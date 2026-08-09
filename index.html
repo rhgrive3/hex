@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#f2f2f7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="referrer" content="no-referrer">
+<title>Hex — ARM64 Viewer</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23007aff'/%3E%3Ctext x='32' y='44' font-size='30' font-family='monospace' font-weight='700' fill='white' text-anchor='middle'%3EA64%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="./css/app.css">
+</head>
+<body>
+
+<div class="app" id="app">
+
+  <!-- ── Title bar ─────────────────────────────────────────── -->
+  <header class="titlebar">
+    <button class="tb-btn" id="btn-open" type="button">Open</button>
+    <div class="tb-title">
+      <span class="tb-name" id="tb-name">No File</span>
+      <span class="tb-sub" id="tb-sub">Select a Mach-O or raw binary</span>
+    </div>
+    <button class="tb-btn icon" id="btn-more" type="button" aria-label="More">⋯</button>
+  </header>
+
+  <!-- ── Toolbar ───────────────────────────────────────────── -->
+  <div class="toolbar">
+    <div class="segmented" id="mode-switch" role="tablist" aria-label="Display mode">
+      <button class="seg" data-mode="asm" role="tab" aria-selected="true" type="button">Assembly</button>
+      <button class="seg" data-mode="hex" role="tab" aria-selected="false" type="button">Hex</button>
+    </div>
+    <div class="tb-spacer"></div>
+    <button class="tb-btn" id="btn-sections" type="button" disabled>Sections</button>
+    <button class="tb-btn" id="btn-jump" type="button" disabled>Go to</button>
+    <button class="tb-btn" id="btn-search" type="button" disabled>Search</button>
+  </div>
+
+  <!-- ── Address bar ───────────────────────────────────────── -->
+  <div class="addrbar">
+    <span class="addr-cur mono" id="addr-cur">—</span>
+    <span class="addr-region" id="addr-region"></span>
+    <span class="addr-range mono" id="addr-range"></span>
+  </div>
+
+  <!-- ── Column header ─────────────────────────────────────── -->
+  <div class="colhead mono" id="colhead">
+    <span class="c-addr">ADDRESS</span>
+    <span class="c-hex">HEX</span>
+    <span class="c-mn">INSTRUCTION</span>
+    <span class="c-ops"></span>
+    <span class="c-ascii">ASCII</span>
+  </div>
+
+  <!-- ── Code viewport ─────────────────────────────────────── -->
+  <div class="viewwrap">
+    <div class="viewport mode-asm" id="viewport" tabindex="0">
+      <div class="rows" id="rows"></div>
+    </div>
+    <div class="scrubber" id="scrubber" aria-hidden="true"><div class="thumb" id="scrub-thumb"></div></div>
+    <div class="empty" id="empty">
+      <div class="empty-inner">
+        <div class="empty-title">iOS ARM64 Viewer</div>
+        <p class="empty-text">Open a Mach-O executable, dylib, or raw binary.<br>
+           Files are parsed entirely on this device and never uploaded.</p>
+        <button class="btn-primary" id="btn-open-2" type="button">Open File…</button>
+      </div>
+    </div>
+    <div class="loading" id="loading" hidden><div class="spinner"></div><span id="loading-text">Loading…</span></div>
+  </div>
+
+  <!-- ── Status bar ────────────────────────────────────────── -->
+  <footer class="statusbar">
+    <span id="st-left" class="mono"></span>
+    <span id="st-right" class="mono"></span>
+  </footer>
+
+</div>
+
+<input type="file" id="file-input" hidden>
+
+<!-- Overlays are created by JS into this container -->
+<div id="overlays"></div>
+
+<script type="module" src="./js/app.js"></script>
+</body>
+</html>
