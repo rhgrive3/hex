@@ -87,6 +87,28 @@ export class Backend {
     return c;
   }
 
+  /**
+   * Await a chunk instead of painting when it lands. Used by range copy, which
+   * needs rows the viewport has never shown; it bypasses the render queue so a
+   * long copy cannot starve scrolling, and fills the same cache.
+   */
+  fetchChunk(regionId, chunk, wantAsm) {
+    const key = this.key(regionId, chunk);
+    const cached = this.cache.get(key);
+    if (cached && !cached.error && (!wantAsm || cached.mn)) return Promise.resolve(cached);
+    const gen = this.gen;
+    return this.call('chunk', { regionId, chunk, wantAsm }).then((res) => {
+      const entry = {
+        bytes: res.bytes,
+        rows: res.rows,
+        mn: res.mn ? res.mn.split('\n') : null,
+        ops: res.ops ? res.ops.split('\n') : null,
+      };
+      if (gen === this.gen) this.cache.set(key, entry);
+      return entry;
+    });
+  }
+
   /** Ask for a chunk; `onChunk` fires when it lands. */
   request(regionId, chunk, wantAsm) {
     const key = this.key(regionId, chunk);

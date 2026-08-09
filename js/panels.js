@@ -5,6 +5,7 @@
  */
 import { Sheet, el, button, list, groupRow, kvRow, tapRow, toast, copyText, alertDialog, menu } from './ui.js';
 import { addrHex, addrText, sizeText, parseAddress, parseHexPattern } from './format.js';
+import { rangeCopyMenu } from './rangecopy.js';
 
 /* ── File info ──────────────────────────────────────────────── */
 
@@ -422,10 +423,16 @@ export function showDetail(app, row) {
     button('Copy Address', 'chip', () => copy('address')),
     button('Copy Hex', 'chip', () => copy('hex')),
     button('Copy Assembly', 'chip', () => copy('asm')),
-    button('Copy All', 'chip', () => copy('all')));
+    button('Copy All', 'chip', () => copy('all')),
+    button('Select Rows…', 'chip', () => { sheet.close(); app.startSelection(row); }));
 }
 
 export function instructionMenu(app, row, x, y) {
+  // Long-pressing while a range is being picked moves its end (the viewer has
+  // already done that by now), so the menu is about the range, not the row.
+  const sel = app.viewer.rangeMode ? app.viewer.selectionRange() : null;
+  if (sel) { rangeCopyMenu(app, x, y); return; }
+
   const d = app.viewer.rowData(row) || {};
   const asm = ((d.mnemonic || '') + ' ' + (d.operands || '')).trim();
   menu([
@@ -434,6 +441,7 @@ export function instructionMenu(app, row, x, y) {
     { label: 'Copy Assembly', action: () => copyText(asm, 'Instruction') },
     { label: 'Copy All', action: () => copyText(addrHex(d.address) + '\t' + (d.bytes || '') + '\t' + asm, 'Row') },
     '-',
+    { label: 'Select Rows from Here', action: () => app.startSelection(row) },
     { label: 'Show Details…', action: () => showDetail(app, row) },
   ], x, y);
 }

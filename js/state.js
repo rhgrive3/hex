@@ -17,6 +17,8 @@ const DEFAULTS = {
   searchQuery: '',
   searchKind: 'asm',     // 'asm' | 'hex' | 'addr'
   selectedRow: -1,
+  selectionStart: -1,    // inclusive row range while picking a range to copy
+  selectionEnd: -1,
   theme: 'system',       // 'system' | 'light' | 'dark'
 };
 
