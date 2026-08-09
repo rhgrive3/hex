@@ -161,6 +161,7 @@ button { font: inherit; color: inherit; }
   white-space: nowrap;
 }
 .tb-btn:disabled { color: var(--label-3); cursor: default; }
+.tb-btn[aria-pressed="true"] { background: var(--accent-soft); }
 .tb-btn:not(:disabled):active { background: var(--fill); }
 .tb-btn.icon { font-size: 20px; line-height: 1; padding: 6px 10px; }
 
@@ -273,7 +274,14 @@ button { font: inherit; color: inherit; }
 .row.data .c-ops .tok-imm { color: inherit; }   /* raw data stays quiet */
 .row.pending .c-hex, .row.pending .c-mn, .row.pending .c-ops { color: var(--label-3); }
 .row.sel { background: var(--selection); }
+/* A multi-row selection is closed off top and bottom so its extent is obvious
+   even when both ends are off screen. */
+.row.sel-first { box-shadow: inset 0 1px 0 var(--accent); }
+.row.sel-last  { box-shadow: inset 0 -1px 0 var(--accent); }
+.row.sel-first.sel-last { box-shadow: inset 0 1px 0 var(--accent), inset 0 -1px 0 var(--accent); }
 .row.hit { box-shadow: inset 3px 0 0 var(--accent); }
+.row.hit.sel-first { box-shadow: inset 3px 0 0 var(--accent), inset 0 1px 0 var(--accent); }
+.row.hit.sel-last  { box-shadow: inset 3px 0 0 var(--accent), inset 0 -1px 0 var(--accent); }
 .row .tok-imm { color: var(--code-imm); }
 .row .tok-punct { color: var(--code-punct); }
 .row .tok-cmt { color: var(--code-cmt); }
@@ -366,6 +374,24 @@ button { font: inherit; color: inherit; }
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2s; } }
+
+/* ── Selection bar ─────────────────────────────────────────── */
+
+.selbar {
+  flex: 0 0 auto;
+  display: flex; align-items: center; gap: 10px;
+  padding: 3px 6px 3px 12px;
+  background: var(--surface);
+  border-top: 0.5px solid var(--separator);
+  white-space: nowrap; overflow: hidden;
+}
+.selbar[hidden] { display: none; }
+.sel-count { font-size: 12px; font-weight: 600; flex: 0 0 auto; }
+.sel-range {
+  font-size: 11px; color: var(--label-2);
+  overflow: hidden; text-overflow: ellipsis; min-width: 0;
+}
+.tb-btn.strong { font-weight: 600; }
 
 /* ── Status bar ────────────────────────────────────────────── */
 

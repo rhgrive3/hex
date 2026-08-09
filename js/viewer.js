@@ -33,6 +33,7 @@ export class CodeViewer {
     this.onTopChange = opts.onTopChange || (() => {});
     this.onSelect = opts.onSelect || (() => {});
     this.onLongPress = opts.onLongPress || (() => {});
+    this.onRangeChange = opts.onRangeChange || (() => {});
 
     this.region = null;
     this.mode = 'asm';
@@ -42,7 +43,14 @@ export class CodeViewer {
     this.baseRow = 0;
     this.rowH = 24;
     this.pool = [];
-    this.selectedRow = -1;
+    // Selection is always a range: `selAnchor` is where it started, `selFocus`
+    // the end the user moves. A single row is anchor === focus. `rangeMode`
+    // says taps extend the range instead of starting a new one.
+    this.selAnchor = -1;
+    this.selFocus = -1;
+    this.rangeMode = false;
+    this._selLo = -1;
+    this._selHi = -1;
     this.markedRow = -1;
     this.frame = 0;
     this.idleTimer = 0;
@@ -100,12 +108,15 @@ export class CodeViewer {
     this.region = region;
     this.totalRows = region ? Number((region.size + 3n) / 4n) : 0;
     this.baseRow = 0;
-    this.selectedRow = -1;
+    this.selAnchor = -1;
+    this.selFocus = -1;
+    this.rangeMode = false;
     this.markedRow = -1;
     this.lastTopRow = -1;          // force the address bar to refresh
     this.vp.scrollTop = 0;
     this._recomputeWindow(false);
     this.invalidate();
+    this.onRangeChange();
   }
 
   setMode(mode) {
@@ -174,25 +185,111 @@ export class CodeViewer {
     this.scrollByRows(n * Math.max(1, this.visibleRows() - 2));
   }
 
+  /** Bring `row` into view without re-centring if it is already visible. */
+  revealRow(row) {
+    if (!this.totalRows) return;
+    row = this.clampRow(row);
+    const top = this.topRow();
+    const visible = this.visibleRows();
+    if (row <= top) this.goToRow(row, 'top');
+    else if (row >= top + visible - 1) this.goToRow(Math.max(0, row - visible + 2), 'top');
+  }
+
   /** Highlight without moving (used by search results). */
   mark(row) {
     this.markedRow = row;
     this.invalidate();
   }
 
+  /* ── selection ────────────────────────────────────────────── */
+
+  /** The selected rows as { start, end, count }, or null when nothing is. */
+  selectionRange() {
+    if (!this.totalRows || this.selAnchor < 0 || this.selFocus < 0) return null;
+    const start = Math.min(this.selAnchor, this.selFocus);
+    const end = Math.max(this.selAnchor, this.selFocus);
+    return { start, end, count: end - start + 1 };
+  }
+
+  /** The single row a one-row selection is on, or -1. */
+  get selectedRow() {
+    return this.selAnchor >= 0 && this.selAnchor === this.selFocus ? this.selAnchor : -1;
+  }
+
+  /** Select exactly one row; leaves range mode. */
   select(row, notify = true) {
-    if (row !== this.selectedRow) {
-      this.selectedRow = row;
+    row = this.clampRow(row);
+    const wasRange = this.rangeMode;
+    this.rangeMode = false;
+    if (row !== this.selAnchor || row !== this.selFocus) {
+      this.selAnchor = row;
+      this.selFocus = row;
       this.invalidate();
     }
+    if (wasRange) this.onRangeChange();
     if (notify) this.onSelect(row);
   }
 
   deselect() {
-    if (this.selectedRow < 0) return;
-    this.selectedRow = -1;
+    const wasRange = this.rangeMode;
+    if (this.selAnchor < 0 && !wasRange) return;
+    this.selAnchor = -1;
+    this.selFocus = -1;
+    this.rangeMode = false;
     this.invalidate();
+    if (wasRange) this.onRangeChange();
   }
+
+  /** Anchor a range at `row`; subsequent taps move its far end. */
+  beginRange(row) {
+    if (!this.totalRows) return;
+    row = this.clampRow(row);
+    this.selAnchor = row;
+    this.selFocus = row;
+    this.rangeMode = true;
+    this.invalidate();
+    this.onRangeChange();
+  }
+
+  /** Move the free end of the range, anchoring one first if needed. */
+  extendTo(row) {
+    if (!this.totalRows) return;
+    row = this.clampRow(row);
+    if (this.selAnchor < 0) this.selAnchor = row;
+    this.selFocus = row;
+    this.rangeMode = true;
+    this.invalidate();
+    this.onRangeChange();
+  }
+
+  /** Keyboard extension: move the free end by `n` rows and follow it. */
+  extendByRows(n) {
+    if (!this.totalRows) return;
+    const from = this.selFocus >= 0 ? this.selFocus : this.topRow();
+    const row = this.clampRow(from + n);
+    this.extendTo(row);
+    this.revealRow(row);
+  }
+
+  extendByPages(n) {
+    this.extendByRows(n * Math.max(1, this.visibleRows() - 2));
+  }
+
+  extendToRow(row) {
+    this.extendTo(row);
+    this.revealRow(this.selFocus);
+  }
+
+  selectAllRows() {
+    if (!this.totalRows) return;
+    this.selAnchor = 0;
+    this.selFocus = this.totalRows - 1;
+    this.rangeMode = true;
+    this.invalidate();
+    this.onRangeChange();
+  }
+
+  clearRange() { this.deselect(); }
 
   /** Everything the detail panel needs for one row, or null if not loaded. */
   rowData(row) {
@@ -261,6 +358,9 @@ export class CodeViewer {
     }
     const rowH = this.rowH;
     const vpH = this.vp.clientHeight;
+    // Resolved once per frame so _paintRow stays allocation-free.
+    this._selLo = this.selAnchor < 0 ? -1 : Math.min(this.selAnchor, this.selFocus);
+    this._selHi = this.selAnchor < 0 ? -1 : Math.max(this.selAnchor, this.selFocus);
     const firstLocal = Math.max(0, Math.floor(this.vp.scrollTop / rowH) - OVERSCAN);
     const count = Math.min(
       this.windowRows - firstLocal,
@@ -365,7 +465,13 @@ export class CodeViewer {
       if (k) cls += ' ' + k;
       if (!asmEntry || !asmEntry.mn) cls += ' pending';
     } else if (avail <= 0) cls += ' pending';
-    if (row === this.selectedRow) cls += ' sel';
+    if (row >= this._selLo && row <= this._selHi) {
+      cls += ' sel';
+      if (this._selLo !== this._selHi) {
+        if (row === this._selLo) cls += ' sel-first';
+        if (row === this._selHi) cls += ' sel-last';
+      }
+    }
     if (row === this.markedRow) cls += ' hit';
     if (el._cls !== cls) { el.className = cls; el._cls = cls; }
   }
@@ -460,6 +566,11 @@ export class CodeViewer {
       return el._row;
     };
     const cancel = () => { clearTimeout(timer); timer = 0; };
+    // In range mode a tap moves the end of the range; otherwise it selects.
+    const touch = (row) => {
+      if (this.rangeMode) this.extendTo(row);
+      else this.select(row);
+    };
 
     this.vp.addEventListener('pointerdown', (e) => {
       if (e.pointerType === 'mouse' && e.button !== 0) return;
@@ -472,7 +583,7 @@ export class CodeViewer {
       timer = setTimeout(() => {
         timer = 0;
         longFired = true;
-        this.select(downRow);
+        touch(downRow);
         this.onLongPress(downRow, downX, downY);
       }, 500);
     }, { passive: true });
@@ -489,7 +600,7 @@ export class CodeViewer {
       const row = rowFrom(e.target);
       if (row >= 0 && row === downRow &&
           Math.abs(e.clientX - downX) < 10 && Math.abs(e.clientY - downY) < 10) {
-        this.select(row);
+        touch(row);
       }
       downRow = -1;
     }, { passive: true });
@@ -499,7 +610,7 @@ export class CodeViewer {
       const row = rowFrom(e.target);
       if (row < 0) return;
       e.preventDefault();
-      this.select(row);
+      touch(row);
       this.onLongPress(row, e.clientX, e.clientY);
     });
   }

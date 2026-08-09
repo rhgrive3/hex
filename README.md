@@ -26,9 +26,19 @@ ADDRESS      HEX            INSTRUCTION
    text, hex byte patterns (`FD 7B ?? A9`), or an address.
 4. Tap an instruction for its address, bytes, mnemonic and operands; long-press
    for Copy Address / Hex / Assembly / All.
+5. **Select** starts a range. Tap (or long-press) another row to select through
+   it — scrolling in between is fine, and the far end can be anywhere in the
+   section. The bar at the bottom shows how many rows are selected and copies
+   them as rows, addresses, hex or assembly. **All** selects the whole section,
+   **Done** clears the selection.
 
 With a hardware keyboard: `⌘F` search, `⌘G` or `G` go to address, arrows /
-page keys / Home / End to move, `Esc` to close.
+page keys / Home / End to move, `Esc` to close. Hold `⇧` with any movement key
+to extend the selection, `⌘A` to select the section, `⌘C` to copy it.
+
+Copied ranges are one row per line: addresses as `0x100001000`, hex as the
+row's four bytes, assembly as `mnemonic operands`, and "Copy Rows" as all
+three separated by tabs. Up to 200,000 rows go on the clipboard at once.
 
 ## Deploying to GitHub Pages
 
@@ -50,6 +60,7 @@ js/state.js         application state + persisted preferences
 js/backend.js       worker client, chunk cache (LRU), prefetch
 js/viewer.js        virtualized code viewer
 js/panels.js        sheets: file info, sections, go to, search, detail, settings
+js/rangecopy.js     copying a selected range of rows to the clipboard
 js/ui.js            sheets / menus / dialogs / toasts / clipboard
 js/format.js        address, hex and size formatting; input parsing
 js/lru.js           bounded cache

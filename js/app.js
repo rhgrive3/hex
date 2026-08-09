@@ -9,6 +9,7 @@ import { CodeViewer } from './viewer.js';
 import { addrHex, addrText, sizeText } from './format.js';
 import { alertDialog, toast, closeTopSheet, closeMenu, menu } from './ui.js';
 import { showFileInfo, showSections, showJump, showSearch, showDetail, showSettings, instructionMenu } from './panels.js';
+import { rangeCopyMenu, copyRange } from './rangecopy.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -31,6 +32,13 @@ class App {
       sections: $('btn-sections'),
       jump: $('btn-jump'),
       search: $('btn-search'),
+      select: $('btn-select'),
+      selbar: $('selbar'),
+      selCount: $('sel-count'),
+      selRange: $('sel-range'),
+      selAll: $('btn-sel-all'),
+      selCopy: $('btn-sel-copy'),
+      selDone: $('btn-sel-done'),
       addrCur: $('addr-cur'),
       addrRegion: $('addr-region'),
       addrRange: $('addr-range'),
@@ -64,6 +72,7 @@ class App {
       onTopChange: (row, addr) => this.onTopChange(row, addr),
       onSelect: (row) => this.onSelectRow(row),
       onLongPress: (row, x, y) => instructionMenu(this, row, x, y),
+      onRangeChange: () => this.updateSelectionBar(),
     });
     this.viewer.attachScrubber(this.dom.scrubber, this.dom.thumb);
 
@@ -96,6 +105,17 @@ class App {
     this.dom.sections.addEventListener('click', () => showSections(this));
     this.dom.jump.addEventListener('click', () => showJump(this));
     this.dom.search.addEventListener('click', () => showSearch(this));
+    this.dom.select.addEventListener('click', () => {
+      if (this.viewer.rangeMode) this.viewer.clearRange();
+      else this.startSelection();
+    });
+
+    this.dom.selAll.addEventListener('click', () => this.viewer.selectAllRows());
+    this.dom.selDone.addEventListener('click', () => this.viewer.clearRange());
+    this.dom.selCopy.addEventListener('click', (e) => {
+      const r = e.currentTarget.getBoundingClientRect();
+      rangeCopyMenu(this, r.left + r.width / 2, r.top);   // flips above the bar
+    });
     this.dom.more.addEventListener('click', (e) => {
       const r = e.currentTarget.getBoundingClientRect();
       menu([
@@ -130,7 +150,8 @@ class App {
     const t = e.target;
     const typing = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
     if (e.key === 'Escape') {
-      if (closeMenu() || closeTopSheet()) e.preventDefault();
+      if (closeMenu() || closeTopSheet()) { e.preventDefault(); return; }
+      if (this.viewer.rangeMode) { this.viewer.clearRange(); e.preventDefault(); }
       return;
     }
     const meta = e.metaKey || e.ctrlKey;
@@ -145,15 +166,27 @@ class App {
     if (typing) return;
     if (!this.store.get('currentRegion')) return;
 
+    if (meta && (e.key === 'a' || e.key === 'A')) {
+      e.preventDefault(); this.viewer.selectAllRows(); return;
+    }
+    if (meta && (e.key === 'c' || e.key === 'C')) {
+      if (!this.viewer.selectionRange()) return;
+      e.preventDefault(); copyRange(this, 'all'); return;
+    }
+
+    // Shift + a movement key extends the selection instead of scrolling.
+    const shift = e.shiftKey;
+    const v = this.viewer;
     switch (e.key) {
       case 'g': case 'G': e.preventDefault(); showJump(this); break;
       case '/': e.preventDefault(); showSearch(this); break;
-      case 'ArrowDown': e.preventDefault(); this.viewer.scrollByRows(1); break;
-      case 'ArrowUp': e.preventDefault(); this.viewer.scrollByRows(-1); break;
-      case 'PageDown': case ' ': e.preventDefault(); this.viewer.scrollByPages(1); break;
-      case 'PageUp': e.preventDefault(); this.viewer.scrollByPages(-1); break;
-      case 'Home': e.preventDefault(); this.viewer.goToRow(0, 'top'); break;
-      case 'End': e.preventDefault(); this.viewer.goToRow(this.viewer.totalRows - 1, 'top'); break;
+      case 'ArrowDown': e.preventDefault(); shift ? v.extendByRows(1) : v.scrollByRows(1); break;
+      case 'ArrowUp': e.preventDefault(); shift ? v.extendByRows(-1) : v.scrollByRows(-1); break;
+      case 'PageDown': case ' ': e.preventDefault(); shift ? v.extendByPages(1) : v.scrollByPages(1); break;
+      case 'PageUp': e.preventDefault(); shift ? v.extendByPages(-1) : v.scrollByPages(-1); break;
+      case 'Home': e.preventDefault(); shift ? v.extendToRow(0) : v.goToRow(0, 'top'); break;
+      case 'End': e.preventDefault();
+        shift ? v.extendToRow(v.totalRows - 1) : v.goToRow(v.totalRows - 1, 'top'); break;
       default: break;
     }
   }
@@ -177,8 +210,10 @@ class App {
     this.dom.sections.disabled = !has;
     this.dom.jump.disabled = !region;
     this.dom.search.disabled = !region;
+    this.dom.select.disabled = !region;
     this.dom.empty.hidden = has;
     this.dom.scrubber.classList.toggle('on', !!region);
+    this.updateSelectionBar();
 
     if (!info) {
       this.dom.name.textContent = 'No File';
@@ -227,6 +262,41 @@ class App {
   onSelectRow(row) {
     this.store.set({ selectedRow: row });
     showDetail(this, row);
+  }
+
+  /* ── row selection ────────────────────────────────────────── */
+
+  /**
+   * Anchor a range. Without a row it starts at the selected row when that is
+   * on screen, otherwise at the top of the viewport — so "Select" always
+   * begins somewhere the user can see.
+   */
+  startSelection(row) {
+    if (!this.store.get('currentRegion')) return;
+    closeTopSheet();          // the rows must be tappable to pick the far end
+    if (row == null) {
+      const sel = this.viewer.selectedRow;
+      const top = this.viewer.topRow();
+      const visible = sel >= top && sel < top + this.viewer.visibleRows();
+      row = visible ? sel : top;
+    }
+    this.viewer.beginRange(row);
+    toast('Tap another row to select through it.');
+  }
+
+  updateSelectionBar() {
+    const sel = this.viewer.rangeMode ? this.viewer.selectionRange() : null;
+    this.dom.selbar.hidden = !sel;
+    this.dom.select.setAttribute('aria-pressed', String(!!sel));
+    this.store.set({
+      selectionStart: sel ? sel.start : -1,
+      selectionEnd: sel ? sel.end : -1,
+    });
+    if (!sel) return;
+    this.dom.selCount.textContent =
+      sel.count.toLocaleString() + (sel.count === 1 ? ' row' : ' rows');
+    this.dom.selRange.textContent =
+      addrText(this.viewer.rowAddress(sel.start)) + '–' + addrText(this.viewer.rowAddress(sel.end));
   }
 
   /* ── theme ────────────────────────────────────────────────── */

@@ -36,6 +36,7 @@
     <button class="tb-btn" id="btn-sections" type="button" disabled>Sections</button>
     <button class="tb-btn" id="btn-jump" type="button" disabled>Go to</button>
     <button class="tb-btn" id="btn-search" type="button" disabled>Search</button>
+    <button class="tb-btn" id="btn-select" type="button" disabled>Select</button>
   </div>
 
   <!-- ── Address bar ───────────────────────────────────────── -->
@@ -69,6 +70,16 @@
       </div>
     </div>
     <div class="loading" id="loading" hidden><div class="spinner"></div><span id="loading-text">Loading…</span></div>
+  </div>
+
+  <!-- ── Selection bar (visible while picking a range) ─────── -->
+  <div class="selbar" id="selbar" hidden>
+    <span class="sel-count mono" id="sel-count"></span>
+    <span class="sel-range mono" id="sel-range"></span>
+    <div class="tb-spacer"></div>
+    <button class="tb-btn" id="btn-sel-all" type="button">All</button>
+    <button class="tb-btn strong" id="btn-sel-copy" type="button">Copy</button>
+    <button class="tb-btn" id="btn-sel-done" type="button">Done</button>
   </div>
 
   <!-- ── Status bar ────────────────────────────────────────── -->

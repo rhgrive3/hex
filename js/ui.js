@@ -162,24 +162,67 @@ export function toast(text) {
 /* ── Clipboard ──────────────────────────────────────────────── */
 
 export async function copyText(text, label) {
-  try {
-    if (navigator.clipboard && window.isSecureContext) {
-      await navigator.clipboard.writeText(text);
-    } else {
-      const ta = document.createElement('textarea');
-      ta.value = text;
-      ta.setAttribute('readonly', '');
-      ta.style.position = 'fixed';
-      ta.style.opacity = '0';
-      document.body.appendChild(ta);
-      ta.select();
-      ta.setSelectionRange(0, text.length);
-      const ok = document.execCommand('copy');
-      ta.remove();
-      if (!ok) throw new Error('copy rejected');
-    }
-    toast((label || 'Copied') + ' — copied');
-  } catch {
-    toast('Could not copy. Long-press the value to select it.');
+  const s = String(text);
+  if (navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(s);
+      toast((label || 'Copied') + ' — copied');
+      return true;
+    } catch { /* no gesture left, or permission denied — try the old way */ }
   }
+  if (legacyCopy(s)) {
+    toast((label || 'Copied') + ' — copied');
+    return true;
+  }
+  toast('Could not copy. Long-press the value to select it.');
+  return false;
+}
+
+function legacyCopy(text) {
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    ta.setSelectionRange(0, text.length);
+    const ok = document.execCommand('copy');
+    ta.remove();
+    return !!ok;
+  } catch { return false; }
+}
+
+/**
+ * Copy text that is still being assembled.
+ *
+ * Gathering a range means awaiting the worker, and by the time it answers the
+ * tap that started the copy no longer counts as a user gesture — Safari would
+ * reject a plain writeText(). Handing ClipboardItem the *promise* keeps the
+ * gesture alive, so the write is authorised up front and settles when the text
+ * is ready. Engines without that path fall back to waiting and writing.
+ */
+export async function copyTextLazy(textPromise, label) {
+  const settled = Promise.resolve(textPromise);
+  settled.catch(() => {});          // the handler below reports it
+  if (navigator.clipboard && navigator.clipboard.write &&
+      window.isSecureContext && typeof window.ClipboardItem === 'function') {
+    try {
+      const blob = settled.then((t) => new Blob([String(t)], { type: 'text/plain' }));
+      await navigator.clipboard.write([new ClipboardItem({ 'text/plain': blob })]);
+      toast((label || 'Copied') + ' — copied');
+      return true;
+    } catch {
+      /* Older engines only accept a resolved value; fall through. */
+    }
+  }
+  let text;
+  try {
+    text = await settled;
+  } catch (err) {
+    toast((err && err.message) ? err.message : 'Could not copy.');
+    return false;
+  }
+  return copyText(text, label);
 }
