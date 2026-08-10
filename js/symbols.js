@@ -118,6 +118,65 @@ export class SymbolIndex {
     return out;
   }
 
+  /**
+   * 名前をあとから足す（Objective-C のクラス表から復元したものなど）。
+   * アドレス順を保ったまま差し込む。同じアドレスに既に名前があればそちらを優先。
+   *
+   * @param {Array<{addr:BigInt,name:string}>} entries
+   */
+  addNames(entries) {
+    if (!entries || !entries.length) return 0;
+    const have = new Set();
+    for (let i = 0; i < this.addrs.length; i++) have.add(this.addrs[i]);
+    const fresh = [];
+    for (const e of entries) {
+      if (!e || e.addr == null || !e.name || have.has(e.addr)) continue;
+      have.add(e.addr);
+      fresh.push(e);
+    }
+    if (!fresh.length) return 0;
+
+    const merged = [];
+    for (let i = 0; i < this.addrs.length; i++) {
+      merged.push({ addr: this.addrs[i], name: this.names[i], kind: this.kinds[i] });
+    }
+    for (const e of fresh) merged.push({ addr: e.addr, name: e.name, kind: SYM_DEFINED });
+    merged.sort((a, b) => (a.addr < b.addr ? -1 : a.addr > b.addr ? 1 : 0));
+
+    const addrs = new BigUint64Array(merged.length);
+    const kinds = new Uint8Array(merged.length);
+    const names = new Array(merged.length);
+    for (let i = 0; i < merged.length; i++) {
+      addrs[i] = merged[i].addr; kinds[i] = merged[i].kind; names[i] = merged[i].name;
+    }
+    this.addrs = addrs; this.kinds = kinds; this.names = names;
+    this.gen = ++SymbolIndex.gen;
+    return fresh.length;
+  }
+
+  /**
+   * 関数の先頭を足す。Objective-C のメソッドの実装アドレスは、
+   * それ自体が確実な関数の先頭なので、切れ目の情報がないファイルで特に効く。
+   */
+  addFunctions(list) {
+    if (!list || !list.length) return 0;
+    const have = new Set();
+    for (let i = 0; i < this.funcs.length; i++) have.add(this.funcs[i]);
+    const all = Array.from(have);
+    let added = 0;
+    for (const a of list) {
+      if (a == null || have.has(a)) continue;
+      have.add(a); all.push(a); added++;
+    }
+    if (!added) return 0;
+    all.sort((x, y) => (x < y ? -1 : x > y ? 1 : 0));
+    const out = new BigUint64Array(all.length);
+    for (let i = 0; i < all.length; i++) out[i] = all[i];
+    this.funcs = out;
+    this.gen = ++SymbolIndex.gen;
+    return added;
+  }
+
   /** 推測で得た関数の先頭を取り込む（LC_FUNCTION_STARTS がないとき）。 */
   setGuessedFunctions(starts) {
     this.funcs = starts || new BigUint64Array(0);

@@ -732,7 +732,7 @@ async function readAtAddress({ addr, len, text }) {
   const at = BigInt(addr);
   const hit = vmToFile(at);
   if (!hit) return { found: false };
-  const max = Math.min(Number(len) || 256, 4096);
+  const max = Math.min(Number(len) || 256, 1 << 20);   // ページ単位でまとめて読むことがある
   const avail = Number(hit.region.vmAddr + hit.region.size - at);
   const bytes = await readRange(hit.offset, Math.min(max, avail));
   const result = {

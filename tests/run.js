@@ -25,10 +25,18 @@ let passed = 0;
 const failures = [];
 let currentTest = '';
 
+const pending = [];
+
 function test(name, fn) {
   currentTest = name;
   try {
-    fn();
+    const r = fn();
+    if (r && typeof r.then === 'function') {
+      pending.push(r.then(
+        () => { passed++; process.stdout.write('  ok  ' + name + '\n'); },
+        (err) => { failures.push({ name, err }); process.stdout.write('FAIL  ' + name + '\n      ' + (err && err.message) + '\n'); }));
+      return;
+    }
     passed++;
     process.stdout.write('  ok  ' + name + '\n');
   } catch (err) {
@@ -575,8 +583,167 @@ test('OBJC: セレクタをポインタごしに解決して「何を呼ぶか�
   has(functionStory(m, null).purpose, 'メソッドを呼んでいます');
 });
 
+/* ────────────────────────────────────────────────────────────
+   Objective-C のクラス表 → 関数の本当の名前
+   ──────────────────────────────────────────────────────────── */
+
+const { buildObjcNames, sanitizePointer } = await import('../js/objc.js');
+
+/** 仮想アドレス空間を 1 枚の配列で用意して、そこに構造体を置いていく。 */
+function objcMemory(relative, corruptName) {
+  const base = 0x100000000n;
+  const mem = new Uint8Array(0x20000);
+  const at = (addr) => Number(addr - base);
+  const ptr = (addr, value) => {
+    let v = BigInt(value);
+    for (let i = 0; i < 8; i++) { mem[at(addr) + i] = Number(v & 0xffn); v >>= 8n; }
+  };
+  const u32w = (addr, value) => {
+    let v = value >>> 0;
+    for (let i = 0; i < 4; i++) { mem[at(addr) + i] = v & 0xff; v >>>= 8; }
+  };
+  const str = (addr, text) => {
+    for (let i = 0; i < text.length; i++) mem[at(addr) + i] = text.charCodeAt(i);
+    mem[at(addr) + text.length] = 0;
+  };
+
+  const A = {
+    classList: 0x100010000n, cls: 0x100011000n, meta: 0x100011100n,
+    ro: 0x100012000n, metaRo: 0x100012100n,
+    clsName: 0x100013000n, selName: 0x100013100n, selName2: 0x100013200n,
+    methods: 0x100014000n, metaMethods: 0x100014100n,
+    selRef: 0x100015000n, imp: 0x100002000n, metaImp: 0x100002100n,
+  };
+
+  ptr(A.classList, A.cls);
+  ptr(A.cls + 0n, A.meta);          // isa → メタクラス
+  ptr(A.cls + 32n, A.ro);           // data
+  ptr(A.ro + 24n, A.clsName);       // name
+  ptr(A.ro + 32n, A.methods);       // baseMethods
+  ptr(A.meta + 32n, A.metaRo);
+  ptr(A.metaRo + 24n, A.clsName);
+  ptr(A.metaRo + 32n, A.metaMethods);
+  if (corruptName) mem.fill(0xff, at(A.clsName), at(A.clsName) + 32);
+  else str(A.clsName, 'LoginViewController');
+  str(A.selName, 'loginButtonTapped:');
+  str(A.selName2, 'sharedInstance');
+
+  if (relative) {
+    // 相対形式: 名前はセレクタのポインタを指す（iOS 14 以降）
+    u32w(A.methods, 12 | 0x80000000);
+    u32w(A.methods + 4n, 1);
+    ptr(A.selRef, A.selName);
+    u32w(A.methods + 8n, Number(A.selRef - (A.methods + 8n)));
+    u32w(A.methods + 12n, 0);
+    u32w(A.methods + 16n, Number(A.imp - (A.methods + 16n)));
+
+    // クラスメソッド側は、名前を直接指す古い相対形式で置く
+    u32w(A.metaMethods, 12 | 0x80000000);
+    u32w(A.metaMethods + 4n, 1);
+    u32w(A.metaMethods + 8n, Number(A.selName2 - (A.metaMethods + 8n)));
+    u32w(A.metaMethods + 12n, 0);
+    u32w(A.metaMethods + 16n, Number(A.metaImp - (A.metaMethods + 16n)));
+  } else {
+    // 従来形式: 1 件 24 バイトのポインタ 3 本
+    u32w(A.methods, 24);
+    u32w(A.methods + 4n, 1);
+    ptr(A.methods + 8n, A.selName);
+    ptr(A.methods + 16n, 0);
+    ptr(A.methods + 24n, A.imp);
+    u32w(A.metaMethods, 24);
+    u32w(A.metaMethods + 4n, 1);
+    ptr(A.metaMethods + 8n, A.selName2);
+    ptr(A.metaMethods + 16n, 0);
+    ptr(A.metaMethods + 24n, A.metaImp);
+  }
+
+  const read = async (addr, len) => {
+    const off = Number(addr - base);
+    if (off < 0 || off >= mem.length) return null;
+    return mem.subarray(off, Math.min(mem.length, off + len));
+  };
+  return { read, A, section: { vmAddr: A.classList, size: 8n } };
+}
+
+test('OBJC: 相対形式のクラス表から -[Class method] を取り出せる', async () => {
+  const { read, A, section } = objcMemory(true);
+  const res = await buildObjcNames(read, section);
+  eq(res.classes, 1);
+  const inst = res.names.find((n) => n.name.startsWith('-'));
+  const clsm = res.names.find((n) => n.name.startsWith('+'));
+  ok(inst, 'インスタンスメソッドが取れていない: ' + res.names.map((n) => n.name).join(', '));
+  eq(inst.name, '-[LoginViewController loginButtonTapped:]');
+  eq(inst.addr, A.imp, '実装のアドレスが違う');
+  ok(clsm, 'クラスメソッドが取れていない');
+  eq(clsm.name, '+[LoginViewController sharedInstance]');
+  eq(clsm.addr, A.metaImp);
+});
+
+test('OBJC: 従来形式のクラス表も読める', async () => {
+  const { read, A, section } = objcMemory(false);
+  const res = await buildObjcNames(read, section);
+  eq(res.names.length, 2);
+  eq(res.names[0].name, '-[LoginViewController loginButtonTapped:]');
+  eq(res.names[0].addr, A.imp);
+});
+
+test('OBJC: 壊れた表では名前を付けずに黙って飛ばす', async () => {
+  const empty = async () => null;
+  const res = await buildObjcNames(empty, { vmAddr: 0x100010000n, size: 800n });
+  eq(res.names.length, 0);
+  eq(res.classes, 0);
+
+  const none = await buildObjcNames(empty, null);
+  eq(none.names.length, 0);
+
+  // クラス名が読めないバイト列なら、そのクラスごと捨てる
+  const broken = objcMemory(true, true);
+  const res2 = await buildObjcNames(broken.read, broken.section);
+  eq(res2.names.length, 0, '読めない名前を名前として採用している');
+  eq(res2.classes, 0);
+});
+
+test('OBJC: chained fixups で上位ビットが立ったポインタをほどく', () => {
+  eq(sanitizePointer(0x100004000n), 0x100004000n);
+  eq(sanitizePointer(0x8010000100004000n), 0x100004000n);
+  eq(sanitizePointer(0n), null);
+});
+
+const { SymbolIndex } = await import('../js/symbols.js');
+
+test('SYMBOLS: 復元した名前と関数の先頭を、順番を保ったまま足せる', () => {
+  const idx = new SymbolIndex({
+    addrs: BigUint64Array.from([0x100n, 0x300n]),
+    kinds: Uint8Array.from([0, 0]),
+    names: '_start\n_end',
+    funcs: BigUint64Array.from([0x100n]),
+  });
+  const before = idx.gen;
+  const added = idx.addNames([
+    { addr: 0x200n, name: '-[A b]' },
+    { addr: 0x100n, name: 'かぶり' },       // 既にある方を優先
+    { addr: 0x080n, name: '+[A c]' },
+  ]);
+  eq(added, 2);
+  eq(idx.nameAt(0x200n), '-[A b]');
+  eq(idx.nameAt(0x100n), '_start', '既存の名前を上書きしている');
+  eq(idx.nameAt(0x080n), '+[A c]');
+  eq(idx.symbolCount, 4);
+  ok(idx.gen > before, '解説キャッシュの世代が上がっていない');
+  // 二分探索が壊れていないこと（＝アドレス順が保たれている）
+  eq(idx.label(0x210n), '-[A b]+0x10');
+
+  eq(idx.addFunctions([0x200n, 0x080n, 0x100n]), 2);
+  eq(idx.functionCount, 3);
+  eq(idx.isFunctionStart(0x200n), true);
+  eq(idx.functionAt(0x204n).start, 0x200n);
+  eq(idx.addNames([]), 0);
+  eq(idx.addFunctions(null), 0);
+});
+
 /* ── まとめ ──────────────────────────────────────────────── */
 
+await Promise.all(pending);
 process.stdout.write('\n' + passed + ' passed, ' + failures.length + ' failed\n');
 if (failures.length) {
   for (const f of failures) {
