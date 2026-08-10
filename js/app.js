@@ -20,6 +20,7 @@ import { SymbolIndex, EMPTY_INDEX } from './symbols.js';
 import { clearBriefCache } from './arm64.js';
 import { clearAnalysisCache, analyzeFunctionCached } from './analyze.js';
 import { buildOverlay } from './narrate.js';
+import { buildObjcNames } from './objc.js';
 import { makeSampleFile } from './sample.js';
 
 const $ = (id) => document.getElementById(id);
@@ -562,8 +563,41 @@ class App {
         this.symbols = new SymbolIndex(res);
         this.viewer.setSymbols(this.symbols);
         this.updateChrome();
+        this.restoreObjcNames(sliceIndex);
       }).catch(() => { /* シンボルがなくても読める */ });
     }
+  }
+
+  /**
+   * Objective-C のクラス表から、関数の本当の名前を戻す。
+   *
+   * 配布用のアプリは自作の関数名が削ってあるが、Objective-C のメソッドだけは
+   * 名前と実装アドレスの対応表がバイナリに残っている。ここを読むと
+   * sub_100123456 が -[LoginViewController loginButtonTapped:] に変わる。
+   *
+   * 裏で走らせて、できたところで一覧と画面を差し替える。失敗しても表示は続く。
+   */
+  async restoreObjcNames(sliceIndex) {
+    const regions = this.store.get('regions') || [];
+    const list = regions.find((r) => r.section === '__objc_classlist' && r.size > 0n);
+    if (!list) return;
+    const read = (addr, len) => this.backend.readAt(addr, len)
+      .then((r) => (r && r.found ? r.bytes : null))
+      .catch(() => null);
+    try {
+      const { names, classes } = await buildObjcNames(read, list);
+      if (this.store.get('sliceIndex') !== sliceIndex || !names.length) return;
+      const added = this.symbols.addNames(names);
+      this.symbols.addFunctions(names.map((n) => n.addr));
+      this.objcClasses = classes;
+      this.viewer.setSymbols(this.symbols);
+      this.updateChrome();
+      if (added) {
+        toast(pick(
+          classes + ' 個のクラスから、' + added + ' 個の関数の名前を復元しました',
+          'Recovered ' + added + ' function names from ' + classes + ' classes'));
+      }
+    } catch { /* 読めなくても、ほかの表示には影響させない */ }
   }
 
   pickDefaultRegion(regions, info) {
