@@ -1,4 +1,5 @@
 /* Formatting helpers. All addresses are BigInt — never Number. */
+import { pick } from './i18n.js';
 
 const HEX2 = new Array(256);
 for (let i = 0; i < 256; i++) HEX2[i] = i.toString(16).toUpperCase().padStart(2, '0');
@@ -40,7 +41,7 @@ export function bytesAscii(u8, off, len) {
 /** 24.7 MB */
 export function sizeText(n) {
   const v = Number(n);
-  if (v < 1024) return v + ' bytes';
+  if (v < 1024) return v + pick(' バイト', ' bytes');
   const units = ['KB', 'MB', 'GB', 'TB'];
   let i = -1, x = v;
   while (x >= 1024 && i < units.length - 1) { x /= 1024; i++; }

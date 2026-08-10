@@ -1,97 +1,210 @@
-# hex — iOS ARM64 Hex / Assembly Viewer
+# hex — アプリの中身を、日本語で読むツール
 
-A browser-based viewer for Mach-O executables and raw ARM64 code, built for
-reading large amounts of disassembly on an iPad (designed against iPad mini 6,
-portrait and landscape) in Safari.
+iPhone / iPad / Mac アプリの実行ファイル（Mach-O）や生のバイナリを開いて、
+中の **機械語を 1 行ずつ日本語で解説しながら読む** ためのビューアです。
 
-It is a **viewer**, not an editor: the file you open is never modified, never
-uploaded, and never leaves the device. Everything — Mach-O parsing, Capstone
-disassembly, search — runs locally in a Web Worker.
+アセンブリを触ったことがない人が、ゼロから読めるようになることを目標にしています。
+iPad（iPad mini 6 の縦・横で調整）の Safari で快適に動くように作ってあります。
 
-```
-ADDRESS      HEX            INSTRUCTION
-100001000    FF 83 00 D1    sub    sp, sp, #0x20
-100001004    FD 7B 01 A9    stp    x29, x30, [sp, #0x10]
-100001008    F6 57 BD A9    stp    x22, x21, [sp, #-0x30]!
-```
-
-## Using it
-
-1. Open the page and tap **Open**, then pick a binary from the Files app.
-2. Mach-O images are recognised automatically; `__TEXT,__text` is selected and
-   disassembled straight away.
-3. **Assembly / Hex** switches the display. **Sections** navigates segments and
-   sections (and architecture slices in a universal binary). **Go to** jumps to
-   an address (`10000C448` or `0x10000C448`). **Search** looks for instruction
-   text, hex byte patterns (`FD 7B ?? A9`), or an address.
-4. Tap an instruction for its address, bytes, mnemonic and operands; long-press
-   for Copy Address / Hex / Assembly / All.
-5. **Select** starts a range. Tap (or long-press) another row to select through
-   it — scrolling in between is fine, and the far end can be anywhere in the
-   section. The bar at the bottom shows how many rows are selected and copies
-   them as rows, addresses, hex or assembly. **All** selects the whole section,
-   **Done** clears the selection.
-
-With a hardware keyboard: `⌘F` search, `⌘G` or `G` go to address, arrows /
-page keys / Home / End to move, `Esc` to close. Hold `⇧` with any movement key
-to extend the selection, `⌘A` to select the section, `⌘C` to copy it.
-
-Copied ranges are one row per line: addresses as `0x100001000`, hex as the
-row's four bytes, assembly as `mnemonic operands`, and "Copy Rows" as all
-three separated by tabs. Up to 200,000 rows go on the clipboard at once.
-
-## Deploying to GitHub Pages
-
-Push the repository and enable Pages on the branch root. Nothing is built and
-nothing is fetched from a CDN, so `https://<user>.github.io/<repo>/` works as
-is — every path in the app is relative.
-
-The page must be served over http(s); opening `index.html` from the file system
-does not work, because browsers refuse to start workers and WebAssembly from
-`file://`.
-
-## What's in here
+**閲覧専用です。** 開いたファイルは書き換えられず、どこにも送信されません。
+Mach-O の解析も、逆アセンブルも、検索も、すべて端末の中の Web Worker で動きます。
 
 ```
-index.html          app shell
-css/app.css         all styling (light + dark, portrait + landscape)
-js/app.js           wiring: chrome, state, file lifecycle, keyboard
-js/state.js         application state + persisted preferences
-js/backend.js       worker client, chunk cache (LRU), prefetch
-js/viewer.js        virtualized code viewer
-js/panels.js        sheets: file info, sections, go to, search, detail, settings
-js/rangecopy.js     copying a selected range of rows to the clipboard
-js/ui.js            sheets / menus / dialogs / toasts / clipboard
-js/format.js        address, hex and size formatting; input parsing
-js/lru.js           bounded cache
-js/worker.js        file I/O, Mach-O parsing, Capstone, search  (classic worker)
-js/macho.js         Mach-O reader (header, load commands, segments, sections)
-capstone.js         Capstone 5 compiled to WebAssembly (@alexaltea/capstone-js)
-capstone.wasm       …and its WebAssembly module — both files are required
+アドレス      命令                        意味
+1000003D4    stp   x29, x30, [sp, #-0x10]!
+  ▼ _greet   戻り先アドレス (x30) と、呼び出し元のフレーム位置 (x29) をスタックに保存する。
+             関数の始まりの合図です。
+1000003DC    adrp  x0, #0x100000000
+             x0 に 0x100000000 を入れる。これは 4096 バイト単位に切り下げた「おおまかな住所」です。
+1000003E0    add   x0, x0, #0x43c
+             x0 に 0x43C（10進で 1084）を足して x0 に入れる。 → 0x10000043C
+1000003E4    bl    #0x100000430
+             _puts を呼び出す。終わったらこの次の行に戻ってきます。
 ```
 
-## How it stays fast on large files
+---
 
-* **Nothing is disassembled up front.** Rows are produced in 4 KiB chunks on
-  demand, disassembled in the worker and kept in a 64-entry LRU cache.
-* **Only visible rows exist in the DOM** (~45 elements), recycled while
-  scrolling. No row is ever created or destroyed during a scroll.
-* **The scroll container is capped at 6,000,000 px.** It shows a *window* of
-  rows; when the user scrolls near an edge and the scroll comes to rest, the
-  window is re-based and `scrollTop` shifts by the same amount, so the view
-  never moves and inertial scrolling is never interrupted. A 32 MB `__text`
-  (8.4 M instructions) scrolls end to end at 60 fps.
-* **Addresses are BigInt everywhere.** ARM64 is fixed width, so row ↔ address is
-  exact: `address = section.vmaddr + row × 4`.
-* **Undecodable words are shown, not skipped.** Capstone runs with `SKIPDATA`,
-  so data inside code appears as `.byte` rows and every 4-byte word keeps its
-  address.
+## 初心者のための仕掛け
 
-## Limits
+### 1. すべての行に、日本語の意味が付く
 
-* Disassembly is ARM64 (AArch64) only. Other Mach-O architectures still show
-  their header, sections and bytes; the Assembly tab is disabled for them.
-* Symbols, cross-references, function lists and Objective-C/Swift metadata are
-  not implemented.
-* App Store binaries with `cryptid = 1` are detected and flagged: their `__TEXT`
-  is encrypted on disk, so it will not disassemble into meaningful code.
+ツールバーの **解説** を押すと、命令 1 行ごとに日本語の説明が下に足されます（既定でオン）。
+表示は「日本語の文」「式（`x0 = x1 + 8`）」「両方」から選べます。
+
+約 200 種類の ARM64 命令に、専用の説明文を用意しています。
+16 進の値には必ず 10 進を添え、レジスタには役割（引数・戻り値・戻り先アドレス…）を添えます。
+
+### 2. 1 行タップで、部品ごとに全部説明
+
+命令をタップすると、その 1 行について次のすべてが出ます。
+
+* ひとことで言うと何をする命令か
+* 式で書くとどうなるか
+* なぜそうなるのか（背景の説明）
+* オペランドの部品ごとの意味（レジスタの役割、即値の 10 進・2 進・文字としての値）
+* 飛び先・指し先のアドレス（名前が分かれば名前で）
+* **その先に文字列があれば、その中身**
+* 実際の 4 バイトと、リトルエンディアンで逆順に見えている理由
+* 32 ビットを 2 進数に開いたもの
+* 出てきた用語へのリンク
+
+### 3. 2 行組をまとめて解釈する
+
+ARM64 で最初につまずくのが `adrp` + `add` の 2 行組です。
+このツールは 2 行を組にして最終的なアドレスを計算し、そこにある文字列まで読んで表示します。
+
+### 4. 学習コース（10 章）と用語集
+
+`？` ボタンから、ゼロから読めるようになるための 10 章が読めます。
+
+1. コンピュータは、実は単純なことしかしていない
+2. 0 と 1、バイト、そして 16 進数
+3. メモリとアドレス — データはどこに置かれているのか
+4. レジスタ — CPU の手元にある 31 個の入れ物
+5. 命令を読む（1）代入と計算
+6. 命令を読む（2）メモリの読み書き
+7. 命令を読む（3）if と for の正体
+8. 関数とスタック — 呼んで、帰ってくる仕組み
+9. 実行ファイル（Mach-O）の中身
+10. 実際に読んでみる — 手順とコツ
+
+用語集には約 60 語が入っていて、解説や学習コースの中からその場で引けます。
+
+### 5. サンプルバイナリを内蔵
+
+手元にファイルがなくても始められるように、練習用の ARM64 Mach-O を
+**その場で組み立てて開く** ようにしてあります（`js/sample.js`）。本物と同じ形式で、
+関数 5 つ、ループ、文字列参照、外部関数の呼び出し（`__stubs` → `__got`）、
+シンボル、`LC_FUNCTION_STARTS` が入っています。
+
+---
+
+## 読み解きのための道具
+
+| 機能 | 何ができるか |
+| --- | --- |
+| **関数** | 関数の一覧。名前がなければ命令の並びから推測して並べます |
+| **関数の要約** | 1 つの関数について「何を呼ぶか・ループはあるか・引数は何個か・スタックをどれだけ使うか」を先に日本語で要約します |
+| **文字列** | プログラム中の文字列を一覧に。アプリが何をしているかの一番の手がかりです |
+| **ここを使っている場所** | あるアドレスへ飛ぶ／そのアドレスを作っている命令をすべて探します（`adrp`+`add` の組も解決します） |
+| **構造** | ヘッダ → ロードコマンド → セグメントの順に、ファイルの組み立てを日本語で |
+| **セクション** | `__text` や `__cstring` など各区画の説明と移動 |
+| **検索** | 命令の文字・文字列（ASCII）・16 進バイト（`FD 7B ?? A9`）・アドレス |
+| **選択とコピー** | 範囲を選んで、アドレス／16 進／命令／**日本語の解説つき** でコピー |
+
+### 関数の要約の例
+
+> この関数は命令 118 個。それなりの処理をしています。
+> 中で「_malloc」「_memcpy」を呼んでいます。
+> 呼んでいる相手から推測すると、メモリを確保・データをコピー、といったことをしていそうです。
+> 前の行へ戻る分岐が 2 か所あるので、ループが入っています。
+> 自分で値を入れる前に x0、x1 を読んでいるので、引数を 2 個くらい受け取っていそうです。
+> 帰る前に x0 を作っているので、呼び出し元へ値を返しています。
+
+---
+
+## 使い方
+
+1. ページを開いて **サンプルで練習する**、または **ファイルを開く** からバイナリを選びます。
+2. Mach-O は自動で認識され、`__TEXT,__text` が選ばれて逆アセンブルされます。
+3. **アセンブリ / 16進** で表示を切り替え。**解説** で日本語の注釈を出し入れします。
+4. 行をタップすると詳細、長押しでメニュー。
+5. **選択** で範囲コピー。開始行をタップしたあと、もう 1 行タップすると範囲が決まります。
+
+ハードウェアキーボード: `⌘F` 検索、`⌘G` または `G` ジャンプ、`E` 解説の切り替え、
+`?` ヘルプ、矢印 / PageUp / PageDown / Home / End で移動、`Esc` で閉じる。
+`⇧` を押しながら移動キーで範囲を伸ばし、`⌘A` で全選択、`⌘C` でコピー。
+
+**設定**（`⋯`）から、テーマ・文字の大きさ（4 段階）・解説の書き方・表示言語（日本語 / English）を変えられます。
+
+---
+
+## GitHub Pages へ置く
+
+リポジトリを push して、Pages をブランチのルートに向けるだけです。
+ビルドは不要で、CDN からも何も取ってきません。すべてのパスが相対なので
+`https://<user>.github.io/<repo>/` でそのまま動きます。
+
+ページは **http(s) で配信する必要があります**。`index.html` をファイルとして直接開くと、
+ブラウザが `file://` からの Worker と WebAssembly を拒否するため動きません。
+
+---
+
+## ファイル構成
+
+```
+index.html          画面の骨組み
+css/app.css         見た目すべて（ライト/ダーク、縦/横）
+
+js/app.js           全体の配線: 画面の枠、状態、ファイルの読み込み、キーボード
+js/state.js         アプリの状態と、保存される設定
+js/backend.js       worker との窓口、チャンクのキャッシュ (LRU)、先読み
+js/viewer.js        仮想スクロールするコードビューア（解説行つき）
+js/panels.js        シート類: ファイル情報/セクション/構造/関数/文字列/検索/詳細/設定/学習/用語集
+js/rangecopy.js     選択した範囲をクリップボードへ
+js/ui.js            シート・メニュー・ダイアログ・トースト・クリップボード
+js/format.js        アドレス・16 進・サイズの整形、入力の解釈
+js/lru.js           上限つきキャッシュ
+
+js/i18n.js          表示言語（日本語が既定、英語に切替可能）
+js/arm64.js         ★ ARM64 命令 → 日本語の解説・擬似コードへの変換エンジン
+js/glossary.js      用語集（約 60 語）
+js/learn.js         学習コース（10 章）
+js/analyze.js       関数の解析と、日本語の要約づくり
+js/symbols.js       名前と関数の索引（二分探索）
+js/sample.js        練習用 Mach-O をその場で組み立てる
+
+js/worker.js        ファイル入出力、Mach-O 解析、Capstone、検索、走査（クラシック worker）
+js/macho.js         Mach-O リーダ（ヘッダ、ロードコマンド、シンボル、関数の切れ目）
+
+capstone.js         Capstone 5 を WebAssembly にしたもの (@alexaltea/capstone-js)
+capstone.wasm       …とその WebAssembly 本体。この 2 つは両方必要です
+```
+
+---
+
+## 大きなファイルでも軽い理由
+
+* **最初にまとめて逆アセンブルしない。** 4 KiB ごとのチャンクを、必要になったときだけ
+  worker で逆アセンブルし、64 個ぶんを LRU キャッシュに置きます。
+* **画面に出ている行だけが DOM にある**（40〜50 要素）。スクロール中に要素の生成も破棄も起きません。
+* **スクロール領域は 6,000,000 px で頭打ち。** 端に近づいてスクロールが止まったところで
+  窓を張り直し、同じ量だけ `scrollTop` をずらすので、画面は動かず慣性スクロールも途切れません。
+  32 MB の `__text`（840 万命令）でも端から端まで 60 fps で流れます。
+* **アドレスは全部 BigInt。** ARM64 は命令長が固定なので `アドレス = 区画の先頭 + 行 × 4` が厳密に成り立ちます。
+* **解説文はキャッシュ**（ニーモニック＋オペランドをキーに 4000 件）。同じ命令の繰り返しは 1 回しか組み立てません。
+* **走査系（文字列抽出・相互参照・関数の推測）は Capstone を通さず、
+  4 バイトの語を直接デコード**します。逆アセンブルより桁違いに速いので、
+  数十 MB のセクションでも一気に走ります。
+
+---
+
+## できないこと・気をつけること
+
+* **逆アセンブルは ARM64 (AArch64) だけ**です。他の CPU の Mach-O も、ヘッダ・セクション・
+  バイト列は読めますが「アセンブリ」タブは使えません。
+* **App Store 版のアプリ（`cryptid = 1`）は読めません。** `__TEXT` が暗号化されたままなので、
+  意味のある命令にはなりません。開くと警告が出ます。実機から復号済みの状態で取り出したものが必要です。
+* **名前が削られたファイルでの関数の切れ目は「推測」です。** `bl` の飛び先と、
+  `ret` の直後にあるプロローグらしい命令を手がかりにしています。
+  取りこぼしはありますが（呼ばれない小さな関数など）、誤検出は出にくいようにしてあります。
+  画面にも推測である旨を表示します。
+* **関数の要約も推測です。** 命令の並びから読み取れることだけを書いています。断定ではありません。
+* Objective-C / Swift のメタデータ、C++ の名前復元、デコンパイル（C 言語への復元）は入っていません。
+* 学習コースと用語集は日本語のみです。UI と命令の解説は英語にも切り替えられます。
+
+---
+
+## 開発時の確認方法
+
+`js/sample.js` が組み立てるバイナリは、実物の Mach-O として検証できます。
+
+```sh
+# サンプルを書き出して、Mach-O として正しいか確かめる
+node -e "import('./js/sample.js').then(m=>require('fs').writeFileSync('/tmp/s.bin',m.buildSampleBinary()))"
+llvm-objdump --macho --private-headers /tmp/s.bin
+llvm-objdump --macho -d --syms --indirect-symbols /tmp/s.bin
+```
+
+命令の解説を新しく足したときは、`llvm-mc` で命令列を組み立て、Capstone で
+オペランドの書式を確かめてから `js/arm64.js` のハンドラを書くのが確実です。

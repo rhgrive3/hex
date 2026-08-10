@@ -1,15 +1,23 @@
 /*
- * App shell: wires the store, the backend worker and the virtualized viewer to
- * the chrome (title bar, mode switch, address bar, status bar) and to the
- * sheets in panels.js.
+ * アプリの骨組み。
+ * store・worker・ビューアと、画面の枠（タイトルバー、ツールバー、状態表示）、
+ * それに panels.js のシート群をつなぐ。
  */
 import { Store, loadPrefs, savePrefs } from './state.js';
 import { Backend } from './backend.js';
 import { CodeViewer } from './viewer.js';
 import { addrHex, addrText, sizeText } from './format.js';
 import { alertDialog, toast, closeTopSheet, closeMenu, menu } from './ui.js';
-import { showFileInfo, showSections, showJump, showSearch, showDetail, showSettings, instructionMenu } from './panels.js';
+import {
+  showFileInfo, showSections, showJump, showSearch, showDetail, showSettings,
+  instructionMenu, showFunctions, showStrings, showStructure, showHelp,
+  showLearn, showGlossary, showWelcome, showSampleGuide, showFunctionSummary,
+} from './panels.js';
 import { rangeCopyMenu, copyRange } from './rangecopy.js';
+import { t, setLang, detectLang, lang, isJa, pick } from './i18n.js';
+import { SymbolIndex, EMPTY_INDEX } from './symbols.js';
+import { clearBriefCache } from './arm64.js';
+import { makeSampleFile } from './sample.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -19,7 +27,11 @@ class App {
     this.prefs = loadPrefs();
     this.detailRefresh = null;
     this.capstoneVersion = '5';
-    this.preferredMode = 'asm';   // what the user last chose; hex can be forced
+    this.preferredMode = 'asm';
+    this.symbols = EMPTY_INDEX;
+    this.sampleOpen = false;
+
+    setLang(this.prefs.lang || detectLang());
 
     this.dom = {
       app: $('app'),
@@ -27,9 +39,16 @@ class App {
       sub: $('tb-sub'),
       open: $('btn-open'),
       open2: $('btn-open-2'),
+      sample: $('btn-sample'),
+      learn: $('btn-learn-2'),
+      help: $('btn-help'),
       more: $('btn-more'),
       modeSwitch: $('mode-switch'),
+      explain: $('btn-explain'),
       sections: $('btn-sections'),
+      functions: $('btn-functions'),
+      strings: $('btn-strings'),
+      struct: $('btn-struct'),
       jump: $('btn-jump'),
       search: $('btn-search'),
       select: $('btn-select'),
@@ -62,7 +81,7 @@ class App {
     };
     this.backend.onFatal = (message) => {
       this.setBusy(false);
-      alertDialog('Analysis engine stopped', friendly(message));
+      alertDialog(t('err.engineTitle'), friendly(message));
     };
 
     this.viewer = new CodeViewer({
@@ -77,23 +96,54 @@ class App {
     this.viewer.attachScrubber(this.dom.scrubber, this.dom.thumb);
 
     this.applyTheme(this.prefs.theme || 'system');
+    this.applyTextSize(this.prefs.textSize || 'm');
     this.store.set({ hexJoined: !!this.prefs.hexJoined });
     this.viewer.setHexJoined(!!this.prefs.hexJoined);
+    if (this.prefs.explain == null) this.prefs.explain = true;   // 初心者向けなので既定でオン
+    this.viewer.setNotes(this.prefs.explain, this.prefs.noteStyle || 'ja');
 
     this.bind();
+    this.applyLabels();
     this.layout();
+    this.updateChrome();
+
+    if (!this.prefs.guideSeen) setTimeout(() => showWelcome(this), 300);
+  }
+
+  /* ── 文言 ─────────────────────────────────────────────────── */
+
+  /** data-i18n が付いた要素の文言を、今の言語で入れ直す。 */
+  applyLabels() {
+    for (const node of document.querySelectorAll('[data-i18n]')) {
+      node.textContent = t(node.dataset.i18n);
+    }
+    for (const node of document.querySelectorAll('[data-i18n-aria]')) {
+      node.setAttribute('aria-label', t(node.dataset.i18nAria));
+    }
+    for (const node of document.querySelectorAll('[data-i18n-html]')) {
+      node.replaceChildren();
+      const lines = t(node.dataset.i18nHtml).split('\n');
+      lines.forEach((line, i) => {
+        if (i) node.append(document.createElement('br'));
+        node.append(document.createTextNode(line));
+      });
+    }
+    document.title = t('app.title');
+    this.dom.explain.setAttribute('aria-pressed', String(!!this.prefs.explain));
     this.updateChrome();
   }
 
-  /* ── wiring ───────────────────────────────────────────────── */
+  /* ── 配線 ─────────────────────────────────────────────────── */
 
   bind() {
-    const pick = () => this.dom.fileInput.click();
-    this.dom.open.addEventListener('click', pick);
-    this.dom.open2.addEventListener('click', pick);
+    const pick2 = () => this.dom.fileInput.click();
+    this.dom.open.addEventListener('click', pick2);
+    this.dom.open2.addEventListener('click', pick2);
+    this.dom.sample.addEventListener('click', () => this.openSample());
+    this.dom.learn.addEventListener('click', () => showLearn(this));
     this.dom.fileInput.addEventListener('change', (e) => {
       const f = e.target.files && e.target.files[0];
-      e.target.value = '';                   // allow re-opening the same file
+      e.target.value = '';
       if (f) this.openFile(f);
     });
 
@@ -102,9 +152,14 @@ class App {
       if (b) this.setMode(b.dataset.mode);
     });
 
+    this.dom.explain.addEventListener('click', () => this.setExplain(!this.prefs.explain));
     this.dom.sections.addEventListener('click', () => showSections(this));
+    this.dom.functions.addEventListener('click', () => showFunctions(this));
+    this.dom.strings.addEventListener('click', () => showStrings(this));
+    this.dom.struct.addEventListener('click', () => showStructure(this));
     this.dom.jump.addEventListener('click', () => showJump(this));
     this.dom.search.addEventListener('click', () => showSearch(this));
+    this.dom.help.addEventListener('click', () => showHelp(this));
     this.dom.select.addEventListener('click', () => {
       if (this.viewer.rangeMode) this.viewer.clearRange();
       else this.startSelection();
@@ -114,16 +169,22 @@ class App {
     this.dom.selDone.addEventListener('click', () => this.viewer.clearRange());
     this.dom.selCopy.addEventListener('click', (e) => {
       const r = e.currentTarget.getBoundingClientRect();
-      rangeCopyMenu(this, r.left + r.width / 2, r.top);   // flips above the bar
+      rangeCopyMenu(this, r.left + r.width / 2, r.top);
     });
     this.dom.more.addEventListener('click', (e) => {
       const r = e.currentTarget.getBoundingClientRect();
+      const needFile = (fn) => () => (this.store.get('fileInfo') ? fn() : toast(t('err.openFirst')));
       menu([
-        { label: 'File Info…', action: () => this.store.get('fileInfo') ? showFileInfo(this) : toast('Open a file first.') },
-        { label: 'Sections…', action: () => this.store.get('fileInfo') ? showSections(this) : toast('Open a file first.') },
+        { label: t('file.title') + '…', action: needFile(() => showFileInfo(this)) },
+        { label: t('struct.title') + '…', action: needFile(() => showStructure(this)) },
+        { label: t('sections.title') + '…', action: needFile(() => showSections(this)) },
         '-',
-        { label: 'Settings…', action: () => showSettings(this) },
-        { label: 'Open File…', action: () => this.dom.fileInput.click() },
+        { label: t('help.learn'), action: () => showLearn(this) },
+        { label: t('glossary.title'), action: () => showGlossary(this) },
+        { label: t('help.title'), action: () => showHelp(this) },
+        '-',
+        { label: t('settings.title') + '…', action: () => showSettings(this) },
+        { label: t('btn.openFile'), action: () => this.dom.fileInput.click() },
       ], r.left + r.width / 2, r.bottom - 4);
     });
 
@@ -137,7 +198,6 @@ class App {
 
     document.addEventListener('keydown', (e) => this.onKey(e));
 
-    // Dropping a file onto the page is handy with a Mac/keyboard setup.
     document.addEventListener('dragover', (e) => { e.preventDefault(); });
     document.addEventListener('drop', (e) => {
       e.preventDefault();
@@ -147,8 +207,8 @@ class App {
   }
 
   onKey(e) {
-    const t = e.target;
-    const typing = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
+    const target = e.target;
+    const typing = target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable);
     if (e.key === 'Escape') {
       if (closeMenu() || closeTopSheet()) { e.preventDefault(); return; }
       if (this.viewer.rangeMode) { this.viewer.clearRange(); e.preventDefault(); }
@@ -164,6 +224,7 @@ class App {
       e.preventDefault(); showJump(this); return;
     }
     if (typing) return;
+    if (e.key === '?') { e.preventDefault(); showHelp(this); return; }
     if (!this.store.get('currentRegion')) return;
 
     if (meta && (e.key === 'a' || e.key === 'A')) {
@@ -174,12 +235,12 @@ class App {
       e.preventDefault(); copyRange(this, 'all'); return;
     }
 
-    // Shift + a movement key extends the selection instead of scrolling.
     const shift = e.shiftKey;
     const v = this.viewer;
     switch (e.key) {
       case 'g': case 'G': e.preventDefault(); showJump(this); break;
       case '/': e.preventDefault(); showSearch(this); break;
+      case 'e': case 'E': e.preventDefault(); this.setExplain(!this.prefs.explain); break;
       case 'ArrowDown': e.preventDefault(); shift ? v.extendByRows(1) : v.scrollByRows(1); break;
       case 'ArrowUp': e.preventDefault(); shift ? v.extendByRows(-1) : v.scrollByRows(-1); break;
       case 'PageDown': case ' ': e.preventDefault(); shift ? v.extendByPages(1) : v.scrollByPages(1); break;
@@ -191,7 +252,7 @@ class App {
     }
   }
 
-  /* ── layout & chrome ──────────────────────────────────────── */
+  /* ── 画面の枠 ─────────────────────────────────────────────── */
 
   layout() {
     const wide = window.innerWidth >= 820;
@@ -208,6 +269,9 @@ class App {
     const region = this.store.get('currentRegion');
     const has = !!info;
     this.dom.sections.disabled = !has;
+    this.dom.struct.disabled = !has;
+    this.dom.strings.disabled = !has;
+    this.dom.functions.disabled = !region;
     this.dom.jump.disabled = !region;
     this.dom.search.disabled = !region;
     this.dom.select.disabled = !region;
@@ -216,8 +280,8 @@ class App {
     this.updateSelectionBar();
 
     if (!info) {
-      this.dom.name.textContent = 'No File';
-      this.dom.sub.textContent = 'Select a Mach-O or raw binary';
+      this.dom.name.textContent = t('app.noFile');
+      this.dom.sub.textContent = t('app.noFileSub');
       this.dom.stLeft.textContent = '';
       this.dom.stRight.textContent = '';
       this.dom.addrCur.textContent = '—';
@@ -235,8 +299,8 @@ class App {
       this.dom.addrRange.textContent =
         addrText(region.vmAddr) + '–' + addrText(region.vmAddr + region.size);
       this.dom.stLeft.textContent =
-        (this.store.get('canDisassemble') ? 'ARM64' : (arch || 'data')) + ' · ' +
-        sizeText(region.size) + ' · ' + this.viewer.totalRows.toLocaleString() + ' rows';
+        (this.store.get('canDisassemble') ? 'ARM64' : (arch || t('status.data'))) + ' · ' +
+        sizeText(region.size) + ' · ' + t('status.rows', { n: this.viewer.totalRows.toLocaleString() });
     }
     this.updateModeUI();
   }
@@ -248,13 +312,14 @@ class App {
     }
     this.dom.colhead.classList.toggle('mode-asm-head', mode === 'asm');
     this.dom.colhead.classList.toggle('mode-hex-head', mode === 'hex');
+    this.dom.explain.disabled = mode !== 'asm';
   }
 
   onTopChange(row, addr) {
     this.dom.addrCur.textContent = addrHex(addr);
     const total = this.viewer.totalRows;
     this.dom.stRight.textContent = total
-      ? (row + 1).toLocaleString() + ' / ' + total.toLocaleString()
+      ? t('status.rowOf', { cur: (row + 1).toLocaleString(), total: total.toLocaleString() })
       : '';
     this.store.set({ currentAddress: addr });
   }
@@ -264,16 +329,11 @@ class App {
     showDetail(this, row);
   }
 
-  /* ── row selection ────────────────────────────────────────── */
+  /* ── 範囲選択 ─────────────────────────────────────────────── */
 
-  /**
-   * Anchor a range. Without a row it starts at the selected row when that is
-   * on screen, otherwise at the top of the viewport — so "Select" always
-   * begins somewhere the user can see.
-   */
   startSelection(row) {
     if (!this.store.get('currentRegion')) return;
-    closeTopSheet();          // the rows must be tappable to pick the far end
+    closeTopSheet();
     if (row == null) {
       const sel = this.viewer.selectedRow;
       const top = this.viewer.topRow();
@@ -281,7 +341,7 @@ class App {
       row = visible ? sel : top;
     }
     this.viewer.beginRange(row);
-    toast('Tap another row to select through it.');
+    toast(t('sel.hint'));
   }
 
   updateSelectionBar() {
@@ -293,18 +353,19 @@ class App {
       selectionEnd: sel ? sel.end : -1,
     });
     if (!sel) return;
-    this.dom.selCount.textContent =
-      sel.count.toLocaleString() + (sel.count === 1 ? ' row' : ' rows');
+    this.dom.selCount.textContent = t('sel.rows', { n: sel.count.toLocaleString() });
     this.dom.selRange.textContent =
       addrText(this.viewer.rowAddress(sel.start)) + '–' + addrText(this.viewer.rowAddress(sel.end));
   }
 
-  /* ── theme ────────────────────────────────────────────────── */
+  /* ── 設定 ─────────────────────────────────────────────────── */
+
+  saveSettings() { savePrefs(this.prefs); }
 
   setTheme(theme) {
     this.applyTheme(theme);
     this.prefs.theme = theme;
-    savePrefs(this.prefs);
+    this.saveSettings();
   }
 
   applyTheme(theme) {
@@ -313,31 +374,68 @@ class App {
     else document.documentElement.setAttribute('data-theme', theme);
   }
 
+  setTextSize(size) {
+    this.applyTextSize(size);
+    this.prefs.textSize = size;
+    this.saveSettings();
+  }
+
+  applyTextSize(size) {
+    const root = document.documentElement;
+    for (const s of ['s', 'm', 'l', 'xl']) root.classList.toggle('size-' + s, s === size);
+    if (this.viewer) this.viewer.measure();
+  }
+
   setHexJoined(on) {
     this.store.set({ hexJoined: on });
     this.viewer.setHexJoined(on);
     this.prefs.hexJoined = on;
-    savePrefs(this.prefs);
+    this.saveSettings();
   }
 
-  /* ── file lifecycle ───────────────────────────────────────── */
+  setExplain(on) {
+    this.prefs.explain = !!on;
+    this.viewer.setNotes(!!on, this.prefs.noteStyle || 'ja');
+    this.dom.explain.setAttribute('aria-pressed', String(!!on));
+    this.saveSettings();
+  }
 
-  async openFile(file) {
+  setNoteStyle(style) {
+    this.prefs.noteStyle = style;
+    this.viewer.setNotes(this.prefs.explain, style);
+    this.saveSettings();
+  }
+
+  setLanguage(l) {
+    this.prefs.lang = l;
+    setLang(l);
+    clearBriefCache();
+    this.saveSettings();
+    this.applyLabels();
+    this.viewer.setSymbols(this.symbols);   // 解説を作り直させる
+  }
+
+  /* ── ファイルを開く ───────────────────────────────────────── */
+
+  async openFile(file, opts) {
     if (!file) return;
     if (file.size === 0) {
-      alertDialog('Empty file', 'This file contains no data.');
+      alertDialog(t('err.emptyTitle'), t('err.emptyText'));
       return;
     }
-    this.setBusy(true, 'Reading ' + file.name + '…');
+    this.sampleOpen = !!(opts && opts.sample);
+    this.setBusy(true, t('status.reading', { name: file.name }));
     this.backend.resetCache();
     this.detailRefresh = null;
+    this.symbols = EMPTY_INDEX;
+    this.viewer.setSymbols(EMPTY_INDEX);
 
     let info;
     try {
       info = await this.backend.open(file);
     } catch (err) {
       this.setBusy(false);
-      alertDialog('Could not open this file', friendly(err.message));
+      alertDialog(t('err.openTitle'), friendly(err.message));
       return;
     }
 
@@ -354,10 +452,18 @@ class App {
     if (info.warnings && info.warnings.length) toast(info.warnings[0]);
     const slice = this.currentSlice();
     if (slice && slice.info && slice.info.encrypted) {
-      alertDialog('Encrypted binary',
-        'This Mach-O still has cryptid = 1, so __TEXT is App Store encrypted. ' +
-        'The bytes are shown exactly as stored, but they will not disassemble into meaningful code ' +
-        'until the image is decrypted (e.g. dumped from a device).');
+      alertDialog(t('err.encryptedTitle'), t('err.encryptedText'));
+    }
+    if (this.sampleOpen) setTimeout(() => showSampleGuide(this), 250);
+  }
+
+  /** 練習用のサンプルをその場で組み立てて開く。 */
+  async openSample() {
+    try {
+      const file = makeSampleFile();
+      await this.openFile(file, { sample: true });
+    } catch (err) {
+      alertDialog(t('err.openTitle'), friendly(err && err.message));
     }
   }
 
@@ -368,12 +474,10 @@ class App {
     const arch = slice && slice.info
       ? slice.info.cpu + (slice.info.cpuSub && slice.info.cpuSub !== 'all' ? ' (' + slice.info.cpuSub + ')' : '')
       : null;
-    const canDisassemble = slice && slice.info ? !!slice.info.isArm64 : true;   // raw files: assume ARM64
+    const canDisassemble = slice && slice.info ? !!slice.info.isArm64 : true;
 
     this.store.set({ sliceIndex, regions, architecture: arch, canDisassemble });
 
-    // Hex is forced for non-ARM64 images; the user's own choice comes back as
-    // soon as an ARM64 image is opened again.
     const mode = canDisassemble ? this.preferredMode : 'hex';
     this.store.set({ displayMode: mode });
     this.viewer.setMode(mode);
@@ -387,10 +491,20 @@ class App {
         this.store.set({ canDisassemble: false, displayMode: 'hex' });
         this.viewer.setMode('hex');
         this.updateChrome();
-        alertDialog('Disassembler unavailable', friendly(err.message));
+        alertDialog(t('err.engineTitle'), friendly(err.message));
       });
     } else if (slice && slice.info) {
-      toast(arch + ' is not ARM64 — showing bytes only.');
+      toast(t('err.notArm64', { arch }));
+    }
+
+    // 名前と関数の一覧はここで作る。失敗しても表示自体は続けられる。
+    if (sliceIndex >= 0) {
+      this.backend.analyze(sliceIndex).then((res) => {
+        if (this.store.get('sliceIndex') !== sliceIndex) return;
+        this.symbols = new SymbolIndex(res);
+        this.viewer.setSymbols(this.symbols);
+        this.updateChrome();
+      }).catch(() => { /* シンボルがなくても読める */ });
     }
   }
 
@@ -414,15 +528,18 @@ class App {
     const info = this.store.get('fileInfo');
     if (!info || !info.slices[index] || info.slices[index].error) return;
     this.backend.resetCache();
+    this.symbols = EMPTY_INDEX;
+    this.viewer.setSymbols(EMPTY_INDEX);
     this.applySlice(index, info);
   }
 
   selectRegion(region, { silent } = {}) {
     if (!region) return;
     if (region.zerofill || region.size === 0n) {
-      alertDialog('Nothing to show',
-        region.name + ' has no bytes in the file' +
-        (region.zerofill ? ' (it is zero-filled at load time).' : '.'));
+      alertDialog(t('err.nothingTitle'), t('err.nothingText', {
+        name: region.name,
+        zero: region.zerofill ? t('err.zerofill') : '',
+      }));
       return;
     }
     this.backend.dropQueued();
@@ -436,10 +553,8 @@ class App {
   setMode(mode) {
     if (mode !== 'asm' && mode !== 'hex') return;
     if (mode === 'asm' && !this.store.get('canDisassemble')) {
-      const arch = this.store.get('architecture') || 'This binary';
-      alertDialog('ARM64 only',
-        arch + ' cannot be disassembled here. This viewer decodes ARM64 (AArch64) only; ' +
-        'the Hex tab still shows the bytes.');
+      const arch = this.store.get('architecture') || pick('このファイル', 'This binary');
+      alertDialog(t('err.disasmTitle'), t('err.arm64Only', { arch }));
       return;
     }
     this.preferredMode = mode;
@@ -448,7 +563,8 @@ class App {
     this.updateModeUI();
   }
 
-  /** Jump anywhere in the active slice; switches section when needed. */
+  /* ── 移動 ─────────────────────────────────────────────────── */
+
   goToAddress(addr, { announce } = {}) {
     const region = this.store.get('currentRegion');
     if (region && addr >= region.vmAddr && addr < region.vmAddr + region.size) {
@@ -461,20 +577,61 @@ class App {
     if (target) {
       this.selectRegion(target, { silent: true });
       this.viewer.goToAddress(addr);
-      toast(target.name);
+      toast(t('toast.jumped', { name: target.name }));
       if (announce) this.flash(addr);
       return true;
     }
     const info = this.store.get('fileInfo');
     if (info && region && region.id === 'raw') {
-      alertDialog('Outside the file',
-        addrHex(addr) + ' is past the end of this file (' + addrHex(info.size) + ').');
+      alertDialog(t('err.outsideTitle'), t('err.outsideText', {
+        addr: addrHex(addr), size: addrHex(info.size),
+      }));
       return false;
     }
-    alertDialog('Address not mapped',
-      addrHex(addr) + ' is not inside any section of this image.\n\n' +
-      'Sections cover ' + describeRange(regions) + '.');
+    alertDialog(t('err.unmappedTitle'), t('err.unmappedText', {
+      addr: addrHex(addr), range: describeRange(regions),
+    }));
     return false;
+  }
+
+  /** 関数の先頭へ移動して、そこを選んだ状態にする。 */
+  goToFunction(addr) {
+    if (!this.goToAddress(addr, { announce: true })) return;
+    const region = this.store.get('currentRegion');
+    if (!region) return;
+    const row = Number((addr - region.vmAddr) / 4n);
+    this.viewer.select(row, false);
+    this.store.set({ selectedRow: row });
+  }
+
+  /** 名前から探して移動する（サンプルの案内などで使う）。 */
+  goToSymbol(name) {
+    const idx = this.symbols;
+    for (let i = 0; i < idx.names.length; i++) {
+      if (idx.names[i] === name) { this.goToFunction(idx.addrs[i]); return true; }
+    }
+    toast(pick('見つかりませんでした。', 'Not found.'));
+    return false;
+  }
+
+  /** ファイル内の位置で移動する（構造ビューから）。 */
+  goToFileOffset(offset) {
+    const info = this.store.get('fileInfo');
+    if (!info) return;
+    this.selectRegion(info.raw, { silent: true });
+    this.setMode('hex');
+    this.viewer.goToAddress(offset);
+    this.flash(offset);
+  }
+
+  /** 文字列の場所へ移動する。文字列はコードではないので 16 進で見せる。 */
+  goToStringAddress(region, addr) {
+    if (region && (!this.store.get('currentRegion') || this.store.get('currentRegion').id !== region.id)) {
+      this.selectRegion(region, { silent: true });
+    }
+    if (!region || !region.exec) this.setMode('hex');
+    this.viewer.goToAddress(addr);
+    this.flash(addr);
   }
 
   flash(addr) {
@@ -487,7 +644,7 @@ class App {
 
 function describeRange(regions) {
   const live = regions.filter((r) => r.size > 0n);
-  if (!live.length) return 'nothing';
+  if (!live.length) return pick('なし', 'nothing');
   let lo = live[0].vmAddr, hi = live[0].vmAddr + live[0].size;
   for (const r of live) {
     if (r.vmAddr < lo) lo = r.vmAddr;
@@ -496,28 +653,20 @@ function describeRange(regions) {
   return addrHex(lo) + ' – ' + addrHex(hi);
 }
 
-/** Turn engine/browser errors into something a person can act on. */
+/** エンジンやブラウザのエラーを、人が次にどうすればいいか分かる文にする。 */
 function friendly(message) {
   const m = String(message || '');
-  if (/capstone\.wasm|WebAssembly|wasm/i.test(m)) {
-    return 'The disassembler engine could not be loaded.\n\n' +
-      'capstone.js and capstone.wasm must both be present next to index.html, ' +
-      'and the page must be served over http(s) — opening index.html from the file system will not work.';
-  }
-  if (/NotReadableError|permission/i.test(m)) {
-    return 'The file could not be read. If it came from iCloud Drive, open the Files app and download it first.';
-  }
-  if (/out of memory|allocation/i.test(m)) {
-    return 'The browser ran out of memory while analysing this file. Close other tabs and try again.';
-  }
-  return m || 'Unknown error.';
+  if (/capstone\.wasm|WebAssembly|wasm/i.test(m)) return t('err.engineWasm');
+  if (/NotReadableError|permission/i.test(m)) return t('err.notReadable');
+  if (/out of memory|allocation/i.test(m)) return t('err.memory');
+  return m || t('err.unknown');
 }
 
-/* ── boot ───────────────────────────────────────────────────── */
+/* ── 起動 ───────────────────────────────────────────────────── */
 
 window.addEventListener('error', (e) => {
   if (e && e.message && /ResizeObserver/.test(e.message)) return;
 });
 
 const app = new App();
-window.__app = app;   // handy in Safari's Web Inspector; not used by the UI
+window.__app = app;   // Safari の Web インスペクタ用。UI からは使っていない。

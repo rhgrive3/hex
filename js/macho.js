@@ -25,14 +25,24 @@
   const CPU_TYPE_X86_64   = CPU_TYPE_X86 | CPU_ARCH_ABI64;      // 0x01000007
   const CPU_TYPE_PPC      = 18;
 
+  /*
+   * LC_REQ_DYLD 付きのコマンド番号は 0x80000000 を立てる。
+   * `|` は符号つき 32 ビットを返す（0x28|0x80000000 → 負の数）ので、
+   * ファイルから getUint32 で読んだ値と一致しなくなる。必ず >>> 0 で戻すこと。
+   */
   const LC_REQ_DYLD = 0x80000000;
+  const req = (n) => (n | LC_REQ_DYLD) >>> 0;
   const LC = {
-    SEGMENT: 0x1, SYMTAB: 0x2, UNIXTHREAD: 0x5, LOAD_DYLIB: 0xc, ID_DYLIB: 0xd,
+    SEGMENT: 0x1, SYMTAB: 0x2, UNIXTHREAD: 0x5, DYSYMTAB: 0xb, LOAD_DYLIB: 0xc, ID_DYLIB: 0xd,
     LOAD_DYLINKER: 0xe, SEGMENT_64: 0x19, UUID: 0x1b, CODE_SIGNATURE: 0x1d,
-    ENCRYPTION_INFO: 0x21, DYLD_INFO: 0x22, VERSION_MIN_MACOSX: 0x24,
-    VERSION_MIN_IPHONEOS: 0x25, FUNCTION_STARTS: 0x26, ENCRYPTION_INFO_64: 0x2c,
-    MAIN: 0x28 | LC_REQ_DYLD, BUILD_VERSION: 0x32, DYLD_CHAINED_FIXUPS: 0x34 | LC_REQ_DYLD,
-    DYLD_EXPORTS_TRIE: 0x33 | LC_REQ_DYLD, RPATH: 0x1c | LC_REQ_DYLD,
+    SUB_FRAMEWORK: 0x12, TWOLEVEL_HINTS: 0x16, LOAD_WEAK_DYLIB: req(0x18),
+    ENCRYPTION_INFO: 0x21, DYLD_INFO: 0x22, DYLD_INFO_ONLY: req(0x22),
+    VERSION_MIN_MACOSX: 0x24,
+    VERSION_MIN_IPHONEOS: 0x25, FUNCTION_STARTS: 0x26, DATA_IN_CODE: 0x29,
+    SOURCE_VERSION: 0x2a, ENCRYPTION_INFO_64: 0x2c,
+    REEXPORT_DYLIB: req(0x1f),
+    MAIN: req(0x28), BUILD_VERSION: 0x32, DYLD_CHAINED_FIXUPS: req(0x34),
+    DYLD_EXPORTS_TRIE: req(0x33), RPATH: req(0x1c),
   };
   const LC_NAMES = {};
   for (const k in LC) LC_NAMES[LC[k]] = 'LC_' + k;
@@ -53,6 +63,14 @@
   const S_ATTR_SOME_INSTRUCTIONS = 0x00000400;
   // section type lives in the low byte of sect.flags (S_REGULAR is 0x0)
   const S_ZEROFILL = 0x1, S_GB_ZEROFILL = 0xc, S_THREAD_LOCAL_ZEROFILL = 0x12;
+  const S_CSTRING_LITERALS = 0x2;
+  const S_NON_LAZY_SYMBOL_POINTERS = 0x6;
+  const S_LAZY_SYMBOL_POINTERS = 0x7;
+  const S_SYMBOL_STUBS = 0x8;
+
+  // nlist n_type bits
+  const N_STAB = 0xe0, N_TYPE = 0x0e, N_SECT = 0x0e, N_UNDF = 0x00;
+  const INDIRECT_SYMBOL_LOCAL = 0x80000000, INDIRECT_SYMBOL_ABS = 0x40000000;
 
   function cpuName(type, sub) {
     const s = sub & 0x00ffffff;
@@ -154,7 +172,9 @@
       ncmds, sizeofcmds, flags,
       uuid: null, entry: null, entryFileOff: null, platform: null, minos: null, sdk: null,
       dylibCount: 0, encrypted: false, encryption: null, hasCodeSignature: false,
-      commands: [], segments: [],
+      commands: [], segments: [], dylibs: [],
+      symtab: null, dysymtab: null, functionStarts: null,
+      textVM: null, textFileOff: null,
     };
 
     let off = hdrSize;
@@ -201,13 +221,18 @@
             const offset = dv.getUint32(q, true); q += 4;
             const align = dv.getUint32(q, true); q += 4;
             q += 8; // reloff, nreloc
-            const sflags = dv.getUint32(q, true);
+            const sflags = dv.getUint32(q, true); q += 4;
+            const reserved1 = dv.getUint32(q, true); q += 4;
+            const reserved2 = dv.getUint32(q, true);
             const type = sflags & 0xff;
             seg.sections.push({
               name: sectname, segment: ssegname || segname, addr, size,
-              offset: BigInt(offset), align, flags: sflags, type,
+              offset: BigInt(offset), align, flags: sflags, type, reserved1, reserved2,
               zerofill: type === S_ZEROFILL || type === S_GB_ZEROFILL || type === S_THREAD_LOCAL_ZEROFILL,
               exec: !!(sflags & (S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS)),
+              cstrings: type === S_CSTRING_LITERALS,
+              stubs: type === S_SYMBOL_STUBS,
+              pointers: type === S_LAZY_SYMBOL_POINTERS || type === S_NON_LAZY_SYMBOL_POINTERS,
             });
           }
           if (segname === '__TEXT') { textVM = vmaddr; textFileOff = fileoff; }
@@ -243,7 +268,37 @@
           info.minos = info.minos || ver32(dv.getUint32(off + 8, true));
           break;
         case LC.LOAD_DYLIB:
+        case LC.LOAD_WEAK_DYLIB:
+        case LC.REEXPORT_DYLIB: {
           info.dylibCount++;
+          const nameOff = dv.getUint32(off + 8, true);
+          if (nameOff >= 8 && nameOff < cmdsize) {
+            const s = cstr(u8, off + nameOff, cmdsize - nameOff);
+            if (s) info.dylibs.push(s);
+          }
+          break;
+        }
+        case LC.SYMTAB:
+          info.symtab = {
+            symoff: dv.getUint32(off + 8, true),
+            nsyms: dv.getUint32(off + 12, true),
+            stroff: dv.getUint32(off + 16, true),
+            strsize: dv.getUint32(off + 20, true),
+          };
+          break;
+        case LC.DYSYMTAB:
+          if (cmdsize >= 80) {
+            info.dysymtab = {
+              indirectsymoff: dv.getUint32(off + 56, true),
+              nindirectsyms: dv.getUint32(off + 60, true),
+            };
+          }
+          break;
+        case LC.FUNCTION_STARTS:
+          info.functionStarts = {
+            dataoff: dv.getUint32(off + 8, true),
+            datasize: dv.getUint32(off + 12, true),
+          };
           break;
         case LC.CODE_SIGNATURE:
           info.hasCodeSignature = true;
@@ -262,6 +317,8 @@
       off += cmdsize;
     }
 
+    info.textVM = textVM;
+    info.textFileOff = textFileOff;
     if (info.entryOff != null && textVM != null && textFileOff != null) {
       // LC_MAIN's entryoff is a file offset relative to the start of the image.
       info.entryFileOff = info.entryOff;
@@ -293,6 +350,7 @@
           declaredSize: sec.size,
           exec: sec.exec,
           zerofill: sec.zerofill,
+          cstrings: !!sec.cstrings,
           truncated: !sec.zerofill && avail < sec.size,
         });
       }
@@ -302,8 +360,109 @@
 
   function bigMin(a, b) { return a < b ? a : b; }
 
+  /* ── シンボルテーブル ─────────────────────────────────── */
+
+  /**
+   * nlist の配列を読む。
+   * @param {Uint8Array} symBuf  シンボルテーブル本体
+   * @param {Uint8Array} strBuf  文字列テーブル
+   * @param {boolean} is64
+   * @returns {{names: string[], values: BigUint64Array, types: Uint8Array, sects: Uint8Array}}
+   *          添字はシンボル番号。間接シンボルの解決にそのまま使える。
+   */
+  function parseSymbols(symBuf, strBuf, is64) {
+    const entry = is64 ? 16 : 12;
+    const n = Math.floor(symBuf.length / entry);
+    const dv = new DataView(symBuf.buffer, symBuf.byteOffset, symBuf.byteLength);
+    const names = new Array(n);
+    const values = new BigUint64Array(n);
+    const types = new Uint8Array(n);
+    const sects = new Uint8Array(n);
+    for (let i = 0; i < n; i++) {
+      const o = i * entry;
+      const strx = dv.getUint32(o, true);
+      types[i] = symBuf[o + 4];
+      sects[i] = symBuf[o + 5];
+      values[i] = is64 ? dv.getBigUint64(o + 8, true) : BigInt(dv.getUint32(o + 8, true));
+      names[i] = strx > 0 && strx < strBuf.length ? cstr(strBuf, strx, 1024) : '';
+    }
+    return { names, values, types, sects };
+  }
+
+  /** セクションに定義されている（＝アドレスを持つ）シンボルだけを取り出す。 */
+  function definedSymbols(sym) {
+    const out = [];
+    for (let i = 0; i < sym.names.length; i++) {
+      const t = sym.types[i];
+      if (t & N_STAB) continue;                   // デバッグ情報
+      if ((t & N_TYPE) !== N_SECT) continue;      // セクション内でないものは飛ばす
+      const v = sym.values[i];
+      if (v === 0n) continue;
+      const name = sym.names[i];
+      if (!name) continue;
+      out.push({ addr: v, name });
+    }
+    out.sort((a, b) => (a.addr < b.addr ? -1 : a.addr > b.addr ? 1 : 0));
+    return out;
+  }
+
+  /* ── LC_FUNCTION_STARTS ───────────────────────────────── */
+
+  /** ULEB128 の差分列を、絶対アドレスの配列にほどく。 */
+  function parseFunctionStarts(buf, base) {
+    const out = [];
+    let addr = base;
+    let i = 0;
+    while (i < buf.length) {
+      let delta = 0n, shift = 0n, byte;
+      do {
+        if (i >= buf.length) return out;
+        byte = buf[i++];
+        delta |= BigInt(byte & 0x7f) << shift;
+        shift += 7n;
+        if (shift > 70n) return out;              // 壊れている
+      } while (byte & 0x80);
+      if (delta === 0n) break;                    // 終端
+      addr += delta;
+      out.push(addr);
+    }
+    return out;
+  }
+
+  /* ── 間接シンボル（__stubs / __got の名前） ───────────── */
+
+  /**
+   * スタブや GOT の各エントリに、参照している関数名を割り当てる。
+   * これがあると「_printf を呼んでいる」と読めるようになる。
+   */
+  function stubSymbols(info, indirectBuf, sym) {
+    const out = [];
+    if (!indirectBuf || !indirectBuf.length || !sym) return out;
+    const dv = new DataView(indirectBuf.buffer, indirectBuf.byteOffset, indirectBuf.byteLength);
+    const total = Math.floor(indirectBuf.length / 4);
+    for (const seg of info.segments) {
+      for (const sec of seg.sections) {
+        if (!sec.stubs && !sec.pointers) continue;
+        const entSize = sec.stubs ? (sec.reserved2 || 12) : 8;
+        if (entSize <= 0) continue;
+        const count = Number(sec.size / BigInt(entSize));
+        for (let i = 0; i < count; i++) {
+          const idx = sec.reserved1 + i;
+          if (idx >= total) break;
+          const symIdx = dv.getUint32(idx * 4, true);
+          if (symIdx & (INDIRECT_SYMBOL_LOCAL | INDIRECT_SYMBOL_ABS)) continue;
+          const name = sym.names[symIdx];
+          if (!name) continue;
+          out.push({ addr: sec.addr + BigInt(i * entSize), name, stub: !!sec.stubs });
+        }
+      }
+    }
+    return out;
+  }
+
   root.MachO = {
     detect, parseFat, parseSlice, regionsFrom, cpuName,
+    parseSymbols, definedSymbols, parseFunctionStarts, stubSymbols,
     CPU_TYPE_ARM64, CPU_TYPE_ARM64_32,
   };
 })(typeof self !== 'undefined' ? self : globalThis);

@@ -10,6 +10,8 @@
 import { CHUNK_ROWS } from './backend.js';
 import { addrHex, bytesHex, sizeText } from './format.js';
 import { menu, alertDialog, copyTextLazy } from './ui.js';
+import { t } from './i18n.js';
+import { brief } from './arm64.js';
 
 /* A cap, not a limit of the format: 200k rows is ~10 MB of text, which is
    about as much as mobile Safari will take without a long stall. */
@@ -21,14 +23,15 @@ const MN_COL = 6;               // mnemonic column width, like the row display
 export function rangeCopyItems(app) {
   const sel = app.viewer.selectionRange();
   if (!sel) return [];
-  const rows = sel.count.toLocaleString() + (sel.count === 1 ? ' Row' : ' Rows');
+  const n = sel.count.toLocaleString();
   const items = [
-    { label: 'Copy ' + rows, action: () => copyRange(app, 'all') },
-    { label: 'Copy Addresses', action: () => copyRange(app, 'address') },
-    { label: 'Copy Hex', action: () => copyRange(app, 'hex') },
+    { label: t('sel.copyRows', { n }), action: () => copyRange(app, 'all') },
+    { label: t('sel.copyAddresses'), action: () => copyRange(app, 'address') },
+    { label: t('sel.copyHex'), action: () => copyRange(app, 'hex') },
   ];
   if (app.store.get('canDisassemble')) {
-    items.push({ label: 'Copy Assembly', action: () => copyRange(app, 'asm') });
+    items.push({ label: t('sel.copyAsm'), action: () => copyRange(app, 'asm') });
+    items.push({ label: t('sel.copyExplained'), action: () => copyRange(app, 'explained') });
   }
   return items;
 }
@@ -37,8 +40,8 @@ export function rangeCopyMenu(app, x, y) {
   const items = rangeCopyItems(app);
   if (!items.length) return;
   items.push('-',
-    { label: 'Select All Rows', action: () => app.viewer.selectAllRows() },
-    { label: 'Clear Selection', action: () => app.viewer.clearRange() });
+    { label: t('sel.selectAll'), action: () => app.viewer.selectAllRows() },
+    { label: t('sel.clear'), action: () => app.viewer.clearRange() });
   menu(items, x, y);
 }
 
@@ -49,17 +52,20 @@ export function copyRange(app, what) {
   if (!region || !sel) return;
 
   if (sel.count > MAX_COPY_ROWS) {
-    alertDialog('Selection too large',
-      sel.count.toLocaleString() + ' rows is more than can be put on the clipboard in one go. ' +
-      'Select at most ' + MAX_COPY_ROWS.toLocaleString() + ' rows (' + sizeText(MAX_COPY_ROWS * 4) + ' of code).');
+    alertDialog(t('sel.tooLarge'), t('sel.tooLargeText', {
+      n: sel.count.toLocaleString(),
+      max: MAX_COPY_ROWS.toLocaleString(),
+      size: sizeText(MAX_COPY_ROWS * 4),
+    }));
     return;
   }
 
-  const wantAsm = (what === 'asm' || what === 'all') &&
+  const wantAsm = (what === 'asm' || what === 'all' || what === 'explained') &&
     !!app.store.get('canDisassemble') && region.disasm !== false;
-  const label = sel.count.toLocaleString() + (sel.count === 1 ? ' row' : ' rows');
+  const n = sel.count.toLocaleString();
+  const label = t('sel.rows', { n });
 
-  app.setBusy(true, 'Copying ' + label + '…');
+  app.setBusy(true, t('sel.copying', { n }));
   const text = buildText(app, region, sel, what, wantAsm)
     .finally(() => app.setBusy(false));
 
@@ -71,11 +77,12 @@ async function buildText(app, region, sel, what, wantAsm) {
   const first = Math.floor(sel.start / CHUNK_ROWS);
   const last = Math.floor(sel.end / CHUNK_ROWS);
   const out = [];
+  const ctx = { gen: app.symbols.gen, symbolFor: (a) => app.symbols.nameAt(a) };
 
   for (let c = first; c <= last; c++) {
     // Switching section or file mid-copy would silently mix two regions.
     if (app.store.get('currentRegion') !== region) {
-      throw new Error('The section changed while copying.');
+      throw new Error(t('sel.regionChanged'));
     }
     const entry = await app.backend.fetchChunk(region.id, c, wantAsm);
     const base = c * CHUNK_ROWS;
@@ -96,6 +103,11 @@ async function buildText(app, region, sel, what, wantAsm) {
         out.push(hex);
       } else if (what === 'asm') {
         out.push(ops ? mn.padEnd(MN_COL) + ' ' + ops : mn);
+      } else if (what === 'explained') {
+        // アドレス / 命令 / 日本語の意味。人に見せるときはこれがいちばん通じる。
+        const asm = ops ? mn.padEnd(MN_COL) + ' ' + ops : mn;
+        const note = mn ? brief(mn, ops, 'ja', ctx) : '';
+        out.push(addrHex(app.viewer.rowAddress(row)) + '  ' + asm.padEnd(34) + (note ? '  ; ' + note : ''));
       } else {
         const cells = [addrHex(app.viewer.rowAddress(row)), hex];
         if (wantAsm) cells.push((mn + ' ' + ops).trim());
@@ -105,7 +117,7 @@ async function buildText(app, region, sel, what, wantAsm) {
 
     if (last > first) {
       const done = Math.round(((c - first + 1) / (last - first + 1)) * 100);
-      app.setBusy(true, 'Copying ' + sel.count.toLocaleString() + ' rows… ' + done + '%');
+      app.setBusy(true, t('sel.copyingPct', { n: sel.count.toLocaleString(), pct: done }));
     }
   }
   return out.join('\n');

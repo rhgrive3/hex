@@ -35,13 +35,27 @@
   --code-punct:    rgba(60,60,67,.45);
   --code-cmt:      #5d6c79;
 
+  /* 行の高さ。--row-h は JS が --line-h (+ --note-h) から計算して書き戻す。
+     CSS の calc() のままだと getComputedStyle で数値として読めないため。 */
+  --line-h: 24px;
+  --note-h: 19px;
   --row-h: 24px;
   --code-size: 13px;
+  --note-size: 11.5px;
   --addr-w: 11ch;      /* fits a 10-digit VM address without clipping */
   --hex-w: 12ch;
   --mn-w: 8ch;
   --radius: 10px;
+
+  --code-note:     rgba(60,60,67,.62);
+  --fn-accent:     #34a853;
 }
+
+/* 文字の大きさ（設定で切り替え）。指で触る端末はもともと少し大きめ。 */
+:root.size-s  { --line-h: 22px; --note-h: 17px; --code-size: 12px;   --note-size: 10.5px; }
+:root.size-m  { --line-h: 26px; --note-h: 20px; --code-size: 13.5px; --note-size: 11.5px; }
+:root.size-l  { --line-h: 30px; --note-h: 24px; --code-size: 15.5px; --note-size: 13.5px; }
+:root.size-xl { --line-h: 34px; --note-h: 28px; --code-size: 17.5px; --note-size: 15.5px; }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
@@ -70,6 +84,8 @@
     --code-imm:    #a5c8ff;
     --code-punct:  rgba(235,235,245,.40);
     --code-cmt:    #7f8c98;
+    --code-note:   rgba(235,235,245,.55);
+    --fn-accent:   #4cd964;
   }
 }
 
@@ -99,6 +115,8 @@
   --code-imm:    #a5c8ff;
   --code-punct:  rgba(235,235,245,.40);
   --code-cmt:    #7f8c98;
+  --code-note:   rgba(235,235,245,.55);
+  --fn-accent:   #4cd964;
 }
 
 * { box-sizing: border-box; }
@@ -261,7 +279,9 @@ button { font: inherit; color: inherit; }
 }
 
 @media (pointer: coarse) {
-  :root { --row-h: 28px; }
+  :root { --line-h: 28px; }
+  :root.size-s { --line-h: 24px; }
+  :root.size-m { --line-h: 28px; }
 }
 .row .c-addr  { color: var(--code-addr); }
 .row .c-hex   { color: var(--code-hex); }
@@ -314,6 +334,65 @@ button { font: inherit; color: inherit; }
 .mode-hex .row .c-ascii, .mode-hex-head .c-ascii { display: block; }
 .mode-hex .row .c-mn, .mode-hex .row .c-ops,
 .mode-hex-head .c-mn, .mode-hex-head .c-ops { display: none; }
+
+/* ── 解説行（初心者モードの主役） ───────────────────────────
+   命令の下にもう 1 段、日本語の意味を敷く。行の高さは JS が
+   --line-h + --note-h で決めているので、ここは行の中の配置だけ。 */
+
+.row .c-note { display: none; }
+
+:root.with-notes .mode-asm .row {
+  grid-template-rows: var(--line-h) var(--note-h);
+  align-items: center;
+}
+:root.with-notes .mode-asm .row .c-note {
+  display: block;
+  grid-column: 1 / -1;
+  grid-row: 2;
+  padding-left: 1.2ch;
+  font-size: var(--note-size);
+  line-height: var(--note-h);
+  color: var(--code-note);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+}
+:root.with-notes .mode-asm .row > .c-addr,
+:root.with-notes .mode-asm .row > .c-hex,
+:root.with-notes .mode-asm .row > .c-mn,
+:root.with-notes .mode-asm .row > .c-ops { grid-row: 1; }
+
+/* 行の間に薄い区切りを入れないと、2 段になったときに続き具合が読みにくい */
+:root.with-notes .mode-asm .row {
+  border-bottom: 0.5px solid var(--separator-2);
+}
+
+.row .c-note .fnname {
+  font-style: normal;
+  font-weight: 600;
+  color: var(--fn-accent);
+  margin-right: .6em;
+}
+.row .c-note .fnname:empty { display: none; margin: 0; }
+
+/* 関数の先頭は、上に線を引いて区切りを見せる */
+.mode-asm .row.fnstart { box-shadow: inset 0 1.5px 0 var(--fn-accent); }
+.mode-asm .row.fnstart .c-addr { color: var(--fn-accent); font-weight: 600; }
+
+/* 命令の種類ごとの、左端のごく細い色帯。目で追うための手掛かり。 */
+.mode-asm .row.cat-load  .c-mn { color: #0f7b6c; }
+.mode-asm .row.cat-store .c-mn { color: #b3541e; }
+.mode-asm .row.cat-compare .c-mn { color: #7a5cd6; }
+.mode-asm .row.cat-system  .c-mn { color: var(--label-2); font-weight: 500; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .mode-asm .row.cat-load  .c-mn { color: #6fdcc8; }
+  :root:not([data-theme="light"]) .mode-asm .row.cat-store .c-mn { color: #ffb27a; }
+  :root:not([data-theme="light"]) .mode-asm .row.cat-compare .c-mn { color: #c0a8ff; }
+}
+:root[data-theme="dark"] .mode-asm .row.cat-load  .c-mn { color: #6fdcc8; }
+:root[data-theme="dark"] .mode-asm .row.cat-store .c-mn { color: #ffb27a; }
+:root[data-theme="dark"] .mode-asm .row.cat-compare .c-mn { color: #c0a8ff; }
 
 /* ── Scrubber (global position indicator) ──────────────────── */
 
@@ -558,5 +637,180 @@ input:focus { outline: 2px solid var(--accent); outline-offset: -2px; }
 .detail-actions { display: flex; flex-wrap: wrap; gap: 8px; padding: 14px; }
 .detail-actions .chip { flex: 1 1 40%; justify-content: center; display: flex; align-items: center; }
 
-.hint { padding: 10px 14px; font-size: 12px; color: var(--label-2); line-height: 1.45; }
+.hint { padding: 10px 14px; font-size: 12px; color: var(--label-2); line-height: 1.45; white-space: pre-line; }
 .warn { color: var(--danger); }
+
+/* ── 空の画面 ──────────────────────────────────────────────── */
+
+.empty-inner { max-width: 460px; }
+.empty-actions { display: flex; flex-direction: column; gap: 10px; align-items: stretch; }
+.btn-secondary {
+  -webkit-appearance: none; appearance: none;
+  border: 0.5px solid var(--separator); background: var(--surface); color: var(--accent);
+  font-size: 15px; font-weight: 500;
+  padding: 11px 20px; min-height: 44px;
+  border-radius: 12px;
+  touch-action: manipulation; cursor: pointer;
+}
+.btn-secondary:active { background: var(--fill); }
+.linkbtn {
+  -webkit-appearance: none; appearance: none;
+  background: none; border: none; color: var(--accent);
+  font-size: 14px; padding: 14px 8px; min-height: 44px;
+  cursor: pointer; touch-action: manipulation;
+}
+.empty-note { color: var(--label-3); font-size: 12px; margin: 4px 0 0; }
+
+/* ── 読み物（用語集・学習コース・解説） ────────────────────── */
+
+.doc { padding: 4px 16px 18px; }
+.doc-title { margin: 10px 0 2px; font-size: 20px; line-height: 1.35; }
+.doc-sub { color: var(--label-2); font-size: 13px; margin-bottom: 10px; }
+.doc-short {
+  font-size: 15px; line-height: 1.5;
+  padding: 10px 12px; margin: 6px 0 12px;
+  background: var(--accent-soft); border-radius: 10px;
+}
+.doc-h {
+  margin: 22px 0 6px; font-size: 15px; font-weight: 600;
+  padding-bottom: 4px; border-bottom: 0.5px solid var(--separator-2);
+}
+.doc-p {
+  margin: 0 0 12px; font-size: 15px; line-height: 1.72;
+  white-space: pre-line;
+}
+.doc-code {
+  margin: 0 0 14px; padding: 12px 14px;
+  background: var(--surface-2);
+  border: 0.5px solid var(--separator-2);
+  border-radius: 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px; line-height: 1.65;
+  overflow-x: auto; -webkit-overflow-scrolling: touch;
+  white-space: pre;
+  -webkit-user-select: text; user-select: text;
+}
+.doc-note {
+  margin: 0 0 14px; padding: 11px 13px;
+  border-left: 3px solid var(--accent);
+  background: var(--fill);
+  border-radius: 0 8px 8px 0;
+  font-size: 14px; line-height: 1.65;
+  white-space: pre-line;
+}
+.doc-list { margin: 0 0 14px; padding-left: 1.3em; }
+.doc-list li { margin-bottom: 7px; font-size: 15px; line-height: 1.6; }
+.faq-q { font-weight: 600; font-size: 15px; margin: 16px 0 4px; }
+
+.termchips { display: flex; flex-wrap: wrap; gap: 7px; padding: 2px 0 14px; }
+.termchip {
+  -webkit-appearance: none; appearance: none;
+  border: 0.5px solid var(--accent); background: var(--accent-soft);
+  color: var(--accent);
+  padding: 6px 11px; min-height: 34px; border-radius: 17px;
+  font-size: 13px; cursor: pointer; touch-action: manipulation;
+}
+.termchip:active { background: var(--accent); color: #fff; }
+
+.trybtn {
+  -webkit-appearance: none; appearance: none;
+  display: block; width: 100%;
+  border: none; background: var(--accent); color: #fff;
+  padding: 13px 16px; min-height: 46px;
+  border-radius: 12px; margin: 4px 0 18px;
+  font-size: 15px; font-weight: 600; text-align: center;
+  cursor: pointer; touch-action: manipulation;
+}
+.trybtn:active { opacity: .8; }
+
+.guide { padding: 8px 18px 4px; }
+.guide-step { color: var(--label-3); font-size: 12px; letter-spacing: .06em; }
+.guide-title { margin: 6px 0 14px; font-size: 21px; line-height: 1.4; }
+.guide-nav {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 14px calc(12px + env(safe-area-inset-bottom));
+  border-top: 0.5px solid var(--separator-2);
+}
+.chip.strong { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+.chips.inline { padding: 0; margin-left: auto; }
+
+/* ── 命令の詳細 ────────────────────────────────────────────── */
+
+.detail { padding: 2px 0 12px; }
+.det-head {
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+  padding: 8px 16px 2px;
+}
+.det-addr {
+  font-size: 14px; font-weight: 600;
+  -webkit-user-select: text; user-select: text;
+}
+.det-fn { font-size: 12px; color: var(--fn-accent); font-weight: 600; }
+.det-insn {
+  padding: 4px 16px 12px;
+  font-size: 17px; line-height: 1.4;
+  -webkit-user-select: text; user-select: text;
+  word-break: break-all;
+}
+.det-insn b { color: var(--code-mn); font-weight: 700; }
+
+.blk { padding: 12px 16px 4px; border-top: 0.5px solid var(--separator-2); }
+.blk-title {
+  font-size: 11px; letter-spacing: .06em;
+  color: var(--label-3); margin-bottom: 6px;
+}
+.blk .doc-p { font-size: 14px; line-height: 1.7; margin-bottom: 10px; }
+.blk .doc-code { font-size: 13.5px; }
+.blk .list li { padding: 8px 0; min-height: 0; border-bottom: none; }
+.blk .list .k { min-width: 6.5ch; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+.det-title { font-size: 18px; font-weight: 600; margin-bottom: 6px; line-height: 1.4; }
+.det-string {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 14px; line-height: 1.6;
+  padding: 10px 12px; margin-bottom: 10px;
+  background: var(--accent-soft); border-radius: 8px;
+  word-break: break-all;
+  -webkit-user-select: text; user-select: text;
+}
+.bigval {
+  font-size: 18px; letter-spacing: .06em;
+  padding: 10px 0 6px;
+  -webkit-user-select: text; user-select: text;
+}
+.bigval.tappable { cursor: pointer; }
+
+.cat-badge {
+  display: inline-block;
+  font-size: 11px; padding: 3px 9px; border-radius: 5px;
+  background: var(--fill); color: var(--label-2);
+  margin-bottom: 8px;
+}
+.cat-badge.cat-flow { background: rgba(201,81,12,.14); color: var(--code-mn-flow); }
+.cat-badge.cat-load, .cat-badge.cat-store { background: var(--accent-soft); color: var(--accent); }
+
+/* ── 関数の要約 ────────────────────────────────────────────── */
+
+.fn-head { padding: 10px 16px 6px; }
+.fn-name {
+  font-size: 18px; font-weight: 600; word-break: break-all;
+  -webkit-user-select: text; user-select: text;
+}
+.fn-range { font-size: 12px; color: var(--label-2); margin-top: 2px; }
+
+/* 一覧の補足は複数行になることがある */
+.list .sub { white-space: pre-line; }
+
+/* ツールバーの切り替えボタン */
+.tb-btn.pill {
+  border: 0.5px solid var(--separator);
+  border-radius: 16px;
+  padding: 6px 12px;
+  min-height: 32px;
+  font-size: 13px;
+  flex: 0 0 auto;
+}
+.tb-btn.pill[aria-pressed="true"] {
+  background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600;
+}
+.tb-btn.pill:disabled { opacity: .45; }
