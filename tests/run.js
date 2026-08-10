@@ -551,6 +551,30 @@ test('FEATURE: 実行エンジンの見当がつく／分からなければ null
   eq(detectEngine([{ addr: 1n, text: 'nothing here' }]), null);
 });
 
+test('OBJC: セレクタをポインタごしに解決して「何を呼ぶか」まで言える', () => {
+  const m = build([
+    'adrp x8, #0x100008000',
+    'ldr x1, [x8, #0x10]',      // __objc_selrefs の枠 → メソッド名を指す
+    'adrp x0, #0x100009000',
+    'ldr x0, [x0, #0x8]',
+    'bl #0x100000700',
+  ], { '0x100000700': '_objc_msgSend' });
+
+  const ref = m.addressRefs.find((r) => r.addr === 0x100008010n);
+  ok(ref, 'selrefs の枠を参照として拾えていない');
+
+  // worker が 1 段たどって持ってきた名前を流し込む
+  attachTexts(m, new Map([['' + 0x100008010n, 'loginWithPassword:']]),
+    new Set(['' + 0x100008010n]));
+
+  eq(m.calls[0].selector, 'loginWithPassword:', 'セレクタが呼び出しに結びついていない');
+  const b = m.semantic.find((x) => x.facts.selector);
+  ok(b, 'まとまりにセレクタが載っていない');
+  eq(blockTitle(b), '「loginWithPassword:」を呼ぶ');
+  has(blockSummary(b, m), 'loginWithPassword:');
+  has(functionStory(m, null).purpose, 'メソッドを呼んでいます');
+});
+
 /* ── まとめ ──────────────────────────────────────────────── */
 
 process.stdout.write('\n' + passed + ' passed, ' + failures.length + ' failed\n');

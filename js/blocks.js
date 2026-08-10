@@ -544,7 +544,9 @@ export function analyzeDataFlow(insns, opts) {
             flow('stack->reg', insn.row, slot, dst, v);
           } else {
             const baseVal = m.base ? get(m.base) : null;
-            const addr = baseVal && baseVal.kind === 'address' && !baseVal.partial && m.disp != null
+            // adrp（ページの先頭）＋ ldr の即値でも、指している場所は確定する。
+            // __objc_selrefs からメソッド名を引くのがまさにこの形。
+            const addr = baseVal && baseVal.kind === 'address' && m.disp != null
               ? baseVal.addr + m.disp : null;
             v = value('loaded', { at: { base: m.base, disp: m.disp }, addr, size: m.size },
               SCORE.high, [ev('load', insn.row, { base: m.base, disp: m.disp, addr })], insn.row);
@@ -1104,15 +1106,19 @@ function pickMainRole(semantic, facts) {
  * @param {object} model
  * @param {Map<string,string>} texts  addr.toString() -> 文字列
  */
-export function attachTexts(model, texts) {
+export function attachTexts(model, texts, indirect) {
   if (!model || !texts) return model;
+  const via = indirect || new Set();
   for (const r of model.addressRefs) {
-    const text = texts.get(r.addr.toString());
+    const key = r.addr.toString();
+    const text = texts.get(key);
     if (!text) continue;
     r.text = text;
+    r.viaPointer = via.has(key);
     if (r.value) {
       r.value.kind = 'string';
       r.value.text = text;
+      r.value.viaPointer = via.has(key);
       r.value.conf = SCORE.confirmed;
       r.value.ev = r.value.ev.concat([ev('string', r.row, { addr: r.addr, text })]);
     }
@@ -1131,5 +1137,17 @@ export function attachTexts(model, texts) {
     if (text) s.text = text;
   }
   model.facts.strings = model.facts.stringRefs.filter((s) => s.text).map((s) => s.text);
+
+  // objc_msgSend の第 2 引数＝呼ぼうとしているメソッドの名前。
+  // ここが埋まると「何というメソッドを呼んでいるか」まで言えるようになる。
+  for (const c of model.calls) {
+    if (!c.api || c.api.id !== 'objc_msgSend') continue;
+    const sel = c.args.find((a) => a.index === 1);
+    if (sel && sel.value && sel.value.text) c.selector = sel.value.text;
+  }
+  for (const b of model.semantic) {
+    const c = b.facts.apiCall;
+    if (c && c.selector) b.facts.selector = c.selector;
+  }
   return model;
 }
