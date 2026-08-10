@@ -291,12 +291,48 @@ export async function resolveModelTexts(backend, model, limit = MODEL_TEXTS) {
     if (wanted.length >= limit) break;
   }
   const texts = new Map();
+  const indirect = new Set();
   const got = await Promise.all(wanted.map((a) =>
     backend.readAt(a, 120, true).catch(() => null)));
+
+  /*
+   * そこに文字列がなければ、「文字列を指しているポインタ」かもしれない。
+   * Objective-C のメソッド名（__objc_selrefs → __objc_methname）がこの形なので、
+   * ここを 1 段たどれるかどうかで「何というメソッドを呼んでいるか」が分かる。
+   * iOS アプリの動作はほとんど objc_msgSend なので、効き目が大きい。
+   */
+  const deref = [];
   got.forEach((g, i) => {
-    if (g && g.found && g.text) texts.set(wanted[i].toString(), g.text);
+    if (g && g.found && g.text) { texts.set(wanted[i].toString(), g.text); return; }
+    if (g && g.found && g.bytes && g.bytes.length >= 8) deref.push({ i, bytes: g.bytes });
   });
-  return attachTexts(model, texts);
+  if (deref.length) {
+    const ptrs = deref.map((d) => pointerAt(d.bytes));
+    const got2 = await Promise.all(ptrs.map((ptr) =>
+      (ptr == null ? Promise.resolve(null) : backend.readAt(ptr, 120, true).catch(() => null))));
+    got2.forEach((g, k) => {
+      if (!g || !g.found || !g.text) return;
+      const key = wanted[deref[k].i].toString();
+      texts.set(key, g.text);
+      indirect.add(key);
+    });
+  }
+  return attachTexts(model, texts, indirect);
+}
+
+/**
+ * 8 バイトをアドレスとして読む。
+ *
+ * 最近の Mach-O はポインタをそのまま持たず、起動時に埋める形（chained fixups）で
+ * 書いてあることがある。上位ビットに印が入るので、素直に読めなければ下位だけを見る。
+ * どちらでもなければ null（読めないものを読めたことにしない）。
+ */
+function pointerAt(bytes) {
+  let v = 0n;
+  for (let i = 7; i >= 0; i--) v = (v << 8n) | BigInt(bytes[i]);
+  if (v === 0n) return null;
+  if (v < 0x0001000000000000n) return v;
+  return v & 0x0000000fffffffffn;
 }
 
 /* ── 要約を日本語の文にする ─────────────────────────────── */

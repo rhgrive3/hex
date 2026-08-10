@@ -178,8 +178,9 @@ export function describeValue(v) {
       return pick((v.index + 1) + ' 番目の引数（呼び出し元から渡された値）',
         'argument ' + (v.index + 1) + ' from the caller');
     case 'string':
-      return pick('「' + trim(v.text) + '」という文字列の場所',
-        'the text “' + trim(v.text) + '”');
+      return v.viaPointer
+        ? pick('「' + trim(v.text) + '」という名前', 'the name “' + trim(v.text) + '”')
+        : pick('「' + trim(v.text) + '」という文字列の場所', 'the text “' + trim(v.text) + '”');
     case 'address':
       return v.partial
         ? pick('アドレスの上半分（次の行と組で完成します）', 'the top half of an address (completed by the next line)')
@@ -294,6 +295,10 @@ function short(s) { return s || pick('不明', 'unknown'); }
 /** 一覧・ビューアに出す短い見出し。 */
 export function blockTitle(block) {
   if (!block) return '';
+  // メソッド名まで分かっているなら、それがいちばん知りたいこと
+  if (block.facts && block.facts.selector) {
+    return pick('「' + block.facts.selector + '」を呼ぶ', 'Call “' + block.facts.selector + '”');
+  }
   if (block.facts && block.facts.api) {
     const s = apiShort(block.facts.api.id);
     if (s) return s;
@@ -317,6 +322,9 @@ export function blockHeading(block) {
 /** 流れの 1 ステップとして並べる、さらに短い言い方。 */
 export function stepLabel(block) {
   if (!block) return '';
+  if (block.facts && block.facts.selector) {
+    return pick('「' + block.facts.selector + '」を呼ぶ', '“' + block.facts.selector + '”');
+  }
   if (block.facts && block.facts.api) {
     const s = apiShort(block.facts.api.id);
     if (s) return s;
@@ -360,7 +368,13 @@ export function blockSummary(block, model) {
       const api = block.facts.api;
       const call = block.facts.apiCall || block.calls[0];
       if (api) {
-        lines.push(apiLong(api.id));
+        if (block.facts.selector) {
+          lines.push(pick(
+            'ある「もの」に対して「' + block.facts.selector + '」という仕事を頼んでいます。',
+            'Asks an object to perform “' + block.facts.selector + '”.'));
+        } else {
+          lines.push(apiLong(api.id));
+        }
         const prep = n > (call ? 1 : 0);
         if (prep) {
           lines.push(pick(
@@ -498,6 +512,8 @@ function describeArgs(call) {
       if (role === 'size' && a.value.kind === 'imm') {
         known.push(pick(label + 'は ' + a.value.value + ' バイトです。',
           'The ' + label + ' is ' + a.value.value + ' bytes.'));
+      } else if (role === 'selector' && a.value.text) {
+        continue;   // メソッド名はすでに見出しと 1 文目で言っている
       } else {
         known.push(pick(label + 'は' + describeValue(a.value) + 'です。',
           'The ' + label + ' is ' + describeValue(a.value) + '.'));
@@ -592,6 +608,15 @@ export function functionStory(model, name) {
     purpose.push(pick(
       Who + 'は、' + f.features.map(featureLabel).filter(Boolean).join('と') + 'に関わる処理をしています。',
       Who + ' is involved in ' + f.features.map(featureLabel).filter(Boolean).join(' and ') + '.'));
+  }
+  const sels = uniq((model.calls || []).map((c) => c.selector).filter(Boolean));
+  if (sels.length) {
+    purpose.push(pick(
+      '「' + sels.slice(0, 5).join('」「') + '」' +
+        (sels.length > 5 ? ' など ' + sels.length + ' 個' : '') + 'というメソッドを呼んでいます。' +
+        'メソッドの名前は人が付けたものなので、この関数が何の担当かを知る手がかりになります。',
+      'It calls the methods ' + sels.slice(0, 5).map((x) => '“' + x + '”').join(', ') +
+        '. Method names are written by people, so they say a lot about what this is for.'));
   }
   const apiPhrases = f.apis.map((a) => apiShort(a.id)).filter(Boolean);
   if (apiPhrases.length) {
