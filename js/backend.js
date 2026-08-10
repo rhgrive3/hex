@@ -19,6 +19,7 @@ export class Backend {
     this.inflight = new Map();
     this.queue = [];
     this.onSearchProgress = null;
+    this.onScanProgress = null;      // 文字列抽出・相互参照・関数推測の進み具合
     this.onChunk = null;             // called when a chunk arrives
     this.onFatal = null;
 
@@ -33,6 +34,10 @@ export class Backend {
     if (!m) return;
     if (m.t === 'searchProgress') {
       if (this.onSearchProgress) this.onSearchProgress(m);
+      return;
+    }
+    if (m.t === 'scanProgress') {
+      if (this.onScanProgress) this.onScanProgress(m);
       return;
     }
     if (m.t === 'fatal') {
@@ -69,6 +74,21 @@ export class Backend {
   search(params) { return this.call('search', params); }
 
   cancelSearch() { this.worker.postMessage({ t: 'cancelSearch' }); }
+
+  /* ── 解析 ────────────────────────────────────────────────
+     どれも worker 側で走査するので、UI は止まらない。
+     cancelSearch() が走査全般の中断も兼ねている。 */
+
+  analyze(sliceIndex) { return this.call('analyze', { sliceIndex }); }
+
+  guessFunctions(regionId, limit) { return this.call('guessFunctions', { regionId, limit }); }
+
+  strings(params) { return this.call('strings', params); }
+
+  xrefs(params) { return this.call('xrefs', params); }
+
+  /** 仮想アドレスの中身を読む。text: true で 0 終端の文字列として解釈。 */
+  readAt(addr, len, text) { return this.call('readAt', { addr, len, text }); }
 
   /** Drop cached rows, e.g. when switching region. */
   resetCache() {

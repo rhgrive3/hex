@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ja">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -8,7 +8,8 @@
 <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="referrer" content="no-referrer">
-<title>Hex — ARM64 Viewer</title>
+<meta name="description" content="iOS / macOS アプリの中身（Mach-O / ARM64）を、1 行ずつ日本語で解説しながら読むためのビューア。">
+<title>Hex — ARM64 読み解きツール</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23007aff'/%3E%3Ctext x='32' y='44' font-size='30' font-family='monospace' font-weight='700' fill='white' text-anchor='middle'%3EA64%3C/text%3E%3C/svg%3E">
 <link rel="stylesheet" href="./css/app.css">
 </head>
@@ -16,73 +17,91 @@
 
 <div class="app" id="app">
 
-  <!-- ── Title bar ─────────────────────────────────────────── -->
+  <!-- ── タイトルバー ──────────────────────────────────────── -->
   <header class="titlebar">
-    <button class="tb-btn" id="btn-open" type="button">Open</button>
+    <button class="tb-btn" id="btn-open" type="button" data-i18n="btn.open">開く</button>
     <div class="tb-title">
-      <span class="tb-name" id="tb-name">No File</span>
-      <span class="tb-sub" id="tb-sub">Select a Mach-O or raw binary</span>
+      <span class="tb-name" id="tb-name">ファイル未選択</span>
+      <span class="tb-sub" id="tb-sub">アプリの中身（Mach-O / 生バイナリ）を開いてください</span>
     </div>
-    <button class="tb-btn icon" id="btn-more" type="button" aria-label="More">⋯</button>
+    <button class="tb-btn icon" id="btn-help" type="button"
+            data-i18n-aria="btn.help" aria-label="ヘルプ">？</button>
+    <button class="tb-btn icon" id="btn-more" type="button"
+            data-i18n-aria="btn.settings" aria-label="設定">⋯</button>
   </header>
 
-  <!-- ── Toolbar ───────────────────────────────────────────── -->
+  <!-- ── ツールバー ────────────────────────────────────────── -->
   <div class="toolbar">
-    <div class="segmented" id="mode-switch" role="tablist" aria-label="Display mode">
-      <button class="seg" data-mode="asm" role="tab" aria-selected="true" type="button">Assembly</button>
-      <button class="seg" data-mode="hex" role="tab" aria-selected="false" type="button">Hex</button>
+    <div class="segmented" id="mode-switch" role="tablist" aria-label="表示の切り替え">
+      <button class="seg" data-mode="asm" role="tab" aria-selected="true" type="button"
+              data-i18n="mode.asm">アセンブリ</button>
+      <button class="seg" data-mode="hex" role="tab" aria-selected="false" type="button"
+              data-i18n="mode.hex">16進</button>
     </div>
+    <button class="tb-btn pill" id="btn-explain" type="button" aria-pressed="true"
+            data-i18n="btn.explainToggle">解説</button>
     <div class="tb-spacer"></div>
-    <button class="tb-btn" id="btn-sections" type="button" disabled>Sections</button>
-    <button class="tb-btn" id="btn-jump" type="button" disabled>Go to</button>
-    <button class="tb-btn" id="btn-search" type="button" disabled>Search</button>
-    <button class="tb-btn" id="btn-select" type="button" disabled>Select</button>
+    <button class="tb-btn" id="btn-functions" type="button" disabled data-i18n="btn.functions">関数</button>
+    <button class="tb-btn" id="btn-strings" type="button" disabled data-i18n="btn.strings">文字列</button>
+    <button class="tb-btn" id="btn-sections" type="button" disabled data-i18n="btn.sections">セクション</button>
+    <button class="tb-btn" id="btn-struct" type="button" disabled data-i18n="btn.struct">構造</button>
+    <button class="tb-btn" id="btn-search" type="button" disabled data-i18n="btn.search">検索</button>
+    <button class="tb-btn" id="btn-jump" type="button" disabled data-i18n="btn.jump">ジャンプ</button>
+    <button class="tb-btn" id="btn-select" type="button" disabled data-i18n="btn.select">選択</button>
   </div>
 
-  <!-- ── Address bar ───────────────────────────────────────── -->
+  <!-- ── 現在位置 ──────────────────────────────────────────── -->
   <div class="addrbar">
     <span class="addr-cur mono" id="addr-cur">—</span>
     <span class="addr-region" id="addr-region"></span>
     <span class="addr-range mono" id="addr-range"></span>
   </div>
 
-  <!-- ── Column header ─────────────────────────────────────── -->
+  <!-- ── 列見出し ──────────────────────────────────────────── -->
   <div class="colhead mono" id="colhead">
-    <span class="c-addr">ADDRESS</span>
-    <span class="c-hex">HEX</span>
-    <span class="c-mn">INSTRUCTION</span>
+    <span class="c-addr" data-i18n="col.address">アドレス</span>
+    <span class="c-hex" data-i18n="col.hex">16進</span>
+    <span class="c-mn" data-i18n="col.instruction">命令</span>
     <span class="c-ops"></span>
-    <span class="c-ascii">ASCII</span>
+    <span class="c-ascii" data-i18n="col.ascii">文字</span>
   </div>
 
-  <!-- ── Code viewport ─────────────────────────────────────── -->
+  <!-- ── 本体 ──────────────────────────────────────────────── -->
   <div class="viewwrap">
     <div class="viewport mode-asm" id="viewport" tabindex="0">
       <div class="rows" id="rows"></div>
     </div>
     <div class="scrubber" id="scrubber" aria-hidden="true"><div class="thumb" id="scrub-thumb"></div></div>
+
     <div class="empty" id="empty">
       <div class="empty-inner">
-        <div class="empty-title">iOS ARM64 Viewer</div>
-        <p class="empty-text">Open a Mach-O executable, dylib, or raw binary.<br>
-           Files are parsed entirely on this device and never uploaded.</p>
-        <button class="btn-primary" id="btn-open-2" type="button">Open File…</button>
+        <div class="empty-title" data-i18n="empty.title">アプリの中身を、日本語で読む</div>
+        <p class="empty-text" data-i18n-html="empty.text"></p>
+        <div class="empty-actions">
+          <button class="btn-primary" id="btn-sample" type="button" data-i18n="btn.sample">サンプルで練習する</button>
+          <button class="btn-secondary" id="btn-open-2" type="button" data-i18n="btn.openFile">ファイルを開く…</button>
+        </div>
+        <button class="linkbtn" id="btn-learn-2" type="button" data-i18n="help.learn">学習コース（ゼロから読めるようになる）</button>
+        <p class="empty-note" data-i18n="empty.firstTime">はじめての方へ：まずは「サンプルで練習する」がおすすめです。</p>
       </div>
     </div>
-    <div class="loading" id="loading" hidden><div class="spinner"></div><span id="loading-text">Loading…</span></div>
+
+    <div class="loading" id="loading" hidden>
+      <div class="spinner"></div><span id="loading-text">読み込み中…</span>
+    </div>
   </div>
 
-  <!-- ── Selection bar (visible while picking a range) ─────── -->
+  <!-- ── 範囲選択バー ──────────────────────────────────────── -->
   <div class="selbar" id="selbar" hidden>
     <span class="sel-count mono" id="sel-count"></span>
     <span class="sel-range mono" id="sel-range"></span>
     <div class="tb-spacer"></div>
-    <button class="tb-btn" id="btn-sel-all" type="button">All</button>
-    <button class="tb-btn strong" id="btn-sel-copy" type="button">Copy</button>
-    <button class="tb-btn" id="btn-sel-done" type="button">Done</button>
+    <button class="tb-btn" id="btn-sel-all" type="button" data-i18n="btn.all">全部</button>
+    <button class="tb-btn strong" id="btn-sel-copy" type="button" data-i18n="btn.copy">コピー</button>
+    <button class="tb-btn" id="btn-sel-done" type="button" data-i18n="btn.clear">解除</button>
   </div>
 
-  <!-- ── Status bar ────────────────────────────────────────── -->
+  <!-- ── 状態表示 ──────────────────────────────────────────── -->
   <footer class="statusbar">
     <span id="st-left" class="mono"></span>
     <span id="st-right" class="mono"></span>
@@ -92,7 +111,7 @@
 
 <input type="file" id="file-input" hidden>
 
-<!-- Overlays are created by JS into this container -->
+<!-- シートやメニューは JS がここに作ります -->
 <div id="overlays"></div>
 
 <script type="module" src="./js/app.js"></script>

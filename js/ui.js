@@ -4,6 +4,8 @@
  * so file names and disassembly text can never be interpreted as markup.
  */
 
+import { t } from './i18n.js';
+
 const overlays = () => document.getElementById('overlays');
 
 export function el(tag, cls, text) {
@@ -35,7 +37,7 @@ export class Sheet {
     const spacer = el('div');
     spacer.style.minWidth = '44px';
     head.append(spacer, el('div', 'sheet-title', title),
-      button('Done', 'tb-btn', () => this.close()));
+      button(t('btn.done'), 'tb-btn', () => this.close()));
     this.body = el('div', 'sheet-body');
     this.root.append(head, this.body);
 
@@ -93,6 +95,60 @@ export function tapRow(label, { sub, right, tag, tagClass, disabled, indent, onT
   return li;
 }
 
+/* ── 読み物のための部品（用語集・学習コース・詳細解説） ─────── */
+
+/** 小見出し。 */
+export function heading(text) { return el('h4', 'doc-h', text); }
+
+/** 段落。改行はそのまま活かす。 */
+export function para(text, cls) {
+  const p = el('p', 'doc-p' + (cls ? ' ' + cls : ''));
+  p.textContent = text;
+  return p;
+}
+
+/** 等幅のブロック。命令の例やメモリ図に使う。横にはみ出す場合はスクロール。 */
+export function codeBlock(lines) {
+  const pre = el('pre', 'doc-code');
+  pre.textContent = Array.isArray(lines) ? lines.join('\n') : String(lines);
+  return pre;
+}
+
+/** 目立たせたい補足。 */
+export function noteBox(text) { return el('div', 'doc-note', text); }
+
+/** 箇条書き。 */
+export function bullets(items) {
+  const ul = el('ul', 'doc-list');
+  for (const it of items) ul.append(el('li', null, it));
+  return ul;
+}
+
+/** 用語へのリンクを横に並べたもの。 */
+export function termChips(ids, labelFor, onTap) {
+  const wrap = el('div', 'termchips');
+  for (const id of ids) {
+    const label = labelFor(id);
+    if (!label) continue;
+    wrap.append(button(label, 'termchip', () => onTap(id)));
+  }
+  return wrap.childElementCount ? wrap : null;
+}
+
+/** 見出しつきの区切り（詳細画面の各ブロック）。 */
+export function block(title) {
+  const d = el('div', 'blk');
+  if (title) d.append(el('div', 'blk-title', title));
+  return d;
+}
+
+/** 値をタップでコピーできる大きめの表示。 */
+export function bigValue(text, onTap) {
+  const d = el('div', 'bigval mono', text);
+  if (onTap) { d.classList.add('tappable'); d.addEventListener('click', onTap); }
+  return d;
+}
+
 /* ── Menu (long-press / ⋯) ──────────────────────────────────── */
 
 let openMenu = null;
@@ -131,7 +187,7 @@ export function closeMenu() {
 
 /* ── Dialog ─────────────────────────────────────────────────── */
 
-export function alertDialog(title, message, { confirmLabel = 'OK', onConfirm } = {}) {
+export function alertDialog(title, message, { confirmLabel = t('btn.ok'), onConfirm } = {}) {
   const backdrop = el('div', 'backdrop');
   const d = el('div', 'dialog');
   d.setAttribute('role', 'alertdialog');
@@ -166,15 +222,15 @@ export async function copyText(text, label) {
   if (navigator.clipboard && window.isSecureContext) {
     try {
       await navigator.clipboard.writeText(s);
-      toast((label || 'Copied') + ' — copied');
+      toast(t('toast.copied', { what: label || '' }));
       return true;
     } catch { /* no gesture left, or permission denied — try the old way */ }
   }
   if (legacyCopy(s)) {
-    toast((label || 'Copied') + ' — copied');
+    toast(t('toast.copied', { what: label || '' }));
     return true;
   }
-  toast('Could not copy. Long-press the value to select it.');
+  toast(t('err.copyFailed'));
   return false;
 }
 
@@ -209,9 +265,9 @@ export async function copyTextLazy(textPromise, label) {
   if (navigator.clipboard && navigator.clipboard.write &&
       window.isSecureContext && typeof window.ClipboardItem === 'function') {
     try {
-      const blob = settled.then((t) => new Blob([String(t)], { type: 'text/plain' }));
+      const blob = settled.then((text) => new Blob([String(text)], { type: 'text/plain' }));
       await navigator.clipboard.write([new ClipboardItem({ 'text/plain': blob })]);
-      toast((label || 'Copied') + ' — copied');
+      toast(t('toast.copied', { what: label || '' }));
       return true;
     } catch {
       /* Older engines only accept a resolved value; fall through. */
@@ -221,7 +277,7 @@ export async function copyTextLazy(textPromise, label) {
   try {
     text = await settled;
   } catch (err) {
-    toast((err && err.message) ? err.message : 'Could not copy.');
+    toast((err && err.message) ? err.message : t('err.copyFailed'));
     return false;
   }
   return copyText(text, label);

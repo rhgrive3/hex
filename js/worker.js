@@ -24,11 +24,19 @@ const SEARCH_BLOCK_ASM = 128 * 1024; // smaller: disassembly makes blocks slower
 const SEARCH_LIMIT = 1000;
 const HEADER_MAX = 4 * 1024 * 1024;  // cap on load-command area we will read
 
+const SYMBOL_MAX = 400_000;          // シンボルはこれ以上読まない（メモリ保護）
+const STRTAB_MAX = 48 * 1024 * 1024;
+const STRINGS_LIMIT = 20_000;        // 文字列一覧の上限
+const STRINGS_MIN = 4;               // これより短い文字列は拾わない
+const XREF_LIMIT = 2000;
+const SCAN_BLOCK = 1024 * 1024;      // 生スキャンの読み取り単位
+
 /* ── State ──────────────────────────────────────────────────── */
 
 let file = null;
 let fileSize = 0n;
 let regions = new Map();
+let slices = [];                      // 解析済みのスライス（アーキテクチャごと）
 let cs = null;                        // { M, handle, hp }
 let csError = null;
 let searchToken = 0;
@@ -74,6 +82,11 @@ async function handle(msg) {
     case 'chunk':   return getChunk(msg);
     case 'search':  return runSearch(msg);
     case 'probe':   return probeCapstone();
+    case 'analyze': return analyzeSlice(msg);
+    case 'strings': return scanStrings(msg);
+    case 'xrefs':   return findXrefs(msg);
+    case 'readAt':  return readAtAddress(msg);
+    case 'guessFunctions': return guessFunctions(msg);
     default: throw new Error('Unknown request: ' + msg.t);
   }
 }
@@ -227,6 +240,7 @@ async function openFile(f) {
   fileSize = BigInt(f.size);
   blocks.clear();
   regions = new Map();
+  slices = [];
 
   if (f.size === 0) throw new Error('This file is empty (0 bytes).');
 
@@ -285,6 +299,7 @@ async function openFile(f) {
   out.raw = raw;
   registerRegions([raw]);
   for (const s of out.slices) registerRegions(s.regions);
+  slices = out.slices;
 
   return out;
 }
@@ -342,6 +357,408 @@ async function getChunk({ regionId, chunk, wantAsm }) {
   };
 }
 
+/* ── シンボルと関数の一覧 ───────────────────────────────────── */
+
+/**
+ * スライス 1 つぶんの「名前」を集める。
+ *  - LC_SYMTAB    … 定義されている関数・変数の名前
+ *  - 間接シンボル … __stubs / __got が指す外部関数の名前
+ *  - LC_FUNCTION_STARTS … 関数の切れ目（名前がなくても分かる）
+ *
+ * 結果は転送可能な型付き配列で返す。数十万件あっても main 側でコピーが起きない。
+ */
+async function analyzeSlice({ sliceIndex }) {
+  const slice = slices[sliceIndex];
+  if (!slice || !slice.info) {
+    return {
+      addrs: new BigUint64Array(0), kinds: new Uint8Array(0), names: '',
+      funcs: new BigUint64Array(0), symbolCount: 0, funcCount: 0, capped: false,
+      __transfer: [],
+    };
+  }
+  const info = slice.info;
+  const base = slice.offset;
+  let capped = false;
+  let sym = null;
+
+  if (info.symtab && info.symtab.nsyms > 0) {
+    const entry = info.is64 ? 16 : 12;
+    let nsyms = info.symtab.nsyms;
+    if (nsyms > SYMBOL_MAX) { nsyms = SYMBOL_MAX; capped = true; }
+    const symBuf = await readRange(base + BigInt(info.symtab.symoff), nsyms * entry);
+    const strLen = Math.min(info.symtab.strsize, STRTAB_MAX);
+    const strBuf = await readRange(base + BigInt(info.symtab.stroff), strLen);
+    if (symBuf.length >= entry && strBuf.length) {
+      try { sym = MachO.parseSymbols(symBuf, strBuf, info.is64); } catch { sym = null; }
+    }
+  }
+
+  const entries = [];
+  if (sym) {
+    for (const d of MachO.definedSymbols(sym)) entries.push({ addr: d.addr, name: d.name, kind: 0 });
+    if (info.dysymtab && info.dysymtab.nindirectsyms > 0) {
+      const n = Math.min(info.dysymtab.nindirectsyms, SYMBOL_MAX);
+      const ind = await readRange(base + BigInt(info.dysymtab.indirectsymoff), n * 4);
+      if (ind.length >= 4) {
+        try {
+          for (const s of MachO.stubSymbols(info, ind, sym)) {
+            entries.push({ addr: s.addr, name: s.name, kind: s.stub ? 1 : 2 });
+          }
+        } catch { /* 壊れていても他は返す */ }
+      }
+    }
+  }
+
+  // 同じアドレスに複数の名前が付くことがある。先に来たものを優先。
+  entries.sort((a, b) => (a.addr < b.addr ? -1 : a.addr > b.addr ? 1 : a.kind - b.kind));
+  const addrs = new BigUint64Array(entries.length);
+  const kinds = new Uint8Array(entries.length);
+  const names = new Array(entries.length);
+  let n = 0;
+  for (const e of entries) {
+    if (n > 0 && addrs[n - 1] === e.addr) continue;
+    addrs[n] = e.addr; kinds[n] = e.kind; names[n] = e.name;
+    n++;
+  }
+
+  let funcs = new BigUint64Array(0);
+  if (info.functionStarts && info.functionStarts.datasize > 0 && info.textVM != null) {
+    const buf = await readRange(base + BigInt(info.functionStarts.dataoff),
+                                Math.min(info.functionStarts.datasize, 8 * 1024 * 1024));
+    try {
+      const list = MachO.parseFunctionStarts(buf, info.textVM);
+      funcs = new BigUint64Array(list.length);
+      for (let i = 0; i < list.length; i++) funcs[i] = list[i];
+    } catch { funcs = new BigUint64Array(0); }
+  }
+
+  const outAddrs = addrs.slice(0, n);
+  const outKinds = kinds.slice(0, n);
+  return {
+    addrs: outAddrs,
+    kinds: outKinds,
+    names: names.slice(0, n).join('\n'),
+    funcs,
+    symbolCount: n,
+    funcCount: funcs.length,
+    capped,
+    __transfer: [outAddrs.buffer, outKinds.buffer, funcs.buffer],
+  };
+}
+
+/* ── 名前がないファイルで、関数の切れ目を推測する ───────────── */
+
+const RET      = 0xd65f03c0;   // ret
+const PACIASP  = 0xd503233f;
+const PACIBSP  = 0xd503237f;
+
+/*
+ * ビットマスクの比較は必ずこれを通す。
+ * JS の & は符号つき 32 ビットを返すので、bit31 が立つ命令（0x94000000 の bl や
+ * 0xD65F0000 の ret など）を素朴に比較すると、いつまでも一致しない。
+ */
+const masked = (w, mask) => (w & mask) >>> 0;
+
+/** bti c / bti j / bti jc */
+function isBti(w) { return masked(w, 0xffffff1f) === 0xd503241f; }
+
+/** stp xN, xM, [sp, …] — スタックへの 2 本組の書き込み。プロローグの目印。 */
+function isStpToSp(w) {
+  return (w >>> 30) === 2 && ((w >>> 27) & 7) === 5 && ((w >>> 26) & 1) === 0 &&
+         ((w >>> 22) & 1) === 0 && ((w >>> 5) & 0x1f) === 31;
+}
+
+/** sub sp, sp, #imm — スタックの確保。 */
+function isSubSp(w) {
+  return ((w >>> 23) & 0x1ff) === 0x1a2 && ((w >>> 5) & 0x1f) === 31 && (w & 0x1f) === 31;
+}
+
+function looksLikePrologue(w) {
+  return isStpToSp(w) || isSubSp(w) || isBti(w) || w === PACIASP || w === PACIBSP;
+}
+
+/**
+ * LC_FUNCTION_STARTS がないファイル（＝配布用にシンボルを削ったアプリ）向け。
+ *
+ *  1. bl の飛び先は、ほぼ確実に関数の先頭
+ *  2. ret の直後で、プロローグらしい命令が来ていればそこも先頭
+ *
+ * 推測なので取りこぼしも誤検出もある。UI 側でその旨を伝えること。
+ */
+async function guessFunctions({ regionId, limit }) {
+  const region = regions.get(regionId);
+  if (!region) throw new Error('Unknown region.');
+  const token = ++searchToken;
+  const cap = Math.min(Number(limit) || 200_000, 200_000);
+  const total = Number(region.size);
+  const found = new Set();
+  const lo = region.vmAddr, hi = region.vmAddr + region.size;
+
+  let pos = 0;
+  let prevWasEnd = false;
+  while (pos < total) {
+    if (token !== searchToken) return { starts: [], cancelled: true };
+    const want = Math.min(SCAN_BLOCK, total - pos);
+    const blk = await readRange(region.fileOffset + BigInt(pos), want);
+    if (blk.length < 4) break;
+    const words = Math.floor(blk.length / 4);
+    const dv = new DataView(blk.buffer, blk.byteOffset, words * 4);
+    for (let i = 0; i < words; i++) {
+      const w = dv.getUint32(i * 4, true);
+      const pc = region.vmAddr + BigInt(pos + i * 4);
+
+      if (prevWasEnd && looksLikePrologue(w) && found.size < cap) found.add(pc);
+      // ret / retaa / retab / 無条件 b は関数の終わりになりうる
+      prevWasEnd = (w === RET) || masked(w, 0xfffffc1f) === 0xd65f0000 ||
+                   masked(w, 0xfc000000) === 0x14000000;
+
+      // bl の飛び先
+      if (masked(w, 0xfc000000) === 0x94000000) {
+        const t = pc + (signExtend(BigInt(w >>> 0) & 0x3ffffffn, 26) << 2n);
+        if (t >= lo && t < hi && found.size < cap) found.add(t);
+      }
+    }
+    pos += words * 4;
+    self.postMessage({ t: 'scanProgress', done: pos, all: total, hits: found.size });
+    await yieldToQueue();
+  }
+
+  const list = Array.from(found).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  const starts = new BigUint64Array(list.length);
+  for (let i = 0; i < list.length; i++) starts[i] = list[i];
+  return { starts, cancelled: false, __transfer: [starts.buffer] };
+}
+
+/* ── 文字列の抽出 ───────────────────────────────────────────── */
+
+/** 読める ASCII が min 文字以上続くところを拾う。 */
+async function scanStrings({ regionId, min, limit }) {
+  const region = regions.get(regionId);
+  if (!region) throw new Error('Unknown region.');
+  const token = ++searchToken;
+  const minLen = Math.max(2, Number(min) || STRINGS_MIN);
+  const cap = Math.min(Number(limit) || STRINGS_LIMIT, STRINGS_LIMIT);
+  const total = Number(region.size);
+  const out = [];
+  let pos = 0;
+  let run = [];
+  let runStart = 0;
+
+  const flush = () => {
+    if (run.length >= minLen) {
+      out.push({
+        addr: region.vmAddr + BigInt(runStart),
+        offset: runStart,
+        text: run.join(''),
+      });
+    }
+    run = [];
+  };
+
+  while (pos < total && out.length < cap) {
+    if (token !== searchToken) return { results: out, cancelled: true, capped: false };
+    const want = Math.min(SCAN_BLOCK, total - pos);
+    const blk = await readRange(region.fileOffset + BigInt(pos), want);
+    if (!blk.length) break;
+    for (let i = 0; i < blk.length; i++) {
+      const c = blk[i];
+      // タブと改行は文字列の一部として認める（メッセージによく入る）
+      const printable = (c >= 0x20 && c < 0x7f) || c === 9 || c === 10;
+      if (printable) {
+        if (!run.length) runStart = pos + i;
+        if (run.length < 400) run.push(c === 9 ? '\\t' : c === 10 ? '\\n' : String.fromCharCode(c));
+        else if (run.length === 400) run.push('…');
+      } else {
+        flush();
+        if (out.length >= cap) break;
+      }
+    }
+    pos += blk.length;
+    self.postMessage({ t: 'scanProgress', done: pos, all: total, hits: out.length });
+    await yieldToQueue();
+  }
+  flush();
+  return { results: out.slice(0, cap), cancelled: false, capped: out.length >= cap };
+}
+
+/* ── 相互参照（どこからここを見ているか） ───────────────────── */
+
+/*
+ * capstone を通さず、4 バイトの語を直接読んで分岐先とアドレス生成を拾う。
+ * 逆アセンブルより桁違いに速いので、数十 MB のセクションでも一気に走査できる。
+ */
+function signExtend(value, bits) {
+  const sign = 1n << BigInt(bits - 1);
+  return (value & (sign - 1n)) - (value & sign);
+}
+
+/** 1 語から「この命令が指しているアドレス」を求める。分からなければ null。 */
+function wordTarget(w, pc) {
+  const bw = BigInt(w >>> 0);
+  // B / BL : op(31) 0 00101 imm26
+  if (masked(w, 0x7c000000) === 0x14000000) {
+    return pc + (signExtend(bw & 0x3ffffffn, 26) << 2n);
+  }
+  // B.cond : 0101 0100 imm19 0 cond
+  if (masked(w, 0xff000010) === 0x54000000) {
+    return pc + (signExtend((bw >> 5n) & 0x7ffffn, 19) << 2n);
+  }
+  // CBZ / CBNZ : sf 011010 op imm19 Rt
+  if (masked(w, 0x7e000000) === 0x34000000) {
+    return pc + (signExtend((bw >> 5n) & 0x7ffffn, 19) << 2n);
+  }
+  // TBZ / TBNZ : b5 011011 op b40 imm14 Rt
+  if (masked(w, 0x7e000000) === 0x36000000) {
+    return pc + (signExtend((bw >> 5n) & 0x3fffn, 14) << 2n);
+  }
+  // LDR (literal) : 0x 011 0 00 imm19 Rt
+  if (masked(w, 0x3b000000) === 0x18000000) {
+    return pc + (signExtend((bw >> 5n) & 0x7ffffn, 19) << 2n);
+  }
+  return null;
+}
+
+/** ADR / ADRP をほどく。{reg, value} か null。 */
+function pcRelTarget(w, pc) {
+  if (masked(w, 0x1f000000) !== 0x10000000) return null;
+  const bw = BigInt(w >>> 0);
+  const immlo = (bw >> 29n) & 0x3n;
+  const immhi = (bw >> 5n) & 0x7ffffn;
+  const imm = signExtend((immhi << 2n) | immlo, 21);
+  const reg = w & 0x1f;
+  if (w & 0x80000000) {                       // ADRP
+    return { reg, value: (pc & ~0xfffn) + (imm << 12n), page: true };
+  }
+  return { reg, value: pc + imm, page: false };  // ADR
+}
+
+/** ADRP の後ろに続く ADD / LDR から、最終的なアドレスを求める。 */
+function pairedOffset(w) {
+  // ADD (immediate, 64-bit, shift 0)
+  if (((w >>> 23) & 0x1ff) === 0x122 && !((w >>> 22) & 1)) {
+    return { rn: (w >>> 5) & 0x1f, rd: w & 0x1f, imm: BigInt((w >>> 10) & 0xfff) };
+  }
+  // LDR (immediate, unsigned offset) 64-bit / 32-bit
+  const top10 = (w >>> 22) & 0x3ff;
+  if (top10 === 0x3e5) return { rn: (w >>> 5) & 0x1f, rd: w & 0x1f, imm: BigInt((w >>> 10) & 0xfff) * 8n, load: true };
+  if (top10 === 0x2e5) return { rn: (w >>> 5) & 0x1f, rd: w & 0x1f, imm: BigInt((w >>> 10) & 0xfff) * 4n, load: true };
+  return null;
+}
+
+/**
+ * `target` を指している命令を region の中から探す。
+ * 直接の分岐に加えて、adrp + add / adrp + ldr の 2 行組も解決する
+ * （文字列やデータを「誰が使っているか」を追うにはこれが要る）。
+ */
+async function findXrefs({ regionId, target, limit }) {
+  const region = regions.get(regionId);
+  if (!region) throw new Error('Unknown region.');
+  const token = ++searchToken;
+  const want = BigInt(target);
+  const cap = Math.min(Number(limit) || XREF_LIMIT, XREF_LIMIT);
+  const total = Number(region.size);
+  const out = [];
+
+  // レジスタごとに「直近の ADRP が作ったページ」を覚えておく。
+  const pageOf = new Array(32).fill(null);
+  const pageAt = new Array(32).fill(-1);
+  let index = 0;
+
+  let pos = 0;
+  while (pos < total && out.length < cap) {
+    if (token !== searchToken) return { results: out, cancelled: true, capped: false };
+    const wantBytes = Math.min(SCAN_BLOCK, total - pos);
+    const blk = await readRange(region.fileOffset + BigInt(pos), wantBytes);
+    if (blk.length < 4) break;
+    const words = Math.floor(blk.length / 4);
+    const dv = new DataView(blk.buffer, blk.byteOffset, words * 4);
+    for (let i = 0; i < words; i++, index++) {
+      const w = dv.getUint32(i * 4, true);
+      const byteOff = pos + i * 4;
+      const pc = region.vmAddr + BigInt(byteOff);
+
+      const direct = wordTarget(w, pc);
+      if (direct !== null && direct === want) {
+        out.push({ row: byteOff / 4, addr: pc, kind: 'branch' });
+        if (out.length >= cap) break;
+        continue;
+      }
+      const rel = pcRelTarget(w, pc);
+      if (rel) {
+        pageOf[rel.reg] = rel.value;
+        pageAt[rel.reg] = index;
+        if (!rel.page && rel.value === want) {
+          out.push({ row: byteOff / 4, addr: pc, kind: 'address' });
+          if (out.length >= cap) break;
+        }
+        continue;
+      }
+      const pair = pairedOffset(w);
+      if (pair && pageOf[pair.rn] != null && index - pageAt[pair.rn] <= 8) {
+        const full = pageOf[pair.rn] + pair.imm;
+        if (full === want) {
+          out.push({ row: byteOff / 4, addr: pc, kind: pair.load ? 'load' : 'address' });
+          if (out.length >= cap) break;
+        }
+        // ADD の結果は別レジスタに移ることがあるので、そのまま引き継ぐ
+        if (!pair.load) { pageOf[pair.rd] = full; pageAt[pair.rd] = index; }
+      }
+    }
+    pos += words * 4;
+    self.postMessage({ t: 'scanProgress', done: pos, all: total, hits: out.length });
+    await yieldToQueue();
+  }
+  return { results: out, cancelled: false, capped: out.length >= cap };
+}
+
+/* ── 任意のアドレスを読む ───────────────────────────────────── */
+
+/** 仮想アドレス → ファイル内の位置。見つからなければ null。 */
+function vmToFile(addr) {
+  for (const r of regions.values()) {
+    if (r.id === 'raw' || r.zerofill) continue;
+    if (addr >= r.vmAddr && addr < r.vmAddr + r.size) {
+      return { offset: r.fileOffset + (addr - r.vmAddr), region: r };
+    }
+  }
+  return null;
+}
+
+/**
+ * アドレスの中身を読む。text: true なら 0 で終わる文字列として解釈する。
+ * 「adrp + add で作ったアドレスに何があるか」を見せるために使う。
+ */
+async function readAtAddress({ addr, len, text }) {
+  const at = BigInt(addr);
+  const hit = vmToFile(at);
+  if (!hit) return { found: false };
+  const max = Math.min(Number(len) || 256, 4096);
+  const avail = Number(hit.region.vmAddr + hit.region.size - at);
+  const bytes = await readRange(hit.offset, Math.min(max, avail));
+  const result = {
+    found: true,
+    region: hit.region.name,
+    fileOffset: hit.offset,
+    bytes: new Uint8Array(bytes),
+  };
+  if (text) {
+    let s = '';
+    let terminated = false;
+    for (let i = 0; i < bytes.length; i++) {
+      const c = bytes[i];
+      if (c === 0) { terminated = true; break; }
+      if (c === 9) s += '\\t';
+      else if (c === 10) s += '\\n';
+      else if (c >= 0x20 && c < 0x7f) s += String.fromCharCode(c);
+      else { s = ''; break; }                     // 読めない → 文字列ではない
+    }
+    result.text = s;
+    result.terminated = terminated;
+  }
+  result.__transfer = [result.bytes.buffer];
+  return result;
+}
+
 /* ── search ─────────────────────────────────────────────────── */
 
 async function runSearch({ regionId, kind, query, hex, from }) {
@@ -378,6 +795,49 @@ async function runSearch({ regionId, kind, query, hex, from }) {
           push(results, byteOff, region, joined, i, plen);
           if (results.length >= SEARCH_LIMIT) { capped = true; break; }
         }
+      }
+      pos += blk.length;
+      scanned = pos - startByte;
+      if (capped) break;
+      carry = plen > 1 ? joined.subarray(joined.length - Math.min(plen - 1, joined.length)) : new Uint8Array(0);
+      progress(scanned, total - startByte, results.length);
+      await yieldToQueue();
+    }
+  } else if (kind === 'text') {
+    // ASCII の文字列として探す。大文字小文字は区別しない。
+    const needle = String(query || '');
+    if (!needle) throw new Error('Enter text to search for.');
+    const pat = new Uint8Array(needle.length);
+    for (let i = 0; i < needle.length; i++) pat[i] = needle.charCodeAt(i) & 0xff;
+    const lower = (b) => (b >= 65 && b <= 90 ? b + 32 : b);
+    for (let i = 0; i < pat.length; i++) pat[i] = lower(pat[i]);
+    const plen = pat.length;
+    let pos = startByte;
+    let carry = new Uint8Array(0);
+    while (pos < total) {
+      if (token !== searchToken) return { cancelled: true, results, scanned };
+      const want = Math.min(SEARCH_BLOCK_HEX, total - pos);
+      const blk = await readRange(region.fileOffset + BigInt(pos), want);
+      if (!blk.length) break;
+      const joined = carry.length ? concat(carry, blk) : blk;
+      const base = pos - carry.length;
+      const limit = joined.length - plen + 1;
+      for (let i = 0; i < limit; i++) {
+        let ok = true;
+        for (let j = 0; j < plen; j++) {
+          if (lower(joined[i + j]) !== pat[j]) { ok = false; break; }
+        }
+        if (!ok) continue;
+        const byteOff = base + i;
+        // 前後を少し添えて、どんな文字列の中の一致か分かるようにする
+        let text = '';
+        const from = Math.max(0, i - 16), to = Math.min(joined.length, i + plen + 24);
+        for (let k = from; k < to; k++) {
+          const ch = joined[k];
+          text += (ch >= 0x20 && ch < 0x7f) ? String.fromCharCode(ch) : '·';
+        }
+        results.push({ row: Math.floor(byteOff / INSN_SIZE), addr: region.vmAddr + BigInt(byteOff), text, byteOff });
+        if (results.length >= SEARCH_LIMIT) { capped = true; break; }
       }
       pos += blk.length;
       scanned = pos - startByte;

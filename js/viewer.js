@@ -17,6 +17,9 @@
  */
 import { CHUNK_ROWS } from './backend.js';
 import { addrText, bytesHex, bytesAscii, mnemonicClass } from './format.js';
+import { brief, categoryOf, explain } from './arm64.js';
+import { EMPTY_INDEX } from './symbols.js';
+import { lang } from './i18n.js';
 
 const WINDOW_PX = 6_000_000;    // well inside every browser's scroll limit
 const OVERSCAN = 6;             // rows rendered above/below the viewport
@@ -38,6 +41,11 @@ export class CodeViewer {
     this.region = null;
     this.mode = 'asm';
     this.hexJoined = false;
+    // 「各行に日本語の意味を出す」モード。行が 2 段になるので row-h も変わる。
+    this.showNotes = false;
+    this.noteStyle = 'ja';
+    this.symbols = EMPTY_INDEX;
+    this._ctx = null;
     this.totalRows = 0;
     this.windowRows = 0;
     this.baseRow = 0;
@@ -66,10 +74,17 @@ export class CodeViewer {
 
   /* ── geometry ─────────────────────────────────────────────── */
 
+  /*
+   * 行の高さは CSS の --line-h / --note-h から組み立てて、--row-h として書き戻す。
+   * calc() のまま読むと parseFloat できないので、計算は JS 側で持つ。
+   */
   measure() {
-    const raw = getComputedStyle(document.documentElement).getPropertyValue('--row-h');
-    const h = parseFloat(raw);
-    this.rowH = h > 0 ? h : 24;
+    const cs = getComputedStyle(document.documentElement);
+    const line = parseFloat(cs.getPropertyValue('--line-h')) || 24;
+    const note = parseFloat(cs.getPropertyValue('--note-h')) || 18;
+    const h = (this.showNotes && this.mode === 'asm') ? line + note : line;
+    document.documentElement.style.setProperty('--row-h', h + 'px');
+    this.rowH = h;
     this._recomputeWindow(true);
   }
 
@@ -124,14 +139,75 @@ export class CodeViewer {
     this.mode = mode;
     this.vp.classList.toggle('mode-asm', mode === 'asm');
     this.vp.classList.toggle('mode-hex', mode === 'hex');
-    for (const el of this.pool) { el._hex = null; el._ops = null; el._mn = null; }
-    this.invalidate();
+    for (const el of this.pool) { el._hex = null; el._ops = null; el._mn = null; el._note = null; }
+    // 16 進表示に解説行は付かないので、行の高さが変わる
+    if (this.showNotes) this.measure();
+    else this.invalidate();
   }
 
   setHexJoined(on) {
     this.hexJoined = !!on;
     for (const el of this.pool) el._hex = null;
     this.invalidate();
+  }
+
+  /** 解説行の表示。行の高さが変わるので、測り直してから位置を戻す。 */
+  setNotes(on, style) {
+    const changed = this.showNotes !== !!on;
+    this.showNotes = !!on;
+    if (style) this.noteStyle = style;
+    document.documentElement.classList.toggle('with-notes', this.showNotes);
+    for (const el of this.pool) el._note = null;
+    if (changed) this.measure();
+    else this.invalidate();
+  }
+
+  /** 名前と関数の索引を差し替える（ファイルやスライスを開き直したとき）。 */
+  setSymbols(index) {
+    this.symbols = index || EMPTY_INDEX;
+    this._ctx = null;
+    for (const el of this.pool) { el._note = null; el._fn = null; }
+    this.invalidate();
+  }
+
+  /**
+   * 1 行ぶんの解説文。
+   *
+   * adrp の直後の add / ldr だけは、前の行と組で初めて意味が決まるので、
+   * キャッシュを通さずに前の行を渡して解き直し、できあがったアドレスを添える。
+   * 初心者がいちばんつまずくのがこの 2 行組なので、ここだけは特別扱いする。
+   */
+  _noteFor(row, idx, mn, ops, asmEntry) {
+    const base = mn.toLowerCase();
+    if ((base === 'add' || base === 'ldr') && idx > 0 && asmEntry && asmEntry.mn &&
+        /^adrp$/i.test(asmEntry.mn[idx - 1] || '')) {
+      const ctx = Object.assign({}, this._explainCtx(), {
+        prev: { mn: asmEntry.mn[idx - 1], ops: asmEntry.ops[idx - 1] || '' },
+      });
+      const e = explain(mn, ops, this.rowAddress(row), ctx);
+      let text = this.noteStyle === 'pseudo' ? e.pseudo
+        : this.noteStyle === 'both' ? e.pseudo + '   — ' + e.title
+        : (e.summary || e.title);
+      if (e.target != null) {
+        const name = this.symbols.nameAt(e.target);
+        text += '  → ' + (name || '0x' + e.target.toString(16).toUpperCase());
+      }
+      return text.replace(/\s+/g, ' ').trim();
+    }
+    return brief(mn, ops, this.noteStyle, this._explainCtx());
+  }
+
+  /** 解説エンジンに渡す文脈。1 フレームに 1 回だけ作る。 */
+  _explainCtx() {
+    if (!this._ctx || this._ctx.gen !== this.symbols.gen || this._ctx.lang !== lang()) {
+      const sym = this.symbols;
+      this._ctx = {
+        gen: sym.gen,
+        lang: lang(),
+        symbolFor: (addr) => sym.nameAt(addr),
+      };
+    }
+    return this._ctx;
   }
 
   wantAsm() {
@@ -413,10 +489,15 @@ export class CodeViewer {
       const m = document.createElement('span'); m.className = 'c-mn';
       const o = document.createElement('span'); o.className = 'c-ops';
       const s = document.createElement('span'); s.className = 'c-ascii';
-      el.append(a, h, m, o, s);
-      el._a = a; el._h = h; el._m = m; el._o = o; el._s = s;
+      // 2 行目: 関数名のしるし＋日本語の意味
+      const n = document.createElement('span'); n.className = 'c-note';
+      const f = document.createElement('i'); f.className = 'fnname';
+      const nt = document.createTextNode('');
+      n.append(f, nt);
+      el.append(a, h, m, o, s, n);
+      el._a = a; el._h = h; el._m = m; el._o = o; el._s = s; el._n = n; el._f = f; el._nt = nt;
       el._row = -1; el._addr = null; el._hex = null; el._mn = null; el._ops = null;
-      el._ascii = null; el._top = -1; el._cls = '';
+      el._ascii = null; el._top = -1; el._cls = ''; el._note = null; el._fn = null;
       this.rowsEl.appendChild(el);
       this.pool.push(el);
     }
@@ -459,11 +540,29 @@ export class CodeViewer {
       this._setOps(el, '');
     }
 
+    // 2 行目（解説）と、関数の先頭のしるし
+    const isFnStart = this.symbols.functionCount > 0 && this.symbols.isFunctionStart(this.rowAddress(row));
+    if (this.showNotes && this.mode === 'asm') {
+      const fnName = isFnStart ? (this.symbols.nameAt(this.rowAddress(row)) || '') : '';
+      if (el._fn !== fnName) { el._f.textContent = fnName ? '▼ ' + fnName : ''; el._fn = fnName; }
+      let note = '';
+      if (mn && mn !== '…' && mn !== '???') {
+        note = this._noteFor(row, idx, mn, ops, asmEntry);
+      }
+      if (el._note !== note) { el._nt.nodeValue = note; el._note = note; }
+    } else if (el._note !== '') {
+      el._nt.nodeValue = ''; el._note = '';
+      el._f.textContent = ''; el._fn = '';
+    }
+
     let cls = 'row';
     if (this.mode === 'asm') {
       const k = (asmEntry && asmEntry.mn) ? mnemonicClass(mn) : '';
       if (k) cls += ' ' + k;
       if (!asmEntry || !asmEntry.mn) cls += ' pending';
+      const cg = (asmEntry && asmEntry.mn) ? categoryOf(mn) : '';
+      if (cg) cls += ' cat-' + cg;
+      if (isFnStart) cls += ' fnstart';
     } else if (avail <= 0) cls += ' pending';
     if (row >= this._selLo && row <= this._selHi) {
       cls += ' sel';
