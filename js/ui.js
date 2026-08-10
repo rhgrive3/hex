@@ -142,6 +142,31 @@ export function block(title) {
   return d;
 }
 
+/**
+ * たたんでおける区切り。「まず日本語、次に処理、最後に ARM64」という順で
+ * 見せるために使う。中身は open のときだけ組み立てる（重い一覧を抱えないため）。
+ *
+ * @param {string} title
+ * @param {{open?:boolean, build?:function(HTMLElement):void}} opts
+ */
+export function disclosure(title, { open = false, build } = {}) {
+  const d = el('details', 'disc');
+  const s = el('summary', 'disc-sum', title);
+  d.append(s);
+  const body = el('div', 'disc-body');
+  d.append(body);
+  let built = false;
+  const fill = () => {
+    if (built || !build) return;
+    built = true;
+    build(body);
+  };
+  if (open) { d.open = true; fill(); }
+  d.addEventListener('toggle', () => { if (d.open) fill(); });
+  d.body = body;
+  return d;
+}
+
 /** 値をタップでコピーできる大きめの表示。 */
 export function bigValue(text, onTap) {
   const d = el('div', 'bigval mono', text);

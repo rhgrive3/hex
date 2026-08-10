@@ -45,6 +45,10 @@ export class CodeViewer {
     this.showNotes = false;
     this.noteStyle = 'ja';
     this.symbols = EMPTY_INDEX;
+    // Semantic Block の帯と見出し。ここは「引くだけ」の表で、解析はしない。
+    // 中身は analyze.js が作ったモデルから panels/app 側で組み立てて渡す。
+    this.blockOverlay = null;      // Map<row, {title, role, pos, level}>
+    this.blockRegionId = null;
     this._ctx = null;
     this.totalRows = 0;
     this.windowRows = 0;
@@ -127,6 +131,10 @@ export class CodeViewer {
     this.selFocus = -1;
     this.rangeMode = false;
     this.markedRow = -1;
+    if (this.blockRegionId && (!region || this.blockRegionId !== region.id)) {
+      this.blockOverlay = null;
+      this.blockRegionId = null;
+    }
     this.lastTopRow = -1;          // force the address bar to refresh
     this.vp.scrollTop = 0;
     this._recomputeWindow(false);
@@ -160,6 +168,27 @@ export class CodeViewer {
     for (const el of this.pool) el._note = null;
     if (changed) this.measure();
     else this.invalidate();
+  }
+
+  /**
+   * Semantic Block の表示を差し替える。
+   *
+   * 渡すのは「行 → 表示情報」の表だけで、ビューアはそれ以上のことを知らない。
+   * 解析そのものは analyze.js（＋キャッシュ）の担当で、スクロール中には走らない。
+   */
+  setBlockOverlay(regionId, map) {
+    this.blockOverlay = map && map.size ? map : null;
+    this.blockRegionId = this.blockOverlay ? regionId : null;
+    for (const el of this.pool) { el._sblk = null; el._sblkName = null; }
+    this.invalidate();
+  }
+
+  clearBlockOverlay() { this.setBlockOverlay(null, null); }
+
+  /** その行が属する Semantic Block の表示情報（なければ null）。 */
+  blockAt(row) {
+    if (!this.blockOverlay || !this.region || this.blockRegionId !== this.region.id) return null;
+    return this.blockOverlay.get(row) || null;
   }
 
   /** 名前と関数の索引を差し替える（ファイルやスライスを開き直したとき）。 */
@@ -489,15 +518,18 @@ export class CodeViewer {
       const m = document.createElement('span'); m.className = 'c-mn';
       const o = document.createElement('span'); o.className = 'c-ops';
       const s = document.createElement('span'); s.className = 'c-ascii';
-      // 2 行目: 関数名のしるし＋日本語の意味
+      // 2 行目: 関数名のしるし＋処理のまとまりの見出し＋日本語の意味
       const n = document.createElement('span'); n.className = 'c-note';
       const f = document.createElement('i'); f.className = 'fnname';
+      const bt = document.createElement('i'); bt.className = 'sblkname';
       const nt = document.createTextNode('');
-      n.append(f, nt);
+      n.append(f, bt, nt);
       el.append(a, h, m, o, s, n);
       el._a = a; el._h = h; el._m = m; el._o = o; el._s = s; el._n = n; el._f = f; el._nt = nt;
+      el._bt = bt;
       el._row = -1; el._addr = null; el._hex = null; el._mn = null; el._ops = null;
       el._ascii = null; el._top = -1; el._cls = ''; el._note = null; el._fn = null;
+      el._sblk = null; el._sblkName = null;
       this.rowsEl.appendChild(el);
       this.pool.push(el);
     }
@@ -540,11 +572,17 @@ export class CodeViewer {
       this._setOps(el, '');
     }
 
-    // 2 行目（解説）と、関数の先頭のしるし
+    // 2 行目（解説）と、関数の先頭のしるし、処理のまとまりの見出し
     const isFnStart = this.symbols.functionCount > 0 && this.symbols.isFunctionStart(this.rowAddress(row));
+    const blk = this.mode === 'asm' ? this.blockAt(row) : null;
     if (this.showNotes && this.mode === 'asm') {
       const fnName = isFnStart ? (this.symbols.nameAt(this.rowAddress(row)) || '') : '';
       if (el._fn !== fnName) { el._f.textContent = fnName ? '▼ ' + fnName : ''; el._fn = fnName; }
+      const blkName = blk && blk.title ? blk.title : '';
+      if (el._sblkName !== blkName) {
+        el._bt.textContent = blkName ? '▼ ' + blkName : '';
+        el._sblkName = blkName;
+      }
       let note = '';
       if (mn && mn !== '…' && mn !== '???') {
         note = this._noteFor(row, idx, mn, ops, asmEntry);
@@ -553,6 +591,7 @@ export class CodeViewer {
     } else if (el._note !== '') {
       el._nt.nodeValue = ''; el._note = '';
       el._f.textContent = ''; el._fn = '';
+      el._bt.textContent = ''; el._sblkName = '';
     }
 
     let cls = 'row';
@@ -563,6 +602,8 @@ export class CodeViewer {
       const cg = (asmEntry && asmEntry.mn) ? categoryOf(mn) : '';
       if (cg) cls += ' cat-' + cg;
       if (isFnStart) cls += ' fnstart';
+      // 処理のまとまりを、左端の帯で囲って見せる（行の高さは変えない）
+      if (blk) cls += ' sblk sblk-' + blk.pos + ' sblk-lv-' + blk.level;
     } else if (avail <= 0) cls += ' pending';
     if (row >= this._selLo && row <= this._selHi) {
       cls += ' sel';

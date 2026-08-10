@@ -8,7 +8,7 @@
  */
 import {
   Sheet, el, button, list, groupRow, kvRow, tapRow, toast, copyText, alertDialog, menu,
-  heading, para, codeBlock, noteBox, bullets, termChips, block, bigValue,
+  heading, para, codeBlock, noteBox, bullets, termChips, block, bigValue, disclosure,
 } from './ui.js';
 import { addrHex, addrText, sizeText, parseAddress, parseHexPattern } from './format.js';
 import { rangeCopyMenu } from './rangecopy.js';
@@ -16,7 +16,12 @@ import { t, isJa, pick } from './i18n.js';
 import { explain, operandNotes, categoryLabel, isBranch, isCall } from './arm64.js';
 import { GLOSSARY, searchGlossary } from './glossary.js';
 import { CHAPTERS, loadProgress, saveProgress } from './learn.js';
-import { analyzeFunction, describeFunction } from './analyze.js';
+import { analyzeFunctionCached, describeFunction } from './analyze.js';
+import { levelOf } from './blocks.js';
+import {
+  functionStory, blockTitle, blockHeading, blockSummary, roleTag, buildOverlay,
+  confidenceText, evidenceText, describeValue,
+} from './narrate.js';
 import { SAMPLE_GUIDE } from './sample.js';
 
 /* ── ファイル情報 ────────────────────────────────────────── */
@@ -448,11 +453,12 @@ export function showFunctionSummary(app, row) {
   bar.append(fill);
   sheet.body.append(bar, status);
 
-  analyzeFunction(app.backend, region, startRow, endRow, sym,
+  analyzeFunctionCached(app.backend, region, startRow, endRow, sym,
     (p) => { fill.style.width = Math.round(p * 100) + '%'; })
     .then((res) => {
       status.remove();
       bar.remove();
+      applySemantic(app, region, res);
       renderFunctionSummary(app, sheet, res, name, region);
     })
     .catch((err) => {
@@ -461,8 +467,29 @@ export function showFunctionSummary(app, row) {
     });
 }
 
+/**
+ * 解析済みモデルをビューアの表示（帯と見出し）に反映する。
+ * ビューアは表を引くだけで、解析は一切しない。
+ */
+export function applySemantic(app, region, res) {
+  if (!res || !res.model) return;
+  app.semantic = { regionId: region.id, model: res.model, result: res };
+  app.viewer.setBlockOverlay(region.id, buildOverlay(res.model));
+}
+
+/** いま表示している行に対応する Semantic Block（なければ null）。 */
+function semanticBlockAt(app, row) {
+  const s = app.semantic;
+  const region = app.store.get('currentRegion');
+  if (!s || !region || s.regionId !== region.id) return null;
+  return s.model.blockOfRow(row);
+}
+
+/* ── 関数を開いたら、まず日本語。次に処理。最後に ARM64。 ── */
+
 function renderFunctionSummary(app, sheet, res, name, region) {
   const body = sheet.body;
+  const model = res.model;
 
   const head = el('div', 'fn-head');
   head.append(el('div', 'fn-name', name || t('functions.unnamed')));
@@ -470,10 +497,175 @@ function renderFunctionSummary(app, sheet, res, name, region) {
     addrHex(res.startAddr) + ' – ' + addrHex(res.endAddr)));
   body.append(head);
 
-  /* あらすじ */
+  /* 1. 日本語 — 命令を一切見せずに「何をしているか」 */
+  body.append(storySection(app, model, name, sheet));
+
+  /* 2. 処理のまとまり */
+  body.append(disclosure(pick('詳細を見る（処理のまとまり）', 'Show the steps in detail'), {
+    build: (into) => into.append(blockListSection(app, model, sheet, region)),
+  }));
+
+  /* 3. ARM64 と数字 */
+  body.append(disclosure(pick('ARM64 を見る（命令と数字）', 'Show the ARM64 details'), {
+    build: (into) => into.append(rawSection(app, sheet, res, name, region)),
+  }));
+
+  const actions = el('div', 'detail-actions');
+  actions.append(button(t('fn.goto'), 'chip', () => {
+    sheet.close();
+    app.goToAddress(res.startAddr, { announce: true });
+  }));
+  actions.append(button(pick('この関数を呼んでいる場所', 'Find who calls this'), 'chip', () => {
+    sheet.close();
+    showXrefs(app, res.startAddr);
+  }));
+  body.append(actions);
+}
+
+/** 「この処理では、A → B → C しています」。最初に見せるのはこれ。 */
+function storySection(app, model, name, sheet) {
+  const wrap = el('div', 'story');
+  const story = functionStory(model, name);
+
+  wrap.append(el('div', 'story-head', story.headline));
+
+  const lead = el('p', 'doc-p');
+  lead.textContent = pick('この処理では、次のことをしています。', 'This routine does the following.');
+  wrap.append(lead);
+
+  const ol = el('ul', 'story-steps');
+  story.steps.forEach((s, i) => {
+    const li = el('li');
+    li.append(el('i', null, String(i + 1) + '.'));
+    li.append(el('span', null, s));
+    ol.append(li);
+  });
+  wrap.append(ol);
+
+  for (const line of story.purpose) wrap.append(para(line));
+
+  const conf = el('span', 'conf lv-' + levelOf(story.confidence), confidenceText(story.confidence));
+  wrap.append(conf);
+
+  if (story.evidence.length) {
+    wrap.append(el('div', 'blk-title', pick('この判断の根拠', 'What this is based on')));
+    wrap.append(bullets(story.evidence));
+  }
+  wrap.append(para(pick(
+    '※ ここに書いてあるのは、命令の並びから読み取れた範囲のことだけです。' +
+    '根拠のない決めつけはしていません。分からないものは「分かりません」と書いています。',
+    'Everything above comes from the instructions themselves. Nothing is asserted without evidence.'), 'sub'));
+  void sheet;
+  void app;
+  return wrap;
+}
+
+/** 処理のまとまり一覧。タップでその行へ飛べる（処理 → ARM64 の道筋）。 */
+function blockListSection(app, model, sheet, region) {
+  const ul = list();
+  if (!model.semantic.length) {
+    ul.append(tapRow(pick('処理のまとまりを取り出せませんでした。', 'No steps could be extracted.'),
+      { disabled: true }));
+    return ul;
+  }
+  ul.append(groupRow(pick('処理のまとまり  (' + model.semantic.length + ')',
+    'Steps  (' + model.semantic.length + ')')));
+  for (const b of model.semantic) {
+    const lines = blockSummary(b, model);
+    const rowEl = tapRow(blockHeading(b), {
+      sub: (lines[0] || '') + '\n' +
+        addrHex(region.vmAddr + BigInt(b.startRow) * 4n) +
+        '  ·  ' + pick(b.instructions.length + ' 命令', b.instructions.length + ' instructions'),
+      onTap: () => { sheet.close(); showBlockDetail(app, model, b, region); },
+    });
+    ul.append(rowEl);
+  }
+  if (model.truncated) {
+    ul.append(tapRow(pick('※ 大きすぎるため、途中までを解析しています。',
+      'Note: too large — only the first part was analysed.'), { disabled: true }));
+  }
+  return ul;
+}
+
+/** ひとつの「処理」の詳細。ここで初めて ARM64 が出てくる。 */
+export function showBlockDetail(app, model, b, region) {
+  const sheet = new Sheet(blockTitle(b));
+  const body = sheet.body;
+  const addrOf = (row) => region.vmAddr + BigInt(row) * 4n;
+
+  const head = el('div', 'det-head');
+  head.append(el('div', 'det-addr mono', addrHex(addrOf(b.startRow)) + ' – ' + addrHex(addrOf(b.endRow))));
+  head.append(el('div', 'sb-role', roleTag(b.role)));
+  body.append(head);
+
+  const what = block(t('detail.what'));
+  what.append(el('div', 'det-title', blockTitle(b)));
+  for (const line of blockSummary(b, model)) what.append(para(line));
+  what.append(el('span', 'conf lv-' + b.level, confidenceText(b.confidence)));
+  body.append(what);
+
+  /* この処理が受け取っている値（Phase 6: レジスタの意味） */
+  const known = (b.inputs || []).filter((i) => i.value && i.value.kind !== 'unknown');
+  if (known.length) {
+    const bi = block(pick('この処理が使っている値', 'Values this step uses'));
+    const ul = list();
+    for (const i of known.slice(0, 6)) ul.append(kvRow(i.reg, '', describeValue(i.value)));
+    bi.append(ul);
+    body.append(bi);
+  }
+
+  /* 根拠 */
+  const evs = [];
+  for (const e of b.evidence) {
+    const text = evidenceText(e);
+    if (text && !evs.includes(text)) evs.push(text);
+  }
+  if (evs.length) {
+    const be = block(pick('根拠', 'Evidence'));
+    be.append(bullets(evs.slice(0, 8)));
+    body.append(be);
+  }
+
+  /* 呼び出し先へ辿る */
+  if (b.calls.length) {
+    const bc = list();
+    bc.append(groupRow(pick('この中で呼んでいる処理', 'What it calls here')));
+    for (const c of b.calls) {
+      bc.append(tapRow(c.name || (c.target != null ? addrHex(c.target) : pick('行き先は実行時に決まります', 'resolved at run time')), {
+        sub: c.target != null ? addrHex(c.target) : '',
+        disabled: c.target == null,
+        onTap: () => { sheet.close(); app.goToAddress(c.target, { announce: true }); },
+      }));
+    }
+    body.append(bc);
+  }
+
+  /* 最後に ARM64 */
+  body.append(disclosure(pick('ARM64 を見る', 'Show the ARM64'), {
+    build: (into) => {
+      const lines = b.instructions.map((i) =>
+        addrText(addrOf(i.row)) + '  ' + i.mnemonic + (i.operands ? ' ' + i.operands : ''));
+      into.append(codeBlock(lines));
+    },
+  }));
+
+  const actions = el('div', 'detail-actions');
+  actions.append(button(pick('この処理の先頭へ移動', 'Go to this step'), 'chip', () => {
+    sheet.close();
+    app.viewer.goToRow(b.startRow, 'third');
+    app.viewer.select(b.startRow, false);
+    app.viewer.mark(b.startRow);
+  }));
+  body.append(actions);
+}
+
+/** 既存の数字・呼び出し・ループ・文字列。いちばん奥に置く。 */
+function rawSection(app, sheet, res, name, region) {
+  const wrap = el('div');
+
   const story = block(t('fn.story'));
   for (const line of describeFunction(res, name)) story.append(para(line));
-  body.append(story);
+  wrap.append(story);
 
   /* 数字 */
   const ul = list();
@@ -487,7 +679,7 @@ function renderFunctionSummary(app, sheet, res, name, region) {
   ul.append(kvRow(t('fn.loops'), res.loops.length
     ? t('fn.loopsN', { n: res.loops.length }) : t('fn.loopsNone')));
   ul.append(kvRow(t('fn.returns'), String(res.returns)));
-  body.append(ul);
+  wrap.append(ul);
 
   /* 呼び出している関数 */
   if (res.calls.length) {
@@ -510,7 +702,7 @@ function renderFunctionSummary(app, sheet, res, name, region) {
         },
       }));
     }
-    body.append(cul);
+    wrap.append(cul);
   }
 
   /* ループの位置 */
@@ -523,14 +715,14 @@ function renderFunctionSummary(app, sheet, res, name, region) {
         onTap: () => { sheet.close(); app.goToAddress(l.to, { announce: true }); },
       }));
     }
-    body.append(lul);
+    wrap.append(lul);
   }
 
   /* 指している文字列 */
   if (res.stringRefs.length) {
     const sul = list();
     sul.append(groupRow(pick('この関数が指しているデータ', 'Data this function points at')));
-    body.append(sul);
+    wrap.append(sul);
     const seen = new Set();
     let shown = 0;
     for (const r of res.stringRefs) {
@@ -554,12 +746,8 @@ function renderFunctionSummary(app, sheet, res, name, region) {
     }
   }
 
-  const actions = el('div', 'detail-actions');
-  actions.append(button(t('fn.goto'), 'chip', () => {
-    sheet.close();
-    app.goToAddress(res.startAddr, { announce: true });
-  }));
-  body.append(actions);
+  void region;
+  return wrap;
 }
 
 /* ── 文字列の一覧 ────────────────────────────────────────── */
@@ -997,6 +1185,25 @@ function renderDetail(app, sheet, root, d, row, region) {
   if (ops) insn.append(document.createTextNode(' ' + ops));
   root.append(insn);
 
+  /*
+   * ARM64 → 処理 → 関数 → 機能 と、逆向きに辿れるようにする。
+   * 解析済みの関数を見ているときだけ出る（ここで解析は始めない）。
+   */
+  const sb = region ? semanticBlockAt(app, row) : null;
+  if (sb) {
+    const bb = block(pick('この行が属する処理', 'The step this line belongs to'));
+    bb.append(el('div', 'det-title', blockHeading(sb)));
+    const first = blockSummary(sb, app.semantic.model)[0];
+    if (first) bb.append(para(first));
+    const bul = list();
+    bul.append(tapRow(pick('この処理をくわしく見る', 'Open this step'), {
+      sub: pick('処理 → 関数 → 呼び出し元、と辿れます', 'step → function → callers'),
+      onTap: () => { sheet.close(); showBlockDetail(app, app.semantic.model, sb, region); },
+    }));
+    bb.append(bul);
+    root.append(bb);
+  }
+
   if (e) {
     /* ひとことで */
     const b1 = block(t('detail.what'));
@@ -1157,8 +1364,13 @@ export function instructionMenu(app, row, x, y) {
 
   const d = app.viewer.rowData(row) || {};
   const asm = ((d.mnemonic || '') + ' ' + (d.operands || '')).trim();
+  const sb = semanticBlockAt(app, row);
   menu([
     { label: t('detail.title') + '…', action: () => showDetail(app, row) },
+    ...(sb ? [{
+      label: pick('この処理を見る', 'Show this step') + '（' + blockTitle(sb) + '）',
+      action: () => showBlockDetail(app, app.semantic.model, sb, app.store.get('currentRegion')),
+    }] : []),
     { label: t('detail.showFunction'), action: () => showFunctionSummary(app, row) },
     { label: t('detail.findRefs'), action: () => showXrefs(app, d.address) },
     '-',
