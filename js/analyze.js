@@ -9,8 +9,12 @@
 import { CHUNK_ROWS } from './backend.js';
 import { parseOperands, isCall, isReturn, categoryOf, referenceTarget } from './arm64.js';
 import { pick } from './i18n.js';
+import { buildSemanticModel, attachTexts } from './blocks.js';
+import { LRU } from './lru.js';
 
 const MAX_INSTRUCTIONS = 40000;   // これ以上大きい関数は途中で切り上げる
+const MAX_MODEL_ROWS = 6000;      // Semantic Model を作る上限（表示は上限なしで続く）
+const MODEL_TEXTS = 24;           // 文字列を読みにいくアドレスの上限
 
 /** 命令の「書き込み先」がオペランドの何番目か。書き込まないものは -1。 */
 function destIndex(mn) {
@@ -78,6 +82,9 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
   const calleeSaved = new Set();
   let lastX0Write = -1;
 
+  // Semantic Model の材料。既存の走査に相乗りするので、二度読みは起きない。
+  const rawInsns = [];
+
   const first = Math.floor(startRow / CHUNK_ROWS);
   const last = Math.floor(end / CHUNK_ROWS);
   // adrp のページを覚えておいて、続く add/ldr と組にする
@@ -97,6 +104,8 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
       if (!mn) continue;
       const addr = region.vmAddr + BigInt(row) * 4n;
       const b = mn.toLowerCase();
+
+      if (rawInsns.length < MAX_MODEL_ROWS) rawInsns.push({ row, address: addr, mn, ops: opsStr });
 
       if (b.charCodeAt(0) === 46) { res.dataRows++; continue; }   // .byte
       res.instructions++;
@@ -205,7 +214,89 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
     seen.add(k);
     return true;
   });
+
+  /*
+   * Semantic Model（意味の層）。
+   * 上のループで集めた命令をそのまま渡すだけなので、逆アセンブルもチャンク読みも
+   * 二重には走らない。ここは純粋な計算で、DOM にも worker にも触らない。
+   */
+  const name = symbols && symbols.nameAt ? symbols.nameAt(res.startAddr) : null;
+  res.model = buildSemanticModel(rawInsns, {
+    startRow, endRow: end,
+    name,
+    symbolFor: (a) => (symbols ? (symbols.nameAt(a) || null) : null),
+    rowOfAddress: (a) => {
+      if (a == null) return null;
+      const rel = a - region.vmAddr;
+      if (rel < 0n || rel >= region.size) return null;
+      return Number(rel / 4n);
+    },
+  });
   return res;
+}
+
+/* ── 関数単位のキャッシュ ─────────────────────────────────────
+   同じ関数を何度も解析しない。スクロールでは絶対に走らせない。
+   （Viewer → 解析、ではなく 解析 → キャッシュ → Viewer の向きを守る） */
+
+const CACHE_MAX = 24;
+const cache = new LRU(CACHE_MAX);
+
+function cacheKey(region, startRow, symbols) {
+  return (symbols && symbols.gen != null ? symbols.gen : 0) + ':' + region.id + '#' + startRow;
+}
+
+/** キャッシュを捨てる（ファイルやスライスを開き直したとき）。 */
+export function clearAnalysisCache() { cache.clear(); }
+
+/**
+ * analyzeFunction のキャッシュつき版。参照している文字列も、上限つきで読み込む。
+ *
+ * @param {object} backend
+ * @param {object} region
+ * @param {number} startRow
+ * @param {number} endRow
+ * @param {object} symbols
+ * @param {function} onProgress
+ * @param {object} [opts] { texts: false で文字列の読み込みを省く }
+ */
+export async function analyzeFunctionCached(backend, region, startRow, endRow, symbols, onProgress, opts) {
+  const key = cacheKey(region, startRow, symbols);
+  const hit = cache.get(key);
+  if (hit) {
+    if (onProgress) onProgress(1);
+    return hit;
+  }
+  const res = await analyzeFunction(backend, region, startRow, endRow, symbols, onProgress);
+  if (!opts || opts.texts !== false) {
+    try { await resolveModelTexts(backend, res.model); } catch { /* 読めなくても解析結果は返す */ }
+  }
+  cache.set(key, res);
+  return res;
+}
+
+/**
+ * モデルが指しているアドレスの中身を読んで、文字列なら流し込む。
+ * 読み取りは worker 側なので、UI スレッドは待つだけ。
+ */
+export async function resolveModelTexts(backend, model, limit = MODEL_TEXTS) {
+  if (!model || !backend || !model.addressRefs.length) return model;
+  const wanted = [];
+  const seen = new Set();
+  for (const r of model.addressRefs) {
+    const k = r.addr.toString();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    wanted.push(r.addr);
+    if (wanted.length >= limit) break;
+  }
+  const texts = new Map();
+  const got = await Promise.all(wanted.map((a) =>
+    backend.readAt(a, 120, true).catch(() => null)));
+  got.forEach((g, i) => {
+    if (g && g.found && g.text) texts.set(wanted[i].toString(), g.text);
+  });
+  return attachTexts(model, texts);
 }
 
 /* ── 要約を日本語の文にする ─────────────────────────────── */

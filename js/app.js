@@ -17,6 +17,8 @@ import { rangeCopyMenu, copyRange } from './rangecopy.js';
 import { t, setLang, detectLang, lang, isJa, pick } from './i18n.js';
 import { SymbolIndex, EMPTY_INDEX } from './symbols.js';
 import { clearBriefCache } from './arm64.js';
+import { clearAnalysisCache, analyzeFunctionCached } from './analyze.js';
+import { buildOverlay } from './narrate.js';
 import { makeSampleFile } from './sample.js';
 
 const $ = (id) => document.getElementById(id);
@@ -30,6 +32,8 @@ class App {
     this.preferredMode = 'asm';
     this.symbols = EMPTY_INDEX;
     this.sampleOpen = false;
+    // 直近に解析した関数の Semantic Model。ビューアはここから作った表を引くだけ。
+    this.semantic = null;
 
     setLang(this.prefs.lang || detectLang());
 
@@ -413,6 +417,53 @@ class App {
     this.saveSettings();
     this.applyLabels();
     this.viewer.setSymbols(this.symbols);   // 解説を作り直させる
+    // Semantic Model は言語に依存しないので、見出しだけ作り直せばよい
+    if (this.semantic) {
+      this.viewer.setBlockOverlay(this.semantic.regionId, buildOverlay(this.semantic.model));
+    }
+  }
+
+  /* ── 意味の層 ─────────────────────────────────────────────── */
+
+  /**
+   * 表示中の解析結果を手放す。
+   *
+   * @param {boolean} dropCache 解析キャッシュごと捨てるか。
+   *   別のファイル・スライスに移ったときだけ true。セクションを移っただけなら
+   *   キャッシュ（鍵にセクション id を含む）はそのまま残して、戻ってきたとき速くする。
+   */
+  forgetSemantics(dropCache) {
+    this.semantic = null;
+    if (dropCache) clearAnalysisCache();
+    if (this.viewer) this.viewer.clearBlockOverlay();
+  }
+
+  /**
+   * 関数 1 つぶんの意味解析を走らせて、ビューアに処理の区切りを出す。
+   *
+   * 呼ばれるのは「利用者が関数を開いたとき」だけ。スクロールや描画からは絶対に呼ばない。
+   * 同じ関数は analyze.js 側のキャッシュに載るので、二度目はすぐ返る。
+   */
+  async analyzeFunctionAt(addr) {
+    const region = this.store.get('currentRegion');
+    const sym = this.symbols;
+    if (!region || !this.store.get('canDisassemble') || !sym.functionCount) return null;
+    const fn = sym.functionAt(addr);
+    if (!fn || fn.start < region.vmAddr) return null;
+    const startRow = Number((fn.start - region.vmAddr) / 4n);
+    const endRow = fn.end != null
+      ? Math.min(this.viewer.totalRows - 1, Number((fn.end - region.vmAddr) / 4n) - 1)
+      : Math.min(this.viewer.totalRows - 1, startRow + 2048);
+    if (endRow < startRow) return null;
+    try {
+      const res = await analyzeFunctionCached(this.backend, region, startRow, endRow, sym);
+      if (this.store.get('currentRegion') !== region) return null;
+      this.semantic = { regionId: region.id, model: res.model, result: res };
+      this.viewer.setBlockOverlay(region.id, buildOverlay(res.model));
+      return res;
+    } catch {
+      return null;   // 解析できなくても、命令の表示はそのまま続く
+    }
   }
 
   /* ── ファイルを開く ───────────────────────────────────────── */
@@ -429,6 +480,7 @@ class App {
     this.detailRefresh = null;
     this.symbols = EMPTY_INDEX;
     this.viewer.setSymbols(EMPTY_INDEX);
+    this.forgetSemantics(true);
 
     let info;
     try {
@@ -528,6 +580,7 @@ class App {
     const info = this.store.get('fileInfo');
     if (!info || !info.slices[index] || info.slices[index].error) return;
     this.backend.resetCache();
+    this.forgetSemantics(true);
     this.symbols = EMPTY_INDEX;
     this.viewer.setSymbols(EMPTY_INDEX);
     this.applySlice(index, info);
@@ -543,6 +596,7 @@ class App {
       return;
     }
     this.backend.dropQueued();
+    if (this.semantic && this.semantic.regionId !== region.id) this.forgetSemantics();
     region.disasm = this.store.get('canDisassemble');
     this.store.set({ currentRegion: region, selectedRow: -1 });
     this.viewer.setRegion(region);
@@ -602,6 +656,8 @@ class App {
     const row = Number((addr - region.vmAddr) / 4n);
     this.viewer.select(row, false);
     this.store.set({ selectedRow: row });
+    // 関数を開いた「そのとき」だけ意味解析を走らせる（描画とは別の流れ）
+    this.analyzeFunctionAt(addr);
   }
 
   /** 名前から探して移動する（サンプルの案内などで使う）。 */

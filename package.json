@@ -1,0 +1,9 @@
+{
+  "name": "hex",
+  "private": true,
+  "type": "module",
+  "description": "アプリの中身（Mach-O / ARM64）を日本語で読むためのビューア。ビルドはしない — index.html をそのまま開く静的サイト。",
+  "scripts": {
+    "test": "node tests/run.js"
+  }
+}
