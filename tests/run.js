@@ -512,6 +512,45 @@ test('異常: すべての役割で説明文が作れる（欠けがない）', 
   }
 });
 
+
+/* ────────────────────────────────────────────────────────────
+   機能から探す（文字列 → 機能）
+   ──────────────────────────────────────────────────────────── */
+
+const { classifyString, groupByFeature, detectEngine } = await import('../js/features.js');
+
+test('FEATURE: ゲームの言葉を機能に振り分けられる', () => {
+  eq(classifyString('LoginViewController')[0].id, 'login');
+  eq(classifyString('ガチャを引く')[0].id, 'gacha');
+  ok(classifyString('purchase_receipt_verify').some((h) => h.id === 'purchase'));
+  ok(classifyString('ダメージ計算').some((h) => h.id === 'battle'));
+  ok(classifyString('https://api.example.com/v1/user').some((h) => h.id === 'network'));
+  ok(classifyString('jailbreak detected').some((h) => h.id === 'anticheat'));
+  eq(classifyString('ab').length, 0, '短すぎる文字列は拾わない');
+  eq(classifyString('%@%@%@').length, 0, '記号だけの文字列を拾っている');
+});
+
+test('FEATURE: 機能ごとに束ね、濃い手がかりを先に出す', () => {
+  const strings = [
+    { addr: 1n, text: 'login' },
+    { addr: 2n, text: 'ログインに失敗しました' },
+    { addr: 3n, text: 'ガチャ結果' },
+    { addr: 4n, text: 'zzzz' },
+  ];
+  const g = groupByFeature(strings);
+  const login = g.find((f) => f.id === 'login');
+  ok(login, 'ログインの束がない');
+  eq(login.items.length, 2);
+  eq(login.items[0].text, 'ログインに失敗しました', '日本語の文言を先に出していない');
+  ok(login.items[0].score > login.items[1].score);
+  ok(g.every((f) => f.items.length > 0), '空の機能を出している');
+});
+
+test('FEATURE: 実行エンジンの見当がつく／分からなければ null', () => {
+  eq(detectEngine([{ addr: 1n, text: 'libil2cpp.so' }]).id, 'unity');
+  eq(detectEngine([{ addr: 1n, text: 'nothing here' }]), null);
+});
+
 /* ── まとめ ──────────────────────────────────────────────── */
 
 process.stdout.write('\n' + passed + ' passed, ' + failures.length + ' failed\n');

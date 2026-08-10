@@ -22,6 +22,7 @@ import {
   functionStory, blockTitle, blockHeading, blockSummary, roleTag, buildOverlay,
   confidenceText, evidenceText, describeValue,
 } from './narrate.js';
+import { groupByFeature, detectEngine } from './features.js';
 import { SAMPLE_GUIDE } from './sample.js';
 
 /* ── ファイル情報 ────────────────────────────────────────── */
@@ -750,6 +751,124 @@ function rawSection(app, sheet, res, name, region) {
   return wrap;
 }
 
+/* ── 機能から探す ────────────────────────────────────────────
+   関数が 1 万個あるファイルで「この関数は何をしているか」だけ分かっても、
+   ゲームのどこの処理かは分からない。逆から辿るための入口をここに置く。
+
+     機能 → その機能の言葉（文字列）→ 使っている場所 → 関数 → 意味 */
+
+export function showFeatures(app) {
+  const info = app.store.get('fileInfo');
+  if (!info) { toast(t('err.openFirst')); return; }
+  const sheet = new Sheet(pick('機能から探す', 'Find by feature'), {
+    onClose: () => { app.backend.cancelSearch(); app.backend.onScanProgress = null; },
+  });
+
+  const status = el('div', 'hint', pick(
+    'アプリの中の言葉を集めて、機能ごとに束ねます。少し待ってください。',
+    'Collecting the words inside the app and grouping them by feature…'));
+  const bar = el('div', 'progress');
+  const fill = el('i');
+  bar.append(fill);
+  const body = el('div');
+  sheet.body.append(bar, status, body);
+
+  const render = (index) => {
+    bar.remove();
+    body.replaceChildren();
+
+    if (index.engine) {
+      const nb = noteBox(index.engine.note);
+      body.append(nb);
+    }
+    status.textContent = pick(
+      '知りたい機能を選ぶと、その機能に関係のありそうな言葉が並びます。' +
+      '言葉を選ぶと、それを使っている場所＝その機能を担当している関数にたどり着けます。',
+      'Pick a feature, then a word, then the code that uses it.');
+
+    const ul = list();
+    if (!index.features.length) {
+      ul.append(tapRow(pick(
+        '手がかりになる言葉が見つかりませんでした。文字列が暗号化・難読化されているか、' +
+        'ゲームの中身が別のファイル（il2cpp など）にある可能性があります。',
+        'No usable words were found — the strings may be obfuscated, or the game logic may live in another file.'),
+        { disabled: true }));
+    }
+    for (const f of index.features) {
+      ul.append(tapRow(f.label, {
+        right: String(f.items.length),
+        sub: f.items.slice(0, 2).map((i) => '「' + trimText(i.text, 28) + '」').join('  '),
+        onTap: () => { sheet.close(); showFeatureWords(app, f); },
+      }));
+    }
+    body.append(ul);
+    body.append(para(pick(
+      '※ 言葉が近くにあるからといって、その関数がその機能そのものだとは限りません。' +
+      'あくまで「探し始める場所」として使ってください。',
+      'A nearby word does not prove what the function is for — treat this as a place to start looking.'), 'sub'));
+  };
+
+  if (app.featureIndex) { render(app.featureIndex); return; }
+
+  app.backend.onScanProgress = (p) => {
+    if (!p.all) return;
+    fill.style.width = Math.min(100, Math.round((p.done / p.all) * 100)) + '%';
+  };
+  collectStrings(app).then((strings) => {
+    app.backend.onScanProgress = null;
+    const index = {
+      features: groupByFeature(strings),
+      engine: detectEngine(strings),
+      count: strings.length,
+    };
+    app.featureIndex = index;
+    render(index);
+  }).catch((err) => {
+    app.backend.onScanProgress = null;
+    bar.remove();
+    status.textContent = '';
+    alertDialog(t('search.failed'), err.message || String(err));
+  });
+}
+
+/** 文字列を集める。__cstring などが第一候補で、なければ今のセクション。 */
+async function collectStrings(app) {
+  const regions = app.store.get('regions') || [];
+  const targets = regions.filter((r) => r.size > 0n &&
+    (r.cstrings || /string|cstring|objc_method|objc_class|const/i.test(r.section || '')));
+  const current = app.store.get('currentRegion');
+  const use = targets.length ? targets.slice(0, 6) : (current ? [current] : []);
+  const out = [];
+  for (const r of use) {
+    const res = await app.backend.strings({ regionId: r.id, min: 4 });
+    for (const s of res.results) out.push({ addr: s.addr, text: s.text, region: r });
+  }
+  return out;
+}
+
+/** ある機能に属する言葉の一覧。 */
+function showFeatureWords(app, feature) {
+  const sheet = new Sheet(feature.label);
+  sheet.body.append(el('div', 'hint', pick(
+    'この機能に関係のありそうな言葉です。上にあるものほど手がかりとして濃いものです。\n' +
+    '言葉を選ぶと、それを使っている場所を探します。',
+    'Words that look related to this feature, strongest first. Pick one to find the code that uses it.')));
+  const ul = list();
+  for (const item of feature.items.slice(0, 150)) {
+    ul.append(tapRow(trimText(item.text, 60), {
+      sub: addrHex(item.addr),
+      right: item.score >= 0.75 ? '●' : item.score >= 0.5 ? '◐' : '○',
+      onTap: () => { sheet.close(); showXrefs(app, item.addr); },
+    }));
+  }
+  sheet.body.append(ul);
+}
+
+function trimText(s, n) {
+  const text = String(s || '').replace(/\s+/g, ' ');
+  return text.length > n ? text.slice(0, n) + '…' : text;
+}
+
 /* ── 文字列の一覧 ────────────────────────────────────────── */
 
 export function showStrings(app) {
@@ -1072,7 +1191,9 @@ export function showXrefs(app, target) {
   });
 
   sheet.body.append(el('div', 'hint',
-    addrHex(target) + '\n' + t('xref.hint')));
+    addrHex(target) + '\n' + t('xref.hint') + '\n' + pick(
+      'ここに出てくる関数が、この言葉を扱っている＝その機能を担当している候補です。',
+      'The functions listed here are the ones that touch this — your candidates for the feature.')));
   const bar = el('div', 'progress');
   const fill = el('i');
   bar.append(fill);
@@ -1094,14 +1215,18 @@ export function showXrefs(app, target) {
     for (const r of res.results.slice(0, 400)) {
       const fn = sym.functionCount ? sym.functionAt(r.addr) : null;
       const owner = fn ? (sym.nameAt(fn.start) || addrHex(fn.start)) : null;
-      results.append(tapRow(addrHex(r.addr), {
-        sub: (owner ? pick('関数 ', 'in ') + owner + '  ·  ' : '') + xrefKind(r.kind),
+      results.append(tapRow(owner || addrHex(r.addr), {
+        sub: (owner ? addrHex(r.addr) + '  ·  ' : '') + xrefKind(r.kind) +
+          (fn ? pick('\nタップすると、この関数が何をしているかまで解析します',
+            '\nTap to jump here and analyse the surrounding function') : ''),
         onTap: () => {
           sheet.close();
           if (codeRegion !== region) app.selectRegion(codeRegion, { silent: true });
           app.viewer.goToRow(r.row, 'third');
           app.viewer.mark(r.row);
           app.viewer.select(r.row, false);
+          // その場所を含む関数まで解析して、処理の区切りを出す（機能 → 関数 → 処理）
+          app.analyzeFunctionAt(app.viewer.rowAddress(r.row));
         },
       }));
     }

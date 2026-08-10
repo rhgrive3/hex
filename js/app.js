@@ -12,6 +12,7 @@ import {
   showFileInfo, showSections, showJump, showSearch, showDetail, showSettings,
   instructionMenu, showFunctions, showStrings, showStructure, showHelp,
   showLearn, showGlossary, showWelcome, showSampleGuide, showFunctionSummary,
+  showFeatures,
 } from './panels.js';
 import { rangeCopyMenu, copyRange } from './rangecopy.js';
 import { t, setLang, detectLang, lang, isJa, pick } from './i18n.js';
@@ -34,6 +35,7 @@ class App {
     this.sampleOpen = false;
     // 直近に解析した関数の Semantic Model。ビューアはここから作った表を引くだけ。
     this.semantic = null;
+    this.featureIndex = null;   // 機能から探すための文字列の索引（ファイル単位）
 
     setLang(this.prefs.lang || detectLang());
 
@@ -50,6 +52,7 @@ class App {
       modeSwitch: $('mode-switch'),
       explain: $('btn-explain'),
       sections: $('btn-sections'),
+      features: $('btn-features'),
       functions: $('btn-functions'),
       strings: $('btn-strings'),
       struct: $('btn-struct'),
@@ -158,6 +161,7 @@ class App {
 
     this.dom.explain.addEventListener('click', () => this.setExplain(!this.prefs.explain));
     this.dom.sections.addEventListener('click', () => showSections(this));
+    this.dom.features.addEventListener('click', () => showFeatures(this));
     this.dom.functions.addEventListener('click', () => showFunctions(this));
     this.dom.strings.addEventListener('click', () => showStrings(this));
     this.dom.struct.addEventListener('click', () => showStructure(this));
@@ -275,6 +279,7 @@ class App {
     this.dom.sections.disabled = !has;
     this.dom.struct.disabled = !has;
     this.dom.strings.disabled = !has;
+    this.dom.features.disabled = !has;
     this.dom.functions.disabled = !region;
     this.dom.jump.disabled = !region;
     this.dom.search.disabled = !region;
@@ -434,6 +439,7 @@ class App {
    */
   forgetSemantics(dropCache) {
     this.semantic = null;
+    if (dropCache) this.featureIndex = null;
     if (dropCache) clearAnalysisCache();
     if (this.viewer) this.viewer.clearBlockOverlay();
   }
