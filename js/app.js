@@ -461,6 +461,7 @@ class App {
       this.featureIndex = null;
       this.stringIndex = null;
       this.autoReport = null;
+      this.pinnedCache = null;
       this.fields = EMPTY_FIELDS;
       this.objcModel = null;
       this.program = null;

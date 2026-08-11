@@ -8,20 +8,29 @@
  *   1. プログラム全体の索引（呼び出し・データ参照・命令統計）    ← 事実
  *   2. 文字列の収集と、機能への振り分け                          ← 事実 + 分類
  *   3. すべての目的（HP・攻撃力・課金・通信…）を総当たりで採点   ← 根拠つきの候補
- *   4. 目的に関係なく「注目すべき関数」を選ぶ                     ← 計数にもとづく
- *   5. 気づいたこと（通信先・反解析・暗号・広告）を拾う           ← 参照元つき
- *   6. 上位の候補だけ、実際に逆アセンブルして中身まで踏み込む     ← 変更候補まで
+ *   4. 目的ごとに値を 1 個まで絞り、逆アセンブルして裏を取る      ← 決着（pinpoint）
+ *   5. 目的に関係なく「注目すべき関数」を選ぶ                     ← 計数にもとづく
+ *   6. 気づいたこと（通信先・反解析・暗号・広告）を拾う           ← 参照元つき
+ *   7. 上位の候補だけ、実際に逆アセンブルして中身まで踏み込む     ← 変更候補まで
+ *
+ * 4 がこのツールの答えそのものになる。候補を並べて終わりにせず、
+ * 「HP は BattleManager.hp です」まで言い切る（言い切れないものは言い切らない）。
+ * 中身は pinpoint.js / evidence.js / verify.js。
  *
  * ここも日本語は作らない。返すのは構造と根拠だけ（文にするのは narrate/panels）。
  *
- * 重い処理の順番には意味がある。索引 → 採点（軽い）→ 深掘り（重い）の順で、
+ * 重い処理の順番には意味がある。索引 → 採点（軽い）→ 決着 → 深掘り（重い）の順で、
  * 途中経過を都度返すので、UI は分かったところから出せる。
+ * 逆アセンブルの回数には全体で予算を切ってあり、使い切ったら
+ * 「決着しなかった」と正直に返す（時間をかけて断定しにいくことはしない）。
  */
 import { GOALS, goalFromPreset } from './goals.js';
 import { rankCandidates } from './rank.js';
 import { groupByFeature, detectEngine } from './features.js';
 import { findValueUpdates, constantComparisons } from './dataflow.js';
 import { buildAppMap, buildStringMap } from './appmap.js';
+import { pinpointField, pinpointFunction, pinpointLocation } from './pinpoint.js';
+import { VERDICT, verdictRank } from './evidence.js';
 
 /* ── 気づいたこと（目的を指定しなくても言えること） ────────
    どれも「その文字列が実在する」という事実が起点で、
@@ -172,6 +181,8 @@ export async function autoAnalyze(opts) {
     engine: null,
     features: [],
     goals: [],
+    pinned: [],
+    confirmed: [],
     notable: [],
     findings: [],
     deep: [],
@@ -207,11 +218,13 @@ export async function autoAnalyze(opts) {
   /* 3. すべての目的を総当たりで採点する。
         1 目的あたりの計算は索引の二分探索なので、16 個回しても軽い。 */
   const all = GOALS.length;
+  const rankedByGoal = new Map();
   for (let i = 0; i < GOALS.length; i++) {
     if (cancelled()) { report.notes.push('cancelled'); return report; }
     progress({ phase: 'goals', done: i, all });
     const goal = goalFromPreset(GOALS[i].id);
     const ranked = rankCandidates({ goal, strings, program, symbols, region, limit: 5 });
+    rankedByGoal.set(goal.id, { goal, ranked });
     if (!ranked.candidates.length) continue;
     report.goals.push({
       goal,
@@ -225,6 +238,91 @@ export async function autoAnalyze(opts) {
   }
   // 最有力の目的から先に見せる
   report.goals.sort((a, b) => b.best.score - a.best.score);
+
+  /* ── 3.5 目的ごとに「これです」まで決めにいく ────────────
+   *
+   * ここが従来との分かれ目。候補を並べて終わりにせず、
+   * クラス表の値と、逆アセンブルによる裏取りを突き合わせて 1 個に絞る。
+   * 決着したものだけを confirmed に積む（付かなかったものは付かなかったと言う）。
+   *
+   * 逆アセンブルの回数は全体で予算を切る。16 個の目的が青天井に読みにいくと
+   * 「開いた瞬間に終わっている」という前提が壊れるため。
+   */
+  const startBudget = o.pinpointBudget != null ? o.pinpointBudget : 72;
+  const budget = { left: startBudget };
+  const memo = o.analyze ? memoize(o.analyze) : null;
+  const hasClasses = !!(fields && fields.classCount);
+  if (memo || hasClasses) {
+    for (let i = 0; i < GOALS.length; i++) {
+      if (cancelled()) { report.notes.push('pin-cancelled'); break; }
+      progress({ phase: 'pinpoint', done: i, all });
+      const entry = rankedByGoal.get(GOALS[i].id);
+      const goal = entry ? entry.goal : goalFromPreset(GOALS[i].id);
+      const common = {
+        goal, fields, program, symbols, strings, region,
+        map: report.map,
+        analyze: memo,
+        scanAccess: o.scanAccess || null,
+        budget,
+        isCancelled: cancelled,
+        limit: 8,
+      };
+      let pin = null;
+      if (hasClasses) {
+        try { pin = await pinpointField(common); } catch { pin = null; }
+      }
+      /*
+       * 名前から決められなかった目的は、形から場所を決めにいく。
+       * クラス表のないアプリでも「ここを書き換えれば変わる」までは出したい。
+       */
+      if ((!pin || !pin.top) && memo && entry && entry.ranked.candidates.length) {
+        try {
+          pin = await pinpointLocation(Object.assign({}, common, {
+            ranked: entry.ranked.candidates,
+          }));
+        } catch { /* 出せなくても、ほかの目的は続ける */ }
+      }
+      if (!pin || !pin.top || pin.verdict === VERDICT.NONE) continue;
+      /*
+       * 目的に結びつく手がかりが 1 つも無いものは載せない。
+       * 「バトルのクラスにある 4 バイトの整数」は、防御力を探している人にとっては
+       * 答えではなくノイズで、しかも並んでいると答えに見えてしまう。
+       */
+      if (!(pin.top.fusion.identifying > 0)) continue;
+      report.pinned.push(pin);
+      const g = report.goals.find((x) => x.goal.id === goal.id);
+      if (g) g.pinned = pin;
+      await tick();
+    }
+    /* 確定 → 有力 → 割れている の順。確率の高いものを先に。 */
+    report.pinned.sort((a, b) => (verdictRank(b.verdict) - verdictRank(a.verdict)) ||
+      (b.top.fusion.probability - a.top.fusion.probability));
+    report.confirmed = report.pinned.filter((p) => p.verdict === VERDICT.CONFIRMED);
+    report.stats.pinpointUsed = startBudget - budget.left;
+  }
+
+  /* 3.6 いちばん確度の高い目的については、処理そのものも決めにいく。 */
+  if (memo && report.pinned.length && budget.left > 0) {
+    const best = report.pinned[0];
+    const entry = rankedByGoal.get(best.goal.id);
+    // 名前まで決まった値のときだけ。名前のない場所では、処理の裏取りに使えない。
+    if (entry && entry.ranked.candidates.length && best.top.kind === 'field') {
+      progress({ phase: 'pinpoint-fn', done: 0, all: 1 });
+      try {
+        const fn = await pinpointFunction({
+          goal: best.goal, ranked: entry.ranked.candidates,
+          program, symbols, fields, analyze: memo, budget,
+          functionCount: symbols ? symbols.functionCount : 0,
+          field: {
+            offset: best.top.offset, className: best.top.className,
+            plain: best.top.plain, name: best.top.field.name,
+          },
+          isCancelled: cancelled,
+        });
+        if (fn && fn.top) best.function = fn;
+      } catch { /* 決められなくても、値の特定だけは残す */ }
+    }
+  }
 
   /* 4. 目的とは無関係の「注目すべき関数」 */
   progress({ phase: 'notable', done: 0, all: 1 });
@@ -255,7 +353,8 @@ export async function autoAnalyze(opts) {
       const range = program ? program.functionRange(t.addr) : null;
       let model = null;
       try {
-        model = await o.analyze(t.addr, range ? range.end : null);
+        // 特定のときに読んだ関数は取ってある。同じものを 2 度読まない。
+        model = await (memo || o.analyze)(t.addr, range ? range.end : null);
       } catch { model = null; }
       if (!model) continue;
       const updates = findValueUpdates(model).filter((u) => u.kind === 'read-modify-write');
@@ -298,6 +397,37 @@ export async function autoAnalyze(opts) {
 export function autoNextSteps(report) {
   const steps = [];
   if (!report) return steps;
+
+  /* 決着が付いた目的があるなら、それが最初の一手。ほかの案内より先に出す。 */
+  const confirmed = (report.confirmed || []).filter((p) => p.top && p.top.kind === 'field');
+  if (confirmed.length) {
+    const p = confirmed[0];
+    const write = (p.changeSites || []).find((s) => s.stores);
+    steps.push({
+      code: 'open-pinned',
+      detail: {
+        label: p.goal.text,
+        className: p.top.className,
+        field: p.top.plain,
+        addr: write ? write.first : null,
+      },
+    });
+  } else {
+    // 割れている目的は、決め手が何かを言えるものだけ案内する
+    const split = (report.pinned || []).find((x) => x.verdict === VERDICT.AMBIGUOUS &&
+      x.top && x.top.kind === 'field');
+    if (split) {
+      steps.push({
+        code: 'decide-ambiguous',
+        detail: {
+          label: split.goal.text,
+          a: split.top.plain,
+          b: split.runnerUp && split.runnerUp.kind === 'field' ? split.runnerUp.plain : null,
+        },
+      });
+    }
+  }
+
   const withUpdates = report.deep.filter((d) => d.updates.length);
   if (withUpdates.length) {
     steps.push({ code: 'open-update', detail: { addr: withUpdates[0].updates[0].store.address, name: withUpdates[0].name } });
@@ -322,4 +452,23 @@ export function autoNextSteps(report) {
 /** UI スレッドを譲る（自動解析中もスクロールを止めない）。 */
 function tick() {
   return new Promise((r) => setTimeout(r, 0));
+}
+
+/*
+ * 同じ関数を何度も逆アセンブルしない。
+ * 目的が 16 個あると、同じアクセサに何度も行き当たる（`count` は所持金でも
+ * アイテムでもレベルでも候補になる）。ここで 1 回に抑える。
+ */
+function memoize(analyze) {
+  const cache = new Map();
+  return (addr, end) => {
+    const key = addr == null ? 'null' : addr.toString();
+    if (cache.has(key)) return cache.get(key);
+    const p = Promise.resolve()
+      .then(() => analyze(addr, end))
+      .catch(() => null);
+    cache.set(key, p);
+    if (cache.size > 400) cache.delete(cache.keys().next().value);
+    return p;
+  };
 }

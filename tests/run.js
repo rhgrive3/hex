@@ -1493,6 +1493,9 @@ test('AUTO: 上位だけ中身まで読み、値の書き換えを自動で見�
   const report = await autoAnalyze({
     strings: w.strings, program: w.program, symbols: w.symbols, region: w.region,
     deepLimit: 2,
+    // 特定（pinpoint）にも逆アセンブルの予算があるので、ここでは切って
+    // 深掘りの上限だけを見る。特定側の上限は PINPOINT のテストで見ている。
+    pinpointBudget: 0,
     analyze: async (addr) => { asked.push(addr); return model; },
   });
   ok(asked.length > 0, '深掘りをしていない');
@@ -1543,7 +1546,7 @@ test('AUTO 異常: 手がかりが何もなくても落ちず、そう言える'
    [x0, #0x20] を self.hp と言えるかどうか。ここがこのツールの分かりやすさの要。
    ──────────────────────────────────────────────────────────── */
 
-const { buildObjcModel, decodeTypeEncoding } = await import('../js/objc.js');
+const { buildObjcModel, decodeTypeEncoding, parsePropertyAttributes } = await import('../js/objc.js');
 const { FieldIndex, plainFieldName } = await import('../js/fields.js');
 const { buildSampleBinary } = await import('../js/sample.js');
 
@@ -1577,6 +1580,32 @@ test('OBJC: クラス表から、値の名前・型・位置まで取り出せ�
   eq(c.ivars[0].type.bytes, 4);
   eq(c.ivars[1].name, '_attack');
   eq(c.ivars[1].offset, 0x24);
+});
+
+test('OBJC: プロパティの属性から、型と裏の ivar 名を取り出せる', () => {
+  const a = parsePropertyAttributes('Ti,N,V_hp');
+  eq(a.type, 'i');
+  eq(a.ivar, '_hp');
+  eq(a.readonly, false);
+
+  const b = parsePropertyAttributes('T@"NSString",R,C,V_name');
+  eq(b.type, '@"NSString"');
+  eq(b.ivar, '_name');
+  eq(b.readonly, true);
+
+  // 別名のアクセサ
+  const c = parsePropertyAttributes('TB,N,Gready,SsetReady:,V_ready');
+  eq(c.getter, 'ready');
+  eq(c.setter, 'setReady:');
+
+  // 構造体の型にはカンマが入る。区切りに巻き込まない。
+  const d = parsePropertyAttributes('T{CGRect={CGPoint=dd}{CGSize=dd}},N,V_frame');
+  eq(d.type, '{CGRect={CGPoint=dd}{CGSize=dd}}');
+  eq(d.ivar, '_frame');
+
+  // 読めないものは、読めたことにしない
+  eq(parsePropertyAttributes('').ivar, null);
+  eq(parsePropertyAttributes(null).type, null);
 });
 
 test('OBJC: 型の書き方を、意味の分かる形にほどける', () => {
@@ -1768,6 +1797,714 @@ test('ONELINER: 型と場所の言い換え', () => {
   eq(fieldName({ plain: 'hp', className: 'BattleManager' }), 'BattleManager の hp');
   eq(placeName(null, 'x0', 0x20n), 'x0 + 0x20', 'フィールドが分からないのに名前を作っている');
   eq(placeName({ plain: 'hp', className: 'C' }, 'x0', 0x20n), 'C の hp');
+});
+
+/* ────────────────────────────────────────────────────────────
+   証拠の合成（js/evidence.js）
+
+   点を足すのではなく、尤度比を掛ける。ここが正しくないと
+   「87%」がまた意味のない数字に戻ってしまうので、境目を細かく見る。
+   ──────────────────────────────────────────────────────────── */
+
+const {
+  evidence, fuse, decide, explain, starsOf, verdictRank, VERDICT, FAMILY,
+} = await import('../js/evidence.js');
+
+test('EVIDENCE: 候補が多いほど、同じ証拠でも確からしさは低くなる', () => {
+  const ev = [evidence('field-name-exact', 1, {})];
+  const few = fuse(ev, { candidates: 10 });
+  const many = fuse(ev, { candidates: 20000 });
+  ok(few.probability > many.probability,
+    '候補が 2 万個あっても、10 個のときと同じ確からしさになっている');
+  ok(many.probability < 0.05, '名前が当たっただけで確定に近づいている: ' + many.probability);
+  ok(few.prior < 0.2, '「どれでもない」を選択肢に入れていない');
+});
+
+test('EVIDENCE: 同じ系統の証拠をいくら並べても確定にはならない', () => {
+  const only名前 = fuse([
+    evidence('field-name-exact', 1, {}),
+    evidence('field-name-strong', 1, {}),
+    evidence('property-name', 1, {}),
+    evidence('accessor-name', 1, {}),
+  ], { candidates: 200 });
+  const withOthers = fuse([
+    evidence('field-name-exact', 1, {}),
+    evidence('getter-verified', 1, {}),
+    evidence('class-category', 1, {}),
+  ], { candidates: 200 });
+  ok(withOthers.logOdds > only名前.logOdds,
+    '名前ばかり 4 つの方が、種類の違う 3 つより強くなっている');
+  ok(only名前.families.length === 1, '名前だけなのに系統が複数あることになっている');
+});
+
+test('EVIDENCE: 打ち消す証拠は確からしさを下げる', () => {
+  const plain = fuse([evidence('field-name-exact', 1, {})], { candidates: 200 });
+  const conflict = fuse([
+    evidence('field-name-exact', 1, {}),
+    evidence('type-conflict', 1, {}),
+  ], { candidates: 200 });
+  ok(conflict.logOdds < plain.logOdds, '型が合わないのに点が下がっていない');
+});
+
+test('EVIDENCE: 確定を名乗るには、検証・独立性・差の 3 つがそろう必要がある', () => {
+  const strong = () => [
+    evidence('field-name-exact', 1, {}),
+    evidence('getter-verified', 1, {}),
+    evidence('setter-verified', 1, {}),
+    evidence('class-category', 1, {}),
+    evidence('type-numeric', 1, {}),
+  ];
+  const mk = (ev) => ({ fusion: fuse(ev, { candidates: 200 }) });
+
+  // そろっていれば確定
+  const good = decide([mk(strong()), mk([evidence('field-name-weak', 0.4, {})])]);
+  eq(good.verdict, VERDICT.CONFIRMED);
+
+  // 逆アセンブルでの裏取りがなければ、点がいくら高くても確定にしない
+  const noVerify = decide([
+    mk([evidence('field-name-exact', 1, {}), evidence('class-category', 1, {}),
+      evidence('type-numeric', 1, {}), evidence('sibling-fields', 1, {}),
+      evidence('selector-match', 1, {})]),
+    mk([evidence('field-name-weak', 0.3, {})]),
+  ]);
+  ok(noVerify.verdict !== VERDICT.CONFIRMED, '命令で確かめずに確定と言っている');
+  ok(noVerify.missing.includes('need-verification'));
+
+  // 2 位が拮抗していれば確定にしない
+  const tie = decide([mk(strong()), mk(strong())]);
+  ok(tie.verdict !== VERDICT.CONFIRMED, '同点なのに 1 位を確定と言っている');
+  ok(tie.missing.includes('need-separation'));
+});
+
+test('EVIDENCE: 名前が読めない相手を「確定」と呼ばせない', () => {
+  const mk = (ev) => ({ fusion: fuse(ev, { candidates: 60 }) });
+  const list = [
+    mk([evidence('loc-rmw', 1, {}), evidence('loc-in-goal-fn', 1, {}),
+      evidence('loc-shared', 1, {}), evidence('loc-size', 1, {}),
+      evidence('loc-not-stack', 1, {})]),
+    mk([evidence('loc-size', 0.4, {})]),
+  ];
+  const capped = decide(list, { maxVerdict: VERDICT.LIKELY });
+  ok(verdictRank(capped.verdict) <= verdictRank(VERDICT.LIKELY),
+    '名前が無いのに確定と言っている');
+  ok(capped.missing.includes('no-name'));
+});
+
+test('EVIDENCE: 内訳の掛け算が、出している確からしさと一致する', () => {
+  const f = fuse([
+    evidence('field-name-exact', 1, {}),
+    evidence('getter-verified', 1, {}),
+    evidence('class-category', 1, {}),
+  ], { candidates: 500 });
+  let logOdds = Math.log(f.prior / (1 - f.prior));
+  for (const item of f.items) logOdds += item.applied;
+  ok(Math.abs(logOdds - f.logOdds) < 1e-9,
+    '内訳を足しても、出している数字にならない');
+  const byExplain = explain(f).reduce((n, x) => n + x.applied, 0);
+  ok(Math.abs((logOdds - Math.log(f.prior / (1 - f.prior))) - byExplain) < 1e-9,
+    '画面に出す内訳と、実際の計算が食い違っている');
+  eq(starsOf(f.probability, VERDICT.CONFIRMED), 5);
+  eq(starsOf(0.05, null), 1);
+  void FAMILY;
+});
+
+/* ────────────────────────────────────────────────────────────
+   検証（js/verify.js）
+
+   「表にそう書いてある」を「命令が本当にそう動く」に上げる層。
+   ここが甘いと、確定の意味がなくなる。
+   ──────────────────────────────────────────────────────────── */
+
+const {
+  verifyAccessor, fieldUse, verifyGuard, verifyFunctionHandlesField, selfRegisters,
+} = await import('../js/verify.js');
+
+test('VERIFY: getter を逆アセンブルして、位置が合っているか確かめられる', () => {
+  const getter = build(['ldr w0, [x0, #0x20]', 'ret']);
+  const hit = verifyAccessor(getter, { offset: 0x20n, size: 4 });
+  eq(hit.getter, true);
+  eq(hit.setter, false);
+  eq(hit.exclusive, true, 'ほかの位置を触っていないことを見ていない');
+  eq(hit.size, 4);
+
+  // 位置が違えば、確かめられなかったと言う
+  const miss = verifyAccessor(getter, { offset: 0x28n, size: 4 });
+  eq(miss.getter, false, '位置が違うのに一致したことにしている');
+});
+
+test('VERIFY: setter が、引数の値を書いているところまで見る', () => {
+  const setter = build(['str w2, [x0, #0x20]', 'ret']);
+  const hit = verifyAccessor(setter, { offset: 0x20n, size: 4 });
+  eq(hit.setter, true);
+  eq(hit.fromArgument, true, '引数から来た値かどうかを見ていない');
+
+  // self の別の値を写しているだけの関数は、setter とは呼ばない
+  const copy = build(['ldr w8, [x0, #0x24]', 'str w8, [x0, #0x20]', 'ret']);
+  const c = verifyAccessor(copy, { offset: 0x20n, size: 4 });
+  eq(c.setter, true);
+  eq(!!c.fromArgument, false, '引数でない値を引数から来たことにしている');
+  eq(c.exclusive, false, 'ほかの位置も触っているのに専用扱いしている');
+});
+
+test('VERIFY: 長すぎる関数をアクセサとは呼ばない', () => {
+  const lines = ['ldr w0, [x0, #0x20]'];
+  for (let i = 0; i < 60; i++) lines.push('add w1, w1, #1');
+  lines.push('ret');
+  const hit = verifyAccessor(build(lines), { offset: 0x20n, size: 4 });
+  eq(hit.getter, false, '60 命令の関数をアクセサと言っている');
+});
+
+test('VERIFY: self を持ち回っているレジスタだけを self として数える', () => {
+  const m = build([
+    'mov x19, x0',
+    'ldr w8, [x19, #0x20]',
+    'ldr w9, [x21, #0x20]',
+    'ret',
+  ]);
+  const { set } = selfRegisters(m);
+  ok(set.has('x19'), 'mov x19, x0 で写した self を追えていない');
+  ok(!set.has('x21'), '関係のないレジスタを self とみなしている');
+
+  const use = fieldUse(m, 0x20n);
+  eq(use.loads, 1, 'よそのオブジェクトの同じ位置まで数えている');
+});
+
+test('VERIFY: 読んで計算して書き戻す形と、しきい値の判定を拾える', () => {
+  const m = build([
+    'mov x19, x0',
+    'ldr w8, [x19, #0x20]',
+    'sub w8, w8, w2',
+    'str w8, [x19, #0x20]',
+    'cmp w8, #0',
+    'b.gt #0x100000030',
+    'ret',
+  ]);
+  const use = fieldUse(m, 0x20n);
+  eq(use.loads, 1);
+  eq(use.stores, 1);
+  eq(use.rmw.length, 1, '読んで計算して書き戻す形を見つけられていない');
+  eq(use.compares.length, 1, 'しきい値の判定を拾えていない');
+  eq(use.compares[0].value, 0n);
+
+  const g = verifyGuard(m, 0x20n);
+  eq(g.guards.length, 1);
+
+  const handled = verifyFunctionHandlesField(m, 0x20n);
+  eq(handled.touches, true);
+  eq(handled.writes, true);
+  eq(handled.rmw, true);
+  eq(handled.guard, true);
+
+  // 触っていない位置については、触っていないと言う
+  eq(verifyFunctionHandlesField(m, 0x40n).touches, false);
+});
+
+test('VERIFY 異常: 空・壊れた命令列でも落ちない', () => {
+  const empty = build([]);
+  eq(verifyAccessor(empty, { offset: 0x20n }).getter, false);
+  eq(verifyAccessor(null, { offset: 0x20n }).getter, false);
+  eq(verifyAccessor(empty, null).getter, false);
+  eq(fieldUse(empty, 0x20n).sites.length, 0);
+  eq(fieldUse(null, 0x20n).sites.length, 0);
+  const junk = build(['.byte 0x00, 0x01', 'zzz x0, x1', 'ldr w0, [']);
+  ok(verifyAccessor(junk, { offset: 0x20n }) !== null);
+});
+
+/* ────────────────────────────────────────────────────────────
+   特定（js/pinpoint.js）
+
+   このツールの新しい中心。「選ぶだけで 1 個に決まる」が本当に成り立つか、
+   そして **決まらないときに決まったと言わないか** を見る。
+   ──────────────────────────────────────────────────────────── */
+
+const { pinpointField, pinpointLocation, pinpointFunction } = await import('../js/pinpoint.js');
+const { matchField, normalizeFieldName, fieldRole, typeFits, accessorKind } =
+  await import('../js/goals.js');
+const { EVIDENCE } = await import('../js/evidence.js');
+const {
+  verdictText, verdictLead, missingText, proofText, factorText, probabilityText,
+} = await import('../js/narrate.js');
+
+const INT4 = { kind: 'int', bytes: 4, signed: true, enc: 'i' };
+const OBJ = { kind: 'object', bytes: 8, enc: '@"NSString"', className: 'NSString' };
+
+/* proofText はどのコードでも文にできなければならない。
+   足りない材料があっても落ちないことまで、まとめて見る。 */
+const PROOF_DETAIL = {
+  name: '_hp', term: 'hp', className: 'BattleManager', sel: 'setHp:',
+  offset: 0x20, size: 4, n: 2, value: 0n, type: INT4, addr: BASE, address: BASE,
+  getter: 'hp', setter: 'setHp:', exclusive: true, base: 'x19', op: 'sub',
+};
+
+/** 名前・値・メソッドを持つクラス表を、手で組み立てる。 */
+function classTable(defs) {
+  return new FieldIndex({
+    classes: defs.map((d, i) => ({
+      name: d.name, addr: BigInt(i + 1), superName: d.superName || null,
+      instanceSize: d.size || 0x40,
+      ivars: d.ivars || [],
+      properties: d.properties || [],
+      methods: d.methods || [],
+      classMethods: [],
+    })),
+  });
+}
+
+/** 逆アセンブル役。アドレスごとに命令列を返す。 */
+function reader(bodies) {
+  const calls = [];
+  const fn = async (addr) => {
+    calls.push(addr);
+    const lines = bodies[addr.toString()];
+    return lines ? build(lines, addr) : null;
+  };
+  fn.calls = calls;
+  return fn;
+}
+
+const GETTER = 0x100001000n, SETTER = 0x100001100n, APPLY = 0x100001200n, OTHER = 0x100002000n;
+
+function battleWorld() {
+  const fields = classTable([
+    {
+      name: 'BattleManager',
+      ivars: [
+        { name: '_hp', offset: 0x20, size: 4, type: INT4 },
+        { name: '_maxHp', offset: 0x24, size: 4, type: INT4 },
+        { name: '_attack', offset: 0x28, size: 4, type: INT4 },
+        { name: '_title', offset: 0x8, size: 8, type: OBJ },
+      ],
+      methods: [
+        { addr: GETTER, sel: 'hp', kind: '-' },
+        { addr: SETTER, sel: 'setHp:', kind: '-' },
+        { addr: APPLY, sel: 'applyDamage:', kind: '-' },
+      ],
+    },
+    {
+      name: 'HealthBarView',
+      ivars: [{ name: '_health', offset: 0x20, size: 4, type: INT4 }],
+      methods: [{ addr: OTHER, sel: 'layout', kind: '-' }],
+    },
+  ]);
+  const bodies = {
+    [GETTER]: ['ldr w0, [x0, #0x20]', 'ret'],
+    [SETTER]: ['str w2, [x0, #0x20]', 'ret'],
+    [APPLY]: [
+      'mov x19, x0',
+      'ldr w8, [x19, #0x20]',
+      'sub w8, w8, w2',
+      'str w8, [x19, #0x20]',
+      'cmp w8, #0',
+      'ret',
+    ],
+    [OTHER]: ['ldr w0, [x0, #0x18]', 'ret'],
+  };
+  const map = {
+    classes: [
+      { name: 'BattleManager', category: 'battle' },
+      { name: 'HealthBarView', category: 'ui' },
+    ],
+  };
+  return { fields, bodies, map };
+}
+
+test('PINPOINT: HP を選ぶだけで BattleManager.hp が 1 個に決まる', async () => {
+  const w = battleWorld();
+  const analyze = reader(w.bodies);
+  const res = await pinpointField({
+    goal: goalFromPreset('hp'), fields: w.fields, map: w.map, analyze,
+  });
+
+  eq(res.verdict, VERDICT.CONFIRMED, '確定できていない: ' + res.missing.join(', '));
+  eq(res.top.className, 'BattleManager');
+  eq(res.top.plain, 'hp');
+  eq(res.top.offset, 0x20);
+  ok(res.marginRatio > 20, '2 位との差が小さいのに確定と言っている');
+  ok(res.top.fusion.probability > 0.99);
+
+  // 決め手が、名前ではなく逆アセンブルの結果であること
+  const codes = res.top.why.map((x) => x.code);
+  ok(codes.includes('getter-verified'), 'getter を確かめた証拠が残っていない');
+  ok(codes.includes('setter-verified'), 'setter を確かめた証拠が残っていない');
+  ok(res.top.why.every((x) => proofText(x).length > 0), '文にできない証拠がある');
+});
+
+test('PINPOINT: 上限（maxHp）を、今の値（hp）より上に出さない', async () => {
+  const w = battleWorld();
+  const res = await pinpointField({
+    goal: goalFromPreset('hp'), fields: w.fields, map: w.map, analyze: reader(w.bodies),
+  });
+  const hp = res.candidates.findIndex((c) => c.plain === 'hp');
+  const max = res.candidates.findIndex((c) => c.plain === 'maxHp');
+  ok(hp >= 0 && max >= 0, '候補が足りない');
+  ok(hp < max, '上限の方を上に出している（増やしたい値は上限ではない）');
+  eq(res.candidates[hp].role, 'plain');
+  eq(res.candidates[max].role, 'max');
+});
+
+test('PINPOINT: 目的に結びつかない値を「確定」と言わない（防御力を探して HP を出さない）', async () => {
+  /*
+   * BattleManager には防御力の値が無い。ところが _hp は
+   *   ・バトルを担当するクラスにある
+   *   ・4 バイトの整数である
+   *   ・読んで計算して書き戻されているのを命令で確かめられる
+   * を全部満たしてしまう。これを「防御力の確定」と言ってしまうのが、
+   * このツールでいちばんやってはいけない間違い。
+   */
+  const w = battleWorld();
+  const res = await pinpointField({
+    goal: goalFromPreset('defense'), fields: w.fields, map: w.map, analyze: reader(w.bodies),
+  });
+  ok(res.verdict !== VERDICT.CONFIRMED,
+    '防御力を探して、名前の裏づけがない値を確定と言っている');
+  if (res.top) {
+    ok(!(res.top.fusion.identifying > 0) || res.top.plain !== 'hp',
+      'HP を防御力に結びつける手がかりがあることになっている');
+    ok(res.missing.includes('need-name-evidence'),
+      '目的に結びつく手がかりが無いことを言えていない');
+  }
+
+  // 名前が当たる目的では、これまでどおり確定できること（締めすぎていないか）
+  const hp = await pinpointField({
+    goal: goalFromPreset('hp'), fields: w.fields, map: w.map, analyze: reader(w.bodies),
+  });
+  eq(hp.verdict, VERDICT.CONFIRMED, '締めすぎて、当たる目的まで確定できなくなっている');
+});
+
+test('PINPOINT: 裏づけだけの証拠は、目的への結びつきが無いと効かない', () => {
+  const corroborationOnly = fuse([
+    evidence('class-category', 1, {}),
+    evidence('type-numeric', 1, {}),
+    evidence('size-fits', 1, {}),
+    evidence('getter-verified', 1, {}),
+    evidence('rmw-verified', 1, {}),
+    evidence('written-in-class', 1, {}),
+  ], { candidates: 2000 });
+  const withName = fuse([
+    evidence('field-name-exact', 1, {}),
+    evidence('class-category', 1, {}),
+    evidence('type-numeric', 1, {}),
+    evidence('size-fits', 1, {}),
+    evidence('getter-verified', 1, {}),
+    evidence('rmw-verified', 1, {}),
+    evidence('written-in-class', 1, {}),
+  ], { candidates: 2000 });
+
+  eq(corroborationOnly.identifying, 0, '結びつける証拠が無いのに 0 になっていない');
+  ok(corroborationOnly.corroborationScale < 0.3, '結びつきが無いのに裏づけを満額で効かせている');
+  ok(corroborationOnly.probability < 0.5,
+    '名前の裏づけが無いのに確からしいことになっている: ' + corroborationOnly.probability);
+  ok(withName.corroborationScale > 0.99, '名前が当たっているのに裏づけを割り引いている');
+  // 名前 1 つの差が、裏づけ全部より大きく効く
+  ok(withName.logOdds - corroborationOnly.logOdds > Math.log(50));
+});
+
+test('PINPOINT: 型が合わない値は候補から外す', async () => {
+  const w = battleWorld();
+  const res = await pinpointField({
+    goal: goalFromPreset('money'), fields: w.fields, map: w.map, analyze: reader(w.bodies),
+  });
+  ok(!res.candidates.some((c) => c.plain === 'title'),
+    '文字列のオブジェクトを、所持金の候補にしている');
+});
+
+test('PINPOINT: アクセサが位置と食い違うときは確定させない', async () => {
+  const w = battleWorld();
+  // getter が別の位置を読んでいる＝表と実装が食い違っている
+  const bodies = Object.assign({}, w.bodies, {
+    [GETTER]: ['ldr w0, [x0, #0x30]', 'ret'],
+    [SETTER]: ['str w2, [x0, #0x30]', 'ret'],
+    [APPLY]: ['ldr w0, [x0, #0x30]', 'ret'],
+  });
+  const res = await pinpointField({
+    goal: goalFromPreset('hp'), fields: w.fields, map: w.map, analyze: reader(bodies),
+  });
+  ok(res.verdict !== VERDICT.CONFIRMED,
+    '命令が表と食い違っているのに確定と言っている');
+  ok(res.missing.includes('need-verification') || res.missing.includes('need-separation'));
+});
+
+test('PINPOINT: 逆アセンブルできないときは、確定ではなく「足りない」と言う', async () => {
+  const w = battleWorld();
+  const res = await pinpointField({
+    goal: goalFromPreset('hp'), fields: w.fields, map: w.map,   // analyze なし
+  });
+  ok(res.top, '名前だけでも候補は出るはず');
+  eq(res.top.plain, 'hp');
+  ok(res.verdict !== VERDICT.CONFIRMED, '命令を 1 つも読まずに確定と言っている');
+  ok(res.missing.includes('need-verification'));
+  ok(res.missing.every((m) => missingText(m).length > 0), '文にできない不足がある');
+});
+
+test('PINPOINT: 逆アセンブルの回数は予算で頭打ちになる', async () => {
+  const w = battleWorld();
+  const analyze = reader(w.bodies);
+  await pinpointField({
+    goal: goalFromPreset('hp'), fields: w.fields, map: w.map, analyze,
+    budget: { left: 2 },
+  });
+  ok(analyze.calls.length <= 2, '予算を超えて逆アセンブルしている: ' + analyze.calls.length);
+});
+
+test('PINPOINT: 途中でやめられる', async () => {
+  const w = battleWorld();
+  const analyze = reader(w.bodies);
+  const res = await pinpointField({
+    goal: goalFromPreset('hp'), fields: w.fields, map: w.map, analyze,
+    isCancelled: () => true,
+  });
+  eq(analyze.calls.length, 0, 'やめると言われたのに読み始めている');
+  ok(res.top, '中断しても、名前から分かることは返すべき');
+});
+
+test('PINPOINT: 当てはまる値がなければ、無いと言う', async () => {
+  const w = battleWorld();
+  const res = await pinpointField({
+    goal: goalFromPreset('ads'), fields: w.fields, map: w.map, analyze: reader(w.bodies),
+  });
+  eq(res.verdict, VERDICT.NONE);
+  eq(res.top, null, '当てはまらないのに 1 位をでっち上げている');
+
+  // クラス表そのものが無いとき
+  const none = await pinpointField({ goal: goalFromPreset('hp'), fields: new FieldIndex(null) });
+  eq(none.verdict, VERDICT.NONE);
+  ok(none.missing.includes('no-class-table'));
+});
+
+test('PINPOINT: 書き換えている場所まで出す', async () => {
+  const w = battleWorld();
+  const sites = [
+    { addr: 0x10000120cn, kind: 'load', base: 'x19', size: 4 },
+    { addr: 0x100001214n, kind: 'store', base: 'x19', size: 4 },
+  ];
+  const res = await pinpointField({
+    goal: goalFromPreset('hp'), fields: w.fields, map: w.map, analyze: reader(w.bodies),
+    program: {
+      functionStartOf: () => APPLY,
+      functionRange: (a) => ({ start: a, end: a + 0x40n }),
+    },
+    scanAccess: async (list) => {
+      eq(list.length, 1, '決まった 1 個だけを走査するべき');
+      eq(list[0].offset, 0x20);
+      return new Map([['32', sites]]);
+    },
+  });
+  eq(res.changeSites.length, 1, '関数ごとにまとめられていない');
+  eq(res.changeSites[0].stores, 1);
+  eq(res.changeSites[0].loads, 1);
+  eq(res.changeSites[0].sameClass, true, '同じクラスの中であることを見ていない');
+});
+
+test('PINPOINT: プロパティ表から、潰された ivar 名を補える', async () => {
+  const fields = classTable([{
+    name: 'Wallet',
+    ivars: [{ name: '_a1', offset: 0x10, size: 8, type: { kind: 'int', bytes: 8, enc: 'q' } }],
+    properties: [{
+      name: 'coin', ivar: '_a1', getter: 'coin', setter: 'setCoin:',
+      type: { kind: 'int', bytes: 8, enc: 'q' },
+    }],
+    methods: [
+      { addr: GETTER, sel: 'coin', kind: '-' },
+      { addr: SETTER, sel: 'setCoin:', kind: '-' },
+    ],
+  }]);
+  const res = await pinpointField({
+    goal: goalFromPreset('money'), fields,
+    analyze: reader({
+      [GETTER]: ['ldr x0, [x0, #0x10]', 'ret'],
+      [SETTER]: ['str x2, [x0, #0x10]', 'ret'],
+    }),
+  });
+  ok(res.top, 'ivar 名が潰されていると何も出せていない');
+  eq(res.top.offset, 0x10);
+  const codes = res.top.why.map((x) => x.code);
+  ok(codes.includes('property-name'), 'プロパティ名を根拠に使えていない');
+  ok(codes.includes('getter-verified'), '別名のアクセサを追えていない');
+});
+
+test('PINPOINT: クラス表がなくても、形から場所を特定できる', async () => {
+  const addr = 0x100003000n;
+  const analyze = reader({
+    [addr]: [
+      'mov x19, x0',
+      'ldr w8, [x19, #0x30]',
+      'sub w8, w8, w1',
+      'str w8, [x19, #0x30]',
+      'cmp w8, #0',
+      'ret',
+    ],
+  });
+  const res = await pinpointLocation({
+    goal: goalFromPreset('hp'),
+    ranked: [{ addr, name: null, strings: [{ text: 'ダメージ %d', addr: 1n }] }],
+    program: { functionRange: (a) => ({ start: a, end: a + 0x40n }) },
+    analyze,
+  });
+  ok(res.top, '形から場所を決められていない');
+  eq(res.top.kind, 'location');
+  eq(res.top.offset, 0x30n);
+  // 名前が読めない以上「確定」とは呼ばない
+  ok(verdictRank(res.verdict) <= verdictRank(VERDICT.LIKELY),
+    '名前が無いのに確定と言っている');
+  ok(res.missing.includes('no-name'));
+  const codes = res.top.why.map((x) => x.code);
+  ok(codes.includes('loc-rmw'), '読んで計算して書き戻す形を根拠にできていない');
+  ok(res.top.why.every((x) => proofText(x).length > 0), '文にできない証拠がある');
+});
+
+test('PINPOINT: スタックの一時置き場を「アプリが持っている値」と言わない', async () => {
+  const addr = 0x100003100n;
+  const res = await pinpointLocation({
+    goal: goalFromPreset('hp'),
+    ranked: [{ addr, name: null, strings: [] }],
+    analyze: reader({
+      [addr]: [
+        'ldr w8, [sp, #0x8]',
+        'add w8, w8, #1',
+        'str w8, [sp, #0x8]',
+        'ret',
+      ],
+    }),
+  });
+  eq(res.top, null, 'スタックの一時変数を値として出している');
+  ok(res.missing.includes('no-value-change'));
+});
+
+test('PINPOINT: 特定した値を書き換えている処理を、命令で確かめて選ぶ', async () => {
+  const hit = 0x100004000n, miss = 0x100004100n;
+  const analyze = reader({
+    [hit]: ['mov x19, x0', 'ldr w8, [x19, #0x20]', 'sub w8, w8, w2', 'str w8, [x19, #0x20]', 'ret'],
+    [miss]: ['ldr w0, [x0, #0x80]', 'ret'],
+  });
+  const res = await pinpointFunction({
+    goal: goalFromPreset('hp'),
+    // わざと「触っていない方」を先頭にしておく
+    ranked: [
+      { addr: miss, name: 'sub_miss', reasons: [{ code: 'name-match', points: 25, detail: {} }], strings: [] },
+      { addr: hit, name: 'sub_hit', reasons: [{ code: 'numeric', points: 12, detail: {} }], strings: [] },
+    ],
+    field: { offset: 0x20, className: 'BattleManager', plain: 'hp', name: '_hp' },
+    program: { functionRange: (a) => ({ start: a, end: a + 0x40n }) },
+    functionCount: 5000,
+    analyze,
+  });
+  ok(res.top, '処理を決められていない');
+  eq(res.top.addr, hit, '名前だけの候補が、値を実際に書き換えている処理より上に来ている');
+  ok(res.top.why.some((x) => x.code === 'fn-writes-field'),
+    '値を書き換えていることを根拠にできていない');
+});
+
+test('PINPOINT 語彙: 変数名を正規化してから当てる', () => {
+  eq(normalizeFieldName('_currentHP'), 'current hp');
+  eq(normalizeFieldName('m_hitPoint'), 'hit point');
+  eq(normalizeFieldName('maxHP'), 'max hp');
+  eq(normalizeFieldName('__attack_power'), 'attack power');
+
+  // `\bhp\b` が `_hp` に当たらない問題が直っていること
+  const hp = goalFromPreset('hp');
+  ok(matchField(hp, '_hp'), '_hp に当たっていない（ここが当たらないと何も始まらない）');
+  eq(matchField(hp, '_hp').exact, true);
+  ok(matchField(hp, '_currentHP'), '_currentHP に当たっていない');
+  eq(matchField(hp, '_maxHp').score < matchField(hp, '_hp').score, true,
+    '上限と今の値を同じ強さで当てている');
+  eq(matchField(hp, '_coinCount'), null, '関係のない名前に当てている');
+
+  eq(fieldRole('_maxHp'), 'max');
+  eq(fieldRole('_baseAttack'), 'base');
+  eq(fieldRole('_hp'), 'plain');
+
+  eq(typeFits(hp, INT4), 'fit');
+  eq(typeFits(hp, OBJ), 'conflict');
+  eq(typeFits(hp, { kind: 'int', bytes: 1, bool: true }), 'conflict', 'BOOL を HP 扱いしている');
+  eq(typeFits(goalFromPreset('purchase'), INT4), 'unknown');
+
+  eq(accessorKind('hp', '_hp'), 'getter');
+  eq(accessorKind('setHp:', '_hp'), 'setter');
+  eq(accessorKind('somethingElse', '_hp'), null);
+});
+
+test('PINPOINT: 自動解析に組み込まれ、決着したものが先に出る', async () => {
+  const w = battleWorld();
+  const symbols = new SymbolIndex({ funcs: BigUint64Array.from([GETTER, SETTER, APPLY, OTHER]) });
+  const report = await autoAnalyze({
+    strings: [], symbols, fields: w.fields,
+    program: new ProgramIndex(fakeScan({}), symbols, { vmAddr: GETTER, size: 0x4000n }),
+    region: { vmAddr: GETTER, size: 0x4000n },
+    deepLimit: 0,
+    analyze: reader(w.bodies),
+  });
+  ok(report.pinned.length >= 1, '特定の結果が report に入っていない');
+  const hp = report.pinned.find((p) => p.goal.id === 'hp');
+  ok(hp, 'HP を特定できていない');
+  eq(hp.top.plain, 'hp');
+  ok(report.confirmed.some((p) => p.goal.id === 'hp'), '確定したものが confirmed にない');
+  // 決着したものが、確率の低いものより先に来る
+  eq(report.pinned[0].verdict, VERDICT.CONFIRMED);
+
+  const steps = autoNextSteps(report);
+  eq(steps[0].code, 'open-pinned', '確定したのに、それを最初の案内にしていない');
+  ok(steps.every((s) => autoStepText(s).length > 0), '文にできない案内がある');
+});
+
+test('PINPOINT: 本物のクラス表（練習用サンプル）から、アクセサ無しでも確定できる', async () => {
+  const model = await buildObjcModel(sampleReader(), SAMPLE_CLASSLIST);
+  const fields = new FieldIndex(model);
+  eq(fields.classCount, 1);
+  const apply = model.classes[0].methods.find((m) => m.sel === 'applyDamage:');
+  ok(apply, 'サンプルの applyDamage: が読めていない');
+
+  /*
+   * サンプルの apply_damage は、ゲームの数値変更でいちばんよくある形をしている。
+   * アクセサ（getter / setter）は無いので、決め手はこの本体を読むことだけになる。
+   */
+  const body = [
+    'stp x29, x30, [sp, #-0x20]!',
+    'mov x29, sp',
+    'str x0, [sp, #0x10]',
+    'ldr w8, [x0, #0x20]',
+    'ldr w9, [x0, #0x24]',
+    'mul w9, w1, w9',
+    'sub w8, w8, w9',
+    'str w8, [x0, #0x20]',
+    'cmp w8, #0',
+    'ret',
+  ];
+  const res = await pinpointField({
+    goal: goalFromPreset('hp'),
+    fields,
+    map: { classes: [{ name: 'BattleManager', category: 'battle' }] },
+    analyze: async (addr) => (addr === apply.addr ? build(body, addr) : null),
+  });
+
+  eq(res.verdict, VERDICT.CONFIRMED, '確定できていない: ' + res.missing.join(', '));
+  eq(res.top.className, 'BattleManager');
+  eq(res.top.plain, 'hp');
+  eq(res.top.offset, 0x20);
+  const codes = res.top.why.map((x) => x.code);
+  ok(codes.includes('access-verified'), 'クラス自身のメソッドで確かめた証拠がない');
+  ok(codes.includes('rmw-verified'), '読んで計算して書き戻す形を確かめられていない');
+  ok(codes.includes('guard-verified'), 'しきい値の判定を拾えていない');
+  // 攻撃力の方は、HP としては上に来ない
+  ok(res.top.plain !== 'attack');
+});
+
+test('NARRATE: 特定まわりの言葉に、言い漏らしがない', () => {
+  for (const v of ['confirmed', 'likely', 'ambiguous', 'none']) {
+    ok(verdictText(v).length > 0, v + ' の言葉がない');
+    ok(verdictLead(v).length > 0, v + ' の説明がない');
+  }
+  for (const m of ['need-verification', 'need-independent-evidence', 'need-more-evidence',
+    'need-separation', 'no-class-table', 'no-match', 'no-name', 'no-value-change', 'no-candidate']) {
+    ok(missingText(m).length > 0, m + ' の説明がない');
+  }
+  // 証拠のコードは、すべて日本語にできること（コードが画面に漏れない）
+  for (const code of Object.keys(EVIDENCE)) {
+    ok(proofText({ code, detail: PROOF_DETAIL, count: 1, factor: 2 }).length > 0,
+      code + ' を文にできない');
+  }
+  eq(factorText(12).startsWith('×'), true);
+  eq(factorText(0.5).startsWith('÷'), true);
+  ok(probabilityText(0.9995).length > 0);
 });
 
 /* ── まとめ ──────────────────────────────────────────────── */

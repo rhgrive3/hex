@@ -40,11 +40,32 @@ export class FieldIndex {
         byOffset.set(iv.offset, iv);
         this.fieldCount++;
       }
+      /*
+       * 宣言されたプロパティを ivar に結びつける。
+       * 属性の V に裏の ivar 名が入っているので、`hp` ⇄ `_hp` の対応がそのまま取れる。
+       * これで「表に書いてある名前」が 2 通りになり、片方が潰されていても拾える。
+       */
+      const propByIvar = new Map();
+      for (const p of c.properties || []) {
+        const key = p.ivar || ('_' + p.name);
+        if (!propByIvar.has(key)) propByIvar.set(key, p);
+      }
+      for (const iv of c.ivars || []) {
+        const p = propByIvar.get(iv.name);
+        if (p) {
+          iv.property = p;
+          // 宣言された型の方が具体的なら、そちらも持っておく（上書きはしない）
+          if (p.type && (!iv.type || iv.type.kind === 'unknown')) iv.declaredType = p.type;
+        }
+      }
+
       const entry = {
         name: c.name,
         superName: c.superName || null,
         instanceSize: c.instanceSize || 0,
         ivars: c.ivars || [],
+        properties: c.properties || [],
+        propertyByIvar: propByIvar,
         byOffset,
         methods: c.methods || [],
         classMethods: c.classMethods || [],
