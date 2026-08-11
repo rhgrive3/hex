@@ -255,6 +255,124 @@ function buildStub(stubAddr, gotAddr) {
 }
 
 /* ────────────────────────────────────────────────────────────
+   Objective-C のクラス表
+   ────────────────────────────────────────────────────────────
+
+   本物の iOS アプリには、関数名が削られていても
+
+     - クラス名とメソッド名（実装アドレスつき）
+     - メンバ変数の名前・型・位置
+
+   の表が必ず残っている。ここを読めるかどうかで、解析の分かりやすさが決定的に変わる
+   （[x0, #0x20] が「BattleManager の hp」になる）。練習用のサンプルにも、
+   本物と同じ形で 1 クラスぶん置いておく。
+
+   置くのは、実際のコードと辻褄の合う形にする:
+     _apply_damage は [x0,#0x20] と [x0,#0x24] を触る
+       → BattleManager の _hp (+0x20) と _attack (+0x24)
+   ──────────────────────────────────────────────────────────── */
+
+const OBJC_CLASS_NAME = 'BattleManager';
+
+/**
+ * __objc_classlist と、そこからたどれる構造体一式を組み立てる。
+ *
+ * @param {BigInt} base  この塊を置く先頭アドレス
+ * @param {object} imps  {applyDamage, criticalMultiplier} 実装アドレス
+ * @returns {{bytes:Uint8Array, classListAddr:BigInt, classListSize:number}}
+ */
+function buildObjcData(base, imps) {
+  const size = 0x400;
+  const buf = new Uint8Array(size);
+  const dv = new DataView(buf.buffer);
+  const at = (addr) => Number(addr - base);
+  const ptr = (addr, value) => dv.setBigUint64(at(addr), BigInt(value), true);
+  const u32at = (addr, value) => dv.setUint32(at(addr), value >>> 0, true);
+  const strings = [];
+  let strCursor = 0x300;
+  const str = (text) => {
+    const addr = base + BigInt(strCursor);
+    for (let i = 0; i < text.length; i++) buf[strCursor + i] = text.charCodeAt(i) & 0x7f;
+    buf[strCursor + text.length] = 0;
+    strCursor += text.length + 1;
+    strings.push(text);
+    return addr;
+  };
+
+  const A = {
+    classList: base + 0x00n,
+    cls: base + 0x40n,
+    meta: base + 0x80n,
+    ro: base + 0xc0n,
+    metaRo: base + 0x120n,
+    methods: base + 0x180n,
+    ivars: base + 0x200n,
+    ivarOff0: base + 0x280n,
+    ivarOff1: base + 0x288n,
+  };
+
+  const nameAddr = str(OBJC_CLASS_NAME);
+  const selApply = str('applyDamage:');
+  const selCrit = str('criticalMultiplier');
+  const typesV = str('i24@0:8i16');          // 型の並び（読めなくても解析は続く）
+  const ivarHp = str('_hp');
+  const ivarAtk = str('_attack');
+  const typeInt = str('i');                  // 4 バイトの整数
+
+  // __objc_classlist: クラスへのポインタが 1 本
+  ptr(A.classList, A.cls);
+
+  // class_t: isa(0) super(8) cache(16) vtable(24) data(32)
+  ptr(A.cls + 0n, A.meta);
+  ptr(A.cls + 8n, 0);
+  ptr(A.cls + 32n, A.ro);
+  ptr(A.meta + 0n, 0);
+  ptr(A.meta + 32n, A.metaRo);
+
+  // class_ro_t: flags(0) instanceStart(4) instanceSize(8) reserved(12)
+  //             ivarLayout(16) name(24) baseMethods(32) baseProtocols(40) ivars(48)
+  u32at(A.ro + 4n, 8);
+  u32at(A.ro + 8n, 0x28);                    // 1 個あたり 40 バイト
+  ptr(A.ro + 24n, nameAddr);
+  ptr(A.ro + 32n, A.methods);
+  ptr(A.ro + 48n, A.ivars);
+  u32at(A.metaRo + 4n, 40);
+  u32at(A.metaRo + 8n, 40);
+  ptr(A.metaRo + 24n, nameAddr);
+
+  // method_list_t: entsize(0) count(4) — 1 件 24 バイトの従来形式
+  u32at(A.methods, 24);
+  u32at(A.methods + 4n, 2);
+  ptr(A.methods + 8n, selApply);
+  ptr(A.methods + 16n, typesV);
+  ptr(A.methods + 24n, imps.applyDamage);
+  ptr(A.methods + 32n, selCrit);
+  ptr(A.methods + 40n, typesV);
+  ptr(A.methods + 48n, imps.criticalMultiplier);
+
+  // ivar_list_t: entsize(0) count(4) — 1 件 32 バイト
+  // ivar_t: offset*(0) name*(8) type*(16) alignment(24) size(28)
+  u32at(A.ivars, 32);
+  u32at(A.ivars + 4n, 2);
+  ptr(A.ivars + 8n, A.ivarOff0);
+  ptr(A.ivars + 16n, ivarHp);
+  ptr(A.ivars + 24n, typeInt);
+  u32at(A.ivars + 32n, 2);
+  u32at(A.ivars + 36n, 4);
+  ptr(A.ivars + 40n, A.ivarOff1);
+  ptr(A.ivars + 48n, ivarAtk);
+  ptr(A.ivars + 56n, typeInt);
+  u32at(A.ivars + 64n, 2);
+  u32at(A.ivars + 68n, 4);
+
+  // 位置そのものは別の変数に置かれている（実行時に書き換わるため）
+  ptr(A.ivarOff0, 0x20);
+  ptr(A.ivarOff1, 0x24);
+
+  return { bytes: buf, classListAddr: A.classList, classListSize: 8, size };
+}
+
+/* ────────────────────────────────────────────────────────────
    Mach-O の組み立て
    ──────────────────────────────────────────────────────────── */
 
@@ -307,7 +425,7 @@ export function buildSampleBinary() {
   const cmdSizes = [
     segCmd(0),                          // __PAGEZERO
     segCmd(3),                          // __TEXT: __text, __stubs, __cstring
-    segCmd(1),                          // __DATA_CONST: __got
+    segCmd(3),                          // __DATA_CONST: __got, __objc_classlist, __objc_const
     segCmd(0),                          // __LINKEDIT
     align8(12 + dylinker.length + 1),   // LC_LOAD_DYLINKER
     24,                                 // LC_UUID
@@ -348,9 +466,17 @@ export function buildSampleBinary() {
   const gotAddr = TEXT_VM + PAGE;              // __DATA_CONST の先頭
   const gotOff = Number(PAGE);
 
+  // Objective-C のクラス表は __DATA_CONST の中に置く（本物と同じ場所）
+  const objcAddr = gotAddr + 0x100n;
+  const objcOff = gotOff + 0x100;
+
   // 本番の位置で組み直す（文字列の位置が決まったので adrp が正しくなる）
   const text = assemble(textAddr, stubsAddr, stringAddrs);
   const stub = buildStub(stubsAddr, gotAddr);
+  const objc = buildObjcData(objcAddr, {
+    applyDamage: text.label._apply_damage,
+    criticalMultiplier: text.label._square,
+  });
 
   /* ── __LINKEDIT の中身 ── */
   const funcOrder = ['_add', '_square', '_sum_to', '_greet', '_apply_damage', '_main'];
@@ -451,6 +577,10 @@ export function buildSampleBinary() {
   segment('__DATA_CONST', TEXT_VM + PAGE, PAGE, PAGE, PAGE, 3 /* rw- */, [
     { name: '__got', addr: gotAddr, size: 8n, offset: gotOff,
       flags: S_NON_LAZY_SYMBOL_POINTERS, align: 3, reserved1: 1 },
+    { name: '__objc_classlist', addr: objc.classListAddr, size: BigInt(objc.classListSize),
+      offset: objcOff, flags: S_REGULAR, align: 3 },
+    { name: '__objc_const', addr: objcAddr + 8n, size: BigInt(objc.size - 8),
+      offset: objcOff + 8, flags: S_REGULAR, align: 3 },
   ]);
   segment('__LINKEDIT', TEXT_VM + PAGE * 2n, PAGE, BigInt(linkeditOff), BigInt(linkeditSize), 1 /* r-- */, []);
 
@@ -525,6 +655,7 @@ export function buildSampleBinary() {
   w.words(stubsOff, stub);
   w.bytes(cstringOff, cstringData);
   w.u64(gotOff, 0n);                    // __got: 起動時に dyld が埋める場所
+  w.bytes(objcOff, objc.bytes);         // Objective-C のクラス表
 
   /* ── __LINKEDIT ── */
   w.bytes(funcStartsOff, funcStarts);

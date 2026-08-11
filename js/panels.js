@@ -33,8 +33,10 @@ import {
   starsText, reasonText, certaintyWord, factText, inferenceText, unknownText,
   nextStepText, updateLines, useText, shapeText, roleLabel,
   findingTitle, findingWhy, notableReasonText, autoStepText,
+  typeWord, placeName, oneLiner, whatItDoes, changeVerb,
 } from './narrate.js';
 import { autoAnalyze, autoNextSteps } from './auto.js';
+import { plainFieldName } from './fields.js';
 
 /* ── ファイル情報 ────────────────────────────────────────── */
 
@@ -1568,6 +1570,9 @@ function progressBox(parent, text) {
  * どちらも 1 ファイルにつき 1 回で済み、2 回目からはすぐ返る。
  */
 async function prepare(app, box) {
+  // クラスとフィールドの名前がいちばん効くので、まずこれを読む
+  if (box) box.say(pick('クラスと、その中の値の名前を読んでいます…', 'Reading classes and their fields…'));
+  await app.ensureObjc();
   const strings = await app.ensureStrings((p) => {
     if (box) { box.set(p); box.say(pick('アプリの中の言葉を集めています…', 'Collecting text…')); }
   });
@@ -1640,14 +1645,20 @@ export function showOverview(app) {
   if (region) head.append(kvRow(pick('コードの区画', 'Code section'), region.name + ' · ' + sizeText(region.size)));
   body.append(head);
 
-  /* 2. 何を調べたいか — 一覧より先にこれを出す */
-  body.append(el('div', 'blk-title', pick('何を調べたいですか？', 'What do you want to find?')));
-  body.append(para(pick(
-    'ここから選ぶと、その目的に関係のありそうな関数を、根拠つきで並べます。',
-    'Pick one and the tool will rank the functions that look related, with the evidence for each.')));
+  /*
+   * 2. 目的から探す入口は、1 行だけ置いておく。
+   *    まず見せたいのは「このアプリが何でできているか」なので、
+   *    選択肢を先に並べて画面を埋めない。
+   */
   const openGoal = (goal) => { sheet.close(); showCandidates(app, goal); };
-  body.append(goalChips(app, openGoal));
-  body.append(goalInput(app, openGoal));
+  const entry = list();
+  entry.append(tapRow(pick('調べたいものが決まっている', 'I know what I am looking for'), {
+    sub: pick('HP・攻撃力・コイン・ガチャ・通信… から選ぶ／自由に入力する',
+      'Pick HP, attack, coins, gacha, network… or type it yourself'),
+    right: '›',
+    onTap: () => { sheet.close(); showInvestigate(app); },
+  }));
+  body.append(entry);
 
   /* 3. 裏で走査して、分かったことを足していく */
   const later = el('div');
@@ -1685,7 +1696,7 @@ export function showOverview(app) {
     prepare(app, box).then(async ({ strings, program }) => {
       if (cancelled || !sheet.root.isConnected) return;
       const report = await autoAnalyze({
-        strings, program, symbols: app.symbols, region,
+        strings, program, symbols: app.symbols, region, fields: app.fields,
         analyze: makeAnalyzer(app, region),
         isCancelled: () => cancelled || !sheet.root.isConnected,
         onProgress: (p) => {
@@ -1733,15 +1744,338 @@ function makeAnalyzer(app, region) {
   };
 }
 
+/* ────────────────────────────────────────────────────────────
+   アプリの地図 — 上から降りていくための画面
+   ────────────────────────────────────────────────────────────
+
+   部品 → クラス → 値（フィールド）→ 触っている場所 → 命令。
+   1 画面に出るのは常に十数個までにする。数万の関数を一覧にしない。 */
+
+/** 地図の 1 行（部品）。 */
+function subsystemRow(app, sub, onTap) {
+  const parts = [];
+  if (sub.classCount) parts.push(pick(sub.classCount + ' クラス', sub.classCount + ' classes'));
+  if (sub.methods) parts.push(pick(sub.methods + ' メソッド', sub.methods + ' methods'));
+  if (sub.fields) parts.push(pick(sub.fields + ' 個の値', sub.fields + ' fields'));
+  const sample = (sub.classes || []).slice(0, 3).map((c) => c.name).join('、') ||
+    (sub.functions || []).slice(0, 2).map((f) => f.name || fnLabel(app, f.addr)).join('、');
+  return tapRow(sub.icon + ' ' + sub.label, {
+    sub: parts.join('  ·  ') + (sample ? '\n' + trimText(sample, 60) : ''),
+    right: '›',
+    onTap,
+  });
+}
+
+export function showAppMap(app, map) {
+  const m = map || (app.autoReport && app.autoReport.report ? app.autoReport.report.map : null);
+  if (!m || !m.subsystems.length) {
+    toast(pick('地図を作れませんでした。', 'No map could be built.'));
+    return;
+  }
+  const sheet = new Sheet(pick('アプリの地図', 'Map of this app'));
+  const body = sheet.body;
+
+  body.append(para(m.byStrings
+    ? pick('このファイルには Objective-C のクラス表がないため、' +
+      '「どんな言葉を使っているか」だけで大まかに分けています。粗い地図です。',
+    'This binary has no Objective-C class table, so the grouping is based on text alone — a rough map.')
+    : pick('このアプリを、担当ごとの部品に分けました。' +
+      'まず部品を選び、次にクラス、そのクラスが持っている値、と降りていけます。',
+    'The app grouped into parts. Pick a part, then a class, then the values it holds.')));
+
+  const ul = list();
+  for (const sub of m.subsystems) {
+    ul.append(subsystemRow(app, sub, () => { sheet.close(); showSubsystem(app, sub); }));
+  }
+  body.append(ul);
+
+  if (m.unclassified) {
+    const rest = list();
+    rest.append(tapRow(pick('分類できなかったクラス', 'Classes that could not be grouped'), {
+      right: String(m.unclassified),
+      sub: pick('名前からも、使っている言葉からも、担当が読み取れなかったものです',
+        'Nothing in the name, text or calls said what these are for'),
+      onTap: () => {
+        sheet.close();
+        showSubsystem(app, {
+          id: 'unknown', icon: '❓',
+          label: pick('分類できなかったクラス', 'Unclassified'),
+          classes: m.unclassifiedClasses || [], classCount: m.unclassified,
+        });
+      },
+    }));
+    body.append(rest);
+  }
+
+  body.append(para(pick(
+    '※ 部品の分け方は、クラス名・参照している文字列・呼んでいる API の 3 つを足して決めています。' +
+    'どれも実際にバイナリにあるものですが、分類そのものは推測です。',
+    'Grouping combines class names, referenced text and called APIs. All are real, but the grouping itself is a guess.'), 'sub'));
+}
+
+/** 部品 1 つの中身（クラスの一覧）。 */
+export function showSubsystem(app, sub) {
+  const sheet = new Sheet(sub.icon + ' ' + sub.label);
+  const body = sheet.body;
+  const classes = sub.classes || [];
+
+  if (classes.length) {
+    body.append(para(pick(
+      'この部品を担当しているクラスです。上にあるものほど、担当がはっきりしていて、よく使われています。',
+      'The classes in this part, clearest and most-used first.')));
+    const ul = list();
+    for (const c of classes.slice(0, 60)) {
+      const parts = [];
+      if (c.methods) parts.push(pick(c.methods + ' メソッド', c.methods + ' methods'));
+      if (c.fields) parts.push(pick(c.fields + ' 個の値', c.fields + ' fields'));
+      if (c.calls) parts.push(pick('呼ばれた回数 ' + c.calls, 'called ' + c.calls + '×'));
+      if (c.superName) parts.push(pick(c.superName + ' の仲間', 'extends ' + c.superName));
+      ul.append(tapRow(c.name, {
+        sub: parts.join('  ·  '),
+        right: '›',
+        onTap: () => { sheet.close(); showClass(app, c.name); },
+      }));
+    }
+    body.append(ul);
+    if (classes.length > 60) {
+      body.append(para(pick('※ 上位 60 クラスだけ出しています。', 'Showing the top 60 classes only.'), 'sub'));
+    }
+  }
+
+  // クラスがないファイルでは、関数を直接並べる
+  if (sub.functions && sub.functions.length) {
+    body.append(para(pick(
+      'この部品に関係する言葉を使っている関数です。',
+      'Functions that use text belonging to this part.')));
+    const ul = list();
+    for (const f of sub.functions.slice(0, 40)) {
+      ul.append(tapRow(f.name || fnLabel(app, f.addr), {
+        sub: addrHex(f.addr) + (f.samples && f.samples.length
+          ? '\n' + f.samples.map((s) => '「' + trimText(s, 22) + '」').join(' ') : ''),
+        onTap: () => { sheet.close(); showFunctionReport(app, f.addr); },
+      }));
+    }
+    body.append(ul);
+  }
+
+  if (!classes.length && !(sub.functions || []).length) {
+    body.append(para(pick('中身を取り出せませんでした。', 'Nothing could be listed here.')));
+  }
+}
+
+/** クラス 1 つ。ここが「どれがどの処理か」のいちばん分かりやすい単位。 */
+export function showClass(app, className) {
+  const info = app.fields ? app.fields.classInfo(className) : null;
+  if (!info) { toast(pick('このクラスの情報がありません。', 'No information for this class.')); return; }
+  const sheet = new Sheet(className);
+  const body = sheet.body;
+
+  const head = el('div', 'fn-head');
+  head.append(el('div', 'fn-name', className));
+  const meta = [];
+  if (info.superName) meta.push(pick(info.superName + ' を継承', 'extends ' + info.superName));
+  if (info.instanceSize) meta.push(pick('1 個あたり ' + info.instanceSize + ' バイト', info.instanceSize + ' bytes each'));
+  head.append(el('div', 'fn-range', meta.join('  ·  ')));
+  body.append(head);
+
+  /* 1. このクラスが持っている値 — 改造したい人が本当に見たいのはここ */
+  if (info.ivars.length) {
+    body.append(el('div', 'sec-title', pick('このクラスが持っている値', 'The values this class holds')));
+    body.append(para(pick(
+      'クラスの中にある変数です。名前も型も、アプリを作った人が書いたものがそのまま残っています。' +
+      '選ぶと、その値を読み書きしている場所を探せます。',
+      'The variables inside this class — names and types as written by the developers. Pick one to find where it is read and written.')));
+    const ul = list();
+    for (const iv of info.ivars) {
+      const type = typeWord(iv.type);
+      ul.append(tapRow(plainFieldName(iv.name), {
+        sub: (type ? type + '  ·  ' : '') +
+          pick('先頭から ' + offsetHex(BigInt(iv.offset)) + ' の位置', 'at ' + offsetHex(BigInt(iv.offset))),
+        right: '›',
+        onTap: () => { sheet.close(); showField(app, className, iv); },
+      }));
+    }
+    body.append(ul);
+  } else {
+    body.append(para(pick(
+      'このクラスは値（メンバ変数）を持っていないか、表から読み取れませんでした。',
+      'This class holds no fields, or they could not be read.')));
+  }
+
+  /* 2. メソッド */
+  const methods = (info.methods || []).concat(info.classMethods || []);
+  if (methods.length) {
+    body.append(el('div', 'sec-title',
+      pick('このクラスの処理  (' + methods.length + ')', 'Methods  (' + methods.length + ')')));
+    const ul = list();
+    for (const m of methods.slice(0, 80)) {
+      ul.append(tapRow((m.kind || '-') + ' ' + (m.sel || '?'), {
+        sub: addrHex(m.addr),
+        onTap: () => { sheet.close(); showFunctionReport(app, m.addr); },
+      }));
+    }
+    body.append(ul);
+    if (methods.length > 80) {
+      body.append(para(pick('※ 先頭 80 個だけ出しています。', 'Showing the first 80 only.'), 'sub'));
+    }
+  }
+}
+
+/** 値 1 つ。「HP はどこで書き換えられているのか」に答える画面。 */
+export function showField(app, className, field) {
+  const sheet = new Sheet(className + '.' + plainFieldName(field.name), {
+    onClose: () => { app.backend.cancelSearch(); app.backend.onScanProgress = null; },
+  });
+  const body = sheet.body;
+
+  const type = typeWord(field.type);
+  body.append(bigValue(plainFieldName(field.name)));
+  const ul = list();
+  ul.append(kvRow(pick('持ち主', 'Belongs to'), className));
+  if (type) ul.append(kvRow(pick('種類', 'Type'), type));
+  ul.append(kvRow(pick('置かれている位置', 'Position'),
+    offsetHex(BigInt(field.offset)) + pick('（オブジェクトの先頭から）', ' from the start of the object')));
+  if (field.size) ul.append(kvRow(pick('大きさ', 'Size'), field.size + pick(' バイト', ' bytes')));
+  body.append(ul);
+
+  body.append(para(pick(
+    'この値を読み書きしている命令を、コード全体から探します。' +
+    '書き込んでいる場所が、その値を変えている場所です。',
+    'Searching the whole binary for instructions that read or write this value. The writes are where it changes.')));
+
+  const box = progressBox(body, pick('探しています…', 'Searching…'));
+  const results = el('div');
+  body.append(results);
+
+  Promise.all([
+    app.ensureProgram(),
+    app.backend.fieldAccess({
+      regionId: (app.codeRegion() || {}).id,
+      offset: field.offset,
+      size: field.size || 0,
+    }),
+  ]).then(([program, res]) => {
+    box.done();
+    if (!sheet.root.isConnected) return;
+    const sites = res.results || [];
+    if (!sites.length) {
+      results.append(para(pick(
+        'この値を直接読み書きしている命令は見つかりませんでした。' +
+        'プロパティ（setter / getter）ごしにだけ使われている可能性があります。',
+        'No instruction reads or writes this position directly; it may only be used through accessors.')));
+      return;
+    }
+
+    /* 関数ごとにまとめる。同じクラスのメソッドの中にあるものが本命。 */
+    const byFunc = new Map();
+    for (const s of sites) {
+      const fn = program ? program.functionStartOf(s.addr) : null;
+      const key = fn != null ? fn.toString() : 's' + s.addr.toString();
+      if (!byFunc.has(key)) {
+        const owner = fn != null && app.fields ? app.fields.ownerOf(fn) : null;
+        byFunc.set(key, {
+          addr: fn, owner, loads: 0, stores: 0, first: s.addr,
+          sameClass: !!(owner && owner.className === className),
+        });
+      }
+      const e = byFunc.get(key);
+      if (s.kind === 'load') e.loads++; else e.stores++;
+    }
+    const list2 = Array.from(byFunc.values());
+    // 同じクラスの中で、書き込んでいるものを先頭に
+    list2.sort((a, b) => (b.sameClass - a.sameClass) || (b.stores - a.stores) || (b.loads - a.loads));
+
+    const writes = list2.filter((e) => e.stores).length;
+    const sure = list2.filter((e) => e.sameClass).length;
+    results.append(para(pick(
+      sites.length + ' か所で使われていました。うち書き込みは ' +
+        list2.reduce((n, e) => n + e.stores, 0) + ' か所です。',
+      'Used in ' + sites.length + ' places; ' +
+        list2.reduce((n, e) => n + e.stores, 0) + ' of them write to it.')));
+    if (sure) {
+      results.append(para(pick(
+        'このうち ' + sure + ' か所は ' + className + ' 自身のメソッドの中なので、' +
+        'この値のことでほぼ間違いありません。',
+        sure + ' of them are inside ' + className + '’s own methods, so those are almost certainly this value.'), 'sub'));
+    }
+
+    const ul2 = list();
+    for (const e of list2.slice(0, 60)) {
+      const what = [];
+      if (e.stores) what.push(pick('書き込み ' + e.stores + ' か所', e.stores + ' writes'));
+      if (e.loads) what.push(pick('読み出し ' + e.loads + ' か所', e.loads + ' reads'));
+      ul2.append(tapRow(
+        e.owner ? e.owner.kind + '[' + e.owner.className + ' ' + e.owner.sel + ']'
+          : (e.addr != null ? fnLabel(app, e.addr) : addrHex(e.first)),
+        {
+          sub: what.join('  ·  ') + '  ·  ' + addrHex(e.first),
+          tag: e.sameClass ? pick('このクラス', 'this class')
+            : (e.owner ? pick('別のクラス', 'another class') : pick('クラス不明', 'unknown class')),
+          tagClass: e.sameClass ? 'tag-fact' : 'tag-infer',
+          right: e.stores ? '✎' : '',
+          onTap: () => {
+            sheet.close();
+            if (e.addr != null) showFunctionReport(app, e.addr);
+            else app.goToAddress(e.first, { announce: true });
+          },
+        }));
+    }
+    results.append(ul2);
+    results.append(para(pick(
+      '※ 同じ位置（' + offsetHex(BigInt(field.offset)) + '）を触っている命令をすべて拾っています。' +
+      '別のクラスの、たまたま同じ位置にある値が混ざることがあります。' +
+      '「このクラス」の札が付いているものが確実です。',
+      'Every instruction touching this offset is listed. Other classes may use the same offset for something else — the ones tagged as this class are the certain ones.'), 'sub'));
+    void writes;
+  }).catch((err) => {
+    box.done();
+    results.append(para(pick('探せませんでした: ', 'Search failed: ') +
+      (err && err.message ? err.message : String(err))));
+  });
+}
+
 /* ── 自動解析の結果を並べる ─────────────────────────────── */
 
 function renderAutoReport(app, sheet, body, report, region) {
   const openGoal = (goal) => { sheet.close(); showCandidates(app, goal); };
 
+  /*
+   * 0. まず地図。「このアプリはこういう部品でできている」から始める。
+   *    数万の関数をいきなり見せない、というのがこの画面のいちばんの役目。
+   */
+  const map = report.map;
+  if (map && map.subsystems.length) {
+    body.append(el('div', 'sec-title', pick('このアプリは、こういう部品でできています',
+      'What this app is made of')));
+    const ul = list();
+    for (const sub of map.subsystems.slice(0, 6)) {
+      ul.append(subsystemRow(app, sub, () => { sheet.close(); showSubsystem(app, sub); }));
+    }
+    if (map.subsystems.length > 6) {
+      ul.append(tapRow(pick('部品をすべて見る（' + map.subsystems.length + ' 個）',
+        'See all ' + map.subsystems.length + ' parts'), {
+        onTap: () => { sheet.close(); showAppMap(app, map); },
+      }));
+    }
+    body.append(ul);
+    if (map.byStrings) {
+      body.append(para(pick(
+        '※ Objective-C のクラス表がないため、使っている言葉だけで分けた粗い地図です。',
+        'No class table here, so this grouping comes from text alone — a rough map.'), 'sub'));
+    } else {
+      body.append(para(pick(
+        'クラス ' + (report.stats.classes || 0).toLocaleString() + ' 個、' +
+        'その中の値 ' + (report.stats.fields || 0).toLocaleString() + ' 個の名前が読めました。' +
+        'クラスを開くと、そのクラスが持っている値（HP や所持数）まで名前で分かります。',
+        (report.stats.classes || 0).toLocaleString() + ' classes and ' +
+        (report.stats.fields || 0).toLocaleString() + ' of their fields have readable names.'), 'sub'));
+    }
+  }
+
   /* 1. いちばん価値があるのは「値を書き換えている場所」。最初に出す。 */
   const withUpdates = report.deep.filter((d) => d.updates.length);
   if (withUpdates.length) {
-    body.append(el('div', 'blk-title', pick('値を書き換えている場所（自動で見つけたもの）',
+    body.append(el('div', 'sec-title', pick('値を書き換えている場所（自動で見つけたもの）',
       'Places that change a value (found automatically)')));
     body.append(para(pick(
       '値を読み込み → 計算 → 同じ場所へ書き戻している処理です。' +
@@ -1750,10 +2084,11 @@ function renderAutoReport(app, sheet, body, report, region) {
     const ul = list();
     for (const d of withUpdates.slice(0, 8)) {
       const u = d.updates[0];
-      const where = u.location.base + (u.location.disp != null ? ' + ' + offsetHex(u.location.disp) : '');
-      ul.append(tapRow(d.name || fnLabel(app, d.addr), {
-        sub: addrHex(u.store.address) + '  ·  ' + where + '\n' +
-          updateLines(u).slice(2).join('  /  ') +
+      const where = placeName(u.field, u.location.base, u.location.disp);
+      const verb = changeVerb(u.steps && u.steps.length ? u.steps[u.steps.length - 1] : null);
+      ul.append(tapRow(where + ' を' + verb, {
+        sub: (d.owner ? d.owner.kind + '[' + d.owner.className + ' ' + d.owner.sel + ']'
+          : (d.name || fnLabel(app, d.addr))) + '  ·  ' + addrHex(u.store.address) +
           (d.goalLabel ? '\n' + pick('「' + d.goalLabel + '」の候補として見つかりました',
             'found while looking for “' + d.goalLabel + '”') : ''),
         tag: pick('事実', 'fact'), tagClass: 'tag-fact',
@@ -1765,7 +2100,7 @@ function renderAutoReport(app, sheet, body, report, region) {
 
   /* 2. 目的ごとの最有力候補 */
   if (report.goals.length) {
-    body.append(el('div', 'blk-title', pick('目的ごとの最有力候補', 'Strongest candidate per goal')));
+    body.append(el('div', 'sec-title', pick('目的ごとの最有力候補', 'Strongest candidate per goal')));
     body.append(para(pick(
       '16 個の目的すべてを自動で採点しました。★ が多いものほど根拠がそろっています。',
       'All 16 goals were scored automatically; more stars means more evidence.')));
@@ -1783,7 +2118,7 @@ function renderAutoReport(app, sheet, body, report, region) {
 
   /* 3. 気づいたこと（通信先・反解析・暗号…） */
   if (report.findings.length) {
-    body.append(el('div', 'blk-title', pick('気づいたこと', 'What stood out')));
+    body.append(el('div', 'sec-title', pick('気づいたこと', 'What stood out')));
     const byId = new Map();
     for (const f of report.findings) {
       if (!byId.has(f.id)) byId.set(f.id, []);
@@ -1812,7 +2147,7 @@ function renderAutoReport(app, sheet, body, report, region) {
 
   /* 4. 目的とは無関係に「よく効く」関数 */
   if (report.notable.length) {
-    body.append(el('div', 'blk-title', pick('注目すべき処理（回数と命令から）',
+    body.append(el('div', 'sec-title', pick('注目すべき処理（回数と命令から）',
       'Routines worth a look (by counts, not names)')));
     const ul = list();
     for (const n of report.notable.slice(0, 8)) {
@@ -1829,7 +2164,7 @@ function renderAutoReport(app, sheet, body, report, region) {
   /* 5. 言葉から分かった機能 */
   if (report.engine) body.append(noteBox(report.engine.note));
   if (report.features.length) {
-    body.append(el('div', 'blk-title', pick('見つかった手がかり（言葉から）', 'Clues found (from text)')));
+    body.append(el('div', 'sec-title', pick('見つかった手がかり（言葉から）', 'Clues found (from text)')));
     const ul = list();
     for (const f of report.features.slice(0, 8)) {
       ul.append(tapRow(f.label, {
@@ -1841,7 +2176,12 @@ function renderAutoReport(app, sheet, body, report, region) {
     body.append(ul);
   }
 
-  /* 6. 次の一手 */
+  /* 6. 目的から探す（ここまで見て、まだ見つからない人向け） */
+  body.append(el('div', 'sec-title', pick('目的から探す', 'Search by goal')));
+  body.append(goalChips(app, openGoal));
+  body.append(goalInput(app, openGoal));
+
+  /* 7. 次の一手 */
   const steps = autoNextSteps(report);
   if (steps.length) {
     const nb = block(pick('次にすること', 'What to do next'));
@@ -2012,7 +2352,7 @@ export function showCandidateWhy(app, cand, goal) {
     Math.round(cand.score) + ' points')));
   body.append(score);
 
-  body.append(el('div', 'blk-title', pick('この点数の内訳', 'How this score was built')));
+  body.append(el('div', 'sec-title', pick('この点数の内訳', 'How this score was built')));
   const ul = list();
   for (const r of breakdown(cand)) {
     const text = reasonText(r);
@@ -2033,7 +2373,7 @@ export function showCandidateWhy(app, cand, goal) {
 
   /* 参照している、目的に関係する文字列 */
   if (cand.strings && cand.strings.length) {
-    body.append(el('div', 'blk-title', pick('この関数が参照している言葉', 'Text this function references')));
+    body.append(el('div', 'sec-title', pick('この関数が参照している言葉', 'Text this function references')));
     const sul = list();
     for (const s of cand.strings.slice(0, 10)) {
       sul.append(tapRow(trimText(s.text, 48), {
@@ -2096,6 +2436,8 @@ export function showFunctionReport(app, addr, goal) {
     applySemantic(app, region, res);
     const report = buildFunctionReport({
       model: res.model, region, symbols: sym, program, goal, name,
+      // クラスとフィールドが読めていれば、x0+0x20 は self.hp として説明される
+      fields: app.fields, owner: app.ownerOf(start),
     });
     renderFunctionReport(app, sheet, later, report, res, region, goal);
   }).catch((err) => {
@@ -2113,80 +2455,100 @@ function renderFunctionReport(app, sheet, body, report, res, region, goal) {
   body.append(head);
 
   /*
-   * いちばん上には、事実だけから言えることを置く。
-   * 「この関数はある値を読んで、計算して、同じ場所へ書き戻しています」は
-   * 命令がそこにあるという意味で確かなので、あらすじ（推測混じり）より先に出す。
+   * 説明は 3 段。既定で見えるのは 1 段目と 2 段目だけにする。
+   *
+   *   1. ひとこと      … 「BattleManager の hp を 10 減らす処理です」
+   *   2. どういうこと  … 受け取る値 / 変えるもの / 返すもの / 呼ばれ方（4 行まで）
+   *   3. 詳しく        … 事実・推測・分からないこと（畳んでおく）
+   *
+   * 説明は具体的すぎると、かえって「で、何がしたい処理なの？」が消えてしまう。
+   * だから詳細は、降りたい人だけが降りられる場所に置く。
    */
-  if (report.editTargets.length) {
-    const u = report.editTargets[0];
-    const where = u.location.base +
-      (u.location.disp != null ? ' + ' + offsetHex(u.location.disp) : '');
-    body.append(el('div', 'lead', pick(
-      'この関数は ' + where + ' にある値を読み込み、計算して、同じ場所へ書き戻しています。' +
-      'ゲームの数値（HP や所持数）を増やす／減らす処理は、この形をしています。',
-      'This routine reads the value at ' + where + ', changes it, and writes it back — ' +
-      'the shape that increasing or decreasing a game value takes.')));
+  if (report.owner) {
+    body.append(el('div', 'owner-line', pick(
+      report.owner.className + ' のメソッド', 'a method of ' + report.owner.className)));
+  }
+  body.append(el('div', 'lead', oneLiner(report, id.name)));
+  const what = whatItDoes(report);
+  if (what.length) {
+    const ul0 = el('ul', 'story-steps');
+    for (const line of what) {
+      const li = el('li');
+      li.append(el('i', null, '・'));
+      li.append(el('span', null, line));
+      ul0.append(li);
+    }
+    body.append(ul0);
   }
 
-  /* 1. まず日本語のあらすじ（従来の要約をそのまま使う） */
-  body.append(storySection(app, res.model, id.name, sheet));
+  /* 3. 詳しく — 事実 / 推測 / 分からないこと。既定では畳んでおく。 */
+  body.append(disclosure(pick('詳しく見る（事実・推測・分からないこと）',
+    'Show the detail (facts, inferences, unknowns)'), {
+    build: (into) => {
+      into.append(storySection(app, res.model, id.name, sheet));
 
-  /* 2. 事実 — ここに書けるのはバイナリから直接読めることだけ */
-  const factBlk = block(pick('確かなこと（バイナリから直接読めたこと）',
-    'Facts — read directly from the binary'));
-  const ful = list();
-  let shown = 0;
-  for (const f of report.facts) {
-    const text = factText(f);
-    if (!text) continue;
-    shown++;
-    ful.append(tapRow(text, {
-      tag: certaintyWord('fact'), tagClass: 'tag-fact',
-      sub: f.row >= 0 ? addrHex(region.vmAddr + BigInt(f.row) * 4n) : null,
-      disabled: f.row < 0,
-      onTap: f.row >= 0 ? () => {
-        sheet.close();
-        app.viewer.goToRow(f.row, 'third');
-        app.viewer.select(f.row, false);
-        app.viewer.mark(f.row);
-      } : null,
-    }));
-  }
-  if (!shown) ful.append(tapRow(pick('数えられる事実がありませんでした。', 'Nothing countable was found.'), { disabled: true }));
-  factBlk.append(ful);
-  body.append(factBlk);
+      const factBlk = block(pick('確かなこと（バイナリから直接読めたこと）',
+        'Facts — read directly from the binary'));
+      const ful = list();
+      let shown = 0;
+      for (const f of report.facts) {
+        const text = factText(f);
+        if (!text) continue;
+        shown++;
+        ful.append(tapRow(text, {
+          tag: certaintyWord('fact'), tagClass: 'tag-fact',
+          sub: f.row >= 0 ? addrHex(region.vmAddr + BigInt(f.row) * 4n) : null,
+          disabled: f.row < 0,
+          onTap: f.row >= 0 ? () => {
+            sheet.close();
+            app.viewer.goToRow(f.row, 'third');
+            app.viewer.select(f.row, false);
+            app.viewer.mark(f.row);
+          } : null,
+        }));
+      }
+      if (!shown) {
+        ful.append(tapRow(pick('数えられる事実がありませんでした。', 'Nothing countable was found.'),
+          { disabled: true }));
+      }
+      factBlk.append(ful);
+      into.append(factBlk);
 
-  /* 3. 推測 — 確度と根拠つき。事実とは見た目を変える */
-  const infBlk = block(pick('ここから推測できること', 'What can be inferred from that'));
-  const iul = list();
-  let inferred = 0;
-  for (const i of report.inferences) {
-    const text = inferenceText(i);
-    if (!text) continue;
-    inferred++;
-    iul.append(tapRow(text, {
-      tag: certaintyWord('inference'), tagClass: 'tag-infer',
-      right: Math.round(i.confidence * 100) + '%',
-      sub: pick('根拠 ' + i.evidence.length + ' 件', i.evidence.length + ' pieces of evidence'),
-      onTap: () => showEvidence(app, text, i),
-    }));
-  }
-  if (!inferred) {
-    iul.append(tapRow(pick('推測できることはありませんでした（手がかり不足）。',
-      'Nothing could be inferred — not enough clues.'), { disabled: true }));
-  }
-  infBlk.append(iul);
-  body.append(infBlk);
+      const infBlk = block(pick('ここから推測できること', 'What can be inferred from that'));
+      const iul = list();
+      let inferred = 0;
+      for (const i of report.inferences) {
+        const text = inferenceText(i);
+        if (!text) continue;
+        inferred++;
+        iul.append(tapRow(text, {
+          tag: certaintyWord('inference'), tagClass: 'tag-infer',
+          right: Math.round(i.confidence * 100) + '%',
+          sub: pick('根拠 ' + i.evidence.length + ' 件', i.evidence.length + ' pieces of evidence'),
+          onTap: () => showEvidence(app, text, i),
+        }));
+      }
+      if (!inferred) {
+        iul.append(tapRow(pick('推測できることはありませんでした（手がかり不足）。',
+          'Nothing could be inferred — not enough clues.'), { disabled: true }));
+      }
+      infBlk.append(iul);
+      into.append(infBlk);
 
-  /* 4. 分からないこと — ここを書かないツールは信用できない */
-  const unkBlk = block(pick('このツールでは分からないこと', 'What this tool cannot tell you'));
-  const uul = list();
-  for (const u of report.unknowns) {
-    const text = unknownText(u);
-    if (text) uul.append(tapRow(text, { tag: certaintyWord('unknown'), tagClass: 'tag-unknown', disabled: true }));
-  }
-  unkBlk.append(uul);
-  body.append(unkBlk);
+      const unkBlk = block(pick('このツールでは分からないこと', 'What this tool cannot tell you'));
+      const uul = list();
+      for (const u of report.unknowns) {
+        const text = unknownText(u);
+        if (text) {
+          uul.append(tapRow(text, {
+            tag: certaintyWord('unknown'), tagClass: 'tag-unknown', disabled: true,
+          }));
+        }
+      }
+      unkBlk.append(uul);
+      into.append(unkBlk);
+    },
+  }));
 
   /* 5. 変更候補 — このツールの目的地のひとつ */
   if (report.editTargets.length) {
@@ -2377,7 +2739,7 @@ export function showCallGraph(app, addr) {
       return;
     }
 
-    body.append(el('div', 'blk-title', pick('ここへ来るまで（呼び出し元）', 'How you get here (callers)')));
+    body.append(el('div', 'sec-title', pick('ここへ来るまで（呼び出し元）', 'How you get here (callers)')));
     const up = el('div', 'calltree');
     const seenUp = new Set([addr.toString()]);
     const addUp = (target, depth) => {
@@ -2404,7 +2766,7 @@ export function showCallGraph(app, addr) {
     me.append(el('div', 'fn-range mono', addrHex(addr)));
     body.append(me);
 
-    body.append(el('div', 'blk-title', pick('ここから先（呼び出し先）', 'Where it goes (callees)')));
+    body.append(el('div', 'sec-title', pick('ここから先（呼び出し先）', 'Where it goes (callees)')));
     const down = el('div', 'calltree');
     const seenDown = new Set([addr.toString()]);
     const addDown = (start, depth) => {
@@ -2474,7 +2836,7 @@ export function showValueFlow(app, model, row, region) {
     return;
   }
   const uses = traceForward(model, row, reg, 24);
-  body.append(el('div', 'blk-title', pick('この値（' + reg + '）が、このあとどうなるか',
+  body.append(el('div', 'sec-title', pick('この値（' + reg + '）が、このあとどうなるか',
     'What happens to this value (' + reg + ')')));
   const ul = list();
   if (!uses.length) {

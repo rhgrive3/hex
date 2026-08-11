@@ -20,7 +20,8 @@ import { SymbolIndex, EMPTY_INDEX } from './symbols.js';
 import { clearBriefCache } from './arm64.js';
 import { clearAnalysisCache, analyzeFunctionCached } from './analyze.js';
 import { buildOverlay } from './narrate.js';
-import { buildObjcNames } from './objc.js';
+import { buildObjcModel } from './objc.js';
+import { FieldIndex, EMPTY_FIELDS } from './fields.js';
 import { makeSampleFile } from './sample.js';
 import { ProgramIndex } from './program.js';
 
@@ -44,6 +45,9 @@ class App {
     this.programKey = null;     // 索引がどのセクションのものか
     this.programBusy = null;    // 走査中の Promise（二重に走らせない）
     this.lastGoal = null;       // 直近に調べた目的
+    // Objective-C のクラスとフィールド。x0+0x20 を self.hp と言えるようにする索引。
+    this.fields = EMPTY_FIELDS;
+    this.objcBusy = null;
 
     setLang(this.prefs.lang || detectLang());
 
@@ -457,6 +461,8 @@ class App {
       this.featureIndex = null;
       this.stringIndex = null;
       this.autoReport = null;
+      this.fields = EMPTY_FIELDS;
+      this.objcModel = null;
       this.program = null;
       this.programScan = null;
       this.programKey = null;
@@ -705,41 +711,67 @@ class App {
         this.symbols = new SymbolIndex(res);
         this.viewer.setSymbols(this.symbols);
         this.updateChrome();
-        this.restoreObjcNames(sliceIndex);
+        return this.ensureObjc(sliceIndex);
       }).catch(() => { /* シンボルがなくても読める */ });
     }
   }
 
   /**
-   * Objective-C のクラス表から、関数の本当の名前を戻す。
+   * Objective-C のクラス表を読む。このツールでいちばん効く一手。
    *
-   * 配布用のアプリは自作の関数名が削ってあるが、Objective-C のメソッドだけは
-   * 名前と実装アドレスの対応表がバイナリに残っている。ここを読むと
-   * sub_100123456 が -[LoginViewController loginButtonTapped:] に変わる。
+   * 配布用のアプリは自作の関数名が削ってあるが、Objective-C のクラスだけは
    *
-   * 裏で走らせて、できたところで一覧と画面を差し替える。失敗しても表示は続く。
+   *   - クラス名とメソッド名（実装アドレスつき）
+   *   - **メンバ変数の名前・型・位置**
+   *
+   * がバイナリに必ず残っている。前者で sub_100123456 が
+   * -[LoginViewController loginButtonTapped:] に戻り、後者で
+   * [x0, #0x20] が self.hp に戻る。「どれがどの処理か」に答えられるのはここ。
+   *
+   * 裏で走らせて、できたところで画面を差し替える。失敗しても表示は続く。
    */
-  async restoreObjcNames(sliceIndex) {
+  async ensureObjc(sliceIndex) {
+    if (this.fields && this.fields.classCount) return this.fields;
+    if (this.objcBusy) return this.objcBusy;
     const regions = this.store.get('regions') || [];
     const list = regions.find((r) => r.section === '__objc_classlist' && r.size > 0n);
-    if (!list) return;
-    const read = (addr, len) => this.backend.readAt(addr, len)
-      .then((r) => (r && r.found ? r.bytes : null))
-      .catch(() => null);
-    try {
-      const { names, classes } = await buildObjcNames(read, list);
-      if (this.store.get('sliceIndex') !== sliceIndex || !names.length) return;
-      const added = this.symbols.addNames(names);
-      this.symbols.addFunctions(names.map((n) => n.addr));
-      this.objcClasses = classes;
-      this.viewer.setSymbols(this.symbols);
-      this.updateChrome();
-      if (added) {
-        toast(pick(
-          classes + ' 個のクラスから、' + added + ' 個の関数の名前を復元しました',
-          'Recovered ' + added + ' function names from ' + classes + ' classes'));
+    if (!list) { this.fields = EMPTY_FIELDS; return this.fields; }
+    const slice = sliceIndex != null ? sliceIndex : this.store.get('sliceIndex');
+
+    this.objcBusy = (async () => {
+      const read = (addr, len) => this.backend.readAt(addr, len)
+        .then((r) => (r && r.found ? r.bytes : null))
+        .catch(() => null);
+      try {
+        const model = await buildObjcModel(read, list);
+        if (this.store.get('sliceIndex') !== slice) return this.fields;
+        this.objcModel = model;
+        this.fields = new FieldIndex(model);
+        if (model.names.length) {
+          const added = this.symbols.addNames(model.names);
+          this.symbols.addFunctions(model.names.map((n) => n.addr));
+          this.viewer.setSymbols(this.symbols);
+          this.updateChrome();
+          if (added) {
+            toast(pick(
+              model.count + ' 個のクラスから、' + added + ' 個の関数の名前と ' +
+                this.fields.fieldCount + ' 個の値の名前を復元しました',
+              'Recovered ' + added + ' function names and ' + this.fields.fieldCount +
+                ' field names from ' + model.count + ' classes'));
+          }
+        }
+      } catch { /* 読めなくても、ほかの表示には影響させない */
+      } finally {
+        this.objcBusy = null;
       }
-    } catch { /* 読めなくても、ほかの表示には影響させない */ }
+      return this.fields;
+    })();
+    return this.objcBusy;
+  }
+
+  /** その関数がどのクラスのメソッドか。分からなければ null。 */
+  ownerOf(addr) {
+    return this.fields ? this.fields.ownerOf(addr) : null;
   }
 
   pickDefaultRegion(regions, info) {

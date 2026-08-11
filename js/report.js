@@ -104,11 +104,26 @@ export function buildFunctionReport(opts) {
   /* ── FACT: 値の変更（load → 演算 → store） ─────────────── */
 
   const updates = findValueUpdates(model);
+  /*
+   * Objective-C のクラス表が読めていれば、ここで「x0 + 0x20」を
+   * 「BattleManager の hp」に置き換える。読めていなければ、そのままにする
+   * （分からないものに名前を付けない）。
+   */
+  const fieldIndex = o.fields || null;
+  const owner = o.owner || (fieldIndex && startAddr != null ? fieldIndex.ownerOf(startAddr) : null);
+  if (fieldIndex && owner) {
+    for (const u of updates) {
+      u.field = fieldIndex.resolveAccess(
+        { base: u.location.base, disp: u.location.disp }, owner.className);
+    }
+  }
+
   for (const u of updates.slice(0, 8)) {
     facts.push(fact('value-update', {
       kind: u.kind,
       base: u.location.base, disp: u.location.disp, size: u.location.size,
       stack: u.location.stack,
+      field: u.field || null,
       ops: u.steps.map((s) => ({ op: s.op, imm: s.imm, row: s.row })),
       loadRow: u.from ? u.from.row : null,
       storeRow: u.store.row,
@@ -122,6 +137,11 @@ export function buildFunctionReport(opts) {
   }
 
   const locations = hotLocations(model);
+  if (fieldIndex && owner) {
+    for (const loc of locations) {
+      loc.field = fieldIndex.resolveAccess({ base: loc.base, disp: loc.disp }, owner.className);
+    }
+  }
 
   /* ── FACT: 呼び出し関係（プログラム全体の索引から） ───── */
 
@@ -169,7 +189,7 @@ export function buildFunctionReport(opts) {
      * どれだけ証拠がそろっても、推測を 100% とは言わない。
      */
     inferences.push(inference('value-holder', Math.min(u.confidence, 0.9), u.evidence, {
-      base: u.location.base, disp: u.location.disp,
+      base: u.location.base, disp: u.location.disp, field: u.field || null,
       op: u.steps.length ? u.steps[u.steps.length - 1].op : null,
       imm: u.steps.length ? u.steps[u.steps.length - 1].imm : null,
       storeRow: u.store.row,
@@ -246,6 +266,7 @@ export function buildFunctionReport(opts) {
     address: u.store.address,
     row: u.store.row,
     location: u.location,
+    field: u.field || null,
     from: u.from,
     steps: u.steps,
     confidence: u.confidence,
@@ -255,6 +276,7 @@ export function buildFunctionReport(opts) {
   }));
 
   return {
+    owner,
     identity: {
       name: o.name || model.name || null,
       startAddr, endAddr,

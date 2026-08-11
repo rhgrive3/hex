@@ -94,6 +94,7 @@ async function handle(msg) {
     case 'readAt':  return readAtAddress(msg);
     case 'guessFunctions': return guessFunctions(msg);
     case 'scanProgram': return scanProgram(msg);
+    case 'fieldAccess': return findFieldAccess(msg);
     default: throw new Error('Unknown request: ' + msg.t);
   }
 }
@@ -640,6 +641,61 @@ async function scanProgram({ regionId }) {
       refFrom[nRefs] = pc; refTo[nRefs] = target; refKind[nRefs] = k; nRefs++;
     } else refsCapped = true;
   }
+}
+
+/* ── フィールドを触っている場所を探す ───────────────────────
+ *
+ * 「HP はどこで書き換えられているの？」に答えるための走査。
+ *
+ * Objective-C のクラス表から「HP は self の +0x20 にある 4 バイト」と分かったら、
+ * あとは [xN, #0x20] の形でその大きさを読み書きしている命令を全部拾えばよい。
+ * 文字列の参照と違って、これは**データそのものの居場所**を辿ることになる。
+ *
+ * ベースレジスタが本当に self かどうかまでは、ここでは判定しない
+ * （それは呼び出し側が、その関数がどのクラスのメソッドかで絞る）。
+ */
+async function findFieldAccess({ regionId, offset, size, limit }) {
+  const region = regions.get(regionId);
+  if (!region) throw new Error('Unknown region.');
+  const token = ++searchToken;
+  const want = BigInt(offset);
+  const wantSize = Number(size) || 0;
+  const cap = Math.min(Number(limit) || 2000, 4000);
+  const total = Number(region.size);
+  const out = [];
+
+  let pos = 0;
+  while (pos < total && out.length < cap) {
+    if (token !== searchToken) return { results: out, cancelled: true };
+    const wantBytes = Math.min(SCAN_BLOCK, total - pos);
+    const blk = await readRange(region.fileOffset + BigInt(pos), wantBytes);
+    if (blk.length < 4) break;
+    const words = Math.floor(blk.length / 4);
+    const dv = new DataView(blk.buffer, blk.byteOffset, words * 4);
+    for (let i = 0; i < words; i++) {
+      const w = dv.getUint32(i * 4, true);
+      const kind = Words.classifyWord(w);
+      if (kind !== Words.KIND.LOAD && kind !== Words.KIND.STORE) continue;
+      const mem = Words.memoryAccess(w);
+      if (!mem || mem.disp == null || mem.indexed) continue;
+      if (mem.disp !== want) continue;
+      // 大きさが分かっているなら、それも合わせる（別の変数を拾わないため）
+      if (wantSize > 0 && mem.size !== wantSize && !(wantSize > 8 && mem.size === 8)) continue;
+      const byteOff = pos + i * 4;
+      out.push({
+        row: byteOff / 4,
+        addr: region.vmAddr + BigInt(byteOff),
+        kind: mem.load ? 'load' : 'store',
+        base: mem.base,
+        size: mem.size,
+      });
+      if (out.length >= cap) break;
+    }
+    pos += words * 4;
+    self.postMessage({ t: 'scanProgress', done: pos, all: total, hits: out.length });
+    await yieldToQueue();
+  }
+  return { results: out, cancelled: false, capped: out.length >= cap };
 }
 
 /* ── 文字列の抽出 ───────────────────────────────────────────── */

@@ -21,6 +21,7 @@ import { GOALS, goalFromPreset } from './goals.js';
 import { rankCandidates } from './rank.js';
 import { groupByFeature, detectEngine } from './features.js';
 import { findValueUpdates, constantComparisons } from './dataflow.js';
+import { buildAppMap, buildStringMap } from './appmap.js';
 
 /* ── 気づいたこと（目的を指定しなくても言えること） ────────
    どれも「その文字列が実在する」という事実が起点で、
@@ -167,6 +168,7 @@ export async function autoAnalyze(opts) {
   const deepLimit = o.deepLimit != null ? o.deepLimit : 12;
 
   const report = {
+    map: null,
     engine: null,
     features: [],
     goals: [],
@@ -191,7 +193,18 @@ export async function autoAnalyze(opts) {
   report.features = groupByFeature(strings);
   report.findings = findings(strings, program, symbols);
 
-  /* 2. すべての目的を総当たりで採点する。
+  /* 2. アプリの地図。数万の関数を、人が把握できる数の部品に畳む。
+        ここが「どれがどの処理か分からない」への答えになる。 */
+  progress({ phase: 'map', done: 0, all: 1 });
+  const fields = o.fields || null;
+  report.map = (fields && fields.classCount)
+    ? buildAppMap({ fields, program, symbols, strings, region })
+    : buildStringMap({ program, symbols, strings });
+  report.stats.classes = fields ? fields.classCount : 0;
+  report.stats.fields = fields ? fields.fieldCount : 0;
+  await tick();
+
+  /* 3. すべての目的を総当たりで採点する。
         1 目的あたりの計算は索引の二分探索なので、16 個回しても軽い。 */
   const all = GOALS.length;
   for (let i = 0; i < GOALS.length; i++) {
@@ -213,11 +226,11 @@ export async function autoAnalyze(opts) {
   // 最有力の目的から先に見せる
   report.goals.sort((a, b) => b.best.score - a.best.score);
 
-  /* 3. 目的とは無関係の「注目すべき関数」 */
+  /* 4. 目的とは無関係の「注目すべき関数」 */
   progress({ phase: 'notable', done: 0, all: 1 });
   report.notable = notableFunctions(program, symbols, region);
 
-  /* 4. 上位だけ、実際に中身まで踏み込む。
+  /* 5. 上位だけ、実際に中身まで踏み込む。
         ここだけ逆アセンブルが走るので、数を厳しく絞る。 */
   if (o.analyze && deepLimit > 0) {
     const targets = [];
@@ -247,8 +260,19 @@ export async function autoAnalyze(opts) {
       if (!model) continue;
       const updates = findValueUpdates(model).filter((u) => u.kind === 'read-modify-write');
       const compares = constantComparisons(model);
+      /*
+       * ここで「x0 + 0x20」を「BattleManager の hp」に置き換える。
+       * この 1 手で、報告の意味が初心者にも通じるものに変わる。
+       */
+      const owner = fields ? fields.ownerOf(t.addr) : null;
+      for (const u of updates) {
+        u.field = owner
+          ? fields.resolveAccess({ base: u.location.base, disp: u.location.disp }, owner.className)
+          : null;
+      }
       report.deep.push({
         addr: t.addr,
+        owner,
         name: symbols ? symbols.nameAt(t.addr) : null,
         why: t.why,
         goal: t.goal ? t.goal.id : null,

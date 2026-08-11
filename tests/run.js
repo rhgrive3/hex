@@ -1537,6 +1537,239 @@ test('AUTO 異常: 手がかりが何もなくても落ちず、そう言える'
   ok(empty && Array.isArray(empty.goals));
 });
 
+/* ────────────────────────────────────────────────────────────
+   クラスとフィールド（js/objc.js, js/fields.js）
+
+   [x0, #0x20] を self.hp と言えるかどうか。ここがこのツールの分かりやすさの要。
+   ──────────────────────────────────────────────────────────── */
+
+const { buildObjcModel, decodeTypeEncoding } = await import('../js/objc.js');
+const { FieldIndex, plainFieldName } = await import('../js/fields.js');
+const { buildSampleBinary } = await import('../js/sample.js');
+
+/** 練習用サンプルを 1 枚のメモリとして読む（本物と同じ経路で確かめる）。 */
+function sampleReader() {
+  const bytes = buildSampleBinary();
+  const base = 0x100000000n;
+  return async (addr, len) => {
+    const off = Number(addr - base);
+    if (off < 0 || off >= bytes.length) return null;
+    return bytes.subarray(off, Math.min(bytes.length, off + len));
+  };
+}
+const SAMPLE_CLASSLIST = { vmAddr: 0x100004100n, size: 8n };
+
+test('OBJC: クラス表から、値の名前・型・位置まで取り出せる', async () => {
+  const model = await buildObjcModel(sampleReader(), SAMPLE_CLASSLIST);
+  eq(model.count, 1, 'クラスが読めていない');
+  const c = model.classes[0];
+  eq(c.name, 'BattleManager');
+  eq(c.instanceSize, 0x28);
+  eq(c.methods.length, 2, 'メソッドが読めていない');
+  eq(c.methods[0].sel, 'applyDamage:');
+  eq(c.methods[0].kind, '-');
+
+  eq(c.ivars.length, 2, '値（ivar）が読めていない');
+  eq(c.ivars[0].name, '_hp');
+  eq(c.ivars[0].offset, 0x20, '位置が違う');
+  eq(c.ivars[0].size, 4);
+  eq(c.ivars[0].type.kind, 'int');
+  eq(c.ivars[0].type.bytes, 4);
+  eq(c.ivars[1].name, '_attack');
+  eq(c.ivars[1].offset, 0x24);
+});
+
+test('OBJC: 型の書き方を、意味の分かる形にほどける', () => {
+  eq(decodeTypeEncoding('i').kind, 'int');
+  eq(decodeTypeEncoding('i').bytes, 4);
+  eq(decodeTypeEncoding('q').bytes, 8);
+  eq(decodeTypeEncoding('f').kind, 'float');
+  eq(decodeTypeEncoding('B').kind, 'bool');
+  eq(decodeTypeEncoding('@"NSString"').kind, 'object');
+  eq(decodeTypeEncoding('@"NSString"').className, 'NSString');
+  eq(decodeTypeEncoding('@?').kind, 'block');
+  eq(decodeTypeEncoding('^i').kind, 'pointer');
+  eq(decodeTypeEncoding('{CGRect=dddd}').kind, 'struct');
+  eq(decodeTypeEncoding('{CGRect=dddd}').name, 'CGRect');
+  eq(decodeTypeEncoding('').kind, 'unknown', '読めないものを読めたことにしている');
+  eq(decodeTypeEncoding('zzz').kind, 'unknown');
+});
+
+test('FIELDS: [x0, #0x20] を self の hp として解決できる', async () => {
+  const model = await buildObjcModel(sampleReader(), SAMPLE_CLASSLIST);
+  const fields = new FieldIndex(model);
+  eq(fields.classCount, 1);
+  eq(fields.fieldCount, 2);
+
+  const owner = fields.ownerOf(model.classes[0].methods[0].addr);
+  ok(owner, 'メソッドの持ち主が分からない');
+  eq(owner.className, 'BattleManager');
+  eq(owner.sel, 'applyDamage:');
+
+  const hit = fields.resolveAccess({ base: 'x0', disp: 0x20n }, 'BattleManager');
+  ok(hit, '解決できていない');
+  eq(hit.plain, 'hp');
+  eq(hit.certain, true, 'x0 なら self と言い切ってよい');
+  eq(hit.exact, true);
+
+  // 別のレジスタ経由は「self とは限らない」ので確定させない
+  const viaX19 = fields.resolveAccess({ base: 'x19', disp: 0x20n }, 'BattleManager');
+  ok(viaX19 && viaX19.certain === false, 'self でないものを self と言い切っている');
+  eq(fields.resolveAccess({ base: 'x8', disp: 0x20n }, 'BattleManager'), null,
+    '関係のないレジスタまで self 扱いしている');
+  eq(fields.resolveAccess({ base: 'x0', disp: 0x99n }, 'BattleManager'), null,
+    '存在しない位置に名前を付けている');
+  eq(fields.resolveAccess({ base: 'x0', disp: 0x20n }, 'NoSuchClass'), null);
+});
+
+test('FIELDS: 名前で値を探せる（HP を探したい、に答える）', async () => {
+  const fields = new FieldIndex(await buildObjcModel(sampleReader(), SAMPLE_CLASSLIST));
+  const hp = fields.findFields(/hp/i);
+  eq(hp.length, 1);
+  eq(hp[0].className, 'BattleManager');
+  eq(hp[0].field.offset, 0x20);
+  eq(fields.findFields('zzz').length, 0);
+  eq(fields.findClasses(/battle/i).length, 1);
+  eq(plainFieldName('_hp'), 'hp');
+  eq(plainFieldName('__attack'), 'attack');
+});
+
+test('FIELDS 異常: クラス表がなくても落ちない', () => {
+  const empty = new FieldIndex(null);
+  eq(empty.classCount, 0);
+  eq(empty.ownerOf(1n), null);
+  eq(empty.fieldAt('X', 0), null);
+  eq(empty.resolveAccess({ base: 'x0', disp: 0n }, 'X'), null);
+  eq(empty.findFields('a').length, 0);
+});
+
+/* ────────────────────────────────────────────────────────────
+   アプリの地図（js/appmap.js）
+   ──────────────────────────────────────────────────────────── */
+
+const { buildAppMap, buildStringMap, classifyClassName } = await import('../js/appmap.js');
+
+/** クラス名だけを持つ、簡単な索引を作る。 */
+function classIndex(names) {
+  return new FieldIndex({
+    classes: names.map((n, i) => ({
+      name: n, addr: BigInt(i + 1), superName: null, instanceSize: 8,
+      methods: [{ addr: BigInt(0x1000 + i * 0x10), sel: 'run', kind: '-' }],
+      ivars: [],
+    })),
+  });
+}
+
+test('MAP: クラス名から担当を見分けられる', () => {
+  const of = (name) => {
+    const hits = classifyClassName(name);
+    return hits.length ? hits.sort((a, b) => b.points - a.points)[0].id : null;
+  };
+  eq(of('BattleManager'), 'battle');
+  eq(of('ShopViewController'), 'purchase', 'ViewController の語に引っぱられている');
+  eq(of('APIClient'), 'network');
+  eq(of('GachaResultView'), 'gacha');
+  eq(of('JailbreakDetector'), 'anticheat');
+  eq(of('SaveDataManager'), 'save');
+  eq(of('ZzzThing'), null, '当たらない名前に無理やり分類を付けている');
+});
+
+test('MAP: アプリを部品ごとに束ねる（1 画面に出るものを減らす）', () => {
+  const fields = classIndex([
+    'BattleManager', 'EnemyUnit', 'ShopViewController', 'APIClient', 'ZzzThing',
+  ]);
+  const map = buildAppMap({ fields, strings: [] });
+  ok(map.hasClasses);
+  eq(map.classCount, 5);
+  const battle = map.subsystems.find((s) => s.id === 'battle');
+  ok(battle, 'バトルの部品がない');
+  eq(battle.classCount, 2, 'BattleManager と EnemyUnit がまとまっていない');
+  ok(battle.icon.length > 0, '見出しの絵文字がない');
+  ok(map.subsystems.every((s) => s.id !== 'unknown'), '未分類を部品として出している');
+  eq(map.unclassified, 1, '分類できなかったものを数えていない');
+  // どの部品にも、なぜそう分類したかの根拠が残っている
+  ok(battle.classes[0].why.length >= 1, '分類の根拠がない');
+});
+
+test('MAP: クラスがないバイナリでも、文字列から粗い地図を作れる', () => {
+  const symbols = new SymbolIndex({
+    addrs: BigUint64Array.from([PC]), kinds: Uint8Array.from([0]),
+    names: 'sub_a', funcs: BigUint64Array.from([PC, PC + 0x40n]),
+  });
+  const STR = 0x200000000n;
+  const program = new ProgramIndex(fakeScan({ refs: [[PC + 4n, STR, 0]] }), symbols,
+    { vmAddr: PC, size: 0x100n });
+  const map = buildStringMap({
+    program, symbols,
+    strings: [{ addr: STR, text: 'ガチャを引く' }],
+  });
+  eq(map.hasClasses, false);
+  eq(map.byStrings, true);
+  const gacha = map.subsystems.find((s) => s.id === 'gacha');
+  ok(gacha, 'ガチャの部品がない');
+  eq(gacha.functions.length, 1, '参照している関数を結びつけていない');
+  eq(gacha.functions[0].addr, PC);
+});
+
+/* ────────────────────────────────────────────────────────────
+   説明の 1 段目（ひとこと）
+   ──────────────────────────────────────────────────────────── */
+
+const { oneLiner, whatItDoes, changeVerb, typeWord, placeName, fieldName } =
+  await import('../js/narrate.js');
+
+test('ONELINER: 値の変更を、まず 1 行で言える', async () => {
+  const fields = new FieldIndex(await buildObjcModel(sampleReader(), SAMPLE_CLASSLIST));
+  const m = build([
+    'ldr w8, [x0, #0x20]',
+    'sub w8, w8, #0xa',
+    'str w8, [x0, #0x20]',
+    'ret',
+  ]);
+  const rep = buildFunctionReport({
+    model: m, region: REGION, fields,
+    owner: { className: 'BattleManager', sel: 'applyDamage:', kind: '-' },
+  });
+  const line = oneLiner(rep, null);
+  has(line, 'hp', 'フィールド名が出ていない');
+  has(line, '10 減らす', '何をどれだけ変えるのかが出ていない');
+  ok(line.indexOf('x0 + 0x20') < 0, 'レジスタとずらし幅のまま説明している');
+
+  const what = whatItDoes(rep);
+  ok(what.length >= 1);
+  has(what.join('\n'), 'hp');
+});
+
+test('ONELINER: 変更がなければ、別の言い方に落とす', () => {
+  const m = build(['bl #0x100000100', 'ret'], { '0x100000100': '_NSLog' });
+  const rep = buildFunctionReport({ model: m, region: REGION });
+  ok(oneLiner(rep, null).length > 0, '1 行の説明が作れていない');
+
+  const empty = buildFunctionReport({ model: build(['ret']), region: REGION });
+  has(oneLiner(empty, null), '特定できません', '分からないときに分からないと言えていない');
+});
+
+test('ONELINER: 演算の言い換えに漏れがない', () => {
+  for (const op of ['add', 'sub', 'mul', 'sdiv', 'fmul', 'lsl', 'mov', 'and', 'zzz']) {
+    ok(changeVerb({ op, imm: 3n }).length > 0, op + ' の言い換えがない');
+    ok(changeVerb({ op, imm: null }).length > 0, op + '（数なし）の言い換えがない');
+  }
+  ok(changeVerb(null).length > 0);
+  has(changeVerb({ op: 'add', imm: 5n }), '5 増やす');
+  has(changeVerb({ op: 'sub', imm: 5n }), '5 減らす');
+  has(changeVerb({ op: 'lsl', imm: 2n }), '4 倍');
+});
+
+test('ONELINER: 型と場所の言い換え', () => {
+  eq(typeWord({ kind: 'int', bytes: 4 }), '4 バイトの整数');
+  eq(typeWord({ kind: 'object', className: 'NSString' }), 'NSString のオブジェクト');
+  eq(typeWord({ kind: 'unknown' }), null, '分からない型に名前を付けている');
+  eq(typeWord(null), null);
+  eq(fieldName({ plain: 'hp', className: 'BattleManager' }), 'BattleManager の hp');
+  eq(placeName(null, 'x0', 0x20n), 'x0 + 0x20', 'フィールドが分からないのに名前を作っている');
+  eq(placeName({ plain: 'hp', className: 'C' }, 'x0', 0x20n), 'C の hp');
+});
+
 /* ── まとめ ──────────────────────────────────────────────── */
 
 await Promise.all(pending);

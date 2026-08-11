@@ -89,6 +89,9 @@ export class Backend {
    */
   scanProgram(regionId) { return this.call('scanProgram', { regionId }); }
 
+  /** そのフィールド（クラスの中の位置）を読み書きしている命令を全部探す。 */
+  fieldAccess(params) { return this.call('fieldAccess', params); }
+
   strings(params) { return this.call('strings', params); }
 
   xrefs(params) { return this.call('xrefs', params); }

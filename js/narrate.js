@@ -702,6 +702,62 @@ function uniq(arr) {
 
 const hex = (v) => (v == null ? '' : '0x' + v.toString(16).toUpperCase());
 
+/* ── フィールドの言い換え ────────────────────────────────────
+ *
+ * ここがこのツールでいちばん効く言い換え。
+ *   「x0 + 0x20 の値」  →  「BattleManager の hp」
+ * Objective-C のクラス表から名前が取れたときだけ使う。取れなければ元のまま。
+ */
+
+/** 型を初心者の言葉に。分からなければ null。 */
+export function typeWord(type) {
+  if (!type) return null;
+  switch (type.kind) {
+    case 'int':
+      return pick((type.bytes || 4) + ' バイトの整数', (type.bytes || 4) + '-byte integer');
+    case 'float':
+      return pick((type.bytes || 4) + ' バイトの小数', (type.bytes || 4) + '-byte number with decimals');
+    case 'bool': return pick('はい／いいえ', 'a yes/no flag');
+    case 'object':
+      return type.className
+        ? pick(type.className + ' のオブジェクト', 'a ' + type.className + ' object')
+        : pick('オブジェクト', 'an object');
+    case 'cstring': return pick('文字列', 'text');
+    case 'class': return pick('クラス', 'a class');
+    case 'selector': return pick('メソッド名', 'a method name');
+    case 'block': return pick('あとで実行される処理', 'a block of code');
+    case 'pointer': return pick('ほかの場所を指す値', 'a pointer to somewhere else');
+    case 'struct':
+      return type.name
+        ? pick(type.name + ' というまとまり', 'a ' + type.name + ' structure')
+        : pick('データのまとまり', 'a structure');
+    case 'array': return pick('並び', 'an array');
+    default: return null;
+  }
+}
+
+/** フィールド 1 つの呼び名。「BattleManager の hp」 */
+export function fieldName(field, withClass = true) {
+  if (!field) return null;
+  const plain = field.plain || String(field.name || '').replace(/^_+/, '');
+  if (!plain) return null;
+  if (withClass && field.className) {
+    return pick(field.className + ' の ' + plain, plain + ' of ' + field.className);
+  }
+  return plain;
+}
+
+/**
+ * 場所の呼び名。フィールド名が分かればそれを、分からなければレジスタ＋ずらし幅を。
+ * 分かるふりはしない。
+ */
+export function placeName(field, base, disp) {
+  const named = fieldName(field);
+  if (named) return named;
+  if (!base) return pick('ある場所', 'somewhere');
+  return base + (disp != null ? ' + ' + hex(disp) : '');
+}
+
 /** ★★★★☆ の見た目。 */
 export function starsText(n) {
   const k = Math.max(1, Math.min(5, n | 0));
@@ -812,10 +868,10 @@ export function factText(f) {
     }
     case 'value-update': {
       const op = d.ops && d.ops.length ? d.ops[d.ops.length - 1] : null;
-      const where = d.base ? d.base + (d.disp != null ? ' + ' + hex(d.disp) : '') : pick('ある場所', 'somewhere');
+      const where = placeName(d.field, d.base, d.disp);
       if (d.kind === 'read-modify-write') {
-        return pick(where + ' の値を読み、' + (op ? '「' + opWord(op) + '」という計算をして、' : '') + '同じ場所へ書き戻している',
-          'reads the value at ' + where + (op ? ', ' + opWord(op) : '') + ', and writes it back');
+        return pick(where + ' を読み、' + (op ? '「' + opWord(op) + '」という計算をして、' : '') + '書き戻している',
+          'reads ' + where + (op ? ', ' + opWord(op) : '') + ', and writes it back');
       }
       return pick(where + ' へ値を書き込んでいる', 'writes a value to ' + where);
     }
@@ -873,9 +929,9 @@ export function inferenceText(i) {
         '）から見て、その担当らしい',
       'the method names it sends (' + (d.selectors || []).slice(0, 3).join(', ') + ') suggest what it is for');
     case 'value-holder': {
-      const where = d.base + (d.disp != null ? ' + ' + hex(d.disp) : '');
-      return pick(where + ' に置かれている値が、この関数が扱っている値そのものである可能性が高い',
-        'the value stored at ' + where + ' is probably the value this function works on');
+      const where = placeName(d.field, d.base, d.disp);
+      return pick(where + ' が、この関数が扱っている値そのものである可能性が高い',
+        where + ' is probably the value this function works on');
     }
     case 'threshold-check':
       return pick('決まった数と比べて処理を分けているので、上限や条件の判定が入っていそう',
@@ -920,6 +976,124 @@ export function unknownText(u) {
   }
 }
 
+/* ────────────────────────────────────────────────────────────
+   ひとこと — 説明の一番上の段
+   ────────────────────────────────────────────────────────────
+
+   詳しい説明は、詳しすぎると「で、何がしたい処理なの？」が消える。
+   だから最初に出すのは必ず 1 行にする。詳細は、降りたい人だけが降りる。
+
+   優先順位は「利用者にとっての価値」の順:
+     1. 値を書き換えている（＝改造したい人が探しているもの）
+     2. 何のメソッドか（クラス名とメソッド名が分かっている）
+     3. 何の機能に関わるか（API から）
+     4. 分からない → 分からないと言う                            */
+
+/**
+ * 値をどう変えているか、を 1 語で。「10 減らす」「2 倍にする」。
+ * 数が分からないときは「計算した値だけ減らす」のように、分かる範囲で言う。
+ */
+export function changeVerb(step) {
+  if (!step) return pick('書き換える', 'change');
+  const n = step.imm != null ? step.imm.toString() : null;
+  switch (step.op) {
+    case 'add': case 'adds':
+      return n ? pick(n + ' 増やす', 'add ' + n + ' to') : pick('計算した値だけ増やす', 'increase');
+    case 'sub': case 'subs':
+      return n ? pick(n + ' 減らす', 'subtract ' + n + ' from') : pick('計算した値だけ減らす', 'decrease');
+    case 'mul': case 'madd':
+      return n ? pick(n + ' 倍にする', 'multiply by ' + n) : pick('掛け算で書き換える', 'multiply');
+    case 'msub': return pick('掛け算した値だけ減らす', 'subtract a product from');
+    case 'sdiv': case 'udiv': return pick('割り算で減らす', 'divide');
+    case 'fmul': return pick('小数の掛け算で書き換える', 'multiply (float)');
+    case 'fadd': return pick('小数の足し算で増やす', 'add (float)');
+    case 'fsub': return pick('小数の引き算で減らす', 'subtract (float)');
+    case 'lsl': return n ? pick((2 ** Number(n)) + ' 倍にする', 'multiply by ' + (2 ** Number(n))) : pick('倍にする', 'scale up');
+    case 'lsr': case 'asr': return n ? pick((2 ** Number(n)) + ' で割る', 'divide by ' + (2 ** Number(n))) : pick('割る', 'scale down');
+    case 'and': case 'orr': case 'eor': case 'bic':
+      return pick('ビット単位で書き換える', 'change bit by bit');
+    case 'mov': case 'movz': return pick('別の値に入れ替える', 'replace');
+    case 'csel': case 'csinc': return pick('条件によって入れ替える', 'replace depending on a condition');
+    default: return pick('計算した値に書き換える', 'replace with a computed value');
+  }
+}
+
+/** 関数レポートから、1 行の要約を作る。 */
+export function oneLiner(report, name) {
+  if (!report) return '';
+  const edit = report.editTargets && report.editTargets[0];
+  if (edit) {
+    const where = placeName(edit.field, edit.location.base, edit.location.disp);
+    const step = edit.steps && edit.steps.length ? edit.steps[edit.steps.length - 1] : null;
+    const verb = changeVerb(step);
+    return pick(where + ' を' + verb + '処理です。', 'It will ' + verb + ' ' + where + '.');
+  }
+
+  const owner = report.owner;
+  if (owner && owner.sel) {
+    return pick(owner.className + ' の「' + owner.sel + '」という処理です。',
+      'This is “' + owner.sel + '” on ' + owner.className + '.');
+  }
+
+  const sel = report.selectors && report.selectors[0];
+  if (sel) {
+    return pick('「' + sel + '」というメソッドを呼び出す処理です。',
+      'It sends the message “' + sel + '”.');
+  }
+
+  const purpose = (report.inferences || []).find((i) => i.code === 'purpose-feature');
+  if (purpose && purpose.detail && purpose.detail.features && purpose.detail.features.length) {
+    const label = purpose.detail.features.map(featureLabel).filter(Boolean).join('と');
+    if (label) return pick(label + ' に関わる処理です。', 'It deals with ' + label + '.');
+  }
+
+  const facts = report.facts || [];
+  const calls = facts.find((f) => f.code === 'calls');
+  if (calls && calls.detail && calls.detail.n) {
+    return pick('ほかの処理を ' + calls.detail.n + ' 回呼び出している処理です。',
+      'It calls other routines ' + calls.detail.n + ' times.');
+  }
+  void name;
+  return pick('この処理が何をしているかは、特定できませんでした。',
+    'What this routine does could not be determined.');
+}
+
+/**
+ * 「どういうこと」— ひとことの次の段。3 行まで。
+ * 入力・出力・変えるもの、という人が知りたい順に並べる。
+ */
+export function whatItDoes(report) {
+  const lines = [];
+  if (!report) return lines;
+  const facts = report.facts || [];
+  const at = (code) => facts.find((f) => f.code === code);
+
+  const args = at('arguments');
+  if (args && args.detail.regs.length) {
+    lines.push(pick(
+      '呼び出し元から ' + args.detail.regs.length + ' 個の値を受け取ります。',
+      'It receives ' + args.detail.regs.length + ' value(s) from the caller.'));
+  }
+  const edit = report.editTargets && report.editTargets[0];
+  if (edit) {
+    const where = placeName(edit.field, edit.location.base, edit.location.disp);
+    const type = edit.field && edit.field.type ? typeWord(edit.field.type) : null;
+    lines.push(pick(
+      '変えているのは ' + where + (type ? '（' + type + '）' : '') + 'です。',
+      'What it changes is ' + where + (type ? ' (' + type + ')' : '') + '.'));
+  }
+  if (at('returns-value')) {
+    lines.push(pick('計算した結果を、呼び出し元へ返します。', 'It returns a value to the caller.'));
+  }
+  const callers = at('callers');
+  if (callers) {
+    lines.push(pick(
+      'この処理は ' + callers.detail.n + ' か所から呼ばれています。',
+      'It is called from ' + callers.detail.n + ' place(s).'));
+  }
+  return lines.slice(0, 4);
+}
+
 /** 「次に何をすればいいか」。初心者がいちばん詰まるところ。 */
 export function nextStepText(s) {
   if (!s) return '';
@@ -962,8 +1136,7 @@ export function nextStepText(s) {
  */
 export function updateLines(update) {
   if (!update) return [];
-  const where = update.location.base +
-    (update.location.disp != null ? ' + ' + hex(update.location.disp) : '');
+  const where = placeName(update.field, update.location.base, update.location.disp);
   const lines = [];
   lines.push(pick('変更対象: ' + where, 'Target: ' + where));
   if (update.from) {
