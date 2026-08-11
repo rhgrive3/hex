@@ -49,7 +49,12 @@ function ok(cond, msg) {
   if (!cond) throw new Error(msg || 'expected truthy');
 }
 function eq(a, b, msg) {
-  if (a !== b) throw new Error((msg || 'not equal') + ': got ' + JSON.stringify(a) + ', want ' + JSON.stringify(b));
+  if (a !== b) throw new Error((msg || 'not equal') + ': got ' + show(a) + ', want ' + show(b));
+}
+/** BigInt は JSON にできないので、表示は自前で。 */
+function show(v) {
+  if (typeof v === 'bigint') return '0x' + v.toString(16) + 'n';
+  try { return JSON.stringify(v); } catch { return String(v); }
 }
 function has(haystack, needle, msg) {
   const text = Array.isArray(haystack) ? haystack.join(' / ') : String(haystack);
@@ -739,6 +744,1030 @@ test('SYMBOLS: 復元した名前と関数の先頭を、順番を保ったま�
   eq(idx.functionAt(0x204n).start, 0x200n);
   eq(idx.addNames([]), 0);
   eq(idx.addFunctions(null), 0);
+});
+
+/* ────────────────────────────────────────────────────────────
+   ARM64 の語を直接読む層（js/words.js）
+
+   ここが間違うと、参照関係も呼び出しグラフも全部ずれる。
+   命令の並びは llvm-mc が実際に吐いたバイト列をそのまま使っている。
+   ──────────────────────────────────────────────────────────── */
+
+await import('../js/words.js');
+const W = globalThis.Words;
+const PC = 0x100000000n;
+
+test('WORDS: 実物のエンコードを正しく分類できる', () => {
+  const cases = [
+    ['bl',        0x94000040, 'CALL'],
+    ['blr',       0xd63f0100, 'INDCALL'],
+    ['ret',       0xd65f03c0, 'RET'],
+    ['b',         0x14000010, 'BRANCH'],
+    ['b.lt',      0x5400010b, 'CONDBR'],
+    ['cbz',       0x34000080, 'CONDBR'],
+    ['tbz',       0x36180080, 'CONDBR'],
+    ['ldr w',     0xb9402008, 'LOAD'],
+    ['str w',     0xb9002008, 'STORE'],
+    ['ldp',       0xa9417bfd, 'LOAD'],
+    ['stp!',      0xa9bf7bfd, 'STORE'],
+    ['add imm',   0x11002908, 'ARITH'],
+    ['mul',       0x1b027c20, 'MUL'],
+    ['madd',      0x1b020c20, 'MUL'],
+    ['sdiv',      0x1ac20c20, 'DIV'],
+    ['fmul',      0x1e220820, 'FMUL'],
+    ['fadd',      0x1e622820, 'FARITH'],
+    ['cmp imm',   0x7101911f, 'CMP'],
+    ['cmp reg',   0xeb02003f, 'CMP'],
+    ['tst',       0x7200001f, 'CMP'],
+    ['adrp',      0xb0000000, 'ADRP'],
+    ['mov #5',    0x528000a0, 'MOVIMM'],
+    ['mov reg',   0xaa0203e1, 'MOVREG'],
+    ['nop',       0xd503201f, 'NOP'],
+    ['brk',       0xd4200020, 'TRAP'],
+    ['ldr lit',   0x58000040, 'LITERAL'],
+    ['csel',      0x1a820020, 'CSEL'],
+    ['and',       0x0a020020, 'LOGIC'],
+    ['lsl',       0x531e7420, 'SHIFT'],
+  ];
+  for (const [name, word, want] of cases) {
+    eq(W.decodeWord(word >>> 0, PC).kindName, want, name);
+  }
+});
+
+test('WORDS: 分岐と呼び出しの飛び先を計算できる', () => {
+  eq(W.decodeWord(0x94000040, PC).target, PC + 0x100n, 'bl');
+  eq(W.decodeWord(0x14000010, PC).target, PC + 0x40n, 'b');
+  eq(W.decodeWord(0x5400010b, PC).target, PC + 0x20n, 'b.lt');
+  eq(W.decodeWord(0x58000040, PC).target, PC + 8n, 'ldr literal');
+  // 後ろ向きの分岐（ループ）も符号つきで解ける
+  const back = (0x14000000 | ((-4 >>> 0) & 0x3ffffff)) >>> 0;
+  eq(W.branchImm26(back, PC), PC - 16n, '後ろ向きの b');
+});
+
+test('WORDS: メモリアクセスの大きさとずらし幅を正しく読む', () => {
+  const m = (w) => W.memoryAccess(w >>> 0);
+  eq(m(0xb9402008).disp, 32n, 'ldr w8, [x0,#32]');
+  eq(m(0xb9402008).size, 4);
+  eq(m(0xb9402008).load, true);
+  eq(m(0xb9002008).load, false, 'str は書き込み');
+  eq(m(0xf9400909).disp, 16n, 'ldr x9, [x8,#16]');
+  eq(m(0x39400c41).disp, 3n, 'ldrb は倍率 1');
+  eq(m(0xa9417bfd).disp, 16n, 'ldp のずらし幅');
+  eq(m(0xa9bf7bfd).disp, -16n, 'stp の負のずらし幅');
+  eq(m(0xb85fc020).disp, -4n, 'ldur は符号つき');
+  eq(m(0xb8626820).indexed, true, 'レジスタ添字は場所を特定しない');
+  eq(m(0xb8626820).disp, null);
+  // SIMD の 128 ビット転送は size ビットだけでは分からない
+  eq(m(0x3d800400).size, 16, 'str q0 は 16 バイト');
+  eq(m(0x3d800400).disp, 16n, 'str q0, [x0,#16]');
+});
+
+test('WORDS: adrp + add / adrp + ldr でアドレスを組み立てられる', () => {
+  const adrp = W.pcRelTarget(0xb0000000, 0x100000000n);   // adrp x0, #4096
+  eq(adrp.page, true);
+  eq(adrp.value, 0x100001000n);
+  eq(adrp.reg, 0);
+  const pair = W.pairedOffset(0x9110f000);                // add x0, x0, #1084
+  eq(pair.rn, 0); eq(pair.rd, 0); eq(pair.imm, 1084n);
+  eq(adrp.value + pair.imm, 0x10000143cn, '最終アドレス');
+  // SIMD の ldr で倍率を間違えると、まったく別の場所を指してしまう
+  eq(W.pairedOffset(0x3dc00841).imm, 32n, 'ldr q1, [x2,#32]');
+});
+
+test('WORDS: 分からない語は分類しない（でっちあげない）', () => {
+  eq(W.classifyWord(0), W.KIND.OTHER, '0 埋めは命令として数えない');
+  eq(W.decodeWord(0, PC).target, null);
+  eq(W.classifyWord(0x0000abcd), W.KIND.TRAP, 'udf を見落としている');
+  // どんな 32 ビットでも、落ちずに何かしらの分類を返す
+  for (const w of [0xffffffff, 0x00000001, 0x7fffffff, 0x9fffffff]) {
+    const d = W.decodeWord(w >>> 0, PC);
+    ok(typeof d.kind === 'number' && d.kindName, '0x' + w.toString(16) + ' で落ちている');
+  }
+});
+
+/* ────────────────────────────────────────────────────────────
+   プログラム全体の索引（js/program.js）
+   ──────────────────────────────────────────────────────────── */
+
+const { ProgramIndex } = await import('../js/program.js');
+
+/** 走査結果を手で組み立てる。worker を動かさずに索引の中身を確かめる。 */
+function fakeScan({ calls = [], refs = [], kinds = [], base = PC, words = 64 }) {
+  const callFrom = BigUint64Array.from(calls.map((c) => c[0]));
+  const callTo = BigUint64Array.from(calls.map((c) => c[1]));
+  const refFrom = BigUint64Array.from(refs.map((r) => r[0]));
+  const refTo = BigUint64Array.from(refs.map((r) => r[1]));
+  const refKind = Uint8Array.from(refs.map((r) => r[2] || 0));
+  const kindArr = new Uint8Array(words);
+  for (const [i, k] of kinds) kindArr[i] = k;
+  return {
+    vmAddr: base, words,
+    callFrom, callTo, refFrom, refTo, refKind,
+    kinds: kindArr, kindsCovered: words,
+    callsCapped: false, refsCapped: false,
+  };
+}
+
+test('PROGRAM: 呼び出し元・呼び出し先を辺からたどれる', () => {
+  const symbols = new SymbolIndex({
+    addrs: BigUint64Array.from([PC, PC + 0x40n, PC + 0x80n]),
+    kinds: Uint8Array.from([0, 0, 0]),
+    names: '_battle\n_calcDamage\n_applyDamage',
+    funcs: BigUint64Array.from([PC, PC + 0x40n, PC + 0x80n]),
+  });
+  const scan = fakeScan({
+    calls: [
+      [PC + 0x10n, PC + 0x40n],       // battle → calcDamage
+      [PC + 0x20n, PC + 0x40n],       // battle → calcDamage（2 回目）
+      [PC + 0x50n, PC + 0x80n],       // calcDamage → applyDamage
+    ],
+    words: 64,
+  });
+  const p = new ProgramIndex(scan, symbols, { vmAddr: PC, size: 0x100n });
+
+  const callers = p.callersOf(PC + 0x40n);
+  eq(callers.length, 1, '呼び出し元は 1 つの関数にまとまる');
+  eq(callers[0].addr, PC, '呼び出し元が関数の先頭に解決されていない');
+  eq(callers[0].count, 2, '同じ関数からの 2 回が数えられていない');
+  eq(p.callCountOf(PC + 0x40n), 2);
+
+  const callees = p.calleesOf(PC + 0x40n, PC + 0x80n);
+  eq(callees.length, 1);
+  eq(callees[0].addr, PC + 0x80n);
+  eq(p.callersOf(PC).length, 0, '誰も呼んでいない関数');
+});
+
+test('PROGRAM: 文字列を参照している関数を、参照命令から特定できる', () => {
+  const symbols = new SymbolIndex({
+    addrs: BigUint64Array.from([PC]),
+    kinds: Uint8Array.from([0]),
+    names: '_calcDamage',
+    funcs: BigUint64Array.from([PC, PC + 0x40n]),
+  });
+  const STR = 0x200000000n;
+  const scan = fakeScan({
+    refs: [[PC + 0x08n, STR, 0], [PC + 0x50n, STR + 4n, 0]],
+  });
+  const p = new ProgramIndex(scan, symbols, { vmAddr: PC, size: 0x100n });
+
+  eq(p.refSitesTo(STR).length, 1, 'ちょうどそのアドレスだけを拾う');
+  // 文字列の長さぶんを 1 つの対象として扱えば、途中を指す参照も拾える
+  eq(p.refSitesTo(STR, 16n).length, 2);
+  const users = p.functionsReferencing(STR, 16n);
+  eq(users.length, 2, '2 つの関数が参照している');
+  eq(users[0].addr, PC);
+  eq(users[1].addr, PC + 0x40n);
+  eq(p.refsFrom(PC, PC + 0x40n).length, 1, 'この関数が指しているデータ');
+});
+
+test('PROGRAM: 関数ごとの命令の内訳を数えられる（推測ではなく計数）', () => {
+  const K = W.KIND;
+  const symbols = new SymbolIndex({
+    addrs: new BigUint64Array(0), kinds: new Uint8Array(0), names: '',
+    funcs: BigUint64Array.from([PC, PC + 0x20n]),
+  });
+  const scan = fakeScan({
+    kinds: [[0, K.LOAD], [1, K.MUL], [2, K.MUL], [3, K.STORE], [4, K.CMP], [5, K.RET],
+      [8, K.FMUL], [9, K.CALL]],
+    words: 32,
+  });
+  const p = new ProgramIndex(scan, symbols, { vmAddr: PC, size: 0x80n });
+  const s = p.statsOf(PC, PC + 0x20n);
+  eq(s.mul, 2); eq(s.load, 1); eq(s.store, 1); eq(s.cmp, 1);
+  eq(s.numeric, 2, '掛け算は数値計算として数える');
+  eq(s.total, 8, '関数の語数');
+  const rest = p.statsOf(PC + 0x20n, PC + 0x30n);
+  eq(rest.fmul, 1); eq(rest.call, 1);
+});
+
+test('PROGRAM: 索引がなくても落ちない', () => {
+  const p = new ProgramIndex(null, null, null);
+  eq(p.callCount, 0);
+  eq(p.callersOf(PC).length, 0);
+  eq(p.refSitesTo(PC).length, 0);
+  eq(p.functionStartOf(PC), null);
+  eq(p.statsOf(PC, PC + 4n).covered, false);
+  eq(p.mostCalled().length, 0);
+});
+
+/* ────────────────────────────────────────────────────────────
+   目的から探す（js/goals.js, js/rank.js）
+   ──────────────────────────────────────────────────────────── */
+
+const { parseGoal, goalFromPreset, matchText, expandTerms } = await import('../js/goals.js');
+const { rankCandidates, breakdown, REASON, scoreToConfidence } = await import('../js/rank.js');
+
+test('GOAL: 自由入力を、探せる語に開ける', () => {
+  const g = parseGoal('敵にダメージを与える処理');
+  ok(g, '目的が作れていない');
+  eq(g.id, 'damage', 'ダメージのプリセットに寄せられていない');
+  ok(matchText(g, 'damage_calc'), '英語の識別子に当たらない');
+  ok(matchText(g, 'ダメージ計算'), '日本語の文言に当たらない');
+  eq(matchText(g, 'zzz'), null);
+
+  const free = parseGoal('ほげほげ');
+  eq(free.free, true, '知らない言葉は自由目的として扱う');
+  ok(matchText(free, 'ほげほげ設定'), '入力そのものは手がかりとして使う');
+
+  const terms = expandTerms('コインを増やしたい');
+  ok(terms.some((t2) => t2.word === 'coin'), '日本語から英語の語に開けていない');
+  eq(parseGoal('  '), null);
+});
+
+test('GOAL: 手がかりの濃さで点が変わる（記号だらけは下げる）', () => {
+  const g = goalFromPreset('login');
+  const good = matchText(g, 'ログインに失敗しました');
+  const junk = matchText(g, '%@/login/%@%@%@%@%@%@%@%@%@%@%@%@%@%@%@%@');
+  ok(good.score > 0, '文言に当たらない');
+  ok(good.score > junk.score, '記号だらけの文字列を下げていない');
+});
+
+test('RANK: 名前だけの一致より、参照と命令の裏づけがある関数を上に出す', () => {
+  const NAMED = PC;              // 名前だけが一致する関数
+  const REAL = PC + 0x40n;       // 文字列を参照し、計算して書き戻している関数
+  const STR = 0x200000000n;
+  const symbols = new SymbolIndex({
+    addrs: BigUint64Array.from([NAMED, REAL]),
+    kinds: Uint8Array.from([0, 0]),
+    names: '_damageLabelText\nsub_realwork',
+    funcs: BigUint64Array.from([NAMED, REAL, PC + 0x80n]),
+  });
+  const K = W.KIND;
+  const scan = fakeScan({
+    refs: [[REAL + 8n, STR, 0]],
+    calls: [[PC + 0x84n, REAL], [PC + 0x88n, REAL], [PC + 0x8cn, REAL]],
+    kinds: [[16, K.LOAD], [17, K.MUL], [18, K.MUL], [19, K.STORE], [20, K.CMP]],
+    words: 64,
+  });
+  const program = new ProgramIndex(scan, symbols, { vmAddr: PC, size: 0x100n });
+  const goal = goalFromPreset('damage');
+  const res = rankCandidates({
+    goal,
+    strings: [{ addr: STR, text: 'damage dealt to enemy' }],
+    program, symbols, region: { vmAddr: PC, size: 0x100n },
+  });
+
+  ok(res.candidates.length >= 2, '候補が足りない');
+  eq(res.candidates[0].addr, REAL, '名前だけの一致が上に来てしまっている');
+  const codes = res.candidates[0].reasons.map((r) => r.code);
+  ok(codes.includes(REASON.STRING_REF), '文字列の参照が根拠に入っていない');
+  ok(codes.includes(REASON.NUMERIC), '計算の実在が根拠に入っていない');
+  ok(codes.includes(REASON.STORE), '書き戻しが根拠に入っていない');
+  ok(codes.includes(REASON.POPULAR), '呼ばれる回数が根拠に入っていない');
+  ok(res.candidates[0].score > res.candidates[1].score);
+  ok(res.candidates[0].stars >= res.candidates[1].stars);
+});
+
+test('RANK: 点数の内訳の合計が、表示している点数と一致する', () => {
+  const STR = 0x200000000n;
+  const symbols = new SymbolIndex({
+    addrs: BigUint64Array.from([PC]), kinds: Uint8Array.from([0]),
+    names: '_coinCount', funcs: BigUint64Array.from([PC]),
+  });
+  const program = new ProgramIndex(fakeScan({ refs: [[PC + 4n, STR, 0]] }), symbols,
+    { vmAddr: PC, size: 0x100n });
+  const res = rankCandidates({
+    goal: goalFromPreset('money'),
+    strings: [{ addr: STR, text: 'not enough coins' }],
+    program, symbols, region: { vmAddr: PC, size: 0x100n },
+  });
+  const c = res.candidates[0];
+  ok(c, '候補がない');
+  const sum = breakdown(c).reduce((a, r) => a + r.points, 0);
+  ok(Math.abs(sum - Math.round(c.score)) <= breakdown(c).length,
+    '内訳の合計 (' + sum + ') が点数 (' + c.score + ') と合わない');
+  // 確度は 100% にはならない（静的解析だけで「確実」とは言わない）
+  ok(c.confidence < 1);
+  ok(scoreToConfidence(0) === 0);
+});
+
+test('RANK: 手がかりがなければ候補を作らない（無理に埋めない）', () => {
+  const symbols = new SymbolIndex({ funcs: BigUint64Array.from([PC]) });
+  const program = new ProgramIndex(fakeScan({}), symbols, { vmAddr: PC, size: 0x100n });
+  const res = rankCandidates({
+    goal: goalFromPreset('gacha'),
+    strings: [{ addr: 0x300000000n, text: 'hello world' }],
+    program, symbols, region: { vmAddr: PC, size: 0x100n },
+  });
+  eq(res.candidates.length, 0);
+  eq(res.matchedStrings.length, 0);
+});
+
+test('RANK: 一致した文字列を誰も参照していないときは、そう言える', () => {
+  const symbols = new SymbolIndex({ funcs: BigUint64Array.from([PC]) });
+  const program = new ProgramIndex(fakeScan({ calls: [[PC, PC]] }), symbols,
+    { vmAddr: PC, size: 0x100n });
+  const res = rankCandidates({
+    goal: goalFromPreset('gacha'),
+    strings: [{ addr: 0x300000000n, text: 'ガチャを引く' }],
+    program, symbols, region: { vmAddr: PC, size: 0x100n },
+  });
+  eq(res.candidates.length, 0, '参照がないのに候補を作っている');
+  eq(res.matchedStrings.length, 1);
+  ok(res.notes.includes('strings-unreferenced'), '理由を説明していない');
+});
+
+/* ────────────────────────────────────────────────────────────
+   データフロー（js/dataflow.js）
+   ──────────────────────────────────────────────────────────── */
+
+const {
+  findValueUpdates, traceForward, traceBackward, constantComparisons, hotLocations,
+} = await import('../js/dataflow.js');
+
+test('FLOW: 読む → 足す → 同じ場所へ書き戻す、をひとつながりに拾える', () => {
+  const m = build([
+    'ldr w8, [x0, #0x20]',
+    'add w8, w8, #0xa',
+    'str w8, [x0, #0x20]',
+    'ret',
+  ]);
+  const ups = findValueUpdates(m);
+  eq(ups.length, 1, '変更の連鎖が 1 つ見つからない');
+  const u = ups[0];
+  eq(u.kind, 'read-modify-write');
+  eq(u.location.base, 'x0');
+  eq(u.location.disp, 0x20n);
+  eq(u.location.size, 4);
+  eq(u.from.row, 0, '読み出しの行が違う');
+  eq(u.store.row, 2, '書き込みの行が違う');
+  eq(u.steps.length, 1);
+  eq(u.steps[0].op, 'add');
+  eq(u.steps[0].imm, 10n);
+  eq(u.level, 'confirmed', '往復が閉じているのに確度が低い');
+});
+
+test('FLOW: 別の場所へ移しているだけなら「往復」と言わない', () => {
+  const m = build([
+    'ldr w8, [x0, #0x20]',
+    'str w8, [x1, #0x30]',
+    'ret',
+  ]);
+  const u = findValueUpdates(m)[0];
+  ok(u, '連鎖が拾えていない');
+  eq(u.kind, 'move', '別の場所への書き込みを往復と誤認している');
+  ok(u.confidence < 1);
+});
+
+test('FLOW: 掛け算をはさむ計算も追える（ダメージ計算の形）', () => {
+  const m = build([
+    'ldr w8, [x0, #0x10]',
+    'ldr w9, [x0, #0x14]',
+    'mul w8, w8, w9',
+    'str w8, [x1, #0x8]',
+    'ret',
+  ]);
+  const u = findValueUpdates(m)[0];
+  ok(u, '連鎖が拾えていない');
+  eq(u.steps[0].op, 'mul');
+  eq(u.from.disp, 0x10n, '読み出し元をさかのぼれていない');
+});
+
+test('FLOW: この値が次にどこで使われるかを追える', () => {
+  const m = build([
+    'ldr w8, [x0, #0x20]',
+    'add w8, w8, #1',
+    'str w8, [x0, #0x20]',
+    'cmp w8, #0x64',
+    'mov x0, x8',
+    'ret',
+  ]);
+  const uses = traceForward(m, 0, 'x8');
+  const kinds2 = uses.map((u) => u.use);
+  has(kinds2.join(','), 'compute', '計算に使われていることを見ていない');
+  has(kinds2.join(','), 'store', '書き込みに使われていることを見ていない');
+  has(kinds2.join(','), 'compare', '比較に使われていることを見ていない');
+  eq(traceForward(m, 0, null).length, 0, 'レジスタ不明なら何も言わない');
+
+  const back = traceBackward(m, 2, 'x8');
+  ok(back.length >= 1, '作り主をさかのぼれていない');
+  eq(back[0].kind, 'compute');
+});
+
+test('FLOW: しきい値との比較を拾える', () => {
+  const m = build([
+    'cmp w8, #0x64',
+    'b.lt #0x100000000',
+    'fcmp s0, #0.0',
+    'ret',
+  ]);
+  const cs = constantComparisons(m);
+  ok(cs.length >= 1, '定数との比較を拾えていない');
+  eq(cs[0].value, 0x64n);
+  eq(cs[0].register, 'x8');
+});
+
+test('FLOW: よく触っている場所をまとめられる', () => {
+  const m = build([
+    'ldr w8, [x19, #0x40]',
+    'add w8, w8, #1',
+    'str w8, [x19, #0x40]',
+    'ldr w9, [x19, #0x40]',
+    'ret',
+  ]);
+  const hot = hotLocations(m);
+  ok(hot.length >= 1);
+  eq(hot[0].base, 'x19');
+  eq(hot[0].loads, 2);
+  eq(hot[0].stores, 1);
+});
+
+test('FLOW 異常: 読み出しのない書き込み・壊れた列でも落ちない', () => {
+  const m = build([
+    'str w8, [x0, #0x20]',
+    '.byte 0x00, 0x01, 0x02, 0x03',
+    'ldr w8, [x0]',
+    'ret',
+  ]);
+  const ups = findValueUpdates(m);
+  ok(Array.isArray(ups), '落ちている');
+  for (const u of ups) ok(u.location, '場所のない連鎖を返している');
+  eq(traceForward(m, 999, 'x8').length, 0, '存在しない行でも空で返す');
+  eq(traceBackward(m, 999, 'x8').length, 0);
+  ok(Array.isArray(findValueUpdates({ instructions: [] })));
+});
+
+/* ────────────────────────────────────────────────────────────
+   制御フロー（js/cfg.js）
+   ──────────────────────────────────────────────────────────── */
+
+const { buildCfg, outline } = await import('../js/cfg.js');
+
+const rowOfBase = (base, count) => (addr) => {
+  if (addr == null) return null;
+  const rel = addr - base;
+  if (rel < 0n || rel >= BigInt(count) * 4n) return null;
+  return Number(rel / 4n);
+};
+
+test('CFG: if / else と合流を見分けられる', () => {
+  const lines = [
+    'cmp w0, #0',            // 0
+    'b.eq #0x100000010',     // 1 → row 4
+    'mov w1, #1',            // 2  … 条件に合わなかった道
+    'b #0x100000014',        // 3 → row 5
+    'mov w1, #2',            // 4  … 条件に合った道
+    'add w1, w1, #1',        // 5  … 合流
+    'ret',                   // 6
+  ];
+  const m = build(lines);
+  const cfg = buildCfg(m, { rowOfAddress: rowOfBase(BASE, lines.length) });
+  ok(cfg.nodes.length >= 3, 'ブロックに割れていない');
+  const kinds3 = cfg.shapes.map((s) => s.kind);
+  ok(kinds3.includes('if') || kinds3.includes('if-else'), '枝分かれを見つけられていない: ' + kinds3.join(','));
+  // 合流点には 2 本の入り口がある
+  const join = cfg.nodes.find((n) => n.pred.length >= 2);
+  ok(join, '合流点が見つからない');
+});
+
+test('CFG: ループ（後ろへの分岐）を見分けられる', () => {
+  const lines = [
+    'mov w0, #0',            // 0
+    'add w0, w0, #1',        // 1  ← ループの入口
+    'cmp w0, #0xa',          // 2
+    'b.lt #0x100000004',     // 3 → row 1
+    'ret',                   // 4
+  ];
+  const m = build(lines);
+  const cfg = buildCfg(m, { rowOfAddress: rowOfBase(BASE, lines.length) });
+  const loop = cfg.shapes.find((s) => s.kind === 'loop');
+  ok(loop, 'ループを見つけられていない');
+  eq(cfg.nodes[loop.header].startRow, 1);
+  ok(cfg.backEdges.length >= 1);
+});
+
+test('CFG: 途中で帰る道（early return）を見分けられる', () => {
+  const lines = [
+    'cbz x0, #0x10000000c',  // 0 → row 3
+    'ldr w8, [x0]',          // 1
+    'b #0x100000014',        // 2 → row 5
+    'mov w0, #0',            // 3
+    'ret',                   // 4
+    'ret',                   // 5
+  ];
+  const m = build(lines);
+  const cfg = buildCfg(m, { rowOfAddress: rowOfBase(BASE, lines.length) });
+  ok(cfg.shapes.some((s) => s.kind === 'early-return' || s.kind === 'if'),
+    '途中で帰る形を見分けられていない');
+  ok(cfg.exits.length >= 1, '出口がない');
+});
+
+test('CFG: 行き先が実行時に決まる分岐は「分からない」ままにする', () => {
+  const m = build(['ldr x8, [x0]', 'br x8']);
+  const cfg = buildCfg(m, { rowOfAddress: rowOfBase(BASE, 2) });
+  const last = cfg.nodes[cfg.nodes.length - 1];
+  ok(last.succ.some((s) => s.kind === 'unknown'), '行き先不明を握りつぶしている');
+  ok(outline(cfg).length >= 1);
+});
+
+/* ────────────────────────────────────────────────────────────
+   関数レポート（js/report.js）— 事実 / 推測 / 不明の分離
+   ──────────────────────────────────────────────────────────── */
+
+const { buildFunctionReport, CERTAINTY } = await import('../js/report.js');
+const {
+  factText, inferenceText, unknownText, nextStepText, reasonText, updateLines,
+  useText, shapeText, starsText, certaintyWord,
+  findingTitle, findingWhy, notableReasonText, autoStepText,
+} = await import('../js/narrate.js');
+
+const REGION = { vmAddr: BASE, size: 0x1000n };
+
+test('REPORT: 事実・推測・不明が混ざらない', () => {
+  const m = build([
+    'stp x29, x30, [sp, #-0x10]!',
+    'mov x29, sp',
+    'ldr w8, [x0, #0x20]',
+    'add w8, w8, #0xa',
+    'str w8, [x0, #0x20]',
+    'cmp w8, #0x64',
+    'bl #0x100000100',
+    'ldp x29, x30, [sp], #0x10',
+    'ret',
+  ], { '0x100000100': '_applyDamage' });
+
+  const rep = buildFunctionReport({ model: m, region: REGION, name: '-[Battle calc]' });
+  ok(rep, 'レポートが作れていない');
+  ok(rep.facts.every((f) => f.certainty === CERTAINTY.FACT), '事実の欄に事実でないものが混ざっている');
+  ok(rep.inferences.every((i) => i.certainty === CERTAINTY.INFERENCE), '推測の欄が汚れている');
+  ok(rep.unknowns.every((u) => u.certainty === CERTAINTY.UNKNOWN), '不明の欄が汚れている');
+  ok(rep.inferences.every((i) => i.confidence > 0 && i.confidence <= 1), '確度のない推測がある');
+  ok(rep.inferences.every((i) => Array.isArray(i.evidence)), '根拠のない推測がある');
+
+  const codes = rep.facts.map((f) => f.code);
+  ok(codes.includes('value-update'), '値の書き換えを事実として拾っていない');
+  ok(codes.includes('compare-const'), 'しきい値の比較を拾っていない');
+  ok(codes.includes('call-named'), '呼んでいる相手を拾っていない');
+  // 静的解析の限界は必ず書く
+  ok(rep.unknowns.some((u) => u.code === 'runtime-meaning'), '限界を言っていない');
+});
+
+test('REPORT: 変更候補には必ず但し書きが付く', () => {
+  const m = build([
+    'ldr w8, [x0, #0x20]',
+    'add w8, w8, #0xa',
+    'str w8, [x0, #0x20]',
+    'ret',
+  ]);
+  const rep = buildFunctionReport({ model: m, region: REGION });
+  eq(rep.editTargets.length, 1);
+  eq(rep.editTargets[0].caveat, 'runtime-unverified', '保証できないことを明示していない');
+  ok(rep.editTargets[0].evidence.length >= 3, '根拠が足りない');
+  const lines = updateLines(rep.editTargets[0]);
+  eq(lines.length, 4, '変更対象・変更前・演算・変更後の 4 行になっていない');
+  has(lines, '変更対象');
+  has(lines, '10 を足す');
+});
+
+test('REPORT: 目的を渡すと、関係の有無を根拠つきで言う', () => {
+  const m = build(['adrp x0, #0x100001000', 'add x0, x0, #0x10', 'bl #0x100000100', 'ret'],
+    { '0x100000100': '_log' });
+  attachTexts(m, new Map([['' + 0x100001010n, 'damage applied: %d']]), new Set());
+  const rep = buildFunctionReport({
+    model: m, region: REGION, goal: goalFromPreset('damage'), name: 'sub_1',
+  });
+  const rel = rep.inferences.find((i) => i.code === 'goal-related');
+  ok(rel, '目的との関係を言っていない');
+  ok(rel.evidence.length >= 1, '関係があると言いながら根拠がない');
+  ok(rel.confidence < 1, '静的解析だけで断定している');
+
+  const other = buildFunctionReport({ model: m, region: REGION, goal: goalFromPreset('ads') });
+  ok(other.unknowns.some((u) => u.code === 'goal-unrelated'), '関係がないときにそう言えていない');
+});
+
+test('REPORT: 次に何をすればいいかを必ず出す', () => {
+  const m = build(['ldr w8, [x0, #0x20]', 'str w8, [x0, #0x20]', 'ret']);
+  const rep = buildFunctionReport({ model: m, region: REGION });
+  ok(rep.nextSteps.length >= 2, '案内が足りない');
+  ok(rep.nextSteps.every((s) => nextStepText(s).length > 0), '文にできない案内がある');
+  ok(rep.nextSteps.some((s) => s.code === 'verify-runtime'), '最後に実機で確かめる案内がない');
+});
+
+test('REPORT 異常: 空の関数でも落ちず、分からないと言える', () => {
+  const m = build(['.byte 0x00, 0x00, 0x00, 0x00']);
+  const rep = buildFunctionReport({ model: m, region: REGION });
+  ok(rep, '落ちている');
+  ok(rep.unknowns.length >= 1);
+  eq(rep.editTargets.length, 0, '根拠なく変更候補を出している');
+  eq(buildFunctionReport({}), null, 'モデルなしでも null を返す');
+});
+
+test('NARRATE: 新しいコードがすべて日本語になる（言い漏らしがない）', () => {
+  const factCodes = ['instructions', 'calls', 'call-named', 'selector', 'string-ref', 'loops',
+    'conditionals', 'memory', 'returns-value', 'arguments', 'numeric', 'value-update',
+    'compare-const', 'callers', 'no-callers', 'indirect-calls'];
+  const details = {
+    instructions: { n: 1 }, calls: { n: 1, named: 1 }, 'call-named': { name: '_x' },
+    selector: { selector: 's' }, 'string-ref': { text: 'a', addr: 1n }, loops: { n: 1 },
+    conditionals: { n: 1 }, memory: { loads: 1, stores: 1 }, 'returns-value': null,
+    arguments: { regs: [0] }, numeric: { mul: 1 },
+    'value-update': { kind: 'read-modify-write', base: 'x0', disp: 8n, ops: [{ op: 'add', imm: 1n }] },
+    'compare-const': { value: 1n, register: 'x0' }, callers: { n: 1 }, 'no-callers': null,
+    'indirect-calls': { n: 1 },
+  };
+  for (const code of factCodes) {
+    ok(factText({ code, detail: details[code] }).length > 0, code + ' の文がない');
+  }
+  for (const code of ['purpose-feature', 'purpose-selector', 'value-holder', 'threshold-check', 'goal-related']) {
+    const text = inferenceText({
+      code, detail: { features: ['data'], selectors: ['a'], base: 'x0', disp: 8n, label: 'HP' },
+    });
+    ok(text.length > 0, code + ' の文がない');
+  }
+  for (const code of ['indirect-target', 'unnamed-calls', 'no-strings', 'truncated',
+    'stats-partial', 'goal-unrelated', 'runtime-meaning']) {
+    ok(unknownText({ code, detail: { n: 1 } }).length > 0, code + ' の文がない');
+  }
+  for (const code of Object.values(REASON)) {
+    if (code === 'no-evidence') continue;
+    const text = reasonText({
+      code, detail: { text: 'a', name: '_n', mul: 1, n: 2, toName: 'x', fromName: 'y' },
+    });
+    ok(text.length > 0, code + ' の理由の文がない');
+  }
+  for (const use of ['argument', 'store', 'compare', 'compute', 'address', 'returned',
+    'overwritten', 'join', 'read']) {
+    ok(useText({ use, detail: {} }).length > 0, use + ' の文がない');
+  }
+  for (const kind of ['loop', 'if', 'if-else', 'early-return']) {
+    ok(shapeText({ kind }).length > 0, kind + ' の文がない');
+  }
+  eq(starsText(5), '★★★★★');
+  eq(starsText(0), '★☆☆☆☆', '星は最低 1 つ');
+  ok(certaintyWord('fact').length > 0);
+  ok(certaintyWord('inference').length > 0);
+  ok(certaintyWord('unknown').length > 0);
+});
+
+/* ────────────────────────────────────────────────────────────
+   自動解析（js/auto.js）— 何も指示しなくても分かることを全部やる
+   ──────────────────────────────────────────────────────────── */
+
+const { autoAnalyze, autoNextSteps, notableFunctions, findings } = await import('../js/auto.js');
+
+/** 目的つきの小さな世界を 1 つ作る。 */
+function tinyWorld() {
+  const CALC = PC;                 // ダメージ計算らしい関数
+  const CALLER = PC + 0x40n;       // それを呼ぶ関数
+  const STR = 0x200000000n;
+  const URL = 0x200000100n;
+  const symbols = new SymbolIndex({
+    addrs: BigUint64Array.from([CALC, CALLER]),
+    kinds: Uint8Array.from([0, 0]),
+    names: '_calcDamage\n_battleTurn',
+    funcs: BigUint64Array.from([CALC, CALLER, PC + 0x80n]),
+  });
+  const K = W.KIND;
+  const scan = fakeScan({
+    refs: [[CALC + 8n, STR, 0], [CALLER + 8n, URL, 0]],
+    calls: [[CALLER + 0x10n, CALC], [PC + 0x84n, CALC], [PC + 0x88n, CALC]],
+    kinds: [[0, K.LOAD], [1, K.MUL], [2, K.STORE], [3, K.CMP], [4, K.RET],
+      [16, K.LOAD], [17, K.STORE], [18, K.CALL]],
+    words: 64,
+  });
+  const region = { vmAddr: PC, size: 0x100n };
+  return {
+    symbols, region,
+    program: new ProgramIndex(scan, symbols, region),
+    strings: [
+      { addr: STR, text: 'damage dealt to enemy: %d' },
+      { addr: URL, text: 'https://api.example.com/v1/battle' },
+      { addr: 0x200000200n, text: 'jailbreak detected' },
+    ],
+    CALC, CALLER,
+  };
+}
+
+test('AUTO: 何も指示しなくても、目的ごとの最有力候補まで出す', async () => {
+  const w = tinyWorld();
+  const report = await autoAnalyze({
+    strings: w.strings, program: w.program, symbols: w.symbols, region: w.region,
+    deepLimit: 0,
+  });
+  ok(report.goals.length >= 1, '目的が 1 つも採点されていない');
+  const dmg = report.goals.find((g) => g.goal.id === 'damage');
+  ok(dmg, 'ダメージの目的が出ていない');
+  eq(dmg.best.addr, w.CALC, '最有力候補が違う');
+  ok(dmg.best.reasons.length >= 2, '根拠が 1 本しかない');
+  // 強い目的が先に来る
+  ok(report.goals[0].best.score >= report.goals[report.goals.length - 1].best.score);
+  eq(report.stats.calls, 3);
+  eq(report.stats.strings, 3);
+});
+
+test('AUTO: 通信先や改造検知を、参照元つきで拾う', () => {
+  const w = tinyWorld();
+  const f = findings(w.strings, w.program, w.symbols);
+  const endpoint = f.find((x) => x.id === 'endpoint');
+  ok(endpoint, '通信先を拾えていない');
+  eq(endpoint.users.length, 1, '参照元をたどれていない');
+  eq(endpoint.users[0].name, '_battleTurn');
+  ok(f.some((x) => x.id === 'anticheat'), '改造検知の手がかりを拾えていない');
+  // 参照元が見つからないものも捨てずに残す（ただし後ろに回す）
+  const anti = f.find((x) => x.id === 'anticheat');
+  eq(anti.users.length, 0);
+  ok(f.indexOf(endpoint) < f.indexOf(anti), '参照元つきを先に出していない');
+});
+
+test('AUTO: 名前や文字列に頼らず「注目すべき処理」を選べる', () => {
+  const w = tinyWorld();
+  const notable = notableFunctions(w.program, w.symbols, w.region);
+  ok(notable.length >= 1, '注目すべき処理が出ていない');
+  eq(notable[0].addr, w.CALC, 'よく呼ばれ、計算している関数が先頭に来ていない');
+  const codes = notable[0].reasons.map((r) => r.code);
+  ok(codes.includes('called'), '呼ばれた回数を根拠にしていない');
+  ok(codes.includes('numeric'), '計算の実在を根拠にしていない');
+  ok(notable[0].reasons.every((r) => notableReasonText(r).length > 0), '文にできない根拠がある');
+});
+
+test('AUTO: 上位だけ中身まで読み、値の書き換えを自動で見つける', async () => {
+  const w = tinyWorld();
+  const asked = [];
+  const model = build([
+    'ldr w8, [x0, #0x20]',
+    'mul w8, w8, w1',
+    'str w8, [x0, #0x20]',
+    'cmp w8, #0x64',
+    'ret',
+  ]);
+  const report = await autoAnalyze({
+    strings: w.strings, program: w.program, symbols: w.symbols, region: w.region,
+    deepLimit: 2,
+    analyze: async (addr) => { asked.push(addr); return model; },
+  });
+  ok(asked.length > 0, '深掘りをしていない');
+  ok(asked.length <= 2, '深掘りの上限を守っていない');
+  ok(report.deep.length >= 1, '深掘りの結果がない');
+  const hit = report.deep.find((d) => d.updates.length);
+  ok(hit, '値の書き換えを見つけられていない');
+  eq(hit.updates[0].location.disp, 0x20n);
+  ok(hit.compares.length >= 1, 'しきい値を拾えていない');
+
+  const steps = autoNextSteps(report);
+  ok(steps.length >= 2);
+  eq(steps[0].code, 'open-update', '最初の案内が「書き換えている場所を見る」になっていない');
+  ok(steps.every((s) => autoStepText(s).length > 0), '文にできない案内がある');
+});
+
+test('AUTO: 途中でやめられる（大きなファイルで待たせない）', async () => {
+  const w = tinyWorld();
+  let n = 0;
+  const report = await autoAnalyze({
+    strings: w.strings, program: w.program, symbols: w.symbols, region: w.region,
+    deepLimit: 4,
+    analyze: async () => { n++; return null; },
+    isCancelled: () => n >= 1,
+  });
+  ok(report.notes.includes('deep-cancelled') || report.deep.length === 0, '中断できていない');
+  ok(n <= 2, '中断後も解析を続けている');
+});
+
+test('AUTO 異常: 手がかりが何もなくても落ちず、そう言える', async () => {
+  const symbols = new SymbolIndex({ funcs: BigUint64Array.from([PC]) });
+  const report = await autoAnalyze({
+    strings: [], program: new ProgramIndex(fakeScan({}), symbols, { vmAddr: PC, size: 0x100n }),
+    symbols, region: { vmAddr: PC, size: 0x100n }, deepLimit: 0,
+  });
+  eq(report.goals.length, 0);
+  eq(report.findings.length, 0);
+  const steps = autoNextSteps(report);
+  ok(steps.some((s) => s.code === 'nothing-found'), '見つからなかったことを言えていない');
+  // 索引そのものがなくても落ちない
+  const empty = await autoAnalyze({});
+  ok(empty && Array.isArray(empty.goals));
+});
+
+/* ────────────────────────────────────────────────────────────
+   クラスとフィールド（js/objc.js, js/fields.js）
+
+   [x0, #0x20] を self.hp と言えるかどうか。ここがこのツールの分かりやすさの要。
+   ──────────────────────────────────────────────────────────── */
+
+const { buildObjcModel, decodeTypeEncoding } = await import('../js/objc.js');
+const { FieldIndex, plainFieldName } = await import('../js/fields.js');
+const { buildSampleBinary } = await import('../js/sample.js');
+
+/** 練習用サンプルを 1 枚のメモリとして読む（本物と同じ経路で確かめる）。 */
+function sampleReader() {
+  const bytes = buildSampleBinary();
+  const base = 0x100000000n;
+  return async (addr, len) => {
+    const off = Number(addr - base);
+    if (off < 0 || off >= bytes.length) return null;
+    return bytes.subarray(off, Math.min(bytes.length, off + len));
+  };
+}
+const SAMPLE_CLASSLIST = { vmAddr: 0x100004100n, size: 8n };
+
+test('OBJC: クラス表から、値の名前・型・位置まで取り出せる', async () => {
+  const model = await buildObjcModel(sampleReader(), SAMPLE_CLASSLIST);
+  eq(model.count, 1, 'クラスが読めていない');
+  const c = model.classes[0];
+  eq(c.name, 'BattleManager');
+  eq(c.instanceSize, 0x28);
+  eq(c.methods.length, 2, 'メソッドが読めていない');
+  eq(c.methods[0].sel, 'applyDamage:');
+  eq(c.methods[0].kind, '-');
+
+  eq(c.ivars.length, 2, '値（ivar）が読めていない');
+  eq(c.ivars[0].name, '_hp');
+  eq(c.ivars[0].offset, 0x20, '位置が違う');
+  eq(c.ivars[0].size, 4);
+  eq(c.ivars[0].type.kind, 'int');
+  eq(c.ivars[0].type.bytes, 4);
+  eq(c.ivars[1].name, '_attack');
+  eq(c.ivars[1].offset, 0x24);
+});
+
+test('OBJC: 型の書き方を、意味の分かる形にほどける', () => {
+  eq(decodeTypeEncoding('i').kind, 'int');
+  eq(decodeTypeEncoding('i').bytes, 4);
+  eq(decodeTypeEncoding('q').bytes, 8);
+  eq(decodeTypeEncoding('f').kind, 'float');
+  eq(decodeTypeEncoding('B').kind, 'bool');
+  eq(decodeTypeEncoding('@"NSString"').kind, 'object');
+  eq(decodeTypeEncoding('@"NSString"').className, 'NSString');
+  eq(decodeTypeEncoding('@?').kind, 'block');
+  eq(decodeTypeEncoding('^i').kind, 'pointer');
+  eq(decodeTypeEncoding('{CGRect=dddd}').kind, 'struct');
+  eq(decodeTypeEncoding('{CGRect=dddd}').name, 'CGRect');
+  eq(decodeTypeEncoding('').kind, 'unknown', '読めないものを読めたことにしている');
+  eq(decodeTypeEncoding('zzz').kind, 'unknown');
+});
+
+test('FIELDS: [x0, #0x20] を self の hp として解決できる', async () => {
+  const model = await buildObjcModel(sampleReader(), SAMPLE_CLASSLIST);
+  const fields = new FieldIndex(model);
+  eq(fields.classCount, 1);
+  eq(fields.fieldCount, 2);
+
+  const owner = fields.ownerOf(model.classes[0].methods[0].addr);
+  ok(owner, 'メソッドの持ち主が分からない');
+  eq(owner.className, 'BattleManager');
+  eq(owner.sel, 'applyDamage:');
+
+  const hit = fields.resolveAccess({ base: 'x0', disp: 0x20n }, 'BattleManager');
+  ok(hit, '解決できていない');
+  eq(hit.plain, 'hp');
+  eq(hit.certain, true, 'x0 なら self と言い切ってよい');
+  eq(hit.exact, true);
+
+  // 別のレジスタ経由は「self とは限らない」ので確定させない
+  const viaX19 = fields.resolveAccess({ base: 'x19', disp: 0x20n }, 'BattleManager');
+  ok(viaX19 && viaX19.certain === false, 'self でないものを self と言い切っている');
+  eq(fields.resolveAccess({ base: 'x8', disp: 0x20n }, 'BattleManager'), null,
+    '関係のないレジスタまで self 扱いしている');
+  eq(fields.resolveAccess({ base: 'x0', disp: 0x99n }, 'BattleManager'), null,
+    '存在しない位置に名前を付けている');
+  eq(fields.resolveAccess({ base: 'x0', disp: 0x20n }, 'NoSuchClass'), null);
+});
+
+test('FIELDS: 名前で値を探せる（HP を探したい、に答える）', async () => {
+  const fields = new FieldIndex(await buildObjcModel(sampleReader(), SAMPLE_CLASSLIST));
+  const hp = fields.findFields(/hp/i);
+  eq(hp.length, 1);
+  eq(hp[0].className, 'BattleManager');
+  eq(hp[0].field.offset, 0x20);
+  eq(fields.findFields('zzz').length, 0);
+  eq(fields.findClasses(/battle/i).length, 1);
+  eq(plainFieldName('_hp'), 'hp');
+  eq(plainFieldName('__attack'), 'attack');
+});
+
+test('FIELDS 異常: クラス表がなくても落ちない', () => {
+  const empty = new FieldIndex(null);
+  eq(empty.classCount, 0);
+  eq(empty.ownerOf(1n), null);
+  eq(empty.fieldAt('X', 0), null);
+  eq(empty.resolveAccess({ base: 'x0', disp: 0n }, 'X'), null);
+  eq(empty.findFields('a').length, 0);
+});
+
+/* ────────────────────────────────────────────────────────────
+   アプリの地図（js/appmap.js）
+   ──────────────────────────────────────────────────────────── */
+
+const { buildAppMap, buildStringMap, classifyClassName } = await import('../js/appmap.js');
+
+/** クラス名だけを持つ、簡単な索引を作る。 */
+function classIndex(names) {
+  return new FieldIndex({
+    classes: names.map((n, i) => ({
+      name: n, addr: BigInt(i + 1), superName: null, instanceSize: 8,
+      methods: [{ addr: BigInt(0x1000 + i * 0x10), sel: 'run', kind: '-' }],
+      ivars: [],
+    })),
+  });
+}
+
+test('MAP: クラス名から担当を見分けられる', () => {
+  const of = (name) => {
+    const hits = classifyClassName(name);
+    return hits.length ? hits.sort((a, b) => b.points - a.points)[0].id : null;
+  };
+  eq(of('BattleManager'), 'battle');
+  eq(of('ShopViewController'), 'purchase', 'ViewController の語に引っぱられている');
+  eq(of('APIClient'), 'network');
+  eq(of('GachaResultView'), 'gacha');
+  eq(of('JailbreakDetector'), 'anticheat');
+  eq(of('SaveDataManager'), 'save');
+  eq(of('ZzzThing'), null, '当たらない名前に無理やり分類を付けている');
+});
+
+test('MAP: アプリを部品ごとに束ねる（1 画面に出るものを減らす）', () => {
+  const fields = classIndex([
+    'BattleManager', 'EnemyUnit', 'ShopViewController', 'APIClient', 'ZzzThing',
+  ]);
+  const map = buildAppMap({ fields, strings: [] });
+  ok(map.hasClasses);
+  eq(map.classCount, 5);
+  const battle = map.subsystems.find((s) => s.id === 'battle');
+  ok(battle, 'バトルの部品がない');
+  eq(battle.classCount, 2, 'BattleManager と EnemyUnit がまとまっていない');
+  ok(battle.icon.length > 0, '見出しの絵文字がない');
+  ok(map.subsystems.every((s) => s.id !== 'unknown'), '未分類を部品として出している');
+  eq(map.unclassified, 1, '分類できなかったものを数えていない');
+  // どの部品にも、なぜそう分類したかの根拠が残っている
+  ok(battle.classes[0].why.length >= 1, '分類の根拠がない');
+});
+
+test('MAP: クラスがないバイナリでも、文字列から粗い地図を作れる', () => {
+  const symbols = new SymbolIndex({
+    addrs: BigUint64Array.from([PC]), kinds: Uint8Array.from([0]),
+    names: 'sub_a', funcs: BigUint64Array.from([PC, PC + 0x40n]),
+  });
+  const STR = 0x200000000n;
+  const program = new ProgramIndex(fakeScan({ refs: [[PC + 4n, STR, 0]] }), symbols,
+    { vmAddr: PC, size: 0x100n });
+  const map = buildStringMap({
+    program, symbols,
+    strings: [{ addr: STR, text: 'ガチャを引く' }],
+  });
+  eq(map.hasClasses, false);
+  eq(map.byStrings, true);
+  const gacha = map.subsystems.find((s) => s.id === 'gacha');
+  ok(gacha, 'ガチャの部品がない');
+  eq(gacha.functions.length, 1, '参照している関数を結びつけていない');
+  eq(gacha.functions[0].addr, PC);
+});
+
+/* ────────────────────────────────────────────────────────────
+   説明の 1 段目（ひとこと）
+   ──────────────────────────────────────────────────────────── */
+
+const { oneLiner, whatItDoes, changeVerb, typeWord, placeName, fieldName } =
+  await import('../js/narrate.js');
+
+test('ONELINER: 値の変更を、まず 1 行で言える', async () => {
+  const fields = new FieldIndex(await buildObjcModel(sampleReader(), SAMPLE_CLASSLIST));
+  const m = build([
+    'ldr w8, [x0, #0x20]',
+    'sub w8, w8, #0xa',
+    'str w8, [x0, #0x20]',
+    'ret',
+  ]);
+  const rep = buildFunctionReport({
+    model: m, region: REGION, fields,
+    owner: { className: 'BattleManager', sel: 'applyDamage:', kind: '-' },
+  });
+  const line = oneLiner(rep, null);
+  has(line, 'hp', 'フィールド名が出ていない');
+  has(line, '10 減らす', '何をどれだけ変えるのかが出ていない');
+  ok(line.indexOf('x0 + 0x20') < 0, 'レジスタとずらし幅のまま説明している');
+
+  const what = whatItDoes(rep);
+  ok(what.length >= 1);
+  has(what.join('\n'), 'hp');
+});
+
+test('ONELINER: 変更がなければ、別の言い方に落とす', () => {
+  const m = build(['bl #0x100000100', 'ret'], { '0x100000100': '_NSLog' });
+  const rep = buildFunctionReport({ model: m, region: REGION });
+  ok(oneLiner(rep, null).length > 0, '1 行の説明が作れていない');
+
+  const empty = buildFunctionReport({ model: build(['ret']), region: REGION });
+  has(oneLiner(empty, null), '特定できません', '分からないときに分からないと言えていない');
+});
+
+test('ONELINER: 演算の言い換えに漏れがない', () => {
+  for (const op of ['add', 'sub', 'mul', 'sdiv', 'fmul', 'lsl', 'mov', 'and', 'zzz']) {
+    ok(changeVerb({ op, imm: 3n }).length > 0, op + ' の言い換えがない');
+    ok(changeVerb({ op, imm: null }).length > 0, op + '（数なし）の言い換えがない');
+  }
+  ok(changeVerb(null).length > 0);
+  has(changeVerb({ op: 'add', imm: 5n }), '5 増やす');
+  has(changeVerb({ op: 'sub', imm: 5n }), '5 減らす');
+  has(changeVerb({ op: 'lsl', imm: 2n }), '4 倍');
+});
+
+test('ONELINER: 型と場所の言い換え', () => {
+  eq(typeWord({ kind: 'int', bytes: 4 }), '4 バイトの整数');
+  eq(typeWord({ kind: 'object', className: 'NSString' }), 'NSString のオブジェクト');
+  eq(typeWord({ kind: 'unknown' }), null, '分からない型に名前を付けている');
+  eq(typeWord(null), null);
+  eq(fieldName({ plain: 'hp', className: 'BattleManager' }), 'BattleManager の hp');
+  eq(placeName(null, 'x0', 0x20n), 'x0 + 0x20', 'フィールドが分からないのに名前を作っている');
+  eq(placeName({ plain: 'hp', className: 'C' }, 'x0', 0x20n), 'C の hp');
 });
 
 /* ── まとめ ──────────────────────────────────────────────── */

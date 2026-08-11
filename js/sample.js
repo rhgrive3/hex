@@ -47,6 +47,10 @@ const subImm = (rd, rn, imm, bits = 64) =>
 const addReg = (rd, rn, rm, bits = 64) =>
   u((bits === 64 ? 0x8b000000 : 0x0b000000) | (rm << 16) | (rn << 5) | rd);
 
+/** sub Rd, Rn, Rm */
+const subReg = (rd, rn, rm, bits = 64) =>
+  u((bits === 64 ? 0xcb000000 : 0x4b000000) | (rm << 16) | (rn << 5) | rd);
+
 /** cmp Rn, Rm  （subs xzr, Rn, Rm） */
 const cmpReg = (rn, rm, bits = 32) =>
   u((bits === 64 ? 0xeb000000 : 0x6b000000) | (rm << 16) | (rn << 5) | XZR);
@@ -103,15 +107,19 @@ const STRINGS = [
   'sum_to(10) = %d\n',
   '/tmp/sample-practice.log',
   'practice mode: nothing here is real',
+  // 「目的から探す」の練習用。ゲームらしい言葉を、実際に参照する形で入れておく。
+  'damage dealt to enemy: %d\n',
+  'player hp is now %d\n',
 ];
 
 /**
  * 命令列を組み立てる。
  * ラベルの位置が決まってから分岐先を埋めたいので、2 回まわす。
  */
-function assemble(textAddr, stubsAddr, cstringAddr) {
+function assemble(textAddr, stubsAddr, strAddrs) {
   const label = {};
   let out = [];
+  const cstringAddr = strAddrs[0];
 
   const build = () => {
     out = [];
@@ -157,28 +165,68 @@ function assemble(textAddr, stubsAddr, cstringAddr) {
     put(ldp(29, 30, SP, 16, 'post'));    // ldp x29, x30, [sp], #16
     put(RET);
 
-    /* ── int main(void) — ローカル変数と、3 回の呼び出し ──── */
-    label._main = here();
+    /* ── int apply_damage(unit *u, int atk) ──────────────────
+       ゲームの中でいちばんよくある形を、そのまま入れてある。
+
+         u->hp が unit + 0x20、攻撃倍率が unit + 0x24。
+         damage = atk * rate;  u->hp -= damage;  0 より下がったら 0 で止める。
+
+       「読み込む → 計算する → 同じ場所へ書き戻す」という、
+       このツールが「変更候補」として拾う形そのものです。         */
+    label._apply_damage = here();
     put(stp(29, 30, SP, -32, 'pre'));    // stp x29, x30, [sp, #-32]!
+    put(movFromSp(29));                  // mov x29, sp
+    put(strImm(0, SP, 16, 64));          // str x0, [sp, #16]   … unit を控える
+    put(ldrImm(8, 0, 0x20, 32));         // ldr w8, [x0, #0x20] … 今の HP
+    put(ldrImm(9, 0, 0x24, 32));         // ldr w9, [x0, #0x24] … 攻撃倍率
+    put(mul(9, 1, 9, 32));               // mul w9, w1, w9      … ダメージ = 攻撃力 × 倍率
+    put(subReg(8, 8, 9, 32));            // sub w8, w8, w9      … HP を減らす
+    put(strImm(8, 0, 0x20, 32));         // str w8, [x0, #0x20] … 同じ場所へ書き戻す
+    put(cmpImm(8, 0, 32));               // cmp w8, #0
+    const bAlive = out.length; put(0);   // b.gt alive
+    put(movz(8, 0, 32));                 // mov w8, #0          … 0 より下は 0 で止める
+    put(ldrImm(0, SP, 16, 64));          // ldr x0, [sp, #16]
+    put(strImm(8, 0, 0x20, 32));         // str w8, [x0, #0x20]
+    label.alive = here();
+    put(strImm(8, SP, 12, 32));          // str w8, [sp, #12]   … 呼び出しをまたいで残す
+    const adrpDmg = here();
+    put(adrp(0, adrpDmg, strAddrs[4]));  // adrp x0, "damage dealt…"
+    put(addImm(0, 0, Number(strAddrs[4] & 0xfffn)));
+    const bPutsDmg = out.length; put(0); // bl _puts
+    put(ldrImm(0, SP, 12, 32));          // ldr w0, [sp, #12]   … 残った HP を返す
+    put(ldp(29, 30, SP, 32, 'post'));
+    put(RET);
+
+    /* ── int main(void) — ローカル変数と、4 回の呼び出し ──── */
+    label._main = here();
+    put(stp(29, 30, SP, -64, 'pre'));    // stp x29, x30, [sp, #-64]!
     put(movFromSp(29));                  // mov x29, sp
     put(movz(0, 3, 32));                 // mov w0, #3      … 第 1 引数
     put(movz(1, 4, 32));                 // mov w1, #4      … 第 2 引数
     const bAdd = out.length; put(0);     // bl _add
-    put(strImm(0, SP, 28, 32));          // str w0, [sp, #28]  … ローカル変数へ
+    put(strImm(0, SP, 8, 32));           // str w0, [sp, #8]   … ローカル変数へ
     put(movz(0, 10, 32));                // mov w0, #10
     const bSum = out.length; put(0);     // bl _sum_to
-    put(ldrImm(1, SP, 28, 32));          // ldr w1, [sp, #28]  … さっきの値を戻す
+    put(ldrImm(1, SP, 8, 32));           // ldr w1, [sp, #8]   … さっきの値を戻す
     put(addReg(0, 0, 1, 32));            // add w0, w0, w1
-    put(strImm(0, SP, 24, 32));          // str w0, [sp, #24]
+    put(strImm(0, SP, 12, 32));          // str w0, [sp, #12]
     const bGreet = out.length; put(0);   // bl _greet
-    put(ldrImm(0, SP, 24, 32));          // ldr w0, [sp, #24]  … 戻り値
-    put(ldp(29, 30, SP, 32, 'post'));
+    // 敵ユニットを 1 体こしらえて、殴ってみる（unit は sp+16 に置く）
+    put(movz(0, 100, 32));               // mov w0, #100
+    put(strImm(0, SP, 48, 32));          // str w0, [sp, #48]  … u->hp   = 100
+    put(movz(0, 3, 32));                 // mov w0, #3
+    put(strImm(0, SP, 52, 32));          // str w0, [sp, #52]  … u->rate = 3
+    put(addImm(0, SP, 16));              // add x0, sp, #16    … 第 1 引数 = unit
+    put(movz(1, 7, 32));                 // mov w1, #7         … 第 2 引数 = 攻撃力
+    const bDamage = out.length; put(0);  // bl _apply_damage
+    put(ldrImm(0, SP, 12, 32));          // ldr w0, [sp, #12]  … 戻り値
+    put(ldp(29, 30, SP, 64, 'post'));
     put(RET);
 
     // 4 バイトの位置合わせ（本物のバイナリでも関数の間に入っています）
     put(NOP);
 
-    return { bGt, bLoop, bPuts, bAdd, bSum, bGreet };
+    return { bGt, bLoop, bPuts, bAdd, bSum, bGreet, bAlive, bPutsDmg, bDamage };
   };
 
   // 1 回目でラベルの位置を確定させ、2 回目で分岐先を埋める。
@@ -190,6 +238,9 @@ function assemble(textAddr, stubsAddr, cstringAddr) {
   out[slots.bAdd] = branch(true, label._add - at(slots.bAdd));
   out[slots.bSum] = branch(true, label._sum_to - at(slots.bSum));
   out[slots.bGreet] = branch(true, label._greet - at(slots.bGreet));
+  out[slots.bAlive] = bcond(COND.gt, label.alive - at(slots.bAlive));
+  out[slots.bPutsDmg] = branch(true, stubsAddr - at(slots.bPutsDmg));
+  out[slots.bDamage] = branch(true, label._apply_damage - at(slots.bDamage));
 
   return { words: out, label };
 }
@@ -201,6 +252,124 @@ function buildStub(stubAddr, gotAddr) {
     ldrImm(16, 16, Number(gotAddr & 0xfffn), 64),
     br(16),
   ];
+}
+
+/* ────────────────────────────────────────────────────────────
+   Objective-C のクラス表
+   ────────────────────────────────────────────────────────────
+
+   本物の iOS アプリには、関数名が削られていても
+
+     - クラス名とメソッド名（実装アドレスつき）
+     - メンバ変数の名前・型・位置
+
+   の表が必ず残っている。ここを読めるかどうかで、解析の分かりやすさが決定的に変わる
+   （[x0, #0x20] が「BattleManager の hp」になる）。練習用のサンプルにも、
+   本物と同じ形で 1 クラスぶん置いておく。
+
+   置くのは、実際のコードと辻褄の合う形にする:
+     _apply_damage は [x0,#0x20] と [x0,#0x24] を触る
+       → BattleManager の _hp (+0x20) と _attack (+0x24)
+   ──────────────────────────────────────────────────────────── */
+
+const OBJC_CLASS_NAME = 'BattleManager';
+
+/**
+ * __objc_classlist と、そこからたどれる構造体一式を組み立てる。
+ *
+ * @param {BigInt} base  この塊を置く先頭アドレス
+ * @param {object} imps  {applyDamage, criticalMultiplier} 実装アドレス
+ * @returns {{bytes:Uint8Array, classListAddr:BigInt, classListSize:number}}
+ */
+function buildObjcData(base, imps) {
+  const size = 0x400;
+  const buf = new Uint8Array(size);
+  const dv = new DataView(buf.buffer);
+  const at = (addr) => Number(addr - base);
+  const ptr = (addr, value) => dv.setBigUint64(at(addr), BigInt(value), true);
+  const u32at = (addr, value) => dv.setUint32(at(addr), value >>> 0, true);
+  const strings = [];
+  let strCursor = 0x300;
+  const str = (text) => {
+    const addr = base + BigInt(strCursor);
+    for (let i = 0; i < text.length; i++) buf[strCursor + i] = text.charCodeAt(i) & 0x7f;
+    buf[strCursor + text.length] = 0;
+    strCursor += text.length + 1;
+    strings.push(text);
+    return addr;
+  };
+
+  const A = {
+    classList: base + 0x00n,
+    cls: base + 0x40n,
+    meta: base + 0x80n,
+    ro: base + 0xc0n,
+    metaRo: base + 0x120n,
+    methods: base + 0x180n,
+    ivars: base + 0x200n,
+    ivarOff0: base + 0x280n,
+    ivarOff1: base + 0x288n,
+  };
+
+  const nameAddr = str(OBJC_CLASS_NAME);
+  const selApply = str('applyDamage:');
+  const selCrit = str('criticalMultiplier');
+  const typesV = str('i24@0:8i16');          // 型の並び（読めなくても解析は続く）
+  const ivarHp = str('_hp');
+  const ivarAtk = str('_attack');
+  const typeInt = str('i');                  // 4 バイトの整数
+
+  // __objc_classlist: クラスへのポインタが 1 本
+  ptr(A.classList, A.cls);
+
+  // class_t: isa(0) super(8) cache(16) vtable(24) data(32)
+  ptr(A.cls + 0n, A.meta);
+  ptr(A.cls + 8n, 0);
+  ptr(A.cls + 32n, A.ro);
+  ptr(A.meta + 0n, 0);
+  ptr(A.meta + 32n, A.metaRo);
+
+  // class_ro_t: flags(0) instanceStart(4) instanceSize(8) reserved(12)
+  //             ivarLayout(16) name(24) baseMethods(32) baseProtocols(40) ivars(48)
+  u32at(A.ro + 4n, 8);
+  u32at(A.ro + 8n, 0x28);                    // 1 個あたり 40 バイト
+  ptr(A.ro + 24n, nameAddr);
+  ptr(A.ro + 32n, A.methods);
+  ptr(A.ro + 48n, A.ivars);
+  u32at(A.metaRo + 4n, 40);
+  u32at(A.metaRo + 8n, 40);
+  ptr(A.metaRo + 24n, nameAddr);
+
+  // method_list_t: entsize(0) count(4) — 1 件 24 バイトの従来形式
+  u32at(A.methods, 24);
+  u32at(A.methods + 4n, 2);
+  ptr(A.methods + 8n, selApply);
+  ptr(A.methods + 16n, typesV);
+  ptr(A.methods + 24n, imps.applyDamage);
+  ptr(A.methods + 32n, selCrit);
+  ptr(A.methods + 40n, typesV);
+  ptr(A.methods + 48n, imps.criticalMultiplier);
+
+  // ivar_list_t: entsize(0) count(4) — 1 件 32 バイト
+  // ivar_t: offset*(0) name*(8) type*(16) alignment(24) size(28)
+  u32at(A.ivars, 32);
+  u32at(A.ivars + 4n, 2);
+  ptr(A.ivars + 8n, A.ivarOff0);
+  ptr(A.ivars + 16n, ivarHp);
+  ptr(A.ivars + 24n, typeInt);
+  u32at(A.ivars + 32n, 2);
+  u32at(A.ivars + 36n, 4);
+  ptr(A.ivars + 40n, A.ivarOff1);
+  ptr(A.ivars + 48n, ivarAtk);
+  ptr(A.ivars + 56n, typeInt);
+  u32at(A.ivars + 64n, 2);
+  u32at(A.ivars + 68n, 4);
+
+  // 位置そのものは別の変数に置かれている（実行時に書き換わるため）
+  ptr(A.ivarOff0, 0x20);
+  ptr(A.ivarOff1, 0x24);
+
+  return { bytes: buf, classListAddr: A.classList, classListSize: 8, size };
 }
 
 /* ────────────────────────────────────────────────────────────
@@ -256,7 +425,7 @@ export function buildSampleBinary() {
   const cmdSizes = [
     segCmd(0),                          // __PAGEZERO
     segCmd(3),                          // __TEXT: __text, __stubs, __cstring
-    segCmd(1),                          // __DATA_CONST: __got
+    segCmd(3),                          // __DATA_CONST: __got, __objc_classlist, __objc_const
     segCmd(0),                          // __LINKEDIT
     align8(12 + dylinker.length + 1),   // LC_LOAD_DYLINKER
     24,                                 // LC_UUID
@@ -276,7 +445,8 @@ export function buildSampleBinary() {
   const textAddr = TEXT_VM + BigInt(textOff);
 
   // まず仮の位置で組み立てて大きさを知り、そのあと本番の位置で組み直す。
-  let probe = assemble(textAddr, textAddr, textAddr);
+  const probeAddrs = STRINGS.map(() => textAddr);
+  let probe = assemble(textAddr, textAddr, probeAddrs);
   const textBytes = probe.words.length * 4;
 
   const stubsOff = textOff + textBytes;
@@ -296,12 +466,20 @@ export function buildSampleBinary() {
   const gotAddr = TEXT_VM + PAGE;              // __DATA_CONST の先頭
   const gotOff = Number(PAGE);
 
+  // Objective-C のクラス表は __DATA_CONST の中に置く（本物と同じ場所）
+  const objcAddr = gotAddr + 0x100n;
+  const objcOff = gotOff + 0x100;
+
   // 本番の位置で組み直す（文字列の位置が決まったので adrp が正しくなる）
-  const text = assemble(textAddr, stubsAddr, stringAddrs[0]);
+  const text = assemble(textAddr, stubsAddr, stringAddrs);
   const stub = buildStub(stubsAddr, gotAddr);
+  const objc = buildObjcData(objcAddr, {
+    applyDamage: text.label._apply_damage,
+    criticalMultiplier: text.label._square,
+  });
 
   /* ── __LINKEDIT の中身 ── */
-  const funcOrder = ['_add', '_square', '_sum_to', '_greet', '_main'];
+  const funcOrder = ['_add', '_square', '_sum_to', '_greet', '_apply_damage', '_main'];
   const funcAddrs = funcOrder.map((n) => text.label[n]).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
 
   const funcStarts = [];
@@ -399,6 +577,10 @@ export function buildSampleBinary() {
   segment('__DATA_CONST', TEXT_VM + PAGE, PAGE, PAGE, PAGE, 3 /* rw- */, [
     { name: '__got', addr: gotAddr, size: 8n, offset: gotOff,
       flags: S_NON_LAZY_SYMBOL_POINTERS, align: 3, reserved1: 1 },
+    { name: '__objc_classlist', addr: objc.classListAddr, size: BigInt(objc.classListSize),
+      offset: objcOff, flags: S_REGULAR, align: 3 },
+    { name: '__objc_const', addr: objcAddr + 8n, size: BigInt(objc.size - 8),
+      offset: objcOff + 8, flags: S_REGULAR, align: 3 },
   ]);
   segment('__LINKEDIT', TEXT_VM + PAGE * 2n, PAGE, BigInt(linkeditOff), BigInt(linkeditSize), 1 /* r-- */, []);
 
@@ -473,6 +655,7 @@ export function buildSampleBinary() {
   w.words(stubsOff, stub);
   w.bytes(cstringOff, cstringData);
   w.u64(gotOff, 0n);                    // __got: 起動時に dyld が埋める場所
+  w.bytes(objcOff, objc.bytes);         // Objective-C のクラス表
 
   /* ── __LINKEDIT ── */
   w.bytes(funcStartsOff, funcStarts);
@@ -505,6 +688,9 @@ export const SAMPLE_GUIDE = {
     ['_square', '受け取った値を掛け算して返します。mul 命令が見られます。'],
     ['_sum_to', '1 から n までを足すループ。cmp と b.gt、そして上に戻る b が見どころです。'],
     ['_greet', '文字列のアドレスを adrp + add で作り、外部の _puts をスタック経由で呼びます。'],
+    ['_apply_damage',
+      'ゲームでいちばんよくある形です。HP を読み込み、攻撃力 × 倍率を引いて、同じ場所へ書き戻します。' +
+      '「調べる」から「ダメージ計算」を選ぶと、この関数が根拠つきで候補に出てきます。'],
     ['_main', 'ローカル変数をスタックに置きながら、上の関数を順に呼びます。ここから読み始めるとよいです。'],
   ],
 };

@@ -24,6 +24,19 @@ import {
 } from './narrate.js';
 import { groupByFeature, detectEngine } from './features.js';
 import { SAMPLE_GUIDE } from './sample.js';
+import { GOALS, goalFromPreset, parseGoal, goalLabel } from './goals.js';
+import { rankCandidates, breakdown, reasonKind } from './rank.js';
+import { buildFunctionReport } from './report.js';
+import { outline } from './cfg.js';
+import { traceForward, regKeyOf } from './dataflow.js';
+import {
+  starsText, reasonText, certaintyWord, factText, inferenceText, unknownText,
+  nextStepText, updateLines, useText, shapeText, roleLabel,
+  findingTitle, findingWhy, notableReasonText, autoStepText,
+  typeWord, placeName, oneLiner, whatItDoes, changeVerb,
+} from './narrate.js';
+import { autoAnalyze, autoNextSteps } from './auto.js';
+import { plainFieldName } from './fields.js';
 
 /* ── ファイル情報 ────────────────────────────────────────── */
 
@@ -400,24 +413,18 @@ export function showFunctions(app) {
       render();
       return;
     }
-    // LC_FUNCTION_STARTS がない → 命令の並びから推測する
+    // LC_FUNCTION_STARTS がない → 命令の並びから推測する（推測は app 側に一本化）
     status.textContent = t('functions.analyzing');
-    app.backend.onScanProgress = (p) => {
-      if (!p.all) return;
-      fill.style.width = Math.min(100, Math.round((p.done / p.all) * 100)) + '%';
-    };
     try {
-      const res = await app.backend.guessFunctions(region.id);
-      app.backend.onScanProgress = null;
+      const guessed = await app.ensureFunctions(region, (p) => {
+        if (!p.all) return;
+        fill.style.width = Math.min(100, Math.round((p.done / p.all) * 100)) + '%';
+      });
       fill.style.width = '100%';
-      if (res.cancelled) { status.textContent = ''; return; }
-      sym.setGuessedFunctions(res.starts);
-      app.viewer.setSymbols(sym);
-      all = sym.functionList(region);
-      status.textContent = t('functions.hintNoSymbols');
+      all = guessed.functionList(region);
+      status.textContent = all.length ? t('functions.hintNoSymbols') : t('functions.none');
       render();
     } catch (err) {
-      app.backend.onScanProgress = null;
       status.textContent = '';
       alertDialog(t('search.failed'), err.message || String(err));
     }
@@ -831,20 +838,8 @@ export function showFeatures(app) {
   });
 }
 
-/** 文字列を集める。__cstring などが第一候補で、なければ今のセクション。 */
-async function collectStrings(app) {
-  const regions = app.store.get('regions') || [];
-  const targets = regions.filter((r) => r.size > 0n &&
-    (r.cstrings || /string|cstring|objc_method|objc_class|const/i.test(r.section || '')));
-  const current = app.store.get('currentRegion');
-  const use = targets.length ? targets.slice(0, 6) : (current ? [current] : []);
-  const out = [];
-  for (const r of use) {
-    const res = await app.backend.strings({ regionId: r.id, min: 4 });
-    for (const s of res.results) out.push({ addr: s.addr, text: s.text, region: r });
-  }
-  return out;
-}
+/** 文字列を集める。収集とキャッシュは app 側に置いてある（何度も走査しないため）。 */
+function collectStrings(app) { return app.ensureStrings(); }
 
 /** ある機能に属する言葉の一覧。 */
 function showFeatureWords(app, feature) {
@@ -1463,7 +1458,20 @@ function renderDetail(app, sheet, root, d, row, region) {
     actions.append(button(t('detail.showFunction'), 'chip', () => {
       sheet.close(); showFunctionSummary(app, row);
     }));
+    actions.append(button(pick('この関数を調べる', 'Investigate this function'), 'chip', () => {
+      sheet.close(); showFunctionReport(app, d.address, app.lastGoal);
+    }));
+    // 解析済みの関数の中の行なら、その値がこのあとどこへ行くかまで辿れる
+    if (app.semantic && app.semantic.regionId === (region && region.id) &&
+        app.semantic.model.blockOfRow(row)) {
+      actions.append(button(pick('この値の行き先を追う', 'Follow this value'), 'chip', () => {
+        sheet.close(); showValueFlow(app, app.semantic.model, row, region);
+      }));
+    }
   }
+  actions.append(button(pick('アドレスの対応', 'Address mapping'), 'chip', () => {
+    showAddressInfo(app, d.address);
+  }));
   root.append(actions);
 }
 
@@ -1497,7 +1505,14 @@ export function instructionMenu(app, row, x, y) {
       action: () => showBlockDetail(app, app.semantic.model, sb, app.store.get('currentRegion')),
     }] : []),
     { label: t('detail.showFunction'), action: () => showFunctionSummary(app, row) },
+    { label: pick('この関数を調べる（事実と推測）', 'Investigate this function'),
+      action: () => showFunctionReport(app, d.address, app.lastGoal) },
+    ...(sb ? [{
+      label: pick('この値の行き先を追う', 'Follow this value'),
+      action: () => showValueFlow(app, app.semantic.model, row, app.store.get('currentRegion')),
+    }] : []),
     { label: t('detail.findRefs'), action: () => showXrefs(app, d.address) },
+    { label: pick('アドレスの対応を見る', 'Show address mapping'), action: () => showAddressInfo(app, d.address) },
     '-',
     { label: t('detail.copyAddress'), action: () => copyText(addrHex(d.address), t('toast.copyAddress')) },
     { label: t('detail.copyHex'), action: () => copyText(d.bytes || '', t('toast.copyHex')) },
@@ -1505,6 +1520,1394 @@ export function instructionMenu(app, row, x, y) {
     '-',
     { label: t('detail.selectRows'), action: () => app.startSelection(row) },
   ], x, y);
+}
+
+/* ────────────────────────────────────────────────────────────
+   目的から探す — このツールの入口
+   ────────────────────────────────────────────────────────────
+
+   初心者は関数名を知らない。知っているのは「攻撃力を増やしたい」だけ。
+   だからここは「何を調べたいですか？」から始めて、
+
+     目的 → 文字列 → その文字列を参照している命令 → 関数 → 呼び出し関係
+          → 根拠つきの候補 → 関数レポート → 処理 → 命令 → アドレス → バイト
+
+   まで一本の道でつなぐ。途中で「なぜそう言えるのか」を必ず出す。   */
+
+/** 関数の見出し。名前がなければアドレスで。 */
+function fnLabel(app, addr) {
+  if (addr == null) return t('functions.unnamed');
+  const name = app.symbols ? app.symbols.nameAt(addr) : null;
+  return name || 'sub_' + addr.toString(16).toUpperCase();
+}
+
+/** ずらし幅は短い 16 進で。アドレスと違って桁をそろえない（読みにくいので）。 */
+function offsetHex(v) {
+  const n = v < 0n ? -v : v;
+  return (v < 0n ? '-0x' : '0x') + n.toString(16).toUpperCase();
+}
+
+/** 進み具合の表示。走査は worker で走るので、UI は止まらない。 */
+function progressBox(parent, text) {
+  const bar = el('div', 'progress');
+  const fill = el('i');
+  bar.append(fill);
+  const status = el('div', 'hint', text || '');
+  parent.append(bar, status);
+  return {
+    bar, status, fill,
+    set(p) {
+      if (!p || !p.all) return;
+      fill.style.width = Math.min(100, Math.round((p.done / p.all) * 100)) + '%';
+    },
+    say(s) { status.textContent = s; },
+    done() { bar.remove(); status.remove(); },
+  };
+}
+
+/**
+ * 解析の材料（文字列とプログラム索引）をそろえる。
+ * どちらも 1 ファイルにつき 1 回で済み、2 回目からはすぐ返る。
+ */
+async function prepare(app, box) {
+  // クラスとフィールドの名前がいちばん効くので、まずこれを読む
+  if (box) box.say(pick('クラスと、その中の値の名前を読んでいます…', 'Reading classes and their fields…'));
+  await app.ensureObjc();
+  const strings = await app.ensureStrings((p) => {
+    if (box) { box.set(p); box.say(pick('アプリの中の言葉を集めています…', 'Collecting text…')); }
+  });
+  const program = await app.ensureProgram((p) => {
+    if (box) {
+      box.set(p);
+      box.say(p.phase === 'functions'
+        ? pick('関数の切れ目を調べています…', 'Finding function boundaries…')
+        : pick('呼び出し関係とデータ参照を調べています…', 'Mapping calls and data references…'));
+    }
+  });
+  return { strings, program };
+}
+
+/** 目的を選ぶボタンの並び。概要画面と「調べる」画面の両方で使う。 */
+function goalChips(app, onPick) {
+  const wrap = el('div', 'goalchips');
+  for (const g of GOALS) {
+    const b = button((g.icon ? g.icon + ' ' : '') + pick(g.ja, g.en), 'goalchip', () => {
+      onPick(goalFromPreset(g.id));
+    });
+    wrap.append(b);
+  }
+  return wrap;
+}
+
+/** 自由入力。「敵にダメージを与える処理」のような文でも受け取る。 */
+function goalInput(app, onPick) {
+  const field = el('div', 'field');
+  const input = el('input');
+  input.type = 'search';
+  input.placeholder = pick('例: 敵にダメージを与える処理 / コインの増減 / ログイン',
+    'e.g. damage dealt to enemies, coin balance, login');
+  input.autocapitalize = 'off';
+  input.autocomplete = 'off';
+  input.spellcheck = false;
+  const go = () => {
+    const goal = parseGoal(input.value);
+    if (!goal) { toast(pick('調べたいことを入力してください。', 'Type what you want to look for.')); return; }
+    onPick(goal);
+  };
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
+  field.append(input, button(pick('探す', 'Search'), 'chip', go));
+  return field;
+}
+
+/* ── 概要（ファイルを開いて最初に出る画面） ─────────────── */
+
+export function showOverview(app) {
+  const info = app.store.get('fileInfo');
+  if (!info) { toast(t('err.openFirst')); return; }
+  const sheet = new Sheet(pick('自動解析', 'Automatic analysis'), {
+    onClose: () => { app.backend.cancelSearch(); app.backend.onScanProgress = null; },
+  });
+  const body = sheet.body;
+
+  /* 1. 何のファイルか（ここは全部 FACT） */
+  const head = list();
+  const slice = app.currentSlice();
+  head.append(kvRow(pick('形式', 'Format'), info.format +
+    (app.store.get('architecture') ? ' · ' + app.store.get('architecture') : '')));
+  head.append(kvRow(pick('大きさ', 'Size'), sizeText(info.size)));
+  if (slice && slice.info) {
+    head.append(kvRow(pick('種類', 'Type'), slice.info.filetypeName));
+    if (slice.info.encrypted) {
+      head.append(kvRow(pick('暗号化', 'Encrypted'), pick('されています（読めません）', 'yes — cannot be read')));
+    }
+  }
+  const region = app.codeRegion();
+  if (region) head.append(kvRow(pick('コードの区画', 'Code section'), region.name + ' · ' + sizeText(region.size)));
+  body.append(head);
+
+  /*
+   * 2. 目的から探す入口は、1 行だけ置いておく。
+   *    まず見せたいのは「このアプリが何でできているか」なので、
+   *    選択肢を先に並べて画面を埋めない。
+   */
+  const openGoal = (goal) => { sheet.close(); showCandidates(app, goal); };
+  const entry = list();
+  entry.append(tapRow(pick('調べたいものが決まっている', 'I know what I am looking for'), {
+    sub: pick('HP・攻撃力・コイン・ガチャ・通信… から選ぶ／自由に入力する',
+      'Pick HP, attack, coins, gacha, network… or type it yourself'),
+    right: '›',
+    onTap: () => { sheet.close(); showInvestigate(app); },
+  }));
+  body.append(entry);
+
+  /* 3. 裏で走査して、分かったことを足していく */
+  const later = el('div');
+  body.append(later);
+
+  /*
+   * 走査はセクション 1 周ぶん。ふつうの大きさなら一瞬だが、
+   * 数十 MB のコードでは待たせることになるので、そのときは自分で始めてもらう。
+   */
+  const BIG = 24 * 1024 * 1024;
+  if (region && region.size > BigInt(BIG) && !app.program) {
+    const ul = list();
+    ul.append(tapRow(pick('このファイルを詳しく調べる', 'Analyse this file in depth'), {
+      sub: pick('コードが ' + sizeText(region.size) + ' あります。' +
+        '呼び出し関係とデータ参照を索引するので、少し時間がかかります。',
+      'The code is ' + sizeText(region.size) + '; indexing calls and references will take a moment.'),
+      onTap: () => { ul.remove(); run(); },
+    }));
+    later.append(ul);
+  } else {
+    run();
+  }
+
+  function run() {
+    // 一度出した結果は取っておく。開き直すたびに走らせ直さない。
+    const cached = app.autoReport;
+    if (cached && region && cached.key === region.id && cached.gen === app.symbols.gen) {
+      renderAutoReport(app, sheet, later, cached.report, region);
+      return;
+    }
+    const box = progressBox(later, pick('中身を調べています…', 'Looking inside…'));
+    let cancelled = false;
+    sheet.onClose = () => { cancelled = true; app.backend.cancelSearch(); app.backend.onScanProgress = null; };
+
+    prepare(app, box).then(async ({ strings, program }) => {
+      if (cancelled || !sheet.root.isConnected) return;
+      const report = await autoAnalyze({
+        strings, program, symbols: app.symbols, region, fields: app.fields,
+        analyze: makeAnalyzer(app, region),
+        isCancelled: () => cancelled || !sheet.root.isConnected,
+        onProgress: (p) => {
+          box.set({ done: p.done, all: p.all });
+          box.say(autoPhaseText(p.phase));
+        },
+      });
+      box.done();
+      if (cancelled || !sheet.root.isConnected) return;
+      app.autoReport = { report, key: region ? region.id : null, gen: app.symbols.gen };
+      renderAutoReport(app, sheet, later, report, region);
+    }).catch((err) => {
+      box.done();
+      later.append(para(pick('調べているうちに問題が起きました: ', 'Something went wrong: ') +
+        (err && err.message ? err.message : String(err))));
+    });
+  }
+}
+
+function autoPhaseText(phase) {
+  switch (phase) {
+    case 'features': return pick('言葉を機能ごとに分けています…', 'Sorting the text by feature…');
+    case 'goals': return pick('目的ごとに、関係のありそうな関数を採点しています…', 'Scoring candidates for every goal…');
+    case 'notable': return pick('よく使われている処理を選んでいます…', 'Picking the routines that matter…');
+    case 'deep': return pick('有力な関数の中身を読んでいます…', 'Reading the strongest candidates…');
+    default: return pick('まとめています…', 'Wrapping up…');
+  }
+}
+
+/** 自動解析の深掘り用。関数 1 つを解析してモデルだけ返す。 */
+function makeAnalyzer(app, region) {
+  if (!region || !app.store.get('canDisassemble')) return null;
+  const totalRows = Number(region.size / 4n);
+  return async (addr, end) => {
+    const startRow = Number((addr - region.vmAddr) / 4n);
+    if (!(startRow >= 0) || startRow >= totalRows) return null;
+    const endRow = end != null
+      ? Math.min(totalRows - 1, Number((end - region.vmAddr) / 4n) - 1)
+      : Math.min(totalRows - 1, startRow + 512);
+    if (endRow < startRow) return null;
+    // 速さのために文字列は読まない。あとで開いたときに読み足される。
+    const res = await analyzeFunctionCached(app.backend, region, startRow, endRow,
+      app.symbols, null, { texts: false });
+    return res.model;
+  };
+}
+
+/* ────────────────────────────────────────────────────────────
+   アプリの地図 — 上から降りていくための画面
+   ────────────────────────────────────────────────────────────
+
+   部品 → クラス → 値（フィールド）→ 触っている場所 → 命令。
+   1 画面に出るのは常に十数個までにする。数万の関数を一覧にしない。 */
+
+/** 地図の 1 行（部品）。 */
+function subsystemRow(app, sub, onTap) {
+  const parts = [];
+  if (sub.classCount) parts.push(pick(sub.classCount + ' クラス', sub.classCount + ' classes'));
+  if (sub.methods) parts.push(pick(sub.methods + ' メソッド', sub.methods + ' methods'));
+  if (sub.fields) parts.push(pick(sub.fields + ' 個の値', sub.fields + ' fields'));
+  const sample = (sub.classes || []).slice(0, 3).map((c) => c.name).join('、') ||
+    (sub.functions || []).slice(0, 2).map((f) => f.name || fnLabel(app, f.addr)).join('、');
+  return tapRow(sub.icon + ' ' + sub.label, {
+    sub: parts.join('  ·  ') + (sample ? '\n' + trimText(sample, 60) : ''),
+    right: '›',
+    onTap,
+  });
+}
+
+export function showAppMap(app, map) {
+  const m = map || (app.autoReport && app.autoReport.report ? app.autoReport.report.map : null);
+  if (!m || !m.subsystems.length) {
+    toast(pick('地図を作れませんでした。', 'No map could be built.'));
+    return;
+  }
+  const sheet = new Sheet(pick('アプリの地図', 'Map of this app'));
+  const body = sheet.body;
+
+  body.append(para(m.byStrings
+    ? pick('このファイルには Objective-C のクラス表がないため、' +
+      '「どんな言葉を使っているか」だけで大まかに分けています。粗い地図です。',
+    'This binary has no Objective-C class table, so the grouping is based on text alone — a rough map.')
+    : pick('このアプリを、担当ごとの部品に分けました。' +
+      'まず部品を選び、次にクラス、そのクラスが持っている値、と降りていけます。',
+    'The app grouped into parts. Pick a part, then a class, then the values it holds.')));
+
+  const ul = list();
+  for (const sub of m.subsystems) {
+    ul.append(subsystemRow(app, sub, () => { sheet.close(); showSubsystem(app, sub); }));
+  }
+  body.append(ul);
+
+  if (m.unclassified) {
+    const rest = list();
+    rest.append(tapRow(pick('分類できなかったクラス', 'Classes that could not be grouped'), {
+      right: String(m.unclassified),
+      sub: pick('名前からも、使っている言葉からも、担当が読み取れなかったものです',
+        'Nothing in the name, text or calls said what these are for'),
+      onTap: () => {
+        sheet.close();
+        showSubsystem(app, {
+          id: 'unknown', icon: '❓',
+          label: pick('分類できなかったクラス', 'Unclassified'),
+          classes: m.unclassifiedClasses || [], classCount: m.unclassified,
+        });
+      },
+    }));
+    body.append(rest);
+  }
+
+  body.append(para(pick(
+    '※ 部品の分け方は、クラス名・参照している文字列・呼んでいる API の 3 つを足して決めています。' +
+    'どれも実際にバイナリにあるものですが、分類そのものは推測です。',
+    'Grouping combines class names, referenced text and called APIs. All are real, but the grouping itself is a guess.'), 'sub'));
+}
+
+/** 部品 1 つの中身（クラスの一覧）。 */
+export function showSubsystem(app, sub) {
+  const sheet = new Sheet(sub.icon + ' ' + sub.label);
+  const body = sheet.body;
+  const classes = sub.classes || [];
+
+  if (classes.length) {
+    body.append(para(pick(
+      'この部品を担当しているクラスです。上にあるものほど、担当がはっきりしていて、よく使われています。',
+      'The classes in this part, clearest and most-used first.')));
+    const ul = list();
+    for (const c of classes.slice(0, 60)) {
+      const parts = [];
+      if (c.methods) parts.push(pick(c.methods + ' メソッド', c.methods + ' methods'));
+      if (c.fields) parts.push(pick(c.fields + ' 個の値', c.fields + ' fields'));
+      if (c.calls) parts.push(pick('呼ばれた回数 ' + c.calls, 'called ' + c.calls + '×'));
+      if (c.superName) parts.push(pick(c.superName + ' の仲間', 'extends ' + c.superName));
+      ul.append(tapRow(c.name, {
+        sub: parts.join('  ·  '),
+        right: '›',
+        onTap: () => { sheet.close(); showClass(app, c.name); },
+      }));
+    }
+    body.append(ul);
+    if (classes.length > 60) {
+      body.append(para(pick('※ 上位 60 クラスだけ出しています。', 'Showing the top 60 classes only.'), 'sub'));
+    }
+  }
+
+  // クラスがないファイルでは、関数を直接並べる
+  if (sub.functions && sub.functions.length) {
+    body.append(para(pick(
+      'この部品に関係する言葉を使っている関数です。',
+      'Functions that use text belonging to this part.')));
+    const ul = list();
+    for (const f of sub.functions.slice(0, 40)) {
+      ul.append(tapRow(f.name || fnLabel(app, f.addr), {
+        sub: addrHex(f.addr) + (f.samples && f.samples.length
+          ? '\n' + f.samples.map((s) => '「' + trimText(s, 22) + '」').join(' ') : ''),
+        onTap: () => { sheet.close(); showFunctionReport(app, f.addr); },
+      }));
+    }
+    body.append(ul);
+  }
+
+  if (!classes.length && !(sub.functions || []).length) {
+    body.append(para(pick('中身を取り出せませんでした。', 'Nothing could be listed here.')));
+  }
+}
+
+/** クラス 1 つ。ここが「どれがどの処理か」のいちばん分かりやすい単位。 */
+export function showClass(app, className) {
+  const info = app.fields ? app.fields.classInfo(className) : null;
+  if (!info) { toast(pick('このクラスの情報がありません。', 'No information for this class.')); return; }
+  const sheet = new Sheet(className);
+  const body = sheet.body;
+
+  const head = el('div', 'fn-head');
+  head.append(el('div', 'fn-name', className));
+  const meta = [];
+  if (info.superName) meta.push(pick(info.superName + ' を継承', 'extends ' + info.superName));
+  if (info.instanceSize) meta.push(pick('1 個あたり ' + info.instanceSize + ' バイト', info.instanceSize + ' bytes each'));
+  head.append(el('div', 'fn-range', meta.join('  ·  ')));
+  body.append(head);
+
+  /* 1. このクラスが持っている値 — 改造したい人が本当に見たいのはここ */
+  if (info.ivars.length) {
+    body.append(el('div', 'sec-title', pick('このクラスが持っている値', 'The values this class holds')));
+    body.append(para(pick(
+      'クラスの中にある変数です。名前も型も、アプリを作った人が書いたものがそのまま残っています。' +
+      '選ぶと、その値を読み書きしている場所を探せます。',
+      'The variables inside this class — names and types as written by the developers. Pick one to find where it is read and written.')));
+    const ul = list();
+    for (const iv of info.ivars) {
+      const type = typeWord(iv.type);
+      ul.append(tapRow(plainFieldName(iv.name), {
+        sub: (type ? type + '  ·  ' : '') +
+          pick('先頭から ' + offsetHex(BigInt(iv.offset)) + ' の位置', 'at ' + offsetHex(BigInt(iv.offset))),
+        right: '›',
+        onTap: () => { sheet.close(); showField(app, className, iv); },
+      }));
+    }
+    body.append(ul);
+  } else {
+    body.append(para(pick(
+      'このクラスは値（メンバ変数）を持っていないか、表から読み取れませんでした。',
+      'This class holds no fields, or they could not be read.')));
+  }
+
+  /* 2. メソッド */
+  const methods = (info.methods || []).concat(info.classMethods || []);
+  if (methods.length) {
+    body.append(el('div', 'sec-title',
+      pick('このクラスの処理  (' + methods.length + ')', 'Methods  (' + methods.length + ')')));
+    const ul = list();
+    for (const m of methods.slice(0, 80)) {
+      ul.append(tapRow((m.kind || '-') + ' ' + (m.sel || '?'), {
+        sub: addrHex(m.addr),
+        onTap: () => { sheet.close(); showFunctionReport(app, m.addr); },
+      }));
+    }
+    body.append(ul);
+    if (methods.length > 80) {
+      body.append(para(pick('※ 先頭 80 個だけ出しています。', 'Showing the first 80 only.'), 'sub'));
+    }
+  }
+}
+
+/** 値 1 つ。「HP はどこで書き換えられているのか」に答える画面。 */
+export function showField(app, className, field) {
+  const sheet = new Sheet(className + '.' + plainFieldName(field.name), {
+    onClose: () => { app.backend.cancelSearch(); app.backend.onScanProgress = null; },
+  });
+  const body = sheet.body;
+
+  const type = typeWord(field.type);
+  body.append(bigValue(plainFieldName(field.name)));
+  const ul = list();
+  ul.append(kvRow(pick('持ち主', 'Belongs to'), className));
+  if (type) ul.append(kvRow(pick('種類', 'Type'), type));
+  ul.append(kvRow(pick('置かれている位置', 'Position'),
+    offsetHex(BigInt(field.offset)) + pick('（オブジェクトの先頭から）', ' from the start of the object')));
+  if (field.size) ul.append(kvRow(pick('大きさ', 'Size'), field.size + pick(' バイト', ' bytes')));
+  body.append(ul);
+
+  body.append(para(pick(
+    'この値を読み書きしている命令を、コード全体から探します。' +
+    '書き込んでいる場所が、その値を変えている場所です。',
+    'Searching the whole binary for instructions that read or write this value. The writes are where it changes.')));
+
+  const box = progressBox(body, pick('探しています…', 'Searching…'));
+  const results = el('div');
+  body.append(results);
+
+  Promise.all([
+    app.ensureProgram(),
+    app.backend.fieldAccess({
+      regionId: (app.codeRegion() || {}).id,
+      offset: field.offset,
+      size: field.size || 0,
+    }),
+  ]).then(([program, res]) => {
+    box.done();
+    if (!sheet.root.isConnected) return;
+    const sites = res.results || [];
+    if (!sites.length) {
+      results.append(para(pick(
+        'この値を直接読み書きしている命令は見つかりませんでした。' +
+        'プロパティ（setter / getter）ごしにだけ使われている可能性があります。',
+        'No instruction reads or writes this position directly; it may only be used through accessors.')));
+      return;
+    }
+
+    /* 関数ごとにまとめる。同じクラスのメソッドの中にあるものが本命。 */
+    const byFunc = new Map();
+    for (const s of sites) {
+      const fn = program ? program.functionStartOf(s.addr) : null;
+      const key = fn != null ? fn.toString() : 's' + s.addr.toString();
+      if (!byFunc.has(key)) {
+        const owner = fn != null && app.fields ? app.fields.ownerOf(fn) : null;
+        byFunc.set(key, {
+          addr: fn, owner, loads: 0, stores: 0, first: s.addr,
+          sameClass: !!(owner && owner.className === className),
+        });
+      }
+      const e = byFunc.get(key);
+      if (s.kind === 'load') e.loads++; else e.stores++;
+    }
+    const list2 = Array.from(byFunc.values());
+    // 同じクラスの中で、書き込んでいるものを先頭に
+    list2.sort((a, b) => (b.sameClass - a.sameClass) || (b.stores - a.stores) || (b.loads - a.loads));
+
+    const writes = list2.filter((e) => e.stores).length;
+    const sure = list2.filter((e) => e.sameClass).length;
+    results.append(para(pick(
+      sites.length + ' か所で使われていました。うち書き込みは ' +
+        list2.reduce((n, e) => n + e.stores, 0) + ' か所です。',
+      'Used in ' + sites.length + ' places; ' +
+        list2.reduce((n, e) => n + e.stores, 0) + ' of them write to it.')));
+    if (sure) {
+      results.append(para(pick(
+        'このうち ' + sure + ' か所は ' + className + ' 自身のメソッドの中なので、' +
+        'この値のことでほぼ間違いありません。',
+        sure + ' of them are inside ' + className + '’s own methods, so those are almost certainly this value.'), 'sub'));
+    }
+
+    const ul2 = list();
+    for (const e of list2.slice(0, 60)) {
+      const what = [];
+      if (e.stores) what.push(pick('書き込み ' + e.stores + ' か所', e.stores + ' writes'));
+      if (e.loads) what.push(pick('読み出し ' + e.loads + ' か所', e.loads + ' reads'));
+      ul2.append(tapRow(
+        e.owner ? e.owner.kind + '[' + e.owner.className + ' ' + e.owner.sel + ']'
+          : (e.addr != null ? fnLabel(app, e.addr) : addrHex(e.first)),
+        {
+          sub: what.join('  ·  ') + '  ·  ' + addrHex(e.first),
+          tag: e.sameClass ? pick('このクラス', 'this class')
+            : (e.owner ? pick('別のクラス', 'another class') : pick('クラス不明', 'unknown class')),
+          tagClass: e.sameClass ? 'tag-fact' : 'tag-infer',
+          right: e.stores ? '✎' : '',
+          onTap: () => {
+            sheet.close();
+            if (e.addr != null) showFunctionReport(app, e.addr);
+            else app.goToAddress(e.first, { announce: true });
+          },
+        }));
+    }
+    results.append(ul2);
+    results.append(para(pick(
+      '※ 同じ位置（' + offsetHex(BigInt(field.offset)) + '）を触っている命令をすべて拾っています。' +
+      '別のクラスの、たまたま同じ位置にある値が混ざることがあります。' +
+      '「このクラス」の札が付いているものが確実です。',
+      'Every instruction touching this offset is listed. Other classes may use the same offset for something else — the ones tagged as this class are the certain ones.'), 'sub'));
+    void writes;
+  }).catch((err) => {
+    box.done();
+    results.append(para(pick('探せませんでした: ', 'Search failed: ') +
+      (err && err.message ? err.message : String(err))));
+  });
+}
+
+/* ── 自動解析の結果を並べる ─────────────────────────────── */
+
+function renderAutoReport(app, sheet, body, report, region) {
+  const openGoal = (goal) => { sheet.close(); showCandidates(app, goal); };
+
+  /*
+   * 0. まず地図。「このアプリはこういう部品でできている」から始める。
+   *    数万の関数をいきなり見せない、というのがこの画面のいちばんの役目。
+   */
+  const map = report.map;
+  if (map && map.subsystems.length) {
+    body.append(el('div', 'sec-title', pick('このアプリは、こういう部品でできています',
+      'What this app is made of')));
+    const ul = list();
+    for (const sub of map.subsystems.slice(0, 6)) {
+      ul.append(subsystemRow(app, sub, () => { sheet.close(); showSubsystem(app, sub); }));
+    }
+    if (map.subsystems.length > 6) {
+      ul.append(tapRow(pick('部品をすべて見る（' + map.subsystems.length + ' 個）',
+        'See all ' + map.subsystems.length + ' parts'), {
+        onTap: () => { sheet.close(); showAppMap(app, map); },
+      }));
+    }
+    body.append(ul);
+    if (map.byStrings) {
+      body.append(para(pick(
+        '※ Objective-C のクラス表がないため、使っている言葉だけで分けた粗い地図です。',
+        'No class table here, so this grouping comes from text alone — a rough map.'), 'sub'));
+    } else {
+      body.append(para(pick(
+        'クラス ' + (report.stats.classes || 0).toLocaleString() + ' 個、' +
+        'その中の値 ' + (report.stats.fields || 0).toLocaleString() + ' 個の名前が読めました。' +
+        'クラスを開くと、そのクラスが持っている値（HP や所持数）まで名前で分かります。',
+        (report.stats.classes || 0).toLocaleString() + ' classes and ' +
+        (report.stats.fields || 0).toLocaleString() + ' of their fields have readable names.'), 'sub'));
+    }
+  }
+
+  /* 1. いちばん価値があるのは「値を書き換えている場所」。最初に出す。 */
+  const withUpdates = report.deep.filter((d) => d.updates.length);
+  if (withUpdates.length) {
+    body.append(el('div', 'sec-title', pick('値を書き換えている場所（自動で見つけたもの）',
+      'Places that change a value (found automatically)')));
+    body.append(para(pick(
+      '値を読み込み → 計算 → 同じ場所へ書き戻している処理です。' +
+      'ゲームの数値を増やす／減らす処理は、この形をしています。',
+      'These read a value, change it and write it back — the shape a game value change takes.')));
+    const ul = list();
+    for (const d of withUpdates.slice(0, 8)) {
+      const u = d.updates[0];
+      const where = placeName(u.field, u.location.base, u.location.disp);
+      const verb = changeVerb(u.steps && u.steps.length ? u.steps[u.steps.length - 1] : null);
+      ul.append(tapRow(where + ' を' + verb, {
+        sub: (d.owner ? d.owner.kind + '[' + d.owner.className + ' ' + d.owner.sel + ']'
+          : (d.name || fnLabel(app, d.addr))) + '  ·  ' + addrHex(u.store.address) +
+          (d.goalLabel ? '\n' + pick('「' + d.goalLabel + '」の候補として見つかりました',
+            'found while looking for “' + d.goalLabel + '”') : ''),
+        tag: pick('事実', 'fact'), tagClass: 'tag-fact',
+        onTap: () => { sheet.close(); showFunctionReport(app, d.addr); },
+      }));
+    }
+    body.append(ul);
+  }
+
+  /* 2. 目的ごとの最有力候補 */
+  if (report.goals.length) {
+    body.append(el('div', 'sec-title', pick('目的ごとの最有力候補', 'Strongest candidate per goal')));
+    body.append(para(pick(
+      '16 個の目的すべてを自動で採点しました。★ が多いものほど根拠がそろっています。',
+      'All 16 goals were scored automatically; more stars means more evidence.')));
+    const ul = list();
+    for (const g of report.goals) {
+      ul.append(tapRow((g.goal.icon ? g.goal.icon + ' ' : '') + g.goal.text, {
+        sub: fnLabel(app, g.best.addr) + '  ·  ' + addrHex(g.best.addr) + '\n' +
+          (reasonText(g.best.reasons[0]) || ''),
+        right: starsText(g.best.stars),
+        onTap: () => openGoal(g.goal),
+      }));
+    }
+    body.append(ul);
+  }
+
+  /* 3. 気づいたこと（通信先・反解析・暗号…） */
+  if (report.findings.length) {
+    body.append(el('div', 'sec-title', pick('気づいたこと', 'What stood out')));
+    const byId = new Map();
+    for (const f of report.findings) {
+      if (!byId.has(f.id)) byId.set(f.id, []);
+      byId.get(f.id).push(f);
+    }
+    for (const [id, items] of byId) {
+      const ul = list();
+      ul.append(groupRow(findingTitle(id) + '  (' + items.length + ')'));
+      const why = findingWhy(id);
+      for (const f of items.slice(0, 6)) {
+        const users = f.users.filter((u) => u.addr != null);
+        ul.append(tapRow(trimText(f.text, 56), {
+          sub: addrHex(f.addr) + (users.length
+            ? '  ·  ' + pick(users.length + ' か所から使われています', 'used from ' + users.length + ' places')
+            : '  ·  ' + pick('使っている場所は見つかりませんでした', 'no user found')),
+          right: users.length ? '›' : '',
+          onTap: users.length
+            ? () => { sheet.close(); showFunctionReport(app, users[0].addr); }
+            : () => { sheet.close(); showXrefs(app, f.addr); },
+        }));
+      }
+      body.append(ul);
+      if (why) body.append(para(why, 'sub'));
+    }
+  }
+
+  /* 4. 目的とは無関係に「よく効く」関数 */
+  if (report.notable.length) {
+    body.append(el('div', 'sec-title', pick('注目すべき処理（回数と命令から）',
+      'Routines worth a look (by counts, not names)')));
+    const ul = list();
+    for (const n of report.notable.slice(0, 8)) {
+      ul.append(tapRow(n.name || fnLabel(app, n.addr), {
+        sub: addrHex(n.addr) + '\n' +
+          n.reasons.slice(0, 2).map(notableReasonText).filter(Boolean).join('  ·  '),
+        right: String(Math.round(n.score)),
+        onTap: () => { sheet.close(); showFunctionReport(app, n.addr); },
+      }));
+    }
+    body.append(ul);
+  }
+
+  /* 5. 言葉から分かった機能 */
+  if (report.engine) body.append(noteBox(report.engine.note));
+  if (report.features.length) {
+    body.append(el('div', 'sec-title', pick('見つかった手がかり（言葉から）', 'Clues found (from text)')));
+    const ul = list();
+    for (const f of report.features.slice(0, 8)) {
+      ul.append(tapRow(f.label, {
+        right: String(f.items.length),
+        sub: f.items.slice(0, 2).map((i) => '「' + trimText(i.text, 24) + '」').join('  '),
+        onTap: () => { sheet.close(); showFeatureWords(app, f); },
+      }));
+    }
+    body.append(ul);
+  }
+
+  /* 6. 目的から探す（ここまで見て、まだ見つからない人向け） */
+  body.append(el('div', 'sec-title', pick('目的から探す', 'Search by goal')));
+  body.append(goalChips(app, openGoal));
+  body.append(goalInput(app, openGoal));
+
+  /* 7. 次の一手 */
+  const steps = autoNextSteps(report);
+  if (steps.length) {
+    const nb = block(pick('次にすること', 'What to do next'));
+    const ol = el('ul', 'story-steps');
+    steps.forEach((s, i) => {
+      const text = autoStepText(s);
+      if (!text) return;
+      const li = el('li');
+      li.append(el('i', null, String(i + 1) + '.'));
+      li.append(el('span', null, text));
+      ol.append(li);
+    });
+    nb.append(ol);
+    body.append(nb);
+  }
+
+  /* 7. 何をどれだけ見たか（自動解析の範囲を隠さない） */
+  body.append(para(pick(
+    '自動解析の範囲: 文字列 ' + report.stats.strings.toLocaleString() + ' 本、' +
+    '呼び出しの辺 ' + report.stats.calls.toLocaleString() + ' 本、' +
+    'データ参照 ' + report.stats.refs.toLocaleString() + ' 件、' +
+    '関数 ' + report.stats.functions.toLocaleString() + ' 個。' +
+    'このうち ' + report.deep.length + ' 個の関数は、実際に命令まで読んでいます。' +
+    (report.stats.statsComplete ? '' : ' ※ セクションが大きいため、命令の統計は一部だけです。') +
+    (report.stats.capped ? ' ※ 索引が上限に達したため、後半の呼び出し・参照は入っていません。' : ''),
+    'Scope: ' + report.stats.strings.toLocaleString() + ' strings, ' +
+    report.stats.calls.toLocaleString() + ' call edges, ' +
+    report.stats.refs.toLocaleString() + ' data references, ' +
+    report.stats.functions.toLocaleString() + ' functions; ' +
+    report.deep.length + ' of them were read instruction by instruction.'), 'sub'));
+  body.append(para(pick(
+    '※ ここに出ているのは候補です。★ や点数は「関連度」であって、正解の証明ではありません。' +
+    'それぞれを開けば、なぜそう言えるのかを 1 点ずつ確認できます。',
+    'These are candidates. Stars are relevance, not proof — open each one to see the evidence.'), 'sub'));
+  void region;
+}
+
+/* ── 「何を調べたいですか？」 ───────────────────────────── */
+
+export function showInvestigate(app) {
+  const info = app.store.get('fileInfo');
+  if (!info) { toast(t('err.openFirst')); return; }
+  const sheet = new Sheet(pick('何を調べたいですか？', 'What do you want to find?'));
+  const body = sheet.body;
+
+  body.append(para(pick(
+    'アセンブリの知識は要りません。調べたいものを選ぶか、ふつうの言葉で書いてください。',
+    'No assembly knowledge needed. Pick something, or just describe it in your own words.')));
+
+  const openGoal = (goal) => { sheet.close(); showCandidates(app, goal); };
+  body.append(goalInput(app, openGoal));
+  body.append(goalChips(app, openGoal));
+
+  if (app.lastGoal) {
+    const ul = list();
+    ul.append(groupRow(pick('前回の続き', 'Where you left off')));
+    ul.append(tapRow(goalLabel(app.lastGoal), {
+      sub: pick('もう一度この目的で探す', 'search for this again'),
+      onTap: () => openGoal(app.lastGoal),
+    }));
+    body.append(ul);
+  }
+
+  body.append(para(pick(
+    '※ 見つかるのは「候補」です。言葉が一致しただけのものは上位に来ないよう、' +
+    '実際の参照関係・呼び出し関係・命令の中身を合わせて点を付けています。',
+    'These are candidates. Text matches alone do not rank highly — real references, call edges and instructions are weighed too.'), 'sub'));
+}
+
+/* ── 候補のランキング ───────────────────────────────────── */
+
+export function showCandidates(app, goal) {
+  if (!goal) return;
+  app.lastGoal = goal;
+  const sheet = new Sheet(goalLabel(goal), {
+    onClose: () => { app.backend.cancelSearch(); app.backend.onScanProgress = null; },
+  });
+  const body = sheet.body;
+  const box = progressBox(body, pick('調べています…', 'Working…'));
+  const results = el('div');
+  body.append(results);
+
+  prepare(app, box).then(({ strings, program }) => {
+    box.done();
+    if (!sheet.root.isConnected) return;
+    const region = app.codeRegion();
+    const ranked = rankCandidates({
+      goal, strings, program, symbols: app.symbols, region, limit: 40,
+    });
+
+    if (!ranked.candidates.length) {
+      results.append(para(pick(
+        '手がかりが見つかりませんでした。', 'Nothing was found.')));
+      const why = [];
+      if (!ranked.matchedStrings.length) {
+        why.push(pick('この目的に関係のある文字列が 1 つもありませんでした。',
+          'No text in this binary matches what you are looking for.'));
+      } else if (ranked.notes.includes('strings-unreferenced')) {
+        why.push(pick('関係のありそうな文字列は ' + ranked.matchedStrings.length +
+          ' 本ありましたが、それを参照している命令が見つかりませんでした。' +
+          '文字列が別の実行ファイル（Unity の il2cpp など）から使われている可能性があります。',
+        'Matching text exists but nothing in this section references it — the code may live in another binary.'));
+      }
+      if (ranked.notes.includes('no-program-index')) {
+        why.push(pick('呼び出し関係の索引が作れていないため、参照からは探せていません。',
+          'The call/reference index could not be built, so references were not used.'));
+      }
+      for (const line of why) results.append(para(line, 'sub'));
+      if (ranked.matchedStrings.length) {
+        const ul = list();
+        ul.append(groupRow(pick('一致した言葉（参照元は不明）', 'Matching text (no references found)')));
+        for (const s of ranked.matchedStrings.slice(0, 30)) {
+          ul.append(tapRow(trimText(s.text, 48), {
+            sub: addrHex(s.addr),
+            onTap: () => { sheet.close(); showXrefs(app, s.addr); },
+          }));
+        }
+        results.append(ul);
+      }
+      return;
+    }
+
+    results.append(para(pick(
+      ranked.total + ' 個の候補が見つかりました。上から順に、根拠の強いものです。',
+      'Found ' + ranked.total + ' candidates, strongest evidence first.')));
+    results.append(para(pick(
+      '★ は「今見るべき順」です。名前が一致しただけでは星は増えません。',
+      'Stars mean “look here first”. A name match alone does not earn stars.'), 'sub'));
+
+    const ul = list();
+    for (const c of ranked.candidates) {
+      const top = c.reasons.slice(0, 2).map(reasonText).filter(Boolean);
+      const row = tapRow(fnLabel(app, c.addr), {
+        sub: addrHex(c.addr) + '\n' + top.join('\n'),
+        right: starsText(c.stars),
+        onTap: () => { sheet.close(); showCandidateWhy(app, c, goal); },
+      });
+      row.classList.add('cand');
+      row.append(el('span', 'cand-score', Math.round(c.confidence * 100) + '%'));
+      ul.append(row);
+    }
+    results.append(ul);
+    results.append(para(pick(
+      '※ この点数は「関連度」であって、正解であることの証明ではありません。' +
+      'それぞれの候補で「なぜこの点になったか」を必ず確認してください。',
+      'The score is relevance, not proof. Always check why each candidate scored what it did.'), 'sub'));
+  }).catch((err) => {
+    box.done();
+    alertDialog(t('search.failed'), err && err.message ? err.message : String(err));
+  });
+}
+
+/** 「なぜこの候補なのか」— 点数の内訳をそのまま見せる。 */
+export function showCandidateWhy(app, cand, goal) {
+  const sheet = new Sheet(fnLabel(app, cand.addr));
+  const body = sheet.body;
+
+  const head = el('div', 'fn-head');
+  head.append(el('div', 'fn-name', fnLabel(app, cand.addr)));
+  head.append(el('div', 'fn-range mono', addrHex(cand.addr)));
+  body.append(head);
+
+  const score = el('div', 'scorebox');
+  score.append(el('div', 'score-stars', starsText(cand.stars)));
+  score.append(el('div', 'score-pct', pick('関連度 ' + Math.round(cand.confidence * 100) + '%',
+    Math.round(cand.confidence * 100) + '% related')));
+  score.append(el('div', 'score-sub', pick('合計 ' + Math.round(cand.score) + ' 点',
+    Math.round(cand.score) + ' points')));
+  body.append(score);
+
+  body.append(el('div', 'sec-title', pick('この点数の内訳', 'How this score was built')));
+  const ul = list();
+  for (const r of breakdown(cand)) {
+    const text = reasonText(r);
+    if (!text) continue;
+    const row = tapRow(text, {
+      right: (r.points >= 0 ? '+' : '') + Math.round(r.points),
+      tag: certaintyWord(reasonKind(r.code)),
+      tagClass: reasonKind(r.code) === 'fact' ? 'tag-fact' : 'tag-infer',
+      sub: r.count > 1 ? pick(r.count + ' 件', r.count + ' items') : null,
+    });
+    ul.append(row);
+  }
+  body.append(ul);
+  body.append(para(pick(
+    '「事実」はバイナリから直接読めたこと、「推測」はそこから組み立てた解釈です。' +
+    '事実だけを根拠に、推測は分けて表示しています。',
+    '“Fact” means read directly from the binary; “inference” is what was built on top of it.'), 'sub'));
+
+  /* 参照している、目的に関係する文字列 */
+  if (cand.strings && cand.strings.length) {
+    body.append(el('div', 'sec-title', pick('この関数が参照している言葉', 'Text this function references')));
+    const sul = list();
+    for (const s of cand.strings.slice(0, 10)) {
+      sul.append(tapRow(trimText(s.text, 48), {
+        sub: pick('文字列 ' + addrHex(s.addr) + ' を、' + addrHex(s.site) + ' の命令が参照',
+          'text at ' + addrHex(s.addr) + ', referenced by the instruction at ' + addrHex(s.site)),
+        onTap: () => {
+          sheet.close();
+          app.goToAddress(s.site, { announce: true });
+          app.analyzeFunctionAt(s.site);
+        },
+      }));
+    }
+    body.append(sul);
+  }
+
+  const actions = el('div', 'detail-actions');
+  actions.append(button(pick('この関数を詳しく調べる', 'Investigate this function'), 'chip', () => {
+    sheet.close();
+    showFunctionReport(app, cand.addr, goal);
+  }));
+  actions.append(button(pick('コードへ移動', 'Go to the code'), 'chip', () => {
+    sheet.close();
+    app.goToFunction(cand.addr);
+  }));
+  body.append(actions);
+}
+
+/* ── 関数レポート（事実 / 推測 / 不明を分けて出す） ─────── */
+
+export function showFunctionReport(app, addr, goal) {
+  const region = app.codeRegion() || app.store.get('currentRegion');
+  if (!region) { toast(t('err.openFirst')); return; }
+  if (app.store.get('currentRegion') !== region) app.selectRegion(region, { silent: true });
+
+  const sym = app.symbols;
+  const fn = sym.functionCount ? sym.functionAt(addr) : null;
+  const start = fn ? fn.start : addr;
+  const startRow = Number((start - region.vmAddr) / 4n);
+  const endRow = fn && fn.end != null
+    ? Math.min(app.viewer.totalRows - 1, Number((fn.end - region.vmAddr) / 4n) - 1)
+    : Math.min(app.viewer.totalRows - 1, startRow + 2048);
+  if (!(startRow >= 0) || endRow < startRow) {
+    toast(pick('この場所は関数として読めませんでした。', 'This place could not be read as a function.'));
+    return;
+  }
+
+  const name = sym.nameAt(start);
+  const sheet = new Sheet(pick('この関数について', 'About this function'));
+  const body = sheet.body;
+  const box = progressBox(body, t('functions.analyzing'));
+  const later = el('div');
+  body.append(later);
+
+  Promise.all([
+    analyzeFunctionCached(app.backend, region, startRow, endRow, sym, (p) => box.set({ done: p, all: 1 })),
+    app.ensureProgram(),
+  ]).then(([res, program]) => {
+    box.done();
+    if (!sheet.root.isConnected) return;
+    applySemantic(app, region, res);
+    const report = buildFunctionReport({
+      model: res.model, region, symbols: sym, program, goal, name,
+      // クラスとフィールドが読めていれば、x0+0x20 は self.hp として説明される
+      fields: app.fields, owner: app.ownerOf(start),
+    });
+    renderFunctionReport(app, sheet, later, report, res, region, goal);
+  }).catch((err) => {
+    box.done();
+    alertDialog(t('search.failed'), err && err.message ? err.message : String(err));
+  });
+}
+
+function renderFunctionReport(app, sheet, body, report, res, region, goal) {
+  const id = report.identity;
+
+  const head = el('div', 'fn-head');
+  head.append(el('div', 'fn-name', id.name || fnLabel(app, id.startAddr)));
+  head.append(el('div', 'fn-range mono', addrHex(id.startAddr) + ' – ' + addrHex(id.endAddr)));
+  body.append(head);
+
+  /*
+   * 説明は 3 段。既定で見えるのは 1 段目と 2 段目だけにする。
+   *
+   *   1. ひとこと      … 「BattleManager の hp を 10 減らす処理です」
+   *   2. どういうこと  … 受け取る値 / 変えるもの / 返すもの / 呼ばれ方（4 行まで）
+   *   3. 詳しく        … 事実・推測・分からないこと（畳んでおく）
+   *
+   * 説明は具体的すぎると、かえって「で、何がしたい処理なの？」が消えてしまう。
+   * だから詳細は、降りたい人だけが降りられる場所に置く。
+   */
+  if (report.owner) {
+    body.append(el('div', 'owner-line', pick(
+      report.owner.className + ' のメソッド', 'a method of ' + report.owner.className)));
+  }
+  body.append(el('div', 'lead', oneLiner(report, id.name)));
+  const what = whatItDoes(report);
+  if (what.length) {
+    const ul0 = el('ul', 'story-steps');
+    for (const line of what) {
+      const li = el('li');
+      li.append(el('i', null, '・'));
+      li.append(el('span', null, line));
+      ul0.append(li);
+    }
+    body.append(ul0);
+  }
+
+  /* 3. 詳しく — 事実 / 推測 / 分からないこと。既定では畳んでおく。 */
+  body.append(disclosure(pick('詳しく見る（事実・推測・分からないこと）',
+    'Show the detail (facts, inferences, unknowns)'), {
+    build: (into) => {
+      into.append(storySection(app, res.model, id.name, sheet));
+
+      const factBlk = block(pick('確かなこと（バイナリから直接読めたこと）',
+        'Facts — read directly from the binary'));
+      const ful = list();
+      let shown = 0;
+      for (const f of report.facts) {
+        const text = factText(f);
+        if (!text) continue;
+        shown++;
+        ful.append(tapRow(text, {
+          tag: certaintyWord('fact'), tagClass: 'tag-fact',
+          sub: f.row >= 0 ? addrHex(region.vmAddr + BigInt(f.row) * 4n) : null,
+          disabled: f.row < 0,
+          onTap: f.row >= 0 ? () => {
+            sheet.close();
+            app.viewer.goToRow(f.row, 'third');
+            app.viewer.select(f.row, false);
+            app.viewer.mark(f.row);
+          } : null,
+        }));
+      }
+      if (!shown) {
+        ful.append(tapRow(pick('数えられる事実がありませんでした。', 'Nothing countable was found.'),
+          { disabled: true }));
+      }
+      factBlk.append(ful);
+      into.append(factBlk);
+
+      const infBlk = block(pick('ここから推測できること', 'What can be inferred from that'));
+      const iul = list();
+      let inferred = 0;
+      for (const i of report.inferences) {
+        const text = inferenceText(i);
+        if (!text) continue;
+        inferred++;
+        iul.append(tapRow(text, {
+          tag: certaintyWord('inference'), tagClass: 'tag-infer',
+          right: Math.round(i.confidence * 100) + '%',
+          sub: pick('根拠 ' + i.evidence.length + ' 件', i.evidence.length + ' pieces of evidence'),
+          onTap: () => showEvidence(app, text, i),
+        }));
+      }
+      if (!inferred) {
+        iul.append(tapRow(pick('推測できることはありませんでした（手がかり不足）。',
+          'Nothing could be inferred — not enough clues.'), { disabled: true }));
+      }
+      infBlk.append(iul);
+      into.append(infBlk);
+
+      const unkBlk = block(pick('このツールでは分からないこと', 'What this tool cannot tell you'));
+      const uul = list();
+      for (const u of report.unknowns) {
+        const text = unknownText(u);
+        if (text) {
+          uul.append(tapRow(text, {
+            tag: certaintyWord('unknown'), tagClass: 'tag-unknown', disabled: true,
+          }));
+        }
+      }
+      unkBlk.append(uul);
+      into.append(unkBlk);
+    },
+  }));
+
+  /* 5. 変更候補 — このツールの目的地のひとつ */
+  if (report.editTargets.length) {
+    const eb = block(pick('値を書き換えている場所（変更候補）', 'Where a value is changed'));
+    eb.append(para(pick(
+      'ここで値を読んで、計算して、同じ場所へ書き戻しています。' +
+      '「その値を増やしたい」なら、まずここを見てください。',
+      'Here a value is read, changed and written back — the first place to look if you want to change it.')));
+    const eul = list();
+    for (const e of report.editTargets) {
+      eul.append(tapRow(addrHex(e.address), {
+        sub: updateLines(e).join('\n'),
+        tag: certaintyWord(e.level === 'confirmed' ? 'fact' : 'inference'),
+        tagClass: e.level === 'confirmed' ? 'tag-fact' : 'tag-infer',
+        onTap: () => { sheet.close(); showValueFlow(app, res.model, e.row, region); },
+      }));
+    }
+    eb.append(eul);
+    eb.append(noteBox(pick(
+      'ただし、この解析だけでは「ここを変えれば狙った値が変わる」ことまでは保証できません。' +
+      'その場所が実行時に何を表しているかは、動かして確かめる必要があります。',
+      'This analysis cannot prove that changing this will change what you want. Only running the app can confirm that.')));
+    body.append(eb);
+  }
+
+  /* 6. 呼び出し関係 */
+  const callBlk = block(pick('呼び出し関係', 'Call relationships'));
+  const cul = list();
+  cul.append(groupRow(pick('この関数を呼んでいる (' + report.callers.length + ')',
+    'Callers (' + report.callers.length + ')')));
+  if (!report.callers.length) {
+    cul.append(tapRow(pick('見つかりませんでした。実行時に呼ばれる形かもしれません。',
+      'None found — it may only be reached at run time.'), { disabled: true }));
+  }
+  for (const c of report.callers.slice(0, 12)) {
+    cul.append(tapRow(c.name || (c.addr != null ? 'sub_' + c.addr.toString(16).toUpperCase() : addrHex(c.site)), {
+      sub: addrHex(c.site) + pick(' から呼び出し', ' calls here'),
+      right: c.count > 1 ? '× ' + c.count : '',
+      onTap: () => { sheet.close(); showFunctionReport(app, c.addr != null ? c.addr : c.site, goal); },
+    }));
+  }
+  cul.append(groupRow(pick('この関数が呼んでいる (' + report.callees.length + ')',
+    'Callees (' + report.callees.length + ')')));
+  if (!report.callees.length) {
+    cul.append(tapRow(pick('ほかの処理は呼んでいません。', 'It calls nothing else.'), { disabled: true }));
+  }
+  for (const c of report.callees.slice(0, 12)) {
+    cul.append(tapRow(c.name || 'sub_' + c.addr.toString(16).toUpperCase(), {
+      sub: addrHex(c.addr),
+      right: c.count > 1 ? '× ' + c.count : '',
+      onTap: () => { sheet.close(); showFunctionReport(app, c.addr, goal); },
+    }));
+  }
+  callBlk.append(cul);
+  callBlk.append(button(pick('呼び出しの流れを図で見る', 'Show the call graph'), 'chip', () => {
+    sheet.close();
+    showCallGraph(app, id.startAddr);
+  }));
+  body.append(callBlk);
+
+  /* 7. 処理の流れ（制御フロー） */
+  body.append(disclosure(pick('処理の流れを見る（条件分岐とループ）', 'Show the flow (branches and loops)'), {
+    build: (into) => into.append(cfgSection(app, report, region, sheet)),
+  }));
+
+  /* 8. 処理のまとまり → ARM64（従来の道筋をそのまま残す） */
+  body.append(disclosure(pick('処理のまとまりを見る', 'Show the steps'), {
+    build: (into) => into.append(blockListSection(app, res.model, sheet, region)),
+  }));
+  body.append(disclosure(pick('ARM64 を見る（命令と数字）', 'Show the ARM64 details'), {
+    build: (into) => into.append(rawSection(app, sheet, res, id.name, region)),
+  }));
+
+  /* 9. 次に何をすればいいか */
+  const nb = block(pick('次に確認すること', 'What to check next'));
+  const nl = el('ul', 'story-steps');
+  report.nextSteps.forEach((s, i) => {
+    const text = nextStepText(s);
+    if (!text) return;
+    const li = el('li');
+    li.append(el('i', null, String(i + 1) + '.'));
+    li.append(el('span', null, text));
+    nl.append(li);
+  });
+  nb.append(nl);
+  body.append(nb);
+
+  /* 10. どこからでも降りられるようにする */
+  const actions = el('div', 'detail-actions');
+  actions.append(button(pick('コードへ移動', 'Go to the code'), 'chip', () => {
+    sheet.close();
+    app.goToFunction(id.startAddr);
+  }));
+  actions.append(button(pick('アドレスの対応を見る', 'Show address mapping'), 'chip', () => {
+    showAddressInfo(app, id.startAddr);
+  }));
+  actions.append(button(pick('16 進で見る', 'Show the raw bytes'), 'chip', () => {
+    sheet.close();
+    app.goToAddress(id.startAddr, { announce: true });
+    app.setMode('hex');
+  }));
+  body.append(actions);
+}
+
+/** 推測 1 つぶんの根拠を並べる。 */
+function showEvidence(app, title, inf) {
+  const sheet = new Sheet(pick('この推測の根拠', 'Evidence for this'));
+  sheet.body.append(para(title));
+  sheet.body.append(el('span', 'conf lv-' + levelOf(inf.confidence), confidenceText(inf.confidence)));
+  const ul = list();
+  for (const e of inf.evidence) {
+    const text = evidenceText(e) || factText({ code: e.code, detail: e.detail });
+    ul.append(tapRow(text || e.code, { disabled: true, tag: certaintyWord('fact'), tagClass: 'tag-fact' }));
+  }
+  sheet.body.append(ul);
+  sheet.body.append(para(pick(
+    '根拠はすべてバイナリから読み取った事実です。そこから先の解釈は、この確度つきで示しています。',
+    'Every item above is a fact read from the binary; the interpretation carries the confidence shown.'), 'sub'));
+  void app;
+}
+
+/** 制御フローを、初心者に読める形の道順で出す。 */
+function cfgSection(app, report, region, sheet) {
+  const wrap = el('div');
+  const cfg = report.cfg;
+  if (!cfg || !cfg.nodes.length) {
+    wrap.append(para(pick('処理の流れを取り出せませんでした。', 'The flow could not be extracted.')));
+    return wrap;
+  }
+  const shapes = cfg.shapes || [];
+  if (shapes.length) {
+    const sul = list();
+    sul.append(groupRow(pick('この関数の形', 'The shape of this routine')));
+    const seen = new Set();
+    for (const s of shapes) {
+      const text = shapeText(s);
+      if (!text || seen.has(text + s.at)) continue;
+      seen.add(text + s.at);
+      const node = cfg.nodes[s.at != null ? s.at : s.header];
+      sul.append(tapRow(text, {
+        sub: node ? addrHex(region.vmAddr + BigInt(node.startRow) * 4n) : null,
+        onTap: node ? () => {
+          sheet.close();
+          app.viewer.goToRow(node.startRow, 'third');
+          app.viewer.mark(node.startRow);
+        } : null,
+      }));
+    }
+    wrap.append(sul);
+  } else {
+    wrap.append(para(pick('枝分かれのない、上から下へ流れるだけの関数です。',
+      'A straight-line routine: no branches at all.')));
+  }
+
+  const lines = [];
+  for (const o of outline(cfg)) {
+    const indent = '  '.repeat(o.depth);
+    const addr = addrHex(region.vmAddr + BigInt(o.startRow) * 4n);
+    const label = o.role ? roleLabel(o.role) : pick('処理', 'block');
+    const mark = o.marker === 'loop-start' ? pick('↻ 繰り返しの入口', '↻ loop starts')
+      : o.marker === 'loop-end' ? pick('↺ ここで戻る', '↺ jumps back')
+        : o.marker === 'if' || o.marker === 'if-else' ? pick('◆ 条件で分かれる', '◆ branches')
+          : o.marker === 'early-return' ? pick('⤴ 条件によっては、ここで帰る', '⤴ may return here')
+            : o.marker === 'exit' ? pick('■ 終わり', '■ end')
+              : o.marker === 'join' ? pick('▼ 合流', '▼ join') : '';
+    lines.push(indent + addr + '  ' + label + (mark ? '   ' + mark : ''));
+    if (lines.length >= 60) { lines.push('  …'); break; }
+  }
+  wrap.append(codeBlock(lines));
+  wrap.append(para(pick(
+    '上から順に流れます。字下げは分岐やループの中に入ったことを表しています。',
+    'Read top to bottom; indentation means you are inside a branch or a loop.'), 'sub'));
+  return wrap;
+}
+
+/* ── 呼び出しグラフ（上へも下へも辿れる） ───────────────── */
+
+export function showCallGraph(app, addr) {
+  const sheet = new Sheet(pick('呼び出しの流れ', 'Call graph'));
+  const body = sheet.body;
+  const box = progressBox(body, pick('呼び出し関係を調べています…', 'Mapping calls…'));
+
+  app.ensureProgram((p) => box.set(p)).then((program) => {
+    box.done();
+    if (!sheet.root.isConnected) return;
+    if (!program) {
+      body.append(para(pick('呼び出し関係を取り出せませんでした。', 'No call relationships could be extracted.')));
+      return;
+    }
+
+    body.append(el('div', 'sec-title', pick('ここへ来るまで（呼び出し元）', 'How you get here (callers)')));
+    const up = el('div', 'calltree');
+    const seenUp = new Set([addr.toString()]);
+    const addUp = (target, depth) => {
+      if (depth > 2) return;
+      for (const c of program.callersOf(target, 6)) {
+        if (c.addr == null) continue;
+        const key = c.addr.toString();
+        up.append(treeRow(app, c.addr, depth, '↑', () => {
+          sheet.close(); showFunctionReport(app, c.addr);
+        }));
+        if (seenUp.has(key)) continue;
+        seenUp.add(key);
+        addUp(c.addr, depth + 1);
+      }
+    };
+    addUp(addr, 0);
+    if (!up.childElementCount) {
+      up.append(para(pick('呼び出し元は見つかりませんでした。', 'No callers found.'), 'sub'));
+    }
+    body.append(up);
+
+    const me = el('div', 'calltree-self');
+    me.append(el('div', 'fn-name', fnLabel(app, addr)));
+    me.append(el('div', 'fn-range mono', addrHex(addr)));
+    body.append(me);
+
+    body.append(el('div', 'sec-title', pick('ここから先（呼び出し先）', 'Where it goes (callees)')));
+    const down = el('div', 'calltree');
+    const seenDown = new Set([addr.toString()]);
+    const addDown = (start, depth) => {
+      if (depth > 2) return;
+      const range = program.functionRange(start);
+      for (const c of program.calleesOf(start, range ? range.end : null, 8)) {
+        const key = c.addr.toString();
+        down.append(treeRow(app, c.addr, depth, '↓', () => {
+          sheet.close(); showFunctionReport(app, c.addr);
+        }));
+        if (seenDown.has(key)) continue;
+        seenDown.add(key);
+        addDown(c.addr, depth + 1);
+      }
+    };
+    addDown(addr, 0);
+    if (!down.childElementCount) {
+      down.append(para(pick('ほかの処理は呼んでいません。', 'It calls nothing else.'), 'sub'));
+    }
+    body.append(down);
+
+    body.append(para(pick(
+      'この図は bl 命令（呼び出し）の飛び先を数えたものです。推測ではありません。' +
+      'ただし、行き先が実行時に決まる呼び出し（メソッド呼び出しなど）はここには出てきません。',
+      'This graph is built from real call instructions. Calls resolved at run time do not appear here.'), 'sub'));
+  }).catch(() => {
+    box.done();
+    body.append(para(pick('呼び出し関係を調べられませんでした。', 'The call graph could not be built.')));
+  });
+}
+
+function treeRow(app, addr, depth, arrow, onTap) {
+  const row = tapRow('　'.repeat(depth) + arrow + ' ' + fnLabel(app, addr), {
+    sub: addrHex(addr),
+    onTap,
+  });
+  return row;
+}
+
+/* ── 値の流れ（この値は次にどこで使われるか） ───────────── */
+
+export function showValueFlow(app, model, row, region) {
+  const insn = (model.instructions || []).find((i) => i.row === row);
+  if (!insn) { toast(pick('この行は解析できていません。', 'This line has not been analysed.')); return; }
+  const sheet = new Sheet(pick('この値の流れ', 'Where this value goes'));
+  const body = sheet.body;
+  const addrOf = (r) => region.vmAddr + BigInt(r) * 4n;
+
+  body.append(codeBlock([addrHex(insn.address) + '  ' + insn.mnemonic +
+    (insn.operands ? ' ' + insn.operands : '')]));
+
+  if (insn.memory) {
+    const where = insn.memory.base + (insn.memory.disp != null
+      ? ' + 0x' + insn.memory.disp.toString(16).toUpperCase() : '');
+    body.append(para(insn.memory.kind === 'load'
+      ? pick(where + ' にある値を読み込んでいます。', 'It reads the value at ' + where + '.')
+      : pick(where + ' へ値を書き込んでいます。', 'It writes a value to ' + where + '.')));
+    body.append(para(pick(
+      insn.memory.size + ' バイトぶんを扱っています。',
+      'It handles ' + insn.memory.size + ' bytes.'), 'sub'));
+  }
+
+  const reg = insn.writes && insn.writes.length ? insn.writes[0] : regKeyOf(insn.ops[0]);
+  if (!reg) {
+    body.append(para(pick('この命令が作る値は特定できませんでした。',
+      'The value produced here could not be identified.')));
+    return;
+  }
+  const uses = traceForward(model, row, reg, 24);
+  body.append(el('div', 'sec-title', pick('この値（' + reg + '）が、このあとどうなるか',
+    'What happens to this value (' + reg + ')')));
+  const ul = list();
+  if (!uses.length) {
+    ul.append(tapRow(pick('この先で使われている場所は見つかりませんでした。',
+      'No later use was found.'), { disabled: true }));
+  }
+  for (const u of uses) {
+    ul.append(tapRow(useText(u), {
+      sub: addrHex(addrOf(u.row)),
+      onTap: () => {
+        sheet.close();
+        app.viewer.goToRow(u.row, 'third');
+        app.viewer.select(u.row, false);
+        app.viewer.mark(u.row);
+      },
+    }));
+  }
+  body.append(ul);
+  body.append(para(pick(
+    '追跡は、その値が別の値で上書きされたところか、別の場所から飛んでくる合流点で終わります。' +
+    'そこから先は前提が保てないため、推測で続けません。',
+    'Tracking stops when the value is overwritten, or at a point that can be reached from elsewhere.'), 'sub'));
+}
+
+/* ── アドレスの対応（初心者がいちばん混乱するところ） ───── */
+
+export function showAddressInfo(app, addr) {
+  const sheet = new Sheet(pick('このアドレスについて', 'About this address'));
+  const body = sheet.body;
+  const regions = app.store.get('regions') || [];
+  const info = app.store.get('fileInfo');
+  const hit = regions.find((r) => r.size > 0n && addr >= r.vmAddr && addr < r.vmAddr + r.size);
+
+  body.append(bigValue(addrHex(addr), () => copyText(addrHex(addr), t('toast.copyAddress'))));
+  const ul = list();
+  ul.append(kvRow(pick('メモリ上のアドレス (VM address)', 'VM address'), addrHex(addr),
+    pick('アプリが動いているときに、この処理が置かれる場所', 'where this sits while the app runs')));
+  if (hit) {
+    const off = hit.fileOffset + (addr - hit.vmAddr);
+    ul.append(kvRow(pick('ファイルの中の位置 (file offset)', 'File offset'), addrHex(off),
+      pick('このファイルの先頭から数えた位置', 'counted from the start of this file')));
+    ul.append(kvRow(pick('区画 (section)', 'Section'), hit.name));
+    ul.append(kvRow(pick('区画の先頭からの差', 'Offset inside the section'),
+      addrHex(addr - hit.vmAddr)));
+    ul.append(kvRow(pick('区画の範囲', 'Section range'),
+      addrHex(hit.vmAddr) + ' – ' + addrHex(hit.vmAddr + hit.size)));
+  } else {
+    ul.append(kvRow(pick('区画 (section)', 'Section'),
+      pick('このファイルの中には見つかりませんでした', 'not found in this file')));
+  }
+  if (info) ul.append(kvRow(pick('ファイルの大きさ', 'File size'), sizeText(info.size)));
+  body.append(ul);
+
+  body.append(para(pick(
+    'iOS では、アプリを起動するたびに全体が同じ幅だけずらして置かれます（ASLR）。' +
+    'そのため実機で見えるアドレスは、ここに出ている値に「ずれ幅」を足したものになります。' +
+    'ファイルの中の位置は、いつでも変わりません。',
+    'On iOS the whole image is shifted by a random amount at launch (ASLR), so addresses seen on a device are these values plus that slide. File offsets never change.')));
+
+  const actions = el('div', 'detail-actions');
+  actions.append(button(pick('この場所へ移動', 'Go there'), 'chip', () => {
+    sheet.close();
+    app.goToAddress(addr, { announce: true });
+  }));
+  if (hit) {
+    actions.append(button(pick('16 進で見る', 'Show the bytes'), 'chip', () => {
+      sheet.close();
+      app.goToFileOffset(hit.fileOffset + (addr - hit.vmAddr));
+    }));
+  }
+  body.append(actions);
 }
 
 /* ── 設定 ────────────────────────────────────────────────── */

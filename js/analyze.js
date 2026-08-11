@@ -262,14 +262,30 @@ export function clearAnalysisCache() { cache.clear(); }
  */
 export async function analyzeFunctionCached(backend, region, startRow, endRow, symbols, onProgress, opts) {
   const key = cacheKey(region, startRow, symbols);
+  const wantTexts = !opts || opts.texts !== false;
   const hit = cache.get(key);
   if (hit) {
     if (onProgress) onProgress(1);
+    /*
+     * 自動解析は速さのために文字列を読まずにキャッシュすることがある。
+     * あとから「文字列も込みで」求められたら、そのときに読んで足す。
+     * （文字列の欠けたモデルを、そうと知らずに使い回さないため）
+     */
+    if (wantTexts && !hit.textsResolved) {
+      try {
+        await resolveModelTexts(backend, hit.model);
+        hit.textsResolved = true;
+      } catch { /* 読めなくても解析結果は返す */ }
+    }
     return hit;
   }
   const res = await analyzeFunction(backend, region, startRow, endRow, symbols, onProgress);
-  if (!opts || opts.texts !== false) {
-    try { await resolveModelTexts(backend, res.model); } catch { /* 読めなくても解析結果は返す */ }
+  res.textsResolved = false;
+  if (wantTexts) {
+    try {
+      await resolveModelTexts(backend, res.model);
+      res.textsResolved = true;
+    } catch { /* 読めなくても解析結果は返す */ }
   }
   cache.set(key, res);
   return res;

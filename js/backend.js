@@ -83,6 +83,15 @@ export class Backend {
 
   guessFunctions(regionId, limit) { return this.call('guessFunctions', { regionId, limit }); }
 
+  /**
+   * セクション全体を 1 パス走査して、呼び出しの辺・データ参照・語ごとの命令種別を取る。
+   * これが「参照関係と制御フローを根拠にする」ための土台。1 ファイルにつき 1 回で足りる。
+   */
+  scanProgram(regionId) { return this.call('scanProgram', { regionId }); }
+
+  /** そのフィールド（クラスの中の位置）を読み書きしている命令を全部探す。 */
+  fieldAccess(params) { return this.call('fieldAccess', params); }
+
   strings(params) { return this.call('strings', params); }
 
   xrefs(params) { return this.call('xrefs', params); }

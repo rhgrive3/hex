@@ -12,7 +12,7 @@ import {
   showFileInfo, showSections, showJump, showSearch, showDetail, showSettings,
   instructionMenu, showFunctions, showStrings, showStructure, showHelp,
   showLearn, showGlossary, showWelcome, showSampleGuide, showFunctionSummary,
-  showFeatures,
+  showFeatures, showInvestigate, showOverview, showFunctionReport,
 } from './panels.js';
 import { rangeCopyMenu, copyRange } from './rangecopy.js';
 import { t, setLang, detectLang, lang, isJa, pick } from './i18n.js';
@@ -20,8 +20,10 @@ import { SymbolIndex, EMPTY_INDEX } from './symbols.js';
 import { clearBriefCache } from './arm64.js';
 import { clearAnalysisCache, analyzeFunctionCached } from './analyze.js';
 import { buildOverlay } from './narrate.js';
-import { buildObjcNames } from './objc.js';
+import { buildObjcModel } from './objc.js';
+import { FieldIndex, EMPTY_FIELDS } from './fields.js';
 import { makeSampleFile } from './sample.js';
+import { ProgramIndex } from './program.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -37,6 +39,15 @@ class App {
     // 直近に解析した関数の Semantic Model。ビューアはここから作った表を引くだけ。
     this.semantic = null;
     this.featureIndex = null;   // 機能から探すための文字列の索引（ファイル単位）
+    this.stringIndex = null;    // 収集済みの文字列（ファイル単位でキャッシュ）
+    this.program = null;        // ProgramIndex — 呼び出し関係とデータ参照
+    this.programScan = null;    // worker から受け取った生の走査結果
+    this.programKey = null;     // 索引がどのセクションのものか
+    this.programBusy = null;    // 走査中の Promise（二重に走らせない）
+    this.lastGoal = null;       // 直近に調べた目的
+    // Objective-C のクラスとフィールド。x0+0x20 を self.hp と言えるようにする索引。
+    this.fields = EMPTY_FIELDS;
+    this.objcBusy = null;
 
     setLang(this.prefs.lang || detectLang());
 
@@ -53,6 +64,8 @@ class App {
       modeSwitch: $('mode-switch'),
       explain: $('btn-explain'),
       sections: $('btn-sections'),
+      investigate: $('btn-investigate'),
+      overview: $('btn-overview'),
       features: $('btn-features'),
       functions: $('btn-functions'),
       strings: $('btn-strings'),
@@ -162,6 +175,8 @@ class App {
 
     this.dom.explain.addEventListener('click', () => this.setExplain(!this.prefs.explain));
     this.dom.sections.addEventListener('click', () => showSections(this));
+    this.dom.investigate.addEventListener('click', () => showInvestigate(this));
+    this.dom.overview.addEventListener('click', () => showOverview(this));
     this.dom.features.addEventListener('click', () => showFeatures(this));
     this.dom.functions.addEventListener('click', () => showFunctions(this));
     this.dom.strings.addEventListener('click', () => showStrings(this));
@@ -281,6 +296,8 @@ class App {
     this.dom.struct.disabled = !has;
     this.dom.strings.disabled = !has;
     this.dom.features.disabled = !has;
+    this.dom.investigate.disabled = !has;
+    this.dom.overview.disabled = !has;
     this.dom.functions.disabled = !region;
     this.dom.jump.disabled = !region;
     this.dom.search.disabled = !region;
@@ -440,9 +457,135 @@ class App {
    */
   forgetSemantics(dropCache) {
     this.semantic = null;
-    if (dropCache) this.featureIndex = null;
-    if (dropCache) clearAnalysisCache();
+    if (dropCache) {
+      this.featureIndex = null;
+      this.stringIndex = null;
+      this.autoReport = null;
+      this.fields = EMPTY_FIELDS;
+      this.objcModel = null;
+      this.program = null;
+      this.programScan = null;
+      this.programKey = null;
+      this.lastGoal = null;
+      clearAnalysisCache();
+    }
     if (this.viewer) this.viewer.clearBlockOverlay();
+  }
+
+  /* ── プログラム全体の索引 ─────────────────────────────────
+     「誰が誰を呼び、誰が何を見ているか」を 1 回だけ走査して作る。
+     これがないと、このツールは名前と文字列を眺めるだけの道具に戻ってしまう。 */
+
+  /** コードのセクション（__text 優先）。 */
+  codeRegion() {
+    const regions = this.store.get('regions') || [];
+    return regions.find((r) => r.section === '__text' && r.size > 0n) ||
+           regions.find((r) => r.exec && r.size > 0n) ||
+           this.store.get('currentRegion') || null;
+  }
+
+  /**
+   * 関数の切れ目をそろえる。LC_FUNCTION_STARTS がないファイルでは推測に頼る。
+   * 呼び出しグラフは「その命令がどの関数の中にあるか」を必要とするので、ここが要る。
+   */
+  async ensureFunctions(region, onProgress) {
+    // 名前の読み込みが終わるのを待つ。先に走らせると、無駄に推測してしまう。
+    if (this.symbolsReady) { try { await this.symbolsReady; } catch { /* 名前がなくても続ける */ } }
+    // EMPTY_INDEX は全体で共有している空の索引なので、絶対に書き換えない
+    if (this.symbols === EMPTY_INDEX) {
+      this.symbols = new SymbolIndex({});
+      this.viewer.setSymbols(this.symbols);
+    }
+    const sym = this.symbols;
+    if (!sym || sym.functionCount > 0) return sym;
+    if (!region) return sym;
+    const prev = this.backend.onScanProgress;
+    if (onProgress) {
+      this.backend.onScanProgress = (p) => onProgress({ phase: 'functions', done: p.done, all: p.all });
+    }
+    try {
+      const res = await this.backend.guessFunctions(region.id);
+      if (res && res.starts && res.starts.length) {
+        sym.setGuessedFunctions(res.starts);
+        this.viewer.setSymbols(sym);
+      }
+    } catch { /* 推測できなくても、ほかの解析は続ける */
+    } finally {
+      this.backend.onScanProgress = prev;
+    }
+    return sym;
+  }
+
+  /**
+   * プログラム全体の索引を用意する。すでにあれば作り直さない。
+   * シンボルだけが増えたとき（Objective-C の名前復元など）は、走査結果を使い回す。
+   */
+  async ensureProgram(onProgress) {
+    const region = this.codeRegion();
+    if (!region) return null;
+    const key = region.id;
+    if (this.program && this.programKey === key && this.program.gen === this.symbols.gen) {
+      return this.program;
+    }
+    if (this.programScan && this.programKey === key) {
+      this.program = new ProgramIndex(this.programScan, this.symbols, region);
+      return this.program;
+    }
+    if (this.programBusy) return this.programBusy;
+
+    this.programBusy = (async () => {
+      await this.ensureFunctions(region, onProgress);
+      const prev = this.backend.onScanProgress;
+      if (onProgress) {
+        this.backend.onScanProgress = (p) => onProgress({ phase: 'scan', done: p.done, all: p.all });
+      }
+      try {
+        const scan = await this.backend.scanProgram(region.id);
+        if (scan && !scan.cancelled) {
+          this.programScan = scan;
+          this.programKey = key;
+          this.program = new ProgramIndex(scan, this.symbols, region);
+        }
+      } catch {
+        this.program = null;      // 索引が作れなくても、他の機能は動く
+      } finally {
+        this.backend.onScanProgress = prev;
+        this.programBusy = null;
+      }
+      return this.program;
+    })();
+    return this.programBusy;
+  }
+
+  /**
+   * 文字列を集める。__cstring などが第一候補で、なければ今のセクション。
+   * ファイル単位でキャッシュする（何度も走査しない）。
+   */
+  async ensureStrings(onProgress) {
+    if (this.stringIndex) return this.stringIndex;
+    const regions = this.store.get('regions') || [];
+    const targets = regions.filter((r) => r.size > 0n &&
+      (r.cstrings || /string|cstring|objc_method|objc_class|const/i.test(r.section || '')));
+    const current = this.store.get('currentRegion');
+    const use = targets.length ? targets.slice(0, 6) : (current ? [current] : []);
+    const out = [];
+    const prev = this.backend.onScanProgress;
+    if (onProgress) this.backend.onScanProgress = (p) => onProgress({ phase: 'strings', done: p.done, all: p.all });
+    try {
+      for (const r of use) {
+        const res = await this.backend.strings({ regionId: r.id, min: 4 });
+        for (const s of res.results) out.push({ addr: s.addr, text: s.text, region: r });
+      }
+    } finally {
+      this.backend.onScanProgress = prev;
+    }
+    this.stringIndex = out;
+    return out;
+  }
+
+  /** 関数レポートを開く（候補一覧・XREF・ビューアのどこからでも呼べる入口）。 */
+  openFunctionReport(addr, goal) {
+    showFunctionReport(this, addr, goal || this.lastGoal || null);
   }
 
   /**
@@ -486,6 +629,7 @@ class App {
     this.backend.resetCache();
     this.detailRefresh = null;
     this.symbols = EMPTY_INDEX;
+    this.symbolsReady = null;
     this.viewer.setSymbols(EMPTY_INDEX);
     this.forgetSemantics(true);
 
@@ -514,6 +658,10 @@ class App {
       alertDialog(t('err.encryptedTitle'), t('err.encryptedText'));
     }
     if (this.sampleOpen) setTimeout(() => showSampleGuide(this), 250);
+    else if (!slice || !slice.info || !slice.info.encrypted) {
+      // 最初に見せるのは、大量の一覧ではなく「このファイルは何か / 何を調べたいか」。
+      setTimeout(() => showOverview(this), 200);
+    }
   }
 
   /** 練習用のサンプルをその場で組み立てて開く。 */
@@ -558,46 +706,72 @@ class App {
 
     // 名前と関数の一覧はここで作る。失敗しても表示自体は続けられる。
     if (sliceIndex >= 0) {
-      this.backend.analyze(sliceIndex).then((res) => {
+      this.symbolsReady = this.backend.analyze(sliceIndex).then((res) => {
         if (this.store.get('sliceIndex') !== sliceIndex) return;
         this.symbols = new SymbolIndex(res);
         this.viewer.setSymbols(this.symbols);
         this.updateChrome();
-        this.restoreObjcNames(sliceIndex);
+        return this.ensureObjc(sliceIndex);
       }).catch(() => { /* シンボルがなくても読める */ });
     }
   }
 
   /**
-   * Objective-C のクラス表から、関数の本当の名前を戻す。
+   * Objective-C のクラス表を読む。このツールでいちばん効く一手。
    *
-   * 配布用のアプリは自作の関数名が削ってあるが、Objective-C のメソッドだけは
-   * 名前と実装アドレスの対応表がバイナリに残っている。ここを読むと
-   * sub_100123456 が -[LoginViewController loginButtonTapped:] に変わる。
+   * 配布用のアプリは自作の関数名が削ってあるが、Objective-C のクラスだけは
    *
-   * 裏で走らせて、できたところで一覧と画面を差し替える。失敗しても表示は続く。
+   *   - クラス名とメソッド名（実装アドレスつき）
+   *   - **メンバ変数の名前・型・位置**
+   *
+   * がバイナリに必ず残っている。前者で sub_100123456 が
+   * -[LoginViewController loginButtonTapped:] に戻り、後者で
+   * [x0, #0x20] が self.hp に戻る。「どれがどの処理か」に答えられるのはここ。
+   *
+   * 裏で走らせて、できたところで画面を差し替える。失敗しても表示は続く。
    */
-  async restoreObjcNames(sliceIndex) {
+  async ensureObjc(sliceIndex) {
+    if (this.fields && this.fields.classCount) return this.fields;
+    if (this.objcBusy) return this.objcBusy;
     const regions = this.store.get('regions') || [];
     const list = regions.find((r) => r.section === '__objc_classlist' && r.size > 0n);
-    if (!list) return;
-    const read = (addr, len) => this.backend.readAt(addr, len)
-      .then((r) => (r && r.found ? r.bytes : null))
-      .catch(() => null);
-    try {
-      const { names, classes } = await buildObjcNames(read, list);
-      if (this.store.get('sliceIndex') !== sliceIndex || !names.length) return;
-      const added = this.symbols.addNames(names);
-      this.symbols.addFunctions(names.map((n) => n.addr));
-      this.objcClasses = classes;
-      this.viewer.setSymbols(this.symbols);
-      this.updateChrome();
-      if (added) {
-        toast(pick(
-          classes + ' 個のクラスから、' + added + ' 個の関数の名前を復元しました',
-          'Recovered ' + added + ' function names from ' + classes + ' classes'));
+    if (!list) { this.fields = EMPTY_FIELDS; return this.fields; }
+    const slice = sliceIndex != null ? sliceIndex : this.store.get('sliceIndex');
+
+    this.objcBusy = (async () => {
+      const read = (addr, len) => this.backend.readAt(addr, len)
+        .then((r) => (r && r.found ? r.bytes : null))
+        .catch(() => null);
+      try {
+        const model = await buildObjcModel(read, list);
+        if (this.store.get('sliceIndex') !== slice) return this.fields;
+        this.objcModel = model;
+        this.fields = new FieldIndex(model);
+        if (model.names.length) {
+          const added = this.symbols.addNames(model.names);
+          this.symbols.addFunctions(model.names.map((n) => n.addr));
+          this.viewer.setSymbols(this.symbols);
+          this.updateChrome();
+          if (added) {
+            toast(pick(
+              model.count + ' 個のクラスから、' + added + ' 個の関数の名前と ' +
+                this.fields.fieldCount + ' 個の値の名前を復元しました',
+              'Recovered ' + added + ' function names and ' + this.fields.fieldCount +
+                ' field names from ' + model.count + ' classes'));
+          }
+        }
+      } catch { /* 読めなくても、ほかの表示には影響させない */
+      } finally {
+        this.objcBusy = null;
       }
-    } catch { /* 読めなくても、ほかの表示には影響させない */ }
+      return this.fields;
+    })();
+    return this.objcBusy;
+  }
+
+  /** その関数がどのクラスのメソッドか。分からなければ null。 */
+  ownerOf(addr) {
+    return this.fields ? this.fields.ownerOf(addr) : null;
   }
 
   pickDefaultRegion(regions, info) {
