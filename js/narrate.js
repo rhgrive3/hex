@@ -696,6 +696,451 @@ function uniq(arr) {
   return out;
 }
 
+/* ────────────────────────────────────────────────────────────
+   目的から探す — 候補の理由を読み上げる
+   ──────────────────────────────────────────────────────────── */
+
+const hex = (v) => (v == null ? '' : '0x' + v.toString(16).toUpperCase());
+
+/** ★★★★☆ の見た目。 */
+export function starsText(n) {
+  const k = Math.max(1, Math.min(5, n | 0));
+  return '★'.repeat(k) + '☆'.repeat(5 - k);
+}
+
+/**
+ * 候補の点数の内訳 1 行ぶん。
+ * 「+20 「ダメージ」という文字列を参照している」のように、点と理由を並べて出す。
+ */
+export function reasonText(r) {
+  if (!r) return '';
+  const d = r.detail || {};
+  switch (r.code) {
+    case 'string-ref':
+      return pick('「' + trim(d.text, 28) + '」という文字列を、この関数が実際に参照している',
+        'this function really does reference the text “' + trim(d.text, 28) + '”');
+    case 'name-match':
+      return pick('関数の名前「' + trim(d.name, 40) + '」が目的の言葉を含んでいる',
+        'the function name “' + trim(d.name, 40) + '” contains the word you are looking for');
+    case 'callee-name':
+      return pick('目的の言葉を含む処理「' + trim(d.name, 32) + '」を呼んでいる',
+        'it calls “' + trim(d.name, 32) + '”, whose name matches');
+    case 'caller-name':
+      return pick('目的の言葉を含む処理「' + trim(d.name, 32) + '」から呼ばれている',
+        'it is called by “' + trim(d.name, 32) + '”, whose name matches');
+    case 'calls-match':
+      return pick('有力候補' + (d.toName ? '「' + trim(d.toName, 24) + '」' : '') + 'を呼んでいる',
+        'it calls another strong candidate');
+    case 'called-by-match':
+      return pick('有力候補' + (d.fromName ? '「' + trim(d.fromName, 24) + '」' : '') + 'から呼ばれている',
+        'it is called by another strong candidate');
+    case 'numeric': {
+      const parts = [];
+      if (d.mul) parts.push(pick(d.mul + ' 回の掛け算', d.mul + ' multiplications'));
+      if (d.div) parts.push(pick(d.div + ' 回の割り算', d.div + ' divisions'));
+      if (d.fmul) parts.push(pick(d.fmul + ' 回の小数の掛け算', d.fmul + ' float multiplications'));
+      if (d.farith) parts.push(pick(d.farith + ' 回の小数の足し引き', d.farith + ' float add/subtracts'));
+      return pick('中で数値の計算をしている（' + parts.join('・') + '）',
+        'it does arithmetic inside (' + parts.join(', ') + ')');
+    }
+    case 'store':
+      return pick('計算した値をメモリへ書き込んでいる（' + d.n + ' か所）',
+        'it writes values back into memory (' + d.n + ' places)');
+    case 'compare':
+      return pick('値を比べている（' + d.n + ' か所）— しきい値の判定がありそう',
+        'it compares values (' + d.n + ' places)');
+    case 'popular':
+      return pick('あちこちから呼ばれている（' + d.n + ' か所）— アプリの本筋に近い',
+        'it is called from ' + d.n + ' places — close to the main flow');
+    case 'size-penalty':
+      return pick('命令が ' + d.n.toLocaleString() + ' 個と大きすぎて、目的の計算そのものとは考えにくい',
+        'it is very large (' + d.n.toLocaleString() + ' instructions), so it is unlikely to be the calculation itself');
+    default:
+      return '';
+  }
+}
+
+/** その理由が「事実」か「解釈」か。UI の見た目を変えるための語。 */
+export function certaintyWord(kind) {
+  if (kind === 'fact') return pick('事実', 'fact');
+  if (kind === 'unknown') return pick('不明', 'unknown');
+  return pick('推測', 'inference');
+}
+
+/* ────────────────────────────────────────────────────────────
+   関数レポート — 事実 / 推測 / 不明
+   ──────────────────────────────────────────────────────────── */
+
+/** FACT の 1 行。ここに書けるのは、バイナリから直接読めることだけ。 */
+export function factText(f) {
+  if (!f) return '';
+  const d = f.detail || {};
+  switch (f.code) {
+    case 'instructions':
+      return pick('命令が ' + d.n.toLocaleString() + ' 個ある', d.n.toLocaleString() + ' instructions');
+    case 'calls':
+      return pick('ほかの処理を ' + d.n + ' 回呼んでいる（うち名前が分かるのは ' + d.named + ' 回）',
+        'calls other routines ' + d.n + ' times (' + d.named + ' of them have names)');
+    case 'call-named':
+      return pick('「' + trim(d.name, 40) + '」を呼んでいる', 'calls “' + trim(d.name, 40) + '”');
+    case 'selector':
+      return pick('「' + d.selector + '」というメソッドを呼んでいる',
+        'sends the message “' + d.selector + '”');
+    case 'string-ref':
+      return pick('文字列「' + trim(d.text, 32) + '」（' + hex(d.addr) + '）を参照している',
+        'references the text “' + trim(d.text, 32) + '” at ' + hex(d.addr));
+    case 'loops':
+      return pick('前へ戻る分岐が ' + d.n + ' か所ある（＝繰り返し）', d.n + ' backward branches — loops');
+    case 'conditionals':
+      return pick('条件分岐が ' + d.n + ' か所ある', d.n + ' conditional branches');
+    case 'memory':
+      return pick('メモリの読み出し ' + d.loads + ' 回、書き込み ' + d.stores + ' 回',
+        d.loads + ' loads and ' + d.stores + ' stores');
+    case 'returns-value':
+      return pick('帰る前に x0 を作っている（＝呼び出し元へ値を返している）',
+        'writes x0 before returning — it returns a value');
+    case 'arguments':
+      return pick('自分で書く前に ' + d.regs.map((n) => 'x' + n).join('、') + ' を読んでいる（＝引数を受け取っている）',
+        'reads ' + d.regs.map((n) => 'x' + n).join(', ') + ' before writing them — it takes arguments');
+    case 'numeric': {
+      const parts = [];
+      if (d.mul) parts.push(pick('掛け算 ' + d.mul + ' 回', d.mul + ' multiplications'));
+      if (d.div) parts.push(pick('割り算 ' + d.div + ' 回', d.div + ' divisions'));
+      if (d.fmul) parts.push(pick('小数の掛け算 ' + d.fmul + ' 回', d.fmul + ' float multiplications'));
+      if (d.farith) parts.push(pick('小数の足し引き ' + d.farith + ' 回', d.farith + ' float add/subs'));
+      return parts.join('・');
+    }
+    case 'value-update': {
+      const op = d.ops && d.ops.length ? d.ops[d.ops.length - 1] : null;
+      const where = d.base ? d.base + (d.disp != null ? ' + ' + hex(d.disp) : '') : pick('ある場所', 'somewhere');
+      if (d.kind === 'read-modify-write') {
+        return pick(where + ' の値を読み、' + (op ? '「' + opWord(op) + '」という計算をして、' : '') + '同じ場所へ書き戻している',
+          'reads the value at ' + where + (op ? ', ' + opWord(op) : '') + ', and writes it back');
+      }
+      return pick(where + ' へ値を書き込んでいる', 'writes a value to ' + where);
+    }
+    case 'compare-const':
+      return pick((d.register || pick('ある値', 'a value')) + ' を ' +
+        (d.value != null ? d.value.toString() : d.float) + ' と比べている',
+      'compares ' + (d.register || 'a value') + ' with ' + (d.value != null ? d.value.toString() : d.float));
+    case 'callers':
+      return pick('この関数を呼んでいる場所が ' + d.n + ' か所ある', 'called from ' + d.n + ' places');
+    case 'no-callers':
+      return pick('この関数を呼んでいる場所は、このセクションの中には見つからなかった',
+        'nothing in this section calls it');
+    case 'indirect-calls':
+      return pick('行き先が実行時に決まる呼び出しが ' + d.n + ' か所ある',
+        d.n + ' calls whose target is decided at run time');
+    default:
+      return '';
+  }
+}
+
+/** 演算 1 つを短い言葉にする。「10 を足す」「2 倍する」。 */
+function opWord(op) {
+  const name = op && op.op ? op.op : '';
+  const n = op && op.imm != null ? op.imm.toString() : null;
+  switch (name) {
+    case 'add': case 'adds': return n ? pick(n + ' を足す', 'add ' + n) : pick('足し算をする', 'add');
+    case 'sub': case 'subs': return n ? pick(n + ' を引く', 'subtract ' + n) : pick('引き算をする', 'subtract');
+    case 'mul': case 'madd': case 'msub':
+      return n ? pick(n + ' を掛ける', 'multiply by ' + n) : pick('掛け算をする', 'multiply');
+    case 'sdiv': case 'udiv': return pick('割り算をする', 'divide');
+    case 'fmul': return pick('小数の掛け算をする', 'multiply (float)');
+    case 'fdiv': return pick('小数の割り算をする', 'divide (float)');
+    case 'fadd': return pick('小数の足し算をする', 'add (float)');
+    case 'fsub': return pick('小数の引き算をする', 'subtract (float)');
+    case 'and': case 'orr': case 'eor': case 'bic': return pick('ビット単位の演算をする', 'do bit operations');
+    case 'lsl': return n ? pick(2 ** Number(n) + ' 倍する', 'multiply by ' + (2 ** Number(n))) : pick('左へずらす', 'shift left');
+    case 'lsr': case 'asr': return n ? pick(2 ** Number(n) + ' で割る', 'divide by ' + (2 ** Number(n))) : pick('右へずらす', 'shift right');
+    case 'mov': case 'movz': return pick('別の値に入れ替える', 'replace with another value');
+    case 'csel': case 'csinc': return pick('条件によって値を選ぶ', 'pick a value depending on a condition');
+    default: return pick('計算する', 'compute');
+  }
+}
+
+/** INFERENCE の 1 行。必ず確度と根拠が付く前提で書く。 */
+export function inferenceText(i) {
+  if (!i) return '';
+  const d = i.detail || {};
+  switch (i.code) {
+    case 'purpose-feature':
+      return pick('この関数は ' + (d.features || []).map(featureLabel).filter(Boolean).join('と') +
+        ' に関わる処理をしている可能性が高い',
+      'this function is probably involved in ' + (d.features || []).map(featureLabel).filter(Boolean).join(' and '));
+    case 'purpose-selector':
+      return pick('呼んでいるメソッド名（' + (d.selectors || []).slice(0, 3).join('、') +
+        '）から見て、その担当らしい',
+      'the method names it sends (' + (d.selectors || []).slice(0, 3).join(', ') + ') suggest what it is for');
+    case 'value-holder': {
+      const where = d.base + (d.disp != null ? ' + ' + hex(d.disp) : '');
+      return pick(where + ' に置かれている値が、この関数が扱っている値そのものである可能性が高い',
+        'the value stored at ' + where + ' is probably the value this function works on');
+    }
+    case 'threshold-check':
+      return pick('決まった数と比べて処理を分けているので、上限や条件の判定が入っていそう',
+        'it compares against fixed numbers, so there is probably a limit or condition check');
+    case 'goal-related':
+      return pick('探している「' + (d.label || '') + '」に関係している可能性がある',
+        'this may be related to “' + (d.label || '') + '”');
+    default:
+      return '';
+  }
+}
+
+/** UNKNOWN の 1 行。ここを言わないツールは信用できない。 */
+export function unknownText(u) {
+  if (!u) return '';
+  const d = u.detail || {};
+  switch (u.code) {
+    case 'indirect-target':
+      return pick('行き先が実行時に決まる呼び出しが ' + d.n + ' か所あり、その先はこのツールでは追えません。',
+        d.n + ' calls are resolved at run time; this tool cannot follow them.');
+    case 'unnamed-calls':
+      return pick('名前の残っていない呼び出しが ' + d.n + ' か所あり、それが何をするかは分かりません。',
+        d.n + ' calls have no name information, so what they do is unknown.');
+    case 'no-strings':
+      return pick('読める文字列を参照していないため、言葉からの手がかりはありません。',
+        'it references no readable text, so there is no word-level clue.');
+    case 'truncated':
+      return pick('関数が大きすぎるため、途中までしか解析していません。',
+        'the function is too large; only the first part was analysed.');
+    case 'stats-partial':
+      return pick('セクションが大きいため、命令の統計は一部だけです。',
+        'the section is large, so the instruction statistics cover only part of it.');
+    case 'goal-unrelated':
+      return pick('探しているものとの結びつきは、この関数の中には見つかりませんでした。',
+        'no link to what you are looking for was found in this function.');
+    case 'runtime-meaning':
+      return pick('この値が実行時に何を意味するかは、静的な解析だけでは確定できません。' +
+        '最後は実際に動かして確かめる必要があります。',
+      'What these values mean at run time cannot be settled by static analysis alone.');
+    default:
+      return '';
+  }
+}
+
+/** 「次に何をすればいいか」。初心者がいちばん詰まるところ。 */
+export function nextStepText(s) {
+  if (!s) return '';
+  const d = s.detail || {};
+  switch (s.code) {
+    case 'check-callers':
+      return pick('この関数を呼んでいる ' + d.n + ' か所を見て、どんな場面で使われるか確かめる',
+        'look at the ' + d.n + ' places that call it, to see when it is used');
+    case 'no-callers-hint':
+      return pick('呼び出し元が見つからないので、実行時にだけ呼ばれる形（メソッド呼び出しなど）かもしれない',
+        'nothing calls it directly — it may only be reached at run time');
+    case 'check-inputs':
+      return pick('受け取っている値（' + (d.regs || []).map((n) => 'x' + n).join('、') + '）が何かを、呼び出し元で確かめる',
+        'check what the caller passes in (' + (d.regs || []).map((n) => 'x' + n).join(', ') + ')');
+    case 'check-return':
+      return pick('返している値が、呼び出し元でどう使われるかを追う',
+        'follow the returned value into the caller');
+    case 'check-updates':
+      return pick('値を書き換えている場所（' + hex(d.addr) + '）を開いて、何を増減させているか見る',
+        'open the place that changes the value (' + hex(d.addr) + ') and see what it adds or subtracts');
+    case 'check-callees':
+      return pick('この関数が呼んでいる ' + d.n + ' 個の処理をたどって、本体がどれか探す',
+        'follow the ' + d.n + ' routines it calls to find where the real work happens');
+    case 'check-thresholds':
+      return pick('比べている数（しきい値）を見て、条件が何かを確かめる',
+        'look at the constants it compares against to see what the condition is');
+    case 'verify-runtime':
+      return pick('最後は実際に動かして、狙った値が変わるかどうかを確かめる',
+        'finally, run the app and check whether the value really changes');
+    default:
+      return '';
+  }
+}
+
+/* ── 値の流れ ─────────────────────────────────────────────── */
+
+/**
+ * 「読んで → 計算して → 書き戻す」を 4 行で見せる。
+ * 仕様どおり、変更対象・変更前・演算・変更後を分けて言う。
+ */
+export function updateLines(update) {
+  if (!update) return [];
+  const where = update.location.base +
+    (update.location.disp != null ? ' + ' + hex(update.location.disp) : '');
+  const lines = [];
+  lines.push(pick('変更対象: ' + where, 'Target: ' + where));
+  if (update.from) {
+    lines.push(pick('変更前: ' + where + ' に入っている値', 'Before: the value stored at ' + where));
+  } else {
+    lines.push(pick('変更前: 不明（読み出しが見つかりませんでした）', 'Before: unknown (no matching load was found)'));
+  }
+  if (update.steps && update.steps.length) {
+    const ops = update.steps.map((s) => opWord(s)).join(pick('、そのあと ', ', then '));
+    lines.push(pick('演算: ' + ops, 'Operation: ' + ops));
+  } else {
+    lines.push(pick('演算: なし（そのまま書き込んでいます）', 'Operation: none — the value is stored as-is'));
+  }
+  lines.push(pick('変更後: その結果を、同じ ' + where + ' へ書き戻す',
+    'After: the result is written back to ' + where));
+  return lines;
+}
+
+/** ある値が次にどう使われるか、の 1 行。 */
+export function useText(u) {
+  if (!u) return '';
+  const d = u.detail || {};
+  switch (u.use) {
+    case 'argument':
+      return pick('この値を、次の呼び出しに渡している' +
+        (d.index != null ? '（' + (d.index + 1) + ' 番目の引数）' : ''),
+      'passed to the next call' + (d.index != null ? ' as argument ' + (d.index + 1) : ''));
+    case 'store':
+      return pick('この値をメモリ（' + (d.base || '?') +
+        (d.disp != null ? ' + ' + hex(d.disp) : '') + '）へ書き込んでいる',
+      'stored into memory at ' + (d.base || '?') + (d.disp != null ? ' + ' + hex(d.disp) : ''));
+    case 'compare':
+      return pick('この値を比べて、進む道を決めている', 'compared, to decide which way to go');
+    case 'compute':
+      return pick('この値を使って計算している（' + (d.op || '') + '）',
+        'used in a computation (' + (d.op || '') + ')');
+    case 'address':
+      return pick('この値を場所として使い、メモリを読み書きしている',
+        'used as an address to read or write memory');
+    case 'returned':
+      return pick('この値を、呼び出し元へ返している', 'returned to the caller');
+    case 'overwritten':
+      return pick('ここで別の値に書き換えられ、追跡はここで終わり', 'overwritten here — the trail ends');
+    case 'join':
+      return pick('ここは別の場所から飛んでくる合流点なので、これ以上は追えません',
+        'this point can be reached from elsewhere, so the value can no longer be tracked');
+    default:
+      return pick('この値を読んでいる', 'reads the value');
+  }
+}
+
+/* ── 制御フロー ───────────────────────────────────────────── */
+
+export function shapeText(shape) {
+  if (!shape) return '';
+  switch (shape.kind) {
+    case 'loop':
+      return pick('繰り返し（条件が変わるまで同じ処理に戻ります）', 'a loop — it goes back until a condition changes');
+    case 'if':
+      return pick('条件に合ったときだけ通る道があります', 'a branch that is only taken when a condition holds');
+    case 'if-else':
+      return pick('条件で 2 つの道に分かれ、そのあと合流します',
+        'the flow splits in two and joins again afterwards');
+    case 'early-return':
+      return shape.error
+        ? pick('条件に合うと、異常として途中で終わります', 'on this condition it bails out as an error')
+        : pick('条件に合うと、その場で呼び出し元へ帰ります', 'on this condition it returns early');
+    default:
+      return '';
+  }
+}
+
+/* ────────────────────────────────────────────────────────────
+   自動解析の読み上げ
+   ──────────────────────────────────────────────────────────── */
+
+/** 「気づいたこと」の見出し。 */
+export function findingTitle(id) {
+  switch (id) {
+    case 'endpoint': return pick('通信先（サーバーの住所）', 'Server endpoints');
+    case 'anticheat': return pick('解析・改造の検知らしきもの', 'Anti-tamper checks');
+    case 'crypto': return pick('暗号やハッシュの計算', 'Cryptography');
+    case 'ads': return pick('広告の部品', 'Advertising SDKs');
+    case 'purchase': return pick('課金・レシート確認', 'Purchases and receipts');
+    case 'debuglog': return pick('開発中の名残（デバッグ用）', 'Left-over debug text');
+    case 'path': return pick('ファイルの場所', 'File paths');
+    default: return pick('気づいたこと', 'Notes');
+  }
+}
+
+/** その「気づいたこと」が、なぜ手がかりになるのか。 */
+export function findingWhy(id) {
+  switch (id) {
+    case 'endpoint':
+      return pick('アプリが外へ何を送っているかは、ここから辿るのがいちばん早いです。',
+        'The quickest way to see what the app sends out.');
+    case 'anticheat':
+      return pick('改造や解析を見つけて止める処理かもしれません。' +
+        'ゲームの動きが途中で止まるときは、この近くを見ます。',
+      'These may be checks that detect tampering.');
+    case 'crypto':
+      return pick('通信や保存データを隠している部分の入口です。',
+        'Where communication or saved data gets scrambled.');
+    case 'ads':
+      return pick('広告の表示に関わる部分です。ゲーム本体の処理ではありません。',
+        'Advertising code — not the game logic itself.');
+    case 'purchase':
+      return pick('購入の確認をしている部分です。', 'Where purchases are verified.');
+    case 'debuglog':
+      return pick('作った人が残したメモです。処理の名前がそのまま書いてあることがあります。',
+        'Notes left by the developers; often name things directly.');
+    case 'path':
+      return pick('データがどこに置かれるかの手がかりです。', 'Hints at where data is stored.');
+    default: return '';
+  }
+}
+
+/** 「注目すべき関数」に選ばれた理由。 */
+export function notableReasonText(r) {
+  if (!r) return '';
+  const d = r.detail || {};
+  switch (r.code) {
+    case 'called':
+      return pick(d.n + ' か所から呼ばれている', 'called from ' + d.n + ' places');
+    case 'numeric': {
+      const parts = [];
+      if (d.mul) parts.push(pick('掛け算 ' + d.mul + ' 回', d.mul + ' multiplications'));
+      if (d.div) parts.push(pick('割り算 ' + d.div + ' 回', d.div + ' divisions'));
+      if (d.fmul) parts.push(pick('小数の掛け算 ' + d.fmul + ' 回', d.fmul + ' float multiplications'));
+      return pick('数値の計算をしている（' + parts.join('・') + '）',
+        'does arithmetic (' + parts.join(', ') + ')');
+    }
+    case 'readwrite':
+      return pick('メモリを読んで書き戻している（読み ' + d.load + ' / 書き ' + d.store + '）',
+        'reads and writes memory (' + d.load + ' loads, ' + d.store + ' stores)');
+    case 'named':
+      return pick('名前が残っている', 'it still has a name');
+    case 'compare':
+      return pick('値を ' + d.n + ' か所で比べている', 'compares values in ' + d.n + ' places');
+    case 'huge':
+      return pick('命令が ' + d.n.toLocaleString() + ' 個と大きい', 'very large (' + d.n.toLocaleString() + ' instructions)');
+    default: return '';
+  }
+}
+
+/** 自動解析のあとの「次の一手」。 */
+export function autoStepText(s) {
+  if (!s) return '';
+  const d = s.detail || {};
+  switch (s.code) {
+    case 'open-update':
+      return pick('値を書き換えている場所（' + hex(d.addr) + (d.name ? ' / ' + d.name : '') +
+        '）を開いて、何を増減させているか確かめる',
+      'open the place that changes a value (' + hex(d.addr) + ') and see what it changes');
+    case 'open-goal':
+      return pick('「' + d.label + '」の最有力候補を開いて、根拠を確かめる',
+        'open the strongest candidate for “' + d.label + '” and check the evidence');
+    case 'check-endpoint':
+      return pick('通信先を見て、アプリが何を送受信しているか確かめる',
+        'look at the endpoints to see what the app talks to');
+    case 'check-anticheat':
+      return pick('改造検知らしき処理を見て、何を条件にしているか確かめる',
+        'look at the tamper checks and see what they test');
+    case 'nothing-found':
+      return pick('手がかりが見つかりませんでした。文字列が暗号化・難読化されているか、' +
+        '処理が別のファイルにある可能性があります。',
+      'Nothing was found — the text may be obfuscated, or the logic may live in another file.');
+    case 'other-binary':
+      return pick('このアプリは別のファイルに本体があるようなので、そちらも開いてみる',
+        'the real logic may live in another binary — try opening that too');
+    case 'verify-runtime':
+      return pick('最後は実際に動かして、狙った値が変わるかどうかを確かめる',
+        'finally, run the app and check whether the value really changes');
+    default: return '';
+  }
+}
+
 /* ── ビューア用のオーバーレイ ──────────────────────────────── */
 
 /**

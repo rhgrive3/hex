@@ -47,6 +47,10 @@ const subImm = (rd, rn, imm, bits = 64) =>
 const addReg = (rd, rn, rm, bits = 64) =>
   u((bits === 64 ? 0x8b000000 : 0x0b000000) | (rm << 16) | (rn << 5) | rd);
 
+/** sub Rd, Rn, Rm */
+const subReg = (rd, rn, rm, bits = 64) =>
+  u((bits === 64 ? 0xcb000000 : 0x4b000000) | (rm << 16) | (rn << 5) | rd);
+
 /** cmp Rn, Rm  （subs xzr, Rn, Rm） */
 const cmpReg = (rn, rm, bits = 32) =>
   u((bits === 64 ? 0xeb000000 : 0x6b000000) | (rm << 16) | (rn << 5) | XZR);
@@ -103,15 +107,19 @@ const STRINGS = [
   'sum_to(10) = %d\n',
   '/tmp/sample-practice.log',
   'practice mode: nothing here is real',
+  // 「目的から探す」の練習用。ゲームらしい言葉を、実際に参照する形で入れておく。
+  'damage dealt to enemy: %d\n',
+  'player hp is now %d\n',
 ];
 
 /**
  * 命令列を組み立てる。
  * ラベルの位置が決まってから分岐先を埋めたいので、2 回まわす。
  */
-function assemble(textAddr, stubsAddr, cstringAddr) {
+function assemble(textAddr, stubsAddr, strAddrs) {
   const label = {};
   let out = [];
+  const cstringAddr = strAddrs[0];
 
   const build = () => {
     out = [];
@@ -157,28 +165,68 @@ function assemble(textAddr, stubsAddr, cstringAddr) {
     put(ldp(29, 30, SP, 16, 'post'));    // ldp x29, x30, [sp], #16
     put(RET);
 
-    /* ── int main(void) — ローカル変数と、3 回の呼び出し ──── */
-    label._main = here();
+    /* ── int apply_damage(unit *u, int atk) ──────────────────
+       ゲームの中でいちばんよくある形を、そのまま入れてある。
+
+         u->hp が unit + 0x20、攻撃倍率が unit + 0x24。
+         damage = atk * rate;  u->hp -= damage;  0 より下がったら 0 で止める。
+
+       「読み込む → 計算する → 同じ場所へ書き戻す」という、
+       このツールが「変更候補」として拾う形そのものです。         */
+    label._apply_damage = here();
     put(stp(29, 30, SP, -32, 'pre'));    // stp x29, x30, [sp, #-32]!
+    put(movFromSp(29));                  // mov x29, sp
+    put(strImm(0, SP, 16, 64));          // str x0, [sp, #16]   … unit を控える
+    put(ldrImm(8, 0, 0x20, 32));         // ldr w8, [x0, #0x20] … 今の HP
+    put(ldrImm(9, 0, 0x24, 32));         // ldr w9, [x0, #0x24] … 攻撃倍率
+    put(mul(9, 1, 9, 32));               // mul w9, w1, w9      … ダメージ = 攻撃力 × 倍率
+    put(subReg(8, 8, 9, 32));            // sub w8, w8, w9      … HP を減らす
+    put(strImm(8, 0, 0x20, 32));         // str w8, [x0, #0x20] … 同じ場所へ書き戻す
+    put(cmpImm(8, 0, 32));               // cmp w8, #0
+    const bAlive = out.length; put(0);   // b.gt alive
+    put(movz(8, 0, 32));                 // mov w8, #0          … 0 より下は 0 で止める
+    put(ldrImm(0, SP, 16, 64));          // ldr x0, [sp, #16]
+    put(strImm(8, 0, 0x20, 32));         // str w8, [x0, #0x20]
+    label.alive = here();
+    put(strImm(8, SP, 12, 32));          // str w8, [sp, #12]   … 呼び出しをまたいで残す
+    const adrpDmg = here();
+    put(adrp(0, adrpDmg, strAddrs[4]));  // adrp x0, "damage dealt…"
+    put(addImm(0, 0, Number(strAddrs[4] & 0xfffn)));
+    const bPutsDmg = out.length; put(0); // bl _puts
+    put(ldrImm(0, SP, 12, 32));          // ldr w0, [sp, #12]   … 残った HP を返す
+    put(ldp(29, 30, SP, 32, 'post'));
+    put(RET);
+
+    /* ── int main(void) — ローカル変数と、4 回の呼び出し ──── */
+    label._main = here();
+    put(stp(29, 30, SP, -64, 'pre'));    // stp x29, x30, [sp, #-64]!
     put(movFromSp(29));                  // mov x29, sp
     put(movz(0, 3, 32));                 // mov w0, #3      … 第 1 引数
     put(movz(1, 4, 32));                 // mov w1, #4      … 第 2 引数
     const bAdd = out.length; put(0);     // bl _add
-    put(strImm(0, SP, 28, 32));          // str w0, [sp, #28]  … ローカル変数へ
+    put(strImm(0, SP, 8, 32));           // str w0, [sp, #8]   … ローカル変数へ
     put(movz(0, 10, 32));                // mov w0, #10
     const bSum = out.length; put(0);     // bl _sum_to
-    put(ldrImm(1, SP, 28, 32));          // ldr w1, [sp, #28]  … さっきの値を戻す
+    put(ldrImm(1, SP, 8, 32));           // ldr w1, [sp, #8]   … さっきの値を戻す
     put(addReg(0, 0, 1, 32));            // add w0, w0, w1
-    put(strImm(0, SP, 24, 32));          // str w0, [sp, #24]
+    put(strImm(0, SP, 12, 32));          // str w0, [sp, #12]
     const bGreet = out.length; put(0);   // bl _greet
-    put(ldrImm(0, SP, 24, 32));          // ldr w0, [sp, #24]  … 戻り値
-    put(ldp(29, 30, SP, 32, 'post'));
+    // 敵ユニットを 1 体こしらえて、殴ってみる（unit は sp+16 に置く）
+    put(movz(0, 100, 32));               // mov w0, #100
+    put(strImm(0, SP, 48, 32));          // str w0, [sp, #48]  … u->hp   = 100
+    put(movz(0, 3, 32));                 // mov w0, #3
+    put(strImm(0, SP, 52, 32));          // str w0, [sp, #52]  … u->rate = 3
+    put(addImm(0, SP, 16));              // add x0, sp, #16    … 第 1 引数 = unit
+    put(movz(1, 7, 32));                 // mov w1, #7         … 第 2 引数 = 攻撃力
+    const bDamage = out.length; put(0);  // bl _apply_damage
+    put(ldrImm(0, SP, 12, 32));          // ldr w0, [sp, #12]  … 戻り値
+    put(ldp(29, 30, SP, 64, 'post'));
     put(RET);
 
     // 4 バイトの位置合わせ（本物のバイナリでも関数の間に入っています）
     put(NOP);
 
-    return { bGt, bLoop, bPuts, bAdd, bSum, bGreet };
+    return { bGt, bLoop, bPuts, bAdd, bSum, bGreet, bAlive, bPutsDmg, bDamage };
   };
 
   // 1 回目でラベルの位置を確定させ、2 回目で分岐先を埋める。
@@ -190,6 +238,9 @@ function assemble(textAddr, stubsAddr, cstringAddr) {
   out[slots.bAdd] = branch(true, label._add - at(slots.bAdd));
   out[slots.bSum] = branch(true, label._sum_to - at(slots.bSum));
   out[slots.bGreet] = branch(true, label._greet - at(slots.bGreet));
+  out[slots.bAlive] = bcond(COND.gt, label.alive - at(slots.bAlive));
+  out[slots.bPutsDmg] = branch(true, stubsAddr - at(slots.bPutsDmg));
+  out[slots.bDamage] = branch(true, label._apply_damage - at(slots.bDamage));
 
   return { words: out, label };
 }
@@ -276,7 +327,8 @@ export function buildSampleBinary() {
   const textAddr = TEXT_VM + BigInt(textOff);
 
   // まず仮の位置で組み立てて大きさを知り、そのあと本番の位置で組み直す。
-  let probe = assemble(textAddr, textAddr, textAddr);
+  const probeAddrs = STRINGS.map(() => textAddr);
+  let probe = assemble(textAddr, textAddr, probeAddrs);
   const textBytes = probe.words.length * 4;
 
   const stubsOff = textOff + textBytes;
@@ -297,11 +349,11 @@ export function buildSampleBinary() {
   const gotOff = Number(PAGE);
 
   // 本番の位置で組み直す（文字列の位置が決まったので adrp が正しくなる）
-  const text = assemble(textAddr, stubsAddr, stringAddrs[0]);
+  const text = assemble(textAddr, stubsAddr, stringAddrs);
   const stub = buildStub(stubsAddr, gotAddr);
 
   /* ── __LINKEDIT の中身 ── */
-  const funcOrder = ['_add', '_square', '_sum_to', '_greet', '_main'];
+  const funcOrder = ['_add', '_square', '_sum_to', '_greet', '_apply_damage', '_main'];
   const funcAddrs = funcOrder.map((n) => text.label[n]).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
 
   const funcStarts = [];
@@ -505,6 +557,9 @@ export const SAMPLE_GUIDE = {
     ['_square', '受け取った値を掛け算して返します。mul 命令が見られます。'],
     ['_sum_to', '1 から n までを足すループ。cmp と b.gt、そして上に戻る b が見どころです。'],
     ['_greet', '文字列のアドレスを adrp + add で作り、外部の _puts をスタック経由で呼びます。'],
+    ['_apply_damage',
+      'ゲームでいちばんよくある形です。HP を読み込み、攻撃力 × 倍率を引いて、同じ場所へ書き戻します。' +
+      '「調べる」から「ダメージ計算」を選ぶと、この関数が根拠つきで候補に出てきます。'],
     ['_main', 'ローカル変数をスタックに置きながら、上の関数を順に呼びます。ここから読み始めるとよいです。'],
   ],
 };

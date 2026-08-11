@@ -7,7 +7,7 @@
  */
 'use strict';
 
-importScripts('./macho.js', '../capstone.js');
+importScripts('./macho.js', './words.js', '../capstone.js');
 
 /* ── Constants ──────────────────────────────────────────────── */
 
@@ -30,6 +30,12 @@ const STRINGS_LIMIT = 20_000;        // 文字列一覧の上限
 const STRINGS_MIN = 4;               // これより短い文字列は拾わない
 const XREF_LIMIT = 2000;
 const SCAN_BLOCK = 1024 * 1024;      // 生スキャンの読み取り単位
+
+/* プログラム全体の索引（呼び出し関係とデータ参照）の上限。
+   ここを超えるファイルでは索引を打ち切り、その旨を伝える。黙って嘘をつかない。 */
+const MAX_EDGES = 500_000;           // bl の辺
+const MAX_REFS = 500_000;            // データへの参照
+const MAX_KIND_WORDS = 16 * 1024 * 1024;  // 語ごとの分類を持つ上限（= 64 MiB のコード）
 
 /* ── State ──────────────────────────────────────────────────── */
 
@@ -87,6 +93,7 @@ async function handle(msg) {
     case 'xrefs':   return findXrefs(msg);
     case 'readAt':  return readAtAddress(msg);
     case 'guessFunctions': return guessFunctions(msg);
+    case 'scanProgram': return scanProgram(msg);
     default: throw new Error('Unknown request: ' + msg.t);
   }
 }
@@ -448,34 +455,12 @@ async function analyzeSlice({ sliceIndex }) {
 
 /* ── 名前がないファイルで、関数の切れ目を推測する ───────────── */
 
-const RET      = 0xd65f03c0;   // ret
-const PACIASP  = 0xd503233f;
-const PACIBSP  = 0xd503237f;
-
 /*
- * ビットマスクの比較は必ずこれを通す。
- * JS の & は符号つき 32 ビットを返すので、bit31 が立つ命令（0x94000000 の bl や
- * 0xD65F0000 の ret など）を素朴に比較すると、いつまでも一致しない。
+ * 命令語の読み取りは words.js に一本化してある。
+ * 逆アセンブル結果の文字列ではなくビットそのものを見るので速く、
+ * かつ node のテストから同じコードを検証できる。
  */
-const masked = (w, mask) => (w & mask) >>> 0;
-
-/** bti c / bti j / bti jc */
-function isBti(w) { return masked(w, 0xffffff1f) === 0xd503241f; }
-
-/** stp xN, xM, [sp, …] — スタックへの 2 本組の書き込み。プロローグの目印。 */
-function isStpToSp(w) {
-  return (w >>> 30) === 2 && ((w >>> 27) & 7) === 5 && ((w >>> 26) & 1) === 0 &&
-         ((w >>> 22) & 1) === 0 && ((w >>> 5) & 0x1f) === 31;
-}
-
-/** sub sp, sp, #imm — スタックの確保。 */
-function isSubSp(w) {
-  return ((w >>> 23) & 0x1ff) === 0x1a2 && ((w >>> 5) & 0x1f) === 31 && (w & 0x1f) === 31;
-}
-
-function looksLikePrologue(w) {
-  return isStpToSp(w) || isSubSp(w) || isBti(w) || w === PACIASP || w === PACIBSP;
-}
+const looksLikePrologue = Words.looksLikePrologue;
 
 /**
  * LC_FUNCTION_STARTS がないファイル（＝配布用にシンボルを削ったアプリ）向け。
@@ -509,13 +494,12 @@ async function guessFunctions({ regionId, limit }) {
 
       if (prevWasEnd && looksLikePrologue(w) && found.size < cap) found.add(pc);
       // ret / retaa / retab / 無条件 b は関数の終わりになりうる
-      prevWasEnd = (w === RET) || masked(w, 0xfffffc1f) === 0xd65f0000 ||
-                   masked(w, 0xfc000000) === 0x14000000;
+      prevWasEnd = Words.looksLikeEnd(w);
 
       // bl の飛び先
-      if (masked(w, 0xfc000000) === 0x94000000) {
-        const t = pc + (signExtend(BigInt(w >>> 0) & 0x3ffffffn, 26) << 2n);
-        if (t >= lo && t < hi && found.size < cap) found.add(t);
+      if (Words.isCallImm(w)) {
+        const t = Words.branchImm26(w, pc);
+        if (t != null && t >= lo && t < hi && found.size < cap) found.add(t);
       }
     }
     pos += words * 4;
@@ -527,6 +511,135 @@ async function guessFunctions({ regionId, limit }) {
   const starts = new BigUint64Array(list.length);
   for (let i = 0; i < list.length; i++) starts[i] = list[i];
   return { starts, cancelled: false, __transfer: [starts.buffer] };
+}
+
+/* ── プログラム全体の索引（1 パスで作る） ───────────────────
+ *
+ * このツールの土台。セクションを 1 回だけ舐めて、
+ *
+ *   1. どの命令がどこを呼んでいるか（bl の辺）      → 呼び出しグラフ
+ *   2. どの命令がどのアドレスを指しているか          → 文字列・データの参照元
+ *   3. 語ごとの命令の種類                            → 関数ごとの統計（掛け算・store…）
+ *
+ * をまとめて取る。これがあると「文字列が近くにあるから関係ありそう」ではなく
+ * 「この関数がこの文字列を参照し、この関数から呼ばれている」と言えるようになる。
+ *
+ * Capstone は通さない。逆アセンブルより桁違いに速いので、数十 MB でも一気に走る。
+ */
+async function scanProgram({ regionId }) {
+  const region = regions.get(regionId);
+  if (!region) throw new Error('Unknown region.');
+  const token = ++searchToken;
+  const total = Number(region.size);
+  const words = Math.floor(total / 4);
+
+  const callFrom = new BigUint64Array(Math.min(words, MAX_EDGES));
+  const callTo = new BigUint64Array(callFrom.length);
+  const refFrom = new BigUint64Array(Math.min(words, MAX_REFS));
+  const refTo = new BigUint64Array(refFrom.length);
+  const refKind = new Uint8Array(refFrom.length);      // 0 アドレス / 1 読み出し / 2 書き込み
+  const kinds = new Uint8Array(Math.min(words, MAX_KIND_WORDS));
+
+  let nCalls = 0, nRefs = 0;
+  let callsCapped = false, refsCapped = false;
+  const lo = region.vmAddr, hi = region.vmAddr + region.size;
+
+  // レジスタごとに「直近の adrp が作ったページ」を覚える。ブロックをまたいでも続く。
+  const pageOf = new Array(32).fill(null);
+  const pageAt = new Array(32).fill(-1);
+  let index = 0;
+  let pos = 0;
+
+  while (pos < total) {
+    if (token !== searchToken) return { cancelled: true, __transfer: [] };
+    const want = Math.min(SCAN_BLOCK, total - pos);
+    const blk = await readRange(region.fileOffset + BigInt(pos), want);
+    if (blk.length < 4) break;
+    const n = Math.floor(blk.length / 4);
+    const dv = new DataView(blk.buffer, blk.byteOffset, n * 4);
+
+    for (let i = 0; i < n; i++, index++) {
+      const w = dv.getUint32(i * 4, true);
+      const pc = region.vmAddr + BigInt(pos + i * 4);
+      const kind = Words.classifyWord(w);
+      if (index < kinds.length) kinds[index] = kind;
+
+      if (kind === Words.KIND.CALL) {
+        const t = Words.branchImm26(w, pc);
+        if (t != null) {
+          if (nCalls < callFrom.length) { callFrom[nCalls] = pc; callTo[nCalls] = t; nCalls++; }
+          else callsCapped = true;
+        }
+        continue;
+      }
+
+      // adrp / adr — アドレスの土台
+      const rel = Words.pcRelTarget(w, pc);
+      if (rel) {
+        pageOf[rel.reg] = rel.value;
+        pageAt[rel.reg] = index;
+        if (!rel.page) addRef(pc, rel.value, 0);
+        continue;
+      }
+
+      // adrp の続き: add で場所そのもの、ldr/str でその中身
+      const pair = Words.pairedOffset(w);
+      if (pair && pageOf[pair.rn] != null && index - pageAt[pair.rn] <= 8) {
+        const full = pageOf[pair.rn] + pair.imm;
+        addRef(pc, full, pair.load ? 1 : pair.store ? 2 : 0);
+        // add の結果は別レジスタに移ることがあるので、そのまま引き継ぐ
+        if (!pair.load && !pair.store) { pageOf[pair.rd] = full; pageAt[pair.rd] = index; }
+        else if (pair.rd !== pair.rn) { pageOf[pair.rd] = null; pageAt[pair.rd] = -1; }
+        continue;
+      }
+
+      // ldr literal — すぐ近くに置かれた定数
+      if (kind === Words.KIND.LITERAL) {
+        const t = Words.literalTarget(w, pc);
+        if (t != null) addRef(pc, t, 1);
+        continue;
+      }
+
+      // 書き換えられたレジスタのページ情報は捨てる（古い前提を持ち越さない）
+      if (kind !== Words.KIND.NOP && kind !== Words.KIND.CONDBR && kind !== Words.KIND.CMP) {
+        const d = w & 0x1f;
+        if (pageAt[d] >= 0 && pageAt[d] !== index) { pageOf[d] = null; pageAt[d] = -1; }
+      }
+    }
+
+    pos += n * 4;
+    self.postMessage({ t: 'scanProgress', done: pos, all: total, hits: nCalls + nRefs });
+    await yieldToQueue();
+  }
+
+  const outCallFrom = callFrom.slice(0, nCalls);
+  const outCallTo = callTo.slice(0, nCalls);
+  const outRefFrom = refFrom.slice(0, nRefs);
+  const outRefTo = refTo.slice(0, nRefs);
+  const outRefKind = refKind.slice(0, nRefs);
+  return {
+    regionId,
+    vmAddr: region.vmAddr,
+    words,
+    callFrom: outCallFrom, callTo: outCallTo,
+    refFrom: outRefFrom, refTo: outRefTo, refKind: outRefKind,
+    kinds,
+    kindsCovered: Math.min(words, kinds.length),
+    callsCapped, refsCapped,
+    cancelled: false,
+    __transfer: [outCallFrom.buffer, outCallTo.buffer, outRefFrom.buffer,
+      outRefTo.buffer, outRefKind.buffer, kinds.buffer],
+  };
+
+  function addRef(pc, target, k) {
+    // セクションの外を指す参照も残す（文字列は別セクションにあるのが普通）。
+    // ただしどう見てもアドレスでないものは捨てる。
+    if (target == null || target <= 0n) return;
+    void lo; void hi;
+    if (nRefs < refFrom.length) {
+      refFrom[nRefs] = pc; refTo[nRefs] = target; refKind[nRefs] = k; nRefs++;
+    } else refsCapped = true;
+  }
 }
 
 /* ── 文字列の抽出 ───────────────────────────────────────────── */
@@ -587,63 +700,9 @@ async function scanStrings({ regionId, min, limit }) {
  * capstone を通さず、4 バイトの語を直接読んで分岐先とアドレス生成を拾う。
  * 逆アセンブルより桁違いに速いので、数十 MB のセクションでも一気に走査できる。
  */
-function signExtend(value, bits) {
-  const sign = 1n << BigInt(bits - 1);
-  return (value & (sign - 1n)) - (value & sign);
-}
-
-/** 1 語から「この命令が指しているアドレス」を求める。分からなければ null。 */
-function wordTarget(w, pc) {
-  const bw = BigInt(w >>> 0);
-  // B / BL : op(31) 0 00101 imm26
-  if (masked(w, 0x7c000000) === 0x14000000) {
-    return pc + (signExtend(bw & 0x3ffffffn, 26) << 2n);
-  }
-  // B.cond : 0101 0100 imm19 0 cond
-  if (masked(w, 0xff000010) === 0x54000000) {
-    return pc + (signExtend((bw >> 5n) & 0x7ffffn, 19) << 2n);
-  }
-  // CBZ / CBNZ : sf 011010 op imm19 Rt
-  if (masked(w, 0x7e000000) === 0x34000000) {
-    return pc + (signExtend((bw >> 5n) & 0x7ffffn, 19) << 2n);
-  }
-  // TBZ / TBNZ : b5 011011 op b40 imm14 Rt
-  if (masked(w, 0x7e000000) === 0x36000000) {
-    return pc + (signExtend((bw >> 5n) & 0x3fffn, 14) << 2n);
-  }
-  // LDR (literal) : 0x 011 0 00 imm19 Rt
-  if (masked(w, 0x3b000000) === 0x18000000) {
-    return pc + (signExtend((bw >> 5n) & 0x7ffffn, 19) << 2n);
-  }
-  return null;
-}
-
-/** ADR / ADRP をほどく。{reg, value} か null。 */
-function pcRelTarget(w, pc) {
-  if (masked(w, 0x1f000000) !== 0x10000000) return null;
-  const bw = BigInt(w >>> 0);
-  const immlo = (bw >> 29n) & 0x3n;
-  const immhi = (bw >> 5n) & 0x7ffffn;
-  const imm = signExtend((immhi << 2n) | immlo, 21);
-  const reg = w & 0x1f;
-  if (w & 0x80000000) {                       // ADRP
-    return { reg, value: (pc & ~0xfffn) + (imm << 12n), page: true };
-  }
-  return { reg, value: pc + imm, page: false };  // ADR
-}
-
-/** ADRP の後ろに続く ADD / LDR から、最終的なアドレスを求める。 */
-function pairedOffset(w) {
-  // ADD (immediate, 64-bit, shift 0)
-  if (((w >>> 23) & 0x1ff) === 0x122 && !((w >>> 22) & 1)) {
-    return { rn: (w >>> 5) & 0x1f, rd: w & 0x1f, imm: BigInt((w >>> 10) & 0xfff) };
-  }
-  // LDR (immediate, unsigned offset) 64-bit / 32-bit
-  const top10 = (w >>> 22) & 0x3ff;
-  if (top10 === 0x3e5) return { rn: (w >>> 5) & 0x1f, rd: w & 0x1f, imm: BigInt((w >>> 10) & 0xfff) * 8n, load: true };
-  if (top10 === 0x2e5) return { rn: (w >>> 5) & 0x1f, rd: w & 0x1f, imm: BigInt((w >>> 10) & 0xfff) * 4n, load: true };
-  return null;
-}
+const wordTarget = Words.wordTarget;
+const pcRelTarget = Words.pcRelTarget;
+const pairedOffset = Words.pairedOffset;
 
 /**
  * `target` を指している命令を region の中から探す。
@@ -697,11 +756,14 @@ async function findXrefs({ regionId, target, limit }) {
       if (pair && pageOf[pair.rn] != null && index - pageAt[pair.rn] <= 8) {
         const full = pageOf[pair.rn] + pair.imm;
         if (full === want) {
-          out.push({ row: byteOff / 4, addr: pc, kind: pair.load ? 'load' : 'address' });
+          out.push({
+            row: byteOff / 4, addr: pc,
+            kind: pair.load ? 'load' : pair.store ? 'store' : 'address',
+          });
           if (out.length >= cap) break;
         }
         // ADD の結果は別レジスタに移ることがあるので、そのまま引き継ぐ
-        if (!pair.load) { pageOf[pair.rd] = full; pageAt[pair.rd] = index; }
+        if (!pair.load && !pair.store) { pageOf[pair.rd] = full; pageAt[pair.rd] = index; }
       }
     }
     pos += words * 4;
