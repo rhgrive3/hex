@@ -26,15 +26,24 @@ const HEADER_MAX = 4 * 1024 * 1024;  // cap on load-command area we will read
 
 const SYMBOL_MAX = 400_000;          // シンボルはこれ以上読まない（メモリ保護）
 const STRTAB_MAX = 48 * 1024 * 1024;
-const STRINGS_LIMIT = 20_000;        // 文字列一覧の上限
+/* 文字列一覧の上限。20000 で切っていたころは、The Battle Cats の
+   メソッド名 37161 本のうち 17161 本が黙って消えていた（＝機能の 46%）。
+   1 本あたり数十バイトなので、この数でも数十 MB には届かない。 */
+const STRINGS_LIMIT = 500_000;
 const STRINGS_MIN = 4;               // これより短い文字列は拾わない
 const XREF_LIMIT = 2000;
 const SCAN_BLOCK = 1024 * 1024;      // 生スキャンの読み取り単位
 
 /* プログラム全体の索引（呼び出し関係とデータ参照）の上限。
-   ここを超えるファイルでは索引を打ち切り、その旨を伝える。黙って嘘をつかない。 */
-const MAX_EDGES = 500_000;           // bl の辺
-const MAX_REFS = 500_000;            // データへの参照
+   ここを超えるファイルでは索引を打ち切り、その旨を伝える。黙って嘘をつかない。
+
+   最初から上限ぶんを確保すると 28 MB のアプリでも 100 MB 以上を占めるので、
+   小さく取って足りなくなったら倍にする。上限は「これ以上は現実的でない」線。
+   実測: The Battle Cats（18 MB のコード）で bl 695k / データ参照 422k。
+   ここを 500k で切っていたころは、呼び出し関係の 28% が黙って消えていた。 */
+const MAX_EDGES = 8_000_000;         // bl の辺
+const MAX_REFS = 8_000_000;          // データへの参照
+const EDGES_INITIAL = 262_144;       // 最初に確保する数（足りなければ倍々に伸ばす）
 const MAX_KIND_WORDS = 16 * 1024 * 1024;  // 語ごとの分類を持つ上限（= 64 MiB のコード）
 
 /* ── State ──────────────────────────────────────────────────── */
@@ -418,6 +427,17 @@ async function analyzeSlice({ sliceIndex }) {
     }
   }
 
+  /*
+   * Xcode 14 以降のアプリでは、メソッド呼び出しが専用の中継地点にまとめられている。
+   * そこは間接シンボル表に載らないので、上の処理だけでは名前が 1 つも付かない。
+   * バイナリを読んで自分で名前を作る（詳しくは objcStubNames）。
+   */
+  try {
+    for (const s of await objcStubNames(slice, entries)) {
+      entries.push({ addr: s.addr, name: s.name, kind: 1 });
+    }
+  } catch { /* 読めなければ名前を足さないだけ */ }
+
   // 同じアドレスに複数の名前が付くことがある。先に来たものを優先。
   entries.sort((a, b) => (a.addr < b.addr ? -1 : a.addr > b.addr ? 1 : a.kind - b.kind));
   const addrs = new BigUint64Array(entries.length);
@@ -455,6 +475,156 @@ async function analyzeSlice({ sliceIndex }) {
   };
 }
 
+/* ── メソッド呼び出しの中継地点（__objc_stubs）に名前を付ける ──
+ *
+ * Xcode 14 より前は、メソッド呼び出しがこう書かれていた:
+ *
+ *     adrp x1, selref@PAGE      ← メソッド名の在り処
+ *     ldr  x1, [x1, ...]
+ *     bl   _objc_msgSend
+ *
+ * 呼び出す側にメソッド名が書いてあるので、その場で「何を呼ぶか」が読めた。
+ * ところが今のコンパイラは、同じ並びを **セレクタごとの中継地点** にまとめる:
+ *
+ *     bl 0x10116d440            ← 呼び出し側にはもう何も書いていない
+ *
+ *     0x10116d440: adrp x1, selref@PAGE / ldr x1, [x1,…] / adrp x16, _objc_msgSend@GOT
+ *                  ldr x16, [x16,…] / br x16
+ *
+ * この中継地点は間接シンボル表にも LC_SYMTAB にも載らない。つまり何もしないと、
+ * アプリの中の Objective-C 呼び出しが **一件残らず「行き先不明」になる**。
+ * 実測では 16414 か所。要約も役割推定も、ここが空白のままでは当たらない。
+ *
+ * そこで中継地点そのものを読んで、selref → メソッド名を復元し、
+ *
+ *     _objc_msgSend$initWithFrame:
+ *
+ * という名前を付ける（Xcode が生成する名前と同じ綴りにしてある）。
+ * 読めなかった中継地点には、何も付けない。
+ */
+
+const MAX_OBJC_STUBS = 80_000;
+const OBJC_STUB_MAX_BYTES = 8 * 1024 * 1024;
+
+async function objcStubNames(slice, known) {
+  const regs = (slice && slice.regions) || [];
+  const find = (name) => regs.find((r) => r.section === name && r.size > 0n);
+  const stubs = find('__objc_stubs');
+  if (!stubs || stubs.size > BigInt(OBJC_STUB_MAX_BYTES)) return [];
+
+  /* selref（メソッド名へのポインタの表）と、文字列そのものを丸ごと持っておく。
+     飛び飛びに読むと往復が数万回になるため。 */
+  const pointerRegions = [];
+  for (const r of regs) {
+    if (r.size <= 0n || r.size > BigInt(OBJC_STUB_MAX_BYTES)) continue;
+    if (/^__objc_(selrefs|superrefs|classrefs)$/.test(r.section || '')) {
+      pointerRegions.push(r);
+    }
+  }
+  const textRegions = [];
+  for (const r of regs) {
+    if (r.size <= 0n || r.size > BigInt(OBJC_STUB_MAX_BYTES)) continue;
+    if (r.cstrings || /^__objc_(methname|classname)$/.test(r.section || '')) textRegions.push(r);
+  }
+  if (!pointerRegions.length || !textRegions.length) return [];
+
+  const loaded = [];
+  for (const r of pointerRegions.concat(textRegions)) {
+    const buf = await readRange(r.fileOffset, Number(r.size));
+    if (buf && buf.length) loaded.push({ vm: r.vmAddr, buf, ptr: pointerRegions.includes(r) });
+  }
+  const slotOf = (addr) => {
+    for (const l of loaded) {
+      if (!l.ptr) continue;
+      if (addr >= l.vm && addr + 8n <= l.vm + BigInt(l.buf.length)) {
+        const o = Number(addr - l.vm);
+        let v = 0n;
+        for (let i = 7; i >= 0; i--) v = (v << 8n) | BigInt(l.buf[o + i]);
+        return v;
+      }
+    }
+    return null;
+  };
+  const textAt = (addr) => {
+    for (const l of loaded) {
+      if (l.ptr) continue;
+      if (addr < l.vm || addr >= l.vm + BigInt(l.buf.length)) continue;
+      let o = Number(addr - l.vm);
+      let out = '';
+      while (o < l.buf.length && l.buf[o] !== 0 && out.length < MAX_SELECTOR) {
+        out += String.fromCharCode(l.buf[o++]);
+      }
+      return out || null;
+    }
+    return null;
+  };
+
+  /* __got 越しに呼ぶ相手（_objc_msgSend / _objc_msgSendSuper2 …）。
+     名前が分かれば、中継地点の名前もそれに合わせる。 */
+  const gotName = new Map();
+  for (const e of known || []) if (e.kind === 2) gotName.set(e.addr.toString(), e.name);
+
+  const imageBase = slice.info && slice.info.textVM != null ? slice.info.textVM : null;
+  const code = await readRange(stubs.fileOffset, Number(stubs.size));
+  const words = Math.floor(code.length / 4);
+  const dv = new DataView(code.buffer, code.byteOffset, words * 4);
+
+  const out = [];
+  const pageOf = new Array(32).fill(null);
+  let start = null;
+  let selref = null;
+  let target = null;
+  for (let i = 0; i < words && out.length < MAX_OBJC_STUBS; i++) {
+    const w = dv.getUint32(i * 4, true);
+    const pc = stubs.vmAddr + BigInt(i * 4);
+    const rel = Words.pcRelTarget(w, pc);
+    if (rel) {
+      if (start === null) start = pc;
+      pageOf[rel.reg] = rel.value;
+      continue;
+    }
+    const pair = Words.pairedOffset(w);
+    if (pair && pair.load && pageOf[pair.rn] != null) {
+      const at = pageOf[pair.rn] + pair.imm;
+      // x1 に積まれるのがメソッド名、x16/x17 に積まれるのが呼ぶ相手
+      if (pair.rd === 1) selref = at;
+      else target = at;
+      pageOf[pair.rd] = null;
+      continue;
+    }
+    if (Words.classifyWord(w) === Words.KIND.BRANCH || Words.classifyWord(w) === Words.KIND.RET) {
+      if (start !== null && selref != null) {
+        const p = sanitizeStubPointer(slotOf(selref), imageBase);
+        const sel = p == null ? null : textAt(p);
+        if (sel) {
+          const via = target == null ? null : gotName.get(target.toString());
+          const send = via && /msgSend/.test(via) ? via.replace(/^_/, '') : 'objc_msgSend';
+          out.push({ addr: start, name: '_' + send + '$' + sel });
+        }
+      }
+      start = null; selref = null; target = null;
+      pageOf.fill(null);
+    }
+  }
+  return out;
+}
+
+const MAX_SELECTOR = 240;
+
+/**
+ * chained fixups で書かれたポインタをほどく。objc.js の sanitizePointer と同じ考え方
+ * （あちらは ES モジュールなので worker からは読めない。判定は 1 か所にまとめられない）。
+ */
+function sanitizeStubPointer(v, base) {
+  if (v == null || v === 0n) return null;
+  if (v < 0x0001000000000000n) return v;
+  const low = v & 0x0000000fffffffffn;
+  if (low === 0n) return null;
+  if (v & 0x8000000000000000n) return null;      // 外部から入る値。メソッド名ではない
+  if (base != null && low < base) return base + low;
+  return low;
+}
+
 /* ── 名前がないファイルで、関数の切れ目を推測する ───────────── */
 
 /*
@@ -467,19 +637,57 @@ const looksLikePrologue = Words.looksLikePrologue;
 /**
  * LC_FUNCTION_STARTS がないファイル（＝配布用にシンボルを削ったアプリ）向け。
  *
- *  1. bl の飛び先は、ほぼ確実に関数の先頭
- *  2. ret の直後で、プロローグらしい命令が来ていればそこも先頭
+ *  0. __unwind_info に載っている行（事実。当てずっぽうが混ざらない）
+ *  1. クラス表に載っているメソッドの実装アドレス（同じく事実）
+ *  2. bl の飛び先は、ほぼ確実に関数の先頭
+ *  3. ret の直後で、プロローグらしい命令が来ていればそこも先頭
  *
- * 推測なので取りこぼしも誤検出もある。UI 側でその旨を伝えること。
+ * 0 と 1 は表を読んだだけなので確実。2 と 3 は推測で、取りこぼしも誤検出もある。
+ * 命令の並びだけから当てていたころは適合率 73.6% / 再現率 64.8% だった。
+ * 表を先に読むだけで、どちらも大きく上がる。
  */
 async function guessFunctions({ regionId, limit }) {
   const region = regions.get(regionId);
   if (!region) throw new Error('Unknown region.');
   const token = ++searchToken;
-  const cap = Math.min(Number(limit) || 200_000, 200_000);
+  const cap = Math.min(Number(limit) || 400_000, 400_000);
   const total = Number(region.size);
   const found = new Set();
   const lo = region.vmAddr, hi = region.vmAddr + region.size;
+
+  const slice = slices.find((s) => (s.regions || []).some((r) => r.id === regionId));
+  const imageBase = slice && slice.info ? slice.info.textVM : null;
+  const unwind = slice ? (slice.regions || []).find((r) => r.section === '__unwind_info' && r.size > 0n) : null;
+  if (unwind && imageBase != null && unwind.size < BigInt(16 * 1024 * 1024)) {
+    try {
+      const buf = await readRange(unwind.fileOffset, Number(unwind.size));
+      for (const a of MachO.parseUnwindStarts(buf, imageBase)) {
+        if (a >= lo && a < hi && found.size < cap) found.add(a);
+      }
+    } catch { /* 読めなければ推測だけで進む */ }
+  }
+
+  /*
+   * C++ の仮想関数表。__const / __data に、コードを指すポインタが並んでいる。
+   * Cocos2d-x や Unreal のようなアプリでは、メソッドの大半がここにしか現れない
+   * （どこからも bl されず、表ごしに呼ばれるため）。読むだけで数万件増える。
+   */
+  if (slice && imageBase != null) {
+    for (const r of slice.regions || []) {
+      if (r.size <= 0n || r.size > BigInt(32 * 1024 * 1024)) continue;
+      if (!/^__(const|data|objc_const|cfstring)$/.test(r.section || '')) continue;
+      try {
+        const buf = await readRange(r.fileOffset, Number(r.size));
+        const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+        for (let p = 0; p + 8 <= buf.byteLength; p += 8) {
+          const t = sanitizeStubPointer(dv.getBigUint64(p, true), imageBase);
+          if (t == null || t < lo || t >= hi || (t & 3n)) continue;
+          if (found.size < cap) found.add(t);
+        }
+      } catch { /* 読めない区画は飛ばす */ }
+      if (token !== searchToken) return { starts: [], cancelled: true };
+    }
+  }
 
   let pos = 0;
   let prevWasEnd = false;
@@ -535,11 +743,12 @@ async function scanProgram({ regionId }) {
   const total = Number(region.size);
   const words = Math.floor(total / 4);
 
-  const callFrom = new BigUint64Array(Math.min(words, MAX_EDGES));
-  const callTo = new BigUint64Array(callFrom.length);
-  const refFrom = new BigUint64Array(Math.min(words, MAX_REFS));
-  const refTo = new BigUint64Array(refFrom.length);
-  const refKind = new Uint8Array(refFrom.length);      // 0 アドレス / 1 読み出し / 2 書き込み
+  const initial = Math.min(words, EDGES_INITIAL);
+  let callFrom = new BigUint64Array(initial);
+  let callTo = new BigUint64Array(initial);
+  let refFrom = new BigUint64Array(initial);
+  let refTo = new BigUint64Array(initial);
+  let refKind = new Uint8Array(initial);               // 0 アドレス / 1 読み出し / 2 書き込み
   const kinds = new Uint8Array(Math.min(words, MAX_KIND_WORDS));
 
   let nCalls = 0, nRefs = 0;
@@ -569,8 +778,8 @@ async function scanProgram({ regionId }) {
       if (kind === Words.KIND.CALL) {
         const t = Words.branchImm26(w, pc);
         if (t != null) {
+          if (nCalls === callFrom.length && !growCalls()) callsCapped = true;
           if (nCalls < callFrom.length) { callFrom[nCalls] = pc; callTo[nCalls] = t; nCalls++; }
-          else callsCapped = true;
         }
         continue;
       }
@@ -586,7 +795,7 @@ async function scanProgram({ regionId }) {
 
       // adrp の続き: add で場所そのもの、ldr/str でその中身
       const pair = Words.pairedOffset(w);
-      if (pair && pageOf[pair.rn] != null && index - pageAt[pair.rn] <= 8) {
+      if (pair && pageOf[pair.rn] != null && index - pageAt[pair.rn] <= PAIR_WINDOW) {
         const full = pageOf[pair.rn] + pair.imm;
         addRef(pc, full, pair.load ? 1 : pair.store ? 2 : 0);
         // add の結果は別レジスタに移ることがあるので、そのまま引き継ぐ
@@ -602,8 +811,15 @@ async function scanProgram({ regionId }) {
         continue;
       }
 
-      // 書き換えられたレジスタのページ情報は捨てる（古い前提を持ち越さない）
-      if (kind !== Words.KIND.NOP && kind !== Words.KIND.CONDBR && kind !== Words.KIND.CMP) {
+      /*
+       * 書き換えられたレジスタのページ情報は捨てる（古い前提を持ち越さない）。
+       *
+       * 「下位 5 ビット = 書き込み先」は、書き込む命令にしか当てはまらない。
+       * `str x8, [x9]` の下位 5 ビットは x8 だが、x8 は読まれるだけで壊れない。
+       * ここで一律に捨てていたので、adrp で組んだアドレスを一度どこかへ保存すると、
+       * その後の `add x8, x8, #off` が組にならず、参照が丸ごと落ちていた。
+       */
+      if (WRITES_LOW_REG[kind]) {
         const d = w & 0x1f;
         if (pageAt[d] >= 0 && pageAt[d] !== index) { pageOf[d] = null; pageAt[d] = -1; }
       }
@@ -638,11 +854,61 @@ async function scanProgram({ regionId }) {
     // ただしどう見てもアドレスでないものは捨てる。
     if (target == null || target <= 0n) return;
     void lo; void hi;
+    if (nRefs === refFrom.length && !growRefs()) refsCapped = true;
     if (nRefs < refFrom.length) {
       refFrom[nRefs] = pc; refTo[nRefs] = target; refKind[nRefs] = k; nRefs++;
-    } else refsCapped = true;
+    }
+  }
+
+  function growCalls() {
+    const size = Math.min(callFrom.length * 2, MAX_EDGES);
+    if (size <= callFrom.length) return false;
+    callFrom = grow64(callFrom, size);
+    callTo = grow64(callTo, size);
+    return true;
+  }
+  function growRefs() {
+    const size = Math.min(refFrom.length * 2, MAX_REFS);
+    if (size <= refFrom.length) return false;
+    refFrom = grow64(refFrom, size);
+    refTo = grow64(refTo, size);
+    const k = new Uint8Array(size);
+    k.set(refKind);
+    refKind = k;
+    return true;
   }
 }
+
+function grow64(arr, size) {
+  const out = new BigUint64Array(size);
+  out.set(arr);
+  return out;
+}
+
+/*
+ * その命令が「下位 5 ビットのレジスタを書き換えるか」。
+ *
+ * 書き換えないものまで捨てると、adrp で組んだアドレスの追跡が途切れる（scanProgram 参照）。
+ * 逆に書き換えるものを残すと、まったく別のアドレスをでっち上げる。どちらも実害があるので、
+ * 迷うもの（分類できなかった OTHER）は「書き換えた」側に倒しておく。
+ */
+const WRITES_LOW_REG = (() => {
+  const K = Words.KIND;
+  const t = new Uint8Array(64).fill(1);
+  for (const k of [K.NOP, K.CONDBR, K.CMP, K.BRANCH, K.CALL, K.INDCALL, K.RET,
+    K.STORE, K.SYS, K.TRAP]) t[k] = 0;
+  return t;
+})();
+
+/*
+ * adrp と、その続きの add / ldr が、何命令まで離れていてよいか。
+ *
+ * コンパイラはこの 2 つを隣り合わせに出すのが普通だが、最適化で間に別の計算が
+ * 何十命令も挟まることがある。8 命令で切っていたときは、データ参照の 4 割強を
+ * 取りこぼしていた。長くしすぎると別の値を組み合わせてしまうので、
+ * 実測（The Battle Cats）で適合率が落ちない上限を採る。
+ */
+const PAIR_WINDOW = 64;
 
 /* ── 値の「ふるまい」を全文走査で集める ─────────────────────
  *
@@ -1024,7 +1290,17 @@ async function findFieldAccess({ regionId, offset, size, limit, offsets }) {
 
 /* ── 文字列の抽出 ───────────────────────────────────────────── */
 
-/** 読める ASCII が min 文字以上続くところを拾う。 */
+/*
+ * 読める文字が min 文字以上続くところを拾う。
+ *
+ * 「読める」は ASCII だけではない。日本語のアプリの文言は UTF-8 で入っていて、
+ * 1 文字が 3 バイトになる。バイトを 1 つずつ ASCII かどうかで見ていると、
+ * 「攻撃」も「所持金」も 1 つ残らず落ちる — このツールがいちばん拾いたいものが、
+ * まるごと消える。だから UTF-8 の並びとして正しいものは、そのまま文字として認める。
+ */
+const UTF8 = new TextDecoder('utf-8', { fatal: false });
+const MAX_STRING_CHARS = 400;
+
 async function scanStrings({ regionId, min, limit }) {
   const region = regions.get(regionId);
   if (!region) throw new Error('Unknown region.');
@@ -1033,39 +1309,66 @@ async function scanStrings({ regionId, min, limit }) {
   const cap = Math.min(Number(limit) || STRINGS_LIMIT, STRINGS_LIMIT);
   const total = Number(region.size);
   const out = [];
-  let pos = 0;
-  let run = [];
-  let runStart = 0;
+  let pos = 0;                 // 次に読むファイル内の位置（region 先頭から）
+  let runStart = -1;           // いま伸びている文字列の先頭
+  let runBytes = [];
 
   const flush = () => {
-    if (run.length >= minLen) {
-      out.push({
-        addr: region.vmAddr + BigInt(runStart),
-        offset: runStart,
-        text: run.join(''),
-      });
+    if (runStart >= 0 && runBytes.length) {
+      const text = UTF8.decode(new Uint8Array(runBytes))
+        .replace(/\t/g, '\\t').replace(/\n/g, '\\n');
+      if (text.length >= minLen) {
+        out.push({ addr: region.vmAddr + BigInt(runStart), offset: runStart, text });
+      }
     }
-    run = [];
+    runStart = -1;
+    runBytes = [];
   };
 
+  /** buf[i] から始まる UTF-8 の並びの長さ。文字として読めないなら 0。 */
+  const utf8Len = (buf, i) => {
+    const c = buf[i];
+    if (c < 0x80) return (c >= 0x20 && c < 0x7f) || c === 9 || c === 10 ? 1 : 0;
+    let need = 0;
+    if (c >= 0xc2 && c <= 0xdf) need = 1;
+    else if (c >= 0xe0 && c <= 0xef) need = 2;
+    else if (c >= 0xf0 && c <= 0xf4) need = 3;
+    else return 0;
+    if (i + need >= buf.length) return -1;               // 続きは次の塊にある
+    for (let k = 1; k <= need; k++) {
+      if ((buf[i + k] & 0xc0) !== 0x80) return 0;
+    }
+    return need + 1;
+  };
+
+  let carry = new Uint8Array(0);
+  let carryAt = 0;
   while (pos < total && out.length < cap) {
     if (token !== searchToken) return { results: out, cancelled: true, capped: false };
     const want = Math.min(SCAN_BLOCK, total - pos);
     const blk = await readRange(region.fileOffset + BigInt(pos), want);
     if (!blk.length) break;
-    for (let i = 0; i < blk.length; i++) {
-      const c = blk[i];
-      // タブと改行は文字列の一部として認める（メッセージによく入る）
-      const printable = (c >= 0x20 && c < 0x7f) || c === 9 || c === 10;
-      if (printable) {
-        if (!run.length) runStart = pos + i;
-        if (run.length < 400) run.push(c === 9 ? '\\t' : c === 10 ? '\\n' : String.fromCharCode(c));
-        else if (run.length === 400) run.push('…');
-      } else {
-        flush();
-        if (out.length >= cap) break;
-      }
+    let buf = blk, baseOff = pos;
+    if (carry.length) {
+      buf = new Uint8Array(carry.length + blk.length);
+      buf.set(carry, 0);
+      buf.set(blk, carry.length);
+      baseOff = carryAt;
     }
+    const last = pos + blk.length >= total;
+    let i = 0;
+    for (; i < buf.length; i++) {
+      const n = utf8Len(buf, i);
+      if (n === -1 && !last) break;                      // 途中で切れた。次の塊と合わせる
+      if (n <= 0) { flush(); if (out.length >= cap) break; continue; }
+      if (runStart < 0) { runStart = baseOff + i; runBytes = []; }
+      if (runBytes.length < MAX_STRING_CHARS * 4) {
+        for (let k = 0; k < n; k++) runBytes.push(buf[i + k]);
+      }
+      i += n - 1;
+    }
+    carry = i < buf.length ? buf.subarray(i) : new Uint8Array(0);
+    carryAt = baseOff + i;
     pos += blk.length;
     self.postMessage({ t: 'scanProgress', done: pos, all: total, hits: out.length });
     await yieldToQueue();

@@ -162,9 +162,13 @@ export async function openBinary(file, opts) {
   let strings = [];
   if (o.strings !== false) {
     log('strings…');
+    /* 画面と同じ選び方（app.js ensureStrings）。ここがずれると精度を測れない。 */
     const targets = regions.filter((r) => r.size > 0n &&
-      (r.cstrings || /string|cstring|objc_method|objc_class|const/i.test(r.section || '')));
-    for (const r of targets.slice(0, 6)) {
+      (r.cstrings || /string|cstring|objc_method|objc_class|const|ustring|swift5_reflstr/i.test(r.section || '')));
+    let budget = 64 * 1024 * 1024;
+    for (const r of targets) {
+      if (budget <= 0) break;
+      budget -= Number(r.size);
       const res = await backend.strings({ regionId: r.id, min: 4 });
       for (const s of res.results) strings.push({ addr: s.addr, text: s.text, region: r });
     }
@@ -175,8 +179,14 @@ export async function openBinary(file, opts) {
   const analyze = async (addr, end) => {
     const startRow = Number((BigInt(addr) - region.vmAddr) / 4n);
     if (!(startRow >= 0) || startRow >= totalRows) return null;
-    const endRow = end != null
-      ? Math.min(totalRows - 1, Number((BigInt(end) - region.vmAddr) / 4n) - 1)
+    /* 画面（app.js analyzeFunctionAt）と同じで、既定はその関数の終わりまで。 */
+    let stop = end;
+    if (stop == null) {
+      const fn = symbols.functionAt(BigInt(addr));
+      if (fn && fn.end != null) stop = fn.end;
+    }
+    const endRow = stop != null
+      ? Math.min(totalRows - 1, Number((BigInt(stop) - region.vmAddr) / 4n) - 1)
       : Math.min(totalRows - 1, startRow + 512);
     if (endRow < startRow) return null;
     const res = await analyzeFunctionCached(backend, region, startRow, endRow, symbols, null, { texts: false });

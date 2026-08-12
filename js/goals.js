@@ -157,6 +157,23 @@ export function normalizeFieldName(name) {
   return s.replace(/\s+/g, ' ').trim().toLowerCase();
 }
 
+/** 開いた名前 haystack の中に、開いた語の並び needle がそのまま入っているか。 */
+function wordSequence(haystack, needle) {
+  const h = ' ' + haystack + ' ';
+  const n = ' ' + needle + ' ';
+  return h.indexOf(n) >= 0;
+}
+
+/** needle の語のうち、何割が haystack に入っているか。 */
+function wordCoverage(haystack, needle) {
+  const words = needle.split(' ').filter((w) => w.length >= 2);
+  if (!words.length) return 0;
+  const have = new Set(haystack.split(' '));
+  let hit = 0;
+  for (const w of words) if (have.has(w)) hit++;
+  return hit / words.length;
+}
+
 /* 値の役割。同じ「hp」でも、今の値・上限・初期値では意味がまるで違う。 */
 const ROLE_RULES = [
   { role: 'max', re: /\b(max|maximum|limit|cap|upper|full|総|最大)\b/ },
@@ -293,8 +310,10 @@ export function matchField(goal, name) {
   const role = fieldRole(name);
   const vocab = FIELD_VOCAB[goal.id];
   let best = null;
-  const consider = (score, term, exact) => {
-    if (!best || score > best.score) best = { score, term, exact: !!exact, role };
+  const consider = (score, term, exact, literal, sequence) => {
+    if (!best || score > best.score) {
+      best = { score, term, exact: !!exact, role, literal: !!literal, sequence: !!sequence };
+    }
   };
 
   if (vocab) {
@@ -309,12 +328,34 @@ export function matchField(goal, name) {
       if (m) consider(0.4, m[0], false);
     }
   }
+  /*
+   * 打ち込まれた言葉そのもの。
+   *
+   * これが無いと、`adController` と打った人に `_adController` を返せない
+   * — それどころか語彙に「request」が入っているせいで、
+   * `allowConcurrentAssetResourceLoadingRequests` を探しているのに
+   * `_requestTimeout` を「確定」と言い切る、という最悪の外し方をする。
+   * 名前がそのまま一致しているなら、それ以上の証拠は無い。
+   *
+   * 比較は normalizeFieldName どうしで行う。`adController` は
+   * 「ad controller」に開かれるので、文字列のまま比べても永久に一致しない。
+   */
+  const asked = normalizeFieldName(goal.text);
+  if (asked && asked.length >= 2) {
+    if (norm === asked) consider(1.2, goal.text, true, true);
+    else if (wordSequence(norm, asked)) consider(0.8, goal.text, false, true, true);
+    else {
+      const cover = wordCoverage(norm, asked);
+      if (cover >= 0.99) consider(0.75, goal.text, false, true);
+      else if (cover >= 0.6) consider(0.45 * cover, goal.text, false, true);
+    }
+  }
+
   // 自由入力（プリセットにない目的）は、入力から開いた語で当てる
   for (const term of goal.extraTerms || []) {
-    const w = String(term.word).toLowerCase();
-    if (w.length < 2) continue;
-    const re = new RegExp('\\b' + w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b');
-    if (re.test(norm)) consider((norm === w ? 0.95 : 0.7) * (term.weight || 1), term.word, norm === w);
+    const w = normalizeFieldName(term.word);
+    if (!w || w.length < 2) continue;
+    if (wordSequence(norm, w)) consider((norm === w ? 0.95 : 0.7) * (term.weight || 1), term.word, norm === w);
   }
   if (!best && !vocab) {
     // プリセットの文言用の語彙でも一応見る（日本語名の変数など）
@@ -323,13 +364,19 @@ export function matchField(goal, name) {
   }
   if (!best) return null;
 
-  /* 役割による上下。「今の値」が本命で、「上限」「初期値」は別物。 */
-  const prefer = (vocab && vocab.prefer) || ['plain'];
-  if (prefer.includes(best.role)) best.score *= 1;
-  else if (best.role === 'max' || best.role === 'base' || best.role === 'min') best.score *= 0.45;
-  else if (best.role === 'delta' || best.role === 'count') best.score *= 0.7;
-  else best.score *= 0.85;
-
+  /*
+   * 役割による上下。「今の値」が本命で、「上限」「初期値」は別物。
+   * ただし打ち込まれた名前そのものが一致しているなら、上下しない
+   * （`maxHp` を探している人に、`maxHp` を「上限だから」と下げる意味はない）。
+   */
+  if (!best.literal) {
+    const prefer = (vocab && vocab.prefer) || ['plain'];
+    if (prefer.includes(best.role)) best.score *= 1;
+    else if (best.role === 'max' || best.role === 'base' || best.role === 'min') best.score *= 0.45;
+    else if (best.role === 'delta' || best.role === 'count') best.score *= 0.7;
+    else best.score *= 0.85;
+  }
+  best.score = Math.min(1, best.score);
   return best;
 }
 

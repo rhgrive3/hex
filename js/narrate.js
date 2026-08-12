@@ -89,6 +89,41 @@ const API_PHRASE = {
       'Adjusts the reference count that decides when an object is freed.']],
   objc_alloc: [['新しいものを作る', 'Create an object'],
     ['新しいオブジェクト（データのかたまり）を作る処理です。', 'Creates a new object.']],
+  reflect: [['名前からクラスを引く', 'Look a class up by name'],
+    ['クラスやメソッドを、名前の文字列から実行時に引く処理です。難読化されたコードや、動的に組み立てる処理でよく使われます。',
+      'Looks up a class or method from a name string at run time.']],
+  objc_weak: [['弱い参照をあつかう', 'Handle a weak reference'],
+    ['相手がいなくなったら自動的に空になる参照を、読み書きする処理です。持ち主にはなりません。',
+      'Reads or writes a weak reference — one that empties itself when the object goes away.']],
+  objc_runtime: [['Objective-C のしくみ', 'Objective-C plumbing'],
+    ['クラスの取得や排他制御など、Objective-C のしくみが自動で入れている処理です。アプリ独自の中身ではありません。',
+      'Runtime plumbing inserted by Objective-C itself, not app logic.']],
+  swift_runtime: [['Swift のしくみ', 'Swift plumbing'],
+    ['型の照合やメモリの排他など、Swift のしくみが自動で入れている処理です。アプリ独自の中身ではありません。',
+      'Runtime plumbing inserted by Swift itself, not app logic.']],
+  cxx_runtime: [['C++ のしくみ', 'C++ plumbing'],
+    ['例外処理や後片付けの登録など、C++ のしくみが自動で入れている処理です。アプリ独自の中身ではありません。',
+      'Runtime plumbing inserted by C++ itself, not app logic.']],
+  cxx_string: [['文字列をあつかう（C++）', 'C++ string work'],
+    ['C++ の標準の文字列（std::string）を作る・つなぐ・比べる処理です。',
+      'Creates, joins or compares a C++ standard string.']],
+  cxx_container: [['入れ物をあつかう（C++）', 'C++ container work'],
+    ['C++ の配列や辞書（vector・map など）を操作する処理です。ゲームの本体はここに値を貯めています。',
+      'Works on a C++ container such as vector or map.']],
+  cxx_std: [['C++ 標準ライブラリ', 'C++ standard library'],
+    ['C++ の標準ライブラリの処理です。', 'A call into the C++ standard library.']],
+  swift_string: [['文字列をあつかう（Swift）', 'Swift string work'],
+    ['Swift の文字列を作る・つなぐ・比べる処理です。', 'Creates, joins or compares a Swift string.']],
+  swift_hash: [['ハッシュを計算する', 'Compute a hash'],
+    ['辞書や集合で使うための値を、決まった手順で数に変える処理です。',
+      'Turns a value into a number for use in a dictionary or set.']],
+  swift_collection: [['入れ物をあつかう（Swift）', 'Swift collection work'],
+    ['Swift の配列や辞書を操作する処理です。', 'Works on a Swift array or dictionary.']],
+  swift_mangled: [['Swift の処理', 'Swift code'],
+    ['Swift で書かれたライブラリの処理です。名前は飾り付き（マングル）のまま残っています。',
+      'A call into Swift library code; the name is still in its mangled form.']],
+  swift_stdlib: [['Swift 標準ライブラリ', 'Swift standard library'],
+    ['Swift の標準ライブラリの処理です。', 'A call into the Swift standard library.']],
   swift_object: [['持ち主を数える', 'Adjust ownership'],
     ['Swift のデータの持ち主を数え直す処理です。', 'Adjusts a Swift object’s reference count.']],
   file: [['ファイルを扱う', 'Work with a file'],
@@ -602,7 +637,8 @@ export function functionStory(model, name) {
   if (!steps.length) steps.push(pick('内容を特定できませんでした', 'nothing could be identified'));
 
   const purpose = [];
-  const who = name ? pick('この関数（' + name + '）', 'this function (' + name + ')') : pick('この処理', 'this routine');
+  const label = typeof name === 'string' ? name : (name && name.name) || null;
+  const who = label ? pick('この関数（' + label + '）', 'this function (' + label + ')') : pick('この処理', 'this routine');
   const Who = pick(who, who.charAt(0).toUpperCase() + who.slice(1));
 
   if (f.features.length) {
@@ -610,16 +646,26 @@ export function functionStory(model, name) {
       Who + 'は、' + f.features.map(featureLabel).filter(Boolean).join('と') + 'に関わる処理をしています。',
       Who + ' is involved in ' + f.features.map(featureLabel).filter(Boolean).join(' and ') + '.'));
   }
+  /*
+   * 呼んでいるメソッドの名前。人が付けた言葉がそのまま残っている唯一の場所なので、
+   * この 1 文がいちばん役に立つ。だから機能の分類より先に出す。
+   */
   const sels = uniq((model.calls || []).map((c) => c.selector).filter(Boolean));
   if (sels.length) {
-    purpose.push(pick(
-      '「' + sels.slice(0, 5).join('」「') + '」' +
-        (sels.length > 5 ? ' など ' + sels.length + ' 個' : '') + 'というメソッドを呼んでいます。' +
+    purpose.unshift(pick(
+      '「' + sels.slice(0, 8).join('」「') + '」' +
+        (sels.length > 8 ? ' など ' + sels.length + ' 個' : '') + 'というメソッドを呼んでいます。' +
         'メソッドの名前は人が付けたものなので、この関数が何の担当かを知る手がかりになります。',
-      'It calls the methods ' + sels.slice(0, 5).map((x) => '“' + x + '”').join(', ') +
+      'It calls the methods ' + sels.slice(0, 8).map((x) => '“' + x + '”').join(', ') +
         '. Method names are written by people, so they say a lot about what this is for.'));
   }
-  const apiPhrases = f.apis.map((a) => apiShort(a.id)).filter(Boolean);
+  /*
+   * 言語のしくみ（ARC・Swift ランタイム・C++ の下ごしらえ）は、
+   * どの関数にも入っていて、その関数が何をしているかを何も言っていない。
+   * ほかに言うことがあるなら、そちらを先に出す。
+   */
+  const meaty = f.apis.filter((a) => a.cat !== 'runtime');
+  const apiPhrases = (meaty.length ? meaty : f.apis).map((a) => apiShort(a.id)).filter(Boolean);
   if (apiPhrases.length) {
     purpose.push(pick(
       '具体的には、' + uniq(apiPhrases).slice(0, 4).join('・') + 'といった処理を行っています。',
@@ -1691,6 +1737,7 @@ export function actionPhrase(action, amount) {
       return n ? pick(n + ' で割る', 'divide by ' + n) : pick('割り算で減らす', 'divide');
     case 'set':
       return n ? pick(n + ' にする', 'set to ' + n) : pick('別の値に入れ替える', 'replace');
+    case 'get': return pick('読み出して返す', 'read it and return it');
     case 'clear': return pick('0 に戻す', 'reset to zero');
     case 'flag': return pick('印を立て下げする', 'set or clear a flag');
     case 'swap': return pick('条件によって入れ替える', 'swap depending on a condition');
@@ -1903,10 +1950,27 @@ export function roleProofText(item) {
     case 'role-verb-shape':
       return pick('命令の形（比べて分岐する・値を移す）が、この動作と合っている',
         'the instruction shape fits this action');
+    case 'role-verb-accessor':
+      return pick(d.kind === 'read'
+        ? 'この値を読んで、そのまま返している命令が実在する' +
+          (d.address != null ? '（' + hex(d.address) + '）' : '')
+        : '渡された値を、この場所へそのまま入れている命令が実在する' +
+          (d.address != null ? '（' + hex(d.address) + '）' : ''),
+      d.kind === 'read'
+        ? 'a real load of this value is returned as-is'
+        : 'a real store puts the argument straight into this place');
     case 'role-verb-none':
       return pick('値を読んで書き戻している場所が見つからないので、' +
         '「何かを加工する処理」とは言えない',
       'no read–modify–write was found, so this is not a routine that changes a value');
+    case 'field-name-asked':
+      return pick('打ち込まれた名前と、この値の名前が、そっくりそのまま同じ（' +
+        trim(d.name, 40) + '）',
+      'the name you typed is exactly this field’s name (' + trim(d.name, 40) + ')');
+    case 'field-name-contains':
+      return pick('打ち込まれた言葉が、この値の名前にそのままの並びで入っている（' +
+        trim(d.name, 40) + '）',
+      'what you typed appears verbatim in this field’s name (' + trim(d.name, 40) + ')');
     case 'role-subject-field':
       return pick('書き換えている値の名前が「' + trim(d.name, 32) + '」で、' +
         '探している機能の言葉（' + trim(d.term, 16) + '）が入っている',

@@ -360,7 +360,13 @@ export async function autoAnalyze(opts) {
         model = await (memo || o.analyze)(t.addr, range ? range.end : null);
       } catch { model = null; }
       if (!model) continue;
-      const updates = findValueUpdates(model).filter((u) => u.kind === 'read-modify-write');
+      /*
+       * 増減の連鎖だけでなく、素の読み書き（アクセサ）も採る。
+       * アプリの関数の大半はこの形で、ここを外すと「何をしているか分かりません」
+       * としか言えない関数が何万本も残る。
+       */
+      const updates = findValueUpdates(model)
+        .filter((u) => u.kind !== 'compute-store');
       const compares = constantComparisons(model);
       /*
        * ここで「x0 + 0x20」を「BattleManager の hp」に置き換える。
@@ -368,8 +374,11 @@ export async function autoAnalyze(opts) {
        */
       const owner = fields ? fields.ownerOf(t.addr) : null;
       for (const u of updates) {
-        u.field = owner
-          ? fields.resolveAccess({ base: u.location.base, disp: u.location.disp }, owner.className)
+        u.field = fields
+          ? fields.resolveAccess({
+            base: u.location.base, disp: u.location.disp,
+            indexAddr: u.location.indexAddr, self: u.location.self,
+          }, owner ? owner.className : null)
           : null;
       }
       const f = model.facts || {};

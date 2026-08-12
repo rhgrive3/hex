@@ -634,10 +634,22 @@ class App {
   async ensureStrings(onProgress) {
     if (this.stringIndex) return this.stringIndex;
     const regions = this.store.get('regions') || [];
+    /*
+     * 文字列の置き場は 6 か所とはかぎらない。上から 6 つだけ見ていたころは
+     * __oslogstring のような後ろのほうの区画がまるごと抜けていた。
+     * 走査は速いので、文字列が入りうる区画は全部見る（合計のバイト数だけ見張る）。
+     */
     const targets = regions.filter((r) => r.size > 0n &&
-      (r.cstrings || /string|cstring|objc_method|objc_class|const/i.test(r.section || '')));
+      (r.cstrings || /string|cstring|objc_method|objc_class|const|ustring|swift5_reflstr/i.test(r.section || '')));
     const current = this.store.get('currentRegion');
-    const use = targets.length ? targets.slice(0, 6) : (current ? [current] : []);
+    let budget = 64 * 1024 * 1024;
+    const use = [];
+    for (const r of targets) {
+      if (budget <= 0) break;
+      use.push(r);
+      budget -= Number(r.size);
+    }
+    if (!use.length && current) use.push(current);
     const out = [];
     const prev = this.backend.onScanProgress;
     if (onProgress) this.backend.onScanProgress = (p) => onProgress({ phase: 'strings', done: p.done, all: p.all });

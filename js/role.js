@@ -46,6 +46,7 @@ export const ACTION = {
   SCALE: 'scale',         // 掛け算で増やす（倍率・ダメージ計算でよく出る）
   SHRINK: 'shrink',       // 割り算・右シフトで減らす
   SET: 'set',             // 別の値をそのまま入れる
+  GET: 'get',             // 読んで、そのまま返す（アクセサ）
   CLEAR: 'clear',         // 0 を入れる（リセット）
   FLAG: 'flag',           // ビット単位で立てる・落とす
   SWAP: 'swap',           // 条件によって入れ替える（csel）
@@ -190,6 +191,9 @@ function subjectOfUpdate(u) {
 }
 
 function actionOfUpdate(u) {
+  // 素の読み書き（アクセサ）。計算が挟まっていないので、動作はそのまま決まる。
+  if (u.kind === 'read') return { action: ACTION.GET, amount: null, op: null };
+  if (u.kind === 'write') return { action: ACTION.SET, amount: null, op: null };
   const steps = u.steps || [];
   const last = steps.length ? steps[steps.length - 1] : null;
   if (!last) {
@@ -262,7 +266,15 @@ function buildCandidates(input, topics) {
         if (verb.amount != null && input.verified) {
           items.push(evidence('role-verb-imm', 1, { op: verb.op, imm: verb.amount }));
         }
-        if (u.kind !== 'read-modify-write') {
+        if (u.kind === 'read' || u.kind === 'write') {
+          /*
+           * 読んで返すだけ・引数を入れるだけ。命令はこの 1 本しかないので、
+           * 「何をしているか」については、増減の連鎖と同じくらい確かに言える。
+           */
+          items.push(evidence('role-verb-accessor', 1, {
+            kind: u.kind, address: u.store ? u.store.address : null,
+          }));
+        } else if (u.kind !== 'read-modify-write') {
           // 読み書きの往復が閉じていない。動作の言い方を弱める。
           items.push(evidence('role-verb-shape', 0.4, { kind: u.kind }));
         }

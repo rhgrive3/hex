@@ -429,6 +429,58 @@
     return out;
   }
 
+  /* ── __unwind_info（関数の切れ目のもう 1 つの出どころ） ── */
+
+  /**
+   * compact unwind の索引から、関数の先頭を全部取り出す。
+   *
+   * LC_FUNCTION_STARTS を削ったバイナリでも、例外処理のために
+   * `__TEXT,__unwind_info` はほぼ必ず残っている。ここには関数ごとに 1 行あり、
+   * その行の先頭アドレスがそのまま関数の先頭になる。
+   * 命令の並びから推測するのと違って**当てずっぽうが 1 件も混ざらない**ので、
+   * 推測に頼る前に必ずこちらを見る。
+   *
+   * @param {Uint8Array} buf  __unwind_info の中身
+   * @param {BigInt} imageBase  マッハヘッダのアドレス（関数の位置はここからの差）
+   */
+  function parseUnwindStarts(buf, imageBase) {
+    const out = [];
+    if (!buf || buf.length < 28) return out;
+    const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+    if (dv.getUint32(0, true) !== 1) return out;               // 知らない版は読まない
+    const indexOff = dv.getUint32(20, true);
+    const indexCount = dv.getUint32(24, true);
+    if (!indexCount || indexOff + indexCount * 12 > buf.length) return out;
+
+    for (let i = 0; i < indexCount; i++) {
+      const e = indexOff + i * 12;
+      const funcOffset = dv.getUint32(e, true);
+      const pageOff = dv.getUint32(e + 4, true);
+      if (!pageOff || pageOff + 8 > buf.length) continue;      // 最後の番人の行
+      const kind = dv.getUint32(pageOff, true);
+      if (kind === 2) {                                        // そのまま並んでいる形
+        const entryOff = dv.getUint16(pageOff + 4, true);
+        const count = dv.getUint16(pageOff + 6, true);
+        for (let k = 0; k < count; k++) {
+          const p = pageOff + entryOff + k * 8;
+          if (p + 8 > buf.length) break;
+          out.push(imageBase + BigInt(dv.getUint32(p, true)));
+        }
+      } else if (kind === 3) {                                 // 圧縮された形
+        const entryOff = dv.getUint16(pageOff + 4, true);
+        const count = dv.getUint16(pageOff + 6, true);
+        for (let k = 0; k < count; k++) {
+          const p = pageOff + entryOff + k * 4;
+          if (p + 4 > buf.length) break;
+          const v = dv.getUint32(p, true);
+          out.push(imageBase + BigInt(funcOffset + (v & 0x00ffffff)));
+        }
+      }
+    }
+    out.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    return out;
+  }
+
   /* ── 間接シンボル（__stubs / __got の名前） ───────────── */
 
   /**
@@ -462,7 +514,7 @@
 
   root.MachO = {
     detect, parseFat, parseSlice, regionsFrom, cpuName,
-    parseSymbols, definedSymbols, parseFunctionStarts, stubSymbols,
+    parseSymbols, definedSymbols, parseFunctionStarts, parseUnwindStarts, stubSymbols,
     CPU_TYPE_ARM64, CPU_TYPE_ARM64_32,
   };
 })(typeof self !== 'undefined' ? self : globalThis);

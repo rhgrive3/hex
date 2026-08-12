@@ -137,9 +137,31 @@ export async function pinpointField(opts) {
 
   /* ── 3. 証拠を組んで、いったん並べる（ここまで逆アセンブルなし）── */
 
-  const candidates = raw.map((r) => buildFieldCandidate(r, goal));
+  let candidates = raw.map((r) => buildFieldCandidate(r, goal));
+
+  /*
+   * 打ち込まれた名前と、そっくり同じ名前の値があったなら、話はそこで終わっている。
+   *
+   * これを別枠にしないと、名前がぴたり一致している値が、
+   * 「クラスの担当が合っている・兄弟の値が多い・アクセサがある」を寄せ集めた
+   * 別の値に負ける。実測では `allowConcurrentAssetResourceLoadingRequests` を
+   * 探しているのに `_requestTimeout` を**確定と言い切って**いた。
+   * 名前で探した人に、名前が違うものを返してはいけない。
+   */
+  let asked = candidates.filter((c) => c.askedByName);
+  if (!asked.length) {
+    /*
+     * 丸ごと同じ名前は無いが、打ち込まれた語がそのままの並びで入っている
+     * （「show time」→ `_adShowTime`）。うろ覚えで打つ人はこちらのほうが多い。
+     * 語彙ごしの当てはまりより、はるかに具体的な手がかりなので別枠にする。
+     */
+    asked = candidates.filter((c) => c.askedBySequence);
+  }
+  const narrowed = asked.length > 0 && asked.length < candidates.length;
+  if (asked.length) candidates = asked;
+
   // 事前オッズは「値の総数」から。2 万個あるなら 1/20000 から始める。
-  for (const c of candidates) c.fusion = fuse(c.evidence, { candidates: universe });
+  for (const c of candidates) c.fusion = fuse(c.evidence, { candidates: narrowed ? asked.length : universe });
   candidates.sort((a, b) => b.fusion.logOdds - a.fusion.logOdds);
   let ranked = candidates.slice(0, MAX_CANDIDATES);
   let result = decide(ranked);
@@ -274,10 +296,21 @@ function buildFieldCandidate({ cls, iv, nameHit, fit, ctx }, goal) {
 
   /* 名前 — いちばん直接的だが、これだけでは確定にしない（evidence.js が上限を掛ける） */
   if (nameHit) {
-    if (nameHit.exact) ev.push(evidence('field-name-exact', nameHit.score, { name: iv.name, term: nameHit.term }));
+    /*
+     * 打ち込まれた名前と、変数の名前が、そっくりそのまま同じ。
+     * 探しものの名前を知っている人が名前で探しているのだから、
+     * これ以上の手がかりは無い。語彙ごしの一致とは別格に扱う。
+     */
+    if (nameHit.literal && nameHit.exact) {
+      ev.push(evidence('field-name-asked', 1, { name: iv.name, term: nameHit.term }));
+    } else if (nameHit.literal && nameHit.sequence) {
+      ev.push(evidence('field-name-contains', 1, { name: iv.name, term: nameHit.term }));
+    } else if (nameHit.exact) ev.push(evidence('field-name-exact', nameHit.score, { name: iv.name, term: nameHit.term }));
     else if (nameHit.score >= 0.6) ev.push(evidence('field-name-strong', nameHit.score, { name: iv.name, term: nameHit.term }));
     else ev.push(evidence('field-name-weak', Math.max(0.3, nameHit.score), { name: iv.name, term: nameHit.term }));
   }
+  const askedByName = !!(nameHit && nameHit.literal && nameHit.exact);
+  const askedBySequence = !!(nameHit && nameHit.literal && nameHit.sequence);
 
   /*
    * プロパティとして宣言された名前。ivar 名とは別の場所に書いてあるので、
@@ -323,7 +356,7 @@ function buildFieldCandidate({ cls, iv, nameHit, fit, ctx }, goal) {
    * 組み込んだ SDK のクラスなら、ここで打ち消す。
    * 名前がどれだけ完璧に一致していても、それはゲームの値ではない。
    */
-  if (ctx.vendorConflict) {
+  if (ctx.vendorConflict && !askedByName) {
     const sure = ctx.vendor.confidence === 'high';
     ev.push(evidence(sure ? 'third-party-class' : 'library-prefix-class', 1, {
       className: cls.name, vendor: ctx.vendor.vendor, kind: ctx.vendor.kind,
@@ -356,6 +389,9 @@ function buildFieldCandidate({ cls, iv, nameHit, fit, ctx }, goal) {
     superName: cls.superName || null,
     accessors,
     context: ctx,
+    // 打ち込まれた名前そのものだったか（pinpointField が別枠にするための印）
+    askedByName,
+    askedBySequence,
     evidence: ev,
     verifications: [],
     sites: [],

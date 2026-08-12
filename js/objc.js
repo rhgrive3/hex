@@ -290,7 +290,21 @@ async function readIvars(get, listAddr) {
     const entry = listAddr + 8n + BigInt(i) * BigInt(stride);
     const b = await get(entry, IVAR_STRIDE_MIN);
     if (!b) break;
-    const offset = await ivarOffset(get, sanitizePointer(u64(b, 0), get.base));
+    /*
+     * 位置そのものではなく「位置が書いてある場所」も覚えておく。
+     *
+     * いまの Objective-C は、フィールドの位置を命令に埋め込まない:
+     *
+     *     adrp x8, _OBJC_IVAR_$_SceneDelegate._window@PAGE
+     *     ldr  w8, [x8, …]          ← ここに +0x20 が入っている
+     *     ldr  x0, [x0, x8]         ← self の中を、その位置で読む
+     *
+     * 命令には `#0x20` がどこにも出てこないので、ずらし幅だけを見ていると
+     * 「self の何を読んでいるか」が永久に分からない。分かるのは
+     * **どの位置変数を読んだか**で、それはこのアドレスで引ける。
+     */
+    const offsetVar = sanitizePointer(u64(b, 0), get.base);
+    const offset = await ivarOffset(get, offsetVar);
     const name = await cstring(get, sanitizePointer(u64(b, 8), get.base));
     if (offset == null || !name) continue;     // 位置か名前が読めないものは採らない
     const typeEnc = await cstring(get, sanitizePointer(u64(b, 16), get.base));
@@ -298,6 +312,7 @@ async function readIvars(get, listAddr) {
     out.push({
       name,
       offset,
+      offsetVar,
       size: size > 0 && size <= 4096 ? size : null,
       type: decodeTypeEncoding(typeEnc),
     });

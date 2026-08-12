@@ -30,6 +30,13 @@ export class FieldIndex {
     this.classes = new Map();      // クラス名 -> {name, instanceSize, ivars, byOffset}
     this.methodOwner = new Map();  // 実装アドレス(string) -> {className, sel, kind}
     this.classOfName = new Map();  // クラス名 -> クラス情報（別名）
+    /*
+     * 「位置が書いてある場所」→ フィールド。
+     * いまのコンパイラは `ldr x0, [x0, x8]` と書き、+0x20 は x8 に読み込む。
+     * その x8 の出どころ（_OBJC_IVAR_$_Class._field）が分かれば、
+     * ずらし幅が命令に出ていなくてもフィールドを名指しできる。
+     */
+    this.byOffsetVar = new Map();  // アドレス(string) -> {className, field}
     this.fieldCount = 0;
 
     const list = (model && model.classes) || [];
@@ -38,6 +45,9 @@ export class FieldIndex {
       const byOffset = new Map();
       for (const iv of c.ivars || []) {
         byOffset.set(iv.offset, iv);
+        if (iv.offsetVar != null) {
+          this.byOffsetVar.set(iv.offsetVar.toString(), { className: c.name, field: iv });
+        }
         this.fieldCount++;
       }
       /*
@@ -155,9 +165,45 @@ export class FieldIndex {
    * @param {object} access {base:'x0', disp:BigInt}
    * @param {string} className この関数が属するクラス
    */
+  /**
+   * 「位置が書いてある場所」からフィールドを引く。
+   * `adrp/ldr` で _OBJC_IVAR_$_… を読んだアドレスをそのまま渡す。
+   */
+  fieldAtOffsetVar(addr) {
+    if (addr == null) return null;
+    return this.byOffsetVar.get(addr.toString()) || null;
+  }
+
   resolveAccess(access, className) {
-    if (!access || !className) return null;
-    if (access.base !== 'x0' && access.base !== 'x19' && access.base !== 'x20') return null;
+    if (!access) return null;
+    /*
+     * 位置変数ごしのアクセス（いまの Objective-C の普通の形）。
+     * ここはクラス名が分からなくても解ける — 変数そのものがクラスを名乗っている。
+     */
+    if (access.indexAddr != null) {
+      const via = this.fieldAtOffsetVar(access.indexAddr);
+      if (via) {
+        return {
+          className: via.className,
+          name: via.field.name,
+          plain: plainFieldName(via.field.name),
+          offset: via.field.offset,
+          size: via.field.size,
+          type: via.field.type,
+          exact: true,
+          certain: access.base === 'x0' || className === via.className,
+          viaRegister: access.base,
+          viaOffsetVar: true,
+        };
+      }
+    }
+    if (!className) return null;
+    /*
+     * self がどのレジスタに載っているかは、呼ぶ側が dataflow で追ってから渡す。
+     * それが無いときだけ、よく使われる 3 本を当てにする（推測なので certain は付けない）。
+     */
+    if (access.self !== true &&
+        access.base !== 'x0' && access.base !== 'x19' && access.base !== 'x20') return null;
     if (access.disp == null) return null;
     const hit = this.fieldAt(className, access.disp);
     if (!hit) return null;

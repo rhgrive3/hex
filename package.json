@@ -4,6 +4,8 @@
   "type": "module",
   "description": "アプリの中身（Mach-O / ARM64）を日本語で読むためのビューア。ビルドはしない — index.html をそのまま開く静的サイト。",
   "scripts": {
-    "test": "node tests/run.js"
+    "test": "node tests/run.js",
+    "accuracy": "node --max-old-space-size=8000 tests/accuracy.mjs",
+    "oracle": "python3 tests/oracle.py tests/battlecats tests/oracle.battlecats.json.gz"
   }
 }

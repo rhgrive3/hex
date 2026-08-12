@@ -27,70 +27,17 @@
  *
  * 日本語は作らない。
  */
-import { findValueUpdates, locationKey, regKeyOf } from './dataflow.js';
+import { findValueUpdates, locationKey, regKeyOf, selfRegisters } from './dataflow.js';
 
 /* 引数レジスタ。Objective-C のメソッドは x0=self, x1=_cmd, x2 以降が引数。 */
 const ARG0 = 'x0';
 const ARG2 = 'x2';
 
-/**
- * self（＝ x0 で渡されたオブジェクト）を持ち回っているレジスタを求める。
- *
- * -[C hp] のように 2 命令で終わる関数なら x0 のままだが、少し長い関数では
- *
- *     mov  x19, x0        ← ここから x19 が self
- *     ...
- *     ldr  w8, [x19, #0x20]
- *
- * という形になる。x19 を self と認めないと、ほとんどの読み書きを取りこぼす。
- * 逆に、self でないものを self と数えると、よそのクラスの値が混ざる。
- * だからコピーの連鎖だけを追い、上書きされたら即座に外す。
- *
- * @returns {{set:Set<string>, at:Map<string,number>}} レジスタ名と、self になった行
+/*
+ * self を持ち回っているレジスタの判定は dataflow.js へ移した（あちらでも要るため）。
+ * これまでの取り込み口はそのまま使えるように、ここから出し直す。
  */
-export function selfRegisters(model) {
-  const set = new Set([ARG0]);
-  const at = new Map([[ARG0, -1]]);
-  const insns = (model && model.instructions) || [];
-
-  for (const insn of insns) {
-    const mn = String(insn.mnemonic || '').toLowerCase();
-
-    // mov xd, xs / orr xd, xzr, xs — 素直なコピー
-    if ((mn === 'mov' || mn === 'orr') && insn.writes.length === 1) {
-      const dst = insn.writes[0];
-      const src = insn.reads.find((r) => set.has(r));
-      if (src && dst) {
-        // 64 ビット幅のコピーだけを認める（w レジスタへのコピーは値の切り出し）
-        const wide = /^x\d+$/.test(dst) || dst === 'sp';
-        if (wide) { set.add(dst); at.set(dst, insn.row); continue; }
-      }
-    }
-
-    // str x0, [sp, #N] → あとで ldr x19, [sp, #N] で戻す形も追う
-    if (insn.memory && insn.memory.kind === 'store' && insn.memory.stack) {
-      const src = regKeyOf(insn.ops[0]);
-      const key = locationKey(insn.memory);
-      if (src && set.has(src) && key) { set.add('@' + key); at.set('@' + key, insn.row); }
-    }
-    if (insn.memory && insn.memory.kind === 'load' && insn.memory.stack) {
-      const key = locationKey(insn.memory);
-      const dst = regKeyOf(insn.ops[0]);
-      if (dst && key && set.has('@' + key)) { set.add(dst); at.set(dst, insn.row); continue; }
-    }
-
-    // 上書きされたら self ではなくなる
-    for (const w of insn.writes) {
-      if (w === ARG0 && insn.row >= 0) { set.delete(ARG0); at.delete(ARG0); continue; }
-      if (set.has(w)) { set.delete(w); at.delete(w); }
-    }
-  }
-  // x0 は関数の入口では必ず self。上書きされても「入口では self だった」は残す。
-  set.add(ARG0);
-  if (!at.has(ARG0)) at.set(ARG0, -1);
-  return { set, at };
-}
-
+export { selfRegisters };
 /** その命令が、self の +offset を触っているか。 */
 function touches(insn, selfSet, offset) {
   const m = insn.memory;
@@ -128,14 +75,15 @@ export function verifyAccessor(model, hyp, opts) {
   // アクセサは短い。長い関数を「アクセサだった」と言い張らない。
   if (!insns.length || insns.length > max) return out;
 
-  const { set } = selfRegisters(model);
+  const { set, isSelf } = selfRegisters(model);
+  void set;
   let others = 0;
   let hit = null;
 
   for (const insn of insns) {
     const m = insn.memory;
     if (!m || m.stack || m.indexed || m.disp == null) continue;
-    if (!set.has(m.base)) continue;
+    if (!isSelf(m.base, insn.row)) continue;
     if (m.disp === offset) {
       if (!hit) hit = { insn, kind: m.kind, size: m.size };
       if (m.kind === 'load') out.getter = true;
@@ -202,14 +150,14 @@ export function fieldUse(model, offset, opts) {
   const out = { loads: 0, stores: 0, rmw: [], compares: [], sites: [], self: false };
   if (!model) return out;
   const insns = model.instructions || [];
-  const { set } = selfRegisters(model);
+  const { set, isSelf: selfAt } = selfRegisters(model);
   const selfOnly = o.selfOnly !== false;
 
   for (const insn of insns) {
     const m = insn.memory;
     if (!m || m.stack || m.indexed || m.disp == null) continue;
     if (m.disp !== want) continue;
-    const isSelf = set.has(m.base);
+    const isSelf = selfAt(m.base, insn.row);
     if (selfOnly && !isSelf) continue;
     if (isSelf) out.self = true;
     if (m.kind === 'load') out.loads++; else out.stores++;
@@ -224,7 +172,7 @@ export function fieldUse(model, offset, opts) {
   for (const u of findValueUpdates(model)) {
     if (u.kind !== 'read-modify-write') continue;
     if (u.location.disp !== want) continue;
-    if (selfOnly && !set.has(u.location.base)) continue;
+    if (selfOnly && !u.location.self) continue;
     out.rmw.push(u);
   }
 

@@ -117,6 +117,41 @@ const API_TABLE = [
   { id: 'swift_object', re: /^_?swift_(retain|release|allocObject|bridgeObjectRetain|bridgeObjectRelease)/i,
     cat: 'objc', args: ['object'], ret: 'object', effect: 'refcount' },
 
+  /* ── 言語のしくみが勝手に入れている処理 ─────────────────────
+   *
+   * ここを「知らない呼び出し」のままにしておくと、実際のアプリでは
+   * 全呼び出しの 1 割以上が説明できないまま残る。しかもこれらは
+   * **読む人が無視してよい**ものなので、名指しできること自体に価値がある
+   *  — 「ここは Swift のしくみです、あなたの探しものではありません」と言える。
+   */
+  { id: 'objc_weak', re: /^_?(objc_(initWeak|destroyWeak|copyWeak|moveWeak|storeWeak|loadWeak|loadWeakRetained)|swift_unknownObjectWeak\w*|swift_weak\w*)$/i,
+    cat: 'objc', args: ['location'], ret: 'object', effect: 'refcount' },
+  { id: 'objc_runtime', re: /^_?objc_(sync_enter|sync_exit|enumerationMutation|opt_class|opt_isKindOfClass|opt_respondsToSelector|getClass|getMetaClass|lookUpClass|autoreleasePool(Push|Pop)|begin_catch|end_catch|exception_rethrow|setProperty\w*|getProperty|copyStruct|terminate)$/i,
+    cat: 'runtime', args: null, ret: null, effect: 'runtime' },
+  { id: 'swift_runtime', re: /^_?swift_((begin|end)Access|once|getWitnessTable|conformsToProtocol\w*|isUniquelyReferenced\w*|dynamicCast\w*|getObjectType|getInitializedObjCClass|getTypeByMangledName\w*|allocError|willThrow|errorRelease|errorRetain|unknownObject(Retain|Release)|initStackObject|slowAlloc|slowDealloc|deallocClassInstance|task_\w+|checkMetadataState|allocateGenericValueMetadata|getGenericMetadata|getForeignTypeMetadata|storeEnumTagSinglePayload|getEnumTagSinglePayload|arrayInitWithCopy|bridgeObjectRetain|bridgeObjectRelease)/i,
+    cat: 'runtime', args: null, ret: null, effect: 'runtime' },
+  { id: 'cxx_runtime', re: /^_*(cxa_(atexit|guard_acquire|guard_release|throw|begin_catch|end_catch|rethrow|allocate_exception|free_exception|pure_virtual|demangle)|dynamic_cast|Unwind_\w+|Znw[mj]|Zna[mj]|ZdlPv|ZdaPv|Block_(copy|release)|Block_object_(assign|dispose))$/,
+    cat: 'runtime', args: null, ret: null, effect: 'runtime' },
+  /*
+   * C++ の標準ライブラリ。Cocos2d-x / Unreal のゲームでは、ここが呼び出しの中心になる。
+   * 綴りは Itanium ABI の飾りつき（__ZNSt3__1… は std:: の中）。
+   */
+  { id: 'cxx_string', re: /^__?ZN?K?St3__1\d*basic_string|^__?ZNSt3__112basic_string|basic_stringIcNS_11char_traits/,
+    cat: 'string', args: null, ret: null, effect: 'read' },
+  { id: 'cxx_container', re: /^__?ZNSt3__1(6vector|3map|13unordered_map|3set|13unordered_set|4list|5deque|19__shared_weak_count|10shared_ptr|__shared)/,
+    cat: 'memory', args: null, ret: null, effect: 'alloc' },
+  { id: 'cxx_std', re: /^__?ZN?K?St3__1/, cat: 'runtime', args: null, ret: null, effect: 'runtime' },
+  /*
+   * Swift の標準ライブラリ（`_$ss` で始まる飾り名）。文字列とハッシュがほとんど。
+   * 自分のアプリのコード（`_$s` のあとにモジュール名）とは分けて扱う。
+   */
+  { id: 'swift_string', re: /^_\$s(SS|s\w*(String|_string|stringCompare))/, cat: 'string', args: null, ret: null, effect: 'read' },
+  { id: 'swift_collection', re: /^_\$s(Sa|SD|Sh|Sl|Sk)\w/, cat: 'memory', args: null, ret: null, effect: 'alloc' },
+  { id: 'swift_hash', re: /^_\$ss6HasherV|^_\$sS\w+4hash4into/, cat: 'runtime', args: null, ret: 'number', effect: 'runtime' },
+  { id: 'swift_stdlib', re: /^_\$ss/, cat: 'runtime', args: null, ret: null, effect: 'runtime' },
+  /* それ以外の Swift の飾り名（Foundation やライブラリの処理）。最後の受け皿。 */
+  { id: 'swift_mangled', re: /^_\$s/, cat: 'runtime', args: null, ret: null, effect: 'runtime' },
+
   { id: 'file', re: /^_?(open|openat|fopen|fread|fwrite|read|write|close|fclose|lseek|stat|unlink|mkdir|remove)$/i,
     cat: 'io', args: ['path'], ret: 'handle', effect: 'io' },
   { id: 'filemanager', re: /NSFileManager|CFURL|NSBundle|contentsOfFile|writeToFile/i, cat: 'io',
@@ -138,6 +173,8 @@ const API_TABLE = [
   { id: 'database', re: /^_?sqlite3_|CoreData|NSManagedObject|NSPersistent/i, cat: 'storage',
     args: null, ret: 'status', effect: 'storage' },
 
+  { id: 'reflect', re: /^_?(NSStringFromClass|NSClassFromString|NSStringFromSelector|NSSelectorFromString|NSStringFromProtocol|class_\w+|sel_\w+|method_\w+|ivar_\w+|object_(get|set)\w+|protocol_\w+)$/,
+    cat: 'runtime', args: null, ret: null, effect: 'runtime' },
   { id: 'ui', re: /UIAlert|UIView|UIViewController|presentViewController|UILabel|UIButton|NSAlert|SwiftUI/i,
     cat: 'ui', args: null, ret: 'object', effect: 'ui' },
 
@@ -171,7 +208,7 @@ export const FEATURE_OF_CATEGORY = {
   storage: 'storage', io: 'storage', database: 'storage',
   ui: 'ui', objc: 'objc', memory: 'data', string: 'data',
   log: 'diagnostics', error: 'diagnostics', concurrency: 'runtime',
-  random: 'runtime', time: 'runtime', dylink: 'runtime',
+  random: 'runtime', time: 'runtime', dylink: 'runtime', runtime: 'runtime',
 };
 
 /* ────────────────────────────────────────────────────────────
@@ -322,6 +359,9 @@ export function makeInstruction(raw) {
       base: regKey(mem.base),
       disp: mem.disp && mem.disp.value != null ? mem.disp.value : null,
       indexed: !!mem.index,
+      // 添字レジスタ。フィールドの位置がここに載ってくる形（非固定 ABI）を解くのに要る
+      index: mem.index ? regKey(mem.index) : null,
+      indexAddr: null,          // その添字がどこから読まれたか（analyzeDataFlow が埋める）
       size: accessSize(base, parsed),
       stack: mem.base ? (mem.base.cls === 'sp' || (mem.base.cls === 'gp' && mem.base.num === 29)) : false,
       mode: mem.mode,
@@ -533,6 +573,15 @@ export function analyzeDataFlow(insns, opts) {
     /* ── メモリ ── */
     if (insn.memory) {
       const m = insn.memory;
+      /*
+       * 添字レジスタが「どこから読まれた値か」を残す。
+       * `ldr x0, [x0, x8]` の x8 が _OBJC_IVAR_$_Class._field から来ていれば、
+       * ずらし幅が命令に無くても、触っているフィールドを名指しできる（fields.js）。
+       */
+      if (m.index) {
+        const iv = get(m.index);
+        m.indexAddr = iv && iv.kind === 'loaded' && iv.addr != null ? iv.addr : null;
+      }
       const slot = m.stack && m.disp != null && !m.indexed ? m.base + '+' + m.disp.toString() : null;
       if (m.kind === 'load') {
         for (const dst of insn.writes) {
@@ -579,9 +628,17 @@ export function analyzeDataFlow(insns, opts) {
         args.push({ index: a, value: v, role: api && api.args ? (api.args[a] || null) : null });
         flow('reg->arg', insn.row, 'x' + a, 'arg' + a, v);
       }
+      /*
+       * Xcode 14 以降のメソッド呼び出しは `_objc_msgSend$doSomething:` という
+       * 名前の中継地点を呼ぶ形になる。セレクタは第 2 引数ではなく **名前の中** にある。
+       * ここを拾わないと、いまのアプリでは「何というメソッドを呼んでいるか」が
+       * 1 件も言えない（呼び出し側に selref が残っていないため）。
+       */
+      const sel = name ? /objc_msgSend(?:Super2?)?\$(.+)$/.exec(name) : null;
       const call = {
         row: insn.row, address: insn.address, target: insn.callTarget,
         name: name || null, api: api || null, args,
+        selector: sel ? sel[1] : null,
         indirect: !insn.callTarget,
       };
       calls.push(call);
@@ -976,6 +1033,7 @@ export function buildSemanticModel(raw, opts) {
     catch { /* 1 行壊れていても解析全体は続ける */ }
   }
 
+  markTailCalls(insns, o);
   const bbInfo = buildBasicBlocks(insns, o);
   const flow = analyzeDataFlow(insns, Object.assign({ joinRows: bbInfo.joinRows }, o));
   const semantic = buildSemanticBlocks(insns, bbInfo, flow, o);
@@ -999,6 +1057,35 @@ export function buildSemanticModel(raw, opts) {
   };
   model.blockOfRow = (row) => semantic.find((b) => row >= b.startRow && row <= b.endRow) || null;
   return model;
+}
+
+/**
+ * 関数の外へ跳ぶ `b` を、呼び出しとして扱う（末尾呼び出し）。
+ *
+ *     -[ADJConfig setSdkPrefix:]:
+ *         mov w3, #0x38
+ *         b   _objc_setProperty_nonatomic_copy
+ *
+ * これで関数はおしまい。`bl` ではないので、呼び出しとして数えていなかったころは
+ * 「この関数は何も呼んでいない」ことになり、要約も役割も空になっていた。
+ * Objective-C の property は大半がこの形なので、影響はきわめて大きい。
+ *
+ * 行き先が自分の中（ループや if の合流）なら、もちろん呼び出しではない。
+ */
+function markTailCalls(insns, o) {
+  if (!insns.length) return;
+  const lo = insns[0].address;
+  const hi = insns[insns.length - 1].address;
+  if (lo == null || hi == null) return;
+  void o;
+  for (const insn of insns) {
+    if (insn.isCall || insn.isConditional) continue;
+    if (insn.mnemonic.toLowerCase() !== 'b' || insn.branchTarget == null) continue;
+    if (insn.branchTarget >= lo && insn.branchTarget <= hi) continue;   // 自分の中へ跳んでいる
+    insn.isCall = true;
+    insn.isTailCall = true;
+    insn.callTarget = insn.branchTarget;
+  }
 }
 
 /** 関数 1 つぶんの事実と、根拠つきの推測。 */

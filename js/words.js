@@ -153,7 +153,7 @@
     // LDR/LDRB/LDRH/STR… (immediate, unsigned offset) — 倍率は転送サイズで決まる
     if (masked(w, 0x3b000000) === 0x39000000) {
       const scale = transferScale(w);
-      const isLoad = ((w >>> 22) & 1) === 1;
+      const isLoad = transferIsLoad(w);
       return {
         rn: rn(w), rd: rd(w),
         imm: BigInt((w >>> 10) & 0xfff) << BigInt(scale),
@@ -175,6 +175,23 @@
     const vector = ((w >>> 26) & 1) === 1;
     const opcHigh = (w >>> 23) & 1;
     return vector && opcHigh ? size + 4 : size;
+  }
+
+  /**
+   * その転送命令は読み出しか。
+   *
+   * 「bit 22 が 1 なら読み出し」は半分しか合っていない。整数の転送では
+   * bit 23-22（opc）が 00 のときだけ書き込みで、01 / 10 / 11 はすべて読み出しになる。
+   *
+   *     ldrsw x8, [sp, #0xc]   … opc = 10 → 読み出し
+   *
+   * bit 22 だけを見ていると、これが**書き込みに見える**。符号つきの読み出しは
+   * 配列の添字を取り出すところに山ほど出るので、ここを取り違えると
+   * 「この関数はメモリに書いている」という説明が丸ごと逆になる。
+   */
+  function transferIsLoad(w) {
+    if (((w >>> 26) & 1) === 1) return ((w >>> 22) & 1) === 1;   // SIMD は bit 22 のみ
+    return ((w >>> 22) & 3) !== 0;
   }
 
   /* ── メモリアクセス ─────────────────────────────────────── */
@@ -205,7 +222,7 @@
     // 符号なし即値つき (いちばん多い形)
     if (masked(w, 0x3b000000) === 0x39000000) {
       const scale = transferScale(w);
-      const load = ((w >>> 22) & 1) === 1;
+      const load = transferIsLoad(w);
       return {
         load, store: !load, size: 1 << scale, base: rn(w), reg: rd(w),
         disp: BigInt((w >>> 10) & 0xfff) << BigInt(scale),
@@ -213,7 +230,7 @@
     }
     // 前後変化つき / 符号つき即値（こちらは倍率なしの生バイト数）
     if (masked(w, 0x3b200000) === 0x38000000) {
-      const load = ((w >>> 22) & 1) === 1;
+      const load = transferIsLoad(w);
       const kind = (w >>> 10) & 3;                            // 00 unscaled, 01 post, 11 pre
       const imm9 = Number(signExtend(BigInt((w >>> 12) & 0x1ff), 9));
       return {
@@ -222,7 +239,7 @@
       };
     }
     if (masked(w, 0x3b200c00) === 0x38200800) {
-      const load = ((w >>> 22) & 1) === 1;
+      const load = transferIsLoad(w);
       return {
         load, store: !load, size: 1 << transferScale(w),
         base: rn(w), reg: rd(w), disp: null, indexed: true,
@@ -371,8 +388,10 @@
     if (isShiftOp(w)) return KIND.SHIFT;
 
     if (isAddSubImm(w) || isAddSubShifted(w) || isAddSubExtended(w)) {
-      // orr xD, xzr, xM は mov の別名。add xD, xN, #0 も実質コピー。
-      if (isAddSubImm(w) && ((w >>> 10) & 0xfff) === 0) return KIND.MOVREG;
+      /* orr xD, xzr, xM は mov の別名。add xD, xN, #0 も実質コピー。
+         ただし S ビットが立っていれば（adds / subs）旗を立てる計算なので、
+         コピーとは呼べない — `subs x8, x8, #0` は実際には比較として使われる。 */
+      if (isAddSubImm(w) && ((w >>> 10) & 0xfff) === 0 && !((w >>> 29) & 1)) return KIND.MOVREG;
       return KIND.ARITH;
     }
     if (isLogicShifted(w)) {
@@ -415,9 +434,20 @@
   /* ── 関数の切れ目の手がかり ─────────────────────────────── */
 
   /** stp xN, xM, [sp, …] — スタックへの 2 本組の書き込み。プロローグの目印。 */
+  /*
+   * stp xN, xM, [sp, …] — 関数の入口でレジスタを退避する形。
+   *
+   * bit 25 を見落とすと `mov x20, x0`（orr x20, xzr, x0）まで当てはまってしまう。
+   * これは例外処理の合流点によく出る命令なので、関数の先頭を推測するときに
+   * 2 万か所以上の嘘の「関数の始まり」を生んでいた。
+   */
   function isStpToSp(w) {
-    return (w >>> 30) === 2 && ((w >>> 27) & 7) === 5 && ((w >>> 26) & 1) === 0 &&
-           ((w >>> 22) & 1) === 0 && rn(w) === 31;
+    return ((w >>> 30) & 3) === 2 &&        // 64 ビットの組
+           ((w >>> 27) & 7) === 5 &&        // 組の読み書き
+           ((w >>> 26) & 1) === 0 &&        // 整数（SIMD ではない）
+           ((w >>> 25) & 1) === 0 &&        // ここが 1 なら別の命令
+           ((w >>> 22) & 1) === 0 &&        // 書き込み
+           rn(w) === 31;                    // 土台が sp
   }
 
   /** sub sp, sp, #imm — スタックの確保。 */

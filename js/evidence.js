@@ -89,6 +89,9 @@ const FAMILY_CAP = {
  */
 export const EVIDENCE = {
   /* 値（フィールド）を特定するための証拠 */
+  /* 打ち込まれた名前が、そのまま変数の名前だった。名前で探した人への直球の答え。 */
+  'field-name-asked':   { lr: 400,  family: FAMILY.NAME,     kind: 'fact', id: true },
+  'field-name-contains':{ lr: 120,  family: FAMILY.NAME,     kind: 'fact', id: true },
   'field-name-exact':   { lr: 55,   family: FAMILY.NAME,     kind: 'fact', id: true },
   'field-name-strong':  { lr: 16,   family: FAMILY.NAME,     kind: 'fact', id: true },
   'field-name-weak':    { lr: 3,    family: FAMILY.NAME,     kind: 'fact', id: true },
@@ -194,6 +197,8 @@ export const EVIDENCE = {
   'role-verb-imm':      { lr: 5,    family: FAMILY.VERIFIED, kind: 'verified' },
   'role-verb-api':      { lr: 6,    family: FAMILY.CONTEXT,  kind: 'fact' },
   'role-verb-shape':    { lr: 2.4,  family: FAMILY.USAGE,    kind: 'fact' },
+  /* 読んで返すだけ／入れるだけ。命令が 1 本しかないぶん、増減の連鎖と同じくらい確か。 */
+  'role-verb-accessor': { lr: 12,   family: FAMILY.VERIFIED, kind: 'verified' },
   'role-verb-none':     { lr: 0.4,  family: FAMILY.USAGE,    kind: 'inference' },
 
   'role-subject-field': { lr: 22,   family: FAMILY.NAME,     kind: 'fact', id: true },
