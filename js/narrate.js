@@ -11,6 +11,7 @@
  */
 import { pick } from './i18n.js';
 import { ROLE, levelOf } from './blocks.js';
+import { goalById } from './goals.js';
 
 /* ── 役割の見出し ──────────────────────────────────────────── */
 
@@ -1580,6 +1581,364 @@ function hexOffset(v) {
   if (v == null) return '';
   const n = typeof v === 'bigint' ? v : BigInt(v);
   return '+0x' + n.toString(16).toUpperCase();
+}
+
+/* ────────────────────────────────────────────────────────────
+   関数の役割を名指しする（role.js → 日本語）
+   ────────────────────────────────────────────────────────────
+
+   `sub_100A3C0` と出た瞬間に読む人は止まる。命令の説明をいくら足しても
+   「で、これは何の処理なの？」には答えていないため。ここはその 1 行を作る。
+
+       ［機能］を ［動作］する処理
+        🎒 アイテム・所持品   1 増やす
+
+   言い切れないところは必ず言い切らない。機能が分からなければ機能を省き、
+   値の名前が読めなければ場所で呼ぶ。埋めない。                             */
+
+/** 機能（目的）の呼び名。goals.js の語彙をそのまま使う。 */
+export function topicLabel(id) {
+  const g = goalById(id);
+  return g ? pick(g.ja, g.en) : null;
+}
+
+/** 機能の絵文字。一覧で目に留まるように。 */
+export function topicIcon(id) {
+  const g = goalById(id);
+  return g && g.icon ? g.icon : '';
+}
+
+/*
+ * 機能の名前を「を◯◯する」の目的語に置くための言い換え。
+ *
+ * 目的の名前は「何を調べたいですか？」の見出し用に付けてあるので、
+ * そのまま目的語にすると日本語が壊れる（「ダメージ計算を減らす処理」）。
+ * 壊れるものだけ、値としての呼び名を持たせる。書いていないものは元のまま。
+ */
+const TOPIC_OBJECT = {
+  damage: ['ダメージの値', 'the damage value'],
+  gacha: ['ガチャの値', 'the gacha value'],
+  purchase: ['課金の値', 'the purchase value'],
+  login: ['ログインの値', 'the login value'],
+  network: ['通信の値', 'the network value'],
+  save: ['セーブデータ', 'the save data'],
+  anticheat: ['改造検知の値', 'the anti-cheat value'],
+};
+
+/** 「を◯◯する」の目的語に置ける形の機能名。 */
+function topicObject(id) {
+  const o = TOPIC_OBJECT[id];
+  return o ? pick(o[0], o[1]) : topicLabel(id);
+}
+
+/** 数の言い方。1000000 のような即値は 10 進のままだと読めないので添える。 */
+function amountText(amount) {
+  if (amount == null) return null;
+  const n = typeof amount === 'bigint' ? amount : BigInt(amount);
+  const abs = n < 0n ? -n : n;
+  if (abs >= 4096n) return n.toString() + '（0x' + abs.toString(16).toUpperCase() + '）';
+  return n.toString();
+}
+
+/**
+ * 動作を、目的語の後ろに置ける形で。
+ *   increase + 1  →  「1 増やす」
+ *   send          →  「サーバーへ送る」
+ */
+export function actionPhrase(action, amount) {
+  const n = amountText(amount);
+  switch (action) {
+    case 'increase':
+      return n ? pick(n + ' 増やす', 'increase by ' + n) : pick('計算した値だけ増やす', 'increase');
+    case 'decrease':
+      return n ? pick(n + ' 減らす', 'decrease by ' + n) : pick('計算した値だけ減らす', 'decrease');
+    case 'scale':
+      return n ? pick(n + ' 倍にする', 'multiply by ' + n) : pick('掛け算で増やす', 'multiply');
+    case 'shrink':
+      return n ? pick(n + ' で割る', 'divide by ' + n) : pick('割り算で減らす', 'divide');
+    case 'set':
+      return n ? pick(n + ' にする', 'set to ' + n) : pick('別の値に入れ替える', 'replace');
+    case 'clear': return pick('0 に戻す', 'reset to zero');
+    case 'flag': return pick('印を立て下げする', 'set or clear a flag');
+    case 'swap': return pick('条件によって入れ替える', 'swap depending on a condition');
+    case 'check': return pick('しきい値と比べて判定する', 'compare against a threshold');
+    case 'save': return pick('端末に保存する', 'save to the device');
+    case 'load': return pick('端末から読み出す', 'load from the device');
+    case 'send': return pick('サーバーとやり取りする', 'talk to a server');
+    case 'show': return pick('画面に出す', 'show on screen');
+    case 'make': return pick('新しく作る', 'create');
+    case 'dispatch': return pick('ほかの処理へ振り分ける', 'hand off to other routines');
+    default: return null;
+  }
+}
+
+/**
+ * 動作を名詞で。値を触らない処理（保存・通信・判定…）の言い方に使う。
+ *
+ * 「セーブ・保存を端末に保存する処理」では日本語として読めない。
+ * 目的語のない動作は「〜に関わる処理（保存）」の形にする。
+ */
+function actionNoun(action) {
+  switch (action) {
+    case 'check': return pick('判定', 'a check');
+    case 'save': return pick('端末への保存', 'saving to the device');
+    case 'load': return pick('端末からの読み出し', 'loading from the device');
+    case 'send': return pick('サーバーとの通信', 'talking to a server');
+    case 'show': return pick('画面への表示', 'showing something on screen');
+    case 'make': return pick('オブジェクトの生成', 'creating an object');
+    case 'dispatch': return pick('呼び出しの振り分け', 'handing off to other routines');
+    default: return null;
+  }
+}
+
+/** 「±1」のような、一覧に置ける最短の言い方。 */
+function actionMark(role) {
+  const n = role.amount != null ? amountText(role.amount) : null;
+  switch (role.action) {
+    case 'increase': return n ? '+' + n : pick('増加', 'up');
+    case 'decrease': return n ? '−' + n : pick('減少', 'down');
+    case 'scale': return n ? '×' + n : pick('倍増', 'scale');
+    case 'shrink': return n ? '÷' + n : pick('縮小', 'shrink');
+    case 'clear': return pick('0 化', 'reset');
+    case 'set': return n ? '=' + n : pick('代入', 'set');
+    default: return actionPhrase(role.action, role.amount) || '';
+  }
+}
+
+/** 何を触っているか。名前が読めなければ場所で呼ぶ（分かるふりをしない）。 */
+export function fnRoleSubject(role, withClass = true) {
+  const s = role && role.subject;
+  if (!s) return null;
+  if (s.kind === 'field' && s.name) {
+    return fieldName({ plain: s.plain || s.name, name: s.name, className: s.className }, withClass);
+  }
+  if (s.kind === 'local') {
+    return pick('この関数の中だけで使う一時的な値', 'a temporary value inside this function');
+  }
+  if (s.kind === 'location') {
+    return pick('オブジェクトの ' + hexOffset(s.disp) + ' にある値',
+      'the value at ' + hexOffset(s.disp) + ' of the object');
+  }
+  return null;
+}
+
+/**
+ * この関数の名前。1 行でこれだけ読めば用が足りる、という形にする。
+ *   「🎒 アイテム・所持品を 1 増やす処理」
+ *   「ItemManager の count を 1 増やす処理」（機能まで言えないとき）
+ */
+export function fnRoleTitle(role, { icon = true } = {}) {
+  if (!role) return '';
+  const verb = actionPhrase(role.action, role.amount);
+  if (!verb) {
+    return pick('何をする処理かは名指しできませんでした',
+      'what this routine is for could not be named');
+  }
+  /*
+   * 機能が 1 つに決まっていなければ、機能を名乗らない。
+   * 「アイテムかスコアか決まっていない」ときに片方だけ書くと、すぐ下に並ぶ根拠と
+   * 食い違った見出しになる。動作と場所は決まっているので、そちらで名乗る。
+   */
+  const settled = role.topicSettled !== false;
+  const topic = settled ? topicLabel(role.topic) : null;
+  const mark = icon && topic ? (topicIcon(role.topic) + ' ') : '';
+
+  /*
+   * 値を触っていない処理は、目的語がない。「セーブ・保存を端末に保存する処理」
+   * とは書けないので、機能を主語に立てて、動作は括弧で添える。
+   */
+  const noun = actionNoun(role.action);
+  if ((!role.subject || role.subject.kind === 'none') && noun) {
+    if (!topic) return pick(verb + '処理', 'a routine that will ' + verb);
+    return pick(mark + topic + 'に関わる処理（' + noun + '）',
+      mark + 'a routine for ' + topic + ' (' + noun + ')');
+  }
+
+  const head = topic ? topicObject(role.topic) : fnRoleSubject(role);
+  if (!head) return pick(verb + '処理', 'a routine that will ' + verb);
+  return pick(mark + head + 'を' + verb + '処理',
+    mark + 'a routine that will ' + verb + ' ' + head);
+}
+
+/** 一覧の行に添える最短の札。「🎒 アイテム +1」 */
+export function fnRoleShort(role) {
+  if (!role || role.action === 'unknown') return '';
+  const topic = topicLabel(role.topic);
+  const mark = actionMark(role);
+  if (topic) return (topicIcon(role.topic) + ' ' + topic + (mark ? ' ' + mark : '')).trim();
+  const subject = fnRoleSubject(role, false);
+  if (subject) return (subject + (mark ? ' ' + mark : '')).trim();
+  return mark;
+}
+
+/**
+ * 「変えているのは、この値です」の 1 行。
+ * 型と位置まで添える。ここまで出せば、実際に触りにいける。
+ */
+export function fnRoleTargetLine(role) {
+  const s = role && role.subject;
+  if (!s || s.kind === 'none') return null;
+  const where = fnRoleSubject(role);
+  if (!where) return null;
+  const type = s.type ? typeWord(s.type) : null;
+  /*
+   * 名前が読めないときの呼び名は、それ自体が「オブジェクトの +0x20 にある値」。
+   * そこへ「先頭から +0x20」を足すと、同じことを 2 回言うことになる。
+   */
+  const at = (s.disp != null && s.kind === 'field')
+    ? pick('先頭から ' + hexOffset(s.disp), hexOffset(s.disp) + ' from the start') : null;
+  const tail = [type, at].filter(Boolean).join(pick('・', ', '));
+  return pick('変えているのは ' + where + (tail ? '（' + tail + '）' : '') + 'です。',
+    'What it changes is ' + where + (tail ? ' (' + tail + ')' : '') + '.');
+}
+
+/** 名指しの確からしさを、言い切らない日本語で。 */
+export function fnRoleLead(role) {
+  if (!role) return '';
+  switch (role.verdict) {
+    case 'confirmed':
+      return pick('この関数が何をする処理かは、命令まで降りて確かめました。',
+        'What this routine does was confirmed down at the instruction level.');
+    case 'likely':
+      return pick('ここまでは言えます。ただし、決め手が 1 つ足りません。',
+        'This much can be said, but one decisive piece is missing.');
+    case 'ambiguous':
+      return pick('読み方が 2 通り以上あり、1 つに決めていません。' +
+        '決めつけるより、両方を見てもらった方が確実です。',
+      'There is more than one reading, so nothing is being declared.');
+    default:
+      return pick('この関数が何の処理かは、名指しできませんでした。手がかりが足りません。',
+        'This routine could not be named — not enough clues.');
+  }
+}
+
+/**
+ * 機能が決まらなかったときに、何と何で迷っているのかを出す。
+ * 「決まりませんでした」だけで終わらせると、次に何を見ればいいか分からない。
+ */
+export function fnRoleTopicLine(role) {
+  if (!role || !role.topic) return null;
+  const mine = topicLabel(role.topic);
+  if (!mine) return null;
+  if (role.topicSettled !== false) {
+    return pick('アプリの機能でいうと ' + topicIcon(role.topic) + ' ' + mine + ' の担当です。',
+      'In the app, this belongs to ' + mine + '.');
+  }
+  const rival = topicLabel(role.rivalTopic);
+  if (!rival) {
+    return pick('アプリのどの機能かは、手がかりが割れていて決めていません（' + mine + ' の可能性）。',
+      'Which part of the app this belongs to is not settled (possibly ' + mine + ').');
+  }
+  return pick('アプリの機能は ' + topicIcon(role.topic) + ' ' + mine + ' か ' +
+    topicIcon(role.rivalTopic) + ' ' + rival + ' のどちらかです。手がかりが割れているので、' +
+    '1 つには決めていません。',
+  'This belongs either to ' + mine + ' or ' + rival + ' — the clues are split, so neither is declared.');
+}
+
+/** ほかの読み方（2 番目の候補）。決まらなかったときに必ず出す。 */
+export function fnRoleAlternative(role) {
+  const r = role && role.runnerUp;
+  if (!r) return null;
+  const verb = actionPhrase(r.action, r.amount);
+  const head = (r.topic ? topicObject(r.topic) : null) || fnRoleSubject({ subject: r.subject });
+  if (!verb || !head) return null;
+  return pick('もう 1 つの読み方: ' + head + 'を' + verb + '処理（' +
+    probabilityText(r.probability) + '）',
+  'another reading: a routine that will ' + verb + ' ' + head +
+    ' (' + probabilityText(r.probability) + ')');
+}
+
+/**
+ * 「なぜそう言えるのか」1 行ぶん。
+ * role.js の証拠コードだけを受け取り、ここで初めて言葉にする。
+ */
+export function roleProofText(item) {
+  if (!item) return '';
+  const d = item.detail || {};
+  switch (item.code) {
+    case 'role-verb-rmw':
+      return pick('この値を読んで、計算して、同じ場所へ書き戻している命令が実在する' +
+        (d.address != null ? '（' + hex(d.address) + '）' : '') + ' — 加工しているのはここ',
+      'a real read–modify–write exists' + (d.address != null ? ' at ' + hex(d.address) : ''));
+    case 'role-verb-imm':
+      return pick('増減の量が命令に直接書かれている（' + (d.imm != null ? d.imm.toString() : '?') + '）ので、' +
+        'どれだけ変わるかまで読み取れる',
+      'the amount is written straight into the instruction (' + (d.imm != null ? d.imm.toString() : '?') + ')');
+    case 'role-verb-api':
+      return pick(apiShort(d.api) + 'にあたる処理を実際に呼んでいる',
+        'it really calls something that does: ' + apiShort(d.api));
+    case 'role-verb-shape':
+      return pick('命令の形（比べて分岐する・値を移す）が、この動作と合っている',
+        'the instruction shape fits this action');
+    case 'role-verb-none':
+      return pick('値を読んで書き戻している場所が見つからないので、' +
+        '「何かを加工する処理」とは言えない',
+      'no read–modify–write was found, so this is not a routine that changes a value');
+    case 'role-subject-field':
+      return pick('書き換えている値の名前が「' + trim(d.name, 32) + '」で、' +
+        '探している機能の言葉（' + trim(d.term, 16) + '）が入っている',
+      'the field it writes is called “' + trim(d.name, 32) + '”, which contains “' + trim(d.term, 16) + '”');
+    case 'role-subject-prop':
+      return pick('宣言されたプロパティの名前も一致している', 'the declared property name matches too');
+    case 'role-subject-unnamed':
+      return pick('触っている値の名前がバイナリに残っていない（場所までは分かる）',
+        'the value it touches has no name left in the binary');
+    case 'role-topic-name':
+      return pick('関数の名前「' + trim(d.text, 40) + '」そのものが、この機能を指している',
+        'the function name “' + trim(d.text, 40) + '” itself points at this feature');
+    case 'role-topic-selector':
+      return pick('メソッド名「' + trim(d.text, 32) + '」が、この機能を指している' +
+        '（メソッド名は人が付けたもの）',
+      'the method name “' + trim(d.text, 32) + '” points at this feature');
+    case 'role-topic-string':
+      return pick('この関数が「' + trim(d.text, 28) + '」という文言を実際に参照している',
+        'it really references the text “' + trim(d.text, 28) + '”');
+    case 'role-topic-class':
+      return pick('持ち主のクラス名「' + trim(d.text, 28) + '」が、この機能の担当であることを示している',
+        'the owning class “' + trim(d.text, 28) + '” belongs to this feature');
+    case 'role-topic-callee':
+      return pick('この機能の言葉を含む処理「' + trim(d.text, 28) + '」を呼んでいる',
+        'it calls “' + trim(d.text, 28) + '”, whose name matches this feature');
+    case 'role-topic-caller':
+      return pick('この機能の言葉を含む処理「' + trim(d.text, 28) + '」から呼ばれている',
+        'it is called from “' + trim(d.text, 28) + '”, whose name matches this feature');
+    case 'role-topic-agree':
+      return pick('別々の手がかり ' + (d.sources || 0) + ' 種類が、そろって同じ機能を指している' +
+        '（名前・文言・呼び出し関係は、互いに独立した材料）',
+      (d.sources || 0) + ' independent kinds of clue all point at the same feature');
+    case 'role-topic-conflict':
+      return pick('別の機能を指す手がかりも同じくらいあり、この機能だと言い切れない',
+        'clues pointing at other features are just as strong');
+    default:
+      return proofText(item);
+  }
+}
+
+/** 名指しできなかった理由。何をすれば決まるかまで書く。 */
+export function roleMissingText(code) {
+  switch (code) {
+    case 'role-no-topic':
+      return pick('アプリのどの機能の話かを示す手がかり（文言・メソッド名・クラス名）が' +
+        'この関数にありません。何をしているかは言えても、何のためかが言えません',
+      'nothing says which part of the app this belongs to');
+    case 'role-no-field-name':
+      return pick('触っている値の名前がバイナリに残っていません。' +
+        '場所（オブジェクトの何バイト目か）までは確かめましたが、その値の呼び名は分かりません',
+      'the value it touches has no name in the binary — only its offset is known');
+    case 'role-not-disassembled':
+      return pick('一覧用の下見なので、まだ命令まで降りていません。' +
+        'この関数を開くと、命令で裏を取ったうえで言い直します',
+      'this is only a preview from the index — open the function to confirm at instruction level');
+    case 'role-topic-unsettled':
+      return pick('アプリのどの機能かで、手がかりが割れています。' +
+        '大きな関数は文言をいくつも参照するので、こうなることがあります。' +
+        '呼び出し元をたどると、どちらの流れで使われているかが分かります',
+      'the clues about which part of the app this belongs to are split');
+    case 'role-no-clue':
+      return pick('手がかりが 1 つも見つかりませんでした', 'no clue at all was found');
+    default:
+      return missingText(code);
+  }
 }
 
 /* ── ビューア用のオーバーレイ ──────────────────────────────── */

@@ -31,6 +31,7 @@ import { findValueUpdates, constantComparisons } from './dataflow.js';
 import { buildAppMap, buildStringMap } from './appmap.js';
 import { pinpointField, pinpointFunction, pinpointLocation } from './pinpoint.js';
 import { VERDICT, verdictRank } from './evidence.js';
+import { inferRole } from './role.js';
 
 /* ── 気づいたこと（目的を指定しなくても言えること） ────────
    どれも「その文字列が実在する」という事実が起点で、
@@ -369,6 +370,31 @@ export async function autoAnalyze(opts) {
           ? fields.resolveAccess({ base: u.location.base, disp: u.location.disp }, owner.className)
           : null;
       }
+      const f = model.facts || {};
+      const selectors = (model.calls || []).map((c) => c.selector).filter(Boolean);
+      const strings = f.strings || [];
+      /*
+       * ここまでで「どの値をどう加工しているか」は分かっている。あと 1 歩、
+       * 「それはアプリの何の処理なのか」まで名前を付ける。この 1 行がないと、
+       * 画面に残るのは `sub_1001A74E4` と `x0 + 0x20 を 1 増やす` だけになり、
+       * 読む人はここから先へ進めない。
+       */
+      const role = inferRole({
+        name: symbols ? symbols.nameAt(t.addr) : null,
+        owner,
+        updates,
+        apis: f.apis || [],
+        selectors,
+        strings: strings.map((text) => ({ text })),
+        callees: f.calledNames || [],
+        callers: [],
+        comparisons: compares.length,
+        conditionals: f.conditionals || 0,
+        calls: f.calls || 0,
+        stores: f.stores || 0,
+        verified: true,
+      });
+
       report.deep.push({
         addr: t.addr,
         owner,
@@ -376,11 +402,12 @@ export async function autoAnalyze(opts) {
         why: t.why,
         goal: t.goal ? t.goal.id : null,
         goalLabel: t.goal ? t.goal.text : null,
+        role,
         updates: updates.slice(0, 4),
         compares: compares.slice(0, 4),
-        instructions: model.facts ? model.facts.instructionCount : 0,
-        selectors: (model.calls || []).map((c) => c.selector).filter(Boolean).slice(0, 4),
-        strings: (model.facts && model.facts.strings ? model.facts.strings : []).slice(0, 3),
+        instructions: f.instructionCount || 0,
+        selectors: selectors.slice(0, 4),
+        strings: strings.slice(0, 3),
       });
       await tick();
     }

@@ -35,11 +35,14 @@ import {
   findingTitle, findingWhy, notableReasonText, autoStepText,
   typeWord, placeName, oneLiner, whatItDoes, changeVerb,
   verdictText, verdictLead, missingText, proofText, factorText, probabilityText,
+  fnRoleTitle, fnRoleShort, fnRoleLead, fnRoleTargetLine, fnRoleAlternative, fnRoleTopicLine,
+  roleProofText, roleMissingText,
 } from './narrate.js';
 import { autoAnalyze, autoNextSteps } from './auto.js';
 import { plainFieldName } from './fields.js';
 import { pinpointField, pinpointLocation } from './pinpoint.js';
 import { VERDICT } from './evidence.js';
+import { roleFromReport, sketchRole, changesValue } from './role.js';
 
 /* ── ファイル情報 ────────────────────────────────────────── */
 
@@ -507,6 +510,19 @@ function renderFunctionSummary(app, sheet, res, name, region) {
   head.append(el('div', 'fn-range mono',
     addrHex(res.startAddr) + ' – ' + addrHex(res.endAddr)));
   body.append(head);
+
+  /*
+   * 0. この関数の名前。`sub_100A3C0` のままでは何も分からないので、
+   *    アプリの言葉で名指しし直す（役割）。ここだけ読めば用が足りるように。
+   */
+  try {
+    const report = buildFunctionReport({
+      model, region, symbols: app.symbols, name,
+      fields: app.fields, owner: app.ownerOf(res.startAddr),
+    });
+    const role = roleFromReport(report, { apis: model.facts.apis });
+    if (role) body.append(roleSection(app, role, sheet, region));
+  } catch { /* 名指しに失敗しても、下の説明は出す */ }
 
   /* 1. 日本語 — 命令を一切見せずに「何をしているか」 */
   body.append(storySection(app, model, name, sheet));
@@ -2444,16 +2460,30 @@ function renderAutoReport(app, sheet, body, report, region) {
       const u = d.updates[0];
       const where = placeName(u.field, u.location.base, u.location.disp);
       const verb = changeVerb(u.steps && u.steps.length ? u.steps[u.steps.length - 1] : null);
-      ul.append(tapRow(where + ' を' + verb, {
-        sub: (d.owner ? d.owner.kind + '[' + d.owner.className + ' ' + d.owner.sel + ']'
-          : (d.name || fnLabel(app, d.addr))) + '  ·  ' + addrHex(u.store.address) +
-          (d.goalLabel ? '\n' + pick('「' + d.goalLabel + '」の候補として見つかりました',
-            'found while looking for “' + d.goalLabel + '”') : ''),
+      /*
+       * 見出しは「x0 + 0x20 を 1 増やす」ではなく「アイテムを 1 増やす処理」。
+       * どこを触っているかは、その下に事実として残す（消さない）。
+       */
+      const title = d.role && d.role.action !== 'unknown'
+        ? fnRoleTitle(d.role) : (where + ' を' + verb);
+      ul.append(tapRow(title, {
+        sub: [
+          where + ' を' + verb,
+          (d.owner ? d.owner.kind + '[' + d.owner.className + ' ' + d.owner.sel + ']'
+            : (d.name || fnLabel(app, d.addr))) + '  ·  ' + addrHex(u.store.address),
+          d.goalLabel ? pick('「' + d.goalLabel + '」の候補として見つかりました',
+            'found while looking for “' + d.goalLabel + '”') : null,
+        ].filter(Boolean).join('\n'),
+        right: d.role ? verdictText(d.role.verdict) : '',
         tag: pick('事実', 'fact'), tagClass: 'tag-fact',
         onTap: () => { sheet.close(); showFunctionReport(app, d.addr); },
       }));
     }
     body.append(ul);
+    body.append(para(pick(
+      '※ 太字は「アプリの何の処理か」の名指しです。その下の 1 行が、実際に触っている場所' +
+      '（こちらは命令から直接読めた事実）。名指しの根拠は、開いた先で 1 つずつ確かめられます。',
+      'The heading names what the routine is for; the line under it is the location it really touches.'), 'sub'));
   }
 
   /* 3. 目的ごとの最有力候補（決着まで行かなかったもの） */
@@ -2464,9 +2494,10 @@ function renderAutoReport(app, sheet, body, report, region) {
       'All 16 goals were scored automatically; more stars means more evidence.')));
     const ul = list();
     for (const g of report.goals) {
+      const tag = roleTagline(app, g.best.addr);
       ul.append(tapRow((g.goal.icon ? g.goal.icon + ' ' : '') + g.goal.text, {
         sub: fnLabel(app, g.best.addr) + '  ·  ' + addrHex(g.best.addr) + '\n' +
-          (reasonText(g.best.reasons[0]) || ''),
+          (tag ? tag + '\n' : '') + (reasonText(g.best.reasons[0]) || ''),
         right: starsText(g.best.stars),
         onTap: () => openGoal(g.goal),
       }));
@@ -2509,8 +2540,9 @@ function renderAutoReport(app, sheet, body, report, region) {
       'Routines worth a look (by counts, not names)')));
     const ul = list();
     for (const n of report.notable.slice(0, 8)) {
+      const tag = roleTagline(app, n.addr);
       ul.append(tapRow(n.name || fnLabel(app, n.addr), {
-        sub: addrHex(n.addr) + '\n' +
+        sub: (tag ? tag + '\n' : '') + addrHex(n.addr) + '\n' +
           n.reasons.slice(0, 2).map(notableReasonText).filter(Boolean).join('  ·  '),
         right: String(Math.round(n.score)),
         onTap: () => { sheet.close(); showFunctionReport(app, n.addr); },
@@ -2712,8 +2744,10 @@ export function showCandidates(app, goal) {
     const ul = list();
     for (const c of ranked.candidates) {
       const top = c.reasons.slice(0, 2).map(reasonText).filter(Boolean);
+      // 名前だけでは何の処理か分からないので、役割の下見を 1 行目に置く
+      const tag = roleTagline(app, c.addr);
       const row = tapRow(fnLabel(app, c.addr), {
-        sub: addrHex(c.addr) + '\n' + top.join('\n'),
+        sub: (tag ? tag + '\n' : '') + addrHex(c.addr) + '\n' + top.join('\n'),
         right: starsText(c.stars),
         onTap: () => { sheet.close(); showCandidateWhy(app, c, goal); },
       });
@@ -2799,6 +2833,167 @@ export function showCandidateWhy(app, cand, goal) {
   body.append(actions);
 }
 
+/* ────────────────────────────────────────────────────────────
+   関数の役割 — 「sub_100A3C0」に、アプリの言葉で名前を付ける
+   ────────────────────────────────────────────────────────────
+
+   `sub_100A3C0` と出た瞬間に読む人は止まる。命令の説明をいくら足しても
+   「で、これは何の処理なの？」には答えていないため。関数を出すところには
+   必ずこの 1 行を添える。言い切れないところは言い切らない（role.js）。   */
+
+/**
+ * 一覧に添える役割の下見。逆アセンブルしないので、行が何十個あっても重くならない。
+ * 索引ができていなければ静かに諦める（一覧が出ないより、札が無い方がまし）。
+ */
+function roleSketchFor(app, addr) {
+  const program = app.program;
+  if (!program || addr == null) return null;
+  if (!program.roleCache) program.roleCache = new Map();
+  const key = addr.toString();
+  if (program.roleCache.has(key)) return program.roleCache.get(key);
+  let role = null;
+  try {
+    role = sketchRole({
+      start: addr, program, symbols: app.symbols,
+      fields: app.fields, strings: app.stringIndex || [],
+    });
+  } catch { role = null; }        // 下見でつまずいても、一覧そのものは出す
+  program.roleCache.set(key, role);
+  return role;
+}
+
+/**
+ * 一覧の行に出す役割の 1 行。名指しできなければ空文字を返す（埋めない）。
+ *
+ * 下見には必ず「たぶん」を付ける。下見は値の書き換えまで見えていないので、
+ * 開いたときの結論と食い違うことがある（一覧では「判定」、開くと「HP を減らす」）。
+ * このとき一覧の方が自信ありげに見えるのが、いちばん困る。だから
+ * 中身を読んでいない札は、必ず中身を読んだ札より弱く見えるようにしておく。
+ */
+function roleTagline(app, addr) {
+  const role = roleSketchFor(app, addr);
+  if (!role || role.action === 'unknown') return '';
+  /*
+   * 中身の無い札は出さない。
+   *
+   * 機能が決まらず、触っている値も見えていないと、残るのは命令の形だけ
+   * （「しきい値と比べて判定する処理」）。それは、どの関数にも当てはまる。
+   * 一覧の全行に同じ文が並ぶだけで、読む人の手がかりは 1 つも増えない。
+   * 言うことが無いときは黙る。
+   */
+  const hasTopic = role.topic && role.topicSettled !== false;
+  const hasSubject = role.subject && role.subject.kind !== 'none';
+  if (!hasTopic && !hasSubject) return '';
+  const title = fnRoleTitle(role);
+  if (!title) return '';
+  return role.depth === 'sketch' || role.verdict === VERDICT.AMBIGUOUS ||
+    role.verdict === VERDICT.NONE
+    ? pick('たぶん ' + title, 'probably ' + title)
+    : title;
+}
+
+/**
+ * 関数の画面のいちばん上に置く見出し。
+ * 「何の処理か」→「どれくらい確かか」→「変えているのはどの値か」の順。
+ * 読む人がいちばん最初に知りたい順に並べてある。
+ */
+function roleHeadline(app, role, sheet, region) {
+  const wrap = el('div', 'rolebox verdict-' + role.verdict);
+  wrap.append(el('div', 'role-title', fnRoleTitle(role)));
+
+  const badge = el('div', 'role-verdict');
+  badge.append(el('span', 'role-word', verdictText(role.verdict)));
+  if (role.probability > 0) {
+    // 裸の「2%」は、見出しと矛盾しているように読める。何の数字かを必ず添える。
+    badge.append(el('span', 'role-pct', pick('確からしさ ', 'confidence ') +
+      probabilityText(role.probability)));
+  }
+  wrap.append(badge);
+  wrap.append(el('div', 'role-lead', fnRoleLead(role)));
+
+  const target = fnRoleTargetLine(role);
+  if (target) wrap.append(el('div', 'role-target', target));
+
+  const topicLine = fnRoleTopicLine(role);
+  if (topicLine) wrap.append(el('div', 'role-topic', topicLine));
+
+  const alt = fnRoleAlternative(role);
+  if (alt) wrap.append(el('div', 'role-alt', alt));
+
+  /* 値を書き換えている処理なら、その命令まで 1 タップで降りられるようにする。 */
+  if (changesValue(role.action) && role.row != null && region) {
+    wrap.append(button(pick('書き換えている命令へ移動', 'Go to the instruction that changes it'),
+      'chip', () => {
+        if (sheet) sheet.close();
+        app.viewer.goToRow(role.row, 'third');
+        app.viewer.select(role.row, false);
+        app.viewer.mark(role.row);
+      }));
+  }
+  return wrap;
+}
+
+/**
+ * 「なぜ、この名前だと言えるのか」。
+ * 倍率つきの証拠と、言い切れない理由を、隠さずに並べる。
+ */
+function roleWhySection(role) {
+  const wrap = el('div');
+  wrap.append(el('div', 'sec-title', pick('なぜ、この処理だと言えるのか',
+    'Why it can be named this')));
+  wrap.append(para(pick(
+    '下の 1 行ずつが独立した根拠です。右の数字は「その根拠があると、確からしさが' +
+    '何倍になるか」です。「検証済」は、実際に命令を読んで確かめたものです。',
+    'Each line is an independent piece of evidence; the number is how much it multiplies the odds.')));
+
+  const wl = list();
+  let shown = 0;
+  for (const e of role.evidence) {
+    const text = roleProofText(e);
+    if (!text) continue;
+    shown++;
+    const kind = e.kind === 'verified' ? pick('検証済', 'verified')
+      : e.kind === 'fact' ? pick('事実', 'fact') : pick('推測', 'inference');
+    wl.append(tapRow(text, {
+      right: factorText(e.factor),
+      tag: kind,
+      tagClass: e.kind === 'inference' ? 'tag-infer' : 'tag-fact',
+      sub: e.count > 1 ? pick(e.count + ' 件', e.count + ' items') : null,
+    }));
+  }
+  if (!shown) {
+    wl.append(tapRow(pick('根拠になるものが見つかりませんでした。', 'No evidence was found.'),
+      { disabled: true }));
+  }
+  wrap.append(wl);
+
+  if (role.verdict !== VERDICT.CONFIRMED && role.missing.length) {
+    const nb = block(pick('言い切れない理由', 'Why this is not confirmed'));
+    const ol = el('ul', 'story-steps');
+    for (const m of role.missing) {
+      const text = roleMissingText(m);
+      if (!text) continue;
+      const li = el('li');
+      li.append(el('i', null, '•'));
+      li.append(el('span', null, text));
+      ol.append(li);
+    }
+    nb.append(ol);
+    wrap.append(nb);
+  }
+  return wrap;
+}
+
+/** 役割の見出しと、その根拠。関数を出す画面から使い回す。 */
+function roleSection(app, role, sheet, region) {
+  const wrap = el('div');
+  if (!role) return wrap;
+  wrap.append(roleHeadline(app, role, sheet, region));
+  wrap.append(disclosure(pick('この名前の根拠を見る（証拠と、言い切れない理由）',
+    'Show why it is named this'), { build: (into) => into.append(roleWhySection(role)) }));
+  return wrap;
+}
+
 /* ── 関数レポート（事実 / 推測 / 不明を分けて出す） ─────── */
 
 export function showFunctionReport(app, addr, goal) {
@@ -2837,6 +3032,7 @@ export function showFunctionReport(app, addr, goal) {
       // クラスとフィールドが読めていれば、x0+0x20 は self.hp として説明される
       fields: app.fields, owner: app.ownerOf(start),
     });
+    report.role = roleFromReport(report, { apis: res.model.facts.apis });
     renderFunctionReport(app, sheet, later, report, res, region, goal);
   }).catch((err) => {
     box.done();
@@ -2866,6 +3062,11 @@ function renderFunctionReport(app, sheet, body, report, res, region, goal) {
     body.append(el('div', 'owner-line', pick(
       report.owner.className + ' のメソッド', 'a method of ' + report.owner.className)));
   }
+  /*
+   * 0 段目 — この関数の名前。`sub_100A3C0` のままでは何も分からないので、
+   * アプリの言葉で名指しし直す。命令の説明より先に、ここを読んでもらう。
+   */
+  if (report.role) body.append(roleSection(app, report.role, sheet, region));
   body.append(el('div', 'lead', oneLiner(report, id.name)));
   const what = whatItDoes(report);
   if (what.length) {
@@ -2982,8 +3183,9 @@ function renderFunctionReport(app, sheet, body, report, res, region, goal) {
       'None found — it may only be reached at run time.'), { disabled: true }));
   }
   for (const c of report.callers.slice(0, 12)) {
+    const cRole = c.addr != null ? roleTagline(app, c.addr) : '';
     cul.append(tapRow(c.name || (c.addr != null ? 'sub_' + c.addr.toString(16).toUpperCase() : addrHex(c.site)), {
-      sub: addrHex(c.site) + pick(' から呼び出し', ' calls here'),
+      sub: (cRole ? cRole + '\n' : '') + addrHex(c.site) + pick(' から呼び出し', ' calls here'),
       right: c.count > 1 ? '× ' + c.count : '',
       onTap: () => { sheet.close(); showFunctionReport(app, c.addr != null ? c.addr : c.site, goal); },
     }));
@@ -2994,13 +3196,18 @@ function renderFunctionReport(app, sheet, body, report, res, region, goal) {
     cul.append(tapRow(pick('ほかの処理は呼んでいません。', 'It calls nothing else.'), { disabled: true }));
   }
   for (const c of report.callees.slice(0, 12)) {
+    const eRole = roleTagline(app, c.addr);
     cul.append(tapRow(c.name || 'sub_' + c.addr.toString(16).toUpperCase(), {
-      sub: addrHex(c.addr),
+      sub: (eRole ? eRole + '\n' : '') + addrHex(c.addr),
       right: c.count > 1 ? '× ' + c.count : '',
       onTap: () => { sheet.close(); showFunctionReport(app, c.addr, goal); },
     }));
   }
   callBlk.append(cul);
+  callBlk.append(para(pick(
+    '※ 各行の 1 行目は「その関数が何の処理か」です。「たぶん」と書いてあるものは、' +
+    '索引だけで見た下見です。その関数を開くと、命令まで降りて言い直します。',
+    'The first line of each row says what that function is for. Lines marked “probably” are index-only previews.'), 'sub'));
   callBlk.append(button(pick('呼び出しの流れを図で見る', 'Show the call graph'), 'chip', () => {
     sheet.close();
     showCallGraph(app, id.startAddr);

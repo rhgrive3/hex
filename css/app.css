@@ -970,6 +970,47 @@ input:focus { outline: 2px solid var(--accent); outline-offset: -2px; }
 :root[data-theme="dark"] .verdict-confirmed .verdict-word { color: #4cd964; }
 :root[data-theme="dark"] .verdict-ambiguous .verdict-word { color: #f5b942; }
 
+/*
+ * 関数の役割。「sub_100A3C0」の代わりに読ませたい 1 行なので、
+ * 画面のいちばん上に、いちばん大きく出す。
+ * 枠の色は決着（確定 / ほぼ確実 / 絞りきれていません）と同じ約束で塗る。
+ */
+.rolebox {
+  margin: 10px 16px 4px; padding: 12px 14px;
+  border-radius: 12px;
+  border-left: 4px solid var(--label-3);
+  background: var(--fill);
+}
+.role-title {
+  font-size: 19px; font-weight: 700; line-height: 1.4;
+  -webkit-user-select: text; user-select: text;
+}
+.role-verdict { margin-top: 6px; display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.role-word { font-size: 13px; font-weight: 700; }
+.role-pct { font-size: 12px; color: var(--label-2); }
+.role-lead { font-size: 13px; line-height: 1.6; color: var(--label-2); margin-top: 4px; }
+.role-target {
+  font-size: 13px; line-height: 1.6; margin-top: 8px;
+  padding-top: 8px; border-top: 0.5px solid var(--separator-2);
+}
+.role-topic { font-size: 13px; line-height: 1.6; color: var(--label-2); margin-top: 6px; }
+.role-alt { font-size: 12px; line-height: 1.5; color: var(--label-2); margin-top: 6px; }
+.rolebox .chip { margin-top: 10px; }
+/* 決着ごとの色。.rolebox の地の色に負けないよう、2 クラスで指定する。 */
+.rolebox.verdict-confirmed { border-left-color: #34a653; background: rgba(52,166,83,.12); }
+.rolebox.verdict-likely { border-left-color: var(--accent); background: var(--accent-soft); }
+.rolebox.verdict-ambiguous { border-left-color: #d08700; background: rgba(208,135,0,.12); }
+.verdict-confirmed .role-word { color: #1e7a3c; }
+.verdict-likely .role-word { color: var(--accent); }
+.verdict-ambiguous .role-word { color: #8a5a00; }
+.verdict-none { border-left-color: var(--label-3); }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .verdict-confirmed .role-word { color: #4cd964; }
+  :root:not([data-theme="light"]) .verdict-ambiguous .role-word { color: #f5b942; }
+}
+:root[data-theme="dark"] .verdict-confirmed .role-word { color: #4cd964; }
+:root[data-theme="dark"] .verdict-ambiguous .role-word { color: #f5b942; }
+
 /* 特定した値そのもの。画面でいちばん大きく出す。 */
 .pinned-head { padding: 14px 16px 10px; }
 .pinned-name {
