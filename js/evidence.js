@@ -147,6 +147,40 @@ export const EVIDENCE = {
   'fn-too-large':       { lr: 0.45, family: FAMILY.USAGE,    kind: 'inference' },
   'fn-caller-match':    { lr: 2.6,  family: FAMILY.CONTEXT,  kind: 'fact', id: true },
   'fn-callee-match':    { lr: 2.8,  family: FAMILY.CONTEXT,  kind: 'fact', id: true },
+
+  /* ── 関数の「役割」を名指しするための証拠（role.js） ──────
+   *
+   * ここで決めたいのは値ではなく **処理の名前** —
+   * 「sub_100A3C0 は、アイテムの所持数を 1 増やす処理である」。
+   * 主張が 2 つに分かれるので、証拠も 2 系統に分けてある。
+   *
+   *   どう加工するか（動詞）… 命令の形そのもの。逆アセンブルで確かめられる。
+   *   何の話か（対象）      … 名前・文言。人が付けたものだけが手がかり。
+   *
+   * 動詞の証拠は、どれだけ強くても「何の値か」を何ひとつ言っていない。
+   * だから id を付けるのは対象側だけ。ここを混ぜると
+   * 「+1 している処理はぜんぶアイテム獲得」になってしまう。
+   */
+  'role-verb-rmw':      { lr: 14,   family: FAMILY.VERIFIED, kind: 'verified' },
+  'role-verb-imm':      { lr: 5,    family: FAMILY.VERIFIED, kind: 'verified' },
+  'role-verb-api':      { lr: 6,    family: FAMILY.CONTEXT,  kind: 'fact' },
+  'role-verb-shape':    { lr: 2.4,  family: FAMILY.USAGE,    kind: 'fact' },
+  'role-verb-none':     { lr: 0.4,  family: FAMILY.USAGE,    kind: 'inference' },
+
+  'role-subject-field': { lr: 22,   family: FAMILY.NAME,     kind: 'fact', id: true },
+  'role-subject-prop':  { lr: 8,    family: FAMILY.NAME,     kind: 'fact', id: true },
+  'role-subject-unnamed': { lr: 0.5, family: FAMILY.NAME,    kind: 'inference' },
+
+  'role-topic-name':    { lr: 18,   family: FAMILY.NAME,     kind: 'fact', id: true },
+  'role-topic-selector':{ lr: 9,    family: FAMILY.NAME,     kind: 'fact', id: true },
+  'role-topic-string':  { lr: 6,    family: FAMILY.CONTEXT,  kind: 'fact', id: true },
+  'role-topic-class':   { lr: 4,    family: FAMILY.CONTEXT,  kind: 'fact', id: true },
+  'role-topic-callee':  { lr: 3,    family: FAMILY.CONTEXT,  kind: 'fact', id: true },
+  'role-topic-caller':  { lr: 2.6,  family: FAMILY.CONTEXT,  kind: 'fact', id: true },
+  // 別々の出どころが同じ機能を指している。手がかり 1 本ぶんより強い。
+  'role-topic-agree':   { lr: 3,    family: FAMILY.USAGE,    kind: 'inference' },
+  // 手がかりが別々の機能を指している。名指しの邪魔になるので、下げる。
+  'role-topic-conflict':{ lr: 0.35, family: FAMILY.CONTEXT,  kind: 'inference' },
 };
 
 /** その証拠は「目的に結びつける」ものか。裏打ちするだけのものか。 */

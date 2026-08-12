@@ -2023,7 +2023,11 @@ const { matchField, normalizeFieldName, fieldRole, typeFits, accessorKind } =
 const { EVIDENCE } = await import('../js/evidence.js');
 const {
   verdictText, verdictLead, missingText, proofText, factorText, probabilityText,
+  roleProofText, roleMissingText, fnRoleTitle, fnRoleShort, fnRoleLead,
+  fnRoleTargetLine, fnRoleAlternative, fnRoleTopicLine, actionPhrase, topicLabel,
 } = await import('../js/narrate.js');
+const { inferRole, roleFromReport, ACTION, changesValue, actionDirection } =
+  await import('../js/role.js');
 
 const INT4 = { kind: 'int', bytes: 4, signed: true, enc: 'i' };
 const OBJ = { kind: 'object', bytes: 8, enc: '@"NSString"', className: 'NSString' };
@@ -2499,12 +2503,290 @@ test('NARRATE: 特定まわりの言葉に、言い漏らしがない', () => {
   }
   // 証拠のコードは、すべて日本語にできること（コードが画面に漏れない）
   for (const code of Object.keys(EVIDENCE)) {
-    ok(proofText({ code, detail: PROOF_DETAIL, count: 1, factor: 2 }).length > 0,
+    ok(roleProofText({ code, detail: PROOF_DETAIL, count: 1, factor: 2 }).length > 0,
       code + ' を文にできない');
   }
   eq(factorText(12).startsWith('×'), true);
   eq(factorText(0.5).startsWith('÷'), true);
   ok(probabilityText(0.9995).length > 0);
+});
+
+/* ────────────────────────────────────────────────────────────
+   ケース R: 関数の役割 — 「sub_100A3C0 は何の処理か」を名指しできるか
+   ────────────────────────────────────────────────────────────
+
+   ここが崩れると、このツールは「命令は読めるが、何の処理かは分からない」
+   ものに戻る。見ているのは 4 つ:
+
+     1. 名前が読めるとき  … 機能・対象・動作の 3 つがそろって出るか
+     2. 名前が無いとき    … 動作までは言い、機能を名乗らずに済ませられるか
+     3. 動詞だけのとき    … 「+1 しているからアイテム獲得」と言い出さないか
+     4. 手がかりが無いとき … 「名指しできません」と言えるか                */
+
+/** アイテムの所持数を 1 増やすメソッド。獲得の文言も参照している。 */
+const ITEM_BODY = [
+  'stp x29, x30, [sp, #-0x10]!',
+  'mov x29, sp',
+  'ldr w8, [x0, #0x28]',
+  'add w8, w8, #0x1',
+  'str w8, [x0, #0x28]',
+  'adrp x1, #0x100004000',
+  'add x1, x1, #0x10',
+  'bl #0x100000200',
+  'ldp x29, x30, [sp], #0x10',
+  'ret',
+];
+
+function itemModel() {
+  const m = build(ITEM_BODY, { '0x100000200': '_NSLog' });
+  attachTexts(m, new Map([['' + 0x100004010n, 'アイテムを獲得しました (%d 個)']]), new Set());
+  return m;
+}
+
+const ITEM_FIELDS = classTable([{
+  name: 'ItemManager',
+  ivars: [{ name: '_itemCount', offset: 0x28, size: 4, type: INT4 }],
+  methods: [{ addr: BASE, sel: 'addItem:', kind: '-' }],
+}]);
+
+test('ROLE: 名前が読めるなら「アイテムを 1 増やす処理」まで名指しできる', () => {
+  const m = itemModel();
+  const rep = buildFunctionReport({ model: m, region: REGION, fields: ITEM_FIELDS });
+  const role = roleFromReport(rep, { apis: m.facts.apis });
+
+  eq(role.action, ACTION.INCREASE, '動作を取り違えている');
+  eq(String(role.amount), '1', '増える量を読み取れていない');
+  eq(role.topic, 'item', 'アプリのどの機能かを言えていない: ' + role.topic);
+  eq(role.subject.kind, 'field');
+  eq(role.subject.name, '_itemCount');
+  eq(role.subject.className, 'ItemManager');
+  ok(verdictRank(role.verdict) >= verdictRank(VERDICT.LIKELY),
+    '根拠がそろっているのに言い切れていない: ' + role.verdict + ' / ' + role.missing.join(', '));
+
+  const title = fnRoleTitle(role);
+  has(title, 'アイテム');
+  has(title, '1 増やす');
+  has(title, '処理');
+  // 「変えているのはこの値」まで降りられること
+  has(fnRoleTargetLine(role), 'ItemManager の itemCount');
+  has(fnRoleShort(role), '+1');
+  eq(actionDirection(role.action), 'up');
+  eq(changesValue(role.action), true);
+});
+
+test('ROLE: なぜそう言えるのかを、証拠のまま並べられる', () => {
+  const m = itemModel();
+  const rep = buildFunctionReport({ model: m, region: REGION, fields: ITEM_FIELDS });
+  const role = roleFromReport(rep, { apis: m.facts.apis });
+
+  const codes = role.evidence.map((e) => e.code);
+  ok(codes.includes('role-verb-rmw'), '読んで計算して書き戻す形を裏取りできていない: ' + codes.join(','));
+  ok(codes.includes('role-subject-field'), '書き換え先の名前を根拠にできていない: ' + codes.join(','));
+  ok(codes.some((c) => c === 'role-topic-string' || c === 'role-topic-selector'),
+    '機能の手がかり（文言・メソッド名）を根拠にできていない: ' + codes.join(','));
+  // 証拠は 1 本残らず日本語にできること（コードが画面に漏れない）
+  for (const e of role.evidence) {
+    ok(roleProofText(e).length > 0, e.code + ' を文にできない');
+  }
+  for (const code of role.missing) {
+    ok(roleMissingText(code).length > 0, code + ' の理由を文にできない');
+  }
+});
+
+test('ROLE: 名前が残っていないバイナリでも、動作と場所までは言う', () => {
+  const m = itemModel();
+  // クラス表なし = 配布用の Swift アプリや、名前を潰したアプリ
+  const rep = buildFunctionReport({ model: m, region: REGION });
+  const role = roleFromReport(rep, { apis: m.facts.apis });
+
+  eq(role.action, ACTION.INCREASE);
+  eq(role.subject.kind, 'location', '場所としてすら言えていない');
+  eq(String(role.subject.disp), '40', '+0x28 を取り違えている');
+  ok(verdictRank(role.verdict) <= verdictRank(VERDICT.LIKELY),
+    '名前が読めないのに確定を名乗っている');
+  ok(role.missing.includes('role-no-field-name'), '名前が無いことを言っていない');
+  has(fnRoleTitle(role), '1 増やす');
+  // 文言は残っているので、機能までは言えてよい
+  eq(role.topic, 'item');
+});
+
+test('ROLE: 「+1 しているから」だけでは、機能を名乗らない', () => {
+  // 文言も名前もない、ただの読んで足して書き戻すだけの関数
+  const m = build([
+    'ldr w8, [x0, #0x28]',
+    'add w8, w8, #0x1',
+    'str w8, [x0, #0x28]',
+    'ret',
+  ]);
+  const rep = buildFunctionReport({ model: m, region: REGION });
+  const role = roleFromReport(rep, {});
+
+  eq(role.action, ACTION.INCREASE, '動作は命令から言えるはず');
+  eq(role.topic, null, '手がかりが無いのに機能を名乗っている: ' + role.topic);
+  ok(role.missing.includes('role-no-topic'), '機能を言えない理由を書いていない');
+  ok(verdictRank(role.verdict) <= verdictRank(VERDICT.LIKELY),
+    '何の値か分からないのに確定を名乗っている');
+  const title = fnRoleTitle(role);
+  ok(!/アイテム|コイン|HP/.test(title), '手がかりが無いのに機能名が出ている: ' + title);
+  has(title, '1 増やす');
+});
+
+test('ROLE: 機能の手がかりが割れているときは、言い切らない', () => {
+  const m = build([
+    'ldr w8, [x0, #0x28]',
+    'add w8, w8, #0x1',
+    'str w8, [x0, #0x28]',
+    'adrp x1, #0x100004000',
+    'add x1, x1, #0x10',
+    'bl #0x100000200',
+    'adrp x1, #0x100004000',
+    'add x1, x1, #0x20',
+    'bl #0x100000200',
+    'ret',
+  ], { '0x100000200': '_NSLog' });
+  attachTexts(m, new Map([
+    ['' + 0x100004010n, 'アイテムを獲得しました'],
+    ['' + 0x100004020n, 'ログインボーナスを受け取りました'],
+  ]), new Set());
+  const rep = buildFunctionReport({ model: m, region: REGION });
+  const role = roleFromReport(rep, { apis: m.facts.apis });
+
+  ok(verdictRank(role.verdict) <= verdictRank(VERDICT.LIKELY),
+    '手がかりが割れているのに確定を名乗っている');
+  ok(role.evidence.some((e) => e.code === 'role-topic-conflict'),
+    '別の機能を指す手がかりがあることを、証拠に残していない');
+  ok(role.runnerUp, 'ほかの読み方を出していない');
+  ok(fnRoleAlternative(role).length > 0, 'もう 1 つの読み方を文にできない');
+
+  /*
+   * 本物のアプリで実際に出た事故: 見出しには「アイテム」と書いてあるのに、
+   * すぐ下の根拠には「/ranking/ を参照している」と書いてある。
+   * 割れているときは、片方を見出しに出さない。
+   */
+  eq(role.topicSettled, false, '割れているのに決着したことにしている');
+  ok(!/アイテム|ログインボーナス/.test(fnRoleTitle(role)),
+    '割れているのに機能を名乗っている: ' + fnRoleTitle(role));
+  ok(role.missing.includes('role-topic-unsettled'), '割れていることを理由に書いていない');
+  // ただし「何と何で迷っているか」は、必ず言う（黙って消さない）
+  const line = fnRoleTopicLine(role);
+  ok(line && /どちらか|決めていません/.test(line), '迷っている中身を出していない: ' + line);
+});
+
+test('ROLE: 手がかりが無ければ「名指しできません」と言う', () => {
+  const m = build(['mov x0, #0x0', 'ret']);
+  const rep = buildFunctionReport({ model: m, region: REGION });
+  const role = roleFromReport(rep, {});
+
+  eq(role.action, ACTION.UNKNOWN, '何も無いのに動作を名乗っている');
+  has(fnRoleTitle(role), '名指しできませんでした');
+  ok(fnRoleLead(role).length > 0);
+  ok(role.missing.length > 0, '何が足りないのかを言っていない');
+});
+
+test('ROLE: 減らす処理・保存する処理も、それぞれの言葉になる', () => {
+  const spend = build([
+    'ldr w8, [x0, #0x30]',
+    'sub w8, w8, #0xa',
+    'str w8, [x0, #0x30]',
+    'adrp x1, #0x100004000',
+    'add x1, x1, #0x30',
+    'bl #0x100000200',
+    'ret',
+  ], { '0x100000200': '_NSLog' });
+  attachTexts(spend, new Map([['' + 0x100004030n, 'コインが足りません']]), new Set());
+  const role = roleFromReport(buildFunctionReport({ model: spend, region: REGION }),
+    { apis: spend.facts.apis });
+  eq(role.action, ACTION.DECREASE);
+  eq(String(role.amount), '10');
+  eq(role.topic, 'money');
+  eq(actionDirection(role.action), 'down');
+  has(fnRoleTitle(role), '10 減らす');
+  has(fnRoleShort(role), '−10');
+
+  // 値を触らず、端末に保存しているだけの関数
+  const save = build([
+    'adrp x0, #0x100004000',
+    'add x0, x0, #0x40',
+    'bl #0x100000300',
+    'ret',
+  ], { '0x100000300': '_NSUserDefaults_setObject' });
+  attachTexts(save, new Map([['' + 0x100004040n, 'セーブデータを保存しました']]), new Set());
+  const srole = roleFromReport(buildFunctionReport({ model: save, region: REGION }),
+    { apis: save.facts.apis });
+  eq(srole.subject.kind, 'none', '触っていない値を触ったことにしている');
+  eq(srole.topic, 'save');
+  ok(srole.evidence.some((e) => e.code === 'role-verb-none'),
+    '値の書き換えが無いことを、証拠として残していない');
+});
+
+test('ROLE: 一覧向けの下見からは、絶対に「確定」を出さない', () => {
+  const role = inferRole({
+    name: null,
+    owner: { className: 'ItemManager', sel: 'addItem:' },
+    updates: [],
+    apis: [], callees: [{ name: '_addItemCount' }], callers: [], strings: [{ text: 'アイテムを獲得しました' }],
+    selectors: ['addItem:'],
+    comparisons: 1, conditionals: 1, calls: 2, stores: 1,
+    verified: false,
+  });
+  ok(verdictRank(role.verdict) <= verdictRank(VERDICT.LIKELY),
+    '逆アセンブルせずに確定を名乗っている');
+  ok(role.missing.includes('role-not-disassembled'), '下見であることを言っていない');
+  eq(role.topic, 'item');
+  eq(role.depth, 'sketch');
+});
+
+test('ROLE: 下見は、関数の先頭でないアドレスには何も言わない', async () => {
+  const { ProgramIndex } = await import('../js/program.js');
+  const { sketchRole } = await import('../js/role.js');
+  const symbols = new SymbolIndex({
+    addrs: BigUint64Array.from([PC, PC + 0x40n]),
+    kinds: Uint8Array.from([0, 1]),          // 2 つ目は外部への中継地点（スタブ）
+    names: '_applyDamage\n_puts',
+    funcs: BigUint64Array.from([PC]),        // 関数として登録されているのは 1 つ目だけ
+  });
+  const program = new ProgramIndex(fakeScan({
+    refs: [[PC + 4n, PC + 0x100n, 0]],
+  }), symbols, { vmAddr: PC, size: 0x200n, id: 'r' });
+  const strings = [{ addr: PC + 0x100n, text: 'damage dealt to enemy: %d' }];
+
+  /*
+   * スタブは関数ではない。ここで手前の関数の範囲を借りてしまうと、
+   * 一覧の `_puts` の行に隣の関数の役割が出る（実際に出た）。
+   */
+  eq(sketchRole({ start: PC + 0x40n, program, symbols, strings }), null,
+    '関数でないアドレスに役割を付けている');
+  ok(sketchRole({ start: PC, program, symbols, strings }), '本物の関数の先頭で何も言えていない');
+});
+
+test('ROLE: 値を触らない処理は、日本語として読める形で名指しする', () => {
+  const m = build([
+    'adrp x0, #0x100004000',
+    'add x0, x0, #0x40',
+    'bl #0x100000300',
+    'ret',
+  ], { '0x100000300': '_NSUserDefaults_setObject' });
+  attachTexts(m, new Map([['' + 0x100004040n, 'セーブデータを保存しました']]), new Set());
+  const role = roleFromReport(buildFunctionReport({ model: m, region: REGION }),
+    { apis: m.facts.apis });
+
+  const title = fnRoleTitle(role);
+  // 「セーブ・保存を端末に保存する処理」のような、目的語のない言い方をしない
+  ok(!/を端末に保存する処理/.test(title), '日本語になっていない: ' + title);
+  has(title, 'に関わる処理');
+});
+
+test('ROLE: 動作の言葉と、足りない理由に、言い漏らしがない', () => {
+  for (const a of Object.values(ACTION)) {
+    if (a === ACTION.UNKNOWN) continue;
+    ok((actionPhrase(a, null) || '').length > 0, a + ' の言葉がない');
+  }
+  eq(actionPhrase('unknown', null), null, '知らない動作に言葉を付けている');
+  for (const code of ['role-no-topic', 'role-no-field-name', 'role-not-disassembled', 'role-no-clue']) {
+    ok(roleMissingText(code).length > 0, code + ' の説明がない');
+  }
+  for (const id of ['hp', 'money', 'item', 'gacha']) ok(topicLabel(id).length > 0);
+  eq(topicLabel(null), null, '無い機能に名前を付けている');
 });
 
 /* ── まとめ ──────────────────────────────────────────────── */
