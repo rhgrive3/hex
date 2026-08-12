@@ -442,7 +442,8 @@
     branchImm26, condBranchTarget, literalTarget, wordTarget, pcRelTarget, pairedOffset,
     memoryAccess, compareImmediate,
     isCallImm, isBranchImm, isCondBranch, isIndirectCall, isRet, isBr,
-    isCompare, isMultiply, isDivide, isFpMulDiv, isFpAddSub, isSimd, isMoveWide,
+    isCompare, isMultiply, isDivide, isShiftOp, isFpMulDiv, isFpAddSub, isSimd, isMoveWide,
+    isNop,
     isStpToSp, isSubSp, looksLikePrologue, looksLikeEnd,
     classifyWord, decodeWord,
   };

@@ -93,6 +93,13 @@ export class Backend {
   fieldAccess(params) { return this.call('fieldAccess', params); }
 
   /**
+   * 値の「ふるまい」をセクション全体から集める。
+   * 名前も文字列も残っていないアプリで、値を見分ける唯一の手がかりになる。
+   * 1 ファイルにつき 1 回でよい。
+   */
+  valueShapes(regionId) { return this.call('valueShapes', { regionId }); }
+
+  /**
    * 複数の位置を 1 回の走査でまとめて調べる。
    * 候補ごとにセクションを舐め直さないための入口（特定の決着に使う）。
    * @returns {Promise<Map<string, Array>>} ずらし幅（10 進の文字列）→ 読み書きした命令

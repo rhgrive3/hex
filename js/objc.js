@@ -46,15 +46,47 @@ const MAX_NAME = 200;
 /**
  * ポインタとして読む。
  *
- * 最近の Mach-O はポインタをそのまま持たず、起動時に埋める形（chained fixups）で
- * 書いてある。上位ビットに印が入るので、素直に読めなければ下位だけを見る。
- * 0 や、どう見てもアドレスでないものは null（読めないものを読めたことにしない）。
+ * iOS 15 以降のアプリは、ポインタをそのままの形では持っていない。
+ * 起動時に dyld が埋める形（chained fixups）で書いてあって、1 個の 64 ビットが
+ * こうなっている:
+ *
+ *     bit 63     … 1 なら「他のライブラリの記号を入れる」（bind）
+ *     bit 51-62  … 次のポインタまでの距離
+ *     bit 36-43  … アドレスの上位 8 ビット
+ *     bit  0-35  … **イメージの先頭からの距離**（アドレスそのものではない）
+ *
+ * つまり下位 36 ビットを取り出しただけでは、イメージの先頭（ふつう 0x100000000）が
+ * 抜け落ちる。0x1018a13a8 のつもりが 0x18a13a8 になり、そこには何も無いので
+ * クラス表が 1 個も読めない。ここを取り違えると、このツールでいちばん効く
+ * 「値の名前が残っている表」がまるごと失われる。
+ *
+ * @param {BigInt} v      その 8 バイトをそのまま読んだ値
+ * @param {BigInt} [base] イメージの先頭（__TEXT の vmaddr）。無ければ足さない。
  */
-export function sanitizePointer(v) {
+export function sanitizePointer(v, base) {
   if (v === 0n) return null;
-  if (v < 0x0001000000000000n) return v;
+  if (v < 0x0001000000000000n) return v;          // 素のポインタ（古い形式）
   const low = v & 0x0000000fffffffffn;
-  return low === 0n ? null : low;
+  if (low === 0n) return null;
+
+  /*
+   * 最上位ビットは「他のライブラリの記号を入れる」印（bind）。
+   * そこに書いてあるのはアドレスではなく取り込み表の番号なので、
+   * このファイルの中を指しているようには見えないなら、読めたことにしない。
+   * （親クラスが NSObject のときにここへ来る。番号をアドレスと取り違えると、
+   *   たまたま同じ値だった別のクラスを親として拾ってしまう。）
+   */
+  if (v & 0x8000000000000000n) {
+    return (base == null || low >= base) ? low : null;
+  }
+
+  /*
+   * 形式が 2 つある。target にアドレスそのものが入っているもの（DYLD_CHAINED_PTR_64）と、
+   * イメージ先頭からの距離が入っているもの（同 _64_OFFSET）。
+   * 距離のほうは必ずイメージ先頭より小さいので、そこで見分けられる。
+   */
+  if (base != null && low < base) return base + low;
+  return low;
 }
 
 function u32(b, o) { return (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0; }
@@ -121,7 +153,7 @@ async function cstring(get, addr) {
 
 async function pointer(get, addr) {
   const b = await get(addr, PTR);
-  return b ? sanitizePointer(u64(b, 0)) : null;
+  return b ? sanitizePointer(u64(b, 0), get.base) : null;
 }
 
 /**
@@ -162,8 +194,8 @@ async function readMethods(get, listAddr, out, className, prefix, budget) {
       const viaPtr = await cstring(get, nameAddr);
       if (viaPtr == null) nameAddr = nameTarget;
     } else {
-      nameAddr = sanitizePointer(u64(b, 0));
-      imp = sanitizePointer(u64(b, 16));
+      nameAddr = sanitizePointer(u64(b, 0), get.base);
+      imp = sanitizePointer(u64(b, 16), get.base);
     }
     if (imp == null) continue;
     const sel = await cstring(get, nameAddr);
@@ -258,10 +290,10 @@ async function readIvars(get, listAddr) {
     const entry = listAddr + 8n + BigInt(i) * BigInt(stride);
     const b = await get(entry, IVAR_STRIDE_MIN);
     if (!b) break;
-    const offset = await ivarOffset(get, sanitizePointer(u64(b, 0)));
-    const name = await cstring(get, sanitizePointer(u64(b, 8)));
+    const offset = await ivarOffset(get, sanitizePointer(u64(b, 0), get.base));
+    const name = await cstring(get, sanitizePointer(u64(b, 8), get.base));
     if (offset == null || !name) continue;     // 位置か名前が読めないものは採らない
-    const typeEnc = await cstring(get, sanitizePointer(u64(b, 16)));
+    const typeEnc = await cstring(get, sanitizePointer(u64(b, 16), get.base));
     const size = u32(b, 28);
     out.push({
       name,
@@ -340,9 +372,9 @@ async function readProperties(get, listAddr) {
     const entry = listAddr + 8n + BigInt(i) * BigInt(stride);
     const b = await get(entry, PROP_STRIDE);
     if (!b) break;
-    const name = await cstring(get, sanitizePointer(u64(b, 0)));
+    const name = await cstring(get, sanitizePointer(u64(b, 0), get.base));
     if (!name) continue;
-    const attrText = await cstring(get, sanitizePointer(u64(b, 8)));
+    const attrText = await cstring(get, sanitizePointer(u64(b, 8), get.base));
     const attrs = parsePropertyAttributes(attrText);
     out.push({
       name,
@@ -365,7 +397,7 @@ async function readClass(get, classAddr, out, seen, meta) {
 
   const cls = await get(classAddr, CLASS_SIZE);
   if (!cls) return null;
-  const roAddr = sanitizePointer(u64(cls, CLASS_DATA) & ~7n);
+  const roAddr = sanitizePointer(u64(cls, CLASS_DATA) & ~7n, get.base);
   if (roAddr == null) return null;
   /*
    * 短くても受け取る。baseProperties まで読めるとうれしいが、そこまで
@@ -375,11 +407,11 @@ async function readClass(get, classAddr, out, seen, meta) {
   const ro = await get(roAddr, RO_SIZE, true);
   if (!ro || ro.length < RO_IVARS + PTR) return null;
 
-  const name = await cstring(get, sanitizePointer(u64(ro, RO_NAME)));
+  const name = await cstring(get, sanitizePointer(u64(ro, RO_NAME), get.base));
   if (!name) return null;
 
   const before = out.length;
-  await readMethods(get, sanitizePointer(u64(ro, RO_METHODS)), out, name,
+  await readMethods(get, sanitizePointer(u64(ro, RO_METHODS), get.base), out, name,
     meta ? '+' : '-', MAX_METHODS);
   const methods = out.slice(before);
 
@@ -387,7 +419,7 @@ async function readClass(get, classAddr, out, seen, meta) {
     name,
     addr: classAddr,
     meta: !!meta,
-    superAddr: sanitizePointer(u64(cls, CLASS_SUPER)),
+    superAddr: sanitizePointer(u64(cls, CLASS_SUPER), get.base),
     instanceSize: u32(ro, RO_INSTANCE_SIZE),
     methods,
     ivars: [],
@@ -397,19 +429,19 @@ async function readClass(get, classAddr, out, seen, meta) {
   // ivar とプロパティはインスタンス側にしかない（クラスメソッド側には持たせない）
   if (!meta) {
     try {
-      info.ivars = await readIvars(get, sanitizePointer(u64(ro, RO_IVARS)));
+      info.ivars = await readIvars(get, sanitizePointer(u64(ro, RO_IVARS), get.base));
     } catch { info.ivars = []; }
     try {
       // 表が短くて baseProperties まで届かないことがある。届かなければ空のまま。
       if (ro.length >= RO_PROPS + PTR) {
-        info.properties = await readProperties(get, sanitizePointer(u64(ro, RO_PROPS)));
+        info.properties = await readProperties(get, sanitizePointer(u64(ro, RO_PROPS), get.base));
       }
     } catch { info.properties = []; }
   }
 
   // isa はメタクラス。そちらにクラスメソッド（+）が入っている。
   if (!meta) {
-    const isa = sanitizePointer(u64(cls, CLASS_ISA));
+    const isa = sanitizePointer(u64(cls, CLASS_ISA), get.base);
     if (isa != null) {
       const metaInfo = await readClass(get, isa, out, seen, true);
       if (metaInfo && metaInfo.methods) info.classMethods = metaInfo.methods;
@@ -427,14 +459,20 @@ async function readClass(get, classAddr, out, seen, meta) {
  * @param {function} read  async (addr:BigInt, len:number) => Uint8Array|null
  * @param {{vmAddr:BigInt, size:BigInt}} classList  __objc_classlist の範囲
  * @param {function} [onProgress]
+ * @param {BigInt} [imageBase] イメージの先頭（__TEXT の vmaddr）。
+ *   chained fixups のポインタを組み立てるのに要る。渡されなければ
+ *   クラス表の位置から推定する（iOS のアプリは 4 GiB 境界に置かれる）。
  */
-export async function buildObjcModel(read, classList, onProgress) {
+export async function buildObjcModel(read, classList, onProgress, imageBase) {
   const names = [];
   const classes = [];
   const seen = new Set();
   if (!classList || !classList.size) return { classes, names, count: 0 };
 
   const get = pagedReader(read);
+  get.base = imageBase != null
+    ? BigInt(imageBase)
+    : (classList.vmAddr / 0x100000000n) * 0x100000000n;
   const total = Math.min(Number(classList.size) / PTR, MAX_CLASSES);
 
   for (let i = 0; i < total && names.length < MAX_METHODS; i++) {

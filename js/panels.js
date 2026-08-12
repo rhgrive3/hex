@@ -41,6 +41,7 @@ import {
 import { autoAnalyze, autoNextSteps } from './auto.js';
 import { plainFieldName } from './fields.js';
 import { pinpointField, pinpointLocation } from './pinpoint.js';
+import { columnToOffset } from './schema.js';
 import { VERDICT } from './evidence.js';
 import { roleFromReport, sketchRole, changesValue } from './role.js';
 
@@ -1603,7 +1604,17 @@ async function prepare(app, box) {
         : pick('呼び出し関係とデータ参照を調べています…', 'Mapping calls and data references…'));
     }
   });
-  return { strings, program };
+  /*
+   * 値のふるまい。名前も文字列も残っていないアプリ（ゲーム本体が C++ のもの）では、
+   * ここだけが「その値がその目的のものだ」と言える手がかりになる。
+   */
+  const shapes = await app.ensureShapes((p) => {
+    if (box) {
+      box.set(p);
+      box.say(pick('値の増減のしかたを調べています…', 'Watching how values change…'));
+    }
+  });
+  return { strings, program, shapes };
 }
 
 /** 目的を選ぶボタンの並び。概要画面と「調べる」画面の両方で使う。 */
@@ -1712,10 +1723,11 @@ export function showOverview(app) {
     let cancelled = false;
     sheet.onClose = () => { cancelled = true; app.backend.cancelSearch(); app.backend.onScanProgress = null; };
 
-    prepare(app, box).then(async ({ strings, program }) => {
+    prepare(app, box).then(async ({ strings, program, shapes }) => {
       if (cancelled || !sheet.root.isConnected) return;
       const report = await autoAnalyze({
         strings, program, symbols: app.symbols, region, fields: app.fields,
+        shapes,
         analyze: makeAnalyzer(app, region),
         scanAccess: makeAccessScanner(app, region),
         isCancelled: () => cancelled || !sheet.root.isConnected,
@@ -1788,6 +1800,7 @@ async function pinnedFor(app, goal, ctx) {
   const common = {
     goal,
     fields: app.fields,
+    shapes: ctx.shapes || app.shapes || null,
     program: ctx.program,
     symbols: app.symbols,
     strings: ctx.strings || [],
@@ -2625,6 +2638,21 @@ export function showInvestigate(app) {
   body.append(goalInput(app, openGoal));
   body.append(goalChips(app, openGoal));
 
+  /*
+   * ゲームの数値は、たいていアプリの中ではなく CSV や JSON に入っている。
+   * その場合、名前で探しても当たらない代わりに「何列目か」から確実に降りられる。
+   * 目的から探して駄目だったときの逃げ道ではなく、むしろ本道なので上に置く。
+   */
+  const tables = list();
+  tables.append(groupRow(pick('数値の出どころから探す', 'Start from where the numbers come from')));
+  tables.append(tapRow(pick('データの表（CSV・JSON）を見る', 'Look at the data tables (CSV / JSON)'), {
+    sub: pick('「攻撃力は CSV の 4 列目」から、メモリ上の位置を出す',
+      'turn “attack is the 4th column” into an offset'),
+    right: '›',
+    onTap: () => { sheet.close(); showDataTables(app); },
+  }));
+  body.append(tables);
+
   if (app.lastGoal) {
     const ul = list();
     ul.append(groupRow(pick('前回の続き', 'Where you left off')));
@@ -2641,6 +2669,208 @@ export function showInvestigate(app) {
     'These are candidates. Text matches alone do not rank highly — real references, call edges and instructions are weighed too.'), 'sub'));
 }
 
+/* ────────────────────────────────────────────────────────────
+   データの表 — 「攻撃力は CSV の何列目か」から答えに降りる
+   ────────────────────────────────────────────────────────────
+
+   現代のモバイルゲームは、数値をコードに書かない。CSV や JSON に持っていて
+   起動時に読む。だからバイナリの中に「攻撃力」という言葉は 1 つも無い。
+   名前で探すやり方は、そこで行き止まりになる。
+
+   ところが **何列目がどこに入るか** は、読み込みの命令にはっきり書いてある。
+
+       str w0, [x28, x21, lsl #2]   ← i 列目を +i*4 に置く
+       cmp x21, #0x75               ← 117 列
+
+   ここまで読めれば、あとは手元の CSV を開いて「4 列目が攻撃力」と分かるだけで
+   答えが出る。推測が 1 つも要らないので、このツールでいちばん確かな道になる。 */
+
+export function showDataTables(app) {
+  const info = app.store.get('fileInfo');
+  if (!info) { toast(t('err.openFirst')); return; }
+  const sheet = new Sheet(pick('データの表', 'Data tables'));
+  const body = sheet.body;
+
+  body.append(para(pick(
+    'ゲームの数値は、アプリの中ではなく CSV や JSON に入っています。' +
+    'その読み込み処理を読んで、「何列目がどこに置かれるか」を取り出しました。',
+    'Game numbers live in CSV/JSON files, not in the code. ' +
+    'These tables were recovered by reading the loader instructions.')));
+
+  const box = progressBox(body, pick('読み込み処理を調べています…', 'Reading the loaders…'));
+  const out = el('div');
+  body.append(out);
+
+  app.ensureSchemas((p) => box.set(p)).then((schemas) => {
+    box.done();
+    if (!sheet.root.isConnected) return;
+    if (!schemas || !schemas.length) {
+      out.append(para(pick(
+        'データファイルを読み込んでいるところが見つかりませんでした。',
+        'No data-file loader was found.'), 'sub'));
+      return;
+    }
+    /*
+     * つじつまの合った表を先に出す。
+     * 「列数 × 1 列の大きさ ＝ 1 レコードの大きさ」が合っているものは、
+     * 読み違いがまず無い。合っていないものも隠さないが、後ろに置く。
+     */
+    const sure = schemas.filter((s) => s.best.consistent === true);
+    const rest = schemas.filter((s) => s.best.consistent !== true);
+
+    if (sure.length) {
+      const ul = list();
+      ul.append(groupRow(pick('形まで確かめられた表', 'Tables whose shape checks out')));
+      for (const s of sure) ul.append(schemaRow(app, sheet, s));
+      out.append(ul);
+    }
+    if (rest.length) {
+      out.append(disclosure(pick(
+        'そこまで確かめられなかった表（' + rest.length + ' 件）',
+        rest.length + ' tables that could not be fully checked'), {
+        build: (holder) => {
+          const ul = list();
+          for (const s of rest.slice(0, 60)) ul.append(schemaRow(app, sheet, s));
+          holder.append(ul);
+        },
+      }));
+    }
+  }).catch((err) => {
+    box.done();
+    out.append(para(pick('調べているうちに問題が起きました: ', 'Something went wrong: ') +
+      (err && err.message ? err.message : String(err))));
+  });
+}
+
+function schemaShapeText(b) {
+  const parts = [];
+  if (b.columns != null) parts.push(pick(b.columns + ' 列', b.columns + ' columns'));
+  if (b.columnStride) parts.push(pick('1 列 ' + b.columnStride + ' バイト', b.columnStride + ' bytes each'));
+  if (b.recordStride != null) {
+    parts.push(pick('1 件 ' + addrHex(BigInt(b.recordStride)) + ' バイト',
+      addrHex(BigInt(b.recordStride)) + ' per record'));
+  }
+  if (b.records != null) parts.push(pick(b.records + ' 件', b.records + ' records'));
+  return parts.join('  ·  ');
+}
+
+function schemaRow(app, sheet, s) {
+  const files = s.files.slice(0, 3).join(', ') + (s.files.length > 3 ? ' …' : '');
+  return tapRow(files, {
+    sub: schemaShapeText(s.best),
+    right: '›',
+    onTap: () => { sheet.close(); showDataTable(app, s); },
+  });
+}
+
+/** 表 1 つぶん。ここで「何列目 → どのずらし幅」を引く。 */
+export function showDataTable(app, schema) {
+  const b = schema.best;
+  const sheet = new Sheet(schema.files[0] || pick('データの表', 'Data table'));
+  const body = sheet.body;
+
+  if (schema.files.length > 1) {
+    body.append(para(pick(
+      'この処理は ' + schema.files.length + ' 個のファイルを読み込んでいます: ',
+      'This loader reads ' + schema.files.length + ' files: ') + schema.files.join(', '), 'sub'));
+  }
+
+  const facts = list();
+  facts.append(groupRow(pick('表の形', 'Shape of the table')));
+  if (b.columns != null) facts.append(kvRow(pick('列の数', 'Columns'), String(b.columns)));
+  if (b.columnStride) {
+    facts.append(kvRow(pick('1 列の大きさ', 'Bytes per column'), b.columnStride + pick(' バイト', ' bytes')));
+  }
+  if (b.recordStride != null) {
+    facts.append(kvRow(pick('1 件の大きさ', 'Bytes per record'), addrHex(BigInt(b.recordStride))));
+  }
+  if (b.records != null) facts.append(kvRow(pick('件数', 'Records'), String(b.records)));
+  facts.append(tapRow(pick('置き場所を決めている命令', 'The instruction that places each column'), {
+    sub: addrHex(b.storeAddr),
+    right: '›',
+    onTap: () => { sheet.close(); app.goToAddress(b.storeAddr, { announce: true }); },
+  }));
+  facts.append(tapRow(pick('読み込み処理', 'The loader'), {
+    sub: addrHex(schema.loader),
+    right: '›',
+    onTap: () => { sheet.close(); showFunctionReport(app, schema.loader, app.lastGoal || null); },
+  }));
+  body.append(facts);
+
+  if (b.consistent === true) {
+    body.append(noteBox(pick(
+      '列の数 × 1 列の大きさが、1 件の大きさとぴったり合っています。' +
+      'この表の読み取りは、まず間違っていません。',
+      'columns × bytes-per-column exactly equals the record size, so this reading is sound.')));
+  } else if (b.consistent === false) {
+    body.append(noteBox(pick(
+      '列の数と 1 件の大きさが合っていません。どちらかを読み違えている可能性があります。',
+      'The column count and the record size do not agree — one of them may be misread.')));
+  }
+
+  if (b.scaled && b.scaled.length) {
+    body.append(para(pick(
+      '読み込んだあと、' + b.scaled.map((x) => '×' + x.factor).join('・') +
+      ' の倍率が掛かっている列があります（％の値を整数で持つときの書き方）。',
+      'Some columns are multiplied by ' + b.scaled.map((x) => '×' + x.factor).join(', ') +
+      ' after loading — the usual way of keeping a percentage as an integer.'), 'sub'));
+  }
+
+  /* ── 列 ↔ ずらし幅 ─────────────────────────────────────
+     ここがこの画面の本体。手元の CSV を開いて数えた列番号を入れると、
+     メモリ上のずらし幅が出る。逆も引ける。 */
+  body.append(heading(pick('何列目が、どこにあるか', 'Which column sits where')));
+  body.append(para(pick(
+    '手元の ' + (schema.files[0] || 'CSV') + ' を開いて、変えたい数値が左から何番目かを数えてください。',
+    'Open your copy of ' + (schema.files[0] || 'the CSV') +
+    ' and count which column holds the number you want.'), 'sub'));
+
+  const answer = el('div', 'hint');
+  const field = el('div', 'field');
+  const input = el('input');
+  input.type = 'number';
+  input.min = '1';
+  input.placeholder = pick('例: 4（左から 4 番目）', 'e.g. 4 (the 4th column)');
+  const go = () => {
+    const nth = Number(input.value);
+    if (!(nth >= 1)) {
+      answer.textContent = pick('1 以上の数を入れてください。', 'Enter a number of 1 or more.');
+      return;
+    }
+    const off = columnToOffset(schema, nth - 1);
+    if (off == null) {
+      answer.textContent = pick(
+        'この表は ' + (b.columns != null ? b.columns + ' 列までです。' : '列の数が読み取れていません。'),
+        b.columns != null ? 'This table only has ' + b.columns + ' columns.' : 'The column count could not be read.');
+      return;
+    }
+    answer.textContent = pick(
+      nth + ' 列目は、1 件の先頭から +' + addrHex(BigInt(off)) + ' にあります。',
+      'Column ' + nth + ' sits at +' + addrHex(BigInt(off)) + ' from the start of a record.');
+  };
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
+  field.append(input, button(pick('どこにあるか', 'Where is it'), 'chip', go));
+  body.append(field, answer);
+
+  /* 先頭の何列かは、そのまま並べて見せる（入力しなくても分かるように） */
+  if (b.columns != null) {
+    const ul = list();
+    ul.append(groupRow(pick('はじめの方の列', 'The first few columns')));
+    for (let i = 0; i < Math.min(12, b.columns); i++) {
+      const off = columnToOffset(schema, i);
+      if (off == null) continue;
+      ul.append(kvRow(pick((i + 1) + ' 列目', 'Column ' + (i + 1)), '+' + addrHex(BigInt(off))));
+    }
+    body.append(ul);
+  }
+
+  body.append(noteBox(pick(
+    'ここで出るのは「1 件の先頭からのずらし幅」です。' +
+    '表そのものの置き場所は、読み込み処理の中で作られています。',
+    'These are offsets from the start of one record. ' +
+    'Where the table itself lives is set up inside the loader.')));
+}
+
 /* ── 候補のランキング ───────────────────────────────────── */
 
 export function showCandidates(app, goal) {
@@ -2654,7 +2884,7 @@ export function showCandidates(app, goal) {
   const results = el('div');
   body.append(results);
 
-  prepare(app, box).then(async ({ strings, program }) => {
+  prepare(app, box).then(async ({ strings, program, shapes }) => {
     if (!sheet.root.isConnected) { box.done(); return; }
     const region = app.codeRegion();
 
@@ -2667,7 +2897,7 @@ export function showCandidates(app, goal) {
       goal, strings, program, symbols: app.symbols, region, limit: 40,
     });
     const pin = await pinnedFor(app, goal, {
-      strings, program, region, box, ranked: ranked.candidates,
+      strings, program, shapes, region, box, ranked: ranked.candidates,
     });
     box.done();
     if (!sheet.root.isConnected) return;

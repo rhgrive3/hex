@@ -594,13 +594,26 @@ test('OBJC: セレクタをポインタごしに解決して「何を呼ぶか�
 
 const { buildObjcNames, sanitizePointer } = await import('../js/objc.js');
 
-/** 仮想アドレス空間を 1 枚の配列で用意して、そこに構造体を置いていく。 */
-function objcMemory(relative, corruptName) {
+/**
+ * 仮想アドレス空間を 1 枚の配列で用意して、そこに構造体を置いていく。
+ *
+ * @param {boolean} relative    メソッド一覧を相対形式で置く（iOS 14 以降）
+ * @param {boolean} corruptName クラス名を読めないバイト列にする
+ * @param {boolean} chained     ポインタを chained fixups の形で置く（iOS 15 以降）。
+ *   実機のアプリはこちらしかない。生のアドレスではなく
+ *   「イメージ先頭からの距離」が下位 36 ビットに入り、上位に印が付く。
+ */
+function objcMemory(relative, corruptName, chained) {
   const base = 0x100000000n;
   const mem = new Uint8Array(0x20000);
   const at = (addr) => Number(addr - base);
   const ptr = (addr, value) => {
     let v = BigInt(value);
+    /*
+     * chained fixups（_64_OFFSET 形式）。next に 2 を入れて実機と同じ形にする。
+     * ここで大事なのは、書かれるのが **アドレスそのものではない** こと。
+     */
+    if (chained && v !== 0n) v = (2n << 51n) | (v - base);
     for (let i = 0; i < 8; i++) { mem[at(addr) + i] = Number(v & 0xffn); v >>= 8n; }
   };
   const u32w = (addr, value) => {
@@ -712,6 +725,36 @@ test('OBJC: chained fixups で上位ビットが立ったポインタをほど�
   eq(sanitizePointer(0x100004000n), 0x100004000n);
   eq(sanitizePointer(0x8010000100004000n), 0x100004000n);
   eq(sanitizePointer(0n), null);
+});
+
+/*
+ * ここが実機でいちばん効くところ。iOS 15 以降のアプリのポインタは
+ * 「イメージ先頭からの距離」で書かれているので、下位ビットを取り出しただけでは
+ * 先頭（0x100000000）が抜け落ちる。実際に The Battle Cats では、これを直すまで
+ * クラスが 1 個も読めていなかった（0 個 → 3144 個）。
+ */
+test('OBJC: chained fixups の距離形式は、イメージ先頭を足して初めて読める', () => {
+  // 距離形式の生の値。下位 36 ビットには 0x4000 しか入っていない。
+  const raw = (2n << 51n) | 0x4000n;
+  eq(sanitizePointer(raw, 0x100000000n), 0x100004000n, 'イメージ先頭を足していない');
+  // 先頭が分からないなら、距離をアドレスとして返すしかない（作り話はしない）
+  eq(sanitizePointer(raw), 0x4000n);
+  // bind（他のライブラリの記号）は、番号をアドレスと取り違えない
+  eq(sanitizePointer(0x8010000000000ac4n, 0x100000000n), null, 'bind をアドレスとして採っている');
+});
+
+test('OBJC: 距離形式で書かれたクラス表から、名前とフィールドを取り戻せる', async () => {
+  const { read, A, section } = objcMemory(true, false, true);
+  // 先頭を渡さなくても、クラス表の位置から推定して読めること（呼び出し元が古いままでも動く）
+  const guessed = await buildObjcNames(read, section);
+  eq(guessed.classes, 1, 'イメージ先頭を推定できていない');
+
+  const res = await buildObjcNames(read, section, null, 0x100000000n);
+  eq(res.classes, 1);
+  const inst = res.names.find((n) => n.name.startsWith('-'));
+  ok(inst, 'メソッド名が取れていない');
+  eq(inst.name, '-[LoginViewController loginButtonTapped:]');
+  eq(inst.addr, A.imp);
 });
 
 const { SymbolIndex } = await import('../js/symbols.js');
@@ -2787,6 +2830,435 @@ test('ROLE: 動作の言葉と、足りない理由に、言い漏らしがな�
   }
   for (const id of ['hp', 'money', 'item', 'gacha']) ok(topicLabel(id).length > 0);
   eq(topicLabel(null), null, '無い機能に名前を付けている');
+});
+
+/* ────────────────────────────────────────────────────────────
+   ケース V: 組み込んだ SDK を、アプリ自身のコードと分ける
+   ────────────────────────────────────────────────────────────
+
+   ゲーム本体が C++ で書かれていると、Objective-C のクラス表に残るのは
+   広告 SDK だけになる。そこで名前だけを見て「所持金」を探すと、
+   LevelPlay（広告 SDK）の「動画報酬の数」が満点で当たってしまう。
+   自信満々で間違えるのは、何も言わないより悪い。 */
+
+const { learnVendors, vendorOf, vendorConflicts, swiftModuleOf } =
+  await import('../js/vendors.js');
+
+test('VENDORS: Swift の記号名からモジュール名を取り出せる', () => {
+  eq(swiftModuleOf('_TtC12VungleAdsSDK14FirstPartyData'), 'VungleAdsSDK');
+  eq(swiftModuleOf('_TtC10IronSource21ISNHealthCheckFailure'), 'IronSource');
+  eq(swiftModuleOf('BattleManager'), null, '関係ない名前にモジュール名を付けている');
+  eq(swiftModuleOf('_TtC99Bogus'), null, '長さが合わないものを読んでいる');
+});
+
+test('VENDORS: 名前の分かる SDK は、接頭辞ごとまとめて見分けられる', () => {
+  const names = [
+    'IronSourceUtils', 'ISBannerAdapter', 'ISBaseAdUnitManager', 'ISServerResponseParser',
+    'LPMReward', 'LPMBanner', 'LPMInit', 'LPMConfig',
+    'BattleManager', 'EnemyUnit', 'PlayerData',
+  ];
+  const learned = learnVendors(names);
+  ok(vendorOf('ISBannerAdapter', learned), 'IronSource を見分けられていない');
+  eq(vendorOf('ISBannerAdapter', learned).vendor, 'IronSource');
+  ok(vendorOf('LPMReward', learned), 'LevelPlay を見分けられていない');
+  // アプリ自身のクラスは、絶対に SDK 扱いしない
+  eq(vendorOf('BattleManager', learned), null, 'アプリ自身のクラスを SDK にしている');
+  eq(vendorOf('EnemyUnit', learned), null);
+  eq(vendorOf('PlayerData', learned), null);
+});
+
+test('VENDORS: 長い接頭辞と短い接頭辞の両方が当たったら、裏の取れているほうを採る', () => {
+  const names = ['IronSourceUtils', 'ISBanner', 'ISConfig', 'ISLWSProgRvManager'];
+  const learned = learnVendors(names);
+  const hit = vendorOf('ISLWSProgRvManager', learned);
+  ok(hit, 'ISLWS… を見分けられていない');
+  eq(hit.vendor, 'IronSource');
+});
+
+test('VENDORS: 名前が分からないライブラリも、まとまり方だけで見分けられる', () => {
+  // 同じ 3 文字で始まるクラスが 10 個以上 = 配布ライブラリの名前空間のつけ方
+  const names = [];
+  for (let i = 0; i < 12; i++) names.push('ZQXThing' + i);
+  names.push('BattleManager');
+  const learned = learnVendors(names);
+  const hit = vendorOf('ZQXThing3', learned);
+  ok(hit, 'まとまりを見分けられていない');
+  eq(hit.confidence, 'low', '裏が取れていないのに強く言い切っている');
+  eq(vendorOf('BattleManager', learned), null);
+});
+
+test('VENDORS: 広告を調べているときは、広告 SDK を外さない', () => {
+  const v = { vendor: 'IronSource', kind: 'ads' };
+  eq(vendorConflicts('money', v), true, 'ゲームの所持金として SDK を通している');
+  eq(vendorConflicts('hp', v), true);
+  eq(vendorConflicts('ads', v), false, '広告を探しているのに広告 SDK を外している');
+  eq(vendorConflicts('purchase', v), false);
+  eq(vendorConflicts('money', null), false);
+});
+
+test('PINPOINT: 広告 SDK の「報酬の数」を、ゲームの所持金として確定しない', async () => {
+  /*
+   * 名前は完璧に一致している（LPMReward の _amount）。
+   * それでも、これは組み込んだ SDK の値なので答えにしてはいけない。
+   */
+  const sdk = [];
+  for (const n of ['LPMReward', 'LPMBanner', 'LPMInit', 'LPMConfig', 'IronSourceUtils']) sdk.push(n);
+  const fields = classTable([
+    { name: 'LPMReward', ivars: [{ name: '_amount', offset: 8, size: 4, type: { kind: 'int', bytes: 4 } }] },
+    { name: 'LPMBanner', ivars: [] },
+    { name: 'LPMInit', ivars: [] },
+    { name: 'LPMConfig', ivars: [] },
+    { name: 'IronSourceUtils', ivars: [] },
+  ]);
+  void sdk;
+  const pin = await pinpointField({ goal: goalFromPreset('money'), fields });
+  const top = pin.top;
+  if (top) {
+    ok(pin.verdict !== 'confirmed', 'SDK の値を確定にしている');
+    ok(top.fusion.probability < 0.5,
+      'SDK の値を ' + (top.fusion.probability * 100).toFixed(0) + '% で出している');
+  }
+});
+
+/* ────────────────────────────────────────────────────────────
+   ケース W: 名前も文言も無いアプリで、ふるまいから値を見分ける
+   ──────────────────────────────────────────────────────────── */
+
+const { foldShapes, resources, damageSources, evidenceFor, SHAPE, AMOUNT } =
+  await import('../js/shapes.js');
+
+/** worker が返す形の走査結果を、手で組み立てる。 */
+function shapeScan(events) {
+  const n = events.length;
+  const out = {
+    count: n,
+    addr: new BigUint64Array(n), disp: new Int32Array(n), size: new Uint8Array(n),
+    flags: new Uint8Array(n), amtKind: new Uint8Array(n), amtDisp: new Int32Array(n),
+    span: new Int32Array(n), amtSize: new Uint8Array(n), amtSpan: new Int32Array(n),
+  };
+  events.forEach((e, i) => {
+    out.addr[i] = BigInt(e.addr || 0x100004000 + i * 4);
+    out.disp[i] = e.disp;
+    out.size[i] = e.size == null ? 4 : e.size;
+    out.flags[i] = e.flags || 0;
+    out.amtKind[i] = e.amtKind || AMOUNT.NONE;
+    out.amtDisp[i] = e.amtDisp || 0;
+    out.span[i] = e.span == null ? 0x400 : e.span;
+    // 「引く量」の側で観測した大きさと入れ物の大きさ（攻撃力はここにしか出ない）
+    out.amtSize[i] = e.amtSize == null ? 4 : e.amtSize;
+    out.amtSpan[i] = e.amtSpan == null ? 0x400 : e.amtSpan;
+  });
+  return out;
+}
+
+test('SHAPES: 減って増えて 0 で止まる値を、資源として拾える', () => {
+  const ev = [];
+  for (let i = 0; i < 8; i++) {
+    ev.push({ disp: 0x2c, flags: SHAPE.DECREASE | SHAPE.CLAMP | SHAPE.CROSS,
+      amtKind: AMOUNT.FIELD, amtDisp: 0x18 });
+  }
+  for (let i = 0; i < 5; i++) ev.push({ disp: 0x2c, flags: SHAPE.INCREASE });
+  const folded = foldShapes(shapeScan(ev));
+  const res = resources(folded);
+  ok(res.length > 0, '資源を 1 つも拾えていない');
+  eq(res[0].offset, 0x2c);
+  eq(res[0].decreases, 8);
+  eq(res[0].increases, 5);
+  eq(res[0].clamped, 8);
+});
+
+test('SHAPES: 他人の資源を減らす量を、攻撃力として拾える', () => {
+  const ev = [];
+  // +0x2c（体力）が、+0x18（攻撃力）のぶんだけ、別のオブジェクトから減らされる
+  for (let i = 0; i < 6; i++) {
+    ev.push({ disp: 0x2c, flags: SHAPE.DECREASE | SHAPE.CLAMP | SHAPE.CROSS | SHAPE.SCALED,
+      amtKind: AMOUNT.FIELD, amtDisp: 0x18 });
+  }
+  for (let i = 0; i < 4; i++) ev.push({ disp: 0x2c, flags: SHAPE.INCREASE });
+  const folded = foldShapes(shapeScan(ev));
+  const res = resources(folded);
+  const dmg = damageSources(folded, res);
+  ok(dmg.length > 0, '攻撃力の候補を拾えていない');
+  eq(dmg[0].offset, 0x18, '攻撃力として体力側を出している');
+  eq(dmg[0].usedAsAmount, 6);
+  // 体力そのものを「攻撃力」として出してはいけない
+  ok(!dmg.some((d) => d.offset === 0x2c), '減らされる側を攻撃力にしている');
+});
+
+test('SHAPES: C++ の容器の頭（要素数・参照カウンタ）を、ゲームの値と間違えない', () => {
+  /*
+   * std::vector の要素数は +0x0 にあって、減って増えて 0 で止まる。
+   * 体力とふるまいがまったく同じ。分かれるのは入れ物の大きさだけ。
+   */
+  const ev = [];
+  for (let i = 0; i < 40; i++) ev.push({ disp: 0, flags: SHAPE.DECREASE, span: 0x10 });
+  for (let i = 0; i < 60; i++) ev.push({ disp: 0, flags: SHAPE.INCREASE, span: 0x10 });
+  const folded = foldShapes(shapeScan(ev));
+  eq(resources(folded).length, 0, '容器の頭を資源として出している');
+  const why = evidenceFor(folded, 0, 'hp');
+  ok(why && why.codes.some((c) => c.code === 'loc-container-head'),
+    '容器の頭だと言えていない');
+});
+
+test('SHAPES: 大きな構造体の中にある同じ位置なら、ゲームの値として残す', () => {
+  const ev = [];
+  for (let i = 0; i < 8; i++) {
+    ev.push({ disp: 0, flags: SHAPE.DECREASE | SHAPE.CROSS, span: 0x9f4,
+      amtKind: AMOUNT.FIELD, amtDisp: 0x18 });
+  }
+  for (let i = 0; i < 6; i++) ev.push({ disp: 0, flags: SHAPE.INCREASE, span: 0x9f4 });
+  const folded = foldShapes(shapeScan(ev));
+  ok(resources(folded).length > 0, '大きな構造体の中の値まで捨てている');
+});
+
+test('SHAPES: 8 バイトで持たれている値を、ゲームの数値として出さない', () => {
+  // ミリ秒の締め切り（str x8）。減って、0 で止まる。形だけなら体力と同じ。
+  const ev = [];
+  for (let i = 0; i < 6; i++) {
+    ev.push({ disp: 0x3c58, size: 8, flags: SHAPE.DECREASE | SHAPE.CROSS,
+      amtKind: AMOUNT.FIELD, amtDisp: 0x3c58, span: 0x3c58 });
+  }
+  const folded = foldShapes(shapeScan(ev));
+  eq(resources(folded).length, 0, '8 バイトの値を資源として出している');
+});
+
+test('SHAPES: 目的に合ったふるまいだけを証拠にする', () => {
+  const ev = [];
+  for (let i = 0; i < 6; i++) {
+    ev.push({ disp: 0x2c, flags: SHAPE.DECREASE | SHAPE.CROSS | SHAPE.SCALED,
+      amtKind: AMOUNT.FIELD, amtDisp: 0x18 });
+  }
+  for (let i = 0; i < 4; i++) ev.push({ disp: 0x2c, flags: SHAPE.INCREASE });
+  const folded = foldShapes(shapeScan(ev));
+
+  const atk = evidenceFor(folded, 0x18, 'attack');
+  ok(atk.codes.some((c) => c.code === 'loc-damage-source'),
+    '攻撃力を「他人を減らす量」と言えていない');
+  // 攻撃力を探しているときに、体力側を攻撃力の証拠にしない
+  const wrong = evidenceFor(folded, 0x2c, 'attack');
+  ok(!wrong.codes.some((c) => c.code === 'loc-damage-source'),
+    '減らされる側を攻撃力の証拠にしている');
+  // 体力を探しているなら、減らされる側が証拠になる
+  const hp = evidenceFor(folded, 0x2c, 'hp');
+  ok(hp.codes.some((c) => c.code === 'loc-resource-drain'),
+    '体力を「よそから減らされる値」と言えていない');
+});
+
+test('SHAPES: 所持金は、自分の中だけで増減する値として分ける', () => {
+  const ev = [];
+  // 誰にも殴られない（CROSS が立たない）= 所持金のふるまい
+  for (let i = 0; i < 5; i++) ev.push({ disp: 0x30c, flags: SHAPE.DECREASE | SHAPE.CLAMP });
+  for (let i = 0; i < 5; i++) ev.push({ disp: 0x30c, flags: SHAPE.INCREASE });
+  // こちらは別オブジェクトから減らされる = 体力のふるまい
+  for (let i = 0; i < 5; i++) {
+    ev.push({ disp: 0x2c, flags: SHAPE.DECREASE | SHAPE.CROSS,
+      amtKind: AMOUNT.FIELD, amtDisp: 0x18 });
+  }
+  for (let i = 0; i < 5; i++) ev.push({ disp: 0x2c, flags: SHAPE.INCREASE });
+  const folded = foldShapes(shapeScan(ev));
+
+  ok(evidenceFor(folded, 0x30c, 'money').codes.some((c) => c.code === 'loc-self-resource'),
+    '所持金のふるまいを拾えていない');
+  ok(!evidenceFor(folded, 0x2c, 'money').codes.some((c) => c.code === 'loc-self-resource'),
+    '殴られる値を所持金として出している');
+  ok(!evidenceFor(folded, 0x30c, 'hp').codes.some((c) => c.code === 'loc-resource-drain'),
+    '所持金を体力として出している');
+});
+
+test('SHAPES: 何も無い走査結果でも落ちない', () => {
+  eq(foldShapes(null).size, 0);
+  eq(foldShapes({ count: 0 }).size, 0);
+  eq(resources(foldShapes(null)).length, 0);
+  eq(evidenceFor(foldShapes(null), 0x10, 'attack'), null);
+});
+
+/* ────────────────────────────────────────────────────────────
+   ケース S: データファイルの表を、命令から読み取る
+   ────────────────────────────────────────────────────────────
+
+   現代のモバイルゲームは数値をコードに書かない。CSV で持っていて起動時に読む。
+   だから「攻撃力」という言葉はバイナリに 1 つも無いのに、
+   **何列目がどこに入るか** は命令にはっきり書いてある。そこを読む。 */
+
+const { decodeSchema, columnToOffset, offsetToColumn, looksLikeDataFile,
+  recoverSchemas, schemaForFile } = await import('../js/schema.js');
+
+/* ARM64 の命令語を、必要なぶんだけ組み立てる（逆アセンブラを通さないため）。 */
+const A64 = {
+  bl: (off) => (0x94000000 | ((off >>> 2) & 0x03ffffff)) >>> 0,
+  // str Wt, [Xn, Xm, lsl #2]
+  strIdx: (t, n, m) => (0xb8207800 | (m << 16) | (n << 5) | t) >>> 0,
+  ldrIdx: (t, n, m) => (0xb8607800 | (m << 16) | (n << 5) | t) >>> 0,
+  // str Wt, [Xn, #imm]（12 ビット、4 バイト単位）
+  strOff: (t, n, imm) => (0xb9000000 | (((imm / 4) & 0xfff) << 10) | (n << 5) | t) >>> 0,
+  addImm: (d, n, imm) => (0x91000000 | ((imm & 0xfff) << 10) | (n << 5) | d) >>> 0,
+  cmpImm: (n, imm) => (0xf1000000 | ((imm & 0xfff) << 10) | (n << 5) | 31) >>> 0,
+  movz: (d, imm) => (0x52800000 | ((imm & 0xffff) << 5) | d) >>> 0,
+  mul: (d, n, m) => (0x1b007c00 | (m << 16) | (n << 5) | d) >>> 0,
+  ret: () => 0xd65f03c0,
+};
+
+/** The Battle Cats の unit%03d.csv 読み込みと同じ形を組み立てる。 */
+function unitLoaderWords() {
+  return Uint32Array.from([
+    A64.addImm(28, 28, 0),          // 表の基点（ここでは何もしない）
+    A64.bl(-0x100),                 // 1 列ぶんを整数にする
+    A64.strIdx(0, 28, 21),          // str w0, [x28, x21, lsl #2] ← i 列目を +i*4 へ
+    A64.addImm(21, 21, 1),          // 列を 1 つ進める
+    A64.cmpImm(21, 0x75),           // 117 列
+    A64.addImm(28, 28, 0x1d4),      // 次のレコードへ（117 × 4 = 468）
+    A64.addImm(25, 25, 1),          // レコードを 1 つ進める
+    A64.cmpImm(25, 4),              // 4 レコード
+    A64.ret(),
+  ]);
+}
+
+test('SCHEMA: 読み込みの命令から「何列目がどこか」を読み取れる', () => {
+  const s = decodeSchema(unitLoaderWords(), 0x100000000n);
+  ok(s, '表を読み取れていない');
+  const b = s.best;
+  eq(b.kind, 'indexed');
+  eq(b.columns, 117, '列数が違う');
+  eq(b.columnStride, 4, '1 列の大きさが違う');
+  eq(b.recordStride, 0x1d4, 'レコードの大きさが違う');
+  eq(b.records, 4, 'レコード数が違う（列の添字を数えていないか）');
+  // 117 列 × 4 バイト = 468 バイト。ここが合うので読み違いではない。
+  eq(b.consistent, true, 'つじつまが合っていない');
+  eq(b.storeAddr, 0x100000008n, '置き場所を決めている命令の位置が違う');
+});
+
+test('SCHEMA: 列番号とずらし幅を、どちらからでも引ける', () => {
+  const s = decodeSchema(unitLoaderWords(), 0x100000000n);
+  eq(columnToOffset(s, 0), 0);
+  eq(columnToOffset(s, 3), 0xc, '4 列目が +0xc になっていない');
+  eq(columnToOffset(s, 116), 464);
+  // 表の外は答えない（作り話をしない）
+  eq(columnToOffset(s, 117), null, '表の外の列に答えている');
+  eq(columnToOffset(s, -1), null);
+  eq(offsetToColumn(s, 0xc), 3);
+  eq(offsetToColumn(s, 0xd), null, '割り切れないずらし幅に列番号を付けている');
+  eq(offsetToColumn(s, 0x1d4), null, '表の外のずらし幅に答えている');
+});
+
+test('SCHEMA: つじつまが合わないときは、合わないと言う', () => {
+  // レコードの大きさが 列数 × 列幅 と食い違う表
+  const words = Uint32Array.from([
+    A64.bl(-0x100),
+    A64.strIdx(0, 28, 21),
+    A64.addImm(21, 21, 1),
+    A64.cmpImm(21, 10),             // 10 列
+    A64.addImm(28, 28, 0x100),      // なのにレコードは 256 バイト（10×4=40 のはず）
+    A64.ret(),
+  ]);
+  const s = decodeSchema(words, 0x100000000n);
+  ok(s, '表を読み取れていない');
+  eq(s.best.consistent, false, '食い違いを黙って通している');
+  eq(s.best.columns, 10);
+  eq(s.best.recordStride, 0x100);
+});
+
+test('SCHEMA: 1 ずつ増えていない添字を、列数として使わない', () => {
+  const words = Uint32Array.from([
+    A64.bl(-0x100),
+    A64.strIdx(0, 28, 21),
+    A64.addImm(21, 21, 8),          // 8 ずつ進む = 列の添字ではない
+    A64.cmpImm(21, 0x75),
+    A64.ret(),
+  ]);
+  const s = decodeSchema(words, 0x100000000n);
+  ok(s, '表そのものは読み取れているはず');
+  eq(s.best.columns, null, '列の添字でないものを列数にしている');
+});
+
+test('SCHEMA: 読み込んだあとに掛かる倍率を拾える', () => {
+  const words = Uint32Array.from([
+    A64.bl(-0x100),
+    A64.strIdx(0, 28, 21),
+    A64.addImm(21, 21, 1),
+    A64.cmpImm(21, 0x75),
+    A64.addImm(28, 28, 0x1d4),
+    A64.movz(10, 100),              // ×100
+    A64.ldrIdx(11, 9, 8),
+    A64.mul(11, 11, 10),
+    A64.ret(),
+  ]);
+  const s = decodeSchema(words, 0x100000000n);
+  ok(s.best.scaled.some((x) => x.factor === 100), '倍率を拾えていない');
+});
+
+test('SCHEMA: 展開して書いてある表（添字を使わない形）も読める', () => {
+  const words = Uint32Array.from([
+    A64.bl(-0x100), A64.strOff(0, 19, 0x10),
+    A64.bl(-0x100), A64.strOff(0, 19, 0x14),
+    A64.bl(-0x100), A64.strOff(0, 19, 0x18),
+    A64.bl(-0x100), A64.strOff(0, 19, 0x1c),
+    A64.ret(),
+  ]);
+  const s = decodeSchema(words, 0x100000000n);
+  ok(s, '展開されている表を読み取れていない');
+  eq(s.best.kind, 'unrolled');
+  eq(s.best.columns, 4);
+  eq(columnToOffset(s, 0), 0x10);
+  eq(columnToOffset(s, 2), 0x18);
+  eq(offsetToColumn(s, 0x1c), 3);
+});
+
+test('SCHEMA: 表が無い関数には、表があることにしない', () => {
+  const words = Uint32Array.from([A64.addImm(0, 0, 1), A64.ret()]);
+  eq(decodeSchema(words, 0x100000000n), null, '無い表をでっち上げている');
+  eq(decodeSchema(new Uint32Array(0), 0x100000000n), null);
+});
+
+test('SCHEMA: データファイルらしい名前だけを拾う', () => {
+  ok(looksLikeDataFile('unit%03d.csv'));
+  ok(looksLikeDataFile('Matatabi.tsv'));
+  ok(looksLikeDataFile('SpecialRulesMap.json'));
+  ok(!looksLikeDataFile('libSystem.dylib'));
+  ok(!looksLikeDataFile('attack'));
+  ok(!looksLikeDataFile(null));
+});
+
+test('SCHEMA: 材料が無くても落ちない', async () => {
+  eq((await recoverSchemas({})).length, 0);
+  eq((await recoverSchemas({ strings: [], program: null, read: null })).length, 0);
+  eq(schemaForFile(null, 'x.csv'), null);
+  eq(schemaForFile([], 'x.csv'), null);
+});
+
+test('SCHEMA: ファイル名から読み込み処理をたどって表を組み立てる', async () => {
+  /*
+   * 文字列 → それを参照している関数 → その関数の命令 → 表の形
+   * という、実物と同じ順番を通す。
+   */
+  const words = unitLoaderWords();
+  const bytes = new Uint8Array(words.length * 4);
+  const dv = new DataView(bytes.buffer);
+  words.forEach((w, i) => dv.setUint32(i * 4, w, true));
+
+  const loader = 0x100004000n;
+  const program = {
+    functionsReferencing: (addr) => (addr === 0x101000000n ? [{ addr: loader }] : []),
+    functionRange: (a) => (a === loader
+      ? { start: loader, end: loader + BigInt(bytes.length) } : null),
+  };
+  const read = async (addr, len) => {
+    if (addr !== loader) return null;
+    return bytes.subarray(0, len);
+  };
+  const list2 = await recoverSchemas({
+    strings: [
+      { addr: 0x101000000n, text: 'unit%03d.csv' },
+      { addr: 0x101000100n, text: 'libSystem.dylib' },   // データファイルではない
+    ],
+    program, read,
+  });
+  eq(list2.length, 1, '表を 1 つ組み立てられていない');
+  const s = schemaForFile(list2, 'unit%03d.csv');
+  ok(s, 'ファイル名から引けていない');
+  eq(s.loader, loader);
+  eq(s.best.columns, 117);
+  eq(s.best.consistent, true);
+  eq(columnToOffset(s, 3), 0xc, 'ファイル名から引いた表で 4 列目が出ない');
 });
 
 /* ── まとめ ──────────────────────────────────────────────── */

@@ -35,6 +35,8 @@ import { evidence, fuse, decide, explain, starsOf, VERDICT } from './evidence.js
 import { verifyAccessor, verifyFunctionHandlesField, selfRegisters } from './verify.js';
 import { findValueUpdates, constantComparisons } from './dataflow.js';
 import { plainFieldName } from './fields.js';
+import { learnVendors, vendorOf, vendorConflicts } from './vendors.js';
+import { evidenceFor as shapeEvidenceFor, byGoal as shapesByGoal } from './shapes.js';
 
 /* 目的 → 地図の部品。クラスの担当が目的と合っているかを見るために使う。 */
 const GOAL_TO_CATEGORY = {
@@ -103,6 +105,13 @@ export async function pinpointField(opts) {
   // その目的の文字列を参照しているクラス（実際の参照関係から）
   const classStringHits = classesReferencingGoalStrings(goal, o);
 
+  /*
+   * どのクラスが「組み込んだ SDK のもの」かを、このバイナリ自身から学ぶ。
+   * ゲーム本体が C++ のアプリでは、名前が残っているのが広告 SDK だけになるので、
+   * これをやらないと「所持金 ＝ 広告報酬の数」を自信満々で答えてしまう。
+   */
+  const vendors = learnVendors(Array.from(fields.classes.keys()));
+
   /* ── 2. 候補を集める ───────────────────────────────────
      名前が当たった値だけでなく、「目的に合うクラスが持っている数値」も拾う。
      名前が消されている／英語でない場合でも取りこぼさないため。 */
@@ -110,7 +119,7 @@ export async function pinpointField(opts) {
   let universe = 0;
   const raw = [];
   for (const cls of fields.classes.values()) {
-    const ctx = classContext(cls, goal, categoryOf, classStringHits);
+    const ctx = classContext(cls, goal, categoryOf, classStringHits, vendors);
     for (const iv of cls.ivars || []) {
       universe++;
       const nameHit = matchField(goal, iv.name);
@@ -204,7 +213,7 @@ export async function pinpointField(opts) {
 
 /* ── クラスの前提 ────────────────────────────────────────── */
 
-function classContext(cls, goal, categoryOf, classStringHits) {
+function classContext(cls, goal, categoryOf, classStringHits, vendors) {
   const info = categoryOf.get(cls.name) || null;
   const wanted = GOAL_TO_CATEGORY[goal.id] || [];
   const nameHit = matchText(goal, cls.name);
@@ -218,6 +227,7 @@ function classContext(cls, goal, categoryOf, classStringHits) {
   for (const m of (cls.methods || []).slice(0, 120)) {
     if (m.sel && matchName(goal, m.sel)) selectors++;
   }
+  const vendor = vendorOf(cls.name, vendors);
   return {
     info,
     category: info ? info.category : null,
@@ -226,6 +236,9 @@ function classContext(cls, goal, categoryOf, classStringHits) {
     siblings,
     selectors,
     strings: classStringHits.get(cls.name) || 0,
+    vendor,
+    // 広告 SDK の値を「ゲームの所持金」として答えないための印
+    vendorConflict: vendorConflicts(goal.id, vendor),
   };
 }
 
@@ -305,6 +318,17 @@ function buildFieldCandidate({ cls, iv, nameHit, fit, ctx }, goal) {
   }
   if (ctx.strings) {
     ev.push(evidence('class-string', Math.min(1, ctx.strings / 3), { n: ctx.strings, className: cls.name }));
+  }
+  /*
+   * 組み込んだ SDK のクラスなら、ここで打ち消す。
+   * 名前がどれだけ完璧に一致していても、それはゲームの値ではない。
+   */
+  if (ctx.vendorConflict) {
+    const sure = ctx.vendor.confidence === 'high';
+    ev.push(evidence(sure ? 'third-party-class' : 'library-prefix-class', 1, {
+      className: cls.name, vendor: ctx.vendor.vendor, kind: ctx.vendor.kind,
+      via: ctx.vendor.via, classes: ctx.vendor.classes || null,
+    }));
   }
 
   /* アクセサが実在するか（名前の話。中身は verifyCandidate で確かめる） */
@@ -594,12 +618,14 @@ export async function pinpointLocation(opts) {
     goal, kind: 'location', verdict: VERDICT.NONE, top: null, runnerUp: null,
     candidates: [], universe: 0, missing: ['no-candidate'], checked: 0, changeSites: [],
   };
-  if (!goal || !ranked.length || !o.analyze) return empty;
+  // ふるまいの索引があるなら、目的の文言を参照する関数が 1 つも無くても進める
+  const haveShapes = !!(o.shapes && o.shapes.size);
+  if (!goal || (!haveShapes && (!ranked.length || !o.analyze))) return empty;
 
   /* 1. 目的に関係する関数を読んで、触っている場所を集める */
   const byKey = new Map();
   let checked = 0;
-  for (const cand of ranked.slice(0, 8)) {
+  for (const cand of (o.analyze ? ranked.slice(0, 8) : [])) {
     if (cancelled() || spent(o)) break;
     progress({ phase: 'verify-loc', done: checked, all: Math.min(8, ranked.length) });
     charge(o);
@@ -642,6 +668,30 @@ export async function pinpointLocation(opts) {
       }
     }
   }
+  /*
+   * 2'. ふるまいからも候補を出す。
+   *
+   * 上の 1 は「目的の文言を参照している関数」から降りてくるやり方なので、
+   * 文言が 1 つも残っていないアプリでは何も出せない（The Battle Cats には
+   * 「attack」も「攻撃」もバイナリ中に無い）。そこで、コード全体の増減の形から
+   * 直接候補を立てる。名前も文言も要らない、この 1 本だけが通る道になる。
+   */
+  if (o.shapes && o.shapes.size) {
+    for (const sh of shapesByGoal(o.shapes, goal.id, 8)) {
+      const key = 'shape@' + sh.offset;
+      if (byKey.has(key)) continue;
+      byKey.set(key, {
+        key, kind: 'location', fromShape: true,
+        base: null, offset: BigInt(sh.offset), size: sh.size || 4,
+        functions: [], updates: [], compares: [],
+        goalStringRefs: 0, evidence: [], verifications: [],
+        sites: (sh.sites || []).map((s) => ({ first: s.addr, addr: null, loads: 0, stores: 1 })),
+        siteCount: sh.usedAsAmount || (sh.decreases + sh.increases),
+        fusion: null, shape: sh,
+      });
+    }
+  }
+
   if (!byKey.size) return Object.assign({}, empty, { checked, missing: ['no-value-change'] });
 
   /* 2. コード全体で、同じ場所を触っている命令がいくつあるかを数える */
@@ -689,7 +739,20 @@ export async function pinpointLocation(opts) {
       e.evidence.push(evidence('loc-shared', Math.min(1, e.functions.length / 3), { n: e.functions.length }));
     }
     if (e.size === 4 || e.size === 8) e.evidence.push(evidence('loc-size', 0.8, { size: e.size }));
-    e.evidence.push(evidence('loc-not-stack', 1, { base: e.base }));
+    if (e.base) e.evidence.push(evidence('loc-not-stack', 1, { base: e.base }));
+
+    /*
+     * コード全体でのふるまい。名前が 1 つも残っていないアプリでは、
+     * これが「その値がその目的のものだ」と言える唯一の手がかりになる。
+     */
+    if (o.shapes) {
+      const sh = shapeEvidenceFor(o.shapes, Number(e.offset), goal.id);
+      if (sh) {
+        e.shape = sh.shape;
+        for (const c of sh.codes) e.evidence.push(evidence(c.code, c.strength, c.detail));
+      }
+    }
+
   }
 
   /*

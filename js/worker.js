@@ -95,6 +95,7 @@ async function handle(msg) {
     case 'guessFunctions': return guessFunctions(msg);
     case 'scanProgram': return scanProgram(msg);
     case 'fieldAccess': return findFieldAccess(msg);
+    case 'valueShapes': return scanValueShapes(msg);
     default: throw new Error('Unknown request: ' + msg.t);
   }
 }
@@ -641,6 +642,295 @@ async function scanProgram({ regionId }) {
       refFrom[nRefs] = pc; refTo[nRefs] = target; refKind[nRefs] = k; nRefs++;
     } else refsCapped = true;
   }
+}
+
+/* ── 値の「ふるまい」を全文走査で集める ─────────────────────
+ *
+ * ここが、名前も文字列も残っていないアプリのための入口。
+ *
+ * ゲーム本体が C++（Cocos2d-x / Unity）で書かれていると、Objective-C のクラス表には
+ * 広告 SDK しか載らない。文字列も、文言がぜんぶ外部ファイルにあると 1 つも残らない。
+ * 実際 The Battle Cats には「attack」も「攻撃」もバイナリ中に 1 文字も無い。
+ * 名前で探すやり方は、ここで完全に行き止まりになる。
+ *
+ * それでも **ふるまいは残っている**。ゲームの数値には決まった形がある:
+ *
+ *     体力  … 別の値のぶんだけ減り、0 で止められ、また増える
+ *     攻撃力 … 自分は変わらず、他のオブジェクトの体力を減らす「引く量」になる
+ *     所持金 … 同じオブジェクトの中で、片方が増えて片方が減る
+ *
+ * この形は名前と違って消せない。消したら動かなくなるので。
+ * だからここでは、命令の並びからその形だけを取り出す。
+ *
+ *     ldr w8, [x19, #0x2c]     ← 読む
+ *     sub w8, w8, w9           ← 別の値のぶんだけ引く
+ *     bic w8, w8, w8, asr #31  ← 0 未満にならないよう止める
+ *     str w8, [x19, #0x2c]     ← 書き戻す
+ *
+ * これを 1 件の「出来事」として記録する。引く量 w9 がどこから来たかも一緒に。
+ * Capstone は通さず、命令語のビットを直接読む（18 MB でも数秒で終わる）。
+ */
+
+/* 出来事の印（evFlags のビット） */
+const SHAPE_DECREASE = 1;    // 減った
+const SHAPE_INCREASE = 2;    // 増えた
+const SHAPE_CLAMP    = 4;    // 0 で止めていた
+const SHAPE_CROSS    = 8;    // 引く量が「別のオブジェクト」から来ている
+const SHAPE_SCALED   = 16;   // 引く量が掛け算・割り算を通っている（倍率つき）
+
+/* 引く量の出どころ（evAmtKind） */
+const AMT_NONE = 0, AMT_FIELD = 1, AMT_IMM = 2, AMT_CALL = 3;
+
+const MAX_SHAPE_EVENTS = 200_000;
+
+async function scanValueShapes({ regionId }) {
+  const region = regions.get(regionId);
+  if (!region) throw new Error('Unknown region.');
+  const token = ++searchToken;
+  const total = Number(region.size);
+
+  const evAddr = new BigUint64Array(MAX_SHAPE_EVENTS);
+  const evDisp = new Int32Array(MAX_SHAPE_EVENTS);
+  const evAmtDisp = new Int32Array(MAX_SHAPE_EVENTS);
+  const evSize = new Uint8Array(MAX_SHAPE_EVENTS);
+  const evFlags = new Uint8Array(MAX_SHAPE_EVENTS);
+  const evAmtKind = new Uint8Array(MAX_SHAPE_EVENTS);
+  const evSpan = new Int32Array(MAX_SHAPE_EVENTS);
+  /*
+   * 「引く量」の側の大きさと、その入れ物の大きさ。
+   * 攻撃力はこちら側にしか現れないので、ここを持たないと
+   * 攻撃力を容器の頭と取り違える（自分では 1 度も増減しないため）。
+   */
+  const evAmtSize = new Uint8Array(MAX_SHAPE_EVENTS);
+  const evAmtSpan = new Int32Array(MAX_SHAPE_EVENTS);
+  let n = 0;
+  let capped = false;
+
+  /*
+   * そのオブジェクトが、どれくらい大きいものとして使われているか。
+   *
+   * これが要るのは、C++ のアプリでは +0x0 / +0x8 / +0x10 の増減が
+   * 何千件も出てくるため。中身はほぼ std::vector の要素数や参照カウンタで、
+   * ゲームの数値ではない。ところが「減って増えて 0 で止まる」形は同じなので、
+   * ふるまいだけでは選り分けられない。
+   *
+   * 見分けがつくのは **入れ物の大きさ**。同じレジスタが +0x9f4 のような
+   * 遠い場所にも使われているなら、それは何十個も値を持つゲームの構造体で、
+   * 0x0〜0x18 しか触られないものは容器の頭でしかない。
+   */
+  const spanOf = new Int32Array(32);
+  const noteSpan = (base, disp) => {
+    if (base < 0 || base > 31) return;
+    if (disp > spanOf[base]) spanOf[base] = disp;
+  };
+
+  /*
+   * レジスタ 1 本ぶんの「今もっている値の由来」。
+   *   base/disp … どのオブジェクトのどの位置から読んだか
+   *   dir       … そこから増えたか減ったか
+   *   amt*      … 増減の量がどこから来たか
+   */
+  const pBase = new Int8Array(32).fill(-1);      // -1 = 由来が分からない
+  const pDisp = new Int32Array(32);
+  const pSize = new Uint8Array(32);
+  const pDir = new Int8Array(32);                // 0 なし / 1 増 / -1 減
+  const pClamp = new Uint8Array(32);
+  const pAmtKind = new Uint8Array(32);
+  const pAmtBase = new Int8Array(32);
+  const pAmtDisp = new Int32Array(32);
+  const pAmtScaled = new Uint8Array(32);
+  const pAmtSize = new Uint8Array(32);
+  const pAmtSpan = new Int32Array(32);
+
+  const forget = (r) => {
+    if (r < 0 || r >= 31) return;
+    pBase[r] = -1;
+    // 別のものを入れたのだから、それまでの「入れ物の大きさ」も引き継がない
+    spanOf[r] = 0;
+  };
+  const forgetAll = () => { pBase.fill(-1); };
+  const copy = (d, s) => {
+    if (d === 31) return;
+    if (d !== s) spanOf[d] = spanOf[s];
+    pBase[d] = pBase[s]; pDisp[d] = pDisp[s]; pSize[d] = pSize[s];
+    pDir[d] = pDir[s]; pClamp[d] = pClamp[s];
+    pAmtKind[d] = pAmtKind[s]; pAmtBase[d] = pAmtBase[s];
+    pAmtDisp[d] = pAmtDisp[s]; pAmtScaled[d] = pAmtScaled[s];
+    pAmtSize[d] = pAmtSize[s]; pAmtSpan[d] = pAmtSpan[s];
+  };
+  /* 量をまだ持っていないときだけ書き込む（最初に見つけた出どころを採る）。 */
+  const setAmount = (d, kind, base, disp, scaled, size, span) => {
+    if (pAmtKind[d] !== AMT_NONE) return;
+    pAmtKind[d] = kind; pAmtBase[d] = base == null ? -1 : base;
+    pAmtDisp[d] = disp || 0; pAmtScaled[d] = scaled ? 1 : 0;
+    pAmtSize[d] = size || 0; pAmtSpan[d] = span || 0;
+  };
+
+  let pos = 0;
+  while (pos < total) {
+    if (token !== searchToken) return { cancelled: true, __transfer: [] };
+    const want = Math.min(SCAN_BLOCK, total - pos);
+    const blk = await readRange(region.fileOffset + BigInt(pos), want);
+    if (blk.length < 4) break;
+    const words = Math.floor(blk.length / 4);
+    const dv = new DataView(blk.buffer, blk.byteOffset, words * 4);
+
+    for (let i = 0; i < words && n < MAX_SHAPE_EVENTS; i++) {
+      const w = dv.getUint32(i * 4, true);
+
+      /*
+       * 呼び出しをまたいでも、x19〜x28 は呼ばれた側が元に戻す決まりになっている
+       * （AAPCS64）。オブジェクトへのポインタはたいていそこに置かれるので、
+       * ここを捨てずに残せるかどうかで、追える連鎖の長さがまるで変わる。
+       */
+      if (Words.isCallImm(w) || Words.isIndirectCall(w)) {
+        for (let r = 0; r <= 18; r++) { pBase[r] = -1; spanOf[r] = 0; }
+        pBase[0] = -1;
+        // 戻り値は「呼んだ先で決まった量」。ダメージ計算はたいていこの形。
+        pAmtKind[0] = AMT_NONE;
+        copy(0, 0);
+        pBase[0] = -1; pAmtKind[0] = AMT_CALL; pAmtBase[0] = -1; pAmtDisp[0] = 0;
+        continue;
+      }
+      // 無条件分岐・復帰は前提が続かない。条件分岐は値が生きているので残す。
+      if (Words.isBranchImm(w) || Words.isRet(w) || Words.isBr(w)) {
+        forgetAll(); spanOf.fill(0); continue;
+      }
+      if (Words.isCondBranch(w)) continue;
+
+      const mem = Words.memoryAccess(w);
+      if (mem && !mem.pair && !mem.indexed && mem.disp != null) {
+        const d = Number(mem.disp);
+        noteSpan(mem.base, d);
+        if (mem.load) {
+          const r = mem.reg;
+          if (r !== 31) {
+            spanOf[r] = 0;                     // 読み込んだ先は「別のもの」になる
+            pBase[r] = mem.base; pDisp[r] = d; pSize[r] = mem.size;
+            pDir[r] = 0; pClamp[r] = 0;
+            pAmtKind[r] = AMT_NONE; pAmtBase[r] = -1; pAmtDisp[r] = 0; pAmtScaled[r] = 0;
+            pAmtSize[r] = 0; pAmtSpan[r] = 0;
+          }
+          continue;
+        }
+        // 書き戻し — 同じ場所へ戻っているなら、それが「値が変わった瞬間」
+        const s = mem.reg;
+        if (s < 31 && pBase[s] >= 0 && pDir[s] !== 0 &&
+            pBase[s] === mem.base && pDisp[s] === d) {
+          let flags = pDir[s] > 0 ? SHAPE_INCREASE : SHAPE_DECREASE;
+          if (pClamp[s]) flags |= SHAPE_CLAMP;
+          if (pAmtScaled[s]) flags |= SHAPE_SCALED;
+          if (pAmtKind[s] === AMT_FIELD && pAmtBase[s] >= 0 && pAmtBase[s] !== mem.base) {
+            flags |= SHAPE_CROSS;
+          }
+          evAddr[n] = region.vmAddr + BigInt(pos + i * 4);
+          evDisp[n] = d;
+          evSize[n] = mem.size;
+          evFlags[n] = flags;
+          evAmtKind[n] = pAmtKind[s];
+          evAmtDisp[n] = pAmtKind[s] === AMT_FIELD ? pAmtDisp[s] : 0;
+          evSpan[n] = spanOf[mem.base];
+          evAmtSize[n] = pAmtSize[s];
+          evAmtSpan[n] = pAmtSpan[s];
+          n++;
+          if (n >= MAX_SHAPE_EVENTS) capped = true;
+        }
+        continue;
+      }
+
+      /* add / sub（レジスタどうし、シフト無し） */
+      if (Words.masked(w, 0x1f200000) === 0x0b000000 && ((w >>> 10) & 0x3f) === 0) {
+        const d = w & 31, a = (w >>> 5) & 31, m = (w >>> 16) & 31;
+        const sub = ((w >>> 30) & 1) === 1;
+        if (((w >>> 29) & 1) === 1 && d === 31) continue;      // cmp
+        if (pBase[a] >= 0) {
+          const amtKind = pBase[m] >= 0 ? AMT_FIELD : AMT_NONE;
+          const amtBase = pBase[m] >= 0 ? pBase[m] : -1;
+          const amtDisp = pBase[m] >= 0 ? pDisp[m] : 0;
+          const scaled = pAmtScaled[m];
+          copy(d, a);
+          pDir[d] = sub ? -1 : 1;
+          if (amtKind !== AMT_NONE) {
+            setAmount(d, AMT_FIELD, amtBase, amtDisp, scaled, pSize[m], spanOf[amtBase]);
+          }
+          else if (pAmtKind[m] === AMT_CALL) setAmount(d, AMT_CALL, -1, 0, 0);
+        } else forget(d);
+        continue;
+      }
+      /* add / sub（即値） */
+      if (Words.masked(w, 0x1f000000) === 0x11000000) {
+        const d = w & 31, a = (w >>> 5) & 31;
+        const sub = ((w >>> 30) & 1) === 1;
+        if (((w >>> 29) & 1) === 1 && d === 31) continue;      // cmp
+        if (pBase[a] >= 0) {
+          const imm = ((w >>> 10) & 0xfff) << (((w >>> 22) & 1) ? 12 : 0);
+          copy(d, a);
+          pDir[d] = sub ? -1 : 1;
+          setAmount(d, AMT_IMM, -1, imm, 0);
+        } else forget(d);
+        continue;
+      }
+      /* madd / msub — Wd = Wa ± Wn*Wm。倍率つきのダメージはこの形になる。 */
+      if (Words.masked(w, 0x1f000000) === 0x1b000000 && ((w >>> 21) & 7) === 0) {
+        const d = w & 31, nR = (w >>> 5) & 31, m = (w >>> 16) & 31, a = (w >>> 10) & 31;
+        const sub = ((w >>> 15) & 1) === 1;
+        if (a !== 31 && pBase[a] >= 0) {
+          const src = pBase[nR] >= 0 ? nR : (pBase[m] >= 0 ? m : -1);
+          copy(d, a);
+          pDir[d] = sub ? -1 : 1;
+          if (src >= 0) {
+            setAmount(d, AMT_FIELD, pBase[src], pDisp[src], 1, pSize[src], spanOf[pBase[src]]);
+          }
+        } else forget(d);
+        continue;
+      }
+      /* mul / sdiv / udiv / lsl … — 量に倍率が掛かる。由来は保つ。 */
+      if (Words.isMultiply(w) || Words.isDivide(w) || Words.isShiftOp(w)) {
+        const d = w & 31, a = (w >>> 5) & 31, m = (w >>> 16) & 31;
+        const src = pBase[a] >= 0 ? a : (pBase[m] >= 0 ? m : -1);
+        if (src >= 0) { copy(d, src); pAmtScaled[d] = 1; } else forget(d);
+        continue;
+      }
+      /* bic Wd, Wn, Wn, asr #31 — 「0 未満にしない」の定番の書き方 */
+      if (Words.masked(w, 0x1f200000) === 0x0a200000) {
+        const d = w & 31, a = (w >>> 5) & 31, m = (w >>> 16) & 31;
+        if (a === m && ((w >>> 22) & 3) === 2 && ((w >>> 10) & 0x3f) === 31 && pBase[a] >= 0) {
+          copy(d, a); pClamp[d] = 1;
+        } else forget(d);
+        continue;
+      }
+      /* csel / csinc / csneg — 上限・下限で締める */
+      if (Words.masked(w, 0x1fe00000) === 0x1a800000) {
+        const d = w & 31, a = (w >>> 5) & 31, m = (w >>> 16) & 31;
+        const src = pBase[a] >= 0 ? a : (pBase[m] >= 0 ? m : -1);
+        if (src >= 0) { copy(d, src); pClamp[d] = 1; } else forget(d);
+        continue;
+      }
+      /* mov Wd, Wn（orr Wd, wzr, Wn） */
+      if (Words.masked(w, 0x7fe0ffe0) === 0x2a0003e0) {
+        const d = w & 31, m = (w >>> 16) & 31;
+        if (pBase[m] >= 0) copy(d, m); else forget(d);
+        continue;
+      }
+      if (Words.isCompare(w) || Words.isNop(w)) continue;
+      forget(w & 31);
+    }
+
+    pos += words * 4;
+    self.postMessage({ t: 'scanProgress', done: pos, all: total, hits: n });
+    await yieldToQueue();
+  }
+
+  const addr = evAddr.slice(0, n), disp = evDisp.slice(0, n), size = evSize.slice(0, n);
+  const flags = evFlags.slice(0, n), amtKind = evAmtKind.slice(0, n), amtDisp = evAmtDisp.slice(0, n);
+  const span = evSpan.slice(0, n);
+  const amtSize = evAmtSize.slice(0, n), amtSpan = evAmtSpan.slice(0, n);
+  return {
+    regionId, vmAddr: region.vmAddr, count: n, capped, cancelled: false,
+    addr, disp, size, flags, amtKind, amtDisp, span, amtSize, amtSpan,
+    __transfer: [addr.buffer, disp.buffer, size.buffer, flags.buffer,
+      amtKind.buffer, amtDisp.buffer, span.buffer, amtSize.buffer, amtSpan.buffer],
+  };
 }
 
 /* ── フィールドを触っている場所を探す ───────────────────────

@@ -100,6 +100,20 @@ export const EVIDENCE = {
   'sibling-fields':     { lr: 2.6,  family: FAMILY.CONTEXT,  kind: 'inference' },
   'class-string':       { lr: 2.4,  family: FAMILY.CONTEXT,  kind: 'fact', id: true },
   'selector-match':     { lr: 3,    family: FAMILY.CONTEXT,  kind: 'fact', id: true },
+  /*
+   * 組み込んだ SDK のクラスだった。
+   *
+   * ゲーム本体が C++ で書かれていると、名前が残っているのは広告 SDK だけになる。
+   * そこで名前だけを見ると「LevelPlay の報酬の数」が「所持金」として満点で当たる。
+   * 名前の一致（×55）を打ち消せる強さが要るので、ここはかなり小さくしてある。
+   */
+  'third-party-class':  { lr: 0.01, family: FAMILY.CONTEXT,  kind: 'fact' },
+  /*
+   * 名前までは分からないが、まとまり方がライブラリのもの
+   * （同じ 2〜4 文字の大文字で始まるクラスが 10 個以上ある）。
+   * 裏が取れていないぶん、打ち消す力は弱くしてある。
+   */
+  'library-prefix-class': { lr: 0.12, family: FAMILY.CONTEXT, kind: 'inference' },
 
   'type-numeric':       { lr: 2.2,  family: FAMILY.TYPE,     kind: 'fact' },
   'type-declared':      { lr: 3,    family: FAMILY.TYPE,     kind: 'fact' },
@@ -129,6 +143,21 @@ export const EVIDENCE = {
   // 名前が無いときに、目的へ結びつけられる唯一の糸がこれ
   'loc-in-goal-fn':     { lr: 7,    family: FAMILY.CONTEXT,  kind: 'fact', id: true },
   'loc-shared':         { lr: 3.2,  family: FAMILY.USAGE,    kind: 'fact' },
+
+  /* ── ふるまいから値を名指しする証拠（shapes.js） ─────────────
+   *
+   * 名前も文字列も 1 つも残っていないアプリ（C++ のゲームがこれ）で、
+   * 唯一その値を **目的に結びつけられる** 手がかり。だから id を付ける。
+   *
+   * 「4 バイトの整数で、読んで計算して書き戻している」は何の値かを言っていないが、
+   * 「他のオブジェクトの、0 で止められる値を減らすための量として使われている」は
+   * 攻撃力そのものの定義になっている。名前が無くても、これは名指しになる。
+   */
+  'loc-damage-source':  { lr: 8,    family: FAMILY.USAGE,    kind: 'verified', id: true },
+  'loc-resource-drain': { lr: 7,    family: FAMILY.USAGE,    kind: 'verified', id: true },
+  'loc-self-resource':  { lr: 5,    family: FAMILY.USAGE,    kind: 'verified', id: true },
+  // C++ の容器の頭（要素数・参照カウンタ・文字列の長さ）に見える
+  'loc-container-head': { lr: 0.08, family: FAMILY.STRUCT,   kind: 'inference' },
   'loc-size':           { lr: 1.7,  family: FAMILY.STRUCT,   kind: 'fact' },
   'loc-not-stack':      { lr: 2.2,  family: FAMILY.STRUCT,   kind: 'fact' },
   'loc-arith':          { lr: 2.6,  family: FAMILY.USAGE,    kind: 'fact' },

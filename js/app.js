@@ -24,6 +24,8 @@ import { buildObjcModel } from './objc.js';
 import { FieldIndex, EMPTY_FIELDS } from './fields.js';
 import { makeSampleFile } from './sample.js';
 import { ProgramIndex } from './program.js';
+import { foldShapes } from './shapes.js';
+import { recoverSchemas } from './schema.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -44,6 +46,10 @@ class App {
     this.programScan = null;    // worker から受け取った生の走査結果
     this.programKey = null;     // 索引がどのセクションのものか
     this.programBusy = null;    // 走査中の Promise（二重に走らせない）
+    this.shapes = null;         // 値のふるまい（shapes.js）。名前のないアプリ向けの土台。
+    this.shapesBusy = null;
+    this.schemas = null;        // データファイルの表（schema.js）
+    this.schemasBusy = null;
     this.lastGoal = null;       // 直近に調べた目的
     // Objective-C のクラスとフィールド。x0+0x20 を self.hp と言えるようにする索引。
     this.fields = EMPTY_FIELDS;
@@ -467,6 +473,10 @@ class App {
       this.program = null;
       this.programScan = null;
       this.programKey = null;
+      this.shapes = null;
+      this.shapesBusy = null;
+      this.schemas = null;
+      this.schemasBusy = null;
       this.lastGoal = null;
       clearAnalysisCache();
     }
@@ -556,6 +566,65 @@ class App {
       return this.program;
     })();
     return this.programBusy;
+  }
+
+  /**
+   * 値の「ふるまい」をコード全体から集める。
+   *
+   * 名前も文字列も残っていないアプリ（ゲーム本体が C++ のもの）で、値を見分ける
+   * ための土台。セクションを 1 回舐めるだけなので、18 MB でも 1 秒かからない。
+   * ファイル単位でキャッシュする。
+   */
+  async ensureShapes(onProgress) {
+    if (this.shapes) return this.shapes;
+    if (this.shapesBusy) return this.shapesBusy;
+    const region = this.codeRegion();
+    if (!region) return null;
+    const prev = this.backend.onScanProgress;
+    if (onProgress) {
+      this.backend.onScanProgress = (p) => onProgress({ phase: 'shapes', done: p.done, all: p.all });
+    }
+    this.shapesBusy = (async () => {
+      try {
+        const scan = await this.backend.valueShapes(region.id);
+        if (scan && !scan.cancelled) this.shapes = foldShapes(scan);
+      } catch {
+        this.shapes = null;          // 取れなくても、ほかの解析は続く
+      } finally {
+        this.backend.onScanProgress = prev;
+        this.shapesBusy = null;
+      }
+      return this.shapes;
+    })();
+    return this.shapesBusy;
+  }
+
+  /**
+   * データファイル（CSV / JSON）の表の形を、読み込み処理の命令から取り戻す。
+   *
+   * ゲームの数値はコードではなくデータファイルにある。バイナリに「攻撃力」の
+   * 文字は無くても、「何列目がどこに入るか」は命令に書いてある。ここがその入口。
+   * 文字列と呼び出し関係が要るので、先にそちらを用意してから走る。
+   */
+  async ensureSchemas(onProgress) {
+    if (this.schemas) return this.schemas;
+    if (this.schemasBusy) return this.schemasBusy;
+    this.schemasBusy = (async () => {
+      try {
+        const strings = await this.ensureStrings(onProgress);
+        const program = await this.ensureProgram(onProgress);
+        if (!program) { this.schemas = []; return this.schemas; }
+        const read = (addr, len) => this.backend.readAt(addr, len)
+          .then((r) => (r && r.found ? r.bytes : null)).catch(() => null);
+        this.schemas = await recoverSchemas({ strings, program, read, onProgress });
+      } catch {
+        this.schemas = [];        // 読めなくても、ほかの解析は続く
+      } finally {
+        this.schemasBusy = null;
+      }
+      return this.schemas;
+    })();
+    return this.schemasBusy;
   }
 
   /**
@@ -744,7 +813,11 @@ class App {
         .then((r) => (r && r.found ? r.bytes : null))
         .catch(() => null);
       try {
-        const model = await buildObjcModel(read, list);
+        // chained fixups のポインタは「イメージの先頭からの距離」なので、先頭が要る
+        const info = this.store.get('fileInfo');
+        const sl = info && info.slices ? info.slices[slice] : null;
+        const imageBase = sl && sl.info ? sl.info.textVM : null;
+        const model = await buildObjcModel(read, list, null, imageBase);
         if (this.store.get('sliceIndex') !== slice) return this.fields;
         this.objcModel = model;
         this.fields = new FieldIndex(model);

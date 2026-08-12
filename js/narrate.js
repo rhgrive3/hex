@@ -1494,6 +1494,17 @@ export function proofText(item) {
     case 'class-string':
       return pick('このクラスのメソッドが、目的に関係する文言を ' + d.n + ' 本参照している',
         'this class references ' + d.n + ' matching strings');
+    case 'third-party-class':
+      return pick('このクラスは、アプリが組み込んだ ' + (d.vendor || '外部') +
+        ' の SDK のもの — ゲーム自身の値ではない',
+      'this class belongs to the bundled ' + (d.vendor || 'third-party') +
+        ' SDK, not to the game itself');
+    case 'library-prefix-class':
+      return pick('同じ 2〜4 文字で始まるクラスが' +
+        (d.classes ? ' ' + d.classes + ' 個' : 'いくつも') +
+        'ある — 組み込んだライブラリのものらしい',
+      (d.classes ? d.classes + ' classes' : 'many classes') +
+        ' share this short uppercase prefix — it looks like a bundled library');
     case 'selector-match':
       return pick('このクラスに、目的の言葉を含むメソッドが ' + d.n + ' 個ある',
         d.n + ' methods of this class have matching names');
@@ -1537,6 +1548,28 @@ export function proofText(item) {
     case 'loc-not-stack':
       return pick('スタックの一時置き場ではなく、オブジェクトが持ち続けている場所',
         'not a stack temporary — a value the object keeps');
+
+    /* ふるまいから値を名指しするとき（名前も文言も残っていないアプリ） */
+    case 'loc-damage-source':
+      return pick('コード全体で ' + (d.usedAsAmount || 0) + ' か所、' +
+        '**別のオブジェクトの値を減らすための量**として使われている' +
+        (d.scaled ? '（倍率つき）' : ''),
+      'used in ' + (d.usedAsAmount || 0) + ' places as the amount subtracted ' +
+        'from another object’s value' + (d.scaled ? ', with a multiplier' : ''));
+    case 'loc-resource-drain':
+      return pick('別のオブジェクトから ' + (d.decreases || 0) + ' か所で減らされ、' +
+        (d.increases || 0) + ' か所で増える' + (d.clamped ? '。0 未満にならないよう止めている' : ''),
+      'decreased in ' + (d.decreases || 0) + ' places by other objects and increased in ' +
+        (d.increases || 0) + (d.clamped ? ', and held at zero' : ''));
+    case 'loc-self-resource':
+      return pick('同じオブジェクトの中だけで ' + (d.decreases || 0) + ' か所減り、' +
+        (d.increases || 0) + ' か所増える — 誰かに減らされる値ではない',
+      'goes down in ' + (d.decreases || 0) + ' places and up in ' + (d.increases || 0) +
+        ', always within its own object');
+    case 'loc-container-head':
+      return pick('前寄りの位置で、しかも小さな入れ物の中にしか出てこない — ' +
+        'C++ の容器の要素数や参照カウンタである可能性が高い',
+      'a low offset that only ever appears in small objects — likely a C++ container header');
 
     /* 処理を特定するとき */
     case 'fn-name-exact':

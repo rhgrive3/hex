@@ -262,6 +262,8 @@ export async function autoAnalyze(opts) {
       const common = {
         goal, fields, program, symbols, strings, region,
         map: report.map,
+        // 値のふるまい（名前のないアプリで唯一の手がかり）
+        shapes: o.shapes || null,
         analyze: memo,
         scanAccess: o.scanAccess || null,
         budget,
