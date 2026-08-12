@@ -127,6 +127,261 @@ export const GOALS = [
   },
 ];
 
+/* ── 値（フィールド）の名前をあてるための語彙 ────────────────
+ *
+ * 上の strong / weak は「画面に出る文言」を想定して書いてある。ところが
+ * メンバ変数の名前はそれとは書き方がまるで違う。
+ *
+ *     文言:   「HP が足りません」「ダメージ %d」
+ *     変数名:  _hp  _currentHP  m_hitPoint  hpMax
+ *
+ * さらに厄介なのは `\bhp\b` が `_hp` に当たらないこと（`_` は単語の文字なので
+ * 単語の境目にならない）。これを直さないと、いちばん効くはずの
+ * 「クラス表に書いてある名前」がまるごと素通りしてしまう。
+ *
+ * そこで名前を正規化してから当てる。`_currentHP` → `current hp`。
+ * ついでに「今の値なのか、上限なのか、初期値なのか」（役割）も見る。
+ * HP を増やしたい人が触りたいのは `hp` であって `maxHp` ではないので、
+ * ここを見分けられるかどうかで「1 位が正解かどうか」が変わる。
+ */
+
+/** `_currentHP` → `current hp`。当てはめはすべてこの形に対してやる。 */
+export function normalizeFieldName(name) {
+  let s = String(name || '');
+  s = s.replace(/^_+/, '').replace(/^m_/i, '').replace(/^s_/i, '').replace(/^g_/i, '');
+  // camelCase / PascalCase を分ける。HPValue → HP Value のように連続大文字も守る。
+  s = s.replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+    .replace(/[_\-.]+/g, ' ')
+    .replace(/([A-Za-z])([0-9])/g, '$1 $2');
+  return s.replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+/* 値の役割。同じ「hp」でも、今の値・上限・初期値では意味がまるで違う。 */
+const ROLE_RULES = [
+  { role: 'max', re: /\b(max|maximum|limit|cap|upper|full|総|最大)\b/ },
+  { role: 'min', re: /\b(min|minimum|lower|最小)\b/ },
+  { role: 'base', re: /\b(base|default|initial|init|origin|original|start|starting|素|基本|初期)\b/ },
+  { role: 'delta', re: /\b(delta|diff|add|bonus|buff|modifier|mod|rate|ratio|percent|倍率|補正)\b/ },
+  { role: 'count', re: /\b(count|num|number|times|total|len|length|size|回数|個数)\b/ },
+  { role: 'flag', re: /\b(is|has|can|should|enabled|flag)\b/ },
+  { role: 'current', re: /\b(cur|current|now|present|現在|今)\b/ },
+];
+
+/**
+ * その名前が「今の値」なのか「上限」なのかを見分ける。
+ * 何も付いていなければ 'plain'（＝素の値。たいていこれが本命）。
+ */
+export function fieldRole(name) {
+  const s = normalizeFieldName(name);
+  for (const r of ROLE_RULES) if (r.re.test(s)) return r.role;
+  return 'plain';
+}
+
+/*
+ * 目的ごとの、変数名としての語彙と、期待される型。
+ *
+ *   strong  … その目的の値なら、まずこの語が入っている
+ *   weak    … 入っていることもある、程度
+ *   type    … 'number'（整数か小数）/ 'bool' / 'text' / 'any'
+ *   prefer  … 望ましい役割。ここが合うと上がり、外れると下がる。
+ */
+const FIELD_VOCAB = {
+  hp: {
+    strong: [/\bhp\b/, /\bhps\b/, /\bhealth\b/, /\bhit ?points?\b/, /\blife\b/, /\blives\b/,
+      /体力/, /ライフ/, /耐久/],
+    weak: [/\bvitality\b/, /\bvit\b/, /\bdurability\b/],
+    type: 'number', prefer: ['plain', 'current'],
+  },
+  attack: {
+    strong: [/\battack\b/, /\batk\b/, /\bpower\b/, /\bstrength\b/, /\bstr\b/, /\boffen[cs]e\b/,
+      /攻撃/, /威力/],
+    weak: [/\bdamage\b/, /\bdmg\b/, /\bweapon\b/],
+    type: 'number', prefer: ['plain', 'current'],
+  },
+  defense: {
+    strong: [/\bdefen[cs]e\b/, /\bdef\b/, /\barmou?r\b/, /\bresist(ance)?\b/, /\bguard\b/,
+      /防御/, /耐性/],
+    weak: [/\bshield\b/, /\bblock\b/],
+    type: 'number', prefer: ['plain', 'current'],
+  },
+  damage: {
+    strong: [/\bdamage\b/, /\bdmg\b/, /ダメージ/],
+    weak: [/\bcritical\b/, /\bcrit\b/, /\bhit\b/],
+    type: 'number', prefer: ['plain', 'delta'],
+  },
+  money: {
+    strong: [/\bcoins?\b/, /\bgold\b/, /\bgems?\b/, /\bjewels?\b/, /\bmoney\b/, /\bcurrency\b/,
+      /\bwallet\b/, /\bcash\b/, /\bcredits?\b/, /\bbalance\b/,
+      /コイン/, /ゴールド/, /所持金/, /ジェム/, /通貨/],
+    weak: [/\bamount\b/, /\bprice\b/, /\bcost\b/, /\bstone\b/],
+    type: 'number', prefer: ['plain', 'current'],
+  },
+  gacha: {
+    strong: [/\bgacha\b/, /\blottery\b/, /\bsummon\b/, /\bdraw\b/, /ガチャ/, /抽選/],
+    weak: [/\brate\b/, /\bprobability\b/, /\bchance\b/, /\brarity\b/, /\bweight\b/],
+    type: 'number', prefer: ['plain'],
+  },
+  purchase: {
+    strong: [/\bpurchase\b/, /\bpayment\b/, /\bbilling\b/, /\breceipt\b/, /\btransaction\b/,
+      /\bproduct\b/, /\bsubscription\b/, /課金/, /購入/],
+    weak: [/\bprice\b/, /\bstore\b/, /\bpaid\b/],
+    type: 'any', prefer: ['plain'],
+  },
+  login: {
+    strong: [/\blogin\b/, /\bauth\b/, /\btoken\b/, /\bpassword\b/, /\bcredential\b/,
+      /\bsession\b/, /\baccount\b/, /ログイン/, /認証/],
+    weak: [/\buser\b/, /\buid\b/, /\bprofile\b/],
+    type: 'any', prefer: ['plain'],
+  },
+  ads: {
+    strong: [/\bads?\b/, /\binterstitial\b/, /\brewarded\b/, /\bbanner\b/, /\badmob\b/, /広告/],
+    weak: [/\bimpression\b/, /\bplacement\b/],
+    type: 'any', prefer: ['plain'],
+  },
+  save: {
+    strong: [/\bsave\b/, /\bsave ?data\b/, /\bpersist\b/, /\barchive\b/, /\buser ?defaults?\b/,
+      /セーブ/, /保存/],
+    weak: [/\bstorage\b/, /\bcache\b/, /\bfile\b/],
+    type: 'any', prefer: ['plain'],
+  },
+  network: {
+    strong: [/\burl\b/, /\bendpoint\b/, /\brequest\b/, /\bresponse\b/, /\bhost\b/, /\bapi\b/,
+      /\bsession\b/, /通信/],
+    weak: [/\btimeout\b/, /\bretry\b/, /\bheader\b/],
+    type: 'any', prefer: ['plain'],
+  },
+  score: {
+    strong: [/\bscore\b/, /\bhigh ?score\b/, /\branking\b/, /\brank\b/, /スコア/, /得点/],
+    weak: [/\bpoints?\b/, /\brecord\b/, /\bresult\b/],
+    type: 'number', prefer: ['plain', 'current'],
+  },
+  level: {
+    strong: [/\blevel\b/, /\blv\b/, /\blvl\b/, /\bexp\b/, /\bexperience\b/, /レベル/, /経験値/],
+    weak: [/\brank\b/, /\bgrade\b/, /\bstage\b/],
+    type: 'number', prefer: ['plain', 'current'],
+  },
+  stamina: {
+    strong: [/\bstamina\b/, /\benergy\b/, /\bap\b/, /\bsp\b/, /\bfuel\b/, /スタミナ/, /行動力/],
+    weak: [/\brecover\b/, /\bconsume\b/],
+    type: 'number', prefer: ['plain', 'current'],
+  },
+  item: {
+    strong: [/\bitems?\b/, /\binventory\b/, /\bequip(ment)?\b/, /\bbag\b/, /アイテム/, /所持品/, /装備/],
+    weak: [/\bcount\b/, /\bquantity\b/, /\bstock\b/, /\bmaterial\b/],
+    type: 'any', prefer: ['plain'],
+  },
+  anticheat: {
+    strong: [/\bjailbroken?\b/, /\btamper(ed)?\b/, /\bintegrity\b/, /\bcheat(ing)?\b/,
+      /\bdebugger\b/, /\bsecure\b/, /改造/, /不正/],
+    weak: [/\bdetect(ed)?\b/, /\bverified\b/, /\bvalid\b/],
+    type: 'bool', prefer: ['flag', 'plain'],
+  },
+};
+
+export function fieldVocab(goalId) { return FIELD_VOCAB[goalId] || null; }
+
+/**
+ * 変数の名前が、その目的にどれだけ当てはまるか。
+ *
+ * @returns {{score:number, term:string, exact:boolean, role:string}|null}
+ */
+export function matchField(goal, name) {
+  if (!goal || !name) return null;
+  const norm = normalizeFieldName(name);
+  if (!norm) return null;
+  const role = fieldRole(name);
+  const vocab = FIELD_VOCAB[goal.id];
+  let best = null;
+  const consider = (score, term, exact) => {
+    if (!best || score > best.score) best = { score, term, exact: !!exact, role };
+  };
+
+  if (vocab) {
+    for (const re of vocab.strong) {
+      const m = norm.match(re);
+      if (!m) continue;
+      // 名前がその語だけでできている（`_hp` → `hp`）なら、これ以上ない一致
+      consider(norm === m[0].trim() ? 1 : 0.75, m[0], norm === m[0].trim());
+    }
+    for (const re of vocab.weak) {
+      const m = norm.match(re);
+      if (m) consider(0.4, m[0], false);
+    }
+  }
+  // 自由入力（プリセットにない目的）は、入力から開いた語で当てる
+  for (const term of goal.extraTerms || []) {
+    const w = String(term.word).toLowerCase();
+    if (w.length < 2) continue;
+    const re = new RegExp('\\b' + w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b');
+    if (re.test(norm)) consider((norm === w ? 0.95 : 0.7) * (term.weight || 1), term.word, norm === w);
+  }
+  if (!best && !vocab) {
+    // プリセットの文言用の語彙でも一応見る（日本語名の変数など）
+    const m = matchText(goal, norm);
+    if (m) consider(m.score * 0.6, m.term, false);
+  }
+  if (!best) return null;
+
+  /* 役割による上下。「今の値」が本命で、「上限」「初期値」は別物。 */
+  const prefer = (vocab && vocab.prefer) || ['plain'];
+  if (prefer.includes(best.role)) best.score *= 1;
+  else if (best.role === 'max' || best.role === 'base' || best.role === 'min') best.score *= 0.45;
+  else if (best.role === 'delta' || best.role === 'count') best.score *= 0.7;
+  else best.score *= 0.85;
+
+  return best;
+}
+
+/**
+ * 目的が期待している型に、その値の型が合っているか。
+ * @returns {'fit'|'conflict'|'unknown'}
+ */
+export function typeFits(goal, type) {
+  if (!goal || !type) return 'unknown';
+  const want = (FIELD_VOCAB[goal.id] || {}).type || 'any';
+  if (want === 'any') return 'unknown';
+  const kind = type.kind;
+  if (want === 'number') {
+    if (kind === 'int' || kind === 'float') {
+      // BOOL（1 バイトの char）は数値ではあるが、HP や所持金ではない
+      if (type.bool && type.bytes === 1) return 'conflict';
+      return 'fit';
+    }
+    if (kind === 'object' || kind === 'cstring' || kind === 'class' ||
+        kind === 'selector' || kind === 'block' || kind === 'pointer') return 'conflict';
+    return 'unknown';
+  }
+  if (want === 'bool') {
+    if (kind === 'bool' || (kind === 'int' && type.bytes === 1)) return 'fit';
+    if (kind === 'object' || kind === 'float') return 'conflict';
+    return 'unknown';
+  }
+  if (want === 'text') {
+    if (kind === 'object' && (!type.className || /String/i.test(type.className))) return 'fit';
+    if (kind === 'cstring') return 'fit';
+    if (kind === 'int' || kind === 'float') return 'conflict';
+  }
+  return 'unknown';
+}
+
+/**
+ * セレクタ（メソッド名）が、その値のアクセサかどうか。
+ *   hp / isHp        → getter
+ *   setHp:           → setter
+ */
+export function accessorKind(sel, fieldName) {
+  if (!sel || !fieldName) return null;
+  const plain = String(fieldName).replace(/^_+/, '');
+  const s = String(sel).replace(/:$/, '');
+  if (s === plain) return 'getter';
+  if (s.toLowerCase() === plain.toLowerCase()) return 'getter';
+  const setter = 'set' + plain.charAt(0).toUpperCase() + plain.slice(1);
+  if (s === setter || s.toLowerCase() === setter.toLowerCase()) return 'setter';
+  if (s === 'is' + plain.charAt(0).toUpperCase() + plain.slice(1)) return 'getter';
+  return null;
+}
+
 export function goalById(id) { return GOALS.find((g) => g.id === id) || null; }
 
 export function goalLabel(goal) {

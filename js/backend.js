@@ -92,6 +92,20 @@ export class Backend {
   /** そのフィールド（クラスの中の位置）を読み書きしている命令を全部探す。 */
   fieldAccess(params) { return this.call('fieldAccess', params); }
 
+  /**
+   * 複数の位置を 1 回の走査でまとめて調べる。
+   * 候補ごとにセクションを舐め直さないための入口（特定の決着に使う）。
+   * @returns {Promise<Map<string, Array>>} ずらし幅（10 進の文字列）→ 読み書きした命令
+   */
+  fieldAccessMany(regionId, offsets) {
+    return this.call('fieldAccess', { regionId, offsets }).then((res) => {
+      const out = new Map();
+      const groups = (res && res.groups) || {};
+      for (const key of Object.keys(groups)) out.set(key, groups[key]);
+      return out;
+    });
+  }
+
   strings(params) { return this.call('strings', params); }
 
   xrefs(params) { return this.call('xrefs', params); }

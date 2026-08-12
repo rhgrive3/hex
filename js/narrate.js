@@ -1287,6 +1287,16 @@ export function autoStepText(s) {
   if (!s) return '';
   const d = s.detail || {};
   switch (s.code) {
+    case 'open-pinned':
+      return pick('「' + d.label + '」は ' + d.className + ' の ' + d.field + ' で確定しています。' +
+        (d.addr ? hex(d.addr) + ' がそれを書き換えている場所なので、まずそこを開く'
+          : 'まずその値を開いて、書き換えている場所を確かめる'),
+      '“' + d.label + '” resolved to ' + d.className + '.' + d.field +
+        (d.addr ? ' — open ' + hex(d.addr) + ', the place that writes it' : ''));
+    case 'decide-ambiguous':
+      return pick('「' + d.label + '」は ' + d.a + (d.b ? ' と ' + d.b : '') +
+        ' のどちらかまで絞れています。両方を開いて、実際に読み書きしている場所を見比べる',
+      '“' + d.label + '” narrowed to ' + d.a + (d.b ? ' or ' + d.b : '') + ' — compare where each is used');
     case 'open-update':
       return pick('値を書き換えている場所（' + hex(d.addr) + (d.name ? ' / ' + d.name : '') +
         '）を開いて、何を増減させているか確かめる',
@@ -1312,6 +1322,264 @@ export function autoStepText(s) {
         'finally, run the app and check whether the value really changes');
     default: return '';
   }
+}
+
+/* ────────────────────────────────────────────────────────────
+   特定の結果 — 「これです」と言えるか、言えないなら何が足りないか
+   ──────────────────────────────────────────────────────────── */
+
+/** 決着の言葉。ここを曖昧にすると、ツール全体が信用できなくなる。 */
+export function verdictText(v) {
+  switch (v) {
+    case 'confirmed': return pick('確定', 'confirmed');
+    case 'likely': return pick('ほぼ確実', 'very likely');
+    case 'ambiguous': return pick('絞りきれていません', 'not narrowed down');
+    default: return pick('見つかりませんでした', 'not found');
+  }
+}
+
+/** 決着の一行説明。 */
+export function verdictLead(v) {
+  switch (v) {
+    case 'confirmed':
+      return pick('逆アセンブルまで降りて確かめました。これで間違いありません。',
+        'Checked all the way down to the instructions — this is it.');
+    case 'likely':
+      return pick('根拠はそろっていますが、命令での裏取りが 1 つ足りません。',
+        'The evidence lines up, but one instruction-level check is missing.');
+    case 'ambiguous':
+      return pick('上位の候補が拮抗しているため、1 つに決めていません。' +
+        '決めつけるより、両方を見てもらった方が確実です。',
+      'The top candidates are too close to call, so nothing is being declared.');
+    default:
+      return pick('この目的に当てはまる値は見つかりませんでした。',
+        'No value matching this goal was found.');
+  }
+}
+
+/** 確定と言えない理由。何をすれば決まるかまで書く。 */
+export function missingText(code) {
+  switch (code) {
+    case 'need-name-evidence':
+      return pick('この目的に結びつく手がかりがありません。' +
+        '「ゲームの数値らしい」ことは確かめられましたが、それが探しているものだとは言えません',
+      'nothing ties this to the goal you picked — it is a game value, but not provably this one');
+    case 'need-verification':
+      return pick('命令まで降りた裏取りがまだありません（アクセサが無いか、読めませんでした）',
+        'no instruction-level confirmation yet');
+    case 'need-independent-evidence':
+      return pick('別々の種類の根拠が足りません（名前だけ、型だけ、では確定にしません）',
+        'not enough independent kinds of evidence');
+    case 'need-more-evidence':
+      return pick('根拠の量が足りません', 'not enough evidence overall');
+    case 'need-separation':
+      return pick('2 番目の候補との差が小さく、どちらとも言えません',
+        'the runner-up is too close');
+    case 'no-class-table':
+      return pick('Objective-C のクラス表がないため、値の名前から特定できません',
+        'no Objective-C class table, so fields cannot be named');
+    case 'no-match':
+      return pick('この目的に当てはまる名前の値がありませんでした',
+        'no field name matched this goal');
+    case 'no-name':
+      return pick('この値の名前がバイナリに残っていません。場所と形までは確かめられましたが、' +
+        'それが本当にこの目的の値かどうかは、名前からは裏付けられません',
+      'this value has no name in the binary, so the match cannot be confirmed by name');
+    case 'no-value-change':
+      return pick('読んで計算して書き戻している場所が見つかりませんでした',
+        'no read–modify–write of any value was found');
+    case 'no-candidate':
+      return pick('手がかりが 1 つも見つかりませんでした', 'no clue at all was found');
+    default: return '';
+  }
+}
+
+/** 「×12 倍」。掛け算の効きをそのまま見せる。 */
+export function factorText(factor) {
+  if (!(factor > 0)) return '';
+  if (factor >= 1) {
+    const n = factor >= 10 ? Math.round(factor) : Math.round(factor * 10) / 10;
+    return '×' + n;
+  }
+  const n = Math.round((1 / factor) * 10) / 10;
+  return pick('÷' + n, '÷' + n);
+}
+
+/** 確率を、言い過ぎない日本語にする。 */
+export function probabilityText(p) {
+  if (!(p >= 0)) return '';
+  if (p >= 0.999) return pick('99.9% 以上', 'over 99.9%');
+  if (p >= 0.99) return pick('99% 以上', 'over 99%');
+  return Math.round(p * 100) + '%';
+}
+
+/**
+ * 証拠 1 行ぶんの日本語。
+ * evidence.js のコードだけを受け取り、ここで初めて言葉にする。
+ */
+export function proofText(item) {
+  if (!item) return '';
+  const d = item.detail || {};
+  switch (item.code) {
+    /* 名前 */
+    case 'field-name-exact':
+      return pick('クラス表に書かれている名前が「' + trim(d.name, 32) + '」そのものである',
+        'the class table calls this field exactly “' + trim(d.name, 32) + '”');
+    case 'field-name-strong':
+      return pick('名前「' + trim(d.name, 32) + '」に、探している言葉が入っている',
+        'the name “' + trim(d.name, 32) + '” contains what you are looking for');
+    case 'field-name-weak':
+      return pick('名前「' + trim(d.name, 32) + '」が、ゆるく当てはまる',
+        'the name “' + trim(d.name, 32) + '” loosely matches');
+    case 'property-name':
+      return pick('プロパティの名前が一致している', 'the declared property name matches');
+    case 'accessor-name':
+      return pick('この値を読み書きするための専用メソッド（' +
+        [d.getter, d.setter].filter(Boolean).join(' / ') + '）がある',
+      'dedicated accessors exist (' + [d.getter, d.setter].filter(Boolean).join(' / ') + ')');
+
+    /* 逆アセンブルで確かめたもの — ここが確定の決め手 */
+    case 'getter-verified':
+      return pick('-[' + d.className + ' ' + d.sel + '] を実際に逆アセンブルしたところ、' +
+        '本当にこの位置（' + hexOffset(d.offset) + '）を読んで返していた' +
+        (d.exclusive ? '（ほかの位置は触っていない）' : ''),
+      '-[' + d.className + ' ' + d.sel + '] really does read offset ' + hexOffset(d.offset));
+    case 'setter-verified':
+      return pick('-[' + d.className + ' ' + d.sel + '] を逆アセンブルしたところ、' +
+        '本当にこの位置（' + hexOffset(d.offset) + '）へ' +
+        (d.fromArgument ? '引数の値を' : '') + '書き込んでいた',
+      '-[' + d.className + ' ' + d.sel + '] really does write offset ' + hexOffset(d.offset));
+    case 'access-verified':
+      return pick(d.className + ' 自身のメソッド（' + d.sel + '）が、この位置を' +
+        [d.loads ? d.loads + ' 回読み' : '', d.stores ? d.stores + ' 回書いて' : '']
+          .filter(Boolean).join('、') + 'いるのを命令で確認した',
+      d.className + '’s own method ' + d.sel + ' really touches this offset');
+    case 'rmw-verified':
+      return pick('この値を読んで、計算して、同じ場所へ書き戻している命令が実在する' +
+        (d.address != null ? '（' + hex(d.address) + '）' : ''),
+      'a real read–modify–write of this value exists' +
+        (d.address != null ? ' at ' + hex(d.address) : ''));
+    case 'guard-verified':
+      return pick('この値を定数' + (d.value != null ? '（' + d.value + '）' : '') +
+        'と比べて分岐している場所がある — しきい値の判定',
+      'this value is compared against a constant and branched on');
+
+    /* 型・大きさ */
+    case 'type-numeric':
+      return pick('型が数値（' + typeWord(d.type) + '）で、探しているものと合う',
+        'the declared type is numeric, which fits');
+    case 'type-declared':
+      return pick('宣言されている型が、探しているものと合う', 'the declared type fits');
+    case 'type-conflict':
+      return pick('型が ' + typeWord(d.type) + ' で、探しているものとは合わない',
+        'the declared type does not fit what you are looking for');
+    case 'size-fits':
+      return d.measured
+        ? pick('命令が読み書きしている大きさ（' + d.size + ' バイト）が、表の記載と一致した',
+          'the size the instruction uses matches the table')
+        : pick('大きさが ' + d.size + ' バイトで、数を入れる値として自然',
+          'the size is ' + d.size + ' bytes, natural for a number');
+
+    /* まわり */
+    case 'class-category':
+      return pick('持ち主の ' + d.className + ' が、この目的を担当する部品に分類されている',
+        d.className + ' is grouped into the part that handles this');
+    case 'class-name':
+      return pick('持ち主のクラス名「' + trim(d.className, 32) + '」が、探している言葉を含む',
+        'the owning class name matches');
+    case 'sibling-fields':
+      return pick('同じ ' + d.className + ' の中に、関係する値が ' + d.n + ' 個そろっている',
+        d.n + ' related fields sit in the same class');
+    case 'class-string':
+      return pick('このクラスのメソッドが、目的に関係する文言を ' + d.n + ' 本参照している',
+        'this class references ' + d.n + ' matching strings');
+    case 'selector-match':
+      return pick('このクラスに、目的の言葉を含むメソッドが ' + d.n + ' 個ある',
+        d.n + ' methods of this class have matching names');
+
+    /* 使われ方 */
+    case 'rmw-observed':
+      return pick('読んで計算して書き戻す形が見つかっている', 'a read–modify–write shape was found');
+    case 'compare-observed':
+      return pick('定数と比べられている', 'it is compared against a constant');
+    case 'written-in-class':
+      return pick('持ち主のクラス自身が、この値に ' + d.n + ' 回書き込んでいる',
+        'the owning class writes it ' + d.n + ' times');
+    case 'usage-balanced':
+      return pick('読み書きの両方があり、持ち回っている値として自然',
+        'both reads and writes exist');
+    case 'usage-none':
+      return pick('この位置を読み書きしている命令が 1 つも見つからない',
+        'nothing reads or writes this offset');
+
+    /* 名前のない「場所」を特定するとき（クラス表のないアプリ） */
+    case 'loc-rmw':
+      return pick('この場所を読んで、計算して、同じ場所へ書き戻している命令が実在する' +
+        (d.address != null ? '（' + hex(d.address) + '）' : ''),
+      'a real read–modify–write of this location exists');
+    case 'loc-arith':
+      return pick('書き戻す前に計算をはさんでいる — 値の増減そのもの',
+        'arithmetic happens before the write-back');
+    case 'loc-guard':
+      return pick('同じ処理の中で、定数' + (d.value != null ? '（' + d.value + '）' : '') +
+        'と比べて分岐している', 'the same routine compares against a constant');
+    case 'loc-in-goal-fn':
+      return pick('目的に関係する文言を参照している処理' +
+        (d.name ? '（' + trim(d.name, 28) + '）' : '') + 'の中にある',
+      'it sits inside a routine that references matching text');
+    case 'loc-shared':
+      return pick(d.n + ' 個の処理が、同じこの場所を扱っている',
+        d.n + ' routines all use this same location');
+    case 'loc-size':
+      return pick('大きさが ' + d.size + ' バイトで、数を入れる値として自然',
+        'the size is ' + d.size + ' bytes, natural for a number');
+    case 'loc-not-stack':
+      return pick('スタックの一時置き場ではなく、オブジェクトが持ち続けている場所',
+        'not a stack temporary — a value the object keeps');
+
+    /* 処理を特定するとき */
+    case 'fn-name-exact':
+      return pick('処理の名前「' + trim(d.name, 40) + '」が、目的そのものを指している',
+        'the function name “' + trim(d.name, 40) + '” names the goal itself');
+    case 'fn-name-match':
+      return pick('処理の名前が目的の言葉を含む', 'the function name matches');
+    case 'fn-selector':
+      return pick('メソッド名「' + trim(d.sel, 32) + '」が目的の言葉を含む',
+        'the selector “' + trim(d.sel, 32) + '” matches');
+    case 'fn-string-ref':
+      return pick('目的に関係する文言を、この処理が実際に参照している',
+        'this function really references matching text');
+    case 'fn-touches-field':
+      return pick('特定した値（' + d.className + '.' + d.name + '）を、この処理が実際に読んでいる',
+        'this function really reads the field that was identified');
+    case 'fn-writes-field':
+      return d.className
+        ? pick('特定した値（' + d.className + '.' + d.name + '）を、この処理が実際に書き換えている',
+          'this function really writes the field that was identified')
+        : pick('自分が持っている値へ ' + d.n + ' 回書き込んでいる',
+          'it writes its own fields ' + d.n + ' times');
+    case 'fn-owner-class':
+      return pick('この処理を持っているクラスの名前が目的に合う', 'the owning class name fits');
+    case 'fn-numeric':
+      return pick('中で ' + d.n + ' 回の掛け算・割り算をしている',
+        'it does ' + d.n + ' multiplications or divisions');
+    case 'fn-called-often':
+      return pick('あちこちから呼ばれている', 'it is called from many places');
+    case 'fn-too-large':
+      return pick('大きすぎて、目的の計算そのものとは考えにくい',
+        'it is too large to be the calculation itself');
+    case 'fn-caller-match':
+      return pick('目的に合う名前の処理から呼ばれている', 'it is called by a matching function');
+    case 'fn-callee-match':
+      return pick('目的に合う名前の処理を呼んでいる', 'it calls a matching function');
+    default: return '';
+  }
+}
+
+function hexOffset(v) {
+  if (v == null) return '';
+  const n = typeof v === 'bigint' ? v : BigInt(v);
+  return '+0x' + n.toString(16).toUpperCase();
 }
 
 /* ── ビューア用のオーバーレイ ──────────────────────────────── */

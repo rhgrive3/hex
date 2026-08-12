@@ -34,9 +34,12 @@ import {
   nextStepText, updateLines, useText, shapeText, roleLabel,
   findingTitle, findingWhy, notableReasonText, autoStepText,
   typeWord, placeName, oneLiner, whatItDoes, changeVerb,
+  verdictText, verdictLead, missingText, proofText, factorText, probabilityText,
 } from './narrate.js';
 import { autoAnalyze, autoNextSteps } from './auto.js';
 import { plainFieldName } from './fields.js';
+import { pinpointField, pinpointLocation } from './pinpoint.js';
+import { VERDICT } from './evidence.js';
 
 /* ── ファイル情報 ────────────────────────────────────────── */
 
@@ -1698,6 +1701,7 @@ export function showOverview(app) {
       const report = await autoAnalyze({
         strings, program, symbols: app.symbols, region, fields: app.fields,
         analyze: makeAnalyzer(app, region),
+        scanAccess: makeAccessScanner(app, region),
         isCancelled: () => cancelled || !sheet.root.isConnected,
         onProgress: (p) => {
           box.set({ done: p.done, all: p.all });
@@ -1719,11 +1723,82 @@ export function showOverview(app) {
 function autoPhaseText(phase) {
   switch (phase) {
     case 'features': return pick('言葉を機能ごとに分けています…', 'Sorting the text by feature…');
+    case 'map': return pick('アプリを部品に分けています…', 'Splitting the app into parts…');
     case 'goals': return pick('目的ごとに、関係のありそうな関数を採点しています…', 'Scoring candidates for every goal…');
+    case 'pinpoint': return pick('値を 1 つに絞り込んでいます…', 'Narrowing each goal down to one value…');
+    case 'verify': return pick('候補を逆アセンブルして、本当にその値かを確かめています…',
+      'Disassembling the candidates to confirm…');
+    case 'pinpoint-fn': return pick('その値を書き換えている処理を確かめています…',
+      'Confirming which routine changes it…');
     case 'notable': return pick('よく使われている処理を選んでいます…', 'Picking the routines that matter…');
     case 'deep': return pick('有力な関数の中身を読んでいます…', 'Reading the strongest candidates…');
     default: return pick('まとめています…', 'Wrapping up…');
   }
+}
+
+/**
+ * 自動解析の特定用。位置をまとめて渡して、1 回の走査で全部の読み書きを取る。
+ * 候補ごとにセクションを舐め直すと、数十 MB × 候補数になってしまうため。
+ */
+function makeAccessScanner(app, region) {
+  if (!region) return null;
+  return async (list) => {
+    const offsets = (list || []).map((x) => ({ offset: x.offset, size: x.size || 0 }));
+    if (!offsets.length) return new Map();
+    return app.backend.fieldAccessMany(region.id, offsets);
+  };
+}
+
+/**
+ * その目的の「これです」を用意する。
+ *
+ * 自動解析ですでに決着していればそれを使い、なければその場で決めにいく。
+ * 同じ目的を開き直すたびに逆アセンブルし直さないよう、結果は取っておく。
+ */
+async function pinnedFor(app, goal, ctx) {
+  if (!goal) return null;
+  const report = app.autoReport && app.autoReport.report ? app.autoReport.report : null;
+  const fromAuto = report && report.pinned
+    ? report.pinned.find((p) => p.goal && p.goal.id === goal.id && p.goal.text === goal.text)
+    : null;
+  if (fromAuto) return fromAuto;
+
+  if (!app.pinnedCache) app.pinnedCache = new Map();
+  const key = goal.id + ' ' + goal.text + ' ' + app.symbols.gen;
+  if (app.pinnedCache.has(key)) return app.pinnedCache.get(key);
+
+  const region = ctx.region;
+  if (ctx.box) ctx.box.say(pick('値を 1 つに絞り込んでいます…', 'Narrowing down to one value…'));
+  const common = {
+    goal,
+    fields: app.fields,
+    program: ctx.program,
+    symbols: app.symbols,
+    strings: ctx.strings || [],
+    region,
+    map: report ? report.map : null,
+    analyze: makeAnalyzer(app, region),
+    scanAccess: makeAccessScanner(app, region),
+    // 1 つの目的だけを見にきているので、ここでは予算を広く取る
+    budget: { left: 48 },
+    limit: 12,
+    onProgress: (x) => { if (ctx.box) ctx.box.set(x); },
+  };
+  const p = (async () => {
+    let pin = null;
+    if (app.fields && app.fields.classCount) {
+      pin = await pinpointField(common).catch(() => null);
+    }
+    // クラス表がない（Swift だけ・名前を潰したアプリ）なら、形から場所を決めにいく
+    if ((!pin || !pin.top) && ctx.ranked && ctx.ranked.length) {
+      const loc = await pinpointLocation(Object.assign({}, common, { ranked: ctx.ranked }))
+        .catch(() => null);
+      if (loc && loc.top) pin = loc;
+    }
+    return pin;
+  })();
+  app.pinnedCache.set(key, p);
+  return p;
 }
 
 /** 自動解析の深掘り用。関数 1 つを解析してモデルだけ返す。 */
@@ -2034,14 +2109,297 @@ export function showField(app, className, field) {
   });
 }
 
+/* ────────────────────────────────────────────────────────────
+   「これです」— 目的 1 つに対する、決着した答え
+   ────────────────────────────────────────────────────────────
+
+   このツールで、いちばん見せたい画面。
+   候補を並べるのではなく、1 個を出して、なぜそれで確定なのかを全部見せる。
+   確定できなかったときは、確定できなかったと言って、何が足りないかを書く。 */
+
+/** 決着の見出し（確定 / ほぼ確実 / 絞りきれていません）。 */
+function verdictBadge(verdict) {
+  const box = el('div', 'verdict verdict-' + verdict);
+  box.append(el('div', 'verdict-word', verdictText(verdict)));
+  box.append(el('div', 'verdict-lead', verdictLead(verdict)));
+  return box;
+}
+
+/**
+ * 特定したものの名前。
+ * クラス表があれば `BattleManager.hp`、無ければ `オブジェクトの +0x20 の値`。
+ * 名前が無いことを、名前があるかのように見せない。
+ */
+function pinnedName(c) {
+  if (!c) return '';
+  if (c.kind === 'location') {
+    return pick('オブジェクトの ' + offsetHex(BigInt(c.offset)) + ' にある値',
+      'the value at ' + offsetHex(BigInt(c.offset)));
+  }
+  return c.className + '.' + c.plain;
+}
+
+/** 特定した値 1 個ぶんの見出し行。 */
+function pinnedHeadline(pin) {
+  const c = pin.top;
+  const box = el('div', 'pinned-head');
+  box.append(el('div', 'pinned-name', pinnedName(c)));
+  const bits = [];
+  const type = typeWord(c.type);
+  if (type) bits.push(type);
+  bits.push(c.kind === 'location'
+    ? pick('その場所の先頭から ' + offsetHex(BigInt(c.offset)), 'at ' + offsetHex(BigInt(c.offset)))
+    : pick('先頭から ' + offsetHex(BigInt(c.offset)), 'at ' + offsetHex(BigInt(c.offset))));
+  if (c.size) bits.push(c.size + pick(' バイト', ' bytes'));
+  box.append(el('div', 'pinned-sub', bits.join('  ·  ')));
+  return box;
+}
+
+export function showPinned(app, pin) {
+  if (!pin || !pin.top) return;
+  const goal = pin.goal;
+  const sheet = new Sheet(goalLabel(goal));
+  const body = sheet.body;
+  const c = pin.top;
+
+  body.append(verdictBadge(pin.verdict));
+  body.append(pinnedHeadline(pin));
+
+  /* 1. 確からしさ。掛け算の出発点と結果を、隠さずに出す。 */
+  const ul = list();
+  ul.append(kvRow(pick('確からしさ', 'Confidence'), probabilityText(c.fusion.probability)));
+  ul.append(kvRow(pick('調べた値の数', 'Values considered'),
+    pin.universe.toLocaleString() + pick(' 個の中から', '')));
+  if (pin.runnerUp) {
+    ul.append(kvRow(pick('2 番目の候補との差', 'Lead over runner-up'),
+      Number.isFinite(pin.marginRatio)
+        ? pick(Math.round(pin.marginRatio).toLocaleString() + ' 倍',
+          Math.round(pin.marginRatio).toLocaleString() + '×')
+        : pick('比べるものがありません', 'nothing to compare')));
+    ul.append(kvRow(pick('2 番目の候補', 'Runner-up'), pinnedName(pin.runnerUp)));
+  }
+  if (pin.checked) {
+    ul.append(kvRow(pick('実際に読んだ処理', 'Routines disassembled'),
+      pin.checked + pick(' 個', '')));
+  }
+  body.append(ul);
+
+  /* 2. なぜそう言えるか。ここがこの画面の本体。 */
+  body.append(el('div', 'sec-title', pick('なぜ、これだと言えるのか',
+    'Why this is the answer')));
+  body.append(para(pick(
+    '下の 1 行ずつが独立した根拠です。右の数字は「その根拠があると、' +
+    'どれだけ確からしさが上がるか」の倍率です。掛け合わせた結果が上の確からしさになります。',
+    'Each line below is an independent piece of evidence; the number is how much it multiplies the odds.')));
+  const wl = list();
+  for (const w of c.why) {
+    const text = proofText(w);
+    if (!text) continue;
+    const kind = w.kind === 'verified' ? pick('検証済', 'verified')
+      : w.kind === 'fact' ? pick('事実', 'fact') : pick('推測', 'inference');
+    wl.append(tapRow(text, {
+      right: factorText(w.factor),
+      tag: kind,
+      tagClass: w.kind === 'inference' ? 'tag-infer' : 'tag-fact',
+      sub: w.count > 1 ? pick(w.count + ' 件', w.count + ' items') : null,
+    }));
+  }
+  body.append(wl);
+  body.append(para(pick(
+    '「検証済」は、実際にその処理を逆アセンブルして命令を確かめたものです。' +
+    'クラス表にそう書いてあるだけの「事実」より、一段強い根拠になります。',
+    '“Verified” means the instructions were actually disassembled and checked.'), 'sub'));
+
+  /* 3. 確定でないなら、何が足りないのかを必ず書く。 */
+  if (pin.verdict !== VERDICT.CONFIRMED && pin.missing.length) {
+    const nb = block(pick('確定と言えない理由', 'Why this is not confirmed'));
+    const ol = el('ul', 'story-steps');
+    for (const m of pin.missing) {
+      const text = missingText(m);
+      if (!text) continue;
+      const li = el('li');
+      li.append(el('i', null, '•'));
+      li.append(el('span', null, text));
+      ol.append(li);
+    }
+    nb.append(ol);
+    body.append(nb);
+  }
+
+  /* 4. 検証の記録。何を読んで、何が確かめられたか。 */
+  if (c.verifications && c.verifications.length) {
+    body.append(el('div', 'sec-title', pick('実際に読んだ処理', 'What was disassembled')));
+    const vl = list();
+    for (const v of c.verifications) {
+      if (!v.sel) continue;
+      const r = v.result || {};
+      const ok = (v.what === 'getter' && r.getter) || (v.what === 'setter' && r.setter);
+      vl.append(tapRow('-[' + c.className + ' ' + v.sel + ']', {
+        sub: addrHex(v.addr) + '  ·  ' + (ok
+          ? pick('この位置を' + (v.what === 'getter' ? '読んで' : '書いて') + 'いました',
+            'really ' + (v.what === 'getter' ? 'reads' : 'writes') + ' this offset')
+          : pick('この位置は触っていませんでした', 'does not touch this offset')),
+        tag: ok ? pick('一致', 'match') : pick('不一致', 'no match'),
+        tagClass: ok ? 'tag-fact' : 'tag-infer',
+        onTap: () => { sheet.close(); showFunctionReport(app, v.addr, goal); },
+      }));
+    }
+    body.append(vl);
+  }
+
+  /* 5. どこを変えればいいか。値が決まっただけでは終わらない。 */
+  const sites = (pin.changeSites && pin.changeSites.length) ? pin.changeSites : c.sites;
+  if (sites && sites.length) {
+    const writes = sites.filter((s) => s.stores);
+    body.append(el('div', 'sec-title', pick('この値を書き換えている場所',
+      'Where this value is changed')));
+    body.append(para(pick(
+      writes.length
+        ? '書き込んでいる場所が、この値を変えている場所です。ここを開けば、' +
+          '何をどれだけ増減させているかまで 1 行ずつ日本語で読めます。'
+        : '書き込んでいる場所は見つかりませんでした。読み出しだけの一覧です。',
+      writes.length ? 'The writes are where the value changes.' : 'Only reads were found.')));
+    const sl = list();
+    for (const s of sites.slice(0, 20)) {
+      const what = [];
+      if (s.stores) what.push(pick('書き込み ' + s.stores + ' か所', s.stores + ' writes'));
+      if (s.loads) what.push(pick('読み出し ' + s.loads + ' か所', s.loads + ' reads'));
+      const title = s.owner
+        ? s.owner.kind + '[' + s.owner.className + ' ' + s.owner.sel + ']'
+        : (s.sel ? '-[' + (s.className || c.className) + ' ' + s.sel + ']'
+          : (s.addr != null ? fnLabel(app, s.addr) : addrHex(s.first)));
+      sl.append(tapRow(title, {
+        sub: what.join('  ·  ') + '  ·  ' + addrHex(s.first != null ? s.first : s.addr),
+        tag: s.sameClass || s.className === c.className
+          ? pick('このクラス', 'this class')
+          : (s.subclass ? pick('親子クラス', 'related class')
+            : (s.owner ? pick('別のクラス', 'another class') : pick('クラス不明', 'unknown'))),
+        tagClass: (s.sameClass || s.className === c.className) ? 'tag-fact' : 'tag-infer',
+        right: s.stores ? '✎' : '',
+        onTap: () => {
+          sheet.close();
+          if (s.addr != null) showFunctionReport(app, s.addr, goal);
+          else app.goToAddress(s.first, { announce: true });
+        },
+      }));
+    }
+    body.append(sl);
+  }
+
+  /* 6. ほかの候補も、隠さずに出す。 */
+  if (pin.candidates.length > 1) {
+    const dis = disclosure(pick('ほかの候補も見る（' + (pin.candidates.length - 1) + ' 個）',
+      'See the other candidates (' + (pin.candidates.length - 1) + ')'));
+    const ol = list();
+    for (const other of pin.candidates.slice(1)) {
+      ol.append(tapRow(pinnedName(other), {
+        sub: (typeWord(other.type) || '') + '  ·  ' + offsetHex(BigInt(other.offset)) +
+          '\n' + (proofText(other.why[0]) || ''),
+        right: probabilityText(other.probability),
+        onTap: () => {
+          sheet.close();
+          if (other.kind === 'location') {
+            const at = other.updates && other.updates[0] ? other.updates[0].store.address : null;
+            if (at != null) app.goToAddress(at, { announce: true });
+          } else {
+            showField(app, other.className, other.field);
+          }
+        },
+      }));
+    }
+    dis.body.append(ol);
+    body.append(dis);
+  }
+
+  const actions = el('div', 'detail-actions');
+  if (c.kind === 'field') {
+    actions.append(button(pick('この値の使われ方をすべて見る', 'See every use of this value'), 'chip', () => {
+      sheet.close();
+      showField(app, c.className, c.field);
+    }));
+    actions.append(button(pick('このクラスを開く', 'Open this class'), 'chip', () => {
+      sheet.close();
+      showClass(app, c.className);
+    }));
+  } else if (c.functions && c.functions.length) {
+    actions.append(button(pick('この値を扱っている処理を開く', 'Open the routine that uses it'), 'chip', () => {
+      sheet.close();
+      showFunctionReport(app, c.functions[0].addr, goal);
+    }));
+    const at = c.updates && c.updates[0] ? c.updates[0].store.address : null;
+    if (at != null) {
+      actions.append(button(pick('書き換えている命令へ移動', 'Go to the writing instruction'), 'chip', () => {
+        sheet.close();
+        app.goToAddress(at, { announce: true });
+      }));
+    }
+  }
+  body.append(actions);
+
+  body.append(para(pick(
+    '※ 静的解析なので、実際に動かして確かめるまでが一手です。' +
+    '値を書き換えたら、狙ったところが変わるかどうかを必ず確認してください。',
+    'This is static analysis — always confirm at runtime.'), 'sub'));
+}
+
+/** 決着した目的を 1 行で。地図と同じ調子で並べられる形にする。 */
+function pinnedRow(app, pin, onTap) {
+  const c = pin.top;
+  const icon = pin.goal.icon ? pin.goal.icon + ' ' : '';
+  return tapRow(icon + pin.goal.text + ' → ' + pinnedName(c), {
+    sub: (typeWord(c.type) || '') + '  ·  ' + offsetHex(BigInt(c.offset)) +
+      '\n' + (proofText(c.why[0]) || ''),
+    right: pin.verdict === VERDICT.CONFIRMED ? pick('確定', 'confirmed')
+      : probabilityText(c.fusion.probability),
+    tag: pin.verdict === VERDICT.CONFIRMED ? pick('検証済', 'verified') : null,
+    tagClass: 'tag-fact',
+    onTap,
+  });
+}
+
 /* ── 自動解析の結果を並べる ─────────────────────────────── */
 
 function renderAutoReport(app, sheet, body, report, region) {
   const openGoal = (goal) => { sheet.close(); showCandidates(app, goal); };
 
   /*
-   * 0. まず地図。「このアプリはこういう部品でできている」から始める。
-   *    数万の関数をいきなり見せない、というのがこの画面のいちばんの役目。
+   * 0. まず、決着が付いたもの。
+   *    「候補が 40 個あります」ではなく「HP は BattleManager.hp です」から始める。
+   *    これが出せたときは、利用者はもう何も探さなくていい。
+   */
+  /* 0. 決着が付いたもの。ここに出せたなら、利用者はもう何も探さなくていい。 */
+  const confirmed = report.confirmed || [];
+  const pinned = report.pinned || [];
+  if (confirmed.length) {
+    body.append(el('div', 'sec-title', pick('特定できました', 'Identified')));
+    body.append(para(pick(
+      '名前・型・持ち主のクラスに加えて、実際に逆アセンブルして命令まで確かめた結果です。' +
+      '選ぶだけで、そのまま書き換える場所まで開けます。',
+      'Confirmed by disassembling the accessors and checking the instructions themselves.')));
+    const ul = list();
+    for (const p of confirmed.slice(0, 8)) {
+      ul.append(pinnedRow(app, p, () => { sheet.close(); showPinned(app, p); }));
+    }
+    body.append(ul);
+  }
+  const nearly = pinned.filter((p) => p.verdict !== VERDICT.CONFIRMED && p.top);
+  if (nearly.length) {
+    body.append(el('div', 'sec-title', pick('ここまで絞れました（確定はしていません）',
+      'Narrowed down (not confirmed)')));
+    const ul = list();
+    for (const p of nearly.slice(0, 6)) {
+      ul.append(pinnedRow(app, p, () => { sheet.close(); showPinned(app, p); }));
+    }
+    body.append(ul);
+    body.append(para(pick(
+      '確定と言うには根拠が 1 つ足りないものです。開けば、何が足りないかが書いてあります。',
+      'One piece of evidence short of confirmed — open each to see what is missing.'), 'sub'));
+  }
+
+  /*
+   * 1. 次に地図。「このアプリはこういう部品でできている」。
+   *    決着が付かなかった目的は、ここから自分で降りていくことになる。
+   *    数万の関数をいきなり見せない、というのがこの部分の役目。
    */
   const map = report.map;
   if (map && map.subsystems.length) {
@@ -2072,7 +2430,7 @@ function renderAutoReport(app, sheet, body, report, region) {
     }
   }
 
-  /* 1. いちばん価値があるのは「値を書き換えている場所」。最初に出す。 */
+  /* 2. 値を書き換えている場所。目的が決まっていない人には、ここがいちばん効く。 */
   const withUpdates = report.deep.filter((d) => d.updates.length);
   if (withUpdates.length) {
     body.append(el('div', 'sec-title', pick('値を書き換えている場所（自動で見つけたもの）',
@@ -2098,7 +2456,7 @@ function renderAutoReport(app, sheet, body, report, region) {
     body.append(ul);
   }
 
-  /* 2. 目的ごとの最有力候補 */
+  /* 3. 目的ごとの最有力候補（決着まで行かなかったもの） */
   if (report.goals.length) {
     body.append(el('div', 'sec-title', pick('目的ごとの最有力候補', 'Strongest candidate per goal')));
     body.append(para(pick(
@@ -2116,7 +2474,7 @@ function renderAutoReport(app, sheet, body, report, region) {
     body.append(ul);
   }
 
-  /* 3. 気づいたこと（通信先・反解析・暗号…） */
+  /* 4. 気づいたこと（通信先・反解析・暗号…） */
   if (report.findings.length) {
     body.append(el('div', 'sec-title', pick('気づいたこと', 'What stood out')));
     const byId = new Map();
@@ -2145,7 +2503,7 @@ function renderAutoReport(app, sheet, body, report, region) {
     }
   }
 
-  /* 4. 目的とは無関係に「よく効く」関数 */
+  /* 5. 目的とは無関係に「よく効く」関数 */
   if (report.notable.length) {
     body.append(el('div', 'sec-title', pick('注目すべき処理（回数と命令から）',
       'Routines worth a look (by counts, not names)')));
@@ -2161,7 +2519,7 @@ function renderAutoReport(app, sheet, body, report, region) {
     body.append(ul);
   }
 
-  /* 5. 言葉から分かった機能 */
+  /* 6. 言葉から分かった機能 */
   if (report.engine) body.append(noteBox(report.engine.note));
   if (report.features.length) {
     body.append(el('div', 'sec-title', pick('見つかった手がかり（言葉から）', 'Clues found (from text)')));
@@ -2176,12 +2534,12 @@ function renderAutoReport(app, sheet, body, report, region) {
     body.append(ul);
   }
 
-  /* 6. 目的から探す（ここまで見て、まだ見つからない人向け） */
+  /* 7. 目的から探す（ここまで見て、まだ見つからない人向け） */
   body.append(el('div', 'sec-title', pick('目的から探す', 'Search by goal')));
   body.append(goalChips(app, openGoal));
   body.append(goalInput(app, openGoal));
 
-  /* 7. 次の一手 */
+  /* 8. 次の一手 */
   const steps = autoNextSteps(report);
   if (steps.length) {
     const nb = block(pick('次にすること', 'What to do next'));
@@ -2198,7 +2556,7 @@ function renderAutoReport(app, sheet, body, report, region) {
     body.append(nb);
   }
 
-  /* 7. 何をどれだけ見たか（自動解析の範囲を隠さない） */
+  /* 9. 何をどれだけ見たか（自動解析の範囲を隠さない） */
   body.append(para(pick(
     '自動解析の範囲: 文字列 ' + report.stats.strings.toLocaleString() + ' 本、' +
     '呼び出しの辺 ' + report.stats.calls.toLocaleString() + ' 本、' +
@@ -2264,15 +2622,55 @@ export function showCandidates(app, goal) {
   const results = el('div');
   body.append(results);
 
-  prepare(app, box).then(({ strings, program }) => {
-    box.done();
-    if (!sheet.root.isConnected) return;
+  prepare(app, box).then(async ({ strings, program }) => {
+    if (!sheet.root.isConnected) { box.done(); return; }
     const region = app.codeRegion();
+
+    /*
+     * まず「これです」を出しにいく。候補一覧はその下。
+     * 選んだ人がやりたいのは候補を吟味することではなく、値を見つけることなので。
+     * 候補一覧は、クラス表のないバイナリで「場所」を決めるときの材料にもなるので先に作る。
+     */
     const ranked = rankCandidates({
       goal, strings, program, symbols: app.symbols, region, limit: 40,
     });
+    const pin = await pinnedFor(app, goal, {
+      strings, program, region, box, ranked: ranked.candidates,
+    });
+    box.done();
+    if (!sheet.root.isConnected) return;
+    if (pin && pin.top) {
+      results.append(verdictBadge(pin.verdict));
+      results.append(pinnedHeadline(pin));
+      const top = list();
+      top.append(tapRow(pick('なぜこれだと言えるのか、根拠をすべて見る',
+        'See every piece of evidence'), {
+        sub: pick('確からしさ ' + probabilityText(pin.top.fusion.probability) +
+          '  ·  ' + pin.universe.toLocaleString() + ' 個の値の中から',
+        probabilityText(pin.top.fusion.probability) + ' confident, out of ' +
+          pin.universe.toLocaleString() + ' values'),
+        right: '›',
+        onTap: () => { sheet.close(); showPinned(app, pin); },
+      }));
+      const write = (pin.changeSites || []).find((s) => s.stores);
+      if (write) {
+        top.append(tapRow(pick('この値を書き換えている場所を開く', 'Open the place that changes it'), {
+          sub: (write.owner ? write.owner.kind + '[' + write.owner.className + ' ' + write.owner.sel + ']  ·  ' : '') +
+            addrHex(write.first),
+          right: '✎',
+          onTap: () => {
+            sheet.close();
+            if (write.addr != null) showFunctionReport(app, write.addr, goal);
+            else app.goToAddress(write.first, { announce: true });
+          },
+        }));
+      }
+      results.append(top);
+      results.append(el('div', 'sec-title', pick('関係のありそうな処理', 'Routines that may be involved')));
+    }
 
     if (!ranked.candidates.length) {
+      if (pin && pin.top) return;   // 値は特定できている。処理が無いだけ。
       results.append(para(pick(
         '手がかりが見つかりませんでした。', 'Nothing was found.')));
       const why = [];

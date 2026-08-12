@@ -654,19 +654,40 @@ async function scanProgram({ regionId }) {
  * ベースレジスタが本当に self かどうかまでは、ここでは判定しない
  * （それは呼び出し側が、その関数がどのクラスのメソッドかで絞る）。
  */
-async function findFieldAccess({ regionId, offset, size, limit }) {
+async function findFieldAccess({ regionId, offset, size, limit, offsets }) {
   const region = regions.get(regionId);
   if (!region) throw new Error('Unknown region.');
   const token = ++searchToken;
-  const want = BigInt(offset);
-  const wantSize = Number(size) || 0;
   const cap = Math.min(Number(limit) || 2000, 4000);
   const total = Number(region.size);
-  const out = [];
 
+  /*
+   * 複数の位置を 1 回の走査でまとめて調べられるようにしてある。
+   * 「HP はこの値か、それともあの値か」を決めるとき、候補ごとに
+   * セクションを舐め直すと数十 MB × 候補数になってしまうため。
+   */
+  const wanted = new Map();          // ずらし幅(string) -> {want, size, out}
+  const list = Array.isArray(offsets) && offsets.length
+    ? offsets
+    : [{ offset, size }];
+  for (const it of list) {
+    if (it == null || it.offset == null) continue;
+    const want = BigInt(it.offset);
+    const key = want.toString();
+    if (wanted.has(key)) continue;
+    wanted.set(key, { want, size: Number(it.size) || 0, out: [] });
+  }
+  if (!wanted.size) return { results: [], groups: {}, cancelled: false, capped: false };
+
+  const allFull = () => {
+    for (const s of wanted.values()) if (s.out.length < cap) return false;
+    return true;
+  };
+
+  let found = 0;
   let pos = 0;
-  while (pos < total && out.length < cap) {
-    if (token !== searchToken) return { results: out, cancelled: true };
+  while (pos < total && !allFull()) {
+    if (token !== searchToken) return { results: firstOf(), groups: groupsOf(), cancelled: true };
     const wantBytes = Math.min(SCAN_BLOCK, total - pos);
     const blk = await readRange(region.fileOffset + BigInt(pos), wantBytes);
     if (blk.length < 4) break;
@@ -678,24 +699,37 @@ async function findFieldAccess({ regionId, offset, size, limit }) {
       if (kind !== Words.KIND.LOAD && kind !== Words.KIND.STORE) continue;
       const mem = Words.memoryAccess(w);
       if (!mem || mem.disp == null || mem.indexed) continue;
-      if (mem.disp !== want) continue;
+      const slot = wanted.get(mem.disp.toString());
+      if (!slot || slot.out.length >= cap) continue;
       // 大きさが分かっているなら、それも合わせる（別の変数を拾わないため）
-      if (wantSize > 0 && mem.size !== wantSize && !(wantSize > 8 && mem.size === 8)) continue;
+      if (slot.size > 0 && mem.size !== slot.size && !(slot.size > 8 && mem.size === 8)) continue;
       const byteOff = pos + i * 4;
-      out.push({
+      slot.out.push({
         row: byteOff / 4,
         addr: region.vmAddr + BigInt(byteOff),
         kind: mem.load ? 'load' : 'store',
         base: mem.base,
         size: mem.size,
       });
-      if (out.length >= cap) break;
+      found++;
     }
     pos += words * 4;
-    self.postMessage({ t: 'scanProgress', done: pos, all: total, hits: out.length });
+    self.postMessage({ t: 'scanProgress', done: pos, all: total, hits: found });
     await yieldToQueue();
   }
-  return { results: out, cancelled: false, capped: out.length >= cap };
+  const capped = Array.from(wanted.values()).some((s) => s.out.length >= cap);
+  return { results: firstOf(), groups: groupsOf(), cancelled: false, capped };
+
+  function firstOf() {
+    // 1 つだけ頼まれたとき用。これまでの呼び出し元がそのまま動くようにする。
+    const first = wanted.values().next().value;
+    return first ? first.out : [];
+  }
+  function groupsOf() {
+    const out = {};
+    for (const [key, slot] of wanted) out[key] = slot.out;
+    return out;
+  }
 }
 
 /* ── 文字列の抽出 ───────────────────────────────────────────── */
