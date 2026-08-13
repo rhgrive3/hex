@@ -70,6 +70,7 @@
 
   // nlist n_type bits
   const N_STAB = 0xe0, N_TYPE = 0x0e, N_SECT = 0x0e, N_UNDF = 0x00;
+  const N_EXT = 0x01;   // 外へ公開されている名前（エクスポート）の印
   const INDIRECT_SYMBOL_LOCAL = 0x80000000, INDIRECT_SYMBOL_ABS = 0x40000000;
 
   function cpuName(type, sub) {
@@ -400,7 +401,8 @@
       if (v === 0n) continue;
       const name = sym.names[i];
       if (!name) continue;
-      out.push({ addr: v, name });
+      // N_EXT が立っていれば、外のライブラリからも呼べる名前（エクスポート）
+      out.push({ addr: v, name, ext: !!(t & N_EXT) });
     }
     out.sort((a, b) => (a.addr < b.addr ? -1 : a.addr > b.addr ? 1 : 0));
     return out;

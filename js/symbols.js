@@ -16,10 +16,32 @@ export class SymbolIndex {
     this.addrs = r.addrs || new BigUint64Array(0);
     this.kinds = r.kinds || new Uint8Array(0);
     this.names = r.names ? r.names.split('\n') : [];
+    /* 1 = 外へ公開されている名前（エクスポート）。0 = このファイルの中だけ。 */
+    this.flags = r.flags || new Uint8Array(this.addrs.length);
     this.funcs = r.funcs || new BigUint64Array(0);
     this.capped = !!r.capped;
     this.guessed = false;          // 関数一覧が推測によるものか
+    /* 自分で付け直した名前。元の名前より優先される（IDA の Rename と同じ）。
+       アドレス（10 進の文字列）→ 名前。names.js の NoteStore が中身の持ち主。 */
+    this.renames = new Map();
     this.gen = ++SymbolIndex.gen;  // 解説のキャッシュ鍵に使う
+  }
+
+  /**
+   * 自分で付けた名前を差し込む。空文字なら元の名前に戻す。
+   * ここを通すと、命令一覧・関数一覧・呼び出し元まで一斉に新しい名前になる。
+   */
+  rename(addr, name) {
+    if (addr == null) return;
+    const k = addr.toString();
+    if (name) this.renames.set(k, name);
+    else this.renames.delete(k);
+    this.gen = ++SymbolIndex.gen;
+  }
+
+  /** 自分で付けた名前だけを引く。 */
+  renamedAt(addr) {
+    return addr == null ? null : (this.renames.get(addr.toString()) || null);
   }
 
   get symbolCount() { return this.addrs.length; }
@@ -39,6 +61,8 @@ export class SymbolIndex {
 
   /** ちょうどそのアドレスに付いた名前。なければ null。 */
   exact(addr) {
+    const mine = this.renames.size ? this.renames.get(addr.toString()) : null;
+    if (mine) return { name: mine, addr, kind: SYM_DEFINED, mine: true };
     const i = this._floor(this.addrs, addr);
     if (i < 0 || this.addrs[i] !== addr) return null;
     return { name: this.names[i], addr: this.addrs[i], kind: this.kinds[i] };
@@ -49,6 +73,8 @@ export class SymbolIndex {
    * within を超えて離れているものは、無関係とみなして返さない。
    */
   nearest(addr, within = 0x40000n) {
+    const mine = this.renames.size ? this.renames.get(addr.toString()) : null;
+    if (mine) return { name: mine, addr, kind: SYM_DEFINED, delta: 0n, mine: true };
     const i = this._floor(this.addrs, addr);
     if (i < 0) return null;
     const delta = addr - this.addrs[i];
@@ -68,6 +94,9 @@ export class SymbolIndex {
     const e = this.exact(addr);
     return e ? e.name : null;
   }
+
+  /** その名前が外へ公開されているか（エクスポートされているか）。 */
+  isExported(index) { return !!(this.flags && this.flags[index]); }
 
   /** そのアドレスが関数の先頭かどうか。 */
   isFunctionStart(addr) {
@@ -113,7 +142,7 @@ export class SymbolIndex {
       const a = this.addrs[i];
       if (lo != null && (a < lo || a >= hi)) continue;
       if (kind != null && this.kinds[i] !== kind) continue;
-      out.push({ addr: a, name: this.names[i], kind: this.kinds[i] });
+      out.push({ addr: a, name: this.names[i], kind: this.kinds[i], exported: this.isExported(i) });
     }
     return out;
   }
@@ -138,18 +167,20 @@ export class SymbolIndex {
 
     const merged = [];
     for (let i = 0; i < this.addrs.length; i++) {
-      merged.push({ addr: this.addrs[i], name: this.names[i], kind: this.kinds[i] });
+      merged.push({ addr: this.addrs[i], name: this.names[i], kind: this.kinds[i], ext: this.flags[i] });
     }
-    for (const e of fresh) merged.push({ addr: e.addr, name: e.name, kind: SYM_DEFINED });
+    for (const e of fresh) merged.push({ addr: e.addr, name: e.name, kind: SYM_DEFINED, ext: 0 });
     merged.sort((a, b) => (a.addr < b.addr ? -1 : a.addr > b.addr ? 1 : 0));
 
     const addrs = new BigUint64Array(merged.length);
     const kinds = new Uint8Array(merged.length);
+    const flags = new Uint8Array(merged.length);
     const names = new Array(merged.length);
     for (let i = 0; i < merged.length; i++) {
       addrs[i] = merged[i].addr; kinds[i] = merged[i].kind; names[i] = merged[i].name;
+      flags[i] = merged[i].ext || 0;
     }
-    this.addrs = addrs; this.kinds = kinds; this.names = names;
+    this.addrs = addrs; this.kinds = kinds; this.names = names; this.flags = flags;
     this.gen = ++SymbolIndex.gen;
     return fresh.length;
   }

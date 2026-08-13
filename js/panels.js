@@ -46,6 +46,10 @@ import { columnToOffset } from './schema.js';
 import { VERDICT, verdictRank } from './evidence.js';
 import { roleFromReport, sketchRole, changesValue, stringLookup } from './role.js';
 import { describePurpose } from './purpose.js';
+import {
+  showDecompiler, showCfg, showCallGraphPanel, showTypes, showDebugger,
+  showRename, showComment, showPatchEditor, showStructRecover, prettyName,
+} from './tools.js';
 import { purposeText, changeText } from './narrate.js';
 
 /* ── ファイル情報 ────────────────────────────────────────── */
@@ -1057,6 +1061,7 @@ export function showSearch(app) {
     ['asm', t('search.kind.asm')],
     ['text', t('search.kind.text')],
     ['hex', t('search.kind.hex')],
+    ['num', t('search.kind.num')],
     ['addr', t('search.kind.addr')],
   ];
   const chipEls = new Map();
@@ -1124,6 +1129,16 @@ export function showSearch(app) {
     if (kind === 'hex') {
       const pat = parseHexPattern(q);
       if (!pat) { toast(t('search.badHex')); running = false; goBtn.textContent = t('btn.find'); return; }
+      params.hex = pat;
+    } else if (kind === 'num') {
+      /*
+       * 数を探す。メモリの中では下位のバイトが先に並ぶ（リトルエンディアン）ので、
+       * 100 は `64 00 00 00` になる。この並べ替えを人にやらせない。
+       */
+      const hexText = numberPattern(q);
+      const pat = hexText ? parseHexPattern(hexText) : null;
+      if (!pat) { toast(t('search.badNum')); running = false; goBtn.textContent = t('btn.find'); return; }
+      params.kind = 'hex';
       params.hex = pat;
     } else {
       params.query = q;
@@ -1255,6 +1270,26 @@ export function showXrefs(app, target) {
   });
 }
 
+/**
+ * 「100」→ `64 00 00 00`（4 バイト・リトルエンディアン）の 16 進文字列。
+ * 4 バイトに収まらない数は 8 バイトにする。数として読めないものは null。
+ */
+function numberPattern(text) {
+  const t2 = text.trim().replace(/[_,]/g, '');
+  let v;
+  try {
+    if (/^-?0x[0-9a-f]+$/i.test(t2)) v = BigInt(t2.replace('-0x', '0x')) * (t2[0] === '-' ? -1n : 1n);
+    else if (/^-?\d+$/.test(t2)) v = BigInt(t2);
+    else return null;
+  } catch { return null; }
+  const wide = v < -0x80000000n || v > 0xFFFFFFFFn;
+  const bytes = wide ? 8 : 4;
+  const u = BigInt.asUintN(bytes * 8, v);
+  const out = [];
+  for (let i = 0; i < bytes; i++) out.push(Number((u >> BigInt(i * 8)) & 0xffn).toString(16).padStart(2, '0'));
+  return out.join(' ');
+}
+
 function xrefKind(k) {
   if (k === 'branch') return pick('ここへ飛んでいる', 'branches here');
   if (k === 'load') return pick('ここの中身を読んでいる', 'loads from here');
@@ -1327,6 +1362,27 @@ function renderDetail(app, sheet, root, d, row, region) {
   insn.append(el('b', null, mn));
   if (ops) insn.append(document.createTextNode(' ' + ops));
   root.append(insn);
+
+  /* 自分で書いたメモ。書いたものが見えないと、書く意味がない。 */
+  const memo = app.notes ? app.notes.comment(d.address) : null;
+  if (memo) {
+    const mb = block(pick('あなたのメモ', 'Your note'));
+    mb.append(para(memo));
+    root.append(mb);
+  }
+  {
+    const l = list();
+    l.append(tapRow(memo ? pick('メモを書き直す', 'Edit note') : pick('この行にメモを書く', 'Add a note'), {
+      sub: pick('あとで見返したときに、思い出せるようにしておきます',
+        'So you can remember what you worked out'),
+      onTap: () => showComment(app, d.address),
+    }));
+    l.append(tapRow(pick('この命令を書き換える（パッチ）', 'Patch this instruction'), {
+      sub: pick('元のファイルには書き込みません', 'The original file is never modified'),
+      onTap: () => showPatchEditor(app, d.address, { mnemonic: mn, operands: ops, address: d.address }),
+    }));
+    root.append(l);
+  }
 
   /*
    * ARM64 → 処理 → 関数 → 機能 と、逆向きに辿れるようにする。
@@ -1523,6 +1579,8 @@ export function instructionMenu(app, row, x, y) {
   const sb = semanticBlockAt(app, row);
   menu([
     { label: t('detail.title') + '…', action: () => showDetail(app, row) },
+    { label: pick('擬似コードで読む（C 風）', 'Read as pseudocode'),
+      action: () => showDecompiler(app, functionStartOf(app, d.address)) },
     ...(sb ? [{
       label: pick('この処理を見る', 'Show this step') + '（' + blockTitle(sb) + '）',
       action: () => showBlockDetail(app, app.semantic.model, sb, app.store.get('currentRegion')),
@@ -1535,7 +1593,21 @@ export function instructionMenu(app, row, x, y) {
       action: () => showValueFlow(app, app.semantic.model, row, app.store.get('currentRegion')),
     }] : []),
     { label: t('detail.findRefs'), action: () => showXrefs(app, d.address) },
+    { label: pick('制御フロー図を見る', 'Show control-flow graph'),
+      action: () => showCfg(app, functionStartOf(app, d.address)) },
+    { label: pick('呼び出し図を見る', 'Show call graph'),
+      action: () => showCallGraphPanel(app, functionStartOf(app, d.address)) },
+    { label: pick('引数と戻り値を調べる', 'Show arguments and return value'),
+      action: () => showTypes(app, functionStartOf(app, d.address)) },
     { label: pick('アドレスの対応を見る', 'Show address mapping'), action: () => showAddressInfo(app, d.address) },
+    '-',
+    { label: pick('ここから実行してみる', 'Run from here'),
+      action: () => showDebugger(app, functionStartOf(app, d.address)) },
+    { label: pick('名前を付ける', 'Rename'),
+      action: () => showRename(app, functionStartOf(app, d.address)) },
+    { label: pick('この行にメモを書く', 'Add a comment'), action: () => showComment(app, d.address) },
+    { label: pick('この命令を書き換える（パッチ）', 'Patch this instruction'),
+      action: () => showPatchEditor(app, d.address, { mnemonic: d.mnemonic, operands: d.operands, address: d.address }) },
     '-',
     { label: t('detail.copyAddress'), action: () => copyText(addrHex(d.address), t('toast.copyAddress')) },
     { label: t('detail.copyHex'), action: () => copyText(d.bytes || '', t('toast.copyHex')) },
@@ -1557,11 +1629,18 @@ export function instructionMenu(app, row, x, y) {
 
    まで一本の道でつなぐ。途中で「なぜそう言えるのか」を必ず出す。   */
 
+/** そのアドレスを含む関数の先頭。分からなければそのアドレス自身。 */
+function functionStartOf(app, addr) {
+  const fn = app.symbols && app.symbols.functionCount ? app.symbols.functionAt(addr) : null;
+  return fn ? fn.start : addr;
+}
+
 /** 関数の見出し。名前がなければアドレスで。 */
 function fnLabel(app, addr) {
   if (addr == null) return t('functions.unnamed');
   const name = app.symbols ? app.symbols.nameAt(addr) : null;
-  return name || 'sub_' + addr.toString(16).toUpperCase();
+  // C++ / Swift のマングル名は、読める形に直して見せる（元の名前は詳細画面に出す）
+  return name ? prettyName(name) : 'sub_' + addr.toString(16).toUpperCase();
 }
 
 /** ずらし幅は短い 16 進で。アドレスと違って桁をそろえない（読みにくいので）。 */

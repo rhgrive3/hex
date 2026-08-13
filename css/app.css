@@ -1068,3 +1068,118 @@ input:focus { outline: 2px solid var(--accent); outline-offset: -2px; }
   margin-top: 8px;
 }
 .sheet-body > .sec-title:first-child { border-top: none; margin-top: 0; }
+
+/* ─────────────────────────────────────────────────────────────
+   解析ツール（tools.js）
+   擬似コード・図・レジスタ表・入力欄。
+   どれもシートの中に入るので、横にはみ出す部分だけ自前でスクロールさせる。
+   ───────────────────────────────────────────────────────────── */
+
+/* 擬似コードとスクリプトの出力 */
+.codeview {
+  margin: 8px 0;
+  padding: 8px 0;
+  background: var(--surface);
+  border-top: 0.5px solid var(--separator-2);
+  border-bottom: 0.5px solid var(--separator-2);
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.codeview.small { max-height: 40vh; overflow-y: auto; font-size: 12px; }
+
+.cl { display: flex; align-items: baseline; gap: 8px; padding: 0 12px; white-space: pre; }
+.cl.tappable { cursor: pointer; }
+.cl.tappable:active { background: var(--fill); }
+.cl-addr {
+  flex: 0 0 auto; width: 6ch;
+  color: var(--code-addr); font-size: 10.5px;
+  text-align: right; user-select: none;
+}
+.cl-text { flex: 1 1 auto; font-size: 12.5px; line-height: 1.65; color: var(--label); }
+.cl.sig .cl-text { font-weight: 700; color: var(--code-mn); }
+.cl.ctrl .cl-text { color: var(--code-mn-flow); }
+.cl.decl .cl-text { color: var(--label-2); }
+.cl.label .cl-text { color: var(--code-mn-data); }
+.cl.comment .cl-text, .cl.note .cl-text { color: var(--code-cmt); font-size: 11.5px; }
+.cl.asm .cl-text { color: var(--code-mn-data); font-size: 11px; }
+.cl.warn .cl-text { color: var(--danger); }
+.cl.blank { height: 8px; }
+
+.hint.warn { color: var(--danger); }
+
+/* 図（CFG / コールグラフ） */
+.graphwrap {
+  position: relative;
+  margin: 8px 0;
+  padding: 4px 0 8px;
+  background: var(--surface);
+  border-top: 0.5px solid var(--separator-2);
+  border-bottom: 0.5px solid var(--separator-2);
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+  max-height: 60vh;
+}
+.graph { display: block; }
+.graph .g-box {
+  fill: var(--surface-2);
+  stroke: var(--separator);
+  stroke-width: 1;
+}
+.graph .g-node.entry .g-box { stroke: var(--accent); stroke-width: 2; }
+.graph .g-node.loop .g-box { fill: var(--accent-soft); }
+.graph .g-node.caller .g-box { fill: var(--fill); }
+.graph .g-title {
+  font: 600 10.5px ui-monospace, monospace;
+  fill: var(--label-2);
+}
+.graph .g-line { font: 11px ui-monospace, monospace; fill: var(--label); }
+.graph .g-line.dim { fill: var(--label-3); }
+.graph .g-label { font: 10px -apple-system, sans-serif; fill: var(--label-2); text-anchor: middle; }
+.graph .g-edge { fill: none; stroke: var(--label-3); stroke-width: 1.5; }
+.graph .g-edge.true { stroke: #34c759; }
+.graph .g-edge.false { stroke: #ff3b30; }
+.graph .g-edge.back { stroke: var(--accent); stroke-width: 2.5; }
+.graph .g-arrow { fill: var(--label-3); }
+.graph .g-arrow.true { fill: #34c759; }
+.graph .g-arrow.false { fill: #ff3b30; }
+.graph .g-arrow.back { fill: var(--accent); }
+.graph-tools {
+  position: sticky; left: 0; bottom: 0;
+  display: flex; gap: 6px; padding: 6px 12px;
+}
+
+/* レジスタ表（デバッガ） */
+.regs {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 2px 12px;
+  padding: 8px 16px;
+}
+.reg { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; }
+.reg-name { color: var(--label-2); }
+.reg-val { color: var(--label); font-variant-numeric: tabular-nums; }
+
+/* 入力欄（スクリプト・メモ） */
+.code-input {
+  display: block;
+  width: calc(100% - 32px);
+  margin: 8px 16px;
+  padding: 10px;
+  border: 0.5px solid var(--separator);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--label);
+  font: 12.5px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+  resize: vertical;
+}
+.field.wrap { flex-wrap: wrap; }
+.chip.on { background: var(--accent); color: #fff; }
+.chip.danger, .tb-btn.danger { color: var(--danger); }
+.chip.strong { background: var(--accent); color: #fff; }
+
+@media (prefers-color-scheme: dark) {
+  .graph .g-edge.true { stroke: #30d158; }
+  .graph .g-edge.false { stroke: #ff453a; }
+  .graph .g-arrow.true { fill: #30d158; }
+  .graph .g-arrow.false { fill: #ff453a; }
+}

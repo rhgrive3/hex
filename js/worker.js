@@ -413,7 +413,7 @@ async function analyzeSlice({ sliceIndex }) {
 
   const entries = [];
   if (sym) {
-    for (const d of MachO.definedSymbols(sym)) entries.push({ addr: d.addr, name: d.name, kind: 0 });
+    for (const d of MachO.definedSymbols(sym)) entries.push({ addr: d.addr, name: d.name, kind: 0, ext: d.ext });
     if (info.dysymtab && info.dysymtab.nindirectsyms > 0) {
       const n = Math.min(info.dysymtab.nindirectsyms, SYMBOL_MAX);
       const ind = await readRange(base + BigInt(info.dysymtab.indirectsymoff), n * 4);
@@ -442,11 +442,13 @@ async function analyzeSlice({ sliceIndex }) {
   entries.sort((a, b) => (a.addr < b.addr ? -1 : a.addr > b.addr ? 1 : a.kind - b.kind));
   const addrs = new BigUint64Array(entries.length);
   const kinds = new Uint8Array(entries.length);
+  const flags = new Uint8Array(entries.length);     // 1 = 外へ公開されている名前
   const names = new Array(entries.length);
   let n = 0;
   for (const e of entries) {
     if (n > 0 && addrs[n - 1] === e.addr) continue;
     addrs[n] = e.addr; kinds[n] = e.kind; names[n] = e.name;
+    flags[n] = e.ext ? 1 : 0;
     n++;
   }
 
@@ -463,15 +465,17 @@ async function analyzeSlice({ sliceIndex }) {
 
   const outAddrs = addrs.slice(0, n);
   const outKinds = kinds.slice(0, n);
+  const outFlags = flags.slice(0, n);
   return {
     addrs: outAddrs,
     kinds: outKinds,
+    flags: outFlags,
     names: names.slice(0, n).join('\n'),
     funcs,
     symbolCount: n,
     funcCount: funcs.length,
     capped,
-    __transfer: [outAddrs.buffer, outKinds.buffer, funcs.buffer],
+    __transfer: [outAddrs.buffer, outKinds.buffer, outFlags.buffer, funcs.buffer],
   };
 }
 

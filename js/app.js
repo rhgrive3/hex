@@ -26,6 +26,10 @@ import { makeSampleFile } from './sample.js';
 import { ProgramIndex } from './program.js';
 import { foldShapes } from './shapes.js';
 import { recoverSchemas } from './schema.js';
+import { NoteStore, noteKeyFor, EMPTY_NOTES } from './names.js';
+import { PatchSet } from './patch.js';
+import { PluginHost } from './plugins.js';
+import { showTools } from './tools.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -54,6 +58,12 @@ class App {
     // Objective-C のクラスとフィールド。x0+0x20 を self.hp と言えるようにする索引。
     this.fields = EMPTY_FIELDS;
     this.objcBusy = null;
+    /* 自分で付けた名前・メモ・型（names.js）。ファイルごとに保存される。 */
+    this.notes = EMPTY_NOTES;
+    /* 命令の書き換え（patch.js）。保存を選ぶまでファイルには触らない。 */
+    this.patches = new PatchSet();
+    /* 追加した機能（plugins.js）。 */
+    this.plugins = new PluginHost(this);
 
     setLang(this.prefs.lang || detectLang());
 
@@ -72,6 +82,7 @@ class App {
       sections: $('btn-sections'),
       investigate: $('btn-investigate'),
       overview: $('btn-overview'),
+      tools: $('btn-tools'),
       features: $('btn-features'),
       functions: $('btn-functions'),
       strings: $('btn-strings'),
@@ -183,6 +194,7 @@ class App {
     this.dom.sections.addEventListener('click', () => showSections(this));
     this.dom.investigate.addEventListener('click', () => showInvestigate(this));
     this.dom.overview.addEventListener('click', () => showOverview(this));
+    this.dom.tools.addEventListener('click', () => showTools(this));
     this.dom.features.addEventListener('click', () => showFeatures(this));
     this.dom.functions.addEventListener('click', () => showFunctions(this));
     this.dom.strings.addEventListener('click', () => showStrings(this));
@@ -304,6 +316,7 @@ class App {
     this.dom.features.disabled = !has;
     this.dom.investigate.disabled = !has;
     this.dom.overview.disabled = !has;
+    this.dom.tools.disabled = !has;
     this.dom.functions.disabled = !region;
     this.dom.jump.disabled = !region;
     this.dom.search.disabled = !region;
@@ -726,6 +739,10 @@ class App {
 
     this.store.set({ file, fileInfo: info, selectedRow: -1 });
 
+    /* 前に付けた名前・メモを呼び戻す。ファイルごとに分かれて保存されている。 */
+    this.notes = new NoteStore(noteKeyFor(file, info));
+    this.patches = new PatchSet();
+
     let sliceIndex = -1;
     if (info.slices.length) {
       sliceIndex = info.slices.findIndex((s) => s.info && s.info.isArm64);
@@ -791,6 +808,8 @@ class App {
       this.symbolsReady = this.backend.analyze(sliceIndex).then((res) => {
         if (this.store.get('sliceIndex') !== sliceIndex) return;
         this.symbols = new SymbolIndex(res);
+        // 前回このファイルに付けた名前を戻す（元の名前より優先される）
+        for (const e of this.notes.nameEntries()) this.symbols.rename(e.addr, e.name);
         this.viewer.setSymbols(this.symbols);
         this.updateChrome();
         return this.ensureObjc(sliceIndex);

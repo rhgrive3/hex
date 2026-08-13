@@ -1,0 +1,1463 @@
+/*
+ * 解析ツール一式の画面。
+ *
+ * IDA や Ghidra にある道具を、初心者にも分かる言葉で並べたところです。
+ * どれも「何のための道具か」を最初に 1 行で説明してから中身を出します。
+ *
+ *   擬似コード      … アセンブリを C 風に読み直す
+ *   制御フロー図    … 分かれ道と合流を絵にする
+ *   呼び出し図      … 誰が誰を呼ぶかを絵にする
+ *   型と変数        … 引数・戻り値・ローカル変数の見当をつける
+ *   構造体          … オブジェクトの中身の並びを組み立てる
+ *   C++ クラス      … vtable と RTTI からクラスを取り出す
+ *   名前とメモ      … 自分で名前を付けて覚えておく
+ *   外とのつながり  … インポート・エクスポート・ライブラリ
+ *   グローバル変数  … どこからでも触れる置き場
+ *   パッチ          … 命令を書き換えて試す
+ *   実行してみる    … 1 命令ずつ動かす（エミュレータ）
+ *   スクリプト      … 同じ作業をまとめて自動化する
+ *   プラグイン      … 自分で機能を足す
+ *   Unity           … global-metadata.dat から C# の名前を戻す
+ */
+
+import {
+  Sheet, el, button, list, groupRow, kvRow, tapRow, para, heading, noteBox,
+  codeBlock, block, disclosure, toast, alertDialog, copyText, menu,
+} from './ui.js';
+import { addrHex } from './format.js';
+import { decompile, decompiledText } from './decompile.js';
+import { cfgGraph, callGraph, renderGraph } from './graphview.js';
+import { inferTypes, recoverStruct, TypeStore, structToC, BASIC_TYPES, typeJa } from './types.js';
+import { readableName, isMangled, findCxxClasses, readVtable } from './rtti.js';
+import { importList, importsByFramework, exportList, findGlobals } from './linkage.js';
+import { assemble, suggestPatches, parseHexBytes, hexOf } from './patch.js';
+import { runScript, SAMPLES, makeEmulator } from './script.js';
+import { EXAMPLE_PLUGIN } from './plugins.js';
+import { parseMetadataAuto, looksLikeUnity } from './il2cpp.js';
+import { brief } from './arm64.js';
+
+/* ── 小道具 ─────────────────────────────────────────────── */
+
+function input(placeholder, value) {
+  const n = el('input');
+  n.type = 'text';
+  n.autocapitalize = 'off';
+  n.autocomplete = 'off';
+  n.spellcheck = false;
+  if (placeholder) n.placeholder = placeholder;
+  if (value != null) n.value = value;
+  return n;
+}
+
+function field(node, label, onGo) {
+  const f = el('div', 'field');
+  f.append(node);
+  if (label) f.append(button(label, 'chip', onGo));
+  return f;
+}
+
+function textArea(value, rows) {
+  const n = el('textarea', 'code-input');
+  n.rows = rows || 8;
+  n.spellcheck = false;
+  n.autocapitalize = 'off';
+  if (value) n.value = value;
+  return n;
+}
+
+/** いま見ている関数の先頭アドレス。分からなければ null。 */
+export function currentFunctionAddr(app) {
+  const sym = app.symbols;
+  const row = app.viewer ? app.viewer.selectedRow : -1;
+  const region = app.store.get('currentRegion');
+  if (region && row >= 0) {
+    const addr = region.vmAddr + BigInt(row) * 4n;
+    const fn = sym && sym.functionCount ? sym.functionAt(addr) : null;
+    if (fn) return fn.start;
+    return addr;
+  }
+  if (app.semantic && app.semantic.result) return app.semantic.result.startAddr;
+  const list2 = sym && sym.functionCount ? sym.functionList(app.codeRegion(), 1) : [];
+  return list2.length ? list2[0].addr : null;
+}
+
+function fnName(app, addr) {
+  if (addr == null) return '—';
+  const n = app.symbols ? (app.symbols.nameAt(addr) || app.symbols.label(addr)) : null;
+  return n ? readableName(n) : 'sub_' + addr.toString(16).toUpperCase();
+}
+
+function needFunction(app) {
+  const addr = currentFunctionAddr(app);
+  if (addr == null) {
+    toast('先に関数を選んでください（「関数」から選ぶか、命令をタップします）。');
+    return null;
+  }
+  return addr;
+}
+
+/** 関数を解析して model を得る。 */
+async function modelOf(app, addr) {
+  const region = app.store.get('currentRegion');
+  if (!region) return null;
+  const code = app.codeRegion();
+  if (code && region !== code && addr >= code.vmAddr && addr < code.vmAddr + code.size) {
+    app.selectRegion(code, { silent: true });
+  }
+  await app.ensureFunctions(app.codeRegion());
+  const res = await app.analyzeFunctionAt(addr);
+  return res;
+}
+
+function rowMapper(app) {
+  const region = app.store.get('currentRegion');
+  return {
+    rowOfAddress: (a) => {
+      if (a == null || !region) return null;
+      const rel = a - region.vmAddr;
+      if (rel < 0n || rel >= region.size) return null;
+      return Number(rel / 4n);
+    },
+    addrOfRow: (row) => (region ? region.vmAddr + BigInt(row) * 4n : null),
+  };
+}
+
+/* ══════════════════════════════════════════════════════════
+   入口: 道具箱
+   ══════════════════════════════════════════════════════════ */
+
+export function showTools(app) {
+  const sheet = new Sheet('解析ツール');
+  const addr = currentFunctionAddr(app);
+
+  sheet.body.append(el('div', 'hint',
+    'IDA や Ghidra にある道具をひととおり用意しています。\n' +
+    'はじめての方は「擬似コード」から見るのがおすすめです。'));
+
+  if (addr != null) {
+    const b = block('いま見ている関数');
+    b.append(el('div', 'bigval mono', fnName(app, addr)));
+    b.append(el('div', 'hint', addrHex(addr)));
+    sheet.body.append(b);
+  }
+
+  const perFunction = list();
+  perFunction.append(groupRow('この関数を調べる'));
+  const item = (label, sub, fn) => perFunction.append(tapRow(label, { sub, onTap: () => { sheet.close(); fn(); } }));
+
+  item('擬似コード（C 風に読む）', 'アセンブリを if / while / 代入の形に直します。いちばん読みやすい形です。',
+    () => { const a = needFunction(app); if (a != null) showDecompiler(app, a); });
+  item('制御フロー図（CFG）', '分かれ道と合流を絵にします。ループの位置がひと目で分かります。',
+    () => { const a = needFunction(app); if (a != null) showCfg(app, a); });
+  item('呼び出し図（Call Graph）', 'この関数を呼ぶ人・この関数が呼ぶ相手を、上下に広げて描きます。',
+    () => { const a = needFunction(app); if (a != null) showCallGraphPanel(app, a); });
+  item('引数・戻り値・変数の型', '何を受け取って何を返すか、スタックに何を置いているかを推定します。',
+    () => { const a = needFunction(app); if (a != null) showTypes(app, a); });
+  item('構造体を組み立てる', '[x0, #0x20] のような使い方から、オブジェクトの中身の並びを起こします。',
+    () => { const a = needFunction(app); if (a != null) showStructRecover(app, a); });
+  item('実行してみる（デバッガ）', '1 命令ずつ動かして、レジスタとメモリの変化を見ます。実機は使いません。',
+    () => { const a = needFunction(app); if (a != null) showDebugger(app, a); });
+  item('名前を付ける / メモを書く', '分かったことにその場で名前を付けます。次に見たときに思い出せます。',
+    () => { const a = needFunction(app); if (a != null) showRename(app, a); });
+  sheet.body.append(perFunction);
+
+  const whole = list();
+  whole.append(groupRow('ファイル全体を調べる'));
+  const item2 = (label, sub, fn) => whole.append(tapRow(label, { sub, onTap: () => { sheet.close(); fn(); } }));
+  item2('外とのつながり（インポート / ライブラリ）', '借りている関数から、アプリの性格が見えます。', () => showLinkage(app));
+  item2('グローバル変数', 'どこからでも触れる置き場。所持金やログイン状態はここにあります。', () => showGlobals(app));
+  item2('C++ のクラス（RTTI / vtable）', '仮想関数の並びとクラス名を取り出します。', () => showCxxClasses(app));
+  item2('自分で付けた名前とメモ', '書き溜めたものの一覧・書き出し・読み込み。', () => showNotes(app));
+  item2('構造体（自分で作ったもの）', '作った型の一覧と、C のヘッダとしての書き出し。', () => showStructs(app));
+  item2('パッチ（命令の書き換え）', '命令を書き換えて、結果を新しいファイルとして保存します。', () => showPatches(app));
+  item2('スクリプト（自動化）', '同じ作業を何百回も繰り返すときに。IDAPython にあたるものです。', () => showScript(app));
+  item2('プラグイン', '自分で書いた機能を足します。', () => showPlugins(app));
+  item2('Unity（IL2CPP）の名前を戻す', 'global-metadata.dat を読み込むと、C# のクラス名とメソッド名が戻ります。', () => showIl2cpp(app));
+  sheet.body.append(whole);
+}
+
+/* ══════════════════════════════════════════════════════════
+   擬似コード
+   ══════════════════════════════════════════════════════════ */
+
+export async function showDecompiler(app, addr) {
+  const sheet = new Sheet('擬似コード');
+  const status = el('div', 'hint', '解析しています…');
+  sheet.body.append(status);
+
+  const res = await modelOf(app, addr);
+  if (!res || !res.model) {
+    status.textContent = 'この場所は関数として解析できませんでした。';
+    return;
+  }
+  const map = rowMapper(app);
+  let showAsm = false;
+  let showNotes = true;
+
+  const out = decompile(res.model, {
+    name: app.symbols.nameAt(addr),
+    addr,
+    rowOfAddress: map.rowOfAddress,
+    addrOfRow: map.addrOfRow,
+    symbolFor: (a) => {
+      const n = app.symbols.nameAt(a);
+      return n ? n : null;
+    },
+    fieldFor: (baseReg, offset) => fieldNameFor(app, addr, baseReg, offset),
+    notes: app.notes,
+  });
+
+  status.remove();
+
+  /* 見出し */
+  const head = block(null);
+  head.append(el('div', 'bigval mono', out.signature));
+  head.append(el('div', 'hint', addrHex(addr) + '  ·  ' + res.instructions + ' 命令'));
+  sheet.body.append(head);
+
+  sheet.body.append(noteBox(
+    'これは「訳」であって、元のソースコードではありません。\n' +
+    '変数名も型も、命令の並びから推測したものです。分からないところは ' +
+    '__asm や goto のまま残しています（きれいに見せるために嘘は書きません）。'));
+
+  for (const w of out.warnings) sheet.body.append(el('div', 'hint warn', '⚠ ' + w));
+
+  /* 表示の切り替え */
+  const chips = el('div', 'chips');
+  const asmChip = button('アセンブリも表示', 'chip', () => {
+    showAsm = !showAsm;
+    asmChip.classList.toggle('on', showAsm);
+    render();
+  });
+  const noteChip = button('日本語の注釈', 'chip on', () => {
+    showNotes = !showNotes;
+    noteChip.classList.toggle('on', showNotes);
+    render();
+  });
+  chips.append(asmChip, noteChip);
+  chips.append(button('コピー', 'chip', () => copyText(decompiledText(out), '擬似コード')));
+  chips.append(button('図で見る', 'chip', () => { sheet.close(); showCfg(app, addr); }));
+  sheet.body.append(chips);
+
+  const codeWrap = el('div', 'codeview');
+  sheet.body.append(codeWrap);
+
+  const byRow = new Map();
+  for (const i of res.model.instructions) byRow.set(i.row, i);
+
+  function render() {
+    codeWrap.replaceChildren();
+    for (const l of out.lines) {
+      if (l.kind === 'blank') { codeWrap.append(el('div', 'cl blank', ' ')); continue; }
+      const row = el('div', 'cl ' + l.kind);
+      const gutter = el('span', 'cl-addr mono', l.addr != null ? l.addr.toString(16).toUpperCase().slice(-6) : '');
+      const text = el('span', 'cl-text mono');
+      text.textContent = '    '.repeat(Math.max(0, l.indent)) + l.text;
+      row.append(gutter, text);
+      if (l.addr != null) {
+        row.classList.add('tappable');
+        row.addEventListener('click', () => lineMenu(app, sheet, l, byRow.get(l.row)));
+      }
+      codeWrap.append(row);
+      if (showNotes && l.note) {
+        const n = el('div', 'cl note');
+        n.append(el('span', 'cl-addr'), el('span', 'cl-text', '// ' + l.note));
+        codeWrap.append(n);
+      }
+      if (showAsm && l.row != null && byRow.has(l.row)) {
+        const insn = byRow.get(l.row);
+        const a = el('div', 'cl asm');
+        a.append(el('span', 'cl-addr'), el('span', 'cl-text mono', '; ' + insn.mnemonic + ' ' + insn.operands));
+        codeWrap.append(a);
+      }
+    }
+  }
+  render();
+}
+
+/** その行に対してできること。 */
+function lineMenu(app, sheet, line, insn) {
+  const items = [
+    { label: 'この場所へ移動', action: () => { sheet.close(); app.goToAddress(line.addr, { announce: true }); } },
+    { label: 'アドレスをコピー', action: () => copyText(addrHex(line.addr), 'アドレス') },
+  ];
+  if (insn) {
+    items.push({ label: 'この行を書き換える（パッチ）', action: () => showPatchEditor(app, line.addr, insn) });
+    items.push({ label: 'メモを書く', action: () => showComment(app, line.addr) });
+  }
+  const target = /(\w+)\(/.exec(line.text);
+  if (target) {
+    items.push({
+      label: '呼んでいる相手を調べる',
+      action: () => { sheet.close(); app.openFunctionReport(line.addr); },
+    });
+  }
+  menu(items, window.innerWidth / 2, window.innerHeight / 2);
+}
+
+/** [x0, #0x20] に名前が付けられるか（Objective-C のクラス表から）。 */
+function fieldNameFor(app, funcAddr, baseReg, offset) {
+  if (!app.fields || !app.fields.classCount) return null;
+  const owner = app.ownerOf(funcAddr);
+  if (!owner) return null;
+  const f = app.fields.fieldAt(owner.className || owner.name || owner, offset);
+  return f ? { name: f.name, type: f.type } : null;
+}
+
+/* ══════════════════════════════════════════════════════════
+   図（CFG / コールグラフ）
+   ══════════════════════════════════════════════════════════ */
+
+export async function showCfg(app, addr) {
+  const sheet = new Sheet('制御フロー図');
+  const status = el('div', 'hint', '解析しています…');
+  sheet.body.append(status);
+  const res = await modelOf(app, addr);
+  if (!res || !res.model) { status.textContent = 'この場所は関数として解析できませんでした。'; return; }
+  status.remove();
+
+  sheet.body.append(el('div', 'hint',
+    fnName(app, addr) + '\n' +
+    '四角が「まっすぐ進むひとかたまり」、線が「次にどこへ行くか」です。\n' +
+    '緑の線は条件が成り立ったとき、赤は成り立たなかったとき、太い線は前へ戻る（ループ）です。'));
+
+  const map = rowMapper(app);
+  const { nodes, edges } = cfgGraph(res.model, {
+    rowOfAddress: map.rowOfAddress,
+    text: (insn) => insn.mnemonic + ' ' + insn.operands,
+    onNode: (b, a) => { sheet.close(); app.goToAddress(a, { announce: true }); },
+  });
+  if (!nodes.length) { sheet.body.append(el('div', 'hint', '図にできる情報がありませんでした。')); return; }
+  sheet.body.append(renderGraph(nodes, edges, {}));
+
+  const legend = list();
+  legend.append(groupRow('この図の読み方'));
+  legend.append(kvRow('四角', 'ひとかたまりの命令（basic block）'));
+  legend.append(kvRow('緑の線', '条件が成り立ったときに進む道'));
+  legend.append(kvRow('赤の線', '成り立たなかったときに進む道'));
+  legend.append(kvRow('戻る線', 'ループ。同じところを繰り返します'));
+  sheet.body.append(legend);
+}
+
+export async function showCallGraphPanel(app, addr) {
+  const sheet = new Sheet('呼び出し図');
+  const status = el('div', 'hint', '呼び出し関係を集めています…');
+  sheet.body.append(status);
+  await app.ensureProgram();
+  if (!app.program) { status.textContent = '呼び出し関係を作れませんでした。'; return; }
+  status.remove();
+
+  let depth = 1;
+  sheet.body.append(el('div', 'hint',
+    fnName(app, addr) + '\n上が「この関数を呼ぶ人」、下が「この関数が呼ぶ相手」です。'));
+
+  const chips = el('div', 'chips');
+  const wrap = el('div');
+  for (const d of [1, 2, 3]) {
+    chips.append(button(d + ' 段', 'chip' + (d === depth ? ' on' : ''), (e) => {
+      depth = d;
+      for (const c of chips.children) c.classList.remove('on');
+      e.currentTarget.classList.add('on');
+      draw();
+    }));
+  }
+  sheet.body.append(chips, wrap);
+
+  function draw() {
+    const { nodes, edges } = callGraph(app.program, app.symbols, addr, {
+      depth, limit: depth >= 3 ? 4 : 8,
+      label: (a) => fnName(app, a),
+      onNode: (a) => { sheet.close(); app.openFunctionReport(a); },
+    });
+    wrap.replaceChildren(renderGraph(nodes, edges, {}));
+  }
+  draw();
+}
+
+/* ══════════════════════════════════════════════════════════
+   型・変数
+   ══════════════════════════════════════════════════════════ */
+
+export async function showTypes(app, addr) {
+  const sheet = new Sheet('引数・戻り値・変数');
+  const status = el('div', 'hint', '解析しています…');
+  sheet.body.append(status);
+  const res = await modelOf(app, addr);
+  if (!res || !res.model) { status.textContent = 'この場所は関数として解析できませんでした。'; return; }
+  status.remove();
+
+  const types = inferTypes(res.model);
+  sheet.body.append(el('div', 'hint',
+    fnName(app, addr) + '\n' +
+    '型は「そのバイトを何として扱っているか」です。バイナリには書かれていないので、\n' +
+    '命令の使い方（何バイト読んだか・何に渡したか）から推測しています。'));
+
+  const render = () => {
+    body.replaceChildren();
+
+    const args = list();
+    args.append(groupRow('受け取っているもの（引数）'));
+    if (!types.args.length) args.append(tapRow('引数はなさそうです', { disabled: true, sub: 'x0〜x7 を、自分で値を入れる前に読んでいません。' }));
+    for (const a of types.args) {
+      const custom = app.notes.typeOf(addr, 'a' + a.index);
+      args.append(tapRow((custom || a.type) + '  a' + (a.index + 1), {
+        sub: 'レジスタ ' + a.reg + '  ·  ' + typeJa(custom || a.type) +
+          (a.why.length ? '\n根拠: ' + a.why.map((w) => w.why).join(' / ') : '') +
+          (custom ? '\n（自分で決めた型）' : ''),
+        right: confidenceMark(a.conf),
+        onTap: () => pickType(app, addr, 'a' + a.index, custom || a.type, render),
+      }));
+    }
+    body.append(args);
+
+    const ret = list();
+    ret.append(groupRow('返しているもの（戻り値）'));
+    const rt = app.notes.typeOf(addr, 'ret') || types.ret.type;
+    ret.append(tapRow(rt, {
+      sub: typeJa(rt) + (types.ret.why.length ? '\n根拠: ' + types.ret.why.map((w) => w.why).join(' / ') : ''),
+      right: confidenceMark(types.ret.conf),
+      onTap: () => pickType(app, addr, 'ret', rt, render),
+    }));
+    body.append(ret);
+
+    const locals = list();
+    locals.append(groupRow('スタックに置いているもの（ローカル変数）'));
+    if (!types.locals.length) locals.append(tapRow('スタックは使っていません', { disabled: true }));
+    for (const l of types.locals.slice(0, 60)) {
+      const custom = app.notes.typeOf(addr, l.slot);
+      locals.append(tapRow((custom || l.type) + '  var_' + Math.abs(l.offset).toString(16).toUpperCase(), {
+        sub: l.slot + '  ·  ' + typeJa(custom || l.type) +
+          (l.why.length ? '\n' + l.why.map((w) => w.why).join(' / ') : ''),
+        right: confidenceMark(l.conf),
+        onTap: () => pickType(app, addr, l.slot, custom || l.type, render),
+      }));
+    }
+    body.append(locals);
+
+    body.append(noteBox('★ の数は「どれくらい確からしいか」です。タップすると自分で型を決められます。'));
+  };
+
+  const body = el('div');
+  sheet.body.append(body);
+  render();
+}
+
+function confidenceMark(conf) {
+  const n = conf >= 0.85 ? 3 : conf >= 0.6 ? 2 : 1;
+  return '★'.repeat(n) + '☆'.repeat(3 - n);
+}
+
+function pickType(app, funcAddr, key, current, onDone) {
+  const items = BASIC_TYPES.map((t) => ({
+    label: t.name + ' — ' + t.ja,
+    action: () => { app.notes.setType(funcAddr, key, t.name); toast('型を ' + t.name + ' にしました'); onDone(); },
+  }));
+  items.push('-');
+  items.push({ label: '推測にもどす', action: () => { app.notes.setType(funcAddr, key, ''); onDone(); } });
+  void current;
+  menu(items, window.innerWidth / 2, 120);
+}
+
+/* ══════════════════════════════════════════════════════════
+   構造体
+   ══════════════════════════════════════════════════════════ */
+
+export async function showStructRecover(app, addr) {
+  const sheet = new Sheet('構造体を組み立てる');
+  const status = el('div', 'hint', '解析しています…');
+  sheet.body.append(status);
+  const res = await modelOf(app, addr);
+  if (!res || !res.model) { status.textContent = '解析できませんでした。'; return; }
+  status.remove();
+
+  sheet.body.append(el('div', 'hint',
+    'ひとつのレジスタが [x19, #0x10] / [x19, #0x18] のように使われていたら、\n' +
+    'x19 は「0x10 と 0x18 に何かが入っている箱」を指しています。\n' +
+    'その並びをまとめたものが構造体（struct）です。'));
+
+  const rec = recoverStruct(res.model, null);
+  if (!rec) {
+    sheet.body.append(noteBox('この関数では、まとまった箱の使い方が見つかりませんでした。'));
+    return;
+  }
+
+  const head = block(rec.base + ' が指している箱');
+  head.append(el('div', 'hint', '全体で ' + rec.size + ' バイト、' + rec.members.length + ' か所を使っています。'));
+  sheet.body.append(head);
+
+  const members = list();
+  for (const m of rec.members) {
+    members.append(tapRow('+0x' + m.offset.toString(16).toUpperCase() + '  ' + m.type + ' ' + m.name, {
+      sub: m.size + ' バイト  ·  読み ' + m.reads + ' 回 / 書き ' + m.writes + ' 回',
+      onTap: () => toast(typeJa(m.type)),
+    }));
+  }
+  sheet.body.append(members);
+
+  sheet.body.append(codeBlock(structToC(rec)));
+
+  const actions = el('div', 'chips');
+  actions.append(button('この形を保存する', 'chip', () => {
+    const store = new TypeStore(app.notes);
+    const name = 'struct_' + addr.toString(16).toUpperCase();
+    store.adopt(rec, name);
+    toast(name + ' として保存しました');
+  }));
+  actions.append(button('C としてコピー', 'chip', () => copyText(structToC(rec), '構造体')));
+  sheet.body.append(actions);
+}
+
+export function showStructs(app) {
+  const sheet = new Sheet('構造体');
+  const store = new TypeStore(app.notes);
+  sheet.body.append(el('div', 'hint',
+    '自分で作った型の一覧です。関数の画面から「構造体を組み立てる」で作れます。'));
+
+  const render = () => {
+    body.replaceChildren();
+    const l = list();
+    if (!store.list().length) l.append(tapRow('まだ 1 つもありません', { disabled: true }));
+    for (const s of store.list()) {
+      l.append(tapRow(s.name, {
+        sub: s.members.length + ' 項目  ·  ' + s.size + ' バイト',
+        onTap: () => showStructDetail(app, store, s, render),
+      }));
+    }
+    body.append(l);
+  };
+  const body = el('div');
+  sheet.body.append(body);
+  render();
+}
+
+function showStructDetail(app, store, s, onChange) {
+  const sheet = new Sheet(s.name);
+  sheet.body.append(codeBlock(store.toC(s.name)));
+  const l = list();
+  for (const m of s.members) {
+    l.append(tapRow('+0x' + m.offset.toString(16).toUpperCase() + '  ' + m.type + ' ' + m.name, {
+      sub: (m.size || 8) + ' バイト',
+      onTap: () => {
+        const nameIn = input('項目の名前', m.name);
+        const d = el('div');
+        d.append(para('この項目に名前を付けます。'), field(nameIn, '決定', () => {
+          store.setMember(s.name, m.offset, { name: nameIn.value.trim() || m.name });
+          sheet.close();
+          onChange();
+          toast('名前を付けました');
+        }));
+        const sh = new Sheet('項目の名前');
+        sh.body.append(d);
+      },
+    }));
+  }
+  sheet.body.append(l);
+  const chips = el('div', 'chips');
+  chips.append(button('C としてコピー', 'chip', () => copyText(store.toC(s.name), '構造体')));
+  chips.append(button('削除', 'chip danger', () => {
+    store.remove(s.name);
+    sheet.close();
+    onChange();
+    toast('削除しました');
+  }));
+  sheet.body.append(chips);
+}
+
+/* ══════════════════════════════════════════════════════════
+   C++ のクラス（RTTI / vtable）
+   ══════════════════════════════════════════════════════════ */
+
+export function showCxxClasses(app) {
+  const sheet = new Sheet('C++ のクラス');
+  sheet.body.append(el('div', 'hint',
+    'C++ は、クラスごとに「仮想関数の一覧表（vtable）」と「型の名札（RTTI）」を\n' +
+    'バイナリの中に残します。ここからクラス名と、その持ちものが分かります。'));
+
+  const classes = findCxxClasses(app.symbols);
+  if (!classes.length) {
+    sheet.body.append(noteBox(
+      'このファイルには C++ のクラス情報が見当たりませんでした。\n' +
+      'Objective-C や Swift で書かれているか、情報が削られている可能性があります。\n' +
+      'Objective-C のクラスは「構造」の画面で見られます。'));
+    return;
+  }
+
+  const search = input('クラス名で絞り込む');
+  sheet.body.append(field(search, '探す', () => render()));
+  const status = el('div', 'hint', classes.length + ' 個のクラスが見つかりました。');
+  const l = list();
+  sheet.body.append(status, l);
+
+  function render() {
+    const q = search.value.trim().toLowerCase();
+    const hits = q ? classes.filter((c) => c.name.toLowerCase().includes(q)) : classes;
+    l.replaceChildren();
+    for (const c of hits.slice(0, 300)) {
+      l.append(tapRow(c.name, {
+        sub: (c.vtable != null ? 'vtable ' + addrHex(c.vtable) : '仮想関数なし') +
+          (c.typeinfo != null ? '  ·  RTTI あり' : ''),
+        onTap: () => showVtable(app, c),
+      }));
+    }
+    status.textContent = hits.length + ' 個' + (hits.length > 300 ? '（先頭 300 個を表示）' : '');
+  }
+  render();
+  search.addEventListener('keydown', (e) => { if (e.key === 'Enter') render(); });
+}
+
+async function showVtable(app, cls) {
+  const sheet = new Sheet(cls.name);
+  if (cls.vtable == null) {
+    sheet.body.append(noteBox('このクラスには仮想関数の表がありません。'));
+    return;
+  }
+  const status = el('div', 'hint', '読み込んでいます…');
+  sheet.body.append(status);
+  const read = (a, len) => app.backend.readAt(a, len).then((r) => (r && r.found ? r.bytes : null)).catch(() => null);
+  const vt = await readVtable(read, cls.vtable, app.symbols);
+  if (!vt || !vt.slots.length) { status.textContent = '仮想関数の表を読めませんでした。'; return; }
+  status.remove();
+
+  sheet.body.append(el('div', 'hint',
+    '仮想関数の一覧です。番号が「何番目のスロットか」で、\n' +
+    'コードの中で `ldr x8, [x0]` → `ldr x8, [x8, #0x10]` → `blr x8` と呼ばれていたら、\n' +
+    'それは 0x10 ÷ 8 = 2 番のスロット、つまり下の 2 番の関数です。'));
+
+  const l = list();
+  for (const s of vt.slots) {
+    l.append(tapRow('#' + s.index + '  ' + (s.readable || s.name || 'sub_' + s.addr.toString(16).toUpperCase()), {
+      sub: addrHex(s.addr) + (s.name && s.readable !== s.name ? '\n' + s.name : ''),
+      onTap: () => { sheet.close(); app.openFunctionReport(s.addr); },
+    }));
+  }
+  sheet.body.append(l);
+}
+
+/* ══════════════════════════════════════════════════════════
+   外とのつながり
+   ══════════════════════════════════════════════════════════ */
+
+export async function showLinkage(app) {
+  const sheet = new Sheet('外とのつながり');
+  sheet.body.append(el('div', 'hint',
+    'アプリ単体では画面も出せません。iOS が用意したライブラリを借りて動いています。\n' +
+    '何を借りているかを見るだけで、アプリが何をするものかが半分わかります。'));
+
+  await app.ensureProgram().catch(() => null);
+  const imports = importList(app.symbols, app.program);
+  const groups = importsByFramework(imports);
+  const slice = app.currentSlice();
+  const dylibs = slice && slice.info ? slice.info.dylibs || [] : [];
+
+  const tabs = el('div', 'chips');
+  const body = el('div');
+  const views = {
+    imports: () => {
+      body.replaceChildren();
+      body.append(el('div', 'hint', '借りている関数 ' + imports.length + ' 個。呼ばれている回数の多い順です。'));
+      for (const g of groups) {
+        const d = disclosure(g.name + '（' + g.items.length + '）', {
+          build: (into) => {
+            const l = list();
+            for (const i of g.items.slice(0, 200)) {
+              l.append(tapRow(i.readable || i.name, {
+                sub: addrHex(i.addr) + (i.calls ? '  ·  ' + i.calls + ' 回呼ばれています' : '') +
+                  (i.readable !== i.name ? '\n' + i.name : ''),
+                onTap: () => { sheet.close(); app.goToAddress(i.addr, { announce: true }); },
+              }));
+            }
+            into.append(l);
+          },
+        });
+        body.append(d);
+      }
+      body.append(noteBox('どの framework のものかは、名前からの推測です（バイナリには対応表が残っていません）。'));
+    },
+    exports: () => {
+      body.replaceChildren();
+      const ex = exportList(app.symbols);
+      body.append(el('div', 'hint',
+        '外へ公開している名前 ' + ex.length + ' 個。\n' +
+        'アプリ本体では少なめですが、.framework を開いたときは「使える API の一覧」になります。'));
+      const l = list();
+      for (const e of ex.slice(0, 400)) {
+        l.append(tapRow(e.readable, {
+          sub: addrHex(e.addr) + (e.readable !== e.name ? '\n' + e.name : ''),
+          onTap: () => { sheet.close(); app.openFunctionReport(e.addr); },
+        }));
+      }
+      body.append(l);
+    },
+    dylibs: () => {
+      body.replaceChildren();
+      body.append(el('div', 'hint',
+        '起動時に読み込むライブラリの一覧（LC_LOAD_DYLIB）。これは推測ではなく、\n' +
+        'ファイルにそのまま書いてある事実です。'));
+      const l = list();
+      for (const d of dylibs) {
+        const short = d.split('/').pop();
+        l.append(tapRow(short, { sub: d, onTap: () => copyText(d, 'パス') }));
+      }
+      if (!dylibs.length) l.append(tapRow('ありません', { disabled: true }));
+      body.append(l);
+    },
+  };
+
+  let current = 'imports';
+  for (const [key, label] of [['imports', '借りている関数'], ['exports', '公開している名前'], ['dylibs', 'ライブラリ']]) {
+    tabs.append(button(label, 'chip' + (key === current ? ' on' : ''), (e) => {
+      current = key;
+      for (const c of tabs.children) c.classList.remove('on');
+      e.currentTarget.classList.add('on');
+      views[key]();
+    }));
+  }
+  sheet.body.append(tabs, body);
+  views.imports();
+}
+
+/* ══════════════════════════════════════════════════════════
+   グローバル変数
+   ══════════════════════════════════════════════════════════ */
+
+export async function showGlobals(app) {
+  const sheet = new Sheet('グローバル変数');
+  const status = el('div', 'hint', '参照関係を調べています…');
+  sheet.body.append(status);
+  await app.ensureProgram().catch(() => null);
+
+  const globals = findGlobals(app.symbols, app.program, app.store.get('regions') || [], { limit: 400 });
+  status.remove();
+  sheet.body.append(el('div', 'hint',
+    'どこからでも触れる置き場です。所持金・ログイン状態・設定などは、\n' +
+    'たいていここに置かれています。よく参照されているものほど上に出ます。'));
+
+  if (!globals.length) {
+    sheet.body.append(noteBox('見つかりませんでした（データのセクションが無いか、参照が拾えていません）。'));
+    return;
+  }
+
+  const l = list();
+  for (const g of globals.slice(0, 300)) {
+    l.append(tapRow(g.readable, {
+      sub: addrHex(g.addr) + '  ·  ' + g.region + '  ·  ' + g.refs + ' か所から参照' +
+        (g.named ? '' : '\n（名前は残っていません。参照の多さから見つけました）'),
+      onTap: () => { sheet.close(); app.goToAddress(g.addr, { announce: true }); },
+    }));
+  }
+  sheet.body.append(l);
+}
+
+/* ══════════════════════════════════════════════════════════
+   名前とメモ
+   ══════════════════════════════════════════════════════════ */
+
+export function showRename(app, addr) {
+  const sheet = new Sheet('名前を付ける');
+  const cur = app.symbols.nameAt(addr);
+  sheet.body.append(el('div', 'hint',
+    addrHex(addr) + '\n' +
+    '分かったことに、その場で名前を付けておきます。\n' +
+    '命令一覧・関数一覧・呼び出し元まで、いっぺんに新しい名前になります。'));
+  if (cur) sheet.body.append(kvRow('いまの名前', readableName(cur)));
+
+  const nameIn = input('例: ダメージ計算', app.notes.nameOf(addr) || '');
+  sheet.body.append(field(nameIn, '決定', apply));
+  nameIn.addEventListener('keydown', (e) => { if (e.key === 'Enter') apply(); });
+  setTimeout(() => nameIn.focus(), 50);
+
+  const memo = textArea(app.notes.comment(addr) || '', 4);
+  sheet.body.append(heading('メモ（覚えておきたいこと）'), memo);
+  sheet.body.append(field(el('span'), 'メモを保存', () => {
+    app.notes.setComment(addr, memo.value);
+    toast('メモを保存しました');
+  }));
+
+  if (app.notes.nameOf(addr)) {
+    sheet.body.append(button('付けた名前を消す', 'tb-btn danger', () => {
+      app.notes.setName(addr, '');
+      app.symbols.rename(addr, '');
+      app.viewer.setSymbols(app.symbols);
+      sheet.close();
+      toast('元の名前に戻しました');
+    }));
+  }
+
+  function apply() {
+    const v = nameIn.value.trim();
+    app.notes.setName(addr, v);
+    app.symbols.rename(addr, v);
+    app.viewer.setSymbols(app.symbols);
+    app.updateChrome();
+    sheet.close();
+    toast(v ? '「' + v + '」にしました' : '元の名前に戻しました');
+  }
+}
+
+export function showComment(app, addr) {
+  const sheet = new Sheet('メモ');
+  sheet.body.append(el('div', 'hint', addrHex(addr) + '\nこの行についてのメモを残します。'));
+  const memo = textArea(app.notes.comment(addr) || '', 5);
+  sheet.body.append(memo);
+  sheet.body.append(field(el('span'), '保存', () => {
+    app.notes.setComment(addr, memo.value);
+    sheet.close();
+    toast('保存しました');
+  }));
+}
+
+export function showNotes(app) {
+  const sheet = new Sheet('自分で付けた名前とメモ');
+  const render = () => {
+    body.replaceChildren();
+    const names = app.notes.nameEntries();
+    body.append(el('div', 'hint',
+      '名前 ' + names.length + ' 個、メモ ' + app.notes.commentCount() + ' 個。\n' +
+      'この端末のブラウザに保存されています（どこにも送信されません）。'));
+
+    const l = list();
+    l.append(groupRow('名前'));
+    if (!names.length) l.append(tapRow('まだありません', { disabled: true }));
+    for (const n of names.slice(0, 300)) {
+      l.append(tapRow(n.name, {
+        sub: addrHex(n.addr),
+        onTap: () => { sheet.close(); app.goToAddress(n.addr, { announce: true }); },
+      }));
+    }
+    body.append(l);
+
+    const chips = el('div', 'chips');
+    chips.append(button('書き出す（バックアップ）', 'chip', () => {
+      copyText(app.notes.toJSON(), 'メモ');
+    }));
+    chips.append(button('読み込む', 'chip', () => {
+      const sh = new Sheet('読み込む');
+      sh.body.append(para('書き出した内容を貼り付けてください。いまの内容と合わさります。'));
+      const ta = textArea('', 8);
+      sh.body.append(ta, field(el('span'), '取り込む', () => {
+        try {
+          const n = app.notes.fromJSON(ta.value);
+          for (const e of app.notes.nameEntries()) app.symbols.rename(e.addr, e.name);
+          app.viewer.setSymbols(app.symbols);
+          sh.close();
+          render();
+          toast(n + ' 件を取り込みました');
+        } catch (err) { alertDialog('読み込めません', (err && err.message) || String(err)); }
+      }));
+    }));
+    chips.append(button('全部消す', 'chip danger', () => {
+      alertDialog('全部消しますか', 'このファイルに付けた名前とメモを消します。元に戻せません。', {
+        confirmLabel: '消す',
+        onConfirm: () => {
+          for (const e of app.notes.nameEntries()) app.symbols.rename(e.addr, '');
+          app.notes.clear();
+          app.viewer.setSymbols(app.symbols);
+          render();
+          toast('消しました');
+        },
+      });
+    }));
+    body.append(chips);
+  };
+  const body = el('div');
+  sheet.body.append(body);
+  render();
+}
+
+/* ══════════════════════════════════════════════════════════
+   パッチ
+   ══════════════════════════════════════════════════════════ */
+
+export function showPatches(app) {
+  const sheet = new Sheet('パッチ');
+  sheet.body.append(el('div', 'hint',
+    '命令を書き換えて「こうしたらどうなるか」を試す道具です。\n' +
+    '元のファイルには書き込みません。保存を選んだときだけ、新しいファイルを作ります。'));
+  sheet.body.append(noteBox(
+    'iOS の実行ファイルは署名されています。書き換えたものをそのまま実機で動かすことはできません。\n' +
+    '（このツールは解析と実験のためのものです。）'));
+
+  const render = () => {
+    body.replaceChildren();
+    const items = app.patches.list();
+    const l = list();
+    l.append(groupRow('書き換えの一覧（' + items.length + '）'));
+    if (!items.length) l.append(tapRow('まだありません', { disabled: true, sub: '命令を長押しして「書き換える」から作れます。' }));
+    for (const it of items) {
+      l.append(tapRow((it.addr != null ? addrHex(it.addr) : '+' + it.offset) + '  ' + (it.text || ''), {
+        sub: hexOf(it.before) + '  →  ' + hexOf(it.after),
+        onTap: () => {
+          menu([
+            { label: 'この場所へ移動', action: () => { sheet.close(); if (it.addr != null) app.goToAddress(it.addr, { announce: true }); } },
+            { label: 'この書き換えを取り消す', action: () => { app.patches.remove(it.offset); render(); toast('取り消しました'); } },
+          ], window.innerWidth / 2, 200);
+        },
+      }));
+    }
+    body.append(l);
+
+    const chips = el('div', 'chips');
+    chips.append(button('アドレスを指定して書き換える', 'chip', () => {
+      const sh = new Sheet('場所を指定');
+      const a = input('0x100004000');
+      sh.body.append(para('書き換えたい命令のアドレスを入れてください。'), field(a, '進む', async () => {
+        let addr;
+        try { addr = BigInt(a.value.trim()); } catch { toast('アドレスの形が違います'); return; }
+        sh.close();
+        const insn = await instructionAt(app, addr);
+        showPatchEditor(app, addr, insn);
+      }));
+    }));
+    if (items.length) {
+      chips.append(button('書き換えたファイルを保存', 'chip strong', () => savePatched(app)));
+      chips.append(button('全部取り消す', 'chip danger', () => { app.patches.clear(); render(); }));
+    }
+    body.append(chips);
+  };
+  const body = el('div');
+  sheet.body.append(body);
+  render();
+}
+
+async function instructionAt(app, addr) {
+  const region = app.codeRegion();
+  if (!region) return null;
+  const row = Number((addr - region.vmAddr) / 4n);
+  const chunk = Math.floor(row / 1024);
+  try {
+    const e = await app.backend.fetchChunk(region.id, chunk, true);
+    const k = row - chunk * 1024;
+    return { mnemonic: e.mn ? e.mn[k] : '', operands: e.ops ? e.ops[k] : '', address: addr };
+  } catch { return null; }
+}
+
+export async function showPatchEditor(app, addr, insnArg) {
+  const insn = insnArg || await instructionAt(app, addr);
+  const sheet = new Sheet('命令を書き換える');
+  const region = app.codeRegion();
+  if (!region) { sheet.body.append(noteBox('コードのセクションが見つかりません。')); return; }
+  const fileOffset = region.fileOffset + (addr - region.vmAddr);
+
+  sheet.body.append(el('div', 'hint', addrHex(addr) + '  ·  ファイルの中では +0x' + fileOffset.toString(16)));
+  if (insn) {
+    const b = block('いまの命令');
+    b.append(el('div', 'bigval mono', (insn.mnemonic + ' ' + insn.operands).trim()));
+    try {
+      b.append(el('div', 'hint', brief(insn.mnemonic, insn.operands, 'ja', { address: addr })));
+    } catch { /* 説明が作れなくても続ける */ }
+    sheet.body.append(b);
+  }
+
+  const suggestions = suggestPatches(insn ? insn.mnemonic : '', insn ? insn.operands : '', addr);
+  const l = list();
+  l.append(groupRow('よく使う書き換え'));
+  for (const s of suggestions) {
+    l.append(tapRow(s.label, { sub: s.why + '\n→ ' + s.text, onTap: () => apply(s.text) }));
+  }
+  sheet.body.append(l);
+
+  sheet.body.append(heading('自分で書く'));
+  const asm = input('例: mov w0, #1');
+  sheet.body.append(field(asm, '書き換える', () => apply(asm.value)));
+  sheet.body.append(el('div', 'hint',
+    '使えるのは nop / ret / brk / mov / b / bl / b.条件 です。\n' +
+    'それ以外は 16 進で直接どうぞ（例: 1F 20 03 D5）。'));
+
+  const hex = input('1F 20 03 D5');
+  sheet.body.append(field(hex, '16 進で書き換える', () => {
+    const bytes = parseHexBytes(hex.value);
+    if (!bytes || bytes.length !== 4) { toast('4 バイト（8 桁）で指定してください'); return; }
+    commit(bytes, hex.value);
+  }));
+
+  async function apply(text) {
+    const built = assemble(text, addr);
+    if (built.error) { alertDialog('組み立てられません', built.error); return; }
+    commit(built.bytes, text);
+  }
+
+  async function commit(bytes, text) {
+    const before = await app.backend.readAt(addr, bytes.length)
+      .then((r) => (r && r.found ? r.bytes : new Uint8Array(bytes.length))).catch(() => new Uint8Array(bytes.length));
+    app.patches.add(fileOffset, before, bytes, { addr, text });
+    sheet.close();
+    toast('書き換えを登録しました（保存するまでファイルは変わりません）');
+  }
+}
+
+async function savePatched(app) {
+  const file = app.store.get('file');
+  if (!file) { toast('ファイルが開かれていません'); return; }
+  toast('書き出しています…');
+  try {
+    const blob = await app.patches.apply(file);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = (file.name || 'patched') + '.patched';
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+    toast('保存しました');
+  } catch (err) {
+    alertDialog('保存できません', (err && err.message) || String(err));
+  }
+}
+
+/* ══════════════════════════════════════════════════════════
+   実行してみる（デバッガ）
+   ══════════════════════════════════════════════════════════ */
+
+export function showDebugger(app, addr) {
+  const sheet = new Sheet('実行してみる');
+  const emu = makeEmulator(app);
+  let args = [0n, 0n, 0n, 0n];
+
+  sheet.body.append(el('div', 'hint',
+    fnName(app, addr) + '\n' +
+    'この関数を、ブラウザの中で 1 命令ずつ動かします。実機のアプリは起動しません。\n' +
+    '危ないことは何も起きないので、安心して何度でも試せます。'));
+  sheet.body.append(noteBox(
+    'iOS のライブラリ（UIKit など）の中身はこのファイルに入っていないので、\n' +
+    'そこへ出たら「戻り値 0 で帰ってきた」ことにして先へ進みます。\n' +
+    '何をそう扱ったかは、下の「メモ」に出ます。'));
+
+  /* 引数 */
+  const argWrap = el('div', 'field wrap');
+  const argInputs = [];
+  for (let i = 0; i < 4; i++) {
+    const n = input('x' + i, '0');
+    n.style.maxWidth = '80px';
+    argInputs.push(n);
+    argWrap.append(n);
+  }
+  sheet.body.append(heading('引数（x0〜x3）'), argWrap);
+
+  const chips = el('div', 'chips');
+  const status = el('div', 'hint', 'まだ動かしていません。');
+  const regTable = el('div', 'regs mono');
+  const traceBox = el('div', 'codeview small');
+  const logBox = el('div');
+  const bpBox = el('div');
+
+  const start = () => {
+    args = argInputs.map((n) => {
+      const v = n.value.trim();
+      try { return v ? BigInt(v) : 0n; } catch { return 0n; }
+    });
+    const keep = new Set(emu.breakpoints);   // 置いた目印は、やり直しても残す
+    emu.reset();
+    emu.breakpoints = keep;
+    emu.setup(addr, args);
+    status.textContent = '準備しました。「1 命令進む」か「最後まで走らせる」を押してください。';
+    render();
+  };
+
+  chips.append(button('はじめから', 'chip', start));
+  chips.append(button('1 命令進む', 'chip', async () => {
+    const r = await emu.step();
+    status.textContent = r.text ? ('実行: ' + r.text) : (r.reason || '');
+    if (r.reason) status.textContent += '\n' + r.reason;
+    render();
+  }));
+  chips.append(button('10 命令進む', 'chip', async () => {
+    for (let i = 0; i < 10 && !emu.stopped; i++) await emu.step();
+    status.textContent = emu.stopped || (emu.steps + ' 命令まで進みました。');
+    render();
+  }));
+  chips.append(button('最後まで走らせる', 'chip strong', async () => {
+    status.textContent = '走らせています…';
+    const r = await emu.run(50000, (n) => { status.textContent = n + ' 命令…'; });
+    status.textContent = (emu.stopped || 'ブレークポイントで止まりました。') +
+      '\n合計 ' + emu.steps + ' 命令、戻り値 x0 = ' + hexBig(emu.x[0]) + '（10 進で ' + emu.x[0].toString() + '）';
+    void r;
+    render();
+  }));
+  sheet.body.append(chips, status);
+
+  /* ブレークポイント: そこへ来たら止まる目印 */
+  const bpInput = input('0x… 止めたい場所', '');
+  sheet.body.append(heading('ブレークポイント'), el('div', 'hint',
+    'そこへ来たら止まる目印です。「最後まで走らせる」で、ここに着いた時点で止まります。'));
+  sheet.body.append(field(bpInput, '置く', () => {
+    let a;
+    try { a = BigInt(bpInput.value.trim()); } catch { toast('アドレスの形が違います'); return; }
+    emu.breakpoints.add(a.toString());
+    bpInput.value = '';
+    renderBreakpoints();
+    toast(addrHex(a) + ' に置きました');
+  }));
+  sheet.body.append(bpBox);
+
+  function renderBreakpoints() {
+    bpBox.replaceChildren();
+    const l = list();
+    if (!emu.breakpoints.size) l.append(tapRow('まだありません', { disabled: true }));
+    for (const key of emu.breakpoints) {
+      const a = BigInt(key);
+      l.append(tapRow(addrHex(a), {
+        sub: 'タップすると外します',
+        onTap: () => { emu.breakpoints.delete(key); renderBreakpoints(); },
+      }));
+    }
+    bpBox.append(l);
+  }
+  renderBreakpoints();
+
+  sheet.body.append(heading('レジスタ'), regTable);
+  sheet.body.append(heading('通った道（最後の 40 命令）'), traceBox);
+  sheet.body.append(heading('メモ'), logBox);
+
+  const memWrap = el('div');
+  sheet.body.append(heading('メモリを覗く'), memWrap);
+  const memAddr = input('0x… または x0', '');
+  memWrap.append(field(memAddr, '見る', async () => {
+    let a;
+    const v = memAddr.value.trim();
+    if (/^x\d+$/.test(v)) a = emu.get(v);
+    else { try { a = BigInt(v); } catch { toast('アドレスの形が違います'); return; } }
+    const bytes = await emu.dump(a, 64);
+    memOut.replaceChildren(codeBlock(dumpText(a, bytes)));
+  }));
+  const memOut = el('div');
+  memWrap.append(memOut);
+
+  function render() {
+    regTable.replaceChildren();
+    const regs = emu.registerList();
+    for (const r of regs) {
+      if (r.value === 0n && /^x(1[1-9]|2\d|30)$/.test(r.name)) continue;   // 0 のままの退避用は隠す
+      const row = el('div', 'reg');
+      row.append(el('span', 'reg-name', r.name), el('span', 'reg-val', hexBig(r.value)));
+      regTable.append(row);
+    }
+    const f = el('div', 'reg');
+    f.append(el('span', 'reg-name', 'flags'), el('span', 'reg-val', emu.flagText()));
+    regTable.append(f);
+
+    traceBox.replaceChildren();
+    for (const t of emu.trace.slice(-40)) {
+      const row = el('div', 'cl');
+      row.append(el('span', 'cl-addr mono', t.addr.toString(16).toUpperCase().slice(-6)),
+        el('span', 'cl-text mono', t.text));
+      traceBox.append(row);
+    }
+
+    logBox.replaceChildren();
+    if (!emu.log.length) logBox.append(el('div', 'hint', '（まだありません）'));
+    for (const l of emu.log.slice(-20)) {
+      logBox.append(el('div', 'hint', '· ' + l.call + ' — ' + l.note));
+    }
+  }
+
+  start();
+}
+
+function hexBig(v) {
+  return '0x' + BigInt.asUintN(64, v).toString(16).toUpperCase().padStart(16, '0');
+}
+
+function dumpText(addr, bytes) {
+  const lines = [];
+  for (let i = 0; i < bytes.length; i += 16) {
+    const chunk = Array.from(bytes.slice(i, i + 16));
+    const hex = chunk.map((b) => b.toString(16).padStart(2, '0')).join(' ');
+    const ascii = chunk.map((b) => (b >= 32 && b < 127 ? String.fromCharCode(b) : '.')).join('');
+    lines.push((addr + BigInt(i)).toString(16).toUpperCase().padStart(12, '0') + '  ' + hex.padEnd(48) + '  ' + ascii);
+  }
+  return lines.join('\n');
+}
+
+/* ══════════════════════════════════════════════════════════
+   スクリプト
+   ══════════════════════════════════════════════════════════ */
+
+export function showScript(app) {
+  const sheet = new Sheet('スクリプト');
+  sheet.body.append(el('div', 'hint',
+    '同じ作業を何百回も繰り返すときの道具です（IDAPython にあたります）。\n' +
+    '言語は JavaScript。hex.〜 で解析結果に触れて、print(…) で下に出します。'));
+
+  const ta = textArea(SAMPLES[0].code, 10);
+  sheet.body.append(ta);
+
+  const chips = el('div', 'chips');
+  chips.append(button('実行', 'chip strong', run));
+  chips.append(button('消す', 'chip', () => { ta.value = ''; }));
+  chips.append(button('お手本', 'chip', () => {
+    menu(SAMPLES.map((s) => ({
+      label: s.title,
+      action: () => { ta.value = s.code; toast(s.why); },
+    })), window.innerWidth / 2, 160);
+  }));
+  chips.append(button('使える命令', 'chip', showScriptHelp));
+  sheet.body.append(chips);
+
+  const out = el('div', 'codeview small');
+  sheet.body.append(heading('結果'), out);
+
+  async function run() {
+    out.replaceChildren();
+    const write = (line) => {
+      const row = el('div', 'cl');
+      row.append(el('span', 'cl-text mono', line));
+      out.append(row);
+      out.scrollTop = out.scrollHeight;
+    };
+    write('— 実行しています —');
+    const res = await runScript(ta.value, app, write);
+    if (res.error) {
+      const row = el('div', 'cl warn');
+      row.append(el('span', 'cl-text mono', '⚠ ' + res.error));
+      out.append(row);
+    } else {
+      write('— おわり —');
+    }
+  }
+}
+
+function showScriptHelp() {
+  const sheet = new Sheet('スクリプトで使える命令');
+  sheet.body.append(para('よく使うものだけ並べます。すべて hex. から始めます。'));
+  const groups = [
+    ['調べる', [
+      'hex.functions()            関数の一覧',
+      'hex.name(addr)             名前を引く',
+      'hex.disasm(addr, 20)       逆アセンブル',
+      'await hex.decompile(addr)  擬似コード',
+      'await hex.types(addr)      引数と戻り値の推定',
+      'await hex.struct(addr)     構造体の復元',
+      'hex.xrefsTo(addr)          呼んでいる場所',
+      'hex.xrefsFrom(addr)        呼んでいる相手',
+      'hex.mostCalled(20)         よく呼ばれる関数',
+    ]],
+    ['読む', [
+      'await hex.bytes(addr, 16)  生バイト',
+      'await hex.string(addr)     文字列として読む',
+      'await hex.loadStrings()    文字列を集める',
+      'hex.findStrings("error")   文字列を探す',
+    ]],
+    ['書く・動かす', [
+      'hex.rename(addr, "名前")   名前を付ける',
+      'hex.comment(addr, "メモ")  メモを書く',
+      'await hex.patch(addr, "nop")  書き換え',
+      'await hex.run(addr, [1, 2])   動かしてみる',
+      'hex.goto(addr) / hex.open(addr)  画面を動かす',
+    ]],
+    ['その他', [
+      'hex.file()                 開いているファイルの情報',
+      'hex.classes()              Objective-C のクラス',
+      'hex.hex(v)                 0x… の文字列にする',
+      'print(…)                   結果を下に出す',
+    ]],
+  ];
+  for (const [title, lines] of groups) {
+    sheet.body.append(heading(title));
+    sheet.body.append(codeBlock(lines));
+  }
+}
+
+/* ══════════════════════════════════════════════════════════
+   プラグイン
+   ══════════════════════════════════════════════════════════ */
+
+export function showPlugins(app) {
+  const sheet = new Sheet('プラグイン');
+  sheet.body.append(el('div', 'hint',
+    'このツールに無い調べ方は、JavaScript を 1 ファイル書いて足せます。\n' +
+    '読み込んだプラグインは、この画面から実行できます。'));
+  sheet.body.append(noteBox(
+    'プラグインは、あなたが選んだものだけが動きます。中身は必ず自分で確かめてください。\n' +
+    '解析中のファイルが外へ送られることはありません（通信の道具は渡していません）。'));
+
+  const render = () => {
+    body.replaceChildren();
+    const l = list();
+    l.append(groupRow('入っているプラグイン（' + app.plugins.plugins.length + '）'));
+    if (!app.plugins.plugins.length) l.append(tapRow('まだありません', { disabled: true }));
+    for (const p of app.plugins.plugins) {
+      l.append(tapRow(p.name, {
+        sub: (p.description || '') + '\n出どころ: ' + p.origin,
+        onTap: () => {
+          menu([
+            { label: '実行する', action: () => runPlugin(p) },
+            { label: '中身を見る', action: () => { const s = new Sheet(p.name); s.body.append(codeBlock(p.source)); } },
+            { label: '外す', action: () => { app.plugins.remove(p.id); render(); toast('外しました'); } },
+          ], window.innerWidth / 2, 200);
+        },
+      }));
+    }
+    body.append(l);
+
+    const chips = el('div', 'chips');
+    chips.append(button('ファイルから読み込む', 'chip', () => {
+      const picker = document.createElement('input');
+      picker.type = 'file';
+      picker.accept = '.js,text/javascript';
+      picker.addEventListener('change', async () => {
+        const f = picker.files && picker.files[0];
+        if (!f) return;
+        const text = await f.text();
+        confirmInstall(text, f.name);
+      });
+      picker.click();
+    }));
+    chips.append(button('URL から読み込む', 'chip', () => {
+      const sh = new Sheet('URL から読み込む');
+      const u = input('https://…');
+      sh.body.append(para('プラグインの JavaScript ファイルの URL を入れてください。'), field(u, '取り寄せる', async () => {
+        sh.close();
+        toast('取り寄せています…');
+        const res = await app.plugins.installFromUrl(u.value.trim());
+        if (res.error) alertDialog('読み込めません', res.error);
+        else { render(); toast(res.added.length + ' 個入りました'); }
+      }));
+    }));
+    chips.append(button('お手本を見る', 'chip', () => {
+      const s = new Sheet('プラグインの書き方');
+      s.body.append(para('この形で書いて、.js として保存し、上の「ファイルから読み込む」で入れてください。'));
+      s.body.append(codeBlock(EXAMPLE_PLUGIN));
+      s.body.append(button('このお手本を入れる', 'tb-btn strong', () => {
+        const res = app.plugins.install(EXAMPLE_PLUGIN, 'お手本');
+        s.close();
+        if (res.error) alertDialog('入れられません', res.error);
+        else { render(); toast('入れました'); }
+      }));
+    }));
+    body.append(chips);
+  };
+
+  function confirmInstall(text, origin) {
+    const s = new Sheet('中身を確かめる');
+    s.body.append(para('入れる前に、中身を確かめてください。'));
+    s.body.append(codeBlock(text.slice(0, 8000)));
+    s.body.append(button('入れる', 'tb-btn strong', () => {
+      const res = app.plugins.install(text, origin);
+      s.close();
+      if (res.error) alertDialog('入れられません', res.error);
+      else { render(); toast(res.added.length + ' 個入りました'); }
+    }));
+  }
+
+  function runPlugin(p) {
+    const s = new Sheet(p.name);
+    const out = el('div', 'codeview small');
+    s.body.append(el('div', 'hint', '実行しています…'), out);
+    const write = (line) => {
+      const row = el('div', 'cl');
+      row.append(el('span', 'cl-text mono', line));
+      out.append(row);
+    };
+    app.plugins.run(p.id, write).then((res) => {
+      if (res.error) write('⚠ ' + res.error);
+      else write('— おわり —');
+    });
+  }
+
+  const body = el('div');
+  sheet.body.append(body);
+  render();
+}
+
+/* ══════════════════════════════════════════════════════════
+   Unity（IL2CPP）
+   ══════════════════════════════════════════════════════════ */
+
+export function showIl2cpp(app) {
+  const sheet = new Sheet('Unity（IL2CPP）');
+  sheet.body.append(el('div', 'hint',
+    'Unity のアプリは C# で書かれていますが、出荷時にはクラス名やメソッド名が\n' +
+    '実行ファイルから消え、global-metadata.dat という別ファイルに移ります。\n' +
+    'そのファイルを読み込むと、名前の一覧が戻ります。'));
+
+  sheet.body.append(codeBlock([
+    'YourApp.app/',
+    '  YourApp                                    ← いま開いているファイル',
+    '  Data/Managed/Metadata/global-metadata.dat  ← これを読み込みます',
+  ]));
+
+  const unity = looksLikeUnity(app.stringIndex, app.currentSlice());
+  sheet.body.append(el('div', 'hint',
+    unity ? '✓ このファイルは Unity 製のようです。' :
+      'このファイルが Unity 製かどうかは、まだ分かりません（文字列を集めると精度が上がります）。'));
+
+  const body = el('div');
+  const pick = button('global-metadata.dat を読み込む', 'tb-btn strong', () => {
+    const picker = document.createElement('input');
+    picker.type = 'file';
+    picker.addEventListener('change', async () => {
+      const f = picker.files && picker.files[0];
+      if (!f) return;
+      body.replaceChildren(el('div', 'hint', '読み込んでいます…'));
+      try {
+        const meta = parseMetadataAuto(await f.arrayBuffer());
+        show(meta);
+      } catch (err) {
+        body.replaceChildren(el('div', 'hint warn', '⚠ ' + ((err && err.message) || String(err))));
+      }
+    });
+    picker.click();
+  });
+  sheet.body.append(pick, body);
+
+  function show(meta) {
+    body.replaceChildren();
+    body.append(el('div', 'hint',
+      'version ' + meta.version + '  ·  クラス ' + meta.classes.length +
+      ' 個  ·  メソッド ' + meta.methods.length + ' 個  ·  文字列 ' + meta.literals.length + ' 個'));
+    for (const w of meta.warnings) body.append(el('div', 'hint warn', '⚠ ' + w));
+    body.append(noteBox(
+      'メソッド名と「機械語のどのアドレスか」の対応づけは、Unity の版によって形が変わるため\n' +
+      'ここでは行っていません（間違ったまま断定しないためです）。\n' +
+      '名前で見当をつけて、「検索」でその名前の文字列を探すのが確実な進め方です。'));
+
+    const search = input('クラス名・メソッド名で絞り込む');
+    const results = list();
+    body.append(field(search, '探す', run), results);
+
+    function run() {
+      const q = search.value.trim().toLowerCase();
+      results.replaceChildren();
+      if (!q) {
+        results.append(groupRow('クラス（先頭 100 個）'));
+        for (const c of meta.classes.slice(0, 100)) {
+          results.append(tapRow(c.full, { sub: 'クラス', onTap: () => copyText(c.full, '名前') }));
+        }
+        return;
+      }
+      const cs = meta.classes.filter((c) => c.full.toLowerCase().includes(q)).slice(0, 60);
+      const ms = meta.methods.filter((m) => m.name.toLowerCase().includes(q)).slice(0, 100);
+      const ls = meta.literals.filter((x) => x.text.toLowerCase().includes(q)).slice(0, 60);
+      if (cs.length) results.append(groupRow('クラス'));
+      for (const c of cs) results.append(tapRow(c.full, { sub: 'クラス', onTap: () => copyText(c.full, '名前') }));
+      if (ms.length) results.append(groupRow('メソッド'));
+      for (const m of ms) {
+        results.append(tapRow(m.name, {
+          sub: m.className || '（所属不明）',
+          onTap: () => copyText(m.full, '名前'),
+        }));
+      }
+      if (ls.length) results.append(groupRow('プログラムの中の文字列'));
+      for (const x of ls) {
+        results.append(tapRow(x.text.slice(0, 80), {
+          sub: 'この文字列で「検索」すると、使っている場所が見つかることがあります',
+          onTap: () => copyText(x.text, '文字列'),
+        }));
+      }
+      if (!cs.length && !ms.length && !ls.length) results.append(tapRow('見つかりませんでした', { disabled: true }));
+    }
+    search.addEventListener('keydown', (e) => { if (e.key === 'Enter') run(); });
+    run();
+  }
+}
+
+/* ══════════════════════════════════════════════════════════
+   そのほか（ほかの画面から呼ぶ小さな入口）
+   ══════════════════════════════════════════════════════════ */
+
+/** 名前が読み直せるものなら、読める形にして返す。 */
+export function prettyName(name) {
+  if (!name) return name;
+  return isMangled(name) ? readableName(name) : name;
+}
