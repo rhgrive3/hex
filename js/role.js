@@ -57,6 +57,12 @@ export const ACTION = {
   SHOW: 'show',           // 画面に出す
   MAKE: 'make',           // オブジェクトを作る
   DISPATCH: 'dispatch',   // ほかの処理へ振り分けるだけ
+  /*
+   * 1 本の値を、何段もの倍率・加減で作り上げて渡す。
+   * ここは他の動作と違い、1 つの命令ではなく **式の連なり** から決まる
+   * （comprehend.js が復元する）。ゲームの計算処理はほぼこの形になる。
+   */
+  COMPUTE: 'compute',
   UNKNOWN: 'unknown',
 };
 
@@ -190,6 +196,32 @@ function subjectOfUpdate(u) {
   };
 }
 
+/**
+ * 復元した計算の連なりを、役割の「対象」にする。
+ *
+ * 触っている場所ではなく **作っている値そのもの** が主題なので、
+ * フィールド名ではなく、何から作って何段変えたかで名乗る。
+ */
+/** 対象を 1 つの鍵にする。同じものを触っている候補をまとめるのに使う。 */
+function subjectKey(s) {
+  if (!s) return 'none';
+  if (s.kind === 'field') return 'field:' + (s.className || '') + '.' + (s.name || s.disp);
+  if (s.kind === 'computed') return 'computed:' + (s.reg || '');
+  if (s.kind === 'none') return 'none';
+  return s.kind + ':' + (s.base || '') + '@' + (s.disp != null ? s.disp.toString() : '?');
+}
+
+function subjectOfChain(chain) {
+  return {
+    kind: 'computed',
+    className: null, name: null, plain: null, type: null,
+    offset: null, base: null, disp: null, size: null, stack: false,
+    reg: chain.accumulator ? chain.accumulator.reg : null,
+    steps: chain.steps.length,
+    certain: !!(chain.formula && chain.formula.distinct >= 2),
+  };
+}
+
 function actionOfUpdate(u) {
   // 素の読み書き（アクセサ）。計算が挟まっていないので、動作はそのまま決まる。
   if (u.kind === 'read') return { action: ACTION.GET, amount: null, op: null };
@@ -245,18 +277,58 @@ function buildCandidates(input, topics) {
   for (const u of changes) seats.push({ update: u });
   // 「値の書き換えは主役ではない」可能性も候補に入れる
   seats.push({ update: null });
+  /*
+   * 復元した計算の連なりも 1 つの候補として立てる。
+   *
+   * これを候補に入れていなかったころ、6000 命令の計算処理はいつも
+   * 「スタックの一時的な値を入れ替える処理（確からしさ 0.2%）」になっていた。
+   * 値の書き換えだけを主役の候補にしていたので、**計算そのものが主役**という
+   * 読み方を、候補としてすら持っていなかった。
+   */
+  const cm = input.comprehension || null;
+  if (cm && cm.steps && cm.steps.length >= 2) seats.push({ chain: cm });
 
   for (const seat of seats) {
     const u = seat.update;
-    const subject = u ? subjectOfUpdate(u) : { kind: 'none' };
-    const verb = u ? actionOfUpdate(u) : actionOfShape(input);
-    if (!u && verb.action === ACTION.UNKNOWN && changes.length) continue;
+    const chain = seat.chain || null;
+    const subject = chain ? subjectOfChain(chain) : (u ? subjectOfUpdate(u) : { kind: 'none' });
+    const verb = chain ? { action: ACTION.COMPUTE, amount: null, op: null }
+      : (u ? actionOfUpdate(u) : actionOfShape(input));
+    if (!u && !chain && verb.action === ACTION.UNKNOWN && changes.length) continue;
 
     for (const topic of topicChoices) {
       const items = [];
 
       /* ── 動作の証拠。命令の形そのもの。 ── */
-      if (u) {
+      if (chain) {
+        /*
+         * 何段の作り変えを、実際に式まで戻せたか。
+         * 段数が多いほど「たまたまそう見えた」見込みは薄い。
+         */
+        items.push(evidence('role-chain-verified',
+          Math.min(1, 0.4 + 0.1 * chain.steps.length),
+          { steps: chain.steps.length, reg: chain.accumulator ? chain.accumulator.reg : null }));
+        if (chain.formula) {
+          /*
+           * 開発者が文言に書いた計算式と、命令から復元した計算式の一致。
+           * 一致した数の **種類** が多いほど強い（1 種類では偶然が残る）。
+           */
+          items.push(evidence('role-formula-verified', chain.formula.strength, {
+            distinct: chain.formula.distinct,
+            matched: chain.formula.matched,
+            claimed: chain.formula.claimed,
+            texts: chain.formula.texts.slice(0, 3),
+            address: chain.formula.hits.length ? chain.formula.hits[0].address : null,
+          }));
+        }
+        const labelled = chain.steps.filter((s) => s.label).length;
+        if (labelled >= 2) {
+          items.push(evidence('role-step-labelled', Math.min(1, labelled / 6), {
+            n: labelled, of: chain.steps.length,
+            texts: chain.steps.filter((s) => s.label).slice(0, 3).map((s) => s.label.text),
+          }));
+        }
+      } else if (u) {
         if (u.kind === 'read-modify-write' && input.verified) {
           items.push(evidence('role-verb-rmw', 1, {
             address: u.store ? u.store.address : null,
@@ -344,8 +416,13 @@ function buildCandidates(input, topics) {
         subject,
         topic: topic ? topic.id : null,
         update: u,
-        address: u && u.store ? u.store.address : null,
-        row: u && u.store ? u.store.row : null,
+        chain,
+        address: chain
+          ? (chain.steps.length ? chain.steps[0].address : null)
+          : (u && u.store ? u.store.address : null),
+        row: chain
+          ? (chain.steps.length ? chain.steps[0].row : null)
+          : (u && u.store ? u.store.row : null),
         items,
       });
     }
@@ -360,8 +437,17 @@ function buildCandidates(input, topics) {
  */
 function roleSpace(input) {
   const actions = Object.keys(ACTION).length;
-  const places = Math.max(1, (input.updates || []).length) + 1;
-  return Math.max(12, actions * places);
+  /*
+   * 「触っている場所の数」ではなく、**実際に候補として立てた席の数**。
+   *
+   * ここで updates の総数を使っていたころ、スタックの一時置き場を 30 か所
+   * 書くだけで分母が 700 になり、どれだけ強い材料をそろえても
+   * 「あと少しで確定」から動かなくなっていた。置き場の多さは、この関数が
+   * 何をしているかについて何も言っていないのだから、分母に入れる筋合いがない。
+   * 席は buildCandidates が立てるぶん（値の書き換え 4 つ＋なし＋計算の連なり）。
+   */
+  const seats = Math.min(4, (input.updates || []).length) + 2;
+  return Math.max(12, actions * seats);
 }
 
 /**
@@ -399,7 +485,31 @@ export function inferRole(input) {
   }
   candidates.sort((a, b) => b.fusion.logOdds - a.fusion.logOdds);
 
-  const d = decide(candidates);
+  /*
+   * 決着は「主張」ごとに付ける。
+   *
+   * 候補は（動作・対象・機能）の組で作ってあるので、機能が 2 つ拮抗しているだけで、
+   * 動作と対象がまったく同じ候補が 1 位と 2 位に並ぶ。そこを 2 位との差として
+   * 数えていたころ、
+   *
+   *   1 位: 攻撃力の計算処理（98.8%） / 2 位: ダメージの計算処理（98.8%）
+   *
+   * となり、**何をしている関数かは完全に決まっているのに**「割れています」しか
+   * 言えなかった。攻撃力とダメージのどちらの話かが決まっていないことは、
+   * topicSettled が別に持っている（見出しでは機能を名乗らない）。
+   * 動作と対象の決着は、機能が違うだけの候補ではなく、
+   * **別の読み方**（別の動作・別の対象）と比べて付ける。
+   */
+  const claimKey = (c) => c.action + '|' + subjectKey(c.subject);
+  const byClaim = new Map();
+  for (const c of candidates) {
+    const k = claimKey(c);
+    const cur = byClaim.get(k);
+    if (!cur || cur.fusion.logOdds < c.fusion.logOdds) byClaim.set(k, c);
+  }
+  const claims = Array.from(byClaim.values()).sort((a, b) => b.fusion.logOdds - a.fusion.logOdds);
+
+  const d = decide(claims);
   const top = d.top || candidates[0];
   const missing = d.missing.slice();
 
@@ -412,8 +522,18 @@ export function inferRole(input) {
       verdictRank(verdict) > verdictRank(VERDICT.LIKELY)) {
     verdict = VERDICT.LIKELY;
   }
-  if (top.subject && top.subject.kind !== 'field' && top.subject.kind !== 'none') {
+  /*
+   * 計算そのものが主題の関数には、書き換えているフィールドが無い。
+   * 「値の名前が読めない」を足すのは筋違いなので、そこは黙る
+   * （代わりに、式が復元できているかどうかで語る）。
+   */
+  if (top.subject && top.subject.kind !== 'field' && top.subject.kind !== 'none' &&
+      top.subject.kind !== 'computed') {
     if (!missing.includes('role-no-field-name')) missing.push('role-no-field-name');
+  }
+  if (top.subject && top.subject.kind === 'computed' && !top.subject.certain &&
+      !missing.includes('role-no-formula')) {
+    missing.push('role-no-formula');
   }
   if (!top.topic && !missing.includes('role-no-topic')) missing.push('role-no-topic');
   if (!input.verified && !missing.includes('role-not-disassembled')) {
@@ -441,10 +561,20 @@ export function inferRole(input) {
   }
   const rivalTopic = !topicSettled && rival ? rival.topic : null;
 
-  const runnerUp = d.runnerUp && d.runnerUp !== top ? {
-    action: d.runnerUp.action, amount: d.runnerUp.amount,
-    subject: d.runnerUp.subject, topic: d.runnerUp.topic,
-    probability: d.runnerUp.fusion.probability,
+  /*
+   * 「ほかの読み方」は、決着の判定とは別に選ぶ。
+   *
+   * 決着は主張（動作・対象）どうしで付けるが、読む人に見せたい 2 番目は
+   * 「機能が違うだけの読み方」でもかまわない ——
+   * 「アイテムの数を 1 増やす」と「ログインボーナスの数を 1 増やす」は、
+   * 読む人にとっては立派に別の読み方だから。
+   */
+  const alt = candidates.find((c) => c !== top &&
+    (claimKey(c) !== claimKey(top) || c.topic !== top.topic)) || d.runnerUp;
+  const runnerUp = alt && alt !== top ? {
+    action: alt.action, amount: alt.amount,
+    subject: alt.subject, topic: alt.topic,
+    probability: alt.fusion.probability,
   } : null;
 
   return {
@@ -463,6 +593,7 @@ export function inferRole(input) {
     address: top.address,
     row: top.row,
     update: top.update,
+    chain: top.chain || null,
     direction: actionDirection(top.action),
     evidence: explain(top.fusion, 8),
     fusion: top.fusion,
@@ -496,6 +627,8 @@ export function roleFromReport(report, extra) {
     name: (report.identity && report.identity.name) || e.name || null,
     owner: report.owner || null,
     updates: report.updates || [],
+    /* 復元した計算の連なり（comprehend.js）。無ければ従来どおり。 */
+    comprehension: e.comprehension || report.comprehension || null,
     apis: e.apis || (report.apis || []),
     selectors: report.selectors || [],
     strings: report.strings || [],

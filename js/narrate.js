@@ -12,6 +12,7 @@
 import { pick } from './i18n.js';
 import { ROLE, levelOf } from './blocks.js';
 import { goalById } from './goals.js';
+import { shortName } from './rtti.js';
 
 /* ── 役割の見出し ──────────────────────────────────────────── */
 
@@ -1808,6 +1809,13 @@ export function actionPhrase(action, amount) {
       return n ? pick(n + ' 増やす', 'increase by ' + n) : pick('計算した値だけ増やす', 'increase');
     case 'decrease':
       return n ? pick(n + ' 減らす', 'decrease by ' + n) : pick('計算した値だけ減らす', 'decrease');
+    case 'compute':
+      /*
+       * 命令 1 つではなく、式の連なりから決まる動作。
+       * 「計算する」で終わらせると何も言っていないので、
+       * 呼ぶ側（fnRoleTitle）が段数と中身を必ず添える。
+       */
+      return pick('1 つの数に計算しあげる', 'compute into a single number');
     case 'scale':
       return n ? pick(n + ' 倍にする', 'multiply by ' + n) : pick('掛け算で増やす', 'multiply');
     case 'shrink':
@@ -1890,6 +1898,23 @@ export function fnRoleTitle(role, { icon = true } = {}) {
   if (!verb) {
     return pick('何をする処理かは名指しできませんでした',
       'what this routine is for could not be named');
+  }
+
+  /*
+   * 計算そのものが主題の関数。
+   *
+   * 「攻撃力を計算する処理」だけでは、この関数と、攻撃力を 1 回読むだけの
+   * 関数の区別が付かない。復元できた段数を必ず添える —
+   * 「17 段の倍率を掛けあわせて 1 つの数を出す」は、この関数にしか当てはまらない。
+   */
+  if (role.subject && role.subject.kind === 'computed') {
+    const n = role.subject.steps || 0;
+    const topic0 = role.topicSettled !== false ? topicLabel(role.topic) : null;
+    const of = topic0 ? pick(topicObject(role.topic) + 'を', topicObject(role.topic) + ' ') : '';
+    const mark0 = icon && topic0 ? (topicIcon(role.topic) + ' ') : '';
+    return pick(
+      mark0 + of + '元の値から ' + n + ' 段の計算で 1 つの数に組み立てる処理',
+      mark0 + 'a routine that builds ' + (of || 'a value') + ' through ' + n + ' calculation steps');
   }
   /*
    * 機能が 1 つに決まっていなければ、機能を名乗らない。
@@ -2013,6 +2038,26 @@ export function roleProofText(item) {
   if (!item) return '';
   const d = item.detail || {};
   switch (item.code) {
+    case 'role-formula-verified':
+      /*
+       * このツールでいちばん強い証拠。何が起きたのかを、言葉を惜しまずに書く。
+       * 「一致しました」だけでは、読む人は何と何が一致したのか分からない。
+       */
+      return pick(
+        '開発者が書き残した計算式と、命令から復元した計算式が、' + (d.distinct || 0) +
+        ' 種類の数まで一致した' +
+        (d.texts && d.texts.length ? '（例:「' + trim(d.texts[0], 40) + '」）' : '') +
+        '。文言は開発者の書いたもの、式は命令から戻したもので、出どころがまったく違う',
+        'the formula written by the developer and the formula recovered from the instructions ' +
+        'agree on ' + (d.distinct || 0) + ' distinct numbers');
+    case 'role-chain-verified':
+      return pick('1 本の値を ' + (d.steps || 0) + ' 段にわたって作り変えている連なりを、' +
+        'すべて式まで戻せた（' + (d.reg || '?') + ' が持ち回っている）',
+      'a single value is transformed ' + (d.steps || 0) + ' times, and every step was recovered as an expression');
+    case 'role-step-labelled':
+      return pick('作り変えの ' + (d.n || 0) + ' か所で、その直前に開発者が書いた文言を' +
+        '組み立てている' + (d.texts && d.texts.length ? '（例:「' + trim(d.texts[0], 28) + '」）' : ''),
+      (d.n || 0) + ' of the steps build a developer-written message right before running');
     case 'role-verb-rmw':
       return pick('この値を読んで、計算して、同じ場所へ書き戻している命令が実在する' +
         (d.address != null ? '（' + hex(d.address) + '）' : '') + ' — 加工しているのはここ',
@@ -2110,8 +2155,99 @@ export function roleMissingText(code) {
       'the clues about which part of the app this belongs to are split');
     case 'role-no-clue':
       return pick('手がかりが 1 つも見つかりませんでした', 'no clue at all was found');
+    case 'role-no-formula':
+      return pick('計算の中身は式まで戻せましたが、それが何の計算かを裏付ける文言が' +
+        'この関数にありません。式は読めても、意味の裏取りができていません',
+      'the arithmetic was recovered, but nothing in the function says what it is for');
     default:
       return missingText(code);
+  }
+}
+
+/* ────────────────────────────────────────────────────────────
+   復元した計算を、日本語にする（comprehend.js の出力）
+   ────────────────────────────────────────────────────────────
+
+   ここで気をつけるのは 1 つだけ。式そのものは訳さない。
+   `result = result * (x + 100) / 100` は、言葉に開くと必ず長くなるし、
+   読む人が確かめたいのは式の形そのものなので、式は式のまま見せる。
+   言葉で補うのは「この式が全体の中でどういう役割か」だけにする。 */
+
+/** 復元した処理の 1 行見出し。 */
+export function comprehensionHeadline(c) {
+  const h = c && c.headline;
+  if (!h) return null;
+  switch (h.code) {
+    case 'cm-formula':
+      return pick(
+        '1 本の値を ' + h.steps + ' 段の計算で組み立てています。しかも、' +
+        'その計算式を開発者自身が文言として書き残していて（' + h.distinct + ' 種類の数が一致）、' +
+        '命令から復元した式と食い違いがありません。',
+        'It builds one value through ' + h.steps + ' calculation steps, and the developer’s own ' +
+        'written formulas agree with the recovered arithmetic on ' + h.distinct + ' distinct numbers.');
+    case 'cm-pipeline':
+      return pick(
+        '1 本の値（' + h.reg + '）を ' + h.steps + ' 段にわたって作り変えています。' +
+        'うち ' + h.scales + ' 段は倍率の掛け合わせです。',
+        'It transforms one value (' + h.reg + ') through ' + h.steps + ' steps, ' +
+        h.scales + ' of which are scaling.');
+    case 'cm-carry':
+      return pick('1 本の値（' + h.reg + '）を ' + h.steps + ' 回作り変えて持ち回っています。',
+        'It carries one value (' + h.reg + ') and reworks it ' + h.steps + ' times.');
+    case 'cm-returns':
+      return pick('計算した結果をそのまま呼び出し元へ返しています。',
+        'It returns the value it computes.');
+    case 'cm-store':
+      return pick('計算した結果を 1 か所へ書き込んでいます。', 'It writes the value it computes to one place.');
+    default:
+      return null;
+  }
+}
+
+/** 工程 1 つの説明（式そのものは呼び出し側が添える）。 */
+export function stepNote(step) {
+  const s = step && step.shape;
+  if (!s) return null;
+  switch (s.kind) {
+    case 'scale': {
+      const m = s.muls && s.muls.length;
+      const d = s.divs && s.divs.length;
+      if (m && d) return pick('倍率を掛けてから割り戻しています（百分率の適用）。', 'applies a percentage');
+      if (m) return pick('倍率を掛けています。', 'multiplies');
+      return pick('割っています。', 'divides');
+    }
+    case 'offset':
+      return s.sign > 0 ? pick('計算した量を足しています。', 'adds a computed amount')
+        : pick('計算した量を引いています。', 'subtracts a computed amount');
+    case 'clamp':
+      return pick('上限か下限で止めています。', 'clamps the value');
+    default:
+      return pick('この段は式の形が素直ではないため、そのまま出しています。',
+        'this step does not reduce to a simple form');
+  }
+}
+
+/** 積算値の行き先。 */
+export function sinkText(sink) {
+  if (!sink) return null;
+  switch (sink.kind) {
+    case 'store':
+      return pick('作った値は、そのままメモリへ書き込まれます。', 'the value is written to memory');
+    case 'argument':
+      return pick('作った値は、' + (sink.name ? '「' + shortName(sink.name) + '」' : 'ほかの処理') +
+        ' の ' + (sink.index + 1) + ' 番目の引数として渡されます。',
+      'the value is passed as argument ' + (sink.index + 1) +
+        (sink.name ? ' to ' + shortName(sink.name) : ''));
+    case 'return':
+      return pick('作った値が、そのまま戻り値になります。', 'the value becomes the return value');
+    case 'clamped':
+      return sink.certain
+        ? pick('最後に上限・下限で止めています。', 'it is finally clamped')
+        : pick('最後に上限・下限で止めているように見えます（分岐の合流をまたぐので、' +
+          '同じ値かどうかまでは確かめていません）。',
+        'it looks clamped at the end, but the value could not be followed across a join');
+    default:
+      return null;
   }
 }
 

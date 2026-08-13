@@ -265,6 +265,30 @@ export const EVIDENCE = {
   'role-verb-accessor': { lr: 12,   family: FAMILY.VERIFIED, kind: 'verified' },
   'role-verb-none':     { lr: 0.4,  family: FAMILY.USAGE,    kind: 'inference' },
 
+  /*
+   * ── 復元した計算式による名指し（comprehend.js） ────────────────
+   *
+   * ここがクラス表の無いアプリでの決め手になる。
+   *
+   *   開発者の主張 … 「めっぽう強い:%d 基ダ×(1500+[宝:%d])÷1000×(100+[コンボ:%d])÷100」
+   *   命令の事実   … result = result * (x + 1500) / 1000 * (y + 100) / 100
+   *
+   * 出どころがまったく違う 2 つが、8 種類の数まで一致する。
+   * 名前も型もクラスも無いところで、これ以上の裏取りは静的解析には無い。
+   *
+   * 「関数のどこかに即値 100 がある」とはまるで別物であることに注意。
+   * こちらは魔法数の割り算まで戻したうえで、**その数で割っている式が実在する**
+   * ことを言っている。比較に使われているだけの 100 では、絶対に立たない。
+   */
+  'role-formula-verified': { lr: 260, family: FAMILY.VERIFIED, kind: 'verified', id: true },
+  /*
+   * 1 本の値を何度も作り変えて、最後に使っている。
+   * 「何をしているか」の形は言えるが、「何の値か」は言っていないので id は付けない。
+   */
+  'role-chain-verified': { lr: 16,  family: FAMILY.VERIFIED, kind: 'verified' },
+  /* その工程の直前で、開発者が書いた文言を組み立てている。 */
+  'role-step-labelled': { lr: 7,    family: FAMILY.NAMING,   kind: 'fact', id: true },
+
   'role-subject-field': { lr: 22,   family: FAMILY.NAME,     kind: 'fact', id: true },
   'role-subject-prop':  { lr: 8,    family: FAMILY.NAME,     kind: 'fact', id: true },
   'role-subject-unnamed': { lr: 0.5, family: FAMILY.NAME,    kind: 'inference' },

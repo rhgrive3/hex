@@ -14,7 +14,15 @@ import { LRU } from './lru.js';
 
 const MAX_INSTRUCTIONS = 40000;   // これ以上大きい関数は途中で切り上げる
 const MAX_MODEL_ROWS = 6000;      // Semantic Model を作る上限（表示は上限なしで続く）
-const MODEL_TEXTS = 24;           // 文字列を読みにいくアドレスの上限
+/*
+ * 文字列を読みにいくアドレスの上限。
+ *
+ * 24 本だったころ、計算式を日本語で書き残している関数（参照 31 本）で
+ * 後半の 7 本が黙って落ちていた。落ちるのは決まって関数の後半 —
+ * つまり「最後に何をして終わるのか」の手がかりから先に消えていた。
+ * 1 本読むのは worker への 1 往復なので、この程度なら開いた瞬間に終わる。
+ */
+const MODEL_TEXTS = 96;
 
 /** 命令の「書き込み先」がオペランドの何番目か。書き込まないものは -1。 */
 function destIndex(mn) {
@@ -319,7 +327,7 @@ export async function resolveModelTexts(backend, model, limit = MODEL_TEXTS) {
    */
   const deref = [];
   got.forEach((g, i) => {
-    if (g && g.found && g.text) { texts.set(wanted[i].toString(), g.text); return; }
+    if (looksLikeText(g)) { texts.set(wanted[i].toString(), g.text); return; }
     if (g && g.found && g.bytes && g.bytes.length >= 8) deref.push({ i, bytes: g.bytes });
   });
   if (deref.length) {
@@ -327,13 +335,32 @@ export async function resolveModelTexts(backend, model, limit = MODEL_TEXTS) {
     const got2 = await Promise.all(ptrs.map((ptr) =>
       (ptr == null ? Promise.resolve(null) : backend.readAt(ptr, 120, true).catch(() => null))));
     got2.forEach((g, k) => {
-      if (!g || !g.found || !g.text) return;
+      if (!looksLikeText(g)) return;
       const key = wanted[deref[k].i].toString();
       texts.set(key, g.text);
       indirect.add(key);
     });
   }
   return attachTexts(model, texts, indirect);
+}
+
+/**
+ * そこに本当に文字列が置いてあるか。
+ *
+ * ここを「1 バイトでも読める文字なら文字列」にしていたころ、
+ * `_OBJC_IVAR_$_C._field` に入っている **ずらし幅 0x20** が、
+ * 0x20 ＝ 空白 1 文字の文字列として拾われていた。
+ * すると「メモリから読んだ値」だったものが「文字列」に化けてしまい、
+ * その値を使ってフィールドを名指ししていた解析（アクセサの判定）が
+ * まるごと外れる。実際、これで数百本のアクセサが「何をしているか不明」になっていた。
+ *
+ * 本物の文字列は、終端まで読めて、2 文字以上あって、文字か数字を含む。
+ */
+function looksLikeText(g) {
+  if (!g || !g.found || !g.text) return false;
+  if (!g.terminated) return false;                 // 120 バイト以内に終端が無い＝文字列ではない
+  if (g.text.length < 2) return false;
+  return /[\p{L}\p{N}]/u.test(g.text);
 }
 
 /**

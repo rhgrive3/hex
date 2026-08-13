@@ -187,11 +187,12 @@ export function kvRow(k, v, sub) {
   return li;
 }
 
-export function tapRow(label, { sub, right, tag, tagClass, disabled, indent, onTap } = {}) {
+export function tapRow(label, { sub, right, tag, tagClass, disabled, indent, mono, onTap } = {}) {
   const li = el('li', disabled ? 'disabled' : 'tappable');
   const main = el('div');
   main.style.minWidth = '0';
-  main.append(el('span', null, label));
+  // 式や命令を並べる行は等幅で。桁がそろわないと、式は式として読めない。
+  main.append(el('span', mono ? 'mono' : null, label));
   if (sub) main.append(el('span', 'sub', sub));
   li.append(main);
   if (indent) li.classList.add('indent');

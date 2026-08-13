@@ -1305,6 +1305,36 @@ async function findFieldAccess({ regionId, offset, size, limit, offsets }) {
 const UTF8 = new TextDecoder('utf-8', { fatal: false });
 const MAX_STRING_CHARS = 400;
 
+/**
+ * 「そこに置いてある 1 本の文字列」を読む。読めなければ空文字。
+ *
+ * scanStrings と同じ基準（UTF-8 として正しく、制御文字が混ざっていない）で
+ * 判定する。ここが scanStrings とずれていると、「一覧には出るのに、
+ * その文字列を参照している関数を開くと出てこない」という食い違いが起きる。
+ */
+function decodeUtf8Text(bytes) {
+  if (!bytes || !bytes.length) return '';
+  let n = 0;
+  while (n < bytes.length) {
+    const c = bytes[n];
+    let need;
+    if (c < 0x80) {
+      if (!((c >= 0x20 && c < 0x7f) || c === 9 || c === 10)) break;
+      need = 0;
+    } else if (c >= 0xc2 && c <= 0xdf) need = 1;
+    else if (c >= 0xe0 && c <= 0xef) need = 2;
+    else if (c >= 0xf0 && c <= 0xf4) need = 3;
+    else break;
+    if (n + need >= bytes.length) break;
+    let ok = true;
+    for (let k = 1; k <= need; k++) if ((bytes[n + k] & 0xc0) !== 0x80) { ok = false; break; }
+    if (!ok) break;
+    n += need + 1;
+  }
+  if (!n) return '';
+  return UTF8.decode(bytes.subarray(0, n)).replace(/\t/g, '\\t').replace(/\n/g, '\\n');
+}
+
 async function scanStrings({ regionId, min, limit }) {
   const region = regions.get(regionId);
   if (!region) throw new Error('Unknown region.');
@@ -1491,18 +1521,19 @@ async function readAtAddress({ addr, len, text }) {
     bytes: new Uint8Array(bytes),
   };
   if (text) {
-    let s = '';
-    let terminated = false;
-    for (let i = 0; i < bytes.length; i++) {
-      const c = bytes[i];
-      if (c === 0) { terminated = true; break; }
-      if (c === 9) s += '\\t';
-      else if (c === 10) s += '\\n';
-      else if (c >= 0x20 && c < 0x7f) s += String.fromCharCode(c);
-      else { s = ''; break; }                     // 読めない → 文字列ではない
-    }
-    result.text = s;
-    result.terminated = terminated;
+    /*
+     * ASCII だけを文字列として認めていたころ、日本語のアプリでは
+     * 参照している文言がほぼ全部「文字列ではない」として捨てられていた。
+     *
+     *   「攻撃力アップ:%d 基ダ×(100+%d)÷100」  → 1 バイト目が 0xE6 → 捨てる
+     *
+     * この 1 行のせいで、開発者が計算式そのものを書き残している関数を
+     * 「参照している文言はありません」と説明していた。UTF-8 として読む。
+     */
+    const end = result.bytes.indexOf(0);
+    const body = end >= 0 ? result.bytes.subarray(0, end) : result.bytes;
+    result.text = decodeUtf8Text(body);
+    result.terminated = end >= 0;
   }
   result.__transfer = [result.bytes.buffer];
   return result;

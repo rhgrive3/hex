@@ -19,6 +19,7 @@ import { levelOf, SCORE } from './blocks.js';
 import { buildCfg } from './cfg.js';
 import { findValueUpdates, constantComparisons, hotLocations } from './dataflow.js';
 import { matchText } from './goals.js';
+import { comprehend } from './comprehend.js';
 
 export const CERTAINTY = { FACT: 'fact', INFERENCE: 'inference', UNKNOWN: 'unknown' };
 
@@ -275,8 +276,21 @@ export function buildFunctionReport(opts) {
     caveat: 'runtime-unverified',
   }));
 
+  /* ── 計算の連なりを 1 本に戻す（comprehend.js） ─────────────
+     ここまでの facts は「何が何回あったか」の数え上げで、大きな関数では
+     何も言っていないに等しい。命令をまたいで式に戻したものだけが、
+     「この関数は何を計算しているのか」に答えられる。 */
+  let comprehension = null;
+  try {
+    comprehension = comprehend({
+      model,
+      symbolFor: symbols ? (a) => symbols.nameAt(a) : null,
+    });
+  } catch { comprehension = null; }   /* 復元に失敗しても、レポートは出す */
+
   return {
     owner,
+    comprehension,
     identity: {
       name: o.name || model.name || null,
       startAddr, endAddr,

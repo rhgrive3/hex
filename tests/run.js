@@ -3261,6 +3261,180 @@ test('SCHEMA: ファイル名から読み込み処理をたどって表を組み
   eq(columnToOffset(s, 3), 0xc, 'ファイル名から引いた表で 4 列目が出ない');
 });
 
+
+/* ────────────────────────────────────────────────────────────
+   式の復元（expr.js）— 命令をまたいで 1 つの計算に戻せるか
+   ──────────────────────────────────────────────────────────── */
+
+test('EXPR: 掛けてずらす形から、割り算を逆算できる（32 ビット・符号あり）', async () => {
+  const { buildValues, render } = await import('../js/expr.js');
+  /* clang が `n / 100` に対して吐く定型そのもの。 */
+  const m = build([
+    'mov w9, #0x851f',
+    'movk w9, #0x51eb, lsl #16',
+    'smull x8, w0, w9',
+    'lsr x9, x8, #0x3f',
+    'asr x8, x8, #0x25',
+    'add w0, w8, w9',
+    'ret',
+  ]);
+  const vg = buildValues(m, {});
+  const v = vg.defAt(5, 'x0');
+  ok(v, 'x0 の値が取れていない');
+  has(render(v, {}), '/ 100');
+});
+
+test('EXPR: ずらしが 2 命令に割れていても、割り算に戻せる', async () => {
+  const { buildValues, render } = await import('../js/expr.js');
+  const m = build([
+    'mov w9, #0x851f',
+    'movk w9, #0x51eb, lsl #16',
+    'smull x8, w0, w9',
+    'lsr x10, x8, #0x20',
+    'lsr x8, x8, #0x3f',
+    'add w0, w8, w10, asr #5',
+    'ret',
+  ]);
+  const vg = buildValues(m, {});
+  has(render(vg.defAt(5, 'x0'), {}), '/ 100');
+});
+
+test('EXPR: 割り算でないずらしを、割り算だと言わない', async () => {
+  const { buildValues, render } = await import('../js/expr.js');
+  /* `(a * 17) >> 3`。魔法数ではないので、割り算に読み替えてはいけない。 */
+  const m = build([
+    'mov w9, #0x11',
+    'mul w8, w0, w9',
+    'asr w0, w8, #3',
+    'ret',
+  ]);
+  const vg = buildValues(m, {});
+  const text = render(vg.defAt(2, 'x0'), {});
+  ok(!/\//.test(text), '割り算ではないものを割り算にしている: ' + text);
+});
+
+test('EXPR: ずらしと足し算でできた掛け算を、掛け算に戻す', async () => {
+  const { buildValues, render } = await import('../js/expr.js');
+  const m = build([
+    'add x0, x0, x0, lsl #2',
+    'ret',
+  ]);
+  const vg = buildValues(m, {});
+  eq(render(vg.defAt(0, 'x0'), {}), 'a1 * 5', '× 5 に戻せていない');
+});
+
+test('EXPR: movz と movk で組み立てた定数を 1 つの数にする', async () => {
+  const { buildValues, constOf } = await import('../js/expr.js');
+  const m = build([
+    'mov x9, #0xd70b',
+    'movk x9, #0x70a3, lsl #16',
+    'ret',
+  ]);
+  const vg = buildValues(m, {});
+  eq(constOf(vg.defAt(1, 'x9')), 0x70a3d70bn, '16 ビットずつの組み立てをまとめていない');
+});
+
+test('EXPR: 分岐で飛ばされる範囲が値を壊さないなら、値を持ち越す', async () => {
+  const { buildValues, render } = await import('../js/expr.js');
+  /* tbz が飛ばすのは x0 を触らない 1 行だけ。x19 は合流点でも生きている。 */
+  const m = build([
+    'mov x19, x0',
+    'tbz w1, #0x1f, #0x100000010',
+    'mov x2, #1',
+    'add x19, x19, #4',
+    'ret',
+  ]);
+  const vg = buildValues(m, {});
+  eq(render(vg.defAt(3, 'x19'), {}), 'a1 + 4', '合流点で値を捨てすぎている');
+});
+
+/* ────────────────────────────────────────────────────────────
+   関数の理解（comprehend.js）
+   ──────────────────────────────────────────────────────────── */
+
+test('COMPREHEND: 持ち回っている値と、その作り変えを並べられる', async () => {
+  const { comprehend, stepText } = await import('../js/comprehend.js');
+  const m = build([
+    'mov x19, x0',
+    'mov w9, #0x851f',
+    'movk w9, #0x51eb, lsl #16',
+    'mul w8, w19, w1',
+    'smull x8, w8, w9',
+    'lsr x10, x8, #0x3f',
+    'asr x8, x8, #0x25',
+    'add w19, w8, w10',
+    'lsl x19, x19, #1',
+    'mov x0, x19',
+    'ret',
+  ]);
+  const c = comprehend({ model: m });
+  ok(c, '何も返っていない');
+  ok(c.accumulator && c.accumulator.reg === 'x19', '持ち回っている値を見つけられていない');
+  /* 割り算のあとに ×2。連続した書き込みは 1 つの工程にまとめられる。 */
+  ok(c.steps.length >= 1, '工程が取れていない');
+  const all = c.steps.map((st) => stepText(st, {})).join('\n');
+  has(all, '/ 100');
+  has(all, '* 2');
+});
+
+test('COMPREHEND: 文言に書かれた計算式と、復元した式を突き合わせる', async () => {
+  const { comprehend } = await import('../js/comprehend.js');
+  const m = build([
+    'mov x19, x0',
+    'adrp x1, #0x100004000',
+    'add x1, x1, #0x10',
+    'mov w9, #0x851f',
+    'movk w9, #0x51eb, lsl #16',
+    'mul w8, w19, w1',
+    'smull x8, w8, w9',
+    'lsr x10, x8, #0x3f',
+    'asr x8, x8, #0x25',
+    'add w19, w8, w10',
+    'lsl x19, x19, #1',
+    'ret',
+  ]);
+  attachTexts(m, new Map([['' + 0x100004010n, '攻撃力アップ:%d 基ダ×2÷100']]), new Set());
+  const c = comprehend({ model: m });
+  ok(c.formula, '突き合わせができていない');
+  ok(c.formula.distinct >= 2, '一致した数の種類が足りない: ' + c.formula.distinct);
+});
+
+test('COMPREHEND: 計算式が無ければ、合ったことにしない', async () => {
+  const { comprehend } = await import('../js/comprehend.js');
+  const m = build([
+    'mov x19, x0',
+    'adrp x1, #0x100004000',
+    'add x1, x1, #0x10',
+    'add x19, x19, #1',
+    'ret',
+  ]);
+  attachTexts(m, new Map([['' + 0x100004010n, 'アイテムを獲得しました']]), new Set());
+  const c = comprehend({ model: m });
+  ok(!c.formula, '式が書かれていないのに一致を名乗っている');
+});
+
+test('COMPREHEND: レジスタが別の用途に移ったら、そこで区間を切る', async () => {
+  const { comprehend } = await import('../js/comprehend.js');
+  /* 前半は数を作り、後半は同じ x19 を配列の添字に使い回している。 */
+  const m = build([
+    'mov x19, x0',
+    'lsl x19, x19, #1',
+    'lsl x19, x19, #2',
+    'ldr x19, [x1, #0x8]',
+    'add x19, x19, #4',
+    'add x19, x19, #4',
+    'ret',
+  ]);
+  const c = comprehend({ model: m });
+  eq(c.accumulator.reg, 'x19');
+  /* ldr で別物が入ったところで区間は終わる。そのあとの `+4` は数に入らない。 */
+  ok(c.steps.every((st) => st.row < 3), '別の用途になった先まで 1 つの計算として数えている');
+});
+
+/* ────────────────────────────────────────────────────────────
+   擬似 C（decompile.js）— 中間の行が消えているか
+   ──────────────────────────────────────────────────────────── */
+
 /* ── まとめ ──────────────────────────────────────────────── */
 
 await Promise.all(pending);

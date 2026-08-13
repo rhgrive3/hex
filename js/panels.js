@@ -51,6 +51,9 @@ import {
   showRename, showComment, showPatchEditor, showStructRecover, prettyName,
 } from './tools.js';
 import { purposeText, changeText } from './narrate.js';
+import { comprehensionHeadline, stepNote, sinkText } from './narrate.js';
+import { stepText } from './comprehend.js';
+import { render as renderExpr } from './expr.js';
 
 /* ── ファイル情報 ────────────────────────────────────────── */
 
@@ -3812,6 +3815,104 @@ function roleSection(app, role, sheet, region) {
   return wrap;
 }
 
+/* ────────────────────────────────────────────────────────────
+   復元した計算を出す
+   ────────────────────────────────────────────────────────────
+
+   ここは「情報を増やして見せる」場所ではない。逆で、1339 命令のうち
+   **意味のある 19 行だけ**を残して、あとは全部たたむ場所になる。
+
+   1 行 1 行は式そのもの（`result = result * (x + 100) / 100;`）で、
+   その左に開発者が書き残した文言、右にアドレス。押せばその命令へ飛ぶ。
+   読む人がやることは、上から順に 19 行を読むことだけ。 */
+
+function comprehensionSection(app, c, sheet, region) {
+  if (!c || (!c.steps.length && !c.ret)) return null;
+  const wrap = block(pick('この関数が組み立てている計算', 'The calculation this function builds'));
+
+  const head = comprehensionHeadline(c);
+  if (head) wrap.append(para(head));
+
+  const symbolFor = (a) => (app.symbols ? app.symbols.nameAt(a) : null);
+  const opts = { symbolFor, maxLen: 200 };
+
+  /* 出発点 */
+  if (c.seed) {
+    const seed = el('div', 'calc-seed');
+    seed.append(el('div', 'sub', pick('出発点', 'starts from')));
+    seed.append(el('code', 'mono', 'result = ' + renderExpr(c.seed.expr, opts) + ';'));
+    wrap.append(seed);
+  }
+
+  /* 工程 */
+  if (c.steps.length) {
+    const ul = list();
+    for (const s of c.steps) {
+      const note = stepNote(s);
+      const sub = [s.label ? '「' + s.label.text + '」' : null, note].filter(Boolean).join('\n');
+      ul.append(tapRow(stepText(s, opts), {
+        sub: sub || null,
+        right: addrHex(s.address),
+        mono: true,
+        onTap: () => {
+          sheet.close();
+          const row = Number((s.address - region.vmAddr) / 4n);
+          app.viewer.goToRow(row, 'third');
+          app.viewer.select(row, false);
+          app.viewer.mark(row);
+        },
+      }));
+    }
+    wrap.append(ul);
+  }
+
+  /* 行き先 */
+  const sink = sinkText(c.sink);
+  if (sink) wrap.append(para(sink, 'sub'));
+
+  /*
+   * 文言との突き合わせ。ここがこのツールの「確定」の中身なので、
+   * 何と何が一致したのかを 1 件ずつ出して、読む人が自分で確かめられるようにする。
+   */
+  if (c.formula && c.formula.distinct >= 2) {
+    wrap.append(disclosure(pick(
+      '開発者が書いた計算式との一致を見る（' + c.formula.distinct + ' 種類）',
+      'Show the agreement with the developer’s own formulas (' + c.formula.distinct + ')'), {
+      build: (into) => {
+        into.append(para(pick(
+          '左が開発者の書き残した文言、右がその数を実際に使っている命令の場所です。' +
+          '出どころがまったく違う 2 つが一致しているので、ここがその計算をしていることは' +
+          '推測ではありません。',
+          'On the left is what the developer wrote; on the right is where that number is actually used.')));
+        const ful = list();
+        for (const h of c.formula.hits) {
+          ful.append(tapRow(h.op + ' ' + h.value.toString(), {
+            sub: '「' + h.text + '」',
+            right: addrHex(h.address),
+            onTap: () => {
+              sheet.close();
+              const row = Number((h.address - region.vmAddr) / 4n);
+              app.viewer.goToRow(row, 'third');
+              app.viewer.select(row, false);
+              app.viewer.mark(row);
+            },
+          }));
+        }
+        into.append(ful);
+      },
+    }));
+  }
+
+  /* 戻り値の式（積算値と別に出す） */
+  if (c.ret && c.ret.expr) {
+    const r = el('div', 'calc-seed');
+    r.append(el('div', 'sub', pick('返している値', 'returns')));
+    r.append(el('code', 'mono', 'return ' + renderExpr(c.ret.expr, opts) + ';'));
+    wrap.append(r);
+  }
+  return wrap;
+}
+
 /* ── 関数レポート（事実 / 推測 / 不明を分けて出す） ─────── */
 
 export function showFunctionReport(app, addr, goal) {
@@ -3885,6 +3986,18 @@ function renderFunctionReport(app, sheet, body, report, res, region, goal) {
    * アプリの言葉で名指しし直す。命令の説明より先に、ここを読んでもらう。
    */
   if (report.role) body.append(roleSection(app, report.role, sheet, region));
+  /*
+   * 1 段目 — 復元した計算そのもの。
+   *
+   * 大きな関数について、これまでいちばん多かった不満は
+   * 「数え上げは読んだが、結局この関数が何を計算しているのか分からない」だった。
+   * 命令をまたいで式に戻したものは、数え上げとはまるで別の情報量を持つので、
+   * 事実・推測より **先に** 出す。
+   */
+  if (report.comprehension) {
+    const cs = comprehensionSection(app, report.comprehension, sheet, region);
+    if (cs) body.append(cs);
+  }
   body.append(el('div', 'lead', oneLiner(report, id.name)));
   const what = whatItDoes(report);
   if (what.length) {

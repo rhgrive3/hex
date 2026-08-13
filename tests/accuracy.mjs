@@ -605,6 +605,139 @@ feature('summary', '関数の要約が中身と合っている', async ({ w, o }
   return { score: n ? hit / n : 0, detail: `${hit}/${n} の要約が呼び先をきちんと名指し` };
 }, { slow: true });
 
+/* 20. 命令をまたいだ計算を、1 つの式に戻す */
+feature('expr', '割り算に戻す（魔法数の逆算）', async ({ w, o }) => {
+  const { buildValues, walk } = await import('../js/expr.js');
+  /*
+   * 割り算は掛け算に置き換えられて出てくる。逆算できているかは、
+   * 「置き換えの形が命令として実在する関数」を集めて、そのうち何本で
+   * 割り算に戻せたかで測る。正解表は要らない —
+   * 元が割り算だったことは、魔法数とずらし幅から算数として確かめられる。
+   */
+  const starts = o.functionStarts;
+  const cands = [];
+  for (let i = 0; i < starts.length - 1 && cands.length < 4000; i++) {
+    cands.push([starts[i], starts[i + 1]]);
+  }
+  const samples = stride(cands, 900);
+  let withIdiom = 0, recovered = 0;
+  const miss = [];
+  for (const [a, end] of samples) {
+    if (end - a > 4096) continue;
+    const model = await w.analyze(BigInt(a), BigInt(end));
+    if (!model) continue;
+    /* 置き換えの形: 上位を取る掛け算（smulh/umulh/smull/umull）＋ 符号直しの lsr #63 */
+    const insns = model.instructions || [];
+    const hasHigh = insns.some((i) => /^(smulh|umulh|smull|umull)$/i.test(i.mnemonic || ''));
+    const hasFix = insns.some((i) => /^(lsr|asr)$/i.test(i.mnemonic || '') &&
+      /#0x3f|#63|#0x1f|#31/.test(i.operands || ''));
+    if (!hasHigh || !hasFix) continue;
+    withIdiom++;
+    let ok = false;
+    const vg = buildValues(model, {});
+    for (const [, made] of vg.defs) {
+      for (const reg of Object.keys(made)) {
+        walk(made[reg], (n) => {
+          if (n.k === 'bin' && (n.op === 'sdiv' || n.op === 'udiv') &&
+              n.b && n.b.k === 'const' && n.b.v > 2n) ok = true;
+        });
+      }
+      if (ok) break;
+    }
+    if (ok) recovered++;
+    else if (miss.length < 3) miss.push('0x' + a.toString(16));
+  }
+  return {
+    score: withIdiom ? recovered / withIdiom : 0,
+    detail: `${recovered}/${withIdiom} 本で割り算に戻せた` + (miss.length ? ' 例: ' + miss[0] : ''),
+  };
+}, { slow: true });
+
+/* 21. 開発者が書いた計算式と、復元した計算式が合う */
+feature('formula', '書かれた計算式と復元した式が合う', async ({ w, o }) => {
+  const { comprehend, formulaOf } = await import('../js/comprehend.js');
+  /*
+   * このツールの「確定」の土台。文言に計算式が書いてある関数を集めて、
+   * 命令から戻した式がその数と一致するかを測る。
+   * 一致しない＝式に戻せていない、なので、ここは復元力そのものの物差しになる。
+   */
+  const formulaStrings = (w.strings || []).filter((s) => formulaOf(s.text));
+  const users = new Map();
+  for (const s of formulaStrings.slice(0, 600)) {
+    for (const u of w.program.functionsReferencing(s.addr, 1n, 8)) {
+      if (u.addr == null) continue;
+      const fn = w.program.functionRange(u.addr);
+      if (fn) users.set(fn.start.toString(), fn);
+    }
+  }
+  const samples = stride(Array.from(users.values()), 60);
+  /*
+   * 点は「文言が名乗っている数のうち、何割を命令の側でも見つけられたか」。
+   * 当たり外れの 2 値ではなく割合にするのは、式が半分だけ戻せている状態が
+   * 実際にあるため（そこが伸びたことを見えるようにしたい）。
+   */
+  let sum = 0, n = 0;
+  const miss = [];
+  for (const fn of samples) {
+    const model = await w.analyze(fn.start, fn.end);
+    if (!model) continue;
+    /*
+     * 文言を「持っている」だけの関数（表の初期化など）は数えない。
+     * 測りたいのは、書かれた計算を **している** 関数で式に戻せるかどうか。
+     */
+    const doesMath = (model.instructions || []).some((i) =>
+      /^(mul|madd|msub|sdiv|udiv|smull|umull|smulh|umulh|smaddl|umaddl|fmul|fdiv)$/i.test(i.mnemonic || ''));
+    if (!doesMath) continue;
+    n++;
+    const c = comprehend({ model, symbolFor: (x) => w.symbols.nameAt(x) });
+    const ratio = c && c.formula ? c.formula.matched / c.formula.claimed : 0;
+    sum += ratio;
+    if (ratio < 0.5 && miss.length < 3) miss.push('0x' + fn.start.toString(16));
+  }
+  void o;
+  return {
+    score: n ? sum / n : 0,
+    detail: `${n} 本の平均一致率` + (miss.length ? '（弱い例: ' + miss[0] + '）' : ''),
+  };
+}, { slow: true });
+
+/* 22. 擬似 C に「訳せなかった命令」が残っていないか */
+feature('pseudoc', '擬似 C に訳せない命令が残らない', async ({ w, o }) => {
+  const { decompile } = await import('../js/decompile.js');
+  const starts = o.functionStarts;
+  const cands = [];
+  for (let i = 0; i < starts.length - 1; i++) {
+    if (starts[i + 1] - starts[i] >= 64 && starts[i + 1] - starts[i] <= 2048) {
+      cands.push([starts[i], starts[i + 1]]);
+    }
+  }
+  const samples = stride(cands, 120);
+  let lines = 0, asmLines = 0, done = 0;
+  for (const [a, end] of samples) {
+    const model = await w.analyze(BigInt(a), BigInt(end));
+    if (!model) continue;
+    let res;
+    try {
+      res = decompile(model, {
+        addr: BigInt(a),
+        rowOfAddress: (x) => (x == null ? null : Number((x - w.region.vmAddr) / 4n)),
+        addrOfRow: (r) => w.region.vmAddr + BigInt(r) * 4n,
+        symbolFor: (x) => w.symbols.nameAt(x),
+      });
+    } catch { continue; }
+    done++;
+    for (const l of res.lines) {
+      if (l.kind !== 'stmt' && l.kind !== 'ctrl') continue;
+      lines++;
+      if (/__asm\(/.test(l.text)) asmLines++;
+    }
+  }
+  return {
+    score: lines ? 1 - asmLines / lines : 0,
+    detail: `${lines - asmLines}/${lines} 行が C の式になった（関数 ${done} 本）`,
+  };
+}, { slow: true });
+
 /* ── 実行 ───────────────────────────────────────────────────── */
 
 async function main() {

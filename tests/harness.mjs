@@ -176,6 +176,12 @@ export async function openBinary(file, opts) {
 
   /* panels.js の makeAnalyzer と同じ形にそろえる（画面と違う結果を測っても意味がない）。 */
   const totalRows = Number(region.size / 4n);
+  /*
+   * 画面と同じで、既定では参照している文字列まで読み込む。
+   * 文字列を読まずに測っていたころ、開発者が書き残した文言を材料にする
+   * 解析（＝いちばん効く材料）がテストにだけ効かない、という食い違いがあった。
+   */
+  const wantTexts = o.texts !== false;
   const analyze = async (addr, end) => {
     const startRow = Number((BigInt(addr) - region.vmAddr) / 4n);
     if (!(startRow >= 0) || startRow >= totalRows) return null;
@@ -189,7 +195,8 @@ export async function openBinary(file, opts) {
       ? Math.min(totalRows - 1, Number((BigInt(stop) - region.vmAddr) / 4n) - 1)
       : Math.min(totalRows - 1, startRow + 512);
     if (endRow < startRow) return null;
-    const res = await analyzeFunctionCached(backend, region, startRow, endRow, symbols, null, { texts: false });
+    const res = await analyzeFunctionCached(backend, region, startRow, endRow, symbols, null,
+      { texts: wantTexts });
     return res.model;
   };
   function rowOf(addr) { return Number((BigInt(addr) - region.vmAddr) / 4n); }

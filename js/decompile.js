@@ -25,6 +25,7 @@
 
 import { typeFromAccess, inferTypes, signatureOf } from './types.js';
 import { shortName } from './rtti.js';
+import { buildValues, render as renderExpr, sizeOf as exprSize } from './expr.js';
 
 /* ── 出力の 1 行 ────────────────────────────────────────────
    kind: 'sig' 見出し / 'decl' 変数宣言 / 'stmt' 文 / 'ctrl' 制御 /
@@ -149,12 +150,29 @@ function buildContext(model, o) {
   const callOf = new Map();       // row -> call 情報
   for (const c of model.calls || []) callOf.set(c.row, c);
 
+  /*
+   * 値グラフ。ここが入って、擬似 C はようやく「訳」になった。
+   *
+   * それまでは 1 命令 ＝ 1 行で、5 行に散らばった 1 つの割り算は
+   * 5 行のまま（しかも 2 行は __asm）出ていた。値グラフを持つと、
+   * その 5 行が作っている値が 1 つの式として手に入るので、
+   *
+   *   ・意味を持たない中間の行は消せる（誰も変数として使っていないので）
+   *   ・残った行には、命令ではなく **計算** が書ける
+   *
+   * どの値を変数として残し、どの値を式に埋め込むかは decideMaterial が決める。
+   */
+  let values = null;
+  try { values = buildValues(model, { symbolFor: o.symbolFor }); } catch { values = null; }
+
   return {
     model,
     byRow,
     textOf,
     refOf,
     callOf,
+    values,
+    material: values ? decideMaterial(model, values) : null,
     rowOfAddress: o.rowOfAddress || (() => null),
     addrOfRow: o.addrOfRow || (() => null),
     /*
@@ -178,6 +196,358 @@ function buildContext(model, o) {
     stackNames: new Map(),
     usedVars: new Set(),
   };
+}
+
+/* ────────────────────────────────────────────────────────────
+   どの値を「変数」として残すか
+   ────────────────────────────────────────────────────────────
+
+   命令 1 つに 1 行を割り当てると、擬似 C は代入だらけになって読めない。
+   かといって全部を埋め込むと、1 行が 400 文字の式になって、これも読めない。
+
+   人が書く C との違いはここで、人は「2 回以上使う値」と「名前を付けたい値」
+   だけに変数を作る。同じ規則を使う。
+
+     ・2 か所以上から使われている        → 変数として残す（でないと計算が二重に出る）
+     ・別のブロックから使われている      → 変数として残す（式が飛び越えられない）
+     ・式が大きい                        → 変数として残す（読めなくなるので）
+     ・呼び出しの結果                    → 原則は残す（順序が意味を持つため）
+     ・それ以外                          → 使う側へ埋め込む（行ごと消える）
+
+   これで、意味を持たない中間の行は 1 行も出なくなる。 */
+
+const INLINE_MAX = 14;      // 埋め込みを許す式の大きさ
+
+function decideMaterial(model, vg) {
+  const insns = model.instructions || [];
+  const blocks = model.basicBlocks || [];
+  const blockOf = new Map();
+  blocks.forEach((b, i) => { for (const r of b.rows) blockOf.set(r, i); });
+  const liveOut = liveOutSets(model, blocks, blockOf);
+
+  const uses = new Map();          // ノード → 使われた回数
+  const crossed = new Set();       // 別ブロックから使われたノード
+  const bump = (nodeValue, atRow) => {
+    if (!nodeValue) return;
+    const def = vg.nodeDef.get(nodeValue);
+    if (!def) return;
+    uses.set(nodeValue, (uses.get(nodeValue) || 0) + 1);
+    if (blockOf.get(def.row) !== blockOf.get(atRow)) crossed.add(nodeValue);
+  };
+
+  for (const insn of insns) {
+    for (const r of insn.reads) bump(vg.at(insn.row, r), insn.row);
+  }
+  for (const w of vg.memWrites || []) bump(w.value, w.row);
+  for (const r of vg.returns || []) bump(r.value, r.row);
+  /*
+   * 引数は数に入れない。呼び出しの行が中身をそのまま書き出すので、
+   * `x1 = a4;` という行を別に立てる必要がない。
+   * （消えてしまわないよう、あとの掃除では「使われている」として数える。）
+   */
+
+  /*
+   * そのブロックの中で、そのレジスタへの **最後の** 代入だけが外へ出ていける。
+   * ここを見ずに「外へ出るレジスタなら全部残す」にしていたころ、
+   * `x8 = 2; x8 = 4; x8 = 8; …` という、次の行で上書きされるだけの代入が
+   * 12 行並んでいた。
+   */
+  const lastInBlock = new Map();
+  const lastCallRow = new Map();
+  for (const insn of insns) {
+    const bi = blockOf.get(insn.row);
+    const made = vg.defs.get(insn.row) || {};
+    for (const reg of Object.keys(made)) lastInBlock.set(bi + ':' + reg, made[reg]);
+    if (insn.isCall) lastCallRow.set(bi, insn.row);
+  }
+  /*
+   * 呼び出しは x0〜x17 を壊す（AAPCS64）。だから同じブロックの中で
+   * 呼び出しより手前にある x0〜x17 への代入は、そのブロックの外へは出ていけない。
+   * 引数を用意する `mov x1, x24` が「外へ出るから残す」と判定されて、
+   * すぐ下の呼び出しの行に同じ中身が書いてある、という重複はここで消える。
+   */
+  const killedByCall = (def) => {
+    if (!/^x([0-9]|1[0-7])$/.test(def.reg)) return false;
+    const bi = blockOf.get(def.row);
+    const call = lastCallRow.get(bi);
+    return call != null && call > def.row;
+  };
+
+  /*
+   * 「あとで名前として出てくるのに、その行を消してしまった」を絶対に起こさない。
+   *
+   * 値グラフは分岐の合流で追跡をやめる。やめた先で同じレジスタが読まれると、
+   * そこには式ではなく `x25` という名前が出る。名前が出るなら、その名前へ
+   * 値を入れる行が残っていなければならない。
+   *
+   * 判定は素直に生存区間で行う。ブロックの中では値を見失うことはないので、
+   * **そのブロックの外へ生きて出るレジスタ** への代入は必ず行として残す。
+   * ここを「直前の代入と同じ値か」で近似していたころ、分岐の反対側で
+   * 同じレジスタに代入があるだけで判定がすり抜けて、
+   * `x25 = …` の行だけが消えるという壊れ方をしていた。
+   */
+  const material = new Set();
+  for (const [nodeValue, def] of vg.nodeDef) {
+    const n = uses.get(nodeValue) || 0;
+    const big = visibleSize(nodeValue, material) > INLINE_MAX;
+    const bi = blockOf.get(def.row);
+    const live = bi != null && liveOut[bi] && liveOut[bi].has(def.reg) &&
+      lastInBlock.get(bi + ':' + def.reg) === nodeValue && !killedByCall(def);
+    /* 呼び出しは、結果を使っていなくても必ず行として残す（呼んだこと自体が処理）。 */
+    if (nodeValue.k === 'call') { material.add(nodeValue); continue; }
+    if (live) { material.add(nodeValue); continue; }
+    if (n === 0) continue;                       // 誰も使わない値。行ごと消える。
+    if (n > 1 || crossed.has(nodeValue) || big) material.add(nodeValue);
+  }
+  /*
+   * 大きさの判定は、変数として残すと決めたところで止まる。
+   * 最初の 1 巡では止め先がまだ決まっていないので、決まったぶんを踏まえて数え直す。
+   */
+  for (let round = 0; round < 2; round++) {
+    for (const [nodeValue] of vg.nodeDef) {
+      if (material.has(nodeValue) || !(uses.get(nodeValue) > 0)) continue;
+      if (visibleSize(nodeValue, material) > INLINE_MAX) material.add(nodeValue);
+    }
+  }
+
+  /*
+   * ここまでの「使われた回数」は、命令がそのレジスタを読んでいるかで数えている。
+   * ところが式に戻す過程で、読んでいた値そのものが消えることがある。
+   *
+   *   smulh x8, x8, x9        ← 割り算の途中。数え上げでは 2 回読まれている
+   *   asr   x9, x8, #6
+   *   add   x25, x9, x8, lsr #63   →  x25 = … / 100;   ← smulh は式から消えた
+   *
+   * 消えた値の行を残すと、誰も使わない中間結果が 1 行だけ取り残される。
+   * 最後に、実際に書き出す式の中に出てくるかどうかで数え直して落とす。
+   */
+  for (let round = 0; round < 3; round++) {
+    const seen = new Set();
+    const mark = (n, self) => {
+      if (!n) return;
+      const stack = [n];
+      while (stack.length) {
+        const cur = stack.pop();
+        if (!cur) continue;
+        if (cur !== self && material.has(cur)) { seen.add(cur); continue; }
+        const kids = cur.k === 'bin' ? [cur.a, cur.b]
+          : cur.k === 'un' ? [cur.a]
+            : cur.k === 'sel' ? [cur.a, cur.b]
+              : cur.k === 'mem' ? [cur.base, cur.index]
+                : cur.k === 'call' ? (cur.args || []).map((a) => a.value) : [];
+        for (const c of kids) if (c) stack.push(c);
+      }
+    };
+    for (const nodeValue of material) mark(nodeValue, nodeValue);
+    for (const w of vg.memWrites || []) mark(w.value, null);
+    for (const r of vg.returns || []) mark(r.value, null);
+    for (const insn of insns) {
+      if (!insn.isCall) continue;
+      for (let a = 0; a <= 7; a++) mark(vg.at(insn.row, 'x' + a), null);
+    }
+    let dropped = 0;
+    for (const nodeValue of Array.from(material)) {
+      if (nodeValue.k === 'call') continue;                 // 呼び出しは残す（副作用）
+      const def = vg.nodeDef.get(nodeValue);
+      const bi = def ? blockOf.get(def.row) : null;
+      if (bi != null && liveOut[bi] && liveOut[bi].has(def.reg) &&
+          lastInBlock.get(bi + ':' + def.reg) === nodeValue && !killedByCall(def)) continue;
+      if (seen.has(nodeValue)) continue;
+      material.delete(nodeValue);
+      dropped++;
+    }
+    if (!dropped) break;
+  }
+
+  /*
+   * 変数として残した値に、名前を付ける。
+   *
+   * レジスタ名をそのまま使うと、同じ x0 に 40 回別の値が入るので、
+   * 式の中の `x0` がどの x0 なのか決まらない（そして必ず間違って読まれる）。
+   * かといって v1, v2 … にすると、アセンブリと突き合わせられなくなる。
+   *
+   * だから「そのレジスタに入った何番目の値か」を名前にする。
+   *   x0 に 1 個しか入らない関数なら  → x0
+   *   x0 に何度も入る関数なら         → x0_1, x0_2, …
+   * これならアセンブリの側から追えるし、どの値かも 1 つに決まる。
+   */
+  /*
+   * ただし、値を見失ったレジスタは番号を振らない。
+   *
+   * 分岐の合流で追跡が切れると、そこから先の式には `x25` という素の名前が出る。
+   * その状態で代入の側だけ `x25_4` と名乗ると、`x25` に値を入れる行が
+   * どこにも無いことになる — いちばんまずい壊れ方をする。
+   * 見失うレジスタについては、素直にレジスタ名を変数名として使う
+   * （アセンブリと同じ読み方になるので、突き合わせもしやすい）。
+   */
+  const lost = new Set();
+  for (const insn of insns) {
+    for (const r of insn.reads) {
+      const at = vg.at(insn.row, r);
+      if (at && at.k === 'reg' && at.reg === r) lost.add(r);
+    }
+  }
+
+  const names = new Map();
+  const perReg = new Map();
+  for (const insn of insns) {
+    const made = vg.defs.get(insn.row) || {};
+    for (const reg of Object.keys(made)) {
+      const v = made[reg];
+      if (!material.has(v) || names.has(v)) continue;
+      /*
+       * 見失うレジスタは、そのブロックの **最後の** 代入だけが素の名前を名乗る。
+       * 合流の先で `x0` と書かれたときに指しているのは、どの道を通っても
+       * 「その道の最後に入れた値」だから。同じブロックの途中の代入まで
+       * 素の名前にすると、1 つの式の中に `x0 + x0` が出て意味が壊れる。
+       */
+      if (lost.has(reg) && lastInBlock.get(blockOf.get(insn.row) + ':' + reg) === v) {
+        names.set(v, reg);
+        continue;
+      }
+      const list = perReg.get(reg) || [];
+      list.push(v);
+      perReg.set(reg, list);
+      names.set(v, reg + '_' + list.length);
+    }
+  }
+  for (const [reg, list] of perReg) {
+    if (list.length === 1 && !lost.has(reg)) names.set(list[0], reg);
+  }
+  return { material, uses, crossed, blockOf, names };
+}
+
+/** 変数として残したところで止めた、見た目の大きさ。 */
+function visibleSize(n, material, depth) {
+  if (!n || (depth || 0) > 24) return 1;
+  let total = 1;
+  const kids = n.k === 'bin' ? [n.a, n.b]
+    : n.k === 'un' ? [n.a]
+      : n.k === 'sel' ? [n.a, n.b]
+        : n.k === 'mem' ? [n.base, n.index].filter(Boolean)
+          : n.k === 'call' ? (n.args || []).map((a) => a.value) : [];
+  for (const c of kids) {
+    if (!c) continue;
+    total += material.has(c) ? 1 : visibleSize(c, material, (depth || 0) + 1);
+  }
+  return total;
+}
+
+/**
+ * ブロックごとの「外へ生きて出るレジスタ」。教科書どおりの後ろ向き解析。
+ * 飛び先が読めない分岐があるブロックは、安全側に全部生きているものとして扱う。
+ */
+function liveOutSets(model, blocks, blockOf) {
+  const n = blocks.length;
+  const use = [], def = [], succ = [];
+  const rowAt = new Map();
+  for (const insn of model.instructions || []) {
+    if (insn.address != null) rowAt.set(insn.address.toString(), insn.row);
+  }
+  const byRow = new Map();
+  for (const insn of model.instructions || []) byRow.set(insn.row, insn);
+
+  for (let i = 0; i < n; i++) {
+    const u = new Set(), d = new Set(), s = new Set();
+    for (const row of blocks[i].rows) {
+      const insn = byRow.get(row);
+      if (!insn) continue;
+      for (const r of insn.reads) if (!d.has(r)) u.add(r);
+      if (insn.isCall) for (let a = 0; a <= 7; a++) if (!d.has('x' + a)) u.add('x' + a);
+      for (const w of insn.writes) d.add(w);
+      if (insn.isCall) for (let a = 0; a <= 17; a++) d.add('x' + a);
+    }
+    const last = byRow.get(blocks[i].endRow);
+    if (last && last.isBranch && !last.isCall && !last.isReturn) {
+      if (last.branchTarget != null) {
+        const t = rowAt.get(last.branchTarget.toString());
+        if (t != null && blockOf.has(t)) s.add(blockOf.get(t));
+      }
+      if (last.isConditional && i + 1 < n) s.add(i + 1);
+    } else if (i + 1 < n && !(last && last.isReturn)) s.add(i + 1);
+    use.push(u); def.push(d); succ.push(Array.from(s));
+  }
+
+  const out = blocks.map(() => new Set());
+  const inSet = blocks.map(() => new Set());
+  for (let round = 0; round < 40; round++) {
+    let changed = false;
+    for (let i = n - 1; i >= 0; i--) {
+      const o = new Set();
+      for (const s of succ[i]) for (const r of inSet[s]) o.add(r);
+      const ni = new Set(use[i]);
+      for (const r of o) if (!def[i].has(r)) ni.add(r);
+      if (ni.size !== inSet[i].size || o.size !== out[i].size) changed = true;
+      inSet[i] = ni; out[i] = o;
+    }
+    if (!changed) break;
+  }
+  return out;
+}
+
+/**
+ * 式を C の文にする。ほかの行で変数として残した値は、その名前で止める。
+ * 止めないと、同じ計算が何行にも重複して出てしまう。
+ */
+function exprText(ctx, nodeValue, self) {
+  if (!nodeValue) return null;
+  const mat = ctx.material;
+  const opts = {
+    symbolFor: ctx.symbolFor,
+    maxLen: 400,
+    nameOf: (n) => {
+      if (n === self) return null;               // 自分自身は展開する
+      if (n.k === 'reg') return varOf(n.reg, ctx);
+      if (n.k === 'arg') return argName(n.n, ctx);
+      if (mat && mat.names.has(n)) {
+        ctx.usedVars.add(mat.names.get(n));
+        return mat.names.get(n);
+      }
+      return null;
+    },
+    memName: (m) => memNodeName(m, ctx),
+    callName: (c) => callLabel(c, ctx),
+  };
+  return renderExpr(nodeValue, opts);
+}
+
+/**
+ * その行がその レジスタ に入れた値の呼び名。
+ * 値グラフが名前を持っていればそれを使う（式の中の名前とそろえるため）。
+ */
+function nameForDef(ctx, row, reg) {
+  if (ctx.values && ctx.material) {
+    const v = ctx.values.defAt(row, reg);
+    const n = v ? ctx.material.names.get(v) : null;
+    if (n) { ctx.usedVars.add(n); return n; }
+  }
+  return varOf(reg, ctx);
+}
+
+/** 引数の呼び名。types.js が付けた a1, a2 … にそろえる。 */
+function argName(n, ctx) {
+  const custom = ctx.notes && ctx.funcAddr != null ? ctx.notes.varName(ctx.funcAddr, 'x' + n) : null;
+  return custom || ('a' + (n + 1));
+}
+
+/** メモリ参照の呼び名。スタックなら var_XX、名前が読めるなら self->hp。 */
+function memNodeName(m, ctx) {
+  if (m.stack && m.disp != null) {
+    return slotName(m.baseReg === 'x29' ? 'x29' : 'sp', m.disp, ctx);
+  }
+  if (m.baseReg && m.disp != null && !m.index && ctx.fieldFor) {
+    const named = ctx.fieldFor(m.baseReg, Number(m.disp), m.row);
+    if (named && named.name) return varOf(m.baseReg, ctx) + '->' + named.name;
+  }
+  return null;
+}
+
+function callLabel(c, ctx) {
+  const custom = ctx.notes && c.target != null ? ctx.notes.nameOf(c.target) : null;
+  if (custom) return custom;
+  if (c.sel) return '[' + (c.sel) + ']';
+  if (c.name) return shortName(c.name);
+  return c.target != null ? 'sub_' + c.target.toString(16).toUpperCase() : '(*func)';
 }
 
 /**
@@ -611,6 +981,17 @@ function statementFor(insn, ctx, node) {
 
   if (insn.data) return mk('__data(' + insn.operands + ');', { kind: 'comment', note: '命令ではなくデータです。' });
   if (SKIP_MN.test(base)) return null;                     // 意味を持たない命令は出さない
+
+  /*
+   * 値グラフから作った文。ここが当たれば、命令の形ではなく **計算** が出る。
+   *
+   *   mov w9, #0x851f ; movk w9, #0x51eb, lsl #16
+   *   smull x8, w8, w9 ; lsr x9, x8, #0x3f ; asr x8, x8, #0x25 ; add w8, w8, w9
+   *       ↓
+   *   x8 = x8 / 100;          （ほかの 5 行は、誰も使わない中間値なので消える）
+   */
+  const fromValues = valueStatement(insn, ctx, mk);
+  if (fromValues !== undefined) return fromValues;
   if (base === 'ret' || base === 'retab' || base === 'retaa') {
     const ret = ctx.types && ctx.types.ret && ctx.types.ret.type !== 'void';
     return mk(ret ? 'return ' + varOf('x0', ctx) + ';' : 'return;', { kind: 'ctrl', note: ret ? '呼び出し元へ x0 の値を返します。' : '呼び出し元へ戻ります。' });
@@ -730,6 +1111,78 @@ function shiftOp(op) {
   return { lsl: '<<', lsr: '>>', asr: '>>', ror: '>>>' }[op] || '<<';
 }
 
+/*
+ * 値グラフから 1 命令ぶんの文を作る。
+ *
+ * 戻り値:
+ *   undefined … この命令はここでは扱えない（従来の道に任せる）
+ *   null      … 行は出さない（中間の値なので、使う側に埋め込まれる）
+ *   文        … その行
+ */
+function valueStatement(insn, ctx, mk) {
+  const vg = ctx.values;
+  if (!vg || !ctx.material) return undefined;
+  const base = (insn.mnemonic || '').toLowerCase();
+
+  /*
+   * 読み込みだけは、ここで「行として残すか」を決める。
+   *
+   *   ldr x8, [x9] ; add x8, x8, #1 ; str x8, [x9]
+   *
+   * 3 行それぞれに名前を付けると読めないが、読み込みには副作用がないので、
+   * 誰も変数として使わないなら、使う側の式に埋め込んでしまってよい。
+   * 行として残すと決まったものは、これまでどおり memoryStatement が書く
+   * （self->hp や var_20 という呼び名は、あちらのほうが上手い）。
+   */
+  if (insn.memory && insn.memory.kind === 'load' && insn.writes.length === 1) {
+    const v = vg.defAt(insn.row, insn.writes[0]);
+    if (v && v.k !== 'reg' && !ctx.material.material.has(v)) return null;
+    return undefined;
+  }
+
+  /* 呼び出し・メモリ・分岐・比較は、これまでどおり専用の道で書く。 */
+  if (insn.isCall || insn.memory || insn.isBranch || insn.isReturn) return undefined;
+  if (/^(cmp|cmn|tst|fcmp|fcmpe|ccmp|ccmn)$/.test(base)) return undefined;
+  if (isFrameHousekeeping(insn, ctx)) return undefined;
+  if (insn.writes.length !== 1) return undefined;
+
+  const dst = insn.writes[0];
+  const value = vg.defAt(insn.row, dst);
+  if (!value) return undefined;
+  /* 出どころが読めなかった値は、命令のまま出したほうが正直。 */
+  if (value.k === 'reg') return undefined;
+
+  if (!ctx.material.material.has(value)) {
+    /*
+     * 誰も変数として使っていない中間の値。行ごと落とす。
+     * これが「5 行の割り算が 1 行になる」の中身。
+     */
+    return null;
+  }
+  /*
+   * すでに別の行で名前を持っている値を、別のレジスタへ写しているだけ。
+   *
+   *   bl f ; mov x24, x0        →  x0 = f(); だけでよい
+   *
+   * 名前は値に付いているので、以後 x24 を使う式にも同じ名前が出る。
+   * 写しの行を残すと、同じ値に 2 つの名前が付いて、必ず読み間違いのもとになる。
+   */
+  const def = vg.nodeDef.get(value);
+  if (def && def.row !== insn.row) return null;
+  const text = exprText(ctx, value, value);
+  if (text == null) return undefined;
+  const name = ctx.material.names.get(value);
+  if (name) {
+    ctx.usedVars.add(name);
+    return mk(name + ' = ' + text + ';', { dst, pure: false, fromValues: true });
+  }
+  /*
+   * pure を立てない。どの値を変数に残すかは、もう値グラフの側で決めてある。
+   * そのうえで文字列としてもう一度たたむと、二重に消して辻褄が合わなくなる。
+   */
+  return mk(varOf(dst, ctx) + ' = ' + text + ';', { dst, pure: false, fromValues: true });
+}
+
 /**
  * 「後片付け」の命令かどうか。
  *
@@ -796,9 +1249,9 @@ function memoryStatement(insn, ctx, mk, base) {
   }
 
   if (m.kind === 'load') {
-    const d0 = insn.ops[0] ? varOf(regOf(insn.ops[0]), ctx) : '?';
+    const d0 = insn.ops[0] ? nameForDef(ctx, insn.row, regOf(insn.ops[0])) : '?';
     if (pair) {
-      const d1 = insn.ops[1] ? varOf(regOf(insn.ops[1]), ctx) : '?';
+      const d1 = insn.ops[1] ? nameForDef(ctx, insn.row, regOf(insn.ops[1])) : '?';
       return mk(d0 + ' = ' + place + ';   ' + d1 + ' = ' + nextSlot(place, m) + ';',
         { dst: insn.writes[0], note: '2 つ続けて読み出しています。' });
     }
@@ -806,14 +1259,44 @@ function memoryStatement(insn, ctx, mk, base) {
     if (text != null) {
       return mk(d0 + ' = "' + escapeText(text) + '";', { dst: insn.writes[0], pure: true, note: '文字列を読み出しています。' });
     }
-    return mk(d0 + ' = ' + place + ';', { dst: insn.writes[0], pure: true, note: 'メモリから値を読み出します。' });
+    /*
+     * 住所は、値グラフが持っている式のほうが正しい。
+     * `*(uint64 *)(x8)` の x8 が、埋め込まれて消えた行のものだったりするので、
+     * レジスタ名ではなく中身で書く。
+     */
+    const node = ctx.values ? ctx.values.defAt(insn.row, insn.writes[0]) : null;
+    const viaExpr = node && node.k === 'mem' ? exprText(ctx, node, node) : null;
+    return mk(d0 + ' = ' + (viaExpr || place) + ';', { dst: insn.writes[0], pure: true, note: 'メモリから値を読み出します。' });
   }
-  const s0 = insn.ops[0] ? varOf(regOf(insn.ops[0]), ctx) : '?';
+  /*
+   * 書き込む値は、レジスタ名ではなく **その中身** で書く。
+   *
+   *   mov w8, #2 ; str w8, [sp, #0xc8]      →   var_C8 = 2;
+   *
+   * レジスタ名のまま出していたころ、値を作った行（誰も変数として使わないので
+   * 消える行）と食い違って、`var_C8 = x8;` の x8 がどこにも無い、という
+   * いちばんまずい形になっていた。
+   */
+  const stored = storedValues(insn, ctx);
+  const s0 = stored[0] || (insn.ops[0] ? varOf(regOf(insn.ops[0]), ctx) : '?');
   if (pair) {
-    const s1 = insn.ops[1] ? varOf(regOf(insn.ops[1]), ctx) : '?';
+    const s1 = stored[1] || (insn.ops[1] ? varOf(regOf(insn.ops[1]), ctx) : '?');
     return mk(place + ' = ' + s0 + ';   ' + nextSlot(place, m) + ' = ' + s1 + ';', { note: '2 つ続けて書き込んでいます。' });
   }
   return mk(place + ' = ' + s0 + ';', { note: 'メモリへ値を書き込みます。' });
+}
+
+/** その書き込み命令が置いている値を、式として。読めなければ空。 */
+function storedValues(insn, ctx) {
+  const vg = ctx.values;
+  if (!vg) return [];
+  const out = [];
+  for (const w of vg.memWrites || []) {
+    if (w.row !== insn.row) continue;
+    const text = w.value ? exprText(ctx, w.value, null) : null;
+    out.push(text || null);
+  }
+  return out;
 }
 
 /** *(型 *)(x8) → (型 *)(x8) 。「その場所そのもの」を表す式にする。 */
@@ -860,7 +1343,7 @@ function callStatement(insn, ctx, mk) {
   /* 末尾呼び出し（b で別の関数へ跳んで終わる）は、そのまま return になる */
   const text = insn.isTailCall
     ? 'return ' + callExpr + ';'
-    : varOf('x0', ctx) + ' = ' + callExpr + ';';
+    : nameForDef(ctx, insn.row, 'x0') + ' = ' + callExpr + ';';
   return mk(text, {
     dst: insn.isTailCall ? null : 'x0', call: true, target, reads,
     kind: insn.isTailCall ? 'ctrl' : 'stmt',
@@ -884,7 +1367,14 @@ function callArguments(call, ctx) {
   for (let i = 0; i <= 7; i++) {
     const a = known.get(i);
     if (!a) break;
-    out.push(valueText(a.value, ctx, i));
+    /*
+     * 引数も、レジスタ名ではなく中身で書く。
+     * `sub_10041A334(1, a4, …)` と `sub_10041A334(x0, x1, …)` では、
+     * 読む人が受け取るものがまったく違う。
+     */
+    const node = ctx.values ? ctx.values.at(call.row, 'x' + i) : null;
+    const text = node ? exprText(ctx, node, null) : null;
+    out.push(text || valueText(a.value, ctx, i));
   }
   return out;
 }
