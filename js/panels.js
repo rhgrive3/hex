@@ -1,4 +1,7 @@
 /*
+ * Design philosophy: 「証拠の地図帳」。結果の根拠・関係・次の行動を
+ * 一画面の中で接続し、同じ機能への入口を重複させない。
+ *
  * シート（下から出てくる画面）とダイアログ。
  *
  *   ファイル情報 / セクション / 構造 / 関数 / 文字列 / ジャンプ / 検索 /
@@ -54,6 +57,7 @@ import { purposeText, changeText } from './narrate.js';
 import { comprehensionHeadline, stepNote, sinkText } from './narrate.js';
 import { stepText } from './comprehend.js';
 import { render as renderExpr } from './expr.js';
+import { callGraph, graphLegend, renderGraph } from './graphview.js';
 
 /* ── ファイル情報 ────────────────────────────────────────── */
 
@@ -4263,7 +4267,7 @@ function cfgSection(app, report, region, sheet) {
 /* ── 呼び出しグラフ（上へも下へも辿れる） ───────────────── */
 
 export function showCallGraph(app, addr) {
-  const sheet = new Sheet(pick('呼び出しの流れ', 'Call graph'));
+  const sheet = new Sheet(pick('呼び出しの流れ', 'Call graph'), { size: 'wide' });
   const body = sheet.body;
   const box = progressBox(body, pick('呼び出し関係を調べています…', 'Mapping calls…'));
 
@@ -4275,54 +4279,27 @@ export function showCallGraph(app, addr) {
       return;
     }
 
-    body.append(el('div', 'sec-title', pick('ここへ来るまで（呼び出し元）', 'How you get here (callers)')));
-    const up = el('div', 'calltree');
-    const seenUp = new Set([addr.toString()]);
-    const addUp = (target, depth) => {
-      if (depth > 2) return;
-      for (const c of program.callersOf(target, 6)) {
-        if (c.addr == null) continue;
-        const key = c.addr.toString();
-        up.append(treeRow(app, c.addr, depth, '↑', () => {
-          sheet.close(); showFunctionReport(app, c.addr);
-        }));
-        if (seenUp.has(key)) continue;
-        seenUp.add(key);
-        addUp(c.addr, depth + 1);
-      }
-    };
-    addUp(addr, 0);
-    if (!up.childElementCount) {
-      up.append(para(pick('呼び出し元は見つかりませんでした。', 'No callers found.'), 'sub'));
-    }
-    body.append(up);
+    const { nodes, edges } = callGraph(program, app.symbols, addr, {
+      depth: 2,
+      limit: 6,
+      label: (a) => fnLabel(app, a),
+      onNode: (a) => { sheet.close(); showFunctionReport(app, a); },
+    });
+    const head = el('div', 'graph-head');
+    head.append(el('span', null, pick(
+      '上が呼ぶ側、中央がこの処理、下が呼ばれる側です。箱を押すと詳細を開けます。',
+      'Callers are above, this routine is in the middle, and callees are below. Select a box for details.')));
+    head.append(button(pick('広げて見る', 'Expand'), 'chip', () => {
+      sheet.close(); showCallGraphPanel(app, addr);
+    }));
+    body.append(el('div', 'sec-title', pick('この処理のつながり', 'Relationship map')), head);
 
-    const me = el('div', 'calltree-self');
-    me.append(el('div', 'fn-name', fnLabel(app, addr)));
-    me.append(el('div', 'fn-range mono', addrHex(addr)));
-    body.append(me);
-
-    body.append(el('div', 'sec-title', pick('ここから先（呼び出し先）', 'Where it goes (callees)')));
-    const down = el('div', 'calltree');
-    const seenDown = new Set([addr.toString()]);
-    const addDown = (start, depth) => {
-      if (depth > 2) return;
-      const range = program.functionRange(start);
-      for (const c of program.calleesOf(start, range ? range.end : null, 8)) {
-        const key = c.addr.toString();
-        down.append(treeRow(app, c.addr, depth, '↓', () => {
-          sheet.close(); showFunctionReport(app, c.addr);
-        }));
-        if (seenDown.has(key)) continue;
-        seenDown.add(key);
-        addDown(c.addr, depth + 1);
-      }
-    };
-    addDown(addr, 0);
-    if (!down.childElementCount) {
-      down.append(para(pick('ほかの処理は呼んでいません。', 'It calls nothing else.'), 'sub'));
+    if (nodes.length <= 1 || !edges.length) {
+      body.append(para(pick('静的に確認できる呼び出しは見つかりませんでした。',
+        'No statically resolvable calls were found.'), 'hint'));
+    } else {
+      body.append(renderGraph(nodes, edges, {}), graphLegend('call'));
     }
-    body.append(down);
 
     body.append(para(pick(
       'この図は bl 命令（呼び出し）の飛び先を数えたものです。推測ではありません。' +
@@ -4588,38 +4565,37 @@ const FAQ = [
 
 const GUIDE_PAGES = [
   {
-    title: ['アプリの中身を、日本語で読む', 'Read a binary in plain language'],
+    title: ['答えに近づく道筋を、根拠つきで読む', 'Follow the evidence, not just the code'],
     body: [
       'iPhone や Mac のアプリは、人間の書いたコードが「機械語」という数字の列に翻訳されたものです。',
-      'このツールは、その数字を 1 行ずつ日本語に訳して見せます。アセンブリを触ったことがなくても大丈夫です。',
+      'Hex は、その数字を日本語に訳すだけでなく、「何を調べたいか」から関係する値・処理・根拠まで案内します。',
     ],
     bodyEn: [
       'An app is human-written code translated into machine numbers.',
-      'This tool translates those numbers back, one line at a time.',
+      'Hex guides you from a question to the related value, routine, and supporting evidence.',
     ],
   },
   {
-    title: ['まずは「解説」をオンに', 'Turn on “Explain”'],
+    title: ['まずは、調べたいことから入る', 'Start with a question'],
     body: [
-      '画面上の「解説」ボタンを押すと、命令 1 行ごとに日本語の意味が下に付きます。',
-      '行をタップすれば、その 1 行を部品ごとに分解して、全部説明します。',
-      '分からない言葉が出てきたら、その場で用語集を引けます。',
+      'ファイルを開いたら、最初に「調べる」を選んでください。HP・課金・通信のような目的から、関係する処理を絞り込みます。',
+      '見つかった結果には、検証済みの事実・推測・まだ決められないことが別々に表示されます。',
     ],
     bodyEn: [
-      'The “Explain” button adds a plain-language line under every instruction.',
-      'Tap any row to break that single line down completely.',
+      'After opening a file, start with Find. Pick a goal such as HP, payment, or network to narrow the relevant routines.',
+      'Results distinguish verified facts, inferences, and what is still unknown.',
     ],
   },
   {
-    title: ['迷ったら「？」から学習コースへ', 'The course is behind “?”'],
+    title: ['関係図から、命令まで降りる', 'Use the map, then inspect the instruction'],
     body: [
-      '右上の「？」に、ゼロから読めるようになるための 10 章の学習コースが入っています。',
-      '2 進数の話から、実際のアプリを読む手順まで、順番に進めます。',
-      'まずは「サンプルで練習する」で、小さな練習用アプリを開いてみてください。',
+      '関数の詳細では、誰が呼び、何を呼ぶかを関係図で見渡せます。箱を選ぶと、その処理の根拠と命令へ進めます。',
+      '命令の意味が気になったら「解説」をオンにしてください。右上の「？」には、ゼロから読める学習コースがあります。',
+      'まずはサンプルで、この流れを試してみましょう。',
     ],
     bodyEn: [
-      'The “?” button holds a ten-chapter course, from binary numbers to reading a real app.',
-      'Start with “Try the sample”.',
+      'Function details show a relationship map of callers and callees. Select a box to move into its evidence and instructions.',
+      'Turn on Explain for a plain-language line under each instruction. The ? button holds a course from first principles.',
     ],
   },
 ];
@@ -4638,6 +4614,13 @@ export function showWelcome(app, force) {
     const p = GUIDE_PAGES[page];
     holder.replaceChildren();
     holder.append(el('div', 'guide-step', (page + 1) + ' / ' + GUIDE_PAGES.length));
+    if (page === 0) {
+      const visual = document.createElement('img');
+      visual.className = 'guide-visual';
+      visual.src = '/manus-storage/hex-learning-card_891f7758.png';
+      visual.alt = pick('命令列と根拠の関係を示すイラスト', 'An illustration of code and evidence becoming understandable');
+      holder.append(visual);
+    }
     holder.append(el('h3', 'guide-title', pick(p.title[0], p.title[1])));
     for (const line of (isJa() ? p.body : p.bodyEn)) holder.append(para(line));
 

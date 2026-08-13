@@ -1,4 +1,6 @@
 /*
+ * Design philosophy: 「証拠の地図帳」。日本語を主軸に、現在地・根拠・次の行動を接続する。
+ *
  * アプリの骨組み。
  * store・worker・ビューアと、画面の枠（タイトルバー、ツールバー、状態表示）、
  * それに panels.js のシート群をつなぐ。
@@ -65,7 +67,7 @@ class App {
     /* 追加した機能（plugins.js）。 */
     this.plugins = new PluginHost(this);
 
-    setLang(this.prefs.lang || detectLang());
+    setLang(this.prefs.lang || 'ja');
 
     this.dom = {
       app: $('app'),

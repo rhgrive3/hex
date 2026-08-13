@@ -1,4 +1,7 @@
 /*
+ * Design philosophy: 「証拠の地図帳」。呼び出し・制御の関係を文字の
+ * 羅列で終わらせず、現在地を中心にたどれる図として提示する。
+ *
  * 図（グラフ）を描く。
  *
  *  - 制御フローグラフ（CFG）… 関数の中の「道の分かれ方」
@@ -95,7 +98,11 @@ export function renderGraph(nodes, edges, opts) {
   for (const n of nodes) {
     const p = layout.pos.get(n.id);
     if (!p) continue;
-    const g = svgEl('g', { class: 'g-node' + (n.kind ? ' ' + n.kind : ''), tabindex: 0 });
+    const label = [n.title, ...(n.lines || []).slice(0, 2)].filter(Boolean).join(' — ');
+    const g = svgEl('g', {
+      class: 'g-node' + (n.kind ? ' ' + n.kind : ''), tabindex: 0,
+      role: n.onTap || o.onNode ? 'button' : 'img', 'aria-label': label || '関係図のノード',
+    });
     g.append(svgEl('rect', { x: p.x, y: p.y, width: p.w, height: p.h, rx: 8, class: 'g-box' }));
     if (n.title) {
       const t = svgEl('text', { x: p.x + PAD_X, y: p.y + PAD_Y + 12, class: 'g-title' });
@@ -115,7 +122,11 @@ export function renderGraph(nodes, edges, opts) {
     }
     if (n.onTap || o.onNode) {
       g.style.cursor = 'pointer';
-      g.addEventListener('click', () => (n.onTap ? n.onTap() : o.onNode(n)));
+      const activate = () => (n.onTap ? n.onTap() : o.onNode(n));
+      g.addEventListener('click', activate);
+      g.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); activate(); }
+      });
     }
     svg.append(g);
   }
