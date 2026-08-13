@@ -195,16 +195,62 @@ function resourceScore(e) {
   return Math.min(1, s);
 }
 
+/* ── 役は 1 つの位置につき 1 つだけ ──────────────────────────
+ *
+ * ここを分けていなかったせいで、このツールはいちばん恥ずかしい壊れ方をしていた。
+ *
+ *   ❤️ HP を押す      → +0x30 が 1 位
+ *   ⚔️ 攻撃力を押す   → +0x30 が 1 位
+ *
+ * 同じ場所を、体力とも攻撃力とも言っている。どちらかを「確定」と言った瞬間に、
+ * このツールは自分と矛盾する。しかも体力と攻撃力は、定義からして別のものでなければ
+ * ならない（攻撃力とは「体力を減らすのに使われる量」なので、自分自身は減らされない）。
+ *
+ * だから位置ごとに **役を 1 つに決めてから** 目的に配る。減らされる側と、
+ * 減らす量の側は、同じ位置では両立しない。両方の点が近い位置は、どちらとも
+ * 名乗らせない（そこは「決められなかった」と言うべきところ）。
+ */
+const ROLE_MARGIN = 1.25;        // 勝ち側がこの倍率で上回らなければ、役を決めない
+
+function assignRoles(folded) {
+  if (folded.__roles) return folded.__roles;
+  const roles = new Map();
+  // 相手が資源かどうかを見るために、まず素の資源らしさだけで下見をする
+  const draft = new Set();
+  for (const e of folded.values()) if (resourceScore(e) > 0) draft.add(e.offset);
+  for (const e of folded.values()) {
+    const res = resourceScore(e);
+    const dmg = damageSourceScore(e, draft);
+    let role = null;
+    if (res > 0 || dmg > 0) {
+      if (res >= dmg * ROLE_MARGIN) role = 'resource';
+      else if (dmg >= res * ROLE_MARGIN) role = 'damage-source';
+      else role = 'ambiguous';
+    }
+    roles.set(e.offset, { role, resource: res, damage: dmg });
+  }
+  try { Object.defineProperty(folded, '__roles', { value: roles, enumerable: false }); }
+  catch { /* 凍結されていたら毎回計算する */ }
+  return roles;
+}
+
+/** その位置に決まった役と、両方の点。UI で「なぜ攻撃力ではないのか」を言うのに使う。 */
+export function roleOf(folded, offset) {
+  if (!folded || !folded.size) return null;
+  return assignRoles(folded).get(offset) || null;
+}
+
 /**
  * 「減らされる資源」を強い順に。体力・残量・所持金がここに出る。
  * @returns {Array<object>}
  */
 export function resources(folded, limit = 12) {
+  const roles = assignRoles(folded);
   const out = [];
   for (const e of folded.values()) {
-    const score = resourceScore(e);
-    if (score <= 0) continue;
-    out.push(Object.assign({}, e, { score, role: 'resource' }));
+    const r = roles.get(e.offset);
+    if (!r || r.role !== 'resource') continue;
+    out.push(Object.assign({}, e, { score: r.resource, role: 'resource', roles: r }));
   }
   out.sort((a, b) => b.score - a.score ||
     (b.decreases + b.increases) - (a.decreases + a.increases));
@@ -244,11 +290,14 @@ function damageSourceScore(e, resourceOffsets) {
  */
 export function damageSources(folded, res, limit = 12) {
   const resourceOffsets = new Set((res || []).map((r) => r.offset));
+  const roles = assignRoles(folded);
   const out = [];
   for (const e of folded.values()) {
+    const r = roles.get(e.offset);
+    if (!r || r.role !== 'damage-source') continue;   // 減らされる側は、減らす量ではない
     const score = damageSourceScore(e, resourceOffsets);
     if (score <= 0) continue;
-    out.push(Object.assign({}, e, { score, role: 'damage-source' }));
+    out.push(Object.assign({}, e, { score, role: 'damage-source', roles: r }));
   }
   out.sort((a, b) => b.score - a.score || b.usedAsAmount - a.usedAsAmount);
   return out.slice(0, limit);
@@ -282,9 +331,21 @@ export function evidenceFor(folded, offset, goalId) {
 
   const res = resources(folded, 24);
   const resourceOffsets = new Set(res.map((r) => r.offset));
+  const role = assignRoles(folded).get(offset) || { role: null };
+
+  /*
+   * 役が食い違うなら、そう言う。黙って弱い証拠を出すより、
+   * 「ここは減らされる側なので、攻撃力ではありません」と言えたほうが役に立つ。
+   */
+  if (role.role === 'ambiguous') {
+    codes.push({
+      code: 'loc-role-conflict', strength: 1,
+      detail: { offset, resource: role.resource, damage: role.damage },
+    });
+  }
 
   if (goalId === 'attack' || goalId === 'damage') {
-    const s = damageSourceScore(e, resourceOffsets);
+    const s = role.role === 'damage-source' ? damageSourceScore(e, resourceOffsets) : 0;
     if (s > 0) {
       codes.push({
         code: 'loc-damage-source',
@@ -298,7 +359,7 @@ export function evidenceFor(folded, offset, goalId) {
     }
   } else if (goalId === 'hp' || goalId === 'stamina') {
     // 体力は「よそから減らされる」。そこが所持金との分かれ目。
-    if (resourceScore(e) > 0 && (e.crossObject > 0 || e.amountFromCall > 0)) {
+    if (role.role === 'resource' && (e.crossObject > 0 || e.amountFromCall > 0)) {
       codes.push({
         code: 'loc-resource-drain',
         strength: resourceScore(e),
@@ -310,7 +371,7 @@ export function evidenceFor(folded, offset, goalId) {
     }
   } else if (goalId === 'money' || goalId === 'score' || goalId === 'item') {
     // 所持金は自分のオブジェクトの中だけで増減する（誰かに殴られたりしない）
-    if (resourceScore(e) > 0 && e.crossObject === 0) {
+    if (role.role === 'resource' && e.crossObject === 0) {
       codes.push({
         code: 'loc-self-resource',
         strength: resourceScore(e),

@@ -26,6 +26,7 @@
  */
 import { GOALS, goalFromPreset } from './goals.js';
 import { rankCandidates } from './rank.js';
+import { vendorsOf } from './vendors.js';
 import { groupByFeature, detectEngine } from './features.js';
 import { findValueUpdates, constantComparisons } from './dataflow.js';
 import { buildAppMap, buildStringMap } from './appmap.js';
@@ -224,7 +225,9 @@ export async function autoAnalyze(opts) {
     if (cancelled()) { report.notes.push('cancelled'); return report; }
     progress({ phase: 'goals', done: i, all });
     const goal = goalFromPreset(GOALS[i].id);
-    const ranked = rankCandidates({ goal, strings, program, symbols, region, limit: 5 });
+    const ranked = rankCandidates({
+      goal, strings, program, symbols, region, limit: 5, vendors: vendorsOf(fields),
+    });
     rankedByGoal.set(goal.id, { goal, ranked });
     if (!ranked.candidates.length) continue;
     report.goals.push({

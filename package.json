@@ -5,6 +5,7 @@
   "description": "アプリの中身（Mach-O / ARM64）を日本語で読むためのビューア。ビルドはしない — index.html をそのまま開く静的サイト。",
   "scripts": {
     "test": "node tests/run.js",
+    "browser": "node tests/browser.mjs",
     "accuracy": "node --max-old-space-size=8000 tests/accuracy.mjs",
     "oracle": "python3 tests/oracle.py tests/battlecats tests/oracle.battlecats.json.gz"
   }

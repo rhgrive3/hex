@@ -4,3 +4,6 @@ graft/
 # 正解表（tests/oracle.py で作り直せる。数 MB あるので置かない）
 tests/oracle.*.json.gz
 tests/current.json
+
+# 画面の写し（KEEP=1 npm run browser で作り直せる）
+tests/.shots/

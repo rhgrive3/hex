@@ -165,6 +165,28 @@ function matchPattern(name) {
 }
 
 /**
+ * `-[BattleManager hp]` → `BattleManager`。Objective-C のメソッド名から持ち主を取る。
+ * その形でなければ null（当てずっぽうは返さない）。
+ */
+export function classFromSymbol(name) {
+  const m = /^[-+]\s*\[\s*([^\s\]]+)/.exec(String(name || ''));
+  return m ? m[1] : null;
+}
+
+/**
+ * 名前でも文字列でもいいから、SDK の名前が中に出てくるか。
+ *
+ * クラス名が取れない相手（`sub_100B602CC` が `com.ironsource.healthcheck` を
+ * 参照しているだけ、というよくある形）でも持ち主を言えるようにするための入口。
+ * 当てるのは第 1 段階（誰が見ても分かる名前）だけ。接頭辞での推測はここではしない
+ * ——「文字列の中にたまたま `IS` が入っていた」で SDK 扱いされては困るため。
+ */
+export function vendorInText(text) {
+  const direct = matchPattern(text);
+  return direct ? Object.assign({ confidence: 'high' }, direct) : null;
+}
+
+/**
  * このバイナリに入っているクラス名の一覧から、SDK の見分け方を学ぶ。
  *
  * 表に載っている名前で当たったクラスの接頭辞・モジュール名を集めて、
@@ -231,6 +253,23 @@ export function learnVendors(classNames) {
     });
   }
   return { prefixes, modules };
+}
+
+/*
+ * 学習の結果は、クラス表 1 つにつき 1 回で足りる。
+ * 目的 16 個を総当たりするたびに 3,000 クラスを学び直さないための memo。
+ */
+const LEARNED = new WeakMap();
+
+/** クラス表（FieldIndex）から、学習済みの見分け方を取る。表が無ければ null。 */
+export function vendorsOf(fields) {
+  if (!fields || !fields.classes) return null;
+  let learned = LEARNED.get(fields);
+  if (!learned) {
+    learned = learnVendors(Array.from(fields.classes.keys()));
+    LEARNED.set(fields, learned);
+  }
+  return learned;
 }
 
 /**

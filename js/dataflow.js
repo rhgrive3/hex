@@ -245,6 +245,17 @@ export function findValueUpdates(model, opts) {
        * 読んでいるなら、そちらが「持ち回っている値」。そこを優先して遡る。
        */
       const next = insn.reads.includes(want) ? want : (insn.reads[0] || null);
+      /*
+       * もう片方の入力。「いくら引いたのか」はここにしか書いていない。
+       *
+       *     sub w8, w8, w9      ← w8 が持ち回っている値、w9 が「引いた量」
+       *
+       * 持ち回っている側だけを遡っていたころは、「+0x30 を減らしている」までは
+       * 言えても「何ぶん減らしたのか」がまるごと落ちていた。ところが
+       * 「別のオブジェクトの +0x9f4 ぶん減らした」まで言えて初めて、
+       * その処理がダメージ適用だと**名前なしで**分かる。だから覚えておく。
+       */
+      op.other = insn.reads.find((r) => r !== next) || null;
       if (!next) break;
       want = next;
     }
@@ -303,6 +314,191 @@ export function findValueUpdates(model, opts) {
   out.sort((a, b) => b.confidence - a.confidence || a.store.row - b.store.row);
   void byRow;
   return out;
+}
+
+/* ────────────────────────────────────────────────────────────
+   「その値はどこから来たのか」を 1 本さかのぼる
+   ────────────────────────────────────────────────────────────
+
+   findValueUpdates は「どこを書き換えたか」までを答える。しかし読む人が
+   知りたいのはその先で、
+
+       +0x30 を減らした  →  で、何ぶん減らしたの？
+
+   ここが言えるかどうかで、名前の無いアプリの読み方がまるで変わる。
+
+       ・別のオブジェクトの +0x9f4 ぶん減らした     → 攻撃を受けた処理（体力）
+       ・即値 1 ぶん減らした                        → 残り回数のカウンタ
+       ・呼び出しの戻り値ぶん減らした               → 計算した結果を適用している
+
+   同じ「減らす」でも意味がまったく違う。量の出どころは、その 3 つを分ける
+   唯一の手がかりになる。 */
+
+/* 中身を変えずに写すだけの命令。ここは素通りして、その先を見にいく。 */
+const PASS_OPS = new Set(['mov', 'fmov', 'sxtw', 'uxtw', 'sxtb', 'uxtb', 'sxth', 'uxth', 'orr']);
+/* 呼び出しの直後の x0 は「呼んだ先が決めた値」。 */
+const RET_REG = 'x0';
+/* 呼び出しで壊れるレジスタ（AAPCS64）。x19〜x28 は呼ばれた側が元に戻す。 */
+const CALL_CLOBBERED = /^(x([0-9]|1[0-8])|v[0-7])$/;
+
+/**
+ * row 行の直前の時点で、レジスタ reg が持っていた値の出どころ。
+ *
+ * @param {object} model
+ * @param {number} row     この行より前を見る
+ * @param {string} reg     'x8' / 'v0' など regKeyOf の形
+ * @param {object} [opts]  { window: さかのぼる行数, hops: 写しを追う回数 }
+ * @returns {object|null}  {kind:'field'|'stack'|'imm'|'call'|'arg'|'computed', …}
+ */
+export function traceOrigin(model, row, reg, opts) {
+  const o = opts || {};
+  const window = o.window || 40;
+  const insns = (model && model.instructions) || [];
+  if (!reg || !insns.length) return null;
+  const joins = new Set((model.basicBlocks || []).filter((b) => b.isJoin).map((b) => b.startRow));
+  const callAt = new Map();
+  for (const c of (model.calls || [])) callAt.set(c.row, c);
+
+  let want = reg;
+  let hops = o.hops == null ? 4 : o.hops;
+  let at = row;
+  let crossedJoin = false;
+
+  while (hops-- >= 0) {
+    // insns は行の昇順に並んでいる。at より手前の最後の 1 つを二分探索で取る。
+    let lo = 0, hi = insns.length - 1, idx = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (insns[mid].row < at) { idx = mid; lo = mid + 1; } else hi = mid - 1;
+    }
+    let found = null;
+    let viaCall = null;
+    for (let k = idx; k >= 0 && at - insns[k].row <= window; k--) {
+      const insn = insns[k];
+      if (joins.has(insn.row)) { crossedJoin = true; break; }
+      /*
+       * 呼び出しをまたいだら、そこで打ち止め。
+       *
+       * `bl` は命令の書き方の上ではどのレジスタも書かない。しかし実際には
+       * x0〜x18 / v0〜v7 を壊す。ここで止めないと、呼び出しの **手前** で
+       * x0 に入れた「引数」を、呼び出しの **あと** の x0（＝戻り値）の
+       * 出どころとして返してしまう。まるで逆のことを言うことになる。
+       */
+      if (callAt.has(insn.row) && CALL_CLOBBERED.test(want)) {
+        if (want === RET_REG) viaCall = callAt.get(insn.row);
+        break;
+      }
+      if (!insn.writes.includes(want)) continue;
+      found = insn;
+      break;
+    }
+    if (viaCall) {
+      return {
+        kind: 'call', name: viaCall.name || null, selector: viaCall.selector || null,
+        target: viaCall.target != null ? viaCall.target : null,
+        row: viaCall.row, crossedJoin,
+      };
+    }
+    if (!found) {
+      /*
+       * 誰も書いていないなら、関数に渡されたまま。x0 は Objective-C なら self、
+       * C++ なら this にあたる。呼び出し側から来た値だと言えるだけでも意味がある。
+       */
+      if (/^x[0-7]$/.test(want)) return { kind: 'arg', reg: want, crossedJoin };
+      return null;
+    }
+    const mn = String(found.mnemonic || '').toLowerCase();
+
+    if (found.memory && found.memory.kind === 'load') {
+      return {
+        kind: found.memory.stack ? 'stack' : 'field',
+        base: found.memory.base, disp: found.memory.disp,
+        size: found.memory.size, indexAddr: found.memory.indexAddr,
+        row: found.row, address: found.address, crossedJoin,
+      };
+    }
+    if (mn === 'movz' || mn === 'mov' || mn === 'movk' || mn === 'movn') {
+      const imm = found.ops.find((x) => x.k === 'imm' && x.value != null);
+      if (imm) return { kind: 'imm', value: imm.value, row: found.row, crossedJoin };
+    }
+    if (PASS_OPS.has(mn)) {
+      const src = found.reads.find((r) => r !== want) || found.reads[0] || null;
+      if (!src) return null;
+      want = src; at = found.row; continue;         // 写しただけ。その先を見る。
+    }
+    /*
+     * 計算した結果。ここで止める。何から計算したかまで潜ると、
+     * 「掛け算の掛け算の足し算」のような、読む人に何も言っていない木になる。
+     */
+    const imm = found.ops.find((x) => x.k === 'imm' && x.value != null);
+    return {
+      kind: 'computed', op: mn, imm: imm ? imm.value : null,
+      row: found.row, address: found.address, crossedJoin,
+    };
+  }
+  return null;
+}
+
+/* 「引いた・足した量」がそこに現れる演算。ここ以外の写しや切り出しは量ではない。 */
+const AMOUNT_OPS = new Set(['add', 'adds', 'sub', 'subs', 'mul', 'madd', 'msub',
+  'smull', 'umull', 'sdiv', 'udiv', 'fadd', 'fsub', 'fmul', 'fdiv', 'lsl', 'lsr', 'asr']);
+/* 「0 未満にしない」「上限で止める」の定番。ゲームの資源には必ず付く。 */
+const CLAMP_OPS = new Set(['bic', 'csel', 'csinc', 'csneg', 'csinv', 'smax', 'smin', 'umax', 'umin']);
+
+/**
+ * 1 件の更新について、「いくら」「どこから来た量で」変えたのかを求める。
+ *
+ * @param {object} model
+ * @param {object} update findValueUpdates の 1 件
+ * @returns {{amount:object|null, clamped:boolean, scaled:boolean, ops:Array}}
+ */
+export function amountOf(model, update) {
+  const steps = (update && update.steps) || [];
+  let amount = null;
+  let scaled = false;
+  let clamped = false;
+  let cappedBy = null;
+  for (const s of steps) {
+    if (CLAMP_OPS.has(s.op)) {
+      clamped = true;
+      /*
+       * 何で止めているのか。
+       *
+       *   bic w8, w8, w8, asr #31        → 0 で止めた（下限）
+       *   csel w8, w8, w9 ...  w9 = [x19, #0x34]  → **別の値で止めた**
+       *
+       * 後者は「今の値と、その上限」が並んでいるということ。体力・スタミナ・
+       * ゲージはこの形を必ず持ち、所持金やスコアはまず持たない。名前が 1 つも
+       * 残っていないアプリで、体力を所持金から分ける決め手がこれになる。
+       */
+      if (!cappedBy && s.other) {
+        const origin = traceOrigin(model, s.row, s.other);
+        if (origin && origin.kind === 'field') cappedBy = origin;
+      }
+    }
+    if (s.op === 'mul' || s.op === 'madd' || s.op === 'msub' || s.op === 'fmul' ||
+        s.op === 'sdiv' || s.op === 'udiv' || s.op === 'fdiv' || s.op === 'lsl' ||
+        s.op === 'lsr' || s.op === 'asr') scaled = true;
+    if (!AMOUNT_OPS.has(s.op)) continue;
+    if (amount) continue;                      // 最初に見つけた量を採る
+    if (s.imm != null && !s.other) {
+      amount = { kind: 'imm', value: s.imm, op: s.op, row: s.row };
+      continue;
+    }
+    if (!s.other) continue;
+    const origin = traceOrigin(model, s.row, s.other);
+    if (!origin) continue;
+    amount = Object.assign({ op: s.op }, origin);
+  }
+  /*
+   * 量がレジスタからも定数からも取れないときは、せめて即値だけでも拾う。
+   * `add w8, w8, #1` は steps に imm として入っている。
+   */
+  if (!amount) {
+    const withImm = steps.find((s) => AMOUNT_OPS.has(s.op) && s.imm != null);
+    if (withImm) amount = { kind: 'imm', value: withImm.imm, op: withImm.op, row: withImm.row };
+  }
+  return { amount, clamped, scaled, cappedBy, ops: steps.map((s) => s.op) };
 }
 
 /**

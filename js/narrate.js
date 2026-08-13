@@ -747,7 +747,25 @@ function uniq(arr) {
    目的から探す — 候補の理由を読み上げる
    ──────────────────────────────────────────────────────────── */
 
-const hex = (v) => (v == null ? '' : '0x' + v.toString(16).toUpperCase());
+/* 負の数は `0x-60` ではなく `-0x60`。16 進の中に符号を混ぜない。 */
+const hex = (v) => {
+  if (v == null) return '';
+  const n = typeof v === 'bigint' ? v : BigInt(v);
+  return (n < 0n ? '-0x' : '0x') + (n < 0n ? -n : n).toString(16).toUpperCase();
+};
+
+/**
+ * `x29 - 0x60` のように、ずらし幅の符号を演算子として書く。
+ *
+ * スタックの上（関数の中だけで使う一時的な値）は必ず負になるので、
+ * ここを素直に足すと `x29 + 0x-60` という、読めないものが画面に出る。
+ */
+const atOffset = (base, disp) => {
+  if (disp == null) return String(base);
+  const n = typeof disp === 'bigint' ? disp : BigInt(disp);
+  if (n === 0n) return String(base);
+  return base + (n < 0n ? ' - 0x' : ' + 0x') + (n < 0n ? -n : n).toString(16).toUpperCase();
+};
 
 /* ── フィールドの言い換え ────────────────────────────────────
  *
@@ -802,7 +820,7 @@ export function placeName(field, base, disp) {
   const named = fieldName(field);
   if (named) return named;
   if (!base) return pick('ある場所', 'somewhere');
-  return base + (disp != null ? ' + ' + hex(disp) : '');
+  return atOffset(base, disp);
 }
 
 /** ★★★★☆ の見た目。 */
@@ -858,6 +876,15 @@ export function reasonText(r) {
     case 'size-penalty':
       return pick('命令が ' + d.n.toLocaleString() + ' 個と大きすぎて、目的の計算そのものとは考えにくい',
         'it is very large (' + d.n.toLocaleString() + ' instructions), so it is unlikely to be the calculation itself');
+    case 'vendor': {
+      const who = d.vendor || pick('外部のライブラリ', 'a third-party library');
+      const proof = d.where === 'string'
+        ? pick('参照している文字列「' + trim(d.text, 24) + '」', 'the text it references, “' + trim(d.text, 24) + '”')
+        : pick('名前', 'its name');
+      return pick(proof + 'から、これはアプリ本体ではなく ' + who + '（組み込んだ SDK）のものです。' +
+        'ゲームの数値の答えにはなりません',
+      proof + ' shows this belongs to ' + who + ', a bundled SDK — not to the game itself');
+    }
     default:
       return '';
   }
@@ -1212,9 +1239,8 @@ export function useText(u) {
         (d.index != null ? '（' + (d.index + 1) + ' 番目の引数）' : ''),
       'passed to the next call' + (d.index != null ? ' as argument ' + (d.index + 1) : ''));
     case 'store':
-      return pick('この値をメモリ（' + (d.base || '?') +
-        (d.disp != null ? ' + ' + hex(d.disp) : '') + '）へ書き込んでいる',
-      'stored into memory at ' + (d.base || '?') + (d.disp != null ? ' + ' + hex(d.disp) : ''));
+      return pick('この値をメモリ（' + atOffset(d.base || '?', d.disp) + '）へ書き込んでいる',
+        'stored into memory at ' + atOffset(d.base || '?', d.disp));
     case 'compare':
       return pick('この値を比べて、進む道を決めている', 'compared, to decide which way to go');
     case 'compute':
@@ -1616,6 +1642,45 @@ export function proofText(item) {
       return pick('前寄りの位置で、しかも小さな入れ物の中にしか出てこない — ' +
         'C++ の容器の要素数や参照カウンタである可能性が高い',
       'a low offset that only ever appears in small objects — likely a C++ container header');
+    case 'loc-role-conflict':
+      return pick('同じ場所が「減らされる側」とも「減らす量の側」とも読めてしまう — ' +
+        'どちらか一方だとは言えない',
+      'this same location reads both as the value being drained and as the amount doing ' +
+        'the draining — neither role can be claimed');
+
+    /* 形から立てた候補を、命令まで降りて確かめたもの */
+    case 'loc-drain-verified':
+      return pick('実際に開いて確かめた: ' + (d.address != null ? hex(d.address) + ' で' : '') +
+        '**別のオブジェクトの' + (d.from && d.from.disp != null ? ' ' + hexOffset(d.from.disp) : '') +
+        'の値ぶん**この場所を増減し、同じ場所へ書き戻している' +
+        (d.n > 1 ? '（同じ形が ' + d.n + ' 個の処理にある）' : ''),
+      'checked in the instructions: another object’s field is what this location is ' +
+        'changed by' + (d.n > 1 ? ', in ' + d.n + ' separate routines' : ''));
+    case 'loc-amount-verified':
+      return pick('実際に開いて確かめた: この場所の値が、ほかの値を減らす量として使われている' +
+        (d.address != null ? '（' + hex(d.address) + '）' : ''),
+      'checked in the instructions: this value is used as the amount subtracted elsewhere');
+    case 'loc-clamp-verified':
+      return pick('実際に開いて確かめた: 書き戻す前に下限で止めている' +
+        (d.address != null ? '（' + hex(d.address) + '）' : '') + ' — 残量として扱われている',
+      'checked in the instructions: the value is held at its floor before being written back');
+    case 'loc-capped-by-field':
+      return pick('実際に開いて確かめた: 上限が**別の値**（同じオブジェクトの ' +
+        hexOffset(d.cap) + '）で決まっている — 「今の値」と「上限」の組になっている。' +
+        '所持金やスコアはこの形を持たない',
+      'checked in the instructions: the ceiling comes from another field (' + hexOffset(d.cap) +
+        ') — a current/maximum pair, which money and score never have');
+    case 'loc-counter-verified':
+      return pick('開いて確かめた ' + (d.n || 0) + ' か所のうち ' + (d.byOne || 0) +
+        ' か所が 1 ずつの増減で、よそから来た量は 1 度も無かった — ' +
+        '数える物（残り回数・フレーム数）であって、増やしたい値ではない',
+      (d.byOne || 0) + ' of ' + (d.n || 0) + ' checked places move by exactly 1, and none ' +
+        'takes its amount from elsewhere — a counter, not a quantity');
+    case 'loc-unverified':
+      return pick('形からは出たが、' + (d.tried || 0) + ' 個の処理を開いても、' +
+        'この場所を書き換えている命令が見つからなかった',
+      'the shape suggested it, but opening ' + (d.tried || 0) +
+        ' routines found nothing that writes it');
 
     /* 処理を特定するとき */
     case 'fn-name-exact':
@@ -1629,6 +1694,18 @@ export function proofText(item) {
     case 'fn-string-ref':
       return pick('目的に関係する文言を、この処理が実際に参照している',
         'this function really references matching text');
+    case 'fn-string-exclusive':
+      return pick('「' + trim(d.text, 30) + '」を参照しているのは、' +
+        (d.of ? d.of.toLocaleString() + ' 個の処理のうち' : '') +
+        (d.users === 1 ? 'この処理だけ' : 'この処理を含む ' + d.users + ' 個だけ'),
+      'of ' + (d.of ? d.of.toLocaleString() + ' functions, ' : '') +
+        (d.users === 1 ? 'only this one' : 'only ' + d.users) +
+        ' references “' + trim(d.text, 30) + '”');
+    case 'fn-formula-verified':
+      return pick('その文言が書いている計算式の ' + d.value +
+        ' が、この処理の命令の中に即値として ' + d.count + ' 個ある',
+      'the constant ' + d.value + ' from that text appears ' + d.count +
+        ' times as an immediate in this function');
     case 'fn-touches-field':
       return pick('特定した値（' + d.className + '.' + d.name + '）を、この処理が実際に読んでいる',
         'this function really reads the field that was identified');
@@ -1659,7 +1736,7 @@ export function proofText(item) {
 function hexOffset(v) {
   if (v == null) return '';
   const n = typeof v === 'bigint' ? v : BigInt(v);
-  return '+0x' + n.toString(16).toUpperCase();
+  return (n < 0n ? '-0x' : '+0x') + (n < 0n ? -n : n).toString(16).toUpperCase();
 }
 
 /* ────────────────────────────────────────────────────────────
@@ -2061,4 +2138,118 @@ export function buildOverlay(model) {
     }
   }
   return map;
+}
+
+/* ── 「で、この処理は何をしているのか」（purpose.js の読み上げ） ──
+ *
+ * 一覧の 1 行に入る長さで、**命令で確かめられることだけ**を言う。
+ * ここでいちばん避けたいのは「数値計算をしています」のような、
+ * どの関数にも当てはまる文。それは読む人の手がかりを 1 つも増やさない。 */
+
+/** 「+0x4C（4 バイト）」。名前が分かっているならそちらを優先する。 */
+function placeShort(c) {
+  if (!c) return '';
+  if (c.field && c.field.name) return fieldName(c.field, false);
+  const at = c.disp != null ? hexOffset(c.disp) : pick('位置不明', 'unknown offset');
+  const size = c.size ? pick('（' + c.size + ' バイト）', ' (' + c.size + ' bytes)') : '';
+  return pick('オブジェクトの ' + at + size, 'this object’s ' + at + size);
+}
+
+/** 「別のオブジェクトの +0xA18 の値」「1」「呼んだ先が決めた値」。 */
+function amountShort(a, base) {
+  if (!a) return '';
+  switch (a.kind) {
+    case 'imm':
+      return String(a.value);
+    case 'field':
+      return a.base && base && a.base !== base
+        ? pick('別のオブジェクトの ' + hexOffset(a.disp) + ' の値',
+          'another object’s ' + hexOffset(a.disp))
+        : pick('同じオブジェクトの ' + hexOffset(a.disp) + ' の値',
+          'this object’s own ' + hexOffset(a.disp));
+    case 'call':
+      return a.name
+        ? pick(trim(a.name, 24) + ' が返した値', 'what ' + trim(a.name, 24) + ' returned')
+        : pick('呼んだ先が決めた値', 'a value another routine worked out');
+    case 'arg':
+      return pick('呼び出し元から渡された値', 'a value handed in by the caller');
+    case 'stack':
+      return pick('その場で計算した値', 'a value worked out on the spot');
+    case 'computed':
+      return pick('計算した値', 'a computed value');
+    default: return '';
+  }
+}
+
+const WORK_VERB = {
+  drain: ['減らす', 'takes away'],
+  feed: ['増やす', 'adds to'],
+  decrease: ['減らす', 'decreases'],
+  increase: ['増やす', 'increases'],
+  scale: ['倍率を掛ける', 'scales'],
+  set: ['入れる', 'sets'],
+  clear: ['0 にする', 'clears'],
+  read: ['読み出す', 'reads'],
+};
+
+/** 変更 1 件を、そのまま読み上げる。 */
+export function changeText(c) {
+  if (!c) return '';
+  const verb = WORK_VERB[c.work] || WORK_VERB.set;
+  const place = placeShort(c);
+  const amt = amountShort(c.amount, c.base);
+  const tail = [];
+  if (c.cappedBy) {
+    tail.push(pick('上限は ' + hexOffset(c.cappedBy.disp) + ' の値',
+      'capped by ' + hexOffset(c.cappedBy.disp)));
+  } else if (c.clamped) {
+    tail.push(pick('下限で止める', 'held at its floor'));
+  }
+  if (c.n > 1) tail.push(pick('同じ形が ' + c.n + ' か所', c.n + ' places'));
+  const note = tail.length ? pick('（' + tail.join('・') + '）', ' (' + tail.join(', ') + ')') : '';
+
+  if (c.work === 'read') return pick(place + 'を読み出す' + note, 'reads ' + place + note);
+  if (c.work === 'set' || c.work === 'clear') {
+    return amt
+      ? pick(place + 'に ' + amt + ' を入れる' + note, 'puts ' + amt + ' into ' + place + note)
+      : pick(place + 'を書き換える' + note, 'writes ' + place + note);
+  }
+  if (!amt) return pick(place + 'を' + pick(verb[0], verb[1]) + note, verb[1] + ' ' + place + note);
+  return pick(place + 'を、' + amt + ' ぶん' + verb[0] + note,
+    verb[1] + ' ' + place + ' by ' + amt + note);
+}
+
+/**
+ * 関数 1 つを 1 行で。命令から確かめられることが無ければ空文字を返す（埋めない）。
+ * @param {object} purpose describePurpose の結果
+ */
+export function purposeText(purpose) {
+  if (!purpose || !purpose.headline) return '';
+  const h = purpose.headline;
+  switch (h.code) {
+    case 'work-change':
+      return changeText(h.change);
+    case 'work-accessor':
+      return pick(placeShort(h.change) + 'を読んで返すだけの処理',
+        'just reads ' + placeShort(h.change) + ' and returns it');
+    case 'work-format':
+      return pick('文言に数値を差し込んで文を組み立てる処理' +
+        (h.texts && h.texts.length ? '（「' + trim(h.texts[0].text, 22) + '」など ' + h.n + ' 本）' : ''),
+      'builds text by filling numbers into ' + h.n + ' format strings');
+    case 'work-fill':
+      return pick('並びを最後まで回して、値を詰めていく処理（繰り返し ' + h.loops + ' か所）',
+        'walks a list and fills values in (' + h.loops + ' loops)');
+    case 'work-dispatch':
+      return pick('自分では値を変えず、ほかの処理へ渡すだけ（' + h.calls + ' 回の呼び出し）',
+        'changes nothing itself — hands off to other routines (' + h.calls + ' calls)');
+    case 'work-too-big':
+      return pick('1 つの処理と呼ぶには大きすぎる（' + h.n.toLocaleString() + ' 命令・' +
+        h.calls + ' 回の呼び出し）— 複数の処理がまとめて埋め込まれている',
+      'too large to be one routine (' + h.n.toLocaleString() + ' instructions) — ' +
+        'several routines were inlined together');
+    case 'work-check':
+      return pick('決まった数と比べて分かれるだけの処理（分岐 ' + h.n + ' 個）',
+        'only compares against constants and branches (' + h.n + ' branches)');
+    default: return '';
+  }
 }

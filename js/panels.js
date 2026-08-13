@@ -26,6 +26,7 @@ import { groupByFeature, detectEngine } from './features.js';
 import { SAMPLE_GUIDE } from './sample.js';
 import { GOALS, goalFromPreset, parseGoal, goalLabel } from './goals.js';
 import { rankCandidates, breakdown, reasonKind } from './rank.js';
+import { vendorsOf } from './vendors.js';
 import { buildFunctionReport } from './report.js';
 import { outline } from './cfg.js';
 import { traceForward, regKeyOf } from './dataflow.js';
@@ -40,10 +41,12 @@ import {
 } from './narrate.js';
 import { autoAnalyze, autoNextSteps } from './auto.js';
 import { plainFieldName } from './fields.js';
-import { pinpointField, pinpointLocation } from './pinpoint.js';
+import { pinpointField, pinpointLocation, pinpointFunction } from './pinpoint.js';
 import { columnToOffset } from './schema.js';
-import { VERDICT } from './evidence.js';
-import { roleFromReport, sketchRole, changesValue } from './role.js';
+import { VERDICT, verdictRank } from './evidence.js';
+import { roleFromReport, sketchRole, changesValue, stringLookup } from './role.js';
+import { describePurpose } from './purpose.js';
+import { purposeText, changeText } from './narrate.js';
 
 /* ── ファイル情報 ────────────────────────────────────────── */
 
@@ -1733,7 +1736,13 @@ export function showOverview(app) {
         isCancelled: () => cancelled || !sheet.root.isConnected,
         onProgress: (p) => {
           box.set({ done: p.done, all: p.all });
-          box.say(autoPhaseText(p.phase));
+          /*
+           * 何個目まで進んだかを文にも出す。目的 16 個を 1 つずつ絞る間は
+           * 10 秒ほど同じ文言のままになるので、棒だけだと止まったように見える。
+           */
+          box.say(autoPhaseText(p.phase) +
+            (p.all > 1 ? pick('（' + (p.done + 1) + ' / ' + p.all + '）',
+              ' (' + (p.done + 1) + ' / ' + p.all + ')') : ''));
         },
       });
       box.done();
@@ -1806,6 +1815,8 @@ async function pinnedFor(app, goal, ctx) {
     strings: ctx.strings || [],
     region,
     map: report ? report.map : null,
+    // 形から立てた候補を開いて確かめるとき、参照している文言もそこで読む
+    textAt: stringLookup(ctx.strings || []),
     analyze: makeAnalyzer(app, region),
     scanAccess: makeAccessScanner(app, region),
     // 1 つの目的だけを見にきているので、ここでは予算を広く取る
@@ -1818,16 +1829,125 @@ async function pinnedFor(app, goal, ctx) {
     if (app.fields && app.fields.classCount) {
       pin = await pinpointField(common).catch(() => null);
     }
-    // クラス表がない（Swift だけ・名前を潰したアプリ）なら、形から場所を決めにいく
-    if ((!pin || !pin.top) && ctx.ranked && ctx.ranked.length) {
-      const loc = await pinpointLocation(Object.assign({}, common, { ranked: ctx.ranked }))
+    /*
+     * クラス表から決まらなかったなら、形と命令から「場所」を決めにいく。
+     *
+     * ここは長いあいだ `!pin.top` のときしか走っていなかった。ところが
+     * クラス表がある C++ ゲームでは、pinpointField は必ず何かを 1 位に立てる
+     * （中身は広告 SDK の名前で、判定は「見つかりませんでした」）。top が
+     * ある以上ここが素通りされ、**命令から降りる道が 1 度も試されないまま**
+     * 「見つかりませんでした」と出ていた。battlecats の HP がまさにこれ。
+     * 決着していないなら、必ずもう一方も試して、良かったほうを採る。
+     */
+    const undecided = (p) => !p || !p.top ||
+      verdictRank(p.verdict) <= verdictRank(VERDICT.AMBIGUOUS);
+    if (undecided(pin) && ((ctx.ranked && ctx.ranked.length) || (common.shapes && common.shapes.size))) {
+      const loc = await pinpointLocation(Object.assign({}, common, { ranked: ctx.ranked || [] }))
         .catch(() => null);
-      if (loc && loc.top) pin = loc;
+      if (beats(loc, pin)) pin = loc;
+    }
+    /*
+     * 値としては決まらなかった。それでも「その処理がどれか」は決まることがある。
+     *
+     * ゲーム本体が C++ のアプリでは、値の名前はどこにも残っていない代わりに、
+     * 「攻撃力アップ:%d 基ダ×(100+%d)÷100」のような、開発者が書いた計算式が残る。
+     * その文言を参照している関数が 1 個だけで、しかもその式の定数が命令の中に
+     * 実在するなら、処理としては確定できる。ここを呼んでいなかったので、
+     * 画面には「見つかりませんでした」しか出ていなかった。
+     */
+    if (undecided(pin) && ctx.ranked && ctx.ranked.length) {
+      const fn = await pinpointFunction(Object.assign({}, common, { ranked: ctx.ranked }))
+        .catch(() => null);
+      if (beats(fn, pin)) pin = fn;
     }
     return pin;
   })();
   app.pinnedCache.set(key, p);
   return p;
+}
+
+/**
+ * 3 通りの決め方（値の名前・場所・処理）のうち、どちらの答えを採るか。
+ *
+ * 判定（確定 > ほぼ確実 > 絞りきれていません）が先。**同じ判定なら確からしさで比べる**。
+ * ここを判定だけで比べていたころ、「絞りきれていません 52%」の場所が
+ * 「絞りきれていません 99.9%」の処理を押しのけて見出しに出ていた。
+ * どちらも決着していないときこそ、材料の多いほうを見せないと意味がない。
+ */
+function beats(next, cur) {
+  if (!next || !next.top) return false;
+  if (!cur || !cur.top) return true;
+  const rank = verdictRank(next.verdict) - verdictRank(cur.verdict);
+  if (rank !== 0) return rank > 0;
+  const pn = next.top.fusion ? next.top.fusion.probability : 0;
+  const pc = cur.top.fusion ? cur.top.fusion.probability : 0;
+  return pn > pc;
+}
+
+/*
+ * 一覧に並んだ処理を、実際に開いて「何をしているか」に書き換える。
+ *
+ * ここが無かったころ、一覧はこう出ていた:
+ *
+ *     sub_100036588
+ *     0x100036588
+ *     中で数値の計算をしている（45 回の掛け算）
+ *
+ * 掛け算をしている関数は 10 万個ある。読む人は結局、自分で開いて
+ * 1339 命令を読むしかない。それでは半分手作業のままになる。
+ *
+ * 開くのは重い（1 個で数百ミリ秒かかることもある）ので、一覧を出したあとに
+ * 走らせて、言えたものから順に差し替える。シートが閉じたらそこでやめる。
+ */
+const PURPOSE_ROWS = 10;
+
+/** 答えに選ばれた処理 1 個ぶんの「何をしているか」を、見出しの下に足す。 */
+async function describeAnswer(app, region, program, strings, addr, into) {
+  const analyze = makeAnalyzer(app, region);
+  if (!analyze || !into) return;
+  const range = program ? program.functionRange(addr) : null;
+  let model = null;
+  try { model = await analyze(addr, range ? range.end : null); } catch { model = null; }
+  if (!model || !into.isConnected) return;
+  let text = '';
+  try {
+    text = purposeText(describePurpose({
+      model, addr, fields: app.fields,
+      owner: app.fields ? app.fields.ownerOf(addr) : null,
+      textAt: stringLookup(strings || []),
+    }));
+  } catch { text = ''; }
+  if (text) into.append(para(pick('この処理がしていること: ' + text,
+    'What this routine does: ' + text), 'sub'));
+}
+
+async function fillPurpose(app, region, program, strings, rows) {
+  const analyze = makeAnalyzer(app, region);
+  if (!analyze || !rows || !rows.length) return;
+  const lookup = stringLookup(strings || []);
+  for (const r of rows.slice(0, PURPOSE_ROWS)) {
+    if (!r.row.isConnected) return;                 // 閉じられた。追いかけない。
+    const range = program ? program.functionRange(r.addr) : null;
+    let model = null;
+    try { model = await analyze(r.addr, range ? range.end : null); } catch { model = null; }
+    if (!model) continue;
+    let text = '';
+    try {
+      const owner = app.fields ? app.fields.ownerOf(r.addr) : null;
+      text = purposeText(describePurpose({
+        model, addr: r.addr, fields: app.fields, owner, textAt: lookup,
+      }));
+    } catch { text = ''; }
+    if (!text) continue;
+    const sub = r.row.querySelector('.sub');
+    if (!sub) continue;
+    /*
+     * 「たぶん 🎒 アイテムに関わる処理（判定）」のような下見は、ここで消す。
+     * 命令から確かめた文と、名前から当てた推測を並べると、読む人は
+     * どちらを信じればいいのか分からなくなる。確かめたほうだけを残す。
+     */
+    sub.textContent = text + '\n' + r.rest;
+  }
 }
 
 /** 自動解析の深掘り用。関数 1 つを解析してモデルだけ返す。 */
@@ -2147,11 +2267,28 @@ export function showField(app, className, field) {
    確定できなかったときは、確定できなかったと言って、何が足りないかを書く。 */
 
 /** 決着の見出し（確定 / ほぼ確実 / 絞りきれていません）。 */
-function verdictBadge(verdict) {
+function verdictBadge(verdict, lead) {
   const box = el('div', 'verdict verdict-' + verdict);
   box.append(el('div', 'verdict-word', verdictText(verdict)));
-  box.append(el('div', 'verdict-lead', verdictLead(verdict)));
+  box.append(el('div', 'verdict-lead', lead || verdictLead(verdict)));
   return box;
+}
+
+/*
+ * 「絞りきれていません」の説明は 2 通り要る。
+ * 決め手が無くて並んでいるのか、担当している処理が本当に複数あるのか。
+ * 後者に「決めつけるより両方を見てもらった方が確実です」と書くと、
+ * 出せた答えを引っ込めたように読める。
+ */
+function verdictLeadFor(pin) {
+  if (pin && pin.verdict === VERDICT.AMBIGUOUS && pin.tiedVerified >= 2) {
+    return pick('この目的を担当している処理は ' + pin.tiedVerified + ' つあります。' +
+      'どれも命令まで降りて確かめました。絞り込めなかったのではなく、' +
+      'アプリの側で処理が分かれています。',
+    'This goal is handled by ' + pin.tiedVerified + ' routines, each confirmed at the ' +
+      'instruction level. The work really is split up in this app.');
+  }
+  return null;
 }
 
 /**
@@ -2159,8 +2296,11 @@ function verdictBadge(verdict) {
  * クラス表があれば `BattleManager.hp`、無ければ `オブジェクトの +0x20 の値`。
  * 名前が無いことを、名前があるかのように見せない。
  */
-function pinnedName(c) {
+function pinnedName(c, app) {
   if (!c) return '';
+  if (c.kind === 'function') {
+    return (app ? fnLabel(app, c.addr) : null) || c.name || addrHex(c.addr);
+  }
   if (c.kind === 'location') {
     return pick('オブジェクトの ' + offsetHex(BigInt(c.offset)) + ' にある値',
       'the value at ' + offsetHex(BigInt(c.offset)));
@@ -2168,12 +2308,22 @@ function pinnedName(c) {
   return c.className + '.' + c.plain;
 }
 
-/** 特定した値 1 個ぶんの見出し行。 */
-function pinnedHeadline(pin) {
+/** 特定した答え 1 個ぶんの見出し行。値のことも、処理のこともある。 */
+function pinnedHeadline(pin, app) {
   const c = pin.top;
   const box = el('div', 'pinned-head');
-  box.append(el('div', 'pinned-name', pinnedName(c)));
+  box.append(el('div', 'pinned-name', pinnedName(c, app)));
   const bits = [];
+  /*
+   * 答えが「処理」のときは、位置や大きさが無い。
+   * 値の見出しをそのまま使うと `undefined バイト` が出るので、別に組む。
+   */
+  if (c.kind === 'function') {
+    bits.push(addrHex(c.addr));
+    if (c.instructions) bits.push(c.instructions.toLocaleString() + pick(' 命令', ' instructions'));
+    box.append(el('div', 'pinned-sub', bits.join('  ·  ')));
+    return box;
+  }
   const type = typeWord(c.type);
   if (type) bits.push(type);
   bits.push(c.kind === 'location'
@@ -2191,8 +2341,8 @@ export function showPinned(app, pin) {
   const body = sheet.body;
   const c = pin.top;
 
-  body.append(verdictBadge(pin.verdict));
-  body.append(pinnedHeadline(pin));
+  body.append(verdictBadge(pin.verdict, verdictLeadFor(pin)));
+  body.append(pinnedHeadline(pin, app));
 
   /* 1. 確からしさ。掛け算の出発点と結果を、隠さずに出す。 */
   const ul = list();
@@ -2205,7 +2355,7 @@ export function showPinned(app, pin) {
         ? pick(Math.round(pin.marginRatio).toLocaleString() + ' 倍',
           Math.round(pin.marginRatio).toLocaleString() + '×')
         : pick('比べるものがありません', 'nothing to compare')));
-    ul.append(kvRow(pick('2 番目の候補', 'Runner-up'), pinnedName(pin.runnerUp)));
+    ul.append(kvRow(pick('2 番目の候補', 'Runner-up'), pinnedName(pin.runnerUp, app)));
   }
   if (pin.checked) {
     ul.append(kvRow(pick('実際に読んだ処理', 'Routines disassembled'),
@@ -2895,25 +3045,64 @@ export function showCandidates(app, goal) {
      */
     const ranked = rankCandidates({
       goal, strings, program, symbols: app.symbols, region, limit: 40,
+      vendors: vendorsOf(app.fields),
     });
     const pin = await pinnedFor(app, goal, {
       strings, program, shapes, region, box, ranked: ranked.candidates,
     });
     box.done();
     if (!sheet.root.isConnected) return;
-    if (pin && pin.top) {
+    /*
+     * 「見つかりませんでした」と言いながら、その下に値の名前を大きく出してはいけない。
+     * 読む人は見出しではなく名前を答えだと受け取る（`ISBaseAdUnitManager.
+     * waterfallLifeCycleHolder` を「確からしさ 0%」付きで HP として出していた）。
+     * 決着していないときは、名前を出さずに理由だけ言って、下の候補一覧に譲る。
+     */
+    const decided = pin && pin.top && pin.verdict !== VERDICT.NONE;
+    if (pin && pin.top && !decided) {
       results.append(verdictBadge(pin.verdict));
-      results.append(pinnedHeadline(pin));
+      results.append(para(pick(
+        'クラス表の中には、この目的に結びつく値がありませんでした。' +
+        'ゲーム本体が C++ で書かれていると、名前が残るのは組み込んだ SDK だけになります。' +
+        '下の「関係のありそうな処理」から、命令で確かめられる方へ降りてください。',
+        'Nothing in the class table ties to this goal — if the game itself is written in C++, ' +
+        'only the bundled SDKs keep their names. Start from the routines listed below instead.')));
+    }
+    if (decided) {
+      results.append(verdictBadge(pin.verdict, verdictLeadFor(pin)));
+      results.append(pinnedHeadline(pin, app));
+      const isFn = pin.top.kind === 'function';
+      /*
+       * 答えが「処理」のときは、その処理が何をしているかも一緒に言う。
+       *
+       * 「⚔️ 攻撃力 → sub_100036588（99.9%）」だけを出していたころ、
+       * その関数は実は **攻撃力の説明文を組み立てる処理** だった。
+       * 判定としては正しい（攻撃力の計算式を書いた文言を、この関数だけが
+       * 参照している）が、計算そのものを探しに来た人はそこで必ず迷う。
+       * 何をしている処理なのかは命令から言えるのだから、隠さずに出す。
+       */
+      const answerNote = el('div', 'pinned-work');
+      if (isFn) {
+        results.append(answerNote);
+        describeAnswer(app, region, program, strings, pin.top.addr, answerNote);
+      }
       const top = list();
       top.append(tapRow(pick('なぜこれだと言えるのか、根拠をすべて見る',
         'See every piece of evidence'), {
         sub: pick('確からしさ ' + probabilityText(pin.top.fusion.probability) +
-          '  ·  ' + pin.universe.toLocaleString() + ' 個の値の中から',
+          '  ·  ' + pin.universe.toLocaleString() + (isFn ? ' 個の処理の中から' : ' 個の値の中から'),
         probabilityText(pin.top.fusion.probability) + ' confident, out of ' +
-          pin.universe.toLocaleString() + ' values'),
+          pin.universe.toLocaleString() + (isFn ? ' functions' : ' values')),
         right: '›',
         onTap: () => { sheet.close(); showPinned(app, pin); },
       }));
+      if (isFn) {
+        top.append(tapRow(pick('この処理を開く（命令まで降りる）', 'Open this routine'), {
+          sub: addrHex(pin.top.addr),
+          right: '›',
+          onTap: () => { sheet.close(); showFunctionReport(app, pin.top.addr, goal); },
+        }));
+      }
       const write = (pin.changeSites || []).find((s) => s.stores);
       if (write) {
         top.append(tapRow(pick('この値を書き換えている場所を開く', 'Open the place that changes it'), {
@@ -2928,11 +3117,34 @@ export function showCandidates(app, goal) {
         }));
       }
       results.append(top);
+
+      /*
+       * 実際に開いて確かめた命令。
+       *
+       * 名前の 1 つも残っていないアプリでは、答えは「+0x30 の 4 バイト」という
+       * 住所でしかない。それだけ出されても、読む人には確かめようがない。
+       * 「0x10003E318 を開けば、そこでこの値を減らしています」まで出して初めて、
+       * 自分の目で見て納得できる。ここがこのツールの答えの終点になる。
+       */
+      const proof = (pin.top.proof || []).slice(0, 3);
+      if (proof.length) {
+        results.append(el('div', 'sec-title',
+          pick('実際に開いて確かめた命令', 'The instructions that were checked')));
+        const pl = list();
+        for (const p of proof) {
+          pl.append(tapRow(changeText(p.change), {
+            sub: addrHex(p.change.address) + '  ·  ' + fnLabel(app, p.fn),
+            right: '›',
+            onTap: () => { sheet.close(); showFunctionReport(app, p.fn, goal); },
+          }));
+        }
+        results.append(pl);
+      }
       results.append(el('div', 'sec-title', pick('関係のありそうな処理', 'Routines that may be involved')));
     }
 
     if (!ranked.candidates.length) {
-      if (pin && pin.top) return;   // 値は特定できている。処理が無いだけ。
+      if (decided) return;   // 値は特定できている。処理が無いだけ。
       results.append(para(pick(
         '手がかりが見つかりませんでした。', 'Nothing was found.')));
       const why = [];
@@ -2972,24 +3184,38 @@ export function showCandidates(app, goal) {
       'Stars mean “look here first”. A name match alone does not earn stars.'), 'sub'));
 
     const ul = list();
+    const rows = [];
     for (const c of ranked.candidates) {
       const top = c.reasons.slice(0, 2).map(reasonText).filter(Boolean);
       // 名前だけでは何の処理か分からないので、役割の下見を 1 行目に置く
       const tag = roleTagline(app, c.addr);
+      const rest = addrHex(c.addr) + '\n' + top.join('\n');
       const row = tapRow(fnLabel(app, c.addr), {
-        sub: (tag ? tag + '\n' : '') + addrHex(c.addr) + '\n' + top.join('\n'),
+        sub: (tag ? tag + '\n' : '') + rest,
         right: starsText(c.stars),
         onTap: () => { sheet.close(); showCandidateWhy(app, c, goal); },
       });
       row.classList.add('cand');
       row.append(el('span', 'cand-score', Math.round(c.confidence * 100) + '%'));
       ul.append(row);
+      rows.push({ addr: c.addr, row, rest });
     }
     results.append(ul);
     results.append(para(pick(
       '※ この点数は「関連度」であって、正解であることの証明ではありません。' +
       'それぞれの候補で「なぜこの点になったか」を必ず確認してください。',
       'The score is relevance, not proof. Always check why each candidate scored what it did.'), 'sub'));
+
+    /*
+     * ここから先が、一覧を「候補の羅列」から「何をしている処理か」に変える所。
+     *
+     * 上の行に出ているのは名前・住所・当たった文字列で、どれも
+     * 「関係あるかもしれない」までしか言っていない。読む人が本当に知りたい
+     * 「で、これは何をしているの？」は、実際に逆アセンブルしないと言えない。
+     * 一覧を出したあとに 1 個ずつ開いて、言えたものから差し替えていく
+     * （待たせないために、描画のあとで走らせる）。
+     */
+    fillPurpose(app, region, program, strings, rows);
   }).catch((err) => {
     box.done();
     alertDialog(t('search.failed'), err && err.message ? err.message : String(err));
@@ -3654,8 +3880,7 @@ export function showValueFlow(app, model, row, region) {
     (insn.operands ? ' ' + insn.operands : '')]));
 
   if (insn.memory) {
-    const where = insn.memory.base + (insn.memory.disp != null
-      ? ' + 0x' + insn.memory.disp.toString(16).toUpperCase() : '');
+    const where = placeName(null, insn.memory.base, insn.memory.disp);
     body.append(para(insn.memory.kind === 'load'
       ? pick(where + ' にある値を読み込んでいます。', 'It reads the value at ' + where + '.')
       : pick(where + ' へ値を書き込んでいます。', 'It writes a value to ' + where + '.')));

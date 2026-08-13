@@ -26,6 +26,15 @@ export const GOALS = [
     id: 'hp', ja: 'HP・体力', en: 'HP / health', icon: '❤️',
     strong: [/\bhp\b/i, /health/i, /\blife\b/i, /体力/, /ライフ/, /耐久/],
     weak: [/damage/i, /heal/i, /revive/i, /回復/, /死亡/, /\bdie\b/i],
+    /*
+     * health は体力とは限らない。広告 SDK の死活監視（healthCheck）や
+     * 端末情報（healthPercentile）まで拾うと、HP を探した人に
+     * IronSource の通信設定が並ぶ。同じことが lifecycle / lifetime にも起きる。
+     */
+    avoid: [
+      /health[\s_-]*(check|monitor|status|state|report|percentile|kit)/i,
+      /life[\s_-]*(cycle|time|span|line)/i,
+    ],
     expects: { numeric: true, store: true, compare: true },
   },
   {
@@ -51,6 +60,14 @@ export const GOALS = [
     strong: [/\bcoin/i, /\bgold\b/i, /\bgem\b/i, /jewel/i, /money/i, /currency/i, /wallet/i,
       /コイン/, /ゴールド/, /所持金/, /ジェム/, /石/, /通貨/],
     weak: [/balance/i, /amount/i, /price/i, /cost/i, /残高/, /金額/],
+    /*
+     * `currency` は `concurrency` の中にも入っている。これを外さないと
+     * 所持金を探した人の首位が IronSource の
+     * `useWaterfallLifecycleHolderConcurrency` になる（実際になっていた）。
+     * `bid_floor_currency` のほうは綴りは正しいが、広告の入札下限額であって
+     * ゲームの所持金ではないので、語ごと外す。
+     */
+    avoid: [/concurren(cy|t)/i, /\bbid[\s_-]*floor\w*/i, /price[\s_-]*floor\w*/i],
     expects: { numeric: true, store: true, compare: true },
   },
   {
@@ -310,7 +327,15 @@ export function matchField(goal, name) {
   const role = fieldRole(name);
   const vocab = FIELD_VOCAB[goal.id];
   let best = null;
-  const consider = (score, term, exact, literal, sequence) => {
+  /*
+   * 変数名にも「同じつづりの別の言葉」は出る。normalizeFieldName が
+   * `_lifeCycleHolder` を「life cycle holder」に開くので、文字列と同じ物差しで外せる。
+   * ここを素通しにすると、HP を探した人に IronSource の
+   * `waterfallLifeCycleHolder` が出る（実際に出ていた）。
+   */
+  const blocked = avoidSpans(goal, norm);
+  const consider = (score, term, exact, literal, sequence, at) => {
+    if (at != null && overlaps(blocked, at, term.length)) return;
     if (!best || score > best.score) {
       best = { score, term, exact: !!exact, role, literal: !!literal, sequence: !!sequence };
     }
@@ -318,14 +343,16 @@ export function matchField(goal, name) {
 
   if (vocab) {
     for (const re of vocab.strong) {
-      const m = norm.match(re);
-      if (!m) continue;
-      // 名前がその語だけでできている（`_hp` → `hp`）なら、これ以上ない一致
-      consider(norm === m[0].trim() ? 1 : 0.75, m[0], norm === m[0].trim());
+      for (const m of allMatches(re, norm, blocked.length)) {
+        // 名前がその語だけでできている（`_hp` → `hp`）なら、これ以上ない一致
+        const whole = norm === m.text.trim();
+        consider(whole ? 1 : 0.75, m.text, whole, false, false, m.at);
+      }
     }
     for (const re of vocab.weak) {
-      const m = norm.match(re);
-      if (m) consider(0.4, m[0], false);
+      for (const m of allMatches(re, norm, blocked.length)) {
+        consider(0.4, m.text, false, false, false, m.at);
+      }
     }
   }
   /*
@@ -524,6 +551,52 @@ export function goalFromPreset(id) {
   return Object.assign({}, g, { text: pick(g.ja, g.en), extraTerms: [], free: false });
 }
 
+/* ── 「同じつづりだが、別の言葉」を外す ──────────────────────
+ *
+ * `health` は体力だが、`healthCheck`（サーバの死活監視）の health は体力ではない。
+ * 名前としては完璧に一致するので、点の付け方をどう変えても上がってくる。
+ * 目的の avoid に当たった範囲を先に取っておき、そこに重なった一致だけを捨てる。
+ * 「attack と healthcheck が両方書いてある文字列」の attack までは捨てない。 */
+
+function avoidSpans(goal, s) {
+  const spans = [];
+  for (const re of (goal && goal.avoid) || []) {
+    const g = new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g');
+    let m;
+    while ((m = g.exec(s)) !== null) {
+      spans.push([m.index, m.index + m[0].length]);
+      if (m[0].length === 0) g.lastIndex++;
+    }
+  }
+  return spans;
+}
+
+function overlaps(spans, at, len) {
+  for (const [lo, hi] of spans) if (at < hi && at + len > lo) return true;
+  return false;
+}
+
+/*
+ * 外す範囲があるときだけ、2 個目以降の一致も見る。
+ * `healthcheck then health` の後ろの health を取りこぼさないため。
+ * 外す範囲が無いふつうの目的では、これまでどおり最初の 1 個で止める。
+ */
+function allMatches(re, s, hasAvoid) {
+  if (!hasAvoid) {
+    const m = s.match(re);
+    return m ? [{ text: m[0], at: m.index }] : [];
+  }
+  const g = new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g');
+  const out = [];
+  let m;
+  while ((m = g.exec(s)) !== null) {
+    out.push({ text: m[0], at: m.index });
+    if (m[0].length === 0) g.lastIndex++;
+    if (out.length >= 8) break;
+  }
+  return out;
+}
+
 /**
  * 文字列 1 本が、その目的にどれだけ当てはまるか。
  *
@@ -534,20 +607,20 @@ export function matchText(goal, text) {
   const s = String(text || '');
   if (s.length < 2) return null;
   let best = null;
-  const consider = (score, term) => {
+  const blocked = avoidSpans(goal, s);
+  const consider = (score, term, at) => {
+    if (at != null && overlaps(blocked, at, term.length)) return;
     if (!best || score > best.score) best = { score, term };
   };
   for (const re of goal.strong || []) {
-    const m = s.match(re);
-    if (m) consider(1, m[0]);
+    for (const m of allMatches(re, s, blocked.length)) consider(1, m.text, m.at);
   }
   for (const re of goal.weak || []) {
-    const m = s.match(re);
-    if (m) consider(0.5, m[0]);
+    for (const m of allMatches(re, s, blocked.length)) consider(0.5, m.text, m.at);
   }
   for (const term of goal.extraTerms || []) {
     const i = s.toLowerCase().indexOf(term.word.toLowerCase());
-    if (i >= 0) consider(0.85 * term.weight, term.word);
+    if (i >= 0) consider(0.85 * term.weight, term.word, i);
   }
   if (!best) return null;
 

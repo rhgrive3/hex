@@ -20,7 +20,9 @@
  * ここも日本語は作らない。ラベルの id だけを返す。
  */
 import { classifyString, featureLabelOf } from './features.js';
+import { pick } from './i18n.js';
 import { apiInfo, FEATURE_OF_CATEGORY } from './blocks.js';
+import { vendorsOf, vendorOf } from './vendors.js';
 
 /** 部品の見出しに使う絵文字。文字だけの一覧より、地図に見える。 */
 export const CATEGORY_ICON = {
@@ -37,6 +39,20 @@ const API_CATEGORY_TO_FEATURE = {
   crypto: 'anticheat', keychain: 'anticheat', antidebug: 'anticheat',
   storage: 'save', io: 'save', database: 'save', prefs: 'save',
   ui: 'ui', log: 'error', error: 'error',
+};
+
+/*
+ * blocks.js は命令を分類するための語彙を持っていて、地図の語彙とは別物。
+ * そちらの名前をそのまま部品の名前にすると、地図に「❓ objc」「❓ runtime」
+ * という、絵文字も日本語も付かない部品が出る（実際に出ていた）。
+ *
+ * 対応するものだけ翻訳し、objc / runtime / data は捨てる。
+ * メモリ管理や Objective-C の土台はどのクラスにもあるので、
+ * 「このアプリはこういう部品でできています」の答えにならない。
+ */
+const BLOCK_FEATURE_TO_CATEGORY = {
+  network: 'network', security: 'anticheat', storage: 'save',
+  ui: 'ui', diagnostics: 'error',
 };
 
 /*
@@ -84,7 +100,29 @@ export function classifyClassName(name) {
 const NAME_POINTS = 3;      // クラス名が当たった
 const STRING_POINTS = 2;    // 参照している文字列が当たった
 const API_POINTS = 2;       // 呼んでいる API の分類が当たった
+const VENDOR_POINTS = 6;    // 持ち主が分かっている（名前の語彙より強い）
 const MAX_METHODS_PER_CLASS = 60;
+
+/** SDK の役目 → 地図の部品。広告 SDK は広告のところに置く。 */
+const VENDOR_KIND_TO_CATEGORY = {
+  ads: 'ads', analytics: 'system', marketing: 'system',
+  support: 'system', library: 'system',
+};
+
+/*
+ * features.js が持たない、地図だけの部品名。
+ * ここに書いておかないと、画面に `🔧 system` という id がそのまま出る。
+ */
+const EXTRA_LABEL = {
+  system: { ja: '土台・組み込みライブラリ', en: 'Frameworks and libraries' },
+  unknown: { ja: 'その他（分類できず）', en: 'Everything else' },
+};
+
+/** 部品の見出し。地図だけの部品は EXTRA_LABEL から、それ以外は features.js から。 */
+export function categoryLabel(id) {
+  const extra = EXTRA_LABEL[id];
+  return extra ? pick(extra.ja, extra.en) : featureLabelOf(id);
+}
 
 /**
  * クラス 1 つを分類する。
@@ -98,6 +136,30 @@ function classifyClass(cls, ctx) {
     votes.set(id, (votes.get(id) || 0) + points);
     why.push({ code, id, points, detail: detail || null });
   };
+
+  /*
+   * 0. 持ち主が先。組み込んだ SDK のクラスに、ゲームの語彙を当ててはいけない。
+   *
+   * `ISBaseAdUnitManager` は `unit` に当たって「キャラクター・育成」になる。
+   * すると地図のいちばん上の部品が IronSource になり、
+   * 「このアプリはこういう部品でできています」が嘘になる。
+   * SDK だと分かっているなら、その SDK の役目のところに置く。
+   */
+  const vendor = vendorOf(cls.name, ctx.vendors);
+  if (vendor) {
+    /*
+     * 持ち主が分かったら、そこで決める。触っている文字列で上書きさせない。
+     * IronSource の広告クラスが「報酬」の文言をいくつも持っているのは当然で、
+     * それを票にすると、また「ガチャ・抽選・報酬 ＝ IronSource」に戻る。
+     */
+    const where = VENDOR_KIND_TO_CATEGORY[vendor.kind] || 'system';
+    return {
+      category: where,
+      score: VENDOR_POINTS,
+      why: [{ code: 'vendor', id: where, points: VENDOR_POINTS,
+        detail: { name: cls.name, vendor: vendor.vendor } }],
+    };
+  }
 
   // 1. クラス名（クラス名専用の語彙で見る）
   for (const hit of classifyClassName(cls.name)) {
@@ -134,7 +196,8 @@ function classifyClass(cls, ctx) {
         if (!name) continue;
         const api = apiInfo(name);
         if (!api) continue;
-        const feature = API_CATEGORY_TO_FEATURE[api.cat] || FEATURE_OF_CATEGORY[api.cat];
+        const feature = API_CATEGORY_TO_FEATURE[api.cat] ||
+          BLOCK_FEATURE_TO_CATEGORY[FEATURE_OF_CATEGORY[api.cat]];
         if (!feature) continue;
         add(feature, API_POINTS, 'api', { name, api: api.id, sel: m.sel });
         apiHits++;
@@ -175,7 +238,7 @@ export function buildAppMap(opts) {
   const textByAddr = new Map();
   for (const s of o.strings || []) textByAddr.set(s.addr.toString(), s.text);
   const textOf = (addr) => (addr == null ? null : textByAddr.get(addr.toString()) || null);
-  const ctx = { program, symbols, textOf };
+  const ctx = { program, symbols, textOf, vendors: vendorsOf(fields) };
 
   const classes = [];
   if (fields && fields.classCount) {
@@ -227,7 +290,7 @@ export function buildAppMap(opts) {
       (a.categoryScore + a.calls / 4 + a.methods / 8));
     subsystems.push({
       id: g.id,
-      label: featureLabelOf(g.id),
+      label: categoryLabel(g.id),
       icon: CATEGORY_ICON[g.id] || CATEGORY_ICON.unknown,
       classes: g.classes,
       classCount: g.classes.length,
@@ -296,7 +359,7 @@ export function buildStringMap(opts) {
     funcs.sort((a, b) => b.samples.length - a.samples.length);
     subsystems.push({
       id: g.id,
-      label: featureLabelOf(g.id),
+      label: categoryLabel(g.id),
       icon: CATEGORY_ICON[g.id] || CATEGORY_ICON.unknown,
       classes: [],
       functions: funcs.slice(0, 60),

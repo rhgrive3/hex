@@ -48,6 +48,7 @@ export const FAMILY = {
   USAGE: 'usage',        // 使われ方（読み書きの回数・読んで計算して書き戻す形）
   VERIFIED: 'verified',  // 逆アセンブルして確かめたもの
   STRUCT: 'struct',      // 構造（オフセット・大きさの整合）
+  NAMING: 'naming',      // 開発者が書いた文言による、排他的な名指し
 };
 
 /* 1 つの系統だけで到達できる尤度比の上限。
@@ -59,6 +60,19 @@ const FAMILY_CAP = {
   [FAMILY.USAGE]: 30,
   [FAMILY.STRUCT]: 12,
   [FAMILY.VERIFIED]: 4000,   // 実測だけは強い。ただし後述のとおり単独では確定にしない
+  /*
+   * 排他的な名指しだけ、上限を関数の総数より上に置いてある。
+   *
+   * 「17MB のうち、この文字列を参照している関数はこの 1 個だけ」は、
+   * 事前オッズ（10 万分の 1）を打ち消すのと同じ大きさの観測なので、
+   * ここを 25 倍などで頭打ちにすると、どれだけ材料があっても確定に届かない。
+   * 実際、この上限のせいで「攻撃力の計算式を日本語で書いた文字列を 4 本、
+   * この関数だけが参照している」という材料が 0.09% に潰れていた。
+   *
+   * 単独で確定させない歯止めは、上限ではなく decide() 側にある
+   * （別々の系統が 3 つ以上・逆アセンブルでの裏取り・2 位との差 20 倍）。
+   */
+  [FAMILY.NAMING]: 1e9,
 };
 
 /* ── 証拠の表 ────────────────────────────────────────────────
@@ -159,6 +173,41 @@ export const EVIDENCE = {
   'loc-damage-source':  { lr: 8,    family: FAMILY.USAGE,    kind: 'verified', id: true },
   'loc-resource-drain': { lr: 7,    family: FAMILY.USAGE,    kind: 'verified', id: true },
   'loc-self-resource':  { lr: 5,    family: FAMILY.USAGE,    kind: 'verified', id: true },
+  /*
+   * 同じ位置が「減らされる側」とも「減らす量の側」とも読める。
+   *
+   * 体力と攻撃力を同じ場所だと言ってしまう壊れ方が、ここで止まる。
+   * 決めきれないことは弱点なので、点を下げる形で必ず持ち回る。
+   */
+  'loc-role-conflict':  { lr: 0.2,  family: FAMILY.USAGE,    kind: 'inference' },
+  /*
+   * ── 形の候補を、命令まで降りて裏取りした証拠（purpose.js） ──
+   *
+   * ここまでのふるまいの証拠は、セクションを 1 回舐めただけの統計でしかない
+   * （分岐をまたいだ時点で追跡をやめているので、取りこぼしも取り違えもある）。
+   * そこで上位の候補だけ、その場所を触っている関数を実際に逆アセンブルして、
+   *
+   *   「0x1002f4aa0 で、別のオブジェクトの +0xa18 を掛けた値ぶん、
+   *     この +0x74 を減らして、同じ場所へ書き戻している」
+   *
+   * まで確かめる。統計と、名指しできる 1 命令は、まったく別の強さを持つ。
+   */
+  'loc-drain-verified': { lr: 30,   family: FAMILY.VERIFIED, kind: 'verified', id: true },
+  'loc-amount-verified':{ lr: 24,   family: FAMILY.VERIFIED, kind: 'verified', id: true },
+  'loc-clamp-verified': { lr: 6,    family: FAMILY.VERIFIED, kind: 'verified' },
+  // 形からは出たが、命令まで降りたら、その場所を触る関数が 1 つも確かめられなかった
+  'loc-unverified':     { lr: 0.25, family: FAMILY.VERIFIED, kind: 'inference' },
+  /*
+   * 上限が「もう 1 つの値」で決まっている（`csel w8, w8, w9` の w9 が [x19, #0x34]）。
+   * 体力・スタミナ・ゲージは必ずこの組を持ち、所持金やスコアは持たない。
+   * 名前が 1 文字も残っていないアプリで、体力を所持金から分ける決め手になる。
+   */
+  'loc-capped-by-field': { lr: 14,  family: FAMILY.VERIFIED, kind: 'verified', id: true },
+  /*
+   * どこを見ても 1 ずつしか動いていない。それは数える物（残り回数・添字・
+   * フレーム数）であって、プレイヤーが増やしたい値ではない。
+   */
+  'loc-counter-verified': { lr: 0.2, family: FAMILY.VERIFIED, kind: 'verified' },
   // C++ の容器の頭（要素数・参照カウンタ・文字列の長さ）に見える
   'loc-container-head': { lr: 0.08, family: FAMILY.STRUCT,   kind: 'inference' },
   'loc-size':           { lr: 1.7,  family: FAMILY.STRUCT,   kind: 'fact' },
@@ -170,6 +219,21 @@ export const EVIDENCE = {
   'fn-name-match':      { lr: 9,    family: FAMILY.NAME,     kind: 'fact', id: true },
   'fn-selector':        { lr: 7,    family: FAMILY.NAME,     kind: 'fact', id: true },
   'fn-string-ref':      { lr: 6,    family: FAMILY.CONTEXT,  kind: 'fact', id: true },
+  /*
+   * 目的の言葉を含む文言を、このバイナリの中でこの関数「だけ」が参照している。
+   * 尤度比は表に書かず、測った排他性から作って渡す（exclusiveLR）。
+   * 「10 万個のうち 1 個」と「10 万個のうち 40 個」を同じ点にはできないため。
+   */
+  'fn-string-exclusive': { lr: 6,   family: FAMILY.NAMING,   kind: 'fact', id: true },
+  /*
+   * その文言が書いている計算式の数字が、この関数の命令の中に即値として実在する。
+   *
+   * 「基ダ×(100+%d+[コンボ:%d])÷100」を参照している関数の中に、即値 100 が 12 個ある。
+   * 文言は開発者の主張、即値は命令の事実で、出どころが違う。この 2 つが一致したとき、
+   * 「ここがその計算をしている」は逆アセンブルで確かめた話になる。
+   * クラス表の無いアプリ（ゲーム本体が C++）で、裏取りの手段はこれしかない。
+   */
+  'fn-formula-verified': { lr: 20,  family: FAMILY.VERIFIED, kind: 'verified', id: true },
   // すでに特定できている値を触っている＝目的に結びついている
   'fn-touches-field':   { lr: 14,   family: FAMILY.VERIFIED, kind: 'verified', id: true },
   'fn-writes-field':    { lr: 26,   family: FAMILY.VERIFIED, kind: 'verified', id: true },
@@ -239,13 +303,14 @@ export function evidenceKind(code) {
  * @param {number} [strength] 0..1。手がかりの濃さ。尤度比を lr^strength にする。
  * @param {object} [detail] 画面に出すための材料（名前・アドレス・回数…）
  */
-export function evidence(code, strength, detail) {
+export function evidence(code, strength, detail, lr) {
   const info = EVIDENCE[code];
   const s = strength == null ? 1 : Math.max(0, Math.min(1, strength));
   return {
     code,
     strength: s,
-    lr: info ? info.lr : 1,
+    // 実測から作った尤度比があれば、表の既定値より優先する
+    lr: lr != null && lr > 0 ? lr : (info ? info.lr : 1),
     family: info ? info.family : FAMILY.CONTEXT,
     kind: info ? info.kind : 'inference',
     id: !!(info && info.id),
@@ -253,14 +318,110 @@ export function evidence(code, strength, detail) {
   };
 }
 
+/**
+ * 排他性から尤度比を作る。
+ *
+ * このバイナリの N 個の関数のうち、その文言を参照しているのが k 個だけなら、
+ * その観測は候補を N 個から k 個に絞ったのと同じ意味を持つ。だから素の効きは N/k。
+ *
+ * ただし「その文言が本当に目的を名指ししているか」は別の話なので、そこを掛けて割り引く。
+ * 「攻撃力アップ:%d 基ダ×…」のように目的の語がそのまま入っているものは強く、
+ * 「damage」がたまたま含まれているだけのものは弱い。
+ *
+ * @param {number} total   このバイナリの関数の総数
+ * @param {number} users   その文言を参照している関数の数
+ * @param {number} score   matchText の当てはまり（1 以上なら強い一致）
+ */
+export function exclusiveLR(total, users, score, text) {
+  const n = Math.max(2, total || 0);
+  const k = Math.max(1, users || 1);
+  if (k > EXCLUSIVE_MAX_USERS) return 0;        // 何十か所からも使われる語は名指しではない
+  if (!namesBehaviour(text)) return 0;
+  /*
+   * 目的の語がそのまま入っているものだけを名指しとして扱う。
+   * ここを緩めて弱い一致まで数えると、`set_enemy001_zombie_revive.maanim` の
+   * ようなアニメのファイル名が 50 本集まって 100% になる（実際になった）。
+   * 素材のファイル名がたまたま 1 か所からしか使われていないのは当たり前で、
+   * 排他的であること自体は、それが目的を名指ししている証拠にならない。
+   */
+  if (!(score >= EXCLUSIVE_MIN_SCORE)) return 0;
+  return Math.max(1, Math.min(1e5, (n / k) * NAMES_THE_GOAL));
+}
+
+/*
+ * その文言は「処理の中身」を名指ししているか。それとも素材の名前か。
+ *
+ * `skill_wave_attack.maanim` は攻撃という語を含み、しかもこのバイナリの中で
+ * 1 か所からしか参照されていない。排他性だけで測ると満点になるが、
+ * これはアニメのファイル名であって、攻撃力の計算をしている証拠ではない。
+ * 実際これで、素材を読み込むだけの関数が本物の計算式より上に来ていた。
+ *
+ * 分ける手がかりは、開発者が誰に向けて書いたか。
+ *   人に見せる文言 … `攻撃力アップ:%d 基ダ×(100+%d)÷100`
+ *                    書式指定・空白・記号が入る。処理の中身を説明している。
+ *   素材の名前     … `skill_wave_attack.maanim`
+ *                    拡張子付きの識別子。何をするかは何も言っていない。
+ */
+function namesBehaviour(text) {
+  const s = String(text == null ? '' : text);
+  if (!s) return true;                     // 文言が渡っていないなら判定しない
+  if (/%[-+ 0-9.#]*[@a-zA-Z]/.test(s)) return true;   // 書式指定があれば人に見せる文言
+  // 拡張子付きの識別子＝素材（.maanim / .mamodel のように長い拡張子もある）
+  if (/^[\w./\\-]+\.[a-zA-Z][a-zA-Z0-9]{1,7}$/.test(s)) return false;
+  return true;
+}
+
+/**
+ * ふるまいの珍しさから尤度比を作る。
+ *
+ * 走査で見えた位置が 342 個あって、体力の形（減って・増えて・0 で止まって・
+ * 減らす量がよそから来る）に当てはまるのが 4 個なら、その形に合っていること自体が
+ * 候補を 342 個から 4 個に絞る。固定の ×7 では、この絞り込みを表せていなかった。
+ *
+ * ただし文言と違って、形は「その目的の値である」ことまでは言い切らない。
+ * 体力の形をした値は、盾でも残弾でも耐久度でもありうる。だから割引は大きい。
+ */
+export function rarityLR(total, matching) {
+  const n = Math.max(2, total || 0);
+  const k = Math.max(1, matching || 1);
+  if (k >= n) return 0;
+  return Math.max(1, Math.min(1e4, (n / k) * SHAPE_FITS_GOAL));
+}
+
+/* その形をした値が、本当にその目的の値である確からしさ。文言より低い。 */
+const SHAPE_FITS_GOAL = 0.3;
+
+/* これより多くの関数から参照されている文言は、名指しとして扱わない。 */
+const EXCLUSIVE_MAX_USERS = 2;
+/* 目的の語がそのまま入っていること（weak な当たりは名指しではない）。 */
+const EXCLUSIVE_MIN_SCORE = 0.9;
+/* その文言が本当に目的を名指ししている確からしさ。 */
+const NAMES_THE_GOAL = 0.25;
+/* 同じ主張を何本も数えないための上限（別々の文言でも 4 本まで）。 */
+export const EXCLUSIVE_MAX_STRINGS = 4;
+
 /*
  * 同じ系統の証拠が重なったときの割引。
  * 1 件目はそのまま、2 件目は半分、3 件目は 1/4 …と効きを落とす。
  * 「名前が 3 通りの書き方で一致した」を 3 つぶんの証拠として数えないため。
+ *
+ * ただし名指しだけは落とし方を緩める。`_hp` と `hp` と `HP` の一致は
+ * 同じ 1 つの名前を 3 通りに読んだだけだが、
+ *
+ *   「攻撃力アップ:%d 基ダ×(100+%d+[コンボ:%d])÷100」
+ *   「撃破時攻撃力アップ:%d 基ダ×(100+%d)÷100」
+ *   「本能玉ダメージアップ:%d 攻撃力:%d +%d%」
+ *
+ * は、開発者が別々の場面について別々に書いた 3 つの文で、
+ * そのどれもがこの関数だけから参照されている。1 つを 3 通りに読んだのとは違う。
+ * ここを同じ割引にすると、文言を 4 本持つ本物と 1 本しか無い隣が並んでしまう。
  */
-function damping(nth) {
+const DAMPING_RATE = { [FAMILY.NAMING]: 0.45 };
+
+function damping(nth, family) {
   if (nth <= 0) return 1;
-  return 1 / (1 + nth * 1.2);
+  const rate = DAMPING_RATE[family] != null ? DAMPING_RATE[family] : 1.2;
+  return 1 / (1 + nth * rate);
 }
 
 const LN = Math.log;
@@ -317,7 +478,7 @@ export function fuse(items, opts) {
     counted.set(key, nth + 1);
 
     // 1 件の効き（対数オッズ）。濃さで指数を落とし、重複で割り引く。
-    let delta = LN(lr) * (it.strength == null ? 1 : it.strength) * damping(nth);
+    let delta = LN(lr) * (it.strength == null ? 1 : it.strength) * damping(nth, family);
     // 打ち消す証拠（尤度比が 1 未満）は割り引かない。危険側に倒さないため。
     if (delta > 0) delta *= scale;
 
@@ -358,13 +519,28 @@ export function fuse(items, opts) {
   const scale = 0.2 + 0.8 * Math.max(0, Math.min(1, idLogOdds / LN(10)));
   for (const it of corroborating) apply(it, scale);
 
-  const probability = 1 / (1 + Math.exp(-logOdds));
   const families = new Set();
   let verified = 0;
   for (const d of detailed) {
     if (d.applied > 0) families.add(d.family);
     if (d.kind === 'verified' && d.applied > 0) verified++;
   }
+
+  /*
+   * 命令まで降りて確かめていないものは、確かさの天井を下げる。
+   *
+   * このファイルの冒頭に書いてあるきまりの 2 番目
+   * 「確定を名乗れるのは、逆アセンブルして確かめた証拠があるときだけ」は、
+   * これまで decide() の判定にしか効いていなかった。確率のほうは素通しで、
+   * 表に書いてあることを足しただけの候補が 100.000% と出ていた。
+   *
+   * それは表示として嘘であるだけでなく、本物と 2 位を並ばせて
+   * 「2 位との差が足りない」を作り出していた。実測したものと、
+   * していないものが、同じ 100% で並んでいたため。
+   */
+  if (!verified) logOdds = Math.min(logOdds, UNVERIFIED_CEIL);
+
+  const probability = 1 / (1 + Math.exp(-logOdds));
 
   return {
     logOdds,
@@ -401,6 +577,14 @@ export const VERDICT = {
 
 const CONFIRM = { p: 0.99, margin: LN(20), families: 3 };
 const LIKELY = { p: 0.85, margin: LN(4) };
+/* 命令で確かめていないものが名乗れる上限（97%）。確定の 99% には届かせない。 */
+const UNVERIFIED_CEIL = LN(0.97 / 0.03);
+/*
+ * ここを下回ったら、名前を出さない。
+ * 5% は「20 個に 1 個は当たる」で、答えとして見せられる下限としてはぎりぎり。
+ * これより低いものを画面に出すくらいなら、見つからなかったと言う方がいい。
+ */
+const AMBIGUOUS_FLOOR = 0.05;
 
 const VERDICT_ORDER = { none: 0, ambiguous: 1, likely: 2, confirmed: 3 };
 
@@ -440,8 +624,17 @@ export function decide(ranked, opts) {
   let verdict = VERDICT.NONE;
   if (!missing.length) verdict = VERDICT.CONFIRMED;
   else if (top.fusion.probability >= LIKELY.p && margin >= LIKELY.margin) verdict = VERDICT.LIKELY;
-  else if (top.fusion.probability >= 0.35 || (runnerUp && margin < LIKELY.margin)) verdict = VERDICT.AMBIGUOUS;
-  else verdict = VERDICT.NONE;
+  else if (top.fusion.probability >= 0.35 ||
+    (runnerUp && margin < LIKELY.margin && top.fusion.probability >= AMBIGUOUS_FLOOR)) {
+    /*
+     * 「上位が拮抗している」だけで割れていると言ってはいけない。
+     * 確からしさが 0 のものどうしも拮抗する。それは割れているのではなく、
+     * 何も見つかっていない。ここを緩くしていたせいで、HP を探した人の画面に
+     * 「絞りきれていません／VideoFrameLoggingBufferService.curIdx／確からしさ 0%」
+     * が出ていた。名前が出れば、読む人はそれを答えとして受け取る。
+     */
+    verdict = VERDICT.AMBIGUOUS;
+  } else verdict = VERDICT.NONE;
 
   /*
    * 目的に結びつく手がかりが無いものは、どれだけ形が確かでも「見つかった」とは言わない。

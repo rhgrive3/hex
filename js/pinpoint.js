@@ -31,12 +31,13 @@
 import {
   matchField, typeFits, accessorKind, matchText, matchName, normalizeFieldName, fieldRole,
 } from './goals.js';
-import { evidence, fuse, decide, explain, starsOf, VERDICT } from './evidence.js';
+import { evidence, exclusiveLR, rarityLR, EXCLUSIVE_MAX_STRINGS, fuse, decide, explain, starsOf, VERDICT } from './evidence.js';
 import { verifyAccessor, verifyFunctionHandlesField, selfRegisters } from './verify.js';
 import { findValueUpdates, constantComparisons } from './dataflow.js';
 import { plainFieldName } from './fields.js';
-import { learnVendors, vendorOf, vendorConflicts } from './vendors.js';
+import { vendorsOf, vendorOf, vendorConflicts } from './vendors.js';
 import { evidenceFor as shapeEvidenceFor, byGoal as shapesByGoal } from './shapes.js';
+import { describePurpose, changeAt } from './purpose.js';
 
 /* 目的 → 地図の部品。クラスの担当が目的と合っているかを見るために使う。 */
 const GOAL_TO_CATEGORY = {
@@ -110,7 +111,7 @@ export async function pinpointField(opts) {
    * ゲーム本体が C++ のアプリでは、名前が残っているのが広告 SDK だけになるので、
    * これをやらないと「所持金 ＝ 広告報酬の数」を自信満々で答えてしまう。
    */
-  const vendors = learnVendors(Array.from(fields.classes.keys()));
+  const vendors = vendorsOf(fields);
 
   /* ── 2. 候補を集める ───────────────────────────────────
      名前が当たった値だけでなく、「目的に合うクラスが持っている数値」も拾う。
@@ -722,8 +723,10 @@ export async function pinpointLocation(opts) {
         functions: [], updates: [], compares: [],
         goalStringRefs: 0, evidence: [], verifications: [],
         sites: (sh.sites || []).map((s) => ({ first: s.addr, addr: null, loads: 0, stores: 1 })),
+        // 走査で「ここで変わった」と見えた場所。裏取りはこの住所から始める。
+        shapeSites: (sh.sites || []).map((s) => s.addr),
         siteCount: sh.usedAsAmount || (sh.decreases + sh.increases),
-        fusion: null, shape: sh,
+        fusion: null, shape: sh, proof: [],
       });
     }
   }
@@ -731,7 +734,7 @@ export async function pinpointLocation(opts) {
   if (!byKey.size) return Object.assign({}, empty, { checked, missing: ['no-value-change'] });
 
   /* 2. コード全体で、同じ場所を触っている命令がいくつあるかを数える */
-  const list = Array.from(byKey.values());
+  let list = Array.from(byKey.values());
   if (o.scanAccess) {
     try {
       const groups = await o.scanAccess(list.slice(0, 8).map((e) => ({
@@ -745,6 +748,33 @@ export async function pinpointLocation(opts) {
       }
     } catch { /* 数えられなくても、形の証拠だけで並べる */ }
   }
+
+  /*
+   * 2''. 形から立てた候補を、命令まで降りて裏取りする。
+   *
+   * ここまでの候補は「セクションを 1 回舐めた統計」でしかない。統計は
+   * 「+0x30 は 17 か所で減っている」とは言うが、**その 1 か所を開いて見せる**
+   * ことはできない。読む人が確かめられないものを答えとは呼べない。
+   *
+   * そこで上位だけ、その場所を書き換えている関数を実際に逆アセンブルして、
+   * 「0x1002f4aa0 の 5 命令がそれだ」というところまで持っていく。
+   * 確かめられなかった候補は、確かめられなかったぶん点を下げる。
+   */
+  await verifyShapes(list, o, progress, cancelled);
+
+  /*
+   * 2'''. 同じ場所を指している候補を 1 つにまとめる。
+   *
+   * 候補は 2 つの入口から立つ（目的の文言を参照する関数の中で見つけた場所と、
+   * コード全体のふるまいから立てた場所）。同じ +0x30 が両方から出てくると、
+   * 一覧に +0x30 が 2 行並び、しかも **お互いを 2 位として競わせてしまう**。
+   * 2 位との差で決着を測っているので、これは「自分自身に負けて絞りきれない」
+   * という壊れ方になる。同じ場所は同じ 1 つの主張なので、証拠は足し合わせる。
+   *
+   * クラス表の無いバイナリでは、場所の身元はずらし幅そのもの
+   * （ベースレジスタ名 x8 / x19 は、その関数の中でしか意味を持たない）。
+   */
+  list = mergeByOffset(list);
 
   /* 3. 証拠を組む */
   for (const e of list) {
@@ -785,10 +815,90 @@ export async function pinpointLocation(opts) {
       const sh = shapeEvidenceFor(o.shapes, Number(e.offset), goal.id);
       if (sh) {
         e.shape = sh.shape;
-        for (const c of sh.codes) e.evidence.push(evidence(c.code, c.strength, c.detail));
+        /*
+         * そのふるまいが、どれだけ珍しいか。
+         *
+         * 走査で見えた位置は 342 個あって、そのうち体力の形（減って・増えて・
+         * 0 で止まって・減らす量がよそから来る）に当てはまるのは 4 個しかない。
+         * ここを固定の ×7 で数えていたので、いくら形が合っていても
+         * 「文言を参照している関数の中にあった」に負けていた。
+         * 珍しさは測れるのだから、測った値を使う。
+         */
+        for (const c of sh.codes) {
+          const lr = SHAPE_CODES.has(c.code)
+            ? rarityLR(o.shapes.size, shapeMatchCount(o.shapes, goal.id))
+            : null;
+          e.evidence.push(evidence(c.code, c.strength, c.detail, lr));
+        }
       }
     }
 
+    /*
+     * 命令まで降りて確かめられたこと。ここだけが「開いて見せられる」証拠になる。
+     */
+    if (e.fromShape) {
+      const proof = e.proof || [];
+      const drains = proof.filter((p) => p.change &&
+        (p.change.work === 'drain' || p.change.work === 'feed'));
+      const changes = proof.filter((p) => p.change);
+      if (drains.length) {
+        e.evidence.push(evidence('loc-drain-verified', Math.min(1, drains.length / 2), {
+          n: drains.length, address: drains[0].change.address,
+          fn: drains[0].fn, from: drains[0].change.amount || null,
+          offset: e.offset,
+        }));
+      } else if (changes.length) {
+        e.evidence.push(evidence('loc-rmw', Math.min(1, changes.length / 2), {
+          n: changes.length, address: changes[0].change.address,
+          op: (changes[0].change.ops || [])[0] || null,
+        }));
+      }
+      const clamped = changes.filter((p) => p.change.clamped);
+      if (clamped.length) {
+        e.evidence.push(evidence('loc-clamp-verified', Math.min(1, clamped.length / 2), {
+          n: clamped.length, address: clamped[0].change.address,
+        }));
+      }
+      /*
+       * 上限がもう 1 つの値にある（＝「今の値／上限」の組）。
+       * 体力・スタミナ・ゲージだけが持つ形で、所持金やスコアは持たない。
+       */
+      const capped = changes.find((p) => p.change.cappedBy);
+      if (capped) {
+        e.evidence.push(evidence('loc-capped-by-field', 1, {
+          offset: e.offset, cap: capped.change.cappedBy.disp,
+          address: capped.change.address, fn: capped.fn,
+        }));
+      }
+      /*
+       * どの裏取りでも「1 ずつしか動いていない」なら、それは数える物であって
+       * 体力や所持金ではない（残り回数・添字・フレーム数）。
+       * これを入れるまで、1 ずつ減って 0 で止まるカウンタが所持金の 1 位だった。
+       */
+      const moves = changes.filter((p) => p.change.work !== 'set' && p.change.work !== 'read');
+      const byOne = moves.filter((p) => p.change.amount &&
+        p.change.amount.kind === 'imm' &&
+        (p.change.amount.value === 1 || p.change.amount.value === 1n));
+      /*
+       * 「よそから来た量」を 1 度も見なかったか。
+       *
+       * 体力なら、どこかに必ず「別のオブジェクトの値ぶん引く」場所がある。
+       * 開いて確かめた場所がぜんぶ ±1 で、外から来た量が 1 つも無いなら、
+       * それは数える物のほう。全部が ±1 のときだけを見ていると、量の取れなかった
+       * 1 件が混ざるだけで、カウンタが体力の 1 位のまま通ってしまう。
+       */
+      const fromOutside = moves.some((p) => p.change.amount &&
+        (p.change.amount.kind === 'field' || p.change.amount.kind === 'call' ||
+         p.change.amount.kind === 'arg'));
+      if (moves.length >= 2 && byOne.length * 2 >= moves.length && !fromOutside) {
+        e.evidence.push(evidence('loc-counter-verified', 1,
+          { n: moves.length, byOne: byOne.length }));
+      }
+      if (e.verifyTried && !changes.length) {
+        // 開いてみたが、その場所を書き換えている命令が 1 つも見当たらなかった
+        e.evidence.push(evidence('loc-unverified', 1, { tried: e.verifyTried }));
+      }
+    }
   }
 
   /*
@@ -885,6 +995,18 @@ export async function pinpointFunction(opts) {
     c.why = explain(c.fusion);
   }
 
+  /*
+   * 「絞りきれていません」には 2 通りある。
+   *   決め手が無くて並んでいる  … まだ何も分かっていない
+   *   どれも命令で確かめられた  … その処理が本当に複数ある
+   *
+   * 攻撃力の計算が sub_100036588（アップ・コンボ）と sub_10003950C（ダウン・無効）に
+   * 分かれているのは、絞り込みの失敗ではなく、そういう作りだという答え。
+   * 数えておいて、画面で言い分けられるようにする。
+   */
+  const tiedVerified = candidates.filter(
+    (c) => c.fusion && c.fusion.verified > 0 && c.fusion.probability >= CONFIRM_P).length;
+
   return {
     goal, kind: 'function',
     verdict: result.verdict,
@@ -893,9 +1015,135 @@ export async function pinpointFunction(opts) {
     margin: result.margin,
     marginRatio: result.marginRatio,
     missing: result.missing,
+    tiedVerified,
     candidates: candidates.slice(0, o.limit || 12),
     universe, checked,
   };
+}
+
+/* ────────────────────────────────────────────────────────────
+   形から立てた候補を、逆アセンブルで裏取りする
+   ──────────────────────────────────────────────────────────── */
+
+/* 裏取りに開く関数の数と、開く候補の数。ここを増やすと確実に遅くなる。 */
+const VERIFY_CANDIDATES = 4;
+const VERIFY_FUNCTIONS = 3;
+
+/**
+ * 候補の中の「形から出たもの」について、その位置を書き換えている関数を実際に開き、
+ * 何をしているのかを命令から取り出して e.proof に積む。
+ */
+async function verifyShapes(list, o, progress, cancelled) {
+  if (!o.analyze) return;
+  const targets = list.filter((e) => e.fromShape && (e.shapeSites || []).length)
+    .slice(0, VERIFY_CANDIDATES);
+  if (!targets.length) return;
+  const program = o.program || null;
+  let done = 0;
+  for (const e of targets) {
+    e.proof = [];
+    e.verifyTried = 0;
+    const seen = new Set();
+    for (const site of e.shapeSites) {
+      if (cancelled() || spent(o)) return;
+      if (e.proof.length >= VERIFY_FUNCTIONS) break;
+      const range = program ? program.functionRange(site) : null;
+      const start = range ? range.start : null;
+      if (start == null || seen.has(start.toString())) continue;
+      seen.add(start.toString());
+      progress({ phase: 'verify-shape', done: done++, all: targets.length * VERIFY_FUNCTIONS });
+      charge(o);
+      e.verifyTried++;
+      let model = null;
+      try { model = await o.analyze(start, range.end != null ? range.end : null); }
+      catch { model = null; }
+      if (!model) continue;
+      const purpose = describePurpose({
+        model, addr: start, fields: o.fields, textAt: o.textAt || null,
+      });
+      if (!purpose) continue;
+      const change = changeAt(purpose, e.offset);
+      /*
+       * その場所を触っていなければ、証拠にはしない。
+       * 走査の側の取り違え（分岐をまたいだ追跡）はここで落ちる。
+       */
+      if (!change) continue;
+      e.proof.push({ fn: start, change, purpose, site });
+      if (!e.functions.some((f) => f.addr === start)) {
+        e.functions.push({ addr: start, name: null, strings: 0 });
+      }
+    }
+    /*
+     * 大きさは、実際に読み書きしている命令に合わせる。
+     *
+     * 見出しに「8 バイト」と出しながら、そのすぐ下の裏取りが
+     * 「4 バイトを減らす」と言っている、という食い違いがここで消える。
+     * 走査や別の候補が見た大きさより、開いて数えたほうが確か。
+     */
+    const tally = new Map();
+    for (const p of e.proof) {
+      const s = p.change.size;
+      if (s) tally.set(s, (tally.get(s) || 0) + 1);
+    }
+    let best = null;
+    for (const [s, n] of tally) if (!best || n > best[1]) best = [s, n];
+    if (best) { e.size = best[0]; e.sizeVerified = true; }
+  }
+}
+
+/**
+ * 同じずらし幅を指している候補を 1 つにたたむ。
+ *
+ * 残すのは「材料の多いほう」。目的の文言を参照する関数から出たものは
+ * 読んだ命令と比較を持っているので、そちらを台にして、ふるまい側の
+ * 裏取り（proof / shape / 走査で数えた場所）を足し込む。
+ */
+function mergeByOffset(list) {
+  const byOffset = new Map();
+  const out = [];
+  for (const e of list) {
+    const key = e.offset != null ? e.offset.toString() : e.key;
+    const hit = byOffset.get(key);
+    if (!hit) { byOffset.set(key, e); out.push(e); continue; }
+    // 大きさは、実際に開いて数えたほうを優先する（見出しと裏取りを食い違わせない）
+    if (e.sizeVerified && !hit.sizeVerified) { hit.size = e.size; hit.sizeVerified = true; }
+    else if (!hit.size && e.size) hit.size = e.size;
+    if (!hit.base && e.base) hit.base = e.base;
+    if (e.fromShape) {
+      hit.fromShape = true;
+      hit.shape = hit.shape || e.shape;
+      hit.shapeSites = (hit.shapeSites || []).concat(e.shapeSites || []);
+      hit.proof = (hit.proof || []).concat(e.proof || []);
+      if (e.verifyTried) hit.verifyTried = (hit.verifyTried || 0) + e.verifyTried;
+    } else {
+      hit.updates = hit.updates.concat(e.updates);
+      hit.compares = hit.compares.concat(e.compares);
+      hit.goalStringRefs += e.goalStringRefs;
+    }
+    for (const f of e.functions) {
+      if (!hit.functions.some((x) => x.addr === f.addr)) hit.functions.push(f);
+    }
+    if ((e.siteCount || 0) > (hit.siteCount || 0)) {
+      hit.siteCount = e.siteCount;
+      if (e.sites && e.sites.length) hit.sites = e.sites;
+    }
+  }
+  return out;
+}
+
+/* 「命令で確かめたうえで、ほぼ確実」と言える確率。 */
+const CONFIRM_P = 0.99;
+
+/* ふるまいが「その目的の値である」と名指ししている証拠。珍しさから尤度比を作る。 */
+const SHAPE_CODES = new Set(['loc-damage-source', 'loc-resource-drain', 'loc-self-resource']);
+
+/* その目的のふるまいに当てはまる位置が、走査で見えた中に何個あるか。 */
+const shapeMatchCache = new WeakMap();
+function shapeMatchCount(shapes, goalId) {
+  let per = shapeMatchCache.get(shapes);
+  if (!per) { per = new Map(); shapeMatchCache.set(shapes, per); }
+  if (!per.has(goalId)) per.set(goalId, Math.max(1, shapesByGoal(shapes, goalId, 64).length));
+  return per.get(goalId);
 }
 
 /* rank.js の理由コード → 尤度比つきの証拠へ翻訳する。
@@ -923,6 +1171,36 @@ function buildFunctionCandidate(c, goal, o) {
     const strength = Math.max(0.2, Math.min(1, Math.abs(r.points) / 25));
     ev.push(evidence(code, strength, r.detail));
   }
+
+  /*
+   * 開発者が書いた文言による名指し。
+   *
+   * 「攻撃力アップ:%d 基ダ×(100+%d+[コンボ:%d])÷100」を参照している関数が、
+   * 17MB の中にこの 1 個しかない ——「攻撃力の計算はここ」と言い切れる材料は、
+   * クラス名が残っていないアプリではこれしかない。上の rank 由来の証拠は
+   * 「文字列を参照している」までしか見ておらず、何個の関数が参照しているかを
+   * 捨てていたので、ここで排他性から尤度比を作り直す。
+   *
+   * 別々の文言はそれぞれ独立した観測として数える（同じ文言の重複は数えない）。
+   */
+  const total = o.functionCount || (o.symbols ? o.symbols.functionCount : 0) || 0;
+  if (total > 0) {
+    const seenText = new Set();
+    const named = [];
+    for (const s of c.strings || []) {
+      if (!s || s.users == null || seenText.has(s.text)) continue;
+      seenText.add(s.text);
+      const lr = exclusiveLR(total, s.users, s.score || 0, s.text);
+      if (lr <= 1) continue;
+      named.push({ s, lr });
+    }
+    // 効きの強い（＝いちばん排他的な）ものから、決められた本数だけ数える
+    named.sort((a, b) => b.lr - a.lr);
+    for (const { s, lr } of named.slice(0, EXCLUSIVE_MAX_STRINGS)) {
+      ev.push(evidence('fn-string-exclusive', 1,
+        { text: s.text, addr: s.addr, site: s.site, users: s.users, of: total }, lr));
+    }
+  }
   if (owner) {
     const m = matchName(goal, owner.sel || '');
     if (m) ev.push(evidence('fn-selector', m.score, { sel: owner.sel, className: owner.className }));
@@ -947,6 +1225,49 @@ function buildFunctionCandidate(c, goal, o) {
     verifications: [],
     updates: [],
     fusion: null,
+  };
+}
+
+/*
+ * 文言に書かれている計算式の数字が、命令の即値として実在するか。
+ *
+ * 「攻撃力アップ:%d 基ダ×(100+%d+[コンボ:%d])÷100」の 100 が、
+ * その文言を参照している関数の中に即値として 12 個ある——これは偶然ではない。
+ * 開発者の書いた説明と、コンパイラが吐いた命令が、別々の出どころで一致している。
+ *
+ * 小さい数（0〜9）は何にでも出るので数えない。
+ */
+const FORMULA_MIN_CONST = 10;
+
+function verifyFormula(c, insns) {
+  const wanted = new Map();          // 定数 → それを書いている文言
+  for (const s of c.strings || []) {
+    if (!s || !s.text || s.users == null || s.users > 2) continue;
+    for (const m of String(s.text).matchAll(/\d+/g)) {
+      const v = Number(m[0]);
+      if (!(v >= FORMULA_MIN_CONST) || !Number.isSafeInteger(v)) continue;
+      if (!wanted.has(v)) wanted.set(v, s.text);
+    }
+  }
+  if (!wanted.size) return null;
+
+  const seen = new Map();
+  for (const i of insns) {
+    for (const op of i.ops || []) {
+      if (!op || op.k !== 'imm') continue;
+      const v = Number(op.value);
+      if (!wanted.has(v)) continue;
+      seen.set(v, (seen.get(v) || 0) + 1);
+    }
+  }
+  if (!seen.size) return null;
+
+  const hits = [...seen.entries()].sort((a, b) => b[1] - a[1]);
+  const [value, count] = hits[0];
+  return {
+    // 何度も出てくるほど、たまたま同じ数字だった見込みは薄い
+    strength: Math.min(1, 0.5 + 0.1 * count),
+    detail: { value, count, text: wanted.get(value), constants: hits.length },
   };
 }
 
@@ -990,6 +1311,18 @@ async function verifyFunctionCandidate(c, goal, o) {
     const use = insns.filter((i) => /^(mul|madd|msub|sdiv|udiv|fmul|fdiv)/i.test(i.mnemonic || ''));
     if (use.length) c.evidence.push(evidence('fn-numeric', Math.min(1, use.length / 3), { n: use.length }));
   }
+
+  /*
+   * 文言が書いている計算式を、命令の即値で確かめる。
+   * クラス表が無いアプリでは、これが唯一の「逆アセンブルで確かめた」になる。
+   */
+  const formula = verifyFormula(c, insns);
+  if (formula) {
+    c.evidence.push(evidence('fn-formula-verified', formula.strength, formula.detail));
+    c.verifications.push(Object.assign({ what: 'formula' }, formula.detail));
+    c.verified = true;
+  }
+
   c.verifications.push({ what: 'instructions', instructions: c.instructions });
 }
 
