@@ -228,13 +228,145 @@ export function demangleSwift(name) {
   return words.join('.') + (kind ? '   [' + kind + ']' : '');
 }
 
+/* ── 読みやすい形に整える ────────────────────────────────────
+ *
+ * マングルを解いただけでは、まだ人の読む文にはならない:
+ *
+ *   std::__1::basic_string<char, __1::char_traits<char>,
+ *     __1::allocator<char>>::append(const char *)
+ *
+ * libc++ は名前空間に __1 を挟むので、それがそのまま出る。
+ * 標準の型はほとんどが別名（typedef）で知られているので、そちらに直す。
+ */
+
+/** libc++ の内部名前空間を落とす。 */
+function stripInline(s) {
+  return s
+    .replace(/std::__[0-9]+::/g, 'std::')
+    .replace(/(^|[^\w:])__[0-9]+::/g, '$1std::');
+}
+
+/** <> の中身を、入れ子を数えながら切り出す。 */
+function splitArgs(s) {
+  const out = [];
+  let depth = 0, cur = '';
+  for (const ch of s) {
+    if (ch === '<' || ch === '(') depth++;
+    if (ch === '>' || ch === ')') depth--;
+    if (ch === ',' && depth === 0) { out.push(cur.trim()); cur = ''; continue; }
+    cur += ch;
+  }
+  if (cur.trim()) out.push(cur.trim());
+  return out;
+}
+
+/** テンプレート引数のかたまりを 1 つ見つけて [開始, 終了) を返す。 */
+function findTemplate(s, from) {
+  const open = s.indexOf('<', from);
+  if (open < 0) return null;
+  let depth = 0;
+  for (let i = open; i < s.length; i++) {
+    if (s[i] === '<') depth++;
+    else if (s[i] === '>') { depth--; if (!depth) return { open, close: i }; }
+  }
+  return null;
+}
+
+/* 標準ライブラリの、よく知られた別名。中身が既定どおりのときだけ短くする。 */
+const ALIASES = [
+  { name: 'std::basic_string', args: ['char'], to: 'std::string' },
+  { name: 'std::basic_string', args: ['wchar_t'], to: 'std::wstring' },
+  { name: 'std::basic_ostream', args: ['char'], to: 'std::ostream' },
+  { name: 'std::basic_istream', args: ['char'], to: 'std::istream' },
+  { name: 'std::basic_stringstream', args: ['char'], to: 'std::stringstream' },
+];
+/* 2 つめ以降が置き場（allocator など）なだけの型は、1 つめだけ残す。 */
+const DROP_TAIL = /^std::(vector|list|deque|set|multiset|forward_list|stack|queue)$/;
+const DROP_TAIL2 = /^std::(map|multimap|unordered_map|unordered_set)$/;
+
+/**
+ * 標準の型を、ふだん書く名前に戻す。
+ *   basic_string<char, char_traits<char>, allocator<char>>  →  std::string
+ *   vector<int, allocator<int>>                             →  std::vector<int>
+ */
+function simplifyStd(s) {
+  let out = s;
+  for (let guard = 0; guard < 40; guard++) {
+    const t = findTemplate(out, 0);
+    if (!t) break;
+    const head = /[\w:~]+$/.exec(out.slice(0, t.open));
+    if (!head) break;
+    const base = head[0];
+    const inner = out.slice(t.open + 1, t.close);
+    const args = splitArgs(inner).map((a) => simplifyStd(a));
+    let replaced = null;
+    for (const al of ALIASES) {
+      if (base === al.name && args.length && args[0] === al.args[0]) { replaced = al.to; break; }
+    }
+    if (replaced == null) {
+      if (DROP_TAIL.test(base) && args.length > 1) replaced = base + '<' + args[0] + '>';
+      else if (DROP_TAIL2.test(base) && args.length > 2) replaced = base + '<' + args.slice(0, 2).join(', ') + '>';
+      else replaced = base + '<' + args.join(', ') + '>';
+    }
+    const start = t.open - base.length;
+    out = out.slice(0, start) + replaced + out.slice(t.close + 1);
+    // 置き換えた部分より後ろに、まだテンプレートが残っているかもしれない
+    const next = out.indexOf('<', start + replaced.length);
+    if (next < 0) break;
+  }
+  return out;
+}
+
 /**
  * 名前を 1 つ渡すと、いちばん読みやすい形を返す。
  * どれでもなければ元の名前をそのまま返す（勝手に変えない）。
  */
 export function readableName(name) {
   if (!name) return name;
-  return demangleCxx(name) || demangleSwift(name) || name;
+  const cxx = demangleCxx(name);
+  if (cxx) return simplifyStd(stripInline(cxx));
+  return demangleSwift(name) || name;
+}
+
+/**
+ * コードの行に置くための、短い名前。
+ *
+ * 擬似コードの 1 行に
+ *   __ZNSt3__1plIcNS_11char_traitsIcEENS_9allocatorIcEEEE…
+ * や、その完全な復元形（150 字）を置いても読めない。行の中では
+ *   std::operator+
+ *   std::string::append
+ *   BattleCat::attack
+ * まで削る。完全な形は、その行を押したときに出す。
+ *
+ * @param {string} name  シンボル名（マングルされていてもいなくてもよい）
+ * @param {{keepNamespace?:boolean}} [opts]
+ */
+export function shortName(name, opts) {
+  if (!name) return name;
+  const o = opts || {};
+  let s = readableName(name);
+  if (s === name) {
+    // マングルでもなんでもない、ふつうの名前。頭の _ だけ落とす。
+    return name.replace(/^_+/, '') || name;
+  }
+  // 引数の並びを落とす（かっこの中はぜんぶ）
+  const paren = s.indexOf('(');
+  if (paren > 0) s = s.slice(0, paren);
+  // テンプレート引数を落とす
+  for (let guard = 0; guard < 40; guard++) {
+    const t = findTemplate(s, 0);
+    if (!t) break;
+    s = s.slice(0, t.open) + s.slice(t.close + 1);
+  }
+  s = s.replace(/\s+/g, ' ').replace(/ const$/, '').trim();
+  if (!o.keepNamespace) {
+    /* std:: だけは残す（どこの関数かが分かる手がかりなので）。
+       それ以外の長い名前空間は、末尾 2 つに切り詰める。 */
+    const parts = s.split('::');
+    if (parts.length > 2 && parts[0] !== 'std') s = parts.slice(-2).join('::');
+  }
+  return s || name;
 }
 
 /** 名前が読み直されたかどうか（画面で「元の名前」を併記するため）。 */

@@ -26,9 +26,9 @@ import {
 } from './ui.js';
 import { addrHex } from './format.js';
 import { decompile, decompiledText } from './decompile.js';
-import { cfgGraph, callGraph, renderGraph } from './graphview.js';
+import { cfgGraph, callGraph, renderGraph, graphLegend } from './graphview.js';
 import { inferTypes, recoverStruct, TypeStore, structToC, BASIC_TYPES, typeJa } from './types.js';
-import { readableName, isMangled, findCxxClasses, readVtable } from './rtti.js';
+import { readableName, shortName, isMangled, findCxxClasses, readVtable } from './rtti.js';
 import { importList, importsByFramework, exportList, findGlobals } from './linkage.js';
 import { assemble, suggestPatches, parseHexBytes, hexOf } from './patch.js';
 import { runScript, SAMPLES, makeEmulator } from './script.js';
@@ -84,7 +84,7 @@ export function currentFunctionAddr(app) {
 function fnName(app, addr) {
   if (addr == null) return '—';
   const n = app.symbols ? (app.symbols.nameAt(addr) || app.symbols.label(addr)) : null;
-  return n ? readableName(n) : 'sub_' + addr.toString(16).toUpperCase();
+  return n ? shortName(n) : 'sub_' + addr.toString(16).toUpperCase();
 }
 
 function needFunction(app) {
@@ -126,13 +126,31 @@ function rowMapper(app) {
    入口: 道具箱
    ══════════════════════════════════════════════════════════ */
 
-export function showTools(app) {
-  const sheet = new Sheet('解析ツール');
-  const addr = currentFunctionAddr(app);
+/*
+ * 解析の入口は、ここ 1 つ。
+ *
+ * 以前は「自動解析」「解析ツール」「機能」がツールバーに別々に並んでいて、
+ * どれが何をする物なのか、どれが当てにならない物なのかが分からなくなっていた。
+ * ここでは
+ *   1. まず何をすればいいか   （自動解析 → 目的から探す）
+ *   2. いま見ている関数を調べる
+ *   3. ファイル全体を調べる
+ *   4. 書き換える・自動化する
+ * の順に置き、1 行ごとに「事実 / 推定 / 参考」の札を付ける。
+ * 札の意味は「この結果はどこまで信用できるか」に 1 枚でまとめてある。
+ */
 
-  sheet.body.append(el('div', 'hint',
-    'IDA や Ghidra にある道具をひととおり用意しています。\n' +
-    'はじめての方は「擬似コード」から見るのがおすすめです。'));
+/* この道具は、バイナリを読んだだけか、そこから推し量ったものか。 */
+const FACT = 'fact';
+const INFER = 'infer';
+const HINT = 'hint';
+
+const LEVEL_WORD = { fact: '事実', infer: '推定', hint: '参考' };
+const LEVEL_CLASS = { fact: 'tag-fact', infer: 'tag-infer', hint: 'tag-hint' };
+
+export function showTools(app) {
+  const sheet = new Sheet('解析');
+  const addr = currentFunctionAddr(app);
 
   if (addr != null) {
     const b = block('いま見ている関数');
@@ -141,39 +159,98 @@ export function showTools(app) {
     sheet.body.append(b);
   }
 
-  const perFunction = list();
-  perFunction.append(groupRow('この関数を調べる'));
-  const item = (label, sub, fn) => perFunction.append(tapRow(label, { sub, onTap: () => { sheet.close(); fn(); } }));
+  /** 1 行。level は「その結果をどこまで信じていいか」。 */
+  const rowIn = (ul) => (level, label, sub, fn) => ul.append(tapRow(label, {
+    sub,
+    tag: LEVEL_WORD[level],
+    tagClass: LEVEL_CLASS[level],
+    right: '›',
+    onTap: () => { sheet.close(); fn(); },
+  }));
 
-  item('擬似コード（C 風に読む）', 'アセンブリを if / while / 代入の形に直します。いちばん読みやすい形です。',
-    () => { const a = needFunction(app); if (a != null) showDecompiler(app, a); });
-  item('制御フロー図（CFG）', '分かれ道と合流を絵にします。ループの位置がひと目で分かります。',
-    () => { const a = needFunction(app); if (a != null) showCfg(app, a); });
-  item('呼び出し図（Call Graph）', 'この関数を呼ぶ人・この関数が呼ぶ相手を、上下に広げて描きます。',
-    () => { const a = needFunction(app); if (a != null) showCallGraphPanel(app, a); });
-  item('引数・戻り値・変数の型', '何を受け取って何を返すか、スタックに何を置いているかを推定します。',
-    () => { const a = needFunction(app); if (a != null) showTypes(app, a); });
-  item('構造体を組み立てる', '[x0, #0x20] のような使い方から、オブジェクトの中身の並びを起こします。',
-    () => { const a = needFunction(app); if (a != null) showStructRecover(app, a); });
-  item('実行してみる（デバッガ）', '1 命令ずつ動かして、レジスタとメモリの変化を見ます。実機は使いません。',
-    () => { const a = needFunction(app); if (a != null) showDebugger(app, a); });
-  item('名前を付ける / メモを書く', '分かったことにその場で名前を付けます。次に見たときに思い出せます。',
-    () => { const a = needFunction(app); if (a != null) showRename(app, a); });
+  /* ── 1. まず何をすればいいか ── */
+  const first = list();
+  first.append(groupRow('まず、ここから'));
+  const item0 = rowIn(first);
+  item0(INFER, '自動解析（ぜんぶ自動で調べる）',
+    '開いてから終わるまで待つだけ。何が分かって、何が分からなかったかを最後にまとめて言います。',
+    () => app.openOverview());
+  item0(INFER, '目的から探す（HP・所持金・攻撃力…）',
+    '探したいものを選ぶか、ふつうの言葉で書きます。名前・参照・命令の 3 方向から絞ります。',
+    () => app.openInvestigate());
+  item0(HINT, '使っている言葉から見る（機能一覧）',
+    '文字列を機能ごとに分けたものです。ここに出るのは手がかりで、答えではありません。',
+    () => app.openFeatures());
+  sheet.body.append(first);
+
+  /* ── 2. いま見ている関数 ── */
+  const perFunction = list();
+  perFunction.append(groupRow('いま見ている関数を調べる'));
+  const item = rowIn(perFunction);
+  const withFn = (fn) => () => { const a = needFunction(app); if (a != null) fn(a); };
+
+  item(INFER, '擬似コード（C 風に読む）',
+    'アセンブリを if / while / 代入の形に直します。いちばん読みやすい形です。訳なので、元のソースそのものではありません。',
+    withFn((a) => showDecompiler(app, a)));
+  item(FACT, '制御フロー図（分かれ道を絵にする）',
+    '命令の並びをそのまま絵にしたものです。ループの位置がひと目で分かります。',
+    withFn((a) => showCfg(app, a)));
+  item(FACT, '呼び出し図（誰が誰を呼ぶか）',
+    'この関数を呼ぶ側・この関数が呼ぶ相手を、上下に広げて描きます。',
+    withFn((a) => showCallGraphPanel(app, a)));
+  item(INFER, '引数・戻り値・変数の型',
+    '使われ方からの推定です。「4 バイトで比較されている」以上のことは言えません。',
+    withFn((a) => showTypes(app, a)));
+  item(INFER, '構造体を組み立てる',
+    '[x0, #0x20] のような使い方から、オブジェクトの中身の並びを起こします。触られていない場所は空きのままです。',
+    withFn((a) => showStructRecover(app, a)));
+  item(FACT, '実行してみる（1 命令ずつ・デバッガ）',
+    '命令のとおりに動かして、レジスタとメモリの変化を見ます。実機は使いません。',
+    withFn((a) => showDebugger(app, a)));
+  item(FACT, '名前を付ける / メモを書く',
+    '分かったことにその場で名前を付けます。次に見たときに思い出せます。',
+    withFn((a) => showRename(app, a)));
   sheet.body.append(perFunction);
 
+  /* ── 3. ファイル全体 ── */
   const whole = list();
   whole.append(groupRow('ファイル全体を調べる'));
-  const item2 = (label, sub, fn) => whole.append(tapRow(label, { sub, onTap: () => { sheet.close(); fn(); } }));
-  item2('外とのつながり（インポート / ライブラリ）', '借りている関数から、アプリの性格が見えます。', () => showLinkage(app));
-  item2('グローバル変数', 'どこからでも触れる置き場。所持金やログイン状態はここにあります。', () => showGlobals(app));
-  item2('C++ のクラス（RTTI / vtable）', '仮想関数の並びとクラス名を取り出します。', () => showCxxClasses(app));
-  item2('自分で付けた名前とメモ', '書き溜めたものの一覧・書き出し・読み込み。', () => showNotes(app));
-  item2('構造体（自分で作ったもの）', '作った型の一覧と、C のヘッダとしての書き出し。', () => showStructs(app));
-  item2('パッチ（命令の書き換え）', '命令を書き換えて、結果を新しいファイルとして保存します。', () => showPatches(app));
-  item2('スクリプト（自動化）', '同じ作業を何百回も繰り返すときに。IDAPython にあたるものです。', () => showScript(app));
-  item2('プラグイン', '自分で書いた機能を足します。', () => showPlugins(app));
-  item2('Unity（IL2CPP）の名前を戻す', 'global-metadata.dat を読み込むと、C# のクラス名とメソッド名が戻ります。', () => showIl2cpp(app));
+  const item2 = rowIn(whole);
+  item2(FACT, '外とのつながり（インポート / ライブラリ）',
+    'リンカの表をそのまま読んだものです。借りている関数から、アプリの性格が見えます。',
+    () => showLinkage(app));
+  item2(FACT, 'グローバル変数',
+    'どこからでも触れる置き場。所持金やログイン状態はここにあります。', () => showGlobals(app));
+  item2(FACT, 'C++ のクラス（RTTI / vtable）',
+    'バイナリに残っている型情報から、クラス名と仮想関数の並びを取り出します。', () => showCxxClasses(app));
+  item2(FACT, 'Unity（IL2CPP）の名前を戻す',
+    'global-metadata.dat を読み込むと、C# のクラス名とメソッド名が戻ります。', () => showIl2cpp(app));
   sheet.body.append(whole);
+
+  /* ── 4. 書き換える・ためる・自動化する ── */
+  const work = list();
+  work.append(groupRow('書き換える・自動化する'));
+  const item3 = rowIn(work);
+  item3(FACT, 'パッチ（命令の書き換え）',
+    '命令を書き換えて、結果を新しいファイルとして保存します。', () => showPatches(app));
+  item3(FACT, '自分で付けた名前とメモ',
+    '書き溜めたものの一覧・書き出し・読み込み。', () => showNotes(app));
+  item3(FACT, '構造体（自分で作ったもの）',
+    '作った型の一覧と、C のヘッダとしての書き出し。', () => showStructs(app));
+  item3(FACT, 'スクリプト（自動化）',
+    '同じ作業を何百回も繰り返すときに。IDAPython にあたるものです。', () => showScript(app));
+  item3(FACT, 'プラグイン', '自分で書いた機能を足します。', () => showPlugins(app));
+  sheet.body.append(work);
+
+  /* ── 5. 札の意味 ── */
+  const about = list();
+  about.append(groupRow('札の意味'));
+  about.append(tapRow('この結果はどこまで信用できるか', {
+    sub: '「事実」「推定」「参考」の違いと、機能ごとに測った精度。',
+    right: '›',
+    onTap: () => { sheet.close(); app.openAccuracyNotes(); },
+  }));
+  sheet.body.append(about);
 }
 
 /* ══════════════════════════════════════════════════════════
@@ -281,18 +358,50 @@ function lineMenu(app, sheet, line, insn) {
     { label: 'この場所へ移動', action: () => { sheet.close(); app.goToAddress(line.addr, { announce: true }); } },
     { label: 'アドレスをコピー', action: () => copyText(addrHex(line.addr), 'アドレス') },
   ];
+  /*
+   * 行の中では std::string::append まで短くしている。
+   * 本当の名前（テンプレート引数まで入った形）は、ここから見られるようにする。
+   */
+  const callTarget = insn && insn.callTarget != null ? insn.callTarget : null;
+  const raw = callTarget != null && app.symbols ? app.symbols.nameAt(callTarget) : null;
+  if (raw && isMangled(raw)) {
+    items.push({ label: 'この名前の元の形を見る', action: () => showRealName(raw) });
+  }
   if (insn) {
     items.push({ label: 'この行を書き換える（パッチ）', action: () => showPatchEditor(app, line.addr, insn) });
     items.push({ label: 'メモを書く', action: () => showComment(app, line.addr) });
   }
-  const target = /(\w+)\(/.exec(line.text);
-  if (target) {
+  const called = /(\w+)\(/.exec(line.text);
+  if (called) {
     items.push({
       label: '呼んでいる相手を調べる',
       action: () => { sheet.close(); app.openFunctionReport(line.addr); },
     });
   }
   menu(items, window.innerWidth / 2, window.innerHeight / 2);
+}
+
+/**
+ * 名前の「元の形」を見せる。
+ *
+ * 行に出しているのは短くした形なので、テンプレート引数や引数の型まで
+ * 確かめたいときのために、3 つの段階をぜんぶ並べる。
+ */
+function showRealName(raw) {
+  const sheet = new Sheet('この名前について');
+  const ul = list();
+  ul.append(groupRow('3 つの段階'));
+  ul.append(kvRow('行に出している形', shortName(raw)));
+  ul.append(kvRow('読める形に戻したもの', readableName(raw)));
+  sheet.body.append(ul);
+  sheet.body.append(el('div', 'sec-title', 'リンカが残した、そのままの名前'));
+  sheet.body.append(codeBlock(raw));
+  const chips = el('div', 'chips');
+  chips.append(button('コピー', 'chip', () => copyText(raw, '名前')));
+  sheet.body.append(chips);
+  sheet.body.append(el('div', 'hint',
+    'C++ は、同じ名前の関数を引数の型で見分けます。そのため引数の型まで名前に' +
+    '埋め込まれていて（マングリング）、そのままでは記号の列に見えます。'));
 }
 
 /** [x0, #0x20] に名前が付けられるか（Objective-C のクラス表から）。 */
@@ -309,17 +418,14 @@ function fieldNameFor(app, funcAddr, baseReg, offset) {
    ══════════════════════════════════════════════════════════ */
 
 export async function showCfg(app, addr) {
-  const sheet = new Sheet('制御フロー図');
+  /* 図は画面いっぱいで見せる。小さい窓に押し込むと、結局そのたびに広げることになる。 */
+  const sheet = new Sheet('制御フロー図', { size: 'full' });
   const status = el('div', 'hint', '解析しています…');
   sheet.body.append(status);
   const res = await modelOf(app, addr);
   if (!res || !res.model) { status.textContent = 'この場所は関数として解析できませんでした。'; return; }
   status.remove();
-
-  sheet.body.append(el('div', 'hint',
-    fnName(app, addr) + '\n' +
-    '四角が「まっすぐ進むひとかたまり」、線が「次にどこへ行くか」です。\n' +
-    '緑の線は条件が成り立ったとき、赤は成り立たなかったとき、太い線は前へ戻る（ループ）です。'));
+  sheet.setTitle('制御フロー図 — ' + fnName(app, addr));
 
   const map = rowMapper(app);
   const { nodes, edges } = cfgGraph(res.model, {
@@ -328,31 +434,29 @@ export async function showCfg(app, addr) {
     onNode: (b, a) => { sheet.close(); app.goToAddress(a, { announce: true }); },
   });
   if (!nodes.length) { sheet.body.append(el('div', 'hint', '図にできる情報がありませんでした。')); return; }
-  sheet.body.append(renderGraph(nodes, edges, {}));
 
-  const legend = list();
-  legend.append(groupRow('この図の読み方'));
-  legend.append(kvRow('四角', 'ひとかたまりの命令（basic block）'));
-  legend.append(kvRow('緑の線', '条件が成り立ったときに進む道'));
-  legend.append(kvRow('赤の線', '成り立たなかったときに進む道'));
-  legend.append(kvRow('戻る線', 'ループ。同じところを繰り返します'));
-  sheet.body.append(legend);
+  const head = el('div', 'graph-head');
+  head.append(el('span', null,
+    nodes.length + ' 個のかたまり · ' + edges.length + ' 本の道 · 箱を押すとその場所へ移動します'));
+  head.append(button('この図の読み方', 'chip', () => showGraphHelp('cfg')));
+  sheet.body.classList.add('nogrow');
+  sheet.body.append(head, renderGraph(nodes, edges, {}), graphLegend('cfg'));
 }
 
 export async function showCallGraphPanel(app, addr) {
-  const sheet = new Sheet('呼び出し図');
+  const sheet = new Sheet('呼び出し図', { size: 'full' });
   const status = el('div', 'hint', '呼び出し関係を集めています…');
   sheet.body.append(status);
   await app.ensureProgram();
   if (!app.program) { status.textContent = '呼び出し関係を作れませんでした。'; return; }
   status.remove();
+  sheet.setTitle('呼び出し図 — ' + fnName(app, addr));
 
   let depth = 1;
-  sheet.body.append(el('div', 'hint',
-    fnName(app, addr) + '\n上が「この関数を呼ぶ人」、下が「この関数が呼ぶ相手」です。'));
-
-  const chips = el('div', 'chips');
-  const wrap = el('div');
+  const head = el('div', 'graph-head');
+  const count = el('span', null, '');
+  head.append(count);
+  const chips = el('div', 'chips inline');
   for (const d of [1, 2, 3]) {
     chips.append(button(d + ' 段', 'chip' + (d === depth ? ' on' : ''), (e) => {
       depth = d;
@@ -361,7 +465,11 @@ export async function showCallGraphPanel(app, addr) {
       draw();
     }));
   }
-  sheet.body.append(chips, wrap);
+  head.append(chips, button('この図の読み方', 'chip', () => showGraphHelp('call')));
+
+  const wrap = el('div', 'graph-host');
+  sheet.body.classList.add('nogrow');
+  sheet.body.append(head, wrap, graphLegend('call'));
 
   function draw() {
     const { nodes, edges } = callGraph(app.program, app.symbols, addr, {
@@ -369,9 +477,39 @@ export async function showCallGraphPanel(app, addr) {
       label: (a) => fnName(app, a),
       onNode: (a) => { sheet.close(); app.openFunctionReport(a); },
     });
+    count.textContent = '上が呼ぶ側・下が呼ばれる側 · ' + nodes.length + ' 個の関数 · ' +
+      '箱を押すとその関数を開きます';
     wrap.replaceChildren(renderGraph(nodes, edges, {}));
   }
   draw();
+}
+
+/** 図の読み方。凡例だけでは足りない人のために、言葉でも置いておく。 */
+function showGraphHelp(kind) {
+  const sheet = new Sheet('この図の読み方');
+  const ul = list();
+  if (kind === 'call') {
+    ul.append(groupRow('呼び出し図'));
+    ul.append(kvRow('まん中の太枠', 'いま見ている関数'));
+    ul.append(kvRow('上の箱', 'この関数を呼んでいる側'));
+    ul.append(kvRow('下の破線の箱', 'この関数が呼んでいる相手'));
+    ul.append(kvRow('段', '何段まで辿るか。増やすほど広く、遅くなります'));
+  } else {
+    ul.append(groupRow('制御フロー図'));
+    ul.append(kvRow('四角', 'ひとかたまりの命令（basic block）。上から下へ順に実行されます'));
+    ul.append(kvRow('緑の線', '条件が成り立ったときに進む道'));
+    ul.append(kvRow('赤の線', '成り立たなかったときに進む道'));
+    ul.append(kvRow('破線で戻る', 'ループ。同じところを繰り返します'));
+    ul.append(kvRow('太枠', '入口。ここから始まります'));
+  }
+  sheet.body.append(ul);
+  const ops = list();
+  ops.append(groupRow('動かし方'));
+  ops.append(kvRow('押したまま動かす', '図をつかんで動かします'));
+  ops.append(kvRow('2 本指でつまむ', '拡大・縮小します'));
+  ops.append(kvRow('全体', '全部が入る大きさに戻します'));
+  ops.append(kvRow('箱を押す', 'その場所・その関数へ移動します'));
+  sheet.body.append(ops);
 }
 
 /* ══════════════════════════════════════════════════════════
@@ -1458,6 +1596,18 @@ export function showIl2cpp(app) {
 
 /** 名前が読み直せるものなら、読める形にして返す。 */
 export function prettyName(name) {
+  if (!name) return name;
+  /*
+   * 一覧や図の中では、短い形で出す。
+   * 完全に戻した形は 150 字を超えることがあり、行からあふれて
+   * 「どのクラスの何か」がかえって読めなくなる。
+   * 完全な形は、関数の詳細（名前を付ける画面）に出している。
+   */
+  return isMangled(name) ? shortName(name) : name;
+}
+
+/** 完全に戻した形。詳細画面で「本当の名前」を見せるときだけ使う。 */
+export function fullName(name) {
   if (!name) return name;
   return isMangled(name) ? readableName(name) : name;
 }

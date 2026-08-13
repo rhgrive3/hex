@@ -185,6 +185,12 @@ export async function autoAnalyze(opts) {
     goals: [],
     pinned: [],
     confirmed: [],
+    /* 決着したもの（確定・有力）と、しなかったもの（割れている）を分けて持つ。
+       混ぜて並べると、割れているものまで答えとして読まれてしまう。 */
+    settled: [],
+    unsettled: [],
+    /* 予算が尽きて、命令まで見に行けなかった目的。黙って落とさず、そう言う。 */
+    unexamined: [],
     notable: [],
     findings: [],
     deep: [],
@@ -252,16 +258,40 @@ export async function autoAnalyze(opts) {
    * 逆アセンブルの回数は全体で予算を切る。16 個の目的が青天井に読みにいくと
    * 「開いた瞬間に終わっている」という前提が壊れるため。
    */
-  const startBudget = o.pinpointBudget != null ? o.pinpointBudget : 72;
+  /*
+   * 逆アセンブルの予算。
+   *
+   * 以前は 16 個の目的で 1 つの財布を共有し、GOALS に書いた順に使っていた。
+   * その結果、先頭の hp・attack・defense が「何も見つからないのに」1 目的あたり
+   * 6〜19 回を使い切り、10 個の目的は 1 回も命令を読めずに終わっていた
+   * （実測: 通信・ログイン・課金は、見に行けば決着するのに 15% のまま）。
+   *
+   * そこで
+   *   ・1 目的あたりの上限を切る    … 1 個が財布を空にできないようにする
+   *   ・点数の高い目的から見る      … 途中で尽きたときに、惜しい方が残る
+   * の 2 つにする。実測では決着が 4/16 → 9/16、確度も 15% → 91〜100% に上がる。
+   */
+  const startBudget = o.pinpointBudget != null ? o.pinpointBudget : 192;
+  const perGoal = o.pinpointPerGoal != null ? o.pinpointPerGoal : 12;
   const budget = { left: startBudget };
   const memo = o.analyze ? memoize(o.analyze) : null;
   const hasClasses = !!(fields && fields.classCount);
+  /* 点数の高い目的から。採点の済んだものが先、残りは元の順で後ろに付ける。 */
+  const goalOrder = GOALS.map((g) => g.id).sort((a, b) => {
+    const ea = rankedByGoal.get(a), eb = rankedByGoal.get(b);
+    const sa = ea && ea.ranked.candidates[0] ? ea.ranked.candidates[0].score : 0;
+    const sb = eb && eb.ranked.candidates[0] ? eb.ranked.candidates[0].score : 0;
+    return sb - sa;
+  });
   if (memo || hasClasses) {
-    for (let i = 0; i < GOALS.length; i++) {
+    for (let i = 0; i < goalOrder.length; i++) {
       if (cancelled()) { report.notes.push('pin-cancelled'); break; }
       progress({ phase: 'pinpoint', done: i, all });
-      const entry = rankedByGoal.get(GOALS[i].id);
-      const goal = entry ? entry.goal : goalFromPreset(GOALS[i].id);
+      const entry = rankedByGoal.get(goalOrder[i]);
+      const goal = entry ? entry.goal : goalFromPreset(goalOrder[i]);
+      /* この目的が使える分だけを渡す。使い残しは次の目的へ戻る。 */
+      const purse = { left: Math.max(0, Math.min(perGoal, budget.left)) };
+      const beforeLeft = purse.left;
       const common = {
         goal, fields, program, symbols, strings, region,
         map: report.map,
@@ -269,7 +299,7 @@ export async function autoAnalyze(opts) {
         shapes: o.shapes || null,
         analyze: memo,
         scanAccess: o.scanAccess || null,
-        budget,
+        budget: purse,
         isCancelled: cancelled,
         limit: 8,
       };
@@ -288,6 +318,10 @@ export async function autoAnalyze(opts) {
           }));
         } catch { /* 出せなくても、ほかの目的は続ける */ }
       }
+      /* この目的が実際に使った分だけ、全体の財布から引く。 */
+      budget.left -= (beforeLeft - purse.left);
+      if (beforeLeft <= 0) report.unexamined.push(goal);
+
       if (!pin || !pin.top || pin.verdict === VERDICT.NONE) continue;
       /*
        * 目的に結びつく手がかりが 1 つも無いものは載せない。
@@ -304,7 +338,17 @@ export async function autoAnalyze(opts) {
     report.pinned.sort((a, b) => (verdictRank(b.verdict) - verdictRank(a.verdict)) ||
       (b.top.fusion.probability - a.top.fusion.probability));
     report.confirmed = report.pinned.filter((p) => p.verdict === VERDICT.CONFIRMED);
+    /*
+     * 「決着した」と呼べるのは、確定と、あと一歩の有力まで。
+     * 割れているもの（多くは 5〜30%）は答えではないので、混ぜて並べない。
+     * ここを混ぜていたせいで、C++ 製のゲームを開くと 15% の広告 SDK の値が
+     * 4 件並び、それが答えのように見えていた。
+     */
+    report.settled = report.pinned.filter((p) => verdictRank(p.verdict) >= verdictRank(VERDICT.LIKELY));
+    report.unsettled = report.pinned.filter((p) => verdictRank(p.verdict) < verdictRank(VERDICT.LIKELY));
     report.stats.pinpointUsed = startBudget - budget.left;
+    report.stats.pinpointBudget = startBudget;
+    report.stats.goalsExamined = goalOrder.length - report.unexamined.length;
   }
 
   /* 3.6 いちばん確度の高い目的については、処理そのものも決めにいく。 */

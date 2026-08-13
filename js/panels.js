@@ -26,7 +26,7 @@ import { groupByFeature, detectEngine } from './features.js';
 import { SAMPLE_GUIDE } from './sample.js';
 import { GOALS, goalFromPreset, parseGoal, goalLabel } from './goals.js';
 import { rankCandidates, breakdown, reasonKind } from './rank.js';
-import { vendorsOf } from './vendors.js';
+import { vendorsOf, vendorOf } from './vendors.js';
 import { buildFunctionReport } from './report.js';
 import { outline } from './cfg.js';
 import { traceForward, regKeyOf } from './dataflow.js';
@@ -1880,7 +1880,7 @@ async function pinnedFor(app, goal, ctx) {
   if (fromAuto) return fromAuto;
 
   if (!app.pinnedCache) app.pinnedCache = new Map();
-  const key = goal.id + ' ' + goal.text + ' ' + app.symbols.gen;
+  const key = goal.id + '\u0000' + goal.text + '\u0000' + app.symbols.gen;
   if (app.pinnedCache.has(key)) return app.pinnedCache.get(key);
 
   const region = ctx.region;
@@ -2600,19 +2600,249 @@ export function showPinned(app, pin) {
     'This is static analysis — always confirm at runtime.'), 'sub'));
 }
 
+/**
+ * その答えは、アプリ自身のものか、組み込んだ SDK のものか。
+ *
+ * 広告・課金・分析の SDK は Objective-C で書かれているので、C++ のゲームでも
+ * その部分だけは名前が残る。結果として「所持金を探したら Adjust の値が出る」。
+ * 判定としては間違っていないが、探している人の答えではない。必ずそう言う。
+ */
+function vendorNoteFor(app, pin) {
+  const c = pin && pin.top;
+  const cls = c && c.className;
+  if (!cls) return null;
+  const v = vendorOf(cls, app.fields ? vendorsOf(app.fields) : null);
+  if (!v) return null;
+  return v.vendor || v.name || null;
+}
+
 /** 決着した目的を 1 行で。地図と同じ調子で並べられる形にする。 */
 function pinnedRow(app, pin, onTap) {
   const c = pin.top;
   const icon = pin.goal.icon ? pin.goal.icon + ' ' : '';
+  const vendor = vendorNoteFor(app, pin);
   return tapRow(icon + pin.goal.text + ' → ' + pinnedName(c), {
     sub: (typeWord(c.type) || '') + '  ·  ' + offsetHex(BigInt(c.offset)) +
+      (vendor ? '\n' + pick('これは ' + vendor + ' の中の値です（アプリ自身のものではありません）',
+        'this lives inside ' + vendor + ', not the app itself') : '') +
       '\n' + (proofText(c.why[0]) || ''),
     right: pin.verdict === VERDICT.CONFIRMED ? pick('確定', 'confirmed')
       : probabilityText(c.fusion.probability),
-    tag: pin.verdict === VERDICT.CONFIRMED ? pick('検証済', 'verified') : null,
-    tagClass: 'tag-fact',
+    tag: vendor ? 'SDK' : (pin.verdict === VERDICT.CONFIRMED ? pick('検証済', 'verified') : null),
+    tagClass: vendor ? 'tag-infer' : 'tag-fact',
     onTap,
   });
+}
+
+/**
+ * 自動解析の総括。いちばん上に置く 1 かたまり。
+ *
+ * 「16 個中いくつ決まったか」「決まらなかったのはなぜか」を先に言う。
+ * これが無いと、下に並ぶ候補の一覧が答えのように読まれてしまう。
+ */
+function autoSummary(app, report) {
+  const wrap = el('div', 'autosum');
+  const settled = report.settled || report.confirmed || [];
+  const all = (report.goals || []).length || 16;
+  const vendorOnly = settled.length > 0 && settled.every((p) => vendorNoteFor(app, p));
+
+  const head = settled.length
+    ? pick(all + ' 個の目的のうち、' + settled.length + ' 個が決まりました',
+      settled.length + ' of ' + all + ' goals settled')
+    : pick(all + ' 個の目的を調べましたが、答えと呼べるものは 1 つも決まりませんでした',
+      'None of the ' + all + ' goals could be settled');
+  wrap.append(el('div', 'autosum-head', head));
+
+  const why = [];
+  if (!report.stats.classes) {
+    why.push(pick(
+      'このアプリには Objective-C のクラス表がありません。値に名前が残っていないので、' +
+      '名前から探す方法は使えません。',
+      'There is no Objective-C class table here, so values have no names to search by.'));
+  } else if (vendorOnly || !settled.length) {
+    why.push(pick(
+      '名前が読めるのは、組み込んである他社の SDK（広告・課金・分析）だけでした。' +
+      'ゲーム本体が C++ や Unity で書かれていると、本体側の値には名前が残りません。' +
+      'ゲームの数値は「値のふるまい（増える・減る・0 で止まる）」から探すことになります。',
+      'Only the bundled SDKs keep their names. If the game itself is C++ or Unity, its own ' +
+      'values have none — they have to be found by how they behave.'));
+  }
+  if ((report.unexamined || []).length) {
+    why.push(pick(
+      '逆アセンブルの回数が上限に達したため、' + report.unexamined.length +
+      ' 個の目的は命令まで確かめられていません。',
+      report.unexamined.length + ' goals were not checked down to the instructions.'));
+  }
+  for (const line of why) wrap.append(el('div', 'autosum-why', line));
+
+  const stats = report.stats || {};
+  wrap.append(el('div', 'autosum-stats', [
+    pick('関数 ' + (stats.functions || 0).toLocaleString() + ' 本',
+      (stats.functions || 0).toLocaleString() + ' functions'),
+    pick('文字列 ' + (stats.strings || 0).toLocaleString() + ' 本',
+      (stats.strings || 0).toLocaleString() + ' strings'),
+    stats.classes ? pick('クラス ' + stats.classes.toLocaleString() + ' 個',
+      stats.classes.toLocaleString() + ' classes') : null,
+    stats.pinpointUsed != null ? pick('中身を読んだ関数 ' + stats.pinpointUsed + ' 本',
+      stats.pinpointUsed + ' functions read') : null,
+  ].filter(Boolean).join('  ·  ')));
+
+  const chips = el('div', 'chips');
+  chips.append(button(pick('この結果はどこまで信用できるか', 'How far can this be trusted'), 'chip',
+    () => showAccuracyNotes(app, report)));
+  wrap.append(chips);
+  return wrap;
+}
+
+/* ────────────────────────────────────────────────────────────
+   この道具は、どこまで信用できるのか
+   ────────────────────────────────────────────────────────────
+
+   解析の部品が増えるほど、「どれが事実で、どれが当てずっぽうか」が
+   利用者から見えなくなる。ここに 1 枚にまとめて置く。
+
+   段階は 3 つだけにする:
+
+     事実  … バイナリに書いてあることを、そのまま読んだもの。
+             読み違いが無ければ必ず正しい（Mach-O の区画、命令、呼び出し先）。
+     推定  … 事実から組み立てた解釈。根拠と確からしさが必ず付く。
+     参考  … 順番を決めるためだけの点数。当たっている保証はない。
+   ──────────────────────────────────────────────────────────── */
+
+export const RELIABILITY = {
+  FACT: 'fact',
+  INFERRED: 'inferred',
+  HINT: 'hint',
+};
+
+export function reliabilityWord(level) {
+  switch (level) {
+    case RELIABILITY.FACT: return pick('事実', 'fact');
+    case RELIABILITY.INFERRED: return pick('推定', 'inferred');
+    default: return pick('参考', 'hint');
+  }
+}
+
+export function reliabilityClass(level) {
+  return level === RELIABILITY.FACT ? 'tag-fact'
+    : level === RELIABILITY.INFERRED ? 'tag-infer' : 'tag-hint';
+}
+
+/* 実測してある機能は、その数字をそのまま書く（tests/accuracy.mjs の結果）。 */
+const ACCURACY_NOTES = [
+  { level: RELIABILITY.FACT, name: 'Mach-O の区画を読む', measured: '100%',
+    note: 'ヘッダに書いてあるとおりに読んでいます。' },
+  { level: RELIABILITY.FACT, name: '命令を逆アセンブルする', measured: '100%',
+    note: 'Capstone（IDA と同じ系統の部品）を使っています。' },
+  { level: RELIABILITY.FACT, name: '呼び出し関係をたどる', measured: '100%',
+    note: 'bl 命令の飛び先をそのまま集めています。' },
+  { level: RELIABILITY.FACT, name: '外部 API の名前を出す', measured: '100%',
+    note: 'リンカが残した表を読んでいます。' },
+  { level: RELIABILITY.FACT, name: 'クラスとフィールドの表を読む', measured: '99.2%',
+    note: 'Objective-C の表がある場合のみ。C++ や Unity のアプリには、この表がありません。' },
+  { level: RELIABILITY.FACT, name: 'データの参照先を解く', measured: '99.1%',
+    note: 'adrp + add の組を追っています。' },
+  { level: RELIABILITY.FACT, name: '関数の切れ目を見つける', measured: '100%',
+    note: 'シンボル表がある場合。無い場合は推測になり、再現 83.9% まで落ちます。' },
+  { level: RELIABILITY.INFERRED, name: '関数が何をしているかを言う', measured: '91.3%',
+    note: '命令の並びから読み取っています。名前が残っていない関数では、当たりにくくなります。' },
+  { level: RELIABILITY.INFERRED, name: '引数・戻り値・変数の型', measured: null,
+    note: '使われ方からの推定です。「4 バイトで比較されている」以上のことは言えません。' },
+  { level: RELIABILITY.INFERRED, name: '構造体を組み立てる', measured: null,
+    note: '触っている位置から並びを起こしています。触られていない場所は空白のままです。' },
+  { level: RELIABILITY.INFERRED, name: '擬似コード', measured: null,
+    note: '訳であって、元のソースではありません。訳せない命令は __asm や goto のまま残します。' },
+  { level: RELIABILITY.INFERRED, name: '目的から値を 1 個に決める', measured: null,
+    note: '名前・型・命令の 3 方向から確かめて、そろったものだけ「確定」と言います。' +
+      'クラス表のないアプリでは、そもそも決まりません。' },
+  { level: RELIABILITY.HINT, name: '目的ごとの候補と ★', measured: null,
+    note: '「今どこから見るべきか」の順番です。★ 4 個でも、外れていることはふつうにあります。' },
+  { level: RELIABILITY.HINT, name: 'アプリの地図・注目すべき処理', measured: null,
+    note: '呼ばれた回数や言葉の集まりで分けたものです。分け方に正解はありません。' },
+];
+
+export function showAccuracyNotes(app, report) {
+  const sheet = new Sheet(pick('この結果はどこまで信用できるか', 'How far can this be trusted'));
+  const body = sheet.body;
+
+  body.append(para(pick(
+    'この道具の中には、性格の違う解析が混ざっています。' +
+    'バイナリに書いてあることを読んだだけのものと、そこから組み立てた推測は、' +
+    '同じ画面に出ていても信用できる度合いがまったく違います。3 段階に分けてあります。',
+    'Different kinds of analysis live in here. Reading what the binary states is not the same ' +
+    'as inferring from it. Three levels.')));
+
+  const legend = list();
+  legend.append(groupRow(pick('3 つの段階', 'The three levels')));
+  legend.append(tapRow(pick('事実', 'Fact'), {
+    sub: pick('バイナリに書いてあることを、そのまま読んだもの。読み違いが無ければ必ず正しい。',
+      'Read straight out of the binary.'),
+    tag: reliabilityWord(RELIABILITY.FACT), tagClass: 'tag-fact',
+  }));
+  legend.append(tapRow(pick('推定', 'Inferred'), {
+    sub: pick('事実から組み立てた解釈。必ず根拠と確からしさが付きます。外れることがあります。',
+      'Built on top of facts. Always carries its evidence and a probability.'),
+    tag: reliabilityWord(RELIABILITY.INFERRED), tagClass: 'tag-infer',
+  }));
+  legend.append(tapRow(pick('参考', 'Hint'), {
+    sub: pick('見る順を決めるための点数（★）。当たっている保証はありません。',
+      'A ranking score. No guarantee at all.'),
+    tag: reliabilityWord(RELIABILITY.HINT), tagClass: 'tag-hint',
+  }));
+  body.append(legend);
+
+  body.append(el('div', 'sec-title', pick('機能ごとの段階と、測った精度',
+    'Level and measured accuracy, feature by feature')));
+  body.append(para(pick(
+    '数字は、正解の分かっている実物のアプリ 1 本で測った結果です（tests/accuracy.mjs）。' +
+    'ほかのアプリで同じ数字が出るとは限りません。',
+    'Measured against one real app with known answers. Other apps will differ.'), 'sub'));
+
+  let current = null;
+  const ul = list();
+  for (const item of ACCURACY_NOTES) {
+    if (item.level !== current) {
+      current = item.level;
+      ul.append(groupRow(reliabilityWord(item.level)));
+    }
+    ul.append(tapRow(item.name, {
+      sub: item.note,
+      right: item.measured || '',
+      tag: reliabilityWord(item.level),
+      tagClass: reliabilityClass(item.level),
+    }));
+  }
+  body.append(ul);
+
+  /* いま開いているファイルで、実際にどうだったか。 */
+  if (report) {
+    body.append(el('div', 'sec-title', pick('いま開いているファイルでは', 'On the file you have open')));
+    const stats = report.stats || {};
+    const settled = report.settled || report.confirmed || [];
+    const sl = list();
+    sl.append(kvRow(pick('決まった目的', 'Goals settled'),
+      settled.length + ' / ' + ((report.goals || []).length || 16)));
+    sl.append(kvRow(pick('名前の読める値', 'Values with names'),
+      stats.classes
+        ? pick((stats.fields || 0).toLocaleString() + ' 個（クラス ' + stats.classes.toLocaleString() + ' 個）',
+          (stats.fields || 0).toLocaleString() + ' fields')
+        : pick('0 個（クラス表がありません）', 'none — no class table')));
+    sl.append(kvRow(pick('中身まで読んだ関数', 'Functions read in full'),
+      String(stats.pinpointUsed || 0)));
+    body.append(sl);
+    if (!stats.classes) {
+      body.append(noteBox(pick(
+        'このファイルには Objective-C のクラス表がありません。' +
+        'つまり「名前から探す」系の機能は、ここでは当たりません。' +
+        '値のふるまい（増える・減る・0 で止まる）から探す方へ回ってください。',
+        'No class table here, so anything name-based will not work on this file.')));
+    }
+  }
+
+  body.append(para(pick(
+    '※ 静的解析なので、最後は実際に動かして確かめてください。' +
+    'ここで「確定」と出たものも、動かして初めて確かめられます。',
+    'This is static analysis. Confirm at runtime.'), 'sub'));
 }
 
 /* ── 自動解析の結果を並べる ─────────────────────────────── */
@@ -2625,33 +2855,58 @@ function renderAutoReport(app, sheet, body, report, region) {
    *    「候補が 40 個あります」ではなく「HP は BattleManager.hp です」から始める。
    *    これが出せたときは、利用者はもう何も探さなくていい。
    */
-  /* 0. 決着が付いたもの。ここに出せたなら、利用者はもう何も探さなくていい。 */
-  const confirmed = report.confirmed || [];
+  /* 0. まず、この解析でどこまで言えたのかを 1 行で言う。
+   *    ここを出さずに一覧だけ並べていたころ、決着 0 件でも画面は
+   *    「絞れました」から始まり、15% の広告 SDK の値が答えに見えていた。 */
   const pinned = report.pinned || [];
-  if (confirmed.length) {
-    body.append(el('div', 'sec-title', pick('特定できました', 'Identified')));
+  const settled = report.settled || (report.confirmed || []);
+  const unsettled = report.unsettled ||
+    pinned.filter((p) => p.verdict !== VERDICT.CONFIRMED && p.top);
+  body.append(autoSummary(app, report));
+
+  /* 0.1 決着が付いたもの。ここに出せたなら、利用者はもう何も探さなくていい。 */
+  if (settled.length) {
+    body.append(el('div', 'sec-title', pick('決まりました', 'Settled')));
     body.append(para(pick(
       '名前・型・持ち主のクラスに加えて、実際に逆アセンブルして命令まで確かめた結果です。' +
       '選ぶだけで、そのまま書き換える場所まで開けます。',
       'Confirmed by disassembling the accessors and checking the instructions themselves.')));
     const ul = list();
-    for (const p of confirmed.slice(0, 8)) {
+    for (const p of settled.slice(0, 8)) {
       ul.append(pinnedRow(app, p, () => { sheet.close(); showPinned(app, p); }));
     }
     body.append(ul);
+    if (settled.some((p) => vendorNoteFor(app, p))) {
+      body.append(para(pick(
+        '※「SDK」と付いたものは、アプリが組み込んでいる他社の部品（広告・課金・分析）の中の値です。' +
+        'ゲーム本体の数値ではありません。',
+        'Rows marked “SDK” live inside a bundled third-party component, not the app’s own code.'), 'sub'));
+    }
   }
-  const nearly = pinned.filter((p) => p.verdict !== VERDICT.CONFIRMED && p.top);
-  if (nearly.length) {
-    body.append(el('div', 'sec-title', pick('ここまで絞れました（確定はしていません）',
-      'Narrowed down (not confirmed)')));
-    const ul = list();
-    for (const p of nearly.slice(0, 6)) {
-      ul.append(pinnedRow(app, p, () => { sheet.close(); showPinned(app, p); }));
-    }
-    body.append(ul);
-    body.append(para(pick(
-      '確定と言うには根拠が 1 つ足りないものです。開けば、何が足りないかが書いてあります。',
-      'One piece of evidence short of confirmed — open each to see what is missing.'), 'sub'));
+
+  /*
+   * 0.2 決まらなかったもの。
+   *
+   * ここを「ここまで絞れました」として上に並べていたのが、
+   * 15% の値が 4 件並ぶ画面の正体だった。畳んでおいて、
+   * 開いた人にだけ「何が足りないのか」と一緒に見せる。
+   */
+  if (unsettled.length) {
+    body.append(disclosure(pick(
+      '決められなかった目的（' + unsettled.length + ' 件）を見る',
+      'See the ' + unsettled.length + ' goals that did not settle'), {
+      build: (host) => {
+        host.append(para(pick(
+          '候補は挙がりましたが、答えと呼べるところまでは絞れませんでした。' +
+          '名前が似ているだけの値が上位に来ている場合が多いので、そのつもりで見てください。',
+          'Candidates exist but none is an answer — usually just a similar-looking name.')));
+        const ul = list();
+        for (const p of unsettled.slice(0, 8)) {
+          ul.append(pinnedRow(app, p, () => { sheet.close(); showPinned(app, p); }));
+        }
+        host.append(ul);
+      },
+    }));
   }
 
   /*
@@ -3258,9 +3513,22 @@ export function showCandidates(app, goal) {
     results.append(para(pick(
       ranked.total + ' 個の候補が見つかりました。上から順に、根拠の強いものです。',
       'Found ' + ranked.total + ' candidates, strongest evidence first.')));
+    /*
+     * ここには確率を出さない。
+     *
+     * 以前は点数を 1 - exp(-点/45) で 0〜100% に写して「81%」と出していたが、
+     * これは確率ではなく、点数の付け替えでしかなかった。同じ候補を開くと、
+     * 命令まで確かめる本物の計算が「確からしさ 0%」と出す。同じ画面の中で
+     * 81% と 0% が並ぶことになり、どちらも信じられなくなる。
+     *
+     * 順番を示すものは順番として出す（★ = 見る順）。確からしさを名乗るのは、
+     * 根拠を積み上げて計算した所（evidence.js）だけにする。
+     */
     results.append(para(pick(
-      '★ は「今見るべき順」です。名前が一致しただけでは星は増えません。',
-      'Stars mean “look here first”. A name match alone does not earn stars.'), 'sub'));
+      '★ は「今見るべき順」であって、当たっている確からしさではありません。' +
+      '確からしさは、開いて命令まで確かめたときに初めて出せます。',
+      'Stars mean “look here first” — not a probability. Confidence only exists once ' +
+      'the instructions have been checked.'), 'sub'));
 
     const ul = list();
     const rows = [];
@@ -3275,7 +3543,6 @@ export function showCandidates(app, goal) {
         onTap: () => { sheet.close(); showCandidateWhy(app, c, goal); },
       });
       row.classList.add('cand');
-      row.append(el('span', 'cand-score', Math.round(c.confidence * 100) + '%'));
       ul.append(row);
       rows.push({ addr: c.addr, row, rest });
     }
@@ -3313,10 +3580,14 @@ export function showCandidateWhy(app, cand, goal) {
 
   const score = el('div', 'scorebox');
   score.append(el('div', 'score-stars', starsText(cand.stars)));
-  score.append(el('div', 'score-pct', pick('関連度 ' + Math.round(cand.confidence * 100) + '%',
-    Math.round(cand.confidence * 100) + '% related')));
-  score.append(el('div', 'score-sub', pick('合計 ' + Math.round(cand.score) + ' 点',
+  /*
+   * ここは「見る順」を決めるための点数で、確からしさではない。
+   * % に直して出すと確率に見えてしまうので、点数のまま出す。
+   */
+  score.append(el('div', 'score-pct', pick('合計 ' + Math.round(cand.score) + ' 点',
     Math.round(cand.score) + ' points')));
+  score.append(el('div', 'score-sub', pick('見る順を決めるための点数です（確からしさではありません）',
+    'a ranking score — not a probability')));
   body.append(score);
 
   body.append(el('div', 'sec-title', pick('この点数の内訳', 'How this score was built')));
@@ -3438,10 +3709,22 @@ function roleHeadline(app, role, sheet, region) {
 
   const badge = el('div', 'role-verdict');
   badge.append(el('span', 'role-word', verdictText(role.verdict)));
-  if (role.probability > 0) {
-    // 裸の「2%」は、見出しと矛盾しているように読める。何の数字かを必ず添える。
-    badge.append(el('span', 'role-pct', pick('確からしさ ', 'confidence ') +
-      probabilityText(role.probability)));
+  /*
+   * 数字を出すのは、見出しと同じことを言えるときだけ。
+   *
+   * 「見つかりませんでした」の横に「確からしさ 4%」を出していたころ、
+   * これが自動解析の一覧に出ていた「確定」と並んで読まれて、
+   * 「確定と言ったのに 4% とはどういうことだ」になっていた。
+   * 決着していない見立ての確率は、見出しの裏づけにならないので出さない。
+   * （出すのは、下の「なぜそう言えるのか」の中だけ。）
+   */
+  if (role.probability > 0 && verdictRank(role.verdict) >= verdictRank(VERDICT.AMBIGUOUS)) {
+    badge.append(el('span', 'role-pct',
+      role.verdict === VERDICT.AMBIGUOUS
+        ? pick('いちばん有力なもので ' + probabilityText(role.probability),
+          'best candidate at ' + probabilityText(role.probability))
+        : pick('この見立ての確からしさ ' + probabilityText(role.probability),
+          probabilityText(role.probability) + ' confident')));
   }
   wrap.append(badge);
   wrap.append(el('div', 'role-lead', fnRoleLead(role)));

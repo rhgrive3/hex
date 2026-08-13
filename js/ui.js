@@ -22,44 +22,150 @@ export function button(label, cls, onClick) {
   return b;
 }
 
-/* ── Sheet ──────────────────────────────────────────────────── */
+/* ── Sheet ──────────────────────────────────────────────────────
+ *
+ * シートは 1 枚ずつではなく、**重なり**として持つ。
+ *
+ * 以前は新しいシートを開くたびに前のシートを捨てていたので、
+ * 「解析ツール → 擬似コード」と 2 つ潜ったら、閉じるボタンで一気に
+ * 画面まで戻るしかなかった（道具箱には戻れない）。
+ *
+ * ここでは、閉じたシートをその場では捨てずに一旦「待たせて」おく。
+ * 同じ処理の流れの中で次のシートが作られたら、待っていた方を親として
+ * つなぎ、戻るボタンでそこへ帰れるようにする。誰も次を開かなければ、
+ * そのときに初めて親ごと片付ける（＝「完了」を押したときの動き）。
+ *
+ * この仕組みのおかげで、呼ぶ側は今までどおり
+ *   sheet.close(); showSomething();
+ * と書くだけでよく、書き換えなくても戻れるようになる。
+ */
 
 let openSheet = null;
+let parkedSheet = null;      // 閉じたが、まだ捨てていないシート
+let parkTimer = 0;
+
+const MAX_DEPTH = 8;         // 重ねすぎ（＝DOM の持ちすぎ）を防ぐ
 
 export class Sheet {
-  constructor(title, { onClose, anchor, dim } = {}) {
+  constructor(title, { onClose, anchor, dim, size } = {}) {
     this.backdrop = el('div', 'backdrop' + (dim === 'light' ? ' light' : ''));
-    this.root = el('div', 'sheet' + (anchor === 'bottom' ? ' bottom' : ''));
+    this.root = el('div', 'sheet' +
+      (anchor === 'bottom' ? ' bottom' : '') +
+      (size === 'full' ? ' full' : size === 'wide' ? ' wide' : ''));
     this.root.setAttribute('role', 'dialog');
     this.root.setAttribute('aria-modal', 'true');
 
+    /* 親を決める。直前のシートがあれば、それが親になる。 */
+    this.parent = null;
+    if (parkedSheet) {
+      this.parent = parkedSheet;
+      parkedSheet = null;
+      clearTimeout(parkTimer);
+    } else if (openSheet) {
+      this.parent = openSheet;
+      openSheet.park();
+    }
+    /* 深くなりすぎたら、いちばん古いものから捨てる。 */
+    let depth = 0;
+    for (let p = this.parent; p; p = p.parent) {
+      depth++;
+      if (depth >= MAX_DEPTH && p.parent) { p.parent.destroyChain(); p.parent = null; break; }
+    }
+
     const head = el('div', 'sheet-head');
-    const spacer = el('div');
-    spacer.style.minWidth = '44px';
-    head.append(spacer, el('div', 'sheet-title', title),
-      button(t('btn.done'), 'tb-btn', () => this.close()));
+    if (this.parent) {
+      this.backBtn = button('‹ ' + t('btn.back'), 'tb-btn back', () => this.back());
+      head.append(this.backBtn);
+    } else {
+      const spacer = el('div');
+      spacer.style.minWidth = '52px';
+      head.append(spacer);
+    }
+    this.titleEl = el('div', 'sheet-title', title);
+    head.append(this.titleEl, button(t('btn.done'), 'tb-btn', () => this.close()));
     this.body = el('div', 'sheet-body');
     this.root.append(head, this.body);
 
     this.onClose = onClose;
-    this.backdrop.addEventListener('click', () => this.close());
+    /* 背景を押したときは 1 枚戻る。全部消えるより迷わない。 */
+    this.backdrop.addEventListener('click', () => this.back());
     overlays().append(this.backdrop, this.root);
-
-    if (openSheet) openSheet.close();
     openSheet = this;
   }
 
-  close() {
+  /** 見出しを後から差し替える（中身が決まってから名前が付く画面のため）。 */
+  setTitle(text) { if (this.titleEl) this.titleEl.textContent = text; }
+
+  /** 表示から外すだけ。中身も onClose も生かしたまま。 */
+  park() {
+    this.root.classList.add('parked');
+    this.backdrop.classList.add('parked');
+    if (openSheet === this) openSheet = null;
+  }
+
+  /** 親として待たせていたものを、また表に出す。 */
+  unpark() {
+    this.root.classList.remove('parked');
+    this.backdrop.classList.remove('parked');
+    openSheet = this;
+  }
+
+  /** このシートだけを捨てる。 */
+  destroy() {
     if (!this.root.isConnected) return;
     this.backdrop.remove();
     this.root.remove();
     if (openSheet === this) openSheet = null;
+    if (parkedSheet === this) parkedSheet = null;
     if (this.onClose) this.onClose();
+  }
+
+  /** このシートと、その親をすべて捨てる。 */
+  destroyChain() {
+    let p = this.parent;
+    this.parent = null;
+    this.destroy();
+    while (p) { const next = p.parent; p.parent = null; p.destroy(); p = next; }
+  }
+
+  /** 1 枚戻る。親がいなければ、そのまま閉じる。 */
+  back() {
+    const parent = this.parent;
+    this.parent = null;
+    this.destroy();
+    if (parent) parent.unpark();
+  }
+
+  /**
+   * 閉じる。
+   *
+   * ただしその場では捨てない。同じ流れの中で次のシートが作られたら
+   * 「移動」だったと分かるので、そのときは親として残す。
+   * 誰も開かなければ、重なりごと片付ける。
+   */
+  close() {
+    if (!this.root.isConnected) return;
+    this.park();
+    parkedSheet = this;
+    clearTimeout(parkTimer);
+    parkTimer = setTimeout(() => {
+      if (parkedSheet === this) { parkedSheet = null; this.destroyChain(); }
+    }, 0);
   }
 }
 
+/** Esc・端末の戻る操作。1 枚だけ戻る。 */
 export function closeTopSheet() {
-  if (openSheet) { openSheet.close(); return true; }
+  if (openSheet) { openSheet.back(); return true; }
+  return false;
+}
+
+/** 重なりをまとめて閉じる（ファイルを開き直したときなど）。 */
+export function closeAllSheets() {
+  clearTimeout(parkTimer);
+  const s = openSheet || parkedSheet;
+  parkedSheet = null;
+  if (s) { s.destroyChain(); return true; }
   return false;
 }
 

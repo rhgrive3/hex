@@ -24,6 +24,7 @@
  */
 
 import { typeFromAccess, inferTypes, signatureOf } from './types.js';
+import { shortName } from './rtti.js';
 
 /* ── 出力の 1 行 ────────────────────────────────────────────
    kind: 'sig' 見出し / 'decl' 変数宣言 / 'stmt' 文 / 'ctrl' 制御 /
@@ -93,7 +94,9 @@ export function decompile(model, opts) {
   emitRange(cfg, 0, cfg.nodes.length - 1, 1, body, ctx, state, null);
 
   /* 見出し（シグネチャ） */
-  const name = (o.notes && o.notes.nameOf(o.addr)) || o.name || ('sub_' + (o.addr != null ? o.addr.toString(16).toUpperCase() : '0'));
+  const name = (o.notes && o.notes.nameOf(o.addr)) ||
+    (o.name ? shortName(o.name) : null) ||
+    ('sub_' + (o.addr != null ? o.addr.toString(16).toUpperCase() : '0'));
   const signature = signatureOf(name, types, o.notes, o.addr);
   out.push(line('sig', 0, signature, insns[0].row, insns[0].address));
   out.push(line('ctrl', 0, '{', insns[0].row));
@@ -124,6 +127,15 @@ export function decompile(model, opts) {
    下ごしらえ
    ──────────────────────────────────────────────────────────── */
 
+/** シンボルを引く関数を、短い名前を返す関数に包む。 */
+function nameReader(fn) {
+  const raw = fn || (() => null);
+  return (addr) => {
+    const n = raw(addr);
+    return n ? shortName(n) : null;
+  };
+}
+
 function buildContext(model, o) {
   const byRow = new Map();
   for (const i of model.instructions) byRow.set(i.row, i);
@@ -145,7 +157,17 @@ function buildContext(model, o) {
     callOf,
     rowOfAddress: o.rowOfAddress || (() => null),
     addrOfRow: o.addrOfRow || (() => null),
-    symbolFor: o.symbolFor || (() => null),
+    /*
+     * 名前は、必ずここを通してから行に置く。
+     *
+     * リンカが残す C++ の名前は
+     *   __ZNSt3__1plIcNS_11char_traitsIcEENS_9allocatorIcEEEENS_12basic_stringI…
+     * のような記号の列で、そのまま擬似コードに出すと 1 行が読めなくなる。
+     * ここで std::operator+ / std::string::append まで短くしてから渡す。
+     * 元の名前は、その行を押したときに出す（消してしまわない）。
+     */
+    symbolFor: nameReader(o.symbolFor),
+    rawSymbolFor: o.symbolFor || (() => null),
     fieldFor: o.fieldFor || (() => null),
     notes: o.notes || null,
     funcAddr: o.addr != null ? o.addr : null,
@@ -810,7 +832,7 @@ function nextSlot(place, m) {
 function callStatement(insn, ctx, mk) {
   const call = ctx.callOf.get(insn.row);
   const target = insn.callTarget;
-  let name = call && call.name ? call.name : (target != null ? ctx.symbolFor(target) : null);
+  let name = call && call.name ? shortName(call.name) : (target != null ? ctx.symbolFor(target) : null);
   const custom = ctx.notes && target != null ? ctx.notes.nameOf(target) : null;
   if (custom) name = custom;
 

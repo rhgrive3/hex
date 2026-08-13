@@ -7,12 +7,12 @@ import { Store, loadPrefs, savePrefs } from './state.js';
 import { Backend } from './backend.js';
 import { CodeViewer } from './viewer.js';
 import { addrHex, addrText, sizeText } from './format.js';
-import { alertDialog, toast, closeTopSheet, closeMenu, menu } from './ui.js';
+import { alertDialog, toast, closeTopSheet, closeAllSheets, closeMenu, menu } from './ui.js';
 import {
   showFileInfo, showSections, showJump, showSearch, showDetail, showSettings,
   instructionMenu, showFunctions, showStrings, showStructure, showHelp,
   showLearn, showGlossary, showWelcome, showSampleGuide, showFunctionSummary,
-  showFeatures, showInvestigate, showOverview, showFunctionReport,
+  showFeatures, showInvestigate, showOverview, showFunctionReport, showAccuracyNotes,
 } from './panels.js';
 import { rangeCopyMenu, copyRange } from './rangecopy.js';
 import { t, setLang, detectLang, lang, isJa, pick } from './i18n.js';
@@ -81,9 +81,7 @@ class App {
       explain: $('btn-explain'),
       sections: $('btn-sections'),
       investigate: $('btn-investigate'),
-      overview: $('btn-overview'),
       tools: $('btn-tools'),
-      features: $('btn-features'),
       functions: $('btn-functions'),
       strings: $('btn-strings'),
       struct: $('btn-struct'),
@@ -193,9 +191,7 @@ class App {
     this.dom.explain.addEventListener('click', () => this.setExplain(!this.prefs.explain));
     this.dom.sections.addEventListener('click', () => showSections(this));
     this.dom.investigate.addEventListener('click', () => showInvestigate(this));
-    this.dom.overview.addEventListener('click', () => showOverview(this));
     this.dom.tools.addEventListener('click', () => showTools(this));
-    this.dom.features.addEventListener('click', () => showFeatures(this));
     this.dom.functions.addEventListener('click', () => showFunctions(this));
     this.dom.strings.addEventListener('click', () => showStrings(this));
     this.dom.struct.addEventListener('click', () => showStructure(this));
@@ -313,9 +309,7 @@ class App {
     this.dom.sections.disabled = !has;
     this.dom.struct.disabled = !has;
     this.dom.strings.disabled = !has;
-    this.dom.features.disabled = !has;
     this.dom.investigate.disabled = !has;
-    this.dom.overview.disabled = !has;
     this.dom.tools.disabled = !has;
     this.dom.functions.disabled = !region;
     this.dom.jump.disabled = !region;
@@ -683,6 +677,17 @@ class App {
     showFunctionReport(this, addr, goal || this.lastGoal || null);
   }
 
+  /*
+   * 解析の各画面への入口。
+   *
+   * 「解析」シートの中から呼べるように、app 側に口を作っておく。
+   * tools.js が panels.js を直に読むと、両方が互いを読み合う形になるため。
+   */
+  openOverview() { showOverview(this); }
+  openInvestigate() { showInvestigate(this); }
+  openFeatures() { showFeatures(this); }
+  openAccuracyNotes() { showAccuracyNotes(this, this.autoReport ? this.autoReport.report : null); }
+
   /**
    * 関数 1 つぶんの意味解析を走らせて、ビューアに処理の区切りを出す。
    *
@@ -720,6 +725,9 @@ class App {
       return;
     }
     this.sampleOpen = !!(opts && opts.sample);
+    /* 前のファイルについて開いていたシートは、重なりごと片付ける。
+       1 枚だけ閉じると、下に前のファイルの画面が残って戻れてしまう。 */
+    closeAllSheets();
     this.setBusy(true, t('status.reading', { name: file.name }));
     this.backend.resetCache();
     this.detailRefresh = null;

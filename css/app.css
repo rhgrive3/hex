@@ -526,39 +526,60 @@ button { font: inherit; color: inherit; }
 .sheet {
   position: fixed; z-index: 51;
   left: 0; right: 0; bottom: 0;
-  max-height: 82dvh;
+  /* 図やコードを読むための面なので、画面のほとんどを使う。
+     小さく切り取ると、そのたびに拡大縮小させることになる。 */
+  height: 94dvh; max-height: 94dvh;
   display: flex; flex-direction: column;
   background: var(--surface);
   border-radius: 14px 14px 0 0;
   box-shadow: var(--shadow);
   padding-bottom: env(safe-area-inset-bottom);
 }
+/* 待たせている（重なりの下にいる）シートは、消さずに隠すだけ。 */
+.sheet.parked, .backdrop.parked { display: none; }
+
 @media (min-width: 700px) {
   .sheet {
     left: 50%; right: auto; bottom: 50%;
     transform: translate(-50%, 50%);
-    width: min(560px, 92vw);
-    max-height: 76dvh;
+    width: min(880px, 94vw);
+    height: auto; max-height: 90dvh;
     border-radius: 14px;
   }
+  .sheet.wide { width: min(1100px, 96vw); }
+  .sheet.full { width: 96vw; max-height: 94dvh; height: 94dvh; }
   /* The instruction inspector stays docked at the bottom so the code above it
      remains readable. */
   .sheet.bottom {
     left: 0; right: auto; bottom: 0;
     transform: none;
     width: 100%;
-    max-height: 46dvh;
+    height: auto; max-height: 46dvh;
     border-radius: 14px 14px 0 0;
   }
 }
+/* 図・擬似コード・デバッガは、狭い画面でも縦いっぱいに使う。 */
+.sheet.full { height: 96dvh; max-height: 96dvh; border-radius: 0; }
+.sheet.bottom { height: auto; max-height: 60dvh; }
+
 .backdrop.light { background: rgba(0,0,0,.06); }
 .sheet-head {
   display: flex; align-items: center; gap: 8px;
   padding: 10px 12px;
   border-bottom: 0.5px solid var(--separator);
+  flex: 0 0 auto;
 }
-.sheet-title { flex: 1; font-weight: 600; font-size: 16px; text-align: center; }
-.sheet-body { overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; padding: 4px 0 12px; }
+.sheet-title { flex: 1; font-weight: 600; font-size: 16px; text-align: center;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tb-btn.back { color: var(--accent); font-weight: 600; }
+.sheet-body {
+  flex: 1 1 auto; min-height: 0;
+  overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain;
+  padding: 4px 0 12px;
+}
+/* 図だけを見せる面。中で自前にスクロールするので、外は伸ばさない。 */
+.sheet-body.nogrow { display: flex; flex-direction: column; overflow: hidden; padding-bottom: 0; }
+.sheet-body.nogrow > .graphwrap { flex: 1 1 auto; min-height: 0; max-height: none; }
 
 .list { list-style: none; margin: 0; padding: 0; }
 .list li {
@@ -571,6 +592,12 @@ button { font: inherit; color: inherit; }
 .list li.tappable { cursor: pointer; }
 .list li.tappable:active { background: var(--fill); }
 .list li.disabled { color: var(--label-3); }
+/*
+ * 行の本文は、必ず自分の幅の中で折り返す。
+ * クラス名（ISAdQualitySegment.inAppPurchasesTotal）のような切れ目のない
+ * 長い語が、右端の札の下へはみ出して重なっていた。
+ */
+.list li > div { min-width: 0; overflow-wrap: anywhere; }
 .list .k { color: var(--label-2); font-size: 13px; flex: 0 0 auto; }
 .list .v { margin-left: auto; text-align: right; word-break: break-all; font-size: 13px; }
 .list .sub { display: block; color: var(--label-2); font-size: 11px; }
@@ -579,6 +606,8 @@ button { font: inherit; color: inherit; }
 .tag {
   font-size: 10px; padding: 2px 6px; border-radius: 5px;
   background: var(--fill); color: var(--label-2);
+  /* 本文に押し潰されない・本文を押し潰さない */
+  flex: 0 0 auto; white-space: nowrap; align-self: center;
 }
 .tag.exec { background: var(--accent-soft); color: var(--accent); }
 
@@ -937,6 +966,30 @@ input:focus { outline: 2px solid var(--accent); outline-offset: -2px; }
 .tag.tag-fact { background: rgba(52,166,83,.16); color: #1e7a3c; font-weight: 600; }
 .tag.tag-infer { background: var(--accent-soft); color: var(--accent); }
 .tag.tag-unknown { background: var(--fill-strong); color: var(--label-3); }
+/* 「参考」= 順番を決めるだけの点数。事実とも推定とも違う見た目にする。 */
+.tag.tag-hint { background: var(--fill); color: var(--label-3); }
+
+/*
+ * 自動解析の総括。まずここを読めば「どこまで言えたのか」が分かる。
+ * これを出さずに一覧から始めていたころ、決着 0 件の画面でも
+ * 15% の候補が答えのように読まれていた。
+ */
+.autosum {
+  padding: 14px 16px;
+  background: var(--surface-2);
+  border-bottom: 0.5px solid var(--separator);
+}
+.autosum-head { font-size: 17px; font-weight: 700; line-height: 1.35; }
+.autosum-why {
+  margin-top: 8px;
+  font-size: 13px; line-height: 1.6; color: var(--label-2);
+}
+.autosum-stats {
+  margin-top: 10px;
+  font-size: 11px; color: var(--label-3);
+  font-variant-numeric: tabular-nums;
+}
+.autosum .chips { padding: 10px 0 0; }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) .tag.tag-fact { color: #4cd964; }
 }
@@ -1110,43 +1163,82 @@ input:focus { outline: 2px solid var(--accent); outline-offset: -2px; }
 /* 図（CFG / コールグラフ） */
 .graphwrap {
   position: relative;
-  margin: 8px 0;
-  padding: 4px 0 8px;
-  background: var(--surface);
+  margin: 0;
+  background: var(--surface-2);
   border-top: 0.5px solid var(--separator-2);
-  border-bottom: 0.5px solid var(--separator-2);
   overflow: auto;
   -webkit-overflow-scrolling: touch;
-  max-height: 60vh;
+  overscroll-behavior: contain;
+  /* 指でつまんで動かす面。ブラウザ既定のスクロール横取りを止める。 */
+  touch-action: none;
+  cursor: grab;
+  min-height: 320px;
+  max-height: 72dvh;
 }
+.graphwrap.dragging { cursor: grabbing; }
 .graph { display: block; }
 .graph .g-box {
-  fill: var(--surface-2);
+  fill: var(--surface);
   stroke: var(--separator);
   stroke-width: 1;
 }
-.graph .g-node.entry .g-box { stroke: var(--accent); stroke-width: 2; }
+.graph .g-node.entry .g-box { stroke: var(--accent); stroke-width: 2.5; }
 .graph .g-node.loop .g-box { fill: var(--accent-soft); }
 .graph .g-node.caller .g-box { fill: var(--fill); }
+.graph .g-node.callee .g-box { fill: var(--surface); stroke-dasharray: 4 3; }
+.graph .g-node.here .g-box { stroke: var(--accent); stroke-width: 3; }
+.graph .g-node:hover .g-box { stroke: var(--accent); }
 .graph .g-title {
-  font: 600 10.5px ui-monospace, monospace;
+  font: 600 12px ui-monospace, monospace;
   fill: var(--label-2);
 }
-.graph .g-line { font: 11px ui-monospace, monospace; fill: var(--label); }
+.graph .g-line { font: 12.5px ui-monospace, monospace; fill: var(--label); }
 .graph .g-line.dim { fill: var(--label-3); }
-.graph .g-label { font: 10px -apple-system, sans-serif; fill: var(--label-2); text-anchor: middle; }
-.graph .g-edge { fill: none; stroke: var(--label-3); stroke-width: 1.5; }
+.graph .g-label { font: 600 11px -apple-system, sans-serif; fill: var(--label-2); text-anchor: middle; }
+.graph .g-labelbg { fill: var(--surface-2); }
+.graph .g-edge { fill: none; stroke: var(--label-3); stroke-width: 1.6; }
 .graph .g-edge.true { stroke: #34c759; }
 .graph .g-edge.false { stroke: #ff3b30; }
-.graph .g-edge.back { stroke: var(--accent); stroke-width: 2.5; }
+.graph .g-edge.back { stroke: var(--accent); stroke-width: 2.5; stroke-dasharray: 6 4; }
 .graph .g-arrow { fill: var(--label-3); }
 .graph .g-arrow.true { fill: #34c759; }
 .graph .g-arrow.false { fill: #ff3b30; }
 .graph .g-arrow.back { fill: var(--accent); }
+
+/* 図の操作棒。図の上に浮かせる（下に置くと縦を食う）。 */
+/* 図の上に浮かせる。入口の箱は上にあるので、下の隅に置いて隠さない。 */
 .graph-tools {
-  position: sticky; left: 0; bottom: 0;
-  display: flex; gap: 6px; padding: 6px 12px;
+  position: absolute; right: 10px; bottom: 10px; z-index: 2;
+  display: flex; gap: 4px; padding: 4px;
+  background: var(--surface);
+  border: 0.5px solid var(--separator);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
 }
+.graph-tools .tb-btn { min-width: 40px; min-height: 36px; padding: 4px 8px; }
+.graph-head {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 8px 12px;
+  font-size: 12px; color: var(--label-2);
+  flex: 0 0 auto;
+}
+.graph-head > span { flex: 1; min-width: 160px; }
+.chips.inline { padding: 0; }
+.graph-host { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+.graph-host > .graphwrap { flex: 1 1 auto; min-height: 0; max-height: none; }
+.graph-legend {
+  display: flex; flex-wrap: wrap; gap: 4px 14px;
+  padding: 6px 12px;
+  font-size: 11px; color: var(--label-2);
+  background: var(--surface);
+  border-top: 0.5px solid var(--separator-2);
+  flex: 0 0 auto;
+}
+.graph-legend i { display: inline-block; width: 14px; height: 0; margin-right: 5px;
+  border-top: 2px solid var(--label-3); vertical-align: middle; }
+.graph-legend .lg-true i { border-color: #34c759; }
+.graph-legend .lg-false i { border-color: #ff3b30; }
+.graph-legend .lg-back i { border-color: var(--accent); border-top-style: dashed; }
 
 /* レジスタ表（デバッガ） */
 .regs {

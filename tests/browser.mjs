@@ -207,7 +207,16 @@ async function main() {
       if (SHOTS) fs.writeFileSync(path.join(SHOTS, 'goal-' + goal.id + '.txt'), text);
       const named = await sheet.locator('.pinned-name').count();
       const name = named ? (await sheet.locator('.pinned-name').first().innerText()).trim() : '';
-      const verdict = (text.split('\n')[2] || '').trim();
+      /*
+       * 決着の言葉は、その要素から直に読む。
+       * 以前は innerText の 3 行目を決め打ちで読んでいたが、シートの見出しに
+       * 「戻る」が増えただけで行がずれ、「閉じる」を決着として読んでいた。
+       * 画面の見た目に引きずられない読み方にしておく。
+       */
+      const verdictEl = sheet.locator('.verdict-word').first();
+      const verdict = (await verdictEl.count())
+        ? (await verdictEl.innerText()).trim()
+        : (text.split('\n')[2] || '').trim();
       /* 見出しに出ている確からしさ。名前を出す以上、ここは 0% であってはならない。 */
       const conf = Number((/確からしさ\s*([\d.]+)\s*%/.exec(text) || [])[1]);
 
