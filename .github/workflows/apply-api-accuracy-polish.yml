@@ -1,0 +1,30 @@
+name: Apply validated API accuracy polish
+
+on:
+  push:
+    branches: [final/api-accuracy-polish-20260814]
+    paths: ['.github/workflows/apply-api-accuracy-polish.yml']
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: final/api-accuracy-polish-20260814
+          fetch-depth: 0
+      - name: Apply only validated post-freeze deltas
+        run: |
+          set -euo pipefail
+          VALIDATED=dcb827a3e8ba0001776a4a7b2f2185e26e20a5b6
+          git fetch origin "$VALIDATED"
+          git checkout "$VALIDATED" -- js/blocks.js tests/api.mjs tests/accuracy.mjs tests/accuracy-gate.mjs
+          rm -f .github/workflows/apply-api-accuracy-polish.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add js/blocks.js tests/api.mjs tests/accuracy.mjs tests/accuracy-gate.mjs .github/workflows
+          git commit -m 'Polish runtime API classification and accuracy reporting'
+          git push origin HEAD:final/api-accuracy-polish-20260814
