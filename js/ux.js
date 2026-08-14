@@ -41,7 +41,7 @@ function retireLegacyActionDom() {
   document.getElementById('nav-history')?.remove();
 }
 
-function migrateRootControls(ui, app) {
+function migrateRootControls(ui) {
   /* Rebind the surviving visible Open control through the action registry. This also
      keeps the old browser-regression selector on a real, visible canonical action. */
   const oldOpen = document.getElementById('btn-open');
@@ -54,25 +54,14 @@ function migrateRootControls(ui, app) {
   }
 
   const investigate = document.querySelector('.ui-nav-item[data-route-id="investigate"]');
-  if (investigate) {
-    investigate.id = 'btn-investigate';
-    ui.actions.register('investigate.strategy', () => app.openInvestigate());
-    /* A second tap on the already-active Investigate destination means “start choosing
-       a concrete investigation”. First navigation from another destination only routes. */
-    investigate.addEventListener('click', () => {
-      const alreadyActive = ui.router.current?.route?.id === 'investigate';
-      if (alreadyActive && app.store.get('fileInfo')) {
-        queueMicrotask(() => ui.actions.run('investigate.strategy'));
-      }
-    }, true);
-  }
+  if (investigate) investigate.id = 'btn-investigate';
 }
 
 function boot() {
   if (!window.__app) return;
   retireLegacyActionDom();
   const ui = installProductUI(window.__app);
-  if (ui) migrateRootControls(ui, window.__app);
+  if (ui) migrateRootControls(ui);
 }
 
 if (document.readyState === 'loading') {

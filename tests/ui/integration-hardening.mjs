@@ -8,8 +8,18 @@ import { createAppRuntimeIO } from '../../js/runtime/app-runtime.js';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '../..');
 const product = fs.readFileSync(path.join(ROOT, 'js/ui/product.js'), 'utf8');
+const ux = fs.readFileSync(path.join(ROOT, 'js/ux.js'), 'utf8');
+const secondary = fs.readFileSync(path.join(ROOT, 'js/ui/secondary.js'), 'utf8');
 
 assert.equal(product.includes('triggerLegacyInvestigation'), false, 'canonical investigate must not fake legacy sheet input');
+assert.equal(product.includes('HP・体力') && product.includes('ダメージ計算') && product.includes('所持金・コイン'), true, 'canonical investigate must expose beginner goal presets');
+assert.equal(product.includes('renderSecondaryRoute(app, router, route)'), true, 'settings/help/learn must render as canonical routes');
+assert.equal(product.includes('function renderSecondary('), false, 'legacy open-button secondary screen must be removed');
+assert.equal(product.includes('showSettings, showHelp, showLearn'), false, 'product UI must not import legacy secondary sheets');
+assert.equal(secondary.includes("case 'settings': return renderSettings(app, router)"), true, 'canonical settings route must be implemented');
+assert.equal(secondary.includes("case 'help': return renderHelp(app, router)"), true, 'canonical help route must be implemented');
+assert.equal(secondary.includes("case 'learn': return renderLearn(app, router, route)"), true, 'canonical learning route must be implemented');
+assert.equal(ux.includes('app.openInvestigate()'), false, 'primary Investigate navigation must never reopen the legacy sheet');
 assert.equal(product.includes('querySelector(\'#overlays .sheet'), false, 'canonical investigate must not scrape legacy sheet DOM');
 assert.equal(product.includes('compileGoal('), true, 'canonical investigate must call Goal Compiler directly');
 assert.equal(product.includes('traceAppFunction('), true, 'Function Runtime tab must call Runtime Analysis Platform bridge');
