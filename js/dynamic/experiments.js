@@ -57,12 +57,13 @@ export function compileExperiment(hypothesis, options = {}) {
   const objectBase = BigInt(options.objectBase ?? hypothesis.objectBase ?? 0x600000001000n);
   const initial = BigInt(hypothesis.initial ?? options.initial ?? 100);
   const argIndex = boundedInteger(hypothesis.argumentIndex, 1, 0, 7, 'argumentIndex');
-  const inputs = options.inputs || generateDifferentialInputs({ bits:fieldSize <= 4 ? 32 : 64, signed:hypothesis.signed !== false, boundary:hypothesis.boundary ?? hypothesis.clampMin ?? hypothesis.clampMax, pointer:false, limit:options.limit || 12 });
+  const pointerInput = hypothesis.argumentKind === 'pointer' || hypothesis.pointer === true;
+  const inputs = options.inputs || generateDifferentialInputs({ bits:fieldSize <= 4 ? 32 : 64, signed:hypothesis.signed !== false, boundary:hypothesis.boundary ?? hypothesis.clampMin ?? hypothesis.clampMax, pointer:pointerInput, limit:options.limit || 12 });
   const cases = [];
   for (const item of inputs) {
-    if (item.kind !== 'scalar') continue;
+    if (item.kind !== 'scalar' && !(pointerInput && item.kind === 'pointer')) continue;
     const args = Array.from({length:Math.max(argIndex + 1, 2)}, () => 0n); args[0] = objectBase; args[argIndex] = item.value;
-    const expected = fieldOffset == null ? null : relationExpected(hypothesis, initial, item.value);
+    const expected = item.kind === 'scalar' && fieldOffset != null ? relationExpected(hypothesis, initial, item.value) : null;
     cases.push({
       id:`${hypothesis.id || 'hypothesis'}:${item.id}`,
       input:{ arguments:args, scalar:item.value },
