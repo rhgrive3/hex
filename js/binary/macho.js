@@ -1,0 +1,311 @@
+import { ByteView } from './reader.js';
+import { BinaryImage, functionSeed } from './model.js';
+import { parseChainedImports, parseChainedBindingSites, parseClassicBindings, parseExportTrie } from './macho-dyld.js';
+
+const LC_SEGMENT = 0x1;
+const LC_SYMTAB = 0x2;
+const LC_DYSYMTAB = 0xb;
+const LC_LOAD_DYLIB = 0xc;
+const LC_ID_DYLIB = 0xd;
+const LC_LOAD_WEAK_DYLIB = 0x80000018;
+const LC_REEXPORT_DYLIB = 0x8000001f;
+const LC_LAZY_LOAD_DYLIB = 0x20;
+const LC_LOAD_UPWARD_DYLIB = 0x80000023;
+const LC_SEGMENT_64 = 0x19;
+const LC_DYLD_INFO = 0x22;
+const LC_DYLD_INFO_ONLY = 0x80000022;
+const LC_FUNCTION_STARTS = 0x26;
+const LC_MAIN = 0x80000028;
+const LC_BUILD_VERSION = 0x32;
+const LC_DYLD_EXPORTS_TRIE = 0x80000033;
+const LC_DYLD_CHAINED_FIXUPS = 0x80000034;
+
+const DYLIB_COMMANDS = new Set([
+  LC_LOAD_DYLIB, LC_LOAD_WEAK_DYLIB, LC_REEXPORT_DYLIB,
+  LC_LAZY_LOAD_DYLIB, LC_LOAD_UPWARD_DYLIB,
+]);
+
+export function parseMachO(input, opts = {}) {
+  const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
+  const kind = machoKind(bytes);
+  if (!kind) throw new Error('not a Mach-O file');
+  if (kind.fat) {
+    const selected = selectFatSlice(bytes, kind, opts.arch);
+    if (!selected) throw new Error('Mach-O universal binary has no readable slice');
+    const sub = bytes.subarray(Number(selected.offset), Number(selected.offset + selected.size));
+    const image = parseThin(sub, { ...opts, containerOffset: selected.offset });
+    image.metadata.fat = {
+      slices: selected.all.map((s) => ({ arch: cpuName(s.cpu), cpu: s.cpu, subtype: s.subtype, offset: s.offset, size: s.size })),
+      selected: { arch: cpuName(selected.cpu), offset: selected.offset, size: selected.size },
+    };
+    return image;
+  }
+  return parseThin(bytes, opts);
+}
+
+function parseThin(bytes, opts) {
+  const kind = machoKind(bytes);
+  if (!kind || kind.fat) throw new Error('not a thin Mach-O file');
+  const r = new ByteView(bytes, { littleEndian: kind.littleEndian });
+  const bits = kind.bits;
+  const headerSize = bits === 64 ? 32 : 28;
+  const cpu = r.i32(4);
+  const subtype = r.i32(8);
+  const filetype = r.u32(12);
+  const ncmds = r.u32(16);
+  const sizeofcmds = r.u32(20);
+  const flags = r.u32(24);
+  if (headerSize + sizeofcmds > r.length) throw new Error('Mach-O load commands exceed file');
+
+  const image = new BinaryImage(bytes, {
+    format: 'macho', arch: cpuName(cpu), bits,
+    endian: kind.littleEndian ? 'little' : 'big',
+    platform: 'apple', imageBase: 0n,
+    fileOffset: opts.containerOffset || 0n,
+    metadata: { cpu, subtype, filetype, flags, ncmds, sizeofcmds },
+  });
+
+  const commands = [];
+  const segmentOrder = [];
+  const symtabs = [];
+  const linkeditData = {};
+  const dyldInfos = [];
+  let p = headerSize;
+  for (let i = 0; i < ncmds; i++) {
+    if (p + 8 > r.length) { image.warnings.push(`truncated load command ${i}`); break; }
+    const cmd = r.u32(p);
+    const cmdsize = r.u32(p + 4);
+    if (cmdsize < 8 || p + cmdsize > r.length) {
+      image.warnings.push(`invalid load command ${i} size ${cmdsize}`);
+      break;
+    }
+    commands.push({ cmd, offset: p, size: cmdsize });
+    try {
+      if (cmd === LC_SEGMENT_64 && bits === 64) parseSegment64(r, p, image, segmentOrder);
+      else if (cmd === LC_SEGMENT && bits === 32) parseSegment32(r, p, image, segmentOrder);
+      else if (cmd === LC_SYMTAB) symtabs.push({ symoff: r.u32(p + 8), nsyms: r.u32(p + 12), stroff: r.u32(p + 16), strsize: r.u32(p + 20) });
+      else if (DYLIB_COMMANDS.has(cmd) || cmd === LC_ID_DYLIB) parseDylib(r, p, cmdsize, image, cmd === LC_ID_DYLIB);
+      else if (cmd === LC_MAIN && cmdsize >= 24) linkeditData.main = { entryoff: r.u64(p + 8), stacksize: r.u64(p + 16) };
+      else if (cmd === LC_FUNCTION_STARTS && cmdsize >= 16) linkeditData.functionStarts = dataCommand(r, p);
+      else if (cmd === LC_DYLD_CHAINED_FIXUPS && cmdsize >= 16) linkeditData.chainedFixups = dataCommand(r, p);
+      else if (cmd === LC_DYLD_EXPORTS_TRIE && cmdsize >= 16) linkeditData.exportsTrie = dataCommand(r, p);
+      else if ((cmd === LC_DYLD_INFO || cmd === LC_DYLD_INFO_ONLY) && cmdsize >= 48) dyldInfos.push(parseDyldInfo(r, p));
+      else if (cmd === LC_BUILD_VERSION && cmdsize >= 24) parseBuildVersion(r, p, image);
+    } catch (e) {
+      image.warnings.push(`load command 0x${cmd.toString(16)}: ${e.message}`);
+    }
+    p += cmdsize;
+  }
+
+  image.metadata.loadCommands = commands.length;
+  image.metadata.segmentOrder = segmentOrder.map((s) => s.name);
+  const text = image.segments.find((s) => s.name === '__TEXT') || image.segments.find((s) => s.perms.execute) || image.segments[0];
+  image.imageBase = text ? text.address : 0n;
+
+  if (linkeditData.main) {
+    image.entrypoint = image.offsetToAddress(linkeditData.main.entryoff);
+    if (image.entrypoint != null) image.functions.push(functionSeed(image.entrypoint, { source: 'entrypoint', confidence: 0.9 }));
+  }
+
+  for (const st of symtabs) parseSymbolTable(r, st, image, bits);
+  const hadFunctionStarts = !!linkeditData.functionStarts;
+  if (linkeditData.functionStarts) parseFunctionStarts(r, linkeditData.functionStarts, image);
+  let chainedImports = null;
+  if (linkeditData.chainedFixups) chainedImports = parseChainedImports(r, linkeditData.chainedFixups, image);
+  if (linkeditData.chainedFixups && chainedImports) parseChainedBindingSites(r, linkeditData.chainedFixups, image, chainedImports);
+  for (const info of dyldInfos) {
+    parseClassicBindings(r, info.bind, image, segmentOrder, 'bind');
+    parseClassicBindings(r, info.weakBind, image, segmentOrder, 'weak-bind');
+    parseClassicBindings(r, info.lazyBind, image, segmentOrder, 'lazy-bind');
+    if (!linkeditData.exportsTrie && info.export.size) parseExportTrie(r, info.export, image);
+  }
+  if (linkeditData.exportsTrie) parseExportTrie(r, linkeditData.exportsTrie, image);
+
+  const namesByAddr = new Map();
+  for (const sym of image.symbols) if (sym.defined && sym.address) namesByAddr.set(sym.address.toString(), sym.name);
+  for (const ex of image.exports) if (ex.address) namesByAddr.set(ex.address.toString(), ex.name);
+  if (hadFunctionStarts) {
+    for (const f of image.functions) if (!f.name) f.name = namesByAddr.get(f.address.toString()) || null;
+    const provenStarts = new Set(image.functions.filter((f) => f.source !== 'export').map((f) => f.address.toString()));
+    image.functions = image.functions.filter((f) => f.source !== 'export' || provenStarts.has(f.address.toString()));
+  } else {
+    for (const sym of image.symbols) {
+      if (!sym.defined || !sym.address) continue;
+      const sec = image.sectionAt(sym.address);
+      if (sec && sec.perms.execute && sym.name !== '__mh_execute_header') image.functions.push(functionSeed(sym.address, { name: sym.name, source: 'symbol', confidence: 0.9 }));
+    }
+  }
+
+  return image.finalize();
+}
+
+function parseSegment64(r, p, image, order) {
+  const name = r.ascii(p + 8, 16);
+  const address = r.u64(p + 24);
+  const size = r.u64(p + 32);
+  const fileOffset = r.u64(p + 40);
+  const fileSize = r.u64(p + 48);
+  const initprot = r.i32(p + 60);
+  const nsects = r.u32(p + 64);
+  const flags = r.u32(p + 68);
+  const seg = image.addSegment({ name, address, size, fileOffset, fileSize, perms: vmPerms(initprot), flags, source: 'LC_SEGMENT_64' });
+  order.push(seg);
+  let q = p + 72;
+  for (let i = 0; i < nsects; i++, q += 80) {
+    r.check(q, 80);
+    const sectname = r.ascii(q, 16);
+    const segname = r.ascii(q + 16, 16);
+    const saddr = r.u64(q + 32);
+    const ssize = r.u64(q + 40);
+    const offset = r.u32(q + 48);
+    const sflags = r.u32(q + 64);
+    const zeroFill = (sflags & 0xff) === 1 || (sflags & 0xff) === 0x0c || (sflags & 0xff) === 0x12;
+    image.addSection({ name: sectname, segment: segname, address: saddr, size: ssize, fileOffset: BigInt(offset), fileSize: zeroFill ? 0n : ssize, perms: vmPerms(initprot), flags: sflags, index: image.sections.length + 1 });
+  }
+}
+
+function parseSegment32(r, p, image, order) {
+  const name = r.ascii(p + 8, 16);
+  const address = BigInt(r.u32(p + 24));
+  const size = BigInt(r.u32(p + 28));
+  const fileOffset = BigInt(r.u32(p + 32));
+  const fileSize = BigInt(r.u32(p + 36));
+  const initprot = r.i32(p + 44);
+  const nsects = r.u32(p + 48);
+  const flags = r.u32(p + 52);
+  const seg = image.addSegment({ name, address, size, fileOffset, fileSize, perms: vmPerms(initprot), flags, source: 'LC_SEGMENT' });
+  order.push(seg);
+  let q = p + 56;
+  for (let i = 0; i < nsects; i++, q += 68) {
+    r.check(q, 68);
+    const sectname = r.ascii(q, 16);
+    const segname = r.ascii(q + 16, 16);
+    const saddr = BigInt(r.u32(q + 32));
+    const ssize = BigInt(r.u32(q + 36));
+    const offset = r.u32(q + 40);
+    const sflags = r.u32(q + 56);
+    const zeroFill = (sflags & 0xff) === 1 || (sflags & 0xff) === 0x0c || (sflags & 0xff) === 0x12;
+    image.addSection({ name: sectname, segment: segname, address: saddr, size: ssize, fileOffset: BigInt(offset), fileSize: zeroFill ? 0n : ssize, perms: vmPerms(initprot), flags: sflags, index: image.sections.length + 1 });
+  }
+}
+
+function parseDylib(r, p, cmdsize, image, isId) {
+  const nameoff = r.u32(p + 8);
+  if (nameoff >= cmdsize) return;
+  const name = r.cstring(p + nameoff, cmdsize - nameoff);
+  if (isId) image.metadata.installName = name;
+  else if (name) image.libraries.push(name);
+}
+
+function parseBuildVersion(r, p, image) {
+  const platform = r.u32(p + 8);
+  const minos = r.u32(p + 12);
+  const sdk = r.u32(p + 16);
+  image.metadata.buildVersion = { platform, platformName: platformName(platform), minos: version32(minos), sdk: version32(sdk) };
+  image.platform = platformName(platform) || image.platform;
+}
+
+function parseDyldInfo(r, p) {
+  return {
+    rebase: { offset: r.u32(p + 8), size: r.u32(p + 12) },
+    bind: { offset: r.u32(p + 16), size: r.u32(p + 20) },
+    weakBind: { offset: r.u32(p + 24), size: r.u32(p + 28) },
+    lazyBind: { offset: r.u32(p + 32), size: r.u32(p + 36) },
+    export: { offset: r.u32(p + 40), size: r.u32(p + 44) },
+  };
+}
+
+function parseSymbolTable(r, st, image, bits) {
+  const ent = bits === 64 ? 16 : 12;
+  if (st.symoff + st.nsyms * ent > r.length || st.stroff + st.strsize > r.length) {
+    image.warnings.push('Mach-O symbol table is truncated'); return;
+  }
+  for (let i = 0; i < st.nsyms; i++) {
+    const p = st.symoff + i * ent;
+    const strx = r.u32(p);
+    const type = r.u8(p + 4);
+    const sect = r.u8(p + 5);
+    const desc = r.u16(p + 6);
+    const value = bits === 64 ? r.u64(p + 8) : BigInt(r.u32(p + 8));
+    if (type & 0xe0) continue;
+    const name = strx < st.strsize ? r.cstring(st.stroff + strx, st.strsize - strx) : '';
+    if (!name) continue;
+    const ntype = type & 0x0e;
+    const external = !!(type & 1);
+    const undefinedSymbol = ntype === 0 && value === 0n;
+    const sym = { name, address: value, size: null, kind: ntype === 0x0e ? 'section' : undefinedSymbol ? 'undefined' : 'other', binding: external ? 'global' : 'local', defined: !undefinedSymbol, sectionIndex: sect, desc, source: 'LC_SYMTAB' };
+    image.symbols.push(sym);
+    if (undefinedSymbol && external) {
+      const ordinal = (desc >>> 8) & 0xff;
+      image.imports.push({ name, library: dylibForOrdinal(image, ordinal), ordinal, weak: !!(desc & 0x40), source: 'symbol-table', sites: [] });
+    } else if (external && value !== 0n) {
+      image.exports.push({ name, address: value, kind: 'symbol', source: 'symbol-table' });
+    }
+    void sect;
+  }
+}
+
+function parseFunctionStarts(r, dc, image) {
+  if (!dc.size || dc.offset + dc.size > r.length) return;
+  let p = dc.offset;
+  const end = dc.offset + dc.size;
+  let addr = image.imageBase;
+  while (p < end) {
+    const x = r.uleb(p);
+    p = x.next;
+    if (x.value === 0n) break;
+    addr += x.value;
+    image.functions.push(functionSeed(addr, { source: 'function_starts', confidence: 0.995 }));
+  }
+}
+
+function dataCommand(r, p) { return { offset: r.u32(p + 8), size: r.u32(p + 12) }; }
+function vmPerms(v) { return { read: !!(v & 1), write: !!(v & 2), execute: !!(v & 4) }; }
+function dylibForOrdinal(image, ordinal) {
+  if (ordinal === 0) return null;
+  if (ordinal === -1 || ordinal === 0xff) return '<main-executable>';
+  if (ordinal === -2 || ordinal === 0xfe) return '<flat-lookup>';
+  if (ordinal === -3 || ordinal === 0xfd) return '<weak-lookup>';
+  return ordinal > 0 ? image.libraries[ordinal - 1] || null : null;
+}
+function cpuName(cpu) {
+  const u = cpu >>> 0;
+  return ({ 7: 'x86', 12: 'arm', 18: 'ppc', 0x01000007: 'x86_64', 0x0100000c: 'arm64', 0x0200000c: 'arm64_32' })[u] || `cpu-${u}`;
+}
+function platformName(p) { return ({ 1: 'macOS', 2: 'iOS', 3: 'tvOS', 4: 'watchOS', 6: 'macCatalyst', 7: 'iOS-simulator', 8: 'tvOS-simulator', 9: 'watchOS-simulator', 10: 'driverKit', 11: 'visionOS', 12: 'visionOS-simulator' })[p] || `apple-platform-${p}`; }
+function version32(v) { return `${(v >>> 16) & 0xffff}.${(v >>> 8) & 0xff}.${v & 0xff}`; }
+
+function machoKind(bytes) {
+  if (bytes.length < 4) return null;
+  const s = [...bytes.subarray(0, 4)].map((x) => x.toString(16).padStart(2, '0')).join('');
+  if (s === 'cefaedfe') return { fat: false, bits: 32, littleEndian: true };
+  if (s === 'cffaedfe') return { fat: false, bits: 64, littleEndian: true };
+  if (s === 'feedface') return { fat: false, bits: 32, littleEndian: false };
+  if (s === 'feedfacf') return { fat: false, bits: 64, littleEndian: false };
+  if (s === 'cafebabe') return { fat: true, bits: 32, littleEndian: false };
+  if (s === 'cafebabf') return { fat: true, bits: 64, littleEndian: false };
+  if (s === 'bebafeca') return { fat: true, bits: 32, littleEndian: true };
+  if (s === 'bfbafeca') return { fat: true, bits: 64, littleEndian: true };
+  return null;
+}
+
+function selectFatSlice(bytes, kind, preferredArch) {
+  const r = new ByteView(bytes, { littleEndian: kind.littleEndian });
+  const n = r.u32(4);
+  if (n > 128) throw new Error(`unreasonable Mach-O slice count ${n}`);
+  const all = [];
+  let p = 8;
+  for (let i = 0; i < n; i++) {
+    if (kind.bits === 64) {
+      const cpu = r.i32(p), subtype = r.i32(p + 4), offset = r.u64(p + 8), size = r.u64(p + 16);
+      all.push({ cpu, subtype, offset, size }); p += 32;
+    } else {
+      const cpu = r.i32(p), subtype = r.i32(p + 4), offset = BigInt(r.u32(p + 8)), size = BigInt(r.u32(p + 12));
+      all.push({ cpu, subtype, offset, size }); p += 20;
+    }
+  }
+  const valid = all.filter((s) => s.offset >= 0n && s.size > 0n && s.offset + s.size <= BigInt(bytes.length));
+  const want = preferredArch ? valid.find((s) => cpuName(s.cpu) === preferredArch) : null;
+  const chosen = want || valid.find((s) => cpuName(s.cpu) === 'arm64') || valid.find((s) => cpuName(s.cpu) === 'x86_64') || valid[0];
+  return chosen ? { ...chosen, all } : null;
+}
