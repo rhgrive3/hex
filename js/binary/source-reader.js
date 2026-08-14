@@ -56,7 +56,9 @@ export class SparseByteBuffer {
 
 export async function parseSourceRanges(source, parser, parserOptions = {}, options = {}) {
   const pageSize = options.pageSize ?? 256 * 1024;
-  const maxPageSize = options.maxPageSize ?? Math.min(2 * 1024 * 1024, source.maxReadLength);
+  // `pageSize` historically is also a hard per-read ceiling. Keep that API
+  // contract unless the caller explicitly opts into adaptive batching.
+  const maxPageSize = options.maxPageSize ?? pageSize;
   const maxCachedBytes = options.maxCachedBytes ?? 64 * 1024 * 1024;
   const maxReads = options.maxReads ?? 4096;
   if (!Number.isSafeInteger(pageSize) || pageSize <= 0) throw new ByteSourceLimitError('pageSize must be a positive safe integer');
@@ -78,8 +80,9 @@ export async function parseSourceRanges(source, parser, parserOptions = {}, opti
   for (;;) {
     try {
       // Parsers remain synchronous. On a cache miss we fetch a bounded range
-      // and restart deterministically. Read size grows after repeated misses so
-      // large metadata does not cause O(n^2) 64 KiB restart storms.
+      // and restart deterministically. Callers may opt into a larger
+      // maxPageSize so large metadata avoids O(n^2) restart storms without
+      // removing the overall metadata memory budget.
       const image = parser(sparse, parserOptions);
       image.attachSource(source, { discardBytes: true });
       image.metadata.sourceBacked = true;
