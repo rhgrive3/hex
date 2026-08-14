@@ -1,12 +1,17 @@
 /* IR-first compatibility facade. The previous decompiler is retained verbatim in decompile-legacy.js and is used only when Semantic IR cannot produce a result. */
 import { decompile as legacyDecompile } from './decompile-legacy.js';
 import { decompileSemantic } from './decompiler/semantic.js';
+import { repairCanonicalPostTestLoop } from './decompiler/loop-repair.js';
 
-// Preserve every historical helper export (stackNaming, etc.). Explicit exports
-// below intentionally override only the public decompile entry point.
+// Preserve every historical helper export (stackNaming, decompiledText, etc.).
+// Explicit exports below intentionally override only the public decompile entry.
 export * from './decompile-legacy.js';
 export { decompileSemantic } from './decompiler/semantic.js';
 export { renderValue as renderSemanticValue, renderMemoryLocation, renderBranchCondition, recoverInductionVariables, reachingRegisterValue } from './decompiler/semantic.js';
+
+function textOf(lines) {
+  return (lines || []).map((l) => `${'    '.repeat(Math.max(0, l.indent || 0))}${l.text || ''}`).join('\n');
+}
 
 function normalizeCompatibility(result) {
   if (!result) return result;
@@ -15,30 +20,58 @@ function normalizeCompatibility(result) {
   for (const l of result.lines || []) {
     if (l && typeof l.text === 'string') l.text = l.text.replace(/\bvar_([0-9a-f]+)\b/g, (_m, h) => 'var_' + h.toUpperCase());
   }
-  if (result.semantic) result.pseudocode = (result.lines || []).map((l) => `${'    '.repeat(Math.max(0, l.indent || 0))}${l.text || ''}`).join('\n');
+  if (result.semantic) result.pseudocode = textOf(result.lines);
   return result;
+}
+
+function augmentLegacy(fallback, reason) {
+  fallback.warnings = [...(fallback.warnings || []), reason];
+  fallback.summary = fallback.summary || 'Semantic IR が安全に表現できない領域があるため、命令を省略しない互換表示へ切り替えました。';
+  fallback.pseudocode = fallback.pseudocode || textOf(fallback.lines);
+  fallback.evidence = fallback.evidence || [];
+  fallback.semantic = false;
+  fallback.legacyFallback = true;
+  return fallback;
+}
+
+function blockAddress(result, model, opts, bi) {
+  const b = result?.ir?.blocks?.[bi];
+  if (!b) return opts.addr ?? model.instructions?.[0]?.address ?? 0n;
+  return model.instructions?.find((x) => x.row === b.startRow)?.address
+    ?? opts.addrOfRow?.(b.startRow)
+    ?? (opts.addr ?? model.instructions?.[0]?.address ?? 0n) + BigInt(b.startRow || 0) * 4n;
 }
 
 export function decompile(model, opts = {}) {
   if (opts.semanticIR === false || opts.forceLegacyDecompiler === true) return legacyDecompile(model, opts);
   try {
-    const result = decompileSemantic(model, opts);
-    if (result) return normalizeCompatibility(result);
+    let result = decompileSemantic(model, opts);
+    if (result) {
+      // IR construction intentionally visits only reachable blocks. If the
+      // function range also contains disconnected/indirectly-reachable blocks,
+      // IR cannot claim coverage for them; this is a legitimate unsupported-IR
+      // case and the faithful legacy CFG renderer is the safe fallback.
+      const total = result.ir?.blocks?.length || 0;
+      const reachable = result.coverage?.reachable ?? total;
+      if (total > reachable) {
+        return augmentLegacy(
+          legacyDecompile(model, opts),
+          `Semantic IR covers ${reachable}/${total} Basic Blocks; disconnected or indirect targets are shown with the faithful CFG fallback.`,
+        );
+      }
+
+      result = repairCanonicalPostTestLoop(result, (bi) => blockAddress(result, model, opts, bi));
+      if (result.coverage) {
+        result.coverage.total = total;
+        result.coverage.emitted = result.coverage.emitted ?? total;
+      }
+      return normalizeCompatibility(result);
+    }
   } catch (error) {
-    const fallback = legacyDecompile(model, opts);
-    fallback.warnings = [...(fallback.warnings || []), `Semantic IR decompiler fallback: ${error && error.message ? error.message : 'unknown error'}`];
-    fallback.summary = fallback.summary || 'Semantic IR の生成または変換に失敗したため、命令を省略しない互換表示へ切り替えました。';
-    fallback.pseudocode = fallback.pseudocode || (fallback.lines || []).map((l) => `${'    '.repeat(Math.max(0, l.indent || 0))}${l.text || ''}`).join('\n');
-    fallback.evidence = fallback.evidence || [];
-    fallback.semantic = false;
-    fallback.legacyFallback = true;
-    return fallback;
+    return augmentLegacy(
+      legacyDecompile(model, opts),
+      `Semantic IR decompiler fallback: ${error && error.message ? error.message : 'unknown error'}`,
+    );
   }
-  const fallback = legacyDecompile(model, opts);
-  fallback.summary = fallback.summary || 'Semantic IR が利用できないため、互換Decompilerで表示しています。';
-  fallback.pseudocode = fallback.pseudocode || (fallback.lines || []).map((l) => `${'    '.repeat(Math.max(0, l.indent || 0))}${l.text || ''}`).join('\n');
-  fallback.evidence = fallback.evidence || [];
-  fallback.semantic = false;
-  fallback.legacyFallback = true;
-  return fallback;
+  return augmentLegacy(legacyDecompile(model, opts), 'Semantic IR is unavailable for this function.');
 }
