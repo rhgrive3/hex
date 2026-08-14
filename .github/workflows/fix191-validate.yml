@@ -15,6 +15,7 @@ jobs:
           node tools/apply-fix191.mjs
           node tools/fix191-adjust.mjs
           node tools/apply-fix265.mjs
+          node tools/fix265-adjust.mjs
           node tools/fix265-tests.mjs
       - run: |
           node --check js/analyze.js
