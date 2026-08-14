@@ -25,13 +25,13 @@ const retI = { id: 16, op: 'ret', row: 6, block: 0, address: 0x1018n, args: [] }
 for (const [v, use] of [[self, loadI],[damage,subI],[loaded,subI],[sub,cmpI],[sub,selI],[zero,cmpI],[zero,selI],[flags,selI],[selected,storeI]]) v.uses.push(use);
 const ir = { values: [self,damage,loaded,zero,sub,flags,selected], instructions: [loadI,constI,subI,cmpI,selI,storeI,retI], args: new Map([['x0',self],['x1',damage]]), blocks: [{ index:0,startRow:0,endRow:6,succ:[],insts:[loadI,constI,subI,cmpI,selI,storeI,retI] }] };
 const types = { values: new Map([[self.id,{name:'Player *',kind:'pointer',confidence:.9}],[damage.id,{name:'int32',kind:'integer',bits:32,signed:true,confidence:.9}],[loaded.id,{name:'int32',kind:'integer',bits:32,signed:true,confidence:.9}],[sub.id,{name:'int32',kind:'integer',bits:32,signed:true,confidence:.9}],[selected.id,{name:'int32',kind:'integer',bits:32,signed:true,confidence:.9}]]), locations: new Map() };
-const result = { semantic:true, ir, types, lines:[{kind:'sig',indent:0,text:'void test(Player * arg1, int32 arg2)'},{kind:'ctrl',indent:0,text:'{'},{kind:'stmt',indent:1,text:'arg1->field_20 = (arg1->field_20 - arg2 > 0 ? arg1->field_20 - arg2 : 0);',row:5,addr:0x1014n},{kind:'ctrl',indent:0,text:'}'}], warnings:[], evidence:[], summary:'fallback', coverage:{mode:'structured'} };
+const result = { semantic:true, ir, types, lines:[{kind:'sig',indent:0,text:'void test(Player * a1, int32 a2)'},{kind:'ctrl',indent:0,text:'{'},{kind:'stmt',indent:1,text:'a1->field_20 = (a1->field_20 - a2 > 0 ? a1->field_20 - a2 : 0);',row:5,addr:0x1014n},{kind:'ctrl',indent:0,text:'}'}], warnings:[], evidence:[], summary:'fallback', coverage:{mode:'structured'} };
 const enhanced = enhanceSemanticDecompilation(result, { calls:[] }, { fieldFor: (_reg, off) => off === 32n ? { name:'hp' } : null, decompilerTimeBudgetMs:1000 });
 assert.ok(enhanced.semanticAst && enhanced.cAst);
 assert.ok(enhanced.sourceMap.length >= 4);
 assert.match(enhanced.pseudocode, /->hp = max\(/);
 assert.ok(enhanced.rewriteStats.applications > 0);
-assert.ok(enhanced.importantInputs.includes('arg1'));
+assert.ok(enhanced.importantInputs.includes('a1'));
 assert.ok(enhanced.sideEffects.some((x) => x.includes('hp')));
 assert.ok(enhanced.metrics.sourceMappedNodes >= 4);
 assert.ok(enhanced.highVariables.groups.length > 0);
