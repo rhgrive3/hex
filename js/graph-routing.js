@@ -8,7 +8,7 @@ export const MAX_LINES = 14;
 export const MAX_CHARS = 46;
 
 const GAP_X = 42;
-const GAP_Y = 80;
+const GAP_Y = 96;
 const GRAPH_PAD = 26;
 const PORT_PAD = 14;
 const EDGE_STUB = 14;
@@ -27,7 +27,6 @@ export function layoutNodes(nodes, edges, byId) {
     indeg.set(e.to, indeg.get(e.to) + 1);
   }
 
-  /* 段を決める。back edge は rank 計算から除外する。 */
   const rank = new Map();
   const queue = nodes.filter((n) => indeg.get(n.id) === 0).map((n) => n.id);
   if (!queue.length && nodes.length) queue.push(nodes[0].id);
@@ -67,7 +66,6 @@ export function layoutNodes(nodes, edges, byId) {
   }
   const ranksSorted = Array.from(rows.keys()).sort((a, b) => a - b);
 
-  /* barycenter sweep: 同段の順序を前後の接続位置へ寄せて交差数を減らす。 */
   const order = new Map();
   for (const r of ranksSorted) rows.get(r).forEach((id, i) => order.set(id, i));
 
@@ -105,7 +103,7 @@ export function layoutNodes(nodes, edges, byId) {
 
   const pos = new Map();
   const rowBounds = new Map();
-  let y = GRAPH_PAD + 18; // rank 0 の上にも戻り辺が通れるコリドーを確保
+  let y = GRAPH_PAD + 18;
   for (const r of ranksSorted) {
     const ids = rows.get(r);
     let x = GRAPH_PAD + (contentWidth - rowWidth(ids)) / 2;
@@ -127,8 +125,6 @@ export function layoutNodes(nodes, edges, byId) {
   };
 }
 
-/* ── 辺ルーティング ─────────────────────────────────────── */
-
 export function routeEdges(edges, layout) {
   const valid = [];
   edges.forEach((edge, index) => {
@@ -141,6 +137,7 @@ export function routeEdges(edges, layout) {
   const sourcePort = new Map();
   const targetPort = new Map();
   assignVerticalPorts(valid, sourcePort, targetPort);
+  const { sourceTrack, targetTrack, sourceJogY, targetJogY } = assignEndpointTracks(valid, sourcePort, targetPort, layout);
 
   const local = [];
   const external = [];
@@ -151,8 +148,6 @@ export function routeEdges(edges, layout) {
   }
 
   const routes = [];
-
-  /* 隣接段: 段間の空白を複数レーンに分け、同じ mid-Y に線を束ねない。 */
   const corridorGroups = new Map();
   for (const item of local) {
     const key = item.a.rank + '>' + item.b.rank;
@@ -167,18 +162,19 @@ export function routeEdges(edges, layout) {
     });
     const fromBounds = layout.rowBounds.get(group[0].a.rank);
     const toBounds = layout.rowBounds.get(group[0].b.rank);
-    const low = fromBounds.bottom + EDGE_STUB;
-    const high = toBounds.top - EDGE_STUB;
+    const corridorHeight = toBounds.top - fromBounds.bottom;
+    const band = Math.max(EDGE_STUB, corridorHeight * 0.34);
+    const low = fromBounds.bottom + band;
+    const high = toBounds.top - band;
     group.forEach((item, i) => {
       const laneY = distributeBetween(low, high, i, group.length);
       const sx = sourcePort.get(item).x;
       const tx = targetPort.get(item).x;
-      const points = simplifyPoints([
-        { x: sx, y: item.a.y + item.a.h },
-        { x: sx, y: laneY },
-        { x: tx, y: laneY },
-        { x: tx, y: item.b.y - 2 },
-      ]);
+      const stx = sourceTrack.get(item);
+      const ttx = targetTrack.get(item);
+      const sourceY = item.a.y + item.a.h;
+      const targetY = item.b.y - 2;
+      const points = endpointTrackedPoints(sx, stx, sourceY, sourceJogY.get(item), laneY, ttx, tx, targetJogY.get(item), targetY);
       routes.push({
         edge: item.edge, index: item.index, points,
         label: item.edge.label ? { x: (sx + tx) / 2, y: laneY - 3 } : null,
@@ -186,16 +182,10 @@ export function routeEdges(edges, layout) {
     });
   }
 
-  /*
-   * 段飛び・戻り辺: ノード群の外側へ逃がす。
-   * vertical span が重なる線だけ別レーンにし、離れた区間では同じ x を再利用する。
-   */
   const bounds = graphNodeBounds(layout.pos);
   const graphCenter = (bounds.left + bounds.right) / 2;
   const laneSegments = { left: [], right: [] };
   const sideLoad = { left: 0, right: 0 };
-
-  const stubY = assignExternalStubYs(external, layout);
 
   external.sort((u, v) => {
     const us = Math.abs(u.b.rank - u.a.rank);
@@ -206,7 +196,10 @@ export function routeEdges(edges, layout) {
   for (const item of external) {
     const sx = sourcePort.get(item).x;
     const tx = targetPort.get(item).x;
-    const { exitY, enterY } = stubY.get(item);
+    const stx = sourceTrack.get(item);
+    const ttx = targetTrack.get(item);
+    const exitY = sourceJogY.get(item);
+    const enterY = targetJogY.get(item);
     const top = Math.min(exitY, enterY);
     const bottom = Math.max(exitY, enterY);
 
@@ -224,13 +217,17 @@ export function routeEdges(edges, layout) {
       ? bounds.left - EXTERNAL_PAD - lane * EXTERNAL_LANE_GAP
       : bounds.right + EXTERNAL_PAD + lane * EXTERNAL_LANE_GAP;
 
+    const sourceY = item.a.y + item.a.h;
+    const targetY = item.b.y - 2;
     const points = simplifyPoints([
-      { x: sx, y: item.a.y + item.a.h },
+      { x: sx, y: sourceY },
       { x: sx, y: exitY },
+      { x: stx, y: exitY },
       { x: laneX, y: exitY },
       { x: laneX, y: enterY },
+      { x: ttx, y: enterY },
       { x: tx, y: enterY },
-      { x: tx, y: item.b.y - 2 },
+      { x: tx, y: targetY },
     ]);
 
     const labelY = (top + bottom) / 2;
@@ -246,38 +243,92 @@ export function routeEdges(edges, layout) {
   return routes;
 }
 
-function assignExternalStubYs(items, layout) {
-  const result = new Map();
-  const bySourceRank = new Map();
-  const byTargetRank = new Map();
-  const push = (map, rank, item) => {
-    if (!map.has(rank)) map.set(rank, []);
-    map.get(rank).push(item);
+function assignEndpointTracks(items, sourcePort, targetPort, layout) {
+  const sourceTrack = new Map();
+  const targetTrack = new Map();
+  const sourceJogY = new Map();
+  const targetJogY = new Map();
+  const corridors = new Map();
+  const add = (key, item, endpoint, baseX) => {
+    if (!corridors.has(key)) corridors.set(key, []);
+    corridors.get(key).push({ item, endpoint, baseX });
   };
+
   for (const item of items) {
-    push(bySourceRank, item.a.rank, item);
-    push(byTargetRank, item.b.rank, item);
-    result.set(item, { exitY: item.a.y + item.a.h + EDGE_STUB, enterY: item.b.y - EDGE_STUB });
+    add('gap:' + item.a.rank, item, 'source', sourcePort.get(item).x);
+    const targetKey = item.b.rank > 0 ? 'gap:' + (item.b.rank - 1) : 'top';
+    add(targetKey, item, 'target', targetPort.get(item).x);
   }
 
-  /* 同じ段から外へ出る水平線を、段間コリドーの下側 35% に扇状配置。 */
-  for (const [rank, list] of bySourceRank) {
-    const bounds = layout.rowBounds.get(rank);
-    list.sort((u, v) => centerX(u.a) - centerX(v.a) || u.index - v.index);
-    const low = bounds.bottom + 8;
-    const high = bounds.bottom + Math.max(18, GAP_Y * 0.35);
-    list.forEach((item, i) => { result.get(item).exitY = distributeBetween(low, high, i, list.length); });
-  }
+  for (const [key, records] of corridors) {
+    records.sort((a, b) => a.baseX - b.baseX || a.item.index - b.item.index || (a.endpoint < b.endpoint ? -1 : 1));
+    const used = [];
+    for (const record of records) {
+      const x = nearestFreeTrack(record.baseX, used);
+      used.push(x);
+      (record.endpoint === 'source' ? sourceTrack : targetTrack).set(record.item, x);
+    }
 
-  /* 入る側はコリドー上側 35%。出口側と同じ y に重ならない。 */
-  for (const [rank, list] of byTargetRank) {
-    const bounds = layout.rowBounds.get(rank);
-    list.sort((u, v) => centerX(u.b) - centerX(v.b) || u.index - v.index);
-    const low = bounds.top - Math.max(18, GAP_Y * 0.35);
-    const high = bounds.top - 8;
-    list.forEach((item, i) => { result.get(item).enterY = distributeBetween(low, high, i, list.length); });
+    const bounds = corridorBounds(key, layout);
+    const height = Math.max(24, bounds.bottom - bounds.top);
+    const sourceRecords = records.filter((r) => r.endpoint === 'source')
+      .sort((a, b) => a.baseX - b.baseX || a.item.index - b.item.index);
+    const targetRecords = records.filter((r) => r.endpoint === 'target')
+      .sort((a, b) => a.baseX - b.baseX || a.item.index - b.item.index);
+    const sourceLow = bounds.top + 4;
+    const sourceHigh = bounds.top + Math.max(8, height * 0.28);
+    const targetLow = bounds.bottom - Math.max(8, height * 0.28);
+    const targetHigh = bounds.bottom - 4;
+    sourceRecords.forEach((record, i) => {
+      sourceJogY.set(record.item, distributeBetween(sourceLow, sourceHigh, i, sourceRecords.length));
+    });
+    targetRecords.forEach((record, i) => {
+      targetJogY.set(record.item, distributeBetween(targetLow, targetHigh, i, targetRecords.length));
+    });
   }
-  return result;
+  return { sourceTrack, targetTrack, sourceJogY, targetJogY };
+}
+
+function corridorBounds(key, layout) {
+  if (key === 'top') {
+    const first = layout.rowBounds.get(layout.ranksSorted[0]);
+    return { top: Math.max(2, first.top - 42), bottom: first.top - 2 };
+  }
+  const rank = Number(key.slice(4));
+  const from = layout.rowBounds.get(rank);
+  const nextRank = layout.ranksSorted.find((r) => r > rank);
+  if (from && nextRank != null) {
+    const to = layout.rowBounds.get(nextRank);
+    return { top: from.bottom, bottom: to.top - 2 };
+  }
+  const top = from ? from.bottom : layout.height - 44;
+  return { top, bottom: Math.min(layout.height - 2, top + 42) };
+}
+
+function nearestFreeTrack(baseX, used) {
+  const spacing = 6;
+  const clearance = 3;
+  for (let ring = 0; ring <= 8; ring++) {
+    const offsets = ring === 0 ? [0] : [ring * spacing, -ring * spacing];
+    for (const offset of offsets) {
+      const candidate = baseX + offset;
+      if (used.every((x) => Math.abs(x - candidate) >= clearance)) return candidate;
+    }
+  }
+  return baseX + (used.length + 1) * spacing;
+}
+
+function endpointTrackedPoints(sx, stx, sourceY, sourceJogY, laneY, ttx, tx, targetJogY, targetY) {
+  return simplifyPoints([
+    { x: sx, y: sourceY },
+    { x: sx, y: sourceJogY },
+    { x: stx, y: sourceJogY },
+    { x: stx, y: laneY },
+    { x: ttx, y: laneY },
+    { x: ttx, y: targetJogY },
+    { x: tx, y: targetJogY },
+    { x: tx, y: targetY },
+  ]);
 }
 
 function assignVerticalPorts(items, sourcePort, targetPort) {
@@ -409,7 +460,6 @@ function pointToward(from, to, distance) {
 
 function centerX(p) { return p.x + p.w / 2; }
 
-/* テスト専用。UI DOM を作らずにレイアウト品質を検証できる。 */
 export function graphRoutingDiagnostics(nodes, edges) {
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const layout = layoutNodes(nodes, edges, byId);
