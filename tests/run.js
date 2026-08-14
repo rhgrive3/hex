@@ -3825,4 +3825,17 @@ if (failures.length) {
   }
   process.exit(1);
 }
+
+for (const aiSuite of [
+  './ai-schema.mjs',
+  './ai-context.mjs',
+  './ai-tools.mjs',
+  './ai-runtime.mjs',
+  './ai-approval.mjs',
+  './ai-worker.mjs',
+  './ai-performance.mjs',
+  './ai-agent-integration.mjs',
+]) {
+  await import(aiSuite);
+}
 void currentTest;
