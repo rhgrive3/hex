@@ -364,7 +364,7 @@ function legacySliceCapability(slice) {
   return Object.freeze({
     format: 'macho', architecture, endianness: 'little', bits: info.is64 === false ? 32 : 64,
     canDisassemble: architecture === 'arm64', canAnalyzeDataflow: architecture === 'arm64',
-    canEmulate: architecture === 'arm64', viewerCanDisassemble: architecture === 'arm64',
+    canEmulate: false, viewerCanDisassemble: architecture === 'arm64',
     instructionAlignment: architecture === 'arm64' ? 4 : 1,
     fixedInstructionSize: architecture === 'arm64' ? 4 : null,
     engineVerified: false,
