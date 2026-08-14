@@ -1,0 +1,49 @@
+name: Materialize issue 191+ fixes
+on:
+  push:
+    branches: [fix-issues-191-plus]
+permissions:
+  contents: write
+jobs:
+  materialize:
+    if: ${{ contains(github.event.head_commit.message, '[materialize-fix191]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Apply
+        run: |
+          set -euo pipefail
+          node tools/apply-fix191.mjs
+          node tools/fix191-adjust.mjs
+          node tools/apply-fix265.mjs
+          node tools/fix265-adjust.mjs
+          node tools/fix265-tests.mjs
+          node tools/apply-fix283.mjs
+          node tools/apply-fix296.mjs
+          node tools/apply-fix303.mjs
+          node tools/fix303-adjust.mjs
+          node tools/fix322-script.mjs
+          node tools/apply-fix322.mjs
+          node tools/fix322-features.mjs
+          node tools/fix322-import.mjs
+          node tools/fix322-adjust.mjs
+          node tools/fix334-script.mjs
+          node tools/apply-fix334.mjs
+          node tools/fix334-macho.mjs
+          node tools/apply-fix352.mjs
+          node tools/apply-fix364.mjs
+          node tools/apply-fix191-ci.mjs
+      - name: Syntax gate
+        run: |
+          set -euo pipefail
+          for f in js/*.js js/ai/**/*.js js/apple/*.js js/binary/*.js js/decompiler/**/*.js js/symbolic/*.js js/trace/*.js; do [ -f "$f" ] && node --check "$f"; done
+      - name: Commit materialized source
+        run: |
+          git config user.name hex-fix-bot
+          git config user.email actions@users.noreply.github.com
+          git add js package.json package-lock.json .github/workflows/ui-regression.yml tests
+          git commit -m 'Materialize issue 191+ source fixes [fix191-materialized]'
+          git push origin HEAD:fix-issues-191-plus
