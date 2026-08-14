@@ -11,6 +11,9 @@
     "sandbox": "node tests/sandbox.mjs",
     "tools": "node tests/tools.mjs",
     "accuracy": "node --max-old-space-size=8000 tests/accuracy.mjs",
-    "oracle": "python3 tests/oracle.py tests/battlecats tests/oracle.battlecats.json.gz"
+    "oracle": "python3 tests/oracle.py tests/battlecats tests/oracle.battlecats.json.gz",
+    "binary:test": "node tests/universal-binary.mjs && node tests/universal-binary-sectionless.mjs",
+    "binary:gate": "node tests/universal-binary-gate.mjs",
+    "binary:benchmark": "node tests/universal-binary-benchmark.mjs"
   }
 }
