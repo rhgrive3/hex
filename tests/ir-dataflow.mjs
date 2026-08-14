@@ -1,7 +1,7 @@
 /* Regression tests for the incremental IR -> dataflow migration. */
 import { buildSemanticModel } from '../js/blocks.js';
 import { findValueUpdates, findValueUpdatesLegacy } from '../js/dataflow.js';
-import { irFor, irText, readModifyWrite } from '../js/ir.js';
+import { irFor, irText, readModifyWrite, OP } from '../js/ir.js';
 
 let passed = 0;
 const failures = [];
@@ -89,6 +89,35 @@ test('indexed/unknown memory is never upgraded to a concrete IR field update', (
   ]);
   const updates = findValueUpdates(model);
   ok(!updates.some((u) => u.engine === 'ir-ssa'), 'unknown aliases stay unproven');
+});
+
+test('unknown indexed store clobbers an older concrete Memory-SSA store', () => {
+  const model = modelOf([
+    'str w1, [x19, #0x20]',
+    'str w2, [x19, x3, lsl #2]',
+    'ldr w8, [x19, #0x20]',
+    'ret',
+  ]);
+  const ir = irFor(model);
+  const load = ir.instructions.find((i) => i.op === OP.LOAD && i.row === 2);
+  ok(load, 'load exists');
+  ok(!load.reachingStore, 'stale concrete store is blocked');
+  ok(load.memUse && load.memUse.kind === 'clobber' && load.memUse.unknownAlias,
+    'unknown store is recorded as the barrier');
+  eq(ir.memorySafety.blockedLoads, 1);
+});
+
+test('unknown indexed store after a load does not erase earlier provenance', () => {
+  const model = modelOf([
+    'str w1, [x19, #0x20]',
+    'ldr w8, [x19, #0x20]',
+    'str w2, [x19, x3, lsl #2]',
+    'ret',
+  ]);
+  const ir = irFor(model);
+  const load = ir.instructions.find((i) => i.op === OP.LOAD && i.row === 1);
+  ok(load && load.reachingStore, 'the later unknown write cannot travel backward in time');
+  eq(load.reachingStore.row, 0);
 });
 
 process.stdout.write('\n' + passed + ' passed, ' + failures.length + ' failed\n');
