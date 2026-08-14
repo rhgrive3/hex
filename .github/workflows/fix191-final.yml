@@ -1,0 +1,98 @@
+name: Final integrate issue 191+
+on:
+  push:
+    branches: [fix-issues-191-plus]
+permissions:
+  contents: write
+jobs:
+  integrate:
+    if: ${{ contains(github.event.head_commit.message, '[run-final-fix191]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 1 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Apply all guarded patches
+        shell: bash
+        run: |
+          set -euo pipefail
+          node tools/apply-fix191.mjs
+          node tools/fix191-adjust.mjs
+          node tools/apply-fix265.mjs
+          node tools/fix265-adjust.mjs
+          node tools/fix265-tests.mjs
+          node tools/apply-fix283.mjs
+          node tools/apply-fix296.mjs
+          node tools/apply-fix303.mjs
+          node tools/fix303-adjust.mjs
+          node tools/fix322-script.mjs
+          node tools/apply-fix322.mjs
+          node tools/fix322-features.mjs
+          node tools/fix322-import.mjs
+          node tools/fix322-adjust.mjs
+          node tools/fix334-script.mjs
+          node tools/apply-fix334.mjs
+          node tools/fix334-macho.mjs
+          node tools/apply-fix352.mjs
+          node tools/apply-fix364.mjs
+          node tools/apply-fix191-ci.mjs
+      - name: Lock browser test dependency
+        shell: bash
+        run: |
+          set -euo pipefail
+          PLAYWRIGHT_VERSION="$(npm view playwright version)"
+          npm install --save-dev --save-exact "playwright@${PLAYWRIGHT_VERSION}"
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const p=JSON.parse(fs.readFileSync('package.json','utf8'));
+          const old=p.scripts['ui:browser'] || '';
+          if (old && !old.includes('primitives-regression.mjs')) {
+            const anchor='node tests/ui/accessibility.mjs && npm run ai:browser';
+            if (old.includes(anchor)) p.scripts['ui:browser']=old.replace(anchor,'node tests/ui/accessibility.mjs && node tests/ui/primitives-regression.mjs && node tests/ui/plugin-sandbox-regression.mjs && npm run ai:browser');
+          }
+          fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n');
+          NODE
+          npm audit --audit-level=high
+      - name: Syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in js/analyze.js js/backend.js js/auto.js js/rank.js js/fields.js js/pinpoint.js js/verify.js js/names.js js/schema.js js/shapes.js js/program.js js/worker.js js/plugins.js js/sandbox.js js/script.js js/calib.js js/dataflow-ir.js js/dataflow-semantic.js js/report.js js/comprehend.js js/expr.js js/arm64.js js/ir-core.js js/linkage.js js/trace/ring-buffer.js js/apple/objc-runtime.js js/apple/objc-metadata.js js/objc-legacy.js js/adapters/index.js js/project/index.js js/features.js js/graphview.js js/tools.js js/vendors.js js/emu.js js/architecture/index.js js/ai/interaction/actions.js js/ai/render/normalize.js js/binary/elf.js js/binary/pe-loader.js js/binary/macho.js js/decompiler/passes/manager.js js/decompiler/ast/nodes.js js/decompiler/rewrite/engine.js js/decompiler/rewrite/rules.js js/decompiler/pretty/c.js js/decompiler/pipeline-core.js js/decompiler/types/high-variables.js js/decompiler/semantic.js js/symbolic/executor.js; do node --check "$f"; done
+      - name: Targeted regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          node tests/issue-191-plus.mjs
+          node tests/issue-265-plus.mjs
+          node tests/issue-283-plus.mjs
+          node tests/issue-303-plus.mjs
+          node tests/issue-322-plus.mjs
+      - name: Existing regression suite
+        run: npm test
+      - name: Browser regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx playwright install chromium
+          node tests/ui/primitives-regression.mjs
+          node tests/ui/plugin-sandbox-regression.mjs
+      - name: Commit tested source result
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .fix191-validate .fix191-error.log .fix191-final-trigger
+          rm -f .github/workflows/fix-issues-191-diagnostic.yml .github/workflows/fix-issues-191-apply.yml .github/workflows/fix191-validate.yml .github/workflows/fix191-final.yml
+          rm -f tools/apply-fix191.mjs tools/apply-fix191-ci.mjs tools/fix191-adjust.mjs
+          rm -f tools/apply-fix265.mjs tools/fix265-adjust.mjs tools/fix265-tests.mjs
+          rm -f tools/apply-fix283.mjs tools/apply-fix296.mjs
+          rm -f tools/apply-fix303.mjs tools/fix303-adjust.mjs
+          rm -f tools/apply-fix322.mjs tools/fix322-script.mjs tools/fix322-features.mjs tools/fix322-import.mjs tools/fix322-adjust.mjs
+          rm -f tools/apply-fix334.mjs tools/fix334-script.mjs tools/fix334-macho.mjs tools/fix334-template.mjs
+          rm -f tools/apply-fix352.mjs tools/apply-fix364.mjs
+          git config user.name 'hex-fix-bot'
+          git config user.email 'actions@users.noreply.github.com'
+          git add -A
+          git commit -m 'Fix issue 191+ safety and correctness [fix191-result]'
+          git push origin HEAD:fix-issues-191-plus
