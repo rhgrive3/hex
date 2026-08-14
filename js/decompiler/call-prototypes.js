@@ -2,9 +2,9 @@
  * Fixed-arity external call knowledge used by the semantic decompiler.
  *
  * AAPCS64 tells us where arguments live, but it does not encode how many a
- * particular callee accepts.  Never turn merely-live x0..x7 registers into
- * source-level arguments.  We only emit arguments when arity is proven by a
- * recovered call-site/prototype or by this small, stable ABI knowledge table.
+ * particular callee accepts. In particular, modelCall.args is only a snapshot
+ * of live x0..x7 values at the call site; it is not arity evidence. Never turn
+ * those merely-live registers into source-level arguments.
  */
 
 const FIXED = new Map([
@@ -23,8 +23,6 @@ const VARIADIC_MIN = new Map([
 
 export function normalizeExternalSymbol(name) {
   let s = String(name || '').trim();
-  // Mach-O C symbols normally carry one leading underscore.  Also accept the
-  // common import/stub spellings without making target-specific guesses.
   s = s.replace(/^_+/, '').replace(/^(?:imp_|j_)/, '');
   const suffix = s.search(/(?:\$|@@?)/);
   if (suffix >= 0) s = s.slice(0, suffix);
@@ -38,18 +36,9 @@ export function knownCallPrototype(name) {
   return null;
 }
 
-function validIndex(value) {
+function validArity(value) {
   const n = Number(value);
-  return Number.isInteger(n) && n >= 0 && n < 8 ? n : null;
-}
-
-function explicitIndices(modelCall) {
-  const out = [];
-  for (const arg of modelCall?.args || []) {
-    const n = validIndex(arg?.index);
-    if (n != null && !out.includes(n)) out.push(n);
-  }
-  return out.sort((a, b) => a - b);
+  return Number.isInteger(n) && n >= 0 && n <= 8 ? n : null;
 }
 
 function range(n) {
@@ -58,28 +47,23 @@ function range(n) {
 }
 
 /**
- * Return only call argument registers whose existence has evidence.
- * `override` may be supplied by interprocedural/user prototype recovery.
+ * Return argument register indexes only when the count is supported by actual
+ * prototype/API evidence. null means "arity unknown"; [] means proven zero.
  */
 export function callArgumentIndices({ name, modelCall = null, override = null, defaultCallArgs = null } = {}) {
-  const explicit = explicitIndices(modelCall);
-  const recoveredArity = validIndex(override?.arity) ?? (override?.arity === 8 ? 8 : null);
-  if (recoveredArity != null) {
-    const base = range(recoveredArity);
-    if (!override?.variadic) return base;
-    return [...new Set([...base, ...explicit])].sort((a, b) => a - b);
-  }
+  const recoveredArity = validArity(override?.arity);
+  if (recoveredArity != null) return range(recoveredArity);
+
+  // Existing semantic API metadata may carry a fixed schema. The live values
+  // in modelCall.args are deliberately ignored here.
+  const apiArity = Array.isArray(modelCall?.api?.args) ? modelCall.api.args.length : null;
+  if (apiArity != null) return range(apiArity);
 
   const known = knownCallPrototype(name);
-  if (known) {
-    const base = range(known.arity);
-    if (!known.variadic) return base;
-    return [...new Set([...base, ...explicit])].sort((a, b) => a - b);
-  }
+  if (known) return range(known.arity); // Variadic entries expose only their proven fixed prefix.
 
-  if (explicit.length) return explicit;
-  // Compatibility escape hatch: only an explicitly configured fallback may
-  // guess a count.  There is intentionally no implicit "four arguments" rule.
+  // Compatibility escape hatch for embedders that deliberately opt into a
+  // guessed count. There is intentionally no built-in default.
   if (defaultCallArgs != null) return range(defaultCallArgs);
-  return [];
+  return null;
 }
