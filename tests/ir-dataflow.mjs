@@ -42,6 +42,11 @@ test('linear RMW keeps the public shape and is proven by IR', () => {
   eq(u.location.disp, 0x20n);
   ok(u.steps.some((s) => s.op === 'add'), 'add step survives adapter');
   ok(u.evidence.some((e) => e && e.detail && e.detail.engine === 'ir-ssa'), 'IR provenance is visible');
+  const factKeys = u.evidence.map((e) => String(e.code) + ':' + String(e.row));
+  eq(new Set(factKeys).size, factKeys.length, 'same machine evidence is not counted twice');
+  eq(factKeys.filter((k) => k === 'load:0').length, 1, 'one load fact');
+  eq(factKeys.filter((k) => k === 'compute:1').length, 1, 'one compute fact');
+  eq(factKeys.filter((k) => k === 'store:2').length, 1, 'one store fact');
 });
 
 test('SSA can prove an RMW across a control-flow join that legacy refuses to cross', () => {
