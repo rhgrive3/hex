@@ -41,6 +41,11 @@ function normalizeHex(value) {
   try { return `0x${BigInt(s).toString(16)}`; } catch { return null; }
 }
 
+function isAddressField(key) {
+  const k = String(key || '').replace(/[-_]/g, '').toLowerCase();
+  return k === 'address' || k === 'addr' || k === 'functionaddress' || k === 'target' || k === 'targetaddress';
+}
+
 function collectAddressLike(value, out = new Set(), depth = 0) {
   if (depth > 6 || value == null) return out;
   if (typeof value === 'string') {
@@ -58,7 +63,7 @@ function collectAddressLike(value, out = new Set(), depth = 0) {
   }
   if (typeof value === 'object') {
     for (const [k, v] of Object.entries(value)) {
-      if (/address|addr|target|function/i.test(k)) collectAddressLike(v, out, depth + 1);
+      if (isAddressField(k)) collectAddressLike(v, out, depth + 1);
     }
   }
   return out;
@@ -71,7 +76,7 @@ function collectAddressFields(value, out = new Set(), depth = 0) {
     return out;
   }
   for (const [k, v] of Object.entries(value)) {
-    if (/address|addr|target|function/i.test(k)) collectAddressLike(v, out, depth + 1);
+    if (isAddressField(k)) collectAddressLike(v, out, depth + 1);
     else if (v && typeof v === 'object') collectAddressFields(v, out, depth + 1);
   }
   return out;
