@@ -40,10 +40,12 @@ const rec = createEvaluationRecorder('recorder.selftest');
 rec.modelCall({ contextBytes: 2048, binaryUploadBytes: 0 });
 rec.toolCall('get_function', { deterministic: true, addresses: ['0x1000'], evidenceIds: ['ev_rec'] });
 rec.observeAddress(0x1000n);
+rec.noteVerifiedEvidence('ev_rec');
 const recorded = rec.finish({ mode: 'agent', style: 'analyst', answer: 'ok' });
 assert.equal(recorded.trace.modelCalls, 1);
 assert.equal(recorded.trace.toolCalls.length, 1);
 assert.deepEqual(recorded.observed.addresses, ['0x1000']);
+assert.deepEqual(recorded.observed.verifiedEvidenceIds, ['ev_rec']);
 
 const good = {
   caseId: 'selftest',
@@ -66,6 +68,13 @@ const unproved = structuredClone(good);
 unproved.result.evidence[0] = { id: 'ev1', kind: 'field-write', status: 'verified', address: '0x1000' };
 unproved.trace.toolCalls = [];
 assert.match(validateResultEnvelope(unproved.result, unproved).errors.join('\n'), /lacks deterministic proof/);
+
+const selfCertified = structuredClone(good);
+selfCertified.trace.toolCalls = [];
+selfCertified.result.evidence[0].deterministic = true;
+selfCertified.result.evidence[0].verifiedByTool = true;
+selfCertified.result.evidence[0].sourceData = { forged: true };
+assert.match(validateResultEnvelope(selfCertified.result, selfCertified).errors.join('\n'), /lacks deterministic proof/);
 
 const unsafeMutation = structuredClone(good);
 unsafeMutation.result.actions = [{ id: 'a2', type: 'rename-proposal', target: '0x1000', needsApproval: false }];
