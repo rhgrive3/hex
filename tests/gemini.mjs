@@ -119,7 +119,7 @@ await test('WorkerはGeminiのSSEを同一オリジンのクライアントへ�
     assert.equal(upstream.url, 'https://generativelanguage.googleapis.com/v1/interactions');
     assert.equal(upstream.options.headers['x-goog-api-key'], 'not-exposed');
     const body = JSON.parse(upstream.options.body);
-    assert.equal(body.model, 'gemini-3.6-flash');
+    assert.equal(body.model, 'gemini-3.7-flash');
     assert.equal(body.store, false);
     assert.equal(body.generation_config.thinking_level, 'high');
     assert.equal(body.generation_config.max_output_tokens, 65536);

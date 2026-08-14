@@ -1,5 +1,5 @@
 const GEMINI_INTERACTIONS_URL = 'https://generativelanguage.googleapis.com/v1/interactions';
-const MODEL = 'gemini-3.6-flash';
+const MODEL = 'gemini-3.7-flash';
 const MAX_REQUEST_BYTES = 512 * 1024;
 const MAX_QUESTION_CHARS = 6000;
 const MAX_CONTEXT_CHARS = 160000;
