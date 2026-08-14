@@ -12,6 +12,7 @@ const ux = fs.readFileSync(path.join(ROOT, 'js/ux.js'), 'utf8');
 const secondary = fs.readFileSync(path.join(ROOT, 'js/ui/secondary.js'), 'utf8');
 
 assert.equal(product.includes('triggerLegacyInvestigation'), false, 'canonical investigate must not fake legacy sheet input');
+assert.equal(product.includes('HP・体力') && product.includes('ダメージ計算') && product.includes('所持金・コイン'), true, 'canonical investigate must expose beginner goal presets');
 assert.equal(product.includes('renderSecondaryRoute(app, router, route)'), true, 'settings/help/learn must render as canonical routes');
 assert.equal(product.includes('function renderSecondary('), false, 'legacy open-button secondary screen must be removed');
 assert.equal(product.includes('showSettings, showHelp, showLearn'), false, 'product UI must not import legacy secondary sheets');

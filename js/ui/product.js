@@ -154,8 +154,21 @@ function renderInvestigate(app, router) {
     text('通信している場所', 'network communication'),
     text('ガチャの結果を決める処理', 'where gacha results are decided'),
   ]) suggestions.append(uiButton(q, { cls: 'ui-suggestion', onClick: () => { input.value = q; rememberQuery(q); runInvestigation(app, q); } }));
-  hero.body.append(suggestions);
-  s.body.append(hero.root);
+  const commonGoals = h('div', 'ui-goal-suggestions ui-purpose-presets');
+for (const preset of [
+  { label:text('HP・体力', 'HP / health'), query:text('HPを書き換える処理', 'where HP is written') },
+  { label:text('攻撃力', 'Attack power'), query:text('攻撃力を決める・書き換える処理', 'where attack power is calculated or written') },
+  { label:text('ダメージ計算', 'Damage calculation'), query:text('ダメージを計算して適用する処理', 'where damage is calculated and applied') },
+  { label:text('所持金・コイン', 'Money / coins'), query:text('所持金・コインを増減・保存する処理', 'where money or coins are changed and stored') },
+  { label:text('アイテム・所持品', 'Items / inventory'), query:text('アイテム・所持品を増減・保存する処理', 'where inventory items are changed and stored') },
+]) {
+  commonGoals.append(uiButton(preset.label, {
+    cls:'ui-suggestion ui-purpose-chip',
+    onClick:() => { input.value = preset.query; rememberQuery(preset.query); runInvestigation(app, preset.query); },
+  }));
+}
+hero.body.append(suggestions, sectionTitle(text('よくある目的', 'Common goals')), commonGoals);
+s.body.append(hero.root);
 
   const overview = card(text('自動で分かったこと', 'Automatic overview'), {
     subtitle: text('ファイル全体の地図を作り、候補・根拠・未確認点をまとめます。',
