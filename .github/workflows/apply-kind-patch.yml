@@ -25,27 +25,18 @@ jobs:
           p = Path('js/words.js')
           s = p.read_text()
 
-          old = """    if (isFpToInt(w) || isFpDp1(w)) return KIND.FCONV;"""
-          new = """    if (isFpToInt(w)) return KIND.FCONV;
-    if (isFpDp1(w)) {
-      /* FP one-source shares one encoding family. fabs/fneg/fsqrt are
-         arithmetic; fcvt and the remaining conversion forms are conversions. */
-      const op = (w >>> 15) & 0x3f;
-      if (op === 1 || op === 2 || op === 3) return KIND.FARITH;
-      return KIND.FCONV;
-    }"""
+          old = '    if (isFpToInt(w) || isFpDp1(w)) return KIND.FCONV;'
+          new = '    if (isFpToInt(w)) return KIND.FCONV;\n    if (isFpDp1(w)) {\n      /* FP one-source shares one encoding family. fabs/fneg/fsqrt are\n         arithmetic; fcvt and the remaining conversion forms are conversions. */\n      const op = (w >>> 15) & 0x3f;\n      if (op === 1 || op === 2 || op === 3) return KIND.FARITH;\n      return KIND.FCONV;\n    }'
           assert s.count(old) == 1
           s = s.replace(old, new, 1)
 
-          old = """      if (isAddSubImm(w) && ((w >>> 10) & 0xfff) === 0 && !((w >>> 29) & 1)) return KIND.MOVREG;"""
-          new = """      if (isAddSubImm(w) && ((w >>> 10) & 0xfff) === 0 && !((w >>> 29) & 1) &&
-          (rn(w) === 31 || rd(w) === 31)) return KIND.MOVREG;"""
+          old = '      if (isAddSubImm(w) && ((w >>> 10) & 0xfff) === 0 && !((w >>> 29) & 1)) return KIND.MOVREG;'
+          new = '      if (isAddSubImm(w) && ((w >>> 10) & 0xfff) === 0 && !((w >>> 29) & 1) &&\n          (rn(w) === 31 || rd(w) === 31)) return KIND.MOVREG;'
           assert s.count(old) == 1
           s = s.replace(old, new, 1)
 
-          old = """      if (((w >>> 29) & 3) === 1 && rn(w) === 31) return KIND.MOVREG;   // orr xD, xzr, xM"""
-          new = """      if (((w >>> 29) & 3) === 1 && rn(w) === 31 && ((w >>> 21) & 1) === 0 &&
-          ((w >>> 22) & 3) === 0 && ((w >>> 10) & 0x3f) === 0) return KIND.MOVREG; // mov = orr xD,xzr,xM"""
+          old = '      if (((w >>> 29) & 3) === 1 && rn(w) === 31) return KIND.MOVREG;   // orr xD, xzr, xM'
+          new = '      if (((w >>> 29) & 3) === 1 && rn(w) === 31 && ((w >>> 21) & 1) === 0 &&\n          ((w >>> 22) & 3) === 0 && ((w >>> 10) & 0x3f) === 0) return KIND.MOVREG; // mov = orr xD,xzr,xM'
           assert s.count(old) == 1
           s = s.replace(old, new, 1)
 
