@@ -1,7 +1,6 @@
 import { EVIDENCE_STATUSES } from './schema.js';
 import { addressText, jsonSafe } from './validation.js';
 
-const VERIFIED_TOOLS = new Set(['verify_field_update', 'verify_runtime_hypothesis', 'get_runtime_observations', 'get_binary_diff']);
 const DETERMINISTIC_VERIFICATION = Symbol('deterministic-verification');
 
 function hashText(text) {
@@ -81,10 +80,13 @@ export class EvidenceStore {
     return this.records.get(id);
   }
 
-  ingest(toolName, result) {
+  /* Verification authority comes from the local ToolRegistry definition, never
+     from a model-visible tool name or an output field alone. A verifier must be
+     explicitly registered by trusted application code and must also return an
+     explicit verified status. */
+  ingest(toolName, result, { verifier = false } = {}) {
     const output = result && result.result != null ? result.result : result;
     if (!output || typeof output !== 'object') return [];
-    const verifier = VERIFIED_TOOLS.has(toolName);
     const explicitlyVerified = output.verified === true || output.status === 'verified';
     const created = [];
     for (const { key, row } of factRows(output)) {
@@ -95,7 +97,7 @@ export class EvidenceStore {
       const fnAddr = addressText(row.functionAddress ?? row.function ?? output.functionAddress ?? output.address);
       const sourceIds = ids.length ? ids : (Array.isArray(output.evidence) ? output.evidence.filter((x) => typeof x === 'string') : []);
       for (const sourceId of sourceIds.length ? sourceIds : [null]) {
-        const status = verifier && explicitlyVerified ? 'verified' : 'supported';
+        const status = verifier === true && explicitlyVerified ? 'verified' : 'supported';
         const kind = String(row.kind || key || 'observation');
         const evidence = this.add({
           sourceId, sourceTool: toolName, kind, status,
