@@ -18,6 +18,20 @@ await run(async ({ browser }) => {
   const { check, state } = reporter();
   const { context, page, errors } = await openApp(browser, { width: 1440, height: 900, sample: true });
 
+  /*
+   * Force the degraded path instead of depending on the core being absent from
+   * the checkout: the bridge is built with a loader that throws, which is what
+   * a broken, missing or mid-deploy core looks like from here. The provider is
+   * unreachable either way — the test server has no /api.
+   */
+  const wired = await page.evaluate(async () => {
+    const { createAiEngine } = await import('/js/ai/ui/bridge.js');
+    const engine = createAiEngine(window.__app, { loadCore: () => { throw new Error('core-unavailable'); } });
+    window.__hexAi.session.engine = engine;
+    return typeof engine.run === 'function';
+  });
+  check('the bridge stays usable when the core cannot load', wired);
+
   await page.click('#ai-launcher');
   await page.waitForTimeout(150);
 
