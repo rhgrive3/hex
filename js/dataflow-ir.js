@@ -8,11 +8,11 @@
  */
 
 import { SCORE, ev, levelOf } from './blocks.js';
-import { irFor, readModifyWrite, OP, MK } from './ir.js';
+import { irFor, readModifyWrite, OP, MK, VK } from './ir.js';
 
 const BIN_NAME = {
   add: 'add', sub: 'sub', mul: 'mul', sdiv: 'sdiv', udiv: 'udiv',
-  smull: 'smull', umull: 'umull', smulh: 'smulh', umulh: 'umulh',
+  smull: 'smull', umull: 'umull', smulh: 'smulh', umulh: 'umullh',
   and: 'and', or: 'orr', xor: 'eor', bic: 'bic', orn: 'orn', eon: 'eon',
   shl: 'lsl', lshr: 'lsr', ashr: 'asr', ror: 'ror',
   fadd: 'fadd', fsub: 'fsub', fmul: 'fmul', fdiv: 'fdiv',
@@ -23,6 +23,8 @@ const UN_NAME = {
   sxt8: 'sxtb', sxt16: 'sxth', sxt32: 'sxtw',
   uxt8: 'uxtb', uxt16: 'uxth', uxt32: 'uxtw',
 };
+
+const PASS_UN = new Set(['sxt8', 'sxt16', 'sxt32', 'uxt8', 'uxt16', 'uxt32', 'fmov']);
 
 function valueDependsOn(value, targetId, memo = new Map(), active = new Set()) {
   if (!value) return false;
@@ -50,8 +52,6 @@ function otherInput(inst, loadValue) {
   if (!args.length || !loadValue) return null;
   const memo = new Map();
   const dep = args.map((a) => valueDependsOn(a.value, loadValue.id, memo));
-  // Prefer an input that is not part of the carried value. That is the amount,
-  // cap, mask, etc. in `old + amount` / `min(old, cap)` patterns.
   for (let i = 0; i < args.length; i++) if (!dep[i]) return args[i].value;
   return null;
 }
@@ -71,15 +71,97 @@ function operationName(inst) {
   return null;
 }
 
-function stepFrom(inst, loadValue) {
+function originKey(o) {
+  if (!o) return null;
+  if (o.kind === 'field' || o.kind === 'stack') return o.kind + ':' + String(o.base || '') + ':' + String(o.disp ?? '') + ':' + String(o.size ?? '');
+  if (o.kind === 'global') return 'global:' + String(o.address ?? '');
+  if (o.kind === 'imm') return 'imm:' + String(o.value);
+  if (o.kind === 'arg') return 'arg:' + String(o.reg || '');
+  if (o.kind === 'call') return 'call:' + String(o.row ?? '') + ':' + String(o.target ?? '');
+  return null;
+}
+
+/**
+ * Convert an SSA value into the small, acyclic origin shape used by legacy
+ * amountOf()/role logic. This follows only proof-preserving copies and identical
+ * phi inputs; conflicting phi origins remain unknown.
+ */
+function stableOrigin(value, callByRow, memo = new Map(), active = new Set()) {
+  if (!value) return null;
+  if (memo.has(value.id)) return memo.get(value.id);
+  if (active.has(value.id)) return null;
+  active.add(value.id);
+
+  const def = value.def;
+  let out = null;
+  if (def && def.op === OP.LOAD && def.loc) {
+    if (def.loc.kind === MK.FIELD) {
+      out = {
+        kind: 'field',
+        base: (def.addr && def.addr.baseReg) || null,
+        disp: def.loc.disp,
+        size: def.loc.size || (def.extra && def.extra.size) || null,
+        indexAddr: null,
+        row: def.row,
+        address: def.address,
+        engine: 'ir-ssa',
+      };
+    } else if (def.loc.kind === MK.STACK) {
+      out = {
+        kind: 'stack',
+        base: (def.addr && def.addr.baseReg) || 'sp',
+        disp: def.loc.disp,
+        size: def.loc.size || (def.extra && def.extra.size) || null,
+        row: def.row,
+        address: def.address,
+        engine: 'ir-ssa',
+      };
+    } else if (def.loc.kind === MK.GLOBAL) {
+      out = { kind: 'global', address: def.loc.address, size: def.loc.size || null, row: def.row, engine: 'ir-ssa' };
+    }
+  } else if (def && def.op === OP.CALL) {
+    const call = callByRow.get(def.row) || null;
+    out = {
+      kind: 'call',
+      name: call ? call.name || null : null,
+      selector: call ? call.selector || null : null,
+      target: call && call.target != null ? call.target : (def.extra ? def.extra.target : null),
+      row: def.row,
+      engine: 'ir-ssa',
+    };
+  } else if (def && def.op === OP.MOV && def.args && def.args[0]) {
+    out = stableOrigin(def.args[0].value, callByRow, memo, active);
+  } else if (def && def.op === OP.UN && PASS_UN.has(def.sub) && def.args && def.args[0]) {
+    out = stableOrigin(def.args[0].value, callByRow, memo, active);
+  } else if (def && def.op === OP.PHI && def.args && def.args.length) {
+    const origins = def.args.map((a) => stableOrigin(a && a.value, callByRow, memo, active));
+    const keys = origins.map(originKey);
+    if (keys.length && keys[0] && keys.every((k) => k === keys[0])) out = origins[0];
+  } else if (value.kind === VK.ARG && value.reg) {
+    out = { kind: 'arg', reg: value.reg, engine: 'ir-ssa' };
+  } else if (value.const != null) {
+    out = { kind: 'imm', value: value.const, row: def ? def.row : null, engine: 'ir-ssa' };
+  } else if (def) {
+    const op = operationName(def);
+    if (op) out = { kind: 'computed', op, row: def.row, address: def.address, engine: 'ir-ssa' };
+  }
+
+  active.delete(value.id);
+  memo.set(value.id, out);
+  return out;
+}
+
+function stepFrom(inst, loadValue, callByRow, originMemo) {
   const op = operationName(inst);
   if (!op) return null;
   const otherValue = otherInput(inst, loadValue);
+  const otherOrigin = stableOrigin(otherValue, callByRow, originMemo);
   return {
     op,
     imm: otherValue && otherValue.const != null ? otherValue.const : null,
     immFloat: null,
     other: otherValue && otherValue.reg ? otherValue.reg : null,
+    otherOrigin,
     row: inst.row,
     address: inst.address,
     engine: 'ir-ssa',
@@ -119,11 +201,6 @@ function rowIdentity(u) {
   return row + ':' + disp + ':' + stack;
 }
 
-/*
- * The legacy and SSA adapters often describe the exact same machine observation.
- * `load@12` from two engines is one fact, not two independent facts. Keep one
- * evidence item per (code,row), preferring the SSA-enriched detail when present.
- */
 function mergeEvidence(legacy, proven) {
   const byFact = new Map();
   for (const item of [...(legacy || []), ...(proven || [])]) {
@@ -138,19 +215,17 @@ function mergeEvidence(legacy, proven) {
     (a.row == null ? -1 : a.row) - (b.row == null ? -1 : b.row));
 }
 
-/**
- * Return only updates proven by SSA + Memory SSA.
- * The result deliberately matches the historical findValueUpdates() structure.
- */
 export function findIrValueUpdates(model, opts) {
   if (!model || !model.instructions || !model.instructions.length) return [];
   const ir = irFor(model, opts && opts.ir);
   if (!ir) return [];
 
+  const callByRow = new Map((model.calls || []).map((c) => [c.row, c]));
+  const originMemo = new Map();
   const out = [];
   for (const rmw of readModifyWrite(ir)) {
     const location = locationShape(rmw);
-    if (!location) continue; // never turn an unknown alias into a field claim
+    if (!location) continue;
     const load = rmw.load;
     const store = rmw.store;
     if (!load || !store || !load.dst) continue;
@@ -158,7 +233,7 @@ export function findIrValueUpdates(model, opts) {
     const steps = (rmw.chain || [])
       .slice()
       .sort((a, b) => (a.row || 0) - (b.row || 0))
-      .map((inst) => stepFrom(inst, load.dst))
+      .map((inst) => stepFrom(inst, load.dst, callByRow, originMemo))
       .filter(Boolean);
 
     const evidence = [
@@ -195,11 +270,6 @@ export function findIrValueUpdates(model, opts) {
   return out;
 }
 
-/**
- * Overlay proven IR updates on top of legacy results. Same-store results are
- * merged instead of duplicated so ranking does not accidentally count two engines
- * as two independent observations of the same machine instructions.
- */
 export function mergeValueUpdates(legacy, proven) {
   const out = (legacy || []).slice();
   const at = new Map(out.map((u, i) => [rowIdentity(u), i]));
