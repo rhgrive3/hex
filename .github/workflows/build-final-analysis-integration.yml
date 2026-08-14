@@ -1,0 +1,41 @@
+name: Build final analysis integration
+
+on:
+  push:
+    branches: [integration/cross-binary-accuracy-final-20260814]
+    paths: ['.github/workflows/build-final-analysis-integration.yml']
+
+permissions:
+  contents: write
+
+jobs:
+  integrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: integration/cross-binary-accuracy-final-20260814
+          fetch-depth: 0
+      - name: Apply frozen analysis files on current main
+        run: |
+          set -euo pipefail
+          FROZEN=84565ae3c75a6e13c051e9e272c1bf18c2626ea9
+          git fetch origin "$FROZEN"
+          git checkout "$FROZEN" -- \
+            .github/workflows/cross-binary-accuracy.yml \
+            js/backend.js js/blocks.js js/chained.js js/words.js js/worker.js \
+            tests/accuracy-gate.mjs tests/api.mjs tests/harness.mjs tests/words.mjs
+
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const p = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          p.scripts.test = 'node tests/run.js && node tests/ux.mjs && node tests/gemini.mjs && node tests/words.mjs && node tests/api.mjs';
+          fs.writeFileSync('package.json', JSON.stringify(p, null, 2) + '\n');
+          NODE
+
+          rm -f .github/workflows/build-final-analysis-integration.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .github/workflows js/backend.js js/blocks.js js/chained.js js/words.js js/worker.js package.json tests
+          git commit -m 'Integrate cross-binary analysis hardening with Gemini proxy'
+          git push origin HEAD:integration/cross-binary-accuracy-final-20260814
