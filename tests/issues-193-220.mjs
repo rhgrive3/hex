@@ -126,9 +126,9 @@ assert.equal(await parseSwiftNominalDescriptor(badRead,0n),null);
 await assert.rejects(() => parseSwiftFieldDescriptor(async()=>null,1n,0), TypeError);
 await assert.rejects(() => parseSwiftWitnessTable(async()=>null,1n,NaN), TypeError);
 
-assert.equal(demangleCxx('_Z3fooU3bari'), null);
-assert.equal(demangleCxx('_ZN3Foo3barEv'), 'Foo::bar()');
-assert.equal(demangleCxx('_ZN3Foo3bar'), null);
-const partial=demangleCxxDetailed('_ZN3Foo3bar'); assert.equal(partial.complete,false); assert.ok(partial.error);
+assert.equal(demangleCxx('__Z3fooU3bari'), null);
+assert.equal(demangleCxx('__ZN3Foo3barEv'), 'Foo::bar()');
+assert.equal(demangleCxx('__ZN3Foo3bar'), null);
+const partial=demangleCxxDetailed('__ZN3Foo3bar'); assert.equal(partial.complete,false); assert.ok(partial.error);
 
 console.log('issues-193-220: PASS');
