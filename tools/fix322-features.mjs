@@ -1,0 +1,16 @@
+import fs from 'node:fs';
+const p='js/features.js';
+let s=fs.readFileSync(p,'utf8');
+const old=`      const list = buckets.get(h.id);
+      if (!list || list.length >= perFeature) continue;
+      list.push({ addr: s.addr, text: s.text, score: strength(s.text, h.weak) });`;
+const neu=`      const list = buckets.get(h.id);
+      if (!list) continue;
+      const scored = { addr: s.addr, text: s.text, score: strength(s.text, h.weak) };
+      let at = list.findIndex((row) => scored.score > row.score);
+      if (at < 0) at = list.length;
+      list.splice(at, 0, scored);
+      if (list.length > perFeature) list.length = perFeature;`;
+if(!s.includes(old)) throw new Error('feature top-K anchor missing');
+s=s.replace(old,neu);
+fs.writeFileSync(p,s);
