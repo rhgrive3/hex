@@ -68,15 +68,23 @@ function blockAddress(result, model, opts, bi) {
     ?? (opts.addr ?? model.instructions?.[0]?.address ?? 0n) + BigInt(b.startRow || 0) * 4n;
 }
 
-function hasNonNaturalBackwardEdge(model, result) {
-  if ((result?.ir?.loops || []).length) return false;
-  for (const insn of model?.instructions || []) {
-    const from = insn?.address;
-    const to = insn?.branchTarget;
-    if (from == null || to == null) continue;
-    try {
-      if (BigInt(to) < BigInt(from)) return true;
-    } catch { /* malformed address is not structural evidence */ }
+function hasNonNaturalBackwardEdge(_model, result) {
+  const ir = result?.ir;
+  if (!ir?.blocks?.length) return false;
+  const loops = ir.loops || [];
+  const insideSameNaturalLoop = (from, to) => loops.some((loop) =>
+    loop?.nodes?.has?.(from) && loop.nodes.has(to));
+
+  // Use the Semantic IR CFG itself, not parser-specific instruction fields.
+  // A physically backward CFG edge is only source-loop evidence when both ends
+  // belong to the same dominator-proven natural loop. Otherwise it is shared
+  // cleanup/tail control flow and must remain explicit.
+  for (const block of ir.blocks) {
+    for (const succ of block.succ || []) {
+      const dst = ir.blocks[succ];
+      if (!dst) continue;
+      if (dst.startRow < block.startRow && !insideSameNaturalLoop(block.index, succ)) return true;
+    }
   }
   return false;
 }
@@ -99,10 +107,10 @@ export function decompile(model, opts = {}) {
         ), model, opts);
       }
 
-      // A backward address edge that does not form a dominator-proven natural
-      // loop is typically shared cleanup/tail code. Turning it into a loop or
-      // silently inlining it would change the visible control-flow contract, so
-      // keep explicit labels/gotos until the IR has a stronger region proof.
+      // A backward CFG edge that does not form a dominator-proven natural loop
+      // is typically shared cleanup/tail code. Turning it into a loop or silently
+      // inlining it would change the visible control-flow contract, so keep
+      // explicit labels/gotos until the IR has a stronger region proof.
       if (hasNonNaturalBackwardEdge(model, result)) {
         return finalize(augmentLegacy(
           legacyDecompile(model, opts),
