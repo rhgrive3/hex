@@ -558,13 +558,17 @@ class App {
       this.viewer.setSymbols(this.symbols);
     }
     const sym = this.symbols;
-    if (!sym || sym.functionCount > 0) return sym;
+    if (!sym || sym.functionStartsExact) return sym;
     if (!region) return sym;
     try {
       const res = await this.backend.guessFunctions(region.id, null,
         onProgress && ((p) => onProgress({ phase: 'functions', done: p.done, all: p.all })));
       if (epoch === this.backend.gen && res && res.starts && res.starts.length) {
-        sym.setGuessedFunctions(res.starts);
+        /* Keep exact starts recovered from ObjC/metadata and merge inferred C/C++/
+           Swift starts around them. Replacing the list here used to throw away
+           the strongest evidence as soon as partial metadata existed. */
+        sym.addFunctions(res.starts);
+        sym.guessed = true;
         this.viewer.setSymbols(sym);
       }
     } catch { /* 推測できなくても、ほかの解析は続ける */ }

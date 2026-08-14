@@ -20,6 +20,10 @@ export class SymbolIndex {
     this.flags = r.flags || new Uint8Array(this.addrs.length);
     this.funcs = r.funcs || new BigUint64Array(0);
     this.capped = !!r.capped;
+    /* True only when LC_FUNCTION_STARTS itself was parsed successfully. ObjC,
+       vtables and other metadata may add exact starts without making the list
+       complete, so functionCount alone must never suppress stripped recovery. */
+    this.functionStartsExact = !!r.functionStartsExact;
     this.guessed = false;          // 関数一覧が推測によるものか
     /* 自分で付け直した名前。元の名前より優先される（IDA の Rename と同じ）。
        アドレス（10 進の文字列）→ 名前。names.js の NoteStore が中身の持ち主。 */

@@ -789,6 +789,20 @@ test('SYMBOLS: 復元した名前と関数の先頭を、順番を保ったま�
   eq(idx.addFunctions(null), 0);
 });
 
+test('SYMBOLS: 部分的なmetadata関数一覧をLC_FUNCTION_STARTS完全表と取り違えない', () => {
+  const partial = new SymbolIndex({ funcs: BigUint64Array.from([0x100n, 0x300n]) });
+  eq(partial.functionStartsExact, false, '部分的なObjC等の関数だけで推定を止めてしまう');
+  partial.addFunctions([0x200n]);
+  partial.guessed = true;
+  eq(partial.functionCount, 3, '推定関数をmetadata由来の関数へマージできていない');
+
+  const exact = new SymbolIndex({
+    funcs: BigUint64Array.from([0x100n, 0x200n]),
+    functionStartsExact: true,
+  });
+  eq(exact.functionStartsExact, true, 'LC_FUNCTION_STARTSの完全表フラグを保持していない');
+});
+
 /* ────────────────────────────────────────────────────────────
    ARM64 の語を直接読む層（js/words.js）
 
@@ -2483,6 +2497,13 @@ test('PINPOINT 語彙: 変数名を正規化してから当てる', () => {
   eq(matchField(hp, '_maxHp').score < matchField(hp, '_hp').score, true,
     '上限と今の値を同じ強さで当てている');
   eq(matchField(hp, '_coinCount'), null, '関係のない名前に当てている');
+
+  const fcm = parseGoal('fcm token');
+  const fcmExactWords = matchField(fcm, '_cachedFCMToken');
+  const genericToken = matchField(fcm, '_accessToken');
+  ok(fcmExactWords && (fcmExactWords.sequence || fcmExactWords.words), '入力した fcm/token の両方を literal match として扱えていない');
+  ok(genericToken && fcmExactWords.score > genericToken.score,
+    '具体的な複数語入力より汎用語彙 token を強く扱っている');
 
   eq(fieldRole('_maxHp'), 'max');
   eq(fieldRole('_baseAttack'), 'base');

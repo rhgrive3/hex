@@ -2553,13 +2553,18 @@ export function showPinned(app, pin) {
       'See the other candidates (' + (pin.candidates.length - 1) + ')'));
     const ol = list();
     for (const other of pin.candidates.slice(1)) {
-      ol.append(tapRow(pinnedName(other), {
-        sub: (typeWord(other.type) || '') + '  ·  ' + offsetHex(BigInt(other.offset)) +
-          '\n' + (proofText(other.why[0]) || ''),
+      const otherSub = other.kind === 'function'
+        ? addrHex(other.addr) + '\n' + (proofText(other.why[0]) || '')
+        : (typeWord(other.type) || '') + '  ·  ' + offsetHex(BigInt(other.offset)) +
+          '\n' + (proofText(other.why[0]) || '');
+      ol.append(tapRow(pinnedName(other, app), {
+        sub: otherSub,
         right: probabilityText(other.probability),
         onTap: () => {
           sheet.close();
-          if (other.kind === 'location') {
+          if (other.kind === 'function') {
+            showFunctionReport(app, other.addr, goal);
+          } else if (other.kind === 'location') {
             const at = other.updates && other.updates[0] ? other.updates[0].store.address : null;
             if (at != null) app.goToAddress(at, { announce: true });
           } else {
@@ -2573,7 +2578,18 @@ export function showPinned(app, pin) {
   }
 
   const actions = el('div', 'detail-actions');
-  if (c.kind === 'field') {
+  if (c.kind === 'function') {
+    actions.append(button(pick('この処理を開く', 'Open this routine'), 'chip', () => {
+      sheet.close();
+      showFunctionReport(app, c.addr, goal);
+    }));
+    if (pin.value && pin.value.top) {
+      actions.append(button(pick('対応する値の候補を見る', 'See the related value candidate'), 'chip', () => {
+        sheet.close();
+        showPinned(app, pin.value);
+      }));
+    }
+  } else if (c.kind === 'field') {
     actions.append(button(pick('この値の使われ方をすべて見る', 'See every use of this value'), 'chip', () => {
       sheet.close();
       showField(app, c.className, c.field);
@@ -2624,14 +2640,19 @@ function pinnedRow(app, pin, onTap) {
   const c = pin.top;
   const icon = pin.goal.icon ? pin.goal.icon + ' ' : '';
   const vendor = vendorNoteFor(app, pin);
-  return tapRow(icon + pin.goal.text + ' → ' + pinnedName(c), {
-    sub: (typeWord(c.type) || '') + '  ·  ' + offsetHex(BigInt(c.offset)) +
+  const sub = c.kind === 'function'
+    ? addrHex(c.addr) + '\n' + (proofText(c.why[0]) || '')
+    : (typeWord(c.type) || '') + '  ·  ' + offsetHex(BigInt(c.offset)) +
       (vendor ? '\n' + pick('これは ' + vendor + ' の中の値です（アプリ自身のものではありません）',
         'this lives inside ' + vendor + ', not the app itself') : '') +
-      '\n' + (proofText(c.why[0]) || ''),
+      '\n' + (proofText(c.why[0]) || '');
+  return tapRow(icon + pin.goal.text + ' → ' + pinnedName(c, app), {
+    sub,
     right: pin.verdict === VERDICT.CONFIRMED ? pick('確定', 'confirmed')
-      : probabilityText(c.fusion.probability),
-    tag: vendor ? 'SDK' : (pin.verdict === VERDICT.CONFIRMED ? pick('検証済', 'verified') : null),
+      : pin.resolution === 'multiple' ? pick('複数確定', 'multiple')
+        : probabilityText(c.fusion.probability),
+    tag: vendor ? 'SDK' : (pin.verdict === VERDICT.CONFIRMED ? pick('検証済', 'verified')
+      : pin.resolution === 'multiple' ? pick('複数検証済', 'multiple verified') : null),
     tagClass: vendor ? 'tag-infer' : 'tag-fact',
     onTap,
   });

@@ -294,9 +294,25 @@ function buildCandidates(input, topics) {
    * あるだけで別フィールドを「主役」と誤認していた。
    */
   const accessor = exactAccessorUpdate(input, updates);
+  const spec = accessorSpec(input.owner);
+  const metaField = !accessor && spec && input.owner && input.owner.accessorField
+    ? input.owner.accessorField : null;
+  const metadataAccessor = metaField ? {
+    kind: spec.kind,
+    field: {
+      className: input.owner.className || null,
+      name: metaField.name || null,
+      plain: String((metaField.property && metaField.property.name) || metaField.name || '').replace(/^_+/, ''),
+      type: metaField.declaredType || metaField.type || null,
+      offset: metaField.offset,
+      certain: true,
+    },
+    location: { base: 0, disp: metaField.offset != null ? BigInt(metaField.offset) : null, size: metaField.size || null },
+    __metadataAccessor: true,
+  } : null;
   const ordered = accessor
     ? [accessor.update, ...updates.filter((u) => u !== accessor.update)]
-    : updates;
+    : (metadataAccessor ? [metadataAccessor, ...updates] : updates);
   /*
    * 値を触っている場所を、確からしい順に。
    * 「読んで計算して書き戻す」が閉じているものだけが、動作を命令で裏取りできる。
@@ -374,13 +390,23 @@ function buildCandidates(input, topics) {
           items.push(evidence('role-verb-imm', 1, { op: verb.op, imm: verb.amount }));
         }
         if (u.kind === 'read' || u.kind === 'write') {
-          /*
-           * 読んで返すだけ・引数を入れるだけ。命令はこの 1 本しかないので、
-           * 「何をしているか」については、増減の連鎖と同じくらい確かに言える。
-           */
-          items.push(evidence('role-verb-accessor', 1, {
-            kind: u.kind, address: u.store ? u.store.address : null,
-          }));
+          /* A metadata-only accessor states the selector contract but is not an
+             instruction verification. Direct read/write accessors remain the
+             stronger VERIFIED evidence below. */
+          if (u.__metadataAccessor) {
+            items.push(evidence('role-verb-selector', 1, {
+              kind: u.kind, selector: spec ? spec.selector : null,
+            }));
+            items.push(evidence('role-accessor-metadata', 1, {
+              selector: spec ? spec.selector : null,
+              field: u.field ? (u.field.plain || u.field.name) : null,
+              className: u.field ? u.field.className : null,
+            }));
+          } else {
+            items.push(evidence('role-verb-accessor', 1, {
+              kind: u.kind, address: u.store ? u.store.address : null,
+            }));
+          }
           if (accessor && u === accessor.update && input.verified) {
             /*
              * selector (`foo` / `setFoo:`) と self の ivar 名が一致し、さらに
@@ -557,7 +583,15 @@ export function inferRole(input) {
   const claims = Array.from(byClaim.values()).sort((a, b) => b.fusion.logOdds - a.fusion.logOdds);
 
   const d = decide(claims);
-  const top = d.top || candidates[0];
+  let top = d.top || candidates[0];
+  /* For a runtime-declared property accessor, the public semantic action is
+     the selector contract itself. A setter may read the old value for KVO/ARC
+     and a lazy getter may write a cache; those internal operations must not
+     rename `setFoo:` to a getter or `foo` to a setter. Prefer the synthetic
+     metadata-accessor claim when it exists, while keeping instruction evidence
+     visible as supporting/alternative behaviour. */
+  const contract = candidates.find((c) => c.update && c.update.__metadataAccessor);
+  if (contract) top = contract;
   const missing = d.missing.slice();
 
   let verdict = d.verdict;

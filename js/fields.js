@@ -83,10 +83,30 @@ export class FieldIndex {
       };
       this.classes.set(c.name, entry);
       this.classOfName.set(c.name, entry);
+      /* If an Objective-C selector is exactly a declared ivar/property accessor,
+         retain that relationship on the method owner. The implementation may
+         delegate through KVO/lazy-init helpers and never directly touch the ivar,
+         but the runtime metadata still states what `foo` / `setFoo:` means. */
+      const accessorField = (sel) => {
+        const text = String(sel || '');
+        let plain = null;
+        const sm = /^set(.+):$/.exec(text);
+        if (sm && sm[1]) plain = sm[1];
+        else if (text && !text.includes(':')) plain = text;
+        if (!plain) return null;
+        const want = plain.replace(/^_+/, '').toLowerCase();
+        for (const iv of c.ivars || []) {
+          const names = [iv.name, iv.property && iv.property.name]
+            .filter(Boolean).map((x) => plainFieldName(x).toLowerCase());
+          if (names.includes(want)) return iv;
+        }
+        return null;
+      };
       for (const m of (c.methods || []).concat(c.classMethods || [])) {
         if (m.addr == null) continue;
         this.methodOwner.set(m.addr.toString(), {
           className: c.name, sel: m.sel || null, kind: m.kind || '-',
+          accessorField: accessorField(m.sel),
         });
       }
     }

@@ -2074,6 +2074,19 @@ export function roleProofText(item) {
     case 'role-verb-shape':
       return pick('命令の形（比べて分岐する・値を移す）が、この動作と合っている',
         'the instruction shape fits this action');
+    case 'role-verb-selector':
+      return pick(d.kind === 'read'
+        ? 'Objective-C のメソッド名「' + trim(d.selector, 36) + '」が、この値を読む getter であることを示している'
+        : 'Objective-C のメソッド名「' + trim(d.selector, 36) + '」が、この値へ書く setter であることを示している',
+      d.kind === 'read'
+        ? 'the Objective-C selector “' + trim(d.selector, 36) + '” declares a getter for this value'
+        : 'the Objective-C selector “' + trim(d.selector, 36) + '” declares a setter for this value');
+    case 'role-accessor-metadata':
+      return pick('Objective-C のクラス表で「' + trim(d.selector, 36) + '」が「' +
+        trim(d.field, 32) + '」のアクセサとして宣言されている' +
+        (d.className ? '（' + trim(d.className, 30) + '）' : ''),
+      'Objective-C metadata declares “' + trim(d.selector, 36) + '” as an accessor for “' +
+        trim(d.field, 32) + '”' + (d.className ? ' on ' + trim(d.className, 30) : ''));
     case 'role-verb-accessor':
       return pick(d.kind === 'read'
         ? 'この値を読んで、そのまま返している命令が実在する' +
@@ -2099,6 +2112,10 @@ export function roleProofText(item) {
       return pick('打ち込まれた言葉が、この値の名前にそのままの並びで入っている（' +
         trim(d.name, 40) + '）',
       'what you typed appears verbatim in this field’s name (' + trim(d.name, 40) + ')');
+    case 'field-name-words':
+      return pick('打ち込まれた複数の言葉が、すべてこの値の名前に入っている（' +
+        trim(d.name, 40) + '）',
+      'all words you typed are present in this field’s name (' + trim(d.name, 40) + ')');
     case 'role-subject-field':
       return pick('書き換えている値の名前が「' + trim(d.name, 32) + '」で、' +
         '探している機能の言葉（' + trim(d.term, 16) + '）が入っている',

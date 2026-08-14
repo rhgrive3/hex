@@ -107,6 +107,7 @@ export const EVIDENCE = {
   /* 打ち込まれた名前が、そのまま変数の名前だった。名前で探した人への直球の答え。 */
   'field-name-asked':   { lr: 400,  family: FAMILY.NAME,     kind: 'fact', id: true },
   'field-name-contains':{ lr: 120,  family: FAMILY.NAME,     kind: 'fact', id: true },
+  'field-name-words': { lr: 45, family: FAMILY.NAME, kind: 'fact', id: true },
   'field-name-exact':   { lr: 55,   family: FAMILY.NAME,     kind: 'fact', id: true },
   'field-name-strong':  { lr: 16,   family: FAMILY.NAME,     kind: 'fact', id: true },
   'field-name-weak':    { lr: 3,    family: FAMILY.NAME,     kind: 'fact', id: true },
@@ -264,6 +265,11 @@ export const EVIDENCE = {
   'role-verb-shape':    { lr: 2.4,  family: FAMILY.USAGE,    kind: 'fact' },
   /* 読んで返すだけ／入れるだけ。命令が 1 本しかないぶん、増減の連鎖と同じくらい確か。 */
   'role-verb-accessor': { lr: 12,   family: FAMILY.VERIFIED, kind: 'verified' },
+  /* Objective-C runtime metadata itself declares `foo` / `setFoo:` as an
+     accessor for an existing ivar/property. This is a naming/ABI fact, not an
+     instruction-level verification, so keep it out of VERIFIED family. */
+  'role-verb-selector': { lr: 80, family: FAMILY.USAGE, kind: 'fact' },
+  'role-accessor-metadata': { lr: 70, family: FAMILY.NAME, kind: 'fact', id: true },
   /*
    * Objective-C の selector (`foo` / `setFoo:`) が宣言する名前と、実命令で
    * read/write した self の ivar 名が一致した。名前と場所が同じ runtime metadata

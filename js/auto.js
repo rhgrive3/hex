@@ -232,7 +232,7 @@ export async function autoAnalyze(opts) {
     progress({ phase: 'goals', done: i, all });
     const goal = goalFromPreset(GOALS[i].id);
     const ranked = rankCandidates({
-      goal, strings, program, symbols, region, limit: 5, vendors: vendorsOf(fields),
+      goal, strings, program, symbols, region, limit: 12, vendors: vendorsOf(fields),
     });
     rankedByGoal.set(goal.id, { goal, ranked });
     if (!ranked.candidates.length) continue;
@@ -271,107 +271,165 @@ export async function autoAnalyze(opts) {
    *   ・点数の高い目的から見る      … 途中で尽きたときに、惜しい方が残る
    * の 2 つにする。実測では決着が 4/16 → 9/16、確度も 15% → 91〜100% に上がる。
    */
-  const startBudget = o.pinpointBudget != null ? o.pinpointBudget : 192;
-  const perGoal = o.pinpointPerGoal != null ? o.pinpointPerGoal : 12;
+  const startBudget = o.pinpointBudget != null ? o.pinpointBudget : 360;
+  const perGoal = o.pinpointPerGoal != null ? o.pinpointPerGoal : 24;
+  const fieldBudget = o.pinpointFieldBudget != null ? o.pinpointFieldBudget : 7;
+  const locationBudget = o.pinpointLocationBudget != null ? o.pinpointLocationBudget : 7;
+  const functionBudget = o.pinpointFunctionBudget != null ? o.pinpointFunctionBudget : 12;
   const budget = { left: startBudget };
   const memo = o.analyze ? memoize(o.analyze) : null;
   const hasClasses = !!(fields && fields.classCount);
-  /* 点数の高い目的から。採点の済んだものが先、残りは元の順で後ろに付ける。 */
+
+  /*
+   * The three pinpoint engines answer different questions:
+   *   field     — a named member (strong when ObjC metadata survived)
+   *   location  — an anonymous object offset recovered from behaviour
+   *   function  — the routine that implements the requested operation
+   *
+   * Auto analysis used to run only the first one that produced *any* top row.
+   * A weak SDK field with verdict NONE therefore prevented the much stronger
+   * location/function analyzers from ever running. Compare all applicable
+   * answers and keep the strongest verified one instead of trusting call order.
+   */
+  const pinProbability = (p) => p && p.top && p.top.fusion ? p.top.fusion.probability : 0;
+  const pinIdentifying = (p) => p && p.top && p.top.fusion ? (p.top.fusion.identifying || 0) : 0;
+  const pinVerified = (p) => p && p.top && p.top.fusion ? (p.top.fusion.verified || 0) : 0;
+  const usablePin = (p) => !!(p && p.top && pinIdentifying(p) > 0);
+  const multipleVerifiedPin = (p) => usablePin(p) && p.kind === 'function' &&
+    p.verdict === VERDICT.AMBIGUOUS && (p.tiedVerified || 0) >= 2 &&
+    pinVerified(p) > 0 && pinProbability(p) >= 0.99;
+  const settledPin = (p) => usablePin(p) &&
+    (verdictRank(p.verdict) >= verdictRank(VERDICT.LIKELY) || multipleVerifiedPin(p));
+  const beatsPin = (next, cur) => {
+    if (!usablePin(next)) return false;
+    if (!usablePin(cur)) return true;
+    const vr = verdictRank(next.verdict) - verdictRank(cur.verdict);
+    if (vr) return vr > 0;
+    const pp = pinProbability(next) - pinProbability(cur);
+    if (Math.abs(pp) > 1e-12) return pp > 0;
+    const vv = pinVerified(next) - pinVerified(cur);
+    if (vv) return vv > 0;
+    return pinIdentifying(next) > pinIdentifying(cur);
+  };
+  const runWithBudget = async (max, fn) => {
+    if (budget.left <= 0 || max <= 0) return null;
+    const purse = { left: Math.max(0, Math.min(max, perGoal, budget.left)) };
+    const before = purse.left;
+    let result = null;
+    try { result = await fn(purse); } catch { result = null; }
+    budget.left -= (before - purse.left);
+    return result;
+  };
+
+  /* Highest-ranked goals first, but every goal gets an independent sub-budget.
+     One difficult HP search can no longer starve networking/purchase/save. */
   const goalOrder = GOALS.map((g) => g.id).sort((a, b) => {
     const ea = rankedByGoal.get(a), eb = rankedByGoal.get(b);
     const sa = ea && ea.ranked.candidates[0] ? ea.ranked.candidates[0].score : 0;
     const sb = eb && eb.ranked.candidates[0] ? eb.ranked.candidates[0].score : 0;
     return sb - sa;
   });
+  report.stats.pinpointModes = { field: 0, location: 0, function: 0 };
+
   if (memo || hasClasses) {
     for (let i = 0; i < goalOrder.length; i++) {
       if (cancelled()) { report.notes.push('pin-cancelled'); break; }
       progress({ phase: 'pinpoint', done: i, all });
+      if (budget.left <= 0) {
+        report.unexamined.push(...goalOrder.slice(i).map((id) => goalFromPreset(id)));
+        break;
+      }
       const entry = rankedByGoal.get(goalOrder[i]);
       const goal = entry ? entry.goal : goalFromPreset(goalOrder[i]);
-      /* この目的が使える分だけを渡す。使い残しは次の目的へ戻る。 */
-      const purse = { left: Math.max(0, Math.min(perGoal, budget.left)) };
-      const beforeLeft = purse.left;
+      const ranked = entry ? entry.ranked.candidates : [];
       const common = {
         goal, fields, program, symbols, strings, region,
         map: report.map,
-        // 値のふるまい（名前のないアプリで唯一の手がかり）
         shapes: o.shapes || null,
         analyze: memo,
         scanAccess: o.scanAccess || null,
-        budget: purse,
         isCancelled: cancelled,
-        limit: 8,
+        limit: 12,
       };
-      let pin = null;
-      if (hasClasses) {
-        try { pin = await pinpointField(common); } catch { pin = null; }
-      }
-      /*
-       * 名前から決められなかった目的は、形から場所を決めにいく。
-       * クラス表のないアプリでも「ここを書き換えれば変わる」までは出したい。
-       */
-      if ((!pin || !pin.top) && memo && entry && entry.ranked.candidates.length) {
-        try {
-          pin = await pinpointLocation(Object.assign({}, common, {
-            ranked: entry.ranked.candidates,
-          }));
-        } catch { /* 出せなくても、ほかの目的は続ける */ }
-      }
-      /* この目的が実際に使った分だけ、全体の財布から引く。 */
-      budget.left -= (beforeLeft - purse.left);
-      if (beforeLeft <= 0) report.unexamined.push(goal);
+      const alternatives = [];
+      let best = null;
 
-      if (!pin || !pin.top || pin.verdict === VERDICT.NONE) continue;
-      /*
-       * 目的に結びつく手がかりが 1 つも無いものは載せない。
-       * 「バトルのクラスにある 4 バイトの整数」は、防御力を探している人にとっては
-       * 答えではなくノイズで、しかも並んでいると答えに見えてしまう。
-       */
-      if (!(pin.top.fusion.identifying > 0)) continue;
-      report.pinned.push(pin);
+      /* Metadata is cheap and can directly name a value. */
+      if (hasClasses) {
+        const fieldPin = await runWithBudget(fieldBudget, (purse) =>
+          pinpointField(Object.assign({}, common, { budget: purse })));
+        report.stats.pinpointModes.field++;
+        if (fieldPin) alternatives.push(fieldPin);
+        if (beatsPin(fieldPin, best)) best = fieldPin;
+      }
+
+      /* Behavioural location recovery must run whenever shapes/ranked code make
+         it possible — not merely when pinpointField returned null. */
+      const canLocate = memo && ((common.shapes && common.shapes.size) || ranked.length);
+      if (canLocate && !((best && best.verdict === VERDICT.CONFIRMED) && best.kind === 'field')) {
+        const locPin = await runWithBudget(locationBudget, (purse) =>
+          pinpointLocation(Object.assign({}, common, { ranked, budget: purse })));
+        report.stats.pinpointModes.location++;
+        if (locPin) alternatives.push(locPin);
+        if (beatsPin(locPin, best)) best = locPin;
+      }
+
+      /* A goal can be identifiable as a routine even when the underlying value
+         has no surviving name (typical C++/Unity games). Run function pinpoint
+         per goal rather than only once for the globally best field. */
+      const canFindFunction = memo && ranked.length;
+      if (canFindFunction && !(best && best.verdict === VERDICT.CONFIRMED && best.kind === 'field')) {
+        let fieldHint = null;
+        const named = alternatives.find((p) => p && p.kind === 'field' && p.top && settledPin(p));
+        if (named) {
+          fieldHint = {
+            offset: named.top.offset, className: named.top.className,
+            plain: named.top.plain, name: named.top.field && named.top.field.name,
+          };
+        }
+        const fnPin = await runWithBudget(functionBudget, (purse) =>
+          pinpointFunction(Object.assign({}, common, {
+            ranked, budget: purse,
+            functionCount: symbols ? symbols.functionCount : 0,
+            field: fieldHint,
+          })));
+        report.stats.pinpointModes.function++;
+        if (fnPin) alternatives.push(fnPin);
+        if (beatsPin(fnPin, best)) best = fnPin;
+      }
+
+      if (!usablePin(best) || best.verdict === VERDICT.NONE) continue;
+      best.alternatives = alternatives.filter((p) => p && p !== best && usablePin(p));
+      /* Preserve a useful process/value counterpart for the detail screen. */
+      if (best.kind !== 'function') {
+        const fn = alternatives.find((p) => p && p.kind === 'function' && usablePin(p));
+        if (fn) best.function = fn;
+      } else {
+        const value = alternatives.filter((p) => p && p.kind !== 'function' && usablePin(p))
+          .sort((a, b) => (beatsPin(a, b) ? -1 : beatsPin(b, a) ? 1 : 0))[0];
+        if (value) best.value = value;
+      }
+
+      report.pinned.push(best);
       const g = report.goals.find((x) => x.goal.id === goal.id);
-      if (g) g.pinned = pin;
+      if (g) g.pinned = best;
       await tick();
     }
-    /* 確定 → 有力 → 割れている の順。確率の高いものを先に。 */
+
     report.pinned.sort((a, b) => (verdictRank(b.verdict) - verdictRank(a.verdict)) ||
-      (b.top.fusion.probability - a.top.fusion.probability));
+      (pinProbability(b) - pinProbability(a)));
     report.confirmed = report.pinned.filter((p) => p.verdict === VERDICT.CONFIRMED);
-    /*
-     * 「決着した」と呼べるのは、確定と、あと一歩の有力まで。
-     * 割れているもの（多くは 5〜30%）は答えではないので、混ぜて並べない。
-     * ここを混ぜていたせいで、C++ 製のゲームを開くと 15% の広告 SDK の値が
-     * 4 件並び、それが答えのように見えていた。
-     */
-    report.settled = report.pinned.filter((p) => verdictRank(p.verdict) >= verdictRank(VERDICT.LIKELY));
-    report.unsettled = report.pinned.filter((p) => verdictRank(p.verdict) < verdictRank(VERDICT.LIKELY));
+    /* A verified tie between multiple routines is also a resolved result: the
+       app genuinely splits the requested operation across several functions.
+       Keep verdict=AMBIGUOUS (there is no single winner), but do not present it
+       as an analysis failure. */
+    report.multiple = report.pinned.filter(multipleVerifiedPin);
+    for (const p of report.multiple) p.resolution = 'multiple';
+    report.settled = report.pinned.filter(settledPin);
+    report.unsettled = report.pinned.filter((p) => !settledPin(p));
     report.stats.pinpointUsed = startBudget - budget.left;
     report.stats.pinpointBudget = startBudget;
     report.stats.goalsExamined = goalOrder.length - report.unexamined.length;
-  }
-
-  /* 3.6 いちばん確度の高い目的については、処理そのものも決めにいく。 */
-  if (memo && report.pinned.length && budget.left > 0) {
-    const best = report.pinned[0];
-    const entry = rankedByGoal.get(best.goal.id);
-    // 名前まで決まった値のときだけ。名前のない場所では、処理の裏取りに使えない。
-    if (entry && entry.ranked.candidates.length && best.top.kind === 'field') {
-      progress({ phase: 'pinpoint-fn', done: 0, all: 1 });
-      try {
-        const fn = await pinpointFunction({
-          goal: best.goal, ranked: entry.ranked.candidates,
-          program, symbols, fields, analyze: memo, budget,
-          functionCount: symbols ? symbols.functionCount : 0,
-          field: {
-            offset: best.top.offset, className: best.top.className,
-            plain: best.top.plain, name: best.top.field.name,
-          },
-          isCancelled: cancelled,
-        });
-        if (fn && fn.top) best.function = fn;
-      } catch { /* 決められなくても、値の特定だけは残す */ }
-    }
   }
 
   /* 4. 目的とは無関係の「注目すべき関数」 */

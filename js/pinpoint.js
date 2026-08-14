@@ -152,11 +152,12 @@ export async function pinpointField(opts) {
   let asked = candidates.filter((c) => c.askedByName);
   if (!asked.length) {
     /*
-     * 丸ごと同じ名前は無いが、打ち込まれた語がそのままの並びで入っている
-     * （「show time」→ `_adShowTime`）。うろ覚えで打つ人はこちらのほうが多い。
-     * 語彙ごしの当てはまりより、はるかに具体的な手がかりなので別枠にする。
+     * 丸ごと同じ名前は無い場合、ユーザーが打った複数語をすべて含む候補へ絞る。
+     * 「fcm token」のような具体的な入力を、汎用語彙の「token」だけが一致する
+     * verified getter に負けさせない。語順が連続していればより強い証拠になるが、
+     * `cachedFCMToken` のように別の語を挟む名前も literal family として残す。
      */
-    asked = candidates.filter((c) => c.askedBySequence);
+    asked = candidates.filter((c) => c.askedBySequence || c.askedByWords);
   }
   const narrowed = asked.length > 0 && asked.length < candidates.length;
   if (asked.length) candidates = asked;
@@ -306,12 +307,15 @@ function buildFieldCandidate({ cls, iv, nameHit, fit, ctx }, goal) {
       ev.push(evidence('field-name-asked', 1, { name: iv.name, term: nameHit.term }));
     } else if (nameHit.literal && nameHit.sequence) {
       ev.push(evidence('field-name-contains', 1, { name: iv.name, term: nameHit.term }));
+    } else if (nameHit.literal && nameHit.words) {
+      ev.push(evidence('field-name-words', 1, { name: iv.name, term: nameHit.term }));
     } else if (nameHit.exact) ev.push(evidence('field-name-exact', nameHit.score, { name: iv.name, term: nameHit.term }));
     else if (nameHit.score >= 0.6) ev.push(evidence('field-name-strong', nameHit.score, { name: iv.name, term: nameHit.term }));
     else ev.push(evidence('field-name-weak', Math.max(0.3, nameHit.score), { name: iv.name, term: nameHit.term }));
   }
   const askedByName = !!(nameHit && nameHit.literal && nameHit.exact);
   const askedBySequence = !!(nameHit && nameHit.literal && nameHit.sequence);
+  const askedByWords = !!(nameHit && nameHit.literal && nameHit.words);
 
   /*
    * プロパティとして宣言された名前。ivar 名とは別の場所に書いてあるので、
@@ -393,6 +397,7 @@ function buildFieldCandidate({ cls, iv, nameHit, fit, ctx }, goal) {
     // 打ち込まれた名前そのものだったか（pinpointField が別枠にするための印）
     askedByName,
     askedBySequence,
+    askedByWords,
     evidence: ev,
     verifications: [],
     sites: [],
