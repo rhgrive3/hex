@@ -8,6 +8,7 @@ on:
       - 'js/dataflow-ir.js'
       - 'js/ir.js'
       - 'tests/ir-dataflow.mjs'
+      - 'tests/ir-alias.mjs'
       - '.github/workflows/ir-dataflow-migration.yml'
   workflow_dispatch:
 
@@ -24,3 +25,5 @@ jobs:
         run: npm run check
       - name: IR dataflow migration regressions
         run: node tests/ir-dataflow.mjs
+      - name: IR alias safety regressions
+        run: node tests/ir-alias.mjs
