@@ -119,6 +119,25 @@ function rowIdentity(u) {
   return row + ':' + disp + ':' + stack;
 }
 
+/*
+ * The legacy and SSA adapters often describe the exact same machine observation.
+ * `load@12` from two engines is one fact, not two independent facts. Keep one
+ * evidence item per (code,row), preferring the SSA-enriched detail when present.
+ */
+function mergeEvidence(legacy, proven) {
+  const byFact = new Map();
+  for (const item of [...(legacy || []), ...(proven || [])]) {
+    if (!item) continue;
+    const key = String(item.code || '') + ':' + String(item.row == null ? -1 : item.row);
+    const prev = byFact.get(key);
+    const isSsa = !!(item.detail && item.detail.engine === 'ir-ssa');
+    const prevSsa = !!(prev && prev.detail && prev.detail.engine === 'ir-ssa');
+    if (!prev || (isSsa && !prevSsa)) byFact.set(key, item);
+  }
+  return Array.from(byFact.values()).sort((a, b) =>
+    (a.row == null ? -1 : a.row) - (b.row == null ? -1 : b.row));
+}
+
 /**
  * Return only updates proven by SSA + Memory SSA.
  * The result deliberately matches the historical findValueUpdates() structure.
@@ -142,8 +161,6 @@ export function findIrValueUpdates(model, opts) {
       .map((inst) => stepFrom(inst, load.dst))
       .filter(Boolean);
 
-    // An RMW with no visible operation is still a proven same-location cycle,
-    // but the old API treats it as a high-confidence update rather than a compute.
     const evidence = [
       ev('load', load.row, { base: location.base, disp: location.disp, engine: 'ir-ssa' }),
       ...steps.map((s) => ev('compute', s.row, { op: s.op, imm: s.imm, engine: 'ir-ssa' })),
@@ -200,7 +217,7 @@ export function mergeValueUpdates(legacy, proven) {
       ...ir,
       location: { ...(old.location || {}), ...(ir.location || {}) },
       from: { ...(old.from || {}), ...(ir.from || {}) },
-      evidence: [...(old.evidence || []), ...(ir.evidence || [])],
+      evidence: mergeEvidence(old.evidence, ir.evidence),
       legacyConfidence: old.confidence,
       engine: 'ir-ssa',
     };
