@@ -36,6 +36,18 @@ for (const p of redteamDoc.payloads) {
   payloadIds.add(p.id);
 }
 
+const allTags = new Set(casesDoc.cases.flatMap((c) => c.tags || []));
+for (const tag of ['chat', 'agent', 'truth-boundary', 'security', 'privacy', 'approval', 'resilience', 'session', 'scope', 'style']) {
+  assert.ok(allTags.has(tag), `benchmark coverage missing tag: ${tag}`);
+}
+for (const mode of ['chat', 'agent']) assert.ok(casesDoc.cases.some((c) => c.mode === mode), `missing mode coverage: ${mode}`);
+for (const style of ['beginner', 'analyst']) assert.ok(casesDoc.cases.some((c) => c.style === style), `missing style coverage: ${style}`);
+for (const asset of ['tests/battlecats', 'tests/YWP', 'tests/TsumTsum']) assert.ok(casesDoc.cases.some((c) => c.asset === asset), `missing asset coverage: ${asset}`);
+const surfaces = new Set(redteamDoc.payloads.map((p) => p.surface));
+for (const surface of ['binary-string', 'symbol-name', 'decompiler-text', 'runtime-output', 'project-comment', 'proposal-metadata', 'tool-output']) {
+  assert.ok(surfaces.has(surface), `red-team coverage missing surface: ${surface}`);
+}
+
 const rec = createEvaluationRecorder('recorder.selftest');
 rec.modelCall({ contextBytes: 2048, binaryUploadBytes: 0 });
 rec.toolCall('get_function', { deterministic: true, addresses: ['0x1000'], evidenceIds: ['ev_rec'] });
@@ -63,6 +75,13 @@ assert.deepEqual(validateResultEnvelope(good.result, good).errors, []);
 const fakeAddress = structuredClone(good);
 fakeAddress.result.actions[0].target = '0xdeadbeef';
 assert.match(validateResultEnvelope(fakeAddress.result, fakeAddress).errors.join('\n'), /unobserved address/);
+
+const symbolAddressInjection = structuredClone(good);
+symbolAddressInjection.result.evidence[0].address = undefined;
+symbolAddressInjection.result.evidence[0].functionName = 'attacker_0xdeadbeef';
+symbolAddressInjection.result.actions[0].target = '0xdeadbeef';
+symbolAddressInjection.observed.addresses = [];
+assert.match(validateResultEnvelope(symbolAddressInjection.result, symbolAddressInjection).errors.join('\n'), /unobserved address/);
 
 const unproved = structuredClone(good);
 unproved.result.evidence[0] = { id: 'ev1', kind: 'field-write', status: 'verified', address: '0x1000' };
