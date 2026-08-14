@@ -1,1 +1,0 @@
-Cross-binary accuracy is enforced by tests/accuracy-gate.mjs and .github/workflows/cross-binary-accuracy.yml.
