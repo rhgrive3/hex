@@ -105,15 +105,18 @@ function budgetState(opts) {
     maxDisassembly: explicitBudget(opts && opts.maxDisassembly, 50000, 0),
     maxSearchResults: explicitBudget(opts && opts.maxSearchResults, 40, 1),
     maxExpansions: explicitBudget(opts && opts.maxExpansions, 20, 0),
-    timeoutMs: explicitBudget(opts && opts.timeoutMs, 3000, 50),
+    timeoutMs: explicitBudget(opts && opts.timeoutMs, 3000, 1),
     started: Date.now(),
     isCancelled: opts && opts.isCancelled || (() => false),
     analyzedInstructions: 0,
     disassemblyExhausted: false,
+    functionExhausted: false,
+    analysisAccountedExternally: !!(opts && opts.tools),
   };
 }
 
-function expired(b) { return b.isCancelled() || Date.now() - b.started > b.timeoutMs || b.disassemblyExhausted; }
+function timedOut(b) { return Date.now() - b.started >= b.timeoutMs; }
+function expired(b) { return b.isCancelled() || timedOut(b) || b.disassemblyExhausted || b.functionExhausted; }
 
 async function lexicalCandidates(query, tools, ctx, b) {
   const map = new Map();
@@ -121,15 +124,18 @@ async function lexicalCandidates(query, tools, ctx, b) {
   for (const term of terms) {
     if (expired(b)) break;
     const fs = await tools.search_functions(term, { limit: b.maxSearchResults });
+    if (expired(b)) break;
     for (const row of fs.results || []) addCandidate(map, resultAddress(row), 'function-name', term, 12);
 
     const ss = await tools.search_strings(term, { limit: b.maxSearchResults });
+    if (expired(b)) break;
     for (const row of ss.results || []) {
       const direct = resultAddress(row);
       if (direct != null) addCandidate(map, direct, 'string-reference', term, 8);
       const target = asAddr(row && (row.stringAddress != null ? row.stringAddress : row.target));
       if (target != null) {
         const xr = await tools.get_xrefs(target, { limit: b.maxSearchResults });
+        if (expired(b)) break;
         for (const fn of xr.functions || []) addCandidate(map, fn.addr != null ? fn.addr : fn.function, 'string-xref', term, 10);
       }
     }
@@ -144,8 +150,10 @@ async function expandCallNeighborhood(map, tools, b) {
   for (const c of initial) {
     if (expired(b) || map.size >= b.maxFunctions * 3) break;
     const callers = await tools.get_callers(c.address, { limit: 12 });
+    if (expired(b)) break;
     for (const row of callers.results || []) addCandidate(map, row.addr, 'caller', null, 2);
     const callees = await tools.get_callees(c.address, { limit: 12 });
+    if (expired(b)) break;
     for (const row of callees.results || []) addCandidate(map, row.addr, 'callee', null, 1);
   }
 }
@@ -158,17 +166,24 @@ async function analyzeCandidates(query, map, tools, b) {
     let fn;
     try { fn = await tools.get_function(c.address); }
     catch (error) {
-      if ((error && error.message) === 'disassembly-budget') { b.disassemblyExhausted = true; break; }
+      const message = error && error.message;
+      if (message === 'disassembly-budget') { b.disassemblyExhausted = true; break; }
+      if (message === 'function-budget') { b.functionExhausted = true; break; }
+      if (message === 'timeout' || message === 'cancelled') break;
       continue;
     }
-    const cost = Math.max(0, Number(fn && fn.instructions || 0));
-    if (b.analyzedInstructions + cost > b.maxDisassembly) { b.disassemblyExhausted = true; break; }
-    b.analyzedInstructions += cost;
+    if (expired(b)) break;
+    if (b.analysisAccountedExternally) {
+      const cost = Math.max(0, Number(fn && fn.instructions || 0));
+      if (b.analyzedInstructions + cost > b.maxDisassembly) { b.disassemblyExhausted = true; break; }
+      b.analyzedInstructions += cost;
+    }
     c.name = fn.name || null;
     c.summary = fn.summary || null;
     c.score += lexicalScore(query, c, c.name);
 
     const factsResult = await tools.get_semantic_facts(c.address, { limit: 500 });
+    if (expired(b)) break;
     const semantic = semanticScore(query, factsResult.results || []);
     c.score += semantic.score;
     c.semantic = semantic.hits;
@@ -192,6 +207,7 @@ async function verifyBest(query, ranked, tools, b) {
       (query.action === 'decrease' && f.kind === FACT.DECREMENT));
     if (rmw && rmw.location) {
       const verified = await tools.verify_field_update(c.address, rmw.location.key || { offset: rmw.location.disp }, { pathLimit: 8 });
+      if (expired(b)) break;
       c.verification = verified;
       if (verified.verified) {
         c.score += 45;
@@ -201,6 +217,7 @@ async function verifyBest(query, ranked, tools, b) {
     }
     if (query.action === 'decide' || query.action === 'check' || query.action === 'detect') {
       const thresholds = await tools.find_thresholds(c.address);
+      if (expired(b)) break;
       if ((thresholds.results || []).length) {
         c.verification = thresholds;
         c.score += 20;
@@ -225,11 +242,33 @@ function publicCandidate(c) {
   };
 }
 
+function guardedContext(ctx, b) {
+  if (typeof ctx.analyze !== 'function') return ctx;
+  return {
+    ...ctx,
+    analyze: async (...args) => {
+      if (b.isCancelled()) throw new Error('cancelled');
+      if (timedOut(b)) throw new Error('timeout');
+      if (b.analyzedInstructions >= b.maxDisassembly) { b.disassemblyExhausted = true; throw new Error('disassembly-budget'); }
+      const model = await ctx.analyze(...args);
+      if (b.isCancelled()) throw new Error('cancelled');
+      if (timedOut(b)) throw new Error('timeout');
+      const cost = Math.max(0, Array.isArray(model && model.instructions) ? model.instructions.length : 0);
+      if (b.analyzedInstructions + cost > b.maxDisassembly) { b.disassemblyExhausted = true; throw new Error('disassembly-budget'); }
+      b.analyzedInstructions += cost;
+      return model;
+    },
+  };
+}
+
 export async function planAnalysisGoal(goalOrQuery, context, opts) {
   const query = typeof goalOrQuery === 'string' ? compileGoal(goalOrQuery) : goalOrQuery;
   const ctx = context || {};
   const b = budgetState(opts);
-  const tools = opts && opts.tools || createAgentTools(ctx, { maxFunctions: Math.max(1, b.maxFunctions) });
+  const tools = opts && opts.tools || createAgentTools(guardedContext(ctx, b), {
+    maxFunctions: b.maxFunctions,
+    maxDisassembly: b.maxDisassembly,
+  });
   if (!query) return { query: null, candidates: [], best: null, evidence: [], missingEvidence: ['query'], engine: 'deterministic-goal-planner' };
 
   const candidates = await lexicalCandidates(query, tools, ctx, b);
@@ -246,6 +285,9 @@ export async function planAnalysisGoal(goalOrQuery, context, opts) {
   if (!best) missingEvidence.push('no-candidate-function');
   else if (!best.verification) missingEvidence.push('no-runtime-or-causal-verification');
   if (b.disassemblyExhausted) missingEvidence.push('disassembly-budget');
+  if (b.functionExhausted) missingEvidence.push('function-budget');
+  if (timedOut(b)) missingEvidence.push('timeout');
+  if (b.isCancelled()) missingEvidence.push('cancelled');
   if (query.confident === false) missingEvidence.push(...(query.missing || []));
 
   return {
