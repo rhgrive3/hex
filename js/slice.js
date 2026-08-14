@@ -355,14 +355,12 @@ export function causalChain(ir, seed, opts) {
  */
 export function findPaths(graph, from, to, opts) {
   const o = opts || {};
-  const maxDepth = o.maxDepth || 6;
-  const maxPaths = o.maxPaths || 8;
-  const maxVisited = o.maxVisited || 20000;
+  const maxDepth = Math.max(1, Math.min(12, Number(o.maxDepth) || 6));
+  const maxPaths = Math.max(1, Math.min(32, Number(o.maxPaths) || 8));
+  const maxVisited = Math.max(16, Math.min(20000, Number(o.maxVisited) || 20000));
   if (from == null || to == null) return [];
 
-  const key = (a) => a.toString();
   const paths = [];
-  const visited = new Set();
   const queue = [[from]];
   let seen = 0;
 
@@ -372,13 +370,11 @@ export function findPaths(graph, from, to, opts) {
     seen++;
     if (head === to) { paths.push(path); continue; }
     if (path.length >= maxDepth) continue;
-    const k = key(head) + '@' + path.length;
-    if (visited.has(k)) continue;
-    visited.add(k);
     let next = [];
     try { next = graph.calleesOf(head) || []; } catch { next = []; }
-    for (const n of next) {
-      if (path.some((p) => p === n)) continue;         // 同じ関数を 2 度通らない
+    for (const item of next) {
+      const n = item && item.addr != null ? item.addr : item;
+      if (n == null || path.some((p) => p === n)) continue;
       queue.push(path.concat([n]));
     }
   }

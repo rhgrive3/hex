@@ -27,10 +27,14 @@ export class AnalysisCache {
     if (!hash) throw new TypeError('binary hash is required');
     const clean = {};
     for (const [key, value] of Object.entries(data)) if (ALLOWED_FIELDS.has(key)) clean[key] = value;
-    const record = { key: this.key(hash), schemaVersion: this.schemaVersion, binaryHash: hash, updatedAt: Date.now(), data: clean };
+    // IndexedDB clones values on put, but the in-memory fallback does not. Take
+    // the same snapshot here so caller-owned arrays/maps cannot mutate a cached
+    // analysis after it has been stored.
+    const snapshot = structuredCloneSafe(clean);
+    const record = { key: this.key(hash), schemaVersion: this.schemaVersion, binaryHash: hash, updatedAt: Date.now(), data: snapshot };
     if (this.memory) this.memory.set(record.key, record);
     else await this.#idbPut(record);
-    return structuredCloneSafe(clean);
+    return structuredCloneSafe(snapshot);
   }
 
   async delete(hash) {
@@ -103,7 +107,36 @@ function requestPromise(request) {
   });
 }
 
+function fallbackClone(value, seen = new WeakMap()) {
+  if (value == null || typeof value !== 'object') return value;
+  if (seen.has(value)) return seen.get(value);
+  if (value instanceof Date) return new Date(value.getTime());
+  if (value instanceof ArrayBuffer) return value.slice(0);
+  if (ArrayBuffer.isView(value)) {
+    if (value instanceof DataView) return new DataView(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength));
+    return value.slice ? value.slice() : new value.constructor(value);
+  }
+  if (value instanceof Map) {
+    const out = new Map(); seen.set(value, out);
+    for (const [k, v] of value) out.set(fallbackClone(k, seen), fallbackClone(v, seen));
+    return out;
+  }
+  if (value instanceof Set) {
+    const out = new Set(); seen.set(value, out);
+    for (const v of value) out.add(fallbackClone(v, seen));
+    return out;
+  }
+  if (Array.isArray(value)) {
+    const out = []; seen.set(value, out);
+    for (const v of value) out.push(fallbackClone(v, seen));
+    return out;
+  }
+  const out = {}; seen.set(value, out);
+  for (const [k, v] of Object.entries(value)) out[k] = fallbackClone(v, seen);
+  return out;
+}
+
 function structuredCloneSafe(value) {
   if (typeof structuredClone === 'function') return structuredClone(value);
-  return value;
+  return fallbackClone(value);
 }

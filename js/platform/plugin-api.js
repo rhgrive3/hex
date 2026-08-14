@@ -1,5 +1,64 @@
 const TYPES = new Set(['format', 'architecture', 'analyzer', 'knowledgeProvider', 'viewContribution', 'goalProvider']);
 
+function deepFreeze(value, seen = new WeakSet()) {
+  if (!value || typeof value !== 'object' || seen.has(value)) return value;
+  seen.add(value);
+  if (value instanceof Map) {
+    for (const [k, v] of value) { deepFreeze(k, seen); deepFreeze(v, seen); }
+  } else if (value instanceof Set) {
+    for (const v of value) deepFreeze(v, seen);
+  } else {
+    for (const key of Reflect.ownKeys(value)) {
+      const desc = Object.getOwnPropertyDescriptor(value, key);
+      if (desc && 'value' in desc) deepFreeze(desc.value, seen);
+    }
+  }
+  try { Object.freeze(value); } catch { /* typed-array views may reject freeze */ }
+  return value;
+}
+
+function fallbackClone(value, seen = new WeakMap(), depth = 0) {
+  if (value == null || typeof value !== 'object') return value;
+  if (depth > 32) throw new Error('plugin context nesting exceeds safety limit');
+  if (seen.has(value)) return seen.get(value);
+  if (value instanceof Date) return new Date(value.getTime());
+  if (value instanceof ArrayBuffer) return value.slice(0);
+  if (ArrayBuffer.isView(value)) {
+    if (value instanceof DataView) return new DataView(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength));
+    return value.slice ? value.slice() : new value.constructor(value);
+  }
+  if (value instanceof Map) {
+    const out = new Map(); seen.set(value, out);
+    for (const [k, v] of value) out.set(fallbackClone(k, seen, depth + 1), fallbackClone(v, seen, depth + 1));
+    return out;
+  }
+  if (value instanceof Set) {
+    const out = new Set(); seen.set(value, out);
+    for (const v of value) out.add(fallbackClone(v, seen, depth + 1));
+    return out;
+  }
+  if (Array.isArray(value)) {
+    const out = []; seen.set(value, out);
+    for (const v of value) out.push(fallbackClone(v, seen, depth + 1));
+    return out;
+  }
+  const out = Object.create(null); seen.set(value, out);
+  for (const [key, v] of Object.entries(value)) {
+    if (typeof v === 'function') continue;
+    out[key] = fallbackClone(v, seen, depth + 1);
+  }
+  return out;
+}
+
+function safeSnapshot(value) {
+  if (value == null) return null;
+  let clone;
+  if (typeof structuredClone === 'function') {
+    try { clone = structuredClone(value); } catch { clone = fallbackClone(value); }
+  } else clone = fallbackClone(value);
+  return deepFreeze(clone);
+}
+
 export class PlatformPluginRegistry {
   constructor() {
     this.entries = new Map([...TYPES].map((type) => [type, new Map()]));
@@ -35,10 +94,13 @@ export class PlatformPluginRegistry {
     const fn = record.contribution[method];
     if (typeof fn !== 'function') return { ok: false, error: `contribution ${type}:${id} has no ${method}()` };
     try {
+      // Plugins receive detached snapshots of host-owned state. Freezing a
+      // shallow spread is insufficient because project.user, arrays and Maps
+      // would still point at live application objects.
       const safeContext = Object.freeze({
-        binary: context.binary ? Object.freeze({ ...context.binary }) : null,
-        capability: context.capability ? Object.freeze({ ...context.capability }) : null,
-        project: context.project ? Object.freeze({ ...context.project }) : null,
+        binary: safeSnapshot(context.binary),
+        capability: safeSnapshot(context.capability),
+        project: safeSnapshot(context.project),
         read: typeof context.read === 'function' ? context.read : undefined,
         reportProgress: typeof context.reportProgress === 'function' ? context.reportProgress : undefined,
       });

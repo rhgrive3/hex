@@ -42,20 +42,34 @@ async function snapshot(emu, watch) {
   return out;
 }
 
-function modifiedRanges(emu, objectBase, maxObjectSize) {
-  const bytes = [];
+function sparseObjectBytes(emu, objectBase, maxObjectSize) {
+  const bytes = new Map();
   const hi = objectBase + BigInt(maxObjectSize);
   for (const [key, page] of emu.mem || []) {
     const base = BigInt(key);
     for (let i = 0; i < page.mask.length; i++) {
       if (!page.mask[i]) continue;
       const addr = base + BigInt(i);
-      if (addr >= objectBase && addr < hi) bytes.push(addr);
+      if (addr < objectBase || addr >= hi) continue;
+      bytes.set(addr.toString(), emu.byteAt(addr));
     }
   }
-  bytes.sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
+  return bytes;
+}
+
+function modifiedRanges(emu, objectBase, maxObjectSize, beforeBytes) {
+  const afterBytes = sparseObjectBytes(emu, objectBase, maxObjectSize);
+  const addresses = new Set([...beforeBytes.keys(), ...afterBytes.keys()]);
+  const changed = [];
+  for (const key of addresses) {
+    const beforeHas = beforeBytes.has(key), afterHas = afterBytes.has(key);
+    if (beforeHas && afterHas && beforeBytes.get(key) === afterBytes.get(key)) continue;
+    if (!afterHas) continue;
+    changed.push(BigInt(key));
+  }
+  changed.sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
   const ranges = [];
-  for (const addr of bytes) {
+  for (const addr of changed) {
     const last = ranges[ranges.length - 1];
     if (last && last.address + BigInt(last.size) === addr) last.size++;
     else ranges.push({ address: addr, offset: addr - objectBase, size: 1 });
@@ -85,6 +99,7 @@ export class FunctionSandbox {
     this.maxObjectSize = Math.max(0x100, Number(opts && opts.maxObjectSize || 0x10000));
     this.watch = [];
     this.before = [];
+    this.beforeObjectBytes = new Map();
   }
 
   async setup(address, opts) {
@@ -118,6 +133,9 @@ export class FunctionSandbox {
 
     this.watch = watchesFromOptions(o, objectBase);
     this.before = await snapshot(this.emulator, this.watch);
+    // Setup writes establish the sandbox's initial state. They must not later be
+    // reported as function effects.
+    this.beforeObjectBytes = sparseObjectBytes(this.emulator, objectBase, this.maxObjectSize);
     return this.state();
   }
 
@@ -159,7 +177,7 @@ export class FunctionSandbox {
       before: this.before,
       after,
       touchedFields,
-      modifiedObjectRanges: modifiedRanges(this.emulator, this.objectBase, this.maxObjectSize),
+      modifiedObjectRanges: modifiedRanges(this.emulator, this.objectBase, this.maxObjectSize, this.beforeObjectBytes),
       takenBranches: branchTrace(this.emulator.trace),
       trace: (this.emulator.trace || []).slice(),
       log: (this.emulator.log || []).slice(),

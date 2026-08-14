@@ -118,9 +118,17 @@ export class Backend {
     return this._callTo(this._engineWorker(t), t, payload, transfer, onProgress);
   }
 
+  _releaseDisassembly(error) {
+    if (this._disasmWorker) { this._disasmWorker.terminate(); this._disasmWorker = null; }
+    const failure = error || new Error('disassembly worker released');
+    for (const pending of this._disasmPending.values()) pending.reject(failure);
+    this._disasmPending.clear();
+  }
+
   advanceEpoch() {
     this.analysisEpoch++;
     this.resetCache();
+    this._releaseDisassembly(new StaleRequestError());
     for (const worker of [this.legacyWorker, this.platformWorker]) {
       worker.postMessage({ t: 'cancel', epoch: this.transportEpoch });
     }
@@ -282,29 +290,34 @@ export class Backend {
     return this.contentHash;
   }
   async disassembleAt(addr, options = {}) {
+    const uiEpoch = this.gen;
     const architecture = options.architecture || this.platformInfo?.capability?.architecture || 'arm64';
     const support = await this.probeArchitectures();
+    if (uiEpoch !== this.gen) throw new StaleRequestError();
     if (!support?.support?.[architecture]) return { supported: false, architecture, instructions: [] };
     if (this.formatId === 'macho') return { supported: false, architecture, instructions: [], compatibility: 'legacy-viewer' };
     const read = await this._callTo('platform', 'readAt', { addr, len: Math.min(1024 * 1024, options.length || 4096), text: false });
+    if (uiEpoch !== this.gen) throw new StaleRequestError();
     if (!read?.found) return { supported: true, architecture, instructions: [], found: false };
-    const result = await this._disassembleBytes(read.bytes, addr, architecture);
+    const result = await this._disassembleBytes(read.bytes, addr, architecture, uiEpoch);
+    if (uiEpoch !== this.gen) throw new StaleRequestError();
     return { supported: true, architecture, found: true, ...result };
   }
-  _disassembleBytes(bytes, address, architecture) {
+  _disassembleBytes(bytes, address, architecture, uiEpoch = this.gen) {
     if (!this._disasmWorker) {
       this._disasmWorker = new Worker(new URL('./platform/capstone-disasm-worker.js', import.meta.url));
       this._disasmWorker.onmessage = (event) => {
         const pending = this._disasmPending.get(event.data?.id);
         if (!pending) return;
         this._disasmPending.delete(event.data.id);
+        if (pending.uiEpoch !== this.gen) { pending.reject(new StaleRequestError()); return; }
         if (event.data.ok) pending.resolve(event.data); else pending.reject(new Error(event.data.error || 'disassembly failed'));
       };
     }
     const id = this._disasmSeq++;
     const copy = bytes instanceof Uint8Array ? bytes.slice() : new Uint8Array(bytes);
     return new Promise((resolve, reject) => {
-      this._disasmPending.set(id, { resolve, reject });
+      this._disasmPending.set(id, { resolve, reject, uiEpoch });
       this._disasmWorker.postMessage({ id, architecture, address, bytes: copy }, [copy.buffer]);
     });
   }
@@ -319,9 +332,7 @@ export class Backend {
   memoryStats() { return this._callTo('platform', 'memoryStats', {}); }
   cleanupMemory() {
     this.resetCache();
-    if (this._disasmWorker) { this._disasmWorker.terminate(); this._disasmWorker = null; }
-    for (const pending of this._disasmPending.values()) pending.reject(new Error('disassembly worker released for memory pressure'));
-    this._disasmPending.clear();
+    this._releaseDisassembly(new Error('disassembly worker released for memory pressure'));
     return this._callTo('platform', 'cleanupMemory', {});
   }
 

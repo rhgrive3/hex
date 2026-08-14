@@ -76,8 +76,12 @@ export function parseHexProject(input) {
   try {
     raw = JSON.parse(text, (_key, value) => {
       if (value && typeof value === 'object' && Object.keys(value).length === 1 && typeof value.$hexBigInt === 'string') {
-        if (!/^[0-9a-f]+$/i.test(value.$hexBigInt)) throw new ProjectFormatError('invalid bigint encoding');
-        return BigInt('0x' + value.$hexBigInt);
+        const encoded = value.$hexBigInt;
+        if (!/^-?[0-9a-f]+$/i.test(encoded) || encoded === '-') throw new ProjectFormatError('invalid bigint encoding');
+        const negative = encoded.startsWith('-');
+        const magnitude = negative ? encoded.slice(1) : encoded;
+        const parsed = BigInt('0x' + magnitude);
+        return negative ? -parsed : parsed;
       }
       return value;
     });

@@ -53,12 +53,19 @@ function deterministicAnswer(plan) {
   };
 }
 
+function explicitLimit(value, fallback, minimum = 0) {
+  if (value == null) return fallback;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(minimum, Math.floor(n));
+}
+
 function budgetOf(opts) {
   return {
-    maxToolCalls: Math.max(1, opts && opts.maxToolCalls || 24),
-    maxFunctions: Math.max(1, opts && opts.maxFunctions || 48),
-    maxDisassembly: Math.max(100, opts && opts.maxDisassembly || 50000),
-    timeoutMs: Math.max(100, opts && opts.timeoutMs || 10000),
+    maxToolCalls: explicitLimit(opts && opts.maxToolCalls, 24, 0),
+    maxFunctions: explicitLimit(opts && opts.maxFunctions, 48, 0),
+    maxDisassembly: explicitLimit(opts && opts.maxDisassembly, 50000, 0),
+    timeoutMs: explicitLimit(opts && opts.timeoutMs, 10000, 1),
     isCancelled: opts && opts.isCancelled || (() => false),
   };
 }
@@ -70,6 +77,11 @@ function normalizeToolRequest(step) {
   let args = step.args || step.arguments || [];
   if (!Array.isArray(args)) args = [args];
   return { tool: String(tool), args };
+}
+
+function instructionCost(model) {
+  const n = model && Array.isArray(model.instructions) ? model.instructions.length : 0;
+  return Number.isSafeInteger(n) && n > 0 ? n : 0;
 }
 
 /** Deterministic mode: no model required. */
@@ -92,33 +104,53 @@ export async function runAgent(config) {
   if (!llm || typeof llm.next !== 'function') return runDeterministicAgent(goal, context, { ...cfg, ...budget });
 
   const query = typeof goal === 'string' ? compileGoal(goal) : goal;
-  const tools = createAgentTools(context, { maxFunctions: budget.maxFunctions });
+  const started = Date.now();
+  const deadlineExceeded = () => Date.now() - started >= budget.timeoutMs;
+  const cancelled = () => budget.isCancelled() || deadlineExceeded();
+  let disassembly = 0;
+  const countedContext = typeof context.analyze === 'function' ? {
+    ...context,
+    analyze: async (...args) => {
+      if (budget.isCancelled()) throw new Error('cancelled');
+      if (deadlineExceeded()) throw new Error('timeout');
+      if (disassembly >= budget.maxDisassembly) throw new Error('disassembly-budget');
+      const model = await context.analyze(...args);
+      if (budget.isCancelled()) throw new Error('cancelled');
+      if (deadlineExceeded()) throw new Error('timeout');
+      disassembly += instructionCost(model);
+      if (disassembly > budget.maxDisassembly) throw new Error('disassembly-budget');
+      return model;
+    },
+  } : context;
+  const tools = createAgentTools(countedContext, { maxFunctions: budget.maxFunctions });
   const availableTools = Object.keys(tools).filter((k) => typeof tools[k] === 'function');
   const observations = [];
   const evidence = new Set();
   const functions = new Set();
-  let disassembly = 0;
-  const started = Date.now();
+  const loadedFunctionCount = () => tools.__loader && typeof tools.__loader.analysisCount === 'function' ? tools.__loader.analysisCount() : 0;
+  const usedFunctionCount = () => Math.max(functions.size, loadedFunctionCount());
   let proposedAnswer = null;
   let stopReason = null;
 
   for (let call = 0; call < budget.maxToolCalls; call++) {
     if (budget.isCancelled()) { stopReason = 'cancelled'; break; }
-    if (Date.now() - started > budget.timeoutMs) { stopReason = 'timeout'; break; }
+    if (deadlineExceeded()) { stopReason = 'timeout'; break; }
     let step;
     try {
       step = await llm.next({
         goal, query, observations: observations.slice(), availableTools,
         budget: {
           remainingToolCalls: budget.maxToolCalls - call,
-          remainingFunctions: budget.maxFunctions - functions.size,
-          remainingDisassembly: budget.maxDisassembly - disassembly,
+          remainingFunctions: Math.max(0, budget.maxFunctions - usedFunctionCount()),
+          remainingDisassembly: Math.max(0, budget.maxDisassembly - disassembly),
         },
       });
     } catch (err) {
       stopReason = 'model-error:' + ((err && err.message) || String(err));
       break;
     }
+    if (budget.isCancelled()) { stopReason = 'cancelled'; break; }
+    if (deadlineExceeded()) { stopReason = 'timeout'; break; }
     if (step && step.answer) { proposedAnswer = step.answer; break; }
     const req = normalizeToolRequest(step);
     if (!req || !Object.prototype.hasOwnProperty.call(tools, req.tool) || typeof tools[req.tool] !== 'function') {
@@ -127,38 +159,48 @@ export async function runAgent(config) {
     const addr = addressFromArgs(req.args);
     if (addr != null) {
       functions.add(addr.toString());
-      if (functions.size > budget.maxFunctions) { stopReason = 'function-budget'; break; }
+      if (usedFunctionCount() > budget.maxFunctions) { stopReason = 'function-budget'; break; }
     }
     let result;
     try { result = await tools[req.tool](...req.args); }
-    catch (err) { result = { tool: req.tool, error: (err && err.message) || String(err) }; }
-    if (result && result.instructions != null) disassembly += Number(result.instructions) || 0;
-    if (disassembly > budget.maxDisassembly) { stopReason = 'disassembly-budget'; break; }
+    catch (err) {
+      const message = (err && err.message) || String(err);
+      result = { tool: req.tool, error: message };
+      if (message === 'disassembly-budget' || message === 'function-budget' || message === 'timeout' || message === 'cancelled') stopReason = message;
+    }
+    if (deadlineExceeded() && !stopReason) stopReason = 'timeout';
+    if (disassembly > budget.maxDisassembly && !stopReason) stopReason = 'disassembly-budget';
     evidenceFromObservation(result, evidence);
     observations.push({ request: req, result });
+    if (stopReason) break;
   }
 
-  // Always run the deterministic planner as the final verifier. It can reuse the
-  // same context but it does not accept the model's conclusion as evidence.
-  const plan = await planAnalysisGoal(query, context, {
-    maxFunctions: Math.max(4, budget.maxFunctions - functions.size),
+  // Always ask the deterministic planner for the final proof, but never extend
+  // the caller's deadline or resource budget to do so. Once the deadline has
+  // expired, the combined cancellation predicate makes the planner return
+  // without starting new analysis work.
+  const remainingFunctions = Math.max(0, budget.maxFunctions - usedFunctionCount());
+  const remainingDisassembly = Math.max(0, budget.maxDisassembly - disassembly);
+  const remainingTimeout = Math.max(0, budget.timeoutMs - (Date.now() - started));
+  const plan = await planAnalysisGoal(query, countedContext, {
+    maxFunctions: remainingFunctions,
+    maxDisassembly: remainingDisassembly,
     maxSearchResults: cfg.maxSearchResults,
-    timeoutMs: Math.max(100, budget.timeoutMs - (Date.now() - started)),
-    isCancelled: budget.isCancelled,
+    timeoutMs: remainingTimeout,
+    isCancelled: cancelled,
     tools,
   });
   for (const e of plan.evidence || []) evidence.add(e);
   const deterministic = deterministicAnswer(plan);
 
-  let conclusion = deterministic.conclusion;
-  let reasons = deterministic.reasons;
+  // The deterministic conclusion and reasons are immutable proof output. The
+  // model may only lower confidence or report additional missing evidence; its
+  // prose is returned separately and never promoted to a verified conclusion.
+  const conclusion = deterministic.conclusion;
+  const reasons = deterministic.reasons;
   let confidence = deterministic.confidence;
   let missingEvidence = deterministic.missingEvidence.slice();
   if (proposedAnswer) {
-    // The model may phrase/choose among already-proved candidates, but cannot
-    // create evidence or raise confidence beyond deterministic verification.
-    if (proposedAnswer.conclusion != null) conclusion = proposedAnswer.conclusion;
-    if (Array.isArray(proposedAnswer.reasons)) reasons = proposedAnswer.reasons;
     if (Array.isArray(proposedAnswer.missingEvidence)) missingEvidence = Array.from(new Set([...missingEvidence, ...proposedAnswer.missingEvidence]));
     if (typeof proposedAnswer.confidence === 'number') confidence = Math.min(confidence, Math.max(0, proposedAnswer.confidence));
   }
@@ -166,6 +208,7 @@ export async function runAgent(config) {
     confidence = Math.min(confidence, 0.5);
     if (!missingEvidence.includes('no-deterministic-evidence')) missingEvidence.push('no-deterministic-evidence');
   }
+  if (!stopReason && deadlineExceeded()) stopReason = 'timeout';
   if (stopReason && !missingEvidence.includes(stopReason)) missingEvidence.push(stopReason);
 
   return {
@@ -174,10 +217,11 @@ export async function runAgent(config) {
     evidence: Array.from(evidence),
     confidence,
     missingEvidence,
+    modelAnswer: proposedAnswer,
     query,
     plan,
     observations,
     mode: 'agent',
-    stats: { toolCalls: observations.length, functions: functions.size, disassembly, elapsedMs: Date.now() - started },
+    stats: { toolCalls: observations.length, functions: usedFunctionCount(), disassembly, elapsedMs: Date.now() - started },
   };
 }

@@ -467,15 +467,19 @@ export function rangeOnBranch(ir, branch, taken = true) {
   if (!c || !c.cond) return null;
   const info = c.cond === 'eq' || c.cond === 'ne' ? { op: c.cond === 'eq' ? '==' : '!=', signed: null } : COND[c.cond];
   if (!info || !info.op) return null;
-  const op = taken ? info.op : invertRel(info.op);
-  const signed = info.signed == null ? (c.lhs.signed === true) : info.signed;
-  const range = constrainedRange(c.lhs, op, c.rhs, signed);
-  const zero = zeroFactOnEdge(op, c.rhs);
+  const relation = taken ? info.op : invertRel(info.op);
+  const signedForBounds = info.signed == null ? (c.lhs.signed === true) : info.signed;
+  const signedness = info.signed === true ? 'signed'
+    : info.signed === false ? 'unsigned'
+      : c.lhs.signed === true ? 'signed'
+        : c.lhs.signed === false ? 'unsigned' : 'unknown';
+  const range = constrainedRange(c.lhs, relation, c.rhs, signedForBounds);
+  const zero = zeroFactOnEdge(relation, c.rhs);
   return {
     value: c.lhs,
-    condition: op,
+    condition: relation,
     constant: c.rhs,
-    signedness: signed ? 'signed' : 'unsigned',
+    signedness,
     range,
     zero,
     nullability: nullabilityFromZero(zero, null),

@@ -55,7 +55,7 @@ export function fingerprintFunction(fn = {}) {
 
 function jaccard(a, b) {
   const left = new Set(a || []), right = new Set(b || []);
-  if (!left.size && !right.size) return 1;
+  if (!left.size && !right.size) return null;
   let hit = 0;
   for (const value of left) if (right.has(value)) hit++;
   return hit / (left.size + right.size - hit || 1);
@@ -63,35 +63,41 @@ function jaccard(a, b) {
 
 function ratio(a, b) {
   a = Math.max(0, Number(a || 0)); b = Math.max(0, Number(b || 0));
-  if (!a && !b) return 1;
+  if (!a && !b) return null;
   return Math.min(a, b) / Math.max(a, b, 1);
 }
 
 function cfgScore(a, b) {
-  return (ratio(a.blocks, b.blocks) + ratio(a.edges, b.edges) + ratio(a.exits, b.exits) + ratio(a.calls, b.calls)) / 4;
+  const pairs = [[a.blocks, b.blocks], [a.edges, b.edges], [a.exits, b.exits], [a.calls, b.calls]];
+  const scores = pairs.map(([x, y]) => ratio(x, y)).filter((x) => x != null);
+  return scores.length ? scores.reduce((sum, x) => sum + x, 0) / scores.length : null;
 }
 
 function byteSampleScore(a = [], b = []) {
-  if (!a.length && !b.length) return 0;
+  if (!a.length && !b.length) return null;
   const n = Math.max(a.length, b.length);
   let same = 0;
   for (let i = 0; i < Math.min(a.length, b.length); i++) if (a[i] === b[i]) same++;
   return same / n;
 }
 
+function addFeature(current, value, weight) {
+  return value == null ? current : current + value * weight;
+}
+
 export function compareFingerprints(a, b) {
   const reasons = [];
   let score = 0;
-  const exactBytes = a.normalizedByteHash && a.normalizedByteHash === b.normalizedByteHash;
+  const exactBytes = a.size > 0 && b.size > 0 && !!a.normalizedByteHash && a.normalizedByteHash === b.normalizedByteHash;
   if (exactBytes) { score += 0.28; reasons.push('normalized-bytes'); }
   else if (a.irHash && a.irHash === b.irHash) { score += 0.25; reasons.push('normalized-ir'); }
-  const bs = byteSampleScore(a.byteSample, b.byteSample); score += bs * 0.42; if (bs >= 0.8 && !exactBytes) reasons.push('byte-similarity');
-  const c = cfgScore(a.cfg, b.cfg); score += c * 0.09; if (c >= 0.9) reasons.push('cfg-shape');
-  const s = jaccard(a.strings, b.strings); score += s * 0.07; if (s >= 0.75 && (a.strings.length || b.strings.length)) reasons.push('strings');
-  const i = jaccard(a.imports, b.imports); score += i * 0.05; if (i >= 0.75 && (a.imports.length || b.imports.length)) reasons.push('imports');
-  const calls = jaccard(a.calls, b.calls); score += calls * 0.03; if (calls >= 0.75 && (a.calls.length || b.calls.length)) reasons.push('calls');
-  const constants = jaccard(a.constants, b.constants); score += constants * 0.02; if (constants >= 0.75 && (a.constants.length || b.constants.length)) reasons.push('constants');
-  const z = ratio(a.size, b.size); score += z * 0.04; if (z >= 0.95) reasons.push('size');
+  const bs = byteSampleScore(a.byteSample, b.byteSample); score = addFeature(score, bs, 0.42); if (bs != null && bs >= 0.8 && !exactBytes) reasons.push('byte-similarity');
+  const c = cfgScore(a.cfg, b.cfg); score = addFeature(score, c, 0.09); if (c != null && c >= 0.9) reasons.push('cfg-shape');
+  const s = jaccard(a.strings, b.strings); score = addFeature(score, s, 0.07); if (s != null && s >= 0.75) reasons.push('strings');
+  const i = jaccard(a.imports, b.imports); score = addFeature(score, i, 0.05); if (i != null && i >= 0.75) reasons.push('imports');
+  const calls = jaccard(a.calls, b.calls); score = addFeature(score, calls, 0.03); if (calls != null && calls >= 0.75) reasons.push('calls');
+  const constants = jaccard(a.constants, b.constants); score = addFeature(score, constants, 0.02); if (constants != null && constants >= 0.75) reasons.push('constants');
+  const z = ratio(a.size, b.size); score = addFeature(score, z, 0.04); if (z != null && z >= 0.95) reasons.push('size');
   return { confidence: Math.max(0, Math.min(1, score)), reasons };
 }
 
@@ -111,7 +117,10 @@ export function diffFunctions(beforeFunctions, afterFunctions, options = {}) {
   for (let i = 0; i < before.length; i++) {
     const pool = new Set();
     for (const token of tokens(before[i])) for (const j of byToken.get(token) || []) pool.add(j);
-    if (!pool.size) for (let j = 0; j < after.length; j++) if (ratio(before[i].size, after[j].size) >= 0.8) pool.add(j);
+    if (!pool.size) for (let j = 0; j < after.length; j++) {
+      const sizeRatio = ratio(before[i].size, after[j].size);
+      if (sizeRatio != null && sizeRatio >= 0.8) pool.add(j);
+    }
     for (const j of pool) {
       const cmp = compareFingerprints(before[i], after[j]);
       if (cmp.confidence >= threshold) candidates.push({ i, j, ...cmp });
@@ -127,7 +136,7 @@ export function diffFunctions(beforeFunctions, afterFunctions, options = {}) {
       .filter((x) => x.i === candidate.i && x.j !== candidate.j && !usedAfter.has(x.j) && candidate.confidence - x.confidence <= ambiguityWindow)
       .slice(0, 4)
       .map((x) => ({ address: after[x.j].address, confidence: x.confidence, reasons: x.reasons }));
-    const exactBytes = !!a.normalizedByteHash && a.normalizedByteHash === b.normalizedByteHash;
+    const exactBytes = a.size > 0 && b.size > 0 && !!a.normalizedByteHash && a.normalizedByteHash === b.normalizedByteHash;
     const sameAddress = a.address != null && b.address != null && a.address === b.address;
     const status = exactBytes ? (sameAddress ? 'identical' : 'moved') : 'slightly changed';
     matches.push({ before: a, after: b, status, confidence: candidate.confidence, reasons: candidate.reasons, candidates: near });
@@ -153,7 +162,7 @@ export function diffFunctions(beforeFunctions, afterFunctions, options = {}) {
 
 function tokens(fp) {
   const out = [];
-  if (fp.normalizedByteHash) out.push('b:' + fp.normalizedByteHash);
+  if (fp.normalizedByteHash && fp.size > 0) out.push('b:' + fp.normalizedByteHash);
   if (fp.irHash) out.push('i:' + fp.irHash);
   if (fp.name) out.push('n:' + fp.name);
   for (const x of fp.strings.slice(0, 8)) out.push('s:' + x);

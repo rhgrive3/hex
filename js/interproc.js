@@ -120,6 +120,8 @@ export function summarizeFunction(model, opts) {
   const reads = uniqueLocations(facts, FACT.READ);
   const writes = uniqueLocations(facts, FACT.WRITE);
   const rmw = facts.filter((f) => f.kind === FACT.RMW);
+  const branches = facts.filter((f) => f.kind === FACT.BRANCH);
+  const unknownPointerStores = facts.filter((f) => f.kind === FACT.POINTER_STORE);
   const nonStackWrites = writes.filter((l) => l.kind !== 'stack');
   const nonStackReads = reads.filter((l) => l.kind !== 'stack');
   const oneReturn = returns.length === 1 ? returns[0] : null;
@@ -128,9 +130,10 @@ export function summarizeFunction(model, opts) {
   const setterFact = facts.find((f) => f.kind === FACT.WRITE && f.location && f.location.kind === 'field' &&
     f.value && f.value.origin && f.value.origin.kind === 'argument');
   const setter = !!(setterFact && nonStackWrites.length === 1);
-  const wrapper = calls.length === 1 && nonStackWrites.length === 0 &&
+  const wrapper = calls.length === 1 && nonStackWrites.length === 0 && branches.length === 0 && unknownPointerStores.length === 0 &&
     (oneReturn && (oneReturn.kind === 'call' || oneReturn.kind === 'argument' || oneReturn.kind === 'constant'));
-  const forwarding = calls.length === 1 && nonStackWrites.length === 0 && rmw.length === 0;
+  const forwarding = calls.length === 1 && nonStackWrites.length === 0 && rmw.length === 0 &&
+    branches.length === 0 && unknownPointerStores.length === 0 && !!oneReturn;
 
   return {
     address: opts && opts.address != null ? opts.address : (model.startAddress != null ? model.startAddress : ir.startAddress),
@@ -141,8 +144,8 @@ export function summarizeFunction(model, opts) {
     effects: {
       readModifyWrite: rmw.map((f) => ({ location: f.location, operation: f.operation, row: f.row, address: f.address })),
       thresholds: facts.filter((f) => f.kind === FACT.THRESHOLD).map((f) => ({ threshold: f.threshold, condition: f.condition, row: f.row, address: f.address })),
-      branches: facts.filter((f) => f.kind === FACT.BRANCH).length,
-      unknownPointerStores: facts.filter((f) => f.kind === FACT.POINTER_STORE).length,
+      branches: branches.length,
+      unknownPointerStores: unknownPointerStores.length,
     },
     argumentRoles: argumentRoles(ir),
     classification: {

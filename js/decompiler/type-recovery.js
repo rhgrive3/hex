@@ -128,23 +128,21 @@ function decide(e, fallbackBits = 64) {
   };
 }
 
-function branchSignedness(model) {
-  const byRow = new Map();
-  for (const insn of (model && model.instructions) || []) byRow.set(insn.row, insn);
-  const signedRows = new Set(), unsignedRows = new Set();
-  for (const insn of byRow.values()) {
-    const mn = String(insn.mnemonic || insn.mn || '').toLowerCase();
-    let cond = null;
-    if (/^b\.[a-z]{2}$/.test(mn)) cond = mn.slice(2);
-    else if (insn.ops && insn.ops.length) {
-      const c = insn.ops.find((o) => o && o.k === 'cond');
-      cond = c ? c.text : null;
-    }
-    const info = cond ? COND[cond] : null;
+// Derive comparison signedness from Semantic IR flags def-use. Re-scanning raw
+// ARM64 rows here would make type recovery depend on instruction adjacency and
+// would violate the IR-as-semantic-truth boundary.
+function branchSignedness(ir) {
+  const signedCmpIds = new Set(), unsignedCmpIds = new Set();
+  for (const inst of (ir && ir.instructions) || []) {
+    if (inst.op !== OP.CBR || !inst.cond) continue;
+    const info = COND[inst.cond];
     if (!info || info.signed == null) continue;
-    (info.signed ? signedRows : unsignedRows).add(insn.row);
+    const flagsArg = (inst.args || []).find((a) => a && a.value && a.value.reg === 'nzcv');
+    const cmp = flagsArg && flagsArg.value && flagsArg.value.def;
+    if (!cmp || cmp.op !== OP.CMP) continue;
+    (info.signed ? signedCmpIds : unsignedCmpIds).add(cmp.id);
   }
-  return { signedRows, unsignedRows };
+  return { signedCmpIds, unsignedCmpIds };
 }
 
 function applyRuntimeHints(ir, evidences, runtime) {
@@ -192,7 +190,7 @@ export function inferSemanticTypes(ir, model, opts = {}) {
     if (v.nullable != null) e.nullable = !!v.nullable;
   }
 
-  const branches = branchSignedness(model);
+  const branches = branchSignedness(ir);
   for (const inst of ir.instructions || []) {
     const dst = eFor(inst.dst);
     if (dst && inst.dst) width(dst, inst.dst.bits || 64, 1, `row ${inst.row}: result width`);
@@ -237,8 +235,8 @@ export function inferSemanticTypes(ir, model, opts = {}) {
 
     if (inst.op === OP.CMP) {
       const args = (inst.args || []).map(valueOf).filter(Boolean);
-      const signedBranch = branches.signedRows.has(inst.row + 1) || branches.signedRows.has(inst.row + 2);
-      const unsignedBranch = branches.unsignedRows.has(inst.row + 1) || branches.unsignedRows.has(inst.row + 2);
+      const signedBranch = branches.signedCmpIds.has(inst.id);
+      const unsignedBranch = branches.unsignedCmpIds.has(inst.id);
       for (const a of args) {
         if (signedBranch) score(eFor(a), 'signed', 5, `row ${inst.row}: signed conditional branch`);
         if (unsignedBranch) score(eFor(a), 'unsigned', 5, `row ${inst.row}: unsigned conditional branch`);
