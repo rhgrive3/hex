@@ -2,9 +2,7 @@
  * Conservative switch/jump-table structuring.
  *
  * A jump table is only rendered as switch when an upstream parser provides a
- * verified descriptor whose case targets all correspond to labels that the
- * faithful CFG already emits. This layer never guesses table entries from an
- * arbitrary indirect branch.
+ * verified descriptor. Unknown indirect branches are never guessed into cases.
  */
 
 function hex(v) { return BigInt(v).toString(16).toUpperCase(); }
@@ -38,11 +36,8 @@ function labelSet(lines) {
 }
 
 function insertionIndex(lines, row) {
-  // Prefer replacing the explicit indirect branch emitted by faithful mode.
   let i = lines.findIndex((l) => l?.row === row && /__asm\(["']br\s/i.test(l.text || ''));
   if (i >= 0) return { start: i, end: i + 1, indent: lines[i].indent || 1 };
-  // Some renderers omit the BR statement but keep source-row annotations on
-  // adjacent statements. Insert immediately after the last line preceding it.
   let last = -1;
   for (let n = 0; n < lines.length; n++) {
     const r = lines[n]?.row;
@@ -59,6 +54,38 @@ function caseLiteral(v) {
   if (typeof v === 'number' && Number.isFinite(v)) return String(v);
   if (typeof v === 'string' && /^-?(?:0x[0-9a-f]+|\d+)$/i.test(v.trim())) return v.trim();
   return null;
+}
+
+function rowForAddress(model, address) {
+  const a = BigInt(address).toString();
+  const insn = (model?.instructions || []).find((i) => {
+    try { return i.address != null && BigInt(i.address).toString() === a; } catch { return false; }
+  });
+  return insn?.row ?? null;
+}
+
+/**
+ * An indirect target can be absent from the ordinary reachable CFG even though
+ * a verified jump-table descriptor proves it is a case entry. In that one
+ * situation we may materialize the label, but only when the target address is
+ * also an exact instruction address in the current function. This never turns
+ * an arbitrary BR target into a case.
+ */
+function ensureVerifiedTargetLabel(result, model, address) {
+  const label = labelForAddress(address);
+  if (labelSet(result.lines).has(label.toUpperCase())) return true;
+  const row = rowForAddress(model, address);
+  if (row == null) return false;
+
+  let at = result.lines.findIndex((l) => l?.row != null && l.row >= row && l.kind !== 'sig');
+  if (at < 0) {
+    at = result.lines.findIndex((l) => l?.kind === 'ctrl' && l.text === '}');
+    if (at < 0) return false;
+  }
+  const nearby = result.lines[at];
+  const indent = nearby?.kind === 'label' ? (nearby.indent || 1) : Math.max(1, (nearby?.indent || 1) - (nearby?.kind === 'stmt' ? 0 : 0));
+  result.lines.splice(at, 0, { kind: 'label', indent, text: `${label}:`, row, addr: BigInt(address), note: null });
+  return true;
 }
 
 /**
@@ -82,11 +109,11 @@ export function structureKnownSwitches(result, model, opts = {}) {
     if (defaultAddress == null && sw.defaultBlock != null) defaultAddress = addressForBlock(result, model, opts, sw.defaultBlock);
     try { if (defaultAddress != null) defaultAddress = BigInt(defaultAddress); } catch { defaultAddress = null; }
 
-    const labels = labelSet(result.lines);
-    const required = cases.map((c) => c.label.toUpperCase());
-    if (defaultAddress != null) required.push(labelForAddress(defaultAddress).toUpperCase());
-    if (!required.every((l) => labels.has(l))) {
-      result.warnings = [...(result.warnings || []), `Switch at row ${sw.row} was not structured because one or more case targets are not proven CFG labels.`];
+    const allTargets = cases.map((c) => c.address);
+    if (defaultAddress != null) allTargets.push(defaultAddress);
+    const targetLabelsProven = allTargets.every((address) => ensureVerifiedTargetLabel(result, model, address));
+    if (!targetLabelsProven) {
+      result.warnings = [...(result.warnings || []), `Switch at row ${sw.row} was not structured because one or more case targets are not exact instruction addresses.`];
       continue;
     }
 
