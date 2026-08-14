@@ -864,7 +864,12 @@ function locationOf(inst) {
   if (a.disp == null) return { key: 'unknown', kind: MK.UNKNOWN };
   if (!a.base) return { key: 'unknown', kind: MK.UNKNOWN };
   if (a.stack) {
-    return { key: 'stack:' + a.disp.toString(), kind: MK.STACK, disp: a.disp, size: a.size };
+    const baseReg = a.baseReg || a.base?.reg || 'stack';
+    const frameEpoch = a.base?.id ?? -1;
+    return {
+      key: `stack:${baseReg}:e${frameEpoch}:${a.disp.toString()}`,
+      kind: MK.STACK, baseReg, frameEpoch, disp: a.disp, size: a.size,
+    };
   }
   const base = a.base;
   if (base.const != null) {
@@ -888,6 +893,7 @@ export function mayAlias(a, b) {
     return false;
   }
   if (a.kind === MK.STACK || a.kind === MK.GLOBAL) {
+    if (a.kind === MK.STACK && (a.baseReg !== b.baseReg || a.frameEpoch !== b.frameEpoch)) return true;
     const pa = a.kind === MK.STACK ? a.disp : a.address;
     const pb = b.kind === MK.STACK ? b.disp : b.address;
     if (pa == null || pb == null) return true;
@@ -1246,7 +1252,7 @@ function recoverStackVariables(ir) {
   for (const [key, loc] of ir.locations) {
     if (loc.kind !== MK.STACK) continue;
     slots.set(key, {
-      key, disp: loc.disp, size: loc.size || 8,
+      key, baseReg: loc.baseReg || 'stack', frameEpoch: loc.frameEpoch ?? -1, disp: loc.disp, size: loc.size || 8,
       reads: 0, writes: 0, name: null, escapes: false,
     });
   }
@@ -1263,8 +1269,11 @@ function recoverStackVariables(ir) {
     return da < db ? -1 : da > db ? 1 : 0;
   });
   ordered.forEach((s) => {
-    const d = s.disp == null ? 0n : (s.disp < 0n ? -s.disp : s.disp);
-    s.name = 'var_' + d.toString(16);
+    const disp = s.disp == null ? 0n : s.disp;
+    const d = disp < 0n ? -disp : disp;
+    const sign = disp < 0n ? 'm' : 'p';
+    const base = String(s.baseReg || 'stack').replace(/[^A-Za-z0-9_]/g, '_');
+    s.name = `var_${base}_e${s.frameEpoch}_${sign}${d.toString(16)}`;
   });
   ir.stackSlots = ordered;
   for (const inst of ir.instructions) {

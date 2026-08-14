@@ -28,65 +28,154 @@ function reachableFrom(succ, entry) {
   return out;
 }
 
-function sameSet(a, b) {
-  if (a.size !== b.size) return false;
-  for (const x of a) if (!b.has(x)) return false;
-  return true;
-}
-
-function intersect(sets) {
-  if (!sets.length) return new Set();
-  const out = new Set(sets[0]);
-  for (let i = 1; i < sets.length; i++) for (const x of Array.from(out)) if (!sets[i].has(x)) out.delete(x);
-  return out;
-}
-
-function dominatorsOf(succ, pred, reachable, entry) {
-  const all = new Set(reachable);
-  const dom = succ.map((_, i) => reachable.has(i) ? new Set(all) : new Set([i]));
-  if (reachable.has(entry)) dom[entry] = new Set([entry]);
-  for (let round = 0; round < succ.length * 4 + 8; round++) {
-    let changed = false;
-    for (const i of reachable) {
-      if (i === entry) continue;
-      const ps = pred[i].filter((p) => reachable.has(p));
-      const next = ps.length ? intersect(ps.map((p) => dom[p])) : new Set();
-      next.add(i);
-      if (!sameSet(next, dom[i])) { dom[i] = next; changed = true; }
+function reversePostOrder(succ, entry, allowed = null) {
+  if (!(entry >= 0 && entry < succ.length) || (allowed && !allowed.has(entry))) return [];
+  const seen = new Set([entry]);
+  const post = [];
+  const stack = [{ node: entry, next: 0 }];
+  while (stack.length) {
+    const frame = stack[stack.length - 1];
+    const xs = succ[frame.node] || [];
+    if (frame.next < xs.length) {
+      const next = xs[frame.next++];
+      if ((allowed && !allowed.has(next)) || seen.has(next)) continue;
+      seen.add(next);
+      stack.push({ node: next, next: 0 });
+      continue;
     }
-    if (!changed) break;
+    post.push(frame.node);
+    stack.pop();
   }
-  return dom;
+  post.reverse();
+  return post;
 }
 
-function tarjan(succ, reachable) {
-  let nextIndex = 0;
-  const index = new Array(succ.length).fill(-1);
-  const low = new Array(succ.length).fill(-1);
-  const stack = [];
-  const onStack = new Set();
+/* Cooper-Harvey-Kennedy immediate dominators: O(N) memory, no Set-per-node. */
+function immediateDominatorsOf(succ, pred, reachable, entry) {
+  const idom = new Array(succ.length).fill(-1);
+  const rpo = reversePostOrder(succ, entry, reachable);
+  if (!rpo.length) return { idom, rpo };
+  const rank = new Array(succ.length).fill(-1);
+  rpo.forEach((node, i) => { rank[node] = i; });
+  idom[entry] = entry;
+  const intersect = (a, b) => {
+    let guard = succ.length * 2 + 4;
+    while (a !== b && guard-- > 0) {
+      while (rank[a] > rank[b]) a = idom[a];
+      while (rank[b] > rank[a]) b = idom[b];
+      if (a < 0 || b < 0) return -1;
+    }
+    return a === b ? a : -1;
+  };
+  let changed = true;
+  for (let round = 0; changed && round < succ.length * 2 + 4; round++) {
+    changed = false;
+    for (let ri = 1; ri < rpo.length; ri++) {
+      const node = rpo[ri];
+      const ps = (pred[node] || []).filter((p) => reachable.has(p) && idom[p] >= 0);
+      if (!ps.length) continue;
+      let next = ps[0];
+      for (let i = 1; i < ps.length && next >= 0; i++) next = intersect(next, ps[i]);
+      if (next >= 0 && idom[node] !== next) { idom[node] = next; changed = true; }
+    }
+  }
+  idom[entry] = -1;
+  return { idom, rpo };
+}
+
+function dominanceIndex(idom, reachable) {
+  const children = idom.map(() => []);
+  const roots = [];
+  for (let i = 0; i < idom.length; i++) {
+    if (!reachable.has(i)) continue;
+    if (idom[i] >= 0) children[idom[i]].push(i); else roots.push(i);
+  }
+  const tin = new Array(idom.length).fill(-1);
+  const tout = new Array(idom.length).fill(-1);
+  const depth = new Array(idom.length).fill(0);
+  let clock = 0;
+  for (const root of roots) {
+    const stack = [{ node: root, exit: false }];
+    while (stack.length) {
+      const frame = stack.pop();
+      if (frame.exit) { tout[frame.node] = clock++; continue; }
+      tin[frame.node] = clock++;
+      stack.push({ node: frame.node, exit: true });
+      const kids = children[frame.node];
+      for (let i = kids.length - 1; i >= 0; i--) {
+        depth[kids[i]] = depth[frame.node] + 1;
+        stack.push({ node: kids[i], exit: false });
+      }
+    }
+  }
+  return { tin, tout, depth };
+}
+
+class DominanceView {
+  constructor(node, idom, reachable, index, excluded = -1) {
+    this.node = node; this.idom = idom; this.reachable = reachable; this.index = index; this.excluded = excluded;
+  }
+  has(candidate) {
+    if (!Number.isInteger(candidate) || candidate < 0 || candidate >= this.idom.length) return false;
+    if (!this.reachable.has(this.node)) return candidate === this.node;
+    if (!this.reachable.has(candidate) || candidate === this.excluded) return false;
+    const { tin, tout } = this.index;
+    return tin[candidate] >= 0 && tin[candidate] <= tin[this.node] && tout[this.node] <= tout[candidate];
+  }
+  get size() {
+    if (!this.reachable.has(this.node)) return 1;
+    return Math.max(1, this.index.depth[this.node] + 1 - (this.excluded >= 0 ? 1 : 0));
+  }
+  *[Symbol.iterator]() {
+    if (!this.reachable.has(this.node)) { yield this.node; return; }
+    let cur = this.node, guard = this.idom.length + 2;
+    while (cur >= 0 && guard-- > 0) {
+      if (cur !== this.excluded) yield cur;
+      cur = this.idom[cur];
+    }
+  }
+}
+
+function dominanceViews(idom, reachable, excluded = -1) {
+  const index = dominanceIndex(idom, reachable);
+  return idom.map((_, node) => new DominanceView(node, idom, reachable, index, excluded));
+}
+
+/* Iterative Kosaraju SCC. Avoids JS call-stack overflow on giant functions. */
+function strongComponents(succ, pred, reachable) {
+  const seen = new Set();
+  const finish = [];
+  for (const root of reachable) {
+    if (seen.has(root)) continue;
+    seen.add(root);
+    const stack = [{ node: root, next: 0 }];
+    while (stack.length) {
+      const frame = stack[stack.length - 1];
+      const xs = succ[frame.node] || [];
+      if (frame.next < xs.length) {
+        const next = xs[frame.next++];
+        if (!reachable.has(next) || seen.has(next)) continue;
+        seen.add(next); stack.push({ node: next, next: 0 });
+      } else { finish.push(frame.node); stack.pop(); }
+    }
+  }
   const components = [];
   const componentOf = new Array(succ.length).fill(-1);
-
-  const visit = (v) => {
-    index[v] = low[v] = nextIndex++;
-    stack.push(v); onStack.add(v);
-    for (const w of succ[v]) {
-      if (!reachable.has(w)) continue;
-      if (index[w] < 0) { visit(w); low[v] = Math.min(low[v], low[w]); }
-      else if (onStack.has(w)) low[v] = Math.min(low[v], index[w]);
-    }
-    if (low[v] !== index[v]) return;
+  const assigned = new Set();
+  for (let fi = finish.length - 1; fi >= 0; fi--) {
+    const root = finish[fi];
+    if (assigned.has(root)) continue;
     const comp = [];
+    const stack = [root]; assigned.add(root);
     while (stack.length) {
-      const w = stack.pop(); onStack.delete(w); comp.push(w);
-      componentOf[w] = components.length;
-      if (w === v) break;
+      const node = stack.pop(); comp.push(node); componentOf[node] = components.length;
+      for (const next of pred[node] || []) {
+        if (!reachable.has(next) || assigned.has(next)) continue;
+        assigned.add(next); stack.push(next);
+      }
     }
     components.push(comp);
-  };
-
-  for (const v of reachable) if (index[v] < 0) visit(v);
+  }
   return { components, componentOf };
 }
 
@@ -95,12 +184,6 @@ function postDominatorsOf(succ, pred, reachable, components, componentOf) {
   const EXIT = n;
   const internal = (i) => succ[i].filter((j) => reachable.has(j));
 
-  /*
-   * A closed SCC with no real exit is a non-terminating path.  If a node can
-   * reach one, an ordinary immediate post-dominator is unsafe: one execution
-   * may never reach the alleged merge at all.  Keep ipdom=null for that whole
-   * reverse-reachable region so the decompiler falls back to explicit edges.
-   */
   const compOut = components.map(() => new Set());
   const compHasExit = components.map(() => false);
   for (const i of reachable) {
@@ -127,34 +210,26 @@ function postDominatorsOf(succ, pred, reachable, components, componentOf) {
   }
 
   const eligible = new Set(Array.from(reachable).filter((i) => !bad.has(i)));
-  const universe = new Set([...eligible, EXIT]);
-  const pdom = Array.from({ length: n + 1 }, (_, i) => i === EXIT ? new Set([EXIT]) :
-    (eligible.has(i) ? new Set(universe) : new Set([i])));
-  const nexts = (i) => {
+  const reverse = Array.from({ length: n + 1 }, () => []);
+  for (const i of eligible) {
     const xs = succ[i].filter((j) => eligible.has(j));
-    return xs.length ? xs : [EXIT];
-  };
-  for (let round = 0; round < (n + 1) * 4 + 8; round++) {
-    let changed = false;
-    for (const i of eligible) {
-      const next = intersect(nexts(i).map((j) => pdom[j]));
-      next.add(i);
-      if (!sameSet(next, pdom[i])) { pdom[i] = next; changed = true; }
-    }
-    if (!changed) break;
+    if (!xs.length) reverse[EXIT].push(i);
+    for (const j of xs) reverse[j].push(i);
   }
+  const reversePred = predecessorsOf(reverse);
+  const reverseReachable = reachableFrom(reverse, EXIT);
+  const { idom: reverseIdom } = immediateDominatorsOf(reverse, reversePred, reverseReachable, EXIT);
+  const views = dominanceViews(reverseIdom, reverseReachable, EXIT);
   const ipdom = new Array(n).fill(null);
   for (const i of eligible) {
-    const candidates = Array.from(pdom[i]).filter((x) => x !== i && x !== EXIT);
-    let best = null, bestSize = -1;
-    for (const c of candidates) {
-      const size = pdom[c].size;
-      if (size > bestSize) { best = c; bestSize = size; }
-    }
-    ipdom[i] = best;
+    const d = reverseIdom[i];
+    ipdom[i] = d >= 0 && d !== EXIT ? d : null;
   }
-  return { postDominators: pdom.slice(0, n), immediatePostDominators: ipdom,
-    nonTerminatingReachable: bad };
+  return {
+    postDominators: views.slice(0, n),
+    immediatePostDominators: ipdom,
+    nonTerminatingReachable: bad,
+  };
 }
 
 /**
@@ -165,8 +240,9 @@ export function analyzeGraph(successors, entry = 0) {
   const succ = normalizedSuccessors(successors || []);
   const predecessors = predecessorsOf(succ);
   const reachable = reachableFrom(succ, entry);
-  const dominators = dominatorsOf(succ, predecessors, reachable, entry);
-  const { components, componentOf } = tarjan(succ, reachable);
+  const { idom: immediateDominators } = immediateDominatorsOf(succ, predecessors, reachable, entry);
+  const dominators = dominanceViews(immediateDominators, reachable);
+  const { components, componentOf } = strongComponents(succ, predecessors, reachable);
   const backEdges = [];
 
   // A natural back-edge is not "an edge to a smaller address".  The target
@@ -214,6 +290,7 @@ export function analyzeGraph(successors, entry = 0) {
     predecessors,
     reachable,
     dominators,
+    immediateDominators,
     components,
     componentOf,
     backEdges,
