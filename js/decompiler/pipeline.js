@@ -6,48 +6,58 @@ export { buildExpressionForTesting } from './pipeline-core.js';
 
 function valueOf(arg) { return arg?.value || null; }
 
-function latestReturnValue(ir, ret) {
+function latestReturnStackLoad(ir, ret) {
   const explicit = valueOf(ret?.args?.[0]);
-  if (explicit) return explicit;
-  let best = null;
-  let bestRow = -Infinity;
-  for (const value of ir?.values || []) {
-    const def = value?.def;
-    if (value?.reg !== 'x0' || !def || value.clobbered) continue;
-    if (def.block === ret.block && def.row < ret.row && def.row > bestRow) {
-      best = value;
-      bestRow = def.row;
-    }
+  if (explicit?.def?.op === 'load' && explicit.def.loc?.kind === 'stack') {
+    return { value: explicit, load: explicit.def };
   }
-  return best;
+
+  // Scan IR instructions directly rather than relying on a value's clobber flag:
+  // the final w0/x0 load can legitimately be marked clobbered by later ABI state
+  // bookkeeping even though it is exactly the value consumed by RET.
+  let best = null;
+  for (const inst of ir?.instructions || []) {
+    if (inst?.op !== 'load' || inst?.loc?.kind !== 'stack' || inst?.dst?.reg !== 'x0') continue;
+    if (ret?.row != null && inst.row >= ret.row) continue;
+    if (!best || (inst.row ?? -1) > (best.load.row ?? -1)) best = { value: inst.dst, load: inst };
+  }
+  if (best) return best;
+
+  // Last conservative fallback: follow the latest x0 SSA definition before RET.
+  let value = null;
+  let bestRow = -Infinity;
+  for (const candidate of ir?.values || []) {
+    const def = candidate?.def;
+    if (candidate?.reg !== 'x0' || !def) continue;
+    if (ret?.row != null && def.row >= ret.row) continue;
+    if (def.row > bestRow) { value = candidate; bestRow = def.row; }
+  }
+  return value?.def?.op === 'load' && value.def.loc?.kind === 'stack' ? { value, load: value.def } : null;
 }
 
 function reanchorExactStackReturn(result) {
   if (!result?.semanticAst || !result?.ir) return result;
   const ret = [...(result.ir.instructions || [])].reverse().find((inst) => inst.op === 'ret');
   if (!ret) return result;
-  const value = latestReturnValue(result.ir, ret);
-  const load = value?.def;
-  if (load?.op !== 'load' || load.loc?.kind !== 'stack' || !load.loc?.key) return result;
+  const found = latestReturnStackLoad(result.ir, ret);
+  if (!found) return result;
+  const { value, load } = found;
+  if (!load.loc?.key) return result;
   const output = result.semanticAst.outputs?.find((x) => x.name === 'return');
   if (!output) return result;
 
-  // pipeline-core may already have folded an incomplete Memory-SSA phi into a
-  // select. Re-anchor to the concrete SSA return load so the exact-stack pass
-  // can reconstruct the two incoming stores from CFG evidence instead of
-  // trusting that premature arm ordering.
   output.expression = expr.load({
     kind: 'stack',
     key: load.loc.key,
     name: load.loc.name || `stack_${load.loc.key}`,
     text: load.loc.name || `stack_${load.loc.key}`,
-  }, value.bits || Number((load.size || 8) * 8), {
+  }, value?.bits || Number((load.size || 8) * 8), {
     address: load.address,
     row: load.row,
     ir: load.id,
-    ssaDef: value.id,
+    ssaDef: value?.id ?? null,
     evidence: [{ reason: 'SSA return stack load re-anchor' }],
-  }, { signed: load.signed ?? value.signed ?? null });
+  }, { signed: load.signed ?? value?.signed ?? null });
   return result;
 }
 
