@@ -7,7 +7,11 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, '..');
 const pw = await loadPlaywright();
-if (!pw) { console.log('Playwright unavailable; sandbox browser test skipped'); process.exit(0); }
+if (!pw) {
+  const msg = 'Playwright unavailable; sandbox browser test skipped';
+  if (process.env.CI) { console.error(msg + ' (CI requires this test)'); process.exit(1); }
+  console.log(msg); process.exit(0);
+}
 const server = await new Promise((resolve) => {
   const s = http.createServer((req, res) => {
     const rel = decodeURIComponent(req.url.split('?')[0]).replace(/^\/+/, '') || 'index.html';
@@ -30,9 +34,8 @@ try {
     const lines = [];
     window.__sandboxLeak = 0;
     const value = await runInSandbox({
-      source: `try { parent.__sandboxLeak = 1; } catch {}
-let network = false; try { await fetch('data:text/plain,leak'); network = true; } catch {}
-print('sandbox', typeof app, parent === window, network, await hex.ping(41));`,
+      source: `let network = false; try { await fetch('data:text/plain,leak'); network = true; } catch {}
+print('sandbox', typeof app, typeof parent, typeof window, typeof document, typeof fetch, network, await hex.ping(41));`,
       api: { ping: (n) => n + 1 }, out: (...args) => lines.push(args), timeout: 5000,
     });
     const pluginSource = `try { parent.__sandboxLeak = 2; } catch {}
@@ -41,15 +44,36 @@ hex.plugin({ name: 'safe-plugin', async run(hex, print) { print('plugin', await 
     const pluginLines = [];
     const plugin = await runInSandbox({ source: pluginSource, mode: 'plugin', index: 0,
       api: { ping: (n) => n + 1 }, out: (...args) => pluginLines.push(args), timeout: 5000 });
-    return { value, lines, leak: window.__sandboxLeak, discovered, plugin, pluginLines };
+
+    const emuLines = [];
+    const emulator = await runInSandbox({
+      source: `const e = await hex.emulator(0x1000n, [3n]);
+print('emu', await e.get('x0'), typeof e.step, e.id);
+await e.destroy();`,
+      api: {
+        emulatorCreate: () => ({ id: 'emu-test' }),
+        emulatorGetRegister: (_id, reg) => reg === 'x0' ? 3n : 0n,
+        emulatorDestroy: () => true,
+      },
+      out: (...args) => emuLines.push(args), timeout: 5000,
+    });
+
+    const begin = performance.now();
+    const runaway = await runInSandbox({ source: 'while (true) {}', api: {}, out: () => {}, timeout: 150 });
+    const runawayMs = performance.now() - begin;
+    return { value, lines, leak: window.__sandboxLeak, discovered, plugin, pluginLines,
+      emulator, emuLines, runaway, runawayMs };
   });
   const line = result.lines[0] || [];
   const unexpected = errors.filter((e) => !/connect-src 'none'|Refused to connect|violates.*Content Security Policy/i.test(e));
-  const blocked = errors.some((e) => /connect-src 'none'|Refused to connect/i.test(e));
   const pluginLine = result.pluginLines[0] || [];
+  const emuLine = result.emuLines[0] || [];
   if (!result.value.ok || !result.discovered.ok || result.discovered.value[0]?.name !== 'safe-plugin' ||
       !result.plugin.ok || pluginLine.join(' ') !== 'plugin 2 undefined' || result.leak !== 0 ||
-      line.join(' ') !== 'sandbox undefined false false 42' || unexpected.length || !blocked) {
+      line.join(' ') !== 'sandbox undefined undefined undefined undefined undefined false 42' ||
+      !result.emulator.ok || emuLine.join(' ') !== 'emu 3 function emu-test' ||
+      !result.runaway.error || !/時間制限/.test(result.runaway.error) || result.runawayMs > 2000 ||
+      unexpected.length) {
     console.error(JSON.stringify({ result, errors, unexpected }, null, 2));
     process.exitCode = 1;
   } else console.log('sandbox browser test: ok');

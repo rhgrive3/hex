@@ -135,8 +135,14 @@ const check = (name, ok, detail) => {
 async function main() {
   const pw = await loadPlaywright();
   if (!pw) {
-    console.log('Playwright がありません。画面での確かめは省きます。');
-    console.log('  入れるなら: npx playwright install chromium');
+    const msg = 'Playwright がありません。画面での確かめは省きます。';
+    if (process.env.CI) {
+      console.error(msg + ' CIではブラウザテストを必須にします。');
+      console.error('  入れるなら: npm install -D playwright && npx playwright install chromium');
+      return 1;
+    }
+    console.log(msg);
+    console.log('  入れるなら: npm install -D playwright && npx playwright install chromium');
     return 0;
   }
   if (!fs.existsSync(BINARY)) {

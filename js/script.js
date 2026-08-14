@@ -49,6 +49,33 @@ export function createApi(app, out) {
     return Number(rel / 4n);
   };
 
+  /*
+   * Stateful objects cannot cross MessageChannel because methods/functions are
+   * not structured-cloneable. Keep Emulator instances on the trusted side and
+   * expose opaque handles. sandbox.js turns the handle back into an ergonomic
+   * proxy for scripts (`const e = await hex.emulator()`).
+   */
+  const emulators = new Map();
+  let emulatorSeq = 1;
+  const MAX_EMULATORS = 16;
+  const MAX_EMULATOR_STEPS = 100000;
+  const MAX_EMULATOR_DUMP = 1024 * 1024;
+
+  const emulatorOf = (id) => {
+    const emu = emulators.get(String(id || ''));
+    if (!emu) throw new Error('そのエミュレータは終了済みか、存在しません。');
+    return emu;
+  };
+  const emulatorState = (emu) => ({
+    x0: emu.x[0] || 0n,
+    pc: emu.pc, sp: emu.sp, steps: emu.steps, stopped: emu.stopped,
+    flags: emu.flagText(), regs: emu.registerList(),
+    log: emu.log.slice(-256),
+    callStack: emu.callStack.slice(-256),
+    trace: emu.trace.slice(-256),
+  });
+  const boundedSteps = (n) => Math.max(1, Math.min(MAX_EMULATOR_STEPS, Math.trunc(Number(n) || 20000)));
+
   const api = {
     /* ── 基本 ─────────────────────────────────────────── */
 
@@ -248,15 +275,80 @@ export function createApi(app, out) {
     async run(addr, args = [], maxSteps = 20000) {
       const emu = makeEmulator(app);
       emu.setup(BigInt(addr), args.map((v) => BigInt(v)));
-      await emu.run(maxSteps);
+      await emu.run(boundedSteps(maxSteps));
       return {
         x0: emu.x[0], steps: emu.steps, stopped: emu.stopped,
-        log: emu.log, regs: emu.registerList(),
+        log: emu.log.slice(-256), regs: emu.registerList(),
       };
     },
 
-    /** 生のエミュレータが欲しいとき。 */
-    emulator() { return makeEmulator(app); },
+    /**
+     * Stateful emulator for scripts. Only the handle crosses the sandbox RPC;
+     * sandbox.js presents it as an object with setup/step/run/get/set/... methods.
+     */
+    emulatorCreate(addr = null, args = []) {
+      if (emulators.size >= MAX_EMULATORS) throw new Error('同時に作れるエミュレータは16個までです。');
+      const emu = makeEmulator(app);
+      if (addr != null) emu.setup(BigInt(addr), (args || []).map((v) => BigInt(v)));
+      const id = 'emu' + emulatorSeq++;
+      emulators.set(id, emu);
+      return { id, state: emulatorState(emu) };
+    },
+
+    /* Direct callers get the same clone-safe descriptor. In the sandbox, the
+       special `hex.emulator()` proxy calls emulatorCreate automatically. */
+    emulator(addr = null, args = []) { return api.emulatorCreate(addr, args); },
+
+    emulatorSetup(id, addr, args = []) {
+      const emu = emulatorOf(id);
+      emu.setup(BigInt(addr), (args || []).map((v) => BigInt(v)));
+      return emulatorState(emu);
+    },
+
+    async emulatorStep(id) {
+      const emu = emulatorOf(id);
+      const result = await emu.step();
+      return { result, state: emulatorState(emu) };
+    },
+
+    async emulatorRun(id, maxSteps = 20000) {
+      const emu = emulatorOf(id);
+      const result = await emu.run(boundedSteps(maxSteps));
+      return { result, state: emulatorState(emu) };
+    },
+
+    emulatorState(id) { return emulatorState(emulatorOf(id)); },
+    emulatorGetRegister(id, reg) { return emulatorOf(id).get(String(reg || '')); },
+    emulatorSetRegister(id, reg, value) {
+      const emu = emulatorOf(id);
+      emu.set(String(reg || ''), BigInt(value));
+      return emu.get(String(reg || ''));
+    },
+
+    async emulatorDump(id, addr, len = 64) {
+      const n = Math.max(0, Math.min(MAX_EMULATOR_DUMP, Math.trunc(Number(len) || 0)));
+      return emulatorOf(id).dump(BigInt(addr), n);
+    },
+
+    async emulatorStore(id, addr, size, value) {
+      const n = Math.trunc(Number(size));
+      if (![1, 2, 4, 8].includes(n)) throw new Error('書き込みサイズは 1 / 2 / 4 / 8 バイトだけ使えます。');
+      await emulatorOf(id).store(BigInt(addr), n, BigInt(value));
+      return true;
+    },
+
+    emulatorAddBreakpoint(id, addr) {
+      const emu = emulatorOf(id);
+      emu.breakpoints.add(BigInt(addr).toString());
+      return true;
+    },
+    emulatorRemoveBreakpoint(id, addr) {
+      const emu = emulatorOf(id);
+      return emu.breakpoints.delete(BigInt(addr).toString());
+    },
+    emulatorBreakpoints(id) { return Array.from(emulatorOf(id).breakpoints, (v) => BigInt(v)); },
+    emulatorReset(id) { const emu = emulatorOf(id); emu.reset(); return emulatorState(emu); },
+    emulatorDestroy(id) { return emulators.delete(String(id || '')); },
 
     /* ── 画面を動かす ─────────────────────────────────── */
 
