@@ -28,9 +28,20 @@ const LIBRARIES = [
 ];
 
 function textOf(value) { return typeof value === 'string' ? value : value?.name || value?.library || value?.text || ''; }
+function testPattern(pattern, text) {
+  if (pattern instanceof RegExp) {
+    // RegExp.prototype.test mutates lastIndex for global/sticky expressions.
+    // Clone those expressions so a caller-owned signature remains stateless and
+    // repeated recognition is independent of input order.
+    if (pattern.global || pattern.sticky) return new RegExp(pattern.source, pattern.flags).test(text);
+    return pattern.test(text);
+  }
+  if (typeof pattern === 'string') return text.includes(pattern);
+  return false;
+}
 function hits(values, regexes) {
   const out = [];
-  for (const value of values || []) { const s = textOf(value); if (s && regexes?.some((rx) => rx.test(s))) out.push(s); }
+  for (const value of values || []) { const s = textOf(value); if (s && regexes?.some((rx) => testPattern(rx, s))) out.push(s); }
   return [...new Set(out)].slice(0, 12);
 }
 export function recognizeLibraries(input = {}, signatures = LIBRARIES) {
@@ -40,7 +51,6 @@ export function recognizeLibraries(input = {}, signatures = LIBRARIES) {
     const libraryHits = hits(libraries, sig.libraries), symbolHits = hits(symbols, sig.symbols), stringHits = hits(strings, sig.strings || []);
     const kinds = Number(libraryHits.length > 0) + Number(symbolHits.length > 0) + Number(stringHits.length > 0);
     if (!kinds) continue;
-    // One exact framework/library path is strong evidence of presence, but still inferred.
     let confidence = libraryHits.length ? 0.82 : 0.52;
     if (symbolHits.length) confidence += 0.11;
     if (stringHits.length) confidence += 0.04;
@@ -69,6 +79,7 @@ export function recognizeLibraries(input = {}, signatures = LIBRARIES) {
 }
 
 function clamp(value) { return Math.max(0, Math.min(1, Number(value) || 0)); }
+function nonBlankString(value) { return typeof value === 'string' && value.trim().length > 0; }
 function normalizeSignatureEntry(entry = {}, pack = {}) {
   return {
     architecture: entry.architecture || pack.architecture || 'any',
@@ -124,16 +135,19 @@ export function validateKnowledgePack(pack) {
     if (pack.signatures.length > 1_000_000 || pack.mappings.length > 1_000_000) throw new Error('knowledge pack is unreasonably large');
     for (const entry of [...pack.signatures, ...pack.mappings]) if (!entry || typeof entry !== 'object') throw new Error('knowledge pack entry must be an object');
     for (const entry of pack.signatures) {
-      if (!entry.architecture || typeof entry.architecture !== 'string') throw new Error('signature architecture is required');
+      if (!nonBlankString(entry.architecture)) throw new Error('signature architecture is required');
       if (!(entry.confidence >= 0 && entry.confidence <= 1)) throw new Error('signature confidence must be in [0,1]');
       if (!Array.isArray(entry.symbols)) throw new Error('signature symbols must be an array');
       if (!entry.provenance || typeof entry.provenance !== 'object') throw new Error('signature provenance is required');
-      if (typeof entry.license !== 'string' || !entry.license) throw new Error('signature license is required');
+      if (!nonBlankString(entry.license)) throw new Error('signature license is required');
     }
     for (const entry of pack.mappings) {
+      if (!nonBlankString(entry.identity)) throw new Error('mapping identity is required');
+      if (entry.name != null && !nonBlankString(entry.name)) throw new Error('mapping name must be non-empty when present');
       if (!(entry.confidence >= 0 && entry.confidence <= 1)) throw new Error('mapping confidence must be in [0,1]');
       if (!entry.provenance || typeof entry.provenance !== 'object') throw new Error('mapping provenance is required');
-      if (typeof entry.license !== 'string' || !entry.license) throw new Error('mapping license is required');
+      if (!nonBlankString(entry.license)) throw new Error('mapping license is required');
+      for (const field of ['roles','types','comments','semanticLabels']) if (!Array.isArray(entry[field])) throw new Error(`mapping ${field} must be an array`);
     }
     return { ok:true, pack };
   } catch (error) { return { ok:false, error:error.message }; }
