@@ -46,7 +46,10 @@ export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
   const strtab = one(DT_STRTAB);
   const strsz = one(DT_STRSZ);
   const symtab = one(DT_SYMTAB);
-  const syment = one(DT_SYMENT) || BigInt(bits === 64 ? 24 : 16);
+  const defaultSyment = BigInt(bits === 64 ? 24 : 16);
+  const syment = one(DT_SYMENT) ?? defaultSyment;
+  const symentValid = syment >= defaultSyment;
+  if (!symentValid) markDynamicPartial(image, `DT_SYMENT ${syment} is smaller than ${defaultSyment}`);
   const strOff = strtab == null ? null : vaToOffset(image, strtab);
   const strSize = strsz == null ? 0 : toSafeNumber(strsz);
 
@@ -69,7 +72,7 @@ export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
 
   const relocs = collectDynamicRelocations(r, tags, image, bits);
   let symbolCount = 0;
-  if (symtab != null && syment > 0n) {
+  if (symtab != null && symentValid) {
     symbolCount = symbolCountFromHash(r, one(DT_HASH), image) ||
       symbolCountFromGnuHash(r, one(DT_GNU_HASH), image, bits) ||
       symbolCountFromRelocations(relocs) ||
@@ -139,7 +142,10 @@ function collectDynamicRelocations(r, tags, image, bits) {
     if (va == null || size == null || size <= 0n) return;
     const off = vaToOffset(image, va);
     const n = toSafeNumber(size);
-    const e = toSafeNumber(ent || BigInt(bits === 64 ? (rela ? 24 : 16) : (rela ? 12 : 8)));
+    const minimum = BigInt(bits === 64 ? (rela ? 24 : 16) : (rela ? 12 : 8));
+    const requested = ent ?? minimum;
+    if (requested < minimum) { markDynamicPartial(image, `${source} entry size ${requested} is smaller than ${minimum}`); return; }
+    const e = toSafeNumber(requested);
     if (off == null || n == null || e == null || e <= 0 || off + n > r.length) return;
     const count = Math.min(Math.floor(n / e), 10_000_000);
     for (let i = 0; i < count; i++) {
@@ -163,8 +169,9 @@ function collectDynamicRelocations(r, tags, image, bits) {
   addTable(one(DT_REL), one(DT_RELSZ), one(DT_RELENT), false, 'PT_DYNAMIC-REL');
   const jmprel = one(DT_JMPREL), pltsz = one(DT_PLTRELSZ), pltrel = one(DT_PLTREL);
   if (jmprel != null && pltsz != null) {
-    const rela = pltrel === DT_RELA;
-    addTable(jmprel, pltsz, rela ? one(DT_RELAENT) : one(DT_RELENT), rela, rela ? 'PT_DYNAMIC-JMPREL-RELA' : 'PT_DYNAMIC-JMPREL-REL');
+    if (pltrel === DT_RELA) addTable(jmprel, pltsz, one(DT_RELAENT), true, 'PT_DYNAMIC-JMPREL-RELA');
+    else if (pltrel === DT_REL) addTable(jmprel, pltsz, one(DT_RELENT), false, 'PT_DYNAMIC-JMPREL-REL');
+    else markDynamicPartial(image, `DT_PLTREL has unsupported value ${pltrel == null ? '<missing>' : pltrel}; JMPREL was not decoded`);
   }
   return out;
 }
@@ -244,6 +251,13 @@ function symbolCountFromLayout(symtab, strtab, syment) {
   if (strtab == null || strtab <= symtab || syment <= 0n) return 0;
   const n = (strtab - symtab) / syment;
   return n > 0n && n <= 10_000_000n ? Number(n) : 0;
+}
+
+function markDynamicPartial(image, message) {
+  image.metadata.programDynamicPartial = true;
+  const diagnostics = image.metadata.programDynamicDiagnostics ||= [];
+  if (!diagnostics.includes(message)) diagnostics.push(message);
+  image.warnings.push(`PT_DYNAMIC: ${message}`);
 }
 
 function vaToOffset(image, va) {
