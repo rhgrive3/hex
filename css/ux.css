@@ -111,6 +111,7 @@ button:focus-visible,
   touch-action: pan-y;
   text-align: left;
 }
+.ux-v2 .app.empty-state .empty[hidden] { display: none; }
 
 .ux-v2 .app.empty-state .empty-inner {
   width: min(100%, 680px);
@@ -159,6 +160,7 @@ button:focus-visible,
   color: var(--label-2);
   font-size: 14px;
   line-height: 1.75;
+  white-space: pre-line;
 }
 
 .ux-v2 .app.empty-state .empty-actions {
