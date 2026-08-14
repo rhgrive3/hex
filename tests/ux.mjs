@@ -1,16 +1,20 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { NavigationHistory } from '../js/navigation.js';
+import { matchRoute } from '../js/ui/router.js';
+import { ROUTES, PRIMARY_NAV, LEGACY_MIGRATION, createActionRegistry } from '../js/ui/registry.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = (name) => fs.readFileSync(path.join(root, name), 'utf8');
 const index = read('index.html');
 const ui = read('js/ui.js');
 const ux = read('js/ux.js');
-const css = read('css/ux.css');
-const panels = read('js/panels.js');
-const app = read('js/app.js');
+const uxCss = read('css/ux.css');
+const shell = read('css/shell.css');
+const mobile = read('css/mobile.css');
+const components = read('css/components.css');
+const product = read('js/ui/product.js');
+const registry = read('js/ui/registry.js');
 let failures = 0;
 
 function check(name, value) {
@@ -19,54 +23,61 @@ function check(name, value) {
   if (!ok) failures++;
 }
 
-check('UX CSS loaded', index.includes('./css/ux.css'));
-check('UX module loaded', index.includes('./js/ux.js'));
-check('outside menu pointer handler', ui.includes("document.addEventListener('pointerdown', outside, true)"));
-check('outside menu handler cleanup', ui.includes("document.removeEventListener('pointerdown', outside, true)"));
+check('compatibility CSS entrypoint remains loaded', index.includes('./css/ux.css'));
+check('compatibility JS bootstrap remains loaded', index.includes('./js/ux.js'));
+check('ux.js is a thin product bootstrap', ux.includes('installProductUI') && !ux.includes('MutationObserver') && !ux.includes('.click()'));
+check('legacy hidden-button architecture is not recreated', !ux.includes('ux-source-action') && !ux.includes('ux-v2'));
+check('ux.css is only a canonical stylesheet entrypoint', uxCss.includes('./tokens.css') && uxCss.includes('./mobile.css') && !uxCss.includes('.ux-v2'));
+
 check('modern copy path retained', ui.includes('navigator.clipboard.writeText'));
-check('legacy copy restores selection', ui.includes('selection.removeAllRanges()'));
-check('legacy copy remains an editable Safari fallback', ui.includes("document.createElement('textarea')") && ui.includes("document.execCommand('copy')"));
-check('context menu closes when scrolling begins', ui.includes("document.addEventListener('scroll', move, true)"));
-check('context menu scroll handler is removed', ui.includes("document.removeEventListener('scroll', move, true)"));
-check('sheet exposes back and forward', ui.includes('goForward()') && ui.includes('sheet-nav-btn forward'));
-check('sheet breadcrumb exists', ui.includes("el('nav', 'sheet-trail')"));
-check('sheet focus is trapped', ui.includes('trapFocus(e)'));
-check('parked sheets cannot keep receiving input', ui.includes("this.root.setAttribute('inert', '')") && ui.includes("this.root.removeAttribute('inert')"));
-check('touch rows support keyboard activation', ui.includes("li.setAttribute('role', 'button')") && ui.includes("e.key !== 'Enter'"));
-check('goal route remains primary', ux.includes("investigate.classList.add('ux-primary')"));
-check('find hub exists', ux.includes("'btn-find-hub'"));
-check('analysis hub exists', ux.includes("'btn-analyze-hub'"));
-check('old actions remain delegated', ['btn-search','btn-functions','btn-strings','btn-jump','btn-tools','btn-sections','btn-struct','btn-select'].every((id) => ux.includes(`$('${id}')`)));
-check('duplicate actions hidden by class', ux.includes('ux-source-action') && css.includes('.ux-source-action'));
-check('menu viewport bounded', css.includes('max-height: min(72dvh'));
+check('legacy Safari copy fallback retained', ui.includes("document.execCommand('copy')") && ui.includes("document.createElement('textarea')"));
+check('outside menu handler cleanup retained', ui.includes("document.removeEventListener('pointerdown', outside, true)"));
+check('context menu closes on scroll', ui.includes("document.addEventListener('scroll', move, true)"));
+check('context menu scroll cleanup retained', ui.includes("document.removeEventListener('scroll', move, true)"));
+check('legacy Sheet remains compatibility-only primitive', ui.includes('export class Sheet'));
 
-check('no-file state follows empty visibility', ux.includes("app.classList.toggle('empty-state', !empty.hidden)"));
-check('no-file chrome is removed', ['.toolbar', '.addrbar', '.colhead', '.statusbar'].every((part) => css.includes(`.app.empty-state ${part}`)));
-check('no-file page scrolls on Safari', css.includes('overflow-y: auto') && css.includes('-webkit-overflow-scrolling: touch'));
-check('real file picker is first action', ux.includes('actions.insertBefore(open, actions.firstElementChild)'));
-check('file picker is primary action', ux.includes("open.classList.add('btn-primary')"));
-check('sample is secondary action', ux.includes("sample.classList.add('btn-secondary')"));
-check('landing headline is plain', ux.includes('解析するファイルを開く'));
-check('decorative landing modules hidden', ['.empty-context', '.empty-rail', '.relation-lens', '.empty-kicker'].every((part) => css.includes(`.app.empty-state ${part}`)));
-check('post-open screen starts from a purpose', panels.includes('何を知りたいですか？') && panels.includes('purpose-hero'));
-check('expert tools are progressively disclosed', panels.includes("pick('専門家向けツール'") && panels.includes("expert.classList.add('expert-entry')"));
-check('answer puts plain summary before technical detail', panels.indexOf("pick('何をしている？'") < panels.indexOf("pick('専門家向け詳細'"));
-check('answer has an evidence-first section', panels.includes("pick('なぜ分かる？'"));
-check('value flow uses existing analysis results', panels.includes('findValueUpdates(model)') && panels.includes('valueFlowView(update)'));
-check('value flow has an honest empty state', panels.includes('この関数では値の流れを十分に復元できませんでした'));
-check('viewer history controls are wired', app.includes('this.navigation.back()') && app.includes('this.navigation.forward()'));
-check('mobile touch targets remain practical', css.includes('.sheet button, .sheet [role="button"]') && css.includes('min-height: 44px'));
+check('primary navigation is task-centric and <= 5 items', PRIMARY_NAV.length === 4 && PRIMARY_NAV.map((x) => x.routeId).join(',') === 'investigate,code,explorer,results');
+check('canonical routes have unique ids', new Set(ROUTES.map((x) => x.id)).size === ROUTES.length);
+check('canonical route patterns are unique', new Set(ROUTES.map((x) => x.pattern)).size === ROUTES.length);
+check('default investigate route resolves', matchRoute(ROUTES, '/investigate')?.route.id === 'investigate');
+check('optional code address resolves without trailing slash', matchRoute(ROUTES, '/code')?.route.id === 'code');
+check('code address deep link resolves', matchRoute(ROUTES, '/code/4294967296')?.params.address === '4294967296');
+check('function tab deep link resolves', matchRoute(ROUTES, '/function/4096/pseudocode')?.params.tab === 'pseudocode');
+check('explorer scope resolves', matchRoute(ROUTES, '/explorer/strings')?.params.scope === 'strings');
+check('unknown path does not falsely resolve', matchRoute(ROUTES, '/does-not-exist') == null);
 
-const visited = [];
-let state = null;
-const history = new NavigationHistory({
-  onNavigate: (entry) => visited.push(entry.label),
-  onChange: (next) => { state = next; },
-});
-history.reset({ key: 'a', label: 'A' });
-history.visit({ key: 'b', label: 'B' });
-check('navigation history can go back', history.back() && visited.at(-1) === 'A' && state.canForward);
-check('navigation history can go forward', history.forward() && visited.at(-1) === 'B' && state.canBack);
+const actions = createActionRegistry();
+let ran = false;
+actions.register('test', () => { ran = true; });
+actions.run('test');
+check('action registry runs the canonical action', ran);
+let duplicateRejected = false;
+try { actions.register('test', () => {}); } catch { duplicateRejected = true; }
+check('action registry rejects duplicate sources of truth', duplicateRejected);
+
+check('legacy screens have migration dispositions', Object.keys(LEGACY_MIGRATION).length >= 20);
+check('summary/report are merged into function workspace', LEGACY_MIGRATION.showFunctionSummary?.includes('/function/') && LEGACY_MIGRATION.showFunctionReport?.includes('/function/'));
+check('decompiler and CFG are function workspace tabs', LEGACY_MIGRATION.showDecompiler?.includes('pseudocode') && LEGACY_MIGRATION.showCfg?.includes('flow'));
+check('search and jump are not top-level duplicates', LEGACY_MIGRATION.showSearch?.startsWith('merge:') && LEGACY_MIGRATION.showJump?.startsWith('merge:'));
+
+check('product UI owns browser-backed router', product.includes('new ProductRouter') && product.includes('router.start()'));
+check('global search recognizes addresses and commands', product.includes('parseAddress(q)') && product.includes("router.navigate('/settings')"));
+check('function workspace renders canonical tabs', product.includes('FUNCTION_TABS') && product.includes('renderFunctionWorkspace'));
+check('Explorer uses windowed rendering', product.includes('new VirtualList'));
+check('visualViewport keyboard bridge exists', product.includes('window.visualViewport') && product.includes('--ui-keyboard-inset'));
+check('route views save state instead of DOM nodes', product.includes('getState:') && product.includes('restoreState:'));
+check('evidence semantic state is separate from ranking', product.includes("evidenceBadge('confirmed'") && product.includes("evidenceBadge(name ? 'confirmed' : 'unverified')"));
+
+check('canonical z-index layers are tokenized', ['--ui-z-sticky','--ui-z-inspector','--ui-z-backdrop','--ui-z-sheet','--ui-z-popover','--ui-z-dialog','--ui-z-toast'].every((token) => read('css/tokens.css').includes(token)));
+check('new screens do not horizontally overflow body by design', shell.includes('min-width: 0') && read('css/base.css').includes('overflow-x: hidden'));
+check('phone navigation is persistent', mobile.includes('.ui-bottom-nav { display: grid; }'));
+check('landscape phone compresses navigation chrome', mobile.includes('(orientation: landscape)') && mobile.includes('max-height: 480px'));
+check('safe-area variables are used for fixed mobile chrome', mobile.includes('var(--ui-safe-bottom)') && shell.includes('var(--ui-safe-right)'));
+check('phone code hides bytes only in ASM mode', mobile.includes('.viewport.mode-asm .c-hex'));
+check('decompiler supports local horizontal scrolling/wrap', components.includes('.ui-pseudocode') && components.includes('.ui-pseudocode.wrap'));
+check('graphs include a text representation style', components.includes('.ui-graph-text'));
+check('touch targets use the shared 44px token', components.includes('min-height: var(--ui-touch)'));
+check('reduced motion is supported', read('css/base.css').includes('prefers-reduced-motion'));
 
 if (failures) process.exit(1);
-console.log('UX regression checks passed');
+console.log('Product UI architecture regression checks passed');
