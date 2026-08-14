@@ -14,7 +14,7 @@ function choiceRow({ title, subtitle, selected, onClick }) {
   return row;
 }
 
-function renderSettings(app) {
+function renderSettings(app, router) {
   const s = screen(pick('設定', 'Settings'), {
     id: 'settings',
     subtitle: pick('表示・言語・解析の見せ方をここで直接変更します。', 'Adjust appearance, language and analysis presentation here.'),
@@ -99,7 +99,7 @@ function renderSettings(app) {
       languageRows.append(choiceRow({
         title: label,
         selected: (app.prefs.lang || 'ja') === key,
-        onClick: () => app.setLanguage(key),
+        onClick: () => { app.setLanguage(key); router.navigate('/settings?lang=' + key, { replace: true }); },
       }));
     }
     language.body.append(languageRows);
@@ -368,7 +368,7 @@ function renderLearn(app, router, route) {
 
 export function renderSecondaryRoute(app, router, route) {
   switch (route?.route?.id) {
-    case 'settings': return renderSettings(app);
+    case 'settings': return renderSettings(app, router);
     case 'help': return renderHelp(app, router);
     case 'learn': return renderLearn(app, router, route);
     default: throw new Error('Unsupported secondary route: ' + String(route?.route?.id));

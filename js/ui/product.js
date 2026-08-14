@@ -6,11 +6,12 @@ import {
   h, uiButton, screen, card, emptyState, loadingState, errorState, evidenceBadge,
   tabs, sectionTitle, listRow, VirtualList,
 } from './primitives.js';
+import { renderSecondaryRoute } from './secondary.js';
 import { addrHex, parseAddress } from '../format.js';
 import { pick } from '../i18n.js';
 import { menu, copyText, toast } from '../ui.js';
 import {
-  showSettings, showHelp, showLearn, showFileInfo, showSections, showStructure, showCandidates,
+  showFileInfo, showSections, showStructure, showCandidates,
 } from '../panels.js';
 import {
   currentFunctionAddr, showTools, showRename, showComment, showDebugger,
@@ -691,18 +692,6 @@ function renderResults(app, router) {
   return { root: s.root };
 }
 
-function renderSecondary(app, router, kind) {
-  const config = {
-    settings: [text('設定', 'Settings'), text('表示・言語・解析表示を調整します。', 'Adjust appearance, language and analysis presentation.'), () => showSettings(app)],
-    help: [text('ヘルプ', 'Help'), text('困ったときの入口です。', 'Help and troubleshooting.'), () => showHelp(app)],
-    learn: [text('学ぶ', 'Learn'), text('ARM64や解析の読み方を段階的に学びます。', 'Learn how to read ARM64 and analysis results.'), () => showLearn(app)],
-  }[kind];
-  const s = screen(config[0], { id: kind, subtitle: config[1] });
-  s.body.append(uiButton(text('開く', 'Open'), { cls: 'ui-primary-action', onClick: config[2] }));
-  void router;
-  return { root: s.root };
-}
-
 function renderAdvanced(app) {
   const s = screen(text('高度な機能', 'Advanced / Lab'), { id: 'advanced', subtitle: text('通常の調査では不要な低レベル機能だけをまとめています。', 'Low-level tools that are not required for the normal question-to-answer flow.') });
   const list = h('div', 'ui-list');
@@ -775,7 +764,7 @@ export function installProductUI(app) {
       else if (route.route.id === 'function') view = renderFunctionWorkspace(app, router, route);
       else if (route.route.id === 'results' || route.route.id === 'finding') view = renderResults(app, router);
       else if (route.route.id === 'advanced') view = renderAdvanced(app);
-      else view = renderSecondary(app, router, route.route.id);
+      else view = renderSecondaryRoute(app, router, route);
       routeHost.append(view.root);
       requestAnimationFrame(() => routeHost.focus({ preventScroll: true }));
       const originalGet = view.getState;
