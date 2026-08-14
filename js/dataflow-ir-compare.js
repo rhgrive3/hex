@@ -18,6 +18,56 @@ function originalHasImmediate(model, row) {
   return !!(insn && (insn.ops || []).some((o) => o && o.k === 'imm' && (o.value != null || o.float != null)));
 }
 
+function mask(v, bits) {
+  if (v == null) return null;
+  return BigInt.asUintN(bits || 64, BigInt(v));
+}
+
+/**
+ * Local, proof-only constant evaluator.
+ * ir-core already propagates most arithmetic. The notable gap is MOVK/BFI, the
+ * normal ARM64 way to assemble constants larger than 16 bits. We evaluate that
+ * SSA expression here rather than guessing from the last MOVK fragment.
+ */
+function provenConstant(value, memo = new Map(), active = new Set()) {
+  if (!value) return null;
+  if (value.const != null) return value.const;
+  if (memo.has(value.id)) return memo.get(value.id);
+  if (active.has(value.id)) return null;
+  active.add(value.id);
+
+  let result = null;
+  const def = value.def;
+  if (def && def.op === OP.MOV && def.args && def.args[0]) {
+    result = provenConstant(def.args[0].value, memo, active);
+  } else if (def && def.op === OP.PHI && def.args && def.args.length) {
+    const vals = def.args.map((a) => provenConstant(a && a.value, memo, active));
+    if (vals.length && vals.every((v) => v != null && v === vals[0])) result = vals[0];
+  } else if (def && def.op === OP.BFI && def.args && def.args.length >= 2) {
+    const old = provenConstant(def.args[0].value, memo, active);
+    const inserted = provenConstant(def.args[1].value, memo, active);
+    const lsb = def.extra && Number.isInteger(def.extra.lsb) ? def.extra.lsb : null;
+    const width = def.extra && Number.isInteger(def.extra.width) ? def.extra.width : null;
+    if (old != null && inserted != null && lsb != null && width != null && width > 0 && width <= 64 && lsb >= 0 && lsb + width <= 64) {
+      const fieldMask = ((1n << BigInt(width)) - 1n) << BigInt(lsb);
+      const piece = (inserted & ((1n << BigInt(width)) - 1n)) << BigInt(lsb);
+      result = mask((old & ~fieldMask) | piece, value.bits || 64);
+    }
+  } else if (def && def.op === OP.BFX && def.args && def.args[0]) {
+    const src = provenConstant(def.args[0].value, memo, active);
+    const lsb = def.extra && Number.isInteger(def.extra.lsb) ? def.extra.lsb : null;
+    const width = def.extra && Number.isInteger(def.extra.width) ? def.extra.width : null;
+    if (src != null && lsb != null && width != null && width > 0 && width <= 64) {
+      const low = (src >> BigInt(lsb)) & ((1n << BigInt(width)) - 1n);
+      result = mask(low, value.bits || 64);
+    }
+  }
+
+  active.delete(value.id);
+  memo.set(value.id, result);
+  return result;
+}
+
 /**
  * Return integer thresholds that SSA can prove at compare sites.
  * We deliberately require exactly one constant and one non-constant operand in
@@ -35,13 +85,14 @@ export function findIrConstantComparisons(model, opts) {
     const pair = (inst.args || []).slice(0, 2).filter((a) => a && a.value);
     if (pair.length !== 2) continue;
 
-    const constants = pair.filter((a) => a.value.const != null);
-    const variables = pair.filter((a) => a.value.const == null);
+    const memo = new Map();
+    const evaluated = pair.map((a) => ({ arg: a, constant: provenConstant(a.value, memo) }));
+    const constants = evaluated.filter((x) => x.constant != null);
+    const variables = evaluated.filter((x) => x.constant == null);
     if (constants.length !== 1 || variables.length !== 1) continue;
 
-    const c = constants[0].value.const;
-    const v = variables[0].value;
-    if (c == null) continue;
+    const c = constants[0].constant;
+    const v = variables[0].arg.value;
     out.push({
       row: inst.row,
       address: inst.address,
