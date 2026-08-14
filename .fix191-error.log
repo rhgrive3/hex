@@ -1,0 +1,34 @@
+>>> node tools/apply-fix191.mjs
+issue 191+ source patches applied
+>>> node tools/fix191-adjust.mjs
+>>> node tools/apply-fix265.mjs
+issues 265-282 patches applied
+>>> node tools/fix265-adjust.mjs
+>>> node tools/fix265-tests.mjs
+>>> node tools/apply-fix283.mjs
+issues 283-292 platform patches applied
+>>> node tools/apply-fix296.mjs
+issues 296-302 semantic patches applied
+>>> node tools/apply-fix303.mjs
+issues 303-319 patches applied
+>>> node tools/fix303-adjust.mjs
+>>> node tools/fix322-script.mjs
+>>> node tools/apply-fix322.mjs
+issues 322-333 patches applied
+>>> node tools/fix322-features.mjs
+>>> node tools/fix322-import.mjs
+>>> node tools/fix322-adjust.mjs
+>>> node tools/fix334-script.mjs
+>>> node tools/apply-fix334.mjs
+file:///home/runner/work/hex/hex/tools/apply-fix334.mjs:302
+  s=s.replace(`    if (node.name === 'MADD' && args.length === 3) return \`${args[0]} * ${args[1]} + ${args[2]}\`;`, `    if (node.name === 'MADD' && args.length === 3) { const text=\`${args[0]} * ${args[1]} + ${args[2]}\`; return parentPrec > PRECEDENCE.add ? \`(${text})\` : text; }`);
+                                                                             ^
+
+ReferenceError: args is not defined
+    at file:///home/runner/work/hex/hex/tools/apply-fix334.mjs:302:78
+    at ModuleJob.run (node:internal/modules/esm/module_job:343:25)
+    at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:681:26)
+    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:117:5)
+
+Node.js v22.23.2
+FAILED rc=1: node tools/apply-fix334.mjs
