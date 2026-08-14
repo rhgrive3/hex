@@ -70,5 +70,18 @@ test('constant propagated through a copy remains a threshold', () => {
   eq(rows[0].register, 'x8');
 });
 
+test('MOVZ/MOVK assembled constants remain whole thresholds', () => {
+  const model = modelOf([
+    'movz w9, #0x1234',
+    'movk w9, #0x5678, lsl #16',
+    'cmp w8, w9',
+    'ret',
+  ]);
+  const rows = constantComparisons(model);
+  ok(rows.length === 1, 'assembled comparison recovered');
+  eq(rows[0].value, 0x56781234n, 'MOVK fragment is inserted instead of mistaken for the full constant');
+  eq(rows[0].register, 'x8');
+});
+
 process.stdout.write('\n' + passed + ' passed, ' + failures.length + ' failed\n');
 if (failures.length) process.exit(1);
