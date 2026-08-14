@@ -58,6 +58,6 @@ export function goalEvidenceConfidence(hits) {
 // Repair calibration regression fixture to the actual fitCalibration input contract.
 {
   const p='tests/issue-283-plus.mjs'; let s=fs.readFileSync(p,'utf8');
-  s=s.replace(`    rows.push({score,verified});`, `    rows.push({confidence: score, verified});`);
+  s=s.replace(`    rows.push({score,verified});`, `    rows.push({ probability: score, correct: !!verified });`);
   fs.writeFileSync(p,s);
 }
