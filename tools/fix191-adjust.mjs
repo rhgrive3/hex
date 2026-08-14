@@ -1,7 +1,12 @@
 import fs from 'node:fs';
 const path = 'js/ai/evidence.js';
 let text = fs.readFileSync(path, 'utf8');
-const before = "const bulk = rows.length > 1 || rows.some(({ key }) => key !== 'result');";
-const after = "const bulk = rows.length > 1;";
-if (!text.includes(before)) throw new Error('evidence bulk anchor missing');
-fs.writeFileSync(path, text.replace(before, after));
+const beforeBulk = "const bulk = rows.length > 1 || rows.some(({ key }) => key !== 'result');";
+const afterBulk = "const bulk = rows.length > 1;";
+if (!text.includes(beforeBulk)) throw new Error('evidence bulk anchor missing');
+text = text.replace(beforeBulk, afterBulk);
+const beforeSingle = "(!bulk && key === 'result' && explicitlyVerified)";
+const afterSingle = "(!bulk && explicitlyVerified)";
+if (!text.includes(beforeSingle)) throw new Error('single-row verifier anchor missing');
+text = text.replace(beforeSingle, afterSingle);
+fs.writeFileSync(path, text);
