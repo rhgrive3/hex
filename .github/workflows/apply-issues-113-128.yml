@@ -13,7 +13,9 @@ jobs:
         with: {fetch-depth: 0}
       - uses: actions/setup-node@v4
         with: {node-version: 22}
-      - run: python3 tools/apply-issues-113-128.py
+      - run: |
+          python3 tools/apply-issues-113-128.py
+          python3 tools/postfix-issues-113-128.py
       - name: Focused regression
         run: |
           node tests/issues-113-128.mjs
@@ -23,7 +25,7 @@ jobs:
       - run: node tests/check.mjs
       - name: Commit verified result
         run: |
-          git rm tools/apply-issues-113-128.py .github/workflows/apply-issues-113-128.yml
+          git rm tools/apply-issues-113-128.py tools/postfix-issues-113-128.py .github/workflows/apply-issues-113-128.yml
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add -A
