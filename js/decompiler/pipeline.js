@@ -6,13 +6,58 @@ export { buildExpressionForTesting } from './pipeline-core.js';
 
 function valueOf(arg) { return arg?.value || null; }
 
-/*
- * Memory-SSA can prove that a load reads an earlier store and pipeline-core can
- * therefore replace the load with the stored expression. That proof is about
- * memory identity, not register width. In particular, `str w0` / `ldr w8`
- * round-trips only 32 bits even when the stored source originated as AAPCS64 x0.
- * Re-attach the SSA value width before later signed comparisons/bit tests.
- */
+const INVERSE_CONDITION = {
+  eq:'ne', ne:'eq', hs:'lo', lo:'hs', cs:'cc', cc:'cs',
+  hi:'ls', ls:'hi', ge:'lt', lt:'ge', gt:'le', le:'gt',
+  mi:'pl', pl:'mi', vs:'vc', vc:'vs',
+};
+
+function isZeroValue(value) {
+  return value?.const === 0n || (value?.def?.op === 'const' && (value.def.extra?.value ?? value.const) === 0n);
+}
+
+/* pipeline-core expresses ordinary CMP relations but intentionally leaves raw
+ * N-flag conditions conservative. For the extremely common `cmp value,#0`, MI
+ * and PL are exactly signed `< 0` and `>= 0`, so normalize them to the relational
+ * conditions the semantic AST already models. */
+function relationalSignCondition(inst, cond) {
+  if (cond !== 'mi' && cond !== 'pl') return cond;
+  const flags = valueOf(inst?.args?.[2] || inst?.args?.at?.(-1));
+  const compare = flags?.def;
+  if (compare?.op !== 'cmp' || compare?.sub !== 'sub' || !isZeroValue(valueOf(compare.args?.[1]))) return cond;
+  return cond === 'mi' ? 'lt' : 'ge';
+}
+
+/* CNEG/CINC/CINV are aliases of CSNEG/CSINC/CSINV with the condition inverted. */
+function normalizeConditionalSelectAliases(ir) {
+  const changes = [];
+  const alias = { cneg:'neg', cinc:'inc', cinv:'inv' };
+  for (const inst of ir?.instructions || []) {
+    const replacement = alias[inst?.sub];
+    if (replacement) {
+      let inverse = INVERSE_CONDITION[inst.cond];
+      if (!inverse) continue;
+      inverse = relationalSignCondition(inst, inverse);
+      changes.push({ inst, sub:inst.sub, cond:inst.cond });
+      inst.sub = replacement;
+      inst.cond = inverse;
+      continue;
+    }
+    const relational = relationalSignCondition(inst, inst?.cond);
+    if (relational !== inst?.cond) {
+      changes.push({ inst, sub:inst.sub, cond:inst.cond });
+      inst.cond = relational;
+    }
+  }
+  return () => {
+    for (let i = changes.length - 1; i >= 0; i--) {
+      const { inst, sub, cond } = changes[i];
+      inst.sub = sub;
+      inst.cond = cond;
+    }
+  };
+}
+
 function constrainSemanticValueWidths(result) {
   if (!result?.semanticAst?.values || !result?.ir?.values) return result;
   const irValues = new Map((result.ir.values || []).map((value) => [value.id, value]));
@@ -22,14 +67,8 @@ function constrainSemanticValueWidths(result) {
     const targetBits = Number(value?.bits || 0);
     const sourceBits = Number(node?.bits || 0);
     if (!node || !targetBits || !sourceBits || sourceBits <= targetBits) continue;
-    item.expression = expr.unary(
-      'trunc',
-      node,
-      targetBits,
-      value?.signed ?? node.signed ?? null,
-      node.source,
-      { fromBits: sourceBits, proof: 'SSA value width after Memory-SSA substitution' },
-    );
+    item.expression = expr.unary('trunc', node, targetBits, value?.signed ?? node.signed ?? null, node.source,
+      { fromBits: sourceBits, proof: 'SSA value width after Memory-SSA substitution' });
   }
   return result;
 }
@@ -37,7 +76,6 @@ function constrainSemanticValueWidths(result) {
 function latestReturnStackLoad(ir, ret) {
   const explicit = valueOf(ret?.args?.[0]);
   if (explicit?.def?.op === 'load' && explicit.def.loc?.kind === 'stack') return { value: explicit, load: explicit.def };
-
   let best = null;
   for (const inst of ir?.instructions || []) {
     if (inst?.op !== 'load' || inst?.loc?.kind !== 'stack' || inst?.dst?.reg !== 'x0') continue;
@@ -45,13 +83,10 @@ function latestReturnStackLoad(ir, ret) {
     if (!best || (inst.row ?? -1) > (best.load.row ?? -1)) best = { value: inst.dst, load: inst };
   }
   if (best) return best;
-
-  let value = null;
-  let bestRow = -Infinity;
+  let value = null, bestRow = -Infinity;
   for (const candidate of ir?.values || []) {
     const def = candidate?.def;
-    if (candidate?.reg !== 'x0' || !def) continue;
-    if (ret?.row != null && def.row >= ret.row) continue;
+    if (candidate?.reg !== 'x0' || !def || (ret?.row != null && def.row >= ret.row)) continue;
     if (def.row > bestRow) { value = candidate; bestRow = def.row; }
   }
   return value?.def?.op === 'load' && value.def.loc?.kind === 'stack' ? { value, load:value.def } : null;
@@ -62,26 +97,21 @@ function reanchorExactStackReturn(result) {
   const ret = [...(result.ir.instructions || [])].reverse().find((inst) => inst.op === 'ret');
   const found = ret ? latestReturnStackLoad(result.ir, ret) : null;
   if (!found?.load?.loc?.key) return result;
-
   const output = result.semanticAst.outputs?.find((x) => x.name === 'return');
   if (!output) return result;
   const { value, load } = found;
-  output.expression = expr.load({
-    kind:'stack',
-    key:load.loc.key,
-    name:load.loc.name || `stack_${load.loc.key}`,
-    text:load.loc.name || `stack_${load.loc.key}`,
-  }, value?.bits || Number((load.size || 8) * 8), {
-    address:load.address,
-    row:load.row,
-    ir:load.id,
-    ssaDef:value?.id ?? null,
-    evidence:[{ reason:'SSA return stack load re-anchor' }],
-  }, { signed:load.signed ?? value?.signed ?? null });
+  output.expression = expr.load({ kind:'stack', key:load.loc.key, name:load.loc.name || `stack_${load.loc.key}`, text:load.loc.name || `stack_${load.loc.key}` },
+    value?.bits || Number((load.size || 8) * 8), {
+      address:load.address, row:load.row, ir:load.id, ssaDef:value?.id ?? null,
+      evidence:[{ reason:'SSA return stack load re-anchor' }],
+    }, { signed:load.signed ?? value?.signed ?? null });
   return result;
 }
 
 export function enhanceSemanticDecompilation(result, model, opts = {}) {
-  const core = constrainSemanticValueWidths(enhanceCore(result, model, opts));
+  const restore = normalizeConditionalSelectAliases(result?.ir);
+  let core;
+  try { core = constrainSemanticValueWidths(enhanceCore(result, model, opts)); }
+  finally { restore(); }
   return recoverExactStackReturn(reanchorExactStackReturn(core), opts);
 }
