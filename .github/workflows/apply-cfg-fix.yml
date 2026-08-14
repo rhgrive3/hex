@@ -1,0 +1,35 @@
+name: Apply CFG repair
+
+on:
+  push:
+    paths:
+      - '.github/workflows/apply-cfg-fix.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/cfg-structuring-battlecats
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Apply repair
+        run: python scripts/_apply_cfg_fix.py
+      - name: Core checks
+        run: npm run check
+      - name: Remove temporary applicator
+        run: rm -f scripts/_apply_cfg_fix.py .github/workflows/apply-cfg-fix.yml
+      - name: Commit repair
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'Fix CFG structuring for optimized cleanup paths'
+          git push origin HEAD:fix/cfg-structuring-battlecats
