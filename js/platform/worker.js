@@ -31,8 +31,15 @@ self.onmessage = async (event) => {
     }
     return;
   }
+  const serialized = msg.t === 'open' || msg.t === 'detect';
+  if (serialized) {
+    // Advance the lifecycle epoch when the request arrives, not when its queued
+    // work eventually starts. This makes older queued opens stale immediately
+    // and aborts an old parse that is already consuming iPad CPU/memory.
+    currentEpoch = msg.epoch;
+    for (const entry of active.values()) if (entry.epoch !== currentEpoch) entry.controller.abort();
+  }
   const execute = async () => {
-    if (msg.t === 'open' || msg.t === 'detect') currentEpoch = msg.epoch;
     if (msg.epoch !== currentEpoch) throw new Error('Stale platform request.');
     const controller = new AbortController();
     if (msg.id != null) active.set(msg.id, { epoch: msg.epoch, controller });
@@ -40,7 +47,6 @@ self.onmessage = async (event) => {
     finally { if (msg.id != null) active.delete(msg.id); }
   };
   try {
-    const serialized = msg.t === 'open' || msg.t === 'detect';
     const result = serialized ? (openChain = openChain.then(execute, execute)) : await execute();
     const resolved = await result;
     post({ t: 'ok', id: msg.id, epoch: msg.epoch, result: resolved }, resolved?.__transfer);
