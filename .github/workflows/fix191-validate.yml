@@ -28,6 +28,7 @@ jobs:
           node tools/fix322-adjust.mjs
           node tools/fix334-script.mjs
           node tools/apply-fix334.mjs
+          node tools/fix334-macho.mjs
       - run: |
           for f in js/analyze.js js/backend.js js/auto.js js/rank.js js/fields.js js/pinpoint.js js/verify.js js/names.js js/schema.js js/shapes.js js/program.js js/worker.js js/plugins.js js/sandbox.js js/script.js js/calib.js js/dataflow-ir.js js/dataflow-semantic.js js/report.js js/comprehend.js js/expr.js js/arm64.js js/ir-core.js js/linkage.js js/trace/ring-buffer.js js/apple/objc-runtime.js js/adapters/index.js js/project/index.js js/features.js js/graphview.js js/tools.js js/vendors.js js/emu.js js/architecture/index.js js/ai/interaction/actions.js js/ai/render/normalize.js js/binary/elf.js js/binary/pe-loader.js js/binary/macho.js js/decompiler/passes/manager.js js/decompiler/ast/nodes.js js/decompiler/rewrite/engine.js js/decompiler/rewrite/rules.js js/decompiler/pretty/c.js js/decompiler/pipeline-core.js js/decompiler/types/high-variables.js; do node --check "$f"; done
           node tests/issue-191-plus.mjs
