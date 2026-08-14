@@ -75,9 +75,9 @@ export class ByteSource {
     throw new ByteSourceError('ByteSource.read() is not implemented');
   }
 
-  async readExactly(offset, length) {
+  async readExactly(offset, length, options = {}) {
     const range = this.validateRange(offset, length);
-    const bytes = asBytes(await this.read(range.offset, range.length));
+    const bytes = asBytes(await this.read(range.offset, range.length, options));
     if (bytes.byteLength !== range.length) {
       throw new ByteSourceRangeError(`truncated read: expected ${range.length} bytes, received ${bytes.byteLength}`, {
         offset: range.offset, length: BigInt(range.length), size: this.size,
@@ -132,9 +132,9 @@ export class SubrangeByteSource extends ByteSource {
     this.offset = start;
   }
 
-  async read(offset, length) {
+  async read(offset, length, options = {}) {
     const range = this.validateRange(offset, length);
-    return this.parent.readExactly(this.offset + range.offset, range.length);
+    return this.parent.readExactly(this.offset + range.offset, range.length, options);
   }
 }
 
@@ -144,10 +144,10 @@ class DelegatingByteSource extends ByteSource {
     this.delegate = source;
   }
 
-  async read(offset, length) {
+  async read(offset, length, options = {}) {
     const range = this.validateRange(offset, length);
     // The adapter contract keeps offsets lossless while lengths stay allocation-safe.
-    const bytes = asBytes(await this.delegate.read(range.offset, range.length));
+    const bytes = asBytes(await this.delegate.read(range.offset, range.length, options));
     if (bytes.byteLength !== range.length) {
       throw new ByteSourceRangeError(`truncated read: expected ${range.length} bytes, received ${bytes.byteLength}`, {
         offset: range.offset, length: BigInt(range.length), size: this.size,
@@ -158,7 +158,10 @@ class DelegatingByteSource extends ByteSource {
 }
 
 export function asByteSource(input, options = {}) {
-  if (input instanceof ByteSource) return input;
+  if (input instanceof ByteSource) {
+    const requested = options?.maxReadLength;
+    return requested == null || requested === input.maxReadLength ? input : new DelegatingByteSource(input, options);
+  }
   if (input instanceof Uint8Array || input instanceof ArrayBuffer || ArrayBuffer.isView(input)) return new MemoryByteSource(input, options);
   if (typeof Blob !== 'undefined' && input instanceof Blob) return new BlobByteSource(input, options);
   if (input && (typeof input.size === 'bigint' || Number.isSafeInteger(input.size)) && typeof input.read === 'function') {

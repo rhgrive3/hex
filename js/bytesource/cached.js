@@ -78,7 +78,7 @@ export class CachedByteSource extends ByteSource {
       const generation = this.generation;
       promise = (async () => {
         throwIfCancelled(signal);
-        const bytes = await this.source.readExactly(offset, length);
+        const bytes = await this.source.readExactly(offset, length, { signal });
         throwIfCancelled(signal);
         this.stats.backendBytesRead += bytes.byteLength;
         // clear() is a memory-pressure/file-lifecycle boundary. An older read is
@@ -134,10 +134,10 @@ export class InstrumentedByteSource extends ByteSource {
     this.reads = [];
   }
 
-  async read(offset, length) {
+  async read(offset, length, options = {}) {
     const range = this.validateRange(offset, length);
     this.reads.push({ offset: nonNegativeBigInt(range.offset), length: range.length });
-    return this.source.readExactly(range.offset, range.length);
+    return this.source.readExactly(range.offset, range.length, options);
   }
 
   metrics() {
