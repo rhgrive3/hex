@@ -1,11 +1,29 @@
 const BUILTINS = new Map();
 
+function canonicalArchitectureId(value) {
+  const id=String(value ?? '').trim().toLowerCase();
+  if (!id) throw new TypeError('architecture id is required');
+  return id;
+}
+
+function positiveInteger(value, name, fallback) {
+  if (value == null && fallback != null) return fallback;
+  const n=Number(value);
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n<=0) throw new TypeError(`${name} must be a positive integer`);
+  return n;
+}
+
+function arm64Mnemonic(instruction) { return String(instruction?.mnemonic || '').trim().toLowerCase(); }
+function isArm64Return(op) { return /^(ret|retaa|retab)$/.test(op); }
+function isArm64AuthenticatedCall(op) { return /^blr(?:aa|ab)z?$/.test(op); }
+function isArm64AuthenticatedBranch(op) { return /^br(?:aa|ab)z?$/.test(op); }
+
 export class ArchitectureAdapter {
   constructor(definition) {
     if (!definition?.id) throw new TypeError('architecture id is required');
-    this.id = definition.id;
-    this.instructionAlignment = Math.max(1, Number(definition.instructionAlignment || 1));
-    this.fixedInstructionSize = definition.fixedInstructionSize == null ? null : Number(definition.fixedInstructionSize);
+    this.id = canonicalArchitectureId(definition.id);
+    this.instructionAlignment = positiveInteger(definition.instructionAlignment, 'instructionAlignment', 1);
+    this.fixedInstructionSize = definition.fixedInstructionSize == null ? null : positiveInteger(definition.fixedInstructionSize, 'fixedInstructionSize');
     this.viewerCompatible = !!definition.viewerCompatible;
     this.decode = definition.decode || null;
     this.controlFlow = definition.controlFlow || (() => null);
@@ -17,17 +35,19 @@ export class ArchitectureAdapter {
 
 export function registerArchitectureAdapter(definition, { replace = false } = {}) {
   const adapter = definition instanceof ArchitectureAdapter ? definition : new ArchitectureAdapter(definition);
-  if (BUILTINS.has(adapter.id) && !replace) throw new Error(`architecture already registered: ${adapter.id}`);
-  BUILTINS.set(adapter.id, adapter);
+  const id=canonicalArchitectureId(adapter.id);
+  if (BUILTINS.has(id) && !replace) throw new Error(`architecture already registered: ${id}`);
+  BUILTINS.set(id, adapter);
   return adapter;
 }
 
 export function architectureAdapter(id) {
-  return BUILTINS.get(String(id || '').toLowerCase()) || BUILTINS.get('unknown');
+  const key=String(id || '').trim().toLowerCase();
+  return BUILTINS.get(key) || BUILTINS.get('unknown');
 }
 
 export function architectureCapability(image, engine = {}) {
-  const architecture = String(image?.arch || 'unknown').toLowerCase();
+  const architecture = String(image?.arch || 'unknown').trim().toLowerCase();
   const adapter = architectureAdapter(architecture);
   const engineSupported = !!engine[architecture];
   const arm64Analysis = architecture === 'arm64' && engineSupported;
@@ -50,15 +70,15 @@ export function architectureCapability(image, engine = {}) {
 registerArchitectureAdapter({
   id: 'arm64', instructionAlignment: 4, fixedInstructionSize: 4, viewerCompatible: true,
   controlFlow(instruction) {
-    const op = String(instruction?.mnemonic || '').toLowerCase();
-    if (op === 'ret') return 'return';
-    if (op === 'bl' || op === 'blr') return 'call';
-    if (op === 'b' || op === 'br') return 'branch';
+    const op = arm64Mnemonic(instruction);
+    if (isArm64Return(op)) return 'return';
+    if (op === 'bl' || op === 'blr' || isArm64AuthenticatedCall(op)) return 'call';
+    if (op === 'b' || op === 'br' || isArm64AuthenticatedBranch(op)) return 'branch';
     if (op.startsWith('b.') || op === 'cbz' || op === 'cbnz' || op === 'tbz' || op === 'tbnz') return 'conditional-branch';
     return 'fallthrough';
   },
-  callKind(instruction) { return /^(bl|blr)$/i.test(instruction?.mnemonic || '') ? 'call' : null; },
-  returnKind(instruction) { return /^ret$/i.test(instruction?.mnemonic || '') ? 'return' : null; },
+  callKind(instruction) { const op=arm64Mnemonic(instruction); return op==='bl'||op==='blr'||isArm64AuthenticatedCall(op) ? 'call' : null; },
+  returnKind(instruction) { return isArm64Return(arm64Mnemonic(instruction)) ? 'return' : null; },
 });
 
 registerArchitectureAdapter({
