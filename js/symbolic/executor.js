@@ -1,0 +1,327 @@
+/*
+ * symbolic/executor.js — bounded light symbolic execution over Semantic IR.
+ *
+ * It intentionally stops on unsupported semantic operations. The executor does
+ * not pretend that an unknown instruction preserved registers/memory.
+ */
+import { OP, MK, COND } from '../ir.js';
+
+export const SYM = Object.freeze({ CONST: 'const', SYMBOL: 'symbol', OP: 'op', ITE: 'ite', UNKNOWN: 'unknown' });
+
+export function symbolic(name, meta) { return { kind: SYM.SYMBOL, name: String(name), ...(meta || {}) }; }
+export function symbolicArg(index, name) { return symbolic(name || 'arg' + index, { source: 'argument', index }); }
+export function symbolicField(location, name) {
+  const key = location && (location.key || (location.disp != null ? String(location.disp) : null));
+  return symbolic(name || ('field(' + (key || '?') + ')'), { source: 'field', location });
+}
+
+function c(value) { return { kind: SYM.CONST, value: BigInt(value) }; }
+function unknown(reason, detail) { return { kind: SYM.UNKNOWN, reason, detail: detail || null }; }
+function op(name, ...args) {
+  if (args.every((a) => a && a.kind === SYM.CONST)) {
+    const a = args[0].value, b = args[1] && args[1].value;
+    try {
+      if (name === 'add') return c(a + b);
+      if (name === 'sub') return c(a - b);
+      if (name === 'and') return c(a & b);
+      if (name === 'orr') return c(a | b);
+      if (name === 'eor') return c(a ^ b);
+      if (name === 'shl') return c(a << b);
+      if (name === 'lshr' || name === 'ashr') return c(a >> b);
+      if (name === 'mul') return c(a * b);
+    } catch { /* symbolic fallback */ }
+  }
+  return { kind: SYM.OP, op: name, args };
+}
+
+function cmp(name, a, b) { return { kind: SYM.OP, op: name, args: [a, b], boolean: true }; }
+function negate(condition) {
+  if (!condition) return unknown('missing-condition');
+  const inverse = { '==': '!=', '!=': '==', '<': '>=', '<=': '>', '>': '<=', '>=': '<' }[condition.op];
+  if (condition.kind === SYM.OP && inverse) return { ...condition, op: inverse };
+  return { kind: SYM.OP, op: 'not', args: [condition], boolean: true };
+}
+
+export function expressionText(e) {
+  if (!e) return '?';
+  if (e.kind === SYM.CONST) return e.value.toString();
+  if (e.kind === SYM.SYMBOL) return e.name;
+  if (e.kind === SYM.UNKNOWN) return 'unknown(' + e.reason + ')';
+  if (e.kind === SYM.ITE) return '(' + expressionText(e.condition) + ' ? ' + expressionText(e.then) + ' : ' + expressionText(e.else) + ')';
+  if (e.kind === SYM.OP) {
+    if (e.op === 'not') return 'not ' + expressionText(e.args[0]);
+    if (e.args.length === 1) return e.op + '(' + expressionText(e.args[0]) + ')';
+    return '(' + expressionText(e.args[0]) + ' ' + e.op + ' ' + expressionText(e.args[1]) + ')';
+  }
+  return '?';
+}
+
+function cloneState(s) {
+  return {
+    block: s.block,
+    prevBlock: s.prevBlock,
+    memory: new Map(s.memory),
+    constraints: s.constraints.slice(),
+    branches: s.branches.slice(),
+    touchedFields: s.touchedFields.slice(),
+    visits: new Map(s.visits),
+    steps: s.steps,
+  };
+}
+
+function fieldName(opts, loc) {
+  const configured = opts && opts.symbolicFields;
+  if (configured) {
+    const keys = [loc && loc.key, loc && loc.disp != null ? String(loc.disp) : null].filter(Boolean);
+    for (const k of keys) {
+      if (configured instanceof Map && configured.has(k)) return configured.get(k);
+      if (typeof configured === 'object' && Object.prototype.hasOwnProperty.call(configured, k)) return configured[k];
+    }
+  }
+  return null;
+}
+
+function argExpr(value, opts) {
+  const reg = String(value && value.reg || '');
+  const m = /^x([0-7])$/.exec(reg);
+  if (!m) return unknown('undefined-entry-register', { reg });
+  const index = Number(m[1]);
+  const configured = opts && opts.symbolicArgs;
+  if (configured && typeof configured === 'object') {
+    const v = configured[index] != null ? configured[index] : configured[reg];
+    if (typeof v === 'bigint' || typeof v === 'number') return c(v);
+    if (typeof v === 'string') return symbolicArg(index, v);
+    if (v && typeof v === 'object' && v.kind) return v;
+  }
+  return symbolicArg(index);
+}
+
+function locationKey(loc) {
+  if (!loc) return null;
+  return loc.key || (loc.kind === MK.GLOBAL && loc.address != null ? 'global:' + loc.address.toString(16) : null);
+}
+
+function phiValue(inst, state) {
+  if (!inst || !inst.incoming || !inst.incoming.length) return null;
+  const hit = inst.incoming.find((x) => x.from === state.prevBlock);
+  return hit ? hit.value : (inst.incoming.length === 1 ? inst.incoming[0].value : null);
+}
+
+function evalValue(value, state, ir, opts, memo, active) {
+  if (!value) return unknown('missing-value');
+  const stateKey = value.id + '@' + state.prevBlock + '@' + state.block;
+  if (memo.has(stateKey)) return memo.get(stateKey);
+  if (active.has(value.id)) return unknown('symbolic-cycle', { value: value.id });
+  active.add(value.id);
+  let out = null;
+  if (value.const != null) out = c(value.const);
+  else if (value.kind === 'arg') out = argExpr(value, opts);
+  else if (!value.def) out = unknown('value-without-definition', { value: value.id });
+  else {
+    const d = value.def;
+    if (d.op === OP.MOV && d.args[0]) out = evalValue(d.args[0].value, state, ir, opts, memo, active);
+    else if (d.op === OP.PHI) {
+      const chosen = phiValue(d, state);
+      out = chosen ? evalValue(chosen, state, ir, opts, memo, active) : unknown('ambiguous-phi', { instruction: d.id });
+    } else if (d.op === OP.BIN && d.args.length >= 2 && ['add', 'sub', 'and', 'orr', 'eor', 'shl', 'lshr', 'ashr', 'mul'].includes(d.sub)) {
+      out = op(d.sub,
+        evalValue(d.args[0].value, state, ir, opts, memo, active),
+        evalValue(d.args[1].value, state, ir, opts, memo, active));
+    } else if (d.op === OP.UN && d.args[0] && /^(sxt|uxt|fmov|neg)/.test(d.sub || '')) {
+      const x = evalValue(d.args[0].value, state, ir, opts, memo, active);
+      out = d.sub === 'neg' ? op('sub', c(0n), x) : x;
+    } else if (d.op === OP.LOAD && d.loc) {
+      const key = locationKey(d.loc);
+      if (key && state.memory.has(key)) out = state.memory.get(key);
+      else if (d.loc.kind === MK.UNKNOWN) out = unknown('unknown-load-alias', { instruction: d.id });
+      else out = symbolicField(d.loc, fieldName(opts, d.loc));
+    } else if (d.op === OP.SEL && d.args.length >= 2) {
+      const condition = conditionFromFlags(d, state, ir, opts, memo, active);
+      out = {
+        kind: SYM.ITE,
+        condition,
+        then: evalValue(d.args[0].value, state, ir, opts, memo, active),
+        else: evalValue(d.args[1].value, state, ir, opts, memo, active),
+      };
+    } else if (d.op === OP.ADDR && value.const != null) out = c(value.const);
+    else out = unknown('unsupported-value-op', { op: d.op, sub: d.sub, instruction: d.id });
+  }
+  active.delete(value.id);
+  memo.set(stateKey, out);
+  return out;
+}
+
+function conditionFromCmp(cmpInst, condCode, state, ir, opts, memo, active) {
+  if (!cmpInst || cmpInst.op !== OP.CMP || cmpInst.args.length < 2) return unknown('unsupported-compare');
+  const info = COND[condCode];
+  if (!info || !info.op) return unknown('unsupported-condition', { condition: condCode });
+  const a = evalValue(cmpInst.args[0].value, state, ir, opts, memo, active);
+  const b = evalValue(cmpInst.args[1].value, state, ir, opts, memo, active);
+  return cmp(info.op, a, b);
+}
+
+function conditionFromFlags(inst, state, ir, opts, memo, active) {
+  const flagsArg = (inst.args || []).find((a) => a && a.value && a.value.reg === 'nzcv');
+  const flags = flagsArg && flagsArg.value;
+  return conditionFromCmp(flags && flags.def, inst.cond, state, ir, opts, memo, active);
+}
+
+function branchCondition(inst, state, ir, opts, memo) {
+  const kind = inst.extra && inst.extra.kind;
+  if ((kind === 'cbz' || kind === 'cbnz') && inst.args[0]) {
+    const a = evalValue(inst.args[0].value, state, ir, opts, memo, new Set());
+    return cmp(kind === 'cbz' ? '==' : '!=', a, c(0n));
+  }
+  if (kind === 'tbz' || kind === 'tbnz') {
+    const a = inst.args[0] ? evalValue(inst.args[0].value, state, ir, opts, memo, new Set()) : unknown('missing-test-value');
+    const bit = BigInt(inst.extra && inst.extra.bit != null ? inst.extra.bit : 0);
+    const masked = op('and', op('lshr', a, c(bit)), c(1n));
+    return cmp(kind === 'tbz' ? '==' : '!=', masked, c(0n));
+  }
+  return conditionFromFlags(inst, state, ir, opts, memo, new Set());
+}
+
+function addressBlockMap(ir) {
+  const m = new Map();
+  for (const block of ir.blocks || []) {
+    let first = null;
+    for (const inst of block.insts || []) {
+      if (inst.address != null && (first == null || inst.row < first.row)) first = inst;
+    }
+    if (first && first.address != null) m.set(first.address.toString(), block.index);
+  }
+  return m;
+}
+
+function successorsForBranch(ir, block, inst, addressMap) {
+  const succ = (block && block.succ || []).slice();
+  const target = inst.extra && inst.extra.target != null ? addressMap.get(inst.extra.target.toString()) : null;
+  if (inst.op === OP.BR) return { target: target == null ? null : target, fallthrough: null };
+  if (inst.op !== OP.CBR) return { target: null, fallthrough: null };
+  let fallthrough = succ.find((b) => b !== target);
+  if (target == null && succ.length === 2) {
+    // Without a proven target mapping the branch identity is ambiguous. Stop.
+    return { target: null, fallthrough: null };
+  }
+  if (fallthrough == null && succ.length === 1 && target !== succ[0]) fallthrough = succ[0];
+  return { target, fallthrough: fallthrough == null ? null : fallthrough };
+}
+
+function stopResult(state, reason, inst) {
+  return {
+    status: 'unknown',
+    reason,
+    at: inst ? { row: inst.row, address: inst.address, op: inst.op, sub: inst.sub || null } : null,
+    constraints: state.constraints.slice(),
+    constraintText: state.constraints.map(expressionText),
+    takenBranches: state.branches.slice(),
+    touchedFields: state.touchedFields.slice(),
+    returnValue: null,
+  };
+}
+
+/**
+ * Explore bounded Semantic IR paths.
+ * @returns {{paths:Array, truncated:boolean, engine:string}}
+ */
+export function symbolicExecute(ir, opts) {
+  if (!ir || !ir.blocks || !ir.blocks.length) return { paths: [], truncated: false, engine: 'semantic-ir-symbolic' };
+  const maxPaths = Math.max(1, opts && opts.maxPaths || 16);
+  const maxSteps = Math.max(8, opts && opts.maxSteps || 2000);
+  const maxBranches = Math.max(1, opts && opts.maxBranches || 32);
+  const maxBlockVisits = Math.max(1, opts && opts.maxBlockVisits || 3);
+  const cancelled = opts && opts.isCancelled || (() => false);
+  const deadline = Date.now() + Math.max(10, opts && opts.timeoutMs || 250);
+  const addressMap = addressBlockMap(ir);
+  const queue = [{ block: ir.entry || 0, prevBlock: -1, memory: new Map(), constraints: [], branches: [], touchedFields: [], visits: new Map(), steps: 0 }];
+  const paths = [];
+  let branchCount = 0;
+  let truncated = false;
+
+  while (queue.length && paths.length < maxPaths) {
+    if (cancelled() || Date.now() > deadline) { truncated = true; break; }
+    const state = queue.shift();
+    if (state.steps > maxSteps) { paths.push(stopResult(state, 'step-budget')); continue; }
+    const n = (state.visits.get(state.block) || 0) + 1;
+    state.visits.set(state.block, n);
+    if (n > maxBlockVisits) { paths.push(stopResult(state, 'loop-budget')); continue; }
+    const block = ir.blocks[state.block];
+    if (!block) { paths.push(stopResult(state, 'missing-block')); continue; }
+    const memo = new Map();
+    let transferred = false;
+
+    for (const inst of block.insts || []) {
+      state.steps++;
+      if (state.steps > maxSteps) { paths.push(stopResult(state, 'step-budget', inst)); transferred = true; break; }
+
+      if (inst.op === OP.STORE) {
+        if (!inst.loc || inst.loc.kind === MK.UNKNOWN) {
+          paths.push(stopResult(state, 'unknown-store-alias', inst)); transferred = true; break;
+        }
+        const key = locationKey(inst.loc);
+        const value = inst.args[0] ? evalValue(inst.args[0].value, state, ir, opts, memo, new Set()) : unknown('missing-store-value');
+        if (key) state.memory.set(key, value);
+        if (inst.loc.kind === MK.FIELD || inst.loc.kind === MK.GLOBAL) {
+          state.touchedFields.push({ key, location: inst.loc, row: inst.row, address: inst.address, value, valueText: expressionText(value) });
+        }
+        continue;
+      }
+      if (inst.op === OP.CALL) {
+        paths.push(stopResult(state, 'unsupported-call', inst)); transferred = true; break;
+      }
+      if (inst.op === OP.UNKNOWN || inst.op === OP.CLOBBER) {
+        paths.push(stopResult(state, 'unsupported-instruction', inst)); transferred = true; break;
+      }
+      if (inst.op === OP.RET) {
+        const value = inst.args[0] ? evalValue(inst.args[0].value, state, ir, opts, memo, new Set()) : null;
+        paths.push({
+          status: value && value.kind === SYM.UNKNOWN ? 'unknown' : 'complete',
+          reason: value && value.kind === SYM.UNKNOWN ? value.reason : null,
+          returnValue: value,
+          returnText: expressionText(value),
+          constraints: state.constraints.slice(),
+          constraintText: state.constraints.map(expressionText),
+          takenBranches: state.branches.slice(),
+          touchedFields: state.touchedFields.slice(),
+        });
+        transferred = true;
+        break;
+      }
+      if (inst.op === OP.CBR) {
+        if (++branchCount > maxBranches) { paths.push(stopResult(state, 'branch-budget', inst)); transferred = true; break; }
+        const cond = branchCondition(inst, state, ir, opts, memo);
+        if (cond.kind === SYM.UNKNOWN) { paths.push(stopResult(state, cond.reason, inst)); transferred = true; break; }
+        const next = successorsForBranch(ir, block, inst, addressMap);
+        if (next.target == null || next.fallthrough == null) { paths.push(stopResult(state, 'unresolved-branch-target', inst)); transferred = true; break; }
+        const yes = cloneState(state);
+        yes.prevBlock = state.block; yes.block = next.target;
+        yes.constraints.push(cond);
+        yes.branches.push({ row: inst.row, address: inst.address, taken: true, condition: expressionText(cond) });
+        const no = cloneState(state);
+        no.prevBlock = state.block; no.block = next.fallthrough;
+        no.constraints.push(negate(cond));
+        no.branches.push({ row: inst.row, address: inst.address, taken: false, condition: expressionText(negate(cond)) });
+        queue.push(yes, no);
+        transferred = true;
+        break;
+      }
+      if (inst.op === OP.BR) {
+        const next = successorsForBranch(ir, block, inst, addressMap);
+        if (next.target == null) { paths.push(stopResult(state, 'unresolved-branch-target', inst)); transferred = true; break; }
+        state.prevBlock = state.block; state.block = next.target; queue.push(state);
+        transferred = true;
+        break;
+      }
+    }
+
+    if (!transferred) {
+      const succ = block.succ || [];
+      if (succ.length === 1) {
+        state.prevBlock = state.block; state.block = succ[0]; queue.push(state);
+      } else if (!succ.length) paths.push(stopResult(state, 'fell-off-function'));
+      else paths.push(stopResult(state, 'ambiguous-control-flow'));
+    }
+  }
+  if (queue.length) truncated = true;
+  return { paths, truncated, engine: 'semantic-ir-symbolic' };
+}
