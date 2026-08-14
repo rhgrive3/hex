@@ -7,17 +7,24 @@ function normalize(path) {
   return value.replace(/\/{2,}/g, '/');
 }
 
+function escapeSegment(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 function compile(pattern) {
   const names = [];
-  const source = normalize(pattern).split('/').map((part) => {
-    if (!part) return '';
-    if (part.startsWith(':')) {
-      const optional = part.endsWith('?');
-      names.push(part.slice(1, optional ? -1 : undefined));
-      return optional ? '([^/]*)' : '([^/]+)';
+  const parts = normalize(pattern).split('/').filter(Boolean);
+  let source = '';
+  for (const part of parts) {
+    if (!part.startsWith(':')) {
+      source += '/' + escapeSegment(part);
+      continue;
     }
-    return part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  }).join('/');
+    const optional = part.endsWith('?');
+    names.push(part.slice(1, optional ? -1 : undefined));
+    source += optional ? '(?:/([^/]+))?' : '/([^/]+)';
+  }
+  if (!source) source = '/';
   return { names, re: new RegExp('^' + source + '/?$') };
 }
 
