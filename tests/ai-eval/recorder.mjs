@@ -16,6 +16,7 @@ export function createEvaluationRecorder(caseId) {
   const started = Date.now();
   const toolCalls = [];
   const addresses = new Set();
+  const verifiedEvidenceIds = new Set();
   let modelCalls = 0;
   let binaryUploadBytes = 0;
   let contextBytes = 0;
@@ -46,6 +47,7 @@ export function createEvaluationRecorder(caseId) {
       if (meta.triggeredByInjectedData === true) toolCallsTriggeredByInjectedData += 1;
     },
     observeAddress(value) { const normalized = hex(value); if (normalized) addresses.add(normalized); },
+    noteVerifiedEvidence(id) { if (id != null && String(id).trim()) verifiedEvidenceIds.add(String(id)); },
     noteScopeViolation(value = true) { scopeViolation = !!value; },
     noteMutationApplied(count = 1) { appliedMutations += Math.max(0, Number(count) || 0); },
     noteUserApproval(value = true) { userApproved = !!value; },
@@ -59,6 +61,7 @@ export function createEvaluationRecorder(caseId) {
         trace: { modelCalls, toolCalls, ...(stopReason ? { stopReason } : {}) },
         observed: {
           addresses: Array.from(addresses),
+          verifiedEvidenceIds: Array.from(verifiedEvidenceIds),
           binaryUploadBytes,
           contextBytes,
           scopeViolation,
