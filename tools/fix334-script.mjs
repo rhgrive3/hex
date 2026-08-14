@@ -20,4 +20,9 @@ const neu=`// #338 — ELF PT_LOAD invariants are enforced before mapping.
   if(!s.includes(add)) throw new Error('ELF PT_LOAD anchor missing'); s=s.replace(add,repl); write(p,s);
 }`;
 if(!s.includes(old)) throw new Error('staged ELF block anchor missing');
-fs.writeFileSync(p,s.replace(old,neu));
+s=s.replace(old,neu);
+const strict=`if(!s.includes(oldFn)) throw new Error('function starts anchor missing'); s=s.replace(oldFn,newFn); write(p,s);`;
+const tolerant=`if(s.includes(oldFn)) s=s.replace(oldFn,newFn); write(p,s);`;
+if(!s.includes(strict)) throw new Error('Mach-O function-start guard anchor missing');
+s=s.replace(strict,tolerant);
+fs.writeFileSync(p,s);
