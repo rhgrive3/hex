@@ -1268,13 +1268,28 @@ function recoverStackVariables(ir) {
     const db = b.disp == null ? 0n : b.disp;
     return da < db ? -1 : da > db ? 1 : 0;
   });
-  ordered.forEach((s) => {
+  // Keep the long-standing compact name when it is unambiguous. Identity is
+  // still the full base+epoch+signed-displacement key; only collisions need the
+  // disambiguating display suffix. This preserves existing UI/API names without
+  // reintroducing the +/- displacement collision fixed by #137.
+  const displayGroups = new Map();
+  for (const s of ordered) {
     const disp = s.disp == null ? 0n : s.disp;
     const d = disp < 0n ? -disp : disp;
-    const sign = disp < 0n ? 'm' : 'p';
-    const base = String(s.baseReg || 'stack').replace(/[^A-Za-z0-9_]/g, '_');
-    s.name = `var_${base}_e${s.frameEpoch}_${sign}${d.toString(16)}`;
-  });
+    const legacy = `var_${d.toString(16)}`;
+    if (!displayGroups.has(legacy)) displayGroups.set(legacy, []);
+    displayGroups.get(legacy).push(s);
+  }
+  for (const [legacy, group] of displayGroups) {
+    if (group.length === 1) { group[0].name = legacy; continue; }
+    for (const s of group) {
+      const disp = s.disp == null ? 0n : s.disp;
+      const d = disp < 0n ? -disp : disp;
+      const sign = disp < 0n ? 'm' : 'p';
+      const base = String(s.baseReg || 'stack').replace(/[^A-Za-z0-9_]/g, '_');
+      s.name = `var_${base}_e${s.frameEpoch}_${sign}${d.toString(16)}`;
+    }
+  }
   ir.stackSlots = ordered;
   for (const inst of ir.instructions) {
     if (inst.loc && slots.has(inst.loc.key)) inst.slot = slots.get(inst.loc.key);
