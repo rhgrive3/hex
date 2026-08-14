@@ -6,6 +6,7 @@ const LEGACY_ACTION_IDS = [
   'btn-investigate', 'btn-tools', 'btn-functions',
   'btn-search', 'btn-jump', 'btn-overflow',
   'btn-strings', 'btn-sections', 'btn-struct', 'btn-select',
+  'btn-open-2',
 ];
 
 function retireLegacyActionDom() {
@@ -19,10 +20,38 @@ function retireLegacyActionDom() {
   document.getElementById('nav-history')?.remove();
 }
 
+function migrateRootControls(ui, app) {
+  /* Rebind the surviving visible Open control through the action registry. This also
+     keeps the old browser-regression selector on a real, visible canonical action. */
+  const oldOpen = document.getElementById('btn-open');
+  if (oldOpen) {
+    const open = oldOpen.cloneNode(true); // clone intentionally drops app.js listeners
+    open.id = 'btn-open-2';
+    oldOpen.replaceWith(open);
+    ui.actions.register('file.open', () => document.getElementById('file-input')?.click());
+    open.addEventListener('click', () => ui.actions.run('file.open'));
+  }
+
+  const investigate = document.querySelector('.ui-nav-item[data-route-id="investigate"]');
+  if (investigate) {
+    investigate.id = 'btn-investigate';
+    ui.actions.register('investigate.strategy', () => app.openInvestigate());
+    /* A second tap on the already-active Investigate destination means “start choosing
+       a concrete investigation”. First navigation from another destination only routes. */
+    investigate.addEventListener('click', () => {
+      const alreadyActive = ui.router.current?.route?.id === 'investigate';
+      if (alreadyActive && app.store.get('fileInfo')) {
+        queueMicrotask(() => ui.actions.run('investigate.strategy'));
+      }
+    }, true);
+  }
+}
+
 function boot() {
   if (!window.__app) return;
   retireLegacyActionDom();
-  installProductUI(window.__app);
+  const ui = installProductUI(window.__app);
+  if (ui) migrateRootControls(ui, window.__app);
 }
 
 if (document.readyState === 'loading') {
