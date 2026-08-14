@@ -28,10 +28,16 @@ function addCandidate(map, address, source, term, weight) {
   const key = addr.toString();
   let c = map.get(key);
   if (!c) {
-    c = { address: addr, score: 0, sources: [], terms: new Set(), semantic: null, verification: null };
+    c = {
+      address: addr, score: 0, sources: [], terms: new Set(), semantic: null, verification: null,
+      scoreComponents: { lexicalScore: 0, semanticScore: 0, graphScore: 0, evidenceScore: 0, runtimeScore: 0 },
+    };
     map.set(key, c);
   }
-  c.score += weight || 0;
+  const amount = weight || 0;
+  c.score += amount;
+  if (source === 'caller' || source === 'callee') c.scoreComponents.graphScore += amount;
+  else c.scoreComponents.lexicalScore += amount;
   c.sources.push(source);
   if (term) c.terms.add(term);
 }
@@ -180,12 +186,15 @@ async function analyzeCandidates(query, map, tools, b) {
     }
     c.name = fn.name || null;
     c.summary = fn.summary || null;
-    c.score += lexicalScore(query, c, c.name);
+    const lexical = lexicalScore(query, c, c.name);
+    c.score += lexical;
+    c.scoreComponents.lexicalScore += lexical;
 
     const factsResult = await tools.get_semantic_facts(c.address, { limit: 500 });
     if (expired(b)) break;
     const semantic = semanticScore(query, factsResult.results || []);
     c.score += semantic.score;
+    c.scoreComponents.semanticScore += semantic.score;
     c.semantic = semantic.hits;
     c.evidence = new Set();
     for (const f of semantic.hits) for (const e of f.evidence || []) c.evidence.add(e);
@@ -211,6 +220,7 @@ async function verifyBest(query, ranked, tools, b) {
       c.verification = verified;
       if (verified.verified) {
         c.score += 45;
+        c.scoreComponents.evidenceScore += 45;
         return c;
       }
       continue;
@@ -221,6 +231,7 @@ async function verifyBest(query, ranked, tools, b) {
       if ((thresholds.results || []).length) {
         c.verification = thresholds;
         c.score += 20;
+        c.scoreComponents.evidenceScore += 20;
         return c;
       }
     }
@@ -234,6 +245,13 @@ function publicCandidate(c) {
     address: c.address,
     name: c.name || null,
     score: c.score,
+    lexicalScore: c.scoreComponents && c.scoreComponents.lexicalScore || 0,
+    semanticScore: c.scoreComponents && c.scoreComponents.semanticScore || 0,
+    graphScore: c.scoreComponents && c.scoreComponents.graphScore || 0,
+    evidenceScore: c.scoreComponents && c.scoreComponents.evidenceScore || 0,
+    runtimeScore: c.scoreComponents && c.scoreComponents.runtimeScore || 0,
+    totalScore: c.score,
+    reasons: c.sources.slice(),
     sources: c.sources,
     semanticFacts: c.semantic || [],
     summary: c.summary || null,

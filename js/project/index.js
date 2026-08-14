@@ -42,6 +42,7 @@ export function createHexProject(input = {}) {
       confirmed: list(input.confirmedFindings ?? input.findings?.confirmed, 'findings.confirmed'),
       agentAnswers: list(input.agentAnswers ?? input.findings?.agentAnswers, 'findings.agentAnswers'),
       evidence: list(input.evidence ?? input.findings?.evidence, 'findings.evidence'),
+      investigationSessions: list(input.investigationSessions ?? input.findings?.investigationSessions, 'findings.investigationSessions'),
     },
     analysis: {
       settings: input.analysisSettings || input.analysis?.settings || {},
@@ -124,8 +125,10 @@ export function validateHexProject(project) {
     'user.names': project.user.names, 'user.comments': project.user.comments, 'user.types': project.user.types,
     'user.structs': project.user.structs, 'user.bookmarks': project.user.bookmarks, 'user.patches': project.user.patches,
     'findings.confirmed': project.findings.confirmed, 'findings.agentAnswers': project.findings.agentAnswers,
-    'findings.evidence': project.findings.evidence, 'analysis.cacheReferences': project.analysis.cacheReferences,
+    'findings.evidence': project.findings.evidence, 'findings.investigationSessions': project.findings.investigationSessions,
+    'analysis.cacheReferences': project.analysis.cacheReferences,
   })) list(value, name);
+  project.findings.investigationSessions ||= [];
   return project;
 }
 
