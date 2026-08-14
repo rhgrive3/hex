@@ -28,7 +28,19 @@ export class SymbolIndex {
     /* 自分で付け直した名前。元の名前より優先される（IDA の Rename と同じ）。
        アドレス（10 進の文字列）→ 名前。names.js の NoteStore が中身の持ち主。 */
     this.renames = new Map();
+    /* Rename は元の symbol table に存在しない stripped function にも付く。
+       nearest() を描画ごと O(rename count) にしないため、変更時だけ sorted index を再構築する。 */
+    this._renameAddrs = [];
     this.gen = ++SymbolIndex.gen;  // 解説のキャッシュ鍵に使う
+  }
+
+  _refreshRenameAddrs() {
+    const out = [];
+    for (const key of this.renames.keys()) {
+      try { out.push(BigInt(key)); } catch { /* malformed persisted key: ignore */ }
+    }
+    out.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    this._renameAddrs = out;
   }
 
   /**
@@ -40,6 +52,7 @@ export class SymbolIndex {
     const k = addr.toString();
     if (name) this.renames.set(k, name);
     else this.renames.delete(k);
+    this._refreshRenameAddrs();
     this.gen = ++SymbolIndex.gen;
   }
 
@@ -75,15 +88,49 @@ export class SymbolIndex {
   /**
    * そのアドレスを含む一番近い名前。`+0x1C` のような差も返す。
    * within を超えて離れているものは、無関係とみなして返さない。
+   *
+   * 重要: 関数境界を越えて前の関数の symbol を借りない。
+   * stripped binary では次の関数に exact symbol が無いことが普通なので、これを
+   * 許すと「別関数名+0x...」を現在関数の名前として表示してしまう。
+   * Rename は元 symbol table に無い関数にも付くため、rename index も同時に検索する。
    */
   nearest(addr, within = 0x40000n) {
-    const mine = this.renames.size ? this.renames.get(addr.toString()) : null;
-    if (mine) return { name: mine, addr, kind: SYM_DEFINED, delta: 0n, mine: true };
-    const i = this._floor(this.addrs, addr);
-    if (i < 0) return null;
-    const delta = addr - this.addrs[i];
+    const symbolIndex = this._floor(this.addrs, addr);
+    const renameIndex = this._floor(this._renameAddrs, addr);
+
+    const symbolAddr = symbolIndex >= 0 ? this.addrs[symbolIndex] : null;
+    const renameAddr = renameIndex >= 0 ? this._renameAddrs[renameIndex] : null;
+
+    let base = null;
+    let name = null;
+    let kind = SYM_DEFINED;
+    let mine = false;
+
+    /* Same-address rename wins over the original symbol. */
+    if (renameAddr != null && (symbolAddr == null || renameAddr >= symbolAddr)) {
+      base = renameAddr;
+      name = this.renames.get(renameAddr.toString()) || null;
+      mine = !!name;
+    } else if (symbolAddr != null) {
+      base = symbolAddr;
+      name = this.names[symbolIndex];
+      kind = this.kinds[symbolIndex];
+    }
+
+    if (base == null || !name) return null;
+
+    /* Do not leak a label from a previous function into an unnamed function.
+       Local labels/symbols inside the current function remain valid because their
+       address is >= the current function start. */
+    const fi = this._floor(this.funcs, addr);
+    if (fi >= 0) {
+      const functionStart = this.funcs[fi];
+      if (base < functionStart) return null;
+    }
+
+    const delta = addr - base;
     if (delta > within) return null;
-    return { name: this.names[i], addr: this.addrs[i], kind: this.kinds[i], delta };
+    return { name, addr: base, kind, delta, mine };
   }
 
   /** 表示用: 「_foo」または「_foo+0x1C」。名前がなければ null。 */
