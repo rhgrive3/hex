@@ -1,4 +1,5 @@
 import { architectureCapability } from '../architecture/index.js';
+import { DEPLOYED_CAPSTONE_SUPPORT } from './capstone-capability.js';
 
 function displayFormat(image) {
   if (image.format === 'elf') return `ELF ${image.bits || '?'}-bit`;
@@ -39,7 +40,11 @@ export function regionsForImage(image, prefix = 'p0_') {
 }
 
 export function describeBinaryImage(image, options = {}) {
-  const engine = options.engine || {};
+  const engine = {
+    ...DEPLOYED_CAPSTONE_SUPPORT,
+    ...(options.engine || {}),
+    verified: true,
+  };
   const capability = architectureCapability(image, engine);
   const regions = regionsForImage(image);
   const info = {
