@@ -1,0 +1,79 @@
+name: Validate and open issue 191+ PR
+on:
+  push:
+    branches: [fix-issues-191-plus]
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+jobs:
+  test-and-pr:
+    if: ${{ contains(github.event.head_commit.message, '[run-test-pr-fix191]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Assert all materialized generations
+        run: |
+          set -euo pipefail
+          grep -q 'eventSnapshot' js/trace/ring-buffer.js
+          grep -q 'goalEvidenceConfidence' js/report.js
+          grep -q 'instructionRowForAddress' js/architecture/index.js
+          grep -q 'OBJC_PROPERTY_HELPERS' js/dataflow-semantic.js
+          grep -q 'rangesOverlap' js/emu.js
+          grep -q 'maxOutputMessages' js/sandbox.js
+      - name: Lock browser dependency
+        run: |
+          set -euo pipefail
+          PLAYWRIGHT_VERSION="$(npm view playwright version)"
+          npm install --save-dev --save-exact "playwright@${PLAYWRIGHT_VERSION}"
+          npm audit --audit-level=high
+      - name: Syntax
+        run: |
+          set -euo pipefail
+          find js -name '*.js' -print0 | xargs -0 -n1 node --check
+      - name: Issue regressions
+        run: |
+          set -euo pipefail
+          node tests/issue-191-plus.mjs
+          node tests/issue-265-plus.mjs
+          node tests/issue-283-plus.mjs
+          node tests/issue-303-plus.mjs
+          node tests/issue-322-plus.mjs
+      - name: Existing Node suite
+        run: npm test
+      - name: Browser regressions
+        run: |
+          set -euo pipefail
+          npx playwright install chromium
+          node tests/ui/primitives-regression.mjs
+          node tests/ui/plugin-sandbox-regression.mjs
+      - name: Finalize branch
+        run: |
+          set -euo pipefail
+          rm -f .fix191-validate .fix191-error.log .fix191-final-trigger .fix191-final-error.log .fix191-final-diagnostic-trigger .fix191-materialize-trigger .fix191-test-pr-trigger
+          rm -f .github/workflows/fix-issues-191-diagnostic.yml .github/workflows/fix-issues-191-apply.yml .github/workflows/fix191-validate.yml .github/workflows/fix191-final.yml .github/workflows/fix191-final-diagnostic.yml .github/workflows/fix191-materialize.yml .github/workflows/fix191-test-pr.yml
+          rm -f tools/apply-fix191.mjs tools/apply-fix191-ci.mjs tools/fix191-adjust.mjs
+          rm -f tools/apply-fix265.mjs tools/fix265-adjust.mjs tools/fix265-tests.mjs
+          rm -f tools/apply-fix283.mjs tools/apply-fix296.mjs tools/apply-fix303.mjs tools/fix303-adjust.mjs
+          rm -f tools/apply-fix322.mjs tools/fix322-script.mjs tools/fix322-features.mjs tools/fix322-import.mjs tools/fix322-adjust.mjs
+          rm -f tools/apply-fix334.mjs tools/fix334-script.mjs tools/fix334-macho.mjs tools/fix334-template.mjs
+          rm -f tools/apply-fix352.mjs tools/apply-fix364.mjs
+          git config user.name hex-fix-bot
+          git config user.email actions@users.noreply.github.com
+          git add -A
+          if ! git diff --cached --quiet; then git commit -m 'Finalize issue 191+ fixes [fix191-final]'; fi
+          git push origin HEAD:fix-issues-191-plus
+      - name: Open PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          existing="$(gh pr list --head fix-issues-191-plus --base main --json url --jq '.[0].url // empty')"
+          if [ -n "$existing" ]; then echo "$existing"; exit 0; fi
+          gh pr create --base main --head fix-issues-191-plus \
+            --title 'Fix issue 191+ safety, correctness, and analysis regressions' \
+            --body $'## Summary\nFixes the creation-order issue range assigned from the 191st issue onward, including newly-created issues captured at the final pre-PR scan. Changes cover patch safety, AI evidence/provenance, runtime/session isolation, analysis cache/provenance, ObjC/Swift semantics, CFG/dataflow/Memory SSA correctness, binary loader invariants, decompiler AST/rewrite/pretty correctness, emulator ARM64 semantics, plugin/sandbox limits, project persistence, UI keyboard/focus, and deterministic browser CI.\n\n## Validation\n- issue-specific Node regression suites\n- full npm test\n- Chromium UI regressions\n- node --check over js/**/*.js\n- npm audit --audit-level=high\n\n## Known coordinated migration\nIssue #244 is not auto-closed: reclaiming repository history requires a coordinated history rewrite/LFS migration and force update, which is intentionally excluded while parallel workers are active.'
