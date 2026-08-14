@@ -12,7 +12,8 @@ function asBig(v) { return typeof v === 'bigint' ? v : BigInt(v || 0); }
 
 function normalizeWatch(watch, objectBase) {
   const out = [];
-  for (const w of watch || []) {
+  const list = Array.isArray(watch) ? watch : [];
+  for (const w of list) {
     if (!w) continue;
     const size = Math.max(1, Number(w.size || 8));
     const addr = w.address != null ? asBig(w.address) : objectBase + asBig(w.offset || 0);
@@ -21,11 +22,23 @@ function normalizeWatch(watch, objectBase) {
   return out;
 }
 
+function watchesFromOptions(o, objectBase) {
+  if (Array.isArray(o.watch)) return normalizeWatch(o.watch, objectBase);
+  if (Array.isArray(o.objectMemory)) return normalizeWatch(o.objectMemory, objectBase);
+  if (o.objectMemory && typeof o.objectMemory === 'object') {
+    return Object.keys(o.objectMemory).map((offset) => ({
+      name: null,
+      address: objectBase + BigInt(offset),
+      offset: BigInt(offset),
+      size: 8,
+    }));
+  }
+  return [];
+}
+
 async function snapshot(emu, watch) {
   const out = [];
-  for (const w of watch) {
-    out.push({ ...w, value: await emu.load(w.address, w.size) });
-  }
+  for (const w of watch) out.push({ ...w, value: await emu.load(w.address, w.size) });
   return out;
 }
 
@@ -103,7 +116,7 @@ export class FunctionSandbox {
     }
     for (const bp of o.breakpoints || []) this.emulator.breakpoints.add(asBig(bp).toString());
 
-    this.watch = normalizeWatch(o.watch || o.objectMemory || [], objectBase);
+    this.watch = watchesFromOptions(o, objectBase);
     this.before = await snapshot(this.emulator, this.watch);
     return this.state();
   }
