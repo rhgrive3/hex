@@ -106,5 +106,31 @@
 .product-ui-ready .ui-nav-item[aria-current="page"] { background: var(--ui-accent-soft); color: var(--ui-accent-strong); font-weight: 700; }
 
 @media (min-width: 900px) {
-  .product-ui-ready .ui-route-host { max-width: var(--ui-content); width: 100%; margin-inline: auto; }
+  .product-ui-ready .app {
+    padding-left: 76px;
+  }
+  .product-ui-ready .ui-bottom-nav {
+    display: grid;
+    left: max(8px, var(--ui-safe-left));
+    right: auto;
+    top: 50%;
+    bottom: auto;
+    width: 60px;
+    grid-template-columns: 1fr;
+    transform: translateY(-50%);
+    padding: 4px;
+    border: 1px solid var(--ui-border);
+    border-radius: var(--ui-radius-md);
+    box-shadow: var(--ui-shadow);
+  }
+  .product-ui-ready .ui-nav-item {
+    min-height: 54px;
+    padding-inline: 3px;
+    font-size: 11px;
+  }
+  .product-ui-ready .ui-route-host {
+    max-width: var(--ui-content);
+    width: 100%;
+    margin-inline: auto;
+  }
 }
