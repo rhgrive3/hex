@@ -113,4 +113,6 @@ export class DebugAdapter {
   async evaluate() { this.require('evaluate'); }
   async trace() { this.require('traceFunction'); }
   async watchMemory() { this.require('watchpointMemory'); }
+  async getObjCRuntimeInfo() { this.require('objcRuntime'); }
+  async getSwiftRuntimeInfo() { this.require('swiftRuntime'); }
 }
