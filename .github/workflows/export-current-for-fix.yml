@@ -1,0 +1,31 @@
+name: Export current source for issue remediation
+
+on:
+  push:
+    branches:
+      - fix-all-open-issues-current
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Package source
+        run: |
+          set -euo pipefail
+          tar -czf /tmp/hex-current.tar.gz \
+            --exclude='.git' \
+            --exclude='tests/TsumTsum' \
+            --exclude='tests/TsumTsum(1)' \
+            --exclude='tests/YWP' \
+            --exclude='tests/YWP(1)' \
+            --exclude='tests/battlecats' \
+            .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hex-current
+          path: /tmp/hex-current.tar.gz
+          retention-days: 1
