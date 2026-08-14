@@ -78,6 +78,89 @@ function simplify(expression, engine) {
   return engine.rewrite(expression).root;
 }
 
+const CONDITION_OP = Object.freeze({
+  eq: 'eq', ne: 'ne', hs: 'ge', cs: 'ge', lo: 'lt', cc: 'lt', hi: 'gt', ls: 'le',
+  ge: 'ge', lt: 'lt', gt: 'gt', le: 'le',
+});
+const INVERT_OP = Object.freeze({ eq: 'ne', ne: 'eq', lt: 'ge', le: 'gt', gt: 'le', ge: 'lt' });
+
+function signednessForCondition(cond) {
+  if (['ge', 'lt', 'gt', 'le'].includes(cond)) return true;
+  if (['hs', 'cs', 'lo', 'cc', 'hi', 'ls'].includes(cond)) return false;
+  return null;
+}
+
+function expressionOfValue(value, maps) {
+  return value ? maps.values.get(value.id) || null : null;
+}
+
+/*
+ * IR-core intentionally models flag-setting arithmetic as two semantic ops on the
+ * same source row: BIN followed by CMP/NZCV. During SSA rename the CMP's first
+ * register read can bind to the just-defined BIN destination (e.g. SUBS becomes
+ * `(a-b) ? b`) even though NZCV was produced from the original `a ? b` operands.
+ *
+ * The decompiler repairs only this provable shadow shape. We never alter IR and
+ * never guess across rows: the CMP first value must be defined by a same-row BIN
+ * with the same arithmetic sub-op. This also covers ADDS/ANDS without weakening
+ * general compare semantics.
+ */
+function repairedFlagComparison(flagsValue, cond, maps) {
+  const cmp = flagsValue?.def;
+  if (cmp?.op !== 'cmp') return null;
+
+  let leftValue = valueOf(cmp.args?.[0]);
+  let rightValue = valueOf(cmp.args?.[1]);
+  const shadow = leftValue?.def;
+  if (shadow?.op === 'bin' && shadow.row === cmp.row && shadow.sub === cmp.sub) {
+    const originalLeft = valueOf(shadow.args?.[0]);
+    const originalRight = valueOf(shadow.args?.[1]);
+    if (originalLeft && originalRight) {
+      leftValue = originalLeft;
+      rightValue = originalRight;
+    }
+  }
+
+  const left = expressionOfValue(leftValue, maps);
+  const right = expressionOfValue(rightValue, maps);
+  const op = CONDITION_OP[cond];
+  if (!left || !right || !op) return null;
+  return expr.compare(op, left, right, signednessForCondition(cond), {
+    address: cmp.address,
+    row: cmp.row,
+    ir: cmp.id,
+    ssaUses: [leftValue?.id, rightValue?.id].filter((x) => x != null),
+    evidence: [{ reason: shadow?.row === cmp.row ? 'same-row flag shadow repaired from arithmetic operands' : 'NZCV comparison' }],
+  });
+}
+
+function invertCondition(condition) {
+  if (condition?.kind === 'compare' && INVERT_OP[condition.op]) {
+    return expr.compare(INVERT_OP[condition.op], condition.left, condition.right, condition.compareSigned, condition.source);
+  }
+  return expr.unary('lnot', condition, 1, false, condition?.source);
+}
+
+function materializedFlagCondition(term, maps) {
+  const kind = term?.extra?.kind || term?.sub || '';
+  if (!['tbz', 'tbnz', 'cbz', 'cbnz'].includes(kind)) return null;
+  const tested = valueOf(term.args?.[0]);
+  const select = tested?.def;
+  if (select?.op !== 'sel' || !['set', 'setm'].includes(select.sub)) return null;
+
+  const flagsValue = valueOf(select.args?.at?.(-1));
+  const condition = repairedFlagComparison(flagsValue, select.cond, maps);
+  if (!condition) return null;
+
+  // cset/csetm materialize true as a non-zero value and false as zero. Branches
+  // on non-zero therefore preserve the condition; zero branches invert it.
+  return kind === 'tbz' || kind === 'cbz' ? invertCondition(condition) : condition;
+}
+
+function controlCondition(term, maps, engine) {
+  return simplify(materializedFlagCondition(term, maps) || maps.conditions.get(term.id), engine);
+}
+
 function exactStoreExpression(inst, key, maps) {
   if (inst?.op !== 'store' || inst.loc?.key !== key) return null;
   const value = valueOf(inst.args?.[0]);
@@ -118,16 +201,16 @@ function resolveStackBefore(ir, blockIndex, beforeRow, key, maps, opts, engine, 
 
     const control = controllerForMerge(ir, blockIndex, predecessors, opts);
     if (!control) return null;
-    const condition = simplify(maps.conditions.get(control.term.id), engine);
+    const condition = controlCondition(control.term, maps, engine);
     if (!condition) return null;
     const bits = incoming[0]?.bits || incoming[1]?.bits || 64;
     const signed = incoming[0]?.signed ?? incoming[1]?.signed ?? null;
-    // semanticAst.conditions describes the fallthrough truth predicate used by
-    // structured output, while targetBlock() names the taken machine branch.
-    // Therefore the exact-stack incoming values are intentionally opposite the
-    // machine-edge yes/no indices here. This is source-ground-truth verified by
-    // O0 max/min/clamp fixtures and prevents globally inverted branch joins.
-    return simplify(expr.select(condition, incoming[control.noIndex], incoming[control.yesIndex], bits, signed, {
+
+    // `yesIndex` is the machine branch target (condition true), `noIndex` is the
+    // fallthrough arm. armIndex() handles a direct-to-merge edge by selecting the
+    // controller block's value, so the mapping is valid for both diamonds and
+    // guard-style shapes such as Clang's O0 clamp.
+    return simplify(expr.select(condition, incoming[control.yesIndex], incoming[control.noIndex], bits, signed, {
       address: control.term.address,
       row: control.term.row,
       ir: control.term.id,
