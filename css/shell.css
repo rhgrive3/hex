@@ -17,6 +17,7 @@
   grid-template-columns: minmax(0, 1fr) auto;
   gap: var(--ui-space-2);
   align-items: center;
+  flex: 0 0 auto;
   min-height: 52px;
   padding: 6px max(var(--ui-space-3), var(--ui-safe-right)) 6px max(var(--ui-space-3), var(--ui-safe-left));
   border-bottom: 1px solid var(--ui-border);
@@ -49,6 +50,7 @@
 }
 
 .product-ui-ready .ui-route-host {
+  flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
   overflow: auto;
