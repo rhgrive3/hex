@@ -19,6 +19,7 @@ jobs:
       - name: Apply source fixes
         run: |
           node tools/apply-fix191.mjs
+          node tools/fix191-adjust.mjs
           node tools/apply-fix191-ci.mjs
       - name: Pin browser dependency and lockfile
         run: |
@@ -55,7 +56,7 @@ jobs:
           node tests/ui/primitives-regression.mjs
       - name: Commit tested result
         run: |
-          rm -f tools/apply-fix191.mjs tools/apply-fix191-ci.mjs
+          rm -f tools/apply-fix191.mjs tools/apply-fix191-ci.mjs tools/fix191-adjust.mjs
           rm -f .github/workflows/fix-issues-191-diagnostic.yml .github/workflows/fix-issues-191-apply.yml
           git config user.name 'hex-fix-bot'
           git config user.email 'actions@users.noreply.github.com'
