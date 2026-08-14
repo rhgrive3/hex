@@ -139,42 +139,42 @@ function buildValue(v, state, flags = {}) {
     } else if (d.op === 'phi') {
       const incoming = (d.incoming || []).map((x) => buildValue(x.value, state));
       const unique = new Map(incoming.map((x) => [structuralKey(x), x]));
-      out = unique.size === 1 ? incoming[0] : expr.variable(argumentName(v, state), v.bits || 64, signedFor(state, v), origin(d, v), { phi: true, incoming: incoming });
+      out = unique.size === 1 ? incoming[0] : expr.variable(`local_phi_${v.id}`, v.bits || 64, signedFor(state, v), origin(d, v), { phi: true });
     }
   }
-  if (!out) out = expr.variable(argumentName(v, state), v.bits || 64, signedFor(state, v), origin(d, v), { ssaId: v.id });
+  if (!out) out = expr.variable(argumentName(v, state), v.bits || 64, signedFor(state, v), origin(d, v), { ssaId: v.id, range: v.range ? { ...v.range } : null });
   state.expressionActive.delete(v.id);
   state.expressionMemo.set(memoKey, out);
   return out;
 }
 
-function rewriteTree(root, engine, state) {
-  const pre = recoverArm64ClangIdiom(root);
-  const r = engine.rewrite(pre, { state });
-  let out = recoverArm64ClangIdiom(r.root);
-  const clamp = recognizeClamp(out);
-  if (clamp) out = expr.intrinsic('clamp', [clamp.value, clamp.low, clamp.high], out.bits, out.signed, out.source, { proof: 'nested ordered min/max' });
-  return { root: out, proof: r.proof, stats: r.stats };
-}
-
 function rewriteAll(state, budget) {
-  const engine = new RewriteEngine(DEFAULT_RULES, { maxIterations: budget.maxIterations, nodeBudget: Math.min(4096, budget.nodeBudget), timeBudgetMs: Math.min(18, budget.timeBudgetMs) });
-  const next = new Map(), proof = [];
-  const mergedStats = { iterations:0, applications:0, budgetExceeded:false,elapsedMs:0,byRule:{} };
-  for (const [id, root] of state.expressionMemo) {
-    if (!String(id).endsWith(':v')) continue;
-    const r = rewriteTree(root, engine, state);
-    next.set(Number(String(id).split(':')[0]), r.root); proof.push(...(r.proof || []));
-    for (const [g,v] of Object.entries(r.stats.byRule || {})) mergedStats.byRule[g] = (mergedStats.byRule[g] || 0) + v;
-    for (const k of ['iterations','applications','elapsedMs']) mergedStats[k] += r.stats[k] || 0;
-    mergedStats.budgetExceeded |= !!r.stats.budgetExceeded;
+  const engine = new RewriteEngine(DEFAULT_RULES, { timeBudgetMs: Math.max(4, Math.min(22, budget.timeBudgetMs / 2)), nodeBudget: Math.min(4096, budget.nodeBudget) });
+  state.expressions = new Map();
+  state.rewriteProof = [];
+  state.rewriteStats = { applications: 0, budgetExceeded: false, byRule: {} };
+  for (const v of state.ir.values || []) {
+    let root = buildValue(v, state);
+    root = walkIdiom(root);
+    const r = engine.rewrite(root, state);
+    state.expressions.set(v.id, r.root);
+    state.rewriteProof.push(...r.proof.map((p) => ({ ...p, valueId: v.id })));
+    state.rewriteStats.applications += r.stats.applications;
+    state.rewriteStats.budgetExceeded ||= r.stats.budgetExceeded;
+    for (const [k, n] of Object.entries(r.stats.byRule)) state.rewriteStats.byRule[k] = (state.rewriteStats.byRule[k] || 0) + n;
   }
-  state.expressions = next; state.rewriteProof = proof; state.rewriteStats = mergedStats;
   return state;
 }
 
+function walkIdiom(n) {
+  if (!n) return n;
+  const mapped = mapChildren(n, walkIdiom);
+  return recoverArm64ClangIdiom(mapped);
+}
+
 function reachingRegisterValue(ir, atInst, reg) {
-  let best = null, bestRow = -Infinity;
+  let best = ir.args?.get?.(reg) || null;
+  let bestRow = -Infinity;
   for (const v of ir.values || []) {
     if (v.reg !== reg || !v.def || v.clobbered) continue;
     const d = v.def;
@@ -194,7 +194,7 @@ function semanticFacts(state, result) {
     if (inst.op === 'store') {
       const location = memoryLocation(inst, state), value = valueOf(inst.args?.[0]), expression = expressionFor(value, state);
       const store = { location, lhsText: location.text, expression, source: origin(inst, inst.dst, 'Memory SSA store') };
-      if (expression?.kind === 'intrinsic' && expression.name === 'max' && expression.args_.[1]?.kind === 'const' && expression.args[1].value === 0n && expression.args[0]?.kind === 'binary' && expression.args[0].op === 'sub') {
+      if (expression?.kind === 'intrinsic' && expression.name === 'max' && expression.args?.[1]?.kind === 'const' && expression.args[1].value === 0n && expression.args[0]?.kind === 'binary' && expression.args[0].op === 'sub') {
         store.readModifyWrite = { kind: 'clamp-zero-sub', operand: printExpression(expression.args[0].right) };
       } else if (expression?.kind === 'binary' && expression.op === 'add') store.readModifyWrite = { kind: 'add', operand: printExpression(expression.right) };
       facts.stores.push(store); facts.outputs.push({ name: location.text, type: state.types?.locations?.get?.(inst.loc?.key) || null });
@@ -207,7 +207,7 @@ function semanticFacts(state, result) {
     } else if (inst.op === 'cbr') {
       const kind = inst.extra?.kind || inst.sub || '';
       let e = null;
-      if (kind === 'cbz' || kind === 'cbnz') e = expr.compare(kind === 'cbz7 ? 'eq' : 'ne', expressionFor(valueOf(inst.args?.[0]), state), expr.constant(0, valueOf(inst.args?.[0])?.bits || 64), null, origin(inst));
+      if (kind === 'cbz' || kind === 'cbnz') e = expr.compare(kind === 'cbz' ? 'eq' : 'ne', expressionFor(valueOf(inst.args?.[0]), state), expr.constant(0, valueOf(inst.args?.[0])?.bits || 64), null, origin(inst));
       else if (kind === 'tbz' || kind === 'tbnz') e = expr.compare(kind === 'tbz' ? 'eq' : 'ne', expr.binary('and', expr.binary('lshr', expressionFor(valueOf(inst.args?.[0]), state), expr.constant(inst.extra?.bit ?? 0, 64), valueOf(inst.args?.[0])?.bits || 64, false), expr.constant(1, 64), 64, false), expr.constant(0, 64), false, origin(inst));
       else e = compareFromFlags(valueOf(inst.args?.at?.(-1)), inst.cond || inst.extra?.cond, state);
       facts.conditions.push({ expression: e, text: printExpression(e), row: inst.row, address: inst.address, ir: inst.id });
@@ -256,4 +256,94 @@ function cAstFromLines(result, state) {
 function semanticAstOf(state, facts) {
   return {
     kind: 'SemanticFunction',
-    values: [...state.expressions.entries()].map(([valueId, expression]) => ({ kind: 'SemanticValue',
+    values: [...state.expressions.entries()].map(([valueId, expression]) => ({ kind: 'SemanticValue', valueId, expression, type: state.types?.values?.get?.(valueId) || null, source: expression.source })),
+    stores: facts.stores.map((s) => ({ kind: 'SemanticStore', ...s })),
+    calls: facts.calls.map((c) => ({ kind: 'SemanticCall', ...c })),
+    conditions: facts.conditions.map((c) => ({ kind: 'SemanticCondition', ...c })),
+    inputs: facts.inputs,
+    outputs: facts.outputs,
+  };
+}
+
+function metricsOf(result, state, printed) {
+  const text = printed.text;
+  const exprMetrics = [...state.expressions.values()].map(expressionReadability);
+  return {
+    rawAssemblyFallbacks: (text.match(/__asm\(/g) || []).length,
+    gotos: (text.match(/\bgoto\b/g) || []).length,
+    temporaries: (text.match(/\b(?:v|tmp|call_)\d+\b/g) || []).length,
+    redundantCasts: exprMetrics.reduce((a, x) => a + x.casts, 0),
+    rewrittenExpressions: state.rewriteStats?.applications || 0,
+    rewriteBudgetExceeded: !!state.rewriteStats?.budgetExceeded,
+    structured: result.coverage?.mode === 'structured',
+    sourceMappedNodes: printed.mapping.length,
+    passElapsedMs: state.passElapsedMs || 0,
+  };
+}
+
+export function enhanceSemanticDecompilation(result, model, opts = {}) {
+  if (!result?.semantic || !result.ir) return result;
+  const state = {
+    ir: result.ir, model, opts, types: result.types || null,
+    expressionMemo: new Map(), expressionActive: new Set(),
+    warnings: [],
+  };
+  const manager = new PassManager([
+    { name: 'high-variable-recovery', run(s) { s.highVariables = recoverHighVariables(s.ir, s.types, opts); return s; } },
+    { name: 'prototype-recovery', run(s) { s.prototype = recoverFunctionPrototype(s.ir, s.types, opts); return s; } },
+    { name: 'aggregate-layout-recovery', run(s) { s.aggregateLayouts = recoverAggregateLayouts(s.ir, s.types, opts); return s; } },
+    { name: 'canonical-expression-build', run(s) { for (const v of s.ir.values || []) buildValue(v, s); return s; } },
+    { name: 'semantic-rewrite', run: rewriteAll },
+    { name: 'semantic-facts', run(s) { s.facts = semanticFacts(s, result); return s; } },
+    { name: 'typed-semantic-ast', run(s) { s.semanticAst = semanticAstOf(s, s.facts); return s; } },
+    { name: 'c-ast', run(s) { s.cAst = cAstFromLines(result, s); return s; } },
+    { name: 'pretty-print', run(s) { s.printed = printProgram(s.cAst, { columnWidth: opts.columnWidth || opts.prettyColumnWidth || 88 }); return s; } },
+  ], { timeBudgetMs: Number(opts.decompilerTimeBudgetMs || 50), nodeBudget: Number(opts.decompilerNodeBudget || 12000), maxIterations: Number(opts.decompilerIterationCap || 16) });
+  const advanced = manager.run(state);
+  // Budgets are a degradation boundary, not a validity boundary. If a large function
+  // exhausts the optional pass budget, finish the mandatory representation layers
+  // once without additional fixed-point work so callers always receive a coherent AST.
+  advanced.expressions ||= new Map([...advanced.expressionMemo.entries()]
+    .filter(([key]) => String(key).endsWith(':v'))
+    .map(([key, value]) => [Number(String(key).split(':')[0]), value]));
+  advanced.rewriteProof ||= [];
+  advanced.rewriteStats ||= { iterations: 0, applications: 0, budgetExceeded: true, elapsedMs: 0, byRule: {} };
+  advanced.highVariables ||= recoverHighVariables(advanced.ir, advanced.types, opts);
+  advanced.prototype ||= recoverFunctionPrototype(advanced.ir, advanced.types, opts);
+  advanced.aggregateLayouts ||= recoverAggregateLayouts(advanced.ir, advanced.types, opts);
+  advanced.facts ||= semanticFacts(advanced, result);
+  advanced.semanticAst ||= semanticAstOf(advanced, advanced.facts);
+  advanced.cAst ||= cAstFromLines(result, advanced);
+  advanced.printed ||= printProgram(advanced.cAst, { columnWidth: opts.columnWidth || opts.prettyColumnWidth || 88 });
+  const explanation = explainSemanticFacts(advanced.facts, result.summary);
+  const lines = advanced.cAst.body.map((n) => ({ kind: n.kind, indent: n.indent, text: n.text, row: n.source.rows[0] ?? null, addr: n.source.addresses[0] ?? null, note: null, source: n.source }));
+  return {
+    ...result,
+    lines,
+    pseudocode: advanced.printed.text,
+    semanticAst: advanced.semanticAst,
+    cAst: advanced.cAst,
+    semanticFacts: advanced.facts,
+    sourceMap: advanced.printed.mapping,
+    highVariables: advanced.highVariables,
+    prototype: advanced.prototype,
+    aggregateLayouts: advanced.aggregateLayouts,
+    rewriteProof: advanced.rewriteProof,
+    rewriteStats: advanced.rewriteStats,
+    passMetrics: advanced.passMetrics,
+    summary: explanation.summary,
+    importantInputs: explanation.importantInputs,
+    importantOutputs: explanation.importantOutputs,
+    sideEffects: explanation.sideEffects,
+    conditions: explanation.conditions,
+    evidence: [...(result.evidence || []), ...(advanced.facts?.evidence || [])],
+    warnings: [...new Set([...(result.warnings || []), ...(advanced.warnings || []), ...(advanced.rewriteStats?.budgetExceeded ? ['Decompiler rewrite budget reached; output was conservatively degraded.'] : [])])],
+    metrics: metricsOf(result, advanced, advanced.printed),
+    ctx: { ...(result.ctx || {}), decompilerPipeline: { phases: advanced.passMetrics, degraded: !!advanced.degraded, rewriteStats: advanced.rewriteStats } },
+  };
+}
+
+export function buildExpressionForTesting(value, state) {
+  const s = { expressionMemo: new Map(), expressionActive: new Set(), opts: {}, types: { values: new Map() }, highVariables: null, ...state };
+  return buildValue(value, s);
+}
