@@ -4,6 +4,7 @@ import { GROUP } from '../evidence.js';
 function nowIso() { return new Date().toISOString(); }
 function safeConfidence(value, fallback = 0.5) { const n=Number(value); return Number.isFinite(n) ? Math.max(0,Math.min(1,n)) : fallback; }
 function idPart(value) { return String(value == null ? '' : value).replace(/[^a-zA-Z0-9_.:-]/g,'_').slice(0,160); }
+function sameAddress(a,b) { try { return BigInt(a) === BigInt(b); } catch { return false; } }
 
 export function createRuntimeEvidenceRecord(input = {}) {
   const traceGroup = input.provenanceGroup || `runtime:${idPart(input.sessionId || 'session')}:${idPart(input.experimentId || input.function || 'observation')}:${idPart(input.caseId || 'case')}`;
@@ -12,7 +13,7 @@ export function createRuntimeEvidenceRecord(input = {}) {
     source:'runtime', backend:String(input.backend || 'unknown').slice(0,128), binaryHash:input.binaryHash || null,
     function:input.function == null ? null : input.function, address:input.address == null ? null : input.address,
     input:input.input || null, initialState:input.initialState || null, observedState:input.observedState || null,
-    branchPath:input.branchPath || [], timestamp:input.timestamp || nowIso(), sessionId:input.sessionId || null,
+    branchPath:Array.isArray(input.branchPath) ? input.branchPath.slice(0,4096) : [], timestamp:input.timestamp || nowIso(), sessionId:input.sessionId || null,
     reproducibility:input.reproducibility || { replayable:false, runs:1, consistent:null },
     confidence:safeConfidence(input.confidence), verdict:input.verdict || 'inconclusive', kind:input.kind || 'observation',
     provenance:{ group:GROUP.RUNTIME, observationGroup:traceGroup, independent:false, parent:input.parentEvidenceId || null },
@@ -23,7 +24,7 @@ export function evidenceFromExperiment({ experiment, testCase, observation, comp
   const group = `runtime:${idPart(sessionId || 'session')}:${idPart(experiment.id)}:${idPart(testCase.id)}`;
   return createRuntimeEvidenceRecord({
     backend, binaryHash:binaryHash || experiment.binaryHash, function:experiment.functionAddress, input:testCase.input,
-    initialState:testCase.initialState, observedState:{ returnValue:observation.returnValue, registerDelta:observation.registerDelta, memoryDelta:observation.memoryDelta, stop:observation.stop },
+    initialState:testCase.initialState, observedState:{ returnValue:observation.returnValue, registerDelta:observation.registerDelta, memoryDelta:observation.memoryDelta, memoryAfter:observation.memoryAfter, stop:observation.stop },
     branchPath:observation.branches || [], sessionId, experimentId:experiment.id, caseId:testCase.id, verdict:comparison.status,
     confidence:comparison.status === 'supported' ? 0.8 : comparison.status === 'contradicted' ? 0.9 : 0.35,
     kind:'experiment', provenanceGroup:group, reproducibility:{ replayable:true, runs:1, consistent:null }
@@ -56,7 +57,7 @@ export function compareRuntimeDispatch(staticTargets, runtimeEvent) {
   const observedRaw = runtimeEvent && (runtimeEvent.imp ?? runtimeEvent.witnessTarget ?? runtimeEvent.vtableTarget ?? runtimeEvent.target);
   if (observedRaw == null) return { status:'inconclusive', observed:null, candidates };
   let observed; try { observed = typeof observedRaw === 'bigint' ? observedRaw : BigInt(observedRaw); } catch { return { status:'inconclusive', observed:null, candidates }; }
-  if (!candidates.length) return { status:'supported', observed, candidates, reason:'runtime-target-observed-without-static-candidate' };
+  if (!candidates.length) return { status:'inconclusive', observed, candidates, reason:'runtime-target-observed-without-static-candidate' };
   return candidates.some((c) => c === observed)
     ? { status:'supported', observed, candidates, reason:'runtime-target-matches-static-candidate' }
     : { status:'contradicted', observed, candidates, reason:'runtime-target-not-in-static-candidates' };
@@ -65,16 +66,25 @@ export function compareRuntimeDispatch(staticTargets, runtimeEvent) {
 export function dynamicTypeAnnotation(event, context = {}) {
   if (!event || (!event.dynamicType && !event.className)) return null;
   return {
-    kind:'runtime-type-annotation', candidate:event.dynamicType || event.className, address:event.object || event.address || null,
+    kind:'runtime-type-annotation', candidate:event.dynamicType || event.className, address:event.object ?? event.address ?? null,
     source:'runtime', binaryHash:context.binaryHash || null, sessionId:context.sessionId || null, backend:context.backend || null,
     confidence:safeConfidence(context.confidence,0.85), permanent:false, timestamp:nowIso(),
   };
 }
 
 export function fuseStaticDynamic(staticCandidate, runtimeEvidence = []) {
-  const evidence = runtimeEvidence.filter(Boolean);
-  const groups = new Map();
+  const candidateHash = staticCandidate && staticCandidate.binaryHash || null;
+  const candidateFunction = staticCandidate && staticCandidate.functionAddress != null ? staticCandidate.functionAddress : null;
+  const evidence = runtimeEvidence.filter((item) => item && (item.source === 'runtime' || item.provenance && item.provenance.group === GROUP.RUNTIME));
+  const compatible = [];
+  let ignoredEvidence = 0;
   for (const item of evidence) {
+    if (candidateHash && item.binaryHash !== candidateHash) { ignoredEvidence++; continue; }
+    if (candidateFunction != null && item.function != null && !sameAddress(candidateFunction,item.function)) { ignoredEvidence++; continue; }
+    compatible.push(item);
+  }
+  const groups = new Map();
+  for (const item of compatible) {
     const group = item.provenance && (item.provenance.observationGroup || item.provenance.group) || item.id || Symbol('evidence');
     if (!groups.has(group)) groups.set(group,item);
   }
@@ -85,7 +95,7 @@ export function fuseStaticDynamic(staticCandidate, runtimeEvidence = []) {
   let confidence = base; let status = 'inconclusive';
   if (contradictions) { confidence = Math.max(0.02, base * Math.pow(0.35,contradictions)); status='contradicted'; }
   else if (support) { confidence = Math.min(0.98, 1 - (1-base) * Math.pow(0.55,support)); status='supported'; }
-  return { candidate:staticCandidate, status, confidence, runtimeGroups:independent.length, support, contradictions, evidence:independent.map((e) => e.id) };
+  return { candidate:staticCandidate, status, confidence, runtimeGroups:independent.length, support, contradictions, ignoredEvidence, evidence:independent.map((e) => e.id) };
 }
 
 export function createRuntimeAgentTools(platform) {
