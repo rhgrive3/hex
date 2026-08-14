@@ -191,7 +191,7 @@ export class FieldIndex {
           size: via.field.size,
           type: via.field.type,
           exact: true,
-          certain: access.base === 'x0' || className === via.className,
+          certain: access.self === true || access.base === 'x0' || className === via.className,
           viaRegister: access.base,
           viaOffsetVar: true,
         };
@@ -216,7 +216,7 @@ export class FieldIndex {
       type: hit.field.type,
       exact: hit.exact,
       // self そのものだと確定できるのは x0 のときだけ。他は「その可能性がある」。
-      certain: access.base === 'x0',
+      certain: access.self === true || access.base === 'x0',
       viaRegister: access.base,
     };
   }
