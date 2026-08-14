@@ -1,4 +1,9 @@
-/* Conservative switch/jump-table structuring. Verified descriptors only. */
+/*
+ * Conservative switch/jump-table structuring.
+ *
+ * A jump table is only rendered as switch when an upstream parser provides a
+ * verified descriptor. Unknown indirect branches are never guessed into cases.
+ */
 
 function hex(v) { return BigInt(v).toString(16).toUpperCase(); }
 function labelForAddress(addr) { return `loc_${hex(addr)}`; }
@@ -7,7 +12,9 @@ function textOf(lines) { return (lines || []).map((l) => `${'    '.repeat(Math.m
 function addressForBlock(result, model, opts, block) {
   const b = result?.ir?.blocks?.[Number(block)];
   if (!b) return null;
-  return model?.instructions?.find((i) => i.row === b.startRow)?.address ?? opts.addrOfRow?.(b.startRow) ?? null;
+  return model?.instructions?.find((i) => i.row === b.startRow)?.address
+    ?? opts.addrOfRow?.(b.startRow)
+    ?? null;
 }
 
 function normalizedCase(c, result, model, opts) {
@@ -16,91 +23,87 @@ function normalizedCase(c, result, model, opts) {
   if (address == null && c.block != null) address = addressForBlock(result, model, opts, c.block);
   if (address == null) return null;
   try { address = BigInt(address); } catch { return null; }
-  return { value:c.value, address, label:labelForAddress(address) };
+  return { value: c.value, address, label: labelForAddress(address) };
+}
+
+function labelSet(lines) {
+  const out = new Set();
+  for (const l of lines || []) {
+    const m = String(l?.text || '').match(/^\s*(loc_[0-9A-Fa-f]+):\s*$/);
+    if (m) out.add(m[1].toUpperCase());
+  }
+  return out;
 }
 
 function insertionIndex(lines, row) {
   let i = lines.findIndex((l) => l?.row === row && /__asm\(["']br\s/i.test(l.text || ''));
-  if (i >= 0) return { start:i, end:i + 1, indent:lines[i].indent || 1 };
+  if (i >= 0) return { start: i, end: i + 1, indent: lines[i].indent || 1 };
   let last = -1;
-  for (let n = 0; n < lines.length; n++) { const r = lines[n]?.row; if (r != null && r <= row) last = n; }
+  for (let n = 0; n < lines.length; n++) {
+    const r = lines[n]?.row;
+    if (r != null && r <= row) last = n;
+  }
   if (last < 0) return null;
   const next = lines[last + 1];
   const indent = next?.kind === 'label' ? (next.indent || 1) + 1 : (lines[last].indent || 1);
-  return { start:last + 1, end:last + 1, indent };
+  return { start: last + 1, end: last + 1, indent };
 }
 
 function caseLiteral(v) {
   if (typeof v === 'bigint') return v.toString();
-  if (typeof v === 'number' && Number.isSafeInteger(v)) return String(v);
+  if (typeof v === 'number' && Number.isFinite(v)) return String(v);
   if (typeof v === 'string' && /^-?(?:0x[0-9a-f]+|\d+)$/i.test(v.trim())) return v.trim();
   return null;
 }
 
-function caseIdentity(literal) {
-  try { return `n:${BigInt(literal).toString()}`; } catch { return null; }
+function rowForAddress(model, address) {
+  const a = BigInt(address).toString();
+  const insn = (model?.instructions || []).find((i) => {
+    try { return i.address != null && BigInt(i.address).toString() === a; } catch { return false; }
+  });
+  return insn?.row ?? null;
 }
 
-function targetIndex(result, model) {
-  const labels = new Set();
-  for (const l of result.lines || []) {
-    const m = String(l?.text || '').match(/^\s*(loc_[0-9A-Fa-f]+):\s*$/);
-    if (m) labels.add(m[1].toUpperCase());
-  }
-  const rows = new Map();
-  for (const i of model?.instructions || []) {
-    if (i?.address == null || i?.row == null) continue;
-    try { rows.set(BigInt(i.address).toString(), i.row); } catch { /* malformed instruction address */ }
-  }
-  return { labels, rows };
-}
+/**
+ * An indirect target can be absent from the ordinary reachable CFG even though
+ * a verified jump-table descriptor proves it is a case entry. In that one
+ * situation we may materialize the label, but only when the target address is
+ * also an exact instruction address in the current function. This never turns
+ * an arbitrary BR target into a case.
+ */
+function ensureVerifiedTargetLabel(result, model, address) {
+  const label = labelForAddress(address);
+  if (labelSet(result.lines).has(label.toUpperCase())) return true;
+  const row = rowForAddress(model, address);
+  if (row == null) return false;
 
-function materializeVerifiedLabels(result, index, addresses) {
-  const missing = [];
-  for (const address of addresses) {
-    const label = labelForAddress(address);
-    if (index.labels.has(label.toUpperCase())) continue;
-    const row = index.rows.get(BigInt(address).toString());
-    if (row == null) return false;
-    missing.push({ address:BigInt(address), label, row });
+  let at = result.lines.findIndex((l) => l?.row != null && l.row >= row && l.kind !== 'sig');
+  if (at < 0) {
+    at = result.lines.findIndex((l) => l?.kind === 'ctrl' && l.text === '}');
+    if (at < 0) return false;
   }
-  if (!missing.length) return true;
-
-  const targets = [...missing].sort((a,b) => a.row - b.row);
-  const placements = [];
-  let ti = 0;
-  for (let li = 0; li < result.lines.length && ti < targets.length; li++) {
-    const row = result.lines[li]?.row;
-    if (row == null) continue;
-    while (ti < targets.length && targets[ti].row <= row) { placements.push({ ...targets[ti++], at:li }); }
-  }
-  let closing = result.lines.findIndex((l) => l?.kind === 'ctrl' && l.text === '}');
-  if (closing < 0) return false;
-  while (ti < targets.length) placements.push({ ...targets[ti++], at:closing });
-
-  placements.sort((a,b) => b.at - a.at || b.row - a.row);
-  for (const item of placements) {
-    const nearby = result.lines[item.at];
-    const indent = nearby?.kind === 'label' ? (nearby.indent || 1) : Math.max(1, nearby?.indent || 1);
-    result.lines.splice(item.at, 0, { kind:'label', indent, text:`${item.label}:`, row:item.row, addr:item.address, note:null });
-    index.labels.add(item.label.toUpperCase());
-  }
+  const nearby = result.lines[at];
+  const indent = nearby?.kind === 'label' ? (nearby.indent || 1) : Math.max(1, (nearby?.indent || 1) - (nearby?.kind === 'stmt' ? 0 : 0));
+  result.lines.splice(at, 0, { kind: 'label', indent, text: `${label}:`, row, addr: BigInt(address), note: null });
   return true;
 }
 
+/**
+ * Upgrade verified switch descriptors to source-like control flow while
+ * retaining goto targets. Accepted descriptor fields:
+ *   {row, expr|reg, cases:[{value,address|target|block}], defaultAddress|defaultTarget|defaultBlock}
+ */
 export function structureKnownSwitches(result, model, opts = {}) {
   if (!result || !Array.isArray(result.lines)) return result;
   const descriptors = opts.switches || opts.jumpTables || model?.switches || model?.jumpTables || [];
   if (!Array.isArray(descriptors) || !descriptors.length) return result;
-  const index = targetIndex(result, model);
 
   for (const sw of descriptors) {
     if (!sw || sw.row == null || !Array.isArray(sw.cases) || sw.cases.length < 2) continue;
     const cases = sw.cases.map((c) => normalizedCase(c, result, model, opts));
     if (cases.some((c) => !c)) continue;
     const values = cases.map((c) => caseLiteral(c.value));
-    const identities = values.map(caseIdentity);
-    if (values.some((v) => v == null) || identities.some((v) => v == null) || new Set(identities).size !== identities.length) continue;
+    if (values.some((v) => v == null) || new Set(values).size !== values.length) continue;
 
     let defaultAddress = sw.defaultAddress ?? sw.defaultTarget ?? null;
     if (defaultAddress == null && sw.defaultBlock != null) defaultAddress = addressForBlock(result, model, opts, sw.defaultBlock);
@@ -108,7 +111,8 @@ export function structureKnownSwitches(result, model, opts = {}) {
 
     const allTargets = cases.map((c) => c.address);
     if (defaultAddress != null) allTargets.push(defaultAddress);
-    if (!materializeVerifiedLabels(result, index, allTargets)) {
+    const targetLabelsProven = allTargets.every((address) => ensureVerifiedTargetLabel(result, model, address));
+    if (!targetLabelsProven) {
       result.warnings = [...(result.warnings || []), `Switch at row ${sw.row} was not structured because one or more case targets are not exact instruction addresses.`];
       continue;
     }
@@ -116,14 +120,22 @@ export function structureKnownSwitches(result, model, opts = {}) {
     const at = insertionIndex(result.lines, sw.row);
     if (!at) continue;
     const expr = String(sw.expr || sw.reg || 'switch_value');
-    const repl = [{ kind:'ctrl', indent:at.indent, text:`switch (${expr}) {`, row:sw.row, addr:null, note:null }];
-    for (let i = 0; i < cases.length; i++) repl.push({ kind:'ctrl', indent:at.indent + 1, text:`case ${values[i]}: goto ${cases[i].label};`, row:sw.row, addr:cases[i].address, note:null });
-    if (defaultAddress != null) repl.push({ kind:'ctrl', indent:at.indent + 1, text:`default: goto ${labelForAddress(defaultAddress)};`, row:sw.row, addr:defaultAddress, note:null });
-    repl.push({ kind:'ctrl', indent:at.indent, text:'}', row:sw.row, addr:null, note:null });
+    const repl = [{ kind: 'ctrl', indent: at.indent, text: `switch (${expr}) {`, row: sw.row, addr: null, note: null }];
+    for (let i = 0; i < cases.length; i++) {
+      repl.push({ kind: 'ctrl', indent: at.indent + 1, text: `case ${values[i]}: goto ${cases[i].label};`, row: sw.row, addr: cases[i].address, note: null });
+    }
+    if (defaultAddress != null) {
+      repl.push({ kind: 'ctrl', indent: at.indent + 1, text: `default: goto ${labelForAddress(defaultAddress)};`, row: sw.row, addr: defaultAddress, note: null });
+    }
+    repl.push({ kind: 'ctrl', indent: at.indent, text: '}', row: sw.row, addr: null, note: null });
     result.lines.splice(at.start, at.end - at.start, ...repl);
-    result.evidence = [...(result.evidence || []), { row:sw.row, address:sw.address ?? null, op:'switch', reason:'verified jump-table/switch descriptor', cases:cases.map((c,i) => ({ value:values[i], target:c.address })) }];
+    result.evidence = [...(result.evidence || []), {
+      row: sw.row, address: sw.address ?? null, op: 'switch',
+      reason: 'verified jump-table/switch descriptor',
+      cases: cases.map((c, i) => ({ value: values[i], target: c.address })),
+    }];
     result.pseudocode = textOf(result.lines);
-    result.ctx = { ...(result.ctx || {}), structuredSwitches:(result.ctx?.structuredSwitches || 0) + 1 };
+    result.ctx = { ...(result.ctx || {}), structuredSwitches: (result.ctx?.structuredSwitches || 0) + 1 };
   }
   return result;
 }
