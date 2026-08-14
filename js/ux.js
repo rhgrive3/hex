@@ -1,5 +1,6 @@
 /* Compatibility bootstrap only. Canonical product UI lives under js/ui/*. */
 import { installProductUI } from './ui/product.js';
+import { closeMenu } from './ui.js';
 
 const LEGACY_ACTION_IDS = [
   'btn-help', 'btn-more',
@@ -8,6 +9,26 @@ const LEGACY_ACTION_IDS = [
   'btn-strings', 'btn-sections', 'btn-struct', 'btn-select',
   'btn-open-2',
 ];
+
+/*
+ * Menu positioning listens to resize/orientation/VisualViewport events while a menu is
+ * open. Those event targets are Window/VisualViewport rather than DOM Nodes, so the
+ * legacy menu dismissal path must not reach Node.contains() with them. Register this
+ * guard before any menu is opened: it closes and unregisters the transient menu's own
+ * listeners first, which also matches the intended mobile UX (orientation/keyboard
+ * geometry changes always dismiss context menus).
+ */
+function installTransientMenuViewportGuard() {
+  const dismiss = () => closeMenu();
+  window.addEventListener('resize', dismiss, { passive: true });
+  window.addEventListener('orientationchange', dismiss, { passive: true });
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', dismiss, { passive: true });
+    window.visualViewport.addEventListener('scroll', dismiss, { passive: true });
+  }
+}
+
+installTransientMenuViewportGuard();
 
 function retireLegacyActionDom() {
   /* app.js has already bound its compatibility handlers by the time this module boots.
