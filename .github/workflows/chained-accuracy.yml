@@ -1,0 +1,39 @@
+name: chained-fixups-accuracy
+
+on:
+  push:
+    branches: [codex/chained-fixups-accuracy]
+  workflow_dispatch:
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: npm run check
+
+  accuracy:
+    needs: unit
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [battlecats, YWP, TsumTsum]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install independent oracle dependencies
+        run: python -m pip install --disable-pip-version-check lief capstone
+      - name: Build independent oracle
+        run: python tests/oracle.py tests/${{ matrix.target }} tests/oracle.${{ matrix.target }}.json.gz
+      - name: Run measured accuracy suite
+        run: node --max-old-space-size=8000 tests/accuracy.mjs --target=tests/${{ matrix.target }} --oracle=tests/oracle.${{ matrix.target }}.json.gz
