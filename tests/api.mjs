@@ -39,6 +39,7 @@ process.stdout.write(`API classification: ${passed} regressions ok\n`);
 // changing package.json or the shared CI workflow.
 await import('./decompile-cfg.mjs');
 await import('./decompiler-semantic.mjs');
+await import('./decompiler-switch.mjs');
 await import('./objc-runtime.mjs');
 await import('./objc-metadata.mjs');
 await import('./swift-runtime.mjs');
