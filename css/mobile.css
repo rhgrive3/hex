@@ -90,9 +90,9 @@
   .product-ui-ready .titlebar { min-height: 36px; }
   .product-ui-ready .titlebar .tb-title,
   .product-ui-ready .titlebar .brand-lockup { display: none; }
-  .product-ui-ready .ui-product-chrome { min-height: 38px; padding-block: 1px; }
-  .product-ui-ready .ui-global-command { min-height: 36px; }
-  .product-ui-ready .ui-more-button { min-height: 36px; min-width: 40px; }
+  .product-ui-ready .ui-product-chrome { min-height: var(--ui-touch); padding-block: 0; }
+  .product-ui-ready .ui-global-command { min-height: var(--ui-touch); }
+  .product-ui-ready .ui-more-button { min-height: var(--ui-touch); min-width: var(--ui-touch); }
   .product-ui-ready .ui-bottom-nav {
     left: auto;
     top: calc(var(--ui-safe-top) + 36px);
@@ -104,7 +104,7 @@
     border-left: 1px solid var(--ui-border);
     padding: 3px max(3px, var(--ui-safe-right)) 3px 3px;
   }
-  .product-ui-ready .ui-nav-item { min-height: 40px; font-size: 10px; }
+  .product-ui-ready .ui-nav-item { min-height: var(--ui-touch); font-size: 10px; }
   .product-ui-ready .ui-route-host { padding-top: var(--ui-space-2); padding-right: calc(72px + var(--ui-safe-right)); padding-bottom: var(--ui-space-2); }
   .product-ui-ready .ui-code-route .statusbar { padding-bottom: 0; padding-right: 70px; }
   .product-ui-ready .ui-code-route .viewwrap { margin-right: 66px; }
