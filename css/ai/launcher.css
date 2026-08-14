@@ -1,0 +1,78 @@
+/* AI launcher — the assistant's entire footprint while closed. */
+
+.ai-launcher {
+  position: fixed;
+  right: max(var(--ui-space-4), var(--ui-safe-right));
+  bottom: calc(var(--ui-safe-bottom) + var(--ai-launcher-offset, 16px));
+  z-index: var(--ui-z-inspector);
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  padding: 0;
+  border: 1px solid var(--ui-border);
+  border-radius: 14px;
+  background: var(--ui-surface);
+  color: var(--ui-accent-strong);
+  box-shadow: var(--ui-shadow);
+  cursor: pointer;
+  transition: transform 160ms ease, background-color 160ms ease, border-color 160ms ease;
+}
+
+.ai-launcher:hover { background: var(--ui-surface-2); }
+.ai-launcher:active { transform: translateY(1px); }
+.ai-launcher.open { background: var(--ui-accent-soft); border-color: var(--ui-accent); }
+
+.ai-launcher-mark { width: 26px; height: 26px; }
+
+/* Working: a quiet ring, never a colour flash. */
+.ai-launcher[data-state="running"]::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border: 2px solid color-mix(in srgb, var(--ui-accent) 55%, transparent);
+  border-top-color: transparent;
+  border-radius: 17px;
+  animation: ai-launcher-spin 1.1s linear infinite;
+}
+
+@keyframes ai-launcher-spin { to { transform: rotate(1turn); } }
+
+/* Unread: a counted dot, so "something happened" is readable without colour. */
+.ai-launcher-badge {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  min-width: 18px;
+  height: 18px;
+  display: none;
+  place-items: center;
+  padding: 0 4px;
+  border-radius: 9px;
+  background: var(--ui-accent);
+  color: var(--ui-surface);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+.ai-launcher[data-unread]:not([data-unread=""]) .ai-launcher-badge { display: grid; }
+
+.ai-launcher[data-state="attention"] { border-color: var(--ui-accent); }
+
+@media (max-width: 899px) {
+  /* Clear of the persistent bottom navigation. */
+  .ai-launcher { --ai-launcher-offset: 70px; }
+}
+
+@media (max-width: 899px) and (orientation: landscape) and (max-height: 480px) {
+  .ai-launcher { --ai-launcher-offset: 12px; right: calc(72px + var(--ui-safe-right)); }
+}
+
+html.ai-open .ai-launcher { display: none; }
+@media (min-width: 900px) {
+  html.ai-open .ai-launcher { display: grid; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ai-launcher, .ai-launcher::after { transition: none; animation: none; }
+}

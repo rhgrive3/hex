@@ -128,3 +128,24 @@
 
 .product-ui-ready.ui-keyboard-open .ui-bottom-nav { transform: translateY(110%); pointer-events: none; }
 .product-ui-ready.ui-keyboard-open .ui-route-host { padding-bottom: calc(var(--ui-space-4) + var(--ui-keyboard-inset)); }
+
+/*
+ * Assistant on narrow layouts.
+ *
+ * The sheet and full-screen panels sit above the bottom navigation and take
+ * the software keyboard inset into account, so the composer is never under
+ * the keyboard and the nav never overlaps the send button.
+ */
+@media (max-width: 899px) {
+  .ai-panel[data-layout="sheet"] { bottom: calc(58px + var(--ui-safe-bottom)); }
+  .product-ui-ready.ui-keyboard-open .ai-panel[data-layout="sheet"] { bottom: 0; }
+  html.ai-open .ui-bottom-nav { display: none; }
+}
+
+@media (max-width: 599px) {
+  .ai-panel[data-layout="full"] { z-index: var(--ui-z-sheet); }
+  .ai-panel .ai-panel-head { flex-wrap: nowrap; }
+  .ai-panel .ai-seg { padding-inline: 8px; font-size: 12px; }
+  .ai-panel .ai-icon-button { min-width: 32px; }
+  .ai-turn-user { max-width: 100%; }
+}

@@ -15,6 +15,7 @@ import {
 } from './ui.js';
 import { addrHex, addrText, sizeText, parseAddress, parseHexPattern } from './format.js';
 import { rangeCopyMenu } from './rangecopy.js';
+import { askAiMenuItem, instructionAiItems, stringAiItems } from './ai/interaction/contextual.js';
 import { t, isJa, pick } from './i18n.js';
 import { explain, operandNotes, categoryLabel, isBranch, isCall } from './arm64.js';
 import { GLOSSARY, searchGlossary } from './glossary.js';
@@ -949,10 +950,19 @@ export function showStrings(app) {
       const end = Math.min(items.length, shown + PAGE);
       for (; shown < end; shown++) {
         const s = items[shown];
-        frag.append(tapRow(s.text, {
+        const row = tapRow(s.text, {
           sub: addrHex(s.addr),
           onTap: () => { sheet.close(); app.goToStringAddress(active, s.addr); },
-        }));
+        });
+        /* 長押しで「この文字列を使っているのはどこか」を AI に回せる。
+           一覧の見た目は変えない。 */
+        row.addEventListener('contextmenu', (event) => {
+          const assistant = typeof window !== 'undefined' ? window.__hexAi : null;
+          if (!assistant) return;
+          event.preventDefault();
+          menu(stringAiItems(assistant, { text: s.text, address: s.addr }), event.clientX, event.clientY);
+        });
+        frag.append(row);
       }
       results.append(frag);
       if (shown < items.length) {
@@ -1585,7 +1595,10 @@ export function instructionMenu(app, row, x, y) {
   const d = app.viewer.rowData(row) || {};
   const asm = ((d.mnemonic || '') + ' ' + (d.operands || '')).trim();
   const sb = semanticBlockAt(app, row);
+  /* AI は 1 行だけ足す。動詞は「AI に聞く…」の下に置いて、このメニューを太らせない。 */
+  const assistant = typeof window !== 'undefined' ? window.__hexAi : null;
   menu([
+    ...(assistant ? [askAiMenuItem(assistant, instructionAiItems(assistant, { address: d.address, text: asm }), { x, y })] : []),
     { label: t('detail.title') + '…', action: () => showDetail(app, row) },
     { label: pick('逆コンパイルして読む（C 風）', 'Decompile to C'),
       action: () => showDecompiler(app, functionStartOf(app, d.address)) },

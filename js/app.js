@@ -86,7 +86,9 @@ class App {
       name: $('tb-name'),
       sub: $('tb-sub'),
       open: $('btn-open'),
-      open2: $('btn-open-2'),
+      /* Welcome-screen open button. The titlebar's own Open is re-bound by the
+         canonical UI bootstrap, so this one keeps its own id. */
+      open2: $('btn-open-welcome'),
       sample: $('btn-sample'),
       learn: $('btn-learn-2'),
       help: $('btn-help'),
@@ -198,7 +200,7 @@ class App {
   bind() {
     const pick2 = () => this.dom.fileInput.click();
     this.dom.open.addEventListener('click', pick2);
-    this.dom.open2.addEventListener('click', pick2);
+    if (this.dom.open2) this.dom.open2.addEventListener('click', pick2);
     this.dom.sample.addEventListener('click', () => this.openSample());
     this.dom.learn.addEventListener('click', () => showLearn(this));
     this.dom.fileInput.addEventListener('change', (e) => {
@@ -861,11 +863,17 @@ class App {
     if (slice && slice.info && slice.info.encrypted) {
       alertDialog(t('err.encryptedTitle'), t('err.encryptedText'));
     }
+    /*
+     * ファイルを開いた直後に主役になるのはコード。
+     * ここで概要シートを自動で開いていたころ、開いた瞬間に全画面のシートが
+     * かぶさって、命令が 1 行も見えないまま「閉じる」を押させていた。
+     * 概要は「解析」から自分で開く（openOverview）ものにして、
+     * ここでは画面をコードへ移すことだけを知らせる。
+     */
+    document.dispatchEvent(new CustomEvent('hex:file-opened', {
+      detail: { name: info.name, sample: this.sampleOpen },
+    }));
     if (this.sampleOpen) setTimeout(() => showSampleGuide(this), 250);
-    else if (!slice || !slice.info || !slice.info.encrypted) {
-      // 最初に見せるのは、大量の一覧ではなく「このファイルは何か / 何を調べたいか」。
-      setTimeout(() => showOverview(this), 200);
-    }
   }
 
   /** 練習用のサンプルをその場で組み立てて開く。 */

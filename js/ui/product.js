@@ -21,6 +21,9 @@ import { decompile, decompiledText } from '../decompile.js';
 import { cfgGraph, callGraph, renderGraph, graphLegend } from '../graphview.js';
 import { classifyFunction, discoverSubsystems } from '../recognition/classifier.js';
 import { traceAppFunction, runtimeEvidenceForApp } from '../runtime/app-runtime.js';
+import { installAssistant } from '../ai/ui/assistant.js';
+import { classifyOmnibox, intentLabel } from '../ai/interaction/omnibox.js';
+import { askAiMenuItem, functionAiItems } from '../ai/interaction/contextual.js';
 
 const ja = () => (document.documentElement.lang || navigator.language || 'ja').toLowerCase().startsWith('ja');
 const text = (j, e) => ja() ? j : e;
@@ -457,7 +460,9 @@ function renderFunctionWorkspace(app, router, route) {
   const actions = h('div', 'ui-screen-actions');
   actions.append(uiButton('•••', { cls: 'ui-icon-action', ariaLabel: text('関数の操作', 'Function actions'), onClick: (e) => {
     const r = e.currentTarget.getBoundingClientRect();
+    const assistant = window.__hexAi;
     menu([
+      ...(assistant ? [askAiMenuItem(assistant, functionAiItems(assistant, { address: addr, name: functionName(app, addr) }), { x: r.left + r.width / 2, y: r.bottom + 4 })] : []),
       { label: text('名前を付ける', 'Rename'), action: () => showRename(app, addr) },
       { label: text('メモを書く', 'Comment'), action: () => showComment(app, addr) },
       { label: text('アセンブリへ', 'Open assembly'), action: () => router.navigate('/code/' + addr.toString()) },
@@ -716,28 +721,89 @@ function renderAdvanced(app) {
   return { root: s.root };
 }
 
-function installCommandCenter(app, router, actions, host) {
+function symbolAddress(app, name) {
+  const sym = app.symbols;
+  const names = sym && Array.isArray(sym.names) ? sym.names : [];
+  const wanted = String(name || '').toLowerCase();
+  for (let i = 0; i < names.length; i++) {
+    if (String(names[i] || '').toLowerCase() === wanted) return sym.addrs[i];
+  }
+  const sub = /^sub_?([0-9a-f]+)$/i.exec(wanted);
+  if (sub) { try { return BigInt('0x' + sub[1]); } catch { /* not an address */ } }
+  return null;
+}
+
+/*
+ * One omnibox.
+ *
+ * Search, jump, command palette and "ask the assistant" were four different
+ * entry points; they are one field now because the user rarely knows in
+ * advance which of the four their question is. The intent is classified as
+ * they type (js/ai/interaction/omnibox.js) and shown next to the field, so
+ * pressing Enter is never a surprise.
+ */
+function installCommandCenter(app, router, actions, host, getAssistant) {
   const form = h('form', 'ui-command-center');
   const input = h('input', 'ui-global-command');
   input.type = 'search';
-  input.placeholder = text('検索、アドレス、コマンド…', 'Search, address, command…');
+  input.placeholder = text('検索・アドレス・> コマンド・? AIに質問', 'Search, address, > command, ? ask AI');
   input.setAttribute('aria-label', text('検索と移動', 'Search and navigate'));
   input.autocomplete = 'off'; input.autocapitalize = 'off'; input.spellcheck = false;
-  const go = uiButton(text('移動', 'Go'), { cls: 'ui-command-go' });
-  form.append(input, go);
+  const hint = h('span', 'ui-command-hint');
+  hint.setAttribute('aria-live', 'polite');
+  const go = uiButton(text('実行', 'Go'), { cls: 'ui-command-go' });
+  form.append(input, hint, go);
+
+  const refreshHint = () => {
+    const intent = classifyOmnibox(input.value);
+    hint.textContent = intent.kind === 'empty' ? '' : intentLabel(intent.kind, ja());
+    form.dataset.intent = intent.kind;
+  };
+  input.addEventListener('input', refreshHint);
+
+  const runCommand = (intent) => {
+    switch (intent.command) {
+      case 'code': router.navigate('/code'); return true;
+      case 'explorer': router.navigate('/explorer/functions'); return true;
+      case 'results': router.navigate('/results'); return true;
+      case 'settings': router.navigate('/settings'); return true;
+      case 'help': router.navigate('/help'); return true;
+      case 'learn': router.navigate('/learn'); return true;
+      case 'advanced': router.navigate('/advanced'); return true;
+      case 'ai': getAssistant()?.open(); return true;
+      case 'agent': getAssistant()?.ask(text('この一覧から調べたいことを教えてください。', 'Tell me what to investigate.'), { mode: 'agent' }); return true;
+      default: return false;
+    }
+  };
+
   form.addEventListener('submit', (event) => {
     event.preventDefault();
-    const q = input.value.trim(); if (!q) return;
-    const addr = parseAddress(q);
-    if (addr != null) { app.goToAddress(addr, { announce: true }); router.navigate('/code/' + addr.toString()); input.blur(); return; }
-    const command = q.replace(/^>\s*/, '').toLowerCase();
-    if (/^(settings|setting|設定)$/.test(command)) { router.navigate('/settings'); input.blur(); return; }
-    if (/^(help|ヘルプ)$/.test(command)) { router.navigate('/help'); input.blur(); return; }
-    if (/^(code|コード)$/.test(command)) { router.navigate('/code'); input.blur(); return; }
-    router.navigate('/explorer/functions?q=' + encodeURIComponent(q)); input.blur();
+    const intent = classifyOmnibox(input.value);
+    if (intent.kind === 'empty') return;
+    input.blur();
+    if (intent.kind === 'ai') {
+      const assistant = getAssistant();
+      if (assistant) { assistant.ask(intent.value); input.value = ''; refreshHint(); return; }
+      router.navigate('/investigate');
+      return;
+    }
+    if (intent.kind === 'command' && runCommand(intent)) return;
+    if (intent.kind === 'address') {
+      const addr = parseAddress(intent.value);
+      if (addr != null) { app.goToAddress(addr, { announce: true }); router.navigate('/code/' + addr.toString()); return; }
+    }
+    if (intent.kind === 'symbol') {
+      const addr = symbolAddress(app, intent.value);
+      if (addr != null) { router.navigate('/function/' + BigInt(addr).toString() + '/overview'); return; }
+    }
+    if (intent.kind === 'string') {
+      router.navigate('/explorer/strings?q=' + encodeURIComponent(intent.value));
+      return;
+    }
+    router.navigate('/explorer/functions?q=' + encodeURIComponent(intent.value));
   });
   host.append(form);
-  actions.register('command.focus', () => input.focus());
+  actions.register('command.focus', () => { input.focus(); input.select(); });
   return input;
 }
 
@@ -755,10 +821,23 @@ export function installProductUI(app) {
   titlebar?.after(chrome);
   const addrbar = appRoot.querySelector('.addrbar');
   if (addrbar) appRoot.insertBefore(routeHost, addrbar); else appRoot.append(routeHost);
-  appRoot.append(nav);
+  /*
+   * The destinations live in the chrome row, not in a rail down the left edge.
+   * On a wide screen they are compact tabs beside the omnibox, which returns
+   * 76px of width to the disassembly; below 900px the same element is pinned
+   * to the bottom of the viewport where a thumb can reach it. `position:
+   * fixed` still resolves against the viewport here because the chrome uses a
+   * plain background — a backdrop-filter on the parent would have trapped it.
+   */
+  chrome.append(nav);
 
   const router = new ProductRouter(ROUTES, {
-    defaultPath: '/investigate',
+    /*
+     * Code first, including before a file exists: the landing state is the
+     * workbench with its compact open/sample card, not a question screen that
+     * has nothing to answer questions about yet.
+     */
+    defaultPath: '/code',
     onRoute: (route) => {
       appRoot.classList.toggle('ui-code-route', route.route.id === 'code');
       appRoot.classList.toggle('ui-screen-route', route.route.id !== 'code');
@@ -789,7 +868,8 @@ export function installProductUI(app) {
     },
   });
 
-  installCommandCenter(app, router, actions, chrome);
+  let assistant = null;
+  installCommandCenter(app, router, actions, chrome, () => assistant);
   const more = uiButton('•••', { cls: 'ui-more-button', ariaLabel: text('その他', 'More'), onClick: (event) => {
     const r = event.currentTarget.getBoundingClientRect();
     menu([
@@ -824,8 +904,34 @@ export function installProductUI(app) {
 
   document.documentElement.classList.add('product-ui-ready');
   router.start();
-  const destroy = () => { router.stop(); cleanupViewport(); document.removeEventListener('keydown', shortcut, true); chrome.remove(); nav.remove(); routeHost.remove(); document.documentElement.classList.remove('product-ui-ready'); };
+
+  /*
+   * Code first. Opening a file used to land on the question screen (or behind
+   * an overview sheet); the workbench now goes straight to the disassembly,
+   * and the assistant is the thing you call when you have a question about it.
+   */
+  const onFileOpened = () => {
+    router.navigate('/code');
+    assistant?.refresh();
+    /* On a phone or a narrow split the panel covers the code it is about to
+       be asked about; step aside and leave the launcher. */
+    assistant?.collapse();
+  };
+  document.addEventListener('hex:file-opened', onFileOpened);
+
+  assistant = installAssistant(app, { router, actions });
+  actions.register('ai.open', () => assistant?.open());
+  actions.register('ai.ask', (question, options) => assistant?.ask(question, options));
+
+  const destroy = () => {
+    router.stop(); cleanupViewport();
+    document.removeEventListener('keydown', shortcut, true);
+    document.removeEventListener('hex:file-opened', onFileOpened);
+    assistant?.destroy();
+    chrome.remove(); nav.remove(); routeHost.remove();
+    document.documentElement.classList.remove('product-ui-ready');
+  };
   window.addEventListener('pagehide', () => router.capture(), { passive: true });
-  window.__hexUi = { router, actions, destroy, routes: ROUTES };
+  window.__hexUi = { router, actions, destroy, routes: ROUTES, assistant };
   return window.__hexUi;
 }

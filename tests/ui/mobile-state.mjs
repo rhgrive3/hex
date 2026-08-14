@@ -144,7 +144,8 @@ async function testKeyboardFlows(page, engine, fn) {
 }
 
 async function testEngine(browserType, engine, baseUrl) {
-  const browser = await browserType.launch({ args: engine === 'chromium' ? ['--no-sandbox'] : [] });
+  const browser = await launchableOr(engine, () => browserType.launch({ args: engine === 'chromium' ? ['--no-sandbox'] : [] }));
+  if (!browser) return;
   const context = await browser.newContext({ viewport: { width: 393, height: 852 }, locale: 'ja-JP', hasTouch: true, isMobile: true });
   const page = await context.newPage();
   const errors = [];
@@ -201,6 +202,24 @@ async function testEngine(browserType, engine, baseUrl) {
   } finally {
     await context.close();
     await browser.close();
+  }
+}
+
+/*
+ * A browser that is installed but cannot start (missing system libraries on a
+ * container, for example) is a capability gap, not a product regression: skip
+ * that engine and keep the rest of the matrix meaningful. CI, where every
+ * engine is expected to work, still fails.
+ */
+async function launchableOr(engineName, launch) {
+  try { return await launch(); }
+  catch (error) {
+    const message = String(error && error.message || error);
+    if (!/Executable doesn't exist|missing dependencies|Host system is missing/i.test(message)) throw error;
+    const note = `${engineName} could not start in this environment; that engine was skipped.`;
+    if (process.env.CI) { check(`${engineName} engine is available`, false, message.split('\n')[0]); return null; }
+    console.log('skip  ' + note);
+    return null;
   }
 }
 
