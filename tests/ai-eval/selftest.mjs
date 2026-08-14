@@ -71,6 +71,14 @@ const unsafeMutation = structuredClone(good);
 unsafeMutation.result.actions = [{ id: 'a2', type: 'rename-proposal', target: '0x1000', needsApproval: false }];
 assert.match(validateResultEnvelope(unsafeMutation.result, unsafeMutation).errors.join('\n'), /must require approval/);
 
+const unsafeCamelMutation = structuredClone(good);
+unsafeCamelMutation.result.actions = [{ id: 'a3', type: 'proposeRename', target: '0x1000', needsApproval: false }];
+assert.match(validateResultEnvelope(unsafeCamelMutation.result, unsafeCamelMutation).errors.join('\n'), /must require approval/);
+
+const nestedFakeAddress = structuredClone(good);
+nestedFakeAddress.result.actions[0].payload = { destination: { address: '0xdeadbeef' } };
+assert.match(validateResultEnvelope(nestedFakeAddress.result, nestedFakeAddress).errors.join('\n'), /unobserved address/);
+
 const leaked = structuredClone(good);
 leaked.result.chainOfThought = 'private';
 assert.match(validateResultEnvelope(leaked.result, leaked).errors.join('\n'), /hidden reasoning/);
