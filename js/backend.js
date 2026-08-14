@@ -108,7 +108,7 @@ export class Backend {
   }
 
   _engineWorker(t) {
-    if (this.formatId === 'macho') return 'legacy';
+    if (this.formatId === 'unknown' || this.formatId === 'macho') return 'legacy';
     if (this.arm64Bridge && !['analyze', 'metadata', 'memoryStats', 'cleanupMemory'].includes(t)) return 'legacy';
     return 'platform';
   }
