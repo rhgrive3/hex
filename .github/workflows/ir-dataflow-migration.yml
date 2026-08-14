@@ -1,0 +1,26 @@
+name: IR dataflow migration
+
+on:
+  pull_request:
+    paths:
+      - 'js/dataflow.js'
+      - 'js/dataflow-legacy.js'
+      - 'js/dataflow-ir.js'
+      - 'js/ir.js'
+      - 'tests/ir-dataflow.mjs'
+      - '.github/workflows/ir-dataflow-migration.yml'
+  workflow_dispatch:
+
+jobs:
+  ir-dataflow:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Existing checks
+        run: npm run check
+      - name: IR dataflow migration regressions
+        run: node tests/ir-dataflow.mjs
