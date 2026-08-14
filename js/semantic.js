@@ -205,6 +205,19 @@ function controlFacts(ir, out) {
     };
     out.push(fact(FACT.BRANCH, inst, base));
 
+    // CBZ/CBNZ always compare against zero. A propagated constant on the tested
+    // value is the input, never the threshold.
+    if (c.cond === 'cbz' || c.cond === 'cbnz') {
+      out.push(fact(FACT.THRESHOLD, inst, {
+        ...base, id: 'fact:threshold:' + inst.id, threshold: 0n,
+        comparisonRow: inst.row, branchRow: inst.row,
+      }));
+      out.push(fact(FACT.ZERO_NULL, inst, {
+        ...base, id: 'fact:zero:' + inst.id, threshold: 0n,
+      }));
+      continue;
+    }
+
     const otherConst = c.other && c.other.const != null ? c.other.const : null;
     const valueConst = c.value && c.value.const != null ? c.value.const : null;
     if (otherConst != null || valueConst != null) {
@@ -216,8 +229,6 @@ function controlFacts(ir, out) {
       if (threshold === 0n) out.push(fact(FACT.ZERO_NULL, c.cmp || inst, {
         ...base, id: 'fact:zero:' + inst.id, threshold: 0n,
       }));
-    } else if (c.cond === 'cbz' || c.cond === 'cbnz') {
-      out.push(fact(FACT.ZERO_NULL, inst, { ...base, id: 'fact:zero:' + inst.id, threshold: 0n }));
     }
   }
 }
