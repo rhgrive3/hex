@@ -2,6 +2,9 @@
 import { decompile as legacyDecompile } from './decompile-legacy.js';
 import { decompileSemantic } from './decompiler/semantic.js';
 
+// Preserve every historical helper export (stackNaming, etc.). Explicit exports
+// below intentionally override only the public decompile entry point.
+export * from './decompile-legacy.js';
 export { decompileSemantic } from './decompiler/semantic.js';
 export { renderValue as renderSemanticValue, renderMemoryLocation, renderBranchCondition, recoverInductionVariables, reachingRegisterValue } from './decompiler/semantic.js';
 
