@@ -71,19 +71,18 @@ function blockAddress(result, model, opts, bi) {
 function hasNonNaturalBackwardEdge(_model, result) {
   const ir = result?.ir;
   if (!ir?.blocks?.length) return false;
-  const loops = ir.loops || [];
-  const insideSameNaturalLoop = (from, to) => loops.some((loop) =>
-    loop?.nodes?.has?.(from) && loop.nodes.has(to));
 
-  // Use the Semantic IR CFG itself, not parser-specific instruction fields.
-  // A physically backward CFG edge is only source-loop evidence when both ends
-  // belong to the same dominator-proven natural loop. Otherwise it is shared
-  // cleanup/tail control flow and must remain explicit.
+  // Natural-loop definition: for a back-edge source -> header, the header
+  // dominates the source. This is stronger than merely checking whether both
+  // nodes were grouped into some loop set, and correctly separates optimized
+  // shared-cleanup jumps from true loops.
+  const isNaturalBackEdge = (from, to) => !!ir.dominators?.[from]?.has?.(to);
+
   for (const block of ir.blocks) {
     for (const succ of block.succ || []) {
       const dst = ir.blocks[succ];
       if (!dst) continue;
-      if (dst.startRow < block.startRow && !insideSameNaturalLoop(block.index, succ)) return true;
+      if (dst.startRow < block.startRow && !isNaturalBackEdge(block.index, succ)) return true;
     }
   }
   return false;
@@ -107,10 +106,8 @@ export function decompile(model, opts = {}) {
         ), model, opts);
       }
 
-      // A backward CFG edge that does not form a dominator-proven natural loop
-      // is typically shared cleanup/tail code. Turning it into a loop or silently
-      // inlining it would change the visible control-flow contract, so keep
-      // explicit labels/gotos until the IR has a stronger region proof.
+      // A backward CFG edge whose target does not dominate the source is shared
+      // cleanup/tail control flow, not a natural loop. Preserve labels/gotos.
       if (hasNonNaturalBackwardEdge(model, result)) {
         return finalize(augmentLegacy(
           legacyDecompile(model, opts),
