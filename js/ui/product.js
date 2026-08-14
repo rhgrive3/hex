@@ -6,11 +6,12 @@ import {
   h, uiButton, screen, card, emptyState, loadingState, errorState, evidenceBadge,
   tabs, sectionTitle, listRow, VirtualList,
 } from './primitives.js';
+import { renderSecondaryRoute } from './secondary.js';
 import { addrHex, parseAddress } from '../format.js';
 import { pick } from '../i18n.js';
 import { menu, copyText, toast } from '../ui.js';
 import {
-  showSettings, showHelp, showLearn, showFileInfo, showSections, showStructure, showCandidates,
+  showFileInfo, showSections, showStructure, showCandidates,
 } from '../panels.js';
 import {
   currentFunctionAddr, showTools, showRename, showComment, showDebugger,
@@ -153,8 +154,21 @@ function renderInvestigate(app, router) {
     text('通信している場所', 'network communication'),
     text('ガチャの結果を決める処理', 'where gacha results are decided'),
   ]) suggestions.append(uiButton(q, { cls: 'ui-suggestion', onClick: () => { input.value = q; rememberQuery(q); runInvestigation(app, q); } }));
-  hero.body.append(suggestions);
-  s.body.append(hero.root);
+  const commonGoals = h('div', 'ui-goal-suggestions ui-purpose-presets');
+for (const preset of [
+  { label:text('HP・体力', 'HP / health'), query:text('HPを書き換える処理', 'where HP is written') },
+  { label:text('攻撃力', 'Attack power'), query:text('攻撃力を決める・書き換える処理', 'where attack power is calculated or written') },
+  { label:text('ダメージ計算', 'Damage calculation'), query:text('ダメージを計算して適用する処理', 'where damage is calculated and applied') },
+  { label:text('所持金・コイン', 'Money / coins'), query:text('所持金・コインを増減・保存する処理', 'where money or coins are changed and stored') },
+  { label:text('アイテム・所持品', 'Items / inventory'), query:text('アイテム・所持品を増減・保存する処理', 'where inventory items are changed and stored') },
+]) {
+  commonGoals.append(uiButton(preset.label, {
+    cls:'ui-suggestion ui-purpose-chip',
+    onClick:() => { input.value = preset.query; rememberQuery(preset.query); runInvestigation(app, preset.query); },
+  }));
+}
+hero.body.append(suggestions, sectionTitle(text('よくある目的', 'Common goals')), commonGoals);
+s.body.append(hero.root);
 
   const overview = card(text('自動で分かったこと', 'Automatic overview'), {
     subtitle: text('ファイル全体の地図を作り、候補・根拠・未確認点をまとめます。',
@@ -691,18 +705,6 @@ function renderResults(app, router) {
   return { root: s.root };
 }
 
-function renderSecondary(app, router, kind) {
-  const config = {
-    settings: [text('設定', 'Settings'), text('表示・言語・解析表示を調整します。', 'Adjust appearance, language and analysis presentation.'), () => showSettings(app)],
-    help: [text('ヘルプ', 'Help'), text('困ったときの入口です。', 'Help and troubleshooting.'), () => showHelp(app)],
-    learn: [text('学ぶ', 'Learn'), text('ARM64や解析の読み方を段階的に学びます。', 'Learn how to read ARM64 and analysis results.'), () => showLearn(app)],
-  }[kind];
-  const s = screen(config[0], { id: kind, subtitle: config[1] });
-  s.body.append(uiButton(text('開く', 'Open'), { cls: 'ui-primary-action', onClick: config[2] }));
-  void router;
-  return { root: s.root };
-}
-
 function renderAdvanced(app) {
   const s = screen(text('高度な機能', 'Advanced / Lab'), { id: 'advanced', subtitle: text('通常の調査では不要な低レベル機能だけをまとめています。', 'Low-level tools that are not required for the normal question-to-answer flow.') });
   const list = h('div', 'ui-list');
@@ -775,7 +777,7 @@ export function installProductUI(app) {
       else if (route.route.id === 'function') view = renderFunctionWorkspace(app, router, route);
       else if (route.route.id === 'results' || route.route.id === 'finding') view = renderResults(app, router);
       else if (route.route.id === 'advanced') view = renderAdvanced(app);
-      else view = renderSecondary(app, router, route.route.id);
+      else view = renderSecondaryRoute(app, router, route);
       routeHost.append(view.root);
       requestAnimationFrame(() => routeHost.focus({ preventScroll: true }));
       const originalGet = view.getState;
