@@ -1,0 +1,334 @@
+/*
+ * semantic.js — Semantic IR から得られる高水準 fact の唯一の共通層。
+ *
+ * consumer は ARM64 命令列を再解釈しない。IR / SSA / Memory SSA が証明した
+ * 事実だけをここから読む。fact.evidence は元になった IR 命令 ID を保持し、
+ * 同じ命令を dataflow/controlflow/semantic と名前だけ変えて二重計上しない。
+ */
+import {
+  irFor, readModifyWrite, OP, MK, VK,
+  valueInfo, originOf, pointerProvenance,
+} from './ir.js';
+
+export const FACT = Object.freeze({
+  READ: 'read',
+  WRITE: 'write',
+  RMW: 'read-modify-write',
+  INCREMENT: 'increment',
+  DECREMENT: 'decrement',
+  CLAMP: 'clamp',
+  THRESHOLD: 'threshold-comparison',
+  ZERO_NULL: 'zero-null-comparison',
+  RETURN: 'return-derived-value',
+  ARGUMENT: 'argument-derived-value',
+  GLOBAL: 'global-access',
+  STACK: 'stack-slot',
+  CALL_RESULT: 'call-result',
+  BRANCH: 'branch-condition',
+  TRANSFER: 'field-to-field-transfer',
+  POINTER_STORE: 'store-through-pointer',
+  SOURCE: 'source',
+  SINK: 'sink',
+});
+
+const factCache = new WeakMap();
+
+function instructionEvidence(inst, relation = null) {
+  if (!inst) return null;
+  return {
+    id: 'ir:' + String(inst.id),
+    instructionId: inst.id,
+    row: inst.row == null ? null : inst.row,
+    address: inst.address == null ? null : inst.address,
+    relation,
+    group: 'semantic-ir:' + String(inst.id),
+  };
+}
+
+function uniqueEvidence(items) {
+  const out = [];
+  const seen = new Set();
+  for (const item of items || []) {
+    if (!item) continue;
+    const key = item.group || item.id || (String(item.address) + ':' + String(item.row));
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(item);
+  }
+  return out;
+}
+
+function locationShape(loc) {
+  if (!loc) return null;
+  return {
+    key: loc.key || null,
+    kind: loc.kind || MK.UNKNOWN,
+    disp: loc.disp == null ? null : loc.disp,
+    size: loc.size == null ? null : loc.size,
+    address: loc.address == null ? null : loc.address,
+    base: loc.base || null,
+  };
+}
+
+function valueShape(value) {
+  if (!value) return null;
+  const info = valueInfo(value);
+  return {
+    id: value.id,
+    reg: value.reg || null,
+    bits: value.bits || 64,
+    kind: value.kind || null,
+    constant: info.constant,
+    min: info.min,
+    max: info.max,
+    signedness: info.signedness,
+    zero: info.zero,
+    nullability: info.nullability,
+    origin: originOf(value),
+    provenance: pointerProvenance(value),
+  };
+}
+
+function fact(kind, inst, extra = {}) {
+  const evidence = uniqueEvidence(extra.evidence || [instructionEvidence(inst)]);
+  return {
+    id: extra.id || ('fact:' + kind + ':' + (inst ? inst.id : 'none')),
+    kind,
+    row: inst && inst.row != null ? inst.row : null,
+    address: inst && inst.address != null ? inst.address : null,
+    function: extra.function == null ? null : extra.function,
+    relation: extra.relation || null,
+    confidence: extra.confidence == null ? 1 : extra.confidence,
+    confidenceSource: extra.confidenceSource || 'semantic-ir',
+    evidence,
+    ...extra,
+    // Do not allow callers to inject a second evidence array after de-duplication.
+    evidence,
+  };
+}
+
+function comparisonForBranch(branch) {
+  if (!branch || branch.op !== OP.CBR || !branch.args || !branch.args.length) return null;
+  if (branch.extra && (branch.extra.kind === 'cbz' || branch.extra.kind === 'cbnz')) {
+    return { cmp: null, value: branch.args[0].value || null, other: null, cond: branch.extra.kind };
+  }
+  const flags = branch.args[0] && branch.args[0].value;
+  const cmp = flags && flags.def && flags.def.op === OP.CMP ? flags.def : null;
+  if (!cmp) return null;
+  return {
+    cmp,
+    value: cmp.args[0] && cmp.args[0].value || null,
+    other: cmp.args[1] && cmp.args[1].value || null,
+    cond: branch.cond || null,
+  };
+}
+
+function rmwFacts(ir, out) {
+  for (const r of readModifyWrite(ir)) {
+    const chain = r.chain || [];
+    const evidence = uniqueEvidence([
+      instructionEvidence(r.load, 'read'),
+      ...chain.map((i) => instructionEvidence(i, 'compute')),
+      instructionEvidence(r.store, 'write'),
+    ]);
+    const written = r.store.args && r.store.args[0] && r.store.args[0].value || null;
+    const base = {
+      id: 'fact:rmw:' + r.load.id + ':' + r.store.id,
+      location: locationShape(r.location),
+      source: valueShape(r.load.dst),
+      sink: valueShape(written),
+      value: valueShape(written),
+      operation: r.kind,
+      chain: chain.map((i) => ({ id: i.id, op: i.op, sub: i.sub, row: i.row, address: i.address })),
+      load: { id: r.load.id, row: r.load.row, address: r.load.address },
+      store: { id: r.store.id, row: r.store.row, address: r.store.address },
+      evidence,
+      relation: 'read→compute→write',
+    };
+    out.push(fact(FACT.RMW, r.store, base));
+    if (r.kind === 'add') out.push(fact(FACT.INCREMENT, r.store, { ...base, id: base.id + ':inc', relation: 'increase' }));
+    if (r.kind === 'sub') out.push(fact(FACT.DECREMENT, r.store, { ...base, id: base.id + ':dec', relation: 'decrease' }));
+    const sel = chain.find((i) => i.op === OP.SEL);
+    if (sel) {
+      out.push(fact(FACT.CLAMP, sel, {
+        id: base.id + ':clamp',
+        location: base.location,
+        value: valueShape(sel.dst),
+        condition: sel.cond || null,
+        evidence,
+        relation: 'clamp-before-write',
+      }));
+    }
+  }
+}
+
+function memoryFacts(ir, out) {
+  for (const inst of ir.instructions || []) {
+    if (inst.op !== OP.LOAD && inst.op !== OP.STORE) continue;
+    const loc = locationShape(inst.loc);
+    const isLoad = inst.op === OP.LOAD;
+    const v = isLoad ? inst.dst : (inst.args[0] && inst.args[0].value || null);
+    const base = {
+      location: loc,
+      value: valueShape(v),
+      source: isLoad ? loc : valueShape(v),
+      sink: isLoad ? valueShape(v) : loc,
+      relation: isLoad ? 'memory→value' : 'value→memory',
+    };
+    out.push(fact(isLoad ? FACT.READ : FACT.WRITE, inst, base));
+    if (loc && loc.kind === MK.GLOBAL) out.push(fact(FACT.GLOBAL, inst, { ...base, id: 'fact:global:' + inst.id }));
+    if (loc && loc.kind === MK.STACK) out.push(fact(FACT.STACK, inst, { ...base, id: 'fact:stack:' + inst.id }));
+    if (!isLoad && (!loc || loc.kind === MK.UNKNOWN)) {
+      out.push(fact(FACT.POINTER_STORE, inst, {
+        ...base,
+        id: 'fact:pointer-store:' + inst.id,
+        confidence: 1,
+        relation: 'unknown-alias-store',
+      }));
+    }
+
+    if (!isLoad) {
+      const origin = originOf(v);
+      if (loc && loc.kind === MK.FIELD && origin && origin.kind === 'field' && origin.location && origin.location.key !== loc.key) {
+        out.push(fact(FACT.TRANSFER, inst, {
+          id: 'fact:transfer:' + inst.id,
+          source: origin,
+          sink: loc,
+          value: valueShape(v),
+          relation: 'field→field',
+        }));
+      }
+    }
+  }
+}
+
+function controlFacts(ir, out) {
+  for (const inst of ir.instructions || []) {
+    if (inst.op !== OP.CBR) continue;
+    const c = comparisonForBranch(inst);
+    if (!c) continue;
+    const cmpEvidence = c.cmp ? instructionEvidence(c.cmp, 'compare') : null;
+    const evidence = uniqueEvidence([cmpEvidence, instructionEvidence(inst, 'branch')]);
+    const base = {
+      condition: c.cond,
+      value: valueShape(c.value),
+      other: valueShape(c.other),
+      target: inst.extra && inst.extra.target != null ? inst.extra.target : null,
+      evidence,
+      relation: 'compare→branch',
+    };
+    out.push(fact(FACT.BRANCH, inst, base));
+
+    const otherConst = c.other && c.other.const != null ? c.other.const : null;
+    const valueConst = c.value && c.value.const != null ? c.value.const : null;
+    if (otherConst != null || valueConst != null) {
+      const threshold = otherConst != null ? otherConst : valueConst;
+      out.push(fact(FACT.THRESHOLD, c.cmp || inst, {
+        ...base,
+        id: 'fact:threshold:' + inst.id,
+        threshold,
+        comparisonRow: c.cmp ? c.cmp.row : inst.row,
+        branchRow: inst.row,
+      }));
+      if (threshold === 0n) {
+        out.push(fact(FACT.ZERO_NULL, c.cmp || inst, {
+          ...base,
+          id: 'fact:zero:' + inst.id,
+          threshold: 0n,
+        }));
+      }
+    } else if (c.cond === 'cbz' || c.cond === 'cbnz') {
+      out.push(fact(FACT.ZERO_NULL, inst, {
+        ...base,
+        id: 'fact:zero:' + inst.id,
+        threshold: 0n,
+      }));
+    }
+  }
+}
+
+function sourceSinkFacts(ir, out) {
+  for (const inst of ir.instructions || []) {
+    if (inst.op === OP.CALL && inst.dst) {
+      const base = {
+        value: valueShape(inst.dst),
+        target: inst.extra && inst.extra.target != null ? inst.extra.target : null,
+        relation: 'call→return-value',
+      };
+      out.push(fact(FACT.CALL_RESULT, inst, base));
+      out.push(fact(FACT.SOURCE, inst, { ...base, id: 'fact:source:call:' + inst.id, sourceType: 'call-result' }));
+    }
+    if (inst.op === OP.RET) {
+      const v = inst.args && inst.args[0] && inst.args[0].value || null;
+      const origin = originOf(v);
+      out.push(fact(FACT.RETURN, inst, {
+        value: valueShape(v),
+        source: origin,
+        sink: { kind: 'return' },
+        relation: 'value→return',
+      }));
+      out.push(fact(FACT.SINK, inst, {
+        id: 'fact:sink:return:' + inst.id,
+        value: valueShape(v),
+        sinkType: 'return',
+        relation: 'return',
+      }));
+    }
+  }
+
+  for (const value of ir.values || []) {
+    if (value.kind !== VK.ARG || !/^x[0-7]$/.test(String(value.reg || ''))) continue;
+    out.push({
+      id: 'fact:arg:' + value.id,
+      kind: FACT.ARGUMENT,
+      row: ir.blocks && ir.blocks[0] ? ir.blocks[0].startRow : 0,
+      address: ir.startAddress || null,
+      function: ir.startAddress || null,
+      value: valueShape(value),
+      relation: 'argument→value',
+      confidence: 1,
+      confidenceSource: 'semantic-ir',
+      evidence: [],
+    });
+  }
+}
+
+export function semanticFacts(ir) {
+  if (!ir || !ir.instructions) return [];
+  if (factCache.has(ir)) return factCache.get(ir);
+  const out = [];
+  memoryFacts(ir, out);
+  rmwFacts(ir, out);
+  controlFacts(ir, out);
+  sourceSinkFacts(ir, out);
+  out.sort((a, b) => (a.row == null ? -1 : a.row) - (b.row == null ? -1 : b.row) || String(a.kind).localeCompare(String(b.kind)));
+  factCache.set(ir, out);
+  return out;
+}
+
+export function semanticFactsFor(model, opts) {
+  const ir = irFor(model, opts && opts.ir ? opts.ir : opts);
+  return ir ? semanticFacts(ir) : [];
+}
+
+export function factsOfKind(irOrFacts, kind) {
+  const facts = Array.isArray(irOrFacts) ? irOrFacts : semanticFacts(irOrFacts);
+  return facts.filter((f) => f.kind === kind);
+}
+
+export function factsForLocation(irOrFacts, keyOrOffset) {
+  const facts = Array.isArray(irOrFacts) ? irOrFacts : semanticFacts(irOrFacts);
+  return facts.filter((f) => {
+    const loc = f.location || f.sink && f.sink.key ? f.sink : null;
+    if (!loc) return false;
+    if (typeof keyOrOffset === 'string') return loc.key === keyOrOffset;
+    if (keyOrOffset == null) return false;
+    try { return loc.disp != null && loc.disp === BigInt(keyOrOffset); } catch { return false; }
+  });
+}
+
+export function semanticEvidenceIds(facts) {
+  const ids = new Set();
+  for (const f of facts || []) for (const e of f.evidence || []) if (e && e.id) ids.add(e.id);
+  return Array.from(ids);
+}
