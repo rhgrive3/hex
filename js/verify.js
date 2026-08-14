@@ -132,11 +132,12 @@ export function fieldUse(model, offset, opts) {
   /*
    * しきい値は「このフィールドをloadしたレジスタ」を最大8行だけ追う既存の局所条件を
    * 維持する。その比較命令が即値を直接持たない場合だけ、SSAが同じcompare行で
-   * 証明した定数を補う。SSA側の variable register が追跡中のregと一致するときに
-   * 限るので、比較の反対側（フィールド自身）が定数化されたケースを閾値と誤認しない。
+   * 証明した定数を補う。ここでは比較行と追跡中レジスタまで照合するため、generic
+   * pinpoint向けの「複数locationならpropagatedを抑止」制限を安全に解除できる。
    */
   const byRow = new Map(insns.map((i) => [i.row, i]));
-  const comparisonByRow = new Map(constantComparisons(model).map((c) => [c.row, c]));
+  const comparisonByRow = new Map(constantComparisons(model, { allowUnscopedPropagated: true })
+    .map((c) => [c.row, c]));
   for (const site of out.sites) {
     if (site.kind !== 'load') continue;
     const insn = byRow.get(site.row);
