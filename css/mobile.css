@@ -95,7 +95,7 @@
   .product-ui-ready .ui-more-button { min-height: var(--ui-touch); min-width: var(--ui-touch); }
   .product-ui-ready .ui-bottom-nav {
     left: auto;
-    top: calc(var(--ui-safe-top) + 36px);
+    top: calc(var(--ui-safe-top) + 100px);
     bottom: var(--ui-safe-bottom);
     width: 66px;
     grid-template-columns: 1fr;
