@@ -2,11 +2,13 @@
 import { decompile as legacyDecompile } from './decompile-legacy.js';
 import { decompileSemantic } from './decompiler/semantic.js';
 import { repairCanonicalPostTestLoop } from './decompiler/loop-repair.js';
+import { structureKnownSwitches } from './decompiler/switch.js';
 
 // Preserve every historical helper export (stackNaming, decompiledText, etc.).
 // Explicit exports below intentionally override only the public decompile entry.
 export * from './decompile-legacy.js';
 export { decompileSemantic } from './decompiler/semantic.js';
+export { structureKnownSwitches } from './decompiler/switch.js';
 export { renderValue as renderSemanticValue, renderMemoryLocation, renderBranchCondition, recoverInductionVariables, reachingRegisterValue } from './decompiler/semantic.js';
 
 function textOf(lines) {
@@ -53,6 +55,11 @@ function augmentLegacy(fallback, reason) {
   return fallback;
 }
 
+function finalize(result, model, opts) {
+  result = structureKnownSwitches(result, model, opts);
+  return normalizeCompatibility(result);
+}
+
 function blockAddress(result, model, opts, bi) {
   const b = result?.ir?.blocks?.[bi];
   if (!b) return opts.addr ?? model.instructions?.[0]?.address ?? 0n;
@@ -86,10 +93,10 @@ export function decompile(model, opts = {}) {
       const total = result.ir?.blocks?.length || 0;
       const reachable = result.coverage?.reachable ?? total;
       if (total > reachable) {
-        return augmentLegacy(
+        return finalize(augmentLegacy(
           legacyDecompile(model, opts),
           `Semantic IR covers ${reachable}/${total} Basic Blocks; disconnected or indirect targets are shown with the faithful CFG fallback.`,
-        );
+        ), model, opts);
       }
 
       // A backward address edge that does not form a dominator-proven natural
@@ -97,10 +104,10 @@ export function decompile(model, opts = {}) {
       // silently inlining it would change the visible control-flow contract, so
       // keep explicit labels/gotos until the IR has a stronger region proof.
       if (hasNonNaturalBackwardEdge(model, result)) {
-        return augmentLegacy(
+        return finalize(augmentLegacy(
           legacyDecompile(model, opts),
           'A backward control-flow edge is not a proven natural loop; shared cleanup is shown with faithful labels/gotos.',
-        );
+        ), model, opts);
       }
 
       result = repairCanonicalPostTestLoop(result, (bi) => blockAddress(result, model, opts, bi));
@@ -108,13 +115,13 @@ export function decompile(model, opts = {}) {
         result.coverage.total = total;
         result.coverage.emitted = result.coverage.emitted ?? total;
       }
-      return normalizeCompatibility(result);
+      return finalize(result, model, opts);
     }
   } catch (error) {
-    return augmentLegacy(
+    return finalize(augmentLegacy(
       legacyDecompile(model, opts),
       `Semantic IR decompiler fallback: ${error && error.message ? error.message : 'unknown error'}`,
-    );
+    ), model, opts);
   }
-  return augmentLegacy(legacyDecompile(model, opts), 'Semantic IR is unavailable for this function.');
+  return finalize(augmentLegacy(legacyDecompile(model, opts), 'Semantic IR is unavailable for this function.'), model, opts);
 }
