@@ -20,14 +20,17 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Apply deterministic patch
-        run: python3 tools/decompiler/apply_address_provenance_fix.py
+      - name: Apply deterministic patches
+        run: |
+          python3 tools/decompiler/apply_address_provenance_fix.py
+          python3 tools/decompiler/apply_address_provenance_fix_round2.py
       - name: Apply damage diagnostics
         run: node tools/decompiler/debug_apply_damage.mjs
       - name: Syntax check changed JavaScript
         run: |
           node --check js/decompiler/semantic.js
           node --check js/decompiler/pipeline-core.js
+          node --check js/decompiler/passes/stack-return-recovery.js
           node --check js/decompiler/call-prototypes.js
           node --check js/decompiler/provenance.js
           node --check js/tools.js
@@ -42,6 +45,6 @@ jobs:
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add js/decompiler/semantic.js js/decompiler/pipeline-core.js js/tools.js css/app.css tests/decompiler-semantic.mjs
+          git add js/decompiler/semantic.js js/decompiler/pipeline-core.js js/decompiler/passes/stack-return-recovery.js js/tools.js css/app.css tests/decompiler-semantic.mjs
           git commit -m "Fix decompiler semantic state and source provenance"
           git push origin HEAD:${GITHUB_REF_NAME}
