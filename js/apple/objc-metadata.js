@@ -3,14 +3,14 @@
  *
  * objc-legacy.js intentionally focused on __objc_classlist. This layer adds the
  * modern protocol/category tables without changing the old parser contract.
- * All pointers go through the same chained-fixup-safe sanitizer. Malformed
- * records are skipped rather than named heuristically.
+ * Malformed records are skipped rather than named heuristically.
  */
 
 import { pagedReader, sanitizePointer } from '../objc-legacy.js';
 
 const PTR = 8;
-const MAX_NAME = 256;
+const NAME_CHUNK = 256;
+const MAX_NAME = 4096;
 const MAX_PROTOCOLS = 20000;
 const MAX_CATEGORIES = 20000;
 const MAX_METHODS = 60000;
@@ -25,21 +25,43 @@ function u64(b, o = 0) {
   return v;
 }
 
+async function resolveStoredPointer(get, raw, fieldAddress = null) {
+  if (raw === 0n) return null;
+  if (typeof get.resolvePointer === 'function') {
+    try {
+      const value = await get.resolvePointer(raw, { address:fieldAddress, imageBase:get.base });
+      if (value !== undefined) return value == null ? null : BigInt(value);
+    } catch { return null; }
+  }
+  return sanitizePointer(raw, get.base);
+}
+
 async function ptr(get, addr) {
   const b = await get(addr, PTR);
-  return b ? sanitizePointer(u64(b), get.base) : null;
+  return b ? resolveStoredPointer(get, u64(b), addr) : null;
 }
 
 async function cstring(get, addr) {
   if (addr == null) return null;
-  const b = await get(addr, MAX_NAME, true);
-  if (!b) return null;
-  let s = '';
-  for (let i = 0; i < b.length; i++) {
-    const c = b[i];
-    if (c === 0) return s || null;
-    if (c < 0x20 || c >= 0x7f) return null;
-    s += String.fromCharCode(c);
+  const bytes = [];
+  for (let offset = 0; offset < MAX_NAME; offset += NAME_CHUNK) {
+    const want = Math.min(NAME_CHUNK, MAX_NAME - offset);
+    const b = await get(addr + BigInt(offset), want, true);
+    if (!b || !b.length) return null;
+    for (let i = 0; i < b.length; i++) {
+      const c = b[i];
+      if (c === 0) {
+        if (!bytes.length) return null;
+        try { return new TextDecoder('utf-8', { fatal:true }).decode(Uint8Array.from(bytes)); }
+        catch { return null; }
+      }
+      // ASCII controls are never valid runtime identifiers. Bytes >= 0x80 are
+      // retained and validated by the strict UTF-8 decoder once NUL is found.
+      if (c < 0x20 || c === 0x7f) return null;
+      bytes.push(c);
+      if (bytes.length >= MAX_NAME) return null;
+    }
+    if (b.length < want) return null;
   }
   return null;
 }
@@ -68,9 +90,9 @@ async function methodList(get, listAddr, owner, classMethod, source) {
       typeAddr = at + 4n + BigInt(i32(b, 4));
       imp = at + 8n + BigInt(i32(b, 8));
     } else {
-      nameAddr = sanitizePointer(u64(b, 0), get.base);
-      typeAddr = sanitizePointer(u64(b, 8), get.base);
-      imp = sanitizePointer(u64(b, 16), get.base);
+      nameAddr = await resolveStoredPointer(get, u64(b, 0), at);
+      typeAddr = await resolveStoredPointer(get, u64(b, 8), at + 8n);
+      imp = await resolveStoredPointer(get, u64(b, 16), at + 16n);
     }
     const sel = await cstring(get, nameAddr);
     if (!sel) continue;
@@ -93,7 +115,7 @@ async function protocolName(get, address) {
   if (address == null) return null;
   const b = await get(address, 16);
   if (!b) return null;
-  return cstring(get, sanitizePointer(u64(b, 8), get.base));
+  return cstring(get, await resolveStoredPointer(get, u64(b, 8), address + 8n));
 }
 
 async function protocolRefs(get, listAddr) {
@@ -114,44 +136,41 @@ async function protocolRefs(get, listAddr) {
 }
 
 async function parseProtocol(get, address) {
-  // protocol_t stable prefix through instanceProperties.
   const b = await get(address, 64, true);
   if (!b || b.length < 56) return null;
-  const name = await cstring(get, sanitizePointer(u64(b, 8), get.base));
+  const name = await cstring(get, await resolveStoredPointer(get, u64(b, 8), address + 8n));
   if (!name) return null;
-  const inherited = await protocolRefs(get, sanitizePointer(u64(b, 16), get.base));
-  const methods = await methodList(get, sanitizePointer(u64(b, 24), get.base), name, false, 'protocol');
-  const classMethods = await methodList(get, sanitizePointer(u64(b, 32), get.base), name, true, 'protocol');
-  const optionalInstanceMethods = await methodList(get, sanitizePointer(u64(b, 40), get.base), name, false, 'protocol-optional');
-  const optionalClassMethods = await methodList(get, sanitizePointer(u64(b, 48), get.base), name, true, 'protocol-optional');
+  const inherited = await protocolRefs(get, await resolveStoredPointer(get, u64(b, 16), address + 16n));
+  const methods = await methodList(get, await resolveStoredPointer(get, u64(b, 24), address + 24n), name, false, 'protocol');
+  const classMethods = await methodList(get, await resolveStoredPointer(get, u64(b, 32), address + 32n), name, true, 'protocol');
+  const optionalInstanceMethods = await methodList(get, await resolveStoredPointer(get, u64(b, 40), address + 40n), name, false, 'protocol-optional');
+  const optionalClassMethods = await methodList(get, await resolveStoredPointer(get, u64(b, 48), address + 48n), name, true, 'protocol-optional');
   return {
     runtime: 'objc', kind: 'protocol', address, name,
     protocols: inherited,
     methods, instanceMethods: methods, classMethods,
     optionalInstanceMethods, optionalClassMethods,
-    instancePropertiesAddress: b.length >= 64 ? sanitizePointer(u64(b, 56), get.base) : null,
+    instancePropertiesAddress: b.length >= 64 ? await resolveStoredPointer(get, u64(b, 56), address + 56n) : null,
   };
 }
 
 async function parseCategory(get, address, classByAddress) {
-  // category_t: name, cls, instanceMethods, classMethods, protocols,
-  // instanceProperties, classProperties (newer runtime; trailing field optional).
   const b = await get(address, 56, true);
   if (!b || b.length < 48) return null;
-  const name = await cstring(get, sanitizePointer(u64(b, 0), get.base));
+  const name = await cstring(get, await resolveStoredPointer(get, u64(b, 0), address));
   if (!name) return null;
-  const classAddress = sanitizePointer(u64(b, 8), get.base);
+  const classAddress = await resolveStoredPointer(get, u64(b, 8), address + 8n);
   const target = classAddress != null ? classByAddress.get(classAddress.toString()) : null;
   const className = target?.name || null;
-  const methods = await methodList(get, sanitizePointer(u64(b, 16), get.base), className, false, 'category');
-  const classMethods = await methodList(get, sanitizePointer(u64(b, 24), get.base), className, true, 'category');
-  const protocols = await protocolRefs(get, sanitizePointer(u64(b, 32), get.base));
+  const methods = await methodList(get, await resolveStoredPointer(get, u64(b, 16), address + 16n), className, false, 'category');
+  const classMethods = await methodList(get, await resolveStoredPointer(get, u64(b, 24), address + 24n), className, true, 'category');
+  const protocols = await protocolRefs(get, await resolveStoredPointer(get, u64(b, 32), address + 32n));
   return {
     runtime: 'objc', kind: 'category', address, name,
     classAddress, className,
     methods, instanceMethods: methods, classMethods, protocols,
-    instancePropertiesAddress: sanitizePointer(u64(b, 40), get.base),
-    classPropertiesAddress: b.length >= 56 ? sanitizePointer(u64(b, 48), get.base) : null,
+    instancePropertiesAddress: await resolveStoredPointer(get, u64(b, 40), address + 40n),
+    classPropertiesAddress: b.length >= 56 ? await resolveStoredPointer(get, u64(b, 48), address + 48n) : null,
   };
 }
 
@@ -173,10 +192,14 @@ async function pointerTable(get, range, budget, parse) {
 /**
  * Parse __objc_protolist / __objc_catlist using class metadata already parsed by
  * objc-legacy.js. `sections` accepts {protocolList, categoryList} ranges.
+ * `opts.resolvePointer(raw, {address,imageBase})` may be supplied by the Mach-O
+ * chained-fixup/PAC layer; it is authoritative when present and the legacy
+ * sanitizer is used only as a compatibility fallback.
  */
 export async function parseObjcExtendedMetadata(read, sections = {}, opts = {}) {
   const get = pagedReader(read, opts.pageBytes || 65536, opts.maxPages || 96);
   get.base = opts.imageBase != null ? BigInt(opts.imageBase) : null;
+  get.resolvePointer = typeof opts.resolvePointer === 'function' ? opts.resolvePointer : null;
   const classByAddress = new Map((opts.classes || []).filter((c) => c?.addr != null).map((c) => [c.addr.toString(), c]));
   const protocols = await pointerTable(get, sections.protocolList, MAX_PROTOCOLS, (address) => parseProtocol(get, address));
   const categories = await pointerTable(get, sections.categoryList, MAX_CATEGORIES, (address) => parseCategory(get, address, classByAddress));
