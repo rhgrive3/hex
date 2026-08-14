@@ -11,6 +11,7 @@ export * from './dataflow-legacy.js';
 import {
   findValueUpdates as legacyFindValueUpdates,
   constantComparisons as legacyConstantComparisons,
+  amountOf as legacyAmountOf,
   selfRegisters,
 } from './dataflow-legacy.js';
 import { findIrValueUpdates, mergeValueUpdates } from './dataflow-ir.js';
@@ -21,6 +22,7 @@ import { irFor, OP, hasUnknownStoreBarrier } from './ir.js';
 export {
   legacyFindValueUpdates as findValueUpdatesLegacy,
   legacyConstantComparisons as constantComparisonsLegacy,
+  legacyAmountOf as amountOfLegacy,
 };
 
 function instructionAt(ir, row, op) {
@@ -33,8 +35,6 @@ function instructionAt(ir, row, op) {
 /**
  * Legacy RMW heuristics are useful while migration is incomplete, but they must
  * not resurrect a claim that the newer alias model can explicitly disprove.
- * Suppression is intentionally narrow: only a legacy RMW with mappable IR load
- * and store endpoints is removed, and only when an unknown store may alias them.
  */
 function filterUnsafeLegacyRmw(ir, updates) {
   if (!ir) return updates;
@@ -42,15 +42,11 @@ function filterUnsafeLegacyRmw(ir, updates) {
     if (!u || u.kind !== 'read-modify-write' || !u.from || !u.store) return true;
     const load = instructionAt(ir, u.from.row, OP.LOAD);
     const store = instructionAt(ir, u.store.row, OP.STORE);
-    if (!load || !store) return true; // no IR correspondence: preserve legacy behavior
+    if (!load || !store) return true;
     return !hasUnknownStoreBarrier(ir, load, store);
   });
 }
 
-/**
- * Prefer SSA/Memory-SSA evidence when it exists, without throwing away the mature
- * legacy heuristics for setters, moves and instructions that the IR does not lift yet.
- */
 export function findValueUpdates(model, opts) {
   const legacyRaw = legacyFindValueUpdates(model, opts);
 
@@ -62,8 +58,6 @@ export function findValueUpdates(model, opts) {
   try {
     proven = findIrValueUpdates(model, opts);
   } catch {
-    // If IR construction succeeded, keep its explicit safety vetoes even when
-    // the adapter itself cannot produce a replacement result.
     return legacy;
   }
   if (!proven.length) return legacy;
@@ -77,13 +71,45 @@ export function findValueUpdates(model, opts) {
   return mergeValueUpdates(legacy, proven);
 }
 
-/**
- * Preserve literal comparisons from the legacy path and add thresholds proved by
- * SSA constant propagation (for example mov-constant -> cmp-register).
- */
 export function constantComparisons(model, opts) {
   const legacy = legacyConstantComparisons(model);
   let proven = [];
   try { proven = findIrConstantComparisons(model, opts); } catch { return legacy; }
   return proven.length ? mergeConstantComparisons(legacy, proven) : legacy;
+}
+
+const AMOUNT_OPS = new Set(['add', 'adds', 'sub', 'subs', 'mul', 'madd', 'msub',
+  'smull', 'umull', 'sdiv', 'udiv', 'fadd', 'fsub', 'fmul', 'fdiv', 'lsl', 'lsr', 'asr']);
+const CLAMP_OPS = new Set(['bic', 'csel', 'csinc', 'csneg', 'csinv', 'smax', 'smin', 'umax', 'umin']);
+const DIRECT_ORIGIN = new Set(['field', 'stack', 'global', 'imm', 'call', 'arg']);
+
+/**
+ * Keep the mature legacy summary shape, but for an IR-backed RMW prefer the
+ * exact SSA origin attached to the arithmetic input. This avoids the old fixed
+ * backward window losing a damage/reward amount across a branch or copy chain.
+ */
+export function amountOf(model, update) {
+  const legacy = legacyAmountOf(model, update);
+  if (!update || update.engine !== 'ir-ssa') return legacy;
+
+  let amount = null;
+  let cappedBy = null;
+  for (const step of update.steps || []) {
+    const origin = step && step.otherOrigin;
+    if (!cappedBy && CLAMP_OPS.has(step.op) && origin && origin.kind === 'field') {
+      cappedBy = origin;
+    }
+    if (amount || !AMOUNT_OPS.has(step.op)) continue;
+    if (origin && DIRECT_ORIGIN.has(origin.kind)) {
+      amount = { op: step.op, ...origin };
+    } else if (step.imm != null) {
+      amount = { kind: 'imm', value: step.imm, op: step.op, row: step.row, engine: 'ir-ssa' };
+    }
+  }
+
+  return {
+    ...legacy,
+    amount: amount || legacy.amount,
+    cappedBy: cappedBy || legacy.cappedBy,
+  };
 }
