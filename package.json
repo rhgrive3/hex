@@ -6,13 +6,14 @@
   "scripts": {
     "lint": "node tests/check.mjs",
     "check": "npm run lint && npm test",
-    "test": "node tests/run.js && node tests/ir.mjs && node tests/cfg-structuring.mjs && node tests/ux.mjs && node tests/gemini.mjs && node tests/words.mjs && node tests/api.mjs",
+    "test": "node tests/run.js && node tests/evidence-verdict.mjs && node tests/ir.mjs && node tests/cfg-structuring.mjs && node tests/ux.mjs && node tests/gemini.mjs && node tests/words.mjs && node tests/api.mjs",
     "browser": "node tests/browser.mjs",
     "sandbox": "node tests/sandbox.mjs",
     "tools": "node tests/tools.mjs",
     "accuracy": "node --max-old-space-size=8000 tests/accuracy.mjs",
     "oracle": "python3 tests/oracle.py tests/battlecats tests/oracle.battlecats.json.gz",
-    "binary:test": "node tests/universal-binary.mjs && node tests/universal-binary-sectionless.mjs",
+    "binary:test": "node tests/universal-binary.mjs && node tests/universal-binary-sectionless.mjs && node tests/universal-binary-source.mjs",
+    "binary:source-test": "node tests/universal-binary-source.mjs",
     "binary:gate": "node tests/universal-binary-gate.mjs",
     "binary:benchmark": "node tests/universal-binary-benchmark.mjs"
   }

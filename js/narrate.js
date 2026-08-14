@@ -1607,9 +1607,15 @@ export function missingText(code) {
     case 'need-verification':
       return pick('命令まで降りた裏取りがまだありません（アクセサが無いか、読めませんでした）',
         'no instruction-level confirmation yet');
+    /*
+     * ここは「種類」ではなく「出どころ」の話。
+     * 名前・プロパティ名・クラスの担当は種類としては別だが、
+     * どれも同じクラス表から読んだものなので、独立した根拠にはならない。
+     */
     case 'need-independent-evidence':
-      return pick('別々の種類の根拠が足りません（名前だけ、型だけ、では確定にしません）',
-        'not enough independent kinds of evidence');
+      return pick('出どころの違う根拠が足りません（同じクラス表から読んだ手がかりは、' +
+        'いくつ揃っても 1 つぶんとして数えます）',
+      'not enough independent sources of evidence (clues read from the same class table count as one)');
     case 'need-more-evidence':
       return pick('根拠の量が足りません', 'not enough evidence overall');
     case 'need-separation':

@@ -16,10 +16,11 @@ const SHF_ALLOC = 0x2n;
 const SHF_EXECINSTR = 0x4n;
 
 export function parseELF(input) {
-  const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
-  if (bytes.length < 16 || bytes[0] !== 0x7f || bytes[1] !== 0x45 || bytes[2] !== 0x4c || bytes[3] !== 0x46) throw new Error('not an ELF file');
-  const cls = bytes[4];
-  const data = bytes[5];
+  const initial = new ByteView(input, { littleEndian: true });
+  const bytes = initial.bytes;
+  if (initial.length < 16 || initial.u8(0) !== 0x7f || initial.u8(1) !== 0x45 || initial.u8(2) !== 0x4c || initial.u8(3) !== 0x46) throw new Error('not an ELF file');
+  const cls = initial.u8(4);
+  const data = initial.u8(5);
   if (cls !== 1 && cls !== 2) throw new Error(`unsupported ELF class ${cls}`);
   if (data !== 1 && data !== 2) throw new Error(`unsupported ELF data encoding ${data}`);
   const bits = cls === 2 ? 64 : 32;
@@ -28,9 +29,9 @@ export function parseELF(input) {
   const h = readHeader(r, bits);
   const image = new BinaryImage(bytes, {
     format: 'elf', arch: elfMachineName(h.machine), bits,
-    endian: littleEndian ? 'little' : 'big', platform: elfOsAbi(bytes[7]),
+    endian: littleEndian ? 'little' : 'big', platform: elfOsAbi(r.u8(7)),
     entrypoint: h.entry, imageBase: 0n,
-    metadata: { type: h.type, machine: h.machine, flags: h.flags, osabi: bytes[7], abiVersion: bytes[8] },
+    metadata: { type: h.type, machine: h.machine, flags: h.flags, osabi: r.u8(7), abiVersion: r.u8(8) },
   });
 
   const programHeaders = parseProgramHeaders(r, h, image, bits);
@@ -89,7 +90,8 @@ function readHeader(r, bits) {
 
 function parseProgramHeaders(r, h, image, bits) {
   const out = [];
-  const off = Number(h.phoff);
+  const off = safeOffset(h.phoff);
+  if (off == null) { image.warnings.push('ELF program header offset is not safely representable'); return out; }
   if (!h.phnum || !h.phentsize || off <= 0) return out;
   if (off + h.phnum * h.phentsize > r.length) { image.warnings.push('ELF program header table is truncated'); return out; }
   for (let i = 0; i < h.phnum; i++) {
@@ -112,8 +114,9 @@ function parseProgramHeaders(r, h, image, bits) {
 }
 
 function parseSectionHeaders(r, h, bits, image) {
-  const off = Number(h.shoff);
+  const off = safeOffset(h.shoff);
   let count = h.shnum;
+  if (off == null) { image.warnings.push('ELF section header offset is not safely representable'); return []; }
   if (!off || !h.shentsize) return [];
   if (off + h.shentsize > r.length) { image.warnings.push('ELF section header table is truncated'); return []; }
   if (count === 0) count = bits === 64 ? Number(r.u64(off + 32)) : r.u32(off + 20);
@@ -137,7 +140,10 @@ function nameSections(r, sections, h) {
   for (const s of sections) {
     if (BigInt(s.nameOffset) >= str.size) continue;
     try { s.name = r.cstring(Number(str.offset) + s.nameOffset, Number(str.size) - s.nameOffset); }
-    catch { s.name = ''; }
+    catch (error) {
+      if (error?.code === 'BINARY_SOURCE_RANGE_MISSING') throw error;
+      s.name = '';
+    }
   }
 }
 
@@ -232,4 +238,9 @@ function elfMachineName(m) {
 }
 function elfOsAbi(v) {
   return ({ 0: 'sysv', 1: 'hpux', 2: 'netbsd', 3: 'linux', 6: 'solaris', 9: 'freebsd', 12: 'openbsd' })[v] || `elf-osabi-${v}`;
+}
+
+function safeOffset(value) {
+  const n = Number(value);
+  return Number.isSafeInteger(n) && n >= 0 ? n : null;
 }

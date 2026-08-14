@@ -8,7 +8,7 @@ const IMAGE_DIRECTORY_ENTRY_EXCEPTION = 3;
 const IMAGE_DIRECTORY_ENTRY_BASERELOC = 5;
 
 export function parsePE(input) {
-  const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
+  const bytes = new ByteView(input).bytes;
   const r = new ByteView(bytes, { littleEndian: true });
   if (r.length < 0x40 || r.u16(0) !== 0x5a4d) throw new Error('not a PE file');
   const pe = r.u32(0x3c);

@@ -26,7 +26,7 @@ const DYLIB_COMMANDS = new Set([
 ]);
 
 export function parseMachO(input, opts = {}) {
-  const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
+  const bytes = new ByteView(input).bytes;
   const kind = machoKind(bytes);
   if (!kind) throw new Error('not a Mach-O file');
   if (kind.fat) {
@@ -56,6 +56,7 @@ function parseThin(bytes, opts) {
   const sizeofcmds = r.u32(20);
   const flags = r.u32(24);
   if (headerSize + sizeofcmds > r.length) throw new Error('Mach-O load commands exceed file');
+  const commandEnd = headerSize + sizeofcmds;
 
   const image = new BinaryImage(bytes, {
     format: 'macho', arch: cpuName(cpu), bits,
@@ -72,17 +73,17 @@ function parseThin(bytes, opts) {
   const dyldInfos = [];
   let p = headerSize;
   for (let i = 0; i < ncmds; i++) {
-    if (p + 8 > r.length) { image.warnings.push(`truncated load command ${i}`); break; }
+    if (p + 8 > commandEnd) { image.warnings.push(`truncated load command ${i}`); break; }
     const cmd = r.u32(p);
     const cmdsize = r.u32(p + 4);
-    if (cmdsize < 8 || p + cmdsize > r.length) {
+    if (cmdsize < 8 || p + cmdsize > commandEnd) {
       image.warnings.push(`invalid load command ${i} size ${cmdsize}`);
       break;
     }
     commands.push({ cmd, offset: p, size: cmdsize });
     try {
-      if (cmd === LC_SEGMENT_64 && bits === 64) parseSegment64(r, p, image, segmentOrder);
-      else if (cmd === LC_SEGMENT && bits === 32) parseSegment32(r, p, image, segmentOrder);
+      if (cmd === LC_SEGMENT_64 && bits === 64) parseSegment64(r, p, cmdsize, image, segmentOrder);
+      else if (cmd === LC_SEGMENT && bits === 32) parseSegment32(r, p, cmdsize, image, segmentOrder);
       else if (cmd === LC_SYMTAB) symtabs.push({ symoff: r.u32(p + 8), nsyms: r.u32(p + 12), stroff: r.u32(p + 16), strsize: r.u32(p + 20) });
       else if (DYLIB_COMMANDS.has(cmd) || cmd === LC_ID_DYLIB) parseDylib(r, p, cmdsize, image, cmd === LC_ID_DYLIB);
       else if (cmd === LC_MAIN && cmdsize >= 24) linkeditData.main = { entryoff: r.u64(p + 8), stacksize: r.u64(p + 16) };
@@ -92,6 +93,7 @@ function parseThin(bytes, opts) {
       else if ((cmd === LC_DYLD_INFO || cmd === LC_DYLD_INFO_ONLY) && cmdsize >= 48) dyldInfos.push(parseDyldInfo(r, p));
       else if (cmd === LC_BUILD_VERSION && cmdsize >= 24) parseBuildVersion(r, p, image);
     } catch (e) {
+      if (e?.code === 'BINARY_SOURCE_RANGE_MISSING') throw e;
       image.warnings.push(`load command 0x${cmd.toString(16)}: ${e.message}`);
     }
     p += cmdsize;
@@ -139,7 +141,8 @@ function parseThin(bytes, opts) {
   return image.finalize();
 }
 
-function parseSegment64(r, p, image, order) {
+function parseSegment64(r, p, cmdsize, image, order) {
+  if (cmdsize < 72) throw new Error(`invalid LC_SEGMENT_64 size ${cmdsize}`);
   const name = r.ascii(p + 8, 16);
   const address = r.u64(p + 24);
   const size = r.u64(p + 32);
@@ -147,6 +150,7 @@ function parseSegment64(r, p, image, order) {
   const fileSize = r.u64(p + 48);
   const initprot = r.i32(p + 60);
   const nsects = r.u32(p + 64);
+  if (nsects > Math.floor((cmdsize - 72) / 80)) throw new Error(`invalid section count ${nsects}`);
   const flags = r.u32(p + 68);
   const seg = image.addSegment({ name, address, size, fileOffset, fileSize, perms: vmPerms(initprot), flags, source: 'LC_SEGMENT_64' });
   order.push(seg);
@@ -164,7 +168,8 @@ function parseSegment64(r, p, image, order) {
   }
 }
 
-function parseSegment32(r, p, image, order) {
+function parseSegment32(r, p, cmdsize, image, order) {
+  if (cmdsize < 56) throw new Error(`invalid LC_SEGMENT size ${cmdsize}`);
   const name = r.ascii(p + 8, 16);
   const address = BigInt(r.u32(p + 24));
   const size = BigInt(r.u32(p + 28));
@@ -172,6 +177,7 @@ function parseSegment32(r, p, image, order) {
   const fileSize = BigInt(r.u32(p + 36));
   const initprot = r.i32(p + 44);
   const nsects = r.u32(p + 48);
+  if (nsects > Math.floor((cmdsize - 56) / 68)) throw new Error(`invalid section count ${nsects}`);
   const flags = r.u32(p + 52);
   const seg = image.addSegment({ name, address, size, fileOffset, fileSize, perms: vmPerms(initprot), flags, source: 'LC_SEGMENT' });
   order.push(seg);
@@ -277,7 +283,8 @@ function version32(v) { return `${(v >>> 16) & 0xffff}.${(v >>> 8) & 0xff}.${v &
 
 function machoKind(bytes) {
   if (bytes.length < 4) return null;
-  const s = [...bytes.subarray(0, 4)].map((x) => x.toString(16).padStart(2, '0')).join('');
+  const r = new ByteView(bytes);
+  const s = [r.u8(0), r.u8(1), r.u8(2), r.u8(3)].map((x) => x.toString(16).padStart(2, '0')).join('');
   if (s === 'cefaedfe') return { fat: false, bits: 32, littleEndian: true };
   if (s === 'cffaedfe') return { fat: false, bits: 64, littleEndian: true };
   if (s === 'feedface') return { fat: false, bits: 32, littleEndian: false };

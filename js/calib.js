@@ -38,8 +38,20 @@
 /*
  * 群の定義そのものは evidence.js が持つ（証拠の表と同じ場所に置く）。
  * ここは、その群を使って合成し、当たり具合を測る側。
+ *
+ * 判断基準を 2 つ持たないための取り決め:
+ *
+ *   GROUP / groupOf          … evidence.js が唯一の定義元。ここは再輸出するだけ。
+ *   fuse()                   … **本番の合成**。系統で割り引き、群の数を数えて返す。
+ *   decide()                 … 確定の判定。fuse() の independentGroups だけを見る。
+ *   groupedFusion()          … 群を主にした参照実装。同じ材料で
+ *                              「出どころだけで束ねたらどうなるか」を測るためのもの。
+ *                              **本番の判定には使わない**（使うなら fuse() を置き換える）。
+ *
+ * groupedFusion が fuse と食い違ってよいのは合算の仕方だけで、
+ * 「裏取りが無ければ天井を下げる」という安全側の歯止めは両方に要る。
  */
-import { GROUP, groupOf } from './evidence.js';
+import { GROUP, groupOf, UNVERIFIED_CEIL } from './evidence.js';
 
 export { GROUP, groupOf };
 
@@ -119,6 +131,16 @@ export function groupedFusion(items, opts) {
     .filter(([, v]) => v > 0)
     .map(([g, v]) => ({ group: g, logOdds: v, factor: Math.exp(v) }))
     .sort((a, b) => b.logOdds - a.logOdds);
+
+  /*
+   * 命令まで降りて確かめていないものの天井。fuse() と同じ値を使う。
+   *
+   * ここが無かったころ、semantic の上限が 1e9 なので、開発者が書いた文言が
+   * 1 本あるだけで（裏取りゼロで）99.99% を返せてしまった。fuse() は 97% で
+   * 止めるので、同じ材料に対して 2 つの答えが出ることになる。
+   * 合算の仕方は違ってよいが、安全側の歯止めまで違ってはいけない。
+   */
+  if (!verified) logOdds = Math.min(logOdds, UNVERIFIED_CEIL);
 
   return {
     logOdds,
@@ -229,13 +251,26 @@ export function accuracyReport(rows) {
 }
 
 /**
- * 実測から補正曲線を作る。evidence.js の calibrateProbability に渡せる形。
+ * 実測から補正曲線を作る。
+ *
+ * 返す形は evidence.js の calibrateProbability(score, curve) が食える形、
+ * すなわち `[{score, observed}]` の配列そのもの。
+ * 以前ここは `{points:[{from,to,n}]}` を返していて、docstring は
+ * 「calibrateProbability に渡せる形」と言っていたが、実際に渡すと
+ * `curve.filter is not a function` で落ちた（配列ではなくオブジェクトなので）。
+ * 校正を有効にした瞬間に、確からしさの計算がまるごと例外になる形だった。
+ *
  * サンプルが足りないときは null（＝補正しない）。嘘の補正はしない。
+ *
+ * @param {Array<{probability:number, correct:boolean}>} samples
+ * @returns {Array<{score:number, observed:number, n:number}>|null}
  */
 export function fitCalibration(samples, binCount = 10) {
   const rows = (samples || []).filter((s) => s && typeof s.probability === 'number');
   if (rows.length < 40) return null;
   const bins = reliabilityBins(rows, binCount);
-  const points = bins.filter((b) => b.n >= 3).map((b) => ({ from: b.confidence, to: b.accuracy, n: b.n }));
-  return points.length >= 3 ? { points } : null;
+  const curve = bins.filter((b) => b.n >= 3)
+    .map((b) => ({ score: b.confidence, observed: b.accuracy, n: b.n }))
+    .sort((a, b) => a.score - b.score);
+  return curve.length >= 3 ? curve : null;
 }
