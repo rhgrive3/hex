@@ -3,8 +3,9 @@ import { parseELF } from './elf.js';
 import { parseMachO } from './macho.js';
 import { parsePE } from './pe.js';
 import { ByteView } from './reader.js';
-import { asByteSource, ByteSourceLimitError } from './source.js';
+import { asByteSource } from './source.js';
 import { parseSourceRanges } from './source-reader.js';
+import { scanSourceStrings } from '../bytesource/strings.js';
 
 const FAT_KINDS = new Map([
   ['cafebabe', { bits: 32, littleEndian: false }],
@@ -20,9 +21,7 @@ export async function openBinarySource(input, opts = {}) {
   const prefix = await source.readExactly(0n, prefixLength);
   const detected = detectBinary(prefix);
   const rangeOptions = opts.ranges || {};
-  if (opts.strings) {
-    throw new ByteSourceLimitError('source-backed string scanning is not implemented; request file ranges explicitly instead');
-  }
+
   if (detected.format === 'elf') return parseELFSource(source, opts, prefix, rangeOptions);
   if (detected.format === 'pe') return parsePESource(source, opts, prefix, rangeOptions);
   if (detected.format === 'macho') return parseMachOSource(source, opts, prefix, rangeOptions);
@@ -32,20 +31,25 @@ export async function openBinarySource(input, opts = {}) {
 export async function parseELFSource(input, opts = {}, prefix = null, rangeOptions = opts.ranges || {}) {
   const source = asByteSource(input, opts.source || {});
   const magic = prefix || await readPrefix(source);
-  return parseSourceRanges(source, parseELF, {}, withInitial(magic, rangeOptions));
+  const image = await parseSourceRanges(source, parseELF, {}, withInitial(magic, rangeOptions));
+  return withStrings(image, source, opts);
 }
 
 export async function parsePESource(input, opts = {}, prefix = null, rangeOptions = opts.ranges || {}) {
   const source = asByteSource(input, opts.source || {});
   const magic = prefix || await readPrefix(source);
-  return parseSourceRanges(source, parsePE, {}, withInitial(magic, rangeOptions));
+  const image = await parseSourceRanges(source, parsePE, {}, withInitial(magic, rangeOptions));
+  return withStrings(image, source, opts);
 }
 
 export async function parseMachOSource(input, opts = {}, prefix = null, rangeOptions = opts.ranges || {}) {
   const source = asByteSource(input, opts.source || {});
   const magic = prefix || await source.readExactly(0n, Number(source.size < 16n ? source.size : 16n));
   const fat = fatKind(magic);
-  if (!fat) return parseSourceRanges(source, parseMachO, opts, withInitial(magic, rangeOptions));
+  if (!fat) {
+    const image = await parseSourceRanges(source, parseMachO, opts, withInitial(magic, rangeOptions));
+    return withStrings(image, source, opts);
+  }
 
   if (source.size < 8n) throw new Error('Mach-O universal header is truncated');
   const head = magic.byteLength >= 8 ? magic.subarray(0, 8) : await source.readExactly(0n, 8);
@@ -65,16 +69,26 @@ export async function parseMachOSource(input, opts = {}, prefix = null, rangeOpt
     all.push({ cpu, subtype, offset, size });
   }
   const valid = all.filter((slice) => slice.size > 0n && slice.offset <= source.size && slice.size <= source.size - slice.offset);
-  const requested = opts.arch ? valid.find((slice) => cpuName(slice.cpu) === opts.arch) : null;
-  const selected = requested || valid.find((slice) => cpuName(slice.cpu) === 'arm64') || valid.find((slice) => cpuName(slice.cpu) === 'x86_64') || valid[0];
+  const requested = opts.arch ? valid.find((slice) => sliceArchName(slice) === opts.arch) : null;
+  if (opts.arch && !requested) throw new Error(`requested Mach-O architecture ${opts.arch} is not present in the universal binary`);
+  const selected = requested || valid.find((slice) => sliceArchName(slice) === 'arm64e') || valid.find((slice) => sliceArchName(slice) === 'arm64') || valid.find((slice) => sliceArchName(slice) === 'x86_64') || valid[0];
   if (!selected) throw new Error('Mach-O universal binary has no readable slice');
   const sliceSource = source.subrange(selected.offset, selected.size);
   const slicePrefix = await readPrefix(sliceSource);
   const image = await parseSourceRanges(sliceSource, parseMachO, { ...opts, containerOffset: selected.offset }, withInitial(slicePrefix, rangeOptions));
   image.metadata.fat = {
-    slices: all.map((slice) => ({ arch: cpuName(slice.cpu), cpu: slice.cpu, subtype: slice.subtype, offset: slice.offset, size: slice.size })),
-    selected: { arch: cpuName(selected.cpu), offset: selected.offset, size: selected.size },
+    slices: all.map((slice) => ({ arch: sliceArchName(slice), cpu: slice.cpu, subtype: slice.subtype, offset: slice.offset, size: slice.size })),
+    selected: { arch: sliceArchName(selected), cpu: selected.cpu, subtype: selected.subtype, offset: selected.offset, size: selected.size },
   };
+  return withStrings(image, sliceSource, opts);
+}
+
+async function withStrings(image, source, opts) {
+  if (!opts.strings) return image;
+  const scanOpts = typeof opts.strings === 'object' ? opts.strings : {};
+  const result = await scanSourceStrings(image, source, { ...scanOpts, signal: scanOpts.signal ?? opts.signal });
+  image.strings = result.results;
+  image.metadata.sourceStrings = { cancelled: result.cancelled, capped: result.capped, count: result.results.length };
   return image;
 }
 
@@ -98,3 +112,5 @@ function cpuName(cpu) {
   const value = cpu >>> 0;
   return ({ 7: 'x86', 12: 'arm', 18: 'ppc', 0x01000007: 'x86_64', 0x0100000c: 'arm64', 0x0200000c: 'arm64_32' })[value] || `cpu-${value}`;
 }
+function subtypeBase(subtype) { return (subtype >>> 0) & 0x00ffffff; }
+function sliceArchName(slice) { return cpuName(slice.cpu) === 'arm64' && subtypeBase(slice.subtype) === 2 ? 'arm64e' : cpuName(slice.cpu); }

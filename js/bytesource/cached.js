@@ -12,6 +12,23 @@ function throwIfCancelled(signal) {
   if (signal?.aborted) throw new ByteSourceCancelledError();
 }
 
+function waitForConsumer(promise, signal) {
+  if (!signal) return promise;
+  throwIfCancelled(signal);
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener?.('abort', onAbort);
+      fn(value);
+    };
+    const onAbort = () => finish(reject, new ByteSourceCancelledError());
+    signal.addEventListener?.('abort', onAbort, { once: true });
+    promise.then((value) => finish(resolve, value), (error) => finish(reject, error));
+  });
+}
+
 export class CachedByteSource extends ByteSource {
   constructor(input, options = {}) {
     const source = asByteSource(input, options.source || {});
@@ -43,7 +60,7 @@ export class CachedByteSource extends ByteSource {
       const absolute = start + BigInt(done);
       const pageIndex = absolute / BigInt(this.pageSize);
       const pageOffset = Number(absolute % BigInt(this.pageSize));
-      const page = await this.#page(pageIndex, options.signal);
+      const page = await waitForConsumer(this.#page(pageIndex), options.signal);
       throwIfCancelled(options.signal);
       if (pageOffset >= page.length) break;
       const take = Math.min(page.length - pageOffset, range.length - done);
@@ -60,7 +77,7 @@ export class CachedByteSource extends ByteSource {
     return bytes;
   }
 
-  async #page(pageIndex, signal) {
+  async #page(pageIndex) {
     const key = pageIndex.toString();
     const cached = this.cache.get(key);
     if (cached) {
@@ -77,9 +94,7 @@ export class CachedByteSource extends ByteSource {
       const length = Number(remaining < BigInt(this.pageSize) ? remaining : BigInt(this.pageSize));
       const generation = this.generation;
       promise = (async () => {
-        throwIfCancelled(signal);
         const bytes = await this.source.readExactly(offset, length);
-        throwIfCancelled(signal);
         this.stats.backendBytesRead += bytes.byteLength;
         // clear() is a memory-pressure/file-lifecycle boundary. An older read is
         // allowed to finish for its caller, but must never repopulate the cache.

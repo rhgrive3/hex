@@ -1,5 +1,5 @@
 import { BinaryReadError } from './reader.js';
-import { ByteSourceLimitError, safeNumber } from './source.js';
+import { ByteSourceLimitError, nonNegativeBigInt, safeNumber } from './source.js';
 
 export class SourceRangeMissingError extends BinaryReadError {
   constructor(offset, length) {
@@ -13,42 +13,78 @@ export class SourceRangeMissingError extends BinaryReadError {
 
 export class SparseByteBuffer {
   constructor(size) {
-    this.length = safeNumber(size, 'binary source size');
+    this.size = nonNegativeBigInt(size, 'binary source size');
+    this.length = this.size > BigInt(Number.MAX_SAFE_INTEGER) ? Number.MAX_SAFE_INTEGER : Number(this.size);
     this.__binaryByteBacking = true;
     this.chunks = [];
   }
 
-  add(offset, input) {
-    const start = safeNumber(offset, 'cached range offset');
-    const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
-    if (BigInt(start) + BigInt(bytes.length) > BigInt(this.length)) throw new BinaryReadError('cached range exceeds source', start);
-    if (!bytes.length) return;
-    this.chunks.push({ start, end: start + bytes.length, bytes });
-    this.chunks.sort((a, b) => a.start - b.start);
+  additionalBytes(offset, length) {
+    const start = nonNegativeBigInt(offset, 'cached range offset');
+    const count = nonNegativeBigInt(length, 'cached range length');
+    const end = start + count;
+    if (end > this.size) throw new BinaryReadError('cached range exceeds source', start);
+    let overlap = 0n;
+    for (const chunk of this.chunks) {
+      const lo = chunk.start > start ? chunk.start : start;
+      const hi = chunk.end < end ? chunk.end : end;
+      if (hi > lo) overlap += hi - lo;
+    }
+    return safeNumber(count - overlap, 'new cached byte count');
   }
 
-  subarray(start, end = this.length) {
-    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start || end > this.length) {
-      throw new BinaryReadError('read outside file', Math.max(0, start || 0));
+  add(offset, input) {
+    const start = nonNegativeBigInt(offset, 'cached range offset');
+    const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
+    const end = start + BigInt(bytes.length);
+    if (end > this.size) throw new BinaryReadError('cached range exceeds source', start);
+    if (!bytes.length) return 0;
+    const added = this.additionalBytes(start, bytes.length);
+    let mergeStart = start, mergeEnd = end;
+    const keep = [];
+    const merge = [];
+    for (const chunk of this.chunks) {
+      if (chunk.end < start || chunk.start > end) keep.push(chunk);
+      else {
+        merge.push(chunk);
+        if (chunk.start < mergeStart) mergeStart = chunk.start;
+        if (chunk.end > mergeEnd) mergeEnd = chunk.end;
+      }
     }
-    const size = end - start;
+    const mergedLength = safeNumber(mergeEnd - mergeStart, 'merged cached range');
+    const merged = new Uint8Array(mergedLength);
+    for (const chunk of merge) merged.set(chunk.bytes, safeNumber(chunk.start - mergeStart, 'cached chunk offset'));
+    merged.set(bytes, safeNumber(start - mergeStart, 'cached input offset'));
+    keep.push({ start: mergeStart, end: mergeEnd, bytes: merged });
+    keep.sort((a, b) => a.start < b.start ? -1 : a.start > b.start ? 1 : 0);
+    this.chunks = keep;
+    return added;
+  }
+
+  subarray(start, end = this.size) {
+    const begin = nonNegativeBigInt(start, 'cached read start');
+    const finish = nonNegativeBigInt(end, 'cached read end');
+    if (finish < begin || finish > this.size) throw new BinaryReadError('read outside file', begin);
+    const size = safeNumber(finish - begin, 'cached read length');
     if (!size) return new Uint8Array();
-    let cursor = start;
+    let cursor = begin;
     for (const chunk of this.chunks) {
       if (chunk.end <= cursor) continue;
-      if (chunk.start > cursor) throw new SourceRangeMissingError(cursor, end - cursor);
-      cursor = Math.min(end, chunk.end);
-      if (cursor === end) break;
+      if (chunk.start > cursor) throw new SourceRangeMissingError(cursor, finish - cursor);
+      cursor = finish < chunk.end ? finish : chunk.end;
+      if (cursor === finish) break;
     }
-    if (cursor !== end) throw new SourceRangeMissingError(cursor, end - cursor);
+    if (cursor !== finish) throw new SourceRangeMissingError(cursor, finish - cursor);
     const out = new Uint8Array(size);
-    cursor = start;
+    cursor = begin;
     for (const chunk of this.chunks) {
       if (chunk.end <= cursor) continue;
-      const takeEnd = Math.min(end, chunk.end);
-      out.set(chunk.bytes.subarray(cursor - chunk.start, takeEnd - chunk.start), cursor - start);
+      const takeEnd = finish < chunk.end ? finish : chunk.end;
+      const from = safeNumber(cursor - chunk.start, 'cached chunk read offset');
+      const to = safeNumber(takeEnd - chunk.start, 'cached chunk read end');
+      out.set(chunk.bytes.subarray(from, to), safeNumber(cursor - begin, 'cached output offset'));
       cursor = takeEnd;
-      if (cursor === end) return out;
+      if (cursor === finish) return out;
     }
     return out;
   }
@@ -67,14 +103,16 @@ export async function parseSourceRanges(source, parser, parserOptions = {}, opti
   if (!Number.isSafeInteger(maxReads) || maxReads <= 0) throw new ByteSourceLimitError('maxReads must be a positive safe integer');
   const sparse = new SparseByteBuffer(source.size);
   let reads = 0;
+  let parserPasses = 0;
   let cachedBytes = 0;
   let totalRequestedBytes = 0;
   let largestRead = 0;
   const initial = options.initial || [];
   for (const item of initial) {
-    if (cachedBytes + item.bytes.byteLength > maxCachedBytes) throw new ByteSourceLimitError(`initial metadata exceeds the ${maxCachedBytes}-byte cache limit`);
+    const added = sparse.additionalBytes(item.offset, item.bytes.byteLength);
+    if (cachedBytes + added > maxCachedBytes) throw new ByteSourceLimitError(`initial metadata exceeds the ${maxCachedBytes}-byte cache limit`);
     sparse.add(item.offset, item.bytes);
-    cachedBytes += item.bytes.byteLength;
+    cachedBytes += added;
   }
 
   for (;;) {
@@ -83,32 +121,45 @@ export async function parseSourceRanges(source, parser, parserOptions = {}, opti
       // and restart deterministically. Callers may opt into a larger
       // maxPageSize so large metadata avoids O(n^2) restart storms without
       // removing the overall metadata memory budget.
+      parserPasses++;
       const image = parser(sparse, parserOptions);
       image.attachSource(source, { discardBytes: true });
       image.metadata.sourceBacked = true;
-      image.metadata.sourceReads = { requests: reads, cachedBytes, pageSize, maxPageSize, totalRequestedBytes, largestRead };
+      image.metadata.sourceReads = { requests: reads, parserPasses, cachedBytes, pageSize, maxPageSize, totalRequestedBytes, largestRead };
       return image;
     } catch (error) {
       if (error?.code !== 'BINARY_SOURCE_RANGE_MISSING') throw error;
-      if (++reads > maxReads) throw new ByteSourceLimitError(`binary metadata required more than ${maxReads} range reads`);
-      const offset = error.offset;
-      if (offset >= source.size) throw new BinaryReadError('truncated binary metadata', offset);
-      const remaining = source.size - offset;
-      const budgetRemaining = maxCachedBytes - cachedBytes;
-      if (budgetRemaining <= 0) throw new ByteSourceLimitError(`binary metadata exceeds the ${maxCachedBytes}-byte cache limit`);
-
-      const growthShift = Math.min(5, Math.floor((reads - 1) / 4));
-      const adaptive = Math.min(maxPageSize, pageSize * (2 ** growthShift));
-      const wantedByParser = error.length > BigInt(maxPageSize) ? maxPageSize : safeNumber(error.length, 'missing source range length');
-      const requested = Math.max(pageSize, adaptive, wantedByParser);
-      const requestLimit = Math.min(requested, maxPageSize, source.maxReadLength, budgetRemaining);
-      const length = Number(remaining < BigInt(requestLimit) ? remaining : BigInt(requestLimit));
-      if (length <= 0) throw new ByteSourceLimitError(`binary metadata exceeds the ${maxCachedBytes}-byte cache limit`);
-      const bytes = await source.readExactly(offset, length);
-      sparse.add(offset, bytes);
-      cachedBytes += bytes.byteLength;
-      totalRequestedBytes += bytes.byteLength;
-      largestRead = Math.max(largestRead, bytes.byteLength);
+      const missingEnd = error.offset + error.length > source.size ? source.size : error.offset + error.length;
+      let cursor = error.offset;
+      let first = true;
+      while (cursor < source.size && (first || cursor < missingEnd)) {
+        first = false;
+        if (++reads > maxReads) throw new ByteSourceLimitError(`binary metadata required more than ${maxReads} range reads`);
+        if (options.signal?.aborted) {
+          const cancelled = new Error('binary metadata read aborted');
+          cancelled.name = 'AbortError';
+          throw cancelled;
+        }
+        const remaining = source.size - cursor;
+        const budgetRemaining = maxCachedBytes - cachedBytes;
+        if (budgetRemaining <= 0) throw new ByteSourceLimitError(`binary metadata exceeds the ${maxCachedBytes}-byte cache limit`);
+        const growthShift = Math.min(5, Math.floor((reads - 1) / 4));
+        const adaptive = Math.min(maxPageSize, pageSize * (2 ** growthShift));
+        const missing = missingEnd > cursor ? missingEnd - cursor : 0n;
+        const wantedByParser = missing > BigInt(maxPageSize) ? maxPageSize : safeNumber(missing, 'missing source range length');
+        const requested = Math.max(pageSize, adaptive, wantedByParser);
+        const requestLimit = Math.min(requested, maxPageSize, source.maxReadLength, budgetRemaining);
+        const length = Number(remaining < BigInt(requestLimit) ? remaining : BigInt(requestLimit));
+        if (length <= 0) throw new ByteSourceLimitError(`binary metadata exceeds the ${maxCachedBytes}-byte cache limit`);
+        const bytes = await source.readExactly(cursor, length, { signal: options.signal });
+        const added = sparse.additionalBytes(cursor, bytes.byteLength);
+        if (added > budgetRemaining) throw new ByteSourceLimitError(`binary metadata exceeds the ${maxCachedBytes}-byte cache limit`);
+        sparse.add(cursor, bytes);
+        cachedBytes += added;
+        totalRequestedBytes += bytes.byteLength;
+        largestRead = Math.max(largestRead, bytes.byteLength);
+        cursor += BigInt(bytes.byteLength);
+      }
     }
   }
 }
