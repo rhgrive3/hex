@@ -49,6 +49,19 @@ export function traceToSemanticFacts(trace, context = {}) {
   return facts;
 }
 
+export function compareRuntimeDispatch(staticTargets, runtimeEvent) {
+  const candidates = (Array.isArray(staticTargets) ? staticTargets : [staticTargets]).filter((v) => v != null).map((v) => {
+    try { return typeof v === 'bigint' ? v : BigInt(v); } catch { return null; }
+  }).filter((v) => v != null);
+  const observedRaw = runtimeEvent && (runtimeEvent.imp ?? runtimeEvent.witnessTarget ?? runtimeEvent.vtableTarget ?? runtimeEvent.target);
+  if (observedRaw == null) return { status:'inconclusive', observed:null, candidates };
+  let observed; try { observed = typeof observedRaw === 'bigint' ? observedRaw : BigInt(observedRaw); } catch { return { status:'inconclusive', observed:null, candidates }; }
+  if (!candidates.length) return { status:'supported', observed, candidates, reason:'runtime-target-observed-without-static-candidate' };
+  return candidates.some((c) => c === observed)
+    ? { status:'supported', observed, candidates, reason:'runtime-target-matches-static-candidate' }
+    : { status:'contradicted', observed, candidates, reason:'runtime-target-not-in-static-candidates' };
+}
+
 export function dynamicTypeAnnotation(event, context = {}) {
   if (!event || (!event.dynamicType && !event.className)) return null;
   return {
