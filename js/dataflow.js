@@ -16,9 +16,8 @@ import {
 } from './dataflow-legacy.js';
 import { findIrValueUpdates, mergeValueUpdates } from './dataflow-ir.js';
 import { findIrConstantComparisons, mergeConstantComparisons } from './dataflow-ir-compare.js';
-import { irFor, OP, hasUnknownStoreBarrier } from './ir.js';
+import { irFor, OP, MK, hasUnknownStoreBarrier } from './ir.js';
 
-/** Exposed only for regression tests and migration diagnostics. */
 export {
   legacyFindValueUpdates as findValueUpdatesLegacy,
   legacyConstantComparisons as constantComparisonsLegacy,
@@ -32,10 +31,6 @@ function instructionAt(ir, row, op) {
   return list.find((i) => i.op === op) || null;
 }
 
-/**
- * Legacy RMW heuristics are useful while migration is incomplete, but they must
- * not resurrect a claim that the newer alias model can explicitly disprove.
- */
 function filterUnsafeLegacyRmw(ir, updates) {
   if (!ir) return updates;
   return (updates || []).filter((u) => {
@@ -60,6 +55,11 @@ export function findValueUpdates(model, opts) {
   } catch {
     return legacy;
   }
+  // The old public shape interprets `location.disp` as an object/stack offset.
+  // A GLOBAL IR location has an absolute address instead, so feeding it into the
+  // legacy pinpoint-location path would mislabel it as a +0 field. Keep global
+  // analysis in IR/slicing, but do not adapt it as a legacy field candidate.
+  proven = proven.filter((u) => !(u.location && u.location.irKind === MK.GLOBAL));
   if (!proven.length) return legacy;
 
   const self = selfRegisters(model);
@@ -83,11 +83,6 @@ const AMOUNT_OPS = new Set(['add', 'adds', 'sub', 'subs', 'mul', 'madd', 'msub',
 const CLAMP_OPS = new Set(['bic', 'csel', 'csinc', 'csneg', 'csinv', 'smax', 'smin', 'umax', 'umin']);
 const DIRECT_ORIGIN = new Set(['field', 'stack', 'global', 'imm', 'call', 'arg']);
 
-/**
- * Keep the mature legacy summary shape, but for an IR-backed RMW prefer the
- * exact SSA origin attached to the arithmetic input. This avoids the old fixed
- * backward window losing a damage/reward amount across a branch or copy chain.
- */
 export function amountOf(model, update) {
   const legacy = legacyAmountOf(model, update);
   if (!update || update.engine !== 'ir-ssa') return legacy;
