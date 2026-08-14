@@ -9,6 +9,13 @@ function normalizePermissions(value) {
   return Object.freeze({ read: s.includes('r'), write: s.includes('w'), execute: s.includes('x') });
 }
 
+function strictSize(value, fallback, max, name) {
+  const n = value == null ? fallback : Number(value);
+  if (!Number.isSafeInteger(n) || n < 1) throw new MemoryAccessError('invalid-size', `${name} must be a positive safe integer`, { value });
+  if (n > max) throw new MemoryAccessError('too-large', `${name} exceeds ${max} bytes`, { value:n, max });
+  return n;
+}
+
 export class MemoryAccessError extends DebugAdapterError {
   constructor(code, message, details) { super(code, message, details); this.name = 'MemoryAccessError'; }
 }
@@ -16,7 +23,7 @@ export class MemoryAccessError extends DebugAdapterError {
 export class MemoryRegion {
   constructor(spec = {}) {
     this.start = asAddress(spec.start);
-    this.size = boundedInteger(spec.size, 0, 1, MAX_REGION_SIZE, 'region size');
+    this.size = strictSize(spec.size, 1, MAX_REGION_SIZE, 'region size');
     this.end = this.start + BigInt(this.size);
     this.kind = MEMORY_KINDS.includes(spec.kind) ? spec.kind : 'mapped';
     this.name = spec.name == null ? null : String(spec.name).slice(0, 256);
@@ -51,11 +58,11 @@ export class RuntimeMemoryMap {
     return before !== this.regions.length;
   }
   find(address, size = 1) {
-    const a = asAddress(address); const n = boundedInteger(size, 1, 1, this.maxTransfer, 'memory size');
+    const a = asAddress(address); const n = strictSize(size, 1, this.maxTransfer, 'memory size');
     return this.regions.find((r) => r.contains(a, n)) || null;
   }
   assert(address, size, access = 'read') {
-    const a = asAddress(address); const n = boundedInteger(size, 1, 1, this.maxTransfer, 'memory size');
+    const a = asAddress(address); const n = strictSize(size, 1, this.maxTransfer, 'memory size');
     const region = this.find(a, n);
     if (!region) throw new MemoryAccessError('oob', `unmapped ${access} at 0x${a.toString(16)}`, { address:a, size:n, access });
     if (access === 'read' && !region.permissions.read) throw new MemoryAccessError('permission', 'memory region is not readable', { region:region.toJSON() });
