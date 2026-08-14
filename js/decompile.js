@@ -1,4 +1,4 @@
-/* IR-first compatibility facade. The previous decompiler is retained verbatim in decompile-legacy.js and is used only when Semantic IR cannot produce a result. */
+/* IR-first compatibility facade. Legacy decompilation is used only when Semantic IR cannot faithfully cover a function/instruction. */
 import { decompile as legacyDecompile } from './decompile-legacy.js';
 import { decompileSemantic } from './decompiler/semantic.js';
 import { repairCanonicalPostTestLoop } from './decompiler/loop-repair.js';
@@ -13,6 +13,12 @@ export { renderValue as renderSemanticValue, renderMemoryLocation, renderBranchC
 
 function textOf(lines) {
   return (lines || []).map((l) => `${'    '.repeat(Math.max(0, l.indent || 0))}${l.text || ''}`).join('\n');
+}
+
+function asmCount(result) {
+  let n = 0;
+  for (const l of result?.lines || []) if ((l.kind === 'stmt' || l.kind === 'ctrl') && /__asm\(/.test(l.text || '')) n++;
+  return n;
 }
 
 function foldSelectIdiom(text) {
@@ -35,13 +41,24 @@ function normalizeCompatibility(result) {
   return result;
 }
 
-function augmentLegacy(fallback, reason) {
+function augmentLegacy(fallback, reason, semantic = null) {
   fallback.warnings = [...(fallback.warnings || []), reason];
-  fallback.summary = fallback.summary || 'Semantic IR が安全に表現できない領域があるため、命令を省略しない互換表示へ切り替えました。';
+  fallback.summary = fallback.summary || semantic?.summary || 'Semantic IR が安全に表現できない領域があるため、互換Decompilerへ切り替えました。';
   fallback.pseudocode = fallback.pseudocode || textOf(fallback.lines);
-  fallback.evidence = fallback.evidence || [];
+  fallback.evidence = [...(semantic?.evidence || []), ...(fallback.evidence || [])];
   fallback.semantic = false;
   fallback.legacyFallback = true;
+  fallback.ctx = {
+    ...(fallback.ctx || {}),
+    semanticIRFallback: semantic ? {
+      irPrimary: true,
+      unsupportedInstructions: semantic.ctx?.unknownInstructions || 0,
+      coverage: semantic.coverage || null,
+      warnings: semantic.warnings || [],
+    } : null,
+  };
+  // Keep the IR available to expert callers even when textual fallback is used.
+  if (semantic?.ir && !fallback.ir) fallback.ir = semantic.ir;
   return fallback;
 }
 
@@ -52,10 +69,9 @@ function finalize(result, model, opts) {
 
 /*
  * Some textual disassemblers emit direct control-flow targets without '#'.
- * arm64.parseOperands then (correctly) leaves them as `other`; that must not
- * make an otherwise direct branch disappear from Semantic IR. Accept only a
- * strict integer token for known direct-control mnemonics. Arbitrary labels,
- * symbol expressions and strings remain unresolved rather than guessed.
+ * arm64.parseOperands then leaves them as `other`. Accept only a strict integer
+ * token for known direct-control mnemonics; labels/symbol expressions are never
+ * guessed into addresses.
  */
 function strictTextAddress(op) {
   if (!op || op.k !== 'other') return null;
@@ -93,89 +109,82 @@ function labelAddress(result, model, opts, bi) {
   return `loc_${BigInt(blockAddress(result, model, opts, bi)).toString(16).toUpperCase()}`;
 }
 
-function asmText(insn) {
-  const mn = String(insn?.mnemonic || insn?.mn || '').trim();
-  const ops = typeof insn?.operands === 'string'
-    ? insn.operands
-    : typeof insn?.operandsText === 'string'
-      ? insn.operandsText
-      : Array.isArray(insn?.ops)
-        ? insn.ops.map((o) => o?.text || '').filter(Boolean).join(', ')
-        : String(insn?.ops || '');
-  return `${mn}${ops.trim() ? ' ' + ops.trim() : ''}`.trim() || 'unknown';
-}
-
-function faithfulIrCfg(result, model, opts, reason) {
+function nonNaturalBackwardEdges(result) {
   const ir = result?.ir;
-  if (!ir?.blocks?.length) return result;
-  const lines = [];
-  const sig = result.signature || result.lines?.find((l) => l.kind === 'sig')?.text || 'void sub(void)';
-  lines.push({ kind: 'sig', indent: 0, text: sig, row: model.instructions?.[0]?.row ?? null, addr: model.instructions?.[0]?.address ?? null, note: null });
-  lines.push({ kind: 'ctrl', indent: 0, text: '{', row: model.instructions?.[0]?.row ?? null, addr: null, note: null });
-
-  const blocks = ir.blocks.slice().sort((a, b) => a.startRow - b.startRow);
-  for (let pos = 0; pos < blocks.length; pos++) {
-    const block = blocks[pos];
-    const addr = blockAddress(result, model, opts, block.index);
-    lines.push({ kind: 'label', indent: 1, text: `${labelAddress(result, model, opts, block.index)}:`, row: block.startRow, addr, note: null });
-    const rows = (model.instructions || []).filter((i) => i.row >= block.startRow && i.row <= block.endRow);
-    for (let ri = 0; ri < rows.length; ri++) {
-      const insn = rows[ri];
-      const mn = String(insn.mnemonic || insn.mn || '').toLowerCase();
-      const isLast = ri === rows.length - 1;
-      if (isLast && mn === 'b' && block.succ?.length === 1) {
-        lines.push({ kind: 'stmt', indent: 2, text: `goto ${labelAddress(result, model, opts, block.succ[0])};`, row: insn.row, addr: insn.address ?? null, note: null });
-        continue;
-      }
-      if (isLast && /^(?:b\.[a-z]{2}|cbz|cbnz|tbz|tbnz)$/.test(mn)) {
-        const targets = (block.succ || []).map((s) => labelAddress(result, model, opts, s)).join(', ');
-        lines.push({ kind: 'stmt', indent: 2, text: `__asm(${JSON.stringify(asmText(insn))});${targets ? ` /* successors: ${targets} */` : ''}`, row: insn.row, addr: insn.address ?? null, note: null });
-        continue;
-      }
-      if (isLast && mn === 'br') {
-        lines.push({ kind: 'stmt', indent: 2, text: `__asm(${JSON.stringify(asmText(insn))});`, row: insn.row, addr: insn.address ?? null, note: null });
-        continue;
-      }
-      if (isLast && mn === 'ret') {
-        lines.push({ kind: 'stmt', indent: 2, text: '__asm("ret");', row: insn.row, addr: insn.address ?? null, note: null });
-        continue;
-      }
-      lines.push({ kind: 'stmt', indent: 2, text: `__asm(${JSON.stringify(asmText(insn))});`, row: insn.row, addr: insn.address ?? null, note: null });
-    }
-    const next = blocks[pos + 1]?.index;
-    if (block.succ?.length === 1 && block.succ[0] !== next) {
-      const last = rows.at(-1);
-      const mn = String(last?.mnemonic || last?.mn || '').toLowerCase();
-      if (!/^(?:b|ret|br|b\.[a-z]{2}|cbz|cbnz|tbz|tbnz)$/.test(mn)) {
-        lines.push({ kind: 'stmt', indent: 2, text: `goto ${labelAddress(result, model, opts, block.succ[0])};`, row: block.endRow, addr: null, note: null });
-      }
-    }
-  }
-  lines.push({ kind: 'ctrl', indent: 0, text: '}', row: model.instructions?.at?.(-1)?.row ?? null, addr: null, note: null });
-
-  result.lines = lines;
-  result.pseudocode = textOf(lines);
-  result.summary = '構造化を断定できない共有cleanup経路があるため、Semantic IRのCFGをラベルとedgeを保った形で表示しています。';
-  result.warnings = [...(result.warnings || []), reason];
-  result.evidence = [...(result.evidence || []), { reason: 'faithful Semantic IR CFG fallback', op: 'cfg', row: null, address: null }];
-  result.coverage = { ...(result.coverage || {}), mode: 'linear', total: ir.blocks.length, emitted: ir.blocks.length, missing: 0 };
-  result.ctx = { ...(result.ctx || {}), faithfulIrCfg: true };
-  result.semantic = true;
-  return result;
-}
-
-function hasNonNaturalBackwardEdge(_model, result) {
-  const ir = result?.ir;
-  if (!ir?.blocks?.length) return false;
-  const isNaturalBackEdge = (from, to) => !!ir.dominators?.[from]?.has?.(to);
+  if (!ir?.blocks?.length) return [];
+  const edges = [];
   for (const block of ir.blocks) {
     for (const succ of block.succ || []) {
       const dst = ir.blocks[succ];
-      if (!dst) continue;
-      if (dst.startRow < block.startRow && !isNaturalBackEdge(block.index, succ)) return true;
+      if (!dst || dst.startRow >= block.startRow) continue;
+      // Natural-loop definition: target dominates source.
+      if (ir.dominators?.[block.index]?.has?.(succ)) continue;
+      edges.push({ from: block, to: dst });
     }
   }
-  return false;
+  return edges;
+}
+
+function ensureLegacyLabel(lines, row, label, address) {
+  if (lines.some((l) => String(l.text || '').replace(/:$/, '') === label)) return;
+  let at = lines.findIndex((l) => l.row != null && l.row >= row && l.kind !== 'sig');
+  if (at < 0) at = Math.max(1, lines.findIndex((l) => l.kind === 'ctrl' && l.text === '}'));
+  if (at < 0) at = lines.length;
+  const indent = Math.max(1, lines[at]?.indent || 1);
+  lines.splice(at, 0, { kind: 'label', indent, text: `${label}:`, row, addr: address, note: null });
+}
+
+function ensureLegacyGoto(lines, edge, label) {
+  // Only synthesize an unconditional goto when IR proves a single successor.
+  // Conditional non-natural edges keep the conservative Semantic IR CFG path.
+  if ((edge.from.succ || []).length !== 1) return false;
+  if (lines.some((l) => l.row === edge.from.endRow && String(l.text || '').includes(`goto ${label}`))) return true;
+  let at = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const r = lines[i]?.row;
+    if (r != null && r <= edge.from.endRow) at = i;
+  }
+  if (at < 0) return false;
+  const indent = Math.max(1, lines[at]?.indent || 1);
+  lines.splice(at + 1, 0, { kind: 'stmt', indent, text: `goto ${label};`, row: edge.from.endRow, addr: null, note: null });
+  return true;
+}
+
+/**
+ * Keep legacy statement rendering for a rare non-natural shared-cleanup layout,
+ * but graft in only the goto/label edges proven by Semantic IR. This avoids the
+ * old false-loop bug without replacing an otherwise translatable function with
+ * raw assembly.
+ */
+function legacyWithIrCleanupEdges(model, semanticModel, opts, semantic, edges) {
+  const fallback = augmentLegacy(
+    legacyDecompile(model, opts),
+    'A backward control-flow edge is not a proven natural loop; Semantic IR supplies the shared-cleanup goto/label edge while legacy rendering handles statements.',
+    semantic,
+  );
+  for (const edge of edges) {
+    const label = labelAddress(semantic, semanticModel, opts, edge.to.index);
+    const address = blockAddress(semantic, semanticModel, opts, edge.to.index);
+    ensureLegacyLabel(fallback.lines || (fallback.lines = []), edge.to.startRow, label, address);
+    if (!ensureLegacyGoto(fallback.lines, edge, label)) return null;
+  }
+  fallback.pseudocode = textOf(fallback.lines);
+  fallback.coverage = { ...(semantic.coverage || {}), mode: 'linear', total: semantic.ir?.blocks?.length || 0, emitted: semantic.ir?.blocks?.length || 0, missing: 0 };
+  fallback.ctx = { ...(fallback.ctx || {}), semanticCleanupEdges: edges.length };
+  return fallback;
+}
+
+function preferLegacyForUnsupported(model, opts, semantic) {
+  const unsupported = semantic?.ctx?.unknownInstructions || 0;
+  if (!unsupported) return semantic;
+  const legacy = augmentLegacy(
+    legacyDecompile(model, opts),
+    `Semantic IR has ${unsupported} unsupported instruction(s); only this unsupported function uses the isolated legacy expression fallback.`,
+    semantic,
+  );
+  // The legacy path is a fallback, not an unconditional preference. If it is
+  // actually less faithful (more raw assembly), keep the Semantic IR result.
+  return asmCount(legacy) < asmCount(semantic) ? legacy : semantic;
 }
 
 export function decompile(model, opts = {}) {
@@ -189,18 +198,19 @@ export function decompile(model, opts = {}) {
       if (total > reachable) {
         return finalize(augmentLegacy(
           legacyDecompile(model, opts),
-          `Semantic IR covers ${reachable}/${total} Basic Blocks; disconnected or indirect targets are shown with the faithful CFG fallback.`,
+          `Semantic IR covers ${reachable}/${total} Basic Blocks; disconnected or indirect targets use the isolated faithful fallback.`,
+          result,
         ), model, opts);
       }
 
-      if (hasNonNaturalBackwardEdge(semanticModel, result)) {
-        return finalize(faithfulIrCfg(
-          result,
-          semanticModel,
-          opts,
-          'A backward control-flow edge is not a proven natural loop; shared cleanup is shown with faithful Semantic IR labels/gotos.',
-        ), semanticModel, opts);
+      const cleanupEdges = nonNaturalBackwardEdges(result);
+      if (cleanupEdges.length) {
+        const mixed = legacyWithIrCleanupEdges(model, semanticModel, opts, result, cleanupEdges);
+        if (mixed) return finalize(mixed, semanticModel, opts);
       }
+
+      result = preferLegacyForUnsupported(model, opts, result);
+      if (!result.semantic) return finalize(result, semanticModel, opts);
 
       result = repairCanonicalPostTestLoop(result, (bi) => blockAddress(result, semanticModel, opts, bi));
       if (result.coverage) {
