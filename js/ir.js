@@ -178,8 +178,9 @@ const provenanceMemo = new WeakMap();
 
 /**
  * Conservative pointer provenance for an SSA value.
- * `must` means every represented path has the same root+offset. Unknown values
- * retain their SSA identity; two unrelated arguments are never asserted equal.
+ * `must` means every represented path has the same root+offset. Entry registers
+ * are distinct symbolic roots: preserving x19 -> x20 does not claim x19 aliases
+ * any other register, but it lets later MOV/ADD/SUB retain proven identity.
  */
 export function pointerProvenance(value, active) {
   if (!value) return null;
@@ -196,6 +197,8 @@ export function pointerProvenance(value, active) {
     out = { kind: 'stack', root: 'stack', offset: 0n, must: true, valueId: value.id };
   } else if (value.kind === VK.ARG && /^x[0-7]$/.test(reg)) {
     out = { kind: 'arg', root: 'arg:' + reg, offset: 0n, arg: reg, must: true, valueId: value.id };
+  } else if (value.kind === VK.ARG && /^x(?:[89]|1\d|2\d|30)$/.test(reg)) {
+    out = { kind: 'entry-register', root: 'entry:' + reg, offset: 0n, reg, must: true, valueId: value.id };
   } else if (def && def.op === OP.ADDR && value.const != null) {
     out = { kind: 'global', root: 'global', offset: 0n, address: value.const, must: true, valueId: value.id };
   } else if (def && def.op === OP.CALL) {
@@ -388,6 +391,14 @@ export function valueRange(value) {
   return value.range ? { min: value.range.min, max: value.range.max } : null;
 }
 
+function nullabilityFromZero(zero, explicit) {
+  if (explicit === false) return 'non-null';
+  if (explicit === true) return 'maybe-null';
+  if (zero === 'zero') return 'null';
+  if (zero === 'non-zero') return 'non-null';
+  return 'unknown';
+}
+
 export function valueInfo(value) {
   if (!value) return {
     constant: null, min: null, max: null, signedness: 'unknown', zero: 'unknown', nullability: 'unknown', provenance: null,
@@ -403,7 +414,7 @@ export function valueInfo(value) {
     max: range ? range.max : null,
     signedness: value.signed === true ? 'signed' : value.signed === false ? 'unsigned' : 'unknown',
     zero,
-    nullability: value.nullable === true ? 'maybe-null' : value.nullable === false ? 'non-null' : 'unknown',
+    nullability: nullabilityFromZero(zero, value.nullable),
     provenance: pointerProvenance(value),
   };
 }
@@ -441,7 +452,15 @@ function constrainedRange(value, op, constant, signed) {
   return { min, max };
 }
 
-/** Range that is true on one edge of a conditional branch. Does not mutate SSA globally. */
+function zeroFactOnEdge(op, constant) {
+  if (constant !== 0n) return 'unknown';
+  if (op === '==') return 'zero';
+  if (op === '!=') return 'non-zero';
+  if (op === '>') return 'non-zero';
+  return 'unknown';
+}
+
+/** Range/nullability that is true on one branch edge. Does not mutate SSA globally. */
 export function rangeOnBranch(ir, branch, taken = true) {
   void ir;
   const c = comparisonOfBranch(branch);
@@ -451,12 +470,15 @@ export function rangeOnBranch(ir, branch, taken = true) {
   const op = taken ? info.op : invertRel(info.op);
   const signed = info.signed == null ? (c.lhs.signed === true) : info.signed;
   const range = constrainedRange(c.lhs, op, c.rhs, signed);
+  const zero = zeroFactOnEdge(op, c.rhs);
   return {
     value: c.lhs,
     condition: op,
     constant: c.rhs,
     signedness: signed ? 'signed' : 'unsigned',
     range,
+    zero,
+    nullability: nullabilityFromZero(zero, null),
     taken: !!taken,
     branch,
     compare: c.cmp,
