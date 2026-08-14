@@ -10,6 +10,8 @@ const EPS = 1e-12;
  * production pipeline when compared with independent LIEF + Capstone truth.
  * Keep the exact invariants exact; keep heuristic floors just below the
  * measured values so harmless implementation noise cannot hide a real drop.
+ * Metrics with no applicable samples are emitted as null/N/A and are never
+ * mistaken for a measured zero.
  */
 const TARGETS = [
   {
@@ -31,7 +33,7 @@ const TARGETS = [
       role: 0.99,
       pinpoint: 1,
       'pinpoint-partial': 1,
-      apimeaning: 0.99,
+      apimeaning: 0.994,
       summary: 0.99,
       pseudoc: 0.994,
     },
@@ -50,7 +52,7 @@ const TARGETS = [
       imports: 1,
       strings: 0.999,
       xrefs: 0.994,
-      apimeaning: 0.99,
+      apimeaning: 0.992,
       pseudoc: 0.994,
     },
   },
@@ -73,7 +75,7 @@ const TARGETS = [
       role: 0.99,
       pinpoint: 1,
       'pinpoint-partial': 1,
-      apimeaning: 0.99,
+      apimeaning: 0.993,
       summary: 0.99,
       pseudoc: 0.994,
     },
