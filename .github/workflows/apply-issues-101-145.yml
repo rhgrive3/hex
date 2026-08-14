@@ -1,0 +1,47 @@
+name: apply-issues-101-145
+on:
+  push:
+    branches: [fix-issues-101-145]
+permissions:
+  contents: write
+jobs:
+  apply:
+    if: ${{ !contains(github.event.head_commit.message, '[issues-101-145 applied]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Apply fixes
+        run: python3 tools/apply_issues_101_145.py
+      - name: Remove staging machinery
+        run: rm -f tools/apply_issues_101_145.py .github/workflows/apply-issues-101-145.yml
+      - name: Syntax and focused regression
+        run: |
+          node --check js/binary/pe-loader.js
+          node --check js/platform/worker.js
+          node --check js/blocks.js
+          node --check js/controlflow.js
+          node --check js/cfg.js
+          node --check js/ir-core.js
+          node --check js/decompiler/semantic.js
+          node --check js/decompiler/types/prototype.js
+          node tests/issues-101-145.mjs
+      - name: Relevant suites
+        run: |
+          npm run lint
+          npm run binary:test
+          npm run platform:test
+          npm run semantic:test
+          npm run decompiler:test
+      - name: Commit verified fixes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix: resolve issues 101-145 [issues-101-145 applied]"
+          git push origin HEAD:fix-issues-101-145
