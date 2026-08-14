@@ -76,24 +76,20 @@ export function sliceResult(ir, seed, direction, opts) {
   return { nodes, truncated: !!result.truncated, engine: 'semantic-ir' };
 }
 
-/** Bounded call-graph path using ProgramIndex without forcing function analysis. */
+/** Bounded call-graph paths using ProgramIndex without forcing function analysis. */
 export function functionPaths(program, from, to, opts) {
-  const maxDepth = Math.max(1, opts && opts.maxDepth || 6);
-  const maxPaths = Math.max(1, opts && opts.maxPaths || 8);
-  const maxVisited = Math.max(16, opts && opts.maxVisited || 10000);
+  const maxDepth = Math.max(1, Math.min(12, opts && opts.maxDepth || 6));
+  const maxPaths = Math.max(1, Math.min(32, opts && opts.maxPaths || 8));
+  const maxVisited = Math.max(16, Math.min(20000, opts && opts.maxVisited || 10000));
   if (!program || from == null || to == null) return [];
   const q = [[from]];
   const out = [];
-  const seen = new Set();
   let visited = 0;
   while (q.length && out.length < maxPaths && visited++ < maxVisited) {
     const path = q.shift();
     const head = path[path.length - 1];
     if (head === to) { out.push(path); continue; }
     if (path.length >= maxDepth) continue;
-    const stateKey = head.toString() + ':' + path.length;
-    if (seen.has(stateKey)) continue;
-    seen.add(stateKey);
     let range = null;
     try { range = program.functionRange(head); } catch { range = null; }
     let callees = [];
