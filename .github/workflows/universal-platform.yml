@@ -1,0 +1,40 @@
+name: Universal binary platform
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm run check
+      - run: npm run binary:test
+      - run: npm run binary:gate
+
+  benchmark:
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm run binary:benchmark | tee universal-platform-benchmark.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: universal-platform-benchmark
+          path: universal-platform-benchmark.json
