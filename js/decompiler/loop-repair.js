@@ -29,7 +29,7 @@ function continuationCondition(iv) {
   const flags = valueOf(term.args?.[term.args.length - 1]);
   const cmp = flags?.def;
   if (!cmp || cmp.op !== OP.CMP || cmp.args.length < 2) return null;
-  const inside = (iv.phi?.incoming || []).find((x) => loop.nodes.has(x.from))?.value || null;
+  const inside = iv.inside || (iv.phi?.incoming || []).find((x) => loop.nodes.has(x.from))?.value || null;
   const render = (v) => {
     if (same(v, iv.value) || same(v, inside)) return iv.name;
     const c = constantText(v);
@@ -39,6 +39,55 @@ function continuationCondition(iv) {
   const b = render(valueOf(cmp.args[1]));
   if (!a || (!info.vsZero && !b)) return null;
   return info.vsZero ? `${a} ${info.op} 0` : `${a} ${info.op} ${b}`;
+}
+
+function termOf(block) {
+  const xs = block?.insts || [];
+  for (let i = xs.length - 1; i >= 0; i--) if (xs[i].op === OP.CBR) return xs[i];
+  return null;
+}
+
+function discoverPostTestInduction(result, loop, ordinal) {
+  const block = result.ir?.blocks?.[loop.header];
+  const term = termOf(block);
+  if (!block || !term) return null;
+  const flags = valueOf(term.args?.[term.args.length - 1]);
+  const cmp = flags?.def;
+  if (!cmp || cmp.op !== OP.CMP || cmp.args.length < 2) return null;
+
+  for (const arg of cmp.args) {
+    const updated = valueOf(arg);
+    const stepDef = updated?.def;
+    if (!stepDef || stepDef.op !== OP.BIN || !['add', 'sub'].includes(stepDef.sub)) continue;
+    const a = valueOf(stepDef.args?.[0]);
+    const b = valueOf(stepDef.args?.[1]);
+    let prior = null, step = null;
+    if (a && b?.const != null) {
+      prior = a;
+      step = stepDef.sub === 'add' ? b.const : -b.const;
+    } else if (stepDef.sub === 'add' && b && a?.const != null) {
+      prior = b;
+      step = a.const;
+    }
+    if (!prior || step == null || step === 0n) continue;
+
+    let init = null, phi = null;
+    if (prior.def?.op === OP.PHI) {
+      phi = prior.def;
+      const outside = (phi.incoming || []).find((x) => !loop.nodes.has(x.from));
+      init = outside?.value || null;
+    }
+    if (!init && prior.const != null) init = prior;
+    if (!init) continue;
+
+    return {
+      loop, phi, value: prior, inside: updated,
+      name: ordinal ? `i${ordinal}` : 'i', init, step,
+      conditionInst: term, initText: constantText(init), conditionText: null,
+      discoveredFrom: 'ir-def-use',
+    };
+  }
+  return null;
 }
 
 function replacementRange(lines, term, label) {
@@ -70,25 +119,35 @@ function replacementRange(lines, term, label) {
 
 /**
  * Repair the canonical post-test loop that a generic if/else region pass can
- * accidentally consume first: one Basic Block updates a PHI induction value
- * and conditionally branches back to itself (source-level do/while).
+ * accidentally consume first: one Basic Block updates an induction value and
+ * conditionally branches back to itself (source-level do/while).
  *
- * This is intentionally narrow. SSA must prove the PHI, constant induction
- * step, self back-edge and single exit. If any proof is missing, goto remains.
+ * The preferred proof is the normal PHI induction recovery. If that helper was
+ * too strict, this pass independently verifies the same fact from IR def-use:
+ * BIN with constant step -> CMP -> CBR self, plus a proven outside PHI initial
+ * value. It never reparses ARM64 text and never invents a loop from addresses.
  */
 export function repairCanonicalPostTestLoop(result, blockAddress) {
-  if (!result?.semantic || !result.ir || !result.ctx?.inductions?.length) return result;
+  if (!result?.semantic || !result.ir) return result;
   if ((result.lines || []).some((l) => /\b(?:for|while)\s*\(|\bdo\s*\{/.test(l.text || ''))) return result;
 
-  for (const iv0 of result.ctx.inductions) {
-    const loop = iv0.loop;
+  const byHeader = new Map();
+  for (const iv of result.ctx?.inductions || []) byHeader.set(iv.loop?.header, iv);
+  let ordinal = byHeader.size;
+
+  for (const loop of result.ir.loops || []) {
     if (!loop || loop.nodes?.size !== 1 || loop.exits?.size !== 1 || !loop.nodes.has(loop.header)) continue;
     const block = result.ir.blocks?.[loop.header];
     if (!block || block.succ?.length !== 2 || !block.succ.includes(loop.header)) continue;
-    if (iv0.step == null || !iv0.init) continue;
 
-    const term = iv0.conditionInst;
+    const iv0 = byHeader.get(loop.header) || discoverPostTestInduction(result, loop, ordinal++);
+    if (!iv0 || iv0.step == null || !iv0.init) continue;
+    const term = iv0.conditionInst || termOf(block);
     if (!term || term.op !== OP.CBR) continue;
+
+    // Pure register SSA updates are not emitted as standalone statements. If a
+    // memory write/call/other side effect is already visible in this block, a
+    // narrow repair cannot safely reorder it, so retain faithful control flow.
     const emittedSideEffects = (result.lines || []).filter((l) =>
       l.row != null && l.row >= block.startRow && l.row <= block.endRow &&
       l.kind === 'stmt' && !/^goto\s+loc_/.test(l.text || ''));
@@ -118,7 +177,7 @@ export function repairCanonicalPostTestLoop(result, blockAddress) {
     result.lines.splice(range.start, range.end - range.start, ...replacement);
     result.pseudocode = result.lines.map((l) => `${'    '.repeat(Math.max(0, l.indent || 0))}${l.text || ''}`).join('\n');
     result.warnings = (result.warnings || []).filter((w) => !/control-flow edge/.test(w));
-    result.ctx.loopRepair = 'ssa-post-test';
+    result.ctx = { ...(result.ctx || {}), loopRepair: iv0.discoveredFrom || 'ssa-post-test' };
     return result;
   }
   return result;
