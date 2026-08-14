@@ -73,24 +73,15 @@ jobs:
 
           ux_path = Path('js/ux.js')
           ux = ux_path.read_text()
-          old = '''  const investigate = document.querySelector('.ui-nav-item[data-route-id="investigate"]');
-          if (investigate) {
-            investigate.id = 'btn-investigate';
-            ui.actions.register('investigate.strategy', () => app.openInvestigate());
-            /* A second tap on the already-active Investigate destination means “start choosing
-               a concrete investigation”. First navigation from another destination only routes. */
-            investigate.addEventListener('click', () => {
-              const alreadyActive = ui.router.current?.route?.id === 'investigate';
-              if (alreadyActive && app.store.get('fileInfo')) {
-                queueMicrotask(() => ui.actions.run('investigate.strategy'));
-              }
-            }, true);
-          }
-          '''
-          replacement = '''  const investigate = document.querySelector('.ui-nav-item[data-route-id="investigate"]');
-          if (investigate) investigate.id = 'btn-investigate';
-          '''
-          ux = once(ux, old, replacement, 'legacy investigate second tap')
+          ux, count = re.subn(
+              r'''  const investigate = document\.querySelector\('\.ui-nav-item\[data-route-id="investigate"\]'\);\n  if \(investigate\) \{.*?\n  \}\n''',
+              '''  const investigate = document.querySelector('.ui-nav-item[data-route-id="investigate"]');\n  if (investigate) investigate.id = 'btn-investigate';\n''',
+              ux,
+              count=1,
+              flags=re.S,
+          )
+          if count != 1:
+              raise SystemExit(f'legacy investigate second tap: expected 1 structural match, got {count}')
           ux = once(ux, 'function migrateRootControls(ui, app) {', 'function migrateRootControls(ui) {', 'migrate signature')
           ux = once(ux, 'if (ui) migrateRootControls(ui, window.__app);', 'if (ui) migrateRootControls(ui);', 'migrate call')
           ux_path.write_text(ux)
@@ -167,8 +158,7 @@ jobs:
           '''
           css_path.write_text(css)
 
-          workflow = Path('.github/workflows/tmp-canonical-secondary-patch.yml')
-          workflow.unlink()
+          Path('.github/workflows/tmp-canonical-secondary-patch.yml').unlink()
       - name: Commit patched product UI
         run: |
           git config user.name "github-actions[bot]"
