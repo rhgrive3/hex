@@ -1,7 +1,7 @@
 import {
   h, uiButton, screen, card, listRow, sectionTitle, emptyState,
 } from './primitives.js';
-import { t, pick } from '../i18n.js';
+import { pick } from '../i18n.js';
 import { CHAPTERS, loadProgress, saveProgress, chapterById } from '../learn.js';
 import { GLOSSARY, searchGlossary } from '../glossary.js';
 import { toast } from '../ui.js';
@@ -244,7 +244,7 @@ function chapterBlock(app, router, block) {
 
 function renderChapter(app, router, chapter) {
   const index = CHAPTERS.indexOf(chapter);
-  const s = screen(t('learn.chapter', { n: index + 1 }) + ' — ' + chapter.title, {
+  const s = screen(pick(`第${index + 1}章`, `Chapter ${index + 1}`) + ' — ' + chapter.title, {
     id: 'learn', subtitle: chapter.subtitle,
   });
   const progress = loadProgress();
@@ -357,7 +357,7 @@ function renderLearn(app, router, route) {
 
   const rows = list();
   CHAPTERS.forEach((chapter, index) => rows.append(listRow({
-    title: t('learn.chapter', { n: index + 1 }) + '　' + chapter.title,
+    title: pick(`第${index + 1}章`, `Chapter ${index + 1}`) + '　' + chapter.title,
     subtitle: chapter.subtitle,
     meta: progress[chapter.id] ? '✓' : '',
     onClick: () => router.navigate('/learn?chapter=' + chapter.id),
