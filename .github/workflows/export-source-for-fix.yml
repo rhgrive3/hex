@@ -16,18 +16,16 @@ jobs:
       - name: Package source
         run: |
           set -euo pipefail
-          tar -czf /tmp/hex-source.tar.gz \
+          tar -czf /tmp/hex-source-full.tar.gz \
+            --exclude='.git' \
             --exclude='tests/TsumTsum' \
+            --exclude='tests/TsumTsum(1)' \
             --exclude='tests/YWP' \
+            --exclude='tests/YWP(1)' \
             --exclude='tests/battlecats' \
-            js tests package.json package-lock.json .github 2>/dev/null || \
-          tar -czf /tmp/hex-source.tar.gz \
-            --exclude='tests/TsumTsum' \
-            --exclude='tests/YWP' \
-            --exclude='tests/battlecats' \
-            js tests package.json .github
+            .
       - uses: actions/upload-artifact@v4
         with:
-          name: hex-source
-          path: /tmp/hex-source.tar.gz
+          name: hex-source-full
+          path: /tmp/hex-source-full.tar.gz
           retention-days: 1
