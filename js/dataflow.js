@@ -24,6 +24,12 @@ export {
   legacyAmountOf as amountOfLegacy,
 };
 
+const updateCache = new WeakMap();
+function rememberUpdates(model, updates) {
+  if (model && typeof model === 'object') updateCache.set(model, updates || []);
+  return updates;
+}
+
 function instructionAt(ir, row, op) {
   if (!ir || row == null) return null;
   const list = ir.byRow && ir.byRow.get ? (ir.byRow.get(row) || []) :
@@ -53,14 +59,10 @@ export function findValueUpdates(model, opts) {
   try {
     proven = findIrValueUpdates(model, opts);
   } catch {
-    return legacy;
+    return rememberUpdates(model, legacy);
   }
-  // The old public shape interprets `location.disp` as an object/stack offset.
-  // A GLOBAL IR location has an absolute address instead, so feeding it into the
-  // legacy pinpoint-location path would mislabel it as a +0 field. Keep global
-  // analysis in IR/slicing, but do not adapt it as a legacy field candidate.
   proven = proven.filter((u) => !(u.location && u.location.irKind === MK.GLOBAL));
-  if (!proven.length) return legacy;
+  if (!proven.length) return rememberUpdates(model, legacy);
 
   const self = selfRegisters(model);
   for (const u of proven) {
@@ -68,13 +70,36 @@ export function findValueUpdates(model, opts) {
       u.location.self = self.isSelf(u.location.base, u.store ? u.store.row : null);
     }
   }
-  return mergeValueUpdates(legacy, proven);
+  return rememberUpdates(model, mergeValueUpdates(legacy, proven));
+}
+
+function distinctCandidateLocations(updates) {
+  const keys = new Set();
+  for (const u of updates || []) {
+    const loc = u && u.location;
+    if (!loc || loc.stack || loc.key == null) continue;
+    keys.add(String(loc.key));
+    if (keys.size > 1) break;
+  }
+  return keys.size;
 }
 
 export function constantComparisons(model, opts) {
   const legacy = legacyConstantComparisons(model);
   let proven = [];
   try { proven = findIrConstantComparisons(model, opts); } catch { return legacy; }
+
+  /*
+   * pinpointLocation currently associates generic comparisons with every location
+   * candidate found in the function. A propagated SSA threshold is new evidence,
+   * so do not introduce it when that function has multiple distinct candidate
+   * locations and the caller has not explicitly requested scoped comparison facts.
+   * Direct literals already existed in the legacy path and remain unchanged.
+   */
+  const cached = updateCache.get(model);
+  if (!(opts && opts.allowUnscopedPropagated) && cached && distinctCandidateLocations(cached) > 1) {
+    proven = proven.filter((c) => !c.propagated);
+  }
   return proven.length ? mergeConstantComparisons(legacy, proven) : legacy;
 }
 
