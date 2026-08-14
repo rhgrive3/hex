@@ -18,14 +18,14 @@ function semanticSummary(before,after) {
 }
 
 export function diffFunctions(beforeFunctions, afterFunctions, options = {}) {
-  const matched=matchFunctions(beforeFunctions,afterFunctions,{threshold:options.threshold ?? 0.55, ambiguityWindow:options.ambiguityWindow ?? 0.04, neighborhoodIterations:options.neighborhoodIterations ?? 2, maxCandidates:options.maxCandidates ?? 128});
+  const matched=matchFunctions(beforeFunctions,afterFunctions,{threshold:options.threshold ?? 0.55, ambiguityWindow:options.ambiguityWindow ?? 0.04, neighborhoodIterations:options.neighborhoodIterations ?? 2, maxCandidates:options.maxCandidates ?? 128, allowSimilar:options.allowSimilar ?? true});
   const matches=matched.matches.map((m)=>{
     const sameAddress=m.before.address!=null&&m.after.address!=null&&m.before.address===m.after.address;
     let changeType;
     if (m.identity==='exact'||m.identity==='normalized-identical') changeType=sameAddress?'same':'moved';
     else if (m.identity==='semantic-equivalent'||m.identity==='probable-same') changeType='changed';
     else changeType='rewritten';
-    const status=changeType==='same'?'identical':changeType==='changed'?'slightly changed':changeType;
+    const status=changeType==='same'?'identical':changeType==='moved'?'moved':'slightly changed';
     return {...m,status,changeType,semanticChange:semanticSummary(m.before,m.after)};
   });
   const deleted=matched.deleted.map((before)=>({status:'deleted',changeType:'deleted',before,after:null,confidence:1,reasons:['unmatched'],semanticChange:null}));

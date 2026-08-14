@@ -42,15 +42,18 @@ export class KnowledgeDB {
     const address = input.address ?? fingerprint.address;
     const identityKey = input.identityKey || fingerprint.semanticHash || fingerprint.normalizedBytesHash || fingerprint.hash || null;
     const id = input.id || `${sourceBinaryHash}:${addrText(address)}:${identityKey || 'sparse'}`;
-    const confirmation = CONFIRMATION_LEVELS.includes(input.confirmation) ? input.confirmation :
-      input.userConfirmed ? 'user-confirmed' : input.debuggerConfirmed ? 'debugger-confirmed' : input.metadataConfirmed ? 'metadata-confirmed' :
-      clamp(input.confidence ?? 1) >= 0.9 ? 'high-confidence-inferred' : 'weak-inferred';
+    const requestedConfirmation = CONFIRMATION_LEVELS.includes(input.confirmation) ? input.confirmation : null;
+    const userConfirmed = input.userConfirmed || requestedConfirmation === 'user-confirmed';
+    const debuggerConfirmed = input.debuggerConfirmed || requestedConfirmation === 'debugger-confirmed';
+    const metadataConfirmed = input.metadataConfirmed || requestedConfirmation === 'metadata-confirmed';
+    const resolvedConfidence = input.confidence == null ? (userConfirmed || debuggerConfirmed ? 1 : metadataConfirmed ? 0.95 : 0.5) : clamp(input.confidence);
+    const confirmation = requestedConfirmation || (userConfirmed ? 'user-confirmed' : debuggerConfirmed ? 'debugger-confirmed' : metadataConfirmed ? 'metadata-confirmed' : resolvedConfidence >= 0.9 ? 'high-confidence-inferred' : 'weak-inferred');
     const record = {
       schemaVersion: KNOWLEDGE_SCHEMA_VERSION, id, identityKey, fingerprint, fingerprints: uniq(input.fingerprints || (fingerprint.hash ? [fingerprint.hash] : [])),
       names: uniq(input.names || (input.name ? [input.name] : [])), roles: uniq(input.roles), types: uniq(input.types),
       comments: uniq(input.comments || (input.comment ? [input.comment] : [])), semanticLabels: uniq(input.semanticLabels),
       fieldInterpretations: Array.isArray(input.fieldInterpretations) ? clone(input.fieldInterpretations) : [],
-      sourceBinaryHash, versions: uniq(input.versions), confidence: clamp(input.confidence ?? 1), confirmation,
+      sourceBinaryHash, versions: uniq(input.versions), confidence: resolvedConfidence, confirmation,
       evidence: Array.isArray(input.evidence) ? clone(input.evidence.slice(0,1000)) : [], userConfirmed: confirmation === 'user-confirmed',
       searchTerms: [], updatedAt: Date.now(), createdAt: input.createdAt || Date.now(),
     };
@@ -62,8 +65,10 @@ export class KnowledgeDB {
   async reject(input = {}) {
     const targetFingerprint = input.fingerprint ? fingerprintFunction(input.fingerprint) : null;
     const key = input.id || [input.sourceBinaryHash || 'unknown', input.candidateName || input.candidateIdentity || 'unknown', targetFingerprint?.semanticHash || targetFingerprint?.normalizedBytesHash || targetFingerprint?.hash || addrText(input.address)].join(':');
+    const targetAddress = input.address ?? targetFingerprint?.address ?? null;
     const record = { id:key, sourceBinaryHash:input.sourceBinaryHash || 'unknown', candidateName:input.candidateName || null, candidateIdentity:input.candidateIdentity || null,
-      targetHash:targetFingerprint?.hash || null, targetSemanticHash:targetFingerprint?.semanticHash || null, reason:input.reason || 'rejected', updatedAt:Date.now() };
+      targetHash:targetFingerprint?.hash || null, targetSemanticHash:targetFingerprint?.semanticHash || null, targetNormalizedBytesHash:targetFingerprint?.normalizedBytesHash || null,
+      targetAddress:targetAddress == null ? null : addrText(targetAddress), targetSize:targetFingerprint?.size || null, reason:input.reason || 'rejected', updatedAt:Date.now() };
     if (this.negativeMemory) this.negativeMemory.set(key, clone(record)); else await this.#put('negative', record);
     return record;
   }
@@ -72,7 +77,18 @@ export class KnowledgeDB {
     const name = input.candidateName || null, identity = input.candidateIdentity || null;
     const fp = input.fingerprint ? fingerprintFunction(input.fingerprint) : null;
     const records = this.negativeMemory ? [...this.negativeMemory.values()] : await this.#negativeCandidates(name, identity, fp);
-    return records.some((r) => (!r.candidateName || r.candidateName === name) && (!r.candidateIdentity || r.candidateIdentity === identity) && (!fp || !r.targetHash || r.targetHash === fp.hash || r.targetSemanticHash === fp.semanticHash));
+    return records.some((r) => {
+      if (r.candidateName && r.candidateName !== name) return false;
+      if (r.candidateIdentity && r.candidateIdentity !== identity) return false;
+      if (fp) {
+        if (r.targetHash && fp.hash && r.targetHash === fp.hash) return true;
+        if (r.targetNormalizedBytesHash && fp.normalizedBytesHash && r.targetNormalizedBytesHash === fp.normalizedBytesHash) return true;
+        if (r.candidateIdentity && r.targetSemanticHash && fp.semanticHash && r.targetSemanticHash === fp.semanticHash && (!r.targetSize || !fp.size || r.targetSize === fp.size)) return true;
+      }
+      const address = input.address ?? fp?.address ?? null;
+      const sameBinary = r.sourceBinaryHash !== 'unknown' && input.sourceBinaryHash && r.sourceBinaryHash === input.sourceBinaryHash;
+      return !r.targetHash && !r.targetNormalizedBytesHash && !r.targetSemanticHash && sameBinary && address != null && r.targetAddress === addrText(address);
+    });
   }
 
   async findMatches(input, options = {}) {

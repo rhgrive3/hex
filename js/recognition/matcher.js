@@ -3,7 +3,7 @@ import { coarseTokens, compareFingerprints, fingerprintFunction, fingerprintFunc
 export class FunctionMatchIndex {
   constructor(functions = [], options = {}) {
     const mode = options.mode || 'fast';
-    this.items = functions.map((x) => mode === 'full' ? fingerprintFunction(x) : (x?.schema ? x : fingerprintFunctionFast(x)));
+    this.items = functions.map((x) => mode === 'full' ? fingerprintFunction(x) : fingerprintFunctionFast(x));
     this.buckets = new Map();
     for (let i = 0; i < this.items.length; i++) {
       for (const token of coarseTokens(this.items[i])) {
@@ -14,7 +14,7 @@ export class FunctionMatchIndex {
     }
   }
   candidates(input, options = {}) {
-    const fp = input?.schema ? input : fingerprintFunctionFast(input);
+    const fp = fingerprintFunctionFast(input);
     const maxCandidates = Math.max(1, options.maxCandidates ?? 128);
     const maxBucketScan = Math.max(maxCandidates, options.maxBucketScan ?? 1024);
     const tokenBuckets = coarseTokens(fp).map((token) => ({token,bucket:this.buckets.get(token)})).filter((x) => x.bucket?.length).sort((a,b) => a.bucket.length - b.bucket.length);
@@ -94,11 +94,16 @@ export function matchFunctions(beforeFunctions, afterFunctions, options = {}) {
     }
     if (!changed) break;
   }
-  all.sort((a, b) => b.confidence - a.confidence || b.baseConfidence - a.baseConfidence || a.i - b.i || a.j - b.j);
+  const eligible = all.filter((c) => {
+    if (c.identity !== 'similar' || options.allowSimilar === true) return true;
+    if (c.baseConfidence >= 0.7 && c.confidence >= 0.78 && c.reasons.includes('call-neighborhood')) { c.identity = 'probable-same'; return true; }
+    return false;
+  });
+  eligible.sort((a, b) => b.confidence - a.confidence || b.baseConfidence - a.baseConfidence || a.i - b.i || a.j - b.j);
   const usedBefore = new Set(), usedAfter = new Set(), matches = [];
-  for (const c of all) {
+  for (const c of eligible) {
     if (usedBefore.has(c.i) || usedAfter.has(c.j)) continue;
-    const alternatives = all.filter((x) => x.i === c.i && x.j !== c.j && !usedAfter.has(x.j) && c.confidence - x.confidence <= ambiguityWindow)
+    const alternatives = eligible.filter((x) => x.i === c.i && x.j !== c.j && !usedAfter.has(x.j) && c.confidence - x.confidence <= ambiguityWindow)
       .slice(0, 4).map((x) => ({ index: x.j, address: after[x.j].address, confidence: x.confidence, identity: x.identity, reasons: x.reasons }));
     const ambiguous = alternatives.length > 0;
     matches.push({ before: before[c.i], after: after[c.j], confidence: c.confidence, identity: c.identity, reasons: c.reasons, evidence: c.evidence, ambiguous, candidates: alternatives });

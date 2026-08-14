@@ -34,6 +34,11 @@ const regB=fingerprintFunction({...base,bytes:Uint8Array.from([9,8,7,6]),instruc
 assert.equal(regA.normalizedOperandsHash,regB.normalizedOperandsHash);
 assert.equal(normalizeInstruction('str x3, [x0, #0x20]').operands.includes('#0x20'), true, 'field offsets must remain semantic constants');
 assert.equal(normalizeInstruction('adrp x8, #0x100120000').operands.includes('@address'), true, 'relocatable addresses normalize');
+const aliasSame=fingerprintFunction({...base,bytes:null,semantic:{},cfg:{},strings:[],imports:[],calls:[],constants:[],instructions:['add x3,x1,x1','ret']});
+const aliasDifferent=fingerprintFunction({...base,bytes:null,semantic:{},cfg:{},strings:[],imports:[],calls:[],constants:[],instructions:['add x3,x1,x2','ret']});
+assert.notEqual(aliasSame.normalizedOperandsHash,aliasDifferent.normalizedOperandsHash,'register normalization preserves same-vs-different aliases');
+const spoofA=fingerprintFunction({address:30n,size:4,byteHash:'same-precomputed-hash'}), spoofB=fingerprintFunction({address:31n,size:8,byteHash:'same-precomputed-hash'});
+assert.notEqual(compareFingerprints(spoofA,spoofB).identity,'exact','equal precomputed hash with different size is not exact identity');
 assert.ok(compareFingerprints(regA,regB).confidence>=0.78);
 const stackA=fingerprintFunction({...base,bytes:null,instructions:['sub sp, sp, #0x40','ldr x8, [sp,#0x20]','add x1,x2,x3']});
 const stackB=fingerprintFunction({...base,bytes:null,address:77n,instructions:['sub sp, sp, #0x80','ldr x9, [sp,#0x60]','add x4,x5,x6']});
@@ -41,6 +46,7 @@ assert.equal(stackA.normalizedOperandsHash,stackB.normalizedOperandsHash,'stack 
 const schedA=fingerprintFunction({...base,bytes:null,instructions:['add x1,x2,x3','eor x4,x5,x6','ret']});
 const schedB=fingerprintFunction({...base,bytes:null,address:78n,instructions:['eor x9,x10,x11','add x7,x8,x12','ret']});
 assert.equal(schedA.instructionBagHash,schedB.instructionBagHash,'instruction scheduling keeps bag identity');
+assert.equal(schedA.normalizedOperandBagHash,schedB.normalizedOperandBagHash,'scheduling-tolerant operand bag preserves local register roles');
 
 // compiler noise/scheduling: semantic fingerprint can carry identity across minor optimization.
 const optA=fingerprintFunction({...base,bytes:Uint8Array.from([1,2,3,4]),instructions:['add x3, x1, x2','str x3, [x0,#0x20]']});
@@ -54,6 +60,17 @@ assert.notEqual(semCmp.identity,'semantic-equivalent');
 d=diffFunctions([base],[clamped],{threshold:0.45});
 assert.equal(d.matches.length,1);
 assert.ok(d.matches[0].semanticChange.tags.includes('clamp-introduced'));
+
+// Common prefixes and one correlated signal family are insufficient identity evidence.
+const longA=Uint8Array.from({length:1024},(_,i)=>i<300?0x55:(i*13)&255);
+const longB=Uint8Array.from({length:1024},(_,i)=>i<300?0x55:(i*29+7)&255);
+const longCmp=compareFingerprints(fingerprintFunction({address:40n,architecture:'arm64',bytes:longA}),fingerprintFunction({address:41n,architecture:'arm64',bytes:longB}));
+assert.ok(longCmp.confidence<0.55,'stratified sampling prevents common-prefix false matches');
+const instructionOnlyA={address:42n,architecture:'arm64',size:16,instructions:['mov x8,x9','add x8,x8,#1','ret']};
+const instructionOnlyB={address:43n,architecture:'arm64',size:16,instructions:['mov x20,x21','add x20,x20,#1','ret']};
+assert.equal(matchFunctions([instructionOnlyA],[instructionOnlyB]).matches.length,0,'correlated instruction evidence alone is not identity');
+const staleFast={schema:'hex.function-fingerprint-fast',version:2,address:44n,architecture:'arm64',size:16,instructionSequenceHash:'legacy'};
+assert.equal(new FunctionMatchIndex([staleFast]).items[0].version,3,'stale fast fingerprints are upgraded before indexing');
 
 // unrelated collision resistance: same size/empty metadata alone cannot match.
 const unrelated1=fingerprintFunction({address:10n,architecture:'arm64',size:64,bytes:Uint8Array.from({length:64},(_,i)=>i),cfg:{blocks:4,edges:3,exits:1}});
@@ -96,11 +113,24 @@ assert.equal(classifyFunction(appFn,{notKnownVendor:true,calledFromApplication:t
 assert.ok(applicationCodeScore(appFn,{notKnownVendor:true,calledFromApplication:true})>0.6);
 assert.ok(discoverSubsystems(appFn).some((x)=>x.subsystem==='economy/reward'));
 assert.equal(classifyFunction(base,{owningLibrary:'/usr/lib/libSystem.B.dylib'}).classification,'SYSTEM');
+const cAppRuntimeCalls={address:55n,architecture:'arm64',imports:['malloc','free'],instructions:['bl malloc','bl free','ret']};
+assert.notEqual(classifyFunction(cAppRuntimeCalls,{libraries:['Foundation.framework','/usr/lib/libSystem.B.dylib']}).classification,'RUNTIME','linked frameworks plus malloc/free do not imply runtime ownership');
+const fallbackVendor=recognizeLibraries({strings:['AppLovin internal marker only']}).find((x)=>x.name==='AppLovin MAX');
+if (fallbackVendor) assert.ok(fallbackVendor.confidence<0.8,'one vendor string cannot reach suppression confidence');
 const ranked=rankApplicationFunctions([base,appFn],(_fn,index)=>index?{notKnownVendor:true,calledFromApplication:true}:{}); assert.equal(ranked[0].classification.classification,'APPLICATION');
 const clusters=clusterFunctions([appFn,{...appFn,address:0x3333n,strings:['reward','coins','wallet']}]); assert.ok(clusters.some((x)=>x.subsystem==='economy/reward'));
 const suppression=classificationMetrics([{classification:'APPLICATION'},{classification:'SDK'},{classification:'RUNTIME'},{classification:'LIBRARY'}]); assert.equal(suppression.librarySuppressionRate,0.75);
 
 // knowledge reidentification, propagation, and negative knowledge.
+const defaultDb=new KnowledgeDB({indexedDB:null,memory:new Map(),negativeMemory:new Map()});
+const defaultRecord=await defaultDb.remember({fingerprint:base,name:'heuristic-name'});
+assert.equal(defaultRecord.confirmation,'weak-inferred'); assert.equal(defaultRecord.confidence,0.5);
+const explicitConfirmed=await defaultDb.remember({fingerprint:{...base,address:0x1111n},name:'confirmed-name',confirmation:'user-confirmed'});
+assert.equal(explicitConfirmed.confidence,1); assert.equal(explicitConfirmed.confirmation,'user-confirmed');
+await defaultDb.reject({sourceBinaryHash:'v2',candidateName:'address-scoped',address:0x1234n});
+assert.equal(await defaultDb.isRejected({sourceBinaryHash:'v2',candidateName:'address-scoped',address:0x1234n}),true);
+assert.equal(await defaultDb.isRejected({sourceBinaryHash:'v2',candidateName:'address-scoped',address:0x5678n}),false,'address-only rejection is not global negative knowledge');
+
 const db=new KnowledgeDB({indexedDB:null,memory:new Map(),negativeMemory:new Map()});
 await db.remember({fingerprint:base,name:'PlayerData::addCoins',roles:['economy writer'],types:['void(int)'],semanticLabels:['adds currency'],sourceBinaryHash:'v1',versions:['1.0'],confidence:0.99,confirmation:'user-confirmed',evidence:[{kind:'manual-confirmation'}]});
 let reid=await db.reidentify({...base,address:0x8800n});

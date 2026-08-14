@@ -3,7 +3,8 @@ export const FUNCTION_CLASSES = Object.freeze(['APPLICATION','SYSTEM','RUNTIME',
 
 const RUNTIME_IMPORTS = [/^_?objc_/, /^_?swift_/, /^_?dyld_/, /^_?__?cxa_/, /^_?pthread_/, /^_?malloc$/, /^_?free$/];
 const SYSTEM_LIBS = [/libsystem/i, /foundation/i, /corefoundation/i, /libobjc/i, /libswift/i];
-const GENERATED = [/thunk/i, /outlined/i, /block_invoke/i, /partial apply/i, /witness thunk/i, /metadata accessor/i];
+const GENERATED = [/\bthunk\b/i, /^outlined(?: function)?\b/i, /block_invoke/i, /partial apply/i, /witness thunk/i, /metadata accessor/i];
+const RUNTIME_NAMES = [/^_?(?:objc_|swift_|dyld_|__?cxa_|pthread_)/i];
 
 export function classifyFunction(input = {}, context = {}) {
   const fp = fingerprintFunction(input);
@@ -14,10 +15,8 @@ export function classifyFunction(input = {}, context = {}) {
   const name = fp.name || '';
   if (context.owningLibrary && SYSTEM_LIBS.some((rx) => rx.test(String(context.owningLibrary)))) return { classification:'SYSTEM', confidence:0.92, evidence:['system-library:' + context.owningLibrary] };
   if (GENERATED.some((rx) => rx.test(name))) return { classification: 'GENERATED', confidence: 0.9, evidence: ['compiler-generated-name'] };
-  const libs = [...(context.libraries || []), ...fp.imports];
-  const runtimeHits = libs.filter((x) => SYSTEM_LIBS.some((rx) => rx.test(String(x))))
-    .concat(fp.imports.filter((x) => RUNTIME_IMPORTS.some((rx) => rx.test(String(x)))));
-  if (runtimeHits.length >= 2 && !(fp.objc.class || fp.swift.typeDescriptor || context.appType)) return { classification: 'RUNTIME', confidence: Math.min(0.94, 0.72 + runtimeHits.length * 0.04), evidence: runtimeHits.slice(0, 6) };
+  if (RUNTIME_NAMES.some((rx) => rx.test(name))) return { classification:'RUNTIME', confidence:0.88, evidence:['runtime-symbol-name'] };
+  const runtimeImports = fp.imports.filter((x) => RUNTIME_IMPORTS.some((rx) => rx.test(String(x))));
   if (context.vendor?.confidence >= 0.8) {
     const classification = FUNCTION_CLASSES.includes(context.vendor.classification) ? context.vendor.classification : context.vendor.kind === 'runtime' ? 'RUNTIME' : context.vendor.kind === 'library' ? 'LIBRARY' : 'SDK';
     return { classification, confidence: context.vendor.confidence, evidence: context.vendor.evidence || [] };
@@ -29,6 +28,7 @@ export function classifyFunction(input = {}, context = {}) {
   if (fp.semantic.writes.length) { appScore += 0.16; evidence.push('state-writes'); }
   if (context.calledFromApplication) { appScore += 0.16; evidence.push('application-entry-path'); }
   if (context.notKnownVendor) { appScore += 0.14; evidence.push('not-known-vendor'); }
+  if (runtimeImports.length) evidence.push('uses-runtime-api');
   if (appScore >= 0.38) return { classification: 'APPLICATION', confidence: Math.min(0.95, 0.5 + appScore / 2), evidence };
   return { classification: 'UNKNOWN', confidence: 0.35, evidence };
 }

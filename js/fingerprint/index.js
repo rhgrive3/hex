@@ -1,7 +1,7 @@
 const MASK64 = 0xffffffffffffffffn;
 const FNV_OFFSET = 0xcbf29ce484222325n;
 const FNV_PRIME = 0x100000001b3n;
-export const FUNCTION_FINGERPRINT_VERSION = 2;
+export const FUNCTION_FINGERPRINT_VERSION = 3;
 
 function hashBytes(bytes) {
   if (!bytes || !bytes.length) return null;
@@ -37,6 +37,30 @@ const ADDRESS_MNEMONICS = /^(adrp?|ldr|str|ldp|stp)$/;
 const REGEX_REG = /\b([xwvsdqhb])(\d{1,2})\b/gi;
 const IMM_HEX = /#?0x[0-9a-f]+/gi;
 
+function registerFamily(cls) { return /^[xw]$/i.test(cls) ? 'gpr' : 'vec'; }
+function normalizeRegisters(text, options = {}) {
+  const registerMap = options.registerMap instanceof Map ? options.registerMap : new Map();
+  const registerCounters = options.registerCounters instanceof Map ? options.registerCounters : new Map();
+  return text.replace(REGEX_REG, (_m, cls, number) => {
+    const family = registerFamily(cls), key = `${family}:${number}`;
+    let id = registerMap.get(key);
+    if (id == null) {
+      id = registerCounters.get(family) || 0;
+      registerCounters.set(family, id + 1);
+      registerMap.set(key, id);
+    }
+    return `${cls.toLowerCase()}R${id}`;
+  });
+}
+function normalizeInstructionList(instructions = [], options = {}) {
+  const shared = { ...options, registerMap:new Map(), registerCounters:new Map() };
+  return instructions.map((x) => normalizeInstruction(x, shared)).filter(Boolean);
+}
+function normalizeInstructionBag(instructions = [], options = {}) {
+  return instructions.map((x) => normalizeInstruction(x, { ...options, registerMap:new Map(), registerCounters:new Map() })).filter(Boolean);
+}
+
+
 export function normalizeInstruction(instruction, options = {}) {
   let mnemonic, operands;
   if (typeof instruction === 'string') {
@@ -51,8 +75,8 @@ export function normalizeInstruction(instruction, options = {}) {
   let normalized = operands
     .replace(/\b(fp|x29)\b/gi, 'FP')
     .replace(/\b(lr|x30)\b/gi, 'LR')
-    .replace(/\bsp\b/gi, 'SP')
-    .replace(REGEX_REG, (_m, cls) => `${cls.toLowerCase()}R`);
+    .replace(/\bsp\b/gi, 'SP');
+  normalized = normalizeRegisters(normalized, options);
   // Stack-frame placement is a compiler choice; object/field offsets are not.
   normalized = normalized.replace(/\[(SP|FP)\s*,\s*(#?-?(?:0x[0-9a-f]+|\d+))\]/gi, '[$1,@stack]');
   if (/^(add|sub)$/.test(mnemonic) && /^SP\s*,\s*SP\s*,/i.test(normalized)) normalized = normalized.replace(/#?-?(?:0x[0-9a-f]+|\d+)/i, '@frame');
@@ -84,6 +108,15 @@ export function normalizeRelocations(bytes, relocationOffsets = [], relocationRa
   return out;
 }
 
+function stratifiedByteSample(bytes, maxBytes = 256) {
+  if (!bytes?.length) return [];
+  if (bytes.length <= maxBytes) return Array.from(bytes);
+  const first = Math.floor(maxBytes / 3), middle = Math.floor(maxBytes / 3), last = maxBytes - first - middle;
+  const middleStart = Math.max(first, Math.floor((bytes.length - middle) / 2));
+  const endStart = bytes.length - last;
+  return [...bytes.subarray(0, first), ...bytes.subarray(middleStart, middleStart + middle), ...bytes.subarray(endStart)];
+}
+
 function cfgShape(cfg = {}) {
   const blocks = Array.isArray(cfg.blocks) ? cfg.blocks.length : Math.max(0, Number(cfg.blocks || 0));
   const edges = Array.isArray(cfg.edges) ? cfg.edges.length : Math.max(0, Number(cfg.edges || 0));
@@ -95,7 +128,7 @@ function cfgShape(cfg = {}) {
 function blockHashes(cfg = {}) {
   if (!Array.isArray(cfg.blocks)) return [];
   return cfg.blocks.map((block) => {
-    const instructions = (block.instructions || block.insns || []).map((x) => normalizeInstruction(x)).filter(Boolean);
+    const instructions = normalizeInstructionList(block.instructions || block.insns || []);
     const descriptor = {
       instructions: instructions.map((x) => x.mnemonic),
       operands: instructions.map((x) => x.operands),
@@ -128,12 +161,13 @@ function stackShape(input = {}) {
 }
 
 export function fingerprintFunction(fn = {}, options = {}) {
-  if (fn?.schema === 'hex.function-fingerprint' && fn.version >= 2 && options.includeSemantic !== false) return fn;
+  if (fn?.schema === 'hex.function-fingerprint' && fn.version >= FUNCTION_FINGERPRINT_VERSION && options.includeSemantic !== false) return fn;
   const bytes = fn.bytes == null ? null : (fn.bytes instanceof Uint8Array ? fn.bytes : new Uint8Array(fn.bytes));
   const normalizedBytes = normalizeRelocations(bytes, fn.relocationOffsets, fn.relocationRanges);
-  const instructions = (fn.instructions || []).map((x) => normalizeInstruction(x, fn.normalization)).filter(Boolean);
+  const instructions = normalizeInstructionList(fn.instructions || [], fn.normalization);
   const mnemonics = instructions.map((x) => x.mnemonic);
   const operands = instructions.map((x) => `${x.mnemonic} ${x.operands}`.trim());
+  const bagOperands = normalizeInstructionBag(fn.instructions || [], fn.normalization).map((x) => `${x.mnemonic} ${x.operands}`.trim());
   const cfg = cfgShape(fn.cfg);
   const blocks = blockHashes(fn.cfg);
   const semantic = options.includeSemantic === false ? semanticShape({}) : semanticShape(fn);
@@ -149,7 +183,7 @@ export function fingerprintFunction(fn = {}, options = {}) {
   const instructionSequenceHash = mnemonics.length ? nonEmptyHash(mnemonics) : (fn.instructionSequenceHash || null);
   const instructionBagHash = mnemonics.length ? nonEmptyHash([...mnemonics].sort()) : (fn.instructionBagHash || null);
   const normalizedOperandsHash = operands.length ? nonEmptyHash(operands) : (fn.normalizedOperandsHash || null);
-  const normalizedOperandBagHash = operands.length ? nonEmptyHash([...operands].sort()) : (fn.normalizedOperandBagHash || null);
+  const normalizedOperandBagHash = bagOperands.length ? nonEmptyHash([...bagOperands].sort()) : (fn.normalizedOperandBagHash || null);
   const cfgHash = (cfg.blocks || cfg.edges || cfg.exits || cfg.loops || cfg.calls) ? nonEmptyHash({ cfg, blocks }) : (fn.cfgHash || null);
   const semanticHash = options.includeSemantic === false ? null : (Object.values(semantic).some((v) => Array.isArray(v) ? v.length : v != null) ? nonEmptyHash(semantic) : (fn.semanticHash || fn.irHash || null));
   const components = {
@@ -167,7 +201,7 @@ export function fingerprintFunction(fn = {}, options = {}) {
     schema: 'hex.function-fingerprint', version: FUNCTION_FINGERPRINT_VERSION,
     address: fn.address == null ? null : BigInt(fn.address), name: fn.name || null, architecture, size,
     exactBytesHash, byteHash: exactBytesHash, normalizedBytesHash, normalizedByteHash: normalizedBytesHash,
-    byteSample: normalizedBytes ? Array.from(normalizedBytes.subarray(0, Math.min(256, normalizedBytes.length))) : Array.from(fn.byteSample || []),
+    byteSample: normalizedBytes ? stratifiedByteSample(normalizedBytes) : Array.from(fn.byteSample || []),
     instructionSequenceHash, instructionBagHash, normalizedOperandsHash, normalizedOperandBagHash, cfgHash, basicBlockHashes: blocks, semanticHash, irHash: semanticHash,
     cfg, semantic, constants, strings, imports, calls, callees, callers, fieldAccessShape: fields, stackShape: stack,
     runtimeMetadata, objc, swift,
@@ -176,19 +210,20 @@ export function fingerprintFunction(fn = {}, options = {}) {
 }
 
 export function fingerprintFunctionFast(fn = {}) {
-  if (fn?.schema === 'hex.function-fingerprint-fast' && fn.version >= 2) return fn;
+  if (fn?.schema === 'hex.function-fingerprint-fast' && fn.version >= FUNCTION_FINGERPRINT_VERSION) return fn;
   const source = fn?.schema === 'hex.function-fingerprint' ? fn : null;
   if (source) {
     return Object.freeze({ schema:'hex.function-fingerprint-fast', version:FUNCTION_FINGERPRINT_VERSION, address:source.address, name:source.name, architecture:source.architecture, size:source.size,
       exactBytesHash:source.exactBytesHash, byteHash:source.byteHash, normalizedBytesHash:source.normalizedBytesHash, normalizedByteHash:source.normalizedByteHash,
       instructionSequenceHash:source.instructionSequenceHash, instructionBagHash:source.instructionBagHash, normalizedOperandsHash:source.normalizedOperandsHash, normalizedOperandBagHash:source.normalizedOperandBagHash,
-      cfgHash:source.cfgHash, cfg:source.cfg, strings:(source.strings||[]).slice(0,4), imports:(source.imports||[]).slice(0,4), semanticHash:null,
+      cfgHash:source.cfgHash, cfg:source.cfg, strings:(source.strings||[]).slice(0,4), imports:(source.imports||[]).slice(0,4), semanticHash:source.semanticHash || null,
       objc:{ selector:source.objc?.selector || null }, swift:{ typeDescriptor:source.swift?.typeDescriptor || null } });
   }
   const bytes = fn.bytes == null ? null : (fn.bytes instanceof Uint8Array ? fn.bytes : new Uint8Array(fn.bytes));
   const normalizedBytes = normalizeRelocations(bytes, fn.relocationOffsets, fn.relocationRanges);
-  const instructions = (fn.instructions || []).map((x) => normalizeInstruction(x, fn.normalization)).filter(Boolean);
+  const instructions = normalizeInstructionList(fn.instructions || [], fn.normalization);
   const mnemonics = instructions.map((x) => x.mnemonic), operands = instructions.map((x) => `${x.mnemonic} ${x.operands}`.trim());
+  const bagOperands = normalizeInstructionBag(fn.instructions || [], fn.normalization).map((x) => `${x.mnemonic} ${x.operands}`.trim());
   const cfg = cfgShape(fn.cfg), blocks = blockHashes(fn.cfg);
   const size = Math.max(0, Number(fn.size ?? bytes?.length ?? 0));
   const architecture = String(fn.architecture || fn.arch || 'unknown').toLowerCase();
@@ -197,7 +232,7 @@ export function fingerprintFunctionFast(fn = {}) {
   const instructionSequenceHash = mnemonics.length ? nonEmptyHash(mnemonics) : (fn.instructionSequenceHash || null);
   const instructionBagHash = mnemonics.length ? nonEmptyHash([...mnemonics].sort()) : (fn.instructionBagHash || null);
   const normalizedOperandsHash = operands.length ? nonEmptyHash(operands) : (fn.normalizedOperandsHash || null);
-  const normalizedOperandBagHash = operands.length ? nonEmptyHash([...operands].sort()) : (fn.normalizedOperandBagHash || null);
+  const normalizedOperandBagHash = bagOperands.length ? nonEmptyHash([...bagOperands].sort()) : (fn.normalizedOperandBagHash || null);
   const cfgHash = (cfg.blocks || cfg.edges || cfg.exits || cfg.loops || cfg.calls) ? nonEmptyHash({cfg,blocks}) : (fn.cfgHash || null);
   return Object.freeze({ schema:'hex.function-fingerprint-fast', version:FUNCTION_FINGERPRINT_VERSION,
     address:fn.address==null?null:BigInt(fn.address), name:fn.name||null, architecture, size, exactBytesHash, byteHash:exactBytesHash, normalizedBytesHash, normalizedByteHash:normalizedBytesHash,
@@ -246,13 +281,13 @@ export function compareFingerprints(left, right) {
   if (a.architecture !== 'unknown' && b.architecture !== 'unknown' && a.architecture !== b.architecture) {
     return { confidence: 0, identity: 'unrelated', reasons: ['architecture-mismatch'], evidence: [{ signal: 'architecture-mismatch', value: 0, weight: 1, group: 'hard' }] };
   }
-  if (a.exactBytesHash && b.exactBytesHash && a.size > 0 && b.size > 0 && a.exactBytesHash === b.exactBytesHash) {
+  if (a.exactBytesHash && b.exactBytesHash && a.size > 0 && a.size === b.size && a.exactBytesHash === b.exactBytesHash) {
     return { confidence: 1, identity: 'exact', reasons: ['exact-bytes'], evidence: [{ signal: 'exact-bytes', value: 1, weight: 1, group: 'bytes', exact: true }] };
   }
   const evidence = [];
-  const normalizedExact = !!a.normalizedBytesHash && a.normalizedBytesHash === b.normalizedBytesHash && a.size > 0 && b.size > 0;
+  const normalizedExact = !!a.normalizedBytesHash && a.normalizedBytesHash === b.normalizedBytesHash && a.size > 0 && a.size === b.size;
   add(evidence, 'normalized-bytes', normalizedExact ? 1 : null, 0.46, 'bytes', normalizedExact);
-  if (!normalizedExact) add(evidence, 'byte-similarity', byteSampleSimilarity(a.byteSample, b.byteSample), 0.42, 'bytes');
+  if (!normalizedExact) add(evidence, 'byte-similarity', byteSampleSimilarity(a.byteSample, b.byteSample), 0.16, 'byte-sample');
   add(evidence, 'instruction-sequence', a.instructionSequenceHash && b.instructionSequenceHash ? (a.instructionSequenceHash === b.instructionSequenceHash ? 1 : 0) : null, 0.24, 'instruction');
   add(evidence, 'instruction-bag', a.instructionBagHash && b.instructionBagHash ? (a.instructionBagHash === b.instructionBagHash ? 1 : 0) : null, 0.10, 'instruction');
   add(evidence, 'normalized-operands', a.normalizedOperandsHash && b.normalizedOperandsHash ? (a.normalizedOperandsHash === b.normalizedOperandsHash ? 1 : 0) : null, 0.12, 'instruction');
@@ -277,30 +312,34 @@ export function compareFingerprints(left, right) {
   }
   let weighted = 0, total = 0;
   for (const group of byGroup.values()) {
-    for (const e of group) { weighted += e.value * e.weight; total += e.weight; }
+    const groupWeight = Math.max(...group.map((e) => e.weight));
+    const signalWeight = group.reduce((sum, e) => sum + e.weight, 0);
+    const groupValue = signalWeight ? group.reduce((sum, e) => sum + e.value * e.weight, 0) / signalWeight : 0;
+    weighted += groupValue * groupWeight; total += groupWeight;
   }
   let confidence = total ? weighted / total : 0;
-  const strongPositive = evidence.filter((e) => ['bytes','instruction','semantic','cfg'].includes(e.group) && e.value >= 0.9);
-  const onlyWeak = strongPositive.length === 0;
+  const strongPositiveGroups = new Set(evidence.filter((e) => ['bytes','instruction','semantic','cfg'].includes(e.group) && e.value >= 0.9).map((e) => e.group));
+  const onlyWeak = strongPositiveGroups.size === 0;
   if (onlyWeak) confidence = Math.min(confidence, 0.59);
   if (normalizedExact) confidence = Math.max(confidence, 0.985);
   const semanticExact = evidence.some((e) => e.signal === 'semantic-ir' && e.value === 1);
-  if (semanticExact && strongPositive.length >= 2) confidence = Math.max(confidence, 0.9);
+  if (semanticExact && strongPositiveGroups.size >= 2) confidence = Math.max(confidence, 0.9);
   const instructionExact = evidence.some((e) => e.signal === 'instruction-sequence' && e.value === 1);
-  if (instructionExact && evidence.some((e) => e.signal === 'normalized-operands' && e.value === 1)) confidence = Math.max(confidence, 0.86);
+  if (instructionExact && evidence.some((e) => e.signal === 'normalized-operands' && e.value === 1) && strongPositiveGroups.size >= 2) confidence = Math.max(confidence, 0.86);
+  if (!normalizedExact && strongPositiveGroups.size < 2) confidence = Math.min(confidence, 0.77);
   confidence = Math.max(0, Math.min(1, confidence));
 
   let identity = 'unrelated';
   if (normalizedExact) identity = 'normalized-identical';
-  else if (semanticExact && confidence >= 0.88) identity = 'semantic-equivalent';
-  else if (confidence >= 0.78 && strongPositive.length >= 1) identity = 'probable-same';
+  else if (semanticExact && strongPositiveGroups.size >= 2 && confidence >= 0.88) identity = 'semantic-equivalent';
+  else if (confidence >= 0.78 && strongPositiveGroups.size >= 2) identity = 'probable-same';
   else if (confidence >= 0.55) identity = 'similar';
   const reasons = evidence.filter((e) => e.value >= 0.75).sort((x, y) => y.weight * y.value - x.weight * x.value).map((e) => e.signal);
   return { confidence, identity, reasons, evidence };
 }
 
 export function coarseTokens(fp) {
-  if (!fp?.schema) fp = fingerprintFunctionFast(fp);
+  if (!fp?.schema || Number(fp.version || 0) < FUNCTION_FINGERPRINT_VERSION) fp = fingerprintFunctionFast(fp);
   const out = [];
   if (fp.normalizedBytesHash) out.push('nb:' + fp.normalizedBytesHash);
   if (fp.semanticHash) out.push('sem:' + fp.semanticHash);

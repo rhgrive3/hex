@@ -49,14 +49,21 @@ export function recognizeLibraries(input = {}, signatures = LIBRARIES) {
   }
   const existing = new Set(results.map((x) => x.name.toLowerCase()));
   const vendorHits = new Map();
-  for (const value of [...libraries, ...symbols, ...strings]) {
-    const text = textOf(value); if (!text) continue; const vendor = vendorInText(text); if (!vendor) continue;
-    let record = vendorHits.get(vendor.vendor); if (!record) vendorHits.set(vendor.vendor, record = { values:new Set(), kind:vendor.kind }); record.values.add(text);
+  for (const [source, values] of [['library',libraries],['symbol',symbols],['string',strings]]) {
+    for (const value of values) {
+      const text = textOf(value); if (!text) continue; const vendor = vendorInText(text); if (!vendor) continue;
+      let record = vendorHits.get(vendor.vendor);
+      if (!record) vendorHits.set(vendor.vendor, record = { values:new Set(), sources:new Set(), kind:vendor.kind });
+      record.values.add(text); record.sources.add(source);
+    }
   }
   for (const [name, hit] of vendorHits) {
     if (existing.has(name.toLowerCase())) continue;
-    const evidence=[...hit.values].slice(0,12); const confidence=Math.min(0.94,0.76+0.04*Math.min(4,evidence.length));
-    results.push({ name, library:name, classification:hit.kind==='library'?'LIBRARY':'SDK', kind:hit.kind, confidence, confirmed:false, evidence });
+    const evidence=[...hit.values].slice(0,12), evidenceKinds=[...hit.sources];
+    let confidence = hit.sources.has('library') ? 0.82 : hit.sources.has('symbol') ? (evidence.length >= 2 ? 0.68 : 0.56) : (evidence.length >= 2 ? 0.56 : 0.46);
+    if (hit.sources.size >= 2) confidence += 0.08;
+    confidence = Math.min(0.92, confidence);
+    results.push({ name, library:name, classification:hit.kind==='library'?'LIBRARY':'SDK', kind:hit.kind, confidence, confirmed:false, evidence, evidenceKinds });
   }
   return results.sort((a,b) => b.confidence - a.confidence);
 }
