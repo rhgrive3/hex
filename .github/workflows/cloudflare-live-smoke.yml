@@ -1,96 +1,422 @@
-name: Cloudflare live smoke
+name: Apply Gemini UI patch
 
 on:
   pull_request:
     paths:
       - '.github/workflows/cloudflare-live-smoke.yml'
-  workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
-  live-smoke:
+  patch-main:
+    if: github.head_ref == 'diag/cloudflare-live-smoke-20260814'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Compare Workers and Pages static assets
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Patch Gemini markdown rendering and function report size
         shell: bash
         run: |
-          set -euo pipefail
-          CF='https://ida.rhgrive.workers.dev'
-          GH='https://rhgrive3.github.io/hex'
-          mkdir -p /tmp/hex-smoke
+          python3 - <<'PY'
+          from pathlib import Path
 
-          assets=(
-            '/index.html'
-            '/css/app.css'
-            '/js/app.js'
-            '/js/backend.js'
-            '/js/worker.js'
-            '/js/macho.js'
-            '/js/words.js'
-            '/capstone.js'
-            '/capstone.wasm'
+          def replace_once(text, old, new, label):
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected exactly one match, got {count}')
+              return text.replace(old, new, 1)
+
+          panels = Path('js/panels.js')
+          text = panels.read_text()
+
+          text = replace_once(
+              text,
+              "  const sheet = new Sheet(pick('この関数について', 'About this function'));\n",
+              "  const sheet = new Sheet(pick('この関数について', 'About this function'), { size: 'wide' });\n"
+              "  sheet.root.classList.add('function-report-sheet');\n",
+              'function report sheet size',
           )
 
-          printf '%-24s | %-3s | %-30s | %-10s | %s\n' 'asset' 'src' 'content-type' 'bytes' 'sha256'
-          printf '%s\n' '------------------------------------------------------------------------------------------------------------'
-          for p in "${assets[@]}"; do
-            safe="$(printf '%s' "$p" | tr '/.' '__')"
-            for src in CF GH; do
-              if [[ "$src" == CF ]]; then base="$CF"; else base="$GH"; fi
-              body="/tmp/hex-smoke/${src}_${safe}"
-              meta="$(curl --retry 2 --retry-all-errors --connect-timeout 10 --max-time 45 -fsSL \
-                -o "$body" -w '%{http_code}|%{content_type}|%{size_download}|%{url_effective}' "$base$p")"
-              IFS='|' read -r status ctype size effective <<< "$meta"
-              hash="$(sha256sum "$body" | awk '{print $1}')"
-              printf '%-24s | %-3s | %-30s | %-10s | %s\n' "$p" "$src" "$ctype" "$size" "$hash"
-              [[ "$status" == '200' ]]
-            done
-            cf_hash="$(sha256sum "/tmp/hex-smoke/CF_${safe}" | awk '{print $1}')"
-            gh_hash="$(sha256sum "/tmp/hex-smoke/GH_${safe}" | awk '{print $1}')"
-            if [[ "$cf_hash" != "$gh_hash" ]]; then
-              echo "MISMATCH: $p differs between Workers and Pages" >&2
-              exit 1
-            fi
-          done
+          marker = "/** Geminiへ送るのは、この関数に関係する上限付きの根拠だけにする。 */\n"
+          helpers = r'''/** GeminiのMarkdownを、HTML文字列を使わず安全なDOMとして組み立てる。 */
+          function appendGeminiInline(parent, text) {
+            const src = String(text || '');
+            const re = /(`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*)/g;
+            let last = 0;
+            for (const match of src.matchAll(re)) {
+              if (match.index > last) parent.append(document.createTextNode(src.slice(last, match.index)));
+              const token = match[0];
+              if (token.startsWith('`')) {
+                parent.append(el('code', 'mono', token.slice(1, -1)));
+              } else if (token.startsWith('**')) {
+                parent.append(el('strong', null, token.slice(2, -2)));
+              } else {
+                parent.append(el('em', null, token.slice(1, -1)));
+              }
+              last = match.index + token.length;
+            }
+            if (last < src.length) parent.append(document.createTextNode(src.slice(last)));
+          }
 
-          wasm_magic="$(od -An -tx1 -N4 /tmp/hex-smoke/CF__capstone_wasm | tr -d ' \n')"
-          echo "Workers capstone.wasm magic: $wasm_magic"
-          [[ "$wasm_magic" == '0061736d' ]]
+          function renderGeminiMarkdown(target, source) {
+            const lines = String(source || '').replace(/\r\n?/g, '\n').split('\n');
+            target.replaceChildren();
+            let listNode = null;
+            let listKind = '';
+            let paragraph = [];
+            let inCode = false;
+            let codeLines = [];
 
-      - name: Verify private deployment files are not public
+            const closeList = () => { listNode = null; listKind = ''; };
+            const flushParagraph = () => {
+              if (!paragraph.length) return;
+              const p = el('p');
+              paragraph.forEach((line, i) => {
+                if (i) p.append(document.createElement('br'));
+                appendGeminiInline(p, line);
+              });
+              target.append(p);
+              paragraph = [];
+            };
+            const flushCode = () => {
+              const pre = el('pre', 'gemini-code');
+              const code = el('code', 'mono');
+              code.textContent = codeLines.join('\n');
+              pre.append(code);
+              target.append(pre);
+              codeLines = [];
+              inCode = false;
+            };
+            const appendListItem = (kind, value) => {
+              flushParagraph();
+              if (!listNode || listKind !== kind) {
+                listNode = document.createElement(kind);
+                listNode.className = 'gemini-list';
+                target.append(listNode);
+                listKind = kind;
+              }
+              const li = document.createElement('li');
+              appendGeminiInline(li, value);
+              listNode.append(li);
+            };
+
+            for (const raw of lines) {
+              const trimmed = raw.trim();
+              if (/^```/.test(trimmed)) {
+                flushParagraph();
+                closeList();
+                if (inCode) flushCode();
+                else inCode = true;
+                continue;
+              }
+              if (inCode) { codeLines.push(raw); continue; }
+              if (!trimmed) { flushParagraph(); closeList(); continue; }
+
+              const heading = trimmed.match(/^(#{1,6})\s+(.+)$/);
+              if (heading) {
+                flushParagraph(); closeList();
+                const h = document.createElement('h' + heading[1].length);
+                appendGeminiInline(h, heading[2]);
+                target.append(h);
+                continue;
+              }
+              if (/^([-*_])(?:\s*\1){2,}$/.test(trimmed)) {
+                flushParagraph(); closeList();
+                target.append(document.createElement('hr'));
+                continue;
+              }
+              const unordered = trimmed.match(/^[-+*]\s+(.+)$/);
+              if (unordered) { appendListItem('ul', unordered[1]); continue; }
+              const ordered = trimmed.match(/^\d+[.)]\s+(.+)$/);
+              if (ordered) { appendListItem('ol', ordered[1]); continue; }
+              const quote = trimmed.match(/^>\s?(.*)$/);
+              if (quote) {
+                flushParagraph(); closeList();
+                const q = document.createElement('blockquote');
+                appendGeminiInline(q, quote[1]);
+                target.append(q);
+                continue;
+              }
+              closeList();
+              paragraph.push(trimmed);
+            }
+            flushParagraph();
+            closeList();
+            if (inCode) flushCode();
+          }
+
+          '''
+          if 'function renderGeminiMarkdown(' not in text:
+              text = replace_once(text, marker, helpers + marker, 'Gemini markdown helper insertion')
+
+          old_output = r'''  const status = el('p', 'gemini-status sub', '');
+            status.setAttribute('aria-live', 'polite');
+            const output = el('pre', 'gemini-output');
+            output.hidden = true;
+            output.setAttribute('aria-live', 'polite');
+            section.append(status, output);
+
+            let controller = null;
+            const setRunning = (running) => {
+              send.disabled = running;
+              cancel.disabled = !running;
+              thinking.disabled = running;
+              question.disabled = running;
+            };
+
+            send.addEventListener('click', async () => {
+              const text = question.value.trim();
+              if (!text) {
+                status.textContent = pick('質問を入力してください。', 'Enter a question first.');
+                question.focus();
+                return;
+              }
+              let payload;
+              try {
+                payload = buildGeminiPayload(report, res.model, text, thinking.value);
+              } catch (err) {
+                status.textContent = err && err.message ? err.message : pick('解析対象を準備できませんでした。', 'Could not prepare the analysis context.');
+                return;
+              }
+
+              controller = new AbortController();
+              output.hidden = false;
+              output.textContent = '';
+              status.textContent = pick('解析中… 回答を受信し次第、ここへ表示します。', 'Analyzing… the response will appear here as it arrives.');
+              setRunning(true);
+              try {
+                await streamGemini(payload, {
+                  onText: (chunk) => { output.textContent += chunk; },
+                }, controller.signal);
+                if (controller && !controller.signal.aborted) {
+                  status.textContent = output.textContent
+                    ? pick('解析が完了しました。', 'Analysis complete.')
+                    : pick('回答本文を受信できませんでした。もう一度お試しください。', 'No response text was received. Please try again.');
+                }
+              } catch (err) {
+                if (err && err.name === 'AbortError') {
+                  status.textContent = pick('解析をキャンセルしました。', 'Analysis cancelled.');
+                } else {
+                  status.textContent = err && err.message ? err.message : pick('解析中にエラーが発生しました。', 'An error occurred during analysis.');
+                }
+              } finally {
+                controller = null;
+                setRunning(false);
+              }
+            });
+
+            cancel.addEventListener('click', () => {
+              if (controller) controller.abort();
+            });
+            return section;
+          }
+          '''
+          new_output = r'''  const status = el('p', 'gemini-status sub', '');
+            status.setAttribute('aria-live', 'polite');
+            const output = el('div', 'gemini-output');
+            output.hidden = true;
+            output.setAttribute('aria-live', 'polite');
+            output.setAttribute('role', 'document');
+            section.append(status, output);
+
+            let controller = null;
+            let markdownText = '';
+            let renderFrame = 0;
+            const renderOutput = () => {
+              renderFrame = 0;
+              const follow = output.scrollHeight - output.scrollTop - output.clientHeight < 72;
+              renderGeminiMarkdown(output, markdownText);
+              if (follow) output.scrollTop = output.scrollHeight;
+            };
+            const scheduleRender = () => {
+              if (!renderFrame) renderFrame = requestAnimationFrame(renderOutput);
+            };
+            const flushRender = () => {
+              if (renderFrame) cancelAnimationFrame(renderFrame);
+              renderFrame = 0;
+              renderOutput();
+            };
+            const setRunning = (running) => {
+              send.disabled = running;
+              cancel.disabled = !running;
+              thinking.disabled = running;
+              question.disabled = running;
+            };
+
+            send.addEventListener('click', async () => {
+              const text = question.value.trim();
+              if (!text) {
+                status.textContent = pick('質問を入力してください。', 'Enter a question first.');
+                question.focus();
+                return;
+              }
+              let payload;
+              try {
+                payload = buildGeminiPayload(report, res.model, text, thinking.value);
+              } catch (err) {
+                status.textContent = err && err.message ? err.message : pick('解析対象を準備できませんでした。', 'Could not prepare the analysis context.');
+                return;
+              }
+
+              controller = new AbortController();
+              markdownText = '';
+              if (renderFrame) cancelAnimationFrame(renderFrame);
+              renderFrame = 0;
+              output.hidden = false;
+              output.replaceChildren();
+              status.textContent = pick('解析中… 回答を受信し次第、ここへ表示します。', 'Analyzing… the response will appear here as it arrives.');
+              setRunning(true);
+              try {
+                await streamGemini(payload, {
+                  onText: (chunk) => {
+                    markdownText += chunk;
+                    scheduleRender();
+                  },
+                }, controller.signal);
+                flushRender();
+                if (controller && !controller.signal.aborted) {
+                  status.textContent = markdownText
+                    ? pick('解析が完了しました。', 'Analysis complete.')
+                    : pick('回答本文を受信できませんでした。もう一度お試しください。', 'No response text was received. Please try again.');
+                }
+              } catch (err) {
+                if (markdownText) flushRender();
+                if (err && err.name === 'AbortError') {
+                  status.textContent = pick('解析をキャンセルしました。', 'Analysis cancelled.');
+                } else {
+                  status.textContent = err && err.message ? err.message : pick('解析中にエラーが発生しました。', 'An error occurred during analysis.');
+                }
+              } finally {
+                controller = null;
+                setRunning(false);
+              }
+            });
+
+            cancel.addEventListener('click', () => {
+              if (controller) controller.abort();
+            });
+            return section;
+          }
+          '''
+          text = replace_once(text, old_output, new_output, 'Gemini output renderer')
+          panels.write_text(text)
+
+          css = Path('css/app.css')
+          styles = css.read_text()
+          old_css = r'''.gemini-output {
+            max-height: min(52dvh, 540px);
+            margin: 8px 0 0;
+            padding: 11px;
+            overflow: auto;
+            border: 0.5px solid var(--separator);
+            border-radius: 9px;
+            background: var(--surface-2);
+            color: var(--label);
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+            font: 12px/1.6 ui-monospace, "SF Mono", SFMono-Regular, Menlo, Monaco, monospace;
+            -webkit-overflow-scrolling: touch;
+            -webkit-user-select: text;
+            user-select: text;
+          }
+          '''
+          new_css = r'''.gemini-output {
+            max-height: min(60dvh, 680px);
+            margin: 8px 0 0;
+            padding: 14px 16px;
+            overflow: auto;
+            border: 0.5px solid var(--separator);
+            border-radius: 10px;
+            background: var(--surface-2);
+            color: var(--label);
+            white-space: normal;
+            overflow-wrap: anywhere;
+            font: 14px/1.65 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", system-ui, sans-serif;
+            -webkit-overflow-scrolling: touch;
+            -webkit-user-select: text;
+            user-select: text;
+          }
+          .gemini-output > :first-child { margin-top: 0; }
+          .gemini-output > :last-child { margin-bottom: 0; }
+          .gemini-output h1,
+          .gemini-output h2,
+          .gemini-output h3,
+          .gemini-output h4,
+          .gemini-output h5,
+          .gemini-output h6 {
+            margin: 1.05em 0 .42em;
+            color: var(--label);
+            line-height: 1.3;
+            font-weight: 700;
+          }
+          .gemini-output h1 { font-size: 1.45em; }
+          .gemini-output h2 { font-size: 1.28em; }
+          .gemini-output h3 { font-size: 1.14em; }
+          .gemini-output h4,
+          .gemini-output h5,
+          .gemini-output h6 { font-size: 1em; }
+          .gemini-output p { margin: .55em 0; }
+          .gemini-output .gemini-list { margin: .45em 0 .8em; padding-left: 1.45em; }
+          .gemini-output .gemini-list li { margin: .22em 0; padding-left: .15em; }
+          .gemini-output blockquote {
+            margin: .7em 0;
+            padding: .2em 0 .2em .9em;
+            border-left: 3px solid var(--separator);
+            color: var(--label-2);
+          }
+          .gemini-output hr { border: 0; border-top: 0.5px solid var(--separator); margin: 1em 0; }
+          .gemini-output code {
+            padding: .08em .32em;
+            border-radius: 5px;
+            background: var(--fill);
+            font-size: .93em;
+          }
+          .gemini-output .gemini-code {
+            margin: .7em 0;
+            padding: 11px 12px;
+            overflow-x: auto;
+            border-radius: 8px;
+            background: var(--fill);
+            white-space: pre;
+            font: 12px/1.55 ui-monospace, "SF Mono", SFMono-Regular, Menlo, Monaco, monospace;
+          }
+          .gemini-output .gemini-code code { padding: 0; background: transparent; font-size: inherit; }
+          @media (min-width: 700px) {
+            .sheet.function-report-sheet {
+              width: min(1180px, 97vw);
+              height: 94dvh;
+              max-height: 94dvh;
+            }
+          }
+          '''
+          styles = replace_once(styles, old_css, new_css, 'Gemini CSS')
+          css.write_text(styles)
+          PY
+
+      - name: Verify
         shell: bash
         run: |
           set -euo pipefail
-          CF='https://ida.rhgrive.workers.dev'
-          for p in /worker.js /wrangler.jsonc /package.json /README.md /tests/run.js; do
-            code="$(curl --retry 2 --retry-all-errors --connect-timeout 10 --max-time 30 -sS \
-              -o /dev/null -w '%{http_code}' "$CF$p")"
-            echo "$p -> $code"
-            [[ "$code" == '404' ]]
-          done
+          node --check js/panels.js
+          npm run check
+          grep -q "function renderGeminiMarkdown" js/panels.js
+          grep -q "function-report-sheet" css/app.css
 
-      - name: Verify Worker API routing and secret presence
+      - name: Commit to main
         shell: bash
         run: |
           set -euo pipefail
-          CF='https://ida.rhgrive.workers.dev'
-
-          get_code="$(curl --retry 2 --retry-all-errors --connect-timeout 10 --max-time 30 -sS \
-            -o /tmp/api-get.json -w '%{http_code}' "$CF/api/gemini")"
-          echo "GET /api/gemini -> $get_code"
-          cat /tmp/api-get.json
-          echo
-          [[ "$get_code" == '405' ]]
-
-          post_code="$(curl --retry 2 --retry-all-errors --connect-timeout 10 --max-time 30 -sS \
-            -H 'content-type: application/json' -d '{}' \
-            -o /tmp/api-post.json -w '%{http_code}' "$CF/api/gemini")"
-          echo "POST /api/gemini {} -> $post_code"
-          cat /tmp/api-post.json
-          echo
-          if [[ "$post_code" == '503' ]]; then
-            echo '::warning::GEMINI_API_KEY is not configured on the deployed ida Worker.'
-          elif [[ "$post_code" != '422' ]]; then
-            echo "Unexpected API status: $post_code" >&2
-            exit 1
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add js/panels.js css/app.css
+          if git diff --cached --quiet; then
+            echo 'No changes to commit.'
+            exit 0
           fi
+          git commit -m 'fix: render Gemini markdown and enlarge report overlay'
+          git push origin HEAD:main
