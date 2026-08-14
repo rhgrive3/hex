@@ -31,6 +31,7 @@ export function architectureCapability(image, engine = {}) {
   const adapter = architectureAdapter(architecture);
   const engineSupported = !!engine[architecture];
   const arm64Analysis = architecture === 'arm64' && engineSupported;
+  const emulationSupported = !!engine.emulation?.[architecture];
   return Object.freeze({
     format: image?.format || 'unknown',
     architecture,
@@ -38,7 +39,7 @@ export function architectureCapability(image, engine = {}) {
     bits: Number(image?.bits || 0),
     canDisassemble: engineSupported,
     canAnalyzeDataflow: arm64Analysis,
-    canEmulate: arm64Analysis,
+    canEmulate: emulationSupported,
     viewerCanDisassemble: engineSupported && !!adapter.viewerCompatible,
     instructionAlignment: adapter.instructionAlignment,
     fixedInstructionSize: adapter.fixedInstructionSize,
