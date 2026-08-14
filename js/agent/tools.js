@@ -10,18 +10,24 @@ import { createFunctionSummaryCache } from '../interproc.js';
 import { sliceResult, minimalCausalPath, functionPaths } from '../query/causal.js';
 import { symbolicExecute } from '../symbolic/executor.js';
 
-function addrKey(v) { return v == null ? null : BigInt(v).toString(); }
 function asAddress(v) {
   if (v == null) return null;
   try { return typeof v === 'bigint' ? v : BigInt(v); } catch { return null; }
 }
 function textOf(v) { return String(v == null ? '' : v).toLowerCase(); }
+function explicitLimit(value, fallback) {
+  if (value == null) return fallback;
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.max(0, Math.floor(n)) : fallback;
+}
 
 class FunctionLoader {
-  constructor(ctx, maxEntries) {
+  constructor(ctx, maxEntries, maxFunctions) {
     this.ctx = ctx;
     this.maxEntries = Math.max(8, maxEntries || 64);
+    this.maxFunctions = explicitLimit(maxFunctions, 64);
     this.cache = new Map();
+    this.analyzed = new Set();
   }
   _put(key, value) {
     if (this.cache.has(key)) this.cache.delete(key);
@@ -35,12 +41,17 @@ class FunctionLoader {
     if (this.cache.has(key)) {
       const hit = this.cache.get(key); this._put(key, hit); return hit;
     }
+    if (!this.analyzed.has(key)) {
+      if (this.analyzed.size >= this.maxFunctions) throw new Error('function-budget');
+      this.analyzed.add(key);
+    }
     let range = null;
     try { range = this.ctx.program && this.ctx.program.functionRange ? this.ctx.program.functionRange(addr) : null; } catch { range = null; }
     const model = await this.ctx.analyze(addr, range && range.end);
     this._put(key, model || null);
     return model || null;
   }
+  analysisCount() { return this.analyzed.size; }
 }
 
 function nameFor(ctx, addr) {
@@ -118,8 +129,8 @@ function seedInstruction(ir, spec) {
 
 export function createAgentTools(context, opts) {
   const ctx = context || {};
-  const maxFunctions = Math.max(4, opts && opts.maxFunctions || 64);
-  const loader = new FunctionLoader(ctx, maxFunctions);
+  const maxFunctions = explicitLimit(opts && opts.maxFunctions, 64);
+  const loader = new FunctionLoader(ctx, Math.max(8, maxFunctions || 8), maxFunctions);
   const summaries = createFunctionSummaryCache({ ...ctx, analyze: (a) => loader.get(a) }, {
     maxEntries: Math.max(16, opts && opts.summaryCache || 128), maxDepth: opts && opts.summaryDepth,
   });
@@ -150,7 +161,9 @@ export function createAgentTools(context, opts) {
     },
 
     async search_functions(query, options) {
-      const limit = Math.max(1, Math.min(maxFunctions, options && options.limit || 40));
+      // Searching an index is cheap and does not consume the function-analysis
+      // budget; only loading/analyzing a candidate does.
+      const limit = Math.max(1, Math.min(200, options && options.limit || 40));
       if (typeof ctx.searchFunctions === 'function') {
         const rows = await ctx.searchFunctions(query, { ...(options || {}), limit });
         return { tool: 'search_functions', results: (rows || []).slice(0, limit) };
