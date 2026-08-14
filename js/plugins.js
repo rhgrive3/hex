@@ -97,5 +97,6 @@ export const EXAMPLE_PLUGIN = `hex.plugin({
 export {
   PlatformPluginRegistry, platformPlugins,
   registerFormat, registerArchitecture, registerAnalyzer, registerKnowledgeProvider,
+  registerSignatureProvider, registerRecognitionProvider,
   registerViewContribution, registerGoalProvider,
 } from './platform/plugin-api.js';
