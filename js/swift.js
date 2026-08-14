@@ -8,11 +8,20 @@
 
 const MAX_NAME = 512;
 const DEFAULT_BUDGET = 20000;
+const RAW_POINTER_LIMIT = 0x0001000000000000n;
 
 function u16(b, o = 0) { return b[o] | (b[o + 1] << 8); }
 function u32(b, o = 0) { return (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0; }
 function i32(b, o = 0) { return u32(b, o) | 0; }
+function u64(b, o = 0) { let v=0n; for (let i=7;i>=0;i--) v=(v<<8n)|BigInt(b[o+i]); return v; }
 function rel(fieldAddress, raw) { return raw ? BigInt(fieldAddress) + BigInt(raw) : null; }
+
+function normalizeBudget(value, fallback = DEFAULT_BUDGET, max = 100000) {
+  if (value == null) return Math.min(fallback, max);
+  const n=Number(value);
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n<=0) throw new TypeError('Swift metadata budget must be a finite positive integer');
+  return Math.min(n,max);
+}
 
 async function exact(read, addr, len) {
   if (addr == null || len <= 0) return null;
@@ -26,11 +35,27 @@ async function cstring(read, addr, max = MAX_NAME) {
   if (!b || !b.length) return null;
   let end = 0;
   for (; end < b.length && b[end]; end++) {
-    if (b[end] < 0x20 || b[end] === 0x7f) return null;
+    const byte=b[end];
+    if (byte < 0x20 || byte === 0x7f) return null;
   }
   if (!end || end === b.length) return null;
-  try { return new TextDecoder().decode(b.subarray(0, end)); }
-  catch { return String.fromCharCode(...b.subarray(0, end)); }
+  try { return new TextDecoder('utf-8', { fatal:true }).decode(b.subarray(0, end)); }
+  catch { return null; }
+}
+
+async function resolvePointerWord(read, address) {
+  const b=await exact(read,address,8);
+  if (!b) return { raw:null, target:null, unresolved:true };
+  const raw=u64(b);
+  if (!raw) return { raw, target:null, unresolved:false };
+  if (typeof read.resolvePointer === 'function') {
+    try {
+      const value=await read.resolvePointer(raw,{address:BigInt(address)});
+      if (value !== undefined) return { raw, target:value==null?null:BigInt(value), unresolved:false };
+    } catch { return { raw, target:null, unresolved:true }; }
+  }
+  if (read.pointerEncoding === 'raw' || raw < RAW_POINTER_LIMIT) return { raw, target:raw, unresolved:false };
+  return { raw, target:null, unresolved:true };
 }
 
 function contextKind(flags) {
@@ -76,9 +101,11 @@ export function demangleSwiftSymbol(symbol) {
     i += n;
   }
   const suffix = s.slice(i);
-  const async = /Ya/.test(suffix);
-  const throws = /K/.test(suffix);
-  const accessor = /Ma|Mf|ML|Mn/.test(suffix) ? 'metadata' : null;
+  // Effect markers are only interpreted in the terminal function production.
+  // A K elsewhere in a type/name production is not evidence of `throws`.
+  const throws = /KF$/.test(suffix);
+  const async = /YaK?F$/.test(suffix);
+  const accessor = /(?:Ma|Mf|ML|Mn)$/.test(suffix) ? 'metadata' : null;
   const demangled = components.length ? components.join('.') + (async ? ' async' : '') + (throws ? ' throws' : '') : original;
   return { original, demangled, parsed: components.length > 0, components, suffix, async, throws, accessor };
 }
@@ -91,11 +118,14 @@ async function relativeString(read, fieldAddr, raw) {
 /** Parse the common nominal type descriptor prefix. */
 export async function parseSwiftNominalDescriptor(read, address) {
   const addr = BigInt(address);
-  const b = await exact(read, addr, 44);
-  if (!b) return null;
-  const flags = u32(b, 0);
+  const prefix = await exact(read, addr, 20);
+  if (!prefix) return null;
+  const flags = u32(prefix, 0);
   const kind = contextKind(flags);
   if (!['class', 'struct', 'enum'].includes(kind)) return null;
+  const required = kind === 'class' ? 44 : 28;
+  const b = required === 20 ? prefix : await exact(read, addr, required);
+  if (!b) return null;
   const nameRel = i32(b, 8);
   const accessRel = i32(b, 12);
   const fieldsRel = i32(b, 16);
@@ -126,12 +156,13 @@ export async function parseSwiftNominalDescriptor(read, address) {
 
 export async function parseSwiftFieldDescriptor(read, address, budget = 4096) {
   if (address == null) return [];
+  const limit=normalizeBudget(budget,4096,100000);
   const addr = BigInt(address);
   const h = await exact(read, addr, 16);
   if (!h) return [];
   const recordSize = u16(h, 10);
   const count = u32(h, 12);
-  if (recordSize < 12 || count > budget) return [];
+  if (recordSize < 12 || count > limit) return [];
   const out = [];
   for (let i = 0; i < count; i++) {
     const at = addr + 16n + BigInt(i * recordSize);
@@ -169,14 +200,27 @@ export async function parseSwiftConformanceDescriptor(read, address) {
   const b = await exact(read, addr, 16);
   if (!b) return null;
   const protocol = rel(addr, i32(b, 0));
-  const typeRef = rel(addr + 4n, i32(b, 4));
+  const rawTypeReference = rel(addr + 4n, i32(b, 4));
   const witnessTable = rel(addr + 8n, i32(b, 8));
   const flags = u32(b, 12);
-  if (protocol == null || typeRef == null) return null;
+  const typeReferenceKind = (flags >>> 3) & 7;
+  if (protocol == null || rawTypeReference == null || typeReferenceKind > 3) return null;
+  let typeRef=null, objcClassName=null, objcClassPointer=null, unresolvedTypeReference=false;
+  if (typeReferenceKind === 0) typeRef=rawTypeReference;
+  else if (typeReferenceKind === 1) {
+    const resolved=await resolvePointerWord(read,rawTypeReference);
+    typeRef=resolved.target; unresolvedTypeReference=resolved.unresolved || typeRef==null;
+  } else if (typeReferenceKind === 2) {
+    objcClassName=await cstring(read,rawTypeReference);
+    unresolvedTypeReference=!objcClassName;
+  } else {
+    const resolved=await resolvePointerWord(read,rawTypeReference);
+    objcClassPointer=resolved.target; unresolvedTypeReference=resolved.unresolved || objcClassPointer==null;
+  }
   return {
     runtime: 'swift', kind: 'conformance', address: addr, protocol, typeRef,
-    witnessTable, flags,
-    typeReferenceKind: (flags >>> 3) & 7,
+    rawTypeReference, objcClassName, objcClassPointer, unresolvedTypeReference,
+    witnessTable, flags, typeReferenceKind,
     conditionalRequirements: (flags >>> 8) & 0xff,
     resilientWitnesses: !!(flags & (1 << 16)),
   };
@@ -184,7 +228,10 @@ export async function parseSwiftConformanceDescriptor(read, address) {
 
 /** Parse vtable records when the enclosing descriptor has identified their range. */
 export async function parseSwiftVTable(read, address, count, budget = 4096) {
-  const n = Math.min(Number(count) || 0, budget);
+  const limit=normalizeBudget(budget,4096,100000);
+  const requested=Number(count);
+  if (!Number.isFinite(requested) || requested < 0 || !Number.isInteger(requested)) throw new TypeError('Swift vtable count must be a finite non-negative integer');
+  const n = Math.min(requested, limit);
   const out = [];
   let at = BigInt(address);
   for (let i = 0; i < n; i++, at += 8n) {
@@ -198,15 +245,16 @@ export async function parseSwiftVTable(read, address, count, budget = 4096) {
 }
 
 export async function parseSwiftWitnessTable(read, address, count, budget = 4096) {
-  const n = Math.min(Number(count) || 0, budget);
+  const limit=normalizeBudget(budget,4096,100000);
+  const requested=Number(count);
+  if (!Number.isFinite(requested) || requested < 0 || !Number.isInteger(requested)) throw new TypeError('Swift witness count must be a finite non-negative integer');
+  const n = Math.min(requested, limit);
   const out = [];
   let at = BigInt(address);
   for (let i = 0; i < n; i++, at += 8n) {
-    const b = await exact(read, at, 8);
-    if (!b) break;
-    let value = 0n;
-    for (let j = 7; j >= 0; j--) value = (value << 8n) | BigInt(b[j]);
-    out.push({ index: i, target: value || null });
+    const resolved=await resolvePointerWord(read,at);
+    if (resolved.raw == null) break;
+    out.push({ index: i, target: resolved.target, rawTarget:resolved.raw, unresolved:resolved.unresolved });
   }
   return out;
 }
@@ -214,7 +262,7 @@ export async function parseSwiftWitnessTable(read, address, count, budget = 4096
 async function relativePointerSection(read, range, budget, parser) {
   const out = [];
   if (!range) return out;
-  const count = Math.min(Number(range.size / 4n), budget);
+  const count = Math.min(Number(range.size / 4n), normalizeBudget(budget));
   for (let i = 0; i < count; i++) {
     const field = range.addr + BigInt(i * 4);
     const b = await exact(read, field, 4);
@@ -235,7 +283,9 @@ async function relativePointerSection(read, range, budget, parser) {
  * knows without duplicating ABI guessing here.
  */
 export async function buildSwiftMetadataModel(read, sections, opts = {}) {
-  const budget = Math.max(128, Math.min(opts.budget || DEFAULT_BUDGET, 100000));
+  const budget = normalizeBudget(opts.budget, DEFAULT_BUDGET, 100000);
+  if (typeof opts.resolvePointer === 'function' && typeof read.resolvePointer !== 'function') read.resolvePointer=opts.resolvePointer;
+  if (opts.pointerEncoding && !read.pointerEncoding) read.pointerEncoding=opts.pointerEncoding;
   const typeSec = sectionRange(sections, ['__swift5_types']);
   const protoSec = sectionRange(sections, ['__swift5_protos']);
   const confSec = sectionRange(sections, ['__swift5_proto']);
@@ -260,35 +310,72 @@ export async function buildSwiftMetadataModel(read, sections, opts = {}) {
   const witnessTables = [];
   for (const w of opts.witnessTables || []) witnessTables.push({ ...w, entries: await parseSwiftWitnessTable(read, w.address, w.count, budget) });
 
-  return { runtime: 'swift', types, protocols, conformances, vtables, witnessTables, warnings: [] };
+  return { runtime: 'swift', types, protocols, conformances, vtables, witnessTables, objcClasses:opts.objcClasses || [], warnings: [] };
+}
+
+function indexedIdentity(item, duplicateNames) {
+  if (!item?.name) return null;
+  if (item.qualifiedName) return String(item.qualifiedName);
+  if (item.fullName) return String(item.fullName);
+  if (item.module) return `${item.module}.${item.name}`;
+  if (item.parentName) return `${item.parentName}.${item.name}`;
+  if (!duplicateNames.has(item.name)) return item.name;
+  const parent=item.parent!=null?`parent@${item.parent}`:'root';
+  const address=item.address!=null?`@${item.address}`:'';
+  return `${parent}.${item.name}${address}`;
+}
+
+function buildNameIndex(items) {
+  const counts=new Map();
+  for (const item of items) if (item?.name) counts.set(item.name,(counts.get(item.name)||0)+1);
+  const duplicates=new Set([...counts].filter(([,count])=>count>1).map(([name])=>name));
+  const byName=new Map(), bySimpleName=new Map();
+  for (const item of items) {
+    if (!item?.name) continue;
+    const identity=indexedIdentity(item,duplicates);
+    item.qualifiedName ||= identity;
+    byName.set(identity,item);
+    let group=bySimpleName.get(item.name); if (!group) bySimpleName.set(item.name,group=[]); group.push(item);
+  }
+  for (const [name,group] of bySimpleName) if (group.length===1) byName.set(name,group[0]);
+  return { byName, bySimpleName };
 }
 
 export function buildSwiftRuntimeIndex(model = {}) {
-  const typesByAddress = new Map(), typesByName = new Map(), protocolsByAddress = new Map(), protocolsByName = new Map();
+  const types=model.types || [], protocols=model.protocols || [];
+  const typesByAddress = new Map(), protocolsByAddress = new Map();
+  for (const t of types) if (t.address != null) typesByAddress.set(t.address.toString(), t);
+  for (const p of protocols) if (p.address != null) protocolsByAddress.set(p.address.toString(), p);
+  const typeNames=buildNameIndex(types), protocolNames=buildNameIndex(protocols);
+  const typesByName=typeNames.byName, protocolsByName=protocolNames.byName;
   const conformancesByType = new Map(), vtablesByType = new Map(), witnessesByPair = new Map();
-  for (const t of model.types || []) {
-    if (t.address != null) typesByAddress.set(t.address.toString(), t);
-    if (t.name) typesByName.set(t.name, t);
-  }
-  for (const p of model.protocols || []) {
-    if (p.address != null) protocolsByAddress.set(p.address.toString(), p);
-    if (p.name) protocolsByName.set(p.name, p);
-  }
+  const objcByName=new Map((model.objcClasses||[]).filter((x)=>x?.name).map((x)=>[x.name,x]));
+  const objcByAddress=new Map((model.objcClasses||[]).filter((x)=>x?.address!=null||x?.addr!=null).map((x)=>[String(x.address??x.addr),x]));
   for (const c of model.conformances || []) {
-    const type = typesByAddress.get(c.typeRef?.toString()) || null;
-    const proto = protocolsByAddress.get(c.protocol?.toString()) || null;
-    if (type) {
-      let a = conformancesByType.get(type.name); if (!a) { a = []; conformancesByType.set(type.name, a); }
-      a.push({ ...c, typeName: type.name, protocolName: proto?.name || null });
+    let type=null, typeName=null;
+    if (c.typeReferenceKind===0 || c.typeReferenceKind===1 || c.typeReferenceKind==null) {
+      type=typesByAddress.get(c.typeRef?.toString()) || null;
+      typeName=type?.qualifiedName || type?.name || null;
+    } else if (c.typeReferenceKind===2 && c.objcClassName) {
+      type=objcByName.get(c.objcClassName) || null; typeName=c.objcClassName;
+    } else if (c.typeReferenceKind===3 && c.objcClassPointer!=null) {
+      type=objcByAddress.get(String(c.objcClassPointer)) || null; typeName=type?.name || `objc@${c.objcClassPointer}`;
     }
-    if (type && proto) witnessesByPair.set(`${type.name}:${proto.name}`, c);
+    const proto = protocolsByAddress.get(c.protocol?.toString()) || null;
+    const protocolName=proto?.qualifiedName || proto?.name || null;
+    if (typeName) {
+      let a = conformancesByType.get(typeName); if (!a) { a = []; conformancesByType.set(typeName, a); }
+      a.push({ ...c, typeName, protocolName, resolvedType:type });
+    }
+    if (typeName && protocolName) witnessesByPair.set(`${typeName}:${protocolName}`, c);
   }
   for (const v of model.vtables || []) {
-    const key = v.typeName || typesByAddress.get(String(v.typeAddress))?.name;
+    const owner=typesByAddress.get(String(v.typeAddress));
+    const key = v.typeName || owner?.qualifiedName || owner?.name;
     if (key) vtablesByType.set(key, v.methods || []);
   }
-  for (const t of model.types || []) if (t.name && t.vtable?.length) vtablesByType.set(t.name, t.vtable);
-  return { runtime: 'swift', model, typesByAddress, typesByName, protocolsByAddress, protocolsByName, conformancesByType, vtablesByType, witnessesByPair };
+  for (const t of types) if (t.name && t.vtable?.length) vtablesByType.set(t.qualifiedName || t.name, t.vtable);
+  return { runtime: 'swift', model, typesByAddress, typesByName, typesBySimpleName:typeNames.bySimpleName, protocolsByAddress, protocolsByName, protocolsBySimpleName:protocolNames.bySimpleName, conformancesByType, vtablesByType, witnessesByPair };
 }
 
 /** Resolve direct/vtable/witness dispatch without pretending ambiguous slots are named. */
@@ -309,7 +396,7 @@ export function resolveSwiftDispatch(index, call = {}) {
       (conf?.witnessTable != null && String(w.address) === conf.witnessTable.toString()) ||
       (w.typeName === call.typeName && w.protocolName === call.protocolName));
     const entry = table?.entries?.find((x) => x.index === Number(call.slot));
-    if (entry) return { kind: call.kind, resolved: entry, candidates: [entry], confidence: 0.86, conformance: conf || null };
+    if (entry?.target != null) return { kind: call.kind, resolved: entry, candidates: [entry], confidence: 0.86, conformance: conf || null };
     return { kind: call.kind, resolved: null, candidates: [], confidence: conf ? 0.55 : 0.2, conformance: conf || null };
   }
   return { kind: call.kind || 'indirect', resolved: null, candidates: [], confidence: 0.15 };
