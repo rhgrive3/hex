@@ -1,7 +1,7 @@
 /* Verify that the IR-backed dataflow facade reaches the verification path used by pinpoint.js. */
 import { buildSemanticModel } from '../js/blocks.js';
 import { verifyFunctionHandlesField } from '../js/verify.js';
-import { amountOf } from '../js/dataflow.js';
+import { amountOf, amountOfLegacy } from '../js/dataflow.js';
 
 let passed = 0;
 const failures = [];
@@ -29,14 +29,14 @@ function modelOf(lines) {
 
 test('verifyFunctionHandlesField sees an SSA-proven RMW across a join', () => {
   const model = modelOf([
-    'mov x19, x0',                    // self -> x19
-    'ldr w8, [x19, #0x20]',           // old value
+    'mov x19, x0',
+    'ldr w8, [x19, #0x20]',
     'cmp w2, #0',
-    'b.eq #0x100000018',              // row 6
+    'b.eq #0x100000018',
     'add w8, w8, #1',
-    'b #0x10000001c',                 // row 7
+    'b #0x10000001c',
     'add w8, w8, #2',
-    'str w8, [x19, #0x20]',           // join + store
+    'str w8, [x19, #0x20]',
     'ret',
   ]);
   const verified = verifyFunctionHandlesField(model, 0x20n);
@@ -50,8 +50,8 @@ test('verifyFunctionHandlesField sees an SSA-proven RMW across a join', () => {
 test('IR-backed update keeps the amount source expected by role/pinpoint logic', () => {
   const model = modelOf([
     'mov x19, x0',
-    'ldr w9, [x20, #0x30]',           // damage / amount from another object
-    'ldr w8, [x19, #0x20]',           // current field
+    'ldr w9, [x20, #0x30]',
+    'ldr w8, [x19, #0x20]',
     'sub w8, w8, w9',
     'str w8, [x19, #0x20]',
     'ret',
@@ -63,6 +63,33 @@ test('IR-backed update keeps the amount source expected by role/pinpoint logic',
   ok(change && change.amount, 'amount origin is preserved');
   eq(change.amount.kind, 'field', 'amount comes from another field');
   eq(change.amount.disp, 0x30n, 'amount field offset');
+});
+
+test('SSA amount origin survives a join where the legacy backward window stops', () => {
+  const model = modelOf([
+    'mov x19, x0',                    // 0
+    'ldr w9, [x20, #0x30]',           // 1 amount source
+    'cmp w2, #0',                     // 2
+    'b.eq #0x100000018',              // 3 -> 6
+    'mov w10, w9',                    // 4
+    'b #0x10000001c',                 // 5 -> 7
+    'mov w10, w9',                    // 6 same source on both paths
+    'ldr w8, [x19, #0x20]',           // 7 join
+    'sub w8, w8, w10',                // 8
+    'str w8, [x19, #0x20]',           // 9
+    'ret',                             // 10
+  ]);
+  const verified = verifyFunctionHandlesField(model, 0x20n);
+  ok(verified.rmw, 'joined RMW is verified');
+  const update = verified.use.rmw[0];
+  eq(update.engine, 'ir-ssa');
+  const old = amountOfLegacy(model, update);
+  const modern = amountOf(model, update);
+  ok(!old.amount || old.amount.kind !== 'field', 'fixture demonstrates the legacy join limitation');
+  ok(modern.amount, 'SSA provides the amount');
+  eq(modern.amount.kind, 'field');
+  eq(modern.amount.disp, 0x30n);
+  eq(modern.amount.engine, 'ir-ssa');
 });
 
 process.stdout.write('\n' + passed + ' passed, ' + failures.length + ' failed\n');
