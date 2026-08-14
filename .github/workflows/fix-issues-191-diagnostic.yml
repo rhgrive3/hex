@@ -1,0 +1,36 @@
+name: Fix issues 191+ diagnostic
+on:
+  push:
+    branches: [fix-issues-191-plus]
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    if: ${{ !contains(github.event.head_commit.message, '[skip-fix191]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Large files
+        run: |
+          echo '=== files >= 20 MiB ==='
+          find . -type f -size +20M -printf '%s %p\n' | sort -nr || true
+          echo '=== references to large fixture names ==='
+          for f in $(find . -type f -size +20M -printf '%p\n'); do
+            b=$(basename "$f")
+            echo "--- $f"
+            git grep -n -F "$b" -- ':!*.bin' ':!*.ipa' ':!*.dylib' ':!*.exe' || true
+          done
+      - name: Target excerpts
+        run: |
+          echo '=== ui primitives ==='
+          grep -n -E 'Tabs|tablist|VirtualList|virtual' js/ui/primitives.js | head -80 || true
+          echo '=== RTTI substitutions ==='
+          grep -n -E 'substitution|substitutions|auto' js/rtti.js | head -100 || true
+          echo '=== Swift unknown token paths ==='
+          grep -n -E 'unknown|unsupported|skip|legacy|demangl' js/swift.js | head -120 || true
+          echo '=== workflow install ==='
+          sed -n '1,220p' .github/workflows/ui-regression.yml || true
+          echo '=== package playwright ==='
+          grep -n -E 'playwright|ui:browser|ai:browser' package.json package-lock.json 2>/dev/null | head -80 || true
