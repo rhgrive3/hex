@@ -23,9 +23,12 @@ export function parsePE(input) {
   const characteristics = r.u16(coff + 18);
   const opt = coff + 20;
   if (opt + sizeOptional > r.length) throw new Error('PE optional header is truncated');
+  if (sizeOptional < 2) throw new Error('PE optional header is too small for its magic');
   const magic = r.u16(opt);
   if (magic !== 0x10b && magic !== 0x20b) throw new Error(`unsupported PE optional magic 0x${magic.toString(16)}`);
   const bits = magic === 0x20b ? 64 : 32;
+  const minimumOptionalSize = bits === 64 ? 112 : 96;
+  if (sizeOptional < minimumOptionalSize) throw new Error(`PE optional header size ${sizeOptional} is smaller than ${minimumOptionalSize}`);
   const entryRva = r.u32(opt + 16);
   const imageBase = bits === 64 ? r.u64(opt + 24) : BigInt(r.u32(opt + 28));
   const sectionAlignment = r.u32(opt + 32);
@@ -41,7 +44,7 @@ export function parsePE(input) {
 
   const image = new BinaryImage(bytes, {
     format: 'pe', arch: peMachineName(machine), bits, endian: 'little', platform: 'windows',
-    imageBase, entrypoint: imageBase + BigInt(entryRva),
+    imageBase, entrypoint: entryRva ? imageBase + BigInt(entryRva) : null,
     metadata: { machine, timestamp, characteristics, subsystem, sectionAlignment, fileAlignment, sizeOfImage, sizeOfHeaders, directories },
   });
 
@@ -57,10 +60,12 @@ export function parsePE(input) {
     const ptrRaw = r.u32(p + 20);
     const flags = r.u32(p + 36);
     const address = imageBase + BigInt(virtualAddress);
-    const size = BigInt(Math.max(virtualSize, sizeRaw));
+    const virtualExtent = BigInt(virtualSize || sizeRaw);
+    const rawAvailable = BigInt(Math.min(sizeRaw, Math.max(0, bytes.length - ptrRaw)));
+    const mappedFileSize = rawAvailable < virtualExtent ? rawAvailable : virtualExtent;
     const perms = { read: !!(flags & 0x40000000), write: !!(flags & 0x80000000), execute: !!(flags & 0x20000000) };
-    image.addSegment({ name, address, size, fileOffset: BigInt(ptrRaw), fileSize: BigInt(Math.min(sizeRaw, Math.max(0, bytes.length - ptrRaw))), perms, flags, source: 'PE-section' });
-    image.addSection({ name, address, size: BigInt(virtualSize || sizeRaw), fileOffset: BigInt(ptrRaw), fileSize: BigInt(sizeRaw), perms, flags, type: null, index: i + 1, source: 'PE-section' });
+    image.addSegment({ name, address, size: virtualExtent, fileOffset: BigInt(ptrRaw), fileSize: mappedFileSize, perms, flags, source: 'PE-section' });
+    image.addSection({ name, address, size: virtualExtent, fileOffset: BigInt(ptrRaw), fileSize: mappedFileSize, perms, flags, type: null, index: i + 1, source: 'PE-section' });
   }
 
   if (entryRva) image.functions.push(functionSeed(image.entrypoint, { source: 'entrypoint', confidence: 0.9 }));

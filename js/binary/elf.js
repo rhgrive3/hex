@@ -171,7 +171,7 @@ function parseSymbols(r, table, sections, image, bits) {
     const sym = { name, address: value, size, kind, binding, defined, sectionIndex: shndx, visibility: other & 3, source: table.type === SHT_DYNSYM ? 'dynsym' : 'symtab', index: i, tableIndex: table.index };
     image.symbols.push(sym);
     if (!defined && (bind === 1 || bind === 2)) image.imports.push({ name, library: null, ordinal: null, weak: bind === 2, source: 'elf-dynsym', sites: [] });
-    if (defined && (bind === 1 || bind === 2) && sym.visibility !== 2) image.exports.push({ name, address: value, kind, source: sym.source });
+    if (defined && (bind === 1 || bind === 2) && (sym.visibility === 0 || sym.visibility === 3)) image.exports.push({ name, address: value, kind, source: sym.source });
     if (defined && type === 2 && value !== 0n) image.functions.push(functionSeed(value, { size: size || null, name, source: 'symbol', confidence: 0.995 }));
   }
 }
