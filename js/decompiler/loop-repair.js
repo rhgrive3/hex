@@ -91,8 +91,20 @@ function discoverPostTestInduction(result, loop, ordinal) {
 }
 
 function replacementRange(lines, term, label) {
+  // Generic loop structurer may already have rendered this post-test latch as a
+  // for-loop. Replace that whole proven region so the condition observes the
+  // post-update SSA value rather than leaking a PHI expression into source.
+  let start = lines.findIndex((l) => l.row === term.row && /^for\s*\(/.test(l.text || ''));
+  if (start >= 0) {
+    const indent = lines[start].indent || 0;
+    for (let i = start + 1; i < lines.length; i++) {
+      if ((lines[i].indent || 0) === indent && (lines[i].text || '') === '}') return { start, end: i + 1 };
+    }
+    return null;
+  }
+
   // Faithful/linear form: if (cond) goto header; goto exit;
-  let start = lines.findIndex((l) =>
+  start = lines.findIndex((l) =>
     typeof l.text === 'string' && l.text.includes(`goto ${label}`) &&
     (l.row === term.row || /^if\s*\(/.test(l.text)));
   if (start >= 0) {
@@ -102,8 +114,6 @@ function replacementRange(lines, term, label) {
   }
 
   // Region structurer form: if (cond) { goto header; } else { ... }
-  // The goto inserted for an already-visited block has no source row, so locate
-  // the source CBR first and prove that its then-arm contains this back-edge.
   start = lines.findIndex((l) => l.row === term.row && /^if\s*\(.+\)\s*\{$/.test(l.text || ''));
   if (start < 0) return null;
   let hasBackEdge = false;
@@ -118,18 +128,13 @@ function replacementRange(lines, term, label) {
 }
 
 /**
- * Repair the canonical post-test loop that a generic if/else region pass can
- * accidentally consume first: one Basic Block updates an induction value and
- * conditionally branches back to itself (source-level do/while).
- *
- * The preferred proof is the normal PHI induction recovery. If that helper was
- * too strict, this pass independently verifies the same fact from IR def-use:
- * BIN with constant step -> CMP -> CBR self, plus a proven outside PHI initial
- * value. It never reparses ARM64 text and never invents a loop from addresses.
+ * Repair the canonical post-test loop that a generic region pass can represent
+ * incorrectly as a pre-test for-loop. SSA must prove the induction, constant
+ * step, self back-edge and single exit. Otherwise the original structure stays.
  */
 export function repairCanonicalPostTestLoop(result, blockAddress) {
   if (!result?.semantic || !result.ir) return result;
-  if ((result.lines || []).some((l) => /\b(?:for|while)\s*\(|\bdo\s*\{/.test(l.text || ''))) return result;
+  if ((result.lines || []).some((l) => /\bwhile\s*\(|\bdo\s*\{/.test(l.text || ''))) return result;
 
   const byHeader = new Map();
   for (const iv of result.ctx?.inductions || []) byHeader.set(iv.loop?.header, iv);
@@ -145,15 +150,13 @@ export function repairCanonicalPostTestLoop(result, blockAddress) {
     const term = iv0.conditionInst || termOf(block);
     if (!term || term.op !== OP.CBR) continue;
 
-    // Pure register SSA updates are not emitted as standalone statements. If a
-    // memory write/call/other side effect is already visible in this block, a
-    // narrow repair cannot safely reorder it, so retain faithful control flow.
     const emittedSideEffects = (result.lines || []).filter((l) =>
       l.row != null && l.row >= block.startRow && l.row <= block.endRow &&
       l.kind === 'stmt' && !/^goto\s+loc_/.test(l.text || ''));
     if (emittedSideEffects.length) continue;
 
-    const iv = { ...iv0, _ir: result.ir, _blockAddress: blockAddress };
+    const iv = { ...iv0, inside: iv0.inside || (iv0.phi?.incoming || []).find((x) => loop.nodes.has(x.from))?.value || null,
+      _ir: result.ir, _blockAddress: blockAddress };
     const cond = continuationCondition(iv);
     const init = iv.initText || constantText(iv.init);
     if (!cond || !init) continue;
