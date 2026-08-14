@@ -22,6 +22,8 @@ jobs:
           node-version: '22'
       - name: Apply deterministic patch
         run: python3 tools/decompiler/apply_address_provenance_fix.py
+      - name: Apply damage diagnostics
+        run: node tools/decompiler/debug_apply_damage.mjs
       - name: Syntax check changed JavaScript
         run: |
           node --check js/decompiler/semantic.js
