@@ -24,9 +24,10 @@ jobs:
           status=$?
           set -e
           if [ "$status" -ne 0 ]; then
-            conflicts="$(git diff --name-only --diff-filter=U)"
-            test "$conflicts" = "js/binary/elf-dynamic.js"
-            git checkout --theirs js/binary/elf-dynamic.js
+            conflicts="$(git diff --name-only --diff-filter=U | sort)"
+            expected="$(printf '%s\n' js/binary/elf-dynamic.js js/binary/elf.js | sort)"
+            test "$conflicts" = "$expected"
+            git checkout --theirs js/binary/elf-dynamic.js js/binary/elf.js
           fi
       - name: Resolve ELF semantic overlap
         run: node tools/integrate-elf-74-97.mjs
