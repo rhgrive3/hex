@@ -41,7 +41,7 @@ jobs:
       - name: Install Playwright engines
         run: |
           npm install --no-save playwright
-          npx playwright install --with-deps chromium webkit
+          npx playwright install chromium webkit
       - name: Run existing browser regression
         run: npm run browser
       - name: Run UI viewport matrix
