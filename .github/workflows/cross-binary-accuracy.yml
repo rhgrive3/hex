@@ -1,6 +1,7 @@
 name: Cross-binary accuracy
 
 # Permanent regression gate: production analysis is checked against three real Mach-O binaries.
+# Reference recovery parameters are accepted only after the same three-binary oracle comparison.
 on:
   workflow_dispatch:
   pull_request:
