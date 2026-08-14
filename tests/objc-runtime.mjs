@@ -3,6 +3,7 @@ import {
   buildObjcRuntimeIndex, resolveObjcDispatch, objcMessage,
   recognizeObjcBlockLiteral, buildSelectorIndex, resolveSelectorStub,
 } from '../js/objc.js';
+import { resolveObjcIMP, runtimeOriginForSymbol, buildAppleRuntimeIndex } from '../js/apple/runtime.js';
 
 const model = {
   classes: [
@@ -63,6 +64,19 @@ const index = buildObjcRuntimeIndex(model);
   assert.equal(block.kind, 'block');
   assert.equal(block.invoke, 0x2222n);
   assert.equal(block.captures.length, 1);
+}
+{
+  const imp = resolveObjcIMP(index, 0x2000n, { receiverType: 'PlayerData *', selector: 'addCoins:' });
+  assert.equal(imp.resolved?.selector, 'addCoins:');
+  assert.equal(imp.confidence, 0.98);
+}
+{
+  assert.equal(runtimeOriginForSymbol('-[PlayerData addCoins:]'), 'objc');
+  assert.equal(runtimeOriginForSymbol('_ZN10GameObject6updateEv'), 'cpp');
+  assert.equal(runtimeOriginForSymbol('_$s4Game6updateyyF'), 'swift');
+  const mixed = buildAppleRuntimeIndex({ objc: model, swift: { types: [] } });
+  assert.equal(mixed.runtime, 'mixed');
+  assert.ok(mixed.objc.classes.has('PlayerData'));
 }
 
 console.log('objc-runtime: ok');
