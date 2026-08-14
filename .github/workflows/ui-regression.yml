@@ -49,6 +49,10 @@ jobs:
           CI: '1'
           UI_SHOTS: tests/.ui-shots
         run: npm run ui:browser
+      - name: Verify screenshot audit
+        run: |
+          test -d tests/.ui-shots
+          test "$(find tests/.ui-shots -type f -name '*.png' | wc -l)" -ge 30
       - name: Upload screenshot audit
         if: always()
         uses: actions/upload-artifact@v4
