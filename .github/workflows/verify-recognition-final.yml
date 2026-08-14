@@ -1,0 +1,27 @@
+name: Verify recognition final source
+
+on:
+  push:
+    branches: [verify-recognition-final-20260814]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 04631feae76a36cb855a93470916e91b143b2c49
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify exact final recognition commit
+        run: |
+          test "$(git rev-parse HEAD)" = "04631feae76a36cb855a93470916e91b143b2c49"
+          npm run check
+          npm run platform:test
+          npm run binary:test
+          npm run binary:gate
