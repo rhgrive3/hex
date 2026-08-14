@@ -25,8 +25,10 @@ function check(name, value) {
 
 check('compatibility CSS entrypoint remains loaded', index.includes('./css/ux.css'));
 check('compatibility JS bootstrap remains loaded', index.includes('./js/ux.js'));
-check('ux.js is a thin product bootstrap', ux.includes('installProductUI') && !ux.includes('MutationObserver') && !ux.includes('.click()'));
+check('ux.js is a thin product bootstrap', ux.includes('installProductUI') && !ux.includes('MutationObserver'));
 check('legacy hidden-button architecture is not recreated', !ux.includes('ux-source-action') && !ux.includes('ux-v2'));
+check('legacy analysis actions are not delegated through DOM click', !/(btn-tools|btn-functions|btn-search|btn-jump|btn-strings|btn-sections|btn-struct)[\s\S]{0,160}\.click\(/.test(ux));
+check('file picker activation is an explicit canonical action', ux.includes("actions.register('file.open'") && ux.includes("getElementById('file-input')?.click()"));
 check('ux.css is only a canonical stylesheet entrypoint', uxCss.includes('./tokens.css') && uxCss.includes('./mobile.css') && !uxCss.includes('.ux-v2'));
 
 check('modern copy path retained', ui.includes('navigator.clipboard.writeText'));
