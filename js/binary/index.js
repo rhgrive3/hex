@@ -6,6 +6,12 @@ import { scanStrings } from './strings.js';
 
 export { BinaryImage, functionSeed, mergeFunctionSeeds } from './model.js';
 export { ByteView, BinaryReadError, hex } from './reader.js';
+export {
+  ByteSource, ByteSourceError, ByteSourceRangeError, ByteSourceLimitError,
+  MemoryByteSource, BlobByteSource, SubrangeByteSource,
+  asByteSource, readExactly, safeNumber,
+} from './source.js';
+export { openBinarySource, parseMachOSource, parseELFSource, parsePESource } from './source-loaders.js';
 export { detectBinary } from './detect.js';
 export { parseMachO } from './macho.js';
 export { parseELF } from './elf.js';

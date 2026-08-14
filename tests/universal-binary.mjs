@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   ByteView, detectBinary, openBinary, auditBinary,
   fingerprintFunction, fingerprintImage, fnv1a64, fingerprintBytes,
@@ -29,7 +29,7 @@ function testFingerprint() {
   assert.equal(fingerprintBytes(hello), 'a430d84680aabd0b');
 }
 
-function makeMachO64Fixture() {
+export function makeMachO64Fixture() {
   const b = new Uint8Array(0x400);
   const v = new DataView(b.buffer);
   const w16=(o,x)=>v.setUint16(o,x,true), w32=(o,x)=>v.setUint32(o,x,true), wi32=(o,x)=>v.setInt32(o,x,true), w64=(o,x)=>v.setBigUint64(o,BigInt(x),true);
@@ -49,7 +49,7 @@ function makeMachO64Fixture() {
   return b;
 }
 
-function makeFatMachOFixture() {
+export function makeFatMachOFixture() {
   const thin=makeMachO64Fixture();
   const b=new Uint8Array(0x100+thin.length);
   const v=new DataView(b.buffer);
@@ -71,7 +71,7 @@ function testMachO() {
   assert.equal(fat.arch,'arm64'); assert.equal(fat.metadata.fat.selected.offset,0x100n); assert.equal(fat.functions.length,2);
 }
 
-function makeElf64Fixture() {
+export function makeElf64Fixture() {
   const b = new Uint8Array(0x480);
   const v = new DataView(b.buffer);
   const w16=(o,x)=>v.setUint16(o,x,true), w32=(o,x)=>v.setUint32(o,x,true), w64=(o,x)=>v.setBigUint64(o,BigInt(x),true);
@@ -95,7 +95,7 @@ function makeElf64Fixture() {
   return b;
 }
 
-function makePe64Fixture() {
+export function makePe64Fixture() {
   const b = new Uint8Array(0x800);
   const v = new DataView(b.buffer);
   const w16=(o,x)=>v.setUint16(o,x,true), w32=(o,x)=>v.setUint32(o,x,true), w64=(o,x)=>v.setBigUint64(o,BigInt(x),true);
@@ -161,5 +161,7 @@ function testRealMachO() {
   }
 }
 
-testReader(); testDetection(); testFingerprint(); testMachO(); testElf(); testPe(); testRealMachO();
-console.log('universal-binary: PASS');
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+  testReader(); testDetection(); testFingerprint(); testMachO(); testElf(); testPe(); testRealMachO();
+  console.log('universal-binary: PASS');
+}

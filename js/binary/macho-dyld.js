@@ -217,7 +217,10 @@ export function parseExportTrie(r, dc, image) {
       walk(Number(child.value), prefix + edge, depth + 1);
     }
   };
-  try { walk(0, '', 0); } catch (e) { image.warnings.push(`exports trie: ${e.message}`); }
+  try { walk(0, '', 0); } catch (e) {
+    if (e?.code === 'BINARY_SOURCE_RANGE_MISSING') throw e;
+    image.warnings.push(`exports trie: ${e.message}`);
+  }
 }
 
 function dylibForOrdinal(image, ordinal) {
