@@ -72,6 +72,18 @@ export async function runtimePlatformForApp(app) {
   return state.platform;
 }
 
+export function runtimeEvidenceForApp(app, functionAddress = null) {
+  const state = states.get(app);
+  if (!state || state.fileToken !== currentFileToken(app)) return [];
+  const evidence = Array.isArray(state.platform?.evidence) ? state.platform.evidence : [];
+  if (functionAddress == null) return evidence.slice();
+  let address;
+  try { address = BigInt(functionAddress); } catch { return []; }
+  return evidence.filter((item) => {
+    try { return item?.function != null && BigInt(item.function) === address; } catch { return false; }
+  });
+}
+
 export async function traceAppFunction(app, functionAddress, options = {}) {
   const platform = await runtimePlatformForApp(app);
   return platform.traceFunction(functionAddress, {
