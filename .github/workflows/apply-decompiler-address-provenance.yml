@@ -24,6 +24,7 @@ jobs:
         run: |
           python3 tools/decompiler/apply_address_provenance_fix.py
           python3 tools/decompiler/apply_address_provenance_fix_round2.py
+          python3 tools/decompiler/apply_address_provenance_fix_round3.py
       - name: Apply damage diagnostics
         run: node tools/decompiler/debug_apply_damage.mjs
       - name: Syntax check changed JavaScript
