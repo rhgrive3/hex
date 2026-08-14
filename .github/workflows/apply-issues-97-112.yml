@@ -1,0 +1,32 @@
+name: Apply issues 97-112
+on:
+  push:
+    branches: [fix/issues-97-109-20260815]
+permissions:
+  contents: write
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - uses: actions/setup-node@v4
+        with: {node-version: 22}
+      - run: python3 tools/apply-issues-97-112.py
+      - name: Focused regression
+        run: |
+          node tests/issues-97-112.mjs
+          node tests/universal-binary.mjs
+          node tests/universal-binary-source.mjs
+          node tests/binary-platform.mjs
+          node tests/platform-bytesource.mjs
+      - run: node tests/check.mjs
+      - name: Commit verified result
+        run: |
+          git rm tools/apply-issues-97-112.py .github/workflows/apply-issues-97-112.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m 'fix: harden PE parsing and worker byte-source semantics 97-112'
+          git push origin HEAD:fix/issues-97-109-20260815
