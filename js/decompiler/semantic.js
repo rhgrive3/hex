@@ -10,6 +10,8 @@ import { irFor, readModifyWrite, OP, VK, MK, COND, inverseCondition } from '../i
 import { analyzeGraph } from '../controlflow.js';
 import { inferSemanticTypes, semanticSignature, typeNameOf } from './type-recovery.js';
 import { buildAppleRuntimeIndex, resolveAppleCall, shouldFoldRuntimeCall, runtimeOriginForSymbol } from '../apple/runtime.js';
+import { callArgumentIndices, knownCallPrototype } from './call-prototypes.js';
+import { sourceOf, mergeSource } from './ast/nodes.js';
 
 const MAX_EXPR_DEPTH = 48;
 const MAX_EXPR_NODES = 512;
@@ -27,6 +29,159 @@ function safeIdent(s, fallback = 'value') {
 }
 function paren(s) { return /^[-+]?\w+(?:->\w+|\.\w+|\[[^\]]+\])*$/.test(s) || /^0x[0-9A-F]+$/.test(s) ? s : `(${s})`; }
 function sameValue(a, b) { return !!a && !!b && a.id === b.id; }
+
+function sourceForInst(inst, reason = null) {
+  if (!inst) return sourceOf();
+  return sourceOf({
+    address: inst.address ?? null, row: inst.row ?? null, ir: inst.id ?? null,
+    evidence: reason ? [{ reason }] : [],
+  });
+}
+
+function dependencySource(value, ctx, seen = new Set(), depth = 0) {
+  if (!value || depth > MAX_EXPR_DEPTH || seen.has(value.id)) return sourceOf();
+  seen.add(value.id);
+  const d = value.def;
+  if (!d) return sourceOf({ ssaUse: value.id });
+  const parts = [sourceForInst(d), sourceOf({ ssaDef: value.id })];
+  if (d.op === OP.PHI) {
+    for (const incoming of d.incoming || []) parts.push(dependencySource(incoming.value, ctx, seen, depth + 1));
+  } else if (d.op === OP.LOAD) {
+    // A fixed stack slot's SP/FP arithmetic is frame-construction provenance,
+    // not source provenance for the value loaded from that slot. Including it
+    // makes unrelated prologue instructions (for example 0x...490 STP) appear
+    // to own later C statements. Keep the load itself, but stop at the stack
+    // memory boundary. Non-stack addressing still retains its base/index defs.
+    if (d.loc?.kind !== MK.STACK) {
+      parts.push(dependencySource(d.addr?.base, ctx, seen, depth + 1));
+      parts.push(dependencySource(d.addr?.index, ctx, seen, depth + 1));
+    }
+  } else {
+    for (const arg of d.args || []) parts.push(dependencySource(valueOf(arg), ctx, seen, depth + 1));
+  }
+  return mergeSource(...parts);
+}
+
+function controlSource(inst) {
+  if (!inst) return sourceOf();
+  const flags = valueOf(inst.args?.[inst.args.length - 1]);
+  const cmp = cmpFromFlags(flags);
+  return mergeSource(sourceForInst(cmp, cmp ? 'condition compare' : null), sourceForInst(inst, 'control transfer'));
+}
+
+function storeSource(inst, ctx) {
+  return mergeSource(
+    dependencySource(valueOf(inst.args?.[0]), ctx),
+    dependencySource(inst.addr?.base, ctx),
+    dependencySource(inst.addr?.index, ctx),
+    sourceForInst(inst, 'memory store'),
+  );
+}
+
+function callSource(inst, call, ctx) {
+  const parts = [sourceForInst(inst, 'call')];
+  for (const index of call?.sourceArgIndices || []) {
+    parts.push(dependencySource(reachingRegisterValue(ctx.ir, inst, `x${index}`), ctx));
+  }
+  return mergeSource(...parts);
+}
+
+function buildStoredValueAliases(ir) {
+  const out = new Map();
+  for (const inst of ir?.instructions || []) {
+    if (inst.op !== OP.STORE) continue;
+    const value = valueOf(inst.args?.[0]);
+    if (!value) continue;
+    if (!out.has(value.id)) out.set(value.id, []);
+    out.get(value.id).push(inst);
+  }
+  return out;
+}
+
+/*
+ * Once `v = old_field - damage` has been committed by a STORE, a following CMP
+ * of v is a comparison of the new field value. Re-expanding v as
+ * `field - damage` after emitting `field -= damage` would apply the subtraction
+ * twice in the source program. Alias it back to the committed lvalue only when
+ * same-basic-block ordering and the absence of an intervening memory/call
+ * barrier prove that substitution safe.
+ */
+function storedValueAlias(value, atInst, ctx) {
+  if (!value || !atInst) return null;
+  const stores = ctx.storedValueAliases?.get(value.id) || [];
+  for (let n = stores.length - 1; n >= 0; n--) {
+    const store = stores[n];
+    if (store.block !== atInst.block || store.row == null || atInst.row == null || store.row >= atInst.row) continue;
+    const blocked = (ctx.ir.blocks?.[atInst.block]?.insts || []).some((inst) =>
+      inst.row > store.row && inst.row < atInst.row && (inst.op === OP.STORE || inst.op === OP.CALL || inst.op === OP.UNKNOWN));
+    if (blocked) continue;
+    return renderMemoryLocation(store.loc, store, ctx);
+  }
+  return null;
+}
+
+function renderValueAt(value, atInst, ctx) {
+  return storedValueAlias(value, atInst, ctx) || renderValue(value, ctx);
+}
+
+function canonicalRegister(reg) {
+  const text = String(reg || '').toLowerCase();
+  const m = /^[wx](\d+)$/.exec(text);
+  return m ? `r${m[1]}` : text;
+}
+
+function loadReachedByStore(load, store, ctx) {
+  if (load?.op !== OP.LOAD || load.loc?.key !== store.loc?.key || load.row <= store.row) return false;
+  if (load.reachingStore) return load.reachingStore === store;
+  // Conservative linear fallback for older IR producers without a reachingStore
+  // annotation. Cross-block cases require Memory SSA proof.
+  if (load.block !== store.block) return false;
+  return !(ctx.ir.blocks?.[load.block]?.insts || []).some((x) =>
+    x.op === OP.STORE && x.loc?.key === store.loc?.key && x.row > store.row && x.row < load.row);
+}
+
+function feedsReturn(value, ctx) {
+  if (!value || !ctx.returnInst) return false;
+  const rv = reachingRegisterValue(ctx.ir, ctx.returnInst, 'x0') || valueOf(ctx.returnInst.args?.[0]);
+  return sameValue(value, rv);
+}
+
+/* Hide only stack stores whose loads prove register preservation/return spill. */
+function isMechanicalStackSpill(inst, ctx) {
+  if (inst?.op !== OP.STORE || inst.loc?.kind !== MK.STACK) return false;
+  const stored = valueOf(inst.args?.[0]);
+  const reg = canonicalRegister(stored?.reg);
+  if (reg === 'r29' || reg === 'r30') return true; // frame pointer / link register save
+  const loads = (ctx.ir.instructions || []).filter((x) => loadReachedByStore(x, inst, ctx));
+  if (!loads.length) return false;
+  return loads.every((load) =>
+    (reg && canonicalRegister(load.dst?.reg) === reg) || feedsReturn(load.dst, ctx));
+}
+
+function stringLiteralAt(addr, ctx) {
+  if (addr == null) return null;
+  try {
+    const direct = ctx.opts.stringFor?.(BigInt(addr));
+    if (typeof direct === 'string') return JSON.stringify(direct);
+  } catch { /* optional resolver */ }
+  for (const ref of ctx.model.addressRefs || []) {
+    if (ref?.addr == null || typeof ref.text !== 'string') continue;
+    try { if (BigInt(ref.addr) === BigInt(addr)) return JSON.stringify(ref.text); } catch { /* malformed ref */ }
+  }
+  return null;
+}
+
+function stringLiteralForValue(value, ctx) {
+  if (value?.const == null) return null;
+  const defRow = value.def?.row;
+  for (const ref of ctx.model.addressRefs || []) {
+    if (ref?.row !== defRow || ref?.addr == null || typeof ref.text !== 'string') continue;
+    try { if (BigInt(ref.addr) === BigInt(value.const)) return JSON.stringify(ref.text); } catch { /* malformed ref */ }
+  }
+  // A direct ADR/ADRP value is intrinsically address-like. For arithmetic
+  // constants require the exact row+addressRef proof above.
+  return value.def?.op === OP.ADDR ? stringLiteralAt(value.const, ctx) : null;
+}
 
 function formatConst(v, bits = 64) {
   if (v == null) return 'unknown';
@@ -138,11 +293,11 @@ function cmpFromFlags(flagValue) {
   return d && d.op === OP.CMP ? d : null;
 }
 
-function renderCmp(cmp, cond, ctx) {
+function renderCmp(cmp, cond, ctx, atInst = cmp) {
   if (!cmp) return cond ? `condition_${cond}` : 'condition';
   const info = COND[cond] || null;
-  const a = renderValue(valueOf(cmp.args?.[0]), ctx);
-  const b = renderValue(valueOf(cmp.args?.[1]), ctx);
+  const a = renderValueAt(valueOf(cmp.args?.[0]), atInst, ctx);
+  const b = renderValueAt(valueOf(cmp.args?.[1]), atInst, ctx);
   if (!info) return `${a} /* ${cond || 'flags'} */`;
   if (info.vsZero) return `${a} ${info.op} 0`;
   return `${a} ${info.op} ${b}`;
@@ -153,15 +308,15 @@ export function renderBranchCondition(inst, ctx, invert = false) {
   const kind = inst.extra?.kind || inst.sub || '';
   let s;
   if (kind === 'cbz' || kind === 'cbnz') {
-    s = `${renderValue(valueOf(inst.args?.[0]), ctx)} ${kind === 'cbz' ? '==' : '!='} 0`;
+    s = `${renderValueAt(valueOf(inst.args?.[0]), inst, ctx)} ${kind === 'cbz' ? '==' : '!='} 0`;
   } else if (kind === 'tbz' || kind === 'tbnz') {
     const bit = inst.extra?.bit ?? 0;
-    s = `((${renderValue(valueOf(inst.args?.[0]), ctx)} >> ${bit}) & 1) ${kind === 'tbz' ? '==' : '!='} 0`;
+    s = `((${renderValueAt(valueOf(inst.args?.[0]), inst, ctx)} >> ${bit}) & 1) ${kind === 'tbz' ? '==' : '!='} 0`;
   } else {
     let cond = inst.cond || inst.extra?.cond || 'ne';
     if (invert) cond = inverseCondition(cond) || cond;
     const flags = valueOf(inst.args?.[inst.args.length - 1]);
-    return renderCmp(cmpFromFlags(flags), cond, ctx);
+    return renderCmp(cmpFromFlags(flags), cond, ctx, inst);
   }
   return invert ? `!(${s})` : s;
 }
@@ -218,18 +373,47 @@ function callRecord(inst, ctx) {
   for (let i = 0; i < 8; i++) values.push(reachingRegisterValue(ctx.ir, inst, 'x' + i));
   const argText = values.map((v) => v ? renderValue(v, ctx) : null);
   const origin = runtimeOriginForSymbol(name);
-  let selector = null;
+  const objc = origin === 'objc' || /objc_msgSend/.test(name);
+  let selector = modelCall?.selector || null;
   let receiverType = null;
-  if (origin === 'objc' || /objc_msgSend/.test(name)) {
+  if (objc) {
     const selValue = values[1];
     const selAddr = selValue?.const ?? (selValue?.def?.op === OP.ADDR ? selValue.const : null);
-    if (selAddr != null) selector = ctx.opts.selectorFor?.(selAddr) || ctx.runtime?.selectors?.byAddress?.get(selAddr.toString())?.[0]?.selector || null;
+    if (!selector && selAddr != null) selector = ctx.opts.selectorFor?.(selAddr) || ctx.runtime?.selectors?.byAddress?.get(selAddr.toString())?.[0]?.selector || null;
     receiverType = typeNameOf(ctx.types.values.get(values[0]?.id));
     if (receiverType === 'unknown' || receiverType === 'id' || receiverType === 'void *') receiverType = ctx.opts.receiverType || null;
   }
-  const logicalArgs = origin === 'objc' || /objc_msgSend/.test(name) ? argText.slice(2).filter((x) => x != null) : argText.filter((x, i) => x != null && (modelCall?.args?.some?.((a) => a.index === i) || i < (ctx.opts.defaultCallArgs ?? 4)));
+
+  let logicalArgs = [];
+  let sourceArgIndices = [];
+  let arityKnown = true;
+  let variadicPrefixOnly = false;
+  if (objc) {
+    const selectorArity = selector ? (selector.match(/:/g) || []).length : null;
+    if (selectorArity == null) {
+      arityKnown = false;
+      sourceArgIndices = [0, 1].filter((i) => values[i]);
+    } else {
+      const indexes = Array.from({ length: selectorArity }, (_, i) => i + 2).filter((i) => i < 8);
+      logicalArgs = indexes.map((i) => argText[i]).filter((x) => x != null);
+      sourceArgIndices = [0, 1, ...indexes].filter((i) => values[i]);
+    }
+  } else {
+    let override = null;
+    try { override = ctx.opts.callPrototypeFor?.(target, name, inst) || null; } catch { override = null; }
+    const indexes = callArgumentIndices({ name, modelCall, override, defaultCallArgs: ctx.opts.defaultCallArgs });
+    if (indexes == null) {
+      arityKnown = false;
+      ctx.unknownCallArities++;
+    } else {
+      logicalArgs = indexes.map((i) => argText[i] ?? 'unknown');
+      sourceArgIndices = indexes.filter((i) => values[i]);
+      variadicPrefixOnly = !!knownCallPrototype(name)?.variadic && !override;
+    }
+  }
+
   const info = {
-    name, target, runtime: origin, args: logicalArgs,
+    name, target, runtime: origin, args: logicalArgs, arityKnown, variadicPrefixOnly, sourceArgIndices,
     receiver: argText[0] || 'receiver', receiverType, selector,
     stubAddress: target, callingConvention: ctx.opts.swiftCallingConventionFor?.(target, name) || null,
     kind: ctx.opts.swiftDispatchFor?.(inst)?.kind || (inst.extra?.indirect ? 'indirect' : 'direct'),
@@ -246,9 +430,13 @@ function renderCall(inst, ctx) {
   if (c.resolved.runtime === 'objc' && c.resolved.message) return c.resolved.message.text;
   if (c.resolved.runtime === 'swift' && c.resolved.text) return c.resolved.text;
   const name = c.name ? safeIdent(c.name, 'unknown_call') : null;
-  if (name) return `${name}(${c.args.join(', ')})`;
+  if (name) {
+    const args = !c.arityKnown ? '/* arguments unknown */'
+      : c.args.join(', ') + (c.variadicPrefixOnly ? `${c.args.length ? ', ' : ''}/* varargs unknown */` : '');
+    return `${name}(${args})`;
+  }
   const targetValue = valueOf(inst.args?.[0]);
-  return `unknown_call(${targetValue ? renderValue(targetValue, ctx) : ''})`;
+  return `unknown_call(${targetValue ? renderValue(targetValue, ctx) : '/* target unknown */'})`;
 }
 
 /** Reconstruct one SSA value as an expression with memoization and hard budgets. */
@@ -260,7 +448,7 @@ export function renderValue(value, ctx, flags = {}) {
   if (ctx.exprActive.has(value.id) || ctx.exprNodes++ > MAX_EXPR_NODES) return value.reg ? safeIdent(value.reg) : `v${value.id}`;
   ctx.exprActive.add(value.id);
   let out = null;
-  if (value.const != null && value.def?.op !== OP.ADDR) out = formatConst(value.const, value.bits);
+  if (value.const != null && value.def?.op !== OP.ADDR) out = stringLiteralForValue(value, ctx) || formatConst(value.const, value.bits);
   if (!out && value.kind === VK.ARG) out = argName(value, ctx);
   const d = value.def;
   if (!out && d) {
@@ -287,7 +475,8 @@ export function renderValue(value, ctx, flags = {}) {
       }
     } else if (d.op === OP.ADDR) {
       const addr = value.const ?? d.extra?.value ?? d.extra?.target;
-      out = addr != null ? (ctx.opts.symbolFor?.(addr) ? safeIdent(ctx.opts.symbolFor(addr)) : `&global_${hex(addr)}`) : 'address_unknown';
+      const literal = stringLiteralForValue(value, ctx) || stringLiteralAt(addr, ctx);
+      out = literal || (addr != null ? (ctx.opts.symbolFor?.(addr) ? safeIdent(ctx.opts.symbolFor(addr)) : `&global_${hex(addr)}`) : 'address_unknown');
     } else if (d.op === OP.CALL) out = renderCall(d, ctx);
     else if (d.op === OP.PHI) {
       const parts = (d.incoming || []).map((x) => renderValue(x.value, ctx)).filter(Boolean);
@@ -371,17 +560,23 @@ function emitBlockStatements(block, out, ctx, indent) {
   for (const inst of block.insts || []) {
     if (inst === term || inst.op === OP.CMP || inst.op === OP.PHI || inst.op === OP.LOAD || inst.op === OP.CONST || inst.op === OP.MOV || inst.op === OP.BIN || inst.op === OP.UN || inst.op === OP.SEL || inst.op === OP.ADDR || inst.op === OP.MAC || inst.op === OP.BFX || inst.op === OP.BFI || inst.op === OP.CLOBBER) continue;
     if (inst.op === OP.STORE) {
+      if (isMechanicalStackSpill(inst, ctx)) {
+        ctx.suppressed.push(evidenceOf(inst, 'compiler-only stack spill'));
+        continue;
+      }
       const text = statementForStore(inst, ctx);
-      out.push(line('stmt', indent, text, inst.row, inst.address)); ctx.evidence.push(evidenceOf(inst, 'Memory SSA store'));
+      out.push(line('stmt', indent, text, inst.row, inst.address, { source: storeSource(inst, ctx) }));
+      ctx.evidence.push(evidenceOf(inst, 'Memory SSA store'));
     } else if (inst.op === OP.CALL) {
       const c = callRecord(inst, ctx);
       if (shouldFoldRuntimeCall(c.name, { expert: ctx.opts.expert })) { ctx.suppressed.push(evidenceOf(inst, `folded runtime noise: ${c.name}`)); continue; }
       const call = renderCall(inst, ctx);
-      if (inst.dst && ctx.materialNames.has(inst.dst.id)) out.push(line('stmt', indent, `${ctx.materialNames.get(inst.dst.id)} = ${call};`, inst.row, inst.address));
-      else out.push(line('stmt', indent, `${call};`, inst.row, inst.address));
+      const extra = { source: callSource(inst, c, ctx) };
+      if (inst.dst && ctx.materialNames.has(inst.dst.id)) out.push(line('stmt', indent, `${ctx.materialNames.get(inst.dst.id)} = ${call};`, inst.row, inst.address, extra));
+      else out.push(line('stmt', indent, `${call};`, inst.row, inst.address, extra));
       ctx.evidence.push(evidenceOf(inst, c.resolved.runtime === 'objc' ? 'Objective-C dispatch' : c.resolved.runtime === 'swift' ? 'Swift dispatch' : 'call'));
     } else if (inst.op === OP.UNKNOWN) {
-      out.push(line('stmt', indent, `__asm(${JSON.stringify(inst.text || 'unknown')});`, inst.row, inst.address)); ctx.unknown++;
+      out.push(line('stmt', indent, `__asm(${JSON.stringify(inst.text || 'unknown')});`, inst.row, inst.address, { source: sourceForInst(inst, 'unsupported instruction') })); ctx.unknown++;
       ctx.evidence.push(evidenceOf(inst, 'unsupported IR instruction retained faithfully'));
     }
   }
@@ -433,10 +628,10 @@ function loopRender(loop, block, term, ctx, state, indent, stop) {
     const step = iv.step === 1n ? `${iv.name}++` : iv.step === -1n ? `${iv.name}--` : `${iv.name} += ${iv.step}`;
     head = `for (${typeNameOf(ctx.types.values.get(iv.value.id)) === 'unknown' ? 'int64' : typeNameOf(ctx.types.values.get(iv.value.id))} ${iv.name} = ${init}; ${cond}; ${step})`;
   } else head = `while (${renderBranchCondition(term, ctx, invert)})`;
-  const lines = [line('ctrl', indent, `${head} {`, term.row, term.address)];
+  const lines = [line('ctrl', indent, `${head} {`, term.row, term.address, { source: controlSource(term) })];
   const local = { ...state, activeLoop: loop, loopHeader: loop.header, loopExit: exit };
   emitRegion(bodyStart, loop.header, lines, ctx, local, indent + 1, loop.nodes);
-  lines.push(line('ctrl', indent, '}', term.row, term.address));
+  lines.push(line('ctrl', indent, '}'));
   return { lines, next: exit === stop ? stop : exit };
 }
 
@@ -463,7 +658,7 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null) {
     if (term2.op === OP.RET) {
       const rv = reachingRegisterValue(ctx.ir, term2, 'x0') || valueOf(term2.args?.[0]);
       const text = rv && ((rv.uses || []).length || rv.const != null || rv.def) ? `return ${renderValue(rv, ctx)};` : 'return;';
-      out.push(line('stmt', indent, text, term2.row, term2.address)); ctx.evidence.push(evidenceOf(term2, 'return')); return;
+      out.push(line('stmt', indent, text, term2.row, term2.address, { source: mergeSource(dependencySource(rv, ctx), sourceForInst(term2, 'return')) })); ctx.evidence.push(evidenceOf(term2, 'return')); return;
     }
     if (term2.op === OP.BR) {
       const next = block.succ[0] ?? null;
@@ -478,7 +673,7 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null) {
       const sw = ctx.switchByRow.get(term2.row);
       if (sw) {
         const expr = sw.expr || renderValue(reachingRegisterValue(ctx.ir, term2, sw.reg || 'x0'), ctx);
-        out.push(line('ctrl', indent, `switch (${expr}) {`, term2.row, term2.address));
+        out.push(line('ctrl', indent, `switch (${expr}) {`, term2.row, term2.address, { source: controlSource(term2) }));
         for (const c of sw.cases || []) out.push(line('ctrl', indent + 1, `case ${c.value}: goto loc_${hex(ctx.blockAddress(c.block))};`));
         if (sw.defaultBlock != null) out.push(line('ctrl', indent + 1, `default: goto loc_${hex(ctx.blockAddress(sw.defaultBlock))};`));
         out.push(line('ctrl', indent, '}')); state.gotos += (sw.cases || []).length + (sw.defaultBlock != null ? 1 : 0); return;
@@ -487,16 +682,27 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null) {
       const join = ctx.graph.immediatePostDominators?.[bi];
       const structural = join != null && join !== bi && yes != null && no != null && (!allowed || (allowed.has(yes) && allowed.has(no)));
       if (structural) {
-        const cond = renderBranchCondition(term2, ctx);
-        out.push(line('ctrl', indent, `if (${cond}) {`, term2.row, term2.address));
-        emitRegion(yes, join, out, ctx, state, indent + 1, allowed);
-        out.push(line('ctrl', indent, '} else {'));
-        emitRegion(no, join, out, ctx, state, indent + 1, allowed);
-        out.push(line('ctrl', indent, '}'));
+        const yesEmpty = yes === join;
+        const noEmpty = no === join;
+        if (yesEmpty !== noEmpty) {
+          const invert = yesEmpty;
+          const bodyStart = yesEmpty ? no : yes;
+          const cond = renderBranchCondition(term2, ctx, invert);
+          out.push(line('ctrl', indent, `if (${cond}) {`, term2.row, term2.address, { source: controlSource(term2) }));
+          emitRegion(bodyStart, join, out, ctx, state, indent + 1, allowed);
+          out.push(line('ctrl', indent, '}'));
+        } else {
+          const cond = renderBranchCondition(term2, ctx);
+          out.push(line('ctrl', indent, `if (${cond}) {`, term2.row, term2.address, { source: controlSource(term2) }));
+          emitRegion(yes, join, out, ctx, state, indent + 1, allowed);
+          out.push(line('ctrl', indent, '} else {'));
+          emitRegion(no, join, out, ctx, state, indent + 1, allowed);
+          out.push(line('ctrl', indent, '}'));
+        }
         bi = join; continue;
       }
       const cond = renderBranchCondition(term2, ctx);
-      if (yes != null) out.push(line('ctrl', indent, `if (${cond}) goto loc_${hex(ctx.blockAddress(yes))};`, term2.row, term2.address));
+      if (yes != null) out.push(line('ctrl', indent, `if (${cond}) goto loc_${hex(ctx.blockAddress(yes))};`, term2.row, term2.address, { source: controlSource(term2) }));
       if (no != null) out.push(line('stmt', indent, `goto loc_${hex(ctx.blockAddress(no))};`, term2.row, term2.address));
       state.gotos += (yes != null ? 1 : 0) + (no != null ? 1 : 0); return;
     }
@@ -513,10 +719,10 @@ function faithfulCfg(ctx, indent = 1) {
     if (!term) continue;
     if (term.op === OP.RET) {
       const rv = reachingRegisterValue(ctx.ir, term, 'x0') || valueOf(term.args?.[0]);
-      out.push(line('stmt', indent + 1, rv ? `return ${renderValue(rv, ctx)};` : 'return;', term.row, term.address));
+      out.push(line('stmt', indent + 1, rv ? `return ${renderValue(rv, ctx)};` : 'return;', term.row, term.address, { source: mergeSource(dependencySource(rv, ctx), sourceForInst(term, 'return')) }));
     } else if (term.op === OP.CBR) {
       const { yes, no } = branchSucc(ctx.ir, block, term, ctx);
-      if (yes != null) out.push(line('ctrl', indent + 1, `if (${renderBranchCondition(term, ctx)}) goto loc_${hex(ctx.blockAddress(yes))};`, term.row, term.address));
+      if (yes != null) out.push(line('ctrl', indent + 1, `if (${renderBranchCondition(term, ctx)}) goto loc_${hex(ctx.blockAddress(yes))};`, term.row, term.address, { source: controlSource(term) }));
       if (no != null) out.push(line('stmt', indent + 1, `goto loc_${hex(ctx.blockAddress(no))};`, term.row, term.address));
     } else if (term.op === OP.BR && block.succ[0] != null) out.push(line('stmt', indent + 1, `goto loc_${hex(ctx.blockAddress(block.succ[0]))};`, term.row, term.address));
   }
@@ -561,8 +767,10 @@ export function decompileSemantic(model, opts = {}) {
   const ctx = {
     ir, model, opts, runtime, types, graph, rmw,
     rmwByStore: new Map(rmw.map((r) => [r.store.id, r])),
+    storedValueAliases: buildStoredValueAliases(ir),
+    returnInst: [...(ir.instructions || [])].reverse().find((i) => i.op === OP.RET) || null,
     exprCache: new Map(), exprActive: new Set(), exprNodes: 0,
-    callCache: new Map(), evidence: [], suppressed: [], unknown: 0,
+    callCache: new Map(), evidence: [], suppressed: [], unknown: 0, unknownCallArities: 0,
     materialNames: new Map(), switchByRow: new Map((opts.switches || model.switches || []).map((s) => [s.row, s])),
     blockAddress: (bi) => model.instructions?.find((x) => x.row === ir.blocks[bi]?.startRow)?.address ?? firstAddr + BigInt(ir.blocks[bi]?.startRow || 0) * 4n,
   };
@@ -584,14 +792,18 @@ export function decompileSemantic(model, opts = {}) {
     coverage = { mode: 'linear', reachable: reachable.size, emitted: reachable.size, missing: 0, recovered: missing.length, structuredMissing: missing.length };
   }
 
-  const lines = [line('sig', 0, signature, model.instructions?.[0]?.row ?? null, firstAddr), line('ctrl', 0, '{', model.instructions?.[0]?.row ?? null)];
+  const lines = [
+    line('sig', 0, signature, model.instructions?.[0]?.row ?? null, firstAddr, { source: sourceOf({ address: firstAddr, row: model.instructions?.[0]?.row ?? null, evidence: [{ reason: 'function entry' }] }) }),
+    line('ctrl', 0, '{'),
+  ];
   for (const l of body) lines.push(l);
-  lines.push(line('ctrl', 0, '}', model.instructions?.at?.(-1)?.row ?? null));
+  lines.push(line('ctrl', 0, '}'));
 
   const warnings = [...(types.warnings || [])];
   if (state.gotos) warnings.push(`${state.gotos} control-flow edge(s) remain explicit because a safe source structure was not proven.`);
   if (coverage.mode === 'linear') warnings.push('Structured CFG proof was incomplete; faithful address/edge mode was used.');
   if (ctx.unknown) warnings.push(`${ctx.unknown} unsupported IR instruction(s) remain as __asm.`);
+  if (ctx.unknownCallArities) warnings.push(`${ctx.unknownCallArities} call site(s) have unknown arity; live argument registers were intentionally not guessed.`);
   if (ir.truncated) warnings.push('Semantic IR budget truncated this function; the result is partial.');
 
   const summary = summarize(body, ctx);
