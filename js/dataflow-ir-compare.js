@@ -8,13 +8,13 @@
 
 import { irFor, OP } from './ir.js';
 
-function sourceMnemonic(model, row) {
-  const insn = (model && model.instructions || []).find((i) => i.row === row);
+function sourceMnemonic(sourceByRow, row) {
+  const insn = sourceByRow.get(row);
   return insn && insn.mnemonic ? String(insn.mnemonic).toLowerCase() : 'cmp';
 }
 
-function originalHasImmediate(model, row) {
-  const insn = (model && model.instructions || []).find((i) => i.row === row);
+function originalHasImmediate(sourceByRow, row) {
+  const insn = sourceByRow.get(row);
   return !!(insn && (insn.ops || []).some((o) => o && o.k === 'imm' && (o.value != null || o.float != null)));
 }
 
@@ -29,7 +29,7 @@ function mask(v, bits) {
  * normal ARM64 way to assemble constants larger than 16 bits. We evaluate that
  * SSA expression here rather than guessing from the last MOVK fragment.
  */
-function provenConstant(value, memo = new Map(), active = new Set()) {
+function provenConstant(value, memo, active = new Set()) {
   if (!value) return null;
   if (value.const != null) return value.const;
   if (memo.has(value.id)) return memo.get(value.id);
@@ -79,14 +79,17 @@ export function findIrConstantComparisons(model, opts) {
   const ir = irFor(model, opts && opts.ir);
   if (!ir) return [];
 
+  // Large game functions can contain thousands of comparisons. Row lookup used
+  // to scan model.instructions for every comparison, making this path O(n²).
+  const sourceByRow = new Map(model.instructions.map((i) => [i.row, i]));
+  const constMemo = new Map();
   const out = [];
   for (const inst of ir.instructions || []) {
     if (inst.op !== OP.CMP) continue;
     const pair = (inst.args || []).slice(0, 2).filter((a) => a && a.value);
     if (pair.length !== 2) continue;
 
-    const memo = new Map();
-    const evaluated = pair.map((a) => ({ arg: a, constant: provenConstant(a.value, memo) }));
+    const evaluated = pair.map((a) => ({ arg: a, constant: provenConstant(a.value, constMemo) }));
     const constants = evaluated.filter((x) => x.constant != null);
     const variables = evaluated.filter((x) => x.constant == null);
     if (constants.length !== 1 || variables.length !== 1) continue;
@@ -99,9 +102,9 @@ export function findIrConstantComparisons(model, opts) {
       register: v.reg || null,
       value: c,
       float: null,
-      mnemonic: sourceMnemonic(model, inst.row),
+      mnemonic: sourceMnemonic(sourceByRow, inst.row),
       engine: 'ir-ssa',
-      propagated: !originalHasImmediate(model, inst.row),
+      propagated: !originalHasImmediate(sourceByRow, inst.row),
     });
   }
   return out;
