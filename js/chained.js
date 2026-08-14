@@ -295,17 +295,27 @@ export async function augmentAnalysisResultWithChainedImports(file, sliceIndex, 
   const oldNames = typeof result.names === 'string' ? result.names.split('\n') : [];
   const entries = [];
   const occupied = new Set();
+  const existing = new Map();
   for (let i = 0; i < result.addrs.length; i++) {
     const addr = result.addrs[i];
     const name = oldNames[i] || '';
     entries.push({ addr, name, kind: result.kinds ? result.kinds[i] : 0,
       flag: result.flags ? result.flags[i] : 0 });
+    existing.set(addr.toString(), entries.length - 1);
     if (name) occupied.add(addr.toString());
   }
   for (const e of extra) {
     const key = e.addr.toString();
     if (occupied.has(key)) continue;
+    const at = existing.get(key);
+    if (at != null && !entries[at].name) {
+      entries[at].name = e.name;
+      if (!entries[at].kind) entries[at].kind = e.kind;
+      occupied.add(key);
+      continue;
+    }
     occupied.add(key);
+    existing.set(key, entries.length);
     entries.push({ addr: e.addr, name: e.name, kind: e.kind, flag: 0 });
   }
   entries.sort((a, b) => a.addr < b.addr ? -1 : a.addr > b.addr ? 1 : a.kind - b.kind);
