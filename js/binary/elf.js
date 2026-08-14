@@ -1,6 +1,7 @@
 import { ByteView } from './reader.js';
 import { BinaryImage, functionSeed } from './model.js';
 import { parseEhFrameHeader } from './elf-unwind.js';
+import { parseProgramDynamic } from './elf-dynamic.js';
 
 const PT_LOAD = 1;
 const SHT_SYMTAB = 2;
@@ -32,9 +33,9 @@ export function parseELF(input) {
     metadata: { type: h.type, machine: h.machine, flags: h.flags, osabi: bytes[7], abiVersion: bytes[8] },
   });
 
-  parseProgramHeaders(r, h, image, bits);
+  const programHeaders = parseProgramHeaders(r, h, image, bits);
   const rawSections = parseSectionHeaders(r, h, bits, image);
-  nameSections(r, rawSections, h, image);
+  nameSections(r, rawSections, h);
   for (const s of rawSections) {
     image.addSection({
       name: s.name || `section_${s.index}`, segment: null,
@@ -53,6 +54,15 @@ export function parseELF(input) {
   for (const s of rawSections) {
     if (s.type === SHT_REL || s.type === SHT_RELA) parseRelocations(r, s, rawSections, image, bits);
     else if (s.type === SHT_DYNAMIC) parseDynamic(r, s, rawSections, image, bits);
+  }
+  const hasDynsym = rawSections.some((s) => s.type === SHT_DYNSYM);
+  const hasRelocations = rawSections.some((s) => s.type === SHT_REL || s.type === SHT_RELA);
+  const hasDynamic = rawSections.some((s) => s.type === SHT_DYNAMIC);
+  if (!hasDynsym || !hasRelocations || !hasDynamic) {
+    parseProgramDynamic(r, programHeaders, image, bits, {
+      symbols: !hasDynsym,
+      relocations: !hasRelocations,
+    });
   }
   const ehFrameHdr = rawSections.find((s) => s.name === '.eh_frame_hdr');
   if (ehFrameHdr) parseEhFrameHeader(r, ehFrameHdr, image, bits);
@@ -78,9 +88,10 @@ function readHeader(r, bits) {
 }
 
 function parseProgramHeaders(r, h, image, bits) {
+  const out = [];
   const off = Number(h.phoff);
-  if (!h.phnum || !h.phentsize || off <= 0) return;
-  if (off + h.phnum * h.phentsize > r.length) { image.warnings.push('ELF program header table is truncated'); return; }
+  if (!h.phnum || !h.phentsize || off <= 0) return out;
+  if (off + h.phnum * h.phentsize > r.length) { image.warnings.push('ELF program header table is truncated'); return out; }
   for (let i = 0; i < h.phnum; i++) {
     const p = off + i * h.phentsize;
     let ph;
@@ -89,6 +100,7 @@ function parseProgramHeaders(r, h, image, bits) {
     } else {
       ph = { type: r.u32(p), offset: BigInt(r.u32(p + 4)), vaddr: BigInt(r.u32(p + 8)), filesz: BigInt(r.u32(p + 16)), memsz: BigInt(r.u32(p + 20)), flags: r.u32(p + 24), align: BigInt(r.u32(p + 28)) };
     }
+    out.push(ph);
     if (ph.type === PT_LOAD) {
       image.addSegment({
         name: `LOAD${i}`, address: ph.vaddr, size: ph.memsz, fileOffset: ph.offset, fileSize: ph.filesz,
@@ -96,6 +108,7 @@ function parseProgramHeaders(r, h, image, bits) {
       });
     }
   }
+  return out;
 }
 
 function parseSectionHeaders(r, h, bits, image) {
