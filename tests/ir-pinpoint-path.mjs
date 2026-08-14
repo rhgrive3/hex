@@ -67,17 +67,17 @@ test('IR-backed update keeps the amount source expected by role/pinpoint logic',
 
 test('SSA amount origin survives a join where the legacy backward window stops', () => {
   const model = modelOf([
-    'mov x19, x0',                    // 0
-    'ldr w9, [x20, #0x30]',           // 1 amount source
-    'cmp w2, #0',                     // 2
-    'b.eq #0x100000018',              // 3 -> 6
-    'mov w10, w9',                    // 4
-    'b #0x10000001c',                 // 5 -> 7
-    'mov w10, w9',                    // 6 same source on both paths
-    'ldr w8, [x19, #0x20]',           // 7 join
-    'sub w8, w8, w10',                // 8
-    'str w8, [x19, #0x20]',           // 9
-    'ret',                             // 10
+    'mov x19, x0',
+    'ldr w9, [x20, #0x30]',
+    'cmp w2, #0',
+    'b.eq #0x100000018',
+    'mov w10, w9',
+    'b #0x10000001c',
+    'mov w10, w9',
+    'ldr w8, [x19, #0x20]',
+    'sub w8, w8, w10',
+    'str w8, [x19, #0x20]',
+    'ret',
   ]);
   const verified = verifyFunctionHandlesField(model, 0x20n);
   ok(verified.rmw, 'joined RMW is verified');
@@ -90,6 +90,24 @@ test('SSA amount origin survives a join where the legacy backward window stops',
   eq(modern.amount.kind, 'field');
   eq(modern.amount.disp, 0x30n);
   eq(modern.amount.engine, 'ir-ssa');
+});
+
+test('field guard verification receives a register-held SSA threshold', () => {
+  const model = modelOf([
+    'mov x19, x0',
+    'ldr w8, [x19, #0x20]',
+    'mov w9, #100',
+    'cmp w8, w9',
+    'b.hi #0x100000014',
+    'ret',
+  ]);
+  const verified = verifyFunctionHandlesField(model, 0x20n);
+  ok(verified.guard, 'field has a verified guard');
+  ok(verified.use.compares.length >= 1, 'comparison is attached to the field');
+  const cmp = verified.use.compares[0];
+  eq(cmp.value, 100n, 'SSA fills the register-held threshold');
+  eq(cmp.engine, 'ir-ssa');
+  eq(cmp.propagated, true);
 });
 
 process.stdout.write('\n' + passed + ' passed, ' + failures.length + ' failed\n');
