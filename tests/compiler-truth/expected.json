@@ -1,0 +1,8 @@
+{
+  "max_i32": { "mustContain": ["max("], "semantic": "signed-max" },
+  "min_i32": { "mustContain": ["min("], "semantic": "signed-min" },
+  "clamp0_i32": { "mustContainAny": ["max(", "?"], "semantic": "nonnegative-clamp" },
+  "extract8": { "mustContainAny": ["bit_extract(", ">>"], "semantic": "unsigned-bit-extract" },
+  "muladd_i32": { "mustContain": ["*", "+"], "semantic": "wrapping-mul-add" },
+  "bool_i32": { "mustContainAny": ["==", "condition"], "semantic": "boolean-materialization" }
+}
