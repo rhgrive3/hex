@@ -19,6 +19,13 @@ export class DebugAdapterError extends Error {
 
 export function asAddress(value, name = 'address') {
   try {
+    if (value == null || typeof value === 'boolean') throw new Error('missing');
+    if (typeof value === 'number') {
+      if (!Number.isSafeInteger(value)) throw new Error('unsafe-number');
+      if (value < 0) throw new Error('negative');
+      return BigInt(value);
+    }
+    if (typeof value === 'string' && !value.trim()) throw new Error('empty');
     const out = typeof value === 'bigint' ? value : BigInt(value);
     if (out < 0n) throw new Error('negative');
     return out;
@@ -44,21 +51,31 @@ export function normalizeBreakpoint(spec) {
   if (!spec || typeof spec !== 'object') throw new DebugAdapterError('invalid-breakpoint', 'breakpoint must be an object');
   const kind = spec.kind || (spec.address != null ? 'address' : spec.function ? 'function' : null);
   if (!BREAKPOINT_KINDS.includes(kind)) throw new DebugAdapterError('invalid-breakpoint', `unsupported breakpoint kind: ${kind}`);
-  const id = String(spec.id || `bp:${kind}:${spec.address ?? spec.function ?? spec.expression ?? ''}`);
-  if (kind === 'address') return { id, kind, address: asAddress(spec.address), enabled: spec.enabled !== false };
+  if (kind === 'address') {
+    const address = asAddress(spec.address);
+    const id = String(spec.id || `bp:address:${address}`);
+    return { id, kind, address, enabled: spec.enabled !== false };
+  }
   if (kind === 'function') {
     const fn = String(spec.function || '').trim();
     if (!fn) throw new DebugAdapterError('invalid-breakpoint', 'function breakpoint requires function');
-    return { id, kind, function: fn, address: spec.address == null ? null : asAddress(spec.address), enabled: spec.enabled !== false };
+    const address = spec.address == null ? null : asAddress(spec.address);
+    const id = String(spec.id || `bp:function:${fn}:${address ?? ''}`);
+    return { id, kind, function: fn, address, enabled: spec.enabled !== false };
   }
   if (kind === 'conditional') {
     if (spec.address == null) throw new DebugAdapterError('invalid-breakpoint', 'conditional breakpoint requires address');
+    const address = asAddress(spec.address);
     const condition = String(spec.condition || '').trim();
     if (!condition) throw new DebugAdapterError('invalid-breakpoint', 'conditional breakpoint requires condition');
-    return { id, kind, address: asAddress(spec.address), condition, enabled: spec.enabled !== false };
+    const id = String(spec.id || `bp:conditional:${address}:${condition}`);
+    return { id, kind, address, condition, enabled: spec.enabled !== false };
   }
+  const address = asAddress(spec.address);
   const size = boundedInteger(spec.size, 1, 1, 4096, 'watchpoint size');
-  return { id, kind: 'memory', address: asAddress(spec.address), size, access: spec.access === 'read' ? 'read' : spec.access === 'readwrite' ? 'readwrite' : 'write', enabled: spec.enabled !== false };
+  const access = spec.access === 'read' ? 'read' : spec.access === 'readwrite' ? 'readwrite' : 'write';
+  const id = String(spec.id || `bp:memory:${address}:${size}:${access}`);
+  return { id, kind: 'memory', address, size, access, enabled: spec.enabled !== false };
 }
 
 const METHOD_CAPABILITY = Object.freeze({
@@ -76,8 +93,9 @@ export class DebugAdapter {
   }
   negotiate(requested = null) {
     if (!requested) return this.capabilities;
+    const keys = requested instanceof Set ? [...requested] : Array.isArray(requested) ? requested : Object.keys(requested);
     const out = {};
-    for (const key of requested) out[key] = !!this.capabilities[key];
+    for (const key of keys) out[key] = !!this.capabilities[key];
     return Object.freeze(out);
   }
   require(capability) {
@@ -85,7 +103,8 @@ export class DebugAdapter {
   }
   requireMethod(method) {
     const cap = METHOD_CAPABILITY[method];
-    if (cap) this.require(cap);
+    if (!cap) throw new DebugAdapterError('unsupported-method', `unknown debug adapter method: ${method}`, { method });
+    this.require(cap);
   }
   async connect() { this.connected = true; return { adapter: this.id, capabilities: this.capabilities }; }
   async disconnect() { this.connected = false; return { disconnected: true }; }
