@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import { buildSemanticModel } from '../js/blocks.js';
-import { irFor } from '../js/ir.js';
+import { irFor, OP, rangeOnBranch } from '../js/ir.js';
 import { semanticFacts, FACT } from '../js/semantic.js';
 import { symbolicExecute } from '../js/symbolic/executor.js';
 import { FunctionSandbox } from '../js/symbolic/function-sandbox.js';
 import { runAgent, runDeterministicAgent } from '../js/agent/runtime.js';
 import { planAnalysisGoal } from '../js/query/planner.js';
+import { summarizeFunction } from '../js/interproc.js';
+import { inferSemanticTypes } from '../js/decompiler/type-recovery.js';
 import { createHexProject, parseHexProject, serializeHexProject } from '../js/project/index.js';
 import { CachedByteSource } from '../js/bytesource/cached.js';
 
@@ -32,6 +34,13 @@ function modelOf(lines, base = BASE) {
   const zero = facts.find((f) => f.kind === FACT.ZERO_NULL);
   assert.equal(threshold?.threshold, 0n);
   assert.equal(zero?.threshold, 0n);
+}
+
+// Equality/zero tests do not imply signed or unsigned ordering semantics.
+{
+  const ir = irFor(modelOf(['cmp x0, #0', 'b.eq #0x10000000c', 'ret', 'ret']));
+  const branch = ir.instructions.find((i) => i.op === OP.CBR);
+  assert.equal(rangeOnBranch(ir, branch, true)?.signedness, 'unknown');
 }
 
 // A symbolic LOAD observes memory at the LOAD, not after a later STORE.
@@ -82,7 +91,7 @@ function modelOf(lines, base = BASE) {
   assert.ok(result.reasons.some((r) => r.kind === 'deterministic-verification'));
 }
 
-// Explicit small/zero budgets remain strict; they are never raised to four.
+// Explicit small/zero budgets remain strict; runtime never raises them.
 {
   const model = modelOf(['mov x0, #1', 'ret']);
   const context = { candidateFunctions: [BASE], analyze: async () => model };
@@ -93,6 +102,17 @@ function modelOf(lines, base = BASE) {
   const disasm = await runDeterministicAgent('XPが増える場所', context, { maxFunctions: 1, maxDisassembly: 1, timeoutMs: 1000 });
   assert.equal(disasm.plan.best, null);
   assert.ok(disasm.missingEvidence.includes('disassembly-budget'));
+
+  let modelCalled = false;
+  const agent = await runAgent({
+    goal: 'XPが増える場所', context,
+    llm: { async next() { modelCalled = true; return { answer: { conclusion: { address: BASE }, confidence: 1 } }; } },
+    maxToolCalls: 0, maxFunctions: 0, maxDisassembly: 0, timeoutMs: 1000,
+  });
+  assert.equal(modelCalled, false);
+  assert.equal(agent.conclusion, null);
+  assert.equal(agent.stats.toolCalls, 0);
+  assert.equal(agent.stats.disassembly, 0);
 }
 
 // Verification failure on a high-ranked candidate must not block a later proof.
@@ -119,6 +139,36 @@ function modelOf(lines, base = BASE) {
   const plan = await planAnalysisGoal('XPが増える場所', { candidateFunctions: [A, B] }, { tools, maxFunctions: 2, maxDisassembly: 10, timeoutMs: 1000 });
   assert.equal(plan.best?.address, B);
   assert.equal(plan.best?.verification?.verified, true);
+}
+
+// Signedness is recovered from IR flags def-use, not raw row adjacency.
+{
+  const model = modelOf([
+    'cmp x0, #5',
+    'mov x1, x1',
+    'mov x2, x2',
+    'b.lt #0x100000014',
+    'ret',
+    'ret',
+  ]);
+  const ir = irFor(model);
+  const recovered = inferSemanticTypes(ir, model);
+  const arg0 = recovered.args.find((a) => a.index === 0);
+  assert.ok(arg0, 'x0 argument should be recovered');
+  assert.equal(arg0.semanticType?.signed, true);
+}
+
+// A conditional one-call function is not a trivial forwarding wrapper.
+{
+  const summary = summarizeFunction(modelOf([
+    'cmp x0, #0',
+    'b.eq #0x10000000c',
+    'mov x1, #1',
+    'bl #0x100000100',
+    'ret',
+  ]));
+  assert.equal(summary?.calls.length, 1);
+  assert.equal(summary?.classification.forwarding, false);
 }
 
 // Project persistence must round-trip signed offsets/constants.
