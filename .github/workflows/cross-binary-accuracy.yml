@@ -1,5 +1,6 @@
 name: Cross-binary accuracy
 
+# Permanent regression gate: production analysis is checked against three real Mach-O binaries.
 on:
   workflow_dispatch:
   pull_request:
