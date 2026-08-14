@@ -283,7 +283,7 @@ class FakeAdapter extends DebugAdapter {
   assert.equal(adapter.capabilities.objcRuntime,true);
   await assert.rejects(adapter.readMemory(0x1000n,300*1024),/exceeds|too-large|too large/i);
   assert.deepEqual([...await adapter.readMemory(0x1000n,2)],[1,2]);
-  await assert.rejects(adapter.readMemory(0x1001n,2),/short-read/);
+  await assert.rejects(adapter.readMemory(0x1001n,2),{code:'short-read'});
   assert.throws(()=>adapter.call('totallyUnknown',{}),/not exposed|unsupported-method/i);
   adapter.protocol.close();
 }
