@@ -222,7 +222,18 @@ async function main() {
     const done = await settle(page);
     const secs = ((Date.now() - t0) / 1000).toFixed(1);
     check('開いただけで自動解析が終わる', done, secs + ' 秒');
-    check('解析後は目的から始まる', await sheetOf(page).getByText('何を知りたいですか？', { exact: true }).count());
+    /*
+     * 開いた直後に主役になるのはコード。
+     * ここで概要シートが自動で開いていたころ、命令が 1 行も見えないまま
+     * 「閉じる」を押させていた。概要は自分で開くものにしたので、
+     * 「勝手に開かない」ことと「開けば今までどおり読める」ことを両方見る。
+     */
+    check('開いた直後はコードが主役（シートが勝手に出ない）',
+      !(await page.locator('#overlays .sheet').count()) && (await page.locator('#rows .row').count()) > 0);
+    check('AI はいつでも呼べる場所にいる', await page.locator('#ai-launcher').count() === 1);
+    await page.evaluate(() => window.__app.openOverview());
+    await page.waitForTimeout(400);
+    check('概要を開けば目的から始まる', await sheetOf(page).getByText('何を知りたいですか？', { exact: true }).count());
     check('専門家向けツールは最初は閉じている',
       await sheetOf(page).locator('details.expert-entry:not([open])').count());
     if (SHOTS) await page.screenshot({ path: path.join(SHOTS, 'auto.png') });

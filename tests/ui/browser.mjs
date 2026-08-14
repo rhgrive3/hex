@@ -158,7 +158,8 @@ async function captureValueFlowAudit(page, browserName, viewportName, fn) {
 }
 
 async function checkViewport(browserType, browserName, viewportName, width, height, baseUrl, screenshots = false) {
-  const browser = await browserType.launch({ args: browserName === 'chromium' ? ['--no-sandbox'] : [] });
+  const browser = await launchableOr(browserName, () => browserType.launch({ args: browserName === 'chromium' ? ['--no-sandbox'] : [] }));
+  if (!browser) return;
   const context = await browser.newContext({ viewport: { width, height }, locale: 'ja-JP', hasTouch: width < 900, isMobile: width < 600 });
   const page = await context.newPage();
   const errors = [];
@@ -185,7 +186,21 @@ async function checkViewport(browserType, browserName, viewportName, width, heig
     await page.waitForTimeout(350);
     await closeTransient(page);
 
-    check(`${browserName}/${viewportName}: investigate is default`, await page.locator('[data-screen="investigate"]').count() === 1);
+    /*
+     * Code first. The landing state is the workbench with its compact
+     * open/sample card — not a question screen with nothing to answer
+     * questions about. Investigate stays one tap away in the nav.
+     */
+    check(`${browserName}/${viewportName}: the workbench is the landing state`,
+      await page.locator('#viewport').count() === 1
+      && await page.locator('#empty:not([hidden])').count() === 1
+      && await page.locator('[data-screen="investigate"]').count() === 0);
+    check(`${browserName}/${viewportName}: the compact welcome offers open and sample`,
+      await page.locator('#empty #btn-open-welcome').count() === 1 && await page.locator('#empty #btn-sample').count() === 1);
+    check(`${browserName}/${viewportName}: investigate stays reachable from the navigation`,
+      await page.locator('.ui-bottom-nav [data-route-id="investigate"]').count() === 1);
+    check(`${browserName}/${viewportName}: the assistant is one tap away`,
+      await page.locator('#ai-launcher').count() === 1);
     let overflow = await noOverflow(page);
     check(`${browserName}/${viewportName}: no body horizontal overflow`, overflow.body <= 1 && overflow.root <= 1, JSON.stringify(overflow));
 
@@ -282,6 +297,24 @@ async function checkViewport(browserType, browserName, viewportName, width, heig
   } finally {
     await context.close();
     await browser.close();
+  }
+}
+
+/*
+ * A browser that is installed but cannot start (missing system libraries on a
+ * container, for example) is a capability gap, not a product regression: skip
+ * that engine and keep the rest of the matrix meaningful. CI, where every
+ * engine is expected to work, still fails.
+ */
+async function launchableOr(engineName, launch) {
+  try { return await launch(); }
+  catch (error) {
+    const message = String(error && error.message || error);
+    if (!/Executable doesn't exist|missing dependencies|Host system is missing/i.test(message)) throw error;
+    const note = `${engineName} could not start in this environment; that engine was skipped.`;
+    if (process.env.CI) { check(`${engineName} engine is available`, false, message.split('\n')[0]); return null; }
+    console.log('skip  ' + note);
+    return null;
   }
 }
 

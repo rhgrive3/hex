@@ -385,7 +385,7 @@ button { font: inherit; color: inherit; }
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  font-family: "Inter", "IBM Plex Sans JP", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
 }
 :root.with-notes .mode-asm .row > .c-addr,
 :root.with-notes .mode-asm .row > .c-hex,
@@ -814,7 +814,7 @@ input:focus { outline: 2px solid var(--accent); outline-offset: -2px; }
 .guide { padding: 22px clamp(20px, 4vw, 42px) 12px; }
 .guide-step { color: var(--accent); font: 600 11px/1 "IBM Plex Mono", monospace; letter-spacing: .12em; }
 .guide-visual { display: block; width: 132px; height: 132px; object-fit: cover; margin: 18px 0 16px; border: 1px solid var(--separator-2); border-radius: 10px; box-shadow: 0 8px 22px rgba(20,33,31,.10); }
-.guide-title { margin: 6px 0 14px; font: 900 25px/1.38 "Zen Kaku Gothic New", "Noto Sans JP", sans-serif; letter-spacing: -.03em; }
+.guide-title { margin: 6px 0 14px; font: 700 22px/1.4 "Inter", "IBM Plex Sans JP", sans-serif; letter-spacing: -.02em; }
 .guide-nav {
   display: flex; align-items: center; gap: 8px;
   padding: 10px 14px calc(12px + env(safe-area-inset-bottom));
@@ -1386,10 +1386,25 @@ input:focus { outline: 2px solid var(--accent); outline-offset: -2px; }
   --accent-soft: rgba(53,183,166,.16);
   --selection: rgba(53,183,166,.22);
 }
-html, body { font-family: "Noto Sans JP", -apple-system, BlinkMacSystemFont, system-ui, sans-serif; }
+/*
+ * Non-code typography.
+ *
+ * Inter carries Latin and the digits; IBM Plex Sans JP carries Japanese. They
+ * share a humanist skeleton and a near-identical x-height, so a mixed
+ * 「sub_100458C00 を確認」 line does not visibly change size mid-sentence, and
+ * both ship the 400/500/600/700 range this UI actually uses — no faux bold.
+ * Code keeps IBM Plex Mono untouched: the disassembly must not move.
+ */
+html, body {
+  font-family: "Inter", "IBM Plex Sans JP", -apple-system, BlinkMacSystemFont, "Hiragino Sans", system-ui, sans-serif;
+  font-feature-settings: "palt" 1;
+}
+/* Counts, offsets and sizes outside code line up in columns and stop jittering
+   while a value updates. Addresses stay in .mono. */
+.tb-sub, .ui-list-row-meta, .ui-metric, .addrbar, .statusbar { font-variant-numeric: tabular-nums; }
 .mono, .viewport, .colhead { font-family: "IBM Plex Mono", ui-monospace, "SF Mono", SFMono-Regular, Menlo, Monaco, monospace; }
 .titlebar { min-height: 56px; padding: 7px 14px; }
-.brand-lockup { display: flex; align-items: center; gap: 7px; flex: 0 0 auto; color: var(--label); font: 900 13px/1 "Zen Kaku Gothic New", sans-serif; letter-spacing: .12em; }
+.brand-lockup { display: flex; align-items: center; gap: 7px; flex: 0 0 auto; color: var(--label); font: 700 13px/1 "Inter", "IBM Plex Sans JP", sans-serif; letter-spacing: .14em; }
 .brand-lockup img { display: block; width: 28px; height: 28px; }
 .tb-btn { border-radius: 6px; transition: background-color 160ms cubic-bezier(.23,1,.32,1), color 160ms cubic-bezier(.23,1,.32,1), transform 120ms cubic-bezier(.23,1,.32,1); }
 .tb-btn:not(:disabled):active { transform: scale(.97); }
@@ -1412,9 +1427,8 @@ html, body { font-family: "Noto Sans JP", -apple-system, BlinkMacSystemFont, sys
 .menu button.is-disabled:active { background: transparent; }
 .brand-lockup .brand-mark { display: block; width: 26px; height: 26px; color: var(--accent); }
 .empty { padding: 28px; text-align: left; overflow: hidden; }
-.empty-backdrop { position: absolute; inset: 0; background: linear-gradient(90deg, rgba(255,254,250,.99) 0%, rgba(255,254,250,.96) 44%, rgba(255,254,250,.18) 100%); opacity: .92; pointer-events: none; }
 .empty-inner { position: relative; z-index: 1; width: min(100%, 520px); }
-.empty-title { position: relative; font: 900 clamp(28px, 4vw, 42px)/1.24 "Zen Kaku Gothic New", "Noto Sans JP", sans-serif; letter-spacing: -.04em; margin-bottom: 12px; max-width: 15em; }
+.empty-title { position: relative; font: 700 clamp(20px, 2.4vw, 26px)/1.3 "Inter", "IBM Plex Sans JP", sans-serif; letter-spacing: -.02em; margin-bottom: 10px; max-width: 22em; }
 .empty-text { position: relative; color: var(--label-2); font-size: 15px; margin: 0 0 18px; line-height: 1.75; max-width: 34em; }
 .empty-kicker { position: relative; margin-bottom: 14px; color: var(--accent); font: 600 11px/1 "IBM Plex Mono", monospace; letter-spacing: .12em; }
 .empty-proof { position: relative; display: flex; flex-wrap: wrap; gap: 8px 14px; margin: 0 0 24px; color: var(--label-2); font-size: 12px; }
@@ -1447,7 +1461,6 @@ html, body { font-family: "Noto Sans JP", -apple-system, BlinkMacSystemFont, sys
   .workspace-nav .nav-item { display: none; }
   .segmented .seg { padding: 6px 9px; }
   .empty { align-items: flex-end; padding: 24px; }
-  .empty-backdrop { background: linear-gradient(180deg, rgba(255,254,250,.32) 0%, rgba(255,254,250,.98) 55%); }
   .empty-title { font-size: 29px; }
   .graphwrap { min-height: 290px; }
 }
@@ -1455,32 +1468,17 @@ html, body { font-family: "Noto Sans JP", -apple-system, BlinkMacSystemFont, sys
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; }
 }
 
-/* No-file state: an actual evidence workbench rather than a marketing hero. */
-.empty { align-items: flex-start; justify-content: center; padding: clamp(20px, 4vw, 54px); }
-.empty-inner { width: min(100%, 1060px); max-width: 1060px; }
-.empty-backdrop { background: linear-gradient(90deg, rgba(255,254,250,.99) 0%, rgba(255,254,250,.94) 47%, rgba(255,254,250,.35) 100%); }
-.empty-context { position: relative; z-index: 1; display: flex; align-items: center; gap: 9px; padding: 0 0 14px 44px; color: var(--label-3); font: 500 11px/1 "IBM Plex Mono", monospace; letter-spacing: .05em; }
-.empty-context .context-label { color: var(--accent); font-weight: 600; margin-right: 8px; letter-spacing: .12em; }
-.empty-context strong { color: var(--label); font-weight: 600; }
-.empty-context b { color: var(--accent); font-size: 13px; }
-.empty-frame { position: relative; z-index: 1; display: grid; grid-template-columns: 44px minmax(310px, 1fr) minmax(260px, 360px); min-height: 420px; background: rgba(255,254,250,.78); border: 1px solid var(--separator); box-shadow: 0 18px 38px rgba(20,33,31,.10); backdrop-filter: blur(8px); }
-.empty-rail { display: flex; flex-direction: column; align-items: center; gap: 22px; padding: 18px 0; border-right: 1px solid var(--separator-2); background: rgba(240,238,231,.66); }
-.rail-title { writing-mode: vertical-rl; color: var(--label-3); font: 600 9px/1 "IBM Plex Mono", monospace; letter-spacing: .16em; }
-.rail-stop { position: relative; display: grid; place-items: center; width: 28px; min-height: 54px; font-size: 9px; color: var(--label-2); }
-.rail-stop::before { content: ""; position: absolute; width: 2px; height: 54px; top: 27px; background: var(--separator); }
-.rail-stop:last-child::before { display: none; }
-.rail-stop i { position: relative; z-index: 1; width: 10px; height: 10px; border-radius: 50%; background: var(--surface); border: 2px solid currentColor; }
-.rail-stop span { position: absolute; top: 18px; white-space: nowrap; writing-mode: vertical-rl; }
-.rail-stop.fact { color: var(--accent); }.rail-stop.infer { color: #b66c0e; }.rail-stop.unknown { color: var(--label-3); }
-.empty-main { display: flex; flex-direction: column; justify-content: center; padding: clamp(28px, 5vw, 62px); }
-.empty-main .empty-title { max-width: 10em; text-wrap: balance; }.empty-main .empty-text { max-width: 30em; }
-.empty-main .empty-actions { max-width: 360px; }.empty-main .linkbtn { align-self: flex-start; padding-left: 0; }.empty-main .empty-note { max-width: 330px; }
-.relation-lens { align-self: center; margin-right: clamp(20px, 3vw, 42px); padding: 18px; background: rgba(255,254,250,.94); border: 1px solid var(--separator); box-shadow: 0 10px 24px rgba(20,33,31,.08); }
-.lens-head { display: flex; justify-content: space-between; gap: 10px; color: var(--label-3); font: 600 10px/1 "IBM Plex Mono", monospace; letter-spacing: .09em; }.lens-head b { color: var(--accent); font-weight: 600; }
-.relation-lens svg { display: block; width: 100%; max-width: 320px; margin: 12px auto 4px; overflow: visible; }.lens-line { fill: none; stroke-width: 2; }.lens-line.verified { stroke: var(--accent); }.lens-line.inferred { stroke: #d97706; stroke-dasharray: 4 4; }.lens-line.muted { stroke: var(--label-3); }
-.lens-node { stroke: var(--surface); stroke-width: 4; }.lens-node.source { fill: #708a85; }.lens-node.index { fill: #5567a5; }.lens-node.evidence { fill: var(--accent); }.lens-node.answer { fill: #203936; }.relation-lens text { fill: var(--label-2); font: 500 10px "Noto Sans JP", sans-serif; text-anchor: middle; }
-.lens-facts { display: grid; gap: 7px; padding-top: 10px; border-top: 1px solid var(--separator-2); font-size: 11px; line-height: 1.45; }.lens-facts div { display: flex; gap: 8px; }.lens-facts b { flex: 0 0 auto; color: var(--accent); font: 600 10px/1.5 "IBM Plex Mono", monospace; }.lens-facts div:last-child b { color: #9a5905; }.lens-facts span { color: var(--label-2); }
-@media (max-width: 780px) { .empty { padding: 12px; }.empty-context { padding-left: 0; overflow: hidden; white-space: nowrap; }.empty-frame { grid-template-columns: 34px minmax(0, 1fr); min-height: 0; }.empty-rail { gap: 16px; }.relation-lens { grid-column: 2; margin: 0 20px 20px; }.empty-main { padding: 30px 22px 22px; }.empty-backdrop { background: linear-gradient(180deg, rgba(255,254,250,.30) 0%, rgba(255,254,250,.98) 48%); } }
+/*
+ * No-file state.
+ *
+ * A small entry card, not a landing page: opening a file is the only thing
+ * that matters here, and the moment one is open this whole element is gone.
+ */
+.empty { align-items: center; justify-content: center; padding: clamp(16px, 4vw, 40px); }
+.empty-inner { width: min(100%, 480px); max-width: 480px; }
+.empty-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 12px; }
+.empty-note { margin: 10px 0 0; color: var(--label-2); font-size: 12px; }
+@media (max-width: 780px) { .empty { padding: 16px; } .empty-actions .btn-primary, .empty-actions .btn-secondary { flex: 1 1 auto; } }
 
 /* ── 関数ごとのAI解析 ─────────────────────────────────────── */
 .gemini-analysis { padding-bottom: 14px; }

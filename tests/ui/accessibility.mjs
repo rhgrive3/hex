@@ -151,8 +151,14 @@ async function focusTrapAudit(page) {
     window.__a11ySheet = sheet;
     window.__a11yFirst = focusable[0];
     window.__a11yLast = focusable[focusable.length - 1];
-    window.__a11yFirst?.focus();
   });
+  /*
+   * A new Sheet moves focus itself on the next frame. Take focus after that
+   * has happened, or the audit measures the sheet's own focus call instead of
+   * the wrap it means to test.
+   */
+  await page.waitForTimeout(120);
+  await page.evaluate(() => window.__a11yFirst?.focus());
   await page.keyboard.press('Shift+Tab');
   check('Sheet focus trap wraps backward', await page.evaluate(() => document.activeElement === window.__a11yLast));
   await page.keyboard.press('Tab');
