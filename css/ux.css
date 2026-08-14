@@ -75,6 +75,116 @@ button:focus-visible,
   outline-offset: 2px;
 }
 
+/* No-file state: show only controls that can actually be used. The original
+   workbench chrome remains untouched once a file has been opened. */
+.ux-v2 .app.empty-state .toolbar,
+.ux-v2 .app.empty-state .addrbar,
+.ux-v2 .app.empty-state .colhead,
+.ux-v2 .app.empty-state .statusbar {
+  display: none;
+}
+
+.ux-v2 .app.empty-state .titlebar {
+  min-height: 48px;
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+
+.ux-v2 .app.empty-state .tb-sub {
+  display: none;
+}
+
+.ux-v2 .app.empty-state .viewwrap {
+  background: var(--surface);
+}
+
+/* app.css intentionally locks the workbench to the viewport. The landing page
+   is different: its content must be allowed to scroll when Safari's browser UI
+   leaves less vertical room than expected. */
+.ux-v2 .app.empty-state .empty {
+  display: block;
+  padding: clamp(18px, 4vw, 40px);
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
+  touch-action: pan-y;
+  text-align: left;
+}
+
+.ux-v2 .app.empty-state .empty-inner {
+  width: min(100%, 680px);
+  max-width: 680px;
+  margin: 0 auto;
+}
+
+/* The decorative evidence atlas is useful after analysis, but on the no-file
+   screen it only delays the file picker and makes the page look like a promo. */
+.ux-v2 .app.empty-state .empty-context,
+.ux-v2 .app.empty-state .empty-rail,
+.ux-v2 .app.empty-state .relation-lens,
+.ux-v2 .app.empty-state .empty-kicker,
+.ux-v2 .app.empty-state .empty-backdrop {
+  display: none;
+}
+
+.ux-v2 .app.empty-state .empty-frame {
+  display: block;
+  min-height: 0;
+  border: 0;
+  box-shadow: none;
+  background: transparent;
+  backdrop-filter: none;
+}
+
+.ux-v2 .app.empty-state .empty-main {
+  display: block;
+  padding: clamp(18px, 5vh, 44px) 0 40px;
+}
+
+.ux-v2 .app.empty-state .empty-title {
+  max-width: none;
+  margin: 0 0 12px;
+  font-family: "Noto Sans JP", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  font-size: clamp(24px, 3vw, 34px);
+  font-weight: 700;
+  line-height: 1.35;
+  letter-spacing: -.02em;
+  text-wrap: pretty;
+}
+
+.ux-v2 .app.empty-state .empty-text {
+  max-width: 46em;
+  margin: 0 0 20px;
+  color: var(--label-2);
+  font-size: 14px;
+  line-height: 1.75;
+}
+
+.ux-v2 .app.empty-state .empty-actions {
+  width: min(100%, 420px);
+  max-width: 420px;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+
+.ux-v2 .app.empty-state .empty-actions .btn-primary,
+.ux-v2 .app.empty-state .empty-actions .btn-secondary {
+  width: 100%;
+  min-height: 46px;
+}
+
+.ux-v2 .app.empty-state .linkbtn {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.ux-v2 .app.empty-state .empty-note {
+  max-width: 420px;
+  margin-top: 0;
+  line-height: 1.55;
+}
+
 @media (pointer: coarse) {
   .ux-v2 .workspace-nav .tb-btn { min-height: 42px; }
   #overlays .menu button { min-height: 48px; }
@@ -85,6 +195,14 @@ button:focus-visible,
   .ux-v2 .workspace-nav .tb-btn { padding-left: 9px; padding-right: 9px; }
   .ux-v2 .segmented .seg { padding-left: 10px; padding-right: 10px; }
   .ux-v2 .tb-btn.pill { padding-left: 10px; padding-right: 10px; }
+  .ux-v2 .app.empty-state .empty { padding: 16px; }
+  .ux-v2 .app.empty-state .empty-main { padding-top: 20px; }
+  .ux-v2 .app.empty-state .empty-title { font-size: 25px; }
+}
+
+@media (max-height: 620px) {
+  .ux-v2 .app.empty-state .empty-main { padding-top: 12px; }
+  .ux-v2 .app.empty-state .empty-text { margin-bottom: 14px; line-height: 1.6; }
 }
 
 @media (prefers-reduced-motion: reduce) {
