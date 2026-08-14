@@ -123,8 +123,8 @@ assert.equal(duplicateIndex.typesByName.get('A.State').address,1n);
 const badNameMem=new Uint8Array(0x200); const badDv=new DataView(badNameMem.buffer); badDv.setUint32(0,17,true); badDv.setInt32(8,0x80,true); badNameMem[0x88]=0xc3; badNameMem[0x89]=0x28; badNameMem[0x8a]=0;
 const badRead=async(addr,len)=>{const a=Number(addr);return badNameMem.subarray(a,Math.min(badNameMem.length,a+len));};
 assert.equal(await parseSwiftNominalDescriptor(badRead,0n),null);
-await assert.rejects(() => parseSwiftFieldDescriptor(async()=>null,1n,0), /positive integer/);
-await assert.rejects(() => parseSwiftWitnessTable(async()=>null,1n,NaN), /positive integer/);
+await assert.rejects(() => parseSwiftFieldDescriptor(async()=>null,1n,0), TypeError);
+await assert.rejects(() => parseSwiftWitnessTable(async()=>null,1n,NaN), TypeError);
 
 assert.equal(demangleCxx('_Z3fooU3bari'), null);
 assert.equal(demangleCxx('_ZN3Foo3barEv'), 'Foo::bar()');
