@@ -31,6 +31,7 @@ export class Backend {
     this.file = null;
     this.formatId = 'unknown';
     this.platformInfo = null;
+    this.legacyInfo = null;
     this.arm64Bridge = false;
     this.onSearchProgress = null;
     this.onScanProgress = null;
@@ -137,11 +138,40 @@ export class Backend {
     this.file = file;
     this.formatId = 'unknown';
     this.platformInfo = null;
+    this.legacyInfo = null;
     this.arm64Bridge = false;
     this.contentHash = null;
 
-    let platformInfo = null;
+    let detection = null;
     let platformError = null;
+    try {
+      detection = await this._callTo('platform', 'detect', { file });
+    } catch (error) {
+      if (error?.stale) throw error;
+      platformError = error;
+    }
+
+    // Modern iOS Mach-O is already parsed by the mature compatibility worker.
+    // Detect it through the universal ByteSource path, but do not retain a
+    // second 100k-300k-function BinaryImage beside the legacy worker on iPad.
+    if (detection?.formatId === 'macho') {
+      this.formatId = 'macho';
+      const legacy = await this._callTo('legacy', 'open', { file });
+      legacy.formatId = 'macho';
+      for (const slice of legacy.slices || []) slice.capability = legacySliceCapability(slice);
+      legacy.capability = legacy.slices?.[0]?.capability || legacySliceCapability(null);
+      legacy.platform = {
+        compatibility: 'legacy-macho',
+        sourceBackedDetection: true,
+        detected: detection,
+        duplicateUniversalParseAvoided: true,
+      };
+      this.legacyInfo = legacy;
+      this.platformInfo = { formatId: 'macho', capability: legacy.capability, detection, compatibility: 'legacy-macho' };
+      return legacy;
+    }
+
+    let platformInfo = null;
     try {
       platformInfo = await this._callTo('platform', 'open', { file }, null, (p) => this.onAnalysisProgress?.(p));
     } catch (error) {
@@ -150,25 +180,21 @@ export class Backend {
     }
     if (platformInfo) {
       this.platformInfo = platformInfo;
-      this.formatId = platformInfo.formatId || platformInfo.capability?.format || 'unknown';
+      this.formatId = platformInfo.formatId || platformInfo.capability?.format || detection?.formatId || 'unknown';
     }
 
-    if (this.formatId === 'macho' || !platformInfo) {
+    if (!platformInfo) {
       const legacy = await this._callTo('legacy', 'open', { file });
-      if (!platformInfo) {
-        if (platformError && legacy.format === 'Raw binary') legacy.warnings = [...(legacy.warnings || []), platformError.message];
-        return legacy;
-      }
-      legacy.formatId = 'macho';
-      legacy.platform = platformInfo.platform;
-      legacy.capability = platformInfo.capability;
-      for (const slice of legacy.slices || []) slice.capability = legacySliceCapability(slice);
+      this.legacyInfo = legacy;
+      if (platformError && legacy.format === 'Raw binary') legacy.warnings = [...(legacy.warnings || []), platformError.message];
       return legacy;
     }
 
     const capability = platformInfo.capability || platformInfo.slices?.[0]?.capability;
     this.arm64Bridge = capability?.architecture === 'arm64';
     if (this.arm64Bridge) {
+      // The legacy worker contributes ARM64 decode/scan only here. ELF/PE
+      // metadata stays owned by BinaryImage and neutral regions are injected.
       await this._callTo('legacy', 'open', { file });
       const allRegions = [...(platformInfo.slices || []).flatMap((s) => s.regions || []), platformInfo.raw].filter(Boolean);
       await this._callTo('legacy', 'setRegions', { regions: allRegions });
@@ -233,7 +259,22 @@ export class Backend {
   strings(params, onProgress) { return this.call('strings', params, null, onProgress); }
   xrefs(params, onProgress) { return this.call('xrefs', params, null, onProgress); }
   readAt(addr, len, text) { return this.call('readAt', { addr, len, text }); }
-  binaryMetadata(kind = 'summary', start = 0, limit = 500) { return this._callTo('platform', 'metadata', { kind, start, limit }); }
+  binaryMetadata(kind = 'summary', start = 0, limit = 500) {
+    if (this.formatId !== 'macho') return this._callTo('platform', 'metadata', { kind, start, limit });
+    const slice = this.legacyInfo?.slices?.[0] || null;
+    const capability = slice?.capability || this.platformInfo?.capability || null;
+    if (kind === 'summary') {
+      return Promise.resolve({
+        summary: {
+          format: 'macho', arch: capability?.architecture || 'unknown', bits: capability?.bits || 0,
+          endian: capability?.endianness || 'unknown', sections: slice?.regions?.length || 0,
+        },
+        metadata: { compatibility: 'legacy-macho', duplicateUniversalParseAvoided: true },
+        capability,
+      });
+    }
+    return Promise.resolve({ kind, start, total: 0, items: [], next: null, compatibility: 'legacy-macho', unsupported: true });
+  }
   async ensureContentHash(onProgress) {
     if (this.contentHash) return this.contentHash;
     const result = await this._callTo('platform', 'hash', {}, null, onProgress);
@@ -244,6 +285,7 @@ export class Backend {
     const architecture = options.architecture || this.platformInfo?.capability?.architecture || 'arm64';
     const support = await this.probeArchitectures();
     if (!support?.support?.[architecture]) return { supported: false, architecture, instructions: [] };
+    if (this.formatId === 'macho') return { supported: false, architecture, instructions: [], compatibility: 'legacy-viewer' };
     const read = await this._callTo('platform', 'readAt', { addr, len: Math.min(1024 * 1024, options.length || 4096), text: false });
     if (!read?.found) return { supported: true, architecture, instructions: [], found: false };
     const result = await this._disassembleBytes(read.bytes, addr, architecture);
