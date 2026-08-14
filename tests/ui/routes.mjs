@@ -27,12 +27,19 @@ for (const tab of FUNCTION_TABS) {
 }
 
 const legacyRequired = [
-  'showOverview','showInvestigate','showFeatures','showSearch','showJump','showFunctions','showStrings',
-  'showSections','showStructure','showFunctionSummary','showFunctionReport','showDecompiler','showCfg',
-  'showCallGraphPanel','showTypes','showDebugger','showAccuracyNotes','showFileInfo','showSettings','showHelp',
-  'showLearn','showTools',
+  'showFileInfo','showSections','showStructure','showFunctions','showFunctionSummary','showBlockDetail',
+  'showFeatures','showStrings','showJump','showSearch','showXrefs','showDetail','showOverview','showAppMap',
+  'showSubsystem','showClass','showField','showPinned','showAccuracyNotes','showInvestigate','showDataTables',
+  'showDataTable','showCandidates','showCandidateWhy','showFunctionReport','showCallGraph','showValueFlow',
+  'showAddressInfo','showSettings','showHelp','showWelcome','showLearn','showGlossary','showTerm','showSampleGuide',
+  'showTools','showDecompiler','showCfg','showCallGraphPanel','showTypes','showStructRecover','showStructs',
+  'showCxxClasses','showRename','showComment','showNotes','showLinkage','showGlobals','showPatches','showPatchEditor',
+  'showDebugger','showScript','showPlugins','showIl2cpp',
 ];
-check('every tracked legacy screen has a migration disposition', legacyRequired.every((name) => typeof LEGACY_MIGRATION[name] === 'string'));
+check('audited legacy inventory contains 54 exported screens', legacyRequired.length === 54);
+check('migration table contains exactly the audited 54 screens', Object.keys(LEGACY_MIGRATION).length === legacyRequired.length);
+check('every audited legacy screen has a migration disposition', legacyRequired.every((name) => typeof LEGACY_MIGRATION[name] === 'string'));
+check('migration table has no un-audited screen names', Object.keys(LEGACY_MIGRATION).every((name) => legacyRequired.includes(name)));
 check('migration table has only explicit dispositions', Object.values(LEGACY_MIGRATION).every((value) => /^(merge|redirect|deprecated):/.test(value)));
 
 if (failures) process.exit(1);
