@@ -22,8 +22,12 @@ jobs:
           node-version: '22'
       - name: Apply repair
         run: python scripts/_apply_cfg_fix.py
+      - name: Keep permanent workflows unchanged
+        run: git checkout -- .github/workflows/cross-binary-accuracy.yml
       - name: Core checks
         run: npm run check
+      - name: BattleCats CFG regression
+        run: node --max-old-space-size=6000 tests/battlecats-cfg-regression.mjs
       - name: Remove temporary applicator
         run: rm -f scripts/_apply_cfg_fix.py .github/workflows/apply-cfg-fix.yml
       - name: Commit repair
