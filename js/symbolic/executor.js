@@ -24,8 +24,8 @@ function op(name, ...args) {
       if (name === 'add') return c(a + b);
       if (name === 'sub') return c(a - b);
       if (name === 'and') return c(a & b);
-      if (name === 'orr') return c(a | b);
-      if (name === 'eor') return c(a ^ b);
+      if (name === 'or' || name === 'orr') return c(a | b);
+      if (name === 'xor' || name === 'eor') return c(a ^ b);
       if (name === 'shl') return c(a << b);
       if (name === 'lshr' || name === 'ashr') return c(a >> b);
       if (name === 'mul') return c(a * b);
@@ -123,7 +123,7 @@ function evalValue(value, state, ir, opts, memo, active) {
     else if (d.op === OP.PHI) {
       const chosen = phiValue(d, state);
       out = chosen ? evalValue(chosen, state, ir, opts, memo, active) : unknown('ambiguous-phi', { instruction: d.id });
-    } else if (d.op === OP.BIN && d.args.length >= 2 && ['add', 'sub', 'and', 'orr', 'eor', 'shl', 'lshr', 'ashr', 'mul'].includes(d.sub)) {
+    } else if (d.op === OP.BIN && d.args.length >= 2 && ['add', 'sub', 'and', 'or', 'xor', 'orr', 'eor', 'shl', 'lshr', 'ashr', 'mul'].includes(d.sub)) {
       out = op(d.sub,
         evalValue(d.args[0].value, state, ir, opts, memo, active),
         evalValue(d.args[1].value, state, ir, opts, memo, active));
@@ -200,7 +200,6 @@ function successorsForBranch(ir, block, inst, addressMap) {
   if (inst.op !== OP.CBR) return { target: null, fallthrough: null };
   let fallthrough = succ.find((b) => b !== target);
   if (target == null && succ.length === 2) {
-    // Without a proven target mapping the branch identity is ambiguous. Stop.
     return { target: null, fallthrough: null };
   }
   if (fallthrough == null && succ.length === 1 && target !== succ[0]) fallthrough = succ[0];
@@ -220,10 +219,7 @@ function stopResult(state, reason, inst) {
   };
 }
 
-/**
- * Explore bounded Semantic IR paths.
- * @returns {{paths:Array, truncated:boolean, engine:string}}
- */
+/** Explore bounded Semantic IR paths. */
 export function symbolicExecute(ir, opts) {
   if (!ir || !ir.blocks || !ir.blocks.length) return { paths: [], truncated: false, engine: 'semantic-ir-symbolic' };
   const maxPaths = Math.max(1, opts && opts.maxPaths || 16);
