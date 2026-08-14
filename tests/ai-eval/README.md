@@ -56,6 +56,12 @@ A record has three layers:
 
 See `results.example.jsonl` for a complete minimal example.
 
+For an integrated release run, require the full corpus rather than grading a selected subset:
+
+```sh
+node tests/ai-eval/grade.mjs path/to/all-results.jsonl ai-eval-report.json --require-all
+```
+
 ## Evidence rule
 
 `status: "verified"` is special. The evaluator accepts it only when application-owned telemetry proves the evidence ID, either because a deterministic tool trace emitted that ID or because the runtime recorder lists it in `observed.verifiedEvidenceIds`.
