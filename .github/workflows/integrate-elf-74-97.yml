@@ -1,0 +1,49 @@
+name: Integrate ELF issues 74-97
+on:
+  push:
+    branches: [fix/issues-86-97]
+permissions:
+  contents: write
+jobs:
+  resolve-and-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Merge ELF validation branch
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git fetch origin fix/issues-74-85
+          set +e
+          git merge --no-edit origin/fix/issues-74-85
+          status=$?
+          set -e
+          if [ "$status" -ne 0 ]; then
+            conflicts="$(git diff --name-only --diff-filter=U)"
+            test "$conflicts" = "js/binary/elf-dynamic.js"
+            git checkout --theirs js/binary/elf-dynamic.js
+          fi
+      - name: Resolve ELF semantic overlap
+        run: node tools/integrate-elf-74-97.mjs
+      - name: Syntax check merged parser
+        run: |
+          node --check js/binary/elf.js
+          node --check js/binary/elf-dynamic.js
+          node --check js/binary/elf-extended.js
+          node --check js/binary/elf-unwind.js
+          node --check js/binary/pe.js
+      - name: Verify binary regressions
+        run: npm run binary:test
+      - name: Verify full regression gate
+        run: npm run check
+      - name: Commit resolved integration
+        run: |
+          git add -A
+          git diff --cached --check
+          git commit -m "Integrate ELF issues 74-97"
+          git push origin HEAD:fix/issues-86-97
