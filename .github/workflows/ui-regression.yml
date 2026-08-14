@@ -41,23 +41,24 @@ jobs:
       - name: Install Playwright engines
         run: |
           npm install --no-save playwright
+          npx playwright install-deps webkit
           npx playwright install chromium webkit
       - name: Run existing browser regression
         run: npm run browser
       - name: Run UI viewport matrix
         env:
           CI: '1'
-          UI_SHOTS: tests/.ui-shots
+          UI_SHOTS: tests/ui-shots
         run: npm run ui:browser
       - name: Verify screenshot audit
         run: |
-          test -d tests/.ui-shots
-          test "$(find tests/.ui-shots -type f -name '*.png' | wc -l)" -ge 30
+          test -d tests/ui-shots
+          test "$(find tests/ui-shots -type f -name '*.png' | wc -l)" -ge 30
       - name: Upload screenshot audit
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ui-screenshot-audit
-          path: tests/.ui-shots
-          if-no-files-found: warn
+          path: tests/ui-shots
+          if-no-files-found: error
           retention-days: 7
