@@ -25,6 +25,7 @@ jobs:
           import fs from 'node:fs';
           import path from 'node:path';
           import zlib from 'node:zlib';
+          import crypto from 'node:crypto';
           const files = [
             '.recognition-payload-00.txt',
             '.recognition-payload-01.txt',
@@ -35,7 +36,31 @@ jobs:
             '.recognition-payload-04.txt',
             '.recognition-payload-05.txt',
           ];
-          const encoded = files.map((x) => fs.readFileSync(path.join('tools', x), 'utf8')).join('').replace(/\s+/g, '');
+          const target = new Map([
+            ['.recognition-payload-03a.txt', 'e8d791fea672835e1156e544b728342317102a20'],
+            ['.recognition-payload-03b.txt', '2d3b6139f4c7d1c3a50b1e2395695b4adf14881f'],
+            ['.recognition-payload-03c.txt', '6a0cdd1d7bbfd01f770d4651b762054e9d821c7f'],
+          ]);
+          const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
+          const gitBlobHash = (s) => crypto.createHash('sha1').update(`blob ${Buffer.byteLength(s)}\0${s}`).digest('hex');
+          function verifiedChunk(name) {
+            let s = fs.readFileSync(path.join('tools', name), 'utf8').replace(/\s+/g, '');
+            const wanted = target.get(name);
+            if (!wanted || gitBlobHash(s) === wanted) return s;
+            for (let i = 0; i < s.length; i++) {
+              const original = s[i];
+              for (const c of alphabet) {
+                if (c === original) continue;
+                const candidate = s.slice(0, i) + c + s.slice(i + 1);
+                if (gitBlobHash(candidate) === wanted) {
+                  console.log(`repaired ${name} at offset ${i}`);
+                  return candidate;
+                }
+              }
+            }
+            throw new Error(`${name} does not match expected source blob and is not a one-character substitution`);
+          }
+          const encoded = files.map(verifiedChunk).join('');
           const manifest = JSON.parse(zlib.gunzipSync(Buffer.from(encoded, 'base64')).toString('utf8'));
           for (const [file, content] of Object.entries(manifest)) {
             fs.mkdirSync(path.dirname(file), { recursive: true });
