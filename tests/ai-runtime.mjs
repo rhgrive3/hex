@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { AIRuntime } from '../js/ai/runtime.js';
 import { AIError } from '../js/ai/schema.js';
+import { EvidenceStore } from '../js/ai/evidence.js';
+import { HypothesisStore } from '../js/ai/hypothesis.js';
 
 function searchContext() {
   return {
@@ -61,4 +63,42 @@ const hungTool = new AIRuntime({
 });
 const hungResult = await hungTool.turn({ mode: 'agent', scope: 'binary', goal: 'bounded tool', budget: { timeoutMs: 20 } });
 assert.equal(hungResult.limits.reason, 'budget_exhausted');
+
+/* A model must not turn a real verified evidence ID into a verified arbitrary
+   claim. Terminal deterministic hypotheses are also immutable to model upserts. */
+const truthEvidence = new EvidenceStore();
+const [verifiedEvidence] = truthEvidence.ingestPlan({
+  best: { address: 0x1000n },
+  candidates: [{
+    address: 0x1000n,
+    name: 'verified_candidate',
+    score: 10,
+    sources: ['fixture'],
+    evidence: ['fixture-proof'],
+    verification: { verified: true },
+  }],
+});
+assert.equal(verifiedEvidence.status, 'verified');
+const hypotheses = new HypothesisStore(truthEvidence);
+const spoofed = hypotheses.upsert({
+  id: 'model_spoof',
+  claim: 'Verified evidence proves an unrelated arbitrary claim',
+  status: 'verified',
+  supportEvidenceIds: [verifiedEvidence.id],
+});
+assert.notEqual(spoofed.status, 'verified', 'model-supplied hypothesis cannot self-promote to verified');
+const terminal = hypotheses.upsert({ id: 'terminal', claim: 'deterministic claim', status: 'open' });
+const verifiedHypothesis = hypotheses.verify(terminal.id, [verifiedEvidence.id]);
+assert.equal(verifiedHypothesis.status, 'verified');
+const hijack = hypotheses.upsert({
+  id: terminal.id,
+  claim: 'rewritten malicious claim',
+  status: 'verified',
+  supportEvidenceIds: [verifiedEvidence.id],
+});
+assert.equal(hijack.claim, 'deterministic claim', 'model upsert cannot rewrite a terminal verified claim');
+assert.equal(hijack.status, 'verified');
+const fakeReject = hypotheses.upsert({ id: 'fake_reject', claim: 'model rejected this', status: 'rejected' });
+assert.notEqual(fakeReject.status, 'rejected', 'model cannot create a rejected verdict without deterministic authority');
+
 console.log('ai-runtime: PASS');
