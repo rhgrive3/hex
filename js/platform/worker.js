@@ -47,7 +47,11 @@ self.onmessage = async (event) => {
     finally { if (msg.id != null) active.delete(msg.id); }
   };
   try {
-    const result = serialized ? (openChain = openChain.then(execute, execute)) : await execute();
+    // Non-lifecycle work must observe the image produced by the open/detect that
+    // was already queued when the request arrived. It is not itself appended to
+    // openChain, so independent reads/searches can still run concurrently after
+    // the lifecycle gate has completed.
+    const result = serialized ? (openChain = openChain.then(execute, execute)) : openChain.then(execute);
     const resolved = await result;
     post({ t: 'ok', id: msg.id, epoch: msg.epoch, result: resolved }, resolved?.__transfer);
   } catch (error) {
