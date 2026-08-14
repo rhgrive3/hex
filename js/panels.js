@@ -3957,7 +3957,8 @@ export function showFunctionReport(app, addr, goal) {
   }
 
   const name = sym.nameAt(start);
-  const sheet = new Sheet(pick('この関数について', 'About this function'));
+  const sheet = new Sheet(pick('この関数について', 'About this function'), { size: 'wide' });
+  sheet.root.classList.add('function-report-sheet');
   const body = sheet.body;
   const box = progressBox(body, t('functions.analyzing'));
   const later = el('div');
@@ -4215,6 +4216,113 @@ function renderFunctionReport(app, sheet, body, report, res, region, goal) {
   body.append(actions);
 }
 
+/** GeminiのMarkdownを、HTML文字列を使わず安全なDOMとして組み立てる。 */
+function appendGeminiInline(parent, text) {
+  const src = String(text || '');
+  const re = /(`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*)/g;
+  let last = 0;
+  for (const match of src.matchAll(re)) {
+    if (match.index > last) parent.append(document.createTextNode(src.slice(last, match.index)));
+    const token = match[0];
+    if (token.startsWith('`')) {
+      parent.append(el('code', 'mono', token.slice(1, -1)));
+    } else if (token.startsWith('**')) {
+      parent.append(el('strong', null, token.slice(2, -2)));
+    } else {
+      parent.append(el('em', null, token.slice(1, -1)));
+    }
+    last = match.index + token.length;
+  }
+  if (last < src.length) parent.append(document.createTextNode(src.slice(last)));
+}
+
+function renderGeminiMarkdown(target, source) {
+  const lines = String(source || '').replace(/\r\n?/g, '\n').split('\n');
+  target.replaceChildren();
+  let listNode = null;
+  let listKind = '';
+  let paragraph = [];
+  let inCode = false;
+  let codeLines = [];
+
+  const closeList = () => { listNode = null; listKind = ''; };
+  const flushParagraph = () => {
+    if (!paragraph.length) return;
+    const p = el('p');
+    paragraph.forEach((line, i) => {
+      if (i) p.append(document.createElement('br'));
+      appendGeminiInline(p, line);
+    });
+    target.append(p);
+    paragraph = [];
+  };
+  const flushCode = () => {
+    const pre = el('pre', 'gemini-code');
+    const code = el('code', 'mono');
+    code.textContent = codeLines.join('\n');
+    pre.append(code);
+    target.append(pre);
+    codeLines = [];
+    inCode = false;
+  };
+  const appendListItem = (kind, value) => {
+    flushParagraph();
+    if (!listNode || listKind !== kind) {
+      listNode = document.createElement(kind);
+      listNode.className = 'gemini-list';
+      target.append(listNode);
+      listKind = kind;
+    }
+    const li = document.createElement('li');
+    appendGeminiInline(li, value);
+    listNode.append(li);
+  };
+
+  for (const raw of lines) {
+    const trimmed = raw.trim();
+    if (/^```/.test(trimmed)) {
+      flushParagraph();
+      closeList();
+      if (inCode) flushCode();
+      else inCode = true;
+      continue;
+    }
+    if (inCode) { codeLines.push(raw); continue; }
+    if (!trimmed) { flushParagraph(); closeList(); continue; }
+
+    const heading = trimmed.match(/^(#{1,6})\s+(.+)$/);
+    if (heading) {
+      flushParagraph(); closeList();
+      const h = document.createElement('h' + heading[1].length);
+      appendGeminiInline(h, heading[2]);
+      target.append(h);
+      continue;
+    }
+    if (/^([-*_])(?:\s*\1){2,}$/.test(trimmed)) {
+      flushParagraph(); closeList();
+      target.append(document.createElement('hr'));
+      continue;
+    }
+    const unordered = trimmed.match(/^[-+*]\s+(.+)$/);
+    if (unordered) { appendListItem('ul', unordered[1]); continue; }
+    const ordered = trimmed.match(/^\d+[.)]\s+(.+)$/);
+    if (ordered) { appendListItem('ol', ordered[1]); continue; }
+    const quote = trimmed.match(/^>\s?(.*)$/);
+    if (quote) {
+      flushParagraph(); closeList();
+      const q = document.createElement('blockquote');
+      appendGeminiInline(q, quote[1]);
+      target.append(q);
+      continue;
+    }
+    closeList();
+    paragraph.push(trimmed);
+  }
+  flushParagraph();
+  closeList();
+  if (inCode) flushCode();
+}
+
 /** Geminiへ送るのは、この関数に関係する上限付きの根拠だけにする。 */
 function geminiAnalysisSection(report, res) {
   const section = block(pick('AIにこの関数を聞く', 'Ask AI about this function'));
@@ -4259,12 +4367,29 @@ function geminiAnalysisSection(report, res) {
 
   const status = el('p', 'gemini-status sub', '');
   status.setAttribute('aria-live', 'polite');
-  const output = el('pre', 'gemini-output');
+  const output = el('div', 'gemini-output');
   output.hidden = true;
   output.setAttribute('aria-live', 'polite');
+  output.setAttribute('role', 'document');
   section.append(status, output);
 
   let controller = null;
+  let markdownText = '';
+  let renderFrame = 0;
+  const renderOutput = () => {
+    renderFrame = 0;
+    const follow = output.scrollHeight - output.scrollTop - output.clientHeight < 72;
+    renderGeminiMarkdown(output, markdownText);
+    if (follow) output.scrollTop = output.scrollHeight;
+  };
+  const scheduleRender = () => {
+    if (!renderFrame) renderFrame = requestAnimationFrame(renderOutput);
+  };
+  const flushRender = () => {
+    if (renderFrame) cancelAnimationFrame(renderFrame);
+    renderFrame = 0;
+    renderOutput();
+  };
   const setRunning = (running) => {
     send.disabled = running;
     cancel.disabled = !running;
@@ -4288,20 +4413,28 @@ function geminiAnalysisSection(report, res) {
     }
 
     controller = new AbortController();
+    markdownText = '';
+    if (renderFrame) cancelAnimationFrame(renderFrame);
+    renderFrame = 0;
     output.hidden = false;
-    output.textContent = '';
+    output.replaceChildren();
     status.textContent = pick('解析中… 回答を受信し次第、ここへ表示します。', 'Analyzing… the response will appear here as it arrives.');
     setRunning(true);
     try {
       await streamGemini(payload, {
-        onText: (chunk) => { output.textContent += chunk; },
+        onText: (chunk) => {
+          markdownText += chunk;
+          scheduleRender();
+        },
       }, controller.signal);
+      flushRender();
       if (controller && !controller.signal.aborted) {
-        status.textContent = output.textContent
+        status.textContent = markdownText
           ? pick('解析が完了しました。', 'Analysis complete.')
           : pick('回答本文を受信できませんでした。もう一度お試しください。', 'No response text was received. Please try again.');
       }
     } catch (err) {
+      if (markdownText) flushRender();
       if (err && err.name === 'AbortError') {
         status.textContent = pick('解析をキャンセルしました。', 'Analysis cancelled.');
       } else {
