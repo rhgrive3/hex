@@ -3,12 +3,14 @@ import { decompile as legacyDecompile } from './decompile-legacy.js';
 import { decompileSemantic } from './decompiler/semantic.js';
 import { repairCanonicalPostTestLoop } from './decompiler/loop-repair.js';
 import { structureKnownSwitches } from './decompiler/switch.js';
+import { enhanceSemanticDecompilation } from './decompiler/pipeline.js';
 
 // Preserve every historical helper export (stackNaming, decompiledText, etc.).
 // Explicit exports below intentionally override only the public decompile entry.
 export * from './decompile-legacy.js';
 export { decompileSemantic } from './decompiler/semantic.js';
 export { structureKnownSwitches } from './decompiler/switch.js';
+export { enhanceSemanticDecompilation } from './decompiler/pipeline.js';
 export { renderValue as renderSemanticValue, renderMemoryLocation, renderBranchCondition, recoverInductionVariables, reachingRegisterValue } from './decompiler/semantic.js';
 
 function textOf(lines) {
@@ -21,21 +23,11 @@ function asmCount(result) {
   return n;
 }
 
-function foldSelectIdiom(text) {
-  if (typeof text !== 'string' || !text.includes('?')) return text;
-  let m = text.match(/^(.+?=\s*)\((.+?)\s*<\s*(-?(?:0x[0-9A-Fa-f]+|\d+))\s*\?\s*(-?(?:0x[0-9A-Fa-f]+|\d+))\s*:\s*(.+)\);$/);
-  if (m && m[3].trim() === m[4].trim() && m[2].trim() === m[5].trim()) return `${m[1]}max(${m[2].trim()}, ${m[3].trim()});`;
-  m = text.match(/^(.+?=\s*)\((.+?)\s*>\s*(-?(?:0x[0-9A-Fa-f]+|\d+))\s*\?\s*(-?(?:0x[0-9A-Fa-f]+|\d+))\s*:\s*(.+)\);$/);
-  if (m && m[3].trim() === m[4].trim() && m[2].trim() === m[5].trim()) return `${m[1]}min(${m[2].trim()}, ${m[3].trim()});`;
-  return text;
-}
-
 function normalizeCompatibility(result) {
   if (!result) return result;
   for (const l of result.lines || []) {
     if (!l || typeof l.text !== 'string') continue;
     l.text = l.text.replace(/\bvar_([0-9a-f]+)\b/g, (_m, h) => 'var_' + h.toUpperCase());
-    l.text = foldSelectIdiom(l.text);
   }
   if (result.semantic) result.pseudocode = textOf(result.lines);
   return result;
@@ -63,8 +55,9 @@ function augmentLegacy(fallback, reason, semantic = null) {
 }
 
 function finalize(result, model, opts) {
-  result = structureKnownSwitches(result, model, opts);
-  return normalizeCompatibility(result);
+  result = normalizeCompatibility(structureKnownSwitches(result, model, opts));
+  if (result?.semantic) result = enhanceSemanticDecompilation(result, model, opts);
+  return result;
 }
 
 /*
