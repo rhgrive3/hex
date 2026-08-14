@@ -1,0 +1,178 @@
+name: Temporary canonical secondary route patch
+
+on:
+  push:
+    branches: [canonical-secondary-ui-v2]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: canonical-secondary-ui-v2
+          fetch-depth: 0
+      - name: Apply exact source edits
+        shell: python
+        run: |
+          from pathlib import Path
+          import re
+
+          def once(text, old, new, label):
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected exactly one match, got {count}')
+              return text.replace(old, new, 1)
+
+          product_path = Path('js/ui/product.js')
+          product = product_path.read_text()
+          product = once(
+              product,
+              "import { addrHex, parseAddress } from '../format.js';",
+              "import { renderSecondaryRoute } from './secondary.js';\nimport { addrHex, parseAddress } from '../format.js';",
+              'secondary import',
+          )
+          product = once(
+              product,
+              "import {\n  showSettings, showHelp, showLearn, showFileInfo, showSections, showStructure, showCandidates,\n} from '../panels.js';",
+              "import {\n  showFileInfo, showSections, showStructure, showCandidates,\n} from '../panels.js';",
+              'legacy secondary imports',
+          )
+          product, count = re.subn(
+              r"\nfunction renderSecondary\(app, router, kind\) \{.*?\n\}\n\nfunction renderAdvanced",
+              "\nfunction renderAdvanced",
+              product,
+              count=1,
+              flags=re.S,
+          )
+          if count != 1:
+              raise SystemExit(f'renderSecondary removal: expected 1 match, got {count}')
+          product = once(
+              product,
+              "else view = renderSecondary(app, router, route.route.id);",
+              "else view = renderSecondaryRoute(app, router, route);",
+              'secondary route dispatch',
+          )
+          product_path.write_text(product)
+
+          secondary_path = Path('js/ui/secondary.js')
+          secondary = secondary_path.read_text()
+          secondary = once(secondary, 'function renderSettings(app) {', 'function renderSettings(app, router) {', 'settings router parameter')
+          secondary = once(
+              secondary,
+              "onClick: () => app.setLanguage(key),",
+              "onClick: () => { app.setLanguage(key); router.navigate('/settings?lang=' + key, { replace: true }); },",
+              'language rerender',
+          )
+          secondary = once(secondary, "case 'settings': return renderSettings(app);", "case 'settings': return renderSettings(app, router);", 'settings dispatch')
+          secondary_path.write_text(secondary)
+
+          ux_path = Path('js/ux.js')
+          ux = ux_path.read_text()
+          old = '''  const investigate = document.querySelector('.ui-nav-item[data-route-id="investigate"]');
+          if (investigate) {
+            investigate.id = 'btn-investigate';
+            ui.actions.register('investigate.strategy', () => app.openInvestigate());
+            /* A second tap on the already-active Investigate destination means “start choosing
+               a concrete investigation”. First navigation from another destination only routes. */
+            investigate.addEventListener('click', () => {
+              const alreadyActive = ui.router.current?.route?.id === 'investigate';
+              if (alreadyActive && app.store.get('fileInfo')) {
+                queueMicrotask(() => ui.actions.run('investigate.strategy'));
+              }
+            }, true);
+          }
+          '''
+          replacement = '''  const investigate = document.querySelector('.ui-nav-item[data-route-id="investigate"]');
+          if (investigate) investigate.id = 'btn-investigate';
+          '''
+          ux = once(ux, old, replacement, 'legacy investigate second tap')
+          ux = once(ux, 'function migrateRootControls(ui, app) {', 'function migrateRootControls(ui) {', 'migrate signature')
+          ux = once(ux, 'if (ui) migrateRootControls(ui, window.__app);', 'if (ui) migrateRootControls(ui);', 'migrate call')
+          ux_path.write_text(ux)
+
+          test_path = Path('tests/ui/integration-hardening.mjs')
+          test = test_path.read_text()
+          anchor = "const product = fs.readFileSync(path.join(ROOT, 'js/ui/product.js'), 'utf8');\n"
+          replacement = anchor + "const ux = fs.readFileSync(path.join(ROOT, 'js/ux.js'), 'utf8');\nconst secondary = fs.readFileSync(path.join(ROOT, 'js/ui/secondary.js'), 'utf8');\n"
+          test = once(test, anchor, replacement, 'test source reads')
+          checks = """
+          assert.equal(product.includes('renderSecondaryRoute(app, router, route)'), true, 'settings/help/learn must render as canonical routes');
+          assert.equal(product.includes('function renderSecondary('), false, 'legacy open-button secondary screen must be removed');
+          assert.equal(product.includes('showSettings, showHelp, showLearn'), false, 'product UI must not import legacy secondary sheets');
+          assert.equal(secondary.includes("case 'settings': return renderSettings(app, router)"), true, 'canonical settings route must be implemented');
+          assert.equal(secondary.includes("case 'help': return renderHelp(app, router)"), true, 'canonical help route must be implemented');
+          assert.equal(secondary.includes("case 'learn': return renderLearn(app, router, route)"), true, 'canonical learning route must be implemented');
+          assert.equal(ux.includes('app.openInvestigate()'), false, 'primary Investigate navigation must never reopen the legacy sheet');
+          """.strip() + "\n"
+          marker = "assert.equal(product.includes('triggerLegacyInvestigation'), false, 'canonical investigate must not fake legacy sheet input');\n"
+          test = once(test, marker, marker + checks, 'integration checks')
+          test_path.write_text(test)
+
+          css_path = Path('css/ux.css')
+          css = css_path.read_text()
+          css += r'''
+
+          /* Canonical settings / help / learning routes. */
+          .ui-setting-chips,
+          .ui-learning-nav {
+            display: flex;
+            flex-wrap: wrap;
+            gap: var(--space-2, 8px);
+            align-items: center;
+          }
+          .ui-learning-doc {
+            display: grid;
+            gap: var(--space-3, 12px);
+            min-width: 0;
+          }
+          .ui-learn-paragraph,
+          .ui-help-answer {
+            margin: 0;
+            line-height: 1.75;
+            overflow-wrap: anywhere;
+          }
+          .ui-learn-heading { margin: 10px 0 0; font-size: 1rem; }
+          .ui-learn-code {
+            margin: 0;
+            padding: 12px;
+            max-width: 100%;
+            overflow: auto;
+            border: 1px solid var(--border, rgba(127,127,127,.24));
+            border-radius: var(--radius-md, 10px);
+            background: var(--surface-2, rgba(127,127,127,.08));
+            font: inherit;
+            font-family: var(--mono, ui-monospace, monospace);
+            line-height: 1.55;
+            -webkit-overflow-scrolling: touch;
+          }
+          .ui-learn-note {
+            padding: 12px 14px;
+            border-inline-start: 3px solid var(--accent, currentColor);
+            border-radius: var(--radius-sm, 7px);
+            background: var(--surface-2, rgba(127,127,127,.08));
+            line-height: 1.7;
+          }
+          .ui-learn-list { margin: 0; padding-inline-start: 1.4rem; line-height: 1.7; }
+          .ui-glossary-short { display: block; margin-bottom: 8px; }
+          @media (max-width: 699px) {
+            .ui-learning-nav > button,
+            .ui-setting-chips > button { min-height: 44px; }
+            .ui-learn-code { font-size: .82rem; }
+          }
+          '''
+          css_path.write_text(css)
+
+          workflow = Path('.github/workflows/tmp-canonical-secondary-patch.yml')
+          workflow.unlink()
+      - name: Commit patched product UI
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add js/ui/product.js js/ui/secondary.js js/ux.js css/ux.css tests/ui/integration-hardening.mjs .github/workflows/tmp-canonical-secondary-patch.yml
+          git commit -m "Wire canonical settings help and learning routes"
+          git push origin HEAD:canonical-secondary-ui-v2
