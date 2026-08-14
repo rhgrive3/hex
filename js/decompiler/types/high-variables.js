@@ -20,7 +20,12 @@ function candidateName(group, index, opts = {}) {
   if (group.kind === 'argument') {
     const m = /^x([0-7])$/.exec(v?.reg || '');
     const n = m ? Number(m[1]) : index;
-    return { name: opts.argNames?.[n] || `arg${n + 1}`, confidence: opts.argNames?.[n] ? 0.95 : 0.72, reason: 'AAPCS64 argument register' };
+    const explicit = opts.argNames?.[n] || null;
+    if (explicit) return { name: explicit, confidence: 0.95, reason: 'explicit argument metadata' };
+    if (n === 0 && opts.receiverType) return { name: 'self', confidence: 0.92, reason: 'typed receiver in AAPCS64 x0' };
+    // Keep the public decompiler's established source-like ABI naming while the
+    // HighVariable identity itself remains SSA/proof based.
+    return { name: `a${n + 1}`, confidence: 0.72, reason: 'AAPCS64 argument register' };
   }
   if (group.fieldName) return { name: group.fieldName, confidence: group.fieldConfidence || 0.9, reason: 'field metadata' };
   if (group.stackOffset != null) {
