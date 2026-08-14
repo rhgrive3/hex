@@ -1,13 +1,11 @@
-/*
- * Backend: the only thing that talks to the worker.
- * The UI asks for rows; it never sees Capstone, file offsets or postMessage.
- */
+/* Format-neutral backend facade. Legacy ARM64/Mach-O worker remains a compatibility engine. */
 import { LRU } from './lru.js';
 import { augmentAnalysisResultWithChainedImports } from './chained.js';
+import { AnalysisCache } from './cache/analysis-cache.js';
 
 export const CHUNK_ROWS = 1024;
 export const CHUNK_BYTES = CHUNK_ROWS * 4;
-const CHUNK_CACHE = 64;          // ~64k instructions kept warm
+const CHUNK_CACHE = 64;
 const MAX_INFLIGHT = 6;
 
 export class StaleRequestError extends Error {
@@ -20,165 +18,271 @@ export class StaleRequestError extends Error {
 
 export class Backend {
   constructor() {
-    this.worker = new Worker(new URL('./worker.js', import.meta.url));
+    this.legacyWorker = new Worker(new URL('./worker.js', import.meta.url));
+    this.platformWorker = new Worker(new URL('./platform/worker.js', import.meta.url), { type: 'module' });
+    this.worker = this.legacyWorker;
     this.seq = 1;
-    this.analysisEpoch = 0;          // bumped for every file and slice transition
+    this.analysisEpoch = 0;
+    this.transportEpoch = 0;
     this.pending = new Map();
     this.cache = new LRU(CHUNK_CACHE);
     this.inflight = new Map();
     this.queue = [];
-    this.file = null;                // needed for main-thread chained-fixup symbol recovery
+    this.file = null;
+    this.formatId = 'unknown';
+    this.platformInfo = null;
+    this.arm64Bridge = false;
     this.onSearchProgress = null;
-    this.onScanProgress = null;      // 文字列抽出・相互参照・関数推測の進み具合
-    this.onChunk = null;             // called when a chunk arrives
+    this.onScanProgress = null;
+    this.onAnalysisProgress = null;
+    this.onChunk = null;
     this.onFatal = null;
+    this._archProbe = null;
+    this._disasmWorker = null;
+    this._disasmSeq = 1;
+    this._disasmPending = new Map();
+    this.contentHash = null;
+    this.analysisCache = new AnalysisCache();
 
-    this.worker.onmessage = (e) => this._onMessage(e.data);
-    this.worker.onerror = (e) => {
-      const msg = e.message || 'The analysis worker failed to start.';
+    this.legacyWorker.onmessage = (event) => this._onMessage(event.data, 'legacy');
+    this.platformWorker.onmessage = (event) => this._onMessage(event.data, 'platform');
+    const failed = (event) => {
+      const msg = event?.message || 'The analysis worker failed to start.';
       if (this.onFatal) this.onFatal(msg);
     };
+    this.legacyWorker.onerror = failed;
+    this.platformWorker.onerror = failed;
+
+    if (typeof document !== 'undefined') {
+      this._memoryPressureHandler = () => {
+        if (!document.hidden) return;
+        this.dropQueued();
+        this.cleanupMemory().catch(() => {});
+      };
+      document.addEventListener('visibilitychange', this._memoryPressureHandler, { passive: true });
+    }
   }
 
-  // `gen` remains as a compatibility alias for chunk-cache callers.  Analysis
-  // requests and UI state share the explicitly named epoch below.
   get gen() { return this.analysisEpoch; }
 
-  _onMessage(m) {
-    if (!m) return;
-    if (m.t === 'searchProgress') {
-      const p = this.pending.get(m.requestId);
-      if (p && p.epoch === this.gen && p.onProgress) p.onProgress(m);
-      else if (this.onSearchProgress) this.onSearchProgress(m); // legacy UI callers
+  _onMessage(message, workerName) {
+    if (!message) return;
+    if (message.t === 'searchProgress' || message.t === 'scanProgress' || message.t === 'analysisProgress') {
+      const pending = this.pending.get(message.requestId);
+      if (!pending || pending.uiEpoch !== this.gen) return;
+      if (pending.onProgress) pending.onProgress(message);
+      else if (message.t === 'searchProgress' && this.onSearchProgress) this.onSearchProgress(message);
+      else if (message.t === 'scanProgress' && this.onScanProgress) this.onScanProgress(message);
+      else if (message.t === 'analysisProgress' && this.onAnalysisProgress) this.onAnalysisProgress(message);
       return;
     }
-    if (m.t === 'scanProgress') {
-      const p = this.pending.get(m.requestId);
-      if (p && p.epoch === this.gen && p.onProgress) p.onProgress(m);
-      else if (this.onScanProgress) this.onScanProgress(m); // legacy UI callers
+    if (message.t === 'fatal') {
+      if (this.onFatal) this.onFatal(message.error);
       return;
     }
-    if (m.t === 'fatal') {
-      if (this.onFatal) this.onFatal(m.error);
+    const pending = this.pending.get(message.id);
+    if (!pending || pending.workerName !== workerName) return;
+    this.pending.delete(message.id);
+    if (pending.uiEpoch !== this.gen || message.epoch !== pending.transportEpoch) {
+      pending.reject(new StaleRequestError());
       return;
     }
-    const p = this.pending.get(m.id);
-    if (!p) return;
-    this.pending.delete(m.id);
-    if (p.epoch !== this.gen || m.epoch !== p.epoch) {
-      p.reject(new StaleRequestError());
-      return;
-    }
-    if (m.t === 'ok') p.resolve(m.result);
-    else p.reject(new Error(m.error || 'Analysis failed.'));
+    if (message.t === 'ok') pending.resolve(message.result);
+    else pending.reject(new Error(message.error || 'Analysis failed.'));
   }
 
-  call(t, payload, transfer, onProgress) {
+  _worker(name) { return name === 'platform' ? this.platformWorker : this.legacyWorker; }
+
+  _callTo(workerName, t, payload = {}, transfer, onProgress) {
     const id = this.seq++;
     this.lastRequestId = id;
-    const epoch = this.gen;
+    const uiEpoch = this.gen;
+    const transportEpoch = this.transportEpoch;
     const promise = new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject, epoch, onProgress });
-      this.worker.postMessage(Object.assign({ t, id, requestId: id, epoch }, payload), transfer || []);
+      this.pending.set(id, { resolve, reject, uiEpoch, transportEpoch, workerName, onProgress });
+      this._worker(workerName).postMessage({ t, id, requestId: id, epoch: transportEpoch, ...payload }, transfer || []);
     });
     promise.requestId = id;
     promise.cancel = () => this.cancel(id);
     return promise;
   }
 
-  /** Start a new file/slice generation and actively settle every stale request. */
+  _engineWorker(t) {
+    if (this.formatId === 'macho') return 'legacy';
+    if (this.arm64Bridge && !['analyze', 'metadata', 'memoryStats', 'cleanupMemory'].includes(t)) return 'legacy';
+    return 'platform';
+  }
+
+  call(t, payload, transfer, onProgress) {
+    return this._callTo(this._engineWorker(t), t, payload, transfer, onProgress);
+  }
+
   advanceEpoch() {
-    const old = this.analysisEpoch;
     this.analysisEpoch++;
     this.resetCache();
-    this.worker.postMessage({ t: 'cancel', epoch: old });
-    for (const [id, p] of this.pending) {
-      if (p.epoch === this.gen) continue;
+    for (const worker of [this.legacyWorker, this.platformWorker]) {
+      worker.postMessage({ t: 'cancel', epoch: this.transportEpoch });
+    }
+    for (const [id, pending] of this.pending) {
+      if (pending.uiEpoch === this.gen) continue;
       this.pending.delete(id);
-      p.reject(new StaleRequestError());
+      pending.reject(new StaleRequestError());
     }
     return this.analysisEpoch;
   }
 
-  /* ── high level ─────────────────────────────────────────── */
-
-  open(file) {
-    this.advanceEpoch();             // region ids repeat between files and slices
+  async open(file) {
+    this.advanceEpoch();
+    this.transportEpoch++;
     this.file = file;
-    return this.call('open', { file });
+    this.formatId = 'unknown';
+    this.platformInfo = null;
+    this.arm64Bridge = false;
+    this.contentHash = null;
+
+    let platformInfo = null;
+    let platformError = null;
+    try {
+      platformInfo = await this._callTo('platform', 'open', { file }, null, (p) => this.onAnalysisProgress?.(p));
+    } catch (error) {
+      if (error?.stale) throw error;
+      platformError = error;
+    }
+    if (platformInfo) {
+      this.platformInfo = platformInfo;
+      this.formatId = platformInfo.formatId || platformInfo.capability?.format || 'unknown';
+    }
+
+    if (this.formatId === 'macho' || !platformInfo) {
+      const legacy = await this._callTo('legacy', 'open', { file });
+      if (!platformInfo) {
+        if (platformError && legacy.format === 'Raw binary') legacy.warnings = [...(legacy.warnings || []), platformError.message];
+        return legacy;
+      }
+      legacy.formatId = 'macho';
+      legacy.platform = platformInfo.platform;
+      legacy.capability = platformInfo.capability;
+      for (const slice of legacy.slices || []) slice.capability = legacySliceCapability(slice);
+      return legacy;
+    }
+
+    const capability = platformInfo.capability || platformInfo.slices?.[0]?.capability;
+    this.arm64Bridge = capability?.architecture === 'arm64';
+    if (this.arm64Bridge) {
+      await this._callTo('legacy', 'open', { file });
+      const allRegions = [...(platformInfo.slices || []).flatMap((s) => s.regions || []), platformInfo.raw].filter(Boolean);
+      await this._callTo('legacy', 'setRegions', { regions: allRegions });
+    }
+    return platformInfo;
   }
 
-  probe() { return this.call('probe', {}); }
+  probe() {
+    if (this.formatId === 'macho' || this.arm64Bridge) return this._callTo('legacy', 'probe', {});
+    return this._callTo('platform', 'probe', {});
+  }
 
-  registerRegions(regions) { return this.call('setRegions', { regions }); }
+  probeArchitectures() {
+    if (this._archProbe) return this._archProbe;
+    this._archProbe = new Promise((resolve) => {
+      const worker = new Worker(new URL('./platform/capstone-probe-worker.js', import.meta.url));
+      const finish = (value) => { worker.terminate(); resolve(value); };
+      worker.onmessage = (event) => finish(event.data);
+      worker.onerror = (event) => finish({ ok: false, error: event.message, support: { arm64: false, x86_64: false } });
+      worker.postMessage({ t: 'probe' });
+    }).finally(() => { this._archProbe = null; });
+    return this._archProbe;
+  }
+
+  registerRegions(regions) {
+    const jobs = [this._callTo('platform', 'setRegions', { regions })];
+    if (this.formatId === 'macho' || this.arm64Bridge) jobs.push(this._callTo('legacy', 'setRegions', { regions }));
+    return Promise.all(jobs).then(() => ({ ok: true }));
+  }
 
   search(params, onProgress) { return this.call('search', params, null, onProgress); }
 
   cancel(request) {
-    const requestId = typeof request === 'number' ? request
-      : request && request.requestId != null ? request.requestId : this.lastRequestId;
+    const requestId = typeof request === 'number' ? request : request?.requestId ?? this.lastRequestId;
     if (requestId == null) return;
-    this.worker.postMessage({ t: 'cancel', requestId, epoch: this.gen });
+    const pending = this.pending.get(requestId);
+    if (pending) this._worker(pending.workerName).postMessage({ t: 'cancel', requestId, epoch: pending.transportEpoch });
   }
 
   cancelSearch(request) { this.cancel(request); }
 
-  /* ── 解析 ────────────────────────────────────────────────
-     どれも worker 側で走査するので、UI は止まらない。
-     キャンセルは request ID ごとに worker へ伝える。 */
-
   analyze(sliceIndex) {
+    const worker = this.formatId === 'macho' ? 'legacy' : 'platform';
     const file = this.file;
-    return this.call('analyze', { sliceIndex })
-      .then((res) => augmentAnalysisResultWithChainedImports(file, sliceIndex, res));
-  }
-
-  guessFunctions(regionId, limit, onProgress) {
-    return this.call('guessFunctions', { regionId, limit }, null, onProgress);
-  }
-
-  /**
-   * セクション全体を 1 パス走査して、呼び出しの辺・データ参照・語ごとの命令種別を取る。
-   * これが「参照関係と制御フローを根拠にする」ための土台。1 ファイルにつき 1 回で足りる。
-   */
-  scanProgram(regionId, onProgress) {
-    return this.call('scanProgram', { regionId }, null, onProgress);
-  }
-
-  /** そのフィールド（クラスの中の位置）を読み書きしている命令を全部探す。 */
-  fieldAccess(params, onProgress) { return this.call('fieldAccess', params, null, onProgress); }
-
-  /**
-   * 値の「ふるまい」をセクション全体から集める。
-   * 名前も文字列も残っていないアプリで、値を見分ける唯一の手がかりになる。
-   * 1 ファイルにつき 1 回でよい。
-   */
-  valueShapes(regionId, onProgress) {
-    return this.call('valueShapes', { regionId }, null, onProgress);
-  }
-
-  /**
-   * 複数の位置を 1 回の走査でまとめて調べる。
-   * 候補ごとにセクションを舐め直さないための入口（特定の決着に使う）。
-   * @returns {Promise<Map<string, Array>>} ずらし幅（10 進の文字列）→ 読み書きした命令
-   */
-  fieldAccessMany(regionId, offsets) {
-    return this.call('fieldAccess', { regionId, offsets }).then((res) => {
-      const out = new Map();
-      const groups = (res && res.groups) || {};
-      for (const key of Object.keys(groups)) out.set(key, groups[key]);
-      return out;
+    return this._callTo(worker, 'analyze', { sliceIndex }).then((result) => {
+      if (this.formatId !== 'macho') return result;
+      return augmentAnalysisResultWithChainedImports(file, sliceIndex, result);
     });
   }
 
+  guessFunctions(regionId, limit, onProgress) { return this.call('guessFunctions', { regionId, limit }, null, onProgress); }
+  scanProgram(regionId, onProgress) { return this.call('scanProgram', { regionId }, null, onProgress); }
+  fieldAccess(params, onProgress) { return this.call('fieldAccess', params, null, onProgress); }
+  valueShapes(regionId, onProgress) { return this.call('valueShapes', { regionId }, null, onProgress); }
+  fieldAccessMany(regionId, offsets) {
+    return this.call('fieldAccess', { regionId, offsets }).then((res) => {
+      const out = new Map();
+      for (const key of Object.keys(res?.groups || {})) out.set(key, res.groups[key]);
+      return out;
+    });
+  }
   strings(params, onProgress) { return this.call('strings', params, null, onProgress); }
-
   xrefs(params, onProgress) { return this.call('xrefs', params, null, onProgress); }
-
-  /** 仮想アドレスの中身を読む。text: true で 0 終端の文字列として解釈。 */
   readAt(addr, len, text) { return this.call('readAt', { addr, len, text }); }
+  binaryMetadata(kind = 'summary', start = 0, limit = 500) { return this._callTo('platform', 'metadata', { kind, start, limit }); }
+  async ensureContentHash(onProgress) {
+    if (this.contentHash) return this.contentHash;
+    const result = await this._callTo('platform', 'hash', {}, null, onProgress);
+    this.contentHash = result.hash;
+    return this.contentHash;
+  }
+  async disassembleAt(addr, options = {}) {
+    const architecture = options.architecture || this.platformInfo?.capability?.architecture || 'arm64';
+    const support = await this.probeArchitectures();
+    if (!support?.support?.[architecture]) return { supported: false, architecture, instructions: [] };
+    const read = await this._callTo('platform', 'readAt', { addr, len: Math.min(1024 * 1024, options.length || 4096), text: false });
+    if (!read?.found) return { supported: true, architecture, instructions: [], found: false };
+    const result = await this._disassembleBytes(read.bytes, addr, architecture);
+    return { supported: true, architecture, found: true, ...result };
+  }
+  _disassembleBytes(bytes, address, architecture) {
+    if (!this._disasmWorker) {
+      this._disasmWorker = new Worker(new URL('./platform/capstone-disasm-worker.js', import.meta.url));
+      this._disasmWorker.onmessage = (event) => {
+        const pending = this._disasmPending.get(event.data?.id);
+        if (!pending) return;
+        this._disasmPending.delete(event.data.id);
+        if (event.data.ok) pending.resolve(event.data); else pending.reject(new Error(event.data.error || 'disassembly failed'));
+      };
+    }
+    const id = this._disasmSeq++;
+    const copy = bytes instanceof Uint8Array ? bytes.slice() : new Uint8Array(bytes);
+    return new Promise((resolve, reject) => {
+      this._disasmPending.set(id, { resolve, reject });
+      this._disasmWorker.postMessage({ id, architecture, address, bytes: copy }, [copy.buffer]);
+    });
+  }
+  async loadAnalysisCache() {
+    const hash = await this.ensureContentHash();
+    return this.analysisCache.get(hash);
+  }
+  async saveAnalysisCache(data) {
+    const hash = await this.ensureContentHash();
+    return this.analysisCache.put(hash, data);
+  }
+  memoryStats() { return this._callTo('platform', 'memoryStats', {}); }
+  cleanupMemory() {
+    this.resetCache();
+    if (this._disasmWorker) { this._disasmWorker.terminate(); this._disasmWorker = null; }
+    for (const pending of this._disasmPending.values()) pending.reject(new Error('disassembly worker released for memory pressure'));
+    this._disasmPending.clear();
+    return this._callTo('platform', 'cleanupMemory', {});
+  }
 
-  /** Drop cached rows, e.g. when switching region. */
   resetCache() {
     this.cache.clear();
     this.inflight.clear();
@@ -187,50 +291,35 @@ export class Backend {
 
   key(regionId, chunk) { return this.gen + ':' + regionId + '#' + chunk; }
 
-  /** Cached chunk or undefined. Never blocks. */
   peek(regionId, chunk, wantAsm) {
-    const c = this.cache.get(this.key(regionId, chunk));
-    if (!c) return undefined;
-    if (wantAsm && !c.mn) return undefined;   // cached bytes-only; needs a re-fetch
-    return c;
+    const entry = this.cache.get(this.key(regionId, chunk));
+    if (!entry) return undefined;
+    if (wantAsm && !entry.mn) return undefined;
+    return entry;
   }
 
-  /**
-   * Await a chunk instead of painting when it lands. Used by range copy, which
-   * needs rows the viewport has never shown; it bypasses the render queue so a
-   * long copy cannot starve scrolling, and fills the same cache.
-   */
   fetchChunk(regionId, chunk, wantAsm) {
     const key = this.key(regionId, chunk);
     const cached = this.cache.get(key);
     if (cached && !cached.error && (!wantAsm || cached.mn)) return Promise.resolve(cached);
     const gen = this.gen;
     return this.call('chunk', { regionId, chunk, wantAsm }).then((res) => {
-      const entry = {
-        bytes: res.bytes,
-        rows: res.rows,
-        mn: res.mn ? res.mn.split('\n') : null,
-        ops: res.ops ? res.ops.split('\n') : null,
-      };
+      const entry = normalizeChunk(res);
       if (gen === this.gen) this.cache.set(key, entry);
       return entry;
     });
   }
 
-  /** Ask for a chunk; `onChunk` fires when it lands. */
   request(regionId, chunk, wantAsm) {
     const key = this.key(regionId, chunk);
     const inflight = this.inflight.get(key);
-    if (inflight) {
-      if (wantAsm && !inflight.wantAsm) inflight.wantAsm = true;  // upgrade for the retry
-      return;
-    }
+    if (inflight) { if (wantAsm && !inflight.wantAsm) inflight.wantAsm = true; return; }
     const cached = this.cache.get(key);
     if (cached && (!wantAsm || cached.mn)) return;
-
     const job = { regionId, chunk, wantAsm, key, gen: this.gen };
     this.inflight.set(key, job);
-    if (this.inflight.size - this.queue.length > MAX_INFLIGHT) this.queue.push(job);
+    const dispatched = this.inflight.size - this.queue.length;
+    if (dispatched > MAX_INFLIGHT) this.queue.push(job);
     else this._dispatch(job);
   }
 
@@ -238,22 +327,15 @@ export class Backend {
     this.call('chunk', { regionId: job.regionId, chunk: job.chunk, wantAsm: job.wantAsm })
       .then((res) => {
         this.inflight.delete(job.key);
-        if (job.gen !== this.gen) return;          // belongs to a file we closed
-        const entry = {
-          bytes: res.bytes,
-          rows: res.rows,
-          mn: res.mn ? res.mn.split('\n') : null,
-          ops: res.ops ? res.ops.split('\n') : null,
-        };
-        this.cache.set(job.key, entry);
-        if (this.onChunk) this.onChunk(job.regionId, job.chunk);
+        if (job.gen !== this.gen) return;
+        this.cache.set(job.key, normalizeChunk(res));
+        this.onChunk?.(job.regionId, job.chunk);
       })
       .catch((err) => {
         this.inflight.delete(job.key);
-        if (job.gen !== this.gen) return;
-        const entry = { bytes: new Uint8Array(0), rows: 0, mn: null, ops: null, error: err.message };
-        this.cache.set(job.key, entry);
-        if (this.onChunk) this.onChunk(job.regionId, job.chunk, err);
+        if (job.gen !== this.gen || err?.stale) return;
+        this.cache.set(job.key, { bytes: new Uint8Array(0), rows: 0, mn: null, ops: null, error: err.message });
+        this.onChunk?.(job.regionId, job.chunk, err);
       })
       .then(() => {
         const next = this.queue.shift();
@@ -261,9 +343,30 @@ export class Backend {
       });
   }
 
-  /** Drop queued (not yet dispatched) work — used when the user jumps away. */
   dropQueued() {
     for (const job of this.queue) this.inflight.delete(job.key);
     this.queue.length = 0;
   }
+}
+
+function normalizeChunk(res) {
+  return {
+    bytes: res.bytes,
+    rows: res.rows,
+    mn: res.mn ? res.mn.split('\n') : null,
+    ops: res.ops ? res.ops.split('\n') : null,
+  };
+}
+
+function legacySliceCapability(slice) {
+  const info = slice?.info || {};
+  const architecture = info.isArm64 ? 'arm64' : String(info.cpu || 'unknown').toLowerCase();
+  return Object.freeze({
+    format: 'macho', architecture, endianness: 'little', bits: info.is64 === false ? 32 : 64,
+    canDisassemble: architecture === 'arm64', canAnalyzeDataflow: architecture === 'arm64',
+    canEmulate: architecture === 'arm64', viewerCanDisassemble: architecture === 'arm64',
+    instructionAlignment: architecture === 'arm64' ? 4 : 1,
+    fixedInstructionSize: architecture === 'arm64' ? 4 : null,
+    engineVerified: false,
+  });
 }
