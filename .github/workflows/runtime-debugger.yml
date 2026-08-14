@@ -1,0 +1,37 @@
+name: Runtime debugger gate
+
+on:
+  push:
+    branches:
+      - finish-dynamic-runtime-debugger
+  pull_request:
+    paths:
+      - 'js/runtime/**'
+      - 'js/debug/**'
+      - 'js/trace/**'
+      - 'js/dynamic/**'
+      - 'js/adapters/**'
+      - 'js/runtime-evidence/**'
+      - 'js/symbolic/**'
+      - 'js/emu.js'
+      - 'js/sandbox.js'
+      - 'js/evidence.js'
+      - 'tests/runtime-platform.mjs'
+      - 'package.json'
+      - '.github/workflows/runtime-debugger.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  runtime-debugger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Full repository checks
+        run: npm run check
