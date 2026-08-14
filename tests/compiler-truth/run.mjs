@@ -29,23 +29,29 @@ function memoryInfo(mn, ops) {
   return { kind: /^ld/.test(m) ? 'load' : 'store', size, stack: mem.base?.cls === 'sp' || mem.base?.num === 29 };
 }
 
+function codeText(line) { return String(line || '').replace(/\/\/.*$/, '').trim(); }
+
 function parseFunction(asm, fn, baseAddress = 0x100000n) {
   const all = asm.split(/\r?\n/);
-  const start = all.findIndex((l) => new RegExp(`^${fn}:\\s*(?:#.*)?$`).test(l.trim()));
+  // LLVM integrated assembler emits `name: // @name`; compare only code before
+  // the comment so an available compiler fixture can never silently disappear.
+  const start = all.findIndex((l) => codeText(l) === `${fn}:`);
   if (start < 0) return null;
   let end = all.length;
-  for (let i = start + 1; i < all.length; i++) if (/^\.Lfunc_end\d+:/.test(all[i].trim()) || (/^[A-Za-z_$][\w$]*:\s*$/.test(all[i].trim()) && !/^\.L/.test(all[i].trim()))) { end = i; break; }
+  for (let i = start + 1; i < all.length; i++) {
+    const code = codeText(all[i]);
+    if (/^\.Lfunc_end\d+:/.test(code) || (/^[A-Za-z_$][\w$]*:\s*$/.test(code) && !/^\.L/.test(code))) { end = i; break; }
+  }
   const raw = [];
   const labels = new Map();
   let row = 0;
   for (let i = start + 1; i < end; i++) {
-    const t = all[i].trim();
+    const t = codeText(all[i]);
     if (!t) continue;
     const lm = /^(\.L[\w.$]+):/.exec(t);
     if (lm) { labels.set(lm[1], row); continue; }
     if (t.startsWith('.') || t.startsWith('//') || t.startsWith('#')) continue;
-    const clean = t.replace(/\/\/.*$/, '').trim();
-    const m = /^([A-Za-z][\w.]*)\s*(.*)$/.exec(clean);
+    const m = /^([A-Za-z][\w.]*)\s*(.*)$/.exec(t);
     if (!m) continue;
     raw.push({ row: row++, mnemonic: m[1].toLowerCase(), operands: m[2].trim() });
   }
@@ -89,7 +95,7 @@ function checkExpected(fn, result, enforceReadability = false) {
   assert.ok(result.cAst, `${fn}: C AST missing`);
   assert.ok(Array.isArray(result.sourceMap) && result.sourceMap.length, `${fn}: source map missing`);
   const truth = semanticTruth(fn, result);
-  assert.notEqual(truth.equivalent, false, `${fn}: semantic mismatch ${JSON.stringify(truth)}`);
+  assert.equal(truth.equivalent, true, `${fn}: semantic truth unavailable/mismatched ${JSON.stringify(truth)}`);
   return { function: fn, semantic: e.semantic, semanticTruth: truth, readabilityPass, asmFallbacks: result.metrics?.rawAssemblyFallbacks ?? null, gotos: result.metrics?.gotos ?? null, rewrites: result.metrics?.rewrittenExpressions ?? 0 };
 }
 
@@ -121,7 +127,7 @@ function semanticTruth(fn, result) {
     const args = inputs.map((_x,j) => truthCases[(i+j*2) % truthCases.length]);
     const env = {};
     for (let j=0;j<inputs.length;j++) env[inputs[j].name] = args[j];
-    for (let j=0;j<args.length;j++) env[`arg${j+1}`] = args[j];
+    for (let j=0;j<args.length;j++) { env[`arg${j+1}`] = args[j]; env[`a${j+1}`] = args[j]; }
     const actual = evaluateExpression(ret, env);
     if (actual == null) continue;
     const expectedValue = truthFns[fn](...args);
@@ -144,7 +150,7 @@ for (const opt of opts) {
   for (let i = 0; i < functions.length; i++) {
     const fn = functions[i];
     const model = parseFunction(compiled.asm, fn, 0x100000n + BigInt(i) * 0x10000n);
-    if (!model) { perFunction.push({ function:fn, skipped:true, reason:'function assembly not parsed' }); continue; }
+    if (!model) { perFunction.push({ function:fn, failure:'function assembly not parsed' }); continue; }
     try {
       const rowMap = new Map(model.instructions.map((x) => [x.address.toString(), x.row]));
       const result = decompile(model, { name:fn, addr:model.instructions[0].address, rowOfAddress:(a)=>rowMap.get(a?.toString()) ?? null, decompilerTimeBudgetMs:120 });
@@ -203,6 +209,10 @@ function optionalGhidraComparison() {
 
 const ghidra = optionalGhidraComparison();
 const hardFailures = results.flatMap((r) => r.functions || []).filter((x) => x.failure);
-const summary = { clangAvailable, clangVersion, optimizations:opts, hardFailures:hardFailures.length, ghidra, results, prebuilt:{ pass:true, semanticTruth:preTruth, rewrites:preResult.metrics?.rewrittenExpressions || 0 } };
+const executed = results.flatMap((r) => r.functions || []).filter((x) => !x.failure && !x.skipped).length;
+const summary = { clangAvailable, clangVersion, optimizations:opts, executed, expectedCases: clangAvailable ? opts.length * functions.length : 0, hardFailures:hardFailures.length, ghidra, results, prebuilt:{ pass:true, semanticTruth:preTruth, rewrites:preResult.metrics?.rewrittenExpressions || 0 } };
 console.log('COMPILER_TRUTH ' + JSON.stringify(summary));
-if (clangAvailable) assert.equal(hardFailures.length, 0, JSON.stringify(hardFailures, null, 2));
+if (clangAvailable) {
+  assert.equal(hardFailures.length, 0, JSON.stringify(hardFailures, null, 2));
+  assert.equal(executed, opts.length * functions.length, `compiler-truth executed ${executed}/${opts.length * functions.length}`);
+}
