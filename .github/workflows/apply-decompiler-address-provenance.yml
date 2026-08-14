@@ -1,0 +1,45 @@
+name: Apply decompiler address provenance fix
+
+on:
+  push:
+    branches:
+      - bot/decompiler-address-provenance-work-20260815
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-test:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Apply deterministic patch
+        run: python3 tools/decompiler/apply_address_provenance_fix.py
+      - name: Syntax check changed JavaScript
+        run: |
+          node --check js/decompiler/semantic.js
+          node --check js/decompiler/pipeline-core.js
+          node --check js/decompiler/call-prototypes.js
+          node --check js/decompiler/provenance.js
+          node --check js/tools.js
+          node --check tests/decompiler-semantic.mjs
+      - name: Decompiler regression suite
+        run: npm run decompiler:test
+      - name: Full project check
+        run: npm run check
+      - name: Diff hygiene
+        run: git diff --check
+      - name: Commit verified implementation
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add js/decompiler/semantic.js js/decompiler/pipeline-core.js js/tools.js css/app.css tests/decompiler-semantic.mjs
+          git commit -m "Fix decompiler semantic state and source provenance"
+          git push origin HEAD:${GITHUB_REF_NAME}
