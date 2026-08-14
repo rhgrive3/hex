@@ -5,6 +5,8 @@ function nowIso() { return new Date().toISOString(); }
 function safeConfidence(value, fallback = 0.5) { const n=Number(value); return Number.isFinite(n) ? Math.max(0,Math.min(1,n)) : fallback; }
 function idPart(value) { return String(value == null ? '' : value).replace(/[^a-zA-Z0-9_.:-]/g,'_').slice(0,160); }
 function sameAddress(a,b) { try { return BigInt(a) === BigInt(b); } catch { return false; } }
+const VERDICT_PRIORITY = Object.freeze({ unsupported:0, inconclusive:1, supported:2, confirmed:3, contradicted:4 });
+function verdictPriority(value) { return VERDICT_PRIORITY[value] ?? 1; }
 
 export function createRuntimeEvidenceRecord(input = {}) {
   const traceGroup = input.provenanceGroup || `runtime:${idPart(input.sessionId || 'session')}:${idPart(input.experimentId || input.function || 'observation')}:${idPart(input.caseId || 'case')}`;
@@ -80,13 +82,18 @@ export function fuseStaticDynamic(staticCandidate, runtimeEvidence = []) {
   let ignoredEvidence = 0;
   for (const item of evidence) {
     if (candidateHash && item.binaryHash !== candidateHash) { ignoredEvidence++; continue; }
-    if (candidateFunction != null && item.function != null && !sameAddress(candidateFunction,item.function)) { ignoredEvidence++; continue; }
+    if (candidateFunction != null && (item.function == null || !sameAddress(candidateFunction,item.function))) { ignoredEvidence++; continue; }
     compatible.push(item);
   }
   const groups = new Map();
   for (const item of compatible) {
     const group = item.provenance && (item.provenance.observationGroup || item.provenance.group) || item.id || Symbol('evidence');
-    if (!groups.has(group)) groups.set(group,item);
+    const existing = groups.get(group);
+    // Correlated observations are one evidence unit. If their derived verdicts
+    // disagree, keep the most conservative/decisive representative rather than
+    // making the result depend on array order. A contradiction from one runtime
+    // observation can never be hidden behind a correlated support record.
+    if (!existing || verdictPriority(item.verdict) > verdictPriority(existing.verdict)) groups.set(group,item);
   }
   const independent = [...groups.values()];
   const contradictions = independent.filter((e) => e.verdict === 'contradicted').length;
