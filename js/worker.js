@@ -721,6 +721,22 @@ async function guessFunctions({ regionId, limit, requestId, epoch }) {
 
   let pos = 0;
   let prevWasEnd = false;
+  let prevWasRet = false;
+  /*
+   * Leaf functions often start with a load/adrp instead of a textbook stack
+   * prologue. Record the instruction after RET and decide only after the full
+   * scan, once every conditional-branch target is known. A target of cbz/tbz/
+   * b.cond is usually another basic block in the same function, not a new
+   * function, so excluding those keeps false positives low.
+   */
+  const postRet = [];
+  const conditionalTargets = new Set();
+  const directBranchTargets = new Set();
+  let pendingPostRet = null;
+  const POST_RET_START_KINDS = new Set([
+    Words.KIND.LOAD, Words.KIND.ADRP, Words.KIND.RET, Words.KIND.LOGIC,
+    Words.KIND.FCONV, Words.KIND.FARITH, Words.KIND.SIMD,
+  ]);
   while (pos < total) {
     if (cancelled(requestId)) return { starts: [], cancelled: true };
     const want = Math.min(SCAN_BLOCK, total - pos);
@@ -733,8 +749,28 @@ async function guessFunctions({ regionId, limit, requestId, epoch }) {
       const pc = region.vmAddr + BigInt(pos + i * 4);
 
       if (prevWasEnd && looksLikePrologue(w) && found.size < cap) found.add(pc);
+      const currentKind = Words.classifyWord(w);
+      if (pendingPostRet && pendingPostRet.addr + 4n === pc) pendingPostRet.nextKind = currentKind;
+      if (prevWasRet) {
+        pendingPostRet = { addr: pc, kind: currentKind, nextKind: null, word: w };
+        postRet.push(pendingPostRet);
+      } else if (pendingPostRet && pendingPostRet.addr + 4n < pc) {
+        pendingPostRet = null;
+      }
+
+      if (Words.isCondBranch(w)) {
+        const t = Words.condBranchTarget(w, pc);
+        if (t != null && t >= lo && t < hi) conditionalTargets.add(t);
+      }
+
       // ret / retaa / retab / 無条件 b は関数の終わりになりうる
+      prevWasRet = Words.isRet(w);
       prevWasEnd = Words.looksLikeEnd(w);
+
+      if (Words.isBranchImm(w)) {
+        const t = Words.branchImm26(w, pc);
+        if (t != null && t >= lo && t < hi) directBranchTargets.add(t);
+      }
 
       // bl の飛び先
       if (Words.isCallImm(w)) {
@@ -745,6 +781,34 @@ async function guessFunctions({ regionId, limit, requestId, epoch }) {
     pos += words * 4;
     scanProgress(requestId, epoch, pos, total, found.size);
     await yieldToQueue();
+  }
+
+  const POST_RET_START_PAIRS = new Set([
+    Words.KIND.MOVREG + ':' + Words.KIND.ARITH,
+    Words.KIND.MOVREG + ':' + Words.KIND.ADRP,
+    Words.KIND.MOVIMM + ':' + Words.KIND.BRANCH,
+    Words.KIND.BRANCH + ':' + Words.KIND.STORE,
+    Words.KIND.MOVIMM + ':' + Words.KIND.RET,
+    Words.KIND.STORE + ':' + Words.KIND.STORE,
+    Words.KIND.ARITH + ':' + Words.KIND.CMP,
+    Words.KIND.MOVREG + ':' + Words.KIND.MOVIMM,
+  ]);
+  for (const c of postRet) {
+    if (found.size >= cap) break;
+    if (conditionalTargets.has(c.addr)) continue;
+    const strongFirst = POST_RET_START_KINDS.has(c.kind);
+    const strongPair = c.nextKind != null && POST_RET_START_PAIRS.has(c.kind + ':' + c.nextKind);
+    /* Objective-C ABI: x0=self, x1=_cmd, x2=first explicit argument. A tiny
+       `str <x2/w2>, [x0,#field]; ret` leaf is therefore a property setter even
+       when it has no stack prologue and nobody calls it with a direct BL. */
+    const mem = c.kind === Words.KIND.STORE ? Words.memoryAccess(c.word) : null;
+    const objcSetterLeaf = c.nextKind === Words.KIND.RET && mem && mem.store &&
+      !mem.pair && mem.base === 0 && mem.reg === 2;
+    if (!strongFirst && !strongPair && !objcSetterLeaf) continue;
+    /* A MOVIMM→B sequence that is itself the target of another direct branch is
+       usually an intra-function dispatch block, not a new function. */
+    if (c.kind === Words.KIND.MOVIMM && c.nextKind === Words.KIND.BRANCH && directBranchTargets.has(c.addr)) continue;
+    found.add(c.addr);
   }
 
   const list = Array.from(found).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));

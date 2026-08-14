@@ -114,8 +114,14 @@ const check = (name, ok, detail) => {
 async function main() {
   const pw = await loadPlaywright();
   if (!pw) {
-    console.log('Playwright がありません。画面での確かめは省きます。');
-    console.log('  入れるなら: npx playwright install chromium');
+    const msg = 'Playwright がありません。画面での確かめは省きます。';
+    if (process.env.CI) {
+      console.error(msg + ' CIではブラウザテストを必須にします。');
+      console.error('  入れるなら: npm install -D playwright && npx playwright install chromium');
+      return 1;
+    }
+    console.log(msg);
+    console.log('  入れるなら: npm install -D playwright && npx playwright install chromium');
     return 0;
   }
   if (!fs.existsSync(BINARY)) {
@@ -259,14 +265,14 @@ async function main() {
         (text.match(/0x[0-9A-F]+[^\n]*/) || [''])[0]);
       await page.evaluate(() => { window.__sandboxLeak = 0; });
       const source = sheetOf(page).locator('textarea').first();
-      await source.fill(`try { parent.__sandboxLeak = 1; } catch {}
-const csp = document.querySelector('meta[http-equiv="Content-Security-Policy"]')?.content || '';
-print('sandbox-check', typeof app, parent === window, csp.includes("connect-src 'none'"));`);
+      await source.fill(`let network = false;
+try { await fetch('data:text/plain,leak'); network = true; } catch {}
+print('sandbox-check', typeof app, typeof parent, typeof window, typeof document, typeof fetch, network);`);
       await runScript.click();
       await page.waitForTimeout(1500);
       text = await sheetOf(page).innerText();
       const leaked = await page.evaluate(() => window.__sandboxLeak);
-      check('スクリプトは親Appと通信手段へ触れない', leaked === 0 && /sandbox-check undefined false true/.test(text),
+      check('スクリプトは親Appと通信手段へ触れない', leaked === 0 && /sandbox-check undefined undefined undefined undefined undefined false/.test(text),
         'parent=' + leaked + ' / ' + (text.match(/sandbox-check[^\n]*/) || ['出力なし'])[0]);
     } else check('スクリプトが動いて結果が出る', false, '開けない');
 

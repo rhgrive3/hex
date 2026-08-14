@@ -260,13 +260,48 @@ function actionOfShape(input) {
 
 /* ── 役割の候補を組み立てる ────────────────────────────────── */
 
+function accessorSpec(owner) {
+  const sel = owner && owner.sel ? String(owner.sel) : '';
+  if (!sel) return null;
+  const set = /^set(.+):$/.exec(sel);
+  if (set && set[1]) return { kind: 'write', name: set[1].replace(/^_+/, '').toLowerCase(), selector: sel };
+  // 引数なし selector だけを getter とみなす。`foo:` のような通常メソッドを
+  // getter 扱いすると、たまたま同名の ivar を読んだだけで誤固定する。
+  if (!sel.includes(':')) return { kind: 'read', name: sel.replace(/^_+/, '').toLowerCase(), selector: sel };
+  return null;
+}
+
+function exactAccessorUpdate(input, updates) {
+  const spec = accessorSpec(input.owner);
+  if (!spec) return null;
+  for (const u of updates) {
+    if (!u || u.kind !== spec.kind || !u.field || !u.field.certain) continue;
+    if (input.owner && input.owner.className && u.field.className &&
+        input.owner.className !== u.field.className) continue;
+    const name = String(u.field.plain || u.field.name || '').replace(/^_+/, '').toLowerCase();
+    if (name === spec.name) return { update: u, spec };
+  }
+  return null;
+}
+
 function buildCandidates(input, topics) {
   const updates = (input.updates || []);
+  /*
+   * Objective-C の accessor は selector 自身が対象名を宣言している。
+   * `setFoo:` の中にログ・KVO・補助フィールドの読み書きが何本あっても、
+   * 実際に self.foo へ書く命令が確認できたなら、それを候補から落としてはいけない。
+   * 以前は updates の先頭 4 件だけだったため、本物の setter/getter が 5 件目以降に
+   * あるだけで別フィールドを「主役」と誤認していた。
+   */
+  const accessor = exactAccessorUpdate(input, updates);
+  const ordered = accessor
+    ? [accessor.update, ...updates.filter((u) => u !== accessor.update)]
+    : updates;
   /*
    * 値を触っている場所を、確からしい順に。
    * 「読んで計算して書き戻す」が閉じているものだけが、動作を命令で裏取りできる。
    */
-  const changes = updates.slice(0, 4);
+  const changes = ordered.slice(0, 4);
 
   const topicList = Array.from(topics.values()).sort((a, b) => b.total - a.total).slice(0, 3);
   // 「機能までは言えない」も必ず候補に残す。ここを外すと、弱い手がかりが必ず勝ってしまう。
@@ -346,6 +381,18 @@ function buildCandidates(input, topics) {
           items.push(evidence('role-verb-accessor', 1, {
             kind: u.kind, address: u.store ? u.store.address : null,
           }));
+          if (accessor && u === accessor.update && input.verified) {
+            /*
+             * selector (`foo` / `setFoo:`) と self の ivar 名が一致し、さらに
+             * その read/write 命令まで実在する。Objective-C runtime metadata と
+             * 逆アセンブルが同じ対象を指した場合だけ立つ、accessor 固有の証拠。
+             */
+            items.push(evidence('role-accessor-match', 1, {
+              selector: accessor.spec.selector,
+              field: u.field ? (u.field.plain || u.field.name) : null,
+              className: u.field ? u.field.className : null,
+            }));
+          }
         } else if (u.kind !== 'read-modify-write') {
           // 読み書きの往復が閉じていない。動作の言い方を弱める。
           items.push(evidence('role-verb-shape', 0.4, { kind: u.kind }));
