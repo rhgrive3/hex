@@ -24,6 +24,7 @@ export class CachedByteSource extends ByteSource {
     this.cache = new Map();
     this.inflight = new Map();
     this.cachedBytes = 0;
+    this.generation = 0;
     this.stats = { requests: 0, hits: 0, misses: 0, backendBytesRead: 0, largestRead: 0 };
   }
 
@@ -74,13 +75,19 @@ export class CachedByteSource extends ByteSource {
       const offset = pageIndex * BigInt(this.pageSize);
       const remaining = this.size - offset;
       const length = Number(remaining < BigInt(this.pageSize) ? remaining : BigInt(this.pageSize));
+      const generation = this.generation;
       promise = (async () => {
         throwIfCancelled(signal);
         const bytes = await this.source.readExactly(offset, length);
+        throwIfCancelled(signal);
         this.stats.backendBytesRead += bytes.byteLength;
-        this.#remember(key, bytes);
+        // clear() is a memory-pressure/file-lifecycle boundary. An older read is
+        // allowed to finish for its caller, but must never repopulate the cache.
+        if (generation === this.generation) this.#remember(key, bytes);
         return bytes;
-      })().finally(() => this.inflight.delete(key));
+      })().finally(() => {
+        if (this.inflight.get(key) === promise) this.inflight.delete(key);
+      });
       this.inflight.set(key, promise);
     }
     return promise;
@@ -103,6 +110,7 @@ export class CachedByteSource extends ByteSource {
   }
 
   clear() {
+    this.generation++;
     this.cache.clear();
     this.inflight.clear();
     this.cachedBytes = 0;
