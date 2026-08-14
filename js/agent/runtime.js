@@ -72,6 +72,11 @@ function normalizeToolRequest(step) {
   return { tool: String(tool), args };
 }
 
+function instructionCost(model) {
+  const n = model && Array.isArray(model.instructions) ? model.instructions.length : 0;
+  return Number.isSafeInteger(n) && n > 0 ? n : 0;
+}
+
 /** Deterministic mode: no model required. */
 export async function runDeterministicAgent(goal, context, opts) {
   const plan = await planAnalysisGoal(goal, context, opts);
@@ -92,12 +97,22 @@ export async function runAgent(config) {
   if (!llm || typeof llm.next !== 'function') return runDeterministicAgent(goal, context, { ...cfg, ...budget });
 
   const query = typeof goal === 'string' ? compileGoal(goal) : goal;
-  const tools = createAgentTools(context, { maxFunctions: budget.maxFunctions });
+  let disassembly = 0;
+  const countedContext = typeof context.analyze === 'function' ? {
+    ...context,
+    analyze: async (...args) => {
+      if (disassembly >= budget.maxDisassembly) throw new Error('disassembly-budget');
+      const model = await context.analyze(...args);
+      disassembly += instructionCost(model);
+      if (disassembly > budget.maxDisassembly) throw new Error('disassembly-budget');
+      return model;
+    },
+  } : context;
+  const tools = createAgentTools(countedContext, { maxFunctions: budget.maxFunctions });
   const availableTools = Object.keys(tools).filter((k) => typeof tools[k] === 'function');
   const observations = [];
   const evidence = new Set();
   const functions = new Set();
-  let disassembly = 0;
   const started = Date.now();
   let proposedAnswer = null;
   let stopReason = null;
@@ -111,8 +126,8 @@ export async function runAgent(config) {
         goal, query, observations: observations.slice(), availableTools,
         budget: {
           remainingToolCalls: budget.maxToolCalls - call,
-          remainingFunctions: budget.maxFunctions - functions.size,
-          remainingDisassembly: budget.maxDisassembly - disassembly,
+          remainingFunctions: Math.max(0, budget.maxFunctions - functions.size),
+          remainingDisassembly: Math.max(0, budget.maxDisassembly - disassembly),
         },
       });
     } catch (err) {
@@ -131,34 +146,40 @@ export async function runAgent(config) {
     }
     let result;
     try { result = await tools[req.tool](...req.args); }
-    catch (err) { result = { tool: req.tool, error: (err && err.message) || String(err) }; }
-    if (result && result.instructions != null) disassembly += Number(result.instructions) || 0;
-    if (disassembly > budget.maxDisassembly) { stopReason = 'disassembly-budget'; break; }
+    catch (err) {
+      const message = (err && err.message) || String(err);
+      result = { tool: req.tool, error: message };
+      if (message === 'disassembly-budget') stopReason = 'disassembly-budget';
+    }
+    if (disassembly > budget.maxDisassembly) stopReason = 'disassembly-budget';
     evidenceFromObservation(result, evidence);
     observations.push({ request: req, result });
+    if (stopReason) break;
   }
 
   // Always run the deterministic planner as the final verifier. It can reuse the
-  // same context but it does not accept the model's conclusion as evidence.
-  const plan = await planAnalysisGoal(query, context, {
-    maxFunctions: Math.max(4, budget.maxFunctions - functions.size),
+  // same deterministic tools, but it does not accept the model's conclusion as evidence.
+  const remainingFunctions = Math.max(0, budget.maxFunctions - functions.size);
+  const remainingDisassembly = Math.max(0, budget.maxDisassembly - disassembly);
+  const plan = await planAnalysisGoal(query, countedContext, {
+    maxFunctions: remainingFunctions,
+    maxDisassembly: remainingDisassembly,
     maxSearchResults: cfg.maxSearchResults,
-    timeoutMs: Math.max(100, budget.timeoutMs - (Date.now() - started)),
+    timeoutMs: Math.max(50, budget.timeoutMs - (Date.now() - started)),
     isCancelled: budget.isCancelled,
     tools,
   });
   for (const e of plan.evidence || []) evidence.add(e);
   const deterministic = deterministicAnswer(plan);
 
-  let conclusion = deterministic.conclusion;
-  let reasons = deterministic.reasons;
+  // The deterministic conclusion and reasons are immutable proof output. The
+  // model may only lower confidence or report additional missing evidence; its
+  // prose is returned separately and never promoted to a verified conclusion.
+  const conclusion = deterministic.conclusion;
+  const reasons = deterministic.reasons;
   let confidence = deterministic.confidence;
   let missingEvidence = deterministic.missingEvidence.slice();
   if (proposedAnswer) {
-    // The model may phrase/choose among already-proved candidates, but cannot
-    // create evidence or raise confidence beyond deterministic verification.
-    if (proposedAnswer.conclusion != null) conclusion = proposedAnswer.conclusion;
-    if (Array.isArray(proposedAnswer.reasons)) reasons = proposedAnswer.reasons;
     if (Array.isArray(proposedAnswer.missingEvidence)) missingEvidence = Array.from(new Set([...missingEvidence, ...proposedAnswer.missingEvidence]));
     if (typeof proposedAnswer.confidence === 'number') confidence = Math.min(confidence, Math.max(0, proposedAnswer.confidence));
   }
@@ -174,6 +195,7 @@ export async function runAgent(config) {
     evidence: Array.from(evidence),
     confidence,
     missingEvidence,
+    modelAnswer: proposedAnswer,
     query,
     plan,
     observations,
