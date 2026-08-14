@@ -25,4 +25,5 @@ const strict=`if(!s.includes(oldFn)) throw new Error('function starts anchor mis
 const tolerant=`if(s.includes(oldFn)) s=s.replace(oldFn,newFn); write(p,s);`;
 if(!s.includes(strict)) throw new Error('Mach-O function-start guard anchor missing');
 s=s.replace(strict,tolerant);
+for (const raw of ['${args[0]}','${args[1]}','${args[2]}','${text}','${printExpression(base)}','${printExpression(index)}','${name}']) s=s.replaceAll(raw, '\\' + raw);
 fs.writeFileSync(p,s);
