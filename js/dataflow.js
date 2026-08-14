@@ -2,22 +2,26 @@
  * dataflow.js — compatibility facade while the analysis engine migrates to IR/SSA.
  *
  * The historical data-flow implementation remains intact in dataflow-legacy.js.
- * Proven read/modify/write chains from ir.js are overlaid on top of those results.
- * Anything the IR cannot prove falls back to the legacy implementation, so callers
- * (pinpoint / verify / purpose / panels) keep the same API during the migration.
+ * Proven read/modify/write chains and constant comparisons from IR are overlaid
+ * on top of those results. Unsupported cases continue through the legacy path.
  */
 
 export * from './dataflow-legacy.js';
 
 import {
   findValueUpdates as legacyFindValueUpdates,
+  constantComparisons as legacyConstantComparisons,
   selfRegisters,
 } from './dataflow-legacy.js';
 import { findIrValueUpdates, mergeValueUpdates } from './dataflow-ir.js';
+import { findIrConstantComparisons, mergeConstantComparisons } from './dataflow-ir-compare.js';
 import { irFor, OP, hasUnknownStoreBarrier } from './ir.js';
 
 /** Exposed only for regression tests and migration diagnostics. */
-export { legacyFindValueUpdates as findValueUpdatesLegacy };
+export {
+  legacyFindValueUpdates as findValueUpdatesLegacy,
+  legacyConstantComparisons as constantComparisonsLegacy,
+};
 
 function instructionAt(ir, row, op) {
   if (!ir || row == null) return null;
@@ -71,4 +75,15 @@ export function findValueUpdates(model, opts) {
     }
   }
   return mergeValueUpdates(legacy, proven);
+}
+
+/**
+ * Preserve literal comparisons from the legacy path and add thresholds proved by
+ * SSA constant propagation (for example mov-constant -> cmp-register).
+ */
+export function constantComparisons(model, opts) {
+  const legacy = legacyConstantComparisons(model);
+  let proven = [];
+  try { proven = findIrConstantComparisons(model, opts); } catch { return legacy; }
+  return proven.length ? mergeConstantComparisons(legacy, proven) : legacy;
 }
