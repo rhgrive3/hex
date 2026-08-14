@@ -5,7 +5,9 @@ import { semanticFacts, FACT } from '../js/semantic.js';
 import { symbolicExecute } from '../js/symbolic/executor.js';
 import { FunctionSandbox } from '../js/symbolic/function-sandbox.js';
 import { runAgent, runDeterministicAgent } from '../js/agent/runtime.js';
+import { createAgentTools } from '../js/agent/tools.js';
 import { planAnalysisGoal } from '../js/query/planner.js';
+import { functionPaths } from '../js/query/causal.js';
 import { summarizeFunction } from '../js/interproc.js';
 import { inferSemanticTypes } from '../js/decompiler/type-recovery.js';
 import { createHexProject, parseHexProject, serializeHexProject } from '../js/project/index.js';
@@ -115,6 +117,19 @@ function modelOf(lines, base = BASE) {
   assert.equal(agent.stats.disassembly, 0);
 }
 
+// Internal multi-function tools share the same global function-analysis budget.
+{
+  const A = BASE + 0x300n, B = BASE + 0x400n;
+  const analyzed = [];
+  const tools = createAgentTools({
+    analyze: async (address) => { analyzed.push(address); return modelOf(['mov x0, #1', 'ret'], address); },
+  }, { maxFunctions: 1 });
+  const first = await tools.find_constant(1, { functions: [A] });
+  assert.equal(first.scopedFunctions, 1);
+  await assert.rejects(() => tools.find_constant(1, { functions: [B] }), /function-budget/);
+  assert.deepEqual(analyzed, [A]);
+}
+
 // Verification failure on a high-ranked candidate must not block a later proof.
 {
   const A = BASE + 0x100n, B = BASE + 0x200n;
@@ -171,6 +186,24 @@ function modelOf(lines, base = BASE) {
   assert.equal(summary?.classification.forwarding, false);
 }
 
+// Distinct call paths that merge and split again must remain distinct.
+{
+  const A = BASE + 0x500n, B = BASE + 0x510n, C = BASE + 0x520n, D = BASE + 0x530n, E = BASE + 0x540n;
+  const edges = new Map([
+    [A, [B, C]], [B, [D]], [C, [D]], [D, [E]], [E, []],
+  ].map(([k, v]) => [k.toString(), v]));
+  const program = {
+    functionRange: () => ({ end: BASE + 0x1000n }),
+    calleesOf: (address) => (edges.get(address.toString()) || []).map((addr) => ({ addr })),
+  };
+  const paths = functionPaths(program, A, E, { maxDepth: 5, maxPaths: 4, maxVisited: 100 });
+  assert.equal(paths.length, 2);
+  assert.deepEqual(paths.map((p) => p.map(String)), [
+    [A, B, D, E].map(String),
+    [A, C, D, E].map(String),
+  ]);
+}
+
 // Project persistence must round-trip signed offsets/constants.
 {
   const project = createHexProject({ comments: [{ addr: BASE, stackOffset: -0x20n }] });
@@ -195,6 +228,28 @@ function modelOf(lines, base = BASE) {
   assert.deepEqual(Array.from(await pending), [1, 2, 3, 4]);
   assert.equal(cached.memoryStats().bytesCached, 0);
   assert.equal(cached.memoryStats().chunksCached, 0);
+}
+
+// Neutral disassembly is invalidated when the file/slice epoch changes.
+{
+  const previousWorker = globalThis.Worker;
+  class FakeWorker {
+    constructor() { this.onmessage = null; this.onerror = null; this.terminated = false; this.messages = []; }
+    postMessage(message) { this.messages.push(message); }
+    terminate() { this.terminated = true; }
+  }
+  globalThis.Worker = FakeWorker;
+  try {
+    const { Backend, StaleRequestError } = await import('../js/backend.js');
+    const backend = new Backend();
+    const pending = backend._disassembleBytes(new Uint8Array([0, 0, 0, 0]), BASE, 'arm64', backend.gen);
+    backend.advanceEpoch();
+    await assert.rejects(pending, (error) => error instanceof StaleRequestError || error?.stale === true);
+    assert.equal(backend._disasmPending.size, 0);
+  } finally {
+    if (previousWorker === undefined) delete globalThis.Worker;
+    else globalThis.Worker = previousWorker;
+  }
 }
 
 console.log('integration-review: PASS');
