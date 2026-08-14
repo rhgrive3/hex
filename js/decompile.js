@@ -27,7 +27,9 @@ function normalizeCompatibility(result) {
   if (!result) return result;
   for (const l of result.lines || []) {
     if (!l || typeof l.text !== 'string') continue;
-    l.text = l.text.replace(/\bvar_([0-9a-f]+)\b/g, (_m, h) => 'var_' + h.toUpperCase());
+    l.text = l.text
+      .replace(/\blocal_([0-9a-f]+)\b/gi, (_m, h) => 'var_' + h.toUpperCase())
+      .replace(/\bvar_([0-9a-f]+)\b/gi, (_m, h) => 'var_' + h.toUpperCase());
   }
   if (result.semantic) result.pseudocode = textOf(result.lines);
   return result;
@@ -57,7 +59,7 @@ function augmentLegacy(fallback, reason, semantic = null) {
 function finalize(result, model, opts) {
   result = normalizeCompatibility(structureKnownSwitches(result, model, opts));
   if (result?.semantic) result = enhanceSemanticDecompilation(result, model, opts);
-  return result;
+  return normalizeCompatibility(result);
 }
 
 /*
