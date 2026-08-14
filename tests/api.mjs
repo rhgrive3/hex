@@ -21,5 +21,10 @@ api('_swift_arrayDestroy', 'swift_runtime', 'runtime');
 api('_swift_setDeallocating', 'swift_runtime', 'runtime');
 api('_swift_unexpectedError', 'swift_runtime', 'runtime');
 api('___error', 'errno', 'runtime');
+api('_memchr', 'memchr', 'memory');
+api('_dispatch_queue_create', 'concurrency', 'concurrency');
+api('_mktime', 'time', 'time');
+api('_swift_getSingletonMetadata', 'swift_runtime', 'runtime');
+api('__swift_stdlib_reportUnimplementedInitializer', 'swift_stdlib_report', 'runtime');
 
 process.stdout.write(`API classification: ${passed} regressions ok\n`);
