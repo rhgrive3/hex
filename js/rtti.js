@@ -69,7 +69,10 @@ export function demangleCxx(name) {
 
 export function demangleCxxDetailed(name) {
   if (!name) return { demangled:null, complete:false, partial:null, unsupported:false, error:'empty-name' };
-  const s = String(name).replace(/^_/, '');
+  const raw = String(name);
+  // Mach-O adds one symbol-table underscore to the Itanium `_Z` prefix. Keep
+  // ELF-style `_Z...` intact while removing exactly the extra Mach-O prefix.
+  const s = raw.startsWith('__Z') ? raw.slice(1) : raw;
   if (!s.startsWith('_Z')) return { demangled:null, complete:false, partial:null, unsupported:false, error:'not-itanium' };
   const p = { s, i:2, subs:[], invalid:false, unsupported:false, reason:null, partial:null };
   try {
@@ -213,7 +216,7 @@ function readType(p) {
   if (c === 'I') return readTemplateArgs(p);
   if (/\d/.test(c)) return readSourceName(p);
   const two = p.s.slice(p.i, p.i + 2);
-  if (BUILTIN[two]) { p.i += 2; return BUILTIN[two]; }
+  if (two.length === 2 && BUILTIN[two]) { p.i += 2; return BUILTIN[two]; }
   if (BUILTIN[c]) { p.i++; return BUILTIN[c]; }
   if (c === 'E') return parseFailure(p, 'unexpected-end-marker', false);
   return parseFailure(p, `unsupported-type:${c}`, true);
