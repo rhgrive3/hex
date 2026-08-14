@@ -26,6 +26,7 @@ import {
 } from './ui.js';
 import { addrHex } from './format.js';
 import { decompile, decompiledText } from './decompile.js';
+import { decompilerSourceRows, formatDecompilerSource, fullDecompilerSourceText, hasSingleDecompilerInstruction, primaryDecompilerAddress } from './decompiler/provenance.js';
 import { cfgGraph, callGraph, renderGraph, graphLegend } from './graphview.js';
 import { inferTypes, recoverStruct, TypeStore, structToC, BASIC_TYPES, typeJa } from './types.js';
 import { readableName, shortName, isMangled, findCxxClasses, readVtable } from './rtti.js';
@@ -339,14 +340,18 @@ export async function showDecompiler(app, addr) {
     codeWrap.replaceChildren();
     for (const l of out.lines) {
       if (l.kind === 'blank') { codeWrap.append(el('div', 'cl blank', ' ')); continue; }
+      const sourceRows = decompilerSourceRows(l);
+      const sourceInsns = sourceRows.map((r) => byRow.get(r)).filter(Boolean);
+      const primary = primaryDecompilerAddress(l);
       const row = el('div', 'cl ' + l.kind);
-      const gutter = el('span', 'cl-addr mono', l.addr != null ? l.addr.toString(16).toUpperCase().slice(-6) : '');
+      const gutter = el('span', 'cl-addr mono', formatDecompilerSource(l, { maxGroups: 1 }));
       const text = el('span', 'cl-text mono');
       paintCode(text, '    '.repeat(Math.max(0, l.indent)) + l.text);
       row.append(gutter, text);
-      if (l.addr != null) {
+      if (primary != null) {
         row.classList.add('tappable');
-        row.addEventListener('click', () => lineMenu(app, sheet, l, byRow.get(l.row)));
+        row.title = fullDecompilerSourceText(l);
+        row.addEventListener('click', () => lineMenu(app, sheet, l, sourceInsns));
       }
       codeWrap.append(row);
       if (showNotes && l.note) {
@@ -354,11 +359,13 @@ export async function showDecompiler(app, addr) {
         n.append(el('span', 'cl-addr'), el('span', 'cl-text', '// ' + l.note));
         codeWrap.append(n);
       }
-      if (showAsm && l.row != null && byRow.has(l.row)) {
-        const insn = byRow.get(l.row);
-        const a = el('div', 'cl asm');
-        a.append(el('span', 'cl-addr'), el('span', 'cl-text mono', '; ' + insn.mnemonic + ' ' + insn.operands));
-        codeWrap.append(a);
+      if (showAsm) {
+        for (const insn of sourceInsns) {
+          const a = el('div', 'cl asm');
+          const asmAddr = insn.address != null ? insn.address.toString(16).toUpperCase().slice(-6).padStart(6, '0') : '';
+          a.append(el('span', 'cl-addr mono', asmAddr), el('span', 'cl-text mono', '; ' + insn.mnemonic + ' ' + insn.operands));
+          codeWrap.append(a);
+        }
       }
     }
   }
@@ -396,29 +403,29 @@ function paintCode(node, text) {
 }
 
 /** その行に対してできること。 */
-function lineMenu(app, sheet, line, insn) {
+function lineMenu(app, sheet, line, sourceInsns = []) {
+  const primary = primaryDecompilerAddress(line);
+  if (primary == null) return;
   const items = [
-    { label: 'この場所へ移動', action: () => { sheet.close(); app.goToAddress(line.addr, { announce: true }); } },
-    { label: 'アドレスをコピー', action: () => copyText(addrHex(line.addr), 'アドレス') },
+    { label: '対応する先頭命令へ移動', action: () => { sheet.close(); app.goToAddress(primary, { announce: true }); } },
+    { label: '対応する命令アドレスをコピー', action: () => copyText(fullDecompilerSourceText(line), '命令アドレス') },
   ];
-  /*
-   * 行の中では std::string::append まで短くしている。
-   * 本当の名前（テンプレート引数まで入った形）は、ここから見られるようにする。
-   */
-  const callTarget = insn && insn.callTarget != null ? insn.callTarget : null;
+  const callInsn = sourceInsns.find((x) => x?.isCall || x?.callTarget != null) || null;
+  const callTarget = callInsn?.callTarget ?? null;
   const raw = callTarget != null && app.symbols ? app.symbols.nameAt(callTarget) : null;
   if (raw && isMangled(raw)) {
     items.push({ label: 'この名前の元の形を見る', action: () => showRealName(raw) });
   }
-  if (insn) {
-    items.push({ label: 'この行を書き換える（パッチ）', action: () => showPatchEditor(app, line.addr, insn) });
-    items.push({ label: 'メモを書く', action: () => showComment(app, line.addr) });
+  if (hasSingleDecompilerInstruction(line) && sourceInsns.length === 1) {
+    items.push({ label: 'この命令を書き換える（パッチ）', action: () => showPatchEditor(app, primary, sourceInsns[0]) });
+    items.push({ label: 'メモを書く', action: () => showComment(app, primary) });
+  } else if (sourceInsns.length) {
+    items.push({ label: '先頭命令にメモを書く', action: () => showComment(app, primary) });
   }
-  const called = /(\w+)\(/.exec(line.text);
-  if (called) {
+  if (callTarget != null) {
     items.push({
       label: '呼んでいる相手を調べる',
-      action: () => { sheet.close(); app.openFunctionReport(line.addr); },
+      action: () => { sheet.close(); app.openFunctionReport(callTarget); },
     });
   }
   menu(items, window.innerWidth / 2, window.innerHeight / 2);

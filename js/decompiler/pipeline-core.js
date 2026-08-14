@@ -332,12 +332,12 @@ function knownStatementForLine(line, state) {
       else if (e.op === 'sub' && e.right?.kind === 'const' && e.right.value === 1n) text = `${location.text}--;`;
       else text = `${location.text} ${{add:'+=',sub:'-=',mul:'*='}[e.op]} ${rhs};`;
     }
-    return { text, semantic: { op: 'store', location, expression: e, ir: store.id }, source: origin(store, store.dst) };
+    return { text, semantic: { op: 'store', location, expression: e, ir: store.id }, source: mergeSource(line.source, e?.source, origin(store, store.dst)) };
   }
   const ret = insts.find((i) => i.op === 'ret');
   if (ret && /^return\b/.test(String(line.text || ''))) {
     const rv = valueOf(ret.args?.[0]) || reachingRegisterValue(state.ir, ret, 'x0');
-    if (rv) return { text: `return ${printExpression(expressionFor(rv, state))};`, semantic: { op: 'return', expression: expressionFor(rv, state), ir: ret.id }, source: origin(ret, rv) };
+    if (rv) { const e = expressionFor(rv, state); return { text: `return ${printExpression(e)};`, semantic: { op: 'return', expression: e, ir: ret.id }, source: mergeSource(line.source, e?.source, origin(ret, rv)) }; }
   }
   return null;
 }
@@ -346,7 +346,11 @@ function cAstFromLines(result, state) {
   const body = [];
   for (const line of result.lines || []) {
     const known = knownStatementForLine(line, state);
-    const source = known?.source || sourceOf({ address: line.addr, row: line.row, evidence: line.note ? [{ reason: line.note }] : [] });
+    const carried = line.source || { address: line.addr, row: line.row };
+    const source = known?.source || sourceOf({
+      ...carried,
+      evidence: [...(carried.evidence || []), ...(line.note ? [{ reason: line.note }] : [])],
+    });
     body.push({ kind: line.kind || 'raw', indent: line.indent || 0, text: known?.text ?? line.text ?? '', source, semantic: known?.semantic || null });
   }
   return { kind: 'CProgram', body, source: mergeSource(...body.map((x) => x.source)) };
