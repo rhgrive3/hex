@@ -130,7 +130,7 @@ const API_TABLE = [
     cat: 'objc', args: ['location'], ret: 'object', effect: 'refcount' },
   { id: 'objc_runtime', re: /^_?objc_(sync_enter|sync_exit|enumerationMutation|opt_class|opt_self|opt_isKindOfClass|opt_respondsToSelector|getClass|getMetaClass|lookUpClass|autoreleasePool(Push|Pop)|begin_catch|end_catch|exception_rethrow|setProperty\w*|getProperty|copyStruct|terminate)$/i,
     cat: 'runtime', args: null, ret: null, effect: 'runtime' },
-  { id: 'swift_runtime', re: /^_?swift_((begin|end)Access|once|getWitnessTable|conformsToProtocol\w*|isUniquelyReferenced\w*|dynamicCast\w*|getObjectType|getInitializedObjCClass|getTypeByMangledName\w*|allocError|willThrow|errorRelease|errorRetain|unknownObject(Retain|Release)|initStackObject|slowAlloc|slowDealloc|deallocClassInstance|task_\w+|checkMetadataState|allocateGenericValueMetadata|getGenericMetadata|getForeignTypeMetadata|getSingletonMetadata|storeEnumTagSinglePayload|getEnumTagSinglePayload|storeEnumTagMultiPayload|getEnumCaseMultiPayload|arrayInitWithCopy|arrayDestroy|initStaticObject|setDeallocating|unexpectedError|bridgeObjectRetain|bridgeObjectRelease)/i,
+  { id: 'swift_runtime', re: /^_?swift_((begin|end)Access|once|getWitnessTable|conformsToProtocol\w*|isUniquelyReferenced\w*|dynamicCast\w*|getObjectType|getInitializedObjCClass|getTypeByMangledName\w*|allocError|willThrow|errorRelease|errorRetain|unknownObject(Retain|Release)|initStackObject|slowAlloc|slowDealloc|deallocClassInstance|task_\w+|checkMetadataState|allocateGenericValueMetadata|getGenericMetadata|getForeignTypeMetadata|getSingletonMetadata|initClassMetadata\d*|initStructMetadata|getErrorValue|storeEnumTagSinglePayload|getEnumTagSinglePayload|storeEnumTagMultiPayload|getEnumCaseMultiPayload|arrayInitWithCopy|arrayDestroy|initStaticObject|setDeallocating|unexpectedError|bridgeObjectRetain|bridgeObjectRelease)/i,
     cat: 'runtime', args: null, ret: null, effect: 'runtime' },
   { id: 'cxx_runtime', re: /^_*(cxa_(atexit|guard_acquire|guard_release|guard_abort|throw|begin_catch|end_catch|rethrow|allocate_exception|free_exception|pure_virtual|demangle)|dynamic_cast|Unwind_\w+|Znw[mj]|Zna[mj]|ZdlPv|ZdaPv|Block_(copy|release)|Block_object_(assign|dispose))$/,
     cat: 'runtime', args: null, ret: null, effect: 'runtime' },
@@ -185,7 +185,7 @@ const API_TABLE = [
 
   { id: 'concurrency', re: /^_?(pthread_|dispatch_(async|sync|once|after|semaphore|get_global_queue|get_main_queue|queue_create)|NSOperation|NSThread)/i,
     cat: 'concurrency', args: null, ret: null, effect: 'concurrency' },
-  { id: 'time', re: /^_?(gettimeofday|mach_absolute_time|clock|time|mktime|localtime|gmtime|NSDate|CFAbsoluteTime)$/i, cat: 'time',
+  { id: 'time', re: /^_?(gettimeofday|mach_absolute_time|clock|time|mktime|strptime|localtime(_r)?|gmtime(_r)?|dispatch_time|NSDate|CFAbsoluteTime)$/i, cat: 'time',
     args: null, ret: 'number', effect: 'read' },
   { id: 'dylink', re: /^_?(dlopen|dlsym|dladdr|NSGetExecutablePath)$/i, cat: 'dylink', args: ['name'], ret: 'ptr', effect: 'dylink' },
   { id: 'antidebug', re: /^_?(ptrace|sysctl|task_get_exception_ports|AmIBeingDebugged|isDebuggerAttached)/i,

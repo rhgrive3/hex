@@ -26,5 +26,11 @@ api('_dispatch_queue_create', 'concurrency', 'concurrency');
 api('_mktime', 'time', 'time');
 api('_swift_getSingletonMetadata', 'swift_runtime', 'runtime');
 api('__swift_stdlib_reportUnimplementedInitializer', 'swift_stdlib_report', 'runtime');
+api('_swift_initClassMetadata2', 'swift_runtime', 'runtime');
+api('_swift_initStructMetadata', 'swift_runtime', 'runtime');
+api('_swift_getErrorValue', 'swift_runtime', 'runtime');
+api('_strptime', 'time', 'time');
+api('_localtime_r', 'time', 'time');
+api('_dispatch_time', 'time', 'time');
 
 process.stdout.write(`API classification: ${passed} regressions ok\n`);

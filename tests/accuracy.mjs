@@ -606,7 +606,7 @@ feature('summary', '関数の要約が中身と合っている', async ({ w, o }
      */
     if (ok >= Math.min(5, Math.ceil(want.size / 2))) hit++;
   }
-  return { score: n ? hit / n : 0, detail: `${hit}/${n} の要約が呼び先をきちんと名指し` };
+  return { score: n ? hit / n : null, detail: `${hit}/${n} の要約が呼び先をきちんと名指し` };
 }, { slow: true });
 
 /* 20. 命令をまたいだ計算を、1 つの式に戻す */
@@ -652,7 +652,7 @@ feature('expr', '割り算に戻す（魔法数の逆算）', async ({ w, o }) =
     else if (miss.length < 3) miss.push('0x' + a.toString(16));
   }
   return {
-    score: withIdiom ? recovered / withIdiom : 0,
+    score: withIdiom ? recovered / withIdiom : null,
     detail: `${recovered}/${withIdiom} 本で割り算に戻せた` + (miss.length ? ' 例: ' + miss[0] : ''),
   };
 }, { slow: true });
@@ -700,7 +700,7 @@ feature('formula', '書かれた計算式と復元した式が合う', async ({ 
   }
   void o;
   return {
-    score: n ? sum / n : 0,
+    score: n ? sum / n : null,
     detail: `${n} 本の平均一致率` + (miss.length ? '（弱い例: ' + miss[0] + '）' : ''),
   };
 }, { slow: true });
