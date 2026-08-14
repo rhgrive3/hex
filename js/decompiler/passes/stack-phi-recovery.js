@@ -4,7 +4,6 @@ import { DEFAULT_RULES } from '../rewrite/rules.js';
 import { printExpression, printProgram } from '../pretty/c.js';
 
 function valueOf(arg) { return arg?.value || null; }
-function constZero(n) { return n?.kind === 'const' && n.value === 0n; }
 
 function targetBlock(ir, term, opts) {
   const address = term?.extra?.target;
@@ -45,8 +44,6 @@ function canReach(ir, start, target, blocked, cap = 256) {
 }
 
 function armIndex(ir, controller, successor, mergeBlock, predecessors) {
-  // A conditional edge can enter the merge directly. In that case the incoming
-  // predecessor is the controller block itself, not the merge target.
   if (successor === mergeBlock) return predecessors.indexOf(controller.index);
   return predecessors.findIndex((pred) => canReach(ir, successor, pred, mergeBlock));
 }
@@ -95,8 +92,6 @@ function instructionsBefore(ir, blockIndex, beforeRow) {
 
 function hasUnsafeBarrier(inst, key) {
   if (inst?.op === 'call' || inst?.op === 'clobber' || inst?.op === 'unknown') return true;
-  // Distinct exact stack slots are proven non-overlapping by their canonical key.
-  // Unknown/ambiguous stores are conservatively treated as a barrier.
   return inst?.op === 'store' && inst.loc?.key !== key && (!inst.loc?.key || inst.loc?.kind === 'unknown');
 }
 
@@ -127,7 +122,12 @@ function resolveStackBefore(ir, blockIndex, beforeRow, key, maps, opts, engine, 
     if (!condition) return null;
     const bits = incoming[0]?.bits || incoming[1]?.bits || 64;
     const signed = incoming[0]?.signed ?? incoming[1]?.signed ?? null;
-    return simplify(expr.select(condition, incoming[control.yesIndex], incoming[control.noIndex], bits, signed, {
+    // semanticAst.conditions describes the fallthrough truth predicate used by
+    // structured output, while targetBlock() names the taken machine branch.
+    // Therefore the exact-stack incoming values are intentionally opposite the
+    // machine-edge yes/no indices here. This is source-ground-truth verified by
+    // O0 max/min/clamp fixtures and prevents globally inverted branch joins.
+    return simplify(expr.select(condition, incoming[control.noIndex], incoming[control.yesIndex], bits, signed, {
       address: control.term.address,
       row: control.term.row,
       ir: control.term.id,
