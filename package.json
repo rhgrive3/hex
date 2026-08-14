@@ -6,7 +6,7 @@
   "scripts": {
     "lint": "node tests/check.mjs",
     "check": "npm run lint && npm test",
-    "test": "node tests/run.js && node tests/evidence-verdict.mjs && node tests/ir.mjs && node tests/cfg-structuring.mjs && node tests/ux.mjs && node tests/ui/routes.mjs && node tests/ui/integration-hardening.mjs && node tests/gemini.mjs && node tests/words.mjs && node tests/api.mjs && npm run integration:test",
+    "test": "node tests/run.js && node tests/evidence-verdict.mjs && node tests/ir.mjs && node tests/cfg-structuring.mjs && node tests/ux.mjs && node tests/ui/routes.mjs && node tests/ui/integration-hardening.mjs && node tests/gemini.mjs && node tests/words.mjs && node tests/api.mjs && node tests/symbol-identity.mjs && npm run integration:test",
     "semantic:test": "node tests/ir-dataflow.mjs && node tests/ir-alias.mjs && node tests/ir-pinpoint-path.mjs && node tests/ir-pinpoint-location.mjs && node tests/ir-comparisons.mjs && node tests/semantic-core.mjs && node tests/semantic-nullability.mjs && node tests/integration-review.mjs",
     "decompiler:test": "node tests/decompile-cfg.mjs && node tests/decompiler-semantic.mjs && node tests/decompiler-switch.mjs && node tests/decompiler-rewrite.mjs && node tests/decompiler-pipeline.mjs && node tests/compiler-truth/run.mjs && node tests/objc-metadata.mjs && node tests/objc-runtime.mjs && node tests/swift-runtime.mjs",
     "compiler-truth": "node tests/compiler-truth/run.mjs",
