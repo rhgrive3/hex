@@ -1,0 +1,48 @@
+name: YWP TsumTsum accuracy
+
+on:
+  push:
+    branches:
+      - accuracy-ywp-tsumtsum-20260814
+  workflow_dispatch:
+
+jobs:
+  accuracy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install oracle dependencies
+        run: python -m pip install --disable-pip-version-check lief capstone
+      - name: Verify inputs
+        run: |
+          file tests/YWP tests/TsumTsum
+          ls -lh tests/YWP tests/TsumTsum
+      - name: YWP oracle
+        run: python tests/oracle.py tests/YWP tests/oracle.YWP.json.gz
+      - name: YWP accuracy
+        run: node --max-old-space-size=6000 tests/accuracy.mjs --target=tests/YWP --oracle=tests/oracle.YWP.json.gz --json | tee accuracy-YWP.json
+      - name: TsumTsum oracle
+        run: python tests/oracle.py tests/TsumTsum tests/oracle.TsumTsum.json.gz
+      - name: TsumTsum accuracy
+        run: node --max-old-space-size=6000 tests/accuracy.mjs --target=tests/TsumTsum --oracle=tests/oracle.TsumTsum.json.gz --json | tee accuracy-TsumTsum.json
+      - name: Human-readable rerun
+        if: always()
+        run: |
+          if [ -f tests/oracle.YWP.json.gz ]; then node --max-old-space-size=6000 tests/accuracy.mjs --target=tests/YWP --oracle=tests/oracle.YWP.json.gz || true; fi
+          if [ -f tests/oracle.TsumTsum.json.gz ]; then node --max-old-space-size=6000 tests/accuracy.mjs --target=tests/TsumTsum --oracle=tests/oracle.TsumTsum.json.gz || true; fi
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: accuracy-results
+          path: |
+            accuracy-YWP.json
+            accuracy-TsumTsum.json
+          if-no-files-found: ignore
