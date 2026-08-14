@@ -30,10 +30,50 @@ export function shouldFoldRuntimeCall(name, opts = {}) {
   return !!c.noise;
 }
 
+/** Resolve an Objective-C IMP/function pointer without pretending duplicate IMPs are unique. */
+export function resolveObjcIMP(objcIndex, address, { receiverType = null, selector = null } = {}) {
+  if (!objcIndex || address == null) return { resolved: null, candidates: [], confidence: 0 };
+  let candidates = (objcIndex.methodsByIMP?.get(BigInt(address).toString()) || []).slice();
+  if (selector) {
+    const narrowed = candidates.filter((m) => m.selector === selector);
+    if (narrowed.length) candidates = narrowed;
+  }
+  if (receiverType) {
+    const type = String(receiverType).replace(/\s*\*+\s*$/, '');
+    const chain = new Set();
+    let cur = type, guard = 0;
+    while (cur && guard++ < 64 && !chain.has(cur)) {
+      chain.add(cur);
+      cur = objcIndex.classes?.get(cur)?.superName || null;
+    }
+    const narrowed = candidates.filter((m) => chain.has(m.className));
+    if (narrowed.length) candidates = narrowed;
+  }
+  const unique = candidates.length === 1 ? candidates[0] : null;
+  return {
+    resolved: unique,
+    candidates,
+    confidence: unique ? 0.98 : candidates.length ? 0.55 : 0,
+    reason: unique ? 'unique IMP in Objective-C metadata' : candidates.length ? 'IMP is shared by multiple methods' : 'IMP not found in parsed metadata',
+  };
+}
+
 export function resolveAppleCall(index, call = {}) {
   const name = call.name || call.symbol || '';
-  const origin = call.runtime || runtimeOriginForSymbol(name);
-  if (origin === 'objc' || /objc_msgSend/.test(name)) {
+  let origin = call.runtime || runtimeOriginForSymbol(name);
+  const indirectTarget = call.impTarget ?? call.functionPointer ?? ((call.kind === 'imp' || call.kind === 'function-pointer') ? call.target : null);
+  const imp = indirectTarget != null ? resolveObjcIMP(index?.objc, indirectTarget, { receiverType: call.receiverType, selector: call.selector }) : null;
+  if (origin === 'unknown' && imp?.candidates?.length) origin = 'objc';
+
+  if (origin === 'objc' || /objc_msgSend/.test(name) || imp?.candidates?.length) {
+    if (imp?.candidates?.length && !/objc_msgSend/.test(name)) {
+      return {
+        runtime: 'objc', kind: 'imp', imp,
+        resolved: imp.resolved,
+        candidates: imp.candidates,
+        text: imp.resolved ? `${imp.resolved.classMethod ? '+' : '-'}[${imp.resolved.className} ${imp.resolved.selector}]` : null,
+      };
+    }
     let selector = call.selector || null;
     let selectorResolution = null;
     if (!selector && call.stubAddress != null && index?.selectors) {
@@ -52,5 +92,5 @@ export function resolveAppleCall(index, call = {}) {
     const cc = swiftCallingConvention({ name, mangled: call.mangled || name, metadata: call.metadata, attributes: call.callingConvention });
     return { runtime: 'swift', kind: dispatch.kind, dispatch, callingConvention: cc, text: formatSwiftCall(name, call.args || [], cc), resolved: dispatch.resolved, candidates: dispatch.candidates };
   }
-  return { runtime: origin, kind: call.target != null ? 'direct' : 'indirect', resolved: call.target != null ? { target: call.target, name: name || null } : null, candidates: [] };
+  return { runtime: origin, kind: call.target != null ? (call.kind || 'direct') : 'indirect', resolved: call.target != null ? { target: call.target, name: name || null } : null, candidates: [] };
 }
