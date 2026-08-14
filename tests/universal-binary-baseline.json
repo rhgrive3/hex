@@ -1,0 +1,45 @@
+{
+  "schema": 1,
+  "note": "Observed loader-level metrics for the repository's three real iOS fixtures. Counts are reference observations; universal-binary-gate.mjs intentionally uses slightly lower floors for heuristic-resistant regression gating.",
+  "targets": {
+    "battlecats": {
+      "bytes": 28153072,
+      "format": "macho",
+      "arch": "arm64",
+      "sections": 55,
+      "imports": 3079,
+      "importSites": 44736,
+      "functions": 102852,
+      "symbols": 3119,
+      "exports": 992,
+      "auditErrors": 0,
+      "executableFingerprint": "72fea56deb074a11"
+    },
+    "TsumTsum": {
+      "bytes": 45994784,
+      "format": "macho",
+      "arch": "arm64",
+      "sections": 57,
+      "imports": 3189,
+      "importSites": 54783,
+      "functions": 152488,
+      "symbols": 0,
+      "exports": 7,
+      "auditErrors": 0,
+      "executableFingerprint": "3ad00cd7b6bb9659"
+    },
+    "YWP": {
+      "bytes": 63455952,
+      "format": "macho",
+      "arch": "arm64",
+      "sections": 51,
+      "imports": 2908,
+      "importSites": 92161,
+      "functions": 293794,
+      "symbols": 2946,
+      "exports": 210,
+      "auditErrors": 0,
+      "executableFingerprint": "14fdfba9132222e2"
+    }
+  }
+}
