@@ -36,8 +36,9 @@ function normalizedOptions(model, opts) {
 }
 
 function blockReachability(ir) {
+  if (ir._canReachBlock) return ir._canReachBlock;
   const cache = new Map();
-  return (from, to) => {
+  const canReach = (from, to) => {
     if (from == null || to == null || from < 0 || to < 0) return false;
     if (from === to) return true;
     const key = from + '>' + to;
@@ -55,6 +56,10 @@ function blockReachability(ir) {
     cache.set(key, yes);
     return yes;
   };
+  // Unknown-store safety and canonical RMW recovery may ask the same reachability
+  // question hundreds of times in giant functions. Keep one cache per immutable IR.
+  ir._canReachBlock = canReach;
+  return canReach;
 }
 
 function orderedBefore(a, b, canReach) {
