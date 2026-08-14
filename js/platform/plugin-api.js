@@ -1,4 +1,4 @@
-const TYPES = new Set(['format', 'architecture', 'analyzer', 'knowledgeProvider', 'viewContribution', 'goalProvider']);
+const TYPES = new Set(['format', 'architecture', 'analyzer', 'knowledgeProvider', 'signatureProvider', 'recognitionProvider', 'viewContribution', 'goalProvider']);
 
 function deepFreeze(value, seen = new WeakSet()) {
   if (!value || typeof value !== 'object' || seen.has(value)) return value;
@@ -69,6 +69,8 @@ export class PlatformPluginRegistry {
   registerArchitecture(id, contribution) { return this.#register('architecture', id, contribution); }
   registerAnalyzer(id, contribution) { return this.#register('analyzer', id, contribution); }
   registerKnowledgeProvider(id, contribution) { return this.#register('knowledgeProvider', id, contribution); }
+  registerSignatureProvider(id, contribution) { return this.#register('signatureProvider', id, contribution); }
+  registerRecognitionProvider(id, contribution) { return this.#register('recognitionProvider', id, contribution); }
   registerViewContribution(id, contribution) { return this.#register('viewContribution', id, contribution); }
   registerGoalProvider(id, contribution) { return this.#register('goalProvider', id, contribution); }
 
@@ -122,6 +124,17 @@ export class PlatformPluginRegistry {
     }
     return out;
   }
+
+  async runProviders(type, method, context = {}, options = {}) {
+    if (!['knowledgeProvider', 'signatureProvider', 'recognitionProvider'].includes(type)) throw new TypeError('unsupported provider type');
+    const out = [];
+    for (const record of this.list(type)) {
+      if (options.signal?.aborted) break;
+      const result = await this.invoke(type, record.id, method, context, options);
+      out.push({ id: record.id, ...result });
+    }
+    return out;
+  }
 }
 
 export const platformPlugins = new PlatformPluginRegistry();
@@ -130,5 +143,7 @@ export const registerFormat = (...args) => platformPlugins.registerFormat(...arg
 export const registerArchitecture = (...args) => platformPlugins.registerArchitecture(...args);
 export const registerAnalyzer = (...args) => platformPlugins.registerAnalyzer(...args);
 export const registerKnowledgeProvider = (...args) => platformPlugins.registerKnowledgeProvider(...args);
+export const registerSignatureProvider = (...args) => platformPlugins.registerSignatureProvider(...args);
+export const registerRecognitionProvider = (...args) => platformPlugins.registerRecognitionProvider(...args);
 export const registerViewContribution = (...args) => platformPlugins.registerViewContribution(...args);
 export const registerGoalProvider = (...args) => platformPlugins.registerGoalProvider(...args);

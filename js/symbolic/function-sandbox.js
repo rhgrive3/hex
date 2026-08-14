@@ -95,6 +95,8 @@ function branchTrace(trace) {
 export class FunctionSandbox {
   constructor(io, opts) {
     this.emulator = new Emulator(io || {});
+    this._initialHeapBase = this.emulator.heap;
+    this._setupCount = 0;
     this.objectBase = opts && opts.objectBase != null ? asBig(opts.objectBase) : DEFAULT_OBJECT_BASE;
     this.maxObjectSize = Math.max(0x100, Number(opts && opts.maxObjectSize || 0x10000));
     this.watch = [];
@@ -109,7 +111,14 @@ export class FunctionSandbox {
     this.objectBase = objectBase;
     if (o.objectAsArg0 !== false && args.length === 0) args.push(objectBase);
     else if (o.objectAsArg0 !== false && args[0] == null) args[0] = objectBase;
+    // A runtime adapter may explicitly select a synthetic heap base before the
+    // first setup. reset() normally restores Emulator's default heap, so retain
+    // that one explicit override. Reused sandboxes still reset allocations on
+    // later setup calls, preserving deterministic replay semantics.
+    const firstSetupHeapOverride = this._setupCount === 0 && this.emulator.heap !== this._initialHeapBase ? this.emulator.heap : null;
     this.emulator.reset();
+    if (firstSetupHeapOverride != null) this.emulator.heap = firstSetupHeapOverride;
+    this._setupCount++;
     this.emulator.setup(asBig(address), args);
 
     for (const [reg, value] of Object.entries(o.registers || {})) this.emulator.set(reg, asBig(value));
