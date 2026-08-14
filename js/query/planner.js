@@ -64,7 +64,6 @@ function semanticScore(query, facts) {
     score += w;
     hits.push(f);
   }
-  // An exact expected shape is stronger than several weak lexical hints.
   if (query && query.dataflow && query.dataflow.shape === 'read-modify-write' && hits.some((f) => f.kind === FACT.RMW)) score += 30;
   return { score, hits };
 }
@@ -93,18 +92,28 @@ function uniqueTerms(query) {
   return out.slice(0, 16);
 }
 
+function explicitBudget(value, fallback, minimum = 0) {
+  if (value == null) return fallback;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(minimum, Math.floor(n));
+}
+
 function budgetState(opts) {
   return {
-    maxFunctions: Math.max(4, opts && opts.maxFunctions || 48),
-    maxSearchResults: Math.max(4, opts && opts.maxSearchResults || 40),
-    maxExpansions: Math.max(0, opts && opts.maxExpansions == null ? 20 : opts.maxExpansions),
-    timeoutMs: Math.max(50, opts && opts.timeoutMs || 3000),
+    maxFunctions: explicitBudget(opts && opts.maxFunctions, 48, 0),
+    maxDisassembly: explicitBudget(opts && opts.maxDisassembly, 50000, 0),
+    maxSearchResults: explicitBudget(opts && opts.maxSearchResults, 40, 1),
+    maxExpansions: explicitBudget(opts && opts.maxExpansions, 20, 0),
+    timeoutMs: explicitBudget(opts && opts.timeoutMs, 3000, 50),
     started: Date.now(),
     isCancelled: opts && opts.isCancelled || (() => false),
+    analyzedInstructions: 0,
+    disassemblyExhausted: false,
   };
 }
 
-function expired(b) { return b.isCancelled() || Date.now() - b.started > b.timeoutMs; }
+function expired(b) { return b.isCancelled() || Date.now() - b.started > b.timeoutMs || b.disassemblyExhausted; }
 
 async function lexicalCandidates(query, tools, ctx, b) {
   const map = new Map();
@@ -130,6 +139,7 @@ async function lexicalCandidates(query, tools, ctx, b) {
 }
 
 async function expandCallNeighborhood(map, tools, b) {
+  if (b.maxFunctions === 0) return;
   const initial = Array.from(map.values()).sort((a, b2) => b2.score - a.score).slice(0, b.maxExpansions);
   for (const c of initial) {
     if (expired(b) || map.size >= b.maxFunctions * 3) break;
@@ -142,9 +152,18 @@ async function expandCallNeighborhood(map, tools, b) {
 
 async function analyzeCandidates(query, map, tools, b) {
   const list = Array.from(map.values()).sort((a, b2) => b2.score - a.score).slice(0, b.maxFunctions);
+  const analyzed = [];
   for (const c of list) {
     if (expired(b)) break;
-    const fn = await tools.get_function(c.address);
+    let fn;
+    try { fn = await tools.get_function(c.address); }
+    catch (error) {
+      if ((error && error.message) === 'disassembly-budget') { b.disassemblyExhausted = true; break; }
+      continue;
+    }
+    const cost = Math.max(0, Number(fn && fn.instructions || 0));
+    if (b.analyzedInstructions + cost > b.maxDisassembly) { b.disassemblyExhausted = true; break; }
+    b.analyzedInstructions += cost;
     c.name = fn.name || null;
     c.summary = fn.summary || null;
     c.score += lexicalScore(query, c, c.name);
@@ -160,8 +179,9 @@ async function analyzeCandidates(query, map, tools, b) {
       const names = (c.summary.calls || []).map((x) => lower(x.name || x.selector || ''));
       if (query.expect.calls.some((expected) => names.some((n) => n.includes(lower(expected))))) c.score += 20;
     }
+    analyzed.push(c);
   }
-  return list.sort((a, b2) => b2.score - a.score);
+  return analyzed.sort((a, b2) => b2.score - a.score);
 }
 
 async function verifyBest(query, ranked, tools, b) {
@@ -173,8 +193,11 @@ async function verifyBest(query, ranked, tools, b) {
     if (rmw && rmw.location) {
       const verified = await tools.verify_field_update(c.address, rmw.location.key || { offset: rmw.location.disp }, { pathLimit: 8 });
       c.verification = verified;
-      if (verified.verified) c.score += 45;
-      return c;
+      if (verified.verified) {
+        c.score += 45;
+        return c;
+      }
+      continue;
     }
     if (query.action === 'decide' || query.action === 'check' || query.action === 'detect') {
       const thresholds = await tools.find_thresholds(c.address);
@@ -206,7 +229,7 @@ export async function planAnalysisGoal(goalOrQuery, context, opts) {
   const query = typeof goalOrQuery === 'string' ? compileGoal(goalOrQuery) : goalOrQuery;
   const ctx = context || {};
   const b = budgetState(opts);
-  const tools = opts && opts.tools || createAgentTools(ctx, { maxFunctions: b.maxFunctions });
+  const tools = opts && opts.tools || createAgentTools(ctx, { maxFunctions: Math.max(1, b.maxFunctions) });
   if (!query) return { query: null, candidates: [], best: null, evidence: [], missingEvidence: ['query'], engine: 'deterministic-goal-planner' };
 
   const candidates = await lexicalCandidates(query, tools, ctx, b);
@@ -222,6 +245,7 @@ export async function planAnalysisGoal(goalOrQuery, context, opts) {
   const missingEvidence = [];
   if (!best) missingEvidence.push('no-candidate-function');
   else if (!best.verification) missingEvidence.push('no-runtime-or-causal-verification');
+  if (b.disassemblyExhausted) missingEvidence.push('disassembly-budget');
   if (query.confident === false) missingEvidence.push(...(query.missing || []));
 
   return {
@@ -231,7 +255,12 @@ export async function planAnalysisGoal(goalOrQuery, context, opts) {
     evidence: Array.from(evidence),
     missingEvidence: Array.from(new Set(missingEvidence)),
     exhausted: expired(b),
-    stats: { analyzedFunctions: ranked.length, candidateFunctions: candidates.size, elapsedMs: Date.now() - b.started },
+    stats: {
+      analyzedFunctions: ranked.length,
+      candidateFunctions: candidates.size,
+      disassembly: b.analyzedInstructions,
+      elapsedMs: Date.now() - b.started,
+    },
     engine: 'deterministic-goal-planner',
   };
 }
