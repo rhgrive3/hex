@@ -1,7 +1,7 @@
 /* Regression tests for the incremental IR -> dataflow migration. */
 import { buildSemanticModel } from '../js/blocks.js';
 import { findValueUpdates, findValueUpdatesLegacy } from '../js/dataflow.js';
-import { irFor, irText, readModifyWrite, OP } from '../js/ir.js';
+import { irFor, irText, readModifyWrite, OP, MK } from '../js/ir.js';
 
 let passed = 0;
 const failures = [];
@@ -51,14 +51,14 @@ test('linear RMW keeps the public shape and is proven by IR', () => {
 
 test('SSA can prove an RMW across a control-flow join that legacy refuses to cross', () => {
   const model = modelOf([
-    'ldr w8, [x19, #0x20]',        // 0
-    'cmp w0, #0',                  // 1
-    'b.eq #0x100000014',           // 2 -> 5
-    'add w8, w8, #1',              // 3
-    'b #0x100000018',              // 4 -> 6
-    'add w8, w8, #2',              // 5
-    'str w8, [x19, #0x20]',        // 6
-    'ret',                          // 7
+    'ldr w8, [x19, #0x20]',
+    'cmp w0, #0',
+    'b.eq #0x100000014',
+    'add w8, w8, #1',
+    'b #0x100000018',
+    'add w8, w8, #2',
+    'str w8, [x19, #0x20]',
+    'ret',
   ]);
   const legacy = findValueUpdatesLegacy(model);
   const modern = findValueUpdates(model);
@@ -94,6 +94,22 @@ test('indexed/unknown memory is never upgraded to a concrete IR field update', (
   ]);
   const updates = findValueUpdates(model);
   ok(!updates.some((u) => u.engine === 'ir-ssa'), 'unknown aliases stay unproven');
+});
+
+test('absolute global RMW stays in IR but is not adapted as a legacy field candidate', () => {
+  const model = modelOf([
+    'adr x19, #0x100001000',
+    'ldr w8, [x19, #0x20]',
+    'add w8, w8, #1',
+    'str w8, [x19, #0x20]',
+    'ret',
+  ]);
+  const ir = irFor(model);
+  const globalRmw = readModifyWrite(ir).find((r) => r.location && r.location.kind === MK.GLOBAL);
+  ok(globalRmw, 'IR retains the absolute-global update');
+  const updates = findValueUpdates(model);
+  ok(!updates.some((u) => u.engine === 'ir-ssa' && u.location && u.location.irKind === MK.GLOBAL),
+    'legacy field API does not receive a global as +0');
 });
 
 test('unknown indexed store clobbers an older concrete Memory-SSA store', () => {
