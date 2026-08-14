@@ -37,15 +37,6 @@ function makeModel(rows) {
 
   assert.equal(model.backEdges.length, 0, 'backward address jump is not a natural loop');
   const result = decompile(model, { ...opts, addr: raw[0].address, beginner: false });
-  console.log('CLEANUP_CFG_DIAG', JSON.stringify({
-    modelBlocks: (model.blocks || []).map((b, i) => ({ i, startRow: b.startRow, endRow: b.endRow, succ: b.succ, successors: b.successors })),
-    modelInstructions: (model.instructions || []).map((i) => ({ row: i.row, address: String(i.address), mn: i.mnemonic || i.mn, ops: i.operandsText || i.ops, target: i.target == null ? null : String(i.target), branchTarget: i.branchTarget == null ? null : String(i.branchTarget) })),
-    irBlocks: (result.ir?.blocks || []).map((b) => ({ index: b.index, startRow: b.startRow, endRow: b.endRow, succ: b.succ, pred: b.pred })),
-    dominators: (result.ir?.dominators || []).map((s) => s ? [...s] : null),
-    coverage: result.coverage,
-    lines: (result.lines || []).map((l) => ({ row: l.row, kind: l.kind, text: l.text })),
-    warnings: result.warnings,
-  }, (_k, v) => typeof v === 'bigint' ? String(v) : v));
   assert.equal(result.lines.some((l) => /\bwhile\s*\(/.test(l.text || '')), false,
     'shared cleanup was incorrectly rendered as a loop');
   assert.ok(result.lines.some((l) => (l.text || '').includes('loc_1004')),
