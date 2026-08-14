@@ -1,0 +1,36 @@
+name: Apply function fixpoint patch
+
+on:
+  push:
+    branches:
+      - accuracy-ywp-tsumtsum-20260814
+    paths:
+      - .github/workflows/apply-fixpoint-patch.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: accuracy-ywp-tsumtsum-20260814
+          fetch-depth: 0
+      - name: Preserve deferred metadata evidence in fixpoint recovery
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('js/worker.js')
+          s = p.read_text()
+          old = '      if (!found.has(c.addr + 4n)) continue;'
+          new = '      if (!found.has(c.addr + 4n) && !dataCandidates.has(c.addr + 4n)) continue;'
+          assert s.count(old) == 1
+          p.write_text(s.replace(old, new, 1))
+          PY
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add js/worker.js
+          git commit -m 'fix: preserve metadata evidence in function fixpoint recovery [fixpoint-patched]'
+          git push origin HEAD:accuracy-ywp-tsumtsum-20260814
