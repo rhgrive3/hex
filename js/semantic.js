@@ -11,24 +11,13 @@ import {
 } from './ir.js';
 
 export const FACT = Object.freeze({
-  READ: 'read',
-  WRITE: 'write',
-  RMW: 'read-modify-write',
-  INCREMENT: 'increment',
-  DECREMENT: 'decrement',
-  CLAMP: 'clamp',
-  THRESHOLD: 'threshold-comparison',
-  ZERO_NULL: 'zero-null-comparison',
-  RETURN: 'return-derived-value',
-  ARGUMENT: 'argument-derived-value',
-  GLOBAL: 'global-access',
-  STACK: 'stack-slot',
-  CALL_RESULT: 'call-result',
-  BRANCH: 'branch-condition',
-  TRANSFER: 'field-to-field-transfer',
-  POINTER_STORE: 'store-through-pointer',
-  SOURCE: 'source',
-  SINK: 'sink',
+  READ: 'read', WRITE: 'write', RMW: 'read-modify-write',
+  INCREMENT: 'increment', DECREMENT: 'decrement', CLAMP: 'clamp',
+  THRESHOLD: 'threshold-comparison', ZERO_NULL: 'zero-null-comparison',
+  RETURN: 'return-derived-value', ARGUMENT: 'argument-derived-value',
+  GLOBAL: 'global-access', STACK: 'stack-slot', CALL_RESULT: 'call-result',
+  BRANCH: 'branch-condition', TRANSFER: 'field-to-field-transfer',
+  POINTER_STORE: 'store-through-pointer', SOURCE: 'source', SINK: 'sink',
 });
 
 const factCache = new WeakMap();
@@ -36,24 +25,20 @@ const factCache = new WeakMap();
 function instructionEvidence(inst, relation = null) {
   if (!inst) return null;
   return {
-    id: 'ir:' + String(inst.id),
-    instructionId: inst.id,
+    id: 'ir:' + String(inst.id), instructionId: inst.id,
     row: inst.row == null ? null : inst.row,
     address: inst.address == null ? null : inst.address,
-    relation,
-    group: 'semantic-ir:' + String(inst.id),
+    relation, group: 'semantic-ir:' + String(inst.id),
   };
 }
 
 function uniqueEvidence(items) {
-  const out = [];
-  const seen = new Set();
+  const out = [], seen = new Set();
   for (const item of items || []) {
     if (!item) continue;
     const key = item.group || item.id || (String(item.address) + ':' + String(item.row));
     if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(item);
+    seen.add(key); out.push(item);
   }
   return out;
 }
@@ -61,8 +46,7 @@ function uniqueEvidence(items) {
 function locationShape(loc) {
   if (!loc) return null;
   return {
-    key: loc.key || null,
-    kind: loc.kind || MK.UNKNOWN,
+    key: loc.key || null, kind: loc.kind || MK.UNKNOWN,
     disp: loc.disp == null ? null : loc.disp,
     size: loc.size == null ? null : loc.size,
     address: loc.address == null ? null : loc.address,
@@ -74,18 +58,11 @@ function valueShape(value) {
   if (!value) return null;
   const info = valueInfo(value);
   return {
-    id: value.id,
-    reg: value.reg || null,
-    bits: value.bits || 64,
-    kind: value.kind || null,
-    constant: info.constant,
-    min: info.min,
-    max: info.max,
-    signedness: info.signedness,
-    zero: info.zero,
-    nullability: info.nullability,
-    origin: originOf(value),
-    provenance: pointerProvenance(value),
+    id: value.id, reg: value.reg || null, bits: value.bits || 64,
+    kind: value.kind || null, constant: info.constant,
+    min: info.min, max: info.max, signedness: info.signedness,
+    zero: info.zero, nullability: info.nullability,
+    origin: originOf(value), provenance: pointerProvenance(value),
   };
 }
 
@@ -100,10 +77,7 @@ function fact(kind, inst, extra = {}) {
     relation: extra.relation || null,
     confidence: extra.confidence == null ? 1 : extra.confidence,
     confidenceSource: extra.confidenceSource || 'semantic-ir',
-    evidence,
-    ...extra,
-    // Do not allow callers to inject a second evidence array after de-duplication.
-    evidence,
+    evidence, ...extra, evidence,
   };
 }
 
@@ -134,32 +108,46 @@ function rmwFacts(ir, out) {
     const written = r.store.args && r.store.args[0] && r.store.args[0].value || null;
     const base = {
       id: 'fact:rmw:' + r.load.id + ':' + r.store.id,
-      location: locationShape(r.location),
-      source: valueShape(r.load.dst),
-      sink: valueShape(written),
-      value: valueShape(written),
-      operation: r.kind,
+      location: locationShape(r.location), source: valueShape(r.load.dst),
+      sink: valueShape(written), value: valueShape(written), operation: r.kind,
       chain: chain.map((i) => ({ id: i.id, op: i.op, sub: i.sub, row: i.row, address: i.address })),
       load: { id: r.load.id, row: r.load.row, address: r.load.address },
       store: { id: r.store.id, row: r.store.row, address: r.store.address },
-      evidence,
-      relation: 'read→compute→write',
+      evidence, relation: 'read→compute→write',
     };
     out.push(fact(FACT.RMW, r.store, base));
     if (r.kind === 'add') out.push(fact(FACT.INCREMENT, r.store, { ...base, id: base.id + ':inc', relation: 'increase' }));
     if (r.kind === 'sub') out.push(fact(FACT.DECREMENT, r.store, { ...base, id: base.id + ':dec', relation: 'decrease' }));
     const sel = chain.find((i) => i.op === OP.SEL);
-    if (sel) {
-      out.push(fact(FACT.CLAMP, sel, {
-        id: base.id + ':clamp',
-        location: base.location,
-        value: valueShape(sel.dst),
-        condition: sel.cond || null,
-        evidence,
-        relation: 'clamp-before-write',
-      }));
-    }
+    if (sel) out.push(fact(FACT.CLAMP, sel, {
+      id: base.id + ':clamp', location: base.location, value: valueShape(sel.dst),
+      condition: sel.cond || null, evidence, relation: 'clamp-before-write',
+    }));
   }
+}
+
+/**
+ * Memory sources that deterministically contribute to an SSA value. This walks
+ * def-use edges only; it never scans source instructions heuristically.
+ */
+function sourceMemoryLoads(value, opts = {}) {
+  const maxNodes = Math.max(8, opts.maxNodes || 128);
+  const work = value ? [value] : [];
+  const seenValues = new Set(), seenInsts = new Set(), out = [];
+  let visited = 0;
+  while (work.length && visited++ < maxNodes) {
+    const v = work.pop();
+    if (!v || seenValues.has(v.id)) continue;
+    seenValues.add(v.id);
+    const d = v.def;
+    if (!d) continue;
+    if (d.op === OP.LOAD && d.loc) {
+      if (!seenInsts.has(d.id)) { seenInsts.add(d.id); out.push(d); }
+      continue;
+    }
+    for (const a of d.args || []) if (a && a.value) work.push(a.value);
+  }
+  return out;
 }
 
 function memoryFacts(ir, out) {
@@ -169,8 +157,7 @@ function memoryFacts(ir, out) {
     const isLoad = inst.op === OP.LOAD;
     const v = isLoad ? inst.dst : (inst.args[0] && inst.args[0].value || null);
     const base = {
-      location: loc,
-      value: valueShape(v),
+      location: loc, value: valueShape(v),
       source: isLoad ? loc : valueShape(v),
       sink: isLoad ? valueShape(v) : loc,
       relation: isLoad ? 'memory→value' : 'value→memory',
@@ -180,22 +167,24 @@ function memoryFacts(ir, out) {
     if (loc && loc.kind === MK.STACK) out.push(fact(FACT.STACK, inst, { ...base, id: 'fact:stack:' + inst.id }));
     if (!isLoad && (!loc || loc.kind === MK.UNKNOWN)) {
       out.push(fact(FACT.POINTER_STORE, inst, {
-        ...base,
-        id: 'fact:pointer-store:' + inst.id,
-        confidence: 1,
-        relation: 'unknown-alias-store',
+        ...base, id: 'fact:pointer-store:' + inst.id,
+        confidence: 1, relation: 'unknown-alias-store',
       }));
     }
 
-    if (!isLoad) {
-      const origin = originOf(v);
-      if (loc && loc.kind === MK.FIELD && origin && origin.kind === 'field' && origin.location && origin.location.key !== loc.key) {
+    if (!isLoad && loc && loc.kind === MK.FIELD) {
+      for (const load of sourceMemoryLoads(v)) {
+        if (!load.loc || load.loc.kind !== MK.FIELD || load.loc.key === inst.loc.key) continue;
         out.push(fact(FACT.TRANSFER, inst, {
-          id: 'fact:transfer:' + inst.id,
-          source: origin,
+          id: 'fact:transfer:' + load.id + ':' + inst.id,
+          source: { kind: 'field', location: locationShape(load.loc), value: valueShape(load.dst) },
           sink: loc,
           value: valueShape(v),
-          relation: 'field→field',
+          relation: 'field→compute→field',
+          evidence: uniqueEvidence([
+            instructionEvidence(load, 'source-read'),
+            instructionEvidence(inst, 'destination-write'),
+          ]),
         }));
       }
     }
@@ -210,12 +199,9 @@ function controlFacts(ir, out) {
     const cmpEvidence = c.cmp ? instructionEvidence(c.cmp, 'compare') : null;
     const evidence = uniqueEvidence([cmpEvidence, instructionEvidence(inst, 'branch')]);
     const base = {
-      condition: c.cond,
-      value: valueShape(c.value),
-      other: valueShape(c.other),
+      condition: c.cond, value: valueShape(c.value), other: valueShape(c.other),
       target: inst.extra && inst.extra.target != null ? inst.extra.target : null,
-      evidence,
-      relation: 'compare→branch',
+      evidence, relation: 'compare→branch',
     };
     out.push(fact(FACT.BRANCH, inst, base));
 
@@ -224,25 +210,14 @@ function controlFacts(ir, out) {
     if (otherConst != null || valueConst != null) {
       const threshold = otherConst != null ? otherConst : valueConst;
       out.push(fact(FACT.THRESHOLD, c.cmp || inst, {
-        ...base,
-        id: 'fact:threshold:' + inst.id,
-        threshold,
-        comparisonRow: c.cmp ? c.cmp.row : inst.row,
-        branchRow: inst.row,
+        ...base, id: 'fact:threshold:' + inst.id, threshold,
+        comparisonRow: c.cmp ? c.cmp.row : inst.row, branchRow: inst.row,
       }));
-      if (threshold === 0n) {
-        out.push(fact(FACT.ZERO_NULL, c.cmp || inst, {
-          ...base,
-          id: 'fact:zero:' + inst.id,
-          threshold: 0n,
-        }));
-      }
+      if (threshold === 0n) out.push(fact(FACT.ZERO_NULL, c.cmp || inst, {
+        ...base, id: 'fact:zero:' + inst.id, threshold: 0n,
+      }));
     } else if (c.cond === 'cbz' || c.cond === 'cbnz') {
-      out.push(fact(FACT.ZERO_NULL, inst, {
-        ...base,
-        id: 'fact:zero:' + inst.id,
-        threshold: 0n,
-      }));
+      out.push(fact(FACT.ZERO_NULL, inst, { ...base, id: 'fact:zero:' + inst.id, threshold: 0n }));
     }
   }
 }
@@ -262,16 +237,10 @@ function sourceSinkFacts(ir, out) {
       const v = inst.args && inst.args[0] && inst.args[0].value || null;
       const origin = originOf(v);
       out.push(fact(FACT.RETURN, inst, {
-        value: valueShape(v),
-        source: origin,
-        sink: { kind: 'return' },
-        relation: 'value→return',
+        value: valueShape(v), source: origin, sink: { kind: 'return' }, relation: 'value→return',
       }));
       out.push(fact(FACT.SINK, inst, {
-        id: 'fact:sink:return:' + inst.id,
-        value: valueShape(v),
-        sinkType: 'return',
-        relation: 'return',
+        id: 'fact:sink:return:' + inst.id, value: valueShape(v), sinkType: 'return', relation: 'return',
       }));
     }
   }
@@ -279,16 +248,11 @@ function sourceSinkFacts(ir, out) {
   for (const value of ir.values || []) {
     if (value.kind !== VK.ARG || !/^x[0-7]$/.test(String(value.reg || ''))) continue;
     out.push({
-      id: 'fact:arg:' + value.id,
-      kind: FACT.ARGUMENT,
+      id: 'fact:arg:' + value.id, kind: FACT.ARGUMENT,
       row: ir.blocks && ir.blocks[0] ? ir.blocks[0].startRow : 0,
-      address: ir.startAddress || null,
-      function: ir.startAddress || null,
-      value: valueShape(value),
-      relation: 'argument→value',
-      confidence: 1,
-      confidenceSource: 'semantic-ir',
-      evidence: [],
+      address: ir.startAddress || null, function: ir.startAddress || null,
+      value: valueShape(value), relation: 'argument→value', confidence: 1,
+      confidenceSource: 'semantic-ir', evidence: [],
     });
   }
 }
@@ -297,10 +261,7 @@ export function semanticFacts(ir) {
   if (!ir || !ir.instructions) return [];
   if (factCache.has(ir)) return factCache.get(ir);
   const out = [];
-  memoryFacts(ir, out);
-  rmwFacts(ir, out);
-  controlFacts(ir, out);
-  sourceSinkFacts(ir, out);
+  memoryFacts(ir, out); rmwFacts(ir, out); controlFacts(ir, out); sourceSinkFacts(ir, out);
   out.sort((a, b) => (a.row == null ? -1 : a.row) - (b.row == null ? -1 : b.row) || String(a.kind).localeCompare(String(b.kind)));
   factCache.set(ir, out);
   return out;
@@ -319,7 +280,7 @@ export function factsOfKind(irOrFacts, kind) {
 export function factsForLocation(irOrFacts, keyOrOffset) {
   const facts = Array.isArray(irOrFacts) ? irOrFacts : semanticFacts(irOrFacts);
   return facts.filter((f) => {
-    const loc = f.location || f.sink && f.sink.key ? f.sink : null;
+    const loc = f.location || ((f.sink && f.sink.key) ? f.sink : null);
     if (!loc) return false;
     if (typeof keyOrOffset === 'string') return loc.key === keyOrOffset;
     if (keyOrOffset == null) return false;
