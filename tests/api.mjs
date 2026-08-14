@@ -34,3 +34,8 @@ api('_localtime_r', 'time', 'time');
 api('_dispatch_time', 'time', 'time');
 
 process.stdout.write(`API classification: ${passed} regressions ok\n`);
+
+// Keep new decompiler/runtime suites inside `npm run check` without changing package.json.
+await import('./decompiler-semantic.mjs');
+await import('./objc-runtime.mjs');
+await import('./swift-runtime.mjs');
