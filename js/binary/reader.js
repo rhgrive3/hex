@@ -1,6 +1,7 @@
 export class BinaryReadError extends Error {
   constructor(message, offset = null) {
-    super(offset == null ? message : `${message} @ 0x${Number(offset).toString(16)}`);
+    const shown = offset == null ? null : (typeof offset === 'bigint' ? offset : BigInt(Number.isFinite(Number(offset)) ? Math.max(0, Math.trunc(Number(offset))) : 0));
+    super(shown == null ? message : `${message} @ 0x${shown.toString(16)}`);
     this.name = 'BinaryReadError';
     this.offset = offset;
   }
@@ -11,8 +12,9 @@ export class ByteView {
     if (input instanceof Uint8Array) this.bytes = input;
     else if (input instanceof ArrayBuffer) this.bytes = new Uint8Array(input);
     else if (ArrayBuffer.isView(input)) this.bytes = new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
-    else throw new TypeError('ByteView expects Uint8Array, ArrayBuffer, or ArrayBufferView');
-    this.view = new DataView(this.bytes.buffer, this.bytes.byteOffset, this.bytes.byteLength);
+    else if (input?.__binaryByteBacking === true && Number.isSafeInteger(input.length) && input.length >= 0 && typeof input.subarray === 'function') this.bytes = input;
+    else throw new TypeError('ByteView expects bytes or a binary byte backing');
+    this.view = this.bytes instanceof Uint8Array ? new DataView(this.bytes.buffer, this.bytes.byteOffset, this.bytes.byteLength) : null;
     this.littleEndian = !!littleEndian;
     this.base = Number(base) || 0;
   }
@@ -26,20 +28,27 @@ export class ByteView {
   check(offset, size = 1) {
     const o = Number(offset);
     const n = Number(size);
-    if (!Number.isSafeInteger(o) || !Number.isSafeInteger(n) || o < 0 || n < 0 || o + n > this.length) {
+    if (!Number.isSafeInteger(o) || !Number.isSafeInteger(n) || o < 0 || n < 0 || o > this.length || n > this.length - o) {
       throw new BinaryReadError(`read outside file (${n} bytes)`, this.base + Math.max(0, o || 0));
     }
     return o;
   }
 
-  u8(offset) { return this.view.getUint8(this.check(offset, 1)); }
-  i8(offset) { return this.view.getInt8(this.check(offset, 1)); }
-  u16(offset, le = this.littleEndian) { return this.view.getUint16(this.check(offset, 2), le); }
-  i16(offset, le = this.littleEndian) { return this.view.getInt16(this.check(offset, 2), le); }
-  u32(offset, le = this.littleEndian) { return this.view.getUint32(this.check(offset, 4), le); }
-  i32(offset, le = this.littleEndian) { return this.view.getInt32(this.check(offset, 4), le); }
-  u64(offset, le = this.littleEndian) { return this.view.getBigUint64(this.check(offset, 8), le); }
-  i64(offset, le = this.littleEndian) { return this.view.getBigInt64(this.check(offset, 8), le); }
+  data(offset, size) {
+    const o = this.check(offset, size);
+    if (this.view) return { view: this.view, offset: o };
+    const bytes = this.bytes.subarray(o, o + size);
+    return { view: new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength), offset: 0 };
+  }
+
+  u8(offset) { const x = this.data(offset, 1); return x.view.getUint8(x.offset); }
+  i8(offset) { const x = this.data(offset, 1); return x.view.getInt8(x.offset); }
+  u16(offset, le = this.littleEndian) { const x = this.data(offset, 2); return x.view.getUint16(x.offset, le); }
+  i16(offset, le = this.littleEndian) { const x = this.data(offset, 2); return x.view.getInt16(x.offset, le); }
+  u32(offset, le = this.littleEndian) { const x = this.data(offset, 4); return x.view.getUint32(x.offset, le); }
+  i32(offset, le = this.littleEndian) { const x = this.data(offset, 4); return x.view.getInt32(x.offset, le); }
+  u64(offset, le = this.littleEndian) { const x = this.data(offset, 8); return x.view.getBigUint64(x.offset, le); }
+  i64(offset, le = this.littleEndian) { const x = this.data(offset, 8); return x.view.getBigInt64(x.offset, le); }
 
   slice(offset, size) {
     const o = this.check(offset, size);
@@ -69,9 +78,16 @@ export class ByteView {
   cstring(offset, max = 1 << 20) {
     const o = this.check(offset, 0);
     const end = Math.min(this.length, o + Math.max(0, Number(max)));
-    let p = o;
-    while (p < end && this.bytes[p] !== 0) p++;
-    const raw = this.bytes.subarray(o, p);
+    let raw;
+    if (this.view) {
+      const span = this.bytes.subarray(o, end);
+      const nul = span.indexOf(0);
+      raw = nul < 0 ? span : span.subarray(0, nul);
+    } else {
+      let p = o;
+      while (p < end && this.u8(p) !== 0) p++;
+      raw = this.bytes.subarray(o, p);
+    }
     try { return new TextDecoder('utf-8', { fatal: false }).decode(raw); }
     catch {
       let out = '';
@@ -86,7 +102,7 @@ export class ByteView {
     let shift = 0n;
     for (let i = 0; i < maxBytes; i++, p++) {
       this.check(p, 1);
-      const b = this.bytes[p];
+      const b = this.u8(p);
       value |= BigInt(b & 0x7f) << shift;
       if ((b & 0x80) === 0) return { value, next: p + 1, bytes: p + 1 - Number(offset) };
       shift += 7n;
@@ -101,7 +117,7 @@ export class ByteView {
     let b = 0;
     for (let i = 0; i < maxBytes; i++, p++) {
       this.check(p, 1);
-      b = this.bytes[p];
+      b = this.u8(p);
       value |= BigInt(b & 0x7f) << shift;
       shift += 7n;
       if ((b & 0x80) === 0) {

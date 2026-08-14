@@ -36,6 +36,7 @@ export function parseEhFrameHeader(r, sec, image, bits) {
     image.metadata.ehFrameHeader = { version, ehFrameEnc, countEnc, tableEnc, declaredFunctions: count, recoveredFunctions: added };
     void frame;
   } catch (e) {
+    if (e?.code === 'BINARY_SOURCE_RANGE_MISSING') throw e;
     image.warnings.push(`.eh_frame_hdr: ${e.message}`);
   }
 }
