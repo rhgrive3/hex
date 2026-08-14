@@ -82,6 +82,15 @@ function unknownStoreBetween(ir, from, to) {
 }
 
 /**
+ * Public safety query for migration adapters. A legacy heuristic may only be
+ * retained as a read/modify/write proof when no unknown indexed store can sit
+ * between its read and write in the reconstructed CFG.
+ */
+export function hasUnknownStoreBarrier(ir, from, to) {
+  return !!unknownStoreBetween(ir, from, to);
+}
+
+/**
  * Memory SSA must never let a concrete field/store flow through an indexed store
  * whose alias cannot be known. The core builder already treats calls/unknown
  * instructions as clobbers; this pass applies the same safety rule to
