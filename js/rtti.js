@@ -43,33 +43,56 @@ const OPERATORS = {
   cm: 'operator,', ix: 'operator[]', cl: 'operator()', pt: 'operator->',
 };
 
+function parseFailure(p, reason, unsupported = false, partial = null) {
+  if (!p.invalid) {
+    p.invalid = true;
+    p.reason = reason;
+    p.unsupported = !!unsupported;
+    if (partial) p.partial = partial;
+  }
+  return null;
+}
+
 /**
  * C++ のマングル名を読める形に戻す。
- * 完全な実装ではありません（テンプレートの一部などはそのまま残します）が、
- * 実際のアプリに出てくる形はおおむねカバーしています。
+ *
+ * Correctness rule: a partial parse is never returned as a successful identity.
+ * Unsupported productions and malformed delimiters are reported by
+ * demangleCxxDetailed(), while this compatibility API returns null.
  *
  * @returns {string|null} 戻せなければ null
  */
 export function demangleCxx(name) {
-  if (!name) return null;
-  let s = name.replace(/^_/, '');
-  if (!s.startsWith('_Z')) return null;
-  const p = { s, i: 2, subs: [] };
+  const result = demangleCxxDetailed(name);
+  return result.complete ? result.demangled : null;
+}
+
+export function demangleCxxDetailed(name) {
+  if (!name) return { demangled:null, complete:false, partial:null, unsupported:false, error:'empty-name' };
+  const s = String(name).replace(/^_/, '');
+  if (!s.startsWith('_Z')) return { demangled:null, complete:false, partial:null, unsupported:false, error:'not-itanium' };
+  const p = { s, i:2, subs:[], invalid:false, unsupported:false, reason:null, partial:null };
   try {
     const special = readSpecial(p);
     const body = readName(p);
-    if (!body) return null;
+    if (!body || p.invalid) return { demangled:null, complete:false, partial:p.partial || body || null, unsupported:p.unsupported, error:p.reason || 'invalid-name' };
     let out = special ? special.replace('{}', body) : body;
-    if (p.i < p.s.length && !special) {
+    if (special) {
+      if (p.i !== p.s.length) parseFailure(p, 'trailing-special-data', true, out);
+    } else if (p.i < p.s.length) {
       const args = readArgs(p);
-      if (args != null) {
-        // const は関数の後ろに付く（Json::Value::asString() const）
+      if (args == null || p.invalid || p.i !== p.s.length) {
+        if (!p.invalid) parseFailure(p, 'incomplete-argument-list', false, out);
+      } else {
         const m = /^(.*?)( const)$/.exec(out);
         out = m ? m[1] + '(' + args + ')' + m[2] : out + '(' + args + ')';
       }
     }
-    return out;
-  } catch { return null; }
+    if (p.invalid || p.i !== p.s.length) return { demangled:null, complete:false, partial:p.partial || out || null, unsupported:p.unsupported, error:p.reason || 'incomplete-parse' };
+    return { demangled:out, complete:true, partial:null, unsupported:false, error:null };
+  } catch (error) {
+    return { demangled:null, complete:false, partial:p.partial, unsupported:p.unsupported, error:p.reason || error?.message || 'demangle-failed' };
+  }
 }
 
 function readSpecial(p) {
@@ -85,13 +108,12 @@ function readSpecial(p) {
 function readName(p) {
   const c = p.s[p.i];
   const two = p.s.slice(p.i, p.i + 2);
-  // 演算子だけの名前（operator new / operator delete）
   if (OPERATORS[two] && !/\d/.test(p.s[p.i])) { p.i += 2; return OPERATORS[two]; }
   if (c === 'N') { p.i++; return readNested(p); }
   if (c === 'S') return readSubstitution(p);
   if (/\d/.test(c)) return readSourceName(p);
-  if (c === 'L') { p.i++; return readName(p); }          // 内部リンケージ
-  return null;
+  if (c === 'L') { p.i++; return readName(p); }
+  return parseFailure(p, 'unsupported-name-production', true);
 }
 
 function readNested(p) {
@@ -103,17 +125,22 @@ function readNested(p) {
   }
   while (p.i < p.s.length && p.s[p.i] !== 'E') {
     const c = p.s[p.i];
-    if (/\d/.test(c)) { parts.push(readSourceName(p)); continue; }
-    if (c === 'S') { parts.push(readSubstitution(p)); continue; }
-    if (c === 'C') { p.i += 2; parts.push(parts[parts.length - 1] || 'ctor'); continue; }
-    if (c === 'D') { p.i += 2; parts.push('~' + (parts[parts.length - 1] || 'dtor')); continue; }
-    if (OPERATORS[p.s.slice(p.i, p.i + 2)]) { parts.push(OPERATORS[p.s.slice(p.i, p.i + 2)]); p.i += 2; continue; }
-    if (c === 'I') { parts.push(readTemplateArgs(p)); continue; }
-    break;
+    let part = null;
+    if (/\d/.test(c)) part = readSourceName(p);
+    else if (c === 'S') part = readSubstitution(p);
+    else if (c === 'C') { if (p.i + 2 > p.s.length) return parseFailure(p, 'truncated-constructor', false, parts.join('::')); p.i += 2; part = parts[parts.length - 1] || 'ctor'; }
+    else if (c === 'D') { if (p.i + 2 > p.s.length) return parseFailure(p, 'truncated-destructor', false, parts.join('::')); p.i += 2; part = '~' + (parts[parts.length - 1] || 'dtor'); }
+    else if (OPERATORS[p.s.slice(p.i, p.i + 2)]) { part = OPERATORS[p.s.slice(p.i, p.i + 2)]; p.i += 2; }
+    else if (c === 'I') part = readTemplateArgs(p);
+    else return parseFailure(p, 'unsupported-nested-production', true, parts.join('::'));
+    if (!part || p.invalid) return null;
+    parts.push(part);
   }
-  if (p.s[p.i] === 'E') p.i++;
   const joined = parts.filter(Boolean).reduce((acc, cur) =>
     (cur.startsWith('<') ? acc + cur : (acc ? acc + '::' + cur : cur)), '');
+  if (p.i >= p.s.length || p.s[p.i] !== 'E') return parseFailure(p, 'unterminated-nested-name', false, joined + cvr);
+  p.i++;
+  if (!joined) return parseFailure(p, 'empty-nested-name', false);
   return joined + cvr;
 }
 
@@ -121,7 +148,7 @@ function readSourceName(p) {
   let n = '';
   while (p.i < p.s.length && /\d/.test(p.s[p.i])) n += p.s[p.i++];
   const len = Number(n);
-  if (!len || p.i + len > p.s.length) return null;
+  if (!Number.isSafeInteger(len) || len <= 0 || p.i + len > p.s.length) return parseFailure(p, 'invalid-source-name-length', false);
   const out = p.s.slice(p.i, p.i + len);
   p.i += len;
   p.subs.push(out);
@@ -131,44 +158,51 @@ function readSourceName(p) {
 function readSubstitution(p) {
   const two = p.s.slice(p.i, p.i + 2);
   if (SUBSTITUTIONS[two]) { p.i += 2; return SUBSTITUTIONS[two]; }
-  // S_ / S0_ / S1_ … 直前に出た名前の使い回し
   p.i++;
   let idx = '';
   while (p.i < p.s.length && p.s[p.i] !== '_') idx += p.s[p.i++];
+  if (p.i >= p.s.length || p.s[p.i] !== '_') return parseFailure(p, 'unterminated-substitution', false);
   p.i++;
+  if (idx && !/^[0-9A-Z]+$/i.test(idx)) return parseFailure(p, 'invalid-substitution-index', false);
   const n = idx === '' ? 0 : parseInt(idx, 36) + 1;
-  return p.subs[n] || 'auto';
+  const value = p.subs[n];
+  return value || parseFailure(p, 'unsupported-substitution', true);
 }
 
 function readTemplateArgs(p) {
-  p.i++;                                    // 'I'
+  p.i++;
   const args = [];
   let guard = 0;
-  while (p.i < p.s.length && p.s[p.i] !== 'E' && guard++ < 64) {
+  while (p.i < p.s.length && p.s[p.i] !== 'E') {
+    if (guard++ >= 64) return parseFailure(p, 'template-argument-limit', true, '<' + args.join(', ') + '>');
     const t = readType(p);
-    if (!t) break;
+    if (!t || p.invalid) return null;
     args.push(t);
   }
-  if (p.s[p.i] === 'E') p.i++;
+  if (p.i >= p.s.length || p.s[p.i] !== 'E') return parseFailure(p, 'unterminated-template-arguments', false, '<' + args.join(', ') + '>');
+  p.i++;
   return '<' + args.join(', ') + '>';
 }
 
 function readArgs(p) {
   const args = [];
   let guard = 0;
-  while (p.i < p.s.length && guard++ < 64) {
+  while (p.i < p.s.length) {
+    if (guard++ >= 64) return parseFailure(p, 'argument-limit', true, args.join(', '));
+    const before = p.i;
     const t = readType(p);
-    if (!t) break;
+    if (!t || p.invalid) return null;
+    if (p.i <= before) return parseFailure(p, 'non-progressing-type-parser', false, args.join(', '));
     args.push(t);
   }
-  if (!args.length) return null;
+  if (!args.length) return '';
   if (args.length === 1 && args[0] === 'void') return '';
   return args.join(', ');
 }
 
 function readType(p) {
   const c = p.s[p.i];
-  if (!c) return null;
+  if (!c) return parseFailure(p, 'truncated-type', false);
   if (c === 'P') { p.i++; const t = readType(p); return t ? t + ' *' : null; }
   if (c === 'R') { p.i++; const t = readType(p); return t ? t + ' &' : null; }
   if (c === 'O') { p.i++; const t = readType(p); return t ? t + ' &&' : null; }
@@ -181,9 +215,8 @@ function readType(p) {
   const two = p.s.slice(p.i, p.i + 2);
   if (BUILTIN[two]) { p.i += 2; return BUILTIN[two]; }
   if (BUILTIN[c]) { p.i++; return BUILTIN[c]; }
-  if (c === 'E') return null;
-  p.i++;
-  return null;
+  if (c === 'E') return parseFailure(p, 'unexpected-end-marker', false);
+  return parseFailure(p, `unsupported-type:${c}`, true);
 }
 
 /* ── Swift のマングル解除（よく出る形だけ） ───────────────── */
@@ -310,7 +343,6 @@ function simplifyStd(s) {
     }
     const start = t.open - base.length;
     out = out.slice(0, start) + replaced + out.slice(t.close + 1);
-    // 置き換えた部分より後ろに、まだテンプレートが残っているかもしれない
     const next = out.indexOf('<', start + replaced.length);
     if (next < 0) break;
   }
@@ -347,13 +379,10 @@ export function shortName(name, opts) {
   const o = opts || {};
   let s = readableName(name);
   if (s === name) {
-    // マングルでもなんでもない、ふつうの名前。頭の _ だけ落とす。
     return name.replace(/^_+/, '') || name;
   }
-  // 引数の並びを落とす（かっこの中はぜんぶ）
   const paren = s.indexOf('(');
   if (paren > 0) s = s.slice(0, paren);
-  // テンプレート引数を落とす
   for (let guard = 0; guard < 40; guard++) {
     const t = findTemplate(s, 0);
     if (!t) break;
@@ -361,8 +390,6 @@ export function shortName(name, opts) {
   }
   s = s.replace(/\s+/g, ' ').replace(/ const$/, '').trim();
   if (!o.keepNamespace) {
-    /* std:: だけは残す（どこの関数かが分かる手がかりなので）。
-       それ以外の長い名前空間は、末尾 2 つに切り詰める。 */
     const parts = s.split('::');
     if (parts.length > 2 && parts[0] !== 'std') s = parts.slice(-2).join('::');
   }
