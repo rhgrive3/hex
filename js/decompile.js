@@ -27,6 +27,7 @@ import { typeFromAccess, inferTypes, signatureOf } from './types.js';
 import { shortName } from './rtti.js';
 import { buildValues, render as renderExpr, sizeOf as exprSize, constOf as exprConst } from './expr.js';
 import { findAccumulators } from './comprehend.js';
+import { analyzeGraph } from './controlflow.js';
 
 /* ── 出力の 1 行 ────────────────────────────────────────────
    kind: 'sig' 見出し / 'decl' 変数宣言 / 'stmt' 文 / 'ctrl' 制御 /
@@ -92,8 +93,31 @@ export function decompile(model, opts) {
   /* どのラベルが本当に要るかは、構造化してみないと分からない。
      まず本体を組み立て、そのあとで使われたラベルだけを差し込む。 */
   const body = [];
-  const state = { labels: new Set(), gotos: 0, depth: 0, openLoops: new Set() };
+  let state = newEmitState();
   emitRange(cfg, 0, cfg.nodes.length - 1, 1, body, ctx, state, null);
+
+  /*
+   * A structured rendering is only trustworthy if it consumed the complete
+   * function.  Mixing a pretty prefix with hundreds of recovered blocks at
+   * the end is technically complete but visually lies about address order.
+   * If even one Basic Block was left behind, restart in faithful linear-CFG
+   * mode: physical addresses stay monotonic and every control edge is explicit.
+   */
+  const structuredMissing = cfg.nodes.length - state.emitted.size;
+  let coverage;
+  if (structuredMissing > 0) {
+    body.length = 0;
+    state = newEmitState();
+    if (ctx.usedVars && ctx.usedVars.clear) ctx.usedVars.clear();
+    emitLinearCfg(cfg, body, ctx, state);
+    coverage = recoverUnemittedBlocks(cfg, body, ctx, state);
+    coverage.mode = 'linear';
+    coverage.structuredMissing = structuredMissing;
+  } else {
+    coverage = recoverUnemittedBlocks(cfg, body, ctx, state);
+    coverage.mode = 'structured';
+    coverage.structuredMissing = 0;
+  }
 
   /* 見出し（シグネチャ） */
   const name = (o.notes && o.notes.nameOf(o.addr)) ||
@@ -120,12 +144,19 @@ export function decompile(model, opts) {
   if (state.gotos) {
     warnings.push('制御の流れが複雑で、' + state.gotos + ' か所は goto のまま残しました（コンパイラの最適化でよくあります）。');
   }
+  if (coverage.mode === 'linear') {
+    warnings.push('制御フローが高度に最適化されているため、アドレス順の正確モードで表示しています（関数内の処理は省略していません）。');
+  }
+  if (coverage.recovered) {
+    warnings.push('構造化できなかった共有・間接経路 ' + coverage.recovered + ' ブロックを goto で安全に補完しました（関数内の処理は省略していません）。');
+  }
+  if (coverage.missing) warnings.push('内部エラー: 到達可能な ' + coverage.missing + ' ブロックを出力できませんでした。');
   if (model.truncated) warnings.push('関数が大きいため、途中までを訳しています。');
   if (ctx.unknown.size) {
     warnings.push('訳せなかった命令が ' + ctx.unknown.size + ' 種類あります（__asm として残しています）。');
   }
 
-  return { lines: out, signature, types, warnings, labels: state.labels, ctx };
+  return { lines: out, signature, types, warnings, labels: state.labels, ctx, coverage };
 }
 
 /* ────────────────────────────────────────────────────────────
@@ -834,7 +865,26 @@ function buildFlow(model, ctx) {
   for (const n of nodes) for (const s of n.succ) preds[s].push(n.index);
   nodes.forEach((n, i) => { n.pred = preds[i]; });
 
-  return { nodes, nodeOfRow };
+  const graph = analyzeGraph(nodes.map((n) => n.succ), nodes.length ? 0 : -1);
+  const loopByHeader = new Map();
+  for (const loop of graph.loops) {
+    const sorted = Array.from(loop.nodes).sort((a, b) => a - b);
+    const min = sorted.length ? sorted[0] : loop.header;
+    const max = sorted.length ? sorted[sorted.length - 1] : loop.header;
+    const contiguous = min === loop.header && sorted.length === max - min + 1 &&
+      sorted.every((x, k) => x === min + k);
+    const exits = Array.from(loop.exits);
+    const singleNaturalExit = exits.length === 0 || (exits.length === 1 && exits[0] === max + 1);
+    const tailIsLatch = loop.latches.has(max);
+    loopByHeader.set(loop.header, Object.assign({}, loop, {
+      min, max, contiguous,
+      structurable: contiguous && singleNaturalExit && tailIsLatch,
+      exit: exits.length === 1 ? exits[0] : null,
+    }));
+  }
+  return { nodes, nodeOfRow, graph, reachable: graph.reachable,
+    loopByHeader, ipdom: graph.immediatePostDominators };
+
 }
 
 /** ブロックの最後の「本物の」命令（nop や pac は飛ばす）。 */
@@ -850,6 +900,10 @@ function lastRealInstruction(node, ctx) {
 /* ────────────────────────────────────────────────────────────
    A. 制御フローの復元
    ──────────────────────────────────────────────────────────── */
+
+function newEmitState() {
+  return { labels: new Set(), gotos: 0, depth: 0, openLoops: new Set(), emitted: new Set(), recovered: 0 };
+}
 
 /**
  * [from, to] の節点を順に訳す。
@@ -873,18 +927,32 @@ function emitRange(cfg, from, to, indent, out, ctx, state, loop) {
   try {
   while (i >= 0 && i <= to && guard++ < 20000) {
     const n = cfg.nodes[i];
+    if (state.emitted.has(i)) return -1;
 
-    /* ループ: 自分に戻ってくる辺があるか（同じループを二重に開かない） */
+    /* ループ: natural loop と証明できるものだけ構造化する。 */
     const back = state.openLoops.has(i) ? -1 : backEdgeInto(cfg, i, to);
     if (back >= i) {
       i = emitLoop(cfg, i, back, to, indent, out, ctx, state);
       continue;
     }
 
-    /* 条件分岐 */
+    /* 条件分岐。構造化できなければ、taken/fall の両方を明示して絶対に捨てない。 */
     if (n.cond && n.condTarget != null) {
       const nextI = emitIf(cfg, i, to, indent, out, ctx, state, loop);
       if (nextI != null) { i = nextI; continue; }
+      emitBlockBody(n, indent, out, ctx, state, { skipTerminator: true });
+      const targetLabel = labelOf(cfg.nodes[n.condTarget], ctx);
+      if (loop && n.condTarget === loop.header) {
+        out.push(line('ctrl', indent, 'if (' + condText(n.cond, ctx) + ') continue;', n.endRow, addrOf(ctx, n.endRow)));
+      } else if (loop && loop.exit != null && n.condTarget === loop.exit) {
+        out.push(line('ctrl', indent, 'if (' + condText(n.cond, ctx) + ') break;', n.endRow, addrOf(ctx, n.endRow)));
+      } else {
+        out.push(line('ctrl', indent, 'if (' + condText(n.cond, ctx) + ') goto ' + targetLabel + ';', n.endRow, addrOf(ctx, n.endRow)));
+        state.labels.add(targetLabel); state.gotos++;
+      }
+      if (n.fall == null) return -1;
+      i = n.fall;
+      continue;
     }
 
     /* ふつうの並び */
@@ -893,16 +961,14 @@ function emitRange(cfg, from, to, indent, out, ctx, state, loop) {
     if (n.jump != null) {
       const target = n.jump;
       if (loop && target === loop.header) { out.push(line('ctrl', indent, 'continue;', n.endRow)); return -1; }
-      if (loop && target === loop.exit) { out.push(line('ctrl', indent, 'break;', n.endRow)); return -1; }
-      if (target === i + 1) { i = i + 1; continue; }      // ただの次へ
-      if (target > to || target < from) {
-        out.push(line('ctrl', indent, 'goto ' + labelOf(cfg.nodes[target], ctx) + ';', n.endRow));
-        state.labels.add(labelOf(cfg.nodes[target], ctx));
-        state.gotos++;
-        return -1;
-      }
-      i = target;
-      continue;
+      if (loop && loop.exit != null && target === loop.exit) { out.push(line('ctrl', indent, 'break;', n.endRow)); return -1; }
+      if (target === i + 1) { i = i + 1; continue; }
+      const label = labelOf(cfg.nodes[target], ctx);
+      out.push(line('ctrl', indent, 'goto ' + label + ';', n.endRow, addrOf(ctx, n.endRow)));
+      state.labels.add(label); state.gotos++;
+      // A non-fallthrough jump ends this linear path. Other reachable blocks are
+      // emitted by their owning branch or by the final coverage recovery pass.
+      return -1;
     }
     if (n.tail || !n.succ.length) return -1;             // ret / 末尾呼び出し
     i = n.fall != null ? n.fall : i + 1;
@@ -911,24 +977,23 @@ function emitRange(cfg, from, to, indent, out, ctx, state, loop) {
   } finally { state.depth--; }
 }
 
-/** i に戻ってくる後ろ向きの辺のうち、いちばん後ろの節点。なければ -1。 */
+/** natural loop と証明でき、今の範囲で安全に構造化できる場合だけ返す。 */
 function backEdgeInto(cfg, i, to) {
-  let last = -1;
-  for (const p of cfg.nodes[i].pred) {
-    if (p >= i && p <= to) last = Math.max(last, p);
-  }
-  return last;
+  const loop = cfg.loopByHeader && cfg.loopByHeader.get(i);
+  if (!loop || !loop.structurable || loop.max > to) return -1;
+  return loop.max;
 }
 
-/** ループを訳す。header..last がループの中身。 */
+/** natural loop を訳す。証明できない後方ジャンプはここへ来ない。 */
 function emitLoop(cfg, header, last, to, indent, out, ctx, state) {
+  const info = cfg.loopByHeader.get(header);
+  if (!info || !info.structurable) return header;
   const node = cfg.nodes[header];
-  const exit = last + 1 <= to ? last + 1 : null;
-  const loop = { header, exit, last };
+  const exit = info.exit != null ? info.exit : (last + 1 <= to ? last + 1 : null);
+  const loop = { header, exit, last, members: info.nodes };
   state.openLoops.add(header);
   try {
-    /* 先頭で条件を見て抜けるなら while、最後で見るなら do-while */
-    const headCond = node.cond && node.condTarget != null && node.condTarget > last;
+    const headCond = node.cond && node.condTarget != null && !info.nodes.has(node.condTarget);
     if (headCond) {
       const cond = negate(node.cond);
       emitBlockBody(node, indent, out, ctx, state, { skipTerminator: true });
@@ -940,12 +1005,25 @@ function emitLoop(cfg, header, last, to, indent, out, ctx, state) {
     }
 
     const tail = cfg.nodes[last];
-    out.push(line('ctrl', indent, 'do  {', node.startRow, addrOf(ctx, node.startRow)));
-    if (ctx.beginner) out[out.length - 1].note = '同じ処理を、条件が続くあいだ繰り返します。';
-    emitRange(cfg, header, last, indent + 1, out, ctx, state, loop);
-    const cond = tail.cond && tail.condTarget === header ? tail.cond : null;
-    out.push(line('ctrl', indent, '} while (' + (cond ? condText(cond, ctx) : '/* 条件は読み取れません */ 1') + ');', tail.endRow));
-    return exit == null ? -1 : exit;
+    const tailCond = tail.cond && tail.condTarget === header ? tail.cond : null;
+    if (tailCond) {
+      out.push(line('ctrl', indent, 'do  {', node.startRow, addrOf(ctx, node.startRow)));
+      if (ctx.beginner) out[out.length - 1].note = '同じ処理を、条件が続くあいだ繰り返します。';
+      emitBlockBody(node, indent + 1, out, ctx, state, { skipTerminator: true });
+      if (last > header + 1) emitRange(cfg, header + 1, last - 1, indent + 1, out, ctx, state, loop);
+      if (last !== header) emitBlockBody(tail, indent + 1, out, ctx, state, { skipTerminator: true });
+      out.push(line('ctrl', indent, '} while (' + condText(tailCond, ctx) + ');', tail.endRow, addrOf(ctx, tail.endRow)));
+      return exit == null ? -1 : exit;
+    }
+
+    // Unconditional latch: a real infinite loop. Never invent an unreadable condition.
+    if (tail.jump === header) {
+      out.push(line('ctrl', indent, 'while (1)  {', node.startRow, addrOf(ctx, node.startRow)));
+      emitRange(cfg, header, last, indent + 1, out, ctx, state, loop);
+      out.push(line('ctrl', indent, '}', tail.endRow));
+      return exit == null ? -1 : exit;
+    }
+    return header;
   } finally {
     state.openLoops.delete(header);
   }
@@ -962,36 +1040,147 @@ function emitLoop(cfg, header, last, to, indent, out, ctx, state) {
  *      …else…
  *   loc_Y:
  */
+function branchRegion(cfg, start, merge, to) {
+  if (start === merge) return new Set();
+  const seen = new Set(), stack = [start];
+  while (stack.length) {
+    const x = stack.pop();
+    if (x === merge || seen.has(x)) continue;
+    if (!(x >= 0 && x <= to) || !cfg.reachable.has(x)) return null;
+    seen.add(x);
+    for (const y of cfg.nodes[x].succ) if (y !== merge) stack.push(y);
+  }
+  return seen;
+}
+
+function contiguousRange(set) {
+  if (!set || !set.size) return null;
+  const xs = Array.from(set).sort((a, b) => a - b);
+  for (let k = 1; k < xs.length; k++) if (xs[k] !== xs[k - 1] + 1) return null;
+  return { from: xs[0], to: xs[xs.length - 1] };
+}
+
+function disjoint(a, b) {
+  for (const x of a || []) if (b && b.has(x)) return false;
+  return true;
+}
+
 function emitIf(cfg, i, to, indent, out, ctx, state, loop) {
   const n = cfg.nodes[i];
-  const t = n.condTarget;
-  const fall = n.fall;
-  if (t == null || fall == null) return null;
-  if (t <= i) return null;                 // 後ろ向き = ループの一部。ここでは扱わない
-  if (t > to + 1) return null;
+  const taken = n.condTarget, fall = n.fall;
+  if (taken == null || fall == null || taken <= i) return null;
+  const merge = cfg.ipdom && cfg.ipdom[i] != null ? cfg.ipdom[i] : null;
+  if (merge == null || merge <= i || merge > to) return null;
+
+  const takenSet = branchRegion(cfg, taken, merge, to);
+  const fallSet = branchRegion(cfg, fall, merge, to);
+  if (!takenSet || !fallSet || !disjoint(takenSet, fallSet)) return null;
+  const tr = contiguousRange(takenSet), fr = contiguousRange(fallSet);
+  if (takenSet.size && !tr) return null;
+  if (fallSet.size && !fr) return null;
+  if ([...takenSet, ...fallSet].some((x) => state.emitted.has(x))) return null;
 
   emitBlockBody(n, indent, out, ctx, state, { skipTerminator: true });
+  if (!takenSet.size && !fallSet.size) return merge;
 
-  /* 条件は「飛ぶ条件」なので、then を書くには裏返す */
-  const cond = negate(n.cond);
-  const thenFrom = fall, thenTo = t - 1;
-
-  /* then の最後が無条件ジャンプなら、その先が合流点＝else の終わり */
-  let elseFrom = null, elseTo = null, after = t;
-  const thenLast = thenTo >= thenFrom ? cfg.nodes[thenTo] : null;
-  if (thenLast && thenLast.jump != null && thenLast.jump > t && thenLast.jump <= to + 1) {
-    elseFrom = t; elseTo = thenLast.jump - 1; after = thenLast.jump;
+  if (!takenSet.size) {
+    const cond = negate(n.cond);
+    out.push(line('ctrl', indent, 'if (' + condText(cond, ctx) + ')  {', n.endRow, addrOf(ctx, n.endRow)));
+    emitRange(cfg, fr.from, fr.to, indent + 1, out, ctx, state, loop);
+    out.push(line('ctrl', indent, '}', null));
+    return merge;
+  }
+  if (!fallSet.size) {
+    out.push(line('ctrl', indent, 'if (' + condText(n.cond, ctx) + ')  {', n.endRow, addrOf(ctx, n.endRow)));
+    emitRange(cfg, tr.from, tr.to, indent + 1, out, ctx, state, loop);
+    out.push(line('ctrl', indent, '}', null));
+    return merge;
   }
 
+  const cond = negate(n.cond); // fall-through path is the source-level "then" arm
   out.push(line('ctrl', indent, 'if (' + condText(cond, ctx) + ')  {', n.endRow, addrOf(ctx, n.endRow)));
-  if (ctx.beginner) out[out.length - 1].note = condNote(cond) + 'ときだけ、中を実行します。';
-  if (thenTo >= thenFrom) emitRange(cfg, thenFrom, thenTo, indent + 1, out, ctx, state, loop);
-  if (elseFrom != null && elseTo >= elseFrom) {
-    out.push(line('ctrl', indent, '} else {', cfg.nodes[elseFrom].startRow));
-    emitRange(cfg, elseFrom, elseTo, indent + 1, out, ctx, state, loop);
-  }
+  emitRange(cfg, fr.from, fr.to, indent + 1, out, ctx, state, loop);
+  out.push(line('ctrl', indent, '} else {', cfg.nodes[taken].startRow));
+  emitRange(cfg, tr.from, tr.to, indent + 1, out, ctx, state, loop);
   out.push(line('ctrl', indent, '}', null));
-  return after <= to ? after : -1;
+  return merge;
+}
+
+/**
+ * Exact fallback for optimized/irreducible/disconnected layouts.
+ * Blocks are emitted once in physical address order.  Internal control-flow is
+ * represented with explicit gotos, so this mode never has to guess a source
+ * language structure and never moves a hidden cleanup block somewhere else.
+ */
+function emitLinearCfg(cfg, out, ctx, state) {
+  for (let i = 0; i < cfg.nodes.length; i++) {
+    const n = cfg.nodes[i];
+    emitBlockBody(n, 1, out, ctx, state, { skipTerminator: true });
+
+    if (n.cond && n.condTarget != null) {
+      // If both outcomes are literally the next block, the branch has no
+      // observable control-flow effect and can be omitted from pseudocode.
+      if (n.condTarget === n.fall) continue;
+      const t = labelOf(cfg.nodes[n.condTarget], ctx);
+      state.labels.add(t);
+      out.push(line('ctrl', 1, 'if (' + condText(n.cond, ctx) + ') goto ' + t + ';',
+        n.endRow, addrOf(ctx, n.endRow)));
+      state.gotos++;
+      if (n.fall != null && n.fall !== i + 1) {
+        const f = labelOf(cfg.nodes[n.fall], ctx);
+        state.labels.add(f);
+        out.push(line('ctrl', 1, 'goto ' + f + ';', n.endRow));
+        state.gotos++;
+      }
+      continue;
+    }
+
+    if (n.jump != null && n.jump !== i + 1) {
+      const t = labelOf(cfg.nodes[n.jump], ctx);
+      state.labels.add(t);
+      out.push(line('ctrl', 1, 'goto ' + t + ';', n.endRow, addrOf(ctx, n.endRow)));
+      state.gotos++;
+    }
+    // Unknown-target `br`/conditional branches are deliberately left in the
+    // block as __asm by emitBlockBody; pretending to know their target is worse.
+  }
+}
+
+/** Final correctness net: every Basic Block in the function must appear at least once. */
+function recoverUnemittedBlocks(cfg, out, ctx, state) {
+  const all = cfg.nodes.map((_, i) => i);
+  const before = all.filter((i) => !state.emitted.has(i));
+  for (const i of before) {
+    if (state.emitted.has(i)) continue;
+    const n = cfg.nodes[i];
+    const own = labelOf(n, ctx);
+    state.labels.add(own);
+    emitBlockBody(n, 1, out, ctx, state, { skipTerminator: true });
+    state.recovered++;
+    if (n.cond && n.condTarget != null) {
+      const t = labelOf(cfg.nodes[n.condTarget], ctx);
+      state.labels.add(t);
+      out.push(line('ctrl', 1, 'if (' + condText(n.cond, ctx) + ') goto ' + t + ';', n.endRow, addrOf(ctx, n.endRow)));
+      state.gotos++;
+      if (n.fall != null) {
+        const f = labelOf(cfg.nodes[n.fall], ctx);
+        state.labels.add(f);
+        out.push(line('ctrl', 1, 'goto ' + f + ';', n.endRow)); state.gotos++;
+      }
+    } else if (n.jump != null) {
+      const t = labelOf(cfg.nodes[n.jump], ctx);
+      state.labels.add(t);
+      out.push(line('ctrl', 1, 'goto ' + t + ';', n.endRow, addrOf(ctx, n.endRow))); state.gotos++;
+    } else if (n.fall != null && n.succ.length) {
+      const f = labelOf(cfg.nodes[n.fall], ctx);
+      state.labels.add(f);
+      out.push(line('ctrl', 1, 'goto ' + f + ';', n.endRow)); state.gotos++;
+    }
+  }
+  const missing = all.filter((i) => !state.emitted.has(i)).length;
+  const reachableMissing = Array.from(cfg.reachable).filter((i) => !state.emitted.has(i)).length;
+  return { total: cfg.nodes.length, reachable: cfg.reachable.size, emitted: state.emitted.size,
+    recovered: state.recovered, missing, reachableMissing };
 }
 
 function labelOf(node, ctx) {
@@ -1318,13 +1507,15 @@ export function stackNaming(model) {
 const SKIP_MN = /^(nop|hint|bti|paciasp|pacibsp|autiasp|autibsp|xpaclri|dmb|dsb|isb|prfm|pacibz|pacia|autia)$/;
 
 function emitBlockBody(node, indent, out, ctx, state, opts) {
+  if (state && state.emitted) state.emitted.add(node.index);
   void opts;
   const stmts = [];
   for (const row of node.rows) {
     const insn = ctx.byRow.get(row);
     if (!insn) continue;
     /* 分岐そのものは if / while / goto として書くので、ここでは出さない */
-    if (insn === node.terminator && insn.isBranch && !insn.isCall && !insn.isReturn) continue;
+    if (insn === node.terminator && insn.isBranch && !insn.isCall && !insn.isReturn &&
+        (node.jump != null || node.condTarget != null)) continue;
     const st = statementFor(insn, ctx, node);
     if (st) stmts.push(st);
   }

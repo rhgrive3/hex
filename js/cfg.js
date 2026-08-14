@@ -16,6 +16,7 @@
  * 行き先が実行時に決まる分岐 (br) は「分からない」として残す。埋めない。
  */
 import { ROLE } from './blocks.js';
+import { analyzeGraph } from './controlflow.js';
 
 export const EDGE = {
   FALL: 'fall',        // そのまま次の行へ
@@ -89,7 +90,6 @@ export function buildCfg(model, opts) {
       const tblock = trow != null ? blockAtRow(trow) : -1;
       if (tblock >= 0) {
         node.succ.push({ to: tblock, kind: isUncond ? EDGE.JUMP : EDGE.TAKEN, target: term.branchTarget });
-        if (tblock <= node.index) backEdges.push({ from: node.index, to: tblock });
       } else {
         // 関数の外へ飛んでいる（末尾呼び出しなど）。ここで道は途切れる。
         node.succ.push({ to: -1, kind: EDGE.JUMP, target: term.branchTarget, outside: true });
@@ -113,6 +113,11 @@ export function buildCfg(model, opts) {
     }
   }
 
+  const graph = analyzeGraph(nodes.map((n) => n.succ.filter((s) => s.to >= 0).map((s) => s.to)), nodes.length ? 0 : -1);
+  backEdges.push(...graph.backEdges.map((e) => ({ from: e.from, to: e.to })));
+  const loopHeaders = new Set(graph.backEdges.map((e) => e.to));
+  for (const n of nodes) n.isLoopHeader = loopHeaders.has(n.index);
+
   // Semantic Block の役割を、対応する Basic Block に添える（見出しに使う）
   for (const sb of model.semantic || []) {
     const i = blockAtRow(sb.startRow);
@@ -124,7 +129,9 @@ export function buildCfg(model, opts) {
     backEdges,
     entry: nodes.length ? 0 : -1,
     exits: nodes.filter((n) => n.isExit).map((n) => n.index),
-    shapes: classifyShapes(nodes, backEdges, model),
+    shapes: classifyShapes(nodes, backEdges, model, graph.immediatePostDominators),
+    dominators: graph.dominators,
+    components: graph.components,
   };
 }
 
@@ -132,7 +139,7 @@ export function buildCfg(model, opts) {
  * 道の形を見分ける。
  * 見分けられなかったものは何も返さない（「たぶん if」とは言わない）。
  */
-function classifyShapes(nodes, backEdges, model) {
+function classifyShapes(nodes, backEdges, model, ipdom) {
   const shapes = [];
   const errorBlocks = new Set();
   for (const sb of model.semantic || []) {
@@ -185,7 +192,8 @@ function classifyShapes(nodes, backEdges, model) {
     }
 
     // 両方の道が同じ場所に合流するなら if / if-else
-    const merge = firstMerge(nodes, a, c, 6);
+    const pd = ipdom && ipdom[n.index] != null ? ipdom[n.index] : -1;
+    const merge = pd >= 0 ? pd : firstMerge(nodes, a, c, 32);
     if (merge >= 0) {
       shapes.push({
         kind: merge === a || merge === c ? 'if' : 'if-else',
