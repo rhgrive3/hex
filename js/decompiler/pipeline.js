@@ -6,6 +6,34 @@ export { buildExpressionForTesting } from './pipeline-core.js';
 
 function valueOf(arg) { return arg?.value || null; }
 
+/*
+ * Memory-SSA can prove that a load reads an earlier store and pipeline-core can
+ * therefore replace the load with the stored expression. That proof is about
+ * memory identity, not register width. In particular, `str w0` / `ldr w8`
+ * round-trips only 32 bits even when the stored source originated as AAPCS64 x0.
+ * Re-attach the SSA value width before later signed comparisons/bit tests.
+ */
+function constrainSemanticValueWidths(result) {
+  if (!result?.semanticAst?.values || !result?.ir?.values) return result;
+  const irValues = new Map((result.ir.values || []).map((value) => [value.id, value]));
+  for (const item of result.semanticAst.values) {
+    const value = irValues.get(item.valueId);
+    const node = item.expression;
+    const targetBits = Number(value?.bits || 0);
+    const sourceBits = Number(node?.bits || 0);
+    if (!node || !targetBits || !sourceBits || sourceBits <= targetBits) continue;
+    item.expression = expr.unary(
+      'trunc',
+      node,
+      targetBits,
+      value?.signed ?? node.signed ?? null,
+      node.source,
+      { fromBits: sourceBits, proof: 'SSA value width after Memory-SSA substitution' },
+    );
+  }
+  return result;
+}
+
 function latestReturnStackLoad(ir, ret) {
   const explicit = valueOf(ret?.args?.[0]);
   if (explicit?.def?.op === 'load' && explicit.def.loc?.kind === 'stack') return { value: explicit, load: explicit.def };
@@ -54,6 +82,6 @@ function reanchorExactStackReturn(result) {
 }
 
 export function enhanceSemanticDecompilation(result, model, opts = {}) {
-  const core = enhanceCore(result, model, opts);
+  const core = constrainSemanticValueWidths(enhanceCore(result, model, opts));
   return recoverExactStackReturn(reanchorExactStackReturn(core), opts);
 }
