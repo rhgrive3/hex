@@ -10,6 +10,7 @@ on:
       - 'js/dataflow-semantic.js'
       - 'js/ir.js'
       - 'js/semantic.js'
+      - 'js/semantic-evidence.js'
       - 'js/interproc.js'
       - 'js/query/**'
       - 'js/agent/**'
@@ -20,6 +21,7 @@ on:
       - 'tests/ir-pinpoint-location.mjs'
       - 'tests/ir-comparisons.mjs'
       - 'tests/semantic-core.mjs'
+      - 'tests/semantic-nullability.mjs'
       - '.github/workflows/ir-dataflow-migration.yml'
   workflow_dispatch:
 
@@ -46,3 +48,5 @@ jobs:
         run: node tests/ir-comparisons.mjs
       - name: Semantic core regressions
         run: node tests/semantic-core.mjs
+      - name: Nullability edge regression
+        run: node tests/semantic-nullability.mjs
