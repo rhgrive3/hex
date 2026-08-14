@@ -2,6 +2,8 @@ name: Validate staged issue 191+ fixes
 on:
   push:
     branches: [fix-issues-191-plus]
+permissions:
+  contents: write
 jobs:
   validate:
     if: ${{ contains(github.event.head_commit.message, '[validate-fix191]') }}
@@ -11,30 +13,48 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
-      - run: |
-          node tools/apply-fix191.mjs
-          node tools/fix191-adjust.mjs
-          node tools/apply-fix265.mjs
-          node tools/fix265-adjust.mjs
-          node tools/fix265-tests.mjs
-          node tools/apply-fix283.mjs
-          node tools/apply-fix296.mjs
-          node tools/apply-fix303.mjs
-          node tools/fix303-adjust.mjs
-          node tools/fix322-script.mjs
-          node tools/apply-fix322.mjs
-          node tools/fix322-features.mjs
-          node tools/fix322-import.mjs
-          node tools/fix322-adjust.mjs
-          node tools/fix334-script.mjs
-          node tools/apply-fix334.mjs
-          node tools/fix334-macho.mjs
-          node tools/apply-fix352.mjs
-          node tools/apply-fix364.mjs
-      - run: |
-          for f in js/analyze.js js/backend.js js/auto.js js/rank.js js/fields.js js/pinpoint.js js/verify.js js/names.js js/schema.js js/shapes.js js/program.js js/worker.js js/plugins.js js/sandbox.js js/script.js js/calib.js js/dataflow-ir.js js/dataflow-semantic.js js/report.js js/comprehend.js js/expr.js js/arm64.js js/ir-core.js js/linkage.js js/trace/ring-buffer.js js/apple/objc-runtime.js js/apple/objc-metadata.js js/objc-legacy.js js/adapters/index.js js/project/index.js js/features.js js/graphview.js js/tools.js js/vendors.js js/emu.js js/architecture/index.js js/ai/interaction/actions.js js/ai/render/normalize.js js/binary/elf.js js/binary/pe-loader.js js/binary/macho.js js/decompiler/passes/manager.js js/decompiler/ast/nodes.js js/decompiler/rewrite/engine.js js/decompiler/rewrite/rules.js js/decompiler/pretty/c.js js/decompiler/pipeline-core.js js/decompiler/types/high-variables.js js/decompiler/semantic.js js/symbolic/executor.js; do node --check "$f"; done
-          node tests/issue-191-plus.mjs
-          node tests/issue-265-plus.mjs
-          node tests/issue-283-plus.mjs
-          node tests/issue-303-plus.mjs
-          node tests/issue-322-plus.mjs
+      - name: Validate staged patches
+        shell: bash
+        run: |
+          set +e
+          : > .fix191-error.log
+          run() {
+            echo ">>> $*" | tee -a .fix191-error.log
+            "$@" >> .fix191-error.log 2>&1
+            rc=$?
+            if [ $rc -ne 0 ]; then
+              echo "FAILED rc=$rc: $*" | tee -a .fix191-error.log
+              git config user.name 'hex-fix-bot'
+              git config user.email 'actions@users.noreply.github.com'
+              git add .fix191-error.log
+              git commit -m 'chore: record fix191 validation failure [skip-fix191]' || true
+              git push origin HEAD:fix-issues-191-plus || true
+              exit $rc
+            fi
+          }
+          run node tools/apply-fix191.mjs
+          run node tools/fix191-adjust.mjs
+          run node tools/apply-fix265.mjs
+          run node tools/fix265-adjust.mjs
+          run node tools/fix265-tests.mjs
+          run node tools/apply-fix283.mjs
+          run node tools/apply-fix296.mjs
+          run node tools/apply-fix303.mjs
+          run node tools/fix303-adjust.mjs
+          run node tools/fix322-script.mjs
+          run node tools/apply-fix322.mjs
+          run node tools/fix322-features.mjs
+          run node tools/fix322-import.mjs
+          run node tools/fix322-adjust.mjs
+          run node tools/fix334-script.mjs
+          run node tools/apply-fix334.mjs
+          run node tools/fix334-macho.mjs
+          run node tools/apply-fix352.mjs
+          run node tools/apply-fix364.mjs
+          for f in js/analyze.js js/backend.js js/auto.js js/rank.js js/fields.js js/pinpoint.js js/verify.js js/names.js js/schema.js js/shapes.js js/program.js js/worker.js js/plugins.js js/sandbox.js js/script.js js/calib.js js/dataflow-ir.js js/dataflow-semantic.js js/report.js js/comprehend.js js/expr.js js/arm64.js js/ir-core.js js/linkage.js js/trace/ring-buffer.js js/apple/objc-runtime.js js/apple/objc-metadata.js js/objc-legacy.js js/adapters/index.js js/project/index.js js/features.js js/graphview.js js/tools.js js/vendors.js js/emu.js js/architecture/index.js js/ai/interaction/actions.js js/ai/render/normalize.js js/binary/elf.js js/binary/pe-loader.js js/binary/macho.js js/decompiler/passes/manager.js js/decompiler/ast/nodes.js js/decompiler/rewrite/engine.js js/decompiler/rewrite/rules.js js/decompiler/pretty/c.js js/decompiler/pipeline-core.js js/decompiler/types/high-variables.js js/decompiler/semantic.js js/symbolic/executor.js; do run node --check "$f"; done
+          run node tests/issue-191-plus.mjs
+          run node tests/issue-265-plus.mjs
+          run node tests/issue-283-plus.mjs
+          run node tests/issue-303-plus.mjs
+          run node tests/issue-322-plus.mjs
+          rm -f .fix191-error.log
