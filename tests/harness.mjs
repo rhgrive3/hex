@@ -54,7 +54,14 @@ function boot() {
     if (m.t === 'ok') p.resolve(m.result);
     else p.reject(new Error(m.error || 'failed'));
   };
-  loadClassic(path.join(ROOT, 'js', 'worker2.js'));
+  /*
+   * In a browser, importScripts() executes classic scripts in one worker global.
+   * This Node harness intentionally wraps classic scripts in a function, so a
+   * separately loaded patch would not see worker.js' lexical state. Append the
+   * chained-fixup layer to the same wrapper to preserve browser semantics.
+   */
+  const chained = fs.readFileSync(path.join(ROOT, 'js', 'chained.js'), 'utf8');
+  loadClassic(path.join(ROOT, 'js', 'worker.js'), chained);
 }
 
 function call(t, payload) {
