@@ -1,7 +1,7 @@
 import { DEBUG_PROTOCOL_VERSION, DebugAdapterError, boundedInteger } from './adapter.js';
 
 const MAX_PACKET_BYTES = 1024 * 1024;
-const MAX_ARRAY = 16384;
+const MAX_ARRAY = 65536;
 const ALLOWED_TYPES = new Set(['hello','request','response','event','cancel']);
 const BLOCKED_METHODS = /^(exec|shell|spawn|system|hostCommand|runCommand)$/i;
 
