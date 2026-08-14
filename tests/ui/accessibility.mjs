@@ -143,17 +143,24 @@ async function focusTrapAudit(page) {
   await page.evaluate(async () => {
     const { Sheet } = await import('/js/ui.js');
     const sheet = new Sheet('Focus audit');
-    const a = document.createElement('button'); a.type = 'button'; a.textContent = 'First'; a.id = 'a11y-focus-first';
-    const b = document.createElement('button'); b.type = 'button'; b.textContent = 'Last'; b.id = 'a11y-focus-last';
+    const a = document.createElement('button'); a.type = 'button'; a.textContent = 'First body action';
+    const b = document.createElement('button'); b.type = 'button'; b.textContent = 'Last body action';
     sheet.body.append(a, b);
+    const focusable = [...sheet.root.querySelectorAll('button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex="0"]')]
+      .filter((node) => node.offsetParent !== null);
     window.__a11ySheet = sheet;
-    a.focus();
+    window.__a11yFirst = focusable[0];
+    window.__a11yLast = focusable[focusable.length - 1];
+    window.__a11yFirst?.focus();
   });
   await page.keyboard.press('Shift+Tab');
-  check('Sheet focus trap wraps backward', await page.evaluate(() => document.activeElement?.id === 'a11y-focus-last'));
+  check('Sheet focus trap wraps backward', await page.evaluate(() => document.activeElement === window.__a11yLast));
   await page.keyboard.press('Tab');
-  check('Sheet focus trap wraps forward', await page.evaluate(() => document.activeElement?.id === 'a11y-focus-first'));
-  await page.evaluate(() => { window.__a11ySheet?.destroyChain(); delete window.__a11ySheet; });
+  check('Sheet focus trap wraps forward', await page.evaluate(() => document.activeElement === window.__a11yFirst));
+  await page.evaluate(() => {
+    window.__a11ySheet?.destroyChain();
+    delete window.__a11ySheet; delete window.__a11yFirst; delete window.__a11yLast;
+  });
 }
 
 async function main() {
