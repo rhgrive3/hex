@@ -29,6 +29,32 @@ import fs from 'node:fs';
   fs.writeFileSync(p,s.replace(a,b));
 }
 
+// Goal evidence correlation is independently testable and reused by FunctionReport.
+{
+  const p='js/report.js'; let s=fs.readFileSync(p,'utf8');
+  s=s.replace(`function unknown(code, detail) {
+  return { certainty: CERTAINTY.UNKNOWN, code, detail: detail || null };
+}`, `function unknown(code, detail) {
+  return { certainty: CERTAINTY.UNKNOWN, code, detail: detail || null };
+}
+
+export function goalEvidenceConfidence(hits) {
+  const groups = new Set((hits || []).map((h) => h.group || GROUP.EXTERNAL));
+  const n = groups.size;
+  if (!n) return 0;
+  return n === 1 ? 0.52 : n === 2 ? 0.76 : Math.min(0.91, 0.76 + 0.15 * (n - 2));
+}`);
+  const inline=`      const groups = new Set(hits.map((h) => h.group || GROUP.EXTERNAL));
+      const groupCount = groups.size;
+      // Same-source repeats only improve trace detail, never confidence. Heterogeneous groups do.
+      const conf = groupCount <= 1 ? 0.52 : groupCount === 2 ? 0.76 : Math.min(0.91, 0.76 + 0.15 * (groupCount - 2));`;
+  if(!s.includes(inline)) throw new Error('goal confidence inline anchor missing');
+  s=s.replace(inline, `      // Same-source repeats only improve trace detail, never confidence. Heterogeneous groups do.
+      const conf = goalEvidenceConfidence(hits);`);
+  s=s.replace(`      fieldCandidate: u.field && !u.field.certain ? null : undefined,\n`, '');
+  fs.writeFileSync(p,s);
+}
+
 // Repair calibration regression fixture to the actual fitCalibration input contract.
 {
   const p='tests/issue-283-plus.mjs'; let s=fs.readFileSync(p,'utf8');
