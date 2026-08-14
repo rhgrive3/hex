@@ -22,13 +22,24 @@ export function ghidraAvailability() {
   return { available:true, executable:exe };
 }
 
-function parseOutput(text) {
+/* analyzeHeadless may prefix GhidraScript.println() with logger/script text. */
+export function parseGhidraOutput(text) {
   const functions = new Map();
   for (const line of String(text || '').split(/\r?\n/)) {
-    const m = /^GHIDRA_FUNCTION\s+(\S+)\s+(.*)$/.exec(line);
+    const marker = line.indexOf('GHIDRA_FUNCTION ');
+    if (marker < 0) continue;
+    const m = /^GHIDRA_FUNCTION\s+(\S+)\s+(.*)$/.exec(line.slice(marker));
     if (m) functions.set(m[1], m[2].replace(/\\n/g, '\n').replace(/\\\\/g, '\\'));
   }
   return functions;
+}
+
+function diagnosticsOf(stdout, stderr) {
+  const combined = `${stdout || ''}\n${stderr || ''}`;
+  return {
+    markerLines: combined.split(/\r?\n/).filter((line) => line.includes('GHIDRA_')).slice(-20),
+    functionHints: combined.split(/\r?\n/).filter((line) => /Function|function|Decomp/i.test(line)).slice(-20),
+  };
 }
 
 export function runGhidra(binary, opts = {}) {
@@ -39,9 +50,16 @@ export function runGhidra(binary, opts = {}) {
   try {
     const args = [tmp, 'hex-diff', '-deleteProject', '-import', path.resolve(binary), '-scriptPath', here, '-postScript', 'GhidraDump.java'];
     const r = spawnSync(a.executable, args, { encoding:'utf8', maxBuffer:64*1024*1024, timeout:Number(opts.timeoutMs || 180000) });
-    if (r.status !== 0) return { status:'failed', exitCode:r.status, stderr:String(r.stderr || '').slice(-4000) };
-    const functions = parseOutput(`${r.stdout || ''}\n${r.stderr || ''}`);
-    return { status:'ok', functions:Object.fromEntries(functions), count:functions.size };
+    const diagnostics = diagnosticsOf(r.stdout, r.stderr);
+    if (r.error) return { status:'failed', reason:r.error.message, diagnostics };
+    if (r.status !== 0) return { status:'failed', exitCode:r.status, stderr:String(r.stderr || '').slice(-4000), diagnostics };
+    const functions = parseGhidraOutput(`${r.stdout || ''}\n${r.stderr || ''}`);
+    return {
+      status:'ok',
+      functions:Object.fromEntries(functions),
+      count:functions.size,
+      diagnostics:functions.size ? undefined : diagnostics,
+    };
   } finally {
     fs.rmSync(tmp, { recursive:true, force:true });
   }
