@@ -7,38 +7,15 @@
  * 使っている保証にはならない。表が古い、別のクラスと位置が同じ、という話は普通にある。
  *
  * ここでやるのは、その仮説を **実際に逆アセンブルして確かめる** こと。
- *
- *     仮説: BattleManager の hp は、self の +0x20 にある
- *       ↓
- *     -[BattleManager hp] を逆アセンブルする
- *       ↓
- *     ldr  w0, [x0, #0x20]
- *     ret
- *       ↓
- *     確認できた。名前と位置の対応は、表ではなく命令で裏が取れた。
- *
- * ここまで来れば「たぶん」ではなく「そうです」と言える。ツールが一発で
- * 確定させられるかどうかは、この層があるかないかで決まる。
- *
- * きまり:
- *   - 確かめられなかったものは false を返す。「たぶん合っている」は返さない。
- *   - self（x0）を持ち回っているレジスタを追い、それ以外のベースは self とみなさない。
- *     よそのオブジェクトの同じ位置を、self の値として数えないため。
- *
  * 日本語は作らない。
  */
-import { findValueUpdates, locationKey, regKeyOf, selfRegisters } from './dataflow.js';
+import { findValueUpdates, constantComparisons, locationKey, regKeyOf, selfRegisters } from './dataflow.js';
 
-/* 引数レジスタ。Objective-C のメソッドは x0=self, x1=_cmd, x2 以降が引数。 */
 const ARG0 = 'x0';
 const ARG2 = 'x2';
 
-/*
- * self を持ち回っているレジスタの判定は dataflow.js へ移した（あちらでも要るため）。
- * これまでの取り込み口はそのまま使えるように、ここから出し直す。
- */
 export { selfRegisters };
-/** その命令が、self の +offset を触っているか。 */
+
 function touches(insn, selfSet, offset) {
   const m = insn.memory;
   if (!m || m.indexed || m.disp == null || m.stack) return false;
@@ -46,18 +23,6 @@ function touches(insn, selfSet, offset) {
   return m.disp === offset;
 }
 
-/**
- * アクセサ（getter / setter）が、本当にその位置を読み書きしているかを確かめる。
- *
- * これがこのファイルでいちばん価値のある関数。
- * クラス表の「名前 ↔ 位置」の対応を、命令で裏付けることになる。
- *
- * @param {object} model    buildSemanticModel の結果
- * @param {object} hyp      {offset: BigInt|number, size: number|null, kind: '-'|'+'}
- * @param {object} [opts]   {maxInstructions: 既定 40}
- * @returns {{getter:boolean, setter:boolean, offset:BigInt, size:number|null,
- *            row:number|null, address:BigInt|null, exclusive:boolean, instructions:number}}
- */
 export function verifyAccessor(model, hyp, opts) {
   const o = opts || {};
   const max = o.maxInstructions || 40;
@@ -72,7 +37,6 @@ export function verifyAccessor(model, hyp, opts) {
 
   const insns = model.instructions || [];
   out.instructions = insns.length;
-  // アクセサは短い。長い関数を「アクセサだった」と言い張らない。
   if (!insns.length || insns.length > max) return out;
 
   const { set, isSelf } = selfRegisters(model);
@@ -98,13 +62,8 @@ export function verifyAccessor(model, hyp, opts) {
   out.row = hit.insn.row;
   out.address = hit.insn.address;
   out.otherOffsets = others;
-  // ほかの位置を触っていないなら、この関数はこの値だけのためのもの＝アクセサそのもの
   out.exclusive = others === 0;
 
-  /*
-   * setter は、書き込んでいる値が引数（x2）から来ていることまで確かめる。
-   * self の別の値をコピーしているだけの関数を setter と呼ばないため。
-   */
   if (out.setter) {
     const store = insns.find((i) => touches(i, set, offset) && i.memory.kind === 'store');
     if (store) {
@@ -121,7 +80,6 @@ function wideOf(reg) {
   return m ? 'x' + m[1] : null;
 }
 
-/** その行の値が、引数レジスタ（x2..x7）から来ているか。短い関数だけを追う。 */
 function tracesToArgument(insns, row, reg) {
   let want = reg;
   for (let i = insns.findIndex((x) => x.row === row) - 1; i >= 0; i--) {
@@ -138,11 +96,7 @@ function tracesToArgument(insns, row, reg) {
 
 /**
  * ある位置（self の +offset）が、この関数の中でどう使われているかを数える。
- *
- * 「読んで、計算して、書き戻している」が見つかれば、そこが値を変えている場所。
- * 名前から探すのではなく、命令の形から探しているので、名前が消されていても効く。
- *
- * @returns {{loads, stores, rmw:Array, compares:Array, sites:Array, self:boolean}}
+ * RMW は dataflow facade を通るため、SSA/Memory-SSAで証明できる場合はその結果を使う。
  */
 export function fieldUse(model, offset, opts) {
   const o = opts || {};
@@ -168,7 +122,6 @@ export function fieldUse(model, offset, opts) {
   }
   if (!out.sites.length) return out;
 
-  /* 読んで → 計算して → 同じ場所へ書き戻す形（＝値の増減）を拾う */
   for (const u of findValueUpdates(model)) {
     if (u.kind !== 'read-modify-write') continue;
     if (u.location.disp !== want) continue;
@@ -176,8 +129,15 @@ export function fieldUse(model, offset, opts) {
     out.rmw.push(u);
   }
 
-  /* この位置の値が、定数と比べられているか（しきい値の判定） */
+  /*
+   * しきい値は「このフィールドをloadしたレジスタ」を最大8行だけ追う既存の局所条件を
+   * 維持する。その比較命令が即値を直接持たない場合だけ、SSAが同じcompare行で
+   * 証明した定数を補う。ここでは比較行と追跡中レジスタまで照合するため、generic
+   * pinpoint向けの「複数locationならpropagatedを抑止」制限を安全に解除できる。
+   */
   const byRow = new Map(insns.map((i) => [i.row, i]));
+  const comparisonByRow = new Map(constantComparisons(model, { allowUnscopedPropagated: true })
+    .map((c) => [c.row, c]));
   for (const site of out.sites) {
     if (site.kind !== 'load') continue;
     const insn = byRow.get(site.row);
@@ -189,25 +149,19 @@ export function fieldUse(model, offset, opts) {
       if (!next) continue;
       const mn = String(next.mnemonic || '').toLowerCase();
       if (!/^(cmp|cmn|subs|adds|ccmp|fcmp|tst)$/.test(mn)) {
-        /*
-         * 値が入れ替わったら追跡をやめる。ただし
-         *
-         *     ldr w8, [x19, #0x20]
-         *     sub w8, w8, w2        ← 同じレジスタを読んで書いている
-         *     cmp w8, #0            ← これも「HP を 0 と比べている」
-         *
-         * のように、自分自身から作った値はまだ同じ値の続きなので追い続ける。
-         * ここで切ると「HP が 0 以下なら死亡」の判定を丸ごと取りこぼす。
-         */
         if (next.writes.includes(reg) && !next.reads.includes(reg)) break;
         continue;
       }
       if (!next.reads.includes(reg)) continue;
       const imm = next.ops.find((op) => op.k === 'imm' && (op.value != null || op.float != null));
+      const fact = comparisonByRow.get(next.row) || null;
+      const ssaFact = fact && fact.register === reg ? fact : null;
       out.compares.push({
         row: next.row, address: next.address, mnemonic: mn,
-        value: imm && imm.value != null ? imm.value : null,
-        float: imm && imm.float != null ? imm.float : null,
+        value: imm && imm.value != null ? imm.value : (ssaFact ? ssaFact.value : null),
+        float: imm && imm.float != null ? imm.float : (ssaFact ? ssaFact.float : null),
+        engine: ssaFact ? ssaFact.engine : null,
+        propagated: !!(ssaFact && ssaFact.propagated),
       });
       break;
     }
@@ -215,10 +169,6 @@ export function fieldUse(model, offset, opts) {
   return out;
 }
 
-/**
- * しきい値の見張り（「HP が 0 以下なら死亡」「所持金が足りなければ買えない」）を探す。
- * 変えると挙動が変わる定数の在り処になるので、見つかったら必ず見せる。
- */
 export function verifyGuard(model, offset) {
   const use = fieldUse(model, offset);
   const guards = [];
@@ -226,17 +176,12 @@ export function verifyGuard(model, offset) {
     guards.push({
       row: c.row, address: c.address,
       value: c.value, float: c.float, mnemonic: c.mnemonic,
+      engine: c.engine || null, propagated: !!c.propagated,
     });
   }
   return { guards, loads: use.loads, stores: use.stores };
 }
 
-/**
- * 「この関数は、この値を扱う処理か」を命令で判定する。
- * 名前に頼らないので、名前が消されたバイナリでも使える。
- *
- * @returns {{touches:boolean, writes:boolean, rmw:boolean, guard:boolean, use:object}}
- */
 export function verifyFunctionHandlesField(model, offset) {
   const use = fieldUse(model, offset);
   return {
@@ -248,10 +193,6 @@ export function verifyFunctionHandlesField(model, offset) {
   };
 }
 
-/**
- * セレクタ（Objective-C のメソッド名）を、この関数が実際に呼んでいるか。
- * 名前の一致ではなく、呼び出しの実在で確かめたいときに使う。
- */
 export function callsSelector(model, re) {
   const out = [];
   for (const c of (model && model.calls) || []) {
