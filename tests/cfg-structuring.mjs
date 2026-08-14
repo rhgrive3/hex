@@ -47,6 +47,16 @@ const loop = make([
   'b.ne #0x100000004',
   'ret',
 ]);
+console.log('SEM_LOOP_DIAG', JSON.stringify({
+  text: loop.text,
+  semantic: loop.result.semantic,
+  legacyFallback: loop.result.legacyFallback,
+  coverage: loop.result.coverage,
+  loops: (loop.result.ir?.loops || []).map((x) => ({ header: x.header, nodes: [...x.nodes], exits: [...x.exits] })),
+  inductions: (loop.result.ctx?.inductions || []).map((x) => ({ name: x.name, header: x.loop?.header, step: String(x.step), init: x.init?.const == null ? null : String(x.init.const) })),
+  blocks: (loop.result.ir?.blocks || []).map((b) => ({ index: b.index, startRow: b.startRow, endRow: b.endRow, succ: b.succ, ops: (b.insts || []).map((i) => ({ op: i.op, sub: i.sub, row: i.row, cond: i.cond, target: i.extra?.target == null ? null : String(i.extra.target) })) })),
+  lines: (loop.result.lines || []).map((l) => ({ kind: l.kind, indent: l.indent, row: l.row, text: l.text })),
+}, (_k, v) => typeof v === 'bigint' ? String(v) : v));
 assert(loop.model.backEdges.length === 1, 'real natural loop disappeared from semantic model');
 assert(loop.cfg.backEdges.length === 1, 'real natural loop disappeared from CFG');
 assert(loop.result.coverage.missing === 0, 'real loop decompile lost a block');
