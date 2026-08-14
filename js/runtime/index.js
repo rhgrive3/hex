@@ -1,5 +1,5 @@
 import { DebugSessionManager } from './session.js';
-import { LocalFunctionSandboxAdapter, SymbolicAdapter, RemoteDebugAdapter, LLDBCompatibleAdapter, FridaCompatibleAdapter, ReplayAdapter } from '../adapters/index.js';
+import { LocalFunctionSandboxAdapter, EmulatorAdapter, SymbolicAdapter, RemoteDebugAdapter, LLDBCompatibleAdapter, FridaCompatibleAdapter, ReplayAdapter } from '../adapters/index.js';
 import { compileExperiment, HypothesisVerifier } from '../dynamic/experiments.js';
 import { createRuntimeEvidenceRecord, evidenceFromExperiment, fuseStaticDynamic, traceToSemanticFacts } from '../runtime-evidence/index.js';
 import { DebugAdapterError, asAddress, boundedInteger } from '../debug/adapter.js';
@@ -87,7 +87,10 @@ export class RuntimeAnalysisPlatform {
   }
   async readRuntimeField(address, size = 8) {
     const session = this.currentSession();
-    const bytes = await session.adapter.readMemory(address, boundedInteger(size,8,1,4096,'size'));
+    const n = Number(size == null ? 8 : size);
+    if (!Number.isSafeInteger(n) || n < 1) throw new DebugAdapterError('invalid-size','runtime field size must be a positive safe integer');
+    if (n > 4096) throw new DebugAdapterError('too-large','runtime field read exceeds 4096 bytes');
+    const bytes = await session.adapter.readMemory(address, n);
     const evidence = createRuntimeEvidenceRecord({ backend:session.backend,binaryHash:session.binaryHash,sessionId:session.id,
       experimentId:`read:${asAddress(address).toString(16)}`,caseId:'read',address:asAddress(address),input:{address:asAddress(address),size},
       observedState:{bytes:[...bytes]},verdict:'inconclusive',confidence:0.5,kind:'memory-read',reproducibility:{replayable:true,runs:1,consistent:null} });
@@ -96,9 +99,26 @@ export class RuntimeAnalysisPlatform {
   }
   fuse(staticCandidate, runtimeEvidence = null) { return fuseStaticDynamic(staticCandidate, runtimeEvidence || this.evidence); }
   replayShape(experimentId = null) { return this.currentSession().replayShape(experimentId); }
+  async replayExperiment(recording, options = {}) {
+    const session = this.currentSession();
+    const source = recording || {};
+    const original = source.experiment || (Array.isArray(source.experiments) ? source.experiments[0] : null);
+    if (!original) throw new DebugAdapterError('replay-missing-experiment','replay recording has no experiment');
+    let functionAddress = asAddress(original.functionAddress);
+    const sourceHash = source.binaryHash || original.binaryHash || null;
+    if (sourceHash && session.binaryHash && sourceHash !== session.binaryHash) {
+      const resolveFunction = options.resolveFunction || this.options.resolveFunction;
+      if (typeof resolveFunction !== 'function') return { status:'unsupported', reason:'binary-version-mismatch', sourceHash, targetHash:session.binaryHash, evidence:[] };
+      const resolved = await resolveFunction({ functionAddress, fingerprint:original.functionFingerprint || source.functionFingerprint || null, sourceBinaryHash:sourceHash, targetBinaryHash:session.binaryHash });
+      if (resolved == null) return { status:'unsupported', reason:'function-re-resolution-failed', sourceHash, targetHash:session.binaryHash, evidence:[] };
+      functionAddress = asAddress(resolved.address ?? resolved);
+    }
+    const experiment = { ...original, functionAddress, binaryHash:session.binaryHash || sourceHash };
+    return this.runExperiment(experiment,{ ...options,replay:true });
+  }
 }
 
 export { DebugSessionManager } from './session.js';
-export { LocalFunctionSandboxAdapter, SymbolicAdapter, RemoteDebugAdapter, LLDBCompatibleAdapter, FridaCompatibleAdapter, ReplayAdapter } from '../adapters/index.js';
+export { LocalFunctionSandboxAdapter, EmulatorAdapter, SymbolicAdapter, RemoteDebugAdapter, LLDBCompatibleAdapter, FridaCompatibleAdapter, ReplayAdapter } from '../adapters/index.js';
 export { compileExperiment, generateDifferentialInputs, compareExpected, classifyHypothesis, HypothesisVerifier } from '../dynamic/experiments.js';
-export { createRuntimeEvidenceRecord, evidenceFromExperiment, traceToSemanticFacts, dynamicTypeAnnotation, fuseStaticDynamic, createRuntimeAgentTools, registerRuntimeAgentTools, RUNTIME_TOOL_NAMES } from '../runtime-evidence/index.js';
+export { createRuntimeEvidenceRecord, evidenceFromExperiment, traceToSemanticFacts, compareRuntimeDispatch, dynamicTypeAnnotation, fuseStaticDynamic, createRuntimeAgentTools, registerRuntimeAgentTools, RUNTIME_TOOL_NAMES } from '../runtime-evidence/index.js';
