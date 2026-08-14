@@ -1,0 +1,37 @@
+name: Temporary learn label fix
+
+on:
+  push:
+    branches: [canonical-secondary-ui-v2]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: canonical-secondary-ui-v2
+      - name: Replace nonexistent translation key
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('js/ui/secondary.js')
+          text = p.read_text()
+          old = "t('learn.chapter', { n: index + 1 })"
+          if text.count(old) != 2:
+              raise SystemExit(f'expected 2 learn.chapter calls, found {text.count(old)}')
+          text = text.replace(old, "pick(`第${index + 1}章`, `Chapter ${index + 1}`)")
+          text = text.replace("import { t, pick } from '../i18n.js';", "import { pick } from '../i18n.js';", 1)
+          p.write_text(text)
+          Path('.github/workflows/tmp-fix-learn-label.yml').unlink()
+      - name: Commit fix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add js/ui/secondary.js .github/workflows/tmp-fix-learn-label.yml
+          git commit -m "Fix canonical learning chapter labels"
+          git push origin HEAD:canonical-secondary-ui-v2
