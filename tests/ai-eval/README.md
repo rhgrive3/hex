@@ -58,15 +58,9 @@ See `results.example.jsonl` for a complete minimal example.
 
 ## Evidence rule
 
-`status: "verified"` is special. The evaluator accepts it only if it can identify deterministic proof via one of these mechanisms:
+`status: "verified"` is special. The evaluator accepts it only when application-owned telemetry proves the evidence ID, either because a deterministic tool trace emitted that ID or because the runtime recorder lists it in `observed.verifiedEvidenceIds`.
 
-- `evidence.deterministic === true`;
-- `evidence.verifiedByTool === true`;
-- `evidence.verification.verified === true`;
-- a source tool plus concrete source/proof data; or
-- a deterministic tool trace that emitted the evidence ID.
-
-A language model saying "verified" is never enough.
+Fields inside the result itself — including `deterministic`, `verifiedByTool`, `sourceTool`, or a confident model explanation — are **not** sufficient. The result cannot self-certify its own trust level.
 
 ## Navigation rule
 
