@@ -10,13 +10,16 @@ import { addrHex, parseAddress } from '../format.js';
 import { pick } from '../i18n.js';
 import { menu, copyText, toast } from '../ui.js';
 import {
-  showSettings, showHelp, showLearn, showFileInfo, showSections, showStructure,
+  showSettings, showHelp, showLearn, showFileInfo, showSections, showStructure, showCandidates,
 } from '../panels.js';
 import {
   currentFunctionAddr, showTools, showRename, showComment, showDebugger,
 } from '../tools.js';
+import { compileGoal } from '../goalc.js';
 import { decompile, decompiledText } from '../decompile.js';
 import { cfgGraph, callGraph, renderGraph, graphLegend } from '../graphview.js';
+import { classifyFunction, discoverSubsystems } from '../recognition/classifier.js';
+import { traceAppFunction, runtimeEvidenceForApp } from '../runtime/app-runtime.js';
 
 const ja = () => (document.documentElement.lang || navigator.language || 'ja').toLowerCase().startsWith('ja');
 const text = (j, e) => ja() ? j : e;
@@ -44,6 +47,16 @@ function requireFile(app, action) {
   if (app.store.get('fileInfo')) return action();
   toast(text('先にファイルを開いてください。', 'Open a file first.'));
   return null;
+}
+
+function architectureOf(app) {
+  const info = app?.store?.get?.('fileInfo') || {};
+  const value = app?.capabilities?.architecture || app?.backend?.capabilities?.architecture || info.architecture || info.arch || info.cpu || 'arm64';
+  return String(value).toLowerCase();
+}
+
+function fixedArm64Rows(app) {
+  return /arm64|aarch64/.test(architectureOf(app));
 }
 
 function installViewportBridge() {
@@ -88,17 +101,26 @@ function rememberQuery(query) {
   try { sessionStorage.setItem('hex.ui.recentQueries', JSON.stringify(next)); } catch { /* private mode */ }
 }
 
-function triggerLegacyInvestigation(app, query) {
-  requireFile(app, () => {
-    app.openInvestigate();
-    if (!query) return;
-    requestAnimationFrame(() => {
-      const input = document.querySelector('#overlays .sheet:not(.parked) input[type="search"]');
-      if (!input) return;
-      input.value = query;
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-    });
+/*
+ * Canonical Investigate no longer opens the legacy question sheet and then
+ * searches its DOM for an input to fake an Enter key. The Goal Compiler is the
+ * domain boundary; only the candidate presentation remains a compatibility Sheet.
+ */
+function runInvestigation(app, query) {
+  return requireFile(app, () => {
+    try {
+      const compiled = compileGoal(String(query || '').trim());
+      const goal = compiled?.goal;
+      if (!goal) {
+        const missing = Array.isArray(compiled?.missing) && compiled.missing.length ? ' ' + compiled.missing.join(' / ') : '';
+        toast(text('質問を解析できませんでした。対象や動作をもう少し具体的に書いてください。', 'Could not compile that question. Describe the target or action more specifically.') + missing);
+        return null;
+      }
+      return showCandidates(app, { ...goal, query: compiled });
+    } catch (error) {
+      toast(text('質問の解析に失敗しました。', 'Question compilation failed.') + ' ' + String(error?.message || error));
+      return null;
+    }
   });
 }
 
@@ -121,7 +143,7 @@ function renderInvestigate(app, router) {
     const q = input.value.trim();
     if (!q) { input.focus(); return; }
     rememberQuery(q);
-    triggerLegacyInvestigation(app, q);
+    runInvestigation(app, q);
   });
   hero.body.append(form);
   const suggestions = h('div', 'ui-goal-suggestions');
@@ -130,7 +152,7 @@ function renderInvestigate(app, router) {
     text('HPを書き換える処理', 'where HP is written'),
     text('通信している場所', 'network communication'),
     text('ガチャの結果を決める処理', 'where gacha results are decided'),
-  ]) suggestions.append(uiButton(q, { cls: 'ui-suggestion', onClick: () => { input.value = q; rememberQuery(q); triggerLegacyInvestigation(app, q); } }));
+  ]) suggestions.append(uiButton(q, { cls: 'ui-suggestion', onClick: () => { input.value = q; rememberQuery(q); runInvestigation(app, q); } }));
   hero.body.append(suggestions);
   s.body.append(hero.root);
 
@@ -147,33 +169,78 @@ function renderInvestigate(app, router) {
   if (recent.length) {
     s.body.append(sectionTitle(text('最近の調査', 'Recent investigations')));
     const list = h('div', 'ui-list');
-    for (const q of recent) list.append(listRow({ title: q, onClick: () => { input.value = q; triggerLegacyInvestigation(app, q); } }));
+    for (const q of recent) list.append(listRow({ title: q, onClick: () => { input.value = q; runInvestigation(app, q); } }));
     s.body.append(list);
   }
   return { root: s.root, focus: () => input.focus() };
 }
 
-function functionItems(app, query) {
+function lowerBoundBigInt(array, value) {
+  let lo = 0, hi = array.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (array[mid] < value) lo = mid + 1; else hi = mid;
+  }
+  return lo;
+}
+
+function functionSource(app) {
+  const sym = app.symbols;
+  const funcs = sym?.funcs || [];
+  const region = app.codeRegion?.() || app.store.get('currentRegion');
+  const lo = region?.vmAddr ?? 0n;
+  const hi = region ? region.vmAddr + region.size : null;
+  const start = funcs.length ? lowerBoundBigInt(funcs, lo) : 0;
+  const end = hi == null ? funcs.length : lowerBoundBigInt(funcs, hi);
+  return {
+    length: Math.max(0, end - start),
+    itemAt(index) {
+      const absolute = start + index;
+      const addr = funcs[absolute];
+      const next = absolute + 1 < end ? funcs[absolute + 1] : hi;
+      const exact = sym?.exact?.(addr);
+      return {
+        addr,
+        name: exact?.name || functionName(app, addr),
+        size: next != null && next > addr ? next - addr : null,
+      };
+    },
+  };
+}
+
+function matchingFunctionItems(app, query) {
   const q = String(query || '').trim().toLowerCase();
+  if (!q) return functionSource(app);
   const sym = app.symbols;
   if (!sym) return [];
+  const region = app.codeRegion?.() || app.store.get('currentRegion');
+  const lo = region?.vmAddr ?? 0n;
+  const hi = region ? region.vmAddr + region.size : null;
   const out = [];
+  const seen = new Set();
+  const add = (addr, name) => {
+    if (addr == null || addr < lo || (hi != null && addr >= hi) || !sym.isFunctionStart?.(addr)) return;
+    const key = addr.toString();
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ addr, name: name || functionName(app, addr) });
+  };
   const names = Array.isArray(sym.names) ? sym.names : [];
-  const addrs = Array.isArray(sym.addrs) ? sym.addrs : [];
-  const max = Math.min(names.length, addrs.length);
-  for (let i = 0; i < max && out.length < 1000; i++) {
+  const addrs = sym.addrs || [];
+  for (let i = 0; i < names.length && i < addrs.length; i++) {
     const name = String(names[i] || '');
-    if (q && !name.toLowerCase().includes(q) && !String(addrs[i]).includes(q)) continue;
-    out.push({ addr: addrs[i], name: name || functionName(app, addrs[i]) });
+    if (name.toLowerCase().includes(q)) add(addrs[i], name);
   }
-  if (!out.length && sym.functionList && app.codeRegion()) {
-    const list = sym.functionList(app.codeRegion(), 600) || [];
-    for (const item of list) {
-      const name = item.name || functionName(app, item.addr);
-      if (!q || name.toLowerCase().includes(q) || addressText(item.addr).toLowerCase().includes(q)) out.push({ addr: item.addr, name });
-      if (out.length >= 600) break;
+  for (const [rawAddr, name] of sym.renames || []) {
+    if (String(name || '').toLowerCase().includes(q)) {
+      try { add(BigInt(rawAddr), name); } catch { /* ignore malformed rename */ }
     }
   }
+  const sub = /^sub_?([0-9a-f]+)$/i.exec(q);
+  if (sub) {
+    try { add(BigInt('0x' + sub[1]), null); } catch { /* ignore */ }
+  }
+  out.sort((a, b) => a.addr < b.addr ? -1 : a.addr > b.addr ? 1 : 0);
   return out;
 }
 
@@ -187,13 +254,8 @@ function sectionItems(app, query) {
 async function stringItems(app, query) {
   const rows = await app.ensureStrings();
   const q = String(query || '').trim().toLowerCase();
-  const out = [];
-  for (const row of rows || []) {
-    if (q && !String(row.text || '').toLowerCase().includes(q)) continue;
-    out.push(row);
-    if (out.length >= 1000) break;
-  }
-  return out;
+  if (!q) return rows || [];
+  return (rows || []).filter((row) => String(row.text || '').toLowerCase().includes(q));
 }
 
 function externalItems(app, query) {
@@ -231,7 +293,7 @@ function renderExplorer(app, router, route) {
   const showRows = (items, renderRow, emptyText) => {
     virtual?.dispose(); virtual = null;
     content.replaceChildren();
-    if (!items.length) { content.append(emptyState(text('見つかりません', 'Nothing found'), emptyText)); return; }
+    if (!items || !Number(items.length)) { content.append(emptyState(text('見つかりません', 'Nothing found'), emptyText)); return; }
     virtual = new VirtualList({ items, rowHeight: 64, ariaLabel: text('索引の結果', 'Explorer results'), renderRow });
     content.append(virtual.root);
   };
@@ -245,8 +307,8 @@ function renderExplorer(app, router, route) {
       return;
     }
     if (scope === 'functions') {
-      const items = functionItems(app, q);
-      showRows(items, (item) => listRow({ title: item.name, subtitle: addressText(item.addr), onClick: () => router.navigate('/function/' + BigInt(item.addr).toString() + '/overview') }), text('関数名がまだ復元されていない可能性があります。', 'Function names may not be recovered yet.'));
+      const items = matchingFunctionItems(app, q);
+      showRows(items, (item) => listRow({ title: item.name, subtitle: addressText(item.addr), meta: item.size != null ? String(item.size) + ' B' : '', onClick: () => router.navigate('/function/' + BigInt(item.addr).toString() + '/overview') }), text('関数名がまだ復元されていない可能性があります。', 'Function names may not be recovered yet.'));
       return;
     }
     if (scope === 'sections') {
@@ -308,6 +370,67 @@ function codeViewState(app) {
   };
 }
 
+function summaryText(res) {
+  const value = res?.summary;
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) return value.filter(Boolean).join(' ');
+  if (value && typeof value === 'object') return value.text || value.summary || value.what || '';
+  return '';
+}
+
+function recognitionInput(app, addr, res) {
+  const owner = app.ownerOf?.(addr);
+  const model = res?.model || {};
+  const semantic = res?.semanticFacts || {};
+  const fn = app.symbols?.functionAt?.(addr);
+  const instructions = (model.instructions || []).map((item) => ({ mnemonic: item.mnemonic || item.mn || '', operands: item.operands || item.ops || '' }));
+  const blocks = model.blocks || [];
+  const edges = blocks.reduce((sum, block) => sum + (block.succ?.length || block.successors?.length || 0), 0);
+  const writes = (semantic.stores || []).map((store) => store.location?.key || store.location?.text || store.lhsText).filter(Boolean);
+  const calls = (semantic.calls || []).map((call) => call.name).filter(Boolean);
+  const operations = [];
+  for (const store of semantic.stores || []) {
+    const op = store.readModifyWrite?.kind || store.expression?.op || store.expression?.name;
+    if (op) operations.push(op);
+  }
+  return {
+    address: addr,
+    name: app.symbols?.nameAt?.(addr) || null,
+    architecture: architectureOf(app),
+    size: fn?.end != null && fn.end > fn.start ? Number(fn.end - fn.start) : 0,
+    instructions,
+    cfg: { blocks: blocks.length, edges, exits: blocks.filter((block) => !(block.succ?.length || block.successors?.length)).length, calls: calls.length },
+    semantic: { writes, calls, operations, reads: [], thresholds: [] },
+    calls,
+    objcClass: owner?.className || null,
+    objcSelector: owner?.sel || null,
+  };
+}
+
+function evidenceStatus(item) {
+  const verdict = String(item?.verdict || item?.status || '').toLowerCase();
+  if (verdict === 'contradicted') return 'contradicted';
+  if (verdict === 'confirmed' || item?.confirmed === true) return 'confirmed';
+  const confidence = Number(item?.confidence);
+  if (verdict === 'supported' || (Number.isFinite(confidence) && confidence >= 0.75)) return 'likely';
+  return 'unverified';
+}
+
+function evidenceTitle(item, index) {
+  return String(item?.reason || item?.kind || item?.type || item?.source || item?.family || text(`根拠 ${index + 1}`, `Evidence ${index + 1}`));
+}
+
+function evidenceSubtitle(item) {
+  const bits = [];
+  if (item?.address != null) bits.push(addressText(item.address));
+  else if (item?.addr != null) bits.push(addressText(item.addr));
+  if (item?.row != null) bits.push('row ' + item.row);
+  if (item?.provenance?.group) bits.push(String(item.provenance.group));
+  else if (item?.group) bits.push(String(item.group));
+  if (item?.detail) bits.push(String(item.detail));
+  return bits.join(' · ');
+}
+
 function renderFunctionWorkspace(app, router, route) {
   let addr;
   try { addr = BigInt(route.params.address); } catch { addr = currentFunctionAddr(app); }
@@ -336,7 +459,9 @@ function renderFunctionWorkspace(app, router, route) {
 
   const rowMapper = () => {
     const region = app.store.get('currentRegion');
+    if (!fixedArm64Rows(app)) return { supported: false, rowOfAddress: () => null, addrOfRow: () => null };
     return {
+      supported: true,
       rowOfAddress: (a) => !region || a == null ? null : Number((a - region.vmAddr) / 4n),
       addrOfRow: (row) => region ? region.vmAddr + BigInt(row) * 4n : null,
     };
@@ -344,23 +469,44 @@ function renderFunctionWorkspace(app, router, route) {
 
   const renderOverview = (res) => {
     const owner = app.ownerOf?.(addr);
+    const recognition = classifyFunction(recognitionInput(app, addr, res));
+    const subsystems = discoverSubsystems(recognitionInput(app, addr, res));
     const grid = h('div', 'ui-card-grid');
     const summary = card(text('何をしている？', 'What does it do?'));
-    summary.body.append(h('p', 'ui-lead', owner && owner.className
+    const recovered = summaryText(res);
+    summary.body.append(h('p', 'ui-lead', recovered || (owner && owner.className
       ? text(`${owner.className} の ${owner.sel || 'メソッド'} として認識されています。`, `Recognized as ${owner.sel || 'a method'} on ${owner.className}.`)
-      : text('命令列と参照関係から、この関数の役割を確認できます。', 'Use the instructions and references below to determine this function’s role.')));
-    summary.body.append(evidenceBadge(owner ? 'confirmed' : 'unverified'));
+      : text('命令列と参照関係から、この関数の役割を確認できます。', 'Use the instructions and references below to determine this function’s role.'))));
+    summary.body.append(evidenceBadge(owner ? 'confirmed' : recovered ? 'likely' : 'unverified'));
     grid.append(summary.root);
+
+    const identity = card(text('コードの分類', 'Code identity'));
+    identity.body.append(listRow({
+      title: recognition.classification,
+      subtitle: (recognition.evidence || []).join(' · ') || text('まだ十分な識別根拠がありません', 'Not enough identity evidence yet'),
+      meta: 'score ' + Number(recognition.confidence || 0).toFixed(2),
+      badge: evidenceBadge(recognition.classification === 'UNKNOWN' ? 'unverified' : 'likely'),
+    }));
+    for (const subsystem of subsystems.slice(0, 3)) identity.body.append(listRow({
+      title: subsystem.subsystem,
+      subtitle: (subsystem.evidence || []).join(' · '),
+      meta: 'score ' + Number(subsystem.confidence || 0).toFixed(2),
+      badge: evidenceBadge(subsystem.confidence >= 0.72 ? 'likely' : 'unverified'),
+    }));
+    grid.append(identity.root);
+
     const facts = card(text('基本情報', 'Basic facts'));
     facts.body.append(listRow({ title: text('命令数', 'Instructions'), meta: String(res.instructions || res.model?.instructions?.length || 0) }));
     facts.body.append(listRow({ title: text('ブロック数', 'Basic blocks'), meta: String(res.model?.blocks?.length || 0) }));
     facts.body.append(listRow({ title: text('アドレス', 'Address'), meta: addressText(addr), mono: true }));
+    facts.body.append(listRow({ title: text('アーキテクチャ', 'Architecture'), meta: architectureOf(app) }));
     grid.append(facts.root);
     const next = card(text('次に見る', 'Next steps'));
     for (const item of [
       ['pseudocode', text('疑似Cで読む', 'Read pseudocode')],
       ['flow', text('分岐とループを見る', 'Inspect branches and loops')],
       ['evidence', text('なぜそう言えるか', 'Review evidence')],
+      ['runtime', text('実行して確かめる', 'Verify at runtime')],
     ]) next.body.append(listRow({ title: item[1], onClick: () => router.navigate('/function/' + addr.toString() + '/' + item[0]) }));
     grid.append(next.root);
     content.replaceChildren(grid);
@@ -368,6 +514,10 @@ function renderFunctionWorkspace(app, router, route) {
 
   const renderPseudocode = (res) => {
     const map = rowMapper();
+    if (!map.supported) {
+      content.replaceChildren(emptyState(text('このアーキテクチャの疑似Cは未対応です', 'Pseudocode is unavailable for this architecture'), text('現在のSemantic DecompilerはARM64を対象にしています。未対応のCPUをARM64として表示することはしません。', 'The Semantic Decompiler currently targets ARM64; Hex will not reinterpret another CPU as ARM64.')));
+      return;
+    }
     const out = decompile(res.model, {
       name: app.symbols?.nameAt?.(addr), addr,
       rowOfAddress: map.rowOfAddress, addrOfRow: map.addrOfRow,
@@ -389,6 +539,10 @@ function renderFunctionWorkspace(app, router, route) {
 
   const renderFlow = (res) => {
     const map = rowMapper();
+    if (!map.supported) {
+      content.replaceChildren(emptyState(text('このアーキテクチャのCFG表示は未対応です', 'CFG view is unavailable for this architecture'), text('固定4バイト行を前提にせず、安全側で表示を止めています。', 'This view is disabled rather than assuming fixed four-byte instruction rows.')));
+      return;
+    }
     const graph = cfgGraph(res.model, {
       rowOfAddress: map.rowOfAddress,
       text: (insn) => insn.mnemonic + ' ' + insn.operands,
@@ -422,19 +576,78 @@ function renderFunctionWorkspace(app, router, route) {
   };
 
   const renderEvidence = (res) => {
-    const facts = h('div', 'ui-evidence-stack');
+    const stack = h('div', 'ui-evidence-stack');
     const name = app.symbols?.nameAt?.(addr);
-    facts.append(listRow({ title: text('関数境界', 'Function boundary'), subtitle: addressText(addr), badge: evidenceBadge('confirmed') }));
-    facts.append(listRow({ title: text('関数名', 'Function name'), subtitle: name || text('シンボル名なし', 'No symbol name'), badge: evidenceBadge(name ? 'confirmed' : 'unverified') }));
-    facts.append(listRow({ title: text('制御フロー復元', 'Control-flow recovery'), subtitle: text(`${res.model?.blocks?.length || 0} ブロック`, `${res.model?.blocks?.length || 0} blocks`), badge: evidenceBadge((res.model?.blocks?.length || 0) > 0 ? 'likely' : 'unverified') }));
-    const note = card(text('表示の意味', 'How to read this'), { subtitle: text('確認済み=バイナリに直接ある事実。可能性が高い=解析からの推論。ランキング点とは別物です。', 'Confirmed means directly observed in the binary; Likely is an inference. Neither is a ranking score.') });
-    content.replaceChildren(note.root, facts);
+    stack.append(listRow({ title: text('関数境界', 'Function boundary'), subtitle: addressText(addr), badge: evidenceBadge('confirmed') }));
+    stack.append(listRow({ title: text('関数名', 'Function name'), subtitle: name || text('シンボル名なし', 'No symbol name'), badge: evidenceBadge(name ? 'confirmed' : 'unverified') }));
+
+    const deterministic = Array.isArray(res.evidence) ? res.evidence : [];
+    deterministic.slice(0, 80).forEach((item, index) => stack.append(listRow({
+      title: evidenceTitle(item, index),
+      subtitle: evidenceSubtitle(item),
+      badge: evidenceBadge(evidenceStatus(item)),
+    })));
+
+    const runtime = runtimeEvidenceForApp(app, addr);
+    runtime.slice(-20).forEach((item, index) => stack.append(listRow({
+      title: text('実行時観測: ', 'Runtime observation: ') + evidenceTitle(item, index),
+      subtitle: evidenceSubtitle(item),
+      badge: evidenceBadge(evidenceStatus(item)),
+    })));
+
+    const proof = Array.isArray(res.rewriteProof) ? res.rewriteProof : [];
+    proof.slice(0, 30).forEach((item) => stack.append(listRow({
+      title: text('逆コンパイル変換: ', 'Decompiler rewrite: ') + String(item.rule || item.name || item.proof?.kind || 'rewrite'),
+      subtitle: item.proof?.detail || item.detail || '',
+      badge: evidenceBadge('confirmed'),
+    })));
+
+    const note = card(text('表示の意味', 'How to read this'), { subtitle: text('「確認済み」はバイナリまたは実行観測に直接結び付いた事実です。推論は「可能性が高い」「未確認」のまま分離します。ランキング点を確率として表示しません。', 'Confirmed is reserved for facts tied directly to binary/runtime evidence. Inference remains Likely or Unverified; ranking scores are not presented as probabilities.') });
+    const nodes = [note.root, stack];
+    if (Array.isArray(res.warnings) && res.warnings.length) {
+      const warnings = card(text('未解決 / 注意', 'Unresolved / warnings'));
+      for (const warning of res.warnings.slice(0, 20)) warnings.body.append(listRow({ title: String(warning), badge: evidenceBadge('unverified') }));
+      nodes.push(warnings.root);
+    }
+    content.replaceChildren(...nodes);
   };
 
-  const renderRuntime = () => {
-    const c = card(text('実行時に確かめる', 'Verify at runtime'), { subtitle: text('静的解析だけで断定できない仮説を、実行結果で確認します。', 'Verify hypotheses that static analysis alone cannot prove.') });
-    c.body.append(uiButton(text('Runtime / Debuggerを開く', 'Open Runtime / Debugger'), { cls: 'ui-primary-action', onClick: () => showDebugger(app, addr) }));
-    content.replaceChildren(c.root);
+  const renderRuntime = (res) => {
+    const root = h('div', 'ui-card-grid');
+    const c = card(text('実行時に確かめる', 'Verify at runtime'), { subtitle: text('新しいRuntime Analysis Platformで、この関数だけを安全なローカルsandbox上で実行・観測します。', 'Run this function in the Runtime Analysis Platform local sandbox and record evidence.') });
+    const resultHost = h('div', 'ui-runtime-result');
+    const run = uiButton(text('ローカル実行で観測する', 'Run local observation'), { cls: 'ui-primary-action' });
+    run.addEventListener('click', async () => {
+      run.disabled = true;
+      resultHost.replaceChildren(loadingState(text('実行して観測しています…', 'Running and collecting observations…')));
+      try {
+        const result = await traceAppFunction(app, addr, { maxSteps: 12000, timeoutMs: 1500, limit: 4096 });
+        if (disposed) return;
+        const obs = result.observation || {};
+        const stop = obs.stop?.kind || 'unknown';
+        const direct = stop === 'return' ? 'confirmed' : 'unverified';
+        const list = h('div', 'ui-list');
+        list.append(listRow({ title: text('停止理由', 'Stop reason'), meta: stop, badge: evidenceBadge(direct) }));
+        list.append(listRow({ title: text('実行命令数', 'Executed instructions'), meta: String(obs.steps ?? '—') }));
+        list.append(listRow({ title: text('戻り値', 'Return value'), meta: obs.returnValue != null ? addressText(obs.returnValue) : '—', mono: true }));
+        list.append(listRow({ title: text('分岐観測', 'Observed branches'), meta: String(obs.branches?.length || 0) }));
+        list.append(listRow({ title: text('メモリ書き込み', 'Memory writes'), meta: String(obs.stores?.length || obs.memoryDelta?.length || 0) }));
+        list.append(listRow({ title: text('Runtime evidence', 'Runtime evidence'), meta: String(result.evidence?.length || 0), badge: evidenceBadge(result.evidence?.length ? 'confirmed' : 'unverified') }));
+        resultHost.replaceChildren(list);
+      } catch (error) {
+        if (!disposed) resultHost.replaceChildren(errorState(text('ローカル実行を完了できませんでした', 'Local runtime observation could not complete'), String(error?.message || error)));
+      } finally {
+        if (!disposed) run.disabled = false;
+      }
+    });
+    c.body.append(run, resultHost);
+    root.append(c.root);
+
+    const capability = card(text('Live Debugger', 'Live Debugger'), { subtitle: text('Safari単体ではiOSプロセスへ任意attachできません。LLDB/Frida互換のlive観測は外部Hex bridge接続時のみ有効です。', 'Safari cannot arbitrarily attach to an iOS process. LLDB/Frida-compatible live observation requires an external Hex bridge.') });
+    capability.body.append(uiButton(text('高度なDebuggerを開く', 'Open advanced debugger'), { cls: 'ui-secondary-action', onClick: () => showDebugger(app, addr) }));
+    root.append(capability.root);
+    content.replaceChildren(root);
+    void res;
   };
 
   (async () => {
@@ -461,13 +674,17 @@ function renderResults(app, router) {
   const report = app.autoReport && app.autoReport.report;
   const findings = report && (report.findings || report.results || report.goals);
   if (Array.isArray(findings) && findings.length) {
-    const list = h('div', 'ui-list');
-    for (const item of findings.slice(0, 100)) {
+    const renderFinding = (item) => {
       const title = item.title || item.label || item.goal?.text || item.goal || text('解析結果', 'Finding');
       const address = item.addr ?? item.address ?? item.functionAddr ?? item.function;
-      list.append(listRow({ title: String(title), subtitle: address != null ? addressText(address) : '', badge: evidenceBadge(item.confirmed ? 'confirmed' : item.confidence > 0.7 ? 'likely' : 'unverified'), onClick: address != null ? () => router.navigate('/function/' + BigInt(address).toString() + '/overview') : null }));
+      return listRow({ title: String(title), subtitle: address != null ? addressText(address) : '', badge: evidenceBadge(item.confirmed ? 'confirmed' : item.confidence > 0.7 ? 'likely' : 'unverified'), onClick: address != null ? () => router.navigate('/function/' + BigInt(address).toString() + '/overview') : null });
+    };
+    if (findings.length > 80) s.body.append(new VirtualList({ items: findings, rowHeight: 64, ariaLabel: text('解析結果', 'Analysis results'), renderRow: renderFinding }).root);
+    else {
+      const list = h('div', 'ui-list');
+      for (const item of findings) list.append(renderFinding(item));
+      s.body.append(list);
     }
-    s.body.append(list);
   } else {
     s.body.append(emptyState(text('まだ確定した結果がありません', 'No confirmed results yet'), text('「調べる」で目的を入力すると、答えと根拠をここから辿れるようになります。', 'Investigate a goal to create results you can revisit.'), uiButton(text('調べるへ', 'Go to Investigate'), { cls: 'ui-primary-action', onClick: () => router.navigate('/investigate') })));
   }
@@ -482,6 +699,7 @@ function renderSecondary(app, router, kind) {
   }[kind];
   const s = screen(config[0], { id: kind, subtitle: config[1] });
   s.body.append(uiButton(text('開く', 'Open'), { cls: 'ui-primary-action', onClick: config[2] }));
+  void router;
   return { root: s.root };
 }
 
@@ -512,7 +730,7 @@ function installCommandCenter(app, router, actions, host) {
     if (addr != null) { app.goToAddress(addr, { announce: true }); router.navigate('/code/' + addr.toString()); input.blur(); return; }
     const command = q.replace(/^>\s*/, '').toLowerCase();
     if (/^(settings|setting|設定)$/.test(command)) { router.navigate('/settings'); input.blur(); return; }
-    if (/^(help|ヘルプ|help)$/.test(command)) { router.navigate('/help'); input.blur(); return; }
+    if (/^(help|ヘルプ)$/.test(command)) { router.navigate('/help'); input.blur(); return; }
     if (/^(code|コード)$/.test(command)) { router.navigate('/code'); input.blur(); return; }
     router.navigate('/explorer/functions?q=' + encodeURIComponent(q)); input.blur();
   });
