@@ -18,6 +18,12 @@ const list = (value, name) => {
   return value;
 };
 
+function plainObject(value, name) {
+  if (value == null) return {};
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new ProjectFormatError(`${name} must be an object`);
+  return value;
+}
+
 export function createHexProject(input = {}) {
   const now = new Date().toISOString();
   return {
@@ -45,7 +51,7 @@ export function createHexProject(input = {}) {
       investigationSessions: list(input.investigationSessions ?? input.findings?.investigationSessions, 'findings.investigationSessions'),
     },
     analysis: {
-      settings: input.analysisSettings || input.analysis?.settings || {},
+      settings: plainObject(input.analysisSettings ?? input.analysis?.settings, 'analysis.settings'),
       cacheReferences: list(input.cacheReferences ?? input.analysis?.cacheReferences, 'analysis.cacheReferences'),
     },
     navigation: normalizeNavigation(input.navigation || {}),
@@ -53,6 +59,7 @@ export function createHexProject(input = {}) {
 }
 
 export function normalizeNavigation(value = {}) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new ProjectFormatError('navigation must be an object');
   return {
     currentFunction: value.currentFunction ?? null,
     history: list(value.history, 'navigation.history').slice(-500),
@@ -115,20 +122,33 @@ export function validateHexProject(project) {
   if (project.format !== 'hexproj') throw new ProjectFormatError('not a .hexproj document');
   if (!Number.isInteger(project.version) || project.version < 1) throw new ProjectFormatError('invalid project version');
   if (project.version > HEX_PROJECT_VERSION) throw new ProjectFormatError(`project version ${project.version} is newer than supported version ${HEX_PROJECT_VERSION}`, 'HEX_PROJECT_FUTURE_VERSION');
-  if (!project.binary || typeof project.binary !== 'object') throw new ProjectFormatError('project binary metadata is missing');
+  if (!project.binary || typeof project.binary !== 'object' || Array.isArray(project.binary)) throw new ProjectFormatError('project binary metadata is missing');
   if (project.binary.embedded) throw new ProjectFormatError('embedded binaries are not accepted by this project version');
-  project.user ||= {};
-  project.findings ||= {};
-  project.analysis ||= {};
+
+  // Validation is also the schema canonicalization boundary. Callers that load
+  // an older project must never have to distinguish "missing" from the schema's
+  // empty collection/default representation.
+  project.binary.hash ??= null;
+  project.binary.metadata ??= null;
+  project.binary.embedded = false;
+  project.user = plainObject(project.user, 'user');
+  project.user.names = list(project.user.names, 'user.names');
+  project.user.comments = list(project.user.comments, 'user.comments');
+  project.user.types = list(project.user.types, 'user.types');
+  project.user.structs = list(project.user.structs, 'user.structs');
+  project.user.bookmarks = list(project.user.bookmarks, 'user.bookmarks');
+  project.user.patches = list(project.user.patches, 'user.patches');
+
+  project.findings = plainObject(project.findings, 'findings');
+  project.findings.confirmed = list(project.findings.confirmed, 'findings.confirmed');
+  project.findings.agentAnswers = list(project.findings.agentAnswers, 'findings.agentAnswers');
+  project.findings.evidence = list(project.findings.evidence, 'findings.evidence');
+  project.findings.investigationSessions = list(project.findings.investigationSessions, 'findings.investigationSessions');
+
+  project.analysis = plainObject(project.analysis, 'analysis');
+  project.analysis.settings = plainObject(project.analysis.settings, 'analysis.settings');
+  project.analysis.cacheReferences = list(project.analysis.cacheReferences, 'analysis.cacheReferences');
   project.navigation = normalizeNavigation(project.navigation || {});
-  for (const [name, value] of Object.entries({
-    'user.names': project.user.names, 'user.comments': project.user.comments, 'user.types': project.user.types,
-    'user.structs': project.user.structs, 'user.bookmarks': project.user.bookmarks, 'user.patches': project.user.patches,
-    'findings.confirmed': project.findings.confirmed, 'findings.agentAnswers': project.findings.agentAnswers,
-    'findings.evidence': project.findings.evidence, 'findings.investigationSessions': project.findings.investigationSessions,
-    'analysis.cacheReferences': project.analysis.cacheReferences,
-  })) list(value, name);
-  project.findings.investigationSessions ||= [];
   return project;
 }
 
