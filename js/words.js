@@ -381,7 +381,14 @@
     if (isDivide(w)) return KIND.DIV;
     if (isFpMulDiv(w)) return KIND.FMUL;
     if (isFpAddSub(w)) return KIND.FARITH;
-    if (isFpToInt(w) || isFpDp1(w)) return KIND.FCONV;
+    if (isFpToInt(w)) return KIND.FCONV;
+    if (isFpDp1(w)) {
+      /* FP one-source shares one encoding family. fabs/fneg/fsqrt are
+         arithmetic; fcvt and the remaining conversion forms are conversions. */
+      const op = (w >>> 15) & 0x3f;
+      if (op === 1 || op === 2 || op === 3) return KIND.FARITH;
+      return KIND.FCONV;
+    }
     if (isFpImm(w)) return KIND.MOVIMM;
     if (isCondSelect(w)) return KIND.CSEL;
     if (isMoveWide(w)) return KIND.MOVIMM;
@@ -391,11 +398,13 @@
       /* orr xD, xzr, xM は mov の別名。add xD, xN, #0 も実質コピー。
          ただし S ビットが立っていれば（adds / subs）旗を立てる計算なので、
          コピーとは呼べない — `subs x8, x8, #0` は実際には比較として使われる。 */
-      if (isAddSubImm(w) && ((w >>> 10) & 0xfff) === 0 && !((w >>> 29) & 1)) return KIND.MOVREG;
+      if (isAddSubImm(w) && ((w >>> 10) & 0xfff) === 0 && !((w >>> 29) & 1) &&
+          (rn(w) === 31 || rd(w) === 31)) return KIND.MOVREG;
       return KIND.ARITH;
     }
     if (isLogicShifted(w)) {
-      if (((w >>> 29) & 3) === 1 && rn(w) === 31) return KIND.MOVREG;   // orr xD, xzr, xM
+      if (((w >>> 29) & 3) === 1 && rn(w) === 31 && ((w >>> 21) & 1) === 0 &&
+          ((w >>> 22) & 3) === 0 && ((w >>> 10) & 0x3f) === 0) return KIND.MOVREG; // mov = orr xD,xzr,xM
       return KIND.LOGIC;
     }
     if (isLogicImm(w)) return KIND.LOGIC;
