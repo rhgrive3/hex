@@ -30,9 +30,10 @@
  *
  *   1. 同じ種類の証拠を並べても確定にはならない（相関の割引を必ず掛ける）。
  *      名前が 3 通りの書き方で一致しても、それは 1 つの手がかりでしかない。
- *   2. 「確定」を名乗れるのは、**独立した系統が 2 つ以上**あり、かつ
+ *   2. 「確定」を名乗れるのは、**独立した証拠群 (group) が 3 つ以上**あり、かつ
  *      そのうち 1 つが **実際に逆アセンブルして確かめた証拠**であるときだけ。
- *      名前と型だけでは、どれだけ数字が大きくても確定にしない。
+ *      数えるのは系統 (family) ではなく出どころ (group)。名前・プロパティ名・
+ *      クラスの担当は系統としては 3 つでも、出どころはクラス表 1 つしかない。
  *   3. 2 位との差（マージン）を必ず見る。1 位が 99% でも、2 位も 99% なら確定ではない。
  *
  * 日本語は作らない。コードと数字だけを返す（文にするのは narrate.js）。
@@ -40,7 +41,8 @@
 
 /* ── 証拠の系統 ──────────────────────────────────────────────
    同じ系統の証拠は互いに相関しているとみなし、合算に上限を設ける。
-   「確定」には別々の系統が 2 つ以上要る、という判定にも使う。 */
+   系統は **合算の割引と上限にだけ** 使う。確定の独立性判定には使わない
+   （そちらは下の GROUP。系統は細かすぎて、独立の単位にならない）。 */
 
 export const FAMILY = {
   NAME: 'name',          // 名前（ivar 名・プロパティ名・アクセサ名・クラス名）
@@ -107,6 +109,34 @@ export function groupOf(item) {
   return FAMILY_GROUP[family] || GROUP.METADATA;
 }
 
+/**
+ * その融合結果には、独立した出どころがいくつあるか。
+ *
+ * 決着（decide）はこの数だけを見る。系統（family）の数では見ない。
+ * 系統で数えると、
+ *
+ *     NAME + CONTEXT + VERIFIED  → 系統 3 つ
+ *
+ * が条件を満たしてしまうが、出どころは metadata + metadata + dataflow の
+ * 2 つしかない。クラス表に書いてある名前と、同じクラス表から読んだ担当分野は、
+ * 互いに独立した観測ではない。片方が間違っていればもう片方も一緒に間違う。
+ *
+ * 古い（あるいは外から渡された）融合結果に群が入っていないときは、
+ * 証拠から数え直す。それも無理なら 0 を返す ＝ 確定を名乗らせない。
+ * 分からないときに緩いほうへ倒さない。
+ */
+export function independentGroupCount(fusion) {
+  if (!fusion) return 0;
+  if (Number.isFinite(fusion.independentGroups)) return fusion.independentGroups;
+  if (Array.isArray(fusion.groups)) return fusion.groups.length;
+  if (Array.isArray(fusion.items)) {
+    const seen = new Set();
+    for (const it of fusion.items) if (it && it.applied > 0) seen.add(groupOf(it));
+    return seen.size;
+  }
+  return 0;
+}
+
 /* 1 つの系統だけで到達できる尤度比の上限。
    名前がどれだけ当たっても、それだけでは 60 倍を超えられない。 */
 const FAMILY_CAP = {
@@ -126,7 +156,7 @@ const FAMILY_CAP = {
    * この関数だけが参照している」という材料が 0.09% に潰れていた。
    *
    * 単独で確定させない歯止めは、上限ではなく decide() 側にある
-   * （別々の系統が 3 つ以上・逆アセンブルでの裏取り・2 位との差 20 倍）。
+   * （独立した証拠群が 3 つ以上・逆アセンブルでの裏取り・2 位との差 20 倍）。
    */
   [FAMILY.NAMING]: 1e9,
 };
@@ -669,11 +699,28 @@ export function fuse(items, opts) {
  * 確定と言うのは、何も言わないより悪い。だから条件は厳しくする。
  *
  *   確定 (confirmed)  … 逆アセンブルで確かめた証拠が 1 つ以上あり、
- *                       独立した系統が 3 つ以上、確率 99% 以上、
+ *                       **独立した証拠群が 3 つ以上**、確からしさ 99% 以上、
  *                       2 位との差が 20 倍以上。
- *   有力 (likely)     … 確率 85% 以上で、2 位との差が 4 倍以上。
+ *   有力 (likely)     … 確からしさ 85% 以上で、2 位との差が 4 倍以上。
  *   割れている (ambiguous) … 上位が拮抗している。何が足りないかを言う。
  *   なし (none)
+ *
+ * 「独立」は **系統 (family) ではなく出どころ (group)** で数える。
+ * ここを系統で数えていたのが、このファイルにあった一番大きな論理の穴だった。
+ * 名前・プロパティ名・クラスの担当は系統としては別でも、出どころは 1 つ
+ * （Objective-C のクラス表）なので、3 つ揃っても独立した 3 つではない。
+ *
+ * 確からしさについて:
+ *   fusion.calibrated が false のあいだ、ここで比べている 0.99 は
+ *   **手設定の尤度比から出した確信度スコア**であって、頻度としての確率ではない。
+ *   hold-out corpus の校正曲線を fuse({calibration}) に渡したときだけ確率になる。
+ *   しきい値そのものはどちらの場合も同じ向きに効くので共通で使うが、
+ *   「99% 当たる」と読み替えてはいけない。画面も % ではなく段階で出している
+ *   （narrate.js probabilityText）。
+ *
+ *   2 位との差 (margin) は校正前の logOdds で測る。校正は単調変換なので
+ *   順位は変わらないが、差の大きさは校正後の確率から測ってはいけない
+ *   （天井付近で潰れて、拮抗していても差が大きく見える）。
  */
 
 export const VERDICT = {
@@ -683,10 +730,16 @@ export const VERDICT = {
   NONE: 'none',
 };
 
-const CONFIRM = { p: 0.99, margin: LN(20), families: 3 };
+/*
+ * groups は「独立した出どころの数」。系統 (family) の数ではない。
+ * ここを families にしていたころ、metadata から来た 2 系統 + dataflow 1 系統で
+ * 「独立が 3 つ」を満たしてしまい、実質 2 つの出どころで確定と言っていた。
+ */
+const CONFIRM = { p: 0.99, margin: LN(20), groups: 3 };
 const LIKELY = { p: 0.85, margin: LN(4) };
-/* 命令で確かめていないものが名乗れる上限（97%）。確定の 99% には届かせない。 */
-const UNVERIFIED_CEIL = LN(0.97 / 0.03);
+/* 命令で確かめていないものが名乗れる上限（97%）。確定の 99% には届かせない。
+   calib.js の groupedFusion も同じ天井を使う（歯止めを 2 か所で持たない）。 */
+export const UNVERIFIED_CEIL = LN(0.97 / 0.03);
 /*
  * ここを下回ったら、名前を出さない。
  * 5% は「20 個に 1 個は当たる」で、答えとして見せられる下限としてはぎりぎり。
@@ -702,15 +755,16 @@ export function verdictRank(v) { return VERDICT_ORDER[v] || 0; }
 /**
  * 並べた候補から結論を出す。
  *
- * @param {Array} ranked  [{fusion:{logOdds, probability, verified, families}, ...}] 降順
+ * @param {Array} ranked  [{fusion:{logOdds, probability, verified, independentGroups}, ...}] 降順
  * @param {object} [opts]
  *   maxVerdict  これより上には行かせない。名前が読めない相手（クラス表のない
  *               バイナリの「+0x20 の値」など）を「確定」と呼ばないために使う。
- * @returns {{verdict, top, runnerUp, margin, marginRatio, missing:Array<string>}}
+ * @returns {{verdict, top, runnerUp, margin, marginRatio, independentGroups,
+ *            missing:Array<string>}}
  */
 export function decide(ranked, opts) {
   const list = (ranked || []).filter((c) => c && c.fusion);
-  if (!list.length) return { verdict: VERDICT.NONE, top: null, runnerUp: null, margin: 0, marginRatio: 1, missing: ['no-candidate'] };
+  if (!list.length) return { verdict: VERDICT.NONE, top: null, runnerUp: null, margin: 0, marginRatio: 1, independentGroups: 0, missing: ['no-candidate'] };
 
   const top = list[0];
   const runnerUp = list[1] || null;
@@ -725,7 +779,12 @@ export function decide(ranked, opts) {
    */
   if (!(top.fusion.identifying > 0)) missing.push('need-name-evidence');
   if (!top.fusion.verified) missing.push('need-verification');
-  if (top.fusion.families.length < CONFIRM.families) missing.push('need-independent-evidence');
+  /*
+   * 独立性は出どころ (group) で数える。系統 (family) では数えない。
+   * families は説明用に残してあるが、確定の条件には一切使わない。
+   */
+  const independent = independentGroupCount(top.fusion);
+  if (independent < CONFIRM.groups) missing.push('need-independent-evidence');
   if (top.fusion.probability < CONFIRM.p) missing.push('need-more-evidence');
   if (margin < CONFIRM.margin) missing.push('need-separation');
 
@@ -764,7 +823,7 @@ export function decide(ranked, opts) {
     if (!missing.includes('no-name')) missing.push('no-name');
   }
 
-  return { verdict, top, runnerUp, margin, marginRatio, missing };
+  return { verdict, top, runnerUp, margin, marginRatio, independentGroups: independent, missing };
 }
 
 /** 確率 → ★ の数。決着の言葉と食い違わないように、ここで一本化する。 */
