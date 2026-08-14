@@ -8,6 +8,14 @@
 .product-ui-ready .nav-history {
   display: none !important;
 }
+.product-ui-ready .ui-code-route > .toolbar {
+  display: flex !important;
+  flex: 0 0 auto;
+  justify-content: flex-start;
+  overflow: visible;
+  padding-block: 4px;
+}
+.product-ui-ready .ui-code-route > .toolbar .tb-spacer { display: none; }
 
 .product-ui-ready .ui-product-chrome {
   position: sticky;
