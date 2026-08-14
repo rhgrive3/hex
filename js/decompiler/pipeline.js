@@ -6,6 +6,48 @@ export { buildExpressionForTesting } from './pipeline-core.js';
 
 function valueOf(arg) { return arg?.value || null; }
 
+const INVERSE_CONDITION = {
+  eq:'ne', ne:'eq', hs:'lo', lo:'hs', cs:'cc', cc:'cs',
+  hi:'ls', ls:'hi', ge:'lt', lt:'ge', gt:'le', le:'gt',
+  mi:'pl', pl:'mi', vs:'vc', vc:'vs',
+};
+
+/*
+ * CNEG/CINC/CINV are ARM64 aliases of CSNEG/CSINC/CSINV with the condition
+ * inverted and both source registers equal. The IR intentionally preserves the
+ * original mnemonic family (`sub: cneg/cinc/cinv`), but pipeline-core's generic
+ * SEL builder models CS* semantics. Normalize only while constructing the
+ * decompiler representation, then restore the shared IR so other consumers see
+ * the original instruction identity.
+ *
+ *   cneg d, n, cond => cond ? -n : n
+ *   cinc d, n, cond => cond ? n+1 : n
+ *   cinv d, n, cond => cond ? ~n : n
+ *
+ * Generic CS* form is: inverse(cond) ? n : transform(n), so changing both `sub`
+ * and `cond` gives the exact alias semantics without inventing a new IR opcode.
+ */
+function normalizeConditionalSelectAliases(ir) {
+  const changes = [];
+  const alias = { cneg:'neg', cinc:'inc', cinv:'inv' };
+  for (const inst of ir?.instructions || []) {
+    const replacement = alias[inst?.sub];
+    if (!replacement) continue;
+    const inverse = INVERSE_CONDITION[inst.cond];
+    if (!inverse) continue; // Unknown VS/VC-like condition stays conservative.
+    changes.push({ inst, sub:inst.sub, cond:inst.cond });
+    inst.sub = replacement;
+    inst.cond = inverse;
+  }
+  return () => {
+    for (let i = changes.length - 1; i >= 0; i--) {
+      const { inst, sub, cond } = changes[i];
+      inst.sub = sub;
+      inst.cond = cond;
+    }
+  };
+}
+
 /*
  * Memory-SSA can prove that a load reads an earlier store and pipeline-core can
  * therefore replace the load with the stored expression. That proof is about
@@ -82,6 +124,12 @@ function reanchorExactStackReturn(result) {
 }
 
 export function enhanceSemanticDecompilation(result, model, opts = {}) {
-  const core = constrainSemanticValueWidths(enhanceCore(result, model, opts));
+  const restore = normalizeConditionalSelectAliases(result?.ir);
+  let core;
+  try {
+    core = constrainSemanticValueWidths(enhanceCore(result, model, opts));
+  } finally {
+    restore();
+  }
   return recoverExactStackReturn(reanchorExactStackReturn(core), opts);
 }
