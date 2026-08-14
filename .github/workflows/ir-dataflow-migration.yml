@@ -6,10 +6,12 @@ on:
       - 'js/dataflow.js'
       - 'js/dataflow-legacy.js'
       - 'js/dataflow-ir.js'
+      - 'js/dataflow-ir-compare.js'
       - 'js/ir.js'
       - 'tests/ir-dataflow.mjs'
       - 'tests/ir-alias.mjs'
       - 'tests/ir-pinpoint-path.mjs'
+      - 'tests/ir-comparisons.mjs'
       - '.github/workflows/ir-dataflow-migration.yml'
   workflow_dispatch:
 
@@ -30,3 +32,5 @@ jobs:
         run: node tests/ir-alias.mjs
       - name: Pinpoint verification integration
         run: node tests/ir-pinpoint-path.mjs
+      - name: SSA threshold recovery
+        run: node tests/ir-comparisons.mjs
