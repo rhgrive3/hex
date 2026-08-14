@@ -7,12 +7,19 @@ on:
       - 'js/dataflow-legacy.js'
       - 'js/dataflow-ir.js'
       - 'js/dataflow-ir-compare.js'
+      - 'js/dataflow-semantic.js'
       - 'js/ir.js'
+      - 'js/semantic.js'
+      - 'js/interproc.js'
+      - 'js/query/**'
+      - 'js/agent/**'
+      - 'js/symbolic/**'
       - 'tests/ir-dataflow.mjs'
       - 'tests/ir-alias.mjs'
       - 'tests/ir-pinpoint-path.mjs'
       - 'tests/ir-pinpoint-location.mjs'
       - 'tests/ir-comparisons.mjs'
+      - 'tests/semantic-core.mjs'
       - '.github/workflows/ir-dataflow-migration.yml'
   workflow_dispatch:
 
@@ -37,3 +44,5 @@ jobs:
         run: node tests/ir-pinpoint-location.mjs
       - name: SSA threshold recovery
         run: node tests/ir-comparisons.mjs
+      - name: Semantic core regressions
+        run: node tests/semantic-core.mjs
