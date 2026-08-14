@@ -4,7 +4,7 @@
  * re-interpret ARM64 instruction text. The legacy decompiler remains an isolated
  * fallback at the public facade.
  */
-import { expr, mergeSource, sourceOf, mapChildren, structuralKey } from './ast/nodes.js';
+import { expr, mergeSource, sourceOf, mapChildren, structuralKey, sameExpr } from './ast/nodes.js';
 import { RewriteEngine } from './rewrite/engine.js';
 import { DEFAULT_RULES } from './rewrite/rules.js';
 import { recoverArm64ClangIdiom, recognizeClamp, recognizeDivisionByConstant } from './idioms/arm64-clang.js';
@@ -14,9 +14,6 @@ import { recoverAggregateLayouts } from './types/layout.js';
 import { PassManager } from './passes/manager.js';
 import { printExpression, printProgram, expressionReadability } from './pretty/c.js';
 import { explainSemanticFacts } from './explain.js';
-
-const PURE_OPS = new Set(['const','mov','bin','un','mac','bfx','bfi','sel','addr','phi']);
-const BARRIER_OPS = new Set(['call','store','clobber','unknown']);
 
 function valueOf(a) { return a?.value || null; }
 function safeIdent(s, fallback = 'value') {
@@ -36,7 +33,10 @@ function argumentName(v, state) {
   const group = state.highVariables?.groups?.find((g) => g.id === groupId);
   if (group?.name) return group.name;
   const m = /^x([0-7])$/.exec(v?.reg || '');
-  return m ? state.opts?.argNames?.[Number(m[1])] || `arg${Number(m[1]) + 1}` : safeIdent(v?.reg || `value_${v?.id}`);
+  if (!m) return safeIdent(v?.reg || `value_${v?.id}`);
+  const n = Number(m[1]);
+  if (n === 0 && (state.opts?.receiverType || state.opts?.methodKind === 'objc')) return 'self';
+  return state.opts?.argNames?.[n] || `a${n + 1}`;
 }
 
 function memoryLocation(inst, state) {
@@ -67,30 +67,129 @@ function memoryLocation(inst, state) {
   return { kind: 'unknown', key: loc.key || `memory:${inst?.id || '?'}`, name: 'memory_unknown', text: 'memory_unknown' };
 }
 
-function hasBarrierBetween(from, to, state) {
-  if (!from || !to || from.block !== to.block || from.row == null || to.row == null) return true;
-  const lo = Math.min(from.row, to.row), hi = Math.max(from.row, to.row);
-  return (state.ir.instructions || []).some((i) => i.block === from.block && i.row > lo && i.row < hi && BARRIER_OPS.has(i.op));
-}
-
 function compareFromFlags(flagValue, cond, state) {
   const d = flagValue?.def;
   if (!d || d.op !== 'cmp') return expr.variable(`condition_${cond || 'flags'}`, 1, false, origin(d, flagValue));
-  const a = buildValue(valueOf(d.args?.[0]), state), b = buildValue(valueOf(d.args?.[1]), state);
+  const a = buildArg(d.args?.[0], state), b = buildArg(d.args?.[1], state);
   const map = { eq:'eq', ne:'ne', hs:'ge', cs:'ge', lo:'lt', cc:'lt', hi:'gt', ls:'le', ge:'ge', lt:'lt', gt:'gt', le:'le' };
-  const op = map[cond] || (d.sub === 'sub' ? 'ne' : 'ne');
+  const op = map[cond] || 'ne';
   const signed = ['ge','lt','gt','le'].includes(cond) ? true : ['hs','cs','lo','cc','hi','ls'].includes(cond) ? false : null;
   return expr.compare(op, a, b, signed, origin(d, d.dst, 'condition flags'));
 }
 
+function applyShift(base, shift) {
+  if (!base || !shift?.op) return base;
+  const bits = Number(base.bits || 64);
+  const amount = expr.constant(BigInt(shift.amount || 0), bits, false, base.source);
+  switch (shift.op) {
+    case 'lsl': return expr.binary('shl', base, amount, bits, base.signed, base.source);
+    case 'lsr': return expr.binary('lshr', base, amount, bits, false, base.source);
+    case 'asr': return expr.binary('ashr', base, amount, bits, true, base.source);
+    case 'uxtb': return expr.unary('zext', expr.unary('trunc', base, 8, false, base.source), bits, false, base.source, { fromBits: 8 });
+    case 'uxth': return expr.unary('zext', expr.unary('trunc', base, 16, false, base.source), bits, false, base.source, { fromBits: 16 });
+    case 'uxtw': return expr.unary('zext', expr.unary('trunc', base, 32, false, base.source), bits, false, base.source, { fromBits: 32 });
+    case 'sxtb': return expr.unary('sext', expr.unary('trunc', base, 8, true, base.source), bits, true, base.source, { fromBits: 8 });
+    case 'sxth': return expr.unary('sext', expr.unary('trunc', base, 16, true, base.source), bits, true, base.source, { fromBits: 16 });
+    case 'sxtw': return expr.unary('sext', expr.unary('trunc', base, 32, true, base.source), bits, true, base.source, { fromBits: 32 });
+    default: return base;
+  }
+}
+
+function buildArg(arg, state, flags = {}) {
+  if (!arg) return expr.variable('unknown', 64, null);
+  return applyShift(buildValue(valueOf(arg), state, flags), arg.shift);
+}
+
 function selectExpression(d, state) {
-  const t = buildValue(valueOf(d.args?.[0]), state), f = buildValue(valueOf(d.args?.[1]), state), flags = valueOf(d.args?.[2]);
-  let condition = compareFromFlags(flags, d.cond, state);
+  const t = buildArg(d.args?.[0], state), f = buildArg(d.args?.[1], state), flags = valueOf(d.args?.[2]);
+  const condition = compareFromFlags(flags, d.cond, state);
   if (d.sub === 'inc') return expr.select(condition, t, expr.binary('add', f, expr.constant(1, f.bits), f.bits, f.signed), d.dst?.bits || t.bits, signedFor(state, d.dst), origin(d, d.dst));
   if (d.sub === 'inv') return expr.select(condition, t, expr.unary('not', f, f.bits, f.signed), d.dst?.bits || t.bits, signedFor(state, d.dst), origin(d, d.dst));
   if (d.sub === 'neg') return expr.select(condition, t, expr.unary('neg', f, f.bits, f.signed), d.dst?.bits || t.bits, signedFor(state, d.dst), origin(d, d.dst));
   if (d.sub === 'set' || d.sub === 'setm') return expr.select(condition, t, f, d.dst?.bits || 1, false, origin(d, d.dst));
   return expr.select(condition, t, f, d.dst?.bits || t.bits, signedFor(state, d.dst), origin(d, d.dst));
+}
+
+function targetBlock(ir, cbr, rowOfAddress) {
+  const addr = cbr?.extra?.target;
+  if (addr == null) return null;
+  const row = rowOfAddress?.(addr);
+  if (row == null) return null;
+  return ir.blocks.find((b) => row >= b.startRow && row <= b.endRow)?.index ?? null;
+}
+
+function blockTerm(block) {
+  const xs = block?.insts || [];
+  for (let i = xs.length - 1; i >= 0; i--) if (['cbr','br','ret'].includes(xs[i].op)) return xs[i];
+  return null;
+}
+
+function branchSucc(ir, block, term, state) {
+  const succ = block?.succ || [];
+  if (term?.op !== 'cbr' || succ.length < 2) return { yes: succ[0] ?? null, no: succ[1] ?? null };
+  const yes = targetBlock(ir, term, state.opts?.rowOfAddress);
+  if (yes == null || !succ.includes(yes)) return { yes: succ[0] ?? null, no: succ[1] ?? null };
+  return { yes, no: succ.find((x) => x !== yes) ?? null };
+}
+
+function branchCondition(inst, state) {
+  const kind = inst?.extra?.kind || inst?.sub || '';
+  const v = valueOf(inst?.args?.[0]);
+  if (kind === 'cbz' || kind === 'cbnz') return expr.compare(kind === 'cbz' ? 'eq' : 'ne', expressionFor(v, state), expr.constant(0, v?.bits || 64), null, origin(inst));
+  if (kind === 'tbz' || kind === 'tbnz') {
+    const value = expressionFor(v, state);
+    const bit = Number(inst.extra?.bit ?? 0);
+    if (bit === Number(v?.bits || value.bits || 64) - 1) return expr.compare(kind === 'tbz' ? 'ge' : 'lt', value, expr.constant(0, v?.bits || value.bits || 64, true), true, origin(inst));
+    const tested = expr.binary('and', expr.binary('lshr', value, expr.constant(bit, value.bits || 64), value.bits || 64, false), expr.constant(1, value.bits || 64), value.bits || 64, false);
+    return expr.compare(kind === 'tbz' ? 'eq' : 'ne', tested, expr.constant(0, value.bits || 64), false, origin(inst));
+  }
+  return compareFromFlags(valueOf(inst?.args?.at?.(-1)), inst?.cond || inst?.extra?.cond, state);
+}
+
+function canReach(ir, start, target, blocked, cap = 256) {
+  if (start == null || target == null) return false;
+  const q = [start], seen = new Set();
+  while (q.length && cap-- > 0) {
+    const b = q.shift();
+    if (b === target) return true;
+    if (b === blocked || seen.has(b)) continue;
+    seen.add(b);
+    for (const s of ir.blocks?.[b]?.succ || []) if (!seen.has(s)) q.push(s);
+  }
+  return false;
+}
+
+function controllingBranchForMemoryPhi(phi, state) {
+  const incoming = phi?.incoming || [];
+  if (incoming.length !== 2) return null;
+  const candidates = [];
+  for (const block of state.ir.blocks || []) {
+    const term = blockTerm(block);
+    if (term?.op !== 'cbr' || (block.succ || []).length < 2) continue;
+    const { yes, no } = branchSucc(state.ir, block, term, state);
+    const yesIndex = incoming.findIndex((x) => canReach(state.ir, yes, x.from, phi.block));
+    const noIndex = incoming.findIndex((x) => canReach(state.ir, no, x.from, phi.block));
+    if (yesIndex >= 0 && noIndex >= 0 && yesIndex !== noIndex) candidates.push({ term, yesIndex, noIndex, row: term.row ?? -1 });
+  }
+  candidates.sort((a, b) => b.row - a.row);
+  return candidates[0] || null;
+}
+
+function memoryNodeExpression(node, loadInst, state, seen = new Set()) {
+  if (!node || seen.has(node)) return null;
+  seen.add(node);
+  if (node.kind === 'store' && node.inst) return buildArg(node.inst.args?.[0], state);
+  if (node.kind !== 'phi') return null;
+  const incoming = (node.incoming || []).filter((x) => x?.node);
+  if (!incoming.length) return null;
+  const values = incoming.map((x) => memoryNodeExpression(x.node, loadInst, state, new Set(seen)));
+  if (values.some((x) => !x)) return null;
+  const unique = new Map(values.map((x) => [structuralKey(x), x]));
+  if (unique.size === 1) return values[0];
+  if (incoming.length !== 2) return null;
+  const control = controllingBranchForMemoryPhi(node, state);
+  if (!control) return null;
+  return expr.select(branchCondition(control.term, state), values[control.yesIndex], values[control.noIndex], loadInst?.dst?.bits || values[0].bits || 64, loadInst?.dst?.signed ?? null, origin(loadInst, loadInst?.dst, 'Memory SSA phi'));
 }
 
 function buildValue(v, state, flags = {}) {
@@ -104,27 +203,29 @@ function buildValue(v, state, flags = {}) {
   if (v.const != null && d?.op !== 'addr') out = constNode(v);
   if (!out && (v.kind === 'arg' || !d)) out = expr.variable(argumentName(v, state), v.bits || 64, signedFor(state, v), origin(d, v), { ssaId: v.id, range: v.range ? { ...v.range } : null });
   if (!out && d) {
-    const args = (d.args || []).map(valueOf);
     if (d.op === 'const') out = constNode(v, v.const ?? d.extra?.value ?? 0n);
-    else if (d.op === 'mov') out = buildValue(args[0], state, flags);
+    else if (d.op === 'mov') out = buildArg(d.args?.[0], state, flags);
     else if (d.op === 'bin') {
-      const a = buildValue(args[0], state), b = args[1] ? buildValue(args[1], state) : expr.constant(0, v.bits || 64);
-      out = expr.binary(d.sub, a, b, v.bits || 64, signedFor(state, v), origin(d, v));
+      const a = buildArg(d.args?.[0], state), b = d.args?.[1] ? buildArg(d.args[1], state) : expr.constant(0, v.bits || 64);
+      if (d.sub === 'bic') out = expr.binary('and', a, expr.unary('not', b, v.bits || b.bits || 64, b.signed), v.bits || 64, signedFor(state, v), origin(d, v));
+      else if (d.sub === 'orn') out = expr.binary('or', a, expr.unary('not', b, v.bits || b.bits || 64, b.signed), v.bits || 64, signedFor(state, v), origin(d, v));
+      else if (d.sub === 'eon') out = expr.unary('not', expr.binary('xor', a, b, v.bits || 64, signedFor(state, v)), v.bits || 64, signedFor(state, v), origin(d, v));
+      else out = expr.binary(d.sub, a, b, v.bits || 64, signedFor(state, v), origin(d, v));
       if (d.negate) out = expr.unary('neg', out, v.bits || 64, signedFor(state, v), origin(d, v));
     } else if (d.op === 'un') {
-      const a = buildValue(args[0], state);
+      const a = buildArg(d.args?.[0], state);
       const sub = String(d.sub || '');
       if (/^sxt/.test(sub)) out = expr.unary('sext', a, v.bits || 64, true, origin(d, v), { fromBits: Number(sub.slice(3)) || a.bits });
       else if (/^uxt/.test(sub)) out = expr.unary('zext', a, v.bits || 64, false, origin(d, v), { fromBits: Number(sub.slice(3)) || a.bits });
       else out = expr.unary(sub, a, v.bits || 64, signedFor(state, v), origin(d, v));
     } else if (d.op === 'mac') {
-      const addend = buildValue(args[0], state), a = buildValue(args[1], state), b = buildValue(args[2], state);
+      const addend = buildArg(d.args?.[0], state), a = buildArg(d.args?.[1], state), b = buildArg(d.args?.[2], state);
       const mult = expr.binary('mul', a, b, v.bits || 64, d.widen === 'unsigned' ? false : d.widen === 'signed' ? true : signedFor(state, v), origin(d, v));
       out = expr.binary(d.sub === 'msub' ? 'sub' : 'add', addend, mult, v.bits || 64, signedFor(state, v), origin(d, v));
     } else if (d.op === 'bfx') {
-      out = expr.intrinsic('bit_extract', [buildValue(args[0], state), expr.constant(d.extra?.lsb ?? 0, 64), expr.constant(d.extra?.width ?? v.bits ?? 64, 64)], v.bits || 64, d.extra?.signed ?? d.signed ?? false, origin(d, v));
+      out = expr.intrinsic('bit_extract', [buildArg(d.args?.[0], state), expr.constant(d.extra?.lsb ?? 0, 64), expr.constant(d.extra?.width ?? v.bits ?? 64, 64)], v.bits || 64, d.extra?.signed ?? d.signed ?? false, origin(d, v));
     } else if (d.op === 'bfi') {
-      out = expr.intrinsic('bit_insert', [buildValue(args[0], state), buildValue(args[1], state), expr.constant(d.extra?.lsb ?? 0, 64), expr.constant(d.extra?.width ?? 16, 64)], v.bits || 64, signedFor(state, v), origin(d, v));
+      out = expr.intrinsic('bit_insert', [buildArg(d.args?.[0], state), buildArg(d.args?.[1], state), expr.constant(d.extra?.lsb ?? 0, 64), expr.constant(d.extra?.width ?? 16, 64)], v.bits || 64, signedFor(state, v), origin(d, v));
     } else if (d.op === 'sel') out = selectExpression(d, state);
     else if (d.op === 'addr') {
       const address = v.const ?? d.extra?.value ?? d.extra?.target;
@@ -132,14 +233,16 @@ function buildValue(v, state, flags = {}) {
       out = expr.variable(name ? safeIdent(name) : `global_${BigInt(address || 0).toString(16).toUpperCase()}`, 64, false, origin(d, v), { address });
     } else if (d.op === 'load') {
       const loc = memoryLocation(d, state);
-      if (d.reachingStore && !hasBarrierBetween(d.reachingStore, d, state)) out = buildValue(valueOf(d.reachingStore.args?.[0]), state);
-      else out = expr.load(loc, v.bits || Number((d.size || 8) * 8), origin(d, v), { signed: d.signed ?? signedFor(state, v), volatile: !!d.volatile });
+      // Memory SSA itself is the alias proof. If a reaching store survives to this
+      // load, unrelated intervening stores/calls did not kill this location version.
+      if (d.reachingStore && d.reachingStore !== d) out = buildArg(d.reachingStore.args?.[0], state);
+      else out = memoryNodeExpression(d.memUse, d, state) || expr.load(loc, v.bits || Number((d.size || 8) * 8), origin(d, v), { signed: d.signed ?? signedFor(state, v), volatile: !!d.volatile });
     } else if (d.op === 'call') {
       out = expr.variable(`call_${d.id}`, v.bits || 64, signedFor(state, v), origin(d, v), { materializedCall: true });
     } else if (d.op === 'phi') {
       const incoming = (d.incoming || []).map((x) => buildValue(x.value, state));
       const unique = new Map(incoming.map((x) => [structuralKey(x), x]));
-      out = unique.size === 1 ? incoming[0] : expr.variable(`local_phi_${v.id}`, v.bits || 64, signedFor(state, v), origin(d, v), { phi: true });
+      out = unique.size === 1 ? incoming[0] : expr.variable(`local_phi_${v.id}`, v.bits || 64, signedFor(state, v), origin(d, v), { phi: true, incoming });
     }
   }
   if (!out) out = expr.variable(argumentName(v, state), v.bits || 64, signedFor(state, v), origin(d, v), { ssaId: v.id, range: v.range ? { ...v.range } : null });
@@ -156,7 +259,7 @@ function rewriteAll(state, budget) {
   for (const v of state.ir.values || []) {
     let root = buildValue(v, state);
     root = walkIdiom(root);
-    const r = engine.rewrite(root, state);
+    const r = engine.rewrite(root, { state });
     state.expressions.set(v.id, r.root);
     state.rewriteProof.push(...r.proof.map((p) => ({ ...p, valueId: v.id })));
     state.rewriteStats.applications += r.stats.applications;
@@ -183,7 +286,7 @@ function reachingRegisterValue(ir, atInst, reg) {
   return best;
 }
 
-function expressionFor(v, state) { return state.expressions?.get(v?.id) || buildValue(v, state); }
+function expressionFor(v, state) { return state.expressions?.get(v?.id) || walkIdiom(buildValue(v, state)); }
 
 function semanticFacts(state, result) {
   const facts = { inputs: [], outputs: [], stores: [], calls: [], conditions: [], evidence: [], warnings: [] };
@@ -205,11 +308,7 @@ function semanticFacts(state, result) {
       const runtime = /objc_msgSend/.test(name) ? 'objc' : /^_?swift_/.test(name) ? 'swift' : null;
       facts.calls.push({ name, runtime, row: inst.row, address: inst.address, ir: inst.id });
     } else if (inst.op === 'cbr') {
-      const kind = inst.extra?.kind || inst.sub || '';
-      let e = null;
-      if (kind === 'cbz' || kind === 'cbnz') e = expr.compare(kind === 'cbz' ? 'eq' : 'ne', expressionFor(valueOf(inst.args?.[0]), state), expr.constant(0, valueOf(inst.args?.[0])?.bits || 64), null, origin(inst));
-      else if (kind === 'tbz' || kind === 'tbnz') e = expr.compare(kind === 'tbz' ? 'eq' : 'ne', expr.binary('and', expr.binary('lshr', expressionFor(valueOf(inst.args?.[0]), state), expr.constant(inst.extra?.bit ?? 0, 64), valueOf(inst.args?.[0])?.bits || 64, false), expr.constant(1, 64), 64, false), expr.constant(0, 64), false, origin(inst));
-      else e = compareFromFlags(valueOf(inst.args?.at?.(-1)), inst.cond || inst.extra?.cond, state);
+      const e = branchCondition(inst, state);
       facts.conditions.push({ expression: e, text: printExpression(e), row: inst.row, address: inst.address, ir: inst.id });
     } else if (inst.op === 'ret') {
       const rv = valueOf(inst.args?.[0]) || reachingRegisterValue(state.ir, inst, 'x0');
