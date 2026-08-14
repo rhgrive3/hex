@@ -4,9 +4,9 @@ import { DebugAdapter, normalizeBreakpoint } from '../js/debug/adapter.js';
 import { RuntimeMemoryMap, createSandboxMemoryMap } from '../js/runtime/memory.js';
 import { TraceRingBuffer } from '../js/trace/ring-buffer.js';
 import { validateRemotePacket, RemoteProtocolClient } from '../js/debug/remote-protocol.js';
-import { LocalFunctionSandboxAdapter } from '../js/adapters/index.js';
+import { LocalFunctionSandboxAdapter, RemoteDebugAdapter } from '../js/adapters/index.js';
 import { compileExperiment, generateDifferentialInputs, classifyHypothesis } from '../js/dynamic/experiments.js';
-import { createRuntimeEvidenceRecord, fuseStaticDynamic, traceToSemanticFacts } from '../js/runtime-evidence/index.js';
+import { createRuntimeEvidenceRecord, fuseStaticDynamic, traceToSemanticFacts, compareRuntimeDispatch } from '../js/runtime-evidence/index.js';
 import { DebugSession } from '../js/runtime/session.js';
 
 function program(entries, fallback = null) {
@@ -108,6 +108,7 @@ async function runLocal(io, address, spec = {}, maxSteps = 100) {
   assert.throws(()=>map.assert(0x1000n,8,'write'),/not writable/);
   assert.throws(()=>map.assert(0x2000n,8,'read'),/unmapped/);
   assert.throws(()=>map.assert(-1,8,'read'),/non-negative/);
+  assert.throws(()=>map.assert(0x1000n,2*1024*1024,'read'),/exceeds|too-large|too large/i);
   const sandbox = createSandboxMemoryMap();
   assert.equal(sandbox.find(0x600000001000n,8)?.kind,'object');
   assert.equal(sandbox.find(0x600000000100n,8)?.kind,'heap');
@@ -128,6 +129,11 @@ async function runLocal(io, address, spec = {}, maxSteps = 100) {
   assert.ok(inputs.some((x)=>x.kind==='scalar'&&x.value===0n));
   assert.ok(inputs.some((x)=>x.kind==='scalar'&&x.value===-1n));
   assert.ok(inputs.some((x)=>x.kind==='scalar'&&x.value===100n));
+  assert.ok(inputs.some((x)=>x.kind==='pointer'&&x.value===0n));
+  assert.ok(inputs.some((x)=>x.kind==='pointer'&&x.value!==0n));
+  const pointerExp=compileExperiment({id:'ptr',functionAddress:0x1000n,argumentIndex:1,argumentKind:'pointer'});
+  assert.ok(pointerExp.cases.some((x)=>x.id.endsWith('pointer:null')));
+  assert.ok(pointerExp.cases.some((x)=>x.id.endsWith('pointer:nonnull')));
   for (const [name,file] of [['BattleCats','battlecats'],['YWP','YWP'],['TsumTsum','TsumTsum']]) {
     assert.ok(fs.statSync(new URL(`./${file}`, import.meta.url)).size > 0);
     const exp=compileExperiment({id:name,functionAddress:0x1000n,fieldOffset:0x20n,fieldSize:4,initial:100,argumentIndex:1,operation:'sub',clampMin:0},{binaryHash:`fixture:${name}`});
@@ -166,6 +172,8 @@ async function runLocal(io, address, spec = {}, maxSteps = 100) {
   assert.deepEqual(new Set(facts.map((f)=>f.kind)),new Set(['reads-field','writes-field','calls-target','branch-taken','returns-value','objc-dispatch','swift-dispatch']));
   assert.equal(new Set(facts.map((f)=>f.provenance.observationGroup)).size,1);
   assert.ok(facts.every((f)=>f.provenance.group==='runtime'));
+  assert.equal(compareRuntimeDispatch([40n],{imp:40n}).status,'supported');
+  assert.equal(compareRuntimeDispatch([41n],{imp:40n}).status,'contradicted');
 }
 
 class FakeAdapter extends DebugAdapter {
@@ -184,6 +192,30 @@ class FakeAdapter extends DebugAdapter {
   session.addExperiment({id:'e'}); session.addObservation({experimentId:'e',value:1});
   assert.equal(session.replayShape('e').experiments.length,1);
   await session.disconnect(); assert.equal(adapter.disconnected,true);
+}
+
+// Remote capability negotiation is the intersection of client support and server advertisement.
+{
+  let receiver = () => {};
+  const sent = [];
+  const transport = {
+    send: async (packet) => {
+      sent.push(packet);
+      if (packet.type === 'request' && packet.method === 'connect') queueMicrotask(() => receiver({
+        version:1,type:'response',id:packet.id,epoch:packet.epoch,
+        result:{capabilities:{readMemory:true,attach:false,objcRuntime:true}}
+      }));
+    },
+    onMessage: (fn) => { receiver = fn; return () => {}; },
+    close: () => {},
+  };
+  const adapter = new RemoteDebugAdapter(transport,{capabilities:{readMemory:true,attach:true,objcRuntime:true}});
+  await adapter.connect();
+  assert.equal(adapter.capabilities.readMemory,true);
+  assert.equal(adapter.capabilities.attach,false);
+  assert.equal(adapter.capabilities.objcRuntime,true);
+  assert.throws(()=>adapter.readMemory(0x1000n,300*1024),/exceeds|too-large|too large/i);
+  adapter.protocol.close();
 }
 
 // Remote protocol validation, malformed/huge packets, request cancellation and stale response rejection.
