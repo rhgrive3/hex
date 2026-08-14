@@ -18,6 +18,7 @@
  *   分からないものは kind:'unknown' のまま残す。無理に名前を付けない。
  */
 import { parseOperands, categoryOf } from './arm64.js';
+import { analyzeGraph } from './controlflow.js';
 
 /* ────────────────────────────────────────────────────────────
    確からしさ
@@ -706,22 +707,16 @@ export function buildBasicBlocks(insns, opts) {
 
   const leaders = new Set([first]);
   const joinRows = new Set();
-  const backEdges = [];
-
   for (const insn of insns) {
     if (!insn.isBranch) continue;
-    const t = insn.branchTarget != null ? insn.branchTarget : insn.callTarget;
     if (insn.branchTarget != null && o.rowOfAddress) {
       const trow = o.rowOfAddress(insn.branchTarget);
       if (trow != null && inRange(trow)) {
         leaders.add(trow);
         joinRows.add(trow);
-        if (trow <= insn.row) backEdges.push({ from: insn.row, to: trow });
       }
     }
-    // 分岐の直後は新しいブロック
     if (!insn.isCall && inRange(insn.row + 1)) leaders.add(insn.row + 1);
-    void t;
   }
   if (o.extraLeaders) for (const r of o.extraLeaders) if (inRange(r)) leaders.add(r);
 
@@ -734,12 +729,46 @@ export function buildBasicBlocks(insns, opts) {
     const rows = [];
     for (let r = start; r <= end; r++) if (byRow.has(r)) rows.push(r);
     if (!rows.length) continue;
-    blocks.push({
-      index: blocks.length, startRow: start, endRow: end, rows,
-      isJoin: joinRows.has(start),
-      isLoopHeader: backEdges.some((b) => b.to === start),
-    });
+    blocks.push({ index: blocks.length, startRow: start, endRow: end, rows,
+      isJoin: joinRows.has(start), isLoopHeader: false });
   }
+
+  const blockOfRow = (row) => {
+    for (let i = 0; i < blocks.length; i++) if (row >= blocks[i].startRow && row <= blocks[i].endRow) return i;
+    return -1;
+  };
+  const lastInsn = (b) => {
+    for (let r = b.endRow; r >= b.startRow; r--) {
+      const x = byRow.get(r);
+      if (x && !x.data) return x;
+    }
+    return null;
+  };
+  const succ = blocks.map(() => []);
+  for (let i = 0; i < blocks.length; i++) {
+    const term = lastInsn(blocks[i]);
+    const next = i + 1 < blocks.length ? i + 1 : -1;
+    if (!term) { if (next >= 0) succ[i].push(next); continue; }
+    if (term.isReturn || term.isTailCall) continue;
+    if (term.isBranch && !term.isCall) {
+      if (term.branchTarget != null && o.rowOfAddress) {
+        const row = o.rowOfAddress(term.branchTarget);
+        const to = row == null ? -1 : blockOfRow(row);
+        if (to >= 0) succ[i].push(to);
+      }
+      if (term.isConditional && next >= 0) succ[i].push(next);
+      continue;
+    }
+    if (next >= 0) succ[i].push(next);
+  }
+
+  const graph = analyzeGraph(succ, blocks.length ? 0 : -1);
+  const backEdges = graph.backEdges.map((e) => {
+    const term = lastInsn(blocks[e.from]);
+    return { from: term ? term.row : blocks[e.from].endRow, to: blocks[e.to].startRow };
+  });
+  const headers = new Set(graph.backEdges.map((e) => e.to));
+  blocks.forEach((b, i) => { b.isLoopHeader = headers.has(i); });
   return { blocks, joinRows, backEdges };
 }
 
