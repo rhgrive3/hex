@@ -8,11 +8,22 @@ export * from './decompile-legacy.js';
 export { decompileSemantic } from './decompiler/semantic.js';
 export { renderValue as renderSemanticValue, renderMemoryLocation, renderBranchCondition, recoverInductionVariables, reachingRegisterValue } from './decompiler/semantic.js';
 
+function normalizeCompatibility(result) {
+  if (!result) return result;
+  // stackNaming() historically uses upper-case hexadecimal. Keep that public
+  // textual contract even though IR stack-slot keys are lower-case internally.
+  for (const l of result.lines || []) {
+    if (l && typeof l.text === 'string') l.text = l.text.replace(/\bvar_([0-9a-f]+)\b/g, (_m, h) => 'var_' + h.toUpperCase());
+  }
+  if (result.semantic) result.pseudocode = (result.lines || []).map((l) => `${'    '.repeat(Math.max(0, l.indent || 0))}${l.text || ''}`).join('\n');
+  return result;
+}
+
 export function decompile(model, opts = {}) {
   if (opts.semanticIR === false || opts.forceLegacyDecompiler === true) return legacyDecompile(model, opts);
   try {
     const result = decompileSemantic(model, opts);
-    if (result) return result;
+    if (result) return normalizeCompatibility(result);
   } catch (error) {
     const fallback = legacyDecompile(model, opts);
     fallback.warnings = [...(fallback.warnings || []), `Semantic IR decompiler fallback: ${error && error.message ? error.message : 'unknown error'}`];
