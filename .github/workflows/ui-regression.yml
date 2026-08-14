@@ -13,6 +13,7 @@ on:
       - 'js/tools.js'
       - 'js/viewer.js'
       - 'js/graphview.js'
+      - 'tests/browser.mjs'
       - 'tests/ui/**'
       - 'tests/ux.mjs'
       - 'package.json'
@@ -31,7 +32,7 @@ jobs:
 
   browser-matrix:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -41,6 +42,8 @@ jobs:
         run: |
           npm install --no-save playwright
           npx playwright install --with-deps chromium webkit
+      - name: Run existing browser regression
+        run: npm run browser
       - name: Run UI viewport matrix
         env:
           CI: '1'
