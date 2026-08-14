@@ -1,6 +1,8 @@
 import { asAddress, boundedInteger, DebugAdapterError } from '../debug/adapter.js';
 
 export const MEMORY_KINDS = Object.freeze(['object','stack','heap','global','mapped','mmio','unknown']);
+export const RUNTIME_HEAP_BASE = 0x0000620000000000n;
+export const RUNTIME_HEAP_SIZE = 4 * 1024 * 1024;
 const MAX_REGION_SIZE = 64 * 1024 * 1024;
 const MAX_TRANSFER = 4 * 1024 * 1024;
 
@@ -74,24 +76,11 @@ export class RuntimeMemoryMap {
   snapshot() { return this.regions.map((r) => r.toJSON()); }
 }
 
-export function createSandboxMemoryMap({ objectBase = 0x600000001000n, objectSize = 0x10000, stackTop = 0x700000000000n, stackSize = 1 << 20, heapBase = 0x600000000000n, heapSize = 1 << 20, globals = [], mappings = [] } = {}) {
+export function createSandboxMemoryMap({ objectBase = 0x600000001000n, objectSize = 0x10000, stackTop = 0x700000000000n, stackSize = 1 << 20, heapBase = RUNTIME_HEAP_BASE, heapSize = RUNTIME_HEAP_SIZE, globals = [], mappings = [] } = {}) {
   const map = new RuntimeMemoryMap();
-  const objStart = BigInt(objectBase), objEnd = objStart + BigInt(objectSize);
-  const heapStart = BigInt(heapBase), heapEnd = heapStart + BigInt(heapSize);
-  map.map({ start: objStart, size: objectSize, kind:'object', permissions:'rw', name:'fake-object' });
-  // The emulator's synthetic heap and fake-object address space intentionally live
-  // near one another. Preserve both without overlap: heap accesses that cross the
-  // object boundary are rejected rather than silently changing region identity.
-  if (heapStart < objStart) {
-    const size = Number((heapEnd < objStart ? heapEnd : objStart) - heapStart);
-    if (size > 0) map.map({ start:heapStart, size, kind:'heap', permissions:'rw', name:'fake-heap:low' });
-  }
-  if (heapEnd > objEnd) {
-    const start = heapStart > objEnd ? heapStart : objEnd;
-    const size = Number(heapEnd - start);
-    if (size > 0) map.map({ start, size, kind:'heap', permissions:'rw', name:'fake-heap:high' });
-  }
-  map.map({ start: BigInt(stackTop) - BigInt(stackSize), size:stackSize, kind:'stack', permissions:'rw', name:'stack' });
+  map.map({ start:asAddress(objectBase,'objectBase'), size:objectSize, kind:'object', permissions:'rw', name:'fake-object' });
+  map.map({ start:asAddress(heapBase,'heapBase'), size:heapSize, kind:'heap', permissions:'rw', name:'fake-heap' });
+  map.map({ start:asAddress(stackTop,'stackTop') - BigInt(stackSize), size:stackSize, kind:'stack', permissions:'rw', name:'stack' });
   for (const g of globals) map.map({ ...g, kind:g.kind || 'global' });
   for (const m of mappings) map.map(m);
   return map;
