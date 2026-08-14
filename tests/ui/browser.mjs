@@ -141,13 +141,9 @@ async function checkViewport(browserType, browserName, viewportName, width, heig
     check(`${browserName}/${viewportName}: no body horizontal overflow`, overflow.body <= 1 && overflow.root <= 1, JSON.stringify(overflow));
 
     const targets = await primaryTargets(page);
-    if (width < 900) {
-      check(`${browserName}/${viewportName}: four persistent task destinations`, targets.length === 4, `count=${targets.length}`);
-      check(`${browserName}/${viewportName}: primary touch targets >=44px`, targets.every((item) => item.w >= 44 && item.h >= 44), JSON.stringify(targets));
-      check(`${browserName}/${viewportName}: fixed nav stays inside viewport`, targets.every((item) => item.left >= -1 && item.right <= width + 1 && item.top >= -1 && item.bottom <= height + 1));
-    } else {
-      check(`${browserName}/${viewportName}: mobile nav is not duplicated on desktop`, targets.length === 0);
-    }
+    check(`${browserName}/${viewportName}: four persistent task destinations`, targets.length === 4, `count=${targets.length}`);
+    check(`${browserName}/${viewportName}: primary touch targets >=44px`, targets.every((item) => item.w >= 44 && item.h >= 44), JSON.stringify(targets));
+    check(`${browserName}/${viewportName}: primary navigation stays inside viewport`, targets.every((item) => item.left >= -1 && item.right <= width + 1 && item.top >= -1 && item.bottom <= height + 1));
     const geometry = await shellGeometry(page);
     check(`${browserName}/${viewportName}: product chrome stays in visual viewport`, geometry.every((item) => item.left >= -1 && item.right <= item.vw + 1 && item.top >= -1 && item.bottom <= item.vh + 2), JSON.stringify(geometry));
     if (screenshots) await shot(page, browserName, viewportName, 'landing-investigate');
