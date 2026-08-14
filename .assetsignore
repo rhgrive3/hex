@@ -6,7 +6,7 @@ node_modules/**
 .wrangler/**
 
 # Workerサーバーコードとデプロイ設定
-worker.js
+/worker.js
 wrangler.jsonc
 package.json
 package-lock.json
