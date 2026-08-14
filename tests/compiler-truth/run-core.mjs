@@ -33,8 +33,6 @@ function codeText(line) { return String(line || '').replace(/\/\/.*$/, '').trim(
 
 function parseFunction(asm, fn, baseAddress = 0x100000n) {
   const all = asm.split(/\r?\n/);
-  // LLVM integrated assembler emits `name: // @name`; compare only code before
-  // the comment so an available compiler fixture can never silently disappear.
   const start = all.findIndex((l) => codeText(l) === `${fn}:`);
   if (start < 0) return null;
   let end = all.length;
@@ -80,7 +78,7 @@ function parseFunction(asm, fn, baseAddress = 0x100000n) {
     if ((ins.isBranch || ins.isReturn) && ins.row + 1 < instructions.length) starts.add(ins.row + 1);
   }
   const sorted = [...starts].filter((x) => x >= 0 && x < instructions.length).sort((a,b) => a-b);
-  const basicBlocks = sorted.map((s, i) => ({ startRow:s, endRow:(sorted[i+1] ?? instructions.length)-1, rows:Array.from({length:(sorted[i+1] ?? instructions.length)-s},(_,k)=>s+k) }));
+  const basicBlocks = sorted.map((s0, i) => ({ startRow:s0, endRow:(sorted[i+1] ?? instructions.length)-1, rows:Array.from({length:(sorted[i+1] ?? instructions.length)-s0},(_,k)=>s0+k) }));
   return { name: fn, instructions, basicBlocks, semantic: [], calls: [] };
 }
 
@@ -177,6 +175,10 @@ assert.match(preResult.pseudocode, /max\(/, `prebuilt max recovery failed\n${pre
 const preTruth = semanticTruth('max_i32', preResult);
 assert.equal(preTruth.equivalent, true, JSON.stringify(preTruth));
 
+function ghidraFunction(functionsMap, name) {
+  return functionsMap?.[name] || functionsMap?.['_' + name] || null;
+}
+
 function optionalGhidraComparison() {
   const availability = ghidraAvailability();
   if (!availability.available) return { status:'skipped', reason:availability.reason };
@@ -188,12 +190,23 @@ function optionalGhidraComparison() {
     if (c.status !== 0) return { status:'skipped', reason:'AArch64 object compilation unavailable for Ghidra differential' };
     const g = runGhidra(obj, { timeoutMs:180000 });
     if (g.status !== 'ok') return g;
+    const missing = functions.filter((fn) => !ghidraFunction(g.functions, fn));
+    if (missing.length) {
+      return {
+        status:'failed',
+        reason:'Ghidra did not return every compiler-truth function',
+        expected:functions.length,
+        parsed:g.count || 0,
+        missing,
+        availableNames:Object.keys(g.functions || {}).slice(0, 50),
+        diagnostics:g.diagnostics || null,
+      };
+    }
     const o2 = results.find((r)=>r.optimization==='-O2')?.functions || [];
     const rows=[];
     for (const fn of functions) {
       const hex = o2.find((x)=>x.function===fn) || null;
-      const gt = g.functions?.[fn] || null;
-      if (!gt) { rows.push({ function:fn, classification:'ghidra-output-missing', hex }); continue; }
+      const gt = ghidraFunction(g.functions, fn);
       const e=expected[fn];
       const ghidraReadable = (e.mustContain || []).every((t)=>gt.includes(t)) && (!e.mustContainAny || e.mustContainAny.some((t)=>gt.includes(t)));
       const hexCorrect = hex?.semanticTruth?.equivalent === true;
@@ -203,7 +216,7 @@ function optionalGhidraComparison() {
             : 'both-unverified';
       rows.push({ function:fn, classification, hex, ghidra:readabilityMetrics(gt) });
     }
-    return { status:'ok', note:'source manifests are ground truth; Ghidra token/readability checks are not treated as semantic oracle', functions:rows };
+    return { status:'ok', parsed:g.count, expected:functions.length, note:'source manifests are ground truth; Ghidra token/readability checks are not treated as semantic oracle', functions:rows };
   } finally { fs.rmSync(tmp,{recursive:true,force:true}); }
 }
 
@@ -215,4 +228,8 @@ console.log('COMPILER_TRUTH ' + JSON.stringify(summary));
 if (clangAvailable) {
   assert.equal(hardFailures.length, 0, JSON.stringify(hardFailures, null, 2));
   assert.equal(executed, opts.length * functions.length, `compiler-truth executed ${executed}/${opts.length * functions.length}`);
+}
+if (ghidraAvailability().available) {
+  assert.equal(ghidra.status, 'ok', `mandatory Ghidra differential failed: ${JSON.stringify(ghidra)}`);
+  assert.equal(ghidra.parsed, functions.length, `Ghidra differential parsed ${ghidra.parsed}/${functions.length}`);
 }
