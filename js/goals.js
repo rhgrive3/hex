@@ -334,10 +334,10 @@ export function matchField(goal, name) {
    * `waterfallLifeCycleHolder` が出る（実際に出ていた）。
    */
   const blocked = avoidSpans(goal, norm);
-  const consider = (score, term, exact, literal, sequence, at) => {
+  const consider = (score, term, exact, literal, sequence, at, words) => {
     if (at != null && overlaps(blocked, at, term.length)) return;
     if (!best || score > best.score) {
-      best = { score, term, exact: !!exact, role, literal: !!literal, sequence: !!sequence };
+      best = { score, term, exact: !!exact, role, literal: !!literal, sequence: !!sequence, words: !!words };
     }
   };
 
@@ -370,10 +370,10 @@ export function matchField(goal, name) {
   const asked = normalizeFieldName(goal.text);
   if (asked && asked.length >= 2) {
     if (norm === asked) consider(1.2, goal.text, true, true);
-    else if (wordSequence(norm, asked)) consider(0.8, goal.text, false, true, true);
+    else if (wordSequence(norm, asked)) consider(1.0, goal.text, false, true, true);
     else {
       const cover = wordCoverage(norm, asked);
-      if (cover >= 0.99) consider(0.75, goal.text, false, true);
+      if (cover >= 0.99) consider(0.95, goal.text, false, true, false, null, true);
       else if (cover >= 0.6) consider(0.45 * cover, goal.text, false, true);
     }
   }

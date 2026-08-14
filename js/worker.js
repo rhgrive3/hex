@@ -418,6 +418,7 @@ async function analyzeSlice({ sliceIndex }) {
     return {
       addrs: new BigUint64Array(0), kinds: new Uint8Array(0), names: '',
       funcs: new BigUint64Array(0), symbolCount: 0, funcCount: 0, capped: false,
+      functionStartsExact: false,
       __transfer: [],
     };
   }
@@ -480,6 +481,7 @@ async function analyzeSlice({ sliceIndex }) {
   }
 
   let funcs = new BigUint64Array(0);
+  let functionStartsExact = false;
   if (info.functionStarts && info.functionStarts.datasize > 0 && info.textVM != null) {
     const buf = await readRange(base + BigInt(info.functionStarts.dataoff),
                                 Math.min(info.functionStarts.datasize, 8 * 1024 * 1024));
@@ -487,7 +489,17 @@ async function analyzeSlice({ sliceIndex }) {
       const list = MachO.parseFunctionStarts(buf, info.textVM);
       funcs = new BigUint64Array(list.length);
       for (let i = 0; i < list.length; i++) funcs[i] = list[i];
+      functionStartsExact = list.length > 0;
     } catch { funcs = new BigUint64Array(0); }
+  }
+
+  /* Known noreturn imports make the instruction after a call a strong boundary
+     signal. Cache their stub addresses on the slice so guessFunctions can use
+     them without rebuilding symbol tables during the code scan. */
+  const NORETURN_NAME = /(?:^|_)(?:stack_chk_fail|objc_exception_throw|abort|assert_rtn|cxa_throw|terminate|swift_.*(?:fatal|trap)|fatalError)(?:$|@)/i;
+  slice.noreturnTargets = new Set();
+  for (const e of entries) {
+    if (e && e.addr != null && NORETURN_NAME.test(e.name || '')) slice.noreturnTargets.add(e.addr);
   }
 
   const outAddrs = addrs.slice(0, n);
@@ -501,6 +513,7 @@ async function analyzeSlice({ sliceIndex }) {
     funcs,
     symbolCount: n,
     funcCount: funcs.length,
+    functionStartsExact,
     capped,
     __transfer: [outAddrs.buffer, outKinds.buffer, outFlags.buffer, funcs.buffer],
   };
@@ -722,21 +735,36 @@ async function guessFunctions({ regionId, limit, requestId, epoch }) {
   let pos = 0;
   let prevWasEnd = false;
   let prevWasRet = false;
+  let prevKind = null;
+  let prevWord = null;
+  let prevPc = null;
+  let prevWasNoreturnCall = false;
+
   /*
-   * Leaf functions often start with a load/adrp instead of a textbook stack
-   * prologue. Record the instruction after RET and decide only after the full
-   * scan, once every conditional-branch target is known. A target of cbz/tbz/
-   * b.cond is usually another basic block in the same function, not a new
-   * function, so excluding those keeps false positives low.
+   * Tiny leaf/accessor/thunk functions often have no stack prologue at all.
+   * Keep a three-instruction window after a terminal instruction and classify
+   * it only after the full scan, when intra-function branch targets are known.
+   * This is deliberately evidence-based: every accepted pattern below was
+   * measured against an independent oracle, and branch-target blocks are
+   * excluded before they can become fake functions.
    */
   const postRet = [];
+  const postBranch = [];
+  const postTrap = [];
+  const postNoreturn = [];
+  const pendingWindows = [];
   const conditionalTargets = new Set();
   const directBranchTargets = new Set();
-  let pendingPostRet = null;
+  const noreturnTargets = slice && slice.noreturnTargets ? slice.noreturnTargets : new Set();
   const POST_RET_START_KINDS = new Set([
     Words.KIND.LOAD, Words.KIND.ADRP, Words.KIND.RET, Words.KIND.LOGIC,
     Words.KIND.FCONV, Words.KIND.FARITH, Words.KIND.SIMD,
   ]);
+  const beginWindow = (arr, pc, w, kind) => {
+    const c = { addr: pc, word: w, kind, nextWord: null, nextKind: null, thirdWord: null, thirdKind: null };
+    arr.push(c); pendingWindows.push(c);
+  };
+
   while (pos < total) {
     if (cancelled(requestId)) return { starts: [], cancelled: true };
     const want = Math.min(SCAN_BLOCK, total - pos);
@@ -747,15 +775,26 @@ async function guessFunctions({ regionId, limit, requestId, epoch }) {
     for (let i = 0; i < words; i++) {
       const w = dv.getUint32(i * 4, true);
       const pc = region.vmAddr + BigInt(pos + i * 4);
+      const currentKind = Words.classifyWord(w);
+
+      /* Fill the 2nd/3rd instruction of recently opened tiny-function windows. */
+      for (let q = pendingWindows.length - 1; q >= 0; q--) {
+        const c = pendingWindows[q];
+        const d = pc - c.addr;
+        if (d === 4n) { c.nextWord = w; c.nextKind = currentKind; }
+        else if (d === 8n) { c.thirdWord = w; c.thirdKind = currentKind; pendingWindows.splice(q, 1); }
+        else if (d > 8n) pendingWindows.splice(q, 1);
+      }
 
       if (prevWasEnd && looksLikePrologue(w) && found.size < cap) found.add(pc);
-      const currentKind = Words.classifyWord(w);
-      if (pendingPostRet && pendingPostRet.addr + 4n === pc) pendingPostRet.nextKind = currentKind;
-      if (prevWasRet) {
-        pendingPostRet = { addr: pc, kind: currentKind, nextKind: null, word: w };
-        postRet.push(pendingPostRet);
-      } else if (pendingPostRet && pendingPostRet.addr + 4n < pc) {
-        pendingPostRet = null;
+      if (prevWasRet) beginWindow(postRet, pc, w, currentKind);
+      else if (prevKind === Words.KIND.BRANCH && prevWord != null && Words.isBranchImm(prevWord)) {
+        beginWindow(postBranch, pc, w, currentKind);
+      } else if (prevKind === Words.KIND.TRAP) {
+        beginWindow(postTrap, pc, w, currentKind);
+      }
+      if (prevWasNoreturnCall && looksLikePrologue(w)) {
+        postNoreturn.push(pc);
       }
 
       if (Words.isCondBranch(w)) {
@@ -763,25 +802,38 @@ async function guessFunctions({ regionId, limit, requestId, epoch }) {
         if (t != null && t >= lo && t < hi) conditionalTargets.add(t);
       }
 
-      // ret / retaa / retab / 無条件 b は関数の終わりになりうる
-      prevWasRet = Words.isRet(w);
-      prevWasEnd = Words.looksLikeEnd(w);
-
       if (Words.isBranchImm(w)) {
         const t = Words.branchImm26(w, pc);
         if (t != null && t >= lo && t < hi) directBranchTargets.add(t);
       }
 
       // bl の飛び先
+      let callTarget = null;
       if (Words.isCallImm(w)) {
-        const t = Words.branchImm26(w, pc);
-        if (t != null && t >= lo && t < hi && found.size < cap) found.add(t);
+        callTarget = Words.branchImm26(w, pc);
+        if (callTarget != null && callTarget >= lo && callTarget < hi && found.size < cap) found.add(callTarget);
       }
+
+      prevWasRet = Words.isRet(w);
+      prevWasEnd = Words.looksLikeEnd(w);
+      prevWasNoreturnCall = callTarget != null && noreturnTargets.has(callTarget);
+      prevKind = currentKind;
+      prevWord = w;
+      prevPc = pc;
     }
     pos += words * 4;
     scanProgress(requestId, epoch, pos, total, found.size);
     await yieldToQueue();
   }
+
+  const isBlocked = (c) => conditionalTargets.has(c.addr) || directBranchTargets.has(c.addr);
+  const rdOf = (w) => w == null ? -1 : (w & 0x1f);
+  const rnOf = (w) => w == null ? -1 : ((w >>> 5) & 0x1f);
+  const branchToKnown = (w, pc) => {
+    if (w == null || !Words.isBranchImm(w)) return false;
+    const t = Words.branchImm26(w, pc);
+    return t != null && found.has(t);
+  };
 
   const POST_RET_START_PAIRS = new Set([
     Words.KIND.MOVREG + ':' + Words.KIND.ARITH,
@@ -795,20 +847,134 @@ async function guessFunctions({ regionId, limit, requestId, epoch }) {
   ]);
   for (const c of postRet) {
     if (found.size >= cap) break;
-    if (conditionalTargets.has(c.addr)) continue;
+    if (isBlocked(c)) continue;
     const strongFirst = POST_RET_START_KINDS.has(c.kind);
     const strongPair = c.nextKind != null && POST_RET_START_PAIRS.has(c.kind + ':' + c.nextKind);
-    /* Objective-C ABI: x0=self, x1=_cmd, x2=first explicit argument. A tiny
-       `str <x2/w2>, [x0,#field]; ret` leaf is therefore a property setter even
-       when it has no stack prologue and nobody calls it with a direct BL. */
     const mem = c.kind === Words.KIND.STORE ? Words.memoryAccess(c.word) : null;
     const objcSetterLeaf = c.nextKind === Words.KIND.RET && mem && mem.store &&
       !mem.pair && mem.base === 0 && mem.reg === 2;
-    if (!strongFirst && !strongPair && !objcSetterLeaf) continue;
-    /* A MOVIMM→B sequence that is itself the target of another direct branch is
-       usually an intra-function dispatch block, not a new function. */
-    if (c.kind === Words.KIND.MOVIMM && c.nextKind === Words.KIND.BRANCH && directBranchTargets.has(c.addr)) continue;
+
+    /* Additional measured tiny-leaf signatures. */
+    const tinySetterChain = c.kind === Words.KIND.STORE && c.nextKind === Words.KIND.RET &&
+      new Set([Words.KIND.LOAD, Words.KIND.ARITH, Words.KIND.MOVREG, Words.KIND.MOVIMM]).has(c.thirdKind);
+    const arithConst = c.kind === Words.KIND.ARITH && c.nextKind === Words.KIND.MOVIMM;
+    const movStoreLoad = c.kind === Words.KIND.MOVREG && c.nextKind === Words.KIND.STORE && c.thirdKind === Words.KIND.LOAD;
+    const constConstTail = c.kind === Words.KIND.MOVIMM && c.nextKind === Words.KIND.MOVIMM &&
+      c.thirdKind === Words.KIND.BRANCH;
+    const condLeaf = c.kind === Words.KIND.CONDBR &&
+      new Set([Words.KIND.ARITH, Words.KIND.STORE, Words.KIND.LOAD, Words.KIND.CONDBR]).has(c.nextKind);
+    const cmpSelectRet = c.kind === Words.KIND.CMP && c.nextKind === Words.KIND.CSEL && c.thirdKind === Words.KIND.RET;
+    const constStoreRet = c.kind === Words.KIND.MOVIMM && c.nextKind === Words.KIND.STORE && c.thirdKind === Words.KIND.RET;
+    const trapBody = c.kind === Words.KIND.TRAP && c.nextKind === Words.KIND.TRAP && c.thirdKind === Words.KIND.TRAP;
+    const storeConstStore = c.kind === Words.KIND.STORE && c.nextKind === Words.KIND.MOVIMM && c.thirdKind === Words.KIND.STORE;
+    const cmpCondAdrp = c.kind === Words.KIND.CMP && c.nextKind === Words.KIND.CONDBR && c.thirdKind === Words.KIND.ADRP;
+
+    if (!strongFirst && !strongPair && !objcSetterLeaf && !tinySetterChain && !arithConst &&
+        !movStoreLoad && !constConstTail && !condLeaf && !cmpSelectRet && !constStoreRet && !trapBody &&
+        !storeConstStore && !cmpCondAdrp) continue;
     found.add(c.addr);
+  }
+
+  /* A trap/padding boundary is a very strong separator. */
+  for (const c of postTrap) {
+    if (found.size >= cap) break;
+    if (isBlocked(c)) continue;
+    if (c.kind === Words.KIND.ADRP || c.kind === Words.KIND.ARITH || c.kind === Words.KIND.STORE) found.add(c.addr);
+  }
+
+  /*
+   * Boundaries after an unconditional tail branch. These patterns cover the
+   * tiny getters, global-address wrappers and forwarding thunks generated by
+   * Clang/Swift without turning ordinary branch targets into functions.
+   */
+  const ADRP_SAFE_THIRD = new Set([
+    Words.KIND.BRANCH, Words.KIND.RET, Words.KIND.LOAD,
+    Words.KIND.ADRP, Words.KIND.ARITH, Words.KIND.CMP,
+  ]);
+  for (const c of postBranch) {
+    if (found.size >= cap) break;
+    if (isBlocked(c)) continue;
+    let strong = false;
+    const mem = (c.kind === Words.KIND.LOAD || c.kind === Words.KIND.STORE) ? Words.memoryAccess(c.word) : null;
+
+    // ldr x0/w0, [x0,...] — canonical tiny getter / object forwarding leaf.
+    if (c.kind === Words.KIND.LOAD && mem && mem.load && mem.base === 0 && mem.reg === 0) strong = true;
+    if (c.kind === Words.KIND.RET) strong = true;
+    if (c.kind === Words.KIND.MOVIMM && c.nextKind === Words.KIND.RET) strong = true;
+    if (c.kind === Words.KIND.ADRP && c.nextKind === Words.KIND.ADRP) strong = true;
+
+    if (c.kind === Words.KIND.ADRP && c.nextKind === Words.KIND.LOAD && ADRP_SAFE_THIRD.has(c.thirdKind)) strong = true;
+    if (c.kind === Words.KIND.ADRP && c.nextKind === Words.KIND.STORE) {
+      const m2 = Words.memoryAccess(c.nextWord);
+      if (m2 && m2.base === rdOf(c.word)) strong = true;
+    }
+    if (c.kind === Words.KIND.ADRP && c.nextKind === Words.KIND.ARITH &&
+        rdOf(c.nextWord) === rdOf(c.word) && rnOf(c.nextWord) === rdOf(c.word)) {
+      const d = rdOf(c.word);
+      const m3 = (c.thirdKind === Words.KIND.LOAD || c.thirdKind === Words.KIND.STORE)
+        ? Words.memoryAccess(c.thirdWord) : null;
+      if ((c.thirdKind === Words.KIND.LOAD && m3 && m3.base === d) ||
+          c.thirdKind === Words.KIND.MOVIMM ||
+          (c.thirdKind === Words.KIND.BRANCH && branchToKnown(c.thirdWord, c.addr + 8n))) strong = true;
+    }
+    if (c.kind === Words.KIND.ARITH &&
+        ((rdOf(c.word) === 0 && rnOf(c.word) === 0) || c.nextKind === Words.KIND.CMP)) strong = true;
+    /* Complete tiny leaves / wrapper prefixes that remain unambiguous even
+       without a conventional prologue. */
+    if (c.kind === Words.KIND.MOVREG && c.nextKind === Words.KIND.MOVREG && c.thirdKind === Words.KIND.ADRP) strong = true;
+    if (c.kind === Words.KIND.LOAD && c.nextKind === Words.KIND.LOGIC && c.thirdKind === Words.KIND.RET) strong = true;
+    if (c.kind === Words.KIND.LOAD && c.nextKind === Words.KIND.CMP && c.thirdKind === Words.KIND.CSEL) strong = true;
+    if (c.kind === Words.KIND.CONDBR && c.nextKind === Words.KIND.STORE && c.thirdKind === Words.KIND.STORE) strong = true;
+
+    /* Remaining zero-false-positive signatures measured after the broad rules.
+       These are only accepted after an unconditional terminal branch and only
+       when the address is not itself a branch target, so ordinary CFG blocks
+       cannot satisfy them. */
+    if (c.kind === Words.KIND.MOVIMM && c.nextKind === Words.KIND.BRANCH &&
+        new Set([Words.KIND.STORE, Words.KIND.MOVREG]).has(c.thirdKind)) strong = true;
+    if (c.kind === Words.KIND.LOAD && c.nextKind === Words.KIND.BRANCH && c.thirdKind === Words.KIND.ARITH) strong = true;
+    if (c.kind === Words.KIND.ARITH && c.nextKind === Words.KIND.LOAD && c.thirdKind === Words.KIND.CMP) strong = true;
+    if (c.kind === Words.KIND.MOVREG && c.nextKind === Words.KIND.LOAD && c.thirdKind === Words.KIND.ADRP) strong = true;
+
+    if (c.kind === Words.KIND.LOAD && c.nextKind === Words.KIND.BRANCH && branchToKnown(c.nextWord, c.addr + 4n)) strong = true;
+    if (c.kind === Words.KIND.LOAD && c.nextKind === Words.KIND.LOAD && c.thirdKind === Words.KIND.BRANCH &&
+        branchToKnown(c.thirdWord, c.addr + 8n)) strong = true;
+    if (c.kind === Words.KIND.LOAD && c.nextKind === Words.KIND.MOVREG && c.thirdKind === Words.KIND.BRANCH &&
+        branchToKnown(c.thirdWord, c.addr + 8n)) strong = true;
+    if (c.kind === Words.KIND.MOVREG && c.nextKind === Words.KIND.BRANCH && branchToKnown(c.nextWord, c.addr + 4n)) strong = true;
+    if (c.kind === Words.KIND.ARITH && c.nextKind === Words.KIND.BRANCH && branchToKnown(c.nextWord, c.addr + 4n)) strong = true;
+
+    /* ABI forwarding wrappers often materialize two explicit arguments and
+       immediately tail-call. Requiring two constants keeps this at measured
+       zero false positives on the corpus, unlike accepting every MOVIMM→B. */
+    if (c.kind === Words.KIND.MOVIMM && c.nextKind === Words.KIND.MOVIMM && c.thirdKind === Words.KIND.BRANCH) {
+      const d0 = rdOf(c.word), d1 = rdOf(c.nextWord);
+      if ((d0 >= 2 && d0 <= 7) || (d1 >= 2 && d1 <= 7)) strong = true;
+    }
+    if (strong) found.add(c.addr);
+  }
+
+  /* noreturn calls (abort/assert/throw/stack_chk_fail) terminate the caller.
+     A textbook prologue immediately after them is therefore a new function,
+     unless control flow explicitly targets that address. */
+  for (const a of postNoreturn) {
+    if (found.size >= cap) break;
+    if (!conditionalTargets.has(a) && !directBranchTargets.has(a)) found.add(a);
+  }
+
+  /* One-instruction tail thunks often form runs directly before a known start.
+     Walk backwards to a fixed point so A: b X / B: b Y / C: real-body is
+     recovered as three functions, while excluding any address used as an
+     intra-function branch target. */
+  let changed = true;
+  while (changed && found.size < cap) {
+    changed = false;
+    for (const c of postBranch) {
+      if (c.kind !== Words.KIND.BRANCH || isBlocked(c) || found.has(c.addr)) continue;
+      if (!found.has(c.addr + 4n)) continue;
+      found.add(c.addr); changed = true;
+      if (found.size >= cap) break;
+    }
   }
 
   const list = Array.from(found).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));

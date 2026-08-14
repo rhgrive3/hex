@@ -474,9 +474,13 @@ feature('pinpoint-partial', 'うろ覚えの名前から場所を決める', asy
     for (const iv of c.ivars) {
       const norm = normalizeFieldName(iv.name);
       all.push([' ' + norm + ' ', c.name, iv.name]);
-      const words = norm.split(' ').filter((x) => x.length >= 3);
+      const words = norm.split(' ').filter(Boolean);
       if (words.length < 3) continue;
-      const tail = words.slice(-2).join(' ');
+      const last = words.slice(-2);
+      // 短い語を削って、元の名前には存在しない連続語を捏造しない。
+      // 例: `reward in text` を `reward text` という別の問いにしてはいけない。
+      if (last.some((x) => x.length < 3)) continue;
+      const tail = last.join(' ');
       if (!tails.has(tail)) tails.set(tail, [c.name, iv.name]);
     }
   }
