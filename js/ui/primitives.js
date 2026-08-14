@@ -125,7 +125,27 @@ export function listRow({ title, subtitle, meta, badge, onClick, mono = false })
   return row;
 }
 
-/* Windowed list: only visible rows exist in the DOM. */
+function validLazySource(value) {
+  return value && !Array.isArray(value) && Number.isSafeInteger(value.length) && value.length >= 0 && typeof value.itemAt === 'function';
+}
+
+function sourceLength(value) {
+  if (Array.isArray(value)) return value.length;
+  if (validLazySource(value)) return value.length;
+  return 0;
+}
+
+function sourceItem(value, index) {
+  return Array.isArray(value) ? value[index] : value.itemAt(index);
+}
+
+/*
+ * Windowed list: only visible rows exist in the DOM.
+ *
+ * `items` may be a normal Array or a lazy source `{ length, itemAt(index) }`.
+ * The latter is important for 100k–300k function indexes on iPad: the UI can
+ * expose every function without first allocating one JS object per function.
+ */
 export class VirtualList {
   constructor({ items = [], rowHeight = 60, overscan = 6, renderRow, ariaLabel = '一覧' } = {}) {
     this.items = items;
@@ -145,22 +165,25 @@ export class VirtualList {
   }
 
   setItems(items) {
-    this.items = Array.isArray(items) ? items : [];
-    this.spacer.style.height = (this.items.length * this.rowHeight) + 'px'; // runtime geometry
+    this.items = Array.isArray(items) || validLazySource(items) ? items : [];
+    this.spacer.style.height = (sourceLength(this.items) * this.rowHeight) + 'px'; // runtime geometry
+    this.first = undefined;
+    this.last = undefined;
     this.render(true);
   }
 
   render(reset = false) {
     if (reset) this.root.scrollTop = 0;
     const height = this.root.clientHeight || 480;
+    const length = sourceLength(this.items);
     const first = Math.max(0, Math.floor(this.root.scrollTop / this.rowHeight) - this.overscan);
     const count = Math.ceil(height / this.rowHeight) + this.overscan * 2;
-    const last = Math.min(this.items.length, first + count);
+    const last = Math.min(length, first + count);
     if (first === this.first && last === this.last) return;
     this.first = first; this.last = last;
     const frag = document.createDocumentFragment();
     for (let index = first; index < last; index++) {
-      const row = this.renderRow(this.items[index], index);
+      const row = this.renderRow(sourceItem(this.items, index), index);
       row.classList.add('ui-virtual-row');
       row.setAttribute('role', 'listitem');
       row.style.height = this.rowHeight + 'px'; // virtualization geometry

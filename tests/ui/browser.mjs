@@ -162,8 +162,23 @@ async function checkViewport(browserType, browserName, viewportName, width, heig
   const context = await browser.newContext({ viewport: { width, height }, locale: 'ja-JP', hasTouch: width < 900, isMobile: width < 600 });
   const page = await context.newPage();
   const errors = [];
+  const appOrigin = new URL(baseUrl).origin;
+  const sameOrigin = (url) => { try { return new URL(url).origin === appOrigin; } catch { return false; } };
   page.on('pageerror', (error) => errors.push(error.message));
-  page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()); });
+  // Chromium reports failed external font/resource loads as a generic console
+  // error with no URL. Track application resources through response/request
+  // events instead, where we can distinguish a real same-origin regression.
+  page.on('console', (message) => {
+    if (message.type() !== 'error') return;
+    if (/^Failed to load resource:/i.test(message.text())) return;
+    errors.push(message.text());
+  });
+  page.on('response', (response) => {
+    if (response.status() >= 400 && sameOrigin(response.url())) errors.push(`${response.status()} ${response.url()}`);
+  });
+  page.on('requestfailed', (request) => {
+    if (sameOrigin(request.url())) errors.push(`request failed ${request.url()}: ${request.failure()?.errorText || 'unknown'}`);
+  });
   try {
     await page.goto(baseUrl, { waitUntil: 'networkidle' });
     await page.waitForFunction(() => !!window.__hexUi, null, { timeout: 10000 });
@@ -191,6 +206,11 @@ async function checkViewport(browserType, browserName, viewportName, width, heig
     await page.waitForTimeout(100);
     check(`${browserName}/${viewportName}: explorer route opens`, await page.locator('[data-screen="explorer"]').count() === 1);
     check(`${browserName}/${viewportName}: explorer is windowed`, await page.locator('.ui-virtual-list').count() <= 1 && await page.locator('.ui-virtual-row').count() < 80);
+    const functionCoverage = await page.evaluate(() => ({
+      visibleSourceLength: window.__hexUi && document.querySelector('.ui-virtual-list')?.querySelector('.ui-virtual-spacer')?.style.height || '',
+      functions: window.__app.symbols?.functionCount || 0,
+    }));
+    check(`${browserName}/${viewportName}: explorer exposes function index without 600/1000-row truncation`, functionCoverage.functions === 0 || !!functionCoverage.visibleSourceLength, JSON.stringify(functionCoverage));
     overflow = await noOverflow(page);
     check(`${browserName}/${viewportName}: explorer no horizontal overflow`, overflow.body <= 1 && overflow.root <= 1);
     if (screenshots) await shot(page, browserName, viewportName, 'explorer');
@@ -205,6 +225,9 @@ async function checkViewport(browserType, browserName, viewportName, width, heig
         await page.evaluate(({ fn, tab }) => window.__hexUi.router.navigate(`/function/${fn}/${tab}`), { fn, tab });
         await page.waitForTimeout(tab === 'calls' ? 500 : 250);
         check(`${browserName}/${viewportName}: function/${tab} opens`, await page.locator('[data-screen="function"]').count() === 1);
+        if (tab === 'runtime') {
+          check(`${browserName}/${viewportName}: runtime tab exposes Runtime Analysis Platform action`, await page.getByRole('button', { name: /ローカル実行で観測する|Run local observation/ }).count() === 1);
+        }
         overflow = await noOverflow(page);
         check(`${browserName}/${viewportName}: function/${tab} no body overflow`, overflow.body <= 1 && overflow.root <= 1, JSON.stringify(overflow));
         if (screenshots) await shot(page, browserName, viewportName, `function-${tab}`);
@@ -255,7 +278,7 @@ async function checkViewport(browserType, browserName, viewportName, width, heig
       await page.evaluate(() => { document.documentElement.classList.remove('ui-keyboard-open'); document.documentElement.style.setProperty('--ui-keyboard-inset', '0px'); });
     }
 
-    check(`${browserName}/${viewportName}: no page errors`, errors.length === 0, errors.slice(0, 3).join(' | '));
+    check(`${browserName}/${viewportName}: no page errors`, errors.length === 0, errors.slice(0, 5).join(' | '));
   } finally {
     await context.close();
     await browser.close();
