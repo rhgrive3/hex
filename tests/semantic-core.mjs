@@ -1,6 +1,6 @@
 import { buildSemanticModel } from '../js/blocks.js';
 import {
-  irFor, readModifyWrite, OP, MK, mustAlias, pointerProvenance,
+  irFor, readModifyWrite, OP, mustAlias, pointerProvenance,
   rangeOnBranch,
 } from '../js/ir.js';
 import { findValueUpdates, dataflowEngine } from '../js/dataflow.js';
@@ -11,15 +11,6 @@ import { runDeterministicAgent } from '../js/agent/runtime.js';
 
 let passed = 0;
 const failures = [];
-function test(name, fn) {
-  Promise.resolve().then(fn).then(() => {
-    passed++;
-    process.stdout.write('  ok  ' + name + '\n');
-  }).catch((err) => {
-    failures.push({ name, err });
-    process.stdout.write('FAIL  ' + name + '\n      ' + err.message + '\n');
-  });
-}
 function ok(v, msg) { if (!v) throw new Error(msg || 'expected truthy'); }
 function eq(a, b, msg) { if (a !== b) throw new Error((msg || 'not equal') + ': got ' + String(a) + ', want ' + String(b)); }
 
@@ -48,7 +39,6 @@ function asyncTest(name, fn) {
   }));
 }
 
-// alias through MOV
 asyncTest('alias through MOV is must-alias and RMW', () => {
   const model = modelOf([
     'mov x20, x19',
@@ -65,7 +55,6 @@ asyncTest('alias through MOV is must-alias and RMW', () => {
   eq(dataflowEngine(model), 'semantic-ir');
 });
 
-// pointer + constant offset
 asyncTest('pointer + constant offset is canonicalized conservatively', () => {
   const model = modelOf([
     'mov x20, x19',
@@ -76,13 +65,13 @@ asyncTest('pointer + constant offset is canonicalized conservatively', () => {
     'ret',
   ]);
   const ir = irFor(model);
-  const base = ir.instructions.find((i) => i.op === OP.LOAD).loc.base;
-  const p = pointerProvenance(base);
-  eq(p.offset, 0x20n, 'constant offset is retained');
-  ok(readModifyWrite(ir).length === 1, 'effective addresses are must-alias');
+  const pointerAdd = ir.instructions.find((i) => i.op === OP.BIN && i.sub === 'add' && i.dst && i.dst.reg === 'x21');
+  ok(pointerAdd && pointerAdd.dst, 'pointer add is represented in SSA');
+  const p = pointerProvenance(pointerAdd.dst);
+  eq(p.offset, 0x20n, 'constant offset is retained on the pointer SSA value');
+  ok(readModifyWrite(ir).length === 1, 'effective addresses are must-alias after address canonicalization');
 });
 
-// unknown indexed store / false positive regression
 asyncTest('unknown indexed store clobbers proof and blocks false-positive RMW', () => {
   const model = modelOf([
     'ldr w8, [x19, #0x20]',
@@ -96,7 +85,6 @@ asyncTest('unknown indexed store clobbers proof and blocks false-positive RMW', 
   ok(!findValueUpdates(model).some((u) => u.kind === 'read-modify-write'), 'facade does not reintroduce the legacy false positive');
 });
 
-// branch merge PHI
 asyncTest('branch merge creates PHI used by semantic update', () => {
   const model = modelOf([
     'ldr w8, [x19, #0x20]',
@@ -113,7 +101,6 @@ asyncTest('branch merge creates PHI used by semantic update', () => {
   ok(readModifyWrite(ir).some((r) => r.store.row === 6), 'Memory/value path crosses the PHI');
 });
 
-// loop PHI
 asyncTest('loop-carried value receives PHI without unbounded analysis', () => {
   const model = modelOf([
     'mov w8, #0',
@@ -128,7 +115,6 @@ asyncTest('loop-carried value receives PHI without unbounded analysis', () => {
   ok(phis(ir).some((p) => p.dst && p.dst.reg === 'x8'), 'loop PHI exists');
 });
 
-// clamp
 asyncTest('clamp is emitted as a first-class Semantic Fact', () => {
   const model = modelOf([
     'ldr w8, [x19, #0x20]',
@@ -143,7 +129,6 @@ asyncTest('clamp is emitted as a first-class Semantic Fact', () => {
   ok(facts.some((f) => f.kind === FACT.CLAMP), 'clamp fact');
 });
 
-// signed / unsigned threshold ranges
 asyncTest('unsigned and signed branch thresholds expose edge ranges', () => {
   const u = irFor(modelOf(['cmp w8, #100', 'b.hi #0x10000000c', 'ret', 'ret']));
   const ub = u.instructions.find((i) => i.op === OP.CBR);
@@ -161,8 +146,7 @@ asyncTest('unsigned and signed branch thresholds expose edge ranges', () => {
   eq(st.signedness, 'signed');
 });
 
-// field -> arithmetic -> field
-asyncTest('field arithmetic feeding another field remains a deterministic write fact', () => {
+asyncTest('field arithmetic feeding another field emits write and transfer facts', () => {
   const model = modelOf([
     'ldr w8, [x19, #0x20]',
     'add w8, w8, #5',
@@ -171,11 +155,13 @@ asyncTest('field arithmetic feeding another field remains a deterministic write 
   ]);
   const facts = semanticFacts(irFor(model));
   const write = facts.find((f) => f.kind === FACT.WRITE && f.location && f.location.disp === 0x30n);
+  const transfer = facts.find((f) => f.kind === FACT.TRANSFER && f.sink && f.sink.disp === 0x30n);
   ok(write, 'destination write is a semantic fact');
   ok(write.value && write.value.origin && write.value.origin.kind === 'computed', 'written value preserves computed origin');
+  ok(transfer && transfer.source && transfer.source.location && transfer.source.location.disp === 0x20n,
+    'source field dependency is retained through arithmetic');
 });
 
-// wrapper / getter / setter
 asyncTest('function summaries classify wrapper getter and setter', () => {
   const wrapper = summarizeFunction(modelOf(['add x0, x0, #5', 'ret']));
   ok(wrapper.classification.simpleArithmeticWrapper, 'simple add wrapper');
@@ -187,7 +173,6 @@ asyncTest('function summaries classify wrapper getter and setter', () => {
   ok(setter.classification.setter, 'setter');
 });
 
-// symbolic condition
 asyncTest('symbolic executor emits explicit path constraints', () => {
   const ir = irFor(modelOf([
     'cmp x0, #0',
@@ -204,7 +189,6 @@ asyncTest('symbolic executor emits explicit path constraints', () => {
   ok(constraints.some((x) => x.includes('arg0') && x.includes('>')), 'fallthrough condition is explicit: ' + constraints.join(', '));
 });
 
-// deterministic agent causal path
 asyncTest('deterministic Goal Planner verifies an agent causal path', async () => {
   const model = modelOf([
     'ldr w8, [x0, #0x20]',
