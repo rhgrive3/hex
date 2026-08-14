@@ -1,0 +1,37 @@
+name: Validate linear CFG fallback
+
+on:
+  push:
+    paths:
+      - '.github/workflows/linear-cfg-fallback.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/cfg-structuring-battlecats
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Apply fallback
+        run: python scripts/_linear_cfg_fallback.py
+      - name: Core checks
+        run: npm run check
+      - name: BattleCats CFG regression
+        run: node --max-old-space-size=6000 tests/battlecats-cfg-regression.mjs
+      - name: Remove temporary fallback files
+        run: rm -f scripts/_linear_cfg_fallback.py .github/workflows/linear-cfg-fallback.yml
+      - name: Commit fallback
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'Use faithful address-order fallback for complex CFGs'
+          git push origin HEAD:fix/cfg-structuring-battlecats
