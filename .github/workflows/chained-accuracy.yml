@@ -14,6 +14,10 @@ jobs:
         with:
           node-version: '24'
       - run: npm run check
+      - name: Install Playwright for real Worker/browser validation
+        run: npx --yes playwright@latest install --with-deps chromium
+      - name: Validate browser Worker pipeline
+        run: npx --yes -p playwright node tests/browser.mjs tests/battlecats
 
   accuracy:
     needs: unit
