@@ -94,7 +94,7 @@ async function openFile(msg, signal) {
     read: (offset, length) => cached.read(offset, length, { signal }),
   };
   image = await openBinarySource(cancellable, {
-    ranges: { pageSize: 64 * 1024, maxCachedBytes: 16 * 1024 * 1024, maxReads: 4096 },
+    ranges: { pageSize: 64 * 1024, maxPageSize: 2 * 1024 * 1024, maxCachedBytes: 16 * 1024 * 1024, maxReads: 4096 },
   });
   if (signal.aborted) throw new Error('Open cancelled');
   progress(msg, 'sections', 2, 7);
