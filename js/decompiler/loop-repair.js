@@ -18,7 +18,7 @@ function continuationCondition(iv) {
   const target = term.extra?.target;
   const headerBlock = loop && loop.header != null ? iv._ir?.blocks?.[loop.header] : null;
   const headerAddress = headerBlock ? iv._blockAddress?.(loop.header) : null;
-  let branchContinues = target != null && headerAddress != null && BigInt(target) === BigInt(headerAddress);
+  const branchContinues = target != null && headerAddress != null && BigInt(target) === BigInt(headerAddress);
 
   let cond = term.cond || term.extra?.cond || null;
   if (!cond) return null;
@@ -41,14 +41,40 @@ function continuationCondition(iv) {
   return info.vsZero ? `${a} ${info.op} 0` : `${a} ${info.op} ${b}`;
 }
 
+function replacementRange(lines, term, label) {
+  // Faithful/linear form: if (cond) goto header; goto exit;
+  let start = lines.findIndex((l) =>
+    typeof l.text === 'string' && l.text.includes(`goto ${label}`) &&
+    (l.row === term.row || /^if\s*\(/.test(l.text)));
+  if (start >= 0) {
+    let end = start + 1;
+    if (lines[end] && /^goto\s+loc_/.test(lines[end].text || '')) end++;
+    return { start, end };
+  }
+
+  // Region structurer form: if (cond) { goto header; } else { ... }
+  // The goto inserted for an already-visited block has no source row, so locate
+  // the source CBR first and prove that its then-arm contains this back-edge.
+  start = lines.findIndex((l) => l.row === term.row && /^if\s*\(.+\)\s*\{$/.test(l.text || ''));
+  if (start < 0) return null;
+  let hasBackEdge = false;
+  let end = -1;
+  const indent = lines[start].indent || 0;
+  for (let i = start + 1; i < lines.length; i++) {
+    const text = lines[i].text || '';
+    if (text.includes(`goto ${label}`)) hasBackEdge = true;
+    if ((lines[i].indent || 0) === indent && text === '}') { end = i + 1; break; }
+  }
+  return hasBackEdge && end > start ? { start, end } : null;
+}
+
 /**
- * Repair the one canonical loop form that the general region structurer cannot
- * represent naturally: a single Basic Block that updates a PHI induction value
+ * Repair the canonical post-test loop that a generic if/else region pass can
+ * accidentally consume first: one Basic Block updates a PHI induction value
  * and conditionally branches back to itself (source-level do/while).
  *
- * This is intentionally narrow. We require SSA PHI proof, a constant step, one
- * loop exit, a self back-edge, and no already-emitted side effects in the loop
- * body. If any proof is missing, the faithful goto form is left untouched.
+ * This is intentionally narrow. SSA must prove the PHI, constant induction
+ * step, self back-edge and single exit. If any proof is missing, goto remains.
  */
 export function repairCanonicalPostTestLoop(result, blockAddress) {
   if (!result?.semantic || !result.ir || !result.ctx?.inductions?.length) return result;
@@ -75,14 +101,13 @@ export function repairCanonicalPostTestLoop(result, blockAddress) {
 
     const headerAddr = blockAddress(loop.header);
     const label = `loc_${hex(headerAddr)}`;
-    const branchIndex = (result.lines || []).findIndex((l) =>
-      l.row === term.row && typeof l.text === 'string' && l.text.includes(`goto ${label}`));
-    if (branchIndex < 0) continue;
+    const range = replacementRange(result.lines || [], term, label);
+    if (!range) continue;
 
     const type = result.types?.values?.get(iv.value.id)?.name;
     const typeName = !type || type === 'unknown' ? 'int64' : type;
     const step = iv.step === 1n ? `${iv.name}++;` : iv.step === -1n ? `${iv.name}--;` : `${iv.name} += ${iv.step};`;
-    const indent = result.lines[branchIndex].indent || 1;
+    const indent = result.lines[range.start].indent || 1;
     const replacement = [
       { kind: 'stmt', indent, text: `${typeName} ${iv.name} = ${init};`, row: block.startRow, addr: headerAddr, note: null },
       { kind: 'ctrl', indent, text: 'do {', row: block.startRow, addr: headerAddr, note: null },
@@ -90,12 +115,7 @@ export function repairCanonicalPostTestLoop(result, blockAddress) {
       { kind: 'ctrl', indent, text: `} while (${cond});`, row: term.row, addr: term.address ?? null, note: null },
     ];
 
-    // Remove the explicit conditional back-edge and its immediately following
-    // explicit exit edge; normal fallthrough then reaches the already-emitted
-    // exit block. This preserves exactly the proven loop and no more.
-    let end = branchIndex + 1;
-    if (result.lines[end] && /^goto\s+loc_/.test(result.lines[end].text || '')) end++;
-    result.lines.splice(branchIndex, end - branchIndex, ...replacement);
+    result.lines.splice(range.start, range.end - range.start, ...replacement);
     result.pseudocode = result.lines.map((l) => `${'    '.repeat(Math.max(0, l.indent || 0))}${l.text || ''}`).join('\n');
     result.warnings = (result.warnings || []).filter((w) => !/control-flow edge/.test(w));
     result.ctx.loopRepair = 'ssa-post-test';
