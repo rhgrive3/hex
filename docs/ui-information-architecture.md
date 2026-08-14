@@ -26,10 +26,21 @@ Beginner-facing copy describes intent: 「値の流れ」「なぜそう言え�
 
 The persistent navigation has four entries only:
 
-1. **調べる / Investigate** — default route and beginner entry.
-2. **コード / Code** — current assembly/hex context.
+1. **調べる / Investigate** — structured question entry.
+2. **コード / Code** — current assembly/hex context, and the default route.
 3. **索引 / Explorer** — entity browsing/search.
 4. **結果 / Results** — revisit conclusions and evidence.
+
+The four entries live in the chrome row as compact tabs from 900px up, and are
+pinned to the bottom of the viewport below that. There is no left rail: the
+width it reserved belongs to the disassembly.
+
+**Code is the default route**, before a file exists as well as after. With no
+file open the workbench shows a compact open/sample card in the viewer area;
+opening a file goes straight to the instructions instead of a question screen
+or an overview sheet. Investigate remains one tap away for a structured goal,
+and the AI Assistant answers a question asked in ordinary language from
+wherever the user already is.
 
 Secondary destinations live in More: Settings, Learn, Help and Advanced. Functions, Sections, Structure, Search and Tools are never repeated there.
 
@@ -67,11 +78,36 @@ Secondary destinations live in More: Settings, Learn, Help and Advanced. Functio
 The global field accepts intent without requiring command syntax:
 
 - `0x100458C00` → address navigation;
-- `PlayerData` → Explorer search;
-- `Reward` → Explorer search across relevant names;
-- `> settings` or `設定` → command navigation.
+- `sub_100458C00` → open that function;
+- `"reward"` → string search;
+- `PlayerData` / `Reward` → Explorer search across relevant names;
+- `> settings` or `> 設定` → command navigation;
+- `? コインが増えるのはどこ` → ask the AI Assistant.
 
+The classified intent is named beside the field as the user types
+(`js/ai/interaction/omnibox.js`), so pressing Enter is never a surprise.
 Command syntax is optional. `Cmd/Ctrl+K` and `/` focus the field for expert use.
+
+## AI Assistant
+
+The assistant is ambient, never a destination: a 48px launcher at the bottom
+right, a docked column beside the code from 900px up, a bottom sheet on a
+tablet, full screen on a phone. The docked layout shrinks the workspace rather
+than covering it; the overlay layouts step aside as soon as an action
+navigates.
+
+| Control | Meaning |
+|---|---|
+| チャット / Chat | fast answers about the current context; no binary-wide search |
+| エージェント / Agent | search, trace and verify, reporting factual progress events |
+| やさしく / Beginner | conclusion first, terms explained, evidence one disclosure away |
+| 解析者 / Analyst | addresses, facts and cost front-loaded |
+| 範囲 / Scope | Auto, selection, function, neighborhood, binary, project, runtime |
+
+Every answer carries evidence, hypotheses and executable actions rather than
+prose alone, and every card ends somewhere in the code. Reading needs no
+approval; any change to project state (rename, comment, type, patch) is a
+proposal card that does nothing until the user presses Apply.
 
 ## Investigate
 
@@ -176,7 +212,7 @@ JavaScript avoids breakpoint-dependent behavior whenever CSS can express it.
 
 ### Landscape phone
 
-On short landscape viewports the bottom navigation becomes a compact right-side rail. Title/chrome height is reduced so the code/graph region retains useful vertical space.
+On short landscape viewports the primary navigation becomes a compact right-side rail. Title/chrome height is reduced so the code/graph region retains useful vertical space.
 
 ### iPad / tablet
 

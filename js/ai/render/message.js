@@ -15,6 +15,7 @@ import { renderActivity } from './activity.js';
 import { confidencePill } from './status.js';
 import { confidenceDisplay } from './normalize.js';
 import { decorateTerms } from './terms.js';
+import { missingLabel } from './missing.js';
 
 function actionsRow(actions, handlers) {
   if (!actions || !actions.length) return null;
@@ -34,7 +35,9 @@ function followupsRow(followups, handlers) {
   root.append(h('span', 'ai-actions-label', pick('未確認・追加で調べる', 'Open questions')));
   const row = h('div', 'ai-actions-row');
   for (const text of followups) {
-    row.append(uiButton(text, { cls: 'ai-chip', onClick: () => handlers.onFollowup(text) }));
+    const item = missingLabel(text);
+    if (!item.label) continue;
+    row.append(uiButton(item.label, { cls: 'ai-chip', onClick: () => handlers.onFollowup(item.ask) }));
   }
   root.append(row);
   return root;

@@ -14,7 +14,7 @@
 import { h, uiButton } from '../../ui/primitives.js';
 import { pick, isJa } from '../../i18n.js';
 import { menu } from '../../ui.js';
-import { MODE_ITEMS, STYLE_ITEMS, SCOPE_ITEMS, modeLabel, scopeLabel, styleLabel } from './modes.js';
+import { MODE_ITEMS, STYLE_ITEMS, SCOPE_ITEMS, scopeLabel } from './modes.js';
 import { renderTurn } from '../render/message.js';
 
 const MAX_RENDERED_TURNS = 40;
@@ -236,5 +236,4 @@ export function createPanel({ session, handlers }) {
   };
 }
 
-export { modeLabel, styleLabel };
 export default createPanel;

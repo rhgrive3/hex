@@ -9,6 +9,7 @@ import { h, uiButton } from '../../ui/primitives.js';
 import { pick } from '../../i18n.js';
 import { confidencePill, statusPill } from './status.js';
 import { confidenceDisplay } from './normalize.js';
+import { missingLabel } from './missing.js';
 
 function checkRow(mark, text, cls) {
   const row = h('li', 'ai-check ' + cls);
@@ -35,7 +36,7 @@ export function renderHypotheses(hypotheses, { onAction, onVerify }) {
     const checks = h('ul', 'ai-check-list');
     for (const support of item.support.slice(0, 4)) checks.append(checkRow('✓', support.title || support.id, 'yes'));
     for (const against of item.contradictions.slice(0, 4)) checks.append(checkRow('✕', against.title || against.id, 'no'));
-    for (const missing of item.missing.slice(0, 4)) checks.append(checkRow('?', missing, 'unknown'));
+    for (const missing of item.missing.slice(0, 4)) checks.append(checkRow('?', missingLabel(missing).label, 'unknown'));
     if (checks.childNodes.length) card.append(checks);
 
     const actions = h('div', 'ai-hypothesis-actions');

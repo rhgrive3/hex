@@ -68,9 +68,12 @@ function localChatAnswer({ name, address, model, selection }) {
     const count = (model.instructions || []).length;
     const blocks = (model.blocks || []).length;
     const calls = (model.instructions || []).filter((item) => /^bl$/i.test(item.mnemonic || '')).length;
+    const parts = [pick(`${count} 命令`, `${count} instructions`)];
+    if (blocks > 1) parts.push(pick(`${blocks} ブロック`, `${blocks} blocks`));
+    if (calls) parts.push(pick(`他の関数を ${calls} 箇所から呼び出し`, `${calls} calls to other functions`));
     lines.push(pick(
-      `${name}（${address}）は ${count} 命令・${blocks} ブロックで、${calls} 箇所から他の関数を呼んでいます。`,
-      `${name} (${address}) has ${count} instructions in ${blocks} blocks and calls other functions ${calls} times.`));
+      `${name}（${address}）は ${parts.join('・')}です。`,
+      `${name} (${address}): ${parts.join(', ')}.`));
   }
   lines.push(pick(
     'AI 応答サービスに接続できないため、ここまでは Hex がバイナリから直接確認した事実だけです。解釈は付けていません。',
