@@ -1,6 +1,6 @@
 /* Constant-threshold regressions for the IR-backed dataflow facade. */
 import { buildSemanticModel } from '../js/blocks.js';
-import { constantComparisons, constantComparisonsLegacy } from '../js/dataflow.js';
+import { constantComparisons, constantComparisonsLegacy, findValueUpdates } from '../js/dataflow.js';
 
 let passed = 0;
 const failures = [];
@@ -81,6 +81,26 @@ test('MOVZ/MOVK assembled constants remain whole thresholds', () => {
   ok(rows.length === 1, 'assembled comparison recovered');
   eq(rows[0].value, 0x56781234n, 'MOVK fragment is inserted instead of mistaken for the full constant');
   eq(rows[0].register, 'x8');
+});
+
+test('propagated guard is not exposed generically after multiple location candidates were found', () => {
+  const model = modelOf([
+    'ldr w8, [x19, #0x20]',
+    'add w8, w8, #1',
+    'str w8, [x19, #0x20]',
+    'ldr w10, [x19, #0x40]',
+    'add w10, w10, #1',
+    'str w10, [x19, #0x40]',
+    'mov w9, #100',
+    'cmp w8, w9',
+    'ret',
+  ]);
+  const updates = findValueUpdates(model);
+  ok(updates.some((u) => u.location && u.location.disp === 0x20n), 'first location found');
+  ok(updates.some((u) => u.location && u.location.disp === 0x40n), 'second location found');
+  const rows = constantComparisons(model);
+  ok(!rows.some((r) => r.row === 7 && r.propagated),
+    'unscoped SSA threshold is withheld instead of being attached to both locations');
 });
 
 process.stdout.write('\n' + passed + ' passed, ' + failures.length + ' failed\n');
