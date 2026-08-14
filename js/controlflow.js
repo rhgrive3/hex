@@ -90,19 +90,53 @@ function tarjan(succ, reachable) {
   return { components, componentOf };
 }
 
-function postDominatorsOf(succ, reachable) {
+function postDominatorsOf(succ, pred, reachable, components, componentOf) {
   const n = succ.length;
   const EXIT = n;
-  const universe = new Set([...reachable, EXIT]);
+  const internal = (i) => succ[i].filter((j) => reachable.has(j));
+
+  /*
+   * A closed SCC with no real exit is a non-terminating path.  If a node can
+   * reach one, an ordinary immediate post-dominator is unsafe: one execution
+   * may never reach the alleged merge at all.  Keep ipdom=null for that whole
+   * reverse-reachable region so the decompiler falls back to explicit edges.
+   */
+  const compOut = components.map(() => new Set());
+  const compHasExit = components.map(() => false);
+  for (const i of reachable) {
+    const ci = componentOf[i];
+    const xs = internal(i);
+    if (!xs.length) compHasExit[ci] = true;
+    for (const j of xs) {
+      const cj = componentOf[j];
+      if (ci !== cj) compOut[ci].add(cj);
+    }
+  }
+  const bad = new Set();
+  const stack = [];
+  for (let c = 0; c < components.length; c++) {
+    if (compOut[c].size || compHasExit[c]) continue;
+    for (const i of components[c]) if (reachable.has(i)) { bad.add(i); stack.push(i); }
+  }
+  while (stack.length) {
+    const i = stack.pop();
+    for (const p of pred[i]) {
+      if (!reachable.has(p) || bad.has(p)) continue;
+      bad.add(p); stack.push(p);
+    }
+  }
+
+  const eligible = new Set(Array.from(reachable).filter((i) => !bad.has(i)));
+  const universe = new Set([...eligible, EXIT]);
   const pdom = Array.from({ length: n + 1 }, (_, i) => i === EXIT ? new Set([EXIT]) :
-    (reachable.has(i) ? new Set(universe) : new Set([i])));
+    (eligible.has(i) ? new Set(universe) : new Set([i])));
   const nexts = (i) => {
-    const xs = succ[i].filter((j) => reachable.has(j));
+    const xs = succ[i].filter((j) => eligible.has(j));
     return xs.length ? xs : [EXIT];
   };
   for (let round = 0; round < (n + 1) * 4 + 8; round++) {
     let changed = false;
-    for (const i of reachable) {
+    for (const i of eligible) {
       const next = intersect(nexts(i).map((j) => pdom[j]));
       next.add(i);
       if (!sameSet(next, pdom[i])) { pdom[i] = next; changed = true; }
@@ -110,7 +144,7 @@ function postDominatorsOf(succ, reachable) {
     if (!changed) break;
   }
   const ipdom = new Array(n).fill(null);
-  for (const i of reachable) {
+  for (const i of eligible) {
     const candidates = Array.from(pdom[i]).filter((x) => x !== i && x !== EXIT);
     let best = null, bestSize = -1;
     for (const c of candidates) {
@@ -119,7 +153,8 @@ function postDominatorsOf(succ, reachable) {
     }
     ipdom[i] = best;
   }
-  return { postDominators: pdom.slice(0, n), immediatePostDominators: ipdom };
+  return { postDominators: pdom.slice(0, n), immediatePostDominators: ipdom,
+    nonTerminatingReachable: bad };
 }
 
 /**
@@ -173,7 +208,7 @@ export function analyzeGraph(successors, entry = 0) {
     for (const x of loop.nodes) for (const y of succ[x]) if (!loop.nodes.has(y)) loop.exits.add(y);
   }
 
-  const post = postDominatorsOf(succ, reachable);
+  const post = postDominatorsOf(succ, predecessors, reachable, components, componentOf);
   return {
     successors: succ,
     predecessors,
@@ -186,5 +221,6 @@ export function analyzeGraph(successors, entry = 0) {
     loopByHeader,
     postDominators: post.postDominators,
     immediatePostDominators: post.immediatePostDominators,
+    nonTerminatingReachable: post.nonTerminatingReachable,
   };
 }

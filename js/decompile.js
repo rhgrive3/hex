@@ -123,7 +123,7 @@ export function decompile(model, opts) {
     warnings.push('制御の流れが複雑で、' + state.gotos + ' か所は goto のまま残しました（コンパイラの最適化でよくあります）。');
   }
   if (coverage.recovered) {
-    warnings.push('最適化された共有経路 ' + coverage.recovered + ' ブロックを goto で安全に補完しました（到達可能な処理の欠落はありません）。');
+    warnings.push('構造化できなかった共有・間接経路 ' + coverage.recovered + ' ブロックを goto で安全に補完しました（関数内の処理は省略していません）。');
   }
   if (coverage.missing) warnings.push('内部エラー: 到達可能な ' + coverage.missing + ' ブロックを出力できませんでした。');
   if (model.truncated) warnings.push('関数が大きいため、途中までを訳しています。');
@@ -1079,7 +1079,8 @@ function emitIf(cfg, i, to, indent, out, ctx, state, loop) {
 
 /** Final correctness net: every reachable Basic Block must appear at least once. */
 function recoverUnemittedBlocks(cfg, out, ctx, state) {
-  const before = Array.from(cfg.reachable).filter((i) => !state.emitted.has(i)).sort((a, b) => a - b);
+  const all = cfg.nodes.map((_, i) => i);
+  const before = all.filter((i) => !state.emitted.has(i));
   for (const i of before) {
     if (state.emitted.has(i)) continue;
     const n = cfg.nodes[i];
@@ -1107,9 +1108,10 @@ function recoverUnemittedBlocks(cfg, out, ctx, state) {
       out.push(line('ctrl', 1, 'goto ' + f + ';', n.endRow)); state.gotos++;
     }
   }
-  const missing = Array.from(cfg.reachable).filter((i) => !state.emitted.has(i)).length;
-  return { reachable: cfg.reachable.size, emitted: state.emitted.size,
-    recovered: state.recovered, missing };
+  const missing = all.filter((i) => !state.emitted.has(i)).length;
+  const reachableMissing = Array.from(cfg.reachable).filter((i) => !state.emitted.has(i)).length;
+  return { total: cfg.nodes.length, reachable: cfg.reachable.size, emitted: state.emitted.size,
+    recovered: state.recovered, missing, reachableMissing };
 }
 
 function labelOf(node, ctx) {
@@ -1443,7 +1445,8 @@ function emitBlockBody(node, indent, out, ctx, state, opts) {
     const insn = ctx.byRow.get(row);
     if (!insn) continue;
     /* 分岐そのものは if / while / goto として書くので、ここでは出さない */
-    if (insn === node.terminator && insn.isBranch && !insn.isCall && !insn.isReturn) continue;
+    if (insn === node.terminator && insn.isBranch && !insn.isCall && !insn.isReturn &&
+        (node.jump != null || node.condTarget != null)) continue;
     const st = statementFor(insn, ctx, node);
     if (st) stmts.push(st);
   }

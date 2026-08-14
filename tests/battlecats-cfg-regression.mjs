@@ -23,7 +23,9 @@ for (const [fromAddr, toAddr] of [
     `false natural loop survived: ${fromAddr.toString(16)} -> ${toAddr.toString(16)}`);
 }
 assert(result.coverage && result.coverage.missing === 0,
-  `reachable blocks missing: ${JSON.stringify(result.coverage)}`);
+  `function blocks missing: ${JSON.stringify(result.coverage)}`);
+assert(result.coverage.emitted === result.coverage.total,
+  `not every function block was emitted: ${JSON.stringify(result.coverage)}`);
 const text = decompiledText(result);
 assert(!text.includes('/* 条件は読み取れません */ 1'), 'fake unreadable infinite loop survived');
 console.log('BattleCats CFG regression: ok', result.coverage);

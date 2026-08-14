@@ -1,6 +1,7 @@
 import { buildSemanticModel } from '../js/blocks.js';
 import { buildCfg } from '../js/cfg.js';
 import { decompile, decompiledText } from '../js/decompile.js';
+import { analyzeGraph } from '../js/controlflow.js';
 
 const BASE = 0x100000000n;
 function assert(cond, msg) { if (!cond) throw new Error(msg); }
@@ -50,4 +51,24 @@ assert(loop.model.backEdges.length === 1, 'real natural loop disappeared from se
 assert(loop.cfg.backEdges.length === 1, 'real natural loop disappeared from CFG');
 assert(loop.result.coverage.missing === 0, 'real loop decompile lost a block');
 assert(/while \(|do\s+\{/.test(loop.text), 'real natural loop was not structured');
+
+// A branch that can either exit or disappear into a closed infinite SCC has no
+// safe immediate post-dominator. Treating one as a merge would invent an if.
+const nonTerm = analyzeGraph([[1, 2], [1], []], 0);
+assert(nonTerm.immediatePostDominators[0] == null,
+  'post-dominator invented across a non-terminating path');
+
+// Indirect branches are not statically connected to their jump-table targets.
+// The decompiler must still preserve both the `br` itself and every block in
+// the function range instead of silently dropping the disconnected chunk.
+const indirect = make([
+  'br x8',
+  'mov x0, #0x1',
+  'ret',
+]);
+assert(indirect.text.includes('__asm("br x8")'), 'indirect branch disappeared');
+assert(indirect.result.coverage.missing === 0, 'disconnected function block disappeared');
+assert(indirect.result.coverage.emitted === indirect.result.coverage.total,
+  'coverage does not include every Basic Block');
+
 console.log('cfg-structuring regression: ok');
