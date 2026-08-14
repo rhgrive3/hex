@@ -37,6 +37,14 @@ __attribute__((noinline)) i32 neg_if(i32 x, i32 flag) {
   return flag ? -x : x;
 }
 
+__attribute__((noinline)) u32 inc_if(u32 x, u32 flag) {
+  return flag ? x + 1u : x;
+}
+
+__attribute__((noinline)) u32 inv_if(u32 x, u32 flag) {
+  return flag ? ~x : x;
+}
+
 __attribute__((noinline)) u32 extract16(u32 x) {
   return (x >> 8) & 0xffffu;
 }
