@@ -1,32 +1,14 @@
-/*
- * Design philosophy: 「証拠の地図帳」。呼び出し・制御の関係を文字の
- * 羅列で終わらせず、現在地を中心にたどれる図として提示する。
- *
- * 図（グラフ）を描く。
- *
- *  - 制御フローグラフ（CFG）… 関数の中の「道の分かれ方」
- *  - 呼び出しグラフ（Call Graph）… 関数どうしの「誰が誰を呼ぶか」
- *
- * IDA の Graph view と同じ絵です。文字だけの一覧より、
- * 「ここで 2 つに分かれて、ここで合流する」が一目で分かります。
- *
- * 外部ライブラリは使わず、SVG を直接組み立てます（読み込みが速く、オフラインでも動く）。
- * 配置は層（レイヤ）方式:
- *   1. 入口からの深さで段を決める
- *   2. 同じ段の中で左から順に並べる
- *   3. 線は「出口の下 → 入口の上」へ、途中で 1 回曲げて引く
- */
+/* Graph rendering and CFG/Call Graph adapters. Routing lives in graph-routing.js. */
 
-const CHAR_W = 7.9;          // 等幅フォント 12.5px のおおよその字幅
-const LINE_H = 18;
-const PAD_X = 12;
-const PAD_Y = 10;
-const GAP_X = 34;
-const GAP_Y = 58;
-const MAX_LINES = 14;        // 1 つの箱に入れる行数の上限
-const MAX_CHARS = 46;
+import {
+  LINE_H, PAD_X, PAD_Y, MAX_LINES, MAX_CHARS,
+  layoutNodes, routeEdges, roundedOrthogonalPath, graphRoutingDiagnostics,
+} from './graph-routing.js';
+
+export { graphRoutingDiagnostics };
 
 const NS = 'http://www.w3.org/2000/svg';
+let graphSerial = 0;
 
 function svgEl(tag, attrs) {
   const n = document.createElementNS(NS, tag);
@@ -44,6 +26,7 @@ export function renderGraph(nodes, edges, opts) {
   const o = opts || {};
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const layout = layoutNodes(nodes, edges, byId);
+  const routes = routeEdges(edges, layout);
 
   const wrap = document.createElement('div');
   wrap.className = 'graphwrap';
@@ -53,45 +36,70 @@ export function renderGraph(nodes, edges, opts) {
     viewBox: '0 0 ' + layout.width + ' ' + layout.height,
   });
 
-  /* 矢印の先端 */
+  /* 同じページに複数グラフがあっても marker id が衝突しない。 */
+  const markerPrefix = 'g' + (++graphSerial) + '-';
   const defs = svgEl('defs');
   for (const [id, cls] of [['ga', 'g-arrow'], ['gt', 'g-arrow true'], ['gf', 'g-arrow false'], ['gb', 'g-arrow back']]) {
     const marker = svgEl('marker', {
-      id, viewBox: '0 0 10 10', refX: 8, refY: 5,
+      id: markerPrefix + id, viewBox: '0 0 10 10', refX: 8, refY: 5,
       markerWidth: 6, markerHeight: 6, orient: 'auto-start-reverse',
+      markerUnits: 'strokeWidth',
     });
     marker.append(svgEl('path', { d: 'M 0 0 L 10 5 L 0 10 z', class: cls }));
     defs.append(marker);
   }
   svg.append(defs);
 
-  /* 線を先に描く（箱の下に来るように） */
-  for (const e of edges) {
-    const a = layout.pos.get(e.from);
-    const b = layout.pos.get(e.to);
-    if (!a || !b) continue;
+  /* 線を先に描く。各線には halo と太い透明 hit-area を持たせる。 */
+  for (const route of routes) {
+    const e = route.edge;
     const cls = 'g-edge ' + (e.kind || 'jump');
-    const path = svgEl('path', {
-      d: edgePath(a, b, detourFor(a, b, layout)),
-      class: cls,
-      'marker-end': 'url(#' + (e.kind === 'true' ? 'gt' : e.kind === 'false' ? 'gf' : e.kind === 'back' ? 'gb' : 'ga') + ')',
+    const markerId = e.kind === 'true' ? 'gt' : e.kind === 'false' ? 'gf' : e.kind === 'back' ? 'gb' : 'ga';
+    const d = roundedOrthogonalPath(route.points);
+    const group = svgEl('g', { class: 'g-edge-group' });
+
+    const hit = svgEl('path', {
+      d, fill: 'none', stroke: 'transparent', 'stroke-width': 14,
+      'pointer-events': 'stroke',
     });
-    svg.append(path);
-    if (e.label) {
-      /* 線の上に字を直に置くと読めない。下地を敷いてから書く。
-         横へ逃がした線は、真ん中ではなく出口のすぐ下に置く（線とずれないように）。 */
-      const detour = detourFor(a, b, layout);
-      /* 逃がした線は、まっすぐ降りる線と札がぶつかる。逃げた先の縦の道に置く。 */
-      const cx = detour != null ? detour : (a.x + a.w / 2 + b.x + b.w / 2) / 2;
-      const cy = (a.y + a.h + b.y) / 2;
+    const halo = svgEl('path', {
+      d, fill: 'none', stroke: 'var(--surface-2)', 'stroke-width': e.kind === 'back' ? 7 : 5.5,
+      'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'pointer-events': 'none',
+    });
+    const path = svgEl('path', {
+      d, class: cls,
+      'stroke-linecap': 'round', 'stroke-linejoin': 'round',
+      'marker-end': 'url(#' + markerPrefix + markerId + ')',
+      'pointer-events': 'none',
+    });
+
+    const baseWidth = e.kind === 'back' ? 2.5 : 1.6;
+    const emphasize = () => {
+      path.style.strokeWidth = String(baseWidth + 1.6);
+      halo.style.strokeWidth = String((e.kind === 'back' ? 7 : 5.5) + 2.4);
+    };
+    const normalize = () => {
+      path.style.strokeWidth = '';
+      halo.style.strokeWidth = String(e.kind === 'back' ? 7 : 5.5);
+    };
+    hit.addEventListener('pointerenter', emphasize);
+    hit.addEventListener('pointerleave', normalize);
+    hit.addEventListener('focus', emphasize);
+    hit.addEventListener('blur', normalize);
+
+    group.append(hit, halo, path);
+
+    if (e.label && route.label) {
       const w = e.label.length * 12 + 10;
-      svg.append(svgEl('rect', {
-        x: cx - w / 2, y: cy - 12, width: w, height: 16, rx: 4, class: 'g-labelbg',
+      group.append(svgEl('rect', {
+        x: route.label.x - w / 2, y: route.label.y - 12,
+        width: w, height: 16, rx: 4, class: 'g-labelbg',
       }));
-      const mid = svgEl('text', { x: cx, y: cy, class: 'g-label' });
+      const mid = svgEl('text', { x: route.label.x, y: route.label.y, class: 'g-label' });
       mid.textContent = e.label;
-      svg.append(mid);
+      group.append(mid);
     }
+    svg.append(group);
   }
 
   /* 箱 */
@@ -136,178 +144,8 @@ export function renderGraph(nodes, edges, opts) {
   return wrap;
 }
 
-/* ── 配置 ───────────────────────────────────────────────── */
-
-function layoutNodes(nodes, edges, byId) {
-  const succ = new Map();
-  const indeg = new Map();
-  for (const n of nodes) { succ.set(n.id, []); indeg.set(n.id, 0); }
-  for (const e of edges) {
-    if (!byId.has(e.from) || !byId.has(e.to) || e.kind === 'back') continue;
-    succ.get(e.from).push(e.to);
-    indeg.set(e.to, indeg.get(e.to) + 1);
-  }
-
-  /* 段を決める: 入口から順に、親より 1 つ下へ */
-  const rank = new Map();
-  const queue = nodes.filter((n) => indeg.get(n.id) === 0).map((n) => n.id);
-  if (!queue.length && nodes.length) queue.push(nodes[0].id);
-  for (const id of queue) rank.set(id, 0);
-  let guard = 0;
-  const work = queue.slice();
-  while (work.length && guard++ < 20000) {
-    const id = work.shift();
-    for (const s of succ.get(id) || []) {
-      const r = (rank.get(id) || 0) + 1;
-      if (!rank.has(s) || rank.get(s) < r) {
-        if ((rank.get(s) || 0) > nodes.length) continue;      // 環に入り込まない
-        rank.set(s, r);
-        work.push(s);
-      }
-    }
-  }
-  for (const n of nodes) if (!rank.has(n.id)) rank.set(n.id, 0);
-
-  /* 箱の大きさ */
-  const size = new Map();
-  for (const n of nodes) {
-    const lines = (n.lines || []).slice(0, MAX_LINES + 1);
-    const longest = Math.max(
-      n.title ? n.title.length : 0,
-      ...lines.map((l) => Math.min(l.length, MAX_CHARS)), 8);
-    size.set(n.id, {
-      w: Math.round(longest * CHAR_W + PAD_X * 2),
-      h: PAD_Y * 2 + (n.title ? LINE_H : 0) + Math.max(1, lines.length) * LINE_H + 4,
-    });
-  }
-
-  /* 段ごとに横並び */
-  const rows = new Map();
-  for (const n of nodes) {
-    const r = rank.get(n.id);
-    if (!rows.has(r)) rows.set(r, []);
-    rows.get(r).push(n.id);
-  }
-  const ranksSorted = Array.from(rows.keys()).sort((a, b) => a - b);
-
-  /*
-   * 段の中の並び順を決める。
-   *
-   * 出てきた順のまま置くと、線が何本も交差して「どこから来た線か」が
-   * 追えなくなる。親の位置の平均（重心）で並べ替えると、交差はぐっと減る。
-   * 上から下、下から上へ数回ならすだけで、目で追える絵になる。
-   */
-  const order = new Map();                 // id → 段の中の位置
-  for (const r of ranksSorted) rows.get(r).forEach((id, i) => order.set(id, i));
-
-  const pred = new Map();
-  for (const n of nodes) pred.set(n.id, []);
-  for (const e of edges) {
-    if (!byId.has(e.from) || !byId.has(e.to) || e.kind === 'back') continue;
-    pred.get(e.to).push(e.from);
-  }
-  const mean = (ids) => (ids.length
-    ? ids.reduce((s, id) => s + (order.get(id) != null ? order.get(id) : 0), 0) / ids.length
-    : null);
-
-  for (let pass = 0; pass < 4; pass++) {
-    const down = pass % 2 === 0;
-    const seq = down ? ranksSorted : ranksSorted.slice().reverse();
-    for (const r of seq) {
-      const ids = rows.get(r);
-      if (ids.length < 2) continue;
-      const key = new Map();
-      for (const id of ids) {
-        const neighbours = down ? pred.get(id) : (succ.get(id) || []);
-        const m = mean(neighbours.filter((x) => rank.get(x) !== r));
-        key.set(id, m == null ? order.get(id) : m);
-      }
-      ids.sort((a, b) => key.get(a) - key.get(b) || order.get(a) - order.get(b));
-      ids.forEach((id, i) => order.set(id, i));
-    }
-  }
-
-  /* いちばん広い段を基準に、どの段も中央にそろえる */
-  const rowWidth = (ids) => ids.reduce((s, id) => s + size.get(id).w, 0) +
-    GAP_X * Math.max(0, ids.length - 1);
-  let width = 200;
-  for (const r of ranksSorted) width = Math.max(width, rowWidth(rows.get(r)));
-
-  const pos = new Map();
-  let y = 24;
-  for (const r of ranksSorted) {
-    const ids = rows.get(r);
-    let x = 24 + (width - rowWidth(ids)) / 2;
-    let tallest = 0;
-    for (const id of ids) {
-      const s = size.get(id);
-      pos.set(id, { x, y, w: s.w, h: s.h });
-      x += s.w + GAP_X;
-      tallest = Math.max(tallest, s.h);
-    }
-    y += tallest + GAP_Y;
-  }
-  /* 右の余白は、段を飛び越す線を逃がす通り道にも使う。 */
-  return { pos, width: width + 80, height: y + 24 };
-}
-
-/*
- * 段を飛び越す線は、間の箱を突き抜けてしまう。
- *
- * cbz で 2 つ先へ飛ぶ形（if の中身を丸ごと飛ばす）はごくふつうに出てくるが、
- * まっすぐ引くと途中の箱の裏に隠れて、線が 1 本消えたように見える。
- * 間に箱があるときは、右へ逃がしてから降ろす。
- *
- * @returns {number|null} 逃がす先の x（要らなければ null）
- */
-function detourFor(a, b, layout) {
-  const top = a.y + a.h;
-  const bottom = b.y;
-  if (bottom <= top) return null;                 // 戻る線は別扱い
-  let hit = false;
-  let right = Math.max(a.x + a.w, b.x + b.w);
-  for (const p of layout.pos.values()) {
-    if (p === a || p === b) continue;
-    // その箱が、線の通る高さの帯にかかっているか
-    if (p.y + p.h <= top + 1 || p.y >= bottom - 1) continue;
-    hit = true;
-    right = Math.max(right, p.x + p.w);
-  }
-  return hit ? right + 24 : null;
-}
-
-function edgePath(a, b, detour) {
-  const x1 = a.x + a.w / 2, y1 = a.y + a.h;
-  const x2 = b.x + b.w / 2, y2 = b.y;
-  if (y2 >= y1) {
-    if (detour != null) {
-      const drop = y1 + 14;
-      const rise = y2 - 14;
-      return 'M ' + x1 + ' ' + y1 + ' L ' + x1 + ' ' + drop + ' L ' + detour + ' ' + drop +
-        ' L ' + detour + ' ' + rise + ' L ' + x2 + ' ' + rise + ' L ' + x2 + ' ' + (y2 - 2);
-    }
-    const mid = (y1 + y2) / 2;
-    return 'M ' + x1 + ' ' + y1 + ' L ' + x1 + ' ' + mid + ' L ' + x2 + ' ' + mid + ' L ' + x2 + ' ' + (y2 - 2);
-  }
-  /* 上へ戻る線（ループ）は横に回り込ませる */
-  const side = Math.max(x1, x2) + 40;
-  return 'M ' + x1 + ' ' + y1 + ' L ' + side + ' ' + y1 + ' L ' + side + ' ' + (b.y + b.h / 2) +
-    ' L ' + (b.x + b.w + 2) + ' ' + (b.y + b.h / 2);
-}
-
 /* ── 指で動かす・広げる ─────────────────────────────────── */
 
-/*
- * 図を、指とマウスの両方で扱えるようにする。
- *
- *   ・押したまま動かす      → 図をつかんで動かす（前は横スクロール棒だけだった）
- *   ・2 本指でつまむ        → その指の間を中心に拡大縮小
- *   ・ホイール / トラックパッド → 上下は移動、⌘・Ctrl 付きは拡大縮小
- *   ・＋ － 全体 100%        → 迷ったときに必ず戻れる場所
- *
- * 拡大は SVG の width/height を書き換える方式のまま。字がぼやけないし、
- * 中の座標も変わらないので、押せる場所がずれない。
- */
 function attachPanZoom(wrap, svg, layout) {
   const MIN = 0.2, MAX = 3;
   let scale = 1;
@@ -318,7 +156,6 @@ function attachPanZoom(wrap, svg, layout) {
     if (pctBtn) pctBtn.textContent = Math.round(scale * 100) + '%';
   };
 
-  /* 画面上のある点を動かさずに、倍率だけ変える。 */
   const zoomTo = (next, cx, cy) => {
     const box = wrap.getBoundingClientRect();
     const px = (cx == null ? box.width / 2 : cx - box.left);
@@ -360,7 +197,6 @@ function attachPanZoom(wrap, svg, layout) {
     mk('全体', '全体を画面に収める', fit));
   wrap.append(bar);
 
-  /* ── つかんで動かす ── */
   const points = new Map();
   let pinch = 0;
   let last = null;
@@ -405,7 +241,6 @@ function attachPanZoom(wrap, svg, layout) {
   };
   wrap.addEventListener('pointerup', release);
   wrap.addEventListener('pointercancel', release);
-  /* 動かしたあとの指離しを、箱への「押した」と取り違えない。 */
   wrap.addEventListener('click', (e) => {
     if (last && last.moved) { e.stopPropagation(); e.preventDefault(); }
   }, true);
@@ -421,7 +256,6 @@ function attachPanZoom(wrap, svg, layout) {
     e.preventDefault();
   }, { passive: false });
 
-  /* 最初は全体が見える大きさで出す。迷子にならないところから始める。 */
   requestAnimationFrame(fit);
   return { apply, fit, zoomTo };
 }
@@ -554,14 +388,13 @@ export function callGraph(program, symbols, addr, opts) {
 
   add(addr, 'entry');
 
-  /* 呼ぶ側 */
   let frontier = [addr];
   for (let d = 0; d < depth; d++) {
     const next = [];
     for (const a of frontier) {
       const callers = program ? program.callersOf(a, limit) : [];
       for (const c of callers) {
-        const start = c.addr;                     // 呼び出し元の関数の先頭
+        const start = c.addr;
         if (start == null) continue;
         add(start, 'caller');
         edges.push({ from: idOf(start), to: idOf(a), kind: 'call' });
@@ -571,7 +404,6 @@ export function callGraph(program, symbols, addr, opts) {
     frontier = next;
   }
 
-  /* 呼ばれる側 */
   frontier = [addr];
   for (let d = 0; d < depth; d++) {
     const next = [];
@@ -580,7 +412,7 @@ export function callGraph(program, symbols, addr, opts) {
       if (!range) continue;
       const callees = program.calleesOf(range.start, range.end, limit) || [];
       for (const c of callees) {
-        const target = c.addr;                    // 呼んでいる先
+        const target = c.addr;
         if (target == null) continue;
         add(target, 'callee');
         edges.push({ from: idOf(a), to: idOf(target), kind: 'call' });
