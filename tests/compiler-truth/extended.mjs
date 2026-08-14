@@ -117,6 +117,12 @@ const specs = {
   neg_if: {
     truth: (x, flag) => u(u(flag, 32) !== 0n ? -s(x, 32) : s(x, 32), 32),
   },
+  inc_if: {
+    truth: (x, flag) => u(u(flag, 32) !== 0n ? u(x, 32) + 1n : u(x, 32), 32),
+  },
+  inv_if: {
+    truth: (x, flag) => u(u(flag, 32) !== 0n ? ~u(x, 32) : u(x, 32), 32),
+  },
   extract16: {
     truth: (x) => (u(x, 32) >> 8n) & 0xffffn,
   },
