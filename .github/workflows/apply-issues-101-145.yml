@@ -17,9 +17,11 @@ jobs:
         with:
           node-version: 22
       - name: Apply fixes
-        run: python3 tools/apply_issues_101_145.py
+        run: |
+          python3 tools/fix_apply_issues_101_145.py
+          python3 tools/apply_issues_101_145.py
       - name: Remove staging machinery
-        run: rm -f tools/apply_issues_101_145.py .github/workflows/apply-issues-101-145.yml
+        run: rm -f tools/apply_issues_101_145.py tools/fix_apply_issues_101_145.py .github/workflows/apply-issues-101-145.yml
       - name: Syntax and focused regression
         run: |
           node --check js/binary/pe-loader.js
