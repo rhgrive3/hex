@@ -3,12 +3,16 @@
  *
  * ir-core.js contains the current lifter/SSA/Memory-SSA implementation. This
  * facade supplies the address->row resolver that CFG reconstruction requires and
- * applies conservative safety hardening before consumers see the IR.
+ * applies conservative safety/alias hardening before consumers see the IR.
  */
 
 export * from './ir-core.js';
 
-import { buildIR as buildCoreIR, OP, MK } from './ir-core.js';
+import {
+  buildIR as buildCoreIR,
+  readModifyWrite as coreReadModifyWrite,
+  OP, MK,
+} from './ir-core.js';
 
 function inferredRowResolver(model) {
   const byAddress = new Map();
@@ -59,6 +63,24 @@ function orderedBefore(a, b, canReach) {
   return canReach(a.block, b.block);
 }
 
+function unknownStores(ir) {
+  if (ir._unknownStoreBarriers) return ir._unknownStoreBarriers;
+  const list = (ir.instructions || []).filter((inst) =>
+    inst.op === OP.STORE && (!inst.loc || inst.loc.kind === MK.UNKNOWN));
+  ir._unknownStoreBarriers = list;
+  return list;
+}
+
+function unknownStoreBetween(ir, from, to) {
+  const barriers = unknownStores(ir);
+  if (!barriers.length || !from || !to) return null;
+  const canReach = blockReachability(ir);
+  for (const candidate of barriers) {
+    if (orderedBefore(from, candidate, canReach) && orderedBefore(candidate, to, canReach)) return candidate;
+  }
+  return null;
+}
+
 /**
  * Memory SSA must never let a concrete field/store flow through an indexed store
  * whose alias cannot be known. The core builder already treats calls/unknown
@@ -67,25 +89,16 @@ function orderedBefore(a, b, canReach) {
  */
 function hardenUnknownStores(ir) {
   if (!ir || !ir.instructions) return ir;
-  const barriers = ir.instructions.filter((inst) =>
-    inst.op === OP.STORE && (!inst.loc || inst.loc.kind === MK.UNKNOWN));
+  const barriers = unknownStores(ir);
   if (!barriers.length) {
     ir.memorySafety = { unknownStores: 0, blockedLoads: 0 };
     return ir;
   }
 
-  const canReach = blockReachability(ir);
   let blocked = 0;
   for (const load of ir.instructions) {
     if (load.op !== OP.LOAD || !load.reachingStore) continue;
-    const origin = load.reachingStore;
-    let barrier = null;
-    for (const candidate of barriers) {
-      if (!orderedBefore(origin, candidate, canReach)) continue;
-      if (!orderedBefore(candidate, load, canReach)) continue;
-      barrier = candidate;
-      break;
-    }
+    const barrier = unknownStoreBetween(ir, load.reachingStore, load);
     if (!barrier) continue;
 
     load.reachingStore = null;
@@ -123,4 +136,117 @@ export function irFor(model, opts) {
   try { ir = buildIR(model, opts); } catch { ir = null; }
   if (!custom) irCache.set(model, ir);
   return ir;
+}
+
+/* ── conservative pointer canonicalization ────────────────────── */
+
+function canonicalPointer(value, memo = new Map(), active = new Set()) {
+  if (!value) return null;
+  if (memo.has(value.id)) return memo.get(value.id);
+  if (active.has(value.id)) return value;
+  active.add(value.id);
+
+  let root = value;
+  const def = value.def;
+  if (def && def.op === OP.MOV && def.args && def.args[0] && def.args[0].value) {
+    root = canonicalPointer(def.args[0].value, memo, active) || value;
+  } else if (def && def.op === OP.PHI && def.args && def.args.length) {
+    const roots = def.args
+      .map((a) => a && a.value ? canonicalPointer(a.value, memo, active) : null)
+      .filter(Boolean);
+    if (roots.length === def.args.length && roots.every((r) => r.id === roots[0].id)) root = roots[0];
+  } else if (def && def.op === OP.BIN && def.sub === 'add' && def.args && def.args.length === 2) {
+    const a = def.args[0] && def.args[0].value;
+    const b = def.args[1] && def.args[1].value;
+    if (a && b && b.const === 0n) root = canonicalPointer(a, memo, active) || value;
+    else if (a && b && a.const === 0n) root = canonicalPointer(b, memo, active) || value;
+  }
+
+  active.delete(value.id);
+  memo.set(value.id, root);
+  return root;
+}
+
+function sameCanonicalLocation(a, b, memo) {
+  if (!a || !b || a.kind === MK.UNKNOWN || b.kind === MK.UNKNOWN) return false;
+  if (a.kind !== b.kind) return false;
+  if (a.kind === MK.STACK) return a.disp != null && b.disp != null && a.disp === b.disp && sizeCompatible(a, b);
+  if (a.kind === MK.GLOBAL) return a.address != null && b.address != null && a.address === b.address && sizeCompatible(a, b);
+  if (a.kind !== MK.FIELD || a.disp == null || b.disp == null || a.disp !== b.disp) return false;
+  const ar = canonicalPointer(a.base, memo);
+  const br = canonicalPointer(b.base, memo);
+  return !!ar && !!br && ar.id === br.id && sizeCompatible(a, b);
+}
+
+function sizeCompatible(a, b) {
+  if (a.size == null || b.size == null) return true;
+  return a.size === b.size;
+}
+
+function classifyUpdate(chain) {
+  const ops = chain.map((c) => (c.op === OP.BIN ? c.sub : c.op));
+  if (ops.includes('add')) return 'add';
+  if (ops.includes('sub')) return 'sub';
+  if (ops.includes('mul')) return 'mul';
+  if (ops.includes('sdiv') || ops.includes('udiv')) return 'div';
+  if (ops.includes(OP.SEL)) return 'clamp';
+  if (!ops.length) return 'copy';
+  return 'other';
+}
+
+/**
+ * RMW query with two guarantees missing from the first IR implementation:
+ *  - simple pointer copies / identical phi merges are treated as the same base;
+ *  - an unknown indexed store between the read and write invalidates the proof.
+ */
+export function readModifyWrite(ir) {
+  if (!ir || !ir.instructions) return [];
+  const memo = new Map();
+  const out = [];
+  const seen = new Set();
+
+  for (const r of coreReadModifyWrite(ir)) {
+    if (!r || !r.load || !r.store || unknownStoreBetween(ir, r.load, r.store)) continue;
+    const key = r.load.id + '>' + r.store.id;
+    seen.add(key);
+    out.push(r);
+  }
+
+  for (const store of ir.instructions) {
+    if (store.op !== OP.STORE || !store.loc) continue;
+    const written = store.args && store.args[0] && store.args[0].value;
+    if (!written) continue;
+
+    const chain = [];
+    const visited = new Set();
+    const work = [written];
+    let load = null;
+    while (work.length && chain.length < 32) {
+      const v = work.pop();
+      if (!v || visited.has(v.id)) continue;
+      visited.add(v.id);
+      const def = v.def;
+      if (!def) continue;
+      chain.push(def);
+      if (def.op === OP.LOAD) {
+        if (sameCanonicalLocation(def.loc, store.loc, memo) && !unknownStoreBetween(ir, def, store)) load = def;
+        continue;
+      }
+      for (const a of def.args || []) if (a && a.value) work.push(a.value);
+    }
+    if (!load) continue;
+    const key = load.id + '>' + store.id;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      load,
+      store,
+      location: store.loc,
+      chain: chain.filter((c) => c !== load && c.op !== OP.STORE),
+      kind: classifyUpdate(chain),
+      canonicalAlias: load.loc && store.loc && load.loc.key !== store.loc.key,
+    });
+  }
+
+  return out;
 }
