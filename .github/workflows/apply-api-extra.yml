@@ -1,0 +1,65 @@
+name: Apply remaining standard API classifications
+
+on:
+  push:
+    branches:
+      - accuracy-ywp-tsumtsum-20260814
+    paths:
+      - .github/workflows/apply-api-extra.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: accuracy-ywp-tsumtsum-20260814
+          fetch-depth: 0
+      - name: Classify standard APIs and pin regressions
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('js/blocks.js')
+          s = p.read_text()
+          old = "  { id: 'memcmp', re: /^_?(memcmp|bcmp|timingsafe_bcmp)$/i, cat: 'memory',\n    args: ['a', 'b', 'size'], ret: 'diff', effect: 'compare' },"
+          new = old + "\n  { id: 'memchr', re: /^_?(memchr|memrchr)$/i, cat: 'memory',\n    args: ['ptr', 'byte', 'size'], ret: 'ptr', effect: 'search' },"
+          assert s.count(old) == 1
+          s = s.replace(old, new, 1)
+
+          old = 'getForeignTypeMetadata|storeEnumTagSinglePayload'
+          new = 'getForeignTypeMetadata|getSingletonMetadata|storeEnumTagSinglePayload'
+          assert s.count(old) == 1
+          s = s.replace(old, new, 1)
+
+          old = "  { id: 'swift_stdlib', re: /^_\\$ss/, cat: 'runtime', args: null, ret: null, effect: 'runtime' },"
+          new = "  { id: 'swift_stdlib_report', re: /^_+swift_stdlib_report\\w*/i, cat: 'runtime', args: null, ret: null, effect: 'runtime' },\n" + old
+          assert s.count(old) == 1
+          s = s.replace(old, new, 1)
+
+          old = "dispatch_(async|sync|once|after|semaphore|get_global_queue|get_main_queue)"
+          new = "dispatch_(async|sync|once|after|semaphore|get_global_queue|get_main_queue|queue_create)"
+          assert s.count(old) == 1
+          s = s.replace(old, new, 1)
+
+          old = "(gettimeofday|mach_absolute_time|clock|time|NSDate|CFAbsoluteTime)"
+          new = "(gettimeofday|mach_absolute_time|clock|time|mktime|localtime|gmtime|NSDate|CFAbsoluteTime)"
+          assert s.count(old) == 1
+          s = s.replace(old, new, 1)
+          p.write_text(s)
+
+          t = Path('tests/api.mjs')
+          q = t.read_text()
+          marker = "api('___error', 'errno', 'runtime');"
+          insert = marker + "\napi('_memchr', 'memchr', 'memory');\napi('_dispatch_queue_create', 'concurrency', 'concurrency');\napi('_mktime', 'time', 'time');\napi('_swift_getSingletonMetadata', 'swift_runtime', 'runtime');\napi('__swift_stdlib_reportUnimplementedInitializer', 'swift_stdlib_report', 'runtime');"
+          assert q.count(marker) == 1
+          t.write_text(q.replace(marker, insert, 1))
+          PY
+          node tests/api.mjs
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add js/blocks.js tests/api.mjs
+          git commit -m 'fix: classify remaining standard runtime APIs [api-extra]'
+          git push origin HEAD:accuracy-ywp-tsumtsum-20260814
