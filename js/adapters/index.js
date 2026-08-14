@@ -1,4 +1,4 @@
-import { DebugAdapter, DebugAdapterError, asAddress, boundedInteger, normalizeBreakpoint } from '../debug/adapter.js';
+import { DebugAdapter, DebugAdapterError, asAddress, boundedInteger, normalizeBreakpoint, normalizeCapabilities } from '../debug/adapter.js';
 import { RemoteProtocolClient } from '../debug/remote-protocol.js';
 import { RuntimeMemoryMap, createSandboxMemoryMap } from '../runtime/memory.js';
 import { TraceRingBuffer } from '../trace/ring-buffer.js';
@@ -115,7 +115,12 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
   }
   async readRegisters() { this.require('readRegisters'); return cloneRegisters(this.ensureSandbox().emulator); }
   async writeRegister(reg,value) { this.require('writeRegister'); this.ensureSandbox().setRegister(String(reg), BigInt(value)); return { register:String(reg), value:this.ensureSandbox().getRegister(String(reg)) }; }
-  async readMemory(address,size) { this.require('readMemory'); const n = boundedInteger(size,8,1,1024*1024,'size'); this.memoryMap.assert(address,n,'read'); return this.ensureSandbox().emulator.dump(asAddress(address),n); }
+  async readMemory(address,size) {
+    this.require('readMemory'); const n = Number(size == null ? 8 : size);
+    if (!Number.isSafeInteger(n) || n < 1) throw new DebugAdapterError('invalid-size','memory read size must be a positive safe integer');
+    if (n > 1024*1024) throw new DebugAdapterError('too-large','memory read exceeds 1 MiB');
+    this.memoryMap.assert(address,n,'read'); return this.ensureSandbox().emulator.dump(asAddress(address),n);
+  }
   async writeMemory(address,bytes) {
     this.require('writeMemory'); const data = bytes instanceof Uint8Array ? bytes : Uint8Array.from(bytes || []); if (data.length > 1024*1024) throw new DebugAdapterError('too-large','memory write exceeds 1 MiB');
     this.memoryMap.assert(address,data.length,'write'); const emu = this.ensureSandbox().emulator; for (let i=0;i<data.length;i++) await emu.store(asAddress(address)+BigInt(i),1,BigInt(data[i])); return { written:data.length };
@@ -137,10 +142,11 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     for (const e of trace) this.traceBuffer.push({ type:'instruction', address:e.addr, text:e.text });
     for (const e of branches) this.traceBuffer.push({ type:'branch', ...e });
     const calls = callsFromTrace(trace), returns = returnsFromTrace(trace);
+    const stop = classifyStop(result);
+    if (stop.kind === 'return' && returns.length) returns[returns.length - 1].value = result.returnValue;
     for (const e of calls) this.traceBuffer.push(e);
     for (const e of returns) this.traceBuffer.push(e);
     const finalRegisters = cloneRegisters(this.sandbox.emulator);
-    const stop = classifyStop(result);
     const traceSnapshot = this.traceBuffer.snapshot();
     const loads = traceSnapshot.events.filter((e) => e.type === 'memory-read');
     const stores = traceSnapshot.events.filter((e) => e.type === 'memory-write');
@@ -155,6 +161,10 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
   }
 }
 
+export class EmulatorAdapter extends LocalFunctionSandboxAdapter {
+  constructor(io, options = {}) { super(io,{ ...options,id:options.id || 'emulator' }); this.kind = 'emulator'; }
+}
+
 export class SymbolicAdapter extends DebugAdapter {
   constructor(options = {}) { super({ id:options.id || 'symbolic', kind:'symbolic', capabilities:{ launch:true,evaluate:true,replay:true } }); this.ir = null; this.options = options; this.result = null; }
   async launch(spec = {}) { this.ir = spec.ir; if (!this.ir) throw new DebugAdapterError('missing-ir','symbolic adapter requires Semantic IR'); this.result = symbolicExecute(this.ir, spec.options || this.options); return this.result; }
@@ -165,25 +175,31 @@ export class RemoteDebugAdapter extends DebugAdapter {
   constructor(transport, options = {}) {
     super({ id:options.id || 'remote-debug', kind:options.kind || 'remote', capabilities:options.capabilities || {} });
     this.protocol = new RemoteProtocolClient(transport, options.protocol || {}); this.epoch = 0; this.eventListeners = new Set();
+    this.allowedCapabilities = this.capabilities;
     this.protocol.onEvent((event) => { if (event.epoch === this.epoch) for (const fn of this.eventListeners) fn(event); });
   }
   async connect(options = {}) {
     const hello = await this.protocol.request('connect', { client:'hex', requestedVersion:1, options }, { epoch:this.epoch });
-    this.capabilities = Object.freeze({ ...this.capabilities, ...(hello && hello.capabilities || {}) }); this.connected = true; return { adapter:this.id, capabilities:this.capabilities, remote:hello || null };
+    const advertised = normalizeCapabilities(hello && hello.capabilities || {});
+    const negotiated = {};
+    for (const [key, allowed] of Object.entries(this.allowedCapabilities)) negotiated[key] = key === 'connect' || key === 'disconnect' ? !!allowed : !!allowed && !!advertised[key];
+    this.capabilities = normalizeCapabilities(negotiated); this.connected = true; return { adapter:this.id, capabilities:this.capabilities, remote:hello || null };
   }
   async disconnect() { if (this.connected) { try { await this.protocol.request('disconnect',{}, { epoch:this.epoch, timeoutMs:1000 }); } catch {} } this.connected=false; this.protocol.close(); return { disconnected:true }; }
   setEpoch(epoch) { this.epoch = Number(epoch) || 0; this.protocol.setEpoch(this.epoch); return this.epoch; }
   nextEpoch() { return this.setEpoch(this.epoch + 1); }
   onEvent(fn) { this.eventListeners.add(fn); return () => this.eventListeners.delete(fn); }
   call(method, params = {}, options = {}) { this.requireMethod(method); return this.protocol.request(method, params, { ...options, epoch:this.epoch }); }
-  attach(spec){return this.call('attach',spec)} launch(spec){return this.call('launch',spec)} pause(){return this.call('pause')} resume(){return this.call('resume')}
+  attach(spec){return this.call('attach',spec)} launch(spec){return this.call('launch',spec)} pause(options={}){return this.call('pause',options)} resume(options={}){return this.call('resume',options)}
   stepInto(){return this.call('stepInto')} stepOver(){return this.call('stepOver')} stepOut(){return this.call('stepOut')}
   setBreakpoint(spec){const bp=normalizeBreakpoint(spec); const cap=bp.kind==='address'?'breakpointAddress':bp.kind==='function'?'breakpointFunction':bp.kind==='conditional'?'breakpointConditional':'watchpointMemory'; this.require(cap); return this.protocol.request('setBreakpoint',bp,{epoch:this.epoch})} removeBreakpoint(id){return this.protocol.request('removeBreakpoint',{id:String(id)},{epoch:this.epoch})}
   readRegisters(threadId){return this.call('readRegisters',{threadId})} writeRegister(reg,value,threadId){return this.call('writeRegister',{reg:String(reg),value:String(value),threadId})}
-  readMemory(address,size){const n=boundedInteger(size,1,1,4*1024*1024,'size'); return this.call('readMemory',{address:String(asAddress(address)),size:n})}
-  writeMemory(address,bytes){const data=bytes instanceof Uint8Array?[...bytes]:Array.from(bytes||[]); if(data.length>4*1024*1024) throw new DebugAdapterError('too-large','memory write exceeds 4 MiB'); return this.call('writeMemory',{address:String(asAddress(address)),bytes:data})}
+  readMemory(address,size){const n=Number(size==null?1:size); if(!Number.isSafeInteger(n)||n<1) throw new DebugAdapterError('invalid-size','memory read size must be a positive safe integer'); if(n>256*1024) throw new DebugAdapterError('too-large','remote memory read exceeds 256 KiB'); return this.call('readMemory',{address:String(asAddress(address)),size:n})}
+  writeMemory(address,bytes){const data=bytes instanceof Uint8Array?[...bytes]:Array.from(bytes||[]); if(data.length>64*1024) throw new DebugAdapterError('too-large','remote memory write exceeds 64 KiB'); return this.call('writeMemory',{address:String(asAddress(address)),bytes:data})}
   getThreads(){return this.call('getThreads')} getModules(){return this.call('getModules')} getBacktrace(threadId){return this.call('getBacktrace',{threadId})}
   evaluate(expression,context){return this.call('evaluate',{expression:String(expression).slice(0,4096),context})} trace(options){return this.call('trace',options||{})} watchMemory(spec){return this.call('watchMemory',normalizeBreakpoint({...spec,kind:'memory'}))}
+  getObjCRuntimeInfo(request={}){this.require('objcRuntime'); return this.protocol.request('objcRuntime',request,{epoch:this.epoch})}
+  getSwiftRuntimeInfo(request={}){this.require('swiftRuntime'); return this.protocol.request('swiftRuntime',request,{epoch:this.epoch})}
 }
 
 export class LLDBCompatibleAdapter extends RemoteDebugAdapter {
@@ -197,7 +213,7 @@ export class ReplayAdapter extends DebugAdapter {
   constructor(recording = {}, options = {}) { super({ id:options.id||'replay',kind:'replay',capabilities:{ launch:true,readRegisters:true,readMemory:true,threads:true,modules:true,backtrace:true,traceFunction:true,replay:true } }); this.recording=recording; }
   async launch(){return { replay:true, metadata:this.recording.metadata||null }}
   async readRegisters(){return this.recording.registers||{}}
-  async readMemory(address,size){const key=String(asAddress(address)); const bytes=this.recording.memory&&this.recording.memory[key]; return Uint8Array.from((bytes||[]).slice(0,boundedInteger(size,1,1,1024*1024,'size')))}
+  async readMemory(address,size){const n=Number(size==null?1:size); if(!Number.isSafeInteger(n)||n<1) throw new DebugAdapterError('invalid-size','replay memory read size must be a positive safe integer'); if(n>1024*1024) throw new DebugAdapterError('too-large','replay memory read exceeds 1 MiB'); const key=String(asAddress(address)); const bytes=this.recording.memory&&this.recording.memory[key]; return Uint8Array.from((bytes||[]).slice(0,n))}
   async getThreads(){return this.recording.threads||[]}
   async getModules(){return this.recording.modules||[]}
   async getBacktrace(){return this.recording.backtrace||[]}
