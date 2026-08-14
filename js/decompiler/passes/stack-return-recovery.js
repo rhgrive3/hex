@@ -17,8 +17,21 @@ function mapsOf(result) {
   return new Map((result.semanticAst?.values || []).map((v) => [v.valueId, v.expression]));
 }
 
+function fitWidth(node, bits, source = null) {
+  bits = Number(bits || 0);
+  if (!node || !bits || Number(node.bits || bits) <= bits) return node;
+  return expr.unary('trunc', node, bits, node.signed ?? null, source || node.source, { fromBits:Number(node.bits || bits) });
+}
+
 function expressionOf(value, values) {
-  return value ? values.get(value.id) || null : null;
+  const node = value ? values.get(value.id) || null : null;
+  return node ? fitWidth(node, value?.bits, {
+    row:value?.def?.row ?? null,
+    address:value?.def?.address ?? null,
+    ir:value?.def?.id ?? null,
+    ssaUse:value?.id ?? null,
+    evidence:[{ reason:'SSA value-width boundary' }],
+  }) : null;
 }
 
 function simplify(node, engine) {
@@ -162,7 +175,17 @@ function controller(ir, merge, predecessors, opts) {
 
 function storeValue(inst, key, values) {
   if (inst?.op !== 'store' || inst.loc?.key !== key) return null;
-  return expressionOf(valueOf(inst.args?.[0]), values);
+  let node = expressionOf(valueOf(inst.args?.[0]), values);
+  if (!node) return null;
+  const bytes = Number(inst.size || inst.loc?.size || inst.addr?.size || 0);
+  const bits = bytes > 0 ? bytes * 8 : 0;
+  if (bits) node = fitWidth(node, bits, {
+    address:inst.address,
+    row:inst.row,
+    ir:inst.id,
+    evidence:[{ reason:`exact ${bits}-bit stack-store boundary` }],
+  });
+  return node;
 }
 
 function unsafeBarrier(inst, key) {
@@ -202,7 +225,7 @@ function resolve(ir, blockIndex, beforeRow, key, values, opts, engine, active, d
     const condition = simplify(branchCondition(ir, control.term, values), engine);
     if (!condition) return null;
     const bits = incoming[0]?.bits || incoming[1]?.bits || 64;
-    const signed = incoming[0]?.signed ?? incoming[1]?.signed ?? null;
+    const signed = condition.compareSigned ?? incoming[0]?.signed ?? incoming[1]?.signed ?? null;
     return simplify(expr.select(condition, incoming[control.yesIndex], incoming[control.noIndex], bits, signed, {
       address:control.term.address,
       row:control.term.row,
