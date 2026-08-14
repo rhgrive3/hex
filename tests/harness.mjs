@@ -39,7 +39,7 @@ function boot() {
   if (booted) return;
   booted = true;
   globalThis.self = globalThis;
-  globalThis.location = { href: pathToFileURL(path.join(ROOT, 'js', 'worker.js')).href };
+  globalThis.location = { href: pathToFileURL(path.join(ROOT, 'js', 'worker2.js')).href };
   globalThis.importScripts = (...ps) => {
     for (const p of ps) {
       const file = path.resolve(ROOT, 'js', p);
@@ -54,7 +54,7 @@ function boot() {
     if (m.t === 'ok') p.resolve(m.result);
     else p.reject(new Error(m.error || 'failed'));
   };
-  loadClassic(path.join(ROOT, 'js', 'worker.js'));
+  loadClassic(path.join(ROOT, 'js', 'worker2.js'));
 }
 
 function call(t, payload) {
