@@ -1002,7 +1002,7 @@ async function guessFunctions({ regionId, limit, requestId, epoch }) {
    * is never removed.  The cohort gate avoids changing ordinary vtables.
    */
   const suppressIndirectFallthrough = dataCandidates.size >= 1000 &&
-    indirectFallthroughData.size >= 512 &&
+    indirectFallthroughData.size >= 1000 &&
     (indirectFallthroughData.size / dataCandidates.size) >= 0.02;
   for (const a of dataCandidates) {
     if (found.size >= cap) break;
