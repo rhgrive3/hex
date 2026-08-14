@@ -10,7 +10,8 @@ assert.equal(diff.matches[0].status, 'moved');
 assert.ok(diff.matches[0].confidence > 0.9);
 
 diff = diffFunctions([base], [{ ...base, address: 0x781000n, bytes: Uint8Array.from([1,2,3,4,5,6,9,8]), constants: [101] }]);
-assert.equal(diff.matches[0].status, 'slightly changed');
+assert.equal(diff.matches[0].status, 'rewritten');
+assert.equal(diff.matches[0].severity, 'major');
 assert.ok(diff.matches[0].confidence >= 0.62);
 
 const fp = fingerprintFunction({ ...base, relocationOffsets: [0] });
