@@ -1,0 +1,67 @@
+name: Apply final runtime and metric cleanup
+
+on:
+  push:
+    branches:
+      - accuracy-ywp-tsumtsum-20260814
+    paths:
+      - .github/workflows/apply-final-cleanup.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: accuracy-ywp-tsumtsum-20260814
+          fetch-depth: 0
+      - name: Apply final cleanup
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path('js/blocks.js')
+          s = p.read_text()
+          old = 'getForeignTypeMetadata|getSingletonMetadata|storeEnumTagSinglePayload'
+          new = 'getForeignTypeMetadata|getSingletonMetadata|initClassMetadata\\d*|initStructMetadata|getErrorValue|storeEnumTagSinglePayload'
+          assert s.count(old) == 1
+          s = s.replace(old, new, 1)
+          old = '(gettimeofday|mach_absolute_time|clock|time|mktime|localtime|gmtime|NSDate|CFAbsoluteTime)'
+          new = '(gettimeofday|mach_absolute_time|clock|time|mktime|strptime|localtime(_r)?|gmtime(_r)?|dispatch_time|NSDate|CFAbsoluteTime)'
+          assert s.count(old) == 1
+          s = s.replace(old, new, 1)
+          p.write_text(s)
+
+          t = Path('tests/api.mjs')
+          q = t.read_text()
+          marker = "api('__swift_stdlib_reportUnimplementedInitializer', 'swift_stdlib_report', 'runtime');"
+          insert = marker + "\napi('_swift_initClassMetadata2', 'swift_runtime', 'runtime');\napi('_swift_initStructMetadata', 'swift_runtime', 'runtime');\napi('_swift_getErrorValue', 'swift_runtime', 'runtime');\napi('_strptime', 'time', 'time');\napi('_localtime_r', 'time', 'time');\napi('_dispatch_time', 'time', 'time');"
+          assert q.count(marker) == 1
+          t.write_text(q.replace(marker, insert, 1))
+
+          a = Path('tests/accuracy.mjs')
+          x = a.read_text()
+          pairs = [
+            ('return { score: n ? hit / n : 0, detail: `${hit}/${n} の要約が呼び先をきちんと名指し` };',
+             'return { score: n ? hit / n : null, detail: `${hit}/${n} の要約が呼び先をきちんと名指し` };'),
+            ('score: withIdiom ? recovered / withIdiom : 0,',
+             'score: withIdiom ? recovered / withIdiom : null,'),
+            ('score: n ? sum / n : 0,',
+             'score: n ? sum / n : null,'),
+          ]
+          for old, new in pairs:
+            assert x.count(old) == 1, old
+            x = x.replace(old, new, 1)
+          a.write_text(x)
+          PY
+          node tests/api.mjs
+          npm run check
+          rm -f .github/workflows/apply-final-cleanup.yml
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add js/blocks.js tests/api.mjs tests/accuracy.mjs .github/workflows
+          git commit -m 'fix: classify remaining runtime calls and mark empty metrics N/A [final-cleanup]'
+          git push origin HEAD:accuracy-ywp-tsumtsum-20260814
