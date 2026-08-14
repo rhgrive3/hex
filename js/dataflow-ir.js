@@ -12,7 +12,7 @@ import { irFor, readModifyWrite, OP, MK, VK } from './ir.js';
 
 const BIN_NAME = {
   add: 'add', sub: 'sub', mul: 'mul', sdiv: 'sdiv', udiv: 'udiv',
-  smull: 'smull', umull: 'umull', smulh: 'smulh', umulh: 'umullh',
+  smull: 'smull', umull: 'umull', smulh: 'smulh', umulh: 'umulh',
   and: 'and', or: 'orr', xor: 'eor', bic: 'bic', orn: 'orn', eon: 'eon',
   shl: 'lsl', lshr: 'lsr', ashr: 'asr', ror: 'ror',
   fadd: 'fadd', fsub: 'fsub', fmul: 'fmul', fdiv: 'fdiv',
