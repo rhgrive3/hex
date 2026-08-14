@@ -51,6 +51,92 @@ function neighborBonus(a, b, anchors) {
   return possible ? Math.min(0.08, 0.08 * hits / possible) : 0;
 }
 
+// Candidates above the recognition threshold form small bipartite ambiguity
+// components in practice. Solve each component as an exact maximum-weight
+// matching rather than greedily consuming the highest edge. The sparse
+// successive-shortest-augmenting-path formulation avoids allocating a dense
+// N×N matrix for large binaries while still finding the global optimum inside
+// every connected ambiguity component.
+function candidateComponents(candidates) {
+  const left = new Map(), right = new Map();
+  for (const c of candidates) {
+    let a = left.get(c.i); if (!a) left.set(c.i, a = []); a.push(c);
+    let b = right.get(c.j); if (!b) right.set(c.j, b = []); b.push(c);
+  }
+  const seenLeft = new Set(), seenRight = new Set(), components = [];
+  for (const start of [...left.keys()].sort((a,b)=>a-b)) {
+    if (seenLeft.has(start)) continue;
+    const queue = [{ side:'left', id:start }], edges = new Set();
+    seenLeft.add(start);
+    for (let q = 0; q < queue.length; q++) {
+      const node = queue[q];
+      const list = node.side === 'left' ? left.get(node.id) || [] : right.get(node.id) || [];
+      for (const c of list) {
+        edges.add(c);
+        if (!seenLeft.has(c.i)) { seenLeft.add(c.i); queue.push({ side:'left', id:c.i }); }
+        if (!seenRight.has(c.j)) { seenRight.add(c.j); queue.push({ side:'right', id:c.j }); }
+      }
+    }
+    components.push([...edges].sort((a,b)=>a.i-b.i || a.j-b.j));
+  }
+  return components;
+}
+
+function maximumWeightComponent(candidates) {
+  const leftIds = [...new Set(candidates.map((c)=>c.i))].sort((a,b)=>a-b);
+  const rightIds = [...new Set(candidates.map((c)=>c.j))].sort((a,b)=>a-b);
+  const leftIndex = new Map(leftIds.map((id,k)=>[id,k]));
+  const rightIndex = new Map(rightIds.map((id,k)=>[id,k]));
+  const source = 0, leftBase = 1, rightBase = leftBase + leftIds.length, sink = rightBase + rightIds.length;
+  const graph = Array.from({length:sink+1},()=>[]);
+  const addEdge = (from,to,capacity,cost,candidate=null) => {
+    const forward = { to, rev:graph[to].length, capacity, cost, candidate, candidateForward:!!candidate };
+    const reverse = { to:from, rev:graph[from].length, capacity:0, cost:-cost, candidate:null, candidateForward:false };
+    graph[from].push(forward); graph[to].push(reverse);
+    return forward;
+  };
+  for (let k=0;k<leftIds.length;k++) addEdge(source,leftBase+k,1,0);
+  for (let k=0;k<rightIds.length;k++) addEdge(rightBase+k,sink,1,0);
+  const candidateEdges = [];
+  for (const c of candidates) {
+    const edge = addEdge(leftBase+leftIndex.get(c.i), rightBase+rightIndex.get(c.j), 1, -Number(c.confidence), c);
+    candidateEdges.push(edge);
+  }
+
+  // SPFA is used deliberately here: forward candidate edges have negative
+  // costs, while reverse edges created by an earlier assignment are positive.
+  // Components are sparse (bounded by candidate generation), so this keeps the
+  // solver exact without a dense cost matrix.
+  const EPS = 1e-12;
+  while (true) {
+    const dist = Array(graph.length).fill(Infinity), prevNode = Array(graph.length).fill(-1), prevEdge = Array(graph.length).fill(-1), inQueue = Array(graph.length).fill(false);
+    const queue = [source]; dist[source]=0; inQueue[source]=true;
+    for (let head=0; head<queue.length; head++) {
+      const u=queue[head]; inQueue[u]=false;
+      for (let ei=0; ei<graph[u].length; ei++) {
+        const edge=graph[u][ei]; if (edge.capacity<=0) continue;
+        const nd=dist[u]+edge.cost;
+        if (nd + EPS < dist[edge.to]) {
+          dist[edge.to]=nd; prevNode[edge.to]=u; prevEdge[edge.to]=ei;
+          if (!inQueue[edge.to]) { inQueue[edge.to]=true; queue.push(edge.to); }
+        }
+      }
+    }
+    if (!Number.isFinite(dist[sink]) || dist[sink] >= -EPS) break;
+    for (let v=sink; v!==source; v=prevNode[v]) {
+      const u=prevNode[v], edge=graph[u][prevEdge[v]];
+      edge.capacity--; graph[v][edge.rev].capacity++;
+    }
+  }
+  return candidateEdges.filter((edge)=>edge.capacity===0).map((edge)=>edge.candidate);
+}
+
+export function maximumWeightCandidateMatching(candidates = []) {
+  const selected = [];
+  for (const component of candidateComponents(candidates)) selected.push(...maximumWeightComponent(component));
+  return selected.sort((a,b)=>a.i-b.i || a.j-b.j);
+}
+
 export function matchFunctions(beforeFunctions, afterFunctions, options = {}) {
   const fastMode = options.mode === 'fast';
   const before = beforeFunctions.map((x) => fastMode ? fingerprintFunctionFast(x) : fingerprintFunction(x));
@@ -77,8 +163,8 @@ export function matchFunctions(beforeFunctions, afterFunctions, options = {}) {
     let right=byAfter.get(c.j); if (!right) byAfter.set(c.j,right=[]); right.push(c);
   }
   for (const [i, choices] of byBefore) {
-    choices.sort((a,b)=>b.baseConfidence-a.baseConfidence); const top=choices[0], second=choices[1];
-    const reverse=(byAfter.get(top.j)||[]).slice().sort((a,b)=>b.baseConfidence-a.baseConfidence); const reverseSecond=reverse.find((x)=>x.i!==i);
+    choices.sort((a,b)=>b.baseConfidence-a.baseConfidence || a.j-b.j); const top=choices[0], second=choices[1];
+    const reverse=(byAfter.get(top.j)||[]).slice().sort((a,b)=>b.baseConfidence-a.baseConfidence || a.i-b.i); const reverseSecond=reverse.find((x)=>x.i!==i);
     const uniqueLeft=!second || top.baseConfidence-second.baseConfidence>0.06;
     const uniqueRight=!reverseSecond || top.baseConfidence-reverseSecond.baseConfidence>0.06;
     if (top.baseConfidence>=0.9 && uniqueLeft && uniqueRight && before[top.i].address!=null && after[top.j].address!=null) anchors.set(String(before[top.i].address),String(after[top.j].address));
@@ -99,22 +185,31 @@ export function matchFunctions(beforeFunctions, afterFunctions, options = {}) {
     if (c.baseConfidence >= 0.7 && c.confidence >= 0.78 && c.reasons.includes('call-neighborhood')) { c.identity = 'probable-same'; return true; }
     return false;
   });
-  eligible.sort((a, b) => b.confidence - a.confidence || b.baseConfidence - a.baseConfidence || a.i - b.i || a.j - b.j);
+  const eligibleByBefore = new Map();
+  for (const c of eligible) { let list=eligibleByBefore.get(c.i); if (!list) eligibleByBefore.set(c.i,list=[]); list.push(c); }
+  for (const list of eligibleByBefore.values()) list.sort((a,b)=>b.confidence-a.confidence || b.baseConfidence-a.baseConfidence || a.j-b.j);
+
+  const selected = maximumWeightCandidateMatching(eligible);
   const usedBefore = new Set(), usedAfter = new Set(), matches = [];
-  for (const c of eligible) {
-    if (usedBefore.has(c.i) || usedAfter.has(c.j)) continue;
-    const alternatives = eligible.filter((x) => x.i === c.i && x.j !== c.j && !usedAfter.has(x.j) && c.confidence - x.confidence <= ambiguityWindow)
+  for (const c of selected) {
+    // Ambiguity is evidence about the original candidate distribution, not a
+    // side-effect of assignment order. Keep candidates even when another match
+    // consumes their after-function.
+    const alternatives = (eligibleByBefore.get(c.i) || []).filter((x) => x.j !== c.j && x.confidence >= c.confidence - ambiguityWindow)
       .slice(0, 4).map((x) => ({ index: x.j, address: after[x.j].address, confidence: x.confidence, identity: x.identity, reasons: x.reasons }));
     const ambiguous = alternatives.length > 0;
     matches.push({ before: before[c.i], after: after[c.j], confidence: c.confidence, identity: c.identity, reasons: c.reasons, evidence: c.evidence, ambiguous, candidates: alternatives });
     usedBefore.add(c.i); usedAfter.add(c.j);
     if (!ambiguous && c.confidence >= 0.82 && before[c.i].address != null && after[c.j].address != null) anchors.set(String(before[c.i].address), String(after[c.j].address));
   }
+  matches.sort((a,b)=>{
+    const ai=before.findIndex((x)=>x===a.before), bi=before.findIndex((x)=>x===b.before);
+    return ai-bi;
+  });
   const deleted = before.filter((_x, i) => !usedBefore.has(i));
   const added = after.filter((_x, i) => !usedAfter.has(i));
   return { matches, deleted, new: added, candidatesEvaluated: all.length, indexBuckets: index.buckets.size };
 }
-
 
 export function matchFunctionsFast(beforeFunctions, afterFunctions, options = {}) {
   return matchFunctions(beforeFunctions, afterFunctions, { ...options, mode:'fast', neighborhoodIterations:0 });
@@ -133,7 +228,6 @@ export function recognitionMetrics(expectedPairs, result) {
     ambiguousRate: result.matches?.length ? result.matches.filter((x) => x.ambiguous).length / result.matches.length : 0,
   };
 }
-
 
 export function calibrationReport(expectedPairs, result, options = {}) {
   const bins = Math.max(2, Math.min(50, Number(options.bins) || 10));
