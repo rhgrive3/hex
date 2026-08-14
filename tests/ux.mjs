@@ -29,5 +29,14 @@ check('old actions remain delegated', ['btn-search','btn-functions','btn-strings
 check('duplicate actions hidden by class', ux.includes('ux-source-action') && css.includes('.ux-source-action'));
 check('menu viewport bounded', css.includes('max-height: min(72dvh'));
 
+check('no-file state follows empty visibility', ux.includes("app.classList.toggle('empty-state', !empty.hidden)"));
+check('no-file chrome is removed', ['.toolbar', '.addrbar', '.colhead', '.statusbar'].every((part) => css.includes(`.app.empty-state ${part}`)));
+check('no-file page scrolls on Safari', css.includes('overflow-y: auto') && css.includes('-webkit-overflow-scrolling: touch'));
+check('real file picker is first action', ux.includes('actions.insertBefore(open, actions.firstElementChild)'));
+check('file picker is primary action', ux.includes("open.classList.add('btn-primary')"));
+check('sample is secondary action', ux.includes("sample.classList.add('btn-secondary')"));
+check('landing headline is plain', ux.includes('解析するファイルを開く'));
+check('decorative landing modules hidden', ['.empty-context', '.empty-rail', '.relation-lens', '.empty-kicker'].every((part) => css.includes(`.app.empty-state ${part}`)));
+
 if (failures) process.exit(1);
 console.log('UX regression checks passed');
