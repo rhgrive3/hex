@@ -28,7 +28,7 @@ function memoryInfo(mn, ops) {
   return { kind: /^ld/.test(m) ? 'load' : 'store', size, stack: mem.base?.cls === 'sp' || mem.base?.num === 29 };
 }
 
-function codeText(line) { return String(line || '').replace(/\/\/.*$/, '').trim(); }
+function codeText(line) { return String(line || '').replace(/(?:\/\/|;).*$/, '').trim(); }
 
 function parseFunction(asm, fn, baseAddress) {
   const all = asm.split(/\r?\n/);
