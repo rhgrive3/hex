@@ -68,6 +68,83 @@ function blockAddress(result, model, opts, bi) {
     ?? (opts.addr ?? model.instructions?.[0]?.address ?? 0n) + BigInt(b.startRow || 0) * 4n;
 }
 
+function labelAddress(result, model, opts, bi) {
+  return `loc_${BigInt(blockAddress(result, model, opts, bi)).toString(16).toUpperCase()}`;
+}
+
+function asmText(insn) {
+  const mn = String(insn?.mnemonic || insn?.mn || '').trim();
+  const ops = String(insn?.operandsText || insn?.ops || '').trim();
+  return `${mn}${ops ? ' ' + ops : ''}`.trim() || 'unknown';
+}
+
+/**
+ * Address-order cleanup edges are intentionally not source-structured unless
+ * the target dominates the source. For those rare optimized layouts, retain a
+ * fully explicit CFG driven by Semantic IR block/successor facts. Raw assembly
+ * is used only as the statement-level fallback inside each proven IR block.
+ */
+function faithfulIrCfg(result, model, opts, reason) {
+  const ir = result?.ir;
+  if (!ir?.blocks?.length) return result;
+  const lines = [];
+  const sig = result.signature || result.lines?.find((l) => l.kind === 'sig')?.text || 'void sub(void)';
+  lines.push({ kind: 'sig', indent: 0, text: sig, row: model.instructions?.[0]?.row ?? null, addr: model.instructions?.[0]?.address ?? null, note: null });
+  lines.push({ kind: 'ctrl', indent: 0, text: '{', row: model.instructions?.[0]?.row ?? null, addr: null, note: null });
+
+  const blocks = ir.blocks.slice().sort((a, b) => a.startRow - b.startRow);
+  for (let pos = 0; pos < blocks.length; pos++) {
+    const block = blocks[pos];
+    const addr = blockAddress(result, model, opts, block.index);
+    lines.push({ kind: 'label', indent: 1, text: `${labelAddress(result, model, opts, block.index)}:`, row: block.startRow, addr, note: null });
+    const rows = (model.instructions || []).filter((i) => i.row >= block.startRow && i.row <= block.endRow);
+    for (let ri = 0; ri < rows.length; ri++) {
+      const insn = rows[ri];
+      const mn = String(insn.mnemonic || insn.mn || '').toLowerCase();
+      const isLast = ri === rows.length - 1;
+      if (isLast && mn === 'b' && block.succ?.length === 1) {
+        lines.push({ kind: 'stmt', indent: 2, text: `goto ${labelAddress(result, model, opts, block.succ[0])};`, row: insn.row, addr: insn.address ?? null, note: null });
+        continue;
+      }
+      if (isLast && /^(?:b\.[a-z]{2}|cbz|cbnz|tbz|tbnz)$/.test(mn)) {
+        const targets = (block.succ || []).map((s) => labelAddress(result, model, opts, s)).join(', ');
+        lines.push({ kind: 'stmt', indent: 2, text: `__asm(${JSON.stringify(asmText(insn))});${targets ? ` /* successors: ${targets} */` : ''}`, row: insn.row, addr: insn.address ?? null, note: null });
+        continue;
+      }
+      if (isLast && mn === 'br') {
+        lines.push({ kind: 'stmt', indent: 2, text: `__asm(${JSON.stringify(asmText(insn))});`, row: insn.row, addr: insn.address ?? null, note: null });
+        continue;
+      }
+      if (isLast && mn === 'ret') {
+        lines.push({ kind: 'stmt', indent: 2, text: '__asm("ret");', row: insn.row, addr: insn.address ?? null, note: null });
+        continue;
+      }
+      lines.push({ kind: 'stmt', indent: 2, text: `__asm(${JSON.stringify(asmText(insn))});`, row: insn.row, addr: insn.address ?? null, note: null });
+    }
+    // If IR proves a non-physical fallthrough edge and no terminal branch was
+    // available in the raw row, make the edge explicit instead of hiding it.
+    const next = blocks[pos + 1]?.index;
+    if (block.succ?.length === 1 && block.succ[0] !== next) {
+      const last = rows.at(-1);
+      const mn = String(last?.mnemonic || last?.mn || '').toLowerCase();
+      if (!/^(?:b|ret|br|b\.[a-z]{2}|cbz|cbnz|tbz|tbnz)$/.test(mn)) {
+        lines.push({ kind: 'stmt', indent: 2, text: `goto ${labelAddress(result, model, opts, block.succ[0])};`, row: block.endRow, addr: null, note: null });
+      }
+    }
+  }
+  lines.push({ kind: 'ctrl', indent: 0, text: '}', row: model.instructions?.at?.(-1)?.row ?? null, addr: null, note: null });
+
+  result.lines = lines;
+  result.pseudocode = textOf(lines);
+  result.summary = '構造化を断定できない共有cleanup経路があるため、Semantic IRのCFGをラベルとedgeを保った形で表示しています。';
+  result.warnings = [...(result.warnings || []), reason];
+  result.evidence = [...(result.evidence || []), { reason: 'faithful Semantic IR CFG fallback', op: 'cfg', row: null, address: null }];
+  result.coverage = { ...(result.coverage || {}), mode: 'linear', total: ir.blocks.length, emitted: ir.blocks.length, missing: 0 };
+  result.ctx = { ...(result.ctx || {}), faithfulIrCfg: true };
+  result.semantic = true;
+  return result;
+}
+
 function hasNonNaturalBackwardEdge(_model, result) {
   const ir = result?.ir;
   if (!ir?.blocks?.length) return false;
@@ -107,11 +184,14 @@ export function decompile(model, opts = {}) {
       }
 
       // A backward CFG edge whose target does not dominate the source is shared
-      // cleanup/tail control flow, not a natural loop. Preserve labels/gotos.
+      // cleanup/tail control flow, not a natural loop. Preserve the IR CFG
+      // itself rather than falling back to a prettier but edge-losing renderer.
       if (hasNonNaturalBackwardEdge(model, result)) {
-        return finalize(augmentLegacy(
-          legacyDecompile(model, opts),
-          'A backward control-flow edge is not a proven natural loop; shared cleanup is shown with faithful labels/gotos.',
+        return finalize(faithfulIrCfg(
+          result,
+          model,
+          opts,
+          'A backward control-flow edge is not a proven natural loop; shared cleanup is shown with faithful Semantic IR labels/gotos.',
         ), model, opts);
       }
 
