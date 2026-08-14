@@ -24,9 +24,20 @@ export {
   legacyAmountOf as amountOfLegacy,
 };
 
+/*
+ * Only the default query is reusable as context for another public API. A caller
+ * may ask findValueUpdates(model, { window: 4 }) or pass a custom IR; caching that
+ * partial answer used to make a later constantComparisons(model) depend on call
+ * order. WeakMap still keeps the normal hot path cheap without cross-model leaks.
+ */
 const updateCache = new WeakMap();
-function rememberUpdates(model, updates) {
-  if (model && typeof model === 'object') updateCache.set(model, updates || []);
+function isDefaultUpdateQuery(opts) {
+  return opts == null || Object.keys(opts).length === 0;
+}
+function rememberUpdates(model, updates, opts) {
+  if (isDefaultUpdateQuery(opts) && model && typeof model === 'object') {
+    updateCache.set(model, updates || []);
+  }
   return updates;
 }
 
@@ -59,10 +70,12 @@ export function findValueUpdates(model, opts) {
   try {
     proven = findIrValueUpdates(model, opts);
   } catch {
-    return rememberUpdates(model, legacy);
+    return rememberUpdates(model, legacy, opts);
   }
+  // The legacy location API models object/stack offsets. Absolute globals stay
+  // available in IR/slicing rather than being misrepresented as a +0 field.
   proven = proven.filter((u) => !(u.location && u.location.irKind === MK.GLOBAL));
-  if (!proven.length) return rememberUpdates(model, legacy);
+  if (!proven.length) return rememberUpdates(model, legacy, opts);
 
   const self = selfRegisters(model);
   for (const u of proven) {
@@ -70,7 +83,7 @@ export function findValueUpdates(model, opts) {
       u.location.self = self.isSelf(u.location.base, u.store ? u.store.row : null);
     }
   }
-  return rememberUpdates(model, mergeValueUpdates(legacy, proven));
+  return rememberUpdates(model, mergeValueUpdates(legacy, proven), opts);
 }
 
 function distinctCandidateLocations(updates) {
@@ -84,6 +97,20 @@ function distinctCandidateLocations(updates) {
   return keys.size;
 }
 
+function comparisonContextUpdates(model, opts) {
+  if (!model || typeof model !== 'object') return [];
+  // A custom IR is a diagnostic/special query; derive context from the same IR
+  // rather than accidentally consulting a cached default result.
+  if (opts && opts.ir) {
+    try { return findValueUpdates(model, { ir: opts.ir }); } catch { return []; }
+  }
+  const cached = updateCache.get(model);
+  if (cached) return cached;
+  // This makes suppression deterministic even when constantComparisons() is the
+  // first public data-flow API called for the model.
+  try { return findValueUpdates(model); } catch { return []; }
+}
+
 export function constantComparisons(model, opts) {
   const legacy = legacyConstantComparisons(model);
   let proven = [];
@@ -93,12 +120,13 @@ export function constantComparisons(model, opts) {
    * pinpointLocation currently associates generic comparisons with every location
    * candidate found in the function. A propagated SSA threshold is new evidence,
    * so do not introduce it when that function has multiple distinct candidate
-   * locations and the caller has not explicitly requested scoped comparison facts.
-   * Direct literals already existed in the legacy path and remain unchanged.
+   * locations unless the caller can scope the comparison itself.
    */
-  const cached = updateCache.get(model);
-  if (!(opts && opts.allowUnscopedPropagated) && cached && distinctCandidateLocations(cached) > 1) {
-    proven = proven.filter((c) => !c.propagated);
+  if (!(opts && opts.allowUnscopedPropagated)) {
+    const context = comparisonContextUpdates(model, opts);
+    if (distinctCandidateLocations(context) > 1) {
+      proven = proven.filter((c) => !c.propagated);
+    }
   }
   return proven.length ? mergeConstantComparisons(legacy, proven) : legacy;
 }
