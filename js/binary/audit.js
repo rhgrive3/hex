@@ -34,11 +34,11 @@ export function auditBinary(image) {
     const key = f.address.toString();
     if (functionAddresses.has(key)) issues.push(issue('error', 'duplicate-function', `duplicate function at ${hex(f.address)}`));
     functionAddresses.add(key);
-    const sec = image.sectionAt(f.address);
+    const sec = image.sectionAt(f.address) || image.segmentAt(f.address);
     if (sec && sec.perms.execute) stats.executableFunctions++;
     else {
       stats.unmappedFunctions++;
-      if (f.source !== 'entrypoint') issues.push(issue('warning', 'function-outside-exec', `${hex(f.address)} (${f.source}) is outside an executable section`));
+      if (f.source !== 'entrypoint') issues.push(issue('warning', 'function-outside-exec', `${hex(f.address)} (${f.source}) is outside executable mapped memory`));
     }
     if (f.size != null && f.size < 0n) issues.push(issue('error', 'negative-function-size', `${hex(f.address)} has a negative size`));
   }
@@ -53,8 +53,8 @@ export function auditBinary(image) {
   }
 
   if (image.entrypoint != null) {
-    const sec = image.sectionAt(image.entrypoint);
-    if (!sec || !sec.perms.execute) issues.push(issue('warning', 'entrypoint-not-executable', `entrypoint ${hex(image.entrypoint)} is not in an executable section`));
+    const sec = image.sectionAt(image.entrypoint) || image.segmentAt(image.entrypoint);
+    if (!sec || !sec.perms.execute) issues.push(issue('warning', 'entrypoint-not-executable', `entrypoint ${hex(image.entrypoint)} is not in executable mapped memory`));
   }
 
   const errors = issues.filter((x) => x.level === 'error').length;
