@@ -1,6 +1,7 @@
 /* Regression tests for the incremental IR -> dataflow migration. */
 import { buildSemanticModel } from '../js/blocks.js';
 import { findValueUpdates, findValueUpdatesLegacy } from '../js/dataflow.js';
+import { irFor, irText, readModifyWrite } from '../js/ir.js';
 
 let passed = 0;
 const failures = [];
@@ -59,7 +60,11 @@ test('SSA can prove an RMW across a control-flow join that legacy refuses to cro
   ok(!legacy.some((u) => u.store && u.store.row === 6 && u.kind === 'read-modify-write'),
     'legacy stays conservative at the join');
   const u = modern.find((x) => x.store && x.store.row === 6 && x.kind === 'read-modify-write');
-  ok(u, 'SSA/phi proves the joined update');
+  if (!u) {
+    const ir = irFor(model);
+    const rmw = ir ? readModifyWrite(ir) : [];
+    throw new Error('SSA/phi proves the joined update; directRmw=' + rmw.length + '\n' + (ir ? irText(ir) : '<no ir>'));
+  }
   eq(u.engine, 'ir-ssa');
 });
 
