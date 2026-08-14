@@ -95,7 +95,7 @@ function fixture(size=0x400){
 assert.throws(()=>safeRegionLength(9007199254740992n)); assert.throws(()=>checkedChunkIndex(-1)); assert.throws(()=>checkedChunkIndex(1.5)); assert.equal(checkedChunkIndex(3),3);
 // #106/#107 request ownership and transactional open are retained in worker code.
 const worker=fs.readFileSync(new URL('../js/platform/worker.js',import.meta.url),'utf8');
-assert.match(worker,/active\.has\(msg\.id\)/); assert.match(worker,/candidateSource|nextSource|newSource/);
+assert.match(worker,/active\.has\(requestKey\)/); assert.match(worker,/candidateSource/); assert.match(worker,/Commit the new session only after every parsing\/description step succeeds/);
 // #108 options on an existing ByteSource become a stricter wrapper.
 {
  class S extends ByteSource{constructor(){super(16n,{maxReadLength:16})}async read(_o,n){return new Uint8Array(n)}}
