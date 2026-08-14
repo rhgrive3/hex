@@ -15,7 +15,7 @@ if (!file) {
 const nodeSource = await NodeFileByteSource.open(file, { maxReadLength: 8 * 1024 * 1024 });
 try {
   const source = new InstrumentedByteSource(nodeSource);
-  const image = await openBinarySource(source, { ranges: { pageSize: 64 * 1024, maxCachedBytes: 16 * 1024 * 1024 } });
+  const image = await openBinarySource(source, { ranges: { pageSize: 64 * 1024, maxPageSize: 2 * 1024 * 1024, maxCachedBytes: 16 * 1024 * 1024 } });
   const audit = auditBinary(image);
   const result = {
     file,
