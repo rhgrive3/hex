@@ -119,10 +119,9 @@ function toolCallCount(record) {
 }
 
 function evidenceProofed(evidence, record) {
-  if (evidence?.deterministic === true || evidence?.verifiedByTool === true || evidence?.verification?.verified === true) return true;
-  if (evidence?.sourceTool && (evidence?.sourceData != null || evidence?.proof != null)) return true;
   const id = evidence?.id;
   if (!id) return false;
+  if (asArray(record?.observed?.verifiedEvidenceIds).includes(id)) return true;
   return traceToolCalls(record).some((call) => {
     if (call?.deterministic === false) return false;
     const emitted = [
