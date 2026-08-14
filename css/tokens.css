@@ -1,0 +1,99 @@
+:root {
+  --ui-bg: #f6f7f5;
+  --ui-surface: #ffffff;
+  --ui-surface-2: #eef1ee;
+  --ui-surface-3: #e4e9e5;
+  --ui-text: #17201d;
+  --ui-text-muted: #5c6863;
+  --ui-border: #d5ddd8;
+  --ui-accent: #1d6954;
+  --ui-accent-strong: #11503f;
+  --ui-accent-soft: #e2f1eb;
+  --ui-danger: #a33d36;
+  --ui-warning: #8a661d;
+  --ui-confirmed: #176448;
+  --ui-likely: #7a5c18;
+  --ui-unverified: #606a66;
+  --ui-contradicted: #9e3e3a;
+  --ui-code-bg: #111817;
+  --ui-code-text: #e7eeeb;
+
+  --ui-space-1: 4px;
+  --ui-space-2: 8px;
+  --ui-space-3: 12px;
+  --ui-space-4: 16px;
+  --ui-space-5: 20px;
+  --ui-space-6: 24px;
+  --ui-space-8: 32px;
+  --ui-space-10: 40px;
+
+  --ui-font-xs: 0.75rem;
+  --ui-font-sm: 0.875rem;
+  --ui-font-md: 1rem;
+  --ui-font-lg: 1.25rem;
+  --ui-font-xl: clamp(1.5rem, 2vw, 2rem);
+  --ui-line: 1.55;
+  --ui-radius-sm: 8px;
+  --ui-radius-md: 12px;
+  --ui-radius-lg: 18px;
+  --ui-shadow: 0 12px 36px rgb(10 26 20 / 0.10);
+  --ui-touch: 44px;
+  --ui-content: 1120px;
+  --ui-inspector: 360px;
+
+  --ui-z-base: 0;
+  --ui-z-sticky: 20;
+  --ui-z-inspector: 40;
+  --ui-z-backdrop: 60;
+  --ui-z-sheet: 70;
+  --ui-z-popover: 80;
+  --ui-z-dialog: 90;
+  --ui-z-toast: 100;
+
+  --ui-safe-top: env(safe-area-inset-top, 0px);
+  --ui-safe-right: env(safe-area-inset-right, 0px);
+  --ui-safe-bottom: env(safe-area-inset-bottom, 0px);
+  --ui-safe-left: env(safe-area-inset-left, 0px);
+  --ui-visual-height: 100dvh;
+  --ui-keyboard-inset: 0px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ui-bg: #0f1513;
+    --ui-surface: #151e1b;
+    --ui-surface-2: #1c2824;
+    --ui-surface-3: #24322d;
+    --ui-text: #edf3f0;
+    --ui-text-muted: #aebbb5;
+    --ui-border: #33433d;
+    --ui-accent: #71d0ae;
+    --ui-accent-strong: #9ce2c9;
+    --ui-accent-soft: #183a30;
+    --ui-danger: #ef9993;
+    --ui-warning: #dfc078;
+    --ui-confirmed: #75d1ad;
+    --ui-likely: #e3c275;
+    --ui-unverified: #aeb9b4;
+    --ui-contradicted: #ee9d98;
+  }
+}
+
+:root[data-theme="dark"] {
+  --ui-bg: #0f1513;
+  --ui-surface: #151e1b;
+  --ui-surface-2: #1c2824;
+  --ui-surface-3: #24322d;
+  --ui-text: #edf3f0;
+  --ui-text-muted: #aebbb5;
+  --ui-border: #33433d;
+  --ui-accent: #71d0ae;
+  --ui-accent-strong: #9ce2c9;
+  --ui-accent-soft: #183a30;
+  --ui-danger: #ef9993;
+  --ui-warning: #dfc078;
+  --ui-confirmed: #75d1ad;
+  --ui-likely: #e3c275;
+  --ui-unverified: #aeb9b4;
+  --ui-contradicted: #ee9d98;
+}
