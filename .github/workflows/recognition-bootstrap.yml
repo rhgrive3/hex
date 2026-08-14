@@ -25,8 +25,16 @@ jobs:
           import fs from 'node:fs';
           import path from 'node:path';
           import zlib from 'node:zlib';
-          const files = fs.readdirSync('tools').filter((x) => /^\.recognition-payload-\d+\.txt$/.test(x)).sort();
-          if (files.length !== 6) throw new Error(`expected 6 payload chunks, got ${files.length}`);
+          const files = [
+            '.recognition-payload-00.txt',
+            '.recognition-payload-01.txt',
+            '.recognition-payload-02.txt',
+            '.recognition-payload-03a.txt',
+            '.recognition-payload-03b.txt',
+            '.recognition-payload-03c.txt',
+            '.recognition-payload-04.txt',
+            '.recognition-payload-05.txt',
+          ];
           const encoded = files.map((x) => fs.readFileSync(path.join('tools', x), 'utf8')).join('').replace(/\s+/g, '');
           const manifest = JSON.parse(zlib.gunzipSync(Buffer.from(encoded, 'base64')).toString('utf8'));
           for (const [file, content] of Object.entries(manifest)) {
