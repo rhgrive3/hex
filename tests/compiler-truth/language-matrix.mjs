@@ -11,7 +11,7 @@ import { s, u } from '../../js/decompiler/truth/integer.js';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const sourceDir = path.join(here, 'sources');
 const optimizations = ['-O0','-O1','-O2','-O3','-Os','-Oz'];
-const clangTargets = ['arm64-apple-ios13.0', 'aarch64-unknown-linux-gnu'];
+const clangTargets = ['aarch64-unknown-linux-gnu', 'arm64-apple-ios13.0'];
 const boundary32 = [0n, 1n, -1n, 2n, -2n, 0x7fffffffn, 0x80000000n, 0xffffffffn, 0x12345678n];
 
 function memoryInfo(mn, ops) {
