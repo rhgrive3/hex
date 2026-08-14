@@ -1,4 +1,7 @@
 const TYPES = new Set(['format', 'architecture', 'analyzer', 'knowledgeProvider', 'signatureProvider', 'recognitionProvider', 'viewContribution', 'goalProvider']);
+const DEFAULT_TIMEOUT_MS = Object.freeze({ analyzer:30000, knowledgeProvider:15000, signatureProvider:15000, recognitionProvider:15000, format:5000, architecture:5000, viewContribution:5000, goalProvider:10000 });
+const DEFAULT_MAX_READ = 1024 * 1024;
+const DEFAULT_TOTAL_READ = 16 * 1024 * 1024;
 
 function deepFreeze(value, seen = new WeakSet()) {
   if (!value || typeof value !== 'object' || seen.has(value)) return value;
@@ -59,6 +62,95 @@ function safeSnapshot(value) {
   return deepFreeze(clone);
 }
 
+function pluginError(message, code) {
+  const error = new Error(message); error.code = code; return error;
+}
+
+function positiveLimit(value, fallback) {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
+}
+
+function permissionRanges(permission) {
+  if (permission === true) return null;
+  if (!permission || permission.allowed !== true) return [];
+  const values = Array.isArray(permission.ranges) ? permission.ranges : (permission.start != null || permission.end != null ? [permission] : []);
+  if (!values.length) return null;
+  return values.map((range) => {
+    const start = BigInt(range.start ?? 0);
+    const end = range.end == null ? null : BigInt(range.end);
+    if (start < 0n || (end != null && end < start)) throw pluginError('invalid plugin read range', 'PLUGIN_READ_RANGE');
+    return { start, end };
+  });
+}
+
+function readPermission(context) {
+  return context?.pluginPermissions?.read ?? context?.capability?.pluginRead ?? context?.capability?.readPermission ?? false;
+}
+
+function createReadFacade(context) {
+  if (typeof context?.read !== 'function') return undefined;
+  const permission = readPermission(context);
+  if (permission !== true && (!permission || permission.allowed !== true)) return undefined;
+  const ranges = permissionRanges(permission);
+  const maxReadBytes = positiveLimit(permission?.maxReadBytes, DEFAULT_MAX_READ);
+  const maxTotalBytes = positiveLimit(permission?.maxTotalBytes, DEFAULT_TOTAL_READ);
+  let consumed = 0;
+  return async (address, length) => {
+    let addr;
+    try { addr = BigInt(address); } catch { throw pluginError('plugin read address is invalid', 'PLUGIN_READ_RANGE'); }
+    const len = Number(length);
+    if (addr < 0n || !Number.isSafeInteger(len) || len <= 0 || len > maxReadBytes) throw pluginError('plugin read exceeds per-read limit', 'PLUGIN_READ_BUDGET');
+    if (consumed + len > maxTotalBytes) throw pluginError('plugin read exceeds total budget', 'PLUGIN_READ_BUDGET');
+    const end = addr + BigInt(len);
+    if (ranges && !ranges.some((range) => addr >= range.start && (range.end == null || end <= range.end))) throw pluginError('plugin read is outside the permitted range', 'PLUGIN_READ_RANGE');
+    consumed += len;
+    const value = await context.read(addr, len);
+    return safeSnapshot(value);
+  };
+}
+
+function invocationControl(type, context, args) {
+  const option = [...args].reverse().find((x) => x && typeof x === 'object' && ('timeoutMs' in x || 'signal' in x)) || {};
+  const timeoutMs = positiveLimit(context?.pluginTimeoutMs ?? option.timeoutMs, DEFAULT_TIMEOUT_MS[type] || 10000);
+  const upstreamSignal = context?.signal || option.signal || null;
+  const controller = typeof AbortController === 'function' ? new AbortController() : null;
+  let abortListener = null;
+  if (controller && upstreamSignal?.addEventListener) {
+    abortListener = () => controller.abort(upstreamSignal.reason);
+    if (upstreamSignal.aborted) abortListener(); else upstreamSignal.addEventListener('abort', abortListener, { once:true });
+  }
+  return { timeoutMs, upstreamSignal, controller, signal:controller?.signal || upstreamSignal || null, cleanup:() => { if (abortListener) upstreamSignal?.removeEventListener?.('abort', abortListener); } };
+}
+
+function snapshotArg(arg, signal) {
+  if (!arg || typeof arg !== 'object') return arg;
+  if (!('signal' in arg)) return safeSnapshot(arg);
+  const copy = {};
+  for (const [key,value] of Object.entries(arg)) if (key !== 'signal') copy[key]=value;
+  const snapshot = safeSnapshot(copy) || {};
+  return Object.freeze({ ...snapshot, signal });
+}
+
+async function boundedCall(fn, safeContext, safeArgs, control) {
+  if (control.upstreamSignal?.aborted) throw pluginError('plugin invocation aborted', 'PLUGIN_ABORTED');
+  let timer = null, abortReject = null;
+  const pluginPromise = Promise.resolve().then(() => fn(safeContext, ...safeArgs));
+  const contenders = [pluginPromise];
+  if (control.timeoutMs > 0) contenders.push(new Promise((_resolve,reject) => {
+    timer = setTimeout(() => { control.controller?.abort(pluginError('plugin invocation timed out', 'PLUGIN_TIMEOUT')); reject(pluginError(`plugin invocation timed out after ${control.timeoutMs}ms`, 'PLUGIN_TIMEOUT')); }, control.timeoutMs);
+  }));
+  if (control.upstreamSignal?.addEventListener) contenders.push(new Promise((_resolve,reject) => {
+    abortReject = () => reject(pluginError('plugin invocation aborted', 'PLUGIN_ABORTED'));
+    control.upstreamSignal.addEventListener('abort', abortReject, { once:true });
+  }));
+  try { return await Promise.race(contenders); }
+  finally {
+    if (timer) clearTimeout(timer);
+    if (abortReject) control.upstreamSignal?.removeEventListener?.('abort', abortReject);
+  }
+}
+
 export class PlatformPluginRegistry {
   constructor() {
     this.entries = new Map([...TYPES].map((type) => [type, new Map()]));
@@ -95,24 +187,24 @@ export class PlatformPluginRegistry {
     if (!record) return { ok: false, error: `unknown contribution ${type}:${id}` };
     const fn = record.contribution[method];
     if (typeof fn !== 'function') return { ok: false, error: `contribution ${type}:${id} has no ${method}()` };
+    const control = invocationControl(type, context, args);
     try {
-      // Plugins receive detached snapshots of host-owned state. Freezing a
-      // shallow spread is insufficient because project.user, arrays and Maps
-      // would still point at live application objects.
       const safeContext = Object.freeze({
         binary: safeSnapshot(context.binary),
         capability: safeSnapshot(context.capability),
         project: safeSnapshot(context.project),
-        read: typeof context.read === 'function' ? context.read : undefined,
+        read: createReadFacade(context),
         reportProgress: typeof context.reportProgress === 'function' ? context.reportProgress : undefined,
+        signal: control.signal,
       });
-      return { ok: true, value: await fn(safeContext, ...args) };
+      const safeArgs = args.map((arg) => snapshotArg(arg, control.signal));
+      return { ok: true, value: await boundedCall(fn, safeContext, safeArgs, control) };
     } catch (error) {
-      const failure = { type, id, method, error: error?.message || String(error), at: Date.now() };
+      const failure = { type, id, method, error: error?.message || String(error), code:error?.code || 'PLUGIN_FAILURE', at: Date.now() };
       this.failures.push(failure);
       if (this.failures.length > 100) this.failures.shift();
-      return { ok: false, error: failure.error, isolated: true };
-    }
+      return { ok: false, error: failure.error, code:failure.code, isolated: true, timedOut:failure.code === 'PLUGIN_TIMEOUT', aborted:failure.code === 'PLUGIN_ABORTED' };
+    } finally { control.cleanup(); }
   }
 
   async runAnalyzers(context, options = {}) {
