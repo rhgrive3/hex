@@ -35,6 +35,11 @@ jobs:
           git rm -f tests/issues-136-147.mjs
           git add tests/issues-135-145.mjs tests/issues-101-145.mjs js/decompiler/switch.js
           git commit -m "chore: trim integration to issues 101-145"
+      - name: Preserve evidence-based lazy getter reads
+        run: |
+          python3 tools/fix_lazy_getter_regression.py
+          git add js/dataflow-semantic.js tests/issues-130-compat.mjs tests/issues-101-145.mjs
+          git commit -m "fix: preserve getter evidence with unknown RET ABI"
       - name: Register focused regressions
         run: |
           python3 - <<'PY'
@@ -60,6 +65,7 @@ jobs:
           node --check js/cfg.js
           node --check js/controlflow.js
           node --check js/ir-core.js
+          node --check js/dataflow-semantic.js
           node --check js/decompiler/semantic.js
           node --check js/decompiler/types/prototype.js
           node tests/issues-101-145.mjs
@@ -69,7 +75,7 @@ jobs:
           npm test
       - name: Remove staging machinery and push verified result
         run: |
-          rm -f tools/integrate_issues_101_145.py .github/workflows/integrate-issues-101-145.yml
+          rm -f tools/integrate_issues_101_145.py tools/fix_lazy_getter_regression.py .github/workflows/integrate-issues-101-145.yml
           git add -A
           git commit -m "fix: resolve issues 101-145 [issues-101-145 integrated]"
           git push origin HEAD:fix-issues-101-145-final
