@@ -41,9 +41,26 @@ function returnDescriptor(value) {
   return { kind: 'computed', op: origin.op || null, sub: origin.sub || null };
 }
 
-function simpleReturnExpression(ret) {
-  if (!ret || !ret.args || !ret.args[0] || !ret.args[0].value) return null;
-  let v = ret.args[0].value;
+function summaryReturnCandidate(ir, ret) {
+  const explicit = ret?.args?.[0]?.value || null;
+  if (explicit) return { value: explicit, inferred: false };
+
+  // #130 deliberately makes an untyped RET carry no x0 SSA use. Interprocedural
+  // summaries may still recognize a *locally defined, terminal* x0 value as a
+  // return-shaped heuristic, without mutating RET or promoting it to ABI truth.
+  // Entry x0 (VK.ARG) is intentionally rejected so setters/void-like functions
+  // do not become synthetic `return arg0` summaries merely because x0 survived.
+  const value = valueBefore(ir, ret, 'x0');
+  if (!value || value.kind === VK.ARG || !value.def) return { value: null, inferred: false };
+  if (value.def.row == null || ret.row == null || value.def.row >= ret.row) return { value: null, inferred: false };
+  const laterUse = (value.uses || []).some((use) => use !== ret && use.row != null && use.row > value.def.row && use.row < ret.row);
+  if (laterUse) return { value: null, inferred: false };
+  return { value, inferred: true };
+}
+
+function simpleReturnExpression(value) {
+  if (!value) return null;
+  let v = value;
   const pass = new Set([OP.MOV]);
   for (let guard = 0; guard < 6 && v && v.def && pass.has(v.def.op); guard++) v = v.def.args[0] && v.def.args[0].value;
   if (!v || !v.def || v.def.op !== OP.BIN || (v.def.sub !== 'add' && v.def.sub !== 'sub')) return null;
@@ -111,10 +128,11 @@ export function summarizeFunction(model, opts) {
   const returns = [];
   for (const ret of ir.instructions || []) {
     if (ret.op !== OP.RET) continue;
-    const v = ret.args && ret.args[0] && ret.args[0].value || null;
-    const descriptor = returnDescriptor(v);
-    const expr = simpleReturnExpression(ret);
-    returns.push(expr || descriptor);
+    const candidate = summaryReturnCandidate(ir, ret);
+    const descriptor = returnDescriptor(candidate.value);
+    const expr = simpleReturnExpression(candidate.value);
+    const summary = expr || descriptor;
+    returns.push(candidate.inferred ? { ...summary, inferred: true, evidence: 'terminal-x0-definition' } : summary);
   }
 
   const reads = uniqueLocations(facts, FACT.READ);
