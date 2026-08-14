@@ -61,6 +61,19 @@ function blockAddress(result, model, opts, bi) {
     ?? (opts.addr ?? model.instructions?.[0]?.address ?? 0n) + BigInt(b.startRow || 0) * 4n;
 }
 
+function hasNonNaturalBackwardEdge(model, result) {
+  if ((result?.ir?.loops || []).length) return false;
+  for (const insn of model?.instructions || []) {
+    const from = insn?.address;
+    const to = insn?.branchTarget;
+    if (from == null || to == null) continue;
+    try {
+      if (BigInt(to) < BigInt(from)) return true;
+    } catch { /* malformed address is not structural evidence */ }
+  }
+  return false;
+}
+
 export function decompile(model, opts = {}) {
   if (opts.semanticIR === false || opts.forceLegacyDecompiler === true) return legacyDecompile(model, opts);
   try {
@@ -76,6 +89,17 @@ export function decompile(model, opts = {}) {
         return augmentLegacy(
           legacyDecompile(model, opts),
           `Semantic IR covers ${reachable}/${total} Basic Blocks; disconnected or indirect targets are shown with the faithful CFG fallback.`,
+        );
+      }
+
+      // A backward address edge that does not form a dominator-proven natural
+      // loop is typically shared cleanup/tail code. Turning it into a loop or
+      // silently inlining it would change the visible control-flow contract, so
+      // keep explicit labels/gotos until the IR has a stronger region proof.
+      if (hasNonNaturalBackwardEdge(model, result)) {
+        return augmentLegacy(
+          legacyDecompile(model, opts),
+          'A backward control-flow edge is not a proven natural loop; shared cleanup is shown with faithful labels/gotos.',
         );
       }
 
