@@ -2,18 +2,19 @@
   "name": "hex",
   "private": true,
   "type": "module",
-  "description": "アプリの中身（Mach-O / ARM64）を日本語で読むためのビューア。ビルドはしない — index.html をそのまま開く静的サイト。",
+  "description": "Browser-first universal binary analysis platform for Mach-O, ELF and PE, optimized for iPad.",
   "scripts": {
     "lint": "node tests/check.mjs",
     "check": "npm run lint && npm test",
-    "test": "node tests/run.js && node tests/evidence-verdict.mjs && node tests/ir.mjs && node tests/cfg-structuring.mjs && node tests/ux.mjs && node tests/gemini.mjs && node tests/words.mjs && node tests/api.mjs",
+    "test": "node tests/run.js && node tests/evidence-verdict.mjs && node tests/ir.mjs && node tests/cfg-structuring.mjs && node tests/ux.mjs && node tests/gemini.mjs && node tests/words.mjs && node tests/api.mjs && npm run platform:test",
+    "platform:test": "node tests/platform-bytesource.mjs && node tests/project-roundtrip.mjs && node tests/diff-platform.mjs && node tests/knowledge-platform.mjs && node tests/cache-platform.mjs && node tests/plugin-platform.mjs",
     "browser": "node tests/browser.mjs",
     "sandbox": "node tests/sandbox.mjs",
     "tools": "node tests/tools.mjs",
     "accuracy": "node --max-old-space-size=8000 tests/accuracy.mjs",
     "oracle": "python3 tests/oracle.py tests/battlecats tests/oracle.battlecats.json.gz",
-    "binary:test": "node tests/universal-binary.mjs && node tests/universal-binary-sectionless.mjs && node tests/universal-binary-source.mjs",
-    "binary:source-test": "node tests/universal-binary-source.mjs",
+    "binary:test": "node tests/universal-binary.mjs && node tests/universal-binary-sectionless.mjs && node tests/universal-binary-source.mjs && node tests/binary-platform.mjs",
+    "binary:source-test": "node tests/universal-binary-source.mjs && node tests/binary-platform.mjs",
     "binary:gate": "node tests/universal-binary-gate.mjs",
     "binary:benchmark": "node tests/universal-binary-benchmark.mjs"
   }
