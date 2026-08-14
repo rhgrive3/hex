@@ -987,7 +987,7 @@ async function guessFunctions({ regionId, limit, requestId, epoch }) {
     changed = false;
     for (const c of postBranch) {
       if (c.kind !== Words.KIND.BRANCH || isBlocked(c) || found.has(c.addr)) continue;
-      if (!found.has(c.addr + 4n)) continue;
+      if (!found.has(c.addr + 4n) && !dataCandidates.has(c.addr + 4n)) continue;
       found.add(c.addr); changed = true;
       if (found.size >= cap) break;
     }
