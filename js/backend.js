@@ -19,7 +19,7 @@ export class StaleRequestError extends Error {
 
 export class Backend {
   constructor() {
-    this.worker = new Worker(new URL('./worker.js', import.meta.url));
+    this.worker = new Worker(new URL('./worker2.js', import.meta.url));
     this.seq = 1;
     this.analysisEpoch = 0;          // bumped for every file and slice transition
     this.pending = new Map();
