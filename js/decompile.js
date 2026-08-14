@@ -17,25 +17,15 @@ function textOf(lines) {
 
 function foldSelectIdiom(text) {
   if (typeof text !== 'string' || !text.includes('?')) return text;
-  // CSEL frequently materializes the comparison constant as a separate SSA
-  // value (e.g. WZR vs `cmp ..., #0`). Compare rendered values, not SSA ids.
-  // Only fold when both non-selected expressions are textually identical, so
-  // a prettier min/max can never change semantics.
   let m = text.match(/^(.+?=\s*)\((.+?)\s*<\s*(-?(?:0x[0-9A-Fa-f]+|\d+))\s*\?\s*(-?(?:0x[0-9A-Fa-f]+|\d+))\s*:\s*(.+)\);$/);
-  if (m && m[3].trim() === m[4].trim() && m[2].trim() === m[5].trim()) {
-    return `${m[1]}max(${m[2].trim()}, ${m[3].trim()});`;
-  }
+  if (m && m[3].trim() === m[4].trim() && m[2].trim() === m[5].trim()) return `${m[1]}max(${m[2].trim()}, ${m[3].trim()});`;
   m = text.match(/^(.+?=\s*)\((.+?)\s*>\s*(-?(?:0x[0-9A-Fa-f]+|\d+))\s*\?\s*(-?(?:0x[0-9A-Fa-f]+|\d+))\s*:\s*(.+)\);$/);
-  if (m && m[3].trim() === m[4].trim() && m[2].trim() === m[5].trim()) {
-    return `${m[1]}min(${m[2].trim()}, ${m[3].trim()});`;
-  }
+  if (m && m[3].trim() === m[4].trim() && m[2].trim() === m[5].trim()) return `${m[1]}min(${m[2].trim()}, ${m[3].trim()});`;
   return text;
 }
 
 function normalizeCompatibility(result) {
   if (!result) return result;
-  // stackNaming() historically uses upper-case hexadecimal. Keep that public
-  // textual contract even though IR stack-slot keys are lower-case internally.
   for (const l of result.lines || []) {
     if (!l || typeof l.text !== 'string') continue;
     l.text = l.text.replace(/\bvar_([0-9a-f]+)\b/g, (_m, h) => 'var_' + h.toUpperCase());
@@ -60,6 +50,37 @@ function finalize(result, model, opts) {
   return normalizeCompatibility(result);
 }
 
+/*
+ * Some textual disassemblers emit direct control-flow targets without '#'.
+ * arm64.parseOperands then (correctly) leaves them as `other`; that must not
+ * make an otherwise direct branch disappear from Semantic IR. Accept only a
+ * strict integer token for known direct-control mnemonics. Arbitrary labels,
+ * symbol expressions and strings remain unresolved rather than guessed.
+ */
+function strictTextAddress(op) {
+  if (!op || op.k !== 'other') return null;
+  const s = String(op.text || '').trim();
+  if (!/^#?(?:0x[0-9a-fA-F]+|[0-9]+)$/.test(s)) return null;
+  try { return BigInt(s.replace(/^#/, '')); } catch { return null; }
+}
+
+function semanticModelForDecompiler(model) {
+  if (!model?.instructions?.length) return model;
+  let changed = false;
+  const instructions = model.instructions.map((insn) => {
+    const mn = String(insn.mnemonic || insn.mn || '').toLowerCase();
+    const directBranch = mn === 'b' || /^b\.[a-z]{2}$/.test(mn) || /^(?:cbz|cbnz|tbz|tbnz)$/.test(mn);
+    const directCall = mn === 'bl';
+    if ((!directBranch || insn.branchTarget != null) && (!directCall || insn.callTarget != null)) return insn;
+    const ops = Array.isArray(insn.ops) ? insn.ops : [];
+    const target = strictTextAddress(ops[ops.length - 1]);
+    if (target == null) return insn;
+    changed = true;
+    return directCall ? { ...insn, callTarget: target } : { ...insn, branchTarget: target };
+  });
+  return changed ? { ...model, instructions } : model;
+}
+
 function blockAddress(result, model, opts, bi) {
   const b = result?.ir?.blocks?.[bi];
   if (!b) return opts.addr ?? model.instructions?.[0]?.address ?? 0n;
@@ -74,16 +95,16 @@ function labelAddress(result, model, opts, bi) {
 
 function asmText(insn) {
   const mn = String(insn?.mnemonic || insn?.mn || '').trim();
-  const ops = String(insn?.operandsText || insn?.ops || '').trim();
-  return `${mn}${ops ? ' ' + ops : ''}`.trim() || 'unknown';
+  const ops = typeof insn?.operands === 'string'
+    ? insn.operands
+    : typeof insn?.operandsText === 'string'
+      ? insn.operandsText
+      : Array.isArray(insn?.ops)
+        ? insn.ops.map((o) => o?.text || '').filter(Boolean).join(', ')
+        : String(insn?.ops || '');
+  return `${mn}${ops.trim() ? ' ' + ops.trim() : ''}`.trim() || 'unknown';
 }
 
-/**
- * Address-order cleanup edges are intentionally not source-structured unless
- * the target dominates the source. For those rare optimized layouts, retain a
- * fully explicit CFG driven by Semantic IR block/successor facts. Raw assembly
- * is used only as the statement-level fallback inside each proven IR block.
- */
 function faithfulIrCfg(result, model, opts, reason) {
   const ir = result?.ir;
   if (!ir?.blocks?.length) return result;
@@ -121,8 +142,6 @@ function faithfulIrCfg(result, model, opts, reason) {
       }
       lines.push({ kind: 'stmt', indent: 2, text: `__asm(${JSON.stringify(asmText(insn))});`, row: insn.row, addr: insn.address ?? null, note: null });
     }
-    // If IR proves a non-physical fallthrough edge and no terminal branch was
-    // available in the raw row, make the edge explicit instead of hiding it.
     const next = blocks[pos + 1]?.index;
     if (block.succ?.length === 1 && block.succ[0] !== next) {
       const last = rows.at(-1);
@@ -148,13 +167,7 @@ function faithfulIrCfg(result, model, opts, reason) {
 function hasNonNaturalBackwardEdge(_model, result) {
   const ir = result?.ir;
   if (!ir?.blocks?.length) return false;
-
-  // Natural-loop definition: for a back-edge source -> header, the header
-  // dominates the source. This is stronger than merely checking whether both
-  // nodes were grouped into some loop set, and correctly separates optimized
-  // shared-cleanup jumps from true loops.
   const isNaturalBackEdge = (from, to) => !!ir.dominators?.[from]?.has?.(to);
-
   for (const block of ir.blocks) {
     for (const succ of block.succ || []) {
       const dst = ir.blocks[succ];
@@ -167,13 +180,10 @@ function hasNonNaturalBackwardEdge(_model, result) {
 
 export function decompile(model, opts = {}) {
   if (opts.semanticIR === false || opts.forceLegacyDecompiler === true) return legacyDecompile(model, opts);
+  const semanticModel = semanticModelForDecompiler(model);
   try {
-    let result = decompileSemantic(model, opts);
+    let result = decompileSemantic(semanticModel, opts);
     if (result) {
-      // IR construction intentionally visits only reachable blocks. If the
-      // function range also contains disconnected/indirectly-reachable blocks,
-      // IR cannot claim coverage for them; this is a legitimate unsupported-IR
-      // case and the faithful legacy CFG renderer is the safe fallback.
       const total = result.ir?.blocks?.length || 0;
       const reachable = result.coverage?.reachable ?? total;
       if (total > reachable) {
@@ -183,24 +193,21 @@ export function decompile(model, opts = {}) {
         ), model, opts);
       }
 
-      // A backward CFG edge whose target does not dominate the source is shared
-      // cleanup/tail control flow, not a natural loop. Preserve the IR CFG
-      // itself rather than falling back to a prettier but edge-losing renderer.
-      if (hasNonNaturalBackwardEdge(model, result)) {
+      if (hasNonNaturalBackwardEdge(semanticModel, result)) {
         return finalize(faithfulIrCfg(
           result,
-          model,
+          semanticModel,
           opts,
           'A backward control-flow edge is not a proven natural loop; shared cleanup is shown with faithful Semantic IR labels/gotos.',
-        ), model, opts);
+        ), semanticModel, opts);
       }
 
-      result = repairCanonicalPostTestLoop(result, (bi) => blockAddress(result, model, opts, bi));
+      result = repairCanonicalPostTestLoop(result, (bi) => blockAddress(result, semanticModel, opts, bi));
       if (result.coverage) {
         result.coverage.total = total;
         result.coverage.emitted = result.coverage.emitted ?? total;
       }
-      return finalize(result, model, opts);
+      return finalize(result, semanticModel, opts);
     }
   } catch (error) {
     return finalize(augmentLegacy(
