@@ -1457,3 +1457,77 @@ html, body { font-family: "Noto Sans JP", -apple-system, BlinkMacSystemFont, sys
 .lens-node { stroke: var(--surface); stroke-width: 4; }.lens-node.source { fill: #708a85; }.lens-node.index { fill: #5567a5; }.lens-node.evidence { fill: var(--accent); }.lens-node.answer { fill: #203936; }.relation-lens text { fill: var(--label-2); font: 500 10px "Noto Sans JP", sans-serif; text-anchor: middle; }
 .lens-facts { display: grid; gap: 7px; padding-top: 10px; border-top: 1px solid var(--separator-2); font-size: 11px; line-height: 1.45; }.lens-facts div { display: flex; gap: 8px; }.lens-facts b { flex: 0 0 auto; color: var(--accent); font: 600 10px/1.5 "IBM Plex Mono", monospace; }.lens-facts div:last-child b { color: #9a5905; }.lens-facts span { color: var(--label-2); }
 @media (max-width: 780px) { .empty { padding: 12px; }.empty-context { padding-left: 0; overflow: hidden; white-space: nowrap; }.empty-frame { grid-template-columns: 34px minmax(0, 1fr); min-height: 0; }.empty-rail { gap: 16px; }.relation-lens { grid-column: 2; margin: 0 20px 20px; }.empty-main { padding: 30px 22px 22px; }.empty-backdrop { background: linear-gradient(180deg, rgba(255,254,250,.30) 0%, rgba(255,254,250,.98) 48%); } }
+
+/* ── 関数ごとのAI解析 ─────────────────────────────────────── */
+.gemini-analysis { padding-bottom: 14px; }
+.gemini-question-label,
+.gemini-thinking-label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--label);
+}
+.gemini-question {
+  width: 100%;
+  min-height: 84px;
+  resize: vertical;
+  margin-top: 7px;
+  padding: 10px 11px;
+  border: 0.5px solid var(--separator);
+  border-radius: 9px;
+  background: var(--surface);
+  color: var(--label);
+  font: inherit;
+  line-height: 1.5;
+  -webkit-appearance: none;
+  appearance: none;
+  -webkit-text-size-adjust: 100%;
+}
+.gemini-question:focus,
+.gemini-thinking:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+.gemini-question:disabled,
+.gemini-thinking:disabled { opacity: .58; }
+.gemini-controls {
+  display: flex;
+  align-items: end;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+.gemini-thinking-label { flex: 1 1 120px; font-size: 11px; color: var(--label-2); }
+.gemini-thinking {
+  min-height: 34px;
+  padding: 5px 28px 5px 9px;
+  border: 0.5px solid var(--separator);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--label);
+  font: inherit;
+  -webkit-appearance: auto;
+  appearance: auto;
+}
+.gemini-controls .chip { flex: 0 0 auto; }
+.gemini-controls .chip:disabled { color: var(--label-3); cursor: default; }
+.gemini-status { min-height: 1.35em; margin: 11px 0 0; }
+.gemini-output {
+  max-height: min(52dvh, 540px);
+  margin: 8px 0 0;
+  padding: 11px;
+  overflow: auto;
+  border: 0.5px solid var(--separator);
+  border-radius: 9px;
+  background: var(--surface-2);
+  color: var(--label);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: 12px/1.6 ui-monospace, "SF Mono", SFMono-Regular, Menlo, Monaco, monospace;
+  -webkit-overflow-scrolling: touch;
+  -webkit-user-select: text;
+  user-select: text;
+}
+@media (max-width: 420px) {
+  .gemini-controls .chip { flex: 1 1 auto; }
+  .gemini-thinking-label { flex-basis: 100%; }
+}

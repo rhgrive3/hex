@@ -1,5 +1,26 @@
+# テスト、依存関係、VCS、Wranglerの作業ファイル
 tests/**
-node_modules/
-.git/
-.github/
-.wrangler/
+node_modules/**
+.git/**
+.github/**
+.wrangler/**
+
+# Workerサーバーコードとデプロイ設定
+worker.js
+wrangler.jsonc
+package.json
+package-lock.json
+pnpm-lock.yaml
+yarn.lock
+
+# リポジトリ管理・開発用のファイルと未使用アーカイブ
+.assetsignore
+.gitignore
+.ignore
+.nojekyll
+.mcp.json
+.claude/**
+README.md
+AGENTS.md
+hex.zip
+a

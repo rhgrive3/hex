@@ -58,6 +58,7 @@ import { comprehensionHeadline, stepNote, sinkText } from './narrate.js';
 import { stepText } from './comprehend.js';
 import { render as renderExpr } from './expr.js';
 import { callGraph, graphLegend, renderGraph } from './graphview.js';
+import { buildGeminiPayload, streamGemini } from './gemini.js';
 
 /* ── ファイル情報 ────────────────────────────────────────── */
 
@@ -4034,6 +4035,8 @@ function renderFunctionReport(app, sheet, body, report, res, region, goal) {
     body.append(ul0);
   }
 
+  body.append(geminiAnalysisSection(report, res));
+
   /* 3. 詳しく — 事実 / 推測 / 分からないこと。既定では畳んでおく。 */
   body.append(disclosure(pick('詳しく見る（事実・推測・分からないこと）',
     'Show the detail (facts, inferences, unknowns)'), {
@@ -4210,6 +4213,110 @@ function renderFunctionReport(app, sheet, body, report, res, region, goal) {
     app.setMode('hex');
   }));
   body.append(actions);
+}
+
+/** Geminiへ送るのは、この関数に関係する上限付きの根拠だけにする。 */
+function geminiAnalysisSection(report, res) {
+  const section = block(pick('AIにこの関数を聞く', 'Ask AI about this function'));
+  section.classList.add('gemini-analysis');
+  section.append(para(pick(
+    'この関数の命令・参照・呼び出し関係だけを送って、根拠つきの見立てを得ます。ファイル全体は送信しません。',
+    'Only this function’s instructions, references, and call relationships are sent. The full file is not uploaded.'), 'sub'));
+
+  const label = el('label', 'gemini-question-label', pick('質問', 'Question'));
+  const question = document.createElement('textarea');
+  question.className = 'gemini-question';
+  question.rows = 3;
+  question.maxLength = 6000;
+  question.placeholder = pick(
+    '例：この関数の役割と、値が書き込まれる経路を根拠つきで説明してください。',
+    'Example: Explain this function’s role and the evidence for how a value is written.');
+  question.value = pick(
+    'この関数の役割と、値が書き込まれる経路を根拠となるARM64命令とともに説明してください。',
+    'Explain this function’s role and the path by which it writes values, citing the relevant ARM64 instructions.');
+  label.htmlFor = 'gemini-question-' + String(report.identity.startAddr);
+  question.id = label.htmlFor;
+  section.append(label, question);
+
+  const controls = el('div', 'gemini-controls');
+  const thinkingLabel = el('label', 'gemini-thinking-label', pick('考える深さ', 'Thinking level'));
+  const thinking = document.createElement('select');
+  thinking.className = 'gemini-thinking';
+  thinking.setAttribute('aria-label', pick('考える深さ', 'Thinking level'));
+  for (const level of ['minimal', 'low', 'medium', 'high']) {
+    const option = document.createElement('option');
+    option.value = level;
+    option.textContent = level;
+    option.selected = level === 'high';
+    thinking.append(option);
+  }
+  thinkingLabel.append(thinking);
+  const send = button(pick('解析する', 'Analyze'), 'chip strong');
+  const cancel = button(pick('キャンセル', 'Cancel'), 'chip');
+  cancel.disabled = true;
+  controls.append(thinkingLabel, send, cancel);
+  section.append(controls);
+
+  const status = el('p', 'gemini-status sub', '');
+  status.setAttribute('aria-live', 'polite');
+  const output = el('pre', 'gemini-output');
+  output.hidden = true;
+  output.setAttribute('aria-live', 'polite');
+  section.append(status, output);
+
+  let controller = null;
+  const setRunning = (running) => {
+    send.disabled = running;
+    cancel.disabled = !running;
+    thinking.disabled = running;
+    question.disabled = running;
+  };
+
+  send.addEventListener('click', async () => {
+    const text = question.value.trim();
+    if (!text) {
+      status.textContent = pick('質問を入力してください。', 'Enter a question first.');
+      question.focus();
+      return;
+    }
+    let payload;
+    try {
+      payload = buildGeminiPayload(report, res.model, text, thinking.value);
+    } catch (err) {
+      status.textContent = err && err.message ? err.message : pick('解析対象を準備できませんでした。', 'Could not prepare the analysis context.');
+      return;
+    }
+
+    controller = new AbortController();
+    output.hidden = false;
+    output.textContent = '';
+    status.textContent = pick('解析中… 回答を受信し次第、ここへ表示します。', 'Analyzing… the response will appear here as it arrives.');
+    setRunning(true);
+    try {
+      await streamGemini(payload, {
+        onText: (chunk) => { output.textContent += chunk; },
+      }, controller.signal);
+      if (controller && !controller.signal.aborted) {
+        status.textContent = output.textContent
+          ? pick('解析が完了しました。', 'Analysis complete.')
+          : pick('回答本文を受信できませんでした。もう一度お試しください。', 'No response text was received. Please try again.');
+      }
+    } catch (err) {
+      if (err && err.name === 'AbortError') {
+        status.textContent = pick('解析をキャンセルしました。', 'Analysis cancelled.');
+      } else {
+        status.textContent = err && err.message ? err.message : pick('解析中にエラーが発生しました。', 'An error occurred during analysis.');
+      }
+    } finally {
+      controller = null;
+      setRunning(false);
+    }
+  });
+
+  cancel.addEventListener('click', () => {
+    if (controller) controller.abort();
+  });
+  return section;
 }
 
 /** 推測 1 つぶんの根拠を並べる。 */
