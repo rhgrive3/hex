@@ -8,6 +8,16 @@ import { stepText } from './comprehend.js';
 const MAX_ASSEMBLY_LINES = 360;
 const MAX_PSEUDOCODE_LINES = 32;
 const MAX_LIST_ITEMS = 40;
+const MAX_STREAM_ATTEMPTS = 2;
+const STREAM_RETRY_BASE_DELAY_MS = 700;
+const RETRYABLE_STREAM_CODES = new Set([
+  'aborted',
+  'api_error',
+  'deadline_exceeded',
+  'rate_limit_exceeded',
+  'service_unavailable',
+  'stream_ended_early',
+]);
 
 export function buildGeminiPayload(report, model, question, thinkingLevel) {
   if (!report || !model) throw new Error('解析対象の関数情報がありません。');
@@ -32,6 +42,25 @@ export function buildGeminiPayload(report, model, question, thinkingLevel) {
 }
 
 export async function streamGemini(payload, handlers, signal) {
+  for (let attempt = 1; attempt <= MAX_STREAM_ATTEMPTS; attempt++) {
+    let emittedText = false;
+    try {
+      const completed = await streamGeminiAttempt(payload, {
+        onText: (chunk) => {
+          emittedText = true;
+          if (handlers && handlers.onText) handlers.onText(chunk);
+        },
+      }, signal);
+      if (handlers && handlers.onDone) handlers.onDone(completed);
+      return;
+    } catch (error) {
+      if (!shouldRetryStream(error, emittedText, attempt, signal)) throw error;
+      if (!await waitForStreamRetry(attempt, signal)) throw error;
+    }
+  }
+}
+
+async function streamGeminiAttempt(payload, handlers, signal) {
   const response = await fetch('/api/gemini', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -40,7 +69,7 @@ export async function streamGemini(payload, handlers, signal) {
   });
 
   if (!response.ok) throw await responseError(response);
-  if (!response.body) throw new Error('解析サービスからストリームが返されませんでした。');
+  if (!response.body) throw new GeminiStreamError('解析サービスからストリームが返されませんでした。', 'stream_ended_early');
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
@@ -58,11 +87,39 @@ export async function streamGemini(payload, handlers, signal) {
       }
     }
     buffered += decoder.decode();
-    if (buffered.trim()) consumeEvent(buffered, handlers);
+    if (buffered.trim()) {
+      if (consumeEvent(buffered, handlers)) completed = true;
+    }
   } finally {
     reader.releaseLock();
   }
-  if (handlers && handlers.onDone) handlers.onDone(completed);
+  if (!completed) {
+    throw new GeminiStreamError('解析サービスのストリームが完了前に終了しました。', 'stream_ended_early');
+  }
+  return true;
+}
+
+function shouldRetryStream(error, emittedText, attempt, signal) {
+  if (attempt >= MAX_STREAM_ATTEMPTS || emittedText || (signal && signal.aborted)) return false;
+  return error instanceof GeminiStreamError && RETRYABLE_STREAM_CODES.has(error.code);
+}
+
+async function waitForStreamRetry(attempt, signal) {
+  if (signal && signal.aborted) return false;
+  const delay = STREAM_RETRY_BASE_DELAY_MS * Math.max(1, attempt) + Math.floor(Math.random() * 200);
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (signal) signal.removeEventListener('abort', onAbort);
+      resolve(value);
+    };
+    const onAbort = () => finish(false);
+    const timer = setTimeout(() => finish(true), delay);
+    if (signal) signal.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 function assemblyText(model) {
@@ -165,7 +222,9 @@ function consumeEvent(raw, handlers) {
   try { value = JSON.parse(joined); }
   catch { return false; }
   if (eventName === 'error' || value.event_type === 'error') {
-    throw new Error(value.error && value.error.message ? value.error.message : '解析サービスでエラーが発生しました。');
+    const code = value.error && typeof value.error.code === 'string' ? value.error.code : 'unknown';
+    const message = value.error && value.error.message ? value.error.message : '解析サービスでエラーが発生しました。';
+    throw new GeminiStreamError(message, code);
   }
   const delta = value.delta;
   if ((eventName === 'step.delta' || value.event_type === 'step.delta') && delta && delta.type === 'text' && typeof delta.text === 'string') {
@@ -177,11 +236,18 @@ function consumeEvent(raw, handlers) {
 
 async function responseError(response) {
   let message = '解析サービスへのリクエストに失敗しました。';
+  let code = 'request_failed';
   try {
     const body = await response.json();
-    if (body && body.error && typeof body.error.message === 'string') message = body.error.message;
+    if (body && body.error) {
+      if (typeof body.error.message === 'string') message = body.error.message;
+      if (typeof body.error.code === 'string') code = body.error.code;
+    }
   } catch { /* JSON でないエラー本文はブラウザへ表示しない */ }
-  return new Error(message);
+  const error = new Error(message);
+  error.code = code;
+  error.status = response.status;
+  return error;
 }
 
 function addressText(value) {
@@ -204,4 +270,12 @@ function numberOrNull(value) {
 
 function textOrNull(value) {
   return typeof value === 'string' && value ? value.slice(0, 3000) : null;
+}
+
+class GeminiStreamError extends Error {
+  constructor(message, code) {
+    super(message);
+    this.name = 'GeminiStreamError';
+    this.code = code;
+  }
 }
