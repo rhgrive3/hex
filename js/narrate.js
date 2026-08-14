@@ -2083,6 +2083,10 @@ export function roleProofText(item) {
       d.kind === 'read'
         ? 'a real load of this value is returned as-is'
         : 'a real store puts the argument straight into this place');
+    case 'role-accessor-match':
+      return pick('Objective-C のメソッド名「' + trim(d.selector, 36) + '」が示す対象と、' +
+        '実際に読み書きしている self の「' + trim(d.field, 32) + '」が一致している',
+      'the Objective-C selector “' + trim(d.selector, 36) + '” names the same self field that the instructions access');
     case 'role-verb-none':
       return pick('値を読んで書き戻している場所が見つからないので、' +
         '「何かを加工する処理」とは言えない',

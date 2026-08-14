@@ -28,7 +28,7 @@ import { makeSampleFile } from './sample.js';
 import { ProgramIndex } from './program.js';
 import { foldShapes } from './shapes.js';
 import { recoverSchemas } from './schema.js';
-import { NoteStore, noteKeyFor, EMPTY_NOTES } from './names.js';
+import { NoteStore, noteKeyFor, legacyNoteKeyFor, EMPTY_NOTES } from './names.js';
 import { PatchSet } from './patch.js';
 import { PluginHost } from './plugins.js';
 import { showTools } from './tools.js';
@@ -832,7 +832,7 @@ class App {
       if (sliceIndex < 0) sliceIndex = info.slices.findIndex((s) => s.info);
     }
     /* fingerprint + active sliceで、同名・同サイズやFat内の別sliceを混同しない。 */
-    const notes = new NoteStore(await noteKeyFor(file, info, sliceIndex));
+    const notes = new NoteStore(await noteKeyFor(file, info, sliceIndex), [legacyNoteKeyFor(file, info)]);
     if (openEpoch !== this.backend.gen) return;
     this.notes = notes;
     this.patches = new PatchSet();
@@ -1000,7 +1000,7 @@ class App {
     this.viewer.setSymbols(EMPTY_INDEX);
     const file = this.store.get('file');
     const epoch = this.backend.gen;
-    const notes = new NoteStore(await noteKeyFor(file, info, index));
+    const notes = new NoteStore(await noteKeyFor(file, info, index), [legacyNoteKeyFor(file, info)]);
     if (epoch !== this.backend.gen) return;
     this.notes = notes;
     this.applySlice(index, info);

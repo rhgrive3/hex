@@ -29,6 +29,23 @@ function key(addr) {
  * このファイルを見分けるための鍵。
  * 同じアプリを開き直したら、前に付けた名前がそのまま戻ってくる。
  */
+/**
+ * 旧版（fingerprint導入前）が使っていた鍵。
+ * 2026-08-13以前の版は active slice を区別せず、
+ * name|size|最初に見つかったUUID だけで保存していた。
+ * 新形式へ一度だけコピーするために正確な旧式を残しておく。
+ */
+export function legacyNoteKeyFor(file, fileInfo) {
+  const parts = [];
+  if (file && file.name) parts.push(file.name);
+  if (file && file.size != null) parts.push(String(file.size));
+  const slice = fileInfo && fileInfo.slices
+    ? fileInfo.slices.find((s) => s.info && s.info.uuid)
+    : null;
+  if (slice) parts.push(slice.info.uuid);
+  return parts.length ? parts.join('|') : null;
+}
+
 export async function noteKeyFor(file, fileInfo, sliceIndex) {
   if (!file) return null;
   const slices = fileInfo && fileInfo.slices || [];
@@ -64,8 +81,10 @@ export async function noteKeyFor(file, fileInfo, sliceIndex) {
 }
 
 export class NoteStore {
-  constructor(id) {
+  constructor(id, legacyIds = []) {
     this.id = id || null;
+    this.legacyIds = Array.from(new Set((legacyIds || []).filter((x) => x && x !== this.id)));
+    this.migratedFrom = null;
     this.names = new Map();      // addr -> 名前
     this.comments = new Map();   // addr -> メモ
     this.vars = new Map();       // 'func:key' -> 呼び名
@@ -80,7 +99,16 @@ export class NoteStore {
   load() {
     if (!this.id) return;
     let raw = null;
-    try { raw = localStorage.getItem(PREFIX + this.id); } catch { return; }
+    let sourceId = this.id;
+    try {
+      raw = localStorage.getItem(PREFIX + this.id);
+      if (!raw) {
+        for (const old of this.legacyIds) {
+          raw = localStorage.getItem(PREFIX + old);
+          if (raw) { sourceId = old; break; }
+        }
+      }
+    } catch { return; }
     if (!raw) return;
     try {
       const o = JSON.parse(raw);
@@ -89,6 +117,11 @@ export class NoteStore {
       for (const [k, v] of Object.entries(o.vars || {})) this.vars.set(k, v);
       for (const [k, v] of Object.entries(o.types || {})) this.types.set(k, v);
       this.structs = Array.isArray(o.structs) ? o.structs : [];
+      if (sourceId !== this.id) {
+        /* Copy, do not delete. The old version can still be opened safely, and
+           a failed write never destroys the only copy of the user's notes. */
+        if (this.save()) this.migratedFrom = sourceId;
+      }
     } catch { /* 壊れていたら無かったことにする（消しはしない） */ }
   }
 

@@ -688,20 +688,30 @@ function delegatedAccessor(model, insns) {
   if (addr == null) return null;
   const args = model.argRegs || new Set();
   const takesValue = args.has ? args.has(2) : Array.from(args || []).includes(2);
+  /*
+   * ARC property helper へ tail-call する薄い accessor では、x2/x3 はこの関数自身の
+   * 命令に現れないことがある。その場合 argRegs だけで getter/setter を決めると
+   * `objc_setProperty*` を getter と逆判定する。既に call resolver が helper 名を
+   * 確定しているなら、その ABI を優先する。
+   */
+  const tailCall = (model.calls || []).find((c) => c.row === tail.row && c.name);
+  let kind = takesValue ? 'write' : 'read';
+  if (tailCall && /objc_setProperty/.test(tailCall.name)) kind = 'write';
+  else if (tailCall && /objc_getProperty/.test(tailCall.name)) kind = 'read';
   return {
-    kind: takesValue ? 'write' : 'read',
+    kind,
     location: {
       base: 'x0', disp: null, size: 8, stack: false,
       key: 'x0@iv' + addr.toString(), indexAddr: addr, self: true,
     },
     from: null,
     steps: [],
-    store: { row: tail.row, address: tail.address, reg: takesValue ? 'x2' : 'x0' },
-    register: takesValue ? 'x2' : 'x0',
+    store: { row: tail.row, address: tail.address, reg: kind === 'write' ? 'x2' : 'x0' },
+    register: kind === 'write' ? 'x2' : 'x0',
     delegated: true,
     confidence: SCORE.high,
     level: levelOf(SCORE.high),
-    evidence: [ev(takesValue ? 'store' : 'load', tail.row, { base: 'x0', disp: null })],
+    evidence: [ev(kind === 'write' ? 'store' : 'load', tail.row, { base: 'x0', disp: null })],
   };
 }
 
@@ -738,7 +748,14 @@ function plainAccessors(model, insns, already, self) {
     });
   }
 
-  /* 読み出し: 読んだ値がそのまま戻り値（x0）になっている。 */
+  /* 読み出し: 読んだ値がそのまま戻り値（x0）になっている。
+   * lazy getter は「無ければ作って同じフィールドへ保存」もするため、同じ場所の
+   * write/move が既にあっても return-read を消してはいけない。read 同士だけ重複排除する。
+   */
+  const readCovered = new Set();
+  for (const u of already.concat(out)) {
+    if (u.kind === 'read' && u.location && u.location.key) readCovered.add(u.location.key);
+  }
   const returns = insns.filter((i) => i.isReturn ||
     (i.isBranch && !i.isConditional && i.mnemonic.toLowerCase() === 'b'));
   for (const r of returns) {
@@ -749,8 +766,8 @@ function plainAccessors(model, insns, already, self) {
       if (!insn.writes.includes(want)) continue;
       if (insn.memory && insn.memory.kind === 'load') {
         const loc = locationKey(insn.memory);
-        if (!loc || covered.has(loc) || insn.memory.stack) break;
-        covered.add(loc);
+        if (!loc || readCovered.has(loc) || insn.memory.stack) break;
+        readCovered.add(loc);
         out.push({
           kind: 'read',
           location: {

@@ -1152,6 +1152,31 @@ test('FLOW: 別の場所へ移しているだけなら「往復」と言わな�
   ok(u.confidence < 1);
 });
 
+test('FLOW: ARC property helper への tail-call setter を getter と逆判定しない', () => {
+  const m = build([
+    'adrp x8, #0x100004000',
+    'ldrsw x3, [x8, #0x20]',
+    'b #0x100000100',
+  ], { '0x100000100': '_objc_setProperty_nonatomic_copy' });
+  const ups = findValueUpdates(m);
+  eq(ups.length, 1, '薄い property setter を拾えていない');
+  eq(ups[0].kind, 'write', 'objc_setProperty* を getter と逆判定している');
+  ok(ups[0].location.indexAddr != null, 'ivar offset variable の場所を失っている');
+});
+
+test('FLOW: lazy getter は同じ field への書き込みがあっても return-read を残す', () => {
+  const m = build([
+    'mov x19, x0',
+    'ldr x8, [x19, #0x10]',
+    'str x0, [x19, #0x10]',
+    'ldr x0, [x19, #0x10]',
+    'ret',
+  ]);
+  const ups = findValueUpdates(m).filter((u) => u.location && u.location.disp === 0x10n);
+  ok(ups.some((u) => u.kind === 'read'), '返り値として読む getter の事実が write/move に消されている');
+  ok(ups.some((u) => u.kind === 'write' || u.kind === 'move'), 'lazy 初期化の書き込みまで消している');
+});
+
 test('FLOW: 掛け算をはさむ計算も追える（ダメージ計算の形）', () => {
   const m = build([
     'ldr w8, [x0, #0x10]',
@@ -1687,6 +1712,9 @@ test('FIELDS: [x0, #0x20] を self の hp として解決できる', async () =>
   // 別のレジスタ経由は「self とは限らない」ので確定させない
   const viaX19 = fields.resolveAccess({ base: 'x19', disp: 0x20n }, 'BattleManager');
   ok(viaX19 && viaX19.certain === false, 'self でないものを self と言い切っている');
+  // dataflow が x19 に self を持ち回っていることまで証明した場合は、x0 と同じく確定できる。
+  const provenX19 = fields.resolveAccess({ base: 'x19', disp: 0x20n, self: true }, 'BattleManager');
+  ok(provenX19 && provenX19.certain === true, 'self 追跡済みのレジスタを未確定に戻している');
   eq(fields.resolveAccess({ base: 'x8', disp: 0x20n }, 'BattleManager'), null,
     '関係のないレジスタまで self 扱いしている');
   eq(fields.resolveAccess({ base: 'x0', disp: 0x99n }, 'BattleManager'), null,
@@ -3645,6 +3673,70 @@ test('NAMES: fingerprintは同名同サイズの別内容・別sliceを分離す
   const otherSlice = await noteKeyFor(file(1), info, 1);
   ok(a !== b, '同名同サイズの別binaryが同じkeyになった');
   ok(a !== otherSlice, 'Fat binaryのactive sliceがkeyに入っていない');
+});
+
+test('NAMES: fingerprint導入前のメモを新しいkeyへ安全に移す', async () => {
+  const saved = globalThis.localStorage;
+  const mem = new Map();
+  globalThis.localStorage = {
+    getItem: (k) => mem.has(k) ? mem.get(k) : null,
+    setItem: (k, v) => { mem.set(k, String(v)); },
+    removeItem: (k) => { mem.delete(k); },
+  };
+  try {
+    const { NoteStore, legacyNoteKeyFor } = await import('../js/names.js');
+    const file = { name: 'game.bin', size: 1234 };
+    const info = { slices: [{ info: { uuid: 'ABC-123' } }] };
+    const old = legacyNoteKeyFor(file, info);
+    eq(old, 'game.bin|1234|ABC-123');
+    mem.set('hex.notes.' + old, JSON.stringify({
+      v: 1, names: { '4096': 'hpUpdate' }, comments: { '4100': 'old note' },
+      vars: {}, types: {}, structs: [],
+    }));
+    const store = new NoteStore('v2|new-fingerprint', [old]);
+    eq(store.nameOf(4096n), 'hpUpdate');
+    eq(store.comment(4100n), 'old note');
+    eq(store.migratedFrom, old);
+    ok(mem.has('hex.notes.v2|new-fingerprint'), '新形式へコピーされていない');
+    ok(mem.has('hex.notes.' + old), '移行時に旧データを消している');
+  } finally {
+    if (saved === undefined) delete globalThis.localStorage;
+    else globalThis.localStorage = saved;
+  }
+});
+
+test('SCRIPT: Emulatorはclone可能なhandle RPCで操作できる', async () => {
+  const { createApi } = await import('../js/script.js');
+  const region = { id: 'text', vmAddr: 0x1000n, size: 0x100n, exec: true };
+  const app = {
+    codeRegion: () => region,
+    store: { get(k) {
+      if (k === 'regions') return [region];
+      if (k === 'file') return { size: 0x1000 };
+      if (k === 'fileInfo') return { slices: [] };
+      return null;
+    } },
+    currentSlice: () => null,
+    backend: {
+      readAt: async (_addr, len) => ({ found: true, bytes: new Uint8Array(len) }),
+      fetchChunk: async () => ({ mn: ['ret'], ops: [''] }),
+    },
+    symbols: { nameAt: () => null, label: () => null, functionList: () => [] },
+  };
+  const { api } = createApi(app, () => {});
+  const created = api.emulatorCreate(0x1000n, [7n]);
+  ok(created.id && typeof created.id === 'string');
+  eq(created.state.x0, 7n);
+  ok(!Object.values(created).some((v) => typeof v === 'function'), '関数をsandboxへ返している');
+  structuredClone(created);
+  eq(api.emulatorSetRegister(created.id, 'x1', 99n), 99n);
+  eq(api.emulatorGetRegister(created.id, 'x1'), 99n);
+  api.emulatorAddBreakpoint(created.id, 0x1010n);
+  eq(api.emulatorBreakpoints(created.id)[0], 0x1010n);
+  ok(api.emulatorDestroy(created.id));
+  let failed = false;
+  try { api.emulatorState(created.id); } catch { failed = true; }
+  ok(failed, 'destroy後のhandleがまだ使える');
 });
 
 test('IL2CPP: 検証できたCodeRegistrationだけMethod→addressへ結ぶ', async () => {
