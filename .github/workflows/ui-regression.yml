@@ -1,0 +1,64 @@
+name: UI regression
+
+on:
+  pull_request:
+    paths:
+      - 'index.html'
+      - 'css/**'
+      - 'js/app.js'
+      - 'js/ui.js'
+      - 'js/ux.js'
+      - 'js/ui/**'
+      - 'js/panels.js'
+      - 'js/tools.js'
+      - 'js/viewer.js'
+      - 'js/graphview.js'
+      - 'tests/browser.mjs'
+      - 'tests/ui/**'
+      - 'tests/ux.mjs'
+      - 'package.json'
+      - '.github/workflows/ui-regression.yml'
+  workflow_dispatch:
+
+jobs:
+  architecture:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm run ui:test
+
+  browser-matrix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install Playwright engines
+        run: |
+          npm install --no-save playwright
+          npx playwright install-deps webkit
+          npx playwright install chromium webkit
+      - name: Run existing browser regression
+        run: npm run browser
+      - name: Run UI viewport matrix
+        env:
+          CI: '1'
+          UI_SHOTS: tests/ui-shots
+        run: npm run ui:browser
+      - name: Verify screenshot audit
+        run: |
+          test -d tests/ui-shots
+          test "$(find tests/ui-shots -type f -name '*.png' | wc -l)" -ge 30
+      - name: Upload screenshot audit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-screenshot-audit
+          path: tests/ui-shots
+          if-no-files-found: error
+          retention-days: 7

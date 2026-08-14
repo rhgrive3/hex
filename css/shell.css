@@ -1,0 +1,142 @@
+.product-ui-ready .app {
+  min-width: 0;
+  min-height: var(--ui-visual-height);
+  background: var(--ui-bg);
+}
+
+/* The surviving file action is part of the product shell on every layout, not just phone. */
+.product-ui-ready .titlebar .tb-btn {
+  min-height: var(--ui-touch);
+  min-width: var(--ui-touch);
+}
+
+.product-ui-ready .toolbar,
+.product-ui-ready .nav-history {
+  display: none !important;
+}
+.product-ui-ready .ui-code-route > .toolbar {
+  display: flex !important;
+  flex: 0 0 auto;
+  justify-content: flex-start;
+  overflow: visible;
+  padding-block: 4px;
+}
+.product-ui-ready .ui-code-route > .toolbar .tb-spacer { display: none; }
+
+.product-ui-ready .ui-product-chrome {
+  position: sticky;
+  top: 0;
+  z-index: var(--ui-z-sticky);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--ui-space-2);
+  align-items: center;
+  flex: 0 0 auto;
+  min-height: 52px;
+  padding: 6px max(var(--ui-space-3), var(--ui-safe-right)) 6px max(var(--ui-space-3), var(--ui-safe-left));
+  border-bottom: 1px solid var(--ui-border);
+  background: color-mix(in srgb, var(--ui-bg) 92%, transparent);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+.product-ui-ready .ui-command-center { display: flex; min-width: 0; gap: var(--ui-space-2); }
+.product-ui-ready .ui-global-command,
+.product-ui-ready .ui-command-input,
+.product-ui-ready .ui-search-field {
+  width: 100%;
+  min-width: 0;
+  min-height: var(--ui-touch);
+  padding: 0 var(--ui-space-3);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-md);
+  background: var(--ui-surface);
+  color: var(--ui-text);
+}
+.product-ui-ready .ui-command-go,
+.product-ui-ready .ui-more-button {
+  min-width: var(--ui-touch);
+  min-height: var(--ui-touch);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-md);
+  background: var(--ui-surface);
+  color: var(--ui-text);
+}
+
+.product-ui-ready .ui-route-host {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: var(--ui-space-5) max(var(--ui-space-4), var(--ui-safe-right)) calc(var(--ui-space-10) + var(--ui-safe-bottom)) max(var(--ui-space-4), var(--ui-safe-left));
+}
+
+.product-ui-ready .ui-screen-route > .addrbar,
+.product-ui-ready .ui-screen-route > .colhead,
+.product-ui-ready .ui-screen-route > .viewwrap,
+.product-ui-ready .ui-screen-route > .statusbar,
+.product-ui-ready .ui-screen-route > .selbar {
+  display: none !important;
+}
+
+.product-ui-ready .ui-code-route > .ui-route-host { display: none !important; }
+
+.product-ui-ready .ui-bottom-nav {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: var(--ui-z-sticky);
+  display: none;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 2px;
+  padding: 5px max(6px, var(--ui-safe-right)) max(5px, var(--ui-safe-bottom)) max(6px, var(--ui-safe-left));
+  border-top: 1px solid var(--ui-border);
+  background: color-mix(in srgb, var(--ui-surface) 94%, transparent);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+}
+
+.product-ui-ready .ui-nav-item {
+  min-width: 0;
+  min-height: 48px;
+  border: 0;
+  border-radius: var(--ui-radius-sm);
+  background: transparent;
+  color: var(--ui-text-muted);
+  white-space: pre-line;
+  line-height: 1.1;
+  font-size: var(--ui-font-xs);
+}
+.product-ui-ready .ui-nav-item[aria-current="page"] { background: var(--ui-accent-soft); color: var(--ui-accent-strong); font-weight: 700; }
+
+@media (min-width: 900px) {
+  .product-ui-ready .app {
+    padding-left: 76px;
+  }
+  .product-ui-ready .ui-bottom-nav {
+    display: grid;
+    left: max(8px, var(--ui-safe-left));
+    right: auto;
+    top: 50%;
+    bottom: auto;
+    width: 60px;
+    grid-template-columns: 1fr;
+    transform: translateY(-50%);
+    padding: 4px;
+    border: 1px solid var(--ui-border);
+    border-radius: var(--ui-radius-md);
+    box-shadow: var(--ui-shadow);
+  }
+  .product-ui-ready .ui-nav-item {
+    min-height: 54px;
+    padding-inline: 3px;
+    font-size: 11px;
+  }
+  .product-ui-ready .ui-route-host {
+    max-width: var(--ui-content);
+    width: 100%;
+    margin-inline: auto;
+  }
+}
