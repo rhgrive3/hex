@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
+import { pathToFileURL } from 'node:url';
 import { openBinary, auditBinary, fingerprintImage } from '../js/binary/index.js';
 
-function makeSectionlessElf64Fixture() {
+export function makeSectionlessElf64Fixture() {
   const b = new Uint8Array(0x500);
   const v = new DataView(b.buffer);
   const w16=(o,x)=>v.setUint16(o,x,true), w32=(o,x)=>v.setUint32(o,x,true), w64=(o,x)=>v.setBigUint64(o,BigInt(x),true), wi64=(o,x)=>v.setBigInt64(o,BigInt(x),true);
@@ -26,18 +27,20 @@ function makeSectionlessElf64Fixture() {
   return b;
 }
 
-const image=openBinary(makeSectionlessElf64Fixture());
-assert.equal(image.format,'elf');
-assert.equal(image.sections.length,0);
-assert.equal(image.entrypoint,0x400180n);
-assert.ok(image.libraries.includes('libc.so.6'));
-const imp=image.imports.find((x)=>x.name==='puts');
-assert.ok(imp);
-assert.equal(imp.source,'PT_DYNAMIC');
-assert.equal(imp.sites?.[0]?.address,0x400420n);
-assert.equal(image.relocations.length,1);
-assert.equal(image.metadata.programDynamic?.sectionless,true);
-assert.equal(image.metadata.programDynamic?.symbols,2);
-assert.equal(auditBinary(image).errors,0);
-assert.ok(fingerprintImage(image).bytes>0);
-console.log('universal-binary-sectionless: PASS');
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const image=openBinary(makeSectionlessElf64Fixture());
+  assert.equal(image.format,'elf');
+  assert.equal(image.sections.length,0);
+  assert.equal(image.entrypoint,0x400180n);
+  assert.ok(image.libraries.includes('libc.so.6'));
+  const imp=image.imports.find((x)=>x.name==='puts');
+  assert.ok(imp);
+  assert.equal(imp.source,'PT_DYNAMIC');
+  assert.equal(imp.sites?.[0]?.address,0x400420n);
+  assert.equal(image.relocations.length,1);
+  assert.equal(image.metadata.programDynamic?.sectionless,true);
+  assert.equal(image.metadata.programDynamic?.symbols,2);
+  assert.equal(auditBinary(image).errors,0);
+  assert.ok(fingerprintImage(image).bytes>0);
+  console.log('universal-binary-sectionless: PASS');
+}

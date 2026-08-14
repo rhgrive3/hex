@@ -12,7 +12,12 @@ function normalizePerms(p) {
 
 export class BinaryImage {
   constructor(input, meta = {}) {
-    this.bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
+    if (input == null) this.bytes = null;
+    else if (input instanceof Uint8Array) this.bytes = input;
+    else if (input instanceof ArrayBuffer || ArrayBuffer.isView(input)) this.bytes = new Uint8Array(input.buffer || input, input.byteOffset || 0, input.byteLength);
+    else if (input.__binaryByteBacking === true) this.bytes = input;
+    else throw new TypeError('BinaryImage expects bytes or a binary byte backing');
+    this.source = meta.source || null;
     this.format = meta.format || 'unknown';
     this.arch = meta.arch || 'unknown';
     this.bits = meta.bits || 0;
@@ -22,7 +27,7 @@ export class BinaryImage {
     this.imageBase = bigintOrNull(meta.imageBase) ?? 0n;
     this.entrypoint = bigintOrNull(meta.entrypoint);
     this.fileOffset = bigintOrNull(meta.fileOffset) ?? 0n;
-    this.fileSize = bigintOrNull(meta.fileSize) ?? BigInt(this.bytes.length);
+    this.fileSize = bigintOrNull(meta.fileSize) ?? (this.bytes ? BigInt(this.bytes.length) : this.source?.size ?? 0n);
     this.segments = [];
     this.sections = [];
     this.imports = [];
@@ -105,12 +110,31 @@ export class BinaryImage {
   }
 
   readVirtual(address, size) {
+    if (!this.bytes) return null;
     const off = this.addressToOffset(address);
     if (off == null) return null;
     const o = Number(off);
     const n = Number(size);
-    if (!Number.isSafeInteger(o) || !Number.isSafeInteger(n) || o < 0 || n < 0 || o + n > this.bytes.length) return null;
+    if (!Number.isSafeInteger(o) || !Number.isSafeInteger(n) || o < 0 || n < 0 || o > this.bytes.length || n > this.bytes.length - o) return null;
     return this.bytes.subarray(o, o + n);
+  }
+
+  async readVirtualAsync(address, size) {
+    const resident = this.readVirtual(address, size);
+    if (resident) return resident;
+    if (!this.source) return null;
+    const off = this.addressToOffset(address);
+    if (off == null) return null;
+    const n = typeof size === 'bigint' ? size : BigInt(size);
+    if (n < 0n || off < 0n || off > this.fileSize || n > this.fileSize - off) return null;
+    return this.source.readExactly(off, n);
+  }
+
+  attachSource(source, { discardBytes = false } = {}) {
+    this.source = source;
+    this.fileSize = source.size;
+    if (discardBytes) this.bytes = null;
+    return this;
   }
 
   finalize() {
