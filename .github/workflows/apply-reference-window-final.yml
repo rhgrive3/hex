@@ -1,0 +1,29 @@
+name: Apply final reference window
+
+on:
+  push:
+    branches: [accuracy-ywp-tsumtsum-20260814]
+    paths: ['.github/workflows/apply-reference-window-final.yml']
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: accuracy-ywp-tsumtsum-20260814
+      - name: Apply measured setting and remove one-off workflows
+        run: |
+          set -euo pipefail
+          sed -Ei 's/^const PAIR_WINDOW = [0-9]+;/const PAIR_WINDOW = 256;/' js/worker.js
+          grep -q '^const PAIR_WINDOW = 256;' js/worker.js
+          rm -f .github/workflows/refs-tune.yml
+          rm -f .github/workflows/apply-reference-window-final.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add js/worker.js .github/workflows
+          git commit -m 'Tune reference recovery across real binaries'
+          git push origin HEAD:accuracy-ywp-tsumtsum-20260814
