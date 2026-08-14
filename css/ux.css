@@ -1,0 +1,92 @@
+/* Front-end interaction refinements layered over app.css. */
+
+.ux-source-action { display: none !important; }
+
+.ux-v2 .toolbar {
+  gap: 8px;
+  scrollbar-width: none;
+}
+.ux-v2 .toolbar::-webkit-scrollbar { display: none; }
+
+.ux-v2 .workspace-nav {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+  padding: 2px;
+  border-radius: 10px;
+  background: var(--fill);
+}
+
+.ux-v2 .workspace-nav .tb-btn {
+  min-width: 0;
+  min-height: 34px;
+  padding: 6px 11px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--label);
+}
+
+.ux-v2 .workspace-nav .tb-btn:not(:disabled):active {
+  background: var(--surface);
+}
+
+.ux-v2 #btn-investigate.ux-primary:not(:disabled) {
+  background: var(--accent);
+  color: #fff;
+  font-weight: 700;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, .12);
+}
+
+.ux-v2 #btn-investigate.ux-primary:disabled,
+.ux-v2 .workspace-nav .ux-hub:disabled {
+  color: var(--label-3);
+  background: transparent;
+  box-shadow: none;
+}
+
+.ux-v2 .ux-hub::after {
+  content: "⌄";
+  margin-left: 5px;
+  color: var(--label-3);
+  font-size: 10px;
+  line-height: 1;
+}
+
+/* A menu may be opened next to a control close to Safari's browser chrome.
+   Bound its own scrolling area instead of letting actions escape the viewport. */
+#overlays .menu {
+  max-width: calc(100vw - 16px);
+  max-height: min(72dvh, calc(100dvh - 16px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.backdrop {
+  -webkit-tap-highlight-color: transparent;
+}
+
+button:focus-visible,
+[role="button"]:focus-visible,
+.list li.tappable:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (pointer: coarse) {
+  .ux-v2 .workspace-nav .tb-btn { min-height: 42px; }
+  #overlays .menu button { min-height: 48px; }
+}
+
+@media (max-width: 699px) {
+  .ux-v2 .toolbar { padding: 5px 6px; gap: 5px; }
+  .ux-v2 .workspace-nav .tb-btn { padding-left: 9px; padding-right: 9px; }
+  .ux-v2 .segmented .seg { padding-left: 10px; padding-right: 10px; }
+  .ux-v2 .tb-btn.pill { padding-left: 10px; padding-right: 10px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #overlays .menu { scroll-behavior: auto; }
+}

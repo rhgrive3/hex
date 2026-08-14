@@ -285,14 +285,61 @@ export function bigValue(text, onTap) {
 
 let openMenu = null;
 
+function viewportRect() {
+  const vv = window.visualViewport;
+  if (!vv) return { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
+  return { left: vv.offsetLeft, top: vv.offsetTop, width: vv.width, height: vv.height };
+}
+
+function armMenuDismiss(entry) {
+  const outside = (e) => {
+    if (!openMenu || openMenu !== entry || entry.m.contains(e.target)) return;
+    // Native context menus consume the first outside tap. Do the same here so
+    // removing the transparent backdrop cannot accidentally activate a button
+    // underneath it on iOS Safari.
+    if (e.cancelable) e.preventDefault();
+    e.stopPropagation();
+    closeMenu();
+  };
+  const key = (e) => {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      closeMenu();
+    }
+  };
+  const move = () => closeMenu();
+
+  document.addEventListener('pointerdown', outside, true);
+  document.addEventListener('keydown', key, true);
+  window.addEventListener('resize', move, { passive: true });
+  window.addEventListener('orientationchange', move, { passive: true });
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', move, { passive: true });
+    window.visualViewport.addEventListener('scroll', move, { passive: true });
+  }
+
+  entry.cleanup = () => {
+    document.removeEventListener('pointerdown', outside, true);
+    document.removeEventListener('keydown', key, true);
+    window.removeEventListener('resize', move);
+    window.removeEventListener('orientationchange', move);
+    if (window.visualViewport) {
+      window.visualViewport.removeEventListener('resize', move);
+      window.visualViewport.removeEventListener('scroll', move);
+    }
+  };
+}
+
 export function menu(items, x, y) {
   closeMenu();
   const backdrop = el('div', 'backdrop');
   backdrop.style.background = 'transparent';
   const m = el('div', 'menu');
+  m.setAttribute('role', 'menu');
   for (const it of items) {
     if (it === '-') { m.append(el('hr')); continue; }
     const b = button(it.label, null, () => { closeMenu(); it.action(); });
+    b.setAttribute('role', 'menuitem');
     /* まだ押せないものは、消さずに「今は押せない」と見せる（項目が動くと迷うため）。 */
     if (it.disabled) { b.disabled = true; b.classList.add('is-disabled'); }
     m.append(b);
@@ -300,23 +347,32 @@ export function menu(items, x, y) {
   overlays().append(backdrop, m);
 
   const r = m.getBoundingClientRect();
+  const vv = viewportRect();
   const pad = 8;
-  let left = Math.min(Math.max(pad, x - r.width / 2), window.innerWidth - r.width - pad);
+  const maxLeft = vv.left + vv.width - r.width - pad;
+  const maxTop = vv.top + vv.height - r.height - pad;
+  let left = Math.min(Math.max(vv.left + pad, x - r.width / 2), Math.max(vv.left + pad, maxLeft));
   let top = y + 8;
-  if (top + r.height > window.innerHeight - pad) top = Math.max(pad, y - r.height - 8);
+  if (top > maxTop) top = Math.max(vv.top + pad, y - r.height - 8);
   m.style.left = Math.round(left) + 'px';
   m.style.top = Math.round(top) + 'px';
 
-  const close = () => closeMenu();
-  backdrop.addEventListener('click', close);
-  openMenu = { m, backdrop };
+  const entry = { m, backdrop, cleanup: null };
+  openMenu = entry;
+  // Keep the backdrop click as a simple fallback, but capture pointerdown at
+  // document level too. Safari can occasionally retarget a tap during a
+  // long-press/callout transition, which used to leave this menu stuck open.
+  backdrop.addEventListener('click', () => closeMenu());
+  armMenuDismiss(entry);
 }
 
 export function closeMenu() {
   if (!openMenu) return false;
-  openMenu.m.remove();
-  openMenu.backdrop.remove();
+  const entry = openMenu;
   openMenu = null;
+  if (entry.cleanup) entry.cleanup();
+  entry.m.remove();
+  entry.backdrop.remove();
   return true;
 }
 
@@ -343,6 +399,8 @@ let toastEl = null, toastTimer = 0;
 export function toast(text) {
   if (!toastEl) {
     toastEl = el('div', 'toast');
+    toastEl.setAttribute('role', 'status');
+    toastEl.setAttribute('aria-live', 'polite');
     overlays().append(toastEl);
   }
   toastEl.textContent = text;
@@ -352,37 +410,79 @@ export function toast(text) {
 
 /* ── Clipboard ──────────────────────────────────────────────── */
 
+async function modernCopy(text) {
+  if (!navigator.clipboard || !navigator.clipboard.writeText || !window.isSecureContext) return false;
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function copyText(text, label) {
   const s = String(text);
-  if (navigator.clipboard && window.isSecureContext) {
-    try {
-      await navigator.clipboard.writeText(s);
-      toast(t('toast.copied', { what: label || '' }));
-      return true;
-    } catch { /* no gesture left, or permission denied — try the old way */ }
-  }
-  if (legacyCopy(s)) {
-    toast(t('toast.copied', { what: label || '' }));
-    return true;
-  }
-  toast(t('err.copyFailed'));
-  return false;
+  const ok = await modernCopy(s) || legacyCopy(s);
+  toast(ok ? t('toast.copied', { what: label || '' }) : t('err.copyFailed'));
+  return ok;
 }
 
 function legacyCopy(text) {
+  let ta = null;
+  const active = document.activeElement;
+  const selection = window.getSelection ? window.getSelection() : null;
+  const ranges = [];
+  if (selection) {
+    for (let i = 0; i < selection.rangeCount; i++) ranges.push(selection.getRangeAt(i).cloneRange());
+  }
+  const scrollX = window.scrollX || 0;
+  const scrollY = window.scrollY || 0;
+
   try {
-    const ta = document.createElement('textarea');
+    ta = document.createElement('textarea');
     ta.value = text;
-    ta.setAttribute('readonly', '');
-    ta.style.position = 'fixed';
-    ta.style.opacity = '0';
+    ta.setAttribute('aria-hidden', 'true');
+    ta.setAttribute('autocomplete', 'off');
+    ta.setAttribute('autocorrect', 'off');
+    ta.setAttribute('autocapitalize', 'off');
+    ta.setAttribute('spellcheck', 'false');
+    // iOS Safari is less reliable when the selection lives in a readonly or
+    // display:none/fully transparent control. Keep a 1px editable control in
+    // the rendered tree, far outside the viewport, for the duration of copy.
+    Object.assign(ta.style, {
+      position: 'fixed',
+      left: '-9999px',
+      top: '0',
+      width: '1px',
+      height: '1px',
+      padding: '0',
+      border: '0',
+      opacity: '0.01',
+      fontSize: '16px',
+      pointerEvents: 'none',
+    });
     document.body.appendChild(ta);
+    try { ta.focus({ preventScroll: true }); } catch { ta.focus(); }
     ta.select();
-    ta.setSelectionRange(0, text.length);
-    const ok = document.execCommand('copy');
-    ta.remove();
-    return !!ok;
-  } catch { return false; }
+    ta.setSelectionRange(0, ta.value.length);
+    return !!document.execCommand('copy');
+  } catch {
+    return false;
+  } finally {
+    if (ta) ta.remove();
+    if (selection) {
+      try {
+        selection.removeAllRanges();
+        for (const range of ranges) selection.addRange(range);
+      } catch { /* selection restoration is best effort */ }
+    }
+    if (active && active !== document.body && typeof active.focus === 'function') {
+      try { active.focus({ preventScroll: true }); } catch { /* best effort */ }
+    }
+    if (typeof window.scrollTo === 'function') {
+      try { window.scrollTo(scrollX, scrollY); } catch { /* best effort */ }
+    }
+  }
 }
 
 /**
@@ -405,7 +505,7 @@ export async function copyTextLazy(textPromise, label) {
       toast(t('toast.copied', { what: label || '' }));
       return true;
     } catch {
-      /* Older engines only accept a resolved value; fall through. */
+      /* Older WebKit builds reject a promised ClipboardItem; fall through. */
     }
   }
   let text;
