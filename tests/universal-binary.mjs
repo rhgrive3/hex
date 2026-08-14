@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   ByteView, detectBinary, openBinary, auditBinary,
-  fingerprintFunction, fingerprintImage,
+  fingerprintFunction, fingerprintImage, fnv1a64, fingerprintBytes,
 } from '../js/binary/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -21,6 +21,54 @@ function testDetection() {
   assert.equal(detectBinary(Uint8Array.from([0x4d,0x5a,0,0])).format, 'pe');
   assert.equal(detectBinary(Uint8Array.from([0xcf,0xfa,0xed,0xfe])).format, 'macho');
   assert.equal(detectBinary(Uint8Array.from([1,2,3,4])).format, 'unknown');
+}
+
+function testFingerprint() {
+  const hello = new TextEncoder().encode('hello');
+  assert.equal(fnv1a64(new Uint8Array()), 0xcbf29ce484222325n);
+  assert.equal(fingerprintBytes(hello), 'a430d84680aabd0b');
+}
+
+function makeMachO64Fixture() {
+  const b = new Uint8Array(0x400);
+  const v = new DataView(b.buffer);
+  const w16=(o,x)=>v.setUint16(o,x,true), w32=(o,x)=>v.setUint32(o,x,true), wi32=(o,x)=>v.setInt32(o,x,true), w64=(o,x)=>v.setBigUint64(o,BigInt(x),true);
+  const text=(o,s,n)=>{const x=new TextEncoder().encode(s); b.set(x.subarray(0,n),o)};
+  w32(0,0xfeedfacf); wi32(4,0x0100000c); wi32(8,0); w32(12,2); w32(16,4); w32(20,248); w32(24,0); w32(28,0);
+  let p=32;
+  w32(p,0x19); w32(p+4,152); text(p+8,'__TEXT',16); w64(p+24,0x100000000n); w64(p+32,0x1000n); w64(p+40,0); w64(p+48,0x400n); wi32(p+56,5); wi32(p+60,5); w32(p+64,1); w32(p+68,0);
+  const q=p+72; text(q,'__text',16); text(q+16,'__TEXT',16); w64(q+32,0x100000300n); w64(q+40,0x20n); w32(q+48,0x300); w32(q+52,2); w32(q+56,0); w32(q+60,0); w32(q+64,0x80000400); w32(q+68,0); w32(q+72,0); w32(q+76,0);
+  p += 152;
+  w32(p,0x0c); w32(p+4,56); w32(p+8,24); w32(p+12,0); w32(p+16,0); w32(p+20,0); text(p+24,'/usr/lib/libSystem.B.dylib\0',32);
+  p += 56;
+  w32(p,0x26); w32(p+4,16); w32(p+8,0x280); w32(p+12,4);
+  p += 16;
+  w32(p,0x80000028); w32(p+4,24); w64(p+8,0x300n); w64(p+16,0n);
+  b.set([0x80,0x06,0x10,0x00],0x280);
+  for(let x=0x300;x<0x320;x+=4) w32(x,0xd65f03c0);
+  return b;
+}
+
+function makeFatMachOFixture() {
+  const thin=makeMachO64Fixture();
+  const b=new Uint8Array(0x100+thin.length);
+  const v=new DataView(b.buffer);
+  v.setUint32(0,0xcafebabe,false); v.setUint32(4,1,false);
+  v.setUint32(8,0x0100000c,false); v.setUint32(12,0,false); v.setUint32(16,0x100,false); v.setUint32(20,thin.length,false); v.setUint32(24,2,false);
+  b.set(thin,0x100);
+  return b;
+}
+
+function testMachO() {
+  const image=openBinary(makeMachO64Fixture());
+  assert.equal(image.format,'macho'); assert.equal(image.arch,'arm64'); assert.equal(image.bits,64);
+  assert.equal(image.sections.length,1); assert.equal(image.libraries[0],'/usr/lib/libSystem.B.dylib');
+  assert.equal(image.entrypoint,0x100000300n); assert.equal(image.addressToOffset(image.entrypoint),0x300n);
+  assert.deepEqual(image.functions.map((x)=>x.address),[0x100000300n,0x100000310n]);
+  assert.ok(image.functions[0].sources?.includes('entrypoint')); assert.ok(image.functions[0].sources?.includes('function_starts'));
+  assert.equal(auditBinary(image).errors,0);
+  const fat=openBinary(makeFatMachOFixture());
+  assert.equal(fat.arch,'arm64'); assert.equal(fat.metadata.fat.selected.offset,0x100n); assert.equal(fat.functions.length,2);
 }
 
 function makeElf64Fixture() {
@@ -60,7 +108,7 @@ function makePe64Fixture() {
   const section=(i,name,vsize,rva,rawSize,raw,flags)=>{const p=sec+i*40; b.set(new TextEncoder().encode(name),p); w32(p+8,vsize); w32(p+12,rva); w32(p+16,rawSize); w32(p+20,raw); w32(p+36,flags)};
   section(0,'.text',0x100,0x1000,0x200,0x200,0x60000020);
   section(1,'.idata',0x200,0x2000,0x200,0x400,0xc0000040);
-  section(2,'.pdata',0x100,0x3000,0x200,0x600,0x40000040);
+  section(2,'.pdata',0x100,0x3000,0x200,0x600,0x600,0x40000040);
   b.fill(0x90,0x200,0x210); b[0x20f]=0xc3;
   w32(0x400,0x2040); w32(0x40c,0x2080); w32(0x410,0x2060);
   w64(0x440,0x2090n); w64(0x448,0n);
@@ -113,5 +161,5 @@ function testRealMachO() {
   }
 }
 
-testReader(); testDetection(); testElf(); testPe(); testRealMachO();
+testReader(); testDetection(); testFingerprint(); testMachO(); testElf(); testPe(); testRealMachO();
 console.log('universal-binary: PASS');
