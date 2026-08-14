@@ -32,3 +32,9 @@ jobs:
         run: node tests/ai-eval/selftest.mjs
       - name: Exercise grader with example trace
         run: node tests/ai-eval/grade.mjs tests/ai-eval/results.example.jsonl /tmp/ai-eval-report.json
+      - name: Ensure release mode rejects an incomplete corpus
+        run: |
+          if node tests/ai-eval/grade.mjs tests/ai-eval/results.example.jsonl /tmp/ai-eval-partial.json --require-all; then
+            echo 'Expected --require-all to reject a one-case trace.' >&2
+            exit 1
+          fi
