@@ -16,6 +16,17 @@ export function recoverArm64ClangIdiom(root) {
       return expr.intrinsic('bit_extract', [root.left.left, root.left.right, expr.constant(width, root.bits)], Number(width || 1n), false, root.source);
     }
   }
+  // Clang lowers max(x, 0) for signed integers to:
+  //   bic w0, w0, w0, asr #31
+  // i.e. x & ~(x >>s (bits-1)). Keep the exact bitvector shape until this
+  // proof point so negative values and INT_MIN retain correct two's-complement semantics.
+  if (root.kind === 'binary' && root.op === 'and' && root.right?.kind === 'unary' && root.right.op === 'not') {
+    const shifted = root.right.arg;
+    if (shifted?.kind === 'binary' && shifted.op === 'ashr' && shifted.right?.kind === 'const'
+        && shifted.right.value === BigInt((root.bits || 64) - 1) && sameExpr(root.left, shifted.left) && isPure(root.left)) {
+      return expr.intrinsic('max', [root.left, expr.constant(0, root.bits, true)], root.bits, true, root.source, { proof: 'clang-bic-sign-mask' });
+    }
+  }
   return root;
 }
 
