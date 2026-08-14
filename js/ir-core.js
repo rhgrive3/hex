@@ -189,7 +189,24 @@ function opnd(op) {
  * 1 命令 → IR 命令の配列（ふつうは 1 つ、ldp/stp は 2 つ）。
  * 意味を付けられない命令は OP.UNKNOWN を返す。ここで嘘を作らない。
  */
-function lift(insn) {
+function callResultLocation(insn, opts) {
+  let proto = insn?.callPrototype || null;
+  if (!proto) {
+    try { proto = opts?.callPrototypeFor?.(insn.callTarget ?? null, insn) || null; } catch { proto = null; }
+  }
+  if (!proto) return null;
+  const type = String(proto.returnType || proto.ret || proto.result || '').toLowerCase();
+  const cls = String(proto.returnClass || proto.abiClass || proto.resultClass || '').toLowerCase();
+  if (proto.void === true || type === 'void' || cls === 'void') return null;
+  if (proto.indirectResult === true || cls === 'indirect') return null;
+  if (cls.includes('fp') || cls.includes('float') || cls.includes('vector') || /^(float|double|__fp16)/.test(type)) {
+    return { reg:'v0', bits:Number(proto.returnBits || proto.bits || 64) || 64 };
+  }
+  if (type || cls || proto.returnsValue === true) return { reg:'x0', bits:Number(proto.returnBits || proto.bits || 64) || 64 };
+  return null;
+}
+
+function lift(insn, opts = {}) {
   const base = (insn.mnemonic || '').toLowerCase();
   const ops = insn.ops || [];
   const at = { row: insn.row, address: insn.address, text: base + ' ' + (insn.operands || '') };
@@ -201,15 +218,20 @@ function lift(insn) {
   const flags = () => ({ dstReg: 'nzcv', dstBits: 4 });
 
   /* ── 分岐と呼び出し ── */
-  if (insn.isReturn) { push({ op: OP.RET, srcs: [{ t: 'reg', reg: 'x0', bits: 64 }] }); return out; }
+  // AAPCS64 does not define a universal return register. Without prototype
+  // evidence RET carries only control-flow semantics; consumers may recover a
+  // return value from typed reaching definitions separately.
+  if (insn.isReturn) { push({ op: OP.RET, srcs: [] }); return out; }
   if (insn.isCall) {
+    const result = callResultLocation(insn, opts);
     push({
       op: OP.CALL,
       target: insn.callTarget != null ? insn.callTarget : null,
       indirect: insn.callTarget == null,
       srcs: (insn.callTarget == null && ops[0] && ops[0].k === 'reg')
         ? [{ t: 'reg', reg: regKeyOf(ops[0]), bits: 64 }] : [],
-      dstReg: 'x0', dstBits: 64,
+      dstReg: result?.reg || null, dstBits: result?.bits || 64,
+      returnEvidence: result ? 'prototype' : null,
       clobbers: CALL_CLOBBERS,
     });
     return out;
@@ -472,11 +494,24 @@ let nextIrId = 1;
 export function buildIR(model, opts) {
   const o = opts || {};
   if (!model || !model.instructions || !model.instructions.length) return null;
-  const insns = model.instructions.length > MAX_INSTRUCTIONS
-    ? model.instructions.slice(0, MAX_INSTRUCTIONS)
-    : model.instructions;
+  const truncatedByBudget = model.instructions.length > MAX_INSTRUCTIONS;
+  const insns = truncatedByBudget ? model.instructions.slice(0, MAX_INSTRUCTIONS) : model.instructions;
 
-  const cfg = o.cfg || buildCfg(model, o);
+  // The CFG and lifted instruction universe must be identical. A full-function
+  // CFG paired with a 6000-instruction IR creates successors/PHIs whose defining
+  // instructions do not exist. Clip block metadata to the same final row and
+  // deliberately ignore a caller-supplied full CFG when the IR budget truncates.
+  const maxRow = insns.length ? insns[insns.length - 1].row : -1;
+  const cfgModel = truncatedByBudget ? {
+    ...model,
+    instructions: insns,
+    basicBlocks: (model.basicBlocks || []).filter((b) => b.startRow <= maxRow).map((b) => ({
+      ...b, endRow: Math.min(b.endRow, maxRow),
+      rows: Array.isArray(b.rows) ? b.rows.filter((r) => r <= maxRow) : b.rows,
+    })),
+    semantic: (model.semantic || []).filter((b) => b.startRow <= maxRow).map((b) => ({ ...b, endRow: Math.min(b.endRow, maxRow) })),
+  } : model;
+  const cfg = truncatedByBudget ? buildCfg(cfgModel, o) : (o.cfg || buildCfg(cfgModel, o));
   const nodes = cfg.nodes || [];
   if (!nodes.length) return null;
 
@@ -534,7 +569,7 @@ export function buildIR(model, opts) {
     const bi = rowToBlock.get(insn.row);
     if (bi == null) continue;
     let parts;
-    try { parts = lift(insn); } catch { parts = []; }
+    try { parts = lift(insn, o); } catch { parts = []; }
     for (const p of parts) {
       p.block = bi;
       p.insn = insn;

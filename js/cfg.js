@@ -36,9 +36,21 @@ export function buildCfg(model, opts) {
   const insnByRow = new Map();
   for (const i of model.instructions || []) insnByRow.set(i.row, i);
 
+  // Preserve original block indices while indexing row intervals once.
+  // Optimized/cold blocks need not be address ordered, so sort a side index and
+  // binary-search it rather than repeatedly scanning all blocks.
+  const blockIntervals = blocks.map((b, index) => ({ index, start:b.startRow, end:b.endRow }))
+    .sort((a, b) => a.start - b.start || a.end - b.end || a.index - b.index);
   const blockAtRow = (row) => {
-    for (let i = 0; i < blocks.length; i++) {
-      if (row >= blocks[i].startRow && row <= blocks[i].endRow) return i;
+    let lo = 0, hi = blockIntervals.length - 1, candidate = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (blockIntervals[mid].start <= row) { candidate = mid; lo = mid + 1; }
+      else hi = mid - 1;
+    }
+    for (let i = candidate; i >= 0 && blockIntervals[i].start <= row; i--) {
+      if (row <= blockIntervals[i].end) return blockIntervals[i].index;
+      if (blockIntervals[i].end < row && i < candidate - 1) break;
     }
     return -1;
   };
@@ -92,8 +104,10 @@ export function buildCfg(model, opts) {
         node.succ.push({ to: tblock, kind: isUncond ? EDGE.JUMP : EDGE.TAKEN, target: term.branchTarget });
       } else {
         // 関数の外へ飛んでいる（末尾呼び出しなど）。ここで道は途切れる。
-        node.succ.push({ to: -1, kind: EDGE.JUMP, target: term.branchTarget, outside: true });
-        node.isExit = true;
+        node.succ.push({ to: -1, kind: isUncond ? EDGE.JUMP : EDGE.TAKEN, target: term.branchTarget, outside: true });
+        // A conditional external target still has a local fallthrough path; it
+        // is not an unconditional function exit.
+        if (isUncond) node.isExit = true;
       }
       if (!isUncond && next >= 0) node.succ.push({ to: next, kind: EDGE.FALL });
       continue;
@@ -204,7 +218,8 @@ function classifyShapes(nodes, backEdges, model, ipdom) {
     if (merge >= 0) {
       shapes.push({
         kind: merge === a || merge === c ? 'if' : 'if-else',
-        at: n.index, thenBlock: c, elseBlock: a, merge,
+        // TAKEN is the true branch; FALL is the false branch.
+        at: n.index, thenBlock: a, elseBlock: c, merge,
         error: errorBlocks.has(a) || errorBlocks.has(c),
       });
     }
