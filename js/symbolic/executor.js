@@ -27,11 +27,33 @@ function op(name, ...args) {
       if (name === 'or' || name === 'orr') return c(a | b);
       if (name === 'xor' || name === 'eor') return c(a ^ b);
       if (name === 'shl') return c(a << b);
-      if (name === 'lshr' || name === 'ashr') return c(a >> b);
+      if (name === 'lshr') return c(a >> b);
       if (name === 'mul') return c(a * b);
     } catch { /* symbolic fallback */ }
   }
   return { kind: SYM.OP, op: name, args };
+}
+
+function binOp(name, a, b, bits = 64) {
+  const width = Math.max(1, Math.min(64, Number(bits) || 64));
+  if (a && b && a.kind === SYM.CONST && b.kind === SYM.CONST) {
+    const av = a.value, bv = b.value;
+    try {
+      let value;
+      if (name === 'add') value = av + bv;
+      else if (name === 'sub') value = av - bv;
+      else if (name === 'mul') value = av * bv;
+      else if (name === 'and') value = av & bv;
+      else if (name === 'or' || name === 'orr') value = av | bv;
+      else if (name === 'xor' || name === 'eor') value = av ^ bv;
+      else if (name === 'shl') value = av << bv;
+      else if (name === 'lshr') value = BigInt.asUintN(width, av) >> bv;
+      else if (name === 'ashr') value = BigInt.asIntN(width, av) >> bv;
+      else return op(name, a, b);
+      return c(BigInt.asUintN(width, value));
+    } catch { /* symbolic fallback */ }
+  }
+  return { kind: SYM.OP, op: name, args: [a, b] };
 }
 
 function cmp(name, a, b) { return { kind: SYM.OP, op: name, args: [a, b], boolean: true }; }
@@ -61,6 +83,7 @@ function cloneState(s) {
     block: s.block,
     prevBlock: s.prevBlock,
     memory: new Map(s.memory),
+    values: new Map(s.values),
     constraints: s.constraints.slice(),
     branches: s.branches.slice(),
     touchedFields: s.touchedFields.slice(),
@@ -107,8 +130,17 @@ function phiValue(inst, state) {
   return hit ? hit.value : (inst.incoming.length === 1 ? inst.incoming[0].value : null);
 }
 
+function loadExpression(inst, state, opts) {
+  if (!inst || !inst.loc) return unknown('missing-load-location', { instruction: inst && inst.id });
+  const key = locationKey(inst.loc);
+  if (key && state.memory.has(key)) return state.memory.get(key);
+  if (inst.loc.kind === MK.UNKNOWN) return unknown('unknown-load-alias', { instruction: inst.id });
+  return symbolicField(inst.loc, fieldName(opts, inst.loc));
+}
+
 function evalValue(value, state, ir, opts, memo, active) {
   if (!value) return unknown('missing-value');
+  if (state.values.has(value.id)) return state.values.get(value.id);
   const stateKey = value.id + '@' + state.prevBlock + '@' + state.block;
   if (memo.has(stateKey)) return memo.get(stateKey);
   if (active.has(value.id)) return unknown('symbolic-cycle', { value: value.id });
@@ -124,17 +156,15 @@ function evalValue(value, state, ir, opts, memo, active) {
       const chosen = phiValue(d, state);
       out = chosen ? evalValue(chosen, state, ir, opts, memo, active) : unknown('ambiguous-phi', { instruction: d.id });
     } else if (d.op === OP.BIN && d.args.length >= 2 && ['add', 'sub', 'and', 'or', 'xor', 'orr', 'eor', 'shl', 'lshr', 'ashr', 'mul'].includes(d.sub)) {
-      out = op(d.sub,
+      out = binOp(d.sub,
         evalValue(d.args[0].value, state, ir, opts, memo, active),
-        evalValue(d.args[1].value, state, ir, opts, memo, active));
+        evalValue(d.args[1].value, state, ir, opts, memo, active),
+        d.dst && d.dst.bits || value.bits || 64);
     } else if (d.op === OP.UN && d.args[0] && /^(sxt|uxt|fmov|neg)/.test(d.sub || '')) {
       const x = evalValue(d.args[0].value, state, ir, opts, memo, active);
-      out = d.sub === 'neg' ? op('sub', c(0n), x) : x;
+      out = d.sub === 'neg' ? binOp('sub', c(0n), x, d.dst && d.dst.bits || value.bits || 64) : x;
     } else if (d.op === OP.LOAD && d.loc) {
-      const key = locationKey(d.loc);
-      if (key && state.memory.has(key)) out = state.memory.get(key);
-      else if (d.loc.kind === MK.UNKNOWN) out = unknown('unknown-load-alias', { instruction: d.id });
-      else out = symbolicField(d.loc, fieldName(opts, d.loc));
+      out = loadExpression(d, state, opts);
     } else if (d.op === OP.SEL && d.args.length >= 2) {
       const condition = conditionFromFlags(d, state, ir, opts, memo, active);
       out = {
@@ -199,9 +229,7 @@ function successorsForBranch(ir, block, inst, addressMap) {
   if (inst.op === OP.BR) return { target: target == null ? null : target, fallthrough: null };
   if (inst.op !== OP.CBR) return { target: null, fallthrough: null };
   let fallthrough = succ.find((b) => b !== target);
-  if (target == null && succ.length === 2) {
-    return { target: null, fallthrough: null };
-  }
+  if (target == null && succ.length === 2) return { target: null, fallthrough: null };
   if (fallthrough == null && succ.length === 1 && target !== succ[0]) fallthrough = succ[0];
   return { target, fallthrough: fallthrough == null ? null : fallthrough };
 }
@@ -229,7 +257,7 @@ export function symbolicExecute(ir, opts) {
   const cancelled = opts && opts.isCancelled || (() => false);
   const deadline = Date.now() + Math.max(10, opts && opts.timeoutMs || 250);
   const addressMap = addressBlockMap(ir);
-  const queue = [{ block: ir.entry || 0, prevBlock: -1, memory: new Map(), constraints: [], branches: [], touchedFields: [], visits: new Map(), steps: 0 }];
+  const queue = [{ block: ir.entry || 0, prevBlock: -1, memory: new Map(), values: new Map(), constraints: [], branches: [], touchedFields: [], visits: new Map(), steps: 0 }];
   const paths = [];
   let branchCount = 0;
   let truncated = false;
@@ -246,10 +274,31 @@ export function symbolicExecute(ir, opts) {
     const memo = new Map();
     let transferred = false;
 
+    // PHI choice is defined by the edge entering this block. Capture it now so
+    // later descendant blocks cannot accidentally reinterpret the predecessor.
+    for (const phi of block.phis || []) {
+      if (!phi.dst) continue;
+      const value = evalValue(phi.dst, state, ir, opts, memo, new Set());
+      state.values.set(phi.dst.id, value);
+    }
+
     for (const inst of block.insts || []) {
       state.steps++;
       if (state.steps > maxSteps) { paths.push(stopResult(state, 'step-budget', inst)); transferred = true; break; }
 
+      // A load observes memory at its program point, not when its SSA value is
+      // eventually consumed. Snapshot the symbolic value immediately.
+      if (inst.op === OP.LOAD) {
+        if (!inst.dst || !inst.loc) {
+          paths.push(stopResult(state, 'unsupported-load', inst)); transferred = true; break;
+        }
+        const value = loadExpression(inst, state, opts);
+        if (value.kind === SYM.UNKNOWN) {
+          paths.push(stopResult(state, value.reason, inst)); transferred = true; break;
+        }
+        state.values.set(inst.dst.id, value);
+        continue;
+      }
       if (inst.op === OP.STORE) {
         if (!inst.loc || inst.loc.kind === MK.UNKNOWN) {
           paths.push(stopResult(state, 'unknown-store-alias', inst)); transferred = true; break;
@@ -295,8 +344,9 @@ export function symbolicExecute(ir, opts) {
         yes.branches.push({ row: inst.row, address: inst.address, taken: true, condition: expressionText(cond) });
         const no = cloneState(state);
         no.prevBlock = state.block; no.block = next.fallthrough;
-        no.constraints.push(negate(cond));
-        no.branches.push({ row: inst.row, address: inst.address, taken: false, condition: expressionText(negate(cond)) });
+        const inverse = negate(cond);
+        no.constraints.push(inverse);
+        no.branches.push({ row: inst.row, address: inst.address, taken: false, condition: expressionText(inverse) });
         queue.push(yes, no);
         transferred = true;
         break;
