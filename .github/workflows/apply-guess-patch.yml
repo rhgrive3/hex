@@ -1,0 +1,64 @@
+name: Apply function-guess patch
+
+on:
+  push:
+    branches:
+      - accuracy-ywp-tsumtsum-20260814
+    paths:
+      - .github/workflows/apply-guess-patch.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: accuracy-ywp-tsumtsum-20260814
+          fetch-depth: 0
+      - name: Patch worker function recovery
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('js/worker.js')
+          s = p.read_text()
+
+          old = """  if (slice && imageBase != null) {\n    for (const r of slice.regions || []) {"""
+          new = """  /*\n   * Metadata/vtable pointers are useful evidence, but not proof by themselves.\n   * In Swift state machines and large switch dispatchers, tables also point at\n   * internal labels.  Keep them separate until instruction-level evidence has\n   * had a chance to confirm them.\n   */\n  const dataCandidates = new Set();\n  if (slice && imageBase != null) {\n    for (const r of slice.regions || []) {"""
+          assert old in s
+          s = s.replace(old, new, 1)
+
+          old = """          if (t == null || t < lo || t >= hi || (t & 3n)) continue;\n          if (found.size < cap) found.add(t);"""
+          new = """          if (t == null || t < lo || t >= hi || (t & 3n)) continue;\n          if (dataCandidates.size < cap) dataCandidates.add(t);"""
+          assert old in s
+          s = s.replace(old, new, 1)
+
+          old = """  const conditionalTargets = new Set();\n  const directBranchTargets = new Set();\n  const noreturnTargets = slice && slice.noreturnTargets ? slice.noreturnTargets : new Set();"""
+          new = """  const conditionalTargets = new Set();\n  const directBranchTargets = new Set();\n  /* Data-table targets immediately after an indirect `br xN` are a classic\n     switch/state-machine shape.  They are only suppressed when the file has a\n     large cohort of them; isolated cases remain untouched. */\n  const indirectFallthroughData = new Set();\n  const noreturnTargets = slice && slice.noreturnTargets ? slice.noreturnTargets : new Set();"""
+          assert old in s
+          s = s.replace(old, new, 1)
+
+          old = """      const currentKind = Words.classifyWord(w);\n\n      /* Fill the 2nd/3rd instruction of recently opened tiny-function windows. */"""
+          new = """      const currentKind = Words.classifyWord(w);\n\n      if (dataCandidates.has(pc) && prevWord != null && Words.isBr(prevWord) &&\n          !looksLikePrologue(w) && !Words.isBranchImm(w) && !Words.isRet(w)) {\n        indirectFallthroughData.add(pc);\n      }\n\n      /* Fill the 2nd/3rd instruction of recently opened tiny-function windows. */"""
+          assert old in s
+          s = s.replace(old, new, 1)
+
+          old = """    return t != null && found.has(t);"""
+          new = """    return t != null && (found.has(t) || dataCandidates.has(t));"""
+          assert old in s
+          s = s.replace(old, new, 1)
+
+          old = """  const list = Array.from(found).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));"""
+          new = """  /*\n   * Add metadata-derived candidates after all stronger evidence has run.\n   * If a binary contains a dense cohort of pointers to fallthrough labels after\n   * indirect branches, those are switch/state-machine entries rather than\n   * independent functions.  Crucially, a candidate confirmed by unwind data,\n   * BL targets, prologues, or the tiny-function rules is already in `found` and\n   * is never removed.  The cohort gate avoids changing ordinary vtables.\n   */\n  const suppressIndirectFallthrough = dataCandidates.size >= 1000 &&\n    indirectFallthroughData.size >= 512 &&\n    (indirectFallthroughData.size / dataCandidates.size) >= 0.02;\n  for (const a of dataCandidates) {\n    if (found.size >= cap) break;\n    if (suppressIndirectFallthrough && indirectFallthroughData.has(a) && !found.has(a)) continue;\n    found.add(a);\n  }\n\n  const list = Array.from(found).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));"""
+          assert old in s
+          s = s.replace(old, new, 1)
+
+          p.write_text(s)
+          PY
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add js/worker.js
+          git commit -m 'fix: reject switch-table labels as functions [guess-patched]'
+          git push origin HEAD:accuracy-ywp-tsumtsum-20260814
