@@ -26,6 +26,20 @@ function modelOf(lines) {
   return buildSemanticModel(rows, { startRow: 0, endRow: rows.length - 1, rowOfAddress });
 }
 
+function multiLocationModel() {
+  return modelOf([
+    'ldr w8, [x19, #0x20]',
+    'add w8, w8, #1',
+    'str w8, [x19, #0x20]',
+    'ldr w10, [x19, #0x40]',
+    'add w10, w10, #1',
+    'str w10, [x19, #0x40]',
+    'mov w9, #100',
+    'cmp w8, w9',
+    'ret',
+  ]);
+}
+
 test('SSA recovers a threshold held in another register', () => {
   const model = modelOf([
     'mov w9, #100',
@@ -84,23 +98,38 @@ test('MOVZ/MOVK assembled constants remain whole thresholds', () => {
 });
 
 test('propagated guard is not exposed generically after multiple location candidates were found', () => {
-  const model = modelOf([
-    'ldr w8, [x19, #0x20]',
-    'add w8, w8, #1',
-    'str w8, [x19, #0x20]',
-    'ldr w10, [x19, #0x40]',
-    'add w10, w10, #1',
-    'str w10, [x19, #0x40]',
-    'mov w9, #100',
-    'cmp w8, w9',
-    'ret',
-  ]);
+  const model = multiLocationModel();
   const updates = findValueUpdates(model);
   ok(updates.some((u) => u.location && u.location.disp === 0x20n), 'first location found');
   ok(updates.some((u) => u.location && u.location.disp === 0x40n), 'second location found');
   const rows = constantComparisons(model);
   ok(!rows.some((r) => r.row === 7 && r.propagated),
     'unscoped SSA threshold is withheld instead of being attached to both locations');
+});
+
+test('comparison safety is identical when constantComparisons is called first', () => {
+  const model = multiLocationModel();
+  const rows = constantComparisons(model);
+  ok(!rows.some((r) => r.row === 7 && r.propagated),
+    'comparison API derives its own default location context');
+});
+
+test('a special update query cannot poison later default comparison safety', () => {
+  const model = multiLocationModel();
+  findValueUpdates(model, { window: 1 });
+  const rows = constantComparisons(model);
+  ok(!rows.some((r) => r.row === 7 && r.propagated),
+    'non-default update results are not reused as default comparison context');
+});
+
+test('a caller that scopes the comparison itself may request propagated facts', () => {
+  const model = multiLocationModel();
+  findValueUpdates(model);
+  const rows = constantComparisons(model, { allowUnscopedPropagated: true });
+  const fact = rows.find((r) => r.row === 7 && r.propagated);
+  ok(fact, 'scoped caller can recover the SSA fact');
+  eq(fact.value, 100n);
+  eq(fact.register, 'x8');
 });
 
 process.stdout.write('\n' + passed + ' passed, ' + failures.length + ' failed\n');
