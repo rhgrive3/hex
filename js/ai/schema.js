@@ -40,6 +40,9 @@ export const ACTION_SCHEMA = Object.freeze({
   properties: { kind: { enum: AI_ACTION_KINDS }, target: { anyOf: [{ type: 'string' }, { type: 'null' }] }, label: { type: 'string' }, evidenceId: { type: 'string' } },
 });
 
+/* These are both defaults and hard browser-side ceilings. Turn/request options
+   may reduce work for latency or battery reasons, but untrusted callers cannot
+   enlarge an investigation beyond the mode's reviewed iPad-safe envelope. */
 export const AI_BUDGETS = Object.freeze({
   chat: Object.freeze({ maxModelCalls: 2, maxToolCalls: 2, maxFunctions: 4, maxDisassembly: 8000, maxCost: 12, timeoutMs: 30000, contextBytes: 64 * 1024 }),
   agent: Object.freeze({ maxModelCalls: 12, maxToolCalls: 24, maxFunctions: 48, maxDisassembly: 50000, maxCost: 160, timeoutMs: 120000, contextBytes: 128 * 1024 }),
@@ -92,7 +95,9 @@ export function aiBudget(mode, overrides = {}) {
   for (const key of Object.keys(base)) {
     if (overrides[key] == null) continue;
     const value = Number(overrides[key]);
-    if (Number.isFinite(value)) out[key] = Math.max(key === 'timeoutMs' || key === 'contextBytes' ? 1 : 0, Math.floor(value));
+    if (!Number.isFinite(value)) continue;
+    const minimum = key === 'timeoutMs' || key === 'contextBytes' ? 1 : 0;
+    out[key] = Math.min(base[key], Math.max(minimum, Math.floor(value)));
   }
   return out;
 }
