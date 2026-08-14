@@ -125,7 +125,8 @@ async function shot(page, browser, viewport, name) {
 
 async function checkViewport(browserType, browserName, viewportName, width, height, baseUrl, screenshots = false) {
   const browser = await browserType.launch({ args: browserName === 'chromium' ? ['--no-sandbox'] : [] });
-  const page = await browser.newPage({ viewport: { width, height }, locale: 'ja-JP', hasTouch: width < 900, isMobile: width < 600 });
+  const context = await browser.newContext({ viewport: { width, height }, locale: 'ja-JP', hasTouch: width < 900, isMobile: width < 600 });
+  const page = await context.newPage();
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
   page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()); });
@@ -223,6 +224,7 @@ async function checkViewport(browserType, browserName, viewportName, width, heig
 
     check(`${browserName}/${viewportName}: no page errors`, errors.length === 0, errors.slice(0, 3).join(' | '));
   } finally {
+    await context.close();
     await browser.close();
   }
 }
