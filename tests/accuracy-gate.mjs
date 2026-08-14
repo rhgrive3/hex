@@ -10,6 +10,8 @@ const EPS = 1e-12;
  * production pipeline when compared with independent LIEF + Capstone truth.
  * Keep the exact invariants exact; keep heuristic floors just below the
  * measured values so harmless implementation noise cannot hide a real drop.
+ * Metrics with no applicable samples are emitted as null/N/A and are never
+ * mistaken for a measured zero.
  */
 const TARGETS = [
   {
@@ -20,9 +22,9 @@ const TARGETS = [
       funcs: 1,
       'funcs-guess': 0.982,
       disasm: 1,
-      kinds: 0.997,
+      kinds: 0.998,
       calls: 1,
-      refs: 0.99,
+      refs: 0.9975,
       imports: 1,
       strings: 0.999,
       xrefs: 0.994,
@@ -31,7 +33,7 @@ const TARGETS = [
       role: 0.99,
       pinpoint: 1,
       'pinpoint-partial': 1,
-      apimeaning: 0.988,
+      apimeaning: 0.994,
       summary: 0.99,
       pseudoc: 0.994,
     },
@@ -44,13 +46,13 @@ const TARGETS = [
       funcs: 1,
       'funcs-guess': 0.970,
       disasm: 1,
-      kinds: 0.997,
+      kinds: 0.998,
       calls: 1,
-      refs: 0.99,
+      refs: 0.9985,
       imports: 1,
       strings: 0.999,
       xrefs: 0.994,
-      apimeaning: 0.988,
+      apimeaning: 0.992,
       pseudoc: 0.994,
     },
   },
@@ -62,9 +64,9 @@ const TARGETS = [
       funcs: 1,
       'funcs-guess': 0.9732,
       disasm: 1,
-      kinds: 0.997,
+      kinds: 0.998,
       calls: 1,
-      refs: 0.99,
+      refs: 0.998,
       imports: 1,
       strings: 0.999,
       xrefs: 0.994,
@@ -73,7 +75,7 @@ const TARGETS = [
       role: 0.99,
       pinpoint: 1,
       'pinpoint-partial': 1,
-      apimeaning: 0.988,
+      apimeaning: 0.993,
       summary: 0.99,
       pseudoc: 0.994,
     },
