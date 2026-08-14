@@ -1,0 +1,36 @@
+name: Apply function threshold patch
+
+on:
+  push:
+    branches:
+      - accuracy-ywp-tsumtsum-20260814
+    paths:
+      - .github/workflows/apply-threshold-patch.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: accuracy-ywp-tsumtsum-20260814
+          fetch-depth: 0
+      - name: Raise switch-table cohort threshold
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('js/worker.js')
+          s = p.read_text()
+          old = 'indirectFallthroughData.size >= 512 &&'
+          new = 'indirectFallthroughData.size >= 1000 &&'
+          assert s.count(old) == 1
+          p.write_text(s.replace(old, new, 1))
+          PY
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add js/worker.js
+          git commit -m 'fix: limit switch-table suppression to dense cohorts [threshold-patched]'
+          git push origin HEAD:accuracy-ywp-tsumtsum-20260814
