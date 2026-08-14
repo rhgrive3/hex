@@ -1,31 +1,8 @@
 /*
- * プラグイン（機能の追加）。
- *
- * このツールに無い調べ方が欲しくなったら、JavaScript を 1 ファイル書いて
- * 読み込ませれば、メニューに項目が増えます。IDA のプラグインと同じ考え方です。
- *
- * プラグインの形はとても簡単で、こう書きます:
- *
- *   hex.plugin({
- *     name: 'ぜんぶの文字列を数える',
- *     description: '同じ文字列が何回使われているかを並べます',
- *     async run(hex, print) {
- *       await hex.loadStrings();
- *       print('文字列の数:', (await hex.strings()).length);
- *     },
- *   });
- *
- * 読み込み方は 2 つ:
- *   - 端末の中のファイルを選ぶ
- *   - URL を入れて取り寄せる（ネットにつながっているときだけ）
- *
- * 安全のために:
- *   - プラグインは、あなたが選んだものだけが動きます。
- *   - 中身は実行前に画面で確認できます（読まずに動かさないでください）。
- *   - 解析中のファイルの中身が外へ送られることはありません
- *     （opaque-origin sandboxとCSPで通信を禁止しています）。
+ * User-installed sandbox plugins plus the stable platform contribution API.
+ * User plugins never receive core parser objects directly; platform plugins
+ * use the isolated registry exported at the bottom of this module.
  */
-
 import { createApi } from './script.js';
 import { runInSandbox } from './sandbox.js';
 
@@ -35,11 +12,9 @@ const MAX_SOURCE = 512 * 1024;
 export class PluginHost {
   constructor(app) {
     this.app = app;
-    this.plugins = [];          // {id, name, description, run, source, origin}
+    this.plugins = [];
     this.ready = this.load();
   }
-
-  /* ── 保存 ─────────────────────────────────────────── */
 
   async load() {
     let raw = null;
@@ -51,24 +26,17 @@ export class PluginHost {
         if (!p || typeof p.source !== 'string') continue;
         await this.install(p.source, p.origin || '保存されたもの', { silent: true });
       }
-    } catch { /* 壊れていたら読まない */ }
+    } catch { /* corrupted plugin storage is isolated */ }
   }
 
   save() {
     const list = this.plugins.map((p) => ({ source: p.source, origin: p.origin }));
-    try { localStorage.setItem(STORE_KEY, JSON.stringify(list)); } catch { /* 容量いっぱい */ }
+    try { localStorage.setItem(STORE_KEY, JSON.stringify(list)); } catch { /* quota */ }
   }
 
-  /* ── 読み込み ─────────────────────────────────────── */
-
-  /**
-   * プラグインの中身（JavaScript のソース）を取り込む。
-   * @returns {{ok:true, added:Array}|{error:string}}
-   */
   async install(source, origin, opts) {
     if (typeof source !== 'string' || !source.trim()) return { error: '中身が空です。' };
     if (source.length > MAX_SOURCE) return { error: 'プラグインが大きすぎます（512 KB まで）。' };
-
     const discovered = await runInSandbox({
       source, mode: 'discover', api: Object.create(null), out: () => {}, timeout: 10000,
     });
@@ -82,13 +50,11 @@ export class PluginHost {
       origin: origin || '不明',
     }));
     if (!added.length) return { error: 'プラグインが 1 つも登録されませんでした（hex.plugin({…}) を呼んでください）。' };
-
     this.plugins.push(...added);
     if (!opts || !opts.silent) this.save();
     return { ok: true, added };
   }
 
-  /** URLから取得するだけ。確認画面を通るまで評価・保存しない。 */
   async installFromUrl(url) {
     let text;
     try {
@@ -102,17 +68,9 @@ export class PluginHost {
     return { ok: true, source: text, origin: url, needsConfirmation: true };
   }
 
-  remove(id) {
-    this.plugins = this.plugins.filter((p) => p.id !== id);
-    this.save();
-  }
+  remove(id) { this.plugins = this.plugins.filter((p) => p.id !== id); this.save(); }
+  clear() { this.plugins = []; this.save(); }
 
-  clear() {
-    this.plugins = [];
-    this.save();
-  }
-
-  /** プラグインを動かす。 */
   async run(id, out) {
     const p = this.plugins.find((x) => x.id === id);
     if (!p) return { error: 'そのプラグインが見つかりません。' };
@@ -121,8 +79,6 @@ export class PluginHost {
       out: (...args) => print(...args) });
   }
 }
-
-/* ── お手本 ─────────────────────────────────────────────── */
 
 export const EXAMPLE_PLUGIN = `hex.plugin({
   name: '大きい関数を並べる',
@@ -137,3 +93,9 @@ export const EXAMPLE_PLUGIN = `hex.plugin({
     }
   },
 });`;
+
+export {
+  PlatformPluginRegistry, platformPlugins,
+  registerFormat, registerArchitecture, registerAnalyzer, registerKnowledgeProvider,
+  registerViewContribution, registerGoalProvider,
+} from './platform/plugin-api.js';

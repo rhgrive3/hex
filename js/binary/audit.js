@@ -68,6 +68,8 @@ export function capabilitiesOf(image) {
   return {
     format: image.format,
     architecture: image.arch,
+    endianness: image.endian,
+    bits: image.bits,
     addressMapping: image.segments.some((x) => x.fileSize > 0n) || image.sections.some((x) => x.fileSize > 0n),
     sections: image.sections.length,
     imports: { count: image.imports.length, sites: importSites, sources: sources(image.imports) },
@@ -80,8 +82,9 @@ export function capabilitiesOf(image) {
 }
 
 function checkFileRange(image, start, size, label, issues) {
-  if (start < 0n || size < 0n || start + size > BigInt(image.bytes.length)) {
-    issues.push(issue('error', 'file-range-outside', `${label}: [${hex(start)}, ${hex(start + size)}) exceeds file size ${hex(image.bytes.length)}`));
+  const fileSize = image.fileSize != null ? BigInt(image.fileSize) : BigInt(image.bytes?.length || 0);
+  if (start < 0n || size < 0n || start > fileSize || size > fileSize - start) {
+    issues.push(issue('error', 'file-range-outside', `${label}: [${hex(start)}, ${hex(start + size)}) exceeds file size ${hex(fileSize)}`));
   }
 }
 

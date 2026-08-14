@@ -56,14 +56,20 @@ export class SparseByteBuffer {
 
 export async function parseSourceRanges(source, parser, parserOptions = {}, options = {}) {
   const pageSize = options.pageSize ?? 256 * 1024;
+  // `pageSize` historically is also a hard per-read ceiling. Keep that API
+  // contract unless the caller explicitly opts into adaptive batching.
+  const maxPageSize = options.maxPageSize ?? pageSize;
   const maxCachedBytes = options.maxCachedBytes ?? 64 * 1024 * 1024;
   const maxReads = options.maxReads ?? 4096;
   if (!Number.isSafeInteger(pageSize) || pageSize <= 0) throw new ByteSourceLimitError('pageSize must be a positive safe integer');
+  if (!Number.isSafeInteger(maxPageSize) || maxPageSize < pageSize) throw new ByteSourceLimitError('maxPageSize must be a safe integer at least as large as pageSize');
   if (!Number.isSafeInteger(maxCachedBytes) || maxCachedBytes <= 0) throw new ByteSourceLimitError('maxCachedBytes must be a positive safe integer');
   if (!Number.isSafeInteger(maxReads) || maxReads <= 0) throw new ByteSourceLimitError('maxReads must be a positive safe integer');
   const sparse = new SparseByteBuffer(source.size);
   let reads = 0;
   let cachedBytes = 0;
+  let totalRequestedBytes = 0;
+  let largestRead = 0;
   const initial = options.initial || [];
   for (const item of initial) {
     if (cachedBytes + item.bytes.byteLength > maxCachedBytes) throw new ByteSourceLimitError(`initial metadata exceeds the ${maxCachedBytes}-byte cache limit`);
@@ -73,12 +79,14 @@ export async function parseSourceRanges(source, parser, parserOptions = {}, opti
 
   for (;;) {
     try {
-      // Parsers stay synchronous. A missing page aborts this pass, is fetched,
-      // and the deterministic parser restarts against the expanded sparse view.
+      // Parsers remain synchronous. On a cache miss we fetch a bounded range
+      // and restart deterministically. Callers may opt into a larger
+      // maxPageSize so large metadata avoids O(n^2) restart storms without
+      // removing the overall metadata memory budget.
       const image = parser(sparse, parserOptions);
       image.attachSource(source, { discardBytes: true });
       image.metadata.sourceBacked = true;
-      image.metadata.sourceReads = { requests: reads, cachedBytes, pageSize };
+      image.metadata.sourceReads = { requests: reads, cachedBytes, pageSize, maxPageSize, totalRequestedBytes, largestRead };
       return image;
     } catch (error) {
       if (error?.code !== 'BINARY_SOURCE_RANGE_MISSING') throw error;
@@ -86,14 +94,21 @@ export async function parseSourceRanges(source, parser, parserOptions = {}, opti
       const offset = error.offset;
       if (offset >= source.size) throw new BinaryReadError('truncated binary metadata', offset);
       const remaining = source.size - offset;
-      const requestLimit = Math.min(pageSize, source.maxReadLength);
+      const budgetRemaining = maxCachedBytes - cachedBytes;
+      if (budgetRemaining <= 0) throw new ByteSourceLimitError(`binary metadata exceeds the ${maxCachedBytes}-byte cache limit`);
+
+      const growthShift = Math.min(5, Math.floor((reads - 1) / 4));
+      const adaptive = Math.min(maxPageSize, pageSize * (2 ** growthShift));
+      const wantedByParser = error.length > BigInt(maxPageSize) ? maxPageSize : safeNumber(error.length, 'missing source range length');
+      const requested = Math.max(pageSize, adaptive, wantedByParser);
+      const requestLimit = Math.min(requested, maxPageSize, source.maxReadLength, budgetRemaining);
       const length = Number(remaining < BigInt(requestLimit) ? remaining : BigInt(requestLimit));
-      if (cachedBytes + length > maxCachedBytes) {
-        throw new ByteSourceLimitError(`binary metadata exceeds the ${maxCachedBytes}-byte cache limit`);
-      }
+      if (length <= 0) throw new ByteSourceLimitError(`binary metadata exceeds the ${maxCachedBytes}-byte cache limit`);
       const bytes = await source.readExactly(offset, length);
       sparse.add(offset, bytes);
       cachedBytes += bytes.byteLength;
+      totalRequestedBytes += bytes.byteLength;
+      largestRead = Math.max(largestRead, bytes.byteLength);
     }
   }
 }
