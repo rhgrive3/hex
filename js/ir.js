@@ -130,9 +130,51 @@ function hardenUnknownStores(ir) {
   return ir;
 }
 
+/**
+ * Memory locations are initially classified before constant propagation runs.
+ * Therefore an address such as `adr x19, global ; ldr ..., [x19,#off]` starts
+ * life as FIELD even though x19 is proved constant later. Reclassify only those
+ * bases that constant propagation has proved, so absolute globals do not leak
+ * into the legacy object-field API as a fake +0/+off field.
+ */
+function promoteResolvedGlobals(ir) {
+  if (!ir || !ir.instructions) return ir;
+  const globals = new Map();
+  for (const inst of ir.instructions) {
+    if ((inst.op !== OP.LOAD && inst.op !== OP.STORE) || !inst.addr) continue;
+    const a = inst.addr;
+    if (a.stack || a.index || !a.base || a.base.const == null || a.disp == null) continue;
+
+    const address = a.base.const + a.disp;
+    const size = (inst.loc && inst.loc.size) || a.size || (inst.extra && inst.extra.size) || null;
+    const key = 'global:' + address.toString(16);
+    let loc = globals.get(key);
+    if (!loc) {
+      loc = { key, kind: MK.GLOBAL, address, size };
+      globals.set(key, loc);
+    } else if (loc.size == null && size != null) {
+      loc.size = size;
+    }
+
+    const oldKey = inst.loc && inst.loc.key;
+    inst.loc = loc;
+    inst.globalAddress = address;
+    if (inst.memUse && oldKey != null && inst.memUse.key === oldKey) inst.memUse.key = key;
+    if (inst.memDef && oldKey != null && inst.memDef.key === oldKey) inst.memDef.key = key;
+  }
+  if (ir.locations && ir.locations.set) {
+    for (const [key, loc] of globals) ir.locations.set(key, loc);
+  }
+  // Cached unknown-store classification depends on loc.kind; invalidate it after
+  // changing locations so the safety pass sees the final memory categories.
+  delete ir._unknownStoreBarriers;
+  return ir;
+}
+
 /** Build IR with a usable CFG even when callers only have the Semantic Model. */
 export function buildIR(model, opts) {
   const ir = buildCoreIR(model, normalizedOptions(model, opts));
+  promoteResolvedGlobals(ir);
   return hardenUnknownStores(ir);
 }
 
