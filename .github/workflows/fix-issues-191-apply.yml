@@ -6,7 +6,7 @@ permissions:
   contents: write
 jobs:
   apply-and-test:
-    if: ${{ !contains(github.event.head_commit.message, '[fix191-result]') }}
+    if: ${{ contains(github.event.head_commit.message, '[run-fix191]') }}
     runs-on: ubuntu-latest
     timeout-minutes: 50
     steps:
@@ -23,7 +23,9 @@ jobs:
           node tools/apply-fix191-ci.mjs
       - name: Pin browser dependency and lockfile
         run: |
-          npm install --save-dev --save-exact playwright@1.55.0
+          PLAYWRIGHT_VERSION="$(npm view playwright version)"
+          npm install --save-dev --save-exact "playwright@${PLAYWRIGHT_VERSION}"
+          npm audit --audit-level=high
           node --input-type=module <<'NODE'
           import fs from 'node:fs';
           const p = JSON.parse(fs.readFileSync('package.json', 'utf8'));
@@ -61,5 +63,5 @@ jobs:
           git config user.name 'hex-fix-bot'
           git config user.email 'actions@users.noreply.github.com'
           git add -A
-          git commit -m 'Fix issues 239-264 safety and correctness [fix191-result]'
+          git commit -m 'Fix issue 191+ safety and correctness [fix191-result]'
           git push origin HEAD:fix-issues-191-plus
