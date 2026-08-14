@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import { DEPLOYED_CAPSTONE_SUPPORT } from '../js/platform/capstone-capability.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const temp = path.join(os.tmpdir(), `hex-capstone-${process.pid}-${Date.now()}.cjs`);
@@ -37,7 +38,7 @@ try {
     x86_64: probe(M.ARCH_X86, M.MODE_64 | M.MODE_LITTLE_ENDIAN),
   };
 
-  assert.equal(support.arm64, true, 'the deployed Capstone build must support ARM64');
+  assert.deepEqual(support, DEPLOYED_CAPSTONE_SUPPORT, 'capability claims must exactly match the deployed Capstone build');
   console.log('capstone-capability:', JSON.stringify(support));
 } finally {
   fs.rmSync(temp, { force: true });
