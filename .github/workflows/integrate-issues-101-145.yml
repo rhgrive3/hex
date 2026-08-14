@@ -40,6 +40,11 @@ jobs:
           python3 tools/fix_lazy_getter_regression.py
           git add js/dataflow-semantic.js tests/issues-130-compat.mjs tests/issues-101-145.mjs
           git commit -m "fix: preserve getter evidence with unknown RET ABI"
+      - name: Preserve compatible stack slot display names
+        run: |
+          python3 tools/fix_stack_slot_display_names.py
+          git add js/ir-core.js
+          git commit -m "fix: disambiguate only colliding stack slot names"
       - name: Register focused regressions
         run: |
           python3 - <<'PY'
@@ -75,7 +80,7 @@ jobs:
           npm test
       - name: Remove staging machinery and push verified result
         run: |
-          rm -f tools/integrate_issues_101_145.py tools/fix_lazy_getter_regression.py .github/workflows/integrate-issues-101-145.yml
+          rm -f tools/integrate_issues_101_145.py tools/fix_lazy_getter_regression.py tools/fix_stack_slot_display_names.py .github/workflows/integrate-issues-101-145.yml
           git add -A
           git commit -m "fix: resolve issues 101-145 [issues-101-145 integrated]"
           git push origin HEAD:fix-issues-101-145-final
