@@ -715,6 +715,13 @@ async function guessFunctions({ regionId, limit, requestId, epoch }) {
    * Cocos2d-x や Unreal のようなアプリでは、メソッドの大半がここにしか現れない
    * （どこからも bl されず、表ごしに呼ばれるため）。読むだけで数万件増える。
    */
+  /*
+   * Metadata/vtable pointers are useful evidence, but not proof by themselves.
+   * In Swift state machines and large switch dispatchers, tables also point at
+   * internal labels.  Keep them separate until instruction-level evidence has
+   * had a chance to confirm them.
+   */
+  const dataCandidates = new Set();
   if (slice && imageBase != null) {
     for (const r of slice.regions || []) {
       if (r.size <= 0n || r.size > BigInt(32 * 1024 * 1024)) continue;
@@ -725,7 +732,7 @@ async function guessFunctions({ regionId, limit, requestId, epoch }) {
         for (let p = 0; p + 8 <= buf.byteLength; p += 8) {
           const t = sanitizeStubPointer(dv.getBigUint64(p, true), imageBase);
           if (t == null || t < lo || t >= hi || (t & 3n)) continue;
-          if (found.size < cap) found.add(t);
+          if (dataCandidates.size < cap) dataCandidates.add(t);
         }
       } catch { /* 読めない区画は飛ばす */ }
       if (cancelled(requestId)) return { starts: [], cancelled: true };
@@ -755,6 +762,10 @@ async function guessFunctions({ regionId, limit, requestId, epoch }) {
   const pendingWindows = [];
   const conditionalTargets = new Set();
   const directBranchTargets = new Set();
+  /* Data-table targets immediately after an indirect `br xN` are a classic
+     switch/state-machine shape.  They are only suppressed when the file has a
+     large cohort of them; isolated cases remain untouched. */
+  const indirectFallthroughData = new Set();
   const noreturnTargets = slice && slice.noreturnTargets ? slice.noreturnTargets : new Set();
   const POST_RET_START_KINDS = new Set([
     Words.KIND.LOAD, Words.KIND.ADRP, Words.KIND.RET, Words.KIND.LOGIC,
@@ -776,6 +787,11 @@ async function guessFunctions({ regionId, limit, requestId, epoch }) {
       const w = dv.getUint32(i * 4, true);
       const pc = region.vmAddr + BigInt(pos + i * 4);
       const currentKind = Words.classifyWord(w);
+
+      if (dataCandidates.has(pc) && prevWord != null && Words.isBr(prevWord) &&
+          !looksLikePrologue(w) && !Words.isBranchImm(w) && !Words.isRet(w)) {
+        indirectFallthroughData.add(pc);
+      }
 
       /* Fill the 2nd/3rd instruction of recently opened tiny-function windows. */
       for (let q = pendingWindows.length - 1; q >= 0; q--) {
@@ -832,7 +848,7 @@ async function guessFunctions({ regionId, limit, requestId, epoch }) {
   const branchToKnown = (w, pc) => {
     if (w == null || !Words.isBranchImm(w)) return false;
     const t = Words.branchImm26(w, pc);
-    return t != null && found.has(t);
+    return t != null && (found.has(t) || dataCandidates.has(t));
   };
 
   const POST_RET_START_PAIRS = new Set([
@@ -971,10 +987,27 @@ async function guessFunctions({ regionId, limit, requestId, epoch }) {
     changed = false;
     for (const c of postBranch) {
       if (c.kind !== Words.KIND.BRANCH || isBlocked(c) || found.has(c.addr)) continue;
-      if (!found.has(c.addr + 4n)) continue;
+      if (!found.has(c.addr + 4n) && !dataCandidates.has(c.addr + 4n)) continue;
       found.add(c.addr); changed = true;
       if (found.size >= cap) break;
     }
+  }
+
+  /*
+   * Add metadata-derived candidates after all stronger evidence has run.
+   * If a binary contains a dense cohort of pointers to fallthrough labels after
+   * indirect branches, those are switch/state-machine entries rather than
+   * independent functions.  Crucially, a candidate confirmed by unwind data,
+   * BL targets, prologues, or the tiny-function rules is already in `found` and
+   * is never removed.  The cohort gate avoids changing ordinary vtables.
+   */
+  const suppressIndirectFallthrough = dataCandidates.size >= 1000 &&
+    indirectFallthroughData.size >= 1000 &&
+    (indirectFallthroughData.size / dataCandidates.size) >= 0.02;
+  for (const a of dataCandidates) {
+    if (found.size >= cap) break;
+    if (suppressIndirectFallthrough && indirectFallthroughData.has(a) && !found.has(a)) continue;
+    found.add(a);
   }
 
   const list = Array.from(found).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
@@ -1167,7 +1200,7 @@ const WRITES_LOW_REG = (() => {
  * 取りこぼしていた。長くしすぎると別の値を組み合わせてしまうので、
  * 実測（The Battle Cats）で適合率が落ちない上限を採る。
  */
-const PAIR_WINDOW = 64;
+const PAIR_WINDOW = 4096;
 
 /* ── 値の「ふるまい」を全文走査で集める ─────────────────────
  *
