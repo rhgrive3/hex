@@ -3,6 +3,7 @@
  * The UI asks for rows; it never sees Capstone, file offsets or postMessage.
  */
 import { LRU } from './lru.js';
+import { augmentAnalysisResultWithChainedImports } from './chained.js';
 
 export const CHUNK_ROWS = 1024;
 export const CHUNK_BYTES = CHUNK_ROWS * 4;
@@ -26,6 +27,7 @@ export class Backend {
     this.cache = new LRU(CHUNK_CACHE);
     this.inflight = new Map();
     this.queue = [];
+    this.file = null;                // needed for main-thread chained-fixup symbol recovery
     this.onSearchProgress = null;
     this.onScanProgress = null;      // 文字列抽出・相互参照・関数推測の進み具合
     this.onChunk = null;             // called when a chunk arrives
@@ -102,6 +104,7 @@ export class Backend {
 
   open(file) {
     this.advanceEpoch();             // region ids repeat between files and slices
+    this.file = file;
     return this.call('open', { file });
   }
 
@@ -124,7 +127,11 @@ export class Backend {
      どれも worker 側で走査するので、UI は止まらない。
      キャンセルは request ID ごとに worker へ伝える。 */
 
-  analyze(sliceIndex) { return this.call('analyze', { sliceIndex }); }
+  analyze(sliceIndex) {
+    const file = this.file;
+    return this.call('analyze', { sliceIndex })
+      .then((res) => augmentAnalysisResultWithChainedImports(file, sliceIndex, res));
+  }
 
   guessFunctions(regionId, limit, onProgress) {
     return this.call('guessFunctions', { regionId, limit }, null, onProgress);

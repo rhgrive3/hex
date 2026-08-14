@@ -15,6 +15,7 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { augmentAnalysisResultWithChainedImports } from '../js/chained.js';
 
 const require = createRequire(import.meta.url);
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -82,8 +83,13 @@ function fileShim(p) {
 /* ── Backend と同じ形の入口 ──────────────────────────────────── */
 
 export class NodeBackend {
-  open(f) { return call('open', { file: f }); }
-  analyze(sliceIndex) { return call('analyze', { sliceIndex }); }
+  constructor() { this.file = null; }
+  open(f) { this.file = f; return call('open', { file: f }); }
+  analyze(sliceIndex) {
+    const file = this.file;
+    return call('analyze', { sliceIndex })
+      .then((res) => augmentAnalysisResultWithChainedImports(file, sliceIndex, res));
+  }
   guessFunctions(regionId, limit) { return call('guessFunctions', { regionId, limit }); }
   scanProgram(regionId) { return call('scanProgram', { regionId }); }
   fieldAccess(params) { return call('fieldAccess', params); }
