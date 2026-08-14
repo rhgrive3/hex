@@ -1174,7 +1174,7 @@ input:focus { outline: 2px solid var(--accent); outline-offset: -2px; }
 .cl.tappable { cursor: pointer; }
 .cl.tappable:active { background: var(--fill); }
 .cl-addr {
-  flex: 0 0 auto; width: 6ch;
+  flex: 0 0 auto; width: 13ch;
   color: var(--code-addr); font-size: 10.5px;
   text-align: right; user-select: none;
 }

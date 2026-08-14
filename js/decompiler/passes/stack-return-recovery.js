@@ -188,8 +188,81 @@ function storeValue(inst, key, values) {
   return node;
 }
 
+function latestStoreTo(ir, blockIndex, beforeRow, key) {
+  let best = null;
+  for (const inst of ir?.blocks?.[blockIndex]?.insts || []) {
+    if (inst?.op !== 'store' || inst.loc?.key !== key) continue;
+    if (beforeRow != null && inst.row >= beforeRow) continue;
+    if (!best || (inst.row ?? -1) > (best.row ?? -1)) best = inst;
+  }
+  return best;
+}
+
+function storeOfExactValue(ir, blockIndex, value) {
+  let best = null;
+  for (const inst of ir?.blocks?.[blockIndex]?.insts || []) {
+    if (inst?.op !== 'store' || inst.loc?.kind === 'stack' || inst.loc?.kind === 'unknown') continue;
+    if (valueOf(inst.args?.[0])?.id !== value?.id) continue;
+    if (!best || (inst.row ?? -1) > (best.row ?? -1)) best = inst;
+  }
+  return best;
+}
+
+function semanticLocationForStore(result, store) {
+  return (result.semanticAst?.stores || []).find((item) =>
+    (item.source?.ir || []).some((id) => Number(id) === Number(store?.id)))?.location || null;
+}
+
+function locationIdentity(location) {
+  if (!location) return null;
+  if (location.kind === 'field') {
+    return `field:${location.offset ?? ''}:${location.name || ''}:${structuralKey(location.base)}`;
+  }
+  if (location.kind === 'index') {
+    return `index:${location.scale || 1}:${structuralKey(location.base)}:${structuralKey(location.index)}`;
+  }
+  return `${location.kind}:${location.key || location.text || location.name || ''}`;
+}
+
+function committedLocationForPhi(result, value) {
+  const phi = value?.def;
+  if (phi?.op !== 'phi' || !(phi.incoming || []).length) return null;
+  const locations = [];
+  for (const incoming of phi.incoming || []) {
+    const store = storeOfExactValue(result.ir, incoming.from, incoming.value);
+    if (!store) return null;
+    const location = semanticLocationForStore(result, store);
+    if (!location) return null;
+    locations.push(location);
+  }
+  const identity = locationIdentity(locations[0]);
+  if (!identity || locations.some((loc) => locationIdentity(loc) !== identity)) return null;
+  return locations[0];
+}
+
+function committedReturnValue(result, root, ret) {
+  if (root?.kind !== 'load' || root.location?.kind !== 'stack' || !root.location?.key) return null;
+  const load = [...(result.ir.instructions || [])].reverse().find((inst) =>
+    inst?.op === 'load' && inst.loc?.key === root.location.key && inst.row < ret.row && inst.dst?.reg === 'x0');
+  if (!load) return null;
+  const stackStore = latestStoreTo(result.ir, load.block, load.row, root.location.key);
+  const spilled = valueOf(stackStore?.args?.[0]);
+  const location = committedLocationForPhi(result, spilled);
+  if (!location) return null;
+  return expr.load(location, root.bits || 64, root.source, {
+    signed: root.signed ?? null,
+    proof: 'all SSA phi predecessors committed the exact spilled value to one lvalue',
+  });
+}
+
 function unsafeBarrier(inst, key) {
-  if (inst?.op === 'call' || inst?.op === 'clobber' || inst?.op === 'unknown') return true;
+  if (inst?.op === 'clobber' || inst?.op === 'unknown') return true;
+  if (inst?.op === 'call') {
+    // buildMemorySSA has already proven which locations this call can kill.
+    // A private caller stack slot is absent from memKills and is safe to carry
+    // through the call; an escaped stack address is present and remains a barrier.
+    return (inst.memKills || []).some((loc) => loc?.key === key);
+  }
   return inst?.op === 'store' && inst.loc?.key !== key && (!inst.loc?.key || inst.loc?.kind === 'unknown');
 }
 
@@ -276,8 +349,11 @@ export function recoverExactStackReturn(result, opts = {}) {
     timeBudgetMs:Math.min(12, Math.max(4, Number(opts.decompilerTimeBudgetMs || 50) / 4)),
     maxApplications:512,
   });
-  const recovered = resolve(result.ir, ret.block, ret.row, root.location.key, values, opts, engine, new Set());
-  if (!recovered || recovered.kind === 'load' || !rewriteReturn(result, recovered, opts)) return result;
+  const committed = committedReturnValue(result, root, ret);
+  const recovered = committed || resolve(result.ir, ret.block, ret.row, root.location.key, values, opts, engine, new Set());
+  // A stack load means no useful reconstruction happened. A committed non-stack
+  // field/global load is an intentional high-level return and must be retained.
+  if (!recovered || (recovered.kind === 'load' && recovered.location?.kind === 'stack') || !rewriteReturn(result, recovered, opts)) return result;
 
   result.rewriteProof = [...(result.rewriteProof || []), {
     rule:'exact-stack-return-recovery', phase:'memory-ssa',
