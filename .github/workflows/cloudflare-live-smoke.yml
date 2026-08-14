@@ -1,0 +1,94 @@
+name: Cloudflare live smoke
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/cloudflare-live-smoke.yml'
+  workflow_dispatch:
+
+jobs:
+  live-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Compare Workers and Pages static assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          CF='https://ida.rhgrive.workers.dev'
+          GH='https://rhgrive3.github.io/hex'
+          mkdir -p /tmp/hex-smoke
+
+          assets=(
+            '/index.html'
+            '/css/app.css'
+            '/js/app.js'
+            '/js/backend.js'
+            '/js/worker.js'
+            '/js/macho.js'
+            '/js/words.js'
+            '/capstone.js'
+            '/capstone.wasm'
+          )
+
+          printf '%-24s | %-3s | %-30s | %-10s | %s\n' 'asset' 'src' 'content-type' 'bytes' 'sha256'
+          printf '%s\n' '------------------------------------------------------------------------------------------------------------'
+          for p in "${assets[@]}"; do
+            safe="$(printf '%s' "$p" | tr '/.' '__')"
+            for src in CF GH; do
+              if [[ "$src" == CF ]]; then base="$CF"; else base="$GH"; fi
+              body="/tmp/hex-smoke/${src}_${safe}"
+              meta="$(curl --retry 2 --retry-all-errors --connect-timeout 10 --max-time 45 -fsSL \
+                -o "$body" -w '%{http_code}|%{content_type}|%{size_download}|%{url_effective}' "$base$p")"
+              IFS='|' read -r status ctype size effective <<< "$meta"
+              hash="$(sha256sum "$body" | awk '{print $1}')"
+              printf '%-24s | %-3s | %-30s | %-10s | %s\n' "$p" "$src" "$ctype" "$size" "$hash"
+              [[ "$status" == '200' ]]
+            done
+            cf_hash="$(sha256sum "/tmp/hex-smoke/CF_${safe}" | awk '{print $1}')"
+            gh_hash="$(sha256sum "/tmp/hex-smoke/GH_${safe}" | awk '{print $1}')"
+            if [[ "$cf_hash" != "$gh_hash" ]]; then
+              echo "MISMATCH: $p differs between Workers and Pages" >&2
+              exit 1
+            fi
+          done
+
+          # The WASM body must really be a WebAssembly module, not an HTML fallback.
+          wasm_magic="$(od -An -tx1 -N4 /tmp/hex-smoke/CF__capstone_wasm | tr -d ' \n')"
+          echo "Workers capstone.wasm magic: $wasm_magic"
+          [[ "$wasm_magic" == '0061736d' ]]
+
+      - name: Verify Worker API routing and secret presence
+        shell: bash
+        run: |
+          set -euo pipefail
+          CF='https://ida.rhgrive.workers.dev'
+
+          get_code="$(curl --retry 2 --retry-all-errors --connect-timeout 10 --max-time 30 -sS \
+            -o /tmp/api-get.json -w '%{http_code}' "$CF/api/gemini")"
+          echo "GET /api/gemini -> $get_code"
+          cat /tmp/api-get.json
+          echo
+          [[ "$get_code" == '405' ]]
+
+          # {} is intentionally invalid and never reaches Gemini. 422 means the Secret exists;
+          # 503 means GEMINI_API_KEY is missing from this deployed Worker.
+          post_code="$(curl --retry 2 --retry-all-errors --connect-timeout 10 --max-time 30 -sS \
+            -H 'content-type: application/json' -d '{}' \
+            -o /tmp/api-post.json -w '%{http_code}' "$CF/api/gemini")"
+          echo "POST /api/gemini {} -> $post_code"
+          cat /tmp/api-post.json
+          echo
+          [[ "$post_code" == '422' ]]
+
+      - name: Verify private deployment files are not public
+        shell: bash
+        run: |
+          set -euo pipefail
+          CF='https://ida.rhgrive.workers.dev'
+          for p in /worker.js /wrangler.jsonc /package.json /README.md /tests/run.js; do
+            code="$(curl --retry 2 --retry-all-errors --connect-timeout 10 --max-time 30 -sS \
+              -o /dev/null -w '%{http_code}' "$CF$p")"
+            echo "$p -> $code"
+            [[ "$code" == '404' ]]
+          done
