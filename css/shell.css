@@ -4,6 +4,12 @@
   background: var(--ui-bg);
 }
 
+/* The surviving file action is part of the product shell on every layout, not just phone. */
+.product-ui-ready .titlebar .tb-btn {
+  min-height: var(--ui-touch);
+  min-width: var(--ui-touch);
+}
+
 .product-ui-ready .toolbar,
 .product-ui-ready .nav-history {
   display: none !important;
