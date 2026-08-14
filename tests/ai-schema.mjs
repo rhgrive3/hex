@@ -15,7 +15,9 @@ const verified = evidence.ingest('verify_field_update', { verified: true, addres
 assert.equal(verified.status, 'verified');
 const hypotheses = new HypothesisStore(evidence);
 assert.equal(hypotheses.upsert({ claim: 'model-only claim', status: 'verified', supportEvidenceIds: [] }).status, 'open');
-assert.equal(hypotheses.upsert({ claim: 'proven claim', status: 'verified', supportEvidenceIds: [verified.id] }).status, 'verified');
+const modelClaim = hypotheses.upsert({ claim: 'proven claim', status: 'verified', supportEvidenceIds: [verified.id] });
+assert.equal(modelClaim.status, 'supported', 'verified evidence alone cannot authorize a model verdict');
+assert.equal(hypotheses.verify(modelClaim.id, [verified.id]).status, 'verified');
 
 const actions = sanitizeActions([
   { kind: 'open-function', target: '0x1000' },
