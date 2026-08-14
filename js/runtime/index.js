@@ -4,10 +4,38 @@ import { compileExperiment, HypothesisVerifier } from '../dynamic/experiments.js
 import { createRuntimeEvidenceRecord, evidenceFromExperiment, fuseStaticDynamic, traceToSemanticFacts } from '../runtime-evidence/index.js';
 import { DebugAdapterError, asAddress, boundedInteger } from '../debug/adapter.js';
 
+function operationController(session, externalSignal) {
+  const controller = session.controller();
+  let listener = null;
+  if (externalSignal) {
+    if (externalSignal.aborted) controller.abort(externalSignal.reason || 'cancelled');
+    else {
+      listener = () => controller.abort(externalSignal.reason || 'cancelled');
+      externalSignal.addEventListener('abort', listener, { once:true });
+    }
+  }
+  return {
+    signal:controller.signal,
+    release() {
+      if (externalSignal && listener) externalSignal.removeEventListener('abort',listener);
+      session.releaseController(controller);
+    }
+  };
+}
+
+function launchOptionsForTrace(functionAddress, options) {
+  const source = options && options.launch ? options.launch : options || {};
+  const launch = { ...source };
+  for (const key of ['maxSteps','limit','timeoutMs','signal','onProgress','launch']) delete launch[key];
+  launch.address = asAddress(functionAddress);
+  delete launch.functionAddress;
+  return launch;
+}
+
 export class RuntimeAnalysisPlatform {
   constructor(options = {}) {
     this.options = options;
-    this.sessions = new DebugSessionManager();
+    this.sessions = new DebugSessionManager(options.sessions || {});
     this.adapters = new Map();
     this.evidence = [];
     if (options.localIO) this.registerAdapter('local', new LocalFunctionSandboxAdapter(options.localIO, options.local || {}));
@@ -33,8 +61,9 @@ export class RuntimeAnalysisPlatform {
     const instance = typeof adapter === 'string' ? this.adapter(adapter) : adapter;
     if (!instance) throw new DebugAdapterError('adapter-not-found',`debug adapter not found: ${adapter}`);
     const session = this.sessions.create(instance,{binaryHash,trace});
-    if (connect) await session.connect();
-    return session;
+    if (!connect) return session;
+    try { await session.connect(); return session; }
+    catch (error) { try { await this.sessions.close(session.id); } catch {} throw error; }
   }
   currentSession(required = true) {
     const session = this.sessions.current;
@@ -49,12 +78,18 @@ export class RuntimeAnalysisPlatform {
   }
   async runExperiment(experiment, options = {}) {
     const session = this.currentSession();
-    session.addExperiment(experiment);
-    const verifier = new HypothesisVerifier(session.adapter, ({experiment,testCase,observation,comparison}) => evidenceFromExperiment({ experiment,testCase,observation,comparison,backend:session.backend,binaryHash:session.binaryHash,sessionId:session.id }));
-    const result = await verifier.verify(experiment, options);
+    if (!experiment || typeof experiment !== 'object' || !Array.isArray(experiment.cases)) throw new DebugAdapterError('invalid-experiment','experiment must contain cases');
+    if (experiment.binaryHash && session.binaryHash && experiment.binaryHash !== session.binaryHash) throw new DebugAdapterError('binary-version-mismatch','experiment binary hash does not match the active runtime session',{experimentHash:experiment.binaryHash,sessionHash:session.binaryHash});
+    const scopedExperiment = experiment.binaryHash || !session.binaryHash ? experiment : { ...experiment, binaryHash:session.binaryHash };
+    session.addExperiment(scopedExperiment);
+    const operation = operationController(session, options.signal);
+    const verifier = new HypothesisVerifier(session.adapter, ({experiment:testExperiment,testCase,observation,comparison}) => evidenceFromExperiment({ experiment:testExperiment,testCase,observation,comparison,backend:session.backend,binaryHash:session.binaryHash,sessionId:session.id }));
+    let result;
+    try { result = await verifier.verify(scopedExperiment, { ...options, signal:operation.signal }); }
+    finally { operation.release(); }
     const evidence = [];
     for (const item of result.cases) {
-      if (item.evidence) { evidence.push(this._recordEvidence(item.evidence)); session.addObservation({ experimentId:experiment.id, caseId:item.case.id, evidenceId:item.evidence.id, verdict:item.comparison.status }); }
+      if (item.evidence) { evidence.push(this._recordEvidence(item.evidence)); session.addObservation({ experimentId:scopedExperiment.id, caseId:item.case.id, evidenceId:item.evidence.id, verdict:item.comparison.status }); }
     }
     return { ...result, evidence };
   }
@@ -65,7 +100,7 @@ export class RuntimeAnalysisPlatform {
   }
   async verifyFunction(functionAddress, options = {}) {
     const hypothesis = options.hypothesis || { id:`verify:${asAddress(functionAddress).toString(16)}`, functionAddress,
-      fieldOffset:options.fieldOffset ?? null, fieldSize:options.fieldSize || 8, initial:options.initial ?? 100,
+      fieldOffset:options.fieldOffset ?? null, fieldSize:options.fieldSize ?? 8, initial:options.initial ?? 100,
       argumentIndex:options.argumentIndex ?? 1, operation:options.operation || 'set' };
     // Without a semantic expectation this is an execution observation, not a
     // semantic confirmation. compileExperiment emits cases with expected=null.
@@ -73,17 +108,23 @@ export class RuntimeAnalysisPlatform {
   }
   async traceFunction(functionAddress, options = {}) {
     const session = this.currentSession();
-    await session.adapter.launch({ address:functionAddress, ...(options.launch || options) });
-    const observation = await session.adapter.resume({ maxSteps:options.maxSteps || 20000 });
+    const requestedAddress = asAddress(functionAddress);
+    const launchSpec = launchOptionsForTrace(requestedAddress,options);
+    const operation = operationController(session,options.signal);
+    let observation;
+    try {
+      await session.adapter.launch(launchSpec,{signal:operation.signal});
+      observation = await session.adapter.resume({ maxSteps:options.maxSteps ?? 20000, timeoutMs:options.timeoutMs, signal:operation.signal });
+    } finally { operation.release(); }
     const trace = observation.trace || await session.adapter.trace({ limit:boundedInteger(options.limit,4096,1,50000,'limit') });
     for (const event of trace.events || []) session.acceptEvent(event);
-    const facts = traceToSemanticFacts(trace,{sessionId:session.id,binaryHash:session.binaryHash,traceId:`fn:${asAddress(functionAddress).toString(16)}`});
+    const facts = traceToSemanticFacts(trace,{sessionId:session.id,binaryHash:session.binaryHash,traceId:`fn:${requestedAddress.toString(16)}`});
     const evidence = createRuntimeEvidenceRecord({ backend:session.backend,binaryHash:session.binaryHash,sessionId:session.id,
-      experimentId:`trace:${asAddress(functionAddress).toString(16)}`,caseId:'trace',function:asAddress(functionAddress),
-      input:options.launch || options,observedState:{stop:observation.stop,returnValue:observation.returnValue},branchPath:observation.branches || [],
+      experimentId:`trace:${requestedAddress.toString(16)}`,caseId:'trace',function:requestedAddress,
+      input:launchSpec,observedState:{stop:observation.stop,returnValue:observation.returnValue},branchPath:observation.branches || [],
       verdict:'inconclusive',confidence:0.5,kind:'trace',reproducibility:{replayable:true,runs:1,consistent:null} });
     this._recordEvidence(evidence);
-    return { functionAddress:asAddress(functionAddress), observation, trace, facts, evidence:[evidence] };
+    return { functionAddress:requestedAddress, observation, trace, facts, evidence:[evidence] };
   }
   async readRuntimeField(address, size = 8) {
     const session = this.currentSession();
@@ -91,8 +132,9 @@ export class RuntimeAnalysisPlatform {
     if (!Number.isSafeInteger(n) || n < 1) throw new DebugAdapterError('invalid-size','runtime field size must be a positive safe integer');
     if (n > 4096) throw new DebugAdapterError('too-large','runtime field read exceeds 4096 bytes');
     const bytes = await session.adapter.readMemory(address, n);
+    if (!(bytes instanceof Uint8Array) || bytes.length !== n) throw new DebugAdapterError('short-read',`runtime field read returned ${bytes && bytes.length || 0} of ${n} bytes`);
     const evidence = createRuntimeEvidenceRecord({ backend:session.backend,binaryHash:session.binaryHash,sessionId:session.id,
-      experimentId:`read:${asAddress(address).toString(16)}`,caseId:'read',address:asAddress(address),input:{address:asAddress(address),size},
+      experimentId:`read:${asAddress(address).toString(16)}`,caseId:'read',address:asAddress(address),input:{address:asAddress(address),size:n},
       observedState:{bytes:[...bytes]},verdict:'inconclusive',confidence:0.5,kind:'memory-read',reproducibility:{replayable:true,runs:1,consistent:null} });
     this._recordEvidence(evidence);
     return { address:asAddress(address), bytes, evidence:[evidence] };
