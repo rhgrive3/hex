@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "hex",
+  "name": "ida",
   "main": "./worker.js",
   "compatibility_date": "2026-08-14",
   "assets": {
