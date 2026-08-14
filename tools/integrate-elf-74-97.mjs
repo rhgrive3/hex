@@ -53,10 +53,5 @@ replace(dynamic,
 `function symbolCountFromLayout(symtab, strtab, syment) {\n  if (strtab == null || strtab <= symtab || syment <= 0n) return 0;\n  const n = (strtab - symtab) / syment;\n  return n > 0n && n <= 10_000_000n ? Number(n) : 0;\n}\n\nfunction markDynamicPartial`,
 `function symbolCountFromLayout(symtab, strtab, syment, image, r) {\n  if (strtab == null || strtab <= symtab || syment <= 0n) return 0;\n  const delta = strtab - symtab;\n  if (delta % syment !== 0n) return 0;\n  const n = delta / syment;\n  if (n <= 0n || n > 1_000_000n) return 0;\n  const symOff = vaToOffset(image, symtab), strOff = vaToOffset(image, strtab);\n  if (symOff == null || strOff == null || strOff <= symOff || strOff > r.length) return 0;\n  if (BigInt(strOff - symOff) !== delta) return 0;\n  return Number(n);\n}\n\nfunction markExtendedPartial(image, message) {\n  image.metadata.programDynamicPartial = true;\n  const list = image.metadata.programDynamicDiagnostics ||= [];\n  if (!list.includes(message)) list.push(message);\n  image.warnings.push('PT_DYNAMIC: ' + message);\n}\n\nfunction markDynamicPartial`);
 
-const elf = 'js/binary/elf.js';
-replace(elf,
-`    if (!defined && (bind === 1 || bind === 2)) image.imports.push({ name, library: null, ordinal: null, weak: bind === 2, source: sym.source, sites: [] });\n    if (defined && (bind === 1 || bind === 2) && (sym.visibility === 0 || sym.visibility === 3)) image.exports.push({ name, address: value, kind, source: sym.source });`,
-`    if (!defined && (bind === 1 || bind === 2)) image.imports.push({ name, library: null, ordinal: null, weak: bind === 2, symbolIndex: i, tableIndex: table.index, source: sym.source, sites: [] });\n    if (defined && (bind === 1 || bind === 2) && (sym.visibility === 0 || sym.visibility === 3)) image.exports.push({ name, address: value, kind, symbolIndex: i, tableIndex: table.index, source: sym.source });`);
-
 fs.rmSync('tools/integrate-elf-74-97.mjs');
 fs.rmSync('.github/workflows/integrate-elf-74-97.yml');
