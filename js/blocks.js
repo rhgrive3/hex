@@ -95,6 +95,8 @@ const API_TABLE = [
     args: ['ptr'], ret: null, effect: 'free' },
   { id: 'memcmp', re: /^_?(memcmp|bcmp|timingsafe_bcmp)$/i, cat: 'memory',
     args: ['a', 'b', 'size'], ret: 'diff', effect: 'compare' },
+  { id: 'memchr', re: /^_?(memchr|memrchr)$/i, cat: 'memory',
+    args: ['ptr', 'byte', 'size'], ret: 'ptr', effect: 'search' },
 
   { id: 'strlen', re: /^_?(strlen|strnlen)$/i, cat: 'string', args: ['str'], ret: 'length', effect: 'read' },
   { id: 'strcmp', re: /^_?(strcmp|strncmp|strcasecmp|strncasecmp)$/i, cat: 'string',
@@ -111,7 +113,7 @@ const API_TABLE = [
     args: ['format'], ret: null, effect: 'log' },
 
   { id: 'objc_msgSend', re: /^_?objc_msgSend/i, cat: 'objc', args: ['receiver', 'selector'], ret: 'object', effect: 'call' },
-  { id: 'objc_retain', re: /^_?(objc_retain|objc_release|objc_autorelease|objc_storeStrong|objc_retainAutorelease)/i,
+  { id: 'objc_retain', re: /^_?(objc_retain|objc_release|objc_autorelease|objc_storeStrong|objc_retainAutorelease(?:ReturnValue)?|objc_retainAutoreleasedReturnValue|objc_autoreleaseReturnValue|objc_claimAutoreleasedReturnValue|objc_unsafeClaimAutoreleasedReturnValue)/i,
     cat: 'objc', args: ['object'], ret: 'object', effect: 'refcount' },
   { id: 'objc_alloc', re: /^_?(objc_alloc|objc_allocWithZone|objc_opt_new)/i, cat: 'objc', args: ['class'], ret: 'object', effect: 'alloc' },
   { id: 'swift_object', re: /^_?swift_(retain|release|allocObject|bridgeObjectRetain|bridgeObjectRelease)/i,
@@ -126,11 +128,11 @@ const API_TABLE = [
    */
   { id: 'objc_weak', re: /^_?(objc_(initWeak|destroyWeak|copyWeak|moveWeak|storeWeak|loadWeak|loadWeakRetained)|swift_unknownObjectWeak\w*|swift_weak\w*)$/i,
     cat: 'objc', args: ['location'], ret: 'object', effect: 'refcount' },
-  { id: 'objc_runtime', re: /^_?objc_(sync_enter|sync_exit|enumerationMutation|opt_class|opt_isKindOfClass|opt_respondsToSelector|getClass|getMetaClass|lookUpClass|autoreleasePool(Push|Pop)|begin_catch|end_catch|exception_rethrow|setProperty\w*|getProperty|copyStruct|terminate)$/i,
+  { id: 'objc_runtime', re: /^_?objc_(sync_enter|sync_exit|enumerationMutation|opt_class|opt_self|opt_isKindOfClass|opt_respondsToSelector|getClass|getMetaClass|lookUpClass|autoreleasePool(Push|Pop)|begin_catch|end_catch|exception_rethrow|setProperty\w*|getProperty|copyStruct|terminate)$/i,
     cat: 'runtime', args: null, ret: null, effect: 'runtime' },
-  { id: 'swift_runtime', re: /^_?swift_((begin|end)Access|once|getWitnessTable|conformsToProtocol\w*|isUniquelyReferenced\w*|dynamicCast\w*|getObjectType|getInitializedObjCClass|getTypeByMangledName\w*|allocError|willThrow|errorRelease|errorRetain|unknownObject(Retain|Release)|initStackObject|slowAlloc|slowDealloc|deallocClassInstance|task_\w+|checkMetadataState|allocateGenericValueMetadata|getGenericMetadata|getForeignTypeMetadata|storeEnumTagSinglePayload|getEnumTagSinglePayload|arrayInitWithCopy|bridgeObjectRetain|bridgeObjectRelease)/i,
+  { id: 'swift_runtime', re: /^_?swift_((begin|end)Access|once|getWitnessTable|conformsToProtocol\w*|isUniquelyReferenced\w*|dynamicCast\w*|getObjectType|getInitializedObjCClass|getTypeByMangledName\w*|allocError|willThrow|errorRelease|errorRetain|unknownObject(Retain|Release)|initStackObject|slowAlloc|slowDealloc|deallocClassInstance|task_\w+|checkMetadataState|allocateGenericValueMetadata|getGenericMetadata|getForeignTypeMetadata|getSingletonMetadata|storeEnumTagSinglePayload|getEnumTagSinglePayload|storeEnumTagMultiPayload|getEnumCaseMultiPayload|arrayInitWithCopy|arrayDestroy|initStaticObject|setDeallocating|unexpectedError|bridgeObjectRetain|bridgeObjectRelease)/i,
     cat: 'runtime', args: null, ret: null, effect: 'runtime' },
-  { id: 'cxx_runtime', re: /^_*(cxa_(atexit|guard_acquire|guard_release|throw|begin_catch|end_catch|rethrow|allocate_exception|free_exception|pure_virtual|demangle)|dynamic_cast|Unwind_\w+|Znw[mj]|Zna[mj]|ZdlPv|ZdaPv|Block_(copy|release)|Block_object_(assign|dispose))$/,
+  { id: 'cxx_runtime', re: /^_*(cxa_(atexit|guard_acquire|guard_release|guard_abort|throw|begin_catch|end_catch|rethrow|allocate_exception|free_exception|pure_virtual|demangle)|dynamic_cast|Unwind_\w+|Znw[mj]|Zna[mj]|ZdlPv|ZdaPv|Block_(copy|release)|Block_object_(assign|dispose))$/,
     cat: 'runtime', args: null, ret: null, effect: 'runtime' },
   /*
    * C++ の標準ライブラリ。Cocos2d-x / Unreal のゲームでは、ここが呼び出しの中心になる。
@@ -148,6 +150,7 @@ const API_TABLE = [
   { id: 'swift_string', re: /^_\$s(SS|s\w*(String|_string|stringCompare))/, cat: 'string', args: null, ret: null, effect: 'read' },
   { id: 'swift_collection', re: /^_\$s(Sa|SD|Sh|Sl|Sk)\w/, cat: 'memory', args: null, ret: null, effect: 'alloc' },
   { id: 'swift_hash', re: /^_\$ss6HasherV|^_\$sS\w+4hash4into/, cat: 'runtime', args: null, ret: 'number', effect: 'runtime' },
+  { id: 'swift_stdlib_report', re: /^_+swift_stdlib_report\w*/i, cat: 'runtime', args: null, ret: null, effect: 'runtime' },
   { id: 'swift_stdlib', re: /^_\$ss/, cat: 'runtime', args: null, ret: null, effect: 'runtime' },
   /* それ以外の Swift の飾り名（Foundation やライブラリの処理）。最後の受け皿。 */
   { id: 'swift_mangled', re: /^_\$s/, cat: 'runtime', args: null, ret: null, effect: 'runtime' },
@@ -175,12 +178,14 @@ const API_TABLE = [
 
   { id: 'reflect', re: /^_?(NSStringFromClass|NSClassFromString|NSStringFromSelector|NSSelectorFromString|NSStringFromProtocol|class_\w+|sel_\w+|method_\w+|ivar_\w+|object_(get|set)\w+|protocol_\w+)$/,
     cat: 'runtime', args: null, ret: null, effect: 'runtime' },
+  { id: 'geometry', re: /^_?CGRectGet(Width|Height|MinX|MinY|MaxX|MaxY|MidX|MidY)$/i,
+    cat: 'ui', args: ['rect'], ret: 'number', effect: 'read' },
   { id: 'ui', re: /UIAlert|UIView|UIViewController|presentViewController|UILabel|UIButton|NSAlert|SwiftUI/i,
     cat: 'ui', args: null, ret: 'object', effect: 'ui' },
 
-  { id: 'concurrency', re: /^_?(pthread_|dispatch_(async|sync|once|after|semaphore)|NSOperation|NSThread)/i,
+  { id: 'concurrency', re: /^_?(pthread_|dispatch_(async|sync|once|after|semaphore|get_global_queue|get_main_queue|queue_create)|NSOperation|NSThread)/i,
     cat: 'concurrency', args: null, ret: null, effect: 'concurrency' },
-  { id: 'time', re: /^_?(gettimeofday|mach_absolute_time|clock|time|NSDate|CFAbsoluteTime)$/i, cat: 'time',
+  { id: 'time', re: /^_?(gettimeofday|mach_absolute_time|clock|time|mktime|localtime|gmtime|NSDate|CFAbsoluteTime)$/i, cat: 'time',
     args: null, ret: 'number', effect: 'read' },
   { id: 'dylink', re: /^_?(dlopen|dlsym|dladdr|NSGetExecutablePath)$/i, cat: 'dylink', args: ['name'], ret: 'ptr', effect: 'dylink' },
   { id: 'antidebug', re: /^_?(ptrace|sysctl|task_get_exception_ports|AmIBeingDebugged|isDebuggerAttached)/i,
@@ -188,6 +193,7 @@ const API_TABLE = [
 
   { id: 'abort', re: /^_?(abort|exit|_exit|__assert_rtn|__stack_chk_fail|objc_exception_throw|_Unwind_Resume|longjmp)$/i,
     cat: 'error', args: null, ret: null, effect: 'abort' },
+  { id: 'errno', re: /^_+error$/i, cat: 'runtime', args: null, ret: 'ptr', effect: 'read' },
   { id: 'errorobj', re: /NSError|NSException|error(WithDomain|Description)/i, cat: 'error',
     args: null, ret: 'object', effect: 'error' },
 ];
