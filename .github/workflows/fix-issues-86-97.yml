@@ -1,0 +1,38 @@
+name: Apply issues 86-97 ELF and PE hardening
+on:
+  push:
+    branches: [fix/issues-86-97]
+permissions:
+  contents: write
+jobs:
+  patch-and-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Apply exact patch
+        run: node tools/fix-issues-86-97.mjs
+      - name: Syntax check
+        run: |
+          node --check js/binary/elf.js
+          node --check js/binary/elf-dynamic.js
+          node --check js/binary/elf-extended.js
+          node --check js/binary/elf-unwind.js
+          node --check js/binary/pe.js
+          node --check tests/binary-platform.mjs
+      - name: Binary regressions
+        run: npm run binary:test
+      - name: Full regression gate
+        run: npm run check
+      - name: Commit verified fix
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git diff --cached --check
+          git commit -m "Fix ELF and PE issues 86-97"
+          git push origin HEAD:fix/issues-86-97
