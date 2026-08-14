@@ -1,0 +1,28 @@
+name: Verify issues 48-97 four-way integration
+on:
+  push:
+    branches: [fix/issues-48-60]
+permissions:
+  contents: read
+jobs:
+  integrate-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Merge all verified issue branches locally
+        run: |
+          git config user.name integration-check
+          git config user.email integration-check@invalid
+          git fetch origin fix/issues-61-73 fix/issues-74-85 fix/issues-86-97
+          git merge --no-edit origin/fix/issues-61-73
+          git merge --no-edit origin/fix/issues-74-85
+          git merge --no-edit origin/fix/issues-86-97
+      - name: Verify combined binary regressions
+        run: npm run binary:test
+      - name: Verify combined full suite
+        run: npm run check
