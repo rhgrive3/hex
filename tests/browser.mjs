@@ -243,11 +243,12 @@ async function main() {
 
     for (const goal of GOALS) {
       console.log(`\n「${goal.chip}」を押す`);
-      /* 開いているシートを閉じてから、毎回ツールバーの「調べる」で入り直す。 */
+      /* 開いているシートを閉じてから、毎回canonical「調べる」へ戻る。
+         目的選択そのものが旧Sheetへ逆戻りしていないことも同時に検査する。 */
       await closeSheets(page);
       await page.click('#btn-investigate');
       await page.waitForTimeout(600);
-      const chip = page.locator('#overlays .sheet button', { hasText: goal.chip.trim() }).first();
+      const chip = page.locator('[data-screen="investigate"] button', { hasText: goal.chip.trim() }).first();
       if (!(await chip.count())) { check(`${goal.id}: 目的が選べる`, false, 'チップが無い'); continue; }
       await chip.click();
       await settle(page, { max: 180000 });

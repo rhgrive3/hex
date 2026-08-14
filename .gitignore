@@ -7,3 +7,7 @@ tests/current.json
 
 # 画面の写し（KEEP=1 npm run browser で作り直せる）
 tests/.shots/
+
+# ローカルの配布用アーカイブ・誤作成されたrootファイルはrepoへ戻さない
+/hex.zip
+/a
