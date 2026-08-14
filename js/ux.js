@@ -101,6 +101,8 @@ function init() {
   // Keep the goal-driven path visually primary. The two hubs are compact
   // secondary routes for users who already know what kind of object/tool they
   // want. Existing source buttons remain in the DOM and retain App bindings.
+  nav.setAttribute('role', 'group');
+  nav.setAttribute('aria-label', pick('解析の入口', 'Analysis entry points'));
   nav.append(findHub, analyzeHub);
   for (const source of [tools, functions, search, jump, overflow]) hideSourceAction(source);
 
