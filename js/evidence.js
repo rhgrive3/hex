@@ -52,6 +52,61 @@ export const FAMILY = {
   NAMING: 'naming',      // 開発者が書いた文言による、排他的な名指し
 };
 
+/* ── 独立した証拠群 ─────────────────────────────────────────
+ *
+ * 系統（family）はまだ細かい。
+ *
+ *     field 名 = hp / getter 名 = hp / setter 名 = setHp
+ *
+ * これは 3 件に見えて、出どころは Objective-C のメタデータ 1 つ。
+ * 相関した証拠を独立した証拠として数えると、必ず過信する。
+ * 「独立した系統が 3 つ」を系統で数えていたころ、名前が 3 通りに一致した
+ * だけで条件を満たしてしまっていた。
+ *
+ * ここでは系統をさらに**出どころ**でまとめる。確定の条件は、
+ * 証拠の数でも系統の数でもなく、この群の数で見るのが正しい。
+ *
+ * NAMING（開発者が書いた文言）は文字列セクションという別の出どころなので、
+ * メタデータとは独立と見なす。クラス表の無い C++ のゲームで確定に届く
+ * 唯一の道がここなので、まとめてしまってはいけない。
+ */
+export const GROUP = {
+  METADATA: 'metadata',       // クラス表・シンボル・セレクタ
+  STRUCTURAL: 'structural',   // 型・大きさ・オフセットの整合
+  DATAFLOW: 'dataflow',       // 読み書きの形・値の流れ・逆アセンブルでの裏取り
+  CONTROLFLOW: 'controlflow', // 分岐・ループの形
+  RUNTIME: 'runtime',         // 実際に動かして確かめた
+  SEMANTIC: 'semantic',       // 開発者が書いた文言・復元した計算式
+  EXTERNAL: 'external',       // AI や外部の知識
+};
+
+const FAMILY_GROUP = {
+  [FAMILY.NAME]: GROUP.METADATA,
+  [FAMILY.CONTEXT]: GROUP.METADATA,
+  [FAMILY.TYPE]: GROUP.STRUCTURAL,
+  [FAMILY.STRUCT]: GROUP.STRUCTURAL,
+  [FAMILY.USAGE]: GROUP.DATAFLOW,
+  [FAMILY.VERIFIED]: GROUP.DATAFLOW,
+  [FAMILY.NAMING]: GROUP.SEMANTIC,
+};
+
+/* 系統に無い出どころは、証拠コードから直接振り分ける。 */
+const CODE_GROUP = [
+  [/^runtime-|^emul|^sandbox-/, GROUP.RUNTIME],
+  [/^cfg-|^control-|^branch-|^loop-/, GROUP.CONTROLFLOW],
+  [/^ai-|^gemini-|^plugin-/, GROUP.EXTERNAL],
+  [/formula|comprehend|purpose/, GROUP.SEMANTIC],
+];
+
+/** その証拠はどの出どころから来ているか。 */
+export function groupOf(item) {
+  if (!item) return GROUP.METADATA;
+  const code = typeof item === 'string' ? item : (item.code || '');
+  for (const [re, g] of CODE_GROUP) if (re.test(code)) return g;
+  const family = typeof item === 'string' ? (EVIDENCE[code] || {}).family : item.family;
+  return FAMILY_GROUP[family] || GROUP.METADATA;
+}
+
 /* 1 つの系統だけで到達できる尤度比の上限。
    名前がどれだけ当たっても、それだけでは 60 倍を超えられない。 */
 const FAMILY_CAP = {
@@ -557,9 +612,21 @@ export function fuse(items, opts) {
   for (const it of corroborating) apply(it, scale);
 
   const families = new Set();
+  /*
+   * 出どころで束ねた数も一緒に返す。
+   *
+   * 系統が 3 つあっても、それが全部クラス表から来ていれば独立した 3 つではない。
+   * 合成そのものはこれまでどおり系統で行い（数字は変えない）、
+   * 「どれだけ独立しているか」を別に持って、判定と画面に渡す。
+   */
+  const groups = new Map();
   let verified = 0;
   for (const d of detailed) {
-    if (d.applied > 0) families.add(d.family);
+    if (d.applied > 0) {
+      families.add(d.family);
+      const g = groupOf(d);
+      groups.set(g, (groups.get(g) || 0) + d.applied);
+    }
     if (d.kind === 'verified' && d.applied > 0) verified++;
   }
 
@@ -586,6 +653,9 @@ export function fuse(items, opts) {
     prior,
     items: detailed.sort((a, b) => b.applied - a.applied),
     families: Array.from(families),
+    groups: Array.from(groups.keys()),
+    independentGroups: groups.size,
+    byGroup: Object.fromEntries(groups),
     verified,
     identifying: idLogOdds,
     corroborationScale: scale,

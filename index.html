@@ -39,6 +39,13 @@
             data-i18n-aria="btn.settings" aria-label="設定">⋯</button>
   </header>
 
+  <!-- ── 解析の現在位置 ───────────────────────────────────── -->
+  <nav class="nav-history" id="nav-history" aria-label="解析の履歴" hidden>
+    <button class="nav-history-btn" id="nav-back" type="button" aria-label="前の場所へ戻る" disabled>← <span>戻る</span></button>
+    <button class="nav-history-btn" id="nav-forward" type="button" aria-label="次の場所へ進む" disabled>→ <span>進む</span></button>
+    <div class="nav-crumbs" id="nav-crumbs" aria-label="現在位置"></div>
+  </nav>
+
   <!-- ── ツールバー ────────────────────────────────────────── -->
   <div class="toolbar">
     <div class="workspace-nav" role="tablist" aria-label="解析の入口">

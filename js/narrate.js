@@ -1230,6 +1230,172 @@ export function updateLines(update) {
   return lines;
 }
 
+/* ── 値の流れ（IR / SSA から作った段） ──────────────────────────
+ *
+ * updateLines() は dataflow.js が見つけた「更新 1 件」を 4 行にする。
+ * こちらは slice.js が IR から取り出した**因果の道**を、そのまま段にする。
+ *
+ *   引数として受け取った数     x1
+ *        ↓
+ *   いまの値を読み出す         オブジェクトの +0x20
+ *        ↓
+ *   足す
+ *        ↓
+ *   上限で丸める
+ *        ↓
+ *   同じ場所へ書き戻す         オブジェクトの +0x20
+ *
+ * 命令もレジスタも読めない人が、数の動きだけを追えるようにするのが狙い。
+ * 分からない段は「分かりません」と出す。飛ばして自然に見せない。
+ */
+
+/** IR の場所を、人に見せる名前にする。 */
+export function flowPlaceName(loc, slotName) {
+  if (!loc) return pick('どこか分からない場所', 'an unknown place');
+  switch (loc.kind) {
+    case 'stack':
+      return slotName
+        ? pick('この関数の中の一時的な入れもの（' + slotName + '）',
+          'a local slot in this routine (' + slotName + ')')
+        : pick('この関数の中の一時的な入れもの', 'a local slot in this routine');
+    case 'field':
+      return pick('オブジェクトの ' + offsetText(loc.disp) + ' にある値',
+        'the value at ' + offsetText(loc.disp) + ' of the object');
+    case 'global':
+      return pick('アプリ全体で共有している値（' + hex(loc.address) + '）',
+        'an app-wide value at ' + hex(loc.address));
+    default:
+      return pick('場所が実行時に決まるため、特定できません',
+        'a place that is only decided while running');
+  }
+}
+
+function offsetText(disp) {
+  if (disp == null) return pick('不明な位置', 'an unknown offset');
+  const v = typeof disp === 'bigint' ? disp : BigInt(disp);
+  const abs = v < 0n ? -v : v;
+  return (v < 0n ? '-' : '+') + '0x' + abs.toString(16).toUpperCase();
+}
+
+const FLOW_COMPUTE = {
+  add: ['足す', 'add'], sub: ['引く', 'subtract'], mul: ['掛ける', 'multiply'],
+  div: ['割る', 'divide'], mask: ['一部のビットだけ取り出す', 'mask bits'],
+  scale: ['桁をずらす（2 の倍数で掛け算・割り算）', 'shift (multiply or divide by a power of two)'],
+  rotate: ['ビットを回す', 'rotate bits'], mac: ['掛けてから足す', 'multiply then add'],
+  neg: ['符号を反転する', 'negate'], not: ['ビットを反転する', 'invert bits'],
+};
+
+/**
+ * 段 1 つを「見出し」と「中身」にする。
+ * @param {object} step slice.js の causalChain / valueChain が返す段
+ * @returns {{label:string, text:string, kind:string}|null}
+ */
+export function flowStepText(step) {
+  if (!step) return null;
+  const num = (v) => {
+    if (!v || v.const == null) return null;
+    const n = v.const;
+    const signed = BigInt.asIntN(64, n);
+    const shown = signed > -1000000n && signed < 1000000n ? signed : n;
+    return shown.toLocaleString();
+  };
+  switch (step.kind) {
+    case 'arg':
+      return {
+        kind: step.kind,
+        label: pick('受け取った値', 'Value passed in'),
+        text: pick('呼び出し元から渡された値です。', 'This value came from the caller.'),
+      };
+    case 'const': {
+      const n = num(step.value);
+      return {
+        kind: step.kind,
+        label: pick('決められた数', 'A fixed number'),
+        text: n != null
+          ? pick(n + ' という数が、そのまま書かれています。', 'The number ' + n + ' is written into the code.')
+          : pick('その場で用意された数です。', 'A number prepared on the spot.'),
+      };
+    }
+    case 'read':
+      return {
+        kind: step.kind,
+        label: pick('いまの値を読み出す', 'Read the current value'),
+        text: flowPlaceName(step.location, step.slot) +
+          pick(' から読み出しています。', ' is read.'),
+      };
+    case 'call':
+      return {
+        kind: step.kind,
+        label: pick('ほかの処理に任せる', 'Hand off to another routine'),
+        text: step.indirect
+          ? pick('呼び先が実行時に決まるため、この先はここからは追えません。',
+            'The target is chosen at run time, so the trail stops here.')
+          : pick('別の処理を呼び、その結果を使っています。',
+            'Another routine is called and its result is used.'),
+      };
+    case 'compute': {
+      const e = FLOW_COMPUTE[step.op] || null;
+      const other = (step.operands || []).map(num).find((x) => x != null);
+      return {
+        kind: step.kind,
+        label: e ? pick(e[0], e[1]) : pick('計算する', 'Compute'),
+        text: other != null
+          ? pick(other + ' を使って計算しています。', 'Computed using ' + other + '.')
+          : pick('読み出した値を使って計算しています。', 'Computed from the value that was read.'),
+      };
+    }
+    case 'clamp': {
+      const other = (step.operands || []).map(num).find((x) => x != null);
+      return {
+        kind: step.kind,
+        label: pick('上限・下限で止める', 'Clamp to a limit'),
+        text: other != null
+          ? pick(other + ' を超えない（下回らない）ように制限しています。',
+            'Limited so it does not pass ' + other + '.')
+          : pick('決められた値を超えないように制限しています。',
+            'Limited so it does not pass a fixed value.'),
+      };
+    }
+    case 'choose':
+      return {
+        kind: step.kind,
+        label: pick('条件で選ぶ', 'Pick by condition'),
+        text: pick('条件によって、2 つのうちどちらかの値を使います。',
+          'One of two values is used, depending on a condition.'),
+      };
+    case 'merge':
+      return {
+        kind: step.kind,
+        label: pick('分かれた道が合流する', 'Two paths merge'),
+        text: pick('ここまでに分かれていた道の値が、1 つにまとまります。',
+          'Values from the different paths come together here.'),
+      };
+    case 'write':
+      return {
+        kind: step.kind,
+        label: pick('書き込む', 'Write it back'),
+        text: flowPlaceName(step.location, step.slot) +
+          pick(' へ書き込んでいます。', ' is written.'),
+      };
+    case 'unknown':
+      return {
+        kind: step.kind,
+        label: pick('ここは読み解けません', 'This step could not be read'),
+        text: pick('この命令の意味を特定できませんでした。推測では埋めていません。',
+          'The meaning of this instruction could not be established, and nothing has been guessed.'),
+      };
+    default:
+      return null;
+  }
+}
+
+/** 畳んだ段があることを、正直に 1 行で言う。 */
+export function flowElidedText(n) {
+  if (!n) return '';
+  return pick('ここに、細かい計算が ' + n + ' 段あります（まとめて省略しています）',
+    n + ' smaller steps are folded away here');
+}
+
 /** ある値が次にどう使われるか、の 1 行。 */
 export function useText(u) {
   if (!u) return '';

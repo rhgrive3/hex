@@ -132,6 +132,13 @@ export function buildCfg(model, opts) {
     shapes: classifyShapes(nodes, backEdges, model, graph.immediatePostDominators),
     dominators: graph.dominators,
     components: graph.components,
+    /*
+     * 支配関係の計算そのものを添えておく。
+     *
+     * ir.js が SSA を組むときにも同じものが要る。持ち回さないと、
+     * ブロックが 1000 を超える関数で同じ 2 乗の計算を 2 回することになる。
+     */
+    graph,
   };
 }
 

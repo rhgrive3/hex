@@ -59,7 +59,16 @@ function serve() {
   return new Promise((ok) => server.listen(0, '127.0.0.1', () => ok(server)));
 }
 
-const sheetOf = (page) => page.locator('#overlays .sheet').last();
+const sheetOf = (page) => page.locator('#overlays .sheet:not(.parked)').last();
+
+/** ux.jsでまとめられた操作も、実際に見えているhubから押す。 */
+async function clickShellAction(page, sourceId, hubId, label) {
+  const source = page.locator(sourceId);
+  if (await source.isVisible()) { await source.click(); return; }
+  await page.click(hubId);
+  const item = page.locator('#overlays .menu button').filter({ hasText: new RegExp('^' + label + '$') }).first();
+  await item.click();
+}
 
 /**
  * 開いているものを全部閉じる。
@@ -96,7 +105,7 @@ async function waitForSearch(page, max = 90000) {
 /** ツールバーの「解析ツール」から、名前で 1 つ開く。 */
 async function openTool(page, label) {
   await closeSheets(page);
-  await page.click('#btn-tools');
+  await clickShellAction(page, '#btn-tools', '#btn-analyze-hub', '解析');
   await page.waitForTimeout(400);
   const row = page.locator('#overlays .sheet li', { hasText: label }).first();
   if (!(await row.count())) return false;
@@ -155,7 +164,7 @@ async function main() {
     await closeSheets(page);
 
     /* 関数を 1 つ選んでおく（ツールは「いま見ている関数」に効く） */
-    await page.click('#btn-functions');
+    await clickShellAction(page, '#btn-functions', '#btn-find-hub', '関数');
     await page.waitForTimeout(2500);
     const fnRow = page.locator('#overlays .sheet li.tappable').first();
     const haveFn = await fnRow.count();
@@ -176,7 +185,7 @@ async function main() {
     if (SHOTS) await page.screenshot({ path: path.join(SHOTS, 'decompile.png') });
 
     /* アセンブリの併記に切り替えられる */
-    const asmChip = page.locator('#overlays .sheet button', { hasText: 'アセンブリも表示' }).first();
+    const asmChip = page.locator('#overlays .sheet button').filter({ hasText: /アセンブリ.*(併記|表示)/ }).first();
     if (await asmChip.count()) {
       await asmChip.click();
       await page.waitForTimeout(400);
@@ -285,7 +294,7 @@ print('sandbox-check', typeof app, typeof parent, typeof window, typeof document
       await sheetOf(page).locator('button', { hasText: '決定' }).first().click();
       await page.waitForTimeout(800);
       await closeSheets(page);
-      await page.click('#btn-tools');
+      await clickShellAction(page, '#btn-tools', '#btn-analyze-hub', '解析');
       await page.waitForTimeout(500);
       const hub = await sheetOf(page).innerText();
       check('付けた名前がすぐ反映される', /テスト用の名前/.test(hub),
@@ -295,7 +304,7 @@ print('sandbox-check', typeof app, typeof parent, typeof window, typeof document
     /* ── 数値の検索 ── */
     console.log('\n数値で探す');
     await closeSheets(page);
-    await page.click('#btn-search');
+    await clickShellAction(page, '#btn-search', '#btn-find-hub', '検索');
     await page.waitForTimeout(500);
     const numChip = page.locator('#overlays .sheet button', { hasText: '数値' }).first();
     if (await numChip.count()) {

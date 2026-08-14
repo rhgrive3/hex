@@ -31,7 +31,8 @@ import { recoverSchemas } from './schema.js';
 import { NoteStore, noteKeyFor, legacyNoteKeyFor, EMPTY_NOTES } from './names.js';
 import { PatchSet } from './patch.js';
 import { PluginHost } from './plugins.js';
-import { showTools } from './tools.js';
+import { showTools, prettyName } from './tools.js';
+import { NavigationHistory } from './navigation.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -121,8 +122,17 @@ class App {
       loadingText: $('loading-text'),
       stLeft: $('st-left'),
       stRight: $('st-right'),
+      navHistory: $('nav-history'),
+      navBack: $('nav-back'),
+      navForward: $('nav-forward'),
+      navCrumbs: $('nav-crumbs'),
       fileInput: $('file-input'),
     };
+
+    this.navigation = new NavigationHistory({
+      onChange: (state) => this.renderNavigation(state),
+      onNavigate: (entry) => this.restoreNavigation(entry),
+    });
 
     this.backend = new Backend();
     this.backend.onChunk = (regionId, chunk) => {
@@ -255,6 +265,8 @@ class App {
         { label: t('btn.openFile'), action: () => this.dom.fileInput.click() },
       ], r.left + r.width / 2, r.bottom - 4);
     });
+    this.dom.navBack.addEventListener('click', () => this.navigation.back());
+    this.dom.navForward.addEventListener('click', () => this.navigation.forward());
 
     let resizeTimer = 0;
     const onResize = () => {
@@ -347,6 +359,7 @@ class App {
     this.dom.search.disabled = !region;
     this.dom.select.disabled = !region;
     this.dom.empty.hidden = has;
+    this.dom.navHistory.hidden = !has;
     this.dom.scrubber.classList.toggle('on', !!region);
     this.updateSelectionBar();
 
@@ -884,6 +897,7 @@ class App {
 
     const region = this.pickDefaultRegion(regions, info);
     this.selectRegion(region, { silent: true });
+    this.navigation.reset(region ? this.navigationEntry(region.vmAddr, pick('解析の開始', 'Analysis start')) : null);
 
     if (canDisassemble) {
       this.backend.probe().catch((err) => {
@@ -1043,11 +1057,66 @@ class App {
 
   /* ── 移動 ─────────────────────────────────────────────────── */
 
-  goToAddress(addr, { announce } = {}) {
+  navigationEntry(addr, label) {
+    const region = this.store.get('currentRegion');
+    if (!region || addr == null) return null;
+    return {
+      key: region.id + ':' + addr.toString() + ':' + this.store.get('displayMode'),
+      regionId: region.id,
+      addr,
+      mode: this.store.get('displayMode'),
+      label: label || null,
+    };
+  }
+
+  restoreNavigation(entry) {
+    if (!entry) return;
+    const regions = this.store.get('regions') || [];
+    const region = regions.find((r) => r.id === entry.regionId);
+    if (!region) return;
+    if (this.store.get('currentRegion') !== region) this.selectRegion(region, { silent: true });
+    if (entry.mode) this.setMode(entry.mode);
+    this.viewer.goToAddress(entry.addr);
+    this.flash(entry.addr);
+  }
+
+  renderNavigation(state = this.navigation.snapshot()) {
+    if (!this.dom.navBack) return;
+    this.dom.navBack.disabled = !state.canBack;
+    this.dom.navForward.disabled = !state.canForward;
+    const entry = state.current;
+    this.dom.navCrumbs.replaceChildren();
+    if (!entry) return;
+    const parts = [];
+    if (this.lastGoal && this.lastGoal.text) parts.push(this.lastGoal.text);
+    const owner = this.ownerOf(entry.addr);
+    if (owner && owner.className) parts.push(owner.className);
+    if (owner && owner.sel) parts.push(owner.sel);
+    if (entry.label) parts.push(entry.label);
+    parts.push(addrHex(entry.addr));
+    const seen = new Set();
+    for (const part of parts.filter(Boolean)) {
+      if (seen.has(part)) continue;
+      seen.add(part);
+      if (this.dom.navCrumbs.childNodes.length) {
+        const sep = document.createElement('span');
+        sep.className = 'nav-sep';
+        sep.textContent = '›';
+        sep.setAttribute('aria-hidden', 'true');
+        this.dom.navCrumbs.append(sep);
+      }
+      const node = document.createElement('span');
+      node.textContent = part;
+      this.dom.navCrumbs.append(node);
+    }
+  }
+
+  goToAddress(addr, { announce, history = true, label } = {}) {
     const region = this.store.get('currentRegion');
     if (region && addr >= region.vmAddr && addr < region.vmAddr + region.size) {
       this.viewer.goToAddress(addr);
       if (announce) this.flash(addr);
+      if (history) this.navigation.visit(this.navigationEntry(addr, label));
       return true;
     }
     const regions = this.store.get('regions') || [];
@@ -1057,6 +1126,7 @@ class App {
       this.viewer.goToAddress(addr);
       toast(t('toast.jumped', { name: target.name }));
       if (announce) this.flash(addr);
+      if (history) this.navigation.visit(this.navigationEntry(addr, label));
       return true;
     }
     const info = this.store.get('fileInfo');
@@ -1074,7 +1144,11 @@ class App {
 
   /** 関数の先頭へ移動して、そこを選んだ状態にする。 */
   goToFunction(addr) {
-    if (!this.goToAddress(addr, { announce: true })) return;
+    const name = this.symbols && this.symbols.nameAt(addr);
+    if (!this.goToAddress(addr, {
+      announce: true,
+      label: name ? prettyName(name) : pick('関数', 'Function'),
+    })) return;
     const region = this.store.get('currentRegion');
     if (!region) return;
     const row = Number((addr - region.vmAddr) / 4n);
@@ -1100,8 +1174,7 @@ class App {
     if (!info) return;
     this.selectRegion(info.raw, { silent: true });
     this.setMode('hex');
-    this.viewer.goToAddress(offset);
-    this.flash(offset);
+    this.goToAddress(offset, { announce: true, label: pick('ファイル内の位置', 'File offset') });
   }
 
   /** 文字列の場所へ移動する。文字列はコードではないので 16 進で見せる。 */
@@ -1110,8 +1183,7 @@ class App {
       this.selectRegion(region, { silent: true });
     }
     if (!region || !region.exec) this.setMode('hex');
-    this.viewer.goToAddress(addr);
-    this.flash(addr);
+    this.goToAddress(addr, { announce: true, label: pick('文字列', 'String') });
   }
 
   flash(addr) {
@@ -1139,6 +1211,10 @@ function friendly(message) {
   if (/capstone\.wasm|WebAssembly|wasm/i.test(m)) return t('err.engineWasm');
   if (/NotReadableError|permission/i.test(m)) return t('err.notReadable');
   if (/out of memory|allocation/i.test(m)) return t('err.memory');
+  if (/TypeError|ReferenceError|SyntaxError|Cannot read|\bundefined\b|\bnull\b/i.test(m)) {
+    console.error('[hex] internal error', m);
+    return t('err.unknown');
+  }
   return m || t('err.unknown');
 }
 

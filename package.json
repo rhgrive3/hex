@@ -6,7 +6,7 @@
   "scripts": {
     "lint": "node tests/check.mjs",
     "check": "npm run lint && npm test",
-    "test": "node tests/run.js && node tests/cfg-structuring.mjs && node tests/ux.mjs && node tests/gemini.mjs && node tests/words.mjs && node tests/api.mjs",
+    "test": "node tests/run.js && node tests/ir.mjs && node tests/cfg-structuring.mjs && node tests/ux.mjs && node tests/gemini.mjs && node tests/words.mjs && node tests/api.mjs",
     "browser": "node tests/browser.mjs",
     "sandbox": "node tests/sandbox.mjs",
     "tools": "node tests/tools.mjs",

@@ -4,7 +4,7 @@
  * tests/accuracy.mjs は「取り出した事実が正しいか」を測る。
  * ここで測るのは、その先の **初めて開いた人が実際に見るもの**。
  *
- *   ❤️ HP・体力 を押す → 何が出るか
+ *   HP・体力 を押す → 何が出るか
  *
  * この 1 手で答えが決まらないなら、中の精度が何 % でもこのツールは使えない。
  * 実際、命令の精度が 19 機能すべて 90% 超えの状態で、HP を押すと
@@ -32,11 +32,11 @@ const SHOTS = process.env.KEEP ? path.join(HERE, '.shots') : null;
 
 /* ゲームの数値を探しているのに、組み込んだ SDK が首位に来てはいけない目的。 */
 const GOALS = [
-  { chip: '❤️ HP・体力', id: 'hp' },
-  { chip: '⚔️ 攻撃力', id: 'attack' },
-  { chip: '💥 ダメージ計算', id: 'damage', confirms: true },
-  { chip: '🪙 所持金・コイン', id: 'money' },
-  { chip: '🎒 アイテム・所持品', id: 'item' },
+  { chip: 'HP・体力', id: 'hp' },
+  { chip: '攻撃力', id: 'attack' },
+  { chip: 'ダメージ計算', id: 'damage', confirms: true },
+  { chip: '所持金・コイン', id: 'money' },
+  { chip: 'アイテム・所持品', id: 'item' },
 ];
 
 const MIME = {
@@ -82,7 +82,7 @@ function serve() {
 
 /* ── 画面を読む小道具 ────────────────────────────────────── */
 
-const sheetOf = (page) => page.locator('#overlays .sheet').last();
+const sheetOf = (page) => page.locator('#overlays .sheet:not(.parked)').last();
 
 /** 開いているシートを閉じる（シートの覆いがツールバーを隠すため）。 */
 async function closeSheets(page) {
@@ -119,7 +119,8 @@ async function settle(page, { step = 1000, need = 3, max = 180000 } = {}) {
 function readCandidates(page) {
   return page.evaluate(() => [...document.querySelectorAll('#overlays .sheet .cand')]
     .map((row) => ({
-      text: row.innerText.replace(/\n+/g, ' ').trim(),
+      /* 候補は答えが出た場合に折りたたむ。内容の品質検査は表示状態と分ける。 */
+      text: row.textContent.replace(/\n+/g, ' ').trim(),
       score: Number((row.querySelector('.cand-score')?.textContent || '').replace('%', '')) || 0,
     })));
 }
@@ -175,11 +176,55 @@ async function main() {
     check('案内を閉じたら、画面が使える状態になる',
       !(await page.locator('#overlays .sheet').count()));
 
+    /* SafariでClipboard APIが使えない場合も、同じタップ内のfallbackでコピーする。 */
+    const copiedByFallback = await page.evaluate(async () => {
+      const originalExec = document.execCommand;
+      Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true });
+      document.execCommand = (command) => command === 'copy';
+      try {
+        const { copyText } = await import('../js/ui.js');
+        return await copyText('Safari fallback', 'test');
+      } finally {
+        delete navigator.clipboard;
+        document.execCommand = originalExec;
+      }
+    });
+    check('Clipboard APIなしでもコピーできる', copiedByFallback);
+
+    await page.evaluate(async () => {
+      const { menu } = await import('../js/ui.js');
+      menu([{ label: 'test', action() {} }], 40, 40);
+    });
+    await page.mouse.click(500, 500);
+    check('コンテキストメニューは外側タップで閉じる', !(await page.locator('#overlays .menu').count()));
+
+    await page.evaluate(async () => {
+      const { Sheet } = await import('../js/ui.js');
+      const first = new Sheet('履歴A');
+      first.close();
+      new Sheet('履歴B');
+    });
+    await sheetOf(page).locator('.sheet-nav-btn.back').click();
+    check('シートの戻るで前の画面へ戻る', (await sheetOf(page).locator('.sheet-title').innerText()) === '履歴A');
+    await sheetOf(page).locator('.sheet-nav-btn.forward').click();
+    check('シートの進むで次の画面へ進む', (await sheetOf(page).locator('.sheet-title').innerText()) === '履歴B');
+    await closeSheets(page);
+    await page.evaluate(async () => {
+      const { Sheet } = await import('../js/ui.js');
+      new Sheet('背景タップ');
+    });
+    await page.locator('#overlays .backdrop:not(.parked)').click({ position: { x: 4, y: 4 } });
+    await page.waitForTimeout(50);
+    check('シートは背景タップで閉じる', !(await page.locator('#overlays .sheet').count()));
+
     console.log(`\n${path.basename(BINARY)} を開く…`);
     await page.setInputFiles('#file-input', BINARY);
     const done = await settle(page);
     const secs = ((Date.now() - t0) / 1000).toFixed(1);
     check('開いただけで自動解析が終わる', done, secs + ' 秒');
+    check('解析後は目的から始まる', await sheetOf(page).getByText('何を知りたいですか？', { exact: true }).count());
+    check('専門家向けツールは最初は閉じている',
+      await sheetOf(page).locator('details.expert-entry:not([open])').count());
     if (SHOTS) await page.screenshot({ path: path.join(SHOTS, 'auto.png') });
 
     /*
@@ -225,6 +270,37 @@ async function main() {
         : (text.split('\n')[2] || '').trim();
       /* 手設定LRは未校正なので、頻度の%ではなく段階表示を読む。 */
       const conf = (/確からしさ\s*(非常に高い|高い|中程度|低い|非常に低い)/.exec(text) || [])[1] || '';
+      check(`${goal.id}: 答えが出たときは結論を候補一覧より先に置く`,
+        !named || !text.includes('ほかの候補を見る') || text.indexOf(name) < text.indexOf('ほかの候補を見る'));
+      check(`${goal.id}: 専門情報は詳しく見るまで閉じている`,
+        await sheet.locator('details:not([open])').count());
+
+      /*
+       * 「数の流れ」は IR / SSA から後追いで組む。読み込みの札のまま
+       * 止まっていたら、初心者がいちばん見たい画面が永久に出てこない。
+       * 出せないなら、正直に「復元できませんでした」と書いてあること。
+       */
+      if (named) {
+        await page.waitForTimeout(1200);
+        const rail = await sheet.locator('.flow-rail .flow-node').count();
+        const honest = await sheet
+          .locator('.flow-host .beginner-empty, .flow-host .flow-note, .flow-view').count();
+        const stuck = await sheet.locator('.flow-pending').count();
+        check(`${goal.id}: 数の流れが出るか、出せない理由が出る`, !stuck && (rail > 0 || honest > 0),
+          stuck ? '読み込みのまま止まっている' : (rail ? rail + ' 段' : '正直な空表示'));
+      }
+
+      if (goal.id === 'damage') {
+        const openRoutine = sheet.getByRole('button', { name: /処理を見る|書き換えている場所を開く/ }).first();
+        if (await openRoutine.count()) {
+          await openRoutine.click();
+          await settle(page);
+          const reportTitle = await sheetOf(page).locator('.sheet-title').innerText();
+          check('答えから処理を開ける', /この関数について/.test(reportTitle));
+          await sheetOf(page).locator('.sheet-nav-btn.back').click();
+          check('処理から答えへ戻れる', await sheetOf(page).locator('.pinned-name').count());
+        }
+      }
 
       /*
        * 1. 答えとして名前を出すなら、それに見合う確からしさが要る。
@@ -291,6 +367,17 @@ async function main() {
     const ja = bar.match(/[ぁ-んァ-ヶ一-龥]+/g);
     check('英語の端末で、ツールバーに日本語が残らない', !ja, ja ? ja.join(' ') : bar.replace(/\n/g, ' '));
     await en.close();
+
+    for (const viewport of [{ width: 390, height: 844 }, { width: 820, height: 1180 }]) {
+      const responsive = await browser.newPage({ viewport, locale: 'ja-JP' });
+      await responsive.goto(url, { waitUntil: 'domcontentloaded' });
+      await responsive.waitForTimeout(800);
+      const open = responsive.locator('#btn-open-2');
+      const box = await open.boundingBox();
+      check(`${viewport.width < 500 ? 'mobile' : 'tablet'} viewportでファイルを開くボタンが画面内にある`,
+        !!box && box.x >= 0 && box.x + box.width <= viewport.width && box.height >= 44);
+      await responsive.close();
+    }
   } finally {
     await browser.close();
     server.close();

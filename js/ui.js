@@ -7,6 +7,8 @@
 import { t } from './i18n.js';
 
 const overlays = () => document.getElementById('overlays');
+const pickUi = (ja, en) => (document.documentElement.lang || navigator.language || 'ja')
+  .toLowerCase().startsWith('ja') ? ja : en;
 
 export function el(tag, cls, text) {
   const n = document.createElement(tag);
@@ -43,17 +45,23 @@ export function button(label, cls, onClick) {
 let openSheet = null;
 let parkedSheet = null;      // 閉じたが、まだ捨てていないシート
 let parkTimer = 0;
+let sheetSerial = 0;
 
 const MAX_DEPTH = 8;         // 重ねすぎ（＝DOM の持ちすぎ）を防ぐ
 
 export class Sheet {
   constructor(title, { onClose, anchor, dim, size } = {}) {
+    closeMenu();
+    this.title = title;
+    this.returnFocus = document.activeElement;
+    this.forward = null;
     this.backdrop = el('div', 'backdrop' + (dim === 'light' ? ' light' : ''));
     this.root = el('div', 'sheet' +
       (anchor === 'bottom' ? ' bottom' : '') +
       (size === 'full' ? ' full' : size === 'wide' ? ' wide' : ''));
     this.root.setAttribute('role', 'dialog');
     this.root.setAttribute('aria-modal', 'true');
+    this.root.tabIndex = -1;
 
     /* 親を決める。直前のシートがあれば、それが親になる。 */
     this.parent = null;
@@ -65,6 +73,7 @@ export class Sheet {
       this.parent = openSheet;
       openSheet.park();
     }
+    if (this.parent && this.parent.forward) this.parent.destroyForward();
     /* 深くなりすぎたら、いちばん古いものから捨てる。 */
     let depth = 0;
     for (let p = this.parent; p; p = p.parent) {
@@ -73,33 +82,125 @@ export class Sheet {
     }
 
     const head = el('div', 'sheet-head');
-    if (this.parent) {
-      this.backBtn = button('‹ ' + t('btn.back'), 'tb-btn back', () => this.back());
-      head.append(this.backBtn);
-    } else {
-      const spacer = el('div');
-      spacer.style.minWidth = '52px';
-      head.append(spacer);
-    }
+    const nav = el('div', 'sheet-history-actions');
+    this.backBtn = button('←', 'tb-btn sheet-nav-btn back', () => this.back());
+    this.backBtn.setAttribute('aria-label', pickUi('戻る', 'Back'));
+    this.forwardBtn = button('→', 'tb-btn sheet-nav-btn forward', () => this.goForward());
+    this.forwardBtn.setAttribute('aria-label', pickUi('進む', 'Forward'));
+    nav.append(this.backBtn, this.forwardBtn);
     this.titleEl = el('div', 'sheet-title', title);
-    head.append(this.titleEl, button(t('btn.done'), 'tb-btn', () => this.close()));
+    this.titleEl.id = 'sheet-title-' + (++sheetSerial);
+    this.root.setAttribute('aria-labelledby', this.titleEl.id);
+    head.append(nav, this.titleEl, button(t('btn.done'), 'tb-btn sheet-done', () => this.close()));
+    this.trail = el('nav', 'sheet-trail');
+    this.trail.setAttribute('aria-label', pickUi('現在位置', 'Current location'));
     this.body = el('div', 'sheet-body');
-    this.root.append(head, this.body);
+    this.root.append(head, this.trail, this.body);
 
     this.onClose = onClose;
     /* 背景を押したときは 1 枚戻る。全部消えるより迷わない。 */
     this.backdrop.addEventListener('click', () => this.back());
     overlays().append(this.backdrop, this.root);
     openSheet = this;
+    this.updateHistoryChrome();
+    this.armSwipe(head);
+    this.root.addEventListener('keydown', (e) => this.trapFocus(e));
+    document.documentElement.classList.add('sheet-open');
+    requestAnimationFrame(() => {
+      if (!this.root.isConnected || openSheet !== this) return;
+      const first = this.root.querySelector('input:not([disabled]), textarea:not([disabled])');
+      try { (first || this.root).focus({ preventScroll: true }); } catch { /* best effort */ }
+    });
   }
 
   /** 見出しを後から差し替える（中身が決まってから名前が付く画面のため）。 */
-  setTitle(text) { if (this.titleEl) this.titleEl.textContent = text; }
+  setTitle(text) {
+    this.title = text;
+    if (this.titleEl) this.titleEl.textContent = text;
+    this.updateHistoryChrome();
+  }
+
+  /*
+   * 現在位置の表示と、そこへの配線。
+   *
+   * 以前このパンくずは、ただの文字だった。3 枚潜ってから 1 枚目へ帰るには
+   * 「戻る」を 3 回押すしかなく、しかもどこまで戻ったのかは戻ってみるまで
+   * 分からなかった。ここは道そのものなので、押して飛べるようにする。
+   * いま居るところだけは押せない（押しても何も起きないボタンを置かない）。
+   */
+  updateHistoryChrome() {
+    if (!this.backBtn) return;
+    this.backBtn.disabled = !this.parent;
+    this.forwardBtn.disabled = !this.forward;
+    this.trail.replaceChildren();
+    const chain = [];
+    for (let p = this; p; p = p.parent) chain.unshift(p);
+    for (const sheet of chain) {
+      if (this.trail.childNodes.length) this.trail.append(el('span', 'sheet-trail-sep', '›'));
+      if (sheet === this) {
+        const here = el('span', 'sheet-trail-item current', sheet.title);
+        here.setAttribute('aria-current', 'page');
+        this.trail.append(here);
+      } else {
+        this.trail.append(button(sheet.title, 'sheet-trail-item sheet-trail-link',
+          () => this.backTo(sheet)));
+      }
+    }
+    this.trail.hidden = chain.length < 2;
+    this.root.dataset.depth = String(Math.min(chain.length, 4));
+  }
+
+  /** パンくずで選んだところまで、一気に戻る。途中の画面は「進む」に残す。 */
+  backTo(target) {
+    if (!target || target === this) return;
+    let p = this.parent;
+    while (p && p !== target) p = p.parent;
+    if (!p) return;                       // 自分の道の上にいない
+    this.park();
+    // 通ってきた道を forward としてつなぎ直す（「進む」で戻れるように）
+    let child = this;
+    for (let q = this.parent; q; q = q.parent) {
+      q.forward = child;
+      if (q === target) break;
+      q.park();
+      child = q;
+    }
+    target.unpark();
+  }
+
+  armSwipe(head) {
+    let start = null;
+    head.addEventListener('pointerdown', (e) => {
+      if (e.pointerType !== 'touch' || e.target.closest('button')) return;
+      start = { id: e.pointerId, x: e.clientX, y: e.clientY };
+    });
+    head.addEventListener('pointerup', (e) => {
+      if (!start || start.id !== e.pointerId) return;
+      const dx = Math.abs(e.clientX - start.x);
+      const dy = e.clientY - start.y;
+      start = null;
+      if (dy > 72 && dx < 80) this.back();
+    });
+    head.addEventListener('pointercancel', () => { start = null; });
+  }
+
+  trapFocus(e) {
+    if (e.key !== 'Tab' || openSheet !== this) return;
+    const focusable = [...this.root.querySelectorAll(
+      'button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex="0"]')]
+      .filter((n) => n.offsetParent !== null);
+    if (!focusable.length) { e.preventDefault(); this.root.focus(); return; }
+    const first = focusable[0], last = focusable[focusable.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  }
 
   /** 表示から外すだけ。中身も onClose も生かしたまま。 */
   park() {
     this.root.classList.add('parked');
     this.backdrop.classList.add('parked');
+    this.root.setAttribute('inert', '');
+    this.root.setAttribute('aria-hidden', 'true');
     if (openSheet === this) openSheet = null;
   }
 
@@ -107,7 +208,15 @@ export class Sheet {
   unpark() {
     this.root.classList.remove('parked');
     this.backdrop.classList.remove('parked');
+    this.root.removeAttribute('inert');
+    this.root.removeAttribute('aria-hidden');
     openSheet = this;
+    this.updateHistoryChrome();
+    requestAnimationFrame(() => {
+      if (openSheet === this) {
+        try { this.root.focus({ preventScroll: true }); } catch { /* best effort */ }
+      }
+    });
   }
 
   /** このシートだけを捨てる。 */
@@ -118,22 +227,57 @@ export class Sheet {
     if (openSheet === this) openSheet = null;
     if (parkedSheet === this) parkedSheet = null;
     if (this.onClose) this.onClose();
+    if (!openSheet && !parkedSheet && !overlays().querySelector('.sheet')) {
+      document.documentElement.classList.remove('sheet-open');
+      if (this.returnFocus && this.returnFocus.isConnected && typeof this.returnFocus.focus === 'function') {
+        try { this.returnFocus.focus({ preventScroll: true }); } catch { /* best effort */ }
+      }
+    }
+  }
+
+  destroyForward() {
+    let child = this.forward;
+    this.forward = null;
+    while (child) {
+      const next = child.forward;
+      child.forward = null;
+      child.parent = null;
+      child.destroy();
+      child = next;
+    }
+    this.updateHistoryChrome();
   }
 
   /** このシートと、その親をすべて捨てる。 */
   destroyChain() {
-    let p = this.parent;
-    this.parent = null;
-    this.destroy();
-    while (p) { const next = p.parent; p.parent = null; p.destroy(); p = next; }
+    let p = this;
+    while (p) {
+      const parent = p.parent;
+      if (parent && parent.forward === p) parent.forward = null;
+      p.parent = null;
+      p.destroyForward();
+      p.destroy();
+      p = parent;
+    }
   }
 
   /** 1 枚戻る。親がいなければ、そのまま閉じる。 */
   back() {
     const parent = this.parent;
-    this.parent = null;
-    this.destroy();
-    if (parent) parent.unpark();
+    if (!parent) { this.close(); return; }
+    this.park();
+    parent.forward = this;
+    parent.unpark();
+  }
+
+  /** 戻った直後の 1 画面へ進む。分岐したら古い進む先は破棄する。 */
+  goForward() {
+    const child = this.forward;
+    if (!child || !child.root.isConnected) return false;
+    this.forward = null;
+    this.park();
+    child.unpark();
+    return true;
   }
 
   /**
@@ -198,7 +342,16 @@ export function tapRow(label, { sub, right, tag, tagClass, disabled, indent, mon
   if (indent) li.classList.add('indent');
   if (tag) li.append(el('span', 'tag' + (tagClass ? ' ' + tagClass : ''), tag));
   if (right) li.append(el('span', 'v', right));
-  if (!disabled && onTap) li.addEventListener('click', onTap);
+  if (!disabled && onTap) {
+    li.setAttribute('role', 'button');
+    li.tabIndex = 0;
+    li.addEventListener('click', onTap);
+    li.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      e.preventDefault();
+      onTap(e);
+    });
+  }
   return li;
 }
 
@@ -307,10 +460,15 @@ function armMenuDismiss(entry) {
       closeMenu();
     }
   };
-  const move = () => closeMenu();
+  const move = (e) => {
+    if (e && e.target && entry.m.contains(e.target)) return;
+    closeMenu();
+  };
 
   document.addEventListener('pointerdown', outside, true);
   document.addEventListener('keydown', key, true);
+  document.addEventListener('scroll', move, true);
+  document.addEventListener('touchmove', move, { passive: true, capture: true });
   window.addEventListener('resize', move, { passive: true });
   window.addEventListener('orientationchange', move, { passive: true });
   if (window.visualViewport) {
@@ -321,6 +479,8 @@ function armMenuDismiss(entry) {
   entry.cleanup = () => {
     document.removeEventListener('pointerdown', outside, true);
     document.removeEventListener('keydown', key, true);
+    document.removeEventListener('scroll', move, true);
+    document.removeEventListener('touchmove', move, true);
     window.removeEventListener('resize', move);
     window.removeEventListener('orientationchange', move);
     if (window.visualViewport) {
@@ -332,6 +492,7 @@ function armMenuDismiss(entry) {
 
 export function menu(items, x, y) {
   closeMenu();
+  const returnFocus = document.activeElement;
   const backdrop = el('div', 'backdrop');
   backdrop.style.background = 'transparent';
   const m = el('div', 'menu');
@@ -357,13 +518,17 @@ export function menu(items, x, y) {
   m.style.left = Math.round(left) + 'px';
   m.style.top = Math.round(top) + 'px';
 
-  const entry = { m, backdrop, cleanup: null };
+  const entry = { m, backdrop, cleanup: null, returnFocus };
   openMenu = entry;
   // Keep the backdrop click as a simple fallback, but capture pointerdown at
   // document level too. Safari can occasionally retarget a tap during a
   // long-press/callout transition, which used to leave this menu stuck open.
   backdrop.addEventListener('click', () => closeMenu());
   armMenuDismiss(entry);
+  requestAnimationFrame(() => {
+    const first = m.querySelector('button:not([disabled])');
+    if (first) first.focus({ preventScroll: true });
+  });
 }
 
 export function closeMenu() {
@@ -373,22 +538,39 @@ export function closeMenu() {
   if (entry.cleanup) entry.cleanup();
   entry.m.remove();
   entry.backdrop.remove();
+  if (entry.returnFocus && entry.returnFocus.isConnected && typeof entry.returnFocus.focus === 'function') {
+    try { entry.returnFocus.focus({ preventScroll: true }); } catch { /* best effort */ }
+  }
   return true;
 }
 
 /* ── Dialog ─────────────────────────────────────────────────── */
 
 export function alertDialog(title, message, { confirmLabel = t('btn.ok'), onConfirm } = {}) {
+  closeMenu();
+  const returnFocus = document.activeElement;
   const backdrop = el('div', 'backdrop');
   const d = el('div', 'dialog');
   d.setAttribute('role', 'alertdialog');
+  d.setAttribute('aria-modal', 'true');
   d.append(el('h3', null, title), el('p', null, message));
   const actions = el('div', 'actions');
-  const done = () => { backdrop.remove(); d.remove(); if (onConfirm) onConfirm(); };
-  actions.append(button(confirmLabel, null, done));
+  const key = (e) => { if (e.key === 'Escape') { e.preventDefault(); done(); } };
+  const done = () => {
+    document.removeEventListener('keydown', key, true);
+    backdrop.remove(); d.remove();
+    if (returnFocus && returnFocus.isConnected && typeof returnFocus.focus === 'function') {
+      try { returnFocus.focus({ preventScroll: true }); } catch { /* best effort */ }
+    }
+    if (onConfirm) onConfirm();
+  };
+  const ok = button(confirmLabel, null, done);
+  actions.append(ok);
   d.append(actions);
   overlays().append(backdrop, d);
   backdrop.addEventListener('click', done);
+  document.addEventListener('keydown', key, true);
+  requestAnimationFrame(() => ok.focus({ preventScroll: true }));
   return d;
 }
 
@@ -406,6 +588,26 @@ export function toast(text) {
   toastEl.textContent = text;
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => { if (toastEl) { toastEl.remove(); toastEl = null; } }, 1900);
+}
+
+/** Keep technical exceptions in the console and return copy suitable for UI. */
+export function userError(err, fallback) {
+  console.error('[hex] operation failed', err);
+  const message = String(err && err.message ? err.message : err || '');
+  if (/out of memory|allocation/i.test(message)) {
+    return pickUi('メモリが足りません。大きな一覧を閉じて、もう一度お試しください。',
+      'Not enough memory. Close large views and try again.');
+  }
+  if (/network|failed to fetch|offline/i.test(message)) {
+    return pickUi('通信できませんでした。接続を確認して、もう一度お試しください。',
+      'Could not connect. Check the network and try again.');
+  }
+  if (/permission|notallowed/i.test(message)) {
+    return pickUi('この操作はブラウザに許可されませんでした。設定を確認してください。',
+      'The browser did not allow this operation. Check its permissions.');
+  }
+  return fallback || pickUi('この結果を表示できませんでした。別の表示から確認できます。',
+    'This result could not be shown. You can use another view.');
 }
 
 /* ── Clipboard ──────────────────────────────────────────────── */
@@ -512,7 +714,7 @@ export async function copyTextLazy(textPromise, label) {
   try {
     text = await settled;
   } catch (err) {
-    toast((err && err.message) ? err.message : t('err.copyFailed'));
+    toast(userError(err, t('err.copyFailed')));
     return false;
   }
   return copyText(text, label);

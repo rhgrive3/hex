@@ -22,7 +22,7 @@
 
 import {
   Sheet, el, button, list, groupRow, kvRow, tapRow, para, heading, noteBox,
-  codeBlock, block, disclosure, toast, alertDialog, copyText, menu,
+  codeBlock, block, disclosure, toast, alertDialog, copyText, menu, userError,
 } from './ui.js';
 import { addrHex } from './format.js';
 import { decompile, decompiledText } from './decompile.js';
@@ -323,6 +323,9 @@ export async function showDecompiler(app, addr) {
   chips.append(button('図で見る', 'chip', () => { sheet.close(); showCfg(app, addr); }));
   head.append(chips);
   sheet.body.append(head);
+  sheet.body.append(para(
+    'これは命令から組み立てた読みやすい訳であり、元のソースコードではありません。',
+    'sub'));
 
   for (const w of out.warnings) sheet.body.append(el('div', 'hint warn', '⚠ ' + w));
 
@@ -1020,7 +1023,7 @@ export function showNotes(app) {
           sh.close();
           render();
           toast(n + ' 件を取り込みました');
-        } catch (err) { alertDialog('読み込めません', (err && err.message) || String(err)); }
+        } catch (err) { alertDialog('読み込めません', userError(err, 'メモの形式を確認してください。')); }
       }));
     }));
     chips.append(button('全部消す', 'chip danger', () => {
@@ -1190,7 +1193,7 @@ async function savePatched(app) {
     setTimeout(() => URL.revokeObjectURL(url), 10000);
     toast('保存しました');
   } catch (err) {
-    alertDialog('保存できません', (err && err.message) || String(err));
+    alertDialog('保存できません', userError(err, 'ブラウザの保存設定を確認して、もう一度お試しください。'));
   }
 }
 
@@ -1596,7 +1599,8 @@ export function showIl2cpp(app) {
         }
         show(meta);
       } catch (err) {
-        body.replaceChildren(el('div', 'hint warn', '⚠ ' + ((err && err.message) || String(err))));
+        body.replaceChildren(el('div', 'hint warn', userError(err,
+          'IL2CPPメタデータを解析できませんでした。別の解析ツールは引き続き利用できます。')));
       }
     });
     picker.click();
