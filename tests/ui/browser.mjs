@@ -123,6 +123,40 @@ async function shot(page, browser, viewport, name) {
   await page.screenshot({ path: path.join(dir, name + '.png'), fullPage: false });
 }
 
+async function captureProgressAudit(page, browserName, viewportName) {
+  const opened = await page.evaluate(async () => {
+    const app = window.__app;
+    if (!app?.store?.get('fileInfo')) return false;
+    app.autoReport = null;
+    const { showOverview } = await import('/js/panels.js');
+    showOverview(app);
+    return true;
+  });
+  check(`${browserName}/${viewportName}: analysis progress state opens`, opened);
+  if (!opened) return;
+  await page.waitForTimeout(30);
+  await shot(page, browserName, viewportName, 'analysis-progress');
+  await closeTransient(page);
+}
+
+async function captureValueFlowAudit(page, browserName, viewportName, fn) {
+  const opened = await page.evaluate(async (address) => {
+    const app = window.__app;
+    const result = await app.analyzeFunctionAt(BigInt(address));
+    const model = result?.model;
+    const insn = model?.instructions?.find((item) => Number.isFinite(item.row));
+    if (!model || !insn) return false;
+    const { showValueFlow } = await import('/js/panels.js');
+    showValueFlow(app, model, insn.row, app.store.get('currentRegion'));
+    return true;
+  }, fn);
+  check(`${browserName}/${viewportName}: value-flow audit state opens`, opened);
+  if (!opened) return;
+  await page.waitForTimeout(80);
+  await shot(page, browserName, viewportName, 'value-flow');
+  await closeTransient(page);
+}
+
 async function checkViewport(browserType, browserName, viewportName, width, height, baseUrl, screenshots = false) {
   const browser = await browserType.launch({ args: browserName === 'chromium' ? ['--no-sandbox'] : [] });
   const context = await browser.newContext({ viewport: { width, height }, locale: 'ja-JP', hasTouch: width < 900, isMobile: width < 600 });
@@ -151,6 +185,7 @@ async function checkViewport(browserType, browserName, viewportName, width, heig
     await openSample(page);
     const fn = await firstFunction(page);
     check(`${browserName}/${viewportName}: sample exposes a function`, !!fn);
+    if (screenshots) await captureProgressAudit(page, browserName, viewportName);
 
     await page.evaluate(() => window.__hexUi.router.navigate('/explorer/functions'));
     await page.waitForTimeout(100);
@@ -174,6 +209,8 @@ async function checkViewport(browserType, browserName, viewportName, width, heig
         check(`${browserName}/${viewportName}: function/${tab} no body overflow`, overflow.body <= 1 && overflow.root <= 1, JSON.stringify(overflow));
         if (screenshots) await shot(page, browserName, viewportName, `function-${tab}`);
       }
+
+      if (screenshots) await captureValueFlowAudit(page, browserName, viewportName, fn);
 
       await page.evaluate(({ fn }) => window.__hexUi.router.navigate(`/function/${fn}/overview`), { fn });
       await page.evaluate(() => { document.querySelector('.ui-route-host').scrollTop = 120; });
