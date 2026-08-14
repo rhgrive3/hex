@@ -16,6 +16,8 @@ jobs:
           node-version: 22
       - name: Apply exact patch
         run: node tools/fix-issues-48-60.mjs
+      - name: Normalize semantic defaults
+        run: node tools/fix-issues-48-60-adjust.mjs
       - name: Syntax check touched modules
         run: |
           node --check js/binary/reader.js
