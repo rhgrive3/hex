@@ -418,6 +418,31 @@ export function buildValues(model, opts) {
    * 「引数だ」と言い直してしまわないために持つ。x0 は self でも引数でもあるが、
    * 関数の途中で作り直されたあとの x0 を「引数」と呼ぶのは、はっきり嘘になる。
    */
+  /*
+   * 直前にフラグを立てた比較。条件つき代入（csel）を式にするのに要る。
+   * 合流点で捨てる（どちらの道の比較か分からなくなるため）。
+   */
+  let flags = null;
+
+  /*
+   * sp は本体の途中では動かないか。
+   *
+   * 動かないなら、合流点でも sp だけは忘れてよい理由がない。忘れていたころ、
+   * 同じ置き場の番地が 2 通りの式で出ていた。
+   *
+   *   sub_10000477C(sp - 264, …)   ← sp を追えている側（関数に入った時点の sp から）
+   *   sub_10000477C(sp + 192, …)   ← 合流で忘れた側（いまの sp から）
+   *
+   * どちらも同じ 1 つの置き場を指しているのに、名前を付けようがなくなる。
+   * `sub sp, sp, x8` のように可変長で動かす関数だけ、これまでどおり忘れる。
+   */
+  const spStable = insns.every((insn) => {
+    const d = insn.ops && insn.ops[0];
+    if (!d || d.k !== 'reg' || d.cls !== 'sp') return true;
+    const imm = insn.ops[2];
+    return !!(imm && imm.k === 'imm' && imm.value != null);
+  });
+
   const everWritten = new Set();
   const get = (key, row) => {
     if (!key || key === 'zr') return ZERO;
@@ -471,8 +496,11 @@ export function buildValues(model, opts) {
     const join = joins.get(row);
     if (join) {
       stack.clear();
+      flags = null;               // どの道を通って来たか分からない ＝ 比較の結果も分からない
+      const keepSp = spStable ? regs.get('sp') : null;
       if (join.all) regs.clear();
       else for (const k of Array.from(regs.keys())) if (join.killed.has(k)) regs.delete(k);
+      if (keepSp) regs.set('sp', keepSp);
     }
 
     /*
@@ -516,6 +544,23 @@ export function buildValues(model, opts) {
       for (let a = 0; a <= 7; a++) {
         const v = regs.get('x' + a);
         if (v) args.push({ index: a, value: v });
+      }
+      /*
+       * うしろに付いている「触っていないレジスタ」は、引数ではない。
+       *
+       *   sub_10041B644(0, a3, *(uint32 *)(sp - 372), x3, x4, x5, x6, x7)
+       *                                               ^^^^^^^^^^^^^^^^^^
+       * x3〜x7 はこの関数が受け取ったものが入ったままで、この呼び出しのために
+       * 用意されたものではない。引数の数は分からないが、「用意していないもの」は
+       * 引数でないと言い切れる。分からないものを並べるより、出さないほうが正しい。
+       */
+      while (args.length) {
+        const last = args[args.length - 1];
+        const v = last.value;
+        const untouched = (v.k === 'arg' && v.n === last.index) ||
+          (v.k === 'reg' && v.reg === 'x' + last.index);
+        if (!untouched) break;
+        args.pop();
       }
       const name = call ? call.name : null;
       const ret = node('call', {
@@ -576,7 +621,16 @@ export function buildValues(model, opts) {
               ? baseVal.addr + m.disp : null;
             v = node('mem', {
               baseReg: m.base,
-              base: baseVal && baseVal.k !== 'reg' ? baseVal : null,
+              /*
+               * 置き場（[sp, #N] / [x29, #N]）は、番地の式を持たない。
+               *
+               * sp を合流点でも忘れないようにしたとき、置き場の読み書きが
+               * どれも `*(uint32 *)((sp - 400) + 28)` という **木** を抱えるようになり、
+               * 1 つの式が大きくなりすぎて（MAX_NODES）レジスタ名に潰れた。
+               * ÷100 の段が式として出なくなり、文言との一致が 93% → 78% に落ちた。
+               * 置き場は baseReg と disp だけで 1 つに決まるので、木は要らない。
+               */
+              base: (m.stack || baseVal == null || baseVal.k === 'reg') ? null : baseVal,
               disp: m.disp != null ? m.disp + BigInt(k * (m.size / (pair ? 2 : 1))) : null,
               index: m.index ? regs.get(m.index) || regNode(m.index, row) : null,
               size: pair ? m.size / 2 : m.size,
@@ -625,6 +679,10 @@ export function buildValues(model, opts) {
     const bits = regBits(dstOp);
     const A = () => valueOf(insn.ops[1], row, bits);
     const B = () => valueOf(insn.ops[2], row, bits);
+    /* 末尾に s の付く演算（subs / adds / ands …）もフラグを立てる。 */
+    if (/^(subs|adds|ands|bics|negs)$/.test(base)) {
+      flags = { op: base, a: A(), b: B() };
+    }
 
     if (base === 'mov' || base === 'fmov' || base === 'movz') {
       const txt = textOf.get(row);
@@ -697,10 +755,23 @@ export function buildValues(model, opts) {
       emit(dst, width > 0n && width < 64n ? bin('and', shifted, constNode((1n << width) - 1n), bits) : shifted);
     } else if (base === 'csel' || base === 'csinc' || base === 'csinv' || base === 'csneg' ||
                base === 'cset' || base === 'csetm' || base === 'cinc') {
-      emit(dst, selectNode(insn, row, valueOf, bits));
+      emit(dst, selectNode(insn, row, valueOf, bits, flags));
     } else if (base === 'cmp' || base === 'cmn' || base === 'tst' || base === 'fcmp' ||
                base === 'fcmpe' || base === 'ccmp' || base === 'ccmn') {
-      /* フラグだけ。値は作らない。 */
+      /*
+       * フラグだけで、値は作らない。ただし **何と何を比べたか** は覚えておく。
+       *
+       * ここを捨てていたころ、csel から作った式の条件は `flag_ne` としか
+       * 書けなかった。`x22 = flag_ne ? flag_ne ? result : flag_lt ? result : 1 : result;`
+       * のような行になり、条件つきの代入はどれも読めなかった。
+       * 比べた 2 つを持っておけば `x22 = (result < 1) ? 1 : result;` と書ける。
+       */
+      const cbits = regBits(insn.ops[0]);
+      flags = {
+        op: base,
+        a: valueOf(insn.ops[0], row, cbits),
+        b: insn.ops[1] ? valueOf(insn.ops[1], row, cbits) : ZERO,
+      };
     } else if (insn.writes.length) {
       for (const w of insn.writes) regs.delete(w);
     }
@@ -815,13 +886,31 @@ function narrow32(v) {
   return v;
 }
 
-function selectNode(insn, row, valueOf, bits) {
+function selectNode(insn, row, valueOf, bits, flags) {
   const ops = insn.ops;
   const cc = ops.length ? ops[ops.length - 1] : null;
   const cond = cc && cc.k === 'cond' ? cc.text : null;
   const base = String(insn.mnemonic).toLowerCase();
+  /*
+   * 何と何を比べた結果なのか。分かっていれば、条件を式として書ける。
+   *
+   * tst と cmn は「引き算して 0 と比べる」形ではないので、比べる形に直してから渡す。
+   *   tst w8, #1  → (w8 & 1) と 0
+   *   cmn w8, #4  → (w8 + 4) と 0
+   */
+  let cmp = null;
+  if (flags && flags.a) {
+    if (flags.op === 'tst' || flags.op === 'ands' || flags.op === 'bics') {
+      cmp = { a: bin('and', flags.a, flags.b, 64), b: ZERO };
+    } else if (flags.op === 'cmn' || flags.op === 'adds') {
+      cmp = { a: bin('add', flags.a, flags.b, 64), b: ZERO };
+    } else {
+      cmp = { a: flags.a, b: flags.b };
+    }
+    if (!cmp.a) cmp = null;
+  }
   if (base === 'cset' || base === 'csetm') {
-    return node('sel', { cc: cond, a: constNode(base === 'csetm' ? -1n : 1n), b: ZERO });
+    return node('sel', { cc: cond, cmp, a: constNode(base === 'csetm' ? -1n : 1n), b: ZERO });
   }
   const a = valueOf(ops[1], row, bits);
   const b = ops[2] && ops[2].k !== 'cond' ? valueOf(ops[2], row, bits) : a;
@@ -829,7 +918,40 @@ function selectNode(insn, row, valueOf, bits) {
   if (base === 'csinc' || base === 'cinc') alt = bin('add', b, constNode(1n), bits);
   else if (base === 'csinv') alt = un('not', b);
   else if (base === 'csneg') alt = un('neg', b);
-  return node('sel', { cc: cond, a, b: alt });
+  /*
+   * どちらを選んでも同じ値なら、選んでいない。
+   *
+   *   x22 = flag_ne ? flag_ne ? result : flag_lt ? result : 1 : result;
+   *
+   * こう出ていた行の外側 2 段は、どちらの枝も result だった。
+   * 比較が読めなかったときに条件を `flag_ne` と書くので、余計に読めなくなる。
+   */
+  if (same(a, alt)) return a;
+  /*
+   * 「大きいほうを採る」「小さいほうを採る」の定型。
+   *
+   *   cmp x25, #1 ; csel x22, x25, x8, lt      →   x22 = min(result, 1);
+   *
+   * ARM64 に min / max の命令は無いので、コンパイラは必ず比較と csel の
+   * 2 命令で書く。比べた 2 つと選んだ 2 つが同じものなら、それは min か max
+   * であって、条件つき代入として読む必要はない。
+   */
+  const mm = minMaxOf(cond, cmp, a, alt);
+  if (mm) return mm;
+  return node('sel', { cc: cond, cmp, a, b: alt });
+}
+
+/** cond ? a : b が min / max の形になっていれば、その 1 つのノードにする。 */
+function minMaxOf(cc, cmp, a, b) {
+  if (!cc || !cmp || !cmp.a || !cmp.b) return null;
+  const LOW = { lt: 'min', le: 'min', gt: 'max', ge: 'max', lo: 'umin', ls: 'umin', hi: 'umax', hs: 'umax' };
+  const op = LOW[cc];
+  if (!op) return null;
+  const flip = { min: 'max', max: 'min', umin: 'umax', umax: 'umin' };
+  /* 「小さければ左」なら min、「小さければ右」なら max（大小が入れ替わる）。 */
+  if (same(cmp.a, a) && same(cmp.b, b)) return node('bin', { op, a, b });
+  if (same(cmp.a, b) && same(cmp.b, a)) return node('bin', { op: flip[op], a: b, b: a });
+  return null;
 }
 
 /* ────────────────────────────────────────────────────────────
@@ -862,6 +984,24 @@ export function foldMagic(n, depth) {
       if (fixed) return fixed;
     }
     const a = foldMagic(n.a, d), b = foldMagic(n.b, d);
+    /*
+     * 符号直しが取り残される形。
+     *
+     * 値を置くたびに foldMagic を通しているので、`asr` の側が先に割り算へ
+     * 戻ってしまうことがある。そのあとで足し算を見ると、片方はもう `/ 100` で、
+     * signFix の当てにしている `sar` の形をしていない。
+     *
+     *   x8  = x25 * f(...) *hi M          ← 別の行として残っている
+     *   x25 = x25 * f(...) / 100 + (x8 >> 63)
+     *                                ^^^^^^^^^ これだけが取り残される
+     *
+     * 割り算はもう出ているので、この項は「マイナスなら 1 足す」の名残でしかない。
+     * 同じ値を割っている割り算が隣にあることを確かめてから落とす。
+     */
+    if (n.op === 'add') {
+      const kept = dropSignFix(a, b) || dropSignFix(b, a);
+      if (kept) return kept;
+    }
     const cur = (a === n.a && b === n.b) ? n : node('bin', { op: n.op, a, b });
     /*
      * 符号直しの付かない割り算。値がマイナスにならないと分かっているとき
@@ -951,6 +1091,73 @@ function signFix(shifted, signBit) {
   return null;
 }
 
+/**
+ * 割り算に戻したあとに残った符号直しの項を落とす。
+ *
+ * @param kept     残す側（すでに割り算になっている式）
+ * @param signTerm `X >> 63` の形をしているはずの項
+ * @returns kept（落としてよいとき） | null
+ */
+function dropSignFix(kept, signTerm) {
+  if (!kept || !signTerm) return null;
+  if (signTerm.k !== 'bin' || signTerm.op !== 'shr') return null;
+  const w = constOf(signTerm.b);
+  if (w !== 63n && w !== 31n) return null;
+  /* 符号を見ている相手は、魔法数を掛けた積でなければならない。 */
+  const src = magicSource(signTerm.a);
+  if (!src) return null;
+  /* その同じ値を割っている割り算が、残す側に本当にあることを確かめる。 */
+  let hit = false;
+  const want = dropSignExt(src.n);
+  walk(kept, (x) => {
+    if (x.k === 'bin' && (x.op === 'sdiv' || x.op === 'udiv') &&
+        same(dropSignExt(x.a), want)) hit = true;
+  });
+  return hit ? kept : null;
+}
+
+/**
+ * 「魔法数を掛けた積」の 3 つの形を、どれでも受ける。
+ *
+ *   smulh(n, M)              64 ビットの上位だけを取る形
+ *   n * M                    smull で 64 ビットの積を作る形
+ *   smulh(n, M) + n          M が 2^63 以上のときの補正つき
+ *
+ * 3 つめを取りこぼしていたころ、÷100 の段が 8 か所そろって
+ * `result = x8_3 / 100 + (x8_4 >> 63);` のまま出ていた。
+ */
+function magicSource(n) {
+  if (!n) return null;
+  const hi = magicHigh(n);
+  if (hi) return hi;
+  const prod = magicProduct(n);
+  if (prod) return prod;
+  if (n.k === 'bin' && n.op === 'add') {
+    const a = magicHigh(n.a);
+    if (a && same(dropSignExt(a.n), dropSignExt(n.b))) return a;
+    const b = magicHigh(n.b);
+    if (b && same(dropSignExt(b.n), dropSignExt(n.a))) return b;
+  }
+  return null;
+}
+
+/** smull で作った 64 ビットの積（`n * 大きな定数`）なら、掛けられた値。 */
+function magicProduct(n) {
+  if (!n || n.k !== 'bin' || n.op !== 'mul') return null;
+  /*
+   * 魔法数はいつも 2^30 級とは限らない。÷1000 の 32 ビット形は 0x10624DD3
+   * （2^28 くらい）で、2^30 で切っていたころ、この形の符号直しだけが
+   * `+ ((int32)x8 * 0x10624DD3 >> 63)` として行に残っていた。
+   * どのみち「同じ値を割っている割り算が隣にある」ことを確かめてから落とすので、
+   * ここは広めに取ってよい。
+   */
+  const big = (v) => v != null && (v > 0x1000000n || v < -0x1000000n);
+  const cb = constOf(n.b), ca = constOf(n.a);
+  if (big(cb)) return { m: cb, n: n.a };
+  if (big(ca)) return { m: ca, n: n.b };
+  return null;
+}
+
 function dropSignExt(n) {
   let cur = n;
   while (cur && cur.k === 'un' && /^(sxt|uxt)/.test(cur.op)) cur = cur.a;
@@ -1022,6 +1229,7 @@ function magicHigh(n) {
    ──────────────────────────────────────────────────────────── */
 
 const PREC = {
+  min: 14, max: 14, umin: 14, umax: 14,
   or: 4, xor: 5, and: 6, shl: 8, shr: 8, sar: 8, ror: 8,
   add: 9, sub: 9, mul: 10, sdiv: 10, udiv: 10, smod: 10, umod: 10,
   smulh: 10, umulh: 10,
@@ -1081,6 +1289,10 @@ function emit(n, prec, o, depth) {
       return prec > 3 ? '(' + t + ')' : t;
     }
     case 'bin': {
+      /* min / max は中置きでは書けないので、関数の形で出す。 */
+      if (n.op === 'min' || n.op === 'max' || n.op === 'umin' || n.op === 'umax') {
+        return n.op + '(' + emit(n.a, 0, o, depth + 1) + ', ' + emit(n.b, 0, o, depth + 1) + ')';
+      }
       const p = PREC[n.op] || 9;
       const t = emit(n.a, p, o, depth + 1) + ' ' + (SYM[n.op] || n.op) + ' ' +
         emit(n.b, p + 1, o, depth + 1);

@@ -9,25 +9,26 @@
  * 例:
  *
  *   // 名前に "damage" が入る関数を探す
- *   for (const f of hex.functions()) {
+ *   for (const f of await hex.functions()) {
  *     if (f.name && f.name.includes('damage')) print(hex.hex(f.addr), f.name);
  *   }
  *
- *   // ある関数の擬似コードを表示する
+ *   // ある関数の逆コンパイル結果を表示する
  *   print(await hex.decompile(0x1000A3C0));
  *
  *   // 名前を付ける
- *   hex.rename(0x1000A3C0, 'ダメージ計算');
+ *   await hex.rename(0x1000A3C0, 'ダメージ計算');
  *
- * 安全のために、外へ通信する手段（fetch など）はこの入れ物からは呼べません。
+ * opaque-origin sandboxとCSPで、外へ通信する手段（fetch など）は使えません。
  * ファイルの中身も、あなたの端末から出ません。
  */
 
 import { decompile, decompiledText } from './decompile.js';
 import { readableName } from './rtti.js';
 import { inferTypes, recoverStruct } from './types.js';
-import { assemble, parseHexBytes } from './patch.js';
+import { assemble, parseHexBytes, isHexBytes, validatePatchRange } from './patch.js';
 import { Emulator } from './emu.js';
+import { runInSandbox } from './sandbox.js';
 
 /**
  * スクリプトから触れる道具一式を作る。
@@ -142,7 +143,7 @@ export function createApi(app, out) {
       return out2;
     },
 
-    /** 擬似コード（文字列）。 */
+    /** 逆コンパイル結果（文字列）。 */
     async decompile(addr) {
       const res = await app.analyzeFunctionAt(BigInt(addr));
       if (!res) return null;
@@ -225,13 +226,16 @@ export function createApi(app, out) {
       const a = BigInt(addr);
       const r = region();
       if (!r) return { error: 'セクションが選ばれていません。' };
-      const off = r.fileOffset + (a - r.vmAddr);
-      const built = /^[0-9a-fx ]+$/i.test(textOrHex) && !/[a-z]{2}/i.test(textOrHex.replace(/0x/gi, ''))
+      const built = isHexBytes(textOrHex)
         ? { bytes: parseHexBytes(textOrHex) }
         : assemble(textOrHex, a);
       if (!built.bytes) return built;
+      const file = app.store.get('file');
+      const valid = validatePatchRange(r, a, built.bytes.length, file && file.size, true);
+      if (valid.error) return valid;
       const before = await api.bytes(a, built.bytes.length);
-      app.patches.add(off, before || new Uint8Array(built.bytes.length), built.bytes, { addr: a, text: textOrHex });
+      if (!before || before.length !== built.bytes.length) return { error: '元のバイトを読み取れません。' };
+      app.patches.add(valid.fileOffset, before, built.bytes, { addr: a, text: textOrHex });
       return { ok: true, bytes: built.bytes };
     },
 
@@ -312,20 +316,7 @@ function format(v) {
  */
 export async function runScript(code, app, out) {
   const { api, print } = createApi(app, out);
-  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-  let fn;
-  try {
-    fn = new AsyncFunction('hex', 'print', 'app', code);
-  } catch (err) {
-    return { error: '書き方に誤りがあります: ' + (err && err.message) };
-  }
-  try {
-    const value = await fn(api, print, app);
-    if (value !== undefined) print(value);
-    return { ok: true };
-  } catch (err) {
-    return { error: (err && err.message) ? err.message : String(err) };
-  }
+  return runInSandbox({ source: code, mode: 'script', api, out: (...args) => print(...args) });
 }
 
 /* ── はじめての人のためのお手本 ─────────────────────────── */
@@ -334,8 +325,8 @@ export const SAMPLES = [
   {
     title: 'よく呼ばれている関数を 20 個',
     why: 'アプリの本筋は、たいてい「たくさん呼ばれている関数」の中にあります。',
-    code: `for (const f of hex.mostCalled(20)) {
-  print(hex.hex(f.addr), (hex.name(f.addr) || '(名前なし)'), f.count + ' 回');
+    code: `for (const f of await hex.mostCalled(20)) {
+  print(hex.hex(f.addr), ((await hex.name(f.addr)) || '(名前なし)'), f.count + ' 回');
 }`,
   },
   {
@@ -343,22 +334,22 @@ export const SAMPLES = [
     why: '知りたい言葉（login, damage, purchase…）で関数を絞り込みます。',
     code: `const word = 'init';
 let n = 0;
-for (const f of hex.functions()) {
+for (const f of await hex.functions()) {
   if (f.name && f.name.toLowerCase().includes(word)) { print(hex.hex(f.addr), f.name); if (++n >= 30) break; }
 }
 print('見つかった数:', n);`,
   },
   {
-    title: '擬似コードを見る',
+    title: '逆コンパイル結果を見る',
     why: 'アドレスを 1 つ決めて、C 風の書き方で読みます。',
-    code: `const f = hex.functions()[0];
+    code: `const f = (await hex.functions())[0];
 print(hex.hex(f.addr), f.name || '');
 print(await hex.decompile(f.addr));`,
   },
   {
     title: '動かしてみる（引数を変えて）',
     why: '同じ関数に違う値を渡して、戻り値がどう変わるかを見ます。',
-    code: `const addr = hex.functions()[0].addr;
+    code: `const addr = (await hex.functions())[0].addr;
 for (const v of [0, 1, 100]) {
   const r = await hex.run(addr, [v], 5000);
   print('引数', v, '→ 戻り値', r.x0, '(' + r.steps + ' 命令)');
@@ -368,9 +359,9 @@ for (const v of [0, 1, 100]) {
     title: '文字列を使っている関数を数える',
     why: '「どの画面の文字がどこで使われているか」をたどります。',
     code: `await hex.loadStrings();
-const hits = hex.findStrings('error', 10);
+const hits = await hex.findStrings('error', 10);
 for (const s of hits) {
-  const refs = hex.xrefsTo(s.addr, 20);
+  const refs = await hex.xrefsTo(s.addr, 20);
   print(JSON.stringify(s.text).slice(0, 40), '→ 参照', refs.length, '件');
 }`,
   },

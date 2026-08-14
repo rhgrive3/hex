@@ -3095,6 +3095,8 @@ const A64 = {
   cmpImm: (n, imm) => (0xf1000000 | ((imm & 0xfff) << 10) | (n << 5) | 31) >>> 0,
   movz: (d, imm) => (0x52800000 | ((imm & 0xffff) << 5) | d) >>> 0,
   mul: (d, n, m) => (0x1b007c00 | (m << 16) | (n << 5) | d) >>> 0,
+  subImm: (d, n, imm) => (0xd1000000 | ((imm & 0xfff) << 10) | (n << 5) | d) >>> 0,
+  bcond: (off) => (0x54000000 | (((off >> 2) & 0x7ffff) << 5)) >>> 0,
   ret: () => 0xd65f03c0,
 };
 
@@ -3178,12 +3180,41 @@ test('SCHEMA: 読み込んだあとに掛かる倍率を拾える', () => {
     A64.cmpImm(21, 0x75),
     A64.addImm(28, 28, 0x1d4),
     A64.movz(10, 100),              // ×100
-    A64.ldrIdx(11, 9, 8),
+    A64.ldrIdx(11, 28, 21),
     A64.mul(11, 11, 10),
     A64.ret(),
   ]);
   const s = decodeSchema(words, 0x100000000n);
   ok(s.best.scaled.some((x) => x.factor === 100), '倍率を拾えていない');
+});
+
+test('SCHEMA: SUBを増加と扱わず、別tableの倍率・別loopの比較を混ぜない', () => {
+  const sub = decodeSchema(Uint32Array.from([
+    A64.bl(-0x100), A64.strIdx(0, 28, 21), A64.subImm(21, 21, 1),
+    A64.cmpImm(21, 117), A64.ret(),
+  ]), 0x100000000n);
+  eq(sub.best.columns, null, 'sub xN,xN,#1 を induction variable にしている');
+
+  const mixedScale = decodeSchema(Uint32Array.from([
+    A64.bl(-0x100), A64.strIdx(0, 28, 21), A64.addImm(21, 21, 1), A64.cmpImm(21, 117),
+    A64.movz(10, 100), A64.ldrIdx(11, 9, 8), A64.mul(11, 11, 10), A64.ret(),
+  ]), 0x100000000n);
+  eq(mixedScale.best.scaled.length, 0, '別のbase/indexの倍率が混ざっている');
+
+  const loops = decodeSchema(Uint32Array.from([
+    A64.bl(-0x100), A64.strIdx(0, 28, 21), A64.addImm(21, 21, 1), A64.bcond(-8),
+    A64.addImm(21, 21, 1), A64.cmpImm(21, 117), A64.bcond(-8), A64.ret(),
+  ]), 0x100000000n);
+  eq(loops.best.columns, null, '別loopで再利用されたregisterのcmpが混ざっている');
+});
+
+test('SCHEMA: SP baseの固定storeをtableとして拾わない', () => {
+  const s = decodeSchema(Uint32Array.from([
+    A64.bl(-0x100), A64.strOff(0, 31, 0x10),
+    A64.bl(-0x100), A64.strOff(0, 31, 0x14),
+    A64.bl(-0x100), A64.strOff(0, 31, 0x18), A64.ret(),
+  ]), 0x100000000n);
+  eq(s, null);
 });
 
 test('SCHEMA: 展開して書いてある表（添字を使わない形）も読める', () => {
@@ -3282,6 +3313,49 @@ test('EXPR: 掛けてずらす形から、割り算を逆算できる（32 ビ�
   const v = vg.defAt(5, 'x0');
   ok(v, 'x0 の値が取れていない');
   has(render(v, {}), '/ 100');
+});
+
+test('EXPR: 大小を選ぶ定型は、min / max として読む', async () => {
+  const { buildValues, render } = await import('../js/expr.js');
+  /* ARM64 に min は無い。コンパイラは必ず cmp + csel の 2 命令で書く。 */
+  const m = build([
+    'cmp x0, x1',
+    'csel x2, x0, x1, lt',
+    'ret',
+  ]);
+  const vg = buildValues(m, {});
+  const v = vg.defAt(1, 'x2');
+  ok(v, 'x2 の値が取れていない');
+  has(render(v, {}), 'min(');
+});
+
+test('EXPR: 条件つき代入の条件を、比べた式として書く', async () => {
+  const { buildValues, render } = await import('../js/expr.js');
+  /*
+   * 比較の中身を捨てていたころ、ここは `flag_ne ? … : …` としか書けなかった。
+   * 何と何を比べたのか出せないなら、条件つき代入はどれも読めない。
+   */
+  const m = build([
+    'cmp x0, #5',
+    'csel x2, x1, x3, eq',
+    'ret',
+  ]);
+  const vg = buildValues(m, {});
+  const text = render(vg.defAt(1, 'x2'), {});
+  has(text, '== 5');
+  ok(!/flag_/.test(text), '比較を復元できていない: ' + text);
+});
+
+test('EXPR: 比べたものが分からなければ、min とは言わない', async () => {
+  const { buildValues, render } = await import('../js/expr.js');
+  /* 直前に比較が無い（別の道から来た）ので、大小の定型だと決めつけてはいけない。 */
+  const m = build([
+    'csel x2, x0, x1, lt',
+    'ret',
+  ]);
+  const vg = buildValues(m, {});
+  const text = render(vg.defAt(0, 'x2'), {});
+  ok(!/min\(|max\(/.test(text), '根拠なく min と言っている: ' + text);
 });
 
 test('EXPR: ずらしが 2 命令に割れていても、割り算に戻せる', async () => {
@@ -3399,6 +3473,33 @@ test('COMPREHEND: 文言に書かれた計算式と、復元した式を突き�
   ok(c.formula.distinct >= 2, '一致した数の種類が足りない: ' + c.formula.distinct);
 });
 
+test('COMPREHEND: 記号 * / が入っているだけの文字列を、計算式と呼ばない', async () => {
+  const { formulaOf } = await import('../js/comprehend.js');
+  /*
+   * ここは role-formula-verified（このツールで最強の証拠）の入口。
+   * 外すと「型エンコードの ×16 と、構造体の +16 が合ったから確定」が通る。
+   * このアプリでは、式として拾えた 88 本のうち 63 本がこの種の偽物だった。
+   */
+  const fakes = [
+    'v40@0:8@16@24*32',                       // Objective-C の型エンコード
+    'video/3gpp',                              // MIME 型
+    '/openrtb/2.5',                            // URL の道
+    'key_bytes == 128 / 8 || key_bytes == 192 / 8',   // C の表明文
+    'MIGHAoGBAMgt6PK9G5WY9RzBROkRVoTwD/4Pttk',        // base64
+    'ca-app-pub-5122780296842565/5904342708',         // 広告の枠 ID
+    "Non-200/201 HTTP response (%@)",                 // 書式指定はあるが式ではない
+  ];
+  for (const f of fakes) eq(formulaOf(f), null, '式でないものを式と読んだ: ' + f);
+
+  const real = [
+    'クリティカル:%d 基ダ×2',
+    'めっぽう強い:%d 基ダ×(1500+[宝:%d])÷1000×(100+[コンボ:%d])÷100',
+    'damage: %d base * (100 + %d) / 100',      // 全角でなくても、人に見せる文なら読む
+  ];
+  for (const r of real) ok(formulaOf(r), '本物の計算式を落とした: ' + r);
+  eq(formulaOf('クリティカル:%d 基ダ×2').mul[0], 2n);
+});
+
 test('COMPREHEND: 計算式が無ければ、合ったことにしない', async () => {
   const { comprehend } = await import('../js/comprehend.js');
   const m = build([
@@ -3432,10 +3533,176 @@ test('COMPREHEND: レジスタが別の用途に移ったら、そこで区間�
 });
 
 /* ────────────────────────────────────────────────────────────
-   擬似 C（decompile.js）— 中間の行が消えているか
+   逆コンパイル（decompile.js）— 中間の行が消えているか
    ──────────────────────────────────────────────────────────── */
 
+test('DECOMPILE: 同じ置き場は、どの書き方で来ても同じ名前になる', async () => {
+  const { decompile } = await import('../js/decompile.js');
+  /*
+   * 1 つの置き場を指す 3 通りの書き方。
+   *   [sp, #0x1c]   命令のオペランド（下げたあとの sp から）
+   *   [x29, #-0x64] フレームポインタから（0x180 - 0x164 = 0x1c）
+   *   add x0, sp, #0x1c → 値グラフでは `sp - 372`（入った時点の sp から）
+   * 揃わないと、同じ変数が 3 つの別物に見える。
+   */
+  const m = build([
+    'sub sp, sp, #0x190',
+    'add x29, sp, #0x180',
+    'str w0, [sp, #0x1c]',
+    'add x2, sp, #0x1c',
+    'ldur w1, [x29, #-0x164]',
+    'ret',
+  ]);
+  const out = decompile(m, { addr: BASE });
+  const text = out.lines.map((l) => l.text).join('\n');
+  has(text, 'var_1C');
+  ok(!/\bsp\s*[-+]\s*\d/.test(text), '置き場が番地のまま出ている: ' + text);
+  ok(!/var_164|var_88\b/.test(text), '同じ置き場に別の名前が付いている: ' + text);
+});
+
+test('DECOMPILE: sp を定数で動かさない関数では、置き場に名前を付けない', async () => {
+  const { decompile } = await import('../js/decompile.js');
+  /* 可変長スタック。どこが置き場かは決まらないので、名乗らないのが正しい。 */
+  const m = build([
+    'sub sp, sp, x8',
+    'add x0, sp, #0x10',
+    'ret',
+  ]);
+  const out = decompile(m, { addr: BASE });
+  const text = out.lines.map((l) => l.text).join('\n');
+  ok(!/&var_/.test(text), '決まらない置き場に名前を付けている: ' + text);
+});
+
 /* ── まとめ ──────────────────────────────────────────────── */
+
+const { assemble: assemblePatch, parseHexBytes: strictHex, isHexBytes,
+  validatePatchRange, PatchSet } = await import('../js/patch.js');
+
+const wordOf = (bytes) => new DataView(bytes.buffer, bytes.byteOffset, 4).getUint32(0, true);
+
+test('PATCH: SP moveはADD alias、幅違いはerrorになる', () => {
+  eq(wordOf(assemblePatch('mov x0, sp', 0x1000n).bytes), 0x910003e0);
+  eq(wordOf(assemblePatch('mov sp, x0', 0x1000n).bytes), 0x9100001f);
+  ok(assemblePatch('mov w0, x1', 0x1000n).error, 'w/x幅違いを受理している');
+});
+
+test('PATCH: branch alignmentとstrict hexを検証する', () => {
+  ok(assemblePatch('b 0x1002', 0x1000n).error, '非整列branchを丸めている');
+  ok(assemblePatch('b.eq 0x1002', 0x1000n).error, '非整列conditional branchを丸めている');
+  ok(isHexBytes('DEADBEEF'));
+  eq(Array.from(strictHex('AA BB CC DD')).join(','), '170,187,204,221');
+  eq(strictHex('AA BB typo CC'), null, '不正文字を削除してhexとして受理している');
+});
+
+test('PATCH: range外を登録・保存成功にしない', async () => {
+  const region = { vmAddr: 0x1000n, size: 0x20n, fileOffset: 0x10n };
+  ok(validatePatchRange(region, 0x1002n, 4, 0x100, true).error);
+  ok(validatePatchRange(region, 0x1020n, 4, 0x100, true).error);
+  const set = new PatchSet();
+  set.add(0x100n, new Uint8Array(4), new Uint8Array(4));
+  let failed = false;
+  try { await set.apply(new Blob([new Uint8Array(16)])); } catch { failed = true; }
+  ok(failed, '範囲外patchを保存時に黙って捨てている');
+});
+
+test('BACKEND: epochで古いrequestを破棄し、progressをrequest単位へ送る', async () => {
+  const savedWorker = globalThis.Worker;
+  class FakeWorker {
+    constructor() { this.sent = []; }
+    postMessage(message) { this.sent.push(message); }
+  }
+  globalThis.Worker = FakeWorker;
+  try {
+    const { Backend } = await import('../js/backend.js');
+    const backend = new Backend();
+    let progress = 0;
+    const active = backend.call('scanProgram', {}, null, () => { progress++; });
+    const msg = backend.worker.sent.at(-1);
+    backend.worker.onmessage({ data: { t: 'scanProgress', requestId: msg.id, epoch: msg.epoch, done: 1, all: 2 } });
+    eq(progress, 1);
+    backend.worker.onmessage({ data: { t: 'ok', id: msg.id, epoch: msg.epoch, result: { ok: true } } });
+    ok((await active).ok);
+
+    const stale = backend.call('analyze', {});
+    backend.advanceEpoch();
+    let rejected = false;
+    try { await stale; } catch (err) { rejected = !!err.stale; }
+    ok(rejected, '古いrequestがsettleされず、結果を待ち続ける');
+  } finally {
+    globalThis.Worker = savedWorker;
+  }
+});
+
+test('NAMES: fingerprintは同名同サイズの別内容・別sliceを分離する', async () => {
+  const { noteKeyFor } = await import('../js/names.js');
+  const file = (byte) => { const b = new Blob([new Uint8Array(1024).fill(byte)]); b.name = 'same.bin'; return b; };
+  const info = { slices: [
+    { offset: 0n, info: { uuid: null, cpu: 'arm64', cpuSub: 'all' } },
+    { offset: 512n, info: { uuid: null, cpu: 'x86_64', cpuSub: 'all' } },
+  ] };
+  const a = await noteKeyFor(file(1), info, 0);
+  const b = await noteKeyFor(file(2), info, 0);
+  const otherSlice = await noteKeyFor(file(1), info, 1);
+  ok(a !== b, '同名同サイズの別binaryが同じkeyになった');
+  ok(a !== otherSlice, 'Fat binaryのactive sliceがkeyに入っていない');
+});
+
+test('IL2CPP: 検証できたCodeRegistrationだけMethod→addressへ結ぶ', async () => {
+  const { bindMethodAddresses } = await import('../js/il2cpp.js');
+  const data = new Uint8Array(0x300);
+  const dv = new DataView(data.buffer);
+  dv.setBigUint64(0, 3n, true);
+  dv.setBigUint64(8, 0x2100n, true);
+  for (let i = 0; i < 3; i++) dv.setBigUint64(0x100 + i * 8, 0x1000n + BigInt(i * 4), true);
+  const regions = [
+    { vmAddr: 0x1000n, size: 0x100n, exec: true, section: '__text' },
+    { vmAddr: 0x2000n, size: 0x300n, exec: false, section: '__const' },
+  ];
+  const read = async (addr, len) => {
+    if (addr < 0x2000n || addr + BigInt(len) > 0x2300n) return null;
+    const at = Number(addr - 0x2000n);
+    return data.slice(at, at + len);
+  };
+  const meta = { methods: [0, 1, 2].map((index) => ({ index, full: 'C::m' + index })), warnings: [] };
+  const result = await bindMethodAddresses(meta, { regions, read });
+  eq(result.bound, 3);
+  eq(meta.methods[2].address, 0x1008n);
+});
+
+test('IL2CPP: modern codegen moduleをimage名とtokenで結ぶ', async () => {
+  const { bindMethodAddresses } = await import('../js/il2cpp.js');
+  const data = new Uint8Array(0x500);
+  const dv = new DataView(data.buffer);
+  dv.setBigUint64(0, 0x2080n, true);       // moduleName
+  dv.setUint32(8, 3, true);                // methodPointerCount
+  dv.setBigUint64(16, 0x2200n, true);      // methodPointers
+  data.set(new TextEncoder().encode('Assembly-CSharp.dll\0'), 0x80);
+  for (let i = 0; i < 3; i++) dv.setBigUint64(0x200 + i * 8, 0x1000n + BigInt(i * 4), true);
+  const regions = [
+    { vmAddr: 0x1000n, size: 0x100n, exec: true, section: '__text' },
+    { vmAddr: 0x2000n, size: 0x500n, exec: false, section: '__const' },
+  ];
+  const read = async (addr, len) => {
+    if (addr < 0x2000n || addr + BigInt(len) > 0x2500n) return null;
+    return data.slice(Number(addr - 0x2000n), Number(addr - 0x2000n) + len);
+  };
+  const meta = {
+    methods: Array.from({ length: 10 }, (_, index) => ({ index, classIndex: index, token: 0x06000001 + index, full: 'C::m' + index })),
+    images: [{ index: 0, name: 'Assembly-CSharp.dll', typeStart: 0, typeCount: 10 }], warnings: [],
+  };
+  const result = await bindMethodAddresses(meta, { regions, read });
+  eq(result.bound, 3);
+  eq(meta.methods[1].address, 0x1004n);
+  eq(meta.methods[1].binding, 'codegen-module');
+});
+
+test('EVIDENCE: hold-out calibrationのBrier/reliabilityを計算できる', async () => {
+  const { calibrateProbability, calibrationReport } = await import('../js/evidence.js');
+  eq(calibrateProbability(0.5, [{ score: 0, observed: 0.1 }, { score: 1, observed: 0.9 }]), 0.5);
+  const report = calibrationReport([{ score: 0.9, outcome: 1 }, { score: 0.8, outcome: 0 }], 2);
+  eq(report.count, 2);
+  ok(report.brier > 0 && report.bins.length === 1);
+});
 
 await Promise.all(pending);
 process.stdout.write('\n' + passed + ' passed, ' + failures.length + ' failed\n');

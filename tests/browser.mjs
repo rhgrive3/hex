@@ -217,19 +217,19 @@ async function main() {
       const verdict = (await verdictEl.count())
         ? (await verdictEl.innerText()).trim()
         : (text.split('\n')[2] || '').trim();
-      /* 見出しに出ている確からしさ。名前を出す以上、ここは 0% であってはならない。 */
-      const conf = Number((/確からしさ\s*([\d.]+)\s*%/.exec(text) || [])[1]);
+      /* 手設定LRは未校正なので、頻度の%ではなく段階表示を読む。 */
+      const conf = (/確からしさ\s*(非常に高い|高い|中程度|低い|非常に低い)/.exec(text) || [])[1] || '';
 
       /*
        * 1. 答えとして名前を出すなら、それに見合う確からしさが要る。
        *    「見つかりませんでした」の下に名前を出すのも、
-       *    「絞りきれていません／確からしさ 0%」で名前を出すのも、同じ間違い。
+       *    「絞りきれていません／確信度表示なし」で名前を出すのも、同じ間違い。
        *    読む人は見出しではなく名前を答えとして受け取る。
        */
-      const bogus = named > 0 && (/見つかりませんでした/.test(text) || !(conf > 0));
+      const bogus = named > 0 && (/見つかりませんでした/.test(text) || !conf);
       check(`${goal.id}: 見合う根拠のない名前を、答えとして出さない`, !bogus,
-        bogus ? `${verdict} なのに「${name}」を ${conf || 0}% で出している`
-          : (named ? `${verdict}（${name} ${conf}%）` : `${verdict}（名前は出していない）`));
+        bogus ? `${verdict} なのに「${name}」の確信度表示がない`
+          : (named ? `${verdict}（${name} / ${conf}）` : `${verdict}（名前は出していない）`));
 
       /*
        * 2. ゲームの数値を探しているのに、組み込んだ SDK を先頭に出さない。
@@ -243,7 +243,7 @@ async function main() {
        */
       if (goal.confirms) {
         check(`${goal.id}: 根拠がそろっていれば、確定と言い切る`,
-          /確定/.test(verdict), verdict + (named ? `（${name} ${conf}%）` : ''));
+          /確定/.test(verdict), verdict + (named ? `（${name} / ${conf}）` : ''));
       }
 
       const cands = await readCandidates(page);
@@ -252,7 +252,7 @@ async function main() {
       check(`${goal.id}: 上位 5 件に、組み込んだ SDK を混ぜない`,
         sdk.length === 0,
         sdk.length ? sdk.map((x) => x.v.vendor).join(', ')
-          : (top[0] ? '首位 ' + top[0].text.slice(0, 48) + ' (' + top[0].score + '%)' : '候補なし'));
+          : (top[0] ? '首位 ' + top[0].text.slice(0, 48) : '候補なし'));
 
       /*
        * 3. 候補が「何をしている処理か」を言えているか。

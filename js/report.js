@@ -20,6 +20,7 @@ import { buildCfg } from './cfg.js';
 import { findValueUpdates, constantComparisons, hotLocations } from './dataflow.js';
 import { matchText } from './goals.js';
 import { comprehend } from './comprehend.js';
+import { stackNaming } from './decompile.js';
 
 export const CERTAINTY = { FACT: 'fact', INFERENCE: 'inference', UNKNOWN: 'unknown' };
 
@@ -287,6 +288,10 @@ export function buildFunctionReport(opts) {
       symbolFor: symbols ? (a) => symbols.nameAt(a) : null,
     });
   } catch { comprehension = null; }   /* 復元に失敗しても、レポートは出す */
+  /* 置き場の呼び名。逆コンパイル画面と同じ名前で出すために持ち回る。 */
+  if (comprehension) {
+    try { comprehension.naming = stackNaming(model); } catch { comprehension.naming = null; }
+  }
 
   return {
     owner,

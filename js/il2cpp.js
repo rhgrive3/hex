@@ -16,10 +16,8 @@
  *   - プログラムの中の文字列（string literal）
  * を取り出します。
  *
- * 正直に書いておくと: メソッド名と「機械語のどのアドレスか」の対応づけは、
- * 実行ファイル側の CodeRegistration という表を読む必要があり、Unity の版によって
- * 形が大きく変わります。ここでは名前の一覧までを確実に出し、
- * アドレスとの対応は「候補」として扱います（間違ったまま断定しないため）。
+ * Method→addressは実行ファイル側のCodeRegistrationを検証できた版だけ復元する。
+ * modern codegen-module形式など検証できない版では、推測addressを作らず名前一覧に留める。
  */
 
 const SANITY = 0xFAB11BAF;
@@ -114,7 +112,9 @@ export function parseMetadata(buffer) {
       const name = stringAt(dv.getInt32(o, true));
       const owner = dv.getInt32(o + 4, true);
       if (!name) continue;
-      methods.push({ index: i, name, classIndex: owner });
+      const tokenAt = version >= 27 ? 24 : 40;
+      const token = o + tokenAt + 4 <= u8.length ? dv.getUint32(o + tokenAt, true) : 0;
+      methods.push({ index: i, name, classIndex: owner, token });
     }
   }
 
@@ -144,10 +144,12 @@ export function parseMetadata(buffer) {
     m.full = (c ? c.full + '::' : '') + m.name;
   }
 
+  const images = parseImages(u8, dv, pair(PAIR.images), stringAt);
+
   if (!classes.length) warnings.push('クラスの一覧を取り出せませんでした（版が違う可能性があります）。');
   if (!methods.length) warnings.push('メソッドの一覧を取り出せませんでした。');
 
-  return { version, classes, methods, literals, warnings, typeSize };
+  return { version, classes, methods, literals, images, warnings, typeSize };
 }
 
 /**
@@ -157,7 +159,7 @@ export function parseMetadata(buffer) {
 function guessTypeSize(version) {
   if (version >= 29) return 92;
   if (version >= 27) return 92;
-  if (version >= 24.4 || version >= 25) return 96;
+  if (version >= 25) return 96;
   if (version >= 24) return 100;
   return 100;
 }
@@ -165,13 +167,32 @@ function guessTypeSize(version) {
 /** 版ごとの Il2CppMethodDefinition の大きさ。 */
 function guessMethodSize(version) {
   if (version >= 27) return 40;      // customAttributeIndex などが消えた
-  if (version >= 24.1 || version >= 25) return 52;
+  if (version >= 25) return 52;
   return 56;
 }
 
 function utf8(bytes) {
   try { return new TextDecoder('utf-8', { fatal: false }).decode(bytes); }
   catch { return Array.from(bytes).map((b) => String.fromCharCode(b)).join(''); }
+}
+
+function parseImages(u8, dv, table, stringAt) {
+  if (!table || table.size <= 0) return [];
+  let best = [];
+  for (const size of [40, 32, 24]) {
+    const out = [];
+    const count = Math.floor(table.size / size);
+    for (let i = 0; i < count && i < 10000; i++) {
+      const o = table.offset + i * size;
+      if (o < 0 || o + 16 > u8.length) break;
+      const name = stringAt(dv.getInt32(o, true));
+      const typeStart = dv.getInt32(o + 8, true), typeCount = dv.getUint32(o + 12, true);
+      if (!name || typeStart < 0 || typeCount > 2_000_000) continue;
+      out.push({ index: i, name, typeStart, typeCount });
+    }
+    if (out.length > best.length) best = out;
+  }
+  return best;
 }
 
 /**
@@ -248,7 +269,9 @@ function parseMetadataWith(buffer, typeSize, methodSize) {
     const name = stringAt(dv.getInt32(o, true));
     const owner = dv.getInt32(o + 4, true);
     if (!name) continue;
-    methods.push({ index: i, name, classIndex: owner });
+    const tokenAt = res.version >= 27 ? 24 : 40;
+    const token = o + tokenAt + 4 <= u8.length ? dv.getUint32(o + tokenAt, true) : 0;
+    methods.push({ index: i, name, classIndex: owner, token });
   }
   const byIndex = new Map(classes.map((c) => [c.index, c]));
   for (const m of methods) {
@@ -283,4 +306,153 @@ export function looksLikeUnity(strings, slice) {
   }
   const dylibs = slice && slice.info ? slice.info.dylibs || [] : [];
   return dylibs.some((d) => /UnityFramework|libil2cpp/i.test(d));
+}
+
+/**
+ * Legacy/monolithic Il2CppCodeRegistration から methodPointers を復元する。
+ *
+ * Unityの版を決め打ちせず、データ区画内の {count, pointer} 候補を検証し、pointer
+ * tableの大半が実行区画を指す場合だけ採用する。見つからないmodern codegen-module
+ * 形式では空を返し、誤ったaddressを名前へ結びつけない。
+ */
+export async function bindMethodAddresses(meta, opts) {
+  const o = opts || {};
+  const regions = o.regions || [];
+  const read = o.read;
+  if (!meta || !meta.methods || !meta.methods.length || typeof read !== 'function') return { bound: 0, candidate: null };
+  const exec = regions.filter((r) => r.exec && r.size > 0n);
+  const data = regions.filter((r) => !r.exec && !r.zerofill && r.size >= 16n &&
+    /__(const|data|data_const|rodata)/.test(r.section || ''));
+  const inExec = (raw) => {
+    let p = BigInt.asUintN(64, raw);
+    p &= 0x00ffffffffffffffn; // top-byte tags/PAC discriminator
+    return exec.some((r) => p >= r.vmAddr && p < r.vmAddr + r.size) ? p : null;
+  };
+  const containing = (addr, bytes) => regions.find((r) => addr >= r.vmAddr && addr + BigInt(bytes) <= r.vmAddr + r.size);
+  const expected = meta.methods.length;
+  const candidates = [];
+  const scanLimit = o.scanLimit || 64 * 1024 * 1024;
+  let scanned = 0;
+  for (const r of data) {
+    if (scanned >= scanLimit) break;
+    const want = Math.min(Number(r.size), scanLimit - scanned);
+    const bytes = await read(r.vmAddr, want).catch(() => null);
+    scanned += want;
+    if (!bytes || bytes.length < 16) continue;
+    const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    for (let at = 0; at + 16 <= bytes.length; at += 8) {
+      const count64 = dv.getBigUint64(at, true);
+      if (count64 < 1n || count64 > 5_000_000n) continue;
+      const count = Number(count64);
+      /* A per-module table must never be mistaken for the old global table. */
+      if (count < Math.max(1, Math.floor(expected * 0.85)) || count > expected * 1.15 + 32) continue;
+      const table = dv.getBigUint64(at + 8, true) & 0x00ffffffffffffffn;
+      const sampleCount = Math.min(count, 96);
+      if (!containing(table, sampleCount * 8)) continue;
+      const sample = await read(table, sampleCount * 8).catch(() => null);
+      if (!sample || sample.length < sampleCount * 8) continue;
+      const sdv = new DataView(sample.buffer, sample.byteOffset, sample.byteLength);
+      let executable = 0, nonzero = 0;
+      for (let i = 0; i < sampleCount; i++) {
+        const raw = sdv.getBigUint64(i * 8, true);
+        if (raw) nonzero++;
+        if (inExec(raw) != null) executable++;
+      }
+      const ratio = executable / Math.max(1, nonzero);
+      if (nonzero >= Math.min(8, sampleCount) && ratio >= 0.85) {
+        candidates.push({ addr: r.vmAddr + BigInt(at), table, count, ratio,
+          score: ratio - Math.abs(count - expected) / Math.max(count, expected) * 0.2 });
+      }
+    }
+  }
+  candidates.sort((a, b) => b.score - a.score);
+  const best = candidates[0];
+  if (!best) {
+    const modern = await bindCodeGenModules(meta, { regions, data, exec, read, containing, inExec, scanLimit });
+    if (modern.bound) return modern;
+    meta.warnings.push('Method→address表は検証できませんでした。');
+    return { bound: 0, candidate: null };
+  }
+  const tableBytes = await read(best.table, best.count * 8).catch(() => null);
+  if (!tableBytes || tableBytes.length < best.count * 8) return { bound: 0, candidate: null };
+  const tdv = new DataView(tableBytes.buffer, tableBytes.byteOffset, tableBytes.byteLength);
+  let bound = 0;
+  for (const method of meta.methods) {
+    if (method.index < 0 || method.index >= best.count) continue;
+    const address = inExec(tdv.getBigUint64(method.index * 8, true));
+    if (address == null) continue;
+    method.address = address;
+    method.binding = 'code-registration';
+    bound++;
+  }
+  meta.methodBinding = { kind: 'code-registration', bound, count: best.count, table: best.table };
+  if (!bound) meta.warnings.push('Method pointer表は見つかりましたが、metadata indexと対応しませんでした。');
+  return { bound, candidate: best };
+}
+
+async function bindCodeGenModules(meta, ctx) {
+  const { data, read, containing, inExec, scanLimit } = ctx;
+  const images = meta.images || [];
+  if (!images.length) return { bound: 0, candidate: null };
+  const raw = [];
+  let scanned = 0;
+  for (const r of data) {
+    if (scanned >= scanLimit) break;
+    const want = Math.min(Number(r.size), scanLimit - scanned);
+    const bytes = await Promise.resolve(read(r.vmAddr, want)).catch(() => null);
+    scanned += want;
+    if (!bytes || bytes.length < 24) continue;
+    const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    for (let at = 0; at + 24 <= bytes.length; at += 8) {
+      const namePtr = dv.getBigUint64(at, true) & 0x00ffffffffffffffn;
+      const count = dv.getUint32(at + 8, true);
+      const table = dv.getBigUint64(at + 16, true) & 0x00ffffffffffffffn;
+      if (!count || count > meta.methods.length + 4096 || !containing(namePtr, 1) || !containing(table, Math.min(count, 32) * 8)) continue;
+      raw.push({ addr: r.vmAddr + BigInt(at), namePtr, count, table });
+      if (raw.length >= 5000) break;
+    }
+  }
+  const wantedNames = new Set(images.map((x) => x.name.toLowerCase()));
+  const modules = new Map();
+  for (const c of raw) {
+    const nameBytes = await Promise.resolve(read(c.namePtr, 160)).catch(() => null);
+    if (!nameBytes) continue;
+    const zero = nameBytes.indexOf(0);
+    const name = utf8(nameBytes.subarray(0, zero < 0 ? nameBytes.length : zero));
+    if (!wantedNames.has(name.toLowerCase())) continue;
+    const sampleCount = Math.min(c.count, 64);
+    const sample = await Promise.resolve(read(c.table, sampleCount * 8)).catch(() => null);
+    if (!sample || sample.length < sampleCount * 8) continue;
+    const dv = new DataView(sample.buffer, sample.byteOffset, sample.byteLength);
+    let nonzero = 0, executable = 0;
+    for (let i = 0; i < sampleCount; i++) {
+      const p = dv.getBigUint64(i * 8, true);
+      if (p) nonzero++;
+      if (inExec(p) != null) executable++;
+    }
+    if (nonzero && executable / nonzero >= 0.85) modules.set(name.toLowerCase(), c);
+  }
+  let bound = 0;
+  const tables = new Map();
+  for (const image of images) {
+    const mod = modules.get(image.name.toLowerCase());
+    if (!mod) continue;
+    const bytes = await Promise.resolve(read(mod.table, mod.count * 8)).catch(() => null);
+    if (bytes && bytes.length >= mod.count * 8) tables.set(image.index, { mod, bytes });
+  }
+  for (const method of meta.methods) {
+    const image = images.find((x) => method.classIndex >= x.typeStart && method.classIndex < x.typeStart + x.typeCount);
+    if (!image || !method.token) continue;
+    const entry = tables.get(image.index);
+    const rid = (method.token & 0x00ffffff) - 1;
+    if (!entry || rid < 0 || rid >= entry.mod.count) continue;
+    const dv = new DataView(entry.bytes.buffer, entry.bytes.byteOffset, entry.bytes.byteLength);
+    const address = inExec(dv.getBigUint64(rid * 8, true));
+    if (address == null) continue;
+    method.address = address;
+    method.binding = 'codegen-module';
+    bound++;
+  }
+  if (bound) meta.methodBinding = { kind: 'codegen-modules', bound, modules: tables.size };
+  return { bound, candidate: null, modules: tables.size };
 }

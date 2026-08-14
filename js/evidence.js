@@ -8,7 +8,7 @@
  *
  * ここはそこを根本から直す。点ではなく **尤度比** を持たせる。
  *
- *     尤度比 ＝ その証拠が、本物で観測される確率 ÷ 本物でないもので観測される確率
+ *     重み ＝ その証拠が候補をどれだけ強めるか
  *
  * 「クラス表に _hp と書いてある」は、本物の HP ならほぼ必ず観測されるが、
  * 無関係な 2 万個の値ではまず観測されない。だから尤度比は大きい（×18 くらい）。
@@ -16,7 +16,8 @@
  * 「オブジェクト型なのに数を数える目的だ」は本物ではまず起きないので、1 未満（×0.06）。
  *
  * 出発点（事前オッズ）は **候補の数** から決める。候補が 2 万個あれば 1/20000 から始める。
- * そこに尤度比を掛けていって、最後に確率へ戻す。こうすると
+ * 現在の重みは手設定で未校正なので、最後の値は「確信度スコア」であり、
+ * 頻度としての確率ではない。hold-out corpusで校正曲線を渡した場合だけ確率と呼べる。
  *
  *     名前が一致しただけ                     …  0.005% → 0.1%   （まだ何も言えない）
  *     名前 ＋ 型 ＋ クラスの担当が合う         …  0.1%   → 12%    （候補どまり）
@@ -564,11 +565,12 @@ export function fuse(items, opts) {
    */
   if (!verified) logOdds = Math.min(logOdds, UNVERIFIED_CEIL);
 
-  const probability = 1 / (1 + Math.exp(-logOdds));
+  const rawProbability = 1 / (1 + Math.exp(-logOdds));
+  const probability = o.calibration ? calibrateProbability(rawProbability, o.calibration) : rawProbability;
 
   return {
     logOdds,
-    probability,
+    probability, rawProbability, calibrated: !!o.calibration,
     prior,
     items: detailed.sort((a, b) => b.applied - a.applied),
     families: Array.from(families),
@@ -716,4 +718,39 @@ export function explain(fusion, limit = 12) {
     .map((m) => Object.assign(m, { factor: Math.exp(m.applied) }))
     .sort((a, b) => Math.abs(b.applied) - Math.abs(a.applied))
     .slice(0, limit);
+}
+
+/** Apply a monotone hold-out calibration curve [{score, observed}]. */
+export function calibrateProbability(score, curve) {
+  const pts = (curve || []).filter((p) => Number.isFinite(p.score) && Number.isFinite(p.observed))
+    .slice().sort((a, b) => a.score - b.score);
+  if (!pts.length) return Math.max(0, Math.min(1, score));
+  if (score <= pts[0].score) return Math.max(0, Math.min(1, pts[0].observed));
+  for (let i = 1; i < pts.length; i++) {
+    if (score > pts[i].score) continue;
+    const a = pts[i - 1], b = pts[i];
+    const t = (score - a.score) / Math.max(1e-12, b.score - a.score);
+    return Math.max(0, Math.min(1, a.observed + (b.observed - a.observed) * t));
+  }
+  return Math.max(0, Math.min(1, pts[pts.length - 1].observed));
+}
+
+/** Brier score and reliability bins for a labelled hold-out corpus. */
+export function calibrationReport(samples, binCount = 10) {
+  const valid = (samples || []).filter((x) => Number.isFinite(x.score) && (x.outcome === 0 || x.outcome === 1));
+  const bins = Array.from({ length: Math.max(2, binCount) }, () => ({ count: 0, predicted: 0, observed: 0 }));
+  let sum = 0;
+  for (const x of valid) {
+    const p = Math.max(0, Math.min(1, x.score));
+    sum += (p - x.outcome) ** 2;
+    const b = bins[Math.min(bins.length - 1, Math.floor(p * bins.length))];
+    b.count++; b.predicted += p; b.observed += x.outcome;
+  }
+  return {
+    count: valid.length,
+    brier: valid.length ? sum / valid.length : null,
+    bins: bins.filter((b) => b.count).map((b) => ({
+      count: b.count, predicted: b.predicted / b.count, observed: b.observed / b.count,
+    })),
+  };
 }

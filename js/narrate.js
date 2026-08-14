@@ -1479,12 +1479,14 @@ export function factorText(factor) {
   return pick('÷' + n, '÷' + n);
 }
 
-/** 確率を、言い過ぎない日本語にする。 */
+/** 未校正の手設定LRを、頻度の%ではなく確信度として表示する。 */
 export function probabilityText(p) {
   if (!(p >= 0)) return '';
-  if (p >= 0.999) return pick('99.9% 以上', 'over 99.9%');
-  if (p >= 0.99) return pick('99% 以上', 'over 99%');
-  return Math.round(p * 100) + '%';
+  if (p >= 0.99) return pick('非常に高い', 'very high');
+  if (p >= 0.85) return pick('高い', 'high');
+  if (p >= 0.5) return pick('中程度', 'medium');
+  if (p >= 0.15) return pick('低い', 'low');
+  return pick('非常に低い', 'very low');
 }
 
 /**

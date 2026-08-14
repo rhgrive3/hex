@@ -163,15 +163,27 @@ export async function openBinary(file, opts) {
   if (o.strings !== false) {
     log('strings…');
     /* 画面と同じ選び方（app.js ensureStrings）。ここがずれると精度を測れない。 */
+    const priority = (r) => r.cstrings || /^__(cstring|objc_methname|objc_classname|swift5_reflstr|oslogstring)$/.test(r.section || '') ? 0
+      : /string|objc_method|objc_class|ustring/i.test(r.section || '') ? 1 : 2;
     const targets = regions.filter((r) => r.size > 0n &&
-      (r.cstrings || /string|cstring|objc_method|objc_class|const|ustring|swift5_reflstr/i.test(r.section || '')));
+      (r.cstrings || /string|cstring|objc_methname|objc_method|objc_classname|objc_class|oslogstring|const|ustring|swift5_reflstr/i.test(r.section || '')))
+      .sort((a, b) => priority(a) - priority(b));
     let budget = 64 * 1024 * 1024;
+    const skipped = [];
+    let scannedBytes = 0;
     for (const r of targets) {
-      if (budget <= 0) break;
-      budget -= Number(r.size);
-      const res = await backend.strings({ regionId: r.id, min: 4 });
+      if (budget <= 0) { skipped.push(r); continue; }
+      const bytes = Math.min(budget, Number(r.size));
+      budget -= bytes;
+      if (bytes < Number(r.size)) skipped.push(r);
+      const res = await backend.strings({ regionId: r.id, min: 4, maxBytes: bytes });
+      scannedBytes += res.scannedBytes || 0;
+      if (!res.complete && !skipped.includes(r)) skipped.push(r);
       for (const s of res.results) strings.push({ addr: s.addr, text: s.text, region: r });
     }
+    strings.complete = skipped.length === 0;
+    strings.skippedRegions = skipped.map((r) => r.id);
+    strings.scannedBytes = scannedBytes;
   }
 
   /* panels.js の makeAnalyzer と同じ形にそろえる（画面と違う結果を測っても意味がない）。 */

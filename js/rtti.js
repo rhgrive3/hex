@@ -331,7 +331,7 @@ export function readableName(name) {
 /**
  * コードの行に置くための、短い名前。
  *
- * 擬似コードの 1 行に
+ * 逆コンパイル結果の 1 行に
  *   __ZNSt3__1plIcNS_11char_traitsIcEENS_9allocatorIcEEEE…
  * や、その完全な復元形（150 字）を置いても読めない。行の中では
  *   std::operator+

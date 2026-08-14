@@ -36,6 +36,8 @@ import { showTools } from './tools.js';
 const $ = (id) => document.getElementById(id);
 
 class App {
+  get analysisEpoch() { return this.backend ? this.backend.analysisEpoch : -1; }
+
   constructor() {
     this.store = new Store();
     this.prefs = loadPrefs();
@@ -52,14 +54,21 @@ class App {
     this.programScan = null;    // worker から受け取った生の走査結果
     this.programKey = null;     // 索引がどのセクションのものか
     this.programBusy = null;    // 走査中の Promise（二重に走らせない）
+    this.programBusyEpoch = -1;
     this.shapes = null;         // 値のふるまい（shapes.js）。名前のないアプリ向けの土台。
     this.shapesBusy = null;
+    this.shapesBusyEpoch = -1;
     this.schemas = null;        // データファイルの表（schema.js）
     this.schemasBusy = null;
+    this.schemasBusyEpoch = -1;
+    this.stringsBusy = null;
+    this.stringsBusyEpoch = -1;
     this.lastGoal = null;       // 直近に調べた目的
     // Objective-C のクラスとフィールド。x0+0x20 を self.hp と言えるようにする索引。
     this.fields = EMPTY_FIELDS;
     this.objcBusy = null;
+    this.objcBusyEpoch = -1;
+    this.symbolsReadyEpoch = -1;
     /* 自分で付けた名前・メモ・型（names.js）。ファイルごとに保存される。 */
     this.notes = EMPTY_NOTES;
     /* 命令の書き換え（patch.js）。保存を選ぶまでファイルには触らない。 */
@@ -67,7 +76,9 @@ class App {
     /* 追加した機能（plugins.js）。 */
     this.plugins = new PluginHost(this);
 
-    setLang(this.prefs.lang || 'ja');
+    /* 端末の言語に合わせる。ここを 'ja' 決め打ちにしていたころ、
+       英語の端末でもツールバーが日本語のままだった。 */
+    setLang(this.prefs.lang || detectLang());
 
     this.dom = {
       app: $('app'),
@@ -88,6 +99,7 @@ class App {
       strings: $('btn-strings'),
       struct: $('btn-struct'),
       jump: $('btn-jump'),
+      overflow: $('btn-overflow'),
       search: $('btn-search'),
       select: $('btn-select'),
       selbar: $('selbar'),
@@ -200,6 +212,22 @@ class App {
     this.dom.jump.addEventListener('click', () => showJump(this));
     this.dom.search.addEventListener('click', () => showSearch(this));
     this.dom.help.addEventListener('click', () => showHelp(this));
+    /*
+     * 「その他」。ツールバーに収まりきらない 4 つを、浮かせたメニューで出す。
+     * 中身は同じボタンをそのまま押すので、有効・無効の扱いは 1 か所のままになる。
+     */
+    this.dom.overflow.addEventListener('click', (e) => {
+      const r = e.currentTarget.getBoundingClientRect();
+      const item = (el2) => ({
+        label: el2.textContent,
+        disabled: el2.disabled,
+        action: () => el2.click(),
+      });
+      menu([
+        item(this.dom.strings), item(this.dom.sections),
+        item(this.dom.struct), item(this.dom.select),
+      ], r.left + r.width / 2, r.bottom + 4);
+    });
     this.dom.select.addEventListener('click', () => {
       if (this.viewer.rangeMode) this.viewer.clearRange();
       else this.startSelection();
@@ -315,6 +343,7 @@ class App {
     this.dom.tools.disabled = !has;
     this.dom.functions.disabled = !region;
     this.dom.jump.disabled = !region;
+    this.dom.overflow.disabled = !has;
     this.dom.search.disabled = !region;
     this.dom.select.disabled = !region;
     this.dom.empty.hidden = has;
@@ -482,10 +511,20 @@ class App {
       this.program = null;
       this.programScan = null;
       this.programKey = null;
+      this.programBusy = null;
+      this.programBusyEpoch = -1;
       this.shapes = null;
       this.shapesBusy = null;
+      this.shapesBusyEpoch = -1;
       this.schemas = null;
       this.schemasBusy = null;
+      this.schemasBusyEpoch = -1;
+      this.stringsBusy = null;
+      this.stringsBusyEpoch = -1;
+      this.objcBusy = null;
+      this.objcBusyEpoch = -1;
+      this.symbolsReady = null;
+      this.symbolsReadyEpoch = -1;
       this.lastGoal = null;
       clearAnalysisCache();
     }
@@ -509,8 +548,10 @@ class App {
    * 呼び出しグラフは「その命令がどの関数の中にあるか」を必要とするので、ここが要る。
    */
   async ensureFunctions(region, onProgress) {
+    const epoch = this.backend.gen;
     // 名前の読み込みが終わるのを待つ。先に走らせると、無駄に推測してしまう。
     if (this.symbolsReady) { try { await this.symbolsReady; } catch { /* 名前がなくても続ける */ } }
+    if (epoch !== this.backend.gen) return null;
     // EMPTY_INDEX は全体で共有している空の索引なので、絶対に書き換えない
     if (this.symbols === EMPTY_INDEX) {
       this.symbols = new SymbolIndex({});
@@ -519,20 +560,14 @@ class App {
     const sym = this.symbols;
     if (!sym || sym.functionCount > 0) return sym;
     if (!region) return sym;
-    const prev = this.backend.onScanProgress;
-    if (onProgress) {
-      this.backend.onScanProgress = (p) => onProgress({ phase: 'functions', done: p.done, all: p.all });
-    }
     try {
-      const res = await this.backend.guessFunctions(region.id);
-      if (res && res.starts && res.starts.length) {
+      const res = await this.backend.guessFunctions(region.id, null,
+        onProgress && ((p) => onProgress({ phase: 'functions', done: p.done, all: p.all })));
+      if (epoch === this.backend.gen && res && res.starts && res.starts.length) {
         sym.setGuessedFunctions(res.starts);
         this.viewer.setSymbols(sym);
       }
-    } catch { /* 推測できなくても、ほかの解析は続ける */
-    } finally {
-      this.backend.onScanProgress = prev;
-    }
+    } catch { /* 推測できなくても、ほかの解析は続ける */ }
     return sym;
   }
 
@@ -551,28 +586,30 @@ class App {
       this.program = new ProgramIndex(this.programScan, this.symbols, region);
       return this.program;
     }
-    if (this.programBusy) return this.programBusy;
+    const epoch = this.backend.gen;
+    if (this.programBusy && this.programBusyEpoch === epoch) return this.programBusy;
 
+    this.programBusyEpoch = epoch;
     this.programBusy = (async () => {
       await this.ensureFunctions(region, onProgress);
-      const prev = this.backend.onScanProgress;
-      if (onProgress) {
-        this.backend.onScanProgress = (p) => onProgress({ phase: 'scan', done: p.done, all: p.all });
-      }
+      if (epoch !== this.backend.gen) return null;
       try {
-        const scan = await this.backend.scanProgram(region.id);
-        if (scan && !scan.cancelled) {
+        const scan = await this.backend.scanProgram(region.id,
+          onProgress && ((p) => onProgress({ phase: 'scan', done: p.done, all: p.all })));
+        if (epoch === this.backend.gen && scan && !scan.cancelled) {
           this.programScan = scan;
           this.programKey = key;
           this.program = new ProgramIndex(scan, this.symbols, region);
         }
       } catch {
-        this.program = null;      // 索引が作れなくても、他の機能は動く
+        if (epoch === this.backend.gen) this.program = null;
       } finally {
-        this.backend.onScanProgress = prev;
-        this.programBusy = null;
+        if (this.programBusyEpoch === epoch) {
+          this.programBusy = null;
+          this.programBusyEpoch = -1;
+        }
       }
-      return this.program;
+      return epoch === this.backend.gen ? this.program : null;
     })();
     return this.programBusy;
   }
@@ -586,24 +623,25 @@ class App {
    */
   async ensureShapes(onProgress) {
     if (this.shapes) return this.shapes;
-    if (this.shapesBusy) return this.shapesBusy;
+    const epoch = this.backend.gen;
+    if (this.shapesBusy && this.shapesBusyEpoch === epoch) return this.shapesBusy;
     const region = this.codeRegion();
     if (!region) return null;
-    const prev = this.backend.onScanProgress;
-    if (onProgress) {
-      this.backend.onScanProgress = (p) => onProgress({ phase: 'shapes', done: p.done, all: p.all });
-    }
+    this.shapesBusyEpoch = epoch;
     this.shapesBusy = (async () => {
       try {
-        const scan = await this.backend.valueShapes(region.id);
-        if (scan && !scan.cancelled) this.shapes = foldShapes(scan);
+        const scan = await this.backend.valueShapes(region.id,
+          onProgress && ((p) => onProgress({ phase: 'shapes', done: p.done, all: p.all })));
+        if (epoch === this.backend.gen && scan && !scan.cancelled) this.shapes = foldShapes(scan);
       } catch {
-        this.shapes = null;          // 取れなくても、ほかの解析は続く
+        if (epoch === this.backend.gen) this.shapes = null;
       } finally {
-        this.backend.onScanProgress = prev;
-        this.shapesBusy = null;
+        if (this.shapesBusyEpoch === epoch) {
+          this.shapesBusy = null;
+          this.shapesBusyEpoch = -1;
+        }
       }
-      return this.shapes;
+      return epoch === this.backend.gen ? this.shapes : null;
     })();
     return this.shapesBusy;
   }
@@ -617,21 +655,29 @@ class App {
    */
   async ensureSchemas(onProgress) {
     if (this.schemas) return this.schemas;
-    if (this.schemasBusy) return this.schemasBusy;
+    const epoch = this.backend.gen;
+    if (this.schemasBusy && this.schemasBusyEpoch === epoch) return this.schemasBusy;
+    this.schemasBusyEpoch = epoch;
     this.schemasBusy = (async () => {
       try {
         const strings = await this.ensureStrings(onProgress);
         const program = await this.ensureProgram(onProgress);
+        if (epoch !== this.backend.gen) return null;
         if (!program) { this.schemas = []; return this.schemas; }
         const read = (addr, len) => this.backend.readAt(addr, len)
           .then((r) => (r && r.found ? r.bytes : null)).catch(() => null);
-        this.schemas = await recoverSchemas({ strings, program, read, onProgress });
+        const schemas = await recoverSchemas({ strings, program, read, onProgress,
+          isCancelled: () => epoch !== this.backend.gen });
+        if (epoch === this.backend.gen) this.schemas = schemas;
       } catch {
-        this.schemas = [];        // 読めなくても、ほかの解析は続く
+        if (epoch === this.backend.gen) this.schemas = [];
       } finally {
-        this.schemasBusy = null;
+        if (this.schemasBusyEpoch === epoch) {
+          this.schemasBusy = null;
+          this.schemasBusyEpoch = -1;
+        }
       }
-      return this.schemas;
+      return epoch === this.backend.gen ? this.schemas : null;
     })();
     return this.schemasBusy;
   }
@@ -642,36 +688,62 @@ class App {
    */
   async ensureStrings(onProgress) {
     if (this.stringIndex) return this.stringIndex;
+    const epoch = this.backend.gen;
+    if (this.stringsBusy && this.stringsBusyEpoch === epoch) return this.stringsBusy;
+    this.stringsBusyEpoch = epoch;
+    this.stringsBusy = (async () => {
     const regions = this.store.get('regions') || [];
     /*
      * 文字列の置き場は 6 か所とはかぎらない。上から 6 つだけ見ていたころは
      * __oslogstring のような後ろのほうの区画がまるごと抜けていた。
      * 走査は速いので、文字列が入りうる区画は全部見る（合計のバイト数だけ見張る）。
      */
+    const priority = (r) => {
+      const s = r.section || '';
+      if (r.cstrings || /^__(cstring|objc_methname|objc_classname|swift5_reflstr|oslogstring)$/.test(s)) return 0;
+      if (/string|objc_method|objc_class|ustring/i.test(s)) return 1;
+      return 2; // general __const comes last
+    };
     const targets = regions.filter((r) => r.size > 0n &&
-      (r.cstrings || /string|cstring|objc_method|objc_class|const|ustring|swift5_reflstr/i.test(r.section || '')));
+      (r.cstrings || /string|cstring|objc_methname|objc_method|objc_classname|objc_class|oslogstring|const|ustring|swift5_reflstr/i.test(r.section || '')))
+      .sort((a, b) => priority(a) - priority(b));
     const current = this.store.get('currentRegion');
     let budget = 64 * 1024 * 1024;
     const use = [];
+    const skipped = [];
     for (const r of targets) {
-      if (budget <= 0) break;
-      use.push(r);
-      budget -= Number(r.size);
+      if (budget <= 0) { skipped.push(r); continue; }
+      const bytes = Math.min(budget, Number(r.size));
+      use.push({ region: r, bytes });
+      budget -= bytes;
+      if (bytes < Number(r.size)) skipped.push(r);
     }
-    if (!use.length && current) use.push(current);
+    if (!use.length && current) use.push({ region: current, bytes: Math.min(64 * 1024 * 1024, Number(current.size)) });
     const out = [];
-    const prev = this.backend.onScanProgress;
-    if (onProgress) this.backend.onScanProgress = (p) => onProgress({ phase: 'strings', done: p.done, all: p.all });
+    let scannedBytes = 0;
     try {
-      for (const r of use) {
-        const res = await this.backend.strings({ regionId: r.id, min: 4 });
+      for (const item of use) {
+        if (epoch !== this.backend.gen) return null;
+        const r = item.region;
+        const res = await this.backend.strings({ regionId: r.id, min: 4, maxBytes: item.bytes },
+          onProgress && ((p) => onProgress({ phase: 'strings', done: p.done, all: p.all, region: r.id })));
+        scannedBytes += res.scannedBytes || 0;
+        if (!res.complete && !skipped.includes(r)) skipped.push(r);
         for (const s of res.results) out.push({ addr: s.addr, text: s.text, region: r });
       }
     } finally {
-      this.backend.onScanProgress = prev;
+      if (this.stringsBusyEpoch === epoch) {
+        this.stringsBusy = null;
+        this.stringsBusyEpoch = -1;
+      }
     }
-    this.stringIndex = out;
-    return out;
+    out.complete = skipped.length === 0;
+    out.skippedRegions = skipped.map((r) => ({ id: r.id, name: r.name, section: r.section, size: r.size }));
+    out.scannedBytes = scannedBytes;
+    if (epoch === this.backend.gen) this.stringIndex = out;
+    return epoch === this.backend.gen ? out : null;
+    })();
+    return this.stringsBusy;
   }
 
   /** 関数レポートを開く（候補一覧・XREF・ビューアのどこからでも呼べる入口）。 */
@@ -739,25 +811,31 @@ class App {
     this.forgetSemantics(true);
 
     let info;
+    let openEpoch;
     try {
-      info = await this.backend.open(file);
+      const opening = this.backend.open(file);
+      openEpoch = this.backend.gen;
+      info = await opening;
     } catch (err) {
+      if (err && err.stale) return;
       this.setBusy(false);
       alertDialog(t('err.openTitle'), friendly(err.message));
       return;
     }
+    if (openEpoch !== this.backend.gen) return;
 
     this.store.set({ file, fileInfo: info, selectedRow: -1 });
-
-    /* 前に付けた名前・メモを呼び戻す。ファイルごとに分かれて保存されている。 */
-    this.notes = new NoteStore(noteKeyFor(file, info));
-    this.patches = new PatchSet();
 
     let sliceIndex = -1;
     if (info.slices.length) {
       sliceIndex = info.slices.findIndex((s) => s.info && s.info.isArm64);
       if (sliceIndex < 0) sliceIndex = info.slices.findIndex((s) => s.info);
     }
+    /* fingerprint + active sliceで、同名・同サイズやFat内の別sliceを混同しない。 */
+    const notes = new NoteStore(await noteKeyFor(file, info, sliceIndex));
+    if (openEpoch !== this.backend.gen) return;
+    this.notes = notes;
+    this.patches = new PatchSet();
     this.setBusy(false);
     this.applySlice(sliceIndex, info);
 
@@ -784,6 +862,7 @@ class App {
   }
 
   applySlice(sliceIndex, infoArg) {
+    const epoch = this.backend.gen;
     const info = infoArg || this.store.get('fileInfo');
     const slice = sliceIndex >= 0 ? info.slices[sliceIndex] : null;
     const regions = slice ? slice.regions : [];
@@ -804,6 +883,7 @@ class App {
 
     if (canDisassemble) {
       this.backend.probe().catch((err) => {
+        if (epoch !== this.backend.gen || (err && err.stale)) return;
         this.store.set({ canDisassemble: false, displayMode: 'hex' });
         this.viewer.setMode('hex');
         this.updateChrome();
@@ -815,8 +895,9 @@ class App {
 
     // 名前と関数の一覧はここで作る。失敗しても表示自体は続けられる。
     if (sliceIndex >= 0) {
+      this.symbolsReadyEpoch = epoch;
       this.symbolsReady = this.backend.analyze(sliceIndex).then((res) => {
-        if (this.store.get('sliceIndex') !== sliceIndex) return;
+        if (epoch !== this.backend.gen || this.store.get('sliceIndex') !== sliceIndex) return;
         this.symbols = new SymbolIndex(res);
         // 前回このファイルに付けた名前を戻す（元の名前より優先される）
         for (const e of this.notes.nameEntries()) this.symbols.rename(e.addr, e.name);
@@ -842,13 +923,15 @@ class App {
    * 裏で走らせて、できたところで画面を差し替える。失敗しても表示は続く。
    */
   async ensureObjc(sliceIndex) {
+    const epoch = this.backend.gen;
     if (this.fields && this.fields.classCount) return this.fields;
-    if (this.objcBusy) return this.objcBusy;
+    if (this.objcBusy && this.objcBusyEpoch === epoch) return this.objcBusy;
     const regions = this.store.get('regions') || [];
     const list = regions.find((r) => r.section === '__objc_classlist' && r.size > 0n);
     if (!list) { this.fields = EMPTY_FIELDS; return this.fields; }
     const slice = sliceIndex != null ? sliceIndex : this.store.get('sliceIndex');
 
+    this.objcBusyEpoch = epoch;
     this.objcBusy = (async () => {
       const read = (addr, len) => this.backend.readAt(addr, len)
         .then((r) => (r && r.found ? r.bytes : null))
@@ -859,7 +942,7 @@ class App {
         const sl = info && info.slices ? info.slices[slice] : null;
         const imageBase = sl && sl.info ? sl.info.textVM : null;
         const model = await buildObjcModel(read, list, null, imageBase);
-        if (this.store.get('sliceIndex') !== slice) return this.fields;
+        if (epoch !== this.backend.gen || this.store.get('sliceIndex') !== slice) return this.fields;
         this.objcModel = model;
         this.fields = new FieldIndex(model);
         if (model.names.length) {
@@ -877,9 +960,12 @@ class App {
         }
       } catch { /* 読めなくても、ほかの表示には影響させない */
       } finally {
-        this.objcBusy = null;
+        if (this.objcBusyEpoch === epoch) {
+          this.objcBusy = null;
+          this.objcBusyEpoch = -1;
+        }
       }
-      return this.fields;
+      return epoch === this.backend.gen ? this.fields : EMPTY_FIELDS;
     })();
     return this.objcBusy;
   }
@@ -905,13 +991,18 @@ class App {
     return info.slices[i];
   }
 
-  selectSlice(index) {
+  async selectSlice(index) {
     const info = this.store.get('fileInfo');
     if (!info || !info.slices[index] || info.slices[index].error) return;
-    this.backend.resetCache();
+    this.backend.advanceEpoch();
     this.forgetSemantics(true);
     this.symbols = EMPTY_INDEX;
     this.viewer.setSymbols(EMPTY_INDEX);
+    const file = this.store.get('file');
+    const epoch = this.backend.gen;
+    const notes = new NoteStore(await noteKeyFor(file, info, index));
+    if (epoch !== this.backend.gen) return;
+    this.notes = notes;
     this.applySlice(index, info);
   }
 

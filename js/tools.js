@@ -4,7 +4,7 @@
  * IDA や Ghidra にある道具を、初心者にも分かる言葉で並べたところです。
  * どれも「何のための道具か」を最初に 1 行で説明してから中身を出します。
  *
- *   擬似コード      … アセンブリを C 風に読み直す
+ *   逆コンパイル    … アセンブリを C 風に読み直す
  *   制御フロー図    … 分かれ道と合流を絵にする
  *   呼び出し図      … 誰が誰を呼ぶかを絵にする
  *   型と変数        … 引数・戻り値・ローカル変数の見当をつける
@@ -30,10 +30,10 @@ import { cfgGraph, callGraph, renderGraph, graphLegend } from './graphview.js';
 import { inferTypes, recoverStruct, TypeStore, structToC, BASIC_TYPES, typeJa } from './types.js';
 import { readableName, shortName, isMangled, findCxxClasses, readVtable } from './rtti.js';
 import { importList, importsByFramework, exportList, findGlobals } from './linkage.js';
-import { assemble, suggestPatches, parseHexBytes, hexOf } from './patch.js';
+import { assemble, suggestPatches, parseHexBytes, hexOf, validatePatchRange } from './patch.js';
 import { runScript, SAMPLES, makeEmulator } from './script.js';
 import { EXAMPLE_PLUGIN } from './plugins.js';
-import { parseMetadataAuto, looksLikeUnity } from './il2cpp.js';
+import { parseMetadataAuto, looksLikeUnity, bindMethodAddresses } from './il2cpp.js';
 import { brief } from './arm64.js';
 
 /* ── 小道具 ─────────────────────────────────────────────── */
@@ -189,7 +189,7 @@ export function showTools(app) {
   const item = rowIn(perFunction);
   const withFn = (fn) => () => { const a = needFunction(app); if (a != null) fn(a); };
 
-  item(INFER, '擬似コード（C 風に読む）',
+  item(INFER, '逆コンパイル（C 風に読む）',
     'アセンブリを if / while / 代入の形に直します。いちばん読みやすい形です。訳なので、元のソースそのものではありません。',
     withFn((a) => showDecompiler(app, a)));
   item(FACT, '制御フロー図（分かれ道を絵にする）',
@@ -254,11 +254,17 @@ export function showTools(app) {
 }
 
 /* ══════════════════════════════════════════════════════════
-   擬似コード
+   逆コンパイル
+
+   アセンブリを C 風に読み直した結果を出す面。
+
+   ここは「読む」ための面なので、画面の広さを全部使う。
+   以前は狭いシートの中に、1 命令 1 行の訳と、行ごとに同じ注釈が
+   並んでいて、200 行の関数が 600 行になっていた。
    ══════════════════════════════════════════════════════════ */
 
 export async function showDecompiler(app, addr) {
-  const sheet = new Sheet('擬似コード');
+  const sheet = new Sheet('逆コンパイル', { size: 'full' });
   const status = el('div', 'hint', '解析しています…');
   sheet.body.append(status);
 
@@ -269,7 +275,7 @@ export async function showDecompiler(app, addr) {
   }
   const map = rowMapper(app);
   let showAsm = false;
-  let showNotes = true;
+  let showNotes = false;
 
   const out = decompile(res.model, {
     name: app.symbols.nameAt(addr),
@@ -285,38 +291,42 @@ export async function showDecompiler(app, addr) {
   });
 
   status.remove();
+  sheet.body.classList.add('nogrow');
 
-  /* 見出し */
-  const head = block(null);
-  head.append(el('div', 'bigval mono', out.signature));
-  head.append(el('div', 'hint', addrHex(addr) + '  ·  ' + res.instructions + ' 命令'));
-  sheet.body.append(head);
+  /* 見出し。関数の名前と形は、下までスクロールしても見えるように貼り付ける。 */
+  const head = el('div', 'code-head');
+  head.append(el('div', 'code-sig mono', out.signature));
+  const meta = el('div', 'code-meta');
+  meta.append(el('span', null, addrHex(addr)));
+  meta.append(el('span', null, res.instructions + ' 命令 → ' +
+    out.lines.filter((l) => l.kind === 'stmt' || l.kind === 'ctrl').length + ' 行'));
+  if (out.ctx && out.ctx.carry) {
+    meta.append(el('span', 'code-carry',
+      'result ＝ ' + out.ctx.carry.reg + '（' + out.ctx.carry.steps + ' 段で組み立てている値）'));
+  }
+  head.append(meta);
 
-  sheet.body.append(noteBox(
-    'これは「訳」であって、元のソースコードではありません。\n' +
-    '変数名も型も、命令の並びから推測したものです。分からないところは ' +
-    '__asm や goto のまま残しています（きれいに見せるために嘘は書きません）。'));
-
-  for (const w of out.warnings) sheet.body.append(el('div', 'hint warn', '⚠ ' + w));
-
-  /* 表示の切り替え */
-  const chips = el('div', 'chips');
-  const asmChip = button('アセンブリも表示', 'chip', () => {
+  /* 表示の切り替え。押せる状態が見て分かるように、入れたものは色を付ける。 */
+  const chips = el('div', 'chips code-chips');
+  const asmChip = button('アセンブリを併記', 'chip', () => {
     showAsm = !showAsm;
     asmChip.classList.toggle('on', showAsm);
     render();
   });
-  const noteChip = button('日本語の注釈', 'chip on', () => {
+  const noteChip = button('日本語の注釈', 'chip', () => {
     showNotes = !showNotes;
     noteChip.classList.toggle('on', showNotes);
     render();
   });
   chips.append(asmChip, noteChip);
-  chips.append(button('コピー', 'chip', () => copyText(decompiledText(out), '擬似コード')));
+  chips.append(button('コピー', 'chip', () => copyText(decompiledText(out), '逆コンパイル結果')));
   chips.append(button('図で見る', 'chip', () => { sheet.close(); showCfg(app, addr); }));
-  sheet.body.append(chips);
+  head.append(chips);
+  sheet.body.append(head);
 
-  const codeWrap = el('div', 'codeview');
+  for (const w of out.warnings) sheet.body.append(el('div', 'hint warn', '⚠ ' + w));
+
+  const codeWrap = el('div', 'codeview code-full');
   sheet.body.append(codeWrap);
 
   const byRow = new Map();
@@ -329,7 +339,7 @@ export async function showDecompiler(app, addr) {
       const row = el('div', 'cl ' + l.kind);
       const gutter = el('span', 'cl-addr mono', l.addr != null ? l.addr.toString(16).toUpperCase().slice(-6) : '');
       const text = el('span', 'cl-text mono');
-      text.textContent = '    '.repeat(Math.max(0, l.indent)) + l.text;
+      paintCode(text, '    '.repeat(Math.max(0, l.indent)) + l.text);
       row.append(gutter, text);
       if (l.addr != null) {
         row.classList.add('tappable');
@@ -350,6 +360,36 @@ export async function showDecompiler(app, addr) {
     }
   }
   render();
+}
+
+/*
+ * 1 行に色を付ける。
+ *
+ * 全部が同じ黒で並んでいると、どこが呼び出しでどこが数か、
+ * 目で追うところから始めることになる。C を読むときと同じ色分けにする。
+ * innerHTML は使わない（名前に < > が入ることがあるため）。
+ */
+const CODE_TOKENS = new RegExp([
+  '("(?:[^"\\\\]|\\\\.)*")',                                  // 文字列
+  '\\b(if|else|while|for|do|return|goto|switch|case|break|continue)\\b',
+  '\\b(int8|int16|int32|int64|uint8|uint16|uint32|uint64|void|double|float|char|bool|result)\\b',
+  '(\\b0x[0-9A-Fa-f]+\\b|\\b\\d+\\b)',                            // 数
+  '([A-Za-z_][\\w:.$]*)(?=\\s*\\()',                                // 呼び出し
+  '(//.*$|/\\*.*?\\*/)',                                          // 注釈
+].join('|'), 'g');
+
+function paintCode(node, text) {
+  node.replaceChildren();
+  let last = 0;
+  text.replace(CODE_TOKENS, (m, str, kw, type, num, call, cmt, at) => {
+    if (at > last) node.append(document.createTextNode(text.slice(last, at)));
+    const cls = str ? 'c-str' : kw ? 'c-kw' : type ? 'c-type'
+      : num ? 'c-num' : call ? 'c-call' : 'c-cmt';
+    node.append(el('span', cls, m));
+    last = at + m.length;
+    return m;
+  });
+  if (last < text.length) node.append(document.createTextNode(text.slice(last)));
 }
 
 /** その行に対してできること。 */
@@ -1060,6 +1100,8 @@ export function showPatches(app) {
 async function instructionAt(app, addr) {
   const region = app.codeRegion();
   if (!region) return null;
+  const file = app.store.get('file');
+  if (validatePatchRange(region, addr, 4, file && file.size, true).error) return null;
   const row = Number((addr - region.vmAddr) / 4n);
   const chunk = Math.floor(row / 1024);
   try {
@@ -1074,7 +1116,10 @@ export async function showPatchEditor(app, addr, insnArg) {
   const sheet = new Sheet('命令を書き換える');
   const region = app.codeRegion();
   if (!region) { sheet.body.append(noteBox('コードのセクションが見つかりません。')); return; }
-  const fileOffset = region.fileOffset + (addr - region.vmAddr);
+  const file = app.store.get('file');
+  const range = validatePatchRange(region, addr, 4, file && file.size, true);
+  if (range.error) { sheet.body.append(noteBox(range.error)); return; }
+  const fileOffset = range.fileOffset;
 
   sheet.body.append(el('div', 'hint', addrHex(addr) + '  ·  ファイルの中では +0x' + fileOffset.toString(16)));
   if (insn) {
@@ -1115,9 +1160,15 @@ export async function showPatchEditor(app, addr, insnArg) {
   }
 
   async function commit(bytes, text) {
+    const valid = validatePatchRange(region, addr, bytes.length, file && file.size, true);
+    if (valid.error) { alertDialog('登録できません', valid.error); return; }
     const before = await app.backend.readAt(addr, bytes.length)
-      .then((r) => (r && r.found ? r.bytes : new Uint8Array(bytes.length))).catch(() => new Uint8Array(bytes.length));
-    app.patches.add(fileOffset, before, bytes, { addr, text });
+      .then((r) => (r && r.found ? r.bytes : null)).catch(() => null);
+    if (!before || before.length !== bytes.length) {
+      alertDialog('登録できません', '元のバイトを読み取れませんでした。');
+      return;
+    }
+    app.patches.add(valid.fileOffset, before, bytes, { addr, text });
     sheet.close();
     toast('書き換えを登録しました（保存するまでファイルは変わりません）');
   }
@@ -1363,7 +1414,7 @@ function showScriptHelp() {
       'hex.functions()            関数の一覧',
       'hex.name(addr)             名前を引く',
       'hex.disasm(addr, 20)       逆アセンブル',
-      'await hex.decompile(addr)  擬似コード',
+      'await hex.decompile(addr)  逆コンパイル',
       'await hex.types(addr)      引数と戻り値の推定',
       'await hex.struct(addr)     構造体の復元',
       'hex.xrefsTo(addr)          呼んでいる場所',
@@ -1449,15 +1500,15 @@ export function showPlugins(app) {
         toast('取り寄せています…');
         const res = await app.plugins.installFromUrl(u.value.trim());
         if (res.error) alertDialog('読み込めません', res.error);
-        else { render(); toast(res.added.length + ' 個入りました'); }
+        else confirmInstall(res.source, res.origin);
       }));
     }));
     chips.append(button('お手本を見る', 'chip', () => {
       const s = new Sheet('プラグインの書き方');
       s.body.append(para('この形で書いて、.js として保存し、上の「ファイルから読み込む」で入れてください。'));
       s.body.append(codeBlock(EXAMPLE_PLUGIN));
-      s.body.append(button('このお手本を入れる', 'tb-btn strong', () => {
-        const res = app.plugins.install(EXAMPLE_PLUGIN, 'お手本');
+      s.body.append(button('このお手本を入れる', 'tb-btn strong', async () => {
+        const res = await app.plugins.install(EXAMPLE_PLUGIN, 'お手本');
         s.close();
         if (res.error) alertDialog('入れられません', res.error);
         else { render(); toast('入れました'); }
@@ -1469,9 +1520,10 @@ export function showPlugins(app) {
   function confirmInstall(text, origin) {
     const s = new Sheet('中身を確かめる');
     s.body.append(para('入れる前に、中身を確かめてください。'));
-    s.body.append(codeBlock(text.slice(0, 8000)));
-    s.body.append(button('入れる', 'tb-btn strong', () => {
-      const res = app.plugins.install(text, origin);
+    s.body.append(para('全 ' + text.length.toLocaleString() + ' 文字です。以下が全文です。'));
+    s.body.append(codeBlock(text));
+    s.body.append(button('全文を確認して入れる', 'tb-btn strong', async () => {
+      const res = await app.plugins.install(text, origin);
       s.close();
       if (res.error) alertDialog('入れられません', res.error);
       else { render(); toast(res.added.length + ' 個入りました'); }
@@ -1530,6 +1582,18 @@ export function showIl2cpp(app) {
       body.replaceChildren(el('div', 'hint', '読み込んでいます…'));
       try {
         const meta = parseMetadataAuto(await f.arrayBuffer());
+        await bindMethodAddresses(meta, {
+          regions: app.store.get('regions') || [],
+          read: (addr, len) => app.backend.readAt(addr, len)
+            .then((r) => (r && r.found ? r.bytes : null)),
+        });
+        const named = meta.methods.filter((m) => m.address != null)
+          .map((m) => ({ addr: m.address, name: m.full }));
+        if (named.length) {
+          app.symbols.addNames(named);
+          app.symbols.addFunctions(named.map((n) => n.addr));
+          app.viewer.setSymbols(app.symbols);
+        }
         show(meta);
       } catch (err) {
         body.replaceChildren(el('div', 'hint warn', '⚠ ' + ((err && err.message) || String(err))));
@@ -1545,10 +1609,9 @@ export function showIl2cpp(app) {
       'version ' + meta.version + '  ·  クラス ' + meta.classes.length +
       ' 個  ·  メソッド ' + meta.methods.length + ' 個  ·  文字列 ' + meta.literals.length + ' 個'));
     for (const w of meta.warnings) body.append(el('div', 'hint warn', '⚠ ' + w));
-    body.append(noteBox(
-      'メソッド名と「機械語のどのアドレスか」の対応づけは、Unity の版によって形が変わるため\n' +
-      'ここでは行っていません（間違ったまま断定しないためです）。\n' +
-      '名前で見当をつけて、「検索」でその名前の文字列を探すのが確実な進め方です。'));
+    body.append(noteBox(meta.methodBinding && meta.methodBinding.bound
+      ? meta.methodBinding.bound + ' 個のメソッドを、検証済みのCodeRegistration表から機械語addressへ対応づけました。'
+      : 'Method→address表を検証できなかったため、名前だけを表示します。推測addressは作りません。'));
 
     const search = input('クラス名・メソッド名で絞り込む');
     const results = list();
@@ -1572,8 +1635,8 @@ export function showIl2cpp(app) {
       if (ms.length) results.append(groupRow('メソッド'));
       for (const m of ms) {
         results.append(tapRow(m.name, {
-          sub: m.className || '（所属不明）',
-          onTap: () => copyText(m.full, '名前'),
+          sub: (m.className || '（所属不明）') + (m.address != null ? '\n' + addrHex(m.address) : ''),
+          onTap: () => m.address != null ? app.goToAddress(m.address) : copyText(m.full, '名前'),
         }));
       }
       if (ls.length) results.append(groupRow('プログラムの中の文字列'));

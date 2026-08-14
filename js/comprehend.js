@@ -320,9 +320,39 @@ function labelFor(labels, row) {
 const MUL_RE = /[×*]\s*\(?\s*(\d+)/g;
 const DIV_RE = /[÷/]\s*\(?\s*(\d+)/g;
 
+/*
+ * ASCII の `*` と `/` だけで「式だ」と言ってはいけない。
+ *
+ * この 1 行を `if (!/[×÷]/.test(s) && !/[*\/]\s*\d/.test(s)) return null;` と
+ * 書いていたころ、このアプリの中で式として拾えた 88 本のうち、本物は 25 本だった。
+ * 残りの 63 本はこういうものだった:
+ *
+ *   "v40@0:8@16@24*32"        Objective-C の型エンコード      → ×32
+ *   "video/3gpp"              MIME 型                         → ÷3
+ *   "/openrtb/2.5"            URL の道                        → ÷2
+ *   "MIGHAoGBAMgt6PK9…D/4Pt"  RSA 秘密鍵（base64）            → ÷4
+ *   "key_bytes == 128 / 8"    C の表明文                       → ÷8
+ *
+ * ここは role-formula-verified（尤度比 260 ＝ このツールで最強の証拠）の
+ * 入口なので、外すと「型エンコードの ×16 と、構造体の +16 が一致したから確定」
+ * という嘘が通る。×16 も ×24 も ×32 も、命令の側にはいくらでもある。
+ *
+ * 全角の × ÷ は、人が読む文の中の掛け算・割り算にしか出てこない。
+ * ASCII だけで書かれているものは、
+ *   ・書式指定（%d / %@ …）があって、人に見せる文であることがはっきりしていて
+ *   ・演算子の前後に区切り（空白や閉じ括弧）がある
+ * ものだけを受ける。`v40@0:8*16` も `video/3gpp` も、この 2 つを満たさない。
+ */
+const FULLWIDTH_OP = /[×÷]/;
+const ASCII_FORMAT = /%[-+ #0-9.]*[diufFgGeEsxX@]/;
+const ASCII_OP = /(?:^|[\s)\]])[*/]\s*\(?\s*\d/;
+
 export function formulaOf(text) {
   const s = String(text == null ? '' : text);
-  if (!/[×÷]/.test(s) && !/[*/]\s*\d/.test(s)) return null;
+  if (!s) return null;
+  if (!FULLWIDTH_OP.test(s)) {
+    if (!ASCII_FORMAT.test(s) || !ASCII_OP.test(s)) return null;
+  }
   const mul = [], div = [];
   for (const m of s.matchAll(MUL_RE)) mul.push(BigInt(m[1]));
   for (const m of s.matchAll(DIV_RE)) div.push(BigInt(m[1]));

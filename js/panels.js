@@ -851,12 +851,11 @@ export function showFeatures(app) {
 
   if (app.featureIndex) { render(app.featureIndex); return; }
 
-  app.backend.onScanProgress = (p) => {
+  const progress = (p) => {
     if (!p.all) return;
     fill.style.width = Math.min(100, Math.round((p.done / p.all) * 100)) + '%';
   };
-  collectStrings(app).then((strings) => {
-    app.backend.onScanProgress = null;
+  collectStrings(app, progress).then((strings) => {
     const index = {
       features: groupByFeature(strings),
       engine: detectEngine(strings),
@@ -865,7 +864,6 @@ export function showFeatures(app) {
     app.featureIndex = index;
     render(index);
   }).catch((err) => {
-    app.backend.onScanProgress = null;
     bar.remove();
     status.textContent = '';
     alertDialog(t('search.failed'), err.message || String(err));
@@ -873,7 +871,7 @@ export function showFeatures(app) {
 }
 
 /** 文字列を集める。収集とキャッシュは app 側に置いてある（何度も走査しないため）。 */
-function collectStrings(app) { return app.ensureStrings(); }
+function collectStrings(app, onProgress) { return app.ensureStrings(onProgress); }
 
 /** ある機能に属する言葉の一覧。 */
 function showFeatureWords(app, feature) {
@@ -970,13 +968,12 @@ export function showStrings(app) {
     all = [];
     status.textContent = t('strings.scanning');
     fill.style.width = '0%';
-    app.backend.onScanProgress = (p) => {
+    const progress = (p) => {
       if (!p.all) return;
       fill.style.width = Math.min(100, Math.round((p.done / p.all) * 100)) + '%';
     };
     try {
-      const res = await app.backend.strings({ regionId: region.id, min: 4 });
-      app.backend.onScanProgress = null;
+      const res = await app.backend.strings({ regionId: region.id, min: 4 }, progress);
       fill.style.width = '100%';
       all = res.results;
       status.textContent = t('strings.count', { n: all.length.toLocaleString() }) +
@@ -984,7 +981,6 @@ export function showStrings(app) {
         '\n' + t('strings.hint');
       render();
     } catch (err) {
-      app.backend.onScanProgress = null;
       status.textContent = '';
       alertDialog(t('search.failed'), err.message || String(err));
     }
@@ -1124,7 +1120,7 @@ export function showSearch(app) {
       app.goToAddress(v, { announce: true });
       return;
     }
-    if (running) app.backend.cancelSearch();
+    if (running) app.backend.cancelSearch(running);
 
     results.replaceChildren();
     fill.style.width = '0%';
@@ -1151,16 +1147,17 @@ export function showSearch(app) {
       params.query = q;
     }
 
-    app.backend.onSearchProgress = (p) => {
+    const progress = (p) => {
       if (!p.all) return;
       fill.style.width = Math.min(100, Math.round((p.done / p.all) * 100)) + '%';
       status.textContent = t('search.searchingN', { n: p.hits });
     };
 
-    app.backend.search(params).then((res) => {
+    const request = app.backend.search(params, progress);
+    running = request;
+    request.then((res) => {
       running = false;
       goBtn.textContent = t('btn.find');
-      app.backend.onSearchProgress = null;
       fill.style.width = '100%';
       if (res.cancelled) status.textContent = t('search.stopped', { n: res.results.length });
       else if (!res.results.length) status.textContent = t('search.none', { region: region.name });
@@ -1172,14 +1169,13 @@ export function showSearch(app) {
     }).catch((err) => {
       running = false;
       goBtn.textContent = t('btn.find');
-      app.backend.onSearchProgress = null;
       status.textContent = '';
       alertDialog(t('search.failed'), err.message || String(err));
     });
   }
 
   function stop() {
-    app.backend.cancelSearch();
+    app.backend.cancelSearch(running);
     running = false;
     goBtn.textContent = t('btn.find');
     status.textContent = t('search.stopped', { n: 0 });
@@ -1241,13 +1237,14 @@ export function showXrefs(app, target) {
   const results = list();
   sheet.body.append(bar, status, results);
 
-  app.backend.onScanProgress = (p) => {
+  const progress = (p) => {
     if (!p.all) return;
     fill.style.width = Math.min(100, Math.round((p.done / p.all) * 100)) + '%';
   };
 
-  app.backend.xrefs({ regionId: codeRegion.id, target }).then((res) => {
-    app.backend.onScanProgress = null;
+  const request = app.backend.xrefs({ regionId: codeRegion.id, target }, progress);
+  sheet.onClose = () => request.cancel();
+  request.then((res) => {
     fill.style.width = '100%';
     if (!res.results.length) { status.textContent = t('xref.none'); return; }
     status.textContent = t('xref.count', { n: res.results.length });
@@ -1271,7 +1268,6 @@ export function showXrefs(app, target) {
       }));
     }
   }).catch((err) => {
-    app.backend.onScanProgress = null;
     status.textContent = '';
     alertDialog(t('search.failed'), err.message || String(err));
   });
@@ -1586,7 +1582,7 @@ export function instructionMenu(app, row, x, y) {
   const sb = semanticBlockAt(app, row);
   menu([
     { label: t('detail.title') + '…', action: () => showDetail(app, row) },
-    { label: pick('擬似コードで読む（C 風）', 'Read as pseudocode'),
+    { label: pick('逆コンパイルして読む（C 風）', 'Decompile to C'),
       action: () => showDecompiler(app, functionStartOf(app, d.address)) },
     ...(sb ? [{
       label: pick('この処理を見る', 'Show this step') + '（' + blockTitle(sb) + '）',
@@ -2757,7 +2753,7 @@ const ACCURACY_NOTES = [
     note: '使われ方からの推定です。「4 バイトで比較されている」以上のことは言えません。' },
   { level: RELIABILITY.INFERRED, name: '構造体を組み立てる', measured: null,
     note: '触っている位置から並びを起こしています。触られていない場所は空白のままです。' },
-  { level: RELIABILITY.INFERRED, name: '擬似コード', measured: null,
+  { level: RELIABILITY.INFERRED, name: '逆コンパイル', measured: null,
     note: '訳であって、元のソースではありません。訳せない命令は __asm や goto のまま残します。' },
   { level: RELIABILITY.INFERRED, name: '目的から値を 1 個に決める', measured: null,
     note: '名前・型・命令の 3 方向から確かめて、そろったものだけ「確定」と言います。' +
@@ -3838,7 +3834,9 @@ function comprehensionSection(app, c, sheet, region) {
   if (head) wrap.append(para(head));
 
   const symbolFor = (a) => (app.symbols ? app.symbols.nameAt(a) : null);
-  const opts = { symbolFor, maxLen: 200 };
+  /* 置き場の呼び名は、逆コンパイル画面と同じものを使う。
+     ここを別々にしていたころ、片方は `&var_88`、もう片方は `sp - 264` と出ていた。 */
+  const opts = Object.assign({ symbolFor, maxLen: 200 }, c.naming || {});
 
   /* 出発点 */
   if (c.seed) {
@@ -4615,10 +4613,23 @@ export function showWelcome(app, force) {
     holder.replaceChildren();
     holder.append(el('div', 'guide-step', (page + 1) + ' / ' + GUIDE_PAGES.length));
     if (page === 0) {
-      const visual = document.createElement('img');
-      visual.className = 'guide-visual';
-      visual.src = '/manus-storage/hex-learning-card_891f7758.png';
-      visual.alt = pick('命令列と根拠の関係を示すイラスト', 'An illustration of code and evidence becoming understandable');
+      /* 挿絵は外の置き場を見に行っていて、そのぶん 404 が出ていた。
+         ここは端末の中だけで動くので、絵も画面の中で描く。 */
+      const visual = el('div', 'guide-visual');
+      visual.innerHTML =
+        '<svg viewBox="0 0 320 120" role="img" aria-label="' +
+        pick('命令から根拠、答えへ進む図', 'From instructions through evidence to an answer') +
+        '"><g fill="none" stroke="currentColor" stroke-width="2">' +
+        '<rect x="8" y="20" width="78" height="80" rx="6" opacity=".45"/>' +
+        '<rect x="121" y="34" width="78" height="52" rx="6" opacity=".7"/>' +
+        '<rect x="234" y="44" width="78" height="32" rx="6"/>' +
+        '<path d="M90 60h27M203 60h27" stroke-linecap="round"/>' +
+        '</g><g fill="currentColor" opacity=".55">' +
+        '<rect x="18" y="32" width="52" height="4" rx="2"/><rect x="18" y="44" width="44" height="4" rx="2"/>' +
+        '<rect x="18" y="56" width="58" height="4" rx="2"/><rect x="18" y="68" width="38" height="4" rx="2"/>' +
+        '<rect x="18" y="80" width="50" height="4" rx="2"/>' +
+        '<rect x="133" y="48" width="54" height="4" rx="2"/><rect x="133" y="62" width="40" height="4" rx="2"/>' +
+        '<rect x="246" y="58" width="54" height="4" rx="2"/></g></svg>';
       holder.append(visual);
     }
     holder.append(el('h3', 'guide-title', pick(p.title[0], p.title[1])));

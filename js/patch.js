@@ -68,7 +68,16 @@ export class PatchSet {
     const buf = new Uint8Array(await file.arrayBuffer());
     for (const it of this.items.values()) {
       const at = Number(it.offset);
-      if (at < 0 || at + it.after.length > buf.length) continue;
+      if (!Number.isSafeInteger(at) || at < 0 || at + it.after.length > buf.length) {
+        throw new Error('書き換え位置がファイルの範囲外です: +' + it.offset.toString(16));
+      }
+      if (it.before && it.before.length === it.after.length) {
+        for (let i = 0; i < it.before.length; i++) {
+          if (buf[at + i] !== it.before[i]) {
+            throw new Error('元のバイトが変わっています: +' + it.offset.toString(16));
+          }
+        }
+      }
       buf.set(it.after, at);
     }
     return new Blob([buf], { type: 'application/octet-stream' });
@@ -109,18 +118,27 @@ export function assemble(text, at) {
 
   /* mov Xd, #imm （movz の形。0〜65535 のみ） */
   if (mn === 'mov' || mn === 'movz') {
-    const d = regNum(ops[0]);
+    const dst = regInfo(ops[0]);
+    const d = dst && dst.num;
     const imm = immOf(ops[1]);
     if (d == null) return { error: '書き込み先のレジスタが読めません。' };
     if (imm != null) {
       if (imm < 0n || imm > 0xFFFFn) return { error: 'この簡易アセンブラでは 0〜65535 の値だけ書けます。' };
-      const sf = is64(ops[0]) ? 1 : 0;
+      if (dst.sp) return { error: 'SP へ即値を直接 mov することはできません。' };
+      const sf = dst.bits === 64 ? 1 : 0;
       return word((sf << 31) | (0xA5 << 23) | (Number(imm) << 5) | d);
     }
     /* mov Xd, Xn は orr Xd, xzr, Xn */
-    const m = regNum(ops[1]);
+    const srcReg = regInfo(ops[1]);
+    const m = srcReg && srcReg.num;
     if (m == null) return { error: 'mov の右側が読めません。' };
-    const sf = is64(ops[0]) ? 1 : 0;
+    if (dst.bits !== srcReg.bits) return { error: 'mov の左右は同じ幅（w同士 / x同士）で指定してください。' };
+    const sf = dst.bits === 64 ? 1 : 0;
+    /* SP は ORR の register 31 では表せない。ADD #0 が mov の正しい alias。 */
+    if (dst.sp || srcReg.sp) {
+      if (dst.zr || srcReg.zr) return { error: 'SP と ZR の間は mov できません。' };
+      return word((sf << 31) | 0x11000000 | (m << 5) | d);
+    }
     return word((sf << 31) | (0x150 << 21) | (m << 16) | (31 << 5) | d);
   }
 
@@ -128,6 +146,7 @@ export function assemble(text, at) {
   if (mn === 'b' || mn === 'bl') {
     const target = immOf(ops[0]);
     if (target == null) return { error: '飛び先のアドレスが読めません（0x… の形で書いてください）。' };
+    if ((target - at) % 4n !== 0n) return { error: '飛び先は 4 バイト境界で指定してください。' };
     const delta = (target - at) / 4n;
     if (delta < -(1n << 25n) || delta >= (1n << 25n)) return { error: '飛び先が遠すぎます（±128 MB まで）。' };
     const imm26 = Number(BigInt.asUintN(26, delta));
@@ -139,6 +158,7 @@ export function assemble(text, at) {
     if (cond < 0) return { error: '知らない条件です: ' + bc[1] };
     const target = immOf(ops[0]);
     if (target == null) return { error: '飛び先のアドレスが読めません。' };
+    if ((target - at) % 4n !== 0n) return { error: '飛び先は 4 バイト境界で指定してください。' };
     const delta = (target - at) / 4n;
     if (delta < -(1n << 18n) || delta >= (1n << 18n)) return { error: '条件分岐の飛び先が遠すぎます（±1 MB まで）。' };
     const imm19 = Number(BigInt.asUintN(19, delta));
@@ -162,7 +182,11 @@ function regNum(op) {
   return op.num;
 }
 
-function is64(op) { return !op || op.bits !== 32; }
+function regInfo(op) {
+  const num = regNum(op);
+  if (num == null) return null;
+  return { num, bits: op.bits === 32 ? 32 : 64, sp: op.cls === 'sp', zr: op.cls === 'zr' };
+}
 
 function immOf(op) {
   if (!op) return null;
@@ -231,11 +255,42 @@ function targetOf(opsStr) {
 
 /** 16 進の文字列（"1f 20 03 d5" など）をバイト列にする。 */
 export function parseHexBytes(text) {
-  const clean = String(text || '').replace(/0x/gi, '').replace(/[^0-9a-f]/gi, '');
+  const raw = String(text || '').trim();
+  if (!isHexBytes(raw)) return null;
+  const clean = raw.replace(/0x/gi, '').replace(/[\s,]+/g, '');
   if (!clean.length || clean.length % 2) return null;
   const out = new Uint8Array(clean.length / 2);
   for (let i = 0; i < out.length; i++) out[i] = parseInt(clean.slice(i * 2, i * 2 + 2), 16);
   return out;
+}
+
+/** Assemblyと取り違えない、厳密な16進バイト文法。 */
+export function isHexBytes(text) {
+  const raw = String(text || '').trim();
+  if (!raw) return false;
+  if (/^(?:0x)?[0-9a-f]+$/i.test(raw)) {
+    const s = raw.replace(/^0x/i, '');
+    return s.length > 0 && s.length % 2 === 0;
+  }
+  return /^(?:0x)?[0-9a-f]{2}(?:[\s,]+(?:0x)?[0-9a-f]{2})+$/i.test(raw);
+}
+
+/** UIとscript APIで共有する、仮想/ファイル両方の範囲検証。 */
+export function validatePatchRange(region, addr, length, fileSize, instruction = true) {
+  if (!region) return { error: 'コードのセクションが見つかりません。' };
+  const a = BigInt(addr);
+  const n = Number(length);
+  if (!Number.isSafeInteger(n) || n <= 0) return { error: '書き換える長さが不正です。' };
+  if (instruction && ((a - region.vmAddr) % 4n !== 0n || n !== 4)) {
+    return { error: '命令の位置と長さは 4 バイト境界で指定してください。' };
+  }
+  const rel = a - region.vmAddr;
+  if (rel < 0n || rel + BigInt(n) > region.size) return { error: 'アドレスがコードのセクション範囲外です。' };
+  const offset = region.fileOffset + rel;
+  if (offset < 0n || (fileSize != null && offset + BigInt(n) > BigInt(fileSize))) {
+    return { error: '書き換え位置がファイル範囲外です。' };
+  }
+  return { ok: true, fileOffset: offset };
 }
 
 /** バイト列を "1F 20 03 D5" の形にする。 */

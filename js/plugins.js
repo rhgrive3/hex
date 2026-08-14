@@ -11,7 +11,7 @@
  *     description: '同じ文字列が何回使われているかを並べます',
  *     async run(hex, print) {
  *       await hex.loadStrings();
- *       print('文字列の数:', hex.strings().length);
+ *       print('文字列の数:', (await hex.strings()).length);
  *     },
  *   });
  *
@@ -23,10 +23,11 @@
  *   - プラグインは、あなたが選んだものだけが動きます。
  *   - 中身は実行前に画面で確認できます（読まずに動かさないでください）。
  *   - 解析中のファイルの中身が外へ送られることはありません
- *     （プラグインから通信の道具は渡していません）。
+ *     （opaque-origin sandboxとCSPで通信を禁止しています）。
  */
 
 import { createApi } from './script.js';
+import { runInSandbox } from './sandbox.js';
 
 const STORE_KEY = 'hex.plugins';
 const MAX_SOURCE = 512 * 1024;
@@ -35,12 +36,12 @@ export class PluginHost {
   constructor(app) {
     this.app = app;
     this.plugins = [];          // {id, name, description, run, source, origin}
-    this.load();
+    this.ready = this.load();
   }
 
   /* ── 保存 ─────────────────────────────────────────── */
 
-  load() {
+  async load() {
     let raw = null;
     try { raw = localStorage.getItem(STORE_KEY); } catch { return; }
     if (!raw) return;
@@ -48,7 +49,7 @@ export class PluginHost {
       const list = JSON.parse(raw);
       for (const p of list) {
         if (!p || typeof p.source !== 'string') continue;
-        this.install(p.source, p.origin || '保存されたもの', { silent: true });
+        await this.install(p.source, p.origin || '保存されたもの', { silent: true });
       }
     } catch { /* 壊れていたら読まない */ }
   }
@@ -64,37 +65,22 @@ export class PluginHost {
    * プラグインの中身（JavaScript のソース）を取り込む。
    * @returns {{ok:true, added:Array}|{error:string}}
    */
-  install(source, origin, opts) {
+  async install(source, origin, opts) {
     if (typeof source !== 'string' || !source.trim()) return { error: '中身が空です。' };
     if (source.length > MAX_SOURCE) return { error: 'プラグインが大きすぎます（512 KB まで）。' };
 
-    const added = [];
-    const registrar = {
-      plugin: (def) => {
-        if (!def || typeof def.run !== 'function') throw new Error('run（実行する処理）がありません。');
-        const entry = {
-          id: 'p' + (this.plugins.length + added.length + 1),
-          name: String(def.name || '名前のないプラグイン').slice(0, 80),
-          description: String(def.description || '').slice(0, 200),
-          run: def.run,
-          source,
-          origin: origin || '不明',
-        };
-        added.push(entry);
-      },
-    };
-
-    try {
-      // eslint-disable-next-line no-new-func
-      const fn = new Function('hex', 'module', 'exports', source);
-      const module = { exports: {} };
-      fn(registrar, module, module.exports);
-      // module.exports 形式にも対応
-      const def = module.exports && typeof module.exports.run === 'function' ? module.exports : null;
-      if (def) registrar.plugin(def);
-    } catch (err) {
-      return { error: '読み込めませんでした: ' + ((err && err.message) || err) };
-    }
+    const discovered = await runInSandbox({
+      source, mode: 'discover', api: Object.create(null), out: () => {}, timeout: 10000,
+    });
+    if (discovered.error) return { error: '読み込めませんでした: ' + discovered.error };
+    const added = (discovered.value || []).map((def, index) => ({
+      id: 'p' + (this.plugins.length + index + 1),
+      name: def.name,
+      description: def.description,
+      index,
+      source,
+      origin: origin || '不明',
+    }));
     if (!added.length) return { error: 'プラグインが 1 つも登録されませんでした（hex.plugin({…}) を呼んでください）。' };
 
     this.plugins.push(...added);
@@ -102,7 +88,7 @@ export class PluginHost {
     return { ok: true, added };
   }
 
-  /** URL から取り寄せる。 */
+  /** URLから取得するだけ。確認画面を通るまで評価・保存しない。 */
   async installFromUrl(url) {
     let text;
     try {
@@ -112,7 +98,8 @@ export class PluginHost {
     } catch (err) {
       return { error: '取り寄せに失敗しました: ' + ((err && err.message) || err) };
     }
-    return this.install(text, url);
+    if (text.length > MAX_SOURCE) return { error: 'プラグインが大きすぎます（512 KB まで）。' };
+    return { ok: true, source: text, origin: url, needsConfirmation: true };
   }
 
   remove(id) {
@@ -130,13 +117,8 @@ export class PluginHost {
     const p = this.plugins.find((x) => x.id === id);
     if (!p) return { error: 'そのプラグインが見つかりません。' };
     const { api, print } = createApi(this.app, out);
-    try {
-      const value = await p.run(api, print, this.app);
-      if (value !== undefined) print(value);
-      return { ok: true };
-    } catch (err) {
-      return { error: (err && err.message) || String(err) };
-    }
+    return runInSandbox({ source: p.source, mode: 'plugin', index: p.index, api,
+      out: (...args) => print(...args) });
   }
 }
 
@@ -146,7 +128,7 @@ export const EXAMPLE_PLUGIN = `hex.plugin({
   name: '大きい関数を並べる',
   description: '命令数の多い関数から順に 30 個。処理の中心を探すときに。',
   async run(hex, print) {
-    const list = hex.functions()
+    const list = (await hex.functions())
       .filter((f) => f.size)
       .sort((a, b) => Number(b.size - a.size))
       .slice(0, 30);

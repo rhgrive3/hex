@@ -9,11 +9,19 @@ export const CHUNK_BYTES = CHUNK_ROWS * 4;
 const CHUNK_CACHE = 64;          // ~64k instructions kept warm
 const MAX_INFLIGHT = 6;
 
+export class StaleRequestError extends Error {
+  constructor() {
+    super('The analysis request belongs to a file or slice that is no longer active.');
+    this.name = 'StaleRequestError';
+    this.stale = true;
+  }
+}
+
 export class Backend {
   constructor() {
     this.worker = new Worker(new URL('./worker.js', import.meta.url));
     this.seq = 1;
-    this.gen = 0;                    // bumped per file; stale chunks are dropped
+    this.analysisEpoch = 0;          // bumped for every file and slice transition
     this.pending = new Map();
     this.cache = new LRU(CHUNK_CACHE);
     this.inflight = new Map();
@@ -30,14 +38,22 @@ export class Backend {
     };
   }
 
+  // `gen` remains as a compatibility alias for chunk-cache callers.  Analysis
+  // requests and UI state share the explicitly named epoch below.
+  get gen() { return this.analysisEpoch; }
+
   _onMessage(m) {
     if (!m) return;
     if (m.t === 'searchProgress') {
-      if (this.onSearchProgress) this.onSearchProgress(m);
+      const p = this.pending.get(m.requestId);
+      if (p && p.epoch === this.gen && p.onProgress) p.onProgress(m);
+      else if (this.onSearchProgress) this.onSearchProgress(m); // legacy UI callers
       return;
     }
     if (m.t === 'scanProgress') {
-      if (this.onScanProgress) this.onScanProgress(m);
+      const p = this.pending.get(m.requestId);
+      if (p && p.epoch === this.gen && p.onProgress) p.onProgress(m);
+      else if (this.onScanProgress) this.onScanProgress(m); // legacy UI callers
       return;
     }
     if (m.t === 'fatal') {
@@ -47,23 +63,45 @@ export class Backend {
     const p = this.pending.get(m.id);
     if (!p) return;
     this.pending.delete(m.id);
+    if (p.epoch !== this.gen || m.epoch !== p.epoch) {
+      p.reject(new StaleRequestError());
+      return;
+    }
     if (m.t === 'ok') p.resolve(m.result);
     else p.reject(new Error(m.error || 'Analysis failed.'));
   }
 
-  call(t, payload, transfer) {
+  call(t, payload, transfer, onProgress) {
     const id = this.seq++;
-    return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      this.worker.postMessage(Object.assign({ t, id }, payload), transfer || []);
+    this.lastRequestId = id;
+    const epoch = this.gen;
+    const promise = new Promise((resolve, reject) => {
+      this.pending.set(id, { resolve, reject, epoch, onProgress });
+      this.worker.postMessage(Object.assign({ t, id, requestId: id, epoch }, payload), transfer || []);
     });
+    promise.requestId = id;
+    promise.cancel = () => this.cancel(id);
+    return promise;
+  }
+
+  /** Start a new file/slice generation and actively settle every stale request. */
+  advanceEpoch() {
+    const old = this.analysisEpoch;
+    this.analysisEpoch++;
+    this.resetCache();
+    this.worker.postMessage({ t: 'cancel', epoch: old });
+    for (const [id, p] of this.pending) {
+      if (p.epoch === this.gen) continue;
+      this.pending.delete(id);
+      p.reject(new StaleRequestError());
+    }
+    return this.analysisEpoch;
   }
 
   /* ── high level ─────────────────────────────────────────── */
 
   open(file) {
-    this.gen++;                      // region ids repeat between files
-    this.resetCache();
+    this.advanceEpoch();             // region ids repeat between files and slices
     return this.call('open', { file });
   }
 
@@ -71,33 +109,46 @@ export class Backend {
 
   registerRegions(regions) { return this.call('setRegions', { regions }); }
 
-  search(params) { return this.call('search', params); }
+  search(params, onProgress) { return this.call('search', params, null, onProgress); }
 
-  cancelSearch() { this.worker.postMessage({ t: 'cancelSearch' }); }
+  cancel(request) {
+    const requestId = typeof request === 'number' ? request
+      : request && request.requestId != null ? request.requestId : this.lastRequestId;
+    if (requestId == null) return;
+    this.worker.postMessage({ t: 'cancel', requestId, epoch: this.gen });
+  }
+
+  cancelSearch(request) { this.cancel(request); }
 
   /* ── 解析 ────────────────────────────────────────────────
      どれも worker 側で走査するので、UI は止まらない。
-     cancelSearch() が走査全般の中断も兼ねている。 */
+     キャンセルは request ID ごとに worker へ伝える。 */
 
   analyze(sliceIndex) { return this.call('analyze', { sliceIndex }); }
 
-  guessFunctions(regionId, limit) { return this.call('guessFunctions', { regionId, limit }); }
+  guessFunctions(regionId, limit, onProgress) {
+    return this.call('guessFunctions', { regionId, limit }, null, onProgress);
+  }
 
   /**
    * セクション全体を 1 パス走査して、呼び出しの辺・データ参照・語ごとの命令種別を取る。
    * これが「参照関係と制御フローを根拠にする」ための土台。1 ファイルにつき 1 回で足りる。
    */
-  scanProgram(regionId) { return this.call('scanProgram', { regionId }); }
+  scanProgram(regionId, onProgress) {
+    return this.call('scanProgram', { regionId }, null, onProgress);
+  }
 
   /** そのフィールド（クラスの中の位置）を読み書きしている命令を全部探す。 */
-  fieldAccess(params) { return this.call('fieldAccess', params); }
+  fieldAccess(params, onProgress) { return this.call('fieldAccess', params, null, onProgress); }
 
   /**
    * 値の「ふるまい」をセクション全体から集める。
    * 名前も文字列も残っていないアプリで、値を見分ける唯一の手がかりになる。
    * 1 ファイルにつき 1 回でよい。
    */
-  valueShapes(regionId) { return this.call('valueShapes', { regionId }); }
+  valueShapes(regionId, onProgress) {
+    return this.call('valueShapes', { regionId }, null, onProgress);
+  }
 
   /**
    * 複数の位置を 1 回の走査でまとめて調べる。
@@ -113,9 +164,9 @@ export class Backend {
     });
   }
 
-  strings(params) { return this.call('strings', params); }
+  strings(params, onProgress) { return this.call('strings', params, null, onProgress); }
 
-  xrefs(params) { return this.call('xrefs', params); }
+  xrefs(params, onProgress) { return this.call('xrefs', params, null, onProgress); }
 
   /** 仮想アドレスの中身を読む。text: true で 0 終端の文字列として解釈。 */
   readAt(addr, len, text) { return this.call('readAt', { addr, len, text }); }

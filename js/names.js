@@ -13,7 +13,7 @@
  *   - 引数・戻り値に決めた型       typeOf(func, key) / setType(...)
  *
  * 保存先はブラウザの localStorage で、ファイルごとに分かれています
- * （名前・サイズ・UUID で見分ける）。どこにも送信しません。
+ * （内容fingerprint・active slice UUID/archで見分ける）。どこにも送信しません。
  */
 
 const PREFIX = 'hex.notes.';
@@ -29,14 +29,38 @@ function key(addr) {
  * このファイルを見分けるための鍵。
  * 同じアプリを開き直したら、前に付けた名前がそのまま戻ってくる。
  */
-export function noteKeyFor(file, fileInfo) {
-  const parts = [];
-  if (file && file.name) parts.push(file.name);
-  if (file && file.size != null) parts.push(String(file.size));
-  const slice = fileInfo && fileInfo.slices ? fileInfo.slices.find((s) => s.info && s.info.uuid) : null;
-  if (slice) parts.push(slice.info.uuid);
-  if (!parts.length) return null;
-  return parts.join('|');
+export async function noteKeyFor(file, fileInfo, sliceIndex) {
+  if (!file) return null;
+  const slices = fileInfo && fileInfo.slices || [];
+  const slice = Number.isInteger(sliceIndex) && sliceIndex >= 0 ? slices[sliceIndex] : null;
+  const info = slice && slice.info;
+  const identity = [
+    'v2', String(file.size == null ? 0 : file.size),
+    info && info.uuid || '', info && info.cpu || '', info && info.cpuSub || '',
+    slice && slice.offset != null ? slice.offset.toString() : '',
+  ].join('|');
+  const chunk = 64 * 1024;
+  const size = Number(file.size || 0);
+  const starts = Array.from(new Set([0, Math.max(0, Math.floor(size / 2) - Math.floor(chunk / 2)), Math.max(0, size - chunk)]));
+  const pieces = [new TextEncoder().encode(identity)];
+  for (const start of starts) {
+    const bytes = new Uint8Array(await file.slice(start, Math.min(size, start + chunk)).arrayBuffer());
+    pieces.push(bytes);
+  }
+  const total = pieces.reduce((n, p) => n + p.length, 0);
+  const input = new Uint8Array(total);
+  let at = 0;
+  for (const p of pieces) { input.set(p, at); at += p.length; }
+  let digest;
+  if (globalThis.crypto && globalThis.crypto.subtle) {
+    digest = new Uint8Array(await globalThis.crypto.subtle.digest('SHA-256', input));
+  } else {
+    /* Very old browsers: still avoid name+size collisions, though SHA-256 is preferred. */
+    let h = 2166136261;
+    for (const b of input) { h ^= b; h = Math.imul(h, 16777619); }
+    digest = Uint8Array.from([(h >>> 24) & 255, (h >>> 16) & 255, (h >>> 8) & 255, h & 255]);
+  }
+  return identity + '|sha256:' + Array.from(digest).map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
 export class NoteStore {

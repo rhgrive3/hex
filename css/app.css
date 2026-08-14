@@ -33,6 +33,8 @@
   --code-imm:      #1c00cf;   /* number */
   --code-punct:    rgba(60,60,67,.45);
   --code-cmt:      #5d6c79;
+  --code-str:      #c41a16;   /* 文字列リテラル */
+  --code-c-type:   #0f766e;   /* 逆コンパイル画面の型名 */
 
   /* 行の高さ。--row-h は JS が --line-h (+ --note-h) から計算して書き戻す。
      CSS の calc() のままだと getComputedStyle で数値として読めないため。 */
@@ -80,6 +82,7 @@
     --code-mn:     #ff7ab2;
     --code-mn-flow:#ffa14f;
     --code-mn-data:rgba(235,235,245,.35);
+    --code-str: #ff8170; --code-c-type: #35b7a6;
     --code-reg:    #e6e6ea;
     --code-imm:    #a5c8ff;
     --code-punct:  rgba(235,235,245,.40);
@@ -557,7 +560,7 @@ button { font: inherit; color: inherit; }
     border-radius: 14px 14px 0 0;
   }
 }
-/* 図・擬似コード・デバッガは、狭い画面でも縦いっぱいに使う。 */
+/* 図・逆コンパイル・デバッガは、狭い画面でも縦いっぱいに使う。 */
 .sheet.full { height: 96dvh; max-height: 96dvh; border-radius: 0; }
 .sheet.bottom { height: auto; max-height: 60dvh; }
 
@@ -597,6 +600,9 @@ button { font: inherit; color: inherit; }
  * 長い語が、右端の札の下へはみ出して重なっていた。
  */
 .list li > div { min-width: 0; overflow-wrap: anywhere; }
+/* 右端に置くアドレスは折り返さない。`0x1000367` / `84` と 2 行に割れると、
+   アドレスとして読めなくなる（実際にそう出ていた）。 */
+.list li > .v:last-child { flex: 0 0 auto; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .list .k { color: var(--label-2); font-size: 13px; flex: 0 0 auto; }
 .list .v { margin-left: auto; text-align: right; word-break: break-all; font-size: 13px; }
 .list .sub { display: block; color: var(--label-2); font-size: 11px; }
@@ -1124,11 +1130,11 @@ input:focus { outline: 2px solid var(--accent); outline-offset: -2px; }
 
 /* ─────────────────────────────────────────────────────────────
    解析ツール（tools.js）
-   擬似コード・図・レジスタ表・入力欄。
+   逆コンパイル・図・レジスタ表・入力欄。
    どれもシートの中に入るので、横にはみ出す部分だけ自前でスクロールさせる。
    ───────────────────────────────────────────────────────────── */
 
-/* 擬似コードとスクリプトの出力 */
+/* 逆コンパイル結果とスクリプトの出力 */
 .codeview {
   margin: 8px 0;
   padding: 8px 0;
@@ -1156,7 +1162,44 @@ input:focus { outline: 2px solid var(--accent); outline-offset: -2px; }
 .cl.comment .cl-text, .cl.note .cl-text { color: var(--code-cmt); font-size: 11.5px; }
 .cl.asm .cl-text { color: var(--code-mn-data); font-size: 11px; }
 .cl.warn .cl-text { color: var(--danger); }
-.cl.blank { height: 8px; }
+.cl.blank { height: 10px; }
+
+/* ── 逆コンパイル画面 ─────────────────────────────────────
+   読むための面。見出しは貼り付けて、コードは残り全部を使う。 */
+.code-head {
+  flex: 0 0 auto;
+  padding: 10px 16px 8px;
+  border-bottom: 0.5px solid var(--separator);
+  background: var(--surface);
+}
+.code-sig {
+  font-size: 13.5px; font-weight: 600; line-height: 1.55;
+  color: var(--code-mn); word-break: break-word;
+}
+.code-meta {
+  display: flex; flex-wrap: wrap; gap: 6px 14px;
+  margin-top: 5px; font-size: 11.5px; color: var(--label-2);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+}
+.code-meta .code-carry { color: var(--accent); }
+.chips.code-chips { margin: 8px 0 0; padding: 0; }
+.codeview.code-full {
+  flex: 1 1 auto; min-height: 0;
+  margin: 0; padding: 10px 0 24px;
+  border: none;
+  overflow: auto;
+  background: var(--surface-2);
+}
+.codeview.code-full .cl { padding: 0 16px; }
+.codeview.code-full .cl-text { font-size: 13px; line-height: 1.7; }
+.codeview.code-full .cl.tappable:hover { background: var(--fill); }
+.cl-text .c-kw { color: var(--code-mn-flow); font-weight: 600; }
+.cl-text .c-type { color: var(--code-c-type); }
+.cl-text .c-num { color: var(--code-imm); }
+.cl-text .c-str { color: var(--code-str); }
+.cl-text .c-call { color: var(--code-mn); font-weight: 600; }
+.cl-text .c-cmt { color: var(--code-cmt); }
+.cl.note .cl-text { padding-left: 2px; opacity: .85; }
 
 .hint.warn { color: var(--danger); }
 
@@ -1333,14 +1376,19 @@ html, body { font-family: "Noto Sans JP", -apple-system, BlinkMacSystemFont, sys
 .workspace-nav .nav-primary { background: var(--accent); color: #fff; box-shadow: 0 2px 5px rgba(15,118,110,.22); }
 .workspace-nav .nav-item:not(:disabled):hover { color: var(--label); background: var(--surface); }
 .compact-action { min-width: auto; min-height: 34px; padding: 6px 9px; font-size: 13px; }
-.tool-overflow { position: relative; flex: 0 0 auto; }
-.tool-overflow summary { list-style: none; display: block; color: var(--accent); cursor: pointer; }
-.tool-overflow summary::-webkit-details-marker { display: none; }
-.tool-overflow-menu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 45; display: none; min-width: 144px; padding: 5px; background: var(--surface); border: 1px solid var(--separator); border-radius: 8px; box-shadow: var(--shadow); }
-.tool-overflow[open] .tool-overflow-menu { display: grid; }
-.tool-overflow-menu .tb-btn { justify-content: flex-start; color: var(--label); text-align: left; min-width: 130px; }
+/* ツールバーに入りきらないものは、浮かせたメニューで出す（menu()）。
+   ここを details のドロップダウンにしていたころ、ツールバー自身が
+   overflow-x: auto の箱だったせいで、開いたメニューが高さで切られて
+   4 つのボタンがどれも押せなかった。 */
+#btn-overflow { color: var(--accent); }
+/* 「その他」メニューの中身。押すのはメニュー側からなので、画面には出さない。
+   display: none でも element.click() は効くので、有効・無効の扱いは 1 か所のまま。 */
+.offscreen { display: none; }
+.menu button.is-disabled { color: var(--label-3); cursor: default; }
+.menu button.is-disabled:active { background: transparent; }
+.brand-lockup .brand-mark { display: block; width: 26px; height: 26px; color: var(--accent); }
 .empty { padding: 28px; text-align: left; overflow: hidden; }
-.empty-backdrop { position: absolute; inset: 0; background: linear-gradient(90deg, rgba(255,254,250,.99) 0%, rgba(255,254,250,.96) 44%, rgba(255,254,250,.18) 100%), url('/manus-storage/hex-empty-analysis_4d8ea7fc.png') center right / cover no-repeat; opacity: .92; pointer-events: none; }
+.empty-backdrop { position: absolute; inset: 0; background: linear-gradient(90deg, rgba(255,254,250,.99) 0%, rgba(255,254,250,.96) 44%, rgba(255,254,250,.18) 100%); opacity: .92; pointer-events: none; }
 .empty-inner { position: relative; z-index: 1; width: min(100%, 520px); }
 .empty-title { position: relative; font: 900 clamp(28px, 4vw, 42px)/1.24 "Zen Kaku Gothic New", "Noto Sans JP", sans-serif; letter-spacing: -.04em; margin-bottom: 12px; max-width: 15em; }
 .empty-text { position: relative; color: var(--label-2); font-size: 15px; margin: 0 0 18px; line-height: 1.75; max-width: 34em; }
@@ -1375,7 +1423,7 @@ html, body { font-family: "Noto Sans JP", -apple-system, BlinkMacSystemFont, sys
   .workspace-nav .nav-item { display: none; }
   .segmented .seg { padding: 6px 9px; }
   .empty { align-items: flex-end; padding: 24px; }
-  .empty-backdrop { background: linear-gradient(180deg, rgba(255,254,250,.32) 0%, rgba(255,254,250,.98) 55%), url('/manus-storage/hex-empty-analysis_4d8ea7fc.png') top right / auto 56% no-repeat; }
+  .empty-backdrop { background: linear-gradient(180deg, rgba(255,254,250,.32) 0%, rgba(255,254,250,.98) 55%); }
   .empty-title { font-size: 29px; }
   .graphwrap { min-height: 290px; }
 }
@@ -1386,7 +1434,7 @@ html, body { font-family: "Noto Sans JP", -apple-system, BlinkMacSystemFont, sys
 /* No-file state: an actual evidence workbench rather than a marketing hero. */
 .empty { align-items: flex-start; justify-content: center; padding: clamp(20px, 4vw, 54px); }
 .empty-inner { width: min(100%, 1060px); max-width: 1060px; }
-.empty-backdrop { background: linear-gradient(90deg, rgba(255,254,250,.99) 0%, rgba(255,254,250,.94) 47%, rgba(255,254,250,.35) 100%), url('/manus-storage/hex-empty-analysis_4d8ea7fc.png') center right / cover no-repeat; }
+.empty-backdrop { background: linear-gradient(90deg, rgba(255,254,250,.99) 0%, rgba(255,254,250,.94) 47%, rgba(255,254,250,.35) 100%); }
 .empty-context { position: relative; z-index: 1; display: flex; align-items: center; gap: 9px; padding: 0 0 14px 44px; color: var(--label-3); font: 500 11px/1 "IBM Plex Mono", monospace; letter-spacing: .05em; }
 .empty-context .context-label { color: var(--accent); font-weight: 600; margin-right: 8px; letter-spacing: .12em; }
 .empty-context strong { color: var(--label); font-weight: 600; }
@@ -1408,4 +1456,4 @@ html, body { font-family: "Noto Sans JP", -apple-system, BlinkMacSystemFont, sys
 .relation-lens svg { display: block; width: 100%; max-width: 320px; margin: 12px auto 4px; overflow: visible; }.lens-line { fill: none; stroke-width: 2; }.lens-line.verified { stroke: var(--accent); }.lens-line.inferred { stroke: #d97706; stroke-dasharray: 4 4; }.lens-line.muted { stroke: var(--label-3); }
 .lens-node { stroke: var(--surface); stroke-width: 4; }.lens-node.source { fill: #708a85; }.lens-node.index { fill: #5567a5; }.lens-node.evidence { fill: var(--accent); }.lens-node.answer { fill: #203936; }.relation-lens text { fill: var(--label-2); font: 500 10px "Noto Sans JP", sans-serif; text-anchor: middle; }
 .lens-facts { display: grid; gap: 7px; padding-top: 10px; border-top: 1px solid var(--separator-2); font-size: 11px; line-height: 1.45; }.lens-facts div { display: flex; gap: 8px; }.lens-facts b { flex: 0 0 auto; color: var(--accent); font: 600 10px/1.5 "IBM Plex Mono", monospace; }.lens-facts div:last-child b { color: #9a5905; }.lens-facts span { color: var(--label-2); }
-@media (max-width: 780px) { .empty { padding: 12px; }.empty-context { padding-left: 0; overflow: hidden; white-space: nowrap; }.empty-frame { grid-template-columns: 34px minmax(0, 1fr); min-height: 0; }.empty-rail { gap: 16px; }.relation-lens { grid-column: 2; margin: 0 20px 20px; }.empty-main { padding: 30px 22px 22px; }.empty-backdrop { background: linear-gradient(180deg, rgba(255,254,250,.30) 0%, rgba(255,254,250,.98) 48%), url('/manus-storage/hex-empty-analysis_4d8ea7fc.png') top right / auto 48% no-repeat; } }
+@media (max-width: 780px) { .empty { padding: 12px; }.empty-context { padding-left: 0; overflow: hidden; white-space: nowrap; }.empty-frame { grid-template-columns: 34px minmax(0, 1fr); min-height: 0; }.empty-rail { gap: 16px; }.relation-lens { grid-column: 2; margin: 0 20px 20px; }.empty-main { padding: 30px 22px 22px; }.empty-backdrop { background: linear-gradient(180deg, rgba(255,254,250,.30) 0%, rgba(255,254,250,.98) 48%); } }

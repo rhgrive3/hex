@@ -95,11 +95,12 @@ const MAX_RECORD = 1 << 20;      // 1 レコードがこれより大きいのも
 export function decodeSchema(words, base) {
   const konst = new Int32Array(32).fill(0);
   const known = new Uint8Array(32);            // その定数が信用できるか
-  const bumped = new Map();                    // レジスタ → 加算されている量（レコード送り）
+  const bumped = [];                           // {reg,imm,row,loop}（レコード送り）
   const loops = [];                            // 添字つき書き込みの候補
   const fixed = [];                            // 展開されている固定ずらしの書き込み
   const scales = [];                           // 読み込みのあとに掛かる倍率
-  const cmps = new Map();                      // レジスタ → 比べている定数
+  const cmps = [];                             // {reg,value,row,loop}
+  const flow = controlContext(words, base);
 
   let lastCall = -1;
   for (let i = 0; i < words.length; i++) {
@@ -115,7 +116,10 @@ export function decodeSchema(words, base) {
 
     /* cmp Xn, #imm — 列数・レコード数はここに出る */
     const ci = W.compareImmediate(w);
-    if (ci != null) { cmps.set(rn(w), { value: Number(ci), row: i }); continue; }
+    if (ci != null) {
+      cmps.push({ reg: rn(w), value: Number(ci), row: i, loop: flow.loopOf[i] });
+      continue;
+    }
 
     if (W.isCallImm(w) || W.isIndirectCall(w)) {
       lastCall = i;
@@ -127,9 +131,8 @@ export function decodeSchema(words, base) {
     /* add Xd, Xn, #imm — 同じレジスタへの加算はレコード送り */
     const as = addSubImm(w);
     if (as) {
-      if (as.d === as.n && as.imm > 0) {
-        const prev = bumped.get(as.d);
-        if (!prev || prev.imm !== as.imm) bumped.set(as.d, { imm: as.imm, row: i });
+      if (!as.sub && as.d === as.n && as.imm > 0) {
+        bumped.push({ reg: as.d, imm: as.imm, row: i, loop: flow.loopOf[i] });
       }
       konst[as.d] = 0; known[as.d] = 0;
       continue;
@@ -140,11 +143,15 @@ export function decodeSchema(words, base) {
     if (ix) {
       if (ix.load) {
         // 読み込み → 掛け算 → 同じ場所へ書き戻す（読み込んだあとの倍率）
-        scales.push({ row: i, base: ix.base, index: ix.index, stride: ix.stride, mul: null });
+        scales.push({
+          row: i, base: ix.base, index: ix.index, stride: ix.stride,
+          loadedReg: ix.reg, block: flow.blockOf[i], loop: flow.loopOf[i], mul: null,
+        });
       } else {
         loops.push({
           row: i, addr: base + BigInt(i * 4),
           base: ix.base, index: ix.index, stride: ix.stride, size: ix.size,
+          block: flow.blockOf[i], loop: flow.loopOf[i],
           // 直前が呼び出しなら、その戻り値をそのまま置いている＝1 列ぶんの値
           fromCall: lastCall >= 0 && i - lastCall <= 3 && ix.reg === 0,
         });
@@ -154,7 +161,7 @@ export function decodeSchema(words, base) {
 
     /* 固定ずらしの書き込みが、呼び出しの直後に並んでいる形（展開されている表） */
     const pa = plainAccess(w);
-    if (pa && !pa.load && pa.reg === 0 && lastCall >= 0 && i - lastCall <= 3 && !pa.base !== 31) {
+    if (pa && !pa.load && pa.reg === 0 && lastCall >= 0 && i - lastCall <= 3 && pa.base !== 31) {
       fixed.push({ row: i, addr: base + BigInt(i * 4), base: pa.base, disp: pa.disp, size: pa.size });
       continue;
     }
@@ -162,8 +169,10 @@ export function decodeSchema(words, base) {
     /* mul Wd, Wn, Wm — 読み込んだ列に掛かる倍率 */
     if (W.isMultiply(w) && scales.length) {
       const last = scales[scales.length - 1];
-      if (last.mul == null && i - last.row <= 6) {
-        const k = known[rm(w)] ? konst[rm(w)] : (known[rn(w)] ? konst[rn(w)] : null);
+      if (last.mul == null && i - last.row <= 6 && last.block === flow.blockOf[i] &&
+          (rn(w) === last.loadedReg || rm(w) === last.loadedReg)) {
+        const other = rn(w) === last.loadedReg ? rm(w) : rn(w);
+        const k = known[other] ? konst[other] : null;
         if (k) last.mul = k;
       }
       continue;
@@ -195,12 +204,12 @@ function buildSchema({ loops, fixed, scales, cmps, bumped, base }) {
      * **その添字が 1 ずつ増えていること** を確かめてから使う。
      * ここを見ないと、たまたま同じレジスタを使っていた別の比較を列数にしてしまう。
      */
-    const step = bumped.get(l.index);
-    const bound = cmps.get(l.index);
+    const step = nearestFact(bumped, l.index, l, (x) => x.imm === 1);
+    const bound = nearestFact(cmps, l.index, l, (x) => x.value > 1 && x.value <= MAX_COLUMNS);
     const columns = (step && step.imm === 1 && bound && bound.value > 1 &&
       bound.value <= MAX_COLUMNS) ? bound.value : null;
 
-    const rec = bumped.get(l.base) || null;
+    const rec = nearestFact(bumped, l.base, l, (x) => x.imm > l.stride && x.imm <= MAX_RECORD);
     const recordStride = rec && rec.imm > l.stride && rec.imm <= MAX_RECORD ? rec.imm : null;
 
     /*
@@ -214,8 +223,8 @@ function buildSchema({ loops, fixed, scales, cmps, bumped, base }) {
     tables.push(makeIndexedTable({
       columns, stride: l.stride, size: l.size, recordStride, consistent,
       storeAddr: l.addr,
-      records: recordCountOf(cmps, bumped, l.base, l.index),
-      scaled: scaledColumns(scales, l.stride),
+      records: recordCountOf(cmps, bumped, l),
+      scaled: scaledColumns(scales, l),
       fromCall: l.fromCall,
     }));
   }
@@ -281,23 +290,67 @@ function makeIndexedTable(t) {
  * 列の添字そのものを数えないよう、必ず除いておく
  * （そうしないと「117 レコード」のような答えになる）。
  */
-function recordCountOf(cmps, bumped, baseReg, indexReg) {
-  for (const [reg, c] of cmps) {
-    if (reg === baseReg || reg === indexReg) continue;
-    const step = bumped.get(reg);
-    if (step && step.imm === 1 && c.value > 1 && c.value <= 4096) return c.value;
+function recordCountOf(cmps, bumped, table) {
+  const candidates = cmps.filter((c) => c.reg !== table.base && c.reg !== table.index &&
+    c.value > 1 && c.value <= 4096 && sameLoopOrNearby(c, table));
+  candidates.sort((a, b) => Math.abs(a.row - table.row) - Math.abs(b.row - table.row));
+  for (const c of candidates) {
+    const step = nearestFact(bumped, c.reg, c, (x) => x.imm === 1);
+    if (step && sameLoopOrNearby(step, table)) return c.value;
   }
   return null;
 }
 
 /** 読み込んだあとに倍率が掛かる列（「％の値を 100 倍して持つ」など）。 */
-function scaledColumns(scales, stride) {
+function scaledColumns(scales, table) {
   const out = [];
   for (const s of scales) {
-    if (s.mul == null) continue;
-    out.push({ factor: s.mul, columnStride: s.stride || stride });
+    if (s.mul == null || s.base !== table.base || s.index !== table.index) continue;
+    if (!sameLoopOrNearby(s, table)) continue;
+    out.push({ factor: s.mul, columnStride: s.stride || table.stride, loadedReg: s.loadedReg });
   }
   return out;
+}
+
+/** Pick a register fact from the same natural loop; loop-less tiny fixtures use locality. */
+function nearestFact(facts, reg, anchor, accept) {
+  const list = facts.filter((x) => x.reg === reg && (!accept || accept(x)) && sameLoopOrNearby(x, anchor));
+  list.sort((a, b) => Math.abs(a.row - anchor.row) - Math.abs(b.row - anchor.row));
+  return list[0] || null;
+}
+
+function sameLoopOrNearby(a, b) {
+  if (a.loop != null || b.loop != null) return a.loop != null && a.loop === b.loop;
+  return Math.abs(a.row - b.row) <= 64;
+}
+
+/** Basic blocks and natural-loop ranges, derived from backward branch edges. */
+function controlContext(words, base) {
+  const leaders = new Set([0]);
+  const ranges = [];
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i], pc = base + BigInt(i * 4);
+    const target = (W.isCallImm(w) ? null : W.branchImm26(w, pc)) ?? W.condBranchTarget(w, pc);
+    if (target != null) {
+      const row = Number((target - base) / 4n);
+      if (row >= 0 && row < words.length) leaders.add(row);
+      if (i + 1 < words.length) leaders.add(i + 1);
+      if (row >= 0 && row <= i) ranges.push({ start: row, end: i });
+    }
+  }
+  const sorted = Array.from(leaders).sort((a, b) => a - b);
+  const blockOf = new Int32Array(words.length);
+  for (let b = 0; b < sorted.length; b++) {
+    const end = b + 1 < sorted.length ? sorted[b + 1] : words.length;
+    for (let i = sorted[b]; i < end; i++) blockOf[i] = b;
+  }
+  const loopOf = new Array(words.length).fill(null);
+  ranges.sort((a, b) => (a.end - a.start) - (b.end - b.start));
+  for (let id = 0; id < ranges.length; id++) {
+    const r = ranges[id];
+    for (let i = r.start; i <= r.end; i++) if (loopOf[i] == null) loopOf[i] = id;
+  }
+  return { blockOf, loopOf };
 }
 
 /* ── バイナリ全体から、データファイルの表を集める ──────────── */

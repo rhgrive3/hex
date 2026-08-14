@@ -54,7 +54,10 @@ let regions = new Map();
 let slices = [];                      // 解析済みのスライス（アーキテクチャごと）
 let cs = null;                        // { M, handle, hp }
 let csError = null;
-let searchToken = 0;
+let currentEpoch = 0;
+let openChain = Promise.resolve();
+const activeRequests = new Map();             // request id -> epoch
+const cancelledRequests = new Set();
 
 const blocks = new Map();             // blockIndex -> Uint8Array (insertion-ordered LRU)
 
@@ -63,15 +66,39 @@ const blocks = new Map();             // blockIndex -> Uint8Array (insertion-ord
 self.onmessage = async (e) => {
   const msg = e.data;
   if (!msg || typeof msg.t !== 'string') return;
-  if (msg.t === 'cancelSearch') { searchToken++; return; }
+  if (msg.t === 'cancel' || msg.t === 'cancelSearch') {
+    for (const [id, epoch] of activeRequests) {
+      if ((msg.requestId == null || msg.requestId === id) &&
+          (msg.epoch == null || msg.epoch === epoch)) cancelledRequests.add(id);
+    }
+    return;
+  }
+  const run = async () => {
+    if (msg.t === 'open') currentEpoch = msg.epoch;
+    if (msg.epoch !== currentEpoch) throw new Error('Stale analysis request.');
+    if (msg.id != null) activeRequests.set(msg.id, msg.epoch);
+    return handle(msg);
+  };
   try {
-    const result = await handle(msg);
-    if (msg.id != null) post({ t: 'ok', id: msg.id, result }, result && result.__transfer);
+    /* File opens mutate all worker state, so serialize them. A later epoch always wins. */
+    const task = msg.t === 'open' ? (openChain = openChain.then(run, run)) : run();
+    const result = await task;
+    if (msg.id != null) post({ t: 'ok', id: msg.id, epoch: msg.epoch, result }, result && result.__transfer);
   } catch (err) {
-    if (msg.id != null) post({ t: 'err', id: msg.id, error: errText(err) });
+    if (msg.id != null) post({ t: 'err', id: msg.id, epoch: msg.epoch, error: errText(err) });
     else post({ t: 'fatal', error: errText(err) });
+  } finally {
+    if (msg.id != null) {
+      activeRequests.delete(msg.id);
+      cancelledRequests.delete(msg.id);
+    }
   }
 };
+
+function cancelled(requestId) { return requestId != null && cancelledRequests.has(requestId); }
+function scanProgress(requestId, epoch, done, all, hits) {
+  self.postMessage({ t: 'scanProgress', requestId, epoch, done, all, hits });
+}
 
 function post(m, transfer) {
   if (transfer && transfer.length) {
@@ -650,10 +677,9 @@ const looksLikePrologue = Words.looksLikePrologue;
  * 命令の並びだけから当てていたころは適合率 73.6% / 再現率 64.8% だった。
  * 表を先に読むだけで、どちらも大きく上がる。
  */
-async function guessFunctions({ regionId, limit }) {
+async function guessFunctions({ regionId, limit, requestId, epoch }) {
   const region = regions.get(regionId);
   if (!region) throw new Error('Unknown region.');
-  const token = ++searchToken;
   const cap = Math.min(Number(limit) || 400_000, 400_000);
   const total = Number(region.size);
   const found = new Set();
@@ -689,14 +715,14 @@ async function guessFunctions({ regionId, limit }) {
           if (found.size < cap) found.add(t);
         }
       } catch { /* 読めない区画は飛ばす */ }
-      if (token !== searchToken) return { starts: [], cancelled: true };
+      if (cancelled(requestId)) return { starts: [], cancelled: true };
     }
   }
 
   let pos = 0;
   let prevWasEnd = false;
   while (pos < total) {
-    if (token !== searchToken) return { starts: [], cancelled: true };
+    if (cancelled(requestId)) return { starts: [], cancelled: true };
     const want = Math.min(SCAN_BLOCK, total - pos);
     const blk = await readRange(region.fileOffset + BigInt(pos), want);
     if (blk.length < 4) break;
@@ -717,7 +743,7 @@ async function guessFunctions({ regionId, limit }) {
       }
     }
     pos += words * 4;
-    self.postMessage({ t: 'scanProgress', done: pos, all: total, hits: found.size });
+    scanProgress(requestId, epoch, pos, total, found.size);
     await yieldToQueue();
   }
 
@@ -740,10 +766,9 @@ async function guessFunctions({ regionId, limit }) {
  *
  * Capstone は通さない。逆アセンブルより桁違いに速いので、数十 MB でも一気に走る。
  */
-async function scanProgram({ regionId }) {
+async function scanProgram({ regionId, requestId, epoch }) {
   const region = regions.get(regionId);
   if (!region) throw new Error('Unknown region.');
-  const token = ++searchToken;
   const total = Number(region.size);
   const words = Math.floor(total / 4);
 
@@ -766,7 +791,7 @@ async function scanProgram({ regionId }) {
   let pos = 0;
 
   while (pos < total) {
-    if (token !== searchToken) return { cancelled: true, __transfer: [] };
+    if (cancelled(requestId)) return { cancelled: true, __transfer: [] };
     const want = Math.min(SCAN_BLOCK, total - pos);
     const blk = await readRange(region.fileOffset + BigInt(pos), want);
     if (blk.length < 4) break;
@@ -830,7 +855,7 @@ async function scanProgram({ regionId }) {
     }
 
     pos += n * 4;
-    self.postMessage({ t: 'scanProgress', done: pos, all: total, hits: nCalls + nRefs });
+    scanProgress(requestId, epoch, pos, total, nCalls + nRefs);
     await yieldToQueue();
   }
 
@@ -953,10 +978,9 @@ const AMT_NONE = 0, AMT_FIELD = 1, AMT_IMM = 2, AMT_CALL = 3;
 
 const MAX_SHAPE_EVENTS = 200_000;
 
-async function scanValueShapes({ regionId }) {
+async function scanValueShapes({ regionId, requestId, epoch }) {
   const region = regions.get(regionId);
   if (!region) throw new Error('Unknown region.');
-  const token = ++searchToken;
   const total = Number(region.size);
 
   const evAddr = new BigUint64Array(MAX_SHAPE_EVENTS);
@@ -1038,7 +1062,7 @@ async function scanValueShapes({ regionId }) {
 
   let pos = 0;
   while (pos < total) {
-    if (token !== searchToken) return { cancelled: true, __transfer: [] };
+    if (cancelled(requestId)) return { cancelled: true, __transfer: [] };
     const want = Math.min(SCAN_BLOCK, total - pos);
     const blk = await readRange(region.fileOffset + BigInt(pos), want);
     if (blk.length < 4) break;
@@ -1187,7 +1211,7 @@ async function scanValueShapes({ regionId }) {
     }
 
     pos += words * 4;
-    self.postMessage({ t: 'scanProgress', done: pos, all: total, hits: n });
+    scanProgress(requestId, epoch, pos, total, n);
     await yieldToQueue();
   }
 
@@ -1214,10 +1238,9 @@ async function scanValueShapes({ regionId }) {
  * ベースレジスタが本当に self かどうかまでは、ここでは判定しない
  * （それは呼び出し側が、その関数がどのクラスのメソッドかで絞る）。
  */
-async function findFieldAccess({ regionId, offset, size, limit, offsets }) {
+async function findFieldAccess({ regionId, offset, size, limit, offsets, requestId, epoch }) {
   const region = regions.get(regionId);
   if (!region) throw new Error('Unknown region.');
-  const token = ++searchToken;
   const cap = Math.min(Number(limit) || 2000, 4000);
   const total = Number(region.size);
 
@@ -1247,7 +1270,7 @@ async function findFieldAccess({ regionId, offset, size, limit, offsets }) {
   let found = 0;
   let pos = 0;
   while (pos < total && !allFull()) {
-    if (token !== searchToken) return { results: firstOf(), groups: groupsOf(), cancelled: true };
+    if (cancelled(requestId)) return { results: firstOf(), groups: groupsOf(), cancelled: true };
     const wantBytes = Math.min(SCAN_BLOCK, total - pos);
     const blk = await readRange(region.fileOffset + BigInt(pos), wantBytes);
     if (blk.length < 4) break;
@@ -1274,7 +1297,7 @@ async function findFieldAccess({ regionId, offset, size, limit, offsets }) {
       found++;
     }
     pos += words * 4;
-    self.postMessage({ t: 'scanProgress', done: pos, all: total, hits: found });
+    scanProgress(requestId, epoch, pos, total, found);
     await yieldToQueue();
   }
   const capped = Array.from(wanted.values()).some((s) => s.out.length >= cap);
@@ -1335,13 +1358,13 @@ function decodeUtf8Text(bytes) {
   return UTF8.decode(bytes.subarray(0, n)).replace(/\t/g, '\\t').replace(/\n/g, '\\n');
 }
 
-async function scanStrings({ regionId, min, limit }) {
+async function scanStrings({ regionId, min, limit, maxBytes, requestId, epoch }) {
   const region = regions.get(regionId);
   if (!region) throw new Error('Unknown region.');
-  const token = ++searchToken;
   const minLen = Math.max(2, Number(min) || STRINGS_MIN);
   const cap = Math.min(Number(limit) || STRINGS_LIMIT, STRINGS_LIMIT);
-  const total = Number(region.size);
+  const regionBytes = Number(region.size);
+  const total = Math.min(regionBytes, Math.max(0, Number(maxBytes == null ? regionBytes : maxBytes)));
   const out = [];
   let pos = 0;                 // 次に読むファイル内の位置（region 先頭から）
   let runStart = -1;           // いま伸びている文字列の先頭
@@ -1378,7 +1401,7 @@ async function scanStrings({ regionId, min, limit }) {
   let carry = new Uint8Array(0);
   let carryAt = 0;
   while (pos < total && out.length < cap) {
-    if (token !== searchToken) return { results: out, cancelled: true, capped: false };
+    if (cancelled(requestId)) return { results: out, cancelled: true, capped: false, scannedBytes: pos, complete: false };
     const want = Math.min(SCAN_BLOCK, total - pos);
     const blk = await readRange(region.fileOffset + BigInt(pos), want);
     if (!blk.length) break;
@@ -1404,11 +1427,14 @@ async function scanStrings({ regionId, min, limit }) {
     carry = i < buf.length ? buf.subarray(i) : new Uint8Array(0);
     carryAt = baseOff + i;
     pos += blk.length;
-    self.postMessage({ t: 'scanProgress', done: pos, all: total, hits: out.length });
+    scanProgress(requestId, epoch, pos, total, out.length);
     await yieldToQueue();
   }
   flush();
-  return { results: out.slice(0, cap), cancelled: false, capped: out.length >= cap };
+  return {
+    results: out.slice(0, cap), cancelled: false, capped: out.length >= cap,
+    scannedBytes: pos, complete: pos >= regionBytes && out.length < cap,
+  };
 }
 
 /* ── 相互参照（どこからここを見ているか） ───────────────────── */
@@ -1426,10 +1452,9 @@ const pairedOffset = Words.pairedOffset;
  * 直接の分岐に加えて、adrp + add / adrp + ldr の 2 行組も解決する
  * （文字列やデータを「誰が使っているか」を追うにはこれが要る）。
  */
-async function findXrefs({ regionId, target, limit }) {
+async function findXrefs({ regionId, target, limit, requestId, epoch }) {
   const region = regions.get(regionId);
   if (!region) throw new Error('Unknown region.');
-  const token = ++searchToken;
   const want = BigInt(target);
   const cap = Math.min(Number(limit) || XREF_LIMIT, XREF_LIMIT);
   const total = Number(region.size);
@@ -1442,7 +1467,7 @@ async function findXrefs({ regionId, target, limit }) {
 
   let pos = 0;
   while (pos < total && out.length < cap) {
-    if (token !== searchToken) return { results: out, cancelled: true, capped: false };
+    if (cancelled(requestId)) return { results: out, cancelled: true, capped: false };
     const wantBytes = Math.min(SCAN_BLOCK, total - pos);
     const blk = await readRange(region.fileOffset + BigInt(pos), wantBytes);
     if (blk.length < 4) break;
@@ -1484,7 +1509,7 @@ async function findXrefs({ regionId, target, limit }) {
       }
     }
     pos += words * 4;
-    self.postMessage({ t: 'scanProgress', done: pos, all: total, hits: out.length });
+    scanProgress(requestId, epoch, pos, total, out.length);
     await yieldToQueue();
   }
   return { results: out, cancelled: false, capped: out.length >= cap };
@@ -1541,10 +1566,9 @@ async function readAtAddress({ addr, len, text }) {
 
 /* ── search ─────────────────────────────────────────────────── */
 
-async function runSearch({ regionId, kind, query, hex, from }) {
+async function runSearch({ regionId, kind, query, hex, from, requestId, epoch }) {
   const region = regions.get(regionId);
   if (!region) throw new Error('Unknown region.');
-  const token = ++searchToken;
   const results = [];
   const total = Number(region.size);
   const startByte = Math.max(0, Math.min(total, Number(from || 0)));
@@ -1558,7 +1582,7 @@ async function runSearch({ regionId, kind, query, hex, from }) {
     let pos = startByte;
     let carry = new Uint8Array(0);
     while (pos < total) {
-      if (token !== searchToken) return { cancelled: true, results, scanned };
+      if (cancelled(requestId)) return { cancelled: true, results, scanned };
       const want = Math.min(SEARCH_BLOCK_HEX, total - pos);
       const blk = await readRange(region.fileOffset + BigInt(pos), want);
       if (!blk.length) break;
@@ -1595,7 +1619,7 @@ async function runSearch({ regionId, kind, query, hex, from }) {
     let pos = startByte;
     let carry = new Uint8Array(0);
     while (pos < total) {
-      if (token !== searchToken) return { cancelled: true, results, scanned };
+      if (cancelled(requestId)) return { cancelled: true, results, scanned };
       const want = Math.min(SEARCH_BLOCK_HEX, total - pos);
       const blk = await readRange(region.fileOffset + BigInt(pos), want);
       if (!blk.length) break;
@@ -1632,7 +1656,7 @@ async function runSearch({ regionId, kind, query, hex, from }) {
     if (!needle) throw new Error('Enter text to search for.');
     let pos = Math.floor(startByte / INSN_SIZE) * INSN_SIZE;
     while (pos < total) {
-      if (token !== searchToken) return { cancelled: true, results, scanned };
+      if (cancelled(requestId)) return { cancelled: true, results, scanned };
       const want = Math.min(SEARCH_BLOCK_ASM, total - pos);
       const blk = await readRange(region.fileOffset + BigInt(pos), want);
       if (!blk.length) break;
@@ -1661,7 +1685,7 @@ async function runSearch({ regionId, kind, query, hex, from }) {
   return { results, scanned, capped, cancelled: false };
 
   function progress(done, all, hits) {
-    self.postMessage({ t: 'searchProgress', done, all, hits });
+    self.postMessage({ t: 'searchProgress', requestId, epoch, done, all, hits });
   }
 }
 

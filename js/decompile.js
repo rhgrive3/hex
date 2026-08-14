@@ -1,5 +1,5 @@
 /*
- * 擬似コード（デコンパイル）。
+ * 逆コンパイル。
  *
  * アセンブリは「CPU への指示」がそのまま並んだもので、人間が読む形ではありません。
  * ここでは同じ内容を C 風の書き方に直します。IDA の Hex-Rays や Ghidra の
@@ -25,7 +25,8 @@
 
 import { typeFromAccess, inferTypes, signatureOf } from './types.js';
 import { shortName } from './rtti.js';
-import { buildValues, render as renderExpr, sizeOf as exprSize } from './expr.js';
+import { buildValues, render as renderExpr, sizeOf as exprSize, constOf as exprConst } from './expr.js';
+import { findAccumulators } from './comprehend.js';
 
 /* ── 出力の 1 行 ────────────────────────────────────────────
    kind: 'sig' 見出し / 'decl' 変数宣言 / 'stmt' 文 / 'ctrl' 制御 /
@@ -113,6 +114,9 @@ export function decompile(model, opts) {
   }
   out.push(line('ctrl', 0, '}', insns[insns.length - 1].row));
 
+  dedupeNotes(out);
+  breatheOut(out);
+
   if (state.gotos) {
     warnings.push('制御の流れが複雑で、' + state.gotos + ' か所は goto のまま残しました（コンパイラの最適化でよくあります）。');
   }
@@ -151,7 +155,27 @@ function buildContext(model, o) {
   for (const c of model.calls || []) callOf.set(c.row, c);
 
   /*
-   * 値グラフ。ここが入って、擬似 C はようやく「訳」になった。
+   * 関数の入口で x19〜x30 を預けたスタックの場所を覚えておく。
+   *
+   * 出口の `ldp x26, x25, [sp, #0x140]` は、その預けたものを取り戻しているだけ。
+   * 「関数の終わりの近く」で判定していたころ、例外処理の後始末がうしろに付く
+   * 関数では窓から外れて、`x26 = var_140;   result = var_140_2;` が
+   * return の直前に 5 行そのまま出ていた。預けた場所と突き合わせれば確実に分かる。
+   */
+  const savedSlots = new Set();
+  const calleeSavedOnly = (insn) => {
+    const regs = insn.ops.filter((x) => x.k === 'reg');
+    return regs.length > 0 && regs.every((x) => x.cls === 'gp' && x.num >= 19 && x.num <= 30);
+  };
+  for (const insn of model.instructions) {
+    const m = insn.memory;
+    if (!m || !m.stack || m.kind !== 'store' || m.disp == null) continue;
+    if (!/^(stp|str|stur)$/.test((insn.mnemonic || '').toLowerCase())) continue;
+    if (calleeSavedOnly(insn)) savedSlots.add((m.baseReg || 'sp') + ':' + m.disp.toString());
+  }
+
+  /*
+   * 値グラフ。ここが入って、逆コンパイル結果はようやく「訳」になった。
    *
    * それまでは 1 命令 ＝ 1 行で、5 行に散らばった 1 つの割り算は
    * 5 行のまま（しかも 2 行は __asm）出ていた。値グラフを持つと、
@@ -165,14 +189,46 @@ function buildContext(model, o) {
   let values = null;
   try { values = buildValues(model, { symbolFor: o.symbolFor }); } catch { values = null; }
 
+  /*
+   * 持ち回っている値には `result` という名前を付ける。
+   *
+   *   x25 = x25 * (int32)(x0 + 100) / 100;      ← どの x25 の話か、読む人には分からない
+   *   result = result * (int32)(x0 + 100) / 100;
+   *
+   * 同じレジスタを 19 回作り変えている関数で、これが「1 本の値を組み立てている」と
+   * 見えるかどうかは、名前ひとつで決まる。持ち回りが 3 段以上あるときだけ名乗らせる
+   * （1〜2 回なら、ただの受け渡しかもしれないので、レジスタ名のほうが正直）。
+   */
+  let carry = null;
+  if (values) {
+    try {
+      const best = (findAccumulators(model, values) || [])[0];
+      if (best && best.count >= 3) carry = { reg: best.reg, steps: best.count };
+    } catch { carry = null; }
+  }
+
+  const aliases = values ? argAliases(model, values) : new Map();
+
+  const material = values ? decideMaterial(model, values) : null;
+  if (carry && material) {
+    const head = carry.reg + '_';
+    for (const [v, n] of material.names) {
+      if (n === carry.reg || n.startsWith(head)) material.names.set(v, 'result');
+    }
+  }
+
   return {
     model,
     byRow,
     textOf,
     refOf,
     callOf,
+    savedSlots,
+    frame: frameOf(model),
     values,
-    material: values ? decideMaterial(model, values) : null,
+    material,
+    carry,
+    aliases,
     rowOfAddress: o.rowOfAddress || (() => null),
     addrOfRow: o.addrOfRow || (() => null),
     /*
@@ -180,7 +236,7 @@ function buildContext(model, o) {
      *
      * リンカが残す C++ の名前は
      *   __ZNSt3__1plIcNS_11char_traitsIcEENS_9allocatorIcEEEENS_12basic_stringI…
-     * のような記号の列で、そのまま擬似コードに出すと 1 行が読めなくなる。
+     * のような記号の列で、そのまま逆コンパイル結果に出すと 1 行が読めなくなる。
      * ここで std::operator+ / std::string::append まで短くしてから渡す。
      * 元の名前は、その行を押したときに出す（消してしまわない）。
      */
@@ -198,11 +254,56 @@ function buildContext(model, o) {
   };
 }
 
+/**
+ * 「関数の頭で引数を預けたきり、最後まで触っていないレジスタ」を見つける。
+ *
+ * ARM64 の呼び出し規約では、引数は x0〜x7 で来る。ところが x0〜x7 は
+ * 呼び出しで壊れるので、コンパイラはまず x19〜x28 へ写す。その結果、
+ * 逆コンパイル結果の頭にはいつもこれが並ぶ:
+ *
+ *     x19 = a1; x20 = a2; x21 = a3; x24 = a4; x27 = a6; x22 = a7; x26 = a8;
+ *
+ * そのあと本文は x19 や x24 で書かれるので、読む人は 8 行ぶんの対応表を
+ * 覚えながら読むことになる。関数の中で **一度しか代入されていない** なら、
+ * そのレジスタは最後まで引数そのものなので、名前ごと a1, a4 … に直してよい。
+ * 一度しか代入されていないことは値グラフから確かめられる（推測ではない）。
+ *
+ * @returns Map<レジスタ, 'aN'>
+ */
+function argAliases(model, vg) {
+  const out = new Map();
+  const defCount = new Map();
+  const firstValue = new Map();
+  for (const insn of model.instructions || []) {
+    const made = vg.defs.get(insn.row);
+    if (!made) continue;
+    /*
+     * 関数の終わりで x19〜x28 を取り戻す ldp は「代入」に数えない。
+     * 数えてしまうと、どの引数も「2 回代入されている」ことになって、
+     * この見分けは 1 つも当たらない（実際そうなっていた）。
+     */
+    const m = insn.memory;
+    if (m && m.stack && m.kind === 'load' &&
+        insn.writes.every((w) => /^x(19|2[0-9]|30)$/.test(w))) continue;
+    for (const reg of Object.keys(made)) {
+      defCount.set(reg, (defCount.get(reg) || 0) + 1);
+      if (!firstValue.has(reg)) firstValue.set(reg, made[reg]);
+    }
+  }
+  for (const [reg, n] of defCount) {
+    if (n !== 1) continue;
+    if (!/^x(19|2[0-8])$/.test(reg)) continue;   // 呼び出しをまたいで残るレジスタだけ
+    const v = firstValue.get(reg);
+    if (v && v.k === 'arg') out.set(reg, 'a' + (v.n + 1));
+  }
+  return out;
+}
+
 /* ────────────────────────────────────────────────────────────
    どの値を「変数」として残すか
    ────────────────────────────────────────────────────────────
 
-   命令 1 つに 1 行を割り当てると、擬似 C は代入だらけになって読めない。
+   命令 1 つに 1 行を割り当てると、逆コンパイル結果は代入だらけになって読めない。
    かといって全部を埋め込むと、1 行が 400 文字の式になって、これも読めない。
 
    人が書く C との違いはここで、人は「2 回以上使う値」と「名前を付けたい値」
@@ -227,11 +328,13 @@ function decideMaterial(model, vg) {
 
   const uses = new Map();          // ノード → 使われた回数
   const crossed = new Set();       // 別ブロックから使われたノード
+  const firstUse = new Map();      // ノード → いちばん早く使われた行
   const bump = (nodeValue, atRow) => {
     if (!nodeValue) return;
     const def = vg.nodeDef.get(nodeValue);
     if (!def) return;
     uses.set(nodeValue, (uses.get(nodeValue) || 0) + 1);
+    if (!firstUse.has(nodeValue) || atRow < firstUse.get(nodeValue)) firstUse.set(nodeValue, atRow);
     if (blockOf.get(def.row) !== blockOf.get(atRow)) crossed.add(nodeValue);
   };
 
@@ -254,11 +357,42 @@ function decideMaterial(model, vg) {
    */
   const lastInBlock = new Map();
   const lastCallRow = new Map();
+  const defRows = new Map();       // ノード → そのノードを置いた行の一覧
   for (const insn of insns) {
     const bi = blockOf.get(insn.row);
     const made = vg.defs.get(insn.row) || {};
-    for (const reg of Object.keys(made)) lastInBlock.set(bi + ':' + reg, made[reg]);
+    for (const reg of Object.keys(made)) {
+      lastInBlock.set(bi + ':' + reg, made[reg]);
+      const list = defRows.get(made[reg]) || [];
+      list.push({ row: insn.row, reg });
+      defRows.set(made[reg], list);
+    }
     if (insn.isCall) lastCallRow.set(bi, insn.row);
+  }
+
+  /*
+   * 1 つの値が、2 つのレジスタに置かれることがある。
+   *
+   *   asr x8, x8, #0x25            ← ここで「÷100」が完成する
+   *   add x25, x8, x8, lsr #63     ← 符号を直して x25 へ。値としては同じもの
+   *
+   * 値グラフから見ると同じ 1 つのノードなので、行を出すのは 1 回でよい。
+   * 問題はどちらの行に出すか ——「最後に置いた行」に出すのが読みやすい
+   * （x8 という使い捨てではなく、result という持ち回りの名前で出るため）。
+   * ただし、途中でその値が使われているなら、使われるより前に出さないといけない。
+   */
+  const canonical = new Map();
+  for (const [nodeValue, list] of defRows) {
+    /*
+     * 呼び出しだけは動かせない。呼んだ行がそのまま処理なので、
+     * あとの `mov x26, x0` を「置いた行」にすると、呼び出しが 2 行に見える
+     * （実際 `x26 = f(...)` が 2 回続けて出ていた）。
+     */
+    if (nodeValue.k === 'call') { canonical.set(nodeValue, list[0]); continue; }
+    const limit = firstUse.has(nodeValue) ? firstUse.get(nodeValue) : Infinity;
+    let pick = list[0];
+    for (const d of list) if (d.row <= limit) pick = d;
+    canonical.set(nodeValue, pick);
   }
   /*
    * 呼び出しは x0〜x17 を壊す（AAPCS64）。だから同じブロックの中で
@@ -287,7 +421,16 @@ function decideMaterial(model, vg) {
    * `x25 = …` の行だけが消えるという壊れ方をしていた。
    */
   const material = new Set();
-  for (const [nodeValue, def] of vg.nodeDef) {
+  for (const [nodeValue, first] of vg.nodeDef) {
+    /*
+     * 生存の判定は「行として出す側」で行う。
+     *
+     * vg.nodeDef が覚えているのは、その値を **最初に** 置いた行で、
+     * たいてい使い捨ての x8 のほう。x8 の生存を見て「誰も使わない」と判定し、
+     * 実際には x25（＝ result）として最後まで持ち回る値の行を、
+     * まるごと消していた。÷100 の段が 8 か所そろって消えたのはこれ。
+     */
+    const def = canonical.get(nodeValue) || first;
     const n = uses.get(nodeValue) || 0;
     const big = visibleSize(nodeValue, material) > INLINE_MAX;
     const bi = blockOf.get(def.row);
@@ -348,15 +491,79 @@ function decideMaterial(model, vg) {
     let dropped = 0;
     for (const nodeValue of Array.from(material)) {
       if (nodeValue.k === 'call') continue;                 // 呼び出しは残す（副作用）
-      const def = vg.nodeDef.get(nodeValue);
+      const def = canonical.get(nodeValue) || vg.nodeDef.get(nodeValue);
       const bi = def ? blockOf.get(def.row) : null;
-      if (bi != null && liveOut[bi] && liveOut[bi].has(def.reg) &&
+      /*
+       * 「掛け算の上位だけ」は、割り算に戻すためだけに作られる中間値。
+       *
+       *   x23 = result * (int32)x26 *hi 0x20C49BA5E353F7CF;
+       *
+       * 割り算に戻した時点で誰も見ていないのに、レジスタとしては生きているので
+       * 生存の判定に引っかかって、意味のないこの 1 行だけが残っていた。
+       * 誰の式にも出てこないなら、落としてよい。
+       */
+      const magicOnly = nodeValue.k === 'bin' && (nodeValue.op === 'smulh' || nodeValue.op === 'umulh');
+      if (!magicOnly && bi != null && liveOut[bi] && liveOut[bi].has(def.reg) &&
           lastInBlock.get(bi + ':' + def.reg) === nodeValue && !killedByCall(def)) continue;
       if (seen.has(nodeValue)) continue;
       material.delete(nodeValue);
       dropped++;
     }
     if (!dropped) break;
+  }
+
+  /*
+   * 最後に「1 か所からしか参照されない中間値」を畳む。
+   *
+   *   x8_2   = result * (int32)(x27 + x28 + 100);
+   *   result = x8_2 / 100;
+   *        ↓
+   *   result = result * (int32)(x27 + x28 + 100) / 100;
+   *
+   * 割り算に戻す前は x8 が 2 回読まれていた（積を smulh へ、そのあと補正へ）ので
+   * 「2 回使われている ＝ 変数として残す」に当たっていた。割り算に戻した時点で
+   * 読む側は 1 つになっているのに、数え直していなかったので 2 行のまま出ていた。
+   * 1 か所からしか参照されず、ブロックをまたがず、外へも出ていかない値だけを畳む。
+   */
+  const MERGE_MAX = 26;
+  for (let round = 0; round < 3; round++) {
+    const refs = new Map();
+    const tally = (n, self) => {
+      if (!n) return;
+      const stack = [n];
+      while (stack.length) {
+        const cur = stack.pop();
+        if (!cur) continue;
+        if (cur !== self && material.has(cur)) { refs.set(cur, (refs.get(cur) || 0) + 1); continue; }
+        const kids = cur.k === 'bin' ? [cur.a, cur.b]
+          : cur.k === 'un' ? [cur.a]
+            : cur.k === 'sel' ? [cur.a, cur.b]
+              : cur.k === 'mem' ? [cur.base, cur.index]
+                : cur.k === 'call' ? (cur.args || []).map((a) => a.value) : [];
+        for (const c of kids) if (c) stack.push(c);
+      }
+    };
+    for (const nodeValue of material) tally(nodeValue, nodeValue);
+    for (const w of vg.memWrites || []) tally(w.value, null);
+    for (const r of vg.returns || []) tally(r.value, null);
+    for (const insn of insns) {
+      if (!insn.isCall) continue;
+      for (let a = 0; a <= 7; a++) tally(vg.at(insn.row, 'x' + a), null);
+    }
+    let merged = 0;
+    for (const nodeValue of Array.from(material)) {
+      if (nodeValue.k === 'call') continue;             // 呼び出しは順序が意味を持つ
+      if (crossed.has(nodeValue)) continue;             // 別のブロックから使われている
+      if ((refs.get(nodeValue) || 0) !== 1) continue;
+      const def = canonical.get(nodeValue) || vg.nodeDef.get(nodeValue);
+      const bi = def ? blockOf.get(def.row) : null;
+      if (bi != null && liveOut[bi] && liveOut[bi].has(def.reg) &&
+          lastInBlock.get(bi + ':' + def.reg) === nodeValue && !killedByCall(def)) continue;
+      if (visibleSize(nodeValue, material) > MERGE_MAX) continue;
+      material.delete(nodeValue);
+      merged++;
+    }
+    if (!merged) break;
   }
 
   /*
@@ -395,6 +602,9 @@ function decideMaterial(model, vg) {
     for (const reg of Object.keys(made)) {
       const v = made[reg];
       if (!material.has(v) || names.has(v)) continue;
+      /* 同じ値を 2 か所に置いているときは、行を出す側の名前だけを使う。 */
+      const can = canonical.get(v);
+      if (can && (can.row !== insn.row || can.reg !== reg)) continue;
       /*
        * 見失うレジスタは、そのブロックの **最後の** 代入だけが素の名前を名乗る。
        * 合流の先で `x0` と書かれたときに指しているのは、どの道を通っても
@@ -414,7 +624,7 @@ function decideMaterial(model, vg) {
   for (const [reg, list] of perReg) {
     if (list.length === 1 && !lost.has(reg)) names.set(list[0], reg);
   }
-  return { material, uses, crossed, blockOf, names };
+  return { material, uses, crossed, blockOf, names, lost, canonical };
 }
 
 /** 変数として残したところで止めた、見た目の大きさ。 */
@@ -496,6 +706,15 @@ function exprText(ctx, nodeValue, self) {
     symbolFor: ctx.symbolFor,
     maxLen: 400,
     nameOf: (n) => {
+      /*
+       * 置き場の番地は、番地ではなく置き場の名前で書く。
+       * `sub_10000477C(sp - 264, …)` では、それが var_88 のことだと誰にも分からない。
+       * 自分自身より先に見る — `x26 = sp - 368;` も `x26 = &var_20;` のほうがよい。
+       */
+      if (n.k === 'bin' || n.k === 'reg') {
+        const d = stackDispOf(n, ctx);
+        if (inFrame(d, ctx)) return '&' + slotName('sp', d, ctx);
+      }
       if (n === self) return null;               // 自分自身は展開する
       if (n.k === 'reg') return varOf(n.reg, ctx);
       if (n.k === 'arg') return argName(n.n, ctx);
@@ -534,6 +753,17 @@ function argName(n, ctx) {
 function memNodeName(m, ctx) {
   if (m.stack && m.disp != null) {
     return slotName(m.baseReg === 'x29' ? 'x29' : 'sp', m.disp, ctx);
+  }
+  /*
+   * オペランドが `[sp, #N]` の形をしていなくても、番地の式が置き場を指していれば
+   * 同じ置き場。`*(uint32 *)(sp - 372)` と `var_1C` が同じものだと分かる。
+   */
+  if (!m.index && m.base) {
+    const d = stackDispOf(m.base, ctx);
+    if (d != null) {
+      const at = d + (m.disp != null ? m.disp : 0n);
+      if (inFrame(at, ctx)) return slotName('sp', at, ctx);
+    }
   }
   if (m.baseReg && m.disp != null && !m.index && ctx.fieldFor) {
     const named = ctx.fieldFor(m.baseReg, Number(m.disp), m.row);
@@ -871,6 +1101,9 @@ function varOf(reg, ctx) {
   if (reg === 'sp') return 'sp';
   const custom = ctx.notes && ctx.funcAddr != null ? ctx.notes.varName(ctx.funcAddr, reg) : null;
   if (custom) return custom;
+  if (ctx.carry && reg === ctx.carry.reg) { ctx.usedVars.add('result'); return 'result'; }
+  const alias = ctx.aliases ? ctx.aliases.get(reg) : null;
+  if (alias) return alias;
   ctx.usedVars.add(reg);
   return reg;
 }
@@ -928,15 +1161,156 @@ function memText(op, ctx, insn) {
   return '*(' + type + ' *)(' + inner + ')';
 }
 
-/** スタック上の場所につける名前。var_20 のように、IDA と同じ書き方にする。 */
+/*
+ * この関数のスタックの形を読む。
+ *
+ *   sub sp, sp, #0x190      ← 置き場のぶんだけ sp を下げる（adjust = 0x190）
+ *   add x29, sp, #0x180     ← フレームポインタは、そこから 0x180 上（fpOffset = 0x180）
+ *
+ * これが分かると、同じ 1 つの置き場を指す 3 通りの書き方を 1 つに揃えられる。
+ *
+ *   [sp, #0x1c]        ← 命令のオペランド（下げたあとの sp から）
+ *   [x29, #-0x60]      ← フレームポインタから
+ *   sp - 372           ← 値グラフの式（sp は関数に入った時点のもの）
+ *
+ * 揃えないと、同じ置き場に var_1C と var_60 と `sp - 372` の 3 つの名前が付く。
+ * 実際そうなっていて、逆コンパイル結果の中で同じ変数が別物に見えていた。
+ * sp を定数で動かしていない関数（可変長スタック）では null を返し、
+ * これまでどおりの書き方に任せる（分からないものを揃えたことにはしない）。
+ */
+function frameOf(model) {
+  let depth = 0n;          // いま sp がどれだけ下がっているか
+  let adjust = 0n;         // 本体で使う深さ（＝いちばん深いところ）
+  let fpOffset = null;
+  const insns = model.instructions || [];
+  for (const insn of insns) {
+    const base = (insn.mnemonic || '').toLowerCase();
+    const ops = insn.ops || [];
+    const dst = ops[0];
+    /* sub sp, sp, #N */
+    if ((base === 'sub' || base === 'add') && dst && dst.k === 'reg' && dst.cls === 'sp') {
+      const src = ops[1], imm = ops[2];
+      if (!src || src.k !== 'reg' || src.cls !== 'sp') return null;
+      if (!imm || imm.k !== 'imm' || imm.value == null) return null;   // sub sp, sp, x8
+      /*
+       * 出口の `add sp, sp, #0x190` まで足し引きすると 0 に戻ってしまう。
+       * 欲しいのは本体を実行しているあいだの深さなので、いちばん深いところを取る。
+       */
+      depth += base === 'sub' ? imm.value : -imm.value;
+      if (depth > adjust) adjust = depth;
+      continue;
+    }
+    /* stp x29, x30, [sp, #-0x10]! — 前置きで sp も下がる */
+    const m = insn.memory;
+    if (m && m.mode === 'pre' && m.baseReg === 'sp' && m.disp != null) {
+      depth -= m.disp;
+      if (depth > adjust) adjust = depth;
+    }
+    /* add x29, sp, #K / mov x29, sp */
+    if (dst && dst.k === 'reg' && dst.cls === 'gp' && dst.num === 29 && fpOffset == null) {
+      const src = ops[1];
+      if (base === 'mov' && src && src.k === 'reg' && src.cls === 'sp') fpOffset = 0n;
+      else if (base === 'add' && src && src.k === 'reg' && src.cls === 'sp' &&
+               ops[2] && ops[2].k === 'imm' && ops[2].value != null) fpOffset = ops[2].value;
+    }
+  }
+  if (adjust <= 0n) return null;
+  return { adjust, fpOffset };
+}
+
+/**
+ * スタック上の場所につける名前。var_20 のように、IDA と同じ書き方にする。
+ *
+ * 呼び名は「下げたあとの sp から何バイト上か」で 1 つに決める。
+ * どの書き方で来ても、ここを通れば同じ置き場は同じ名前になる。
+ */
 function slotName(base, disp, ctx) {
-  const key = base + ':' + disp.toString();
+  let d = disp;
+  let b = base;
+  const f = ctx.frame;
+  if (f && b === 'x29' && f.fpOffset != null) { d = disp + f.fpOffset; b = 'sp'; }
+  const key = b + ':' + d.toString();
   if (ctx.stackNames.has(key)) return ctx.stackNames.get(key);
   const custom = ctx.notes && ctx.funcAddr != null ? ctx.notes.varName(ctx.funcAddr, base + disp) : null;
-  const abs = disp < 0n ? -disp : disp;
+  const abs = d < 0n ? -d : d;
   const n = custom || ('var_' + abs.toString(16).toUpperCase());
   ctx.stackNames.set(key, n);
   return n;
+}
+
+/**
+ * 値グラフの式が「スタックの置き場の番地」なら、その置き場のずれを返す。
+ *
+ * 値グラフの sp は **関数に入った時点** の sp なので、
+ * `sp - 372` は「下げたあとの sp + 28」、つまり `[sp, #0x1c]` と同じ場所を指す。
+ */
+function stackDispOf(n, ctx) {
+  const f = ctx.frame;
+  if (!f || !n) return null;
+  /* 返すのは「下げたあとの sp から何バイト上か」。
+     値グラフの sp は入った時点のものなので adjust、x29 はそこから fpOffset。 */
+  const fromReg = (r) => (r === 'sp' ? f.adjust : (r === 'x29' && f.fpOffset != null ? f.fpOffset : null));
+  if (n.k === 'reg') {
+    /*
+     * 関数の入口の sp だけを「入った時点の sp」と読む。
+     * 途中で作り直された reg('sp') は、いまの sp かもしれないし、
+     * 例外の後始末のように別の流れから来たものかもしれない。
+     * 決められないものに名前を付けると、別の置き場を同じ名前で呼ぶことになる。
+     */
+    if (n.reg === 'sp' && n.row !== ctx.firstRow) return null;
+    const at = fromReg(n.reg);
+    return at == null ? null : at;
+  }
+  if (n.k === 'bin' && (n.op === 'add' || n.op === 'sub')) {
+    const c = exprConst(n.b);
+    if (c == null) return null;
+    const inner = stackDispOf(n.a, ctx);
+    if (inner == null) return null;
+    return n.op === 'add' ? inner + c : inner - c;
+  }
+  return null;
+}
+
+/** 置き場の中に入っているずれかどうか。外れていれば名前を付けない。 */
+function inFrame(d, ctx) {
+  return ctx.frame && d != null && d >= 0n && d < ctx.frame.adjust;
+}
+
+/**
+ * 置き場の呼び名だけを付ける小道具。
+ *
+ * 逆コンパイル画面の外 —— レポートの「この関数が組み立てている計算」など ——
+ * でも、同じ置き場が同じ名前で出るようにする。ここを分けていたころ、
+ * 逆コンパイル画面では `&var_88`、レポートでは `sp - 264` と出ていて、
+ * 2 つの画面を並べた人が同じものだと気づけなかった。
+ *
+ * @returns render() にそのまま混ぜられる {memName, nameOf}（読めなければ空）
+ */
+export function stackNaming(model) {
+  const insns = (model && model.instructions) || [];
+  const ctx = {
+    frame: frameOf(model || {}),
+    stackNames: new Map(),
+    notes: null,
+    funcAddr: null,
+    firstRow: insns.length ? insns[0].row : 0,
+  };
+  if (!ctx.frame) return {};
+  return {
+    memName: (m) => {
+      if (!m || m.index) return null;
+      if (m.stack && m.disp != null) return slotName(m.baseReg === 'x29' ? 'x29' : 'sp', m.disp, ctx);
+      const d = m.base ? stackDispOf(m.base, ctx) : null;
+      if (d == null) return null;
+      const at = d + (m.disp != null ? m.disp : 0n);
+      return inFrame(at, ctx) ? slotName('sp', at, ctx) : null;
+    },
+    nameOf: (n) => {
+      if (!n || (n.k !== 'bin' && n.k !== 'reg')) return null;
+      const d = stackDispOf(n, ctx);
+      return inFrame(d, ctx) ? '&' + slotName('sp', d, ctx) : null;
+    },
+  };
 }
 
 /* ── 1 ブロックぶんの文 ─────────────────────────────────── */
@@ -994,7 +1368,7 @@ function statementFor(insn, ctx, node) {
   if (fromValues !== undefined) return fromValues;
   if (base === 'ret' || base === 'retab' || base === 'retaa') {
     const ret = ctx.types && ctx.types.ret && ctx.types.ret.type !== 'void';
-    return mk(ret ? 'return ' + varOf('x0', ctx) + ';' : 'return;', { kind: 'ctrl', note: ret ? '呼び出し元へ x0 の値を返します。' : '呼び出し元へ戻ります。' });
+    return mk(ret ? 'return ' + varOf('x0', ctx) + ';' : 'return;', { kind: 'ctrl' });
   }
 
   /* 呼び出し */
@@ -1012,7 +1386,7 @@ function statementFor(insn, ctx, node) {
       (base === 'add' && ref && !ref.load && insn.ops.length >= 3 && insn.ops[2] && insn.ops[2].k === 'imm')) {
     const dst = insn.writes[0];
     const text = ctx.textOf.get(row);
-    if (text != null) return mk(varOf(dst, ctx) + ' = "' + escapeText(text) + '";', { dst, pure: true, note: '文字列の場所を用意します。' });
+    if (text != null) return mk(varOf(dst, ctx) + ' = "' + escapeText(text) + '";', { dst, pure: true });
     const t = ref ? ref.addr : insn.pcRelTarget;
     if (base === 'adrp' && !ref) {
       /* ページの先頭だけを作る途中。次の add / ldr と組で 1 つのアドレスになる */
@@ -1022,7 +1396,7 @@ function statementFor(insn, ctx, node) {
     const sym = t != null ? ctx.symbolFor(t) : null;
     return mk(varOf(dst, ctx) + ' = ' + (sym ? '&' + sym : '0x' + (t != null ? t.toString(16).toUpperCase() : '?')) + ';',
       // 場所が 1 つに決まったので、もう手前のレジスタには依存していない
-      { dst, pure: true, reads: [], note: 'データのある場所（アドレス）を作ります。' });
+      { dst, pure: true, reads: [] });
   }
 
   const dst = insn.writes.length === 1 ? insn.writes[0] : null;
@@ -1087,7 +1461,7 @@ function statementFor(insn, ctx, node) {
       scvtf: 'double', ucvtf: 'double', fcvtzs: 'int64', fcvtzu: 'uint64', fcvt: 'double',
     }[base];
     return mk(varOf(dst, ctx) + ' = (' + to + ')' + operandText(insn.ops[1], ctx, insn) + ';',
-      { dst, pure: true, note: '型（値の見方）を ' + to + ' に変えます。' });
+      { dst, pure: true });
   }
   if (base === 'bfi' || base === 'bfxil' || base === 'ubfx' || base === 'sbfx' || base === 'ubfiz') {
     return mk(varOf(dst, ctx) + ' = ' + base + '(' + insn.operands + ');',
@@ -1104,7 +1478,7 @@ function statementFor(insn, ctx, node) {
   ctx.unknown.add(base);
   void node;
   return mk('__asm("' + insn.mnemonic + ' ' + insn.operands + '");',
-    { dst, note: 'この命令は擬似コードに直せませんでした。アセンブリのまま置いています。' });
+    { dst, note: 'この命令は逆コンパイルできませんでした。アセンブリのまま置いています。' });
 }
 
 function shiftOp(op) {
@@ -1152,6 +1526,18 @@ function valueStatement(insn, ctx, mk) {
   /* 出どころが読めなかった値は、命令のまま出したほうが正直。 */
   if (value.k === 'reg') return undefined;
 
+  /*
+   * 引数をレジスタへ写しているだけの行。
+   *
+   *   mov x19, x0 ; mov x20, x1 ; …        →  x19 = a1; x20 = a2; …
+   *
+   * 呼び出し元から渡された値の呼び名は、この関数のどこでも a1, a2 … になる。
+   * 写しの行を残すと、同じものに a1 と x19 の 2 つの名前が付き、
+   * 関数の頭に意味のない 8 行が並ぶ。値を見失うレジスタだけは残す
+   * （合流の先で素の `x19` が出るなら、そこへ入れる行が要るため）。
+   */
+  if (value.k === 'arg' && (ctx.aliases.has(dst) || !ctx.material.lost.has(dst))) return null;
+
   if (!ctx.material.material.has(value)) {
     /*
      * 誰も変数として使っていない中間の値。行ごと落とす。
@@ -1167,8 +1553,13 @@ function valueStatement(insn, ctx, mk) {
    * 名前は値に付いているので、以後 x24 を使う式にも同じ名前が出る。
    * 写しの行を残すと、同じ値に 2 つの名前が付いて、必ず読み間違いのもとになる。
    */
-  const def = vg.nodeDef.get(value);
-  if (def && def.row !== insn.row) return null;
+  const can = ctx.material.canonical.get(value);
+  if (can) {
+    if (can.row !== insn.row || can.reg !== dst) return null;
+  } else {
+    const def = vg.nodeDef.get(value);
+    if (def && def.row !== insn.row) return null;
+  }
   const text = exprText(ctx, value, value);
   if (text == null) return undefined;
   const name = ctx.material.names.get(value);
@@ -1187,7 +1578,7 @@ function valueStatement(insn, ctx, mk) {
  * 「後片付け」の命令かどうか。
  *
  * 関数の入口と出口には、x19〜x30 を守るための決まりきった出し入れが並びます。
- * 処理の中身とは関係がないので、擬似コードからは省きます
+ * 処理の中身とは関係がないので、逆コンパイル結果からは省きます
  * （アセンブリ側にはもちろん残っています）。
  */
 function isFrameHousekeeping(insn, ctx) {
@@ -1201,7 +1592,10 @@ function isFrameHousekeeping(insn, ctx) {
     const atEdge = ctx && (insn.row <= ctx.firstRow + 8 || insn.row >= ctx.lastRow - 8);
     const frameish = m.mode === 'pre' || m.mode === 'post' ||
       regs.some((o) => o.cls === 'gp' && (o.num === 29 || o.num === 30));
-    if (calleeSaved && (atEdge || frameish)) return true;
+    /* 入口で預けた場所から取り戻しているなら、それは後片付け（場所で確かめる）。 */
+    const restoring = m.kind === 'load' && m.disp != null && ctx && ctx.savedSlots &&
+      ctx.savedSlots.has((m.baseReg || 'sp') + ':' + m.disp.toString());
+    if (calleeSaved && (atEdge || frameish || restoring)) return true;
   }
   // フレームポインタの設定 (add x29, sp, #N / mov x29, sp) と sp の増減
   if ((base === 'add' || base === 'sub' || base === 'mov') && insn.ops[0] && insn.ops[0].k === 'reg') {
@@ -1220,13 +1614,13 @@ function conditionalSelect(insn, ctx, mk, base, dst) {
   const c = cond ? condText(cond, ctx) : 'cond';
   if (base === 'cset' || base === 'csetm') {
     return mk(varOf(dst, ctx) + ' = (' + c + ') ? ' + (base === 'csetm' ? '-1' : '1') + ' : 0;',
-      { dst, pure: true, note: '条件が成り立てば 1、そうでなければ 0 を入れます。' });
+      { dst, pure: true });
   }
   const a = ops[1] ? operandText(ops[1], ctx, insn) : '?';
   const b = ops[2] && ops[2].k !== 'cond' ? operandText(ops[2], ctx, insn) : a;
   const alt = base === 'csinc' ? b + ' + 1' : base === 'csinv' ? '~' + b : base === 'csneg' ? '-' + b : b;
   return mk(varOf(dst, ctx) + ' = (' + c + ') ? ' + a + ' : ' + alt + ';',
-    { dst, pure: true, note: '条件によって、入れる値を選びます。' });
+    { dst, pure: true });
 }
 
 function memoryStatement(insn, ctx, mk, base) {
@@ -1253,11 +1647,11 @@ function memoryStatement(insn, ctx, mk, base) {
     if (pair) {
       const d1 = insn.ops[1] ? nameForDef(ctx, insn.row, regOf(insn.ops[1])) : '?';
       return mk(d0 + ' = ' + place + ';   ' + d1 + ' = ' + nextSlot(place, m) + ';',
-        { dst: insn.writes[0], note: '2 つ続けて読み出しています。' });
+        { dst: insn.writes[0] });
     }
     const text = ctx.textOf.get(insn.row);
     if (text != null) {
-      return mk(d0 + ' = "' + escapeText(text) + '";', { dst: insn.writes[0], pure: true, note: '文字列を読み出しています。' });
+      return mk(d0 + ' = "' + escapeText(text) + '";', { dst: insn.writes[0], pure: true });
     }
     /*
      * 住所は、値グラフが持っている式のほうが正しい。
@@ -1266,7 +1660,7 @@ function memoryStatement(insn, ctx, mk, base) {
      */
     const node = ctx.values ? ctx.values.defAt(insn.row, insn.writes[0]) : null;
     const viaExpr = node && node.k === 'mem' ? exprText(ctx, node, node) : null;
-    return mk(d0 + ' = ' + (viaExpr || place) + ';', { dst: insn.writes[0], pure: true, note: 'メモリから値を読み出します。' });
+    return mk(d0 + ' = ' + (viaExpr || place) + ';', { dst: insn.writes[0], pure: true });
   }
   /*
    * 書き込む値は、レジスタ名ではなく **その中身** で書く。
@@ -1281,9 +1675,9 @@ function memoryStatement(insn, ctx, mk, base) {
   const s0 = stored[0] || (insn.ops[0] ? varOf(regOf(insn.ops[0]), ctx) : '?');
   if (pair) {
     const s1 = stored[1] || (insn.ops[1] ? varOf(regOf(insn.ops[1]), ctx) : '?');
-    return mk(place + ' = ' + s0 + ';   ' + nextSlot(place, m) + ' = ' + s1 + ';', { note: '2 つ続けて書き込んでいます。' });
+    return mk(place + ' = ' + s0 + ';   ' + nextSlot(place, m) + ' = ' + s1 + ';', {});
   }
-  return mk(place + ' = ' + s0 + ';', { note: 'メモリへ値を書き込みます。' });
+  return mk(place + ' = ' + s0 + ';');
 }
 
 /** その書き込み命令が置いている値を、式として。読めなければ空。 */
@@ -1347,7 +1741,7 @@ function callStatement(insn, ctx, mk) {
   return mk(text, {
     dst: insn.isTailCall ? null : 'x0', call: true, target, reads,
     kind: insn.isTailCall ? 'ctrl' : 'stmt',
-    note: name ? '「' + name + '」を呼びます。' : '行き先が固定でない呼び出しです（関数ポインタ）。',
+    note: name ? null : '行き先が固定でない呼び出しです（関数ポインタ）。',
   });
 }
 
@@ -1401,7 +1795,7 @@ function escapeText(s) {
 /**
  * `x8 = a + b;` の x8 がそのブロックの中で 1 回しか使われず、
  * そのあと上書きされる（＝あとに残らない）なら、使う側に埋め込む。
- * これをやらないと、擬似コードが代入だらけで読めません。
+ * これをやらないと、逆コンパイル結果が代入だらけで読めません。
  */
 function inlineTemporaries(stmts, ctx) {
   const uses = new Map();       // reg -> [文の位置]
@@ -1419,21 +1813,64 @@ function inlineTemporaries(stmts, ctx) {
 
   for (let i = 0; i < stmts.length; i++) {
     const st = stmts[i];
-    if (!st.dst || !st.pure || st.dropped) continue;
-    if (st.call) continue;
+    if (!st.dst || st.dropped) continue;
+    if (!st.pure && !st.call) continue;
     const reg = st.dst;
-    const readers = (uses.get(reg) || []).filter((j) => j > i);
+    /*
+     * 呼び出しの結果は、レジスタではなく **呼び名** で数える。
+     *
+     * x0 は関数の中で何十回も使い回されるので、レジスタで数えると
+     * 「x0 を読む行が 14 個ある」となって、1 つも埋め込めない。
+     * 実際に指しているのは `x0_1` という 1 つの値で、それを読む行は 1 つしかない。
+     */
+    const lhs = /^([A-Za-z_]\w*)\s*=\s*/.exec(st.text.trim());
+    const name = lhs ? lhs[1] : varOf(reg, ctx);
+    const readers = st.call
+      ? stmts.map((s, k) => k).filter((k) => k > i && !stmts[k].dropped && hasWholeWord(stmts[k].text, name))
+      : (uses.get(reg) || []).filter((j) => j > i);
     if (readers.length !== 1) continue;
     const j = readers[0];
-    const later = (defs.get(reg) || []).filter((k) => k > j);
-    const isTemp = /^x(8|9|1[0-7])$/.test(reg);
-    if (!later.length && !isTemp) continue;      // あとで使われるかもしれない変数は残す
     const target = stmts[j];
     if (!target || target.dropped) continue;
     if (target.call) continue;                   // 呼び出しの行に埋め込むと左辺まで書き換えてしまう
+    if (st.call) {
+      /*
+       * 呼び出しは順番そのものが処理なので、動かせるのは「すぐ次の行」まで。
+       *
+       *   x0_1 = getAttackUp(1, a4);
+       *   var_C4 = x0_1;              →   var_C4 = getAttackUp(1, a4);
+       *
+       * こういう組が 12 個続いている関数があり、24 行が 12 行になる。
+       * 1 つ飛ばして埋め込むと、間の呼び出しと順番が入れ替わってしまうので、
+       * 直後でなければ諦める。
+       */
+      if (!/^[A-Za-z_]\w*\s*=\s*/.test(target.text)) continue;
+      /*
+       * 間に別の呼び出しがあれば、順番が入れ替わってしまうので諦める。
+       * 定数を置くだけの行なら、またいでよい（実際この形が並ぶ）。
+       *
+       *   x0_1 = getAttackUp(1, a4);
+       *   var_C0 = 1;                     ← またぐ
+       *   var_C4 = x0_1;            →     var_C0 = 1; var_C4 = getAttackUp(1, a4);
+       *
+       * ただし、この関数の置き場そのものを呼び先へ渡している呼び出しは動かさない
+       * （呼び先がその置き場を書き換えるかもしれない）。
+       */
+      if (/\bsp\b|\bx29\b|var_/.test(st.text)) continue;
+      let blocked = false;
+      for (let k = i + 1; k < j; k++) {
+        const mid = stmts[k];
+        if (mid.dropped) continue;
+        if (mid.call || !/^[A-Za-z_][\w>.\-[\]*() ]*\s*=\s*/.test(mid.text)) { blocked = true; break; }
+      }
+      if (blocked) continue;
+    } else {
+      const later = (defs.get(reg) || []).filter((k) => k > j);
+      const isTemp = /^x(8|9|1[0-7])$/.test(reg);
+      if (!later.length && !isTemp) continue;    // あとで使われるかもしれない変数は残す
+    }
     const value = rightHandSide(st.text, reg);
     if (value == null) continue;
-    const name = varOf(reg, ctx);
     /* 左辺が「その変数そのもの」なら、そこは書き込み先なので触らない。
        x8 = *(x8 + 8);  の左の x8 まで置き換えると、意味が変わってしまう。 */
     const eq = target.text.indexOf(' = ');
@@ -1499,11 +1936,27 @@ function replaceWholeWord(text, word, value) {
 
 /* ── 変数の宣言 ─────────────────────────────────────────── */
 
+/*
+ * 変数の宣言。
+ *
+ * 1 行に 1 個ずつ並べていたころ、この関数の頭には
+ *
+ *     uint32 var_C8;
+ *     // スタック（この関数のためのメモ帳）にある置き場です。
+ *     uint8 var_CC;
+ *     // スタック（この関数のためのメモ帳）にある置き場です。   … × 30
+ *
+ * が続いていて、処理が始まるまでに 60 行あった。同じ型のものは 1 行にまとめ、
+ * 説明は宣言のまとまりに 1 回だけ書く。読む人が知りたいのは
+ * 「どんな置き場がいくつあるか」であって、1 つずつの行ではない。
+ */
 function declarations(ctx, types, o, body) {
   const out = [];
   const seen = new Set();
   const text = body.map((l) => l.text).join('\n');
+  const byType = new Map();
   let hidden = 0;
+  let shown = 0;
   for (const l of types.locals) {
     const disp = BigInt(l.offset);
     const name = slotName(l.slot.startsWith('x29') ? 'x29' : 'sp', disp, ctx);
@@ -1511,17 +1964,67 @@ function declarations(ctx, types, o, body) {
     seen.add(name);
     // 本文に出てこない置き場（入口と出口の退避だけに使うもの）は並べない
     if (!hasWholeWord(text, name)) { hidden++; continue; }
-    if (out.length >= 40) { hidden++; continue; }
-    const type = (ctx.notes && ctx.funcAddr != null ? ctx.notes.typeOf(ctx.funcAddr, l.slot) : null) || l.type;
-    const l2 = line('decl', 1, (type === 'unknown' ? 'int64' : type) + ' ' + name + ';', null);
-    l2.note = ctx.beginner ? 'スタック（この関数のためのメモ帳）にある置き場です。' : null;
-    out.push(l2);
+    if (shown >= 48) { hidden++; continue; }
+    shown++;
+    const raw = (ctx.notes && ctx.funcAddr != null ? ctx.notes.typeOf(ctx.funcAddr, l.slot) : null) || l.type;
+    const type = raw === 'unknown' ? 'int64' : raw;
+    if (!byType.has(type)) byType.set(type, []);
+    byType.get(type).push(name);
   }
-  if (hidden) {
+  /* 同じ型はまとめて、1 行が長くなりすぎない範囲で折り返す。 */
+  for (const [type, names] of byType) {
+    for (let i = 0; i < names.length; i += 8) {
+      out.push(line('decl', 1, type + ' ' + names.slice(i, i + 8).join(', ') + ';', null));
+    }
+  }
+  if (out.length && ctx.beginner) {
+    out[0].note = 'スタック（この関数のためのメモ帳）にある置き場です' +
+      (hidden ? '。ほかに ' + hidden + ' 個、退避だけに使う置き場があります。' : '。');
+  } else if (hidden) {
     out.push(line('comment', 1, '// … ほかに ' + hidden + ' 個の置き場（退避用など）があります', null));
+  }
+  if (ctx.carry) {
+    out.unshift(line('decl', 1, 'int64 result;   // ' + ctx.carry.reg +
+      '。この関数が ' + ctx.carry.steps + ' 段にわたって作り変えている値', null));
   }
   void o;
   return out;
+}
+
+/*
+ * 同じ注釈を 2 度書かない。
+ *
+ * 注釈は「はじめて見る人がその行で詰まらないため」に付けている。
+ * ところが同じ形の命令は 1 つの関数に何十回も出るので、そのまま出すと
+ * 「メモリへ値を書き込みます。」が 40 行並ぶ。1 回目だけ残せば役目は果たす。
+ */
+function dedupeNotes(lines) {
+  const seen = new Set();
+  for (const l of lines) {
+    if (!l.note) continue;
+    if (seen.has(l.note)) { l.note = null; continue; }
+    seen.add(l.note);
+  }
+}
+
+/*
+ * 段落を作る。
+ *
+ * 人が書いた C には、意味のまとまりごとに空行が入っている。命令を 1 行ずつ
+ * 訳しただけの出力にはそれが無いので、200 行が 1 つのかたまりに見える。
+ * 分岐とループの前後 —— つまり「話が変わるところ」に空行を入れる。
+ */
+function breatheOut(lines) {
+  const isOpen = (l) => l.kind === 'ctrl' && /^(if|while|for|do|switch)\b/.test(l.text);
+  const isClose = (l) => l.kind === 'ctrl' && /^[}]/.test(l.text.trim());
+  for (let i = lines.length - 1; i > 0; i--) {
+    const cur = lines[i], prev = lines[i - 1];
+    if (prev.kind === 'blank' || cur.kind === 'blank') continue;
+    if (prev.kind === 'sig' || prev.text === '{') continue;
+    const wanted = (isOpen(cur) && prev.kind !== 'label') ||
+      (isClose(prev) && !isClose(cur) && cur.indent >= prev.indent);
+    if (wanted) lines.splice(i, 0, line('blank', cur.indent, ''));
+  }
 }
 
 /* ── 文字列にする（コピー用） ──────────────────────────── */

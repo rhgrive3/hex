@@ -701,8 +701,8 @@ feature('formula', '書かれた計算式と復元した式が合う', async ({ 
   };
 }, { slow: true });
 
-/* 22. 擬似 C に「訳せなかった命令」が残っていないか */
-feature('pseudoc', '擬似 C に訳せない命令が残らない', async ({ w, o }) => {
+/* 22. 逆コンパイル結果に「訳せなかった命令」が残っていないか */
+feature('pseudoc', '逆コンパイルで訳せない命令が残らない', async ({ w, o }) => {
   const { decompile } = await import('../js/decompile.js');
   const starts = o.functionStarts;
   const cands = [];

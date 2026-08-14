@@ -27,7 +27,7 @@ export function button(label, cls, onClick) {
  * シートは 1 枚ずつではなく、**重なり**として持つ。
  *
  * 以前は新しいシートを開くたびに前のシートを捨てていたので、
- * 「解析ツール → 擬似コード」と 2 つ潜ったら、閉じるボタンで一気に
+ * 「解析ツール → 逆コンパイル」と 2 つ潜ったら、閉じるボタンで一気に
  * 画面まで戻るしかなかった（道具箱には戻れない）。
  *
  * ここでは、閉じたシートをその場では捨てずに一旦「待たせて」おく。
@@ -292,7 +292,10 @@ export function menu(items, x, y) {
   const m = el('div', 'menu');
   for (const it of items) {
     if (it === '-') { m.append(el('hr')); continue; }
-    m.append(button(it.label, null, () => { closeMenu(); it.action(); }));
+    const b = button(it.label, null, () => { closeMenu(); it.action(); });
+    /* まだ押せないものは、消さずに「今は押せない」と見せる（項目が動くと迷うため）。 */
+    if (it.disabled) { b.disabled = true; b.classList.add('is-disabled'); }
+    m.append(b);
   }
   overlays().append(backdrop, m);
 

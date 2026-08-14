@@ -1,7 +1,7 @@
 /*
  * 解析ツール（tools.js）を、実際にブラウザで押して確かめる。
  *
- * 擬似コードも、図も、デバッガも、Node の足場では「動いたつもり」になれてしまう。
+ * 逆コンパイルも、図も、デバッガも、Node の足場では「動いたつもり」になれてしまう。
  * ここは Playwright で本当にボタンを押し、出てきた文字を読んで判定する。
  *
  * 使い方:
@@ -157,11 +157,11 @@ async function main() {
     await closeSheets(page);
     check('関数を 1 つ開ける', !!haveFn);
 
-    /* ── 擬似コード ── */
-    console.log('\n擬似コード');
-    let ok = await openTool(page, '擬似コード');
+    /* ── 逆コンパイル ── */
+    console.log('\n逆コンパイル');
+    let ok = await openTool(page, '逆コンパイル');
     let text = ok ? await sheetOf(page).innerText() : '';
-    check('擬似コードの画面が開く', ok);
+    check('逆コンパイルの画面が開く', ok);
     check('C 風の行が出ている', /[;{}]/.test(text) && /\w+\s*=/.test(text),
       (text.match(/^\s*\S.*=.*;$/m) || [''])[0].trim());
     check('関数の見出し（型つき）が出ている', /\w+\s+\w+\(/.test(text),
@@ -257,6 +257,17 @@ async function main() {
       text = await sheetOf(page).innerText();
       check('スクリプトが動いて結果が出る', /— おわり —/.test(text) && !/⚠/.test(text),
         (text.match(/0x[0-9A-F]+[^\n]*/) || [''])[0]);
+      await page.evaluate(() => { window.__sandboxLeak = 0; });
+      const source = sheetOf(page).locator('textarea').first();
+      await source.fill(`try { parent.__sandboxLeak = 1; } catch {}
+const csp = document.querySelector('meta[http-equiv="Content-Security-Policy"]')?.content || '';
+print('sandbox-check', typeof app, parent === window, csp.includes("connect-src 'none'"));`);
+      await runScript.click();
+      await page.waitForTimeout(1500);
+      text = await sheetOf(page).innerText();
+      const leaked = await page.evaluate(() => window.__sandboxLeak);
+      check('スクリプトは親Appと通信手段へ触れない', leaked === 0 && /sandbox-check undefined false true/.test(text),
+        'parent=' + leaked + ' / ' + (text.match(/sandbox-check[^\n]*/) || ['出力なし'])[0]);
     } else check('スクリプトが動いて結果が出る', false, '開けない');
 
     /* ── 名前を付ける ── */
