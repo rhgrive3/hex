@@ -70,5 +70,6 @@ assert(indirect.text.includes('__asm("br x8")'), 'indirect branch disappeared');
 assert(indirect.result.coverage.missing === 0, 'disconnected function block disappeared');
 assert(indirect.result.coverage.emitted === indirect.result.coverage.total,
   'coverage does not include every Basic Block');
+assert(indirect.result.coverage.mode === 'linear', 'disconnected CFG did not use faithful mode');
 
 console.log('cfg-structuring regression: ok');

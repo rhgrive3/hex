@@ -93,9 +93,31 @@ export function decompile(model, opts) {
   /* どのラベルが本当に要るかは、構造化してみないと分からない。
      まず本体を組み立て、そのあとで使われたラベルだけを差し込む。 */
   const body = [];
-  const state = { labels: new Set(), gotos: 0, depth: 0, openLoops: new Set(), emitted: new Set(), recovered: 0 };
+  let state = newEmitState();
   emitRange(cfg, 0, cfg.nodes.length - 1, 1, body, ctx, state, null);
-  const coverage = recoverUnemittedBlocks(cfg, body, ctx, state);
+
+  /*
+   * A structured rendering is only trustworthy if it consumed the complete
+   * function.  Mixing a pretty prefix with hundreds of recovered blocks at
+   * the end is technically complete but visually lies about address order.
+   * If even one Basic Block was left behind, restart in faithful linear-CFG
+   * mode: physical addresses stay monotonic and every control edge is explicit.
+   */
+  const structuredMissing = cfg.nodes.length - state.emitted.size;
+  let coverage;
+  if (structuredMissing > 0) {
+    body.length = 0;
+    state = newEmitState();
+    if (ctx.usedVars && ctx.usedVars.clear) ctx.usedVars.clear();
+    emitLinearCfg(cfg, body, ctx, state);
+    coverage = recoverUnemittedBlocks(cfg, body, ctx, state);
+    coverage.mode = 'linear';
+    coverage.structuredMissing = structuredMissing;
+  } else {
+    coverage = recoverUnemittedBlocks(cfg, body, ctx, state);
+    coverage.mode = 'structured';
+    coverage.structuredMissing = 0;
+  }
 
   /* 見出し（シグネチャ） */
   const name = (o.notes && o.notes.nameOf(o.addr)) ||
@@ -121,6 +143,9 @@ export function decompile(model, opts) {
 
   if (state.gotos) {
     warnings.push('制御の流れが複雑で、' + state.gotos + ' か所は goto のまま残しました（コンパイラの最適化でよくあります）。');
+  }
+  if (coverage.mode === 'linear') {
+    warnings.push('制御フローが高度に最適化されているため、アドレス順の正確モードで表示しています（関数内の処理は省略していません）。');
   }
   if (coverage.recovered) {
     warnings.push('構造化できなかった共有・間接経路 ' + coverage.recovered + ' ブロックを goto で安全に補完しました（関数内の処理は省略していません）。');
@@ -876,6 +901,10 @@ function lastRealInstruction(node, ctx) {
    A. 制御フローの復元
    ──────────────────────────────────────────────────────────── */
 
+function newEmitState() {
+  return { labels: new Set(), gotos: 0, depth: 0, openLoops: new Set(), emitted: new Set(), recovered: 0 };
+}
+
 /**
  * [from, to] の節点を順に訳す。
  *
@@ -1077,7 +1106,47 @@ function emitIf(cfg, i, to, indent, out, ctx, state, loop) {
   return merge;
 }
 
-/** Final correctness net: every reachable Basic Block must appear at least once. */
+/**
+ * Exact fallback for optimized/irreducible/disconnected layouts.
+ * Blocks are emitted once in physical address order.  Internal control-flow is
+ * represented with explicit gotos, so this mode never has to guess a source
+ * language structure and never moves a hidden cleanup block somewhere else.
+ */
+function emitLinearCfg(cfg, out, ctx, state) {
+  for (let i = 0; i < cfg.nodes.length; i++) {
+    const n = cfg.nodes[i];
+    emitBlockBody(n, 1, out, ctx, state, { skipTerminator: true });
+
+    if (n.cond && n.condTarget != null) {
+      // If both outcomes are literally the next block, the branch has no
+      // observable control-flow effect and can be omitted from pseudocode.
+      if (n.condTarget === n.fall) continue;
+      const t = labelOf(cfg.nodes[n.condTarget], ctx);
+      state.labels.add(t);
+      out.push(line('ctrl', 1, 'if (' + condText(n.cond, ctx) + ') goto ' + t + ';',
+        n.endRow, addrOf(ctx, n.endRow)));
+      state.gotos++;
+      if (n.fall != null && n.fall !== i + 1) {
+        const f = labelOf(cfg.nodes[n.fall], ctx);
+        state.labels.add(f);
+        out.push(line('ctrl', 1, 'goto ' + f + ';', n.endRow));
+        state.gotos++;
+      }
+      continue;
+    }
+
+    if (n.jump != null && n.jump !== i + 1) {
+      const t = labelOf(cfg.nodes[n.jump], ctx);
+      state.labels.add(t);
+      out.push(line('ctrl', 1, 'goto ' + t + ';', n.endRow, addrOf(ctx, n.endRow)));
+      state.gotos++;
+    }
+    // Unknown-target `br`/conditional branches are deliberately left in the
+    // block as __asm by emitBlockBody; pretending to know their target is worse.
+  }
+}
+
+/** Final correctness net: every Basic Block in the function must appear at least once. */
 function recoverUnemittedBlocks(cfg, out, ctx, state) {
   const all = cfg.nodes.map((_, i) => i);
   const before = all.filter((i) => !state.emitted.has(i));
