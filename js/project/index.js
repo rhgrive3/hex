@@ -1,0 +1,131 @@
+export const HEX_PROJECT_VERSION = 1;
+export const HEX_PROJECT_MIME = 'application/vnd.hex.project+json';
+const MAX_PROJECT_BYTES = 16 * 1024 * 1024;
+const MAX_COLLECTION_ITEMS = 1_000_000;
+
+export class ProjectFormatError extends Error {
+  constructor(message, code = 'HEX_PROJECT_INVALID') {
+    super(message);
+    this.name = 'ProjectFormatError';
+    this.code = code;
+  }
+}
+
+const list = (value, name) => {
+  if (value == null) return [];
+  if (!Array.isArray(value)) throw new ProjectFormatError(`${name} must be an array`);
+  if (value.length > MAX_COLLECTION_ITEMS) throw new ProjectFormatError(`${name} is unreasonably large`);
+  return value;
+};
+
+export function createHexProject(input = {}) {
+  const now = new Date().toISOString();
+  return {
+    format: 'hexproj',
+    version: HEX_PROJECT_VERSION,
+    createdAt: input.createdAt || now,
+    updatedAt: now,
+    binary: {
+      hash: input.binaryHash || input.binary?.hash || null,
+      metadata: input.binaryMetadata || input.binary?.metadata || null,
+      embedded: false,
+    },
+    user: {
+      names: list(input.userNames ?? input.user?.names, 'user.names'),
+      comments: list(input.comments ?? input.user?.comments, 'user.comments'),
+      types: list(input.types ?? input.user?.types, 'user.types'),
+      structs: list(input.structs ?? input.user?.structs, 'user.structs'),
+      bookmarks: list(input.bookmarks ?? input.user?.bookmarks, 'user.bookmarks'),
+      patches: list(input.patches ?? input.user?.patches, 'user.patches'),
+    },
+    findings: {
+      confirmed: list(input.confirmedFindings ?? input.findings?.confirmed, 'findings.confirmed'),
+      agentAnswers: list(input.agentAnswers ?? input.findings?.agentAnswers, 'findings.agentAnswers'),
+      evidence: list(input.evidence ?? input.findings?.evidence, 'findings.evidence'),
+    },
+    analysis: {
+      settings: input.analysisSettings || input.analysis?.settings || {},
+      cacheReferences: list(input.cacheReferences ?? input.analysis?.cacheReferences, 'analysis.cacheReferences'),
+    },
+    navigation: normalizeNavigation(input.navigation || {}),
+  };
+}
+
+export function normalizeNavigation(value = {}) {
+  return {
+    currentFunction: value.currentFunction ?? null,
+    history: list(value.history, 'navigation.history').slice(-500),
+    bookmarks: list(value.bookmarks, 'navigation.bookmarks'),
+    lastQuery: value.lastQuery ?? null,
+  };
+}
+
+export function serializeHexProject(project) {
+  const normalized = validateHexProject(project);
+  return JSON.stringify(normalized, (_key, value) => typeof value === 'bigint' ? { $hexBigInt: value.toString(16) } : value, 2);
+}
+
+export function parseHexProject(input) {
+  let text;
+  if (typeof input === 'string') text = input;
+  else if (input instanceof Uint8Array) text = new TextDecoder().decode(input);
+  else if (input instanceof ArrayBuffer) text = new TextDecoder().decode(new Uint8Array(input));
+  else throw new ProjectFormatError('project input must be JSON text or bytes');
+  if (new TextEncoder().encode(text).byteLength > MAX_PROJECT_BYTES) throw new ProjectFormatError('project exceeds the 16 MiB safety limit', 'HEX_PROJECT_TOO_LARGE');
+  let raw;
+  try {
+    raw = JSON.parse(text, (_key, value) => {
+      if (value && typeof value === 'object' && Object.keys(value).length === 1 && typeof value.$hexBigInt === 'string') {
+        if (!/^[0-9a-f]+$/i.test(value.$hexBigInt)) throw new ProjectFormatError('invalid bigint encoding');
+        return BigInt('0x' + value.$hexBigInt);
+      }
+      return value;
+    });
+  } catch (error) {
+    if (error instanceof ProjectFormatError) throw error;
+    throw new ProjectFormatError(`project JSON is malformed: ${error.message}`);
+  }
+  return validateHexProject(migrateProject(raw));
+}
+
+export function tryParseHexProject(input) {
+  try { return { ok: true, project: parseHexProject(input) }; }
+  catch (error) { return { ok: false, error: error?.message || String(error), code: error?.code || 'HEX_PROJECT_INVALID' }; }
+}
+
+export function exportHexProject(project, name = 'analysis.hexproj') {
+  const text = serializeHexProject(project);
+  if (typeof File !== 'undefined') return new File([text], name, { type: HEX_PROJECT_MIME });
+  if (typeof Blob !== 'undefined') return new Blob([text], { type: HEX_PROJECT_MIME });
+  return new TextEncoder().encode(text);
+}
+
+export async function importHexProject(input) {
+  if (typeof Blob !== 'undefined' && input instanceof Blob) return parseHexProject(await input.text());
+  return parseHexProject(input);
+}
+
+export function validateHexProject(project) {
+  if (!project || typeof project !== 'object' || Array.isArray(project)) throw new ProjectFormatError('project root must be an object');
+  if (project.format !== 'hexproj') throw new ProjectFormatError('not a .hexproj document');
+  if (!Number.isInteger(project.version) || project.version < 1) throw new ProjectFormatError('invalid project version');
+  if (project.version > HEX_PROJECT_VERSION) throw new ProjectFormatError(`project version ${project.version} is newer than supported version ${HEX_PROJECT_VERSION}`, 'HEX_PROJECT_FUTURE_VERSION');
+  if (!project.binary || typeof project.binary !== 'object') throw new ProjectFormatError('project binary metadata is missing');
+  if (project.binary.embedded) throw new ProjectFormatError('embedded binaries are not accepted by this project version');
+  project.user ||= {};
+  project.findings ||= {};
+  project.analysis ||= {};
+  project.navigation = normalizeNavigation(project.navigation || {});
+  for (const [name, value] of Object.entries({
+    'user.names': project.user.names, 'user.comments': project.user.comments, 'user.types': project.user.types,
+    'user.structs': project.user.structs, 'user.bookmarks': project.user.bookmarks, 'user.patches': project.user.patches,
+    'findings.confirmed': project.findings.confirmed, 'findings.agentAnswers': project.findings.agentAnswers,
+    'findings.evidence': project.findings.evidence, 'analysis.cacheReferences': project.analysis.cacheReferences,
+  })) list(value, name);
+  return project;
+}
+
+function migrateProject(raw) {
+  if (!raw || typeof raw !== 'object') return raw;
+  return raw;
+}
