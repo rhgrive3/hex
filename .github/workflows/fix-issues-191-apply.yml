@@ -1,0 +1,64 @@
+name: Apply issue 191+ guarded fixes
+on:
+  push:
+    branches: [fix-issues-191-plus]
+permissions:
+  contents: write
+jobs:
+  apply-and-test:
+    if: ${{ !contains(github.event.head_commit.message, '[fix191-result]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Apply source fixes
+        run: |
+          node tools/apply-fix191.mjs
+          node tools/apply-fix191-ci.mjs
+      - name: Pin browser dependency and lockfile
+        run: |
+          npm install --save-dev --save-exact playwright@1.55.0
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const p = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          const old = p.scripts['ui:browser'];
+          const anchor = 'node tests/ui/accessibility.mjs && npm run ai:browser';
+          if (!old.includes(anchor)) throw new Error('ui:browser anchor missing');
+          p.scripts['ui:browser'] = old.replace(anchor, 'node tests/ui/accessibility.mjs && node tests/ui/primitives-regression.mjs && npm run ai:browser');
+          fs.writeFileSync('package.json', JSON.stringify(p, null, 2) + '\n');
+          NODE
+      - name: Syntax and targeted regressions
+        run: |
+          node --check js/patch.js
+          node --check js/ai/evidence.js
+          node --check js/ai/hypothesis.js
+          node --check js/ai/proposals.js
+          node --check js/ai/runtime.js
+          node --check js/ai/transport.js
+          node --check js/ai/provider/index.js
+          node --check js/ai/context/broker.js
+          node --check js/ai/tools/registry.js
+          node --check js/ui/primitives.js
+          node --check js/rtti.js
+          node --check js/swift.js
+          node tests/issue-191-plus.mjs
+      - name: Existing Node regression suite
+        run: npm test
+      - name: Browser primitive regression
+        run: |
+          npx playwright install chromium
+          node tests/ui/primitives-regression.mjs
+      - name: Commit tested result
+        run: |
+          rm -f tools/apply-fix191.mjs tools/apply-fix191-ci.mjs
+          rm -f .github/workflows/fix-issues-191-diagnostic.yml .github/workflows/fix-issues-191-apply.yml
+          git config user.name 'hex-fix-bot'
+          git config user.email 'actions@users.noreply.github.com'
+          git add -A
+          git commit -m 'Fix issues 239-264 safety and correctness [fix191-result]'
+          git push origin HEAD:fix-issues-191-plus
