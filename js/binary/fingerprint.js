@@ -13,7 +13,7 @@ const FNV_PRIME_HI = 0x100;
  * 2^64 explicitly, so this produces the same digest as the canonical BigInt
  * implementation while remaining practical on iPad-class hardware.
  */
-export function fnv1a64(bytes, seed = null) {
+function fnv1a64State(bytes, seed = null) {
   let hi, lo;
   if (seed == null) {
     hi = FNV_OFFSET_HI;
@@ -45,13 +45,15 @@ export function fnv1a64(bytes, seed = null) {
   return { hi, lo };
 }
 
-export function fnv1a64BigInt(bytes, seed = null) {
-  const x = fnv1a64(bytes, seed);
+export function fnv1a64(bytes, seed = null) {
+  const x = fnv1a64State(bytes, seed);
   return (BigInt(x.hi) << 32n) | BigInt(x.lo);
 }
 
+export const fnv1a64BigInt = fnv1a64;
+
 export function fingerprintBytes(bytes) {
-  return digestHex(fnv1a64(bytes));
+  return digestHex(fnv1a64State(bytes));
 }
 
 export function fingerprintFunction(image, fn, opts = {}) {
@@ -78,7 +80,7 @@ export function fingerprintImage(image, opts = {}) {
     const start = Number(s.fileOffset), size = Number(s.fileSize);
     if (!Number.isSafeInteger(start) || !Number.isSafeInteger(size) || start < 0 || start + size > image.bytes.length) continue;
     const b = image.bytes.subarray(start, start + size);
-    state = fnv1a64(b, state);
+    state = fnv1a64State(b, state);
     total += b.length;
   }
   return { algorithm: 'fnv1a64', hash: digestHex(state), bytes: total, scope: executableOnly ? 'executable-sections' : 'all-sections' };
