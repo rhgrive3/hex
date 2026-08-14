@@ -1,0 +1,47 @@
+name: Diagnose final issue integration
+on:
+  push:
+    branches: [fix-issues-191-plus]
+permissions:
+  contents: write
+jobs:
+  diagnose:
+    if: ${{ contains(github.event.head_commit.message, '[diagnose-final-fix191]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Run guarded sequence
+        shell: bash
+        run: |
+          set +e
+          : > .fix191-final-error.log
+          run(){ echo ">>> $*" | tee -a .fix191-final-error.log; "$@" >>.fix191-final-error.log 2>&1; rc=$?; if [ $rc -ne 0 ]; then echo "FAILED rc=$rc: $*" | tee -a .fix191-final-error.log; git config user.name hex-fix-bot; git config user.email actions@users.noreply.github.com; git add .fix191-final-error.log; git commit -m 'chore: record final fix191 failure [skip-fix191]' || true; git push origin HEAD:fix-issues-191-plus || true; exit $rc; fi; }
+          run node tools/apply-fix191.mjs
+          run node tools/fix191-adjust.mjs
+          run node tools/apply-fix265.mjs
+          run node tools/fix265-adjust.mjs
+          run node tools/fix265-tests.mjs
+          run node tools/apply-fix283.mjs
+          run node tools/apply-fix296.mjs
+          run node tools/apply-fix303.mjs
+          run node tools/fix303-adjust.mjs
+          run node tools/fix322-script.mjs
+          run node tools/apply-fix322.mjs
+          run node tools/fix322-features.mjs
+          run node tools/fix322-import.mjs
+          run node tools/fix322-adjust.mjs
+          run node tools/fix334-script.mjs
+          run node tools/apply-fix334.mjs
+          run node tools/fix334-macho.mjs
+          run node tools/apply-fix352.mjs
+          run node tools/apply-fix364.mjs
+          run node tools/apply-fix191-ci.mjs
+          for f in js/ir-core.js js/decompiler/pipeline-core.js js/decompiler/semantic.js js/symbolic/executor.js js/emu.js js/sandbox.js js/objc-legacy.js js/apple/objc-metadata.js; do run node --check "$f"; done
+          run node tests/issue-191-plus.mjs
+          run node tests/issue-265-plus.mjs
+          run node tests/issue-283-plus.mjs
+          run node tests/issue-303-plus.mjs
+          run node tests/issue-322-plus.mjs
