@@ -127,6 +127,8 @@ export async function runAgent(config) {
   const observations = [];
   const evidence = new Set();
   const functions = new Set();
+  const loadedFunctionCount = () => tools.__loader && typeof tools.__loader.analysisCount === 'function' ? tools.__loader.analysisCount() : 0;
+  const usedFunctionCount = () => Math.max(functions.size, loadedFunctionCount());
   let proposedAnswer = null;
   let stopReason = null;
 
@@ -139,7 +141,7 @@ export async function runAgent(config) {
         goal, query, observations: observations.slice(), availableTools,
         budget: {
           remainingToolCalls: budget.maxToolCalls - call,
-          remainingFunctions: Math.max(0, budget.maxFunctions - functions.size),
+          remainingFunctions: Math.max(0, budget.maxFunctions - usedFunctionCount()),
           remainingDisassembly: Math.max(0, budget.maxDisassembly - disassembly),
         },
       });
@@ -157,14 +159,14 @@ export async function runAgent(config) {
     const addr = addressFromArgs(req.args);
     if (addr != null) {
       functions.add(addr.toString());
-      if (functions.size > budget.maxFunctions) { stopReason = 'function-budget'; break; }
+      if (usedFunctionCount() > budget.maxFunctions) { stopReason = 'function-budget'; break; }
     }
     let result;
     try { result = await tools[req.tool](...req.args); }
     catch (err) {
       const message = (err && err.message) || String(err);
       result = { tool: req.tool, error: message };
-      if (message === 'disassembly-budget' || message === 'timeout' || message === 'cancelled') stopReason = message;
+      if (message === 'disassembly-budget' || message === 'function-budget' || message === 'timeout' || message === 'cancelled') stopReason = message;
     }
     if (deadlineExceeded() && !stopReason) stopReason = 'timeout';
     if (disassembly > budget.maxDisassembly && !stopReason) stopReason = 'disassembly-budget';
@@ -177,7 +179,7 @@ export async function runAgent(config) {
   // the caller's deadline or resource budget to do so. Once the deadline has
   // expired, the combined cancellation predicate makes the planner return
   // without starting new analysis work.
-  const remainingFunctions = Math.max(0, budget.maxFunctions - functions.size);
+  const remainingFunctions = Math.max(0, budget.maxFunctions - usedFunctionCount());
   const remainingDisassembly = Math.max(0, budget.maxDisassembly - disassembly);
   const remainingTimeout = Math.max(0, budget.timeoutMs - (Date.now() - started));
   const plan = await planAnalysisGoal(query, countedContext, {
@@ -220,6 +222,6 @@ export async function runAgent(config) {
     plan,
     observations,
     mode: 'agent',
-    stats: { toolCalls: observations.length, functions: functions.size, disassembly, elapsedMs: Date.now() - started },
+    stats: { toolCalls: observations.length, functions: usedFunctionCount(), disassembly, elapsedMs: Date.now() - started },
   };
 }
