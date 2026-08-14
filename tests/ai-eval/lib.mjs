@@ -64,6 +64,19 @@ function collectAddressLike(value, out = new Set(), depth = 0) {
   return out;
 }
 
+function collectAddressFields(value, out = new Set(), depth = 0) {
+  if (depth > 8 || value == null || typeof value !== 'object') return out;
+  if (Array.isArray(value)) {
+    for (const v of value) collectAddressFields(v, out, depth + 1);
+    return out;
+  }
+  for (const [k, v] of Object.entries(value)) {
+    if (/address|addr|target|function/i.test(k)) collectAddressLike(v, out, depth + 1);
+    else if (v && typeof v === 'object') collectAddressFields(v, out, depth + 1);
+  }
+  return out;
+}
+
 function collectForbiddenKeys(value, path = '$', out = []) {
   if (value == null || typeof value !== 'object') return out;
   if (Array.isArray(value)) {
@@ -194,11 +207,13 @@ export function validateResultEnvelope(result, record = {}) {
     else actionIds.add(a.id);
     const type = extractActionType(a);
     if (!type) errors.push(`action ${a.id || i} missing type`);
-    if (MUTATION_RE.test(type) && a.needsApproval !== true) errors.push(`mutating action must require approval: ${type}`);
+    const mutationType = type.replace(/([a-z0-9])([A-Z])/g, '$1-$2').replace(/\s+/g, '-').toLowerCase();
+    if (MUTATION_RE.test(mutationType) && a.needsApproval !== true) errors.push(`mutating action must require approval: ${type}`);
     for (const ref of [...asArray(a.evidenceIds), ...(a.evidenceId ? [a.evidenceId] : [])]) {
       if (!evidenceIds.has(ref)) errors.push(`action ${a.id || i} references missing evidence: ${ref}`);
     }
-    const actionAddresses = collectAddressLike({ target: a.target, payload: a.payload });
+    const actionAddresses = collectAddressLike(a.target);
+    collectAddressFields(a.payload, actionAddresses);
     for (const addr of actionAddresses) {
       if (!observedAddresses.has(addr)) errors.push(`action ${a.id || i} targets unobserved address: ${addr}`);
     }
