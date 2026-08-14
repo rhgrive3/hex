@@ -50,6 +50,11 @@ jobs:
           python3 tools/fix_interproc_return_candidates.py
           git add js/interproc.js tests/issues-130-interproc.mjs tests/issues-101-145.mjs
           git commit -m "fix: infer wrapper returns only from terminal local x0 definitions"
+      - name: Preserve conservative symbolic return summaries
+        run: |
+          python3 tools/fix_symbolic_return_candidates.py
+          git add js/symbolic/executor.js tests/issues-130-symbolic.mjs tests/issues-101-145.mjs
+          git commit -m "fix: infer symbolic returns only from local nonconstant x0 definitions"
       - name: Register focused regressions
         run: |
           python3 - <<'PY'
@@ -77,6 +82,7 @@ jobs:
           node --check js/ir-core.js
           node --check js/dataflow-semantic.js
           node --check js/interproc.js
+          node --check js/symbolic/executor.js
           node --check js/decompiler/semantic.js
           node --check js/decompiler/types/prototype.js
           node tests/issues-101-145.mjs
@@ -86,7 +92,7 @@ jobs:
           npm test
       - name: Remove staging machinery and push verified result
         run: |
-          rm -f tools/integrate_issues_101_145.py tools/fix_lazy_getter_regression.py tools/fix_stack_slot_display_names.py tools/fix_interproc_return_candidates.py .github/workflows/integrate-issues-101-145.yml
+          rm -f tools/integrate_issues_101_145.py tools/fix_lazy_getter_regression.py tools/fix_stack_slot_display_names.py tools/fix_interproc_return_candidates.py tools/fix_symbolic_return_candidates.py .github/workflows/integrate-issues-101-145.yml
           git add -A
           git commit -m "fix: resolve issues 101-145 [issues-101-145 integrated]"
           git push origin HEAD:fix-issues-101-145-final
