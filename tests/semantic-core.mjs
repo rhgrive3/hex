@@ -7,6 +7,9 @@ import { findValueUpdates, dataflowEngine } from '../js/dataflow.js';
 import { semanticFacts, FACT } from '../js/semantic.js';
 import { summarizeFunction } from '../js/interproc.js';
 import { symbolicExecute } from '../js/symbolic/executor.js';
+import { FunctionSandbox } from '../js/symbolic/function-sandbox.js';
+import { semanticEvidenceItems, runtimeEvidenceItems } from '../js/semantic-evidence.js';
+import { groupOf, GROUP } from '../js/evidence.js';
 import { runDeterministicAgent } from '../js/agent/runtime.js';
 
 let passed = 0;
@@ -187,6 +190,41 @@ asyncTest('symbolic executor emits explicit path constraints', () => {
   const constraints = result.paths.flatMap((p) => p.constraintText || []);
   ok(constraints.some((x) => x.includes('arg0') && x.includes('<=')), 'taken condition is explicit: ' + constraints.join(', '));
   ok(constraints.some((x) => x.includes('arg0') && x.includes('>')), 'fallthrough condition is explicit: ' + constraints.join(', '));
+});
+
+asyncTest('Function Sandbox records before/after memory and touched fields', async () => {
+  const code = new Map([
+    [BASE.toString(), { mn: 'ldr', ops: 'w8, [x0, #0x20]' }],
+    [(BASE + 4n).toString(), { mn: 'add', ops: 'w8, w8, #3' }],
+    [(BASE + 8n).toString(), { mn: 'str', ops: 'w8, [x0, #0x20]' }],
+    [(BASE + 12n).toString(), { mn: 'ret', ops: '' }],
+  ]);
+  const sandbox = new FunctionSandbox({ fetch: async (addr) => code.get(addr.toString()) || null });
+  await sandbox.setup(BASE, {
+    objectMemory: [{ offset: 0x20, size: 4, value: 7 }],
+    watch: [{ name: 'counter', offset: 0x20, size: 4 }],
+  });
+  const result = await sandbox.run({ maxSteps: 16 });
+  eq(result.before[0].value, 7n, 'before snapshot');
+  eq(result.after[0].value, 10n, 'after snapshot');
+  ok(result.touchedFields.some((f) => f.name === 'counter' && f.before === 7n && f.after === 10n), 'field delta captured');
+});
+
+asyncTest('Semantic and runtime evidence keep independent origins without duplicate IR inflation', () => {
+  const facts = semanticFacts(irFor(modelOf([
+    'ldr w8, [x0, #0x20]',
+    'add w8, w8, #1',
+    'str w8, [x0, #0x20]',
+    'ret',
+  ])));
+  const semantic = semanticEvidenceItems(facts);
+  const ids = semantic.map((x) => x.detail && x.detail.evidenceId).filter(Boolean);
+  eq(new Set(ids).size, ids.length, 'one evidence item per IR instruction origin');
+  ok(semantic.length > 0 && semantic.every((x) => groupOf(x) === GROUP.DATAFLOW), 'IR semantic proofs stay in the dataflow group');
+
+  const runtime = runtimeEvidenceItems({ touchedFields: [{ address: 0x6000n, before: 1n, after: 2n }] });
+  eq(runtime.length, 1, 'one runtime observation');
+  eq(groupOf(runtime[0]), GROUP.RUNTIME, 'runtime stays independent from dataflow');
 });
 
 asyncTest('deterministic Goal Planner verifies an agent causal path', async () => {
