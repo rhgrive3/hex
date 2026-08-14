@@ -20,7 +20,6 @@ const DT_PLTREL = 20n;
 const DT_JMPREL = 23n;
 const DT_GNU_HASH = 0x6ffffef5n;
 
-/** Recover dynamic-loader metadata even when ELF section headers are absent. */
 export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
   const dyn = (programHeaders || []).find((p) => p.type === PT_DYNAMIC);
   if (!dyn || dyn.filesz <= 0n) return { parsed: false };
@@ -50,6 +49,7 @@ export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
   const syment = one(DT_SYMENT) || BigInt(bits === 64 ? 24 : 16);
   const strOff = strtab == null ? null : vaToOffset(image, strtab);
   const strSize = strsz == null ? 0 : toSafeNumber(strsz);
+
   const stringAt = (offset) => {
     if (strOff == null || strSize == null) return '';
     const n = Number(offset);
@@ -79,9 +79,12 @@ export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
   let symbols = [];
   if (opts.symbols !== false && symtab != null && symbolCount > 0) {
     symbols = parseDynamicSymbols(r, image, bits, symtab, syment, symbolCount, stringAt);
-  } else if (symtab != null && symbolCount > 0) symbols = dynamicSymbolsFromImage(image);
+  } else if (symtab != null && symbolCount > 0) {
+    symbols = dynamicSymbolsFromImage(image);
+  }
 
   if (opts.relocations !== false) attachDynamicRelocations(image, relocs, symbols);
+
   image.metadata.programDynamic = {
     entries: ordered.length,
     symbols: symbolCount,
@@ -155,6 +158,7 @@ function collectDynamicRelocations(r, tags, image, bits) {
       out.push({ address, symIndex, type, addend, source });
     }
   };
+
   addTable(one(DT_RELA), one(DT_RELASZ), one(DT_RELAENT), true, 'PT_DYNAMIC-RELA');
   addTable(one(DT_REL), one(DT_RELSZ), one(DT_RELENT), false, 'PT_DYNAMIC-REL');
   const jmprel = one(DT_JMPREL), pltsz = one(DT_PLTRELSZ), pltrel = one(DT_PLTREL);
@@ -170,7 +174,16 @@ function attachDynamicRelocations(image, relocs, symbols) {
   const importByName = new Map(image.imports.filter((x) => x.name).map((x) => [x.name, x]));
   for (const rel of relocs) {
     const sym = byIndex.get(rel.symIndex) || null;
-    const item = { address: rel.address, fileOffset: image.addressToOffset(rel.address), type: rel.type, symbol: sym?.name || null, symbolIndex: rel.symIndex, addend: rel.addend, section: null, source: rel.source };
+    const item = {
+      address: rel.address,
+      fileOffset: image.addressToOffset(rel.address),
+      type: rel.type,
+      symbol: sym?.name || null,
+      symbolIndex: rel.symIndex,
+      addend: rel.addend,
+      section: null,
+      source: rel.source,
+    };
     image.relocations.push(item);
     if (sym && !sym.defined && sym.name) {
       let imp = importByName.get(sym.name);
@@ -184,7 +197,8 @@ function attachDynamicRelocations(image, relocs, symbols) {
 }
 
 function dynamicSymbolsFromImage(image) {
-  return image.symbols.filter((s) => s.source === 'dynsym' || s.source === 'PT_DYNAMIC').map((s, i) => ({ ...s, index: s.index ?? i }));
+  const dyn = image.symbols.filter((s) => s.source === 'dynsym' || s.source === 'PT_DYNAMIC');
+  return dyn.map((s, i) => ({ ...s, index: s.index ?? i }));
 }
 
 function symbolCountFromHash(r, hashVa, image) {
