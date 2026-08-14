@@ -1,4 +1,4 @@
-import { asByteSource, openBinarySource } from '../binary/index.js';
+import { asByteSource, detectBinary, openBinarySource } from '../binary/index.js';
 import { CachedByteSource } from '../bytesource/cached.js';
 import { describeBinaryImage } from './describe.js';
 import { fingerprintVendors } from '../knowledge/index.js';
@@ -32,7 +32,7 @@ self.onmessage = async (event) => {
     return;
   }
   const execute = async () => {
-    if (msg.t === 'open') currentEpoch = msg.epoch;
+    if (msg.t === 'open' || msg.t === 'detect') currentEpoch = msg.epoch;
     if (msg.epoch !== currentEpoch) throw new Error('Stale platform request.');
     const controller = new AbortController();
     if (msg.id != null) active.set(msg.id, { epoch: msg.epoch, controller });
@@ -40,7 +40,8 @@ self.onmessage = async (event) => {
     finally { if (msg.id != null) active.delete(msg.id); }
   };
   try {
-    const result = msg.t === 'open' ? (openChain = openChain.then(execute, execute)) : await execute();
+    const serialized = msg.t === 'open' || msg.t === 'detect';
+    const result = serialized ? (openChain = openChain.then(execute, execute)) : await execute();
     const resolved = await result;
     post({ t: 'ok', id: msg.id, epoch: msg.epoch, result: resolved }, resolved?.__transfer);
   } catch (error) {
@@ -60,6 +61,7 @@ function progress(msg, phase, done, total, extra = {}) {
 
 async function handle(msg, signal) {
   switch (msg.t) {
+    case 'detect': return detectFile(msg, signal);
     case 'open': return openFile(msg, signal);
     case 'setRegions': return setRegions(msg.regions);
     case 'chunk': return getChunk(msg, signal);
@@ -81,12 +83,32 @@ async function handle(msg, signal) {
   }
 }
 
+function createSource(input) {
+  const base = asByteSource(input, { maxReadLength: 8 * 1024 * 1024 });
+  return new CachedByteSource(base, { pageSize: 256 * 1024, maxCachedBytes: 8 * 1024 * 1024 });
+}
+
+async function detectFile(msg, signal) {
+  file = msg.file;
+  if (!file || !Number.isSafeInteger(file.size) || file.size <= 0) throw new Error('This file is empty or has an invalid size.');
+  image = null;
+  descriptor = null;
+  regions = new Map();
+  source?.clear?.();
+  source = createSource(file);
+  const length = Math.min(16, file.size);
+  const prefix = await source.readExactly(0n, length, { signal });
+  if (signal.aborted) throw new Error('Open cancelled');
+  const detected = detectBinary(prefix);
+  return { formatId: detected.format, fat: !!detected.fat, size: BigInt(file.size), sourceBacked: true };
+}
+
 async function openFile(msg, signal) {
   file = msg.file;
   if (!file || !Number.isSafeInteger(file.size) || file.size <= 0) throw new Error('This file is empty or has an invalid size.');
   progress(msg, 'header', 0, 7);
-  const base = asByteSource(file, { maxReadLength: 8 * 1024 * 1024 });
-  const cached = new CachedByteSource(base, { pageSize: 256 * 1024, maxCachedBytes: 8 * 1024 * 1024 });
+  source?.clear?.();
+  const cached = createSource(file);
   source = cached;
   const cancellable = {
     size: cached.size,
@@ -317,7 +339,7 @@ async function readAtAddress(msg, signal) {
 }
 
 function metadataPage(msg) {
-  if (!image) throw new Error('No binary is open.');
+  if (!image) throw new Error('No parsed universal binary is open.');
   const collections = {
     segments: image.segments, sections: image.sections, imports: image.imports, exports: image.exports,
     symbols: image.symbols, relocations: image.relocations, functions: image.functions, libraries: image.libraries,
