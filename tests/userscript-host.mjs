@@ -44,20 +44,24 @@ assert.match(network, /globalThis\.fetch = bridgedFetch/);
 assert.match(network, /responseType: 'arraybuffer'/);
 assert.match(workerAssets, /prepareUserscriptWorkers/);
 assert.match(workerAssets, /URL\.createObjectURL\(new Blob/);
-assert.match(workerAssets, /rewriteImportScripts/);
+assert.match(workerAssets, /inlineImportScripts/);
+assert.match(workerAssets, /inlined importScripts/);
 assert.match(workerAssets, /capstone\.wasm/);
+assert.doesNotMatch(workerAssets, /rewriteImportScripts/);
 assert.doesNotMatch(workerAssets, /import\(remote\)|importScripts\(remote\)/);
 
 assert.match(buildScript, /@scope \(#hex-userscript-host\)/);
 assert.match(buildScript, /collectClassicManifest/);
 assert.match(buildScript, /platform-worker\.bundle\.js/);
 assert.match(buildScript, /@inject-into  content/);
+assert.match(buildScript, /@grant        GM\.addStyle/);
 assert.match(buildScript, /@grant        GM\.xmlHttpRequest/);
 assert.match(buildScript, /esbuild/);
 
 assert.match(template, /^\/\/ ==UserScript==/);
 assert.match(template, /@match\s+https:\/\/chatgpt\.com\/\*/);
 assert.match(template, /@inject-into\s+content/);
+assert.match(template, /@grant\s+GM\.addStyle/);
 assert.match(template, /@grant\s+GM\.xmlHttpRequest/);
 assert.match(template, /__HEX_ORIGIN__\/hex\.meta\.js/);
 assert.match(template, /__HEX_ORIGIN__\/hex\.user\.js/);
