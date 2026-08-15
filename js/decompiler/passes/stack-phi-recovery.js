@@ -262,25 +262,39 @@ function resolveStackBefore(ir, blockIndex, beforeRow, key, maps, opts, engine, 
   }
 }
 
-function recoverReturnExpression(result, maps, opts, engine) {
-  const output = result.semanticAst?.outputs?.find((x) => x.name === 'return');
-  const root = output?.expression;
-  if (root?.kind !== 'load' || root.location?.kind !== 'stack' || !root.location?.key) return null;
-  const retInst = [...(result.ir?.instructions || [])].reverse().find((inst) => inst.op === 'ret');
-  if (!retInst) return null;
-  return resolveStackBefore(result.ir, retInst.block, retInst.row, root.location.key, maps, opts, engine, new Set());
+function returnInstructionForNode(result, node) {
+  const irId = node?.semantic?.ir;
+  if (irId == null) return null;
+  const matches = (result.ir?.instructions || []).filter((inst) => inst.op === 'ret' && String(inst.id) === String(irId));
+  return matches.length === 1 ? matches[0] : null;
 }
 
-function rewriteReturnInAst(result, expression) {
-  let changed = false;
-  for (const node of result.cAst?.body || []) {
-    if (node.semantic?.op === 'return' || /^return\b/.test(String(node.text || '').trim())) {
-      node.text = `return ${printExpression(expression)};`;
-      if (node.semantic) node.semantic.expression = expression;
-      changed = true;
-    }
-  }
-  return changed;
+function recoverReturnSite(result, node, maps, opts, engine) {
+  if (node?.semantic?.op !== 'return') return null;
+  const root = node.semantic.expression;
+  if (root?.kind !== 'load' || root.location?.kind !== 'stack' || !root.location?.key) return null;
+  const retInst = returnInstructionForNode(result, node);
+  if (!retInst) return null;
+  const expression = resolveStackBefore(result.ir, retInst.block, retInst.row, root.location.key, maps, opts, engine, new Set());
+  if (!expression || expression.kind === 'load') return null;
+  return { node, retInst, root, expression };
+}
+
+function semanticOutputForSite(result, root) {
+  const outputs = (result.semanticAst?.outputs || []).filter((x) => x.name === 'return');
+  const identical = outputs.filter((x) => x.expression === root);
+  if (identical.length === 1) return identical[0];
+  const key = structuralKey(root);
+  const equivalent = outputs.filter((x) => structuralKey(x.expression) === key);
+  return equivalent.length === 1 ? equivalent[0] : null;
+}
+
+function rewriteReturnSite(result, site) {
+  const { node, root, expression } = site;
+  node.text = `return ${printExpression(expression)};`;
+  node.semantic.expression = expression;
+  const output = semanticOutputForSite(result, root);
+  if (output) output.expression = expression;
 }
 
 export function recoverExactStackPhiExpressions(result, opts = {}) {
@@ -292,12 +306,13 @@ export function recoverExactStackPhiExpressions(result, opts = {}) {
     timeBudgetMs: Math.min(10, Math.max(3, Number(opts.decompilerTimeBudgetMs || 50) / 5)),
     maxApplications: 512,
   });
-  const recovered = recoverReturnExpression(result, maps, opts, engine);
-  if (!recovered || recovered.kind === 'load') return result;
-
-  const output = result.semanticAst.outputs.find((x) => x.name === 'return');
-  output.expression = recovered;
-  if (!rewriteReturnInAst(result, recovered)) return result;
+  const recoveredSites = [];
+  for (const node of result.cAst.body || []) {
+    const recovered = recoverReturnSite(result, node, maps, opts, engine);
+    if (recovered) recoveredSites.push(recovered);
+  }
+  if (!recoveredSites.length) return result;
+  for (const site of recoveredSites) rewriteReturnSite(result, site);
 
   const printed = printProgram(result.cAst, { columnWidth: opts.columnWidth || opts.prettyColumnWidth || 88 });
   result.pseudocode = printed.text;
@@ -314,11 +329,11 @@ export function recoverExactStackPhiExpressions(result, opts = {}) {
   result.rewriteProof = [...(result.rewriteProof || []), {
     rule: 'exact-stack-phi-recovery',
     phase: 'memory-ssa',
-    evidence: { kind: 'cfg-memory-ssa', detail: 'two-path exact stack value reconstructed without crossing unknown memory effects' },
+    evidence: { kind: 'cfg-memory-ssa', detail: `${recoveredSites.length} return site(s) reconstructed from their own reaching stack state` },
   }];
   result.metrics = {
     ...(result.metrics || {}),
-    rewrittenExpressions: (result.metrics?.rewrittenExpressions || 0) + 1,
+    rewrittenExpressions: (result.metrics?.rewrittenExpressions || 0) + recoveredSites.length,
     sourceMappedNodes: printed.mapping.length,
   };
   result.ctx = {
@@ -326,6 +341,7 @@ export function recoverExactStackPhiExpressions(result, opts = {}) {
     decompilerPipeline: {
       ...(result.ctx?.decompilerPipeline || {}),
       exactStackPhiRecovered: true,
+      exactStackPhiRecoveredSites: recoveredSites.length,
     },
   };
   return result;
