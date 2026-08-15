@@ -10,10 +10,40 @@ import { createFunctionSummaryCache } from '../interproc.js';
 import { sliceResult, minimalCausalPath, functionPaths } from '../query/causal.js';
 import { symbolicExecute } from '../symbolic/executor.js';
 
+export class AgentToolError extends Error {
+  constructor(code, message, details = null) {
+    super(message || code);
+    this.name = 'AgentToolError';
+    this.code = code;
+    this.details = details;
+  }
+}
+
+function parseInteger(value, name = 'value', { nonNegative = false } = {}) {
+  try {
+    if (value == null || typeof value === 'boolean') throw new Error('missing');
+    let out;
+    if (typeof value === 'bigint') out = value;
+    else if (typeof value === 'number') {
+      if (!Number.isSafeInteger(value)) throw new Error('unsafe-number');
+      out = BigInt(value);
+    } else if (typeof value === 'string') {
+      const text = value.trim();
+      if (!text || !/^[+-]?(?:0[xX][0-9a-fA-F]+|\d+)$/.test(text)) throw new Error('invalid-string');
+      out = BigInt(text);
+    } else throw new Error('invalid-type');
+    if (nonNegative && out < 0n) throw new Error('negative');
+    return out;
+  } catch {
+    throw new AgentToolError('invalid-argument', `${name} must be ${nonNegative ? 'a non-negative ' : 'an '}integer`, { name, value });
+  }
+}
+
 function asAddress(v) {
   if (v == null) return null;
-  try { return typeof v === 'bigint' ? v : BigInt(v); } catch { return null; }
+  try { return parseInteger(v, 'address', { nonNegative: true }); } catch { return null; }
 }
+function requiredAddress(v, name = 'address') { return parseInteger(v, name, { nonNegative: true }); }
 function textOf(v) { return String(v == null ? '' : v).toLowerCase(); }
 function explicitLimit(value, fallback) {
   if (value == null) return fallback;
@@ -33,6 +63,7 @@ class FunctionLoader {
     this.maxFunctions = explicitLimit(maxFunctions, 64);
     this.cache = new Map();
     this.analyzed = new Set();
+    this.inflight = new Map();
   }
   _put(key, value) {
     if (this.cache.has(key)) this.cache.delete(key);
@@ -40,21 +71,32 @@ class FunctionLoader {
     while (this.cache.size > this.maxEntries) this.cache.delete(this.cache.keys().next().value);
   }
   async get(address) {
-    const addr = asAddress(address);
-    if (addr == null || typeof this.ctx.analyze !== 'function') return null;
+    const addr = requiredAddress(address);
+    if (typeof this.ctx.analyze !== 'function') throw new AgentToolError('unsupported', 'function analysis is unavailable', { capability: 'analyze' });
     const key = addr.toString();
     if (this.cache.has(key)) {
       const hit = this.cache.get(key); this._put(key, hit); return hit;
     }
-    if (!this.analyzed.has(key)) {
-      if (this.analyzed.size >= this.maxFunctions) throw new Error('function-budget');
-      this.analyzed.add(key);
+    if (this.inflight.has(key)) return this.inflight.get(key);
+    if (!this.analyzed.has(key) && this.analyzed.size + this.inflight.size >= this.maxFunctions) {
+      throw new AgentToolError('function-budget', 'function analysis budget exhausted', { maxFunctions: this.maxFunctions });
     }
-    let range = null;
-    try { range = this.ctx.program && this.ctx.program.functionRange ? this.ctx.program.functionRange(addr) : null; } catch { range = null; }
-    const model = await this.ctx.analyze(addr, range && range.end);
-    this._put(key, model || null);
-    return model || null;
+    const pending = (async () => {
+      let range = null;
+      if (this.ctx.program && typeof this.ctx.program.functionRange === 'function') {
+        try { range = this.ctx.program.functionRange(addr); }
+        catch (error) { throw new AgentToolError('tool-failed', 'functionRange failed', { method: 'functionRange', cause: String(error && error.message || error) }); }
+      }
+      const model = await this.ctx.analyze(addr, range && range.end);
+      // Budget is committed only after analysis successfully returns. Failed
+      // analysis attempts therefore cannot permanently consume the quota.
+      this.analyzed.add(key);
+      this._put(key, model || null);
+      return model || null;
+    })();
+    this.inflight.set(key, pending);
+    try { return await pending; }
+    finally { this.inflight.delete(key); }
   }
   analysisCount() { return this.analyzed.size; }
 }
@@ -67,7 +109,7 @@ function nameFor(ctx, addr) {
     if (ctx.symbols && typeof ctx.symbols.symbolAt === 'function') {
       const s = ctx.symbols.symbolAt(addr); return s && (s.name || s.label) || null;
     }
-  } catch { /* no name */ }
+  } catch { /* names are optional metadata */ }
   return null;
 }
 
@@ -92,17 +134,34 @@ function compactFact(f) {
   };
 }
 
-function matchesLocation(f, field) {
-  const loc = f && f.location;
-  if (!loc || field == null) return false;
-  if (typeof field === 'string') return loc.key === field || textOf(loc.key).includes(textOf(field));
-  if (typeof field === 'object') {
-    if (field.key && loc.key !== field.key) return false;
-    if (field.offset != null && loc.disp !== BigInt(field.offset)) return false;
-    if (field.address != null && loc.address !== BigInt(field.address)) return false;
-    return true;
+function normalizeLocationSpec(field) {
+  if (field == null) throw new AgentToolError('invalid-argument', 'field/location is required');
+  if (typeof field === 'string') {
+    const key = field.trim();
+    if (!key) throw new AgentToolError('invalid-argument', 'field key must not be empty');
+    return { key };
   }
-  try { return loc.disp != null && loc.disp === BigInt(field); } catch { return false; }
+  if (typeof field === 'object') {
+    const out = {};
+    if (field.key != null) {
+      out.key = String(field.key).trim();
+      if (!out.key) throw new AgentToolError('invalid-argument', 'field key must not be empty');
+    }
+    if (field.offset != null) out.offset = parseInteger(field.offset, 'field.offset');
+    if (field.address != null) out.address = requiredAddress(field.address, 'field.address');
+    if (out.key == null && out.offset == null && out.address == null) throw new AgentToolError('invalid-argument', 'field object needs key, offset, or address');
+    return out;
+  }
+  return { offset: parseInteger(field, 'field offset') };
+}
+
+function matchesLocation(f, normalized) {
+  const loc = f && f.location;
+  if (!loc) return false;
+  if (normalized.key != null && loc.key !== normalized.key && !textOf(loc.key).includes(textOf(normalized.key))) return false;
+  if (normalized.offset != null && loc.disp !== normalized.offset) return false;
+  if (normalized.address != null && loc.address !== normalized.address) return false;
+  return true;
 }
 
 function functionCandidateAddresses(ctx, requested, limit) {
@@ -122,14 +181,31 @@ function functionCandidateAddresses(ctx, requested, limit) {
 
 function seedInstruction(ir, spec) {
   if (!ir || !ir.instructions) return null;
-  if (spec && spec.instructionId != null) return ir.instructions.find((i) => i.id === Number(spec.instructionId)) || null;
-  if (spec && spec.row != null) return ir.instructions.find((i) => i.row === Number(spec.row) && (!spec.op || i.op === spec.op)) || null;
-  const address = spec && spec.address != null ? asAddress(spec.address) : asAddress(spec);
+  if (spec && spec.instructionId != null) {
+    const id = Number(spec.instructionId);
+    if (!Number.isSafeInteger(id) || id < 0) throw new AgentToolError('invalid-argument', 'instructionId must be a non-negative safe integer');
+    return ir.instructions.find((i) => i.id === id) || null;
+  }
+  if (spec && spec.row != null) {
+    const row = Number(spec.row);
+    if (!Number.isSafeInteger(row) || row < 0) throw new AgentToolError('invalid-argument', 'row must be a non-negative safe integer');
+    return ir.instructions.find((i) => i.row === row && (!spec.op || i.op === spec.op)) || null;
+  }
+  const address = spec && spec.address != null ? requiredAddress(spec.address) : asAddress(spec);
   if (address != null) return ir.instructions.find((i) => i.address === address) || null;
   if (spec && spec.kind === 'last-store') {
     const stores = ir.instructions.filter((i) => i.op === OP.STORE); return stores[stores.length - 1] || null;
   }
   return null;
+}
+
+function programQuery(ctx, method, args) {
+  const fn = ctx.program && ctx.program[method];
+  if (typeof fn !== 'function') return { supported: false, results: [] };
+  try { return { supported: true, results: fn.apply(ctx.program, args) || [] }; }
+  catch (error) {
+    throw new AgentToolError('tool-failed', `${method} failed`, { method, cause: String(error && error.message || error) });
+  }
 }
 
 export function createAgentTools(context, opts) {
@@ -142,7 +218,7 @@ export function createAgentTools(context, opts) {
   });
 
   const modelAndIr = async (address) => {
-    const addr = asAddress(address);
+    const addr = requiredAddress(address);
     const model = await loader.get(addr);
     const ir = model ? irFor(model) : null;
     return { addr, model, ir };
@@ -153,67 +229,68 @@ export function createAgentTools(context, opts) {
       const limit = bounded(options && options.limit, 50, 1, 200);
       if (typeof ctx.searchStrings === 'function') {
         const rows = await ctx.searchStrings(query, { ...(options || {}), limit });
-        return { tool: 'search_strings', results: (rows || []).slice(0, limit) };
+        return { tool: 'search_strings', results: (rows || []).slice(0, limit), cost:{ functions:0, disassembly:0 } };
       }
       if (ctx.strings && typeof ctx.strings.search === 'function') {
         const rows = await ctx.strings.search(query, limit);
-        return { tool: 'search_strings', results: (rows || []).slice(0, limit) };
+        return { tool: 'search_strings', results: (rows || []).slice(0, limit), cost:{ functions:0, disassembly:0 } };
       }
       const list = Array.isArray(ctx.strings) ? ctx.strings : [];
       const q = textOf(query);
       const results = list.filter((s) => textOf(s && (s.text != null ? s.text : s)).includes(q)).slice(0, limit)
         .map((s) => typeof s === 'string' ? { text: s } : s);
-      return { tool: 'search_strings', results };
+      return { tool: 'search_strings', results, cost:{ functions:0, disassembly:0 } };
     },
 
     async search_functions(query, options) {
-      // Searching an index is cheap and does not consume the function-analysis
-      // budget; only loading/analyzing a candidate does.
       const limit = bounded(options && options.limit, 40, 1, 200);
       if (typeof ctx.searchFunctions === 'function') {
         const rows = await ctx.searchFunctions(query, { ...(options || {}), limit });
-        return { tool: 'search_functions', results: (rows || []).slice(0, limit) };
+        return { tool: 'search_functions', results: (rows || []).slice(0, limit), cost:{ functions:0, disassembly:0 } };
       }
       const q = textOf(query);
       const source = Array.isArray(ctx.functions) ? ctx.functions : [];
       const results = source.filter((f) => textOf(f && (f.name || f.label || '')).includes(q)).slice(0, limit);
-      return { tool: 'search_functions', results };
+      return { tool: 'search_functions', results, cost:{ functions:0, disassembly:0 } };
     },
 
     async get_function(address) {
       const { addr, model, ir } = await modelAndIr(address);
-      if (!model || !ir) return { tool: 'get_function', address: addr, found: false };
+      if (!model || !ir) return { tool: 'get_function', address: addr, found: false, cost:{ functions:1, disassembly:0 } };
       const summary = await summaries.summaryFor(addr);
       const facts = semanticFacts(ir);
       return {
         tool: 'get_function', address: addr, name: nameFor(ctx, addr), found: true,
         instructions: ir.instructions.length, truncated: !!ir.truncated, summary,
         evidence: semanticEvidenceIds(facts), engine: 'semantic-ir',
+        cost:{ functions:1, disassembly:ir.instructions.length },
       };
     },
 
     async get_callers(address, options) {
-      const addr = asAddress(address); const limit = bounded(options && options.limit, 100, 1, 500);
-      let rows = [];
-      try { rows = ctx.program && ctx.program.callersOf ? ctx.program.callersOf(addr, limit) : []; } catch { rows = []; }
-      return { tool: 'get_callers', address: addr, results: (rows || []).slice(0, limit).map((r) => ({ ...r, name: nameFor(ctx, r.addr) })) };
+      const addr = requiredAddress(address); const limit = bounded(options && options.limit, 100, 1, 500);
+      const q = programQuery(ctx, 'callersOf', [addr, limit]);
+      return { tool: 'get_callers', address: addr, supported:q.supported, results:q.results.slice(0, limit).map((r) => ({ ...r, name: nameFor(ctx, r.addr) })), cost:{ functions:0, disassembly:0 } };
     },
 
     async get_callees(address, options) {
-      const addr = asAddress(address); const limit = bounded(options && options.limit, 100, 1, 500);
-      let range = null, rows = [];
-      try { range = ctx.program && ctx.program.functionRange ? ctx.program.functionRange(addr) : null; } catch { range = null; }
-      try { rows = ctx.program && ctx.program.calleesOf ? ctx.program.calleesOf(addr, range && range.end, limit) : []; } catch { rows = []; }
-      return { tool: 'get_callees', address: addr, results: (rows || []).slice(0, limit).map((r) => ({ ...r, name: nameFor(ctx, r.addr) })) };
+      const addr = requiredAddress(address); const limit = bounded(options && options.limit, 100, 1, 500);
+      let range = null;
+      if (ctx.program && typeof ctx.program.functionRange === 'function') {
+        const rq = programQuery(ctx, 'functionRange', [addr]);
+        range = rq.results;
+      }
+      const q = programQuery(ctx, 'calleesOf', [addr, range && range.end, limit]);
+      return { tool: 'get_callees', address: addr, supported:q.supported, results:q.results.slice(0, limit).map((r) => ({ ...r, name: nameFor(ctx, r.addr) })), cost:{ functions:0, disassembly:0 } };
     },
 
     async get_xrefs(address, options) {
-      const addr = asAddress(address); const span = asAddress(options && options.span) || 1n;
+      const addr = requiredAddress(address); const span = options && options.span != null ? requiredAddress(options.span, 'span') : 1n;
+      if (span < 1n) throw new AgentToolError('invalid-argument', 'span must be positive');
       const limit = bounded(options && options.limit, 200, 1, 1000);
-      let sites = [], functions = [];
-      try { sites = ctx.program && ctx.program.refSitesTo ? ctx.program.refSitesTo(addr, span, limit) : []; } catch { sites = []; }
-      try { functions = ctx.program && ctx.program.functionsReferencing ? ctx.program.functionsReferencing(addr, span, limit) : []; } catch { functions = []; }
-      return { tool: 'get_xrefs', address: addr, sites: (sites || []).slice(0, limit), functions: (functions || []).slice(0, limit) };
+      const sites = programQuery(ctx, 'refSitesTo', [addr, span, limit]);
+      const functions = programQuery(ctx, 'functionsReferencing', [addr, span, limit]);
+      return { tool: 'get_xrefs', address: addr, supported:{sites:sites.supported,functions:functions.supported}, sites:sites.results.slice(0, limit), functions:functions.results.slice(0, limit), cost:{ functions:0, disassembly:0 } };
     },
 
     async slice_backward(functionAddress, seed, options) {
@@ -233,19 +310,21 @@ export function createAgentTools(context, opts) {
     },
 
     async find_field_writers(functionAddress, field) {
+      const normalized = normalizeLocationSpec(field);
       const { addr, ir } = await modelAndIr(functionAddress);
-      const facts = ir ? semanticFacts(ir).filter((f) => (f.kind === FACT.WRITE || f.kind === FACT.RMW) && matchesLocation(f, field)) : [];
+      const facts = ir ? semanticFacts(ir).filter((f) => (f.kind === FACT.WRITE || f.kind === FACT.RMW) && matchesLocation(f, normalized)) : [];
       return { tool: 'find_field_writers', address: addr, results: facts.map(compactFact), evidence: semanticEvidenceIds(facts) };
     },
 
     async find_field_readers(functionAddress, field) {
+      const normalized = normalizeLocationSpec(field);
       const { addr, ir } = await modelAndIr(functionAddress);
-      const facts = ir ? semanticFacts(ir).filter((f) => f.kind === FACT.READ && matchesLocation(f, field)) : [];
+      const facts = ir ? semanticFacts(ir).filter((f) => f.kind === FACT.READ && matchesLocation(f, normalized)) : [];
       return { tool: 'find_field_readers', address: addr, results: facts.map(compactFact), evidence: semanticEvidenceIds(facts) };
     },
 
     async find_constant(value, options) {
-      const want = BigInt(value);
+      const want = parseInteger(value, 'constant');
       const addresses = functionCandidateAddresses(ctx, options && options.functions, maxFunctions);
       const resultLimit = bounded(options && options.limit, 100, 1, 1000);
       const results = [];
@@ -264,19 +343,23 @@ export function createAgentTools(context, opts) {
     async find_thresholds(functionAddress, options) {
       const { addr, ir } = await modelAndIr(functionAddress);
       let facts = ir ? semanticFacts(ir).filter((f) => f.kind === FACT.THRESHOLD) : [];
-      if (options && options.value != null) facts = facts.filter((f) => f.threshold === BigInt(options.value));
+      if (options && options.value != null) {
+        const want = parseInteger(options.value, 'threshold');
+        facts = facts.filter((f) => f.threshold === want);
+      }
       facts = facts.slice(0, bounded(options && options.limit, 300, 1, 1000));
       return { tool: 'find_thresholds', address: addr, results: facts.map(compactFact), evidence: semanticEvidenceIds(facts) };
     },
 
     async find_paths(from, to, options) {
+      const fromAddress = requiredAddress(from, 'from'); const toAddress = requiredAddress(to, 'to');
       const safe = {
         maxDepth: bounded(options && options.maxDepth, 6, 1, 12),
         maxPaths: bounded(options && options.maxPaths, 8, 1, 32),
         maxVisited: bounded(options && options.maxVisited, 10000, 16, 20000),
       };
-      const paths = functionPaths(ctx.program, asAddress(from), asAddress(to), safe);
-      return { tool: 'find_paths', from: asAddress(from), to: asAddress(to), paths };
+      const paths = functionPaths(ctx.program, fromAddress, toAddress, safe);
+      return { tool: 'find_paths', from: fromAddress, to: toAddress, paths };
     },
 
     async get_semantic_facts(functionAddress, options) {
@@ -291,8 +374,9 @@ export function createAgentTools(context, opts) {
     },
 
     async verify_field_update(functionAddress, field, options) {
+      const normalized = normalizeLocationSpec(field);
       const { addr, ir } = await modelAndIr(functionAddress);
-      const facts = ir ? semanticFacts(ir).filter((f) => f.kind === FACT.RMW && matchesLocation(f, field)) : [];
+      const facts = ir ? semanticFacts(ir).filter((f) => f.kind === FACT.RMW && matchesLocation(f, normalized)) : [];
       const paths = [];
       const limit = bounded(options && options.limit, 8, 1, 32);
       const pathLimit = bounded(options && options.pathLimit, 8, 2, 32);
