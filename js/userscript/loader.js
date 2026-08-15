@@ -54,7 +54,7 @@ async function loadRuntime() {
   const plaintext = await decompress(compressed, bootstrap.manifest.compression);
   await assertHash(plaintext, bootstrap.manifest.contentHash);
   const blobUrl = URL.createObjectURL(new Blob([toExactArrayBuffer(plaintext)], { type: 'text/javascript' }));
-  try { await import(blobUrl); }
+  try { await runtimeStage('protected runtime import', () => import(blobUrl)); }
   finally {
     URL.revokeObjectURL(blobUrl); ciphertext.fill(0); compressed.fill(0); plaintext.fill(0); new Uint8Array(contentKeyRaw).fill(0); new Uint8Array(shared).fill(0);
   }
@@ -63,6 +63,10 @@ async function loadRuntime() {
 async function cryptoStage(stage, operation) {
   try { return await operation(); }
   catch (error) { throw new Error(`${stage}: ${String(error?.message || error || 'WebCrypto failed.')}`); }
+}
+async function runtimeStage(stage, operation) {
+  try { return await operation(); }
+  catch (error) { throw new Error(`${stage}: ${String(error?.message || error || 'runtime failed.')}`); }
 }
 async function decompress(bytes, algorithm) {
   if (algorithm !== 'gzip' || typeof DecompressionStream !== 'function') throw new Error('The protected runtime compression format is unsupported.');
