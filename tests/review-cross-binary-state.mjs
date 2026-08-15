@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
-import { ProductWorkspace } from '../js/workspace.js';
+import { ProductWorkspace, sameProjectIdentity } from '../js/workspace.js';
 import { createAiEngine } from '../js/ai/ui/bridge.js';
+import { createHexProject, serializeHexProject } from '../js/project/index.js';
 
 class Storage {
   constructor(){ this.m=new Map(); }
@@ -24,7 +25,7 @@ function makeInfo(name,uuid){return {name,size:4096,format:'macho',slices:[{offs
 function makeApp(){
   const values={fileInfo:makeInfo('same.bin','A'),file:{name:'same.bin',size:4096},sliceIndex:0,architecture:'arm64',currentAddress:0x1000n,canDisassemble:false};
   const store={values,get(k){return this.values[k];}};
-  const backend={contentHash:'hash-a',async ensureContentHash(){return this.contentHash;}};
+  const backend={gen:1,contentHash:'hash-a',async ensureContentHash(){return this.contentHash;}};
   return {
     store,backend,prefs:{lang:'ja',explain:true,textSize:'m'},notes:new Notes(),patches:new Patches(),
     navigation:{entries:[],index:-1,limit:40,snapshot(){return {};},onChange(){}},
@@ -122,6 +123,49 @@ function oneFunction(name,address=0x1000n){
   assert.equal(stale?.code,'HEX_WORKSPACE_STALE');
   assert.equal(workspace.baseline,baselineB);
   assert.equal(workspace.diffState,null,'old baseline diff must not publish after replacement');
+}
+
+// A project whose hash matches but whose slice identity is missing must not be
+// accepted into a concrete active slice. Missing metadata is not proof of a match.
+{
+  const app=makeApp();
+  const workspace=new ProductWorkspace(app,{storage:new Storage(),backendFactory:()=>({})});
+  app.workspace=workspace;
+  await workspace.bind();
+  const match=sameProjectIdentity({binary:{hash:'hash-a',metadata:{}}},workspace.identity);
+  assert.equal(match.ok,false);
+  assert.equal(match.reason,'slice-identity-incomplete');
+  assert.equal(match.field,'sliceIndex');
+}
+
+// Project parsing is asynchronous for Blob inputs. If the active file changes
+// while text() is pending, the old project's notes must never land in the new
+// file's NoteStore before workspace.bind() catches up.
+{
+  const app=makeApp();
+  const workspace=new ProductWorkspace(app,{storage:new Storage(),backendFactory:()=>({})});
+  app.workspace=workspace;
+  await workspace.bind();
+  const text=serializeHexProject(createHexProject({binary:workspace.identity,userNames:[{address:0x1000n,value:'from-a'}]}));
+  let releaseImport;
+  const input=new Blob([text]);
+  Object.defineProperty(input,'text',{value:()=>new Promise((resolve)=>{releaseImport=()=>resolve(text);})});
+  const pending=workspace.importProject(input);
+  await Promise.resolve();
+  assert.equal(typeof releaseImport,'function');
+
+  const notesB=new Notes();
+  app.backend.gen++;
+  app.backend.contentHash=null;
+  app.store.values.fileInfo=makeInfo('same.bin','B');
+  app.store.values.file={name:'same.bin',size:4096};
+  app.notes=notesB;
+  releaseImport();
+
+  let stale=null;
+  try{await pending;}catch(error){stale=error;}
+  assert.equal(stale?.code,'HEX_WORKSPACE_STALE');
+  assert.equal(notesB.names.size,0,'stale project import must not mutate the new file notes');
 }
 
 // The real UI adapter must expose the live Backend/ProductWorkspace content hash

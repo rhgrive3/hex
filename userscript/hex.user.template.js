@@ -49259,7 +49259,8 @@ ${rendered}` : rendered,
     const a = project.binary.metadata || {}, b = identity.metadata || {};
     const keys = ["sliceIndex", "sliceOffset", "sliceSize", "uuid", "architecture"];
     for (const key2 of keys) {
-      if (a[key2] == null || b[key2] == null) continue;
+      if (b[key2] == null) continue;
+      if (a[key2] == null) return { ok: false, reason: "slice-identity-incomplete", field: key2 };
       if (keyOf2(a[key2]) !== keyOf2(b[key2])) return { ok: false, reason: "slice-identity-mismatch", field: key2 };
     }
     return { ok: true };
@@ -49491,8 +49492,20 @@ ${rendered}` : rendered,
           return exportHexProject(project, cleanName2(this.identity?.metadata?.name) + ".hexproj");
         }
         async importProject(input2) {
-          if (!this.identity) await this.bind();
+          const liveHash = this.app?.backend?.contentHash || null;
+          if (!this.identity || !liveHash || liveHash !== this.identity.hash) await this.bind();
+          if (!this.identity) throw staleWorkspaceError();
+          const revision = this.bindingRevision, boundKey = identityKey(this.identity);
+          const sourceInfo = this.app?.store?.get?.("fileInfo") || null;
+          const sourceSlice = this.app?.store?.get?.("sliceIndex") ?? -1;
+          const sourceBackendGen = this.app?.backend?.gen;
+          const assertCurrent = () => {
+            this._assertBinding(revision);
+            const currentHash = this.app?.backend?.contentHash || null;
+            if (identityKey(this.identity) !== boundKey || this.app?.store?.get?.("fileInfo") !== sourceInfo || (this.app?.store?.get?.("sliceIndex") ?? -1) !== sourceSlice || sourceBackendGen != null && this.app?.backend?.gen !== sourceBackendGen || !currentHash || currentHash !== this.identity?.hash) throw staleWorkspaceError();
+          };
           const project = await importHexProject(input2);
+          assertCurrent();
           const match = sameProjectIdentity(project, this.identity);
           if (!match.ok) {
             const error = new Error(match.reason);

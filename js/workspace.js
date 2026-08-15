@@ -43,7 +43,8 @@ export function sameProjectIdentity(project, identity){
   const a=project.binary.metadata||{}, b=identity.metadata||{};
   const keys=['sliceIndex','sliceOffset','sliceSize','uuid','architecture'];
   for(const key of keys){
-    if(a[key]==null||b[key]==null)continue;
+    if(b[key]==null)continue;
+    if(a[key]==null)return {ok:false,reason:'slice-identity-incomplete',field:key};
     if(keyOf(a[key])!==keyOf(b[key]))return {ok:false,reason:'slice-identity-mismatch',field:key};
   }
   return {ok:true};
@@ -191,8 +192,23 @@ export class ProductWorkspace{
   }
   exportProject(){const project=this.snapshot();if(!project)throw new Error('project-unbound');return exportHexProject(project,cleanName(this.identity?.metadata?.name)+'.hexproj');}
   async importProject(input){
-    if(!this.identity)await this.bind();
-    const project=await importHexProject(input);const match=sameProjectIdentity(project,this.identity);
+    const liveHash=this.app?.backend?.contentHash||null;
+    if(!this.identity||!liveHash||liveHash!==this.identity.hash)await this.bind();
+    if(!this.identity)throw staleWorkspaceError();
+    const revision=this.bindingRevision, boundKey=identityKey(this.identity);
+    const sourceInfo=this.app?.store?.get?.('fileInfo')||null;
+    const sourceSlice=this.app?.store?.get?.('sliceIndex')??-1;
+    const sourceBackendGen=this.app?.backend?.gen;
+    const assertCurrent=()=>{
+      this._assertBinding(revision);
+      const currentHash=this.app?.backend?.contentHash||null;
+      if(identityKey(this.identity)!==boundKey || this.app?.store?.get?.('fileInfo')!==sourceInfo ||
+        (this.app?.store?.get?.('sliceIndex')??-1)!==sourceSlice ||
+        (sourceBackendGen!=null&&this.app?.backend?.gen!==sourceBackendGen) ||
+        !currentHash || currentHash!==this.identity?.hash)throw staleWorkspaceError();
+    };
+    const project=await importHexProject(input);assertCurrent();
+    const match=sameProjectIdentity(project,this.identity);
     if(!match.ok){const error=new Error(match.reason);error.code='HEX_PROJECT_BINARY_MISMATCH';error.detail=match;throw error;}
     applyWorkspaceProject(this.app,project);this.project=project;this.autosave();return project;
   }
