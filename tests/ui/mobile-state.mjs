@@ -94,7 +94,15 @@ async function focusWithKeyboardViewport(page, selector, keyboard) {
   // than weakening the keyboard usability contract.
   const retained = await field.evaluate((node) => document.activeElement === node);
   if (!retained) await field.focus();
+  // WebKit may drop focus one frame after Playwright's synthetic viewport resize.
+  // Settle layout, then restore focus once more; the caller still strictly
+  // verifies activeElement and visual visibility after this helper returns.
   await page.waitForTimeout(16);
+  const settled = await field.evaluate((node) => document.activeElement === node);
+  if (!settled) {
+    await field.focus();
+    await page.waitForTimeout(16);
+  }
 }
 
 async function testKeyboardFlows(page, engine, fn) {

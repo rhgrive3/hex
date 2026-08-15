@@ -500,8 +500,100 @@
     return [...m.values()];
   }
 
+  // js/binary/macho-budget.js
+  var MACHO_METADATA_LIMITS = Object.freeze({
+    inputBytes: 64 * 1024 * 1024,
+    records: 25e4,
+    objects: 5e5,
+    stringBytes: 16 * 1024 * 1024,
+    operations: 2e6,
+    warnings: 2048,
+    estimatedHeapBytes: 128 * 1024 * 1024,
+    wallClockMs: 5e3
+  });
+  function metadataOf(image2) {
+    image2.metadata ||= {};
+    return image2.metadata.machoMetadata ||= { complete: true, reasons: [] };
+  }
+  function markMachOMetadataPartial(image2, reason) {
+    const meta = metadataOf(image2);
+    meta.complete = false;
+    if (!meta.reasons.includes(reason)) meta.reasons.push(reason);
+  }
+  function createMachOMetadataBudget(image2, options = {}) {
+    const limits = { ...MACHO_METADATA_LIMITS, ...options.limits || options.metadataLimits || {} };
+    const signal = options.signal || null;
+    const started = Date.now();
+    const used = {
+      inputBytes: 0,
+      records: 0,
+      objects: 0,
+      stringBytes: 0,
+      operations: 0,
+      warnings: Math.min(image2.warnings?.length || 0, limits.warnings),
+      estimatedHeapBytes: 0
+    };
+    const meta = metadataOf(image2);
+    meta.limits = { ...limits };
+    meta.used = used;
+    let nextTimeCheck = 1024;
+    const stop = (reason) => {
+      markMachOMetadataPartial(image2, `budget:${reason}`);
+      return false;
+    };
+    return {
+      limits,
+      used,
+      signal,
+      get remainingStringBytes() {
+        return Math.max(0, limits.stringBytes - used.stringBytes);
+      },
+      remaining(key) {
+        return Math.max(0, Number(limits[key] ?? 0) - Number(used[key] ?? 0));
+      },
+      take(cost = {}, reason = "metadata") {
+        if (signal?.aborted) return stop("aborted");
+        const opCost = Math.max(0, Number(cost.operations || 0));
+        if (used.operations + opCost >= nextTimeCheck) {
+          nextTimeCheck = used.operations + opCost + 1024;
+          if (Date.now() - started > limits.wallClockMs) return stop("wall-clock");
+        }
+        for (const key of Object.keys(used)) {
+          const next = used[key] + Math.max(0, Number(cost[key] || 0));
+          if (!Number.isFinite(next) || next > limits[key]) return stop(`${reason}:${key}`);
+        }
+        for (const key of Object.keys(used)) used[key] += Math.max(0, Number(cost[key] || 0));
+        return true;
+      },
+      partial(reason, warning = null) {
+        markMachOMetadataPartial(image2, reason);
+        if (warning) this.warn(warning);
+        return false;
+      },
+      warn(message) {
+        const text = String(message);
+        if (image2.warnings?.includes(text)) return true;
+        if (!this.take({ warnings: 1, objects: 1, stringBytes: text.length * 2, estimatedHeapBytes: text.length * 2 + 32 }, "warning")) return false;
+        image2.warnings.push(text);
+        return true;
+      },
+      snapshot() {
+        const current2 = metadataOf(image2);
+        return { complete: current2.complete, reasons: [...current2.reasons], limits: { ...limits }, used: { ...used } };
+      }
+    };
+  }
+  function ensureMachOMetadataBudget(image2, budget = null) {
+    if (budget) return budget;
+    if (image2.__machoMetadataBudget) return image2.__machoMetadataBudget;
+    const created = createMachOMetadataBudget(image2);
+    Object.defineProperty(image2, "__machoMetadataBudget", { value: created, configurable: true, enumerable: false, writable: false });
+    return created;
+  }
+
   // js/binary/macho-dyld.js
-  function parseChainedImports(r, dc, image2) {
+  function parseChainedImports(r, dc, image2, sharedBudget = null) {
+    const budget = ensureMachOMetadataBudget(image2, sharedBudget);
     if (!dc.size || dc.offset + dc.size > r.length || dc.size < 28) return null;
     const base = dc.offset;
     const version = r.u32(base);
@@ -532,6 +624,11 @@
     }
     const parsed = [];
     for (let i = 0; i < importsCount; i++) {
+      if (!budget.take({ inputBytes: entrySize, records: 1, objects: 1, operations: 2, estimatedHeapBytes: 224 }, "chained-import-record")) {
+        image2.metadata.chainedFixups.importsComplete = false;
+        image2.metadata.chainedFixups.importsPartialReason = "metadata-budget";
+        break;
+      }
       const p = importsBase + i * entrySize;
       let ordinal, weak, nameOffset, addend = 0n;
       if (importsFormat === 1 || importsFormat === 2) {
@@ -551,13 +648,15 @@
       if (strp < base || strp >= base + dc.size) continue;
       const name = r.cstring(strp, base + dc.size - strp);
       if (!name) continue;
+      if (!budget.take({ stringBytes: name.length * 2, estimatedHeapBytes: name.length * 2 + 32 }, "chained-import-name")) break;
       const imp = { name, library: dylibForOrdinal(image2, ordinal), ordinal, weak, addend, source: "chained-fixups", sites: [], chainedIndex: i };
       image2.imports.push(imp);
       parsed[i] = imp;
     }
     return parsed;
   }
-  function parseChainedBindingSites(r, dc, image2, imports, segments = image2.segments || []) {
+  function parseChainedBindingSites(r, dc, image2, imports, segments = image2.segments || [], sharedBudget = null) {
+    const budget = ensureMachOMetadataBudget(image2, sharedBudget);
     const base = dc.offset;
     const payloadEnd = base + dc.size;
     image2.metadata.chainedFixups ||= {};
@@ -638,6 +737,11 @@
       }
       const overflowCount = (structEnd - overflowBase) / 2;
       for (let page = 0; page < pageCount; page++) {
+        if (!budget.take({ inputBytes: 2, records: 1, operations: 1, estimatedHeapBytes: 16 }, "chained-page")) {
+          fail("shared metadata budget exhausted while decoding pages");
+          status.bindingSites = decoded;
+          return status;
+        }
         const start = r.u16(p + 22 + page * 2);
         if (start === 65535) continue;
         const pageOffset = BigInt(page) * pageSizeBig;
@@ -681,6 +785,11 @@
           let address = pageAddress + BigInt(chainStart);
           let terminated = false;
           for (let guard = 0; guard < 1e5; guard++) {
+            if (!budget.take({ inputBytes: width, records: 1, operations: 1, estimatedHeapBytes: 16 }, "chained-pointer")) {
+              fail("shared metadata budget exhausted while decoding pointer chain");
+              status.bindingSites = decoded;
+              return status;
+            }
             if (address < pageAddress || address + BigInt(width) > pageAddressEnd || address + BigInt(width) > fileBackedAddressEnd) {
               fail(`segment ${segIndex} page ${page} chain leaves its page or file-backed segment range`);
               break;
@@ -699,6 +808,11 @@
               break;
             }
             if (d.bind && d.ordinal >= 0 && d.ordinal < imports.length && imports[d.ordinal]) {
+              if (!budget.take({ objects: 1, operations: 1, estimatedHeapBytes: 112 }, "chained-bind-site")) {
+                fail("shared metadata budget exhausted while recording bind site");
+                status.bindingSites = decoded;
+                return status;
+              }
               imports[d.ordinal].sites.push({ address, offset: expectedOff, kind: "chained-bind", pointerFormat, addend: d.addend });
               decoded++;
             }
@@ -774,7 +888,8 @@
     }
     return null;
   }
-  function parseClassicBindings(r, dc, image2, segments, source2) {
+  function parseClassicBindings(r, dc, image2, segments, source2, sharedBudget = null) {
+    const budget = ensureMachOMetadataBudget(image2, sharedBudget);
     if (!dc || !dc.size || dc.offset + dc.size > r.length) return null;
     const BIND_OPCODE_MASK = 240, BIND_IMMEDIATE_MASK = 15;
     const ptrSize = image2.bits === 64 ? 8n : 4n;
@@ -810,6 +925,10 @@
       const address = seg.address + segOffset;
       const imp = snapshotImport();
       imp.sites.push({ address, offset: image2.addressToOffset(address), kind: source2, type, addend, weak: imp.weak });
+      if (!budget.take({ objects: 2, operations: 1, estimatedHeapBytes: 320 }, "classic-bind-output")) {
+        fail("shared metadata budget exhausted while recording bind");
+        return;
+      }
       image2.imports.push(imp);
       status.decodedBinds++;
     };
@@ -839,6 +958,10 @@
           if (!template) fail(`threaded bind ordinal ${ordinal} is outside table`);
           else {
             const imp = { ...template, sites: [{ address, offset: off, kind: "threaded-bind", type: template.type, addend: template.addend, weak: template.weak }] };
+            if (!budget.take({ objects: 2, operations: 1, estimatedHeapBytes: 320 }, "classic-bind-output")) {
+              fail("shared metadata budget exhausted while recording bind");
+              return;
+            }
             image2.imports.push(imp);
             status.decodedBinds++;
           }
@@ -857,6 +980,10 @@
     };
     try {
       while (p < end) {
+        if (!budget.take({ inputBytes: 1, records: 1, operations: 1, estimatedHeapBytes: 8 }, "classic-bind-opcode")) {
+          fail("shared metadata budget exhausted while decoding bind stream");
+          break;
+        }
         const byte = r.u8(p++);
         const op = byte & BIND_OPCODE_MASK;
         const imm = byte & BIND_IMMEDIATE_MASK;
@@ -910,13 +1037,21 @@
           p = a.next;
           const b = r.uleb(p, 10, end);
           p = b.next;
-          if (a.value > 10000000n) {
-            fail("bind repeat count exceeds budget");
+          if (a.value > BigInt(Number.MAX_SAFE_INTEGER)) {
+            fail("bind repeat count exceeds safe integer range");
             break;
           }
-          for (let i = 0n; i < a.value; i++) {
+          const repeat = Number(a.value), step = ptrSize + b.value, owner = segments[segIndex];
+          const maxBySegment = owner && step > 0n && segOffset >= 0n && segOffset + ptrSize <= owner.size ? Number((owner.size - segOffset - ptrSize) / step + 1n) : 0;
+          const maxByBudget = Math.min(budget.remaining("operations"), Math.floor(budget.remaining("objects") / 2));
+          const allowed = Math.max(0, Math.min(repeat, maxBySegment, maxByBudget));
+          for (let i = 0; i < allowed; i++) {
             bind();
-            segOffset += ptrSize + b.value;
+            segOffset += step;
+          }
+          if (allowed < repeat) {
+            fail(`bind repeat count ${repeat} exceeds segment/shared metadata capacity ${allowed}`);
+            break;
           }
         } else if (op === 208) {
           if (imm === 0) {
@@ -945,7 +1080,8 @@
     if (threadedTable && threadedTable.length !== threadedTableLimit) fail(`threaded ordinal table expected ${threadedTableLimit} entries, decoded ${threadedTable.length}`);
     return status;
   }
-  function parseExportTrie(r, dc, image2) {
+  function parseExportTrie(r, dc, image2, sharedBudget = null) {
+    const budget = ensureMachOMetadataBudget(image2, sharedBudget);
     if (!dc || !dc.size || dc.offset + dc.size > r.length) return null;
     const base = dc.offset, end = dc.offset + dc.size;
     const active2 = /* @__PURE__ */ new Set();
@@ -969,10 +1105,11 @@
         markPartial(`cycle detected at node 0x${nodeOff.toString(16)}`, "cycleDetected");
         return;
       }
-      if (++status.nodes > 1e6) {
-        markPartial("node budget exceeded", "budgetExceeded");
+      if (!budget.take({ records: 1, objects: 1, operations: 1, estimatedHeapBytes: 48 }, "export-trie-node")) {
+        markPartial("shared metadata node budget exceeded", "budgetExceeded");
         return;
       }
+      status.nodes++;
       active2.add(nodeOff);
       try {
         let p = base + nodeOff;
@@ -1005,10 +1142,20 @@
               p = resolverX.next;
               ex.resolver = image2.imageBase + resolverX.value;
             }
+            if (!budget.take({ objects: 1, operations: 1, stringBytes: prefix.length * 2, estimatedHeapBytes: prefix.length * 2 + 160 }, "export-trie-output")) {
+              markPartial("shared metadata output budget exceeded", "budgetExceeded");
+              return;
+            }
             image2.exports.push(ex);
             if (exportKind === 0) {
               const sec = image2.sectionAt(address);
-              if (sec && sec.perms.execute) image2.functions.push(functionSeed(address, { name: prefix, source: "export", confidence: 0.9 }));
+              if (sec && sec.perms.execute) {
+                if (!budget.take({ objects: 1, operations: 1, estimatedHeapBytes: 128 }, "export-function")) {
+                  markPartial("shared metadata function budget exceeded", "budgetExceeded");
+                  return;
+                }
+              }
+              image2.functions.push(functionSeed(address, { name: prefix, source: "export", confidence: 0.9 }));
             }
           }
         }
@@ -1016,10 +1163,11 @@
         if (p >= end) return;
         const children = r.u8(p++);
         for (let i = 0; i < children; i++) {
-          if (++status.edges > 2e6) {
-            markPartial("edge budget exceeded", "budgetExceeded");
+          if (!budget.take({ records: 1, operations: 1, estimatedHeapBytes: 32 }, "export-trie-edge")) {
+            markPartial("shared metadata edge budget exceeded", "budgetExceeded");
             return;
           }
+          status.edges++;
           const edgeX = rawCString(r, p, end);
           const edge = edgeX.text;
           p = edgeX.next;
@@ -1152,6 +1300,7 @@
         sizeofcmds
       }
     });
+    const metadataBudget = ensureMachOMetadataBudget(image2);
     const commands = [];
     const segmentOrder = [];
     const symtabs = [];
@@ -1169,6 +1318,7 @@
         image2.warnings.push(`invalid load command ${i} size ${cmdsize}`);
         break;
       }
+      if (!metadataBudget.take({ inputBytes: cmdsize, records: 1, objects: 1, operations: 1, estimatedHeapBytes: 64 }, "load-command")) break;
       commands.push({ cmd, offset: p, size: cmdsize });
       try {
         if (cmd === LC_SEGMENT_64 && bits === 64) parseSegment64(r, p, cmdsize, image2, segmentOrder);
@@ -1209,22 +1359,25 @@
       image2.metadata.entrypointSource = "LC_UNIXTHREAD";
     }
     if (image2.entrypoint != null && image2.entrypoint !== 0n) image2.functions.push(functionSeed(image2.entrypoint, { source: "entrypoint", confidence: 0.9 }));
-    for (const st of symtabs) parseSymbolTable(r, st, image2, bits);
+    for (const st of symtabs) parseSymbolTable(r, st, image2, bits, metadataBudget);
     const hadFunctionStarts = !!linkeditData.functionStarts;
-    if (linkeditData.functionStarts) parseFunctionStarts(r, linkeditData.functionStarts, image2);
+    if (linkeditData.functionStarts) parseFunctionStarts(r, linkeditData.functionStarts, image2, metadataBudget);
     let chainedImports = null;
-    if (linkeditData.chainedFixups) chainedImports = parseChainedImports(r, linkeditData.chainedFixups, image2);
-    if (linkeditData.chainedFixups && chainedImports) parseChainedBindingSites(r, linkeditData.chainedFixups, image2, chainedImports, segmentOrder);
+    if (linkeditData.chainedFixups) chainedImports = parseChainedImports(r, linkeditData.chainedFixups, image2, metadataBudget);
+    if (linkeditData.chainedFixups && chainedImports) parseChainedBindingSites(r, linkeditData.chainedFixups, image2, chainedImports, segmentOrder, metadataBudget);
     for (const info of dyldInfos) {
-      parseClassicBindings(r, info.bind, image2, segmentOrder, "bind");
-      parseClassicBindings(r, info.weakBind, image2, segmentOrder, "weak-bind");
-      parseClassicBindings(r, info.lazyBind, image2, segmentOrder, "lazy-bind");
-      if (!linkeditData.exportsTrie && info.export.size) parseExportTrie(r, info.export, image2);
+      parseClassicBindings(r, info.bind, image2, segmentOrder, "bind", metadataBudget);
+      parseClassicBindings(r, info.weakBind, image2, segmentOrder, "weak-bind", metadataBudget);
+      parseClassicBindings(r, info.lazyBind, image2, segmentOrder, "lazy-bind", metadataBudget);
+      if (!linkeditData.exportsTrie && info.export.size) parseExportTrie(r, info.export, image2, metadataBudget);
     }
-    if (linkeditData.exportsTrie) parseExportTrie(r, linkeditData.exportsTrie, image2);
+    if (linkeditData.exportsTrie) parseExportTrie(r, linkeditData.exportsTrie, image2, metadataBudget);
     const namesByAddr = /* @__PURE__ */ new Map();
-    for (const sym of image2.symbols) if (sym.defined && sym.address) namesByAddr.set(sym.address.toString(), sym.name);
-    for (const ex of image2.exports) if (ex.address) namesByAddr.set(ex.address.toString(), ex.name);
+    const nameIndexEntries = image2.symbols.length + image2.exports.length;
+    if (metadataBudget.take({ objects: nameIndexEntries, operations: nameIndexEntries, estimatedHeapBytes: nameIndexEntries * 48 }, "name-address-index")) {
+      for (const sym of image2.symbols) if (sym.defined && sym.address) namesByAddr.set(sym.address.toString(), sym.name);
+      for (const ex of image2.exports) if (ex.address) namesByAddr.set(ex.address.toString(), ex.name);
+    }
     if (hadFunctionStarts) {
       for (const f of image2.functions) if (!f.name) f.name = namesByAddr.get(f.address.toString()) || null;
       const provenStarts = new Set(image2.functions.filter((f) => f.source !== "export").map((f) => f.address.toString()));
@@ -1233,9 +1386,10 @@
       for (const sym of image2.symbols) {
         if (!sym.defined || !sym.address) continue;
         const sec = image2.sectionAt(sym.address);
-        if (sec && sec.perms.execute && sym.name !== "__mh_execute_header") image2.functions.push(functionSeed(sym.address, { name: sym.name, source: "symbol", confidence: 0.9 }));
+        if (sec && sec.perms.execute && sym.name !== "__mh_execute_header" && metadataBudget.take({ objects: 1, operations: 1, estimatedHeapBytes: 128 }, "symbol-function-fallback")) image2.functions.push(functionSeed(sym.address, { name: sym.name, source: "symbol", confidence: 0.9 }));
       }
     }
+    image2.metadata.machoMetadata = metadataBudget.snapshot();
     return image2.finalize();
   }
   function validateMappedRange(label, address, size, fileOffset, fileSize, image2) {
@@ -1355,13 +1509,15 @@
       export: { offset: r.u32(p + 40), size: r.u32(p + 44) }
     };
   }
-  function parseSymbolTable(r, st, image2, bits) {
+  function parseSymbolTable(r, st, image2, bits, sharedBudget = null) {
+    const budget = ensureMachOMetadataBudget(image2, sharedBudget);
     const ent = bits === 64 ? 16 : 12;
     if (st.symoff + st.nsyms * ent > r.length || st.stroff + st.strsize > r.length) {
       image2.warnings.push("Mach-O symbol table is truncated");
       return;
     }
     for (let i = 0; i < st.nsyms; i++) {
+      if (!budget.take({ inputBytes: ent, records: 1, objects: 1, operations: 2, estimatedHeapBytes: 224 }, "symbol-record")) break;
       const p = st.symoff + i * ent;
       const strx = r.u32(p);
       const type = r.u8(p + 4);
@@ -1371,6 +1527,7 @@
       if (type & 224) continue;
       const name = strx < st.strsize ? r.cstring(st.stroff + strx, st.strsize - strx) : "";
       if (!name) continue;
+      if (!budget.take({ stringBytes: name.length * 2, estimatedHeapBytes: name.length * 2 + 32 }, "symbol-name")) break;
       const ntype = type & 14;
       const external = !!(type & 1);
       const isUndefinedType = ntype === 0;
@@ -1398,7 +1555,8 @@
       void sect;
     }
   }
-  function parseFunctionStarts(r, dc, image2) {
+  function parseFunctionStarts(r, dc, image2, sharedBudget = null) {
+    const budget = ensureMachOMetadataBudget(image2, sharedBudget);
     if (!dc.size || dc.offset > r.length || dc.size > r.length - dc.offset) return;
     let p = dc.offset;
     const end = dc.offset + dc.size;
@@ -1406,6 +1564,11 @@
     const alignment = image2.arch === "arm64" || image2.arch === "arm64e" || image2.arch === "arm64_32" ? 4n : image2.arch === "arm" ? 2n : 1n;
     const status = image2.metadata.functionStarts = { complete: true, recovered: 0, partialReason: null };
     while (p < end) {
+      if (!budget.take({ records: 1, operations: 1, estimatedHeapBytes: 32 }, "function-start-record")) {
+        status.complete = false;
+        status.partialReason = "metadata-budget";
+        break;
+      }
       let x;
       try {
         x = r.uleb(p, 10, end);
@@ -1428,6 +1591,11 @@
       if (!seg || !seg.perms.execute || alignment > 1n && addr % alignment !== 0n) {
         image2.warnings.push(`invalid LC_FUNCTION_STARTS entry 0x${addr.toString(16)}`);
         continue;
+      }
+      if (!budget.take({ inputBytes: x.bytes, objects: 1, estimatedHeapBytes: 128 }, "function-start-output")) {
+        status.complete = false;
+        status.partialReason = "metadata-budget";
+        break;
       }
       image2.functions.push(functionSeed(addr, { source: "function_starts", confidence: 0.995 }));
       status.recovered++;
@@ -2516,12 +2684,12 @@
     estimatedHeapBytes: 96 * 1024 * 1024,
     wallClockMs: 5e3
   });
-  function metadataOf(image2) {
+  function metadataOf2(image2) {
     image2.metadata ||= {};
     return image2.metadata.elfMetadata ||= { complete: true, reasons: [] };
   }
   function markELFMetadataPartial(image2, reason, warning = null) {
-    const meta = metadataOf(image2);
+    const meta = metadataOf2(image2);
     meta.complete = false;
     if (!meta.reasons.includes(reason)) meta.reasons.push(reason);
     if (warning && !image2.warnings.includes(warning)) image2.warnings.push(warning);
@@ -2531,7 +2699,7 @@
     const signal = options.signal || null;
     const started = Date.now();
     const used = { inputBytes: 0, records: 0, objects: 0, stringBytes: 0, operations: 0, estimatedHeapBytes: 0 };
-    const meta = metadataOf(image2);
+    const meta = metadataOf2(image2);
     meta.limits = { ...limits };
     meta.used = used;
     let nextTimeCheck = 1024;
