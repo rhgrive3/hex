@@ -24,8 +24,10 @@ function toBigInt(value) {
 }
 
 function fixedRows(app) {
-  const arch = String(app.store.get('architecture') || 'arm64').toLowerCase();
-  return /arm64|aarch64/.test(arch) || !!app.store.get('canDisassemble');
+  return !!app.store.get('canDisassemble') && Number(app.store.get('instructionAlignment') || app.store.get('capability')?.instructionAlignment || 0) > 0;
+}
+function instructionBytes(app) {
+  return Math.max(1, Number(app.store.get('instructionAlignment') || app.store.get('capability')?.instructionAlignment || 4));
 }
 
 /** Semantic model for one function, or null when it cannot be analysed. */
@@ -38,10 +40,12 @@ export async function analyzeModelAt(app, address) {
   const fn = sym && sym.functionCount ? sym.functionAt(addr) : null;
   const start = fn ? fn.start : addr;
   if (start < region.vmAddr || start >= region.vmAddr + region.size) return null;
-  const startRow = Number((start - region.vmAddr) / 4n);
-  const totalRows = Number(region.size / 4n);
+  const step=BigInt(instructionBytes(app));
+  if ((start-region.vmAddr)%step !== 0n) return null;
+  const startRow = Number((start - region.vmAddr) / step);
+  const totalRows = Number(region.size / step);
   const endRow = fn && fn.end != null
-    ? Math.min(totalRows - 1, Number((fn.end - region.vmAddr) / 4n) - 1)
+    ? Math.min(totalRows - 1, Number((fn.end - region.vmAddr) / step) - 1)
     : Math.min(totalRows - 1, startRow + 2048);
   if (endRow < startRow) return null;
   try {
@@ -91,6 +95,8 @@ export function createHexAIContext(app) {
     get program() { return app.program; },
     get strings() { return app.stringIndex || []; },
     get candidateFunctions() {
+      const ranked=app.recognition?.records;
+      if (Array.isArray(ranked) && ranked.length) return ranked.slice(0,5000).map((item)=>item.address);
       const addr = safeCurrentFunction(app);
       return addr == null ? [] : [addr];
     },
@@ -134,12 +140,18 @@ export function createHexAIContext(app) {
       const sym = app.symbols;
       if (!sym || !Array.isArray(sym.names)) return [];
       const q = String(query || '').toLowerCase();
-      const out = [];
-      for (let i = 0; i < sym.names.length && out.length < limit; i++) {
+      const maxScan=Math.min(sym.names.length,1_000_000), out=[];
+      let matches=0;
+      for (let i = 0; i < maxScan; i++) {
         const name = String(sym.names[i] || '');
         if (q && !name.toLowerCase().includes(q)) continue;
-        out.push({ addr: sym.addrs[i], name });
+        matches++;
+        if(out.length<limit) out.push({ addr: sym.addrs[i], name });
       }
+      out.complete=maxScan===sym.names.length && matches<=limit;
+      out.scannedCount=maxScan; out.total=sym.names.length; out.matchCount=matches;
+      out.truncationReason=maxScan<sym.names.length?'scan-budget':matches>limit?'result-limit':null;
+      out.coverage=sym.names.length?maxScan/sym.names.length:1;
       return out;
     },
 
@@ -196,8 +208,8 @@ function pseudocode(app, model, addr, nameOf) {
   return decompile(model, {
     name: nameOf(addr),
     addr,
-    rowOfAddress: (a) => (region && a != null ? Number((a - region.vmAddr) / 4n) : null),
-    addrOfRow: (row) => (region ? region.vmAddr + BigInt(row) * 4n : null),
+    rowOfAddress: (a) => (region && a != null ? Number((a - region.vmAddr) / BigInt(instructionBytes(app))) : null),
+    addrOfRow: (row) => (region ? region.vmAddr + BigInt(row) * BigInt(instructionBytes(app)) : null),
     symbolFor: (a) => app.symbols?.nameAt?.(a) || null,
     notes: app.notes,
   });

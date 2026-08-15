@@ -22,7 +22,10 @@ import { SymbolIndex, EMPTY_INDEX } from './symbols.js';
 import { clearBriefCache } from './arm64.js';
 import { clearAnalysisCache, analyzeFunctionCached } from './analyze.js';
 import { buildOverlay } from './narrate.js';
-import { buildObjcModel } from './objc.js';
+import { buildObjcRuntimeModel, buildObjcRuntimeIndex } from './objc.js';
+import { buildSwiftMetadataModel, buildSwiftRuntimeIndex, resolveSwiftDispatch } from './swift.js';
+import { classifyFunction, rankApplicationFunctions } from './recognition/classifier.js';
+import { KnowledgeDB } from './knowledge/index.js';
 import { FieldIndex, EMPTY_FIELDS } from './fields.js';
 import { makeSampleFile } from './sample.js';
 import { ProgramIndex } from './program.js';
@@ -69,6 +72,14 @@ class App {
     this.fields = EMPTY_FIELDS;
     this.objcBusy = null;
     this.objcBusyEpoch = -1;
+    this.objcRuntime = null;
+    this.swiftModel = null;
+    this.swiftRuntime = null;
+    this.swiftBusy = null;
+    this.swiftBusyEpoch = -1;
+    this.recognition = null;
+    this.recognitionBusy = null;
+    this.knowledge = new KnowledgeDB();
     this.symbolsReadyEpoch = -1;
     /* 自分で付けた名前・メモ・型（names.js）。ファイルごとに保存される。 */
     this.notes = EMPTY_NOTES;
@@ -386,7 +397,7 @@ class App {
       this.dom.addrRange.textContent =
         addrText(region.vmAddr) + '–' + addrText(region.vmAddr + region.size);
       this.dom.stLeft.textContent =
-        (this.store.get('canDisassemble') ? 'ARM64' : (arch || t('status.data'))) + ' · ' +
+        (this.store.get('canDisassemble') ? (arch || 'code') : (arch || t('status.data'))) + ' · ' +
         sizeText(region.size) + ' · ' + t('status.rows', { n: this.viewer.totalRows.toLocaleString() });
     }
     this.updateModeUI();
@@ -524,6 +535,13 @@ class App {
       this.pinnedCache = null;
       this.fields = EMPTY_FIELDS;
       this.objcModel = null;
+      this.objcRuntime = null;
+      this.swiftModel = null;
+      this.swiftRuntime = null;
+      this.swiftBusy = null;
+      this.swiftBusyEpoch = -1;
+      this.recognition = null;
+      this.recognitionBusy = null;
       this.program = null;
       this.programScan = null;
       this.programKey = null;
@@ -792,25 +810,22 @@ class App {
    * 同じ関数は analyze.js 側のキャッシュに載るので、二度目はすぐ返る。
    */
   async analyzeFunctionAt(addr) {
-    const region = this.store.get('currentRegion');
-    const sym = this.symbols;
-    if (!region || !this.store.get('canDisassemble') || !sym.functionCount) return null;
-    const fn = sym.functionAt(addr);
-    if (!fn || fn.start < region.vmAddr) return null;
-    const startRow = Number((fn.start - region.vmAddr) / 4n);
-    const endRow = fn.end != null
-      ? Math.min(this.viewer.totalRows - 1, Number((fn.end - region.vmAddr) / 4n) - 1)
-      : Math.min(this.viewer.totalRows - 1, startRow + 2048);
-    if (endRow < startRow) return null;
+    const sym=this.symbols, range=this.validatedFunctionRange(addr);
+    if(!range.ok || !this.store.get('canDisassemble') || !sym.functionCount) return null;
+    const region=range.region, alignment=Math.max(1,Number(this.store.get('instructionAlignment')||this.store.get('capability')?.instructionAlignment||4));
+    const width=BigInt(alignment);
+    if((range.start-region.vmAddr)%width!==0n) return null;
+    const startRow=Number((range.start-region.vmAddr)/width);
+    const endRow=Math.min(Number((range.end-region.vmAddr+width-1n)/width)-1, Math.max(0,Number(region.size/width)-1));
+    if(endRow<startRow)return null;
     try {
-      const res = await analyzeFunctionCached(this.backend, region, startRow, endRow, sym);
-      if (this.store.get('currentRegion') !== region) return null;
-      this.semantic = { regionId: region.id, model: res.model, result: res };
-      this.viewer.setBlockOverlay(region.id, buildOverlay(res.model));
+      const res=await analyzeFunctionCached(this.backend,region,startRow,endRow,sym);
+      if(this.store.get('sliceIndex')<0 || this.executableRegionFor(range.start)!==region)return null;
+      res.completeness={complete:range.complete!==false,reason:range.reason||null,provenance:range.provenance,regionId:region.id};
+      this.semantic={regionId:region.id,model:res.model,result:res};
+      if(this.store.get('currentRegion')===region)this.viewer.setBlockOverlay(region.id,buildOverlay(res.model));
       return res;
-    } catch {
-      return null;   // 解析できなくても、命令の表示はそのまま続く
-    }
+    } catch { return null; }
   }
 
   /* ── ファイルを開く ───────────────────────────────────────── */
@@ -897,12 +912,10 @@ class App {
     const info = infoArg || this.store.get('fileInfo');
     const slice = sliceIndex >= 0 ? info.slices[sliceIndex] : null;
     const regions = slice ? slice.regions : [];
-    const arch = slice && slice.info
-      ? slice.info.cpu + (slice.info.cpuSub && slice.info.cpuSub !== 'all' ? ' (' + slice.info.cpuSub + ')' : '')
-      : null;
-    const canDisassemble = slice && slice.info ? !!slice.info.isArm64 : true;
-
-    this.store.set({ sliceIndex, regions, architecture: arch, canDisassemble });
+    const capability = slice?.capability || info?.capability || { architecture:slice?.info?.architecture || (slice?.info?.isArm64?'arm64':'unknown'), canDisassemble:!!slice?.info?.isArm64, analysisLevel:!!slice?.info?.isArm64?'full':'data-only', limitations:[], instructionAlignment:slice?.info?.isArm64?4:1 };
+    const arch = capability.architecture || slice?.info?.architecture || slice?.info?.cpu || null;
+    const canDisassemble = capability.canDisassemble === true || capability.viewerCanDisassemble === true;
+    this.store.set({ sliceIndex, regions, architecture: arch, canDisassemble, capability, analysisLevel:capability.analysisLevel||'data-only', limitations:capability.limitations||[], instructionAlignment:Math.max(1,Number(capability.instructionAlignment||capability.fixedInstructionSize||1)) });
 
     const mode = canDisassemble ? this.preferredMode : 'hex';
     this.store.set({ displayMode: mode });
@@ -960,50 +973,103 @@ class App {
    */
   async ensureObjc(sliceIndex) {
     const epoch = this.backend.gen;
-    if (this.fields && this.fields.classCount) return this.fields;
+    if (this.objcModel && this.objcRuntime) return this.fields;
     if (this.objcBusy && this.objcBusyEpoch === epoch) return this.objcBusy;
     const regions = this.store.get('regions') || [];
-    const list = regions.find((r) => r.section === '__objc_classlist' && r.size > 0n);
-    if (!list) { this.fields = EMPTY_FIELDS; return this.fields; }
+    const list = regions.find((r) => r.section === '__objc_classlist' && r.size > 0n) || null;
+    const protocolList = regions.find((r) => r.section === '__objc_protolist' && r.size > 0n) || null;
+    const categoryList = regions.find((r) => r.section === '__objc_catlist' && r.size > 0n) || null;
+    if (!list && !protocolList && !categoryList) { this.fields = EMPTY_FIELDS; this.objcModel=null; this.objcRuntime=null; return this.fields; }
     const slice = sliceIndex != null ? sliceIndex : this.store.get('sliceIndex');
-
     this.objcBusyEpoch = epoch;
     this.objcBusy = (async () => {
-      const read = (addr, len) => this.backend.readAt(addr, len)
-        .then((r) => (r && r.found ? r.bytes : null))
-        .catch(() => null);
+      const read = (addr, len) => this.backend.readAt(addr, len).then((r) => (r && r.found ? r.bytes : null)).catch(() => null);
       try {
-        // chained fixups のポインタは「イメージの先頭からの距離」なので、先頭が要る
         const info = this.store.get('fileInfo');
         const sl = info && info.slices ? info.slices[slice] : null;
         const imageBase = sl && sl.info ? sl.info.textVM : null;
-        const model = await buildObjcModel(read, list, null, imageBase);
+        const model = list ? await buildObjcRuntimeModel(read, list, { protocolList, categoryList }, null, imageBase) : {classes:[],names:[],protocols:[],categories:[],count:0};
         if (epoch !== this.backend.gen || this.store.get('sliceIndex') !== slice) return this.fields;
+        model.runtimeIndex = model.runtimeIndex || buildObjcRuntimeIndex(model);
         this.objcModel = model;
+        this.objcRuntime = model.runtimeIndex;
         this.fields = new FieldIndex(model);
-        if (model.names.length) {
-          const added = this.symbols.addNames(model.names);
-          this.symbols.addFunctions(model.names.map((n) => n.addr));
-          this.viewer.setSymbols(this.symbols);
-          this.updateChrome();
-          if (added) {
-            toast(pick(
-              model.count + ' 個のクラスから、' + added + ' 個の関数の名前と ' +
-                this.fields.fieldCount + ' 個の値の名前を復元しました',
-              'Recovered ' + added + ' function names and ' + this.fields.fieldCount +
-                ' field names from ' + model.count + ' classes'));
-          }
+        if (model.names?.length) {
+          const exec = this.executableRegions();
+          const verifiedNames = model.names.filter((n) => n?.addr != null && exec.some((r)=>n.addr>=r.vmAddr && n.addr<r.vmAddr+r.size));
+          const added = this.symbols.addNames(verifiedNames);
+          this.symbols.addFunctions(verifiedNames.map((n) => n.addr));
+          this.viewer.setSymbols(this.symbols); this.updateChrome();
+          if (added) toast(pick(`Objective-C metadataから ${added} 個の関数名を復元しました`, `Recovered ${added} Objective-C function names`));
         }
-      } catch { /* 読めなくても、ほかの表示には影響させない */
-      } finally {
-        if (this.objcBusyEpoch === epoch) {
-          this.objcBusy = null;
-          this.objcBusyEpoch = -1;
-        }
-      }
+      } catch { /* fail-soft on partial Apple metadata */ }
+      finally { if (this.objcBusyEpoch === epoch) { this.objcBusy=null; this.objcBusyEpoch=-1; } }
       return epoch === this.backend.gen ? this.fields : EMPTY_FIELDS;
     })();
     return this.objcBusy;
+  }
+
+  async ensureSwift() {
+    const epoch=this.backend.gen;
+    if (this.swiftModel && this.swiftRuntime) return this.swiftModel;
+    if (this.swiftBusy && this.swiftBusyEpoch===epoch) return this.swiftBusy;
+    const regions=this.store.get('regions') || [];
+    if (!regions.some((r)=>/^__swift5_/.test(r.section||''))) return null;
+    const slice=this.store.get('sliceIndex');
+    this.swiftBusyEpoch=epoch;
+    this.swiftBusy=(async()=>{
+      const read=(addr,len)=>this.backend.readAt(addr,len).then((r)=>(r&&r.found?r.bytes:null)).catch(()=>null);
+      try {
+        const model=await buildSwiftMetadataModel(read,regions,{budget:20000});
+        if(epoch!==this.backend.gen || this.store.get('sliceIndex')!==slice) return null;
+        this.swiftModel=model; this.swiftRuntime=buildSwiftRuntimeIndex(model);
+        const exec=this.executableRegions(); const names=[];
+        for(const type of model.types||[]) for(const method of type.methods||type.vtable||[]) {
+          if(method?.impl!=null && exec.some((r)=>method.impl>=r.vmAddr&&method.impl<r.vmAddr+r.size)) names.push({addr:method.impl,name:`${type.name||'SwiftType'}::method_${method.index}`,source:'swift-metadata'});
+        }
+        if(names.length){this.symbols.addNames(names);this.symbols.addFunctions(names.map((x)=>x.addr));this.viewer.setSymbols(this.symbols);}
+        return model;
+      } catch { return null; }
+      finally { if(this.swiftBusyEpoch===epoch){this.swiftBusy=null;this.swiftBusyEpoch=-1;} }
+    })();
+    return this.swiftBusy;
+  }
+
+  resolveSwiftCall(call) { return this.swiftRuntime ? resolveSwiftDispatch(this.swiftRuntime, call || {}) : {resolved:null,candidates:[],confidence:0,reason:'swift-runtime-unavailable'}; }
+
+  executableRegions() { return (this.store.get('regions') || []).filter((r)=>r?.exec===true && r.size>0n); }
+  executableRegionFor(addr) { const a=BigInt(addr); return this.executableRegions().find((r)=>a>=r.vmAddr && a<r.vmAddr+r.size) || null; }
+  validatedFunctionRange(addr) {
+    const fn=this.symbols?.functionAt?.(BigInt(addr)); if(!fn) return {ok:false,reason:'function-symbol-missing'};
+    const region=this.executableRegionFor(fn.start); if(!region) return {ok:false,reason:'function-start-not-executable',function:fn};
+    const regionEnd=region.vmAddr+region.size;
+    let end=fn.end!=null?BigInt(fn.end):regionEnd;
+    let complete=true,reason=null;
+    if(end<=fn.start){return {ok:false,reason:'invalid-function-range',function:fn,region};}
+    if(end>regionEnd){end=regionEnd;complete=false;reason='symbol-range-crosses-executable-region';}
+    return {ok:true,start:fn.start,end,region,function:fn,complete,reason,provenance:'executable-region+symbol-boundary'};
+  }
+
+  async ensureRecognition(options={}) {
+    if(this.recognition && this.recognition.gen===this.symbols.gen) return this.recognition;
+    if(this.recognitionBusy) return this.recognitionBusy;
+    const epoch=this.backend.gen, sym=this.symbols, max=Math.min(500000,Math.max(1000,Number(options.maxFunctions)||350000));
+    this.recognitionBusy=(async()=>{
+      const total=sym?.addrs?.length||0, count=Math.min(total,max), functions=[];
+      for(let i=0;i<count;i++){
+        if(epoch!==this.backend.gen) return null;
+        const address=sym.addrs[i], name=sym.names?.[i]||null;
+        const objc=name&&/^[+-]\[([^ ]+)/.exec(name);
+        functions.push({address,name,size:0,objc:objc?{class:objc[1]}:{},strings:[],calls:[],imports:[],semantic:{writes:[],thresholds:[]},fieldAccessShape:[]});
+        if((i&8191)===8191) await Promise.resolve();
+      }
+      const ranked=rankApplicationFunctions(functions,()=>({notKnownVendor:true}));
+      // Preserve obfuscated/unknown functions after application candidates instead of hiding them.
+      const records=ranked.map((x)=>({address:x.function.address,name:x.function.name||null,score:x.score,classification:x.classification.classification,confidence:x.classification.confidence,evidence:x.classification.evidence}));
+      const state={gen:sym.gen,records,total,scannedCount:count,complete:count===total,truncationReason:count===total?null:'function-budget',binaryHash:this.backend.contentHash||null,knowledge:this.knowledge};
+      if(epoch===this.backend.gen)this.recognition=state; return state;
+    })().finally(()=>{this.recognitionBusy=null;});
+    return this.recognitionBusy;
   }
 
   /** その関数がどのクラスのメソッドか。分からなければ null。 */
