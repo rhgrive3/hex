@@ -127,7 +127,17 @@ export async function executeTurn(input = {}, options = {}) {
                 scope: scopeController.effectiveScope, requestedScope: request.scope, effectiveScope: scopeController.effectiveScope,
                 intent, task: request.task || null, messages, context: built.context, tools,
               }, { signal, timeoutMs: remainingTime(started, budget.timeoutMs) });
-              next = validateModelDecision(next, tools.map((tool) => tool.name));
+              const visibleToolNames = tools.map((tool) => tool.name);
+              const previousTool = observations.length ? observations[observations.length - 1]?.tool : null;
+              if (
+                next?.type === 'tool'
+                && previousTool
+                && next.tool === previousTool
+                && registry.has(previousTool)
+                && scopeController.scopeAllowsTool(scopeController.effectiveScope, previousTool, next.arguments)
+                && !visibleToolNames.includes(previousTool)
+              ) visibleToolNames.push(previousTool);
+              next = validateModelDecision(next, visibleToolNames);
             } catch (error) {
               const normalized = normalizeError(error, signal);
               if ((normalized.type === 'invalid_model_output' || normalized.type === 'invalid_tool_call') && repairs++ === 0 && modelCalls < budget.maxModelCalls) {
