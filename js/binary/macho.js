@@ -90,14 +90,23 @@ function parseThin(bytes, opts) {
     try {
       if (cmd === LC_SEGMENT_64 && bits === 64) parseSegment64(r, p, cmdsize, image, segmentOrder);
       else if (cmd === LC_SEGMENT && bits === 32) parseSegment32(r, p, cmdsize, image, segmentOrder);
-      else if (cmd === LC_SYMTAB) symtabs.push({ symoff: r.u32(p + 8), nsyms: r.u32(p + 12), stroff: r.u32(p + 16), strsize: r.u32(p + 20) });
-      else if (DYLIB_COMMANDS.has(cmd) || cmd === LC_ID_DYLIB) parseDylib(r, p, cmdsize, image, cmd === LC_ID_DYLIB);
+      else if (cmd === LC_SYMTAB) {
+        if (cmdsize < 24) throw new Error(`invalid LC_SYMTAB size ${cmdsize}`);
+        symtabs.push({ symoff: r.u32(p + 8), nsyms: r.u32(p + 12), stroff: r.u32(p + 16), strsize: r.u32(p + 20) });
+      }
+      else if (DYLIB_COMMANDS.has(cmd) || cmd === LC_ID_DYLIB) {
+        if (cmdsize < 24) throw new Error(`invalid dylib command size ${cmdsize}`);
+        parseDylib(r, p, cmdsize, image, cmd === LC_ID_DYLIB);
+      }
       else if (cmd === LC_MAIN && cmdsize >= 24) linkeditData.main = { entryoff: r.u64(p + 8), stacksize: r.u64(p + 16) };
       else if ((cmd === LC_THREAD || cmd === LC_UNIXTHREAD) && cmdsize >= 16) {
         const pc = parseThreadEntrypoint(r, p, cmdsize, cpu, bits);
         if (pc != null && linkeditData.threadEntry == null) linkeditData.threadEntry = pc;
       }
-      else if (cmd === LC_VERSION_MIN_MACOSX || cmd === LC_VERSION_MIN_IPHONEOS || cmd === LC_VERSION_MIN_TVOS || cmd === LC_VERSION_MIN_WATCHOS) parseLegacyVersionMin(r, p, cmd, image);
+      else if (cmd === LC_VERSION_MIN_MACOSX || cmd === LC_VERSION_MIN_IPHONEOS || cmd === LC_VERSION_MIN_TVOS || cmd === LC_VERSION_MIN_WATCHOS) {
+        if (cmdsize < 16) throw new Error(`invalid LC_VERSION_MIN size ${cmdsize}`);
+        parseLegacyVersionMin(r, p, cmd, image);
+      }
       else if (cmd === LC_FUNCTION_STARTS && cmdsize >= 16) linkeditData.functionStarts = dataCommand(r, p);
       else if (cmd === LC_DYLD_CHAINED_FIXUPS && cmdsize >= 16) linkeditData.chainedFixups = dataCommand(r, p);
       else if (cmd === LC_DYLD_EXPORTS_TRIE && cmdsize >= 16) linkeditData.exportsTrie = dataCommand(r, p);

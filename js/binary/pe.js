@@ -10,6 +10,27 @@ const IMAGE_DIRECTORY_ENTRY_TLS = 9;
 const IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG = 10;
 const IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT = 13;
 
+function seedValidatedEntrypoint(image, entryRva, sizeOfImage, machine) {
+  const address = image.imageBase + BigInt(entryRva);
+  const reject = (reason) => {
+    image.warnings.push(`PE entrypoint 0x${entryRva.toString(16)} rejected: ${reason}`);
+    image.metadata.entrypointValid = false;
+    image.metadata.entrypointDiagnostic = reason;
+  };
+  if (entryRva >= sizeOfImage) { reject('RVA is outside SizeOfImage'); return; }
+  const segment = image.segments.find((s) => s.source === 'PE-section' &&
+    address >= s.address && address < s.address + s.size);
+  if (!segment) { reject('RVA is not mapped by a section'); return; }
+  if (!segment.perms?.execute) { reject('section is not executable'); return; }
+  const offset = address - segment.address;
+  if (offset < 0n || offset >= segment.fileSize) { reject('entrypoint has no file-backed instruction byte'); return; }
+  const alignment = machine === 0xaa64 || machine === 0x01c0 || machine === 0x01c4 ? 4n : 1n;
+  if (address % alignment !== 0n) { reject(`address is not ${alignment}-byte aligned`); return; }
+  image.metadata.entrypointValid = true;
+  image.metadata.entrypointDiagnostic = null;
+  image.functions.push(functionSeed(address, { source: 'entrypoint', confidence: 0.9 }));
+}
+
 export function parsePE(input) {
   const bytes = new ByteView(input).bytes;
   const r = new ByteView(bytes, { littleEndian: true });
@@ -71,7 +92,7 @@ export function parsePE(input) {
     image.addSection({ name, address, size: virtualExtent, fileOffset: BigInt(ptrRaw), fileSize: mappedFileSize, perms, flags, type: null, index: i + 1, source: 'PE-section' });
   }
 
-  if (entryRva) image.functions.push(functionSeed(image.entrypoint, { source: 'entrypoint', confidence: 0.9 }));
+  if (entryRva) seedValidatedEntrypoint(image, entryRva, sizeOfImage, machine);
   parseCoffSymbols(r, ptrSymbols, numberOfSymbols, image);
   parseImports(r, directory(directories, IMAGE_DIRECTORY_ENTRY_IMPORT), image);
   parseExports(r, directory(directories, IMAGE_DIRECTORY_ENTRY_EXPORT), image);
