@@ -156,6 +156,21 @@ function parseThin(bytes, opts) {
   return image.finalize();
 }
 
+function validateMappedRange(label, address, size, fileOffset, fileSize, image) {
+  const inputSize = BigInt(image.bytes?.length ?? image.fileSize ?? 0);
+  if (fileSize > size) throw new Error(`${label} file size exceeds VM size`);
+  if (fileOffset > inputSize || fileSize > inputSize - fileOffset) throw new Error(`${label} file range exceeds input`);
+  return { vmEnd: address + size, fileEnd: fileOffset + fileSize };
+}
+
+function validateSectionRange(label, saddr, ssize, fileOffset, fileSize, seg, image, zeroFill) {
+  if (saddr < seg.address || saddr > seg.address + seg.size || ssize > seg.address + seg.size - saddr) throw new Error(`${label} VM range escapes parent segment`);
+  if (!zeroFill) {
+    if (fileOffset < seg.fileOffset || fileOffset > seg.fileOffset + seg.fileSize || fileSize > seg.fileOffset + seg.fileSize - fileOffset) throw new Error(`${label} file range escapes parent segment`);
+    validateMappedRange(label, saddr, ssize, fileOffset, fileSize, image);
+  }
+}
+
 function parseSegment64(r, p, cmdsize, image, order) {
   if (cmdsize < 72) throw new Error(`invalid LC_SEGMENT_64 size ${cmdsize}`);
   const name = r.ascii(p + 8, 16);
@@ -167,6 +182,7 @@ function parseSegment64(r, p, cmdsize, image, order) {
   const nsects = r.u32(p + 64);
   if (nsects > Math.floor((cmdsize - 72) / 80)) throw new Error(`invalid section count ${nsects}`);
   const flags = r.u32(p + 68);
+  validateMappedRange(`segment ${name}`, address, size, fileOffset, fileSize, image);
   const seg = image.addSegment({ name, address, size, fileOffset, fileSize, perms: vmPerms(initprot), flags, source: 'LC_SEGMENT_64' });
   order.push(seg);
   let q = p + 72;
@@ -179,7 +195,9 @@ function parseSegment64(r, p, cmdsize, image, order) {
     const offset = r.u32(q + 48);
     const sflags = r.u32(q + 64);
     const zeroFill = (sflags & 0xff) === 1 || (sflags & 0xff) === 0x0c || (sflags & 0xff) === 0x12;
-    image.addSection({ name: sectname, segment: segname, address: saddr, size: ssize, fileOffset: BigInt(offset), fileSize: zeroFill ? 0n : ssize, perms: vmPerms(initprot), flags: sflags, index: image.sections.length + 1 });
+    const sectionFileOffset = BigInt(offset), sectionFileSize = zeroFill ? 0n : ssize;
+    validateSectionRange(`section ${sectname}`, saddr, ssize, sectionFileOffset, sectionFileSize, seg, image, zeroFill);
+    image.addSection({ name: sectname, segment: segname, address: saddr, size: ssize, fileOffset: sectionFileOffset, fileSize: sectionFileSize, perms: vmPerms(initprot), flags: sflags, index: image.sections.length + 1 });
   }
 }
 
@@ -194,6 +212,7 @@ function parseSegment32(r, p, cmdsize, image, order) {
   const nsects = r.u32(p + 48);
   if (nsects > Math.floor((cmdsize - 56) / 68)) throw new Error(`invalid section count ${nsects}`);
   const flags = r.u32(p + 52);
+  validateMappedRange(`segment ${name}`, address, size, fileOffset, fileSize, image);
   const seg = image.addSegment({ name, address, size, fileOffset, fileSize, perms: vmPerms(initprot), flags, source: 'LC_SEGMENT' });
   order.push(seg);
   let q = p + 56;
@@ -206,7 +225,9 @@ function parseSegment32(r, p, cmdsize, image, order) {
     const offset = r.u32(q + 40);
     const sflags = r.u32(q + 56);
     const zeroFill = (sflags & 0xff) === 1 || (sflags & 0xff) === 0x0c || (sflags & 0xff) === 0x12;
-    image.addSection({ name: sectname, segment: segname, address: saddr, size: ssize, fileOffset: BigInt(offset), fileSize: zeroFill ? 0n : ssize, perms: vmPerms(initprot), flags: sflags, index: image.sections.length + 1 });
+    const sectionFileOffset = BigInt(offset), sectionFileSize = zeroFill ? 0n : ssize;
+    validateSectionRange(`section ${sectname}`, saddr, ssize, sectionFileOffset, sectionFileSize, seg, image, zeroFill);
+    image.addSection({ name: sectname, segment: segname, address: saddr, size: ssize, fileOffset: sectionFileOffset, fileSize: sectionFileSize, perms: vmPerms(initprot), flags: sflags, index: image.sections.length + 1 });
   }
 }
 
@@ -292,15 +313,23 @@ function parseSymbolTable(r, st, image, bits) {
 }
 
 function parseFunctionStarts(r, dc, image) {
-  if (!dc.size || dc.offset + dc.size > r.length) return;
+  if (!dc.size || dc.offset > r.length || dc.size > r.length - dc.offset) return;
   let p = dc.offset;
   const end = dc.offset + dc.size;
   let addr = image.imageBase;
+  const alignment = image.arch === 'arm64' ? 4n : image.arch === 'arm' ? 2n : 1n;
   while (p < end) {
     const x = r.uleb(p);
     p = x.next;
     if (x.value === 0n) break;
-    addr += x.value;
+    const next = addr + x.value;
+    if (next < addr) { image.warnings.push('LC_FUNCTION_STARTS address overflow'); break; }
+    addr = next;
+    const seg = image.segmentAt(addr);
+    if (!seg || !seg.perms.execute || (alignment > 1n && addr % alignment !== 0n)) {
+      image.warnings.push(`invalid LC_FUNCTION_STARTS entry 0x${addr.toString(16)}`);
+      continue;
+    }
     image.functions.push(functionSeed(addr, { source: 'function_starts', confidence: 0.995 }));
   }
 }

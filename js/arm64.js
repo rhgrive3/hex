@@ -106,16 +106,17 @@ function parseMem(text) {
   if (!parts.length) return null;
   const base = parseReg(parts[0]);
   if (!base) return null;
-  const mem = { k: 'mem', text, base, index: null, disp: null, shift: null, mode: bang ? 'pre' : 'offset' };
+  const mem = { k: 'mem', text, base, index: null, disp: null, addressDisp: null, writebackDisp: null, shift: null, mode: bang ? 'pre' : 'offset' };
   for (let i = 1; i < parts.length; i++) {
     const p = parts[i];
     const imm = parseImm(p);
-    if (imm) { mem.disp = imm; continue; }
+    if (imm) { mem.disp = imm; mem.addressDisp = imm; continue; }
     const reg = parseReg(p);
     if (reg) { mem.index = reg; continue; }
     const sh = SHIFT_RE.exec(p) || EXT_RE.exec(p);
     if (sh) mem.shift = { op: sh[1].toLowerCase(), amount: sh[2] != null ? Number(bigOf(sh[2])) : null };
   }
+  if (mem.mode === 'pre' && mem.disp) mem.writebackDisp = mem.disp;
   return mem;
 }
 
@@ -157,7 +158,9 @@ export function parseOperands(str) {
     if (out[i].k === 'mem' && out[i].mode === 'offset' && out[i].disp == null &&
         out[i].index == null && out[i + 1].k === 'imm' && !out[i].text.endsWith('!')) {
       // 直後が即値で、かつ元の文字列で "]" のあとにコンマが来ていた場合のみ。
-      out[i].disp = out[i + 1];
+      out[i].writebackDisp = out[i + 1];
+      out[i].addressDisp = null;
+      out[i].disp = null;
       out[i].mode = 'post';
       out.splice(i + 1, 1);
     }

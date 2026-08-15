@@ -172,15 +172,25 @@ function strength(text, weak) {
  * @param {number} perFeature 機能あたりの上限
  */
 export function groupByFeature(strings, perFeature = 200) {
+  const limit = Math.max(0, Math.floor(Number(perFeature) || 0));
   const buckets = new Map();
   for (const f of FEATURES) buckets.set(f.id, []);
 
-  for (const s of strings) {
+  // Evaluate every matching string.  The limit is a retention bound, not an
+  // evaluation bound: a late strong hit must be able to evict an early weak hit.
+  for (const s of strings || []) {
     const hits = classifyString(s.text);
     for (const h of hits) {
       const list = buckets.get(h.id);
-      if (!list || list.length >= perFeature) continue;
-      list.push({ addr: s.addr, text: s.text, score: strength(s.text, h.weak) });
+      if (!list || limit <= 0) continue;
+      const item = { addr: s.addr, text: s.text, score: strength(s.text, h.weak) };
+      if (list.length < limit) {
+        list.push(item);
+        list.sort((a, b) => b.score - a.score);
+      } else if (item.score > list[list.length - 1].score) {
+        list[list.length - 1] = item;
+        list.sort((a, b) => b.score - a.score);
+      }
     }
   }
 
@@ -188,7 +198,6 @@ export function groupByFeature(strings, perFeature = 200) {
   for (const f of FEATURES) {
     const list = buckets.get(f.id);
     if (!list.length) continue;
-    // 濃い手がかりから先に見せる。上から順に試すのがいちばん速い。
     list.sort((a, b) => b.score - a.score);
     out.push({ id: f.id, label: pick(f.ja, f.en), items: list });
   }

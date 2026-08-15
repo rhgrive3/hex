@@ -57,7 +57,6 @@ export function normalizeStatus(value, confidence) {
   if (STATUS_ALIASES.has(key)) return STATUS_ALIASES.get(key);
   const n = num(confidence);
   if (n != null) {
-    if (n >= 0.95) return STATUS.VERIFIED;
     if (n >= 0.7) return STATUS.SUPPORTED;
     if (n > 0) return STATUS.HYPOTHESIS;
   }
@@ -245,8 +244,9 @@ function normalizeHypothesis(raw, index, evidenceById) {
     claim: text(raw.claim || raw.title || '', 600),
     status: normalizeStatus(raw.status, raw.confidence),
     confidence: num(raw.confidence),
-    support: support.map((id) => evidenceById.get(id) || { id, title: id, status: STATUS.SUPPORTED }),
-    contradictions: contradictions.map((id) => evidenceById.get(id) || { id, title: id, status: STATUS.CONTRADICTED }),
+    support: support.map((id) => evidenceById.get(id) || { id, title: id, status: STATUS.UNKNOWN, unresolved: true }).filter((item) => !item.unresolved),
+    contradictions: contradictions.map((id) => evidenceById.get(id) || { id, title: id, status: STATUS.UNKNOWN, unresolved: true }).filter((item) => !item.unresolved),
+    unresolvedEvidenceIds: [...support, ...contradictions].filter((id) => !evidenceById.has(id)),
     missing: (Array.isArray(raw.missingEvidence) ? raw.missingEvidence : []).map((item) => text(item, 200)).slice(0, 8),
   };
 }

@@ -248,6 +248,9 @@ export class Emulator {
     }
     if (mn === 'bl' || mn === 'blr') {
       const target = mn === 'bl' ? this.branchTarget(ops) : R(ops[0]);
+      if (target != null && this.trace.length < 4000) {
+        this.trace.push({ type:'call', addr:at, address:at, target, indirect:mn === 'blr', text:(mn + ' ' + opsStr).trim() });
+      }
       this.x[30] = at + 4n;
       if (target == null) throw new Error('呼び出し先が分かりませんでした。');
       const hooked = await this.hookedCall(target);
