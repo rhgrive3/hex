@@ -7,8 +7,12 @@ function provenance(source, confidence = 1) {
 function statusReasons(value, prefix, out) {
   if (!value || typeof value !== 'object') return;
   if (value.complete === false) out.push(`${prefix}:incomplete`);
+  if (value.importsComplete === false) out.push(`${prefix}:imports-incomplete`);
+  if (value.symbolsComplete === false) out.push(`${prefix}:symbols-incomplete`);
   if (value.bindingSitesComplete === false) out.push(`${prefix}:binding-sites-incomplete`);
-  if (value.partialReason) out.push(`${prefix}:${value.partialReason}`);
+  for (const reason of [value.partialReason, value.importsPartialReason, value.symbolsPartialReason, value.bindingSitesPartialReason]) {
+    if (reason) out.push(`${prefix}:${reason}`);
+  }
   for (const reason of value.reasons || value.bindingSiteReasons || []) out.push(`${prefix}:${reason}`);
 }
 
