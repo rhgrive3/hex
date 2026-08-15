@@ -7,12 +7,12 @@ import {
 } from '../js/userscript/runtime-security.js';
 
 const root = new URL('../', import.meta.url);
-const [wranglerText, workerEntry, entry, bridge, adapter, selectors, buildScript, template, secretsModule, embedded] = await Promise.all([
+const [wranglerText, workerEntry, entry, bridge, adapter, selectors, buildScript, loaderSource, template, secretsModule, embedded] = await Promise.all([
   readFile(new URL('wrangler.jsonc', root), 'utf8'), readFile(new URL('worker-entry.js', root), 'utf8'),
   readFile(new URL('js/userscript/entry.js', root), 'utf8'), readFile(new URL('js/userscript/chatgpt-bridge.js', root), 'utf8'),
   readFile(new URL('js/userscript/chatgpt-adapter.js', root), 'utf8'), readFile(new URL('js/userscript/chatgpt-selectors.js', root), 'utf8'),
-  readFile(new URL('scripts/build-userscript.mjs', root), 'utf8'), readFile(new URL('userscript/hex.user.template.js', root), 'utf8'),
-  import('../.runtime-build/runtime-secrets.js'), import('../.runtime-build/embedded-assets.js'),
+  readFile(new URL('scripts/build-userscript.mjs', root), 'utf8'), readFile(new URL('js/userscript/loader.js', root), 'utf8'),
+  readFile(new URL('userscript/hex.user.template.js', root), 'utf8'), import('../.runtime-build/runtime-secrets.js'), import('../.runtime-build/embedded-assets.js'),
 ]);
 
 const wrangler = JSON.parse(wranglerText.replace(/^\s*\/\/.*$/gm, ''));
@@ -50,6 +50,9 @@ assert.match(buildScript, /createCipheriv\('aes-256-gcm'/);
 assert.match(buildScript, /gzipSync/);
 assert.match(buildScript, /MAX_LOADER_BYTES/);
 assert.match(buildScript, /bundleCss/);
+assert.match(loaderSource, /async function fetchBytes/);
+assert.match(loaderSource, /credentials:\s*'omit'/);
+assert.doesNotMatch(loaderSource, /responseType:\s*'arraybuffer'/);
 assert.doesNotMatch(embedded.PROTECTED_HOST.css, /@import\b/);
 assert.match(embedded.PROTECTED_HOST.scopedCss, /@scope \(#hex-userscript-host\)/);
 assert.doesNotMatch(embedded.PROTECTED_HOST.scopedCss, /(?:^|[},])\s*(?:html|body)(?=[\s.#:[,{>+~])/);
@@ -58,6 +61,7 @@ assert.match(template, /^\/\/ ==UserScript==/);
 assert.match(template, /@match\s+https:\/\/chatgpt\.com\/\*/);
 assert.match(template, /@grant\s+GM\.xmlHttpRequest/);
 assert.match(template, /__HEX_ORIGIN__\/hex\.meta\.js/);
+assert.doesNotMatch(template, /responseType:"arraybuffer"/);
 assert.ok(Buffer.byteLength(template) < 64 * 1024, `loader is ${Buffer.byteLength(template)} bytes`);
 for (const forbidden of ['Semantic IR', 'createHexToolRegistry', 'decompileFunction', 'EvidenceStore', 'platform-worker.bundle', '__HEX_WORKER_MANIFEST__']) assert.doesNotMatch(template, new RegExp(forbidden));
 
