@@ -168,7 +168,14 @@ export function createHexAIContext(app) {
       getObservations({ functionAddress, limit = 100 } = {}) {
         const addr = toBigInt(functionAddress);
         const results = runtimeEvidenceForApp(app, addr).slice(-limit);
-        return { results, returned: results.length, verified: results.length > 0 };
+        const completeConfirmed = results.filter((item)=>item?.verdict==='confirmed' && item?.observedState?.factsComplete !== false && item?.reproducibility?.replayable === true);
+        const contradicted = results.filter((item)=>item?.verdict==='contradicted').length;
+        return {
+          results, returned:results.length,
+          status:contradicted ? 'contradicted' : completeConfirmed.length ? 'confirmed' : results.length ? 'observed' : 'none',
+          verified:completeConfirmed.length > 0 && contradicted === 0,
+          verification:{confirmedCompleteReplayable:completeConfirmed.length,contradictions:contradicted,total:results.length}
+        };
       },
       async verifyHypothesis(hypothesis, options) {
         try { return await verifyAppHypothesis(app, hypothesis, options || {}); }

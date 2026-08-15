@@ -12,7 +12,7 @@ export function createRuntimeEvidenceRecord(input = {}) {
   const traceGroup = input.provenanceGroup || `runtime:${idPart(input.sessionId || 'session')}:${idPart(input.experimentId || input.function || 'observation')}:${idPart(input.caseId || 'case')}`;
   return {
     id:input.id || `${traceGroup}:${idPart(input.kind || 'observation')}`,
-    source:'runtime', backend:String(input.backend || 'unknown').slice(0,128), binaryHash:input.binaryHash || null,
+    source:'runtime', backend:String(input.backend || 'unknown').slice(0,128), binaryHash:input.binaryHash || null, sliceIdentity:input.sliceIdentity || null,
     function:input.function == null ? null : input.function, address:input.address == null ? null : input.address,
     input:input.input || null, initialState:input.initialState || null, observedState:input.observedState || null,
     branchPath:Array.isArray(input.branchPath) ? input.branchPath.slice(0,4096) : [], timestamp:input.timestamp || nowIso(), sessionId:input.sessionId || null,
@@ -22,14 +22,14 @@ export function createRuntimeEvidenceRecord(input = {}) {
   };
 }
 
-export function evidenceFromExperiment({ experiment, testCase, observation, comparison, backend = 'unknown', binaryHash = null, sessionId = null }) {
+export function evidenceFromExperiment({ experiment, testCase, observation, comparison, backend = 'unknown', binaryHash = null, sliceIdentity = null, sessionId = null, replayable = false }) {
   const group = `runtime:${idPart(sessionId || 'session')}:${idPart(experiment.id)}:${idPart(testCase.id)}`;
   return createRuntimeEvidenceRecord({
-    backend, binaryHash:binaryHash || experiment.binaryHash, function:experiment.functionAddress, input:testCase.input,
+    backend, binaryHash:binaryHash || experiment.binaryHash, sliceIdentity, function:experiment.functionAddress, input:testCase.input,
     initialState:testCase.initialState, observedState:{ returnValue:observation.returnValue, registerDelta:observation.registerDelta, memoryDelta:observation.memoryDelta, memoryAfter:observation.memoryAfter, stop:observation.stop },
     branchPath:observation.branches || [], sessionId, experimentId:experiment.id, caseId:testCase.id, verdict:comparison.status,
     confidence:comparison.status === 'supported' ? 0.8 : comparison.status === 'contradicted' ? 0.9 : 0.35,
-    kind:'experiment', provenanceGroup:group, reproducibility:{ replayable:true, runs:1, consistent:null }
+    kind:'experiment', provenanceGroup:group, reproducibility:{ replayable:!!replayable, runs:1, consistent:null }
   });
 }
 
@@ -106,6 +106,7 @@ export function dynamicTypeAnnotation(event, context = {}) {
 export function fuseStaticDynamic(staticCandidate, runtimeEvidence = []) {
   const candidateHash = staticCandidate && staticCandidate.binaryHash || null;
   const candidateFunction = staticCandidate && staticCandidate.functionAddress != null ? staticCandidate.functionAddress : null;
+  const candidateSlice = staticCandidate && staticCandidate.sliceIdentity || null;
   const evidence = runtimeEvidence.filter((item) => item && (item.source === 'runtime' || item.provenance && item.provenance.group === GROUP.RUNTIME));
   if (!candidateHash || candidateFunction == null) {
     return { candidate:staticCandidate, status:'inconclusive', reason:'identity-missing', confidence:safeConfidence(staticCandidate && staticCandidate.confidence,0.5), runtimeGroups:0, support:0, contradictions:0, ignoredEvidence:evidence.length, evidence:[] };
@@ -114,6 +115,7 @@ export function fuseStaticDynamic(staticCandidate, runtimeEvidence = []) {
   let ignoredEvidence = 0;
   for (const item of evidence) {
     if (candidateHash && item.binaryHash !== candidateHash) { ignoredEvidence++; continue; }
+    if (item.sliceIdentity && (!candidateSlice || item.sliceIdentity !== candidateSlice)) { ignoredEvidence++; continue; }
     if (candidateFunction != null && (item.function == null || !sameAddress(candidateFunction,item.function))) { ignoredEvidence++; continue; }
     compatible.push(item);
   }
