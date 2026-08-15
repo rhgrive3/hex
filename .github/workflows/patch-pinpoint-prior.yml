@@ -1,0 +1,49 @@
+name: Guarded pinpoint prior patch
+
+on:
+  push:
+    branches:
+      - fix-open-issues-151-200-rebased
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix-open-issues-151-200-rebased
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply exact scoped replacement
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('js/pinpoint-legacy.js')
+          text = path.read_text()
+          start = text.index('export async function pinpointField')
+          end = text.index('/* ── クラスの前提', start)
+          before, body, after = text[:start], text[start:end], text[end:]
+          anchor = '  if (asked.length) candidates = asked;\n\n'
+          assert body.count(anchor) == 1, 'candidate narrowing anchor changed'
+          body = body.replace(anchor, anchor + '  const priorCandidates = narrowed ? asked.length : universe;\n\n', 1)
+          old_initial = '{ candidates: narrowed ? asked.length : universe }'
+          old_round = '{ candidates: universe }'
+          assert body.count(old_initial) == 1, 'initial prior expression changed'
+          assert body.count(old_round) == 1, 'verification prior expression changed'
+          body = body.replace(old_initial, '{ candidates: priorCandidates }', 1)
+          body = body.replace(old_round, '{ candidates: priorCandidates }', 1)
+          assert body.count('candidates: priorCandidates') == 2
+          path.write_text(before + body + after)
+          PY
+          rm .github/workflows/patch-pinpoint-prior.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add js/pinpoint-legacy.js .github/workflows/patch-pinpoint-prior.yml
+          git diff --cached --check
+          git commit -m 'fix(pinpoint): keep narrowed prior stable across verification'
+          git push origin HEAD:fix-open-issues-151-200-rebased
