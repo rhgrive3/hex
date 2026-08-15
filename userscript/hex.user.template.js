@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hex for ChatGPT
 // @namespace    https://github.com/rhgrive3/hex
-// @version      1.0.1786789806
+// @version      1.0.1786804768
 // @description  Run the Hex binary analysis workbench on ChatGPT Web.
 // @match        https://chatgpt.com/*
 // @run-at       document-idle
@@ -16,7 +16,7 @@
   if (location.hostname !== 'chatgpt.com') return;
   const HEX_ORIGIN = "__HEX_ORIGIN__";
   globalThis.__HEX_API_BASE__ = HEX_ORIGIN;
-  globalThis.__HEX_WORKER_MANIFEST__ = {"classicEntries":["js/worker.js","js/platform/capstone-probe-worker.js","js/platform/capstone-disasm-worker.js"],"classicAssets":["js/worker.js","js/worker-legacy.js","js/macho.js","js/words.js","js/worker-budget.js","js/address-provenance.js","capstone.js","js/worker-fixes.js","js/platform/capstone-probe-worker.js","js/platform/capstone-disasm-worker.js"],"classicDependencies":{"js/worker.js":["js/worker-legacy.js","js/worker-fixes.js"],"js/worker-legacy.js":["js/macho.js","js/words.js","js/worker-budget.js","js/address-provenance.js","capstone.js"],"js/macho.js":[],"js/words.js":[],"js/worker-budget.js":[],"js/address-provenance.js":[],"capstone.js":[],"js/worker-fixes.js":[],"js/platform/capstone-probe-worker.js":["capstone.js"],"js/platform/capstone-disasm-worker.js":["capstone.js"]},"moduleBundles":{"js/platform/worker.js":"userscript/platform-worker.bundle.js"},"wasm":"capstone.wasm"};
+  globalThis.__HEX_WORKER_MANIFEST__ = {"classicEntries":["js/worker.js","js/platform/capstone-probe-worker.js","js/platform/capstone-disasm-worker.js"],"classicAssets":["js/worker.js","js/worker-legacy.js","js/macho.js","js/words.js","js/worker-budget.js","js/objc-stub-recovery.js","js/address-provenance.js","capstone.js","js/worker-fixes.js","js/platform/capstone-probe-worker.js","js/platform/capstone-disasm-worker.js"],"classicDependencies":{"js/worker.js":["js/worker-legacy.js","js/worker-fixes.js"],"js/worker-legacy.js":["js/macho.js","js/words.js","js/worker-budget.js","js/objc-stub-recovery.js","js/address-provenance.js","capstone.js"],"js/macho.js":[],"js/words.js":[],"js/worker-budget.js":[],"js/objc-stub-recovery.js":[],"js/address-provenance.js":[],"capstone.js":[],"js/worker-fixes.js":[],"js/platform/capstone-probe-worker.js":["capstone.js"],"js/platform/capstone-disasm-worker.js":["capstone.js"]},"moduleBundles":{"js/platform/worker.js":"userscript/platform-worker.bundle.js"},"wasm":"capstone.wasm"};
   if (!document.getElementById('hex-userscript-host')) {
     const host = document.createElement('div');
     host.id = 'hex-userscript-host';
@@ -204,31 +204,32 @@
     const head = await bytes(file, 0, 8);
     if (head.length < 4) return null;
     const dv = new DataView(head.buffer, head.byteOffset, head.byteLength);
-    const le = dv.getUint32(0, true);
-    if (le === MH_MAGIC_64) return 0n;
+    if (dv.getUint32(0, true) === MH_MAGIC_64) return { base: 0n, size: BigInt(file.size) };
     const be = dv.getUint32(0, false);
-    if (be !== FAT_MAGIC && be !== FAT_MAGIC_64) return null;
-    if (head.length < 8) return null;
-    const n = u32be(dv, 4);
-    const idx = Math.max(0, Number(sliceIndex) || 0);
+    if (be !== FAT_MAGIC && be !== FAT_MAGIC_64 || head.length < 8) return null;
+    const n = u32be(dv, 4), idx = Math.max(0, Number(sliceIndex) || 0);
     if (idx >= n || n > 64) return null;
-    const wide = be === FAT_MAGIC_64;
-    const entry2 = wide ? 32 : 20;
+    const wide = be === FAT_MAGIC_64, entry2 = wide ? 32 : 20;
     const table = await bytes(file, 0, 8 + n * entry2);
-    const tdv = new DataView(table.buffer, table.byteOffset, table.byteLength);
-    const p = 8 + idx * entry2;
-    return wide ? tdv.getBigUint64(p + 8, false) : BigInt(tdv.getUint32(p + 8, false));
+    if (table.length < 8 + n * entry2) return null;
+    const tdv = new DataView(table.buffer, table.byteOffset, table.byteLength), p = 8 + idx * entry2;
+    const base = wide ? tdv.getBigUint64(p + 8, false) : BigInt(tdv.getUint32(p + 8, false));
+    const size = wide ? tdv.getBigUint64(p + 16, false) : BigInt(tdv.getUint32(p + 12, false));
+    const total = BigInt(file.size);
+    if (size <= 0n || base > total || size > total - base) return null;
+    return { base, size };
   }
   async function parseImage(file, sliceIndex) {
-    const base = await sliceOffset(file, sliceIndex);
-    if (base == null) return null;
+    const slice = await sliceOffset(file, sliceIndex);
+    if (slice == null) return null;
+    const { base, size: sliceSize } = slice;
     const h2 = await bytes(file, base, 32);
     if (h2.length < 32) return null;
     let dv = new DataView(h2.buffer, h2.byteOffset, h2.byteLength);
     if (dv.getUint32(0, true) !== MH_MAGIC_64) return null;
     const ncmds = dv.getUint32(16, true);
     const sizeofcmds = dv.getUint32(20, true);
-    if (!ncmds || ncmds > 1e4 || sizeofcmds > 64 * 1024 * 1024) return null;
+    if (!ncmds || ncmds > 1e4 || sizeofcmds > MAX_LOAD_COMMAND_BYTES || BigInt(32 + sizeofcmds) > sliceSize) return null;
     const raw = await bytes(file, base, 32 + sizeofcmds);
     if (raw.length < 32) return null;
     dv = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
@@ -249,7 +250,8 @@
         const filesize = dv.getBigUint64(p + 48, true);
         const nsects = dv.getUint32(p + 64, true);
         const segIndex = segments2.length;
-        segments2.push({ name, vmaddr, vmsize, fileoff, filesize });
+        const validFileRange = fileoff <= sliceSize && filesize <= sliceSize - fileoff;
+        segments2.push({ name, vmaddr, vmsize, fileoff, filesize, validFileRange });
         let q = p + 72;
         for (let si = 0; si < nsects && q + 80 <= p + size; si++, q += 80) {
           const section = ascii(raw, q, 16);
@@ -267,7 +269,7 @@
       }
       p += size;
     }
-    return { base, segments: segments2, stubs, fixups };
+    return { base, sliceSize, segments: segments2, stubs, fixups };
   }
   function parseImportNames(raw) {
     if (raw.length < 28) return null;
@@ -278,7 +280,7 @@
     const symbolsOffset = dv.getUint32(12, true);
     const count = dv.getUint32(16, true);
     const format2 = dv.getUint32(20, true);
-    if (version !== 0 || count > 1e6 || startsOffset >= raw.length || importsOffset >= raw.length || symbolsOffset >= raw.length) return null;
+    if (version !== 0 || count > MAX_CHAINED_IMPORTS || startsOffset >= raw.length || importsOffset >= raw.length || symbolsOffset >= raw.length) return null;
     const stride = format2 === 1 ? 4 : format2 === 2 ? 8 : format2 === 3 ? 16 : 0;
     if (!stride || importsOffset + count * stride > raw.length) return null;
     const names = new Array(count);
@@ -384,20 +386,32 @@
     if (!file || typeof file.slice !== "function") return [];
     const image = await parseImage(file, sliceIndex);
     if (!image || !image.fixups || !image.stubs.length) return [];
+    if (image.fixups.datasize > MAX_FIXUP_BYTES) return [];
+    const fixupSize = BigInt(image.fixups.datasize);
+    if (image.fixups.dataoff > image.sliceSize || fixupSize > image.sliceSize - image.fixups.dataoff) return [];
     const raw = await bytes(file, image.base + image.fixups.dataoff, image.fixups.datasize);
     const imports = parseImportNames(raw);
     if (!imports || !imports.names.length) return [];
     const read64 = makeBlockReader(file);
     const out = [];
+    let supplementalReadBytes = raw.length;
+    let decodedStubs = 0;
     for (const sec of image.stubs) {
-      const code = await bytes(file, image.base + sec.fileoff, sec.size);
-      const count = Math.floor(Number(sec.size) / sec.stubSize);
+      if (sec.size > BigInt(MAX_STUB_BYTES) || sec.fileoff > image.sliceSize || sec.size > image.sliceSize - sec.fileoff) continue;
+      const sectionBytes = Number(sec.size);
+      if (supplementalReadBytes + sectionBytes > MAX_SUPPLEMENTAL_READ_BYTES) break;
+      const code = await bytes(file, image.base + sec.fileoff, sectionBytes);
+      supplementalReadBytes += code.length;
+      const count = Math.min(Math.floor(Number(sec.size) / sec.stubSize), MAX_STUBS - decodedStubs);
       for (let i = 0; i < count; i++) {
+        decodedStubs++;
         const stubAddr = sec.addr + BigInt(i * sec.stubSize);
         const slot = stubSlot(code, i * sec.stubSize, stubAddr, sec.stubSize);
         if (slot == null) continue;
         const hit = segmentFor(image.segments, slot);
-        if (!hit) continue;
+        if (!hit || hit.s.validFileRange === false) continue;
+        const delta = slot - hit.s.vmaddr;
+        if (delta < 0n || delta + 8n > hit.s.filesize) continue;
         const format2 = imports.formats.get(hit.i);
         if (format2 == null) continue;
         const fileOff = image.base + hit.s.fileoff + (slot - hit.s.vmaddr);
@@ -465,7 +479,7 @@
     }
     return Object.assign({}, result, { addrs, kinds, flags, names });
   }
-  var MH_MAGIC_64, FAT_MAGIC, FAT_MAGIC_64, LC_SEGMENT_64, LC_DYLD_CHAINED_FIXUPS, S_SYMBOL_STUBS, PTR_ARM64E, PTR_ARM64E_24, PTR_64;
+  var MH_MAGIC_64, FAT_MAGIC, FAT_MAGIC_64, LC_SEGMENT_64, LC_DYLD_CHAINED_FIXUPS, S_SYMBOL_STUBS, MAX_LOAD_COMMAND_BYTES, MAX_FIXUP_BYTES, MAX_CHAINED_IMPORTS, MAX_STUB_BYTES, MAX_STUBS, MAX_SUPPLEMENTAL_READ_BYTES, PTR_ARM64E, PTR_ARM64E_24, PTR_64;
   var init_chained = __esm({
     "js/chained.js"() {
       MH_MAGIC_64 = 4277009103;
@@ -474,9 +488,81 @@
       LC_SEGMENT_64 = 25;
       LC_DYLD_CHAINED_FIXUPS = 2147483700;
       S_SYMBOL_STUBS = 8;
+      MAX_LOAD_COMMAND_BYTES = 4 * 1024 * 1024;
+      MAX_FIXUP_BYTES = 16 * 1024 * 1024;
+      MAX_CHAINED_IMPORTS = 25e4;
+      MAX_STUB_BYTES = 8 * 1024 * 1024;
+      MAX_STUBS = 8e4;
+      MAX_SUPPLEMENTAL_READ_BYTES = 32 * 1024 * 1024;
       PTR_ARM64E = /* @__PURE__ */ new Set([1, 7, 9, 10]);
       PTR_ARM64E_24 = 12;
       PTR_64 = /* @__PURE__ */ new Set([2, 6]);
+    }
+  });
+
+  // js/macho-analysis-merge.js
+  function namesOf(result) {
+    if (Array.isArray(result?.names)) return result.names.map((x) => String(x ?? ""));
+    if (typeof result?.names === "string") return result.names ? result.names.split("\n") : [];
+    return [];
+  }
+  function truthFallback(reason) {
+    return { source: "BinaryImage", normalized: true, complete: false, reasons: [String(reason || "normalized-macho-analysis-unavailable")] };
+  }
+  function markMachOSymbolTruthIncomplete(result, reason) {
+    return { ...result, symbolTruth: truthFallback(reason) };
+  }
+  function mergeMachOAnalysisResults(legacy, normalized) {
+    if (!legacy?.addrs) return normalized;
+    if (!normalized?.addrs) return markMachOSymbolTruthIncomplete(legacy, "normalized-macho-analysis-unavailable");
+    const entries = /* @__PURE__ */ new Map();
+    const ingest = (result, authoritative) => {
+      const names = namesOf(result);
+      for (let i = 0; i < result.addrs.length; i++) {
+        const addr = BigInt(result.addrs[i]), key2 = addr.toString();
+        const next = {
+          addr,
+          name: names[i] || "",
+          kind: Number(result.kinds?.[i] ?? 0),
+          flag: Number(result.flags?.[i] ?? 0),
+          provenance: result.nameProvenance?.[i] || null
+        };
+        const current2 = entries.get(key2);
+        if (!current2) {
+          entries.set(key2, next);
+          continue;
+        }
+        current2.flag ||= next.flag;
+        if (authoritative && next.name && (next.kind === 2 || !current2.name || current2.kind === 0)) {
+          current2.name = next.name;
+          current2.kind = next.kind;
+          current2.provenance = next.provenance;
+        }
+      }
+    };
+    ingest(legacy, false);
+    ingest(normalized, true);
+    const sorted = [...entries.values()].sort((a, b) => a.addr < b.addr ? -1 : a.addr > b.addr ? 1 : 0);
+    const addrs = new BigUint64Array(sorted.length), kinds = new Uint8Array(sorted.length), flags = new Uint8Array(sorted.length);
+    for (let i = 0; i < sorted.length; i++) {
+      addrs[i] = sorted[i].addr;
+      kinds[i] = sorted[i].kind;
+      flags[i] = sorted[i].flag;
+    }
+    return {
+      ...legacy,
+      addrs,
+      kinds,
+      flags,
+      names: sorted.map((x) => x.name),
+      nameProvenance: sorted.map((x) => x.provenance),
+      symbolCount: sorted.length,
+      symbolTruth: normalized.symbolTruth || truthFallback("normalized-macho-completeness-unreported"),
+      __transfer: [addrs.buffer, kinds.buffer, flags.buffer, legacy.funcs?.buffer].filter(Boolean)
+    };
+  }
+  var init_macho_analysis_merge = __esm({
+    "js/macho-analysis-merge.js"() {
     }
   });
 
@@ -727,6 +813,7 @@
     "js/backend.js"() {
       init_lru();
       init_chained();
+      init_macho_analysis_merge();
       init_analysis_cache();
       CHUNK_ROWS = 1024;
       CHUNK_BYTES = CHUNK_ROWS * 4;
@@ -762,10 +849,13 @@
           this.onChunk = null;
           this.onFatal = null;
           this._archProbe = null;
+          this._archProbeWorker = null;
+          this._archProbeFinish = null;
           this._disasmWorker = null;
           this._disasmSeq = 1;
           this._disasmPending = /* @__PURE__ */ new Map();
           this.contentHash = null;
+          this.disposed = false;
           this.analysisCache = new AnalysisCache();
           this.legacyWorker.onmessage = (event) => this._onMessage(event.data, "legacy");
           this.platformWorker.onmessage = (event) => this._onMessage(event.data, "platform");
@@ -817,6 +907,15 @@
           return name === "platform" ? this.platformWorker : this.legacyWorker;
         }
         _callTo(workerName, t2, payload = {}, transfer, onProgress) {
+          if (this.disposed) {
+            const error = new Error("Backend has been disposed.");
+            error.code = "BACKEND_DISPOSED";
+            const promise2 = Promise.reject(error);
+            promise2.requestId = null;
+            promise2.cancel = () => {
+            };
+            return promise2;
+          }
           const id = this.seq++;
           this.lastRequestId = id;
           const uiEpoch = this.gen;
@@ -847,6 +946,7 @@
           this._disasmPending.clear();
         }
         advanceEpoch() {
+          if (this.disposed) return this.analysisEpoch;
           this.analysisEpoch++;
           this.resetCache();
           this._releaseDisassembly(new StaleRequestError());
@@ -859,15 +959,36 @@
           return this.analysisEpoch;
         }
         async open(file) {
-          this.transportEpoch++;
+          if (this.disposed) {
+            const error = new Error("Backend has been disposed.");
+            error.code = "BACKEND_DISPOSED";
+            throw error;
+          }
+          const previousTransportEpoch = this.transportEpoch;
+          const openTransportEpoch = ++this.transportEpoch;
+          for (const worker of [this.legacyWorker, this.platformWorker]) worker.postMessage({ t: "cancel", epoch: previousTransportEpoch });
+          const assertCurrent = () => {
+            if (this.transportEpoch !== openTransportEpoch) throw new StaleRequestError();
+          };
+          const step = async (promise) => {
+            try {
+              const value2 = await promise;
+              assertCurrent();
+              return value2;
+            } catch (error) {
+              assertCurrent();
+              throw error;
+            }
+          };
           let detection = null;
           let platformError = null;
           try {
-            detection = await this._callTo("platform", "detect", { file });
+            detection = await step(this._callTo("platform", "detect", { file }));
           } catch (error) {
             if (error?.stale) throw error;
             platformError = error;
           }
+          assertCurrent();
           let nextFormat = "unknown";
           let nextPlatform = null;
           let nextLegacy = null;
@@ -875,22 +996,38 @@
           let result = null;
           if (detection?.formatId === "macho") {
             nextFormat = "macho";
-            const legacy = await this._callTo("legacy", "open", { file });
-            legacy.formatId = "macho";
-            for (const slice of legacy.slices || []) slice.capability = legacySliceCapability(slice);
-            legacy.capability = legacy.slices?.[0]?.capability || legacySliceCapability(null);
-            legacy.platform = { compatibility: "legacy-macho", sourceBackedDetection: true, detected: detection, duplicateUniversalParseAvoided: true };
-            nextLegacy = legacy;
-            nextPlatform = { formatId: "macho", capability: legacy.capability, detection, compatibility: "legacy-macho" };
-            result = legacy;
-          } else {
-            let platformInfo = null;
+            const legacy = await step(this._callTo("legacy", "open", { file }));
+            let normalized = null;
             try {
-              platformInfo = await this._callTo("platform", "open", { file }, null, (p) => this.onAnalysisProgress?.(p));
+              normalized = await step(this._callTo("platform", "open", { file }, null, (p) => this.onAnalysisProgress?.(p)));
             } catch (error) {
               if (error?.stale) throw error;
               platformError = error;
             }
+            assertCurrent();
+            legacy.formatId = "macho";
+            for (const slice of legacy.slices || []) slice.capability = legacySliceCapability(slice);
+            legacy.capability = legacy.slices?.[0]?.capability || legacySliceCapability(null);
+            legacy.platform = {
+              compatibility: "hybrid-macho",
+              sourceBackedDetection: true,
+              detected: detection,
+              normalizedDyldTruth: !!normalized,
+              duplicateUniversalParseAvoided: false,
+              ...platformError ? { normalizedDyldError: platformError.message } : {}
+            };
+            nextLegacy = legacy;
+            nextPlatform = normalized ? { ...normalized, normalizedDyldTruth: true, compatibility: "hybrid-macho" } : { formatId: "macho", capability: legacy.capability, detection, normalizedDyldTruth: false, compatibility: "legacy-macho" };
+            result = legacy;
+          } else {
+            let platformInfo = null;
+            try {
+              platformInfo = await step(this._callTo("platform", "open", { file }, null, (p) => this.onAnalysisProgress?.(p)));
+            } catch (error) {
+              if (error?.stale) throw error;
+              platformError = error;
+            }
+            assertCurrent();
             if (platformInfo) {
               nextPlatform = platformInfo;
               nextFormat = platformInfo.formatId || platformInfo.capability?.format || detection?.formatId || "unknown";
@@ -898,21 +1035,23 @@
               nextBridge = capability?.architecture === "arm64";
               if (nextBridge) {
                 try {
-                  await this._callTo("legacy", "open", { file });
+                  await step(this._callTo("legacy", "open", { file }));
                   const allRegions = [...(platformInfo.slices || []).flatMap((slice) => slice.regions || []), platformInfo.raw].filter(Boolean);
-                  await this._callTo("legacy", "setRegions", { regions: allRegions });
-                } catch {
+                  await step(this._callTo("legacy", "setRegions", { regions: allRegions }));
+                } catch (error) {
+                  if (error?.stale) throw error;
                   nextBridge = false;
                 }
               }
               result = platformInfo;
             } else {
-              const legacy = await this._callTo("legacy", "open", { file });
+              const legacy = await step(this._callTo("legacy", "open", { file }));
               nextLegacy = legacy;
               if (platformError && legacy.format === "Raw binary") legacy.warnings = [...legacy.warnings || [], platformError.message];
               result = legacy;
             }
           }
+          assertCurrent();
           this.advanceEpoch();
           this.file = file;
           this.formatId = nextFormat;
@@ -927,18 +1066,29 @@
           return this._callTo("platform", "probe", {});
         }
         probeArchitectures() {
+          if (this.disposed) return Promise.resolve({ ok: false, error: "Backend has been disposed.", support: { arm64: false, x86_64: false } });
           if (this._archProbe) return this._archProbe;
           this._archProbe = new Promise((resolve2) => {
             const worker = new Worker(new URL("./platform/capstone-probe-worker.js", "__HEX_ORIGIN__/userscript-assets/js/backend.js"));
+            this._archProbeWorker = worker;
+            let finished = false;
             const finish = (value2) => {
-              worker.terminate();
+              if (finished) return;
+              finished = true;
+              if (this._archProbeWorker === worker) this._archProbeWorker = null;
+              try {
+                worker.terminate();
+              } catch {
+              }
               resolve2(value2);
             };
+            this._archProbeFinish = finish;
             worker.onmessage = (event) => finish(event.data);
             worker.onerror = (event) => finish({ ok: false, error: event.message, support: { arm64: false, x86_64: false } });
             worker.postMessage({ t: "probe" });
           }).finally(() => {
             this._archProbe = null;
+            this._archProbeFinish = null;
           });
           return this._archProbe;
         }
@@ -959,13 +1109,28 @@
         cancelSearch(request) {
           this.cancel(request);
         }
-        analyze(sliceIndex) {
-          const worker = this.formatId === "macho" ? "legacy" : "platform";
-          const file = this.file;
-          return this._callTo(worker, "analyze", { sliceIndex }).then((result) => {
-            if (this.formatId !== "macho") return result;
-            return augmentAnalysisResultWithChainedImports(file, sliceIndex, result);
-          });
+        async analyze(sliceIndex) {
+          if (this.formatId !== "macho") return this._callTo("platform", "analyze", { sliceIndex });
+          const uiEpoch = this.gen, transportEpoch = this.transportEpoch, file = this.file;
+          const assertCurrent = () => {
+            if (uiEpoch !== this.gen || transportEpoch !== this.transportEpoch || file !== this.file) throw new StaleRequestError();
+          };
+          const legacy = await this._callTo("legacy", "analyze", { sliceIndex });
+          assertCurrent();
+          const enriched = await augmentAnalysisResultWithChainedImports(file, sliceIndex, legacy);
+          assertCurrent();
+          if (!this.platformInfo?.normalizedDyldTruth) {
+            return markMachOSymbolTruthIncomplete(enriched, this.legacyInfo?.platform?.normalizedDyldError || "normalized-macho-analysis-unavailable");
+          }
+          try {
+            const normalized = await this._callTo("platform", "analyze", { sliceIndex });
+            assertCurrent();
+            return mergeMachOAnalysisResults(enriched, normalized);
+          } catch (error) {
+            if (error?.stale) throw error;
+            assertCurrent();
+            return markMachOSymbolTruthIncomplete(enriched, error?.message || "normalized-macho-analysis-failed");
+          }
         }
         guessFunctions(regionId, limit2, onProgress) {
           return this.call("guessFunctions", { regionId, limit: limit2 }, null, onProgress);
@@ -992,8 +1157,8 @@
         xrefs(params, onProgress) {
           return this.call("xrefs", params, null, onProgress);
         }
-        readAt(addr, len, text3) {
-          return this.call("readAt", { addr, len, text: text3 });
+        readAt(addr, len, text4) {
+          return this.call("readAt", { addr, len, text: text4 });
         }
         binaryMetadata(kind = "summary", start = 0, limit2 = 500) {
           if (this.formatId !== "macho") return this._callTo("platform", "metadata", { kind, start, limit: limit2 });
@@ -1065,6 +1230,31 @@
           this.resetCache();
           this._releaseDisassembly(new Error("disassembly worker released for memory pressure"));
           return this._callTo("platform", "cleanupMemory", {});
+        }
+        dispose() {
+          if (this.disposed) return;
+          this.disposed = true;
+          const failure = new Error("Backend has been disposed.");
+          failure.code = "BACKEND_DISPOSED";
+          this.analysisEpoch++;
+          this.transportEpoch++;
+          this.resetCache();
+          this._releaseDisassembly(failure);
+          this._archProbeFinish?.({ ok: false, error: failure.message, support: { arm64: false, x86_64: false } });
+          this._archProbeFinish = null;
+          this._archProbeWorker = null;
+          for (const pending of this.pending.values()) pending.reject(failure);
+          this.pending.clear();
+          for (const worker of [this.legacyWorker, this.platformWorker]) {
+            try {
+              worker.terminate();
+            } catch {
+            }
+          }
+          if (typeof document !== "undefined" && this._memoryPressureHandler) {
+            document.removeEventListener("visibilitychange", this._memoryPressureHandler);
+            this._memoryPressureHandler = null;
+          }
         }
         resetCache() {
           this.cache.clear();
@@ -1851,9 +2041,9 @@
     }
     return (x < 10 ? x.toFixed(2) : x < 100 ? x.toFixed(1) : Math.round(x)) + " " + units[i];
   }
-  function parseAddress(text3) {
-    if (typeof text3 !== "string") return null;
-    let s2 = text3.trim().replace(/[\s_,]/g, "");
+  function parseAddress(text4) {
+    if (typeof text4 !== "string") return null;
+    let s2 = text4.trim().replace(/[\s_,]/g, "");
     if (!s2) return null;
     let neg = false;
     if (s2[0] === "+") s2 = s2.slice(1);
@@ -1874,8 +2064,8 @@
     if (v < 0n) return null;
     return neg ? -v : v;
   }
-  function parseHexPattern(text3) {
-    const s2 = String(text3).replace(/0x/gi, "").replace(/[\s,_-]/g, "");
+  function parseHexPattern(text4) {
+    const s2 = String(text4).replace(/0x/gi, "").replace(/[\s,_-]/g, "");
     if (!s2.length || s2.length % 2 !== 0) return null;
     if (!/^[0-9a-f?]+$/i.test(s2)) return null;
     const n = s2.length / 2;
@@ -1941,10 +2131,10 @@
     if (num2 === 30) return { id: "lr", ja: "戻り先アドレス。関数が終わったらここへ帰る", en: "link register — the return address" };
     return { id: "gp", ja: "汎用レジスタ", en: "general-purpose register" };
   }
-  function parseReg(text3) {
-    const m = REG_RE.exec(text3);
+  function parseReg(text4) {
+    const m = REG_RE.exec(text4);
     if (!m) return null;
-    const t2 = text3.toLowerCase();
+    const t2 = text4.toLowerCase();
     if (m[1]) {
       const n = parseInt(m[2], 10);
       if (n > 31) return null;
@@ -1977,35 +2167,35 @@
     if (cur.trim()) out.push(cur.trim());
     return out;
   }
-  function bigOf(text3) {
+  function bigOf(text4) {
     try {
-      if (/^0x/i.test(text3)) return BigInt(text3);
-      if (/\./.test(text3)) return null;
-      return BigInt(text3);
+      if (/^0x/i.test(text4)) return BigInt(text4);
+      if (/\./.test(text4)) return null;
+      return BigInt(text4);
     } catch {
       return null;
     }
   }
-  function parseImm(text3) {
-    const m = IMM_RE.exec(text3);
+  function parseImm(text4) {
+    const m = IMM_RE.exec(text4);
     if (!m) return null;
     const neg = m[1] === "-";
     if (/\./.test(m[2])) {
       const f = parseFloat(m[2]);
-      return { k: "imm", text: text3, value: null, float: neg ? -f : f };
+      return { k: "imm", text: text4, value: null, float: neg ? -f : f };
     }
     const v = bigOf(m[2]);
     if (v == null) return null;
-    return { k: "imm", text: text3, value: neg ? -v : v };
+    return { k: "imm", text: text4, value: neg ? -v : v };
   }
-  function parseMem(text3) {
-    const bang = text3.endsWith("!");
-    const inner = text3.replace(/^\[/, "").replace(/\]!?$/, "");
+  function parseMem(text4) {
+    const bang = text4.endsWith("!");
+    const inner = text4.replace(/^\[/, "").replace(/\]!?$/, "");
     const parts = splitTop(inner);
     if (!parts.length) return null;
     const base = parseReg(parts[0]);
     if (!base) return null;
-    const mem = { k: "mem", text: text3, base, index: null, disp: null, addressDisp: null, writebackDisp: null, shift: null, mode: bang ? "pre" : "offset" };
+    const mem = { k: "mem", text: text4, base, index: null, disp: null, addressDisp: null, writebackDisp: null, shift: null, mode: bang ? "pre" : "offset" };
     for (let i = 1; i < parts.length; i++) {
       const p = parts[i];
       const imm = parseImm(p);
@@ -2663,14 +2853,14 @@
     const hit = briefCache.get(key2);
     if (hit !== void 0) return hit;
     const e = explain(mn, ops, null, ctx);
-    let text3;
-    if (style === "pseudo") text3 = e.pseudo;
-    else if (style === "both") text3 = e.pseudo + (e.title ? "   — " + e.title : "");
-    else text3 = e.summary || e.title;
-    text3 = (text3 || "").replace(/\s+/g, " ").trim();
+    let text4;
+    if (style === "pseudo") text4 = e.pseudo;
+    else if (style === "both") text4 = e.pseudo + (e.title ? "   — " + e.title : "");
+    else text4 = e.summary || e.title;
+    text4 = (text4 || "").replace(/\s+/g, " ").trim();
     if (briefCache.size > BRIEF_CACHE_MAX) briefCache.clear();
-    briefCache.set(key2, text3);
-    return text3;
+    briefCache.set(key2, text4);
+    return text4;
   }
   function clearBriefCache() {
     briefCache.clear();
@@ -3712,6 +3902,7 @@
           this.functionRegions = [];
           this.setFunctionRegions(r.regions || [], false);
           this.capped = !!r.capped;
+          this.symbolTruth = r.symbolTruth || null;
           const discoveryComplete = r.discoveryComplete === true || r.functionStartsComplete === true || r.functionStartsExact === true;
           this.allSeedsExact = r.allSeedsExact != null ? !!r.allSeedsExact : !!r.functionStartsExact;
           this.functionStartsComplete = discoveryComplete;
@@ -4254,12 +4445,12 @@
               prev: { mn: asmEntry.mn[idx - 1], ops: asmEntry.ops[idx - 1] || "" }
             });
             const e = explain(mn, ops, this.rowAddress(row), ctx);
-            let text3 = this.noteStyle === "pseudo" ? e.pseudo : this.noteStyle === "both" ? e.pseudo + "   — " + e.title : e.summary || e.title;
+            let text4 = this.noteStyle === "pseudo" ? e.pseudo : this.noteStyle === "both" ? e.pseudo + "   — " + e.title : e.summary || e.title;
             if (e.target != null) {
               const name = this.symbols.nameAt(e.target);
-              text3 += "  → " + (name || "0x" + e.target.toString(16).toUpperCase());
+              text4 += "  → " + (name || "0x" + e.target.toString(16).toUpperCase());
             }
-            return text3.replace(/\s+/g, " ").trim();
+            return text4.replace(/\s+/g, " ").trim();
           }
           return brief(mn, ops, this.noteStyle, this._explainCtx());
         }
@@ -4821,10 +5012,10 @@
   });
 
   // js/ui.js
-  function el(tag, cls, text3) {
+  function el(tag, cls, text4) {
     const n = document.createElement(tag);
     if (cls) n.className = cls;
-    if (text3 != null) n.textContent = text3;
+    if (text4 != null) n.textContent = text4;
     return n;
   }
   function button(label, cls, onClick) {
@@ -4887,12 +5078,12 @@
     }
     return li;
   }
-  function heading(text3) {
-    return el("h4", "doc-h", text3);
+  function heading(text4) {
+    return el("h4", "doc-h", text4);
   }
-  function para(text3, cls) {
+  function para(text4, cls) {
     const p = el("p", "doc-p" + (cls ? " " + cls : ""));
-    p.textContent = text3;
+    p.textContent = text4;
     return p;
   }
   function codeBlock(lines) {
@@ -4900,8 +5091,8 @@
     pre.textContent = Array.isArray(lines) ? lines.join("\n") : String(lines);
     return pre;
   }
-  function noteBox(text3) {
-    return el("div", "doc-note", text3);
+  function noteBox(text4) {
+    return el("div", "doc-note", text4);
   }
   function bullets(items) {
     const ul = el("ul", "doc-list");
@@ -4944,8 +5135,8 @@
     d.body = body;
     return d;
   }
-  function bigValue(text3, onTap) {
-    const d = el("div", "bigval mono", text3);
+  function bigValue(text4, onTap) {
+    const d = el("div", "bigval mono", text4);
     if (onTap) {
       d.classList.add("tappable");
       d.addEventListener("click", onTap);
@@ -5091,14 +5282,14 @@
     requestAnimationFrame(() => ok.focus({ preventScroll: true }));
     return d;
   }
-  function toast(text3) {
+  function toast(text4) {
     if (!toastEl) {
       toastEl = el("div", "toast");
       toastEl.setAttribute("role", "status");
       toastEl.setAttribute("aria-live", "polite");
       overlays().append(toastEl);
     }
-    toastEl.textContent = text3;
+    toastEl.textContent = text4;
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => {
       if (toastEl) {
@@ -5133,22 +5324,22 @@
       "This result could not be shown. You can use another view."
     );
   }
-  async function modernCopy(text3) {
+  async function modernCopy(text4) {
     if (!navigator.clipboard || !navigator.clipboard.writeText || !window.isSecureContext) return false;
     try {
-      await navigator.clipboard.writeText(text3);
+      await navigator.clipboard.writeText(text4);
       return true;
     } catch {
       return false;
     }
   }
-  async function copyText(text3, label) {
-    const s2 = String(text3);
+  async function copyText(text4, label) {
+    const s2 = String(text4);
     const ok = await modernCopy(s2) || legacyCopy(s2);
     toast(ok ? t("toast.copied", { what: label || "" }) : t("err.copyFailed"));
     return ok;
   }
-  function legacyCopy(text3) {
+  function legacyCopy(text4) {
     let ta = null;
     const active = document.activeElement;
     const selection = window.getSelection ? window.getSelection() : null;
@@ -5160,7 +5351,7 @@
     const scrollY = window.scrollY || 0;
     try {
       ta = document.createElement("textarea");
-      ta.value = text3;
+      ta.value = text4;
       ta.setAttribute("aria-hidden", "true");
       ta.setAttribute("autocomplete", "off");
       ta.setAttribute("autocorrect", "off");
@@ -5218,21 +5409,21 @@
     });
     if (navigator.clipboard && navigator.clipboard.write && window.isSecureContext && typeof window.ClipboardItem === "function") {
       try {
-        const blob = settled.then((text4) => new Blob([String(text4)], { type: "text/plain" }));
+        const blob = settled.then((text5) => new Blob([String(text5)], { type: "text/plain" }));
         await navigator.clipboard.write([new ClipboardItem({ "text/plain": blob })]);
         toast(t("toast.copied", { what: label || "" }));
         return true;
       } catch {
       }
     }
-    let text3;
+    let text4;
     try {
-      text3 = await settled;
+      text4 = await settled;
     } catch (err) {
       toast(userError(err, t("err.copyFailed")));
       return false;
     }
-    return copyText(text3, label);
+    return copyText(text4, label);
   }
   var overlays, pickUi, openSheet, parkedSheet, parkTimer, sheetSerial, MAX_DEPTH, Sheet, openMenu, toastEl, toastTimer;
   var init_ui = __esm({
@@ -5308,9 +5499,9 @@
           });
         }
         /** 見出しを後から差し替える（中身が決まってから名前が付く画面のため）。 */
-        setTitle(text3) {
-          this.title = text3;
-          if (this.titleEl) this.titleEl.textContent = text3;
+        setTitle(text4) {
+          this.title = text4;
+          if (this.titleEl) this.titleEl.textContent = text4;
           this.updateHistoryChrome();
         }
         /*
@@ -5552,8 +5743,8 @@
     const n = sel.count.toLocaleString();
     const label = t("sel.rows", { n });
     app2.setBusy(true, t("sel.copying", { n }));
-    const text3 = buildText(app2, region, sel, what, wantAsm).finally(() => app2.setBusy(false));
-    copyTextLazy(text3, label);
+    const text4 = buildText(app2, region, sel, what, wantAsm).finally(() => app2.setBusy(false));
+    copyTextLazy(text4, label);
   }
   async function buildText(app2, region, sel, what, wantAsm) {
     const spaced = !app2.store.get("hexJoined");
@@ -5617,9 +5808,9 @@
     assistant.open();
     assistant.ask(question, options);
   }
-  function instructionAiItems(assistant, { address, text: text3 }) {
+  function instructionAiItems(assistant, { address, text: text4 }) {
     const at = address != null ? addrHex(address) : "";
-    const asm = text3 ? "`" + text3 + "`" : "";
+    const asm = text4 ? "`" + text4 + "`" : "";
     return [
       {
         label: pick("この命令を説明して", "Explain this instruction"),
@@ -5653,9 +5844,9 @@
       }
     ];
   }
-  function stringAiItems(assistant, { text: text3, address }) {
+  function stringAiItems(assistant, { text: text4, address }) {
     const at = address != null ? addrHex(address) : "";
-    const quoted = '"' + String(text3 || "").slice(0, 60) + '"';
+    const quoted = '"' + String(text4 || "").slice(0, 60) + '"';
     return [
       {
         label: pick("この文字列の使われ方", "How this string is used"),
@@ -7924,30 +8115,30 @@
     const via = indirect || /* @__PURE__ */ new Set();
     for (const r of model.addressRefs) {
       const key2 = r.addr.toString();
-      const text3 = texts.get(key2);
-      if (!text3) continue;
-      r.text = text3;
+      const text4 = texts.get(key2);
+      if (!text4) continue;
+      r.text = text4;
       r.viaPointer = via.has(key2);
       if (r.value) {
         r.value.kind = "string";
-        r.value.text = text3;
+        r.value.text = text4;
         r.value.viaPointer = via.has(key2);
         r.value.conf = SCORE.confirmed;
-        r.value.ev = r.value.ev.concat([ev("string", r.row, { addr: r.addr, text: text3 })]);
+        r.value.ev = r.value.ev.concat([ev("string", r.row, { addr: r.addr, text: text4 })]);
       }
     }
     for (const b of model.semantic) {
       for (const ref of b.refs) {
-        const text3 = texts.get(ref.addr.toString());
-        if (text3) {
-          ref.text = text3;
-          b.evidence.push(ev("string", ref.row, { addr: ref.addr, text: text3 }));
+        const text4 = texts.get(ref.addr.toString());
+        if (text4) {
+          ref.text = text4;
+          b.evidence.push(ev("string", ref.row, { addr: ref.addr, text: text4 }));
         }
       }
     }
     for (const s2 of model.facts.stringRefs) {
-      const text3 = texts.get(s2.addr.toString());
-      if (text3) s2.text = text3;
+      const text4 = texts.get(s2.addr.toString());
+      if (text4) s2.text = text4;
     }
     model.facts.strings = model.facts.stringRefs.filter((s2) => s2.text).map((s2) => s2.text);
     for (const c3 of model.calls) {
@@ -8412,6 +8603,14 @@
   });
 
   // js/analyze.js
+  function supportsArm64SemanticAnalysis(architecture) {
+    return ARM64_SEMANTIC_ARCHES.has(String(architecture || "").toLowerCase());
+  }
+  function rowBudget(opts = {}) {
+    const raw = Number(opts?.maxRows);
+    if (!Number.isFinite(raw)) return MAX_INSTRUCTIONS;
+    return Math.max(1, Math.min(MAX_INSTRUCTIONS, Math.floor(raw)));
+  }
   function destIndex(mn) {
     const b = mn.toLowerCase();
     if (/^(str|stp|stur|strb|strh|sturb|sturh|stnp|st1|st2|st3|st4|stlr)/.test(b)) return -1;
@@ -8427,9 +8626,11 @@
       if (op2.index && op2.index.cls === "gp") into.add(op2.index.num);
     }
   }
-  async function analyzeFunction(backend, region, startRow, endRow, symbols, onProgress) {
-    const rows = Math.min(endRow - startRow + 1, MAX_INSTRUCTIONS);
-    const truncated = endRow - startRow + 1 > MAX_INSTRUCTIONS;
+  async function analyzeFunction(backend, region, startRow, endRow, symbols, onProgress, opts = {}) {
+    const requestedRows = Math.max(0, endRow - startRow + 1);
+    const rows = Math.min(requestedRows, rowBudget(opts));
+    if (rows <= 0) throw new Error("analysis-range-empty");
+    const truncated = requestedRows > rows;
     const end = startRow + rows - 1;
     const res = {
       startRow,
@@ -8480,7 +8681,7 @@
         if (!mn) continue;
         const addr = region.vmAddr + BigInt(row) * 4n;
         const b = mn.toLowerCase();
-        if (rawInsns.length < MAX_MODEL_ROWS) rawInsns.push({ row, address: addr, mn, ops: opsStr });
+        if (rawInsns.length <= MAX_MODEL_ROWS) rawInsns.push({ row, address: addr, mn, ops: opsStr });
         if (b.charCodeAt(0) === 46) {
           res.dataRows++;
           continue;
@@ -8587,19 +8788,24 @@
         return Number(rel2 / 4n);
       }
     });
+    if (truncated && res.model) res.model.truncated = true;
+    res.truncated = truncated || !!res.model?.truncated;
+    res.requestedRows = requestedRows;
+    res.analyzedRows = rows;
     return res;
   }
-  function cacheKey(region, startRow, endRow, symbols) {
+  function cacheKey(region, startRow, endRow, symbols, maxRows = MAX_INSTRUCTIONS) {
     const symbolGen = symbols && symbols.gen != null ? symbols.gen : 0;
     const regionRevision = region?.revision ?? region?.gen ?? region?.generation ?? 0;
-    return [symbolGen, region?.id, String(region?.vmAddr ?? ""), String(region?.size ?? ""), regionRevision, startRow, endRow].join(":");
+    return [symbolGen, region?.id, String(region?.vmAddr ?? ""), String(region?.size ?? ""), regionRevision, startRow, endRow, "rows=" + maxRows].join(":");
   }
   function clearAnalysisCache() {
     cache.clear();
   }
-  async function analyzeFunctionCached(backend, region, startRow, endRow, symbols, onProgress, opts) {
-    const key2 = cacheKey(region, startRow, endRow, symbols);
-    const wantTexts = !opts || opts.texts !== false;
+  async function analyzeFunctionCached(backend, region, startRow, endRow, symbols, onProgress, opts = {}) {
+    const budget = rowBudget(opts);
+    const key2 = cacheKey(region, startRow, endRow, symbols, budget);
+    const wantTexts = opts.texts !== false;
     const hit = cache.get(key2);
     if (hit) {
       if (onProgress) onProgress(1);
@@ -8612,7 +8818,7 @@
       }
       return hit;
     }
-    const res = await analyzeFunction(backend, region, startRow, endRow, symbols, onProgress);
+    const res = await analyzeFunction(backend, region, startRow, endRow, symbols, onProgress, { ...opts, maxRows: budget });
     res.textsResolved = false;
     if (wantTexts) {
       try {
@@ -8726,7 +8932,7 @@
     if (res.truncated) lines.push("※ 大きすぎるため、先頭から " + MAX_INSTRUCTIONS.toLocaleString() + " 命令ぶんだけを見ています。");
     return lines;
   }
-  var MAX_INSTRUCTIONS, MAX_MODEL_ROWS, MODEL_TEXTS, CACHE_MAX, cache, HINTS;
+  var MAX_INSTRUCTIONS, MAX_MODEL_ROWS, MODEL_TEXTS, ARM64_SEMANTIC_ARCHES, CACHE_MAX, cache, HINTS;
   var init_analyze = __esm({
     "js/analyze.js"() {
       init_backend();
@@ -8737,6 +8943,7 @@
       MAX_INSTRUCTIONS = 4e4;
       MAX_MODEL_ROWS = 6e3;
       MODEL_TEXTS = 96;
+      ARM64_SEMANTIC_ARCHES = /* @__PURE__ */ new Set(["arm64", "arm64e", "arm64_32"]);
       CACHE_MAX = 24;
       cache = new LRU(CACHE_MAX);
       HINTS = [
@@ -8893,8 +9100,8 @@
     if (goal.free) return goal.text;
     return pick(goal.ja, goal.en);
   }
-  function expandTerms(text3) {
-    const raw = String(text3 || "").trim();
+  function expandTerms(text4) {
+    const raw = String(text4 || "").trim();
     const terms = [];
     const push = (word2, weight) => {
       const w = String(word2).trim();
@@ -8910,8 +9117,8 @@
     }
     return terms;
   }
-  function parseGoal(text3) {
-    const raw = String(text3 || "").trim();
+  function parseGoal(text4) {
+    const raw = String(text4 || "").trim();
     if (!raw) return null;
     let best = null;
     for (const g of GOALS) {
@@ -8973,9 +9180,9 @@
     }
     return out;
   }
-  function matchText(goal, text3) {
+  function matchText(goal, text4) {
     if (!goal) return null;
-    const s2 = String(text3 || "");
+    const s2 = String(text4 || "");
     if (s2.length < 2) return null;
     let best = null;
     const blocked = avoidSpans(goal, s2);
@@ -12571,8 +12778,8 @@
     const f = FEATURES.find((x) => x.id === id);
     return f ? pick(f.ja, f.en) : id;
   }
-  function classifyString(text3) {
-    const s2 = String(text3 || "");
+  function classifyString(text4) {
+    const s2 = String(text4 || "");
     if (s2.length < 3) return [];
     const out = [];
     for (const f of FEATURES) {
@@ -12590,8 +12797,8 @@
     }
     return null;
   }
-  function strength(text3, weak) {
-    const s2 = String(text3);
+  function strength(text4, weak) {
+    const s2 = String(text4);
     let score2 = weak ? 0.35 : 0.6;
     if (s2.length >= 6 && s2.length <= 60) score2 += 0.15;
     if (/[ぁ-んァ-ヶ一-龥]/.test(s2)) score2 += 0.15;
@@ -12910,12 +13117,12 @@
     const u32at = (addr, value2) => dv.setUint32(at(addr), value2 >>> 0, true);
     const strings = [];
     let strCursor = 768;
-    const str = (text3) => {
+    const str = (text4) => {
       const addr = base + BigInt(strCursor);
-      for (let i = 0; i < text3.length; i++) buf[strCursor + i] = text3.charCodeAt(i) & 127;
-      buf[strCursor + text3.length] = 0;
-      strCursor += text3.length + 1;
-      strings.push(text3);
+      for (let i = 0; i < text4.length; i++) buf[strCursor + i] = text4.charCodeAt(i) & 127;
+      buf[strCursor + text4.length] = 0;
+      strCursor += text4.length + 1;
+      strings.push(text4);
       return addr;
     };
     const A = {
@@ -13040,14 +13247,14 @@
     const gotOff = Number(PAGE);
     const objcAddr = gotAddr + 0x100n;
     const objcOff = gotOff + 256;
-    const text3 = assemble(textAddr, stubsAddr, stringAddrs);
+    const text4 = assemble(textAddr, stubsAddr, stringAddrs);
     const stub = buildStub(stubsAddr, gotAddr);
     const objc = buildObjcData(objcAddr, {
-      applyDamage: text3.label._apply_damage,
-      criticalMultiplier: text3.label._square
+      applyDamage: text4.label._apply_damage,
+      criticalMultiplier: text4.label._square
     });
     const funcOrder = ["_add", "_square", "_sum_to", "_greet", "_apply_damage", "_main"];
-    const funcAddrs = funcOrder.map((n) => text3.label[n]).sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
+    const funcAddrs = funcOrder.map((n) => text4.label[n]).sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
     const funcStarts = [];
     let prev = TEXT_VM;
     for (const a of funcAddrs) {
@@ -13056,7 +13263,7 @@
     }
     funcStarts.push(0);
     while (funcStarts.length % 8) funcStarts.push(0);
-    const defined = funcOrder.map((n) => ({ name: n, addr: text3.label[n] })).sort((a, b) => a.addr < b.addr ? -1 : 1);
+    const defined = funcOrder.map((n) => ({ name: n, addr: text4.label[n] })).sort((a, b) => a.addr < b.addr ? -1 : 1);
     const symbols = [
       ...defined.map((d) => ({ name: d.name, type: N_SECT | N_EXT, sect: 1, value: d.addr })),
       { name: "_puts", type: N_UNDF | N_EXT, sect: 0, value: 0n }
@@ -13203,7 +13410,7 @@
     {
       w.u32(o, LC_MAIN);
       w.u32(o + 4, 24);
-      w.u64(o + 8, text3.label._main - TEXT_VM);
+      w.u64(o + 8, text4.label._main - TEXT_VM);
       w.u64(o + 16, 0n);
       o += 24;
     }
@@ -13249,7 +13456,7 @@
       w.str(o + 24, dylib, dylib.length);
       o += size;
     }
-    w.words(textOff, text3.words);
+    w.words(textOff, text4.words);
     w.words(stubsOff, stub);
     w.bytes(cstringOff, cstringData);
     w.u64(gotOff, 0n);
@@ -13406,8 +13613,8 @@
     const m = /^[-+]\s*\[\s*([^\s\]]+)/.exec(String(name || ""));
     return m ? m[1] : null;
   }
-  function vendorInText(text3) {
-    const direct = matchPattern(text3);
+  function vendorInText(text4) {
+    const direct = matchPattern(text4);
     return direct ? Object.assign({ confidence: "high" }, direct) : null;
   }
   function learnVendors(classNames) {
@@ -15502,14 +15709,14 @@
       }
     }
     const stacks = /* @__PURE__ */ new Map();
-    const counter2 = /* @__PURE__ */ new Map();
+    const counter3 = /* @__PURE__ */ new Map();
     const children2 = ir.blocks.map(() => []);
     for (let b = 0; b < ir.blocks.length; b++) if (idom[b] >= 0) children2[idom[b]].push(b);
     for (const reg of allRegs) {
       const entryValue = newValue(VK.ARG, { reg, version: 0, label: reg, bits: reg === "nzcv" ? 4 : 64 });
       ir.args.set(reg, entryValue);
       stacks.set(reg, [entryValue]);
-      counter2.set(reg, 0);
+      counter3.set(reg, 0);
     }
     const topOf = (reg) => {
       const st = stacks.get(reg);
@@ -15520,8 +15727,8 @@
       return v;
     };
     const pushDef = (reg, value2) => {
-      const n = (counter2.get(reg) || 0) + 1;
-      counter2.set(reg, n);
+      const n = (counter3.get(reg) || 0) + 1;
+      counter3.set(reg, n);
       value2.reg = reg;
       value2.version = n;
       let st = stacks.get(reg);
@@ -19871,8 +20078,8 @@
     }
     return best;
   }
-  function formulaOf(text3) {
-    const s2 = String(text3 == null ? "" : text3);
+  function formulaOf(text4) {
+    const s2 = String(text4 == null ? "" : text4);
     if (!s2) return null;
     if (!FULLWIDTH_OP.test(s2)) {
       if (!ASCII_FORMAT.test(s2) || !ASCII_OP.test(s2)) return null;
@@ -20239,8 +20446,8 @@
     if (!/^(ldr|str|ldur|stur|ldp|stp|ldnp|stnp)/.test(b)) return null;
     return { bytes: 0, signed: false };
   }
-  function widthOfRegisterName(text3) {
-    const s2 = (text3 || "").trim().toLowerCase();
+  function widthOfRegisterName(text4) {
+    const s2 = (text4 || "").trim().toLowerCase();
     if (/^w\d+$|^wzr$/.test(s2)) return { bytes: 4 };
     if (/^x\d+$|^xzr$|^sp$/.test(s2)) return { bytes: 8 };
     if (/^b\d+$/.test(s2)) return { bytes: 1 };
@@ -20288,8 +20495,8 @@
     const alias = /* @__PURE__ */ new Map();
     for (const r of argRegs) alias.set(r, r);
     const canonicalGpr = (value2) => {
-      const text3 = typeof value2 === "string" ? value2 : value2 && value2.text;
-      const m = /^[wx](\d+)$/.exec(String(text3 || "").toLowerCase());
+      const text4 = typeof value2 === "string" ? value2 : value2 && value2.text;
+      const m = /^[wx](\d+)$/.exec(String(text4 || "").toLowerCase());
       return m ? "x" + Number(m[1]) : null;
     };
     for (const insn of insns) {
@@ -20950,8 +21157,8 @@
   });
 
   // js/decompile-legacy.js
-  function line(kind, indent, text3, row, addr) {
-    return { kind, indent, text: text3, row: row == null ? null : row, addr: addr || null, note: null };
+  function line(kind, indent, text4, row, addr) {
+    return { kind, indent, text: text4, row: row == null ? null : row, addr: addr || null, note: null };
   }
   function decompile(model, opts) {
     const o = opts || {};
@@ -22041,7 +22248,7 @@
   function statementFor(insn, ctx, node3) {
     const base = (insn.mnemonic || "").toLowerCase();
     const row = insn.row, addr = insn.address;
-    const mk = (text3, extra) => Object.assign({ text: text3, row, addr, dst: null, reads: insn.reads.slice(), pure: false }, extra || {});
+    const mk = (text4, extra) => Object.assign({ text: text4, row, addr, dst: null, reads: insn.reads.slice(), pure: false }, extra || {});
     if (insn.data) return mk("__data(" + insn.operands + ");", { kind: "comment", note: "命令ではなくデータです。" });
     if (SKIP_MN.test(base)) return null;
     const fromValues = valueStatement(insn, ctx, mk);
@@ -22056,8 +22263,8 @@
     const ref = ctx.refOf.get(row);
     if (base === "adrp" || base === "adr" || base === "add" && ref && !ref.load && insn.ops.length >= 3 && insn.ops[2] && insn.ops[2].k === "imm") {
       const dst2 = insn.writes[0];
-      const text3 = ctx.textOf.get(row);
-      if (text3 != null) return mk(varOf(dst2, ctx) + ' = "' + escapeText2(text3) + '";', { dst: dst2, pure: true });
+      const text4 = ctx.textOf.get(row);
+      if (text4 != null) return mk(varOf(dst2, ctx) + ' = "' + escapeText2(text4) + '";', { dst: dst2, pure: true });
       const t2 = ref ? ref.addr : insn.pcRelTarget;
       if (base === "adrp" && !ref) {
         return mk(
@@ -22075,8 +22282,8 @@
     const dst = insn.writes.length === 1 ? insn.writes[0] : null;
     if (base === "mov" || base === "fmov" || base === "movz") {
       const src = insn.ops[1];
-      const text3 = ctx.textOf.get(row);
-      if (text3 != null) return mk(varOf(dst, ctx) + ' = "' + escapeText2(text3) + '";', { dst, pure: true });
+      const text4 = ctx.textOf.get(row);
+      if (text4 != null) return mk(varOf(dst, ctx) + ' = "' + escapeText2(text4) + '";', { dst, pure: true });
       return mk(varOf(dst, ctx) + " = " + operandText(src, ctx, insn) + ";", { dst, pure: true });
     }
     if (base === "movn") {
@@ -22209,14 +22416,14 @@
       const def = vg.nodeDef.get(value2);
       if (def && def.row !== insn.row) return null;
     }
-    const text3 = exprText(ctx, value2, value2);
-    if (text3 == null) return void 0;
+    const text4 = exprText(ctx, value2, value2);
+    if (text4 == null) return void 0;
     const name = ctx.material.names.get(value2);
     if (name) {
       ctx.usedVars.add(name);
-      return mk(name + " = " + text3 + ";", { dst, pure: false, fromValues: true });
+      return mk(name + " = " + text4 + ";", { dst, pure: false, fromValues: true });
     }
-    return mk(varOf(dst, ctx) + " = " + text3 + ";", { dst, pure: false, fromValues: true });
+    return mk(varOf(dst, ctx) + " = " + text4 + ";", { dst, pure: false, fromValues: true });
   }
   function isFrameHousekeeping(insn, ctx) {
     const base = (insn.mnemonic || "").toLowerCase();
@@ -22285,9 +22492,9 @@
           { dst: insn.writes[0] }
         );
       }
-      const text3 = ctx.textOf.get(insn.row);
-      if (text3 != null) {
-        return mk(d0 + ' = "' + escapeText2(text3) + '";', { dst: insn.writes[0], pure: true });
+      const text4 = ctx.textOf.get(insn.row);
+      if (text4 != null) {
+        return mk(d0 + ' = "' + escapeText2(text4) + '";', { dst: insn.writes[0], pure: true });
       }
       const node3 = ctx.values ? ctx.values.defAt(insn.row, insn.writes[0]) : null;
       const viaExpr = node3 && node3.k === "mem" ? exprText(ctx, node3, node3) : null;
@@ -22307,8 +22514,8 @@
     const out = [];
     for (const w of vg.memWrites || []) {
       if (w.row !== insn.row) continue;
-      const text3 = w.value ? exprText(ctx, w.value, null) : null;
-      out.push(text3 || null);
+      const text4 = w.value ? exprText(ctx, w.value, null) : null;
+      out.push(text4 || null);
     }
     return out;
   }
@@ -22346,11 +22553,11 @@
     const label = name || (target != null ? "sub_" + target.toString(16).toUpperCase() : indirectName(insn, ctx));
     const callExpr = label + "(" + args.join(", ") + ")";
     const reads = insn.reads.slice();
-    args.forEach((text4, i) => {
-      if (text4 === varOf("x" + i, ctx)) reads.push("x" + i);
+    args.forEach((text5, i) => {
+      if (text5 === varOf("x" + i, ctx)) reads.push("x" + i);
     });
-    const text3 = insn.isTailCall ? "return " + callExpr + ";" : nameForDef(ctx, insn.row, "x0") + " = " + callExpr + ";";
-    return mk(text3, {
+    const text4 = insn.isTailCall ? "return " + callExpr + ";" : nameForDef(ctx, insn.row, "x0") + " = " + callExpr + ";";
+    return mk(text4, {
       dst: insn.isTailCall ? null : "x0",
       call: true,
       target,
@@ -22371,8 +22578,8 @@
       const a = known.get(i);
       if (!a) break;
       const node3 = ctx.values ? ctx.values.at(call.row, "x" + i) : null;
-      const text3 = node3 ? exprText(ctx, node3, null) : null;
-      out.push(text3 || valueText(a.value, ctx, i));
+      const text4 = node3 ? exprText(ctx, node3, null) : null;
+      out.push(text4 || valueText(a.value, ctx, i));
     }
     return out;
   }
@@ -22468,10 +22675,10 @@
       if (redefined && !read) st.dropped = true;
     }
   }
-  function rightHandSide(text3, reg) {
-    const m = new RegExp("^" + escapeRe(reg) + "\\s*=\\s*(.*);$").exec(text3.trim());
+  function rightHandSide(text4, reg) {
+    const m = new RegExp("^" + escapeRe(reg) + "\\s*=\\s*(.*);$").exec(text4.trim());
     if (!m) {
-      const m2 = /^[A-Za-z_]\w*\s*=\s*(.*);$/.exec(text3.trim());
+      const m2 = /^[A-Za-z_]\w*\s*=\s*(.*);$/.exec(text4.trim());
       if (m2) return m2[1];
       return null;
     }
@@ -22483,11 +22690,11 @@
   function escapeRe(s2) {
     return s2.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   }
-  function hasWholeWord(text3, word2) {
-    return new RegExp("(^|[^\\w>])" + escapeRe(word2) + "($|[^\\w])").test(text3);
+  function hasWholeWord(text4, word2) {
+    return new RegExp("(^|[^\\w>])" + escapeRe(word2) + "($|[^\\w])").test(text4);
   }
-  function replaceWholeWord(text3, word2, value2) {
-    return text3.replace(
+  function replaceWholeWord(text4, word2, value2) {
+    return text4.replace(
       new RegExp("(^|[^\\w>])" + escapeRe(word2) + "($|[^\\w])", "g"),
       (m, a, b) => a + value2 + b
     );
@@ -22495,7 +22702,7 @@
   function declarations(ctx, types, o, body) {
     const out = [];
     const seen = /* @__PURE__ */ new Set();
-    const text3 = body.map((l) => l.text).join("\n");
+    const text4 = body.map((l) => l.text).join("\n");
     const byType = /* @__PURE__ */ new Map();
     let hidden = 0;
     let shown = 0;
@@ -22504,7 +22711,7 @@
       const name = slotName(l.slot.startsWith("x29") ? "x29" : "sp", disp, ctx);
       if (seen.has(name)) continue;
       seen.add(name);
-      if (!hasWholeWord(text3, name)) {
+      if (!hasWholeWord(text4, name)) {
         hidden++;
         continue;
       }
@@ -23745,12 +23952,12 @@
     if (Number.isNaN(n)) return "NAN";
     if (n === Infinity) return "INFINITY";
     if (n === -Infinity) return "-INFINITY";
-    let text3 = Object.is(n, -0) ? "-0.0" : String(n);
-    if (!/[.eE]/.test(text3)) text3 += ".0";
-    return Number(bits || 64) <= 32 ? text3 + "f" : text3;
+    let text4 = Object.is(n, -0) ? "-0.0" : String(n);
+    if (!/[.eE]/.test(text4)) text4 += ".0";
+    return Number(bits || 64) <= 32 ? text4 + "f" : text4;
   }
-  function wrap2(text3, p, parent) {
-    return p < parent ? `(${text3})` : text3;
+  function wrap2(text4, p, parent) {
+    return p < parent ? `(${text4})` : text4;
   }
   function printExpression(n, parentPrec = 0, opts = {}) {
     if (!n) return "unknown";
@@ -23771,12 +23978,12 @@
         return `${n.callee || "unknown_call"}(${(n.args || []).map((a) => printExpression(a, 0, opts)).join(", ")})`;
       case "intrinsic": {
         if (n.name === "madd" && n.args?.length === 3) {
-          const text3 = `${printExpression(n.args[0], PREC2.mul, opts)} * ${printExpression(n.args[1], PREC2.mul, opts)} + ${printExpression(n.args[2], PREC2.add + 1, opts)}`;
-          return wrap2(text3, PREC2.add, parentPrec);
+          const text4 = `${printExpression(n.args[0], PREC2.mul, opts)} * ${printExpression(n.args[1], PREC2.mul, opts)} + ${printExpression(n.args[2], PREC2.add + 1, opts)}`;
+          return wrap2(text4, PREC2.add, parentPrec);
         }
         if (n.name === "msub" && n.args?.length === 3) {
-          const text3 = `${printExpression(n.args[0], PREC2.mul, opts)} * ${printExpression(n.args[1], PREC2.mul, opts)} - ${printExpression(n.args[2], PREC2.add + 1, opts)}`;
-          return wrap2(text3, PREC2.sub, parentPrec);
+          const text4 = `${printExpression(n.args[0], PREC2.mul, opts)} * ${printExpression(n.args[1], PREC2.mul, opts)} - ${printExpression(n.args[2], PREC2.add + 1, opts)}`;
+          return wrap2(text4, PREC2.sub, parentPrec);
         }
         return `${n.name}(${(n.args || []).map((a) => printExpression(a, 0, opts)).join(", ")})`;
       }
@@ -23790,33 +23997,33 @@
         return `${n.op}(${printExpression(n.arg, 0, opts)})`;
       }
       case "compare": {
-        const p = PREC2[n.op] || 8, text3 = `${printExpression(n.left, p, opts)} ${OP_TEXT[n.op] || n.op} ${printExpression(n.right, p + 1, opts)}`;
-        return wrap2(text3, p, parentPrec);
+        const p = PREC2[n.op] || 8, text4 = `${printExpression(n.left, p, opts)} ${OP_TEXT[n.op] || n.op} ${printExpression(n.right, p + 1, opts)}`;
+        return wrap2(text4, p, parentPrec);
       }
       case "binary": {
         const p = PREC2[n.op] || 11;
-        const text3 = `${printExpression(n.left, p, opts)} ${OP_TEXT[n.op] || n.op} ${printExpression(n.right, p + (["sub", "sdiv", "udiv", "smod", "umod", "shl", "lshr", "ashr"].includes(n.op) ? 1 : 0), opts)}`;
-        return wrap2(text3, p, parentPrec);
+        const text4 = `${printExpression(n.left, p, opts)} ${OP_TEXT[n.op] || n.op} ${printExpression(n.right, p + (["sub", "sdiv", "udiv", "smod", "umod", "shl", "lshr", "ashr"].includes(n.op) ? 1 : 0), opts)}`;
+        return wrap2(text4, p, parentPrec);
       }
       case "select": {
-        const text3 = `${printExpression(n.condition, PREC2.select + 1, opts)} ? ${printExpression(n.whenTrue, PREC2.select, opts)} : ${printExpression(n.whenFalse, PREC2.select, opts)}`;
-        return wrap2(text3, PREC2.select, parentPrec);
+        const text4 = `${printExpression(n.condition, PREC2.select + 1, opts)} ? ${printExpression(n.whenTrue, PREC2.select, opts)} : ${printExpression(n.whenFalse, PREC2.select, opts)}`;
+        return wrap2(text4, PREC2.select, parentPrec);
       }
       default:
         return n.name || "unknown";
     }
   }
-  function splitLong(text3, width2, indent) {
-    if (text3.length + indent.length <= width2) return [text3];
+  function splitLong(text4, width2, indent) {
+    if (text4.length + indent.length <= width2) return [text4];
     const candidates = [" && ", " || ", ", ", " + ", " - "];
     for (const sep of candidates) {
-      const parts = text3.split(sep);
+      const parts = text4.split(sep);
       if (parts.length <= 1) continue;
       const out = [parts[0] + sep.trimEnd()];
       for (let i = 1; i < parts.length; i++) out.push("    " + parts[i] + (i < parts.length - 1 ? sep.trimEnd() : ""));
       return out;
     }
-    return [text3];
+    return [text4];
   }
   function printProgram(cAst, opts = {}) {
     const width2 = Math.max(48, Number(opts.columnWidth || 88));
@@ -23824,8 +24031,8 @@
     const mapping = [];
     for (const n of cAst?.body || []) {
       const indent = "    ".repeat(Math.max(0, n.indent || 0));
-      const text3 = n.text ?? "";
-      const chunks = splitLong(text3, width2, indent);
+      const text4 = n.text ?? "";
+      const chunks = splitLong(text4, width2, indent);
       const start = lines.length;
       for (const chunk of chunks) lines.push(indent + chunk);
       mapping.push({ outputStartLine: start + 1, outputEndLine: lines.length, source: n.source, kind: n.kind });
@@ -23833,8 +24040,8 @@
     return { text: lines.join("\n"), lines, mapping };
   }
   function expressionReadability(n) {
-    const text3 = printExpression(n);
-    return { characters: text3.length, effect: effectOf(n), casts: (text3.match(/\([ui]nt\d+_t\)/g) || []).length, temporaries: (text3.match(/\b(?:v|tmp)\d+\b/g) || []).length };
+    const text4 = printExpression(n);
+    return { characters: text4.length, effect: effectOf(n), casts: (text4.match(/\([ui]nt\d+_t\)/g) || []).length, temporaries: (text4.match(/\b(?:v|tmp)\d+\b/g) || []).length };
   }
   var PREC2, OP_TEXT;
   var init_c = __esm({
@@ -24009,8 +24216,8 @@
   function safeExtendName(value2) {
     return String(value2 || "unknown").toLowerCase().replace(/[^a-z0-9_]/g, "_");
   }
-  function wrapped(text3) {
-    const s2 = String(text3 || "index");
+  function wrapped(text4) {
+    const s2 = String(text4 || "index");
     return /^[-+]?\w+(?:->\w+|\.\w+)*$/.test(s2) ? s2 : `(${s2})`;
   }
   function renderExtendedIndex(indexText, extend2 = null) {
@@ -24048,8 +24255,8 @@
   });
 
   // js/decompiler/semantic.js
-  function line2(kind, indent, text3, row = null, addr = null, extra = null) {
-    return { kind, indent, text: text3, row, addr, note: null, ...extra || {} };
+  function line2(kind, indent, text4, row = null, addr = null, extra = null) {
+    return { kind, indent, text: text4, row, addr, note: null, ...extra || {} };
   }
   function valueOf2(a) {
     return a && a.value ? a.value : null;
@@ -24142,9 +24349,9 @@
     return storedValueAlias(value2, atInst, ctx) || renderValue(value2, ctx);
   }
   function canonicalRegister(reg) {
-    const text3 = String(reg || "").toLowerCase();
-    const m = /^[wx](\d+)$/.exec(text3);
-    return m ? `r${m[1]}` : text3;
+    const text4 = String(reg || "").toLowerCase();
+    const m = /^[wx](\d+)$/.exec(text4);
+    return m ? `r${m[1]}` : text4;
   }
   function loadReachedByStore(load, store, ctx) {
     if (load?.op !== OP.LOAD || load.loc?.key !== store.loc?.key || load.row <= store.row) return false;
@@ -24213,9 +24420,9 @@
     if (Number.isNaN(n)) return "NAN";
     if (n === Infinity) return "INFINITY";
     if (n === -Infinity) return "-INFINITY";
-    let text3 = Object.is(n, -0) ? "-0.0" : String(n);
-    if (!/[.eE]/.test(text3)) text3 += ".0";
-    return Number(bits || 64) <= 32 ? text3 + "f" : text3;
+    let text4 = Object.is(n, -0) ? "-0.0" : String(n);
+    if (!/[.eE]/.test(text4)) text4 += ".0";
+    return Number(bits || 64) <= 32 ? text4 + "f" : text4;
   }
   function formatConst(v, bits = 64, signed = null) {
     if (v == null) return "unknown";
@@ -24632,8 +24839,8 @@
           ctx.suppressed.push(evidenceOf(inst, "compiler-only stack spill"));
           continue;
         }
-        const text3 = statementForStore(inst, ctx);
-        out.push(line2("stmt", indent, text3, inst.row, inst.address, { source: storeSource(inst, ctx) }));
+        const text4 = statementForStore(inst, ctx);
+        out.push(line2("stmt", indent, text4, inst.row, inst.address, { source: storeSource(inst, ctx) }));
         ctx.evidence.push(evidenceOf(inst, "Memory SSA store"));
       } else if (inst.op === OP.CALL) {
         const c3 = callRecord(inst, ctx);
@@ -24742,8 +24949,8 @@
       }
       if (term2.op === OP.RET) {
         const rv = returnValueAt(term2, ctx);
-        const text3 = rv && ((rv.uses || []).length || rv.const != null || rv.def) ? `return ${renderValue(rv, ctx)};` : "return;";
-        out.push(line2("stmt", indent, text3, term2.row, term2.address, { source: mergeSource(dependencySource(rv, ctx), sourceForInst(term2, "return")) }));
+        const text4 = rv && ((rv.uses || []).length || rv.const != null || rv.def) ? `return ${renderValue(rv, ctx)};` : "return;";
+        out.push(line2("stmt", indent, text4, term2.row, term2.address, { source: mergeSource(dependencySource(rv, ctx), sourceForInst(term2, "return")) }));
         ctx.evidence.push(evidenceOf(term2, "return"));
         return;
       }
@@ -24831,10 +25038,10 @@
     return out;
   }
   function summarize(lines, ctx) {
-    const text3 = lines.map((l) => l.text).join("\n");
-    const rmw = text3.match(/(self->\w+)\s*=\s*max\(\1\s*-\s*([^,]+),\s*0\)/);
+    const text4 = lines.map((l) => l.text).join("\n");
+    const rmw = text4.match(/(self->\w+)\s*=\s*max\(\1\s*-\s*([^,]+),\s*0\)/);
     if (rmw) return `${rmw[1].replace("self->", "")}から${rmw[2].trim()}を引き、0未満にならないよう制限して保存しています。`;
-    const add2 = text3.match(/(self->\w+)\s*\+=\s*([^;]+)/);
+    const add2 = text4.match(/(self->\w+)\s*\+=\s*([^;]+)/);
     if (add2) return `${add2[1].replace("self->", "")}に${add2[2].trim()}を加えて保存しています。`;
     if (ctx.evidence.some((e) => e.reason === "Objective-C dispatch")) return "Objective-C のメッセージ送信を型・selector情報付きで実行しています。";
     if (ctx.evidence.some((e) => e.reason === "Swift dispatch")) return "Swift の呼び出しをABI情報付きで実行しています。";
@@ -25063,9 +25270,9 @@
     let end = -1;
     const indent = lines[start].indent || 0;
     for (let i = start + 1; i < lines.length; i++) {
-      const text3 = lines[i].text || "";
-      if (text3.includes(`goto ${label}`)) hasBackEdge = true;
-      if ((lines[i].indent || 0) === indent && text3 === "}") {
+      const text4 = lines[i].text || "";
+      if (text4.includes(`goto ${label}`)) hasBackEdge = true;
+      if ((lines[i].indent || 0) === indent && text4 === "}") {
         end = i + 1;
         break;
       }
@@ -26915,14 +27122,14 @@
     const store = insts.find((i) => i.op === "store");
     if (store) {
       const location2 = memoryLocation(store, state), value2 = valueOf4(store.args?.[0]), e = expressionFor(value2, state);
-      let text3 = `${location2.text} = ${printExpression(e)};`;
+      let text4 = `${location2.text} = ${printExpression(e)};`;
       if (e?.kind === "binary" && ["add", "sub", "mul"].includes(e.op) && e.left?.kind === "load" && e.left.location?.key === location2.key) {
         const rhs = printExpression(e.right);
-        if (e.op === "add" && e.right?.kind === "const" && e.right.value === 1n) text3 = `${location2.text}++;`;
-        else if (e.op === "sub" && e.right?.kind === "const" && e.right.value === 1n) text3 = `${location2.text}--;`;
-        else text3 = `${location2.text} ${{ add: "+=", sub: "-=", mul: "*=" }[e.op]} ${rhs};`;
+        if (e.op === "add" && e.right?.kind === "const" && e.right.value === 1n) text4 = `${location2.text}++;`;
+        else if (e.op === "sub" && e.right?.kind === "const" && e.right.value === 1n) text4 = `${location2.text}--;`;
+        else text4 = `${location2.text} ${{ add: "+=", sub: "-=", mul: "*=" }[e.op]} ${rhs};`;
       }
-      return { text: text3, semantic: { op: "store", location: location2, expression: e, ir: store.id }, source: mergeSource(line4.source, e?.source, origin(store, store.dst)) };
+      return { text: text4, semantic: { op: "store", location: location2, expression: e, ir: store.id }, source: mergeSource(line4.source, e?.source, origin(store, store.dst)) };
     }
     const ret = insts.find((i) => i.op === "ret");
     if (ret && /^return\b/.test(String(line4.text || ""))) {
@@ -26959,12 +27166,12 @@
     };
   }
   function metricsOf(result, state, printed) {
-    const text3 = printed.text;
+    const text4 = printed.text;
     const exprMetrics = [...state.expressions.values()].map(expressionReadability);
     return {
-      rawAssemblyFallbacks: (text3.match(/__asm\(/g) || []).length,
-      gotos: (text3.match(/\bgoto\b/g) || []).length,
-      temporaries: (text3.match(/\b(?:v|tmp|call_)\d+\b/g) || []).length,
+      rawAssemblyFallbacks: (text4.match(/__asm\(/g) || []).length,
+      gotos: (text4.match(/\bgoto\b/g) || []).length,
+      temporaries: (text4.match(/\b(?:v|tmp|call_)\d+\b/g) || []).length,
       redundantCasts: exprMetrics.reduce((a, x) => a + x.casts, 0),
       rewrittenExpressions: state.rewriteStats?.applications || 0,
       rewriteBudgetExceeded: !!state.rewriteStats?.budgetExceeded,
@@ -27658,11 +27865,11 @@
     } catch {
     }
     for (const value2 of candidates) {
-      const text3 = String(value2 || "").trim();
-      const match = /^([+-])\[([^\]\s]+)\s+([^\]]+)\]$/.exec(text3);
+      const text4 = String(value2 || "").trim();
+      const match = /^([+-])\[([^\]\s]+)\s+([^\]]+)\]$/.exec(text4);
       if (!match) continue;
       return {
-        raw: text3,
+        raw: text4,
         kind: match[1],
         className: match[2],
         selector: match[3],
@@ -28707,8 +28914,8 @@
     }
     return "unknown";
   }
-  function compileGoal(text3) {
-    const raw = String(text3 || "").trim();
+  function compileGoal(text4) {
+    const raw = String(text4 || "").trim();
     const action = ACTIONS.find((a) => a.re.test(raw)) || null;
     const event = EVENTS.find((e) => e.re.test(raw)) || null;
     const entityTerms = [];
@@ -29012,10 +29219,10 @@
       if (!range2) continue;
       if (ctx.program && ctx.textOf && stringHits < 24) {
         for (const ref of ctx.program.refsFrom(range2.start, range2.end, 24)) {
-          const text3 = ctx.textOf(ref.target);
-          if (!text3) continue;
-          for (const hit of classifyString(text3)) {
-            add2(hit.id, hit.weak ? 1 : STRING_POINTS, "string", { text: text3, sel: m.sel });
+          const text4 = ctx.textOf(ref.target);
+          if (!text4) continue;
+          for (const hit of classifyString(text4)) {
+            add2(hit.id, hit.weak ? 1 : STRING_POINTS, "string", { text: text4, sel: m.sel });
             stringHits++;
           }
           if (stringHits >= 24) break;
@@ -29295,16 +29502,16 @@
       detail: detail || null
     };
   }
-  function exclusiveLR(total, users, score2, text3) {
+  function exclusiveLR(total, users, score2, text4) {
     const n = Math.max(2, total || 0);
     const k = Math.max(1, users || 1);
     if (k > EXCLUSIVE_MAX_USERS) return 0;
-    if (!namesBehaviour(text3)) return 0;
+    if (!namesBehaviour(text4)) return 0;
     if (!(score2 >= EXCLUSIVE_MIN_SCORE)) return 0;
     return Math.max(1, Math.min(1e5, n / k * NAMES_THE_GOAL));
   }
-  function namesBehaviour(text3) {
-    const s2 = String(text3 == null ? "" : text3);
+  function namesBehaviour(text4) {
+    const s2 = String(text4 == null ? "" : text4);
     if (!s2) return true;
     if (/%[-+ 0-9.#]*[@a-zA-Z]/.test(s2)) return true;
     if (/^[\w./\\-]+\.[a-zA-Z][a-zA-Z0-9]{1,7}$/.test(s2)) return false;
@@ -29985,11 +30192,11 @@
             this.classes.set(c3.name, entry2);
             this.classOfName.set(c3.name, entry2);
             const accessorField = (sel) => {
-              const text3 = String(sel || "");
+              const text4 = String(sel || "");
               let plain = null;
-              const sm = /^set(.+):$/.exec(text3);
+              const sm = /^set(.+):$/.exec(text4);
               if (sm && sm[1]) plain = sm[1];
-              else if (text3 && !text3.includes(":")) plain = text3;
+              else if (text4 && !text4.includes(":")) plain = text4;
               if (!plain) return null;
               const want = plain.replace(/^_+/, "").toLowerCase();
               for (const iv of c3.ivars || []) {
@@ -30514,15 +30721,15 @@
     const texts = [];
     let formats = 0;
     for (const s2 of f.stringRefs || []) {
-      let text3 = s2.text || null;
-      if (!text3 && textAt && s2.addr != null) {
+      let text4 = s2.text || null;
+      if (!text4 && textAt && s2.addr != null) {
         const hit = textAt(s2.addr);
-        text3 = hit ? hit.text : null;
+        text4 = hit ? hit.text : null;
       }
-      if (!text3) continue;
-      if (FORMAT_RE.test(text3)) formats++;
-      if (texts.length < 6 && !texts.some((x) => x.text === text3)) {
-        texts.push({ text: text3, addr: s2.addr, row: s2.row });
+      if (!text4) continue;
+      if (FORMAT_RE.test(text4)) formats++;
+      if (texts.length < 6 && !texts.some((x) => x.text === text4)) {
+        texts.push({ text: text4, addr: s2.addr, row: s2.row });
       }
     }
     const out = {
@@ -31695,9 +31902,9 @@
       if (!prev || prev.strength < s2) t2.sources.set(key2, { strength: s2, detail });
     };
     const texts = [];
-    const push = (key2, text3, scale) => {
-      if (!text3) return;
-      texts.push({ key: key2, text: String(text3), scale: scale == null ? 1 : scale });
+    const push = (key2, text4, scale) => {
+      if (!text4) return;
+      texts.push({ key: key2, text: String(text4), scale: scale == null ? 1 : scale });
     };
     if (input2.name && !/^sub_[0-9a-f]+$/i.test(input2.name)) push("name", input2.name);
     if (input2.owner && input2.owner.sel) push("selector", input2.owner.sel);
@@ -32680,7 +32887,7 @@
           updates,
           apis: f.apis || [],
           selectors,
-          strings: stringFacts.map((text3) => ({ text: text3 })),
+          strings: stringFacts.map((text4) => ({ text: text4 })),
           callees: f.calledNames || [],
           callers: [],
           comparisons: compares.length,
@@ -33538,8 +33745,8 @@
     for (let id = 0; id < ranges.length; id++) for (let i = ranges[id].start; i <= ranges[id].end; i++) if (loopOf[i] == null) loopOf[i] = id;
     return { blockOf, loopOf };
   }
-  function looksLikeDataFile(text3) {
-    return /\.(csv|tsv|json|plist|dat|txt)$/i.test(String(text3 || ""));
+  function looksLikeDataFile(text4) {
+    return /\.(csv|tsv|json|plist|dat|txt)$/i.test(String(text4 || ""));
   }
   async function recoverSchemas(opts) {
     const o = opts || {};
@@ -33669,9 +33876,9 @@
     const groups = groupDecompilerAddresses(line4);
     if (!groups.length) return "";
     const shown = groups.slice(0, Math.max(1, maxGroups));
-    let text3 = shown.map((g) => groupText(g, { digits })).join(" · ");
-    if (groups.length > shown.length) text3 += ` · +${groups.length - shown.length}`;
-    return text3;
+    let text4 = shown.map((g) => groupText(g, { digits })).join(" · ");
+    if (groups.length > shown.length) text4 += ` · +${groups.length - shown.length}`;
+    return text4;
   }
   function fullDecompilerSourceText(line4) {
     return groupDecompilerAddresses(line4).map((g) => groupText(g, { digits: 0, prefix: "0x" })).join(", ");
@@ -34238,9 +34445,9 @@
         g.append(t2);
       }
       const start = p.y + PAD_Y + (n.title ? LINE_H + 12 : 12);
-      (n.lines || []).slice(0, MAX_LINES).forEach((text3, i) => {
+      (n.lines || []).slice(0, MAX_LINES).forEach((text4, i) => {
         const t2 = svgEl("text", { x: p.x + PAD_X, y: start + i * LINE_H, class: "g-line" });
-        t2.textContent = text3.length > MAX_CHARS ? text3.slice(0, MAX_CHARS - 1) + "…" : text3;
+        t2.textContent = text4.length > MAX_CHARS ? text4.slice(0, MAX_CHARS - 1) + "…" : text4;
         g.append(t2);
       });
       if ((n.lines || []).length > MAX_LINES) {
@@ -34399,11 +34606,11 @@
   function graphLegend(kind) {
     const wrap3 = document.createElement("div");
     wrap3.className = "graph-legend";
-    const add2 = (cls, text3) => {
+    const add2 = (cls, text4) => {
       const s2 = document.createElement("span");
       s2.className = cls;
       s2.append(document.createElement("i"));
-      s2.append(document.createTextNode(text3));
+      s2.append(document.createTextNode(text4));
       wrap3.append(s2);
     };
     if (kind === "call") {
@@ -34713,8 +34920,8 @@
       return null;
     }
   }
-  function assemble2(text3, at) {
-    const src = String(text3 || "").trim().toLowerCase().replace(/\s+/g, " ");
+  function assemble2(text4, at) {
+    const src = String(text4 || "").trim().toLowerCase().replace(/\s+/g, " ");
     if (!src) return { error: "命令が空です。" };
     const sp = src.indexOf(" ");
     const mn = sp < 0 ? src : src.slice(0, sp);
@@ -34820,8 +35027,8 @@
     const m = /#?(0x[0-9a-f]+)/i.exec(opsStr || "");
     return m ? BigInt(m[1]) : null;
   }
-  function parseHexBytes(text3) {
-    const raw = String(text3 || "").trim();
+  function parseHexBytes(text4) {
+    const raw = String(text4 || "").trim();
     if (!isHexBytes(raw)) return null;
     const clean = raw.replace(/0x/gi, "").replace(/[\s,]+/g, "");
     if (!clean.length || clean.length % 2) return null;
@@ -34829,8 +35036,8 @@
     for (let i = 0; i < out.length; i++) out[i] = parseInt(clean.slice(i * 2, i * 2 + 2), 16);
     return out;
   }
-  function isHexBytes(text3) {
-    const raw = String(text3 || "").trim();
+  function isHexBytes(text4) {
+    const raw = String(text4 || "").trim();
     if (!raw) return false;
     if (/^(?:0x)?[0-9a-f]+$/i.test(raw)) {
       const s2 = raw.replace(/^0x/i, "");
@@ -35336,8 +35543,8 @@
             this.stopped = "0x" + at.toString(16).toUpperCase() + " の命令が読めませんでした。";
             return { ok: false, text: "", reason: this.stopped };
           }
-          const text3 = (insn.mn + " " + (insn.ops || "")).trim();
-          if (this.trace.length < TRACE_MAX) this.trace.push({ addr: at, text: text3 });
+          const text4 = (insn.mn + " " + (insn.ops || "")).trim();
+          if (this.trace.length < TRACE_MAX) this.trace.push({ addr: at, text: text4 });
           else {
             this.traceTruncated = true;
             this.traceDropped++;
@@ -35349,11 +35556,11 @@
             if (jumped != null) next = jumped;
           } catch (err) {
             this.stopped = err && err.message || String(err);
-            return { ok: false, text: text3, reason: this.stopped, code: err && err.code || null };
+            return { ok: false, text: text4, reason: this.stopped, code: err && err.code || null };
           }
           this.pc = next;
           if (this.pc === 0n) this.stopped = "最初の呼び出し元まで戻ってきました（実行おわり）。";
-          return { ok: !this.stopped, text: text3, reason: this.stopped };
+          return { ok: !this.stopped, text: text4, reason: this.stopped };
         }
         async run(maxSteps = 2e4, onProgress) {
           const limit2 = Number(maxSteps);
@@ -36501,8 +36708,8 @@ ${user}
         return true;
       },
       /** その行にメモを書く。 */
-      comment(addr, text3) {
-        app2.notes.setComment(BigInt(addr), text3);
+      comment(addr, text4) {
+        app2.notes.setComment(BigInt(addr), text4);
         return true;
       },
       /** そのアドレスを含む関数の {start, end}。 */
@@ -36628,11 +36835,11 @@ ${user}
       },
       /* ── 書き換え ─────────────────────────────────────── */
       /** 現在のarchitecture用に命令を組み立てる。 */
-      assemble(text3, at) {
+      assemble(text4, at) {
         const arch = architecture();
         const archAdapter = adapter();
         if (typeof archAdapter.assemble !== "function") return unsupportedArchitectureResult("assemble", arch);
-        return archAdapter.assemble(text3, BigInt(at));
+        return archAdapter.assemble(text4, BigInt(at));
       },
       /** 書き換えを登録する（保存するまでファイルは変わりません）。 */
       async patch(addr, textOrHex) {
@@ -37112,14 +37319,14 @@ for (const s of hits) {
     if (!res.body?.getReader) {
       const n = Number(rawLength);
       if (!Number.isFinite(n) || n < 0 || n > maxBytes) throw new Error("PLUGIN_UNBOUNDED_RESPONSE");
-      const text4 = await res.text();
-      if (sourceBytes(text4) > maxBytes) throw new Error("PLUGIN_TOO_LARGE");
-      return text4;
+      const text5 = await res.text();
+      if (sourceBytes(text5) > maxBytes) throw new Error("PLUGIN_TOO_LARGE");
+      return text5;
     }
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let total = 0;
-    let text3 = "";
+    let text4 = "";
     try {
       while (true) {
         const { done, value: value2 } = await reader.read();
@@ -37132,17 +37339,17 @@ for (const s of hits) {
           }
           throw new Error("PLUGIN_TOO_LARGE");
         }
-        text3 += decoder.decode(value2, { stream: true });
+        text4 += decoder.decode(value2, { stream: true });
       }
-      text3 += decoder.decode();
+      text4 += decoder.decode();
     } finally {
       try {
         reader.releaseLock?.();
       } catch {
       }
     }
-    if (sourceBytes(text3) > maxBytes) throw new Error("PLUGIN_TOO_LARGE");
-    return text3;
+    if (sourceBytes(text4) > maxBytes) throw new Error("PLUGIN_TOO_LARGE");
+    return text4;
   }
   var STORE_KEY, MAX_PLUGIN_SOURCE_BYTES, sourceBytes, fallbackInstallSeq, PluginHost, EXAMPLE_PLUGIN;
   var init_plugins = __esm({
@@ -37249,17 +37456,17 @@ for (const s of hits) {
           return { ok: true, added, installationId };
         }
         async installFromUrl(url) {
-          let text3;
+          let text4;
           try {
             const res = await fetch(url, { credentials: "omit", referrerPolicy: "no-referrer" });
             if (!res.ok) return { error: "取り寄せられませんでした（" + res.status + "）。" };
-            text3 = await boundedResponseText(res);
+            text4 = await boundedResponseText(res);
           } catch (err) {
             if (err?.message === "PLUGIN_TOO_LARGE") return { error: "プラグインが大きすぎます（512 KB まで）。" };
             if (err?.message === "PLUGIN_UNBOUNDED_RESPONSE") return { error: "サイズを安全に確認できない応答だったため読み込みませんでした。" };
             return { error: "取り寄せに失敗しました: " + (err && err.message || err) };
           }
-          return { ok: true, source: text3, origin: url, needsConfirmation: true };
+          return { ok: true, source: text4, origin: url, needsConfirmation: true };
         }
         remove(id) {
           const before2 = this.plugins.slice();
@@ -37521,8 +37728,8 @@ for (const s of hits) {
       if (o + 8 > index2.end) break;
       const len = ctx.dv.getInt32(o, true), off = ctx.dv.getInt32(o + 4, true);
       if (len < 0 || len > 1 << 16 || off < 0 || off + len > data.size) continue;
-      const text3 = utf8(ctx.u8.subarray(data.offset + off, data.offset + off + len));
-      if (text3 != null) out.push({ index: i, text: text3 });
+      const text4 = utf8(ctx.u8.subarray(data.offset + off, data.offset + off + len));
+      if (text4 != null) out.push({ index: i, text: text4 });
     }
     return out;
   }
@@ -38221,9 +38428,9 @@ for (const s of hits) {
         const primary = primaryDecompilerAddress(l);
         const row = el("div", "cl " + l.kind);
         const gutter = el("span", "cl-addr mono", formatDecompilerSource(l, { maxGroups: 1 }));
-        const text3 = el("span", "cl-text mono");
-        paintCode(text3, "    ".repeat(Math.max(0, l.indent)) + l.text);
-        row.append(gutter, text3);
+        const text4 = el("span", "cl-text mono");
+        paintCode(text4, "    ".repeat(Math.max(0, l.indent)) + l.text);
+        row.append(gutter, text4);
         if (primary != null) {
           row.classList.add("tappable");
           row.title = fullDecompilerSourceText(l);
@@ -38247,17 +38454,17 @@ for (const s of hits) {
     }
     render2();
   }
-  function paintCode(node3, text3) {
+  function paintCode(node3, text4) {
     node3.replaceChildren();
     let last = 0;
-    text3.replace(CODE_TOKENS, (m, str, kw, type, num2, call, cmt, at) => {
-      if (at > last) node3.append(document.createTextNode(text3.slice(last, at)));
+    text4.replace(CODE_TOKENS, (m, str, kw, type, num2, call, cmt, at) => {
+      if (at > last) node3.append(document.createTextNode(text4.slice(last, at)));
       const cls = str ? "c-str" : kw ? "c-kw" : type ? "c-type" : num2 ? "c-num" : call ? "c-call" : "c-cmt";
       node3.append(el("span", cls, m));
       last = at + m.length;
       return m;
     });
-    if (last < text3.length) node3.append(document.createTextNode(text3.slice(last)));
+    if (last < text4.length) node3.append(document.createTextNode(text4.slice(last)));
   }
   function lineMenu(app2, sheet, line4, sourceInsns = []) {
     const primary = primaryDecompilerAddress(line4);
@@ -39090,15 +39297,15 @@ for (const s of hits) {
       }
       commit(bytes3, hex6.value);
     }));
-    async function apply(text3) {
-      const built = assemble2(text3, addr);
+    async function apply(text4) {
+      const built = assemble2(text4, addr);
       if (built.error) {
         alertDialog("組み立てられません", built.error);
         return;
       }
-      commit(built.bytes, text3);
+      commit(built.bytes, text4);
     }
-    async function commit(bytes3, text3) {
+    async function commit(bytes3, text4) {
       const valid = validatePatchRange(region, addr, bytes3.length, file && file.size, true);
       if (valid.error) {
         alertDialog("登録できません", valid.error);
@@ -39109,7 +39316,7 @@ for (const s of hits) {
         alertDialog("登録できません", "元のバイトを読み取れませんでした。");
         return;
       }
-      app2.patches.add(valid.fileOffset, before2, bytes3, { addr, text: text3 });
+      app2.patches.add(valid.fileOffset, before2, bytes3, { addr, text: text4 });
       sheet.close();
       toast("書き換えを登録しました（保存するまでファイルは変わりません）");
     }
@@ -39441,8 +39648,8 @@ for (const s of hits) {
             toast("プラグインが大きすぎます（512 KB まで）。");
             return;
           }
-          const text3 = await f.text();
-          confirmInstall(text3, f.name);
+          const text4 = await f.text();
+          confirmInstall(text4, f.name);
         });
         picker.click();
       }));
@@ -39473,13 +39680,13 @@ for (const s of hits) {
       }));
       body.append(chips);
     };
-    function confirmInstall(text3, origin2) {
+    function confirmInstall(text4, origin2) {
       const s2 = new Sheet("中身を確かめる");
       s2.body.append(para("入れる前に、中身を確かめてください。"));
-      s2.body.append(para("全 " + text3.length.toLocaleString() + " 文字です。以下が全文です。"));
-      s2.body.append(codeBlock(text3));
+      s2.body.append(para("全 " + text4.length.toLocaleString() + " 文字です。以下が全文です。"));
+      s2.body.append(codeBlock(text4));
       s2.body.append(button("全文を確認して入れる", "tb-btn strong", async () => {
-        const res = await app2.plugins.install(text3, origin2);
+        const res = await app2.plugins.install(text4, origin2);
         s2.close();
         if (res.error) alertDialog("入れられません", res.error);
         else {
@@ -39838,14 +40045,14 @@ ${rendered}` : rendered,
       }))
     }));
   }
-  function takeEvents(text3) {
+  function takeEvents(text4) {
     const events = [];
     let index2;
-    while ((index2 = text3.indexOf("\n\n")) >= 0) {
-      events.push(text3.slice(0, index2));
-      text3 = text3.slice(index2 + 2);
+    while ((index2 = text4.indexOf("\n\n")) >= 0) {
+      events.push(text4.slice(0, index2));
+      text4 = text4.slice(index2 + 2);
     }
-    return { events, rest: text3 };
+    return { events, rest: text4 };
   }
   function consumeEvent(raw, handlers) {
     const lines = raw.split("\n");
@@ -40527,8 +40734,8 @@ ${rendered}` : rendered,
     }
     const evs = [];
     for (const e of b.evidence) {
-      const text3 = evidenceText(e);
-      if (text3 && !evs.includes(text3)) evs.push(text3);
+      const text4 = evidenceText(e);
+      if (text4 && !evs.includes(text4)) evs.push(text4);
     }
     if (evs.length) {
       const be = block(pick("根拠", "Evidence"));
@@ -40751,8 +40958,8 @@ ${rendered}` : rendered,
     sheet.body.append(ul);
   }
   function trimText(s2, n) {
-    const text3 = String(s2 || "").replace(/\s+/g, " ");
-    return text3.length > n ? text3.slice(0, n) + "…" : text3;
+    const text4 = String(s2 || "").replace(/\s+/g, " ");
+    return text4.length > n ? text4.slice(0, n) + "…" : text4;
   }
   function showStrings(app2) {
     const info = app2.store.get("fileInfo");
@@ -41138,8 +41345,8 @@ ${rendered}` : rendered,
       alertDialog(t("search.failed"), userError(err));
     });
   }
-  function numberPattern(text3) {
-    const t2 = text3.trim().replace(/[_,]/g, "");
+  function numberPattern(text4) {
+    const t2 = text4.trim().replace(/[_,]/g, "");
     let v;
     try {
       if (/^-?0x[0-9a-f]+$/i.test(t2)) v = BigInt(t2.replace("-0x", "0x")) * (t2[0] === "-" ? -1n : 1n);
@@ -41362,8 +41569,8 @@ ${rendered}` : rendered,
     );
     if (e) {
       actions.append(button(t("detail.copyExplain"), "chip", () => {
-        const text3 = [addrHex(d.address), asmText, e.title, e.summary, e.pseudo, ...e.detail || []].filter(Boolean).join("\n");
-        copyText(text3, t("toast.copyExplain"));
+        const text4 = [addrHex(d.address), asmText, e.title, e.summary, e.pseudo, ...e.detail || []].filter(Boolean).join("\n");
+        copyText(text4, t("toast.copyExplain"));
       }));
     }
     actions.append(
@@ -41489,11 +41696,11 @@ ${rendered}` : rendered,
     const n = v < 0n ? -v : v;
     return (v < 0n ? "-0x" : "0x") + n.toString(16).toUpperCase();
   }
-  function progressBox(parent, text3) {
+  function progressBox(parent, text4) {
     const bar = el("div", "progress");
     const fill = el("i");
     bar.append(fill);
-    const status = el("div", "hint", text3 || "");
+    const status = el("div", "hint", text4 || "");
     bar.setAttribute("role", "progressbar");
     bar.setAttribute("aria-valuemin", "0");
     bar.setAttribute("aria-valuemax", "100");
@@ -41532,9 +41739,9 @@ ${rendered}` : rendered,
     parent.append(box);
     return box;
   }
-  function beginnerEmpty(parent, title, text3, { actionLabel: actionLabel2, onAction } = {}) {
+  function beginnerEmpty(parent, title, text4, { actionLabel: actionLabel2, onAction } = {}) {
     const box = el("div", "beginner-empty");
-    box.append(el("h4", null, title), para(text3));
+    box.append(el("h4", null, title), para(text4));
     if (onAction) box.append(button(actionLabel2, "chip", onAction));
     parent.append(box);
     return box;
@@ -41623,8 +41830,8 @@ ${rendered}` : rendered,
       }
       if (bits.length) reading.append(el("span", "goal-reading-detail", bits.join("　·　")));
       for (const m of query.missing) {
-        const text3 = queryMissingText(m);
-        if (text3) reading.append(el("span", "goal-reading-missing", "• " + text3));
+        const text4 = queryMissingText(m);
+        if (text4) reading.append(el("span", "goal-reading-missing", "• " + text4));
       }
     };
     const go = () => {
@@ -41906,9 +42113,9 @@ ${rendered}` : rendered,
       model = null;
     }
     if (!model || !into.isConnected) return;
-    let text3 = "";
+    let text4 = "";
     try {
-      text3 = purposeText(describePurpose({
+      text4 = purposeText(describePurpose({
         model,
         addr,
         fields: app2.fields,
@@ -41916,11 +42123,11 @@ ${rendered}` : rendered,
         textAt: stringLookup(strings || [])
       }));
     } catch {
-      text3 = "";
+      text4 = "";
     }
-    if (text3) into.append(para(pick(
-      "この処理がしていること: " + text3,
-      "What this routine does: " + text3
+    if (text4) into.append(para(pick(
+      "この処理がしていること: " + text4,
+      "What this routine does: " + text4
     ), "sub"));
   }
   async function fillPurpose(app2, region, program, strings, rows) {
@@ -41937,10 +42144,10 @@ ${rendered}` : rendered,
         model = null;
       }
       if (!model) continue;
-      let text3 = "";
+      let text4 = "";
       try {
         const owner = app2.fields ? app2.fields.ownerOf(r.addr) : null;
-        text3 = purposeText(describePurpose({
+        text4 = purposeText(describePurpose({
           model,
           addr: r.addr,
           fields: app2.fields,
@@ -41948,12 +42155,12 @@ ${rendered}` : rendered,
           textAt: lookup
         }));
       } catch {
-        text3 = "";
+        text4 = "";
       }
-      if (!text3) continue;
+      if (!text4) continue;
       const sub = r.row.querySelector(".sub");
       if (!sub) continue;
-      sub.textContent = text3 + "\n" + r.rest;
+      sub.textContent = text4 + "\n" + r.rest;
     }
   }
   function makeAnalyzer(app2, region) {
@@ -42364,13 +42571,13 @@ ${rendered}` : rendered,
     wrap3.tabIndex = -1;
     const written = /* @__PURE__ */ new Set();
     chain.steps.forEach((step, i) => {
-      const text3 = flowStepText(step);
-      if (!text3) return;
-      const node3 = el("div", "flow-node flow-" + text3.kind);
-      const mark = el("span", "flow-mark", FLOW_KIND_ICON[text3.kind] || "·");
+      const text4 = flowStepText(step);
+      if (!text4) return;
+      const node3 = el("div", "flow-node flow-" + text4.kind);
+      const mark = el("span", "flow-mark", FLOW_KIND_ICON[text4.kind] || "·");
       mark.setAttribute("aria-hidden", "true");
       const bodyEl = el("div", "flow-body");
-      bodyEl.append(el("b", null, text3.label), el("span", null, text3.text));
+      bodyEl.append(el("b", null, text4.label), el("span", null, text4.text));
       node3.append(mark, bodyEl);
       if (step.address != null && !written.has(step.address)) {
         written.add(step.address);
@@ -42481,10 +42688,10 @@ ${rendered}` : rendered,
     body.append(el("div", "sec-title", pick("なぜ分かる？", "Why do we know?")));
     const beginnerWhy = el("ul", "answer-evidence");
     for (const w of c3.why.slice(0, 5)) {
-      const text3 = proofText(w);
-      if (!text3) continue;
+      const text4 = proofText(w);
+      if (!text4) continue;
       const li = el("li");
-      li.append(el("i", null, w.kind === "inference" ? "•" : "✓"), el("span", null, text3));
+      li.append(el("i", null, w.kind === "inference" ? "•" : "✓"), el("span", null, text4));
       beginnerWhy.append(li);
     }
     body.append(beginnerWhy);
@@ -42492,11 +42699,11 @@ ${rendered}` : rendered,
       const nb = block(pick("確定と言えない理由", "Why this is not confirmed"));
       const ol = el("ul", "story-steps");
       for (const m of pin.missing) {
-        const text3 = missingText(m);
-        if (!text3) continue;
+        const text4 = missingText(m);
+        if (!text4) continue;
         const li = el("li");
         li.append(el("i", null, "•"));
-        li.append(el("span", null, text3));
+        li.append(el("span", null, text4));
         ol.append(li);
       }
       nb.append(ol);
@@ -42555,9 +42762,9 @@ ${rendered}` : rendered,
         into.append(ul, el("div", "sec-title", pick("根拠の内訳", "Evidence breakdown")));
         const wl = list();
         for (const w of c3.why) {
-          const text3 = proofText(w);
-          if (!text3) continue;
-          wl.append(tapRow(text3, {
+          const text4 = proofText(w);
+          if (!text4) continue;
+          wl.append(tapRow(text4, {
             right: factorText(w.factor),
             tag: w.kind === "inference" ? pick("推測", "inference") : pick("検証済", "verified"),
             tagClass: w.kind === "inference" ? "tag-infer" : "tag-fact"
@@ -43062,11 +43269,11 @@ ${rendered}` : rendered,
       const nb = block(pick("次にすること", "What to do next"));
       const ol = el("ul", "story-steps");
       steps.forEach((s2, i) => {
-        const text3 = autoStepText(s2);
-        if (!text3) return;
+        const text4 = autoStepText(s2);
+        if (!text4) return;
         const li = el("li");
         li.append(el("i", null, String(i + 1) + "."));
-        li.append(el("span", null, text3));
+        li.append(el("span", null, text4));
         ol.append(li);
       });
       nb.append(ol);
@@ -43561,9 +43768,9 @@ ${rendered}` : rendered,
     body.append(el("div", "sec-title", pick("この点数の内訳", "How this score was built")));
     const ul = list();
     for (const r of breakdown(cand)) {
-      const text3 = reasonText(r);
-      if (!text3) continue;
-      const row = tapRow(text3, {
+      const text4 = reasonText(r);
+      if (!text4) continue;
+      const row = tapRow(text4, {
         right: (r.points >= 0 ? "+" : "") + Math.round(r.points),
         tag: certaintyWord(reasonKind(r.code)),
         tagClass: reasonKind(r.code) === "fact" ? "tag-fact" : "tag-infer",
@@ -43689,11 +43896,11 @@ ${rendered}` : rendered,
     const wl = list();
     let shown = 0;
     for (const e of role.evidence) {
-      const text3 = roleProofText(e);
-      if (!text3) continue;
+      const text4 = roleProofText(e);
+      if (!text4) continue;
       shown++;
       const kind = e.kind === "verified" ? pick("検証済", "verified") : e.kind === "fact" ? pick("事実", "fact") : pick("推測", "inference");
-      wl.append(tapRow(text3, {
+      wl.append(tapRow(text4, {
         right: factorText(e.factor),
         tag: kind,
         tagClass: e.kind === "inference" ? "tag-infer" : "tag-fact",
@@ -43711,11 +43918,11 @@ ${rendered}` : rendered,
       const nb = block(pick("言い切れない理由", "Why this is not confirmed"));
       const ol = el("ul", "story-steps");
       for (const m of role.missing) {
-        const text3 = roleMissingText(m);
-        if (!text3) continue;
+        const text4 = roleMissingText(m);
+        if (!text4) continue;
         const li = el("li");
         li.append(el("i", null, "•"));
-        li.append(el("span", null, text3));
+        li.append(el("span", null, text4));
         ol.append(li);
       }
       nb.append(ol);
@@ -43903,10 +44110,10 @@ ${rendered}` : rendered,
         const ful = list();
         let shown = 0;
         for (const f of report.facts) {
-          const text3 = factText(f);
-          if (!text3) continue;
+          const text4 = factText(f);
+          if (!text4) continue;
           shown++;
-          ful.append(tapRow(text3, {
+          ful.append(tapRow(text4, {
             tag: certaintyWord("fact"),
             tagClass: "tag-fact",
             sub: f.row >= 0 ? addrHex(region.vmAddr + BigInt(f.row) * 4n) : null,
@@ -43931,15 +44138,15 @@ ${rendered}` : rendered,
         const iul = list();
         let inferred = 0;
         for (const i of report.inferences) {
-          const text3 = inferenceText(i);
-          if (!text3) continue;
+          const text4 = inferenceText(i);
+          if (!text4) continue;
           inferred++;
-          iul.append(tapRow(text3, {
+          iul.append(tapRow(text4, {
             tag: certaintyWord("inference"),
             tagClass: "tag-infer",
             right: Math.round(i.confidence * 100) + "%",
             sub: pick("根拠 " + i.evidence.length + " 件", i.evidence.length + " pieces of evidence"),
-            onTap: () => showEvidence(app2, text3, i)
+            onTap: () => showEvidence(app2, text4, i)
           }));
         }
         if (!inferred) {
@@ -43953,9 +44160,9 @@ ${rendered}` : rendered,
         const unkBlk = block(pick("このツールでは分からないこと", "What this tool cannot tell you"));
         const uul = list();
         for (const u3 of report.unknowns) {
-          const text3 = unknownText(u3);
-          if (text3) {
-            uul.append(tapRow(text3, {
+          const text4 = unknownText(u3);
+          if (text4) {
+            uul.append(tapRow(text4, {
               tag: certaintyWord("unknown"),
               tagClass: "tag-unknown",
               disabled: true
@@ -44054,11 +44261,11 @@ ${rendered}` : rendered,
     const nb = block(pick("次に確認すること", "What to check next"));
     const nl = el("ul", "story-steps");
     report.nextSteps.forEach((s2, i) => {
-      const text3 = nextStepText(s2);
-      if (!text3) return;
+      const text4 = nextStepText(s2);
+      if (!text4) return;
       const li = el("li");
       li.append(el("i", null, String(i + 1) + "."));
-      li.append(el("span", null, text3));
+      li.append(el("span", null, text4));
       nl.append(li);
     });
     nb.append(nl);
@@ -44081,8 +44288,8 @@ ${rendered}` : rendered,
     }));
     body.append(actions);
   }
-  function appendGeminiInline(parent, text3) {
-    const src = String(text3 || "");
+  function appendGeminiInline(parent, text4) {
+    const src = String(text4 || "");
     const re = /(`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*)/g;
     let last = 0;
     for (const match of src.matchAll(re)) {
@@ -44277,15 +44484,15 @@ ${rendered}` : rendered,
       question.disabled = running;
     };
     send.addEventListener("click", async () => {
-      const text3 = question.value.trim();
-      if (!text3) {
+      const text4 = question.value.trim();
+      if (!text4) {
         status.textContent = pick("質問を入力してください。", "Enter a question first.");
         question.focus();
         return;
       }
       let payload;
       try {
-        payload = buildGeminiPayload(report, res.model, text3, thinking.value);
+        payload = buildGeminiPayload(report, res.model, text4, thinking.value);
       } catch (err) {
         console.error("[hex] could not prepare Gemini context", err);
         status.textContent = pick(
@@ -44342,8 +44549,8 @@ ${rendered}` : rendered,
     sheet.body.append(el("span", "conf lv-" + levelOf(inf.confidence), confidenceText(inf.confidence)));
     const ul = list();
     for (const e of inf.evidence) {
-      const text3 = evidenceText(e) || factText({ code: e.code, detail: e.detail });
-      ul.append(tapRow(text3 || e.code, { disabled: true, tag: certaintyWord("fact"), tagClass: "tag-fact" }));
+      const text4 = evidenceText(e) || factText({ code: e.code, detail: e.detail });
+      ul.append(tapRow(text4 || e.code, { disabled: true, tag: certaintyWord("fact"), tagClass: "tag-fact" }));
     }
     sheet.body.append(ul);
     sheet.body.append(para(pick(
@@ -44365,11 +44572,11 @@ ${rendered}` : rendered,
       sul.append(groupRow(pick("この関数の形", "The shape of this routine")));
       const seen = /* @__PURE__ */ new Set();
       for (const s2 of shapes) {
-        const text3 = shapeText(s2);
-        if (!text3 || seen.has(text3 + s2.at)) continue;
-        seen.add(text3 + s2.at);
+        const text4 = shapeText(s2);
+        if (!text4 || seen.has(text4 + s2.at)) continue;
+        seen.add(text4 + s2.at);
         const node3 = cfg.nodes[s2.at != null ? s2.at : s2.header];
-        sul.append(tapRow(text3, {
+        sul.append(tapRow(text4, {
           sub: node3 ? addrHex(region.vmAddr + BigInt(node3.startRow) * 4n) : null,
           onTap: node3 ? () => {
             sheet.close();
@@ -45694,8 +45901,8 @@ ${rendered}` : rendered,
         if (!end) return null;
         const bytes3 = b.subarray(0, end);
         try {
-          const text3 = new TextDecoder("utf-8", { fatal: true }).decode(bytes3);
-          return /[\u0000-\u001f\u007f]/u.test(text3) ? null : text3;
+          const text4 = new TextDecoder("utf-8", { fatal: true }).decode(bytes3);
+          return /[\u0000-\u001f\u007f]/u.test(text4) ? null : text4;
         } catch {
           return null;
         }
@@ -45922,8 +46129,8 @@ ${rendered}` : rendered,
     }
     return hash.toString(16).padStart(16, "0");
   }
-  function hashText(text3) {
-    return text3 ? hashBytes(new TextEncoder().encode(text3)) : null;
+  function hashText(text4) {
+    return text4 ? hashBytes(new TextEncoder().encode(text4)) : null;
   }
   function stable(value2) {
     if (value2 == null) return "null";
@@ -45959,10 +46166,10 @@ ${rendered}` : rendered,
   function registerFamily(cls) {
     return /^[xw]$/i.test(cls) ? "gpr" : "vec";
   }
-  function normalizeRegisters(text3, options = {}) {
+  function normalizeRegisters(text4, options = {}) {
     const registerMap = options.registerMap instanceof Map ? options.registerMap : /* @__PURE__ */ new Map();
     const registerCounters = options.registerCounters instanceof Map ? options.registerCounters : /* @__PURE__ */ new Map();
-    return text3.replace(REGEX_REG, (_m, cls, number) => {
+    return text4.replace(REGEX_REG, (_m, cls, number) => {
       const family = registerFamily(cls), key2 = `${family}:${number}`;
       let id = registerMap.get(key2);
       if (id == null) {
@@ -45975,17 +46182,17 @@ ${rendered}` : rendered,
   }
   function canonicalRegister2(op2, options) {
     if (!op2) return "?";
-    const text3 = String(op2.text || "").toLowerCase();
-    if (text3 === "fp" || text3 === "x29") return "FP";
-    if (text3 === "lr" || text3 === "x30") return "LR";
-    if (text3 === "sp" || text3 === "wsp") return "SP";
-    if (text3 === "xzr" || text3 === "wzr") return text3.toUpperCase();
-    return normalizeRegisters(text3, options);
+    const text4 = String(op2.text || "").toLowerCase();
+    if (text4 === "fp" || text4 === "x29") return "FP";
+    if (text4 === "lr" || text4 === "x30") return "LR";
+    if (text4 === "sp" || text4 === "wsp") return "SP";
+    if (text4 === "xzr" || text4 === "wzr") return text4.toUpperCase();
+    return normalizeRegisters(text4, options);
   }
   function numericOther(op2) {
-    const text3 = String(op2?.text || "").trim();
-    if (!/^[#]?[+-]?(?:0[xX][0-9a-fA-F]+|\d+)$/.test(text3)) return null;
-    const stripped = text3.replace(/^#/, "");
+    const text4 = String(op2?.text || "").trim();
+    if (!/^[#]?[+-]?(?:0[xX][0-9a-fA-F]+|\d+)$/.test(text4)) return null;
+    const stripped = text4.replace(/^#/, "");
     const sign = stripped[0] === "-" || stripped[0] === "+" ? stripped[0] : "";
     const body = sign ? stripped.slice(1) : stripped;
     try {
@@ -46011,10 +46218,10 @@ ${rendered}` : rendered,
     if (op2.index) parts.push(canonicalRegister2(op2.index, options));
     if (op2.disp) parts.push(canonicalImmediate(op2.disp));
     if (op2.shift) parts.push(canonicalShift(op2.shift));
-    let text3 = "[" + parts.join(",") + "]";
-    if (op2.mode === "pre") text3 += "!";
-    else if (op2.mode === "post") text3 += ",@post";
-    return text3;
+    let text4 = "[" + parts.join(",") + "]";
+    if (op2.mode === "pre") text4 += "!";
+    else if (op2.mode === "post") text4 += ",@post";
+    return text4;
   }
   function canonicalOperand(op2, mnemonic, index2, options) {
     const isBranchTarget = BRANCH_MNEMONICS.test(mnemonic) && index2 === (mnemonic.startsWith("cb") ? 1 : mnemonic.startsWith("tb") ? 2 : 0);
@@ -46028,8 +46235,8 @@ ${rendered}` : rendered,
     if (op2?.k === "cond") return String(op2.text || "").toLowerCase();
     if (op2?.k === "list") return "{" + (op2.regs || []).map((r) => canonicalOperand(r, mnemonic, index2, options)).join(",") + "}";
     if (op2?.k === "elem") return String(op2.text || "").toLowerCase();
-    const text3 = String(op2?.text || "").replace(/\b(fp|x29)\b/gi, "FP").replace(/\b(lr|x30)\b/gi, "LR").replace(/\bsp\b/gi, "SP");
-    return normalizeRegisters(text3, options);
+    const text4 = String(op2?.text || "").replace(/\b(fp|x29)\b/gi, "FP").replace(/\b(lr|x30)\b/gi, "LR").replace(/\bsp\b/gi, "SP");
+    return normalizeRegisters(text4, options);
   }
   function normalizeInstructionList(instructions = [], options = {}) {
     const shared = { ...options, registerMap: /* @__PURE__ */ new Map(), registerCounters: /* @__PURE__ */ new Map() };
@@ -46455,15 +46662,15 @@ ${rendered}` : rendered,
 
   // js/recognition/classifier.js
   function libraryBasename(value2) {
-    const text3 = String(value2 || "").replace(/\\/g, "/").replace(/\/+$/, "");
-    if (!text3) return "";
-    return text3.slice(text3.lastIndexOf("/") + 1);
+    const text4 = String(value2 || "").replace(/\\/g, "/").replace(/\/+$/, "");
+    if (!text4) return "";
+    return text4.slice(text4.lastIndexOf("/") + 1);
   }
   function isAppleSystemLibrary(value2) {
-    const text3 = String(value2 || "").replace(/\\/g, "/");
-    const base = libraryBasename(text3);
+    const text4 = String(value2 || "").replace(/\\/g, "/");
+    const base = libraryBasename(text4);
     if (/^(Foundation|CoreFoundation)$/i.test(base)) {
-      return /(?:^|\/)(?:Foundation|CoreFoundation)\.framework\/(?:Foundation|CoreFoundation)$/i.test(text3) || !text3.includes("/");
+      return /(?:^|\/)(?:Foundation|CoreFoundation)\.framework\/(?:Foundation|CoreFoundation)$/i.test(text4) || !text4.includes("/");
     }
     if (/^libobjc(?:\.A)?\.dylib$/i.test(base)) return true;
     if (/^libsystem(?:(?:\.[a-z0-9]+)|(?:_[a-z0-9]+))?\.dylib$/i.test(base)) return true;
@@ -47214,10 +47421,10 @@ ${rendered}` : rendered,
     const values = [...input2.names || [], ...input2.roles || [], ...input2.semanticLabels || [], ...input2.comments || []];
     const out = /* @__PURE__ */ new Set();
     for (const value2 of values) {
-      const text3 = String(value2 || "").trim().toLowerCase();
-      if (!text3) continue;
-      out.add(text3);
-      for (const token of text3.split(/[^\p{L}\p{N}_+.-]+/u)) if (token) out.add(token);
+      const text4 = String(value2 || "").trim().toLowerCase();
+      if (!text4) continue;
+      out.add(text4);
+      for (const token of text4.split(/[^\p{L}\p{N}_+.-]+/u)) if (token) out.add(token);
     }
     return [...out].slice(0, 512);
   }
@@ -47256,8 +47463,8 @@ ${rendered}` : rendered,
           const fingerprint2 = input2.fingerprint?.schema ? fingerprintFunction(input2.fingerprint) : fingerprintFunction(input2.fingerprint || input2);
           const sourceBinaryHash = input2.sourceBinaryHash || "unknown";
           const address = input2.address ?? fingerprint2.address;
-          const identityKey = input2.identityKey || fingerprint2.semanticHash || fingerprint2.normalizedBytesHash || fingerprint2.hash || null;
-          const id = input2.id || `${sourceBinaryHash}:${addrText2(address)}:${identityKey || "sparse"}`;
+          const identityKey2 = input2.identityKey || fingerprint2.semanticHash || fingerprint2.normalizedBytesHash || fingerprint2.hash || null;
+          const id = input2.id || `${sourceBinaryHash}:${addrText2(address)}:${identityKey2 || "sparse"}`;
           const requestedConfirmation = CONFIRMATION_LEVELS.includes(input2.confirmation) ? input2.confirmation : null;
           const userConfirmed = input2.userConfirmed || requestedConfirmation === "user-confirmed";
           const debuggerConfirmed = input2.debuggerConfirmed || requestedConfirmation === "debugger-confirmed";
@@ -47267,7 +47474,7 @@ ${rendered}` : rendered,
           const record = {
             schemaVersion: KNOWLEDGE_SCHEMA_VERSION,
             id,
-            identityKey,
+            identityKey: identityKey2,
             fingerprint: fingerprint2,
             fingerprints: uniq4(input2.fingerprints || (fingerprint2.hash ? [fingerprint2.hash] : [])),
             names: uniq4(input2.names || (input2.name ? [input2.name] : [])),
@@ -47378,8 +47585,8 @@ ${rendered}` : rendered,
             evidence: result.reasons
           };
         }
-        async query(text3, functions = [], options = {}) {
-          const q = String(text3 || "").trim().toLowerCase();
+        async query(text4, functions = [], options = {}) {
+          const q = String(text4 || "").trim().toLowerCase();
           if (!q) return [];
           const terms = q.split(/\s+/).filter(Boolean);
           const fps = functions.map((fn) => fingerprintFunction(fn));
@@ -48495,16 +48702,16 @@ ${rendered}` : rendered,
             types: Object.fromEntries(this.types),
             structs: this.structs
           };
-          let text3;
+          let text4;
           try {
-            text3 = JSON.stringify(o);
+            text4 = JSON.stringify(o);
           } catch (error) {
             return this._saveFailure("SERIALIZE_ERROR", error);
           }
-          const bytes3 = new TextEncoder().encode(text3).byteLength;
+          const bytes3 = new TextEncoder().encode(text4).byteLength;
           if (bytes3 > MAX_BYTES) return this._saveFailure("TOO_LARGE", null, { bytes: bytes3, maxBytes: MAX_BYTES });
           try {
-            localStorage.setItem(PREFIX + this.id, text3);
+            localStorage.setItem(PREFIX + this.id, text4);
             this.dirty = false;
             this.lastSaveError = null;
             this.lastMutationSaved = true;
@@ -48541,10 +48748,10 @@ ${rendered}` : rendered,
         comment(addr) {
           return this.comments.get(key(addr)) || null;
         }
-        setComment(addr, text3) {
+        setComment(addr, text4) {
           const k = key(addr);
           if (!k) return this._saveFailure("INVALID_KEY");
-          const clean = (text3 || "").toString().slice(0, 500).trim();
+          const clean = (text4 || "").toString().slice(0, 500).trim();
           if (clean) this.comments.set(k, clean);
           else this.comments.delete(k);
           this.dirty = true;
@@ -48614,8 +48821,8 @@ ${rendered}` : rendered,
           }, null, 1);
         }
         /** 読み込み（書き出したものを戻す）。既存の内容とまぜる。 */
-        fromJSON(text3) {
-          const o = JSON.parse(text3);
+        fromJSON(text4) {
+          const o = JSON.parse(text4);
           if (!o || typeof o !== "object") throw new Error("invalid-notes-import");
           if (o.id != null && this.id != null && String(o.id) !== String(this.id)) throw new Error("notes-file-mismatch");
           let n = 0;
@@ -48735,12 +48942,12 @@ ${rendered}` : rendered,
         requestLimit() {
           return Math.max(0, this.resultLimit - this.results);
         }
-        accept(text3) {
+        accept(text4) {
           if (this.results >= this.resultLimit) {
             this.truncationReason ||= "result-budget";
             return false;
           }
-          const bytes3 = 96 + String(text3 || "").length * 2;
+          const bytes3 = 96 + String(text4 || "").length * 2;
           if (this.estimatedHeap + bytes3 > this.heapLimit) {
             this.truncationReason ||= "heap-budget";
             return false;
@@ -48757,8 +48964,8 @@ ${rendered}` : rendered,
   });
 
   // js/project/index.js
-  function encodedByteLength(text3) {
-    return new TextEncoder().encode(text3).byteLength;
+  function encodedByteLength(text4) {
+    return new TextEncoder().encode(text4).byteLength;
   }
   function assertProjectSize(bytes3) {
     if (bytes3 > MAX_PROJECT_BYTES) throw new ProjectFormatError("project exceeds the 16 MiB safety limit", "HEX_PROJECT_TOO_LARGE");
@@ -48795,24 +49002,24 @@ ${rendered}` : rendered,
   }
   function serializeHexProject(project) {
     const normalized = validateHexProject(project);
-    const text3 = JSON.stringify(normalized, (_key, value2) => typeof value2 === "bigint" ? { $hexBigInt: value2.toString(16) } : value2, 2);
-    assertProjectSize(encodedByteLength(text3));
-    return text3;
+    const text4 = JSON.stringify(normalized, (_key, value2) => typeof value2 === "bigint" ? { $hexBigInt: value2.toString(16) } : value2, 2);
+    assertProjectSize(encodedByteLength(text4));
+    return text4;
   }
   function parseHexProject(input2) {
-    let text3;
-    if (typeof input2 === "string") text3 = input2;
+    let text4;
+    if (typeof input2 === "string") text4 = input2;
     else if (input2 instanceof Uint8Array) {
       assertProjectSize(input2.byteLength);
-      text3 = new TextDecoder().decode(input2);
+      text4 = new TextDecoder().decode(input2);
     } else if (input2 instanceof ArrayBuffer) {
       assertProjectSize(input2.byteLength);
-      text3 = new TextDecoder().decode(new Uint8Array(input2));
+      text4 = new TextDecoder().decode(new Uint8Array(input2));
     } else throw new ProjectFormatError("project input must be JSON text or bytes");
-    assertProjectSize(encodedByteLength(text3));
+    assertProjectSize(encodedByteLength(text4));
     let raw;
     try {
-      raw = JSON.parse(text3, (_key, value2) => {
+      raw = JSON.parse(text4, (_key, value2) => {
         if (value2 && typeof value2 === "object" && Object.keys(value2).length === 1 && typeof value2.$hexBigInt === "string") {
           const encoded = value2.$hexBigInt;
           if (!/^-?[0-9a-f]+$/i.test(encoded) || encoded === "-") throw new ProjectFormatError("invalid bigint encoding");
@@ -48830,10 +49037,10 @@ ${rendered}` : rendered,
     return validateHexProject(migrateProject(raw));
   }
   function exportHexProject(project, name = "analysis.hexproj") {
-    const text3 = serializeHexProject(project);
-    if (typeof File !== "undefined") return new File([text3], name, { type: HEX_PROJECT_MIME });
-    if (typeof Blob !== "undefined") return new Blob([text3], { type: HEX_PROJECT_MIME });
-    return new TextEncoder().encode(text3);
+    const text4 = serializeHexProject(project);
+    if (typeof File !== "undefined") return new File([text4], name, { type: HEX_PROJECT_MIME });
+    if (typeof Blob !== "undefined") return new Blob([text4], { type: HEX_PROJECT_MIME });
+    return new TextEncoder().encode(text4);
   }
   async function importHexProject(input2) {
     if (typeof Blob !== "undefined" && input2 instanceof Blob) {
@@ -49020,6 +49227,15 @@ ${rendered}` : rendered,
   function bytesOf(value2) {
     return Array.from(value2 || [], (x) => Number(x) & 255);
   }
+  function identityKey(identity) {
+    const meta = identity?.metadata || {};
+    return [identity?.hash || "", meta.sliceIndex, meta.sliceOffset, meta.sliceSize, meta.uuid, meta.architecture].map(keyOf2).join("\0");
+  }
+  function staleWorkspaceError() {
+    const error = new Error("workspace-binding-changed");
+    error.code = "HEX_WORKSPACE_STALE";
+    return error;
+  }
   function binaryIdentity(app2, hash = null) {
     const info = app2?.store?.get?.("fileInfo") || null;
     const index2 = app2?.store?.get?.("sliceIndex") ?? -1;
@@ -49044,7 +49260,8 @@ ${rendered}` : rendered,
     const a = project.binary.metadata || {}, b = identity.metadata || {};
     const keys = ["sliceIndex", "sliceOffset", "sliceSize", "uuid", "architecture"];
     for (const key2 of keys) {
-      if (a[key2] == null || b[key2] == null) continue;
+      if (b[key2] == null) continue;
+      if (a[key2] == null) return { ok: false, reason: "slice-identity-incomplete", field: key2 };
       if (keyOf2(a[key2]) !== keyOf2(b[key2])) return { ok: false, reason: "slice-identity-mismatch", field: key2 };
     }
     return { ok: true };
@@ -49202,15 +49419,45 @@ ${rendered}` : rendered,
           this.baseline = null;
           this.diffState = null;
           this.busy = null;
+          this.bindingRevision = 0;
+          this.bindSequence = 0;
+          this.baselineSequence = 0;
+        }
+        _resetBoundState() {
+          const previous = this.baseline;
+          this.bindingRevision++;
+          this.baselineSequence++;
+          this.project = null;
+          this.baseline = null;
+          this.diffState = null;
+          this.busy = null;
+          if (previous?.ownedBackend) previous.backend?.dispose?.();
+        }
+        _assertBinding(revision) {
+          if (revision !== this.bindingRevision) throw staleWorkspaceError();
         }
         async bind() {
-          if (!this.app?.store?.get?.("fileInfo")) {
+          const sequence2 = ++this.bindSequence;
+          const sourceInfo = this.app?.store?.get?.("fileInfo") || null;
+          if (!sourceInfo) {
             this.identity = null;
-            this.project = null;
+            this._resetBoundState();
             return null;
           }
+          const sourceSlice = this.app?.store?.get?.("sliceIndex") ?? -1;
+          const sourceBackendGen = this.app?.backend?.gen;
           const hash = await this.app.backend.ensureContentHash();
-          this.identity = binaryIdentity(this.app, hash);
+          const superseded = sequence2 !== this.bindSequence || this.app?.store?.get?.("fileInfo") !== sourceInfo || (this.app?.store?.get?.("sliceIndex") ?? -1) !== sourceSlice || sourceBackendGen != null && this.app?.backend?.gen !== sourceBackendGen;
+          if (superseded) {
+            if (sequence2 === this.bindSequence) {
+              this.identity = null;
+              this._resetBoundState();
+            }
+            return null;
+          }
+          const nextIdentity = binaryIdentity(this.app, hash);
+          if (this.identity && identityKey(this.identity) !== identityKey(nextIdentity)) this._resetBoundState();
+          this.identity = nextIdentity;
           const saved = this._loadLocal(this.identity);
           if (saved) {
             const ok = sameProjectIdentity(saved, this.identity);
@@ -49246,8 +49493,22 @@ ${rendered}` : rendered,
           return exportHexProject(project, cleanName2(this.identity?.metadata?.name) + ".hexproj");
         }
         async importProject(input2) {
-          if (!this.identity) await this.bind();
+          const liveHash = this.app?.backend?.contentHash || null;
+          const liveKey = liveHash ? identityKey(binaryIdentity(this.app, liveHash)) : "";
+          if (!this.identity || !liveHash || identityKey(this.identity) !== liveKey) await this.bind();
+          if (!this.identity) throw staleWorkspaceError();
+          const revision = this.bindingRevision, boundKey = identityKey(this.identity);
+          const sourceInfo = this.app?.store?.get?.("fileInfo") || null;
+          const sourceSlice = this.app?.store?.get?.("sliceIndex") ?? -1;
+          const sourceBackendGen = this.app?.backend?.gen;
+          const assertCurrent = () => {
+            this._assertBinding(revision);
+            const currentHash = this.app?.backend?.contentHash || null;
+            const currentLiveKey = currentHash ? identityKey(binaryIdentity(this.app, currentHash)) : "";
+            if (identityKey(this.identity) !== boundKey || currentLiveKey !== boundKey || this.app?.store?.get?.("fileInfo") !== sourceInfo || (this.app?.store?.get?.("sliceIndex") ?? -1) !== sourceSlice || sourceBackendGen != null && this.app?.backend?.gen !== sourceBackendGen || !currentHash) throw staleWorkspaceError();
+          };
           const project = await importHexProject(input2);
+          assertCurrent();
           const match = sameProjectIdentity(project, this.identity);
           if (!match.ok) {
             const error = new Error(match.reason);
@@ -49275,51 +49536,87 @@ ${rendered}` : rendered,
         async loadBaseline(file, { backend = null } = {}) {
           if (!file) throw new Error("baseline-file-required");
           if (!this.identity) await this.bind();
-          const other = backend || this.backendFactory();
-          const info = await other.open(file);
-          const currentArch = this.identity?.metadata?.architecture || null;
-          const sliceIndex = chooseSlice(info, currentArch);
-          if (sliceIndex < 0) throw new Error("baseline-slice-unavailable");
-          const slice = info.slices[sliceIndex];
-          const arch = slice?.capability?.architecture || slice?.info?.architecture || slice?.info?.cpu || null;
-          if (currentArch && arch && currentArch !== arch) {
-            const error = new Error(`architecture mismatch: ${currentArch} vs ${arch}`);
-            error.code = "DIFF_ARCH_MISMATCH";
+          if (!this.identity) throw staleWorkspaceError();
+          const revision = this.bindingRevision, request = ++this.baselineSequence;
+          const assertCurrent = () => {
+            this._assertBinding(revision);
+            if (request !== this.baselineSequence) throw staleWorkspaceError();
+          };
+          const ownedBackend = !backend, other = backend || this.backendFactory();
+          try {
+            const info = await other.open(file);
+            assertCurrent();
+            const currentArch = this.identity?.metadata?.architecture || null;
+            const sliceIndex = chooseSlice(info, currentArch);
+            if (sliceIndex < 0) throw new Error("baseline-slice-unavailable");
+            const slice = info.slices[sliceIndex];
+            const arch = slice?.capability?.architecture || slice?.info?.architecture || slice?.info?.cpu || null;
+            if (currentArch && arch && currentArch !== arch) {
+              const error = new Error(`architecture mismatch: ${currentArch} vs ${arch}`);
+              error.code = "DIFF_ARCH_MISMATCH";
+              throw error;
+            }
+            const hash = await other.ensureContentHash();
+            assertCurrent();
+            const result = await other.analyze(sliceIndex);
+            assertCurrent();
+            const symbols = new SymbolIndex({ ...result, regions: slice?.regions || [] });
+            const functions = functionsFromSymbols(symbols);
+            assertCurrent();
+            const previous = this.baseline;
+            this.baseline = { file, backend: other, ownedBackend, info, sliceIndex, slice, architecture: arch, hash, symbols, functions, complete: functions.complete === true };
+            if (previous?.ownedBackend && previous.backend !== other) previous.backend?.dispose?.();
+            this.diffState = null;
+            this.busy = null;
+            return this.baseline;
+          } catch (error) {
+            if (ownedBackend) other?.dispose?.();
             throw error;
           }
-          const hash = await other.ensureContentHash();
-          const result = await other.analyze(sliceIndex);
-          const symbols = new SymbolIndex({ ...result, regions: slice?.regions || [] });
-          const functions = functionsFromSymbols(symbols);
-          this.baseline = { file, backend: other, info, sliceIndex, slice, architecture: arch, hash, symbols, functions, complete: functions.complete === true };
-          this.diffState = null;
-          return this.baseline;
         }
         async diff(options = {}) {
           if (this.busy) return this.busy;
-          this.busy = (async () => {
-            if (!this.baseline) throw new Error("baseline-not-loaded");
+          const revision = this.bindingRevision, baseline = this.baseline;
+          let task;
+          task = (async () => {
+            if (!baseline) throw new Error("baseline-not-loaded");
+            const assertCurrent = () => {
+              this._assertBinding(revision);
+              if (this.baseline !== baseline) throw staleWorkspaceError();
+            };
             try {
               await this.app.ensureRecognition?.({ maxFunctions: MAX_DIFF_FUNCTIONS, knowledgeLimit: 0 });
             } catch {
             }
-            const current2 = currentDiffFunctions(this.app), before2 = this.baseline.functions;
+            assertCurrent();
+            const current2 = currentDiffFunctions(this.app), before2 = baseline.functions;
             const result = diffFunctions(before2, current2, { mode: "fast", threshold: options.threshold ?? 0.62, matchBudget: options.matchBudget || { maxCandidateEvaluations: 15e5, maxEdges: 3e5, maxComponentNodes: 4096, maxComponentEdges: 65536 } });
+            assertCurrent();
             const inputsComplete = before2.complete === true && current2.complete === true;
             result.completeness = { complete: inputsComplete && result.truncated !== true, reasons: [], baseline: { complete: before2.complete === true, total: before2.total, scanned: before2.scanned, reason: before2.truncationReason }, current: { complete: current2.complete === true, total: current2.total, scanned: current2.scanned, reason: current2.truncationReason } };
             if (!before2.complete) result.completeness.reasons.push("baseline-function-set-incomplete");
             if (!current2.complete) result.completeness.reasons.push("current-function-set-incomplete");
             if (result.truncated) result.completeness.reasons.push("matcher-truncated");
-            result.provenance = { baselineHash: this.baseline.hash, currentHash: this.identity?.hash || null, architecture: this.baseline.architecture, currentArchitecture: this.identity?.metadata?.architecture || null, baselineName: this.baseline.info?.name || this.baseline.file?.name || null, currentName: this.identity?.metadata?.name || null, complete: result.completeness.complete };
+            result.provenance = { baselineHash: baseline.hash, currentHash: this.identity?.hash || null, architecture: baseline.architecture, currentArchitecture: this.identity?.metadata?.architecture || null, baselineName: baseline.info?.name || baseline.file?.name || null, currentName: this.identity?.metadata?.name || null, complete: result.completeness.complete };
+            assertCurrent();
             this.diffState = result;
             return result;
           })().finally(() => {
-            this.busy = null;
+            if (this.busy === task) this.busy = null;
           });
-          return this.busy;
+          this.busy = task;
+          return task;
         }
         getBinaryDiff() {
           return this.diffState;
+        }
+        invalidate() {
+          this.bindSequence++;
+          this.identity = null;
+          this._resetBoundState();
+        }
+        dispose() {
+          this.invalidate();
         }
       };
     }
@@ -49720,9 +50017,9 @@ ${rendered}` : rendered,
           const wide = window.innerWidth >= 820;
           this.dom.app.classList.toggle("wide", wide);
         }
-        setBusy(on, text3) {
+        setBusy(on, text4) {
           this.dom.loading.hidden = !on;
-          if (text3) this.dom.loadingText.textContent = text3;
+          if (text4) this.dom.loadingText.textContent = text4;
         }
         updateChrome() {
           const info = this.store.get("fileInfo");
@@ -50232,7 +50529,8 @@ ${rendered}` : rendered,
          */
         async analyzeFunctionAt(addr) {
           const sym = this.symbols, range2 = this.validatedFunctionRange(addr);
-          if (!range2.ok || !this.store.get("canDisassemble") || !sym.functionCount) return null;
+          const architecture = this.store.get("architecture") || this.store.get("capability")?.architecture || null;
+          if (!supportsArm64SemanticAnalysis(architecture) || !range2.ok || !this.store.get("canDisassemble") || !sym.functionCount) return null;
           const region = range2.region, alignment = Math.max(1, Number(this.store.get("instructionAlignment") || this.store.get("capability")?.instructionAlignment || 4));
           const width2 = BigInt(alignment);
           if ((range2.start - region.vmAddr) % width2 !== 0n) return null;
@@ -50270,6 +50568,8 @@ ${rendered}` : rendered,
             return;
           }
           const openEpoch = this.backend.gen;
+          this.workspace?.invalidate();
+          this.activeProject = null;
           closeAllSheets();
           this.sampleOpen = sampleOpen;
           this.detailRefresh = null;
@@ -50599,8 +50899,8 @@ ${rendered}` : rendered,
           return this.fields ? this.fields.ownerOf(addr) : null;
         }
         pickDefaultRegion(regions, info) {
-          const text3 = regions.find((r) => r.section === "__text" && r.size > 0n);
-          if (text3) return text3;
+          const text4 = regions.find((r) => r.section === "__text" && r.size > 0n);
+          if (text4) return text4;
           const exec = regions.find((r) => r.exec && r.size > 0n);
           if (exec) return exec;
           const any = regions.find((r) => r.size > 0n);
@@ -50616,6 +50916,8 @@ ${rendered}` : rendered,
           const info = this.store.get("fileInfo");
           if (!info || !info.slices[index2] || info.slices[index2].error) return;
           this.workspace?.autosave();
+          this.workspace?.invalidate();
+          this.activeProject = null;
           this.noteAttachController?.abort();
           this.backend.advanceEpoch();
           this.forgetSemantics(true);
@@ -51174,10 +51476,10 @@ ${rendered}` : rendered,
   });
 
   // js/ui/primitives.js
-  function h(tag, cls, text3) {
+  function h(tag, cls, text4) {
     const node3 = document.createElement(tag);
     if (cls) node3.className = cls;
-    if (text3 != null) node3.textContent = String(text3);
+    if (text4 != null) node3.textContent = String(text4);
     return node3;
   }
   function uiButton(label, { cls = "", ariaLabel, pressed, onClick } = {}) {
@@ -51210,27 +51512,27 @@ ${rendered}` : rendered,
     root.append(body);
     return { root, body };
   }
-  function emptyState(title, text3, action) {
+  function emptyState(title, text4, action) {
     const root = h("div", "ui-state ui-empty-state");
     root.append(h("strong", "ui-state-title", title));
-    if (text3) root.append(h("p", "ui-state-text", text3));
+    if (text4) root.append(h("p", "ui-state-text", text4));
     if (action) root.append(action);
     return root;
   }
-  function loadingState(text3 = "読み込み中…") {
+  function loadingState(text4 = "読み込み中…") {
     const root = h("div", "ui-state ui-loading-state");
     root.setAttribute("role", "status");
     root.setAttribute("aria-live", "polite");
     const spinner = h("span", "ui-spinner");
     spinner.setAttribute("aria-hidden", "true");
-    root.append(spinner, h("span", null, text3));
+    root.append(spinner, h("span", null, text4));
     return root;
   }
-  function errorState(title, text3, action) {
+  function errorState(title, text4, action) {
     const root = h("div", "ui-state ui-error-state");
     root.setAttribute("role", "alert");
     root.append(h("strong", "ui-state-title", title));
-    if (text3) root.append(h("p", "ui-state-text", text3));
+    if (text4) root.append(h("p", "ui-state-text", text4));
     if (action) root.append(action);
     return root;
   }
@@ -52269,15 +52571,15 @@ ${rendered}` : rendered,
     for (let i = 0; i < bytes3.length; i += CHUNK) binary += String.fromCharCode(...bytes3.subarray(i, i + CHUNK));
     return btoa(binary);
   }
-  function base64ToBytes(text3) {
+  function base64ToBytes(text4) {
     try {
       if (typeof Buffer !== "undefined") {
-        const buf = Buffer.from(text3, "base64");
-        if (buf.toString("base64").replace(/=+$/, "") !== String(text3).replace(/=+$/, "")) throw new Error("non-canonical");
+        const buf = Buffer.from(text4, "base64");
+        if (buf.toString("base64").replace(/=+$/, "") !== String(text4).replace(/=+$/, "")) throw new Error("non-canonical");
         return new Uint8Array(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
       }
       if (typeof atob !== "function") throw new Error("decoder unavailable");
-      const binary = atob(text3);
+      const binary = atob(text4);
       const out = new Uint8Array(binary.length);
       for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i);
       return out;
@@ -53609,8 +53911,8 @@ ${rendered}` : rendered,
   function returnsFromTrace(trace) {
     return (trace || []).filter((e) => /^ret\b/i.test(e.text || "")).map((e) => ({ type: "return", address: e.addr ?? e.address, text: e.text }));
   }
-  function isConditionalBranch(text3) {
-    return /^((b\.[a-z]+)|cbz|cbnz|tbz|tbnz)\b/i.test(text3 || "");
+  function isConditionalBranch(text4) {
+    return /^((b\.[a-z]+)|cbz|cbnz|tbz|tbnz)\b/i.test(text4 || "");
   }
   function isRegisterName(reg) {
     return /^(x([0-9]|[12][0-9]|30)|w([0-9]|[12][0-9]|30)|sp|pc)$/.test(reg);
@@ -53895,8 +54197,8 @@ ${rendered}` : rendered,
           return (this.ensureSandbox().emulator.callStack || []).slice(-256).reverse().map((f, i) => ({ index: i, address: f.addr, returnAddress: f.ret }));
         }
         async evaluate(expression) {
-          const text3 = String(expression || "").trim();
-          if (/^(x([0-9]|[12][0-9]|30)|sp|pc)$/.test(text3)) return this.ensureSandbox().getRegister(text3);
+          const text4 = String(expression || "").trim();
+          if (/^(x([0-9]|[12][0-9]|30)|sp|pc)$/.test(text4)) return this.ensureSandbox().getRegister(text4);
           throw new DebugAdapterError("unsupported-expression", "local evaluate only accepts register names");
         }
         async trace(options = {}) {
@@ -55390,14 +55692,14 @@ Still write readable technical prose rather than fragmented machine notes.
 
   // js/ai/prompts/task.js
   function detectTask(question, context = {}) {
-    const text3 = String(question || "").trim();
-    if (!text3) return null;
-    if (/^(explain|explain this|説明|これは？|これは\?|何これ)$/i.test(text3)) {
+    const text4 = String(question || "").trim();
+    if (!text4) return null;
+    if (/^(explain|explain this|説明|これは？|これは\?|何これ)$/i.test(text4)) {
       return context.selection === "instruction" ? "explain_instruction" : "explain_function";
     }
     for (const [id, re] of PATTERNS) {
-      if (re.test(text3)) {
-        if (id === "explain_function" && context.selection === "instruction" && /この行|this line/i.test(text3)) {
+      if (re.test(text4)) {
+        if (id === "explain_function" && context.selection === "instruction" && /この行|this line/i.test(text4)) {
           return "explain_instruction";
         }
         return id;
@@ -55494,12 +55796,15 @@ When evidence is insufficient, request a permitted tool or state the missing evi
 
   // js/ai/prompts/compose.js
   function clip(value2, limit2 = MAX_TEXT) {
-    const text3 = String(value2 == null ? "" : value2).replace(/\s+/g, " ").trim();
-    return text3.length > limit2 ? text3.slice(0, limit2 - 1) + "…" : text3;
+    const text4 = String(value2 == null ? "" : value2).replace(/\s+/g, " ").trim();
+    return text4.length > limit2 ? text4.slice(0, limit2 - 1) + "…" : text4;
+  }
+  function escapeTagText(value2) {
+    return String(value2).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   }
   function line3(label, value2) {
-    const text3 = clip(value2);
-    return text3 ? label + ": " + text3 : "";
+    const text4 = escapeTagText(clip(value2));
+    return text4 ? label + ": " + text4 : "";
   }
   function composeContextBlock(context = {}) {
     const rows = [], binary = context.binary || null;
@@ -55522,7 +55827,7 @@ When evidence is insufficient, request a permitted tool or state the missing evi
   }
   function intentBlock(intent) {
     return intent ? `<intent>
-${clip(intent, 120)}
+${escapeTagText(clip(intent, 120))}
 </intent>` : "";
   }
   function composePrompt(input2 = {}) {
@@ -55615,26 +55920,261 @@ ${clip(intent, 120)}
     }
   });
 
+  // js/ai/ui/conversations.js
+  function newConversationId() {
+    counter += 1;
+    return "c-" + Date.now().toString(36) + "-" + counter.toString(36);
+  }
+  function createConversation(fields = {}) {
+    const now2 = Date.now();
+    return {
+      id: fields.id || newConversationId(),
+      title: String(fields.title || ""),
+      createdAt: fields.createdAt || now2,
+      updatedAt: fields.updatedAt || now2,
+      turns: Array.isArray(fields.turns) ? fields.turns : [],
+      mode: fields.mode || "chat",
+      style: fields.style || "beginner",
+      scope: fields.scope || "auto",
+      provider: fields.provider || null,
+      model: fields.model || null,
+      reasoning: fields.reasoning || null,
+      namespace: fields.namespace == null ? null : String(fields.namespace),
+      busy: false,
+      controller: null,
+      lastQuestion: fields.lastQuestion || null
+    };
+  }
+  function deriveTitle(question) {
+    const text4 = String(question || "").replace(/\s+/g, " ").trim();
+    if (!text4) return "";
+    const head = text4.split(/[\n。．.!?！？]/)[0].trim() || text4;
+    const clean = head.replace(/[？?！!、,。．.\s]+$/, "");
+    const source = clean || head;
+    return source.length > MAX_TITLE ? source.slice(0, MAX_TITLE - 1) + "…" : source;
+  }
+  function conversationTitle(conversation, ja2 = true) {
+    if (conversation && conversation.title) return conversation.title;
+    return ja2 ? "新しいチャット" : "New chat";
+  }
+  function serializeTurn(turn) {
+    const base = { role: turn.role, mode: turn.mode, style: turn.style, scope: turn.scope, at: turn.at || Date.now() };
+    if (turn.role === "user") return { ...base, text: String(turn.text || "").slice(0, MAX_PERSISTED_TEXT) };
+    const answer = turn.response && turn.response.answerText ? turn.response.answerText : turn.text;
+    return { ...base, status: turn.status === "running" ? "cancelled" : turn.status, text: String(answer || "").slice(0, MAX_PERSISTED_TEXT) };
+  }
+  function reviveTurn(raw, index2) {
+    const mode = raw.mode || "chat";
+    const style = raw.style || "beginner";
+    const scope = raw.scope || "auto";
+    const text4 = String(raw.text || "");
+    const base = { id: "r" + index2 + "-" + Math.random().toString(36).slice(2, 7), mode, style, scope, at: raw.at || Date.now() };
+    if (raw.role === "user") return { ...base, role: "user", text: text4 };
+    return {
+      ...base,
+      role: "assistant",
+      status: raw.status === "running" ? "cancelled" : raw.status || "done",
+      effectiveScope: scope,
+      activity: [],
+      error: null,
+      text: "",
+      response: text4 ? normalizeResponse({ answer: text4 }, { mode, style }) : null
+    };
+  }
+  function serializeConversation(conversation) {
+    return {
+      id: conversation.id,
+      title: conversation.title,
+      createdAt: conversation.createdAt,
+      updatedAt: conversation.updatedAt,
+      mode: conversation.mode,
+      style: conversation.style,
+      scope: conversation.scope,
+      provider: conversation.provider,
+      model: conversation.model,
+      reasoning: conversation.reasoning,
+      turns: conversation.turns.slice(-MAX_PERSISTED_TURNS).map(serializeTurn)
+    };
+  }
+  function reviveConversation(raw, namespace) {
+    const turns = Array.isArray(raw && raw.turns) ? raw.turns.map(reviveTurn) : [];
+    return createConversation({ ...raw, turns, namespace });
+  }
+  function createConversationStore({ namespace, storage, key: key2 = STORAGE_KEY } = {}) {
+    const backing = () => {
+      if (storage) return storage;
+      try {
+        return typeof localStorage === "undefined" ? null : localStorage;
+      } catch {
+        return null;
+      }
+    };
+    const currentNamespace = () => {
+      let value2 = null;
+      try {
+        value2 = typeof namespace === "function" ? namespace() : namespace;
+      } catch {
+        value2 = null;
+      }
+      return value2 == null || value2 === "" ? "default" : String(value2);
+    };
+    const readAll = () => {
+      const store = backing();
+      if (!store) return {};
+      try {
+        const raw = store.getItem(key2);
+        const parsed = raw ? JSON.parse(raw) : null;
+        return parsed && typeof parsed === "object" ? parsed : {};
+      } catch {
+        return {};
+      }
+    };
+    return {
+      key: key2,
+      namespace: currentNamespace,
+      available: () => !!backing(),
+      load(space = currentNamespace()) {
+        const bucket = readAll()[space];
+        if (!Array.isArray(bucket)) return [];
+        return bucket.map((raw) => reviveConversation(raw, space));
+      },
+      save(conversations, space = currentNamespace()) {
+        const store = backing();
+        if (!store) return false;
+        const all = readAll();
+        const keep = conversations.filter((item) => item.turns.length).slice(-MAX_CONVERSATIONS).map(serializeConversation);
+        if (keep.length) all[space] = keep;
+        else delete all[space];
+        const spaces = Object.keys(all);
+        if (spaces.length > MAX_NAMESPACES) {
+          const ranked = spaces.filter((name) => name !== space).sort((a, b) => lastTouched(all[a]) - lastTouched(all[b]));
+          for (const name of ranked.slice(0, spaces.length - MAX_NAMESPACES)) delete all[name];
+        }
+        try {
+          store.setItem(key2, JSON.stringify(all));
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      clear() {
+        const store = backing();
+        if (!store) return;
+        try {
+          store.removeItem(key2);
+        } catch {
+        }
+      }
+    };
+  }
+  function lastTouched(bucket) {
+    if (!Array.isArray(bucket) || !bucket.length) return 0;
+    return bucket.reduce((max, item) => Math.max(max, item.updatedAt || 0), 0);
+  }
+  var MAX_CONVERSATIONS, MAX_PERSISTED_TURNS, MAX_PERSISTED_TEXT, MAX_TITLE, MAX_NAMESPACES, STORAGE_KEY, counter;
+  var init_conversations = __esm({
+    "js/ai/ui/conversations.js"() {
+      init_normalize();
+      MAX_CONVERSATIONS = 20;
+      MAX_PERSISTED_TURNS = 40;
+      MAX_PERSISTED_TEXT = 4e3;
+      MAX_TITLE = 28;
+      MAX_NAMESPACES = 6;
+      STORAGE_KEY = "hex.ai.conversations.v1";
+      counter = 0;
+    }
+  });
+
   // js/ai/ui/session.js
-  var counter, nextId, AiSession;
+  function defaultStore(engine) {
+    try {
+      if (typeof localStorage === "undefined") return null;
+    } catch {
+      return null;
+    }
+    return createConversationStore({
+      namespace: () => {
+        const context = engine && engine.localContext;
+        if (!context) return "default";
+        try {
+          return context.binaryHash || context.projectId || "default";
+        } catch {
+          return "default";
+        }
+      }
+    });
+  }
+  var counter2, nextId, AiSession, MAX_RESTORED;
   var init_session2 = __esm({
     "js/ai/ui/session.js"() {
       init_normalize();
       init_modes();
-      counter = 0;
-      nextId = (prefix) => prefix + "-" + (++counter).toString(36);
+      init_conversations();
+      counter2 = 0;
+      nextId = (prefix) => prefix + "-" + (++counter2).toString(36);
       AiSession = class {
-        constructor({ engine, mode = "chat", style = "beginner", scope = "auto", maxTurns = 200 } = {}) {
+        constructor({ engine, mode = "chat", style = "beginner", scope = "auto", maxTurns = 200, storage } = {}) {
           this.engine = engine || null;
-          this.mode = mode;
-          this.style = style;
-          this.scope = scope;
           this.maxTurns = maxTurns;
-          this.turns = [];
-          this.busy = false;
           this.listeners = /* @__PURE__ */ new Set();
-          this.controller = null;
-          this.lastQuestion = null;
+          this.storage = storage === null ? null : storage || defaultStore(engine);
+          this.selection = { provider: null, model: null, reasoning: null };
+          this.namespace = this.storage ? this.storage.namespace() : null;
+          this.conversations = this.restore(mode, style, scope);
+          this.current = this.conversations[this.conversations.length - 1];
+          this.saveTimer = null;
+        }
+        /* ── the current conversation, seen as the old flat session ─ */
+        get turns() {
+          return this.current.turns;
+        }
+        set turns(value2) {
+          this.current.turns = value2;
+        }
+        get mode() {
+          return this.current.mode;
+        }
+        set mode(value2) {
+          this.current.mode = value2;
+        }
+        get style() {
+          return this.current.style;
+        }
+        set style(value2) {
+          this.current.style = value2;
+        }
+        get scope() {
+          return this.current.scope;
+        }
+        set scope(value2) {
+          this.current.scope = value2;
+        }
+        get busy() {
+          return !!this.current.busy;
+        }
+        set busy(value2) {
+          this.current.busy = !!value2;
+        }
+        get controller() {
+          return this.current.controller;
+        }
+        set controller(value2) {
+          this.current.controller = value2;
+        }
+        get lastQuestion() {
+          return this.current.lastQuestion;
+        }
+        set lastQuestion(value2) {
+          this.current.lastQuestion = value2;
+        }
+        get provider() {
+          return this.current.provider;
+        }
+        get model() {
+          return this.current.model;
+        }
+        get reasoning() {
+          return this.current.reasoning;
         }
         on(listener) {
           this.listeners.add(listener);
@@ -55651,52 +56191,183 @@ ${clip(intent, 120)}
         setMode(mode) {
           if (mode !== this.mode) {
             this.mode = mode;
+            this.touch();
             this.emit({ type: "mode" });
           }
         }
         setStyle(style) {
           if (style !== this.style) {
             this.style = style;
+            this.touch();
             this.emit({ type: "style" });
           }
         }
         setScope(scope) {
           if (scope !== this.scope) {
             this.scope = scope;
+            this.touch();
             this.emit({ type: "scope" });
           }
         }
+        /** Provider / model / reasoning for the current conversation. */
+        setSelection(selection = {}) {
+          const conversation = this.current;
+          let changed = false;
+          for (const field2 of ["provider", "model", "reasoning"]) {
+            if (!(field2 in selection)) continue;
+            const value2 = selection[field2] == null ? null : String(selection[field2]);
+            if (conversation[field2] === value2) continue;
+            conversation[field2] = value2;
+            this.selection[field2] = value2;
+            changed = true;
+          }
+          if (!changed) return false;
+          this.touch();
+          this.emit({ type: "selection" });
+          return true;
+        }
+        selectionOf(conversation = this.current) {
+          return { provider: conversation.provider, model: conversation.model, reasoning: conversation.reasoning };
+        }
         clear() {
           this.cancel();
-          this.turns = [];
-          this.lastQuestion = null;
+          this.current.turns = [];
+          this.current.lastQuestion = null;
+          this.touch();
           this.emit({ type: "clear" });
         }
         cancel() {
-          if (!this.controller) return false;
-          const controller2 = this.controller;
-          this.controller = null;
+          const conversation = this.current;
+          if (!conversation.controller) return false;
+          const controller2 = conversation.controller;
+          conversation.controller = null;
           try {
             controller2.abort();
           } catch {
           }
-          const pending = this.turns.find((turn) => turn.role === "assistant" && turn.status === "running");
+          const pending = conversation.turns.find((turn) => turn.role === "assistant" && turn.status === "running");
           if (pending) {
             pending.status = "cancelled";
           }
-          this.busy = false;
+          conversation.busy = false;
           this.emit({ type: "cancel" });
           return true;
         }
         trim() {
-          if (this.turns.length <= this.maxTurns) return;
-          this.turns = this.turns.slice(this.turns.length - this.maxTurns);
+          const conversation = this.current;
+          if (conversation.turns.length <= this.maxTurns) return;
+          conversation.turns = conversation.turns.slice(conversation.turns.length - this.maxTurns);
         }
+        /* ── conversations ──────────────────────────────────────── */
+        /** Newest first, for a history list. */
+        list() {
+          return this.conversations.slice().sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+        }
+        get(id) {
+          return this.conversations.find((item) => item.id === String(id)) || null;
+        }
+        /**
+         * Start a new chat.
+         *
+         * The previous chat is kept, not cleared. Mode, style, scope and the model
+         * selection carry over, because they describe how this user works rather
+         * than what the last question was about.
+         */
+        newConversation({ inherit = true, silent = false } = {}) {
+          if (this.busy) return null;
+          const from = inherit ? this.current : null;
+          if (from && !from.turns.length) {
+            if (!silent) this.emit({ type: "conversation", conversation: from });
+            return from;
+          }
+          const conversation = createConversation({
+            mode: from ? from.mode : "chat",
+            style: from ? from.style : "beginner",
+            scope: from ? from.scope : "auto",
+            provider: from ? from.provider : this.selection.provider,
+            model: from ? from.model : this.selection.model,
+            reasoning: from ? from.reasoning : this.selection.reasoning,
+            namespace: this.namespace
+          });
+          this.conversations.push(conversation);
+          this.dropOverflow();
+          this.current = conversation;
+          if (!silent) this.emit({ type: "conversation", conversation });
+          return conversation;
+        }
+        /** Open an existing chat. Refused while a turn is running. */
+        switchTo(id) {
+          const conversation = this.get(id);
+          if (!conversation || conversation === this.current) return false;
+          if (this.busy) return false;
+          this.current = conversation;
+          this.emit({ type: "conversation", conversation });
+          return true;
+        }
+        renameConversation(id, title) {
+          const conversation = this.get(id);
+          if (!conversation) return false;
+          const clean = String(title || "").replace(/\s+/g, " ").trim().slice(0, 80);
+          if (conversation.title === clean) return false;
+          conversation.title = clean;
+          conversation.updatedAt = Date.now();
+          this.scheduleSave();
+          this.emit({ type: "conversations" });
+          return true;
+        }
+        /**
+         * Delete a chat.
+         *
+         * A running chat is never deleted from under its own turn, and the session
+         * always has one conversation: deleting the last one leaves a blank chat
+         * rather than a session with nothing to type into.
+         */
+        deleteConversation(id) {
+          const conversation = this.get(id);
+          if (!conversation || conversation.busy) return false;
+          const index2 = this.conversations.indexOf(conversation);
+          this.conversations.splice(index2, 1);
+          if (this.current === conversation) {
+            const next = this.conversations[index2] || this.conversations[index2 - 1] || null;
+            this.current = next || createConversation({
+              mode: conversation.mode,
+              style: conversation.style,
+              scope: conversation.scope,
+              provider: conversation.provider,
+              model: conversation.model,
+              reasoning: conversation.reasoning,
+              namespace: this.namespace
+            });
+            if (!next) this.conversations.push(this.current);
+          }
+          this.scheduleSave();
+          this.emit({ type: "conversation", conversation: this.current });
+          return true;
+        }
+        /**
+         * Re-read history when the binary under the panel changed.
+         *
+         * Cheap enough to call from every panel update: it compares one string and
+         * only does work when the bucket actually moved.
+         */
+        syncNamespace() {
+          if (!this.storage || this.busy) return false;
+          const next = this.storage.namespace();
+          if (next === this.namespace) return false;
+          this.flushSave(this.namespace);
+          this.namespace = next;
+          this.conversations = this.restore(this.current.mode, this.current.style, this.current.scope);
+          this.current = this.conversations[this.conversations.length - 1];
+          this.emit({ type: "conversation", conversation: this.current });
+          return true;
+        }
+        /* ── asking ─────────────────────────────────────────────── */
         /** Re-run the previous question with the current mode/style/scope. */
         retry(context) {
           if (!this.lastQuestion) return null;
-          while (this.turns.length && this.turns[this.turns.length - 1].role === "assistant") this.turns.pop();
-          if (this.turns.length && this.turns[this.turns.length - 1].role === "user") this.turns.pop();
+          const turns = this.current.turns;
+          while (turns.length && turns[turns.length - 1].role === "assistant") turns.pop();
+          if (turns.length && turns[turns.length - 1].role === "user") turns.pop();
           return this.ask(this.lastQuestion, context);
         }
         /**
@@ -55704,15 +56375,17 @@ ${clip(intent, 120)}
          * failed engine call becomes a turn with `status: 'error'`.
          */
         async ask(question, options = {}) {
-          const text3 = String(question || "").trim();
-          if (!text3 || this.busy) return null;
-          const mode = options.mode || this.mode;
-          const style = options.style || this.style;
-          const scope = options.scope || this.scope;
+          const text4 = String(question || "").trim();
+          if (!text4 || this.busy) return null;
+          const conversation = this.current;
+          const mode = options.mode || conversation.mode;
+          const style = options.style || conversation.style;
+          const scope = options.scope || conversation.scope;
           const context = options.context || {};
           const effectiveScope = resolveScope(scope, context.state || {});
-          this.lastQuestion = text3;
-          const userTurn = { id: nextId("u"), role: "user", text: text3, mode, style, scope, at: Date.now() };
+          conversation.lastQuestion = text4;
+          if (!conversation.title) conversation.title = deriveTitle(text4);
+          const userTurn = { id: nextId("u"), role: "user", text: text4, mode, style, scope, at: Date.now() };
           const turn = {
             id: nextId("a"),
             role: "assistant",
@@ -55727,27 +56400,28 @@ ${clip(intent, 120)}
             text: "",
             at: Date.now()
           };
-          this.turns.push(userTurn, turn);
+          conversation.turns.push(userTurn, turn);
           this.trim();
-          this.busy = true;
-          this.controller = typeof AbortController === "function" ? new AbortController() : null;
-          const signal = this.controller ? this.controller.signal : null;
-          this.emit({ type: "turn", turn });
+          conversation.busy = true;
+          conversation.updatedAt = Date.now();
+          conversation.controller = typeof AbortController === "function" ? new AbortController() : null;
+          const signal = conversation.controller ? conversation.controller.signal : null;
+          this.emit({ type: "turn", turn, conversation });
           const onActivity = (event) => {
             if (turn.status !== "running") return;
             const item = typeof event === "string" ? { label: event } : event || {};
             turn.activity.push({ id: nextId("v"), label: String(item.label || ""), detail: item.detail == null ? "" : String(item.detail), state: item.state || "done" });
-            this.emit({ type: "activity", turn });
+            this.emit({ type: "activity", turn, conversation });
           };
           const onText = (chunk) => {
             if (turn.status !== "running") return;
             turn.text += String(chunk || "");
-            this.emit({ type: "stream", turn });
+            this.emit({ type: "stream", turn, conversation });
           };
           try {
             if (!this.engine || typeof this.engine.run !== "function") throw new Error("engine-unavailable");
             const raw = await this.engine.run({
-              question: text3,
+              question: text4,
               mode,
               style,
               scope: effectiveScope,
@@ -55756,7 +56430,11 @@ ${clip(intent, 120)}
               signal,
               onActivity,
               onText,
-              history: this.historyFor()
+              history: this.historyFor(8, conversation),
+              conversationId: conversation.id,
+              provider: conversation.provider,
+              model: conversation.model,
+              reasoning: conversation.reasoning
             });
             if (turn.status === "cancelled") return turn;
             turn.response = normalizeResponse(raw, { mode, style });
@@ -55771,15 +56449,17 @@ ${clip(intent, 120)}
               turn.error = String(error && error.message || error || "unknown-error");
             }
           } finally {
-            if (this.controller && this.controller.signal === signal) this.controller = null;
-            this.busy = false;
-            this.emit({ type: "settled", turn });
+            if (conversation.controller && conversation.controller.signal === signal) conversation.controller = null;
+            conversation.busy = false;
+            conversation.updatedAt = Date.now();
+            this.scheduleSave();
+            this.emit({ type: "settled", turn, conversation });
           }
           return turn;
         }
         /** Compact history handed to the engine: text only, bounded. */
-        historyFor(limit2 = 8) {
-          return this.turns.slice(-limit2 * 2).map((turn) => ({
+        historyFor(limit2 = 8, conversation = this.current) {
+          return conversation.turns.slice(-limit2 * 2).map((turn) => ({
             role: turn.role,
             text: turn.role === "user" ? turn.text : turn.response ? turn.response.answerText : turn.text
           })).filter((item) => item.text);
@@ -55792,10 +56472,55 @@ ${clip(intent, 120)}
          * deliberate stop. Only the initial empty assistant shell of a turn that was
          * never started is skipped.
          */
-        visibleTurns() {
-          return this.turns.filter((turn) => turn.role === "user" || turn.status !== "pending");
+        visibleTurns(conversation = this.current) {
+          return conversation.turns.filter((turn) => turn.role === "user" || turn.status !== "pending");
+        }
+        /* ── storage ────────────────────────────────────────────── */
+        restore(mode, style, scope) {
+          let restored = [];
+          if (this.storage) {
+            try {
+              restored = this.storage.load(this.namespace);
+            } catch {
+              restored = [];
+            }
+          }
+          restored = restored.slice(-MAX_RESTORED);
+          restored.push(createConversation({ mode, style, scope, namespace: this.namespace, ...this.selection }));
+          return restored;
+        }
+        touch() {
+          this.current.updatedAt = Date.now();
+          this.scheduleSave();
+        }
+        dropOverflow() {
+          if (this.conversations.length <= MAX_RESTORED + 1) return;
+          const oldest = this.conversations.filter((item) => item !== this.current).sort((a, b) => (a.updatedAt || 0) - (b.updatedAt || 0))[0];
+          if (oldest) this.conversations.splice(this.conversations.indexOf(oldest), 1);
+        }
+        scheduleSave() {
+          if (!this.storage || this.saveTimer) return;
+          const later = typeof setTimeout === "function" ? setTimeout : null;
+          if (!later) {
+            this.flushSave();
+            return;
+          }
+          this.saveTimer = later(() => {
+            this.saveTimer = null;
+            this.flushSave();
+          }, 300);
+          if (this.saveTimer && typeof this.saveTimer.unref === "function") this.saveTimer.unref();
+        }
+        flushSave(space) {
+          if (!this.storage) return false;
+          try {
+            return this.storage.save(this.conversations, space || this.namespace);
+          } catch {
+            return false;
+          }
         }
       };
+      MAX_RESTORED = 19;
     }
   });
 
@@ -55949,14 +56674,14 @@ ${clip(intent, 120)}
     return { label: pick(labelJa, labelEn), ask: pick(askJa, askEn) };
   }
   function missingLabel(value2) {
-    const text3 = String(value2 == null ? "" : value2).trim();
-    if (!text3) return { label: "", ask: "", code: null };
-    if (!CODE.test(text3)) return { label: text3, ask: text3, code: null };
-    const known = TABLE[text3];
-    if (known) return { ...known, code: text3 };
-    const narrated = missingText(text3);
-    if (narrated) return { label: narrated, ask: narrated, code: text3 };
-    return { label: pick("未確認: ", "Unresolved: ") + text3, ask: pick(`${text3} について詳しく教えて`, `Tell me more about ${text3}`), code: text3 };
+    const text4 = String(value2 == null ? "" : value2).trim();
+    if (!text4) return { label: "", ask: "", code: null };
+    if (!CODE.test(text4)) return { label: text4, ask: text4, code: null };
+    const known = TABLE[text4];
+    if (known) return { ...known, code: text4 };
+    const narrated = missingText(text4);
+    if (narrated) return { label: narrated, ask: narrated, code: text4 };
+    return { label: pick("未確認: ", "Unresolved: ") + text4, ask: pick(`${text4} について詳しく教えて`, `Tell me more about ${text4}`), code: text4 };
   }
   var CODE, TABLE;
   var init_missing = __esm({
@@ -56060,11 +56785,11 @@ ${clip(intent, 120)}
   });
 
   // js/ai/render/hypothesis.js
-  function checkRow(mark, text3, cls) {
+  function checkRow(mark, text4, cls) {
     const row = h("li", "ai-check " + cls);
     const glyph = h("span", "ai-check-mark", mark);
     glyph.setAttribute("aria-hidden", "true");
-    row.append(glyph, h("span", "ai-check-text", text3));
+    row.append(glyph, h("span", "ai-check-text", text4));
     return row;
   }
   function renderHypotheses(hypotheses, { onAction, onVerify }) {
@@ -56191,12 +56916,12 @@ ${clip(intent, 120)}
       for (const node3 of Array.from(host2.childNodes)) {
         if (marked >= MAX_TERMS_PER_ANSWER) break;
         if (node3.nodeType !== 3) continue;
-        const text3 = node3.nodeValue;
-        const hit = entries.find((entry2) => !used2.has(entry2.id) && text3.includes(entry2.term));
+        const text4 = node3.nodeValue;
+        const hit = entries.find((entry2) => !used2.has(entry2.id) && text4.includes(entry2.term));
         if (!hit) continue;
-        const at = text3.indexOf(hit.term);
-        const before2 = text3.slice(0, at);
-        const after = text3.slice(at + hit.term.length);
+        const at = text4.indexOf(hit.term);
+        const before2 = text4.slice(0, at);
+        const after = text4.slice(at + hit.term.length);
         const button2 = h("button", "ai-term", hit.term);
         button2.type = "button";
         button2.setAttribute("aria-expanded", "false");
@@ -56253,8 +56978,8 @@ ${clip(intent, 120)}
     const root = h("div", "ai-followups");
     root.append(h("span", "ai-actions-label", pick("未確認・追加で調べる", "Open questions")));
     const row = h("div", "ai-actions-row");
-    for (const text3 of followups) {
-      const item = missingLabel(text3);
+    for (const text4 of followups) {
+      const item = missingLabel(text4);
       if (!item.label) continue;
       row.append(uiButton(item.label, { cls: "ai-chip", onClick: () => handlers.onFollowup(item.ask) }));
     }
@@ -56366,6 +57091,376 @@ ${clip(intent, 120)}
     }
   });
 
+  // js/ai/ui/model-picker.js
+  function normalizeEntry(raw, fallbackLabel) {
+    if (raw == null) return null;
+    if (typeof raw === "string") return { id: raw, label: fallbackLabel || raw, available: true };
+    const id = text2(raw.id || raw.value || raw.name || raw.model || raw.slug);
+    if (!id) return null;
+    return {
+      id,
+      label: text2(raw.label || raw.title || raw.name || id) || id,
+      available: raw.available === void 0 ? true : !!raw.available,
+      detail: text2(raw.detail || raw.description || "")
+    };
+  }
+  function normalizeList(raw, mapper) {
+    if (!raw) return [];
+    const items = Array.isArray(raw) ? raw : Object.entries(raw).map(([id, value2]) => value2 && typeof value2 === "object" ? { id, ...value2 } : { id, label: text2(value2) || id });
+    return items.map(mapper).filter(Boolean);
+  }
+  function normalizeCapabilities2(raw) {
+    const source = raw && typeof raw === "object" ? raw : null;
+    const providersRaw = source ? source.providers || source.provider || source : null;
+    const providers = normalizeList(providersRaw, (item) => {
+      const base = normalizeEntry(item, null);
+      if (!base) return null;
+      const models = normalizeList(item && typeof item === "object" ? item.models || item.model : null, (m) => {
+        const model = normalizeEntry(m);
+        if (!model) return null;
+        const levels = m && typeof m === "object" ? m.reasoning || m.reasoningLevels || m.effort : null;
+        return { ...model, reasoning: normalizeList(levels, (r) => normalizeEntry(r)) };
+      });
+      const reasoning = normalizeList(item && typeof item === "object" ? item.reasoning || item.reasoningLevels || item.effort : null, (r) => normalizeEntry(r));
+      const defaultModel = item && typeof item === "object" ? text2(item.defaultModel || item.default) : "";
+      return { ...base, models, reasoning, defaultModel: defaultModel || null };
+    });
+    if (!providers.length) {
+      return { known: false, providers: FALLBACK_PROVIDERS.map((item) => ({ ...item, available: false, models: [], reasoning: [], defaultModel: null })) };
+    }
+    return { known: true, providers };
+  }
+  function applyStatus(capabilities, status) {
+    if (!status || typeof status !== "object") return capabilities;
+    const byId2 = /* @__PURE__ */ new Map();
+    const collect = (raw) => {
+      for (const entry2 of normalizeList(raw, (item) => normalizeEntry(item))) byId2.set(entry2.id, entry2.available);
+    };
+    collect(status.providers || status.provider || null);
+    const active = text2(status.providerId || (typeof status.provider === "string" ? status.provider : ""));
+    if (active && status.available !== void 0) byId2.set(active, !!status.available);
+    if (!byId2.size) return capabilities;
+    return {
+      ...capabilities,
+      providers: capabilities.providers.map((provider) => byId2.has(provider.id) ? { ...provider, available: byId2.get(provider.id) } : provider)
+    };
+  }
+  function findProvider(capabilities, id) {
+    if (!capabilities || !id) return null;
+    return capabilities.providers.find((item) => item.id === String(id)) || null;
+  }
+  function findModel(provider, id) {
+    if (!provider || !id) return null;
+    return provider.models.find((item) => item.id === String(id)) || null;
+  }
+  function findReasoning(provider, model, id) {
+    if (!id) return null;
+    const pools = [model && model.reasoning, provider && provider.reasoning];
+    for (const pool of pools) {
+      if (!Array.isArray(pool)) continue;
+      const hit = pool.find((item) => item.id === String(id));
+      if (hit) return hit;
+    }
+    return null;
+  }
+  function selectionLabel(capabilities, selection = {}, ja2 = true) {
+    const unknownLabel = ja2 ? "利用不可" : "Unavailable";
+    const provider = findProvider(capabilities, selection.provider);
+    if (selection.provider && !provider) return { text: String(selection.provider), unavailable: true, note: unknownLabel };
+    if (!provider) {
+      return capabilities && capabilities.known ? { text: ja2 ? "モデルを選ぶ" : "Choose model", unavailable: false, note: "" } : { text: ja2 ? "モデル未接続" : "No model", unavailable: true, note: unknownLabel };
+    }
+    const model = findModel(provider, selection.model);
+    if (selection.model && !model) return { text: String(selection.model), unavailable: true, note: unknownLabel };
+    const parts = [model ? model.label : provider.label];
+    if (selection.reasoning) {
+      const reasoning = findReasoning(provider, model, selection.reasoning);
+      parts.push(reasoning ? reasoning.label : String(selection.reasoning));
+    }
+    const unavailable = provider.available === false || !!(model && model.available === false);
+    return { text: parts.join(" · "), unavailable, note: unavailable ? unknownLabel : "" };
+  }
+  function selectionForProvider(capabilities, providerId, previous = {}) {
+    const provider = findProvider(capabilities, providerId);
+    if (!provider) return { provider: providerId == null ? null : String(providerId), model: null, reasoning: null };
+    const keptModel = previous.provider === provider.id ? findModel(provider, previous.model) : null;
+    const model = keptModel || findModel(provider, provider.defaultModel);
+    const keptReasoning = previous.provider === provider.id ? findReasoning(provider, model, previous.reasoning) : null;
+    return { provider: provider.id, model: model ? model.id : null, reasoning: keptReasoning ? keptReasoning.id : null };
+  }
+  function capabilityApi(engine) {
+    const scope = typeof globalThis === "undefined" ? {} : globalThis;
+    const lookup = (name) => {
+      for (const host2 of [engine, scope, scope.__HEX_AI__]) {
+        if (host2 && typeof host2[name] === "function") return host2[name].bind(host2);
+      }
+      return null;
+    };
+    return {
+      capabilities: lookup("aiCapabilities"),
+      status: lookup("aiStatus"),
+      get: lookup("getAISelection"),
+      set: lookup("setAISelection")
+    };
+  }
+  async function callSafely(fn, ...args) {
+    if (typeof fn !== "function") return null;
+    try {
+      return await fn(...args);
+    } catch {
+      return null;
+    }
+  }
+  var FALLBACK_PROVIDERS, text2;
+  var init_model_picker = __esm({
+    "js/ai/ui/model-picker.js"() {
+      FALLBACK_PROVIDERS = Object.freeze([
+        { id: "chatgpt-web", label: "ChatGPT Web" },
+        { id: "gemini", label: "Gemini" }
+      ]);
+      text2 = (value2) => value2 == null ? "" : String(value2);
+    }
+  });
+
+  // js/ai/ui/session-menu.js
+  function anchorPoint(node3) {
+    const rect = node3.getBoundingClientRect();
+    return { x: rect.left + rect.width / 2, y: rect.bottom + 4 };
+  }
+  function markCurrent(index2) {
+    if (index2 < 0 || typeof document === "undefined") return;
+    const items = document.querySelectorAll('#overlays .menu [role="menuitem"]');
+    const node3 = items[index2];
+    if (node3) node3.setAttribute("aria-current", "true");
+  }
+  function expand(button2, open) {
+    button2.setAttribute("aria-expanded", String(!!open));
+  }
+  function trackExpanded(button2) {
+    if (expandedButton && expandedButton !== button2) expand(expandedButton, false);
+    expandedButton = button2;
+    expand(button2, true);
+    const poll = () => {
+      if (expandedButton !== button2) return;
+      if (document.querySelector("#overlays .menu")) {
+        setTimeout(poll, 150);
+        return;
+      }
+      expand(button2, false);
+      expandedButton = null;
+    };
+    setTimeout(poll, 150);
+  }
+  function openSessionMenu({ button: button2, session, ja: ja2 = true, onChange = () => {
+  } }) {
+    const busy = session.busy;
+    const conversations = session.list().slice(0, MAX_LISTED);
+    const items = [];
+    items.push({
+      label: ja2 ? "＋ 新しいチャット" : "＋ New chat",
+      disabled: busy,
+      action: () => {
+        session.newConversation();
+        onChange();
+      }
+    });
+    if (conversations.length) items.push("-");
+    let currentIndex = -1;
+    for (const conversation of conversations) {
+      const isCurrent = conversation === session.current;
+      if (isCurrent) currentIndex = items.length;
+      items.push({
+        label: (isCurrent ? "✓ " : "") + conversationTitle(conversation, ja2),
+        disabled: busy && !isCurrent,
+        action: () => {
+          if (session.switchTo(conversation.id)) onChange();
+        }
+      });
+    }
+    items.push("-");
+    items.push({
+      label: ja2 ? "名前を変更…" : "Rename…",
+      action: () => openRename({ session, ja: ja2, onChange })
+    });
+    items.push({
+      label: ja2 ? "削除…" : "Delete…",
+      disabled: busy,
+      action: () => openDelete({ session, ja: ja2, onChange })
+    });
+    const point = anchorPoint(button2);
+    menu(items, point.x, point.y);
+    markCurrent(currentIndex);
+    trackExpanded(button2);
+  }
+  function openModelMenu({ button: button2, session, capabilities, ja: ja2 = true, onChange = () => {
+  } }) {
+    const selection = session.selectionOf();
+    const items = [];
+    let currentIndex = -1;
+    if (session.busy) {
+      items.push({ label: ja2 ? "回答中は変更できません" : "Not while answering", disabled: true, action: () => {
+      } });
+      const busyPoint = anchorPoint(button2);
+      menu(items, busyPoint.x, busyPoint.y);
+      trackExpanded(button2);
+      return;
+    }
+    for (const provider2 of capabilities.providers) {
+      const isCurrent = provider2.id === selection.provider;
+      if (isCurrent) currentIndex = items.length;
+      const note = provider2.available === false ? ja2 ? "（利用不可）" : " (unavailable)" : "";
+      items.push({
+        label: (isCurrent ? "✓ " : "") + provider2.label + note,
+        action: () => {
+          session.setSelection(selectionForProvider(capabilities, provider2.id, selection));
+          onChange();
+        }
+      });
+    }
+    const provider = findProvider(capabilities, selection.provider);
+    if (provider && provider.models.length) {
+      items.push("-");
+      for (const model2 of provider.models) {
+        const isCurrent = model2.id === selection.model;
+        const note = model2.available === false ? ja2 ? "（利用不可）" : " (unavailable)" : "";
+        items.push({
+          label: (isCurrent ? "✓ " : "") + model2.label + note,
+          action: () => {
+            session.setSelection({ provider: provider.id, model: model2.id });
+            onChange();
+          }
+        });
+      }
+    }
+    const model = provider ? provider.models.find((item) => item.id === selection.model) : null;
+    const levels = model && model.reasoning && model.reasoning.length ? model.reasoning : provider ? provider.reasoning : [];
+    if (levels && levels.length) {
+      items.push("-");
+      for (const level of levels) {
+        const isCurrent = level.id === selection.reasoning;
+        items.push({
+          label: (isCurrent ? "✓ " : "") + level.label,
+          action: () => {
+            session.setSelection({ reasoning: level.id });
+            onChange();
+          }
+        });
+      }
+    }
+    if (!capabilities.known) {
+      items.push("-");
+      items.push({ label: ja2 ? "モデル一覧を取得できません" : "No model list advertised", disabled: true, action: () => {
+      } });
+    }
+    const point = anchorPoint(button2);
+    menu(items, point.x, point.y);
+    markCurrent(currentIndex);
+    trackExpanded(button2);
+  }
+  function overlayHost() {
+    return document.getElementById("overlays") || document.body;
+  }
+  function dialogShell(titleText) {
+    const backdrop = h("div", "backdrop");
+    const root = h("div", "dialog ai-dialog");
+    root.setAttribute("role", "dialog");
+    root.setAttribute("aria-modal", "true");
+    root.append(h("h3", null, titleText));
+    return { backdrop, root };
+  }
+  function openDialog({ title, build, ja: ja2 }) {
+    const returnFocus = document.activeElement;
+    const { backdrop, root } = dialogShell(title);
+    const actions = h("div", "actions");
+    const close = () => {
+      document.removeEventListener("keydown", key2, true);
+      backdrop.remove();
+      root.remove();
+      if (returnFocus && returnFocus.isConnected && typeof returnFocus.focus === "function") {
+        try {
+          returnFocus.focus({ preventScroll: true });
+        } catch {
+        }
+      }
+    };
+    const key2 = (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        close();
+      }
+    };
+    const cancel = uiButton(ja2 ? "やめる" : "Cancel", { cls: "ai-dialog-cancel", onClick: close });
+    const { body, confirm } = build({ close });
+    if (body) root.append(body);
+    actions.append(cancel, confirm);
+    root.append(actions);
+    overlayHost().append(backdrop, root);
+    backdrop.addEventListener("click", close);
+    document.addEventListener("keydown", key2, true);
+    return { root, close };
+  }
+  function openRename({ session, ja: ja2 = true, onChange = () => {
+  } }) {
+    const conversation = session.current;
+    const input2 = h("input", "ai-dialog-input");
+    input2.type = "text";
+    input2.value = conversation.title || "";
+    input2.setAttribute("aria-label", ja2 ? "チャットの名前" : "Chat name");
+    input2.maxLength = 80;
+    const dialog = openDialog({
+      title: ja2 ? "チャットの名前を変える" : "Rename chat",
+      ja: ja2,
+      build: ({ close }) => {
+        const apply = () => {
+          session.renameConversation(conversation.id, input2.value);
+          onChange();
+          close();
+        };
+        input2.addEventListener("keydown", (event) => {
+          if (event.key !== "Enter") return;
+          event.preventDefault();
+          apply();
+        });
+        return { body: input2, confirm: uiButton(ja2 ? "変える" : "Rename", { cls: "ai-dialog-confirm", onClick: apply }) };
+      }
+    });
+    requestAnimationFrame(() => {
+      input2.focus();
+      input2.select();
+    });
+    return dialog;
+  }
+  function openDelete({ session, ja: ja2 = true, onChange = () => {
+  } }) {
+    const conversation = session.current;
+    return openDialog({
+      title: ja2 ? "このチャットを消す" : "Delete this chat",
+      ja: ja2,
+      build: ({ close }) => ({
+        body: h("p", null, ja2 ? `「${conversationTitle(conversation, true)}」を消します。元に戻せません。` : `“${conversationTitle(conversation, false)}” will be deleted. This cannot be undone.`),
+        confirm: uiButton(ja2 ? "消す" : "Delete", {
+          cls: "ai-dialog-confirm danger",
+          onClick: () => {
+            session.deleteConversation(conversation.id);
+            onChange();
+            close();
+          }
+        })
+      })
+    });
+  }
+  var MAX_LISTED, expandedButton;
+  var init_session_menu = __esm({
+    "js/ai/ui/session-menu.js"() {
+      init_primitives();
+      init_ui();
+      init_conversations();
+      init_model_picker();
+      MAX_LISTED = 10;
+      expandedButton = null;
+    }
+  });
+
   // js/ai/ui/panel.js
   function segmented(items, active, onPick, label) {
     const root = h("div", "ai-segmented");
@@ -56392,6 +57487,21 @@ ${clip(intent, 120)}
     root.setAttribute("role", "complementary");
     root.setAttribute("aria-label", pick("AI アシスタント", "AI assistant"));
     const head = h("header", "ai-panel-head");
+    const sessionButton = uiButton("", { cls: "ai-session-button" });
+    sessionButton.setAttribute("aria-haspopup", "menu");
+    sessionButton.setAttribute("aria-expanded", "false");
+    const sessionTitle = h("span", "ai-session-title", "");
+    sessionButton.replaceChildren(sessionTitle, h("span", "ai-caret", "▾"));
+    sessionButton.addEventListener("click", () => {
+      openSessionMenu({ button: sessionButton, session, ja: isJa(), onChange: () => refresh() });
+    });
+    const newChat = uiButton("＋", {
+      cls: "ai-icon-button ai-new-chat",
+      ariaLabel: pick("新しいチャット", "New chat"),
+      onClick: () => {
+        if (session.newConversation()) refresh({ focus: true });
+      }
+    });
     const modes = segmented(MODE_ITEMS, session.mode, (id) => handlers.onMode(id), pick("モード", "Mode"));
     const styles = segmented(STYLE_ITEMS, session.style, (id) => handlers.onStyle(id), pick("答え方", "Answer style"));
     const close = uiButton("✕", {
@@ -56399,7 +57509,7 @@ ${clip(intent, 120)}
       ariaLabel: pick("閉じる", "Close"),
       onClick: () => handlers.onClose()
     });
-    head.append(modes, close);
+    head.append(sessionButton, newChat, modes, close);
     const contextBar = h("div", "ai-context-bar");
     const scopeChip = uiButton("", { cls: "ai-chip ai-scope-chip" });
     scopeChip.setAttribute("aria-haspopup", "menu");
@@ -56433,7 +57543,15 @@ ${clip(intent, 120)}
     send.type = "submit";
     const stop = uiButton(pick("停止", "Stop"), { cls: "ai-chip ai-stop", onClick: () => handlers.onCancel() });
     stop.hidden = true;
-    composer.append(input2, send, stop);
+    const composerBar = h("div", "ai-composer-bar");
+    const modelChip = uiButton("", { cls: "ai-chip ai-model-chip" });
+    modelChip.setAttribute("aria-haspopup", "menu");
+    modelChip.setAttribute("aria-expanded", "false");
+    modelChip.addEventListener("click", () => {
+      openModelMenu({ button: modelChip, session, capabilities, ja: isJa(), onChange: () => applySelection() });
+    });
+    composerBar.append(modelChip, stop);
+    composer.append(input2, send, composerBar);
     const coarse = typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia("(pointer: coarse)").matches;
     const grow = () => {
       input2.style.height = "auto";
@@ -56473,8 +57591,44 @@ ${clip(intent, 120)}
         first2.focus();
       }
     });
+    const capabilityFns = capabilityApi(session.engine);
+    let capabilities = normalizeCapabilities2(null);
+    let capabilityRequest = null;
+    function loadCapabilities() {
+      if (capabilityRequest) return capabilityRequest;
+      capabilityRequest = (async () => {
+        const advertised = await callSafely(capabilityFns.capabilities);
+        const status = await callSafely(capabilityFns.status);
+        capabilities = applyStatus(normalizeCapabilities2(advertised), status);
+        const current2 = await callSafely(capabilityFns.get);
+        if (current2 && typeof current2 === "object" && !session.current.provider) {
+          session.setSelection({
+            provider: current2.provider == null ? null : current2.provider,
+            model: current2.model == null ? null : current2.model,
+            reasoning: current2.reasoning == null ? null : current2.reasoning
+          });
+        }
+        update({ stick: false });
+      })().catch(() => {
+      });
+      return capabilityRequest;
+    }
+    function applySelection() {
+      callSafely(capabilityFns.set, session.selectionOf());
+      update({ stick: false });
+    }
+    function refresh({ focus = false } = {}) {
+      update({ stick: false });
+      if (focus) input2.focus();
+    }
     const rendered = /* @__PURE__ */ new Map();
+    let renderedConversation = null;
     function renderConversation() {
+      if (renderedConversation !== session.current.id) {
+        for (const entry2 of rendered.values()) entry2.node.remove();
+        rendered.clear();
+        renderedConversation = session.current.id;
+      }
       const turns = session.visibleTurns().slice(-MAX_RENDERED_TURNS);
       empty.hidden = turns.length > 0;
       const seen = /* @__PURE__ */ new Set();
@@ -56510,6 +57664,8 @@ ${clip(intent, 120)}
     }
     function update({ stick = true } = {}) {
       const shouldStick = stick && atBottom();
+      if (typeof session.syncNamespace === "function") session.syncNamespace();
+      loadCapabilities();
       for (const button2 of modes.querySelectorAll(".ai-seg")) {
         const on = button2.dataset.value === session.mode;
         button2.classList.toggle("active", on);
@@ -56525,6 +57681,20 @@ ${clip(intent, 120)}
       contextChip.textContent = context.label;
       contextChip.hidden = !context.label;
       contextChip.disabled = !context.actionable;
+      const ja2 = isJa();
+      sessionTitle.textContent = conversationTitle(session.current, ja2);
+      sessionButton.setAttribute(
+        "aria-label",
+        (ja2 ? "会話: " : "Conversation: ") + conversationTitle(session.current, ja2)
+      );
+      sessionButton.dataset.conversation = session.current.id;
+      newChat.disabled = session.busy;
+      const model = selectionLabel(capabilities, session.selectionOf(), ja2);
+      modelChip.textContent = model.text;
+      modelChip.title = model.note ? model.text + " · " + model.note : model.text;
+      modelChip.dataset.unavailable = String(!!model.unavailable);
+      modelChip.setAttribute("aria-label", (ja2 ? "モデル: " : "Model: ") + modelChip.title);
+      modelChip.disabled = session.busy;
       root.dataset.mode = session.mode;
       root.dataset.style = session.style;
       send.disabled = session.busy;
@@ -56553,8 +57723,20 @@ ${clip(intent, 120)}
       },
       header: head,
       body,
+      refresh,
+      capabilities: () => capabilities,
       describeState() {
-        return { mode: session.mode, style: session.style, scope: session.scope, busy: session.busy, turns: session.turns.length };
+        return {
+          mode: session.mode,
+          style: session.style,
+          scope: session.scope,
+          busy: session.busy,
+          turns: session.turns.length,
+          conversationId: session.current.id,
+          conversationTitle: conversationTitle(session.current, isJa()),
+          conversations: session.list().length,
+          selection: session.selectionOf()
+        };
       }
     };
   }
@@ -56566,6 +57748,9 @@ ${clip(intent, 120)}
       init_ui();
       init_modes();
       init_message();
+      init_conversations();
+      init_model_picker();
+      init_session_menu();
       MAX_RENDERED_TURNS = 40;
     }
   });
@@ -56755,9 +57940,11 @@ ${clip(intent, 120)}
     const matches = (app2.store.get("regions") || []).filter((region) => containsAddress(region, addr));
     return matches.find((region) => region.exec === true) || matches.find((region) => region.exec !== false) || matches[0] || null;
   }
-  async function analyzeModelAt(app2, address) {
+  async function analyzeModelAt(app2, address, end = null, options = {}) {
     const addr = toBigInt(address);
     if (addr == null) return null;
+    const architecture = app2.store.get("architecture") || app2.store.get("capability")?.architecture || null;
+    if (!supportsArm64SemanticAnalysis(architecture)) return null;
     const region = regionForAddress(app2, addr);
     if (!region || !app2.store.get("canDisassemble")) return null;
     const sym = app2.symbols;
@@ -56765,14 +57952,29 @@ ${clip(intent, 120)}
     const start = fn ? fn.start : addr;
     if (!containsAddress(region, start)) return null;
     const step = BigInt(instructionBytes(app2));
-    if ((start - region.vmAddr) % step !== 0n) return null;
+    if (step !== 4n || (start - region.vmAddr) % step !== 0n) return null;
     const startRow = Number((start - region.vmAddr) / step);
     const totalRows = Number(region.size / step);
-    const endRow = fn && fn.end != null ? Math.min(totalRows - 1, Number((fn.end - region.vmAddr) / step) - 1) : Math.min(totalRows - 1, startRow + 2048);
+    const regionEnd = region.vmAddr + region.size;
+    const provenEnd = fn?.end == null ? null : toBigInt(fn.end);
+    const requestedEnd = toBigInt(end);
+    let boundedEnd = provenEnd;
+    if (requestedEnd != null) boundedEnd = boundedEnd == null ? requestedEnd : requestedEnd < boundedEnd ? requestedEnd : boundedEnd;
+    if (boundedEnd == null) boundedEnd = start + 2048n * step;
+    if (boundedEnd > regionEnd) boundedEnd = regionEnd;
+    if (boundedEnd <= start) return null;
+    const endRow = Math.min(totalRows - 1, Number((boundedEnd - region.vmAddr + step - 1n) / step) - 1);
     if (endRow < startRow) return null;
+    const rawMax = Number(options?.maxInstructions);
+    if (Number.isFinite(rawMax) && Math.floor(rawMax) <= 0) return null;
+    const maxRows = Number.isFinite(rawMax) ? Math.max(1, Math.floor(rawMax)) : void 0;
+    const coversProvenEnd = provenEnd != null && provenEnd <= regionEnd && boundedEnd >= provenEnd;
     try {
-      const res = await analyzeFunctionCached(app2.backend, region, startRow, endRow, sym);
-      return res && res.model ? res.model : null;
+      const res = await analyzeFunctionCached(app2.backend, region, startRow, endRow, sym, null, { maxRows });
+      const model = res?.model;
+      if (!model) return null;
+      const incomplete = !coversProvenEnd || res.truncated === true || model.truncated === true;
+      return incomplete && model.truncated !== true ? { ...model, truncated: true } : model;
     } catch {
       return null;
     }
@@ -56848,7 +58050,7 @@ ${clip(intent, 120)}
       },
       getBinaryDiff: () => app2.getBinaryDiff?.() || null,
       functionName: nameOf,
-      analyze: (address) => analyzeModelAt(app2, address),
+      analyze: (address, end, options) => analyzeModelAt(app2, address, end, options),
       async searchStrings(query, options = {}) {
         const limit2 = Math.max(1, Math.min(200, Number(options.limit) || 50));
         const rows = await app2.ensureStrings();
@@ -57451,9 +58653,9 @@ ${clip(intent, 120)}
         if (!Number.isSafeInteger(value2)) throw new Error("unsafe-number");
         out = BigInt(value2);
       } else if (typeof value2 === "string") {
-        const text3 = value2.trim();
-        if (!text3 || !/^[+-]?(?:0[xX][0-9a-fA-F]+|\d+)$/.test(text3)) throw new Error("invalid-string");
-        out = BigInt(text3);
+        const text4 = value2.trim();
+        if (!text4 || !/^[+-]?(?:0[xX][0-9a-fA-F]+|\d+)$/.test(text4)) throw new Error("invalid-string");
+        out = BigInt(text4);
       } else throw new Error("invalid-type");
       if (nonNegative && out < 0n) throw new Error("negative");
       return out;
@@ -58275,10 +59477,10 @@ ${clip(intent, 120)}
     return Math.max(48, b.maxFunctions * factor, b.maxSearchResults * 2);
   }
   function classifyPrior(c3) {
-    const text3 = lower(c3?.source ?? c3?.kind ?? c3?.reason ?? "");
-    if (text3.includes("runtime")) return "runtime";
-    if (text3.includes("semantic")) return "semantic";
-    if (text3.includes("explor")) return "exploration";
+    const text4 = lower(c3?.source ?? c3?.kind ?? c3?.reason ?? "");
+    if (text4.includes("runtime")) return "runtime";
+    if (text4.includes("semantic")) return "semantic";
+    if (text4.includes("explor")) return "exploration";
     return "recognition";
   }
   async function candidatePools(query, tools, ctx, b) {
@@ -59407,22 +60609,22 @@ ${clip(intent, 120)}
   });
 
   // js/ai/evidence.js
-  function hashText2(text3) {
+  function hashText2(text4) {
     let hash = 2166136261;
-    for (let i = 0; i < text3.length; i++) {
-      hash ^= text3.charCodeAt(i);
+    for (let i = 0; i < text4.length; i++) {
+      hash ^= text4.charCodeAt(i);
       hash = Math.imul(hash, 16777619) >>> 0;
     }
     return hash.toString(16).padStart(8, "0");
   }
   function compactSource(value2) {
     const safe2 = jsonSafe(value2);
-    const text3 = JSON.stringify(safe2);
-    if (text3.length <= 4096) return safe2;
-    if (!safe2 || typeof safe2 !== "object" || Array.isArray(safe2)) return { oversized: true, bytes: text3.length, type: Array.isArray(safe2) ? "array" : typeof safe2 };
+    const text4 = JSON.stringify(safe2);
+    if (text4.length <= 4096) return safe2;
+    if (!safe2 || typeof safe2 !== "object" || Array.isArray(safe2)) return { oversized: true, bytes: text4.length, type: Array.isArray(safe2) ? "array" : typeof safe2 };
     const semantic = {};
     for (const key2 of SEMANTIC_SOURCE_KEYS) if (safe2[key2] !== void 0) semantic[key2] = safe2[key2];
-    return { oversized: true, bytes: text3.length, semantic };
+    return { oversized: true, bytes: text4.length, semantic };
   }
   function firstAddress(value2) {
     if (!value2 || typeof value2 !== "object") return null;
@@ -59826,9 +61028,9 @@ ${clip(intent, 120)}
 
   // js/ai/proposals.js
   function fingerprint(value2) {
-    const text3 = canonicalIdentity(value2);
+    const text4 = canonicalIdentity(value2);
     let hash = 5381;
-    for (let i = 0; i < text3.length; i++) hash = (hash << 5) + hash ^ text3.charCodeAt(i);
+    for (let i = 0; i < text4.length; i++) hash = (hash << 5) + hash ^ text4.charCodeAt(i);
     return (hash >>> 0).toString(16);
   }
   function canonicalIdentity(value2, stack = /* @__PURE__ */ new Set()) {
@@ -60232,8 +61434,8 @@ ${clip(intent, 120)}
     if (current2 != null) addresses.add(addressText2(current2));
     for (const item of Array.isArray(raw) ? raw.slice(0, 256) : []) {
       const value2 = item?.address ?? item?.start ?? item;
-      const text3 = addressText2(value2);
-      if (text3) addresses.add(text3);
+      const text4 = addressText2(value2);
+      if (text4) addresses.add(text4);
     }
     return Array.from(addresses);
   }
@@ -60302,8 +61504,8 @@ ${clip(intent, 120)}
     return out;
   }
   function isAddressKey(key2) {
-    const text3 = String(key2 || "");
-    return /^(address|addr|start|end|from|to|target)$/i.test(text3) || /_(address|addr|start|end|from|to|target)$/i.test(text3) || /(Address|Addr|Start|End|From|To|Target)$/.test(text3);
+    const text4 = String(key2 || "");
+    return /^(address|addr|start|end|from|to|target)$/i.test(text4) || /_(address|addr|start|end|from|to|target)$/i.test(text4) || /(Address|Addr|Start|End|From|To|Target)$/.test(text4);
   }
   function inFunction(target, fn) {
     if (!fn?.address) return false;
@@ -60413,11 +61615,11 @@ ${clip(intent, 120)}
 
   // js/ai/routing/intent.js
   function routeIntent(goal, snapshot2 = {}) {
-    const text3 = String(goal || "").trim();
-    for (const [intent, pattern] of RULES) if (pattern.test(text3)) return intent;
-    if (snapshot2.selection && /(what|why|how|意味|何|なぜ|どう)/i.test(text3)) return "explain-selection";
-    if (snapshot2.currentFunction && /(what|why|how|意味|何|なぜ|どう)/i.test(text3)) return "explain-current-function";
-    if (/^(what|why|how|is |are |can |does |explain|教えて|とは|なぜ|どう)/i.test(text3)) return "general-question";
+    const text4 = String(goal || "").trim();
+    for (const [intent, pattern] of RULES) if (pattern.test(text4)) return intent;
+    if (snapshot2.selection && /(what|why|how|意味|何|なぜ|どう)/i.test(text4)) return "explain-selection";
+    if (snapshot2.currentFunction && /(what|why|how|意味|何|なぜ|どう)/i.test(text4)) return "explain-current-function";
+    if (/^(what|why|how|is |are |can |does |explain|教えて|とは|なぜ|どう)/i.test(text4)) return "general-question";
     return "unknown";
   }
   function shouldRunPlanner(request = {}, snapshot2 = {}, intent = routeIntent(request.goal, snapshot2)) {
@@ -60585,10 +61787,10 @@ ${clip(intent, 120)}
   });
 
   // js/ai/tools/paging/cursor.js
-  function fnv1a(text3, seed = 2166136261) {
+  function fnv1a(text4, seed = 2166136261) {
     let h2 = seed >>> 0;
-    for (let i = 0; i < text3.length; i++) {
-      h2 ^= text3.charCodeAt(i);
+    for (let i = 0; i < text4.length; i++) {
+      h2 ^= text4.charCodeAt(i);
       h2 = Math.imul(h2, 16777619) >>> 0;
     }
     return h2 >>> 0;
@@ -60627,9 +61829,9 @@ ${clip(intent, 120)}
     return JSON.stringify(String(value2));
   }
   function shortHash(value2) {
-    const text3 = typeof value2 === "string" ? value2 : stableSerialize(value2);
-    const a = fnv1a(text3, 2166136261);
-    const b = fnv1a(text3, 2654435769);
+    const text4 = typeof value2 === "string" ? value2 : stableSerialize(value2);
+    const a = fnv1a(text4, 2166136261);
+    const b = fnv1a(text4, 2654435769);
     return `${a.toString(36)}${b.toString(36)}`;
   }
   var CursorCodec;
@@ -60645,12 +61847,12 @@ ${clip(intent, 120)}
           return `c1.${body}.${macFor(this.secret, body)}`;
         }
         decode(cursor, { bindingKey = null, kind = null } = {}) {
-          const text3 = String(cursor || "");
-          const first2 = text3.indexOf(".");
-          const last = text3.lastIndexOf(".");
-          if (!text3.startsWith("c1.") || first2 !== 2 || last <= first2 + 1) throw new Error("invalid-cursor");
-          const body = text3.slice(first2 + 1, last);
-          const mac = text3.slice(last + 1);
+          const text4 = String(cursor || "");
+          const first2 = text4.indexOf(".");
+          const last = text4.lastIndexOf(".");
+          if (!text4.startsWith("c1.") || first2 !== 2 || last <= first2 + 1) throw new Error("invalid-cursor");
+          const body = text4.slice(first2 + 1, last);
+          const mac = text4.slice(last + 1);
           if (!mac || mac !== macFor(this.secret, body)) throw new Error("invalid-cursor");
           let payload;
           try {
@@ -61744,8 +62946,8 @@ ${clip(intent, 120)}
     } else if (args.view === "cfg") source = model.blocks || model.cfg?.blocks || [];
     else {
       let value2 = typeof context.decompile === "function" ? await context.decompile(args.functionAddress) : typeof context.pseudocodeFor === "function" ? context.pseudocodeFor(args.functionAddress, model) : "";
-      const text3 = typeof value2 === "string" ? value2 : value2?.text || value2?.code || JSON.stringify(jsonSafe(value2 || ""));
-      source = text3.split(/\r?\n/);
+      const text4 = typeof value2 === "string" ? value2 : value2?.text || value2?.code || JSON.stringify(jsonSafe(value2 || ""));
+      source = text4.split(/\r?\n/);
     }
     if (!args.cursor && args.aroundInstructionId != null && (args.view === "semantic-ir" || args.view === "assembly")) {
       if (!semanticIr && args.view === "semantic-ir") semanticIr = irFor(model);
@@ -61776,8 +62978,8 @@ ${clip(intent, 120)}
   async function decompileFunction(context, legacy, address) {
     if (typeof context.decompile === "function") {
       const value2 = await context.decompile(address);
-      const text3 = typeof value2 === "string" ? value2 : value2?.text || value2?.code || JSON.stringify(jsonSafe(value2));
-      return { functionAddress: addressText2(address), pseudocodeExcerpt: text3.slice(0, 3e4), total: text3.length, returned: Math.min(text3.length, 3e4), complete: text3.length <= 3e4, truncated: text3.length > 3e4, reason: text3.length > 3e4 ? "preview-limit" : null, trust: "untrusted-data" };
+      const text4 = typeof value2 === "string" ? value2 : value2?.text || value2?.code || JSON.stringify(jsonSafe(value2));
+      return { functionAddress: addressText2(address), pseudocodeExcerpt: text4.slice(0, 3e4), total: text4.length, returned: Math.min(text4.length, 3e4), complete: text4.length <= 3e4, truncated: text4.length > 3e4, reason: text4.length > 3e4 ? "preview-limit" : null, trust: "untrusted-data" };
     }
     if (legacy.decompile) return legacy.decompile(address);
     return { functionAddress: addressText2(address), unavailable: true };
@@ -62737,10 +63939,10 @@ Hex が確認できた根拠は ${evidence3.length} 件です。` : "\n\nこの�
         controller2.abort("response-too-large");
         throw new AIError("context_too_large", `The AI service response exceeded ${responseLimit} bytes.`, { bytes: contentLength, maxBytes: responseLimit });
       }
-      const text3 = await readBoundedText(response, responseLimit, controller2);
+      const text4 = await readBoundedText(response, responseLimit, controller2);
       let payload;
       try {
-        payload = JSON.parse(text3);
+        payload = JSON.parse(text4);
       } catch {
         throw new AIError("provider_error", "The AI service returned invalid JSON.", { status: response.status });
       }
@@ -62794,13 +63996,13 @@ Hex が確認できた根拠は ${evidence3.length} 件です。` : "\n\nこの�
         }
       }
     }
-    const text3 = typeof response.text === "function" ? await response.text() : JSON.stringify(await response.json());
-    const bytes3 = new TextEncoder().encode(text3).byteLength;
+    const text4 = typeof response.text === "function" ? await response.text() : JSON.stringify(await response.json());
+    const bytes3 = new TextEncoder().encode(text4).byteLength;
     if (bytes3 > maxBytes) {
       controller2.abort("response-too-large");
       throw new AIError("context_too_large", `The AI service response exceeded ${maxBytes} bytes.`, { bytes: bytes3, maxBytes });
     }
-    return text3;
+    return text4;
   }
   function normalizeLimit(value2) {
     const n = Number(value2);
@@ -62898,14 +64100,14 @@ Hex が確認できた根拠は ${evidence3.length} 件です。` : "\n\nこの�
               this.capabilitiesPrepared = true;
               return this.getCapabilities();
             }
-            const text3 = await response.text();
-            if (new TextEncoder().encode(text3).byteLength > 64 * 1024) {
+            const text4 = await response.text();
+            if (new TextEncoder().encode(text4).byteLength > 64 * 1024) {
               this.capabilitiesPrepared = true;
               return this.getCapabilities();
             }
             let payload = null;
             try {
-              payload = JSON.parse(text3);
+              payload = JSON.parse(text4);
             } catch {
             }
             if (payload?.capabilities && typeof payload.capabilities === "object") this.capabilities = { ...this.capabilities, ...payload.capabilities };
@@ -63005,13 +64207,13 @@ ${safeJSONStringify(payload)}
   }
   function parseChatGPTDecision(value2) {
     if (value2 && typeof value2 === "object") return value2;
-    let text3 = String(value2 ?? "").trim();
-    if (!text3) throw new AIError("invalid_model_output", "ChatGPT Web returned an empty response.");
-    text3 = stripFence(text3);
-    const first2 = text3.indexOf("{");
-    const last = text3.lastIndexOf("}");
+    let text4 = String(value2 ?? "").trim();
+    if (!text4) throw new AIError("invalid_model_output", "ChatGPT Web returned an empty response.");
+    text4 = stripFence(text4);
+    const first2 = text4.indexOf("{");
+    const last = text4.lastIndexOf("}");
     if (first2 < 0 || last < first2) throw new AIError("invalid_model_output", "ChatGPT Web did not return a JSON object.");
-    const candidate = text3.slice(first2, last + 1);
+    const candidate = text4.slice(first2, last + 1);
     let parsed = tryParse(candidate);
     if (parsed == null && /[\u201c\u201d]/.test(candidate)) {
       parsed = tryParse(normalizeSmartJSONQuotes(candidate));
@@ -63021,14 +64223,14 @@ ${safeJSONStringify(payload)}
     }
     return parsed;
   }
-  function normalizeSmartJSONQuotes(text3) {
+  function normalizeSmartJSONQuotes(text4) {
     let output = "";
     let inSmartString = false;
     let nestedSmartQuotes = 0;
     let smartEscaped = false;
     let inAsciiString = false;
     let asciiEscaped = false;
-    for (const char of String(text3)) {
+    for (const char of String(text4)) {
       if (inAsciiString) {
         output += char;
         if (asciiEscaped) {
@@ -63087,19 +64289,19 @@ ${safeJSONStringify(payload)}
     }
     return output;
   }
-  function stripFence(text3) {
-    const fenced = text3.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
-    return fenced ? fenced[1].trim() : text3;
+  function stripFence(text4) {
+    const fenced = text4.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+    return fenced ? fenced[1].trim() : text4;
   }
-  function tryParse(text3) {
+  function tryParse(text4) {
     try {
-      return JSON.parse(text3);
+      return JSON.parse(text4);
     } catch {
       return null;
     }
   }
   function safeJSONStringify(value2) {
-    return JSON.stringify(value2, (_key, item) => typeof item === "bigint" ? `0x${item.toString(16)}` : item);
+    return JSON.stringify(value2, (_key, item) => typeof item === "bigint" ? `0x${item.toString(16)}` : item).replace(/&/g, "\\u0026").replace(/</g, "\\u003c").replace(/>/g, "\\u003e");
   }
   function apiEndpoint(path) {
     const base = globalThis.__HEX_API_BASE__;
@@ -63139,11 +64341,11 @@ ${safeJSONStringify(payload)}
           }
           this.controllers.add(controller2);
           try {
-            const text3 = await this.bridge.request(buildChatGPTTurnPrompt(request), {
+            const text4 = await this.bridge.request(buildChatGPTTurnPrompt(request), {
               signal: controller2.signal,
               timeoutMs: options.timeoutMs || this.timeoutMs
             });
-            const decision = parseChatGPTDecision(text3);
+            const decision = parseChatGPTDecision(text4);
             return validateModelDecision(decision, (request.tools || []).map((tool) => tool.name));
           } catch (error) {
             if (controller2.signal.aborted || error?.name === "AbortError") {
@@ -63276,14 +64478,35 @@ ${safeJSONStringify(payload)}
       } catch {
       }
     };
+    const workspaceHash = () => {
+      const live = app2.backend?.contentHash || null;
+      if (live) return String(live);
+      if (app2.backend && Object.prototype.hasOwnProperty.call(app2.backend, "contentHash")) return null;
+      return app2.workspace?.identity?.hash || app2.workspace?.project?.binary?.hash || app2.activeProject?.binary?.hash || app2.project?.binary?.hash || app2.currentProject?.binary?.hash || app2.project?.binaryHash || app2.currentProject?.binaryHash || null;
+    };
     define("binaryFingerprint", () => {
-      const stored = app2.store?.get?.("binaryFingerprint") || app2.store?.get?.("contentFingerprint") || app2.binaryFingerprint || null;
-      if (stored?.hash) return stored;
-      const projectHash = app2.project?.binaryHash || app2.currentProject?.binaryHash || null;
-      return projectHash ? { algorithm: "project-content-hash", hash: String(projectHash) } : null;
+      const liveHash = workspaceHash();
+      if (liveHash) return { algorithm: "content-hash", hash: String(liveHash) };
+      const stored = app2.backend ? null : app2.store?.get?.("binaryFingerprint") || app2.store?.get?.("contentFingerprint") || app2.binaryFingerprint || null;
+      return stored?.hash ? stored : null;
     });
     define("binaryHash", () => context.binaryFingerprint?.hash || null);
-    define("projectId", () => app2.project?.id || app2.currentProject?.id || app2.project?.binaryHash || null);
+    define("binaryIdentity", () => {
+      const fingerprint2 = context.binaryFingerprint;
+      if (!fingerprint2?.hash) return null;
+      const slice = app2.store?.get?.("sliceIndex");
+      const hash = String(fingerprint2.hash);
+      return {
+        id: `content:${hash}${slice == null ? "" : `:${String(slice)}`}`,
+        kind: "content-derived",
+        confidence: "strong",
+        state: "ready",
+        algorithm: String(fingerprint2.algorithm || "existing-hash"),
+        hash,
+        legacyId: context.binaryId == null ? null : String(context.binaryId)
+      };
+    });
+    define("projectId", () => app2.project?.id || app2.currentProject?.id || app2.workspace?.project?.binary?.hash || app2.activeProject?.binary?.hash || app2.project?.binaryHash || null);
     define("sliceIndex", () => app2.store?.get?.("sliceIndex") ?? null);
     define("architecture", () => app2.store?.get?.("architecture") || app2.store?.get?.("capability")?.architecture || null);
     define("fileInfo", () => app2.store?.get?.("fileInfo") || null);
@@ -63293,7 +64516,12 @@ ${safeJSONStringify(payload)}
     const state = { binaryId: null, known: false, sessionId: null };
     const originalPlatform = typeof context.runtime.platform === "function" ? context.runtime.platform.bind(context.runtime) : null;
     const originalVerify = typeof context.runtime.verifyHypothesis === "function" ? context.runtime.verifyHypothesis.bind(context.runtime) : null;
-    const currentBinaryId = () => context.binaryId == null ? null : String(context.binaryId);
+    const currentBinaryId = () => {
+      const identity = context.binaryIdentity;
+      const strong = identity && typeof identity === "object" ? identity.id : identity;
+      const value2 = strong ?? context.binaryId;
+      return value2 == null ? null : String(value2);
+    };
     const capture = (platform) => {
       state.binaryId = currentBinaryId();
       state.known = true;
@@ -63460,11 +64688,11 @@ ${safeJSONStringify(payload)}
     const actions = h("div", "ai-proposal-actions");
     const apply = uiButton(pick("適用する", "Apply"), { cls: "ai-chip primary" });
     const reject = uiButton(pick("却下", "Reject"), { cls: "ai-chip" });
-    const settle = (text3, state) => {
+    const settle = (text4, state) => {
       root.dataset.status = state;
       apply.disabled = true;
       reject.disabled = true;
-      status.textContent = text3;
+      status.textContent = text4;
     };
     apply.addEventListener("click", async () => {
       apply.disabled = true;
@@ -63565,8 +64793,8 @@ ${safeJSONStringify(payload)}
       onRetry() {
         session.retry({ context: workbenchContext(app2) });
       },
-      onFollowup(text3) {
-        ask2(text3);
+      onFollowup(text4) {
+        ask2(text4);
       },
       onTerm(id) {
         showTerm(app2, id);
@@ -64037,7 +65265,7 @@ ${safeJSONStringify(payload)}
     }
   }
   function functionName(app2, addr) {
-    if (addr == null) return text2("関数", "Function");
+    if (addr == null) return text3("関数", "Function");
     const sym = app2.symbols;
     const raw = sym && (sym.nameAt?.(addr) || sym.label?.(addr));
     return raw || "sub_" + BigInt(addr).toString(16).toUpperCase();
@@ -64051,7 +65279,7 @@ ${safeJSONStringify(payload)}
   }
   function requireFile(app2, action) {
     if (app2.store.get("fileInfo")) return action();
-    toast(text2("先にファイルを開いてください。", "Open a file first."));
+    toast(text3("先にファイルを開いてください。", "Open a file first."));
     return null;
   }
   function architectureOf(app2) {
@@ -64119,20 +65347,20 @@ ${safeJSONStringify(payload)}
         const goal = compiled?.goal;
         if (!goal) {
           const missing = Array.isArray(compiled?.missing) && compiled.missing.length ? " " + compiled.missing.join(" / ") : "";
-          toast(text2("質問を解析できませんでした。対象や動作をもう少し具体的に書いてください。", "Could not compile that question. Describe the target or action more specifically.") + missing);
+          toast(text3("質問を解析できませんでした。対象や動作をもう少し具体的に書いてください。", "Could not compile that question. Describe the target or action more specifically.") + missing);
           return null;
         }
         return showCandidates(app2, { ...goal, query: compiled });
       } catch (error) {
-        toast(text2("質問の解析に失敗しました。", "Question compilation failed.") + " " + String(error?.message || error));
+        toast(text3("質問の解析に失敗しました。", "Question compilation failed.") + " " + String(error?.message || error));
         return null;
       }
     });
   }
   function renderInvestigate(app2, router) {
-    const s2 = screen(text2("何を知りたい？", "What do you want to know?"), {
+    const s2 = screen(text3("何を知りたい？", "What do you want to know?"), {
       id: "investigate",
-      subtitle: text2(
+      subtitle: text3(
         "ツール名ではなく、知りたいことをそのまま入力してください。必要な探索方法はHexが選びます。",
         "Describe the answer you need. Hex chooses the search strategy."
       )
@@ -64141,11 +65369,11 @@ ${safeJSONStringify(payload)}
     const form = h("form", "ui-goal-form");
     const input2 = h("input", "ui-command-input");
     input2.type = "search";
-    input2.placeholder = text2("例: 戦闘終了時に経験値が増える場所", "e.g. where experience increases after a battle");
+    input2.placeholder = text3("例: 戦闘終了時に経験値が増える場所", "e.g. where experience increases after a battle");
     input2.autocomplete = "off";
     input2.autocapitalize = "off";
     input2.spellcheck = false;
-    const submit = uiButton(text2("調べる", "Investigate"), { cls: "ui-primary-action" });
+    const submit = uiButton(text3("調べる", "Investigate"), { cls: "ui-primary-action" });
     form.append(input2, submit);
     form.addEventListener("submit", (event) => {
       event.preventDefault();
@@ -64160,10 +65388,10 @@ ${safeJSONStringify(payload)}
     hero.body.append(form);
     const suggestions = h("div", "ui-goal-suggestions");
     for (const q of [
-      text2("経験値が増える場所", "where experience increases"),
-      text2("HPを書き換える処理", "where HP is written"),
-      text2("通信している場所", "network communication"),
-      text2("ガチャの結果を決める処理", "where gacha results are decided")
+      text3("経験値が増える場所", "where experience increases"),
+      text3("HPを書き換える処理", "where HP is written"),
+      text3("通信している場所", "network communication"),
+      text3("ガチャの結果を決める処理", "where gacha results are decided")
     ]) suggestions.append(uiButton(q, { cls: "ui-suggestion", onClick: () => {
       input2.value = q;
       rememberQuery(q);
@@ -64171,11 +65399,11 @@ ${safeJSONStringify(payload)}
     } }));
     const commonGoals = h("div", "ui-goal-suggestions ui-purpose-presets");
     for (const preset of [
-      { label: text2("HP・体力", "HP / health"), query: text2("HPを書き換える処理", "where HP is written") },
-      { label: text2("攻撃力", "Attack power"), query: text2("攻撃力を決める・書き換える処理", "where attack power is calculated or written") },
-      { label: text2("ダメージ計算", "Damage calculation"), query: text2("ダメージを計算して適用する処理", "where damage is calculated and applied") },
-      { label: text2("所持金・コイン", "Money / coins"), query: text2("所持金・コインを増減・保存する処理", "where money or coins are changed and stored") },
-      { label: text2("アイテム・所持品", "Items / inventory"), query: text2("アイテム・所持品を増減・保存する処理", "where inventory items are changed and stored") }
+      { label: text3("HP・体力", "HP / health"), query: text3("HPを書き換える処理", "where HP is written") },
+      { label: text3("攻撃力", "Attack power"), query: text3("攻撃力を決める・書き換える処理", "where attack power is calculated or written") },
+      { label: text3("ダメージ計算", "Damage calculation"), query: text3("ダメージを計算して適用する処理", "where damage is calculated and applied") },
+      { label: text3("所持金・コイン", "Money / coins"), query: text3("所持金・コインを増減・保存する処理", "where money or coins are changed and stored") },
+      { label: text3("アイテム・所持品", "Items / inventory"), query: text3("アイテム・所持品を増減・保存する処理", "where inventory items are changed and stored") }
     ]) {
       commonGoals.append(uiButton(preset.label, {
         cls: "ui-suggestion ui-purpose-chip",
@@ -64186,22 +65414,22 @@ ${safeJSONStringify(payload)}
         }
       }));
     }
-    hero.body.append(suggestions, sectionTitle(text2("よくある目的", "Common goals")), commonGoals);
+    hero.body.append(suggestions, sectionTitle(text3("よくある目的", "Common goals")), commonGoals);
     s2.body.append(hero.root);
-    const overview = card(text2("自動で分かったこと", "Automatic overview"), {
-      subtitle: text2(
+    const overview = card(text3("自動で分かったこと", "Automatic overview"), {
+      subtitle: text3(
         "ファイル全体の地図を作り、候補・根拠・未確認点をまとめます。",
         "Build a map of the binary and summarize candidates, evidence and unknowns."
       )
     });
-    overview.body.append(uiButton(text2("概要を更新する", "Refresh overview"), {
+    overview.body.append(uiButton(text3("概要を更新する", "Refresh overview"), {
       cls: "ui-secondary-action",
       onClick: () => requireFile(app2, () => app2.openOverview())
     }));
     s2.body.append(overview.root);
     const recent = recentQueries();
     if (recent.length) {
-      s2.body.append(sectionTitle(text2("最近の調査", "Recent investigations")));
+      s2.body.append(sectionTitle(text3("最近の調査", "Recent investigations")));
       const list4 = h("div", "ui-list");
       for (const q of recent) list4.append(listRow({ title: q, onClick: () => {
         input2.value = q;
@@ -64271,9 +65499,9 @@ ${safeJSONStringify(payload)}
   }
   function renderExplorer(app2, router, route) {
     const scope = EXPLORER_SCOPES.some((x) => x.id === route.params.scope) ? route.params.scope : "functions";
-    const s2 = screen(text2("索引", "Explorer"), {
+    const s2 = screen(text3("索引", "Explorer"), {
       id: "explorer",
-      subtitle: text2(
+      subtitle: text3(
         "関数・文字列・型・データ・外部API・セクションを一つの検索体験で見ます。",
         "Browse functions, strings, types, data, external APIs and sections with one search."
       )
@@ -64289,7 +65517,7 @@ ${safeJSONStringify(payload)}
     }
     const search = h("input", "ui-search-field");
     search.type = "search";
-    search.placeholder = text2("名前・文字列・アドレスで検索", "Search names, strings or addresses");
+    search.placeholder = text3("名前・文字列・アドレスで検索", "Search names, strings or addresses");
     search.value = route.query.get("q") || "";
     controls.append(scopes, search);
     s2.body.append(controls);
@@ -64305,13 +65533,13 @@ ${safeJSONStringify(payload)}
       virtual = null;
       content.replaceChildren();
       if (!items || !Number(items.length)) {
-        content.append(emptyState(text2("見つかりません", "Nothing found"), emptyText));
+        content.append(emptyState(text3("見つかりません", "Nothing found"), emptyText));
         return;
       }
       if (items.complete === false) {
-        content.append(h("div", "ui-hint", text2(`一部のみ表示: ${Number(items.scannedCount || 0).toLocaleString()} / ${Number(items.total || 0).toLocaleString()} を走査 (${items.truncationReason || "incomplete"})`, `Partial results: scanned ${Number(items.scannedCount || 0).toLocaleString()} / ${Number(items.total || 0).toLocaleString()} (${items.truncationReason || "incomplete"})`)));
+        content.append(h("div", "ui-hint", text3(`一部のみ表示: ${Number(items.scannedCount || 0).toLocaleString()} / ${Number(items.total || 0).toLocaleString()} を走査 (${items.truncationReason || "incomplete"})`, `Partial results: scanned ${Number(items.scannedCount || 0).toLocaleString()} / ${Number(items.total || 0).toLocaleString()} (${items.truncationReason || "incomplete"})`)));
       }
-      virtual = new VirtualList({ items, rowHeight: 64, ariaLabel: text2("索引の結果", "Explorer results"), renderRow });
+      virtual = new VirtualList({ items, rowHeight: 64, ariaLabel: text3("索引の結果", "Explorer results"), renderRow });
       content.append(virtual.root);
     };
     const update = async () => {
@@ -64324,17 +65552,17 @@ ${safeJSONStringify(payload)}
       const q = search.value.trim();
       const parsed = parseAddress(q);
       if (parsed != null && q) {
-        showRows([{ addr: parsed }], (item) => listRow({ title: addressText3(item.addr), subtitle: text2("このアドレスへ移動", "Jump to this address"), onClick: () => router.navigate("/code/" + item.addr.toString()) }), "");
+        showRows([{ addr: parsed }], (item) => listRow({ title: addressText3(item.addr), subtitle: text3("このアドレスへ移動", "Jump to this address"), onClick: () => router.navigate("/code/" + item.addr.toString()) }), "");
         return;
       }
       if (scope === "functions") {
-        if (q) content.replaceChildren(loadingState(text2("索引を検索しています…", "Searching index…")));
+        if (q) content.replaceChildren(loadingState(text3("索引を検索しています…", "Searching index…")));
         try {
           const items = await matchingFunctionItems(app2, q, { signal: controller2.signal, limit: 200 });
           if (!current2()) return;
-          showRows(items, (item) => listRow({ title: item.name, subtitle: addressText3(item.addr), meta: item.size != null ? String(item.size) + " B" : "", onClick: () => router.navigate("/function/" + BigInt(item.addr).toString() + "/overview") }), text2("関数名がまだ復元されていない可能性があります。", "Function names may not be recovered yet."));
+          showRows(items, (item) => listRow({ title: item.name, subtitle: addressText3(item.addr), meta: item.size != null ? String(item.size) + " B" : "", onClick: () => router.navigate("/function/" + BigInt(item.addr).toString() + "/overview") }), text3("関数名がまだ復元されていない可能性があります。", "Function names may not be recovered yet."));
         } catch (err) {
-          if (err?.name !== "AbortError" && current2()) content.replaceChildren(errorState(text2("検索できませんでした", "Search failed"), String(err?.message || err)));
+          if (err?.name !== "AbortError" && current2()) content.replaceChildren(errorState(text3("検索できませんでした", "Search failed"), String(err?.message || err)));
         }
         return;
       }
@@ -64343,39 +65571,39 @@ ${safeJSONStringify(payload)}
         showRows(items, (item) => listRow({ title: item.name, subtitle: addressText3(item.addr), meta: String(item.size) + " bytes", onClick: () => {
           app2.selectRegion(item.region, { silent: true });
           router.navigate("/code/" + BigInt(item.addr).toString());
-        } }), text2("表示できるセクションがありません。", "No sections are available."));
+        } }), text3("表示できるセクションがありません。", "No sections are available."));
         return;
       }
       if (scope === "external") {
         const items = externalItems(app2, q);
-        showRows(items, (item) => listRow({ title: item.name }), text2("外部ライブラリ情報がありません。", "No external library information is available."));
+        showRows(items, (item) => listRow({ title: item.name }), text3("外部ライブラリ情報がありません。", "No external library information is available."));
         return;
       }
       if (scope === "strings") {
-        content.replaceChildren(loadingState(text2("文字列を集めています…", "Collecting strings…")));
+        content.replaceChildren(loadingState(text3("文字列を集めています…", "Collecting strings…")));
         try {
           const items = await stringItems(app2, q, { signal: controller2.signal, limit: 200 });
           if (!current2()) return;
           showRows(items, (item) => listRow({ title: item.text, subtitle: addressText3(item.addr), onClick: () => {
             app2.goToStringAddress(item.region, item.addr);
             router.navigate("/code/" + BigInt(item.addr).toString());
-          } }), text2("文字列が見つかりません。", "No strings were found."));
-          if (items?.complete === false) content.prepend(h("p", "ui-partial-note", text2("結果はメモリ上限内の一部です。未走査領域を「該当なし」とは扱いません。", "Results are partial within the memory budget; unscanned regions are not treated as negative evidence.")));
+          } }), text3("文字列が見つかりません。", "No strings were found."));
+          if (items?.complete === false) content.prepend(h("p", "ui-partial-note", text3("結果はメモリ上限内の一部です。未走査領域を「該当なし」とは扱いません。", "Results are partial within the memory budget; unscanned regions are not treated as negative evidence.")));
         } catch (err) {
-          if (err?.name !== "AbortError" && current2()) content.replaceChildren(errorState(text2("文字列を表示できません", "Could not show strings"), String(err && err.message || err)));
+          if (err?.name !== "AbortError" && current2()) content.replaceChildren(errorState(text3("文字列を表示できません", "Could not show strings"), String(err && err.message || err)));
         }
         return;
       }
       if (scope === "classes") {
-        const c4 = card(text2("型 / クラス", "Types / Classes"), { subtitle: text2("Objective-C / Swift / C++ の型情報を、同じ索引の一部として扱います。", "Runtime and recovered types live in this explorer scope.") });
+        const c4 = card(text3("型 / クラス", "Types / Classes"), { subtitle: text3("Objective-C / Swift / C++ の型情報を、同じ索引の一部として扱います。", "Runtime and recovered types live in this explorer scope.") });
         const count = app2.fields && app2.fields.classCount ? app2.fields.classCount : 0;
-        c4.body.append(h("p", "ui-metric", text2(`${count.toLocaleString()} クラスを認識`, `${count.toLocaleString()} classes recognized`)));
-        c4.body.append(uiButton(text2("クラスと構造を見る", "Open class/structure index"), { cls: "ui-secondary-action", onClick: () => requireFile(app2, () => showStructure(app2)) }));
+        c4.body.append(h("p", "ui-metric", text3(`${count.toLocaleString()} クラスを認識`, `${count.toLocaleString()} classes recognized`)));
+        c4.body.append(uiButton(text3("クラスと構造を見る", "Open class/structure index"), { cls: "ui-secondary-action", onClick: () => requireFile(app2, () => showStructure(app2)) }));
         content.replaceChildren(c4.root);
         return;
       }
-      const c3 = card(text2("データ", "Data"), { subtitle: text2("グローバル・構造体・復元したデータ表をまとめます。", "Globals, structures and recovered data tables are grouped here.") });
-      c3.body.append(uiButton(text2("データ構造を開く", "Open data structures"), { cls: "ui-secondary-action", onClick: () => requireFile(app2, () => showStructure(app2)) }));
+      const c3 = card(text3("データ", "Data"), { subtitle: text3("グローバル・構造体・復元したデータ表をまとめます。", "Globals, structures and recovered data tables are grouped here.") });
+      c3.body.append(uiButton(text3("データ構造を開く", "Open data structures"), { cls: "ui-secondary-action", onClick: () => requireFile(app2, () => showStructure(app2)) }));
       content.replaceChildren(c3.root);
     };
     search.addEventListener("input", () => {
@@ -64453,7 +65681,7 @@ ${safeJSONStringify(payload)}
     return genericEvidenceStatus(item);
   }
   function evidenceTitle(item, index2) {
-    return String(item?.reason || item?.kind || item?.type || item?.source || item?.family || text2(`根拠 ${index2 + 1}`, `Evidence ${index2 + 1}`));
+    return String(item?.reason || item?.kind || item?.type || item?.source || item?.family || text3(`根拠 ${index2 + 1}`, `Evidence ${index2 + 1}`));
   }
   function evidenceSubtitle(item) {
     const bits = [];
@@ -64473,33 +65701,33 @@ ${safeJSONStringify(payload)}
       addr = currentFunctionAddr(app2);
     }
     if (addr == null) {
-      const s3 = screen(text2("関数", "Function"), { id: "function" });
-      s3.body.append(emptyState(text2("関数が選択されていません", "No function selected"), text2("コードまたは索引から関数を開いてください。", "Open a function from Code or Explorer.")));
+      const s3 = screen(text3("関数", "Function"), { id: "function" });
+      s3.body.append(emptyState(text3("関数が選択されていません", "No function selected"), text3("コードまたは索引から関数を開いてください。", "Open a function from Code or Explorer.")));
       return { root: s3.root };
     }
     const verifiedRange = app2.validatedFunctionRange?.(addr);
     if (verifiedRange && !verifiedRange.ok) {
       const s3 = screen(functionName(app2, addr), { id: "function", subtitle: addressText3(addr) });
-      s3.body.append(errorState(text2("関数境界を検証できません", "Function boundary could not be verified"), verifiedRange.reason || "unverified-function-range"));
+      s3.body.append(errorState(text3("関数境界を検証できません", "Function boundary could not be verified"), verifiedRange.reason || "unverified-function-range"));
       return { root: s3.root };
     }
     const tab = FUNCTION_TABS.some((x) => x.id === route.params.tab) ? route.params.tab : "overview";
     const actions = h("div", "ui-screen-actions");
-    actions.append(uiButton("•••", { cls: "ui-icon-action", ariaLabel: text2("関数の操作", "Function actions"), onClick: (e) => {
+    actions.append(uiButton("•••", { cls: "ui-icon-action", ariaLabel: text3("関数の操作", "Function actions"), onClick: (e) => {
       const r = e.currentTarget.getBoundingClientRect();
       const assistant = window.__hexAi;
       menu([
         ...assistant ? [askAiMenuItem(assistant, functionAiItems(assistant, { address: addr, name: functionName(app2, addr) }), { x: r.left + r.width / 2, y: r.bottom + 4 })] : [],
-        { label: text2("名前を付ける", "Rename"), action: () => showRename(app2, addr) },
-        { label: text2("メモを書く", "Comment"), action: () => showComment(app2, addr) },
-        { label: text2("アセンブリへ", "Open assembly"), action: () => router.navigate("/code/" + addr.toString()) }
+        { label: text3("名前を付ける", "Rename"), action: () => showRename(app2, addr) },
+        { label: text3("メモを書く", "Comment"), action: () => showComment(app2, addr) },
+        { label: text3("アセンブリへ", "Open assembly"), action: () => router.navigate("/code/" + addr.toString()) }
       ], r.left + r.width / 2, r.bottom + 4);
     } }));
     const s2 = screen(functionName(app2, addr), { id: "function", subtitle: addressText3(addr), actions });
     const tabbar = tabs(FUNCTION_TABS, tab, (next) => router.navigate("/function/" + addr.toString() + "/" + next));
     s2.body.append(tabbar);
     const content = h("div", "ui-workspace-content");
-    content.append(loadingState(text2("関数を解析しています…", "Analysing function…")));
+    content.append(loadingState(text3("関数を解析しています…", "Analysing function…")));
     s2.body.append(content);
     let disposed = false;
     const viewEpoch = app2.backend?.gen;
@@ -64520,20 +65748,20 @@ ${safeJSONStringify(payload)}
       const recognition = classifyFunction(recognitionInput(app2, addr, res));
       const subsystems = discoverSubsystems(recognitionInput(app2, addr, res));
       const grid = h("div", "ui-card-grid");
-      const summary = card(text2("何をしている？", "What does it do?"));
+      const summary = card(text3("何をしている？", "What does it do?"));
       const recovered = summaryText(res);
       const recoveredStatus = summaryEvidenceStatus(res);
-      const ownerLead = ownerFact.unique ? text2(`${ownerFact.unique.className} の ${ownerFact.unique.sel || "メソッド"} としてruntime metadataから一意に識別されています。`, `Runtime metadata uniquely identifies this as ${ownerFact.unique.sel || "a method"} on ${ownerFact.unique.className}.`) : ownerFact.candidates.length ? text2("この実装アドレスは複数のObjective-Cメソッドで共有されています。候補を確認してください。", "This implementation address is shared by multiple Objective-C methods; review the candidates below.") : text2("命令列と参照関係から、この関数の役割を確認できます。", "Use the instructions and references below to determine this function’s role.");
+      const ownerLead = ownerFact.unique ? text3(`${ownerFact.unique.className} の ${ownerFact.unique.sel || "メソッド"} としてruntime metadataから一意に識別されています。`, `Runtime metadata uniquely identifies this as ${ownerFact.unique.sel || "a method"} on ${ownerFact.unique.className}.`) : ownerFact.candidates.length ? text3("この実装アドレスは複数のObjective-Cメソッドで共有されています。候補を確認してください。", "This implementation address is shared by multiple Objective-C methods; review the candidates below.") : text3("命令列と参照関係から、この関数の役割を確認できます。", "Use the instructions and references below to determine this function’s role.");
       summary.body.append(h("p", "ui-lead", recovered || ownerLead));
       summary.body.append(evidenceBadge(recovered ? recoveredStatus : ownerFact.status));
       if (ownerFact.candidates.length > 1) {
-        for (const candidate of ownerFact.candidates.slice(0, 8)) summary.body.append(listRow({ title: candidate.className || text2("不明なクラス", "Unknown class"), subtitle: candidate.sel || text2("selector不明", "Unknown selector"), badge: evidenceBadge("likely") }));
+        for (const candidate of ownerFact.candidates.slice(0, 8)) summary.body.append(listRow({ title: candidate.className || text3("不明なクラス", "Unknown class"), subtitle: candidate.sel || text3("selector不明", "Unknown selector"), badge: evidenceBadge("likely") }));
       }
       grid.append(summary.root);
-      const identity = card(text2("コードの分類", "Code identity"));
+      const identity = card(text3("コードの分類", "Code identity"));
       identity.body.append(listRow({
         title: recognition.classification,
-        subtitle: (recognition.evidence || []).join(" · ") || text2("まだ十分な識別根拠がありません", "Not enough identity evidence yet"),
+        subtitle: (recognition.evidence || []).join(" · ") || text3("まだ十分な識別根拠がありません", "Not enough identity evidence yet"),
         meta: "score " + Number(recognition.confidence || 0).toFixed(2),
         badge: evidenceBadge(recognition.classification === "UNKNOWN" ? "unverified" : "likely")
       }));
@@ -64544,18 +65772,18 @@ ${safeJSONStringify(payload)}
         badge: evidenceBadge(subsystem.confidence >= 0.72 ? "likely" : "unverified")
       }));
       grid.append(identity.root);
-      const facts = card(text2("基本情報", "Basic facts"));
-      facts.body.append(listRow({ title: text2("命令数", "Instructions"), meta: String(res.instructions || res.model?.instructions?.length || 0) }));
-      facts.body.append(listRow({ title: text2("ブロック数", "Basic blocks"), meta: String(res.model?.blocks?.length || 0) }));
-      facts.body.append(listRow({ title: text2("アドレス", "Address"), meta: addressText3(addr), mono: true }));
-      facts.body.append(listRow({ title: text2("アーキテクチャ", "Architecture"), meta: architectureOf(app2) }));
+      const facts = card(text3("基本情報", "Basic facts"));
+      facts.body.append(listRow({ title: text3("命令数", "Instructions"), meta: String(res.instructions || res.model?.instructions?.length || 0) }));
+      facts.body.append(listRow({ title: text3("ブロック数", "Basic blocks"), meta: String(res.model?.blocks?.length || 0) }));
+      facts.body.append(listRow({ title: text3("アドレス", "Address"), meta: addressText3(addr), mono: true }));
+      facts.body.append(listRow({ title: text3("アーキテクチャ", "Architecture"), meta: architectureOf(app2) }));
       grid.append(facts.root);
-      const next = card(text2("次に見る", "Next steps"));
+      const next = card(text3("次に見る", "Next steps"));
       for (const item of [
-        ["pseudocode", text2("疑似Cで読む", "Read pseudocode")],
-        ["flow", text2("分岐とループを見る", "Inspect branches and loops")],
-        ["evidence", text2("なぜそう言えるか", "Review evidence")],
-        ["runtime", text2("実行して確かめる", "Verify at runtime")]
+        ["pseudocode", text3("疑似Cで読む", "Read pseudocode")],
+        ["flow", text3("分岐とループを見る", "Inspect branches and loops")],
+        ["evidence", text3("なぜそう言えるか", "Review evidence")],
+        ["runtime", text3("実行して確かめる", "Verify at runtime")]
       ]) next.body.append(listRow({ title: item[1], onClick: () => router.navigate("/function/" + addr.toString() + "/" + item[0]) }));
       grid.append(next.root);
       content.replaceChildren(grid);
@@ -64563,7 +65791,7 @@ ${safeJSONStringify(payload)}
     const renderPseudocode = (res) => {
       const map = rowMapper2();
       if (!map.supported) {
-        content.replaceChildren(emptyState(text2("このアーキテクチャの疑似Cは未対応です", "Pseudocode is unavailable for this architecture"), text2("現在のSemantic DecompilerはARM64を対象にしています。未対応のCPUをARM64として表示することはしません。", "The Semantic Decompiler currently targets ARM64; Hex will not reinterpret another CPU as ARM64.")));
+        content.replaceChildren(emptyState(text3("このアーキテクチャの疑似Cは未対応です", "Pseudocode is unavailable for this architecture"), text3("現在のSemantic DecompilerはARM64を対象にしています。未対応のCPUをARM64として表示することはしません。", "The Semantic Decompiler currently targets ARM64; Hex will not reinterpret another CPU as ARM64.")));
         return;
       }
       const out = decompile2(res.model, {
@@ -64580,20 +65808,20 @@ ${safeJSONStringify(payload)}
       code.textContent = decompiledText(out);
       let wrap3 = false;
       toolbar.append(
-        uiButton(text2("コピー", "Copy"), { cls: "ui-secondary-action", onClick: () => copyText(code.textContent, text2("疑似C", "Pseudocode")) }),
-        uiButton(text2("折り返し", "Wrap"), { cls: "ui-secondary-action", onClick: (e) => {
+        uiButton(text3("コピー", "Copy"), { cls: "ui-secondary-action", onClick: () => copyText(code.textContent, text3("疑似C", "Pseudocode")) }),
+        uiButton(text3("折り返し", "Wrap"), { cls: "ui-secondary-action", onClick: (e) => {
           wrap3 = !wrap3;
           code.classList.toggle("wrap", wrap3);
           e.currentTarget.setAttribute("aria-pressed", String(wrap3));
         } }),
-        uiButton(text2("アセンブリへ", "Assembly"), { cls: "ui-secondary-action", onClick: () => router.navigate("/code/" + addr.toString()) })
+        uiButton(text3("アセンブリへ", "Assembly"), { cls: "ui-secondary-action", onClick: () => router.navigate("/code/" + addr.toString()) })
       );
       content.replaceChildren(toolbar, code);
     };
     const renderFlow = (res) => {
       const map = rowMapper2();
       if (!map.supported) {
-        content.replaceChildren(emptyState(text2("このアーキテクチャのCFG表示は未対応です", "CFG view is unavailable for this architecture"), text2("固定4バイト行を前提にせず、安全側で表示を止めています。", "This view is disabled rather than assuming fixed four-byte instruction rows.")));
+        content.replaceChildren(emptyState(text3("このアーキテクチャのCFG表示は未対応です", "CFG view is unavailable for this architecture"), text3("固定4バイト行を前提にせず、安全側で表示を止めています。", "This view is disabled rather than assuming fixed four-byte instruction rows.")));
         return;
       }
       const graph = cfgGraph(res.model, {
@@ -64602,14 +65830,14 @@ ${safeJSONStringify(payload)}
         onNode: (_block, target) => router.navigate("/code/" + BigInt(target).toString())
       });
       if (!graph.nodes.length) {
-        content.replaceChildren(emptyState(text2("フローを作れませんでした", "No control flow available"), text2("この関数には図にできるブロック情報がありません。", "This function has no graphable block information.")));
+        content.replaceChildren(emptyState(text3("フローを作れませんでした", "No control flow available"), text3("この関数には図にできるブロック情報がありません。", "This function has no graphable block information.")));
         return;
       }
       const mode = h("div", "ui-graph-shell");
       const graphHost = h("div", "ui-graph-host");
       graphHost.append(renderGraph(graph.nodes, graph.edges, {}));
       const list4 = h("details", "ui-graph-text");
-      list4.append(h("summary", null, text2("テキスト一覧でも見る", "View as text list")));
+      list4.append(h("summary", null, text3("テキスト一覧でも見る", "View as text list")));
       const rows = h("div", "ui-list");
       graph.nodes.forEach((node3, index2) => rows.append(listRow({ title: String(node3.label || node3.title || node3.id || `Block ${index2 + 1}`), subtitle: node3.addr != null ? addressText3(node3.addr) : "" })));
       list4.append(rows);
@@ -64617,11 +65845,11 @@ ${safeJSONStringify(payload)}
       content.replaceChildren(mode);
     };
     const renderCalls = async () => {
-      content.replaceChildren(loadingState(text2("呼び出し関係を集めています…", "Mapping calls…")));
+      content.replaceChildren(loadingState(text3("呼び出し関係を集めています…", "Mapping calls…")));
       await app2.ensureProgram();
       if (!viewCurrent()) return;
       if (!app2.program) {
-        content.replaceChildren(emptyState(text2("呼び出し関係がありません", "No call graph available"), text2("このバイナリでは呼び出し索引を作れませんでした。", "A call index could not be built for this binary.")));
+        content.replaceChildren(emptyState(text3("呼び出し関係がありません", "No call graph available"), text3("このバイナリでは呼び出し索引を作れませんでした。", "A call index could not be built for this binary.")));
         return;
       }
       const graph = callGraph(app2.program, app2.symbols, addr, {
@@ -64641,8 +65869,8 @@ ${safeJSONStringify(payload)}
       const nameEvidence = app2.symbols?.nameEvidence?.(addr);
       const boundaryStatus = provenanceStatus(boundaryEvidence);
       const nameStatus = provenanceStatus(nameEvidence);
-      stack.append(listRow({ title: text2("関数境界", "Function boundary"), subtitle: addressText3(addr), meta: boundaryEvidence?.source || text2("由来不明", "unknown source"), badge: evidenceBadge(boundaryStatus === "manual" ? "unverified" : boundaryStatus) }));
-      stack.append(listRow({ title: text2("関数名", "Function name"), subtitle: name || text2("シンボル名なし", "No symbol name"), meta: nameStatus === "manual" ? text2("手動 / User", "Manual / User") : nameEvidence?.source || "", badge: evidenceBadge(nameStatus === "manual" ? "unverified" : nameStatus) }));
+      stack.append(listRow({ title: text3("関数境界", "Function boundary"), subtitle: addressText3(addr), meta: boundaryEvidence?.source || text3("由来不明", "unknown source"), badge: evidenceBadge(boundaryStatus === "manual" ? "unverified" : boundaryStatus) }));
+      stack.append(listRow({ title: text3("関数名", "Function name"), subtitle: name || text3("シンボル名なし", "No symbol name"), meta: nameStatus === "manual" ? text3("手動 / User", "Manual / User") : nameEvidence?.source || "", badge: evidenceBadge(nameStatus === "manual" ? "unverified" : nameStatus) }));
       const deterministic = Array.isArray(res.evidence) ? res.evidence : [];
       deterministic.slice(0, 80).forEach((item, index2) => stack.append(listRow({
         title: evidenceTitle(item, index2),
@@ -64651,20 +65879,20 @@ ${safeJSONStringify(payload)}
       })));
       const runtime = runtimeEvidenceForApp(app2, addr);
       runtime.slice(-20).forEach((item, index2) => stack.append(listRow({
-        title: text2("実行時観測: ", "Runtime observation: ") + evidenceTitle(item, index2),
+        title: text3("実行時観測: ", "Runtime observation: ") + evidenceTitle(item, index2),
         subtitle: evidenceSubtitle(item),
         badge: evidenceBadge(evidenceStatus(item))
       })));
       const proof2 = Array.isArray(res.rewriteProof) ? res.rewriteProof : [];
       proof2.slice(0, 30).forEach((item) => stack.append(listRow({
-        title: text2("逆コンパイル変換: ", "Decompiler rewrite: ") + String(item.rule || item.name || item.proof?.kind || "rewrite"),
+        title: text3("逆コンパイル変換: ", "Decompiler rewrite: ") + String(item.rule || item.name || item.proof?.kind || "rewrite"),
         subtitle: item.proof?.detail || item.detail || "",
         badge: evidenceBadge("confirmed")
       })));
-      const note = card(text2("表示の意味", "How to read this"), { subtitle: text2("「確認済み」はバイナリまたは実行観測に直接結び付いた事実です。推論は「可能性が高い」「未確認」のまま分離します。ランキング点を確率として表示しません。", "Confirmed is reserved for facts tied directly to binary/runtime evidence. Inference remains Likely or Unverified; ranking scores are not presented as probabilities.") });
+      const note = card(text3("表示の意味", "How to read this"), { subtitle: text3("「確認済み」はバイナリまたは実行観測に直接結び付いた事実です。推論は「可能性が高い」「未確認」のまま分離します。ランキング点を確率として表示しません。", "Confirmed is reserved for facts tied directly to binary/runtime evidence. Inference remains Likely or Unverified; ranking scores are not presented as probabilities.") });
       const nodes = [note.root, stack];
       if (Array.isArray(res.warnings) && res.warnings.length) {
-        const warnings = card(text2("未解決 / 注意", "Unresolved / warnings"));
+        const warnings = card(text3("未解決 / 注意", "Unresolved / warnings"));
         for (const warning of res.warnings.slice(0, 20)) warnings.body.append(listRow({ title: String(warning), badge: evidenceBadge("unverified") }));
         nodes.push(warnings.root);
       }
@@ -64672,12 +65900,12 @@ ${safeJSONStringify(payload)}
     };
     const renderRuntime = (res) => {
       const root = h("div", "ui-card-grid");
-      const c3 = card(text2("実行時に確かめる", "Verify at runtime"), { subtitle: text2("新しいRuntime Analysis Platformで、この関数だけを安全なローカルsandbox上で実行・観測します。", "Run this function in the Runtime Analysis Platform local sandbox and record evidence.") });
+      const c3 = card(text3("実行時に確かめる", "Verify at runtime"), { subtitle: text3("新しいRuntime Analysis Platformで、この関数だけを安全なローカルsandbox上で実行・観測します。", "Run this function in the Runtime Analysis Platform local sandbox and record evidence.") });
       const resultHost = h("div", "ui-runtime-result");
-      const run = uiButton(text2("ローカル実行で観測する", "Run local observation"), { cls: "ui-primary-action" });
+      const run = uiButton(text3("ローカル実行で観測する", "Run local observation"), { cls: "ui-primary-action" });
       run.addEventListener("click", async () => {
         run.disabled = true;
-        resultHost.replaceChildren(loadingState(text2("実行して観測しています…", "Running and collecting observations…")));
+        resultHost.replaceChildren(loadingState(text3("実行して観測しています…", "Running and collecting observations…")));
         try {
           const result = await traceAppFunction(app2, addr, { maxSteps: 12e3, timeoutMs: 1500, limit: 4096 });
           if (!viewCurrent()) return;
@@ -64685,23 +65913,23 @@ ${safeJSONStringify(payload)}
           const stop = obs.stop?.kind || "unknown";
           const direct = stop === "return" ? "confirmed" : "unverified";
           const list4 = h("div", "ui-list");
-          list4.append(listRow({ title: text2("停止理由", "Stop reason"), meta: stop, badge: evidenceBadge(direct) }));
-          list4.append(listRow({ title: text2("実行命令数", "Executed instructions"), meta: String(obs.steps ?? "—") }));
-          list4.append(listRow({ title: text2("戻り値", "Return value"), meta: obs.returnValue != null ? addressText3(obs.returnValue) : "—", mono: true }));
-          list4.append(listRow({ title: text2("分岐観測", "Observed branches"), meta: String(obs.branches?.length || 0) }));
-          list4.append(listRow({ title: text2("メモリ書き込み", "Memory writes"), meta: String(obs.stores?.length || obs.memoryDelta?.length || 0) }));
-          list4.append(listRow({ title: text2("Runtime evidence", "Runtime evidence"), meta: String(result.evidence?.length || 0), badge: evidenceBadge(result.evidence?.length ? "confirmed" : "unverified") }));
+          list4.append(listRow({ title: text3("停止理由", "Stop reason"), meta: stop, badge: evidenceBadge(direct) }));
+          list4.append(listRow({ title: text3("実行命令数", "Executed instructions"), meta: String(obs.steps ?? "—") }));
+          list4.append(listRow({ title: text3("戻り値", "Return value"), meta: obs.returnValue != null ? addressText3(obs.returnValue) : "—", mono: true }));
+          list4.append(listRow({ title: text3("分岐観測", "Observed branches"), meta: String(obs.branches?.length || 0) }));
+          list4.append(listRow({ title: text3("メモリ書き込み", "Memory writes"), meta: String(obs.stores?.length || obs.memoryDelta?.length || 0) }));
+          list4.append(listRow({ title: text3("Runtime evidence", "Runtime evidence"), meta: String(result.evidence?.length || 0), badge: evidenceBadge(result.evidence?.length ? "confirmed" : "unverified") }));
           resultHost.replaceChildren(list4);
         } catch (error) {
-          if (!disposed) resultHost.replaceChildren(errorState(text2("ローカル実行を完了できませんでした", "Local runtime observation could not complete"), String(error?.message || error)));
+          if (!disposed) resultHost.replaceChildren(errorState(text3("ローカル実行を完了できませんでした", "Local runtime observation could not complete"), String(error?.message || error)));
         } finally {
           if (!disposed) run.disabled = false;
         }
       });
       c3.body.append(run, resultHost);
       root.append(c3.root);
-      const capability = card(text2("Live Debugger", "Live Debugger"), { subtitle: text2("Safari単体ではiOSプロセスへ任意attachできません。LLDB/Frida互換のlive観測は外部Hex bridge接続時のみ有効です。", "Safari cannot arbitrarily attach to an iOS process. LLDB/Frida-compatible live observation requires an external Hex bridge.") });
-      capability.body.append(uiButton(text2("高度なDebuggerを開く", "Open advanced debugger"), { cls: "ui-secondary-action", onClick: () => showDebugger(app2, addr) }));
+      const capability = card(text3("Live Debugger", "Live Debugger"), { subtitle: text3("Safari単体ではiOSプロセスへ任意attachできません。LLDB/Frida互換のlive観測は外部Hex bridge接続時のみ有効です。", "Safari cannot arbitrarily attach to an iOS process. LLDB/Frida-compatible live observation requires an external Hex bridge.") });
+      capability.body.append(uiButton(text3("高度なDebuggerを開く", "Open advanced debugger"), { cls: "ui-secondary-action", onClick: () => showDebugger(app2, addr) }));
       root.append(capability.root);
       content.replaceChildren(root);
       void res;
@@ -64711,7 +65939,7 @@ ${safeJSONStringify(payload)}
         const res = await app2.analyzeFunctionAt(addr);
         if (!viewCurrent()) return;
         if (!res || !res.model) {
-          content.replaceChildren(errorState(text2("関数を解析できません", "Could not analyse function"), text2("このアドレスは現在のコード領域の関数として解析できませんでした。", "This address could not be analysed as a function in the current code region.")));
+          content.replaceChildren(errorState(text3("関数を解析できません", "Could not analyse function"), text3("このアドレスは現在のコード領域の関数として解析できませんでした。", "This address could not be analysed as a function in the current code region.")));
           return;
         }
         if (tab === "overview") renderOverview(res);
@@ -64721,7 +65949,7 @@ ${safeJSONStringify(payload)}
         else if (tab === "evidence") renderEvidence2(res);
         else renderRuntime(res);
       } catch (err) {
-        if (viewCurrent()) content.replaceChildren(errorState(text2("表示できませんでした", "Could not render this view"), String(err && err.message || err)));
+        if (viewCurrent()) content.replaceChildren(errorState(text3("表示できませんでした", "Could not render this view"), String(err && err.message || err)));
       }
     })();
     return { root: s2.root, getState: () => ({ scrollTop: s2.body.scrollTop }), restoreState: (state) => {
@@ -64731,23 +65959,23 @@ ${safeJSONStringify(payload)}
     } };
   }
   function renderResults(app2, router) {
-    const s2 = screen(text2("結果", "Results"), { id: "results", subtitle: text2("確認した答え、根拠、履歴、ピンをここへ集めます。", "Confirmed answers, evidence, history and pins live here.") });
+    const s2 = screen(text3("結果", "Results"), { id: "results", subtitle: text3("確認した答え、根拠、履歴、ピンをここへ集めます。", "Confirmed answers, evidence, history and pins live here.") });
     const report = app2.autoReport && app2.autoReport.report;
     const findings2 = report && (report.findings || report.results || report.goals);
     if (Array.isArray(findings2) && findings2.length) {
       const renderFinding = (item) => {
-        const title = item.title || item.label || item.goal?.text || item.goal || text2("解析結果", "Finding");
+        const title = item.title || item.label || item.goal?.text || item.goal || text3("解析結果", "Finding");
         const address = item.addr ?? item.address ?? item.functionAddr ?? item.function;
         return listRow({ title: String(title), subtitle: address != null ? addressText3(address) : "", badge: evidenceBadge(item.confirmed ? "confirmed" : item.confidence > 0.7 ? "likely" : "unverified"), onClick: address != null ? () => router.navigate("/function/" + BigInt(address).toString() + "/overview") : null });
       };
-      if (findings2.length > 80) s2.body.append(new VirtualList({ items: findings2, rowHeight: 64, ariaLabel: text2("解析結果", "Analysis results"), renderRow: renderFinding }).root);
+      if (findings2.length > 80) s2.body.append(new VirtualList({ items: findings2, rowHeight: 64, ariaLabel: text3("解析結果", "Analysis results"), renderRow: renderFinding }).root);
       else {
         const list4 = h("div", "ui-list");
         for (const item of findings2) list4.append(renderFinding(item));
         s2.body.append(list4);
       }
     } else {
-      s2.body.append(emptyState(text2("まだ確定した結果がありません", "No confirmed results yet"), text2("「調べる」で目的を入力すると、答えと根拠をここから辿れるようになります。", "Investigate a goal to create results you can revisit."), uiButton(text2("調べるへ", "Go to Investigate"), { cls: "ui-primary-action", onClick: () => router.navigate("/investigate") })));
+      s2.body.append(emptyState(text3("まだ確定した結果がありません", "No confirmed results yet"), text3("「調べる」で目的を入力すると、答えと根拠をここから辿れるようになります。", "Investigate a goal to create results you can revisit."), uiButton(text3("調べるへ", "Go to Investigate"), { cls: "ui-primary-action", onClick: () => router.navigate("/investigate") })));
     }
     return { root: s2.root };
   }
@@ -64783,9 +66011,9 @@ ${safeJSONStringify(payload)}
     try {
       const blob = await app2.exportProjectFile();
       downloadBlob(blob, (app2.store.get("fileInfo")?.name || "analysis") + ".hexproj");
-      toast(text2("プロジェクトを書き出しました。", "Project exported."));
+      toast(text3("プロジェクトを書き出しました。", "Project exported."));
     } catch (error) {
-      toast(text2("プロジェクトを書き出せませんでした: ", "Could not export project: ") + String(error?.message || error));
+      toast(text3("プロジェクトを書き出せませんでした: ", "Could not export project: ") + String(error?.message || error));
     }
   }
   async function importProjectFromProduct(app2) {
@@ -64793,64 +66021,64 @@ ${safeJSONStringify(payload)}
     if (!file) return;
     try {
       await app2.importProjectFile(file);
-      toast(text2("プロジェクトを復元しました。", "Project restored."));
+      toast(text3("プロジェクトを復元しました。", "Project restored."));
     } catch (error) {
       const mismatch = error?.code === "HEX_PROJECT_BINARY_MISMATCH";
-      toast(mismatch ? text2("このプロジェクトは現在のバイナリ/スライス用ではありません。", "This project belongs to a different binary or slice.") : text2("プロジェクトを読み込めませんでした: ", "Could not import project: ") + String(error?.message || error));
+      toast(mismatch ? text3("このプロジェクトは現在のバイナリ/スライス用ではありません。", "This project belongs to a different binary or slice.") : text3("プロジェクトを読み込めませんでした: ", "Could not import project: ") + String(error?.message || error));
     }
   }
   function renderDiff(app2, router) {
-    const s2 = screen(text2("バイナリ差分", "Binary Diff"), { id: "diff", subtitle: text2("前のバージョンと現在のバージョンを関数単位で比較します。", "Compare a previous version with the current binary at function granularity.") });
+    const s2 = screen(text3("バイナリ差分", "Binary Diff"), { id: "diff", subtitle: text3("前のバージョンと現在のバージョンを関数単位で比較します。", "Compare a previous version with the current binary at function granularity.") });
     const host2 = h("div", "ui-stack");
     s2.body.append(host2);
     if (!app2.store.get("fileInfo")) {
-      host2.append(emptyState(text2("先に現在のバイナリを開いてください", "Open the current binary first"), "", uiButton(text2("コードへ", "Go to Code"), { onClick: () => router.navigate("/code") })));
+      host2.append(emptyState(text3("先に現在のバイナリを開いてください", "Open the current binary first"), "", uiButton(text3("コードへ", "Go to Code"), { onClick: () => router.navigate("/code") })));
       return { root: s2.root };
     }
     const state = app2.getBinaryDiff?.();
     const baseline = app2.workspace?.baseline;
     const controls = h("div", "ui-actions");
-    controls.append(uiButton(baseline ? text2("比較元を変更", "Change baseline") : text2("前のバージョンを選ぶ", "Choose previous version"), { cls: "ui-primary-action", onClick: async () => {
+    controls.append(uiButton(baseline ? text3("比較元を変更", "Change baseline") : text3("前のバージョンを選ぶ", "Choose previous version"), { cls: "ui-primary-action", onClick: async () => {
       const file = await pickOneFile();
       if (!file) return;
-      host2.replaceChildren(loadingState(text2("比較元を解析しています…", "Analysing baseline…")));
+      host2.replaceChildren(loadingState(text3("比較元を解析しています…", "Analysing baseline…")));
       try {
         await app2.loadDiffBaseline(file);
         await app2.runBinaryDiff();
         router.navigate("/diff", { replace: true });
       } catch (error) {
-        host2.replaceChildren(errorState(text2("比較できませんでした", "Could not compare"), String(error?.message || error)));
+        host2.replaceChildren(errorState(text3("比較できませんでした", "Could not compare"), String(error?.message || error)));
       }
     } }));
-    if (baseline) controls.append(uiButton(text2("再比較", "Compare again"), { onClick: async () => {
-      host2.replaceChildren(loadingState(text2("比較しています…", "Comparing…")));
+    if (baseline) controls.append(uiButton(text3("再比較", "Compare again"), { onClick: async () => {
+      host2.replaceChildren(loadingState(text3("比較しています…", "Comparing…")));
       try {
         await app2.runBinaryDiff();
         router.navigate("/diff", { replace: true });
       } catch (error) {
-        host2.replaceChildren(errorState(text2("比較できませんでした", "Could not compare"), String(error?.message || error)));
+        host2.replaceChildren(errorState(text3("比較できませんでした", "Could not compare"), String(error?.message || error)));
       }
     } }));
     host2.append(controls);
     if (!state) {
-      host2.append(emptyState(text2("比較元を選ぶと変更された関数を抽出します", "Choose a baseline to find changed functions"), text2("同一CPU/スライスだけを比較し、不完全な探索では new/deleted を断定しません。", "Only matching architectures/slices are compared; incomplete matching never invents new/deleted certainty.")));
+      host2.append(emptyState(text3("比較元を選ぶと変更された関数を抽出します", "Choose a baseline to find changed functions"), text3("同一CPU/スライスだけを比較し、不完全な探索では new/deleted を断定しません。", "Only matching architectures/slices are compared; incomplete matching never invents new/deleted certainty.")));
       return { root: s2.root };
     }
     const counts = { same: 0, moved: 0, changed: 0, rewritten: 0, new: 0, deleted: 0, unresolved: 0 };
     for (const c3 of state.changes || []) counts[c3.changeType] = (counts[c3.changeType] || 0) + 1;
-    const summary = card(text2("比較結果", "Diff summary"));
+    const summary = card(text3("比較結果", "Diff summary"));
     summary.body.append(h("p", "ui-body", `${counts.changed || 0} changed · ${counts.rewritten || 0} rewritten · ${counts.moved || 0} moved · ${counts.new || 0} new · ${counts.deleted || 0} deleted · ${counts.unresolved || 0} unresolved`));
-    summary.body.append(h("p", state.completeness?.complete ? "ui-sub" : "ui-warning", state.completeness?.complete ? text2("関数集合とmatchingは完全です。", "Function sets and matching are complete.") : text2("部分結果です: ", "Partial result: ") + (state.completeness?.reasons || []).join(", ")));
+    summary.body.append(h("p", state.completeness?.complete ? "ui-sub" : "ui-warning", state.completeness?.complete ? text3("関数集合とmatchingは完全です。", "Function sets and matching are complete.") : text3("部分結果です: ", "Partial result: ") + (state.completeness?.reasons || []).join(", ")));
     host2.append(summary.root);
     const interesting = (state.changes || []).filter((c3) => c3.changeType !== "same").slice(0, 5e3);
     const render2 = (c3) => {
       const current2 = c3.after?.address ?? null;
       const previous = c3.before?.address ?? null;
-      const title = c3.after?.name || c3.before?.name || (current2 != null ? functionName(app2, current2) : text2("削除された関数", "Deleted function"));
+      const title = c3.after?.name || c3.before?.name || (current2 != null ? functionName(app2, current2) : text3("削除された関数", "Deleted function"));
       const tags = c3.semanticChange?.tags?.join(", ") || "";
       return listRow({ title, subtitle: [c3.changeType, current2 != null ? addressText3(current2) : previous != null ? "old " + addressText3(previous) : "", tags].filter(Boolean).join(" · "), badge: evidenceBadge(c3.changeType === "unresolved" ? "unverified" : c3.confidence >= 0.82 ? "confirmed" : "likely"), onClick: current2 != null ? () => router.navigate("/function/" + BigInt(current2).toString() + "/overview") : null });
     };
-    if (interesting.length > 100) host2.append(new VirtualList({ items: interesting, rowHeight: 64, ariaLabel: text2("変更関数", "Changed functions"), renderRow: render2 }).root);
+    if (interesting.length > 100) host2.append(new VirtualList({ items: interesting, rowHeight: 64, ariaLabel: text3("変更関数", "Changed functions"), renderRow: render2 }).root);
     else {
       const list4 = h("div", "ui-list");
       for (const c3 of interesting) list4.append(render2(c3));
@@ -64859,15 +66087,15 @@ ${safeJSONStringify(payload)}
     return { root: s2.root };
   }
   function renderAdvanced(app2) {
-    const s2 = screen(text2("高度な機能", "Advanced / Lab"), { id: "advanced", subtitle: text2("通常の調査では不要な低レベル機能だけをまとめています。", "Low-level tools that are not required for the normal question-to-answer flow.") });
+    const s2 = screen(text3("高度な機能", "Advanced / Lab"), { id: "advanced", subtitle: text3("通常の調査では不要な低レベル機能だけをまとめています。", "Low-level tools that are not required for the normal question-to-answer flow.") });
     const list4 = h("div", "ui-list");
-    list4.append(listRow({ title: text2("ファイル情報", "File information"), onClick: () => requireFile(app2, () => showFileInfo(app2)) }));
-    list4.append(listRow({ title: text2("セクション詳細", "Section details"), onClick: () => requireFile(app2, () => showSections(app2)) }));
-    list4.append(listRow({ title: text2("構造 / 生データ", "Structure / raw data"), onClick: () => requireFile(app2, () => showStructure(app2)) }));
-    list4.append(listRow({ title: text2("解析ツール一覧", "Analysis tools"), subtitle: text2("パッチ・スクリプト・プラグイン等", "Patching, scripting, plugins, etc."), onClick: () => requireFile(app2, () => showTools2(app2)) }));
-    list4.append(listRow({ title: text2("プロジェクトを書き出す (.hexproj)", "Export project (.hexproj)"), subtitle: text2("名前・メモ・型・patch・解析結果・AI調査・移動履歴を保存", "Save names, notes, types, patches, findings, AI investigation and navigation"), onClick: () => requireFile(app2, () => exportProjectFromProduct(app2)) }));
-    list4.append(listRow({ title: text2("プロジェクトを読み込む", "Import project"), subtitle: text2("現在のバイナリhashとsliceが一致した場合だけ復元します", "Restores only when binary hash and slice identity match"), onClick: () => requireFile(app2, () => importProjectFromProduct(app2)) }));
-    list4.append(listRow({ title: text2("バージョン差分", "Binary Diff"), subtitle: text2("前のバイナリと変更関数を比較", "Compare changed functions against a previous binary"), onClick: () => requireFile(app2, () => window.__hexUi?.router?.navigate("/diff")) }));
+    list4.append(listRow({ title: text3("ファイル情報", "File information"), onClick: () => requireFile(app2, () => showFileInfo(app2)) }));
+    list4.append(listRow({ title: text3("セクション詳細", "Section details"), onClick: () => requireFile(app2, () => showSections(app2)) }));
+    list4.append(listRow({ title: text3("構造 / 生データ", "Structure / raw data"), onClick: () => requireFile(app2, () => showStructure(app2)) }));
+    list4.append(listRow({ title: text3("解析ツール一覧", "Analysis tools"), subtitle: text3("パッチ・スクリプト・プラグイン等", "Patching, scripting, plugins, etc."), onClick: () => requireFile(app2, () => showTools2(app2)) }));
+    list4.append(listRow({ title: text3("プロジェクトを書き出す (.hexproj)", "Export project (.hexproj)"), subtitle: text3("名前・メモ・型・patch・解析結果・AI調査・移動履歴を保存", "Save names, notes, types, patches, findings, AI investigation and navigation"), onClick: () => requireFile(app2, () => exportProjectFromProduct(app2)) }));
+    list4.append(listRow({ title: text3("プロジェクトを読み込む", "Import project"), subtitle: text3("現在のバイナリhashとsliceが一致した場合だけ復元します", "Restores only when binary hash and slice identity match"), onClick: () => requireFile(app2, () => importProjectFromProduct(app2)) }));
+    list4.append(listRow({ title: text3("バージョン差分", "Binary Diff"), subtitle: text3("前のバイナリと変更関数を比較", "Compare changed functions against a previous binary"), onClick: () => requireFile(app2, () => window.__hexUi?.router?.navigate("/diff")) }));
     s2.body.append(list4);
     return { root: s2.root };
   }
@@ -64891,14 +66119,14 @@ ${safeJSONStringify(payload)}
     const form = h("form", "ui-command-center");
     const input2 = h("input", "ui-global-command");
     input2.type = "search";
-    input2.placeholder = text2("検索・アドレス・> コマンド・? AIに質問", "Search, address, > command, ? ask AI");
-    input2.setAttribute("aria-label", text2("検索と移動", "Search and navigate"));
+    input2.placeholder = text3("検索・アドレス・> コマンド・? AIに質問", "Search, address, > command, ? ask AI");
+    input2.setAttribute("aria-label", text3("検索と移動", "Search and navigate"));
     input2.autocomplete = "off";
     input2.autocapitalize = "off";
     input2.spellcheck = false;
     const hint = h("span", "ui-command-hint");
     hint.setAttribute("aria-live", "polite");
-    const go = uiButton(text2("実行", "Go"), { cls: "ui-command-go" });
+    const go = uiButton(text3("実行", "Go"), { cls: "ui-command-go" });
     form.append(input2, hint, go);
     const refreshHint = () => {
       const intent = classifyOmnibox(input2.value);
@@ -64933,7 +66161,7 @@ ${safeJSONStringify(payload)}
           getAssistant()?.open();
           return true;
         case "agent":
-          getAssistant()?.ask(text2("この一覧から調べたいことを教えてください。", "Tell me what to investigate."), { mode: "agent" });
+          getAssistant()?.ask(text3("この一覧から調べたいことを教えてください。", "Tell me what to investigate."), { mode: "agent" });
           return true;
         default:
           return false;
@@ -64994,7 +66222,7 @@ ${safeJSONStringify(payload)}
     routeHost.tabIndex = -1;
     const chrome = h("div", "ui-product-chrome");
     const nav = h("nav", "ui-bottom-nav");
-    nav.setAttribute("aria-label", text2("主要ナビゲーション", "Primary navigation"));
+    nav.setAttribute("aria-label", text3("主要ナビゲーション", "Primary navigation"));
     const titlebar = appRoot.querySelector(".titlebar");
     titlebar?.after(chrome);
     const addrbar = appRoot.querySelector(".addrbar");
@@ -65061,14 +66289,14 @@ ${safeJSONStringify(payload)}
       };
     }
     installCommandCenter(app2, router, actions, chrome, () => assistant);
-    const more = uiButton("•••", { cls: "ui-more-button", ariaLabel: text2("その他", "More"), onClick: (event) => {
+    const more = uiButton("•••", { cls: "ui-more-button", ariaLabel: text3("その他", "More"), onClick: (event) => {
       const r = event.currentTarget.getBoundingClientRect();
       menu([
-        { label: text2("設定", "Settings"), action: () => router.navigate("/settings") },
-        { label: text2("学ぶ", "Learn"), action: () => router.navigate("/learn") },
-        { label: text2("ヘルプ", "Help"), action: () => router.navigate("/help") },
+        { label: text3("設定", "Settings"), action: () => router.navigate("/settings") },
+        { label: text3("学ぶ", "Learn"), action: () => router.navigate("/learn") },
+        { label: text3("ヘルプ", "Help"), action: () => router.navigate("/help") },
         "-",
-        { label: text2("高度な機能", "Advanced / Lab"), action: () => router.navigate("/advanced") }
+        { label: text3("高度な機能", "Advanced / Lab"), action: () => router.navigate("/advanced") }
       ], r.left + r.width / 2, r.bottom + 4);
     } });
     chrome.append(more);
@@ -65127,7 +66355,7 @@ ${safeJSONStringify(payload)}
     window.__hexUi = { router, actions, destroy, routes: ROUTES, assistant };
     return window.__hexUi;
   }
-  var ja, text2, EXPLORER_SOURCE_LIMIT;
+  var ja, text3, EXPLORER_SOURCE_LIMIT;
   var init_product = __esm({
     "js/ui/product.js"() {
       init_router();
@@ -65151,7 +66379,7 @@ ${safeJSONStringify(payload)}
       init_explorer_index();
       init_evidence_model();
       ja = () => (document.documentElement.lang || navigator.language || "ja").toLowerCase().startsWith("ja");
-      text2 = (j, e) => ja() ? j : e;
+      text3 = (j, e) => ja() ? j : e;
       EXPLORER_SOURCE_LIMIT = 5e4;
     }
   });
@@ -65335,9 +66563,9 @@ ${safeJSONStringify(payload)}
         if (turns.length > beforeCount) sawNewTurn = true;
         const node3 = turns.length ? turns[turns.length - 1] : null;
         if (!sawNewTurn || !node3) return;
-        const text3 = assistantText(node3);
-        if (text3 !== latest) {
-          latest = text3;
+        const text4 = assistantText(node3);
+        if (text4 !== latest) {
+          latest = text4;
           lastChangedAt = Date.now();
         }
         if (isGenerating()) {
@@ -65363,14 +66591,14 @@ ${safeJSONStringify(payload)}
       return current2.length === 0;
     }, timeoutMs, signal);
   }
-  function setComposerText(composer, text3) {
+  function setComposerText(composer, text4) {
     composer.focus();
     if (composer instanceof HTMLTextAreaElement || composer instanceof HTMLInputElement) {
       const proto = composer instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
       const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
-      if (setter) setter.call(composer, text3);
-      else composer.value = text3;
-      composer.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: text3 }));
+      if (setter) setter.call(composer, text4);
+      else composer.value = text4;
+      composer.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: text4 }));
       composer.dispatchEvent(new Event("change", { bubbles: true }));
       return;
     }
@@ -65381,13 +66609,13 @@ ${safeJSONStringify(payload)}
     selection?.addRange(range2);
     let inserted = false;
     try {
-      inserted = document.execCommand("insertText", false, text3);
+      inserted = document.execCommand("insertText", false, text4);
     } catch {
       inserted = false;
     }
     if (!inserted) {
-      composer.textContent = text3;
-      composer.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: text3 }));
+      composer.textContent = text4;
+      composer.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: text4 }));
     }
     selection?.removeAllRanges();
     composer.dispatchEvent(new Event("change", { bubbles: true }));
@@ -65817,8 +67045,8 @@ ${error?.message || error}`);
     document.documentElement.append(button2);
     return button2;
   }
-  function setLauncherState(text3, busy) {
-    launcher.textContent = text3;
+  function setLauncherState(text4, busy) {
+    launcher.textContent = text4;
     launcher.disabled = !!busy;
     launcher.style.opacity = busy ? "0.72" : "1";
   }

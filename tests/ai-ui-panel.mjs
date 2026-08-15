@@ -286,6 +286,74 @@ await run(async ({ browser }) => {
   check('a contextual verb asks a complete question in the selection scope',
     /0x[0-9a-f]+/.test(asked.question) && asked.scope === 'selection' && asked.open, JSON.stringify(asked));
 
+  /* Several chats: New chat, the history menu, and what the engine is told. */
+  await closeSheets(page);
+  await stubEngine(page, { answer: '一つ目のチャットの答え' });
+  await page.evaluate(() => document.querySelector('.ai-new-chat').click());
+  await page.waitForTimeout(120);
+  await ask(page, 'コインが増える処理はどこ？');
+  await page.waitForTimeout(250);
+  const header = await page.evaluate(() => {
+    const button = document.querySelector('.ai-session-button');
+    const chip = document.querySelector('.ai-model-chip');
+    const call = window.__hexStub.calls[window.__hexStub.calls.length - 1];
+    return {
+      title: button.textContent, haspopup: button.getAttribute('aria-haspopup'),
+      newChat: !!document.querySelector('.ai-new-chat[aria-label]'),
+      model: chip.textContent, modelPopup: chip.getAttribute('aria-haspopup'),
+      conversationId: call.conversationId, fields: call.fields,
+    };
+  });
+  check('the header names the chat and offers New chat next to it',
+    /コインが増える/.test(header.title) && header.haspopup === 'menu' && header.newChat, JSON.stringify(header.title));
+  check('the composer shows which model the next question uses',
+    header.model.length > 0 && header.modelPopup === 'menu', header.model);
+  check('every turn carries its conversation id and model metadata to the engine',
+    !!header.conversationId && ['provider', 'model', 'reasoning'].every((name) => header.fields.includes(name)),
+    JSON.stringify({ id: header.conversationId, fields: header.fields }));
+
+  const started = await page.evaluate(async () => {
+    document.querySelector('.ai-new-chat').click();
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    const state = window.__hexAi.panel.describeState();
+    return { turns: document.querySelectorAll('.ai-turn').length, state, empty: !document.querySelector('.ai-empty').hidden };
+  });
+  check('New chat empties the transcript without losing the old chat',
+    started.turns === 0 && started.empty && started.state.conversations >= 2, JSON.stringify(started.state));
+
+  await stubEngine(page, { answer: '二つ目のチャットの答え' });
+  await ask(page, 'セーブしている場所を探して');
+  await page.waitForTimeout(250);
+  const switched = await page.evaluate(async () => {
+    document.querySelector('.ai-session-button').click();
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    const rows = [...document.querySelectorAll('#overlays .menu [role="menuitem"]')].map((n) => n.textContent);
+    const back = [...document.querySelectorAll('#overlays .menu [role="menuitem"]')].find((n) => /コインが増える/.test(n.textContent));
+    back.click();
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    return { rows, text: document.querySelector('.ai-conversation').textContent, id: window.__hexAi.panel.describeState().conversationId };
+  });
+  check('the history menu lists both chats with the current one marked',
+    switched.rows.some((t) => /新しいチャット/.test(t)) && switched.rows.filter((t) => /^✓/.test(t)).length === 1, JSON.stringify(switched.rows));
+  check('going back to the first chat restores only its own transcript',
+    /一つ目のチャットの答え/.test(switched.text) && !/二つ目のチャットの答え/.test(switched.text), switched.text.slice(0, 60));
+
+  /* iPad and phone widths: the header must not need a mouse or a scrollbar. */
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.waitForTimeout(250);
+  const narrow = await page.evaluate(() => {
+    const head = document.querySelector('.ai-panel-head');
+    const sizes = [...head.querySelectorAll('button')].map((n) => Math.round(n.getBoundingClientRect().height));
+    return {
+      layout: document.getElementById('ai-panel').dataset.layout,
+      overflow: head.scrollWidth - head.clientWidth,
+      smallest: Math.min(...sizes),
+      pageOverflow: document.body.scrollWidth - document.documentElement.clientWidth,
+    };
+  });
+  check('the header still fits on a phone-width panel', narrow.overflow <= 1 && narrow.pageOverflow <= 1, JSON.stringify(narrow));
+  check('every header control stays a comfortable tap target', narrow.smallest >= 30, String(narrow.smallest));
+
   check('no page errors during the whole session', errors.length === 0, errors.slice(0, 3).join(' | '));
   await context.close();
   return state.failures;

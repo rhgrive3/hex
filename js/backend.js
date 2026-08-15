@@ -40,10 +40,13 @@ export class Backend {
     this.onChunk = null;
     this.onFatal = null;
     this._archProbe = null;
+    this._archProbeWorker = null;
+    this._archProbeFinish = null;
     this._disasmWorker = null;
     this._disasmSeq = 1;
     this._disasmPending = new Map();
     this.contentHash = null;
+    this.disposed = false;
     this.analysisCache = new AnalysisCache();
 
     this.legacyWorker.onmessage = (event) => this._onMessage(event.data, 'legacy');
@@ -96,6 +99,10 @@ export class Backend {
   _worker(name) { return name === 'platform' ? this.platformWorker : this.legacyWorker; }
 
   _callTo(workerName, t, payload = {}, transfer, onProgress) {
+    if (this.disposed) {
+      const error = new Error('Backend has been disposed.'); error.code = 'BACKEND_DISPOSED';
+      const promise = Promise.reject(error); promise.requestId = null; promise.cancel = () => {}; return promise;
+    }
     const id = this.seq++;
     this.lastRequestId = id;
     const uiEpoch = this.gen;
@@ -125,6 +132,7 @@ export class Backend {
   }
 
   advanceEpoch() {
+    if (this.disposed) return this.analysisEpoch;
     this.analysisEpoch++;
     this.resetCache();
     this._releaseDisassembly(new StaleRequestError());
@@ -138,11 +146,32 @@ export class Backend {
   }
 
   async open(file) {
-    this.transportEpoch++;
+    if (this.disposed) {
+      const error = new Error('Backend has been disposed.'); error.code = 'BACKEND_DISPOSED';
+      throw error;
+    }
+    const previousTransportEpoch = this.transportEpoch;
+    const openTransportEpoch = ++this.transportEpoch;
+    for (const worker of [this.legacyWorker, this.platformWorker]) worker.postMessage({ t: 'cancel', epoch: previousTransportEpoch });
+    const assertCurrent = () => {
+      if (this.transportEpoch !== openTransportEpoch) throw new StaleRequestError();
+    };
+    const step = async (promise) => {
+      try {
+        const value = await promise;
+        assertCurrent();
+        return value;
+      } catch (error) {
+        assertCurrent();
+        throw error;
+      }
+    };
+
     let detection = null;
     let platformError = null;
-    try { detection = await this._callTo('platform', 'detect', { file }); }
+    try { detection = await step(this._callTo('platform', 'detect', { file })); }
     catch (error) { if (error?.stale) throw error; platformError = error; }
+    assertCurrent();
 
     let nextFormat = 'unknown';
     let nextPlatform = null;
@@ -151,10 +180,11 @@ export class Backend {
     let result = null;
     if (detection?.formatId === 'macho') {
       nextFormat = 'macho';
-      const legacy = await this._callTo('legacy', 'open', { file });
+      const legacy = await step(this._callTo('legacy', 'open', { file }));
       let normalized = null;
-      try { normalized = await this._callTo('platform', 'open', { file }, null, (p) => this.onAnalysisProgress?.(p)); }
+      try { normalized = await step(this._callTo('platform', 'open', { file }, null, (p) => this.onAnalysisProgress?.(p))); }
       catch (error) { if (error?.stale) throw error; platformError = error; }
+      assertCurrent();
       legacy.formatId = 'macho';
       for (const slice of legacy.slices || []) slice.capability = legacySliceCapability(slice);
       legacy.capability = legacy.slices?.[0]?.capability || legacySliceCapability(null);
@@ -170,8 +200,9 @@ export class Backend {
       result = legacy;
     } else {
       let platformInfo = null;
-      try { platformInfo = await this._callTo('platform', 'open', { file }, null, (p) => this.onAnalysisProgress?.(p)); }
+      try { platformInfo = await step(this._callTo('platform', 'open', { file }, null, (p) => this.onAnalysisProgress?.(p))); }
       catch (error) { if (error?.stale) throw error; platformError = error; }
+      assertCurrent();
       if (platformInfo) {
         nextPlatform = platformInfo;
         nextFormat = platformInfo.formatId || platformInfo.capability?.format || detection?.formatId || 'unknown';
@@ -179,19 +210,23 @@ export class Backend {
         nextBridge = capability?.architecture === 'arm64';
         if (nextBridge) {
           try {
-            await this._callTo('legacy', 'open', { file });
+            await step(this._callTo('legacy', 'open', { file }));
             const allRegions=[...(platformInfo.slices||[]).flatMap((slice)=>slice.regions||[]),platformInfo.raw].filter(Boolean);
-            await this._callTo('legacy','setRegions',{regions:allRegions});
-          } catch { nextBridge=false; }
+            await step(this._callTo('legacy','setRegions',{regions:allRegions}));
+          } catch (error) {
+            if (error?.stale) throw error;
+            nextBridge=false;
+          }
         }
         result=platformInfo;
       } else {
-        const legacy=await this._callTo('legacy','open',{file});
+        const legacy=await step(this._callTo('legacy','open',{file}));
         nextLegacy=legacy;
         if (platformError && legacy.format === 'Raw binary') legacy.warnings=[...(legacy.warnings||[]),platformError.message];
         result=legacy;
       }
     }
+    assertCurrent();
     this.advanceEpoch();
     this.file=file;
     this.formatId=nextFormat;
@@ -208,14 +243,24 @@ export class Backend {
   }
 
   probeArchitectures() {
+    if (this.disposed) return Promise.resolve({ ok:false, error:'Backend has been disposed.', support:{ arm64:false, x86_64:false } });
     if (this._archProbe) return this._archProbe;
     this._archProbe = new Promise((resolve) => {
       const worker = new Worker(new URL('./platform/capstone-probe-worker.js', import.meta.url));
-      const finish = (value) => { worker.terminate(); resolve(value); };
+      this._archProbeWorker = worker;
+      let finished = false;
+      const finish = (value) => {
+        if (finished) return;
+        finished = true;
+        if (this._archProbeWorker === worker) this._archProbeWorker = null;
+        try { worker.terminate(); } catch { /* best effort */ }
+        resolve(value);
+      };
+      this._archProbeFinish = finish;
       worker.onmessage = (event) => finish(event.data);
       worker.onerror = (event) => finish({ ok: false, error: event.message, support: { arm64: false, x86_64: false } });
       worker.postMessage({ t: 'probe' });
-    }).finally(() => { this._archProbe = null; });
+    }).finally(() => { this._archProbe = null; this._archProbeFinish = null; });
     return this._archProbe;
   }
 
@@ -238,17 +283,24 @@ export class Backend {
 
   async analyze(sliceIndex) {
     if (this.formatId !== 'macho') return this._callTo('platform', 'analyze', { sliceIndex });
-    const file = this.file;
+    const uiEpoch = this.gen, transportEpoch = this.transportEpoch, file = this.file;
+    const assertCurrent = () => {
+      if (uiEpoch !== this.gen || transportEpoch !== this.transportEpoch || file !== this.file) throw new StaleRequestError();
+    };
     const legacy = await this._callTo('legacy', 'analyze', { sliceIndex });
+    assertCurrent();
     const enriched = await augmentAnalysisResultWithChainedImports(file, sliceIndex, legacy);
+    assertCurrent();
     if (!this.platformInfo?.normalizedDyldTruth) {
       return markMachOSymbolTruthIncomplete(enriched, this.legacyInfo?.platform?.normalizedDyldError || 'normalized-macho-analysis-unavailable');
     }
     try {
       const normalized = await this._callTo('platform', 'analyze', { sliceIndex });
+      assertCurrent();
       return mergeMachOAnalysisResults(enriched, normalized);
     } catch (error) {
       if (error?.stale) throw error;
+      assertCurrent();
       return markMachOSymbolTruthIncomplete(enriched, error?.message || 'normalized-macho-analysis-failed');
     }
   }
@@ -328,6 +380,24 @@ export class Backend {
     this.resetCache();
     this._releaseDisassembly(new Error('disassembly worker released for memory pressure'));
     return this._callTo('platform', 'cleanupMemory', {});
+  }
+
+  dispose() {
+    if (this.disposed) return;
+    this.disposed = true;
+    const failure = new Error('Backend has been disposed.'); failure.code = 'BACKEND_DISPOSED';
+    this.analysisEpoch++; this.transportEpoch++;
+    this.resetCache();
+    this._releaseDisassembly(failure);
+    this._archProbeFinish?.({ ok:false, error:failure.message, support:{ arm64:false, x86_64:false } });
+    this._archProbeFinish = null; this._archProbeWorker = null;
+    for (const pending of this.pending.values()) pending.reject(failure);
+    this.pending.clear();
+    for (const worker of [this.legacyWorker, this.platformWorker]) { try { worker.terminate(); } catch { /* best effort */ } }
+    if (typeof document !== 'undefined' && this._memoryPressureHandler) {
+      document.removeEventListener('visibilitychange', this._memoryPressureHandler);
+      this._memoryPressureHandler = null;
+    }
   }
 
   resetCache() {
