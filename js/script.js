@@ -406,7 +406,10 @@ export function createApi(app, out) {
 
 /** app からエミュレータを作る（画面側でも使う）。 */
 export function makeEmulator(app) {
-  const architecture = String(app.store.get('architecture') || app.currentSlice?.()?.capability?.architecture || 'unknown').toLowerCase();
+  // Legacy callers predate architecture metadata and were ARM64-only. Keep that
+  // compatibility path, while explicit unknown/foreign architectures fail closed.
+  const detectedArchitecture = app.store.get('architecture') || app.currentSlice?.()?.capability?.architecture;
+  const architecture = String(detectedArchitecture || 'arm64').toLowerCase();
   const adapter = architectureAdapter(architecture);
   if (adapter.id !== 'arm64') throw new UnsupportedArchitectureError('emulate', architecture);
   const regions = (app.store.get('regions') || []).filter((r) => r.exec && r.size > 0n);
