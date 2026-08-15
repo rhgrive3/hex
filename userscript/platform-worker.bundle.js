@@ -594,7 +594,11 @@
   // js/binary/macho-dyld.js
   function parseChainedImports(r, dc, image2, sharedBudget = null) {
     const budget = ensureMachOMetadataBudget(image2, sharedBudget);
-    if (!dc.size || dc.offset + dc.size > r.length || dc.size < 28) return null;
+    if (!dc?.size || dc.offset + dc.size > r.length || dc.size < 28) {
+      image2.metadata.chainedFixups = { complete: false, symbolsComplete: false, importsComplete: false, bindingSitesComplete: false, partialReason: "invalid-or-truncated-payload" };
+      image2.warnings.push("chained-fixups payload is missing or truncated; results are partial");
+      return null;
+    }
     const base = dc.offset;
     const version = r.u32(base);
     const startsOffset = r.u32(base + 4);
@@ -603,7 +607,14 @@
     const importsCount = r.u32(base + 16);
     const importsFormat = r.u32(base + 20);
     const symbolsFormat = r.u32(base + 24);
-    image2.metadata.chainedFixups = { version, startsOffset, importsCount, importsFormat, symbolsFormat, complete: true, symbolsComplete: true };
+    const status = image2.metadata.chainedFixups = { version, startsOffset, importsCount, importsFormat, symbolsFormat, complete: true, symbolsComplete: true, importsComplete: true };
+    if (version !== 0) {
+      status.complete = false;
+      status.importsComplete = false;
+      status.importsPartialReason = "unsupported-version";
+      image2.warnings.push(`chained-fixups version ${version} is not supported; results are partial`);
+      return null;
+    }
     if (symbolsFormat !== 0) {
       image2.metadata.chainedFixups.complete = false;
       image2.metadata.chainedFixups.symbolsComplete = false;
@@ -615,18 +626,25 @@
     const stringsBase = base + symbolsOffset;
     const entrySize = importsFormat === 1 ? 4 : importsFormat === 2 ? 8 : importsFormat === 3 ? 16 : 0;
     if (!entrySize) {
+      status.complete = false;
+      status.importsComplete = false;
+      status.importsPartialReason = "unsupported-import-format";
       image2.warnings.push(`unknown chained import format ${importsFormat}`);
       return null;
     }
-    if (importsBase + importsCount * entrySize > base + dc.size) {
+    if (importsOffset >= dc.size || symbolsOffset >= dc.size || importsBase + importsCount * entrySize > base + dc.size) {
+      status.complete = false;
+      status.importsComplete = false;
+      status.importsPartialReason = "truncated-import-table";
       image2.warnings.push("chained imports are truncated");
       return null;
     }
     const parsed = [];
     for (let i = 0; i < importsCount; i++) {
       if (!budget.take({ inputBytes: entrySize, records: 1, objects: 1, operations: 2, estimatedHeapBytes: 224 }, "chained-import-record")) {
-        image2.metadata.chainedFixups.importsComplete = false;
-        image2.metadata.chainedFixups.importsPartialReason = "metadata-budget";
+        status.complete = false;
+        status.importsComplete = false;
+        status.importsPartialReason = "metadata-budget";
         break;
       }
       const p = importsBase + i * entrySize;
@@ -645,10 +663,25 @@
         addend = r.i64(p + 8);
       }
       const strp = stringsBase + nameOffset;
-      if (strp < base || strp >= base + dc.size) continue;
+      if (strp < base || strp >= base + dc.size) {
+        status.complete = false;
+        status.importsComplete = false;
+        status.importsPartialReason ||= "invalid-name-offset";
+        continue;
+      }
       const name = r.cstring(strp, base + dc.size - strp);
-      if (!name) continue;
-      if (!budget.take({ stringBytes: name.length * 2, estimatedHeapBytes: name.length * 2 + 32 }, "chained-import-name")) break;
+      if (!name) {
+        status.complete = false;
+        status.importsComplete = false;
+        status.importsPartialReason ||= "invalid-import-name";
+        continue;
+      }
+      if (!budget.take({ stringBytes: name.length * 2, estimatedHeapBytes: name.length * 2 + 32 }, "chained-import-name")) {
+        status.complete = false;
+        status.importsComplete = false;
+        status.importsPartialReason = "metadata-budget";
+        break;
+      }
       const imp = { name, library: dylibForOrdinal(image2, ordinal), ordinal, weak, addend, source: "chained-fixups", sites: [], chainedIndex: i };
       image2.imports.push(imp);
       parsed[i] = imp;
@@ -890,7 +923,15 @@
   }
   function parseClassicBindings(r, dc, image2, segments, source2, sharedBudget = null) {
     const budget = ensureMachOMetadataBudget(image2, sharedBudget);
-    if (!dc || !dc.size || dc.offset + dc.size > r.length) return null;
+    image2.metadata.dyldBindings ||= { complete: true, streams: {} };
+    if (!dc || !dc.size) return null;
+    if (dc.offset + dc.size > r.length) {
+      const invalid = { source: source2, complete: false, decodedBinds: 0, threadedApplies: 0, unsupportedOpcodes: [], partialReason: "truncated-range" };
+      image2.metadata.dyldBindings.complete = false;
+      image2.metadata.dyldBindings.streams[source2] = invalid;
+      image2.warnings.push(`${source2}: binding stream is truncated`);
+      return invalid;
+    }
     const BIND_OPCODE_MASK = 240, BIND_IMMEDIATE_MASK = 15;
     const ptrSize = image2.bits === 64 ? 8n : 4n;
     let p = dc.offset;
@@ -1082,7 +1123,13 @@
   }
   function parseExportTrie(r, dc, image2, sharedBudget = null) {
     const budget = ensureMachOMetadataBudget(image2, sharedBudget);
-    if (!dc || !dc.size || dc.offset + dc.size > r.length) return null;
+    if (!dc || !dc.size) return null;
+    if (dc.offset + dc.size > r.length) {
+      const invalid = { complete: false, nodes: 0, edges: 0, cycleDetected: false, budgetExceeded: false, partialReason: "truncated-range" };
+      image2.metadata.exportTrie = invalid;
+      image2.warnings.push("exports trie: payload is truncated");
+      return invalid;
+    }
     const base = dc.offset, end = dc.offset + dc.size;
     const active2 = /* @__PURE__ */ new Set();
     const status = { complete: true, nodes: 0, edges: 0, cycleDetected: false, budgetExceeded: false };
@@ -1309,12 +1356,14 @@
     let p = headerSize;
     for (let i = 0; i < ncmds; i++) {
       if (p + 8 > commandEnd) {
+        markMachOMetadataPartial(image2, "load-command-truncated");
         image2.warnings.push(`truncated load command ${i}`);
         break;
       }
       const cmd = r.u32(p);
       const cmdsize = r.u32(p + 4);
       if (cmdsize < 8 || p + cmdsize > commandEnd) {
+        markMachOMetadataPartial(image2, "load-command-invalid-size");
         image2.warnings.push(`invalid load command ${i} size ${cmdsize}`);
         break;
       }
@@ -1343,6 +1392,7 @@
         else if (cmd === LC_BUILD_VERSION && cmdsize >= 24) parseBuildVersion(r, p, image2);
       } catch (e) {
         if (e?.code === "BINARY_SOURCE_RANGE_MISSING") throw e;
+        markMachOMetadataPartial(image2, `load-command-0x${cmd.toString(16)}-parse-error`);
         image2.warnings.push(`load command 0x${cmd.toString(16)}: ${e.message}`);
       }
       p += cmdsize;
@@ -1513,6 +1563,7 @@
     const budget = ensureMachOMetadataBudget(image2, sharedBudget);
     const ent = bits === 64 ? 16 : 12;
     if (st.symoff + st.nsyms * ent > r.length || st.stroff + st.strsize > r.length) {
+      markMachOMetadataPartial(image2, "symbol-table-truncated");
       image2.warnings.push("Mach-O symbol table is truncated");
       return;
     }
@@ -6772,9 +6823,23 @@
   function statusReasons(value, prefix, out) {
     if (!value || typeof value !== "object") return;
     if (value.complete === false) out.push(`${prefix}:incomplete`);
+    if (value.importsComplete === false) out.push(`${prefix}:imports-incomplete`);
+    if (value.symbolsComplete === false) out.push(`${prefix}:symbols-incomplete`);
     if (value.bindingSitesComplete === false) out.push(`${prefix}:binding-sites-incomplete`);
-    if (value.partialReason) out.push(`${prefix}:${value.partialReason}`);
-    for (const reason of value.reasons || value.bindingSiteReasons || []) out.push(`${prefix}:${reason}`);
+    for (const reason of [value.partialReason, value.importsPartialReason, value.symbolsPartialReason, value.bindingSitesPartialReason]) {
+      if (reason) out.push(`${prefix}:${reason}`);
+    }
+    for (const reason of value.reasons || []) out.push(`${prefix}:${reason}`);
+    for (const reason of value.bindingSiteReasons || []) out.push(`${prefix}:${reason}`);
+  }
+  function dyldBindingReasons(value, out) {
+    if (!value || typeof value !== "object") return;
+    statusReasons(value, "dyld-bindings", out);
+    const streams = value.streams && typeof value.streams === "object" ? value.streams : value;
+    for (const [kind, status] of Object.entries(streams)) {
+      if (kind === "complete" || kind === "streams") continue;
+      statusReasons(status, `dyld-${kind}`, out);
+    }
   }
   function machoSymbolTruth(image2) {
     if (!image2 || image2.format !== "macho") return null;
@@ -6783,9 +6848,7 @@
     statusReasons(metadata.machoMetadata, "metadata-budget", reasons);
     statusReasons(metadata.chainedFixups, "chained-fixups", reasons);
     statusReasons(metadata.exportTrie, "export-trie", reasons);
-    if (metadata.dyldBindings && typeof metadata.dyldBindings === "object") {
-      for (const [kind, status] of Object.entries(metadata.dyldBindings)) statusReasons(status, `dyld-${kind}`, reasons);
-    }
+    dyldBindingReasons(metadata.dyldBindings, reasons);
     const unique = [...new Set(reasons)].slice(0, 64);
     return {
       source: "BinaryImage",

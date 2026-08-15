@@ -9,7 +9,7 @@
  * Everything here is read-only. Mutations (rename, comment) go through the
  * proposal path in interaction/proposals.js, never through a tool.
  */
-import { analyzeFunctionCached } from '../../analyze.js';
+import { analyzeFunctionCached, supportsArm64SemanticAnalysis } from '../../analyze.js';
 import { decompile, decompiledText } from '../../decompile.js';
 import { runtimeEvidenceForApp, runtimePlatformForApp, verifyAppHypothesis } from '../../runtime/app-runtime.js';
 import { functionNameOf, selectionOf } from './workbench.js';
@@ -47,26 +47,41 @@ function regionForAddress(app, address) {
 }
 
 /** Semantic model for one function, or null when it cannot be analysed. */
-export async function analyzeModelAt(app, address) {
+export async function analyzeModelAt(app, address, end = null, options = {}) {
   const addr = toBigInt(address);
   if (addr == null) return null;
+  const architecture = app.store.get('architecture') || app.store.get('capability')?.architecture || null;
+  if (!supportsArm64SemanticAnalysis(architecture)) return null;
   const region = regionForAddress(app, addr);
   if (!region || !app.store.get('canDisassemble')) return null;
   const sym = app.symbols;
   const fn = sym && sym.functionCount ? sym.functionAt(addr) : null;
   const start = fn ? fn.start : addr;
   if (!containsAddress(region, start)) return null;
-  const step=BigInt(instructionBytes(app));
-  if ((start-region.vmAddr)%step !== 0n) return null;
+  const step = BigInt(instructionBytes(app));
+  if (step !== 4n || (start - region.vmAddr) % step !== 0n) return null;
   const startRow = Number((start - region.vmAddr) / step);
   const totalRows = Number(region.size / step);
-  const endRow = fn && fn.end != null
-    ? Math.min(totalRows - 1, Number((fn.end - region.vmAddr) / step) - 1)
-    : Math.min(totalRows - 1, startRow + 2048);
+  const regionEnd = region.vmAddr + region.size;
+  const provenEnd = fn?.end == null ? null : toBigInt(fn.end);
+  const requestedEnd = toBigInt(end);
+  let boundedEnd = provenEnd;
+  if (requestedEnd != null) boundedEnd = boundedEnd == null ? requestedEnd : (requestedEnd < boundedEnd ? requestedEnd : boundedEnd);
+  if (boundedEnd == null) boundedEnd = start + 2048n * step;
+  if (boundedEnd > regionEnd) boundedEnd = regionEnd;
+  if (boundedEnd <= start) return null;
+  const endRow = Math.min(totalRows - 1, Number((boundedEnd - region.vmAddr + step - 1n) / step) - 1);
   if (endRow < startRow) return null;
+  const rawMax = Number(options?.maxInstructions);
+  if (Number.isFinite(rawMax) && Math.floor(rawMax) <= 0) return null;
+  const maxRows = Number.isFinite(rawMax) ? Math.max(1, Math.floor(rawMax)) : undefined;
+  const coversProvenEnd = provenEnd != null && provenEnd <= regionEnd && boundedEnd >= provenEnd;
   try {
-    const res = await analyzeFunctionCached(app.backend, region, startRow, endRow, sym);
-    return res && res.model ? res.model : null;
+    const res = await analyzeFunctionCached(app.backend, region, startRow, endRow, sym, null, { maxRows });
+    const model = res?.model;
+    if (!model) return null;
+    const incomplete = !coversProvenEnd || res.truncated === true || model.truncated === true;
+    return incomplete && model.truncated !== true ? { ...model, truncated: true } : model;
   } catch {
     return null;
   }
@@ -136,7 +151,7 @@ export function createHexAIContext(app) {
     getBinaryDiff: () => app.getBinaryDiff?.() || null,
 
     functionName: nameOf,
-    analyze: (address) => analyzeModelAt(app, address),
+    analyze: (address, end, options) => analyzeModelAt(app, address, end, options),
 
     async searchStrings(query, options = {}) {
       const limit = Math.max(1, Math.min(200, Number(options.limit) || 50));

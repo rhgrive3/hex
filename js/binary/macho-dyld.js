@@ -3,7 +3,11 @@ import { functionSeed } from './model.js';
 
 export function parseChainedImports(r,dc,image,sharedBudget=null){
   const budget=ensureMachOMetadataBudget(image,sharedBudget);
-  if (!dc.size || dc.offset + dc.size > r.length || dc.size < 28) return null;
+  if (!dc?.size || dc.offset + dc.size > r.length || dc.size < 28) {
+    image.metadata.chainedFixups = { complete:false, symbolsComplete:false, importsComplete:false, bindingSitesComplete:false, partialReason:'invalid-or-truncated-payload' };
+    image.warnings.push('chained-fixups payload is missing or truncated; results are partial');
+    return null;
+  }
   const base = dc.offset;
   const version = r.u32(base);
   const startsOffset = r.u32(base + 4);
@@ -12,7 +16,12 @@ export function parseChainedImports(r,dc,image,sharedBudget=null){
   const importsCount = r.u32(base + 16);
   const importsFormat = r.u32(base + 20);
   const symbolsFormat = r.u32(base + 24);
-  image.metadata.chainedFixups = { version, startsOffset, importsCount, importsFormat, symbolsFormat, complete: true, symbolsComplete: true };
+  const status = image.metadata.chainedFixups = { version, startsOffset, importsCount, importsFormat, symbolsFormat, complete:true, symbolsComplete:true, importsComplete:true };
+  if (version !== 0) {
+    status.complete=false; status.importsComplete=false; status.importsPartialReason='unsupported-version';
+    image.warnings.push(`chained-fixups version ${version} is not supported; results are partial`);
+    return null;
+  }
   if (symbolsFormat !== 0) {
     image.metadata.chainedFixups.complete = false;
     image.metadata.chainedFixups.symbolsComplete = false;
@@ -23,11 +32,11 @@ export function parseChainedImports(r,dc,image,sharedBudget=null){
   const importsBase = base + importsOffset;
   const stringsBase = base + symbolsOffset;
   const entrySize = importsFormat === 1 ? 4 : importsFormat === 2 ? 8 : importsFormat === 3 ? 16 : 0;
-  if (!entrySize) { image.warnings.push(`unknown chained import format ${importsFormat}`); return null; }
-  if (importsBase + importsCount * entrySize > base + dc.size) { image.warnings.push('chained imports are truncated'); return null; }
+  if (!entrySize) { status.complete=false; status.importsComplete=false; status.importsPartialReason='unsupported-import-format'; image.warnings.push(`unknown chained import format ${importsFormat}`); return null; }
+  if (importsOffset >= dc.size || symbolsOffset >= dc.size || importsBase + importsCount * entrySize > base + dc.size) { status.complete=false; status.importsComplete=false; status.importsPartialReason='truncated-import-table'; image.warnings.push('chained imports are truncated'); return null; }
   const parsed = [];
   for(let i=0;i<importsCount;i++){
-    if(!budget.take({inputBytes:entrySize,records:1,objects:1,operations:2,estimatedHeapBytes:224},'chained-import-record')){image.metadata.chainedFixups.importsComplete=false;image.metadata.chainedFixups.importsPartialReason='metadata-budget';break;}
+    if(!budget.take({inputBytes:entrySize,records:1,objects:1,operations:2,estimatedHeapBytes:224},'chained-import-record')){status.complete=false;status.importsComplete=false;status.importsPartialReason='metadata-budget';break;}
     const p = importsBase + i * entrySize;
     let ordinal, weak, nameOffset, addend = 0n;
     if (importsFormat === 1 || importsFormat === 2) {
@@ -44,10 +53,10 @@ export function parseChainedImports(r,dc,image,sharedBudget=null){
       addend = r.i64(p + 8);
     }
     const strp = stringsBase + nameOffset;
-    if (strp < base || strp >= base + dc.size) continue;
+    if (strp < base || strp >= base + dc.size) { status.complete=false;status.importsComplete=false;status.importsPartialReason ||= 'invalid-name-offset';continue; }
     const name = r.cstring(strp, base + dc.size - strp);
-    if (!name) continue;
-    if(!budget.take({stringBytes:name.length*2,estimatedHeapBytes:name.length*2+32},'chained-import-name'))break;
+    if (!name) { status.complete=false;status.importsComplete=false;status.importsPartialReason ||= 'invalid-import-name';continue; }
+    if(!budget.take({stringBytes:name.length*2,estimatedHeapBytes:name.length*2+32},'chained-import-name')){status.complete=false;status.importsComplete=false;status.importsPartialReason='metadata-budget';break;}
     const imp = { name, library: dylibForOrdinal(image, ordinal), ordinal, weak, addend, source: 'chained-fixups', sites: [], chainedIndex: i };
     image.imports.push(imp);
     parsed[i] = imp;
@@ -243,7 +252,13 @@ function decodeChainedPointer(raw, format) {
 
 export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=null){
   const budget=ensureMachOMetadataBudget(image,sharedBudget);
-  if (!dc || !dc.size || dc.offset + dc.size > r.length) return null;
+  image.metadata.dyldBindings ||= { complete:true, streams:{} };
+  if (!dc || !dc.size) return null;
+  if (dc.offset + dc.size > r.length) {
+    const invalid={source,complete:false,decodedBinds:0,threadedApplies:0,unsupportedOpcodes:[],partialReason:'truncated-range'};
+    image.metadata.dyldBindings.complete=false;image.metadata.dyldBindings.streams[source]=invalid;
+    image.warnings.push(`${source}: binding stream is truncated`);return invalid;
+  }
   const BIND_OPCODE_MASK = 0xf0, BIND_IMMEDIATE_MASK = 0x0f;
   const ptrSize = image.bits === 64 ? 8n : 4n;
   let p = dc.offset;
@@ -349,7 +364,11 @@ export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=nul
 
 export function parseExportTrie(r,dc,image,sharedBudget=null){
   const budget=ensureMachOMetadataBudget(image,sharedBudget);
-  if (!dc || !dc.size || dc.offset + dc.size > r.length) return null;
+  if (!dc || !dc.size) return null;
+  if (dc.offset + dc.size > r.length) {
+    const invalid={complete:false,nodes:0,edges:0,cycleDetected:false,budgetExceeded:false,partialReason:'truncated-range'};
+    image.metadata.exportTrie=invalid;image.warnings.push('exports trie: payload is truncated');return invalid;
+  }
   const base = dc.offset, end = dc.offset + dc.size;
   const active = new Set();
   const status = { complete: true, nodes: 0, edges: 0, cycleDetected: false, budgetExceeded: false };
