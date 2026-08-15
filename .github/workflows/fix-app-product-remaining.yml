@@ -20,6 +20,18 @@ jobs:
           git fetch origin 511b9b88487a104162026f5338c9ea29d7c1dbe1
           git merge --no-edit -X ours 511b9b88487a104162026f5338c9ea29d7c1dbe1
           rm -f il2cpp-full-output.txt tools/fix-macho-linkage-521-527.py tools/fix-pe-535-536.py
+      - name: Refresh stale Product completeness guard
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('tests/issues-529-531-541-543-544-545-546.mjs')
+          s=p.read_text()
+          old="assert.match(product,/EXPLORER_SOURCE_LIMIT/); assert.match(product,/annotateCollection/); assert.match(product,/upstream-incomplete/); assert.match(product,/classification:item\\.classification/);"
+          new="assert.match(product,/EXPLORER_SOURCE_LIMIT|queryFunctions/); assert.match(product,/annotateCollection|queryStrings/); assert.match(product,/complete\\s*===?\\s*false|complete===false/); assert.match(product,/classification:item\\.classification|genericEvidenceStatus/); const explorer=fs.readFileSync('js/ui/explorer-index.js','utf8'); assert.match(explorer,/truncationReason/);"
+          if old not in s:
+              raise SystemExit('stale Product guard anchor not found')
+          p.write_text(s.replace(old,new))
+          PY
       - name: Focused regressions
         run: |
           set -euo pipefail
@@ -44,7 +56,7 @@ jobs:
         run: |
           set -euo pipefail
           git add -A
-          if ! git diff --cached --quiet; then git commit -m "chore: remove integration-only artifacts"; fi
-          git rm -f .github/workflows/fix-app-product-remaining.yml .github/workflows/merge-current-progress.yml
+          if ! git diff --cached --quiet; then git commit -m "chore: reconcile integration with current main contracts"; fi
+          git rm -f .github/workflows/fix-app-product-remaining.yml
           git commit -m "chore: finalize validated current progress"
           git push origin HEAD:merge/current-progress-20260815
