@@ -11,33 +11,33 @@ Status values:
 - **Unsupported** — the implementation does not provide this stage.
 - **Unavailable** — the implementation exists, but a required runtime dependency such as the deployed decoder is unavailable.
 
-`level` is the furthest implemented stage. `fullySatisfiedLevel` is the highest cumulative stage with no known gap. This distinction is important for `arm64e` and partially mature formats.
+`level` is the highest **cumulative fully satisfied** maturity level. `implementedLevel` is the furthest stage with any current implementation, including partial implementation. A target never receives a higher maturity level by skipping an incomplete prerequisite.
 
 ## Architecture maturity
 
-| Architecture | Detect | Decode | Lift / exact effects | CFG + Semantic IR | SSA + MemorySSA | Types / interproc | Decompile | Runtime/debug/patch | Level | Fully satisfied |
+| Architecture | Detect | Decode | Lift / exact effects | CFG + Semantic IR | SSA + MemorySSA | Types / interproc | Decompile | Runtime/debug/patch | Maturity level | Implemented through |
 |---|---|---|---|---|---|---|---|---|---|---|
 | `arm64` | Supported | Supported | Supported | Supported | Supported | Supported | Supported | Partial | **A6** | **A6** |
-| `arm64e` | Supported | Supported | Partial | Partial | Partial | Partial | Partial | Partial | **A6 Partial** | **A1** |
+| `arm64e` | Supported | Supported | Partial | Partial | Partial | Partial | Partial | Partial | **A1** | **A6 Partial** |
 | `x86_64` | Supported | Supported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | **A1** | **A1** |
 | unknown | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | none | none |
 
 Important limitations:
 
-- `arm64e`: pointer-authentication data semantics remain partial. Downstream analysis therefore stays explicitly partial even though the ARM64 pipeline can process many functions.
+- `arm64e`: pointer-authentication data semantics remain partial. It therefore remains maturity **A1**, while partial semantic/CFG/SSA/decompiler implementation is recorded separately through A6.
 - `x86_64`: the deployed Capstone build can decode it, but Hex does **not** claim semantic lifting, CFG/Semantic IR, SSA/dataflow, or decompiler maturity for x86-64.
 - If the decoder is unavailable at runtime, a recognized architecture is downgraded to effective **A0 Detect** and all decoder-dependent implemented stages become `unavailable`.
 - `arm64` does not claim A7; runtime/debug/patch validation is only partial.
 
 ## Native format maturity
 
-| Format | Detect | Parse | Load / mapping | Imports / exports / relocations | Function / debug / unwind | Runtime / language metadata | Validated rebuild / patch | Level | Fully satisfied |
+| Format | Detect | Parse | Load / mapping | Imports / exports / relocations | Function / debug / unwind | Runtime / language metadata | Validated rebuild / patch | Maturity level | Implemented through |
 |---|---|---|---|---|---|---|---|---|---|
-| Mach-O | Supported | Supported | Supported | Supported | Partial | Partial | Unsupported | **F5 Partial** | **F3** |
-| ELF | Supported | Supported | Supported | Supported | Partial | Unsupported | Unsupported | **F4 Partial** | **F3** |
-| PE/PE+ | Supported | Supported | Supported | Supported | Partial | Unsupported | Unsupported | **F4 Partial** | **F3** |
+| Mach-O | Supported | Supported | Supported | Supported | Partial | Partial | Unsupported | **F3** | **F5 Partial** |
+| ELF | Supported | Supported | Supported | Supported | Partial | Unsupported | Unsupported | **F3** | **F4 Partial** |
+| PE/PE+ | Supported | Supported | Supported | Supported | Partial | Unsupported | Unsupported | **F3** | **F4 Partial** |
 
-The F4 rows are deliberately conservative. Current loaders/tests cover function-boundary and unwind/debug-related evidence to varying degrees, but this matrix does not claim complete universal DWARF/PDB/debug ingestion. F6 is unsupported because Hex does not yet provide validated format rebuild/patch semantics as defined by the Master Architecture.
+The format levels are deliberately conservative. Current loaders/tests cover function-boundary and unwind/debug-related evidence to varying degrees, but this matrix does not claim complete universal DWARF/PDB/debug ingestion. F6 is unsupported because Hex does not yet provide validated format rebuild/patch semantics as defined by the Master Architecture.
 
 ## Managed / VM frontends
 
