@@ -198,11 +198,36 @@ function __mappedDataAddress(slice, addr, codeRegion) {
   return false;
 }
 
+function __addressBitmap(region) {
+  const rows = Math.ceil(Number(region.size) / 4);
+  const bits = new Uint8Array(Math.ceil(rows / 8));
+  const indexOf = (addr) => {
+    if (addr == null || addr < region.vmAddr) return -1;
+    const delta = addr - region.vmAddr;
+    if (delta >= region.size || (delta & 3n)) return -1;
+    const index = Number(delta >> 2n);
+    return Number.isSafeInteger(index) ? index : -1;
+  };
+  return {
+    add(addr) {
+      const index = indexOf(addr);
+      if (index >= 0) bits[index >> 3] |= 1 << (index & 7);
+    },
+    has(addr) {
+      const index = indexOf(addr);
+      return index >= 0 && !!(bits[index >> 3] & (1 << (index & 7)));
+    },
+  };
+}
+
 async function __functionEvidence(region, slice, requestId) {
   const lo = region.vmAddr, hi = region.vmAddr + region.size;
   const imageBase = slice && slice.info ? slice.info.textVM : null;
-  const data = new Set(), structured = new Set(), unwind = new Set();
-  const directCalls = new Set(), branchTargets = new Set(), prologues = new Set(), terminalStarts = new Set();
+  const data = new Set(), structured = new Set();
+  const unwind = __addressBitmap(region);
+  const directCalls = __addressBitmap(region);
+  const prologues = __addressBitmap(region);
+  const terminalStarts = __addressBitmap(region);
 
   if (slice && imageBase != null) {
     const unwindRegion = (slice.regions || []).find((r) => r.section === '__unwind_info' && r.size > 0n);
@@ -268,21 +293,115 @@ async function __functionEvidence(region, slice, requestId) {
         const t = Words.branchImm26(w, pc);
         if (t != null && t >= lo && t < hi) directCalls.add(t);
       }
-      const bt = (Words.isCallImm(w) ? null : Words.branchImm26(w, pc)) ?? Words.condBranchTarget(w, pc);
-      if (bt != null && bt >= lo && bt < hi) branchTargets.add(bt);
       prevEnd = Words.looksLikeEnd(w);
     }
     pos += n * 4;
     await yieldToQueue();
   }
-  return { data, structured, unwind, directCalls, branchTargets, prologues, terminalStarts };
+  return { data, structured, unwind, directCalls, prologues, terminalStarts };
+}
+
+const __FUNCTION_DIRECT_BYTES = 24n * 1024n * 1024n;
+const __FUNCTION_CHUNK_BYTES = 8n * 1024n * 1024n;
+const __FUNCTION_CHUNK_OVERLAP = 1n * 1024n * 1024n;
+
+function __minBigInt(a, b) { return a < b ? a : b; }
+
+/*
+ * #555 bounds the legacy candidate collections to protect iPad-class devices.
+ * A single shared pool is intentionally fail-closed for adversarial dense code,
+ * but a normal 25–40 MiB __text can contain enough legitimate ret/branch
+ * boundaries to consume that pool even though each local neighbourhood is
+ * ordinary compiler output.  Process large code regions in overlapping 8 MiB
+ * windows so the same bounded algorithm can release its temporary JS objects
+ * between windows.  Only the non-overlap core contributes results, preserving
+ * one global 400k output cap without raising the per-window memory ceiling.
+ */
+async function __budgetedLegacyGuessFunctions(args) {
+  const region = regions.get(args.regionId);
+  if (!region || region.size <= __FUNCTION_DIRECT_BYTES) return __legacyGuessFunctions(args);
+  const slice = slices.find((s) => (s.regions || []).some((r) => r.id === args.regionId));
+  if (!slice) return __legacyGuessFunctions(args);
+
+  const cap = Math.min(Number(args.limit) || 400_000, 400_000);
+  const originalRegions = slice.regions;
+  const merged = new Set();
+  let incomplete = false;
+  let truncationReason = null;
+
+  try {
+    for (let coreStart = 0n; coreStart < region.size && merged.size < cap; coreStart += __FUNCTION_CHUNK_BYTES) {
+      if (cancelled(args.requestId)) return { starts: new BigUint64Array(0), cancelled: true };
+      const coreEnd = __minBigInt(region.size, coreStart + __FUNCTION_CHUNK_BYTES);
+      const scanStart = coreStart > __FUNCTION_CHUNK_OVERLAP ? coreStart - __FUNCTION_CHUNK_OVERLAP : 0n;
+      const scanEnd = __minBigInt(region.size, coreEnd + __FUNCTION_CHUNK_OVERLAP);
+      const temp = {
+        ...region,
+        id: region.id + ':fn:' + coreStart.toString(16),
+        fileOffset: region.fileOffset + scanStart,
+        vmAddr: region.vmAddr + scanStart,
+        size: scanEnd - scanStart,
+      };
+      regions.set(temp.id, temp);
+      slice.regions = [...originalRegions, temp];
+      let part;
+      try {
+        part = await __legacyGuessFunctions({ ...args, regionId: temp.id, limit: cap });
+      } finally {
+        regions.delete(temp.id);
+        slice.regions = originalRegions;
+      }
+      if (!part || part.cancelled) return part || { starts: new BigUint64Array(0), cancelled: true };
+
+      const lo = region.vmAddr + coreStart;
+      const hi = region.vmAddr + coreEnd;
+      for (const addr of part.starts || []) {
+        if (addr >= lo && addr < hi) merged.add(addr);
+        if (merged.size >= cap) break;
+      }
+      if (part.complete === false || part.capped) {
+        incomplete = true;
+        truncationReason ||= part.truncationReason || part.completeness?.reason || 'candidate-memory-budget';
+      }
+      await yieldToQueue();
+    }
+  } finally {
+    slice.regions = originalRegions;
+  }
+
+  const list = Array.from(merged).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  const starts = new BigUint64Array(list.length);
+  for (let i = 0; i < list.length; i++) starts[i] = list[i];
+  const outputCapped = merged.size >= cap;
+  const capped = outputCapped || incomplete;
+  const reason = outputCapped ? 'function-start-cap-reached' : truncationReason;
+  return {
+    starts,
+    cancelled: false,
+    capped,
+    truncated: capped,
+    complete: !capped,
+    cap,
+    truncationReason: reason,
+    completeness: {
+      complete: !capped,
+      reason,
+      discovered: list.length,
+      cap,
+      chunked: true,
+      addressRange: { regionId: args.regionId, vmAddr: region.vmAddr, size: region.size, complete: !capped },
+    },
+    __transfer: [starts.buffer],
+  };
 }
 
 /* Issue #288: a raw pointer into __text is candidate evidence, never proof of a
- * function boundary.  Keep metadata-derived starts only when a second,
- * independent signal confirms them. */
+ * function boundary. Keep metadata-derived starts only when a second,
+ * independent signal confirms them. A terminal boundary remains independent
+ * evidence even when another branch also targets the same entry; branch-target
+ * status must not negate stronger evidence. */
 guessFunctions = async function guessFunctionsHardened(args) {
-  const result = await __legacyGuessFunctions(args);
+  const result = await __budgetedLegacyGuessFunctions(args);
   if (!result || result.cancelled || !result.starts || !result.starts.length) return result;
   const region = regions.get(args.regionId);
   const slice = slices.find((s) => (s.regions || []).some((r) => r.id === args.regionId));
@@ -295,7 +414,7 @@ guessFunctions = async function guessFunctionsHardened(args) {
   for (const a of result.starts) {
     if (!ev.data.has(a)) { kept.push(a); continue; }
     const confirmed = ev.unwind.has(a) || ev.directCalls.has(a) || ev.structured.has(a) ||
-      ev.prologues.has(a) || (ev.terminalStarts.has(a) && !ev.branchTargets.has(a));
+      ev.prologues.has(a) || ev.terminalStarts.has(a);
     if (confirmed) kept.push(a);
     else filteredDataCandidates++;
   }

@@ -29,8 +29,21 @@ let seq = 1;
 
 function loadClassic(file, tail) {
   const src = fs.readFileSync(file, 'utf8');
+  if (!tail) {
+    /*
+     * Browser importScripts() evaluates classic scripts in one shared worker
+     * global lexical environment.  Wrapping every file in a fresh Function
+     * silently breaks that contract once worker.js is split across files:
+     * worker-fixes.js must see runSearch/regions/etc. from worker-legacy.js.
+     */
+    vm.runInThisContext(src, { filename: file });
+    return;
+  }
+
+  /* capstone.js is generated for Node too and needs CommonJS path globals.
+   * Keep only that generated bundle isolated, then export its one worker global. */
   const wrapper = vm.runInThisContext(
-    '(function(require,__dirname,__filename,module,exports){' + src + '\n' + (tail || '') + '\n})',
+    '(function(require,__dirname,__filename,module,exports){' + src + '\n' + tail + '\n})',
     { filename: file });
   const mod = { exports: {} };
   wrapper(require, path.dirname(file), file, mod, mod.exports);
@@ -77,6 +90,31 @@ function fileShim(p) {
       const s = buf.subarray(a, b);
       return { arrayBuffer: async () => s.buffer.slice(s.byteOffset, s.byteOffset + s.byteLength) };
     },
+  };
+}
+
+function logicalProgramScan(scan) {
+  if (!scan) return scan;
+  const callCount = Math.max(0, Math.min(
+    Number(scan.callCount ?? scan.callFrom?.length ?? 0),
+    scan.callFrom?.length ?? 0,
+    scan.callTo?.length ?? 0,
+  ));
+  const refCount = Math.max(0, Math.min(
+    Number(scan.refCount ?? scan.refFrom?.length ?? 0),
+    scan.refFrom?.length ?? 0,
+    scan.refTo?.length ?? 0,
+    scan.refKind?.length ?? Number.MAX_SAFE_INTEGER,
+  ));
+  return {
+    ...scan,
+    callFrom: scan.callFrom?.subarray(0, callCount) ?? scan.callFrom,
+    callTo: scan.callTo?.subarray(0, callCount) ?? scan.callTo,
+    refFrom: scan.refFrom?.subarray(0, refCount) ?? scan.refFrom,
+    refTo: scan.refTo?.subarray(0, refCount) ?? scan.refTo,
+    refKind: scan.refKind?.subarray(0, refCount) ?? scan.refKind,
+    callCount,
+    refCount,
   };
 }
 
@@ -162,7 +200,10 @@ export async function openBinary(file, opts) {
   }
 
   log('scan…');
-  const scan = await backend.scanProgram(region.id);
+  /* #554 returns capacity-backed typed arrays plus logical counts to avoid a
+     second full-size slice() allocation in the worker. Accuracy code must see
+     the logical edge set, not unused capacity slots. */
+  const scan = logicalProgramScan(await backend.scanProgram(region.id));
   const program = new ProgramIndex(scan, symbols, region);
 
   let strings = [];
