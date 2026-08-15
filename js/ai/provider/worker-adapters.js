@@ -1,6 +1,13 @@
 const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1/interactions';
 const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
 
+// Browser/runtime payloads are re-wrapped by the Worker (canonical system
+// prompt, final-result tool and provider-specific JSON). A conservative 2x
+// expansion bound plus fixed reserve prevents a browser-approved request from
+// becoming an oversized provider request after that transformation.
+export const PROVIDER_ENVELOPE_RESERVE_BYTES = 24 * 1024;
+export const PROVIDER_WIRE_EXPANSION_FACTOR = 2;
+
 export const TURN_PROTOCOL_INSTRUCTION = `Return exactly one tool call per turn. Call one supplied Hex read tool when more evidence is required, or call submit_hex_result when the answer is ready. Never invent a tool, address, evidence ID, symbol, or runtime fact.`;
 
 export function resolveInferenceAdapter(env = {}) {
@@ -9,6 +16,18 @@ export function resolveInferenceAdapter(env = {}) {
   if (requested === 'gemini') return geminiAdapter(env);
   if (env.GROQ_API_KEY && !env.GEMINI_API_KEY) return groqAdapter(env);
   return geminiAdapter(env);
+}
+
+export function clientSafeCapabilities(capabilities = {}) {
+  const upstreamMax = positiveNumber(capabilities.maxRequestBytes, 160000);
+  const safeClientMax = Math.max(4096, Math.floor((upstreamMax - PROVIDER_ENVELOPE_RESERVE_BYTES) / PROVIDER_WIRE_EXPANSION_FACTOR));
+  return {
+    ...capabilities,
+    maxRequestBytes: safeClientMax,
+    upstreamMaxRequestBytes: upstreamMax,
+    requestEnvelopeReserveBytes: PROVIDER_ENVELOPE_RESERVE_BYTES,
+    requestWireExpansionFactor: PROVIDER_WIRE_EXPANSION_FACTOR,
+  };
 }
 
 function geminiAdapter(env) {
@@ -67,5 +86,6 @@ function modelInput(payload) {
 }
 function toGeminiTool(tool) { return { type: 'function', name: tool.name, description: tool.description, parameters: tool.inputSchema }; }
 function toOpenAITool(tool) { return { type: 'function', function: { name: tool.name, description: tool.description, parameters: tool.inputSchema } }; }
-function numberOr(value, fallback) { const n = Number(value); return Number.isFinite(n) && n > 0 ? n : fallback; }
+function positiveNumber(value, fallback) { const n = Number(value); return Number.isFinite(n) && n > 0 ? n : fallback; }
+function numberOr(value, fallback) { return positiveNumber(value, fallback); }
 function nullableNumber(value) { const n = Number(value); return Number.isFinite(n) && n > 0 ? n : null; }
