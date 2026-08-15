@@ -1,0 +1,37 @@
+name: Guarded Swift grammar token patch
+
+on:
+  push:
+    branches:
+      - fix-open-issues-151-200-rebased
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix-open-issues-151-200-rebased
+      - name: Add only the known empty-tuple type token
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('js/swift.js')
+          text = p.read_text()
+          old = "const atoms = ['Ya', 'Ma', 'Mf', 'ML', 'Mn', 'vg', 'vs', 'fC', 'fD', 'K', 'F'];"
+          new = "const atoms = ['Ya', 'Ma', 'Mf', 'ML', 'Mn', 'vg', 'vs', 'fC', 'fD', 'K', 'F', 'y'];"
+          assert text.count(old) == 1, 'strict suffix grammar changed unexpectedly'
+          text = text.replace(old, new, 1)
+          p.write_text(text)
+          PY
+          rm .github/workflows/patch-swift-known-token.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add js/swift.js .github/workflows/patch-swift-known-token.yml
+          git diff --cached --check
+          git commit -m 'fix(swift): accept known empty-tuple mangling token'
+          git push origin HEAD:fix-open-issues-151-200-rebased
