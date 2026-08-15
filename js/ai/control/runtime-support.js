@@ -10,7 +10,7 @@ export function requiredScopeForTool(tool) {
 }
 export function wireMeta(request, controller, intent, sessionId = null) { return { sessionId, mode: request.mode, style: request.style, scope: controller.effectiveScope, requestedScope: request.scope, effectiveScope: controller.effectiveScope, intent, task: request.task || null, responseSchema: null }; }
 export function maxWireUsage(a, b) { return Object.fromEntries(Object.keys(a).map((key) => [key, Math.max(Number(a[key] || 0), Number(b[key] || 0))])); }
-export function memoryAnchor(snapshot, effectiveScope) { return { snapshotId: snapshot.id, binaryId: snapshot.binaryId, functionAddress: snapshot.currentFunction?.address || null, selection: snapshot.selection ? { start: snapshot.selection.start, end: snapshot.selection.end } : null, effectiveScope }; }
+export function memoryAnchor(snapshot, effectiveScope) { return { snapshotId: snapshot.id, binaryId: snapshot.binaryId, functionAddress: snapshot.currentFunction?.address || null, selection: snapshot.selection ? { start: snapshot.selection.start, end: snapshot.selection.end } : null, runtimeSessionId: snapshot.runtimeSessionIdentity || null, effectiveScope }; }
 export function sessionMatchesSnapshot(session, snapshot) {
   const sessionId = session.binaryId == null ? null : String(session.binaryId);
   const snapshotId = snapshot.binaryId == null ? null : String(snapshot.binaryId);
@@ -31,8 +31,10 @@ export function sessionMatchesSnapshot(session, snapshot) {
     else if (!sessionStrong && !snapshotStrong) binaryMatches = sameLegacy(sessionLegacy, snapshotLegacy);
     else binaryMatches = false;
   }
-  const projectMatches = session.projectId == null || snapshot.projectIdentity == null || String(session.projectId) === String(snapshot.projectIdentity);
-  return binaryMatches && projectMatches;
+  const projectMatches = session.projectId == null || (snapshot.projectIdentity != null && String(session.projectId) === String(snapshot.projectIdentity));
+  const priorRuntime = session.investigationMemory?.anchor?.runtimeSessionId ?? null;
+  const runtimeMatches = priorRuntime == null || (snapshot.runtimeSessionIdentity != null && String(priorRuntime) === String(snapshot.runtimeSessionIdentity));
+  return binaryMatches && projectMatches && runtimeMatches;
 }
 export function assertLiveBindingsUnchanged(local, snapshot) {
   const live = resolveBinaryIdentity(local, {});
@@ -42,11 +44,11 @@ export function assertLiveBindingsUnchanged(local, snapshot) {
   const same = sameId || (bothWeak && sameLegacy(live.legacyId, snapshot.legacyBinaryId));
   if (!same) throw new AIError('scope_violation', 'The binary changed while this AI turn was running; refusing to mix workbench states.');
   const liveProject = local.projectId ?? local.project?.id ?? local.project?.binaryHash ?? null;
-  if (snapshot.projectIdentity != null && liveProject != null && String(liveProject) !== String(snapshot.projectIdentity)) {
+  if (!sameNullableBinding(liveProject, snapshot.projectIdentity)) {
     throw new AIError('scope_violation', 'The project changed while this AI turn was running; refusing to mix workbench states.');
   }
   const liveRuntime = local.runtimeSession?.id ?? local.runtime?.sessionId ?? local.runtimeSessionId ?? null;
-  if (snapshot.runtimeSessionIdentity != null && liveRuntime != null && String(liveRuntime) !== String(snapshot.runtimeSessionIdentity)) {
+  if (!sameNullableBinding(liveRuntime, snapshot.runtimeSessionIdentity)) {
     throw new AIError('scope_violation', 'The runtime session changed while this AI turn was running; refusing to mix workbench states.');
   }
 }
@@ -74,3 +76,4 @@ function strongIdentity(identity, id) {
   return identity?.confidence === 'strong' && identity?.state === 'ready' && typeof value === 'string' && !value.startsWith('fallback:');
 }
 function sameLegacy(a, b) { return a != null && b != null && String(a) === String(b); }
+function sameNullableBinding(a, b) { return a == null && b == null || a != null && b != null && String(a) === String(b); }
