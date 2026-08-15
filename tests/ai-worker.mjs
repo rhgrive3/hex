@@ -23,11 +23,22 @@ globalThis.fetch = async (_url, options) => {
   return new Response(JSON.stringify({ steps: [{ type: 'function_call', name: 'submit_hex_result', arguments: { answer: 'safe answer', evidenceIds: [] } }] }), { status: 200, headers: { 'content-type': 'application/json' } });
 };
 try {
+  let acquired = 0, released = 0;
+  const quotaStub = {
+    async acquire() { acquired++; return { allowed: true, token: 'test-lease' }; },
+    async release(token) { assert.equal(token, 'test-lease'); released++; return { released: true }; },
+  };
   const response = await worker.fetch(new Request('https://example.test/api/ai/turn', {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ mode: 'chat', style: 'analyst', scope: 'auto', context: { request: { goal: 'What is ASLR?' } }, messages: [], tools: [] }),
-  }), { GEMINI_API_KEY: 'server-only', ASSETS: { fetch: () => new Response('asset') } });
+  }), {
+    GEMINI_API_KEY: 'server-only',
+    AI_QUOTA: { getByName: () => quotaStub },
+    ASSETS: { fetch: () => new Response('asset') },
+  });
   assert.equal(response.status, 200);
   assert.equal((await response.json()).decision.answer, 'safe answer');
+  assert.equal(acquired, 1);
+  assert.equal(released, 1);
 } finally { globalThis.fetch = originalFetch; }
 console.log('ai-worker: PASS');

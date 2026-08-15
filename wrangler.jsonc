@@ -1,11 +1,27 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "ida",
-  "main": "./worker.js",
+  "main": "./worker-entry.js",
   "compatibility_date": "2026-08-14",
   "assets": {
     "directory": ".",
     "binding": "ASSETS",
-    "run_worker_first": ["/api/*"]
+    "run_worker_first": [
+      "/api/*"
+    ]
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "AI_QUOTA",
+        "class_name": "AIQuota"
+      }
+    ]
+  },
+  "exports": {
+    "AIQuota": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    }
   }
 }
