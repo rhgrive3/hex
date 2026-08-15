@@ -67,7 +67,7 @@ assert.equal(hungResult.limits.reason, 'budget_exhausted');
 /* A model must not turn a real verified evidence ID into a verified arbitrary
    claim. Terminal deterministic hypotheses are also immutable to model upserts. */
 const truthEvidence = new EvidenceStore();
-const [verifiedEvidence] = truthEvidence.ingestPlan({
+const planEvidence = truthEvidence.ingestPlan({
   best: { address: 0x1000n },
   candidates: [{
     address: 0x1000n,
@@ -78,6 +78,8 @@ const [verifiedEvidence] = truthEvidence.ingestPlan({
     verification: { verified: true },
   }],
 });
+const verifiedEvidence = planEvidence.find((item) => item.kind === 'candidate-verification');
+assert.ok(verifiedEvidence, 'verified candidate verdict is emitted as its own evidence record');
 assert.equal(verifiedEvidence.status, 'verified');
 const hypotheses = new HypothesisStore(truthEvidence);
 const spoofed = hypotheses.upsert({
