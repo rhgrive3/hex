@@ -230,13 +230,16 @@ function hostBootstrap(bodyHtml, scopedCss, workerManifest) {
 
 function userscriptVersion() {
   try {
-    /* Generated bundles are committed so Cloudflare can serve them directly.
-       Excluding those files makes a rebuild on the generated commit produce
-       the exact same @version instead of creating an endless self-update. */
+    /* Only changes that can alter the installed userscript affect @version.
+       Workflow/test/docs commits therefore cannot create false bundle drift. */
     const stamp = execFileSync('git', [
-      'log', '-1', '--format=%ct', '--', '.',
-      ':(exclude)userscript/hex.user.template.js',
-      ':(exclude)userscript/platform-worker.bundle.js',
+      'log', '-1', '--format=%ct', '--',
+      'index.html',
+      'css',
+      'js',
+      'package.json',
+      'package-lock.json',
+      'scripts/build-userscript.mjs',
     ], { cwd: root, encoding: 'utf8' }).trim();
     if (/^\d+$/.test(stamp)) return `1.0.${stamp}`;
   } catch { /* deterministic fallback for source archives */ }
