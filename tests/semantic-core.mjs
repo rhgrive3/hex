@@ -166,11 +166,11 @@ asyncTest('field arithmetic feeding another field emits write and transfer facts
 });
 
 asyncTest('function summaries classify wrapper getter and setter', () => {
-  const wrapper = summarizeFunction(modelOf(['add x0, x0, #5', 'ret']));
+  const wrapper = summarizeFunction(modelOf(['add x0, x0, #5', 'ret']), { returnEvidence: true });
   ok(wrapper.classification.simpleArithmeticWrapper, 'simple add wrapper');
   eq(wrapper.returns[0].kind, 'argument-arithmetic');
 
-  const getter = summarizeFunction(modelOf(['ldr x0, [x0, #0x20]', 'ret']));
+  const getter = summarizeFunction(modelOf(['ldr x0, [x0, #0x20]', 'ret']), { returnEvidence: true });
   ok(getter.classification.getter, 'getter');
   const setter = summarizeFunction(modelOf(['str x2, [x0, #0x20]', 'ret']));
   ok(setter.classification.setter, 'setter');
