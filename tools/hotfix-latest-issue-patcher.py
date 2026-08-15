@@ -3,6 +3,20 @@ from pathlib import Path
 p = Path('tools/apply-latest-issue-fixes.py')
 s = p.read_text()
 
+# Latest main already contains a stricter #557 implementation (confirmed-only
+# verification, supported/contradicted/inconclusive handling, and source-confidence
+# caps). Do not overwrite that parallel fix with the older local variant.
+agent_start = s.find('# ---------------------------------------------------------------------------\n# #557 Agent verdict semantics')
+agent_end = s.find('# ---------------------------------------------------------------------------\n# #556/#554/#555 Worker provenance and bounded memory', agent_start)
+if agent_start < 0 or agent_end < 0:
+    raise SystemExit('hotfix: agent patch boundaries not found')
+s = s[:agent_start] + s[agent_end:]
+s = s.replace(
+    "  assert.equal(reason.supported, true);\n",
+    "  assert.equal(answer.reasons.some((x) => x.kind === 'runtime-supported' && x.verified === false), true);\n",
+    1,
+)
+
 # findXrefs does not currently propagate ADD-produced provenance to pair.rd, so the
 # original patcher tried to replace a block that does not exist. The preceding
 # replacement already converts its ADRP state to the shared path-aware contract.
