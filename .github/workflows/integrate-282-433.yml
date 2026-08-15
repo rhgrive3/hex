@@ -1,0 +1,82 @@
+name: Integrate remaining 282 433
+on:
+  push:
+    branches: [fix/all-remaining-issues-20260815]
+permissions:
+  contents: write
+jobs:
+  fix:
+    if: ${{ !contains(github.event.head_commit.message, '[autofix]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - name: Apply fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git fetch origin fix/issue-456-caller-completeness-v2:refs/remotes/origin/fix/issue-456-caller-completeness-v2
+          set +e
+          git merge --no-commit --no-ff origin/fix/issue-456-caller-completeness-v2
+          rc=$?
+          set -e
+          if [ $rc -ne 0 ]; then
+            git checkout --ours js/report-legacy.js || true
+            git add js/report-legacy.js || true
+            git checkout --ours tests/issue-456-report-completeness.mjs 2>/dev/null || true
+            git add tests/issue-456-report-completeness.mjs 2>/dev/null || true
+            test -z "$(git diff --name-only --diff-filter=U)" || { echo 'unresolved:'; git diff --name-only --diff-filter=U; exit 1; }
+          fi
+          git commit -m 'fix: preserve ProgramIndex query completeness for #282'
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('js/runtime/index.js'); s=p.read_text()
+          old="""      const resolved = await resolveFunction({ functionAddress, fingerprint:original.functionFingerprint || source.functionFingerprint || null, sourceBinaryHash:sourceHash, targetBinaryHash:targetHash });
+                if (resolved == null) return { status:'unsupported', reason:'function-re-resolution-failed', sourceHash, targetHash, evidence:[] };
+                functionAddress = asAddress(resolved.address ?? resolved);"""
+          new="""      const resolved = await resolveFunction({ functionAddress, fingerprint:original.functionFingerprint || source.functionFingerprint || null, sourceBinaryHash:sourceHash, targetBinaryHash:targetHash });
+                if (resolved == null) return { status:'unsupported', reason:'function-re-resolution-failed', sourceHash, targetHash, evidence:[] };
+                const confidence = Number(resolved && typeof resolved === 'object' ? (resolved.identityConfidence ?? resolved.confidence ?? resolved.score) : NaN);
+                const margin = Number(resolved && typeof resolved === 'object' ? (resolved.ambiguityMargin ?? resolved.margin) : NaN);
+                const accepted = !!(resolved && typeof resolved === 'object' && resolved.accepted === true);
+                const ambiguous = !!(resolved && typeof resolved === 'object' && resolved.ambiguous === true);
+                if (!accepted || !Number.isFinite(confidence) || confidence < 0.85 || ambiguous || (Number.isFinite(margin) && margin < 0.10)) {
+                  return { status:'unsupported', reason:'function-re-resolution-ambiguous', sourceHash, targetHash, confidence:Number.isFinite(confidence)?confidence:null, ambiguityMargin:Number.isFinite(margin)?margin:null, evidence:[] };
+                }
+                functionAddress = asAddress(resolved.address);"""
+          if new not in s:
+            if old not in s: raise SystemExit('runtime replay anchor changed')
+            s=s.replace(old,new,1); p.write_text(s)
+          PY
+          cat > tests/issue-433-runtime-replay.mjs <<'EOF'
+          import assert from 'node:assert/strict';
+          import { RuntimeAnalysisPlatform } from '../js/runtime/index.js';
+          const platform=Object.create(RuntimeAnalysisPlatform.prototype);
+          platform.options={}; platform.currentSession=()=>({binaryHash:'target'});
+          platform.runExperiment=async experiment=>({status:'ran',experiment});
+          const recording={binaryHash:'source',experiment:{id:'e',functionAddress:0x1000n,cases:[]}};
+          let r=await platform.replayExperiment(recording,{resolveFunction:async()=>0x2000n});
+          assert.equal(r.reason,'function-re-resolution-ambiguous');
+          r=await platform.replayExperiment(recording,{resolveFunction:async()=>({address:0x2000n,accepted:true,confidence:.7,ambiguityMargin:.4})}); assert.equal(r.status,'unsupported');
+          r=await platform.replayExperiment(recording,{resolveFunction:async()=>({address:0x2000n,accepted:true,confidence:.95,ambiguityMargin:.02})}); assert.equal(r.status,'unsupported');
+          r=await platform.replayExperiment(recording,{resolveFunction:async()=>({address:0x2000n,accepted:true,confidence:.95,ambiguityMargin:.3})}); assert.equal(r.status,'ran'); assert.equal(r.experiment.functionAddress,0x2000n);
+          console.log('issue #433 replay trust passed');
+          EOF
+          git add js/runtime/index.js tests/issue-433-runtime-replay.mjs
+          git commit -m 'fix: fail closed on ambiguous cross-binary replay #433'
+      - name: Validate
+        run: |
+          node tests/issue-456-report-completeness.mjs
+          node tests/issue-433-runtime-replay.mjs
+          node tests/run.js
+          npm run check
+      - name: Finalize
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm .github/workflows/integrate-282-433.yml
+          git commit -m 'chore: finalize #282 #433 fixes [autofix]'
+          git push origin HEAD:fix/all-remaining-issues-20260815
