@@ -1,0 +1,64 @@
+name: Verify binary trust boundaries 461 and 463 on latest main
+
+on:
+  push:
+    branches:
+      - fix/latest-463-461-binary-boundaries-v2
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/latest-463-461-binary-boundaries-v2
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Confirm owned parser paths were untouched on main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin fix/latest-463-461-binary-boundaries main
+          BASE=a24ee30c1907ec6137d94358fba559ec0ad38d9f
+          git diff --quiet "$BASE"..origin/main -- js/binary/macho.js js/binary/pe.js || {
+            echo 'Parser paths changed on main; refusing blind replay.' >&2
+            git diff --name-only "$BASE"..origin/main -- js/binary/macho.js js/binary/pe.js
+            exit 1
+          }
+      - name: Replay verified parser source onto latest main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout origin/fix/latest-463-461-binary-boundaries -- \
+            js/binary/macho.js js/binary/pe.js tests/issues-461-463-binary.mjs
+          node - <<'NODE'
+          const fs = require('fs');
+          const p = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          const t = 'node tests/issues-461-463-binary.mjs';
+          if (!p.scripts['binary:test'].includes(t)) p.scripts['binary:test'] = `${t} && ${p.scripts['binary:test']}`;
+          fs.writeFileSync('package.json', JSON.stringify(p, null, 2) + '\n');
+          NODE
+      - name: Focused regressions
+        run: node tests/issues-461-463-binary.mjs
+      - name: Binary regressions
+        run: npm run binary:test
+      - name: Static checks
+        run: |
+          node --check js/binary/macho.js
+          node --check js/binary/pe.js
+          npm run lint
+      - name: Commit verified source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add js/binary/macho.js js/binary/pe.js tests/issues-461-463-binary.mjs package.json
+          git commit -m "fix: enforce Mach-O command and PE entrypoint boundaries (#461 #463)"
+          git push origin HEAD:fix/latest-463-461-binary-boundaries-v2
