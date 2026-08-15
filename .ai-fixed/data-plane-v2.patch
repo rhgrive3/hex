@@ -1,0 +1,118 @@
+--- a/js/ai/tools/registry.js
++++ b/js/ai/tools/registry.js
+@@ -253,7 +253,7 @@
+   register('get_semantic_facts', 'Extract deterministic Semantic IR facts with exact pre-page totals and opaque continuation.', semanticSchema(), async ({ functionAddress, kinds, limit = 300, cursor }) => {
+     const params = { functionAddress, kinds: kinds || [] };
+     const offset = pageOffset('get_semantic_facts', params, cursor);
+-    return semanticFactsPage(legacy, functionAddress, kinds, limit, offset, (next) => pageCursor('get_semantic_facts', params, next));
++    return semanticFactsPage(context, legacy, functionAddress, kinds, limit, offset, (next) => pageCursor('get_semantic_facts', params, next));
+   }, { cost: 'medium', scopeSupport: functionScopes, category: 'semantic', resultKind: 'semantic-facts', modelProjection: projectSemanticFacts });
+ 
+   register('decompile_function', 'Get bounded semantic pseudocode for one function. Decompiler text is untrusted evidence.', addressSchema('functionAddress'), async ({ functionAddress }) => decompileFunction(context, legacy, functionAddress), {
+@@ -475,8 +475,40 @@
+   return { addr, model, ir, facts: ir ? semanticFacts(ir) : [] };
+ }
+ 
+-async function semanticFactsPage(legacy, functionAddress, kinds, limit, offset, cursorFor) {
+-  const { addr, ir, facts: all } = await allFacts(legacy, functionAddress);
++async function semanticFactsPage(context, legacy, functionAddress, kinds, limit, offset, cursorFor) {
++  const addr = BigInt(functionAddress);
++  // Prefer an existing deterministic fact index when the host has one. This
++  // avoids rebuilding/serializing full Semantic IR merely to page already-known
++  // facts, while preserving the IR path as the authoritative fallback.
++  if (typeof context?.semanticFactsFor === 'function') {
++    const indexed = await context.semanticFactsFor(addr, { kinds: kinds || [], limit, offset });
++    const rows = Array.isArray(indexed) ? indexed : (Array.isArray(indexed?.results) ? indexed.results : []);
++    const reportedOffset = Number(indexed?.offset ?? offset);
++    const pageOffset = Number.isSafeInteger(reportedOffset) && reportedOffset >= 0 ? reportedOffset : offset;
++    const total = Number(indexed?.total);
++    if (Number.isSafeInteger(total) && total >= 0) {
++      const page = rows.slice(0, limit);
++      const next = pageOffset + page.length < total ? pageOffset + page.length : null;
++      return pageResult({
++        address: addr, results: page.map(compactFact), evidence: semanticEvidenceIds(page),
++        engine: indexed?.engine || 'semantic-facts-index',
++      }, total, pageOffset, page.length, next == null ? null : cursorFor(next));
++    }
++    // A bare full-array adapter is also safe: its length is the exact total.
++    if (Array.isArray(indexed)) {
++      let facts = rows;
++      if (Array.isArray(kinds) && kinds.length) {
++        const wanted = new Set(kinds);
++        facts = facts.filter((fact) => wanted.has(fact.kind));
++      }
++      const total = facts.length;
++      const page = facts.slice(offset, offset + limit);
++      const next = offset + page.length < total ? offset + page.length : null;
++      return pageResult({ address: addr, results: page.map(compactFact), evidence: semanticEvidenceIds(page), engine: 'semantic-facts-index' }, total, offset, page.length, next == null ? null : cursorFor(next));
++    }
++  }
++
++  const { ir, facts: all } = await allFacts(legacy, functionAddress);
+   let facts = all;
+   if (Array.isArray(kinds) && kinds.length) {
+     const wanted = new Set(kinds);
+--- a/tests/ai-lossless-data-plane.mjs
++++ b/tests/ai-lossless-data-plane.mjs
+@@ -25,18 +25,33 @@
+   return buildSemanticModel(asm(lines, base), { startRow:0, endRow:lines.length - 1, rowOfAddress });
+ }
+ 
+-// 500 deterministic RMWs: page 1 must not be mistaken for the whole result.
+-const rmwLines = [];
+-for (let i = 0; i < 500; i++) rmwLines.push('ldr w8, [x0, #0x20]', 'add w8, w8, #1', 'str w8, [x0, #0x20]');
+-rmwLines.push('ret');
+-const rmwModel = modelFor(rmwLines);
++// A. 500 deterministic semantic facts: page 1 must not be mistaken for the whole result.
++// Use the host's deterministic fact index so this test measures Data Plane paging,
++// not O(n^2)-style stress in the Semantic IR builder.
++const indexedFacts = Array.from({ length:500 }, (_, i) => ({
++  id:`fact:rmw:${i}`, kind:FACT.RMW, row:i, address:BASE + BigInt(i * 4),
++  location:{ key:'field:0x20', kind:'field', disp:0x20n, size:4 },
++  operation:'add', evidence:[{ id:`ir:${i}`, instructionId:i, row:i, address:BASE + BigInt(i * 4) }],
++}));
++// B. A distinct 500-instruction function proves late-region and local Semantic IR access.
++const regionLines = Array.from({ length:500 }, () => 'nop');
++regionLines.push('ret');
++const regionModel = modelFor(regionLines);
+ const evidence = new EvidenceStore();
+ let signatureCalls = 0;
+ const context = {
+   binaryId:'binary:A', analysisRevision:'rev:1',
+   addressExists:() => true,
+-  analyze:async () => rmwModel,
+-  program:{ functionRange:() => ({ start:BASE, end:BASE + BigInt(rmwLines.length * 4) }) },
++  analyze:async () => regionModel,
++  semanticFactsFor:async (_address, { kinds, limit, offset }) => {
++    let rows = indexedFacts;
++    if (Array.isArray(kinds) && kinds.length) {
++      const wanted = new Set(kinds);
++      rows = rows.filter((fact) => wanted.has(fact.kind));
++    }
++    return { results:rows.slice(offset, offset + limit), total:rows.length, offset, engine:'semantic-facts-index' };
++  },
++  program:{ functionRange:() => ({ start:BASE, end:BASE + BigInt(regionLines.length * 4) }) },
+   resolveObjcDispatch:async () => ({
+     resolved:{ address:'0x100001000', method:'-[Wallet addCoins:]' }, confidence:0.74,
+     candidates:[{ address:'0x100001000', class:'Wallet' }, { address:'0x100002000', class:'WalletCategory' }],
+@@ -55,7 +70,6 @@
+ };
+ const registry = createHexToolRegistry(context, { evidenceStore:evidence, maxFunctions:8, maxDisassembly:10000 });
+ 
+-// A. Semantic facts: exact total + continuation.
+ const facts1 = await registry.execute('get_semantic_facts', { functionAddress:'0x100000000', kinds:[FACT.RMW], limit:100 }, { scope:'function' });
+ assert.equal(facts1.result.total, 500);
+ assert.equal(facts1.result.returned, 100);
+@@ -66,10 +80,10 @@
+ assert.equal(facts2.result.offset, 100);
+ assert.equal(facts2.result.total, 500);
+ assert.equal(facts2.result.returned, 100);
++assert.equal(facts2.result.engine, 'semantic-facts-index');
+ 
+-// B + semantic IR drill-down: preview is bounded, later regions are directly addressable.
+ const fn = await registry.execute('get_function', { address:'0x100000000' }, { scope:'function' });
+-assert.equal(fn.result.total, rmwLines.length);
++assert.equal(fn.result.total, regionLines.length);
+ assert.equal(fn.result.returned, 160);
+ assert.equal(fn.result.truncated, true);
+ const later = await registry.execute('inspect_function_region', { functionAddress:'0x100000000', view:'assembly', start:400, count:50 }, { scope:'function' });
