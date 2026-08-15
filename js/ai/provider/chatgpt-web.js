@@ -145,19 +145,30 @@ function normalizeSmartJSONQuotes(text) {
   let output = '';
   let inSmartString = false;
   let nestedSmartQuotes = 0;
+  let smartEscaped = false;
   let inAsciiString = false;
-  let escaped = false;
+  let asciiEscaped = false;
 
   for (const char of String(text)) {
     if (inAsciiString) {
       output += char;
-      if (escaped) { escaped = false; continue; }
-      if (char === '\\') { escaped = true; continue; }
+      if (asciiEscaped) { asciiEscaped = false; continue; }
+      if (char === '\\') { asciiEscaped = true; continue; }
       if (char === '"') inAsciiString = false;
       continue;
     }
 
     if (inSmartString) {
+      if (smartEscaped) {
+        output += char;
+        smartEscaped = false;
+        continue;
+      }
+      if (char === '\\') {
+        output += char;
+        smartEscaped = true;
+        continue;
+      }
       if (char === '\u201c') {
         nestedSmartQuotes++;
         output += char;
@@ -173,10 +184,8 @@ function normalizeSmartJSONQuotes(text) {
         }
         continue;
       }
-      if (char === '\\') {
-        output += '\\\\';
-        continue;
-      }
+      /* ASCII quotes inside a smart-delimited string are content, not JSON
+         delimiters. Escape them so the repaired JSON stays lossless. */
       if (char === '"') {
         output += '\\"';
         continue;
@@ -189,6 +198,7 @@ function normalizeSmartJSONQuotes(text) {
       output += '"';
       inSmartString = true;
       nestedSmartQuotes = 0;
+      smartEscaped = false;
       continue;
     }
     if (char === '"') inAsciiString = true;
