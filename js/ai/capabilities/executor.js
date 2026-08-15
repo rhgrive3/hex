@@ -100,7 +100,7 @@ export class CapabilityExecutor {
   }
 }
 
-function validAuthorization(value) { return value?.kind === 'proposal' && typeof value.token === 'string' && value.token.length >= 16; }
+function validAuthorization(value) { return value?.kind === 'proposal' && typeof value.token === 'string' && value.token.length >= 8; }
 function runtimeAdapter(platform) { const session = platform?.currentSession?.(); if (!session?.adapter) throw new AIError('tool_failed', 'Runtime adapter is unavailable.'); return session.adapter; }
 function runtimeStatus(platform) { const session = platform?.currentSession?.(false); return session ? { connected: !!session.adapter?.connected, sessionId: session.id, binaryId: session.binaryHash || null, backend: session.backend, capabilities: session.adapter?.capabilities || {} } : { connected: false, sessionId: null }; }
 

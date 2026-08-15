@@ -49,7 +49,10 @@ export function createAiEngine(app, options = {}) {
     proposals: () => (core && core.proposalStore) || null,
     capabilities: () => capabilityCatalog.list(capabilityExecutor.context()),
     capabilityExecutor,
-    proposalExecutor: () => core?.proposalStore ? createProposalExecutor({ store: core.proposalStore, capabilityExecutor, app }) : null,
+    proposalExecutor: (store = null) => {
+      const target = store || core?.proposalStore || null;
+      return target ? createProposalExecutor({ store: target, capabilityExecutor, app }) : null;
+    },
     async run(input) {
       const { question, mode, style, scope, signal, onActivity, context } = input;
       const conversationKey = input.conversationId == null ? null : String(input.conversationId);

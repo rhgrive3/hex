@@ -117,7 +117,10 @@ export function installAssistant(app, ui) {
 
   /* ── proposals ────────────────────────────────────────── */
   async function applyProposal(proposal) {
-    const executor = engine.proposalExecutor?.();
+    // `proposals()` is an established UI/test integration seam. Pass the
+    // currently exposed store explicitly so custom persistence adapters keep
+    // the same approval semantics as AIRuntime-owned stores.
+    const executor = engine.proposalExecutor?.(engine.proposals?.());
     if (!executor) throw new Error(pick('提案を適用できる状態ではありません。', 'No proposal executor is available.'));
     await executor.approveAndApply(proposal.id);
     toast(pick('変更を適用しました', 'Change applied'));
