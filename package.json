@@ -30,7 +30,7 @@
     "binary:source-test": "node tests/universal-binary-source.mjs && node tests/binary-platform.mjs",
     "binary:gate": "node tests/universal-binary-gate.mjs",
     "binary:benchmark": "node tests/universal-binary-benchmark.mjs",
-    "ai:test": "node tests/ai-quota.mjs && node tests/ai-worker.mjs && node tests/ai-prompt-compose.mjs && node tests/ai-ui-mode.mjs && node tests/ai-ui-evidence.mjs && node tests/issue-467-ai-context.mjs",
+    "ai:test": "node tests/ai-quota.mjs && node tests/ai-worker.mjs && node tests/ai-prompt-compose.mjs && node tests/ai-ui-mode.mjs && node tests/ai-ui-evidence.mjs && node tests/issue-467-ai-context.mjs && node tests/ai-control-plane.mjs && node tests/ai-scope-hardening.mjs",
     "ai:browser": "node tests/ai-ui-launcher.mjs && node tests/ai-ui-panel.mjs && node tests/ai-ui-proposal.mjs && node tests/ai-ui-fallback.mjs && node tests/ai-ui-core-integration.mjs"
   }
 }

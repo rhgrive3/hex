@@ -30,17 +30,32 @@ function fixedRows(app) {
 function instructionBytes(app) {
   return Math.max(1, Number(app.store.get('instructionAlignment') || app.store.get('capability')?.instructionAlignment || 4));
 }
+function containsAddress(region, addr) {
+  try { return !!region && region.size > 0n && addr >= region.vmAddr && addr < region.vmAddr + region.size; } catch { return false; }
+}
+function regionForAddress(app, address) {
+  const addr = toBigInt(address);
+  if (addr == null) return null;
+  // Keep the fast path for the currently displayed region, but never require it:
+  // a TurnSnapshot may still be analysing function A after the UI navigates to
+  // function B in another executable region of the same binary.
+  let current = null;
+  try { current = app.codeRegion?.() || app.store.get('currentRegion'); } catch { current = app.store.get('currentRegion'); }
+  if (containsAddress(current, addr)) return current;
+  const matches = (app.store.get('regions') || []).filter((region) => containsAddress(region, addr));
+  return matches.find((region) => region.exec === true) || matches.find((region) => region.exec !== false) || matches[0] || null;
+}
 
 /** Semantic model for one function, or null when it cannot be analysed. */
 export async function analyzeModelAt(app, address) {
   const addr = toBigInt(address);
   if (addr == null) return null;
-  const region = app.codeRegion?.() || app.store.get('currentRegion');
+  const region = regionForAddress(app, addr);
   if (!region || !app.store.get('canDisassemble')) return null;
   const sym = app.symbols;
   const fn = sym && sym.functionCount ? sym.functionAt(addr) : null;
   const start = fn ? fn.start : addr;
-  if (start < region.vmAddr || start >= region.vmAddr + region.size) return null;
+  if (!containsAddress(region, start)) return null;
   const step=BigInt(instructionBytes(app));
   if ((start-region.vmAddr)%step !== 0n) return null;
   const startRow = Number((start - region.vmAddr) / step);
@@ -78,11 +93,10 @@ function selectionContext(app) {
 }
 
 /**
- * Build the capability object the AI core expects.
- *
- * Live getters, not a snapshot: the user keeps navigating while a turn runs,
- * and a stale "current function" is the fastest way to produce a confident
- * answer about the wrong code.
+ * Build the live capability object the AI core consumes. AIRuntime creates an
+ * immutable TurnSnapshot from these getters at user-turn start; capability
+ * methods below therefore accept explicit addresses and must not depend on the
+ * workbench's subsequently selected function/region.
  */
 export function createHexAIContext(app) {
   const nameOf = (addr) => functionNameOf(app, addr);
@@ -94,6 +108,8 @@ export function createHexAIContext(app) {
     },
     get symbols() { return app.symbols; },
     get program() { return app.program; },
+    get knowledge() { return app.knowledge || null; },
+    get functions() { return (app.recognition?.records || []).map((item)=>item.fingerprint).filter(Boolean).slice(0,5000); },
     get strings() { return app.stringIndex || []; },
     get candidateFunctions() {
       const ranked=app.recognition?.records;
@@ -112,11 +128,12 @@ export function createHexAIContext(app) {
     },
     get selection() { return selectionContext(app); },
     get project() {
-      return {
-        names: app.notes ? app.notes.nameEntries().slice(0, 400) : [],
-        lastGoal: app.lastGoal ? app.lastGoal.text : null,
+      return app.workspace?.project || app.activeProject || {
+        binary:null,user:{names:app.notes?app.notes.nameEntries().slice(0,400):[]},navigation:{lastQuery:app.lastGoal?.text||null},
       };
     },
+    get binaryDiff() { return app.getBinaryDiff?.() || null; },
+    getBinaryDiff: () => app.getBinaryDiff?.() || null,
 
     functionName: nameOf,
     analyze: (address) => analyzeModelAt(app, address),
@@ -136,23 +153,36 @@ export function createHexAIContext(app) {
       return out;
     },
 
-    searchFunctions(query, options = {}) {
+    async searchFunctions(query, options = {}) {
       const limit = Math.max(1, Math.min(200, Number(options.limit) || 40));
+      const q = String(query || '').toLowerCase();
+      try { await app.ensureRecognition?.({maxFunctions:350000,knowledgeLimit:512}); } catch { /* fallback below */ }
+      const ranked=app.recognition?.records || [];
+      if(ranked.length){
+        const out=[]; let matches=0;
+        for(const item of ranked){
+          const name=String(item.name||item.originalName||'');
+          const cls=String(item.classification||'');
+          const knowledge=(item.knowledge?.names||[]).concat(item.knowledge?.roles||[]).join(' ');
+          if(q && !(`${name} ${cls} ${knowledge}`.toLowerCase().includes(q)))continue;
+          matches++; if(out.length<limit)out.push({addr:item.address,name:name||null,score:item.score||0,classification:item.classification,confidence:item.confidence,knowledge:item.knowledge||null});
+        }
+        out.complete=app.recognition.complete===true && matches<=limit;
+        out.scannedCount=app.recognition.scannedCount;out.total=app.recognition.total;out.matchCount=matches;
+        out.truncationReason=app.recognition.complete!==true?(app.recognition.truncationReason||'recognition-incomplete'):matches>limit?'result-limit':null;
+        out.coverage=app.recognition.total?app.recognition.scannedCount/app.recognition.total:1;
+        return out;
+      }
       const sym = app.symbols;
       if (!sym || !Array.isArray(sym.names)) return [];
-      const q = String(query || '').toLowerCase();
-      const maxScan=Math.min(sym.names.length,1_000_000), out=[];
-      let matches=0;
+      const maxScan=Math.min(sym.names.length,1_000_000), out=[]; let matches=0;
       for (let i = 0; i < maxScan; i++) {
         const name = String(sym.names[i] || '');
         if (q && !name.toLowerCase().includes(q)) continue;
-        matches++;
-        if(out.length<limit) out.push({ addr: sym.addrs[i], name });
+        matches++; if(out.length<limit) out.push({ addr: sym.addrs[i], name });
       }
-      out.complete=maxScan===sym.names.length && matches<=limit;
-      out.scannedCount=maxScan; out.total=sym.names.length; out.matchCount=matches;
-      out.truncationReason=maxScan<sym.names.length?'scan-budget':matches>limit?'result-limit':null;
-      out.coverage=sym.names.length?maxScan/sym.names.length:1;
+      out.complete=maxScan===sym.names.length && matches<=limit; out.scannedCount=maxScan;out.total=sym.names.length;out.matchCount=matches;
+      out.truncationReason=maxScan<sym.names.length?'scan-budget':matches>limit?'result-limit':null;out.coverage=sym.names.length?maxScan/sym.names.length:1;
       return out;
     },
 
@@ -174,6 +204,12 @@ export function createHexAIContext(app) {
       return { ...result, candidates: (result.candidates || []).slice(0, 32), requirements: (result.requirements || []).slice(0, 32) };
     },
 
+    async resolveSwiftDispatch(call = {}) {
+      try { await app.ensureSwift?.(); } catch { /* Swift metadata is optional */ }
+      const result=app.resolveSwiftCall?.(call) || {resolved:null,candidates:[],confidence:0,reason:'swift-runtime-unavailable'};
+      return { ...result, candidates:(result?.candidates||[]).slice(0,32), requirements:(result?.requirements||[]).slice(0,32), complete:result?.complete!==false && app.swiftModel?.complete!==false };
+    },
+
     pseudocodeFor(address, model) {
       if (!model || !fixedRows(app)) return null;
       try { return decompiledText(pseudocode(app, model, toBigInt(address), nameOf)); } catch { return null; }
@@ -183,7 +219,7 @@ export function createHexAIContext(app) {
       const addr = toBigInt(address);
       if (addr == null) return false;
       for (const region of app.store.get('regions') || []) {
-        if (region.size > 0n && addr >= region.vmAddr && addr < region.vmAddr + region.size) return true;
+        if (containsAddress(region, addr)) return true;
       }
       return false;
     },
@@ -216,15 +252,18 @@ function safeCurrentFunction(app) {
 }
 
 function pseudocode(app, model, addr, nameOf) {
-  const region = app.store.get('currentRegion');
+  const region = regionForAddress(app, addr);
   return decompile(model, {
     name: nameOf(addr),
     addr,
-    rowOfAddress: (a) => (region && a != null ? Number((a - region.vmAddr) / BigInt(instructionBytes(app))) : null),
+    rowOfAddress: (a) => (region && a != null && containsAddress(region, a) ? Number((a - region.vmAddr) / BigInt(instructionBytes(app))) : null),
     addrOfRow: (row) => (region ? region.vmAddr + BigInt(row) * BigInt(instructionBytes(app)) : null),
     symbolFor: (a) => app.symbols?.nameAt?.(a) || null,
     objcModel: app.objcModel || null,
     objcRuntimeIndex: app.objcRuntime || null,
+    swiftModel: app.swiftModel || null,
+    swiftRuntimeIndex: app.swiftRuntime || null,
+    resolveSwiftDispatch: (call) => app.resolveSwiftCall?.(call) || null,
     notes: app.notes,
   });
 }
