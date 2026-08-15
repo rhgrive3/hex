@@ -850,156 +850,23 @@ guessFunctions = async function guessFunctionsHardened(args) {
   const ev = await __functionEvidence(region, slice, args.requestId);
   if (cancelled(args.requestId)) return { starts: new BigUint64Array(0), cancelled: true };
 
-  const kept = new Set();
+  const kept = [];
   let filteredDataCandidates = 0;
   for (const a of result.starts) {
-    const exact = ev.unwind.has(a) || ev.directCalls.has(a) || ev.exactMetadata.has(a) || ev.metadataFunctions.has(a);
-    const strong = exact || ev.structured.has(a) || ev.tailCalls.has(a);
-    if (!strong && (ev.interiorFrameSetups.has(a) || ev.denseAddressLeafStarts.has(a))) {
-      if (ev.data.has(a)) filteredDataCandidates++;
-      continue;
-    }
-    if (!exact && (ev.exceptionLandingPads.has(a) || __strictlyInsideFunctionRange(ev.ehFrameRanges, a))) {
-      if (ev.data.has(a)) filteredDataCandidates++;
-      continue;
-    }
-    // A conditional branch target is ordinarily a Basic Block inside the same
-    // function, not a new function entry. Preserve only independent metadata
-    // or call evidence when those two roles intentionally coincide.
-    if (ev.conditionalTargets.has(a) && !strong) {
-      if (ev.data.has(a)) filteredDataCandidates++;
-      continue;
-    }
-    // AArch64 prologues are often multi-instruction sequences (PAC/BTI,
-    // stack save, stack allocation). A candidate at the second consecutive
-    // prologue instruction is inside the already-started function, not a new
-    // entry. Independent metadata/call evidence still wins.
-    if (!strong && ev.prologues.has(a) && ev.prologues.has(a - 4n)) {
-      if (ev.data.has(a)) filteredDataCandidates++;
-      continue;
-    }
-    if (!ev.data.has(a)) { kept.add(a); continue; }
-    const confirmed = strong || ev.prologues.has(a) || ev.terminalStarts.has(a) || ev.indirectTailStarts.has(a);
-    if (confirmed) kept.add(a);
+    const exact = ev.unwind.has(a) || ev.directCalls.has(a) || ev.structured.has(a) || ev.metadataFunctions.has(a);
+    /* A conditional branch stays inside its current function by construction.
+       Treat a conditional target as an internal basic block unless independent
+       metadata/call evidence proves that the same address is also a public
+       function entry.  This removes cold/outlined blocks that happen to begin
+       with a normal-looking prologue after an early return. */
+    if (ev.conditionalTargets.has(a) && !exact) { filteredDataCandidates++; continue; }
+    if (!ev.data.has(a)) { kept.push(a); continue; }
+    const confirmed = exact || ev.prologues.has(a) || ev.terminalStarts.has(a) || ev.indirectTailStarts.has(a);
+    if (confirmed) kept.push(a);
     else filteredDataCandidates++;
   }
-  // Runtime-defined Objective-C method lists are exact function-start metadata
-  // even when their relative IMPs never appear as raw data pointers.
-  for (const a of ev.structured) {
-    if (a < region.vmAddr || a >= region.vmAddr + region.size) continue;
-    if (!ev.exactMetadata.has(a) && (ev.exceptionLandingPads.has(a) || __strictlyInsideFunctionRange(ev.ehFrameRanges, a))) continue;
-    kept.add(a);
-  }
-  // Two or more independent epilogues restoring FP/LR and branching to the
-  // same address are strong evidence of a shared tail-called function entry.
-  for (let off = 0n; off < region.size; off += 4n) {
-    const a = region.vmAddr + off;
-    if (ev.tailCalls.has(a) || ev.indirectThunkStarts.has(a) || ev.repeatedThunkStarts.has(a) || ev.repeatedDirectTailStarts.has(a)) kept.add(a);
-  }
-  // Propagate function identity through short, independently proven tail
-  // wrappers.  If an exact function is <=32 bytes and its final instruction
-  // is an unconditional B immediately before the next known boundary, its
-  // branch target is a function entry.  This is ABI/control-flow evidence,
-  // not a target-address or binary-specific signature.
-  let tailChanged = true, tailPasses = 0;
-  while (tailChanged && tailPasses++ < 8) {
-    tailChanged = false;
-    const passStarts = Array.from(kept).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
-    let si = 0;
-    for (let e = 0; e + 1 < ev.directBranches.length; e += 2) {
-      const src = region.vmAddr + BigInt(ev.directBranches[e]);
-      const target = region.vmAddr + BigInt(ev.directBranches[e + 1]);
-      const next = src + 4n;
-      if (kept.has(target) || !kept.has(next)) continue;
-      while (si + 1 < passStarts.length && passStarts[si + 1] < next) si++;
-      if (si + 1 >= passStarts.length || passStarts[si + 1] !== next) continue;
-      const start = passStarts[si];
-      if (src < start || src - start + 4n > 32n) continue;
-      if (!(ev.unwind.has(start) || ev.directCalls.has(start) || ev.exactMetadata.has(start))) continue;
-      kept.add(target); tailChanged = true;
-    }
-  }
-
-  // Recover terminal-separated entries reached by an unconditional branch
-  // from outside the currently inferred function interval.  This is the
-  // layout form produced by tail-called helpers that intentionally omit a
-  // conventional prologue.  Requiring both a terminal predecessor and an
-  // incoming edge from outside the interval avoids promoting ordinary local
-  // basic-block labels.
-  let externalTailChanged = true, externalTailPasses = 0;
-  while (externalTailChanged && externalTailPasses++ < 4) {
-    externalTailChanged = false;
-    const passStarts = Array.from(kept).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
-    const bounds = (target) => {
-      let lo = 0, hi = passStarts.length;
-      while (lo < hi) {
-        const mid = (lo + hi) >> 1;
-        if (passStarts[mid] < target) lo = mid + 1;
-        else hi = mid;
-      }
-      return {
-        prev: lo > 0 ? passStarts[lo - 1] : region.vmAddr,
-        next: lo < passStarts.length ? passStarts[lo] : region.vmAddr + region.size,
-      };
-    };
-    for (let e = 0; e + 1 < ev.directBranches.length; e += 2) {
-      const src = region.vmAddr + BigInt(ev.directBranches[e]);
-      const target = region.vmAddr + BigInt(ev.directBranches[e + 1]);
-      if (kept.has(target) || !ev.terminalStarts.has(target)) continue;
-      if (ev.exceptionLandingPads.has(target) || __strictlyInsideFunctionRange(ev.ehFrameRanges, target)) continue;
-      const { prev, next } = bounds(target);
-      if (src >= prev && src < next) continue;
-      kept.add(target);
-      externalTailChanged = true;
-    }
-  }
-
-  // A run of tiny `adrp; add; ret` address getters is ambiguous without
-  // entry metadata: the same three instructions also occur at case labels
-  // inside larger functions. Duplicated target-vectors are strong evidence of
-  // copied/inlined code islands, while a long unreferenced run has no external
-  // entry evidence at all. Suppress only those two conservative cases. Exact
-  // unwind/call/runtime metadata always wins.
-  const adrpRunByTargets = new Map();
-  for (const group of ev.adrpReturnGroups || []) {
-    const sig = group.map((x) => x.target.toString(16)).join(',');
-    let list = adrpRunByTargets.get(sig);
-    if (!list) adrpRunByTargets.set(sig, list = []);
-    list.push(group);
-  }
-  for (const groups of adrpRunByTargets.values()) {
-    const duplicated = groups.length > 1;
-    for (const group of groups) {
-      const exactSeed = group.some(({ start }) =>
-        ev.unwind.has(start) || ev.directCalls.has(start) || ev.exactMetadata.has(start));
-      if (exactSeed || (!duplicated && group.length < 10)) continue;
-      for (const { start } of group) kept.delete(start);
-    }
-  }
-
-  // Recover self-described fixed-width trap-stub tables.  The width is
-  // learned from the run itself; a previously accepted entry fixes the phase
-  // so a periodic value in the middle of a record cannot create false starts.
-  for (const group of ev.trapStrideGroups || []) {
-    if (!group.some((a) => kept.has(a))) continue;
-    for (const a of group) kept.add(a);
-  }
-
-  // Recover periodic trap-stub tables only when one member of the same
-  // inferred period is already a proven/accepted function start. The period
-  // and marker value are learned from the run itself; no binary-specific UDF
-  // immediate is baked into the recognizer.
-  for (const group of ev.trapPeriodicGroups) {
-    // A long, exactly periodic marker sequence inside a trap-only island is
-    // itself strong layout evidence. Shorter sequences still need one already
-    // proven member so random embedded data cannot manufacture boundaries.
-    if (group.length < 6 && !group.some((a) => kept.has(a))) continue;
-    for (const a of group) kept.add(a);
-  }
-
-  const ordered = Array.from(kept).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
-  const starts = new BigUint64Array(ordered.length);
-  for (let i = 0; i < ordered.length; i++) starts[i] = ordered[i];
+  const starts = new BigUint64Array(kept.length);
+  for (let i = 0; i < kept.length; i++) starts[i] = kept[i];
   return {
     ...result,
     starts,
