@@ -173,7 +173,7 @@ export class BinaryImage {
 
   toJSON() {
     const convert = (v) => {
-      if (typeof v === 'bigint') return '0x' + v.toString(16).toUpperCase();
+      if (typeof v === 'bigint') return v < 0n ? '-0x' + (-v).toString(16).toUpperCase() : '0x' + v.toString(16).toUpperCase();
       if (Array.isArray(v)) return v.map(convert);
       if (v && typeof v === 'object') {
         const out = {};
@@ -235,8 +235,17 @@ export function mergeFunctionSeeds(input) {
     if (f.end == null && f.size != null) f.end = f.address + f.size;
     if (f.size == null && f.end != null && f.end > f.address) f.size = f.end - f.address;
     if (f.size == null && i + 1 < out.length && out[i + 1].address > f.address) {
-      const delta = out[i + 1].address - f.address;
-      if (delta <= 0x1000000n) { f.size = delta; f.end = out[i + 1].address; }
+      const next = out[i + 1];
+      const sources = new Set(f.sources || [f.source]);
+      const nextSources = new Set(next.sources || [next.source]);
+      const provenFunctionStarts = sources.has('function_starts') && nextSources.has('function_starts');
+      const delta = next.address - f.address;
+      if (provenFunctionStarts && delta <= 0x1000000n) {
+        f.size = delta; f.end = next.address;
+        f.extentInferred = true;
+        f.extentConfidence = Math.min(0.35, Number(f.confidence ?? 0.35));
+        f.extentSource = 'next-function-start';
+      }
     }
   }
   return out;
@@ -245,7 +254,8 @@ export function mergeFunctionSeeds(input) {
 function dedupeImports(input) {
   const m = new Map();
   for (const i of input || []) {
-    const key = `${i.library || ''}\0${i.name || ''}\0${i.ordinal ?? ''}`;
+    const scalar = (value) => typeof value === 'bigint' ? value.toString() : value == null ? '' : String(value);
+    const key = [i.library || '', i.name || '', scalar(i.ordinal), i.weak ? '1' : '0', scalar(i.addend ?? 0n), scalar(i.pointerFormat), scalar(i.type), scalar(i.version), i.versionLibrary || ''].join('\0');
     const prev = m.get(key);
     if (!prev) {
       m.set(key, { ...i, sites: i.sites ? [...i.sites] : [] });
@@ -259,7 +269,8 @@ function dedupeImports(input) {
     if (i.sites) {
       const seen = new Set();
       i.sites = i.sites.filter((s) => {
-        const key = `${s.address ?? ''}:${s.offset ?? ''}:${s.kind ?? ''}`;
+        const scalar = (value) => typeof value === 'bigint' ? value.toString() : value == null ? '' : String(value);
+        const key = [scalar(s.address), scalar(s.offset), s.kind || '', scalar(s.type), scalar(s.addend), scalar(s.pointerFormat), s.weak ? '1' : '0'].join(':');
         if (seen.has(key)) return false;
         seen.add(key); return true;
       });

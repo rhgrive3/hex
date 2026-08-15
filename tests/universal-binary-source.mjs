@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict';
 import {
-  BlobByteSource, ByteSourceLimitError, ByteSourceRangeError, MemoryByteSource,
-  openBinary, openBinarySource,
+  BinaryImage, BlobByteSource, ByteSourceLimitError, ByteSourceRangeError, ByteView, MemoryByteSource,
+  mergeFunctionSeeds, openBinary, openBinarySource,
 } from '../js/binary/index.js';
+import { SparseByteBuffer, parseSourceRanges } from '../js/binary/source-reader.js';
+import { CachedByteSource, ByteSourceCancelledError } from '../js/bytesource/cached.js';
+import { scanSourceStrings } from '../js/bytesource/strings.js';
 import { makeElf64Fixture, makeFatMachOFixture, makeMachO64Fixture, makePe64Fixture } from './universal-binary.mjs';
 import { makeSectionlessElf64Fixture } from './universal-binary-sectionless.mjs';
 
@@ -86,14 +89,10 @@ async function testMalformedInputs() {
     ByteSourceLimitError,
   );
 
-  const impossible = {
-    size: BigInt(Number.MAX_SAFE_INTEGER) + 1n,
-    async read(offset, length) {
-      if (offset !== 0n || length !== 16) throw new Error('unexpected read');
-      return makeElf64Fixture().subarray(0, length);
-    },
-  };
-  await assert.rejects(() => openBinarySource(impossible), /safe integer range/);
+  const hugeSparse = new SparseByteBuffer(BigInt(Number.MAX_SAFE_INTEGER) + 0x1000n);
+  const hugeOffset = BigInt(Number.MAX_SAFE_INTEGER) + 0x100n;
+  hugeSparse.add(hugeOffset, Uint8Array.of(0xaa, 0xbb));
+  assert.deepEqual([...hugeSparse.subarray(hugeOffset, hugeOffset + 2n)], [0xaa, 0xbb]);
 
   const short = {
     size: 64n,
@@ -102,7 +101,97 @@ async function testMalformedInputs() {
   await assert.rejects(() => openBinarySource(short), /truncated read/);
 }
 
+async function testIssue48To60Regressions() {
+  const exactBase = (1n << 53n) + 0x123n;
+  const view = new ByteView(Uint8Array.of(1), { base: exactBase });
+  assert.throws(() => view.u32(0), new RegExp((exactBase).toString(16)));
+  assert.throws(() => new ByteView(Uint8Array.of(1), { base: Number.MAX_SAFE_INTEGER + 1 }), /safe integer/);
+
+  const sparse = new SparseByteBuffer(64n);
+  assert.equal(sparse.add(0n, Uint8Array.of(1, 2, 3, 4)), 4);
+  assert.equal(sparse.add(2n, Uint8Array.of(9, 9, 9, 9)), 2);
+  assert.equal(sparse.chunks.length, 1);
+  assert.deepEqual([...sparse.subarray(0n, 6n)], [1, 2, 9, 9, 9, 9]);
+
+  let parserPasses = 0;
+  const stagedSource = new MemoryByteSource(new Uint8Array(4096), { maxReadLength: 64 });
+  const staged = await parseSourceRanges(stagedSource, (backing) => {
+    parserPasses++;
+    new ByteView(backing).slice(0, 2048);
+    return new BinaryImage(backing, { format: 'test' });
+  }, {}, { pageSize: 64, maxPageSize: 64, maxCachedBytes: 4096 });
+  assert.equal(parserPasses, 2);
+  assert.equal(staged.metadata.sourceReads.parserPasses, 2);
+
+  const stringImage = await openBinarySource(makeElf64Fixture(), { strings: { minLength: 4 }, ranges: { pageSize: 128, maxCachedBytes: 2 * 1024 * 1024 } });
+  assert.ok(stringImage.strings.some((s) => s.text.includes('puts')));
+
+  const thin = makeMachO64Fixture();
+  const fat = new Uint8Array(0x200 + thin.length * 2);
+  const fv = new DataView(fat.buffer);
+  fv.setUint32(0, 0xcafebabe, false); fv.setUint32(4, 2, false);
+  const addSlice = (p, subtype, offset) => { fv.setUint32(p, 0x0100000c, false); fv.setUint32(p + 4, subtype, false); fv.setUint32(p + 8, offset, false); fv.setUint32(p + 12, thin.length, false); fv.setUint32(p + 16, 2, false); };
+  addSlice(8, 0, 0x100); addSlice(28, 2, 0x100 + thin.length);
+  fat.set(thin, 0x100); const arm64eThin = thin.slice(); new DataView(arm64eThin.buffer).setInt32(8, 2, true); fat.set(arm64eThin, 0x100 + thin.length);
+  assert.equal(openBinary(fat).metadata.fat.selected.arch, 'arm64e');
+  assert.equal(openBinary(fat, { arch: 'arm64' }).metadata.fat.selected.arch, 'arm64');
+  assert.throws(() => openBinary(fat, { arch: 'x86_64' }), /not present/);
+  assert.equal((await openBinarySource(fat, { arch: 'arm64e', ranges: { pageSize: 128, maxCachedBytes: 2 * 1024 * 1024 } })).metadata.fat.selected.arch, 'arm64e');
+  await assert.rejects(() => openBinarySource(fat, { arch: 'x86_64' }), /not present/);
+
+  let backendResolve; let backendReads = 0;
+  const sharedSource = {
+    size: 16n,
+    async read(_offset, length, options) { backendReads++; assert.equal(options?.signal, undefined); return new Promise((resolve) => { backendResolve = () => resolve(new Uint8Array(length).fill(7)); }); },
+  };
+  const cached = new CachedByteSource(sharedSource, { pageSize: 16, maxCachedBytes: 16 });
+  const a = new AbortController(), b = new AbortController();
+  const first = cached.read(0n, 4, { signal: a.signal });
+  const second = cached.read(0n, 4, { signal: b.signal });
+  a.abort();
+  await assert.rejects(first, ByteSourceCancelledError);
+  backendResolve();
+  assert.deepEqual([...await second], [7, 7, 7, 7]);
+  assert.equal(backendReads, 1);
+
+  const asciiBytes = new TextEncoder().encode('ABCDEFGH\0');
+  const asciiImage = new BinaryImage(asciiBytes, { format: 'test' });
+  asciiImage.addSection({ name: 'data', address: 0x1000n, size: BigInt(asciiBytes.length), fileOffset: 0n, fileSize: BigInt(asciiBytes.length), perms: { read: true } });
+  const asciiScan = await scanSourceStrings(asciiImage, asciiBytes, { minLength: 2, maxLength: 4, utf16: false, chunkSize: 64 });
+  assert.deepEqual(asciiScan.results.map((x) => x.text), ['ABCD', 'EFGH']);
+
+  const beBytes = Uint8Array.of(0, 0x41, 0, 0x42, 0, 0x43, 0, 0);
+  const beImage = new BinaryImage(beBytes, { format: 'test', endian: 'big' });
+  beImage.addSection({ name: 'data', address: 0x2000n, size: 8n, fileOffset: 0n, fileSize: 8n, perms: { read: true } });
+  const beScan = await scanSourceStrings(beImage, beBytes, { minLength: 3, maxLength: 8 });
+  assert.ok(beScan.results.some((x) => x.encoding === 'utf16be' && x.text === 'ABC'));
+
+  let observedSignal = null;
+  const aborter = new AbortController();
+  const cancelSource = { size: 64n, async read(_offset, _length, options) { observedSignal = options?.signal; aborter.abort(); const e = new Error('abort'); e.name = 'AbortError'; throw e; } };
+  const cancelImage = new BinaryImage(null, { format: 'test', endian: 'little', fileSize: 64n });
+  cancelImage.addSection({ name: 'data', address: 0x3000n, size: 64n, fileOffset: 0n, fileSize: 64n, perms: { read: true } });
+  const cancelled = await scanSourceStrings(cancelImage, cancelSource, { signal: aborter.signal });
+  assert.equal(observedSignal, aborter.signal); assert.equal(cancelled.cancelled, true);
+
+  const symbolGap = mergeFunctionSeeds([{ address: 0x1000n, source: 'symbol', confidence: 0.9 }, { address: 0x2000n, source: 'symbol', confidence: 0.9 }]);
+  assert.ok(symbolGap[0].size == null);
+  const starts = mergeFunctionSeeds([{ address: 0x1000n, source: 'function_starts', confidence: 0.995 }, { address: 0x1100n, source: 'function_starts', confidence: 0.995 }]);
+  assert.equal(starts[0].size, 0x100n); assert.equal(starts[0].extentInferred, true);
+
+  const importImage = new BinaryImage(new Uint8Array(1), { format: 'test' });
+  importImage.imports.push(
+    { name: 'x', library: 'L', ordinal: 1, weak: false, addend: 0n, pointerFormat: 1, sites: [] },
+    { name: 'x', library: 'L', ordinal: 1, weak: true, addend: 0n, pointerFormat: 1, sites: [] },
+    { name: 'x', library: 'L', ordinal: 1, weak: false, addend: 4n, pointerFormat: 1, sites: [] },
+    { name: 'x', library: 'L', ordinal: 1, weak: false, addend: 0n, pointerFormat: 2, sites: [] },
+  );
+  importImage.finalize();
+  assert.equal(importImage.imports.length, 4);
+}
+
 await testMemoryAndBlobSources();
 await testRangeLoaders();
 await testMalformedInputs();
+await testIssue48To60Regressions();
 console.log('universal-binary-source: PASS');

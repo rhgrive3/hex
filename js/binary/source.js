@@ -43,6 +43,14 @@ export function safeNumber(value, label = 'value') {
   return Number(n);
 }
 
+function throwIfAborted(signal) {
+  if (!signal?.aborted) return;
+  const error = new Error('ByteSource read was aborted');
+  error.name = 'AbortError';
+  error.code = 'ABORT_ERR';
+  throw error;
+}
+
 function asBytes(value, label = 'read result') {
   if (value instanceof Uint8Array) return value;
   if (value instanceof ArrayBuffer) return new Uint8Array(value);
@@ -71,13 +79,15 @@ export class ByteSource {
     return { offset: o, length: Number(n64) };
   }
 
-  async read(_offset, _length) {
+  async read(_offset, _length, _options = {}) {
     throw new ByteSourceError('ByteSource.read() is not implemented');
   }
 
   async readExactly(offset, length, options = {}) {
     const range = this.validateRange(offset, length);
+    throwIfAborted(options.signal);
     const bytes = asBytes(await this.read(range.offset, range.length, options));
+    throwIfAborted(options.signal);
     if (bytes.byteLength !== range.length) {
       throw new ByteSourceRangeError(`truncated read: expected ${range.length} bytes, received ${bytes.byteLength}`, {
         offset: range.offset, length: BigInt(range.length), size: this.size,
@@ -98,8 +108,9 @@ export class MemoryByteSource extends ByteSource {
     this.bytes = bytes;
   }
 
-  async read(offset, length) {
+  async read(offset, length, options = {}) {
     const range = this.validateRange(offset, length);
+    throwIfAborted(options.signal);
     const start = safeNumber(range.offset, 'read offset');
     return this.bytes.subarray(start, start + range.length);
   }
@@ -112,10 +123,13 @@ export class BlobByteSource extends ByteSource {
     this.blob = blob;
   }
 
-  async read(offset, length) {
+  async read(offset, length, options = {}) {
     const range = this.validateRange(offset, length);
+    throwIfAborted(options.signal);
     const start = safeNumber(range.offset, 'Blob read offset');
-    return new Uint8Array(await this.blob.slice(start, start + range.length).arrayBuffer());
+    const bytes = new Uint8Array(await this.blob.slice(start, start + range.length).arrayBuffer());
+    throwIfAborted(options.signal);
+    return bytes;
   }
 }
 
@@ -146,8 +160,10 @@ class DelegatingByteSource extends ByteSource {
 
   async read(offset, length, options = {}) {
     const range = this.validateRange(offset, length);
+    throwIfAborted(options.signal);
     // The adapter contract keeps offsets lossless while lengths stay allocation-safe.
     const bytes = asBytes(await this.delegate.read(range.offset, range.length, options));
+    throwIfAborted(options.signal);
     if (bytes.byteLength !== range.length) {
       throw new ByteSourceRangeError(`truncated read: expected ${range.length} bytes, received ${bytes.byteLength}`, {
         offset: range.offset, length: BigInt(range.length), size: this.size,
@@ -170,8 +186,8 @@ export function asByteSource(input, options = {}) {
   throw new TypeError('Expected bytes, Blob/File, or an object with size and async read(offset, length)');
 }
 
-export async function readExactly(source, offset, length) {
-  return asByteSource(source).readExactly(offset, length);
+export async function readExactly(source, offset, length, options = {}) {
+  return asByteSource(source).readExactly(offset, length, options);
 }
 
 export { DEFAULT_MAX_READ_LENGTH };
