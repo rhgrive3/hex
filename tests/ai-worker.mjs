@@ -37,8 +37,26 @@ try {
     ASSETS: { fetch: () => new Response('asset') },
   });
   assert.equal(response.status, 200);
-  assert.equal((await response.json()).decision.answer, 'safe answer');
+  const body = await response.json();
+  assert.equal(body.decision.answer, 'safe answer');
+  assert.ok(body.capabilities.maxRequestBytes < body.capabilities.upstreamMaxRequestBytes, 'client budget reserves provider wrapping overhead');
+  assert.equal(body.capabilities.requestWireExpansionFactor, 2);
   assert.equal(acquired, 1);
   assert.equal(released, 1);
+
+  // A configured provider request-size ceiling is enforced on the actual
+  // transformed upstream body, before any network request is attempted.
+  let upstreamCalled = false;
+  globalThis.fetch = async () => { upstreamCalled = true; throw new Error('must not reach upstream'); };
+  const tinyLimitResponse = await worker.fetch(new Request('https://example.test/api/ai/turn', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ mode: 'chat', style: 'analyst', scope: 'auto', context: { request: { goal: 'What is ASLR?' } }, messages: [], tools: [] }),
+  }), {
+    GEMINI_API_KEY: 'server-only', AI_REQUEST_LIMIT_BYTES: '1024',
+    AI_QUOTA: { getByName: () => quotaStub },
+    ASSETS: { fetch: () => new Response('asset') },
+  });
+  assert.equal(tinyLimitResponse.status, 413);
+  assert.equal(upstreamCalled, false);
 } finally { globalThis.fetch = originalFetch; }
 console.log('ai-worker: PASS');
