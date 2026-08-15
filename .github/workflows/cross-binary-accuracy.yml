@@ -32,6 +32,8 @@ jobs:
         run: node tests/issue-497-cross-binary-workflow.mjs
       - name: Core checks
         run: npm run check
+      - name: Matcher scaling regression
+        run: node tests/issue-500-matcher-budget.mjs
       - name: Detect real fixture configuration
         id: fixtures
         shell: bash
