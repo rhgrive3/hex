@@ -17,6 +17,13 @@ function semanticSummary(before,after) {
   return { changed:!!(tags.length||removedConstants.length||removedCalls.length), tags, addedConstants, removedConstants, addedCalls, removedCalls, addedWrites, removedWrites };
 }
 
+function statusFor(changeType) {
+  if (changeType === 'same') return 'identical';
+  if (changeType === 'moved') return 'moved';
+  if (changeType === 'rewritten') return 'rewritten';
+  return 'slightly changed';
+}
+
 export function diffFunctions(beforeFunctions, afterFunctions, options = {}) {
   const matched=matchFunctions(beforeFunctions,afterFunctions,{threshold:options.threshold ?? 0.55, ambiguityWindow:options.ambiguityWindow ?? 0.04, neighborhoodIterations:options.neighborhoodIterations ?? 2, maxCandidates:options.maxCandidates ?? 128, allowSimilar:options.allowSimilar ?? true});
   const matches=matched.matches.map((m)=>{
@@ -25,11 +32,11 @@ export function diffFunctions(beforeFunctions, afterFunctions, options = {}) {
     if (m.identity==='exact'||m.identity==='normalized-identical') changeType=sameAddress?'same':'moved';
     else if (m.identity==='semantic-equivalent'||m.identity==='probable-same') changeType='changed';
     else changeType='rewritten';
-    const status=changeType==='same'?'identical':changeType==='moved'?'moved':'slightly changed';
-    return {...m,status,changeType,semanticChange:semanticSummary(m.before,m.after)};
+    const semanticChange=semanticSummary(m.before,m.after);
+    return {...m,status:statusFor(changeType),changeType,semanticChange};
   });
-  const deleted=matched.deleted.map((before)=>({status:'deleted',changeType:'deleted',before,after:null,confidence:1,reasons:['unmatched'],semanticChange:null}));
-  const added=matched.new.map((after)=>({status:'new',changeType:'new',before:null,after,confidence:1,reasons:['unmatched'],semanticChange:null}));
-  matches.sort(byAddress); deleted.sort(byAddress); added.sort(byAddress);
-  return { matches, deleted, new:added, results:[...matches,...deleted,...added], stats:{before:beforeFunctions.length,after:afterFunctions.length,matched:matches.length,identical:matches.filter((x)=>x.changeType==='same').length,moved:matches.filter((x)=>x.changeType==='moved').length,changed:matches.filter((x)=>x.changeType==='changed').length,rewritten:matches.filter((x)=>x.changeType==='rewritten').length,deleted:deleted.length,new:added.length,candidatesEvaluated:matched.candidatesEvaluated} };
+  const deleted=(matched.deleted||[]).map((before)=>({before,after:null,status:'deleted',changeType:'deleted',confidence:1,semanticChange:null}));
+  const added=(matched.new||[]).map((after)=>({before:null,after,status:'new',changeType:'new',confidence:1,semanticChange:null}));
+  const changes=[...matches,...deleted,...added].sort(byAddress);
+  return { matches, deleted, new:added, changes, candidatesEvaluated:matched.candidatesEvaluated, indexBuckets:matched.indexBuckets };
 }
