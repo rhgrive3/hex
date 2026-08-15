@@ -42,7 +42,6 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           rm -rf .integration scripts/_compose-review-integration.mjs
           git add js package.json scripts tests
-          git rm scripts/_compose-review-integration.mjs
           git commit -m 'Integrate exhaustive review hardening fixes'
       - run: npm ci
       - name: Build deployment bundles
