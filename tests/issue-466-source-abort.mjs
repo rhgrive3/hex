@@ -1,23 +1,18 @@
 import assert from 'node:assert/strict';
 import { BinaryImage } from '../js/binary/index.js';
+import { normalizeByteSource } from '../js/binary/source.js';
 import { parseSourceRanges } from '../js/binary/source-reader.js';
 import { openBinarySource } from '../js/binary/source-loaders.js';
-import { parseELF } from '../js/binary/elf.js';
-import { parsePE } from '../js/binary/pe.js';
-import { parseMachO } from '../js/binary/macho.js';
 import { makeElf64Fixture, makeMachO64Fixture, makePe64Fixture } from './universal-binary.mjs';
 
 function abortingSource(bytes, controller, abortOnRead = 2) {
   const state = { reads:0, signals:[] };
   return {
-    size:BigInt(bytes.length),
-    maxReadLength:64,
-    state,
+    size:BigInt(bytes.length), maxReadLength:64, state,
     async read(offset, length, options = {}) {
       state.reads++;
       state.signals.push(options.signal || null);
-      const start = Number(offset);
-      const out = bytes.subarray(start, start + length);
+      const out = bytes.subarray(Number(offset), Number(offset) + length);
       if (state.reads === abortOnRead) controller.abort();
       return out;
     },
@@ -25,9 +20,7 @@ function abortingSource(bytes, controller, abortOnRead = 2) {
 }
 
 for (const [label, bytes] of [
-  ['ELF', makeElf64Fixture()],
-  ['PE', makePe64Fixture()],
-  ['Mach-O', makeMachO64Fixture()],
+  ['ELF', makeElf64Fixture()], ['PE', makePe64Fixture()], ['Mach-O', makeMachO64Fixture()],
 ]) {
   const controller = new AbortController();
   const source = abortingSource(bytes, controller, 2);
@@ -43,15 +36,15 @@ for (const [label, bytes] of [
 {
   const controller = new AbortController();
   let reads = 0, passes = 0;
-  const source = {
-    size:4096n,
-    maxReadLength:64,
+  const rawSource = {
+    size:4096n, maxReadLength:64,
     async read(_offset, length, options = {}) {
       reads++;
       assert.equal(options.signal, controller.signal);
       return new Uint8Array(length);
     },
   };
+  const source = normalizeByteSource(rawSource);
   await assert.rejects(
     () => parseSourceRanges(source, (backing) => {
       passes++;
