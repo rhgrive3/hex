@@ -3,6 +3,13 @@ name: AI evaluation contract
 on:
   pull_request:
     paths:
+      - 'js/ai/**'
+      - 'js/agent/**'
+      - 'js/query/**'
+      - 'js/gemini.js'
+      - 'js/goalc.js'
+      - 'js/semantic-evidence.js'
+      - 'worker.js'
       - 'tests/ai-eval/**'
       - 'docs/ai-integration-contract.md'
       - 'docs/ai-quality-gate.md'
@@ -10,6 +17,13 @@ on:
   push:
     branches: [main]
     paths:
+      - 'js/ai/**'
+      - 'js/agent/**'
+      - 'js/query/**'
+      - 'js/gemini.js'
+      - 'js/goalc.js'
+      - 'js/semantic-evidence.js'
+      - 'worker.js'
       - 'tests/ai-eval/**'
       - 'docs/ai-integration-contract.md'
       - 'docs/ai-quality-gate.md'
@@ -28,6 +42,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
+      - name: Validate workflow trigger coverage
+        run: node tests/ai-eval/workflow-trigger.mjs
       - name: Validate AI evaluation corpus
         run: node tests/ai-eval/selftest.mjs
       - name: Exercise grader with example trace
