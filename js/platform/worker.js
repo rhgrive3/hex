@@ -124,7 +124,11 @@ async function openFile(msg, signal) {
     });
     if (signal.aborted) throw new Error('Open cancelled');
     progress(msg, 'sections', 2, 7);
-    const engine = { arm64: candidateImage.arch === 'arm64', verified: false };
+    const engine = {
+      arm64: candidateImage.arch === 'arm64' || candidateImage.arch === 'arm64e',
+      arm64e: candidateImage.arch === 'arm64e',
+      verified: false,
+    };
     candidateDescriptor = describeBinaryImage(candidateImage, { name: candidateFile.name || 'binary', engine });
     candidateDescriptor.platform.vendorCandidates = fingerprintVendors({ libraries: candidateImage.libraries, imports: candidateImage.imports, symbols: candidateImage.symbols });
     const candidateRegions = new Map();
