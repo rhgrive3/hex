@@ -1,3 +1,5 @@
+import { assemble as assembleArm64 } from '../patch.js';
+
 const BUILTINS = new Map();
 
 function canonicalId(value) { return String(value || '').trim().toLowerCase(); }
@@ -17,11 +19,59 @@ export class ArchitectureAdapter {
     this.fixedInstructionSize = positiveInteger(definition.fixedInstructionSize, 'fixedInstructionSize', { nullable: true });
     this.viewerCompatible = !!definition.viewerCompatible;
     this.decode = definition.decode || null;
+    this.assemble = definition.assemble || null;
     this.controlFlow = definition.controlFlow || (() => null);
     this.callKind = definition.callKind || (() => null);
     this.returnKind = definition.returnKind || (() => null);
+    this.rowForAddress = definition.rowForAddress || ((region, address) => {
+      if (this.fixedInstructionSize == null || !region) return null;
+      const rel = BigInt(address) - BigInt(region.vmAddr);
+      if (rel < 0n || rel >= BigInt(region.size)) return null;
+      const size = BigInt(this.fixedInstructionSize);
+      if (rel % size !== 0n) return null;
+      return Number(rel / size);
+    });
+    this.addressForRow = definition.addressForRow || ((region, row) => {
+      if (this.fixedInstructionSize == null || !region) return null;
+      const n = Number(row);
+      if (!Number.isSafeInteger(n) || n < 0) return null;
+      const address = BigInt(region.vmAddr) + BigInt(n) * BigInt(this.fixedInstructionSize);
+      return address < BigInt(region.vmAddr) + BigInt(region.size) ? address : null;
+    });
+    this.validateInstructionPlacement = definition.validateInstructionPlacement || ((region, address, length) => {
+      if (this.fixedInstructionSize == null) return unsupportedArchitectureResult('assemble', this.id);
+      const rel = BigInt(address) - BigInt(region?.vmAddr ?? 0n);
+      if (!region || rel < 0n || rel >= BigInt(region.size)) return { ok:false, code:'patch-range', error:'アドレスがコードのセクション範囲外です。' };
+      if (rel % BigInt(this.instructionAlignment) !== 0n || Number(length) !== this.fixedInstructionSize) {
+        return { ok:false, code:'instruction-placement', architecture:this.id, error:`${this.id} 命令の位置または長さが不正です。` };
+      }
+      return { ok:true };
+    });
     Object.freeze(this);
   }
+}
+
+export class UnsupportedArchitectureError extends Error {
+  constructor(operation, architecture) {
+    super(`${operation} is not supported for architecture ${architecture || 'unknown'}`);
+    this.name = 'UnsupportedArchitectureError';
+    this.code = 'unsupported-architecture';
+    this.unsupported = true;
+    this.operation = operation;
+    this.architecture = canonicalId(architecture || 'unknown');
+  }
+}
+
+export function unsupportedArchitectureResult(operation, architecture) {
+  const error = new UnsupportedArchitectureError(operation, architecture);
+  return {
+    ok:false,
+    unsupported:true,
+    code:error.code,
+    operation:error.operation,
+    architecture:error.architecture,
+    error:error.message,
+  };
 }
 
 export function registerArchitectureAdapter(definition, { replace = false } = {}) {
@@ -50,6 +100,7 @@ export function architectureCapability(image, engine = {}) {
 
 registerArchitectureAdapter({
   id: 'arm64', instructionAlignment: 4, fixedInstructionSize: 4, viewerCompatible: true,
+  assemble: assembleArm64,
   controlFlow(instruction) {
     const op = String(instruction?.mnemonic || '').toLowerCase();
     if (/^ret(?:aa|ab)?$/.test(op)) return 'return';

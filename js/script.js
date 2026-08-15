@@ -26,8 +26,11 @@
 import { decompile, decompiledText } from './decompile.js';
 import { readableName } from './rtti.js';
 import { inferTypes, recoverStruct } from './types.js';
-import { assemble, parseHexBytes, isHexBytes, validatePatchRange } from './patch.js';
+import { parseHexBytes, isHexBytes, validatePatchRange } from './patch.js';
+import { architectureAdapter, unsupportedArchitectureResult, UnsupportedArchitectureError } from './architecture/index.js';
 import { Emulator } from './emu.js';
+
+export { UnsupportedArchitectureError } from './architecture/index.js';
 import { runInSandbox } from './sandbox.js';
 
 /**
@@ -41,13 +44,12 @@ export function createApi(app, out) {
   };
 
   const region = () => app.codeRegion();
-  const rowOf = (addr) => {
-    const r = region();
-    if (!r) return null;
-    const rel = BigInt(addr) - r.vmAddr;
-    if (rel < 0n || rel >= r.size) return null;
-    return Number(rel / 4n);
-  };
+  const architecture = () => String(
+    app.store.get('architecture') || app.currentSlice?.()?.capability?.architecture || 'unknown'
+  ).toLowerCase();
+  const adapter = () => architectureAdapter(architecture());
+  const rowOf = (addr) => adapter().rowForAddress(region(), BigInt(addr));
+  const addressOfRow = (row) => adapter().addressForRow(region(), row);
 
   /*
    * Stateful objects cannot cross MessageChannel because methods/functions are
@@ -157,17 +159,42 @@ export function createApi(app, out) {
     async disasm(addr, count = 16) {
       const r = region();
       if (!r) return [];
-      const out2 = [];
-      let row = rowOf(addr);
-      if (row == null) return [];
-      for (let i = 0; i < count; i++, row++) {
-        const chunk = Math.floor(row / 1024);
-        const e = await app.backend.fetchChunk(r.id, chunk, true);
-        const k = row - chunk * 1024;
-        if (!e.mn || !e.mn[k]) break;
-        out2.push({ addr: r.vmAddr + BigInt(row) * 4n, mn: e.mn[k], ops: e.ops ? e.ops[k] : '' });
+      const a = BigInt(addr);
+      const arch = architecture();
+      const archAdapter = adapter();
+      const limit = Math.max(0, Math.min(10000, Math.trunc(Number(count) || 0)));
+      if (!limit) return [];
+
+      // Fixed-size legacy viewers have a stable row<->address mapping owned by
+      // the architecture adapter. Variable-length ISAs must use decoder output.
+      if (archAdapter.fixedInstructionSize != null) {
+        const out2 = [];
+        let row = rowOf(a);
+        if (row == null) return [];
+        for (let i = 0; i < limit; i++, row++) {
+          const instructionAddress = addressOfRow(row);
+          if (instructionAddress == null) break;
+          const chunk = Math.floor(row / 1024);
+          const e = await app.backend.fetchChunk(r.id, chunk, true);
+          const k = row - chunk * 1024;
+          if (!e.mn || !e.mn[k]) break;
+          out2.push({ addr:instructionAddress, mn:e.mn[k], ops:e.ops ? e.ops[k] : '' });
+        }
+        return out2;
       }
-      return out2;
+
+      if (typeof app.backend.disassembleAt !== 'function') return unsupportedArchitectureResult('disassemble', arch);
+      const decoded = await app.backend.disassembleAt(a, {
+        architecture:arch,
+        length:Math.min(1024 * 1024, Math.max(64, limit * 16)),
+      });
+      if (!decoded?.supported) return unsupportedArchitectureResult('disassemble', arch);
+      return (decoded.instructions || []).slice(0, limit).map((instruction) => ({
+        addr:BigInt(instruction.address),
+        size:Number(instruction.size || 0),
+        mn:instruction.mnemonic || '',
+        ops:instruction.opStr || '',
+      }));
     },
 
     /** 逆コンパイル結果（文字列）。 */
@@ -245,25 +272,42 @@ export function createApi(app, out) {
 
     /* ── 書き換え ─────────────────────────────────────── */
 
-    /** 命令を組み立てる（4 バイト）。 */
-    assemble(text, at) { return assemble(text, BigInt(at)); },
+    /** 現在のarchitecture用に命令を組み立てる。 */
+    assemble(text, at) {
+      const arch = architecture();
+      const archAdapter = adapter();
+      if (typeof archAdapter.assemble !== 'function') return unsupportedArchitectureResult('assemble', arch);
+      return archAdapter.assemble(text, BigInt(at));
+    },
 
     /** 書き換えを登録する（保存するまでファイルは変わりません）。 */
     async patch(addr, textOrHex) {
       const a = BigInt(addr);
       const r = region();
       if (!r) return { error: 'セクションが選ばれていません。' };
-      const built = isHexBytes(textOrHex)
-        ? { bytes: parseHexBytes(textOrHex) }
-        : assemble(textOrHex, a);
-      if (!built.bytes) return built;
+      const raw = isHexBytes(textOrHex);
+      const arch = architecture();
+      const archAdapter = adapter();
+      let built;
+      if (raw) built = { bytes:parseHexBytes(textOrHex) };
+      else {
+        if (typeof archAdapter.assemble !== 'function') return unsupportedArchitectureResult('assemble', arch);
+        built = archAdapter.assemble(textOrHex, a);
+      }
+      if (!built?.bytes) return built;
+      if (!raw) {
+        const placement = archAdapter.validateInstructionPlacement(r, a, built.bytes.length);
+        if (!placement?.ok) return placement;
+      }
       const file = app.store.get('file');
-      const valid = validatePatchRange(r, a, built.bytes.length, file && file.size, true);
+      // Explicit raw bytes are ISA-neutral and may be any in-range length/alignment.
+      const valid = validatePatchRange(r, a, built.bytes.length, file && file.size, false);
       if (valid.error) return valid;
       const before = await api.bytes(a, built.bytes.length);
       if (!before || before.length !== built.bytes.length) return { error: '元のバイトを読み取れません。' };
-      app.patches.add(valid.fileOffset, before, built.bytes, { addr: a, text: textOrHex });
-      return { ok: true, bytes: built.bytes };
+      const mode = raw ? 'raw' : 'assembly';
+      app.patches.add(valid.fileOffset, before, built.bytes, { addr:a, text:textOrHex, mode, architecture:arch });
+      return { ok:true, bytes:built.bytes, mode, architecture:arch };
     },
 
     /* ── 実行してみる ─────────────────────────────────── */
@@ -362,6 +406,12 @@ export function createApi(app, out) {
 
 /** app からエミュレータを作る（画面側でも使う）。 */
 export function makeEmulator(app) {
+  // Legacy callers predate architecture metadata and were ARM64-only. Keep that
+  // compatibility path, while explicit unknown/foreign architectures fail closed.
+  const detectedArchitecture = app.store.get('architecture') || app.currentSlice?.()?.capability?.architecture;
+  const architecture = String(detectedArchitecture || 'arm64').toLowerCase();
+  const adapter = architectureAdapter(architecture);
+  if (adapter.id !== 'arm64') throw new UnsupportedArchitectureError('emulate', architecture);
   const regions = (app.store.get('regions') || []).filter((r) => r.exec && r.size > 0n);
   const regionAt = (addr) => regions.find((r) => addr >= r.vmAddr && addr < r.vmAddr + r.size) || null;
   return new Emulator({
@@ -370,7 +420,8 @@ export function makeEmulator(app) {
     fetch: async (addr) => {
       const r = regionAt(addr);
       if (!r) return null;
-      const row = Number((addr - r.vmAddr) / 4n);
+      const row = adapter.rowForAddress(r, addr);
+      if (row == null) return null;
       const chunk = Math.floor(row / 1024);
       const e = await app.backend.fetchChunk(r.id, chunk, true);
       const k = row - chunk * 1024;
