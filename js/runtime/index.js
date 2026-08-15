@@ -140,14 +140,15 @@ export class RuntimeAnalysisPlatform {
       }
     } finally { operation.release(); }
     for (const event of trace.events || []) session.acceptEvent(event);
-    const facts = traceToSemanticFacts(trace,{sessionId:session.id,binaryHash:session.binaryHash,traceId:`fn:${requestedAddress.toString(16)}`});
+    const factExtraction = traceToSemanticFacts(trace,{sessionId:session.id,binaryHash:session.binaryHash,traceId:`fn:${requestedAddress.toString(16)}`});
+    const facts = factExtraction.facts;
     const replayable=isReplayable(adapter,observation,trace);
     const evidence = createRuntimeEvidenceRecord({ backend:session.backend,binaryHash:session.binaryHash,sessionId:session.id,
       experimentId:`trace:${requestedAddress.toString(16)}`,caseId:'trace',function:requestedAddress,
-      input:launchSpec,observedState:{stop:observation.stop,returnValue:observation.returnValue},branchPath:observation.branches || [],
-      verdict:'inconclusive',confidence:0.5,kind:'trace',reproducibility:{replayable,runs:1,consistent:null} });
+      input:launchSpec,observedState:{stop:observation.stop,returnValue:observation.returnValue,factsComplete:factExtraction.complete,factExtraction:{truncated:factExtraction.truncated,processedEvents:factExtraction.processedEvents,totalEvents:factExtraction.totalEvents,reasons:factExtraction.reasons}},branchPath:observation.branches || [],
+      verdict:'inconclusive',confidence:factExtraction.complete ? 0.5 : 0.35,kind:'trace',reproducibility:{replayable,runs:1,consistent:null} });
     this._recordEvidence(evidence);
-    return { functionAddress:requestedAddress, observation, trace, facts, evidence:[evidence] };
+    return { functionAddress:requestedAddress, observation, trace, facts, factExtraction, evidence:[evidence] };
   }
   async readRuntimeField(address, size = 8) {
     const session = this.currentSession();
