@@ -1,0 +1,43 @@
+name: Issue 456 caller completeness v2
+
+on:
+  push:
+    branches:
+      - fix/issue-456-caller-completeness-v2
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-test:
+    if: ${{ !contains(github.event.head_commit.message, '[issue-456-applied]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Apply caller completeness fix
+        run: python3 tools/apply-issue-456.py
+      - name: Focused report/query completeness regression
+        run: node tests/issue-456-report-completeness.mjs
+      - name: Core regression suite
+        run: node tests/run.js
+      - name: Static checks
+        run: |
+          node --check js/program.js
+          node --check js/report-legacy.js
+          node --check tests/issue-456-report-completeness.mjs
+      - name: Full lint
+        run: npm run lint
+      - name: Commit validated implementation
+        run: |
+          if git diff --quiet; then exit 0; fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add js/program.js js/report-legacy.js
+          git commit -m 'Fix #456 caller completeness trust [issue-456-applied]'
+          git push
