@@ -78,21 +78,42 @@ export function createAiEngine(app, options = {}) {
 }
 
 function exposeStableIdentityInputs(context, app) {
-  // The binary layer already owns content fingerprinting. The AI bridge only
-  // consumes cached/project fingerprint output; it never scans a large binary
-  // merely to start a turn on iPad.
+  // The live Backend content hash is the authority. When a new file has just
+  // opened Backend intentionally clears contentHash; in that window an older
+  // ProductWorkspace/project hash must not be reused for the new file.
   const define = (name, get) => {
     if (Object.prototype.hasOwnProperty.call(context, name)) return;
     try { Object.defineProperty(context, name, { enumerable: true, configurable: false, get }); } catch { /* optional */ }
   };
+  const workspaceHash = () => {
+    const live = app.backend?.contentHash || null;
+    if (live) return String(live);
+    if (app.backend && Object.prototype.hasOwnProperty.call(app.backend, 'contentHash')) return null;
+    return app.workspace?.identity?.hash || app.workspace?.project?.binary?.hash ||
+      app.activeProject?.binary?.hash || app.project?.binary?.hash || app.currentProject?.binary?.hash ||
+      app.project?.binaryHash || app.currentProject?.binaryHash || null;
+  };
   define('binaryFingerprint', () => {
-    const stored = app.store?.get?.('binaryFingerprint') || app.store?.get?.('contentFingerprint') || app.binaryFingerprint || null;
-    if (stored?.hash) return stored;
-    const projectHash = app.project?.binaryHash || app.currentProject?.binaryHash || null;
-    return projectHash ? { algorithm: 'project-content-hash', hash: String(projectHash) } : null;
+    const liveHash = workspaceHash();
+    if (liveHash) return { algorithm: 'content-hash', hash: String(liveHash) };
+    // Compatibility fallback for embedding hosts that do not expose Backend.
+    const stored = app.backend ? null : (app.store?.get?.('binaryFingerprint') || app.store?.get?.('contentFingerprint') || app.binaryFingerprint || null);
+    return stored?.hash ? stored : null;
   });
   define('binaryHash', () => context.binaryFingerprint?.hash || null);
-  define('projectId', () => app.project?.id || app.currentProject?.id || app.project?.binaryHash || null);
+  define('binaryIdentity', () => {
+    const fingerprint = context.binaryFingerprint;
+    if (!fingerprint?.hash) return null;
+    const slice = app.store?.get?.('sliceIndex');
+    const hash = String(fingerprint.hash);
+    return {
+      id: `content:${hash}${slice == null ? '' : `:${String(slice)}`}`,
+      kind: 'content-derived', confidence: 'strong', state: 'ready',
+      algorithm: String(fingerprint.algorithm || 'existing-hash'), hash,
+      legacyId: context.binaryId == null ? null : String(context.binaryId),
+    };
+  });
+  define('projectId', () => app.project?.id || app.currentProject?.id || app.workspace?.project?.binary?.hash || app.activeProject?.binary?.hash || app.project?.binaryHash || null);
   define('sliceIndex', () => app.store?.get?.('sliceIndex') ?? null);
   define('architecture', () => app.store?.get?.('architecture') || app.store?.get?.('capability')?.architecture || null);
   define('fileInfo', () => app.store?.get?.('fileInfo') || null);
@@ -103,7 +124,12 @@ function exposeRuntimeSessionBinding(context) {
   const state = { binaryId: null, known: false, sessionId: null };
   const originalPlatform = typeof context.runtime.platform === 'function' ? context.runtime.platform.bind(context.runtime) : null;
   const originalVerify = typeof context.runtime.verifyHypothesis === 'function' ? context.runtime.verifyHypothesis.bind(context.runtime) : null;
-  const currentBinaryId = () => context.binaryId == null ? null : String(context.binaryId);
+  const currentBinaryId = () => {
+    const identity = context.binaryIdentity;
+    const strong = identity && typeof identity === 'object' ? identity.id : identity;
+    const value = strong ?? context.binaryId;
+    return value == null ? null : String(value);
+  };
   const capture = (platform) => {
     state.binaryId = currentBinaryId();
     state.known = true;

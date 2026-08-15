@@ -594,7 +594,11 @@
   // js/binary/macho-dyld.js
   function parseChainedImports(r, dc, image2, sharedBudget = null) {
     const budget = ensureMachOMetadataBudget(image2, sharedBudget);
-    if (!dc.size || dc.offset + dc.size > r.length || dc.size < 28) return null;
+    if (!dc?.size || dc.offset + dc.size > r.length || dc.size < 28) {
+      image2.metadata.chainedFixups = { complete: false, symbolsComplete: false, importsComplete: false, bindingSitesComplete: false, partialReason: "invalid-or-truncated-payload" };
+      image2.warnings.push("chained-fixups payload is missing or truncated; results are partial");
+      return null;
+    }
     const base = dc.offset;
     const version = r.u32(base);
     const startsOffset = r.u32(base + 4);
@@ -603,7 +607,14 @@
     const importsCount = r.u32(base + 16);
     const importsFormat = r.u32(base + 20);
     const symbolsFormat = r.u32(base + 24);
-    image2.metadata.chainedFixups = { version, startsOffset, importsCount, importsFormat, symbolsFormat, complete: true, symbolsComplete: true };
+    const status = image2.metadata.chainedFixups = { version, startsOffset, importsCount, importsFormat, symbolsFormat, complete: true, symbolsComplete: true, importsComplete: true };
+    if (version !== 0) {
+      status.complete = false;
+      status.importsComplete = false;
+      status.importsPartialReason = "unsupported-version";
+      image2.warnings.push(`chained-fixups version ${version} is not supported; results are partial`);
+      return null;
+    }
     if (symbolsFormat !== 0) {
       image2.metadata.chainedFixups.complete = false;
       image2.metadata.chainedFixups.symbolsComplete = false;
@@ -615,18 +626,25 @@
     const stringsBase = base + symbolsOffset;
     const entrySize = importsFormat === 1 ? 4 : importsFormat === 2 ? 8 : importsFormat === 3 ? 16 : 0;
     if (!entrySize) {
+      status.complete = false;
+      status.importsComplete = false;
+      status.importsPartialReason = "unsupported-import-format";
       image2.warnings.push(`unknown chained import format ${importsFormat}`);
       return null;
     }
-    if (importsBase + importsCount * entrySize > base + dc.size) {
+    if (importsOffset >= dc.size || symbolsOffset >= dc.size || importsBase + importsCount * entrySize > base + dc.size) {
+      status.complete = false;
+      status.importsComplete = false;
+      status.importsPartialReason = "truncated-import-table";
       image2.warnings.push("chained imports are truncated");
       return null;
     }
     const parsed = [];
     for (let i = 0; i < importsCount; i++) {
       if (!budget.take({ inputBytes: entrySize, records: 1, objects: 1, operations: 2, estimatedHeapBytes: 224 }, "chained-import-record")) {
-        image2.metadata.chainedFixups.importsComplete = false;
-        image2.metadata.chainedFixups.importsPartialReason = "metadata-budget";
+        status.complete = false;
+        status.importsComplete = false;
+        status.importsPartialReason = "metadata-budget";
         break;
       }
       const p = importsBase + i * entrySize;
@@ -645,10 +663,25 @@
         addend = r.i64(p + 8);
       }
       const strp = stringsBase + nameOffset;
-      if (strp < base || strp >= base + dc.size) continue;
+      if (strp < base || strp >= base + dc.size) {
+        status.complete = false;
+        status.importsComplete = false;
+        status.importsPartialReason ||= "invalid-name-offset";
+        continue;
+      }
       const name = r.cstring(strp, base + dc.size - strp);
-      if (!name) continue;
-      if (!budget.take({ stringBytes: name.length * 2, estimatedHeapBytes: name.length * 2 + 32 }, "chained-import-name")) break;
+      if (!name) {
+        status.complete = false;
+        status.importsComplete = false;
+        status.importsPartialReason ||= "invalid-import-name";
+        continue;
+      }
+      if (!budget.take({ stringBytes: name.length * 2, estimatedHeapBytes: name.length * 2 + 32 }, "chained-import-name")) {
+        status.complete = false;
+        status.importsComplete = false;
+        status.importsPartialReason = "metadata-budget";
+        break;
+      }
       const imp = { name, library: dylibForOrdinal(image2, ordinal), ordinal, weak, addend, source: "chained-fixups", sites: [], chainedIndex: i };
       image2.imports.push(imp);
       parsed[i] = imp;
@@ -890,7 +923,15 @@
   }
   function parseClassicBindings(r, dc, image2, segments, source2, sharedBudget = null) {
     const budget = ensureMachOMetadataBudget(image2, sharedBudget);
-    if (!dc || !dc.size || dc.offset + dc.size > r.length) return null;
+    image2.metadata.dyldBindings ||= { complete: true, streams: {} };
+    if (!dc || !dc.size) return null;
+    if (dc.offset + dc.size > r.length) {
+      const invalid = { source: source2, complete: false, decodedBinds: 0, threadedApplies: 0, unsupportedOpcodes: [], partialReason: "truncated-range" };
+      image2.metadata.dyldBindings.complete = false;
+      image2.metadata.dyldBindings.streams[source2] = invalid;
+      image2.warnings.push(`${source2}: binding stream is truncated`);
+      return invalid;
+    }
     const BIND_OPCODE_MASK = 240, BIND_IMMEDIATE_MASK = 15;
     const ptrSize = image2.bits === 64 ? 8n : 4n;
     let p = dc.offset;
@@ -1082,7 +1123,13 @@
   }
   function parseExportTrie(r, dc, image2, sharedBudget = null) {
     const budget = ensureMachOMetadataBudget(image2, sharedBudget);
-    if (!dc || !dc.size || dc.offset + dc.size > r.length) return null;
+    if (!dc || !dc.size) return null;
+    if (dc.offset + dc.size > r.length) {
+      const invalid = { complete: false, nodes: 0, edges: 0, cycleDetected: false, budgetExceeded: false, partialReason: "truncated-range" };
+      image2.metadata.exportTrie = invalid;
+      image2.warnings.push("exports trie: payload is truncated");
+      return invalid;
+    }
     const base = dc.offset, end = dc.offset + dc.size;
     const active2 = /* @__PURE__ */ new Set();
     const status = { complete: true, nodes: 0, edges: 0, cycleDetected: false, budgetExceeded: false };
@@ -1300,7 +1347,7 @@
         sizeofcmds
       }
     });
-    const metadataBudget = ensureMachOMetadataBudget(image2);
+    const metadataBudget = ensureMachOMetadataBudget(image2, createMachOMetadataBudget(image2, { signal: opts.signal }));
     const commands = [];
     const segmentOrder = [];
     const symtabs = [];
@@ -1309,12 +1356,14 @@
     let p = headerSize;
     for (let i = 0; i < ncmds; i++) {
       if (p + 8 > commandEnd) {
+        markMachOMetadataPartial(image2, "load-command-truncated");
         image2.warnings.push(`truncated load command ${i}`);
         break;
       }
       const cmd = r.u32(p);
       const cmdsize = r.u32(p + 4);
       if (cmdsize < 8 || p + cmdsize > commandEnd) {
+        markMachOMetadataPartial(image2, "load-command-invalid-size");
         image2.warnings.push(`invalid load command ${i} size ${cmdsize}`);
         break;
       }
@@ -1343,6 +1392,7 @@
         else if (cmd === LC_BUILD_VERSION && cmdsize >= 24) parseBuildVersion(r, p, image2);
       } catch (e) {
         if (e?.code === "BINARY_SOURCE_RANGE_MISSING") throw e;
+        markMachOMetadataPartial(image2, `load-command-0x${cmd.toString(16)}-parse-error`);
         image2.warnings.push(`load command 0x${cmd.toString(16)}: ${e.message}`);
       }
       p += cmdsize;
@@ -1513,6 +1563,7 @@
     const budget = ensureMachOMetadataBudget(image2, sharedBudget);
     const ent = bits === 64 ? 16 : 12;
     if (st.symoff + st.nsyms * ent > r.length || st.stroff + st.strsize > r.length) {
+      markMachOMetadataPartial(image2, "symbol-table-truncated");
       image2.warnings.push("Mach-O symbol table is truncated");
       return;
     }
@@ -4389,8 +4440,14 @@
       all.push({ cpu, subtype, offset, size });
     }
     const valid = all.filter((slice) => slice.size > 0n && slice.offset <= source2.size && slice.size <= source2.size - slice.offset);
-    const requested = opts.arch ? valid.find((slice) => sliceArchName2(slice) === opts.arch) : null;
-    if (opts.arch && !requested) throw new Error(`requested Mach-O architecture ${opts.arch} is not present in the universal binary`);
+    const requestedIndex = opts.sliceIndex == null ? null : Number(opts.sliceIndex);
+    if (requestedIndex != null && (!Number.isSafeInteger(requestedIndex) || requestedIndex < 0 || requestedIndex >= all.length)) {
+      throw new Error(`requested Mach-O slice index ${opts.sliceIndex} is not present in the universal binary`);
+    }
+    const indexed = requestedIndex == null ? null : all[requestedIndex];
+    if (indexed && !valid.includes(indexed)) throw new Error(`requested Mach-O slice index ${requestedIndex} is outside the active file`);
+    const requested = indexed || (opts.arch ? valid.find((slice) => sliceArchName2(slice) === opts.arch) : null);
+    if (requestedIndex == null && opts.arch && !requested) throw new Error(`requested Mach-O architecture ${opts.arch} is not present in the universal binary`);
     const selected = requested || valid.find((slice) => sliceArchName2(slice) === "arm64e") || valid.find((slice) => sliceArchName2(slice) === "arm64") || valid.find((slice) => sliceArchName2(slice) === "x86_64") || valid[0];
     if (!selected) throw new Error("Mach-O universal binary has no readable slice");
     const sliceSource = source2.subrange(selected.offset, selected.size);
@@ -6759,6 +6816,146 @@
     return [...sources].some((s) => ["entrypoint", "export", "exception", "unwind", "function_starts", "tls-callback", "guard-cf"].includes(s));
   }
 
+  // js/platform/analysis-result.js
+  function provenance(source2, confidence = 1) {
+    return { source: source2 || "binary-metadata", confidence, confirmed: true };
+  }
+  function statusReasons(value, prefix, out) {
+    if (!value || typeof value !== "object") return;
+    if (value.complete === false) out.push(`${prefix}:incomplete`);
+    if (value.importsComplete === false) out.push(`${prefix}:imports-incomplete`);
+    if (value.symbolsComplete === false) out.push(`${prefix}:symbols-incomplete`);
+    if (value.bindingSitesComplete === false) out.push(`${prefix}:binding-sites-incomplete`);
+    for (const reason of [value.partialReason, value.importsPartialReason, value.symbolsPartialReason, value.bindingSitesPartialReason]) {
+      if (reason) out.push(`${prefix}:${reason}`);
+    }
+    for (const reason of value.reasons || []) out.push(`${prefix}:${reason}`);
+    for (const reason of value.bindingSiteReasons || []) out.push(`${prefix}:${reason}`);
+  }
+  function dyldBindingReasons(value, out) {
+    if (!value || typeof value !== "object") return;
+    statusReasons(value, "dyld-bindings", out);
+    const streams = value.streams && typeof value.streams === "object" ? value.streams : value;
+    for (const [kind, status] of Object.entries(streams)) {
+      if (kind === "complete" || kind === "streams") continue;
+      statusReasons(status, `dyld-${kind}`, out);
+    }
+  }
+  function machoSymbolTruth(image2) {
+    if (!image2 || image2.format !== "macho") return null;
+    const metadata = image2.metadata || {};
+    const reasons = [];
+    statusReasons(metadata.machoMetadata, "metadata-budget", reasons);
+    statusReasons(metadata.chainedFixups, "chained-fixups", reasons);
+    statusReasons(metadata.exportTrie, "export-trie", reasons);
+    dyldBindingReasons(metadata.dyldBindings, reasons);
+    const unique = [...new Set(reasons)].slice(0, 64);
+    return {
+      source: "BinaryImage",
+      normalized: true,
+      complete: unique.length === 0,
+      reasons: unique,
+      components: {
+        chainedFixups: metadata.chainedFixups || null,
+        dyldBindings: metadata.dyldBindings || null,
+        exportTrie: metadata.exportTrie || null,
+        metadataBudget: metadata.machoMetadata || null
+      }
+    };
+  }
+  function analysisFromBinaryImage(image2) {
+    if (!image2) return emptyAnalysis();
+    const entries = /* @__PURE__ */ new Map();
+    const add = (address, name, kind, exported, prov, priority) => {
+      if (address == null || !name) return;
+      const addr = BigInt(address), key = addr.toString();
+      const next = { address: addr, name: String(name), kind, exported: !!exported, provenance: prov, priority };
+      const current2 = entries.get(key);
+      if (!current2) {
+        entries.set(key, next);
+        return;
+      }
+      current2.exported ||= next.exported;
+      if (next.priority > current2.priority) {
+        current2.name = next.name;
+        current2.kind = next.kind;
+        current2.provenance = next.provenance;
+        current2.priority = next.priority;
+      }
+    };
+    for (const symbol of image2.symbols || []) {
+      if (symbol?.defined === false || symbol?.address == null || !symbol.name) continue;
+      add(symbol.address, symbol.name, 0, !!symbol.exported, provenance(symbol.source || "symbol-table", 0.99), 10);
+    }
+    for (const exp of image2.exports || []) {
+      if (exp?.address == null || !exp.name) continue;
+      add(exp.address, exp.name, 0, true, provenance(exp.source || "exports-trie", 1), 20);
+    }
+    for (const imp of image2.imports || []) {
+      if (!imp?.name) continue;
+      for (const site of imp.sites || []) {
+        if (site?.address == null) continue;
+        add(site.address, imp.name, 2, false, provenance(site.kind || imp.source || "dyld-bind", 1), 30);
+      }
+    }
+    const sorted = [...entries.values()].sort((a, b) => a.address < b.address ? -1 : a.address > b.address ? 1 : 0);
+    const addrs = new BigUint64Array(sorted.length), kinds = new Uint8Array(sorted.length), flags = new Uint8Array(sorted.length);
+    for (let i = 0; i < sorted.length; i++) {
+      addrs[i] = sorted[i].address;
+      kinds[i] = sorted[i].kind;
+      flags[i] = sorted[i].exported ? 1 : 0;
+    }
+    const seedByAddress = /* @__PURE__ */ new Map();
+    for (const seed of image2.functions || []) if (seed?.address != null) seedByAddress.set(BigInt(seed.address).toString(), seed);
+    const functions = [...seedByAddress.keys()].map(BigInt).sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
+    const funcs = new BigUint64Array(functions);
+    const functionProvenance = functions.map((addr) => {
+      const seed = seedByAddress.get(addr.toString()) || {};
+      const confirmed = isExactFunctionSeed(seed);
+      return { source: seed.source || "heuristic", confidence: Number(seed.confidence ?? (confirmed ? 1 : 0.5)), confirmed };
+    });
+    const nameProvenance = sorted.map((entry) => entry.provenance);
+    const allSeedsExact = functions.length > 0 && (image2.functions || []).every(isExactFunctionSeed);
+    const discoveryComplete = image2.metadata?.functionDiscovery?.complete === true;
+    return {
+      addrs,
+      kinds,
+      flags,
+      names: sorted.map((x) => x.name),
+      funcs,
+      functionProvenance,
+      nameProvenance,
+      symbolCount: addrs.length,
+      funcCount: funcs.length,
+      capped: false,
+      allSeedsExact,
+      discoveryComplete,
+      functionStartsExact: discoveryComplete && allSeedsExact,
+      functionDiscovery: { complete: discoveryComplete, capped: false, reasons: discoveryComplete ? [] : ["platform-function-seeds-not-exhaustive"] },
+      symbolTruth: machoSymbolTruth(image2),
+      __transfer: [addrs.buffer, kinds.buffer, flags.buffer, funcs.buffer]
+    };
+  }
+  function emptyAnalysis() {
+    const addrs = new BigUint64Array(0), kinds = new Uint8Array(0), flags = new Uint8Array(0), funcs = new BigUint64Array(0);
+    return {
+      addrs,
+      kinds,
+      flags,
+      names: [],
+      funcs,
+      symbolCount: 0,
+      funcCount: 0,
+      capped: false,
+      allSeedsExact: false,
+      discoveryComplete: false,
+      functionStartsExact: false,
+      functionDiscovery: { complete: false, capped: false, reasons: ["platform-function-seeds-not-exhaustive"] },
+      symbolTruth: null,
+      __transfer: [addrs.buffer, kinds.buffer, flags.buffer, funcs.buffer]
+    };
+  }
+
   // js/platform/worker.js
   var ROW_BYTES = 4;
   var CHUNK_ROWS = 1024;
@@ -6829,7 +7026,7 @@
       case "chunk":
         return getChunk(msg, signal);
       case "analyze":
-        return analyzeImage();
+        return analyzeImage(msg, signal);
       case "strings":
         return scanStrings2(msg, signal);
       case "search":
@@ -6944,79 +7141,18 @@
     const copy = bytes.slice();
     return { regionId, chunk, bytes: copy, mn: "", ops: "", rows: Math.ceil(copy.length / ROW_BYTES), __transfer: [copy.buffer] };
   }
-  function analyzeImage() {
+  async function analyzeImage(msg, signal) {
     if (!image) return emptyAnalysis();
-    const entries = /* @__PURE__ */ new Map();
-    for (const symbol of image.symbols || []) {
-      if (symbol?.address == null || !symbol.name) continue;
-      entries.set(BigInt(symbol.address).toString(), { address: BigInt(symbol.address), name: symbol.name, exported: !!symbol.exported });
+    let selected = image;
+    if (image.metadata?.fat?.slices?.length && msg.sliceIndex != null) {
+      selected = await parseMachOSource(source, {
+        sliceIndex: msg.sliceIndex,
+        signal,
+        ranges: { pageSize: 64 * 1024, maxPageSize: 2 * 1024 * 1024, maxCachedBytes: 16 * 1024 * 1024, maxReads: 4096 }
+      });
     }
-    for (const exp of image.exports || []) {
-      if (exp?.address == null || !exp.name) continue;
-      const key = BigInt(exp.address).toString();
-      const existing = entries.get(key);
-      if (existing) existing.exported = true;
-      else entries.set(key, { address: BigInt(exp.address), name: exp.name, exported: true });
-    }
-    const sorted = [...entries.values()].sort((a, b) => a.address < b.address ? -1 : a.address > b.address ? 1 : 0);
-    const addrs = new BigUint64Array(sorted.length);
-    const kinds = new Uint8Array(sorted.length);
-    const flags = new Uint8Array(sorted.length);
-    for (let i = 0; i < sorted.length; i++) {
-      addrs[i] = sorted[i].address;
-      flags[i] = sorted[i].exported ? 1 : 0;
-    }
-    const seedByAddress = /* @__PURE__ */ new Map();
-    for (const seed of image.functions || []) if (seed?.address != null) seedByAddress.set(BigInt(seed.address).toString(), seed);
-    const functions = [...seedByAddress.keys()].map(BigInt).sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
-    const funcs = new BigUint64Array(functions);
-    const functionProvenance = functions.map((addr) => {
-      const seed = seedByAddress.get(addr.toString()) || {};
-      const confirmed = isExactFunctionSeed(seed);
-      return { source: seed.source || "heuristic", confidence: Number(seed.confidence ?? (confirmed ? 1 : 0.5)), confirmed };
-    });
-    const nameProvenance = sorted.map((entry) => ({ source: entry.exported ? "export-table" : "binary-symbol", confidence: 1, confirmed: true }));
-    const allSeedsExact = functions.length > 0 && (image.functions || []).every(isExactFunctionSeed);
-    const discoveryComplete = image.metadata?.functionDiscovery?.complete === true;
-    return {
-      addrs,
-      kinds,
-      flags,
-      names: sorted.map((x) => String(x.name ?? "")),
-      funcs,
-      functionProvenance,
-      nameProvenance,
-      symbolCount: addrs.length,
-      funcCount: funcs.length,
-      capped: false,
-      allSeedsExact,
-      discoveryComplete,
-      functionStartsExact: discoveryComplete && allSeedsExact,
-      functionDiscovery: {
-        complete: discoveryComplete,
-        capped: false,
-        reasons: discoveryComplete ? [] : ["platform-function-seeds-not-exhaustive"]
-      },
-      __transfer: [addrs.buffer, kinds.buffer, flags.buffer, funcs.buffer]
-    };
-  }
-  function emptyAnalysis() {
-    const addrs = new BigUint64Array(0), kinds = new Uint8Array(0), flags = new Uint8Array(0), funcs = new BigUint64Array(0);
-    return {
-      addrs,
-      kinds,
-      flags,
-      names: [],
-      funcs,
-      symbolCount: 0,
-      funcCount: 0,
-      capped: false,
-      allSeedsExact: false,
-      discoveryComplete: false,
-      functionStartsExact: false,
-      functionDiscovery: { complete: false, capped: false, reasons: ["platform-function-seeds-not-exhaustive"] },
-      __transfer: [addrs.buffer, kinds.buffer, flags.buffer, funcs.buffer]
-    };
+    if (signal.aborted) throw new Error("Analysis cancelled");
+    return analysisFromBinaryImage(selected);
   }
   function genericFunctionSeeds() {
     const values = [...new Set((image?.functions || []).map((f) => BigInt(f.address).toString()))].map(BigInt).sort((a, b) => a < b ? -1 : a > b ? 1 : 0);

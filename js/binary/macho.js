@@ -1,7 +1,7 @@
 import { ByteView } from './reader.js';
 import { BinaryImage, functionSeed } from './model.js';
 import { parseChainedImports, parseChainedBindingSites, parseClassicBindings, parseExportTrie } from './macho-dyld.js';
-import { createMachOMetadataBudget, ensureMachOMetadataBudget } from './macho-budget.js';
+import { createMachOMetadataBudget, ensureMachOMetadataBudget, markMachOMetadataPartial } from './macho-budget.js';
 
 const LC_SEGMENT = 0x1;
 const LC_SYMTAB = 0x2;
@@ -86,10 +86,11 @@ function parseThin(bytes, opts) {
   const dyldInfos = [];
   let p = headerSize;
   for (let i = 0; i < ncmds; i++) {
-    if (p + 8 > commandEnd) { image.warnings.push(`truncated load command ${i}`); break; }
+    if (p + 8 > commandEnd) { markMachOMetadataPartial(image, 'load-command-truncated'); image.warnings.push(`truncated load command ${i}`); break; }
     const cmd = r.u32(p);
     const cmdsize = r.u32(p + 4);
     if (cmdsize < 8 || p + cmdsize > commandEnd) {
+      markMachOMetadataPartial(image, 'load-command-invalid-size');
       image.warnings.push(`invalid load command ${i} size ${cmdsize}`);
       break;
     }
@@ -122,6 +123,7 @@ function parseThin(bytes, opts) {
       else if (cmd === LC_BUILD_VERSION && cmdsize >= 24) parseBuildVersion(r, p, image);
     } catch (e) {
       if (e?.code === 'BINARY_SOURCE_RANGE_MISSING') throw e;
+      markMachOMetadataPartial(image, `load-command-0x${cmd.toString(16)}-parse-error`);
       image.warnings.push(`load command 0x${cmd.toString(16)}: ${e.message}`);
     }
     p += cmdsize;
@@ -307,6 +309,7 @@ function parseSymbolTable(r, st, image, bits, sharedBudget = null) {
   const budget = ensureMachOMetadataBudget(image, sharedBudget);
   const ent = bits === 64 ? 16 : 12;
   if (st.symoff + st.nsyms * ent > r.length || st.stroff + st.strsize > r.length) {
+    markMachOMetadataPartial(image, 'symbol-table-truncated');
     image.warnings.push('Mach-O symbol table is truncated'); return;
   }
   for (let i = 0; i < st.nsyms; i++) {

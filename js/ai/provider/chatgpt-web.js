@@ -217,7 +217,13 @@ function tryParse(text) {
 }
 
 function safeJSONStringify(value) {
-  return JSON.stringify(value, (_key, item) => typeof item === 'bigint' ? `0x${item.toString(16)}` : item);
+  /* JSON escaping alone does not protect the surrounding HEX_DATA delimiter:
+     an analyzed string may literally contain </HEX_DATA>. Encode markup
+     metacharacters so untrusted payload bytes can never become prompt syntax. */
+  return JSON.stringify(value, (_key, item) => typeof item === 'bigint' ? `0x${item.toString(16)}` : item)
+    .replace(/&/g, '\\u0026')
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e');
 }
 
 function apiEndpoint(path) {

@@ -20,7 +20,7 @@ import { rangeCopyMenu, copyRange } from './rangecopy.js';
 import { t, setLang, detectLang, lang, isJa, pick } from './i18n.js';
 import { SymbolIndex, EMPTY_INDEX } from './symbols.js';
 import { clearBriefCache } from './arm64.js';
-import { clearAnalysisCache, analyzeFunctionCached } from './analyze.js';
+import { clearAnalysisCache, analyzeFunctionCached, supportsArm64SemanticAnalysis } from './analyze.js';
 import { buildOverlay } from './narrate.js';
 import { buildObjcRuntimeModel, buildObjcRuntimeIndex } from './objc.js';
 import { buildSwiftMetadataModel, buildSwiftRuntimeIndex, resolveSwiftDispatch } from './swift.js';
@@ -851,7 +851,8 @@ class App {
    */
   async analyzeFunctionAt(addr) {
     const sym=this.symbols, range=this.validatedFunctionRange(addr);
-    if(!range.ok || !this.store.get('canDisassemble') || !sym.functionCount) return null;
+    const architecture=this.store.get('architecture')||this.store.get('capability')?.architecture||null;
+    if(!supportsArm64SemanticAnalysis(architecture)||!range.ok||!this.store.get('canDisassemble')||!sym.functionCount)return null;
     const region=range.region, alignment=Math.max(1,Number(this.store.get('instructionAlignment')||this.store.get('capability')?.instructionAlignment||4));
     const width=BigInt(alignment);
     if((range.start-region.vmAddr)%width!==0n) return null;
@@ -885,6 +886,8 @@ class App {
       return;
     }
     const openEpoch=this.backend.gen;
+    this.workspace?.invalidate();
+    this.activeProject=null;
     closeAllSheets();
     this.sampleOpen=sampleOpen;
     this.detailRefresh=null;
@@ -1195,6 +1198,8 @@ class App {
     const info=this.store.get('fileInfo');
     if (!info || !info.slices[index] || info.slices[index].error) return;
     this.workspace?.autosave();
+    this.workspace?.invalidate();
+    this.activeProject=null;
     this.noteAttachController?.abort();
     this.backend.advanceEpoch();
     this.forgetSemantics(true);

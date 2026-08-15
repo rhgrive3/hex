@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hex for ChatGPT
 // @namespace    https://github.com/rhgrive3/hex
-// @version      1.0.1786789806
+// @version      1.0.1786804768
 // @description  Run the Hex binary analysis workbench on ChatGPT Web.
 // @match        https://chatgpt.com/*
 // @run-at       document-idle
@@ -16,7 +16,7 @@
   if (location.hostname !== 'chatgpt.com') return;
   const HEX_ORIGIN = "__HEX_ORIGIN__";
   globalThis.__HEX_API_BASE__ = HEX_ORIGIN;
-  globalThis.__HEX_WORKER_MANIFEST__ = {"classicEntries":["js/worker.js","js/platform/capstone-probe-worker.js","js/platform/capstone-disasm-worker.js"],"classicAssets":["js/worker.js","js/worker-legacy.js","js/macho.js","js/words.js","js/worker-budget.js","js/address-provenance.js","capstone.js","js/worker-fixes.js","js/platform/capstone-probe-worker.js","js/platform/capstone-disasm-worker.js"],"classicDependencies":{"js/worker.js":["js/worker-legacy.js","js/worker-fixes.js"],"js/worker-legacy.js":["js/macho.js","js/words.js","js/worker-budget.js","js/address-provenance.js","capstone.js"],"js/macho.js":[],"js/words.js":[],"js/worker-budget.js":[],"js/address-provenance.js":[],"capstone.js":[],"js/worker-fixes.js":[],"js/platform/capstone-probe-worker.js":["capstone.js"],"js/platform/capstone-disasm-worker.js":["capstone.js"]},"moduleBundles":{"js/platform/worker.js":"userscript/platform-worker.bundle.js"},"wasm":"capstone.wasm"};
+  globalThis.__HEX_WORKER_MANIFEST__ = {"classicEntries":["js/worker.js","js/platform/capstone-probe-worker.js","js/platform/capstone-disasm-worker.js"],"classicAssets":["js/worker.js","js/worker-legacy.js","js/macho.js","js/words.js","js/worker-budget.js","js/objc-stub-recovery.js","js/address-provenance.js","capstone.js","js/worker-fixes.js","js/platform/capstone-probe-worker.js","js/platform/capstone-disasm-worker.js"],"classicDependencies":{"js/worker.js":["js/worker-legacy.js","js/worker-fixes.js"],"js/worker-legacy.js":["js/macho.js","js/words.js","js/worker-budget.js","js/objc-stub-recovery.js","js/address-provenance.js","capstone.js"],"js/macho.js":[],"js/words.js":[],"js/worker-budget.js":[],"js/objc-stub-recovery.js":[],"js/address-provenance.js":[],"capstone.js":[],"js/worker-fixes.js":[],"js/platform/capstone-probe-worker.js":["capstone.js"],"js/platform/capstone-disasm-worker.js":["capstone.js"]},"moduleBundles":{"js/platform/worker.js":"userscript/platform-worker.bundle.js"},"wasm":"capstone.wasm"};
   if (!document.getElementById('hex-userscript-host')) {
     const host = document.createElement('div');
     host.id = 'hex-userscript-host';
@@ -204,31 +204,32 @@
     const head = await bytes(file, 0, 8);
     if (head.length < 4) return null;
     const dv = new DataView(head.buffer, head.byteOffset, head.byteLength);
-    const le = dv.getUint32(0, true);
-    if (le === MH_MAGIC_64) return 0n;
+    if (dv.getUint32(0, true) === MH_MAGIC_64) return { base: 0n, size: BigInt(file.size) };
     const be = dv.getUint32(0, false);
-    if (be !== FAT_MAGIC && be !== FAT_MAGIC_64) return null;
-    if (head.length < 8) return null;
-    const n = u32be(dv, 4);
-    const idx = Math.max(0, Number(sliceIndex) || 0);
+    if (be !== FAT_MAGIC && be !== FAT_MAGIC_64 || head.length < 8) return null;
+    const n = u32be(dv, 4), idx = Math.max(0, Number(sliceIndex) || 0);
     if (idx >= n || n > 64) return null;
-    const wide = be === FAT_MAGIC_64;
-    const entry2 = wide ? 32 : 20;
+    const wide = be === FAT_MAGIC_64, entry2 = wide ? 32 : 20;
     const table = await bytes(file, 0, 8 + n * entry2);
-    const tdv = new DataView(table.buffer, table.byteOffset, table.byteLength);
-    const p = 8 + idx * entry2;
-    return wide ? tdv.getBigUint64(p + 8, false) : BigInt(tdv.getUint32(p + 8, false));
+    if (table.length < 8 + n * entry2) return null;
+    const tdv = new DataView(table.buffer, table.byteOffset, table.byteLength), p = 8 + idx * entry2;
+    const base = wide ? tdv.getBigUint64(p + 8, false) : BigInt(tdv.getUint32(p + 8, false));
+    const size = wide ? tdv.getBigUint64(p + 16, false) : BigInt(tdv.getUint32(p + 12, false));
+    const total = BigInt(file.size);
+    if (size <= 0n || base > total || size > total - base) return null;
+    return { base, size };
   }
   async function parseImage(file, sliceIndex) {
-    const base = await sliceOffset(file, sliceIndex);
-    if (base == null) return null;
+    const slice = await sliceOffset(file, sliceIndex);
+    if (slice == null) return null;
+    const { base, size: sliceSize } = slice;
     const h2 = await bytes(file, base, 32);
     if (h2.length < 32) return null;
     let dv = new DataView(h2.buffer, h2.byteOffset, h2.byteLength);
     if (dv.getUint32(0, true) !== MH_MAGIC_64) return null;
     const ncmds = dv.getUint32(16, true);
     const sizeofcmds = dv.getUint32(20, true);
-    if (!ncmds || ncmds > 1e4 || sizeofcmds > 64 * 1024 * 1024) return null;
+    if (!ncmds || ncmds > 1e4 || sizeofcmds > MAX_LOAD_COMMAND_BYTES || BigInt(32 + sizeofcmds) > sliceSize) return null;
     const raw = await bytes(file, base, 32 + sizeofcmds);
     if (raw.length < 32) return null;
     dv = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
@@ -249,7 +250,8 @@
         const filesize = dv.getBigUint64(p + 48, true);
         const nsects = dv.getUint32(p + 64, true);
         const segIndex = segments2.length;
-        segments2.push({ name, vmaddr, vmsize, fileoff, filesize });
+        const validFileRange = fileoff <= sliceSize && filesize <= sliceSize - fileoff;
+        segments2.push({ name, vmaddr, vmsize, fileoff, filesize, validFileRange });
         let q = p + 72;
         for (let si = 0; si < nsects && q + 80 <= p + size; si++, q += 80) {
           const section = ascii(raw, q, 16);
@@ -267,7 +269,7 @@
       }
       p += size;
     }
-    return { base, segments: segments2, stubs, fixups };
+    return { base, sliceSize, segments: segments2, stubs, fixups };
   }
   function parseImportNames(raw) {
     if (raw.length < 28) return null;
@@ -278,7 +280,7 @@
     const symbolsOffset = dv.getUint32(12, true);
     const count = dv.getUint32(16, true);
     const format2 = dv.getUint32(20, true);
-    if (version !== 0 || count > 1e6 || startsOffset >= raw.length || importsOffset >= raw.length || symbolsOffset >= raw.length) return null;
+    if (version !== 0 || count > MAX_CHAINED_IMPORTS || startsOffset >= raw.length || importsOffset >= raw.length || symbolsOffset >= raw.length) return null;
     const stride = format2 === 1 ? 4 : format2 === 2 ? 8 : format2 === 3 ? 16 : 0;
     if (!stride || importsOffset + count * stride > raw.length) return null;
     const names = new Array(count);
@@ -384,20 +386,32 @@
     if (!file || typeof file.slice !== "function") return [];
     const image = await parseImage(file, sliceIndex);
     if (!image || !image.fixups || !image.stubs.length) return [];
+    if (image.fixups.datasize > MAX_FIXUP_BYTES) return [];
+    const fixupSize = BigInt(image.fixups.datasize);
+    if (image.fixups.dataoff > image.sliceSize || fixupSize > image.sliceSize - image.fixups.dataoff) return [];
     const raw = await bytes(file, image.base + image.fixups.dataoff, image.fixups.datasize);
     const imports = parseImportNames(raw);
     if (!imports || !imports.names.length) return [];
     const read64 = makeBlockReader(file);
     const out = [];
+    let supplementalReadBytes = raw.length;
+    let decodedStubs = 0;
     for (const sec of image.stubs) {
-      const code = await bytes(file, image.base + sec.fileoff, sec.size);
-      const count = Math.floor(Number(sec.size) / sec.stubSize);
+      if (sec.size > BigInt(MAX_STUB_BYTES) || sec.fileoff > image.sliceSize || sec.size > image.sliceSize - sec.fileoff) continue;
+      const sectionBytes = Number(sec.size);
+      if (supplementalReadBytes + sectionBytes > MAX_SUPPLEMENTAL_READ_BYTES) break;
+      const code = await bytes(file, image.base + sec.fileoff, sectionBytes);
+      supplementalReadBytes += code.length;
+      const count = Math.min(Math.floor(Number(sec.size) / sec.stubSize), MAX_STUBS - decodedStubs);
       for (let i = 0; i < count; i++) {
+        decodedStubs++;
         const stubAddr = sec.addr + BigInt(i * sec.stubSize);
         const slot = stubSlot(code, i * sec.stubSize, stubAddr, sec.stubSize);
         if (slot == null) continue;
         const hit = segmentFor(image.segments, slot);
-        if (!hit) continue;
+        if (!hit || hit.s.validFileRange === false) continue;
+        const delta = slot - hit.s.vmaddr;
+        if (delta < 0n || delta + 8n > hit.s.filesize) continue;
         const format2 = imports.formats.get(hit.i);
         if (format2 == null) continue;
         const fileOff = image.base + hit.s.fileoff + (slot - hit.s.vmaddr);
@@ -465,7 +479,7 @@
     }
     return Object.assign({}, result, { addrs, kinds, flags, names });
   }
-  var MH_MAGIC_64, FAT_MAGIC, FAT_MAGIC_64, LC_SEGMENT_64, LC_DYLD_CHAINED_FIXUPS, S_SYMBOL_STUBS, PTR_ARM64E, PTR_ARM64E_24, PTR_64;
+  var MH_MAGIC_64, FAT_MAGIC, FAT_MAGIC_64, LC_SEGMENT_64, LC_DYLD_CHAINED_FIXUPS, S_SYMBOL_STUBS, MAX_LOAD_COMMAND_BYTES, MAX_FIXUP_BYTES, MAX_CHAINED_IMPORTS, MAX_STUB_BYTES, MAX_STUBS, MAX_SUPPLEMENTAL_READ_BYTES, PTR_ARM64E, PTR_ARM64E_24, PTR_64;
   var init_chained = __esm({
     "js/chained.js"() {
       MH_MAGIC_64 = 4277009103;
@@ -474,9 +488,81 @@
       LC_SEGMENT_64 = 25;
       LC_DYLD_CHAINED_FIXUPS = 2147483700;
       S_SYMBOL_STUBS = 8;
+      MAX_LOAD_COMMAND_BYTES = 4 * 1024 * 1024;
+      MAX_FIXUP_BYTES = 16 * 1024 * 1024;
+      MAX_CHAINED_IMPORTS = 25e4;
+      MAX_STUB_BYTES = 8 * 1024 * 1024;
+      MAX_STUBS = 8e4;
+      MAX_SUPPLEMENTAL_READ_BYTES = 32 * 1024 * 1024;
       PTR_ARM64E = /* @__PURE__ */ new Set([1, 7, 9, 10]);
       PTR_ARM64E_24 = 12;
       PTR_64 = /* @__PURE__ */ new Set([2, 6]);
+    }
+  });
+
+  // js/macho-analysis-merge.js
+  function namesOf(result) {
+    if (Array.isArray(result?.names)) return result.names.map((x) => String(x ?? ""));
+    if (typeof result?.names === "string") return result.names ? result.names.split("\n") : [];
+    return [];
+  }
+  function truthFallback(reason) {
+    return { source: "BinaryImage", normalized: true, complete: false, reasons: [String(reason || "normalized-macho-analysis-unavailable")] };
+  }
+  function markMachOSymbolTruthIncomplete(result, reason) {
+    return { ...result, symbolTruth: truthFallback(reason) };
+  }
+  function mergeMachOAnalysisResults(legacy, normalized) {
+    if (!legacy?.addrs) return normalized;
+    if (!normalized?.addrs) return markMachOSymbolTruthIncomplete(legacy, "normalized-macho-analysis-unavailable");
+    const entries = /* @__PURE__ */ new Map();
+    const ingest = (result, authoritative) => {
+      const names = namesOf(result);
+      for (let i = 0; i < result.addrs.length; i++) {
+        const addr = BigInt(result.addrs[i]), key2 = addr.toString();
+        const next = {
+          addr,
+          name: names[i] || "",
+          kind: Number(result.kinds?.[i] ?? 0),
+          flag: Number(result.flags?.[i] ?? 0),
+          provenance: result.nameProvenance?.[i] || null
+        };
+        const current2 = entries.get(key2);
+        if (!current2) {
+          entries.set(key2, next);
+          continue;
+        }
+        current2.flag ||= next.flag;
+        if (authoritative && next.name && (next.kind === 2 || !current2.name || current2.kind === 0)) {
+          current2.name = next.name;
+          current2.kind = next.kind;
+          current2.provenance = next.provenance;
+        }
+      }
+    };
+    ingest(legacy, false);
+    ingest(normalized, true);
+    const sorted = [...entries.values()].sort((a, b) => a.addr < b.addr ? -1 : a.addr > b.addr ? 1 : 0);
+    const addrs = new BigUint64Array(sorted.length), kinds = new Uint8Array(sorted.length), flags = new Uint8Array(sorted.length);
+    for (let i = 0; i < sorted.length; i++) {
+      addrs[i] = sorted[i].addr;
+      kinds[i] = sorted[i].kind;
+      flags[i] = sorted[i].flag;
+    }
+    return {
+      ...legacy,
+      addrs,
+      kinds,
+      flags,
+      names: sorted.map((x) => x.name),
+      nameProvenance: sorted.map((x) => x.provenance),
+      symbolCount: sorted.length,
+      symbolTruth: normalized.symbolTruth || truthFallback("normalized-macho-completeness-unreported"),
+      __transfer: [addrs.buffer, kinds.buffer, flags.buffer, legacy.funcs?.buffer].filter(Boolean)
+    };
+  }
+  var init_macho_analysis_merge = __esm({
+    "js/macho-analysis-merge.js"() {
     }
   });
 
@@ -727,6 +813,7 @@
     "js/backend.js"() {
       init_lru();
       init_chained();
+      init_macho_analysis_merge();
       init_analysis_cache();
       CHUNK_ROWS = 1024;
       CHUNK_BYTES = CHUNK_ROWS * 4;
@@ -762,10 +849,13 @@
           this.onChunk = null;
           this.onFatal = null;
           this._archProbe = null;
+          this._archProbeWorker = null;
+          this._archProbeFinish = null;
           this._disasmWorker = null;
           this._disasmSeq = 1;
           this._disasmPending = /* @__PURE__ */ new Map();
           this.contentHash = null;
+          this.disposed = false;
           this.analysisCache = new AnalysisCache();
           this.legacyWorker.onmessage = (event) => this._onMessage(event.data, "legacy");
           this.platformWorker.onmessage = (event) => this._onMessage(event.data, "platform");
@@ -817,6 +907,15 @@
           return name === "platform" ? this.platformWorker : this.legacyWorker;
         }
         _callTo(workerName, t2, payload = {}, transfer, onProgress) {
+          if (this.disposed) {
+            const error = new Error("Backend has been disposed.");
+            error.code = "BACKEND_DISPOSED";
+            const promise2 = Promise.reject(error);
+            promise2.requestId = null;
+            promise2.cancel = () => {
+            };
+            return promise2;
+          }
           const id = this.seq++;
           this.lastRequestId = id;
           const uiEpoch = this.gen;
@@ -847,6 +946,7 @@
           this._disasmPending.clear();
         }
         advanceEpoch() {
+          if (this.disposed) return this.analysisEpoch;
           this.analysisEpoch++;
           this.resetCache();
           this._releaseDisassembly(new StaleRequestError());
@@ -859,15 +959,36 @@
           return this.analysisEpoch;
         }
         async open(file) {
-          this.transportEpoch++;
+          if (this.disposed) {
+            const error = new Error("Backend has been disposed.");
+            error.code = "BACKEND_DISPOSED";
+            throw error;
+          }
+          const previousTransportEpoch = this.transportEpoch;
+          const openTransportEpoch = ++this.transportEpoch;
+          for (const worker of [this.legacyWorker, this.platformWorker]) worker.postMessage({ t: "cancel", epoch: previousTransportEpoch });
+          const assertCurrent = () => {
+            if (this.transportEpoch !== openTransportEpoch) throw new StaleRequestError();
+          };
+          const step = async (promise) => {
+            try {
+              const value2 = await promise;
+              assertCurrent();
+              return value2;
+            } catch (error) {
+              assertCurrent();
+              throw error;
+            }
+          };
           let detection = null;
           let platformError = null;
           try {
-            detection = await this._callTo("platform", "detect", { file });
+            detection = await step(this._callTo("platform", "detect", { file }));
           } catch (error) {
             if (error?.stale) throw error;
             platformError = error;
           }
+          assertCurrent();
           let nextFormat = "unknown";
           let nextPlatform = null;
           let nextLegacy = null;
@@ -875,22 +996,38 @@
           let result = null;
           if (detection?.formatId === "macho") {
             nextFormat = "macho";
-            const legacy = await this._callTo("legacy", "open", { file });
-            legacy.formatId = "macho";
-            for (const slice of legacy.slices || []) slice.capability = legacySliceCapability(slice);
-            legacy.capability = legacy.slices?.[0]?.capability || legacySliceCapability(null);
-            legacy.platform = { compatibility: "legacy-macho", sourceBackedDetection: true, detected: detection, duplicateUniversalParseAvoided: true };
-            nextLegacy = legacy;
-            nextPlatform = { formatId: "macho", capability: legacy.capability, detection, compatibility: "legacy-macho" };
-            result = legacy;
-          } else {
-            let platformInfo = null;
+            const legacy = await step(this._callTo("legacy", "open", { file }));
+            let normalized = null;
             try {
-              platformInfo = await this._callTo("platform", "open", { file }, null, (p) => this.onAnalysisProgress?.(p));
+              normalized = await step(this._callTo("platform", "open", { file }, null, (p) => this.onAnalysisProgress?.(p)));
             } catch (error) {
               if (error?.stale) throw error;
               platformError = error;
             }
+            assertCurrent();
+            legacy.formatId = "macho";
+            for (const slice of legacy.slices || []) slice.capability = legacySliceCapability(slice);
+            legacy.capability = legacy.slices?.[0]?.capability || legacySliceCapability(null);
+            legacy.platform = {
+              compatibility: "hybrid-macho",
+              sourceBackedDetection: true,
+              detected: detection,
+              normalizedDyldTruth: !!normalized,
+              duplicateUniversalParseAvoided: false,
+              ...platformError ? { normalizedDyldError: platformError.message } : {}
+            };
+            nextLegacy = legacy;
+            nextPlatform = normalized ? { ...normalized, normalizedDyldTruth: true, compatibility: "hybrid-macho" } : { formatId: "macho", capability: legacy.capability, detection, normalizedDyldTruth: false, compatibility: "legacy-macho" };
+            result = legacy;
+          } else {
+            let platformInfo = null;
+            try {
+              platformInfo = await step(this._callTo("platform", "open", { file }, null, (p) => this.onAnalysisProgress?.(p)));
+            } catch (error) {
+              if (error?.stale) throw error;
+              platformError = error;
+            }
+            assertCurrent();
             if (platformInfo) {
               nextPlatform = platformInfo;
               nextFormat = platformInfo.formatId || platformInfo.capability?.format || detection?.formatId || "unknown";
@@ -898,21 +1035,23 @@
               nextBridge = capability?.architecture === "arm64";
               if (nextBridge) {
                 try {
-                  await this._callTo("legacy", "open", { file });
+                  await step(this._callTo("legacy", "open", { file }));
                   const allRegions = [...(platformInfo.slices || []).flatMap((slice) => slice.regions || []), platformInfo.raw].filter(Boolean);
-                  await this._callTo("legacy", "setRegions", { regions: allRegions });
-                } catch {
+                  await step(this._callTo("legacy", "setRegions", { regions: allRegions }));
+                } catch (error) {
+                  if (error?.stale) throw error;
                   nextBridge = false;
                 }
               }
               result = platformInfo;
             } else {
-              const legacy = await this._callTo("legacy", "open", { file });
+              const legacy = await step(this._callTo("legacy", "open", { file }));
               nextLegacy = legacy;
               if (platformError && legacy.format === "Raw binary") legacy.warnings = [...legacy.warnings || [], platformError.message];
               result = legacy;
             }
           }
+          assertCurrent();
           this.advanceEpoch();
           this.file = file;
           this.formatId = nextFormat;
@@ -927,18 +1066,29 @@
           return this._callTo("platform", "probe", {});
         }
         probeArchitectures() {
+          if (this.disposed) return Promise.resolve({ ok: false, error: "Backend has been disposed.", support: { arm64: false, x86_64: false } });
           if (this._archProbe) return this._archProbe;
           this._archProbe = new Promise((resolve2) => {
             const worker = new Worker(new URL("./platform/capstone-probe-worker.js", "__HEX_ORIGIN__/userscript-assets/js/backend.js"));
+            this._archProbeWorker = worker;
+            let finished = false;
             const finish = (value2) => {
-              worker.terminate();
+              if (finished) return;
+              finished = true;
+              if (this._archProbeWorker === worker) this._archProbeWorker = null;
+              try {
+                worker.terminate();
+              } catch {
+              }
               resolve2(value2);
             };
+            this._archProbeFinish = finish;
             worker.onmessage = (event) => finish(event.data);
             worker.onerror = (event) => finish({ ok: false, error: event.message, support: { arm64: false, x86_64: false } });
             worker.postMessage({ t: "probe" });
           }).finally(() => {
             this._archProbe = null;
+            this._archProbeFinish = null;
           });
           return this._archProbe;
         }
@@ -959,13 +1109,28 @@
         cancelSearch(request) {
           this.cancel(request);
         }
-        analyze(sliceIndex) {
-          const worker = this.formatId === "macho" ? "legacy" : "platform";
-          const file = this.file;
-          return this._callTo(worker, "analyze", { sliceIndex }).then((result) => {
-            if (this.formatId !== "macho") return result;
-            return augmentAnalysisResultWithChainedImports(file, sliceIndex, result);
-          });
+        async analyze(sliceIndex) {
+          if (this.formatId !== "macho") return this._callTo("platform", "analyze", { sliceIndex });
+          const uiEpoch = this.gen, transportEpoch = this.transportEpoch, file = this.file;
+          const assertCurrent = () => {
+            if (uiEpoch !== this.gen || transportEpoch !== this.transportEpoch || file !== this.file) throw new StaleRequestError();
+          };
+          const legacy = await this._callTo("legacy", "analyze", { sliceIndex });
+          assertCurrent();
+          const enriched = await augmentAnalysisResultWithChainedImports(file, sliceIndex, legacy);
+          assertCurrent();
+          if (!this.platformInfo?.normalizedDyldTruth) {
+            return markMachOSymbolTruthIncomplete(enriched, this.legacyInfo?.platform?.normalizedDyldError || "normalized-macho-analysis-unavailable");
+          }
+          try {
+            const normalized = await this._callTo("platform", "analyze", { sliceIndex });
+            assertCurrent();
+            return mergeMachOAnalysisResults(enriched, normalized);
+          } catch (error) {
+            if (error?.stale) throw error;
+            assertCurrent();
+            return markMachOSymbolTruthIncomplete(enriched, error?.message || "normalized-macho-analysis-failed");
+          }
         }
         guessFunctions(regionId, limit2, onProgress) {
           return this.call("guessFunctions", { regionId, limit: limit2 }, null, onProgress);
@@ -1065,6 +1230,31 @@
           this.resetCache();
           this._releaseDisassembly(new Error("disassembly worker released for memory pressure"));
           return this._callTo("platform", "cleanupMemory", {});
+        }
+        dispose() {
+          if (this.disposed) return;
+          this.disposed = true;
+          const failure = new Error("Backend has been disposed.");
+          failure.code = "BACKEND_DISPOSED";
+          this.analysisEpoch++;
+          this.transportEpoch++;
+          this.resetCache();
+          this._releaseDisassembly(failure);
+          this._archProbeFinish?.({ ok: false, error: failure.message, support: { arm64: false, x86_64: false } });
+          this._archProbeFinish = null;
+          this._archProbeWorker = null;
+          for (const pending of this.pending.values()) pending.reject(failure);
+          this.pending.clear();
+          for (const worker of [this.legacyWorker, this.platformWorker]) {
+            try {
+              worker.terminate();
+            } catch {
+            }
+          }
+          if (typeof document !== "undefined" && this._memoryPressureHandler) {
+            document.removeEventListener("visibilitychange", this._memoryPressureHandler);
+            this._memoryPressureHandler = null;
+          }
         }
         resetCache() {
           this.cache.clear();
@@ -3712,6 +3902,7 @@
           this.functionRegions = [];
           this.setFunctionRegions(r.regions || [], false);
           this.capped = !!r.capped;
+          this.symbolTruth = r.symbolTruth || null;
           const discoveryComplete = r.discoveryComplete === true || r.functionStartsComplete === true || r.functionStartsExact === true;
           this.allSeedsExact = r.allSeedsExact != null ? !!r.allSeedsExact : !!r.functionStartsExact;
           this.functionStartsComplete = discoveryComplete;
@@ -8412,6 +8603,14 @@
   });
 
   // js/analyze.js
+  function supportsArm64SemanticAnalysis(architecture) {
+    return ARM64_SEMANTIC_ARCHES.has(String(architecture || "").toLowerCase());
+  }
+  function rowBudget(opts = {}) {
+    const raw = Number(opts?.maxRows);
+    if (!Number.isFinite(raw)) return MAX_INSTRUCTIONS;
+    return Math.max(1, Math.min(MAX_INSTRUCTIONS, Math.floor(raw)));
+  }
   function destIndex(mn) {
     const b = mn.toLowerCase();
     if (/^(str|stp|stur|strb|strh|sturb|sturh|stnp|st1|st2|st3|st4|stlr)/.test(b)) return -1;
@@ -8427,9 +8626,11 @@
       if (op2.index && op2.index.cls === "gp") into.add(op2.index.num);
     }
   }
-  async function analyzeFunction(backend, region, startRow, endRow, symbols, onProgress) {
-    const rows = Math.min(endRow - startRow + 1, MAX_INSTRUCTIONS);
-    const truncated = endRow - startRow + 1 > MAX_INSTRUCTIONS;
+  async function analyzeFunction(backend, region, startRow, endRow, symbols, onProgress, opts = {}) {
+    const requestedRows = Math.max(0, endRow - startRow + 1);
+    const rows = Math.min(requestedRows, rowBudget(opts));
+    if (rows <= 0) throw new Error("analysis-range-empty");
+    const truncated = requestedRows > rows;
     const end = startRow + rows - 1;
     const res = {
       startRow,
@@ -8480,7 +8681,7 @@
         if (!mn) continue;
         const addr = region.vmAddr + BigInt(row) * 4n;
         const b = mn.toLowerCase();
-        if (rawInsns.length < MAX_MODEL_ROWS) rawInsns.push({ row, address: addr, mn, ops: opsStr });
+        if (rawInsns.length <= MAX_MODEL_ROWS) rawInsns.push({ row, address: addr, mn, ops: opsStr });
         if (b.charCodeAt(0) === 46) {
           res.dataRows++;
           continue;
@@ -8587,19 +8788,24 @@
         return Number(rel2 / 4n);
       }
     });
+    if (truncated && res.model) res.model.truncated = true;
+    res.truncated = truncated || !!res.model?.truncated;
+    res.requestedRows = requestedRows;
+    res.analyzedRows = rows;
     return res;
   }
-  function cacheKey(region, startRow, endRow, symbols) {
+  function cacheKey(region, startRow, endRow, symbols, maxRows = MAX_INSTRUCTIONS) {
     const symbolGen = symbols && symbols.gen != null ? symbols.gen : 0;
     const regionRevision = region?.revision ?? region?.gen ?? region?.generation ?? 0;
-    return [symbolGen, region?.id, String(region?.vmAddr ?? ""), String(region?.size ?? ""), regionRevision, startRow, endRow].join(":");
+    return [symbolGen, region?.id, String(region?.vmAddr ?? ""), String(region?.size ?? ""), regionRevision, startRow, endRow, "rows=" + maxRows].join(":");
   }
   function clearAnalysisCache() {
     cache.clear();
   }
-  async function analyzeFunctionCached(backend, region, startRow, endRow, symbols, onProgress, opts) {
-    const key2 = cacheKey(region, startRow, endRow, symbols);
-    const wantTexts = !opts || opts.texts !== false;
+  async function analyzeFunctionCached(backend, region, startRow, endRow, symbols, onProgress, opts = {}) {
+    const budget = rowBudget(opts);
+    const key2 = cacheKey(region, startRow, endRow, symbols, budget);
+    const wantTexts = opts.texts !== false;
     const hit = cache.get(key2);
     if (hit) {
       if (onProgress) onProgress(1);
@@ -8612,7 +8818,7 @@
       }
       return hit;
     }
-    const res = await analyzeFunction(backend, region, startRow, endRow, symbols, onProgress);
+    const res = await analyzeFunction(backend, region, startRow, endRow, symbols, onProgress, { ...opts, maxRows: budget });
     res.textsResolved = false;
     if (wantTexts) {
       try {
@@ -8726,7 +8932,7 @@
     if (res.truncated) lines.push("※ 大きすぎるため、先頭から " + MAX_INSTRUCTIONS.toLocaleString() + " 命令ぶんだけを見ています。");
     return lines;
   }
-  var MAX_INSTRUCTIONS, MAX_MODEL_ROWS, MODEL_TEXTS, CACHE_MAX, cache, HINTS;
+  var MAX_INSTRUCTIONS, MAX_MODEL_ROWS, MODEL_TEXTS, ARM64_SEMANTIC_ARCHES, CACHE_MAX, cache, HINTS;
   var init_analyze = __esm({
     "js/analyze.js"() {
       init_backend();
@@ -8737,6 +8943,7 @@
       MAX_INSTRUCTIONS = 4e4;
       MAX_MODEL_ROWS = 6e3;
       MODEL_TEXTS = 96;
+      ARM64_SEMANTIC_ARCHES = /* @__PURE__ */ new Set(["arm64", "arm64e", "arm64_32"]);
       CACHE_MAX = 24;
       cache = new LRU(CACHE_MAX);
       HINTS = [
@@ -47256,8 +47463,8 @@ ${rendered}` : rendered,
           const fingerprint2 = input2.fingerprint?.schema ? fingerprintFunction(input2.fingerprint) : fingerprintFunction(input2.fingerprint || input2);
           const sourceBinaryHash = input2.sourceBinaryHash || "unknown";
           const address = input2.address ?? fingerprint2.address;
-          const identityKey = input2.identityKey || fingerprint2.semanticHash || fingerprint2.normalizedBytesHash || fingerprint2.hash || null;
-          const id = input2.id || `${sourceBinaryHash}:${addrText2(address)}:${identityKey || "sparse"}`;
+          const identityKey2 = input2.identityKey || fingerprint2.semanticHash || fingerprint2.normalizedBytesHash || fingerprint2.hash || null;
+          const id = input2.id || `${sourceBinaryHash}:${addrText2(address)}:${identityKey2 || "sparse"}`;
           const requestedConfirmation = CONFIRMATION_LEVELS.includes(input2.confirmation) ? input2.confirmation : null;
           const userConfirmed = input2.userConfirmed || requestedConfirmation === "user-confirmed";
           const debuggerConfirmed = input2.debuggerConfirmed || requestedConfirmation === "debugger-confirmed";
@@ -47267,7 +47474,7 @@ ${rendered}` : rendered,
           const record = {
             schemaVersion: KNOWLEDGE_SCHEMA_VERSION,
             id,
-            identityKey,
+            identityKey: identityKey2,
             fingerprint: fingerprint2,
             fingerprints: uniq4(input2.fingerprints || (fingerprint2.hash ? [fingerprint2.hash] : [])),
             names: uniq4(input2.names || (input2.name ? [input2.name] : [])),
@@ -49020,6 +49227,15 @@ ${rendered}` : rendered,
   function bytesOf(value2) {
     return Array.from(value2 || [], (x) => Number(x) & 255);
   }
+  function identityKey(identity) {
+    const meta = identity?.metadata || {};
+    return [identity?.hash || "", meta.sliceIndex, meta.sliceOffset, meta.sliceSize, meta.uuid, meta.architecture].map(keyOf2).join("\0");
+  }
+  function staleWorkspaceError() {
+    const error = new Error("workspace-binding-changed");
+    error.code = "HEX_WORKSPACE_STALE";
+    return error;
+  }
   function binaryIdentity(app2, hash = null) {
     const info = app2?.store?.get?.("fileInfo") || null;
     const index2 = app2?.store?.get?.("sliceIndex") ?? -1;
@@ -49044,7 +49260,8 @@ ${rendered}` : rendered,
     const a = project.binary.metadata || {}, b = identity.metadata || {};
     const keys = ["sliceIndex", "sliceOffset", "sliceSize", "uuid", "architecture"];
     for (const key2 of keys) {
-      if (a[key2] == null || b[key2] == null) continue;
+      if (b[key2] == null) continue;
+      if (a[key2] == null) return { ok: false, reason: "slice-identity-incomplete", field: key2 };
       if (keyOf2(a[key2]) !== keyOf2(b[key2])) return { ok: false, reason: "slice-identity-mismatch", field: key2 };
     }
     return { ok: true };
@@ -49202,15 +49419,45 @@ ${rendered}` : rendered,
           this.baseline = null;
           this.diffState = null;
           this.busy = null;
+          this.bindingRevision = 0;
+          this.bindSequence = 0;
+          this.baselineSequence = 0;
+        }
+        _resetBoundState() {
+          const previous = this.baseline;
+          this.bindingRevision++;
+          this.baselineSequence++;
+          this.project = null;
+          this.baseline = null;
+          this.diffState = null;
+          this.busy = null;
+          if (previous?.ownedBackend) previous.backend?.dispose?.();
+        }
+        _assertBinding(revision) {
+          if (revision !== this.bindingRevision) throw staleWorkspaceError();
         }
         async bind() {
-          if (!this.app?.store?.get?.("fileInfo")) {
+          const sequence2 = ++this.bindSequence;
+          const sourceInfo = this.app?.store?.get?.("fileInfo") || null;
+          if (!sourceInfo) {
             this.identity = null;
-            this.project = null;
+            this._resetBoundState();
             return null;
           }
+          const sourceSlice = this.app?.store?.get?.("sliceIndex") ?? -1;
+          const sourceBackendGen = this.app?.backend?.gen;
           const hash = await this.app.backend.ensureContentHash();
-          this.identity = binaryIdentity(this.app, hash);
+          const superseded = sequence2 !== this.bindSequence || this.app?.store?.get?.("fileInfo") !== sourceInfo || (this.app?.store?.get?.("sliceIndex") ?? -1) !== sourceSlice || sourceBackendGen != null && this.app?.backend?.gen !== sourceBackendGen;
+          if (superseded) {
+            if (sequence2 === this.bindSequence) {
+              this.identity = null;
+              this._resetBoundState();
+            }
+            return null;
+          }
+          const nextIdentity = binaryIdentity(this.app, hash);
+          if (this.identity && identityKey(this.identity) !== identityKey(nextIdentity)) this._resetBoundState();
+          this.identity = nextIdentity;
           const saved = this._loadLocal(this.identity);
           if (saved) {
             const ok = sameProjectIdentity(saved, this.identity);
@@ -49246,8 +49493,22 @@ ${rendered}` : rendered,
           return exportHexProject(project, cleanName2(this.identity?.metadata?.name) + ".hexproj");
         }
         async importProject(input2) {
-          if (!this.identity) await this.bind();
+          const liveHash = this.app?.backend?.contentHash || null;
+          const liveKey = liveHash ? identityKey(binaryIdentity(this.app, liveHash)) : "";
+          if (!this.identity || !liveHash || identityKey(this.identity) !== liveKey) await this.bind();
+          if (!this.identity) throw staleWorkspaceError();
+          const revision = this.bindingRevision, boundKey = identityKey(this.identity);
+          const sourceInfo = this.app?.store?.get?.("fileInfo") || null;
+          const sourceSlice = this.app?.store?.get?.("sliceIndex") ?? -1;
+          const sourceBackendGen = this.app?.backend?.gen;
+          const assertCurrent = () => {
+            this._assertBinding(revision);
+            const currentHash = this.app?.backend?.contentHash || null;
+            const currentLiveKey = currentHash ? identityKey(binaryIdentity(this.app, currentHash)) : "";
+            if (identityKey(this.identity) !== boundKey || currentLiveKey !== boundKey || this.app?.store?.get?.("fileInfo") !== sourceInfo || (this.app?.store?.get?.("sliceIndex") ?? -1) !== sourceSlice || sourceBackendGen != null && this.app?.backend?.gen !== sourceBackendGen || !currentHash) throw staleWorkspaceError();
+          };
           const project = await importHexProject(input2);
+          assertCurrent();
           const match = sameProjectIdentity(project, this.identity);
           if (!match.ok) {
             const error = new Error(match.reason);
@@ -49275,51 +49536,87 @@ ${rendered}` : rendered,
         async loadBaseline(file, { backend = null } = {}) {
           if (!file) throw new Error("baseline-file-required");
           if (!this.identity) await this.bind();
-          const other = backend || this.backendFactory();
-          const info = await other.open(file);
-          const currentArch = this.identity?.metadata?.architecture || null;
-          const sliceIndex = chooseSlice(info, currentArch);
-          if (sliceIndex < 0) throw new Error("baseline-slice-unavailable");
-          const slice = info.slices[sliceIndex];
-          const arch = slice?.capability?.architecture || slice?.info?.architecture || slice?.info?.cpu || null;
-          if (currentArch && arch && currentArch !== arch) {
-            const error = new Error(`architecture mismatch: ${currentArch} vs ${arch}`);
-            error.code = "DIFF_ARCH_MISMATCH";
+          if (!this.identity) throw staleWorkspaceError();
+          const revision = this.bindingRevision, request = ++this.baselineSequence;
+          const assertCurrent = () => {
+            this._assertBinding(revision);
+            if (request !== this.baselineSequence) throw staleWorkspaceError();
+          };
+          const ownedBackend = !backend, other = backend || this.backendFactory();
+          try {
+            const info = await other.open(file);
+            assertCurrent();
+            const currentArch = this.identity?.metadata?.architecture || null;
+            const sliceIndex = chooseSlice(info, currentArch);
+            if (sliceIndex < 0) throw new Error("baseline-slice-unavailable");
+            const slice = info.slices[sliceIndex];
+            const arch = slice?.capability?.architecture || slice?.info?.architecture || slice?.info?.cpu || null;
+            if (currentArch && arch && currentArch !== arch) {
+              const error = new Error(`architecture mismatch: ${currentArch} vs ${arch}`);
+              error.code = "DIFF_ARCH_MISMATCH";
+              throw error;
+            }
+            const hash = await other.ensureContentHash();
+            assertCurrent();
+            const result = await other.analyze(sliceIndex);
+            assertCurrent();
+            const symbols = new SymbolIndex({ ...result, regions: slice?.regions || [] });
+            const functions = functionsFromSymbols(symbols);
+            assertCurrent();
+            const previous = this.baseline;
+            this.baseline = { file, backend: other, ownedBackend, info, sliceIndex, slice, architecture: arch, hash, symbols, functions, complete: functions.complete === true };
+            if (previous?.ownedBackend && previous.backend !== other) previous.backend?.dispose?.();
+            this.diffState = null;
+            this.busy = null;
+            return this.baseline;
+          } catch (error) {
+            if (ownedBackend) other?.dispose?.();
             throw error;
           }
-          const hash = await other.ensureContentHash();
-          const result = await other.analyze(sliceIndex);
-          const symbols = new SymbolIndex({ ...result, regions: slice?.regions || [] });
-          const functions = functionsFromSymbols(symbols);
-          this.baseline = { file, backend: other, info, sliceIndex, slice, architecture: arch, hash, symbols, functions, complete: functions.complete === true };
-          this.diffState = null;
-          return this.baseline;
         }
         async diff(options = {}) {
           if (this.busy) return this.busy;
-          this.busy = (async () => {
-            if (!this.baseline) throw new Error("baseline-not-loaded");
+          const revision = this.bindingRevision, baseline = this.baseline;
+          let task;
+          task = (async () => {
+            if (!baseline) throw new Error("baseline-not-loaded");
+            const assertCurrent = () => {
+              this._assertBinding(revision);
+              if (this.baseline !== baseline) throw staleWorkspaceError();
+            };
             try {
               await this.app.ensureRecognition?.({ maxFunctions: MAX_DIFF_FUNCTIONS, knowledgeLimit: 0 });
             } catch {
             }
-            const current2 = currentDiffFunctions(this.app), before2 = this.baseline.functions;
+            assertCurrent();
+            const current2 = currentDiffFunctions(this.app), before2 = baseline.functions;
             const result = diffFunctions(before2, current2, { mode: "fast", threshold: options.threshold ?? 0.62, matchBudget: options.matchBudget || { maxCandidateEvaluations: 15e5, maxEdges: 3e5, maxComponentNodes: 4096, maxComponentEdges: 65536 } });
+            assertCurrent();
             const inputsComplete = before2.complete === true && current2.complete === true;
             result.completeness = { complete: inputsComplete && result.truncated !== true, reasons: [], baseline: { complete: before2.complete === true, total: before2.total, scanned: before2.scanned, reason: before2.truncationReason }, current: { complete: current2.complete === true, total: current2.total, scanned: current2.scanned, reason: current2.truncationReason } };
             if (!before2.complete) result.completeness.reasons.push("baseline-function-set-incomplete");
             if (!current2.complete) result.completeness.reasons.push("current-function-set-incomplete");
             if (result.truncated) result.completeness.reasons.push("matcher-truncated");
-            result.provenance = { baselineHash: this.baseline.hash, currentHash: this.identity?.hash || null, architecture: this.baseline.architecture, currentArchitecture: this.identity?.metadata?.architecture || null, baselineName: this.baseline.info?.name || this.baseline.file?.name || null, currentName: this.identity?.metadata?.name || null, complete: result.completeness.complete };
+            result.provenance = { baselineHash: baseline.hash, currentHash: this.identity?.hash || null, architecture: baseline.architecture, currentArchitecture: this.identity?.metadata?.architecture || null, baselineName: baseline.info?.name || baseline.file?.name || null, currentName: this.identity?.metadata?.name || null, complete: result.completeness.complete };
+            assertCurrent();
             this.diffState = result;
             return result;
           })().finally(() => {
-            this.busy = null;
+            if (this.busy === task) this.busy = null;
           });
-          return this.busy;
+          this.busy = task;
+          return task;
         }
         getBinaryDiff() {
           return this.diffState;
+        }
+        invalidate() {
+          this.bindSequence++;
+          this.identity = null;
+          this._resetBoundState();
+        }
+        dispose() {
+          this.invalidate();
         }
       };
     }
@@ -50232,7 +50529,8 @@ ${rendered}` : rendered,
          */
         async analyzeFunctionAt(addr) {
           const sym = this.symbols, range2 = this.validatedFunctionRange(addr);
-          if (!range2.ok || !this.store.get("canDisassemble") || !sym.functionCount) return null;
+          const architecture = this.store.get("architecture") || this.store.get("capability")?.architecture || null;
+          if (!supportsArm64SemanticAnalysis(architecture) || !range2.ok || !this.store.get("canDisassemble") || !sym.functionCount) return null;
           const region = range2.region, alignment = Math.max(1, Number(this.store.get("instructionAlignment") || this.store.get("capability")?.instructionAlignment || 4));
           const width2 = BigInt(alignment);
           if ((range2.start - region.vmAddr) % width2 !== 0n) return null;
@@ -50270,6 +50568,8 @@ ${rendered}` : rendered,
             return;
           }
           const openEpoch = this.backend.gen;
+          this.workspace?.invalidate();
+          this.activeProject = null;
           closeAllSheets();
           this.sampleOpen = sampleOpen;
           this.detailRefresh = null;
@@ -50616,6 +50916,8 @@ ${rendered}` : rendered,
           const info = this.store.get("fileInfo");
           if (!info || !info.slices[index2] || info.slices[index2].error) return;
           this.workspace?.autosave();
+          this.workspace?.invalidate();
+          this.activeProject = null;
           this.noteAttachController?.abort();
           this.backend.advanceEpoch();
           this.forgetSemantics(true);
@@ -55497,8 +55799,11 @@ When evidence is insufficient, request a permitted tool or state the missing evi
     const text3 = String(value2 == null ? "" : value2).replace(/\s+/g, " ").trim();
     return text3.length > limit2 ? text3.slice(0, limit2 - 1) + "…" : text3;
   }
+  function escapeTagText(value2) {
+    return String(value2).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
   function line3(label, value2) {
-    const text3 = clip(value2);
+    const text3 = escapeTagText(clip(value2));
     return text3 ? label + ": " + text3 : "";
   }
   function composeContextBlock(context = {}) {
@@ -55522,7 +55827,7 @@ When evidence is insufficient, request a permitted tool or state the missing evi
   }
   function intentBlock(intent) {
     return intent ? `<intent>
-${clip(intent, 120)}
+${escapeTagText(clip(intent, 120))}
 </intent>` : "";
   }
   function composePrompt(input2 = {}) {
@@ -56755,9 +57060,11 @@ ${clip(intent, 120)}
     const matches = (app2.store.get("regions") || []).filter((region) => containsAddress(region, addr));
     return matches.find((region) => region.exec === true) || matches.find((region) => region.exec !== false) || matches[0] || null;
   }
-  async function analyzeModelAt(app2, address) {
+  async function analyzeModelAt(app2, address, end = null, options = {}) {
     const addr = toBigInt(address);
     if (addr == null) return null;
+    const architecture = app2.store.get("architecture") || app2.store.get("capability")?.architecture || null;
+    if (!supportsArm64SemanticAnalysis(architecture)) return null;
     const region = regionForAddress(app2, addr);
     if (!region || !app2.store.get("canDisassemble")) return null;
     const sym = app2.symbols;
@@ -56765,14 +57072,29 @@ ${clip(intent, 120)}
     const start = fn ? fn.start : addr;
     if (!containsAddress(region, start)) return null;
     const step = BigInt(instructionBytes(app2));
-    if ((start - region.vmAddr) % step !== 0n) return null;
+    if (step !== 4n || (start - region.vmAddr) % step !== 0n) return null;
     const startRow = Number((start - region.vmAddr) / step);
     const totalRows = Number(region.size / step);
-    const endRow = fn && fn.end != null ? Math.min(totalRows - 1, Number((fn.end - region.vmAddr) / step) - 1) : Math.min(totalRows - 1, startRow + 2048);
+    const regionEnd = region.vmAddr + region.size;
+    const provenEnd = fn?.end == null ? null : toBigInt(fn.end);
+    const requestedEnd = toBigInt(end);
+    let boundedEnd = provenEnd;
+    if (requestedEnd != null) boundedEnd = boundedEnd == null ? requestedEnd : requestedEnd < boundedEnd ? requestedEnd : boundedEnd;
+    if (boundedEnd == null) boundedEnd = start + 2048n * step;
+    if (boundedEnd > regionEnd) boundedEnd = regionEnd;
+    if (boundedEnd <= start) return null;
+    const endRow = Math.min(totalRows - 1, Number((boundedEnd - region.vmAddr + step - 1n) / step) - 1);
     if (endRow < startRow) return null;
+    const rawMax = Number(options?.maxInstructions);
+    if (Number.isFinite(rawMax) && Math.floor(rawMax) <= 0) return null;
+    const maxRows = Number.isFinite(rawMax) ? Math.max(1, Math.floor(rawMax)) : void 0;
+    const coversProvenEnd = provenEnd != null && provenEnd <= regionEnd && boundedEnd >= provenEnd;
     try {
-      const res = await analyzeFunctionCached(app2.backend, region, startRow, endRow, sym);
-      return res && res.model ? res.model : null;
+      const res = await analyzeFunctionCached(app2.backend, region, startRow, endRow, sym, null, { maxRows });
+      const model = res?.model;
+      if (!model) return null;
+      const incomplete = !coversProvenEnd || res.truncated === true || model.truncated === true;
+      return incomplete && model.truncated !== true ? { ...model, truncated: true } : model;
     } catch {
       return null;
     }
@@ -56848,7 +57170,7 @@ ${clip(intent, 120)}
       },
       getBinaryDiff: () => app2.getBinaryDiff?.() || null,
       functionName: nameOf,
-      analyze: (address) => analyzeModelAt(app2, address),
+      analyze: (address, end, options) => analyzeModelAt(app2, address, end, options),
       async searchStrings(query, options = {}) {
         const limit2 = Math.max(1, Math.min(200, Number(options.limit) || 50));
         const rows = await app2.ensureStrings();
@@ -63099,7 +63421,7 @@ ${safeJSONStringify(payload)}
     }
   }
   function safeJSONStringify(value2) {
-    return JSON.stringify(value2, (_key, item) => typeof item === "bigint" ? `0x${item.toString(16)}` : item);
+    return JSON.stringify(value2, (_key, item) => typeof item === "bigint" ? `0x${item.toString(16)}` : item).replace(/&/g, "\\u0026").replace(/</g, "\\u003c").replace(/>/g, "\\u003e");
   }
   function apiEndpoint(path) {
     const base = globalThis.__HEX_API_BASE__;
@@ -63276,14 +63598,35 @@ ${safeJSONStringify(payload)}
       } catch {
       }
     };
+    const workspaceHash = () => {
+      const live = app2.backend?.contentHash || null;
+      if (live) return String(live);
+      if (app2.backend && Object.prototype.hasOwnProperty.call(app2.backend, "contentHash")) return null;
+      return app2.workspace?.identity?.hash || app2.workspace?.project?.binary?.hash || app2.activeProject?.binary?.hash || app2.project?.binary?.hash || app2.currentProject?.binary?.hash || app2.project?.binaryHash || app2.currentProject?.binaryHash || null;
+    };
     define("binaryFingerprint", () => {
-      const stored = app2.store?.get?.("binaryFingerprint") || app2.store?.get?.("contentFingerprint") || app2.binaryFingerprint || null;
-      if (stored?.hash) return stored;
-      const projectHash = app2.project?.binaryHash || app2.currentProject?.binaryHash || null;
-      return projectHash ? { algorithm: "project-content-hash", hash: String(projectHash) } : null;
+      const liveHash = workspaceHash();
+      if (liveHash) return { algorithm: "content-hash", hash: String(liveHash) };
+      const stored = app2.backend ? null : app2.store?.get?.("binaryFingerprint") || app2.store?.get?.("contentFingerprint") || app2.binaryFingerprint || null;
+      return stored?.hash ? stored : null;
     });
     define("binaryHash", () => context.binaryFingerprint?.hash || null);
-    define("projectId", () => app2.project?.id || app2.currentProject?.id || app2.project?.binaryHash || null);
+    define("binaryIdentity", () => {
+      const fingerprint2 = context.binaryFingerprint;
+      if (!fingerprint2?.hash) return null;
+      const slice = app2.store?.get?.("sliceIndex");
+      const hash = String(fingerprint2.hash);
+      return {
+        id: `content:${hash}${slice == null ? "" : `:${String(slice)}`}`,
+        kind: "content-derived",
+        confidence: "strong",
+        state: "ready",
+        algorithm: String(fingerprint2.algorithm || "existing-hash"),
+        hash,
+        legacyId: context.binaryId == null ? null : String(context.binaryId)
+      };
+    });
+    define("projectId", () => app2.project?.id || app2.currentProject?.id || app2.workspace?.project?.binary?.hash || app2.activeProject?.binary?.hash || app2.project?.binaryHash || null);
     define("sliceIndex", () => app2.store?.get?.("sliceIndex") ?? null);
     define("architecture", () => app2.store?.get?.("architecture") || app2.store?.get?.("capability")?.architecture || null);
     define("fileInfo", () => app2.store?.get?.("fileInfo") || null);
@@ -63293,7 +63636,12 @@ ${safeJSONStringify(payload)}
     const state = { binaryId: null, known: false, sessionId: null };
     const originalPlatform = typeof context.runtime.platform === "function" ? context.runtime.platform.bind(context.runtime) : null;
     const originalVerify = typeof context.runtime.verifyHypothesis === "function" ? context.runtime.verifyHypothesis.bind(context.runtime) : null;
-    const currentBinaryId = () => context.binaryId == null ? null : String(context.binaryId);
+    const currentBinaryId = () => {
+      const identity = context.binaryIdentity;
+      const strong = identity && typeof identity === "object" ? identity.id : identity;
+      const value2 = strong ?? context.binaryId;
+      return value2 == null ? null : String(value2);
+    };
     const capture = (platform) => {
       state.binaryId = currentBinaryId();
       state.known = true;
