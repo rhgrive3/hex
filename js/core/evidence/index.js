@@ -101,6 +101,7 @@ export function createClaimNode(input = {}) {
   let verdict = requestedVerdict;
   if (contradictingEvidenceIds.length || requestedVerdict === 'contradicted') verdict = 'contradicted';
   else if (requestedVerdict === 'confirmed') verdict = supportingEvidenceIds.length || confirmedByEvidenceIds.length ? 'supported' : 'unverified';
+  else if (requestedVerdict === 'supported' && !supportingEvidenceIds.length) verdict = 'unverified';
   const targetEntityIds = stringArray(input.targetEntityIds, 'evidence-invalid-targets');
   const scope = input.scope == null ? null : jsonSafe(input.scope);
   if (!targetEntityIds.length && scope == null) fail('evidence-claim-target-required');
@@ -210,8 +211,8 @@ export class EvidenceGraph {
     let verdict = claim.verdict;
     if (knownContradictions.length || claim.verdict === 'contradicted') verdict = 'contradicted';
     else if (deterministicConfirmations.length) verdict = 'confirmed';
-    else if (knownSupport.length || claim.verdict === 'supported') verdict = 'supported';
-    else if (claim.verdict === 'unverified') verdict = 'unverified';
+    else if (knownSupport.length) verdict = 'supported';
+    else if (supporting.size || confirmedBy.size || claim.verdict === 'unverified') verdict = 'unverified';
     else verdict = 'unknown';
     return deepFreeze({
       verdict,
