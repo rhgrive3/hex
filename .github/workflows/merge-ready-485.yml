@@ -24,10 +24,27 @@ jobs:
           status=$?
           set -e
           if [ "$status" -ne 0 ]; then
-            echo 'MERGE_CONFLICTS:'
-            git diff --name-only --diff-filter=U
-            exit "$status"
+            conflicts="$(git diff --name-only --diff-filter=U)"
+            test "$conflicts" = "js/names.js" || { echo "Unexpected conflicts: $conflicts"; exit 1; }
+            # #477 deliberately keeps unsaved mutations dirty/exportable instead of
+            # rolling them back. Keep that newer contract, while retaining the
+            # latest-main invalid-key and import-identity validation boundaries.
+            git checkout --ours js/names.js
+            python3 <<'PY'
+          from pathlib import Path
+          p = Path('js/names.js')
+          s = p.read_text()
+          s = s.replace("  setVarName(func, k, name) {\n    const kk = key(func) + ':' + k;\n    const clean = cleanName(name);",
+                        "  setVarName(func, k, name) {\n    const kk = key(func) + ':' + k;\n    if (!key(func)) return this._saveFailure('INVALID_KEY');\n    const clean = cleanName(name);")
+          s = s.replace("  setType(func, k, type) {\n    const kk = key(func) + ':' + k;\n    const clean = (type || '').toString().slice(0, 80).trim();",
+                        "  setType(func, k, type) {\n    const kk = key(func) + ':' + k;\n    if (!key(func)) return this._saveFailure('INVALID_KEY');\n    const clean = (type || '').toString().slice(0, 80).trim();")
+          s = s.replace("  fromJSON(text) {\n    const o = JSON.parse(text);\n    let n = 0;",
+                        "  fromJSON(text) {\n    const o = JSON.parse(text);\n    if (!o || typeof o !== 'object') throw new Error('invalid-notes-import');\n    if (o.id != null && this.id != null && String(o.id) !== String(this.id)) throw new Error('notes-file-mismatch');\n    let n = 0;")
+          p.write_text(s)
+          PY
+            git add js/names.js
           fi
+          test -z "$(git diff --name-only --diff-filter=U)"
           rm .github/workflows/merge-ready-485.yml
           npm run check
           git add -A
