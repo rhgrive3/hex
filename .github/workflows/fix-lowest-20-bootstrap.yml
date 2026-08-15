@@ -16,6 +16,17 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+      - name: Adapt patch to current RMW layout
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('.github/scripts/fix-lowest-20.py')
+          s=p.read_text()
+          start=s.index("# #407 — RMW proof")
+          end=s.index("write(p, s)", start)+len("write(p, s)")
+          replacement='''# #407 — RMW proof must use the exact Memory-SSA version read by the load.\np = 'js/ir-core.js'; s = read(p)\ns = replace_once(s, """    if (!load) continue;\n    out.push({""", """    if (!load) continue;\n    // Require the load to read the exact Memory-SSA version preceding this store.\n    if (store.memDef && load.memUse !== store.memDef.prev) continue;\n    out.push({""", '#407 memory version')\nwrite(p, s)'''
+          p.write_text(s[:start]+replacement+s[end:])
+          PY
       - name: Apply fixes
         shell: bash
         run: |
