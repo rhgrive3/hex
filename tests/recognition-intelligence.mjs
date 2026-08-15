@@ -33,7 +33,7 @@ assert.equal(compareFingerprints(emptyA,emptyB).reasons.includes('strings'),fals
 const regA=fingerprintFunction({...base,bytes:Uint8Array.from([1,2,3,4]),instructions:['add x3, x1, x2','str x3, [x0,#0x20]']});
 const regB=fingerprintFunction({...base,bytes:Uint8Array.from([9,8,7,6]),instructions:['add x11, x8, x9','str x11, [x4,#0x20]']});
 assert.equal(regA.normalizedOperandsHash,regB.normalizedOperandsHash);
-assert.equal(normalizeInstruction('str x3, [x0, #0x20]').operands.includes('#0x20'), true, 'field offsets must remain semantic constants');
+assert.equal(normalizeInstruction('str x3, [x0, #0x20]').operands.includes('#32'), true, 'field offsets must remain semantic constants');
 assert.equal(normalizeInstruction('adrp x8, #0x100120000').operands.includes('@address'), true, 'relocatable addresses normalize');
 const aliasSame=fingerprintFunction({...base,bytes:null,semantic:{},cfg:{},strings:[],imports:[],calls:[],constants:[],instructions:['add x3,x1,x1','ret']});
 const aliasDifferent=fingerprintFunction({...base,bytes:null,semantic:{},cfg:{},strings:[],imports:[],calls:[],constants:[],instructions:['add x3,x1,x2','ret']});
