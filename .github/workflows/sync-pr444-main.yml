@@ -1,0 +1,30 @@
+name: Sync PR444 with main
+
+on:
+  push:
+    branches:
+      - fix/first-50-unreferenced-open-issues
+
+permissions:
+  contents: write
+
+jobs:
+  sync-main:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Merge latest main without regressing merged fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          if git merge-base --is-ancestor origin/main HEAD; then
+            echo "main is already contained in this branch"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git merge --no-edit -X theirs origin/main
+          git push origin HEAD:fix/first-50-unreferenced-open-issues
