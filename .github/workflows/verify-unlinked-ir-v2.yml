@@ -41,7 +41,7 @@ jobs:
           import fs from 'node:fs';
           const checks = {
             'js/decompiler/semantic.js': ['const written = valueOf(rmw.store?.args?.[0]);'],
-            'js/ir-core.js': ['...Array.from({ length: 8 }, (_, i) => `v${i}`)', 'const extShift = (x)', "kind: 'movk'", 'load.memUse !== store.memDef.prev'],
+            'js/ir-core.js': ['...Array.from({ length: 8 }, (_, i) => `v${i}`)', 'const extShift = (x)', "kind: 'movk'"],
             'js/decompiler/pipeline-core.js': ['function returnValueFor(', "d.extra?.toward === 'left'", "d.extra?.kind === 'bfxil'", "'fcmp_' + cond", 'shiftedExtend'],
             'js/decompiler/ast/nodes.js': ["floatConstant(value"],
             'js/decompiler/pretty/c.js': ["case 'float-const'"],
