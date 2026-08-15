@@ -108,7 +108,11 @@ function resolveFunctionRange(local, current) {
   if (current == null) return null;
   let range = null;
   try {
-    range = local.functionRange?.(current) || local.program?.functionRange?.(current) || local.symbols?.functionAt?.(current) || null;
+    // Prefer an exact function boundary source over ProgramIndex.functionRange.
+    // ProgramIndex intentionally falls back to the executable region end when
+    // an exact end is unknown; using that fallback for AI scope=function would
+    // silently widen one function to the remainder of the region.
+    range = local.functionRange?.(current) || local.symbols?.functionAt?.(current) || local.program?.functionRange?.(current) || null;
   } catch { /* optional */ }
   const start = first(range?.start, range?.address, range?.startAddr, local.activeFunction?.start, local.currentFunction?.start, current);
   const end = first(range?.end, range?.endAddr, local.activeFunction?.end, local.currentFunction?.end);
