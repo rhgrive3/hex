@@ -1,0 +1,43 @@
+name: Final revalidate PE issues 535 536
+on:
+  push:
+    branches:
+      - fix/issues-535-536-pe-final
+permissions:
+  contents: write
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Port validated PE diff
+        run: |
+          set -euo pipefail
+          git diff d85f4bbc66429566ab56d7402fd099ae48cd496f 985cfc7bb35dcca5ef1bb22132446e0418753ac6 -- \
+            js/binary/pe-loader.js js/binary/pe.js tests/issues-535-536-pe-bounds-budget.mjs tests/issues-97-100-146-147.mjs tests/issues-101-112.mjs | git apply -3
+      - name: Focused validation
+        run: |
+          node --check js/binary/pe-loader.js
+          node --check js/binary/pe.js
+          node tests/issues-535-536-pe-bounds-budget.mjs
+          node tests/issues-97-100-146-147.mjs
+          node tests/issues-101-112.mjs
+          node tests/issues-434-450-regressions.mjs
+          npm run binary:test
+      - name: Full validation
+        run: |
+          node tests/run.js
+          npm run check
+      - name: Finalize
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add js/binary/pe-loader.js js/binary/pe.js tests/issues-535-536-pe-bounds-budget.mjs tests/issues-97-100-146-147.mjs tests/issues-101-112.mjs
+          git commit -m "fix: bound PE metadata spans and resource use (#535 #536)"
+          git rm -f .github/workflows/fix-app-product-remaining.yml
+          git commit -m "chore: finalize PE fixes after ELF merge"
+          git push origin HEAD:fix/issues-535-536-pe-final
