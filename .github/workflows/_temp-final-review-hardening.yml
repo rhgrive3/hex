@@ -1,0 +1,49 @@
+name: Temp final review hardening
+on:
+  push:
+    branches:
+      - review-all-hardening-integration
+permissions:
+  contents: write
+jobs:
+  harden:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: review-all-hardening-integration
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: node scripts/_final-review-hardening.mjs
+      - name: Commit final source hardening
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          rm scripts/_final-review-hardening.mjs
+          git add js/backend.js tests/backend-disposal.mjs scripts
+          git commit -m 'Finish analysis boundary and prompt hardening'
+      - run: npm ci
+      - name: Focused regression gates
+        run: |
+          node tests/backend-open-race.mjs
+          node tests/backend-disposal.mjs
+          node tests/review-cross-binary-state.mjs
+          node tests/issues-521-527.mjs
+          node tests/ai-chatgpt-web-provider.mjs
+          node tests/ai-prompt-compose.mjs
+          node tests/userscript-version.mjs || true
+      - run: npm run userscript:build
+      - run: node tests/userscript-version.mjs
+      - run: npm run check
+      - run: npm run userscript:test
+      - name: Commit regenerated deployment bundles
+        run: |
+          git add userscript/hex.user.template.js userscript/platform-worker.bundle.js
+          if ! git diff --cached --quiet; then
+            git commit -m 'Sync bundles after final review hardening'
+          fi
+          git push origin HEAD:review-all-hardening-integration
