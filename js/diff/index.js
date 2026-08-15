@@ -25,7 +25,15 @@ function statusFor(changeType) {
 }
 
 export function diffFunctions(beforeFunctions, afterFunctions, options = {}) {
-  const matched=matchFunctions(beforeFunctions,afterFunctions,{threshold:options.threshold ?? 0.55, ambiguityWindow:options.ambiguityWindow ?? 0.04, neighborhoodIterations:options.neighborhoodIterations ?? 2, maxCandidates:options.maxCandidates ?? 128, allowSimilar:options.allowSimilar ?? true});
+  const matched=matchFunctions(beforeFunctions,afterFunctions,{
+    threshold:options.threshold ?? 0.55,
+    ambiguityWindow:options.ambiguityWindow ?? 0.04,
+    neighborhoodIterations:options.neighborhoodIterations ?? 2,
+    maxCandidates:options.maxCandidates ?? 128,
+    maxBucketScan:options.maxBucketScan,
+    allowSimilar:options.allowSimilar ?? true,
+    matchBudget:options.matchBudget,
+  });
   const matches=matched.matches.map((m)=>{
     const sameAddress=m.before.address!=null&&m.after.address!=null&&m.before.address===m.after.address;
     let changeType;
@@ -35,8 +43,45 @@ export function diffFunctions(beforeFunctions, afterFunctions, options = {}) {
     const semanticChange=semanticSummary(m.before,m.after);
     return {...m,status:statusFor(changeType),changeType,semanticChange};
   });
-  const deleted=(matched.deleted||[]).map((before)=>({before,after:null,status:'deleted',changeType:'deleted',confidence:1,semanticChange:null}));
-  const added=(matched.new||[]).map((after)=>({before:null,after,status:'new',changeType:'new',confidence:1,semanticChange:null}));
-  const changes=[...matches,...deleted,...added].sort(byAddress);
-  return { matches, deleted, new:added, changes, candidatesEvaluated:matched.candidatesEvaluated, indexBuckets:matched.indexBuckets };
+  const matchingIncomplete = matched.truncated === true
+    || matched.ambiguous === true
+    || matched.matching?.truncated === true
+    || matched.matching?.candidateGraphIncomplete === true;
+  const incompleteReason = matched.matching?.budget?.reason
+    || matched.matching?.truncatedComponents?.[0]?.reason
+    || (matched.matching?.candidateGraphIncomplete ? 'candidate-graph-incomplete' : 'matching-incomplete');
+
+  let deleted=[];
+  let added=[];
+  let unresolved=[];
+  if (matchingIncomplete) {
+    // Matcher budgets are a trust boundary. With an incomplete global graph we
+    // cannot prove that any unmatched before/after is truly deleted/new. Even
+    // when truncation is component-local, matcher.js currently exposes only
+    // aggregate unresolved counts, not stable member identities; conservatively
+    // keep every unmatched function unresolved rather than invent certainty.
+    const unresolvedBefore=(matched.deleted||[]).map((before)=>({
+      before,after:null,status:'unresolved',changeType:'unresolved',confidence:0,
+      semanticChange:null,reason:incompleteReason,side:'before',
+    }));
+    const unresolvedAfter=(matched.new||[]).map((after)=>({
+      before:null,after,status:'unresolved',changeType:'unresolved',confidence:0,
+      semanticChange:null,reason:incompleteReason,side:'after',
+    }));
+    unresolved=[...unresolvedBefore,...unresolvedAfter];
+  } else {
+    deleted=(matched.deleted||[]).map((before)=>({before,after:null,status:'deleted',changeType:'deleted',confidence:1,semanticChange:null}));
+    added=(matched.new||[]).map((after)=>({before:null,after,status:'new',changeType:'new',confidence:1,semanticChange:null}));
+  }
+  const changes=[...matches,...deleted,...added,...unresolved].sort(byAddress);
+  return {
+    matches, deleted, new:added, unresolved, changes,
+    complete:!matchingIncomplete,
+    truncated:!!matched.truncated,
+    ambiguous:!!matched.ambiguous,
+    matching:matched.matching || null,
+    candidatesEvaluated:matched.candidatesEvaluated,
+    candidateComparisons:matched.candidateComparisons,
+    indexBuckets:matched.indexBuckets,
+  };
 }
