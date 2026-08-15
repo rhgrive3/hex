@@ -1,0 +1,136 @@
+name: Aggregate remaining ready PRs into 485
+on:
+  push:
+    branches: [fix/latest-478-476-notes]
+permissions:
+  contents: write
+jobs:
+  aggregate:
+    if: startsWith(github.event.head_commit.message, 'ready-pr-merge-helper:')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Merge latest main and ready heads
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch origin main fix/latest-475-473-platform-v2 fix/latest-472-471-legacy-types-v3 fix/issue-467-ai-assembly-completeness
+
+          merge_package_union() {
+            git show :2:package.json > /tmp/pkg-ours.json
+            git show :3:package.json > /tmp/pkg-theirs.json
+            node <<'NODE'
+          const fs = require('fs');
+          const ours = JSON.parse(fs.readFileSync('/tmp/pkg-ours.json','utf8'));
+          const theirs = JSON.parse(fs.readFileSync('/tmp/pkg-theirs.json','utf8'));
+          const out = { ...ours };
+          for (const [k,v] of Object.entries(theirs)) {
+            if (k === 'scripts' || k === 'dependencies' || k === 'devDependencies' || k === 'optionalDependencies' || k === 'peerDependencies') continue;
+            if (!(k in out)) out[k] = v;
+          }
+          out.scripts = { ...(ours.scripts || {}) };
+          for (const name of new Set([...Object.keys(ours.scripts || {}), ...Object.keys(theirs.scripts || {})])) {
+            const a = String(ours.scripts?.[name] || '').split(' && ').filter(Boolean);
+            const b = String(theirs.scripts?.[name] || '').split(' && ').filter(Boolean);
+            out.scripts[name] = [...a, ...b.filter(x => !a.includes(x))].join(' && ');
+          }
+          for (const key of ['dependencies','devDependencies','optionalDependencies','peerDependencies']) {
+            const a = ours[key] || {}, b = theirs[key] || {};
+            for (const dep of Object.keys(a)) {
+              if (dep in b && a[dep] !== b[dep]) throw new Error(`${key}.${dep} version conflict: ${a[dep]} vs ${b[dep]}`);
+            }
+            if (Object.keys(a).length || Object.keys(b).length) out[key] = { ...a, ...b };
+          }
+          fs.writeFileSync('package.json', JSON.stringify(out, null, 2) + '\n');
+          NODE
+            git add package.json
+          }
+
+          merge_ref() {
+            ref="$1"
+            label="$2"
+            allowed="$3"
+            set +e
+            git merge --no-commit --no-ff "$ref"
+            status=$?
+            set -e
+            if [ "$status" -ne 0 ]; then
+              conflicts="$(git diff --name-only --diff-filter=U)"
+              printf '%s\n' "$conflicts"
+              while IFS= read -r f; do
+                [ -z "$f" ] && continue
+                case ",$allowed," in
+                  *",$f,"*) ;;
+                  *) echo "Unexpected conflict while merging $label: $f"; exit 1;;
+                esac
+              done <<< "$conflicts"
+              if echo "$conflicts" | grep -qx 'package.json'; then merge_package_union; fi
+              if echo "$conflicts" | grep -qx 'worker.js'; then
+                git checkout --ours worker.js
+                python3 <<'PY'
+          from pathlib import Path
+          p = Path('worker.js')
+          s = p.read_text()
+          old = "If the supplied evidence is insufficient, say what additional function, XREF, memory access, or call-site evidence would be most useful next."
+          new = old + " If currentFunction.assemblyMeta.truncated is true, the supplied assembly is incomplete: do not state whole-function conclusions as complete, and explicitly account for the omitted range."
+          if old not in s: raise SystemExit('legacy system prompt anchor missing')
+          s = s.replace(old, new, 1)
+          old2 = "Read-only tools may be requested. Mutations (rename, comment, type, struct field, patch, annotation) must only be suggested as actions for later human-reviewed proposals; never request or claim to apply them. Respect explicit scope. Answer in the user's language. Beginner and analyst styles change presentation only, never analysis depth."
+          new2 = "Read-only tools may be requested. Mutations (rename, comment, type, struct field, patch, annotation) must only be suggested as actions for later human-reviewed proposals; never request or claim to apply them. If any supplied function context declares truncated/incomplete assembly, do not treat the visible instruction subset as the complete function. Respect explicit scope. Answer in the user's language. Beginner and analyst styles change presentation only, never analysis depth."
+          if old2 not in s: raise SystemExit('AI turn system prompt anchor missing')
+          s = s.replace(old2, new2, 1)
+          old3 = """  return {
+    address,
+    name: boundedText(value.name, 500).trim() || null,
+    assembly,
+    pseudocode: boundedText(value.pseudocode, 30000).trim() || null,
+  };
+"""
+          new3 = """  const rawMeta = isObject(value.assemblyMeta) ? value.assemblyMeta : {};
+  const nonNegativeInt = (v, fallback = 0) => {
+    const n = Number(v);
+    return Number.isFinite(n) && n >= 0 ? Math.floor(n) : fallback;
+  };
+  const totalInstructions = nonNegativeInt(rawMeta.totalInstructions);
+  const includedInstructions = nonNegativeInt(rawMeta.includedInstructions);
+  const startRow = rawMeta.startRow == null ? null : nonNegativeInt(rawMeta.startRow);
+  const endRow = rawMeta.endRow == null ? null : nonNegativeInt(rawMeta.endRow);
+  const truncated = rawMeta.truncated === true || totalInstructions > includedInstructions;
+  return {
+    address,
+    name: boundedText(value.name, 500).trim() || null,
+    assembly,
+    assemblyMeta: {
+      totalInstructions, includedInstructions, startRow, endRow, truncated,
+      omittedInstructions: Math.max(0, nonNegativeInt(rawMeta.omittedInstructions, Math.max(0, totalInstructions - includedInstructions))),
+      selection: boundedText(rawMeta.selection, 40).trim() || 'unknown',
+    },
+    pseudocode: boundedText(value.pseudocode, 30000).trim() || null,
+  };
+"""
+          if old3 not in s: raise SystemExit('normalizeCurrentFunction anchor missing')
+          s = s.replace(old3, new3, 1)
+          s = s.replace('await await await await cleanup();', 'await cleanup();')
+          p.write_text(s)
+          PY
+                git add worker.js
+              fi
+              test -z "$(git diff --name-only --diff-filter=U)"
+            fi
+            git commit -m "Merge $label into ready integration"
+          }
+
+          merge_ref origin/main main 'package.json'
+          merge_ref origin/fix/latest-475-473-platform-v2 '#487' 'package.json,js/binary/macho.js'
+          merge_ref origin/fix/latest-472-471-legacy-types-v3 '#488' 'package.json,js/types-legacy.js'
+          merge_ref origin/fix/issue-467-ai-assembly-completeness '#491' 'package.json,worker.js'
+
+          rm .github/workflows/aggregate-ready-485.yml
+          npm run check
+          git add -A
+          git commit -m 'Finalize ready PR integration on #485'
+          git push origin HEAD
