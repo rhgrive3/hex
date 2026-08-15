@@ -27,6 +27,18 @@ export function selectToolWindow(registry, { mode = 'agent', requestedScope = 'a
   const byName = new Map(available.map((tool) => [tool.name, tool]));
   const selected = [];
   for (const name of preferred) if (byName.has(name) && selected.length < maxTools) selected.push(byName.get(name));
+
+  // Phase transitions must not invalidate the tool the model just used while
+  // that tool is still legal in the effective scope. Keeping one continuity
+  // slot avoids artificial invalid_tool_call failures and lets the runtime's
+  // repeated-call guard detect genuine loops deterministically.
+  const previousTool = previousToolName(observations);
+  if (previousTool && byName.has(previousTool) && !selected.some((item) => item.name === previousTool)) {
+    const tool = byName.get(previousTool);
+    if (selected.length < maxTools) selected.push(tool);
+    else if (selected.length) selected[selected.length - 1] = tool;
+  }
+
   if (selected.length < Math.min(5, maxTools)) {
     for (const tool of available) if (!selected.some((item) => item.name === tool.name) && selected.length < maxTools) selected.push(tool);
   }
@@ -41,4 +53,12 @@ export function choosePhase({ intent, observations = [], hypotheses = [], effect
   if (missingEvidence || (hasCandidate && observations.length > 1)) return 'verification';
   if (intent === 'find-behaviour' || intent === 'find-function' || effectiveScope === 'binary') return 'discovery';
   return 'current';
+}
+
+function previousToolName(observations) {
+  for (let index = observations.length - 1; index >= 0; index--) {
+    const name = observations[index]?.tool;
+    if (name && name !== 'deterministic_goal_planner' && name !== 'protocol_guardrail') return name;
+  }
+  return null;
 }

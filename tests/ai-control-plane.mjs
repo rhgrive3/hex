@@ -68,6 +68,9 @@ assert.ok(discovery.tools.some((tool) => tool.name === 'get_function'), 'search 
 const verification = selectToolWindow(registry, { effectiveScope: 'binary', intent: 'find-function', observations: [{ tool: 'search_functions' }, { tool: 'get_function' }], hypotheses: [{ missingEvidence: ['verify'] }], maxTools: 8 });
 assert.equal(verification.phase, 'verification');
 assert.ok(verification.tools.some((tool) => tool.name === 'verify_field_update'));
+const continuity = selectToolWindow(registry, { effectiveScope: 'binary', intent: 'unknown', observations: [{ tool: 'search_functions' }, { tool: 'search_functions' }], maxTools: 8 });
+assert.equal(continuity.phase, 'verification');
+assert.ok(continuity.tools.some((tool) => tool.name === 'search_functions'), 'phase transition retains the previous scope-valid tool so loop detection stays deterministic');
 
 // I/J: cheap routing controls planner invocation.
 assert.equal(routeIntent('この関数のx8は何？', fnSnap), 'trace-value');
