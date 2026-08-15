@@ -228,8 +228,15 @@ async function __functionEvidence(region, slice, requestId) {
   const directCalls = __addressBitmap(region);
   const prologues = __addressBitmap(region);
   const terminalStarts = __addressBitmap(region);
+  const indirectTailStarts = __addressBitmap(region);
+  const metadataFunctions = __addressBitmap(region);
+  const conditionalTargets = __addressBitmap(region);
 
   if (slice && imageBase != null) {
+    for (const a of await objcMethodImplementationStarts(slice, lo, hi, imageBase, requestId)) metadataFunctions.add(a);
+    for (const a of await initializerFunctionStarts(slice, lo, hi, imageBase, requestId)) metadataFunctions.add(a);
+    for (const a of await swiftReflectionFunctionStarts(slice, lo, hi, requestId)) metadataFunctions.add(a);
+
     const unwindRegion = (slice.regions || []).find((r) => r.section === '__unwind_info' && r.size > 0n);
     if (unwindRegion && unwindRegion.size < 16n * 1024n * 1024n) {
       try {
@@ -277,7 +284,11 @@ async function __functionEvidence(region, slice, requestId) {
     }
   }
 
-  let pos = 0, prevEnd = true;
+  let pos = 0, prevEnd = true, prevIndirectBr = false, pendingIndirectTail = null;
+  const indirectTailNext = new Set([
+    Words.KIND.STORE, Words.KIND.ADRP, Words.KIND.ARITH,
+    Words.KIND.RET, Words.KIND.CMP, Words.KIND.MOVREG,
+  ]);
   while (pos < Number(region.size)) {
     if (cancelled(requestId)) break;
     const blk = await readRange(region.fileOffset + BigInt(pos), Math.min(1024 * 1024, Number(region.size) - pos));
@@ -287,18 +298,29 @@ async function __functionEvidence(region, slice, requestId) {
     for (let i = 0; i < n; i++) {
       const w = dv.getUint32(i * 4, true);
       const pc = region.vmAddr + BigInt(pos + i * 4);
+      const kind = Words.classifyWord(w);
+      if (pendingIndirectTail != null) {
+        if (indirectTailNext.has(kind)) indirectTailStarts.add(pendingIndirectTail);
+        pendingIndirectTail = null;
+      }
+      if (prevIndirectBr && Words.isBranchImm(w)) pendingIndirectTail = pc;
       if (Words.looksLikePrologue(w)) prologues.add(pc);
       if (prevEnd) terminalStarts.add(pc);
+      if (Words.isCondBranch(w)) {
+        const t = Words.condBranchTarget(w, pc);
+        if (t != null && t >= lo && t < hi) conditionalTargets.add(t);
+      }
       if (Words.isCallImm(w)) {
         const t = Words.branchImm26(w, pc);
         if (t != null && t >= lo && t < hi) directCalls.add(t);
       }
-      prevEnd = Words.looksLikeEnd(w);
+      prevEnd = Words.looksLikeEnd(w) || kind === Words.KIND.TRAP;
+      prevIndirectBr = Words.isBr(w);
     }
     pos += n * 4;
     await yieldToQueue();
   }
-  return { data, structured, unwind, directCalls, prologues, terminalStarts };
+  return { data, structured, unwind, directCalls, prologues, terminalStarts, indirectTailStarts, metadataFunctions, conditionalTargets };
 }
 
 const __FUNCTION_DIRECT_BYTES = 24n * 1024n * 1024n;
@@ -412,9 +434,15 @@ guessFunctions = async function guessFunctionsHardened(args) {
   const kept = [];
   let filteredDataCandidates = 0;
   for (const a of result.starts) {
+    const exact = ev.unwind.has(a) || ev.directCalls.has(a) || ev.structured.has(a) || ev.metadataFunctions.has(a);
+    /* A conditional branch stays inside its current function by construction.
+       Treat a conditional target as an internal basic block unless independent
+       metadata/call evidence proves that the same address is also a public
+       function entry.  This removes cold/outlined blocks that happen to begin
+       with a normal-looking prologue after an early return. */
+    if (ev.conditionalTargets.has(a) && !exact) { filteredDataCandidates++; continue; }
     if (!ev.data.has(a)) { kept.push(a); continue; }
-    const confirmed = ev.unwind.has(a) || ev.directCalls.has(a) || ev.structured.has(a) ||
-      ev.prologues.has(a) || ev.terminalStarts.has(a);
+    const confirmed = exact || ev.prologues.has(a) || ev.terminalStarts.has(a) || ev.indirectTailStarts.has(a);
     if (confirmed) kept.push(a);
     else filteredDataCandidates++;
   }
