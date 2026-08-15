@@ -1,0 +1,256 @@
+HEX PROPRIETARY SOURCE CODE LICENSE
+NO LICENSE GRANTED — ALL RIGHTS RESERVED
+
+Copyright (c) 2026 RHgrive. All rights reserved.
+
+IMPORTANT: THIS SOFTWARE IS NOT OPEN SOURCE, FREE SOFTWARE, PUBLIC DOMAIN,
+OR SOURCE-AVAILABLE SOFTWARE UNDER AN OPEN-SOURCE LICENSE.
+
+This repository, including without limitation all source code, object code,
+binaries, scripts, build files, documentation, specifications, designs,
+algorithms, interfaces, data files, assets, tests, generated files, and other
+materials contained in or derived from it (collectively, the "Software"), is
+proprietary and confidential intellectual property of RHgrive (the "Owner"),
+except for Third-Party Materials expressly identified under Section 10.
+
+1. RESERVATION OF RIGHTS
+
+No copyright license, patent license, trademark license, trade-secret license,
+or other intellectual-property right is granted by this document, whether
+expressly, by implication, estoppel, exhaustion, or otherwise.
+
+All rights not unavoidably granted by applicable law or by the mandatory terms
+of the hosting platform are expressly reserved by the Owner.
+
+Mere publication, availability, transmission, possession, access, viewing,
+discovery, or receipt of the Software does not constitute permission to use
+it.
+
+2. ABSOLUTE PROHIBITION ON USE
+
+Except with the Owner's prior, specific, express written permission, you MUST
+NOT, directly or indirectly, in whole or in part:
+
+(a) use, execute, deploy, host, operate, evaluate, benchmark, test, or otherwise
+    exploit the Software for any purpose;
+
+(b) copy, reproduce, download, clone, retain, archive, cache, mirror, republish,
+    re-host, upload, transmit, distribute, redistribute, sell, rent, lease,
+    sublicense, lend, disclose, provide access to, or otherwise transfer the
+    Software or any portion of it;
+
+(c) modify, adapt, translate, transform, port, refactor, merge, combine,
+    incorporate, embed, extract, or create derivative works based on the
+    Software;
+
+(d) compile, transpile, bundle, minify, assemble, disassemble, decompile,
+    reverse engineer, reconstruct, or otherwise convert the Software into any
+    other form, except only to the minimum extent that a non-waivable provision
+    of applicable law expressly requires such activity to be permitted;
+
+(e) inspect, study, analyze, map, index, scrape, crawl, mine, profile, or
+    systematically extract information from the Software, except for the
+    minimum access that the hosting platform's mandatory terms or non-waivable
+    applicable law expressly permit;
+
+(f) create, maintain, publish, synchronize, or use any fork, mirror, duplicate,
+    snapshot, archive, or substantially similar repository containing the
+    Software, except only to the narrow extent that GitHub's then-current Terms
+    of Service themselves grant a platform-specific right while this repository
+    remains public;
+
+(g) use any fork or platform-provided copy to modify, develop, deploy, publish,
+    distribute, commercialize, research, teach, demonstrate, benchmark, or
+    otherwise exploit the Software;
+
+(h) use the Software for commercial, non-commercial, personal, educational,
+    academic, research, evaluation, security-research, competitive-analysis,
+    interoperability, or other purposes;
+
+(i) use the Software or any portion, representation, embedding, feature,
+    derivative, summary, translation, or extracted information as training,
+    fine-tuning, evaluation, retrieval, grounding, indexing, context, corpus,
+    benchmark, or other input for any artificial-intelligence, machine-learning,
+    statistical, code-generation, code-completion, or automated-analysis system;
+
+(j) permit, assist, induce, encourage, facilitate, or enable any third party to
+    do anything prohibited by this License; or
+
+(k) remove, conceal, alter, bypass, or misrepresent any copyright, ownership,
+    provenance, access-control, attribution, legal, or proprietary notice.
+
+The prohibitions in this Section apply regardless of whether an activity is
+commercial or non-commercial, public or private, for profit or not for profit.
+
+3. VIEWING, ACCESS, AND PUBLIC GITHUB REPOSITORY LIMITATION
+
+The Owner does not voluntarily grant permission to obtain, inspect, study,
+analyze, copy, or retain the source code merely because it is visible in a
+public repository.
+
+However, while this repository is public on GitHub, GitHub's Terms of Service
+may independently grant GitHub and other GitHub users certain limited rights,
+including rights necessary to view the repository and to reproduce it through
+GitHub functionality such as forking. Nothing in this License purports to
+revoke a right that GitHub's binding Terms of Service independently and
+unavoidably grant while the repository remains public.
+
+Any such platform-granted right is limited strictly to its scope under those
+Terms. It does NOT create any additional license from the Owner and does NOT,
+by itself, authorize off-platform use, modification, redistribution,
+commercialization, derivative works, deployment, AI/ML use, or any other
+exploitation of the Software.
+
+If the repository becomes private or is removed from GitHub, any
+platform-specific permission ends to the extent provided by GitHub's Terms of
+Service, subject to rights that cannot lawfully be withdrawn.
+
+4. NO FORK LICENSE
+
+A GitHub fork, if created under a right independently provided by GitHub's Terms
+of Service, is NOT a license from the Owner to use the Software.
+
+No permission is granted by the Owner to create or maintain forks outside the
+minimum platform-specific rights described in Section 3. No permission is
+provided to use a fork as a development base, distribute it, publish releases
+from it, operate it as a service, extract code from it, or create derivative
+works from it.
+
+5. NO IMPLIED OR INCIDENTAL PERMISSION
+
+No permission arises from:
+
+- the repository being public;
+- the absence or presence of access controls;
+- Git, GitHub, a browser, an API, or another tool technically allowing copying;
+- a third party having previously copied or forked the Software;
+- the Owner failing to object immediately to a particular act;
+- prior communications, silence, custom, course of dealing, or industry
+  practice; or
+- use that is non-commercial, educational, personal, academic, experimental,
+  or allegedly beneficial.
+
+Any permission must be granted in a separate written instrument that clearly
+identifies the permitted recipient, scope, purpose, duration, and applicable
+version or portion of the Software and is expressly authorized by the Owner.
+
+6. UNAUTHORIZED USE AND ENFORCEMENT
+
+Any act outside the narrow rights, if any, independently granted by mandatory
+applicable law or the hosting platform's binding terms is unauthorized.
+
+The Owner expressly reserves the right, to the fullest extent permitted by
+applicable law, to investigate suspected unauthorized use; preserve and collect
+relevant evidence; issue platform, hosting-provider, search-engine, or other
+legally available notices and takedown requests; demand cessation and deletion;
+and pursue any and all available legal or equitable remedies.
+
+Such remedies may include, where legally available, temporary or permanent
+injunctive relief, damages, recovery or disgorgement of profits or unjust
+enrichment, statutory remedies, preservation orders, recovery of recoverable
+costs and legal fees, and any other relief available under applicable law.
+
+The Owner is not required to provide advance warning, a cure period, or an
+informal resolution opportunity before exercising available rights, except
+where applicable law requires otherwise.
+
+Nothing in this License characterizes any particular conduct as criminal. The
+Owner reserves the right to report conduct to competent authorities where the
+conduct independently appears to violate applicable law.
+
+7. NO WAIVER; CUMULATIVE REMEDIES
+
+Failure or delay by the Owner to enforce any right does not waive that right or
+any other right. A waiver is effective only if made expressly in writing by the
+Owner for the specific instance stated.
+
+All rights and remedies are cumulative to the extent permitted by law.
+
+8. NO WARRANTY; NO SUPPORT
+
+TO THE MAXIMUM EXTENT PERMITTED BY LAW, THE SOFTWARE IS PROVIDED, IF AT ALL,
+"AS IS" AND "AS AVAILABLE," WITHOUT ANY WARRANTY OF ANY KIND, EXPRESS,
+IMPLIED, STATUTORY, OR OTHERWISE, INCLUDING WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE, TITLE, NON-INFRINGEMENT, ACCURACY,
+RELIABILITY, OR SECURITY.
+
+The Owner has no obligation to provide support, maintenance, updates, access,
+compatibility, documentation, or continued availability.
+
+9. LIMITATION OF LIABILITY
+
+TO THE MAXIMUM EXTENT PERMITTED BY LAW, THE OWNER SHALL NOT BE LIABLE FOR ANY
+DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, PUNITIVE, OR CONSEQUENTIAL
+LOSS OR DAMAGE ARISING FROM ACCESS TO, INABILITY TO ACCESS, OR ANY UNAUTHORIZED
+USE OF THE SOFTWARE.
+
+Nothing in this Section excludes liability that cannot legally be excluded.
+
+10. THIRD-PARTY MATERIALS
+
+This License does not override an applicable third-party license.
+
+Files, libraries, dependencies, generated artifacts, data, or other materials
+that contain an express third-party copyright or license notice remain subject
+solely to the applicable third-party terms for those materials. No ownership or
+additional restriction is claimed over third-party material beyond the rights
+lawfully held by the Owner.
+
+You are responsible for identifying and complying with all applicable
+third-party terms.
+
+11. CONTRIBUTIONS
+
+No contribution, pull request, patch, issue attachment, code submission, or
+other material is requested or accepted under an open-source contribution
+model.
+
+A contribution does not transfer copyright ownership to the Owner unless a
+separate valid written agreement expressly provides otherwise. The Owner may
+reject, remove, or decline to use any unsolicited contribution.
+
+No contributor is authorized to grant rights in the Owner's existing Software.
+
+12. TRADEMARKS AND PROJECT IDENTITY
+
+No permission is granted to use the names "Hex," "RHgrive," repository names,
+logos, trade dress, project identity, or other source-identifying marks in a
+manner that suggests affiliation, endorsement, origin, sponsorship, or
+authorization by the Owner.
+
+This Section does not claim trademark rights that the Owner does not otherwise
+possess under applicable law.
+
+13. APPLICABLE LAW
+
+This License and any permission expressly granted under it are governed by the
+laws of Japan, excluding conflict-of-laws rules, except to the extent mandatory
+law requires otherwise.
+
+Copyright and other intellectual-property claims may also be governed by the
+law applicable to the relevant conduct, territory, forum, or protected right.
+
+14. SEVERABILITY
+
+If any provision of this License is held invalid, illegal, or unenforceable,
+that provision shall be limited or severed only to the minimum extent necessary,
+and the remaining provisions shall remain in effect to the fullest extent
+permitted by law.
+
+15. ENTIRE NOTICE; CHANGES
+
+This License states the Owner's general public permission policy for the
+Software. No broader permission is intended.
+
+The Owner may publish different terms for future versions or specific recipients.
+A later license does not retroactively grant rights in earlier versions unless
+it expressly says so.
+
+16. CONTACT / PERMISSION
+
+No use is authorized unless the Owner grants prior express written permission.
+Requests for permission may be made through a communication channel expressly
+published by the Owner for that purpose. The Owner has no obligation to respond
+or to grant permission.
+
+END OF LICENSE
