@@ -32,6 +32,8 @@ jobs:
           echo '165cbdc70547d607902fbe84681c78a022796ded68ddeb690eb090e8cb5b2427  /tmp/data-plane-v2.patch' | sha256sum -c -
           cp .ai-fixed/patch-2 /tmp/data-plane-v3.patch
           echo 'a89cceb0addb399aa8660515834058c9827d3bd5b37f3b52d0e7a8ef0696fe91  /tmp/data-plane-v3.patch' | sha256sum -c -
+          cp .ai-fixed/patch-3 /tmp/data-plane-v4.patch
+          echo 'daef0ed63ff02021590abf0f248069da504ded2590ae99fb043ebdd117d89348  /tmp/data-plane-v4.patch' | sha256sum -c -
 
       - name: Rebuild from latest main
         shell: bash
@@ -42,6 +44,7 @@ jobs:
           tar xzf /tmp/ai-data-plane-fixed.tar.gz
           git apply /tmp/data-plane-v2.patch
           git apply /tmp/data-plane-v3.patch
+          git apply /tmp/data-plane-v4.patch
 
       - name: Verify exact implementation hashes
         shell: bash
@@ -50,7 +53,7 @@ jobs:
           test "$(git hash-object js/agent/tools.js)" = '26c39bdfd7983f01c435a103d75bad5f4cfa3922'
           test "$(git hash-object js/ai/evidence.js)" = 'ea7f0f016ce3ac37f617811cf72bc6b13623a6a7'
           test "$(git hash-object js/ai/tools/index.js)" = '87f1665c7022aac9d0e01d863d0e1618475673b1'
-          test "$(git hash-object js/ai/tools/names.js)" = 'a81fff720448a24df24d2410d256c8e4ebd10945'
+          test "$(git hash-object js/ai/tools/names.js)" = '7bc0403fb6cb542c9501d468dd7950cb36097735'
           test "$(git hash-object js/ai/tools/paging/cursor.js)" = '0faf38cff2bb9ed75800c30af21b620ac61f81ef'
           test "$(git hash-object js/ai/tools/projections/index.js)" = 'd18ae44d031ce99c320764a420911d985c292ba6'
           test "$(git hash-object js/ai/tools/registry.js)" = '80c79552dbccb21e11fd3da5b8296290eeba8642'
