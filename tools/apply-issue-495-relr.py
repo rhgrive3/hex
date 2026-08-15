@@ -5,6 +5,10 @@ text=p.read_text()
 if "./relocation-budget.js" not in text:
     text="import { createRelocationBudget } from './relocation-budget.js';\n\n"+text
 
+if 'export function collectRelrRelocations(r, tags, image, bits, context = null) {' in text:
+    p.write_text(text)
+    raise SystemExit(0)
+
 start=text.index('export function collectRelrRelocations(r, tags, image, bits) {')
 end=text.index('\nfunction readSleb(r, state, end) {', start)
 new=r'''function dynamicBudget(image, limits = {}) {
