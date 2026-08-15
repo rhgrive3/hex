@@ -10,7 +10,7 @@ const dist = resolve(root, 'dist');
 const generated = resolve(root, '.runtime-build');
 const committedTemplate = resolve(root, 'userscript/hex.user.template.js');
 const ORIGIN_TOKEN = '__HEX_ORIGIN__';
-let LOADER_VERSION = '2.0.0';
+const LOADER_VERSION = '2.0.2322241674';
 const MAX_LOADER_BYTES = 64 * 1024;
 const CLASSIC_ENTRIES = ['js/worker.js', 'js/platform/capstone-probe-worker.js', 'js/platform/capstone-disasm-worker.js'];
 
@@ -24,7 +24,6 @@ await writeGeneratedModule('embedded-assets.js', `export const PROTECTED_HOST=${
 
 const runtime = await bundle('js/userscript/protected-entry.js', { format: 'esm', rewriteImportMeta: true });
 const contentHash = sha256(runtime), buildId = contentHash.slice(0, 24);
-LOADER_VERSION = `2.0.${Number.parseInt(buildId.slice(0, 8), 16)}`;
 const compressed = gzipSync(runtime, { level: 9 });
 const contentKey = randomBytes(32), iv = randomBytes(12);
 const runtimeVersion = `2.${LOADER_VERSION}`;
