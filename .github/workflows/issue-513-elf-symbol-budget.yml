@@ -1,0 +1,49 @@
+name: Issue 513 ELF symbol budget
+
+on:
+  push:
+    branches:
+      - fix/issue-513-elf-symbol-budget
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-test:
+    if: ${{ !contains(github.event.head_commit.message, '[issue-513-applied]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Apply bounded dynamic symbol parsing
+        run: |
+          if grep -q "programDynamicSymbolBudget" js/binary/elf-dynamic.js; then
+            echo 'Issue #513 implementation already applied.'
+          else
+            python3 tools/apply-issue-513.py
+          fi
+      - name: Focused hostile ELF regression
+        run: node tests/issue-513-elf-symbol-budget.mjs
+      - name: Binary regression suite
+        run: npm run binary:test
+      - name: Static checks
+        run: |
+          node --check js/binary/dynamic-symbol-budget.js
+          node --check js/binary/elf-dynamic.js
+          node --check js/binary/elf-extended.js
+          node --check tests/issue-513-elf-symbol-budget.mjs
+      - name: Full lint
+        run: npm run lint
+      - name: Commit validated implementation
+        run: |
+          if git diff --quiet; then exit 0; fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add js/binary/elf-dynamic.js js/binary/elf-extended.js
+          git commit -m 'Fix #513 bounded ELF dynamic symbol decode [issue-513-applied]'
+          git push
