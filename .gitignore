@@ -11,3 +11,6 @@ tests/.shots/
 # ローカルの配布用アーカイブ・誤作成されたrootファイルはrepoへ戻さない
 /hex.zip
 /a
+
+# 実アプリの大容量fixtureはopt-inで取得し、Gitには戻さない
+tests/.real-fixtures/
