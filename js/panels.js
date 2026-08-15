@@ -63,6 +63,7 @@ import { comprehensionHeadline, stepNote, sinkText } from './narrate.js';
 import { stepText } from './comprehend.js';
 import { render as renderExpr } from './expr.js';
 import { callGraph, graphLegend, renderGraph } from './graphview.js';
+import { functionViews, openFunctionView } from './ui/next-views.js';
 import { buildGeminiPayload, streamGemini } from './gemini.js';
 import { productDescriptor } from './platform/product-descriptor.js';
 
@@ -569,11 +570,10 @@ function renderFunctionSummary(app, sheet, res, name, region) {
     build: (into) => into.append(rawSection(app, sheet, res, name, region)),
   }));
 
+  const views = nextViewsRow(app, res.startAddr, { sheet, exclude: ['report'], primary: 'pseudocode' });
+  if (views) body.append(views);
+
   const actions = el('div', 'detail-actions');
-  actions.append(button(t('fn.goto'), 'chip', () => {
-    sheet.close();
-    app.goToAddress(res.startAddr, { announce: true });
-  }));
   actions.append(button(pick('この関数を呼んでいる場所', 'Find who calls this'), 'chip', () => {
     sheet.close();
     showXrefs(app, res.startAddr);
@@ -1681,6 +1681,66 @@ function offsetHex(v) {
   return (v < 0n ? '-0x' : '0x') + n.toString(16).toUpperCase();
 }
 
+/* ── 次に見る形 ────────────────────────────────────────────
+   解析の結果は「どの関数か」までは言う。そこから先の「疑似Cで読む」
+   「流れを図で見る」へ、結果の画面から直接行けるようにする。以前は
+   関数一覧まで戻って、いま見せられたアドレスを自分で探し直す必要が
+   あった。行き先は正規の作業画面（/function/:address/:tab）で、
+   router が無いときだけ従来のシートに落とす。
+   ──────────────────────────────────────────────────────── */
+
+function productRouter() {
+  return (typeof window !== 'undefined' && window.__hexUi && window.__hexUi.router) || null;
+}
+
+function legacyViewOpeners(app, goal) {
+  const big = (addr) => BigInt(addr);
+  return {
+    report: (addr) => showFunctionReport(app, big(addr), goal),
+    decompiler: (addr) => showDecompiler(app, big(addr)),
+    cfg: (addr) => showCfg(app, big(addr)),
+    callGraph: (addr) => showCallGraphPanel(app, big(addr)),
+    code: (addr) => app.goToFunction(big(addr)),
+  };
+}
+
+/**
+ * 結果の画面に置く「次に見る形」の一段。
+ *
+ * ボタンには短い説明を添える。「フロー」「CFG」だけでは、押す前に何が
+ * 出るのか分からないため。出せないものは消さずに、押せない理由を書く。
+ */
+function nextViewsRow(app, addr, { sheet, goal = null, exclude = [], primary = 'report', title } = {}) {
+  /* 関数が特定できていない結果に、押せないボタンの列を出しても仕方がない。 */
+  if (addr == null) return null;
+  const views = functionViews({
+    address: addr,
+    capability: { canDisassemble: app.store ? app.store.get('canDisassemble') !== false : true },
+    exclude, primary, ja: isJa(),
+  });
+  if (!views.length) return null;
+  const root = el('section', 'next-views');
+  root.append(el('h4', 'sec-title', title || pick('この関数を別の形で見る', 'See this routine another way')));
+  const bar = el('div', 'action-bar');
+  for (const view of views) {
+    const b = button('', 'action-btn' + (view.primary ? ' strong' : ''), () => {
+      if (sheet) sheet.close();
+      const opened = openFunctionView(view, { router: productRouter(), legacy: legacyViewOpeners(app, goal) });
+      if (!opened) toast(pick('この形では開けませんでした。', 'That view could not be opened.'));
+    });
+    b.replaceChildren(el('span', 'action-label', view.label), el('span', 'action-hint', view.hint));
+    if (!view.available) {
+      b.disabled = true;
+      b.classList.add('is-disabled');
+      b.title = view.reason;
+      b.querySelector('.action-hint').textContent = view.reason;
+    }
+    bar.append(b);
+  }
+  root.append(bar);
+  return root;
+}
+
 /** 進み具合の表示。走査は worker で走るので、UI は止まらない。 */
 function progressBox(parent, text) {
   const bar = el('div', 'progress');
@@ -2776,9 +2836,6 @@ export function showPinned(app, pin) {
   const process = c.kind === 'function' ? c.addr
     : (sites || []).find((s) => s.stores && s.addr != null)?.addr
       || (c.functions && c.functions[0] ? c.functions[0].addr : null);
-  if (process != null) actions.append(button(pick('処理を見る', 'Show the routine'), 'chip strong', () => {
-    sheet.close(); showFunctionReport(app, process, goal);
-  }));
   const update = c.updates && c.updates[0];
   let flow = null;
   let flowHost = null;
@@ -2793,11 +2850,23 @@ export function showPinned(app, pin) {
     target.scrollIntoView({ block: 'center' });
     if (typeof target.focus === 'function') target.focus({ preventScroll: true });
   }));
-  actions.append(button(pick('なぜ？', 'Why?'), 'chip', () => {
+  actions.append(button(pick('根拠をひらく', 'Open the evidence'), 'chip', () => {
     const details = body.querySelector('.answer-expert');
     if (details) { details.open = true; details.scrollIntoView({ block: 'start' }); }
   }));
-  body.append(actions);
+
+  /*
+   * 行き先は 2 種類あり、混ぜると読めなくなる。
+   *   ・別の画面へ行く（疑似C・図・アセンブリ）
+   *   ・この画面の中で下へ動く（数の流れ・根拠）
+   * 先に別画面への一段を置き、そのあとに画面内の移動を小さく置く。
+   */
+  const views = nextViewsRow(app, process, { sheet, goal, primary: 'report' });
+  if (views) body.append(views);
+  const inSheet = el('section', 'in-sheet-actions');
+  inSheet.append(el('h4', 'sec-title', pick('この画面の中で確かめる', 'Check inside this result')));
+  inSheet.append(actions);
+  body.append(inSheet);
 
   /*
    * 値の流れ。
@@ -2810,11 +2879,37 @@ export function showPinned(app, pin) {
   flowHost = appendNumberFlow(app, body, process,
     c.kind === 'field' || c.kind === 'location' ? c.offset : null, flow);
 
+  /*
+   * 「次に見るなら」は、以前はただの箇条書きだった。読んだ人はそこに
+   * 書いてある画面を、自分でもう一度探しに行くことになる。書いてある
+   * ものは、そのまま押せる行にする。
+   */
   const next = block(pick('次に見るなら', 'What to look at next'));
-  const nextList = el('ol', 'doc-list');
-  if (process != null) nextList.append(el('li', null, pick('この値を書き換えている処理を見る', 'Open the routine that changes this value')));
-  nextList.append(el('li', null, pick('この処理を呼んでいる場所を見る', 'See where this routine is called')));
-  nextList.append(el('li', null, pick('値の流れを確認する', 'Check the value flow')));
+  const nextList = list();
+  const jump = (view) => () => {
+    sheet.close();
+    const [target] = functionViews({ address: process, include: [view], ja: isJa() });
+    if (!target || !openFunctionView(target, { router: productRouter(), legacy: legacyViewOpeners(app, goal) })) {
+      toast(pick('この形では開けませんでした。', 'That view could not be opened.'));
+    }
+  };
+  if (process != null) {
+    nextList.append(tapRow(pick('この値を書き換えている処理を読む', 'Read the routine that changes this value'), {
+      sub: pick('関数の概要へ', 'Opens the function overview'), onTap: jump('report'),
+    }));
+    nextList.append(tapRow(pick('この処理を呼んでいる場所を見る', 'See where this routine is called'), {
+      sub: pick('呼び出しの図へ', 'Opens the call diagram'), onTap: jump('calls'),
+    }));
+  }
+  nextList.append(tapRow(pick('値の流れを確認する', 'Check the value flow'), {
+    sub: pick('この画面の下にあります', 'Further down in this result'),
+    onTap: () => {
+      const target = flow || flowHost;
+      if (!target) return;
+      target.scrollIntoView({ block: 'center' });
+      if (typeof target.focus === 'function') target.focus({ preventScroll: true });
+    },
+  }));
   next.append(nextList);
   body.append(next);
 
@@ -4005,16 +4100,8 @@ export function showCandidateWhy(app, cand, goal) {
     body.append(sul);
   }
 
-  const actions = el('div', 'detail-actions');
-  actions.append(button(pick('この関数を詳しく調べる', 'Investigate this function'), 'chip', () => {
-    sheet.close();
-    showFunctionReport(app, cand.addr, goal);
-  }));
-  actions.append(button(pick('コードへ移動', 'Go to the code'), 'chip', () => {
-    sheet.close();
-    app.goToFunction(cand.addr);
-  }));
-  body.append(actions);
+  const views = nextViewsRow(app, cand.addr, { sheet, goal, primary: 'report' });
+  if (views) body.append(views);
 }
 
 /* ────────────────────────────────────────────────────────────
@@ -4558,11 +4645,10 @@ function renderFunctionReport(app, sheet, body, report, res, region, goal) {
   body.append(nb);
 
   /* 10. どこからでも降りられるようにする */
+  const views = nextViewsRow(app, id.startAddr, { sheet, goal, exclude: ['report'], primary: 'pseudocode' });
+  if (views) body.append(views);
+
   const actions = el('div', 'detail-actions');
-  actions.append(button(pick('コードへ移動', 'Go to the code'), 'chip', () => {
-    sheet.close();
-    app.goToFunction(id.startAddr);
-  }));
   actions.append(button(pick('アドレスの対応を見る', 'Show address mapping'), 'chip', () => {
     showAddressInfo(app, id.startAddr);
   }));

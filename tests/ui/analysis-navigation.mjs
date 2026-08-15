@@ -1,0 +1,173 @@
+/*
+ * From a result to another view of the same routine.
+ *
+ * The complaint this covers: an automatic analysis names a function, and the
+ * only way to read it as pseudo-C or as a diagram was to go back to the
+ * function index and search for the address you had just been shown. Every
+ * result surface must offer those views itself, with buttons that say what
+ * they open, and with body text that is not flush against the sheet edge.
+ */
+import { openApp, reporter, run, closeSheets } from '../ai-ui-support.mjs';
+
+await run(async ({ browser }) => {
+  const { check, state } = reporter();
+  const { context, page, errors } = await openApp(browser, { width: 1024, height: 1366, sample: true });
+
+  const address = await page.evaluate(() => {
+    const app = window.__app;
+    const region = app.codeRegion();
+    const list = app.symbols?.functionList?.(region, 4) || [];
+    return list.length ? list[0].addr.toString() : null;
+  });
+  check('the sample provides a function to report on', !!address, String(address));
+  if (!address) { await context.close(); return state.failures + 1; }
+
+  /* ── the function report ─────────────────────────────────── */
+  await page.evaluate(async (addr) => {
+    const { showFunctionReport } = await import('/js/panels.js');
+    showFunctionReport(window.__app, BigInt(addr));
+  }, address);
+  await page.waitForSelector('#overlays .sheet .next-views .action-btn', { timeout: 20000 });
+
+  const bar = await page.evaluate(() => {
+    const buttons = [...document.querySelectorAll('#overlays .sheet .next-views .action-btn')];
+    return buttons.map((node) => ({
+      label: node.querySelector('.action-label')?.textContent || '',
+      hint: node.querySelector('.action-hint')?.textContent || '',
+      height: Math.round(node.getBoundingClientRect().height),
+      disabled: node.disabled,
+    }));
+  });
+  check('a result offers pseudo-C and the flow diagram without leaving for the index',
+    bar.some((b) => /疑似C/.test(b.label)) && bar.some((b) => /図/.test(b.label)), JSON.stringify(bar.map((b) => b.label)));
+  check('every view button says what it opens', bar.length >= 3 && bar.every((b) => b.hint.length > 0), JSON.stringify(bar.map((b) => b.hint)));
+  check('view buttons are comfortable tap targets', bar.every((b) => b.height >= 44), JSON.stringify(bar.map((b) => b.height)));
+  check('the report does not offer a button back to the report', !bar.some((b) => /関数の概要/.test(b.label)), JSON.stringify(bar.map((b) => b.label)));
+
+  const sections = await page.evaluate(() => document.querySelectorAll('#overlays .sheet .sec-title, #overlays .sheet .blk-title, #overlays .sheet .fn-name').length);
+  check('the result is broken into named sections rather than one block of text', sections >= 3, String(sections));
+
+  /* ── the wiring itself ───────────────────────────────────── */
+  await page.evaluate(() => {
+    const button = [...document.querySelectorAll('#overlays .sheet .next-views .action-btn')]
+      .find((node) => /疑似C/.test(node.textContent));
+    button.click();
+  });
+  await page.waitForTimeout(600);
+  const pseudo = await page.evaluate(() => ({
+    hash: location.hash,
+    sheets: document.querySelectorAll('#overlays .sheet').length,
+  }));
+  check('one tap lands on the pseudo-C view of that exact function',
+    pseudo.hash === '#/function/' + address + '/pseudocode', pseudo.hash);
+  check('the result sheet gets out of the way when it navigates', pseudo.sheets === 0, String(pseudo.sheets));
+  await page.waitForTimeout(1200);
+  const rendered = await page.evaluate(() => ({
+    code: !!document.querySelector('.ui-pseudocode, .ui-empty-state, .ui-workspace-content'),
+    text: (document.querySelector('.ui-pseudocode')?.textContent || '').slice(0, 40),
+  }));
+  check('the pseudo-C view actually renders for that function', rendered.code, rendered.text);
+
+  /* ── text placement on a sheet that writes prose directly ── */
+  await page.evaluate(() => { window.__hexUi.router.navigate('/code'); });
+  await page.waitForTimeout(250);
+  await closeSheets(page);
+  await page.evaluate(async (addr) => {
+    const { showCandidateWhy } = await import('/js/panels.js');
+    showCandidateWhy(window.__app, { addr: BigInt(addr), stars: 3, score: 42, reasons: [], strings: [] }, null);
+  }, address);
+  await page.waitForSelector('#overlays .sheet .scorebox', { timeout: 10000 });
+  const typography = await page.evaluate(() => {
+    const body = document.querySelector('#overlays .sheet:not(.parked) .sheet-body');
+    const read = (node) => {
+      if (!node) return null;
+      const style = getComputedStyle(node);
+      const rect = node.getBoundingClientRect();
+      return { left: parseFloat(style.paddingLeft), size: parseFloat(style.fontSize), width: rect.width };
+    };
+    return {
+      note: read(body.querySelector(':scope > .doc-p.sub')),
+      bodyWidth: body.clientWidth,
+      views: body.querySelectorAll('.next-views .action-btn').length,
+    };
+  });
+  check('prose written straight into a sheet is inset, not flush with the edge',
+    !!typography.note && typography.note.left >= 12, JSON.stringify(typography.note));
+  check('a footnote reads as a footnote, not as body text',
+    !!typography.note && typography.note.size <= 13, JSON.stringify(typography.note));
+  check('a long line is capped so the eye finds the next one',
+    !!typography.note && typography.note.width <= typography.bodyWidth, JSON.stringify(typography));
+  check('the candidate sheet offers the same views', typography.views >= 4, String(typography.views));
+
+  /* ── the settled-answer overlay ──────────────────────────── */
+  await closeSheets(page);
+  const pinned = await page.evaluate(async (addr) => {
+    const [{ showPinned }, { goalFromPreset }, { VERDICT }] = await Promise.all([
+      import('/js/panels.js'), import('/js/goals.js'), import('/js/evidence.js'),
+    ]);
+    const address = BigInt(addr);
+    const top = {
+      kind: 'function', addr: address, fusion: { probability: 0.93 },
+      why: [{ kind: 'fact', code: 'store', factor: 3 }], sites: [], updates: [], functions: [{ addr: address }],
+    };
+    try {
+      showPinned(window.__app, {
+        goal: goalFromPreset('coins'), verdict: VERDICT.CONFIRMED, top,
+        missing: [], candidates: [top], universe: 1200, changeSites: [], checked: 4,
+      });
+    } catch (error) { return { error: String(error && error.message || error) }; }
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    const sheet = document.querySelector('#overlays .sheet:not(.parked)');
+    if (!sheet) return { error: 'no sheet' };
+    const rows = [...sheet.querySelectorAll('.blk .list li')].map((node) => node.textContent);
+    return {
+      views: [...sheet.querySelectorAll('.next-views .action-btn .action-label')].map((n) => n.textContent),
+      tappableNext: [...sheet.querySelectorAll('.blk .list li')].filter((n) => n.matches('.tappable, [role="button"]') || n.querySelector('button')).length,
+      nextRows: rows.length,
+      inSheet: sheet.querySelectorAll('.in-sheet-actions .chip').length,
+    };
+  }, address);
+  check('the settled-answer overlay renders', !pinned.error, pinned.error || '');
+  check('a settled answer offers pseudo-C and the diagram for its routine',
+    !!pinned.views && pinned.views.some((label) => /疑似C/.test(label)) && pinned.views.some((label) => /図/.test(label)),
+    JSON.stringify(pinned.views));
+  check('"what to look at next" is a set of rows you can press, not a paragraph',
+    pinned.nextRows >= 2 && pinned.tappableNext === pinned.nextRows, JSON.stringify({ rows: pinned.nextRows, tappable: pinned.tappableNext }));
+  check('moving inside the result stays separate from leaving it', pinned.inSheet >= 2, String(pinned.inSheet));
+
+  /* ── the same bar on the quick function summary ──────────── */
+  await closeSheets(page);
+  await page.evaluate(async () => {
+    const { showFunctionSummary } = await import('/js/panels.js');
+    showFunctionSummary(window.__app, 0);
+  });
+  await page.waitForSelector('#overlays .sheet .next-views .action-btn', { timeout: 20000 });
+  const summaryBar = await page.evaluate(() => [...document.querySelectorAll('#overlays .sheet .next-views .action-btn')]
+    .map((node) => node.querySelector('.action-label')?.textContent || ''));
+  check('the quick summary offers the same views, in the same words',
+    summaryBar.some((label) => /疑似C/.test(label)) && summaryBar.some((label) => /図/.test(label)), JSON.stringify(summaryBar));
+
+  const overflow = await page.evaluate(() => document.body.scrollWidth - document.documentElement.clientWidth);
+  check('the new controls never widen the page', overflow <= 1, String(overflow));
+
+  /* ── phone width ─────────────────────────────────────────── */
+  await page.setViewportSize({ width: 375, height: 667 });
+  await page.waitForTimeout(400);
+  const phone = await page.evaluate(() => {
+    const buttons = [...document.querySelectorAll('#overlays .sheet .next-views .action-btn')];
+    const rects = buttons.map((node) => node.getBoundingClientRect());
+    return {
+      columns: new Set(rects.map((r) => Math.round(r.left))).size,
+      height: Math.min(...rects.map((r) => Math.round(r.height))),
+      inside: rects.every((r) => r.right <= document.documentElement.clientWidth + 1),
+      overflow: document.body.scrollWidth - document.documentElement.clientWidth,
+    };
+  });
+  check('on a phone the views stack in one column and stay on screen',
+    phone.columns === 1 && phone.inside && phone.overflow <= 1, JSON.stringify(phone));
+  check('phone-width view buttons keep a full tap target', phone.height >= 44, String(phone.height));
+  check('no page errors during the whole walk', errors.length === 0, errors.slice(0, 3).join(' | '));
+
+  await context.close();
+  return state.failures;
+});

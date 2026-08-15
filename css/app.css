@@ -1605,3 +1605,69 @@ html, body {
   .gemini-controls .chip { flex: 1 1 auto; }
   .gemini-thinking-label { flex-basis: 100%; }
 }
+
+/* ─────────────────────────────────────────────────────────────
+   解析結果の面 — 文字の置き方
+   ─────────────────────────────────────────────────────────────
+   シートの本文は .blk の中だけが余白を持っていた。結果の画面は段落や
+   箇条書きをシート直下に置くので、長い説明が画面の端に貼り付き、補足も
+   本文と同じ重さで続いていた（読む人には、どこからどこまでが一つの話
+   なのかが見えない）。ここで段落・箇条書き・補足に、余白・幅・重さの
+   差を与える。要素は増やさない。 */
+
+.sheet-body > .doc-p,
+.sheet-body > .doc-h,
+.sheet-body > .doc-list,
+.sheet-body > .answer-evidence { padding-left: 16px; padding-right: 16px; }
+.sheet-body > .doc-note,
+.sheet-body > .doc-code { margin-left: 16px; margin-right: 16px; }
+/* 1 行が長すぎると目が戻る場所を見失う。読む幅を決めておく。 */
+.sheet-body > .doc-p, .blk > .doc-p, .answer-summary .doc-p { max-width: 42em; }
+
+/* 補足は本文ではない。小さく、静かに、しかし消さずに置く。 */
+.doc-p.sub {
+  font-size: 12.5px; line-height: 1.65; color: var(--label-2);
+  padding-top: 2px;
+}
+
+/* 「確定しました」の面 — 見出し・要約・根拠・次の一手を段で分ける。 */
+.answer-summary { padding: 2px 16px 6px; }
+.answer-summary h4 {
+  margin: 12px 0 4px; font-size: 13px; font-weight: 700;
+  letter-spacing: .04em; color: var(--label-2);
+}
+.answer-summary .doc-p { padding: 0; margin-bottom: 6px; font-size: 15.5px; line-height: 1.72; }
+.answer-confidence { padding: 2px 16px 8px; font-size: 12.5px; color: var(--label-2); }
+.answer-evidence { margin: 0; list-style: none; display: grid; gap: 7px; padding-bottom: 8px; }
+.answer-evidence li { display: flex; gap: 9px; align-items: baseline; font-size: 14.5px; line-height: 1.62; }
+.answer-evidence li i { font-style: normal; font-weight: 700; color: var(--accent); }
+
+/* ── 次に見る形 ────────────────────────────────────────────
+   結果からそのまま「疑似C」「図」へ行くための一段。ボタンは名前だけ
+   では何が出るのか分からないので、一行の説明を必ず添える。 */
+.next-views { padding-bottom: 4px; }
+.action-bar {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 8px;
+  padding: 6px 16px 12px;
+}
+.action-btn {
+  -webkit-appearance: none; appearance: none;
+  display: flex; flex-direction: column; align-items: flex-start; gap: 3px;
+  min-height: 58px; padding: 10px 13px;
+  border: 0.5px solid var(--separator); border-radius: 12px;
+  background: var(--surface-2); color: var(--label);
+  text-align: left; cursor: pointer; touch-action: manipulation;
+}
+.action-btn:active { background: var(--fill); }
+.action-btn .action-label { font-size: 15px; font-weight: 600; line-height: 1.35; }
+.action-btn .action-hint { font-size: 12px; line-height: 1.45; color: var(--label-2); }
+.action-btn.strong { border-color: var(--accent); background: var(--accent-soft); }
+.action-btn.strong .action-label { color: var(--accent); }
+.action-btn.is-disabled { opacity: .55; cursor: default; }
+.action-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* 画面の中で下へ動くだけの操作は、別画面へ行く一段より弱く見せる。 */
+.in-sheet-actions .detail-actions { padding: 2px 16px 12px; }
+.in-sheet-actions .detail-actions .chip { flex: 0 1 auto; }
