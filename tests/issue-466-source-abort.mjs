@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { BinaryImage } from '../js/binary/image.js';
+import { BinaryImage } from '../js/binary/index.js';
 import { parseSourceRanges } from '../js/binary/source-reader.js';
 import { openBinarySource } from '../js/binary/source-loaders.js';
 import { parseELF } from '../js/binary/elf.js';
@@ -24,7 +24,6 @@ function abortingSource(bytes, controller, abortOnRead = 2) {
   };
 }
 
-// Public loader must pass one AbortSignal through prefix + structural reads.
 for (const [label, bytes] of [
   ['ELF', makeElf64Fixture()],
   ['PE', makePe64Fixture()],
@@ -41,8 +40,6 @@ for (const [label, bytes] of [
   assert.ok(source.state.signals.every((signal) => signal === controller.signal), `${label}: signal must reach every source read`);
 }
 
-// parseSourceRanges must also stop if the synchronous parser itself causes the
-// abort during a later pass, before handling another missing-range exception.
 {
   const controller = new AbortController();
   let reads = 0, passes = 0;
