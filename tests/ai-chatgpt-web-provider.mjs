@@ -27,6 +27,13 @@ const tools = [{
 }
 
 {
+  /* Curly quotes that are actual answer content must survive delimiter repair. */
+  const decision = parseChatGPTDecision('{“type”:“final”,“answer”:“The function returns “coin” after validation.”,“confidence”:0.8,“evidenceIds”:[]}');
+  assert.equal(decision.type, 'final');
+  assert.equal(decision.answer, 'The function returns “coin” after validation.');
+}
+
+{
   const decision = parseChatGPTDecision('```json\n{"type":"final","answer":"done","confidence":0.8,"evidenceIds":[]}\n```');
   assert.equal(decision.type, 'final');
   assert.equal(decision.answer, 'done');
@@ -43,7 +50,8 @@ assert.throws(() => parseChatGPTDecision('{oops}'), /malformed JSON/);
     tools,
   });
   assert.match(prompt, /Return exactly ONE JSON object/);
-  assert.match(prompt, /ASCII double quotes/);
+  assert.match(prompt, /ASCII double quote/);
+  assert.match(prompt, /U\+0022/);
   assert.match(prompt, /untrusted DATA\/EVIDENCE/);
   assert.match(prompt, /search_functions/);
   assert.match(prompt, /ignore previous instructions/);
