@@ -183,15 +183,23 @@ export class ProductWorkspace{
   async loadBaseline(file,{backend=null}={}){
     if(!file)throw new Error('baseline-file-required');
     if(!this.identity)await this.bind();
-    const other=backend||this.backendFactory();
-    const info=await other.open(file);const currentArch=this.identity?.metadata?.architecture||null;const sliceIndex=chooseSlice(info,currentArch);
-    if(sliceIndex<0)throw new Error('baseline-slice-unavailable');
-    const slice=info.slices[sliceIndex];const arch=slice?.capability?.architecture||slice?.info?.architecture||slice?.info?.cpu||null;
-    if(currentArch&&arch&&currentArch!==arch){const error=new Error(`architecture mismatch: ${currentArch} vs ${arch}`);error.code='DIFF_ARCH_MISMATCH';throw error;}
-    const hash=await other.ensureContentHash();const result=await other.analyze(sliceIndex);const symbols=new SymbolIndex({...result,regions:slice?.regions||[]});
-    const functions=functionsFromSymbols(symbols);
-    this.baseline={file,backend:other,info,sliceIndex,slice,architecture:arch,hash,symbols,functions,complete:functions.complete===true};
-    this.diffState=null;return this.baseline;
+    const ownedBackend=!backend, other=backend||this.backendFactory();
+    try{
+      const info=await other.open(file);const currentArch=this.identity?.metadata?.architecture||null;const sliceIndex=chooseSlice(info,currentArch);
+      if(sliceIndex<0)throw new Error('baseline-slice-unavailable');
+      const slice=info.slices[sliceIndex];const arch=slice?.capability?.architecture||slice?.info?.architecture||slice?.info?.cpu||null;
+      if(currentArch&&arch&&currentArch!==arch){const error=new Error(`architecture mismatch: ${currentArch} vs ${arch}`);error.code='DIFF_ARCH_MISMATCH';throw error;}
+      const hash=await other.ensureContentHash();const result=await other.analyze(sliceIndex);const symbols=new SymbolIndex({...result,regions:slice?.regions||[]});
+      const functions=functionsFromSymbols(symbols);
+      const previous=this.baseline;
+      this.baseline={file,backend:other,ownedBackend,info,sliceIndex,slice,architecture:arch,hash,symbols,functions,complete:functions.complete===true};
+      if(previous?.ownedBackend&&previous.backend!==other)previous.backend?.dispose?.();
+      this.diffState=null;return this.baseline;
+    }catch(error){if(ownedBackend)other?.dispose?.();throw error;}
+  }
+  dispose(){
+    if(this.baseline?.ownedBackend)this.baseline.backend?.dispose?.();
+    this.baseline=null;this.diffState=null;this.busy=null;
   }
   async diff(options={}){
     if(this.busy)return this.busy;

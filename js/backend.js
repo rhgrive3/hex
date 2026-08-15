@@ -44,6 +44,7 @@ export class Backend {
     this._disasmSeq = 1;
     this._disasmPending = new Map();
     this.contentHash = null;
+    this.disposed = false;
     this.analysisCache = new AnalysisCache();
 
     this.legacyWorker.onmessage = (event) => this._onMessage(event.data, 'legacy');
@@ -96,6 +97,10 @@ export class Backend {
   _worker(name) { return name === 'platform' ? this.platformWorker : this.legacyWorker; }
 
   _callTo(workerName, t, payload = {}, transfer, onProgress) {
+    if (this.disposed) {
+      const error = new Error('Backend has been disposed.'); error.code = 'BACKEND_DISPOSED';
+      const promise = Promise.reject(error); promise.requestId = null; promise.cancel = () => {}; return promise;
+    }
     const id = this.seq++;
     this.lastRequestId = id;
     const uiEpoch = this.gen;
@@ -328,6 +333,22 @@ export class Backend {
     this.resetCache();
     this._releaseDisassembly(new Error('disassembly worker released for memory pressure'));
     return this._callTo('platform', 'cleanupMemory', {});
+  }
+
+  dispose() {
+    if (this.disposed) return;
+    this.disposed = true;
+    const failure = new Error('Backend has been disposed.'); failure.code = 'BACKEND_DISPOSED';
+    this.analysisEpoch++; this.transportEpoch++;
+    this.resetCache();
+    this._releaseDisassembly(failure);
+    for (const pending of this.pending.values()) pending.reject(failure);
+    this.pending.clear();
+    for (const worker of [this.legacyWorker, this.platformWorker]) { try { worker.terminate(); } catch { /* best effort */ } }
+    if (typeof document !== 'undefined' && this._memoryPressureHandler) {
+      document.removeEventListener('visibilitychange', this._memoryPressureHandler);
+      this._memoryPressureHandler = null;
+    }
   }
 
   resetCache() {

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hex for ChatGPT
 // @namespace    https://github.com/rhgrive3/hex
-// @version      1.0.1786789806
+// @version      1.0.1786795194
 // @description  Run the Hex binary analysis workbench on ChatGPT Web.
 // @match        https://chatgpt.com/*
 // @run-at       document-idle
@@ -16,7 +16,7 @@
   if (location.hostname !== 'chatgpt.com') return;
   const HEX_ORIGIN = "__HEX_ORIGIN__";
   globalThis.__HEX_API_BASE__ = HEX_ORIGIN;
-  globalThis.__HEX_WORKER_MANIFEST__ = {"classicEntries":["js/worker.js","js/platform/capstone-probe-worker.js","js/platform/capstone-disasm-worker.js"],"classicAssets":["js/worker.js","js/worker-legacy.js","js/macho.js","js/words.js","js/worker-budget.js","js/address-provenance.js","capstone.js","js/worker-fixes.js","js/platform/capstone-probe-worker.js","js/platform/capstone-disasm-worker.js"],"classicDependencies":{"js/worker.js":["js/worker-legacy.js","js/worker-fixes.js"],"js/worker-legacy.js":["js/macho.js","js/words.js","js/worker-budget.js","js/address-provenance.js","capstone.js"],"js/macho.js":[],"js/words.js":[],"js/worker-budget.js":[],"js/address-provenance.js":[],"capstone.js":[],"js/worker-fixes.js":[],"js/platform/capstone-probe-worker.js":["capstone.js"],"js/platform/capstone-disasm-worker.js":["capstone.js"]},"moduleBundles":{"js/platform/worker.js":"userscript/platform-worker.bundle.js"},"wasm":"capstone.wasm"};
+  globalThis.__HEX_WORKER_MANIFEST__ = {"classicEntries":["js/worker.js","js/platform/capstone-probe-worker.js","js/platform/capstone-disasm-worker.js"],"classicAssets":["js/worker.js","js/worker-legacy.js","js/macho.js","js/words.js","js/worker-budget.js","js/objc-stub-recovery.js","js/address-provenance.js","capstone.js","js/worker-fixes.js","js/platform/capstone-probe-worker.js","js/platform/capstone-disasm-worker.js"],"classicDependencies":{"js/worker.js":["js/worker-legacy.js","js/worker-fixes.js"],"js/worker-legacy.js":["js/macho.js","js/words.js","js/worker-budget.js","js/objc-stub-recovery.js","js/address-provenance.js","capstone.js"],"js/macho.js":[],"js/words.js":[],"js/worker-budget.js":[],"js/objc-stub-recovery.js":[],"js/address-provenance.js":[],"capstone.js":[],"js/worker-fixes.js":[],"js/platform/capstone-probe-worker.js":["capstone.js"],"js/platform/capstone-disasm-worker.js":["capstone.js"]},"moduleBundles":{"js/platform/worker.js":"userscript/platform-worker.bundle.js"},"wasm":"capstone.wasm"};
   if (!document.getElementById('hex-userscript-host')) {
     const host = document.createElement('div');
     host.id = 'hex-userscript-host';
@@ -204,31 +204,32 @@
     const head = await bytes(file, 0, 8);
     if (head.length < 4) return null;
     const dv = new DataView(head.buffer, head.byteOffset, head.byteLength);
-    const le = dv.getUint32(0, true);
-    if (le === MH_MAGIC_64) return 0n;
+    if (dv.getUint32(0, true) === MH_MAGIC_64) return { base: 0n, size: BigInt(file.size) };
     const be = dv.getUint32(0, false);
-    if (be !== FAT_MAGIC && be !== FAT_MAGIC_64) return null;
-    if (head.length < 8) return null;
-    const n = u32be(dv, 4);
-    const idx = Math.max(0, Number(sliceIndex) || 0);
+    if (be !== FAT_MAGIC && be !== FAT_MAGIC_64 || head.length < 8) return null;
+    const n = u32be(dv, 4), idx = Math.max(0, Number(sliceIndex) || 0);
     if (idx >= n || n > 64) return null;
-    const wide = be === FAT_MAGIC_64;
-    const entry2 = wide ? 32 : 20;
+    const wide = be === FAT_MAGIC_64, entry2 = wide ? 32 : 20;
     const table = await bytes(file, 0, 8 + n * entry2);
-    const tdv = new DataView(table.buffer, table.byteOffset, table.byteLength);
-    const p = 8 + idx * entry2;
-    return wide ? tdv.getBigUint64(p + 8, false) : BigInt(tdv.getUint32(p + 8, false));
+    if (table.length < 8 + n * entry2) return null;
+    const tdv = new DataView(table.buffer, table.byteOffset, table.byteLength), p = 8 + idx * entry2;
+    const base = wide ? tdv.getBigUint64(p + 8, false) : BigInt(tdv.getUint32(p + 8, false));
+    const size = wide ? tdv.getBigUint64(p + 16, false) : BigInt(tdv.getUint32(p + 12, false));
+    const total = BigInt(file.size);
+    if (size <= 0n || base > total || size > total - base) return null;
+    return { base, size };
   }
   async function parseImage(file, sliceIndex) {
-    const base = await sliceOffset(file, sliceIndex);
-    if (base == null) return null;
+    const slice = await sliceOffset(file, sliceIndex);
+    if (slice == null) return null;
+    const { base, size: sliceSize } = slice;
     const h2 = await bytes(file, base, 32);
     if (h2.length < 32) return null;
     let dv = new DataView(h2.buffer, h2.byteOffset, h2.byteLength);
     if (dv.getUint32(0, true) !== MH_MAGIC_64) return null;
     const ncmds = dv.getUint32(16, true);
     const sizeofcmds = dv.getUint32(20, true);
-    if (!ncmds || ncmds > 1e4 || sizeofcmds > 64 * 1024 * 1024) return null;
+    if (!ncmds || ncmds > 1e4 || sizeofcmds > MAX_LOAD_COMMAND_BYTES || BigInt(32 + sizeofcmds) > sliceSize) return null;
     const raw = await bytes(file, base, 32 + sizeofcmds);
     if (raw.length < 32) return null;
     dv = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
@@ -249,7 +250,8 @@
         const filesize = dv.getBigUint64(p + 48, true);
         const nsects = dv.getUint32(p + 64, true);
         const segIndex = segments2.length;
-        segments2.push({ name, vmaddr, vmsize, fileoff, filesize });
+        const validFileRange = fileoff <= sliceSize && filesize <= sliceSize - fileoff;
+        segments2.push({ name, vmaddr, vmsize, fileoff, filesize, validFileRange });
         let q = p + 72;
         for (let si = 0; si < nsects && q + 80 <= p + size; si++, q += 80) {
           const section = ascii(raw, q, 16);
@@ -267,7 +269,7 @@
       }
       p += size;
     }
-    return { base, segments: segments2, stubs, fixups };
+    return { base, sliceSize, segments: segments2, stubs, fixups };
   }
   function parseImportNames(raw) {
     if (raw.length < 28) return null;
@@ -278,7 +280,7 @@
     const symbolsOffset = dv.getUint32(12, true);
     const count = dv.getUint32(16, true);
     const format2 = dv.getUint32(20, true);
-    if (version !== 0 || count > 1e6 || startsOffset >= raw.length || importsOffset >= raw.length || symbolsOffset >= raw.length) return null;
+    if (version !== 0 || count > MAX_CHAINED_IMPORTS || startsOffset >= raw.length || importsOffset >= raw.length || symbolsOffset >= raw.length) return null;
     const stride = format2 === 1 ? 4 : format2 === 2 ? 8 : format2 === 3 ? 16 : 0;
     if (!stride || importsOffset + count * stride > raw.length) return null;
     const names = new Array(count);
@@ -384,20 +386,32 @@
     if (!file || typeof file.slice !== "function") return [];
     const image = await parseImage(file, sliceIndex);
     if (!image || !image.fixups || !image.stubs.length) return [];
+    if (image.fixups.datasize > MAX_FIXUP_BYTES) return [];
+    const fixupSize = BigInt(image.fixups.datasize);
+    if (image.fixups.dataoff > image.sliceSize || fixupSize > image.sliceSize - image.fixups.dataoff) return [];
     const raw = await bytes(file, image.base + image.fixups.dataoff, image.fixups.datasize);
     const imports = parseImportNames(raw);
     if (!imports || !imports.names.length) return [];
     const read64 = makeBlockReader(file);
     const out = [];
+    let supplementalReadBytes = raw.length;
+    let decodedStubs = 0;
     for (const sec of image.stubs) {
-      const code = await bytes(file, image.base + sec.fileoff, sec.size);
-      const count = Math.floor(Number(sec.size) / sec.stubSize);
+      if (sec.size > BigInt(MAX_STUB_BYTES) || sec.fileoff > image.sliceSize || sec.size > image.sliceSize - sec.fileoff) continue;
+      const sectionBytes = Number(sec.size);
+      if (supplementalReadBytes + sectionBytes > MAX_SUPPLEMENTAL_READ_BYTES) break;
+      const code = await bytes(file, image.base + sec.fileoff, sectionBytes);
+      supplementalReadBytes += code.length;
+      const count = Math.min(Math.floor(Number(sec.size) / sec.stubSize), MAX_STUBS - decodedStubs);
       for (let i = 0; i < count; i++) {
+        decodedStubs++;
         const stubAddr = sec.addr + BigInt(i * sec.stubSize);
         const slot = stubSlot(code, i * sec.stubSize, stubAddr, sec.stubSize);
         if (slot == null) continue;
         const hit = segmentFor(image.segments, slot);
-        if (!hit) continue;
+        if (!hit || hit.s.validFileRange === false) continue;
+        const delta = slot - hit.s.vmaddr;
+        if (delta < 0n || delta + 8n > hit.s.filesize) continue;
         const format2 = imports.formats.get(hit.i);
         if (format2 == null) continue;
         const fileOff = image.base + hit.s.fileoff + (slot - hit.s.vmaddr);
@@ -465,7 +479,7 @@
     }
     return Object.assign({}, result, { addrs, kinds, flags, names });
   }
-  var MH_MAGIC_64, FAT_MAGIC, FAT_MAGIC_64, LC_SEGMENT_64, LC_DYLD_CHAINED_FIXUPS, S_SYMBOL_STUBS, PTR_ARM64E, PTR_ARM64E_24, PTR_64;
+  var MH_MAGIC_64, FAT_MAGIC, FAT_MAGIC_64, LC_SEGMENT_64, LC_DYLD_CHAINED_FIXUPS, S_SYMBOL_STUBS, MAX_LOAD_COMMAND_BYTES, MAX_FIXUP_BYTES, MAX_CHAINED_IMPORTS, MAX_STUB_BYTES, MAX_STUBS, MAX_SUPPLEMENTAL_READ_BYTES, PTR_ARM64E, PTR_ARM64E_24, PTR_64;
   var init_chained = __esm({
     "js/chained.js"() {
       MH_MAGIC_64 = 4277009103;
@@ -474,9 +488,81 @@
       LC_SEGMENT_64 = 25;
       LC_DYLD_CHAINED_FIXUPS = 2147483700;
       S_SYMBOL_STUBS = 8;
+      MAX_LOAD_COMMAND_BYTES = 4 * 1024 * 1024;
+      MAX_FIXUP_BYTES = 16 * 1024 * 1024;
+      MAX_CHAINED_IMPORTS = 25e4;
+      MAX_STUB_BYTES = 8 * 1024 * 1024;
+      MAX_STUBS = 8e4;
+      MAX_SUPPLEMENTAL_READ_BYTES = 32 * 1024 * 1024;
       PTR_ARM64E = /* @__PURE__ */ new Set([1, 7, 9, 10]);
       PTR_ARM64E_24 = 12;
       PTR_64 = /* @__PURE__ */ new Set([2, 6]);
+    }
+  });
+
+  // js/macho-analysis-merge.js
+  function namesOf(result) {
+    if (Array.isArray(result?.names)) return result.names.map((x) => String(x ?? ""));
+    if (typeof result?.names === "string") return result.names ? result.names.split("\n") : [];
+    return [];
+  }
+  function truthFallback(reason) {
+    return { source: "BinaryImage", normalized: true, complete: false, reasons: [String(reason || "normalized-macho-analysis-unavailable")] };
+  }
+  function markMachOSymbolTruthIncomplete(result, reason) {
+    return { ...result, symbolTruth: truthFallback(reason) };
+  }
+  function mergeMachOAnalysisResults(legacy, normalized) {
+    if (!legacy?.addrs) return normalized;
+    if (!normalized?.addrs) return markMachOSymbolTruthIncomplete(legacy, "normalized-macho-analysis-unavailable");
+    const entries = /* @__PURE__ */ new Map();
+    const ingest = (result, authoritative) => {
+      const names = namesOf(result);
+      for (let i = 0; i < result.addrs.length; i++) {
+        const addr = BigInt(result.addrs[i]), key2 = addr.toString();
+        const next = {
+          addr,
+          name: names[i] || "",
+          kind: Number(result.kinds?.[i] ?? 0),
+          flag: Number(result.flags?.[i] ?? 0),
+          provenance: result.nameProvenance?.[i] || null
+        };
+        const current2 = entries.get(key2);
+        if (!current2) {
+          entries.set(key2, next);
+          continue;
+        }
+        current2.flag ||= next.flag;
+        if (authoritative && next.name && (next.kind === 2 || !current2.name || current2.kind === 0)) {
+          current2.name = next.name;
+          current2.kind = next.kind;
+          current2.provenance = next.provenance;
+        }
+      }
+    };
+    ingest(legacy, false);
+    ingest(normalized, true);
+    const sorted = [...entries.values()].sort((a, b) => a.addr < b.addr ? -1 : a.addr > b.addr ? 1 : 0);
+    const addrs = new BigUint64Array(sorted.length), kinds = new Uint8Array(sorted.length), flags = new Uint8Array(sorted.length);
+    for (let i = 0; i < sorted.length; i++) {
+      addrs[i] = sorted[i].addr;
+      kinds[i] = sorted[i].kind;
+      flags[i] = sorted[i].flag;
+    }
+    return {
+      ...legacy,
+      addrs,
+      kinds,
+      flags,
+      names: sorted.map((x) => x.name),
+      nameProvenance: sorted.map((x) => x.provenance),
+      symbolCount: sorted.length,
+      symbolTruth: normalized.symbolTruth || truthFallback("normalized-macho-completeness-unreported"),
+      __transfer: [addrs.buffer, kinds.buffer, flags.buffer, legacy.funcs?.buffer].filter(Boolean)
+    };
+  }
+  var init_macho_analysis_merge = __esm({
+    "js/macho-analysis-merge.js"() {
     }
   });
 
@@ -727,6 +813,7 @@
     "js/backend.js"() {
       init_lru();
       init_chained();
+      init_macho_analysis_merge();
       init_analysis_cache();
       CHUNK_ROWS = 1024;
       CHUNK_BYTES = CHUNK_ROWS * 4;
@@ -766,6 +853,7 @@
           this._disasmSeq = 1;
           this._disasmPending = /* @__PURE__ */ new Map();
           this.contentHash = null;
+          this.disposed = false;
           this.analysisCache = new AnalysisCache();
           this.legacyWorker.onmessage = (event) => this._onMessage(event.data, "legacy");
           this.platformWorker.onmessage = (event) => this._onMessage(event.data, "platform");
@@ -817,6 +905,15 @@
           return name === "platform" ? this.platformWorker : this.legacyWorker;
         }
         _callTo(workerName, t2, payload = {}, transfer, onProgress) {
+          if (this.disposed) {
+            const error = new Error("Backend has been disposed.");
+            error.code = "BACKEND_DISPOSED";
+            const promise2 = Promise.reject(error);
+            promise2.requestId = null;
+            promise2.cancel = () => {
+            };
+            return promise2;
+          }
           const id = this.seq++;
           this.lastRequestId = id;
           const uiEpoch = this.gen;
@@ -876,12 +973,26 @@
           if (detection?.formatId === "macho") {
             nextFormat = "macho";
             const legacy = await this._callTo("legacy", "open", { file });
+            let normalized = null;
+            try {
+              normalized = await this._callTo("platform", "open", { file }, null, (p) => this.onAnalysisProgress?.(p));
+            } catch (error) {
+              if (error?.stale) throw error;
+              platformError = error;
+            }
             legacy.formatId = "macho";
             for (const slice of legacy.slices || []) slice.capability = legacySliceCapability(slice);
             legacy.capability = legacy.slices?.[0]?.capability || legacySliceCapability(null);
-            legacy.platform = { compatibility: "legacy-macho", sourceBackedDetection: true, detected: detection, duplicateUniversalParseAvoided: true };
+            legacy.platform = {
+              compatibility: "hybrid-macho",
+              sourceBackedDetection: true,
+              detected: detection,
+              normalizedDyldTruth: !!normalized,
+              duplicateUniversalParseAvoided: false,
+              ...platformError ? { normalizedDyldError: platformError.message } : {}
+            };
             nextLegacy = legacy;
-            nextPlatform = { formatId: "macho", capability: legacy.capability, detection, compatibility: "legacy-macho" };
+            nextPlatform = normalized ? { ...normalized, normalizedDyldTruth: true, compatibility: "hybrid-macho" } : { formatId: "macho", capability: legacy.capability, detection, normalizedDyldTruth: false, compatibility: "legacy-macho" };
             result = legacy;
           } else {
             let platformInfo = null;
@@ -959,13 +1070,21 @@
         cancelSearch(request) {
           this.cancel(request);
         }
-        analyze(sliceIndex) {
-          const worker = this.formatId === "macho" ? "legacy" : "platform";
+        async analyze(sliceIndex) {
+          if (this.formatId !== "macho") return this._callTo("platform", "analyze", { sliceIndex });
           const file = this.file;
-          return this._callTo(worker, "analyze", { sliceIndex }).then((result) => {
-            if (this.formatId !== "macho") return result;
-            return augmentAnalysisResultWithChainedImports(file, sliceIndex, result);
-          });
+          const legacy = await this._callTo("legacy", "analyze", { sliceIndex });
+          const enriched = await augmentAnalysisResultWithChainedImports(file, sliceIndex, legacy);
+          if (!this.platformInfo?.normalizedDyldTruth) {
+            return markMachOSymbolTruthIncomplete(enriched, this.legacyInfo?.platform?.normalizedDyldError || "normalized-macho-analysis-unavailable");
+          }
+          try {
+            const normalized = await this._callTo("platform", "analyze", { sliceIndex });
+            return mergeMachOAnalysisResults(enriched, normalized);
+          } catch (error) {
+            if (error?.stale) throw error;
+            return markMachOSymbolTruthIncomplete(enriched, error?.message || "normalized-macho-analysis-failed");
+          }
         }
         guessFunctions(regionId, limit2, onProgress) {
           return this.call("guessFunctions", { regionId, limit: limit2 }, null, onProgress);
@@ -1065,6 +1184,28 @@
           this.resetCache();
           this._releaseDisassembly(new Error("disassembly worker released for memory pressure"));
           return this._callTo("platform", "cleanupMemory", {});
+        }
+        dispose() {
+          if (this.disposed) return;
+          this.disposed = true;
+          const failure = new Error("Backend has been disposed.");
+          failure.code = "BACKEND_DISPOSED";
+          this.analysisEpoch++;
+          this.transportEpoch++;
+          this.resetCache();
+          this._releaseDisassembly(failure);
+          for (const pending of this.pending.values()) pending.reject(failure);
+          this.pending.clear();
+          for (const worker of [this.legacyWorker, this.platformWorker]) {
+            try {
+              worker.terminate();
+            } catch {
+            }
+          }
+          if (typeof document !== "undefined" && this._memoryPressureHandler) {
+            document.removeEventListener("visibilitychange", this._memoryPressureHandler);
+            this._memoryPressureHandler = null;
+          }
         }
         resetCache() {
           this.cache.clear();
@@ -3712,6 +3853,7 @@
           this.functionRegions = [];
           this.setFunctionRegions(r.regions || [], false);
           this.capped = !!r.capped;
+          this.symbolTruth = r.symbolTruth || null;
           const discoveryComplete = r.discoveryComplete === true || r.functionStartsComplete === true || r.functionStartsExact === true;
           this.allSeedsExact = r.allSeedsExact != null ? !!r.allSeedsExact : !!r.functionStartsExact;
           this.functionStartsComplete = discoveryComplete;
@@ -49275,25 +49417,38 @@ ${rendered}` : rendered,
         async loadBaseline(file, { backend = null } = {}) {
           if (!file) throw new Error("baseline-file-required");
           if (!this.identity) await this.bind();
-          const other = backend || this.backendFactory();
-          const info = await other.open(file);
-          const currentArch = this.identity?.metadata?.architecture || null;
-          const sliceIndex = chooseSlice(info, currentArch);
-          if (sliceIndex < 0) throw new Error("baseline-slice-unavailable");
-          const slice = info.slices[sliceIndex];
-          const arch = slice?.capability?.architecture || slice?.info?.architecture || slice?.info?.cpu || null;
-          if (currentArch && arch && currentArch !== arch) {
-            const error = new Error(`architecture mismatch: ${currentArch} vs ${arch}`);
-            error.code = "DIFF_ARCH_MISMATCH";
+          const ownedBackend = !backend, other = backend || this.backendFactory();
+          try {
+            const info = await other.open(file);
+            const currentArch = this.identity?.metadata?.architecture || null;
+            const sliceIndex = chooseSlice(info, currentArch);
+            if (sliceIndex < 0) throw new Error("baseline-slice-unavailable");
+            const slice = info.slices[sliceIndex];
+            const arch = slice?.capability?.architecture || slice?.info?.architecture || slice?.info?.cpu || null;
+            if (currentArch && arch && currentArch !== arch) {
+              const error = new Error(`architecture mismatch: ${currentArch} vs ${arch}`);
+              error.code = "DIFF_ARCH_MISMATCH";
+              throw error;
+            }
+            const hash = await other.ensureContentHash();
+            const result = await other.analyze(sliceIndex);
+            const symbols = new SymbolIndex({ ...result, regions: slice?.regions || [] });
+            const functions = functionsFromSymbols(symbols);
+            const previous = this.baseline;
+            this.baseline = { file, backend: other, ownedBackend, info, sliceIndex, slice, architecture: arch, hash, symbols, functions, complete: functions.complete === true };
+            if (previous?.ownedBackend && previous.backend !== other) previous.backend?.dispose?.();
+            this.diffState = null;
+            return this.baseline;
+          } catch (error) {
+            if (ownedBackend) other?.dispose?.();
             throw error;
           }
-          const hash = await other.ensureContentHash();
-          const result = await other.analyze(sliceIndex);
-          const symbols = new SymbolIndex({ ...result, regions: slice?.regions || [] });
-          const functions = functionsFromSymbols(symbols);
-          this.baseline = { file, backend: other, info, sliceIndex, slice, architecture: arch, hash, symbols, functions, complete: functions.complete === true };
+        }
+        dispose() {
+          if (this.baseline?.ownedBackend) this.baseline.backend?.dispose?.();
+          this.baseline = null;
           this.diffState = null;
-          return this.baseline;
+          this.busy = null;
         }
         async diff(options = {}) {
           if (this.busy) return this.busy;
