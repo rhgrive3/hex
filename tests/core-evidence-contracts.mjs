@@ -57,6 +57,8 @@ assert.throws(() => graph.addNode({ ...support, payload:{ different:true } }), /
 assert.throws(() => createEvidenceNode({ id:'bad', family:'NotEvidence' }), /evidence-invalid-family/);
 assert.throws(() => createEvidenceEdge({ type:'not-an-edge', from:'a', to:'b' }), /evidence-invalid-edge-family/);
 assert.throws(() => createClaimNode({ id:'bad-claim', family:'Claim', semanticKind:'x' }), /evidence-claim-target-required/);
+assert.throws(() => createClaimNode({ id:'bad-assumptions', family:'Claim', targetEntityIds:['entity-a'], semanticKind:'x', assumptions:'not-an-array' }), /evidence-invalid-assumptions/);
+assert.throws(() => new EvidenceGraph({ nodes:'not-an-array', edges:[] }), /evidence-invalid-nodes/);
 
 const ai = legacyAiEvidenceToCanonical({ id:'legacy-ai', kind:'alias', status:'verified', sourceTool:'prove_alias', confidence:1, timestamp:'2026-08-16T00:00:00.000Z' });
 assert.equal(ai.id, 'legacy-ai', 'compatibility adapter must preserve legacy evidence IDs');
