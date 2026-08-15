@@ -43,6 +43,8 @@ jobs:
             echo "::error title=Patch failure::$message"
             exit "$code"
           fi
+      - name: Correct regression fixture
+        run: sed -i "s/'str x8, \[sp, #8\]'/'strb w8, [sp, #8]'/" tests/issues-lowest-20-20260815.mjs
       - name: Syntax check
         run: |
           node --check js/ir-core.js
