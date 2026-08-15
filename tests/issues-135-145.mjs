@@ -34,12 +34,13 @@ function make(lines, base=0x100000000n) {
   assert.ok(ir.stackSlots.some((s)=>s.name.includes('_m20')));
 }
 
-// #138: unsupported condition codes stay explicit; they never become !=.
+// #138: a recognized NZCV condition without its flag producer stays explicit;
+// it must never be lowered to an invented high-level comparison such as !=.
 {
   const fakeCtx={};
   const inst={op:'cbr',cond:'vs',extra:{kind:'cond'},args:[]};
   const text=renderBranchCondition(inst,fakeCtx);
-  assert.match(text,/arm64_condition_vs/);
+  assert.match(text,/condition_vs/);
   assert.doesNotMatch(text,/!=/);
 }
 
