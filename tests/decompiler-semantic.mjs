@@ -167,4 +167,76 @@ function make(lines, opts = {}) {
   assert.equal(ut.values.get(unsignedValue.id).signed, false);
 }
 
+// YWP regression: detached Objective-C exception landing pads must not force
+// the ordinary message-send body back through legacy register rendering.
+{
+  const MSG = 0x100010000n;
+  const BEGIN_CATCH = 0x100010100n;
+  const END_CATCH = 0x100010200n;
+  const UNWIND = 0x100010300n;
+  const symbols = new Map([
+    [MSG.toString(), '_objc_msgSend'],
+    [BEGIN_CATCH.toString(), '_objc_begin_catch'],
+    [END_CATCH.toString(), '_objc_end_catch'],
+    [UNWIND.toString(), '__Unwind_Resume'],
+  ]);
+  const symbolFor = (addr) => symbols.get(BigInt(addr).toString()) || null;
+  const methodName = '-[POBRequestBuilder urlRequestWithMethod:contentType:]';
+  const { model, rowOfAddress } = make([
+    'mov x24, x0',
+    'mov x2, #0x123', // stale ABI register: zero-arity selector must ignore it
+    'mov x0, x24',
+    `bl #0x${MSG.toString(16)}`,
+    'mov x26, x0',
+    'mov x0, x26',
+    'ret',
+    // No ordinary predecessor: entered only through exception unwinding metadata.
+    'mov x25, x0',
+    `bl #0x${BEGIN_CATCH.toString(16)}`,
+    `bl #0x${END_CATCH.toString(16)}`,
+    'mov x0, x25',
+    `bl #0x${UNWIND.toString(16)}`,
+  ], { name: methodName, symbolFor });
+  model.calls = [
+    { row: 3, name: '_objc_msgSend', selector: 'adRequest', target: MSG },
+    { row: 8, name: '_objc_begin_catch', target: BEGIN_CATCH },
+    { row: 9, name: '_objc_end_catch', target: END_CATCH },
+    { row: 11, name: '__Unwind_Resume', target: UNWIND },
+  ];
+
+  const r = decompile(model, {
+    addr: BASE, name: methodName, rowOfAddress, symbolFor, returnType: 'id', beginner: false,
+  });
+  assert.equal(r.semantic, true, r.warnings?.join('\n'));
+  assert.equal(r.legacyFallback, undefined, r.pseudocode);
+  assert.equal(r.coverage?.missing, 0);
+  assert.ok((r.coverage?.detachedExceptionBlocks || 0) >= 1, JSON.stringify(r.coverage));
+  assert.match(r.pseudocode, /\[self adRequest\]/, r.pseudocode);
+  assert.doesNotMatch(r.pseudocode, /adRequest\s*:/, r.pseudocode);
+  assert.match(r.pseudocode, /Exception landing pads/);
+  assert.match(r.pseudocode, /objc_begin_catch/);
+  assert.match(r.pseudocode, /Unwind_Resume/);
+  assert.doesNotMatch((r.warnings || []).join('\n'), /disconnected or indirect targets use the isolated faithful fallback/);
+  assert.match(r.signature, /^id -\[POBRequestBuilder urlRequestWithMethod:contentType:\]\(/);
+  assert.doesNotMatch(r.signature, /\ba1\b|\ba2\b/); // self/_cmd stay implicit
+  assert.match(r.signature, /\ba3\b/);
+  assert.match(r.signature, /\ba4\b/);
+}
+
+// Safety regression: ordinary unreachable/dead code is not silently blessed as
+// an exception region. Unknown disconnected control flow still takes the
+// historical faithful whole-function fallback.
+{
+  const { model, rowOfAddress } = make([
+    'mov w0, #1',
+    'ret',
+    'mov w0, #2',
+    'ret',
+  ]);
+  const r = decompile(model, { addr: BASE, name: 'has_unknown_detached_code', rowOfAddress, returnType: 'int32', beginner: false });
+  assert.equal(r.semantic, false);
+  assert.equal(r.legacyFallback, true);
+  assert.match((r.warnings || []).join('\n'), /disconnected or indirect targets use the isolated faithful fallback/);
+}
+
 console.log('decompiler-semantic: ok');
