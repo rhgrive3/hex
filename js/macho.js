@@ -517,6 +517,361 @@
     return out;
   }
 
+
+  /* ── Compact-unwind LSDA / exception landing pads ── */
+
+  /**
+   * Read the linker-defined LSDA index arrays embedded in `__unwind_info`.
+   * Each pair associates an exact function start with one `__gcc_except_tab`
+   * record. Values are image-relative 32-bit offsets by Mach-O ABI.
+   */
+  function parseUnwindLsdaEntries(buf, imageBase) {
+    const out = [];
+    if (!buf || buf.length < 28 || imageBase == null) return out;
+    const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+    if (dv.getUint32(0, true) !== 1) return out;
+    const indexOff = dv.getUint32(20, true);
+    const indexCount = dv.getUint32(24, true);
+    if (indexCount < 2 || indexOff + indexCount * 12 > buf.length) return out;
+    const base = BigInt(imageBase);
+    const seen = new Set();
+    for (let i = 0; i + 1 < indexCount; i++) {
+      const p = indexOff + i * 12;
+      const q = p + 12;
+      const lsdaOff = dv.getUint32(p + 8, true);
+      const nextLsdaOff = dv.getUint32(q + 8, true);
+      if (!lsdaOff || !nextLsdaOff || nextLsdaOff < lsdaOff || nextLsdaOff > buf.length) continue;
+      for (let x = lsdaOff; x + 8 <= nextLsdaOff; x += 8) {
+        const fnOff = dv.getUint32(x, true);
+        const tableOff = dv.getUint32(x + 4, true);
+        if (!tableOff) continue;
+        const key = fnOff + ':' + tableOff;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push({ functionStart: base + BigInt(fnOff), lsda: base + BigInt(tableOff) });
+      }
+    }
+    out.sort((a, b) => (a.lsda < b.lsda ? -1 : a.lsda > b.lsda ? 1 : a.functionStart < b.functionStart ? -1 : 1));
+    return out;
+  }
+
+  /**
+   * Parse Itanium/DWARF LSDA call-site tables and return exact landing-pad
+   * addresses. Landing pads are intra-function exception CFG entries, so they
+   * are authoritative negative evidence for function-boundary guessing.
+   */
+  function parseLsdaLandingPads(buf, sectionVM, entries, options = {}) {
+    const out = new Set();
+    if (!buf || !entries || !entries.length || sectionVM == null) return [];
+    const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+    const u8 = new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+    const vm = BigInt(sectionVM), secEnd = vm + BigInt(buf.length);
+    const local = entries.filter((e) => e && e.lsda >= vm && e.lsda < secEnd)
+      .slice().sort((a, b) => (a.lsda < b.lsda ? -1 : a.lsda > b.lsda ? 1 : 0));
+
+    for (let i = 0; i < local.length; i++) {
+      const e = local[i];
+      let p = Number(e.lsda - vm);
+      const end = i + 1 < local.length ? Number(local[i + 1].lsda - vm) : buf.length;
+      if (p < 0 || p + 3 > end || end > buf.length) continue;
+      try {
+        const lpEncoding = u8[p++];
+        let lpBase = e.functionStart;
+        if (lpEncoding !== 0xff) {
+          const x = ehEncodedValue(dv, u8, p, end, lpEncoding, vm, options);
+          if (!x || x.value == null) continue;
+          lpBase = x.value; p = x.next;
+        }
+        if (p >= end) continue;
+        const typeEncoding = u8[p++];
+        if (typeEncoding !== 0xff) {
+          const typeOffset = ehReadULEB(u8, p, end);
+          if (!typeOffset) continue;
+          p = typeOffset.next; // type table itself is irrelevant to boundaries
+        }
+        if (p >= end) continue;
+        const callSiteEncoding = u8[p++];
+        const tableLen = ehReadULEB(u8, p, end);
+        if (!tableLen || tableLen.value > BigInt(Number.MAX_SAFE_INTEGER)) continue;
+        p = tableLen.next;
+        const tableEnd = p + Number(tableLen.value);
+        if (tableEnd > end) continue;
+        // Call-site offsets are relative to LPStart/functionStart. Preserve the
+        // representation format while ignoring application bits for offsets.
+        const offsetEncoding = callSiteEncoding & 0x0f;
+        while (p < tableEnd) {
+          const startX = ehEncodedValue(dv, u8, p, tableEnd, offsetEncoding, vm, options);
+          if (!startX) break; p = startX.next;
+          const lengthX = ehEncodedValue(dv, u8, p, tableEnd, offsetEncoding, vm, options);
+          if (!lengthX) break; p = lengthX.next;
+          const landingX = ehEncodedValue(dv, u8, p, tableEnd, offsetEncoding, vm, options);
+          if (!landingX) break; p = landingX.next;
+          const action = ehReadULEB(u8, p, tableEnd);
+          if (!action) break; p = action.next;
+          if (landingX.raw !== 0n) out.add(lpBase + landingX.raw);
+          void startX; void lengthX;
+        }
+      } catch { /* malformed LSDA: skip this bounded record */ }
+    }
+    return Array.from(out).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  }
+
+  /* ── DWARF .eh_frame ranges (authoritative function extents) ── */
+
+  function ehReadULEB(u8, p, end) {
+    let value = 0n, shift = 0n;
+    for (let i = 0; i < 10 && p < end; i++, p++) {
+      const b = u8[p];
+      value |= BigInt(b & 0x7f) << shift;
+      if (!(b & 0x80)) return { value, next: p + 1 };
+      shift += 7n;
+    }
+    return null;
+  }
+
+  function ehReadSLEB(u8, p, end) {
+    let value = 0n, shift = 0n, b = 0;
+    for (let i = 0; i < 10 && p < end; i++, p++) {
+      b = u8[p];
+      value |= BigInt(b & 0x7f) << shift;
+      shift += 7n;
+      if (!(b & 0x80)) {
+        if ((b & 0x40) && shift < 64n) value |= (-1n) << shift;
+        return { value, next: p + 1 };
+      }
+    }
+    return null;
+  }
+
+  function ehEncodedValue(dv, u8, p, end, encoding, sectionVM, options = {}) {
+    if (encoding === 0xff) return { value: null, raw: 0n, next: p };
+    const format = encoding & 0x0f;
+    const application = encoding & 0x70;
+    const indirect = !!(encoding & 0x80);
+    const ptrBytes = options.pointerSize === 4 ? 4 : 8;
+    if (application === 0x50) p = Math.ceil(p / ptrBytes) * ptrBytes;
+    const field = sectionVM + BigInt(p);
+    const span = (n) => p >= 0 && p + n <= end;
+    let raw, next;
+    if (format === 0x00) {
+      if (!span(ptrBytes)) return null;
+      // Darwin commonly uses DW_EH_PE_pcrel|DW_EH_PE_absptr.  In that
+      // combination the pointer-width payload is a signed displacement.
+      const signed = application !== 0;
+      if (ptrBytes === 8) raw = signed ? dv.getBigInt64(p, true) : dv.getBigUint64(p, true);
+      else raw = BigInt(signed ? dv.getInt32(p, true) : dv.getUint32(p, true));
+      next = p + ptrBytes;
+    } else if (format === 0x01) {
+      const x = ehReadULEB(u8, p, end); if (!x) return null; raw = x.value; next = x.next;
+    } else if (format === 0x02 || format === 0x0a) {
+      if (!span(2)) return null;
+      raw = BigInt(format === 0x0a ? dv.getInt16(p, true) : dv.getUint16(p, true)); next = p + 2;
+    } else if (format === 0x03 || format === 0x0b) {
+      if (!span(4)) return null;
+      raw = BigInt(format === 0x0b ? dv.getInt32(p, true) : dv.getUint32(p, true)); next = p + 4;
+    } else if (format === 0x04 || format === 0x0c) {
+      if (!span(8)) return null;
+      raw = format === 0x0c ? dv.getBigInt64(p, true) : dv.getBigUint64(p, true); next = p + 8;
+    } else if (format === 0x09) {
+      const x = ehReadSLEB(u8, p, end); if (!x) return null; raw = x.value; next = x.next;
+    } else return null;
+
+    let value = raw;
+    if (application === 0x10) value += field;
+    else if (application === 0x20) {
+      if (options.textBase == null) return null;
+      value += BigInt(options.textBase);
+    } else if (application === 0x30) {
+      if (options.dataBase == null) return null;
+      value += BigInt(options.dataBase);
+    } else if (application === 0x40) {
+      if (options.functionBase == null) return null;
+      value += BigInt(options.functionBase);
+    } else if (application !== 0 && application !== 0x50) return null;
+    // Resolving DW_EH_PE_indirect would require reading another Mach-O region.
+    // A section-local parser must fail closed rather than invent a target.
+    if (indirect) return null;
+    return { value, raw, next };
+  }
+
+  /**
+   * Parse DWARF `.eh_frame` and return exact FDE [start,end) ranges.
+   *
+   * The FDE is link/runtime metadata: unlike a prologue signature its start and
+   * extent are not guesses.  Malformed/unsupported CIEs are skipped locally so
+   * one vendor-specific record cannot poison the rest of the section.
+   */
+  function parseEhFrameRanges(buf, sectionVM, options = {}) {
+    const out = [];
+    if (!buf || buf.length < 8 || sectionVM == null) return out;
+    const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+    const u8 = new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+    const cies = new Map();
+    const vm = BigInt(sectionVM);
+    let p = 0;
+
+    while (p + 4 <= buf.length) {
+      const recordStart = p;
+      let length = BigInt(dv.getUint32(p, true)); p += 4;
+      if (length === 0n) continue;
+      let dwarf64 = false, headerBytes = 4;
+      if (length === 0xffffffffn) {
+        if (p + 8 > buf.length) break;
+        length = dv.getBigUint64(p, true); p += 8; dwarf64 = true; headerBytes = 12;
+      }
+      if (length <= 0n || length > BigInt(buf.length) || length > BigInt(Number.MAX_SAFE_INTEGER)) break;
+      const bodyStart = recordStart + headerBytes;
+      const recordEnd = bodyStart + Number(length);
+      const idBytes = dwarf64 ? 8 : 4;
+      if (bodyStart + idBytes > recordEnd || recordEnd > buf.length) break;
+      const idField = bodyStart;
+      const cieId = dwarf64 ? dv.getBigUint64(idField, true) : BigInt(dv.getUint32(idField, true));
+      const content = idField + idBytes;
+
+      if (cieId === 0n) {
+        try {
+          let q = content;
+          if (q >= recordEnd) { p = recordEnd; continue; }
+          const version = u8[q++];
+          let augmentation = '';
+          while (q < recordEnd && u8[q] !== 0 && augmentation.length < 64) augmentation += String.fromCharCode(u8[q++]);
+          if (q >= recordEnd) { p = recordEnd; continue; }
+          q++; // NUL
+          const codeAlign = ehReadULEB(u8, q, recordEnd); if (!codeAlign) { p = recordEnd; continue; } q = codeAlign.next;
+          const dataAlign = ehReadSLEB(u8, q, recordEnd); if (!dataAlign) { p = recordEnd; continue; } q = dataAlign.next;
+          // Version 1 encodes the return-address register as one byte; later
+          // versions use ULEB128.
+          if (version === 1) q++;
+          else { const ra = ehReadULEB(u8, q, recordEnd); if (!ra) { p = recordEnd; continue; } q = ra.next; }
+          let fdeEncoding = 0x00;
+          if (augmentation.startsWith('z')) {
+            const augLen = ehReadULEB(u8, q, recordEnd); if (!augLen) { p = recordEnd; continue; }
+            q = augLen.next;
+            const augEnd = q + Number(augLen.value);
+            if (!Number.isSafeInteger(augEnd) || augEnd > recordEnd) { p = recordEnd; continue; }
+            for (const ch of augmentation.slice(1)) {
+              if (ch === 'L') { if (q >= augEnd) break; q++; }
+              else if (ch === 'R') { if (q >= augEnd) break; fdeEncoding = u8[q++]; }
+              else if (ch === 'P') {
+                if (q >= augEnd) break;
+                const enc = u8[q++];
+                const x = ehEncodedValue(dv, u8, q, augEnd, enc, vm, options);
+                if (!x) { q = augEnd; break; }
+                q = x.next;
+              } else if (ch !== 'S') {
+                // Unknown augmentation data has no self-describing size. The
+                // outer z-length still lets us skip this CIE safely.
+                q = augEnd; break;
+              }
+            }
+          }
+          cies.set(recordStart, { fdeEncoding });
+        } catch { /* malformed CIE: keep scanning the next bounded record */ }
+      } else {
+        try {
+          // In `.eh_frame`, the FDE CIE pointer is a backwards section offset
+          // from the address of the CIE-pointer field itself.
+          const cieOffset = Number(cieId);
+          if (!Number.isSafeInteger(cieOffset) || cieOffset <= 0) { p = recordEnd; continue; }
+          const cieStart = idField - cieOffset;
+          const cie = cies.get(cieStart);
+          if (!cie) { p = recordEnd; continue; }
+          const startX = ehEncodedValue(dv, u8, content, recordEnd, cie.fdeEncoding, vm, options);
+          if (!startX || startX.value == null) { p = recordEnd; continue; }
+          // The address-range field uses the FDE encoding's representation but
+          // not its relative/indirect application bits.
+          const rangeEncoding = cie.fdeEncoding & 0x0f;
+          const rangeX = ehEncodedValue(dv, u8, startX.next, recordEnd, rangeEncoding, vm, options);
+          if (!rangeX || rangeX.raw <= 0n) { p = recordEnd; continue; }
+          const start = startX.value, end = start + rangeX.raw;
+          if (start >= 0n && end > start) out.push({ start, end });
+        } catch { /* malformed FDE: fail closed */ }
+      }
+      p = recordEnd;
+    }
+    out.sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : a.end < b.end ? -1 : a.end > b.end ? 1 : 0));
+    return out;
+  }
+
+  /* ── Objective-C method lists (authoritative function starts) ── */
+
+  function objcMethodPointer(v, imageBase) {
+    if (v === 0n) return null;
+    if (imageBase != null && v < imageBase) return imageBase + v;
+    if (v < 0x0001000000000000n) return v;
+    const low = v & 0x0000000fffffffffn;
+    if (low === 0n) return null;
+    if (v & 0x8000000000000000n) return (imageBase == null || low >= imageBase) ? low : null;
+    if (imageBase != null && low < imageBase) return imageBase + low;
+    return low;
+  }
+
+  /**
+   * Parse `__TEXT,__objc_methlist` and return implementation addresses.
+   *
+   * Unlike pointer-table guessing, a method-list entry has a runtime-defined
+   * structure: selector, type encoding, and IMP.  We only accept a whole list
+   * when every sampled address lands in the corresponding Mach-O section and
+   * every IMP lands in executable code.  This makes the result authoritative
+   * metadata evidence rather than a heuristic code pointer.
+   */
+  function parseObjcMethodStarts(buf, sectionVM, options = {}) {
+    const out = new Set();
+    if (!buf || buf.length < 20 || sectionVM == null) return [];
+    const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+    const regions = Array.isArray(options.regions) ? options.regions : [];
+    const imageBase = options.imageBase == null ? null : BigInt(options.imageBase);
+    const align = instructionAlignment(options.architecture || 'arm64');
+    const ranges = (pred) => regions.filter((r) => r && r.size > 0n && pred(r))
+      .map((r) => [BigInt(r.vmAddr), BigInt(r.vmAddr) + BigInt(r.size)]);
+    const exec = ranges((r) => !!r.exec);
+    const selrefs = ranges((r) => r.section === '__objc_selrefs');
+    const selectorText = ranges((r) => r.section === '__objc_methname' || r.section === '__cstring');
+    const typeText = ranges((r) => r.section === '__objc_methtype' || r.section === '__cstring');
+    const inside = (addr, rs) => addr != null && rs.some(([lo, hi]) => addr >= lo && addr < hi);
+    const i32 = (p) => BigInt(dv.getInt32(p, true));
+    const u64 = (p) => dv.getBigUint64(p, true);
+    const vm = BigInt(sectionVM);
+
+    for (let p = 0; p + 8 <= buf.length; p += 4) {
+      const raw = dv.getUint32(p, true);
+      const count = dv.getUint32(p + 4, true);
+      if (!count || count > 20000) continue;
+      const relative = !!(raw & 0x80000000);
+      const directSelector = !!(raw & 0x40000000);
+      const stride = raw & 0xfffc;
+      if (relative ? (stride < 12 || stride > 256) : (stride < 24 || stride > 256)) continue;
+      const bytes = 8 + count * stride;
+      if (!Number.isSafeInteger(bytes) || p + bytes > buf.length) continue;
+
+      const imps = [];
+      let valid = true;
+      for (let i = 0; i < count; i++) {
+        const q = p + 8 + i * stride;
+        const entry = vm + BigInt(q);
+        let nameAddr, typeAddr, imp;
+        if (relative) {
+          nameAddr = entry + i32(q);
+          typeAddr = entry + 4n + i32(q + 4);
+          imp = entry + 8n + i32(q + 8);
+          const nameRanges = directSelector ? selectorText : selrefs;
+          if (!inside(nameAddr, nameRanges)) { valid = false; break; }
+        } else {
+          nameAddr = objcMethodPointer(u64(q), imageBase);
+          typeAddr = objcMethodPointer(u64(q + 8), imageBase);
+          imp = objcMethodPointer(u64(q + 16), imageBase);
+          if (!inside(nameAddr, selectorText)) { valid = false; break; }
+        }
+        if (!inside(typeAddr, typeText) || !inside(imp, exec) || (imp % align) !== 0n) {
+          valid = false; break;
+        }
+        imps.push(imp);
+      }
+      if (valid) for (const imp of imps) out.add(imp);
+    }
+    return Array.from(out).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  }
+
   /* ── 間接シンボル（__stubs / __got の名前） ───────────── */
 
   /**
@@ -550,7 +905,7 @@
 
   root.MachO = {
     detect, parseFat, parseSlice, regionsFrom, cpuName,
-    parseSymbols, definedSymbols, parseFunctionStarts, parseUnwindStarts, stubSymbols,
+    parseSymbols, definedSymbols, parseFunctionStarts, parseUnwindStarts, parseUnwindLsdaEntries, parseLsdaLandingPads, parseEhFrameRanges, parseObjcMethodStarts, stubSymbols,
     CPU_TYPE_ARM64, CPU_TYPE_ARM64_32,
   };
 })(typeof self !== 'undefined' ? self : globalThis);
