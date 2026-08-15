@@ -27,4 +27,9 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git merge --no-edit -X theirs origin/main
+          # The Actions app cannot push workflow-file changes. Preserve this
+          # PR's workflow tree in the merge commit; code/test files still take
+          # the normal 3-way merge result and current main becomes an ancestor.
+          git checkout ORIG_HEAD -- .github/workflows
+          git commit --amend --no-edit
           git push origin HEAD:fix/first-50-unreferenced-open-issues
