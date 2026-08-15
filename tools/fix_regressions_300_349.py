@@ -74,4 +74,14 @@ rep('js/expr.js',
 """    inner = shifted.a; shift = s;""",
 """    inner = stripPatternUxt32(shifted.a); shift = s;""", 1)
 
+# #336: confidence is ranking/calibration evidence, not provenance. The old UI
+# test promoted 0.99 to VERIFIED without an explicit verified status, which is
+# precisely the behavior this issue removes.
+rep('tests/ai-ui-evidence.mjs',
+"""  assert.equal(normalizeStatus(null, 0.99), STATUS.VERIFIED);
+  assert.equal(normalizeStatus(null, 0.8), STATUS.SUPPORTED);""",
+"""  assert.equal(normalizeStatus(null, 0.99), STATUS.SUPPORTED);
+  assert.equal(normalizeStatus(null, 0.8), STATUS.SUPPORTED);
+  assert.equal(normalizeStatus('verified', 0.2), STATUS.VERIFIED, 'verification requires explicit provenance/status');""")
+
 print('full-suite regressions fixed')
