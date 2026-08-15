@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hex for ChatGPT
 // @namespace    https://github.com/rhgrive3/hex
-// @version      1.0.1786801922
+// @version      1.0.1786802391
 // @description  Run the Hex binary analysis workbench on ChatGPT Web.
 // @match        https://chatgpt.com/*
 // @run-at       document-idle
@@ -958,6 +958,11 @@
           return this.analysisEpoch;
         }
         async open(file) {
+          if (this.disposed) {
+            const error = new Error("Backend has been disposed.");
+            error.code = "BACKEND_DISPOSED";
+            throw error;
+          }
           const previousTransportEpoch = this.transportEpoch;
           const openTransportEpoch = ++this.transportEpoch;
           for (const worker of [this.legacyWorker, this.platformWorker]) worker.postMessage({ t: "cancel", epoch: previousTransportEpoch });
@@ -55749,8 +55754,11 @@ When evidence is insufficient, request a permitted tool or state the missing evi
     const text3 = String(value2 == null ? "" : value2).replace(/\s+/g, " ").trim();
     return text3.length > limit2 ? text3.slice(0, limit2 - 1) + "…" : text3;
   }
+  function escapeTagText(value2) {
+    return String(value2).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
   function line3(label, value2) {
-    const text3 = clip(value2);
+    const text3 = escapeTagText(clip(value2));
     return text3 ? label + ": " + text3 : "";
   }
   function composeContextBlock(context = {}) {
@@ -55774,7 +55782,7 @@ When evidence is insufficient, request a permitted tool or state the missing evi
   }
   function intentBlock(intent) {
     return intent ? `<intent>
-${clip(intent, 120)}
+${escapeTagText(clip(intent, 120))}
 </intent>` : "";
   }
   function composePrompt(input2 = {}) {
@@ -63351,7 +63359,7 @@ ${safeJSONStringify(payload)}
     }
   }
   function safeJSONStringify(value2) {
-    return JSON.stringify(value2, (_key, item) => typeof item === "bigint" ? `0x${item.toString(16)}` : item);
+    return JSON.stringify(value2, (_key, item) => typeof item === "bigint" ? `0x${item.toString(16)}` : item).replace(/&/g, "\\u0026").replace(/</g, "\\u003c").replace(/>/g, "\\u003e");
   }
   function apiEndpoint(path) {
     const base = globalThis.__HEX_API_BASE__;
