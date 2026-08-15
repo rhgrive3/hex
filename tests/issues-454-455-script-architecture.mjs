@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { createApi, makeEmulator, UnsupportedArchitectureError } from '../js/script.js';
 import { architectureAdapter } from '../js/architecture/index.js';
+import './architecture-abi.mjs';
 
 const BASE = 0x100000000n;
 const region = { id:'text', vmAddr:BASE, size:0x1000n, fileOffset:0n, exec:true, name:'.text' };
