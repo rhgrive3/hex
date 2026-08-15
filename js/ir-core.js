@@ -959,6 +959,40 @@ function livenessOf(ir, lifted, allRegs) {
  *   unknown            添字が実行時に決まるなど        → ここは触ると全部壊れる
  */
 
+export function pointerProvenanceOf(value, memo = new Map(), active = new Set()) {
+  if (!value) return null;
+  if (memo.has(value.id)) return memo.get(value.id);
+  if (active.has(value.id)) return null;
+  active.add(value.id);
+  let out = null;
+  const def = value.def;
+  if (!def || value.kind === VK.ARG || value.kind === VK.UNDEF) {
+    out = { root:value.id, offset:0n, must:true, via:value.kind || 'root' };
+  } else if (def.op === OP.MOV && def.args?.[0]?.value) {
+    const p = pointerProvenanceOf(def.args[0].value, memo, active);
+    if (p?.must) out = { ...p, via:'mov' };
+  } else if (def.op === OP.BIN && (def.sub === 'add' || def.sub === 'sub') && def.args?.length >= 2) {
+    const left=def.args[0]?.value, right=def.args[1]?.value;
+    const lc=left?.const, rc=right?.const;
+    if (left && rc != null) {
+      const p=pointerProvenanceOf(left,memo,active);
+      if (p?.must && p.offset != null) out={...p,offset:p.offset+(def.sub==='sub'?-rc:rc),via:def.sub};
+    } else if (def.sub === 'add' && right && lc != null) {
+      const p=pointerProvenanceOf(right,memo,active);
+      if (p?.must && p.offset != null) out={...p,offset:p.offset+lc,via:'add'};
+    }
+  } else if (def.op === OP.PHI && def.args?.length) {
+    const incoming=def.args.map((a)=>pointerProvenanceOf(a?.value,memo,active));
+    if (incoming.every((x)=>x?.must && x.root != null && x.offset != null)) {
+      const first=incoming[0];
+      if (incoming.every((x)=>x.root===first.root && x.offset===first.offset)) out={...first,via:'phi'};
+    }
+  }
+  active.delete(value.id);
+  memo.set(value.id,out);
+  return out;
+}
+
 function locationOf(inst) {
   const a = inst.addr;
   if (!a) return null;
@@ -980,9 +1014,12 @@ function locationOf(inst) {
     const addr = base.const + a.disp;
     return { key: 'global:' + addr.toString(16) + ':s' + size, kind: MK.GLOBAL, address: addr, size };
   }
+  const provenance = pointerProvenanceOf(base);
+  const baseRoot = provenance?.must && provenance.root != null ? provenance.root : base.id;
+  const disp = provenance?.must && provenance.offset != null ? a.disp + provenance.offset : a.disp;
   return {
-    key: 'field:' + base.id + '+' + a.disp.toString() + ':s' + size,
-    kind: MK.FIELD, base, disp: a.disp, size,
+    key: 'field:' + baseRoot + '+' + disp.toString() + ':s' + size,
+    kind: MK.FIELD, base, baseRoot, pointerProvenance:provenance, disp, size,
   };
 }
 
@@ -1005,7 +1042,9 @@ export function mayAlias(a, b) {
     return !(pa + sa <= pb || pb + sb <= pa);
   }
   // field 同士: ベースが同じ SSA 値なら、オフセットの重なりだけで判定できる
-  if (a.base && b.base && a.base.id === b.base.id) {
+  const ar = a.baseRoot ?? a.base?.id ?? null;
+  const br = b.baseRoot ?? b.base?.id ?? null;
+  if (ar != null && br != null && ar === br) {
     const sa = BigInt(a.size || 8), sb = BigInt(b.size || 8);
     return !(a.disp + sa <= b.disp || b.disp + sb <= a.disp);
   }
@@ -1036,9 +1075,11 @@ function storeOverlapsRange(storeLoc, otherLoc) {
     return overlap(storeLoc.disp,sa,otherLoc.disp,sb);
   }
   if (storeLoc.kind === MK.FIELD) {
-    if (!storeLoc.base || !otherLoc.base || storeLoc.base.id !== otherLoc.base.id) return false;
-    if (storeLoc.disp == null || otherLoc.disp == null) return false;
-    return overlap(storeLoc.disp,sa,otherLoc.disp,sb);
+    if (storeLoc.disp == null || otherLoc.disp == null) return true;
+    const sr = storeLoc.baseRoot ?? storeLoc.base?.id ?? null;
+    const otherRoot = otherLoc.baseRoot ?? otherLoc.base?.id ?? null;
+    if (sr != null && otherRoot != null && sr === otherRoot) return overlap(storeLoc.disp,sa,otherLoc.disp,sb);
+    return true;
   }
   return false;
 }

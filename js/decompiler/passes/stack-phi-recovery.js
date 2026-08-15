@@ -262,25 +262,55 @@ function resolveStackBefore(ir, blockIndex, beforeRow, key, maps, opts, engine, 
   }
 }
 
-function recoverReturnExpression(result, maps, opts, engine) {
-  const output = result.semanticAst?.outputs?.find((x) => x.name === 'return');
-  const root = output?.expression;
-  if (root?.kind !== 'load' || root.location?.kind !== 'stack' || !root.location?.key) return null;
-  const retInst = [...(result.ir?.instructions || [])].reverse().find((inst) => inst.op === 'ret');
-  if (!retInst) return null;
-  return resolveStackBefore(result.ir, retInst.block, retInst.row, root.location.key, maps, opts, engine, new Set());
+function isReturnNode(node) {
+  return node?.semantic?.op === 'return' || /^return\b/.test(String(node?.text || '').trim());
 }
 
-function rewriteReturnInAst(result, expression) {
-  let changed = false;
-  for (const node of result.cAst?.body || []) {
-    if (node.semantic?.op === 'return' || /^return\b/.test(String(node.text || '').trim())) {
-      node.text = `return ${printExpression(expression)};`;
-      if (node.semantic) node.semantic.expression = expression;
-      changed = true;
-    }
+function stackReturnKey(expression) {
+  return expression?.kind === 'load' && expression.location?.kind === 'stack' && expression.location?.key
+    ? expression.location.key : null;
+}
+
+function returnSiteForNode(node, ir, allowSingleFallback = false) {
+  const rets = (ir?.instructions || []).filter((inst) => inst.op === 'ret');
+  if (!rets.length) return null;
+  const source = node?.source || {};
+  const rows = new Set((source.rows || []).map(Number));
+  const irIds = new Set((source.ir || []).map(Number));
+  const addresses = new Set((source.addresses || []).map((x) => String(x)));
+  const matches = rets.filter((ret) => rows.has(Number(ret.row)) || irIds.has(Number(ret.id)) || addresses.has(String(ret.address)));
+  if (matches.length === 1) return matches[0];
+  if (!matches.length && allowSingleFallback && rets.length === 1) return rets[0];
+  return null;
+}
+
+function recoverReturnExpressionAt(result, node, maps, opts, engine, allowSingleFallback) {
+  const output = result.semanticAst?.outputs?.find((x) => x.name === 'return');
+  const expression = node?.semantic?.expression || (allowSingleFallback ? output?.expression : null);
+  const key = stackReturnKey(expression);
+  if (!key) return null;
+  const retInst = returnSiteForNode(node, result.ir, allowSingleFallback);
+  if (!retInst) return null;
+  return resolveStackBefore(result.ir, retInst.block, retInst.row, key, maps, opts, engine, new Set());
+}
+
+function rewriteReturnsInAst(result, maps, opts, engine) {
+  const nodes = (result.cAst?.body || []).filter(isReturnNode);
+  if (!nodes.length) return { changed:0, recovered:[] };
+  const recovered = [];
+  const allowSingleFallback = nodes.length === 1;
+  for (const node of nodes) {
+    const expression = recoverReturnExpressionAt(result, node, maps, opts, engine, allowSingleFallback);
+    if (!expression || expression.kind === 'load') continue;
+    node.text = `return ${printExpression(expression)};`;
+    if (node.semantic) node.semantic.expression = expression;
+    recovered.push({ node, expression });
   }
-  return changed;
+  if (recovered.length === 1 && nodes.length === 1) {
+    const output = result.semanticAst?.outputs?.find((x) => x.name === 'return');
+    if (output) output.expression = recovered[0].expression;
+  }
+  return { changed:recovered.length, recovered };
 }
 
 export function recoverExactStackPhiExpressions(result, opts = {}) {
@@ -292,12 +322,8 @@ export function recoverExactStackPhiExpressions(result, opts = {}) {
     timeBudgetMs: Math.min(10, Math.max(3, Number(opts.decompilerTimeBudgetMs || 50) / 5)),
     maxApplications: 512,
   });
-  const recovered = recoverReturnExpression(result, maps, opts, engine);
-  if (!recovered || recovered.kind === 'load') return result;
-
-  const output = result.semanticAst.outputs.find((x) => x.name === 'return');
-  output.expression = recovered;
-  if (!rewriteReturnInAst(result, recovered)) return result;
+  const rewrite = rewriteReturnsInAst(result, maps, opts, engine);
+  if (!rewrite.changed) return result;
 
   const printed = printProgram(result.cAst, { columnWidth: opts.columnWidth || opts.prettyColumnWidth || 88 });
   result.pseudocode = printed.text;
@@ -314,7 +340,7 @@ export function recoverExactStackPhiExpressions(result, opts = {}) {
   result.rewriteProof = [...(result.rewriteProof || []), {
     rule: 'exact-stack-phi-recovery',
     phase: 'memory-ssa',
-    evidence: { kind: 'cfg-memory-ssa', detail: 'two-path exact stack value reconstructed without crossing unknown memory effects' },
+    evidence: { kind: 'cfg-memory-ssa', detail: `${rewrite.changed} return site(s) reconstructed from exact RET provenance without crossing unknown memory effects` },
   }];
   result.metrics = {
     ...(result.metrics || {}),
