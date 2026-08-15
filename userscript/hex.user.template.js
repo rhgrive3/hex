@@ -1,12 +1,13 @@
 // ==UserScript==
 // @name         Hex for ChatGPT
 // @namespace    https://github.com/rhgrive3/hex
-// @version      1.0.0
+// @version      1.0.1786788042
 // @description  Run the Hex binary analysis workbench on ChatGPT Web.
 // @match        https://chatgpt.com/*
 // @run-at       document-idle
-// @grant        none
-// @updateURL    __HEX_ORIGIN__/hex.user.js
+// @inject-into  content
+// @grant        GM.xmlHttpRequest
+// @updateURL    __HEX_ORIGIN__/hex.meta.js
 // @downloadURL  __HEX_ORIGIN__/hex.user.js
 // ==/UserScript==
 
@@ -14,44 +15,7 @@
   if (location.hostname !== 'chatgpt.com') return;
   const HEX_ORIGIN = "__HEX_ORIGIN__";
   globalThis.__HEX_API_BASE__ = HEX_ORIGIN;
-  (function installHexWorkerBridgeRuntime(origin) {
-  const NativeWorker = globalThis.Worker;
-  const NativeURL = globalThis.URL;
-  if (!NativeWorker || NativeWorker.__hexWrapped) return;
-
-  function workerBootstrap(remote, moduleWorker) {
-    const setup = `
-const __hexRemote = ${JSON.stringify(remote)};
-const __HexNativeURL = globalThis.URL;
-globalThis.URL = class HexRemoteURL extends __HexNativeURL {
-  constructor(path, base) {
-    let resolvedBase = base;
-    if (typeof resolvedBase === 'string' && resolvedBase.startsWith('blob:') && typeof path === 'string') resolvedBase = __hexRemote;
-    super(path, resolvedBase);
-  }
-};`;
-    if (moduleWorker) return `${setup}\nimport(${JSON.stringify(remote)});`;
-    return `${setup}
-const __hexImportScripts = globalThis.importScripts.bind(globalThis);
-globalThis.importScripts = (...urls) => __hexImportScripts(...urls.map((value) => new __HexNativeURL(String(value), __hexRemote).href));
-__hexImportScripts(${JSON.stringify(remote)});`;
-  }
-
-  function HexWorker(url, options) {
-    const href = new NativeURL(String(url), location.href).href;
-    const prefix = origin + '/userscript-assets/';
-    if (!href.startsWith(prefix)) return new NativeWorker(url, options);
-    const bootstrap = workerBootstrap(href, !!(options && options.type === 'module'));
-    const blobUrl = NativeURL.createObjectURL(new Blob([bootstrap], { type: 'text/javascript' }));
-    try { return new NativeWorker(blobUrl, options); }
-    finally { setTimeout(() => NativeURL.revokeObjectURL(blobUrl), 1000); }
-  }
-
-  HexWorker.prototype = NativeWorker.prototype;
-  Object.setPrototypeOf(HexWorker, NativeWorker);
-  Object.defineProperty(HexWorker, '__hexWrapped', { value: true });
-  globalThis.Worker = HexWorker;
-})(HEX_ORIGIN);
+  globalThis.__HEX_WORKER_MANIFEST__ = {"classicEntries":["js/worker.js","js/platform/capstone-probe-worker.js","js/platform/capstone-disasm-worker.js"],"classicAssets":["js/worker.js","js/worker-legacy.js","js/macho.js","js/words.js","js/worker-budget.js","js/address-provenance.js","capstone.js","js/worker-fixes.js","js/platform/capstone-probe-worker.js","js/platform/capstone-disasm-worker.js"],"classicDependencies":{"js/worker.js":["js/worker-legacy.js","js/worker-fixes.js"],"js/worker-legacy.js":["js/macho.js","js/words.js","js/worker-budget.js","js/address-provenance.js","capstone.js"],"js/macho.js":[],"js/words.js":[],"js/worker-budget.js":[],"js/address-provenance.js":[],"capstone.js":[],"js/worker-fixes.js":[],"js/platform/capstone-probe-worker.js":["capstone.js"],"js/platform/capstone-disasm-worker.js":["capstone.js"]},"moduleBundles":{"js/platform/worker.js":"userscript/platform-worker.bundle.js"},"wasm":"capstone.wasm"};
   if (!document.getElementById('hex-userscript-host')) {
     const host = document.createElement('div');
     host.id = 'hex-userscript-host';
