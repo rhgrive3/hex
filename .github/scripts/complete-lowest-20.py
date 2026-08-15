@@ -33,3 +33,12 @@ new = """      case OP.BFI: {
 if old not in s:
     raise SystemExit('BFI propagation anchor missing')
 p.write_text(s.replace(old, new, 1))
+
+# #423 intentionally requires an explicit successful/completed runtime result.
+p = Path('tests/semantic-core.mjs')
+s = p.read_text()
+old = "runtimeEvidenceItems({ touchedFields: [{ address: 0x6000n, before: 1n, after: 2n }] })"
+new = "runtimeEvidenceItems({ ok: true, completed: true, touchedFields: [{ address: 0x6000n, before: 1n, after: 2n }] })"
+if old not in s:
+    raise SystemExit('semantic runtime fixture anchor missing')
+p.write_text(s.replace(old, new, 1))
