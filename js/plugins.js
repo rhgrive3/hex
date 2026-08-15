@@ -9,6 +9,12 @@ import { runInSandbox } from './sandbox.js';
 const STORE_KEY = 'hex.plugins';
 export const MAX_PLUGIN_SOURCE_BYTES = 512 * 1024;
 const sourceBytes = (source) => new TextEncoder().encode(String(source || '')).byteLength;
+let fallbackInstallSeq = 1;
+
+function newInstallId() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  return `install_${Date.now().toString(36)}_${(fallbackInstallSeq++).toString(36)}_${Math.random().toString(36).slice(2)}`;
+}
 
 async function boundedResponseText(res, maxBytes = MAX_PLUGIN_SOURCE_BYTES) {
   const rawLength = res.headers?.get?.('content-length');
@@ -17,8 +23,6 @@ async function boundedResponseText(res, maxBytes = MAX_PLUGIN_SOURCE_BYTES) {
     if (Number.isFinite(n) && n > maxBytes) throw new Error('PLUGIN_TOO_LARGE');
   }
   if (!res.body?.getReader) {
-    // Without a streaming body there is no way to enforce a hard boundary on an
-    // unknown chunked response before materialization. Refuse that unsafe case.
     const n = Number(rawLength);
     if (!Number.isFinite(n) || n < 0 || n > maxBytes) throw new Error('PLUGIN_UNBOUNDED_RESPONSE');
     const text = await res.text();
@@ -61,49 +65,90 @@ export class PluginHost {
     if (!raw) return;
     try {
       const list = JSON.parse(raw);
+      if (!Array.isArray(list)) return;
+      const legacySeen = new Set();
       for (const p of list) {
         if (!p || typeof p.source !== 'string') continue;
-        await this.install(p.source, p.origin || '保存されたもの', { silent: true });
+        /* v1 stored the same source once per discovered definition. Collapse
+           those legacy duplicates only; v2 deliberately permits installing the
+           same source twice because each installation has a distinct UUID. */
+        if (!p.installationId) {
+          const legacyKey = `${p.origin || ''}\u0000${p.source}`;
+          if (legacySeen.has(legacyKey)) continue;
+          legacySeen.add(legacyKey);
+        }
+        await this.install(p.source, p.origin || '保存されたもの', {
+          silent: true,
+          installationId: p.installationId || newInstallId(),
+          enabledIndexes: Array.isArray(p.enabledIndexes) ? p.enabledIndexes : null,
+        });
       }
     } catch { /* corrupted plugin storage is isolated */ }
   }
 
   save() {
-    const list = this.plugins.map((p) => ({ source: p.source, origin: p.origin }));
+    /* Persist source/package state once per installation rather than duplicating
+       the entire source for every definition discovered from that source. */
+    const groups = new Map();
+    for (const p of this.plugins) {
+      let row = groups.get(p.installationId);
+      if (!row) {
+        row = {
+          v: 2,
+          installationId: p.installationId,
+          source: p.source,
+          origin: p.origin,
+          enabledIndexes: [],
+        };
+        groups.set(p.installationId, row);
+      }
+      row.enabledIndexes.push(p.index);
+    }
     try {
-      localStorage.setItem(STORE_KEY, JSON.stringify(list));
+      localStorage.setItem(STORE_KEY, JSON.stringify(Array.from(groups.values())));
       return { ok: true };
     } catch (error) {
       return { ok: false, error: (error && error.message) || 'plugin storage failed' };
     }
   }
 
-  async install(source, origin, opts) {
+  async install(source, origin, opts = {}) {
     if (typeof source !== 'string' || !source.trim()) return { error: '中身が空です。' };
     if (sourceBytes(source) > MAX_PLUGIN_SOURCE_BYTES) return { error: 'プラグインが大きすぎます（512 KB まで）。' };
     const discovered = await runInSandbox({
       source, mode: 'discover', api: Object.create(null), out: () => {}, timeout: 10000,
     });
     if (discovered.error) return { error: '読み込めませんでした: ' + discovered.error };
-    const added = (discovered.value || []).map((def, index) => ({
-      id: 'p' + (this.plugins.length + index + 1),
+
+    const installationId = String(opts.installationId || newInstallId());
+    const enabled = Array.isArray(opts.enabledIndexes)
+      ? new Set(opts.enabledIndexes.map(Number).filter(Number.isInteger))
+      : null;
+    const all = (discovered.value || []).map((def, index) => ({
+      id: `${installationId}:${index}`,
+      installationId,
       name: def.name,
       description: def.description,
       index,
       source,
       origin: origin || '不明',
     }));
-    if (!added.length) return { error: 'プラグインが 1 つも登録されませんでした（hex.plugin({…}) を呼んでください）。' };
+    if (!all.length) return { error: 'プラグインが 1 つも登録されませんでした（hex.plugin({…}) を呼んでください）。' };
+    const added = enabled ? all.filter((plugin) => enabled.has(plugin.index)) : all;
+    /* A persisted installation may intentionally have no enabled definitions;
+       a fresh installation may not. */
+    if (!added.length && !enabled) return { error: 'プラグインが 1 つも登録されませんでした（hex.plugin({…}) を呼んでください）。' };
+
     const before = this.plugins.slice();
     this.plugins.push(...added);
-    if (!opts || !opts.silent) {
+    if (!opts.silent) {
       const saved = this.save();
       if (!saved.ok) {
         this.plugins = before;
         return { error: 'プラグインを保存できませんでした: ' + saved.error, persistenceError: true };
       }
     }
-    return { ok: true, added };
+    return { ok: true, added, installationId };
   }
 
   async installFromUrl(url) {
@@ -124,7 +169,10 @@ export class PluginHost {
     const before = this.plugins.slice();
     this.plugins = this.plugins.filter((p) => p.id !== id);
     const saved = this.save();
-    if (!saved.ok) { this.plugins = before; return { ok: false, error: saved.error, persistenceError: true }; }
+    if (!saved.ok) {
+      this.plugins = before;
+      return { ok: false, error: saved.error, persistenceError: true };
+    }
     return { ok: true };
   }
 
@@ -132,7 +180,10 @@ export class PluginHost {
     const before = this.plugins.slice();
     this.plugins = [];
     const saved = this.save();
-    if (!saved.ok) { this.plugins = before; return { ok: false, error: saved.error, persistenceError: true }; }
+    if (!saved.ok) {
+      this.plugins = before;
+      return { ok: false, error: saved.error, persistenceError: true };
+    }
     return { ok: true };
   }
 
