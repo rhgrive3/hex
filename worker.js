@@ -1,5 +1,5 @@
 import { resolveInferenceAdapter } from './js/ai/provider/worker-adapters.js';
-import { handleAITurn } from './js/ai/provider/worker-turn.js';
+import { handleAICapabilities, handleAITurn } from './js/ai/provider/worker-turn.js';
 import { handleGemini } from './js/ai/provider/worker-legacy.js';
 import { normalizeAITurnRequest, normalizeAIInteraction, normalizeRequest } from './js/ai/provider/worker-protocol.js';
 import {
@@ -10,6 +10,7 @@ import {
 export default {
   async fetch(request, env, executionCtx) {
     const url = new URL(request.url);
+    if (url.pathname === '/api/ai/capabilities') return handleAICapabilities(request, env);
     if (url.pathname === '/api/ai/turn') return handleAITurn(request, env);
     if (url.pathname === '/api/gemini') return handleGemini(request, env, executionCtx);
     if (!env.ASSETS || typeof env.ASSETS.fetch !== 'function') {
