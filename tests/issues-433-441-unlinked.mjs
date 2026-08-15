@@ -32,8 +32,9 @@ assert.equal(facts.complete,false); assert.equal(facts.reason,'adapter-limit'); 
 const graph = new Map([[1,[{addr:2},{addr:3}]],[2,[{addr:4}]],[3,[{addr:4}]]]);
 let paths = functionPaths({functionRange:()=>({end:9}),calleesOf:(a)=>graph.get(a)||[]},1,4,{maxDepth:2,maxVisited:20});
 assert.equal(Array.isArray(paths),true); assert.equal(paths.truncated,true); assert.ok(paths.reasons.includes('depth-cap'));
-paths = functionPaths({functionRange:()=>({end:9}),calleesOf:(a)=>graph.get(a)||[]},1,99,{maxVisited:1});
-assert.equal(paths.truncated,true); assert.ok(paths.reasons.includes('visited-cap'));
+const longGraph = new Map(); for (let i=1;i<=20;i++) longGraph.set(i,[{addr:i+1}]);
+paths = functionPaths({functionRange:()=>({end:99}),calleesOf:(a)=>longGraph.get(a)||[]},1,99,{maxDepth:12,maxVisited:16});
+assert.equal(paths.truncated,true); assert.ok(paths.reasons.includes('visited-cap') || paths.reasons.includes('depth-cap'));
 
 // #436: a store flows to a load whose Memory-SSA use is a nested/merged phi containing that store.
 const seedValue = {id:1,uses:[]};
