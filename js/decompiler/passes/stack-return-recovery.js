@@ -132,11 +132,11 @@ function terminal(block) {
 
 function branchArms(ir, block, term, opts) {
   const succ = block?.succ || [];
-  if (term?.op !== 'cbr' || succ.length < 2) return { yes:succ[0] ?? null, no:succ[1] ?? null };
+  if (term?.op !== 'cbr' || succ.length < 2) return { yes:succ[0] ?? null, no:succ[1] ?? null, exact:term?.op !== 'cbr' };
   const yes = targetBlock(ir, term, opts);
   return yes != null && succ.includes(yes)
-    ? { yes, no:succ.find((x) => x !== yes) ?? null }
-    : { yes:succ[0] ?? null, no:succ[1] ?? null };
+    ? { yes, no:succ.find((x) => x !== yes) ?? null, exact:true }
+    : { yes:null, no:null, exact:false };
 }
 
 function canReach(ir, start, target, blocked, cap = 256) {
@@ -157,20 +157,39 @@ function armPredecessorIndex(ir, controller, successor, merge, predecessors) {
   return predecessors.findIndex((pred) => canReach(ir, successor, pred, merge));
 }
 
+function dominates(ir, candidate, node) {
+  const view = ir.dominators?.[node];
+  if (view?.has) return view.has(candidate);
+  let cur = node, guard = (ir.blocks?.length || 0) + 2;
+  while (cur != null && cur >= 0 && guard-- > 0) {
+    if (cur === candidate) return true;
+    cur = ir.idom?.[cur] ?? ir.blocks?.[cur]?.idom ?? -1;
+  }
+  return false;
+}
+
+function domDepth(ir, block) {
+  let depth = 0, cur = block, guard = (ir.blocks?.length || 0) + 2;
+  while (cur != null && cur >= 0 && guard-- > 0) { depth++; cur = ir.idom?.[cur] ?? ir.blocks?.[cur]?.idom ?? -1; }
+  return depth;
+}
+
 function controller(ir, merge, predecessors, opts) {
   const candidates = [];
   for (const block of ir.blocks || []) {
+    if (!dominates(ir, block.index, merge)) continue;
     const term = terminal(block);
     if (term?.op !== 'cbr' || (block.succ || []).length < 2) continue;
     const arms = branchArms(ir, block, term, opts);
+    if (!arms.exact) continue;
     const yesIndex = armPredecessorIndex(ir, block, arms.yes, merge, predecessors);
     const noIndex = armPredecessorIndex(ir, block, arms.no, merge, predecessors);
-    if (yesIndex >= 0 && noIndex >= 0 && yesIndex !== noIndex) {
-      candidates.push({ term, yesIndex, noIndex, row:term.row ?? -1 });
-    }
+    if (yesIndex >= 0 && noIndex >= 0 && yesIndex !== noIndex) candidates.push({ term, yesIndex, noIndex, depth:domDepth(ir, block.index) });
   }
-  candidates.sort((a,b) => b.row - a.row);
-  return candidates[0] || null;
+  candidates.sort((a,b) => b.depth - a.depth);
+  if (!candidates.length) return null;
+  if (candidates.length > 1 && candidates[0].depth === candidates[1].depth) return null;
+  return candidates[0];
 }
 
 function storeValue(inst, key, values) {
@@ -186,6 +205,25 @@ function storeValue(inst, key, values) {
     evidence:[{ reason:`exact ${bits}-bit stack-store boundary` }],
   });
   return node;
+}
+
+function reachingRegisterDefinition(ir, atInst, reg) {
+  let best = null, bestDepth = -1, bestRow = -Infinity;
+  for (const value of ir?.values || []) {
+    if (value?.reg !== reg || !value.def || value.clobbered) continue;
+    const def = value.def;
+    if (def.block === atInst.block) {
+      if (def.row == null || atInst.row == null || def.row >= atInst.row) continue;
+      if (def.row > bestRow) { best = value; bestRow = def.row; bestDepth = Number.MAX_SAFE_INTEGER; }
+      continue;
+    }
+    if (!dominates(ir, def.block, atInst.block)) continue;
+    const depth = domDepth(ir, def.block);
+    if (bestDepth !== Number.MAX_SAFE_INTEGER && (depth > bestDepth || (depth === bestDepth && (def.row ?? -Infinity) > bestRow))) {
+      best = value; bestDepth = depth; bestRow = def.row ?? -Infinity;
+    }
+  }
+  return best;
 }
 
 function latestStoreTo(ir, blockIndex, beforeRow, key) {
@@ -242,10 +280,10 @@ function committedLocationForPhi(result, value) {
 
 function committedReturnValue(result, root, ret) {
   if (root?.kind !== 'load' || root.location?.kind !== 'stack' || !root.location?.key) return null;
-  const load = [...(result.ir.instructions || [])].reverse().find((inst) =>
-    inst?.op === 'load' && inst.loc?.key === root.location.key && inst.row < ret.row && inst.dst?.reg === 'x0');
-  if (!load) return null;
-  const stackStore = latestStoreTo(result.ir, load.block, load.row, root.location.key);
+  const reaching = reachingRegisterDefinition(result.ir, ret, 'x0');
+  const load = reaching?.def;
+  if (load?.op !== 'load' || load.loc?.key !== root.location.key) return null;
+  const stackStore = load.reachingStore || latestStoreTo(result.ir, load.block, load.row, root.location.key);
   const spilled = valueOf(stackStore?.args?.[0]);
   const location = committedLocationForPhi(result, spilled);
   if (!location) return null;

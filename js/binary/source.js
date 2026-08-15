@@ -174,7 +174,10 @@ class DelegatingByteSource extends ByteSource {
 }
 
 export function asByteSource(input, options = {}) {
-  if (input instanceof ByteSource) return input;
+  if (input instanceof ByteSource) {
+    const requested = options?.maxReadLength;
+    return requested == null || requested === input.maxReadLength ? input : new DelegatingByteSource(input, options);
+  }
   if (input instanceof Uint8Array || input instanceof ArrayBuffer || ArrayBuffer.isView(input)) return new MemoryByteSource(input, options);
   if (typeof Blob !== 'undefined' && input instanceof Blob) return new BlobByteSource(input, options);
   if (input && (typeof input.size === 'bigint' || Number.isSafeInteger(input.size)) && typeof input.read === 'function') {

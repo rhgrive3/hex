@@ -4,6 +4,8 @@ import { parseChainedImports, parseChainedBindingSites, parseClassicBindings, pa
 
 const LC_SEGMENT = 0x1;
 const LC_SYMTAB = 0x2;
+const LC_THREAD = 0x4;
+const LC_UNIXTHREAD = 0x5;
 const LC_DYSYMTAB = 0xb;
 const LC_LOAD_DYLIB = 0xc;
 const LC_ID_DYLIB = 0xd;
@@ -15,7 +17,11 @@ const LC_SEGMENT_64 = 0x19;
 const LC_DYLD_INFO = 0x22;
 const LC_DYLD_INFO_ONLY = 0x80000022;
 const LC_FUNCTION_STARTS = 0x26;
+const LC_VERSION_MIN_MACOSX = 0x24;
+const LC_VERSION_MIN_IPHONEOS = 0x25;
 const LC_MAIN = 0x80000028;
+const LC_VERSION_MIN_TVOS = 0x2f;
+const LC_VERSION_MIN_WATCHOS = 0x30;
 const LC_BUILD_VERSION = 0x32;
 const LC_DYLD_EXPORTS_TRIE = 0x80000033;
 const LC_DYLD_CHAINED_FIXUPS = 0x80000034;
@@ -87,6 +93,11 @@ function parseThin(bytes, opts) {
       else if (cmd === LC_SYMTAB) symtabs.push({ symoff: r.u32(p + 8), nsyms: r.u32(p + 12), stroff: r.u32(p + 16), strsize: r.u32(p + 20) });
       else if (DYLIB_COMMANDS.has(cmd) || cmd === LC_ID_DYLIB) parseDylib(r, p, cmdsize, image, cmd === LC_ID_DYLIB);
       else if (cmd === LC_MAIN && cmdsize >= 24) linkeditData.main = { entryoff: r.u64(p + 8), stacksize: r.u64(p + 16) };
+      else if ((cmd === LC_THREAD || cmd === LC_UNIXTHREAD) && cmdsize >= 16) {
+        const pc = parseThreadEntrypoint(r, p, cmdsize, cpu, bits);
+        if (pc != null && linkeditData.threadEntry == null) linkeditData.threadEntry = pc;
+      }
+      else if (cmd === LC_VERSION_MIN_MACOSX || cmd === LC_VERSION_MIN_IPHONEOS || cmd === LC_VERSION_MIN_TVOS || cmd === LC_VERSION_MIN_WATCHOS) parseLegacyVersionMin(r, p, cmd, image);
       else if (cmd === LC_FUNCTION_STARTS && cmdsize >= 16) linkeditData.functionStarts = dataCommand(r, p);
       else if (cmd === LC_DYLD_CHAINED_FIXUPS && cmdsize >= 16) linkeditData.chainedFixups = dataCommand(r, p);
       else if (cmd === LC_DYLD_EXPORTS_TRIE && cmdsize >= 16) linkeditData.exportsTrie = dataCommand(r, p);
@@ -106,8 +117,12 @@ function parseThin(bytes, opts) {
 
   if (linkeditData.main) {
     image.entrypoint = image.offsetToAddress(linkeditData.main.entryoff);
-    if (image.entrypoint != null) image.functions.push(functionSeed(image.entrypoint, { source: 'entrypoint', confidence: 0.9 }));
+    image.metadata.entrypointSource = 'LC_MAIN';
+  } else if (linkeditData.threadEntry != null) {
+    image.entrypoint = linkeditData.threadEntry;
+    image.metadata.entrypointSource = 'LC_UNIXTHREAD';
   }
+  if (image.entrypoint != null && image.entrypoint !== 0n) image.functions.push(functionSeed(image.entrypoint, { source: 'entrypoint', confidence: 0.9 }));
 
   for (const st of symtabs) parseSymbolTable(r, st, image, bits);
   const hadFunctionStarts = !!linkeditData.functionStarts;
@@ -207,8 +222,33 @@ function parseBuildVersion(r, p, image) {
   const platform = r.u32(p + 8);
   const minos = r.u32(p + 12);
   const sdk = r.u32(p + 16);
-  image.metadata.buildVersion = { platform, platformName: platformName(platform), minos: version32(minos), sdk: version32(sdk) };
+  image.metadata.buildVersion = { platform, platformName: platformName(platform), minos: version32(minos), sdk: version32(sdk), source: 'LC_BUILD_VERSION' };
   image.platform = platformName(platform) || image.platform;
+}
+
+function parseLegacyVersionMin(r, p, cmd, image) {
+  if (image.metadata.buildVersion?.source === 'LC_BUILD_VERSION') return;
+  const platform = cmd === LC_VERSION_MIN_MACOSX ? 1 : cmd === LC_VERSION_MIN_IPHONEOS ? 2 : cmd === LC_VERSION_MIN_TVOS ? 3 : 4;
+  image.metadata.buildVersion = { platform, platformName: platformName(platform), minos: version32(r.u32(p + 8)), sdk: version32(r.u32(p + 12)), source: 'LC_VERSION_MIN' };
+  image.platform = platformName(platform) || image.platform;
+}
+
+function parseThreadEntrypoint(r, p, cmdsize, cpu, bits) {
+  const end = p + cmdsize;
+  let q = p + 8;
+  while (q + 8 <= end) {
+    const flavor = r.u32(q);
+    const count = r.u32(q + 4);
+    const state = q + 8;
+    const stateBytes = count * 4;
+    if (!Number.isSafeInteger(stateBytes) || stateBytes < 0 || state + stateBytes > end) return null;
+    const arch = cpuName(cpu);
+    if (arch === 'arm64' && flavor === 6 && stateBytes >= 272) return r.u64(state + 264);
+    if (arch === 'x86_64' && flavor === 4 && stateBytes >= 136) return r.u64(state + 128);
+    if (arch === 'arm' && bits === 32 && flavor === 1 && stateBytes >= 64) return BigInt(r.u32(state + 60));
+    q = state + stateBytes;
+  }
+  return null;
 }
 
 function parseDyldInfo(r, p) {

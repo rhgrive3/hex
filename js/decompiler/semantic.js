@@ -141,9 +141,12 @@ function loadReachedByStore(load, store, ctx) {
 }
 
 function feedsReturn(value, ctx) {
-  if (!value || !ctx.returnInst) return false;
-  const rv = reachingRegisterValue(ctx.ir, ctx.returnInst, 'x0') || valueOf(ctx.returnInst.args?.[0]);
-  return sameValue(value, rv);
+  if (!value) return false;
+  for (const ret of ctx.returnInsts || []) {
+    const rv = reachingRegisterValue(ctx.ir, ret, 'x0') || valueOf(ret.args?.[0]);
+    if (sameValue(value, rv)) return true;
+  }
+  return false;
 }
 
 /* Hide only stack stores whose loads prove register preservation/return spill. */
@@ -313,8 +316,17 @@ export function renderBranchCondition(inst, ctx, invert = false) {
     const bit = inst.extra?.bit ?? 0;
     s = `((${renderValueAt(valueOf(inst.args?.[0]), inst, ctx)} >> ${bit}) & 1) ${kind === 'tbz' ? '==' : '!='} 0`;
   } else {
-    let cond = inst.cond || inst.extra?.cond || 'ne';
-    if (invert) cond = inverseCondition(cond) || cond;
+    let cond = inst.cond || inst.extra?.cond || null;
+    if (!cond || !Object.prototype.hasOwnProperty.call(COND, cond) || !COND[cond]) {
+      return `__arm64_condition_${safeIdent(cond || 'unknown')}(/* NZCV */)`;
+    }
+    if (invert) {
+      const inverse = inverseCondition(cond);
+      if (!inverse || !Object.prototype.hasOwnProperty.call(COND, inverse) || !COND[inverse]) {
+        return `!(__arm64_condition_${safeIdent(cond)}(/* NZCV */))`;
+      }
+      cond = inverse;
+    }
     const flags = valueOf(inst.args?.[inst.args.length - 1]);
     return renderCmp(cmpFromFlags(flags), cond, ctx, inst);
   }
@@ -500,10 +512,10 @@ function targetBlock(ir, cbr, rowOfAddress) {
 
 function branchSucc(ir, block, term, ctx) {
   const succ = block.succ || [];
-  if (term?.op !== OP.CBR || succ.length < 2) return { yes: succ[0] ?? null, no: succ[1] ?? null };
+  if (term?.op !== OP.CBR || succ.length < 2) return { yes: succ[0] ?? null, no: succ[1] ?? null, exact: term?.op !== OP.CBR };
   const yes = targetBlock(ir, term, ctx.opts.rowOfAddress);
-  if (yes == null || !succ.includes(yes)) return { yes: succ[0], no: succ[1] };
-  return { yes, no: succ.find((x) => x !== yes) ?? null };
+  if (yes == null || !succ.includes(yes)) return { yes: null, no: null, exact: false };
+  return { yes, no: succ.find((x) => x !== yes) ?? null, exact: true };
 }
 
 function blockTerm(block) {
@@ -768,7 +780,7 @@ export function decompileSemantic(model, opts = {}) {
     ir, model, opts, runtime, types, graph, rmw,
     rmwByStore: new Map(rmw.map((r) => [r.store.id, r])),
     storedValueAliases: buildStoredValueAliases(ir),
-    returnInst: [...(ir.instructions || [])].reverse().find((i) => i.op === OP.RET) || null,
+    returnInsts: (ir.instructions || []).filter((i) => i.op === OP.RET),
     exprCache: new Map(), exprActive: new Set(), exprNodes: 0,
     callCache: new Map(), evidence: [], suppressed: [], unknown: 0, unknownCallArities: 0,
     materialNames: new Map(), switchByRow: new Map((opts.switches || model.switches || []).map((s) => [s.row, s])),

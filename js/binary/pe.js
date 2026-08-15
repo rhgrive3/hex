@@ -1,11 +1,13 @@
 import { ByteView } from './reader.js';
 import { BinaryImage, functionSeed } from './model.js';
-import { parseImports, parseExports, parseExceptionFunctions, parseBaseRelocations, parseCoffSymbols, directory, peMachineName } from './pe-loader.js';
+import { parseImports, parseExports, parseExceptionFunctions, parseBaseRelocations, parseCoffSymbols, parseTlsDirectory, parseLoadConfig, directory, peMachineName } from './pe-loader.js';
 
 const IMAGE_DIRECTORY_ENTRY_EXPORT = 0;
 const IMAGE_DIRECTORY_ENTRY_IMPORT = 1;
 const IMAGE_DIRECTORY_ENTRY_EXCEPTION = 3;
 const IMAGE_DIRECTORY_ENTRY_BASERELOC = 5;
+const IMAGE_DIRECTORY_ENTRY_TLS = 9;
+const IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG = 10;
 
 export function parsePE(input) {
   const bytes = new ByteView(input).bytes;
@@ -68,6 +70,8 @@ export function parsePE(input) {
   parseImports(r, directory(directories, IMAGE_DIRECTORY_ENTRY_IMPORT), image);
   parseExports(r, directory(directories, IMAGE_DIRECTORY_ENTRY_EXPORT), image);
   parseExceptionFunctions(r, directory(directories, IMAGE_DIRECTORY_ENTRY_EXCEPTION), image, machine);
-  parseBaseRelocations(r, directory(directories, IMAGE_DIRECTORY_ENTRY_BASERELOC), image);
+  parseBaseRelocations(r, directory(directories, IMAGE_DIRECTORY_ENTRY_BASERELOC), image, machine);
+  parseTlsDirectory(r, directory(directories, IMAGE_DIRECTORY_ENTRY_TLS), image);
+  parseLoadConfig(r, directory(directories, IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG), image);
   return image.finalize();
 }

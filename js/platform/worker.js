@@ -3,6 +3,7 @@ import { CachedByteSource } from '../bytesource/cached.js';
 import { describeBinaryImage } from './describe.js';
 import { fingerprintVendors } from '../knowledge/index.js';
 import { hashByteSource } from './hash.js';
+import { checkedChunkIndex, safeRegionLength, utf8Len, isExactFunctionSeed } from './worker-validation.js';
 
 const ROW_BYTES = 4;
 const CHUNK_ROWS = 1024;
@@ -26,8 +27,8 @@ self.onmessage = async (event) => {
   const msg = event.data;
   if (!msg || typeof msg.t !== 'string') return;
   if (msg.t === 'cancel') {
-    for (const [id, entry] of active) {
-      if ((msg.requestId == null || msg.requestId === id) && (msg.epoch == null || msg.epoch === entry.epoch)) entry.controller.abort();
+    for (const entry of active.values()) {
+      if ((msg.requestId == null || msg.requestId === entry.id) && (msg.epoch == null || msg.epoch === entry.epoch)) entry.controller.abort();
     }
     return;
   }
@@ -42,9 +43,11 @@ self.onmessage = async (event) => {
   const execute = async () => {
     if (msg.epoch !== currentEpoch) throw new Error('Stale platform request.');
     const controller = new AbortController();
-    if (msg.id != null) active.set(msg.id, { epoch: msg.epoch, controller });
+    const requestKey = msg.id == null ? null : `${msg.epoch}:${msg.id}`;
+    if (requestKey != null && active.has(requestKey)) throw new Error(`Duplicate active request id ${msg.id} for epoch ${msg.epoch}.`);
+    if (requestKey != null) active.set(requestKey, { id:msg.id, epoch:msg.epoch, controller });
     try { return await handle(msg, controller.signal); }
-    finally { if (msg.id != null) active.delete(msg.id); }
+    finally { if (requestKey != null && active.get(requestKey)?.controller === controller) active.delete(requestKey); }
   };
   try {
     // Non-lifecycle work must observe the image produced by the open/detect that
@@ -99,49 +102,57 @@ function createSource(input) {
 }
 
 async function detectFile(msg, signal) {
-  file = msg.file;
-  if (!file || !Number.isSafeInteger(file.size) || file.size <= 0) throw new Error('This file is empty or has an invalid size.');
-  image = null;
-  descriptor = null;
-  regions = new Map();
-  source?.clear?.();
-  source = createSource(file);
-  const length = Math.min(16, file.size);
-  const prefix = await source.readExactly(0n, length, { signal });
-  if (signal.aborted) throw new Error('Open cancelled');
-  const detected = detectBinary(prefix);
-  return { formatId: detected.format, fat: !!detected.fat, size: BigInt(file.size), sourceBacked: true };
+  const candidate = msg.file;
+  if (!candidate || !Number.isSafeInteger(candidate.size) || candidate.size <= 0) throw new Error('This file is empty or has an invalid size.');
+  const temporary = createSource(candidate);
+  try {
+    const length = Math.min(16, candidate.size);
+    const prefix = await temporary.readExactly(0n, length, { signal });
+    if (signal.aborted) throw new Error('Open cancelled');
+    const detected = detectBinary(prefix);
+    return { formatId: detected.format, fat: !!detected.fat, size: BigInt(candidate.size), sourceBacked: true };
+  } finally { temporary.clear?.(); }
 }
 
 async function openFile(msg, signal) {
-  file = msg.file;
-  if (!file || !Number.isSafeInteger(file.size) || file.size <= 0) throw new Error('This file is empty or has an invalid size.');
+  const candidateFile = msg.file;
+  if (!candidateFile || !Number.isSafeInteger(candidateFile.size) || candidateFile.size <= 0) throw new Error('This file is empty or has an invalid size.');
   progress(msg, 'header', 0, 7);
-  source?.clear?.();
-  const cached = createSource(file);
-  source = cached;
+  const candidateSource = createSource(candidateFile);
   const cancellable = {
-    size: cached.size,
-    maxReadLength: cached.maxReadLength,
-    read: (offset, length) => cached.read(offset, length, { signal }),
+    size: candidateSource.size,
+    maxReadLength: candidateSource.maxReadLength,
+    read: (offset, length, options = {}) => candidateSource.read(offset, length, { ...options, signal }),
   };
-  image = await openBinarySource(cancellable, {
-    ranges: { pageSize: 64 * 1024, maxPageSize: 2 * 1024 * 1024, maxCachedBytes: 16 * 1024 * 1024, maxReads: 4096 },
-  });
-  if (signal.aborted) throw new Error('Open cancelled');
-  progress(msg, 'sections', 2, 7);
-  const engine = { arm64: image.arch === 'arm64', verified: false };
-  descriptor = describeBinaryImage(image, { name: file.name || 'binary', engine });
-  descriptor.platform.vendorCandidates = fingerprintVendors({ libraries: image.libraries, imports: image.imports, symbols: image.symbols });
-  regions = new Map();
-  setRegions(descriptor.slices.flatMap((s) => s.regions));
-  regions.set(descriptor.raw.id, descriptor.raw);
-  progress(msg, 'symbols', 3, 7, { count: image.symbols.length });
-  progress(msg, 'imports', 4, 7, { count: image.imports.length });
-  progress(msg, 'strings', 4, 7, { deferred: true });
-  progress(msg, 'functions', 5, 7, { count: image.functions.length });
-  progress(msg, 'expensive', 5, 7, { deferred: true });
-  return descriptor;
+  let candidateImage, candidateDescriptor;
+  try {
+    candidateImage = await openBinarySource(cancellable, {
+      ranges: { pageSize: 64 * 1024, maxPageSize: 2 * 1024 * 1024, maxCachedBytes: 16 * 1024 * 1024, maxReads: 4096 },
+    });
+    if (signal.aborted) throw new Error('Open cancelled');
+    progress(msg, 'sections', 2, 7);
+    const engine = { arm64: candidateImage.arch === 'arm64', verified: false };
+    candidateDescriptor = describeBinaryImage(candidateImage, { name: candidateFile.name || 'binary', engine });
+    candidateDescriptor.platform.vendorCandidates = fingerprintVendors({ libraries: candidateImage.libraries, imports: candidateImage.imports, symbols: candidateImage.symbols });
+    const candidateRegions = new Map();
+    for (const region of candidateDescriptor.slices.flatMap((s) => s.regions)) if (region?.id) candidateRegions.set(region.id, region);
+    candidateRegions.set(candidateDescriptor.raw.id, candidateDescriptor.raw);
+
+    progress(msg, 'symbols', 3, 7, { count: candidateImage.symbols.length });
+    progress(msg, 'imports', 4, 7, { count: candidateImage.imports.length });
+    progress(msg, 'strings', 4, 7, { deferred: true });
+    progress(msg, 'functions', 5, 7, { count: candidateImage.functions.length });
+    progress(msg, 'expensive', 5, 7, { deferred: true });
+
+    // Commit the new session only after every parsing/description step succeeds.
+    const previousSource = source;
+    file = candidateFile; source = candidateSource; image = candidateImage; descriptor = candidateDescriptor; regions = candidateRegions;
+    if (previousSource && previousSource !== candidateSource) previousSource.clear?.();
+    return candidateDescriptor;
+  } catch (error) {
+    candidateSource.clear?.();
+    throw error;
+  }
 }
 
 function setRegions(list) {
@@ -157,7 +168,8 @@ async function readFileRange(offset, length, signal) {
 async function getChunk({ regionId, chunk }, signal) {
   const region = regions.get(regionId);
   if (!region) throw new Error('Unknown region.');
-  const rel = BigInt(chunk) * BigInt(CHUNK_BYTES);
+  const chunkIndex = checkedChunkIndex(chunk);
+  const rel = BigInt(chunkIndex) * BigInt(CHUNK_BYTES);
   const remaining = BigInt(region.size) - rel;
   if (remaining <= 0n) return { regionId, chunk, bytes: new Uint8Array(0), mn: '', ops: '', rows: 0 };
   const length = Number(remaining < BigInt(CHUNK_BYTES) ? remaining : BigInt(CHUNK_BYTES));
@@ -190,7 +202,7 @@ function analyzeImage() {
   return {
     addrs, kinds, flags, names: sorted.map((x) => x.name).join('\n'), funcs,
     symbolCount: addrs.length, funcCount: funcs.length, capped: false,
-    functionStartsExact: functions.length > 0,
+    functionStartsExact: functions.length > 0 && (image.functions || []).every(isExactFunctionSeed),
     __transfer: [addrs.buffer, kinds.buffer, flags.buffer, funcs.buffer],
   };
 }
@@ -204,7 +216,7 @@ function emptyAnalysis() {
 function genericFunctionSeeds() {
   const values = [...new Set((image?.functions || []).map((f) => BigInt(f.address).toString()))].map(BigInt).sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
   const starts = new BigUint64Array(values);
-  return { starts, cancelled: false, exact: true, __transfer: [starts.buffer] };
+  return { starts, cancelled: false, exact: values.length > 0 && (image?.functions || []).every(isExactFunctionSeed), __transfer: [starts.buffer] };
 }
 
 function emptyProgramScan() {
@@ -214,25 +226,12 @@ function emptyProgramScan() {
     __transfer: [callFrom.buffer, callTo.buffer, refFrom.buffer, refTo.buffer, refKind.buffer, kinds.buffer] };
 }
 
-function utf8Len(buf, index) {
-  const c = buf[index];
-  if (c < 0x80) return (c >= 0x20 && c < 0x7f) || c === 9 || c === 10 ? 1 : 0;
-  let need = 0;
-  if (c >= 0xc2 && c <= 0xdf) need = 1;
-  else if (c >= 0xe0 && c <= 0xef) need = 2;
-  else if (c >= 0xf0 && c <= 0xf4) need = 3;
-  else return 0;
-  if (index + need >= buf.length) return -1;
-  for (let k = 1; k <= need; k++) if ((buf[index + k] & 0xc0) !== 0x80) return 0;
-  return need + 1;
-}
-
 async function scanStrings(msg, signal) {
   const region = regions.get(msg.regionId);
   if (!region) throw new Error('Unknown region.');
   const minLength = Math.max(2, Number(msg.min) || 4);
   const cap = Math.min(Math.max(1, Number(msg.limit) || STRINGS_LIMIT), STRINGS_LIMIT);
-  const regionBytes = Number(region.size);
+  const regionBytes = safeRegionLength(region.size);
   const total = Math.min(regionBytes, Math.max(0, Number(msg.maxBytes == null ? regionBytes : msg.maxBytes)));
   const out = [];
   let pos = 0, runStart = -1, runBytes = [];
@@ -278,7 +277,7 @@ async function runSearch(msg, signal) {
   const region = regions.get(msg.regionId);
   if (!region) throw new Error('Unknown region.');
   if (msg.kind !== 'hex' && msg.kind !== 'text') return { cancelled: false, results: [], scanned: 0, capped: false, unsupported: true };
-  const total = Number(region.size);
+  const total = safeRegionLength(region.size);
   const start = Math.max(0, Math.min(total, Number(msg.from || 0)));
   let pattern, mask = null;
   if (msg.kind === 'hex') {
