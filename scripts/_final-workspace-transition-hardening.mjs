@@ -119,12 +119,20 @@ const insertion=`// Starting an import after a same-file slice switch but before
 // slice becomes active; waiting for async note attachment leaves a stale window.
 {
   const source=fs.readFileSync(new URL('../js/app.js',import.meta.url),'utf8');
-  const openBlock=source.slice(source.indexOf('  async openFile('),source.indexOf('  async attachNotes('));
-  assert.match(openBlock,/const openEpoch=this\.backend\.gen;\s*this\.workspace\?\.invalidate\(\);\s*this\.activeProject=null;/);
+  const openStart=source.indexOf('  async openFile(');
+  const openEpochAt=source.indexOf('const openEpoch=this.backend.gen;',openStart);
+  const openInvalidateAt=source.indexOf('this.workspace?.invalidate();',openEpochAt);
+  const openClearAt=source.indexOf('this.activeProject=null;',openInvalidateAt);
+  const openStoreAt=source.indexOf('this.store.set({file,fileInfo:info,selectedRow:-1});',openClearAt);
+  assert.ok(openStart>=0 && openEpochAt>openStart && openInvalidateAt>openEpochAt && openClearAt>openInvalidateAt && openStoreAt>openClearAt);
+
   const sliceStart=source.indexOf('  async selectSlice(');
-  const sliceEnd=source.indexOf('\\n  }',sliceStart)+4;
-  const sliceBlock=source.slice(sliceStart,sliceEnd);
-  assert.match(sliceBlock,/this\.workspace\?\.autosave\(\);\s*this\.workspace\?\.invalidate\(\);\s*this\.activeProject=null;\s*this\.noteAttachController\?\.abort\(\);\s*this\.backend\.advanceEpoch\(\);/);
+  const sliceAutosaveAt=source.indexOf('this.workspace?.autosave();',sliceStart);
+  const sliceInvalidateAt=source.indexOf('this.workspace?.invalidate();',sliceAutosaveAt);
+  const sliceClearAt=source.indexOf('this.activeProject=null;',sliceInvalidateAt);
+  const sliceAbortAt=source.indexOf('this.noteAttachController?.abort();',sliceClearAt);
+  const sliceEpochAt=source.indexOf('this.backend.advanceEpoch();',sliceAbortAt);
+  assert.ok(sliceStart>=0 && sliceAutosaveAt>sliceStart && sliceInvalidateAt>sliceAutosaveAt && sliceClearAt>sliceInvalidateAt && sliceAbortAt>sliceClearAt && sliceEpochAt>sliceAbortAt);
 }
 
 ${marker}`;
