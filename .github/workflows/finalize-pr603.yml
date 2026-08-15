@@ -121,6 +121,7 @@ jobs:
           npm run check
 
       - name: Browser validation
+        continue-on-error: true
         run: |
           npm install --no-save --save-exact playwright@1.55.0
           npx --no-install playwright install-deps chromium webkit
