@@ -18,11 +18,16 @@ export class WorkerAIProvider extends AIProvider {
   }
 
   async nextTurn(request, options = {}) {
+    if (options.signal?.aborted) throw new AIError('cancelled', 'AI investigation was cancelled.');
     const controller = new AbortController();
-    const onAbort = () => controller.abort(options.signal.reason || 'cancelled');
-    if (options.signal) options.signal.addEventListener('abort', onAbort, { once: true });
+    const onAbort = () => controller.abort(options.signal?.reason || 'cancelled');
+    if (options.signal) {
+      options.signal.addEventListener('abort', onAbort, { once: true });
+      if (options.signal.aborted) onAbort();
+    }
     this.controllers.add(controller);
     try {
+      if (controller.signal.aborted) throw new AIError('cancelled', 'AI investigation was cancelled.');
       const response = await requestJSON(this.endpoint, {
         sessionId: request.sessionId || null,
         mode: request.mode,
