@@ -78,21 +78,27 @@ export function createAiEngine(app, options = {}) {
 }
 
 function exposeStableIdentityInputs(context, app) {
-  // The binary layer already owns content fingerprinting. The AI bridge only
-  // consumes cached/project fingerprint output; it never scans a large binary
-  // merely to start a turn on iPad.
+  // The live Backend content hash is the authority. When a new file has just
+  // opened Backend intentionally clears contentHash; in that window an older
+  // ProductWorkspace/project hash must not be reused for the new file.
   const define = (name, get) => {
     if (Object.prototype.hasOwnProperty.call(context, name)) return;
     try { Object.defineProperty(context, name, { enumerable: true, configurable: false, get }); } catch { /* optional */ }
   };
-  const workspaceHash = () => app.workspace?.identity?.hash || app.workspace?.project?.binary?.hash ||
-    app.activeProject?.binary?.hash || app.project?.binary?.hash || app.currentProject?.binary?.hash ||
-    app.project?.binaryHash || app.currentProject?.binaryHash || null;
+  const workspaceHash = () => {
+    const live = app.backend?.contentHash || null;
+    if (live) return String(live);
+    if (app.backend && Object.prototype.hasOwnProperty.call(app.backend, 'contentHash')) return null;
+    return app.workspace?.identity?.hash || app.workspace?.project?.binary?.hash ||
+      app.activeProject?.binary?.hash || app.project?.binary?.hash || app.currentProject?.binary?.hash ||
+      app.project?.binaryHash || app.currentProject?.binaryHash || null;
+  };
   define('binaryFingerprint', () => {
-    const stored = app.store?.get?.('binaryFingerprint') || app.store?.get?.('contentFingerprint') || app.binaryFingerprint || null;
-    if (stored?.hash) return stored;
-    const projectHash = workspaceHash();
-    return projectHash ? { algorithm: 'project-content-hash', hash: String(projectHash) } : null;
+    const liveHash = workspaceHash();
+    if (liveHash) return { algorithm: 'content-hash', hash: String(liveHash) };
+    // Compatibility fallback for embedding hosts that do not expose Backend.
+    const stored = app.backend ? null : (app.store?.get?.('binaryFingerprint') || app.store?.get?.('contentFingerprint') || app.binaryFingerprint || null);
+    return stored?.hash ? stored : null;
   });
   define('binaryHash', () => context.binaryFingerprint?.hash || null);
   define('binaryIdentity', () => {
