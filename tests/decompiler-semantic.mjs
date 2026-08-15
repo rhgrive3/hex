@@ -266,6 +266,27 @@ function make(lines, opts = {}) {
   assert.match(r.pseudocode, /Exception-path assembly: b #0x100000010/);
 }
 
+// AArch64 BRK is a known non-returning trap, not an untranslatable instruction.
+{
+  const { model, rowOfAddress } = make(['brk #1', 'ret']);
+  const r = decompile(model, { addr: BASE, name: 'known_trap', rowOfAddress, returnType: 'void', beginner: false });
+  assert.equal(r.semantic, true, r.warnings?.join('\n'));
+  assert.equal(r.legacyFallback, undefined, r.pseudocode);
+  assert.match(r.pseudocode, /__builtin_trap\(\);/);
+  assert.doesNotMatch(r.pseudocode, /__asm\(/);
+}
+
+// AArch64 permits moving a single 64-bit SIMD lane into a GP register. Keep
+// the lane index rather than treating the fully parsed instruction as unknown.
+{
+  const { model, rowOfAddress } = make(['mov x0, v0.d[1]', 'str x0, [x1]', 'ret']);
+  const r = decompile(model, { addr: BASE, name: 'extract_simd_lane', rowOfAddress, beginner: false });
+  assert.equal(r.semantic, true, r.warnings?.join('\n'));
+  assert.equal(r.legacyFallback, undefined, r.pseudocode);
+  assert.match(r.pseudocode, /v0\.d\[1\]/);
+  assert.doesNotMatch(r.pseudocode, /__asm\(/);
+}
+
 // Safety regression: ordinary unreachable/dead code is not silently blessed as
 // an exception region. Unknown disconnected control flow still takes the
 // historical faithful whole-function fallback.

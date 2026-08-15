@@ -482,6 +482,8 @@ function renderCall(inst, ctx) {
 /** Reconstruct one SSA value as an expression with memoization and hard budgets. */
 export function renderValue(value, ctx, flags = {}) {
   if (!value) return 'unknown';
+  const simdLane = value.def?.op === OP.MOV ? value.def.extra?.simdLane : null;
+  if (simdLane) return `${simdLane.reg}.${simdLane.size}[${simdLane.index}]`;
   if (ctx.materialNames?.has(value.id) && !flags.ignoreMaterial) return ctx.materialNames.get(value.id);
   const key = `${value.id}:${flags.asBase ? 'b' : 'v'}`;
   if (ctx.exprCache.has(key)) return ctx.exprCache.get(key);
@@ -626,8 +628,14 @@ function emitBlockStatements(block, out, ctx, indent) {
       else out.push(line('stmt', indent, `${call};`, inst.row, inst.address, extra));
       ctx.evidence.push(evidenceOf(inst, c.resolved.runtime === 'objc' ? 'Objective-C dispatch' : c.resolved.runtime === 'swift' ? 'Swift dispatch' : 'call'));
     } else if (inst.op === OP.UNKNOWN) {
-      out.push(line('stmt', indent, `__asm(${JSON.stringify(inst.text || 'unknown')});`, inst.row, inst.address, { source: sourceForInst(inst, 'unsupported instruction') })); ctx.unknown++;
-      ctx.evidence.push(evidenceOf(inst, 'unsupported IR instruction retained faithfully'));
+      const mnemonic = String(inst.extra?.mnemonic || '').toLowerCase();
+      if (mnemonic === 'brk' || mnemonic === 'udf') {
+        out.push(line('ctrl', indent, '__builtin_trap();', inst.row, inst.address, { source: sourceForInst(inst, 'known non-returning trap') }));
+        ctx.evidence.push(evidenceOf(inst, 'known non-returning trap'));
+      } else {
+        out.push(line('stmt', indent, `__asm(${JSON.stringify(inst.text || 'unknown')});`, inst.row, inst.address, { source: sourceForInst(inst, 'unsupported instruction') })); ctx.unknown++;
+        ctx.evidence.push(evidenceOf(inst, 'unsupported IR instruction retained faithfully'));
+      }
     }
   }
   return term;

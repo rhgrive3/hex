@@ -453,6 +453,19 @@ function lift(insn, opts = {}) {
     return out;
   }
   if (base === 'mov' || base === 'movz' || base === 'movn' || base === 'fmov') {
+    const lane = ops[1];
+    /* `mov xN, vM.d[i]` copies one exact 64-bit SIMD lane into a GP register.
+     * Recognize only this fully specified form; every other element transfer
+     * remains unknown rather than inventing a vector conversion. */
+    if (base === 'mov' && ops[0]?.k === 'reg' && ops[0]?.cls === 'gp' && dstBits() === 64 &&
+        lane?.k === 'elem' && String(lane.size || '').toLowerCase() === 'd' &&
+        Number.isInteger(lane.num) && lane.num >= 0 && lane.num < 32 &&
+        Number.isInteger(lane.index) && lane.index >= 0 && lane.index < 2) {
+      push({ op: OP.MOV, dstReg: dstReg(), dstBits: 64,
+        srcs: [{ t: 'reg', reg: `v${lane.num}`, bits: 128 }],
+        simdLane: { reg: `v${lane.num}`, size: 'd', index: lane.index } });
+      return out;
+    }
     const src = opnd(ops[1]);
     if (!src) { push({ op: OP.UNKNOWN, dstReg: dstReg(), dstBits: dstBits(), srcs: [] }); return out; }
     if (base === 'movn' && src.t === 'imm' && src.value != null) {

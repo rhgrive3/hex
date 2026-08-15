@@ -262,7 +262,12 @@ function buildValue(v, state, flags = {}) {
     if (d.op === 'const') out = (v.constKind === 'float' || v.floatConst != null || v.float != null)
       ? expr.floatConstant(v.floatConst ?? v.float, v.bits || 64, origin(d, v))
       : constNode(v, v.const ?? d.extra?.value ?? 0n);
-    else if (d.op === 'mov') out = buildArg(d.args?.[0], state, flags);
+    else if (d.op === 'mov') {
+      const lane = d.extra?.simdLane;
+      out = lane
+        ? expr.variable(`${lane.reg}.${lane.size}[${lane.index}]`, 64, false, origin(d, v, 'exact SIMD lane move'), { simdLane: true })
+        : buildArg(d.args?.[0], state, flags);
+    }
     else if (d.op === 'bin') {
       const a = buildArg(d.args?.[0], state), b = d.args?.[1] ? buildArg(d.args[1], state) : expr.constant(0, v.bits || 64);
       if (d.sub === 'bic') out = expr.binary('and', a, expr.unary('not', b, v.bits || b.bits || 64, b.signed), v.bits || 64, signedFor(state, v), origin(d, v));
