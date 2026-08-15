@@ -13,13 +13,6 @@
  *
  * この 4 段だけ。ここは IR / SSA / Memory SSA の上で、
  * 「答えに関係のある命令」だけを取り出す層。
- *
- *   backwardSlice … その値を作るのに関わった命令すべて（由来）
- *   forwardSlice  … その値がその後どこへ流れたか（行き先）
- *   valueChain    … 由来を「読む → 計算する → 書く」の段に畳んだもの
- *   causalChain   … 段数の上限を守って畳んだもの（畳んだ数は正直に持つ）
- *
- * きまり: 日本語は作らない。段の種類と材料だけを返す。文は narrate.js の仕事。
  */
 
 import { OP, VK } from './ir.js';
@@ -88,6 +81,7 @@ export function forwardSlice(ir, seed, opts) {
   const start = seed && seed.op ? (seed.dst ? [seed.dst] : []) : (seed ? [seed] : []);
   for (const v of start) for (const u of v.uses || []) stack.push(u);
   if (seed && seed.op) { seenInst.add(seed.id); instructions.push(seed); }
+
   const readersByLoc = new Map();
   for (const inst of ir.instructions) {
     if (inst.op !== OP.LOAD || !inst.loc) continue;
@@ -95,17 +89,21 @@ export function forwardSlice(ir, seed, opts) {
     if (!list) { list = []; readersByLoc.set(inst.loc.key, list); }
     list.push(inst);
   }
+  const pushReaders = (store) => {
+    if (!store || store.op !== OP.STORE || !store.loc) return;
+    for (const reader of readersByLoc.get(store.loc.key) || []) {
+      if (reader.reachingStore === store || memoryNodeContainsStore(reader.memUse, store)) stack.push(reader);
+    }
+  };
+  if (seed && seed.op === OP.STORE) pushReaders(seed);
+
   while (stack.length) {
     if (instructions.length >= limit) { truncated = true; break; }
     const inst = stack.pop();
     if (!inst || seenInst.has(inst.id)) continue;
     seenInst.add(inst.id); instructions.push(inst);
     if (inst.dst) for (const u of inst.dst.uses || []) stack.push(u);
-    if (inst.op === OP.STORE && inst.loc) {
-      for (const r of readersByLoc.get(inst.loc.key) || []) {
-        if (r.reachingStore === inst || memoryNodeContainsStore(r.memUse, inst)) stack.push(r);
-      }
-    }
+    if (inst.op === OP.STORE) pushReaders(inst);
   }
   instructions.sort(byPosition);
   return { instructions, truncated, seed };
