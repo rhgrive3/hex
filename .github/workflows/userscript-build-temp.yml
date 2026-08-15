@@ -21,11 +21,16 @@ jobs:
         run: npm install
       - name: Build and test userscript
         run: npm run userscript:test
+      - name: Relevant regression tests
+        run: |
+          npm run ai:test
+          node tests/gemini.mjs
+          node tests/worker-classic-harness.mjs
       - name: Commit generated bundle and lockfile
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add userscript/hex.user.template.js package-lock.json
+          git add userscript/hex.user.template.js userscript/platform-worker.bundle.js package-lock.json
           if git diff --cached --quiet; then
             exit 0
           fi
