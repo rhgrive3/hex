@@ -1,0 +1,35 @@
+name: Merge latest main for ready PR 485
+on:
+  push:
+    branches: [fix/latest-478-476-notes]
+permissions:
+  contents: write
+jobs:
+  merge-main:
+    if: startsWith(github.event.head_commit.message, 'ready-pr-merge-helper:')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Merge latest main and validate
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch origin main
+          set +e
+          git merge --no-commit --no-ff origin/main
+          status=$?
+          set -e
+          if [ "$status" -ne 0 ]; then
+            echo 'MERGE_CONFLICTS:'
+            git diff --name-only --diff-filter=U
+            exit "$status"
+          fi
+          rm .github/workflows/merge-ready-485.yml
+          npm run check
+          git add -A
+          git commit -m 'Merge latest main into #485'
+          git push origin HEAD
