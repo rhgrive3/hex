@@ -1,0 +1,1 @@
+External fixture moved to tests/.real-fixtures/YWP. Run: npm run fixtures:fetch
