@@ -16,7 +16,13 @@ const tools = {
   async get_callees() { return { results:[] }; },
   async get_function(address) {
     analyzed.push(BigInt(address));
-    return { address:BigInt(address), name:`fn_${BigInt(address).toString(16)}`, instructions:1, summary:{ calls:[] } };
+    return {
+      address:BigInt(address),
+      name:`fn_${BigInt(address).toString(16)}`,
+      instructions:1,
+      cost:{ functions:1, disassembly:1 },
+      summary:{ calls:[] },
+    };
   },
   async get_semantic_facts(address) {
     if (BigInt(address) === exact) {
