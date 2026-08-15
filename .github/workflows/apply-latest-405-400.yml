@@ -24,6 +24,7 @@ jobs:
           python3 tools/apply-latest-405-400.py
           python3 tools/apply-latest-405-400-followup.py
           python3 tools/fix-latest-issue-test-context.py
+          python3 tools/clean-latest-flag-output.py
       - name: Dedicated regressions
         run: node tests/issues-400-405.mjs
       - name: Decompiler suite
