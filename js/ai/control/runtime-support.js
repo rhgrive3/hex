@@ -12,13 +12,34 @@ export function wireMeta(request, controller, intent, sessionId = null) { return
 export function maxWireUsage(a, b) { return Object.fromEntries(Object.keys(a).map((key) => [key, Math.max(Number(a[key] || 0), Number(b[key] || 0))])); }
 export function memoryAnchor(snapshot, effectiveScope) { return { snapshotId: snapshot.id, binaryId: snapshot.binaryId, functionAddress: snapshot.currentFunction?.address || null, selection: snapshot.selection ? { start: snapshot.selection.start, end: snapshot.selection.end } : null, effectiveScope }; }
 export function sessionMatchesSnapshot(session, snapshot) {
-  const binaryMatches = session.binaryId == null || session.binaryId === snapshot.binaryId || session.binaryId === snapshot.legacyBinaryId || session.binaryIdentity?.legacyId === snapshot.legacyBinaryId;
+  const sessionId = session.binaryId == null ? null : String(session.binaryId);
+  const snapshotId = snapshot.binaryId == null ? null : String(snapshot.binaryId);
+  let binaryMatches = sessionId == null || sessionId === snapshotId;
+  if (!binaryMatches) {
+    const sessionIdentity = session.binaryIdentity || null;
+    const snapshotIdentity = snapshot.binaryIdentity || null;
+    const sessionStrong = strongIdentity(sessionIdentity, sessionId);
+    const snapshotStrong = strongIdentity(snapshotIdentity, snapshotId);
+    const sessionLegacy = sessionIdentity?.legacyId ?? (!sessionIdentity ? sessionId : null);
+    const snapshotLegacy = snapshot.legacyBinaryId ?? snapshotIdentity?.legacyId ?? null;
+
+    // Backward compatibility: an old session that only stored filename:slice,
+    // or a weak pre-hash session, may be upgraded to a strong current binding.
+    // Never use a shared legacy name to equate two different strong identities,
+    // and never downgrade a strong stored binding to an unverifiable weak one.
+    if (!sessionStrong && snapshotStrong) binaryMatches = sameLegacy(sessionLegacy, snapshotLegacy);
+    else if (!sessionStrong && !snapshotStrong) binaryMatches = sameLegacy(sessionLegacy, snapshotLegacy);
+    else binaryMatches = false;
+  }
   const projectMatches = session.projectId == null || snapshot.projectIdentity == null || String(session.projectId) === String(snapshot.projectIdentity);
   return binaryMatches && projectMatches;
 }
 export function assertLiveBindingsUnchanged(local, snapshot) {
   const live = resolveBinaryIdentity(local, {});
-  const same = live.id === snapshot.binaryIdentity.id || (live.legacyId && snapshot.legacyBinaryId && live.legacyId === snapshot.legacyBinaryId);
+  const snapshotIdentity = snapshot.binaryIdentity || null;
+  const sameId = live.id === snapshotIdentity?.id;
+  const bothWeak = !strongIdentity(live, live.id) && !strongIdentity(snapshotIdentity, snapshot.binaryId);
+  const same = sameId || (bothWeak && sameLegacy(live.legacyId, snapshot.legacyBinaryId));
   if (!same) throw new AIError('scope_violation', 'The binary changed while this AI turn was running; refusing to mix workbench states.');
   const liveProject = local.projectId ?? local.project?.id ?? local.project?.binaryHash ?? null;
   if (snapshot.projectIdentity != null && liveProject != null && String(liveProject) !== String(snapshot.projectIdentity)) {
@@ -45,3 +66,11 @@ export function humanError(error) { const labels = { cancelled: '解析を停止
 export function addressExistsSync(context, address) { if (typeof context.addressExists === 'function') { const result = context.addressExists(address); if (typeof result === 'boolean') return result; } try { if (context.program?.functionRange) return !!context.program.functionRange(BigInt(address)); if (context.symbols?.functionAt) return !!context.symbols.functionAt(BigInt(address)); } catch { return false; } return true; }
 export function stableStringify(value) { if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`; if (value && typeof value === 'object') return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(',')}}`; return JSON.stringify(value); }
 export function addressString(value) { try { return `0x${BigInt(value).toString(16)}`; } catch { return null; } }
+
+function strongIdentity(identity, id) {
+  const value = id == null ? identity?.id : id;
+  if (identity?.hash != null && String(identity.hash)) return true;
+  if (typeof value === 'string' && value.startsWith('content:')) return true;
+  return identity?.confidence === 'strong' && identity?.state === 'ready' && typeof value === 'string' && !value.startsWith('fallback:');
+}
+function sameLegacy(a, b) { return a != null && b != null && String(a) === String(b); }
