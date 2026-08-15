@@ -1,26 +1,17 @@
 /*
  * 検証 — 「そう書いてある」を「本当にそう動く」に上げる層。
- *
- * このツールのこれまでの弱点は、名前を読んだだけで終わっていたことだった。
- * クラス表に「_hp は先頭から 0x20 の位置にある 4 バイトの整数」と書いてあっても、
- * それは**表にそう書いてある**というだけで、コードが本当にそこを HP として
- * 使っている保証にはならない。表が古い、別のクラスと位置が同じ、という話は普通にある。
- *
- * ここでやるのは、その仮説を **実際に逆アセンブルして確かめる** こと。
- * 日本語は作らない。
+ * 実際の命令とdataflowで裏取りできないものは確定扱いしない。
  */
-import { findValueUpdates, constantComparisons, locationKey, regKeyOf, selfRegisters } from './dataflow.js';
+import { findValueUpdates, constantComparisons, regKeyOf, selfRegisters } from './dataflow.js';
 
-const ARG0 = 'x0';
 const ARG2 = 'x2';
-
 export { selfRegisters };
 
-function touches(insn, selfSet, offset) {
-  const m = insn.memory;
+function memoryTouchesSelf(insn, isSelf, offset, kind = null) {
+  const m = insn?.memory;
   if (!m || m.indexed || m.disp == null || m.stack) return false;
-  if (!selfSet.has(m.base)) return false;
-  return m.disp === offset;
+  if (kind && m.kind !== kind) return false;
+  return isSelf(m.base, insn.row) && m.disp === offset;
 }
 
 export function verifyAccessor(model, hyp, opts) {
@@ -39,11 +30,9 @@ export function verifyAccessor(model, hyp, opts) {
   out.instructions = insns.length;
   if (!insns.length || insns.length > max) return out;
 
-  const { set, isSelf } = selfRegisters(model);
-  void set;
+  const { isSelf } = selfRegisters(model);
   let others = 0;
   let hit = null;
-
   for (const insn of insns) {
     const m = insn.memory;
     if (!m || m.stack || m.indexed || m.disp == null) continue;
@@ -52,9 +41,7 @@ export function verifyAccessor(model, hyp, opts) {
       if (!hit) hit = { insn, kind: m.kind, size: m.size };
       if (m.kind === 'load') out.getter = true;
       else out.setter = true;
-    } else {
-      others++;
-    }
+    } else others++;
   }
   if (!hit) return out;
 
@@ -65,11 +52,13 @@ export function verifyAccessor(model, hyp, opts) {
   out.exclusive = others === 0;
 
   if (out.setter) {
-    const store = insns.find((i) => touches(i, set, offset) && i.memory.kind === 'store');
+    // `self` can move between registers and a callee may clobber a previously
+    // self-looking register. Resolve the exact store row instead of consulting
+    // the summary Set returned by selfRegisters().
+    const store = insns.find((i) => memoryTouchesSelf(i, isSelf, offset, 'store'));
     if (store) {
       const src = regKeyOf(store.ops[0]);
-      out.fromArgument = !!src && (src === ARG2 || src === 'w2' || wideOf(src) === ARG2 ||
-        tracesToArgument(insns, store.row, src));
+      out.fromArgument = !!src && (src === ARG2 || src === 'w2' || wideOf(src) === ARG2 || tracesToArgument(insns, store.row, src));
     }
   }
   return out;
@@ -84,6 +73,7 @@ function tracesToArgument(insns, row, reg) {
   let want = reg;
   for (let i = insns.findIndex((x) => x.row === row) - 1; i >= 0; i--) {
     const insn = insns[i];
+    if (controlBoundary(insn)) return false;
     if (!insn.writes.includes(want)) continue;
     if (insn.memory) return false;
     const next = insn.reads.find((r) => /^[wx][2-7]$/.test(r)) || insn.reads[0];
@@ -94,50 +84,40 @@ function tracesToArgument(insns, row, reg) {
   return false;
 }
 
-/**
- * ある位置（self の +offset）が、この関数の中でどう使われているかを数える。
- * RMW は dataflow facade を通るため、SSA/Memory-SSAで証明できる場合はその結果を使う。
- */
+function controlBoundary(insn) {
+  const mn = String(insn?.mnemonic || '').toLowerCase();
+  return /^(?:b(?:\.|$)|cbz$|cbnz$|tbz$|tbnz$|br$|blr$|bl$|ret$|retaa$|retab$)/.test(mn);
+}
+
+/** Count how self+offset is used, preserving only proven same-control-path guards. */
 export function fieldUse(model, offset, opts) {
   const o = opts || {};
   const want = typeof offset === 'bigint' ? offset : BigInt(offset);
   const out = { loads: 0, stores: 0, rmw: [], compares: [], sites: [], self: false };
   if (!model) return out;
   const insns = model.instructions || [];
-  const { set, isSelf: selfAt } = selfRegisters(model);
+  const { isSelf: selfAt } = selfRegisters(model);
   const selfOnly = o.selfOnly !== false;
 
   for (const insn of insns) {
     const m = insn.memory;
-    if (!m || m.stack || m.indexed || m.disp == null) continue;
-    if (m.disp !== want) continue;
+    if (!m || m.stack || m.indexed || m.disp == null || m.disp !== want) continue;
     const isSelf = selfAt(m.base, insn.row);
     if (selfOnly && !isSelf) continue;
     if (isSelf) out.self = true;
     if (m.kind === 'load') out.loads++; else out.stores++;
-    out.sites.push({
-      row: insn.row, address: insn.address, kind: m.kind,
-      base: m.base, size: m.size, self: isSelf,
-    });
+    out.sites.push({ row: insn.row, address: insn.address, kind: m.kind, base: m.base, size: m.size, self: isSelf });
   }
   if (!out.sites.length) return out;
 
   for (const u of findValueUpdates(model)) {
-    if (u.kind !== 'read-modify-write') continue;
-    if (u.location.disp !== want) continue;
+    if (u.kind !== 'read-modify-write' || u.location.disp !== want) continue;
     if (selfOnly && !u.location.self) continue;
     out.rmw.push(u);
   }
 
-  /*
-   * しきい値は「このフィールドをloadしたレジスタ」を最大8行だけ追う既存の局所条件を
-   * 維持する。その比較命令が即値を直接持たない場合だけ、SSAが同じcompare行で
-   * 証明した定数を補う。ここでは比較行と追跡中レジスタまで照合するため、generic
-   * pinpoint向けの「複数locationならpropagatedを抑止」制限を安全に解除できる。
-   */
   const byRow = new Map(insns.map((i) => [i.row, i]));
-  const comparisonByRow = new Map(constantComparisons(model, { allowUnscopedPropagated: true })
-    .map((c) => [c.row, c]));
+  const comparisonByRow = new Map(constantComparisons(model, { allowUnscopedPropagated: true }).map((c) => [c.row, c]));
   for (const site of out.sites) {
     if (site.kind !== 'load') continue;
     const insn = byRow.get(site.row);
@@ -147,8 +127,14 @@ export function fieldUse(model, offset, opts) {
     for (let r = site.row + 1; r <= site.row + 8; r++) {
       const next = byRow.get(r);
       if (!next) continue;
+      // Never jump across a call/branch/return just because the numeric row is
+      // nearby. That was enough to attach guards from a different CFG path.
+      if (controlBoundary(next)) break;
       const mn = String(next.mnemonic || '').toLowerCase();
       if (!/^(cmp|cmn|subs|adds|ccmp|fcmp|tst)$/.test(mn)) {
+        // An in-place transform such as `sub w8, w8, w2` still carries the
+        // loaded field value. A write that does not read the tracked register
+        // is a new definition and ends the chain.
         if (next.writes.includes(reg) && !next.reads.includes(reg)) break;
         continue;
       }
@@ -171,33 +157,16 @@ export function fieldUse(model, offset, opts) {
 
 export function verifyGuard(model, offset) {
   const use = fieldUse(model, offset);
-  const guards = [];
-  for (const c of use.compares) {
-    guards.push({
-      row: c.row, address: c.address,
-      value: c.value, float: c.float, mnemonic: c.mnemonic,
-      engine: c.engine || null, propagated: !!c.propagated,
-    });
-  }
-  return { guards, loads: use.loads, stores: use.stores };
+  return { guards: use.compares.map((c) => ({ row: c.row, address: c.address, value: c.value, float: c.float, mnemonic: c.mnemonic, engine: c.engine || null, propagated: !!c.propagated })), loads: use.loads, stores: use.stores };
 }
 
 export function verifyFunctionHandlesField(model, offset) {
   const use = fieldUse(model, offset);
-  return {
-    touches: use.sites.length > 0,
-    writes: use.stores > 0,
-    rmw: use.rmw.length > 0,
-    guard: use.compares.length > 0,
-    use,
-  };
+  return { touches: use.sites.length > 0, writes: use.stores > 0, rmw: use.rmw.length > 0, guard: use.compares.length > 0, use };
 }
 
 export function callsSelector(model, re) {
   const out = [];
-  for (const c of (model && model.calls) || []) {
-    if (!c || !c.selector) continue;
-    if (re.test(c.selector)) out.push({ selector: c.selector, row: c.row != null ? c.row : null });
-  }
+  for (const c of (model && model.calls) || []) if (c?.selector && re.test(c.selector)) out.push({ selector: c.selector, row: c.row != null ? c.row : null });
   return out;
 }
