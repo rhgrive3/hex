@@ -1,0 +1,45 @@
+name: Validate issue 560 multi exec
+on:
+  push:
+    branches:
+      - fix/issue-560-multi-exec-current
+permissions:
+  contents: write
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply fix
+        run: python tools/apply-issue-560.py
+      - name: Syntax
+        run: |
+          node --check js/program.js
+          node --check js/backend.js
+          node --check js/worker-legacy.js
+          node --check js/platform/worker.js
+          node --check js/app.js
+          node --check tests/issue-560-multi-exec.mjs
+      - name: Focused regressions
+        run: |
+          node tests/issue-560-multi-exec.mjs
+          node tests/issues-549-561-562.mjs
+          node tests/issue-456-report-completeness.mjs
+          node tests/issues-550-559.mjs
+      - name: Full validation
+        run: |
+          node tests/run.js
+          npm run check
+      - name: Finalize
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add js/program.js js/backend.js js/worker-legacy.js js/platform/worker.js js/app.js tests/issue-560-multi-exec.mjs
+          git commit -m "fix: scan every executable region for program truth (#560 #561)"
+          git rm -f .github/workflows/fix-app-product-remaining.yml tools/apply-issue-560.py
+          git commit -m "chore: finalize multi-exec program fix"
+          git push origin HEAD:fix/issue-560-multi-exec-current
