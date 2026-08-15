@@ -6,8 +6,8 @@ import { createFunctionSandbox, DEFAULT_OBJECT_BASE } from '../symbolic/function
 import { symbolicExecute } from '../symbolic/executor.js';
 import { STACK_TOP } from '../emu.js';
 
-const REMOTE_ARRAY_LIMITS = Object.freeze({ threads:1024, modules:4096, backtrace:4096, trace:20000 });
-const REMOTE_CALL_METHODS = new Set(['attach','launch','pause','resume','stepInto','stepOver','stepOut','readRegisters','writeRegister','readMemory','writeMemory','getThreads','getModules','getBacktrace','evaluate','trace','watchMemory']);
+const REMOTE_ARRAY_LIMITS = Object.freeze({ threads:1024, modules:4096, backtrace:4096, breakpoints:4096, trace:20000 });
+const REMOTE_CALL_METHODS = new Set(['attach','launch','pause','resume','stepInto','stepOver','stepOut','removeBreakpoint','listBreakpoints','readRegisters','writeRegister','readMemory','writeMemory','getThreads','getModules','getBacktrace','evaluate','trace','watchMemory']);
 
 function cloneRegisters(emu) {
   const out = {};
@@ -30,11 +30,18 @@ function classifyStop(result) {
   return { kind:'exception', message:reason };
 }
 function callsFromTrace(trace) {
-  return (trace || []).filter((e) => /^(bl|blr)\b/i.test(e.text || '')).map((e) => {
+  const out = [];
+  for (const e of trace || []) {
+    if (e?.type === 'call') {
+      out.push({ type:'call', address:e.addr ?? e.address, target:e.target ?? null, indirect:!!e.indirect, text:e.text });
+      continue;
+    }
+    if (!/^(bl|blr)\b/i.test(e?.text || '')) continue;
     const match = /^bl\s+#?(0x[0-9a-f]+|[0-9]+)/i.exec(e.text || '');
     let target = null; try { if (match) target = BigInt(match[1]); } catch { target = null; }
-    return { type:'call', address:e.addr ?? e.address, target, text:e.text };
-  });
+    out.push({ type:'call', address:e.addr ?? e.address, target, indirect:/^blr\b/i.test(e.text || ''), text:e.text });
+  }
+  return out;
 }
 function returnsFromTrace(trace) {
   return (trace || []).filter((e) => /^ret\b/i.test(e.text || '')).map((e) => ({ type:'return', address:e.addr ?? e.address, text:e.text }));
@@ -79,7 +86,7 @@ function remoteTrace(result) {
 export class LocalFunctionSandboxAdapter extends DebugAdapter {
   constructor(io, options = {}) {
     super({ id:options.id || 'local-function-sandbox', kind:'local-sandbox', capabilities:{
-      launch:true,pause:true,resume:true,stepInto:true,breakpointAddress:true,readRegisters:true,writeRegister:true,
+      launch:true,pause:true,resume:true,stepInto:true,breakpointAddress:true,removeBreakpoint:true,listBreakpoints:true,readRegisters:true,writeRegister:true,
       readMemory:true,writeMemory:true,threads:true,modules:true,backtrace:true,evaluate:true,
       traceFunction:true,traceCall:true,traceReturn:true,traceBranch:true,traceMemoryWrite:true,cancel:true,replay:true
     }});
@@ -174,7 +181,10 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
       this.traceBuffer.push({ type:'branch', address:before.pc, text:raw.text, next:after.pc, taken:after.pc !== before.pc + 4n });
       this.branchCursor++;
     }
-    for (const call of callsFromTrace([event])) this.traceBuffer.push(call);
+    const freshTrace = (sandbox.emulator.trace || []).slice(this.traceCursor);
+    const directCalls = callsFromTrace(freshTrace.filter((e) => e?.type === 'call'));
+    if (directCalls.length) for (const call of directCalls) this.traceBuffer.push(call);
+    else for (const call of callsFromTrace([event])) this.traceBuffer.push(call);
     for (const ret of returnsFromTrace([event])) this.traceBuffer.push(ret);
     this.traceCursor = (sandbox.emulator.trace || []).length;
     return { ...raw, state:sandbox.state(), registerDelta:registerDelta(before,after), stop:classifyStop({ stopped:sandbox.emulator.stopped }) };
@@ -185,9 +195,11 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     this.require('breakpointAddress'); this.breakpoints.set(bp.id,bp); if (this.sandbox && bp.enabled) this.sandbox.addBreakpoint(bp.address); return bp;
   }
   async removeBreakpoint(id) {
+    this.require('removeBreakpoint');
     const key = typeof id === 'object' ? id.id : String(id); const bp = this.breakpoints.get(key); if (!bp) return false;
     if (this.sandbox && bp.address != null) this.sandbox.removeBreakpoint(bp.address); this.breakpoints.delete(key); return true;
   }
+  async listBreakpoints() { this.require('listBreakpoints'); return [...this.breakpoints.values()]; }
   async readRegisters() { this.require('readRegisters'); return cloneRegisters(this.ensureSandbox().emulator); }
   async writeRegister(reg,value) {
     this.require('writeRegister');
@@ -232,7 +244,10 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     const trace = fullTrace.slice(this.traceCursor); this.traceCursor = fullTrace.length;
     const allBranches = result.takenBranches || [];
     const branches = allBranches.slice(this.branchCursor); this.branchCursor = allBranches.length;
-    for (const e of trace) this.traceBuffer.push({ type:'instruction', address:e.addr, text:e.text });
+    for (const e of trace) {
+      if (e?.type === 'call') continue; // emitted below once, with resolved target
+      this.traceBuffer.push({ type:'instruction', address:e.addr, text:e.text });
+    }
     for (const e of branches) this.traceBuffer.push({ type:'branch', ...e });
     const calls = callsFromTrace(trace), returns = returnsFromTrace(trace);
     const stop = classifyStop(result);
@@ -293,7 +308,8 @@ export class RemoteDebugAdapter extends DebugAdapter {
   resume(options={}){const {signal,...params}=options||{};return this.call('resume',params,{signal})}
   stepInto(options={}){return this.call('stepInto',{},options)} stepOver(options={}){return this.call('stepOver',{},options)} stepOut(options={}){return this.call('stepOut',{},options)}
   setBreakpoint(spec){const bp=normalizeBreakpoint(spec); const cap=bp.kind==='address'?'breakpointAddress':bp.kind==='function'?'breakpointFunction':bp.kind==='conditional'?'breakpointConditional':'watchpointMemory'; this.require(cap); return this.protocol.request('setBreakpoint',bp,{epoch:this.epoch})}
-  removeBreakpoint(id){if(!this.capabilities.breakpointAddress&&!this.capabilities.breakpointFunction&&!this.capabilities.breakpointConditional&&!this.capabilities.watchpointMemory)throw new DebugAdapterError('unsupported','remote adapter does not support breakpoints');return this.protocol.request('removeBreakpoint',{id:String(id)},{epoch:this.epoch})}
+  removeBreakpoint(id){const key=typeof id==='object'?id.id:id;return this.call('removeBreakpoint',{id:String(key)})}
+  async listBreakpoints(){return remoteArray(await this.call('listBreakpoints'),'breakpoints',REMOTE_ARRAY_LIMITS.breakpoints,'breakpoints')}
   async readRegisters(threadId){return remoteRegisters(await this.call('readRegisters',{threadId}))}
   writeRegister(reg,value,threadId){return this.call('writeRegister',{reg:String(reg),value:String(value),threadId})}
   async readMemory(address,size){const n=Number(size==null?1:size); if(!Number.isSafeInteger(n)||n<1) throw new DebugAdapterError('invalid-size','memory read size must be a positive safe integer'); if(n>256*1024) throw new DebugAdapterError('too-large','remote memory read exceeds 256 KiB'); return remoteBytes(await this.call('readMemory',{address:String(asAddress(address)),size:n}),n)}
@@ -309,10 +325,10 @@ export class RemoteDebugAdapter extends DebugAdapter {
 }
 
 export class LLDBCompatibleAdapter extends RemoteDebugAdapter {
-  constructor(transport, options = {}) { super(transport,{ ...options,id:options.id||'lldb-compatible',kind:'lldb-compatible',capabilities:{ attach:true,launch:true,pause:true,resume:true,stepInto:true,stepOver:true,stepOut:true,breakpointAddress:true,breakpointFunction:true,breakpointConditional:true,watchpointMemory:true,readRegisters:true,writeRegister:true,readMemory:true,writeMemory:true,threads:true,modules:true,backtrace:true,evaluate:true,traceFunction:true,cancel:true,...options.capabilities } }); }
+  constructor(transport, options = {}) { super(transport,{ ...options,id:options.id||'lldb-compatible',kind:'lldb-compatible',capabilities:{ attach:true,launch:true,pause:true,resume:true,stepInto:true,stepOver:true,stepOut:true,breakpointAddress:true,breakpointFunction:true,breakpointConditional:true,watchpointMemory:true,removeBreakpoint:true,listBreakpoints:true,readRegisters:true,writeRegister:true,readMemory:true,writeMemory:true,threads:true,modules:true,backtrace:true,evaluate:true,traceFunction:true,cancel:true,...options.capabilities } }); }
 }
 export class FridaCompatibleAdapter extends RemoteDebugAdapter {
-  constructor(transport, options = {}) { super(transport,{ ...options,id:options.id||'frida-compatible',kind:'frida-compatible',capabilities:{ attach:true,launch:true,pause:true,resume:true,breakpointAddress:true,breakpointFunction:true,readRegisters:true,readMemory:true,writeMemory:true,threads:true,modules:true,backtrace:true,evaluate:true,traceFunction:true,traceCall:true,traceReturn:true,traceBranch:true,traceMemoryWrite:true,traceMemoryRead:true,objcRuntime:true,swiftRuntime:true,cancel:true,...options.capabilities } }); }
+  constructor(transport, options = {}) { super(transport,{ ...options,id:options.id||'frida-compatible',kind:'frida-compatible',capabilities:{ attach:true,launch:true,pause:true,resume:true,breakpointAddress:true,breakpointFunction:true,removeBreakpoint:true,listBreakpoints:true,readRegisters:true,readMemory:true,writeMemory:true,threads:true,modules:true,backtrace:true,evaluate:true,traceFunction:true,traceCall:true,traceReturn:true,traceBranch:true,traceMemoryWrite:true,traceMemoryRead:true,objcRuntime:true,swiftRuntime:true,cancel:true,...options.capabilities } }); }
 }
 
 export class ReplayAdapter extends DebugAdapter {

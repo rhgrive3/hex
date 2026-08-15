@@ -200,14 +200,18 @@ function attachPanZoom(wrap, svg, layout) {
   const points = new Map();
   let pinch = 0;
   let last = null;
+  let suppressClick = false;
+  let multiTouchGesture = false;
   wrap.addEventListener('pointerdown', (e) => {
     if (e.target.closest && e.target.closest('.graph-tools')) return;
+    if (points.size === 0) { suppressClick = false; multiTouchGesture = false; }
     points.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (points.size === 1) {
       last = { x: e.clientX, y: e.clientY, moved: false };
       wrap.classList.add('dragging');
       wrap.setPointerCapture(e.pointerId);
     } else if (points.size === 2) {
+      multiTouchGesture = true;
       pinch = spread(points);
     }
   });
@@ -237,12 +241,20 @@ function attachPanZoom(wrap, svg, layout) {
   const release = (e) => {
     points.delete(e.pointerId);
     if (points.size < 2) pinch = 0;
-    if (!points.size) { wrap.classList.remove('dragging'); last = null; }
+    if (!points.size) {
+      wrap.classList.remove('dragging');
+      suppressClick = !!(last && last.moved) || multiTouchGesture;
+      last = null;
+    }
   };
   wrap.addEventListener('pointerup', release);
   wrap.addEventListener('pointercancel', release);
   wrap.addEventListener('click', (e) => {
-    if (last && last.moved) { e.stopPropagation(); e.preventDefault(); }
+    if (suppressClick) {
+      suppressClick = false;
+      e.stopPropagation();
+      e.preventDefault();
+    }
   }, true);
 
   wrap.addEventListener('wheel', (e) => {
@@ -333,6 +345,12 @@ export function cfgGraph(model, opts) {
   });
 
   const edges = [];
+  const backEdges = new Set((model.backEdges || []).map((e) => `${e.from}:${e.to}`));
+  const isBackEdge = (fromBlock, toBlock, terminalRow) => {
+    if (toBlock == null || toBlock < 0) return false;
+    const target = blocks[toBlock];
+    return !!target && backEdges.has(`${terminalRow}:${target.startRow}`);
+  };
   for (const b of blocks) {
     const last = [...b.rows].reverse().map((r) => byRow.get(r)).find((i) => i && !i.data);
     if (!last) continue;
@@ -343,12 +361,12 @@ export function cfgGraph(model, opts) {
     const next = b.index + 1 < blocks.length ? b.index + 1 : null;
 
     if (last.isConditional || /^(cbz|cbnz|tbz|tbnz)$/.test(base) || /^b\./.test(base)) {
-      if (ti >= 0) edges.push({ from: b.index, to: ti, kind: ti <= b.index ? 'back' : 'true', label: '成り立つ' });
+      if (ti >= 0) edges.push({ from: b.index, to: ti, kind: isBackEdge(b.index, ti, last.row) ? 'back' : 'true', label: '成り立つ' });
       if (next != null) edges.push({ from: b.index, to: next, kind: 'false', label: '成り立たない' });
       continue;
     }
     if (base === 'b') {
-      if (ti >= 0) edges.push({ from: b.index, to: ti, kind: ti <= b.index ? 'back' : 'jump' });
+      if (ti >= 0) edges.push({ from: b.index, to: ti, kind: isBackEdge(b.index, ti, last.row) ? 'back' : 'jump' });
       continue;
     }
     if (next != null) edges.push({ from: b.index, to: next, kind: 'jump' });

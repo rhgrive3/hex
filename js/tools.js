@@ -33,7 +33,7 @@ import { readableName, shortName, isMangled, findCxxClasses, readVtable } from '
 import { importList, importsByFramework, exportList, findGlobals } from './linkage.js';
 import { assemble, suggestPatches, parseHexBytes, hexOf, validatePatchRange } from './patch.js';
 import { runScript, SAMPLES, makeEmulator } from './script.js';
-import { EXAMPLE_PLUGIN } from './plugins.js';
+import { EXAMPLE_PLUGIN, MAX_PLUGIN_SOURCE_BYTES } from './plugins.js';
 import { parseMetadataAuto, looksLikeUnity, bindMethodAddresses } from './il2cpp.js';
 import { brief } from './arm64.js';
 
@@ -72,7 +72,8 @@ export function currentFunctionAddr(app) {
   const row = app.viewer ? app.viewer.selectedRow : -1;
   const region = app.store.get('currentRegion');
   if (region && row >= 0) {
-    const addr = region.vmAddr + BigInt(row) * 4n;
+    const addr = app.viewer?.rowAddress ? app.viewer.rowAddress(row) : null;
+    if (addr == null) return null;
     const fn = sym && sym.functionCount ? sym.functionAt(addr) : null;
     if (fn) return fn.start;
     return addr;
@@ -113,14 +114,19 @@ async function modelOf(app, addr) {
 function rowMapper(app) {
   const region = app.store.get('currentRegion');
   return {
-    rowOfAddress: (a) => {
-      if (a == null || !region) return null;
-      const rel = a - region.vmAddr;
-      if (rel < 0n || rel >= region.size) return null;
-      return Number(rel / 4n);
-    },
-    addrOfRow: (row) => (region ? region.vmAddr + BigInt(row) * 4n : null),
+    rowOfAddress: (a) => (a == null || !region || !app.viewer?.rowOfAddress ? null : app.viewer.rowOfAddress(a)),
+    addrOfRow: (row) => (region && app.viewer?.rowAddress ? app.viewer.rowAddress(row) : null),
   };
+}
+
+
+export function parseDebuggerArgument(value) {
+  const raw = String(value ?? '');
+  if (!raw || raw !== raw.trim() || !/^-?(?:0[xX][0-9a-fA-F]+|[0-9]+)$/.test(raw)) {
+    return { ok: false, value: null, error: '10進整数か0x付き16進整数を入力してください。' };
+  }
+  try { return { ok: true, value: BigInt(raw), error: null }; }
+  catch { return { ok: false, value: null, error: '整数として読み取れません。' }; }
 }
 
 /* ══════════════════════════════════════════════════════════
@@ -1153,7 +1159,14 @@ async function instructionAt(app, addr) {
   if (!region) return null;
   const file = app.store.get('file');
   if (validatePatchRange(region, addr, 4, file && file.size, true).error) return null;
-  const row = Number((addr - region.vmAddr) / 4n);
+  const row = app.viewer?.rowOfAddress ? app.viewer.rowOfAddress(addr) : null;
+  if (row == null) {
+    // Variable-length ISA: ask the architecture backend for an instruction at
+    // this exact address rather than manufacturing a 4-byte row.
+    const decoded = await app.backend.disassembleAt(addr, { length: 32 });
+    const hit = decoded?.instructions?.find((i) => i.address === addr || BigInt(i.address ?? -1) === addr);
+    return hit ? { mnemonic: hit.mnemonic || hit.mn || '', operands: hit.operands || hit.opStr || '', address: addr } : null;
+  }
   const chunk = Math.floor(row / 1024);
   try {
     const e = await app.backend.fetchChunk(region.id, chunk, true);
@@ -1282,10 +1295,19 @@ export function showDebugger(app, addr) {
   const bpBox = el('div');
 
   const start = () => {
-    args = argInputs.map((n) => {
-      const v = n.value.trim();
-      try { return v ? BigInt(v) : 0n; } catch { return 0n; }
+    const parsed = argInputs.map((n) => parseDebuggerArgument(n.value));
+    let invalid = false;
+    parsed.forEach((result, i) => {
+      const inputNode = argInputs[i];
+      inputNode.setAttribute('aria-invalid', String(!result.ok));
+      inputNode.classList.toggle('invalid', !result.ok);
+      if (!result.ok) invalid = true;
     });
+    if (invalid) {
+      status.textContent = '引数に読み取れない値があります。赤く示した欄を直してください。';
+      return false;
+    }
+    args = parsed.map((result) => result.value);
     const keep = new Set(emu.breakpoints);   // 置いた目印は、やり直しても残す
     emu.reset();
     emu.breakpoints = keep;
@@ -1538,6 +1560,10 @@ export function showPlugins(app) {
       picker.addEventListener('change', async () => {
         const f = picker.files && picker.files[0];
         if (!f) return;
+        if (f.size > MAX_PLUGIN_SOURCE_BYTES) {
+          toast('プラグインが大きすぎます（512 KB まで）。');
+          return;
+        }
         const text = await f.text();
         confirmInstall(text, f.name);
       });

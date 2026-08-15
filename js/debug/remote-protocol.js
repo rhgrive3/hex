@@ -4,6 +4,9 @@ const MAX_PACKET_BYTES = 1024 * 1024;
 const MAX_ARRAY = 65536;
 const ALLOWED_TYPES = new Set(['hello','request','response','event','cancel']);
 const BLOCKED_METHODS = /^(exec|shell|spawn|system|hostCommand|runCommand)$/i;
+const WIRE_TAG = '__hex_wire_type__';
+const BIGINT_TAG = 'bigint';
+const BYTES_TAG = 'bytes-base64';
 
 function jsonByteSize(value) {
   let json;
@@ -13,15 +16,44 @@ function jsonByteSize(value) {
   return json.length * 2;
 }
 
-function encodeWireValue(value, depth = 0) {
+function bytesToBase64(bytes) {
+  if (typeof Buffer !== 'undefined') return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString('base64');
+  if (typeof btoa !== 'function') throw new DebugAdapterError('encoding-unavailable', 'base64 encoder is unavailable');
+  let binary = '';
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  return btoa(binary);
+}
+
+function base64ToBytes(text) {
+  try {
+    if (typeof Buffer !== 'undefined') {
+      const buf = Buffer.from(text, 'base64');
+      if (buf.toString('base64').replace(/=+$/,'') !== String(text).replace(/=+$/,'')) throw new Error('non-canonical');
+      return new Uint8Array(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
+    }
+    if (typeof atob !== 'function') throw new Error('decoder unavailable');
+    const binary = atob(text);
+    const out = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i);
+    return out;
+  } catch {
+    throw new DebugAdapterError('malformed-packet', 'invalid base64 byte payload');
+  }
+}
+
+export function encodeWireValue(value, depth = 0) {
   if (depth > 20) throw new DebugAdapterError('malformed-packet', 'remote packet nesting is too deep');
   if (value == null || typeof value === 'string' || typeof value === 'boolean') return value;
   if (typeof value === 'number') {
     if (!Number.isFinite(value)) throw new DebugAdapterError('malformed-packet', 'remote packet numbers must be finite');
     return value;
   }
-  if (typeof value === 'bigint') return value.toString();
-  if (value instanceof Uint8Array) return Array.from(value);
+  if (typeof value === 'bigint') return { [WIRE_TAG]: BIGINT_TAG, value: value.toString(10) };
+  if (value instanceof Uint8Array) return { [WIRE_TAG]: BYTES_TAG, value: bytesToBase64(value), length: value.byteLength };
+  if (ArrayBuffer.isView(value)) {
+    return { [WIRE_TAG]: BYTES_TAG, value: bytesToBase64(new Uint8Array(value.buffer, value.byteOffset, value.byteLength)), length: value.byteLength };
+  }
   if (Array.isArray(value)) {
     if (value.length > MAX_ARRAY) throw new DebugAdapterError('malformed-packet', 'remote array exceeds limit');
     return value.map((v) => encodeWireValue(v, depth + 1));
@@ -41,6 +73,31 @@ function encodeWireValue(value, depth = 0) {
     return out;
   }
   throw new DebugAdapterError('malformed-packet', 'remote packet contains an unsupported value');
+}
+
+export function decodeWireValue(value, depth = 0) {
+  if (depth > 20) throw new DebugAdapterError('malformed-packet', 'remote packet nesting is too deep');
+  if (Array.isArray(value)) return value.map((v) => decodeWireValue(v, depth + 1));
+  if (!value || typeof value !== 'object') return value;
+  if (value[WIRE_TAG] === BIGINT_TAG) {
+    if (Object.keys(value).some((k) => ![WIRE_TAG, 'value'].includes(k)) || !/^-?\d+$/.test(String(value.value || ''))) {
+      throw new DebugAdapterError('malformed-packet', 'invalid bigint wire value');
+    }
+    return BigInt(value.value);
+  }
+  if (value[WIRE_TAG] === BYTES_TAG) {
+    if (Object.keys(value).some((k) => ![WIRE_TAG, 'value', 'length'].includes(k)) || typeof value.value !== 'string') {
+      throw new DebugAdapterError('malformed-packet', 'invalid byte wire value');
+    }
+    const out = base64ToBytes(value.value);
+    if (!Number.isSafeInteger(value.length) || value.length < 0 || value.length !== out.byteLength || out.byteLength > MAX_PACKET_BYTES) {
+      throw new DebugAdapterError('malformed-packet', 'byte payload length mismatch');
+    }
+    return out;
+  }
+  const out = {};
+  for (const [key, field] of Object.entries(value)) out[key] = decodeWireValue(field, depth + 1);
+  return out;
 }
 
 function validateValue(value, depth = 0) {
@@ -124,14 +181,17 @@ export class RemoteProtocolClient {
     const next = Number(epoch);
     if (!Number.isSafeInteger(next) || next < 0) throw new DebugAdapterError('invalid-epoch', 'epoch must be a non-negative safe integer');
     if (next === this.epoch) return this.epoch;
+    const previous = this.epoch;
     this.epoch = next;
     for (const [id, pending] of [...this.pending]) {
       if (pending.epoch === next) continue;
       this._cleanupPending(id, pending);
       pending.reject(new DebugAdapterError('stale-request', 'request invalidated by session epoch change'));
-      this.sendPacket({ version:DEBUG_PROTOCOL_VERSION, type:'cancel', id, epoch:pending.epoch, reason:'session-epoch-changed' }).catch(() => {});
+      // Lifecycle packets must use the current epoch so the peer accepts them.
+      // requestEpoch preserves which generation the cancelled request belonged to.
+      this.sendPacket({ version:DEBUG_PROTOCOL_VERSION, type:'cancel', id, epoch:next, requestEpoch:pending.epoch, reason:'session-epoch-changed' }).catch(() => {});
     }
-    return this.epoch;
+    return previous === next ? previous : this.epoch;
   }
   onEvent(fn) { this.listeners.add(fn); return () => this.listeners.delete(fn); }
   async sendPacket(packet) {
@@ -147,7 +207,9 @@ export class RemoteProtocolClient {
     const id = this._allocateId();
     const epoch = options.epoch == null ? this.epoch : Number(options.epoch);
     if (!Number.isSafeInteger(epoch) || epoch < 0) return Promise.reject(new DebugAdapterError('invalid-epoch', 'epoch must be a non-negative safe integer'));
-    const timeoutMs = boundedInteger(options.timeoutMs, this.timeoutMs, 10, 60000, 'timeoutMs');
+    let timeoutMs;
+    try { timeoutMs = boundedInteger(options.timeoutMs, this.timeoutMs, 10, 60000, 'timeoutMs'); }
+    catch (error) { return Promise.reject(error); }
     const packet = { version:DEBUG_PROTOCOL_VERSION, type:'request', id, epoch, method:String(method), params };
     return new Promise((resolve,reject) => {
       const pending = { resolve, reject, timer:null, epoch, method:String(method), signal:options.signal || null, abortHandler:null };
@@ -155,7 +217,7 @@ export class RemoteProtocolClient {
         if (!this.pending.has(id)) return;
         this._cleanupPending(id, pending);
         reject(new DebugAdapterError('timeout', `remote request timed out: ${method}`));
-        this.sendPacket({ version:DEBUG_PROTOCOL_VERSION, type:'cancel', id, epoch, reason:'timeout' }).catch(() => {});
+        this.sendPacket({ version:DEBUG_PROTOCOL_VERSION, type:'cancel', id, epoch:this.epoch, requestEpoch:epoch, reason:'timeout' }).catch(() => {});
       }, timeoutMs);
       if (pending.signal) {
         pending.abortHandler = () => this.cancel(id, String(pending.signal.reason || 'cancelled'));
@@ -174,13 +236,15 @@ export class RemoteProtocolClient {
     if (!pending) return false;
     this._cleanupPending(id, pending);
     pending.reject(new DebugAdapterError('cancelled', reason));
-    try { await this.sendPacket({ version:DEBUG_PROTOCOL_VERSION, type:'cancel', id, epoch:pending.epoch, reason:String(reason).slice(0,256) }); } catch { /* best effort */ }
+    try { await this.sendPacket({ version:DEBUG_PROTOCOL_VERSION, type:'cancel', id, epoch:this.epoch, requestEpoch:pending.epoch, reason:String(reason).slice(0,256) }); } catch { /* best effort */ }
     return true;
   }
   receive(raw) {
+    let wire;
+    try { wire = validateRemotePacket(raw); } catch { return false; }
+    if (wire.type !== 'hello' && wire.epoch !== this.epoch) return false;
     let packet;
-    try { packet = validateRemotePacket(raw); } catch { return false; }
-    if (packet.type !== 'hello' && packet.epoch !== this.epoch) return false;
+    try { packet = decodeWireValue(wire); } catch { return false; }
     if (packet.type === 'response') {
       const pending = this.pending.get(packet.id);
       if (!pending || pending.epoch !== this.epoch) return false;

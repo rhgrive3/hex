@@ -331,6 +331,11 @@ function helperLocation(offsetValue) {
   return null;
 }
 
+const PROPERTY_HELPER_ABI = Object.freeze({
+  getProperty: Object.freeze({ kind: 'read', offsetReg: 'x2', valueReg: 'x0' }),
+  setProperty: Object.freeze({ kind: 'write', offsetReg: 'x2', valueReg: 'x3' }),
+});
+
 function propertyHelperUpdates(model, ir) {
   const out = [];
   const callMeta = new Map((model.calls || []).map((c) => [c.row, c]));
@@ -342,9 +347,10 @@ function propertyHelperUpdates(model, ir) {
     const meta = callMeta.get(inst.row);
     const name = meta && meta.name || null;
     if (!name || !/objc_(getProperty|setProperty)/.test(name)) continue;
-    const read = /objc_getProperty/.test(name);
-    const offsetReg = read ? 'x2' : 'x3';
-    const offsetValue = valueBefore(ir, inst, offsetReg);
+    const family = /objc_getProperty/.test(name) ? 'getProperty' : 'setProperty';
+    const abi = PROPERTY_HELPER_ABI[family];
+    const read = abi.kind === 'read';
+    const offsetValue = valueBefore(ir, inst, abi.offsetReg);
     const location = helperLocation(offsetValue);
     if (!location) continue;
     const detail = {
@@ -357,8 +363,8 @@ function propertyHelperUpdates(model, ir) {
       location,
       from: read ? { row: inst.row, address: inst.address, base: 'x0', disp: location.disp, size: 8, key: location.key } : null,
       steps: [],
-      store: { row: inst.row, address: inst.address, reg: read ? 'x0' : 'x2' },
-      register: read ? 'x0' : 'x2',
+      store: { row: inst.row, address: inst.address, reg: abi.valueReg },
+      register: abi.valueReg,
       helper: name,
       confidence: SCORE.confirmed,
       level: levelOf(SCORE.confirmed),

@@ -584,6 +584,9 @@ class App {
            the strongest evidence as soon as partial metadata existed. */
         sym.addFunctions(res.starts);
         sym.guessed = true;
+        sym.functionDiscovery = res.completeness || { complete: res.complete !== false, capped: !!res.capped };
+        sym.functionStartsComplete = res.complete !== false;
+        sym.functionStartsCapped = !!res.capped;
         this.viewer.setSymbols(sym);
       }
     } catch { /* 推測できなくても、ほかの解析は続ける */ }
@@ -1122,7 +1125,7 @@ class App {
   goToAddress(addr, { announce, history = true, label } = {}) {
     const region = this.store.get('currentRegion');
     if (region && addr >= region.vmAddr && addr < region.vmAddr + region.size) {
-      this.viewer.goToAddress(addr);
+      if (!this.viewer.goToAddress(addr)) return false;
       if (announce) this.flash(addr);
       if (history) this.navigation.visit(this.navigationEntry(addr, label));
       return true;
@@ -1131,7 +1134,7 @@ class App {
     const target = regions.find((r) => r.size > 0n && addr >= r.vmAddr && addr < r.vmAddr + r.size);
     if (target) {
       this.selectRegion(target, { silent: true });
-      this.viewer.goToAddress(addr);
+      if (!this.viewer.goToAddress(addr)) return false;
       toast(t('toast.jumped', { name: target.name }));
       if (announce) this.flash(addr);
       if (history) this.navigation.visit(this.navigationEntry(addr, label));
@@ -1159,7 +1162,8 @@ class App {
     })) return;
     const region = this.store.get('currentRegion');
     if (!region) return;
-    const row = Number((addr - region.vmAddr) / 4n);
+    const row = this.viewer.rowOfAddress(addr);
+    if (row == null) return;
     this.viewer.select(row, false);
     this.store.set({ selectedRow: row });
     // 関数を開いた「そのとき」だけ意味解析を走らせる（描画とは別の流れ）
@@ -1197,8 +1201,8 @@ class App {
   flash(addr) {
     const region = this.store.get('currentRegion');
     if (!region) return;
-    const row = Number((addr - region.vmAddr) / 4n);
-    this.viewer.mark(row);
+    const row = this.viewer.rowOfAddress(addr);
+    if (row != null) this.viewer.mark(row);
   }
 }
 

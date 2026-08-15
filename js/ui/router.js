@@ -40,6 +40,10 @@ export function matchRoute(routes, rawPath) {
 
 function queryOf(rawPath) { const i = String(rawPath || '').indexOf('?'); return new URLSearchParams(i >= 0 ? String(rawPath).slice(i + 1) : ''); }
 
+function ownedState(state) {
+  return !!state && state.hexUi === true && Number.isSafeInteger(state.hexDepth) && state.hexDepth >= 0;
+}
+
 export class ProductRouter {
   constructor(routes, { defaultPath = '/investigate', onRoute, onState, onError } = {}) {
     this.routes = routes; this.defaultPath = normalize(defaultPath); this.onRoute = onRoute || (() => null); this.onState = onState || (() => {}); this.onError = onError || (() => {});

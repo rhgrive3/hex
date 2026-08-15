@@ -12,7 +12,7 @@ const targets=[
 ];
 let failed=false, ran=0;
 for(const t of targets){
-  const file=path.join(root,t.file);
+  const file=path.join(root,'.real-fixtures',t.file);
   if(!fs.existsSync(file)){console.log(`SKIP ${t.file}: fixture not present`);continue;}
   ran++;
   const bytes=new Uint8Array(fs.readFileSync(file));

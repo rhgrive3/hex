@@ -54,23 +54,66 @@ export function mapChildren(n, fn) {
   if (n.kind === 'index') return { ...n, base: fn(n.base), index: fn(n.index) };
   return n;
 }
-export function nodeCount(n, seen = new Set()) { if (!n || seen.has(n)) return 0; seen.add(n); return 1 + children(n).reduce((sum, c) => sum + nodeCount(c, seen), 0); }
-function scalar(v) { return typeof v === 'bigint' ? `${v}n` : JSON.stringify(v); }
-export function structuralKey(n) {
-  if (!n) return 'null';
-  switch (n.kind) {
-    case 'const': return `c:${n.bits}:${n.signed}:${n.value}`;
-    case 'var': return `v:${n.name}:${n.bits}:${n.signed}`;
-    case 'unary': return `u:${n.op}:${n.bits}:${structuralKey(n.arg)}`;
-    case 'binary': return `b:${n.op}:${n.bits}:${n.signed}:${structuralKey(n.left)}:${structuralKey(n.right)}`;
-    case 'compare': return `cmp:${n.op}:${n.compareSigned}:${structuralKey(n.left)}:${structuralKey(n.right)}`;
-    case 'select': return `sel:${structuralKey(n.condition)}:${structuralKey(n.whenTrue)}:${structuralKey(n.whenFalse)}`;
-    case 'field': return `field:${structuralKey(n.base)}:${n.name}:${n.offset}`;
-    case 'index': return `idx:${structuralKey(n.base)}:${structuralKey(n.index)}:${n.scale}`;
-    case 'load': return `load:${scalar(n.location?.key || n.location?.name || n.location)}:${n.bits}`;
-    case 'call': return `call:${n.callee}:${(n.args || []).map(structuralKey).join(',')}`;
-    case 'intrinsic': return `intr:${n.name}:${(n.args || []).map(structuralKey).join(',')}`;
-    default: return `${n.kind}:${scalar(n.name || '')}`;
+
+// Iterative and limit-aware: the budget check itself must never overflow the JS stack.
+export function nodeCount(n, seen = new Set(), limit = Infinity) {
+  if (!n) return 0;
+  if (typeof seen === 'number') { limit = seen; seen = new Set(); }
+  const stack = [n];
+  let total = 0;
+  while (stack.length) {
+    const cur = stack.pop();
+    if (!cur || seen.has(cur)) continue;
+    seen.add(cur);
+    total++;
+    if (total > limit) return total;
+    const kids = children(cur);
+    for (let i = kids.length - 1; i >= 0; i--) stack.push(kids[i]);
   }
+  return total;
+}
+function scalar(v) { return typeof v === 'bigint' ? `${v}n` : JSON.stringify(v); }
+function semanticTag(n) {
+  return `${n.bits ?? ''}:${n.signed ?? ''}:${n.volatile === true}:${n.extension ?? n.extend ?? ''}:${n.returnType ?? n.type ?? ''}:${n.returnClass ?? n.abiReturnClass ?? ''}`;
+}
+
+// Post-order canonicalization without recursion. This handles deeply skewed ASTs safely.
+export function structuralKey(root) {
+  if (!root) return 'null';
+  const keys = new Map();
+  const active = new Set();
+  const stack = [{ n: root, exit: false }];
+  while (stack.length) {
+    const frame = stack.pop();
+    const n = frame.n;
+    if (!n || keys.has(n)) continue;
+    if (!frame.exit) {
+      if (active.has(n)) { keys.set(n, `cycle:${n.kind}`); continue; }
+      active.add(n);
+      stack.push({ n, exit: true });
+      const kids = children(n);
+      for (let i = kids.length - 1; i >= 0; i--) if (kids[i] && !keys.has(kids[i])) stack.push({ n: kids[i], exit: false });
+      continue;
+    }
+    const k = (x) => x ? (keys.get(x) || `cycle:${x.kind}`) : 'null';
+    let value;
+    switch (n.kind) {
+      case 'const': value = `c:${semanticTag(n)}:${n.value}`; break;
+      case 'var': value = `v:${n.name}:${semanticTag(n)}`; break;
+      case 'unary': value = `u:${n.op}:${semanticTag(n)}:${k(n.arg)}`; break;
+      case 'binary': value = `b:${n.op}:${semanticTag(n)}:${k(n.left)}:${k(n.right)}`; break;
+      case 'compare': value = `cmp:${n.op}:${n.compareSigned}:${k(n.left)}:${k(n.right)}`; break;
+      case 'select': value = `sel:${semanticTag(n)}:${k(n.condition)}:${k(n.whenTrue)}:${k(n.whenFalse)}`; break;
+      case 'field': value = `field:${k(n.base)}:${n.name}:${n.offset}:${semanticTag(n)}`; break;
+      case 'index': value = `idx:${k(n.base)}:${k(n.index)}:${n.scale}:${semanticTag(n)}`; break;
+      case 'load': value = `load:${scalar(n.location?.key || n.location?.name || n.location)}:${semanticTag(n)}`; break;
+      case 'call': value = `call:${n.callee}:${semanticTag(n)}:${(n.args || []).map(k).join(',')}`; break;
+      case 'intrinsic': value = `intr:${n.name}:${semanticTag(n)}:${(n.args || []).map(k).join(',')}`; break;
+      default: value = `${n.kind}:${scalar(n.name || '')}:${semanticTag(n)}`; break;
+    }
+    keys.set(n, value);
+    active.delete(n);
+  }
+  return keys.get(root) || 'unknown';
 }
 export function sameExpr(a, b) { return structuralKey(a) === structuralKey(b); }
