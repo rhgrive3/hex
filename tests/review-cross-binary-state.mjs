@@ -70,10 +70,35 @@ function makeApp(){
   assert.equal(workspace.diffState,null);
 }
 
-// The real UI adapter must expose ProductWorkspace's content hash as the strong
-// identity used by TurnSnapshot/ObservationStore, not filename:slice.
+// An async diff that started for A must not repopulate diffState after B binds.
 {
   const app=makeApp();
+  let releaseRecognition;
+  app.ensureRecognition=()=>new Promise((resolve)=>{releaseRecognition=resolve;});
+  const workspace=new ProductWorkspace(app,{storage:new Storage(),backendFactory:()=>({})});
+  app.workspace=workspace;
+  await workspace.bind();
+  const before=[{address:0x1000n,name:'old',size:4,strings:[],calls:[],imports:[],semantic:{writes:[],thresholds:[]},fieldAccessShape:[]}];
+  before.complete=true;before.total=1;before.scanned=1;before.truncationReason=null;
+  workspace.baseline={hash:'baseline-a',architecture:'arm64',info:{name:'baseline'},functions:before};
+  const pending=workspace.diff({matchBudget:{maxCandidateEvaluations:10,maxEdges:10,maxComponentNodes:10,maxComponentEdges:10}});
+  await Promise.resolve();
+
+  app.backend.contentHash='hash-b';
+  app.store.values.fileInfo=makeInfo('same.bin','B');
+  await workspace.bind();
+  releaseRecognition();
+  let stale=null;
+  try{await pending;}catch(error){stale=error;}
+  assert.equal(stale?.code,'HEX_WORKSPACE_STALE');
+  assert.equal(workspace.diffState,null,'stale diff must not restore old state');
+}
+
+// The real UI adapter must expose the live Backend/ProductWorkspace content hash
+// as the strong identity used by TurnSnapshot/ObservationStore, not filename:slice.
+{
+  const app=makeApp();
+  app.backend.contentHash='content-a';
   app.workspace={identity:{hash:'content-a'},project:{binary:{hash:'content-a'}}};
   const engine=createAiEngine(app,{loadCore:async()=>null});
   assert.equal(engine.localContext.binaryId,'same.bin:0');
@@ -82,9 +107,17 @@ function makeApp(){
   assert.equal(engine.localContext.binaryIdentity.id,'content:content-a:0');
   assert.equal(engine.localContext.binaryIdentity.confidence,'strong');
 
-  // Same visible filename/slice, different bytes: identity must change.
+  // During a new file open Backend clears contentHash. The old workspace hash
+  // must not masquerade as the new file's identity in that transition window.
+  app.backend.contentHash=null;
   app.workspace.identity.hash='content-b';
   app.workspace.project.binary.hash='content-b';
+  assert.equal(engine.localContext.binaryHash,null);
+  assert.equal(engine.localContext.binaryIdentity,null);
+
+  // Once the new content hash is established, same filename/slice but different
+  // bytes must receive a distinct strong identity.
+  app.backend.contentHash='content-b';
   assert.equal(engine.localContext.binaryId,'same.bin:0');
   assert.equal(engine.localContext.binaryHash,'content-b');
   assert.equal(engine.localContext.binaryIdentity.id,'content:content-b:0');
