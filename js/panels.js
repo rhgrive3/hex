@@ -1944,9 +1944,11 @@ export function showOverview(app) {
 
     prepare(app, box).then(async ({ strings, program, shapes }) => {
       if (cancelled || !sheet.root.isConnected) return;
+      let recognition=null;
+      try { recognition=await app.ensureRecognition?.({maxFunctions:350000,knowledgeLimit:512}); } catch { recognition=null; }
       const report = await autoAnalyze({
         strings, program, symbols: app.symbols, region, fields: app.fields,
-        shapes,
+        shapes, recognition,
         analyze: makeAnalyzer(app, region),
         scanAccess: makeAccessScanner(app, region),
         isCancelled: () => cancelled || !sheet.root.isConnected,

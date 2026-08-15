@@ -326,7 +326,21 @@ export async function autoAnalyze(opts) {
   }
 
   progress({ phase: 'notable', done: 0, all: 1 });
-  report.notable = notableFunctions(program, symbols, region);
+  const recognized = Array.isArray(o.recognition?.records) ? o.recognition.records : [];
+  const recognizedNotable = recognized
+    .filter((item) => item && (item.classification === 'APPLICATION' || item.classification === 'UNKNOWN'))
+    .slice(0, 24)
+    .map((item) => ({ addr:item.address, name:item.name||null, score:Math.round((item.score||0)*100), reasons:[{code:'recognition',points:Math.round((item.score||0)*100),detail:{classification:item.classification,confidence:item.confidence,knowledge:!!item.knowledge}}], recognition:item }));
+  const structuralNotable = notableFunctions(program, symbols, region);
+  const seen = new Set();
+  report.notable = [...recognizedNotable, ...structuralNotable].filter((item) => {
+    const key=item?.addr==null?'':item.addr.toString(); if(!key||seen.has(key))return false; seen.add(key); return true;
+  }).slice(0, 24);
+  Object.defineProperties(report.notable, {
+    complete:{value:o.recognition ? o.recognition.complete===true && structuralNotable.complete!==false : structuralNotable.complete!==false,enumerable:false},
+    sampled:{value:o.recognition?.complete===false || structuralNotable.sampled===true,enumerable:false},
+  });
+  report.stats.recognition = o.recognition ? { scanned:o.recognition.scannedCount||0,total:o.recognition.total||0,complete:o.recognition.complete===true,knowledgeMatches:o.recognition.knowledgeMatches||0 } : null;
   if (report.notable.sampled) report.notes.push('notable-functions-sampled');
 
   if (o.analyze && deepLimit > 0) {
