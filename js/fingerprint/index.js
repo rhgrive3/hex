@@ -161,7 +161,12 @@ export function normalizeInstruction(instruction, options = {}) {
   if (!mnemonic) return null;
   if (options.ignoreCompilerNoise !== false && IGNORABLE_MNEMONICS.has(mnemonic)) return null;
   const parsed = structured || parseOperands(operandText);
-  const normalized = parsed.map((op, index) => canonicalOperand(op, mnemonic, index, options)).join(', ');
+  const normalizedOperands = parsed.map((op, index) => canonicalOperand(op, mnemonic, index, options));
+  // Stack-frame size is compiler layout noise, not function identity. Preserve
+  // the v3 contract when using the v4 structured-operand canonicalizer.
+  if (/^(add|sub)$/.test(mnemonic) && normalizedOperands[0] === 'SP' && normalizedOperands[1] === 'SP' &&
+      parsed[2] && (parsed[2].k === 'imm' || numericOther(parsed[2]) != null)) normalizedOperands[2] = '@frame';
+  const normalized = normalizedOperands.join(', ');
   return { mnemonic, operands: normalized.replace(/\s+/g, ' ').trim() };
 }
 
