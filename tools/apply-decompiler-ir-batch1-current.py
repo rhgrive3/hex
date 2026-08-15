@@ -73,8 +73,17 @@ elif new not in s:
     raise SystemExit('#356 widthRead fixture anchor missing')
 p.write_text(s)
 
+# Compiler-truth owns the C source, so its declared scalar return types are
+# trusted evidence rather than a decompiler inference.
 p = Path('tests/compiler-truth/run-core.mjs')
 s = p.read_text()
+old = """      const result = decompile(model, { name:fn, addr:model.instructions[0].address, rowOfAddress:(a)=>rowMap.get(a?.toString()) ?? null, decompilerTimeBudgetMs:120 });"""
+new = """      const returnType = fn === 'extract8' || fn === 'bool_i32' ? 'uint32' : 'int32';
+      const result = decompile(model, { name:fn, addr:model.instructions[0].address, rowOfAddress:(a)=>rowMap.get(a?.toString()) ?? null, returnType, decompilerTimeBudgetMs:120 });"""
+if old in s:
+    s = s.replace(old, new, 1)
+elif new not in s:
+    raise SystemExit('compiler-truth scalar fixture anchor missing')
 old = "decompile(prebuilt, { name:'max_prebuilt', addr:0x200000n, rowOfAddress:(a)=>preMap.get(a?.toString()) ?? null, decompilerTimeBudgetMs:120 })"
 new = "decompile(prebuilt, { name:'max_prebuilt', addr:0x200000n, returnType:'int32', rowOfAddress:(a)=>preMap.get(a?.toString()) ?? null, decompilerTimeBudgetMs:120 })"
 if old in s:
