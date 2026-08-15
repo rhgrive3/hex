@@ -32,6 +32,11 @@ function makeApp(){
     viewer:{setSymbols(){}},codeRegion:()=>region,ensureRecognition:async()=>null,
   };
 }
+function oneFunction(name,address=0x1000n){
+  const functions=[{address,name,size:4,strings:[],calls:[],imports:[],semantic:{writes:[],thresholds:[]},fieldAccessShape:[]}];
+  functions.complete=true;functions.total=1;functions.scanned=1;functions.truncationReason=null;
+  return functions;
+}
 
 // Binding a new binary/slice must never inherit the previous in-memory project,
 // diff baseline, or diff result merely because there is no saved project yet.
@@ -78,8 +83,7 @@ function makeApp(){
   const workspace=new ProductWorkspace(app,{storage:new Storage(),backendFactory:()=>({})});
   app.workspace=workspace;
   await workspace.bind();
-  const before=[{address:0x1000n,name:'old',size:4,strings:[],calls:[],imports:[],semantic:{writes:[],thresholds:[]},fieldAccessShape:[]}];
-  before.complete=true;before.total=1;before.scanned=1;before.truncationReason=null;
+  const before=oneFunction('old');
   workspace.baseline={hash:'baseline-a',architecture:'arm64',info:{name:'baseline'},functions:before};
   const pending=workspace.diff({matchBudget:{maxCandidateEvaluations:10,maxEdges:10,maxComponentNodes:10,maxComponentEdges:10}});
   await Promise.resolve();
@@ -92,6 +96,32 @@ function makeApp(){
   try{await pending;}catch(error){stale=error;}
   assert.equal(stale?.code,'HEX_WORKSPACE_STALE');
   assert.equal(workspace.diffState,null,'stale diff must not restore old state');
+}
+
+// Replacing only the comparison baseline is also a transaction boundary. A
+// diff started against baseline A must never publish as the result for B.
+{
+  const app=makeApp();
+  let releaseRecognition;
+  app.ensureRecognition=()=>new Promise((resolve)=>{releaseRecognition=resolve;});
+  const workspace=new ProductWorkspace(app,{storage:new Storage(),backendFactory:()=>({})});
+  app.workspace=workspace;
+  await workspace.bind();
+  const baselineA={hash:'baseline-a',architecture:'arm64',info:{name:'baseline-a'},functions:oneFunction('old-a')};
+  const baselineB={hash:'baseline-b',architecture:'arm64',info:{name:'baseline-b'},functions:oneFunction('old-b',0x1100n)};
+  workspace.baseline=baselineA;
+  const pending=workspace.diff({matchBudget:{maxCandidateEvaluations:10,maxEdges:10,maxComponentNodes:10,maxComponentEdges:10}});
+  await Promise.resolve();
+
+  workspace.baseline=baselineB;
+  workspace.diffState=null;
+  workspace.busy=null;
+  releaseRecognition();
+  let stale=null;
+  try{await pending;}catch(error){stale=error;}
+  assert.equal(stale?.code,'HEX_WORKSPACE_STALE');
+  assert.equal(workspace.baseline,baselineB);
+  assert.equal(workspace.diffState,null,'old baseline diff must not publish after replacement');
 }
 
 // The real UI adapter must expose the live Backend/ProductWorkspace content hash
