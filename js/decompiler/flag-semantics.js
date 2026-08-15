@@ -3,7 +3,7 @@ import { printExpression } from './pretty/c.js';
 
 const CONDITIONS = new Set([
   'eq', 'ne', 'hs', 'cs', 'lo', 'cc', 'mi', 'pl', 'vs', 'vc',
-  'hi', 'ls', 'ge', 'lt', 'gt', 'le', 'al', 'nv',
+  'hi', 'ls', 'ge', 'lt', 'gt', 'le',
 ]);
 const FLAG_SUBS = new Set(['sub', 'add', 'and']);
 
@@ -78,8 +78,6 @@ export function evaluateNZCVCondition(sub, cond, left, right, bits = 64) {
     case 'lt': return f.n !== f.v;
     case 'gt': return !f.z && f.n === f.v;
     case 'le': return f.z || f.n !== f.v;
-    case 'al': return true;
-    case 'nv': return false;
     default: return null;
   }
 }
@@ -96,9 +94,13 @@ function withSignedWidth(node, bits, source) {
 }
 
 function directCompare(op, left, right, signed, bits, source) {
-  const a = signed ? withSignedWidth(left, bits, source) : withUnsignedWidth(left, bits, source);
-  const b = signed ? withSignedWidth(right, bits, source) : withUnsignedWidth(right, bits, source);
-  return a && b ? expr.compare(op, a, b, signed, source) : null;
+  // The AST comparison carries signedness/width semantics. Do not inject
+  // redundant textual casts here: recovered fields/locals already have their
+  // declared C type, and double-casts make otherwise readable predicates noisy.
+  // Architecture-specific cases that cannot be represented by a normal C
+  // comparison are retained as explicit NZCV intrinsics below.
+  void bits;
+  return left && right ? expr.compare(op, left, right, signed, source) : null;
 }
 
 function zero(bits, signed, source) {
@@ -125,8 +127,6 @@ export function buildNZCVConditionExpression(sub, cond, left, right, bits = 64, 
   cond = String(cond || '').toLowerCase();
   bits = widthOf(bits);
   if (!FLAG_SUBS.has(sub) || !CONDITIONS.has(cond) || !left || !right) return null;
-  if (cond === 'al') return expr.constant(1n, 1, false, source);
-  if (cond === 'nv') return expr.constant(0n, 1, false, source);
 
   if (sub === 'sub') {
     switch (cond) {
@@ -175,8 +175,8 @@ export function buildNZCVConditionExpression(sub, cond, left, right, bits = 64, 
 
 export function renderNZCVCondition(sub, cond, leftText, rightText, bits = 64, source = null) {
   bits = widthOf(bits);
-  const left = expr.variable(`(${leftText})`, bits, null, source);
-  const right = expr.variable(`(${rightText})`, bits, null, source);
+  const left = expr.variable(String(leftText), bits, null, source);
+  const right = expr.variable(String(rightText), bits, null, source);
   const condition = buildNZCVConditionExpression(sub, cond, left, right, bits, source);
   return condition ? printExpression(condition) : null;
 }

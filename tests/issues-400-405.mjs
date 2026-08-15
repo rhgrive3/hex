@@ -132,6 +132,9 @@ const indexedText = renderMemoryLocation(indexedLoad.loc, indexedLoad, {
   types:{ values:new Map() },
   runtime:null,
   storedValueAliases:new Map(),
+  exprCache:new Map(),
+  exprActive:new Set(),
+  exprNodes:0,
 });
 assert.match(indexedText, /int32_t/, 'semantic memory rendering must preserve sxtw');
 

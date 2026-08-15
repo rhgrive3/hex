@@ -23,7 +23,7 @@ function normalizedCase(c, result, model, opts) {
   if (address == null && c.block != null) address = addressForBlock(result, model, opts, c.block);
   if (address == null) return null;
   try { address = BigInt(address); } catch { return null; }
-  return { value: c.value, address, label: labelForAddress(address) };
+  return { value: c.value, address, label: labelForAddress(address), bits: c.bits ?? c.width ?? null, signed: c.signed ?? null };
 }
 
 function labelSet(lines) {
@@ -49,11 +49,23 @@ function insertionIndex(lines, row) {
   return { start: last + 1, end: last + 1, indent };
 }
 
-function caseLiteral(v) {
-  if (typeof v === 'bigint') return v.toString();
-  if (typeof v === 'number' && Number.isFinite(v)) return String(v);
-  if (typeof v === 'string' && /^-?(?:0x[0-9a-f]+|\d+)$/i.test(v.trim())) return v.trim();
-  return null;
+function canonicalCaseValue(v, sw = {}, c = {}) {
+  let raw;
+  try {
+    if (typeof v === 'bigint') raw = v;
+    else if (typeof v === 'number' && Number.isSafeInteger(v)) raw = BigInt(v);
+    else if (typeof v === 'string' && /^-?(?:0x[0-9a-f]+|\d+)$/i.test(v.trim())) raw = BigInt(v.trim());
+    else return null;
+  } catch { return null; }
+  const requestedBits = c.bits ?? c.width ?? sw.bits ?? sw.width ?? sw.valueBits ?? null;
+  const numericBits = Number(requestedBits);
+  const bits = Number.isInteger(numericBits) && numericBits > 0 && numericBits <= 128 ? numericBits : null;
+  const signed = c.signed ?? sw.signed ?? null;
+  const canonicalBits = bits ? BigInt.asUintN(bits, raw) : raw;
+  const literal = bits
+    ? (signed === true ? BigInt.asIntN(bits, raw) : BigInt.asUintN(bits, raw)).toString()
+    : raw.toString();
+  return { key:`${bits || 'integer'}:${canonicalBits}`, literal, bits, signed };
 }
 
 function rowForAddress(model, address) {
@@ -102,8 +114,25 @@ export function structureKnownSwitches(result, model, opts = {}) {
     if (!sw || sw.row == null || !Array.isArray(sw.cases) || sw.cases.length < 2) continue;
     const cases = sw.cases.map((c) => normalizedCase(c, result, model, opts));
     if (cases.some((c) => !c)) continue;
-    const values = cases.map((c) => caseLiteral(c.value));
-    if (values.some((v) => v == null) || new Set(values).size !== values.length) continue;
+    const normalizedValues = cases.map((c) => canonicalCaseValue(c.value, sw, c));
+    if (normalizedValues.some((v) => v == null)) continue;
+    const seenValues = new Map();
+    let duplicate = null;
+    for (let i = 0; i < normalizedValues.length; i++) {
+      const key = normalizedValues[i].key;
+      if (seenValues.has(key)) { duplicate = { first:seenValues.get(key), second:i, key }; break; }
+      seenValues.set(key, i);
+    }
+    if (duplicate) {
+      result.warnings = [...(result.warnings || []), `Switch at row ${sw.row} descriptor conflict: duplicate case values after integer canonicalization (${duplicate.key}).`];
+      result.evidence = [...(result.evidence || []), {
+        row:sw.row, address:sw.address ?? null, op:'switch-conflict',
+        reason:'duplicate case values after width-aware integer canonicalization',
+        cases:cases.map((c, i) => ({ value:normalizedValues[i].literal, target:c.address })),
+      }];
+      continue;
+    }
+    const values = normalizedValues.map((v) => v.literal);
 
     let defaultAddress = sw.defaultAddress ?? sw.defaultTarget ?? null;
     if (defaultAddress == null && sw.defaultBlock != null) defaultAddress = addressForBlock(result, model, opts, sw.defaultBlock);
