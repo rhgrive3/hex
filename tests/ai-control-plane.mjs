@@ -1,0 +1,96 @@
+import assert from 'node:assert/strict';
+import { createTurnSnapshot, createSnapshotContext, resolveBinaryIdentity } from '../js/ai/control/snapshot.js';
+import { ScopeController } from '../js/ai/control/scope.js';
+import { routeIntent, shouldRunPlanner } from '../js/ai/routing/intent.js';
+import { selectToolWindow } from '../js/ai/control/tool-window.js';
+import { assertWireBudget, measureWirePayload } from '../js/ai/budget/wire.js';
+import { ContextBroker } from '../js/ai/context/broker.js';
+import { InvestigationSessionStore } from '../js/ai/session-core/index.js';
+
+// A: current UI navigation after turn start cannot move the turn anchor.
+let current = 0x1000n;
+const local = {
+  binaryFingerprint: { algorithm: 'fnv1a64', hash: 'abc123' }, sliceIndex: 0,
+  get currentAddress() { return current; },
+  activeFunction: { address: 0x1000n, start: 0x1000n, end: 0x10ffn, name: 'A' },
+  selection: { start: 0x1008n, end: 0x100cn, instructions: [{ address: 0x1008n, mnemonic: 'mov', operands: 'x8, x0' }] },
+};
+const snap = createTurnSnapshot(local, { scope: 'auto' });
+const scope = new ScopeController(snap, 'auto');
+const frozenLocal = createSnapshotContext(local, snap, scope);
+current = 0x2000n;
+assert.equal(frozenLocal.currentAddress, 0x1000n);
+assert.equal(snap.currentFunction.address, '0x1000');
+assert.equal(Object.isFrozen(snap), true);
+
+// B: content identity prevents same-name/old-session collisions across binaries.
+assert.notEqual(
+  resolveBinaryIdentity({ binaryFingerprint: { hash: 'A' }, binaryId: 'same.ipa:0' }).id,
+  resolveBinaryIdentity({ binaryFingerprint: { hash: 'B' }, binaryId: 'same.ipa:0' }).id,
+);
+assert.equal(snap.binaryIdentity.kind, 'content-derived');
+
+// C/D: address-level explicit scope enforcement.
+const fnSnap = { ...snap, selection: null };
+const fnScope = new ScopeController(fnSnap, 'function');
+assert.equal(fnScope.scopeContainsAddress('function', 0x1010n), true);
+assert.equal(fnScope.scopeContainsAddress('function', 0x2000n), false);
+assert.throws(() => fnScope.assertToolCall('get_function', { address: '0x2000' }), /scope/i);
+const selScope = new ScopeController(snap, 'selection');
+assert.equal(selScope.scopeAllowsTool('selection', 'get_current_function', {}), false);
+assert.throws(() => selScope.assertToolCall('get_semantic_facts', { functionAddress: '0x1000' }), /scope/i);
+
+// E/F: auto starts narrow and expands deterministically only for broad intent.
+const auto = new ScopeController(snap, 'auto');
+assert.equal(auto.effectiveScope, 'selection');
+auto.ensureForIntent('explain-selection');
+assert.equal(auto.effectiveScope, 'selection');
+auto.ensureForIntent('find-behaviour');
+assert.equal(auto.effectiveScope, 'binary');
+assert.equal(auto.expansions.length, 1);
+
+// G/H: phase-specific windows stay small but discovery can reach deep tools.
+const names = ['search_functions','search_strings','lookup_known_function','lookup_signature','get_function','get_current_function','get_selection_context','get_semantic_facts','trace_value','get_cfg','get_callers','get_callees','get_related_functions','verify_field_update','get_runtime_observations','verify_runtime_hypothesis'];
+const registry = { definitionsForModel: () => names.map((name) => ({ name, inputSchema: { type: 'object' } })) };
+const currentWindow = selectToolWindow(registry, { effectiveScope: 'function', intent: 'explain-current-function', maxTools: 8 });
+assert.equal(currentWindow.phase, 'current');
+assert.ok(currentWindow.tools.length <= 8);
+assert.ok(currentWindow.tools.some((tool) => tool.name === 'get_current_function'));
+const autoEscape = selectToolWindow(registry, { requestedScope: 'auto', effectiveScope: 'function', intent: 'unknown', maxTools: 9 });
+assert.ok(autoEscape.tools.some((tool) => tool.name === 'search_functions'), 'Auto has a bounded escape hatch that can trigger controlled expansion');
+const discovery = selectToolWindow(registry, { effectiveScope: 'binary', intent: 'find-function', maxTools: 9 });
+assert.equal(discovery.phase, 'discovery');
+assert.ok(discovery.tools.some((tool) => tool.name === 'search_functions'));
+assert.ok(discovery.tools.some((tool) => tool.name === 'get_function'), 'search result can be followed by a function read');
+const verification = selectToolWindow(registry, { effectiveScope: 'binary', intent: 'find-function', observations: [{ tool: 'search_functions' }, { tool: 'get_function' }], hypotheses: [{ missingEvidence: ['verify'] }], maxTools: 8 });
+assert.equal(verification.phase, 'verification');
+assert.ok(verification.tools.some((tool) => tool.name === 'verify_field_update'));
+
+// I/J: cheap routing controls planner invocation.
+assert.equal(routeIntent('この関数のx8は何？', fnSnap), 'trace-value');
+assert.equal(shouldRunPlanner({ mode: 'agent', goal: 'この関数のx8は何？' }, fnSnap, 'trace-value'), false);
+assert.equal(shouldRunPlanner({ mode: 'agent', goal: 'XPを増やしている場所を探して' }, fnSnap, 'find-behaviour'), true);
+
+// K: provider runtime can carry transcript exactly once (top-level messages).
+const sessionLike = { messages: [{ role: 'user', content: 'one' }], investigationMemory: { goal: 'one', anchor: null, confirmedFacts: [], activeHypotheses: [], rejectedHypotheses: [], unresolvedQuestions: [], userConstraints: [], importantPriorActions: [] } };
+const broker = new ContextBroker(frozenLocal);
+const built = broker.buildModelContext({ request: { mode: 'agent', style: 'analyst', scope: 'function' }, session: sessionLike, snapshot: fnSnap, effectiveScope: 'function', includeHistory: false });
+assert.equal('recentMessages' in built.context, false);
+assert.equal('goal' in built.context.request, false);
+
+// L: structured investigation state survives session updates.
+const sessions = new InvestigationSessionStore();
+const created = await sessions.create({ binaryId: 'content:A', goal: 'trace XP' });
+await sessions.updateMemory(created.id, { confirmedFacts: [{ id: 'e1', summary: 'write' }], unresolvedQuestions: ['caller?'] });
+const persisted = await sessions.get(created.id);
+assert.equal(persisted.investigationMemory.confirmedFacts[0].id, 'e1');
+assert.deepEqual(persisted.investigationMemory.unresolvedQuestions, ['caller?']);
+
+// M/N: budget is computed on full wire payload and rejects before transport.
+const usage = measureWirePayload({ messages: [{ role: 'user', content: 'hello' }], context: { current: { address: '0x1000' } }, tools: [{ name: 'get_function', inputSchema: { type: 'object' } }] });
+assert.ok(usage.wireBytes > usage.semanticContextBytes);
+assert.ok(usage.wireBytes > usage.historyBytes);
+assert.ok(usage.toolSchemaBytes > 0);
+assert.throws(() => assertWireBudget({ messages: [{ role: 'user', content: 'x'.repeat(50000) }], context: {}, tools: [] }, { contextTokens: 100000, maxOutputTokens: 1, maxRequestBytes: 16384 }), /payload/i);
+
+console.log('ai-control-plane: PASS');
