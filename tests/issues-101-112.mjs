@@ -9,9 +9,11 @@ import { boundedOffset, checkedChunkIndex, chunkLength, exactExternalInteger, re
 const BASE=0x140000000n;
 function fixture(size=0x400){
   const bytes=new Uint8Array(size), view=new DataView(bytes.buffer);
-  const image={imageBase:BASE,bits:64,functions:[],relocations:[],warnings:[],metadata:{},
+  const mapped={address:BASE,size:BigInt(bytes.length),fileOffset:0n,fileSize:BigInt(bytes.length),perms:{read:true,write:true}};
+  const exec={address:BASE+0x200n,size:0x100n,fileOffset:0x200n,fileSize:0x100n,perms:{read:true,execute:true}};
+  const image={imageBase:BASE,bits:64,sections:[mapped,exec],segments:[mapped],functions:[],relocations:[],warnings:[],metadata:{},
     addressToOffset(address){const d=BigInt(address)-BASE; return d>=0n&&d<BigInt(bytes.length)?d:null;},
-    sectionAt(address){const d=BigInt(address)-BASE; return d>=0x200n&&d<0x300n?{address:BASE+0x200n,size:0x100n,perms:{execute:true}}:null;}};
+    sectionAt(address){const a=BigInt(address); return a>=exec.address&&a<exec.address+exec.size?exec:null;}};
   return {bytes,view,r:new ByteView(bytes,{littleEndian:true}),image};
 }
 // #101 odd/truncated relocation blocks cannot desynchronize the parser.
