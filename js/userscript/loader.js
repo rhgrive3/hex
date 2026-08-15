@@ -32,7 +32,7 @@ async function loadRuntime() {
   const wrappingKey = await crypto.subtle.deriveKey({ name: 'HKDF', hash: 'SHA-256', salt: fromB64(bootstrap.keyEnvelope.salt), info: utf8(`hex-runtime-wrap:${bootstrap.buildId}`) }, material, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
   const contentKeyRaw = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: fromB64(bootstrap.keyEnvelope.iv), additionalData: utf8(`${bootstrap.buildId}:${bootstrap.sessionId}`), tagLength: 128 }, wrappingKey, fromB64(bootstrap.keyEnvelope.ciphertext));
   const contentKey = await crypto.subtle.importKey('raw', contentKeyRaw, { name: 'AES-GCM' }, false, ['decrypt']);
-  const ciphertext = new Uint8Array(await gmBytes(new URL(bootstrap.runtimeLocator, HEX_ORIGIN).href, { headers: { authorization: `Bearer ${bootstrap.session}` } }));
+  const ciphertext = new Uint8Array(await fetchBytes(new URL(bootstrap.runtimeLocator, HEX_ORIGIN).href, { headers: { authorization: `Bearer ${bootstrap.session}` } }));
   await assertHash(ciphertext, bootstrap.manifest.ciphertextHash);
   const compressed = new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: fromB64(bootstrap.manifest.iv), additionalData: utf8(bootstrap.manifest.aad), tagLength: 128 }, contentKey, ciphertext));
   const plaintext = await decompress(compressed, bootstrap.manifest.compression);
@@ -61,18 +61,22 @@ function userscriptRequest() {
   const legacy = globalThis.GM_xmlhttpRequest;
   return typeof legacy === 'function' ? legacy : null;
 }
-function gmRequest(url, init = {}, responseType = 'arraybuffer') {
+function gmTextRequest(url, init = {}) {
   const gm = userscriptRequest();
-  if (!gm) return fetch(url, init).then(async (response) => ({ status: response.status, body: responseType === 'arraybuffer' ? await response.arrayBuffer() : await response.text() }));
+  if (!gm) return fetch(url, init).then(async (response) => ({ status: response.status, body: await response.text() }));
   return new Promise((resolve, reject) => {
-    const request = gm({ method: init.method || 'GET', url, headers: init.headers || {}, data: init.body, responseType,
-      onload: (value) => resolve({ status: Number(value.status), body: responseType === 'arraybuffer' ? value.response : value.responseText }),
+    const request = gm({ method: init.method || 'GET', url, headers: init.headers || {}, data: init.body, responseType: 'text',
+      onload: (value) => resolve({ status: Number(value.status), body: value.responseText ?? (typeof value.response === 'string' ? value.response : '') }),
       onerror: () => reject(new Error('Hex runtime network request failed.')), ontimeout: () => reject(new Error('Hex runtime network request timed out.')) });
     request?.catch?.(reject);
   });
 }
-async function gmJson(url, init) { const result = await gmRequest(url, init, 'text'); if (result.status !== 200) throw new Error(`Hex runtime bootstrap failed (${result.status}).`); return JSON.parse(result.body); }
-async function gmBytes(url, init) { const result = await gmRequest(url, init, 'arraybuffer'); if (result.status !== 200) throw new Error(`Hex protected runtime fetch failed (${result.status}).`); return result.body; }
+async function gmJson(url, init) { const result = await gmTextRequest(url, init); if (result.status !== 200) throw new Error(`Hex runtime bootstrap failed (${result.status}).`); return JSON.parse(result.body); }
+async function fetchBytes(url, init = {}) {
+  const response = await fetch(url, { ...init, method: init.method || 'GET', credentials: 'omit' });
+  if (response.status !== 200) throw new Error(`Hex protected runtime fetch failed (${response.status}).`);
+  return response.arrayBuffer();
+}
 
 function launcher(text, busy) {
   let button = document.getElementById('hex-secure-loader');
