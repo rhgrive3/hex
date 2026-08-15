@@ -6,6 +6,10 @@ s=s.replace("export function createPEMetadataBudget(image, options = {}) {\n  co
 s=s.replace("reached its mapped file boundary/budget without a NUL terminator", "reached its mapped file boundary without a NUL terminator")
 s=s.replace("reached its mapped boundary/budget without a zero terminator", "reached its mapped boundary without a zero terminator")
 s=s.replace("reached its mapped boundary/budget", "reached its mapped boundary")
+old="if(!name)continue;}\n      const iatAddress=image.imageBase+BigInt(iatRva+index*ptrSize);"
+new="if(!name){image.warnings.push(`Ignored malformed PE delay-import thunk for ${library||'<unknown>'}`);continue;}}\n      const iatAddress=image.imageBase+BigInt(iatRva+index*ptrSize);"
+if old not in s: raise SystemExit('delay import malformed diagnostic anchor missing')
+s=s.replace(old,new,1)
 p.write_text(s)
 
 p=Path('tests/issues-97-100-146-147.mjs')
