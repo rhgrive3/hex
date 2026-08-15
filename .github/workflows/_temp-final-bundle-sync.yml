@@ -1,0 +1,31 @@
+name: Temp final bundle sync
+on:
+  push:
+    branches:
+      - review-all-hardening-integration
+permissions:
+  contents: write
+jobs:
+  sync:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: review-all-hardening-integration
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run userscript:build
+      - run: node tests/userscript-version.mjs
+      - name: Commit generated deployment bundles
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add userscript/hex.user.template.js userscript/platform-worker.bundle.js
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'Sync deployment bundles after final source hardening'
+          git push origin HEAD:review-all-hardening-integration
