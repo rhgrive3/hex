@@ -27,7 +27,8 @@ import { vendorInText } from '../js/vendors.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
-const BINARY = path.resolve(ROOT, process.argv[2] || 'tests/battlecats');
+const BINARY_ARG = process.argv[2] || null;
+const BINARY = BINARY_ARG ? path.resolve(ROOT, BINARY_ARG) : path.join(HERE, '.real-fixtures', 'battlecats');
 const SHOTS = process.env.KEEP ? path.join(HERE, '.shots') : null;
 
 /* ゲームの数値を探しているのに、組み込んだ SDK が首位に来てはいけない目的。 */
@@ -44,15 +45,12 @@ const MIME = {
   '.css': 'text/css; charset=utf-8', '.wasm': 'application/wasm',
 };
 
-/* ── Playwright を見つける（依存に入れないので、あるものを使う） ── */
-
 async function loadPlaywright() {
-  /* CommonJS で配られているので、既定の書き出しに入っていることがある。 */
   const unwrap = (m) => (m && m.chromium ? m : (m && m.default && m.default.chromium ? m.default : null));
   try {
     const got = unwrap(await import('playwright'));
     if (got) return got;
-  } catch { /* 次を試す */ }
+  } catch { }
   const home = process.env.HOME || '';
   const cache = path.join(home, '.npm', '_npx');
   if (!fs.existsSync(cache)) return null;
@@ -62,7 +60,7 @@ async function loadPlaywright() {
     try {
       const got = unwrap(await import(pathToFileURL(p).href));
       if (got) return got;
-    } catch { /* 次 */ }
+    } catch { }
   }
   return null;
 }
@@ -80,28 +78,24 @@ function serve() {
   return new Promise((ok) => server.listen(0, '127.0.0.1', () => ok(server)));
 }
 
-/* ── 画面を読む小道具 ────────────────────────────────────── */
-
 const sheetOf = (page) => page.locator('#overlays .sheet:not(.parked)').last();
 
-/** 開いているシートを閉じる（シートの覆いがツールバーを隠すため）。 */
+/** 開いているシートを、製品と同じ「背景タップ」契約で閉じる。 */
 async function closeSheets(page) {
   for (let i = 0; i < 6; i++) {
-    if (!(await page.locator('#overlays .sheet').count())) return;
-    const done = sheetOf(page).locator('.sheet-head button').last();
-    if (await done.count()) await done.click(); else break;
-    await page.waitForTimeout(300);
+    const activeSheet = page.locator('#overlays .sheet:not(.parked)');
+    if (!(await activeSheet.count())) return;
+    const backdrop = page.locator('#overlays .backdrop:not(.parked)').last();
+    if (!(await backdrop.count())) throw new Error('active sheet has no active backdrop');
+    await backdrop.click({ position: { x: 4, y: 4 } });
+    await activeSheet.last().waitFor({ state: 'detached', timeout: 2000 }).catch(() => {});
+    await page.waitForTimeout(50);
+  }
+  if (await page.locator('#overlays .sheet:not(.parked)').count()) {
+    throw new Error('active sheet did not close after repeated backdrop taps');
   }
 }
 
-/**
- * 解析が終わるまで待つ。
- *
- * 文字が変わらなくなったことを終わりの合図にしてはいけない。
- * 「値を 1 つに絞り込んでいます…」のまま 10 秒動かない区間があり、
- * そこを終わりと取り違える（実際に取り違えて、途中の画面を測っていた）。
- * 進み具合の棒が消えたことが、ただ 1 つの確かな合図。
- */
 async function settle(page, { step = 1000, need = 3, max = 180000 } = {}) {
   const until = Date.now() + max;
   let last = null, same = 0;
@@ -115,17 +109,13 @@ async function settle(page, { step = 1000, need = 3, max = 180000 } = {}) {
   return false;
 }
 
-/** 候補 1 行ぶんを、画面に出ている文字のまま取る。 */
 function readCandidates(page) {
   return page.evaluate(() => [...document.querySelectorAll('#overlays .sheet .cand')]
     .map((row) => ({
-      /* 候補は答えが出た場合に折りたたむ。内容の品質検査は表示状態と分ける。 */
       text: row.textContent.replace(/\n+/g, ' ').trim(),
       score: Number((row.querySelector('.cand-score')?.textContent || '').replace('%', '')) || 0,
     })));
 }
-
-/* ── ここからが検査 ──────────────────────────────────────── */
 
 const results = [];
 const check = (name, ok, detail) => {
@@ -134,6 +124,20 @@ const check = (name, ok, detail) => {
 };
 
 async function main() {
+  if (!fs.existsSync(BINARY)) {
+    if (!BINARY_ARG) {
+      console.log('検証済み実バイナリがないため、BattleCats の heavyweight browser regression を省きます。');
+      console.log('  実行するなら: npm run fixtures:large');
+      return 0;
+    }
+    console.error('バイナリがありません: ' + BINARY);
+    return 1;
+  }
+  if (fs.statSync(BINARY).size < 256 && fs.readFileSync(BINARY, 'utf8').startsWith('HEX_LARGE_FIXTURE_PLACEHOLDER')) {
+    console.error('互換ポインタは実行ファイルではありません: ' + BINARY);
+    console.error('  検証済み実fixtureを取得するなら: npm run fixtures:large');
+    return 1;
+  }
   const pw = await loadPlaywright();
   if (!pw) {
     const msg = 'Playwright がありません。画面での確かめは省きます。';
@@ -145,10 +149,6 @@ async function main() {
     console.log(msg);
     console.log('  入れるなら: npm install -D playwright && npx playwright install chromium');
     return 0;
-  }
-  if (!fs.existsSync(BINARY)) {
-    console.error('バイナリがありません: ' + BINARY);
-    return 1;
   }
   if (SHOTS) fs.mkdirSync(SHOTS, { recursive: true });
 
@@ -165,7 +165,6 @@ async function main() {
   try {
     await page.goto(url, { waitUntil: 'networkidle' });
 
-    /* はじめての人には案内が出る。読み終えて閉じるところまでが「開く」。 */
     for (let i = 0; i < 8; i++) {
       const b = page.locator('#overlays button')
         .filter({ hasText: /^(次へ|閉じる|はじめる|完了)$/ }).last();
@@ -176,7 +175,6 @@ async function main() {
     check('案内を閉じたら、画面が使える状態になる',
       !(await page.locator('#overlays .sheet').count()));
 
-    /* SafariでClipboard APIが使えない場合も、同じタップ内のfallbackでコピーする。 */
     const copiedByFallback = await page.evaluate(async () => {
       const originalExec = document.execCommand;
       Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true });
@@ -222,12 +220,6 @@ async function main() {
     const done = await settle(page);
     const secs = ((Date.now() - t0) / 1000).toFixed(1);
     check('開いただけで自動解析が終わる', done, secs + ' 秒');
-    /*
-     * 開いた直後に主役になるのはコード。
-     * ここで概要シートが自動で開いていたころ、命令が 1 行も見えないまま
-     * 「閉じる」を押させていた。概要は自分で開くものにしたので、
-     * 「勝手に開かない」ことと「開けば今までどおり読める」ことを両方見る。
-     */
     check('開いた直後はコードが主役（シートが勝手に出ない）',
       !(await page.locator('#overlays .sheet').count()) && (await page.locator('#rows .row').count()) > 0);
     check('AI はいつでも呼べる場所にいる', await page.locator('#ai-launcher').count() === 1);
@@ -238,24 +230,17 @@ async function main() {
       await sheetOf(page).locator('details.expert-entry:not([open])').count());
     if (SHOTS) await page.screenshot({ path: path.join(SHOTS, 'auto.png') });
 
-    /*
-     * スタックの上のずらし幅は負になる。`0x-60` と書いてしまうと、
-     * 16 進を読めるようになるためのツールが、読めない 16 進を出すことになる。
-     */
     const auto = await sheetOf(page).innerText();
     if (SHOTS) fs.writeFileSync(path.join(SHOTS, 'auto.txt'), auto);
     const badHex = auto.match(/0x-[0-9a-f]+/i);
     check('負のずらし幅を `x29 - 0x60` と書く', !badHex, badHex ? badHex[0] : '');
 
-    /* 中の分類名がそのまま出ていないか（「❓ objc」「🔧 system」が出ていた）。 */
     const raw = auto.match(/[❓🔧📺🧑⚔️🎒🗺️🎰💳🔑💬🏆🌐💾🚨📱🔊🎓⚠️⚙️]\s*[a-z][a-z0-9_]*\n/gi);
     check('部品の名前に、中の分類名を出さない', !raw,
       raw ? raw.map((s) => s.trim()).join(', ') : '');
 
     for (const goal of GOALS) {
       console.log(`\n「${goal.chip}」を押す`);
-      /* 開いているシートを閉じてから、毎回canonical「調べる」へ戻る。
-         目的選択そのものが旧Sheetへ逆戻りしていないことも同時に検査する。 */
       await closeSheets(page);
       await page.click('#btn-investigate');
       await page.waitForTimeout(600);
@@ -270,28 +255,16 @@ async function main() {
       if (SHOTS) fs.writeFileSync(path.join(SHOTS, 'goal-' + goal.id + '.txt'), text);
       const named = await sheet.locator('.pinned-name').count();
       const name = named ? (await sheet.locator('.pinned-name').first().innerText()).trim() : '';
-      /*
-       * 決着の言葉は、その要素から直に読む。
-       * 以前は innerText の 3 行目を決め打ちで読んでいたが、シートの見出しに
-       * 「戻る」が増えただけで行がずれ、「閉じる」を決着として読んでいた。
-       * 画面の見た目に引きずられない読み方にしておく。
-       */
       const verdictEl = sheet.locator('.verdict-word').first();
       const verdict = (await verdictEl.count())
         ? (await verdictEl.innerText()).trim()
         : (text.split('\n')[2] || '').trim();
-      /* 手設定LRは未校正なので、頻度の%ではなく段階表示を読む。 */
       const conf = (/確からしさ\s*(非常に高い|高い|中程度|低い|非常に低い)/.exec(text) || [])[1] || '';
       check(`${goal.id}: 答えが出たときは結論を候補一覧より先に置く`,
         !named || !text.includes('ほかの候補を見る') || text.indexOf(name) < text.indexOf('ほかの候補を見る'));
       check(`${goal.id}: 専門情報は詳しく見るまで閉じている`,
         await sheet.locator('details:not([open])').count());
 
-      /*
-       * 「数の流れ」は IR / SSA から後追いで組む。読み込みの札のまま
-       * 止まっていたら、初心者がいちばん見たい画面が永久に出てこない。
-       * 出せないなら、正直に「復元できませんでした」と書いてあること。
-       */
       if (named) {
         await page.waitForTimeout(1200);
         const rail = await sheet.locator('.flow-rail .flow-node').count();
@@ -314,27 +287,11 @@ async function main() {
         }
       }
 
-      /*
-       * 1. 答えとして名前を出すなら、それに見合う確からしさが要る。
-       *    「見つかりませんでした」の下に名前を出すのも、
-       *    「絞りきれていません／確信度表示なし」で名前を出すのも、同じ間違い。
-       *    読む人は見出しではなく名前を答えとして受け取る。
-       */
       const bogus = named > 0 && (/見つかりませんでした/.test(text) || !conf);
       check(`${goal.id}: 見合う根拠のない名前を、答えとして出さない`, !bogus,
         bogus ? `${verdict} なのに「${name}」の確信度表示がない`
           : (named ? `${verdict}（${name} / ${conf}）` : `${verdict}（名前は出していない）`));
 
-      /*
-       * 2. ゲームの数値を探しているのに、組み込んだ SDK を先頭に出さない。
-       *    名前が残っているのが広告 SDK だけ、というアプリで必ず起きる外し方。
-       */
-      /*
-       * 「間違えない」で止めない。証拠がそろっている目的では、確定まで出させる。
-       * battlecats のダメージ計算は、開発者が書いた計算式の文言をこの関数だけが
-       * 参照していて、その式の定数が命令の中に実在する。ここが確定にならないなら、
-       * どんなアプリでも確定は出ない。
-       */
       if (goal.confirms) {
         check(`${goal.id}: 根拠がそろっていれば、確定と言い切る`,
           /確定/.test(verdict), verdict + (named ? `（${name} / ${conf}）` : ''));
@@ -348,16 +305,6 @@ async function main() {
         sdk.length ? sdk.map((x) => x.v.vendor).join(', ')
           : (top[0] ? '首位 ' + top[0].text.slice(0, 48) : '候補なし'));
 
-      /*
-       * 3. 候補が「何をしている処理か」を言えているか。
-       *
-       * ここが、このツールが半分手作業のままだった所。候補の説明が
-       * 「中で数値の計算をしている（45 回の掛け算）」だけだと、読む人は結局
-       * 自分で開いて 1339 命令を読むことになる。掛け算をしている関数は
-       * このアプリに 10 万個あるので、その行は何も絞っていない。
-       * 命令から確かめた動作（減らす・増やす・入れる・組み立てる…）が
-       * 上位の半分以上に出ているかを見る。
-       */
       const CONCRETE = /減らす|増やす|入れる|読み出す|組み立てる|渡すだけ|詰めていく|埋め込まれている|比べて分かれる/;
       const said = top.filter((c) => CONCRETE.test(c.text));
       check(`${goal.id}: 候補が「何をしている処理か」まで言えている`,
@@ -368,10 +315,6 @@ async function main() {
 
     check('コンソールにエラーが出ない', errors.length === 0, errors.slice(0, 3).join(' / '));
 
-    /*
-     * 日本語以外の端末では英語になる。いちばん押してほしいボタンだけ
-     * 日本語のまま残っていると、そこで手が止まる。
-     */
     const en = await browser.newPage({ viewport: { width: 1024, height: 900 }, locale: 'en-US' });
     await en.goto(url, { waitUntil: 'domcontentloaded' });
     await en.waitForTimeout(1200);

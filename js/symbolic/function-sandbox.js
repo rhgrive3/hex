@@ -111,14 +111,16 @@ export class FunctionSandbox {
     this.objectBase = objectBase;
     if (o.objectAsArg0 !== false && args.length === 0) args.push(objectBase);
     else if (o.objectAsArg0 !== false && args[0] == null) args[0] = objectBase;
-    // A runtime adapter may explicitly select a synthetic heap base before the
-    // first setup. reset() normally restores Emulator's default heap, so retain
-    // that one explicit override. Reused sandboxes still reset allocations on
-    // later setup calls, preserving deterministic replay semantics.
     const firstSetupHeapOverride = this._setupCount === 0 && this.emulator.heap !== this._initialHeapBase ? this.emulator.heap : null;
     this.emulator.reset();
-    if (firstSetupHeapOverride != null) this.emulator.heap = firstSetupHeapOverride;
+    if (firstSetupHeapOverride != null) {
+      this.emulator.heapBase = firstSetupHeapOverride;
+      this.emulator.heap = firstSetupHeapOverride;
+    }
     this._setupCount++;
+    // Synthetic object memory is explicit. Emulator.ensure() is no longer
+    // allowed to fabricate a zero page when backing I/O fails.
+    this.emulator.mapZero(objectBase, this.maxObjectSize, 'sandbox-object');
     this.emulator.setup(asBig(address), args);
 
     for (const [reg, value] of Object.entries(o.registers || {})) this.emulator.set(reg, asBig(value));
@@ -142,8 +144,6 @@ export class FunctionSandbox {
 
     this.watch = watchesFromOptions(o, objectBase);
     this.before = await snapshot(this.emulator, this.watch);
-    // Setup writes establish the sandbox's initial state. They must not later be
-    // reported as function effects.
     this.beforeObjectBytes = sparseObjectBytes(this.emulator, objectBase, this.maxObjectSize);
     return this.state();
   }
@@ -179,6 +179,7 @@ export class FunctionSandbox {
         before: b ? b.value : null, after: a.value,
       });
     }
+    const traceMeta = this.emulator.traceSnapshot();
     return {
       ...result,
       stopped: this.emulator.stopped,
@@ -187,8 +188,9 @@ export class FunctionSandbox {
       after,
       touchedFields,
       modifiedObjectRanges: modifiedRanges(this.emulator, this.objectBase, this.maxObjectSize, this.beforeObjectBytes),
-      takenBranches: branchTrace(this.emulator.trace),
-      trace: (this.emulator.trace || []).slice(),
+      takenBranches: branchTrace(traceMeta.events),
+      trace: traceMeta.events,
+      traceMeta:{ truncated:traceMeta.truncated, dropped:traceMeta.dropped, limit:traceMeta.limit },
       log: (this.emulator.log || []).slice(),
       steps: this.emulator.steps,
       engine: 'function-sandbox',

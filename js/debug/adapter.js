@@ -1,8 +1,10 @@
 export const DEBUG_PROTOCOL_VERSION = 1;
 export const BREAKPOINT_KINDS = Object.freeze(['address', 'function', 'conditional', 'memory']);
+export const WATCHPOINT_ACCESS = Object.freeze(['read', 'write', 'readwrite']);
 export const DEBUG_CAPABILITIES = Object.freeze([
   'connect','disconnect','attach','launch','pause','resume','stepInto','stepOver','stepOut',
   'breakpointAddress','breakpointFunction','breakpointConditional','watchpointMemory',
+  'removeBreakpoint','listBreakpoints',
   'readRegisters','writeRegister','readMemory','writeMemory','threads','modules','backtrace',
   'evaluate','traceFunction','traceCall','traceReturn','traceBranch','traceMemoryWrite','traceMemoryRead',
   'objcRuntime','swiftRuntime','cancel','replay'
@@ -34,10 +36,17 @@ export function asAddress(value, name = 'address') {
   }
 }
 
+/** Strict protocol integer validation. UI convenience clamping belongs at the UI boundary. */
 export function boundedInteger(value, fallback, min, max, name = 'value') {
-  const n = value == null ? fallback : Number(value);
-  if (!Number.isFinite(n)) throw new DebugAdapterError('invalid-number', `${name} must be finite`);
-  return Math.max(min, Math.min(max, Math.floor(n)));
+  const candidate = value == null ? fallback : value;
+  const n = Number(candidate);
+  if (!Number.isFinite(n) || !Number.isInteger(n)) {
+    throw new DebugAdapterError('invalid-number', `${name} must be a finite integer`, { name, value });
+  }
+  if (n < min || n > max) {
+    throw new DebugAdapterError('out-of-range', `${name} must be between ${min} and ${max}`, { name, value: n, min, max });
+  }
+  return n;
 }
 
 export function normalizeCapabilities(input = {}) {
@@ -73,16 +82,28 @@ export function normalizeBreakpoint(spec) {
   }
   const address = asAddress(spec.address);
   const size = boundedInteger(spec.size, 1, 1, 4096, 'watchpoint size');
-  const access = spec.access === 'read' ? 'read' : spec.access === 'readwrite' ? 'readwrite' : 'write';
+  const access = spec.access == null ? 'write' : String(spec.access).toLowerCase();
+  if (!WATCHPOINT_ACCESS.includes(access)) {
+    throw new DebugAdapterError('invalid-watchpoint-access', `unsupported watchpoint access: ${spec.access}`, { access: spec.access, allowed: WATCHPOINT_ACCESS });
+  }
   const id = String(spec.id || `bp:memory:${address}:${size}:${access}`);
   return { id, kind: 'memory', address, size, access, enabled: spec.enabled !== false };
 }
 
 const METHOD_CAPABILITY = Object.freeze({
   attach:'attach', launch:'launch', pause:'pause', resume:'resume', stepInto:'stepInto', stepOver:'stepOver', stepOut:'stepOut',
+  setBreakpoint:null, removeBreakpoint:'removeBreakpoint', listBreakpoints:'listBreakpoints',
   readRegisters:'readRegisters', writeRegister:'writeRegister', readMemory:'readMemory', writeMemory:'writeMemory',
-  getThreads:'threads', getModules:'modules', getBacktrace:'backtrace', evaluate:'evaluate', trace:'traceFunction', watchMemory:'watchpointMemory'
+  getThreads:'threads', getModules:'modules', getBacktrace:'backtrace', evaluate:'evaluate',
+  trace:'traceFunction', traceCall:'traceCall', traceReturn:'traceReturn', traceBranch:'traceBranch',
+  traceMemoryWrite:'traceMemoryWrite', traceMemoryRead:'traceMemoryRead', watchMemory:'watchpointMemory',
+  getObjCRuntimeInfo:'objcRuntime', getSwiftRuntimeInfo:'swiftRuntime', cancel:'cancel', replay:'replay'
 });
+
+export function capabilityMethod(capability) {
+  for (const [method, cap] of Object.entries(METHOD_CAPABILITY)) if (cap === capability) return method;
+  return null;
+}
 
 export class DebugAdapter {
   constructor({ id, kind = 'generic', capabilities = {} } = {}) {
@@ -95,16 +116,22 @@ export class DebugAdapter {
     if (!requested) return this.capabilities;
     const keys = requested instanceof Set ? [...requested] : Array.isArray(requested) ? requested : Object.keys(requested);
     const out = {};
-    for (const key of keys) out[key] = !!this.capabilities[key];
+    for (const key of keys) {
+      if (!DEBUG_CAPABILITIES.includes(key)) { out[key] = false; continue; }
+      const method = capabilityMethod(key);
+      out[key] = !!this.capabilities[key] && (!method || typeof this[method] === 'function');
+    }
     return Object.freeze(out);
   }
   require(capability) {
     if (!this.capabilities[capability]) throw new DebugAdapterError('unsupported', `${this.kind} adapter does not support ${capability}`, { capability });
   }
   requireMethod(method) {
+    if (!Object.prototype.hasOwnProperty.call(METHOD_CAPABILITY, method)) {
+      throw new DebugAdapterError('unsupported-method', `unknown debug adapter method: ${method}`, { method });
+    }
     const cap = METHOD_CAPABILITY[method];
-    if (!cap) throw new DebugAdapterError('unsupported-method', `unknown debug adapter method: ${method}`, { method });
-    this.require(cap);
+    if (cap) this.require(cap);
   }
   async connect() { this.connected = true; return { adapter: this.id, capabilities: this.capabilities }; }
   async disconnect() { this.connected = false; return { disconnected: true }; }
@@ -121,7 +148,8 @@ export class DebugAdapter {
     this.require(cap);
     return bp;
   }
-  async removeBreakpoint() { throw new DebugAdapterError('unsupported', 'removeBreakpoint is not implemented'); }
+  async removeBreakpoint() { this.require('removeBreakpoint'); throw new DebugAdapterError('not-implemented', 'removeBreakpoint is not implemented'); }
+  async listBreakpoints() { this.require('listBreakpoints'); throw new DebugAdapterError('not-implemented', 'listBreakpoints is not implemented'); }
   async readRegisters() { this.require('readRegisters'); }
   async writeRegister() { this.require('writeRegister'); }
   async readMemory() { this.require('readMemory'); }
@@ -130,8 +158,21 @@ export class DebugAdapter {
   async getModules() { this.require('modules'); }
   async getBacktrace() { this.require('backtrace'); }
   async evaluate() { this.require('evaluate'); }
-  async trace() { this.require('traceFunction'); }
+  async trace(...args) { this.require('traceFunction'); return this._traceCapability('traceFunction', ...args); }
+  async traceCall(...args) { this.require('traceCall'); return this._traceCapability('traceCall', ...args); }
+  async traceReturn(...args) { this.require('traceReturn'); return this._traceCapability('traceReturn', ...args); }
+  async traceBranch(...args) { this.require('traceBranch'); return this._traceCapability('traceBranch', ...args); }
+  async traceMemoryWrite(...args) { this.require('traceMemoryWrite'); return this._traceCapability('traceMemoryWrite', ...args); }
+  async traceMemoryRead(...args) { this.require('traceMemoryRead'); return this._traceCapability('traceMemoryRead', ...args); }
+  async _traceCapability(capability, ...args) {
+    if (capability !== 'traceFunction' && this.trace !== DebugAdapter.prototype.trace) {
+      return this.trace({ capability, args });
+    }
+    throw new DebugAdapterError('not-implemented', `${capability} is advertised but not implemented`, { capability });
+  }
   async watchMemory() { this.require('watchpointMemory'); }
   async getObjCRuntimeInfo() { this.require('objcRuntime'); }
   async getSwiftRuntimeInfo() { this.require('swiftRuntime'); }
+  async cancel() { this.require('cancel'); }
+  async replay() { this.require('replay'); }
 }

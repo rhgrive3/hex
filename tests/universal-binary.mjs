@@ -204,7 +204,7 @@ function testRealMachO() {
     { name:'YWP', minImports:2500, minFunctions:250000 },
   ];
   for (const c of candidates) {
-    const file=path.join(__dirname,c.name);
+    const file=path.join(__dirname,'.real-fixtures',c.name);
     if (!fs.existsSync(file)) continue;
     const image=openBinary(new Uint8Array(fs.readFileSync(file)));
     assert.equal(image.format,'macho',c.name); assert.equal(image.arch,'arm64',c.name); assert.equal(image.bits,64,c.name);
