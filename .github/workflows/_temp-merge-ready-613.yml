@@ -1,0 +1,65 @@
+name: Temp merge ready PR 613
+on:
+  push:
+    branches:
+      - improve-analysis-navigation
+permissions:
+  contents: write
+jobs:
+  integrate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: improve-analysis-navigation
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Merge current main and resolve package script union
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch origin main
+          if ! git merge --no-edit origin/main; then
+            conflicts="$(git diff --name-only --diff-filter=U)"
+            if [ "$conflicts" != "package.json" ]; then
+              echo "Unexpected conflicts: $conflicts" >&2
+              git merge --abort
+              exit 1
+            fi
+            git checkout --theirs package.json
+            node --input-type=module <<'EOF'
+          import fs from 'node:fs';
+          const path='package.json';
+          const pkg=JSON.parse(fs.readFileSync(path,'utf8'));
+          const appendAfter=(scriptName, anchor, token)=>{
+            const value=pkg.scripts[scriptName];
+            if (value.includes(token)) return;
+            if (!value.includes(anchor)) throw new Error(`${scriptName}: anchor not found: ${anchor}`);
+            pkg.scripts[scriptName]=value.replace(anchor, `${anchor} && ${token}`);
+          };
+          appendAfter('ui:test','node tests/ui/routes.mjs','node tests/ui/next-views.mjs');
+          appendAfter('ui:browser','node tests/ui/browser.mjs','node tests/ui/analysis-navigation.mjs');
+          fs.writeFileSync(path,JSON.stringify(pkg,null,2)+'\n');
+          EOF
+            git add package.json
+            git commit --no-edit
+          fi
+      - run: npm ci
+      - run: npm run userscript:build
+      - run: npm run check
+      - run: npm run ui:test
+      - run: npm run ui:browser
+      - run: npm run userscript:test
+      - name: Remove temporary workflow and commit
+        run: |
+          rm .github/workflows/_temp-merge-ready-613.yml
+          git add -A
+          if ! git diff --cached --quiet; then
+            git commit -m 'Merge current main and sync PR 613 bundles'
+          fi
+          git push origin HEAD:improve-analysis-navigation
