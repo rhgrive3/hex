@@ -7,6 +7,7 @@ on:
     paths:
       - 'js/**'
       - 'tests/**'
+      - 'tools/fetch-large-fixtures.mjs'
       - '.github/workflows/cross-binary-accuracy.yml'
 
 jobs:
@@ -23,6 +24,8 @@ jobs:
           node-version: '22'
       - name: Core checks
         run: npm run check
+      - name: Fetch pinned real-app fixtures
+        run: node tools/fetch-large-fixtures.mjs
       - name: Install oracle dependencies
         run: python -m pip install --disable-pip-version-check lief capstone
       - name: Verify inputs
