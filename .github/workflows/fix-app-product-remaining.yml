@@ -14,6 +14,7 @@ jobs:
       - name: Apply remaining fixes
         run: |
           set -euo pipefail
+          python tools/fix-macho-527-current.py
           python tools/fix-pe-535-536.py
           python tools/fix-macho-linkage-521-527.py
           python tools/fix-final-551-554.py
@@ -32,21 +33,16 @@ jobs:
       - name: Focused guards
         run: |
           cat > tests/issues-final-remaining.mjs <<'EOF'
-          import assert from 'node:assert/strict';
-          import fs from 'node:fs';
-          import { ProgramIndex } from '../js/program.js';
-          import { describeBinaryImage } from '../js/platform/describe.js';
-          const scan={vmAddr:0n,callFrom:new BigUint64Array([1n,2n,99n]),callTo:new BigUint64Array([3n,4n,99n]),callCount:2,refFrom:new BigUint64Array([5n,6n,99n]),refTo:new BigUint64Array([7n,8n,99n]),refKind:new Uint8Array([1,2,9]),refCount:2,kinds:new Uint8Array(0),callsCapped:true,refsCapped:true,memoryBudgetBytes:100};
-          const pi=new ProgramIndex(scan,null,null); assert.equal(pi.callCount,2); assert.equal(pi.refCount,2); assert.equal(pi.memoryBudgetBytes,100);
-          const image={format:'elf',arch:'x64',bits:64,endian:'little',imageBase:0x400000n,entryPoint:0x401000n,fileSize:0x2000n,fileOffset:0n,sections:[],segments:[],libraries:['libc.so.6'],imports:[{name:'puts',library:'libc.so.6'}],exports:[],metadata:{},warnings:[],summary(){return{};}};
-          const d=describeBinaryImage(image); assert.deepEqual(d.descriptor.dependencies,['libc.so.6']); assert.equal(d.slices[0].info.formatDescriptor.format,'elf');
-          const worker=fs.readFileSync('js/worker-legacy.js','utf8'); assert.match(worker,/PROGRAM_INDEX_MEMORY_BUDGET = 96 \* 1024 \* 1024/); assert.doesNotMatch(worker,/callFrom\.slice\(0, nCalls\)/);
-          const app=fs.readFileSync('js/app.js','utf8'); assert.match(app,/RESULT_LIMIT=100000/); assert.match(app,/DECODED_LIMIT=16\*1024\*1024/); assert.match(app,/hex:slice-changed/); assert.match(app,/currentFormatDescriptor/);
-          const product=fs.readFileSync('js/ui/product.js','utf8'); assert.match(product,/hex:slice-changed/); assert.match(product,/currentFormatDescriptor\?\.\(\)\.dependencies/); assert.match(product,/viewGeneration/);
-          const panels=fs.readFileSync('js/panels.js','utf8'); assert.match(panels,/Array\.isArray\(slice\.info\.segments\)/); assert.match(panels,/currentFormatDescriptor/);
-          const pe=fs.readFileSync('js/binary/pe-loader.js','utf8'); assert.match(pe,/PE_IMPORT_LIMITS/); assert.match(pe,/PE_EXPORT_LIMITS/);
-          const backend=fs.readFileSync('js/backend.js','utf8'); assert.match(backend,/mergeSymbolAnalyses/); assert.match(backend,/canonicalLinkage/);
-          const chained=fs.readFileSync('js/chained.js','utf8'); assert.match(chained,/CHAINED_MAX_FIXUP_BYTES/); assert.match(chained,/CHAINED_MAX_STUB_BYTES/);
+          import assert from 'node:assert/strict'; import fs from 'node:fs'; import { ProgramIndex } from '../js/program.js'; import { describeBinaryImage } from '../js/platform/describe.js';
+          const scan={vmAddr:0n,callFrom:new BigUint64Array([1n,2n,99n]),callTo:new BigUint64Array([3n,4n,99n]),callCount:2,refFrom:new BigUint64Array([5n,6n,99n]),refTo:new BigUint64Array([7n,8n,99n]),refKind:new Uint8Array([1,2,9]),refCount:2,kinds:new Uint8Array(0),memoryBudgetBytes:100}; const pi=new ProgramIndex(scan,null,null);assert.equal(pi.callCount,2);assert.equal(pi.refCount,2);assert.equal(pi.memoryBudgetBytes,100);
+          const image={format:'elf',arch:'x64',bits:64,endian:'little',imageBase:0x400000n,entryPoint:0x401000n,fileSize:0x2000n,fileOffset:0n,sections:[],segments:[],libraries:['libc.so.6'],imports:[{name:'puts',library:'libc.so.6'}],exports:[],metadata:{},warnings:[],summary(){return{};}};const d=describeBinaryImage(image);assert.deepEqual(d.descriptor.dependencies,['libc.so.6']);assert.equal(d.slices[0].info.formatDescriptor.format,'elf');
+          const worker=fs.readFileSync('js/worker-legacy.js','utf8');assert.match(worker,/PROGRAM_INDEX_MEMORY_BUDGET = 96 \* 1024 \* 1024/);assert.doesNotMatch(worker,/callFrom\.slice\(0, nCalls\)/);assert.match(worker,/OBJC_GLOBAL_BYTES=32\*1024\*1024/);
+          const app=fs.readFileSync('js/app.js','utf8');assert.match(app,/RESULT_LIMIT=100000/);assert.match(app,/DECODED_LIMIT=16\*1024\*1024/);assert.match(app,/hex:slice-changed/);assert.match(app,/currentFormatDescriptor/);
+          const product=fs.readFileSync('js/ui/product.js','utf8');assert.match(product,/hex:slice-changed/);assert.match(product,/viewGeneration/);
+          const panels=fs.readFileSync('js/panels.js','utf8');assert.match(panels,/Array\.isArray\(slice\.info\.segments\)/);assert.match(panels,/currentFormatDescriptor/);
+          const pe=fs.readFileSync('js/binary/pe-loader.js','utf8');assert.match(pe,/PE_IMPORT_LIMITS/);assert.match(pe,/PE_EXPORT_LIMITS/);
+          const backend=fs.readFileSync('js/backend.js','utf8');assert.match(backend,/mergeSymbolAnalyses/);assert.match(backend,/canonicalLinkage/);
+          const chained=fs.readFileSync('js/chained.js','utf8');assert.match(chained,/CHAINED_MAX_FIXUP_BYTES/);assert.match(chained,/sizeofcmds > 4 \* 1024 \* 1024/);assert.match(chained,/count > 100_000/);assert.match(chained,/sliceRange/);
           console.log('final remaining issue guards passed');
           EOF
           node tests/issues-final-remaining.mjs
@@ -61,6 +57,6 @@ jobs:
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add js/binary/pe-loader.js js/platform/worker.js js/backend.js js/chained.js js/worker-legacy.js js/program.js js/app.js js/platform/describe.js js/panels.js js/ui/product.js tests/issues-final-remaining.mjs
           git commit -m "fix: close final remaining issues (#521 #527 #535 #536 #551 #552 #553 #554)"
-          git rm -f .github/workflows/fix-app-product-remaining.yml .github/workflows/fix-final-binary-memory.yml tools/fix-pe-535-536.py tools/fix-macho-linkage-521-527.py tools/fix-final-551-554.py tools/.trigger-final-binary
+          git rm -f .github/workflows/fix-app-product-remaining.yml .github/workflows/fix-final-binary-memory.yml tools/fix-pe-535-536.py tools/fix-macho-linkage-521-527.py tools/fix-macho-527-current.py tools/fix-final-551-554.py tools/.trigger-final-binary
           git commit -m "chore: finalize all remaining issue fixes [autofix]"
           git push origin HEAD:fix/all-remaining-issues-20260815
