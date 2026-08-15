@@ -1,6 +1,6 @@
 export const HEX_PROJECT_VERSION = 1;
 export const HEX_PROJECT_MIME = 'application/vnd.hex.project+json';
-const MAX_PROJECT_BYTES = 16 * 1024 * 1024;
+export const MAX_PROJECT_BYTES = 16 * 1024 * 1024;
 const MAX_COLLECTION_ITEMS = 1_000_000;
 
 export class ProjectFormatError extends Error {
@@ -17,6 +17,11 @@ const list = (value, name) => {
   if (value.length > MAX_COLLECTION_ITEMS) throw new ProjectFormatError(`${name} is unreasonably large`);
   return value;
 };
+
+function encodedByteLength(text) { return new TextEncoder().encode(text).byteLength; }
+function assertProjectSize(bytes) {
+  if (bytes > MAX_PROJECT_BYTES) throw new ProjectFormatError('project exceeds the 16 MiB safety limit', 'HEX_PROJECT_TOO_LARGE');
+}
 
 export function createHexProject(input = {}) {
   const now = new Date().toISOString();
@@ -63,16 +68,18 @@ export function normalizeNavigation(value = {}) {
 
 export function serializeHexProject(project) {
   const normalized = validateHexProject(project);
-  return JSON.stringify(normalized, (_key, value) => typeof value === 'bigint' ? { $hexBigInt: value.toString(16) } : value, 2);
+  const text = JSON.stringify(normalized, (_key, value) => typeof value === 'bigint' ? { $hexBigInt: value.toString(16) } : value, 2);
+  assertProjectSize(encodedByteLength(text));
+  return text;
 }
 
 export function parseHexProject(input) {
   let text;
   if (typeof input === 'string') text = input;
-  else if (input instanceof Uint8Array) text = new TextDecoder().decode(input);
-  else if (input instanceof ArrayBuffer) text = new TextDecoder().decode(new Uint8Array(input));
+  else if (input instanceof Uint8Array) { assertProjectSize(input.byteLength); text = new TextDecoder().decode(input); }
+  else if (input instanceof ArrayBuffer) { assertProjectSize(input.byteLength); text = new TextDecoder().decode(new Uint8Array(input)); }
   else throw new ProjectFormatError('project input must be JSON text or bytes');
-  if (new TextEncoder().encode(text).byteLength > MAX_PROJECT_BYTES) throw new ProjectFormatError('project exceeds the 16 MiB safety limit', 'HEX_PROJECT_TOO_LARGE');
+  assertProjectSize(encodedByteLength(text));
   let raw;
   try {
     raw = JSON.parse(text, (_key, value) => {
@@ -106,7 +113,12 @@ export function exportHexProject(project, name = 'analysis.hexproj') {
 }
 
 export async function importHexProject(input) {
-  if (typeof Blob !== 'undefined' && input instanceof Blob) return parseHexProject(await input.text());
+  if (typeof Blob !== 'undefined' && input instanceof Blob) {
+    assertProjectSize(input.size);
+    // Blob.size is a byte count, so oversize inputs are rejected before allocating
+    // a UTF-16 JavaScript string via Blob.text().
+    return parseHexProject(await input.text());
+  }
   return parseHexProject(input);
 }
 
