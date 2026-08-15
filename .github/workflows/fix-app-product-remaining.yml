@@ -1,0 +1,46 @@
+name: Validate ELF issues 566 567 568
+on:
+  push:
+    branches:
+      - fix/issues-566-567-568-elf-trust
+permissions:
+  contents: write
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply fixes
+        run: python tools/apply-elf-566-567-568.py
+      - name: Syntax
+        run: |
+          node --check js/binary/elf.js
+          node --check js/binary/elf-mapping.js
+          node --check js/binary/elf-budget.js
+          node --check js/binary/elf-dynamic.js
+          node --check js/binary/elf-extended.js
+          node --check js/binary/elf-unwind.js
+          node --check tests/issues-566-567-568-elf-trust.mjs
+      - name: Focused validation
+        run: |
+          node tests/issues-566-567-568-elf-trust.mjs
+          node tests/universal-binary-sectionless.mjs
+          node tests/issue-572-bounded-leb.mjs
+          npm run binary:test
+      - name: Full validation
+        run: |
+          node tests/run.js
+          npm run check
+      - name: Finalize
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add js/binary/elf.js js/binary/elf-mapping.js js/binary/elf-budget.js js/binary/elf-dynamic.js js/binary/elf-extended.js js/binary/elf-unwind.js tests/issues-566-567-568-elf-trust.mjs
+          git commit -m "fix: harden ELF address domains, metadata budgets, and mapped spans (#566 #567 #568)"
+          git rm -f .github/workflows/fix-app-product-remaining.yml tools/apply-elf-566-567-568.py
+          git commit -m "chore: finalize ELF trust-boundary fixes"
+          git push origin HEAD:fix/issues-566-567-568-elf-trust
