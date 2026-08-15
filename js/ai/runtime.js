@@ -6,7 +6,7 @@ import { ProposalStore } from './proposals.js';
 import { InvestigationSessionStore } from './session-core/index.js';
 import { sanitizeActions } from './validation.js';
 import { executeTurn } from './control/turn-executor.js';
-import { addressExistsSync, deterministicConfidence, fallbackEvidence, presentAnswer } from './control/runtime-support.js';
+import { addressExistsSync, assertLiveBindingsUnchanged, deterministicConfidence, fallbackEvidence, presentAnswer } from './control/runtime-support.js';
 
 export class AIRuntime {
   constructor(options = {}) {
@@ -41,6 +41,11 @@ export class AIRuntime {
   async turn(input = {}, options = {}) { return executeTurn.call(this, input, options); }
 
   finalize({ request, decision, plan, activity, modelCalls, toolCalls, contextBytes, wireUsage, started, limitReason, registry, snapshot, effectiveScope }) {
+    // The final model call can overlap a workbench binary/project/runtime switch
+    // without another tool execution. Re-check the turn binding before any
+    // live-context validation (notably suggested action addresses) so finalization
+    // cannot mix a snapshotted investigation with the newly visible binary.
+    assertLiveBindingsUnchanged(this.localContext, snapshot);
     const requestedEvidence = Array.from(new Set((decision.evidenceIds || []).map(String)));
     const evidence = requestedEvidence.map((id) => this.evidenceStore.get(id)).filter(Boolean);
     const missingIds = requestedEvidence.filter((id) => !this.evidenceStore.has(id));
