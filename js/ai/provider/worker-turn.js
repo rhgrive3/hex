@@ -1,5 +1,5 @@
 import { composePrompt } from '../prompts/compose.js';
-import { resolveInferenceAdapter } from './worker-adapters.js';
+import { clientSafeCapabilities, resolveInferenceAdapter } from './worker-adapters.js';
 import { finalResultTool, normalizeAIInteraction, normalizeAITurnRequest, promptWorkbench } from './worker-protocol.js';
 import {
   acquireDistributedQuota, byteLength, HttpError, isJsonRequest, isRetryableUpstreamFailure,
@@ -39,7 +39,8 @@ export async function handleAITurn(request, env) {
   const tools = [...payload.tools, finalResultTool()];
   const upstreamRequest = adapter.build({ payload, systemInstruction: prompt.system, tools });
   const upstreamBody = JSON.stringify(upstreamRequest);
-  if (byteLength(upstreamBody) > Math.max(32 * 1024, Number(adapter.capabilities.maxRequestBytes || MAX_CONTEXT_CHARS) * 2)) {
+  const upstreamLimit = positiveLimit(adapter.capabilities.maxRequestBytes, MAX_CONTEXT_CHARS);
+  if (byteLength(upstreamBody) > upstreamLimit) {
     await cleanup();
     return jsonError(413, 'request_too_large', 'The provider request exceeds its configured transport limit.');
   }
@@ -66,8 +67,13 @@ export async function handleAITurn(request, env) {
   await cleanup();
   try {
     const decision = normalizeAIInteraction(interaction, payload.tools.map((tool) => tool.name));
-    return jsonResponse({ decision, capabilities: adapter.capabilities });
+    return jsonResponse({ decision, capabilities: clientSafeCapabilities(adapter.capabilities) });
   } catch (error) {
     return jsonError(502, 'invalid_model_output', error?.message || 'The model response did not follow the Hex turn protocol.');
   }
+}
+
+function positiveLimit(value, fallback) {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
 }
