@@ -14,7 +14,7 @@ The guardrails are intentionally narrow. They protect proven public seams and sa
 | Project exchange | `.hexproj` v1 import/export remains supported; derived cache state stays referenced rather than owned by the exchange layer | migration guardrail + `project-roundtrip.mjs` |
 | Plugin API v1 | Existing registration entry points remain available. New contribution types may be additive | migration guardrail + `plugin-platform.mjs` |
 | Runtime evidence | Runtime evidence refines/contradicts a static candidate without mutating the static candidate | migration guardrail + `runtime-evidence-fusion.mjs` |
-| AI mutation | Mutation remains evidence-backed proposal -> explicit approval token -> mutation adapter | migration guardrail + `ai:test` |
+| AI mutation | Mutation remains evidence-backed proposal -> explicit approval token -> approval-gated `CapabilityExecutor` -> mutation adapter | migration guardrail + `ai:test` |
 | Source-backed loader | Native loaders continue to support bounded range reads without retaining a whole-file byte array | `binary:source-test` |
 | ARM64 behavior | Current semantic/decompiler/compiler-truth regressions remain mandatory during migration | `semantic:test` + `decompiler:test` |
 
@@ -25,10 +25,10 @@ The guardrails are intentionally narrow. They protect proven public seams and sa
 - generic semantic facade/dataflow modules -> architecture-specific target implementations;
 - `js/project/**` -> derived cache or ArtifactStore implementation;
 - UI modules -> `js/ir-core.js` or `js/decompiler/pipeline-core.js` private internals;
-- `js/ai/**` -> direct binary patch implementation;
+- AI modules other than the existing approval-gated `js/ai/capabilities/executor.js` -> direct binary patch implementation;
 - semantic decompiler core -> architecture decoder/backend implementation.
 
-These checks inspect module dependencies rather than broad keywords. This limits false positives.
+The sanctioned AI mutation executor is separately checked for `requiresApproval` and proposal-scoped authorization before execution. These checks inspect narrow module dependencies and concrete authorization behavior instead of broad keywords. This limits false positives.
 
 ## Deliberate migration exceptions
 
