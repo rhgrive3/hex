@@ -7,7 +7,7 @@ const BASE=0x1000n;
 const DT_NULL=0n, DT_HASH=4n, DT_STRTAB=5n, DT_SYMTAB=6n, DT_STRSZ=10n, DT_SYMENT=11n, DT_VERSYM=0x6ffffff0n;
 
 class SparseReader {
-  constructor({ strtabVa=0x1130n, hashVa=0x1200n, fakeLength=20*1024*1024+0x4000 }={}) {
+  constructor({ strtabVa=0x1130n, hashVa=0x1200n, fakeLength=48*1024*1024+0x400 }={}) {
     this.buf=new Uint8Array(0x400);
     this.dv=new DataView(this.buf.buffer);
     this.length=fakeLength;
@@ -56,13 +56,16 @@ class SparseReader {
 function imageFor(r){
   return {
     warnings:[],metadata:{},libraries:[],symbols:[],imports:[],exports:[],functions:[],relocations:[],sections:[],
-    addressToOffset(va){const off=BigInt(va)-BASE;return off>=0n&&off<BigInt(r.length)?off:null;},
+    // Current ELF decoders require trusted, file-backed PT_LOAD provenance for
+    // HASH/SYMTAB/STRTAB/VERSYM spans. The reader is sparse, so this validates
+    // large logical extents without allocating the corresponding memory.
+    segments:[{address:BASE,fileOffset:0n,fileSize:BigInt(r.length)}],
   };
 }
 const dynamicHeader=[{type:2,offset:0n,filesz:7n*16n}];
 
-// Issue reproducer: 10M DT_HASH count + virtual 20MiB VERSYM + only two
-// genuinely file-backed symbols. SYMTAB extent wins before any huge loop.
+// Issue reproducer: 10M DT_HASH count + a large sparse file-backed VERSYM + only
+// two genuinely file-backed symbols. SYMTAB extent wins before any huge loop.
 {
   const r=new SparseReader();
   const image=imageFor(r);
@@ -99,7 +102,7 @@ const dynamicHeader=[{type:2,offset:0n,filesz:7n*16n}];
 {
   let reads=0;
   const r={length:4096,u16(){reads++;return 2;}};
-  const image={warnings:[],metadata:{},addressToOffset(){return 0n;}};
+  const image={warnings:[],metadata:{},segments:[{address:0n,fileOffset:0n,fileSize:4096n}]};
   const tags=new Map([[DT_VERSYM,[0n]]]);
   const versions=parseDynamicSymbolVersions(r,tags,image,100,()=>'',{
     limits:{maxSymbolRecords:100,maxOutputObjects:4,maxInputBytes:4096,maxOperations:1000,maxWallMs:10_000,maxEstimatedBytes:4096},

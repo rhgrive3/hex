@@ -8,7 +8,13 @@ const DT_ANDROID_REL=0x6000000fn, DT_ANDROID_RELSZ=0x60000010n;
 function image() {
   return {
     metadata: {}, warnings: [],
-    addressToOffset() { return 0n; },
+    // Packed relocation decoders now validate the entire table against a
+    // file-backed PT_LOAD mapping. Keep two independent fixture mappings so
+    // the synthetic RELR (0x1000) and APS2 (0x2000) readers both map to offset 0.
+    segments: [
+      { address:0x1000n, fileOffset:0n, fileSize:0x1000n },
+      { address:0x2000n, fileOffset:0n, fileSize:0x1000n },
+    ],
   };
 }
 
