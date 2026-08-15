@@ -1,5 +1,6 @@
 import { expr, effectOf, isPure, mayDuplicate, mayReorder, sameExpr, nodeCount } from '../ast/nodes.js';
 import { evalBinary, evalUnary, fullMask, isPowerOfTwo, log2Exact, u } from '../truth/integer.js';
+import { normalizeIntegerValue, normalizeRangeDomain } from '../../range-domain.js';
 
 const isStable = (n) => ['pure', 'read'].includes(effectOf(n));
 const isConst = (n, v = null) => n?.kind === 'const' && (v == null || n.value === BigInt(v));
@@ -185,8 +186,14 @@ const rangeRules = [{
   name:'range-proven-compare', phase:'range',
   match:(n)=>{
     if (n?.kind!=='compare' || !n.left?.range || !isConst(n.right)) return null;
-    const r=n.left.range, c=n.right.value;
-    if (r.min==null || r.max==null) return null;
+    const source=n.left.range;
+    const bits=Number(n.left.bits || source.bits || 64);
+    const relational=!['eq','ne'].includes(n.op);
+    const compareSigned=relational ? n.compareSigned : (source.signed ?? n.compareSigned);
+    if (relational && compareSigned == null) return null;
+    const r=normalizeRangeDomain(source,bits,compareSigned);
+    if (!r) return null;
+    const c=normalizeIntegerValue(n.right.value,bits,compareSigned);
     let value=null;
     if (n.op==='eq' && (c<r.min || c>r.max)) value=0;
     else if (n.op==='ne' && (c<r.min || c>r.max)) value=1;
@@ -198,7 +205,11 @@ const rangeRules = [{
     else if (n.op==='gt' && r.max<=c) value=0;
     else if (n.op==='ge' && r.min>=c) value=1;
     else if (n.op==='ge' && r.max<c) value=0;
-    return value==null ? null : { value, range:{min:String(r.min),max:String(r.max)}, constant:String(c) };
+    return value==null ? null : {
+      value,
+      range:{min:String(r.min),max:String(r.max),bits:r.bits,signed:r.signed},
+      constant:String(c),
+    };
   },
   precondition:(n)=>isStable(n.left),
   rewrite:(n,m)=>c(m.value,n,1),
