@@ -111,6 +111,7 @@ await build({
   entryPoints:genericEntries,
   bundle:true,
   write:false,
+  outdir:path.join(root, '.invariant-boundary-build'),
   format:'esm',
   platform:'neutral',
   packages:'external',
