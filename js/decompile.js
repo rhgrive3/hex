@@ -170,8 +170,13 @@ function labelAddress(result, model, opts, bi) {
 function nonNaturalBackwardEdges(result) {
   const ir = result?.ir;
   if (!ir?.blocks?.length) return [];
+  const detachedExceptionBlocks = new Set(result?.ctx?.detachedExceptionBlockIndices || []);
   const edges = [];
   for (const block of ir.blocks) {
+    // Exception landing pads are entered by the unwinder, not ordinary CFG.
+    // Their jumps into earlier ARC cleanup blocks are expected EH exits rather
+    // than evidence that the normal function contains an irreducible loop.
+    if (detachedExceptionBlocks.has(block.index)) continue;
     for (const succ of block.succ || []) {
       const dst = ir.blocks[succ];
       if (!dst || dst.startRow >= block.startRow) continue;
@@ -374,7 +379,8 @@ function graftDetachedExceptionRegions(model, semanticModel, opts, semantic, cla
     ...regionLines,
   );
 
-  const detachedCount = detachedBlocks.size;
+  const detachedIndices = [...detachedBlocks].sort((a, b) => a - b);
+  const detachedCount = detachedIndices.length;
   semantic.warnings = [
     ...(semantic.warnings || []),
     `${detachedCount} exception landing-pad Basic Block(s) are isolated from normal control flow and preserved separately.`,
@@ -386,7 +392,11 @@ function graftDetachedExceptionRegions(model, semanticModel, opts, semantic, cla
     missing: 0,
     detachedExceptionBlocks: detachedCount,
   };
-  semantic.ctx = { ...(semantic.ctx || {}), detachedExceptionBlocks: detachedCount };
+  semantic.ctx = {
+    ...(semantic.ctx || {}),
+    detachedExceptionBlocks: detachedCount,
+    detachedExceptionBlockIndices: detachedIndices,
+  };
   semantic.pseudocode = textOf(semantic.lines);
   return semantic;
 }
