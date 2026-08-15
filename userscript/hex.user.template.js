@@ -58078,17 +58078,17 @@ Compare the two versions by identity and semantics. Report only differences that
   function expired(b) {
     return cancelled(b) || timedOut(b) || b.disassemblyExhausted || b.functionExhausted;
   }
-  function abortError2(b) {
+  function abortError3(b) {
     const code = timedOut(b) ? "timeout" : "cancelled";
     const error = new Error(code);
     error.code = code;
     return error;
   }
   async function awaitBudget(promise, b) {
-    if (expired(b)) throw abortError2(b);
+    if (expired(b)) throw abortError3(b);
     let onAbort;
     const abortPromise = new Promise((_, reject) => {
-      onAbort = () => reject(abortError2(b));
+      onAbort = () => reject(abortError3(b));
       b.signal.addEventListener("abort", onAbort, { once: true });
     });
     try {
@@ -58266,13 +58266,13 @@ Compare the two versions by identity and semantics. Report only differences that
     return {
       ...ctx,
       analyze: async (...args) => {
-        if (expired(b)) throw abortError2(b);
+        if (expired(b)) throw abortError3(b);
         if (b.analyzedInstructions >= b.maxDisassembly) {
           b.disassemblyExhausted = true;
           throw Object.assign(new Error("disassembly-budget"), { code: "disassembly-budget" });
         }
         const model = await awaitBudget(ctx.analyze(...args), b);
-        if (expired(b)) throw abortError2(b);
+        if (expired(b)) throw abortError3(b);
         const cost2 = Math.max(0, Array.isArray(model && model.instructions) ? model.instructions.length : 0);
         if (b.analyzedInstructions + cost2 > b.maxDisassembly) {
           b.disassemblyExhausted = true;
@@ -59965,10 +59965,10 @@ Compare the two versions by identity and semantics. Report only differences that
   }
   async function raceAbort(promise, signal) {
     if (!signal) return promise;
-    if (signal.aborted) throw abortError3(signal);
+    if (signal.aborted) throw abortError4(signal);
     let onAbort;
     const aborted = new Promise((_, reject) => {
-      onAbort = () => reject(abortError3(signal));
+      onAbort = () => reject(abortError4(signal));
       signal.addEventListener("abort", onAbort, { once: true });
     });
     try {
@@ -59977,7 +59977,7 @@ Compare the two versions by identity and semantics. Report only differences that
       signal.removeEventListener("abort", onAbort);
     }
   }
-  function abortError3(signal) {
+  function abortError4(signal) {
     return signal?.reason === "timeout" ? new AIError("budget_exhausted", "The tool execution exceeded the turn timeout.") : new AIError("cancelled", "AI investigation was cancelled.");
   }
   var COST_WEIGHT, ADDRESS_KEYS, ToolRegistry;
@@ -60034,7 +60034,7 @@ Compare the two versions by identity and semantics. Report only differences that
         async execute(name, args = {}, options = {}) {
           const tool = this.get(name);
           if (!tool) throw new AIError("invalid_tool_call", `Unknown tool: ${name}`);
-          if (options.signal?.aborted) throw abortError3(options.signal);
+          if (options.signal?.aborted) throw abortError4(options.signal);
           assertSchema(args, tool.inputSchema, "invalid_tool_call");
           this.assertScope(tool, args, options.scope || "auto");
           await this.assertAddresses(args, options.scope || "auto");
@@ -61489,15 +61489,15 @@ ${safeJSONStringify(payload)}
   });
 
   // js/ui/explorer-index.js
-  function abortError4() {
+  function abortError5() {
     const error = new Error("Explorer query aborted");
     error.name = "AbortError";
     return error;
   }
   async function yieldControl(signal) {
-    if (signal?.aborted) throw abortError4();
+    if (signal?.aborted) throw abortError5();
     await new Promise((resolve2) => setTimeout(resolve2, 0));
-    if (signal?.aborted) throw abortError4();
+    if (signal?.aborted) throw abortError5();
   }
   async function buildFunctionIndex(sym, signal) {
     const cached = functionCache.get(sym);
@@ -63099,22 +63099,271 @@ ${safeJSONStringify(payload)}
     return error;
   }
 
+  // js/userscript/network.js
+  var ABSOLUTE_SCHEME = /^[a-zA-Z][a-zA-Z\d+.-]*:/;
+  function installUserscriptNetworkBridge({ apiBase = globalThis.__HEX_API_BASE__ } = {}) {
+    if (globalThis.__HEX_NATIVE_FETCH__) return globalThis.fetch;
+    const nativeFetch = globalThis.fetch.bind(globalThis);
+    globalThis.__HEX_NATIVE_FETCH__ = nativeFetch;
+    const base = normalizeBase(apiBase);
+    const bridgedFetch = async (input2, init = {}) => {
+      const target = targetFor(input2, base);
+      if (!target.useBridge) return nativeFetch(input2, init);
+      return gmFetch(target.url, init, input2);
+    };
+    Object.defineProperty(bridgedFetch, "__hexUserscriptFetch", { value: true });
+    globalThis.fetch = bridgedFetch;
+    return bridgedFetch;
+  }
+  async function gmFetch(input2, init = {}, requestInput = null) {
+    const gm = globalThis.GM?.xmlHttpRequest;
+    if (typeof gm !== "function") {
+      const nativeFetch = globalThis.__HEX_NATIVE_FETCH__ || globalThis.fetch;
+      return nativeFetch(input2, init);
+    }
+    const request = requestInput instanceof Request ? requestInput : input2 instanceof Request ? input2 : null;
+    const url = request ? request.url : String(input2);
+    const method = String(init.method || request?.method || "GET").toUpperCase();
+    const headers = new Headers(request?.headers || void 0);
+    if (init.headers) new Headers(init.headers).forEach((value2, key2) => headers.set(key2, value2));
+    let body = init.body;
+    if (body == null && request && method !== "GET" && method !== "HEAD") {
+      body = await request.clone().arrayBuffer();
+    }
+    if (body instanceof URLSearchParams) body = body.toString();
+    const signal = init.signal || request?.signal || null;
+    if (signal?.aborted) throw abortError2(signal.reason);
+    return new Promise((resolve2, reject) => {
+      let settled = false;
+      let handle = null;
+      const finish = (fn, value2) => {
+        if (settled) return;
+        settled = true;
+        signal?.removeEventListener("abort", onAbort);
+        fn(value2);
+      };
+      const onAbort = () => {
+        try {
+          handle?.abort?.();
+        } catch {
+        }
+        finish(reject, abortError2(signal?.reason));
+      };
+      if (signal) signal.addEventListener("abort", onAbort, { once: true });
+      try {
+        handle = gm({
+          method,
+          url,
+          headers: Object.fromEntries(headers.entries()),
+          data: body == null ? void 0 : body,
+          responseType: "arraybuffer",
+          onload: (response) => {
+            const status = Number(response?.status) || 0;
+            if (!status) {
+              finish(reject, new TypeError(`Hex request failed before an HTTP response was received: ${url}`));
+              return;
+            }
+            finish(resolve2, new Response(response.response || new ArrayBuffer(0), {
+              status,
+              statusText: response.statusText || "",
+              headers: parseHeaders(response.responseHeaders)
+            }));
+          },
+          onerror: () => finish(reject, new TypeError(`Hex request failed: ${url}`)),
+          ontimeout: () => finish(reject, new DOMException("Hex request timed out.", "TimeoutError")),
+          onabort: () => finish(reject, abortError2(signal?.reason))
+        });
+        if (handle && typeof handle.catch === "function") handle.catch((error) => finish(reject, error));
+      } catch (error) {
+        finish(reject, error);
+      }
+    });
+  }
+  function targetFor(input2, base) {
+    if (!base) return { useBridge: false, url: input2 };
+    if (input2 instanceof Request || input2 instanceof URL) {
+      const url2 = new URL(input2.url || input2.href);
+      return { useBridge: url2.origin === base.origin, url: url2.href };
+    }
+    const raw = String(input2);
+    if (!ABSOLUTE_SCHEME.test(raw) && !raw.startsWith("//")) {
+      return { useBridge: true, url: new URL(raw, base).href };
+    }
+    const url = new URL(raw, location.href);
+    return { useBridge: url.origin === base.origin, url: url.href };
+  }
+  function normalizeBase(value2) {
+    if (!value2) return null;
+    try {
+      const url = new URL(String(value2), location.href);
+      if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+      if (!url.pathname.endsWith("/")) url.pathname += "/";
+      return url;
+    } catch {
+      return null;
+    }
+  }
+  function parseHeaders(raw) {
+    const headers = new Headers();
+    for (const line4 of String(raw || "").split(/\r?\n/)) {
+      const index2 = line4.indexOf(":");
+      if (index2 <= 0) continue;
+      const name = line4.slice(0, index2).trim();
+      const value2 = line4.slice(index2 + 1).trim();
+      if (name) headers.append(name, value2);
+    }
+    return headers;
+  }
+  function abortError2(reason) {
+    return new DOMException(String(reason || "cancelled"), "AbortError");
+  }
+
+  // js/userscript/worker-assets.js
+  async function prepareUserscriptWorkers({
+    origin: origin2 = globalThis.__HEX_API_BASE__,
+    manifest = globalThis.__HEX_WORKER_MANIFEST__
+  } = {}) {
+    if (globalThis.__HEX_WORKER_RUNTIME__) return globalThis.__HEX_WORKER_RUNTIME__;
+    if (!origin2 || !manifest) throw new Error("Hex userscript worker manifest is unavailable.");
+    const base = new URL(String(origin2));
+    const classicPaths = [...new Set(manifest.classicAssets || [])];
+    const sourceEntries = await Promise.all(classicPaths.map(async (path) => {
+      const response = await gmFetch(assetURL(base, path));
+      if (!response.ok) throw new Error(`Could not load Hex worker asset ${path} (${response.status}).`);
+      return [path, await response.text()];
+    }));
+    const sources = new Map(sourceEntries);
+    const wasmResponse = await gmFetch(assetURL(base, manifest.wasm || "capstone.wasm"));
+    if (!wasmResponse.ok) throw new Error(`Could not load capstone.wasm (${wasmResponse.status}).`);
+    const wasmBlobURL = URL.createObjectURL(new Blob([await wasmResponse.arrayBuffer()], { type: "application/wasm" }));
+    const workerURLs = /* @__PURE__ */ new Map();
+    const classicURLs = /* @__PURE__ */ new Map();
+    const dependencies = manifest.classicDependencies || {};
+    const classicEntries = new Set(manifest.classicEntries || []);
+    const buildClassic = (path) => {
+      if (classicURLs.has(path)) return classicURLs.get(path);
+      if (!sources.has(path)) throw new Error(`Hex worker source missing from manifest: ${path}`);
+      for (const dependency of dependencies[path] || []) buildClassic(dependency);
+      let source = rewriteImportScripts(sources.get(path), path, classicURLs);
+      if (classicEntries.has(path)) source = capstonePrelude(wasmBlobURL) + "\n" + source;
+      const url = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
+      classicURLs.set(path, url);
+      return url;
+    };
+    for (const path of manifest.classicEntries || []) workerURLs.set(path, buildClassic(path));
+    for (const [logicalPath2, bundlePath] of Object.entries(manifest.moduleBundles || {})) {
+      const response = await gmFetch(assetURL(base, bundlePath));
+      if (!response.ok) throw new Error(`Could not load Hex module worker ${logicalPath2} (${response.status}).`);
+      const source = await response.text();
+      workerURLs.set(logicalPath2, URL.createObjectURL(new Blob([source], { type: "text/javascript" })));
+    }
+    const runtime = installWorkerOverride(base, workerURLs, {
+      revoke: [wasmBlobURL, .../* @__PURE__ */ new Set([...classicURLs.values(), ...workerURLs.values()])]
+    });
+    globalThis.__HEX_WORKER_RUNTIME__ = runtime;
+    return runtime;
+  }
+  function installWorkerOverride(base, workerURLs, { revoke = [] } = {}) {
+    const NativeWorker = globalThis.Worker;
+    if (!NativeWorker) throw new Error("Web Workers are unavailable in this browser.");
+    if (NativeWorker.__hexUserscriptWorker) return globalThis.__HEX_WORKER_RUNTIME__;
+    function HexWorker(url, options) {
+      const logical = logicalPath(url, base);
+      const local = logical ? workerURLs.get(logical) : null;
+      if (!local) return new NativeWorker(url, options);
+      return new NativeWorker(local, options);
+    }
+    HexWorker.prototype = NativeWorker.prototype;
+    Object.setPrototypeOf(HexWorker, NativeWorker);
+    Object.defineProperty(HexWorker, "__hexUserscriptWorker", { value: true });
+    globalThis.Worker = HexWorker;
+    let cleaned = false;
+    const runtime = {
+      nativeWorker: NativeWorker,
+      workers: workerURLs,
+      cleanup() {
+        if (cleaned) return;
+        cleaned = true;
+        if (globalThis.Worker === HexWorker) globalThis.Worker = NativeWorker;
+        for (const url of revoke) {
+          try {
+            URL.revokeObjectURL(url);
+          } catch {
+          }
+        }
+        if (globalThis.__HEX_WORKER_RUNTIME__ === runtime) delete globalThis.__HEX_WORKER_RUNTIME__;
+      }
+    };
+    addEventListener("pagehide", () => runtime.cleanup(), { once: true });
+    return runtime;
+  }
+  function rewriteImportScripts(source, sourcePath, blobURLs) {
+    return String(source).replace(/\bimportScripts\s*\(([^;]*?)\)\s*;/gs, (whole, args) => {
+      const rewritten = args.replace(/(['"])([^'"]+)\1/g, (literal, _quote, specifier) => {
+        const resolved = resolveLogical(sourcePath, specifier);
+        const blob = blobURLs.get(resolved);
+        if (!blob) throw new Error(`Hex worker dependency ${specifier} from ${sourcePath} was not preloaded.`);
+        return JSON.stringify(blob);
+      });
+      return `importScripts(${rewritten});`;
+    });
+  }
+  function resolveLogical(fromPath, specifier) {
+    if (/^[a-zA-Z][a-zA-Z\d+.-]*:/.test(specifier)) return specifier;
+    const base = new URL("/" + fromPath.replace(/^\/+/, ""), "https://hex.invalid");
+    return new URL(specifier, base).pathname.replace(/^\//, "");
+  }
+  function logicalPath(value2, base) {
+    try {
+      const url = new URL(String(value2), location.href);
+      const prefix = "/userscript-assets/";
+      if (url.origin !== base.origin || !url.pathname.startsWith(prefix)) return null;
+      return decodeURIComponent(url.pathname.slice(prefix.length));
+    } catch {
+      return null;
+    }
+  }
+  function assetURL(base, path) {
+    return new URL("/userscript-assets/" + String(path).replace(/^\/+/, ""), base).href;
+  }
+  function capstonePrelude(wasmBlobURL) {
+    return `
+;(() => {
+  const __HexNativeURL = globalThis.URL;
+  const __hexWasmURL = ${JSON.stringify(wasmBlobURL)};
+  globalThis.URL = class HexWorkerURL extends __HexNativeURL {
+    constructor(path, base) {
+      if (typeof path === 'string' && /(?:^|\\/)capstone\\.wasm(?:[?#].*)?$/.test(path)) {
+        super(__hexWasmURL);
+        return;
+      }
+      super(path, base);
+    }
+  };
+})();`;
+  }
+
   // js/userscript/entry.js
   var PROVIDER_KEY = "hex.ai.provider";
   var host = document.getElementById("hex-userscript-host");
   var bridge = installChatGPTWebBridge();
   globalThis.__HEX_AI_PROVIDER__ = readProvider();
+  installUserscriptNetworkBridge();
   mirrorRootState();
   var launcher = installLauncher();
   (async () => {
     try {
+      setLauncherState("Preparing Hex…", true);
+      await prepareUserscriptWorkers();
       await Promise.resolve().then(() => (init_app(), app_exports));
       await Promise.resolve().then(() => (init_ux(), ux_exports));
       installProviderControl();
+      setLauncherState("HEX", false);
       await revealWhenReady();
     } catch (error) {
       console.error("[hex userscript] boot failed", error);
       launcher.hidden = false;
+      launcher.disabled = false;
       launcher.textContent = "Hex failed — tap for details";
       launcher.onclick = () => alert(`Hex failed to start:
 ${error?.message || error}`);
@@ -63188,6 +63437,11 @@ ${error?.message || error}`);
     document.documentElement.append(button2);
     return button2;
   }
+  function setLauncherState(text3, busy) {
+    launcher.textContent = text3;
+    launcher.disabled = !!busy;
+    launcher.style.opacity = busy ? "0.72" : "1";
+  }
   async function revealWhenReady() {
     if (!host) return;
     if (bridge.status().ready) {
@@ -63205,7 +63459,7 @@ ${error?.message || error}`);
     }
   }
   function showHex() {
-    if (!host) return;
+    if (!host || launcher.disabled) return;
     host.style.visibility = "visible";
     host.style.pointerEvents = "auto";
     host.removeAttribute("aria-hidden");
