@@ -189,11 +189,71 @@ function opnd(op) {
  * 1 命令 → IR 命令の配列（ふつうは 1 つ、ldp/stp は 2 つ）。
  * 意味を付けられない命令は OP.UNKNOWN を返す。ここで嘘を作らない。
  */
-function callResultLocation(insn, opts) {
+function callPrototypeOf(insn, opts) {
   let proto = insn?.callPrototype || null;
   if (!proto) {
-    try { proto = opts?.callPrototypeFor?.(insn.callTarget ?? null, insn) || null; } catch { proto = null; }
+    try { proto = opts?.callPrototypeFor?.(insn?.callTarget ?? null, insn) || null; } catch { proto = null; }
   }
+  return proto;
+}
+
+function callParameterList(proto) {
+  const list = proto && (proto.args || proto.parameters || proto.params || proto.arguments);
+  return Array.isArray(list) ? list : null;
+}
+
+function parameterAbiClass(param) {
+  const type = String(param?.type || param?.name || '').toLowerCase();
+  const cls = String(param?.abiClass || param?.class || param?.kind || '').toLowerCase();
+  const pointer = param?.pointer === true || param?.isPointer === true || /\*|pointer|ptr|object|class|block|closure/.test(type + ' ' + cls);
+  const hfa = param?.hfa === true || cls.includes('hfa') || cls.includes('homogeneous');
+  const vector = cls.includes('vector') || /vector|simd/.test(type);
+  const fp = hfa || vector || cls.includes('float') || cls.includes('fp') || /^(float|double|__fp16)/.test(type);
+  const members = Math.max(1, Math.min(4, Number(param?.members || param?.elements || param?.count || 1) || 1));
+  const bits = Math.max(8, Math.min(128, Number(param?.bits || param?.sizeBits || (fp ? 64 : 64)) || 64));
+  return { pointer, hfa, vector, fp, members, bits };
+}
+
+/** AAPCS64-visible call inputs. Unknown prototypes deliberately include both
+ * GP and SIMD argument banks and mark stack arguments as unknown instead of
+ * pretending x0-x7 is a complete ABI description. */
+export function classifyCallArguments(insn, opts = {}) {
+  const proto = callPrototypeOf(insn, opts);
+  const params = callParameterList(proto);
+  const srcs = [];
+  const arguments_ = [];
+  const stackArguments = [];
+  let gp = 0, fp = 0, stackOffset = 0;
+  let stackArgsMayContainPointers = false;
+  if (!params) {
+    for (let i=0;i<8;i++) { srcs.push({t:'reg',reg:`x${i}`,bits:64}); arguments_.push({index:i,location:'register',reg:`x${i}`,abiClass:'unknown-gp'}); }
+    for (let i=0;i<8;i++) { srcs.push({t:'reg',reg:`v${i}`,bits:128}); arguments_.push({index:8+i,location:'register',reg:`v${i}`,abiClass:'unknown-fp-vector'}); }
+    return { srcs, arguments:arguments_, stackArguments, stackArgsUnknown:true, stackArgsMayContainPointers:false, evidence:'conservative-aapcs64' };
+  }
+  params.forEach((param,index) => {
+    const c=parameterAbiClass(param);
+    const regsNeeded=c.hfa ? c.members : 1;
+    if (c.fp && fp + regsNeeded <= 8) {
+      const regs=[];
+      for(let n=0;n<regsNeeded;n++){const reg=`v${fp++}`;regs.push(reg);srcs.push({t:'reg',reg,bits:c.vector?128:c.bits});}
+      arguments_.push({index,location:'register',regs,reg:regs[0],abiClass:c.hfa?'hfa':c.vector?'vector':'fp',pointer:c.pointer,bits:c.bits});
+      return;
+    }
+    if (!c.fp && gp < 8) {
+      const reg=`x${gp++}`; srcs.push({t:'reg',reg,bits:64});
+      arguments_.push({index,location:'register',reg,abiClass:c.pointer?'pointer':'integer',pointer:c.pointer,bits:c.bits});
+      return;
+    }
+    const slots=Math.max(1,Math.ceil((c.hfa?c.members*c.bits:c.bits)/64));
+    const entry={index,location:'stack',offset:stackOffset,bytes:slots*8,abiClass:c.hfa?'hfa':c.vector?'vector':c.fp?'fp':c.pointer?'pointer':'integer',pointer:c.pointer,bits:c.bits};
+    stackArguments.push(entry);arguments_.push(entry);stackOffset+=slots*8;
+    if(c.pointer || param?.mayContainPointers === true || param?.containsPointers === true) stackArgsMayContainPointers=true;
+  });
+  return { srcs, arguments:arguments_, stackArguments, stackArgsUnknown:proto?.variadic===true||proto?.varargs===true, stackArgsMayContainPointers, evidence:'prototype-aapcs64' };
+}
+
+function callResultLocation(insn, opts) {
+  const proto = callPrototypeOf(insn, opts);
   if (!proto) return null;
   const type = String(proto.returnType || proto.ret || proto.result || '').toLowerCase();
   const cls = String(proto.returnClass || proto.abiClass || proto.resultClass || '').toLowerCase();
@@ -243,7 +303,8 @@ function lift(insn, opts = {}) {
   }
   if (insn.isCall) {
     const result = callResultLocation(insn, opts);
-    const callSrcs = Array.from({ length: 8 }, (_, i) => ({ t: 'reg', reg: `x${i}`, bits: 64 }));
+    const callArgs = classifyCallArguments(insn, opts);
+    const callSrcs = callArgs.srcs.slice();
     if (insn.callTarget == null && ops[0] && ops[0].k === 'reg') {
       const targetReg = regKeyOf(ops[0]);
       if (targetReg && !callSrcs.some((src) => src.reg === targetReg)) callSrcs.push({ t: 'reg', reg: targetReg, bits: 64 });
@@ -253,6 +314,11 @@ function lift(insn, opts = {}) {
       target: insn.callTarget != null ? insn.callTarget : null,
       indirect: insn.callTarget == null,
       srcs: callSrcs,
+      callArguments: callArgs.arguments,
+      stackArguments: callArgs.stackArguments,
+      stackArgsUnknown: callArgs.stackArgsUnknown,
+      stackArgsMayContainPointers: callArgs.stackArgsMayContainPointers,
+      argumentEvidence: callArgs.evidence,
       dstReg: result?.reg || null, dstBits: result?.bits || 64,
       returnEvidence: result ? 'prototype' : null,
       clobbers: CALL_CLOBBERS,
@@ -713,6 +779,10 @@ export function buildIR(model, opts) {
       op: p.op, sub: p.sub || null, block: p.block,
       row: p.row, address: p.address, text: p.text,
       args: [], dst: null, extra: p,
+      stackArguments: p.stackArguments || null,
+      stackArgsUnknown: !!p.stackArgsUnknown,
+      stackArgsMayContainPointers: !!p.stackArgsMayContainPointers,
+      argumentEvidence: p.argumentEvidence || null,
     };
     for (const s of p.srcs || []) {
       const r = resolve(s);
@@ -1048,7 +1118,8 @@ function buildMemorySSA(ir, df, idom, children) {
   let stackEscaped = false;
   for (const inst of ir.instructions) {
     if (inst.op !== OP.CALL && inst.op !== OP.STORE && inst.op !== OP.UNKNOWN) continue;
-    if ((inst.args || []).some((a) => stackPointerProvenanceOf(a?.value, stackPointerMemo))) {
+    if (inst.stackArgsMayContainPointers ||
+        (inst.args || []).some((a) => stackPointerProvenanceOf(a?.value, stackPointerMemo))) {
       stackEscaped = true;
       break;
     }

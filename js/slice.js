@@ -19,6 +19,25 @@ import { OP, VK } from './ir.js';
 
 const DEFAULT_LIMIT = 400;
 
+export function memoryOrigins(node, opts = {}) {
+  const maxNodes=Math.max(1,Math.min(10000,Number(opts.maxNodes)||1024));
+  const maxEdges=Math.max(1,Math.min(20000,Number(opts.maxEdges)||2048));
+  const seen=new Set(), stack=node?[node]:[], stores=[], clobbers=[];
+  let edges=0,truncated=false,phiCount=0;
+  while(stack.length){
+    if(seen.size>=maxNodes||edges>=maxEdges){truncated=true;break;}
+    const cur=stack.pop(); if(!cur||seen.has(cur))continue; seen.add(cur);
+    if(cur.kind==='store'){if(cur.inst)stores.push(cur.inst);continue;}
+    if(cur.kind==='clobber'||cur.kind==='unknown'){if(cur.inst)clobbers.push(cur.inst);continue;}
+    if(cur.kind==='phi'){
+      phiCount++;
+      for(const inc of cur.incoming||[]){edges++;if(edges>maxEdges){truncated=true;break;}if(inc?.node&&!seen.has(inc.node))stack.push(inc.node);}
+    }
+  }
+  const alternatives=stores.length+clobbers.length;
+  return {stores,clobbers,truncated,nodes:seen.size,edges,branchDependent:phiCount>0&&alternatives>1,ambiguous:alternatives>1,alternatives};
+}
+
 export function backwardSlice(ir, seed, opts) {
   const o = opts || {};
   const limit = o.limit || DEFAULT_LIMIT;
@@ -29,6 +48,8 @@ export function backwardSlice(ir, seed, opts) {
   const values = [];
   const stack = [];
   let truncated = false;
+  const memoryAlternatives = [];
+  let memoryTraversalTruncated = false;
   const pushValue = (v) => { if (v && !seenValue.has(v.id)) stack.push({ v }); };
   const pushInst = (i) => { if (i && !seenInst.has(i.id)) stack.push({ i }); };
   if (seed && seed.op) pushInst(seed); else if (seed) pushValue(seed);
@@ -50,14 +71,17 @@ export function backwardSlice(ir, seed, opts) {
       if (inst.addr.base) pushValue(inst.addr.base);
       if (inst.addr.index) pushValue(inst.addr.index);
     }
-    if (throughMemory && inst.op === OP.LOAD && inst.reachingStore) pushInst(inst.reachingStore);
-    if (throughMemory && inst.op === OP.LOAD && inst.memUse && inst.memUse.kind === 'phi') {
-      for (const inc of inst.memUse.incoming || []) if (inc.node && inc.node.kind === 'store') pushInst(inc.node.inst);
-    }
+    if (throughMemory && inst.op === OP.LOAD && inst.memUse) {
+      const origins=memoryOrigins(inst.memUse,{maxNodes:o.memoryNodeLimit,maxEdges:o.memoryEdgeLimit});
+      for(const origin of origins.stores) pushInst(origin);
+      for(const clobber of origins.clobbers) pushInst(clobber);
+      if(origins.ambiguous||origins.truncated) memoryAlternatives.push({loadId:inst.id,row:inst.row,...origins});
+      if(origins.truncated) memoryTraversalTruncated=true;
+    } else if (throughMemory && inst.op === OP.LOAD && inst.reachingStore) pushInst(inst.reachingStore);
     if (inst.op === OP.PHI) for (const inc of inst.incoming || []) pushValue(inc.value);
   }
   instructions.sort(byPosition);
-  return { instructions, values, truncated, seed };
+  return { instructions, values, truncated:truncated||memoryTraversalTruncated, seed, memoryAlternatives, memoryAmbiguous:memoryAlternatives.some((x)=>x.ambiguous), memoryTraversalTruncated };
 }
 
 function memoryNodeContainsStore(node, store, seen = new Set()) {
@@ -182,7 +206,7 @@ export function valueChain(ir, seed, opts) {
     const i = steps.findIndex((s) => s.kind === 'write' && s.row === seed.row);
     if (i >= 0 && i !== steps.length - 1) steps.push(steps.splice(i, 1)[0]);
   }
-  return { steps, truncated: slice.truncated, source: steps.length ? steps[0] : null, sink: steps.length ? steps[steps.length - 1] : null };
+  return { steps, truncated: slice.truncated, memoryAmbiguous:!!slice.memoryAmbiguous, memoryAlternatives:slice.memoryAlternatives||[], source: steps.length ? steps[0] : null, sink: steps.length ? steps[steps.length - 1] : null };
 }
 
 const WEIGHT = {
@@ -195,7 +219,7 @@ export function causalChain(ir, seed, opts) {
   const limit = Math.max(2, o.limit || 8);
   const chain = valueChain(ir, seed, Object.assign({}, o, { limit: o.sliceLimit || DEFAULT_LIMIT }));
   const steps = chain.steps;
-  if (steps.length <= limit) return { steps, elided: 0, truncated: chain.truncated };
+  if (steps.length <= limit) return { steps, elided: 0, truncated: chain.truncated, memoryAmbiguous:chain.memoryAmbiguous, memoryAlternatives:chain.memoryAlternatives };
   const first = steps[0];
   const last = steps[steps.length - 1];
   const middle = steps.slice(1, -1)
@@ -204,7 +228,7 @@ export function causalChain(ir, seed, opts) {
     .slice(0, limit - 2)
     .sort((a, b) => a.i - b.i)
     .map((x) => x.s);
-  return { steps: [first, ...middle, last], elided: steps.length - (middle.length + 2), truncated: chain.truncated };
+  return { steps: [first, ...middle, last], elided: steps.length - (middle.length + 2), truncated: chain.truncated, memoryAmbiguous:chain.memoryAmbiguous, memoryAlternatives:chain.memoryAlternatives };
 }
 
 export function findPaths(graph, from, to, opts) {
