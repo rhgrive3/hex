@@ -39,30 +39,32 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
-          p=Path('js/ir-core.js'); s=p.read_text()
           guard="if (!store.memDef || !load.memUse || load.memUse !== store.memDef.prev) continue;"
+          p=Path('js/ir-core.js'); s=p.read_text()
           if guard not in s:
               start=s.index('export function readModifyWrite')
               pos=s.index('    if (!load) continue;', start)
               insert=pos+len('    if (!load) continue;')
               s=s[:insert]+"\n    // A load is a current-value RMW source only when it observes the memory\n    // version immediately preceding this store. Same-location but stale loads\n    // must not survive an intervening write.\n    "+guard+s[insert:]
               p.write_text(s)
+
+          p=Path('js/ir.js'); s=p.read_text()
+          old="""      if (def.op === OP.LOAD) {
+        if (mustAlias(def.loc, store.loc) && !unknownStoreBetween(ir, def, store)) load = def;
+        continue;
+      }"""
+          new="""      if (def.op === OP.LOAD) {
+        // Proven aliasing is not sufficient for an RMW: the load must also
+        // observe the exact memory version immediately preceding this store.
+        // Otherwise an intervening write makes the load stale (#407).
+        const currentMemoryVersion = !!(store.memDef && def.memUse && def.memUse === store.memDef.prev);
+        if (currentMemoryVersion && mustAlias(def.loc, store.loc) && !unknownStoreBetween(ir, def, store)) load = def;
+        continue;
+      }"""
+          if 'const currentMemoryVersion = !!(store.memDef && def.memUse && def.memUse === store.memDef.prev);' not in s:
+              if old not in s: raise SystemExit('public RMW anchor missing')
+              p.write_text(s.replace(old,new,1))
           PY
-      - name: Diagnose RMW memory versions
-        run: |
-          node --input-type=module <<'NODE'
-          import { buildSemanticModel } from './js/blocks.js';
-          import { buildIR, readModifyWrite, OP } from './js/ir.js';
-          const BASE=0x100000000n;
-          const lines=['ldr w8, [x0,#0x20]','mov w9,#100','str w9, [x0,#0x20]','add w8,w8,#1','str w8, [x0,#0x20]','ret'];
-          const asm=lines.map((line,i)=>{const sp=line.indexOf(' ');return{row:i,address:BASE+BigInt(i)*4n,mn:sp<0?line:line.slice(0,sp),ops:sp<0?'':line.slice(sp+1)}});
-          const rowOfAddress=(a)=>{const r=a-BASE;return r<0n||r>=BigInt(lines.length)*4n?null:Number(r/4n)};
-          const ir=buildIR(buildSemanticModel(asm,{startRow:0,endRow:lines.length-1,rowOfAddress}),{rowOfAddress});
-          const stores=ir.instructions.filter(i=>i.op===OP.STORE);
-          const load=ir.instructions.find(i=>i.op===OP.LOAD);
-          for(const st of stores) console.log(JSON.stringify({row:st.row,key:st.loc?.key,prevKind:st.memDef?.prev?.kind,prevRow:st.memDef?.prev?.inst?.row,loadUseKind:load?.memUse?.kind,loadUseRow:load?.memUse?.inst?.row,same:load?.memUse===st.memDef?.prev}));
-          console.log('rmw rows',readModifyWrite(ir).map(x=>({load:x.load.row,store:x.store.row})));
-          NODE
       - name: Assert semantic fixes are present
         run: |
           node --input-type=module <<'NODE'
@@ -70,6 +72,7 @@ jobs:
           const checks = {
             'js/decompiler/semantic.js': ['const written = valueOf(rmw.store?.args?.[0]);'],
             'js/ir-core.js': ['...Array.from({ length: 8 }, (_, i) => `v${i}`)', 'const extShift = (x)', "kind: 'movk'", 'load.memUse !== store.memDef.prev'],
+            'js/ir.js': ['const currentMemoryVersion = !!(store.memDef && def.memUse && def.memUse === store.memDef.prev);'],
             'js/decompiler/pipeline-core.js': ['function returnValueFor(', "d.extra?.toward === 'left'", "d.extra?.kind === 'bfxil'", "'fcmp_' + cond", 'shiftedExtend'],
             'js/decompiler/ast/nodes.js': ["floatConstant(value"],
             'js/decompiler/pretty/c.js': ["case 'float-const'"],
