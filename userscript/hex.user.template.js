@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hex for ChatGPT
 // @namespace    https://github.com/rhgrive3/hex
-// @version      1.0.1786788590
+// @version      1.0.1786788721
 // @description  Run the Hex binary analysis workbench on ChatGPT Web.
 // @match        https://chatgpt.com/*
 // @run-at       document-idle
@@ -60712,7 +60712,7 @@ Hex が確認できた根拠は ${evidence3.length} 件です。` : "\n\nこの�
     return `HEX CONTROL PROTOCOL ${PROTOCOL_VERSION}
 
 You are the reasoning/planning component of Hex. Hex tools are the source of facts.
-Return exactly ONE JSON object and nothing else. Do not use Markdown or code fences. Use ASCII double quotes (\\") only; never use smart/curly quotes.
+Return exactly ONE JSON object and nothing else. Do not use Markdown or code fences. Use only the ASCII double quote character U+0022 (") for JSON delimiters; never replace JSON delimiters with smart/curly quotes.
 
 If more evidence is required, return exactly:
 {"type":"tool","tool":"<one supplied tool name>","arguments":{},"purpose":"<short reason>"}
@@ -60738,12 +60738,70 @@ ${safeJSONStringify(payload)}
     const candidate = text3.slice(first, last + 1);
     let parsed = tryParse(candidate);
     if (parsed == null && /[\u201c\u201d]/.test(candidate)) {
-      parsed = tryParse(candidate.replace(/[\u201c\u201d]/g, '"'));
+      parsed = tryParse(normalizeSmartJSONQuotes(candidate));
     }
     if (parsed == null || !parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       throw new AIError("invalid_model_output", "ChatGPT Web returned malformed JSON.");
     }
     return parsed;
+  }
+  function normalizeSmartJSONQuotes(text3) {
+    let output = "";
+    let inSmartString = false;
+    let nestedSmartQuotes = 0;
+    let inAsciiString = false;
+    let escaped = false;
+    for (const char of String(text3)) {
+      if (inAsciiString) {
+        output += char;
+        if (escaped) {
+          escaped = false;
+          continue;
+        }
+        if (char === "\\") {
+          escaped = true;
+          continue;
+        }
+        if (char === '"') inAsciiString = false;
+        continue;
+      }
+      if (inSmartString) {
+        if (char === "“") {
+          nestedSmartQuotes++;
+          output += char;
+          continue;
+        }
+        if (char === "”") {
+          if (nestedSmartQuotes > 0) {
+            nestedSmartQuotes--;
+            output += char;
+          } else {
+            output += '"';
+            inSmartString = false;
+          }
+          continue;
+        }
+        if (char === "\\") {
+          output += "\\\\";
+          continue;
+        }
+        if (char === '"') {
+          output += '\\"';
+          continue;
+        }
+        output += char;
+        continue;
+      }
+      if (char === "“") {
+        output += '"';
+        inSmartString = true;
+        nestedSmartQuotes = 0;
+        continue;
+      }
+      if (char === '"') inAsciiString = true;
+      output += char;
+    }
+    return output;
   }
   function stripFence(text3) {
     const fenced = text3.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
