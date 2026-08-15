@@ -400,13 +400,15 @@ function normalizeChunk(res) {
 
 function legacySliceCapability(slice) {
   const info = slice?.info || {};
-  const architecture = info.isArm64 ? 'arm64' : String(info.cpu || 'unknown').toLowerCase();
+  const architecture = info.architecture || (info.ilp32 ? 'arm64_32' : info.cpuSub === 'arm64e' ? 'arm64e' : info.isArm64 ? 'arm64' : String(info.cpu || 'unknown').toLowerCase());
+  const aarch64 = architecture === 'arm64' || architecture === 'arm64e' || architecture === 'arm64_32';
+  const partial = architecture === 'arm64e' || architecture === 'arm64_32';
+  const limitations = architecture === 'arm64e' ? ['pointer-authentication'] : architecture === 'arm64_32' ? ['ilp32-pointer-abi'] : [];
   return Object.freeze({
-    format: 'macho', architecture, endianness: 'little', bits: info.is64 === false ? 32 : 64,
-    canDisassemble: architecture === 'arm64', canAnalyzeDataflow: architecture === 'arm64',
-    canEmulate: false, viewerCanDisassemble: architecture === 'arm64',
-    instructionAlignment: architecture === 'arm64' ? 4 : 1,
-    fixedInstructionSize: architecture === 'arm64' ? 4 : null,
-    engineVerified: false,
+    format:'macho', architecture, endianness:'little', bits:info.is64===false?32:64,
+    pointerBits:info.pointerBits || (info.ilp32?32:(info.is64===false?32:64)), ilp32:!!info.ilp32,
+    canDisassemble:aarch64, canAnalyzeDataflow:aarch64, canEmulate:false, viewerCanDisassemble:aarch64,
+    instructionAlignment:aarch64?4:(architecture==='arm'?2:1), fixedInstructionSize:aarch64?4:null,
+    analysisLevel:partial?'partial':aarch64?'full':'data-only', limitations, engineVerified:false,
   });
 }

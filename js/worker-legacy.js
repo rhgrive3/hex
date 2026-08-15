@@ -497,11 +497,19 @@ async function analyzeSlice({ sliceIndex }) {
     const buf = await readRange(base + BigInt(info.functionStarts.dataoff),
                                 Math.min(info.functionStarts.datasize, 8 * 1024 * 1024));
     try {
-      const list = MachO.parseFunctionStarts(buf, info.textVM);
-      funcs = new BigUint64Array(list.length);
-      for (let i = 0; i < list.length; i++) funcs[i] = list[i];
-      functionStartsExact = list.length > 0;
+      const list = MachO.parseFunctionStarts(buf, info.textVM, { regions:slice.regions || [], architecture:info.architecture || 'arm64' });
+      const seeds = list.slice();
+      if (info.entry != null && !seeds.some((value) => value === info.entry)) seeds.push(info.entry);
+      seeds.sort((a,b)=>(a<b?-1:a>b?1:0));
+      funcs = new BigUint64Array(seeds.length);
+      for (let i = 0; i < seeds.length; i++) funcs[i] = seeds[i];
+      functionStartsExact = list.length > 0 && list.complete === true;
     } catch { funcs = new BigUint64Array(0); }
+  }
+
+  if ((!info.functionStarts || !info.functionStarts.datasize) && info.entry != null) {
+    funcs = new BigUint64Array([info.entry]);
+    functionStartsExact = false;
   }
 
   /* Known noreturn imports make the instruction after a call a strong boundary
