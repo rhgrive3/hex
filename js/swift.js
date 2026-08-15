@@ -55,7 +55,7 @@ export function demangleSwiftSymbol(symbol) {
 function parseSupportedSwiftSuffix(suffix) {
   if (!suffix) return { supported: true, async: false, throws: false, accessor: null };
   let rest = suffix, async = false, sawThrows = false, sawFunction = false, accessor = null;
-  const atoms = ['Ya', 'Ma', 'Mf', 'ML', 'Mn', 'vg', 'vs', 'fC', 'fD', 'K', 'F'];
+  const atoms = ['Ya', 'Ma', 'Mf', 'ML', 'Mn', 'vg', 'vs', 'fC', 'fD', 'K', 'F', 'y'];
   while (rest) {
     const atom = atoms.find((value) => rest.startsWith(value));
     const throws = sawThrows && sawFunction;
