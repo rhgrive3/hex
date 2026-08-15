@@ -1,0 +1,58 @@
+name: TEMP BattleCats accuracy workbench
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'js/**'
+      - 'tests/**'
+      - '.github/workflows/battlecats-accuracy-temp.yml'
+      - 'package.json'
+      - 'package-lock.json'
+
+jobs:
+  battlecats:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      BATTLECATS_URL: https://raw.githubusercontent.com/rhgrive3/hex/bd7bd61d093592d07fdd9e9b14a859e19dd4c3a9/tests/battlecats
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: |
+          npm ci
+          python -m pip install --disable-pip-version-check lief capstone
+      - name: Fetch BattleCats fixture
+        run: |
+          mkdir -p tests/.real-fixtures
+          curl -fL "$BATTLECATS_URL" -o tests/.real-fixtures/battlecats
+          echo '567234909b2a33d62548257c4148290d9215d7edf414fa17c6b06fcf8c7cdf13  tests/.real-fixtures/battlecats' | sha256sum -c -
+      - name: Generate BattleCats oracle
+        run: |
+          python tests/oracle.py tests/.real-fixtures/battlecats tests/oracle.battlecats.temp.json.gz
+          python tests/oracle-cfg-normalize.py tests/.real-fixtures/battlecats tests/oracle.battlecats.temp.json.gz
+      - name: BattleCats accuracy
+        run: |
+          node --max-old-space-size=6000 tests/accuracy.mjs --target=tests/.real-fixtures/battlecats --oracle=tests/oracle.battlecats.temp.json.gz --json | tee accuracy-BattleCats.json
+      - name: Core tests
+        run: npm run check
+      - name: Pack workbench
+        if: always()
+        run: |
+          tar --exclude=.git --exclude=node_modules --exclude=tests/.real-fixtures -czf source.tar.gz .
+      - name: Upload workbench
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: battlecats-accuracy-workbench
+          path: |
+            source.tar.gz
+            tests/oracle.battlecats.temp.json.gz
+            accuracy-BattleCats.json
+          if-no-files-found: warn
