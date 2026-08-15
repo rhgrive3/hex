@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "sourceCommit": "bd7bd61d093592d07fdd9e9b14a859e19dd4c3a9",
+  "fixtures": {
+    "battlecats": {
+      "path": "tests/battlecats",
+      "size": 28153072,
+      "gitBlobSha1": "c8734ebe660465e4e96254b5b86f03121bb7b8ba"
+    },
+    "TsumTsum": {
+      "path": "tests/TsumTsum",
+      "size": 45994784,
+      "gitBlobSha1": "b6b23d3bf1aa7831372bafff55cfd202d74a9d3a"
+    },
+    "YWP": {
+      "path": "tests/YWP",
+      "size": 63455952,
+      "gitBlobSha1": "90295da90c207ce6321908ef0898048634a0a3c7"
+    }
+  }
+}

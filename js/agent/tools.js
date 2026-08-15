@@ -71,7 +71,7 @@ function nameFor(ctx, addr) {
   return null;
 }
 
-function compactFact(f) {
+export function compactFact(f) {
   return {
     id: f.id,
     kind: f.kind,
@@ -83,6 +83,16 @@ function compactFact(f) {
     operation: f.operation || null,
     threshold: f.threshold == null ? null : f.threshold,
     condition: f.condition || null,
+    originalCondition: f.originalCondition || null,
+    operator: f.operator || null,
+    swapped: f.swapped === true,
+    subject: f.subject || null,
+    other: f.other || null,
+    operands: f.operands || null,
+    bound: f.bound || null,
+    candidate: f.candidate || null,
+    clampKind: f.clampKind || null,
+    compare: f.compare || null,
     source: f.source || null,
     sink: f.sink || null,
     value: f.value || null,

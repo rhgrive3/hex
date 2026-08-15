@@ -1,19 +1,15 @@
 const TYPES = new Set(['format', 'architecture', 'analyzer', 'knowledgeProvider', 'signatureProvider', 'recognitionProvider', 'viewContribution', 'goalProvider']);
+const DEFAULT_TIMEOUT_MS = 15_000;
+const DEFAULT_READ_CALL_BYTES = 1024 * 1024;
+const DEFAULT_READ_TOTAL_BYTES = 8 * 1024 * 1024;
 
 function deepFreeze(value, seen = new WeakSet()) {
   if (!value || typeof value !== 'object' || seen.has(value)) return value;
   seen.add(value);
-  if (value instanceof Map) {
-    for (const [k, v] of value) { deepFreeze(k, seen); deepFreeze(v, seen); }
-  } else if (value instanceof Set) {
-    for (const v of value) deepFreeze(v, seen);
-  } else {
-    for (const key of Reflect.ownKeys(value)) {
-      const desc = Object.getOwnPropertyDescriptor(value, key);
-      if (desc && 'value' in desc) deepFreeze(desc.value, seen);
-    }
-  }
-  try { Object.freeze(value); } catch { /* typed-array views may reject freeze */ }
+  if (value instanceof Map) for (const [k, v] of value) { deepFreeze(k, seen); deepFreeze(v, seen); }
+  else if (value instanceof Set) for (const v of value) deepFreeze(v, seen);
+  else for (const key of Reflect.ownKeys(value)) { const desc = Object.getOwnPropertyDescriptor(value, key); if (desc && 'value' in desc) deepFreeze(desc.value, seen); }
+  try { Object.freeze(value); } catch { /* typed arrays may reject freeze */ }
   return value;
 }
 
@@ -23,48 +19,72 @@ function fallbackClone(value, seen = new WeakMap(), depth = 0) {
   if (seen.has(value)) return seen.get(value);
   if (value instanceof Date) return new Date(value.getTime());
   if (value instanceof ArrayBuffer) return value.slice(0);
-  if (ArrayBuffer.isView(value)) {
-    if (value instanceof DataView) return new DataView(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength));
-    return value.slice ? value.slice() : new value.constructor(value);
-  }
-  if (value instanceof Map) {
-    const out = new Map(); seen.set(value, out);
-    for (const [k, v] of value) out.set(fallbackClone(k, seen, depth + 1), fallbackClone(v, seen, depth + 1));
-    return out;
-  }
-  if (value instanceof Set) {
-    const out = new Set(); seen.set(value, out);
-    for (const v of value) out.add(fallbackClone(v, seen, depth + 1));
-    return out;
-  }
-  if (Array.isArray(value)) {
-    const out = []; seen.set(value, out);
-    for (const v of value) out.push(fallbackClone(v, seen, depth + 1));
-    return out;
-  }
+  if (ArrayBuffer.isView(value)) { if (value instanceof DataView) return new DataView(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength)); return value.slice ? value.slice() : new value.constructor(value); }
+  if (value instanceof Map) { const out = new Map(); seen.set(value, out); for (const [k, v] of value) out.set(fallbackClone(k, seen, depth + 1), fallbackClone(v, seen, depth + 1)); return out; }
+  if (value instanceof Set) { const out = new Set(); seen.set(value, out); for (const v of value) out.add(fallbackClone(v, seen, depth + 1)); return out; }
+  if (Array.isArray(value)) { const out = []; seen.set(value, out); for (const v of value) out.push(fallbackClone(v, seen, depth + 1)); return out; }
   const out = Object.create(null); seen.set(value, out);
-  for (const [key, v] of Object.entries(value)) {
-    if (typeof v === 'function') continue;
-    out[key] = fallbackClone(v, seen, depth + 1);
-  }
+  for (const [key, v] of Object.entries(value)) { if (typeof v === 'function') continue; out[key] = fallbackClone(v, seen, depth + 1); }
   return out;
 }
 
 function safeSnapshot(value) {
   if (value == null) return null;
   let clone;
-  if (typeof structuredClone === 'function') {
-    try { clone = structuredClone(value); } catch { clone = fallbackClone(value); }
-  } else clone = fallbackClone(value);
+  if (typeof structuredClone === 'function') { try { clone = structuredClone(value); } catch { clone = fallbackClone(value); } }
+  else clone = fallbackClone(value);
   return deepFreeze(clone);
 }
 
-export class PlatformPluginRegistry {
-  constructor() {
-    this.entries = new Map([...TYPES].map((type) => [type, new Map()]));
-    this.failures = [];
+function finitePositive(value, fallback) { const n = Number(value); return Number.isFinite(n) && n > 0 ? n : fallback; }
+function normalizeRanges(value) {
+  if (!Array.isArray(value)) return [];
+  const out = [];
+  for (const range of value) {
+    try {
+      const start = BigInt(range.start ?? range.address ?? range.vmAddr);
+      const size = BigInt(range.size ?? range.length ?? 0);
+      if (size > 0n) out.push({ start, end: start + size });
+    } catch { /* malformed ranges grant nothing */ }
   }
+  return out;
+}
 
+function makeReadCapability(context) {
+  if (typeof context.read !== 'function') return undefined;
+  const policy = context.pluginPolicy || context.pluginPermissions || {};
+  const allowed = policy.binaryRead === true || policy.readBinary === true;
+  const ranges = normalizeRanges(policy.readRanges || policy.ranges || context.binary?.readRanges);
+  if (!allowed && !ranges.length) return async () => { throw new Error('plugin binary read permission denied'); };
+  const perCall = Math.floor(finitePositive(policy.maxReadBytes, DEFAULT_READ_CALL_BYTES));
+  const totalLimit = Math.floor(finitePositive(policy.maxTotalReadBytes, DEFAULT_READ_TOTAL_BYTES));
+  let total = 0;
+  return async (address, length) => {
+    let at; try { at = BigInt(address); } catch { throw new TypeError('plugin read address must be an integer'); }
+    const bytes = Number(length);
+    if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > perCall) throw new RangeError(`plugin read exceeds per-call limit (${perCall} bytes)`);
+    if (total + bytes > totalLimit) throw new RangeError(`plugin read exceeds total budget (${totalLimit} bytes)`);
+    if (ranges.length && !ranges.some((r) => at >= r.start && at + BigInt(bytes) <= r.end)) throw new RangeError('plugin read is outside permitted ranges');
+    total += bytes;
+    const value = await context.read(at, bytes);
+    return safeSnapshot(value);
+  };
+}
+
+function settleWithin(promise, timeoutMs, signal) {
+  return new Promise((resolve, reject) => {
+    let done = false;
+    const finish = (fn, value) => { if (done) return; done = true; clearTimeout(timer); signal?.removeEventListener?.('abort', onAbort); fn(value); };
+    const onAbort = () => finish(reject, signal.reason instanceof Error ? signal.reason : new Error('plugin invocation aborted'));
+    const timer = setTimeout(() => finish(reject, new Error(`plugin invocation timed out after ${timeoutMs}ms`)), timeoutMs);
+    if (signal?.aborted) return onAbort();
+    signal?.addEventListener?.('abort', onAbort, { once: true });
+    Promise.resolve(promise).then((v) => finish(resolve, v), (e) => finish(reject, e));
+  });
+}
+
+export class PlatformPluginRegistry {
+  constructor(options = {}) { this.entries = new Map([...TYPES].map((type) => [type, new Map()])); this.failures = []; this.timeoutMs = finitePositive(options.timeoutMs, DEFAULT_TIMEOUT_MS); }
   registerFormat(id, contribution) { return this.#register('format', id, contribution); }
   registerArchitecture(id, contribution) { return this.#register('architecture', id, contribution); }
   registerAnalyzer(id, contribution) { return this.#register('analyzer', id, contribution); }
@@ -78,67 +98,55 @@ export class PlatformPluginRegistry {
     if (!TYPES.has(type)) throw new Error(`unsupported plugin contribution type: ${type}`);
     if (!/^[a-z0-9][a-z0-9._-]{1,127}$/i.test(String(id || ''))) throw new TypeError('plugin contribution id must be stable and non-empty');
     if (!contribution || typeof contribution !== 'object') throw new TypeError('plugin contribution must be an object');
+    const key = String(id);
     const bucket = this.entries.get(type);
-    if (bucket.has(id)) throw new Error(`plugin contribution already registered: ${type}:${id}`);
-    const record = Object.freeze({ id: String(id), type, contribution: Object.freeze({ ...contribution }) });
-    bucket.set(id, record);
-    return () => bucket.delete(id);
+    if (bucket.has(key)) throw new Error(`plugin contribution already registered: ${type}:${key}`);
+    const record = Object.freeze({ id: key, type, contribution: Object.freeze({ ...contribution }) });
+    bucket.set(key, record);
+    return () => bucket.delete(key);
   }
 
-  list(type) {
-    if (!TYPES.has(type)) return [];
-    return [...this.entries.get(type).values()];
-  }
+  list(type) { if (!TYPES.has(type)) return []; return [...this.entries.get(type).values()]; }
 
   async invoke(type, id, method, context = {}, ...args) {
     const record = this.entries.get(type)?.get(id);
     if (!record) return { ok: false, error: `unknown contribution ${type}:${id}` };
     const fn = record.contribution[method];
     if (typeof fn !== 'function') return { ok: false, error: `contribution ${type}:${id} has no ${method}()` };
+    const rawOptions = args.at(-1) && typeof args.at(-1) === 'object' ? args.at(-1) : {};
+    const timeoutMs = finitePositive(rawOptions.timeoutMs, this.timeoutMs);
+    const signal = rawOptions.signal;
     try {
-      // Plugins receive detached snapshots of host-owned state. Freezing a
-      // shallow spread is insufficient because project.user, arrays and Maps
-      // would still point at live application objects.
       const safeContext = Object.freeze({
-        binary: safeSnapshot(context.binary),
-        capability: safeSnapshot(context.capability),
-        project: safeSnapshot(context.project),
-        read: typeof context.read === 'function' ? context.read : undefined,
-        reportProgress: typeof context.reportProgress === 'function' ? context.reportProgress : undefined,
+        binary: safeSnapshot(context.binary), capability: safeSnapshot(context.capability), project: safeSnapshot(context.project),
+        read: makeReadCapability(context),
+        reportProgress: typeof context.reportProgress === 'function' ? (...progressArgs) => context.reportProgress(...progressArgs.map((x) => safeSnapshot(x))) : undefined,
       });
-      return { ok: true, value: await fn(safeContext, ...args) };
+      const safeArgs = args.map((arg) => safeSnapshot(arg));
+      const value = await settleWithin(Promise.resolve().then(() => fn(safeContext, ...safeArgs)), timeoutMs, signal);
+      return { ok: true, value: safeSnapshot(value) };
     } catch (error) {
       const failure = { type, id, method, error: error?.message || String(error), at: Date.now() };
-      this.failures.push(failure);
-      if (this.failures.length > 100) this.failures.shift();
-      return { ok: false, error: failure.error, isolated: true };
+      this.failures.push(failure); if (this.failures.length > 100) this.failures.shift();
+      return { ok: false, error: failure.error, isolated: true, timeout: /timed out/i.test(failure.error) };
     }
   }
 
   async runAnalyzers(context, options = {}) {
     const out = [];
-    for (const record of this.list('analyzer')) {
-      if (options.signal?.aborted) break;
-      const result = await this.invoke('analyzer', record.id, 'analyze', context, options);
-      out.push({ id: record.id, ...result });
-    }
+    for (const record of this.list('analyzer')) { if (options.signal?.aborted) break; const result = await this.invoke('analyzer', record.id, 'analyze', context, options); out.push({ id: record.id, ...result }); }
     return out;
   }
 
   async runProviders(type, method, context = {}, options = {}) {
     if (!['knowledgeProvider', 'signatureProvider', 'recognitionProvider'].includes(type)) throw new TypeError('unsupported provider type');
     const out = [];
-    for (const record of this.list(type)) {
-      if (options.signal?.aborted) break;
-      const result = await this.invoke(type, record.id, method, context, options);
-      out.push({ id: record.id, ...result });
-    }
+    for (const record of this.list(type)) { if (options.signal?.aborted) break; const result = await this.invoke(type, record.id, method, context, options); out.push({ id: record.id, ...result }); }
     return out;
   }
 }
 
 export const platformPlugins = new PlatformPluginRegistry();
-
 export const registerFormat = (...args) => platformPlugins.registerFormat(...args);
 export const registerArchitecture = (...args) => platformPlugins.registerArchitecture(...args);
 export const registerAnalyzer = (...args) => platformPlugins.registerAnalyzer(...args);
