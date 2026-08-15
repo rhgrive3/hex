@@ -22,8 +22,10 @@ function normalizeMethod(m, owner, classMethod, source = 'class') {
     className: owner,
     classMethod: !!classMethod,
     imp: m.addr != null ? m.addr : (m.imp != null ? m.imp : null),
-    types: m.types || m.type || null,
+    types: m.types || m.type || m.typeEncoding || null,
+    typeEncoding: m.types || m.type || m.typeEncoding || null,
     source,
+    optional: !!m.optional,
     raw: m,
   };
 }
@@ -65,12 +67,20 @@ export function buildObjcRuntimeIndex(objcModel = {}) {
     const name = cleanClassName(p.name);
     const copy = { ...p, name };
     protocols.set(name, copy);
-    for (const m of p.methods || p.instanceMethods || []) {
-      const x = normalizeMethod(m, name, false, 'protocol');
+    for (const m of p.instanceMethods || p.methods || []) {
+      const x = normalizeMethod({ ...m, optional: false }, name, false, 'protocol');
       if (x) pushIndex(protocolRequirementsBySelector, methodKey(false, x.selector), x);
     }
     for (const m of p.classMethods || []) {
-      const x = normalizeMethod(m, name, true, 'protocol');
+      const x = normalizeMethod({ ...m, optional: false }, name, true, 'protocol');
+      if (x) pushIndex(protocolRequirementsBySelector, methodKey(true, x.selector), x);
+    }
+    for (const m of p.optionalInstanceMethods || []) {
+      const x = normalizeMethod({ ...m, optional: true }, name, false, 'protocol');
+      if (x) pushIndex(protocolRequirementsBySelector, methodKey(false, x.selector), x);
+    }
+    for (const m of p.optionalClassMethods || []) {
+      const x = normalizeMethod({ ...m, optional: true }, name, true, 'protocol');
       if (x) pushIndex(protocolRequirementsBySelector, methodKey(true, x.selector), x);
     }
   }
@@ -81,18 +91,31 @@ export function buildObjcRuntimeIndex(objcModel = {}) {
     const name = cat.name || '(category)';
     const entry = { ...cat, name, targetClass };
     categories.push(entry);
-    for (const m of cat.methods || cat.instanceMethods || []) {
+    const target = targetClass ? classes.get(targetClass) : null;
+    if (target && Array.isArray(cat.protocols) && cat.protocols.length) {
+      target.protocols = [...new Set([...(target.protocols || []), ...cat.protocols.map((p) => cleanClassName(p?.name || p)).filter(Boolean)])];
+    }
+    for (const m of cat.instanceMethods || cat.methods || []) {
       const x = normalizeMethod(m, targetClass, false, 'category');
-      if (x) { x.category = name; pushIndex(methodsBySelector, methodKey(false, x.selector), x); }
+      if (x) {
+        x.category = name;
+        pushIndex(methodsBySelector, methodKey(false, x.selector), x);
+        if (x.imp != null) pushIndex(methodsByIMP, x.imp.toString(), x);
+      }
     }
     for (const m of cat.classMethods || []) {
       const x = normalizeMethod(m, targetClass, true, 'category');
-      if (x) { x.category = name; pushIndex(methodsBySelector, methodKey(true, x.selector), x); }
+      if (x) {
+        x.category = name;
+        pushIndex(methodsBySelector, methodKey(true, x.selector), x);
+        if (x.imp != null) pushIndex(methodsByIMP, x.imp.toString(), x);
+      }
     }
   }
 
+  const completeness = objcModel.runtimeCompleteness || null;
   return {
-    runtime: 'objc', classes, protocols, categories, methodsBySelector, protocolRequirementsBySelector, methodsByIMP,
+    runtime: 'objc', classes, protocols, categories, methodsBySelector, protocolRequirementsBySelector, methodsByIMP, completeness,
     selectorCount: methodsBySelector.size,
     methodCount: [...methodsBySelector.values()].reduce((n, a) => n + a.length, 0),
     protocolRequirementCount: [...protocolRequirementsBySelector.values()].reduce((n, a) => n + a.length, 0),
@@ -178,7 +201,11 @@ export function resolveObjcDispatch(index, { receiverType = null, selector, clas
 
   const top = candidates[0];
   const second = candidates[1];
-  const unambiguous = !!top && top.imp != null && (!second || top.score - second.score >= 0.16 || (second.imp != null && top.imp.toString() === second.imp.toString()));
+  const uniqueByEvidence = !!top && top.imp != null && (!second || top.score - second.score >= 0.16 || (second.imp != null && top.imp.toString() === second.imp.toString()));
+  const categoryComplete = index.completeness?.categories?.complete !== false;
+  const metadataComplete = index.completeness?.complete !== false;
+  const partialBlocksVerification = cleanReceiver ? !categoryComplete : !metadataComplete;
+  const unambiguous = uniqueByEvidence && !partialBlocksVerification;
   return {
     resolved: unambiguous ? top : null,
     candidates,
@@ -187,7 +214,8 @@ export function resolveObjcDispatch(index, { receiverType = null, selector, clas
     receiverType: cleanReceiver,
     selector,
     classMethod: !!classMethod,
-    reason: unambiguous ? top.reason : 'multiple plausible Objective-C implementations',
+    reason: unambiguous ? top.reason : (partialBlocksVerification ? 'Objective-C runtime metadata is partial; unseen category/implementation may change dispatch' : 'multiple plausible Objective-C implementations'),
+    partial: partialBlocksVerification,
   };
 }
 
