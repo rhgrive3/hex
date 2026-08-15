@@ -143,7 +143,7 @@ function parseThin(bytes, opts) {
   if (linkeditData.functionStarts) parseFunctionStarts(r, linkeditData.functionStarts, image);
   let chainedImports = null;
   if (linkeditData.chainedFixups) chainedImports = parseChainedImports(r, linkeditData.chainedFixups, image);
-  if (linkeditData.chainedFixups && chainedImports) parseChainedBindingSites(r, linkeditData.chainedFixups, image, chainedImports);
+  if (linkeditData.chainedFixups && chainedImports) parseChainedBindingSites(r, linkeditData.chainedFixups, image, chainedImports, segmentOrder);
   for (const info of dyldInfos) {
     parseClassicBindings(r, info.bind, image, segmentOrder, 'bind');
     parseClassicBindings(r, info.weakBind, image, segmentOrder, 'weak-bind');
