@@ -136,6 +136,13 @@ export function createHexToolRegistry(context = {}, options = {}) {
     const result = await context.resolveObjcDispatch(receiverClass, selector, kind);
     return { ...result, candidates: (result?.candidates || []).slice(0, 32), requirements: (result?.requirements || []).slice(0, 32) };
   }, { cost: 'cheap', scopeSupport: broadScopes });
+  if (typeof context.resolveSwiftDispatch === 'function') register('resolve_swift_dispatch', 'Resolve a Swift vtable/witness/metadata dispatch through the active Swift runtime index. Ambiguity and partial metadata remain explicit.', {
+    type:'object', additionalProperties:true,
+    properties:{ kind:{type:'string',maxLength:64}, type:{type:'string',maxLength:512}, protocol:{type:'string',maxLength:512}, requirement:{}, slot:{type:'integer',minimum:0,maximum:1000000}, target:addressProperty() },
+  }, async (args) => {
+    const result=await context.resolveSwiftDispatch(args||{});
+    return { ...result, candidates:(result?.candidates||[]).slice(0,32), requirements:(result?.requirements||[]).slice(0,32) };
+  }, {cost:'cheap',scopeSupport:broadScopes});
   register('get_function', 'Get a compact function summary and bounded assembly/pseudocode excerpts.', addressSchema(), async ({ address }) => compactFunction(await legacy.get_function(address), await legacy.__loader.get(address), context), { cost: 'medium', scopeSupport: functionScopes });
   register('get_current_function', 'Get the active function if one exists; no active function is a valid result.', emptySchema(), async () => {
     const address = currentFunctionAddress(context);
