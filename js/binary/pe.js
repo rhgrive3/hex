@@ -1,6 +1,6 @@
 import { ByteView } from './reader.js';
 import { BinaryImage, functionSeed } from './model.js';
-import { parseImports, parseExports, parseExceptionFunctions, parseBaseRelocations, parseCoffSymbols, parseDelayImports, parseTlsDirectory, parseLoadConfig, resolveCoffSectionName, directory, peMachineName } from './pe-loader.js';
+import { parseImports, parseExports, parseExceptionFunctions, parseBaseRelocations, parseCoffSymbols, parseDelayImports, parseTlsDirectory, parseLoadConfig, resolveCoffSectionName, directory, peMachineName, createPEMetadataBudget } from './pe-loader.js';
 
 const IMAGE_DIRECTORY_ENTRY_EXPORT = 0;
 const IMAGE_DIRECTORY_ENTRY_IMPORT = 1;
@@ -31,7 +31,7 @@ function seedValidatedEntrypoint(image, entryRva, sizeOfImage, machine) {
   image.functions.push(functionSeed(address, { source: 'entrypoint', confidence: 0.9 }));
 }
 
-export function parsePE(input) {
+export function parsePE(input, options = {}) {
   const bytes = new ByteView(input).bytes;
   const r = new ByteView(bytes, { littleEndian: true });
   if (r.length < 0x40 || r.u16(0) !== 0x5a4d) throw new Error('not a PE file');
@@ -93,13 +93,14 @@ export function parsePE(input) {
   }
 
   if (entryRva) seedValidatedEntrypoint(image, entryRva, sizeOfImage, machine);
-  parseCoffSymbols(r, ptrSymbols, numberOfSymbols, image);
-  parseImports(r, directory(directories, IMAGE_DIRECTORY_ENTRY_IMPORT), image);
-  parseExports(r, directory(directories, IMAGE_DIRECTORY_ENTRY_EXPORT), image);
-  parseExceptionFunctions(r, directory(directories, IMAGE_DIRECTORY_ENTRY_EXCEPTION), image, machine);
-  parseBaseRelocations(r, directory(directories, IMAGE_DIRECTORY_ENTRY_BASERELOC), image, machine);
-  parseDelayImports(r, directory(directories, IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT), image);
-  parseTlsDirectory(r, directory(directories, IMAGE_DIRECTORY_ENTRY_TLS), image);
-  parseLoadConfig(r, directory(directories, IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG), image);
+  const metadataBudget = createPEMetadataBudget(image, { signal: options.signal, limits: options.metadataLimits });
+  parseCoffSymbols(r, ptrSymbols, numberOfSymbols, image, metadataBudget);
+  parseImports(r, directory(directories, IMAGE_DIRECTORY_ENTRY_IMPORT), image, metadataBudget);
+  parseExports(r, directory(directories, IMAGE_DIRECTORY_ENTRY_EXPORT), image, metadataBudget);
+  parseExceptionFunctions(r, directory(directories, IMAGE_DIRECTORY_ENTRY_EXCEPTION), image, machine, metadataBudget);
+  parseBaseRelocations(r, directory(directories, IMAGE_DIRECTORY_ENTRY_BASERELOC), image, machine, metadataBudget);
+  parseDelayImports(r, directory(directories, IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT), image, metadataBudget);
+  parseTlsDirectory(r, directory(directories, IMAGE_DIRECTORY_ENTRY_TLS), image, metadataBudget);
+  parseLoadConfig(r, directory(directories, IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG), image, metadataBudget);
   return image.finalize();
 }
