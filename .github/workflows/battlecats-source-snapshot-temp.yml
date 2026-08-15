@@ -1,0 +1,20 @@
+name: TEMP BattleCats source snapshot
+
+on:
+  push:
+    branches: [battlecats-accuracy-100-followup]
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+      - name: Pack source
+        run: tar --exclude=.git --exclude=source-main.tar.gz -czf source-main.tar.gz .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: battlecats-source-main
+          path: source-main.tar.gz
