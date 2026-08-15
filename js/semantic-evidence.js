@@ -8,8 +8,22 @@
 import { FAMILY, GROUP, fuse } from './evidence.js';
 
 function boundedStrength(v) {
-  if (v == null || !Number.isFinite(Number(v))) return 1;
+  if (v == null || !Number.isFinite(Number(v))) return 0;
   return Math.max(0, Math.min(1, Number(v)));
+}
+function isExplicitSemanticProof(f, e) {
+  const grade=String(f?.proofGrade || e?.proofGrade || f?.grade || e?.grade || '').toLowerCase();
+  return f?.verified === true || e?.verified === true || !!(f?.verificationOrigin || e?.verificationOrigin)
+    || ['verified','proof','proof-grade','deterministic'].includes(grade);
+}
+function runtimeCompleted(r) {
+  if (!r || typeof r !== 'object') return false;
+  const status=String(r.status || r.state || '').toLowerCase();
+  if (r.ok === false || r.success === false || r.complete === false || r.completed === false || r.truncated === true
+      || r.timedOut === true || r.timeout === true || r.budgetExceeded === true
+      || ['timeout','timed-out','failed','failure','error','crashed','truncated','partial','aborted','budget-exceeded'].includes(status)) return false;
+  return r.ok === true || r.success === true || r.complete === true || r.completed === true
+    || ['ok','success','succeeded','complete','completed'].includes(status);
 }
 
 /**
@@ -27,12 +41,15 @@ export function semanticEvidenceItems(facts, opts) {
       const key = e.group || e.id || ('ir-row:' + String(e.row));
       if (seen.has(key)) continue;
       seen.add(key);
+      const strength=boundedStrength(f.confidence);
+      if (strength <= 0) continue;
+      const verified=isExplicitSemanticProof(f,e);
       out.push({
-        code: 'semantic-ir-proof',
-        strength: boundedStrength(f.confidence),
-        lr,
-        family: FAMILY.VERIFIED,
-        kind: 'verified',
+        code: verified ? 'semantic-ir-proof' : 'semantic-ir-observation',
+        strength,
+        lr: verified ? lr : Math.min(lr, 4),
+        family: verified ? FAMILY.VERIFIED : FAMILY.USAGE,
+        kind: verified ? 'verified' : 'semantic',
         id: false,
         detail: {
           evidenceId: e.id || null,
@@ -55,13 +72,14 @@ export function semanticEvidenceItems(facts, opts) {
  * DATAFLOW proof that selected the same instruction.
  */
 export function runtimeEvidenceItems(runtimeResult, opts) {
-  if (!runtimeResult) return [];
+  if (!runtimeCompleted(runtimeResult)) return [];
   const o = opts || {};
   const out = [];
   const touched = runtimeResult.touchedFields || runtimeResult.modifiedFields || [];
   const branches = runtimeResult.takenBranches || [];
   const lr = o.lr != null ? Math.max(1, Number(o.lr)) : 18;
   const strength = boundedStrength(o.strength == null ? 1 : o.strength);
+  if (strength <= 0) return [];
   const seen = new Set();
   for (const t of touched) {
     const key = 'field:' + String(t.address != null ? t.address : t.offset != null ? t.offset : t.key);

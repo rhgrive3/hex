@@ -5,7 +5,7 @@ const CONDITIONS = new Set([
   'eq', 'ne', 'hs', 'cs', 'lo', 'cc', 'mi', 'pl', 'vs', 'vc',
   'hi', 'ls', 'ge', 'lt', 'gt', 'le',
 ]);
-const FLAG_SUBS = new Set(['sub', 'add', 'and']);
+const FLAG_SUBS = new Set(['sub', 'add', 'and', 'fsub']);
 
 function widthOf(bits) {
   const n = Number(bits || 64);
@@ -17,6 +17,13 @@ function unsignedValue(value, bits) {
 }
 
 function flagsFor(sub, left, right, bits = 64) {
+  if (sub === 'fsub') {
+    const a=Number(left), b=Number(right);
+    if (Number.isNaN(a) || Number.isNaN(b)) return { n:false, z:false, c:true, v:true, result:NaN, bits:widthOf(bits) };
+    if (a === b) return { n:false, z:true, c:true, v:false, result:0, bits:widthOf(bits) };
+    if (a < b) return { n:true, z:false, c:false, v:false, result:a-b, bits:widthOf(bits) };
+    return { n:false, z:false, c:true, v:false, result:a-b, bits:widthOf(bits) };
+  }
   bits = widthOf(bits);
   const a = unsignedValue(left, bits);
   const b = unsignedValue(right, bits);
@@ -127,6 +134,18 @@ export function buildNZCVConditionExpression(sub, cond, left, right, bits = 64, 
   cond = String(cond || '').toLowerCase();
   bits = widthOf(bits);
   if (!FLAG_SUBS.has(sub) || !CONDITIONS.has(cond) || !left || !right) return null;
+
+  if (sub === 'fsub') {
+    switch (cond) {
+      case 'eq': return directCompare('eq', left, right, false, bits, source);
+      case 'ne': return directCompare('ne', left, right, false, bits, source);
+      case 'mi': case 'lo': case 'cc': return directCompare('lt', left, right, true, bits, source);
+      case 'ls': return directCompare('le', left, right, true, bits, source);
+      case 'ge': return directCompare('ge', left, right, true, bits, source);
+      case 'gt': return directCompare('gt', left, right, true, bits, source);
+      default: return intrinsicCondition(sub, cond, left, right, bits, source);
+    }
+  }
 
   if (sub === 'sub') {
     switch (cond) {

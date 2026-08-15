@@ -102,23 +102,10 @@ export function findAccumulators(model, vg) {
       }
 
       if (!contains(now, before)) {
-        /*
-         * 前の値を含まない代入。2 通りある。
-         *
-         *   計算した値を入れ直した   … 分岐の反対側で同じ変数を作り直しただけ。
-         *                              持ち回りは続いている（入れ直し）。
-         *   読み込んだ／別物を入れた … そのレジスタは別の用途に移った。区間は終わり。
-         *
-         * ここを区別しないと、関数の後半でループの添字に使い回された同じ
-         * レジスタの `add x25, x25, #4` が、計算の工程として混ざる。
-         */
-        if (/^(bin|un|sel)$/.test(now.k)) {
-          if (!open.has(reg)) open.set(reg, { reg, steps: [], ops: new Set() });
-          open.get(reg).steps.push({
-            row: insn.row, address: insn.address, reg,
-            before, after: now, reseed: true, expr: now,
-          });
-        } else close(reg);
+        /* A definition independent of the reaching value may be a sibling CFG arm.
+         * Linear row order cannot prove continuity, so fail closed: terminate the
+         * current accumulator interval. A later dependent update may start a new one. */
+        close(reg);
         continue;
       }
       if (!open.has(reg)) open.set(reg, { reg, steps: [], ops: new Set() });
