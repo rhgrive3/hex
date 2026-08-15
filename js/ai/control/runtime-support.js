@@ -10,7 +10,20 @@ export function requiredScopeForTool(tool) {
 }
 export function wireMeta(request, controller, intent, sessionId = null) { return { sessionId, mode: request.mode, style: request.style, scope: controller.effectiveScope, requestedScope: request.scope, effectiveScope: controller.effectiveScope, intent, task: request.task || null, responseSchema: null }; }
 export function maxWireUsage(a, b) { return Object.fromEntries(Object.keys(a).map((key) => [key, Math.max(Number(a[key] || 0), Number(b[key] || 0))])); }
-export function memoryAnchor(snapshot, effectiveScope) { return { snapshotId: snapshot.id, binaryId: snapshot.binaryId, functionAddress: snapshot.currentFunction?.address || null, selection: snapshot.selection ? { start: snapshot.selection.start, end: snapshot.selection.end } : null, runtimeSessionId: snapshot.runtimeSessionIdentity || null, runtimeSessionState: snapshot.runtimeSessionState || (snapshot.runtimeSessionIdentity != null ? 'bound' : 'unknown'), effectiveScope }; }
+export function memoryAnchor(snapshot, effectiveScope, liveContext = null) {
+  let runtimeSessionId = snapshot.runtimeSessionIdentity || null;
+  let runtimeSessionState = snapshot.runtimeSessionState || (runtimeSessionId != null ? 'bound' : 'unknown');
+  // A runtime session can be created lazily by the first runtime tool in a
+  // turn. After the immutable snapshot has protected the turn, promote that
+  // observed binding into structured memory so the next user turn can enforce
+  // the exact session identity.
+  if (runtimeSessionState === 'unknown' && liveContext?.runtimeSessionKnown === true) {
+    const observed = liveContext.runtimeSession?.id ?? liveContext.runtime?.sessionId ?? liveContext.runtimeSessionId ?? null;
+    runtimeSessionId = observed == null ? null : String(observed);
+    runtimeSessionState = runtimeSessionId == null ? 'none' : 'bound';
+  }
+  return { snapshotId: snapshot.id, binaryId: snapshot.binaryId, functionAddress: snapshot.currentFunction?.address || null, selection: snapshot.selection ? { start: snapshot.selection.start, end: snapshot.selection.end } : null, runtimeSessionId, runtimeSessionState, effectiveScope };
+}
 export function sessionMatchesSnapshot(session, snapshot) {
   const sessionIdentity = session.binaryIdentity || null;
   const snapshotIdentity = snapshot.binaryIdentity || null;
