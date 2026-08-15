@@ -1,0 +1,99 @@
+name: AI Data Plane Clean Rebuild
+
+on:
+  push:
+    branches:
+      - ai-data-plane-upload-temp
+
+permissions:
+  contents: write
+
+jobs:
+  rebuild-test-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Verify staged archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .ai-fixed/part-00 .ai-fixed/part-01 .ai-fixed/part-02 .ai-fixed/part-03 .ai-fixed/part-04 .ai-fixed/part-05 > /tmp/fixed.b64
+          base64 -d /tmp/fixed.b64 > /tmp/ai-data-plane-fixed.tar.gz
+          echo '5ebfaac17e64cfa791284eabbcf1debbf53ac29aa0ff4c24ace3ebac7f5def40  /tmp/ai-data-plane-fixed.tar.gz' | sha256sum -c -
+          gzip -t /tmp/ai-data-plane-fixed.tar.gz
+
+      - name: Rebuild from latest main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          git checkout -B clean-data-plane origin/main
+          tar xzf /tmp/ai-data-plane-fixed.tar.gz
+
+      - name: Verify exact implementation hashes
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object js/agent/tools.js)" = '26c39bdfd7983f01c435a103d75bad5f4cfa3922'
+          test "$(git hash-object js/ai/evidence.js)" = 'ea7f0f016ce3ac37f617811cf72bc6b13623a6a7'
+          test "$(git hash-object js/ai/tools/index.js)" = '87f1665c7022aac9d0e01d863d0e1618475673b1'
+          test "$(git hash-object js/ai/tools/names.js)" = 'a81fff720448a24df24d2410d256c8e4ebd10945'
+          test "$(git hash-object js/ai/tools/paging/cursor.js)" = '0faf38cff2bb9ed75800c30af21b620ac61f81ef'
+          test "$(git hash-object js/ai/tools/projections/index.js)" = 'd18ae44d031ce99c320764a420911d985c292ba6'
+          test "$(git hash-object js/ai/tools/registry.js)" = 'c4af937d357406029b90e3d039f9279745a37066'
+          test "$(git hash-object js/ai/tools/storage/observation-store.js)" = '844fa524504d7d1064741d23e8680d25e3bc1156'
+          test "$(git hash-object js/query/planner.js)" = 'a51711828cf63f1d73a1a68087b36b6ca7f4a357'
+          test "$(git hash-object tests/ai-lossless-data-plane.mjs)" = '804a1eb56108a70270c79e0900676f2acbf49132'
+          test "$(git hash-object tests/ai-planner-data-plane.mjs)" = '3ca17274e07c93ff9e28d06d26642ffb13b66ccf'
+          test "$(git hash-object tests/issue-425-planner-budget.mjs)" = 'aa75d6934abf1cde4453429c1eaa4ce8681cf2ed'
+
+      - name: Enforce clean ownership diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected='js/agent/tools.js
+          js/ai/evidence.js
+          js/ai/tools/index.js
+          js/ai/tools/names.js
+          js/ai/tools/paging/cursor.js
+          js/ai/tools/projections/index.js
+          js/ai/tools/registry.js
+          js/ai/tools/storage/observation-store.js
+          js/query/planner.js
+          tests/ai-lossless-data-plane.mjs
+          tests/ai-planner-data-plane.mjs
+          tests/issue-425-planner-budget.mjs'
+          printf '%s\n' "$expected" | sed 's/^ *//' | sort > /tmp/expected
+          git add -N js/agent/tools.js js/ai/evidence.js js/ai/tools js/query/planner.js tests/ai-lossless-data-plane.mjs tests/ai-planner-data-plane.mjs tests/issue-425-planner-budget.mjs
+          git diff --name-only | sort > /tmp/actual
+          diff -u /tmp/expected /tmp/actual
+          git diff --check
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Targeted AI data-plane tests
+        run: |
+          node tests/ai-lossless-data-plane.mjs
+          node tests/ai-planner-data-plane.mjs
+          node tests/issue-425-planner-budget.mjs
+
+      - name: Full repository tests
+        run: npm run check
+
+      - name: Publish clean PR branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add js/agent/tools.js js/ai/evidence.js js/ai/tools js/query/planner.js tests/ai-lossless-data-plane.mjs tests/ai-planner-data-plane.mjs tests/issue-425-planner-budget.mjs
+          git commit -m 'feat(ai): complete lossless analysis data plane'
+          git push --force origin HEAD:finish-ai-analysis-data-plane
