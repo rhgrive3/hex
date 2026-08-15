@@ -784,7 +784,8 @@ test('SYMBOLS: 復元した名前と関数の先頭を、順番を保ったま�
   eq(idx.addFunctions([0x200n, 0x080n, 0x100n]), 2);
   eq(idx.functionCount, 3);
   eq(idx.isFunctionStart(0x200n), true);
-  eq(idx.functionAt(0x204n).start, 0x200n);
+  eq(idx.functionAt(0x200n).start, 0x200n, 'exact function starts remain identifiable');
+  eq(idx.functionAt(0x204n), null, 'unknown last-function extent must not absorb trailing bytes');
   eq(idx.addNames([]), 0);
   eq(idx.addFunctions(null), 0);
 });
@@ -973,7 +974,8 @@ test('PROGRAM: 文字列を参照している関数を、参照命令から特�
   const users = p.functionsReferencing(STR, 16n);
   eq(users.length, 2, '2 つの関数が参照している');
   eq(users[0].addr, PC);
-  eq(users[1].addr, PC + 0x40n);
+  eq(users[1].addr, null, 'end不明の最後の関数へ参照siteを誤帰属しない');
+  eq(users[1].site, PC + 0x50n, '関数帰属が不明でも参照site自体は失わない');
   eq(p.refsFrom(PC, PC + 0x40n).length, 1, 'この関数が指しているデータ');
 });
 
