@@ -30,6 +30,17 @@ jobs:
           p.write_text('\n'.join(lines)+'\n')
           PY
           python tools/fix-decompiler-ir-open-1.py
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('js/decompiler/pipeline-core.js'); s=p.read_text()
+          a=s.find('function postDominators(ir) {')
+          b=s.find('function controllingBranchForMemoryPhi', a)
+          if a < 0 or b < 0: raise SystemExit('post-dominator helper not found')
+          s=s[:a]+s[b:]
+          s=s.replace('  const pdom = postDominators(state.ir);\n','',1)
+          s=s.replace('    if (!pdom[yes]?.has(phi.block) || !pdom[no]?.has(phi.block)) continue;\n','',1)
+          p.write_text(s)
+          PY
       - name: Syntax
         run: |
           node --check js/decompiler/pipeline-core.js
@@ -50,7 +61,8 @@ jobs:
           assert.doesNotMatch(pipe,/if \(d\.negate\)/); assert.match(pipe,/d\.extra\?\.negate/);
           const bs=pipe.slice(pipe.indexOf('function branchSucc'),pipe.indexOf('function branchCondition'));
           assert.match(bs,/succ\.length !== 2/); assert.doesNotMatch(bs,/yes:\s*succ\[0\]/); assert.match(bs,/yes:\s*null, no:\s*null/);
-          assert.match(pipe,/function postDominators/); assert.match(pipe,/candidates\.length === 1/); assert.doesNotMatch(pipe,/candidates\.sort\(\(a, b\) => b\.row - a\.row\)/);
+          const phi=pipe.slice(pipe.indexOf('function controllingBranchForMemoryPhi'),pipe.indexOf('function phiValueExpression'));
+          assert.match(phi,/yr\.filter\(Boolean\)\.length !== 1/); assert.match(phi,/nr\.filter\(Boolean\)\.length !== 1/); assert.match(phi,/yr\[noIndex\] \|\| nr\[yesIndex\]/); assert.match(phi,/candidates\.length === 1/); assert.doesNotMatch(phi,/candidates\.sort\(\(a, b\) => b\.row - a\.row\)/);
           assert.match(ir,/addressDispOp/); assert.match(ir,/writebackDispOp/); assert.match(ir,/mem\?\.mode === 'post' \? 0n/); assert.match(ir,/value: writebackDisp/);
           assert.doesNotMatch(ir,/if \(irCache\.has\(model\)\)/); assert.match(ir,/function irConfigurationKey/); assert.match(ir,/prototypeRevision/); assert.match(ir,/evidenceGeneration/);
           const ret=sem.slice(sem.indexOf('function returnValueAt'),sem.indexOf('function feedsReturn'));
