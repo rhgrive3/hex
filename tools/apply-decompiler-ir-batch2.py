@@ -36,9 +36,6 @@ function stackReturnKey(expression) {
 function returnSiteForNode(node, ir, allowSingleFallback = false) {
   const rets = (ir?.instructions || []).filter((inst) => inst.op === 'ret');
   if (!rets.length) return null;
-  // The return statement's own source is authoritative for the RET site. The
-  // expression source describes where the value came from and may belong to a
-  // different block/path, so it must never be used to select a physical RET.
   const source = node?.source || {};
   const rows = new Set((source.rows || []).map(Number));
   const irIds = new Set((source.ir || []).map(Number));
@@ -102,7 +99,7 @@ p.write_text(s)
 p=Path('js/ir-core.js'); s=p.read_text()
 anchor="""function locationOf(inst) {
   const a = inst.addr;"""
-helper="""function pointerProvenanceOf(value, memo = new Map(), active = new Set()) {
+helper="""export function pointerProvenanceOf(value, memo = new Map(), active = new Set()) {
   if (!value) return null;
   if (memo.has(value.id)) return memo.get(value.id);
   if (active.has(value.id)) return null;
@@ -175,8 +172,6 @@ new="""  if (storeLoc.kind === MK.FIELD) {
     if (storeLoc.baseRoot != null && otherLoc.baseRoot != null && storeLoc.baseRoot === otherLoc.baseRoot) {
       return overlap(storeLoc.disp,sa,otherLoc.disp,sb);
     }
-    // Different SSA roots are not proof of distinct objects. Treat them as
-    // may-alias and install a clobber so a stale reaching store cannot survive.
     return true;
   }"""
 if old not in s: raise SystemExit('#574 store overlap anchor missing')
