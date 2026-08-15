@@ -18,11 +18,16 @@ jobs:
         with:
           ref: battlecats-accuracy-100-sol
           fetch-depth: 0
-      - name: Apply measured generic accuracy patch
+      - name: Rebase measured generic accuracy patch onto current main
         shell: bash
         run: |
+          set -euxo pipefail
           base64 -d .github/battlecats-accuracy-sol.patch.gz.b64 | gzip -dc > /tmp/bc.patch
-          git apply --3way /tmp/bc.patch
+          git cat-file blob 87164ec7ebb74dc82de37bde8ab9e48a6061dc03 > /tmp/worker-base.js
+          mkdir -p /tmp/bc-local/js
+          cp /tmp/worker-base.js /tmp/bc-local/js/worker-fixes.js
+          patch -s -p1 -d /tmp/bc-local < /tmp/bc.patch
+          git merge-file js/worker-fixes.js /tmp/worker-base.js /tmp/bc-local/js/worker-fixes.js
           node --check js/worker-fixes.js
           rm .github/battlecats-accuracy-sol.patch.gz.b64
           rm .github/workflows/battlecats-accuracy-sol-temp.yml
