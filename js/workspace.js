@@ -193,7 +193,8 @@ export class ProductWorkspace{
   exportProject(){const project=this.snapshot();if(!project)throw new Error('project-unbound');return exportHexProject(project,cleanName(this.identity?.metadata?.name)+'.hexproj');}
   async importProject(input){
     const liveHash=this.app?.backend?.contentHash||null;
-    if(!this.identity||!liveHash||liveHash!==this.identity.hash)await this.bind();
+    const liveKey=liveHash?identityKey(binaryIdentity(this.app,liveHash)):'';
+    if(!this.identity||!liveHash||identityKey(this.identity)!==liveKey)await this.bind();
     if(!this.identity)throw staleWorkspaceError();
     const revision=this.bindingRevision, boundKey=identityKey(this.identity);
     const sourceInfo=this.app?.store?.get?.('fileInfo')||null;
@@ -202,10 +203,10 @@ export class ProductWorkspace{
     const assertCurrent=()=>{
       this._assertBinding(revision);
       const currentHash=this.app?.backend?.contentHash||null;
-      if(identityKey(this.identity)!==boundKey || this.app?.store?.get?.('fileInfo')!==sourceInfo ||
+      const currentLiveKey=currentHash?identityKey(binaryIdentity(this.app,currentHash)):'';
+      if(identityKey(this.identity)!==boundKey || currentLiveKey!==boundKey || this.app?.store?.get?.('fileInfo')!==sourceInfo ||
         (this.app?.store?.get?.('sliceIndex')??-1)!==sourceSlice ||
-        (sourceBackendGen!=null&&this.app?.backend?.gen!==sourceBackendGen) ||
-        !currentHash || currentHash!==this.identity?.hash)throw staleWorkspaceError();
+        (sourceBackendGen!=null&&this.app?.backend?.gen!==sourceBackendGen) || !currentHash)throw staleWorkspaceError();
     };
     const project=await importHexProject(input);assertCurrent();
     const match=sameProjectIdentity(project,this.identity);
@@ -261,7 +262,8 @@ export class ProductWorkspace{
     this.busy=task;return task;
   }
   getBinaryDiff(){return this.diffState;}
-  dispose(){this.bindSequence++;this.identity=null;this._resetBoundState();}
+  invalidate(){this.bindSequence++;this.identity=null;this._resetBoundState();}
+  dispose(){this.invalidate();}
 }
 
 export default ProductWorkspace;

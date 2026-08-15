@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hex for ChatGPT
 // @namespace    https://github.com/rhgrive3/hex
-// @version      1.0.1786803850
+// @version      1.0.1786804172
 // @description  Run the Hex binary analysis workbench on ChatGPT Web.
 // @match        https://chatgpt.com/*
 // @run-at       document-idle
@@ -49493,7 +49493,8 @@ ${rendered}` : rendered,
         }
         async importProject(input2) {
           const liveHash = this.app?.backend?.contentHash || null;
-          if (!this.identity || !liveHash || liveHash !== this.identity.hash) await this.bind();
+          const liveKey = liveHash ? identityKey(binaryIdentity(this.app, liveHash)) : "";
+          if (!this.identity || !liveHash || identityKey(this.identity) !== liveKey) await this.bind();
           if (!this.identity) throw staleWorkspaceError();
           const revision = this.bindingRevision, boundKey = identityKey(this.identity);
           const sourceInfo = this.app?.store?.get?.("fileInfo") || null;
@@ -49502,7 +49503,8 @@ ${rendered}` : rendered,
           const assertCurrent = () => {
             this._assertBinding(revision);
             const currentHash = this.app?.backend?.contentHash || null;
-            if (identityKey(this.identity) !== boundKey || this.app?.store?.get?.("fileInfo") !== sourceInfo || (this.app?.store?.get?.("sliceIndex") ?? -1) !== sourceSlice || sourceBackendGen != null && this.app?.backend?.gen !== sourceBackendGen || !currentHash || currentHash !== this.identity?.hash) throw staleWorkspaceError();
+            const currentLiveKey = currentHash ? identityKey(binaryIdentity(this.app, currentHash)) : "";
+            if (identityKey(this.identity) !== boundKey || currentLiveKey !== boundKey || this.app?.store?.get?.("fileInfo") !== sourceInfo || (this.app?.store?.get?.("sliceIndex") ?? -1) !== sourceSlice || sourceBackendGen != null && this.app?.backend?.gen !== sourceBackendGen || !currentHash) throw staleWorkspaceError();
           };
           const project = await importHexProject(input2);
           assertCurrent();
@@ -49607,10 +49609,13 @@ ${rendered}` : rendered,
         getBinaryDiff() {
           return this.diffState;
         }
-        dispose() {
+        invalidate() {
           this.bindSequence++;
           this.identity = null;
           this._resetBoundState();
+        }
+        dispose() {
+          this.invalidate();
         }
       };
     }
@@ -50562,6 +50567,8 @@ ${rendered}` : rendered,
             return;
           }
           const openEpoch = this.backend.gen;
+          this.workspace?.invalidate();
+          this.activeProject = null;
           closeAllSheets();
           this.sampleOpen = sampleOpen;
           this.detailRefresh = null;
@@ -50908,6 +50915,8 @@ ${rendered}` : rendered,
           const info = this.store.get("fileInfo");
           if (!info || !info.slices[index2] || info.slices[index2].error) return;
           this.workspace?.autosave();
+          this.workspace?.invalidate();
+          this.activeProject = null;
           this.noteAttachController?.abort();
           this.backend.advanceEpoch();
           this.forgetSemantics(true);

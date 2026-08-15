@@ -886,6 +886,8 @@ class App {
       return;
     }
     const openEpoch=this.backend.gen;
+    this.workspace?.invalidate();
+    this.activeProject=null;
     closeAllSheets();
     this.sampleOpen=sampleOpen;
     this.detailRefresh=null;
@@ -1196,6 +1198,8 @@ class App {
     const info=this.store.get('fileInfo');
     if (!info || !info.slices[index] || info.slices[index].error) return;
     this.workspace?.autosave();
+    this.workspace?.invalidate();
+    this.activeProject=null;
     this.noteAttachController?.abort();
     this.backend.advanceEpoch();
     this.forgetSemantics(true);

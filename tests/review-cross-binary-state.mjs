@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { ProductWorkspace, sameProjectIdentity } from '../js/workspace.js';
 import { createAiEngine } from '../js/ai/ui/bridge.js';
 import { createHexProject, serializeHexProject } from '../js/project/index.js';
@@ -166,6 +167,54 @@ function oneFunction(name,address=0x1000n){
   try{await pending;}catch(error){stale=error;}
   assert.equal(stale?.code,'HEX_WORKSPACE_STALE');
   assert.equal(notesB.names.size,0,'stale project import must not mutate the new file notes');
+}
+
+// Starting an import after a same-file slice switch but before workspace.bind()
+// must not trust the old slice identity merely because the content hash matches.
+{
+  const app=makeApp();
+  const info=makeInfo('same.bin','A');
+  info.slices=[
+    {offset:0n,size:2048n,info:{uuid:'A0',architecture:'arm64'},capability:{architecture:'arm64'},regions:[region]},
+    {offset:2048n,size:2048n,info:{uuid:'A1',architecture:'arm64'},capability:{architecture:'arm64'},regions:[region]},
+  ];
+  app.store.values.fileInfo=info;
+  app.store.values.sliceIndex=0;
+  const workspace=new ProductWorkspace(app,{storage:new Storage(),backendFactory:()=>({})});
+  app.workspace=workspace;
+  await workspace.bind();
+  const text=serializeHexProject(createHexProject({binary:workspace.identity,userNames:[{address:0x1000n,value:'slice-a'}]}));
+
+  const notesB=new Notes();
+  app.backend.gen++;
+  app.store.values.sliceIndex=1;
+  app.notes=notesB;
+  let rejected=null;
+  try{await workspace.importProject(text);}catch(error){rejected=error;}
+  assert.equal(rejected?.code,'HEX_PROJECT_BINARY_MISMATCH');
+  assert.equal(rejected?.detail?.field,'sliceIndex');
+  assert.equal(notesB.names.size,0,'old-slice project must not mutate the new slice notes');
+  assert.equal(workspace.identity?.metadata?.sliceIndex,1,'import preflight must rebind to the live slice');
+}
+
+// The app must invalidate the bound workspace immediately when a new file or
+// slice becomes active; waiting for async note attachment leaves a stale window.
+{
+  const source=fs.readFileSync(new URL('../js/app.js',import.meta.url),'utf8');
+  const openStart=source.indexOf('  async openFile(');
+  const openEpochAt=source.indexOf('const openEpoch=this.backend.gen;',openStart);
+  const openInvalidateAt=source.indexOf('this.workspace?.invalidate();',openEpochAt);
+  const openClearAt=source.indexOf('this.activeProject=null;',openInvalidateAt);
+  const openStoreAt=source.indexOf('this.store.set({file,fileInfo:info,selectedRow:-1});',openClearAt);
+  assert.ok(openStart>=0 && openEpochAt>openStart && openInvalidateAt>openEpochAt && openClearAt>openInvalidateAt && openStoreAt>openClearAt);
+
+  const sliceStart=source.indexOf('  async selectSlice(');
+  const sliceAutosaveAt=source.indexOf('this.workspace?.autosave();',sliceStart);
+  const sliceInvalidateAt=source.indexOf('this.workspace?.invalidate();',sliceAutosaveAt);
+  const sliceClearAt=source.indexOf('this.activeProject=null;',sliceInvalidateAt);
+  const sliceAbortAt=source.indexOf('this.noteAttachController?.abort();',sliceClearAt);
+  const sliceEpochAt=source.indexOf('this.backend.advanceEpoch();',sliceAbortAt);
+  assert.ok(sliceStart>=0 && sliceAutosaveAt>sliceStart && sliceInvalidateAt>sliceAutosaveAt && sliceClearAt>sliceInvalidateAt && sliceAbortAt>sliceClearAt && sliceEpochAt>sliceAbortAt);
 }
 
 // The real UI adapter must expose the live Backend/ProductWorkspace content hash
