@@ -19,6 +19,11 @@ export class SymbolIndex {
     /* 1 = 外へ公開されている名前（エクスポート）。0 = このファイルの中だけ。 */
     this.flags = r.flags || new Uint8Array(this.addrs.length);
     this.funcs = r.funcs || new BigUint64Array(0);
+    /* Optional exact function ends. A zero/missing entry means unknown. */
+    this.funcEnds = r.funcEnds || null;
+    /* Executable regions are the trust boundary for containment. */
+    this.functionRegions = [];
+    this.setFunctionRegions(r.regions || [], false);
     this.capped = !!r.capped;
     /* True only when LC_FUNCTION_STARTS itself was parsed successfully. ObjC,
        vtables and other metadata may add exact starts without making the list
@@ -155,12 +160,71 @@ export class SymbolIndex {
     return i >= 0 && this.funcs[i] === addr;
   }
 
+  /** Function containment must never cross executable-region gaps. */
+  setFunctionRegions(regions, bump = true) {
+    const out = [];
+    for (const region of regions || []) {
+      if (!region || !region.exec || region.vmAddr == null || region.size == null) continue;
+      try {
+        const start = BigInt(region.vmAddr);
+        const size = BigInt(region.size);
+        if (size <= 0n) continue;
+        out.push({ start, end: start + size, id: region.id ?? null });
+      } catch { /* malformed/untrusted region metadata: ignore */ }
+    }
+    out.sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : 0));
+    this.functionRegions = out;
+    if (bump) this.gen = ++SymbolIndex.gen;
+    return out.length;
+  }
+
+  _functionRegion(addr) {
+    const rs = this.functionRegions;
+    let lo = 0, hi = rs.length - 1, best = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (rs[mid].start <= addr) { best = mid; lo = mid + 1; }
+      else hi = mid - 1;
+    }
+    if (best < 0) return null;
+    const r = rs[best];
+    return addr < r.end ? r : null;
+  }
+
+  _functionEnd(index) {
+    if (index < 0 || index >= this.funcs.length) return null;
+    const start = this.funcs[index];
+    const region = this._functionRegion(start);
+    if (this.funcEnds && index < this.funcEnds.length) {
+      const explicit = this.funcEnds[index];
+      if (explicit != null && explicit > start) {
+        if (region && explicit > region.end) return null;
+        return explicit;
+      }
+    }
+    if (index + 1 >= this.funcs.length) return null;
+    const next = this.funcs[index + 1];
+    if (next <= start || next - start > 0x40000n) return null;
+    if (this.functionRegions.length) {
+      const nextRegion = this._functionRegion(next);
+      if (!region || !nextRegion || nextRegion !== region) return null;
+    }
+    return next;
+  }
+
   /** そのアドレスを含む関数の {start, end}。分からなければ null。 */
   functionAt(addr) {
     const i = this._floor(this.funcs, addr);
     if (i < 0) return null;
     const start = this.funcs[i];
-    const end = i + 1 < this.funcs.length ? this.funcs[i + 1] : null;
+    const end = this._functionEnd(i);
+    if (addr === start) return { start, end, index: i };
+    if (end == null || addr >= end) return null;
+    if (this.functionRegions.length) {
+      const startRegion = this._functionRegion(start);
+      const addrRegion = this._functionRegion(addr);
+      if (!startRegion || !addrRegion || startRegion !== addrRegion) return null;
+    }
     return { start, end, index: i };
   }
 
@@ -173,12 +237,13 @@ export class SymbolIndex {
       const a = this.funcs[i];
       if (a < lo) continue;
       if (hi != null && a >= hi) break;
-      const next = i + 1 < this.funcs.length ? this.funcs[i + 1] : hi;
+      const trustedEnd = this._functionEnd(i);
+      const end = trustedEnd != null && (hi == null || trustedEnd <= hi) ? trustedEnd : null;
       const e = this.exact(a);
       out.push({
         addr: a,
         name: e ? e.name : null,
-        size: next != null && next > a ? next - a : null,
+        size: end != null && end > a ? end - a : null,
       });
     }
     return out;
@@ -255,6 +320,7 @@ export class SymbolIndex {
     const out = new BigUint64Array(all.length);
     for (let i = 0; i < all.length; i++) out[i] = all[i];
     this.funcs = out;
+    this.funcEnds = null;
     this.gen = ++SymbolIndex.gen;
     return added;
   }
@@ -262,6 +328,7 @@ export class SymbolIndex {
   /** 推測で得た関数の先頭を取り込む（LC_FUNCTION_STARTS がないとき）。 */
   setGuessedFunctions(starts) {
     this.funcs = starts || new BigUint64Array(0);
+    this.funcEnds = null;
     this.guessed = true;
     this.gen = ++SymbolIndex.gen;
   }

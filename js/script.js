@@ -139,7 +139,11 @@ export function createApi(app, out) {
     },
 
     /** そのアドレスを含む関数の {start, end}。 */
-    functionAt(addr) { return app.symbols.functionAt(BigInt(addr)); },
+    functionAt(addr) {
+      /* Bind containment to the active slice's executable regions before lookup. */
+      app.symbols.setFunctionRegions(app.store.get('regions') || [], false);
+      return app.symbols.functionAt(BigInt(addr));
+    },
 
     /* ── 中身を読む ───────────────────────────────────── */
 

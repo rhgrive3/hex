@@ -241,6 +241,7 @@ def read_methods(img, vm, rebase):
         return []
     entsize_raw, count = struct.unpack('<II', hdr)
     small = bool(entsize_raw & 0x80000000)
+    direct_selectors = bool(entsize_raw & 0x40000000)
     entsize = entsize_raw & 0xFFFC
     if entsize not in (12, 24) or count > 8192:
         return []
@@ -252,9 +253,15 @@ def read_methods(img, vm, rebase):
             break
         if small:
             n_off, t_off, i_off = struct.unpack('<iii', b[:12])
-            # name は selector 参照（*const char**）
+            # Relative method lists have two selector encodings.  With
+            # METHOD_LIST_FLAG_RELATIVE_DIRECT_SELECTORS (0x40000000), the
+            # name relative pointer targets the selector string directly.
+            # Otherwise it targets a selref whose pointee is the string.
             sel_ref = p + n_off
-            sel_p = rebase.get(sel_ref, img.u64(sel_ref) or 0)
+            if direct_selectors:
+                sel_p = sel_ref
+            else:
+                sel_p = rebase.get(sel_ref, img.u64(sel_ref) or 0)
             name = img.cstr(sel_p) if img.off(sel_p) is not None else None
             imp = p + 8 + i_off
         else:

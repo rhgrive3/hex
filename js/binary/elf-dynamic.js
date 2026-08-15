@@ -1,4 +1,5 @@
 import { functionSeed } from './model.js';
+import { createRelocationBudget } from './relocation-budget.js';
 import { collectAndroidPackedRelocations, collectRelrRelocations, parseDynamicSymbolVersions } from './elf-extended.js';
 
 const PT_DYNAMIC = 2;
@@ -71,9 +72,13 @@ export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
     if (name) image.metadata.soname = name;
   }
 
-  const relocs = collectDynamicRelocations(r, tags, image, bits);
-  relocs.push(...collectRelrRelocations(r, tags, image, bits));
-  relocs.push(...collectAndroidPackedRelocations(r, tags, image, bits));
+  const relocationBudget = createRelocationBudget({
+    onLimit(message) { markDynamicPartial(image, `relocation decode budget exceeded: ${message}`); },
+  });
+  const relocs = collectDynamicRelocations(r, tags, image, bits, relocationBudget);
+  if (!relocationBudget.stopped) collectRelrRelocations(r, tags, image, bits, { budget: relocationBudget, out: relocs });
+  if (!relocationBudget.stopped) collectAndroidPackedRelocations(r, tags, image, bits, { budget: relocationBudget, out: relocs });
+  image.metadata.programDynamicRelocationBudget = relocationBudget.snapshot(relocs.length);
   let symbolCount = 0;
   let symbolCountSource = 'none';
   if (symtab != null && symentValid) {
@@ -163,12 +168,12 @@ function applyVersionMetadata(image, versions) {
   }
 }
 
-function collectDynamicRelocations(r, tags, image, bits) {
+function collectDynamicRelocations(r, tags, image, bits, budget) {
   const out = [];
   const seen = new Set();
   const one = (tag) => tags.get(tag)?.[0] ?? null;
   const addTable = (va, size, ent, rela, source) => {
-    if (va == null || size == null || size <= 0n) return;
+    if (budget.stopped || va == null || size == null || size <= 0n) return;
     const off = vaToOffset(image, va);
     const n = toSafeNumber(size);
     const minimum = BigInt(bits === 64 ? (rela ? 24 : 16) : (rela ? 12 : 8));
@@ -176,28 +181,30 @@ function collectDynamicRelocations(r, tags, image, bits) {
     if (requested < minimum) { markDynamicPartial(image, `${source} entry size ${requested} is smaller than ${minimum}`); return; }
     const e = toSafeNumber(requested);
     if (off == null || n == null || e == null || e <= 0 || off + n > r.length) return;
-    const count = Math.min(Math.floor(n / e), 10_000_000);
-    for (let i = 0; i < count; i++) {
-      const p = off + i * e;
+    if (!budget.claimInput(n, source)) return;
+    const count = Math.floor(n / e);
+    for (let i = 0; i < count && !budget.stopped; i++) {
+      if (!budget.step()) break;
+      const q = off + i * e;
       let address, addend = null, symIndex, type;
       if (bits === 64) {
-        address = r.u64(p); const info = r.u64(p + 8); symIndex = Number(info >> 32n); type = Number(info & 0xffffffffn);
-        if (rela) addend = r.i64(p + 16);
+        address = r.u64(q); const info = r.u64(q + 8); symIndex = Number(info >> 32n); type = Number(info & 0xffffffffn);
+        if (rela) addend = r.i64(q + 16);
       } else {
-        address = BigInt(r.u32(p)); const raw = r.u32(p + 4); symIndex = raw >>> 8; type = raw & 0xff;
-        if (rela) addend = BigInt(r.i32(p + 8));
+        address = BigInt(r.u32(q)); const raw = r.u32(q + 4); symIndex = raw >>> 8; type = raw & 0xff;
+        if (rela) addend = BigInt(r.i32(q + 8));
       }
       const key = `${address}:${symIndex}:${type}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      out.push({ address, symIndex, type, addend, source });
+      if (!budget.push(out, { address, symIndex, type, addend, source }, source)) break;
     }
   };
 
   addTable(one(DT_RELA), one(DT_RELASZ), one(DT_RELAENT), true, 'PT_DYNAMIC-RELA');
   addTable(one(DT_REL), one(DT_RELSZ), one(DT_RELENT), false, 'PT_DYNAMIC-REL');
   const jmprel = one(DT_JMPREL), pltsz = one(DT_PLTRELSZ), pltrel = one(DT_PLTREL);
-  if (jmprel != null && pltsz != null) {
+  if (!budget.stopped && jmprel != null && pltsz != null) {
     if (pltrel === DT_RELA) addTable(jmprel, pltsz, one(DT_RELAENT), true, 'PT_DYNAMIC-JMPREL-RELA');
     else if (pltrel === DT_REL) addTable(jmprel, pltsz, one(DT_RELENT), false, 'PT_DYNAMIC-JMPREL-REL');
     else markDynamicPartial(image, `DT_PLTREL has unsupported value ${pltrel == null ? '<missing>' : pltrel}; JMPREL was not decoded`);
