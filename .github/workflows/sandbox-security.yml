@@ -1,0 +1,32 @@
+name: Sandbox security
+
+on:
+  pull_request:
+    paths:
+      - 'js/sandbox.js'
+      - 'js/plugin*.js'
+      - 'js/plugins/**'
+      - 'js/**/script*.js'
+      - 'tests/sandbox.mjs'
+      - 'package.json'
+      - '.github/workflows/sandbox-security.yml'
+  workflow_dispatch:
+
+jobs:
+  sandbox-security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install Playwright Chromium
+        run: |
+          npm install --no-save playwright
+          npx playwright install-deps chromium
+          npx playwright install chromium
+      - name: Run sandbox security regression
+        env:
+          CI: '1'
+        run: npm run sandbox

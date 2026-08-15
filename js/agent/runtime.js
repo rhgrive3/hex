@@ -38,7 +38,8 @@ function deterministicAnswer(plan) {
       missingEvidence: plan && plan.missingEvidence && plan.missingEvidence.length ? plan.missingEvidence : ['no-verified-candidate'],
     };
   }
-  const verified = !!(best.verification && (best.verification.verified || (best.verification.results && best.verification.results.length)));
+  const verdict = best.verification?.verdict?.status || best.verification?.verdict || best.verification?.status || null;
+  const verified = best.verification?.verified === true || verdict === 'confirmed' || verdict === 'supported';
   const semanticCount = (best.semanticFacts || []).length;
   return {
     conclusion: { address: best.address, name: best.name || null },
@@ -137,14 +138,28 @@ export async function runAgent(config) {
     if (deadlineExceeded()) { stopReason = 'timeout'; break; }
     let step;
     try {
-      step = await llm.next({
-        goal, query, observations: observations.slice(), availableTools,
-        budget: {
-          remainingToolCalls: budget.maxToolCalls - call,
-          remainingFunctions: Math.max(0, budget.maxFunctions - usedFunctionCount()),
-          remainingDisassembly: Math.max(0, budget.maxDisassembly - disassembly),
-        },
-      });
+      const remainingMs = Math.max(1, budget.timeoutMs - (Date.now() - started));
+      const controller = new AbortController();
+      const external = cfg.signal;
+      const abort = () => controller.abort(external?.reason || 'cancelled');
+      if (external?.aborted) abort(); else external?.addEventListener?.('abort', abort, {once:true});
+      let timer;
+      try {
+        step = await Promise.race([
+          Promise.resolve(llm.next({
+            goal, query, observations: observations.slice(), availableTools, signal:controller.signal,
+            budget: {
+              remainingToolCalls: budget.maxToolCalls - call,
+              remainingFunctions: Math.max(0, budget.maxFunctions - usedFunctionCount()),
+              remainingDisassembly: Math.max(0, budget.maxDisassembly - disassembly),
+              remainingMs,
+            },
+          })),
+          new Promise((_, reject) => { timer=setTimeout(() => { controller.abort('timeout'); reject(new Error('timeout')); }, remainingMs); }),
+        ]);
+      } finally {
+        clearTimeout(timer); external?.removeEventListener?.('abort', abort);
+      }
     } catch (err) {
       stopReason = 'model-error:' + ((err && err.message) || String(err));
       break;
