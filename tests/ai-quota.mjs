@@ -3,8 +3,6 @@ import fs from 'node:fs';
 import worker from '../worker.js';
 import { AI_QUOTA, acquireQuotaState, releaseQuotaState } from '../js/ai/quota.js';
 
-// Pure quota policy: the existing 30/min IP ceiling survives restarts/isolate
-// splits because it is computed from persisted state, not module memory.
 {
   let state = null;
   const now = 1_000_000;
@@ -20,8 +18,6 @@ import { AI_QUOTA, acquireQuotaState, releaseQuotaState } from '../js/ai/quota.j
   assert.ok(denied.result.retryAfterMs > 0);
 }
 
-// Per-session concurrency is stricter than the per-IP ceiling, while different
-// sessions on the same IP still share the global active-request cap.
 {
   let state = null;
   const now = 2_000_000;
@@ -58,15 +54,11 @@ function createSharedQuotaBinding() {
   let serial = 0;
   return {
     getByName(name) {
-      // A new stub object each time models independent Worker isolates talking to
-      // the same Durable Object storage/state.
       return {
         async acquire({ sessionId }) {
           const key = String(name);
           const acquired = acquireQuotaState(records.get(key), {
-            now: Date.now(),
-            token: `lease-${++serial}`,
-            sessionId,
+            now: Date.now(), token: `lease-${++serial}`, sessionId,
           });
           records.set(key, acquired.state);
           return acquired.result;
@@ -84,8 +76,7 @@ function createSharedQuotaBinding() {
 }
 
 const turnBody = (sessionId = 'shared') => JSON.stringify({
-  sessionId,
-  mode: 'chat', style: 'analyst', scope: 'auto',
+  sessionId, mode: 'chat', style: 'analyst', scope: 'auto',
   context: { request: { goal: 'What is ASLR?' } }, messages: [], tools: [],
 });
 const legacyBody = JSON.stringify({
@@ -95,11 +86,7 @@ const legacyBody = JSON.stringify({
 function request(path, body, ip = '203.0.113.10', sessionId = 'shared') {
   return new Request(`https://example.test${path}`, {
     method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      'cf-connecting-ip': ip,
-      'x-hex-session': sessionId,
-    },
+    headers: { 'content-type': 'application/json', 'cf-connecting-ip': ip, 'x-hex-session': sessionId },
     body,
   });
 }
@@ -125,19 +112,26 @@ globalThis.fetch = async (_url, options) => {
 };
 
 try {
-  // #470 + #469 integration: two independent env/handler facades share one
-  // durable quota state, and both API routes consume the same 30/min budget.
   const shared = createSharedQuotaBinding();
   const envA = envFor(shared);
   const envB = envFor(shared);
+  const primaryKey = 'ip:203.0.113.10';
   for (let i = 0; i < AI_QUOTA.ipRateLimit; i++) {
     const isTurn = i % 2 === 0;
+    const route = isTurn ? '/api/ai/turn' : '/api/gemini';
     const response = await worker.fetch(
-      isTurn ? request('/api/ai/turn', turnBody()) : request('/api/gemini', legacyBody),
+      isTurn ? request(route, turnBody()) : request(route, legacyBody),
       i % 4 < 2 ? envA : envB,
     );
-    assert.equal(response.status, 200, `shared request ${i + 1} should pass`);
+    if (response.status !== 200) {
+      const detail = await response.text();
+      const state = shared.record(primaryKey);
+      throw new Error(`shared request ${i + 1} ${route} failed ${response.status}: ${detail}; active leases=${JSON.stringify(state?.leases || {})}`);
+    }
     if (isTurn) await response.json(); else await response.text();
+    const state = shared.record(primaryKey);
+    assert.equal(Object.keys(state?.leases || {}).length, 0,
+      `completed sequential request ${i + 1} ${route} must release its concurrency lease before completion`);
   }
   const over = await worker.fetch(request('/api/gemini', legacyBody), envB);
   assert.equal(over.status, 429, '31st request must be rejected across routes/isolate facades');
@@ -148,8 +142,6 @@ try {
   assert.equal(otherIp.status, 200, 'a different IP has an independent quota object');
   await otherIp.json();
 
-  // Fail closed: an accidentally missing/misconfigured binding must never fall
-  // back to a process-local limiter and silently expose the server API key.
   const missing = await worker.fetch(request('/api/ai/turn', turnBody(), '203.0.113.12'), {
     GEMINI_API_KEY: 'server-only', ASSETS: { fetch: () => new Response('asset') },
   });
@@ -167,8 +159,6 @@ try {
   globalThis.fetch = originalFetch;
 }
 
-// Production configuration must route through the Cloudflare-only entrypoint
-// and provision exactly one SQLite-backed DO class binding.
 {
   const cfg = JSON.parse(fs.readFileSync(new URL('../wrangler.jsonc', import.meta.url), 'utf8'));
   assert.equal(cfg.main, './worker-entry.js');
