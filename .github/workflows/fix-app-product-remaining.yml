@@ -21,7 +21,11 @@ jobs:
           old="if (d.negate) out = expr.unary('neg', out, v.bits || 64, signedFor(state, v), origin(d, v));"
           new="if (d.extra?.negate) out = expr.unary('neg', out, v.bits || 64, signedFor(state, v), origin(d, v));"
           if old not in s and new not in s: raise SystemExit('current MNEG anchor missing')
-          if old in s: p.write_text(s.replace(old,new,1))
+          if old in s: s=s.replace(old,new,1)
+          # Normalize the harmless null-safe spelling to the patch driver's expected
+          # old text; the replacement immediately strengthens this whole function.
+          s=s.replace("if (term?.op !== 'cbr' || (block.succ || []).length < 2) continue;", "if (term?.op !== 'cbr' || block.succ.length < 2) continue;", 1)
+          p.write_text(s)
           p=Path('tools/fix-decompiler-ir-open-1.py')
           lines=p.read_text().splitlines()
           lines=[line for line in lines if not (line.startswith("replace('js/decompiler/pipeline-core.js', 'if (d.negate)"))]
