@@ -1,0 +1,33 @@
+name: Verify binary trust-boundary batch
+on:
+  push:
+    branches:
+      - fix/unlinked-binary-446-450-466-20260815
+permissions:
+  contents: write
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Sync latest main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git merge --no-edit origin/main
+      - run: python3 tools/fix-binary-unlinked.py
+      - run: node tests/issues-446-450-466-unlinked.mjs
+      - run: npm run check
+      - name: Commit verified implementation
+        run: |
+          rm -f tools/fix-binary-unlinked.py .github/workflows/verify-binary-unlinked.yml
+          git add -A
+          git commit -m "fix: harden binary trust boundaries (#446-#450, #466)"
+          git push origin HEAD
