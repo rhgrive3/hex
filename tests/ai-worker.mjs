@@ -5,9 +5,14 @@ import { WorkerAIProvider } from '../js/ai/provider/index.js';
 const normalized = __test.normalizeAITurnRequest({
   mode: 'chat', style: 'analyst', scope: 'auto', messages: [{ role: 'user', content: 'general question' }],
   context: { request: { goal: 'general question' }, current: {} },
-  tools: [{ name: 'search_functions', description: 'search', inputSchema: { type: 'object', properties: { query: { type: 'string' } } } }, { name: 'evil_tool', inputSchema: { type: 'object' } }],
+  tools: [
+    { name: 'search_functions', description: 'search', inputSchema: { type: 'object', properties: { query: { type: 'string' } } } },
+    { name: 'future_probe', description: 'future registry read tool', inputSchema: { type: 'object' } },
+    { name: 'Bad-Tool', inputSchema: { type: 'object' } },
+    { name: 'submit_hex_result', inputSchema: { type: 'object' } },
+  ],
 });
-assert.equal(normalized.tools.length, 1);
+assert.deepEqual(normalized.tools.map((tool) => tool.name), ['search_functions', 'future_probe'], 'Worker accepts future safe Registry tools but rejects invalid/reserved names');
 assert.equal(normalized.context.current != null, true, 'current function is optional');
 assert.throws(() => __test.normalizeAITurnRequest({ mode: 'chat', context: { binary: { bytes: [1, 2] } } }), /Binary content/);
 assert.throws(() => __test.normalizeAITurnRequest({ mode: 'chat', context: {}, messages: [] }), /non-empty AI goal/);
