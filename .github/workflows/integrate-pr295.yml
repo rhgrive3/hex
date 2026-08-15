@@ -34,7 +34,7 @@ jobs:
           fi
           for f in $conflicts; do
             case "$f" in
-              js/binary/source.js|js/binary/macho.js|js/binary/model.js) ;;
+              js/binary/source.js|js/binary/macho.js|js/binary/model.js|js/bytesource/cached.js) ;;
               *) echo "unexpected conflict: $f" >&2; exit 1 ;;
             esac
           done
@@ -52,6 +52,31 @@ jobs:
           fs.writeFileSync(p,s);
           NODE
             git add js/binary/source.js
+          fi
+
+          if printf '%s\n' "$conflicts" | grep -qx 'js/bytesource/cached.js'; then
+            git checkout --theirs js/bytesource/cached.js
+            node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const p='js/bytesource/cached.js';
+          let s=fs.readFileSync(p,'utf8');
+          const marker=`function throwIfCancelled(signal) {\n  if (signal?.aborted) throw new ByteSourceCancelledError();\n}\n`;
+          const helper=`\nfunction waitForConsumer(promise, signal) {\n  if (!signal) return promise;\n  throwIfCancelled(signal);\n  return new Promise((resolve, reject) => {\n    let settled = false;\n    const finish = (fn, value) => {\n      if (settled) return;\n      settled = true;\n      signal.removeEventListener?.('abort', onAbort);\n      fn(value);\n    };\n    const onAbort = () => finish(reject, new ByteSourceCancelledError());\n    signal.addEventListener?.('abort', onAbort, { once: true });\n    promise.then((value) => finish(resolve, value), (error) => finish(reject, error));\n  });\n}\n`;
+          if(!s.includes('function waitForConsumer(')) {
+            if(!s.includes(marker)) throw new Error('cached cancellation helper anchor missing');
+            s=s.replace(marker,marker+helper);
+          }
+          const pageCall=`      const page = await this.#page(pageIndex, options.signal);`;
+          if(!s.includes(pageCall)) throw new Error('cached page consumer anchor missing');
+          s=s.replace(pageCall,`      const page = await waitForConsumer(this.#page(pageIndex), options.signal);`);
+          s=s.replace(`  async #page(pageIndex, signal) {`,`  async #page(pageIndex) {`);
+          const backend=`      promise = (async () => {\n        throwIfCancelled(signal);\n        const bytes = await this.source.readExactly(offset, length, { signal });\n        throwIfCancelled(signal);\n        this.stats.backendBytesRead += bytes.byteLength;`;
+          const backendNew=`      promise = (async () => {\n        const bytes = await this.source.readExactly(offset, length);\n        this.stats.backendBytesRead += bytes.byteLength;`;
+          if(!s.includes(backend)) throw new Error('cached shared backend anchor missing');
+          s=s.replace(backend,backendNew);
+          fs.writeFileSync(p,s);
+          NODE
+            git add js/bytesource/cached.js
           fi
 
           if printf '%s\n' "$conflicts" | grep -qx 'js/binary/macho.js'; then
