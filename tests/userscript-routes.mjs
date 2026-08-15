@@ -35,12 +35,27 @@ try {
   assert.equal((await fetch(base + '/runtime/bootstrap', { method: 'POST', headers, body: JSON.stringify(input) })).status, 403, 'nonce replay');
   assert.equal((await fetch(base + bootstrap.runtimeLocator, { headers: { authorization: 'Bearer invalid' } })).status, 403);
 
+  const preflight = await fetch(base + bootstrap.runtimeLocator, {
+    method: 'OPTIONS',
+    headers: {
+      origin: 'https://chatgpt.com',
+      'access-control-request-method': 'GET',
+      'access-control-request-headers': 'authorization',
+    },
+  });
+  assert.equal(preflight.status, 204);
+  assert.equal(preflight.headers.get('access-control-allow-origin'), 'https://chatgpt.com');
+  assert.match(preflight.headers.get('access-control-allow-headers') || '', /authorization/i);
+
   const secrets = (await import('../.runtime-build/runtime-secrets.js')).RUNTIME_BUILD;
   const expired = await signRuntimeSession({ v: 1, sid: 'expired-session', bid: manifest.buildId, rid: 'expired-request', exp: Math.floor(Date.now() / 1000) - 1 }, decodeBase64URL(secrets.signingKey));
   assert.equal((await fetch(base + bootstrap.runtimeLocator, { headers: { authorization: `Bearer ${expired}` } })).status, 403);
 
-  const runtime = await fetch(base + bootstrap.runtimeLocator, { headers: { authorization: `Bearer ${bootstrap.session}` } });
-  assert.equal(runtime.status, 200); assert.equal(runtime.headers.get('x-hex-runtime-build'), manifest.buildId); await runtime.arrayBuffer();
+  const runtime = await fetch(base + bootstrap.runtimeLocator, { headers: { authorization: `Bearer ${bootstrap.session}`, origin: 'https://chatgpt.com' } });
+  assert.equal(runtime.status, 200);
+  assert.equal(runtime.headers.get('x-hex-runtime-build'), manifest.buildId);
+  assert.equal(runtime.headers.get('access-control-allow-origin'), 'https://chatgpt.com');
+  await runtime.arrayBuffer();
   assert.equal((await fetch(base + bootstrap.runtimeLocator, { headers: { authorization: `Bearer ${bootstrap.session}` } })).status, 403, 'session replay');
   console.log(`userscript-routes: ok (${rawPaths.length} private paths)`);
 } finally {
