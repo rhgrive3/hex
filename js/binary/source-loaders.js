@@ -18,9 +18,9 @@ export async function openBinarySource(input, opts = {}) {
   const sourceOptions = opts.source || {};
   const source = asByteSource(input, sourceOptions);
   const prefixLength = Number(source.size < 16n ? source.size : 16n);
-  const prefix = await source.readExactly(0n, prefixLength);
+  const prefix = await source.readExactly(0n, prefixLength, { signal: opts.signal });
   const detected = detectBinary(prefix);
-  const rangeOptions = opts.ranges || {};
+  const rangeOptions = withSignal(opts.ranges || {}, opts.signal);
 
   if (detected.format === 'elf') return parseELFSource(source, opts, prefix, rangeOptions);
   if (detected.format === 'pe') return parsePESource(source, opts, prefix, rangeOptions);
@@ -30,36 +30,39 @@ export async function openBinarySource(input, opts = {}) {
 
 export async function parseELFSource(input, opts = {}, prefix = null, rangeOptions = opts.ranges || {}) {
   const source = asByteSource(input, opts.source || {});
-  const magic = prefix || await readPrefix(source);
-  const image = await parseSourceRanges(source, parseELF, {}, withInitial(magic, rangeOptions));
+  const ranges = withSignal(rangeOptions, opts.signal);
+  const magic = prefix || await readPrefix(source, opts.signal);
+  const image = await parseSourceRanges(source, parseELF, {}, withInitial(magic, ranges));
   return withStrings(image, source, opts);
 }
 
 export async function parsePESource(input, opts = {}, prefix = null, rangeOptions = opts.ranges || {}) {
   const source = asByteSource(input, opts.source || {});
-  const magic = prefix || await readPrefix(source);
-  const image = await parseSourceRanges(source, parsePE, {}, withInitial(magic, rangeOptions));
+  const ranges = withSignal(rangeOptions, opts.signal);
+  const magic = prefix || await readPrefix(source, opts.signal);
+  const image = await parseSourceRanges(source, parsePE, {}, withInitial(magic, ranges));
   return withStrings(image, source, opts);
 }
 
 export async function parseMachOSource(input, opts = {}, prefix = null, rangeOptions = opts.ranges || {}) {
   const source = asByteSource(input, opts.source || {});
-  const magic = prefix || await source.readExactly(0n, Number(source.size < 16n ? source.size : 16n));
+  const ranges = withSignal(rangeOptions, opts.signal);
+  const magic = prefix || await source.readExactly(0n, Number(source.size < 16n ? source.size : 16n), { signal: opts.signal });
   const fat = fatKind(magic);
   if (!fat) {
-    const image = await parseSourceRanges(source, parseMachO, opts, withInitial(magic, rangeOptions));
+    const image = await parseSourceRanges(source, parseMachO, opts, withInitial(magic, ranges));
     return withStrings(image, source, opts);
   }
 
   if (source.size < 8n) throw new Error('Mach-O universal header is truncated');
-  const head = magic.byteLength >= 8 ? magic.subarray(0, 8) : await source.readExactly(0n, 8);
+  const head = magic.byteLength >= 8 ? magic.subarray(0, 8) : await source.readExactly(0n, 8, { signal: opts.signal });
   const hr = new ByteView(head, { littleEndian: fat.littleEndian });
   const count = hr.u32(4);
   if (count > 128) throw new Error(`unreasonable Mach-O slice count ${count}`);
   const entrySize = fat.bits === 64 ? 32 : 20;
   const tableSize = count * entrySize;
   if (8n + BigInt(tableSize) > source.size) throw new Error('Mach-O universal slice table is truncated');
-  const table = await source.readExactly(8n, tableSize);
+  const table = await source.readExactly(8n, tableSize, { signal: opts.signal });
   const r = new ByteView(table, { littleEndian: fat.littleEndian, base: 8 });
   const all = [];
   for (let i = 0, p = 0; i < count; i++, p += entrySize) {
@@ -74,8 +77,8 @@ export async function parseMachOSource(input, opts = {}, prefix = null, rangeOpt
   const selected = requested || valid.find((slice) => sliceArchName(slice) === 'arm64e') || valid.find((slice) => sliceArchName(slice) === 'arm64') || valid.find((slice) => sliceArchName(slice) === 'x86_64') || valid[0];
   if (!selected) throw new Error('Mach-O universal binary has no readable slice');
   const sliceSource = source.subrange(selected.offset, selected.size);
-  const slicePrefix = await readPrefix(sliceSource);
-  const image = await parseSourceRanges(sliceSource, parseMachO, { ...opts, containerOffset: selected.offset }, withInitial(slicePrefix, rangeOptions));
+  const slicePrefix = await readPrefix(sliceSource, opts.signal);
+  const image = await parseSourceRanges(sliceSource, parseMachO, { ...opts, containerOffset: selected.offset }, withInitial(slicePrefix, ranges));
   image.metadata.fat = {
     slices: all.map((slice) => ({ arch: sliceArchName(slice), cpu: slice.cpu, subtype: slice.subtype, offset: slice.offset, size: slice.size })),
     selected: { arch: sliceArchName(selected), cpu: selected.cpu, subtype: selected.subtype, offset: selected.offset, size: selected.size },
@@ -92,13 +95,18 @@ async function withStrings(image, source, opts) {
   return image;
 }
 
+function withSignal(options, signal) {
+  if (!signal || options.signal) return options;
+  return { ...options, signal };
+}
+
 function withInitial(prefix, options) {
   if (!prefix?.byteLength) return options;
   return { ...options, initial: [{ offset: 0n, bytes: prefix }] };
 }
 
-async function readPrefix(source) {
-  return source.readExactly(0n, Number(source.size < 16n ? source.size : 16n));
+async function readPrefix(source, signal) {
+  return source.readExactly(0n, Number(source.size < 16n ? source.size : 16n), { signal });
 }
 
 function fatKind(bytes) {
