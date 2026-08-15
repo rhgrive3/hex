@@ -122,7 +122,7 @@ const insertion=`// Starting an import after a same-file slice switch but before
   const openBlock=source.slice(source.indexOf('  async openFile('),source.indexOf('  async attachNotes('));
   assert.match(openBlock,/const openEpoch=this\.backend\.gen;\s*this\.workspace\?\.invalidate\(\);\s*this\.activeProject=null;/);
   const sliceStart=source.indexOf('  async selectSlice(');
-  const sliceEnd=source.indexOf('\n  }',sliceStart)+4;
+  const sliceEnd=source.indexOf('\\n  }',sliceStart)+4;
   const sliceBlock=source.slice(sliceStart,sliceEnd);
   assert.match(sliceBlock,/this\.workspace\?\.autosave\(\);\s*this\.workspace\?\.invalidate\(\);\s*this\.activeProject=null;\s*this\.noteAttachController\?\.abort\(\);\s*this\.backend\.advanceEpoch\(\);/);
 }
