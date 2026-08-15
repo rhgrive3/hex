@@ -58,17 +58,21 @@ const result = await planAnalysisGoal(query, {}, {
 });
 
 assert.equal(result.stats.candidateFunctions, 49);
-assert.equal(result.stats.analyzedFunctions, 48);
-assert.equal(result.stats.unanalyzedFunctions, 1);
-assert.equal(analyzed.length, 48);
-assert.ok(!analyzed.includes(exact), '49th semantic exact match should remain outside the hard function budget fixture');
-assert.equal(result.partial, true, 'truncated candidate search must be explicitly partial');
-assert.equal(result.exhausted, true, 'candidate truncation must be exposed as exhaustion');
-assert.ok(result.missingEvidence.includes('function-budget'));
-assert.equal(result.best?.budgetLimited, true);
+assert.equal(result.stats.analyzedFunctions, 19, 'planner owns only its reserved 40% shortlist budget');
+assert.equal(result.stats.unanalyzedFunctions, 30);
+assert.equal(analyzed.length, 19);
+assert.ok(!analyzed.includes(exact), '49th semantic exact match should remain outside the planner shortlist budget fixture');
+assert.equal(result.budget.requested.functions, 48);
+assert.equal(result.budget.planner.functions, 19);
+assert.equal(result.budget.reserved.functions, 29);
+assert.equal(result.partial, true, 'planner shortlist must be explicitly partial while preserving refinement reserve');
+assert.equal(result.refinementAvailable, true);
+assert.equal(result.exhausted, false, 'planner shortlist reserve is partial but does not exhaust the turn budget');
+assert.ok(result.missingEvidence.includes('planner-shortlist-limit'));
+assert.equal(result.best?.budgetLimited, false);
 assert.equal(result.best?.complete, false);
-assert.equal(result.completeness?.candidateCoverage, 48 / 49);
-assert.equal(result.completeness?.reason, 'function-budget');
+assert.equal(result.completeness?.candidateCoverage, 19 / 49);
+assert.equal(result.completeness?.reason, 'planner-shortlist-limit');
 
 // No truncation => do not mark a complete bounded search as partial.
 const complete = await planAnalysisGoal(query, {}, {
@@ -84,5 +88,6 @@ assert.equal(complete.exhausted, false);
 assert.ok(!complete.missingEvidence.includes('function-budget'));
 assert.equal(complete.best?.budgetLimited, false);
 assert.equal(complete.best?.complete, true);
+assert.equal(complete.stats.analyzedFunctions, 4);
 
 console.log('issue #425 planner budget regressions passed');

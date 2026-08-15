@@ -12,10 +12,20 @@ function hashText(text) {
   return hash.toString(16).padStart(8, '0');
 }
 
+const SEMANTIC_SOURCE_KEYS = Object.freeze([
+  'id', 'kind', 'status', 'address', 'addr', 'functionAddress', 'function', 'row', 'instructionId',
+  'operation', 'relation', 'location', 'source', 'sink', 'value', 'threshold', 'condition', 'operator',
+  'name', 'selector', 'signature', 'confidence', 'verified', 'reason', 'evidence', 'verification',
+]);
+
 function compactSource(value) {
   const safe = jsonSafe(value);
   const text = JSON.stringify(safe);
-  return text.length <= 4096 ? safe : { truncated: true, excerpt: text.slice(0, 4000) };
+  if (text.length <= 4096) return safe;
+  if (!safe || typeof safe !== 'object' || Array.isArray(safe)) return { oversized: true, bytes: text.length, type: Array.isArray(safe) ? 'array' : typeof safe };
+  const semantic = {};
+  for (const key of SEMANTIC_SOURCE_KEYS) if (safe[key] !== undefined) semantic[key] = safe[key];
+  return { oversized: true, bytes: text.length, semantic };
 }
 
 function firstAddress(value) {
@@ -26,9 +36,10 @@ function firstAddress(value) {
 function factRows(result) {
   const rows = [];
   for (const key of ['results', 'updates', 'sites', 'functions', 'paths', 'causalPaths']) {
-    for (const row of Array.isArray(result && result[key]) ? result[key] : []) rows.push({ key, row });
+    const values = Array.isArray(result && result[key]) ? result[key] : [];
+    values.forEach((row, index) => rows.push({ key, index, row }));
   }
-  if (!rows.length && result && typeof result === 'object') rows.push({ key: 'result', row: result });
+  if (!rows.length && result && typeof result === 'object') rows.push({ key: 'result', index: null, row: result });
   return rows;
 }
 
@@ -62,6 +73,7 @@ function semanticRecord(record) {
     kind: record.kind,
     title: record.title,
     sourceTool: record.sourceTool,
+    sourceBinding: record.sourceBinding || null,
     address: record.address || null,
     functionAddress: record.functionAddress || null,
     functionName: record.functionName || null,
@@ -75,18 +87,76 @@ function sameSemanticRecord(left, right) {
   return JSON.stringify(semanticRecord(left)) === JSON.stringify(semanticRecord(right));
 }
 
+function normalizeSourceRef(sourceRef) {
+  if (!sourceRef) return null;
+  if (typeof sourceRef === 'string') return { detailRef: sourceRef, path: '$' };
+  if (typeof sourceRef !== 'object') return null;
+  if (sourceRef.detailRef) return {
+    detailRef: String(sourceRef.detailRef),
+    path: String(sourceRef.path || '$'),
+    ...(sourceRef.bindingKey ? { bindingKey: String(sourceRef.bindingKey) } : {}),
+  };
+  if (sourceRef.evidenceSourceId) return { evidenceSourceId: String(sourceRef.evidenceSourceId), path: String(sourceRef.path || '$') };
+  return null;
+}
+
 export class EvidenceStore {
-  constructor(initial = []) {
+  constructor(initial = [], options = {}) {
+    if (!Array.isArray(initial) && initial && typeof initial === 'object') {
+      options = initial;
+      initial = [];
+    }
     this.records = new Map();
+    this.sourcePayloads = new Map();
+    this.observationStore = options.observationStore || null;
     for (const evidence of initial) this.add(evidence);
+  }
+
+  setObservationStore(store) {
+    this.observationStore = store || null;
+    if (this.observationStore) {
+      for (const record of this.records.values()) {
+        const sourceId = record.sourceRef?.evidenceSourceId;
+        if (sourceId && this.sourcePayloads.has(sourceId)) {
+          const stored = this.observationStore.put({
+            tool: record.sourceTool || 'evidence-source', arguments: { evidenceId: record.id },
+            fullResult: this.sourcePayloads.get(sourceId), functionIdentity: record.functionAddress ?? record.address ?? null, deterministic: true,
+          });
+          record.sourceRef = { detailRef: stored.id, path: record.sourceRef.path || '$', bindingKey: stored.binding.key };
+          record.sourceBinding = stored.binding.key;
+          this.sourcePayloads.delete(sourceId);
+        }
+        if (record.sourceRef?.detailRef) this.observationStore.pin?.(record.sourceRef.detailRef);
+      }
+    }
+    return this;
   }
 
   add(input, authority = null) {
     if (!input || typeof input !== 'object') return null;
     let status = EVIDENCE_STATUSES.includes(input.status) ? input.status : 'unknown';
     if (status === 'verified' && authority !== DETERMINISTIC_VERIFICATION) status = 'supported';
+
+    let sourceRef = normalizeSourceRef(input.sourceRef);
+    if (!sourceRef && input.sourceData != null) {
+      if (this.observationStore) {
+        const stored = this.observationStore.put({
+          tool: input.sourceTool || 'evidence-source',
+          arguments: { sourceId: input.sourceId || null, evidenceKind: input.kind || 'observation' },
+          fullResult: input.sourceData,
+          functionIdentity: input.functionAddress ?? input.address ?? null,
+          deterministic: true,
+        });
+        sourceRef = { detailRef: stored.id, path: '$', bindingKey: stored.binding.key };
+      } else {
+        const localId = `evsrc_${hashText(JSON.stringify(jsonSafe([input.sourceTool || 'unknown', input.sourceId || null, Date.now(), this.sourcePayloads.size])) )}`;
+        this.sourcePayloads.set(localId, input.sourceData);
+        sourceRef = { evidenceSourceId: localId, path: '$' };
+      }
+    }
+    const sourceBinding = String(input.sourceBinding ?? sourceRef?.bindingKey ?? '');
     const identity = JSON.stringify(jsonSafe([
-      input.sourceTool || 'unknown', input.sourceId || null, input.address || null,
+      input.sourceTool || 'unknown', input.sourceId || null, sourceBinding || null, input.address || null,
       input.functionAddress || null, input.kind || 'observation', input.title || '',
     ]));
     const id = String(input.id || `ev_${hashText(identity)}`);
@@ -97,6 +167,8 @@ export class EvidenceStore {
       title: String(input.title || input.kind || 'Tool evidence').slice(0, 300),
       sourceTool: String(input.sourceTool || 'unknown'),
     };
+    if (sourceBinding) record.sourceBinding = sourceBinding;
+    if (sourceRef) record.sourceRef = sourceRef;
     const address = addressText(input.address);
     const functionAddress = addressText(input.functionAddress);
     if (address) record.address = address;
@@ -109,28 +181,28 @@ export class EvidenceStore {
     if (input.navigation) record.navigation = jsonSafe(input.navigation);
 
     const previous = this.records.get(id);
-    // A verified evidence id is an immutable provenance handle. Reusing it for
-    // different content must never silently preserve the verified badge on new
-    // data. Keep the original record intact; callers may create a fresh id.
+    // Verified evidence is immutable. A model cannot recycle a verified id for
+    // different semantic content or a different binary/revision binding.
     if (previous?.status === 'verified') {
       if (!sameSemanticRecord(previous, record)) return previous;
       return previous;
     }
     this.records.set(id, { ...previous, ...record });
-    return this.records.get(id);
+    const storedRecord = this.records.get(id);
+    if (storedRecord?.sourceRef?.detailRef) this.observationStore?.pin?.(storedRecord.sourceRef.detailRef);
+    return storedRecord;
   }
 
-  /* Verification authority comes from the local ToolRegistry definition, never
-     from a model-visible tool name or an output field alone. A verifier must be
-     explicitly registered by trusted application code. Verification is attached
-     to a concrete row/evidence id; a top-level verdict is not bulk-propagated. */
-  ingest(toolName, result, { verifier = false } = {}) {
+  /* Verification authority is private local state. Tool names, model prose,
+     status strings and supplied evidence ids never grant verified authority. */
+  ingest(toolName, result, { verifier = false, sourceRef = null } = {}) {
     const output = result && result.result != null ? result.result : result;
     if (!output || typeof output !== 'object') return [];
+    const rootSourceRef = normalizeSourceRef(sourceRef);
     const outputVerifiedIds = verifiedEvidenceIds(output);
     const rows = factRows(output);
     const created = [];
-    for (const { key, row } of rows) {
+    for (const { key, index, row } of rows) {
       if (!row || typeof row !== 'object') continue;
       const ids = evidenceIds(row);
       if (!ids.length && key === 'result' && !firstAddress(row) && !output.evidence) continue;
@@ -140,14 +212,18 @@ export class EvidenceStore {
       const rowVerifiedIds = verifiedEvidenceIds(row);
       const rowVerdict = row.verified === true || row.status === 'verified' || row.verification?.verified === true;
       const singleTopLevelVerdict = rows.length === 1 && key === 'result' && (output.verified === true || output.status === 'verified');
+      const rowSourceRef = rootSourceRef ? {
+        ...rootSourceRef,
+        path: key === 'result' ? (rootSourceRef.path || '$') : `${rootSourceRef.path === '$' ? '$.' : `${rootSourceRef.path}.`}${key}[${index}]`,
+      } : null;
       for (const sourceId of sourceIds.length ? sourceIds : [null]) {
         const sourceVerified = sourceId != null && (rowVerifiedIds.has(sourceId) || outputVerifiedIds.has(sourceId));
         const verified = verifier === true && (sourceVerified || rowVerdict || singleTopLevelVerdict);
         const status = verified ? 'verified' : 'supported';
         const kind = String(row.kind || key || 'observation');
         const evidence = this.add({
-          sourceId, sourceTool: toolName, kind, status,
-          address: addr, functionAddress: fnAddr,
+          sourceId, sourceTool: toolName, sourceRef: rowSourceRef, sourceBinding: rowSourceRef?.bindingKey,
+          kind, status, address: addr, functionAddress: fnAddr,
           functionName: row.functionName || row.name || output.name,
           title: `${toolName}: ${kind}`,
           summary: summarizeRow(row), sourceData: row,
@@ -178,8 +254,6 @@ export class EvidenceStore {
           sourceData: { score: candidate.score, sources: candidate.sources, sourceId }, confidence: verified ? 1 : 0.75,
         }, verified ? DETERMINISTIC_VERIFICATION : null));
       }
-      // Preserve the verified candidate verdict as its own evidence instead of
-      // upgrading every supporting source that happened to participate.
       if (isVerifiedBest) {
         out.push(this.add({
           sourceTool: 'deterministic-goal-planner',
@@ -193,6 +267,12 @@ export class EvidenceStore {
       }
     }
     return uniqueById(out.filter(Boolean));
+  }
+
+  sourceDataFor(id) {
+    const record = typeof id === 'object' ? id : this.get(id);
+    if (!record?.sourceRef?.evidenceSourceId) return null;
+    return this.sourcePayloads.get(record.sourceRef.evidenceSourceId) ?? null;
   }
 
   has(id) { return this.records.has(String(id)); }
