@@ -30,7 +30,7 @@ new="""  const importsStart = base + importsOffset, symbolsStart = base + symbol
     const name = np < dc.offset + dc.size ? r.cstring(np, dc.offset + dc.size - np) : '';
     if (!name) continue;
     const library = dylibForOrdinal(image, libOrdinal);
-    const imp = { name, library, ordinal: libOrdinal, weak, addend, source: 'chained-fixups', sites: [], chainedIndex:i };
+    const imp = { name, library, ordinal: libOrdinal, weak, addend, source: 'chained-fixups', sites: [] };
     image.imports.push(imp); parsed[i] = imp;
   }"""
 if old not in s: raise SystemExit('current compact chained import block anchor missing')
