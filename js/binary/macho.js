@@ -1,7 +1,7 @@
 import { ByteView } from './reader.js';
 import { BinaryImage, functionSeed } from './model.js';
 import { parseChainedImports, parseChainedBindingSites, parseClassicBindings, parseExportTrie } from './macho-dyld.js';
-import { ensureMachOMetadataBudget } from './macho-budget.js';
+import { createMachOMetadataBudget, ensureMachOMetadataBudget } from './macho-budget.js';
 
 const LC_SEGMENT = 0x1;
 const LC_SYMTAB = 0x2;
@@ -77,7 +77,7 @@ function parseThin(bytes, opts) {
       filetype, flags, ncmds, sizeofcmds,
     },
   });
-  const metadataBudget = ensureMachOMetadataBudget(image);
+  const metadataBudget = ensureMachOMetadataBudget(image, createMachOMetadataBudget(image, { signal: opts.signal }));
 
   const commands = [];
   const segmentOrder = [];

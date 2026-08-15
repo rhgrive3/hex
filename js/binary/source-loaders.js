@@ -72,8 +72,14 @@ export async function parseMachOSource(input, opts = {}, prefix = null, rangeOpt
     all.push({ cpu, subtype, offset, size });
   }
   const valid = all.filter((slice) => slice.size > 0n && slice.offset <= source.size && slice.size <= source.size - slice.offset);
-  const requested = opts.arch ? valid.find((slice) => sliceArchName(slice) === opts.arch) : null;
-  if (opts.arch && !requested) throw new Error(`requested Mach-O architecture ${opts.arch} is not present in the universal binary`);
+  const requestedIndex = opts.sliceIndex == null ? null : Number(opts.sliceIndex);
+  if (requestedIndex != null && (!Number.isSafeInteger(requestedIndex) || requestedIndex < 0 || requestedIndex >= all.length)) {
+    throw new Error(`requested Mach-O slice index ${opts.sliceIndex} is not present in the universal binary`);
+  }
+  const indexed = requestedIndex == null ? null : all[requestedIndex];
+  if (indexed && !valid.includes(indexed)) throw new Error(`requested Mach-O slice index ${requestedIndex} is outside the active file`);
+  const requested = indexed || (opts.arch ? valid.find((slice) => sliceArchName(slice) === opts.arch) : null);
+  if (requestedIndex == null && opts.arch && !requested) throw new Error(`requested Mach-O architecture ${opts.arch} is not present in the universal binary`);
   const selected = requested || valid.find((slice) => sliceArchName(slice) === 'arm64e') || valid.find((slice) => sliceArchName(slice) === 'arm64') || valid.find((slice) => sliceArchName(slice) === 'x86_64') || valid[0];
   if (!selected) throw new Error('Mach-O universal binary has no readable slice');
   const sliceSource = source.subrange(selected.offset, selected.size);

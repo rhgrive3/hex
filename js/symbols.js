@@ -38,6 +38,7 @@ export class SymbolIndex {
     this.functionRegions = [];
     this.setFunctionRegions(r.regions || [], false);
     this.capped = !!r.capped;
+    this.symbolTruth = r.symbolTruth || null;
     /* Exactness and exhaustiveness are independent. `functionStartsExact` is
        retained as the legacy name for an authoritative complete start set;
        `allSeedsExact` only describes the starts currently present. */

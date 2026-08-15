@@ -7,7 +7,7 @@
  */
 'use strict';
 
-importScripts('./macho.js', './words.js', './worker-budget.js', './address-provenance.js', '../capstone.js');
+importScripts('./macho.js', './words.js', './worker-budget.js', './objc-stub-recovery.js', './address-provenance.js', '../capstone.js');
 const WORKER_BUDGET = globalThis.HexWorkerBudget;
 
 /* ── Constants ──────────────────────────────────────────────── */
@@ -426,7 +426,7 @@ async function getChunk({ regionId, chunk, wantAsm }) {
  *
  * 結果は転送可能な型付き配列で返す。数十万件あっても main 側でコピーが起きない。
  */
-async function analyzeSlice({ sliceIndex }) {
+async function analyzeSlice({ sliceIndex, id: requestId }) {
   const slice = slices[sliceIndex];
   if (!slice || !slice.info) {
     return {
@@ -476,7 +476,7 @@ async function analyzeSlice({ sliceIndex }) {
    * バイナリを読んで自分で名前を作る（詳しくは objcStubNames）。
    */
   try {
-    for (const s of await objcStubNames(slice, entries)) {
+    for (const s of await objcStubNames(slice, entries, requestId)) {
       entries.push({ addr: s.addr, name: s.name, kind: 1 });
     }
   } catch { /* 読めなければ名前を足さないだけ */ }
@@ -582,107 +582,12 @@ async function analyzeSlice({ sliceIndex }) {
 const MAX_OBJC_STUBS = 80_000;
 const OBJC_STUB_MAX_BYTES = 8 * 1024 * 1024;
 
-async function objcStubNames(slice, known) {
-  const regs = (slice && slice.regions) || [];
-  const find = (name) => regs.find((r) => r.section === name && r.size > 0n);
-  const stubs = find('__objc_stubs');
-  if (!stubs || stubs.size > BigInt(OBJC_STUB_MAX_BYTES)) return [];
-
-  /* selref（メソッド名へのポインタの表）と、文字列そのものを丸ごと持っておく。
-     飛び飛びに読むと往復が数万回になるため。 */
-  const pointerRegions = [];
-  for (const r of regs) {
-    if (r.size <= 0n || r.size > BigInt(OBJC_STUB_MAX_BYTES)) continue;
-    if (/^__objc_(selrefs|superrefs|classrefs)$/.test(r.section || '')) {
-      pointerRegions.push(r);
-    }
-  }
-  const textRegions = [];
-  for (const r of regs) {
-    if (r.size <= 0n || r.size > BigInt(OBJC_STUB_MAX_BYTES)) continue;
-    if (r.cstrings || /^__objc_(methname|classname)$/.test(r.section || '')) textRegions.push(r);
-  }
-  if (!pointerRegions.length || !textRegions.length) return [];
-
-  const loaded = [];
-  for (const r of pointerRegions.concat(textRegions)) {
-    const buf = await readRange(r.fileOffset, Number(r.size));
-    if (buf && buf.length) loaded.push({ vm: r.vmAddr, buf, ptr: pointerRegions.includes(r) });
-  }
-  const slotOf = (addr) => {
-    for (const l of loaded) {
-      if (!l.ptr) continue;
-      if (addr >= l.vm && addr + 8n <= l.vm + BigInt(l.buf.length)) {
-        const o = Number(addr - l.vm);
-        let v = 0n;
-        for (let i = 7; i >= 0; i--) v = (v << 8n) | BigInt(l.buf[o + i]);
-        return v;
-      }
-    }
-    return null;
-  };
-  const textAt = (addr) => {
-    for (const l of loaded) {
-      if (l.ptr) continue;
-      if (addr < l.vm || addr >= l.vm + BigInt(l.buf.length)) continue;
-      let o = Number(addr - l.vm);
-      let out = '';
-      while (o < l.buf.length && l.buf[o] !== 0 && out.length < MAX_SELECTOR) {
-        out += String.fromCharCode(l.buf[o++]);
-      }
-      return out || null;
-    }
-    return null;
-  };
-
-  /* __got 越しに呼ぶ相手（_objc_msgSend / _objc_msgSendSuper2 …）。
-     名前が分かれば、中継地点の名前もそれに合わせる。 */
-  const gotName = new Map();
-  for (const e of known || []) if (e.kind === 2) gotName.set(e.addr.toString(), e.name);
-
-  const imageBase = slice.info && slice.info.textVM != null ? slice.info.textVM : null;
-  const code = await readRange(stubs.fileOffset, Number(stubs.size));
-  const words = Math.floor(code.length / 4);
-  const dv = new DataView(code.buffer, code.byteOffset, words * 4);
-
-  const out = [];
-  const pageOf = new Array(32).fill(null);
-  let start = null;
-  let selref = null;
-  let target = null;
-  for (let i = 0; i < words && out.length < MAX_OBJC_STUBS; i++) {
-    const w = dv.getUint32(i * 4, true);
-    const pc = stubs.vmAddr + BigInt(i * 4);
-    const rel = Words.pcRelTarget(w, pc);
-    if (rel) {
-      if (start === null) start = pc;
-      pageOf[rel.reg] = rel.value;
-      continue;
-    }
-    const pair = Words.pairedOffset(w);
-    if (pair && pair.load && pageOf[pair.rn] != null) {
-      const at = pageOf[pair.rn] + pair.imm;
-      // x1 に積まれるのがメソッド名、x16/x17 に積まれるのが呼ぶ相手
-      if (pair.rd === 1) selref = at;
-      else target = at;
-      pageOf[pair.rd] = null;
-      continue;
-    }
-    if (Words.classifyWord(w) === Words.KIND.BRANCH || Words.classifyWord(w) === Words.KIND.RET) {
-      if (start !== null && selref != null) {
-        const p = sanitizeStubPointer(slotOf(selref), imageBase);
-        const sel = p == null ? null : textAt(p);
-        if (sel) {
-          const via = target == null ? null : gotName.get(target.toString());
-          const send = via && /msgSend/.test(via) ? via.replace(/^_/, '') : 'objc_msgSend';
-          out.push({ addr: start, name: '_' + send + '$' + sel });
-        }
-      }
-      start = null; selref = null; target = null;
-      pageOf.fill(null);
-    }
-  }
-  return out;
+async function objcStubNames(slice, known, requestId = null) {
+  return globalThis.HexObjCStubRecovery.recover({
+    slice, known, readRange, cancelled, requestId, fileSize, Words,
+    budget:WORKER_BUDGET.createSupplementalBudget(), sanitizePointer:sanitizeStubPointer,
+    maxSelector:MAX_SELECTOR, maxStubs:MAX_OBJC_STUBS, maxSectionBytes:OBJC_STUB_MAX_BYTES,
+  });
 }
 
 const MAX_SELECTOR = 240;
