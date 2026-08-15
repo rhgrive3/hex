@@ -13,6 +13,12 @@ const FAT_MAGIC_64 = 0xcafebabf;
 const LC_SEGMENT_64 = 0x19;
 const LC_DYLD_CHAINED_FIXUPS = 0x80000034;
 const S_SYMBOL_STUBS = 0x8;
+const MAX_LOAD_COMMAND_BYTES = 4 * 1024 * 1024;
+const MAX_FIXUP_BYTES = 16 * 1024 * 1024;
+const MAX_CHAINED_IMPORTS = 250_000;
+const MAX_STUB_BYTES = 8 * 1024 * 1024;
+const MAX_STUBS = 80_000;
+const MAX_SUPPLEMENTAL_READ_BYTES = 32 * 1024 * 1024;
 
 const PTR_ARM64E = new Set([1, 7, 9, 10]);
 const PTR_ARM64E_24 = 12;
@@ -48,38 +54,38 @@ function utf8z(u8, off) {
 
 function u32be(dv, off) { return dv.getUint32(off, false); }
 
-/** Return the byte offset of the requested architecture slice. */
+/** Return the bounded active architecture slice. */
 async function sliceOffset(file, sliceIndex) {
   const head = await bytes(file, 0, 8);
   if (head.length < 4) return null;
   const dv = new DataView(head.buffer, head.byteOffset, head.byteLength);
-  const le = dv.getUint32(0, true);
-  if (le === MH_MAGIC_64) return 0n;
-
+  if (dv.getUint32(0, true) === MH_MAGIC_64) return { base:0n, size:BigInt(file.size) };
   const be = dv.getUint32(0, false);
-  if (be !== FAT_MAGIC && be !== FAT_MAGIC_64) return null;
-  if (head.length < 8) return null;
-  const n = u32be(dv, 4);
-  const idx = Math.max(0, Number(sliceIndex) || 0);
+  if (be !== FAT_MAGIC && be !== FAT_MAGIC_64 || head.length < 8) return null;
+  const n = u32be(dv, 4), idx = Math.max(0, Number(sliceIndex) || 0);
   if (idx >= n || n > 64) return null;
-  const wide = be === FAT_MAGIC_64;
-  const entry = wide ? 32 : 20;
+  const wide = be === FAT_MAGIC_64, entry = wide ? 32 : 20;
   const table = await bytes(file, 0, 8 + n * entry);
-  const tdv = new DataView(table.buffer, table.byteOffset, table.byteLength);
-  const p = 8 + idx * entry;
-  return wide ? tdv.getBigUint64(p + 8, false) : BigInt(tdv.getUint32(p + 8, false));
+  if (table.length < 8 + n * entry) return null;
+  const tdv = new DataView(table.buffer, table.byteOffset, table.byteLength), p = 8 + idx * entry;
+  const base = wide ? tdv.getBigUint64(p + 8, false) : BigInt(tdv.getUint32(p + 8, false));
+  const size = wide ? tdv.getBigUint64(p + 16, false) : BigInt(tdv.getUint32(p + 12, false));
+  const total = BigInt(file.size);
+  if (size <= 0n || base > total || size > total - base) return null;
+  return { base, size };
 }
 
 async function parseImage(file, sliceIndex) {
-  const base = await sliceOffset(file, sliceIndex);
-  if (base == null) return null;
+  const slice = await sliceOffset(file, sliceIndex);
+  if (slice == null) return null;
+  const { base, size: sliceSize } = slice;
   const h = await bytes(file, base, 32);
   if (h.length < 32) return null;
   let dv = new DataView(h.buffer, h.byteOffset, h.byteLength);
   if (dv.getUint32(0, true) !== MH_MAGIC_64) return null;
   const ncmds = dv.getUint32(16, true);
   const sizeofcmds = dv.getUint32(20, true);
-  if (!ncmds || ncmds > 10000 || sizeofcmds > 64 * 1024 * 1024) return null;
+  if (!ncmds || ncmds > 10000 || sizeofcmds > MAX_LOAD_COMMAND_BYTES || BigInt(32 + sizeofcmds) > sliceSize) return null;
 
   const raw = await bytes(file, base, 32 + sizeofcmds);
   if (raw.length < 32) return null;
@@ -102,7 +108,8 @@ async function parseImage(file, sliceIndex) {
       const filesize = dv.getBigUint64(p + 48, true);
       const nsects = dv.getUint32(p + 64, true);
       const segIndex = segments.length;
-      segments.push({ name, vmaddr, vmsize, fileoff, filesize });
+      const validFileRange = fileoff <= sliceSize && filesize <= sliceSize - fileoff;
+      segments.push({ name, vmaddr, vmsize, fileoff, filesize, validFileRange });
       let q = p + 72;
       for (let si = 0; si < nsects && q + 80 <= p + size; si++, q += 80) {
         const section = ascii(raw, q, 16);
@@ -120,7 +127,7 @@ async function parseImage(file, sliceIndex) {
     }
     p += size;
   }
-  return { base, segments, stubs, fixups };
+  return { base, sliceSize, segments, stubs, fixups };
 }
 
 function parseImportNames(raw) {
@@ -132,7 +139,7 @@ function parseImportNames(raw) {
   const symbolsOffset = dv.getUint32(12, true);
   const count = dv.getUint32(16, true);
   const format = dv.getUint32(20, true);
-  if (version !== 0 || count > 1_000_000 || startsOffset >= raw.length ||
+  if (version !== 0 || count > MAX_CHAINED_IMPORTS || startsOffset >= raw.length ||
       importsOffset >= raw.length || symbolsOffset >= raw.length) return null;
 
   const stride = format === 1 ? 4 : format === 2 ? 8 : format === 3 ? 16 : 0;
@@ -252,21 +259,33 @@ export async function chainedImportSymbols(file, sliceIndex = 0) {
   if (!file || typeof file.slice !== 'function') return [];
   const image = await parseImage(file, sliceIndex);
   if (!image || !image.fixups || !image.stubs.length) return [];
+  if (image.fixups.datasize > MAX_FIXUP_BYTES) return [];
+  const fixupSize = BigInt(image.fixups.datasize);
+  if (image.fixups.dataoff > image.sliceSize || fixupSize > image.sliceSize - image.fixups.dataoff) return [];
   const raw = await bytes(file, image.base + image.fixups.dataoff, image.fixups.datasize);
   const imports = parseImportNames(raw);
   if (!imports || !imports.names.length) return [];
 
   const read64 = makeBlockReader(file);
   const out = [];
+  let supplementalReadBytes = raw.length;
+  let decodedStubs = 0;
   for (const sec of image.stubs) {
-    const code = await bytes(file, image.base + sec.fileoff, sec.size);
-    const count = Math.floor(Number(sec.size) / sec.stubSize);
+    if (sec.size > BigInt(MAX_STUB_BYTES) || sec.fileoff > image.sliceSize || sec.size > image.sliceSize - sec.fileoff) continue;
+    const sectionBytes = Number(sec.size);
+    if (supplementalReadBytes + sectionBytes > MAX_SUPPLEMENTAL_READ_BYTES) break;
+    const code = await bytes(file, image.base + sec.fileoff, sectionBytes);
+    supplementalReadBytes += code.length;
+    const count = Math.min(Math.floor(Number(sec.size) / sec.stubSize), MAX_STUBS - decodedStubs);
     for (let i = 0; i < count; i++) {
+      decodedStubs++;
       const stubAddr = sec.addr + BigInt(i * sec.stubSize);
       const slot = stubSlot(code, i * sec.stubSize, stubAddr, sec.stubSize);
       if (slot == null) continue;
       const hit = segmentFor(image.segments, slot);
-      if (!hit) continue;
+      if (!hit || hit.s.validFileRange === false) continue;
+      const delta = slot - hit.s.vmaddr;
+      if (delta < 0n || delta + 8n > hit.s.filesize) continue;
       const format = imports.formats.get(hit.i);
       if (format == null) continue;
       const fileOff = image.base + hit.s.fileoff + (slot - hit.s.vmaddr);

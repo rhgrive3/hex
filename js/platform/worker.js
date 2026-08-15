@@ -1,9 +1,10 @@
-import { asByteSource, detectBinary, openBinarySource } from '../binary/index.js';
+import { asByteSource, detectBinary, openBinarySource, parseMachOSource } from '../binary/index.js';
 import { CachedByteSource } from '../bytesource/cached.js';
 import { describeBinaryImage } from './describe.js';
 import { fingerprintVendors } from '../knowledge/index.js';
 import { hashByteSource } from './hash.js';
 import { boundedOffset, checkedChunkIndex, chunkLength, exactExternalInteger, regionSize, utf8Len, isExactFunctionSeed } from './worker-validation.js';
+import { analysisFromBinaryImage, emptyAnalysis } from './analysis-result.js';
 
 const ROW_BYTES = 4;
 const CHUNK_ROWS = 1024;
@@ -71,7 +72,7 @@ async function handle(msg, signal) {
     case 'open': return openFile(msg, signal);
     case 'setRegions': return setRegions(msg.regions);
     case 'chunk': return getChunk(msg, signal);
-    case 'analyze': return analyzeImage();
+    case 'analyze': return analyzeImage(msg, signal);
     case 'strings': return scanStrings(msg, signal);
     case 'search': return runSearch(msg, signal);
     case 'readAt': return readAtAddress(msg, signal);
@@ -178,58 +179,18 @@ async function getChunk({ regionId, chunk }, signal) {
   return { regionId, chunk, bytes: copy, mn: '', ops: '', rows: Math.ceil(copy.length / ROW_BYTES), __transfer: [copy.buffer] };
 }
 
-function analyzeImage() {
+async function analyzeImage(msg, signal) {
   if (!image) return emptyAnalysis();
-  const entries = new Map();
-  for (const symbol of image.symbols || []) {
-    if (symbol?.address == null || !symbol.name) continue;
-    entries.set(BigInt(symbol.address).toString(), { address: BigInt(symbol.address), name: symbol.name, exported: !!symbol.exported });
+  let selected = image;
+  if (image.metadata?.fat?.slices?.length && msg.sliceIndex != null) {
+    selected = await parseMachOSource(source, {
+      sliceIndex: msg.sliceIndex,
+      signal,
+      ranges: { pageSize: 64 * 1024, maxPageSize: 2 * 1024 * 1024, maxCachedBytes: 16 * 1024 * 1024, maxReads: 4096 },
+    });
   }
-  for (const exp of image.exports || []) {
-    if (exp?.address == null || !exp.name) continue;
-    const key = BigInt(exp.address).toString();
-    const existing = entries.get(key);
-    if (existing) existing.exported = true;
-    else entries.set(key, { address: BigInt(exp.address), name: exp.name, exported: true });
-  }
-  const sorted = [...entries.values()].sort((a, b) => a.address < b.address ? -1 : a.address > b.address ? 1 : 0);
-  const addrs = new BigUint64Array(sorted.length);
-  const kinds = new Uint8Array(sorted.length);
-  const flags = new Uint8Array(sorted.length);
-  for (let i = 0; i < sorted.length; i++) { addrs[i] = sorted[i].address; flags[i] = sorted[i].exported ? 1 : 0; }
-  const seedByAddress = new Map();
-  for (const seed of image.functions || []) if (seed?.address != null) seedByAddress.set(BigInt(seed.address).toString(), seed);
-  const functions = [...seedByAddress.keys()].map(BigInt).sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
-  const funcs = new BigUint64Array(functions);
-  const functionProvenance = functions.map((addr) => {
-    const seed = seedByAddress.get(addr.toString()) || {};
-    const confirmed = isExactFunctionSeed(seed);
-    return { source: seed.source || 'heuristic', confidence: Number(seed.confidence ?? (confirmed ? 1 : 0.5)), confirmed };
-  });
-  const nameProvenance = sorted.map((entry) => ({ source: entry.exported ? 'export-table' : 'binary-symbol', confidence: 1, confirmed: true }));
-  const allSeedsExact = functions.length > 0 && (image.functions || []).every(isExactFunctionSeed);
-  /* ELF/PE symbol/unwind/exception seeds can all be exact while still being a
-     non-exhaustive subset. The generic platform worker has no exhaustive
-     discovery proof, so it must not suppress later heuristic completion. */
-  const discoveryComplete = image.metadata?.functionDiscovery?.complete === true;
-  return {
-    addrs, kinds, flags, names: sorted.map((x) => String(x.name ?? '')), funcs, functionProvenance, nameProvenance,
-    symbolCount: addrs.length, funcCount: funcs.length, capped: false,
-    allSeedsExact,
-    discoveryComplete,
-    functionStartsExact: discoveryComplete && allSeedsExact,
-    functionDiscovery: { complete: discoveryComplete, capped: false,
-      reasons: discoveryComplete ? [] : ['platform-function-seeds-not-exhaustive'] },
-    __transfer: [addrs.buffer, kinds.buffer, flags.buffer, funcs.buffer],
-  };
-}
-
-function emptyAnalysis() {
-  const addrs = new BigUint64Array(0), kinds = new Uint8Array(0), flags = new Uint8Array(0), funcs = new BigUint64Array(0);
-  return { addrs, kinds, flags, names: [], funcs, symbolCount: 0, funcCount: 0, capped: false,
-    allSeedsExact: false, discoveryComplete: false, functionStartsExact: false,
-    functionDiscovery: { complete:false, capped:false, reasons:['platform-function-seeds-not-exhaustive'] },
-    __transfer: [addrs.buffer, kinds.buffer, flags.buffer, funcs.buffer] };
+  if (signal.aborted) throw new Error('Analysis cancelled');
+  return analysisFromBinaryImage(selected);
 }
 
 function genericFunctionSeeds() {

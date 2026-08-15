@@ -1,6 +1,7 @@
 /* Format-neutral backend facade. Legacy ARM64/Mach-O worker remains a compatibility engine. */
 import { LRU } from './lru.js';
 import { augmentAnalysisResultWithChainedImports } from './chained.js';
+import { markMachOSymbolTruthIncomplete, mergeMachOAnalysisResults } from './macho-analysis-merge.js';
 import { AnalysisCache } from './cache/analysis-cache.js';
 
 export const CHUNK_ROWS = 1024;
@@ -151,12 +152,21 @@ export class Backend {
     if (detection?.formatId === 'macho') {
       nextFormat = 'macho';
       const legacy = await this._callTo('legacy', 'open', { file });
+      let normalized = null;
+      try { normalized = await this._callTo('platform', 'open', { file }, null, (p) => this.onAnalysisProgress?.(p)); }
+      catch (error) { if (error?.stale) throw error; platformError = error; }
       legacy.formatId = 'macho';
       for (const slice of legacy.slices || []) slice.capability = legacySliceCapability(slice);
       legacy.capability = legacy.slices?.[0]?.capability || legacySliceCapability(null);
-      legacy.platform = { compatibility:'legacy-macho', sourceBackedDetection:true, detected:detection, duplicateUniversalParseAvoided:true };
+      legacy.platform = {
+        compatibility:'hybrid-macho', sourceBackedDetection:true, detected:detection,
+        normalizedDyldTruth:!!normalized, duplicateUniversalParseAvoided:false,
+        ...(platformError ? { normalizedDyldError: platformError.message } : {}),
+      };
       nextLegacy = legacy;
-      nextPlatform = { formatId:'macho', capability:legacy.capability, detection, compatibility:'legacy-macho' };
+      nextPlatform = normalized
+        ? { ...normalized, normalizedDyldTruth:true, compatibility:'hybrid-macho' }
+        : { formatId:'macho', capability:legacy.capability, detection, normalizedDyldTruth:false, compatibility:'legacy-macho' };
       result = legacy;
     } else {
       let platformInfo = null;
@@ -226,13 +236,21 @@ export class Backend {
 
   cancelSearch(request) { this.cancel(request); }
 
-  analyze(sliceIndex) {
-    const worker = this.formatId === 'macho' ? 'legacy' : 'platform';
+  async analyze(sliceIndex) {
+    if (this.formatId !== 'macho') return this._callTo('platform', 'analyze', { sliceIndex });
     const file = this.file;
-    return this._callTo(worker, 'analyze', { sliceIndex }).then((result) => {
-      if (this.formatId !== 'macho') return result;
-      return augmentAnalysisResultWithChainedImports(file, sliceIndex, result);
-    });
+    const legacy = await this._callTo('legacy', 'analyze', { sliceIndex });
+    const enriched = await augmentAnalysisResultWithChainedImports(file, sliceIndex, legacy);
+    if (!this.platformInfo?.normalizedDyldTruth) {
+      return markMachOSymbolTruthIncomplete(enriched, this.legacyInfo?.platform?.normalizedDyldError || 'normalized-macho-analysis-unavailable');
+    }
+    try {
+      const normalized = await this._callTo('platform', 'analyze', { sliceIndex });
+      return mergeMachOAnalysisResults(enriched, normalized);
+    } catch (error) {
+      if (error?.stale) throw error;
+      return markMachOSymbolTruthIncomplete(enriched, error?.message || 'normalized-macho-analysis-failed');
+    }
   }
 
   guessFunctions(regionId, limit, onProgress) { return this.call('guessFunctions', { regionId, limit }, null, onProgress); }
