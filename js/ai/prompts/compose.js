@@ -21,7 +21,8 @@ const SCOPE_RULES = Object.freeze({
 });
 const MAX_LIST = 12, MAX_TEXT = 400;
 function clip(value, limit = MAX_TEXT) { const text = String(value == null ? '' : value).replace(/\s+/g, ' ').trim(); return text.length > limit ? text.slice(0, limit - 1) + '…' : text; }
-function line(label, value) { const text = clip(value); return text ? label + ': ' + text : ''; }
+function escapeTagText(value) { return String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+function line(label, value) { const text = escapeTagText(clip(value)); return text ? label + ': ' + text : ''; }
 export function composeContextBlock(context = {}) {
   const rows = [], binary = context.binary || null;
   if (binary) rows.push(line('binary', [binary.name, binary.format, binary.architecture].filter(Boolean).join(' · ')));
@@ -34,7 +35,7 @@ export function composeContextBlock(context = {}) {
   return body ? '<workbench>\n' + body + '\n\nThis is workbench state, not an analysis result.\n</workbench>' : '';
 }
 function scopeBlock(scope) { return '<scope name="' + scope + '">\n' + (SCOPE_RULES[scope] || SCOPE_RULES.auto) + '\n</scope>'; }
-function intentBlock(intent) { return intent ? `<intent>\n${clip(intent, 120)}\n</intent>` : ''; }
+function intentBlock(intent) { return intent ? `<intent>\n${escapeTagText(clip(intent, 120))}\n</intent>` : ''; }
 export function composePrompt(input = {}) {
   const mode = MODES.includes(input.mode) ? input.mode : 'chat';
   const style = STYLES.includes(input.style) ? input.style : 'beginner';
