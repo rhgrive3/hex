@@ -76,29 +76,45 @@ export function sliceResult(ir, seed, direction, opts) {
   return { nodes, truncated: !!result.truncated, engine: 'semantic-ir' };
 }
 
-/** Bounded call-graph paths using ProgramIndex without forcing function analysis. */
+/**
+ * Bounded call-graph paths using ProgramIndex without forcing function analysis.
+ * The result is deliberately explicit about incompleteness: [] is only proof
+ * of absence when complete is true.
+ */
 export function functionPaths(program, from, to, opts) {
   const maxDepth = Math.max(1, Math.min(12, opts && opts.maxDepth || 6));
   const maxPaths = Math.max(1, Math.min(32, opts && opts.maxPaths || 8));
   const maxVisited = Math.max(16, Math.min(20000, opts && opts.maxVisited || 10000));
-  if (!program || from == null || to == null) return [];
+  const result = { paths: [], complete: true, truncated: false, reasons: [], visited: 0 };
+  if (!program || from == null || to == null) return result;
+
+  const reasons = new Set();
   const q = [[from]];
-  const out = [];
-  let visited = 0;
-  while (q.length && out.length < maxPaths && visited++ < maxVisited) {
+  while (q.length && result.paths.length < maxPaths) {
+    if (result.visited >= maxVisited) { reasons.add('visited-limit'); break; }
     const path = q.shift();
+    result.visited++;
     const head = path[path.length - 1];
-    if (head === to) { out.push(path); continue; }
-    if (path.length >= maxDepth) continue;
+    if (head === to) { result.paths.push(path); continue; }
+    if (path.length >= maxDepth) { reasons.add('depth-limit'); continue; }
+
     let range = null;
     try { range = program.functionRange(head); } catch { range = null; }
     let callees = [];
-    try { callees = program.calleesOf(head, range && range.end, 200) || []; } catch { callees = []; }
+    try { callees = program.calleesOf(head, range && range.end, 201) || []; } catch { callees = []; }
+    if (callees.length > 200) { reasons.add('callee-limit'); callees = callees.slice(0, 200); }
     for (const c of callees) {
       const addr = c && c.addr != null ? c.addr : c;
       if (addr == null || path.some((p) => p === addr)) continue;
       q.push(path.concat([addr]));
     }
   }
-  return out.sort((a, b) => a.length - b.length);
+
+  if (result.paths.length >= maxPaths && q.length) reasons.add('path-limit');
+  if (program.graphCompleteness && program.graphCompleteness.callsComplete === false) reasons.add('program-calls-incomplete');
+  result.paths.sort((a, b) => a.length - b.length);
+  result.reasons = [...reasons];
+  result.truncated = result.reasons.length > 0;
+  result.complete = !result.truncated;
+  return result;
 }
