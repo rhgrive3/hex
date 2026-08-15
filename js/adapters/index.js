@@ -30,11 +30,18 @@ function classifyStop(result) {
   return { kind:'exception', message:reason };
 }
 function callsFromTrace(trace) {
-  return (trace || []).filter((e) => /^(bl|blr)\b/i.test(e.text || '')).map((e) => {
+  const out = [];
+  for (const e of trace || []) {
+    if (e?.type === 'call') {
+      out.push({ type:'call', address:e.addr ?? e.address, target:e.target ?? null, indirect:!!e.indirect, text:e.text });
+      continue;
+    }
+    if (!/^(bl|blr)\b/i.test(e?.text || '')) continue;
     const match = /^bl\s+#?(0x[0-9a-f]+|[0-9]+)/i.exec(e.text || '');
     let target = null; try { if (match) target = BigInt(match[1]); } catch { target = null; }
-    return { type:'call', address:e.addr ?? e.address, target, text:e.text };
-  });
+    out.push({ type:'call', address:e.addr ?? e.address, target, indirect:/^blr\b/i.test(e.text || ''), text:e.text });
+  }
+  return out;
 }
 function returnsFromTrace(trace) {
   return (trace || []).filter((e) => /^ret\b/i.test(e.text || '')).map((e) => ({ type:'return', address:e.addr ?? e.address, text:e.text }));
@@ -174,7 +181,10 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
       this.traceBuffer.push({ type:'branch', address:before.pc, text:raw.text, next:after.pc, taken:after.pc !== before.pc + 4n });
       this.branchCursor++;
     }
-    for (const call of callsFromTrace([event])) this.traceBuffer.push(call);
+    const freshTrace = (sandbox.emulator.trace || []).slice(this.traceCursor);
+    const directCalls = callsFromTrace(freshTrace.filter((e) => e?.type === 'call'));
+    if (directCalls.length) for (const call of directCalls) this.traceBuffer.push(call);
+    else for (const call of callsFromTrace([event])) this.traceBuffer.push(call);
     for (const ret of returnsFromTrace([event])) this.traceBuffer.push(ret);
     this.traceCursor = (sandbox.emulator.trace || []).length;
     return { ...raw, state:sandbox.state(), registerDelta:registerDelta(before,after), stop:classifyStop({ stopped:sandbox.emulator.stopped }) };
@@ -232,7 +242,10 @@ export class LocalFunctionSandboxAdapter extends DebugAdapter {
     const trace = fullTrace.slice(this.traceCursor); this.traceCursor = fullTrace.length;
     const allBranches = result.takenBranches || [];
     const branches = allBranches.slice(this.branchCursor); this.branchCursor = allBranches.length;
-    for (const e of trace) this.traceBuffer.push({ type:'instruction', address:e.addr, text:e.text });
+    for (const e of trace) {
+      if (e?.type === 'call') continue; // emitted below once, with resolved target
+      this.traceBuffer.push({ type:'instruction', address:e.addr, text:e.text });
+    }
     for (const e of branches) this.traceBuffer.push({ type:'branch', ...e });
     const calls = callsFromTrace(trace), returns = returnsFromTrace(trace);
     const stop = classifyStop(result);

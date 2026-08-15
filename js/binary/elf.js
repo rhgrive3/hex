@@ -102,6 +102,15 @@ function parseProgramHeaders(r, h, image, bits) {
     } else {
       ph = { type: r.u32(p), offset: BigInt(r.u32(p + 4)), vaddr: BigInt(r.u32(p + 8)), filesz: BigInt(r.u32(p + 16)), memsz: BigInt(r.u32(p + 20)), flags: r.u32(p + 24), align: BigInt(r.u32(p + 28)) };
     }
+    if (ph.type === PT_LOAD) {
+      const fileLength = BigInt(r.length);
+      const invalidSize = ph.filesz > ph.memsz;
+      const invalidRange = ph.offset > fileLength || ph.filesz > fileLength - ph.offset;
+      if (invalidSize || invalidRange) {
+        image.warnings.push(`invalid ELF PT_LOAD ${i}: ${invalidSize ? 'p_filesz > p_memsz' : 'file range exceeds input'}`);
+        continue;
+      }
+    }
     out.push(ph);
     if (ph.type === PT_LOAD) {
       image.addSegment({
