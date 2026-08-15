@@ -119,11 +119,12 @@ function userscriptCss() {
 }
 
 function hostBootstrap(bodyHtml, scopedCss) {
+  const workerBridge = `(${installHexWorkerBridgeRuntime.toString()})(HEX_ORIGIN);`;
   return `(function(){\n` +
     `  if (location.hostname !== 'chatgpt.com') return;\n` +
     `  const HEX_ORIGIN = ${JSON.stringify(ORIGIN_TOKEN)};\n` +
     `  globalThis.__HEX_API_BASE__ = HEX_ORIGIN;\n` +
-    `  installHexWorkerBridge(HEX_ORIGIN);\n` +
+    `  ${workerBridge}\n` +
     `  if (!document.getElementById('hex-userscript-host')) {\n` +
     `    const host = document.createElement('div');\n` +
     `    host.id = 'hex-userscript-host';\n` +
@@ -136,43 +137,46 @@ function hostBootstrap(bodyHtml, scopedCss) {
     `    (document.head || document.documentElement).append(style);\n` +
     `    document.documentElement.append(host);\n` +
     `  }\n` +
-    `  function installHexWorkerBridge(origin) {\n` +
-    `    const NativeWorker = globalThis.Worker;\n` +
-    `    const NativeURL = globalThis.URL;\n` +
-    `    if (!NativeWorker || NativeWorker.__hexWrapped) return;\n` +
-    `    function HexWorker(url, options) {\n` +
-    `      const href = new NativeURL(String(url), location.href).href;\n` +
-    `      const prefix = origin + '/userscript-assets/';\n` +
-    `      if (!href.startsWith(prefix)) return new NativeWorker(url, options);\n` +
-    `      const remote = href;\n` +
-    `      const bootstrap = workerBootstrap(remote, !!(options && options.type === 'module'));\n` +
-    `      const blobUrl = NativeURL.createObjectURL(new Blob([bootstrap], { type:'text/javascript' }));\n` +
-    `      try { return new NativeWorker(blobUrl, options); }\n` +
-    `      finally { setTimeout(() => NativeURL.revokeObjectURL(blobUrl), 1000); }\n` +
-    `    }\n` +
-    `    HexWorker.prototype = NativeWorker.prototype;\n` +
-    `    Object.setPrototypeOf(HexWorker, NativeWorker);\n` +
-    `    Object.defineProperty(HexWorker, '__hexWrapped', { value:true });\n` +
-    `    globalThis.Worker = HexWorker;\n` +
-    `    function workerBootstrap(remote, moduleWorker) {\n` +
-    `      const setup = ` + "`" + `\n` +
-    `        const __hexRemote = \\${JSON.stringify(remote)};\n` +
-    `        const __HexNativeURL = globalThis.URL;\n` +
-    `        globalThis.URL = class HexRemoteURL extends __HexNativeURL {\n` +
-    `          constructor(path, base) {\n` +
-    `            let resolvedBase = base;\n` +
-    `            if (typeof resolvedBase === 'string' && resolvedBase.startsWith('blob:') && typeof path === 'string') resolvedBase = __hexRemote;\n` +
-    `            super(path, resolvedBase);\n` +
-    `          }\n` +
-    `        };\n` +
-    `      ` + "`" + `;\n` +
-    `      if (moduleWorker) return setup + '\\nimport(' + JSON.stringify(remote) + ');';\n` +
-    `      return setup + ` + "`" + `\n` +
-    `        const __hexImportScripts = globalThis.importScripts.bind(globalThis);\n` +
-    `        globalThis.importScripts = (...urls) => __hexImportScripts(...urls.map((value) => new __HexNativeURL(String(value), __hexRemote).href));\n` +
-    `        __hexImportScripts(\\${JSON.stringify(remote)});\n` +
-    `      ` + "`" + `;\n` +
-    `    }\n` +
-    `  }\n` +
     `})();`;
+}
+
+/* This function is stringified into the userscript banner. Keep it standalone:
+   it intentionally has no closure dependencies. */
+function installHexWorkerBridgeRuntime(origin) {
+  const NativeWorker = globalThis.Worker;
+  const NativeURL = globalThis.URL;
+  if (!NativeWorker || NativeWorker.__hexWrapped) return;
+
+  function workerBootstrap(remote, moduleWorker) {
+    const setup = `
+const __hexRemote = ${JSON.stringify(remote)};
+const __HexNativeURL = globalThis.URL;
+globalThis.URL = class HexRemoteURL extends __HexNativeURL {
+  constructor(path, base) {
+    let resolvedBase = base;
+    if (typeof resolvedBase === 'string' && resolvedBase.startsWith('blob:') && typeof path === 'string') resolvedBase = __hexRemote;
+    super(path, resolvedBase);
+  }
+};`;
+    if (moduleWorker) return `${setup}\nimport(${JSON.stringify(remote)});`;
+    return `${setup}
+const __hexImportScripts = globalThis.importScripts.bind(globalThis);
+globalThis.importScripts = (...urls) => __hexImportScripts(...urls.map((value) => new __HexNativeURL(String(value), __hexRemote).href));
+__hexImportScripts(${JSON.stringify(remote)});`;
+  }
+
+  function HexWorker(url, options) {
+    const href = new NativeURL(String(url), location.href).href;
+    const prefix = origin + '/userscript-assets/';
+    if (!href.startsWith(prefix)) return new NativeWorker(url, options);
+    const bootstrap = workerBootstrap(href, !!(options && options.type === 'module'));
+    const blobUrl = NativeURL.createObjectURL(new Blob([bootstrap], { type: 'text/javascript' }));
+    try { return new NativeWorker(blobUrl, options); }
+    finally { setTimeout(() => NativeURL.revokeObjectURL(blobUrl), 1000); }
+  }
+
+  HexWorker.prototype = NativeWorker.prototype;
+  Object.setPrototypeOf(HexWorker, NativeWorker);
+  Object.defineProperty(HexWorker, '__hexWrapped', { value: true });
+  globalThis.Worker = HexWorker;
 }
