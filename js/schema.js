@@ -38,6 +38,17 @@ function plainAccess(w) {
   return { load: m.load, size: m.size, base: m.base, disp: Number(m.disp), reg: m.reg };
 }
 
+function writtenGpr(w) {
+  const pcRel = W.pcRelTarget(w, 0n);
+  if (pcRel) return pcRel.reg;
+  const mw = moveWide(w);
+  if (mw) return mw.d;
+  const kind = W.classifyWord(w);
+  if ([W.KIND.MOVREG, W.KIND.ARITH, W.KIND.MUL, W.KIND.DIV, W.KIND.LOGIC, W.KIND.SHIFT, W.KIND.CSEL].includes(kind)) return rd(w);
+  if ((kind === W.KIND.LOAD || kind === W.KIND.LITERAL) && ((w >>> 26) & 1) === 0) return rd(w);
+  return null;
+}
+
 const MAX_COLUMNS = 4096;
 const MAX_RECORD = 1 << 20;
 
@@ -64,10 +75,13 @@ export function decodeSchema(words, base) {
   const known = new Uint8Array(32);
   const bumped = [], loops = [], fixed = [], scales = [], cmps = [];
   const flow = controlContext(words, base);
+  const baseGeneration = new Uint32Array(32);
   let lastCall = -1;
 
   for (let i = 0; i < words.length; i++) {
     const w = words[i];
+    const written = writtenGpr(w);
+    if (written != null && written >= 0 && written < 31) baseGeneration[written]++;
     const mw = moveWide(w);
     if (mw) {
       if (mw.kind === 'movz') { konst[mw.d] = mw.value; known[mw.d] = 1; }
@@ -81,7 +95,7 @@ export function decodeSchema(words, base) {
 
     if (W.isCallImm(w) || W.isIndirectCall(w)) {
       lastCall = i;
-      for (let r = 0; r <= 18; r++) known[r] = 0;
+      for (let r = 0; r <= 18; r++) { known[r] = 0; baseGeneration[r]++; }
       continue;
     }
 
@@ -111,7 +125,11 @@ export function decodeSchema(words, base) {
     const pa = plainAccess(w);
     if (pa) {
       if (!pa.load && pa.reg === 0 && lastCall >= 0 && i - lastCall <= 3 && pa.base !== 31) {
-        fixed.push({ row: i, addr: base + BigInt(i * 4), base: pa.base, disp: pa.disp, size: pa.size });
+        fixed.push({
+          row: i, addr: base + BigInt(i * 4), base: pa.base, disp: pa.disp, size: pa.size,
+          block: flow.blockOf[i], loop: flow.loopOf[i], baseGeneration: baseGeneration[pa.base],
+          fromCall: true, callRow: lastCall, callAddr: base + BigInt(lastCall * 4),
+        });
       }
       if (pa.load && pa.reg === 0) lastCall = -1;
       continue;
@@ -136,6 +154,59 @@ export function decodeSchema(words, base) {
   return buildSchema({ loops, fixed, scales, cmps, bumped, base, words });
 }
 
+function fixedRegion(f) {
+  if (f?.loop != null && f.loop >= 0) return `loop:${f.loop}`;
+  if (f?.block != null && f.block >= 0) return `block:${f.block}`;
+  return null;
+}
+
+function splitLocalRuns(list, maxGap = 16) {
+  const sorted = list.slice().sort((a, b) => a.row - b.row);
+  const runs = [];
+  let run = [];
+  for (const item of sorted) {
+    if (run.length && item.row - run[run.length - 1].row > maxGap) { runs.push(run); run = []; }
+    run.push(item);
+  }
+  if (run.length) runs.push(run);
+  return runs;
+}
+
+export function unrolledTablesFromFixed(fixed) {
+  const groups = new Map();
+  for (const f of fixed || []) {
+    const region = fixedRegion(f);
+    if (!region || f.base == null || f.baseGeneration == null || f.callRow == null || f.fromCall !== true) continue;
+    const key = `${region}:x${f.base}:v${f.baseGeneration}:s${f.size}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(f);
+  }
+  const tables = [];
+  for (const list of groups.values()) {
+    for (const run of splitLocalRuns(list)) {
+      if (run.length < 3) continue;
+      const sorted = run.slice().sort((a, b) => a.row - b.row);
+      const offsets = sorted.map((f) => f.disp);
+      const stride = offsets[1] - offsets[0];
+      if (!(stride > 0) || offsets.some((off, i) => i > 0 && off - offsets[i - 1] !== stride)) continue;
+      if (new Set(offsets).size !== offsets.length) continue;
+      const region = fixedRegion(sorted[0]);
+      tables.push({
+        kind: 'unrolled', columns: offsets.length, columnStride: stride, columnSize: sorted[0].size,
+        recordStride: null, records: null, consistent: true, fromCall: true,
+        storeAddr: sorted[0].addr, offsets, scaled: [],
+        provenance: {
+          base: sorted[0].base, baseGeneration: sorted[0].baseGeneration, region,
+          callRows: sorted.map((f) => f.callRow), callAddrs: sorted.map((f) => f.callAddr ?? null),
+          storeRows: sorted.map((f) => f.row),
+        },
+        offsetOf(i) { return i >= 0 && i < offsets.length ? offsets[i] : null; },
+      });
+    }
+  }
+  return tables;
+}
+
 function buildSchema({ loops, fixed, scales, cmps, bumped, base }) {
   const tables = [];
   const seen = new Set();
@@ -152,17 +223,7 @@ function buildSchema({ loops, fixed, scales, cmps, bumped, base }) {
     tables.push(makeIndexedTable({ columns, stride: l.stride, size: l.size, recordStride, consistent, storeAddr: l.addr, records: recordCountOf(cmps, bumped, l), scaled: scaledColumns(scales, l), fromCall: l.fromCall }));
   }
 
-  const byBase = new Map();
-  for (const f of fixed) {
-    if (!byBase.has(f.base)) byBase.set(f.base, []);
-    byBase.get(f.base).push(f);
-  }
-  for (const list of byBase.values()) {
-    if (list.length < 3) continue;
-    const sorted = list.slice().sort((a, b) => a.row - b.row);
-    const offsets = sorted.map((f) => f.disp);
-    tables.push({ kind: 'unrolled', columns: offsets.length, columnStride: null, columnSize: sorted[0].size, recordStride: null, records: null, consistent: null, storeAddr: sorted[0].addr, offsets, scaled: [], offsetOf(i) { return i >= 0 && i < offsets.length ? offsets[i] : null; } });
-  }
+  tables.push(...unrolledTablesFromFixed(fixed));
 
   if (!tables.length) return null;
   tables.sort((a, b) => (b.consistent === true) - (a.consistent === true) || (b.fromCall === true) - (a.fromCall === true) || (b.columns || 0) - (a.columns || 0));
