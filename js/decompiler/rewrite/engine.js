@@ -1,4 +1,4 @@
-import { mapChildren, nodeCount, structuralKey } from '../ast/nodes.js';
+import { children, mapChildren, nodeCount, structuralKey } from '../ast/nodes.js';
 
 export const DEFAULT_REWRITE_BUDGET = Object.freeze({
   maxIterations: 12,
@@ -26,6 +26,8 @@ export class RewriteEngine {
 
   rewrite(root, context = {}) {
     const started = now();
+    const localDeadline = started + Math.max(0, Number(this.budget.timeBudgetMs));
+    const deadline = Number.isFinite(Number(context.deadline)) ? Math.min(localDeadline, Number(context.deadline)) : localDeadline;
     const proof = [];
     const stats = { iterations: 0, applications: 0, budgetExceeded: false, elapsedMs: 0, byRule: {} };
     const phases = [...new Set(this.rules.map((r) => r.phase))];
@@ -33,47 +35,68 @@ export class RewriteEngine {
 
     const overBudget = (candidate = current) => {
       if (stats.applications >= this.budget.maxApplications) return true;
-      if (nodeCount(candidate) > this.budget.nodeBudget) return true;
-      if (now() - started > this.budget.timeBudgetMs) return true;
+      if (nodeCount(candidate, new Set(), this.budget.nodeBudget) > this.budget.nodeBudget) return true;
+      if (now() >= deadline || context.shouldAbort?.()) return true;
       return false;
+    };
+
+    const visitIterative = (rootNode, rules) => {
+      if (!rootNode) return rootNode;
+      const rewritten = new Map();
+      const active = new Set();
+      const stack = [{ n: rootNode, exit: false }];
+      while (stack.length) {
+        const frame = stack.pop();
+        const n = frame.n;
+        if (!n || rewritten.has(n)) continue;
+        if (overBudget(n)) { stats.budgetExceeded = true; rewritten.set(n, n); continue; }
+        if (!frame.exit) {
+          if (active.has(n)) { rewritten.set(n, n); continue; }
+          active.add(n);
+          stack.push({ n, exit: true });
+          const kids = children(n);
+          for (let i = kids.length - 1; i >= 0; i--) if (kids[i] && !rewritten.has(kids[i])) stack.push({ n: kids[i], exit: false });
+          continue;
+        }
+
+        let candidate = mapChildren(n, (child) => rewritten.get(child) || child);
+        for (const rule of rules) {
+          if (overBudget(candidate)) { stats.budgetExceeded = true; break; }
+          const match = rule.match(candidate, context);
+          if (!match) continue;
+          if (rule.precondition && !rule.precondition(candidate, match, context)) continue;
+          const beforeKey = structuralKey(candidate);
+          const next = rule.rewrite(candidate, match, context);
+          if (!next) continue;
+          const afterKey = structuralKey(next);
+          if (beforeKey === afterKey) continue;
+          const beforeCost = Number(rule.cost(candidate, context) ?? 0);
+          const afterCost = Number(rule.cost(next, context) ?? 0);
+          if (!rule.allowExpansion && afterCost > beforeCost) continue;
+          const evidence = typeof rule.proof === 'function' ? rule.proof(candidate, next, match, context) : rule.proof;
+          if (!evidence) continue;
+          proof.push({ rule: rule.name, phase: rule.phase, before: beforeKey, after: afterKey, evidence });
+          stats.applications++;
+          stats.byRule[rule.name] = (stats.byRule[rule.name] || 0) + 1;
+          candidate = next;
+          if (rule.repeatability === 'once') break;
+        }
+        rewritten.set(n, candidate);
+        active.delete(n);
+      }
+      return rewritten.get(rootNode) || rootNode;
     };
 
     for (const phase of phases) {
       const rules = this.rules.filter((r) => r.phase === phase);
-      let changed = true;
       let iterations = 0;
-      while (changed && iterations++ < this.budget.maxIterations) {
-        changed = false;
+      while (iterations++ < this.budget.maxIterations) {
+        if (overBudget(current)) { stats.budgetExceeded = true; break; }
         stats.iterations++;
-        const visit = (n) => {
-          if (!n || overBudget(n)) { stats.budgetExceeded = true; return n; }
-          let candidate = mapChildren(n, visit);
-          for (const rule of rules) {
-            const match = rule.match(candidate, context);
-            if (!match) continue;
-            if (rule.precondition && !rule.precondition(candidate, match, context)) continue;
-            const beforeKey = structuralKey(candidate);
-            const rewritten = rule.rewrite(candidate, match, context);
-            if (!rewritten) continue;
-            const afterKey = structuralKey(rewritten);
-            if (beforeKey === afterKey) continue;
-            const beforeCost = Number(rule.cost(candidate, context) ?? 0);
-            const afterCost = Number(rule.cost(rewritten, context) ?? 0);
-            if (!rule.allowExpansion && afterCost > beforeCost) continue;
-            const evidence = typeof rule.proof === 'function' ? rule.proof(candidate, rewritten, match, context) : rule.proof;
-            if (!evidence) continue;
-            proof.push({ rule: rule.name, phase, before: beforeKey, after: afterKey, evidence });
-            stats.applications++;
-            stats.byRule[rule.name] = (stats.byRule[rule.name] || 0) + 1;
-            candidate = rewritten;
-            changed = true;
-            if (rule.repeatability === 'once') break;
-            if (overBudget(candidate)) { stats.budgetExceeded = true; break; }
-          }
-          return candidate;
-        };
-        current = visit(current);
-        if (stats.budgetExceeded) break;
+        const before = structuralKey(current);
+        current = visitIterative(current, rules);
+        const after = structuralKey(current);
+        if (before === after || stats.budgetExceeded) break;
       }
       if (stats.budgetExceeded) break;
     }
