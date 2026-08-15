@@ -1,0 +1,35 @@
+name: Verify issues 426 and 427
+
+on:
+  push:
+    branches:
+      - fix/issues-426-427-semantic-facts
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/issues-426-427-semantic-facts
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: python3 tools/apply-issues-426-427.py
+      - run: node tests/issues-426-427-semantic-facts.mjs
+      - run: npm run semantic:test
+      - run: npm run ai:test
+      - run: npm run lint
+      - name: Commit verified source
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add js/semantic.js js/agent/tools.js package.json tests/issues-426-427-semantic-facts.mjs
+          git diff --cached --check
+          git commit -m 'fix: prove clamps and canonicalize thresholds (#426 #427)'
+          git push origin HEAD:fix/issues-426-427-semantic-facts
