@@ -41,8 +41,6 @@ jobs:
             fi
           fi
 
-          # Start from latest main control-plane bridge and add the userscript
-          # provider selection without weakening TurnSnapshot safety boundaries.
           git checkout --theirs -- js/ai/ui/bridge.js package.json
           python - <<'PY'
           from pathlib import Path
@@ -74,9 +72,6 @@ jobs:
           p.write_text(json.dumps(data, ensure_ascii=False, indent=2) + '\n')
           PY
 
-          # Fix two control-plane integration defects exposed by the latest main:
-          # 1) get_binary_diff references an exported projection missing from the import.
-          # 2) valid scope/TurnSnapshot metadata is incorrectly reported as unknown by UI normalization.
           python - <<'PY'
           from pathlib import Path
 
@@ -84,19 +79,21 @@ jobs:
           s = p.read_text()
           old = "completenessOf, projectBounded, projectCompare, projectDetail, projectFunction, projectGraph,"
           new = "completenessOf, projectBinaryDiff, projectBounded, projectCompare, projectDetail, projectFunction, projectGraph,"
-          if old not in s:
+          if old in s:
+              s = s.replace(old, new, 1)
+              p.write_text(s)
+          elif 'projectBinaryDiff' not in s.split("from './projections/index.js'", 1)[0]:
               raise SystemExit('projectBinaryDiff import anchor not found')
-          p.write_text(s.replace(old, new, 1))
 
           p = Path('js/ai/render/normalize.js')
           s = p.read_text()
-          old = """  'actions', 'rejectedActions', 'toolTrace', 'cost', 'error', 'diagnostics',\n  'sessionId',\n]);"""
-          new = """  'actions', 'rejectedActions', 'toolTrace', 'cost', 'error', 'diagnostics',\n  'sessionId', 'scope', 'turnSnapshotId',\n]);"""
+          old = """  'followups', 'activity', 'usage', 'limits', 'sessionId', 'error', 'task', 'proposals',\n]);"""
+          new = """  'followups', 'activity', 'usage', 'limits', 'sessionId', 'scope', 'turnSnapshotId', 'error', 'task', 'proposals',\n]);"""
           if old not in s:
-              raise SystemExit('normalize known-keys anchor not found')
+              raise SystemExit('normalize known-fields anchor not found')
           s = s.replace(old, new, 1)
-          old = """    unknownFields,\n    sessionId: stringOf(raw?.sessionId),\n  };"""
-          new = """    unknownFields,\n    sessionId: stringOf(raw?.sessionId),\n    scope: stringOf(raw?.scope),\n    turnSnapshotId: stringOf(raw?.turnSnapshotId),\n  };"""
+          old = """    sessionId: source.sessionId ? String(source.sessionId) : null,\n    error: source.error ? text(source.error, 400) : null,"""
+          new = """    sessionId: source.sessionId ? String(source.sessionId) : null,\n    scope: source.scope ? String(source.scope) : null,\n    turnSnapshotId: source.turnSnapshotId ? String(source.turnSnapshotId) : null,\n    error: source.error ? text(source.error, 400) : null,"""
           if old not in s:
               raise SystemExit('normalize return anchor not found')
           p.write_text(s.replace(old, new, 1))
@@ -137,6 +134,7 @@ jobs:
           rm -f .github/workflows/finalize-pr603.yml
           rm -f .github/workflows/ui-debug-temp.yml
           rm -f .github/workflows/tmp-pr603-finalize.yml
+          rm -f .github/workflows/diagnose-pr603-merge.yml
           git add -A
           git status --short
           git commit -m "Merge latest main and finalize ChatGPT userscript integration"
