@@ -1,0 +1,42 @@
+name: Validate issue 574 Memory SSA alias soundness
+
+on:
+  push:
+    branches: [fix/issue-574-memory-alias-soundness]
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    if: ${{ !contains(github.event.head_commit.message, '[issue-574-applied]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Apply fix
+        run: python3 tools/apply-issue-574.py
+      - name: Syntax
+        run: |
+          node --check js/ir-core.js
+          node --check js/ir.js
+          node --check tests/ir-alias.mjs
+      - name: Focused alias regressions
+        run: node tests/ir-alias.mjs
+      - name: Semantic regression suite
+        run: npm run semantic:test
+      - name: Full regression
+        run: npm run check
+      - name: Commit validated production change
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add js/ir-core.js js/ir.js tests/ir-alias.mjs
+          git commit -m 'Fix #574 Memory-SSA pointer alias soundness [issue-574-applied]'
+          git push
