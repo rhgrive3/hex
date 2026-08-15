@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "fixtures": {
+    "battlecats": {
+      "file": "battlecats",
+      "size": 28153072,
+      "sha256": "1efc3397f08b99283ec2202cd66e7f30f52ce19400d3f8f971118472a87a50a1",
+      "urlEnv": "HEX_FIXTURE_BATTLECATS_URL"
+    },
+    "TsumTsum": {
+      "file": "TsumTsum",
+      "size": 45994784,
+      "sha256": "8c3fed835010dce1d1bc71e690582bd55cd63d20b7c4bbcd7aa71e87d8a37c7",
+      "urlEnv": "HEX_FIXTURE_TSUMTSUM_URL"
+    },
+    "YWP": {
+      "file": "YWP",
+      "size": 63455952,
+      "sha256": "0ff90943cd8c3709c6ef2bceae801e466ef04f9775c49c788999466e2e6ffcf6",
+      "urlEnv": "HEX_FIXTURE_YWP_URL"
+    }
+  }
+}
