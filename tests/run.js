@@ -3826,6 +3826,11 @@ test('EVIDENCE: hold-out calibrationのBrier/reliabilityを計算できる', asy
   ok(report.brier > 0 && report.bins.length === 1);
 });
 
+
+test('IL2CPP: #496 binding trust regressions stay fail-closed', async () => {
+  await import('./issue-496-il2cpp-binding.mjs');
+});
+
 await Promise.all(pending);
 process.stdout.write('\n' + passed + ' passed, ' + failures.length + ' failed\n');
 if (failures.length) {
