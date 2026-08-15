@@ -2,6 +2,9 @@ from pathlib import Path
 
 p=Path('js/binary/elf-extended.js')
 text=p.read_text()
+if 'function decodeAndroidTable(r, va, size64, image, bits, rela, source, budget, out) {' in text:
+    raise SystemExit(0)
+
 start=text.index('function decodeAndroidTable(r, va, size64, image, bits, rela, source) {')
 end=text.index('\nexport function parseDynamicSymbolVersions(', start)
 new=r'''function decodeAndroidTable(r, va, size64, image, bits, rela, source, budget, out) {
