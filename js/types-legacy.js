@@ -353,6 +353,7 @@ export class TypeStore {
   constructor(notes) {
     this.notes = notes || null;
     this.structs = notes && Array.isArray(notes.structs) ? notes.structs : [];
+    this.lastPersisted = true;
   }
 
   list() { return this.structs; }
@@ -416,9 +417,19 @@ export class TypeStore {
   }
 
   persist() {
-    if (!this.notes) return;
+    if (!this.notes) { this.lastPersisted = true; return true; }
     this.notes.structs = this.structs;
-    this.notes.save();
+    this.notes.dirty = true;
+    const ok = this.notes.save();
+    this.lastPersisted = ok;
+    if (!ok) {
+      const error = new Error('TypeStore could not persist the structure change');
+      error.name = 'PersistenceError';
+      error.code = this.notes.lastSaveError?.code || 'STORAGE_ERROR';
+      error.cause = this.notes.lastSaveError || null;
+      throw error;
+    }
+    return true;
   }
 
   /** C のヘッダとして書き出す。 */

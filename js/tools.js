@@ -638,10 +638,16 @@ function confidenceMark(conf) {
 function pickType(app, funcAddr, key, current, onDone) {
   const items = BASIC_TYPES.map((t) => ({
     label: t.name + ' — ' + t.ja,
-    action: () => { app.notes.setType(funcAddr, key, t.name); toast('型を ' + t.name + ' にしました'); onDone(); },
+    action: () => {
+      if (!app.notes.setType(funcAddr, key, t.name)) { notePersistenceFailure(app, '型'); onDone(); return; }
+      toast('型を ' + t.name + ' にしました'); onDone();
+    },
   }));
   items.push('-');
-  items.push({ label: '推測にもどす', action: () => { app.notes.setType(funcAddr, key, ''); onDone(); } });
+  items.push({ label: '推測にもどす', action: () => {
+    if (!app.notes.setType(funcAddr, key, '')) notePersistenceFailure(app, '型');
+    onDone();
+  } });
   void current;
   menu(items, window.innerWidth / 2, 120);
 }
@@ -688,8 +694,13 @@ export async function showStructRecover(app, addr) {
   actions.append(button('この形を保存する', 'chip', () => {
     const store = new TypeStore(app.notes);
     const name = 'struct_' + addr.toString(16).toUpperCase();
-    store.adopt(rec, name);
-    toast(name + ' として保存しました');
+    try {
+      store.adopt(rec, name);
+      toast(name + ' として保存しました');
+    } catch (error) {
+      if (error?.name !== 'PersistenceError') throw error;
+      notePersistenceFailure(app, '構造体');
+    }
   }));
   actions.append(button('C としてコピー', 'chip', () => copyText(structToC(rec), '構造体')));
   sheet.body.append(actions);
@@ -729,7 +740,12 @@ function showStructDetail(app, store, s, onChange) {
         const nameIn = input('項目の名前', m.name);
         const d = el('div');
         d.append(para('この項目に名前を付けます。'), field(nameIn, '決定', () => {
-          store.setMember(s.name, m.offset, { name: nameIn.value.trim() || m.name });
+          try {
+            store.setMember(s.name, m.offset, { name: nameIn.value.trim() || m.name });
+          } catch (error) {
+            if (error?.name !== 'PersistenceError') throw error;
+            onChange(); notePersistenceFailure(app, '構造体'); return;
+          }
           sheet.close();
           onChange();
           toast('名前を付けました');
@@ -743,7 +759,11 @@ function showStructDetail(app, store, s, onChange) {
   const chips = el('div', 'chips');
   chips.append(button('C としてコピー', 'chip', () => copyText(store.toC(s.name), '構造体')));
   chips.append(button('削除', 'chip danger', () => {
-    store.remove(s.name);
+    try { store.remove(s.name); }
+    catch (error) {
+      if (error?.name !== 'PersistenceError') throw error;
+      onChange(); notePersistenceFailure(app, '構造体の削除'); return;
+    }
     sheet.close();
     onChange();
     toast('削除しました');
@@ -940,6 +960,13 @@ export async function showGlobals(app) {
    名前とメモ
    ══════════════════════════════════════════════════════════ */
 
+function notePersistenceFailure(app, action = '変更') {
+  const code = app.notes?.lastSaveError?.code || 'STORAGE_ERROR';
+  alertDialog('保存できませんでした',
+    `${action}はこの画面には残っていますが、端末へ保存できていません（${code}）。\n` +
+    '「自分で付けた名前とメモ」を開くと保存の再試行と書き出しができます。ページを閉じる前にバックアップしてください。');
+}
+
 export function showRename(app, addr) {
   const sheet = new Sheet('名前を付ける');
   const cur = app.symbols.nameAt(addr);
@@ -957,15 +984,16 @@ export function showRename(app, addr) {
   const memo = textArea(app.notes.comment(addr) || '', 4);
   sheet.body.append(heading('メモ（覚えておきたいこと）'), memo);
   sheet.body.append(field(el('span'), 'メモを保存', () => {
-    app.notes.setComment(addr, memo.value);
+    if (!app.notes.setComment(addr, memo.value)) { notePersistenceFailure(app, 'メモ'); return; }
     toast('メモを保存しました');
   }));
 
   if (app.notes.nameOf(addr)) {
     sheet.body.append(button('付けた名前を消す', 'tb-btn danger', () => {
-      app.notes.setName(addr, '');
+      const saved = app.notes.setName(addr, '');
       app.symbols.rename(addr, '');
       app.viewer.setSymbols(app.symbols);
+      if (!saved) { notePersistenceFailure(app, '名前の削除'); return; }
       sheet.close();
       toast('元の名前に戻しました');
     }));
@@ -973,10 +1001,11 @@ export function showRename(app, addr) {
 
   function apply() {
     const v = nameIn.value.trim();
-    app.notes.setName(addr, v);
+    const saved = app.notes.setName(addr, v);
     app.symbols.rename(addr, v);
     app.viewer.setSymbols(app.symbols);
     app.updateChrome();
+    if (!saved) { notePersistenceFailure(app, '名前'); return; }
     sheet.close();
     toast(v ? '「' + v + '」にしました' : '元の名前に戻しました');
   }
@@ -988,7 +1017,7 @@ export function showComment(app, addr) {
   const memo = textArea(app.notes.comment(addr) || '', 5);
   sheet.body.append(memo);
   sheet.body.append(field(el('span'), '保存', () => {
-    app.notes.setComment(addr, memo.value);
+    if (!app.notes.setComment(addr, memo.value)) { notePersistenceFailure(app, 'メモ'); return; }
     sheet.close();
     toast('保存しました');
   }));
@@ -998,6 +1027,16 @@ export function showNotes(app) {
   const sheet = new Sheet('自分で付けた名前とメモ');
   const render = () => {
     body.replaceChildren();
+    if (app.notes.dirty) {
+      const warning = noteBox('まだ端末へ保存できていない変更があります。ページを閉じる前に再試行するか、下の「書き出す」でバックアップしてください。', 'warn');
+      const retry = el('div', 'chips');
+      retry.append(button('保存を再試行', 'chip', () => {
+        if (app.notes.save()) { toast('保存しました'); render(); }
+        else notePersistenceFailure(app, '変更');
+      }));
+      warning.append(retry);
+      body.append(warning);
+    }
     const names = app.notes.nameEntries();
     body.append(el('div', 'hint',
       '名前 ' + names.length + ' 個、メモ ' + app.notes.commentCount() + ' 個。\n' +
@@ -1029,6 +1068,7 @@ export function showNotes(app) {
           app.viewer.setSymbols(app.symbols);
           sh.close();
           render();
+          if (!app.notes.lastMutationSaved) { notePersistenceFailure(app, '取り込み'); return; }
           toast(n + ' 件を取り込みました');
         } catch (err) { alertDialog('読み込めません', userError(err, 'メモの形式を確認してください。')); }
       }));
@@ -1038,9 +1078,10 @@ export function showNotes(app) {
         confirmLabel: '消す',
         onConfirm: () => {
           for (const e of app.notes.nameEntries()) app.symbols.rename(e.addr, '');
-          app.notes.clear();
+          const saved = app.notes.clear();
           app.viewer.setSymbols(app.symbols);
           render();
+          if (!saved) { notePersistenceFailure(app, '全消去'); return; }
           toast('消しました');
         },
       });

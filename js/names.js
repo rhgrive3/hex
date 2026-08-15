@@ -16,6 +16,9 @@
  * （内容fingerprint・active slice UUID/archで見分ける）。どこにも送信しません。
  */
 
+import { asByteSource } from './binary/source.js';
+import { hashByteSource, sha256TreeByteSource } from './platform/hash.js';
+
 const PREFIX = 'hex.notes.';
 const MAX_BYTES = 2 * 1024 * 1024;   // 1 ファイルぶんの上限（保存が壊れないように）
 
@@ -46,7 +49,7 @@ export function legacyNoteKeyFor(file, fileInfo) {
   return parts.length ? parts.join('|') : null;
 }
 
-export async function noteKeyFor(file, fileInfo, sliceIndex) {
+export async function legacyV2NoteKeyFor(file, fileInfo, sliceIndex) {
   if (!file) return null;
   const slices = fileInfo && fileInfo.slices || [];
   const slice = Number.isInteger(sliceIndex) && sliceIndex >= 0 ? slices[sliceIndex] : null;
@@ -60,19 +63,18 @@ export async function noteKeyFor(file, fileInfo, sliceIndex) {
   const size = Number(file.size || 0);
   const starts = Array.from(new Set([0, Math.max(0, Math.floor(size / 2) - Math.floor(chunk / 2)), Math.max(0, size - chunk)]));
   const pieces = [new TextEncoder().encode(identity)];
-  for (const start of starts) {
-    const bytes = new Uint8Array(await file.slice(start, Math.min(size, start + chunk)).arrayBuffer());
+  for (const sampleStart of starts) {
+    const bytes = new Uint8Array(await file.slice(sampleStart, Math.min(size, sampleStart + chunk)).arrayBuffer());
     pieces.push(bytes);
   }
-  const total = pieces.reduce((n, p) => n + p.length, 0);
+  const total = pieces.reduce((n, piece) => n + piece.length, 0);
   const input = new Uint8Array(total);
   let at = 0;
-  for (const p of pieces) { input.set(p, at); at += p.length; }
+  for (const piece of pieces) { input.set(piece, at); at += piece.length; }
   let digest;
   if (globalThis.crypto && globalThis.crypto.subtle) {
     digest = new Uint8Array(await globalThis.crypto.subtle.digest('SHA-256', input));
   } else {
-    /* Very old browsers: still avoid name+size collisions, though SHA-256 is preferred. */
     let h = 2166136261;
     for (const b of input) { h ^= b; h = Math.imul(h, 16777619); }
     digest = Uint8Array.from([(h >>> 24) & 255, (h >>> 16) & 255, (h >>> 8) & 255, h & 255]);
@@ -80,11 +82,52 @@ export async function noteKeyFor(file, fileInfo, sliceIndex) {
   return identity + '|sha256:' + Array.from(digest).map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
+export async function noteKeyFor(file, fileInfo, sliceIndex) {
+  if (!file) return null;
+  const slices = fileInfo && fileInfo.slices || [];
+  const slice = Number.isInteger(sliceIndex) && sliceIndex >= 0 ? slices[sliceIndex] : null;
+  const info = slice && slice.info;
+  const source = asByteSource(file);
+  let content = source;
+  let sliceOffset = null;
+  let sliceSize = null;
+  if (slice && slice.offset != null && slice.size != null) {
+    try {
+      sliceOffset = BigInt(slice.offset);
+      sliceSize = BigInt(slice.size);
+      if (sliceOffset >= 0n && sliceSize >= 0n && sliceOffset <= source.size && sliceSize <= source.size - sliceOffset) {
+        content = source.subrange(sliceOffset, sliceSize);
+      } else {
+        sliceOffset = null; sliceSize = null;
+      }
+    } catch { sliceOffset = null; sliceSize = null; }
+  }
+  const identity = [
+    'v3', source.size.toString(),
+    info && info.uuid || '', info && info.cpu || '', info && info.cpuSub || '',
+    sliceOffset == null ? '' : sliceOffset.toString(),
+    sliceSize == null ? '' : sliceSize.toString(),
+  ].join('|');
+
+  let digest;
+  try {
+    digest = await sha256TreeByteSource(content);
+  } catch (error) {
+    if (error?.code !== 'SHA256_UNAVAILABLE') throw error;
+    // Legacy browser fallback still reads every byte. Modern Safari/iPadOS uses
+    // the cryptographic path above; this exists only to avoid making notes unusable.
+    digest = await hashByteSource(content);
+  }
+  return identity + '|' + digest;
+}
+
 export class NoteStore {
   constructor(id, legacyIds = []) {
     this.id = id || null;
     this.legacyIds = Array.from(new Set((legacyIds || []).filter((x) => x && x !== this.id)));
     this.migratedFrom = null;
+    this.lastSaveError = null;
+    this.lastMutationSaved = true;
     this.names = new Map();      // addr -> 名前
     this.comments = new Map();   // addr -> メモ
     this.vars = new Map();       // 'func:key' -> 呼び名
@@ -112,6 +155,13 @@ export class NoteStore {
     if (!raw) return;
     try {
       const o = JSON.parse(raw);
+      if (o && o.cleared === true) {
+        this.dirty = false;
+        this.lastSaveError = null;
+        this.lastMutationSaved = true;
+        this.migratedFrom = null;
+        return;
+      }
       for (const [k, v] of Object.entries(o.names || {})) this.names.set(k, v);
       for (const [k, v] of Object.entries(o.comments || {})) this.comments.set(k, v);
       for (const [k, v] of Object.entries(o.vars || {})) this.vars.set(k, v);
@@ -125,10 +175,21 @@ export class NoteStore {
     } catch { /* 壊れていたら無かったことにする（消しはしない） */ }
   }
 
+  _saveFailure(code, error = null, detail = {}) {
+    this.dirty = true;
+    this.lastMutationSaved = false;
+    this.lastSaveError = {
+      code: code || 'STORAGE_ERROR',
+      message: error?.message || String(error || ''),
+      ...detail,
+    };
+    return false;
+  }
+
   save() {
-    if (!this.id) return false;
+    if (!this.id) return this._saveFailure('NO_ID');
     const o = {
-      v: 1,
+      v: 2,
       names: Object.fromEntries(this.names),
       comments: Object.fromEntries(this.comments),
       vars: Object.fromEntries(this.vars),
@@ -136,10 +197,18 @@ export class NoteStore {
       structs: this.structs,
     };
     let text;
-    try { text = JSON.stringify(o); } catch { return false; }
-    if (text.length > MAX_BYTES) return false;
-    try { localStorage.setItem(PREFIX + this.id, text); this.dirty = false; return true; }
-    catch { return false; }   // 容量いっぱい / プライベートモード
+    try { text = JSON.stringify(o); } catch (error) { return this._saveFailure('SERIALIZE_ERROR', error); }
+    const bytes = new TextEncoder().encode(text).byteLength;
+    if (bytes > MAX_BYTES) return this._saveFailure('TOO_LARGE', null, { bytes, maxBytes: MAX_BYTES });
+    try {
+      localStorage.setItem(PREFIX + this.id, text);
+      this.dirty = false;
+      this.lastSaveError = null;
+      this.lastMutationSaved = true;
+      return true;
+    } catch (error) {
+      return this._saveFailure(error?.name || 'STORAGE_ERROR', error);
+    }
   }
 
   /* ── 名前 ─────────────────────────────────────────────── */
@@ -148,12 +217,12 @@ export class NoteStore {
 
   setName(addr, name) {
     const k = key(addr);
-    if (!k) return;
+    if (!k) return this._saveFailure('INVALID_KEY');
     const clean = cleanName(name);
     if (clean) this.names.set(k, clean);
     else this.names.delete(k);
     this.dirty = true;
-    this.save();
+    return this.save();
   }
 
   /** 保存済みの名前をぜんぶ [{addr, name}] で返す（起動時に索引へ流し込む）。 */
@@ -171,12 +240,12 @@ export class NoteStore {
 
   setComment(addr, text) {
     const k = key(addr);
-    if (!k) return;
+    if (!k) return this._saveFailure('INVALID_KEY');
     const clean = (text || '').toString().slice(0, 500).trim();
     if (clean) this.comments.set(k, clean);
     else this.comments.delete(k);
     this.dirty = true;
-    this.save();
+    return this.save();
   }
 
   commentCount() { return this.comments.size; }
@@ -191,7 +260,7 @@ export class NoteStore {
     if (clean) this.vars.set(kk, clean);
     else this.vars.delete(kk);
     this.dirty = true;
-    this.save();
+    return this.save();
   }
 
   typeOf(func, k) { return this.types.get(key(func) + ':' + k) || null; }
@@ -202,7 +271,7 @@ export class NoteStore {
     if (clean) this.types.set(kk, clean);
     else this.types.delete(kk);
     this.dirty = true;
-    this.save();
+    return this.save();
   }
 
   /* ── まとめて ─────────────────────────────────────────── */
@@ -212,7 +281,20 @@ export class NoteStore {
   clear() {
     this.names.clear(); this.comments.clear(); this.vars.clear(); this.types.clear();
     this.structs = [];
-    if (this.id) { try { localStorage.removeItem(PREFIX + this.id); } catch { /* ignore */ } }
+    this.dirty = true;
+    if (!this.id) return this._saveFailure('NO_ID');
+    // Keep the legacy payload intact for old app versions, but atomically write
+    // a primary-key tombstone so this version never migrates it again.
+    try {
+      localStorage.setItem(PREFIX + this.id, JSON.stringify({ v: 2, cleared: true }));
+      this.dirty = false;
+      this.lastSaveError = null;
+      this.lastMutationSaved = true;
+      this.migratedFrom = null;
+      return true;
+    } catch (error) {
+      return this._saveFailure(error?.name || 'STORAGE_ERROR', error);
+    }
   }
 
   /** 書き出し（バックアップ・共有用）。 */
@@ -236,7 +318,8 @@ export class NoteStore {
     for (const [k, v] of Object.entries(o.vars || {})) { this.vars.set(k, v); n++; }
     for (const [k, v] of Object.entries(o.types || {})) { this.types.set(k, v); n++; }
     if (Array.isArray(o.structs)) this.structs = this.structs.concat(o.structs);
-    this.save();
+    this.dirty = true;
+    this.lastMutationSaved = this.save();
     return n;
   }
 }
