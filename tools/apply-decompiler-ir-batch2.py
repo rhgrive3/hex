@@ -36,10 +36,13 @@ function stackReturnKey(expression) {
 function returnSiteForNode(node, ir, allowSingleFallback = false) {
   const rets = (ir?.instructions || []).filter((inst) => inst.op === 'ret');
   if (!rets.length) return null;
+  // The return statement's own source is authoritative for the RET site. The
+  // expression source describes where the value came from and may belong to a
+  // different block/path, so it must never be used to select a physical RET.
   const source = node?.source || {};
-  const rows = new Set([...(source.rows || []), ...(node?.semantic?.expression?.source?.rows || [])].map(Number));
-  const irIds = new Set([...(source.ir || []), ...(node?.semantic?.expression?.source?.ir || [])].map(Number));
-  const addresses = new Set([...(source.addresses || []), ...(node?.semantic?.expression?.source?.addresses || [])].map((x) => String(x)));
+  const rows = new Set((source.rows || []).map(Number));
+  const irIds = new Set((source.ir || []).map(Number));
+  const addresses = new Set((source.addresses || []).map((x) => String(x)));
   const matches = rets.filter((ret) => rows.has(Number(ret.row)) || irIds.has(Number(ret.id)) || addresses.has(String(ret.address)));
   if (matches.length === 1) return matches[0];
   if (!matches.length && allowSingleFallback && rets.length === 1) return rets[0];
