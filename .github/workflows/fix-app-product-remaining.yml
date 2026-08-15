@@ -40,6 +40,13 @@ jobs:
           s=s.replace('  const pdom = postDominators(state.ir);\n','',1)
           s=s.replace('    if (!pdom[yes]?.has(phi.block) || !pdom[no]?.has(phi.block)) continue;\n','',1)
           p.write_text(s)
+          # #130 changes the contract: this fixture intentionally returns hp, so
+          # provide trusted return type evidence instead of relying on incidental x0.
+          p=Path('tests/decompiler-semantic.mjs'); s=p.read_text()
+          old="addr: base, name: 'apply_damage', rowOfAddress, receiverType: 'Unit', beginner: false,"
+          new="addr: base, name: 'apply_damage', rowOfAddress, returnType: 'int32', receiverType: 'Unit', beginner: false,"
+          if old not in s and new not in s: raise SystemExit('apply_damage fixture anchor missing')
+          if old in s: p.write_text(s.replace(old,new,1))
           PY
       - name: Syntax
         run: |
@@ -48,11 +55,14 @@ jobs:
           node --check js/decompiler/loop-repair.js
           node --check js/decompiler/pretty/c.js
           node --check js/ir-core.js
+          node --check tests/decompiler-semantic.mjs
       - name: Focused guards
         run: |
           cat > tests/issues-decompiler-ir-open-1.mjs <<'EOF'
           import assert from 'node:assert/strict';
           import fs from 'node:fs';
+          import { buildSemanticModel } from '../js/blocks.js';
+          import { decompile } from '../js/decompile.js';
           const pipe=fs.readFileSync('js/decompiler/pipeline-core.js','utf8');
           const sem=fs.readFileSync('js/decompiler/semantic.js','utf8');
           const loop=fs.readFileSync('js/decompiler/loop-repair.js','utf8');
@@ -61,7 +71,7 @@ jobs:
           assert.doesNotMatch(pipe,/if \(d\.negate\)/); assert.match(pipe,/d\.extra\?\.negate/);
           const bs=pipe.slice(pipe.indexOf('function branchSucc'),pipe.indexOf('function branchCondition'));
           assert.match(bs,/succ\.length !== 2/); assert.doesNotMatch(bs,/yes:\s*succ\[0\]/); assert.match(bs,/yes:\s*null, no:\s*null/);
-          const phi=pipe.slice(pipe.indexOf('function controllingBranchForMemoryPhi'),pipe.indexOf('function phiValueExpression'));
+          const phi=pipe.slice(pipe.indexOf('function controllingBranchForMemoryPhi'),pipe.indexOf('function memoryNodeExpression'));
           assert.match(phi,/yr\.filter\(Boolean\)\.length !== 1/); assert.match(phi,/nr\.filter\(Boolean\)\.length !== 1/); assert.match(phi,/yr\[noIndex\] \|\| nr\[yesIndex\]/); assert.match(phi,/candidates\.length === 1/); assert.doesNotMatch(phi,/candidates\.sort\(\(a, b\) => b\.row - a\.row\)/);
           assert.match(ir,/addressDispOp/); assert.match(ir,/writebackDispOp/); assert.match(ir,/mem\?\.mode === 'post' \? 0n/); assert.match(ir,/value: writebackDisp/);
           assert.doesNotMatch(ir,/if \(irCache\.has\(model\)\)/); assert.match(ir,/function irConfigurationKey/); assert.match(ir,/prototypeRevision/); assert.match(ir,/evidenceGeneration/);
@@ -73,6 +83,22 @@ jobs:
           assert.match(sem,/d\.extra\?\.widen/); assert.match(sem,/__arm64_ubfiz/); assert.match(sem,/bitfieldKind === 'bfxil'/);
           assert.match(sem,/cmp\.sub !== 'sub'/);
           assert.match(loop,/renderNZCVCondition/); assert.match(loop,/renderNZCVCondition\(cmp\.sub \|\| 'sub'/);
+          // #130 functional contract: an incidental same-block x0 definition is not
+          // a return proof; trusted ABI/type evidence is.
+          function make(lines) {
+            const base=0x100000000n;
+            const raw=lines.map((text,row)=>{const p=text.indexOf(' ');return {row,address:base+BigInt(row*4),mn:p<0?text:text.slice(0,p),ops:p<0?'':text.slice(p+1)}});
+            const rowOfAddress=(addr)=>Number((BigInt(addr)-base)/4n);
+            return {model:buildSemanticModel(raw,{startRow:0,endRow:raw.length-1,rowOfAddress}),rowOfAddress,base};
+          }
+          {
+            const {model,rowOfAddress,base}=make(['mov x0, #7','ret']);
+            const unknown=decompile(model,{addr:base,name:'unknown_ret',rowOfAddress,beginner:false});
+            assert.doesNotMatch(unknown.pseudocode,/return\s+(?:7|0x7)\s*;/i,unknown.pseudocode);
+            const trusted=decompile(model,{addr:base,name:'known_ret',rowOfAddress,returnType:'int64',beginner:false});
+            assert.match(trusted.pseudocode,/return\s+(?:7|0x7)\s*;/i,trusted.pseudocode);
+          }
+          assert.match(fs.readFileSync('tests/decompiler-semantic.mjs','utf8'),/name: 'apply_damage'.*returnType: 'int32'/s);
           console.log('decompiler/IR open issue batch 1 guards passed');
           EOF
           node tests/issues-decompiler-ir-open-1.mjs
@@ -85,7 +111,7 @@ jobs:
           set -euo pipefail
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add js/decompiler/pipeline-core.js js/decompiler/semantic.js js/decompiler/loop-repair.js js/decompiler/pretty/c.js js/ir-core.js tests/issues-decompiler-ir-open-1.mjs
+          git add js/decompiler/pipeline-core.js js/decompiler/semantic.js js/decompiler/loop-repair.js js/decompiler/pretty/c.js js/ir-core.js tests/decompiler-semantic.mjs tests/issues-decompiler-ir-open-1.mjs
           git commit -m "fix: decompiler and IR correctness batch 1 (#130 #139 #140 #317 #347 #353 #401 #417 #418 #573 #575)"
           git rm -f .github/workflows/fix-app-product-remaining.yml tools/fix-decompiler-ir-open-1.py
           git commit -m "chore: finalize decompiler IR batch 1"
