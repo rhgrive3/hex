@@ -110,6 +110,7 @@ function verifyClamp(asm, fn, baseAddress) {
   const result = decompile(model, {
     name: fn, addr:model.instructions[0].address,
     rowOfAddress:(address) => rowMap.get(address?.toString()) ?? null,
+    returnType:'int32',
     decompilerTimeBudgetMs:120,
   });
   assert.ok(result?.semantic, `${fn}: semantic decompiler fallback`);

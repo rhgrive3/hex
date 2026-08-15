@@ -174,10 +174,11 @@ function blockTerm(block) {
 
 function branchSucc(ir, block, term, state) {
   const succ = block?.succ || [];
-  if (term?.op !== 'cbr' || succ.length < 2) return { yes: succ[0] ?? null, no: succ[1] ?? null };
+  if (term?.op !== 'cbr' || succ.length !== 2) return { yes: null, no: null };
   const yes = targetBlock(ir, term, state.opts?.rowOfAddress);
-  if (yes == null || !succ.includes(yes)) return { yes: succ[0] ?? null, no: succ[1] ?? null };
-  return { yes, no: succ.find((x) => x !== yes) ?? null };
+  if (yes == null || !succ.includes(yes)) return { yes: null, no: null };
+  const no = succ.find((x) => x !== yes) ?? null;
+  return no == null ? { yes: null, no: null } : { yes, no };
 }
 
 function branchCondition(inst, state) {
@@ -209,18 +210,24 @@ function canReach(ir, start, target, blocked, cap = 256) {
 
 function controllingBranchForMemoryPhi(phi, state) {
   const incoming = phi?.incoming || [];
-  if (incoming.length !== 2) return null;
+  if (incoming.length !== 2 || phi?.block == null) return null;
   const candidates = [];
   for (const block of state.ir.blocks || []) {
     const term = blockTerm(block);
-    if (term?.op !== 'cbr' || (block.succ || []).length < 2) continue;
+    if (term?.op !== 'cbr' || block.succ.length !== 2) continue;
     const { yes, no } = branchSucc(state.ir, block, term, state);
-    const yesIndex = incoming.findIndex((x) => canReach(state.ir, yes, x.from, phi.block));
-    const noIndex = incoming.findIndex((x) => canReach(state.ir, no, x.from, phi.block));
-    if (yesIndex >= 0 && noIndex >= 0 && yesIndex !== noIndex) candidates.push({ term, yesIndex, noIndex, row: term.row ?? -1 });
+    if (yes == null || no == null) continue;
+    const phiDom = state.ir.dominators?.[phi.block];
+    if (phiDom && !phiDom.has(block.index)) continue;
+    const yr = incoming.map((x) => canReach(state.ir, yes, x.from, phi.block));
+    const nr = incoming.map((x) => canReach(state.ir, no, x.from, phi.block));
+    const yesIndex = yr.findIndex(Boolean), noIndex = nr.findIndex(Boolean);
+    if (yesIndex < 0 || noIndex < 0 || yesIndex === noIndex) continue;
+    if (yr.filter(Boolean).length !== 1 || nr.filter(Boolean).length !== 1) continue;
+    if (yr[noIndex] || nr[yesIndex]) continue;
+    candidates.push({ term, yesIndex, noIndex, block:block.index });
   }
-  candidates.sort((a, b) => b.row - a.row);
-  return candidates[0] || null;
+  return candidates.length === 1 ? candidates[0] : null;
 }
 
 function memoryNodeExpression(node, loadInst, state, seen = new Set()) {
@@ -262,7 +269,7 @@ function buildValue(v, state, flags = {}) {
       else if (d.sub === 'orn') out = expr.binary('or', a, expr.unary('not', b, v.bits || b.bits || 64, b.signed), v.bits || 64, signedFor(state, v), origin(d, v));
       else if (d.sub === 'eon') out = expr.unary('not', expr.binary('xor', a, b, v.bits || 64, signedFor(state, v)), v.bits || 64, signedFor(state, v), origin(d, v));
       else out = expr.binary(d.sub, a, b, v.bits || 64, signedFor(state, v), origin(d, v));
-      if (d.negate) out = expr.unary('neg', out, v.bits || 64, signedFor(state, v), origin(d, v));
+      if (d.extra?.negate) out = expr.unary('neg', out, v.bits || 64, signedFor(state, v), origin(d, v));
     } else if (d.op === 'un') {
       const a = buildArg(d.args?.[0], state);
       const sub = String(d.sub || '');
@@ -366,9 +373,7 @@ function returnValueAt(inst, state) {
   const explicit=valueOf(inst?.args?.[0]);
   if (explicit) return explicit;
   const reg=returnRegisterForState(state);
-  if (reg) return reachingRegisterValue(state.ir, inst, reg);
-  const candidate=reachingRegisterValue(state.ir, inst, 'x0');
-  return candidate?.def && candidate.def.block === inst?.block ? candidate : null;
+  return reg ? reachingRegisterValue(state.ir, inst, reg) : null;
 }
 
 function semanticFacts(state, result) {

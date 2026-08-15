@@ -3,7 +3,7 @@ import { effectOf } from '../ast/nodes.js';
 const PREC = { select: 2, oror: 3, andand: 4, or: 5, xor: 6, and: 7, eq: 8, ne: 8, lt: 9, le: 9, gt: 9, ge: 9, shl: 10, lshr: 10, ashr: 10, add: 11, sub: 11, mul: 12, sdiv: 12, udiv: 12, smod: 12, umod: 12, unary: 13, primary: 15 };
 const OP_TEXT = { add: '+', sub: '-', mul: '*', and: '&', or: '|', xor: '^', shl: '<<', lshr: '>>', ashr: '>>', sdiv: '/', udiv: '/', smod: '%', umod: '%', eq: '==', ne: '!=', lt: '<', le: '<=', gt: '>', ge: '>=' };
 
-function integerText(v, bits = 64, signed = null) {
+export function integerText(v, bits = 64, signed = null) {
   const n = BigInt(v);
   const width = Math.max(1, Number(bits || 64));
   const sv = BigInt.asIntN(width, n);

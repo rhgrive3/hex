@@ -14,6 +14,7 @@ import { callArgumentIndices, knownCallPrototype } from './call-prototypes.js';
 import { sourceOf, mergeSource } from './ast/nodes.js';
 import { isNZCVCondition, renderNZCVCondition } from './flag-semantics.js';
 import { renderIndexedMemory } from './address-semantics.js';
+import { integerText } from './pretty/c.js';
 
 const MAX_EXPR_DEPTH = 48;
 const MAX_EXPR_NODES = 512;
@@ -151,9 +152,7 @@ function returnValueAt(ret, ctx) {
   const explicit=valueOf(ret?.args?.[0]);
   if (explicit) return explicit;
   const reg=returnRegisterForContext(ctx);
-  if (reg) return reachingRegisterValue(ctx.ir, ret, reg);
-  const candidate=reachingRegisterValue(ctx.ir, ret, 'x0');
-  return candidate?.def && candidate.def.block === ret?.block ? candidate : null;
+  return reg ? reachingRegisterValue(ctx.ir, ret, reg) : null;
 }
 
 function feedsReturn(value, ctx) {
@@ -212,13 +211,9 @@ function formatFloatConst(v, bits = 64) {
   return Number(bits || 64) <= 32 ? text + 'f' : text;
 }
 
-function formatConst(v, bits = 64) {
+function formatConst(v, bits = 64, signed = null) {
   if (v == null) return 'unknown';
-  const n = BigInt(v);
-  const signed = BigInt.asIntN(Math.min(64, Number(bits) || 64), n);
-  if (signed >= -9n && signed <= 99n) return signed.toString();
-  if (n <= 0xffffn) return '0x' + n.toString(16).toUpperCase();
-  return signed < 0n ? signed.toString() : '0x' + n.toString(16).toUpperCase();
+  return integerText(v, bits, signed);
 }
 
 function dominatorDepth(ir, block) {
@@ -370,7 +365,7 @@ function selectAsMinMax(inst, ctx) {
   if (!inst || inst.op !== OP.SEL || inst.args.length < 3) return null;
   const t = valueOf(inst.args[0]), f = valueOf(inst.args[1]), flags = valueOf(inst.args[2]);
   const cmp = cmpFromFlags(flags);
-  if (!cmp || cmp.args.length < 2) return null;
+  if (!cmp || cmp.args.length < 2 || cmp.sub !== 'sub' || cmp.extra?.conditional) return null;
   const a = valueOf(cmp.args[0]), b = valueOf(cmp.args[1]);
   const cond = inst.cond;
   const tt = renderValue(t, ctx), ff = renderValue(f, ctx), aa = renderValue(a, ctx), bb = renderValue(b, ctx);
@@ -500,17 +495,23 @@ export function renderValue(value, ctx, flags = {}) {
   if (!out && d) {
     if (d.op === OP.CONST) out = (value.constKind === 'float' || value.floatConst != null || value.float != null)
       ? formatFloatConst(value.floatConst ?? value.float, value.bits)
-      : formatConst(value.const ?? d.extra?.value ?? 0n, value.bits);
+      : formatConst(value.const ?? d.extra?.value ?? 0n, value.bits, value.signed ?? null);
     else if (d.op === OP.MOV) out = renderValue(valueOf(d.args?.[0]), ctx);
     else if (d.op === OP.BIN) out = binText(d, ctx);
     else if (d.op === OP.UN) out = unaryText(d, ctx);
     else if (d.op === OP.MAC) {
-      const a = renderValue(valueOf(d.args?.[0]), ctx), b = renderValue(valueOf(d.args?.[1]), ctx), c = renderValue(valueOf(d.args?.[2]), ctx);
+      const a = renderValue(valueOf(d.args?.[0]), ctx), b0 = renderValue(valueOf(d.args?.[1]), ctx), c0 = renderValue(valueOf(d.args?.[2]), ctx);
+      const widen=d.extra?.widen;
+      const b=widen==='signed'?`(int64_t)(int32_t)${paren(b0)}`:widen==='unsigned'?`(uint64_t)(uint32_t)${paren(b0)}`:b0;
+      const c=widen==='signed'?`(int64_t)(int32_t)${paren(c0)}`:widen==='unsigned'?`(uint64_t)(uint32_t)${paren(c0)}`:c0;
       out = d.sub === 'msub' ? `${paren(a)} - ${paren(b)} * ${paren(c)}` : `${paren(a)} + ${paren(b)} * ${paren(c)}`;
     } else if (d.op === OP.BFX) {
-      const a = renderValue(valueOf(d.args?.[0]), ctx); out = `bit_extract(${a}, ${d.extra?.lsb ?? 0}, ${d.extra?.width ?? '?'})`;
+      const a = renderValue(valueOf(d.args?.[0]), ctx), l=d.extra?.lsb ?? 0, w=d.extra?.width ?? '?';
+      if (d.extra?.toward === 'left') out = `${d.extra?.signed?'__arm64_sbfiz':'__arm64_ubfiz'}(${a}, ${l}, ${w})`;
+      else out = `${d.extra?.signed?'__arm64_sbfx':'bit_extract'}(${a}, ${l}, ${w})`;
     } else if (d.op === OP.BFI) {
-      const a = renderValue(valueOf(d.args?.[0]), ctx), b = renderValue(valueOf(d.args?.[1]), ctx); out = `bit_insert(${a}, ${b}, ${d.extra?.lsb ?? 0}, ${d.extra?.width ?? '?'})`;
+      const a = renderValue(valueOf(d.args?.[0]), ctx), b = renderValue(valueOf(d.args?.[1]), ctx), l=d.extra?.lsb ?? 0, w=d.extra?.width ?? '?';
+      out = d.extra?.bitfieldKind === 'bfxil' ? `bit_insert(${a}, bit_extract(${b}, ${l}, ${w}), 0, ${w})` : `bit_insert(${a}, ${b}, ${l}, ${w})`;
     } else if (d.op === OP.LOAD) {
       if (d.reachingStore && !flags.noMemoryFold && d.reachingStore !== d) out = renderValue(valueOf(d.reachingStore.args?.[0]), ctx);
       else out = renderMemoryLocation(d.loc, d, ctx);
@@ -767,7 +768,7 @@ function faithfulCfg(ctx, indent = 1) {
     const term = emitBlockStatements(block, out, ctx, indent + 1);
     if (!term) continue;
     if (term.op === OP.RET) {
-      const rv = reachingRegisterValue(ctx.ir, term, 'x0') || valueOf(term.args?.[0]);
+      const rv = returnValueAt(term, ctx);
       out.push(line('stmt', indent + 1, rv ? `return ${renderValue(rv, ctx)};` : 'return;', term.row, term.address, { source: mergeSource(dependencySource(rv, ctx), sourceForInst(term, 'return')) }));
     } else if (term.op === OP.CBR) {
       const { yes, no } = branchSucc(ctx.ir, block, term, ctx);

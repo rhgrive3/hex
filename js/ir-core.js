@@ -351,9 +351,11 @@ function lift(insn, opts = {}) {
   /* ── メモリ ── */
   if (insn.memory) {
     const mem = ops.find((o) => o.k === 'mem');
+    const addressDispOp = mem ? (mem.addressDisp ?? mem.disp ?? null) : null;
+    const writebackDispOp = mem ? (mem.writebackDisp ?? (mem.mode === 'pre' ? addressDispOp : null)) : null;
     const addr = {
       base: mem ? regKeyOf(mem.base) : null,
-      disp: mem && mem.disp && mem.disp.value != null ? mem.disp.value : null,
+      disp: addressDispOp && addressDispOp.value != null ? addressDispOp.value : (mem?.mode === 'post' ? 0n : null),
       index: mem && mem.index ? regKeyOf(mem.index) : null,
       scale: mem && mem.shift ? (mem.shift.amount || 0) : 0,
       extend: mem && mem.shift && mem.shift.op !== 'lsl' ? mem.shift.op : null,
@@ -385,9 +387,10 @@ function lift(insn, opts = {}) {
       });
     }
     // 事前 / 事後インデックス付きは、ベースレジスタ自身も書き換わる
-    if (mem && (mem.mode === 'pre' || mem.mode === 'post') && addr.base && addr.disp != null) {
+    const writebackDisp = writebackDispOp && writebackDispOp.value != null ? writebackDispOp.value : null;
+    if (mem && (mem.mode === 'pre' || mem.mode === 'post') && addr.base && writebackDisp != null) {
       push({ op: OP.BIN, sub: 'add', dstReg: addr.base, dstBits: 64,
-        srcs: [{ t: 'reg', reg: addr.base, bits: 64 }, { t: 'imm', value: addr.disp }] });
+        srcs: [{ t: 'reg', reg: addr.base, bits: 64 }, { t: 'imm', value: writebackDisp }] });
     }
     return out;
   }
@@ -1506,17 +1509,43 @@ function recoverStackVariables(ir) {
  * モデルは解析ごとに作り直されるので、WeakMap で持てば勝手に消える。
  */
 const irCache = new WeakMap();
+const irCacheIds = new WeakMap();
+let nextIrCacheId = 1;
+function irIdentity(value) {
+  if (value == null) return '-';
+  if ((typeof value !== 'object' && typeof value !== 'function')) return `${typeof value}:${String(value)}`;
+  if (!irCacheIds.has(value)) irCacheIds.set(value, nextIrCacheId++);
+  return `@${irCacheIds.get(value)}`;
+}
+function prototypeSignature(proto) {
+  if (!proto) return '-';
+  const args = Array.isArray(proto.args || proto.parameters || proto.params) ? (proto.args || proto.parameters || proto.params) : [];
+  return [irIdentity(proto), proto.returnType || proto.resultType || '', proto.returnClass || '', proto.returnsValue ?? '',
+    ...args.map((a) => `${a?.type || ''}:${a?.abiClass || a?.class || ''}:${a?.bits || ''}`)].join('|');
+}
+function irConfigurationKey(opts) {
+  if (!opts) return 'default';
+  return [
+    prototypeSignature(opts.functionPrototype || opts.prototype),
+    opts.returnType || '', opts.returnClass || '', opts.returnsValue ?? '', opts.returnBits || '',
+    irIdentity(opts.callPrototypeFor), irIdentity(opts.cfg), irIdentity(opts.rowOfAddress),
+    opts.prototypeRevision ?? '', opts.evidenceGeneration ?? '', opts.analysisGeneration ?? '', opts.cacheRevision ?? '',
+  ].join('~');
+}
 
 /**
  * モデルから IR を得る（作れなければ null）。落ちない。
- * ここが panels.js / role.js / pinpoint.js から呼ぶ唯一の入口。
+ * semantic-affecting opts are part of cache identity; failed builds are not sticky.
  */
 export function irFor(model, opts) {
   if (!model || !model.instructions || !model.instructions.length) return null;
-  if (irCache.has(model)) return irCache.get(model);
+  let entries = irCache.get(model);
+  if (!entries) { entries = new Map(); irCache.set(model, entries); }
+  const key = irConfigurationKey(opts);
+  if (entries.has(key)) return entries.get(key);
   let ir = null;
   try { ir = buildIR(model, opts); } catch { ir = null; }
-  irCache.set(model, ir);
+  if (ir != null) entries.set(key, ir);
   return ir;
 }
 
