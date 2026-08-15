@@ -144,7 +144,7 @@ export class BinaryImage {
     this.symbols.sort(byAddr);
     this.exports.sort(byAddr);
     this.relocations.sort(byAddr);
-    this.functions = mergeFunctionSeeds(this.functions);
+    this.functions = mergeFunctionSeeds(this.functions, { sections:this.sections, segments:this.segments });
     this.imports = dedupeImports(this.imports);
     this.libraries = [...new Set(this.libraries.filter(Boolean))];
     return this;
@@ -209,7 +209,7 @@ export function functionSeed(address, opts = {}) {
   };
 }
 
-export function mergeFunctionSeeds(input) {
+export function mergeFunctionSeeds(input, context = {}) {
   const rank = { symbol: 5, exception: 4, unwind: 4, function_starts: 4, export: 3, entrypoint: 2, heuristic: 1 };
   const m = new Map();
   for (const f0 of input || []) {
@@ -230,6 +230,10 @@ export function mergeFunctionSeeds(input) {
     m.set(k, best);
   }
   const out = [...m.values()].sort((a, b) => a.address < b.address ? -1 : a.address > b.address ? 1 : 0);
+  const regions = [...(context.sections || []), ...(context.segments || [])]
+    .filter((r) => r && r.address != null && r.size != null && BigInt(r.size) > 0n && r.perms?.execute)
+    .sort((a,b) => BigInt(a.size) < BigInt(b.size) ? -1 : BigInt(a.size) > BigInt(b.size) ? 1 : 0);
+  const regionFor = (addr) => regions.find((r) => BigInt(addr) >= BigInt(r.address) && BigInt(addr) < BigInt(r.address) + BigInt(r.size)) || null;
   for (let i = 0; i < out.length; i++) {
     const f = out[i];
     if (f.end == null && f.size != null) f.end = f.address + f.size;
@@ -240,7 +244,10 @@ export function mergeFunctionSeeds(input) {
       const nextSources = new Set(next.sources || [next.source]);
       const provenFunctionStarts = sources.has('function_starts') && nextSources.has('function_starts');
       const delta = next.address - f.address;
-      if (provenFunctionStarts && delta <= 0x1000000n) {
+      const currentRegion = regionFor(f.address), nextRegion = regionFor(next.address);
+      const sameCanonicalRegion = !regions.length || (currentRegion != null && currentRegion === nextRegion);
+      const withinRegionEnd = !currentRegion || next.address <= BigInt(currentRegion.address) + BigInt(currentRegion.size);
+      if (provenFunctionStarts && sameCanonicalRegion && withinRegionEnd && delta <= 0x1000000n) {
         f.size = delta; f.end = next.address;
         f.extentInferred = true;
         f.extentConfidence = Math.min(0.35, Number(f.confidence ?? 0.35));

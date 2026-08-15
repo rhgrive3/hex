@@ -25,6 +25,11 @@ function searchTermsOf(input = {}) {
 }
 function addrText(value) { return value == null ? 'unknown' : BigInt(value).toString(16); }
 function requestPromise(request) { return new Promise((resolve,reject) => { request.onsuccess=()=>resolve(request.result); request.onerror=()=>reject(request.error); }); }
+function candidateBatch(values, truncated = false) {
+  const out = Array.isArray(values) ? values : [];
+  Object.defineProperty(out, 'truncated', { value:!!truncated, enumerable:false, configurable:true });
+  return out;
+}
 
 export class KnowledgeDB {
   constructor(options = {}) {
@@ -106,17 +111,19 @@ export class KnowledgeDB {
       matches.push({ record:clone(record), confidence, identity:cmp.identity, reasons:cmp.reasons, evidence:cmp.evidence });
     }
     matches.sort((a,b) => b.confidence - a.confidence || b.record.updatedAt - a.record.updatedAt);
-    return matches.slice(0,limit);
+    const selected = matches.slice(0,limit);
+    return candidateBatch(selected, records.truncated === true || matches.length > limit);
   }
 
   async reidentify(input, options = {}) {
     const matches = await this.findMatches(input, { threshold:options.threshold ?? 0.58, limit:Math.max(5, options.limit || 5) });
-    if (!matches.length) return { matched:false, ambiguous:false, confidence:0, candidates:[] };
+    if (!matches.length) return { matched:false, ambiguous:matches.truncated === true, truncated:matches.truncated === true, confidence:0, candidates:[] };
     const best = matches[0], second = matches[1];
-    const ambiguous = !!second && best.confidence - second.confidence < (options.ambiguityWindow ?? 0.045);
+    const truncated = matches.truncated === true;
+    const ambiguous = truncated || (!!second && best.confidence - second.confidence < (options.ambiguityWindow ?? 0.045));
     const accepted = !ambiguous && best.confidence >= (options.acceptThreshold ?? 0.82) && ['exact','normalized-identical','semantic-equivalent','probable-same'].includes(best.identity);
     return {
-      matched:accepted, ambiguous, confidence:best.confidence, knowledge:accepted ? best.record : null, reasons:best.reasons,
+      matched:accepted, ambiguous, truncated, confidence:best.confidence, knowledge:accepted ? best.record : null, reasons:best.reasons,
       candidates:matches.map((x) => ({ id:x.record.id, names:x.record.names, roles:x.record.roles, confirmation:x.record.confirmation, confidence:x.confidence, identity:x.identity, reasons:x.reasons })),
     };
   }
@@ -198,7 +205,8 @@ export class KnowledgeDB {
   #memoryCandidates(fp) {
     const records = [...this.memory.values()];
     const strong = records.filter((r) => (fp.normalizedBytesHash && (r.fingerprint?.normalizedBytesHash || r.fingerprint?.normalizedByteHash) === fp.normalizedBytesHash) || (fp.semanticHash && r.fingerprint?.semanticHash === fp.semanticHash) || (fp.instructionSequenceHash && r.fingerprint?.instructionSequenceHash === fp.instructionSequenceHash));
-    return (strong.length ? strong : records.filter((r) => r.fingerprint?.size && fp.size && Math.min(r.fingerprint.size,fp.size)/Math.max(r.fingerprint.size,fp.size) >= 0.7)).slice(0,this.maxCandidates);
+    const pool = strong.length ? strong : records.filter((r) => r.fingerprint?.size && fp.size && Math.min(r.fingerprint.size,fp.size)/Math.max(r.fingerprint.size,fp.size) >= 0.7);
+    return candidateBatch(pool.slice(0,this.maxCandidates), pool.length > this.maxCandidates);
   }
 
   async #dbOpen() {
@@ -222,16 +230,21 @@ export class KnowledgeDB {
   async #put(storeName,record) { const db=await this.#dbOpen(); await requestPromise(db.transaction(storeName,'readwrite').objectStore(storeName).put(record)); }
   async #candidateRecords(fp,limit) {
     const db=await this.#dbOpen(); const store=db.transaction('functions','readonly').objectStore('functions'); const out=new Map();
+    let truncated=false;
     for (const [index,value] of [['normalizedBytesHash',fp.normalizedBytesHash],['semanticHash',fp.semanticHash],['instructionSequenceHash',fp.instructionSequenceHash]]) {
       if (!value || !store.indexNames.contains(index)) continue;
-      const found=await requestPromise(store.index(index).getAll(value, Math.min(limit,250))); for (const r of found) out.set(r.id,r);
-      if (out.size>=limit) break;
+      const cap=Math.min(limit,250);
+      const found=await requestPromise(store.index(index).getAll(value, cap + 1));
+      if (found.length > cap) truncated=true;
+      for (const r of found.slice(0,cap)) out.set(r.id,r);
+      if (out.size>=limit) { truncated=true; break; }
     }
-    if (out.size) return [...out.values()].slice(0,limit);
-    // Bounded cursor fallback; never load the complete DB into memory.
+    if (out.size) return candidateBatch([...out.values()].slice(0,limit), truncated || out.size > limit);
+    // Bounded cursor fallback; scan one extra matching row so a cap can never be
+    // mistaken for exhaustive evidence. A hard scan cap itself is truncation.
     return new Promise((resolve,reject) => {
-      const rows=[]; const req=store.openCursor();
-      req.onsuccess=()=>{ const c=req.result; if (!c || rows.length>=limit) return resolve(rows); const r=c.value, sz=r.fingerprint?.size; if (sz && fp.size && Math.min(sz,fp.size)/Math.max(sz,fp.size)>=0.7) rows.push(r); c.continue(); };
+      const rows=[]; let scanned=0; const scanCap=Math.max(2000,limit*20); const req=store.openCursor();
+      req.onsuccess=()=>{ const c=req.result; if (!c || rows.length>limit || scanned>=scanCap) return resolve(candidateBatch(rows.slice(0,limit), rows.length>limit || (!!c && scanned>=scanCap))); scanned++; const r=c.value, sz=r.fingerprint?.size; if (sz && fp.size && Math.min(sz,fp.size)/Math.max(sz,fp.size)>=0.7) rows.push(r); c.continue(); };
       req.onerror=()=>reject(req.error);
     });
   }

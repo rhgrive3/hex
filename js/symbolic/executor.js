@@ -47,22 +47,43 @@ function binOp(name, a, b, bits = 64) {
       else if (name === 'and') value = av & bv;
       else if (name === 'or' || name === 'orr') value = av | bv;
       else if (name === 'xor' || name === 'eor') value = av ^ bv;
-      else if (name === 'shl') value = av << bv;
-      else if (name === 'lshr') value = BigInt.asUintN(width, av) >> bv;
-      else if (name === 'ashr') value = BigInt.asIntN(width, av) >> bv;
+      else if (name === 'shl') value = av << (bv % BigInt(width));
+      else if (name === 'lshr') value = BigInt.asUintN(width, av) >> (bv % BigInt(width));
+      else if (name === 'ashr') value = BigInt.asIntN(width, av) >> (bv % BigInt(width));
       else return op(name, a, b);
       return c(BigInt.asUintN(width, value));
     } catch { /* symbolic fallback */ }
   }
+  if (name === 'shl' || name === 'lshr' || name === 'ashr') {
+    const masked = { kind:SYM.OP, op:'and', args:[b, c(BigInt(width - 1))] };
+    return { kind: SYM.OP, op: name, args: [a, masked], bits:width };
+  }
   return { kind: SYM.OP, op: name, args: [a, b] };
 }
 
-function cmp(name, a, b) { return { kind: SYM.OP, op: name, args: [a, b], boolean: true }; }
+function cmp(name, a, b) {
+  if (a?.kind === SYM.CONST && b?.kind === SYM.CONST) {
+    const av=a.value, bv=b.value;
+    const yes = name === '==' ? av === bv : name === '!=' ? av !== bv : name === '<' ? av < bv : name === '<=' ? av <= bv : name === '>' ? av > bv : name === '>=' ? av >= bv : null;
+    if (yes != null) return { ...c(yes ? 1n : 0n), boolean:true };
+  }
+  return { kind: SYM.OP, op: name, args: [a, b], boolean: true };
+}
 function negate(condition) {
   if (!condition) return unknown('missing-condition');
+  if (condition.kind === SYM.CONST && condition.boolean) return { ...c(condition.value === 0n ? 1n : 0n), boolean:true };
   const inverse = { '==': '!=', '!=': '==', '<': '>=', '<=': '>', '>': '<=', '>=': '<' }[condition.op];
   if (condition.kind === SYM.OP && inverse) return { ...condition, op: inverse };
   return { kind: SYM.OP, op: 'not', args: [condition], boolean: true };
+}
+function constraintAllowed(existing, condition) {
+  if (condition?.kind === SYM.CONST && condition.boolean) return condition.value !== 0n;
+  const key = expressionText(condition);
+  for (const prior of existing || []) {
+    if (prior?.kind === SYM.CONST && prior.boolean && prior.value === 0n) return false;
+    if (expressionText(negate(prior)) === key) return false;
+  }
+  return true;
 }
 
 export function expressionText(e) {
@@ -163,7 +184,16 @@ function evalValue(value, state, ir, opts, memo, active) {
         d.dst && d.dst.bits || value.bits || 64);
     } else if (d.op === OP.UN && d.args[0] && /^(sxt|uxt|fmov|neg)/.test(d.sub || '')) {
       const x = evalValue(d.args[0].value, state, ir, opts, memo, active);
-      out = d.sub === 'neg' ? binOp('sub', c(0n), x, d.dst && d.dst.bits || value.bits || 64) : x;
+      const toBits = d.dst && d.dst.bits || value.bits || 64;
+      const m = /^(sxt|uxt)(8|16|32|64)?/.exec(d.sub || '');
+      if (d.sub === 'neg') out = binOp('sub', c(0n), x, toBits);
+      else if (m) {
+        const fromBits = Number(m[2] || d.args[0].bits || d.args[0].value?.bits || toBits);
+        if (x.kind === SYM.CONST) {
+          const narrowed = m[1] === 'sxt' ? BigInt.asIntN(fromBits, x.value) : BigInt.asUintN(fromBits, x.value);
+          out = c(BigInt.asUintN(toBits, narrowed));
+        } else out = { kind:SYM.OP, op:m[1] === 'sxt' ? 'sext' : 'zext', args:[x], fromBits, toBits };
+      } else out = x;
     } else if (d.op === OP.LOAD && d.loc) {
       out = loadExpression(d, state, opts);
     } else if (d.op === OP.SEL && d.args.length >= 2) {
@@ -363,16 +393,21 @@ export function symbolicExecute(ir, opts) {
         if (cond.kind === SYM.UNKNOWN) { paths.push(stopResult(state, cond.reason, inst)); transferred = true; break; }
         const next = successorsForBranch(ir, block, inst, addressMap);
         if (next.target == null || next.fallthrough == null) { paths.push(stopResult(state, 'unresolved-branch-target', inst)); transferred = true; break; }
-        const yes = cloneState(state);
-        yes.prevBlock = state.block; yes.block = next.target;
-        yes.constraints.push(cond);
-        yes.branches.push({ row: inst.row, address: inst.address, taken: true, condition: expressionText(cond) });
-        const no = cloneState(state);
-        no.prevBlock = state.block; no.block = next.fallthrough;
         const inverse = negate(cond);
-        no.constraints.push(inverse);
-        no.branches.push({ row: inst.row, address: inst.address, taken: false, condition: expressionText(inverse) });
-        queue.push(yes, no);
+        if (constraintAllowed(state.constraints, cond)) {
+          const yes = cloneState(state);
+          yes.prevBlock = state.block; yes.block = next.target;
+          yes.constraints.push(cond);
+          yes.branches.push({ row: inst.row, address: inst.address, taken: true, condition: expressionText(cond) });
+          queue.push(yes);
+        }
+        if (constraintAllowed(state.constraints, inverse)) {
+          const no = cloneState(state);
+          no.prevBlock = state.block; no.block = next.fallthrough;
+          no.constraints.push(inverse);
+          no.branches.push({ row: inst.row, address: inst.address, taken: false, condition: expressionText(inverse) });
+          queue.push(no);
+        }
         transferred = true;
         break;
       }

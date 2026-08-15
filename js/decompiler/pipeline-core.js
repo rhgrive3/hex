@@ -71,14 +71,50 @@ function memoryLocation(inst, state) {
   return { kind: 'unknown', key: loc.key || `memory:${inst?.id || '?'}`, name: 'memory_unknown', text: 'memory_unknown' };
 }
 
+function nzcvCondition(value, cond) {
+  if (value == null) return null;
+  const f = Number(value) & 15;
+  const n=!!(f&8), z=!!(f&4), c=!!(f&2), v=!!(f&1);
+  switch (cond) {
+    case 'eq': return z; case 'ne': return !z;
+    case 'cs': case 'hs': return c; case 'cc': case 'lo': return !c;
+    case 'mi': return n; case 'pl': return !n; case 'vs': return v; case 'vc': return !v;
+    case 'hi': return c && !z; case 'ls': return !c || z;
+    case 'ge': return n === v; case 'lt': return n !== v;
+    case 'gt': return !z && n === v; case 'le': return z || n !== v;
+    case 'al': case 'nv': return true; default: return null;
+  }
+}
+
 function compareFromFlags(flagValue, cond, state) {
   const d = flagValue?.def;
-  if (!d || d.op !== 'cmp') return expr.variable(`condition_${cond || 'flags'}`, 1, false, origin(d, flagValue));
-  const a = buildArg(d.args?.[0], state), b = buildArg(d.args?.[1], state);
-  const map = { eq:'eq', ne:'ne', hs:'ge', cs:'ge', lo:'lt', cc:'lt', hi:'gt', ls:'le', ge:'ge', lt:'lt', gt:'gt', le:'le' };
-  const op = map[cond] || 'ne';
-  const signed = ['ge','lt','gt','le'].includes(cond) ? true : ['hs','cs','lo','cc','hi','ls'].includes(cond) ? false : null;
-  return expr.compare(op, a, b, signed, origin(d, d.dst, 'condition flags'));
+  if (!d || d.op !== 'cmp') return expr.variable('condition_' + (cond || 'flags'), 1, false);
+  const a = buildArg(d.args?.[0], state);
+  let b = buildArg(d.args?.[1], state);
+  // ARM compare immediates inherit the register operand width. The IR wrapper
+  // does not need to duplicate that width on the immediate itself, so canonicalize
+  // the constant here before structural min/max matching (#356).
+  if (b?.kind === 'const' && a?.bits && b.bits !== a.bits) b = expr.constant(BigInt.asUintN(Number(a.bits), b.value), Number(a.bits), false, b.source);
+  const map = { eq:['eq',null], ne:['ne',null], hs:['ge',false], cs:['ge',false], lo:['lt',false], cc:['lt',false], hi:['gt',false], ls:['le',false], ge:['ge',true], lt:['lt',true], gt:['gt',true], le:['le',true] };
+  const info = map[cond] || null;
+  let normal;
+  // CMP/CCMP are subtraction flags, so the standard relational conditions map
+  // directly to a comparison. CCMN is addition flags; do not lie by rendering
+  // it as lhs<rhs. Preserve the exact condition as a semantic intrinsic when it
+  // cannot be losslessly expressed by one ordinary C comparison.
+  if (d.sub !== 'add' && info) normal = expr.compare(info[0], a, b, info[1], origin(d));
+  else if (d.sub === 'add' && (cond === 'eq' || cond === 'ne')) {
+    const sum = expr.binary('add', a, b, a.bits || b.bits || 64, null, origin(d));
+    normal = expr.compare(cond, sum, expr.constant(0, sum.bits || 64), null, origin(d));
+  } else if (cond === 'al' || cond === 'nv') normal = expr.constant(1, 1, false, origin(d));
+  else normal = expr.intrinsic((d.sub === 'add' ? 'ccmn_' : 'cmp_') + (cond || 'flags'), [a,b], 1, false, origin(d), { nzcvCondition:true });
+  if (!d.extra?.conditional) return normal;
+  const previousFlags = valueOf(d.args?.[2]);
+  const gate = compareFromFlags(previousFlags, d.extra?.cond, state);
+  const fallbackTruth = nzcvCondition(d.extra?.fallbackNzcv, cond);
+  const fallback = fallbackTruth == null ? expr.variable('fallback_' + (cond || 'flags'), 1, false, origin(d))
+    : expr.constant(fallbackTruth ? 1 : 0, 1, false, origin(d));
+  return expr.select(gate, normal, fallback, 1, false, origin(d));
 }
 
 function applyShift(base, shift) {
@@ -100,8 +136,19 @@ function applyShift(base, shift) {
 }
 
 function buildArg(arg, state, flags = {}) {
-  if (!arg) return expr.variable('unknown', 64, null);
-  return applyShift(buildValue(valueOf(arg), state, flags), arg.shift);
+  if (!arg) return expr.unknown('missing-arg');
+  let out = buildValue(valueOf(arg), state, flags);
+  const operandBits = Number(arg.bits || 0);
+  const valueBits = Number(out?.bits || valueOf(arg)?.bits || 0);
+  if (operandBits > 0 && out?.kind === 'const') {
+    // Constants have no inherent signedness at the machine level. Canonicalize
+    // every operand-width constant, even when the SSA constant already happens
+    // to have that width, so cmp #0 and wzr are structurally identical.
+    out = expr.constant(BigInt.asUintN(operandBits, out.value), operandBits, false, out.source);
+  } else if (operandBits > 0 && valueBits > operandBits) {
+    out = expr.unary('trunc', out, operandBits, false, sourceOf(out), { fromBits:valueBits });
+  }
+  return applyShift(out, arg.shift);
 }
 
 function selectExpression(d, state) {
@@ -110,6 +157,11 @@ function selectExpression(d, state) {
   if (d.sub === 'inc') return expr.select(condition, t, expr.binary('add', f, expr.constant(1, f.bits), f.bits, f.signed), d.dst?.bits || t.bits, signedFor(state, d.dst), origin(d, d.dst));
   if (d.sub === 'inv') return expr.select(condition, t, expr.unary('not', f, f.bits, f.signed), d.dst?.bits || t.bits, signedFor(state, d.dst), origin(d, d.dst));
   if (d.sub === 'neg') return expr.select(condition, t, expr.unary('neg', f, f.bits, f.signed), d.dst?.bits || t.bits, signedFor(state, d.dst), origin(d, d.dst));
+  // CINC/CINV/CNEG aliases carry one source. The operation applies when the
+  // alias condition is true; treating them as ordinary CS* false arms reverses semantics.
+  if (d.sub === 'cinc') return expr.select(condition, expr.binary('add', t, expr.constant(1, t.bits), t.bits, t.signed), t, d.dst?.bits || t.bits, signedFor(state, d.dst), origin(d, d.dst));
+  if (d.sub === 'cinv') return expr.select(condition, expr.unary('not', t, t.bits, t.signed), t, d.dst?.bits || t.bits, signedFor(state, d.dst), origin(d, d.dst));
+  if (d.sub === 'cneg') return expr.select(condition, expr.unary('neg', t, t.bits, t.signed), t, d.dst?.bits || t.bits, signedFor(state, d.dst), origin(d, d.dst));
   if (d.sub === 'set' || d.sub === 'setm') return expr.select(condition, t, f, d.dst?.bits || 1, false, origin(d, d.dst));
   return expr.select(condition, t, f, d.dst?.bits || t.bits, signedFor(state, d.dst), origin(d, d.dst));
 }
@@ -223,8 +275,15 @@ function buildValue(v, state, flags = {}) {
       else if (/^uxt/.test(sub)) out = expr.unary('zext', a, v.bits || 64, false, origin(d, v), { fromBits: Number(sub.slice(3)) || a.bits });
       else out = expr.unary(sub, a, v.bits || 64, signedFor(state, v), origin(d, v));
     } else if (d.op === 'mac') {
-      const addend = buildArg(d.args?.[0], state), a = buildArg(d.args?.[1], state), b = buildArg(d.args?.[2], state);
-      const mult = expr.binary('mul', a, b, v.bits || 64, d.widen === 'unsigned' ? false : d.widen === 'signed' ? true : signedFor(state, v), origin(d, v));
+      const addend = buildArg(d.args?.[0], state);
+      let a = buildArg(d.args?.[1], state), b = buildArg(d.args?.[2], state);
+      if (d.extra?.widen === 'signed' || d.extra?.widen === 'unsigned') {
+        const signed = d.extra.widen === 'signed';
+        const op = signed ? 'sext' : 'zext';
+        a = expr.unary(op, a, v.bits || 64, signed, origin(d, v), { fromBits:32 });
+        b = expr.unary(op, b, v.bits || 64, signed, origin(d, v), { fromBits:32 });
+      }
+      const mult = expr.binary('mul', a, b, v.bits || 64, d.extra?.widen === 'unsigned' ? false : d.extra?.widen === 'signed' ? true : signedFor(state, v), origin(d, v));
       out = expr.binary(d.sub === 'msub' ? 'sub' : 'add', addend, mult, v.bits || 64, signedFor(state, v), origin(d, v));
     } else if (d.op === 'bfx') {
       out = expr.intrinsic('bit_extract', [buildArg(d.args?.[0], state), expr.constant(d.extra?.lsb ?? 0, 64), expr.constant(d.extra?.width ?? v.bits ?? 64, 64)], v.bits || 64, d.extra?.signed ?? d.signed ?? false, origin(d, v));

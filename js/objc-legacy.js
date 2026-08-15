@@ -36,8 +36,13 @@ const MAX_PROPS = 400;
 const IVAR_STRIDE_MIN = 32;     // ivar_t = offset* + name* + type* + alignment + size
 const MAX_IVARS = 400;
 
-const REL_FLAG = 0x80000000;    // method_list_t.entsize の「相対形式」の印
+const REL_FLAG = 0x80000000;    // relative/small method entries
+const DIRECT_SEL_FLAG = 0x40000000; // selector field points directly at cstring
 const ENTSIZE_MASK = 0xfffc;
+export function decodeMethodListHeader(rawEntsize) {
+  const raw=Number(rawEntsize)>>>0;
+  return { relative:!!(raw&REL_FLAG), directSelector:!!(raw&DIRECT_SEL_FLAG), stride:raw&ENTSIZE_MASK };
+}
 
 const MAX_CLASSES = 20000;
 const MAX_METHODS = 60000;
@@ -172,8 +177,7 @@ async function readMethods(get, listAddr, out, className, prefix, budget) {
   const entsize = u32(head, 0);
   const count = u32(head, 4);
   if (!count || count > 20000) return;
-  const relative = (entsize & REL_FLAG) !== 0;
-  const stride = entsize & ENTSIZE_MASK;
+  const { relative, directSelector, stride } = decodeMethodListHeader(entsize);
   if (relative ? stride < 12 : stride < 24) return;
 
   for (let i = 0; i < count && out.length < budget; i++) {
@@ -188,11 +192,11 @@ async function readMethods(get, listAddr, out, className, prefix, budget) {
       const impField = entry + 8n;
       const nameTarget = nameField + BigInt(i32(b, 0));
       imp = impField + BigInt(i32(b, 8));
-      // まずは「名前を指すポインタ」として読み、だめなら名前そのものとして読む
-      nameAddr = await pointer(get, nameTarget);
-      if (nameAddr == null) nameAddr = nameTarget;
-      const viaPtr = await cstring(get, nameAddr);
-      if (viaPtr == null) nameAddr = nameTarget;
+      if (directSelector) nameAddr = nameTarget;
+      else {
+        nameAddr = await pointer(get, nameTarget);
+        if (nameAddr == null || await cstring(get, nameAddr) == null) nameAddr = nameTarget;
+      }
     } else {
       nameAddr = sanitizePointer(u64(b, 0), get.base);
       imp = sanitizePointer(u64(b, 16), get.base);
@@ -231,7 +235,7 @@ export function decodeTypeEncoding(enc) {
   if (!s) return { kind: 'unknown', enc: s };
   const c = s[0];
   switch (c) {
-    case 'c': return { kind: 'int', bytes: 1, signed: true, enc: s, bool: true };
+    case 'c': return { kind: 'int', bytes: 1, signed: true, enc: s };
     case 'C': return { kind: 'int', bytes: 1, signed: false, enc: s };
     case 'B': return { kind: 'bool', bytes: 1, enc: s };
     case 's': return { kind: 'int', bytes: 2, signed: true, enc: s };
