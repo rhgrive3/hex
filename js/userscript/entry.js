@@ -1,24 +1,33 @@
 import { installChatGPTWebBridge } from './chatgpt-bridge.js';
+import { installUserscriptNetworkBridge } from './network.js';
+import { prepareUserscriptWorkers } from './worker-assets.js';
 
 const PROVIDER_KEY = 'hex.ai.provider';
 const host = document.getElementById('hex-userscript-host');
 const bridge = installChatGPTWebBridge();
 
 globalThis.__HEX_AI_PROVIDER__ = readProvider();
+installUserscriptNetworkBridge();
 mirrorRootState();
 const launcher = installLauncher();
 
-/* Load the existing app unchanged after the ChatGPT bridge exists. esbuild
-   keeps these dynamic imports inside the single userscript bundle. */
+/* The existing Hex application is left intact. Before importing app.js we
+   preload the worker graph through GM.xmlHttpRequest and replace only the
+   Worker constructor targets with same-origin blob URLs. That keeps ChatGPT's
+   CSP out of Hex's binary-analysis data plane. */
 (async () => {
   try {
+    setLauncherState('Preparing Hex…', true);
+    await prepareUserscriptWorkers();
     await import('../app.js');
     await import('../ux.js');
     installProviderControl();
+    setLauncherState('HEX', false);
     await revealWhenReady();
   } catch (error) {
     console.error('[hex userscript] boot failed', error);
     launcher.hidden = false;
+    launcher.disabled = false;
     launcher.textContent = 'Hex failed — tap for details';
     launcher.onclick = () => alert(`Hex failed to start:\n${error?.message || error}`);
   }
@@ -84,6 +93,12 @@ function installLauncher() {
   return button;
 }
 
+function setLauncherState(text, busy) {
+  launcher.textContent = text;
+  launcher.disabled = !!busy;
+  launcher.style.opacity = busy ? '0.72' : '1';
+}
+
 async function revealWhenReady() {
   if (!host) return;
   /* Keep login/model-picker UI accessible while ChatGPT itself is not ready.
@@ -98,7 +113,7 @@ async function revealWhenReady() {
 }
 
 function showHex() {
-  if (!host) return;
+  if (!host || launcher.disabled) return;
   host.style.visibility = 'visible';
   host.style.pointerEvents = 'auto';
   host.removeAttribute('aria-hidden');
