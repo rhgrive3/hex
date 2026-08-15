@@ -92,13 +92,18 @@ const built = broker.buildModelContext({ request: { mode: 'agent', style: 'analy
 assert.equal('recentMessages' in built.context, false);
 assert.equal('goal' in built.context.request, false);
 
-// L: structured investigation state survives session updates.
+// L: structured investigation state survives session updates and identity upgrades stay coherent.
 const sessions = new InvestigationSessionStore();
 const created = await sessions.create({ binaryId: 'content:A', goal: 'trace XP' });
 await sessions.updateMemory(created.id, { confirmedFacts: [{ id: 'e1', summary: 'write' }], unresolvedQuestions: ['caller?'] });
 const persisted = await sessions.get(created.id);
 assert.equal(persisted.investigationMemory.confirmedFacts[0].id, 'e1');
 assert.deepEqual(persisted.investigationMemory.unresolvedQuestions, ['caller?']);
+const legacySession = await sessions.create({ binaryId: 'same.ipa:0', goal: 'legacy' });
+await sessions.update(legacySession.id, { binaryIdentity: identityB });
+const upgraded = await sessions.get(legacySession.id);
+assert.equal(upgraded.binaryId, identityB.id, 'strong identity upgrade must synchronize binaryId');
+assert.equal(sessionMatchesSnapshot(upgraded, snapshotB), true, 'upgraded session must remain usable on the next turn');
 
 // M/N: budget is computed on full wire payload and rejects before transport.
 const usage = measureWirePayload({ messages: [{ role: 'user', content: 'hello' }], context: { current: { address: '0x1000' } }, tools: [{ name: 'get_function', inputSchema: { type: 'object' } }] });
