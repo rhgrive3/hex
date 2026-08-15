@@ -158,6 +158,10 @@
         rn: rn(w), rd: rd(w),
         imm: BigInt((w >>> 10) & 0xfff) << BigInt(scale),
         load: isLoad, store: !isLoad,
+        // SIMD/FP loads write vN/dN/sN, not xN/wN.  Consumers that track
+        // general-purpose register provenance must not invalidate xN merely
+        // because the architectural register number is encoded in the same bits.
+        gpDest: ((w >>> 26) & 1) === 0,
       };
     }
     return null;
@@ -215,8 +219,9 @@
       const scale = vector ? (4 << opc) : (opc === 0 ? 4 : 8);
       const imm7 = Number(signExtend(BigInt((w >>> 15) & 0x7f), 7));
       return {
-        load, store: !load, size: scale * 2, pair: true,
-        base: rn(w), reg: rd(w), disp: BigInt(imm7 * scale),
+        load, store: !load, size: scale * 2, pair: true, vector,
+        base: rn(w), reg: rd(w), reg2: (w >>> 10) & 0x1f, disp: BigInt(imm7 * scale),
+        mode: ((w >>> 23) & 3) === 1 ? 'post' : ((w >>> 23) & 3) === 3 ? 'pre' : 'offset',
       };
     }
     // 符号なし即値つき (いちばん多い形)
@@ -224,7 +229,7 @@
       const scale = transferScale(w);
       const load = transferIsLoad(w);
       return {
-        load, store: !load, size: 1 << scale, base: rn(w), reg: rd(w),
+        load, store: !load, size: 1 << scale, vector: ((w >>> 26) & 1) === 1, base: rn(w), reg: rd(w),
         disp: BigInt((w >>> 10) & 0xfff) << BigInt(scale),
       };
     }
@@ -234,14 +239,14 @@
       const kind = (w >>> 10) & 3;                            // 00 unscaled, 01 post, 11 pre
       const imm9 = Number(signExtend(BigInt((w >>> 12) & 0x1ff), 9));
       return {
-        load, store: !load, size: 1 << transferScale(w), base: rn(w), reg: rd(w),
+        load, store: !load, size: 1 << transferScale(w), vector: ((w >>> 26) & 1) === 1, base: rn(w), reg: rd(w),
         disp: BigInt(imm9), mode: kind === 1 ? 'post' : kind === 3 ? 'pre' : 'offset',
       };
     }
     if (masked(w, 0x3b200c00) === 0x38200800) {
       const load = transferIsLoad(w);
       return {
-        load, store: !load, size: 1 << transferScale(w),
+        load, store: !load, size: 1 << transferScale(w), vector: ((w >>> 26) & 1) === 1,
         base: rn(w), reg: rd(w), disp: null, indexed: true,
       };
     }
@@ -254,12 +259,18 @@
   function isAddSubShifted(w) { return masked(w, 0x1f200000) === 0x0b000000; }
   function isAddSubExtended(w) { return masked(w, 0x1f200000) === 0x0b200000; }
   function isLogicImm(w) { return masked(w, 0x1f800000) === 0x12000000; }
+  // ORR (immediate) with ZR as the source is the architectural MOV #imm alias.
+  // Capstone prints the alias, so semantic kind statistics must do the same.
+  function isLogicalImmediateMove(w) {
+    return isLogicImm(w) && ((w >>> 29) & 3) === 1 && rn(w) === 31;
+  }
   function isLogicShifted(w) { return masked(w, 0x1f000000) === 0x0a000000; }
   function isMoveWide(w) { return masked(w, 0x1f800000) === 0x12800000; }
   function isBitfield(w) { return masked(w, 0x1f800000) === 0x13000000; }
   function isDp3(w) { return masked(w, 0x1f000000) === 0x1b000000; }      // madd / msub / smull …
   function isDp2(w) { return masked(w, 0x5fe00000) === 0x1ac00000; }      // udiv / sdiv / lslv …
   function isCondSelect(w) { return masked(w, 0x1fe00000) === 0x1a800000; }
+  function isFpCondSelect(w) { return masked(w, 0x5f200c00) === 0x1e200c00; }
   function isCondCompare(w) { return masked(w, 0x1fe00000) === 0x1a400000; }
   function isFpDp2(w) { return masked(w, 0x5f200c00) === 0x1e200800; }
   function isFpDp3(w) { return masked(w, 0x5f200000) === 0x1f000000; }
@@ -267,6 +278,14 @@
   function isFpCompare(w) { return masked(w, 0x5f203c00) === 0x1e202000; }
   function isFpToInt(w) { return masked(w, 0x5f20fc00) === 0x1e200000; }
   function isFpImm(w) { return masked(w, 0x5f201c00) === 0x1e201000; }
+  // Fixed-point scalar SCVTF/UCVTF/FCVT* forms use the same conversion family
+  // but keep the scale in imm6, so the ordinary scalar mask does not match.
+  function isFpFixedConvert(w) { return masked(w, 0x5f20fc00) === 0x1e00fc00; }
+  // Advanced-SIMD scalar SCVTF/UCVTF (e.g. scvtf s0, s0).  Ignore the U
+  // (signed/unsigned) and precision bits while retaining the opcode family.
+  function isSimdScalarIntFloatConvert(w) { return masked(w, 0xdf3ffc00) === 0x5e21d800; }
+  // RBIT/REV*/CLZ/CLS are integer one-source bit transforms.
+  function isIntegerOneSourceBitOp(w) { return masked(w, 0x5fe00000) === 0x5ac00000; }
 
   /** cmp / cmn / tst — 「比較して、そのあと分岐する」形。 */
   function isCompare(w) {
@@ -381,7 +400,7 @@
     if (isDivide(w)) return KIND.DIV;
     if (isFpMulDiv(w)) return KIND.FMUL;
     if (isFpAddSub(w)) return KIND.FARITH;
-    if (isFpToInt(w)) return KIND.FCONV;
+    if (isFpToInt(w) || isFpFixedConvert(w) || isSimdScalarIntFloatConvert(w)) return KIND.FCONV;
     if (isFpDp1(w)) {
       /* FP one-source shares one encoding family. fabs/fneg/fsqrt are
          arithmetic; fcvt and the remaining conversion forms are conversions. */
@@ -390,9 +409,9 @@
       return KIND.FCONV;
     }
     if (isFpImm(w)) return KIND.MOVIMM;
-    if (isCondSelect(w)) return KIND.CSEL;
-    if (isMoveWide(w)) return KIND.MOVIMM;
-    if (isShiftOp(w)) return KIND.SHIFT;
+    if (isCondSelect(w) || isFpCondSelect(w)) return KIND.CSEL;
+    if (isMoveWide(w) || isLogicalImmediateMove(w)) return KIND.MOVIMM;
+    if (isShiftOp(w) || isIntegerOneSourceBitOp(w)) return KIND.SHIFT;
 
     if (isAddSubImm(w) || isAddSubShifted(w) || isAddSubExtended(w)) {
       /* orr xD, xzr, xM は mov の別名。add xD, xN, #0 も実質コピー。
@@ -481,7 +500,7 @@
     branchImm26, condBranchTarget, literalTarget, wordTarget, pcRelTarget, pairedOffset,
     memoryAccess, compareImmediate,
     isCallImm, isBranchImm, isCondBranch, isIndirectCall, isRet, isBr,
-    isCompare, isMultiply, isDivide, isShiftOp, isFpMulDiv, isFpAddSub, isSimd, isMoveWide,
+    isCompare, isMultiply, isDivide, isShiftOp, isFpMulDiv, isFpAddSub, isFpCondSelect, isSimd, isMoveWide,
     isNop,
     isStpToSp, isSubSp, looksLikePrologue, looksLikeEnd,
     classifyWord, decodeWord,

@@ -82,6 +82,8 @@ const API_PHRASE = {
     ['文字で書かれた数を、計算できる数値に変える処理です。', 'Converts text into a number.']],
   log: [['記録を残す', 'Write a log'],
     ['動作の記録（ログ）を出す処理です。', 'Writes a diagnostic log line.']],
+  geometry: [['位置や大きさを確認', 'Read geometry'],
+    ['画面上の位置や大きさを読み取る処理です。', 'Reads a view or rectangle geometry value.']],
   objc_msgSend: [['オブジェクトに依頼', 'Send a message'],
     ['ある「もの」に対して、名前を指定して仕事を頼む処理です。iOS アプリの動作はほとんどこの形で書かれています。',
       'Asks an object to perform a named operation — the backbone of iOS apps.']],

@@ -473,7 +473,12 @@ def main():
                     break
                 if e > pos:
                     try:
-                        strings[sec.virtual_address + pos] = blob[pos:e].decode('utf-8')
+                        text = blob[pos:e].decode('utf-8')
+                        # The product string scanner intentionally rejects control-byte
+                        # runs.  A NUL-delimited UTF-8 blob inside __objc_classname is
+                        # not a human string merely because Python can decode it.
+                        if text and all(ch.isprintable() or ch in '\t\r\n' for ch in text):
+                            strings[sec.virtual_address + pos] = text
                     except UnicodeDecodeError:
                         pass
                 pos = e + 1

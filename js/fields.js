@@ -44,7 +44,7 @@ export class FieldIndex {
       if (!c || !c.name) continue;
       const byOffset = new Map();
       for (const iv of c.ivars || []) {
-        byOffset.set(iv.offset, iv);
+        if (iv.offset != null && Number.isFinite(Number(iv.offset))) byOffset.set(Number(iv.offset), iv);
         if (iv.offsetVar != null) {
           this.byOffsetVar.set(iv.offsetVar.toString(), { className: c.name, field: iv });
         }
@@ -154,12 +154,15 @@ export class FieldIndex {
       const exact = c.byOffset.get(off);
       if (exact) return { field: exact, className: currentName, exact: true, delta: 0 };
       for (const iv of c.ivars) {
+        if (iv.offset == null || !Number.isFinite(Number(iv.offset))) continue;
+        const ivOffset = Number(iv.offset);
         const size = iv.size || (iv.type && iv.type.bytes) || 0;
-        if (size > 0 && off > iv.offset && off < iv.offset + size) {
-          return { field: iv, className: currentName, exact: false, delta: off - iv.offset };
+        if (size > 0 && off > ivOffset && off < ivOffset + size) {
+          return { field: iv, className: currentName, exact: false, delta: off - ivOffset };
         }
       }
-      const firstOwnOffset = c.ivars.length ? c.ivars[0].offset : c.instanceSize;
+      const firstLocated = c.ivars.find((iv) => iv.offset != null && Number.isFinite(Number(iv.offset)));
+      const firstOwnOffset = firstLocated ? Number(firstLocated.offset) : c.instanceSize;
       if (!c.superName || !(off < firstOwnOffset)) return null;
       currentName = c.superName;
     }

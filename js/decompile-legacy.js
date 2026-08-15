@@ -1592,7 +1592,10 @@ function statementFor(insn, ctx, node) {
 
   const dst = insn.writes.length === 1 ? insn.writes[0] : null;
 
-  /* mov / movz / movk */
+  /* mov / movz / movk。movi #0 は SIMD 全laneのゼロ初期化。 */
+  if (base === 'movi' && insn.ops[1]?.k === 'imm' && insn.ops[1].value === 0n) {
+    return mk(varOf(insn.ops[0]?.text || dst || 'v0', ctx) + ' = 0; /* vector zero */', { dst, pure: true });
+  }
   if (base === 'mov' || base === 'fmov' || base === 'movz') {
     const src = insn.ops[1];
     const text = ctx.textOf.get(row);
@@ -1610,6 +1613,12 @@ function statementFor(insn, ctx, node) {
   }
 
   /* 比較。単体では文にしないが、条件の材料として残す */
+  if (base === 'bics' && insn.ops[0]?.cls === 'zr') {
+    const a = operandText(insn.ops[1], ctx, insn);
+    const b = operandText(insn.ops[2], ctx, insn);
+    return mk('/* flags = ' + a + ' & ~' + b + ' — 次の分岐のための比較 */',
+      { kind: 'comment', pure: true, compare: true });
+  }
   if (/^(cmp|cmn|tst|fcmp|fcmpe|ccmp|ccmn)$/.test(base)) {
     return mk('/* ' + insn.mnemonic + ' ' + insn.operands + ' — 次の分岐のための比較 */',
       { kind: 'comment', pure: true, compare: true });
@@ -1622,7 +1631,7 @@ function statementFor(insn, ctx, node) {
   /* 二項演算 */
   const BIN = {
     add: '+', adds: '+', sub: '-', subs: '-', mul: '*', udiv: '/', sdiv: '/',
-    and: '&', ands: '&', orr: '|', eor: '^', bic: '& ~', lsl: '<<', lsr: '>>', asr: '>>',
+    and: '&', ands: '&', orr: '|', eor: '^', bic: '& ~', bics: '& ~', lsl: '<<', lsr: '>>', asr: '>>',
     ror: '>>>', fadd: '+', fsub: '-', fmul: '*', fdiv: '/', smull: '*', umull: '*',
   };
   if (BIN[base] && insn.ops.length >= 3 && dst) {

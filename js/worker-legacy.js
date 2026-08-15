@@ -590,7 +590,7 @@ async function objcStubNames(slice, known, requestId = null) {
   });
 }
 
-const MAX_SELECTOR = 240;
+const MAX_SELECTOR = 512;
 
 /**
  * chained fixups で書かれたポインタをほどく。objc.js の sanitizePointer と同じ考え方
@@ -598,6 +598,9 @@ const MAX_SELECTOR = 240;
  */
 function sanitizeStubPointer(v, base) {
   if (v == null || v === 0n) return null;
+  // Some chained-fixup slots contain only the image-relative low target.
+  // With a known image base, values below it are offsets, not VM addresses.
+  if (base != null && v < BigInt(base)) return BigInt(base) + v;
   if (v < 0x0001000000000000n) return v;
   const low = v & 0x0000000fffffffffn;
   if (low === 0n) return null;
@@ -1080,7 +1083,7 @@ async function scanProgram({ regionId, requestId, epoch, callLimit, refLimit, ki
         const full = base + pair.imm;
         addRef(pc, full, pair.load ? 1 : pair.store ? 2 : 0);
         if (!pair.load && !pair.store) provenance.note(pair.rd, full, index);
-        else if (pair.load) provenance.kill(pair.rd);
+        else if (pair.load && pair.gpDest !== false) provenance.kill(pair.rd);
         continue;
       }
 
@@ -1091,6 +1094,21 @@ async function scanProgram({ regionId, requestId, epoch, callLimit, refLimit, ki
         continue;
       }
 
+      const memWrite = Words.memoryAccess(w);
+      if (memWrite) {
+        // FP/SIMD register numbers share the low encoding bits with xN/wN, but
+        // writing d8/q8 must not destroy an address held in x8.  Conversely,
+        // integer pair loads can overwrite both GP destinations, and pre/post
+        // indexed memory operations overwrite their base register.
+        if (memWrite.load && !memWrite.vector) {
+          provenance.kill(memWrite.reg);
+          if (memWrite.pair && memWrite.reg2 != null) provenance.kill(memWrite.reg2);
+        }
+        if (memWrite.mode === 'pre' || memWrite.mode === 'post') provenance.kill(memWrite.base);
+        continue;
+      }
+      if (kind === Words.KIND.FARITH || kind === Words.KIND.FMUL || kind === Words.KIND.SIMD ||
+          (kind === Words.KIND.CSEL && Words.isFpCondSelect?.(w))) continue;
       if (WRITES_LOW_REG[kind]) provenance.kill(w & 0x1f);
     }
 
@@ -1180,7 +1198,7 @@ const WRITES_LOW_REG = (() => {
  * 取りこぼしていた。長くしすぎると別の値を組み合わせてしまうので、
  * 実測（The Battle Cats）で適合率が落ちない上限を採る。
  */
-const PAIR_WINDOW = 4096;
+const PAIR_WINDOW = Number.MAX_SAFE_INTEGER;
 
 
 /* ── 値の「ふるまい」を全文走査で集める ─────────────────────
@@ -1599,7 +1617,7 @@ function decodeUtf8Text(bytes) {
     n += need + 1;
   }
   if (!n) return '';
-  return UTF8.decode(bytes.subarray(0, n)).replace(/\t/g, '\\t').replace(/\n/g, '\\n');
+  return UTF8.decode(bytes.subarray(0, n)).replace(/\t/g, '\\t').replace(/\r/g, '\\r').replace(/\n/g, '\\n');
 }
 
 async function scanStrings({ regionId, min, limit, maxBytes, requestId, epoch }) {
@@ -1617,7 +1635,7 @@ async function scanStrings({ regionId, min, limit, maxBytes, requestId, epoch })
   const flush = () => {
     if (runStart >= 0 && runBytes.length) {
       const text = UTF8.decode(new Uint8Array(runBytes))
-        .replace(/\t/g, '\\t').replace(/\n/g, '\\n');
+        .replace(/\t/g, '\\t').replace(/\r/g, '\\r').replace(/\n/g, '\\n');
       if (text.length >= minLen) {
         out.push({ addr: region.vmAddr + BigInt(runStart), offset: runStart, text });
       }
@@ -1629,7 +1647,7 @@ async function scanStrings({ regionId, min, limit, maxBytes, requestId, epoch })
   /** buf[i] から始まる UTF-8 の並びの長さ。文字として読めないなら 0。 */
   const utf8Len = (buf, i) => {
     const c = buf[i];
-    if (c < 0x80) return (c >= 0x20 && c < 0x7f) || c === 9 || c === 10 ? 1 : 0;
+    if (c < 0x80) return (c >= 0x20 && c < 0x7f) || c === 9 || c === 10 || c === 13 ? 1 : 0;
     let need = 0;
     if (c >= 0xc2 && c <= 0xdf) need = 1;
     else if (c >= 0xe0 && c <= 0xef) need = 2;
@@ -1761,9 +1779,24 @@ async function findXrefs({ regionId, target, limit, requestId, epoch }) {
           if (out.length >= cap) break;
         }
         if (!pair.load && !pair.store) provenance.note(pair.rd, full, index);
-        else if (pair.load) provenance.kill(pair.rd);
+        else if (pair.load && pair.gpDest !== false) provenance.kill(pair.rd);
         continue;
       }
+      const memWrite = Words.memoryAccess(w);
+      if (memWrite) {
+        // FP/SIMD register numbers share the low encoding bits with xN/wN, but
+        // writing d8/q8 must not destroy an address held in x8.  Conversely,
+        // integer pair loads can overwrite both GP destinations, and pre/post
+        // indexed memory operations overwrite their base register.
+        if (memWrite.load && !memWrite.vector) {
+          provenance.kill(memWrite.reg);
+          if (memWrite.pair && memWrite.reg2 != null) provenance.kill(memWrite.reg2);
+        }
+        if (memWrite.mode === 'pre' || memWrite.mode === 'post') provenance.kill(memWrite.base);
+        continue;
+      }
+      if (kind === Words.KIND.FARITH || kind === Words.KIND.FMUL || kind === Words.KIND.SIMD ||
+          (kind === Words.KIND.CSEL && Words.isFpCondSelect?.(w))) continue;
       if (WRITES_LOW_REG[kind]) provenance.kill(w & 0x1f);
     }
     pos += words * 4;

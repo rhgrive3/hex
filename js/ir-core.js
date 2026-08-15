@@ -134,7 +134,7 @@ const BIN_OF = {
   add: 'add', adds: 'add', sub: 'sub', subs: 'sub',
   mul: 'mul', mneg: 'mul', smull: 'smull', umull: 'umull',
   smulh: 'smulh', umulh: 'umulh', sdiv: 'sdiv', udiv: 'udiv',
-  and: 'and', ands: 'and', orr: 'or', eor: 'xor', bic: 'bic', orn: 'orn', eon: 'eon',
+  and: 'and', ands: 'and', orr: 'or', eor: 'xor', bic: 'bic', bics: 'bic', orn: 'orn', eon: 'eon',
   lsl: 'shl', lslv: 'shl', lsr: 'lshr', lsrv: 'lshr', asr: 'ashr', asrv: 'ashr',
   ror: 'ror', rorv: 'ror',
   fadd: 'fadd', fsub: 'fsub', fmul: 'fmul', fdiv: 'fdiv',
@@ -149,7 +149,7 @@ const UN_OF = {
   fmov: 'fmov', abs: 'abs',
 };
 
-const SEL_OF = { csel: 'sel', csinc: 'inc', csinv: 'inv', csneg: 'neg', cset: 'set', csetm: 'setm', cinc: 'cinc', cneg: 'cneg', cinv: 'cinv' };
+const SEL_OF = { csel: 'sel', fcsel: 'sel', csinc: 'inc', csinv: 'inv', csneg: 'neg', cset: 'set', csetm: 'setm', cinc: 'cinc', cneg: 'cneg', cinv: 'cinv' };
 
 /* 条件コード → 比較の意味。signed が null のものは符号に関係しない。 */
 export const COND = {
@@ -448,6 +448,10 @@ function lift(insn, opts = {}) {
   }
 
   /* ── mov 系 ── */
+  if (base === 'movi' && ops[1]?.k === 'imm' && ops[1].value === 0n) {
+    push({ op: OP.CONST, dstReg: dstReg(), dstBits: dstBits(), value: 0n, srcs: [] });
+    return out;
+  }
   if (base === 'mov' || base === 'movz' || base === 'movn' || base === 'fmov') {
     const src = opnd(ops[1]);
     if (!src) { push({ op: OP.UNKNOWN, dstReg: dstReg(), dstBits: dstBits(), srcs: [] }); return out; }
@@ -515,7 +519,7 @@ function lift(insn, opts = {}) {
     if (!a) { push({ op: OP.UNKNOWN, dstReg: dstReg(), dstBits: dstBits(), srcs: [] }); return out; }
     const inst = push({ op: OP.BIN, sub: BIN_OF[base], dstReg: dstReg(), dstBits: dstBits(),
       negate: base === 'mneg', srcs: b ? [a, b] : [a] });
-    if (/s$/.test(base) && /^(adds|subs|ands)$/.test(base)) {
+    if (/s$/.test(base) && /^(adds|subs|ands|bics)$/.test(base)) {
       push(Object.assign(flags(), { op: OP.CMP, sub: BIN_OF[base] === 'add' ? 'add' : BIN_OF[base] === 'and' ? 'and' : 'sub',
         bits: dstBits(), srcs: inst.srcs.slice() }));
     }
