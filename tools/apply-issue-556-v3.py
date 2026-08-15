@@ -249,13 +249,27 @@ rep("""      const pair = pairedOffset(w);
       if (WRITES_LOW_REG[kind]) provenance.kill(w & 0x1f);
 """, 'xref pair')
 
-# Fail closed if either scan still has the duplicated/unsound #571 state machine.
-for forbidden in ['makeAddressProvenance(', 'addressProvenanceBase(', 'noteAddressProvenance(',
-                  'killAddressRegister(', 'applyAddressFlowBarrier(', 'isAddressFlowBarrier(',
-                  'pageOf[pair.rd]', 'pageAt[pair.rd]']:
-    if forbidden in text:
-        raise SystemExit(f'legacy provenance survived: {forbidden}')
-if text.count('AddressProvenance.create(') < 2 or text.count('provenance.enter(pc)') < 2:
-    raise SystemExit('shared provenance not wired into both scans')
+# Fail closed only inside the two worker scans we own. Other worker helpers may
+# legitimately use similarly named local arrays; rejecting the whole file made
+# the validation driver report false failures even after both scan paths were fixed.
+def function_body(start_marker, end_marker):
+    start = text.find(start_marker)
+    if start < 0:
+        raise SystemExit(f'missing validation start: {start_marker}')
+    end = text.find(end_marker, start)
+    if end < 0:
+        raise SystemExit(f'missing validation end: {end_marker}')
+    return text[start:end]
+
+scan_body = function_body('async function scanProgram(', '\nfunction grow64(')
+xref_body = function_body('async function findXrefs(', '\n/* ── 任意のアドレスを読む')
+for label, body in [('scanProgram', scan_body), ('findXrefs', xref_body)]:
+    for forbidden in ['makeAddressProvenance(', 'addressProvenanceBase(', 'noteAddressProvenance(',
+                      'killAddressRegister(', 'applyAddressFlowBarrier(', 'isAddressFlowBarrier(',
+                      'pageOf[pair.rd]', 'pageAt[pair.rd]']:
+        if forbidden in body:
+            raise SystemExit(f'legacy provenance survived in {label}: {forbidden}')
+    if 'AddressProvenance.create(' not in body or 'provenance.enter(pc)' not in body:
+        raise SystemExit(f'shared provenance not wired into {label}')
 
 p.write_text(text)
