@@ -1,12 +1,12 @@
 name: Temp harden analyze epoch
 on:
   push:
-    branches: [review-all-hardening-integration]
+    branches:
+      - review-all-hardening-integration
 permissions:
   contents: write
 jobs:
   harden:
-    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -17,98 +17,13 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - name: Bind Mach-O analyze transaction to one epoch
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          p=Path('js/backend.js');s=p.read_text()
-          old="""  async analyze(sliceIndex) {
-    if (this.formatId !== 'macho') return this._callTo('platform', 'analyze', { sliceIndex });
-    const file = this.file;
-    const legacy = await this._callTo('legacy', 'analyze', { sliceIndex });
-    const enriched = await augmentAnalysisResultWithChainedImports(file, sliceIndex, legacy);
-    if (!this.platformInfo?.normalizedDyldTruth) {
-      return markMachOSymbolTruthIncomplete(enriched, this.legacyInfo?.platform?.normalizedDyldError || 'normalized-macho-analysis-unavailable');
-    }
-    try {
-      const normalized = await this._callTo('platform', 'analyze', { sliceIndex });
-      return mergeMachOAnalysisResults(enriched, normalized);
-    } catch (error) {
-      if (error?.stale) throw error;
-      return markMachOSymbolTruthIncomplete(enriched, error?.message || 'normalized-macho-analysis-failed');
-    }
-  }"""
-          new="""  async analyze(sliceIndex) {
-    if (this.formatId !== 'macho') return this._callTo('platform', 'analyze', { sliceIndex });
-    const uiEpoch = this.gen, transportEpoch = this.transportEpoch, file = this.file;
-    const assertCurrent = () => {
-      if (uiEpoch !== this.gen || transportEpoch !== this.transportEpoch || file !== this.file) throw new StaleRequestError();
-    };
-    const legacy = await this._callTo('legacy', 'analyze', { sliceIndex });
-    assertCurrent();
-    const enriched = await augmentAnalysisResultWithChainedImports(file, sliceIndex, legacy);
-    assertCurrent();
-    if (!this.platformInfo?.normalizedDyldTruth) {
-      return markMachOSymbolTruthIncomplete(enriched, this.legacyInfo?.platform?.normalizedDyldError || 'normalized-macho-analysis-unavailable');
-    }
-    try {
-      const normalized = await this._callTo('platform', 'analyze', { sliceIndex });
-      assertCurrent();
-      return mergeMachOAnalysisResults(enriched, normalized);
-    } catch (error) {
-      if (error?.stale) throw error;
-      assertCurrent();
-      return markMachOSymbolTruthIncomplete(enriched, error?.message || 'normalized-macho-analysis-failed');
-    }
-  }"""
-          if old not in s: raise SystemExit('analyze method snippet missing')
-          p.write_text(s.replace(old,new,1))
-
-          p=Path('tests/backend-open-race.mjs');s=p.read_text()
-          addition=r'''
-
-// Multi-stage Mach-O analysis must keep the epoch captured at start. The local
-// chained-import read is asynchronous; a slice switch during that read must not
-// let the old analysis return under the new epoch.
-{
-  const analysisBackend=new Backend();
-  const legacyAnalysisWorker=workers[workers.length-2];
-  let releaseRead=null;
-  const fakeFile={
-    size:8,
-    slice(){return {arrayBuffer(){return new Promise((resolve)=>{releaseRead=()=>resolve(new ArrayBuffer(8));});}};},
-  };
-  analysisBackend.formatId='macho';
-  analysisBackend.file=fakeFile;
-  analysisBackend.platformInfo={normalizedDyldTruth:false};
-  analysisBackend.legacyInfo={platform:{}};
-  let staleAnalysis=null;
-  const analysis=analysisBackend.analyze(0);
-  const observed=analysis.catch((error)=>{staleAnalysis=error;return null;});
-  await tick();
-  const request=find(legacyAnalysisWorker,(m)=>m.t==='analyze'&&m.sliceIndex===0);
-  assert.ok(request);
-  legacyAnalysisWorker.reply(request,{
-    addrs:new BigUint64Array(0),kinds:new Uint8Array(0),flags:new Uint8Array(0),names:[],funcs:new BigUint64Array(0),
-  });
-  for(let i=0;i<10&&!releaseRead;i++)await tick();
-  assert.ok(releaseRead,'chained-import augmentation should have started a file read');
-  analysisBackend.advanceEpoch();
-  releaseRead();
-  await observed;
-  assert.equal(staleAnalysis?.stale,true,'analysis crossing a slice epoch must reject as stale');
-}
-'''
-          marker="console.log('backend concurrent-open epoch regression: PASS');"
-          if marker not in s: raise SystemExit('backend race test marker missing')
-          s=s.replace(marker,addition+'\n'+marker,1)
-          p.write_text(s)
-          PY
+      - run: node scripts/_patch-analyze-epoch.mjs
       - name: Commit source and regression
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add js/backend.js tests/backend-open-race.mjs
+          rm scripts/_patch-analyze-epoch.mjs
+          git add js/backend.js tests/backend-open-race.mjs scripts
           git commit -m 'Reject Mach-O analysis that crosses slice epochs'
       - run: npm ci
       - run: node tests/backend-open-race.mjs
