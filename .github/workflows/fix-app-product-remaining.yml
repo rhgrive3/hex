@@ -13,7 +13,7 @@ jobs:
         with: { fetch-depth: 0 }
       - name: Apply fixes
         run: |
-          python tools/fix-app-product-anchor.py
+          python tools/fix-app-product-current.py
           python tools/fix-app-product-529-531-541-543-544-545-546.py
       - name: Static syntax first
         run: |
@@ -27,7 +27,7 @@ jobs:
           import assert from 'node:assert/strict';
           import fs from 'node:fs';
           const app=fs.readFileSync('js/app.js','utf8');
-          assert.match(app,/buildObjcRuntimeIndex/); assert.match(app,/buildSwiftMetadataModel/); assert.match(app,/buildSwiftRuntimeIndex/);
+          assert.match(app,/buildObjcRuntimeIndex/); assert.match(app,/buildObjcRuntimeModel/); assert.match(app,/buildSwiftMetadataModel/); assert.match(app,/buildSwiftRuntimeIndex/);
           assert.match(app,/protocolList/); assert.match(app,/categoryList/); assert.match(app,/this\.objcRuntime/); assert.match(app,/this\.swiftRuntime/);
           assert.match(app,/const capability = slice\?\.capability/); assert.match(app,/instructionAlignment/); assert.match(app,/analysisLevel/);
           assert.match(app,/validatedFunctionRange/); assert.match(app,/function-start-not-executable/); assert.match(app,/symbol-range-crosses-executable-region/);
@@ -35,9 +35,10 @@ jobs:
           const ai=fs.readFileSync('js/ai/ui/hex-context.js','utf8');
           assert.match(ai,/instructionBytes\(app\)/); assert.match(ai,/scannedCount/); assert.match(ai,/truncationReason/); assert.match(ai,/coverage/);
           assert.doesNotMatch(ai,/\(start - region\.vmAddr\) \/ 4n/);
+          assert.doesNotMatch(ai,/sym\.names\.length && out\.length < limit/);
           const product=fs.readFileSync('js/ui/product.js','utf8');
-          assert.match(product,/EXPLORER_SOURCE_LIMIT/); assert.match(product,/boundedItems/); assert.match(product,/upstream-incomplete/); assert.match(product,/classification:r\.classification/);
-          assert.match(product,/validatedFunctionRange/);
+          assert.match(product,/EXPLORER_SOURCE_LIMIT/); assert.match(product,/annotateCollection/); assert.match(product,/upstream-incomplete/); assert.match(product,/classification:item\.classification/);
+          assert.match(product,/validatedFunctionRange/); assert.match(product,/recognition\/classifier\+knowledge/);
           assert.equal(/maxFunctions:350000/.test(product),true);
           console.log('App/Product remaining issue guards passed');
           EOF
@@ -53,6 +54,6 @@ jobs:
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add js/app.js js/objc.js js/ai/ui/hex-context.js js/ui/product.js tests/issues-529-531-541-543-544-545-546.mjs
           git commit -m "fix: wire Apple runtime, recognition, capabilities and bounded Product views (#529 #531 #541 #543 #544 #545 #546)"
-          git rm -f .github/workflows/fix-app-product-remaining.yml tools/fix-app-product-529-531-541-543-544-545-546.py tools/fix-app-product-anchor.py
+          git rm -f .github/workflows/fix-app-product-remaining.yml tools/fix-app-product-529-531-541-543-544-545-546.py tools/fix-app-product-anchor.py tools/fix-app-product-current.py
           git commit -m "chore: finalize App Product fixes [autofix]"
           git push origin HEAD:fix/all-remaining-issues-20260815
