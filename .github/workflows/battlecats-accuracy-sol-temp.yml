@@ -1,0 +1,33 @@
+name: TEMP BattleCats accuracy continuation
+
+on:
+  push:
+    branches: [battlecats-accuracy-100-sol]
+    paths:
+      - '.github/battlecats-accuracy-sol.patch.gz.b64'
+      - '.github/workflows/battlecats-accuracy-sol-temp.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: battlecats-accuracy-100-sol
+          fetch-depth: 0
+      - name: Apply measured generic accuracy patch
+        shell: bash
+        run: |
+          base64 -d .github/battlecats-accuracy-sol.patch.gz.b64 | gzip -dc > /tmp/bc.patch
+          git apply --3way /tmp/bc.patch
+          node --check js/worker-fixes.js
+          rm .github/battlecats-accuracy-sol.patch.gz.b64
+          rm .github/workflows/battlecats-accuracy-sol-temp.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'Improve generic ARM64 function boundary recovery'
+          git push origin HEAD:battlecats-accuracy-100-sol
