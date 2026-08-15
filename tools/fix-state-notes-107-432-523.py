@@ -1,0 +1,256 @@
+from pathlib import Path
+
+# #432 + #523
+p=Path('js/names.js'); s=p.read_text()
+a=s.index('export function legacyNoteKeyFor(')
+b=s.index('\nexport async function legacyV2NoteKeyFor', a)
+legacy="""export function legacyNoteKeyFor(file, fileInfo, _sliceIndex = null) {
+  const parts=[];
+  if (file?.name) parts.push(file.name);
+  if (file?.size != null) parts.push(String(file.size));
+  const slices=fileInfo?.slices || [];
+  const firstWithUuid=slices.find((entry)=>entry?.info?.uuid);
+  if (firstWithUuid?.info?.uuid) parts.push(firstWithUuid.info.uuid);
+  return parts.length ? parts.join('|') : null;
+}
+
+export function canonicalLegacyNoteSliceIndex(fileInfo) {
+  const slices=fileInfo?.slices || [];
+  if (!slices.length) return -1;
+  let index=slices.findIndex((entry)=>entry?.info?.isArm64);
+  if (index < 0) index=slices.findIndex((entry)=>entry?.info);
+  return index;
+}
+
+export function legacyNoteKeyForSlice(file, fileInfo, sliceIndex) {
+  return canonicalLegacyNoteSliceIndex(fileInfo) === sliceIndex
+    ? legacyNoteKeyFor(file, fileInfo)
+    : null;
+}
+"""
+s=s[:a]+legacy+s[b:]
+if 'const NOTE_KEY_CACHE = new WeakMap();' not in s:
+    anchor="const MAX_BYTES = 2 * 1024 * 1024;   // 1 ファイルぶんの上限（保存が壊れないように）\n"
+    s=s.replace(anchor,anchor+"const NOTE_KEY_CACHE = new WeakMap(); // File/ByteSource -> resolved slice identities\n",1)
+a=s.index('export async function noteKeyFor(')
+b=s.index('\nexport class NoteStore', a)
+note="""export async function noteKeyFor(file, fileInfo, sliceIndex, options = {}) {
+  if (!file) return null;
+  const slices = fileInfo && fileInfo.slices || [];
+  const slice = Number.isInteger(sliceIndex) && sliceIndex >= 0 ? slices[sliceIndex] : null;
+  const info = slice && slice.info;
+  const source = asByteSource(file);
+  let content = source;
+  let sliceOffset = null;
+  let sliceSize = null;
+  if (slice && slice.offset != null && slice.size != null) {
+    try {
+      sliceOffset = BigInt(slice.offset);
+      sliceSize = BigInt(slice.size);
+      if (sliceOffset >= 0n && sliceSize >= 0n && sliceOffset <= source.size && sliceSize <= source.size - sliceOffset) {
+        content = source.subrange(sliceOffset, sliceSize);
+      } else { sliceOffset = null; sliceSize = null; }
+    } catch { sliceOffset = null; sliceSize = null; }
+  }
+  const identity = [
+    'v3', source.size.toString(),
+    info && info.uuid || '', info && info.cpu || '', info && info.cpuSub || '',
+    sliceOffset == null ? '' : sliceOffset.toString(),
+    sliceSize == null ? '' : sliceSize.toString(),
+  ].join('|');
+  const cacheable = (typeof file === 'object' && file !== null) || typeof file === 'function';
+  let cache = cacheable ? NOTE_KEY_CACHE.get(file) : null;
+  if (cache?.has(identity)) return cache.get(identity);
+  if (options.signal?.aborted) {
+    const error=new Error('note identity cancelled'); error.name='AbortError'; error.code='ABORT_ERR'; throw error;
+  }
+  let digest;
+  try {
+    digest = await sha256TreeByteSource(content, { signal:options.signal, onProgress:options.onProgress });
+  } catch (error) {
+    if (error?.code !== 'SHA256_UNAVAILABLE') throw error;
+    digest = await hashByteSource(content, { signal:options.signal, onProgress:options.onProgress });
+  }
+  const result = identity + '|' + digest;
+  if (cacheable) {
+    if (!cache) { cache=new Map(); NOTE_KEY_CACHE.set(file,cache); }
+    cache.set(identity,result);
+  }
+  return result;
+}
+"""
+s=s[:a]+note+s[b:]
+p.write_text(s)
+
+# #107 backend transactional facade
+p=Path('js/backend.js'); s=p.read_text()
+a=s.index('  async open(file) {')
+b=s.index('\n  probe() {',a)
+new_open="""  async open(file) {
+    this.transportEpoch++;
+    let detection = null;
+    let platformError = null;
+    try { detection = await this._callTo('platform', 'detect', { file }); }
+    catch (error) { if (error?.stale) throw error; platformError = error; }
+
+    let nextFormat = 'unknown';
+    let nextPlatform = null;
+    let nextLegacy = null;
+    let nextBridge = false;
+    let result = null;
+    if (detection?.formatId === 'macho') {
+      nextFormat = 'macho';
+      const legacy = await this._callTo('legacy', 'open', { file });
+      legacy.formatId = 'macho';
+      for (const slice of legacy.slices || []) slice.capability = legacySliceCapability(slice);
+      legacy.capability = legacy.slices?.[0]?.capability || legacySliceCapability(null);
+      legacy.platform = { compatibility:'legacy-macho', sourceBackedDetection:true, detected:detection, duplicateUniversalParseAvoided:true };
+      nextLegacy = legacy;
+      nextPlatform = { formatId:'macho', capability:legacy.capability, detection, compatibility:'legacy-macho' };
+      result = legacy;
+    } else {
+      let platformInfo = null;
+      try { platformInfo = await this._callTo('platform', 'open', { file }, null, (p) => this.onAnalysisProgress?.(p)); }
+      catch (error) { if (error?.stale) throw error; platformError = error; }
+      if (platformInfo) {
+        nextPlatform = platformInfo;
+        nextFormat = platformInfo.formatId || platformInfo.capability?.format || detection?.formatId || 'unknown';
+        const capability = platformInfo.capability || platformInfo.slices?.[0]?.capability;
+        nextBridge = capability?.architecture === 'arm64';
+        if (nextBridge) {
+          try {
+            await this._callTo('legacy', 'open', { file });
+            const allRegions=[...(platformInfo.slices||[]).flatMap((slice)=>slice.regions||[]),platformInfo.raw].filter(Boolean);
+            await this._callTo('legacy','setRegions',{regions:allRegions});
+          } catch { nextBridge=false; }
+        }
+        result=platformInfo;
+      } else {
+        const legacy=await this._callTo('legacy','open',{file});
+        nextLegacy=legacy;
+        if (platformError && legacy.format === 'Raw binary') legacy.warnings=[...(legacy.warnings||[]),platformError.message];
+        result=legacy;
+      }
+    }
+    this.advanceEpoch();
+    this.file=file;
+    this.formatId=nextFormat;
+    this.platformInfo=nextPlatform;
+    this.legacyInfo=nextLegacy;
+    this.arm64Bridge=nextBridge;
+    this.contentHash=null;
+    return result;
+  }
+"""
+s=s[:a]+new_open+s[b:]; p.write_text(s)
+
+# #107 legacy worker rollback
+p=Path('js/worker-legacy.js'); s=p.read_text()
+old="async function openFile(f) {\n  file = f;\n"
+new="async function openFile(f) {\n  const previous = { file, fileSize, regions, slices, blocks: new Map(blocks) };\n  try {\n    file = f;\n"
+if new not in s:
+    if old not in s: raise SystemExit('legacy open start anchor changed')
+    s=s.replace(old,new,1)
+old="  return out;\n}\n\nasync function readSlice(offset, size, label) {"
+new="    return out;\n  } catch (error) {\n    file = previous.file;\n    fileSize = previous.fileSize;\n    regions = previous.regions;\n    slices = previous.slices;\n    blocks.clear();\n    for (const [key, value] of previous.blocks) blocks.set(key, value);\n    throw error;\n  }\n}\n\nasync function readSlice(offset, size, label) {"
+if new not in s:
+    if old not in s: raise SystemExit('legacy open end anchor changed')
+    s=s.replace(old,new,1)
+p.write_text(s)
+
+# App: viewer first, notes later
+p=Path('js/app.js'); s=p.read_text()
+s=s.replace("import { NoteStore, noteKeyFor, legacyV2NoteKeyFor, legacyNoteKeyFor, EMPTY_NOTES } from './names.js';",
+            "import { NoteStore, noteKeyFor, legacyV2NoteKeyFor, legacyNoteKeyForSlice, EMPTY_NOTES } from './names.js';")
+anchor="    this.notes = EMPTY_NOTES;\n    /* 命令の書き換え（patch.js）。保存を選ぶまでファイルには触らない。 */"
+if 'this.noteAttachController = null;' not in s:
+    s=s.replace(anchor,"    this.notes = EMPTY_NOTES;\n    this.noteAttachController = null;\n    /* 命令の書き換え（patch.js）。保存を選ぶまでファイルには触らない。 */",1)
+open_start=s.index('  async openFile(file, opts) {')
+open_end=s.index('\n  /** 練習用のサンプル',open_start)
+open_fn="""  async openFile(file, opts) {
+    if (!file) return;
+    if (file.size === 0) { alertDialog(t('err.emptyTitle'), t('err.emptyText')); return; }
+    const sampleOpen = !!(opts && opts.sample);
+    this.setBusy(true, t('status.reading', { name:file.name }));
+    let info;
+    try { info = await this.backend.open(file); }
+    catch (err) {
+      if (err && err.stale) return;
+      this.setBusy(false);
+      alertDialog(t('err.openTitle'), friendly(err.message));
+      return;
+    }
+    const openEpoch=this.backend.gen;
+    closeAllSheets();
+    this.sampleOpen=sampleOpen;
+    this.detailRefresh=null;
+    this.symbols=EMPTY_INDEX;
+    this.symbolsReady=null;
+    this.viewer.setSymbols(EMPTY_INDEX);
+    this.forgetSemantics(true);
+    this.store.set({file,fileInfo:info,selectedRow:-1});
+    let sliceIndex=-1;
+    if (info.slices.length) {
+      sliceIndex=info.slices.findIndex((entry)=>entry.info && entry.info.isArm64);
+      if (sliceIndex < 0) sliceIndex=info.slices.findIndex((entry)=>entry.info);
+    }
+    this.noteAttachController?.abort();
+    this.notes=EMPTY_NOTES;
+    this.patches=new PatchSet();
+    this.setBusy(false);
+    this.applySlice(sliceIndex,info);
+    void this.attachNotes(file,info,sliceIndex,openEpoch);
+    if (info.warnings && info.warnings.length) toast(info.warnings[0]);
+    const slice=this.currentSlice();
+    if (slice && slice.info && slice.info.encrypted) alertDialog(t('err.encryptedTitle'),t('err.encryptedText'));
+    document.dispatchEvent(new CustomEvent('hex:file-opened',{detail:{name:info.name,sample:this.sampleOpen}}));
+    if (this.sampleOpen) setTimeout(()=>showSampleGuide(this),250);
+  }
+
+  async attachNotes(file, info, sliceIndex, epoch = this.backend.gen) {
+    this.noteAttachController?.abort();
+    const controller=new AbortController();
+    this.noteAttachController=controller;
+    try {
+      const [id, legacyV2] = await Promise.all([
+        noteKeyFor(file,info,sliceIndex,{signal:controller.signal}),
+        legacyV2NoteKeyFor(file,info,sliceIndex),
+      ]);
+      if (controller.signal.aborted || epoch !== this.backend.gen || this.store.get('file') !== file || this.store.get('sliceIndex') !== sliceIndex) return null;
+      const notes=new NoteStore(id,[legacyV2,legacyNoteKeyForSlice(file,info,sliceIndex)]);
+      this.notes=notes;
+      if (this.symbols && this.symbols !== EMPTY_INDEX) {
+        for (const entry of notes.nameEntries()) this.symbols.rename(entry.addr,entry.name);
+        this.viewer.setSymbols(this.symbols);
+        this.updateChrome();
+      }
+      document.dispatchEvent(new CustomEvent('hex:notes-attached',{detail:{sliceIndex}}));
+      return notes;
+    } catch (error) {
+      if (error?.name === 'AbortError' || error?.code === 'ABORT_ERR' || controller.signal.aborted) return null;
+      return null;
+    } finally {
+      if (this.noteAttachController === controller) this.noteAttachController=null;
+    }
+  }
+"""
+s=s[:open_start]+open_fn+s[open_end:]
+ss=s.index('  async selectSlice(index) {')
+se=s.index('\n  selectRegion(',ss)
+select="""  async selectSlice(index) {
+    const info=this.store.get('fileInfo');
+    if (!info || !info.slices[index] || info.slices[index].error) return;
+    this.noteAttachController?.abort();
+    this.backend.advanceEpoch();
+    this.forgetSemantics(true);
+    this.symbols=EMPTY_INDEX;
+    this.viewer.setSymbols(EMPTY_INDEX);
+    this.notes=EMPTY_NOTES;
+    const file=this.store.get('file');
+    const epoch=this.backend.gen;
+    this.applySlice(index,info);
+    void this.attachNotes(file,info,index,epoch);
+  }
+"""
+s=s[:ss]+select+s[se:]
+p.write_text(s)
