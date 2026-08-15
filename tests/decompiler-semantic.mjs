@@ -37,7 +37,7 @@ function make(lines, opts = {}) {
     fieldFor: (_base, off) => off === 0x20n ? { name: 'coins', type: 'int32' } : null,
   });
   assert.equal(r.semantic, true);
-  assert.match(r.pseudocode, /self->coins\s*\+=\s*a2/);
+  assert.match(r.pseudocode, /self->coins\s*\+=\s*(?:\(uint32_t\))?a2/);
   assert.ok(Array.isArray(r.evidence));
   assert.ok(r.summary);
 }
@@ -97,7 +97,7 @@ function make(lines, opts = {}) {
   assert.equal(r.semantic, true, r.warnings?.join('\n'));
   assert.equal(r.legacyFallback, undefined);
   assert.doesNotMatch(r.pseudocode, /\b(?:var_|local_phi|phi_)\w*/i, r.pseudocode);
-  assert.match(r.pseudocode, /self->hp\s*-=\s*a2\s*\*\s*self->damageRate/);
+  assert.match(r.pseudocode, /self->hp\s*-=\s*(?:\(uint32_t\))?a2\s*\*\s*self->damageRate/);
   assert.match(r.pseudocode, /if\s*\(\s*self->hp\s*<=\s*0\s*\)/);
   assert.doesNotMatch(r.pseudocode, /if\s*\([^\n]*self->hp\s*-\s*[^\n]*damageRate/, r.pseudocode);
   assert.doesNotMatch(r.pseudocode, /if\s*\([^\n]+\)\s*\{\s*\}\s*else/s, r.pseudocode);

@@ -30,9 +30,49 @@ const WORKER_PRELUDE = String.raw`
   let totalRpc = 0;
   let argumentUnits = 0;
   const waiting = new Map();
+  const nativePostMessage = globalThis.postMessage.bind(globalThis);
+  const OUTPUT_MAX_MESSAGES = 256;
+  const OUTPUT_MAX_BYTES = 256 * 1024;
+  const OUTPUT_MAX_PER_SECOND = 96;
+  let outputMessages = 0, outputBytes = 0, outputWindow = Date.now(), outputWindowCount = 0;
+  const outputSize = (value) => {
+    const seen = new Set(); const stack=[value]; let bytes=0, nodes=0;
+    while (stack.length && bytes <= OUTPUT_MAX_BYTES) {
+      const x=stack.pop(); if (++nodes > 4096) return OUTPUT_MAX_BYTES + 1;
+      if (x == null) { bytes+=4; continue; }
+      if (typeof x === 'string') { bytes += x.length * 2; continue; }
+      if (typeof x === 'number' || typeof x === 'bigint') { bytes+=16; continue; }
+      if (typeof x === 'boolean') { bytes+=4; continue; }
+      if (x instanceof ArrayBuffer) { bytes+=x.byteLength; continue; }
+      if (ArrayBuffer.isView(x)) { bytes+=x.byteLength; continue; }
+      if (typeof x === 'object') {
+        if (seen.has(x)) continue; seen.add(x);
+        const keys=Object.keys(x); bytes += keys.length * 8;
+        for (let i=0;i<keys.length && i<2048;i++) { bytes += keys[i].length*2; stack.push(x[keys[i]]); }
+      } else bytes+=32;
+    }
+    return bytes;
+  };
+  const outputLimit = (message) => {
+    const now=Date.now(); if (now-outputWindow >= 1000) { outputWindow=now; outputWindowCount=0; }
+    const bytes=outputSize(message);
+    outputMessages++; outputWindowCount++; outputBytes+=bytes;
+    return bytes > OUTPUT_MAX_BYTES || outputMessages > OUTPUT_MAX_MESSAGES || outputBytes > OUTPUT_MAX_BYTES || outputWindowCount > OUTPUT_MAX_PER_SECOND;
+  };
+  const sendOutput = (message) => {
+    if (outputLimit(message)) {
+      try { nativePostMessage({t:'outputLimit', error:'sandbox output budget exceeded'}); } catch {}
+      try { close(); } catch {}
+      return;
+    }
+    try { nativePostMessage(message); } catch {}
+  };
+  // Direct user postMessage is fire-and-forget output too; route it through the
+  // same budget instead of letting it bypass print().
+  try { Object.defineProperty(globalThis,'postMessage',{value:sendOutput,writable:false,configurable:false}); } catch {}
 
   const send = (message) => {
-    try { postMessage(message); }
+    try { nativePostMessage(message); }
     catch (err) {
       try { postMessage({ t: 'error', error: (err && err.message) || String(err) }); } catch {}
     }
@@ -110,7 +150,7 @@ const WORKER_PRELUDE = String.raw`
   });
 
   const hex = makeHex();
-  const print = (...args) => send({ t: 'print', args });
+  const print = (...args) => sendOutput({ t: 'print', args });
   const defs = [];
   const registrar = Object.freeze({ plugin(def) {
     if (!def || typeof def.run !== 'function') throw new Error('run（実行する処理）がありません。');
@@ -199,7 +239,11 @@ const FRAME = `<!doctype html><meta charset="utf-8">
       port.postMessage({ t: 'error', error: '安全な実行用Workerを作れませんでした: ' + ((err && err.message) || err) });
       return;
     }
-    worker.onmessage = (e) => port.postMessage(e.data || {});
+    worker.onmessage = (e) => {
+      const data=e.data || {};
+      if (data.t === 'outputLimit') { port.postMessage({t:'error',error:'出力が安全上限を超えたため停止しました。'}); stop(); return; }
+      port.postMessage(data);
+    };
     worker.onerror = (e) => {
       port.postMessage({ t: 'error', error: (e && e.message) || '実行用Workerでエラーが起きました。' });
       stop();
