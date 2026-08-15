@@ -57,7 +57,7 @@ jobs:
           node tools/fix-350-399-part13.mjs
           node tools/fix-350-399-part14.mjs
           node tools/fix-350-399-part15.mjs
-          rm tools/fix-350-399.mjs tools/fix-350-399-part2.mjs tools/fix-350-399-repair.mjs tools/fix-350-399-part3.mjs tools/fix-350-399-part4.mjs tools/fix-350-399-part5.mjs tools/fix-350-399-part6.mjs tools/fix-350-399-part7.mjs tools/fix-350-399-part8.mjs tools/fix-350-399-part9.mjs tools/fix-350-399-part10.mjs tools/fix-350-399-part11.mjs tools/fix-350-399-part12.mjs tools/fix-350-399-part13.mjs tools/fix-350-399-part14.mjs tools/fix-350-399-part15.mjs .github/workflows/apply-fix-350-399.yml
+          rm tools/fix-350-399.mjs tools/fix-350-399-part2.mjs tools/fix-350-399-repair.mjs tools/fix-350-399-part3.mjs tools/fix-350-399-part4.mjs tools/fix-350-399-part5.mjs tools/fix-350-399-part6.mjs tools/fix-350-399-part7.mjs tools/fix-350-399-part8.mjs tools/fix-350-399-part9.mjs tools/fix-350-399-part10.mjs tools/fix-350-399-part11.mjs tools/fix-350-399-part12.mjs tools/fix-350-399-part13.mjs tools/fix-350-399-part14.mjs tools/fix-350-399-part15.mjs
       - name: Syntax check changed modules
         run: |
           node --check js/ir-core.js
