@@ -1,15 +1,15 @@
 {
   "schema": 1,
   "baseline": {
-    "sourceCommit": "9c20307faf02a56326fdb888db455eb8917612e2",
+    "sourceCommit": "33a2d3311ffdaf1e0b0b9cda21d79f1a361eca0a",
     "capturedOn": "2026-08-16",
     "environment": { "ci": "ubuntu-latest", "node": "22", "binarySamplesPerTarget": 3 },
     "note": "Phase 0 reproducible baseline. Measurement-only branch changes do not alter production semantic/decompiler/architecture code.",
-    "sourceTree": "624d2ee019184d6fbdf306d6415ab92ac5c939fe",
+    "sourceTree": "5160ae16f21d0e62a428a1e193357189dd76e9f0",
     "measurementRuns": {
-      "accuracy": 31898222630,
-      "compilerTruthGhidra": 31898062912,
-      "binaryBenchmark": 31898004742
+      "accuracy": 31898972781,
+      "compilerTruthGhidra": 31898972790,
+      "binaryBenchmark": 31898972799
     }
   },
   "fixtures": {
