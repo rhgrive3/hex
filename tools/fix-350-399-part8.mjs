@@ -1,0 +1,12 @@
+import fs from 'node:fs';
+const path='js/decompiler/pipeline-core.js';
+let s=fs.readFileSync(path,'utf8');
+const a=`if (out?.kind === 'const') out = expr.constant(BigInt.asUintN(operandBits, out.value), operandBits, out.signed, out.source);`;
+const b=`if (out?.kind === 'const') out = expr.constant(BigInt.asUintN(operandBits, out.value), operandBits, false, out.source);`;
+if(!s.includes(a)) throw new Error('width-adjusted constant target missing');
+s=s.replace(a,b);
+const c=`if (b?.kind === 'const' && a?.bits && b.bits !== a.bits) b = expr.constant(BigInt.asUintN(Number(a.bits), b.value), Number(a.bits), b.signed, b.source);`;
+const d=`if (b?.kind === 'const' && a?.bits && b.bits !== a.bits) b = expr.constant(BigInt.asUintN(Number(a.bits), b.value), Number(a.bits), false, b.source);`;
+if(!s.includes(c)) throw new Error('compare constant target missing');
+s=s.replace(c,d);
+fs.writeFileSync(path,s);
