@@ -8,6 +8,12 @@ import { runInSandbox } from './sandbox.js';
 
 const STORE_KEY = 'hex.plugins';
 const MAX_SOURCE = 512 * 1024;
+let fallbackInstallSeq = 1;
+
+function newInstallId() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  return `install_${Date.now().toString(36)}_${(fallbackInstallSeq++).toString(36)}_${Math.random().toString(36).slice(2)}`;
+}
 
 export class PluginHost {
   constructor(app) {
@@ -22,36 +28,63 @@ export class PluginHost {
     if (!raw) return;
     try {
       const list = JSON.parse(raw);
+      if (!Array.isArray(list)) return;
+      const legacySeen = new Set();
       for (const p of list) {
         if (!p || typeof p.source !== 'string') continue;
-        await this.install(p.source, p.origin || '保存されたもの', { silent: true });
+        // v1 stored one copy of the same source for every definition discovered
+        // from that source. Deduplicate only those legacy rows; v2 has a stable
+        // installationId and intentionally permits installing equal source twice.
+        if (!p.installationId) {
+          const legacyKey = `${p.origin || ''}\u0000${p.source}`;
+          if (legacySeen.has(legacyKey)) continue;
+          legacySeen.add(legacyKey);
+        }
+        await this.install(p.source, p.origin || '保存されたもの', {
+          silent: true,
+          installationId: p.installationId || newInstallId(),
+          enabledIndexes: Array.isArray(p.enabledIndexes) ? p.enabledIndexes : null,
+        });
       }
     } catch { /* corrupted plugin storage is isolated */ }
   }
 
   save() {
-    const list = this.plugins.map((p) => ({ source: p.source, origin: p.origin }));
-    try { localStorage.setItem(STORE_KEY, JSON.stringify(list)); } catch { /* quota */ }
+    const groups = new Map();
+    for (const p of this.plugins) {
+      let row = groups.get(p.installationId);
+      if (!row) {
+        row = { v: 2, installationId: p.installationId, source: p.source, origin: p.origin, enabledIndexes: [] };
+        groups.set(p.installationId, row);
+      }
+      row.enabledIndexes.push(p.index);
+    }
+    const list = Array.from(groups.values());
+    try { localStorage.setItem(STORE_KEY, JSON.stringify(list)); return true; }
+    catch { return false; }
   }
 
-  async install(source, origin, opts) {
+  async install(source, origin, opts = {}) {
     if (typeof source !== 'string' || !source.trim()) return { error: '中身が空です。' };
     if (source.length > MAX_SOURCE) return { error: 'プラグインが大きすぎます（512 KB まで）。' };
     const discovered = await runInSandbox({
       source, mode: 'discover', api: Object.create(null), out: () => {}, timeout: 10000,
     });
     if (discovered.error) return { error: '読み込めませんでした: ' + discovered.error };
+    const installationId = String(opts.installationId || newInstallId());
+    const enabled = Array.isArray(opts.enabledIndexes) ? new Set(opts.enabledIndexes.map(Number)) : null;
     const added = (discovered.value || []).map((def, index) => ({
-      id: 'p' + (this.plugins.length + index + 1),
+      id: `${installationId}:${index}`,
+      installationId,
       name: def.name,
       description: def.description,
       index,
       source,
       origin: origin || '不明',
-    }));
-    if (!added.length) return { error: 'プラグインが 1 つも登録されませんでした（hex.plugin({…}) を呼んでください）。' };
+    })).filter((plugin) => !enabled || enabled.has(plugin.index));
+    if (!added.length && !enabled) return { error: 'プラグインが 1 つも登録されませんでした（hex.plugin({…}) を呼んでください）。' };
     this.plugins.push(...added);
-    if (!opts || !opts.silent) this.save();
+    if (!opts.silent) this.save();
     return { ok: true, added };
   }
 
@@ -68,7 +101,11 @@ export class PluginHost {
     return { ok: true, source: text, origin: url, needsConfirmation: true };
   }
 
-  remove(id) { this.plugins = this.plugins.filter((p) => p.id !== id); this.save(); }
+  remove(id) {
+    const before = this.plugins.length;
+    this.plugins = this.plugins.filter((p) => p.id !== id);
+    if (this.plugins.length !== before) this.save();
+  }
   clear() { this.plugins = []; this.save(); }
 
   async run(id, out) {
