@@ -1,4 +1,6 @@
 import { coarseTokens, compareFingerprints, fingerprintFunction, fingerprintFunctionFast } from '../fingerprint/index.js';
+import { maximumWeightCandidateMatchingBounded, solveCandidateMatching } from './bounded-matching.js';
+import { createMatchBudget } from './match-budget.js';
 
 export class FunctionMatchIndex {
   constructor(functions = [], options = {}) {
@@ -51,90 +53,9 @@ function neighborBonus(a, b, anchors) {
   return possible ? Math.min(0.08, 0.08 * hits / possible) : 0;
 }
 
-// Candidates above the recognition threshold form small bipartite ambiguity
-// components in practice. Solve each component as an exact maximum-weight
-// matching rather than greedily consuming the highest edge. The sparse
-// successive-shortest-augmenting-path formulation avoids allocating a dense
-// N×N matrix for large binaries while still finding the global optimum inside
-// every connected ambiguity component.
-function candidateComponents(candidates) {
-  const left = new Map(), right = new Map();
-  for (const c of candidates) {
-    let a = left.get(c.i); if (!a) left.set(c.i, a = []); a.push(c);
-    let b = right.get(c.j); if (!b) right.set(c.j, b = []); b.push(c);
-  }
-  const seenLeft = new Set(), seenRight = new Set(), components = [];
-  for (const start of [...left.keys()].sort((a,b)=>a-b)) {
-    if (seenLeft.has(start)) continue;
-    const queue = [{ side:'left', id:start }], edges = new Set();
-    seenLeft.add(start);
-    for (let q = 0; q < queue.length; q++) {
-      const node = queue[q];
-      const list = node.side === 'left' ? left.get(node.id) || [] : right.get(node.id) || [];
-      for (const c of list) {
-        edges.add(c);
-        if (!seenLeft.has(c.i)) { seenLeft.add(c.i); queue.push({ side:'left', id:c.i }); }
-        if (!seenRight.has(c.j)) { seenRight.add(c.j); queue.push({ side:'right', id:c.j }); }
-      }
-    }
-    components.push([...edges].sort((a,b)=>a.i-b.i || a.j-b.j));
-  }
-  return components;
-}
-
-function maximumWeightComponent(candidates) {
-  const leftIds = [...new Set(candidates.map((c)=>c.i))].sort((a,b)=>a-b);
-  const rightIds = [...new Set(candidates.map((c)=>c.j))].sort((a,b)=>a-b);
-  const leftIndex = new Map(leftIds.map((id,k)=>[id,k]));
-  const rightIndex = new Map(rightIds.map((id,k)=>[id,k]));
-  const source = 0, leftBase = 1, rightBase = leftBase + leftIds.length, sink = rightBase + rightIds.length;
-  const graph = Array.from({length:sink+1},()=>[]);
-  const addEdge = (from,to,capacity,cost,candidate=null) => {
-    const forward = { to, rev:graph[to].length, capacity, cost, candidate, candidateForward:!!candidate };
-    const reverse = { to:from, rev:graph[from].length, capacity:0, cost:-cost, candidate:null, candidateForward:false };
-    graph[from].push(forward); graph[to].push(reverse);
-    return forward;
-  };
-  for (let k=0;k<leftIds.length;k++) addEdge(source,leftBase+k,1,0);
-  for (let k=0;k<rightIds.length;k++) addEdge(rightBase+k,sink,1,0);
-  const candidateEdges = [];
-  for (const c of candidates) {
-    const edge = addEdge(leftBase+leftIndex.get(c.i), rightBase+rightIndex.get(c.j), 1, -Number(c.confidence), c);
-    candidateEdges.push(edge);
-  }
-
-  // SPFA is used deliberately here: forward candidate edges have negative
-  // costs, while reverse edges created by an earlier assignment are positive.
-  // Components are sparse (bounded by candidate generation), so this keeps the
-  // solver exact without a dense cost matrix.
-  const EPS = 1e-12;
-  while (true) {
-    const dist = Array(graph.length).fill(Infinity), prevNode = Array(graph.length).fill(-1), prevEdge = Array(graph.length).fill(-1), inQueue = Array(graph.length).fill(false);
-    const queue = [source]; dist[source]=0; inQueue[source]=true;
-    for (let head=0; head<queue.length; head++) {
-      const u=queue[head]; inQueue[u]=false;
-      for (let ei=0; ei<graph[u].length; ei++) {
-        const edge=graph[u][ei]; if (edge.capacity<=0) continue;
-        const nd=dist[u]+edge.cost;
-        if (nd + EPS < dist[edge.to]) {
-          dist[edge.to]=nd; prevNode[edge.to]=u; prevEdge[edge.to]=ei;
-          if (!inQueue[edge.to]) { inQueue[edge.to]=true; queue.push(edge.to); }
-        }
-      }
-    }
-    if (!Number.isFinite(dist[sink]) || dist[sink] >= -EPS) break;
-    for (let v=sink; v!==source; v=prevNode[v]) {
-      const u=prevNode[v], edge=graph[u][prevEdge[v]];
-      edge.capacity--; graph[v][edge.rev].capacity++;
-    }
-  }
-  return candidateEdges.filter((edge)=>edge.capacity===0).map((edge)=>edge.candidate);
-}
-
-export function maximumWeightCandidateMatching(candidates = []) {
-  const selected = [];
-  for (const component of candidateComponents(candidates)) selected.push(...maximumWeightComponent(component));
-  return selected.sort((a,b)=>a.i-b.i || a.j-b.j);
+// Exact ambiguity solving is implemented only in bounded-matching.js.
+export function maximumWeightCandidateMatching(candidates = [], options = {}) {
+  return maximumWeightCandidateMatchingBounded(candidates, options);
 }
 
 export function matchFunctions(beforeFunctions, afterFunctions, options = {}) {
@@ -144,15 +65,33 @@ export function matchFunctions(beforeFunctions, afterFunctions, options = {}) {
   const index = new FunctionMatchIndex(after, { mode: fastMode ? 'fast' : 'full' });
   const threshold = options.threshold ?? 0.62;
   const ambiguityWindow = options.ambiguityWindow ?? 0.035;
+  const budget = createMatchBudget(options.matchBudget || {});
   const all = [];
+  candidateGeneration:
   for (let i = 0; i < before.length; i++) {
     const candidateIds = index.candidates(before[i], options);
     for (const j of candidateIds) {
+      if (!budget.candidate()) break candidateGeneration;
       const cmp = compareFingerprints(before[i], after[j]);
       if (cmp.confidence < threshold || cmp.identity === 'unrelated') continue;
       if (options.isRejected?.(before[i], after[j])) continue;
+      if (!budget.edge()) break candidateGeneration;
       all.push({ i, j, ...cmp, baseConfidence: cmp.confidence });
     }
+  }
+  if (!budget.candidateGraphIncomplete) budget.checkCandidateWall();
+  if (budget.candidateGraphIncomplete) {
+    const matchingBudget = budget.snapshot();
+    return {
+      matches: [], deleted: before.slice(), new: after.slice(),
+      candidatesEvaluated: all.length, candidateComparisons: matchingBudget.candidateEvaluations,
+      indexBuckets: index.buckets.size, truncated: true, ambiguous: true,
+      matching: {
+        truncated: true, candidateGraphIncomplete: true,
+        ambiguousBefore: before.length, ambiguousAfter: after.length,
+        truncatedComponents: [], budget: matchingBudget,
+      },
+    };
   }
   // Anchor only unique, very strong matches before contextual refinement.
   // Ambiguous strong candidates are deliberately excluded to prevent graph feedback loops.
@@ -189,7 +128,8 @@ export function matchFunctions(beforeFunctions, afterFunctions, options = {}) {
   for (const c of eligible) { let list=eligibleByBefore.get(c.i); if (!list) eligibleByBefore.set(c.i,list=[]); list.push(c); }
   for (const list of eligibleByBefore.values()) list.sort((a,b)=>b.confidence-a.confidence || b.baseConfidence-a.baseConfidence || a.j-b.j);
 
-  const selected = maximumWeightCandidateMatching(eligible);
+  const solved = solveCandidateMatching(eligible, budget);
+  const selected = solved.selected;
   const usedBefore = new Set(), usedAfter = new Set(), matches = [];
   for (const c of selected) {
     // Ambiguity is evidence about the original candidate distribution, not a
@@ -208,7 +148,26 @@ export function matchFunctions(beforeFunctions, afterFunctions, options = {}) {
   });
   const deleted = before.filter((_x, i) => !usedBefore.has(i));
   const added = after.filter((_x, i) => !usedAfter.has(i));
-  return { matches, deleted, new: added, candidatesEvaluated: all.length, indexBuckets: index.buckets.size };
+  const matchingBudget = budget.snapshot();
+  const truncatedComponents = solved.truncatedComponents.slice(0, 32);
+  const truncated = matchingBudget.truncated || solved.truncatedComponents.length > 0;
+  return {
+    matches, deleted, new: added,
+    candidatesEvaluated: all.length,
+    candidateComparisons: matchingBudget.candidateEvaluations,
+    indexBuckets: index.buckets.size,
+    truncated,
+    ambiguous: truncated,
+    matching: {
+      truncated,
+      candidateGraphIncomplete: false,
+      ambiguousBefore: solved.ambiguousLeft.size,
+      ambiguousAfter: solved.ambiguousRight.size,
+      truncatedComponents,
+      omittedTruncatedComponents: Math.max(0, solved.truncatedComponents.length - truncatedComponents.length),
+      budget: matchingBudget,
+    },
+  };
 }
 
 export function matchFunctionsFast(beforeFunctions, afterFunctions, options = {}) {
