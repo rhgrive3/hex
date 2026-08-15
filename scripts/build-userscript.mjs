@@ -1,16 +1,25 @@
 import { build } from 'esbuild';
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
-import { dirname, relative, resolve } from 'node:path';
+import { dirname, posix, relative, resolve } from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const output = resolve(root, 'userscript/hex.user.template.js');
+const platformWorkerOutput = resolve(root, 'userscript/platform-worker.bundle.js');
 const ORIGIN_TOKEN = '__HEX_ORIGIN__';
+const CLASSIC_ENTRIES = [
+  'js/worker.js',
+  'js/platform/capstone-probe-worker.js',
+  'js/platform/capstone-disasm-worker.js',
+];
 
-const [html, appCss, uxCss] = await Promise.all([
+const [html, appCss, uxCss, classicManifest, platformWorker] = await Promise.all([
   readFile(resolve(root, 'index.html'), 'utf8'),
   readFile(resolve(root, 'css/app.css'), 'utf8'),
   readFile(resolve(root, 'css/ux.css'), 'utf8'),
+  collectClassicManifest(CLASSIC_ENTRIES),
+  buildPlatformWorker(),
 ]);
 
 const bodyMatch = html.match(/<body\b[^>]*>([\s\S]*?)<\/body>/i);
@@ -19,8 +28,15 @@ const body = bodyMatch[1]
   .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
   .trim();
 
+const workerManifest = {
+  classicEntries: CLASSIC_ENTRIES,
+  classicAssets: classicManifest.assets,
+  classicDependencies: classicManifest.dependencies,
+  moduleBundles: { 'js/platform/worker.js': 'userscript/platform-worker.bundle.js' },
+  wasm: 'capstone.wasm',
+};
 const css = scopeCss(`${appCss}\n${uxCss}\n${userscriptCss()}`);
-const banner = hostBootstrap(body, css);
+const banner = hostBootstrap(body, css, workerManifest);
 
 const result = await build({
   absWorkingDir: root,
@@ -41,21 +57,86 @@ const result = await build({
 const js = result.outputFiles?.[0]?.text;
 if (!js) throw new Error('esbuild did not produce a JavaScript bundle.');
 
+const version = userscriptVersion();
 const metadata = `// ==UserScript==\n` +
   `// @name         Hex for ChatGPT\n` +
   `// @namespace    https://github.com/rhgrive3/hex\n` +
-  `// @version      1.0.0\n` +
+  `// @version      ${version}\n` +
   `// @description  Run the Hex binary analysis workbench on ChatGPT Web.\n` +
   `// @match        https://chatgpt.com/*\n` +
   `// @run-at       document-idle\n` +
-  `// @grant        none\n` +
-  `// @updateURL    ${ORIGIN_TOKEN}/hex.user.js\n` +
+  `// @inject-into  content\n` +
+  `// @grant        GM.xmlHttpRequest\n` +
+  `// @updateURL    ${ORIGIN_TOKEN}/hex.meta.js\n` +
   `// @downloadURL  ${ORIGIN_TOKEN}/hex.user.js\n` +
   `// ==/UserScript==\n\n`;
 
 await mkdir(dirname(output), { recursive: true });
-await writeFile(output, metadata + js, 'utf8');
+await Promise.all([
+  writeFile(output, metadata + js, 'utf8'),
+  writeFile(platformWorkerOutput, platformWorker, 'utf8'),
+]);
 console.log(`built ${relative(root, output)} (${Buffer.byteLength(metadata + js)} bytes)`);
+console.log(`built ${relative(root, platformWorkerOutput)} (${Buffer.byteLength(platformWorker)} bytes)`);
+
+async function buildPlatformWorker() {
+  const result = await build({
+    absWorkingDir: root,
+    entryPoints: ['js/platform/worker.js'],
+    bundle: true,
+    write: false,
+    format: 'iife',
+    platform: 'browser',
+    target: ['safari17.4'],
+    charset: 'utf8',
+    legalComments: 'none',
+    minify: false,
+    sourcemap: false,
+  });
+  const source = result.outputFiles?.[0]?.text;
+  if (!source) throw new Error('esbuild did not produce the platform worker bundle.');
+  return source;
+}
+
+async function collectClassicManifest(entries) {
+  const dependencies = {};
+  const seen = new Set();
+
+  const visit = async (path) => {
+    path = normalizeRepoPath(path);
+    if (seen.has(path)) return;
+    seen.add(path);
+    const source = await readFile(resolve(root, path), 'utf8');
+    const deps = parseImportScripts(source, path);
+    dependencies[path] = deps;
+    for (const dependency of deps) await visit(dependency);
+  };
+
+  for (const entry of entries) await visit(entry);
+  return { assets: [...seen], dependencies };
+}
+
+function parseImportScripts(source, sourcePath) {
+  const out = [];
+  for (const call of source.matchAll(/\bimportScripts\s*\(([^;]*?)\)\s*;/gs)) {
+    const args = call[1];
+    for (const literal of args.matchAll(/(['"])([^'"]+)\1/g)) {
+      const specifier = literal[2];
+      if (/^[a-zA-Z][a-zA-Z\d+.-]*:/.test(specifier) || specifier.startsWith('//')) {
+        throw new Error(`External importScripts dependency is not supported in userscript workers: ${specifier}`);
+      }
+      const resolved = normalizeRepoPath(posix.join(posix.dirname(sourcePath), specifier));
+      if (!out.includes(resolved)) out.push(resolved);
+    }
+  }
+  return out;
+}
+
+function normalizeRepoPath(path) {
+  const normalized = posix.normalize(String(path).replaceAll('\\', '/')).replace(/^\.\//, '').replace(/^\//, '');
+  if (!normalized || normalized === '..' || normalized.startsWith('../')) throw new Error(`Worker asset escapes repository root: ${path}`);
+  return normalized;
+}
 
 function remoteImportMetaPlugin() {
   return {
@@ -118,13 +199,12 @@ function userscriptCss() {
 `;
 }
 
-function hostBootstrap(bodyHtml, scopedCss) {
-  const workerBridge = `(${installHexWorkerBridgeRuntime.toString()})(HEX_ORIGIN);`;
+function hostBootstrap(bodyHtml, scopedCss, workerManifest) {
   return `(function(){\n` +
     `  if (location.hostname !== 'chatgpt.com') return;\n` +
     `  const HEX_ORIGIN = ${JSON.stringify(ORIGIN_TOKEN)};\n` +
     `  globalThis.__HEX_API_BASE__ = HEX_ORIGIN;\n` +
-    `  ${workerBridge}\n` +
+    `  globalThis.__HEX_WORKER_MANIFEST__ = ${JSON.stringify(workerManifest)};\n` +
     `  if (!document.getElementById('hex-userscript-host')) {\n` +
     `    const host = document.createElement('div');\n` +
     `    host.id = 'hex-userscript-host';\n` +
@@ -140,43 +220,10 @@ function hostBootstrap(bodyHtml, scopedCss) {
     `})();`;
 }
 
-/* This function is stringified into the userscript banner. Keep it standalone:
-   it intentionally has no closure dependencies. */
-function installHexWorkerBridgeRuntime(origin) {
-  const NativeWorker = globalThis.Worker;
-  const NativeURL = globalThis.URL;
-  if (!NativeWorker || NativeWorker.__hexWrapped) return;
-
-  function workerBootstrap(remote, moduleWorker) {
-    const setup = `
-const __hexRemote = ${JSON.stringify(remote)};
-const __HexNativeURL = globalThis.URL;
-globalThis.URL = class HexRemoteURL extends __HexNativeURL {
-  constructor(path, base) {
-    let resolvedBase = base;
-    if (typeof resolvedBase === 'string' && resolvedBase.startsWith('blob:') && typeof path === 'string') resolvedBase = __hexRemote;
-    super(path, resolvedBase);
-  }
-};`;
-    if (moduleWorker) return `${setup}\nimport(${JSON.stringify(remote)});`;
-    return `${setup}
-const __hexImportScripts = globalThis.importScripts.bind(globalThis);
-globalThis.importScripts = (...urls) => __hexImportScripts(...urls.map((value) => new __HexNativeURL(String(value), __hexRemote).href));
-__hexImportScripts(${JSON.stringify(remote)});`;
-  }
-
-  function HexWorker(url, options) {
-    const href = new NativeURL(String(url), location.href).href;
-    const prefix = origin + '/userscript-assets/';
-    if (!href.startsWith(prefix)) return new NativeWorker(url, options);
-    const bootstrap = workerBootstrap(href, !!(options && options.type === 'module'));
-    const blobUrl = NativeURL.createObjectURL(new Blob([bootstrap], { type: 'text/javascript' }));
-    try { return new NativeWorker(blobUrl, options); }
-    finally { setTimeout(() => NativeURL.revokeObjectURL(blobUrl), 1000); }
-  }
-
-  HexWorker.prototype = NativeWorker.prototype;
-  Object.setPrototypeOf(HexWorker, NativeWorker);
-  Object.defineProperty(HexWorker, '__hexWrapped', { value: true });
-  globalThis.Worker = HexWorker;
+function userscriptVersion() {
+  try {
+    const stamp = execFileSync('git', ['show', '-s', '--format=%ct', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
+    if (/^\d+$/.test(stamp)) return `1.0.${stamp}`;
+  } catch { /* deterministic fallback for source archives */ }
+  return '1.0.0';
 }
