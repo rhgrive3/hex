@@ -14,7 +14,9 @@ jobs:
         with:
           fetch-depth: 0
       - name: Apply fix
-        run: python tools/apply-issue-572.py
+        run: |
+          python tools/apply-issue-572.py
+          python tools/apply-issue-572-source-compat.py
       - name: Syntax
         run: |
           node --check js/binary/reader.js
@@ -37,6 +39,6 @@ jobs:
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add js/binary/reader.js js/binary/macho.js js/binary/macho-dyld.js js/binary/elf-unwind.js tests/issue-572-bounded-leb.mjs
           git commit -m "fix: bound metadata LEB decoding to logical substreams (#572)"
-          git rm -f .github/workflows/fix-app-product-remaining.yml tools/apply-issue-572.py
+          git rm -f .github/workflows/fix-app-product-remaining.yml tools/apply-issue-572.py tools/apply-issue-572-source-compat.py
           git commit -m "chore: finalize issue 572"
           git push origin HEAD:fix/issue-572-bounded-leb-current
