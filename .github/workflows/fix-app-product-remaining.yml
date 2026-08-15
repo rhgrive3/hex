@@ -14,7 +14,9 @@ jobs:
         with:
           fetch-depth: 0
       - name: Apply canonical metadata budget
-        run: python tools/apply-issue-570-v3.py
+        run: |
+          sed -i 's/function normalizeSpecialDylibOrdinal/function rawCString/' tools/apply-issue-570-v3.py
+          python tools/apply-issue-570-v3.py
       - name: Apply product truth and supplemental budgets
         run: python tools/apply-issues-521-527.py
       - name: Syntax
