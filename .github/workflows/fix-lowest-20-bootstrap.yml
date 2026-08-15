@@ -66,14 +66,24 @@ jobs:
             exit "$code"
           fi
       - name: Semantic suite
-        run: npm run semantic:test
+        shell: bash
+        run: |
+          set +e
+          npm run semantic:test > semantic.log 2>&1
+          code=$?
+          cat semantic.log
+          if [ "$code" -ne 0 ]; then
+            message=$(tail -c 5000 semantic.log | head -c 4200 | tr '\n' ' ' | sed 's/%/%25/g; s/\r/%0D/g')
+            echo "::error title=Semantic regression::$message"
+            exit "$code"
+          fi
       - name: Decompiler suite
         run: npm run decompiler:test
       - name: Full tests
         run: npm test
       - name: Commit verified changes
         run: |
-          rm -f .github/workflows/fix-lowest-20-bootstrap.yml .github/scripts/fix-lowest-20.py .github/scripts/complete-lowest-20.py .github/retrigger-lowest-20 patch.log batch.log
+          rm -f .github/workflows/fix-lowest-20-bootstrap.yml .github/scripts/fix-lowest-20.py .github/scripts/complete-lowest-20.py .github/retrigger-lowest-20 patch.log batch.log semantic.log
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
