@@ -7,9 +7,24 @@ function provenance(source, confidence = 1) {
 function statusReasons(value, prefix, out) {
   if (!value || typeof value !== 'object') return;
   if (value.complete === false) out.push(`${prefix}:incomplete`);
+  if (value.importsComplete === false) out.push(`${prefix}:imports-incomplete`);
+  if (value.symbolsComplete === false) out.push(`${prefix}:symbols-incomplete`);
   if (value.bindingSitesComplete === false) out.push(`${prefix}:binding-sites-incomplete`);
-  if (value.partialReason) out.push(`${prefix}:${value.partialReason}`);
-  for (const reason of value.reasons || value.bindingSiteReasons || []) out.push(`${prefix}:${reason}`);
+  for (const reason of [value.partialReason, value.importsPartialReason, value.symbolsPartialReason, value.bindingSitesPartialReason]) {
+    if (reason) out.push(`${prefix}:${reason}`);
+  }
+  for (const reason of value.reasons || []) out.push(`${prefix}:${reason}`);
+  for (const reason of value.bindingSiteReasons || []) out.push(`${prefix}:${reason}`);
+}
+
+function dyldBindingReasons(value, out) {
+  if (!value || typeof value !== 'object') return;
+  statusReasons(value, 'dyld-bindings', out);
+  const streams = value.streams && typeof value.streams === 'object' ? value.streams : value;
+  for (const [kind, status] of Object.entries(streams)) {
+    if (kind === 'complete' || kind === 'streams') continue;
+    statusReasons(status, `dyld-${kind}`, out);
+  }
 }
 
 export function machoSymbolTruth(image) {
@@ -19,9 +34,7 @@ export function machoSymbolTruth(image) {
   statusReasons(metadata.machoMetadata, 'metadata-budget', reasons);
   statusReasons(metadata.chainedFixups, 'chained-fixups', reasons);
   statusReasons(metadata.exportTrie, 'export-trie', reasons);
-  if (metadata.dyldBindings && typeof metadata.dyldBindings === 'object') {
-    for (const [kind, status] of Object.entries(metadata.dyldBindings)) statusReasons(status, `dyld-${kind}`, reasons);
-  }
+  dyldBindingReasons(metadata.dyldBindings, reasons);
   const unique = [...new Set(reasons)].slice(0, 64);
   return {
     source: 'BinaryImage', normalized: true, complete: unique.length === 0, reasons: unique,

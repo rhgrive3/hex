@@ -230,10 +230,12 @@ function hostBootstrap(bodyHtml, scopedCss, workerManifest) {
 
 function userscriptVersion() {
   try {
-    /* Only changes that can alter the installed userscript affect @version.
-       Workflow/test/docs commits therefore cannot create false bundle drift. */
+    /* Only non-merge source commits affect @version. A merge commit changes
+       repository history but not the already-built source tree; counting it
+       would make a green PR bundle stale immediately after merging to main.
+       Workflow/test/docs commits likewise cannot create false bundle drift. */
     const stamp = execFileSync('git', [
-      'log', '-1', '--format=%ct', '--',
+      'log', '--no-merges', '-1', '--format=%ct', '--',
       'index.html',
       'css',
       'js',
