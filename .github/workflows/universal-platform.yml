@@ -20,8 +20,8 @@ jobs:
         with:
           node-version: 22
       - run: npm run check
-      - name: Fetch pinned Mach-O fixture
-        run: node tools/fetch-large-fixtures.mjs battlecats
+      - name: Fetch pinned real Mach-O fixtures
+        run: node tools/fetch-large-fixtures.mjs
       - run: npm run binary:test
       - run: npm run binary:gate
 
