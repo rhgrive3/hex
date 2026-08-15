@@ -96,7 +96,9 @@ assert.equal(validateRuntimeBootstrap({ ...bootstrapInput, buildId: 'wrong-build
 const signingKey = fromB64(build.signingKey), now = Date.now();
 const sessionToken = await signRuntimeSession({ v: 1, sid: 'session-valid', bid: build.manifest.buildId, rid: 'request-valid', exp: Math.floor(now / 1000) + 60 }, signingKey);
 assert.equal((await verifyRuntimeSession(sessionToken, signingKey, { now })).sid, 'session-valid');
-assert.equal(await verifyRuntimeSession(sessionToken.slice(0, -1) + (sessionToken.endsWith('A') ? 'B' : 'A'), signingKey, { now }), null);
+const [payloadPart, signaturePart] = sessionToken.split('.');
+const tamperedSignature = `${signaturePart[0] === 'A' ? 'B' : 'A'}${signaturePart.slice(1)}`;
+assert.equal(await verifyRuntimeSession(`${payloadPart}.${tamperedSignature}`, signingKey, { now }), null);
 const expired = await signRuntimeSession({ v: 1, sid: 'session-expired', bid: build.manifest.buildId, rid: 'request-expired', exp: Math.floor(now / 1000) - 1 }, signingKey);
 assert.equal(await verifyRuntimeSession(expired, signingKey, { now }), null);
 assert.equal(publicRuntimeManifest(build.manifest).assetPath, undefined);
