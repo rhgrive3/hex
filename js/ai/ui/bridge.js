@@ -17,6 +17,7 @@ async function loadCoreRuntime(localContext) {
 export function createAiEngine(app, options = {}) {
   const localContext = createHexAIContext(app);
   exposeStableIdentityInputs(localContext, app);
+  exposeRuntimeSessionBinding(localContext);
   const local = createLocalEngine(app, localContext);
   const loadCore = options.loadCore || loadCoreRuntime;
   let corePromise = null, core = null, sessionId = null;
@@ -83,6 +84,43 @@ function exposeStableIdentityInputs(context, app) {
   define('sliceIndex', () => app.store?.get?.('sliceIndex') ?? null);
   define('architecture', () => app.store?.get?.('architecture') || app.store?.get?.('capability')?.architecture || null);
   define('fileInfo', () => app.store?.get?.('fileInfo') || null);
+}
+
+function exposeRuntimeSessionBinding(context) {
+  if (!context?.runtime || typeof context.runtime !== 'object') return;
+  const state = { binaryId: null, known: false, sessionId: null };
+  const originalPlatform = typeof context.runtime.platform === 'function' ? context.runtime.platform.bind(context.runtime) : null;
+  const originalVerify = typeof context.runtime.verifyHypothesis === 'function' ? context.runtime.verifyHypothesis.bind(context.runtime) : null;
+  const currentBinaryId = () => context.binaryId == null ? null : String(context.binaryId);
+  const capture = (platform) => {
+    state.binaryId = currentBinaryId();
+    state.known = true;
+    state.sessionId = platform?.sessions?.current?.id == null ? null : String(platform.sessions.current.id);
+    return platform;
+  };
+  const sameBinary = () => state.binaryId != null && state.binaryId === currentBinaryId();
+
+  if (originalPlatform) {
+    context.runtime.platform = async (...args) => capture(await originalPlatform(...args));
+  }
+  if (originalVerify && originalPlatform) {
+    context.runtime.verifyHypothesis = async (...args) => {
+      try { return await originalVerify(...args); }
+      finally {
+        // verifyHypothesis can lazily create the RuntimeAnalysisPlatform. Read
+        // back the already-created platform so the next user turn can bind to
+        // its concrete session ID without reaching into js/runtime internals.
+        try { capture(await originalPlatform()); } catch { /* runtime remains unknown */ }
+      }
+    };
+  }
+
+  const define = (name, get) => {
+    if (Object.prototype.hasOwnProperty.call(context, name)) return;
+    try { Object.defineProperty(context, name, { enumerable: true, configurable: false, get }); } catch { /* optional */ }
+  };
+  define('runtimeSessionId', () => sameBinary() ? state.sessionId : null);
+  define('runtimeSessionKnown', () => sameBinary() ? state.known : false);
 }
 
 function isSessionBindingMismatch(error) {
