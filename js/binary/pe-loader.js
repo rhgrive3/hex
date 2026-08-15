@@ -1,7 +1,32 @@
 import { functionSeed } from './model.js';
 
+function mappedFileRangeForRva(image, rva) {
+  if (!Number.isInteger(rva) || rva <= 0) return null;
+  const address = image.imageBase + BigInt(rva);
+  const owners = [...(image.sections || []), ...(image.segments || [])];
+  for (const owner of owners) {
+    if (!owner || owner.address == null || owner.fileOffset == null || owner.fileSize == null) continue;
+    const fileSize = BigInt(owner.fileSize);
+    if (fileSize <= 0n || address < owner.address || address >= owner.address + fileSize) continue;
+    const delta = address - owner.address;
+    const start = BigInt(owner.fileOffset) + delta;
+    const end = BigInt(owner.fileOffset) + fileSize;
+    if (start > BigInt(Number.MAX_SAFE_INTEGER) || end > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+    return { start: Number(start), end: Number(end), owner };
+  }
+  return null;
+}
+
+function markImportPartial(image, message) {
+  image.metadata.peImports ||= { complete: true, truncatedTables: 0 };
+  image.metadata.peImports.complete = false;
+  image.metadata.peImports.truncatedTables++;
+  image.warnings.push(message);
+}
+
 export function parseImports(r, dir, image) {
   if (!dir || !dir.rva || !dir.size) return;
+  image.metadata.peImports ||= { complete: true, truncatedTables: 0 };
   let off = rvaToOffset(image, dir.rva);
   if (off == null) return;
   const end = Math.min(r.length, off + dir.size);
@@ -17,27 +42,45 @@ export function parseImports(r, dir, image) {
     if (nameOff == null) continue;
     const library = r.cstring(nameOff, Math.min(1 << 16, r.length - nameOff));
     if (library) image.libraries.push(library);
-    let thunkRva = originalFirstThunk || firstThunk;
-    let thunkOff = rvaToOffset(image, thunkRva);
-    if (thunkOff == null) continue;
-    for (let index = 0; index < 100000; index++, thunkOff += ptrSize, thunkRva += ptrSize) {
-      if (thunkOff + ptrSize > r.length) break;
+    const thunkRva = originalFirstThunk || firstThunk;
+    const thunkRange = mappedFileRangeForRva(image, thunkRva);
+    const iatRange = mappedFileRangeForRva(image, firstThunk);
+    if (!thunkRange || !iatRange) {
+      markImportPartial(image, `PE import thunk table for ${library || '<unknown>'} is not fully file-backed`);
+      continue;
+    }
+    let terminated = false;
+    let index = 0;
+    for (; index < 100000; index++) {
+      const thunkOff = thunkRange.start + index * ptrSize;
+      const iatOff = iatRange.start + index * ptrSize;
+      if (thunkOff + ptrSize > thunkRange.end || thunkOff + ptrSize > r.length || iatOff + ptrSize > iatRange.end || iatOff + ptrSize > r.length) break;
       const raw = image.bits === 64 ? r.u64(thunkOff) : BigInt(r.u32(thunkOff));
-      if (raw === 0n) break;
+      if (raw === 0n) { terminated = true; break; }
       const ordinalMask = image.bits === 64 ? 0x8000000000000000n : 0x80000000n;
       let name = null, ordinal = null, hint = null;
       if (raw & ordinalMask) ordinal = Number(raw & 0xffffn);
       else {
-        const ibnRva = Number(raw & (image.bits === 64 ? 0x7fffffffffffffffn : 0x7fffffffn));
+        const ibnRaw = raw & (image.bits === 64 ? 0x7fffffffffffffffn : 0x7fffffffn);
+        if (ibnRaw > 0xffffffffn) {
+          markImportPartial(image, `Ignored PE import thunk with out-of-range name RVA for ${library || '<unknown>'}`);
+          continue;
+        }
+        const ibnRva = Number(ibnRaw);
         const ibnOff = rvaToOffset(image, ibnRva);
         if (ibnOff != null && ibnOff + 2 < r.length) {
           hint = r.u16(ibnOff);
           name = r.cstring(ibnOff + 2, Math.min(1 << 16, r.length - ibnOff - 2));
         }
+        if (!name) {
+          markImportPartial(image, `Ignored malformed PE import thunk for ${library || '<unknown>'}`);
+          continue;
+        }
       }
       const iatAddress = image.imageBase + BigInt(firstThunk + index * ptrSize);
-      image.imports.push({ name: name || `#${ordinal}`, library, ordinal, hint, source: 'PE-import', sites: [{ address: iatAddress, offset: image.addressToOffset(iatAddress), kind: 'iat' }] });
+      image.imports.push({ name: name || `#${ordinal}`, library, ordinal, hint, source: 'PE-import', sites: [{ address: iatAddress, offset: BigInt(iatOff), kind: 'iat' }] });
     }
+    if (!terminated) markImportPartial(image, `PE import thunk table for ${library || '<unknown>'} reached its mapped file boundary without a NUL terminator`);
   }
 }
 
