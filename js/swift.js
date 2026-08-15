@@ -59,28 +59,64 @@ function sectionRange(sections, wanted) {
   return null;
 }
 
-/** A deliberately small built-in demangler for human labels. */
+/**
+ * A deliberately small built-in demangler for human labels. It is strict about
+ * the grammar it does not understand: partial components are useful evidence,
+ * but are never promoted to an exact identity when trailing tokens are unknown.
+ */
 export function demangleSwiftSymbol(symbol) {
   const original = String(symbol || '');
   const s = original.replace(/^_/, '');
-  if (!s.startsWith('$s') && !s.startsWith('$S')) return { original, demangled: original, parsed: false, components: [] };
+  if (!s.startsWith('$s') && !s.startsWith('$S')) return { original, demangled: original, parsed: false, partial: null, unsupported: false, components: [] };
   let i = 2;
   const components = [];
+  let malformed = false;
   while (i < s.length && components.length < 12) {
     const m = s.slice(i).match(/^(\d+)/);
     if (!m) break;
     const n = Number(m[1]);
     i += m[1].length;
-    if (!(n > 0) || n > 512 || i + n > s.length) break;
+    if (!(n > 0) || n > 512 || i + n > s.length) { malformed = true; break; }
     components.push(s.slice(i, i + n));
     i += n;
   }
   const suffix = s.slice(i);
-  const async = /Ya/.test(suffix);
-  const throws = /K/.test(suffix);
-  const accessor = /Ma|Mf|ML|Mn/.test(suffix) ? 'metadata' : null;
-  const demangled = components.length ? components.join('.') + (async ? ' async' : '') + (throws ? ' throws' : '') : original;
-  return { original, demangled, parsed: components.length > 0, components, suffix, async, throws, accessor };
+  const suffixInfo = parseSupportedSwiftSuffix(suffix);
+  const supported = !malformed && components.length > 0 && suffixInfo.supported;
+  const partial = components.length ? components.join('.') + (suffixInfo.async ? ' async' : '') + (suffixInfo.throws ? ' throws' : '') : null;
+  return {
+    original,
+    // Unknown grammar must retain the mangled symbol as the exact identity.
+    demangled: supported ? partial : original,
+    parsed: supported,
+    partial: supported ? null : partial,
+    unsupported: components.length > 0 && !supported,
+    components,
+    suffix,
+    async: supported && suffixInfo.async,
+    throws: supported && suffixInfo.throws,
+    accessor: supported ? suffixInfo.accessor : null,
+  };
+}
+
+function parseSupportedSwiftSuffix(suffix) {
+  if (!suffix) return { supported: true, async: false, throws: false, accessor: null };
+  let rest = suffix;
+  let async = false;
+  let throws = false;
+  let accessor = null;
+  // This fallback intentionally supports only the suffix atoms it can explain.
+  // Anything else is partial/unsupported rather than skipped byte-by-byte.
+  const atoms = ['Ya', 'Ma', 'Mf', 'ML', 'Mn', 'vg', 'vs', 'fC', 'fD', 'K', 'F'];
+  while (rest) {
+    const atom = atoms.find((value) => rest.startsWith(value));
+    if (!atom) return { supported: false, async, throws, accessor };
+    rest = rest.slice(atom.length);
+    if (atom === 'Ya') async = true;
+    else if (atom === 'K') throws = true;
+    else if (['Ma', 'Mf', 'ML', 'Mn'].includes(atom)) accessor = 'metadata';
+  }
+  return { supported: true, async, throws, accessor };
 }
 
 async function relativeString(read, fieldAddr, raw) {
@@ -88,7 +124,6 @@ async function relativeString(read, fieldAddr, raw) {
   return target == null ? null : cstring(read, target);
 }
 
-/** Parse the common nominal type descriptor prefix. */
 export async function parseSwiftNominalDescriptor(read, address) {
   const addr = BigInt(address);
   const b = await exact(read, addr, 44);
@@ -106,8 +141,7 @@ export async function parseSwiftNominalDescriptor(read, address) {
     parent: rel(addr + 4n, i32(b, 4)),
     metadataAccessor: rel(addr + 12n, accessRel),
     fieldDescriptor: rel(addr + 16n, fieldsRel),
-    generic: !!(flags & 0x80),
-    unique: !!(flags & 0x40),
+    generic: !!(flags & 0x80), unique: !!(flags & 0x40),
     fields: [], methods: [], vtable: [], warnings: [],
   };
   if (kind === 'class') {
@@ -163,7 +197,6 @@ export async function parseSwiftProtocolDescriptor(read, address) {
   };
 }
 
-/** Swift protocol conformance descriptor (stable ABI prefix). */
 export async function parseSwiftConformanceDescriptor(read, address) {
   const addr = BigInt(address);
   const b = await exact(read, addr, 16);
@@ -182,7 +215,6 @@ export async function parseSwiftConformanceDescriptor(read, address) {
   };
 }
 
-/** Parse vtable records when the enclosing descriptor has identified their range. */
 export async function parseSwiftVTable(read, address, count, budget = 4096) {
   const n = Math.min(Number(count) || 0, budget);
   const out = [];
@@ -229,11 +261,6 @@ async function relativePointerSection(read, range, budget, parser) {
   return out;
 }
 
-/**
- * Parse the Swift metadata sections needed for decompilation. Optional explicit
- * vtable/witness descriptors let a Mach-O layer pass layout facts it already
- * knows without duplicating ABI guessing here.
- */
 export async function buildSwiftMetadataModel(read, sections, opts = {}) {
   const budget = Math.max(128, Math.min(opts.budget || DEFAULT_BUDGET, 100000));
   const typeSec = sectionRange(sections, ['__swift5_types']);
@@ -291,18 +318,15 @@ export function buildSwiftRuntimeIndex(model = {}) {
   return { runtime: 'swift', model, typesByAddress, typesByName, protocolsByAddress, protocolsByName, conformancesByType, vtablesByType, witnessesByPair };
 }
 
-/** Resolve direct/vtable/witness dispatch without pretending ambiguous slots are named. */
 export function resolveSwiftDispatch(index, call = {}) {
   if (!call) return { resolved: null, candidates: [], confidence: 0 };
   if (call.target != null) return { kind: 'direct', resolved: { target: call.target, name: call.name || null }, candidates: [], confidence: call.name ? 0.99 : 0.9 };
   if (!index) return { kind: call.kind || 'indirect', resolved: null, candidates: [], confidence: 0 };
-
   if (call.kind === 'vtable' && call.typeName != null && call.slot != null) {
     const methods = index.vtablesByType.get(call.typeName) || [];
     const m = methods.find((x) => x.index === Number(call.slot));
     return m ? { kind: 'vtable', resolved: m, candidates: [m], confidence: 0.9 } : { kind: 'vtable', resolved: null, candidates: [], confidence: 0.2 };
   }
-
   if ((call.kind === 'witness' || call.kind === 'existential') && call.typeName && call.protocolName && call.slot != null) {
     const conf = index.witnessesByPair.get(`${call.typeName}:${call.protocolName}`);
     const table = (index.model.witnessTables || []).find((w) =>
@@ -315,20 +339,14 @@ export function resolveSwiftDispatch(index, call = {}) {
   return { kind: call.kind || 'indirect', resolved: null, candidates: [], confidence: 0.15 };
 }
 
-/** Calling-convention annotations used by the C-like renderer. */
 export function swiftCallingConvention({ name = '', mangled = '', metadata = null, attributes = null } = {}) {
   const sym = demangleSwiftSymbol(mangled || name);
   const a = attributes || {};
   const async = a.async != null ? !!a.async : !!sym.async;
   const throws = a.throws != null ? !!a.throws : !!sym.throws;
   return {
-    runtime: 'swift',
-    swiftself: a.swiftself !== false,
-    swiftasync: async,
-    swiftthrows: throws,
-    indirectResult: !!a.indirectResult,
-    context: a.context !== false,
-    errorResult: throws || !!a.errorResult,
+    runtime: 'swift', swiftself: a.swiftself !== false, swiftasync: async, swiftthrows: throws,
+    indirectResult: !!a.indirectResult, context: a.context !== false, errorResult: throws || !!a.errorResult,
     metadataArguments: Number(a.metadataArguments || (metadata?.generic ? 1 : 0)),
     representation: async && throws ? 'await-throwing' : async ? 'await' : throws ? 'throwing' : 'normal',
   };
@@ -350,7 +368,8 @@ export function classifySwiftRuntimeCall(name) {
 
 export function formatSwiftCall(name, args = [], convention = {}) {
   const cc = convention.representation ? convention : swiftCallingConvention({ name, attributes: convention });
-  const readable = demangleSwiftSymbol(name).demangled || name || 'unknown_call';
+  const symbol = demangleSwiftSymbol(name);
+  const readable = symbol.parsed ? symbol.demangled : (name || 'unknown_call');
   const prefix = cc.swiftasync ? 'await ' : '';
   const throwing = cc.swiftthrows ? 'try ' : '';
   return `${throwing}${prefix}${readable}(${args.join(', ')})`;
