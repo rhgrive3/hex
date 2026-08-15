@@ -20,7 +20,7 @@ jobs:
         with:
           node-version: 22
 
-      - name: Verify staged archive
+      - name: Verify staged archive and optimization patch
         shell: bash
         run: |
           set -euo pipefail
@@ -28,6 +28,8 @@ jobs:
           base64 -d /tmp/fixed.b64 > /tmp/ai-data-plane-fixed.tar.gz
           echo '5ebfaac17e64cfa791284eabbcf1debbf53ac29aa0ff4c24ace3ebac7f5def40  /tmp/ai-data-plane-fixed.tar.gz' | sha256sum -c -
           gzip -t /tmp/ai-data-plane-fixed.tar.gz
+          cat .ai-fixed/patch-0 .ai-fixed/patch-1 > /tmp/data-plane-v2.patch
+          echo '165cbdc70547d607902fbe84681c78a022796ded68ddeb690eb090e8cb5b2427  /tmp/data-plane-v2.patch' | sha256sum -c -
 
       - name: Rebuild from latest main
         shell: bash
@@ -36,6 +38,7 @@ jobs:
           git fetch origin main
           git checkout -B clean-data-plane origin/main
           tar xzf /tmp/ai-data-plane-fixed.tar.gz
+          git apply /tmp/data-plane-v2.patch
 
       - name: Verify exact implementation hashes
         shell: bash
@@ -47,10 +50,10 @@ jobs:
           test "$(git hash-object js/ai/tools/names.js)" = 'a81fff720448a24df24d2410d256c8e4ebd10945'
           test "$(git hash-object js/ai/tools/paging/cursor.js)" = '0faf38cff2bb9ed75800c30af21b620ac61f81ef'
           test "$(git hash-object js/ai/tools/projections/index.js)" = 'd18ae44d031ce99c320764a420911d985c292ba6'
-          test "$(git hash-object js/ai/tools/registry.js)" = 'c4af937d357406029b90e3d039f9279745a37066'
+          test "$(git hash-object js/ai/tools/registry.js)" = '80c79552dbccb21e11fd3da5b8296290eeba8642'
           test "$(git hash-object js/ai/tools/storage/observation-store.js)" = '844fa524504d7d1064741d23e8680d25e3bc1156'
           test "$(git hash-object js/query/planner.js)" = 'a51711828cf63f1d73a1a68087b36b6ca7f4a357'
-          test "$(git hash-object tests/ai-lossless-data-plane.mjs)" = '804a1eb56108a70270c79e0900676f2acbf49132'
+          test "$(git hash-object tests/ai-lossless-data-plane.mjs)" = 'ebee08bdf666cb2c7d64b1b43700bc7938aff427'
           test "$(git hash-object tests/ai-planner-data-plane.mjs)" = '3ca17274e07c93ff9e28d06d26642ffb13b66ccf'
           test "$(git hash-object tests/issue-425-planner-budget.mjs)" = 'aa75d6934abf1cde4453429c1eaa4ce8681cf2ed'
 
