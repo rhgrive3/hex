@@ -19,11 +19,17 @@ assert.equal(demangleCxx('__ZN3Foo3barEiX'), null);
 assert.equal(demangleCxx('__ZN3Foo3barESZZ_'), null);
 assert.equal(demangleCxx('__ZN3Foo3barEi'), 'Foo::bar(int)');
 
-// #249: a partial Swift parse is evidence, never an exact identity.
+// #249: a partial Swift parse is evidence, never an exact identity. Known ABI
+// tokens such as the empty-tuple type `y` must continue to parse normally.
 {
   const valid = demangleSwiftSymbol('$s3Foo3BarF');
   assert.equal(valid.parsed, true);
   assert.equal(valid.demangled, 'Foo.Bar');
+
+  const asyncThrowing = demangleSwiftSymbol('$s4Game6loaderyyYaKF');
+  assert.equal(asyncThrowing.parsed, true);
+  assert.equal(asyncThrowing.async, true);
+  assert.equal(asyncThrowing.throws, true);
 
   const unknown = '$s3Foo3BarQF';
   const partial = demangleSwiftSymbol(unknown);
