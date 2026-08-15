@@ -30,56 +30,59 @@ export function createMatchBudget(overrides = {}) {
   let solverRelaxations = 0;
   let solverAugmentations = 0;
   let oversizedComponents = 0;
-  let globalTruncated = false;
+  let truncated = false;
+  let candidateGraphIncomplete = false;
   let reason = null;
 
-  const truncate = (message) => {
-    if (!globalTruncated) {
-      globalTruncated = true;
-      reason = message;
-    }
+  const stop = (message, incomplete = false) => {
+    truncated = true;
+    if (incomplete) candidateGraphIncomplete = true;
+    if (reason == null) reason = message;
     return false;
   };
-  const wallOkay = (stage) => {
-    if (globalTruncated) return false;
-    if (now() - started > limits.maxWallMs) return truncate(`${stage} exceeded ${limits.maxWallMs} ms wall-clock budget`);
+  const wallOkay = (stage, incomplete = false) => {
+    if (truncated) return false;
+    if (now() - started > limits.maxWallMs) return stop(`${stage} exceeded ${limits.maxWallMs} ms wall-clock budget`, incomplete);
     return true;
   };
 
   return {
     limits,
-    get globalTruncated() { return globalTruncated; },
+    get truncated() { return truncated; },
+    get globalTruncated() { return truncated; },
+    get candidateGraphIncomplete() { return candidateGraphIncomplete; },
     get reason() { return reason; },
     candidate() {
-      if (globalTruncated) return false;
+      if (truncated) return false;
       candidateEvaluations++;
-      if (candidateEvaluations > limits.maxCandidateEvaluations) return truncate(`candidate evaluations exceeded ${limits.maxCandidateEvaluations}`);
-      return (candidateEvaluations & 0xfff) === 0 ? wallOkay('candidate generation') : true;
+      if (candidateEvaluations > limits.maxCandidateEvaluations) return stop(`candidate evaluations exceeded ${limits.maxCandidateEvaluations}`, true);
+      return (candidateEvaluations & 0xfff) === 0 ? wallOkay('candidate generation', true) : true;
     },
     edge() {
-      if (globalTruncated) return false;
+      if (truncated) return false;
       candidateEdges++;
-      if (candidateEdges > limits.maxCandidateEdges) return truncate(`candidate edges exceeded ${limits.maxCandidateEdges}`);
+      if (candidateEdges > limits.maxCandidateEdges) return stop(`candidate edges exceeded ${limits.maxCandidateEdges}`, true);
       return true;
     },
-    checkWall(stage = 'matching') { return wallOkay(stage); },
+    checkCandidateWall() { return wallOkay('candidate generation', true); },
+    checkSolverWall(stage = 'matching') { return wallOkay(stage, false); },
     allowComponent(nodeCount, edgeCount) {
       if (nodeCount > limits.maxComponentNodes || edgeCount > limits.maxComponentEdges) {
         oversizedComponents++;
         return false;
       }
-      return wallOkay('component solving');
+      return wallOkay('component solving', false);
     },
     solverRelaxation() {
-      if (globalTruncated) return false;
+      if (truncated) return false;
       solverRelaxations++;
-      if (solverRelaxations > limits.maxSolverRelaxations) return truncate(`solver relaxations exceeded ${limits.maxSolverRelaxations}`);
-      return (solverRelaxations & 0xfff) === 0 ? wallOkay('exact solver') : true;
+      if (solverRelaxations > limits.maxSolverRelaxations) return stop(`solver relaxations exceeded ${limits.maxSolverRelaxations}`);
+      return (solverRelaxations & 0xfff) === 0 ? wallOkay('exact solver', false) : true;
     },
     solverAugmentation() {
-      if (globalTruncated) return false;
+      if (truncated) return false;
       solverAugmentations++;
-      if (solverAugmentations > limits.maxSolverAugmentations) return truncate(`solver augmentations exceeded ${limits.maxSolverAugmentations}`);
+      if (solverAugmentations > limits.maxSolverAugmentations) return stop(`solver augmentations exceeded ${limits.maxSolverAugmentations}`);
       return true;
     },
     snapshot() {
@@ -90,7 +93,8 @@ export function createMatchBudget(overrides = {}) {
         solverRelaxations,
         solverAugmentations,
         oversizedComponents,
-        truncated: globalTruncated,
+        truncated,
+        candidateGraphIncomplete,
         reason,
       };
     },
