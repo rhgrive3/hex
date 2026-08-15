@@ -73,8 +73,8 @@ elif new not in s:
     raise SystemExit('#356 widthRead fixture anchor missing')
 p.write_text(s)
 
-# Compiler-truth owns the C source, so its declared scalar return types are
-# trusted evidence rather than a decompiler inference.
+# Compiler-truth owns its C/C++/ObjC source, so declared scalar return types are
+# trusted prototype evidence, not a decompiler inference.
 p = Path('tests/compiler-truth/run-core.mjs')
 s = p.read_text()
 old = """      const result = decompile(model, { name:fn, addr:model.instructions[0].address, rowOfAddress:(a)=>rowMap.get(a?.toString()) ?? null, decompilerTimeBudgetMs:120 });"""
@@ -90,6 +90,47 @@ if old in s:
     s = s.replace(old, new, 1)
 elif new not in s:
     raise SystemExit('compiler-truth prebuilt fixture anchor missing')
+p.write_text(s)
+
+p = Path('tests/compiler-truth/extended.mjs')
+s = p.read_text()
+old = """    const result = decompile(model, {
+      name,
+      addr: model.instructions[0].address,
+      rowOfAddress: (addr) => rowMap.get(addr?.toString()) ?? null,
+      decompilerTimeBudgetMs: 180,
+    });"""
+new = """    const returnType = name === 'abs_i32' || name === 'neg_if' || name === 'clamp_i32' ? 'int32' : 'uint32';
+    const result = decompile(model, {
+      name,
+      addr: model.instructions[0].address,
+      rowOfAddress: (addr) => rowMap.get(addr?.toString()) ?? null,
+      returnType,
+      decompilerTimeBudgetMs: 180,
+    });"""
+if old in s:
+    s = s.replace(old, new, 1)
+elif new not in s:
+    raise SystemExit('extended compiler-truth fixture anchor missing')
+p.write_text(s)
+
+p = Path('tests/compiler-truth/language-matrix.mjs')
+s = p.read_text()
+old = """  const result = decompile(model, {
+    name: fn, addr:model.instructions[0].address,
+    rowOfAddress:(address) => rowMap.get(address?.toString()) ?? null,
+    decompilerTimeBudgetMs:120,
+  });"""
+new = """  const result = decompile(model, {
+    name: fn, addr:model.instructions[0].address,
+    rowOfAddress:(address) => rowMap.get(address?.toString()) ?? null,
+    returnType:'int32',
+    decompilerTimeBudgetMs:120,
+  });"""
+if old in s:
+    s = s.replace(old, new, 1)
+elif new not in s:
+    raise SystemExit('language matrix fixture anchor missing')
 p.write_text(s)
 
 print('applied current decompiler/IR batch 1')
