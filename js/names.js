@@ -38,14 +38,17 @@ function key(addr) {
  * name|size|最初に見つかったUUID だけで保存していた。
  * 新形式へ一度だけコピーするために正確な旧式を残しておく。
  */
-export function legacyNoteKeyFor(file, fileInfo) {
-  const parts = [];
-  if (file && file.name) parts.push(file.name);
-  if (file && file.size != null) parts.push(String(file.size));
-  const slice = fileInfo && fileInfo.slices
-    ? fileInfo.slices.find((s) => s.info && s.info.uuid)
-    : null;
-  if (slice) parts.push(slice.info.uuid);
+export function legacyNoteKeyFor(file, fileInfo, sliceIndex = null) {
+  const parts=[];
+  if (file?.name) parts.push(file.name);
+  if (file?.size != null) parts.push(String(file.size));
+  const slices=fileInfo?.slices || [];
+  const selected=Number.isInteger(sliceIndex) && sliceIndex >= 0 ? slices[sliceIndex] : null;
+  // A legacy FAT key is safe only when the caller identifies the active slice.
+  // For a single-slice image the sole UUID is unambiguous.
+  const slice=selected || (slices.length === 1 ? slices[0] : null);
+  if (slice?.info?.uuid) parts.push(slice.info.uuid);
+  else if (slices.length > 1) return null;
   return parts.length ? parts.join('|') : null;
 }
 

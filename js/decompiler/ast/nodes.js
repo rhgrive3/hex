@@ -17,6 +17,7 @@ export function mergeSource(...sources) {
 export function node(kind, props = {}, source = null) { return { kind, ...props, source: sourceOf(source || props.source) }; }
 export const expr = {
   constant(value, bits = 64, signed = null, source = null) { return node('const', { value: BigInt(value), bits: Number(bits || 64), signed, effect: 'pure' }, source); },
+  floatConstant(value, bits = 64, source = null) { return node('float-const', { value:Number(value), bits:Number(bits || 64), signed:null, floating:true, effect:'pure' }, source); },
   variable(name, bits = 64, signed = null, source = null, extra = {}) { return node('var', { name, bits: Number(bits || 64), signed, effect: 'pure', ...extra }, source); },
   unary(op, arg, bits = arg?.bits || 64, signed = arg?.signed ?? null, source = null, extra = {}) { return node('unary', { op, arg, bits, signed, effect: effectOf(arg), ...extra }, mergeSource(source, arg?.source)); },
   binary(op, left, right, bits = left?.bits || right?.bits || 64, signed = null, source = null, extra = {}) { return node('binary', { op, left, right, bits, signed, effect: maxEffect(effectOf(left), effectOf(right)), ...extra }, mergeSource(source, left?.source, right?.source)); },
@@ -99,6 +100,7 @@ export function structuralKey(root) {
     let value;
     switch (n.kind) {
       case 'const': value = `c:${semanticTag(n)}:${n.value}`; break;
+      case 'float-const': { const fv=Number.isNaN(n.value)?'NaN':n.value===Infinity?'Infinity':n.value===-Infinity?'-Infinity':Object.is(n.value,-0)?'-0':String(n.value); value=`fc:${semanticTag(n)}:${fv}`; break; }
       case 'var': value = `v:${n.name}:${semanticTag(n)}`; break;
       case 'unary': value = `u:${n.op}:${semanticTag(n)}:${k(n.arg)}`; break;
       case 'binary': value = `b:${n.op}:${semanticTag(n)}:${k(n.left)}:${k(n.right)}`; break;
