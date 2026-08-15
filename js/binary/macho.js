@@ -1,6 +1,7 @@
 import { ByteView } from './reader.js';
 import { BinaryImage, functionSeed } from './model.js';
 import { parseChainedImports, parseChainedBindingSites, parseClassicBindings, parseExportTrie } from './macho-dyld.js';
+import { ensureMachOMetadataBudget } from './macho-budget.js';
 
 const LC_SEGMENT = 0x1;
 const LC_SYMTAB = 0x2;
@@ -76,6 +77,7 @@ function parseThin(bytes, opts) {
       filetype, flags, ncmds, sizeofcmds,
     },
   });
+  const metadataBudget = ensureMachOMetadataBudget(image);
 
   const commands = [];
   const segmentOrder = [];
@@ -91,6 +93,7 @@ function parseThin(bytes, opts) {
       image.warnings.push(`invalid load command ${i} size ${cmdsize}`);
       break;
     }
+    if (!metadataBudget.take({ inputBytes:cmdsize, records:1, objects:1, operations:1, estimatedHeapBytes:64 }, 'load-command')) break;
     commands.push({ cmd, offset: p, size: cmdsize });
     try {
       if (cmd === LC_SEGMENT_64 && bits === 64) parseSegment64(r, p, cmdsize, image, segmentOrder);
@@ -138,23 +141,26 @@ function parseThin(bytes, opts) {
   }
   if (image.entrypoint != null && image.entrypoint !== 0n) image.functions.push(functionSeed(image.entrypoint, { source: 'entrypoint', confidence: 0.9 }));
 
-  for (const st of symtabs) parseSymbolTable(r, st, image, bits);
+  for (const st of symtabs) parseSymbolTable(r, st, image, bits, metadataBudget);
   const hadFunctionStarts = !!linkeditData.functionStarts;
-  if (linkeditData.functionStarts) parseFunctionStarts(r, linkeditData.functionStarts, image);
+  if (linkeditData.functionStarts) parseFunctionStarts(r, linkeditData.functionStarts, image, metadataBudget);
   let chainedImports = null;
-  if (linkeditData.chainedFixups) chainedImports = parseChainedImports(r, linkeditData.chainedFixups, image);
-  if (linkeditData.chainedFixups && chainedImports) parseChainedBindingSites(r, linkeditData.chainedFixups, image, chainedImports, segmentOrder);
+  if (linkeditData.chainedFixups) chainedImports = parseChainedImports(r, linkeditData.chainedFixups, image, metadataBudget);
+  if (linkeditData.chainedFixups && chainedImports) parseChainedBindingSites(r, linkeditData.chainedFixups, image, chainedImports, segmentOrder, metadataBudget);
   for (const info of dyldInfos) {
-    parseClassicBindings(r, info.bind, image, segmentOrder, 'bind');
-    parseClassicBindings(r, info.weakBind, image, segmentOrder, 'weak-bind');
-    parseClassicBindings(r, info.lazyBind, image, segmentOrder, 'lazy-bind');
-    if (!linkeditData.exportsTrie && info.export.size) parseExportTrie(r, info.export, image);
+    parseClassicBindings(r, info.bind, image, segmentOrder, 'bind', metadataBudget);
+    parseClassicBindings(r, info.weakBind, image, segmentOrder, 'weak-bind', metadataBudget);
+    parseClassicBindings(r, info.lazyBind, image, segmentOrder, 'lazy-bind', metadataBudget);
+    if (!linkeditData.exportsTrie && info.export.size) parseExportTrie(r, info.export, image, metadataBudget);
   }
-  if (linkeditData.exportsTrie) parseExportTrie(r, linkeditData.exportsTrie, image);
+  if (linkeditData.exportsTrie) parseExportTrie(r, linkeditData.exportsTrie, image, metadataBudget);
 
   const namesByAddr = new Map();
-  for (const sym of image.symbols) if (sym.defined && sym.address) namesByAddr.set(sym.address.toString(), sym.name);
-  for (const ex of image.exports) if (ex.address) namesByAddr.set(ex.address.toString(), ex.name);
+  const nameIndexEntries = image.symbols.length + image.exports.length;
+  if (metadataBudget.take({ objects:nameIndexEntries, operations:nameIndexEntries, estimatedHeapBytes:nameIndexEntries*48 }, 'name-address-index')) {
+    for (const sym of image.symbols) if (sym.defined && sym.address) namesByAddr.set(sym.address.toString(), sym.name);
+    for (const ex of image.exports) if (ex.address) namesByAddr.set(ex.address.toString(), ex.name);
+  }
   if (hadFunctionStarts) {
     for (const f of image.functions) if (!f.name) f.name = namesByAddr.get(f.address.toString()) || null;
     const provenStarts = new Set(image.functions.filter((f) => f.source !== 'export').map((f) => f.address.toString()));
@@ -163,10 +169,11 @@ function parseThin(bytes, opts) {
     for (const sym of image.symbols) {
       if (!sym.defined || !sym.address) continue;
       const sec = image.sectionAt(sym.address);
-      if (sec && sec.perms.execute && sym.name !== '__mh_execute_header') image.functions.push(functionSeed(sym.address, { name: sym.name, source: 'symbol', confidence: 0.9 }));
+      if (sec && sec.perms.execute && sym.name !== '__mh_execute_header' && metadataBudget.take({ objects:1, operations:1, estimatedHeapBytes:128 }, 'symbol-function-fallback')) image.functions.push(functionSeed(sym.address, { name: sym.name, source: 'symbol', confidence: 0.9 }));
     }
   }
 
+  image.metadata.machoMetadata = metadataBudget.snapshot();
   return image.finalize();
 }
 
@@ -296,12 +303,14 @@ function parseDyldInfo(r, p) {
   };
 }
 
-function parseSymbolTable(r, st, image, bits) {
+function parseSymbolTable(r, st, image, bits, sharedBudget = null) {
+  const budget = ensureMachOMetadataBudget(image, sharedBudget);
   const ent = bits === 64 ? 16 : 12;
   if (st.symoff + st.nsyms * ent > r.length || st.stroff + st.strsize > r.length) {
     image.warnings.push('Mach-O symbol table is truncated'); return;
   }
   for (let i = 0; i < st.nsyms; i++) {
+    if (!budget.take({ inputBytes:ent, records:1, objects:1, operations:2, estimatedHeapBytes:224 }, 'symbol-record')) break;
     const p = st.symoff + i * ent;
     const strx = r.u32(p);
     const type = r.u8(p + 4);
@@ -311,6 +320,7 @@ function parseSymbolTable(r, st, image, bits) {
     if (type & 0xe0) continue;
     const name = strx < st.strsize ? r.cstring(st.stroff + strx, st.strsize - strx) : '';
     if (!name) continue;
+    if (!budget.take({ stringBytes:name.length*2, estimatedHeapBytes:name.length*2+32 }, 'symbol-name')) break;
     const ntype = type & 0x0e;
     const external = !!(type & 1);
     const isUndefinedType = ntype === 0;
@@ -339,7 +349,8 @@ function parseSymbolTable(r, st, image, bits) {
   }
 }
 
-function parseFunctionStarts(r, dc, image) {
+function parseFunctionStarts(r, dc, image, sharedBudget = null) {
+  const budget = ensureMachOMetadataBudget(image, sharedBudget);
   if (!dc.size || dc.offset > r.length || dc.size > r.length - dc.offset) return;
   let p = dc.offset;
   const end = dc.offset + dc.size;
@@ -347,6 +358,7 @@ function parseFunctionStarts(r, dc, image) {
   const alignment = (image.arch === 'arm64' || image.arch === 'arm64e' || image.arch === 'arm64_32') ? 4n : image.arch === 'arm' ? 2n : 1n;
   const status = image.metadata.functionStarts = { complete: true, recovered: 0, partialReason: null };
   while (p < end) {
+    if (!budget.take({ records:1, operations:1, estimatedHeapBytes:32 }, 'function-start-record')) { status.complete=false; status.partialReason='metadata-budget'; break; }
     let x;
     try { x = r.uleb(p, 10, end); }
     catch (e) {
@@ -364,6 +376,7 @@ function parseFunctionStarts(r, dc, image) {
       image.warnings.push(`invalid LC_FUNCTION_STARTS entry 0x${addr.toString(16)}`);
       continue;
     }
+    if (!budget.take({ inputBytes:x.bytes, objects:1, estimatedHeapBytes:128 }, 'function-start-output')) { status.complete=false; status.partialReason='metadata-budget'; break; }
     image.functions.push(functionSeed(addr, { source: 'function_starts', confidence: 0.995 }));
     status.recovered++;
   }
