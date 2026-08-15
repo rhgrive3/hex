@@ -16,8 +16,6 @@ on:
       - 'tests/browser.mjs'
       - 'tests/ui/**'
       - 'tests/ux.mjs'
-      - 'tools/fetch-large-fixtures.mjs'
-      - 'tests/large-fixtures.json'
       - 'package.json'
       - '.github/workflows/ui-regression.yml'
   workflow_dispatch:
@@ -45,8 +43,6 @@ jobs:
           npm install --no-save playwright
           npx playwright install-deps webkit
           npx playwright install chromium webkit
-      - name: Fetch pinned BattleCats fixture
-        run: node tools/fetch-large-fixtures.mjs battlecats
       - name: Run existing browser regression
         run: npm run browser
       - name: Run UI viewport matrix
