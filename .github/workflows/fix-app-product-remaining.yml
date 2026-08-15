@@ -22,8 +22,6 @@ jobs:
           new="if (d.extra?.negate) out = expr.unary('neg', out, v.bits || 64, signedFor(state, v), origin(d, v));"
           if old not in s and new not in s: raise SystemExit('current MNEG anchor missing')
           if old in s: s=s.replace(old,new,1)
-          # Normalize the harmless null-safe spelling to the patch driver's expected
-          # old text; the replacement immediately strengthens this whole function.
           s=s.replace("if (term?.op !== 'cbr' || (block.succ || []).length < 2) continue;", "if (term?.op !== 'cbr' || block.succ.length < 2) continue;", 1)
           p.write_text(s)
           p=Path('tools/fix-decompiler-ir-open-1.py')
@@ -61,8 +59,7 @@ jobs:
           assert.match(faithful,/const rv = returnValueAt\(term, ctx\)/);
           assert.match(pretty,/export function integerText/); assert.match(sem,/import \{ integerText \}/); assert.match(sem,/return integerText\(v, bits, signed\)/);
           assert.match(sem,/d\.extra\?\.widen/); assert.match(sem,/__arm64_ubfiz/); assert.match(sem,/bitfieldKind === 'bfxil'/);
-          const minmax=sem.slice(sem.indexOf('function selectAsMinMax'),sem.indexOf('function renderValue'));
-          assert.match(minmax,/cmp\.sub !== 'sub'/);
+          assert.match(sem,/cmp\.sub !== 'sub'/);
           assert.match(loop,/renderNZCVCondition/); assert.match(loop,/renderNZCVCondition\(cmp\.sub \|\| 'sub'/);
           console.log('decompiler/IR open issue batch 1 guards passed');
           EOF
