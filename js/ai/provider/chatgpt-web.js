@@ -108,7 +108,7 @@ export function buildChatGPTTurnPrompt(request = {}) {
   return `HEX CONTROL PROTOCOL ${PROTOCOL_VERSION}\n\n` +
     `You are the reasoning/planning component of Hex. Hex tools are the source of facts.\n` +
     `Return exactly ONE JSON object and nothing else. Do not use Markdown or code fences. ` +
-    `Use ASCII double quotes (\\\") only; never use smart/curly quotes.\n\n` +
+    `Use only the ASCII double quote character U+0022 (") for JSON delimiters; never replace JSON delimiters with smart/curly quotes.\n\n` +
     `If more evidence is required, return exactly:\n` +
     `{"type":"tool","tool":"<one supplied tool name>","arguments":{},"purpose":"<short reason>"}\n\n` +
     `If the investigation is complete, return exactly:\n` +
@@ -133,12 +133,68 @@ export function parseChatGPTDecision(value) {
 
   let parsed = tryParse(candidate);
   if (parsed == null && /[\u201c\u201d]/.test(candidate)) {
-    parsed = tryParse(candidate.replace(/[\u201c\u201d]/g, '"'));
+    parsed = tryParse(normalizeSmartJSONQuotes(candidate));
   }
   if (parsed == null || !parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new AIError('invalid_model_output', 'ChatGPT Web returned malformed JSON.');
   }
   return parsed;
+}
+
+function normalizeSmartJSONQuotes(text) {
+  let output = '';
+  let inSmartString = false;
+  let nestedSmartQuotes = 0;
+  let inAsciiString = false;
+  let escaped = false;
+
+  for (const char of String(text)) {
+    if (inAsciiString) {
+      output += char;
+      if (escaped) { escaped = false; continue; }
+      if (char === '\\') { escaped = true; continue; }
+      if (char === '"') inAsciiString = false;
+      continue;
+    }
+
+    if (inSmartString) {
+      if (char === '\u201c') {
+        nestedSmartQuotes++;
+        output += char;
+        continue;
+      }
+      if (char === '\u201d') {
+        if (nestedSmartQuotes > 0) {
+          nestedSmartQuotes--;
+          output += char;
+        } else {
+          output += '"';
+          inSmartString = false;
+        }
+        continue;
+      }
+      if (char === '\\') {
+        output += '\\\\';
+        continue;
+      }
+      if (char === '"') {
+        output += '\\"';
+        continue;
+      }
+      output += char;
+      continue;
+    }
+
+    if (char === '\u201c') {
+      output += '"';
+      inSmartString = true;
+      nestedSmartQuotes = 0;
+      continue;
+    }
+    if (char === '"') inAsciiString = true;
+    output += char;
+  }
+  return output;
 }
 
 function stripFence(text) {
