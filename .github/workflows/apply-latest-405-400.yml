@@ -23,6 +23,7 @@ jobs:
         run: |
           python3 tools/apply-latest-405-400.py
           python3 tools/apply-latest-405-400-followup.py
+          python3 tools/fix-latest-issue-test-context.py
       - name: Dedicated regressions
         run: node tests/issues-400-405.mjs
       - name: Decompiler suite
@@ -34,7 +35,7 @@ jobs:
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add js/ir-core.js js/decompiler/semantic.js js/decompiler/passes/stack-return-recovery.js js/decompiler/passes/stack-phi-recovery.js js/decompiler/switch.js js/decompiler/flag-semantics.js
+          git add js/ir-core.js js/decompiler/semantic.js js/decompiler/passes/stack-return-recovery.js js/decompiler/passes/stack-phi-recovery.js js/decompiler/switch.js js/decompiler/flag-semantics.js tests/issues-400-405.mjs
           git diff --cached --check
           git commit -m 'fix: resolve latest issues 400-405'
           git push origin HEAD:fix/latest-405-400
