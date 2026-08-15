@@ -41,4 +41,11 @@ assert.equal(sessionMatchesSnapshot(persistedSession, snapshot), true);
 assert.equal(sessionMatchesSnapshot(persistedSession, { ...snapshot, projectIdentity: null }), false);
 assert.equal(sessionMatchesSnapshot(persistedSession, { ...snapshot, runtimeSessionIdentity: null }), false);
 
+// Some historical persistence shapes contain binaryIdentity but no binaryId.
+// A strong identity must still bind the session rather than being treated as
+// an unbound wildcard.
+const otherIdentity = { ...snapshot.binaryIdentity, id: 'content:hash-b:0', hash: 'hash-b' };
+assert.equal(sessionMatchesSnapshot({ ...persistedSession, binaryId: null }, snapshot), true);
+assert.equal(sessionMatchesSnapshot({ ...persistedSession, binaryId: null, binaryIdentity: otherIdentity }, snapshot), false);
+
 console.log('ai-scope-hardening: PASS');
