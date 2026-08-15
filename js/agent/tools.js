@@ -79,7 +79,10 @@ class FunctionLoader {
     }
     if (this.inflight.has(key)) return this.inflight.get(key);
     if (!this.analyzed.has(key) && this.analyzed.size + this.inflight.size >= this.maxFunctions) {
-      throw new AgentToolError('function-budget', 'function analysis budget exhausted', { maxFunctions: this.maxFunctions });
+      // Keep the stable identifier in both the structured `code` field and the
+      // human-readable message. Existing integrations historically matched the
+      // message while newer callers consume `error.code`.
+      throw new AgentToolError('function-budget', 'function-budget: function analysis budget exhausted', { maxFunctions: this.maxFunctions });
     }
     const pending = (async () => {
       let range = null;
