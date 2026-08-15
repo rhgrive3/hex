@@ -17,6 +17,7 @@ jobs:
           python tools/fix-macho-527-current.py
           python tools/fix-pe-535-536.py
           python tools/fix-macho-linkage-521-527.py
+          python tools/fix-final-anchor.py
           python tools/fix-final-551-554.py
       - name: Syntax
         run: |
@@ -57,6 +58,6 @@ jobs:
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add js/binary/pe-loader.js js/platform/worker.js js/backend.js js/chained.js js/worker-legacy.js js/program.js js/app.js js/platform/describe.js js/panels.js js/ui/product.js tests/issues-final-remaining.mjs
           git commit -m "fix: close final remaining issues (#521 #527 #535 #536 #551 #552 #553 #554)"
-          git rm -f .github/workflows/fix-app-product-remaining.yml .github/workflows/fix-final-binary-memory.yml tools/fix-pe-535-536.py tools/fix-macho-linkage-521-527.py tools/fix-macho-527-current.py tools/fix-final-551-554.py tools/.trigger-final-binary
+          git rm -f .github/workflows/fix-app-product-remaining.yml .github/workflows/fix-final-binary-memory.yml tools/fix-pe-535-536.py tools/fix-macho-linkage-521-527.py tools/fix-macho-527-current.py tools/fix-final-anchor.py tools/fix-final-551-554.py tools/.trigger-final-binary
           git commit -m "chore: finalize all remaining issue fixes [autofix]"
           git push origin HEAD:fix/all-remaining-issues-20260815
