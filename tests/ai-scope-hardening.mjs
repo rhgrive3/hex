@@ -9,7 +9,7 @@ const snapshot = {
   legacyBinaryId: 'app:0',
   projectIdentity: 'project-a',
   runtimeSessionIdentity: 'runtime-a',
-  currentFunction: { address: '0x1000', range: { start: '0x1000', end: '0x10ff' } },
+  currentFunction: { address: '0x1000', range: { start: '0x1000', end: '0x1100' } },
   selection: null,
 };
 
@@ -19,6 +19,8 @@ const functionScope = new ScopeController(snapshot, 'function');
 assert.equal(functionScope.scopeAllowsTool('function', 'lookup_signature', { functionAddress: '0x1010' }), true);
 assert.equal(functionScope.scopeAllowsTool('function', 'lookup_signature', { functionAddress: '0x2000' }), false);
 assert.throws(() => functionScope.assertToolCall('lookup_signature', { targetAddress: '0x2000' }), /scope/i);
+assert.equal(functionScope.scopeContainsAddress('function', '0x10ff'), true, 'last byte before exclusive function end stays in scope');
+assert.equal(functionScope.scopeContainsAddress('function', '0x1100'), false, 'exclusive function end must not admit the next function start');
 
 // Bound project/runtime identities are part of the investigation boundary.
 // Closing or replacing either during a turn must fail closed.
