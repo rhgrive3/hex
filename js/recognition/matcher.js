@@ -1,4 +1,6 @@
 import { coarseTokens, compareFingerprints, fingerprintFunction, fingerprintFunctionFast } from '../fingerprint/index.js';
+import { maximumWeightCandidateMatchingBounded, solveCandidateMatching } from './bounded-matching.js';
+import { createMatchBudget } from './match-budget.js';
 
 export class FunctionMatchIndex {
   constructor(functions = [], options = {}) {
@@ -131,10 +133,8 @@ function maximumWeightComponent(candidates) {
   return candidateEdges.filter((edge)=>edge.capacity===0).map((edge)=>edge.candidate);
 }
 
-export function maximumWeightCandidateMatching(candidates = []) {
-  const selected = [];
-  for (const component of candidateComponents(candidates)) selected.push(...maximumWeightComponent(component));
-  return selected.sort((a,b)=>a.i-b.i || a.j-b.j);
+export function maximumWeightCandidateMatching(candidates = [], options = {}) {
+  return maximumWeightCandidateMatchingBounded(candidates, options);
 }
 
 export function matchFunctions(beforeFunctions, afterFunctions, options = {}) {
@@ -144,15 +144,33 @@ export function matchFunctions(beforeFunctions, afterFunctions, options = {}) {
   const index = new FunctionMatchIndex(after, { mode: fastMode ? 'fast' : 'full' });
   const threshold = options.threshold ?? 0.62;
   const ambiguityWindow = options.ambiguityWindow ?? 0.035;
+  const budget = createMatchBudget(options.matchBudget || {});
   const all = [];
+  candidateGeneration:
   for (let i = 0; i < before.length; i++) {
     const candidateIds = index.candidates(before[i], options);
     for (const j of candidateIds) {
+      if (!budget.candidate()) break candidateGeneration;
       const cmp = compareFingerprints(before[i], after[j]);
       if (cmp.confidence < threshold || cmp.identity === 'unrelated') continue;
       if (options.isRejected?.(before[i], after[j])) continue;
+      if (!budget.edge()) break candidateGeneration;
       all.push({ i, j, ...cmp, baseConfidence: cmp.confidence });
     }
+  }
+  if (!budget.candidateGraphIncomplete) budget.checkCandidateWall();
+  if (budget.candidateGraphIncomplete) {
+    const matchingBudget = budget.snapshot();
+    return {
+      matches: [], deleted: before.slice(), new: after.slice(),
+      candidatesEvaluated: all.length, candidateComparisons: matchingBudget.candidateEvaluations,
+      indexBuckets: index.buckets.size, truncated: true, ambiguous: true,
+      matching: {
+        truncated: true, candidateGraphIncomplete: true,
+        ambiguousBefore: before.length, ambiguousAfter: after.length,
+        truncatedComponents: [], budget: matchingBudget,
+      },
+    };
   }
   // Anchor only unique, very strong matches before contextual refinement.
   // Ambiguous strong candidates are deliberately excluded to prevent graph feedback loops.
@@ -189,7 +207,8 @@ export function matchFunctions(beforeFunctions, afterFunctions, options = {}) {
   for (const c of eligible) { let list=eligibleByBefore.get(c.i); if (!list) eligibleByBefore.set(c.i,list=[]); list.push(c); }
   for (const list of eligibleByBefore.values()) list.sort((a,b)=>b.confidence-a.confidence || b.baseConfidence-a.baseConfidence || a.j-b.j);
 
-  const selected = maximumWeightCandidateMatching(eligible);
+  const solved = solveCandidateMatching(eligible, budget);
+  const selected = solved.selected;
   const usedBefore = new Set(), usedAfter = new Set(), matches = [];
   for (const c of selected) {
     // Ambiguity is evidence about the original candidate distribution, not a
@@ -208,7 +227,26 @@ export function matchFunctions(beforeFunctions, afterFunctions, options = {}) {
   });
   const deleted = before.filter((_x, i) => !usedBefore.has(i));
   const added = after.filter((_x, i) => !usedAfter.has(i));
-  return { matches, deleted, new: added, candidatesEvaluated: all.length, indexBuckets: index.buckets.size };
+  const matchingBudget = budget.snapshot();
+  const truncatedComponents = solved.truncatedComponents.slice(0, 32);
+  const truncated = matchingBudget.truncated || solved.truncatedComponents.length > 0;
+  return {
+    matches, deleted, new: added,
+    candidatesEvaluated: all.length,
+    candidateComparisons: matchingBudget.candidateEvaluations,
+    indexBuckets: index.buckets.size,
+    truncated,
+    ambiguous: truncated,
+    matching: {
+      truncated,
+      candidateGraphIncomplete: false,
+      ambiguousBefore: solved.ambiguousLeft.size,
+      ambiguousAfter: solved.ambiguousRight.size,
+      truncatedComponents,
+      omittedTruncatedComponents: Math.max(0, solved.truncatedComponents.length - truncatedComponents.length),
+      budget: matchingBudget,
+    },
+  };
 }
 
 export function matchFunctionsFast(beforeFunctions, afterFunctions, options = {}) {
