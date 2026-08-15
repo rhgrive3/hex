@@ -65,8 +65,13 @@ export class InvestigationSessionStore {
   async update(id, patch = {}) {
     const current = await this.get(id);
     if (!current) return null;
-    const allowed = ['binaryIdentity','projectId','mode','style','scope','effectiveScope','goal','messages','summary','investigationMemory','pinnedEvidence','hypotheses','confirmedFindings','rejectedHypotheses','proposedActions','lastActivity'];
+    const allowed = ['binaryId','binaryIdentity','projectId','mode','style','scope','effectiveScope','goal','messages','summary','investigationMemory','pinnedEvidence','hypotheses','confirmedFindings','rejectedHypotheses','proposedActions','lastActivity'];
     for (const key of allowed) if (Object.prototype.hasOwnProperty.call(patch, key)) current[key] = key === 'investigationMemory' ? createInvestigationMemory(patch[key]) : patch[key];
+    // Identity upgrades must update both representations atomically. Otherwise
+    // a legacy/weak session can accept a strong hash on this turn but be
+    // rejected on the next turn because binaryId still contains filename:slice.
+    if (!Object.prototype.hasOwnProperty.call(patch, 'binaryId') && patch.binaryIdentity?.id) current.binaryId = String(patch.binaryIdentity.id);
+    if (current.binaryId != null) current.binaryId = String(current.binaryId);
     current.updatedAt = new Date().toISOString();
     await this.persist(current);
     return current;
