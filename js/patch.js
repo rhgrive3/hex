@@ -20,86 +20,141 @@
 
 import { parseOperands } from './arm64.js';
 
+function canonicalOffset(value, name = 'offset') {
+  try {
+    if (typeof value === 'number' && !Number.isSafeInteger(value)) throw new Error('unsafe');
+    if (typeof value === 'boolean' || value == null) throw new Error('missing');
+    const out = typeof value === 'bigint' ? value : BigInt(value);
+    if (out < 0n) throw new Error('negative');
+    return out;
+  } catch {
+    throw new TypeError(`${name} must be a non-negative integer`);
+  }
+}
+
+function canonicalAddress(value) {
+  if (value == null) return null;
+  return canonicalOffset(value, 'address');
+}
+
+function patchRange(item) {
+  return { start:item.offset, end:item.offset + BigInt(item.before.length) };
+}
+
+function rangesOverlap(a, b) {
+  return a.start < b.end && b.start < a.end;
+}
+
+async function readBlobRange(file, start, length) {
+  const at = Number(start);
+  if (!Number.isSafeInteger(at) || at < 0) throw new RangeError('patch offset exceeds Blob addressability');
+  const end = at + length;
+  if (!Number.isSafeInteger(end)) throw new RangeError('patch range exceeds Blob addressability');
+  return new Uint8Array(await file.slice(at, end).arrayBuffer());
+}
+
 /* ── 書き換えの置き場 ───────────────────────────────────── */
 
 export class PatchSet {
   constructor() {
-    this.items = new Map();   // ファイル内位置(10進文字列) → {offset, addr, before, after, note}
+    this.items = new Map();
   }
 
   get size() { return this.items.size; }
 
   /**
-   * @param {BigInt} fileOffset ファイルの中の位置
-   * @param {Uint8Array} before 元のバイト
-   * @param {Uint8Array} after  置き換えるバイト
+   * `before` is both the stale-source precondition and the source range that is
+   * replaced. `after` may have a different length; insertion without an
+   * expected source range is deliberately rejected because it cannot prove the
+   * offset is still current.
    */
   add(fileOffset, before, after, meta) {
-    const key = fileOffset.toString();
-    this.items.set(key, Object.assign({
-      offset: fileOffset,
-      before: Uint8Array.from(before),
-      after: Uint8Array.from(after),
-    }, meta || {}));
+    const offset = canonicalOffset(fileOffset, 'fileOffset');
+    const expected = Uint8Array.from(before || []);
+    const replacement = Uint8Array.from(after || []);
+    if (!expected.length) throw new Error('patch requires non-empty expected source bytes');
+    const candidate = {
+      ...(meta || {}),
+      offset,
+      addr: meta && meta.addr != null ? canonicalAddress(meta.addr) : null,
+      before: expected,
+      after: replacement,
+    };
+    const range = patchRange(candidate);
+    for (const existing of this.items.values()) {
+      if (!rangesOverlap(range, patchRange(existing))) continue;
+      throw new Error(`patch range conflicts with existing patch at +${existing.offset.toString(16)}`);
+    }
+    const key = offset.toString();
+    this.items.set(key, candidate);
+    return candidate;
   }
 
-  remove(fileOffset) { this.items.delete(fileOffset.toString()); }
+  remove(fileOffset) { return this.items.delete(canonicalOffset(fileOffset, 'fileOffset').toString()); }
 
   clear() { this.items.clear(); }
 
   list() {
-    return Array.from(this.items.values()).sort((a, b) => (a.offset < b.offset ? -1 : 1));
+    return Array.from(this.items.values()).sort((a, b) => (a.offset < b.offset ? -1 : a.offset > b.offset ? 1 : 0));
   }
 
-  /** その位置に書き換えがあるか。 */
-  at(fileOffset) { return this.items.get(fileOffset.toString()) || null; }
+  at(fileOffset) { return this.items.get(canonicalOffset(fileOffset, 'fileOffset').toString()) || null; }
 
-  /** アドレスから探す（表示用）。 */
   byAddress(addr) {
-    for (const it of this.items.values()) if (it.addr != null && it.addr === addr) return it;
+    const wanted = canonicalAddress(addr);
+    for (const it of this.items.values()) if (it.addr != null && canonicalAddress(it.addr) === wanted) return it;
     return null;
   }
 
+  async validateSource(file) {
+    if (!file || typeof file.slice !== 'function' || !Number.isSafeInteger(Number(file.size)) || Number(file.size) < 0) {
+      throw new TypeError('PatchSet.apply requires a Blob/File-compatible source');
+    }
+    const fileSize = BigInt(file.size);
+    const items = this.list();
+    for (const it of items) {
+      const end = it.offset + BigInt(it.before.length);
+      if (end > fileSize) throw new Error('書き換え位置がファイルの範囲外です: +' + it.offset.toString(16));
+      const actual = await readBlobRange(file, it.offset, it.before.length);
+      if (actual.length !== it.before.length) throw new Error('元のバイト範囲を読み出せません: +' + it.offset.toString(16));
+      for (let i = 0; i < it.before.length; i++) {
+        if (actual[i] !== it.before[i]) throw new Error('元のバイトが変わっています: +' + it.offset.toString(16));
+      }
+    }
+    return items;
+  }
+
   /**
-   * 元のファイルに書き換えを当てて、新しい Blob を作る。
-   * @param {File|Blob} file
+   * Validate only patch-sized source ranges, then build the output from Blob
+   * slices plus replacement bytes. Unchanged GB-scale ranges are never loaded
+   * into a JS ArrayBuffer, keeping peak JS memory bounded by patch data.
    */
   async apply(file) {
-    const buf = new Uint8Array(await file.arrayBuffer());
-    for (const it of this.items.values()) {
-      const at = Number(it.offset);
-      if (!Number.isSafeInteger(at) || at < 0 || at + it.after.length > buf.length) {
-        throw new Error('書き換え位置がファイルの範囲外です: +' + it.offset.toString(16));
-      }
-      if (it.before && it.before.length === it.after.length) {
-        for (let i = 0; i < it.before.length; i++) {
-          if (buf[at + i] !== it.before[i]) {
-            throw new Error('元のバイトが変わっています: +' + it.offset.toString(16));
-          }
-        }
-      }
-      buf.set(it.after, at);
+    const items = await this.validateSource(file);
+    if (!items.length) return file.slice(0, file.size, 'application/octet-stream');
+    const parts = [];
+    let cursor = 0n;
+    const fileSize = BigInt(file.size);
+    for (const it of items) {
+      const start = Number(cursor), end = Number(it.offset);
+      if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end)) throw new RangeError('Blob range exceeds safe integer addressability');
+      if (it.offset > cursor) parts.push(file.slice(start, end));
+      if (it.after.length) parts.push(it.after);
+      cursor = it.offset + BigInt(it.before.length);
     }
-    return new Blob([buf], { type: 'application/octet-stream' });
+    if (cursor < fileSize) {
+      const start = Number(cursor);
+      if (!Number.isSafeInteger(start)) throw new RangeError('Blob range exceeds safe integer addressability');
+      parts.push(file.slice(start, file.size));
+    }
+    return new Blob(parts, { type: 'application/octet-stream' });
   }
 }
 
 /* ── 小さなアセンブラ ───────────────────────────────────── */
 
-/*
- * ARM64 の命令はすべて 4 バイトで、ビットの並びが決まっています。
- * ここでは「書き換えでよく使うもの」だけを組み立てます。
- * 対応していない書き方は、はっきり「作れません」と返します（黙って違う命令を作らない）。
- */
-
 const CONDS = ['eq', 'ne', 'cs', 'cc', 'mi', 'pl', 'vs', 'vc', 'hi', 'ls', 'ge', 'lt', 'gt', 'le', 'al', 'nv'];
 
-/**
- * 1 命令をバイト列（4 バイト、リトルエンディアン）にする。
- * @param {string} text  例 'nop' / 'mov w0, #1' / 'b 0x100004000' / 'ret'
- * @param {BigInt} at    その命令が置かれるアドレス（分岐の距離の計算に要る）
- * @returns {{bytes:Uint8Array}|{error:string}}
- */
 export function assemble(text, at) {
   const src = String(text || '').trim().toLowerCase().replace(/\s+/g, ' ');
   if (!src) return { error: '命令が空です。' };
@@ -116,7 +171,6 @@ export function assemble(text, at) {
     return word(0xD4200000 | (Number(imm) << 5));
   }
 
-  /* mov Xd, #imm （movz の形。0〜65535 のみ） */
   if (mn === 'mov' || mn === 'movz') {
     const dst = regInfo(ops[0]);
     const d = dst && dst.num;
@@ -128,13 +182,11 @@ export function assemble(text, at) {
       const sf = dst.bits === 64 ? 1 : 0;
       return word((sf << 31) | (0xA5 << 23) | (Number(imm) << 5) | d);
     }
-    /* mov Xd, Xn は orr Xd, xzr, Xn */
     const srcReg = regInfo(ops[1]);
     const m = srcReg && srcReg.num;
     if (m == null) return { error: 'mov の右側が読めません。' };
     if (dst.bits !== srcReg.bits) return { error: 'mov の左右は同じ幅（w同士 / x同士）で指定してください。' };
     const sf = dst.bits === 64 ? 1 : 0;
-    /* SP は ORR の register 31 では表せない。ADD #0 が mov の正しい alias。 */
     if (dst.sp || srcReg.sp) {
       if (dst.zr || srcReg.zr) return { error: 'SP と ZR の間は mov できません。' };
       return word((sf << 31) | 0x11000000 | (m << 5) | d);
@@ -142,7 +194,6 @@ export function assemble(text, at) {
     return word((sf << 31) | (0x150 << 21) | (m << 16) | (31 << 5) | d);
   }
 
-  /* 分岐 */
   if (mn === 'b' || mn === 'bl') {
     const target = immOf(ops[0]);
     if (target == null) return { error: '飛び先のアドレスが読めません（0x… の形で書いてください）。' };
@@ -195,14 +246,6 @@ function immOf(op) {
   return null;
 }
 
-/* ── よく使う書き換え ───────────────────────────────────── */
-
-/**
- * その命令に対して選べる書き換えの候補を作る。
- * @param {string} mn
- * @param {string} opsStr
- * @param {BigInt} addr
- */
 export function suggestPatches(mn, opsStr, addr) {
   const base = (mn || '').toLowerCase();
   const out = [];
@@ -253,7 +296,6 @@ function targetOf(opsStr) {
   return m ? BigInt(m[1]) : null;
 }
 
-/** 16 進の文字列（"1f 20 03 d5" など）をバイト列にする。 */
 export function parseHexBytes(text) {
   const raw = String(text || '').trim();
   if (!isHexBytes(raw)) return null;
@@ -264,7 +306,6 @@ export function parseHexBytes(text) {
   return out;
 }
 
-/** Assemblyと取り違えない、厳密な16進バイト文法。 */
 export function isHexBytes(text) {
   const raw = String(text || '').trim();
   if (!raw) return false;
@@ -275,7 +316,6 @@ export function isHexBytes(text) {
   return /^(?:0x)?[0-9a-f]{2}(?:[\s,]+(?:0x)?[0-9a-f]{2})+$/i.test(raw);
 }
 
-/** UIとscript APIで共有する、仮想/ファイル両方の範囲検証。 */
 export function validatePatchRange(region, addr, length, fileSize, instruction = true) {
   if (!region) return { error: 'コードのセクションが見つかりません。' };
   const a = BigInt(addr);
@@ -293,7 +333,6 @@ export function validatePatchRange(region, addr, length, fileSize, instruction =
   return { ok: true, fileOffset: offset };
 }
 
-/** バイト列を "1F 20 03 D5" の形にする。 */
 export function hexOf(bytes) {
   return Array.from(bytes).map((b) => b.toString(16).padStart(2, '0').toUpperCase()).join(' ');
 }
