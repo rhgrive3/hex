@@ -1,0 +1,44 @@
+name: Issue 496 IL2CPP binding trust
+
+on:
+  push:
+    branches:
+      - fix/issue-496-il2cpp-binding-trust
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-test:
+    if: ${{ !contains(github.event.head_commit.message, '[issue-496-applied]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Apply IL2CPP binding hardening
+        run: |
+          python3 tools/apply-issue-496.py
+          python3 tools/update-issue-496-contract.py
+      - name: Focused IL2CPP binding regression
+        run: node tests/issue-496-il2cpp-binding.mjs
+      - name: Core regression suite
+        run: node tests/run.js
+      - name: Static checks
+        run: |
+          node --check js/il2cpp.js
+          node --check tests/issue-496-il2cpp-binding.mjs
+      - name: Full lint
+        run: npm run lint
+      - name: Commit validated implementation
+        run: |
+          if git diff --quiet; then exit 0; fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add js/il2cpp.js tests/run.js
+          git commit -m 'Fix #496 IL2CPP binding trust [issue-496-applied]'
+          git push
