@@ -24,6 +24,7 @@ jobs:
           node --check js/ir-core.js
           node --check tests/decompiler-semantic.mjs
           node --check tests/issues-350-399.mjs
+          node --check tests/compiler-truth/run-core.mjs
           node --check tests/issues-decompiler-ir-open-1.mjs
       - name: Focused regressions
         run: node tests/issues-decompiler-ir-open-1.mjs
@@ -36,7 +37,7 @@ jobs:
           set -euo pipefail
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add js/decompiler/pipeline-core.js js/decompiler/semantic.js js/decompiler/loop-repair.js js/decompiler/pretty/c.js js/ir-core.js tests/decompiler-semantic.mjs tests/issues-350-399.mjs tests/issues-decompiler-ir-open-1.mjs
+          git add js/decompiler/pipeline-core.js js/decompiler/semantic.js js/decompiler/loop-repair.js js/decompiler/pretty/c.js js/ir-core.js tests/decompiler-semantic.mjs tests/issues-350-399.mjs tests/compiler-truth/run-core.mjs tests/issues-decompiler-ir-open-1.mjs
           git commit -m "fix: decompiler and IR correctness batch 1 (#130 #139 #140 #317 #347 #353 #401 #417 #418 #573 #575)"
           git rm -f .github/workflows/fix-app-product-remaining.yml tools/fix-decompiler-ir-open-1.py tools/apply-decompiler-ir-batch1-current.py
           git commit -m "chore: finalize decompiler IR batch 1"
