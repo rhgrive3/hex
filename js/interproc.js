@@ -47,8 +47,8 @@ function summaryReturnCandidate(ir, ret) {
 
   // #130 deliberately makes an untyped RET carry no x0 SSA use. Interprocedural
   // summaries may still expose a terminal x0 definition as a *hint*, but it is
-  // not ABI return evidence. Downstream classification/propagation must never
-  // use this inferred candidate as if it were an explicit return.
+  // not ABI return evidence. Downstream propagation must never use this inferred
+  // candidate as if it were an explicit return contract.
   const value = valueBefore(ir, ret, 'x0');
   if (!value || value.kind === VK.ARG || !value.def) return { value: null, inferred: false };
   if (value.def.row == null || ret.row == null || value.def.row >= ret.row) return { value: null, inferred: false };
@@ -149,7 +149,19 @@ export function summarizeFunction(model, opts) {
   const oneReturn = returns.length === 1 ? returns[0] : null;
   const trustedReturn = oneReturn && !oneReturn.inferred ? oneReturn : null;
 
-  const getter = !!(trustedReturn && trustedReturn.kind === 'field' && nonStackWrites.length === 0);
+  // A pure getter or pure argument-arithmetic leaf can be recognized from its
+  // side-effect-free structure even when RET itself is untyped and therefore
+  // carries no explicit x0 SSA use. This evidence is local only: unlike an
+  // explicit/prototype-backed return, it must never cross a call boundary.
+  const structuralReturn = !!(
+    oneReturn && oneReturn.inferred && calls.length === 0 &&
+    nonStackWrites.length === 0 && rmw.length === 0 && branches.length === 0 &&
+    unknownPointerStores.length === 0 &&
+    (oneReturn.kind === 'field' || oneReturn.kind === 'argument-arithmetic')
+  );
+  const classificationReturn = trustedReturn || (structuralReturn ? oneReturn : null);
+
+  const getter = !!(classificationReturn && classificationReturn.kind === 'field' && nonStackWrites.length === 0);
   const setterFact = facts.find((f) => f.kind === FACT.WRITE && f.location && f.location.kind === 'field' &&
     f.value && f.value.origin && f.value.origin.kind === 'argument');
   const setter = !!(setterFact && nonStackWrites.length === 1);
@@ -176,8 +188,11 @@ export function summarizeFunction(model, opts) {
       setter,
       wrapper,
       forwarding,
-      simpleArithmeticWrapper: !!(trustedReturn && trustedReturn.kind === 'argument-arithmetic'),
-      returnEvidence: oneReturn ? (oneReturn.inferred ? 'inferred-terminal-x0' : 'explicit') : 'none',
+      simpleArithmeticWrapper: !!(classificationReturn && classificationReturn.kind === 'argument-arithmetic'),
+      returnEvidence: !oneReturn ? 'none'
+        : !oneReturn.inferred ? 'explicit'
+          : structuralReturn ? 'structural-side-effect-free-terminal-x0'
+            : 'inferred-terminal-x0',
     },
     engine: 'semantic-ir',
     truncated: !!ir.truncated,
