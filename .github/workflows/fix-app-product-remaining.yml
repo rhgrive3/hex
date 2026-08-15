@@ -1,0 +1,40 @@
+name: Validate issue 142 current main
+on:
+  push:
+    branches:
+      - fix/issue-142-current-main
+permissions:
+  contents: write
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply reviewed issue 142 patch
+        run: |
+          set -euo pipefail
+          git diff 1edffbb95a9072921048d0a3c2cb13beba60fbbf 29c9058b24fe0287591bbec06db5979ff030b01a -- js/decompiler/passes/stack-phi-recovery.js | git apply -3
+          git checkout 29c9058b24fe0287591bbec06db5979ff030b01a -- tests/issue-142-return-site-recovery.mjs
+      - name: Focused validation
+        run: |
+          node --check js/decompiler/passes/stack-phi-recovery.js
+          node tests/issue-142-return-site-recovery.mjs
+          node tests/issues-101-145.mjs
+          node tests/decompiler-pipeline.mjs
+      - name: Full validation
+        run: |
+          node tests/run.js
+          npm run check
+      - name: Finalize
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add js/decompiler/passes/stack-phi-recovery.js tests/issue-142-return-site-recovery.mjs
+          git commit -m "fix: recover stack returns per physical RET site (#142)"
+          git rm -f .github/workflows/fix-app-product-remaining.yml
+          git commit -m "chore: finalize issue 142"
+          git push origin HEAD:fix/issue-142-current-main
