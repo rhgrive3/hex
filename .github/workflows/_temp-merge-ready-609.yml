@@ -1,0 +1,40 @@
+name: Temp merge ready PR 609
+on:
+  push:
+    branches:
+      - finish-ai-conversation-ui
+permissions:
+  contents: write
+jobs:
+  integrate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: finish-ai-conversation-ui
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Merge current main
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch origin main
+          git merge --no-edit origin/main
+      - run: npm ci
+      - run: npm run userscript:build
+      - run: npm run check
+      - run: npm run ai:test
+      - run: npm run ui:test
+      - run: npm run userscript:test
+      - name: Remove temporary workflow and commit
+        run: |
+          rm .github/workflows/_temp-merge-ready-609.yml
+          git add -A
+          if ! git diff --cached --quiet; then
+            git commit -m 'Merge current main and sync PR 609 bundles'
+          fi
+          git push origin HEAD:finish-ai-conversation-ui
