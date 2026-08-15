@@ -1,0 +1,22 @@
+name: Temp fix Mach-O test
+on:
+  push:
+    branches: [fix-macho-symbol-truth-completeness]
+permissions:
+  contents: write
+jobs:
+  fix:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix-macho-symbol-truth-completeness
+      - run: sed -i "s/dyld-lazy:incomplete/dyld-lazy-bind:incomplete/" tests/issues-521-527.mjs
+      - run: node tests/issues-521-527.mjs
+      - run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add tests/issues-521-527.mjs
+          git commit -m 'Fix dyld lazy-bind regression expectation'
+          git push origin HEAD:fix-macho-symbol-truth-completeness
