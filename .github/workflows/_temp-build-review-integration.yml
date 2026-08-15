@@ -1,0 +1,65 @@
+name: Temp build review integration
+on:
+  push:
+    branches: [review-all-hardening-integration]
+permissions:
+  contents: write
+jobs:
+  integrate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: review-all-hardening-integration
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Fetch audited branch files
+        run: |
+          git fetch origin fix-macho-symbol-truth-completeness review-backend-open-race review-cross-binary-state-isolation review-backend-resource-disposal fix-userscript-merge-version-drift
+          mkdir -p .integration
+          git show origin/review-backend-resource-disposal:js/backend.js > js/backend.js
+          git show origin/review-backend-open-race:js/backend.js > .integration/backend-race.js
+          git show origin/review-cross-binary-state-isolation:js/workspace.js > js/workspace.js
+          git show origin/review-cross-binary-state-isolation:js/ai/ui/bridge.js > js/ai/ui/bridge.js
+          git show origin/fix-macho-symbol-truth-completeness:js/binary/macho-dyld.js > js/binary/macho-dyld.js
+          git show origin/fix-macho-symbol-truth-completeness:js/binary/macho.js > js/binary/macho.js
+          git show origin/fix-macho-symbol-truth-completeness:js/platform/analysis-result.js > js/platform/analysis-result.js
+          git show origin/fix-userscript-merge-version-drift:scripts/build-userscript.mjs > scripts/build-userscript.mjs
+          git show origin/review-backend-open-race:tests/backend-open-race.mjs > tests/backend-open-race.mjs
+          git show origin/review-cross-binary-state-isolation:tests/review-cross-binary-state.mjs > tests/review-cross-binary-state.mjs
+          git show origin/review-backend-resource-disposal:tests/backend-disposal.mjs > tests/backend-disposal.mjs
+          git show origin/fix-macho-symbol-truth-completeness:tests/issues-521-527.mjs > tests/issues-521-527.mjs
+          git show origin/fix-userscript-merge-version-drift:tests/userscript-version.mjs > tests/userscript-version.mjs
+      - name: Compose overlapping fixes
+        run: node scripts/_compose-review-integration.mjs
+      - name: Commit integrated source
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          rm -rf .integration scripts/_compose-review-integration.mjs
+          git add js package.json scripts tests
+          git rm scripts/_compose-review-integration.mjs
+          git commit -m 'Integrate exhaustive review hardening fixes'
+      - run: npm ci
+      - name: Build deployment bundles
+        run: npm run userscript:build
+      - name: Focused interaction regressions
+        run: |
+          node tests/backend-open-race.mjs
+          node tests/review-cross-binary-state.mjs
+          node tests/backend-disposal.mjs
+          node tests/issues-521-527.mjs
+          node tests/userscript-version.mjs
+      - name: Full repository checks
+        run: npm run check
+      - name: Userscript host checks
+        run: npm run userscript:test
+      - name: Commit bundles and push
+        run: |
+          git add userscript/hex.user.template.js userscript/platform-worker.bundle.js
+          git commit -m 'Sync deployment bundles for integrated hardening'
+          git push origin HEAD:review-all-hardening-integration
