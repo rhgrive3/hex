@@ -1,0 +1,31 @@
+name: Semantic IR verifier v2
+on:
+  push:
+    branches:
+      - fix/unlinked-ir-406-423-20260815
+permissions:
+  contents: write
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: git fetch origin main
+      - run: git merge --no-edit origin/main
+      - run: python3 tools/fix-unlinked-ir.py
+      - run: node tests/issues-406-423-unlinked.mjs
+      - run: npm run check
+      - name: Commit verified implementation
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -f tools/fix-unlinked-ir.py .github/workflows/fix-unlinked-ir-406-423.yml .github/workflows/verify-unlinked-ir-v2.yml
+          git add -A
+          git commit -m "fix: harden semantic IR and evidence correctness (#406-#419, #422-#423)"
+          git push origin HEAD
