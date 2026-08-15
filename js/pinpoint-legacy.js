@@ -162,8 +162,10 @@ export async function pinpointField(opts) {
   const narrowed = asked.length > 0 && asked.length < candidates.length;
   if (asked.length) candidates = asked;
 
+  const priorCandidates = narrowed ? asked.length : universe;
+
   // 事前オッズは「値の総数」から。2 万個あるなら 1/20000 から始める。
-  for (const c of candidates) c.fusion = fuse(c.evidence, { candidates: narrowed ? asked.length : universe });
+  for (const c of candidates) c.fusion = fuse(c.evidence, { candidates: priorCandidates });
   candidates.sort((a, b) => b.fusion.logOdds - a.fusion.logOdds);
   let ranked = candidates.slice(0, MAX_CANDIDATES);
   let result = decide(ranked);
@@ -195,7 +197,7 @@ export async function pinpointField(opts) {
         } catch { /* 1 個読めなくても、ほかは確かめる */ }
         checked++;
       }
-      for (const c of ranked) c.fusion = fuse(c.evidence, { candidates: universe });
+      for (const c of ranked) c.fusion = fuse(c.evidence, { candidates: priorCandidates });
       ranked.sort((a, b) => b.fusion.logOdds - a.fusion.logOdds);
       result = decide(ranked);
     }
