@@ -3769,6 +3769,12 @@ test('IL2CPP: 検証できたCodeRegistrationだけMethod→addressへ結ぶ', a
   const dv = new DataView(data.buffer);
   dv.setBigUint64(0, 3n, true);
   dv.setBigUint64(8, 0x2100n, true);
+  // Verified legacy CodeRegistration requires neighboring count/pointer pairs,
+  // not just one executable-looking table.
+  dv.setBigUint64(16, 1n, true);
+  dv.setBigUint64(24, 0x2180n, true);
+  dv.setBigUint64(32, 1n, true);
+  dv.setBigUint64(40, 0x2190n, true);
   for (let i = 0; i < 3; i++) dv.setBigUint64(0x100 + i * 8, 0x1000n + BigInt(i * 4), true);
   const regions = [
     { vmAddr: 0x1000n, size: 0x100n, exec: true, section: '__text' },
@@ -3818,6 +3824,11 @@ test('EVIDENCE: hold-out calibrationのBrier/reliabilityを計算できる', asy
   const report = calibrationReport([{ score: 0.9, outcome: 1 }, { score: 0.8, outcome: 0 }], 2);
   eq(report.count, 2);
   ok(report.brier > 0 && report.bins.length === 1);
+});
+
+
+test('IL2CPP: #496 binding trust regressions stay fail-closed', async () => {
+  await import('./issue-496-il2cpp-binding.mjs');
 });
 
 await Promise.all(pending);
