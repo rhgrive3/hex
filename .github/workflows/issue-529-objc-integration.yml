@@ -29,6 +29,9 @@ jobs:
       - name: Static checks
         run: |
           node --check js/objc.js
+          node --check js/apple/objc-metadata.js
+          node --check js/apple/objc-runtime.js
+          node --check js/decompiler/semantic.js
           node --check js/app.js
           node --check js/tools.js
           node --check js/ai/ui/hex-context.js
@@ -39,6 +42,6 @@ jobs:
           if git diff --quiet; then exit 0; fi
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add js/objc.js js/app.js js/tools.js js/ai/ui/hex-context.js js/ai/tools/registry.js
+          git add js/objc.js js/apple/objc-metadata.js js/apple/objc-runtime.js js/decompiler/semantic.js js/app.js js/tools.js js/ai/ui/hex-context.js js/ai/tools/registry.js
           git commit -m 'Fix #529 ObjC runtime integration [issue-529-applied]'
           git push
