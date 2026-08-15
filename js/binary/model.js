@@ -173,7 +173,7 @@ export class BinaryImage {
 
   toJSON() {
     const convert = (v) => {
-      if (typeof v === 'bigint') return '0x' + v.toString(16).toUpperCase();
+      if (typeof v === 'bigint') return v < 0n ? '-0x' + (-v).toString(16).toUpperCase() : '0x' + v.toString(16).toUpperCase();
       if (Array.isArray(v)) return v.map(convert);
       if (v && typeof v === 'object') {
         const out = {};
@@ -259,7 +259,8 @@ function dedupeImports(input) {
     if (i.sites) {
       const seen = new Set();
       i.sites = i.sites.filter((s) => {
-        const key = `${s.address ?? ''}:${s.offset ?? ''}:${s.kind ?? ''}`;
+        const scalar = (value) => typeof value === 'bigint' ? value.toString() : value == null ? '' : String(value);
+        const key = [scalar(s.address), scalar(s.offset), s.kind || '', scalar(s.type), scalar(s.addend), scalar(s.pointerFormat), s.weak ? '1' : '0'].join(':');
         if (seen.has(key)) return false;
         seen.add(key); return true;
       });
