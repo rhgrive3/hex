@@ -117,7 +117,7 @@ function putI32(dv,at,value){dv.setInt32(at,Number(value),true);}
   const TAG = 0xf000000000000000n, protocolList=0x100n, protocol=0x200n, nameAt=0x400n;
   put64(dv,Number(protocolList),TAG|protocol);
   put64(dv,Number(protocol)+8,TAG|nameAt);
-  const longName='解析'.repeat(100); // 600 UTF-8 bytes, beyond the old fixed 256-byte read.
+  const longName='解析'.repeat(100);
   const encoded=new TextEncoder().encode(longName+'\0'); mem.set(encoded,Number(nameAt));
   const read=async(addr,len)=>{const a=Number(addr);if(a<0||a>=mem.length)return null;return mem.subarray(a,Math.min(mem.length,a+len));};
   const model=await parseObjcExtendedMetadata(read,{protocolList:{vmAddr:protocolList,size:8n}},{imageBase:0n,resolvePointer:(raw)=>BigInt(raw)&0xffffn});
@@ -129,7 +129,7 @@ function memoryReader(mem){return async(addr,len)=>{const a=Number(addr);if(a<0|
 // #212-#218: Swift descriptor sizing, mangling, pointer decoding, UTF-8, budgets and conformance kinds.
 {
   const mem=new Uint8Array(2048),dv=new DataView(mem.buffer),addr=0x100,nameAt=0x180;
-  put32(dv,addr,17); // struct
+  put32(dv,addr,17);
   putI32(dv,addr+8,nameAt-(addr+8));
   put32(dv,addr+20,1); put32(dv,addr+24,2);
   mem.set(new TextEncoder().encode('短い構造体\0'),nameAt);
@@ -156,7 +156,7 @@ function memoryReader(mem){return async(addr,len)=>{const a=Number(addr);if(a<0|
   put32(idv,invalidAddr,17); putI32(idv,invalidAddr+8,invalidName-(invalidAddr+8)); invalid.set([0xc3,0x28,0],invalidName);
   assert.equal(await parseSwiftNominalDescriptor(memoryReader(invalid),BigInt(invalidAddr)),null);
 
-  const fieldsAt=0x500; put32(dv,fieldsAt+8,12); // recordSize occupies u16 @ +10; write explicitly below.
+  const fieldsAt=0x500; put32(dv,fieldsAt+8,12);
   dv.setUint16(fieldsAt+10,12,true); put32(dv,fieldsAt+12,1);
   put32(dv,fieldsAt+16,0); putI32(dv,fieldsAt+20,0); putI32(dv,fieldsAt+24,0);
   const fields=await parseSwiftFieldDescriptor(read,BigInt(fieldsAt),NaN);
@@ -194,7 +194,8 @@ function metadataFixture({version=24,methodSize=56,owner=0,literalOverflow=false
 
 // #221-#230: IL2CPP parsing is bounded by header/table ranges and chooses coherent v24 layouts.
 {
-  assert.throws(()=>parseMetadata(new Uint8Array(100)),/header|小さすぎ/);
+  const shortHeader=new Uint8Array(100),shortDv=new DataView(shortHeader.buffer); put32(shortDv,0,0xFAB11BAF); putI32(shortDv,4,24);
+  assert.throws(()=>parseMetadata(shortHeader),/header/);
   const oob=metadataFixture(),odv=new DataView(oob.buffer); putI32(odv,8+2*8+4,oob.length); assert.throws(()=>parseMetadata(oob),/outside the file|overlap/);
   const badString=parseMetadata(metadataFixture({stringIndexOverflow:true})); assert.equal(badString.classes.length,0);
   const badOwner=parseMetadata(metadataFixture({owner:999})); assert.equal(badOwner.methods.length,0);
@@ -230,9 +231,9 @@ function installBrowser({hash='#/a',state=null,length=1}={}){
   let restored=0,disposed=0; const errors=[];
   const env=installBrowser({state:{hexUi:true,key:7,depth:0,viewState:{restore:true}},length:99});
   const router=new ProductRouter(routes,{defaultPath:'/a',onError:(e,m)=>errors.push(m.phase),onRoute:(current)=>current.route.id==='a'?{getState:()=>({a:1}),restoreState:()=>{restored++;},dispose:()=>{disposed++;}}:{getState:()=>({b:1})}});
-  router.start(); assert.equal(router.canBack(),false); // browser history length is intentionally irrelevant.
+  router.start(); assert.equal(router.canBack(),false);
   router.navigate('/b'); assert.equal(router.canBack(),true);
-  env.raf.splice(0).forEach((fn)=>fn()); assert.equal(restored,0); // stale restore from /a cannot hit disposed view.
+  env.raf.splice(0).forEach((fn)=>fn()); assert.equal(restored,0);
   assert.equal(disposed,1);
 
   env.location.hash='/a'; env.listeners.get('hashchange')?.(); assert.equal(router.current.route.id,'a');
