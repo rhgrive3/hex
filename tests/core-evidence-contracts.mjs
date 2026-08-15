@@ -44,6 +44,13 @@ const confirmedGraph = new EvidenceGraph({ nodes:[
 ]});
 assert.equal(confirmedGraph.evaluateClaim('claim-confirmed').verdict, 'confirmed', 'direct deterministic proof may confirm regardless of confidence score');
 
+const unresolvedSupportGraph = new EvidenceGraph({ nodes:[
+  { id:'claim-missing-support', family:'Claim', targetEntityIds:['entity-c'], semanticKind:'identity', supportingEvidenceIds:['missing-support'], completeness:'partial', verdict:'supported', confidence:1 },
+]});
+const unresolvedSupport = unresolvedSupportGraph.evaluateClaim('claim-missing-support');
+assert.equal(unresolvedSupport.verdict, 'unverified', 'missing support references must not count as known support');
+assert.deepEqual(unresolvedSupport.missingEvidenceIds, ['missing-support']);
+
 const missing = graph.evaluateClaim('unknown-id');
 assert.equal(missing.verdict, 'unknown');
 assert.deepEqual(missing.missingEvidenceIds, ['unknown-id']);
