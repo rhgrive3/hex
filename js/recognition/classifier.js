@@ -18,7 +18,9 @@ function isAppleSystemLibrary(value) {
     return /(?:^|\/)(?:Foundation|CoreFoundation)\.framework\/(?:Foundation|CoreFoundation)$/i.test(text) || !text.includes('/');
   }
   if (/^libobjc(?:\.A)?\.dylib$/i.test(base)) return true;
-  if (/^libsystem(?:_[a-z0-9]+)?\.dylib$/i.test(base)) return true;
+  // Accept canonical Darwin libSystem names such as libSystem.B.dylib and
+  // libsystem_kernel.dylib without restoring the old loose substring match.
+  if (/^libsystem(?:(?:\.[a-z0-9]+)|(?:_[a-z0-9]+))?\.dylib$/i.test(base)) return true;
   if (/^libswift[a-z0-9_]*\.dylib$/i.test(base)) return true;
   return false;
 }
