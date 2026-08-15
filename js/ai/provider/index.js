@@ -13,7 +13,10 @@ export class AIProvider {
 
 export class WorkerAIProvider extends AIProvider {
   constructor({ endpoint = '/api/ai/turn', fetchImpl = globalThis.fetch, timeoutMs = 110000, capabilities = {} } = {}) {
-    super({ capabilities: { provider: 'worker', contextTokens: 32768, maxOutputTokens: 8192, maxTools: 10, maxRequestBytes: 150 * 1024, ...capabilities } });
+    // Before the first Worker response reveals the selected inference adapter,
+    // use the conservative envelope-safe limit. The Worker returns a derived
+    // provider-aware safe client limit on successful turns.
+    super({ capabilities: { provider: 'worker', contextTokens: 32768, maxOutputTokens: 8192, maxTools: 10, maxRequestBytes: 64 * 1024, ...capabilities } });
     this.endpoint = endpoint;
     this.fetchImpl = fetchImpl;
     this.timeoutMs = timeoutMs;
