@@ -1,0 +1,52 @@
+name: Remaining issue ready integration
+
+on:
+  push:
+    branches:
+      - fix/all-remaining-issues-20260815
+
+permissions:
+  contents: write
+
+jobs:
+  integrate:
+    if: ${{ !contains(github.event.head_commit.message, '[autofix]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Integrate completed issue branches
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          for b in \
+            fix/issue-464-app-region-wiring \
+            fix/issue-500-preprocessing-budget \
+            fix/issue-513-elf-symbol-budget \
+            fix/issue-514-diff-completeness
+          do
+            git fetch origin "$b:refs/remotes/origin/$b"
+            if ! git merge --no-edit --no-ff "origin/$b"; then
+              echo "MERGE_CONFLICT_BRANCH=$b"
+              git status --short
+              exit 1
+            fi
+          done
+      - name: Validate integrated fixes
+        run: |
+          node tests/symbol-identity.mjs
+          node tests/issue-500-matcher-budget.mjs
+          node tests/issue-513-elf-symbol-budget.mjs
+          node tests/diff-platform.mjs
+          npm run check
+      - name: Finalize branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm .github/workflows/remaining-issues-ready-integration.yml
+          git commit -m "Integrate completed remaining issue fixes [autofix]"
+          git push origin HEAD:fix/all-remaining-issues-20260815
