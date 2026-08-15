@@ -20,6 +20,7 @@ jobs:
         with:
           node-version: 22
       - run: npm run check
+      - run: node tests/issue-495-elf-relocation-budget.mjs
       - run: npm run binary:test
       - run: npm run binary:gate
 
