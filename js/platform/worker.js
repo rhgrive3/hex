@@ -77,7 +77,7 @@ async function handle(msg, signal) {
     case 'readAt': return readAtAddress(msg, signal);
     case 'guessFunctions': return genericFunctionSeeds();
     case 'xrefs': return { results: [], cancelled: false, capped: false, unsupported: true };
-    case 'scanProgram': return emptyProgramScan();
+    case 'scanProgram': return emptyProgramScan(msg.regionId);
     case 'fieldAccess': return msg.offsets ? { groups: Object.fromEntries((msg.offsets || []).map((x) => [String(x), []])), unsupported: true } : { results: [], unsupported: true };
     case 'valueShapes': return { groups: [], unsupported: true };
     case 'metadata': return metadataPage(msg);
@@ -242,10 +242,10 @@ function genericFunctionSeeds() {
     __transfer: [starts.buffer] };
 }
 
-function emptyProgramScan() {
+function emptyProgramScan(regionId = null) {
   const callFrom = new BigUint64Array(0), callTo = new BigUint64Array(0), refFrom = new BigUint64Array(0), refTo = new BigUint64Array(0);
   const refKind = new Uint8Array(0), kinds = new Uint8Array(0);
-  return { callFrom, callTo, refFrom, refTo, refKind, kinds, kindsCovered: 0,
+  return { regionId, callFrom, callTo, refFrom, refTo, refKind, kinds, kindsCovered: 0,
     callsCapped: false, refsCapped: false, words: 0, unsupported: true,
     architecture: image?.arch || null,
     completeness: { complete:false, reasons:['unsupported-program-analysis'] },

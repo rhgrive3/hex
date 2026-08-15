@@ -25,7 +25,7 @@ import { buildOverlay } from './narrate.js';
 import { buildObjcRuntimeModel } from './objc.js';
 import { FieldIndex, EMPTY_FIELDS } from './fields.js';
 import { makeSampleFile } from './sample.js';
-import { ProgramIndex } from './program.js';
+import { ProgramIndex, mergeProgramScans, PROGRAM_MERGE_LIMITS } from './program.js';
 import { foldShapes } from './shapes.js';
 import { recoverSchemas } from './schema.js';
 import { NoteStore, noteKeyFor, legacyV2NoteKeyFor, legacyNoteKeyForSlice, EMPTY_NOTES } from './names.js';
@@ -36,6 +36,7 @@ import { NavigationHistory } from './navigation.js';
 import { STRING_SCAN_BUDGET, StringCollectionBudget } from './string-budget.js';
 
 const $ = (id) => document.getElementById(id);
+const FUNCTION_DISCOVERY_GLOBAL_CAP = 400_000;
 
 class App {
   get analysisEpoch() { return this.backend ? this.backend.analysisEpoch : -1; }
@@ -563,93 +564,104 @@ class App {
      「誰が誰を呼び、誰が何を見ているか」を 1 回だけ走査して作る。
      これがないと、このツールは名前と文字列を眺めるだけの道具に戻ってしまう。 */
 
-  /** コードのセクション（__text 優先）。 */
+  /** 全体解析の対象になる、active slice内のfile-backed executable regions。 */
+  programRegions() {
+    const candidates=(this.store.get('regions')||[]).filter((r)=>r?.exec===true && r.size>0n && !r.zerofill);
+    const sectioned=candidates.filter((r)=>!!r.section);
+    const source=sectioned.length?sectioned:candidates;
+    const seen=new Set(), out=[];
+    for(const r of source){
+      const key=`${String(r.fileOffset??'')}|${String(r.vmAddr??'')}|${String(r.size??'')}`;
+      if(seen.has(key))continue; seen.add(key); out.push(r);
+    }
+    out.sort((a,b)=>a.vmAddr<b.vmAddr?-1:a.vmAddr>b.vmAddr?1:String(a.id||'').localeCompare(String(b.id||'')));
+    return out;
+  }
+
+  /** UIの既定コードregion（全体解析自体は programRegions() 全件を使う）。 */
   codeRegion() {
-    const regions = this.store.get('regions') || [];
-    return regions.find((r) => r.section === '__text' && r.size > 0n) ||
-           regions.find((r) => r.exec && r.size > 0n) ||
-           this.store.get('currentRegion') || null;
+    const regions=this.programRegions();
+    return regions.find((r)=>r.section==='__text') || regions[0] || this.store.get('currentRegion') || null;
   }
 
   /**
-   * 関数の切れ目をそろえる。LC_FUNCTION_STARTS がないファイルでは推測に頼る。
-   * 呼び出しグラフは「その命令がどの関数の中にあるか」を必要とするので、ここが要る。
+   * 関数の切れ目をactive sliceの全exec regionで補完する。
+   * exact seedの正確さと一覧の網羅性は分離し、全region走査済みの時だけcompleteにする。
    */
   async ensureFunctions(region, onProgress) {
-    const epoch = this.backend.gen;
-    // 名前の読み込みが終わるのを待つ。先に走らせると、無駄に推測してしまう。
-    if (this.symbolsReady) { try { await this.symbolsReady; } catch { /* 名前がなくても続ける */ } }
-    if (epoch !== this.backend.gen) return null;
-    // EMPTY_INDEX は全体で共有している空の索引なので、絶対に書き換えない
-    if (this.symbols === EMPTY_INDEX) {
-      this.symbols = new SymbolIndex({ regions: this.store.get('regions') || [] });
-      this.viewer.setSymbols(this.symbols);
+    const epoch=this.backend.gen;
+    if(this.symbolsReady){try{await this.symbolsReady;}catch{/* names are optional */}}
+    if(epoch!==this.backend.gen)return null;
+    if(this.symbols===EMPTY_INDEX){this.symbols = new SymbolIndex({ regions: this.store.get('regions') || [] });this.viewer.setSymbols(this.symbols);}
+    const sym=this.symbols;
+    if(!sym || sym.functionStartsComplete===true || sym.functionDiscovery?.complete===true)return sym;
+    const targets=this.programRegions();
+    if(region && region.exec && !targets.some((r)=>r.id===region.id))targets.push(region);
+    if(!targets.length)return sym;
+    const regionSetKey=targets.map((r)=>r.id).join('|');
+    if(sym.functionDiscovery?.attempted===true && sym.functionDiscovery?.regionSetKey===regionSetKey)return sym;
+
+    let remaining= Math.max(0, FUNCTION_DISCOVERY_GLOBAL_CAP - Math.min(FUNCTION_DISCOVERY_GLOBAL_CAP, sym.functionCount||0));
+    let remainingBytes=targets.reduce((n,r)=>n+BigInt(r.size),0n);
+    const results=[], reasons=[];
+    for(let i=0;i<targets.length;i++){
+      if(epoch!==this.backend.gen)return null;
+      const r=targets[i], size=BigInt(r.size), share=remaining>0&&remainingBytes>0n
+        ? Math.max(1,Math.min(remaining,Number((BigInt(remaining)*size+remainingBytes-1n)/remainingBytes))) : 0;
+      if(share<=0){reasons.push(`function-global-budget:${r.id}`);results.push({regionId:r.id,complete:false,skipped:true});remainingBytes-=size;continue;}
+      try{
+        const res=await this.backend.guessFunctions(r.id,share,onProgress&&((p)=>onProgress({phase:'functions',done:i+(p.all?Math.min(1,p.done/p.all):0),all:targets.length,region:r.id})));
+        if(epoch!==this.backend.gen)return null;
+        if(res?.starts?.length){sym.addFunctions(res.starts,{source:'heuristic',confidence:0.55,confirmed:false});sym.guessed=true;remaining=Math.max(0,remaining-res.starts.length);}
+        const complete=res?.discoveryComplete===true || res?.completeness?.complete===true || res?.complete===true;
+        results.push({regionId:r.id,complete,capped:!!res?.capped,discovered:res?.starts?.length||0});
+        if(!complete)reasons.push(`${r.id}:${res?.completeness?.reason||res?.truncationReason||'function-discovery-incomplete'}`);
+      }catch{results.push({regionId:r.id,complete:false,error:true});reasons.push(`${r.id}:function-discovery-failed`);}
+      remainingBytes-=size;
     }
-    const sym = this.symbols;
-    if (!sym || sym.functionStartsComplete === true || sym.functionDiscovery?.complete === true) return sym;
-    if (!region) return sym;
-    try {
-      const res = await this.backend.guessFunctions(region.id, null,
-        onProgress && ((p) => onProgress({ phase: 'functions', done: p.done, all: p.all })));
-      if (epoch === this.backend.gen && res && res.starts && res.starts.length) {
-        /* Keep exact starts recovered from ObjC/metadata and merge inferred C/C++/
-           Swift starts around them. Replacing the list here used to throw away
-           the strongest evidence as soon as partial metadata existed. */
-        sym.addFunctions(res.starts, { source: 'heuristic', confidence: 0.55, confirmed: false });
-        sym.guessed = true;
-        sym.functionDiscovery = res.completeness || {
-          complete: res.discoveryComplete === true || res.complete === true,
-          capped: !!res.capped,
-          reasons: res.discoveryComplete === true || res.complete === true ? [] : ['heuristic-function-discovery-incomplete'],
-        };
-        sym.functionStartsComplete = sym.functionDiscovery.complete === true;
-        sym.functionStartsCapped = !!res.capped;
-        this.viewer.setSymbols(sym);
-      }
-    } catch { /* 推測できなくても、ほかの解析は続ける */ }
+    const complete=results.length===targets.length && results.every((x)=>x.complete===true);
+    sym.functionDiscovery={complete,attempted:true,regionSetKey,regions:results,reasons:[...new Set(reasons)],capped:results.some((x)=>x.capped)};
+    sym.functionStartsComplete=complete;
+    sym.functionStartsCapped=sym.functionDiscovery.capped || reasons.some((x)=>x.includes('budget'));
+    this.viewer.setSymbols(sym);
     return sym;
   }
 
-  /**
-   * プログラム全体の索引を用意する。すでにあれば作り直さない。
-   * シンボルだけが増えたとき（Objective-C の名前復元など）は、走査結果を使い回す。
-   */
+  /** Build one global ProgramIndex from every executable region. */
   async ensureProgram(onProgress) {
-    const region = this.codeRegion();
-    if (!region) return null;
-    const key = region.id;
-    if (this.program && this.programKey === key && this.program.gen === this.symbols.gen) {
-      return this.program;
-    }
-    if (this.programScan && this.programKey === key) {
-      this.program = new ProgramIndex(this.programScan, this.symbols, region);
-      return this.program;
-    }
-    const epoch = this.backend.gen;
-    if (this.programBusy && this.programBusyEpoch === epoch) return this.programBusy;
-
-    this.programBusyEpoch = epoch;
-    this.programBusy = (async () => {
-      await this.ensureFunctions(region, onProgress);
-      if (epoch !== this.backend.gen) return null;
-      try {
-        const scan = await this.backend.scanProgram(region.id,
-          onProgress && ((p) => onProgress({ phase: 'scan', done: p.done, all: p.all })));
-        if (epoch === this.backend.gen && scan && !scan.cancelled) {
-          this.programScan = scan;
-          this.programKey = key;
-          this.program = new ProgramIndex(scan, this.symbols, region);
-        }
-      } catch {
-        if (epoch === this.backend.gen) this.program = null;
-      } finally {
-        if (this.programBusyEpoch === epoch) {
-          this.programBusy = null;
-          this.programBusyEpoch = -1;
-        }
+    const regions=this.programRegions();
+    if(!regions.length)return null;
+    const key=regions.map((r)=>r.id).join('|');
+    const primary=regions.find((r)=>r.section==='__text')||regions[0];
+    if(this.program&&this.programKey===key&&this.program.gen===this.symbols.gen)return this.program;
+    if(this.programScan&&this.programKey===key){this.program=new ProgramIndex(this.programScan,this.symbols,primary);return this.program;}
+    const epoch=this.backend.gen;
+    if(this.programBusy&&this.programBusyEpoch===epoch)return this.programBusy;
+    this.programBusyEpoch=epoch;
+    this.programBusy=(async()=>{
+      await this.ensureFunctions(primary,onProgress);
+      if(epoch!==this.backend.gen)return null;
+      const scans=[], failures=[];
+      let calls=PROGRAM_MERGE_LIMITS.calls, refs=PROGRAM_MERGE_LIMITS.refs, kinds=PROGRAM_MERGE_LIMITS.kindWords;
+      let remainingBytes=regions.reduce((n,r)=>n+BigInt(r.size),0n);
+      const share=(remaining,size,total)=>remaining>0&&total>0n?Math.max(1,Math.min(remaining,Number((BigInt(remaining)*size+total-1n)/total))):0;
+      for(let i=0;i<regions.length;i++){
+        const r=regions[i], size=BigInt(r.size);
+        if(epoch!==this.backend.gen)return null;
+        try{
+          const scan=await this.backend.scanProgram(r.id,onProgress&&((p)=>onProgress({phase:'scan',done:i+(p.all?Math.min(1,p.done/p.all):0),all:regions.length,region:r.id})),{
+            callLimit:share(calls,size,remainingBytes),refLimit:share(refs,size,remainingBytes),kindLimit:share(kinds,size,remainingBytes),
+          });
+          if(scan&&!scan.cancelled){scans.push(scan);calls=Math.max(0,calls-(scan.callCount??scan.callFrom?.length??0));refs=Math.max(0,refs-(scan.refCount??scan.refFrom?.length??0));kinds=Math.max(0,kinds-(scan.kindsCovered??scan.kinds?.length??0));}
+          else failures.push(`${r.id}:program-scan-cancelled`);
+        }catch{failures.push(`${r.id}:program-scan-failed`);}
+        remainingBytes-=size;
       }
-      return epoch === this.backend.gen ? this.program : null;
-    })();
+      if(epoch!==this.backend.gen)return null;
+      const merged=mergeProgramScans(scans,{regions,reasons:failures,limits:PROGRAM_MERGE_LIMITS});
+      this.programScan=merged;this.programKey=key;this.program=new ProgramIndex(merged,this.symbols,primary);
+      return this.program;
+    })().finally(()=>{if(this.programBusyEpoch===epoch){this.programBusy=null;this.programBusyEpoch=-1;}});
     return this.programBusy;
   }
 
