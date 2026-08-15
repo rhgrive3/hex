@@ -1,0 +1,34 @@
+name: Diagnose PR595 UI
+on:
+  push:
+    branches: [diagnose-pr595-ui]
+jobs:
+  ui:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install browsers
+        run: |
+          npm install --no-save --save-exact playwright@1.55.0
+          npx --no-install playwright install-deps webkit
+          npx --no-install playwright install chromium webkit
+      - name: UI browser
+        run: node tests/ui/browser.mjs
+      - name: Mobile state
+        run: node tests/ui/mobile-state.mjs
+      - name: Accessibility
+        run: node tests/ui/accessibility.mjs
+      - name: AI launcher
+        run: node tests/ai-ui-launcher.mjs
+      - name: AI panel
+        run: node tests/ai-ui-panel.mjs
+      - name: AI proposal
+        run: node tests/ai-ui-proposal.mjs
+      - name: AI fallback
+        run: node tests/ai-ui-fallback.mjs
+      - name: AI core integration
+        run: node tests/ai-ui-core-integration.mjs
