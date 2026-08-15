@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hex for ChatGPT
 // @namespace    https://github.com/rhgrive3/hex
-// @version      1.0.1786803135
+// @version      1.0.1786803850
 // @description  Run the Hex binary analysis workbench on ChatGPT Web.
 // @match        https://chatgpt.com/*
 // @run-at       document-idle
@@ -49551,6 +49551,7 @@ ${rendered}` : rendered,
             this.baseline = { file, backend: other, ownedBackend, info, sliceIndex, slice, architecture: arch, hash, symbols, functions, complete: functions.complete === true };
             if (previous?.ownedBackend && previous.backend !== other) previous.backend?.dispose?.();
             this.diffState = null;
+            this.busy = null;
             return this.baseline;
           } catch (error) {
             if (ownedBackend) other?.dispose?.();
@@ -49559,25 +49560,29 @@ ${rendered}` : rendered,
         }
         async diff(options = {}) {
           if (this.busy) return this.busy;
-          const revision = this.bindingRevision;
+          const revision = this.bindingRevision, baseline = this.baseline;
           let task;
           task = (async () => {
-            if (!this.baseline) throw new Error("baseline-not-loaded");
+            if (!baseline) throw new Error("baseline-not-loaded");
+            const assertCurrent = () => {
+              this._assertBinding(revision);
+              if (this.baseline !== baseline) throw staleWorkspaceError();
+            };
             try {
               await this.app.ensureRecognition?.({ maxFunctions: MAX_DIFF_FUNCTIONS, knowledgeLimit: 0 });
             } catch {
             }
-            this._assertBinding(revision);
-            const current2 = currentDiffFunctions(this.app), before2 = this.baseline.functions;
+            assertCurrent();
+            const current2 = currentDiffFunctions(this.app), before2 = baseline.functions;
             const result = diffFunctions(before2, current2, { mode: "fast", threshold: options.threshold ?? 0.62, matchBudget: options.matchBudget || { maxCandidateEvaluations: 15e5, maxEdges: 3e5, maxComponentNodes: 4096, maxComponentEdges: 65536 } });
-            this._assertBinding(revision);
+            assertCurrent();
             const inputsComplete = before2.complete === true && current2.complete === true;
             result.completeness = { complete: inputsComplete && result.truncated !== true, reasons: [], baseline: { complete: before2.complete === true, total: before2.total, scanned: before2.scanned, reason: before2.truncationReason }, current: { complete: current2.complete === true, total: current2.total, scanned: current2.scanned, reason: current2.truncationReason } };
             if (!before2.complete) result.completeness.reasons.push("baseline-function-set-incomplete");
             if (!current2.complete) result.completeness.reasons.push("current-function-set-incomplete");
             if (result.truncated) result.completeness.reasons.push("matcher-truncated");
-            result.provenance = { baselineHash: this.baseline.hash, currentHash: this.identity?.hash || null, architecture: this.baseline.architecture, currentArchitecture: this.identity?.metadata?.architecture || null, baselineName: this.baseline.info?.name || this.baseline.file?.name || null, currentName: this.identity?.metadata?.name || null, complete: result.completeness.complete };
-            this._assertBinding(revision);
+            result.provenance = { baselineHash: baseline.hash, currentHash: this.identity?.hash || null, architecture: baseline.architecture, currentArchitecture: this.identity?.metadata?.architecture || null, baselineName: baseline.info?.name || baseline.file?.name || null, currentName: this.identity?.metadata?.name || null, complete: result.completeness.complete };
+            assertCurrent();
             this.diffState = result;
             return result;
           })().finally(() => {
