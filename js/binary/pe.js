@@ -1,6 +1,6 @@
 import { ByteView } from './reader.js';
 import { BinaryImage, functionSeed } from './model.js';
-import { parseImports, parseExports, parseExceptionFunctions, parseBaseRelocations, parseCoffSymbols, parseTlsDirectory, parseLoadConfig, directory, peMachineName } from './pe-loader.js';
+import { parseImports, parseExports, parseExceptionFunctions, parseBaseRelocations, parseCoffSymbols, parseDelayImports, parseTlsDirectory, parseLoadConfig, resolveCoffSectionName, directory, peMachineName } from './pe-loader.js';
 
 const IMAGE_DIRECTORY_ENTRY_EXPORT = 0;
 const IMAGE_DIRECTORY_ENTRY_IMPORT = 1;
@@ -8,6 +8,7 @@ const IMAGE_DIRECTORY_ENTRY_EXCEPTION = 3;
 const IMAGE_DIRECTORY_ENTRY_BASERELOC = 5;
 const IMAGE_DIRECTORY_ENTRY_TLS = 9;
 const IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG = 10;
+const IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT = 13;
 
 export function parsePE(input) {
   const bytes = new ByteView(input).bytes;
@@ -43,7 +44,7 @@ export function parsePE(input) {
 
   const image = new BinaryImage(bytes, {
     format: 'pe', arch: peMachineName(machine), bits, endian: 'little', platform: 'windows',
-    imageBase, entrypoint: imageBase + BigInt(entryRva),
+    imageBase, entrypoint: entryRva ? imageBase + BigInt(entryRva) : null,
     metadata: { machine, timestamp, characteristics, subsystem, sectionAlignment, fileAlignment, sizeOfImage, sizeOfHeaders, directories },
   });
 
@@ -52,7 +53,7 @@ export function parsePE(input) {
   if (numberOfSections > 4096 || secBase + numberOfSections * 40 > r.length) throw new Error('PE section table is invalid');
   for (let i = 0; i < numberOfSections; i++) {
     const p = secBase + i * 40;
-    const name = r.ascii(p, 8);
+    const name = resolveCoffSectionName(r, r.ascii(p, 8), ptrSymbols, numberOfSymbols);
     const virtualSize = r.u32(p + 8);
     const virtualAddress = r.u32(p + 12);
     const sizeRaw = r.u32(p + 16);
@@ -71,6 +72,7 @@ export function parsePE(input) {
   parseExports(r, directory(directories, IMAGE_DIRECTORY_ENTRY_EXPORT), image);
   parseExceptionFunctions(r, directory(directories, IMAGE_DIRECTORY_ENTRY_EXCEPTION), image, machine);
   parseBaseRelocations(r, directory(directories, IMAGE_DIRECTORY_ENTRY_BASERELOC), image, machine);
+  parseDelayImports(r, directory(directories, IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT), image);
   parseTlsDirectory(r, directory(directories, IMAGE_DIRECTORY_ENTRY_TLS), image);
   parseLoadConfig(r, directory(directories, IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG), image);
   return image.finalize();
