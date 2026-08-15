@@ -20,7 +20,7 @@ old_flush = """  const { readable, writable } = new TransformStream({
   if (executionCtx && typeof executionCtx.waitUntil === 'function') executionCtx.waitUntil(piping);
   else void piping;
 """
-new = """  const upstreamReader = upstream.body.getReader();
+old_pull = """  const upstreamReader = upstream.body.getReader();
   const readable = new ReadableStream({
     async pull(controller) {
       try {
@@ -44,12 +44,37 @@ new = """  const upstreamReader = upstream.body.getReader();
     },
   });
 """
+new = """  const upstreamReader = upstream.body.getReader();
+  const readable = new ReadableStream({
+    start(controller) {
+      return (async () => {
+        try {
+          while (true) {
+            const { done, value } = await upstreamReader.read();
+            if (done) break;
+            controller.enqueue(value);
+          }
+          // Producer completion owns the lease lifecycle. Release before close
+          // so downstream EOF is a strict happens-after edge from quota cleanup.
+          await cleanup();
+          controller.close();
+        } catch (error) {
+          await cleanup();
+          controller.error(error);
+        }
+      })();
+    },
+    async cancel(reason) {
+      try { await upstreamReader.cancel(reason); }
+      finally { await cleanup(); }
+    },
+  });
+"""
 if new in s:
     raise SystemExit(0)
-if old_flush in s:
-    s = s.replace(old_flush, new, 1)
-elif old_plain in s:
-    s = s.replace(old_plain, new, 1)
+for old in (old_pull, old_flush, old_plain):
+    if old in s:
+        p.write_text(s.replace(old, new, 1))
+        break
 else:
     raise SystemExit('stream lifecycle patch anchor missing')
-p.write_text(s)
