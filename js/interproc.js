@@ -31,14 +31,14 @@ function callNameByRow(model) {
 
 function returnDescriptor(value) {
   if (!value) return { kind: 'void' };
-  if (value.const != null) return { kind: 'constant', value: value.const };
+  if (value.const != null) return { kind: 'constant', value: value.const, bits: value.bits || null, signed: value.signed ?? null };
   const origin = originOf(value);
   if (!origin) return { kind: 'unknown' };
-  if (origin.kind === 'argument') return { kind: 'argument', reg: origin.reg, index: Number(origin.reg.slice(1)) };
-  if (origin.kind === 'field' || origin.kind === 'stack') return { kind: origin.kind, location: origin.location || null };
-  if (origin.kind === 'global') return { kind: 'global', address: origin.address };
-  if (origin.kind === 'call') return { kind: 'call', target: origin.target, instructionId: origin.instructionId };
-  return { kind: 'computed', op: origin.op || null, sub: origin.sub || null };
+  if (origin.kind === 'argument') return { kind: 'argument', reg: origin.reg, index: Number(origin.reg.slice(1)), bits: value.bits || null, signed: value.signed ?? null };
+  if (origin.kind === 'field' || origin.kind === 'stack') return { kind: origin.kind, location: origin.location || null, bits: value.bits || null, signed: value.signed ?? null };
+  if (origin.kind === 'global') return { kind: 'global', address: origin.address, bits: value.bits || null, signed: value.signed ?? null };
+  if (origin.kind === 'call') return { kind: 'call', target: origin.target, instructionId: origin.instructionId, bits: value.bits || null, signed: value.signed ?? null };
+  return { kind: 'computed', op: origin.op || null, sub: origin.sub || null, bits: value.bits || null, signed: value.signed ?? null };
 }
 
 function summaryReturnCandidate(ir, ret) {
@@ -46,10 +46,9 @@ function summaryReturnCandidate(ir, ret) {
   if (explicit) return { value: explicit, inferred: false };
 
   // #130 deliberately makes an untyped RET carry no x0 SSA use. Interprocedural
-  // summaries may still recognize a *locally defined, terminal* x0 value as a
-  // return-shaped heuristic, without mutating RET or promoting it to ABI truth.
-  // Entry x0 (VK.ARG) is intentionally rejected so setters/void-like functions
-  // do not become synthetic `return arg0` summaries merely because x0 survived.
+  // summaries may still expose a terminal x0 definition as a *hint*, but it is
+  // not ABI return evidence. Downstream classification/propagation must never
+  // use this inferred candidate as if it were an explicit return.
   const value = valueBefore(ir, ret, 'x0');
   if (!value || value.kind === VK.ARG || !value.def) return { value: null, inferred: false };
   if (value.def.row == null || ret.row == null || value.def.row >= ret.row) return { value: null, inferred: false };
@@ -64,14 +63,18 @@ function simpleReturnExpression(value) {
   const pass = new Set([OP.MOV]);
   for (let guard = 0; guard < 6 && v && v.def && pass.has(v.def.op); guard++) v = v.def.args[0] && v.def.args[0].value;
   if (!v || !v.def || v.def.op !== OP.BIN || (v.def.sub !== 'add' && v.def.sub !== 'sub')) return null;
-  const a = v.def.args[0] && v.def.args[0].value;
-  const b = v.def.args[1] && v.def.args[1].value;
+  const aArg = v.def.args[0] || null;
+  const bArg = v.def.args[1] || null;
+  const a = aArg && aArg.value;
+  const b = bArg && bArg.value;
   if (!a || !b) return null;
+  const bits = Number(v.bits || v.def.extra?.dstBits || aArg?.bits || 64);
+  const signed = v.signed ?? null;
   if (a.kind === VK.ARG && /^x[0-7]$/.test(String(a.reg || '')) && b.const != null) {
-    return { kind: 'argument-arithmetic', argument: Number(a.reg.slice(1)), op: v.def.sub, constant: b.const };
+    return { kind: 'argument-arithmetic', argument: Number(a.reg.slice(1)), op: v.def.sub, constant: b.const, bits, signed };
   }
   if (v.def.sub === 'add' && b.kind === VK.ARG && /^x[0-7]$/.test(String(b.reg || '')) && a.const != null) {
-    return { kind: 'argument-arithmetic', argument: Number(b.reg.slice(1)), op: 'add', constant: a.const };
+    return { kind: 'argument-arithmetic', argument: Number(b.reg.slice(1)), op: 'add', constant: a.const, bits, signed };
   }
   return null;
 }
@@ -105,7 +108,7 @@ function callsOf(model, ir) {
     for (let i = 0; i <= 7; i++) {
       const v = valueBefore(ir, call, 'x' + i);
       if (!v) continue;
-      args.push({ index: i, constant: v.const == null ? null : v.const, origin: originOf(v) });
+      args.push({ index: i, constant: v.const == null ? null : v.const, origin: originOf(v), bits: v.bits || null, signed: v.signed ?? null });
     }
     out.push({
       row: call.row,
@@ -142,16 +145,18 @@ export function summarizeFunction(model, opts) {
   const unknownPointerStores = facts.filter((f) => f.kind === FACT.POINTER_STORE);
   const nonStackWrites = writes.filter((l) => l.kind !== 'stack');
   const nonStackReads = reads.filter((l) => l.kind !== 'stack');
+  void nonStackReads;
   const oneReturn = returns.length === 1 ? returns[0] : null;
+  const trustedReturn = oneReturn && !oneReturn.inferred ? oneReturn : null;
 
-  const getter = !!(oneReturn && oneReturn.kind === 'field' && nonStackWrites.length === 0);
+  const getter = !!(trustedReturn && trustedReturn.kind === 'field' && nonStackWrites.length === 0);
   const setterFact = facts.find((f) => f.kind === FACT.WRITE && f.location && f.location.kind === 'field' &&
     f.value && f.value.origin && f.value.origin.kind === 'argument');
   const setter = !!(setterFact && nonStackWrites.length === 1);
   const wrapper = calls.length === 1 && nonStackWrites.length === 0 && branches.length === 0 && unknownPointerStores.length === 0 &&
-    (oneReturn && (oneReturn.kind === 'call' || oneReturn.kind === 'argument' || oneReturn.kind === 'constant'));
+    (trustedReturn && (trustedReturn.kind === 'call' || trustedReturn.kind === 'argument' || trustedReturn.kind === 'constant'));
   const forwarding = calls.length === 1 && nonStackWrites.length === 0 && rmw.length === 0 &&
-    branches.length === 0 && unknownPointerStores.length === 0 && !!oneReturn;
+    branches.length === 0 && unknownPointerStores.length === 0 && !!trustedReturn;
 
   return {
     address: opts && opts.address != null ? opts.address : (model.startAddress != null ? model.startAddress : ir.startAddress),
@@ -171,7 +176,8 @@ export function summarizeFunction(model, opts) {
       setter,
       wrapper,
       forwarding,
-      simpleArithmeticWrapper: !!(oneReturn && oneReturn.kind === 'argument-arithmetic'),
+      simpleArithmeticWrapper: !!(trustedReturn && trustedReturn.kind === 'argument-arithmetic'),
+      returnEvidence: oneReturn ? (oneReturn.inferred ? 'inferred-terminal-x0' : 'explicit') : 'none',
     },
     engine: 'semantic-ir',
     truncated: !!ir.truncated,
@@ -181,20 +187,30 @@ export function summarizeFunction(model, opts) {
 function actualForArgument(call, index) {
   const a = call && call.arguments && call.arguments.find((x) => x.index === index);
   if (!a) return { kind: 'unknown' };
-  if (a.constant != null) return { kind: 'constant', value: a.constant };
+  if (a.constant != null) return { kind: 'constant', value: a.constant, bits: a.bits || null, signed: a.signed ?? null };
   return a.origin || { kind: 'unknown' };
+}
+
+function normalizeBitvector(value, bits, signed) {
+  const width = Number(bits || 64);
+  if (!Number.isSafeInteger(width) || width < 1 || width > 64) return value;
+  return signed === true ? BigInt.asIntN(width, value) : BigInt.asUintN(width, value);
 }
 
 function composeReturn(wrapper, callee) {
   if (!wrapper || !callee || wrapper.calls.length !== 1 || callee.returns.length !== 1) return null;
   const r = callee.returns[0];
+  // A terminal x0 definition without prototype/caller return evidence is a hint,
+  // not a return contract. Never propagate it across a call boundary.
+  if (!r || r.inferred) return null;
   const call = wrapper.calls[0];
   if (r.kind === 'constant') return r;
   if (r.kind === 'argument') return actualForArgument(call, r.index);
   if (r.kind === 'argument-arithmetic') {
     const actual = actualForArgument(call, r.argument);
     if (actual.kind === 'constant') {
-      return { kind: 'constant', value: r.op === 'sub' ? actual.value - r.constant : actual.value + r.constant, via: 'callee-summary' };
+      const raw = r.op === 'sub' ? actual.value - r.constant : actual.value + r.constant;
+      return { kind: 'constant', value: normalizeBitvector(raw, r.bits, r.signed), bits: r.bits || null, signed: r.signed ?? null, via: 'callee-summary' };
     }
     return { ...r, input: actual, via: 'callee-summary' };
   }
