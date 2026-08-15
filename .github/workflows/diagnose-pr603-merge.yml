@@ -13,6 +13,8 @@ jobs:
       - name: Attempt latest-main merge
         run: |
           set +e
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git fetch origin main
           git merge --no-commit --no-ff origin/main
           code=$?
@@ -23,6 +25,6 @@ jobs:
           for f in $(git diff --name-only --diff-filter=U); do
             echo "===== $f ====="
             git checkout --conflict=merge -- "$f" || true
-            grep -n -C 6 -E '^(<<<<<<<|=======|>>>>>>>)' "$f" || true
+            grep -n -C 8 -E '^(<<<<<<<|=======|>>>>>>>)' "$f" || true
           done
           exit $code
