@@ -90,6 +90,10 @@ export function createAiEngine(app, options = {}) {
           if (onActivity) {
             onActivity({ type: 'error', label: 'AI core unavailable', detail: String((error && error.message) || error).slice(0, 120) });
           }
+          /* Never make a ChatGPT-labelled answer silently come from Gemini.
+             UserscriptAIProvider is deliberately fail-closed while ChatGPT is
+             selected. Gemini mode keeps the legacy local fallback behavior. */
+          if (globalThis.__HEX_CHATGPT_BRIDGE__ && globalThis.__HEX_AI_PROVIDER__ !== 'gemini') throw error;
         }
       }
       return local.run(input);
