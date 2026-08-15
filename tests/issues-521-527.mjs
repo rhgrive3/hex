@@ -77,7 +77,7 @@ import { mergeMachOAnalysisResults } from '../js/macho-analysis-merge.js';
   writeThin(0x100, 2); writeThin(0x200, 0);
   const parsed = await parseMachOSource(new MemoryByteSource(bytes), { sliceIndex:1 });
   assert.equal(parsed.metadata.subtypeBase, 0);
-  assert.equal(parsed.metadata.fat.selected.index, 1);
+  assert.equal(parsed.metadata.fat.selected.offset, 0x200n);
 }
 
 {
