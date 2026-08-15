@@ -160,7 +160,7 @@ export function buildFunctionReport(opts) {
       name: symbols ? symbols.nameAt(c.addr) : null,
     }));
     if (callers.length) facts.push(fact('callers', { n: callers.length }));
-    if (!callers.length) facts.push(fact('no-callers', null));
+    if (!callers.length && program.statsComplete === true) facts.push(fact('no-callers', null));
     const stats = program.statsOf(range.start, range.end);
     if (stats.numeric) {
       facts.push(fact('numeric', {
@@ -239,7 +239,10 @@ export function buildFunctionReport(opts) {
   if (f.calls > f.namedCalls) unknowns.push(unknown('unnamed-calls', { n: f.calls - f.namedCalls }));
   if (!strings.length) unknowns.push(unknown('no-strings', null));
   if (model.truncated) unknowns.push(unknown('truncated', null));
-  if (program && !program.statsComplete) unknowns.push(unknown('stats-partial', null));
+  if (program && !program.statsComplete) {
+    unknowns.push(unknown('stats-partial', null));
+    unknowns.push(unknown('callers-partial', { reason: 'program-index-incomplete', observed: callers.length }));
+  }
   // 静的解析だけでは、実行時にその値が何であるかまでは決められない。必ず言う。
   unknowns.push(unknown('runtime-meaning', null));
 
@@ -247,6 +250,7 @@ export function buildFunctionReport(opts) {
 
   const nextSteps = [];
   if (callers.length) nextSteps.push({ code: 'check-callers', detail: { n: callers.length } });
+  else if (program && program.statsComplete !== true) nextSteps.push({ code: 'check-callers-incomplete', detail: { reason: 'program-index-incomplete' } });
   else nextSteps.push({ code: 'no-callers-hint', detail: null });
   if (f.argRegs && f.argRegs.length) nextSteps.push({ code: 'check-inputs', detail: { regs: f.argRegs } });
   if (f.setsReturnValue) nextSteps.push({ code: 'check-return', detail: null });
