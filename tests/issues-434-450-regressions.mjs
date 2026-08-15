@@ -17,6 +17,11 @@ import { parseProgramDynamic } from '../js/binary/elf-dynamic.js';
 import { parseSourceRanges } from '../js/binary/source-reader.js';
 
 const BASE = 0x100000000n;
+const cases = [];
+function test(name, fn) { cases.push([name, fn]); }
+function workflowEscape(value) {
+  return String(value).replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A');
+}
 function modelOf(lines) {
   const rows = lines.map((line, i) => {
     if (typeof line === 'object') return { row:i, address:BASE + BigInt(i * 4), ...line };
@@ -29,25 +34,22 @@ function modelOf(lines) {
   });
 }
 
-// #450: execution budget is always finite and bounded.
-{
+test('#450 bounded sandbox budget', async () => {
   const sandbox = new FunctionSandbox({ fetch: async () => null });
   await assert.rejects(() => sandbox.run({ maxSteps:Infinity }), /positive finite safe integer/);
   assert.ok(Number.isSafeInteger(MAX_SANDBOX_STEPS) && MAX_SANDBOX_STEPS > 0);
-}
+});
 
-// #440: Objective-C property setter provenance is x2/w2, never x3-x7.
-{
+test('#440 setter x2 provenance', () => {
   const good = verifyAccessor(modelOf(['str x2, [x0, #0x20]', 'ret']), { offset:0x20n });
   assert.equal(good.setter, true); assert.equal(good.fromArgument, true);
   const bad = verifyAccessor(modelOf(['mov x8, x3', 'str x8, [x0, #0x20]', 'ret']), { offset:0x20n });
   assert.equal(bad.setter, true); assert.equal(bad.fromArgument, false);
   const mixed = verifyAccessor(modelOf(['add x8, x2, x3', 'str x8, [x0, #0x20]', 'ret']), { offset:0x20n });
   assert.equal(mixed.fromArgument, false);
-}
+});
 
-// #439: divergent PHI arithmetic must stay branch-dependent, not first-arm truth.
-{
+test('#439 divergent PHI arithmetic', () => {
   const model = modelOf([
     'ldr w8, [x19, #0x20]',
     'cmp w0, #0',
@@ -65,28 +67,25 @@ function modelOf(lines) {
   assert.equal(u.steps.length, 0);
   assert.equal(u.alternatives.length, 2);
   assert.notEqual(u.alternatives[0].steps[0]?.op, u.alternatives[1].steps[0]?.op);
-}
+});
 
-// #438: arithmetic summaries retain the result register width.
-{
+test('#438 arithmetic summary width', () => {
   const s = summarizeFunction(modelOf(['add w0, w0, #1', 'ret']));
   assert.equal(s.returns.length, 1);
   assert.equal(s.returns[0].kind, 'argument-arithmetic');
   assert.equal(s.returns[0].bits, 32);
-}
+});
 
-// #437: call-clobbered terminal x0 remains an inferred hint, not wrapper truth.
-{
+test('#437 weak terminal x0 inference', () => {
   const s = summarizeFunction(modelOf(['bl #0x100001000', 'ret']));
   assert.equal(s.returns.length, 1);
   assert.equal(s.returns[0].inferred, true);
   assert.equal(s.classification.wrapper, false);
   assert.equal(s.classification.forwarding, false);
   assert.equal(s.classification.returnEvidence, 'inferred-terminal-x0');
-}
+});
 
-// #436: forward slicing crosses Memory-SSA PHIs, including when STORE is seed.
-{
+test('#436 Memory SSA PHI forward slice', () => {
   const loc={key:'field:x0:32'};
   const store={id:1,op:OP.STORE,block:0,row:0,loc,dst:null};
   const sink={id:3,op:OP.BIN,block:2,row:2,dst:null,args:[]};
@@ -97,10 +96,9 @@ function modelOf(lines) {
   const result=forwardSlice(ir,store);
   assert.ok(result.instructions.includes(load));
   assert.ok(result.instructions.includes(sink));
-}
+});
 
-// #435: bounded call-path search must expose incompleteness reasons.
-{
+test('#435 call path completeness', () => {
   const completeProgram={
     graphCompleteness:{callsComplete:true},
     functionRange:()=>({end:9n}),
@@ -112,10 +110,9 @@ function modelOf(lines) {
   assert.equal(partial.complete,false); assert.equal(partial.truncated,true);
   assert.ok(partial.reasons.includes('depth-limit'));
   assert.ok(partial.reasons.includes('program-calls-incomplete'));
-}
+});
 
-// #434: fact caps/source trace truncation remain visible to downstream consumers.
-{
+test('#434 runtime fact completeness', () => {
   const capped=traceToSemanticFacts({events:[
     {type:'memory-read',address:1n,size:4,value:1n},
     {type:'memory-write',address:2n,size:4,before:1n,after:2n},
@@ -125,20 +122,18 @@ function modelOf(lines) {
   const sourcePartial=traceToSemanticFacts({events:[{type:'return',value:1n}],truncated:true,dropped:3},{limit:10});
   assert.equal(sourcePartial.complete,false); assert.ok(sourcePartial.reasons.includes('source-trace-truncated'));
   assert.equal(sourcePartial.facts[0].observationComplete,false);
-}
+});
 
-// #441: protocol declarations are requirements, never implementation IMPs.
-{
+test('#441 protocol requirement vs IMP', () => {
   const protocolOnly=buildObjcRuntimeIndex({protocols:[{name:'P',methods:[{sel:'work:',addr:null}]}]});
   const r=resolveObjcDispatch(protocolOnly,{selector:'work:',protocols:['P']});
   assert.equal(r.resolved,null); assert.equal(r.candidates.length,0); assert.equal(r.requirements.length,1);
   const concrete=buildObjcRuntimeIndex({classes:[{name:'Worker',methods:[{sel:'work:',addr:0x1234n}]}],protocols:[{name:'P',methods:[{sel:'work:',addr:null}]}]});
   const c=resolveObjcDispatch(concrete,{receiverType:'Worker',selector:'work:',protocols:['P']});
   assert.equal(c.resolved?.imp,0x1234n); assert.equal(c.requirements.length,1);
-}
+});
 
-// #443: chained bind ordinals remain identity records, never masked fake VAs.
-{
+test('#443 chained vtable pointer identity', async () => {
   const bytes=new Uint8Array(32); const dv=new DataView(bytes.buffer);
   dv.setBigUint64(0,0n,true); dv.setBigUint64(8,0x20n,true);
   dv.setBigUint64(16,(1n<<63n)|3n,true); dv.setBigUint64(24,0n,true);
@@ -150,14 +145,13 @@ function modelOf(lines) {
   const unresolved=await readVtable(async()=>tagged,BASE,null,2);
   assert.equal(unresolved.typeinfo,null); assert.equal(unresolved.slots[0].addr,null);
   assert.equal(unresolved.slots[0].unresolved,true);
-}
+});
 
-// #446: ARM64E_KERNEL next is measured in 4-byte strides, not 8-byte strides.
-{
+test('#446 ARM64E kernel chained stride', () => {
   const bytes=new Uint8Array(0x200); const dv=new DataView(bytes.buffer);
-  dv.setUint32(4,28,true);              // starts_offset
-  dv.setUint32(28,1,true);              // seg_count
-  dv.setUint32(32,8,true);              // seg_info_offset[0]
+  dv.setUint32(4,28,true);
+  dv.setUint32(28,1,true);
+  dv.setUint32(32,8,true);
   const p=36;
   dv.setUint32(p,24,true); dv.setUint16(p+4,0x1000,true); dv.setUint16(p+6,7,true);
   dv.setBigUint64(p+8,0x100n,true); dv.setUint32(p+16,0,true); dv.setUint16(p+20,1,true); dv.setUint16(p+22,0,true);
@@ -168,15 +162,14 @@ function modelOf(lines) {
   const image={imageBase:BASE,metadata:{chainedFixups:{}},warnings:[],addressToOffset:(a)=>a-BASE};
   parseChainedBindingSites(r,{offset:0,size:0x80},image,imports);
   assert.equal(imports[0].sites.length,1); assert.equal(imports[1].sites.length,1);
-}
+});
 
-// #447: undersized dynamic ABI entry sizes are rejected as partial metadata.
-{
+test('#447 dynamic ABI minimum entry size', () => {
   const bytes=new Uint8Array(0x100); const dv=new DataView(bytes.buffer);
   const entries=[
-    [11n,8n],                // DT_SYMENT (ELF64 minimum 24)
-    [17n,0x1000n],[18n,16n],[19n,4n], // DT_REL/RELSZ/RELENT (minimum 16)
-    [7n,0x2000n],[8n,24n],[9n,8n],    // DT_RELA/RELASZ/RELAENT (minimum 24)
+    [11n,8n],
+    [17n,0x1000n],[18n,16n],[19n,4n],
+    [7n,0x2000n],[8n,24n],[9n,8n],
     [0n,0n],
   ];
   entries.forEach(([tag,val],i)=>{dv.setBigInt64(i*16,tag,true);dv.setBigUint64(i*16+8,val,true);});
@@ -185,16 +178,14 @@ function modelOf(lines) {
   assert.ok(image.warnings.some((w)=>w.includes('DT_SYMENT')));
   assert.ok(image.warnings.some((w)=>w.includes('PT_DYNAMIC-REL entry size')));
   assert.ok(image.warnings.some((w)=>w.includes('PT_DYNAMIC-RELA entry size')));
-}
+});
 
-// #448: an unterminated PE INT/IAT cannot walk into adjacent file data.
-{
+test('#448 bounded PE import thunks', () => {
   const bytes=new Uint8Array(0x500); const dv=new DataView(bytes.buffer); const te=new TextEncoder();
-  // import descriptor at RVA 0x1000 / file 0x100
   dv.setUint32(0x100,0x2000,true); dv.setUint32(0x10c,0x4000,true); dv.setUint32(0x110,0x3000,true);
   te.encodeInto('X.dll\0',bytes.subarray(0x380));
   dv.setBigUint64(0x200,0x4010n,true); dv.setBigUint64(0x208,0x4020n,true);
-  dv.setBigUint64(0x210,0x4030n,true); // adjacent decoy: must never be consumed
+  dv.setBigUint64(0x210,0x4030n,true);
   dv.setUint16(0x390,0,true); te.encodeInto('A\0',bytes.subarray(0x392));
   dv.setUint16(0x3a0,0,true); te.encodeInto('B\0',bytes.subarray(0x3a2));
   dv.setUint16(0x3b0,0,true); te.encodeInto('FAKE\0',bytes.subarray(0x3b2));
@@ -210,14 +201,24 @@ function modelOf(lines) {
   assert.deepEqual(image.imports.map((x)=>x.name),['A','B']);
   assert.equal(image.metadata.peImports.complete,false);
   assert.ok(image.warnings.some((w)=>/boundary without a NUL terminator/.test(w)));
-}
+});
 
-// #466: already-aborted range parsing stops before any source read/retry.
-{
+test('#466 source read cancellation', async () => {
   const controller=new AbortController(); controller.abort('test-cancel'); let reads=0;
   const source={size:16n,maxReadLength:16,readExactly:async()=>{reads++;return new Uint8Array(16);}};
   await assert.rejects(()=>parseSourceRanges(source,()=>({attachSource(){},metadata:{}}),{}, {signal:controller.signal}), (e)=>e?.name==='AbortError'&&e?.code==='BYTE_SOURCE_CANCELLED');
   assert.equal(reads,0);
+});
+
+for (const [name, fn] of cases) {
+  try {
+    await fn();
+    console.log(`ok ${name}`);
+  } catch (error) {
+    const detail = workflowEscape(error?.stack || error?.message || error);
+    console.error(`::error title=${workflowEscape(name)}::${detail}`);
+    throw error;
+  }
 }
 
 console.log('issues #434-#450 regressions PASS');
