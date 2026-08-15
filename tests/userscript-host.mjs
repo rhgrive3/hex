@@ -42,6 +42,9 @@ assert.match(template, /@match\s+https:\/\/chatgpt\.com\/\*/);
 assert.match(template, /__HEX_ORIGIN__\/hex\.user\.js/);
 assert.match(template, /hex-userscript-host/);
 assert.match(template, /userscript-assets/);
-assert.doesNotMatch(template, /<script\b/i);
+/* The static index entrypoints must be removed before the DOM is embedded;
+   app.js/ux.js are bundled and started by js/userscript/entry.js instead. */
+assert.doesNotMatch(template, /<script[^>]+src=["']\.\/js\/app\.js/i);
+assert.doesNotMatch(template, /<script[^>]+src=["']\.\/js\/ux\.js/i);
 
 console.log('userscript-host: ok');
