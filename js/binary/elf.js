@@ -193,7 +193,9 @@ function parseSymbols(r, table, sections, image, bits) {
   const minEnt = BigInt(bits === 64 ? 24 : 16);
   if (table.entsize < minEnt) { image.warnings.push(`ELF symbol table ${table.index} entry size ${table.entsize} is smaller than ${minEnt}`); return; }
   const xindex = sections.find((s) => s.type === SHT_SYMTAB_SHNDX && s.link === table.index) || null;
-  if (xindex && (xindex.entsize && xindex.entsize < 4n || xindex.offset + xindex.size > BigInt(r.length))) { image.warnings.push(`ELF SHT_SYMTAB_SHNDX for table ${table.index} is malformed`); }
+  const xindexValid = !!xindex && (!xindex.entsize || xindex.entsize === 4n)
+    && xindex.offset <= BigInt(r.length) && xindex.size <= BigInt(r.length) - xindex.offset;
+  if (xindex && !xindexValid) image.warnings.push(`ELF SHT_SYMTAB_SHNDX for table ${table.index} is malformed`);
   const count = Number(table.size / table.entsize);
   const ent = Number(table.entsize);
   if (count > 10000000 || Number(table.offset) + count * ent > r.length) return;
@@ -210,21 +212,37 @@ function parseSymbols(r, table, sections, image, bits) {
     if (!name) continue;
     const bind = info >>> 4, type = info & 0xf;
     let resolvedShndx = shndx;
+    let sectionIdentityKnown = true;
     if (shndx === SHN_XINDEX) {
-      const xoff = xindex ? safeOffset(xindex.offset + BigInt(i * 4)) : null;
-      if (xoff == null || !xindex || xoff + 4 > r.length || BigInt((i + 1) * 4) > xindex.size) {
+      resolvedShndx = null;
+      sectionIdentityKnown = false;
+      const xoff = xindexValid ? safeOffset(xindex.offset + BigInt(i * 4)) : null;
+      if (xoff == null || xoff + 4 > r.length || BigInt((i + 1) * 4) > xindex.size) {
         image.warnings.push(`ELF symbol ${i} uses SHN_XINDEX without a valid SHT_SYMTAB_SHNDX entry`);
-        resolvedShndx = null;
-      } else resolvedShndx = r.u32(xoff);
+      } else {
+        const candidate = r.u32(xoff);
+        if (candidate === SHN_UNDEF || candidate < sections.length) {
+          resolvedShndx = candidate;
+          sectionIdentityKnown = true;
+        } else {
+          image.warnings.push(`ELF symbol ${i} has out-of-range extended section index ${candidate}`);
+        }
+      }
     }
-    const defined = resolvedShndx == null ? true : resolvedShndx !== SHN_UNDEF;
+    const defined = sectionIdentityKnown ? resolvedShndx !== SHN_UNDEF : null;
     const binding = bind === 0 ? 'local' : bind === 1 ? 'global' : bind === 2 ? 'weak' : `bind-${bind}`;
     const kind = type === 2 ? 'function' : type === 1 ? 'object' : type === 3 ? 'section' : type === 6 ? 'tls' : `type-${type}`;
-    const sym = { name, address: value, size, kind, binding, defined, sectionIndex: resolvedShndx ?? shndx, visibility: other & 3, source: table.type === SHT_DYNSYM ? 'dynsym' : 'symtab', index: i, tableIndex: table.index };
+    const sym = { name, address: value, size, kind, binding, defined, sectionIndex: sectionIdentityKnown ? resolvedShndx : null, visibility: other & 3, source: table.type === SHT_DYNSYM ? 'dynsym' : 'symtab', index: i, tableIndex: table.index };
     image.symbols.push(sym);
-    if (!defined && (bind === 1 || bind === 2)) image.imports.push({ name, library: null, ordinal: null, weak: bind === 2, symbolIndex: i, tableIndex: table.index, source: 'elf-dynsym', sites: [] });
-    if (defined && (bind === 1 || bind === 2) && (sym.visibility === 0 || sym.visibility === 3)) image.exports.push({ name, address: value, kind, symbolIndex: i, tableIndex: table.index, source: sym.source });
-    if (defined && type === 2 && value !== 0n) image.functions.push(functionSeed(value, { size: size || null, name, source: 'symbol', confidence: 0.995 }));
+    if (defined === false && (bind === 1 || bind === 2)) image.imports.push({ name, library: null, ordinal: null, weak: bind === 2, symbolIndex: i, tableIndex: table.index, source: 'elf-dynsym', sites: [] });
+    if (defined === true && (bind === 1 || bind === 2) && (sym.visibility === 0 || sym.visibility === 3)) image.exports.push({ name, address: value, kind, symbolIndex: i, tableIndex: table.index, source: sym.source });
+    if (defined === true && type === 2 && value !== 0n) {
+      const section = Number.isInteger(resolvedShndx) ? sections[resolvedShndx] : null;
+      if (section && !!(section.flags & SHF_EXECINSTR)) image.functions.push(functionSeed(value, {
+        size: size || null, name, source: 'symbol', confidence: 0.995, exactFunctionStart: true,
+        functionStartEvidence: 'ELF STT_FUNC with validated executable section identity',
+      }));
+    }
   }
 }
 

@@ -243,7 +243,10 @@ export function parseCoffSymbols(r, ptr, count, image) {
       const derivedFunction = !!(type & 0x20);
       const executableExternal = !!(sec && sec.perms.execute && storage === 2);
       image.symbols.push({ name, address, size: null, kind: derivedFunction ? 'function' : 'symbol', binding: storage === 2 ? 'global' : 'local', defined: secNo > 0, sectionIndex: secNo, source: 'COFF' });
-      if (derivedFunction && address) image.functions.push(functionSeed(address, { name, source: 'symbol', confidence: 0.98 }));
+      if (derivedFunction && address) image.functions.push(functionSeed(address, {
+        name, source: 'symbol', confidence: 0.98, exactFunctionStart: true,
+        functionStartEvidence: 'COFF derived function type',
+      }));
       else if (executableExternal && address) image.functions.push(functionSeed(address, { name, source: 'symbol-heuristic', confidence: 0.55 }));
     }
     i += 1 + aux;
