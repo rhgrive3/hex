@@ -1,0 +1,62 @@
+name: Fix issues 300-349
+
+on:
+  push:
+    branches: [fix-issues-300-349]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fix-issues-300-349
+  cancel-in-progress: false
+
+jobs:
+  apply-and-verify:
+    if: ${{ !contains(github.event.head_commit.message, '[issues-300-349-applied]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix-issues-300-349
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Apply reviewed issue fixes
+        run: |
+          set -euxo pipefail
+          python3 tools/fix_issues_300_349.py
+          python3 tools/fix_expr_303_311_317.py
+          python3 tools/fix_comprehend_300_302.py
+          python3 tools/fix_linkage_318_319.py
+          python3 tools/fix_remaining_313_314_325_339.py
+          python3 tools/fix_ui_329_332_335.py
+          git diff --check
+
+      - name: Run issue regression suite
+        run: node tests/issues-300-349.mjs
+
+      - name: Run repository checks
+        run: npm run check
+
+      - name: Commit verified source changes
+        run: |
+          set -euxo pipefail
+          rm -f \
+            tools/fix_issues_300_349.py \
+            tools/fix_expr_303_311_317.py \
+            tools/fix_comprehend_300_302.py \
+            tools/fix_linkage_318_319.py \
+            tools/fix_remaining_313_314_325_339.py \
+            tools/fix_ui_329_332_335.py \
+            .github/workflows/fix-issues-300-349.yml
+          git add -A
+          git diff --cached --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Fix issues #300-#349 [issues-300-349-applied]'
+          git push origin HEAD:fix-issues-300-349
