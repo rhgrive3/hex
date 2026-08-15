@@ -46,7 +46,8 @@ jobs:
           # overwriting newer main hardening.
           git checkout origin/main -- js/decompiler/type-recovery.js js/recognition/classifier.js js/runtime/index.js js/emu.js
           node tools/resolve-main-350-399.mjs
-          rm tools/resolve-main-350-399.mjs
+          node tools/resolve-main-350-399-tests.mjs
+          rm tools/resolve-main-350-399.mjs tools/resolve-main-350-399-tests.mjs
 
           git add -A
           remaining="$(git diff --name-only --diff-filter=U)"
@@ -62,6 +63,7 @@ jobs:
           node --check js/recognition/classifier.js
           node --check js/runtime/index.js
           node --check js/emu.js
+          node --check tests/integration-review.mjs
       - name: Focused regression
         run: node tests/issues-350-399.mjs
       - name: Full non-browser check
