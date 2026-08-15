@@ -52,13 +52,13 @@ export function verifyAccessor(model, hyp, opts) {
   out.exclusive = others === 0;
 
   if (out.setter) {
-    // `self` can move between registers and a callee may clobber a previously
-    // self-looking register. Resolve the exact store row instead of consulting
-    // the summary Set returned by selfRegisters().
+    // Objective-C property setters have exactly one explicit argument: x2/w2.
+    // Do not treat x3-x7 as interchangeable argument provenance: those can be
+    // unrelated temporaries/additional parameters in non-property methods.
     const store = insns.find((i) => memoryTouchesSelf(i, isSelf, offset, 'store'));
     if (store) {
       const src = regKeyOf(store.ops[0]);
-      out.fromArgument = !!src && (src === ARG2 || src === 'w2' || wideOf(src) === ARG2 || tracesToArgument(insns, store.row, src));
+      out.fromArgument = !!src && (wideOf(src) === ARG2 || tracesToArgument(insns, store.row, src));
     }
   }
   return out;
@@ -76,9 +76,16 @@ function tracesToArgument(insns, row, reg) {
     if (controlBoundary(insn)) return false;
     if (!insn.writes.includes(want)) continue;
     if (insn.memory) return false;
-    const next = insn.reads.find((r) => /^[wx][2-7]$/.test(r)) || insn.reads[0];
-    if (!next) return false;
-    if (/^[wx][2-7]$/.test(next)) return true;
+    const reads = (insn.reads || []).filter((r) => /^[wx]\d+$/.test(r));
+    if (!reads.length) return false;
+    // A copy-chain step must have one value source. Multi-source arithmetic is
+    // not proof that the stored value is the setter argument even if x2 occurs.
+    const distinct = [...new Set(reads.map((r) => wideOf(r) || r))];
+    if (distinct.length !== 1) return false;
+    const next = reads[0];
+    const wide = wideOf(next);
+    if (wide === ARG2) return true;
+    if (/^x[3-7]$/.test(wide || '')) return false;
     want = next;
   }
   return false;
