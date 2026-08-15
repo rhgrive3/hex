@@ -1,0 +1,79 @@
+name: TEMP BattleCats accuracy follow-up
+
+on:
+  push:
+    branches: [battlecats-accuracy-100-followup]
+
+permissions:
+  contents: write
+
+jobs:
+  battlecats:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      BATTLECATS_URL: https://raw.githubusercontent.com/rhgrive3/hex/bd7bd61d093592d07fdd9e9b14a859e19dd4c3a9/tests/battlecats
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+
+      - name: Apply staged generic accuracy patch
+        if: ${{ hashFiles('.github/battlecats-followup.patch.gz.b64') != '' }}
+        shell: bash
+        run: |
+          base64 -d .github/battlecats-followup.patch.gz.b64 | gzip -dc > /tmp/battlecats-followup.patch
+          patch -p1 < /tmp/battlecats-followup.patch
+          rm .github/battlecats-followup.patch.gz.b64
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'Improve generic ARM64 function boundary inference'
+          git push origin HEAD:${{ github.ref_name }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          python -m pip install --disable-pip-version-check lief capstone
+
+      - name: Fetch BattleCats fixture
+        run: |
+          mkdir -p tests/.real-fixtures
+          curl -fL "$BATTLECATS_URL" -o tests/.real-fixtures/battlecats
+          echo '567234909b2a33d62548257c4148290d9215d7edf414fa17c6b06fcf8c7cdf13  tests/.real-fixtures/battlecats' | sha256sum -c -
+
+      - name: Generate BattleCats oracle
+        run: |
+          python tests/oracle.py tests/.real-fixtures/battlecats tests/oracle.battlecats.followup.json.gz
+          python tests/oracle-cfg-normalize.py tests/.real-fixtures/battlecats tests/oracle.battlecats.followup.json.gz
+
+      - name: BattleCats full accuracy
+        run: |
+          node --max-old-space-size=6000 tests/accuracy.mjs --target=tests/.real-fixtures/battlecats --oracle=tests/oracle.battlecats.followup.json.gz --json | tee accuracy-BattleCats.json
+
+      - name: Core tests
+        run: npm run check
+
+      - name: Pack exact source snapshot
+        if: always()
+        run: |
+          tar --exclude=.git --exclude=node_modules --exclude=tests/.real-fixtures --exclude=source.tar.gz -czf source.tar.gz .
+
+      - name: Upload workbench
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: battlecats-followup-workbench
+          path: |
+            source.tar.gz
+            tests/oracle.battlecats.followup.json.gz
+            accuracy-BattleCats.json
+          if-no-files-found: warn
