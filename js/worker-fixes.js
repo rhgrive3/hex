@@ -228,6 +228,10 @@ async function __functionEvidence(region, slice, requestId) {
   const directBranches = [];
   const unwind = __addressBitmap(region);
   const directCalls = __addressBitmap(region);
+  const callSources = __addressBitmap(region);
+  const conditionalSources = __addressBitmap(region);
+  const returnSources = __addressBitmap(region);
+  const indirectBranchSources = __addressBitmap(region);
   const prologues = __addressBitmap(region);
   const terminalStarts = __addressBitmap(region);
   const indirectTerminalStarts = __addressBitmap(region);
@@ -237,9 +241,12 @@ async function __functionEvidence(region, slice, requestId) {
   const indirectThunkStarts = __addressBitmap(region);
   const repeatedThunkStarts = __addressBitmap(region);
   const repeatedDirectTailStarts = __addressBitmap(region);
+  const repeatedDirectTailGroups = [];
+  const repeatedVectorFrameStarts = __addressBitmap(region);
   const exceptionLandingPads = __addressBitmap(region);
   const interiorFrameSetups = __addressBitmap(region);
   const denseAddressLeafStarts = __addressBitmap(region);
+  const compactPrefixRecordStarts = new Set();
   const trapPeriodicGroups = [];
   const trapStrideGroups = [];
   const adrpReturnGroups = [];
@@ -249,9 +256,9 @@ async function __functionEvidence(region, slice, requestId) {
   let ehFrameRanges = [];
 
   if (slice && imageBase != null) {
-    // Merge exact runtime metadata collectors from the current branch with
-    // the hardened boundary evidence below. These helpers parse ABI-defined
-    // Objective-C, initializer, and Swift reflection function references.
+    // ABI-defined runtime metadata provides exact starts and complements the
+    // structural boundary evidence below. Keep these independent collectors
+    // authoritative when heuristic evidence is ambiguous.
     for (const a of await objcMethodImplementationStarts(slice, lo, hi, imageBase, requestId)) exactMetadata.add(a);
     for (const a of await initializerFunctionStarts(slice, lo, hi, imageBase, requestId)) exactMetadata.add(a);
     for (const a of await swiftReflectionFunctionStarts(slice, lo, hi, requestId)) exactMetadata.add(a);
@@ -396,10 +403,21 @@ async function __functionEvidence(region, slice, requestId) {
     }
   }
 
-  let pos = 0, prevEnd = true, prevWord = null, prevPrevWord = null, prevThirdWord = null;
+  let pos = 0, prevEnd = true, prevWord = null, prevPrevWord = null, prevThirdWord = null, prevFourthWord = null, prevFifthWord = null;
+  const compactRecordWindow = [];
+  const signed32 = (word) => word > 0x7fffffff ? word - 0x100000000 : word;
+  const compactRecordField = (word) => {
+    const value = signed32(word >>> 0);
+    return value !== 0 && Math.abs(value) <= 0x10000 && (value & 3) === 0;
+  };
+  const compactRecordShape = (words, headLimit) => words.length === 4 &&
+    words[0].w > 0 && words[0].w <= headLimit && (words[0].w & 3) === 0 &&
+    words.slice(1).every((x) => compactRecordField(x.w));
   let lastAddressLeafStart = null;
   let lastIndirectBranch = null, betweenIndirectKinds = [];
   let lastDirectNextBranch = null, betweenDirectNextKinds = [];
+  let lastDirectTailBranch = null, betweenDirectTailKinds = [];
+  let directTailGroup = null;
   let directRepeatSig = null, directRepeatStarts = [];
   let repeatSig = null, repeatStarts = [];
   const flushRepeatedThunks = () => {
@@ -413,9 +431,29 @@ async function __functionEvidence(region, slice, requestId) {
     if (directRepeatStarts.length >= 5) for (const a of directRepeatStarts) repeatedDirectTailStarts.add(a);
     directRepeatSig = null; directRepeatStarts = [];
   };
+  const flushDirectTailGroup = () => {
+    if (directTailGroup && directTailGroup.starts.length >= 3) repeatedDirectTailGroups.push(directTailGroup);
+    directTailGroup = null;
+  };
   let trapRunStart = null, trapRunValues = [];
   let inlineUdfRunStart = null, inlineUdfValues = [];
   let adrpReturnRun = [];
+  const vectorFrameCandidates = new Map();
+  const vectorFrameToken = (word) => {
+    const m = Words.memoryAccess(word);
+    if (m) return `m:${m.load ? 'l' : 's'}:${m.pair ? 'p' : '-'}:${m.vector ? 'v' : '-'}:${m.base}:${m.reg}:${m.reg2 ?? '-'}:${m.mode || '-'}`;
+    const fpSetup = ((word >>> 23) & 0x1ff) === 0x122 && ((word >>> 5) & 31) === 31 && (word & 31) === 29;
+    return fpSetup ? 'fp' : `k:${Words.classifyWord(word)}`;
+  };
+  const recordVectorFrameCandidate = (start, before, words) => {
+    if (start < lo || before == null || !Words.isBranchImm(before) || Words.isCallImm(before)) return;
+    const first = Words.memoryAccess(words[0]);
+    if (!first || !first.store || !first.pair || !first.vector || first.base !== 31 || first.mode !== 'pre') return;
+    const sig = words.map(vectorFrameToken).join('|');
+    let list = vectorFrameCandidates.get(sig);
+    if (!list) vectorFrameCandidates.set(sig, list = []);
+    list.push(start);
+  };
   const flushAdrpReturnRun = () => {
     if (adrpReturnRun.length >= 2) adrpReturnGroups.push(adrpReturnRun);
     adrpReturnRun = [];
@@ -490,6 +528,22 @@ async function __functionEvidence(region, slice, requestId) {
     for (let i = 0; i < n; i++) {
       const w = dv.getUint32(i * 4, true);
       const pc = region.vmAddr + BigInt(pos + i * 4);
+      compactRecordWindow.push({ pc, w });
+      if (compactRecordWindow.length > 8) compactRecordWindow.shift();
+      if (compactRecordWindow.length === 8) {
+        const previousRecord = compactRecordWindow.slice(0, 4);
+        const currentRecord = compactRecordWindow.slice(4);
+        // Swift/Clang executable descriptor islands can use a compact 16-byte
+        // record immediately before a generated entry point.  The trailing
+        // fields are signed relative offsets, so one may decode as a normal
+        // instruction instead of UDF.  Recognize the ABI-like record shape,
+        // but defer promotion until the following entry is independently
+        // accepted by the hardened pass.
+        if (compactRecordShape(previousRecord, 0x100) &&
+            compactRecordShape(currentRecord, 24)) {
+          compactPrefixRecordStarts.add(currentRecord[0].pc);
+        }
+      }
       if (Words.looksLikePrologue(w)) prologues.add(pc);
       if (Words.isRet(w) && prevWord != null && prevPrevWord != null &&
           Words.classifyWord(prevPrevWord) === Words.KIND.ADRP && Words.classifyWord(prevWord) === Words.KIND.ARITH) {
@@ -509,21 +563,39 @@ async function __functionEvidence(region, slice, requestId) {
       if (prevWord != null) {
         const pm = Words.memoryAccess(prevWord);
         const fpSetup = ((w >>> 23) & 0x1ff) === 0x122 && ((w >>> 5) & 31) === 31 && (w & 31) === 29;
-        const savedFpLr = pm && pm.store && pm.pair && pm.base === 31 &&
+        const savedFpLr = pm && pm.store && pm.pair && !pm.vector && pm.base === 31 &&
           ((pm.reg === 29 && pm.reg2 === 30) || (pm.reg === 30 && pm.reg2 === 29));
-        if (fpSetup && savedFpLr) interiorFrameSetups.add(pc);
+        if (fpSetup && savedFpLr) {
+          interiorFrameSetups.add(pc);
+          // Large compiler-generated helpers sometimes start by spilling a
+          // SIMD callee-saved pair before the ordinary FP/LR frame record. A
+          // single vector spill is too common to be a boundary signal, so
+          // learn only repeated, same-shape prologues that follow an
+          // unconditional terminator. Immediates are deliberately omitted
+          // from the shape; register/dataflow structure is retained.
+          if (prevPrevWord != null && prevThirdWord != null)
+            recordVectorFrameCandidate(pc - 8n, prevThirdWord, [prevPrevWord, prevWord, w]);
+          if (prevThirdWord != null && prevFourthWord != null)
+            recordVectorFrameCandidate(pc - 12n, prevFourthWord, [prevThirdWord, prevPrevWord, prevWord, w]);
+          if (prevFourthWord != null && prevFifthWord != null)
+            recordVectorFrameCandidate(pc - 16n, prevFifthWord, [prevFourthWord, prevThirdWord, prevPrevWord, prevWord, w]);
+        }
       }
       if (prevEnd) terminalStarts.add(pc);
       if (prevWord != null && Words.isBr(prevWord)) indirectTerminalStarts.add(pc);
       if (prevWord != null && Words.classifyWord(prevWord) === Words.KIND.TRAP) trapTerminalStarts.add(pc);
       if (Words.isCallImm(w)) {
+        callSources.add(pc);
         const t = Words.branchImm26(w, pc);
         if (t != null && t >= lo && t < hi) directCalls.add(t);
       }
       if (Words.isCondBranch(w)) {
+        conditionalSources.add(pc);
         const t = Words.condBranchTarget(w, pc);
         if (t != null && t >= lo && t < hi) conditionalTargets.add(t);
       }
+      if (Words.isRet(w)) returnSources.add(pc);
+      if (Words.isBr(w)) indirectBranchSources.add(pc);
       if (Words.isBranchImm(w)) {
         const t = Words.branchImm26(w, pc);
         if (t != null && t >= lo && t < hi && directBranches.length < 400000) {
@@ -614,6 +686,38 @@ async function __functionEvidence(region, slice, requestId) {
       // boundaries, which avoids treating an ordinary switch CFG as a table
       // of functions.
       const currentKind = Words.classifyWord(w);
+
+      // Learn repeated direct-tail thunk tables from layout rather than fixed
+      // opcodes. Promotion happens later only when a majority of both entry
+      // boundaries and destinations are already independently known.
+      if (lastDirectTailBranch != null && betweenDirectTailKinds.length <= 8) betweenDirectTailKinds.push(currentKind);
+      if (Words.isBranchImm(w)) {
+        if (lastDirectTailBranch != null) {
+          const gap = pc - lastDirectTailBranch;
+          const body = betweenDirectTailKinds;
+          const internalControl = body.slice(0, -1).some((k) =>
+            k === Words.KIND.BRANCH || k === Words.KIND.CONDBR || k === Words.KIND.CALL ||
+            k === Words.KIND.INDCALL || k === Words.KIND.RET);
+          if (gap >= 8n && gap <= 32n && body.length >= 2 && body.length <= 8 && !internalControl &&
+              body[body.length - 1] === Words.KIND.BRANCH) {
+            const sig = gap.toString() + ':' + body.join(',');
+            if (directTailGroup && directTailGroup.sig === sig && directTailGroup.last === lastDirectTailBranch) {
+              directTailGroup.starts.push(pc + 4n);
+              directTailGroup.branches.push(pc);
+              directTailGroup.last = pc;
+            } else {
+              flushDirectTailGroup();
+              directTailGroup = { sig, last: pc, starts: [lastDirectTailBranch + 4n, pc + 4n], branches: [lastDirectTailBranch, pc] };
+            }
+          } else flushDirectTailGroup();
+        }
+        lastDirectTailBranch = pc;
+        betweenDirectTailKinds = [];
+      } else if (lastDirectTailBranch != null && betweenDirectTailKinds.length > 8) {
+        flushDirectTailGroup();
+        lastDirectTailBranch = null;
+        betweenDirectTailKinds = [];
+      }
       // Some compiler-generated leaf helpers are emitted as repeated, fixed-
       // shape straight-line blocks whose final `b` targets the very next word.
       // A single `b .+4` proves nothing, but five adjacent blocks with the same
@@ -682,7 +786,12 @@ async function __functionEvidence(region, slice, requestId) {
         betweenIndirectKinds = [];
       }
 
-      prevEnd = Words.looksLikeEnd(w) || currentKind === Words.KIND.TRAP;
+      // A direct branch to the immediately following instruction is CFG-
+      // equivalent to fallthrough; it must not manufacture a function boundary.
+      const directNext = Words.isBranchImm(w) && Words.branchImm26(w, pc) === pc + 4n;
+      prevEnd = !directNext && Words.looksLikeEnd(w);
+      prevFifthWord = prevFourthWord;
+      prevFourthWord = prevThirdWord;
       prevThirdWord = prevPrevWord;
       prevPrevWord = prevWord;
       prevWord = w;
@@ -692,8 +801,21 @@ async function __functionEvidence(region, slice, requestId) {
   }
   flushRepeatedThunks();
   flushRepeatedDirectTails();
+  flushDirectTailGroup();
   flushInlineUdfRun();
   flushTrapRun();
+  // A repeated structural frame shape within one small code neighbourhood is
+  // strong compiler-layout evidence. Require a matching peer within 4 KiB;
+  // isolated vector spills remain ordinary intra-function instructions.
+  for (const starts of vectorFrameCandidates.values()) {
+    starts.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    for (let i = 0; i < starts.length; i++) {
+      if ((i > 0 && starts[i] - starts[i - 1] <= 4096n) ||
+          (i + 1 < starts.length && starts[i + 1] - starts[i] <= 4096n)) {
+        repeatedVectorFrameStarts.add(starts[i]);
+      }
+    }
+  }
   for (const [target, count] of tailCallCounts) {
     if (count >= 2 || prologues.has(target) || terminalStarts.has(target)) tailCalls.add(target);
   }
@@ -717,7 +839,7 @@ async function __functionEvidence(region, slice, requestId) {
   for (const target of imageRelativeCodeCandidates) {
     if (indirectTerminalStarts.has(target) || trapTerminalStarts.has(target)) structured.add(target);
   }
-  return { data, structured, exactMetadata, directBranches, trapPeriodicGroups, trapStrideGroups, adrpReturnGroups, ehFrameRanges, exceptionLandingPads, interiorFrameSetups, denseAddressLeafStarts, unwind, directCalls, prologues, terminalStarts, indirectTerminalStarts, conditionalTargets, tailCalls, indirectThunkStarts, repeatedThunkStarts, repeatedDirectTailStarts };
+  return { data, structured, exactMetadata, directBranches, compactPrefixRecordStarts, trapPeriodicGroups, trapStrideGroups, adrpReturnGroups, ehFrameRanges, exceptionLandingPads, interiorFrameSetups, denseAddressLeafStarts, unwind, directCalls, callSources, conditionalSources, returnSources, indirectBranchSources, prologues, terminalStarts, indirectTerminalStarts, conditionalTargets, tailCalls, indirectThunkStarts, repeatedThunkStarts, repeatedDirectTailStarts, repeatedDirectTailGroups, repeatedVectorFrameStarts };
 }
 
 const __FUNCTION_DIRECT_BYTES = 24n * 1024n * 1024n;
@@ -888,8 +1010,78 @@ guessFunctions = async function guessFunctionsHardened(args) {
   // same address are strong evidence of a shared tail-called function entry.
   for (let off = 0n; off < region.size; off += 4n) {
     const a = region.vmAddr + off;
-    if (ev.tailCalls.has(a) || ev.indirectThunkStarts.has(a) || ev.repeatedThunkStarts.has(a) || ev.repeatedDirectTailStarts.has(a)) kept.add(a);
+    if (ev.tailCalls.has(a) || ev.indirectThunkStarts.has(a) || ev.repeatedThunkStarts.has(a) || ev.repeatedDirectTailStarts.has(a) || ev.repeatedVectorFrameStarts.has(a)) kept.add(a);
   }
+  // Fill holes in repeated direct-tail thunk tables only when the table is
+  // already independently anchored. This recovers prologue-less thunks while
+  // refusing unanchored local CFG labels.
+  {
+    const branchTargetBySource = new Map();
+    for (let e = 0; e + 1 < ev.directBranches.length; e += 2) {
+      const src = region.vmAddr + BigInt(ev.directBranches[e]);
+      if (ev.callSources.has(src)) continue;
+      branchTargetBySource.set(src, region.vmAddr + BigInt(ev.directBranches[e + 1]));
+    }
+    for (const group of ev.repeatedDirectTailGroups || []) {
+      const starts = group.starts.filter((a) => a >= region.vmAddr && a < region.vmAddr + region.size);
+      if (starts.length < 3) continue;
+      let knownStarts = 0;
+      for (const a of starts) if (kept.has(a)) knownStarts++;
+      if (knownStarts * 2 < starts.length) continue;
+      let knownTargets = 0, totalTargets = 0;
+      for (const src of group.branches) {
+        const target = branchTargetBySource.get(src);
+        if (target == null) continue;
+        totalTargets++;
+        if (kept.has(target)) knownTargets++;
+      }
+      if (!totalTargets || knownTargets * 2 < totalTargets) continue;
+      for (const a of starts) {
+        if (ev.exceptionLandingPads.has(a) || __strictlyInsideFunctionRange(ev.ehFrameRanges, a)) continue;
+        kept.add(a);
+      }
+    }
+  }
+
+  // Reject post-return switch/case veneer islands before using terminal
+  // boundaries as positive evidence.  Compilers may place several tiny case
+  // veneers after a function return; each veneer tail-branches backward to the
+  // same local continuation.  That layout looks like a table of leaf functions
+  // unless the shared backward target is treated as negative evidence.
+  {
+    const branchTargetBySource = new Map();
+    for (let e = 0; e + 1 < ev.directBranches.length; e += 2) {
+      const src = region.vmAddr + BigInt(ev.directBranches[e]);
+      if (ev.callSources.has(src)) continue;
+      branchTargetBySource.set(src, region.vmAddr + BigInt(ev.directBranches[e + 1]));
+    }
+    const passStarts = Array.from(kept).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    for (let i = 1; i < passStarts.length; i++) {
+      const start = passStarts[i];
+      if (!ev.returnSources.has(start - 4n)) continue;
+      if (ev.unwind.has(start) || ev.directCalls.has(start) || ev.exactMetadata.has(start) || ev.structured.has(start)) continue;
+      const previous = passStarts[i - 1];
+      let cur = start, commonTarget = null, blocks = 0, valid = true;
+      while (blocks < 12 && cur < region.vmAddr + region.size) {
+        let end = null;
+        for (let q = cur; q < cur + 24n && q < region.vmAddr + region.size; q += 4n) {
+          if (ev.callSources.has(q) || ev.conditionalSources.has(q) || ev.returnSources.has(q) || ev.indirectBranchSources.has(q)) { valid = false; break; }
+          const target = branchTargetBySource.get(q);
+          if (target == null) continue;
+          if (target >= start || target < previous || start - target > 256n) { valid = false; break; }
+          if (commonTarget == null) commonTarget = target;
+          else if (commonTarget !== target) { valid = false; break; }
+          end = q + 4n;
+          break;
+        }
+        if (!valid || end == null) break;
+        blocks++;
+        cur = end;
+      }
+      if (valid && blocks >= 4 && commonTarget != null) kept.delete(start);
+    }
+  }
+
   // Propagate function identity through short, independently proven tail
   // wrappers.  If an exact function is <=32 bytes and its final instruction
   // is an unconditional B immediately before the next known boundary, its
@@ -912,6 +1104,52 @@ guessFunctions = async function guessFunctionsHardened(args) {
       if (!(ev.unwind.has(start) || ev.directCalls.has(start) || ev.exactMetadata.has(start))) continue;
       kept.add(target); tailChanged = true;
     }
+  }
+
+  // Split a compact interval into repeated terminal-delimited tail thunks
+  // only when the *entire* interval is covered by short straight-line blocks.
+  // Every block must end in an outward unconditional branch, indirect branch,
+  // or return; calls and conditional branches invalidate the interval.  This
+  // learns compiler-generated thunk tables from control-flow structure rather
+  // than from fixed opcodes, addresses, or binary-specific constants.
+  {
+    const branchTargetBySource = new Map();
+    for (let e = 0; e + 1 < ev.directBranches.length; e += 2) {
+      const src = region.vmAddr + BigInt(ev.directBranches[e]);
+      if (ev.callSources.has(src)) continue;
+      branchTargetBySource.set(src, region.vmAddr + BigInt(ev.directBranches[e + 1]));
+    }
+    const passStarts = Array.from(kept).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    const inferred = [];
+    for (let i = 0; i + 1 < passStarts.length; i++) {
+      const lo = passStarts[i], hi = passStarts[i + 1];
+      if (hi - lo < 12n || hi - lo > 1024n) continue;
+      let cur = lo, valid = true;
+      const blocks = [lo];
+      while (cur < hi && blocks.length <= 64) {
+        let end = null;
+        for (let q = cur; q < cur + 28n && q < hi; q += 4n) {
+          if (ev.callSources.has(q) || ev.conditionalSources.has(q)) { valid = false; break; }
+          const target = branchTargetBySource.get(q);
+          if (target != null) {
+            if (target >= lo && target < hi) { valid = false; break; }
+            end = q + 4n;
+            break;
+          }
+          if (ev.indirectBranchSources.has(q) || ev.returnSources.has(q)) { end = q + 4n; break; }
+        }
+        if (!valid || end == null || end <= cur || end > hi) { valid = false; break; }
+        cur = end;
+        if (cur < hi) blocks.push(cur);
+      }
+      if (!valid || cur !== hi || blocks.length < 3) continue;
+      for (let j = 1; j < blocks.length; j++) {
+        const a = blocks[j];
+        if (ev.exceptionLandingPads.has(a) || __strictlyInsideFunctionRange(ev.ehFrameRanges, a)) continue;
+        inferred.push(a);
+      }
+    }
+    for (const a of inferred) kept.add(a);
   }
 
   // Recover terminal-separated entries reached by an unconditional branch
@@ -969,6 +1207,14 @@ guessFunctions = async function guessFunctionsHardened(args) {
       if (exactSeed || (!duplicated && group.length < 10)) continue;
       for (const { start } of group) kept.delete(start);
     }
+  }
+
+  // Recover compact 16-byte compiler descriptor records that sit directly
+  // before an independently accepted generated entry.  Both the current and
+  // preceding records must have a small aligned ABI-like shape; this prevents
+  // arbitrary executable data from becoming function starts.
+  for (const a of ev.compactPrefixRecordStarts || []) {
+    if (kept.has(a + 16n)) kept.add(a);
   }
 
   // Recover self-described fixed-width trap-stub tables.  The width is
