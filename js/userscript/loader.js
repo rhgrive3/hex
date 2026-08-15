@@ -55,9 +55,15 @@ async function assertHash(bytes, expected) {
 }
 function constantTimeEqual(a, b) { if (a.length !== b.length) return false; let diff = 0; for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i); return diff === 0; }
 
+function userscriptRequest() {
+  const modern = globalThis.GM?.xmlHttpRequest;
+  if (typeof modern === 'function') return modern.bind(globalThis.GM);
+  const legacy = globalThis.GM_xmlhttpRequest;
+  return typeof legacy === 'function' ? legacy : null;
+}
 function gmRequest(url, init = {}, responseType = 'arraybuffer') {
-  const gm = globalThis.GM?.xmlHttpRequest;
-  if (typeof gm !== 'function') return fetch(url, init).then(async (response) => ({ status: response.status, body: responseType === 'arraybuffer' ? await response.arrayBuffer() : await response.text() }));
+  const gm = userscriptRequest();
+  if (!gm) return fetch(url, init).then(async (response) => ({ status: response.status, body: responseType === 'arraybuffer' ? await response.arrayBuffer() : await response.text() }));
   return new Promise((resolve, reject) => {
     const request = gm({ method: init.method || 'GET', url, headers: init.headers || {}, data: init.body, responseType,
       onload: (value) => resolve({ status: Number(value.status), body: responseType === 'arraybuffer' ? value.response : value.responseText }),
@@ -70,10 +76,10 @@ async function gmBytes(url, init) { const result = await gmRequest(url, init, 'a
 
 function launcher(text, busy) {
   let button = document.getElementById('hex-secure-loader');
-  if (!button) { button = document.createElement('button'); button.id = 'hex-secure-loader'; Object.assign(button.style, { position:'fixed',right:'12px',bottom:'12px',zIndex:'2147483647',minHeight:'44px',padding:'8px 12px',border:'0',borderRadius:'12px',background:'#111827',color:'#fff',font:'600 13px system-ui',boxShadow:'0 4px 18px rgba(0,0,0,.28)' }); document.documentElement.append(button); }
+  if (!button) { button = document.createElement('button'); button.id = 'hex-secure-loader'; Object.assign(button.style, { position:'fixed',right:'12px',bottom:'12px',zIndex:'2147483647',minHeight:'44px',maxWidth:'min(92vw,520px)',padding:'8px 12px',border:'0',borderRadius:'12px',background:'#111827',color:'#fff',font:'600 13px system-ui',boxShadow:'0 4px 18px rgba(0,0,0,.28)' }); document.documentElement.append(button); }
   button.textContent = text; button.disabled = !!busy; return button;
 }
-function showFailure(error) { const button = launcher('Hex failed — retry', false); button.title = String(error?.message || error); button.onclick = () => { button.remove(); boot().catch(showFailure); }; }
+function showFailure(error) { const message = String(error?.message || error || 'Unknown startup error.'); const button = launcher(`Hex failed — retry · ${message.slice(0, 120)}`, false); button.title = message; button.onclick = () => { button.remove(); boot().catch(showFailure); }; }
 function randomToken(size) { const bytes = crypto.getRandomValues(new Uint8Array(size)); return b64(bytes); }
 function b64(bytes) { let binary = ''; for (const value of bytes) binary += String.fromCharCode(value); return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/g, ''); }
 function fromB64(value) { const raw = String(value).replaceAll('-', '+').replaceAll('_', '/'); const binary = atob(raw + '='.repeat((4 - raw.length % 4) % 4)); return Uint8Array.from(binary, (char) => char.charCodeAt(0)); }

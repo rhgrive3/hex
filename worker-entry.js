@@ -115,7 +115,10 @@ async function runtimeBootstrap(request, env, url) {
 }
 
 async function protectedRuntime(request, env, url) {
-  if (request.method !== 'GET') return methodNotAllowed('GET');
+  const origin = request.headers.get('origin');
+  if (request.method === 'OPTIONS') return runtimeAssetPreflight(origin, url.origin);
+  if (request.method !== 'GET') return methodNotAllowed('GET, OPTIONS');
+  if (origin && origin !== url.origin && !CHATGPT_ORIGINS.has(origin)) return json({ error: 'origin-not-allowed' }, 403);
   const buildId = decodeURIComponent(url.pathname.slice('/_runtime/'.length));
   if (buildId !== RUNTIME_BUILD.manifest.buildId) return json({ error: 'wrong-build' }, 403);
   const raw = request.headers.get('authorization') || '';
@@ -127,6 +130,7 @@ async function protectedRuntime(request, env, url) {
   const response = await asset(env, url, RUNTIME_BUILD.manifest.assetPath);
   if (!response.ok) return json({ error: 'runtime-unavailable' }, 503);
   const headers = new Headers(securityHeaders()); headers.set('content-type', 'application/octet-stream'); headers.set('content-length', String(RUNTIME_BUILD.manifest.byteLength)); headers.set('cache-control', 'private, max-age=120'); headers.set('x-hex-runtime-build', buildId);
+  if (origin && CHATGPT_ORIGINS.has(origin)) { headers.set('access-control-allow-origin', origin); headers.set('vary', 'Origin'); }
   return new Response(response.body, { status: 200, headers });
 }
 
@@ -153,6 +157,10 @@ async function shortHash(value) { const digest = new Uint8Array(await crypto.sub
 function runtimePreflight(origin) {
   if (origin && !CHATGPT_ORIGINS.has(origin) && origin !== 'https://ida.rhgrive.workers.dev') return new Response(null, { status: 403 });
   return new Response(null, { status: 204, headers: { 'access-control-allow-origin': origin || 'https://ida.rhgrive.workers.dev', 'access-control-allow-methods': 'POST, OPTIONS', 'access-control-allow-headers': 'Content-Type', 'access-control-max-age': '600', vary: 'Origin' } });
+}
+function runtimeAssetPreflight(origin, workerOrigin) {
+  if (origin && origin !== workerOrigin && !CHATGPT_ORIGINS.has(origin)) return new Response(null, { status: 403 });
+  return new Response(null, { status: 204, headers: { 'access-control-allow-origin': origin || workerOrigin, 'access-control-allow-methods': 'GET, OPTIONS', 'access-control-allow-headers': 'Authorization', 'access-control-max-age': '600', vary: 'Origin' } });
 }
 function apiPreflight(origin) { if (!CHATGPT_ORIGINS.has(origin)) return new Response(null, { status: 403 }); return new Response(null, { status: 204, headers: { 'access-control-allow-origin': origin, 'access-control-allow-methods': 'POST, OPTIONS', 'access-control-allow-headers': 'Content-Type, X-Hex-Session', 'access-control-max-age': '86400', vary: 'Origin' } }); }
 function withApiCors(response, origin) { if (!CHATGPT_ORIGINS.has(origin)) return response; const headers = new Headers(response.headers); headers.set('access-control-allow-origin', origin); headers.set('access-control-allow-methods', 'POST, OPTIONS'); headers.set('access-control-allow-headers', 'Content-Type, X-Hex-Session'); headers.set('vary', appendVary(headers.get('vary'), 'Origin')); return new Response(response.body, { status: response.status, statusText: response.statusText, headers }); }

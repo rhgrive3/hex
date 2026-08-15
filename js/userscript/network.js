@@ -17,8 +17,8 @@ export function installUserscriptNetworkBridge({ apiBase = globalThis.__HEX_API_
 }
 
 export async function gmFetch(input, init = {}, requestInput = null) {
-  const gm = globalThis.GM?.xmlHttpRequest;
-  if (typeof gm !== 'function') {
+  const gm = userscriptRequest();
+  if (!gm) {
     const nativeFetch = globalThis.__HEX_NATIVE_FETCH__ || globalThis.fetch;
     return nativeFetch(input, init);
   }
@@ -81,6 +81,13 @@ export async function gmFetch(input, init = {}, requestInput = null) {
       finish(reject, error);
     }
   });
+}
+
+function userscriptRequest() {
+  const modern = globalThis.GM?.xmlHttpRequest;
+  if (typeof modern === 'function') return modern.bind(globalThis.GM);
+  const legacy = globalThis.GM_xmlhttpRequest;
+  return typeof legacy === 'function' ? legacy : null;
 }
 
 function targetFor(input, base) {
