@@ -21,23 +21,20 @@ export async function prepareUserscriptWorkers({
   const wasmBlobURL = URL.createObjectURL(new Blob([await wasmResponse.arrayBuffer()], { type: 'application/wasm' }));
 
   const workerURLs = new Map();
-  const classicURLs = new Map();
-  const dependencies = manifest.classicDependencies || {};
-  const classicEntries = new Set(manifest.classicEntries || []);
+  const classicBlobURLs = [];
 
-  const buildClassic = (path) => {
-    if (classicURLs.has(path)) return classicURLs.get(path);
-    if (!sources.has(path)) throw new Error(`Hex worker source missing from manifest: ${path}`);
-    for (const dependency of dependencies[path] || []) buildClassic(dependency);
-
-    let source = rewriteImportScripts(sources.get(path), path, classicURLs);
-    if (classicEntries.has(path)) source = capstonePrelude(wasmBlobURL) + '\n' + source;
+  /* A blob Worker is explicitly allowed by ChatGPT's worker-src policy. Avoid
+     relying on a second CSP decision for importScripts(blob:...) inside that
+     worker: inline the classic dependency graph into the entry blob instead.
+     importScripts executes synchronously in the same global scope, so literal
+     local dependencies preserve their execution order when expanded in place. */
+  for (const path of manifest.classicEntries || []) {
+    let source = inlineImportScripts(path, sources);
+    source = capstonePrelude(wasmBlobURL) + '\n' + source;
     const url = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
-    classicURLs.set(path, url);
-    return url;
-  };
-
-  for (const path of manifest.classicEntries || []) workerURLs.set(path, buildClassic(path));
+    classicBlobURLs.push(url);
+    workerURLs.set(path, url);
+  }
 
   for (const [logicalPath, bundlePath] of Object.entries(manifest.moduleBundles || {})) {
     const response = await gmFetch(assetURL(base, bundlePath));
@@ -47,7 +44,7 @@ export async function prepareUserscriptWorkers({
   }
 
   const runtime = installWorkerOverride(base, workerURLs, {
-    revoke: [wasmBlobURL, ...new Set([...classicURLs.values(), ...workerURLs.values()])],
+    revoke: [wasmBlobURL, ...classicBlobURLs, ...new Set(workerURLs.values())],
   });
   globalThis.__HEX_WORKER_RUNTIME__ = runtime;
   return runtime;
@@ -77,7 +74,7 @@ function installWorkerOverride(base, workerURLs, { revoke = [] } = {}) {
       if (cleaned) return;
       cleaned = true;
       if (globalThis.Worker === HexWorker) globalThis.Worker = NativeWorker;
-      for (const url of revoke) {
+      for (const url of new Set(revoke)) {
         try { URL.revokeObjectURL(url); } catch { /* best effort */ }
       }
       if (globalThis.__HEX_WORKER_RUNTIME__ === runtime) delete globalThis.__HEX_WORKER_RUNTIME__;
@@ -87,15 +84,32 @@ function installWorkerOverride(base, workerURLs, { revoke = [] } = {}) {
   return runtime;
 }
 
-function rewriteImportScripts(source, sourcePath, blobURLs) {
-  return String(source).replace(/\bimportScripts\s*\(([^;]*?)\)\s*;/gs, (whole, args) => {
-    const rewritten = args.replace(/(['"])([^'"]+)\1/g, (literal, _quote, specifier) => {
-      const resolved = resolveLogical(sourcePath, specifier);
-      const blob = blobURLs.get(resolved);
-      if (!blob) throw new Error(`Hex worker dependency ${specifier} from ${sourcePath} was not preloaded.`);
-      return JSON.stringify(blob);
-    });
-    return `importScripts(${rewritten});`;
+function inlineImportScripts(entryPath, sources, stack = []) {
+  if (stack.includes(entryPath)) {
+    throw new Error(`Hex classic worker importScripts cycle: ${[...stack, entryPath].join(' -> ')}`);
+  }
+  const source = sources.get(entryPath);
+  if (source == null) throw new Error(`Hex worker source missing from manifest: ${entryPath}`);
+  const nextStack = [...stack, entryPath];
+
+  return String(source).replace(/\bimportScripts\s*\(([^;]*?)\)\s*;/gs, (_whole, args) => {
+    const matches = [...String(args).matchAll(/(['"])([^'"]+)\1/g)];
+    const residue = String(args)
+      .replace(/(['"])([^'"]+)\1/g, '')
+      .replace(/[\s,]/g, '');
+    if (!matches.length || residue) {
+      throw new Error(`Hex userscript only supports literal local importScripts arguments in ${entryPath}.`);
+    }
+
+    return matches.map((match) => {
+      const specifier = match[2];
+      if (/^[a-zA-Z][a-zA-Z\d+.-]*:/.test(specifier) || specifier.startsWith('//')) {
+        throw new Error(`External importScripts dependency is not supported in ${entryPath}: ${specifier}`);
+      }
+      const resolved = resolveLogical(entryPath, specifier);
+      const inlined = inlineImportScripts(resolved, sources, nextStack);
+      return `\n/* Hex userscript inlined importScripts(${JSON.stringify(specifier)}) from ${entryPath}. */\n${inlined}\n`;
+    }).join('\n');
   });
 }
 
