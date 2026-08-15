@@ -1,0 +1,25 @@
+name: Temporary ready PR 485 merge helper
+on:
+  push:
+    branches: [fix/latest-478-476-notes]
+permissions:
+  contents: write
+jobs:
+  merge-main:
+    if: startsWith(github.event.head_commit.message, 'ready-pr-merge-helper:')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Probe merge with current main
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git fetch origin main
+          if ! git merge --no-commit --no-ff origin/main; then
+            echo '=== UNMERGED FILES ==='
+            git diff --name-only --diff-filter=U
+            exit 1
+          fi
+          echo 'No conflicts'
