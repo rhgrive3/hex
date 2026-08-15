@@ -3,34 +3,35 @@ import { gmFetch, installUserscriptNetworkBridge } from '../js/userscript/networ
 
 const originalFetch = globalThis.fetch;
 const originalGM = globalThis.GM;
+const originalLegacyGM = globalThis.GM_xmlhttpRequest;
 const originalLocation = globalThis.location;
 const requests = [];
 
-try {
-  Object.defineProperty(globalThis, 'location', { value: new URL('https://chatgpt.com/c/test'), configurable: true, writable: true });
-  globalThis.GM = {
-    xmlHttpRequest(details) {
-      requests.push(details);
-      let aborted = false;
-      const handle = {
-        abort() {
-          aborted = true;
-          queueMicrotask(() => details.onabort?.({ status: 0 }));
-        },
-      };
-      queueMicrotask(() => {
-        if (aborted) return;
-        const bytes = new TextEncoder().encode('gm-ok');
-        details.onload?.({
-          status: 200,
-          statusText: 'OK',
-          response: bytes.buffer,
-          responseHeaders: 'content-type: text/plain\r\nx-test: yes\r\n',
-        });
-      });
-      return handle;
+function mockRequest(details) {
+  requests.push(details);
+  let aborted = false;
+  const handle = {
+    abort() {
+      aborted = true;
+      queueMicrotask(() => details.onabort?.({ status: 0 }));
     },
   };
+  queueMicrotask(() => {
+    if (aborted) return;
+    const bytes = new TextEncoder().encode('gm-ok');
+    details.onload?.({
+      status: 200,
+      statusText: 'OK',
+      response: bytes.buffer,
+      responseHeaders: 'content-type: text/plain\r\nx-test: yes\r\n',
+    });
+  });
+  return handle;
+}
+
+try {
+  Object.defineProperty(globalThis, 'location', { value: new URL('https://chatgpt.com/c/test'), configurable: true, writable: true });
+  globalThis.GM = { xmlHttpRequest: mockRequest };
 
   {
     const response = await gmFetch('https://ida.example/api/ai/turn', {
@@ -41,6 +42,16 @@ try {
     assert.equal(response.headers.get('x-test'), 'yes');
     assert.equal(requests.at(-1).method, 'POST');
     assert.equal(requests.at(-1).data, '{"x":1}');
+  }
+
+  {
+    delete globalThis.GM;
+    globalThis.GM_xmlhttpRequest = mockRequest;
+    const response = await gmFetch('https://ida.example/api/ai/turn');
+    assert.equal(response.status, 200);
+    assert.equal(await response.text(), 'gm-ok');
+    assert.equal(requests.at(-1).url, 'https://ida.example/api/ai/turn');
+    globalThis.GM = { xmlHttpRequest: mockRequest };
   }
 
   {
@@ -74,6 +85,7 @@ try {
 } finally {
   globalThis.fetch = originalFetch;
   if (originalGM === undefined) delete globalThis.GM; else globalThis.GM = originalGM;
+  if (originalLegacyGM === undefined) delete globalThis.GM_xmlhttpRequest; else globalThis.GM_xmlhttpRequest = originalLegacyGM;
   if (originalLocation === undefined) delete globalThis.location;
   else Object.defineProperty(globalThis, 'location', { value: originalLocation, configurable: true, writable: true });
   delete globalThis.__HEX_API_BASE__;
