@@ -262,7 +262,7 @@ function buildValue(v, state, flags = {}) {
       else if (d.sub === 'orn') out = expr.binary('or', a, expr.unary('not', b, v.bits || b.bits || 64, b.signed), v.bits || 64, signedFor(state, v), origin(d, v));
       else if (d.sub === 'eon') out = expr.unary('not', expr.binary('xor', a, b, v.bits || 64, signedFor(state, v)), v.bits || 64, signedFor(state, v), origin(d, v));
       else out = expr.binary(d.sub, a, b, v.bits || 64, signedFor(state, v), origin(d, v));
-      if (d.negate) out = expr.unary('neg', out, v.bits || 64, signedFor(state, v), origin(d, v));
+      if (d.extra?.negate) out = expr.unary('neg', out, v.bits || 64, signedFor(state, v), origin(d, v));
     } else if (d.op === 'un') {
       const a = buildArg(d.args?.[0], state);
       const sub = String(d.sub || '');
