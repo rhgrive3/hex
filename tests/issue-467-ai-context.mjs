@@ -58,11 +58,19 @@ function longModel(count) {
     });
   };
   try {
+    const quotaStub = {
+      async acquire() { return { allowed: true, token: 'issue-467-test-lease' }; },
+      async release() { return { released: true }; },
+    };
     const response = await worker.fetch(new Request('https://example.test/api/gemini', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(payload),
-    }), { GEMINI_API_KEY: 'test-key', ASSETS: { fetch: () => new Response('asset') } });
+    }), {
+      GEMINI_API_KEY: 'test-key',
+      AI_QUOTA: { getByName: () => quotaStub },
+      ASSETS: { fetch: () => new Response('asset') },
+    });
     assert.equal(response.status, 200);
     await response.text();
     assert.match(upstreamBody.system_instruction, /assemblyMeta\.truncated/);
