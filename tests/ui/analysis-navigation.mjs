@@ -99,6 +99,32 @@ await run(async ({ browser }) => {
     !!typography.note && typography.note.width <= typography.bodyWidth, JSON.stringify(typography));
   check('the candidate sheet offers the same views', typography.views >= 4, String(typography.views));
 
+  /* ── failed legacy dispatch must preserve context ─────────── */
+  await page.evaluate(() => {
+    if (window.__hexUi) {
+      window.__hexUi.__analysisNavigationSavedRouter = window.__hexUi.router;
+      window.__hexUi.router = null;
+    }
+  });
+  const beforeFailedDispatch = await page.evaluate(() => document.querySelectorAll('#overlays .sheet:not(.parked)').length);
+  await page.evaluate(() => {
+    const button = [...document.querySelectorAll('#overlays .sheet:not(.parked) .next-views .action-btn')]
+      .find((node) => /根拠|evidence/i.test(node.textContent));
+    if (!button) throw new Error('evidence next-view button missing');
+    button.click();
+  });
+  await page.waitForTimeout(100);
+  const afterFailedDispatch = await page.evaluate(() => document.querySelectorAll('#overlays .sheet:not(.parked)').length);
+  check('a next-view with no router or legacy fallback keeps the current result open',
+    beforeFailedDispatch > 0 && afterFailedDispatch === beforeFailedDispatch,
+    JSON.stringify({ before: beforeFailedDispatch, after: afterFailedDispatch }));
+  await page.evaluate(() => {
+    if (window.__hexUi?.__analysisNavigationSavedRouter) {
+      window.__hexUi.router = window.__hexUi.__analysisNavigationSavedRouter;
+      delete window.__hexUi.__analysisNavigationSavedRouter;
+    }
+  });
+
   /* ── the settled-answer overlay ──────────────────────────── */
   await closeSheets(page);
   const pinned = await page.evaluate(async (addr) => {
