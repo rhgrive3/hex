@@ -1,0 +1,42 @@
+name: Temp semantic boundary hardening
+on:
+  push:
+    branches:
+      - review-all-hardening-integration
+permissions:
+  contents: write
+jobs:
+  harden:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: review-all-hardening-integration
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: node scripts/_semantic-boundary-hardening.mjs
+      - name: Commit semantic boundary source changes
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          rm scripts/_semantic-boundary-hardening.mjs
+          git add js/analyze.js js/ai/ui/hex-context.js js/app.js package.json tests/ai-analysis-boundary.mjs scripts
+          git commit -m 'Fail closed on incomplete semantic function analysis'
+      - run: npm ci
+      - run: node tests/ai-analysis-boundary.mjs
+      - run: npm run ai:test
+      - run: npm run userscript:build
+      - run: node tests/userscript-version.mjs
+      - run: npm run check
+      - run: npm run userscript:test
+      - name: Commit regenerated deployment bundles
+        run: |
+          git add userscript/hex.user.template.js userscript/platform-worker.bundle.js
+          if ! git diff --cached --quiet; then
+            git commit -m 'Sync bundles after semantic boundary hardening'
+          fi
+          git push origin HEAD:review-all-hardening-integration
