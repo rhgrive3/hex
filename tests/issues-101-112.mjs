@@ -2,9 +2,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { ByteView } from '../js/binary/reader.js';
 import { parseBaseRelocations, parseTlsDirectory, parseLoadConfig } from '../js/binary/pe-loader.js';
-import { ByteSource, asByteSource } from '../js/binary/source.js';
-import { InstrumentedByteSource } from '../js/bytesource/cached.js';
-import { checkedChunkIndex, safeRegionLength, utf8Len, isExactFunctionSeed } from '../js/platform/worker-validation.js';
+import { BlobByteSource, ByteSource, asByteSource } from '../js/binary/source.js';
+import { CachedByteSource, ByteSourceCancelledError, InstrumentedByteSource } from '../js/bytesource/cached.js';
+import { boundedOffset, checkedChunkIndex, chunkLength, exactExternalInteger, regionSize, utf8Len, isExactFunctionSeed } from '../js/platform/worker-validation.js';
 
 const BASE=0x140000000n;
 function fixture(size=0x400){
@@ -38,20 +38,42 @@ function fixture(size=0x400){
   parseLoadConfig(r,{rva:0x40,size:0x98},image);
   assert.deepEqual(image.metadata.loadConfig.guardCFFunctions,[BASE+0x220n]); assert.ok(image.functions.some((f)=>f.address===BASE+0x220n&&f.source==='guard-cf'));
 }
-// #105/#111 reject lossy region sizes and invalid chunk indexes.
-assert.throws(()=>safeRegionLength(9007199254740992n)); assert.throws(()=>checkedChunkIndex(-1)); assert.throws(()=>checkedChunkIndex(1.5)); assert.equal(checkedChunkIndex(3),3);
+// #105 range boundaries remain exact above 2^53; only bounded chunk lengths become Number.
+{
+  const huge=(1n<<53n)+123n;
+  assert.equal(regionSize(huge),huge);
+  assert.equal(boundedOffset(huge-1n,huge),huge-1n);
+  assert.equal(chunkLength(huge,256*1024),256*1024);
+  assert.equal(typeof exactExternalInteger(huge),'bigint');
+  assert.throws(()=>regionSize(Number.MAX_SAFE_INTEGER+1),/unsafe Number/);
+}
+// #111 invalid chunk indexes are rejected before BigInt offset arithmetic.
+assert.throws(()=>checkedChunkIndex(-1)); assert.throws(()=>checkedChunkIndex(1.5)); assert.equal(checkedChunkIndex(3),3);
 // #106/#107 request ownership and transactional open are retained in worker code.
 const worker=fs.readFileSync(new URL('../js/platform/worker.js',import.meta.url),'utf8');
-assert.match(worker,/active\.has\(requestKey\)/); assert.match(worker,/candidateSource/); assert.match(worker,/Commit the new session only after every parsing\/description step succeeds/);
+assert.match(worker,/active\.has\(requestKey\)/); assert.match(worker,/candidateSource/); assert.match(worker,/regionBytes = regionSize\(region\.size\)/); assert.match(worker,/let pos = 0n/);
 // #108 options on an existing ByteSource become a stricter wrapper.
 {
  class S extends ByteSource{constructor(){super(16n,{maxReadLength:16})}async read(_o,n){return new Uint8Array(n)}}
  const base=new S(), wrapped=asByteSource(base,{maxReadLength:4}); assert.notEqual(wrapped,base); await wrapped.readExactly(0n,4); await assert.rejects(()=>wrapped.readExactly(0n,5));
 }
-// #109 InstrumentedByteSource forwards AbortSignal/options.
+// #109 options/signals propagate, mid-read cancellation is observed, and one cached consumer cannot cancel another.
 {
  let seen=null; const delegate={size:8n,maxReadLength:8,async read(_o,n,opts){seen=opts;return new Uint8Array(n)}};
  const src=new InstrumentedByteSource(delegate), ac=new AbortController(); await src.read(0n,1,{signal:ac.signal}); assert.equal(seen.signal,ac.signal);
+
+ let release; const delayed={size:8n,maxReadLength:8,async read(_o,n){return new Promise((resolve)=>{release=()=>resolve(new Uint8Array(n));});}};
+ const wrapped=asByteSource(delayed), mid=new AbortController(); const pending=wrapped.readExactly(0n,1,{signal:mid.signal}); mid.abort(); release();
+ await assert.rejects(pending,(e)=>e?.name==='AbortError');
+
+ const blob=new BlobByteSource(new Blob([Uint8Array.of(1,2,3)])); const pre=new AbortController(); pre.abort();
+ await assert.rejects(()=>blob.readExactly(0n,1,{signal:pre.signal}),(e)=>e?.name==='AbortError');
+
+ let backendResolve, backendReads=0;
+ const shared={size:16n,maxReadLength:16,async read(_o,n,opts){backendReads++; assert.equal(opts?.signal,undefined); return new Promise((resolve)=>{backendResolve=()=>resolve(new Uint8Array(n).fill(7));});}};
+ const cached=new CachedByteSource(shared,{pageSize:16,maxCachedBytes:16}); const a=new AbortController(), b=new AbortController();
+ const first=cached.read(0n,4,{signal:a.signal}), second=cached.read(0n,4,{signal:b.signal}); a.abort(); await assert.rejects(first,ByteSourceCancelledError); backendResolve();
+ assert.deepEqual([...await second],[7,7,7,7]); assert.equal(backendReads,1);
 }
 // #110 scalar-valid UTF-8 only.
 assert.equal(utf8Len(Uint8Array.from([0xe0,0x80,0x80]),0),0); assert.equal(utf8Len(Uint8Array.from([0xed,0xa0,0x80]),0),0); assert.equal(utf8Len(Uint8Array.from([0xf4,0x90,0x80,0x80]),0),0); assert.equal(utf8Len(Uint8Array.from([0xf0,0x9f,0x98,0x80]),0),4);
