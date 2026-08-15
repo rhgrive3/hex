@@ -185,10 +185,12 @@ for (const opt of optimizations) {
     const model = parseFunction(compiled.asm, name, 0x400000n + BigInt(i) * 0x10000n);
     assert.ok(model, `${opt} ${name}: assembly not parsed`);
     const rowMap = new Map(model.instructions.map((ins) => [ins.address.toString(), ins.row]));
+    const returnType = name === 'abs_i32' || name === 'neg_if' || name === 'clamp_i32' ? 'int32' : 'uint32';
     const result = decompile(model, {
       name,
       addr: model.instructions[0].address,
       rowOfAddress: (addr) => rowMap.get(addr?.toString()) ?? null,
+      returnType,
       decompilerTimeBudgetMs: 180,
     });
     assert.ok(result?.semantic, `${opt} ${name}: semantic path fell back`);

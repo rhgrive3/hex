@@ -1,4 +1,5 @@
 import { COND, inverseCondition, OP } from '../ir.js';
+import { renderNZCVCondition } from './flag-semantics.js';
 
 function hex(v) { return BigInt(v).toString(16).toUpperCase(); }
 function valueOf(a) { return a && a.value ? a.value : null; }
@@ -23,8 +24,7 @@ function continuationCondition(iv) {
   let cond = term.cond || term.extra?.cond || null;
   if (!cond) return null;
   if (!branchContinues) cond = inverseCondition(cond) || cond;
-  const info = COND[cond];
-  if (!info) return null;
+  if (!COND[cond]) return null;
 
   const flags = valueOf(term.args?.[term.args.length - 1]);
   const cmp = flags?.def;
@@ -37,8 +37,8 @@ function continuationCondition(iv) {
   };
   const a = render(valueOf(cmp.args[0]));
   const b = render(valueOf(cmp.args[1]));
-  if (!a || (!info.vsZero && !b)) return null;
-  return info.vsZero ? `${a} ${info.op} 0` : `${a} ${info.op} ${b}`;
+  if (!a || !b) return null;
+  return renderNZCVCondition(cmp.sub || 'sub', cond, a, b, Number(cmp.bits || valueOf(cmp.args[0])?.bits || 64));
 }
 
 function termOf(block) {

@@ -89,7 +89,7 @@ function make(lines, opts = {}) {
   attachTexts(model, new Map([['4294968756', 'damage dealt to enemy']])); // 0x1000005B4
 
   const r = decompile(model, {
-    addr: base, name: 'apply_damage', rowOfAddress, receiverType: 'Unit', beginner: false,
+    addr: base, name: 'apply_damage', rowOfAddress, returnType: 'int32', receiverType: 'Unit', beginner: false,
     symbolFor: (addr) => BigInt(addr) === PUTS ? '_puts' : null,
     fieldFor: (_base, off) => off === 0x20n ? { name: 'hp', type: 'int32' }
       : off === 0x24n ? { name: 'damageRate', type: 'uint32' } : null,
