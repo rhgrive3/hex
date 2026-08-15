@@ -115,8 +115,14 @@ function isAddressKey(key) {
 }
 function inFunction(target, fn) {
   if (!fn?.address) return false;
-  if (fn.range?.end != null) return inRange(target, fn.range.start ?? fn.address, fn.range.end);
-  return sameAddress(fn.address, target);
+  const start = toBigInt(fn.range?.start ?? fn.address);
+  const endExclusive = toBigInt(fn.range?.end);
+  if (start == null) return false;
+  // Hex function ranges (SymbolIndex.functionAt / ProgramIndex) use an
+  // exclusive end. Treating it as inclusive admits the next function's first
+  // address into scope=function.
+  if (endExclusive != null) return target >= start && target < endExclusive;
+  return target === start;
 }
 function inRange(target, start, end) {
   const a = toBigInt(start), b = toBigInt(end);
