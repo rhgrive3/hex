@@ -74,11 +74,12 @@ jobs:
           p.write_text(json.dumps(data, ensure_ascii=False, indent=2) + '\n')
           PY
 
-          # Main currently registers get_binary_diff with projectBinaryDiff but
-          # omits that projection from the import list. This causes core startup
-          # to fail and silently falls back to the local engine in browser tests.
+          # Fix two control-plane integration defects exposed by the latest main:
+          # 1) get_binary_diff references an exported projection missing from the import.
+          # 2) valid scope/TurnSnapshot metadata is incorrectly reported as unknown by UI normalization.
           python - <<'PY'
           from pathlib import Path
+
           p = Path('js/ai/tools/registry.js')
           s = p.read_text()
           old = "completenessOf, projectBounded, projectCompare, projectDetail, projectFunction, projectGraph,"
@@ -86,9 +87,22 @@ jobs:
           if old not in s:
               raise SystemExit('projectBinaryDiff import anchor not found')
           p.write_text(s.replace(old, new, 1))
+
+          p = Path('js/ai/render/normalize.js')
+          s = p.read_text()
+          old = """  'actions', 'rejectedActions', 'toolTrace', 'cost', 'error', 'diagnostics',\n  'sessionId',\n]);"""
+          new = """  'actions', 'rejectedActions', 'toolTrace', 'cost', 'error', 'diagnostics',\n  'sessionId', 'scope', 'turnSnapshotId',\n]);"""
+          if old not in s:
+              raise SystemExit('normalize known-keys anchor not found')
+          s = s.replace(old, new, 1)
+          old = """    unknownFields,\n    sessionId: stringOf(raw?.sessionId),\n  };"""
+          new = """    unknownFields,\n    sessionId: stringOf(raw?.sessionId),\n    scope: stringOf(raw?.scope),\n    turnSnapshotId: stringOf(raw?.turnSnapshotId),\n  };"""
+          if old not in s:
+              raise SystemExit('normalize return anchor not found')
+          p.write_text(s.replace(old, new, 1))
           PY
 
-          git add js/ai/ui/bridge.js package.json js/ai/tools/registry.js
+          git add js/ai/ui/bridge.js package.json js/ai/tools/registry.js js/ai/render/normalize.js
           if git diff --name-only --diff-filter=U | grep -q .; then
             echo 'Unresolved conflicts remain'
             git diff --name-only --diff-filter=U
@@ -121,6 +135,8 @@ jobs:
         run: |
           set -euo pipefail
           rm -f .github/workflows/finalize-pr603.yml
+          rm -f .github/workflows/ui-debug-temp.yml
+          rm -f .github/workflows/tmp-pr603-finalize.yml
           git add -A
           git status --short
           git commit -m "Merge latest main and finalize ChatGPT userscript integration"
