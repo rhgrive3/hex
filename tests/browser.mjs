@@ -27,7 +27,8 @@ import { vendorInText } from '../js/vendors.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
-const BINARY = path.resolve(ROOT, process.argv[2] || 'tests/battlecats');
+const BINARY_ARG = process.argv[2] || null;
+const BINARY = BINARY_ARG ? path.resolve(ROOT, BINARY_ARG) : path.join(HERE, '.real-fixtures', 'battlecats');
 const SHOTS = process.env.KEEP ? path.join(HERE, '.shots') : null;
 
 /* ゲームの数値を探しているのに、組み込んだ SDK が首位に来てはいけない目的。 */
@@ -134,6 +135,20 @@ const check = (name, ok, detail) => {
 };
 
 async function main() {
+  if (!fs.existsSync(BINARY)) {
+    if (!BINARY_ARG) {
+      console.log('検証済み実バイナリがないため、BattleCats の heavyweight browser regression を省きます。');
+      console.log('  実行するなら: npm run fixtures:large');
+      return 0;
+    }
+    console.error('バイナリがありません: ' + BINARY);
+    return 1;
+  }
+  if (fs.statSync(BINARY).size < 256 && fs.readFileSync(BINARY, 'utf8').startsWith('HEX_LARGE_FIXTURE_PLACEHOLDER')) {
+    console.error('互換ポインタは実行ファイルではありません: ' + BINARY);
+    console.error('  検証済み実fixtureを取得するなら: npm run fixtures:large');
+    return 1;
+  }
   const pw = await loadPlaywright();
   if (!pw) {
     const msg = 'Playwright がありません。画面での確かめは省きます。';
@@ -145,10 +160,6 @@ async function main() {
     console.log(msg);
     console.log('  入れるなら: npm install -D playwright && npx playwright install chromium');
     return 0;
-  }
-  if (!fs.existsSync(BINARY)) {
-    console.error('バイナリがありません: ' + BINARY);
-    return 1;
   }
   if (SHOTS) fs.mkdirSync(SHOTS, { recursive: true });
 
