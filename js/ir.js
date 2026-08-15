@@ -12,6 +12,7 @@ export * from './ir-core.js';
 
 import {
   buildIR as buildCoreIR,
+  readModifyWrite as coreReadModifyWrite,
   OP, MK, VK, COND,
 } from './ir-core.js';
 
@@ -582,80 +583,57 @@ function classifyUpdate(chain) {
   return 'other';
 }
 
-function blockDominates(ir, from, to) {
-  if (from == null || to == null || from < 0 || to < 0) return false;
-  if (from === to) return true;
-  const dom = ir.dominators && ir.dominators[to];
-  if (dom && typeof dom.has === 'function') return dom.has(from);
-  let cur = to;
-  const seen = new Set();
-  while (cur != null && cur >= 0 && !seen.has(cur)) {
-    seen.add(cur);
-    cur = (ir.idom && ir.idom[cur] != null) ? ir.idom[cur] : (ir.blocks && ir.blocks[cur] ? ir.blocks[cur].idom : -1);
-    if (cur === from) return true;
-  }
-  return false;
-}
-
-function instructionDominates(ir, def, use) {
-  if (!def || !use) return false;
-  if (def.block === use.block) {
-    if (def.row == null || use.row == null) return false;
-    return def.row < use.row;
-  }
-  return blockDominates(ir, def.block, use.block);
-}
-
-function safeDependencyPath(ir, value, store, active = new Set()) {
-  if (!value || active.has(value.id)) return null;
-  if (value.const != null || !value.def) return null;
-  const def = value.def;
-  if (!instructionDominates(ir, def, store)) return null;
-  if (def.op === OP.PHI || def.op === OP.CALL || def.op === OP.CLOBBER || def.op === OP.UNKNOWN) return null;
-  if (def.op === OP.LOAD) {
-    if (!mustAlias(def.loc, store.loc) || unknownStoreBetween(ir, def, store)) return null;
-    return { load:def, chain:[] };
-  }
-  const nextActive = new Set(active);
-  nextActive.add(value.id);
-  for (const arg of def.args || []) {
-    if (!arg || !arg.value) continue;
-    const found = safeDependencyPath(ir, arg.value, store, nextActive);
-    if (found) return { load:found.load, chain:[...found.chain, def] };
-  }
-  return null;
-}
-
 /**
- * Read/modify/write proof. A compound update is emitted only when the load and
- * every intermediate SSA definition dominate the store. PHI is deliberately a
- * proof barrier: values merged from mutually-exclusive branches must not be
- * reinterpreted as a single source-level read/modify/write expression.
+ * Read/modify/write proof. MOV/PHI/pointer+constant aliases are accepted only
+ * when provenance proves must-alias; unknown indexed stores invalidate the path.
  */
 export function readModifyWrite(ir) {
   if (!ir || !ir.instructions) return [];
   const out = [];
   const seen = new Set();
 
+  for (const r of coreReadModifyWrite(ir)) {
+    if (!r || !r.load || !r.store || unknownStoreBetween(ir, r.load, r.store)) continue;
+    const key = r.load.id + '>' + r.store.id;
+    seen.add(key);
+    out.push(r);
+  }
+
   for (const store of ir.instructions) {
-    if (store.op !== OP.STORE || !store.loc || store.loc.kind === MK.UNKNOWN) continue;
+    if (store.op !== OP.STORE || !store.loc) continue;
     const written = store.args && store.args[0] && store.args[0].value;
     if (!written) continue;
-    const proof = safeDependencyPath(ir, written, store);
-    if (!proof || !proof.load) continue;
-    const key = proof.load.id + '>' + store.id;
+
+    const chain = [];
+    const visited = new Set();
+    const work = [written];
+    let load = null;
+    while (work.length && chain.length < 40) {
+      const v = work.pop();
+      if (!v || visited.has(v.id)) continue;
+      visited.add(v.id);
+      const def = v.def;
+      if (!def) continue;
+      chain.push(def);
+      if (def.op === OP.LOAD) {
+        if (mustAlias(def.loc, store.loc) && !unknownStoreBetween(ir, def, store)) load = def;
+        continue;
+      }
+      for (const a of def.args || []) if (a && a.value) work.push(a.value);
+    }
+    if (!load) continue;
+    const key = load.id + '>' + store.id;
     if (seen.has(key)) continue;
     seen.add(key);
-    const chain = proof.chain;
     out.push({
-      load:proof.load,
+      load,
       store,
-      location:store.loc,
-      chain,
-      kind:classifyUpdate(chain),
-      canonicalAlias:proof.load.loc && store.loc && proof.load.loc.key !== store.loc.key,
-      dominanceSafe:true,
+      location: store.loc,
+      chain: chain.filter((c) => c !== load && c.op !== OP.STORE),
+      kind: classifyUpdate(chain),
+      canonicalAlias: load.loc && store.loc && load.loc.key !== store.loc.key,
     });
   }
+
   return out;
 }
