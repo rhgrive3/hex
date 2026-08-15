@@ -149,9 +149,15 @@ export function buildFunctionReport(opts) {
 
   let callers = [];
   let callees = [];
+  let callersComplete = false;
   if (program && startAddr != null) {
     const range = program.functionRange(startAddr) || { start: startAddr, end: endAddr };
-    callers = program.callersOf(range.start, 60).map((c) => ({
+    const callerQuery = program.callersOf(range.start, 60);
+    const graphCallsComplete = program.graphCompleteness?.callsComplete;
+    callersComplete = callerQuery?.complete === true
+      || (callerQuery?.complete == null && graphCallsComplete === true);
+    if (graphCallsComplete === false) callersComplete = false;
+    callers = Array.from(callerQuery || []).map((c) => ({
       addr: c.addr, site: c.site, count: c.count,
       name: c.addr != null && symbols ? symbols.nameAt(c.addr) : null,
     }));
@@ -160,7 +166,7 @@ export function buildFunctionReport(opts) {
       name: symbols ? symbols.nameAt(c.addr) : null,
     }));
     if (callers.length) facts.push(fact('callers', { n: callers.length }));
-    if (!callers.length && program.statsComplete === true) facts.push(fact('no-callers', null));
+    if (!callers.length && callersComplete) facts.push(fact('no-callers', null));
     const stats = program.statsOf(range.start, range.end);
     if (stats.numeric) {
       facts.push(fact('numeric', {
@@ -249,9 +255,12 @@ export function buildFunctionReport(opts) {
   if (f.calls > f.namedCalls) unknowns.push(unknown('unnamed-calls', { n: f.calls - f.namedCalls }));
   if (!strings.length) unknowns.push(unknown('no-strings', null));
   if (model.truncated) unknowns.push(unknown('truncated', null));
-  if (program && !program.statsComplete) {
-    unknowns.push(unknown('stats-partial', null));
-    unknowns.push(unknown('callers-partial', { reason: 'program-index-incomplete', observed: callers.length }));
+  if (program && !program.statsComplete) unknowns.push(unknown('stats-partial', null));
+  if (program && !callersComplete) {
+    unknowns.push(unknown('callers-partial', {
+      reason: program.graphCompleteness?.callsComplete === false ? 'call-index-incomplete' : 'caller-query-incomplete',
+      observed: callers.length,
+    }));
   }
   // 静的解析だけでは、実行時にその値が何であるかまでは決められない。必ず言う。
   unknowns.push(unknown('runtime-meaning', null));
@@ -260,7 +269,7 @@ export function buildFunctionReport(opts) {
 
   const nextSteps = [];
   if (callers.length) nextSteps.push({ code: 'check-callers', detail: { n: callers.length } });
-  else if (program && program.statsComplete !== true) nextSteps.push({ code: 'check-callers-incomplete', detail: { reason: 'program-index-incomplete' } });
+  else if (program && !callersComplete) nextSteps.push({ code: 'check-callers-incomplete', detail: { reason: 'caller-query-incomplete' } });
   else nextSteps.push({ code: 'no-callers-hint', detail: null });
   if (f.argRegs && f.argRegs.length) nextSteps.push({ code: 'check-inputs', detail: { regs: f.argRegs } });
   if (f.setsReturnValue) nextSteps.push({ code: 'check-return', detail: null });
