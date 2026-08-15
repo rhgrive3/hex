@@ -7,6 +7,7 @@ import { selectToolWindow } from '../js/ai/control/tool-window.js';
 import { assertWireBudget, measureWirePayload } from '../js/ai/budget/wire.js';
 import { ContextBroker } from '../js/ai/context/broker.js';
 import { InvestigationSessionStore } from '../js/ai/session-core/index.js';
+import { createAiEngine } from '../js/ai/ui/bridge.js';
 
 // A: current UI navigation after turn start cannot move the turn anchor.
 let current = 0x1000n;
@@ -37,6 +38,34 @@ const snapshotB = { binaryId: identityB.id, binaryIdentity: identityB, legacyBin
 assert.equal(sessionMatchesSnapshot({ binaryId: identityA.id, binaryIdentity: identityA }, snapshotB), false, 'same legacy name must not equate different strong content identities');
 assert.equal(sessionMatchesSnapshot({ binaryId: 'same.ipa:0' }, snapshotB), true, 'legacy-only sessions remain upgrade-compatible');
 assert.throws(() => assertLiveBindingsUnchanged({ binaryIdentity: identityB }, snapshotA), /binary changed/i, 'mid-turn same-name binary replacement must fail closed');
+
+// B2: UI bridge rebinds a stale session once, but never bypasses a live scope/binding failure via local fallback.
+const bridgeCalls = [];
+let bridgeTurn = 0;
+const bridgeApp = { store: { get() { return null; } } };
+const bridge = createAiEngine(bridgeApp, {
+  loadCore: async () => ({
+    async turn(input) {
+      bridgeCalls.push(input.sessionId ?? null);
+      bridgeTurn++;
+      if (bridgeTurn === 1) return { sessionId: 'old-session', answer: 'first' };
+      if (bridgeTurn === 2) {
+        const error = new Error('The requested AI session belongs to a different binary or project.');
+        error.type = 'scope_violation';
+        throw error;
+      }
+      if (bridgeTurn === 3) return { sessionId: 'new-session', answer: 'second' };
+      const error = new Error('The binary changed while this AI turn was running; refusing to mix workbench states.');
+      error.type = 'scope_violation';
+      throw error;
+    },
+  }),
+});
+const bridgeInput = { question: 'explain', mode: 'chat', style: 'analyst', scope: 'auto', context: {}, onActivity() {} };
+await bridge.run(bridgeInput);
+await bridge.run(bridgeInput);
+assert.deepEqual(bridgeCalls.slice(0, 3), [null, 'old-session', null], 'stale session is retried exactly once as a new session');
+await assert.rejects(() => bridge.run(bridgeInput), /binary changed/i, 'safety-boundary failures must not fall through to live local analysis');
 
 // C/D: address-level explicit scope enforcement.
 const fnSnap = { ...snap, selection: null };
