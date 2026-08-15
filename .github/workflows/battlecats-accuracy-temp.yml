@@ -6,7 +6,7 @@ on:
     paths:
       - 'js/**'
       - 'tests/**'
-      - '.github/battlecats-accuracy.patch.gz.b64'
+      - '.github/battlecats-*.patch.gz.b64'
       - '.github/workflows/battlecats-accuracy-temp.yml'
       - 'package.json'
       - 'package-lock.json'
@@ -25,17 +25,22 @@ jobs:
         with:
           ref: ${{ github.head_ref }}
           fetch-depth: 0
-      - name: Apply staged BattleCats accuracy patch
-        if: ${{ hashFiles('.github/battlecats-accuracy.patch.gz.b64') != '' }}
+      - name: Apply staged BattleCats accuracy patches
+        if: ${{ hashFiles('.github/battlecats-*.patch.gz.b64') != '' }}
         shell: bash
         run: |
-          base64 -d .github/battlecats-accuracy.patch.gz.b64 | gzip -dc > /tmp/battlecats.patch
-          patch -p1 < /tmp/battlecats.patch
-          rm .github/battlecats-accuracy.patch.gz.b64
+          shopt -s nullglob
+          patches=(.github/battlecats-*.patch.gz.b64)
+          for staged in "${patches[@]}"; do
+            echo "Applying $staged"
+            base64 -d "$staged" | gzip -dc > /tmp/battlecats.patch
+            patch -p1 < /tmp/battlecats.patch
+            rm "$staged"
+          done
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
-          git commit -m 'Improve BattleCats analysis accuracy'
+          git commit -m 'Improve BattleCats fallback accuracy'
           git push origin HEAD:${{ github.head_ref }}
       - uses: actions/setup-node@v4
         with:
@@ -63,8 +68,9 @@ jobs:
         run: npm run check
       - name: Pack workbench
         if: always()
+        shell: bash
         run: |
-          tar --exclude=.git --exclude=node_modules --exclude=tests/.real-fixtures --exclude=source.tar.gz -czf source.tar.gz .
+          git archive --format=tar.gz --output=source.tar.gz HEAD
       - name: Upload workbench
         if: always()
         uses: actions/upload-artifact@v4
