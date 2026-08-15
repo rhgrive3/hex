@@ -29,30 +29,28 @@ export function selectToolWindow(registry, { mode = 'agent', requestedScope = 'a
   const limit = Math.max(1, Number(maxTools) || 1);
   const selected = [];
 
+  // Reserve continuity before any phase/novel filling. A phase transition must
+  // not invalidate the immediately previous scope-valid tool; otherwise the
+  // runtime cannot reach its deterministic repeated-call guard and reports an
+  // artificial invalid_tool_call instead.
+  const previousTool = previousToolName(observations);
+  if (previousTool && byName.has(previousTool)) selected.push(byName.get(previousTool));
+
   // ToolRegistry is allowed to grow independently of this control plane. Keep
   // a small rotating slot for scope-valid definitions not known when this file
   // was written. This is metadata-driven (already filtered by effectiveScope),
   // not a keyword guess, and guarantees new read tools do not become permanently
   // unreachable merely because their names are absent from the phase buckets.
   const novel = available.filter((tool) => !KNOWN_WINDOW_TOOLS.has(tool.name) && !AUTO_ESCAPE_TOOLS.includes(tool.name));
-  const novelSlots = novel.length ? (limit >= 4 ? Math.min(2, limit - 2) : (observations.length % 2 ? 1 : 0)) : 0;
-  const preferredLimit = Math.max(0, limit - novelSlots);
-  for (const name of preferred) if (byName.has(name) && selected.length < preferredLimit) selected.push(byName.get(name));
+  const novelSlots = novel.length ? (limit >= 4 ? Math.min(2, Math.max(0, limit - 2)) : (observations.length % 2 ? 1 : 0)) : 0;
+  const preferredLimit = Math.max(selected.length, limit - novelSlots);
+  for (const name of preferred) {
+    if (byName.has(name) && !selected.some((item) => item.name === name) && selected.length < preferredLimit) selected.push(byName.get(name));
+  }
   addRotating(selected, novel, novelSlots, observations.length, limit);
 
-  // Phase transitions must not invalidate the tool the model just used while
-  // that tool is still legal in the effective scope. Keeping one continuity
-  // slot avoids artificial invalid_tool_call failures and lets the runtime's
-  // repeated-call guard detect genuine loops deterministically.
-  const previousTool = previousToolName(observations);
-  if (previousTool && byName.has(previousTool) && !selected.some((item) => item.name === previousTool)) {
-    const tool = byName.get(previousTool);
-    if (selected.length < limit) selected.push(tool);
-    else if (selected.length) selected[selected.length - 1] = tool;
-  }
-
   // Fill any remaining capacity from the scope-valid registry. This preserves
-  // useful legacy behavior while avoiding a hard dependency on the static names.
+  // useful legacy behavior while avoiding a hard dependency on static names.
   for (const tool of available) {
     if (!selected.some((item) => item.name === tool.name) && selected.length < limit) selected.push(tool);
   }
