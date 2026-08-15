@@ -36,6 +36,10 @@ const { Backend }=await import('../js/backend.js');
   await assert.rejects(()=>b.open({name:'disposed.bin',size:1}), (error)=>error?.code==='BACKEND_DISPOSED');
   const messagesAfter=workers.slice(0,2).reduce((sum,w)=>sum+w.sent.length,0);
   assert.equal(messagesAfter,messagesBefore,'disposed backend open must not post to terminated workers');
+  const epochAfterDispose=b.gen;
+  assert.equal(b.advanceEpoch(),epochAfterDispose,'disposed backend epoch advance must be a no-op');
+  const messagesAfterEpoch=workers.slice(0,2).reduce((sum,w)=>sum+w.sent.length,0);
+  assert.equal(messagesAfterEpoch,messagesAfter,'disposed backend epoch advance must not post to terminated workers');
 }
 
 delete globalThis.document;

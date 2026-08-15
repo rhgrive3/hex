@@ -132,6 +132,7 @@ export class Backend {
   }
 
   advanceEpoch() {
+    if (this.disposed) return this.analysisEpoch;
     this.analysisEpoch++;
     this.resetCache();
     this._releaseDisassembly(new StaleRequestError());
