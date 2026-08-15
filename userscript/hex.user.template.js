@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hex for ChatGPT
 // @namespace    https://github.com/rhgrive3/hex
-// @version      1.0.1786788721
+// @version      1.0.1786788761
 // @description  Run the Hex binary analysis workbench on ChatGPT Web.
 // @match        https://chatgpt.com/*
 // @run-at       document-idle
@@ -60749,23 +60749,34 @@ ${safeJSONStringify(payload)}
     let output = "";
     let inSmartString = false;
     let nestedSmartQuotes = 0;
+    let smartEscaped = false;
     let inAsciiString = false;
-    let escaped = false;
+    let asciiEscaped = false;
     for (const char of String(text3)) {
       if (inAsciiString) {
         output += char;
-        if (escaped) {
-          escaped = false;
+        if (asciiEscaped) {
+          asciiEscaped = false;
           continue;
         }
         if (char === "\\") {
-          escaped = true;
+          asciiEscaped = true;
           continue;
         }
         if (char === '"') inAsciiString = false;
         continue;
       }
       if (inSmartString) {
+        if (smartEscaped) {
+          output += char;
+          smartEscaped = false;
+          continue;
+        }
+        if (char === "\\") {
+          output += char;
+          smartEscaped = true;
+          continue;
+        }
         if (char === "“") {
           nestedSmartQuotes++;
           output += char;
@@ -60781,10 +60792,6 @@ ${safeJSONStringify(payload)}
           }
           continue;
         }
-        if (char === "\\") {
-          output += "\\\\";
-          continue;
-        }
         if (char === '"') {
           output += '\\"';
           continue;
@@ -60796,6 +60803,7 @@ ${safeJSONStringify(payload)}
         output += '"';
         inSmartString = true;
         nestedSmartQuotes = 0;
+        smartEscaped = false;
         continue;
       }
       if (char === '"') inAsciiString = true;
