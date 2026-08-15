@@ -153,7 +153,8 @@ function decodeChainedPointer(raw, format) {
       if (a & 0x40000) a -= 0x80000;
       addend = BigInt(a);
     }
-    return { bind, ordinal, addend, next, stride: 8 };
+    const stride = format === 7 || format === 10 ? 4 : 8;
+    return { bind, ordinal, addend, next, stride };
   }
   return null;
 }

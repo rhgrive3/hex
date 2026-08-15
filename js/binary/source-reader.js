@@ -11,6 +11,15 @@ export class SourceRangeMissingError extends BinaryReadError {
   }
 }
 
+function throwIfSourceAborted(signal) {
+  if (!signal?.aborted) return;
+  const cancelled = new Error('binary metadata read aborted');
+  cancelled.name = 'AbortError';
+  cancelled.code = 'BYTE_SOURCE_CANCELLED';
+  cancelled.reason = signal.reason;
+  throw cancelled;
+}
+
 export class SparseByteBuffer {
   constructor(size) {
     this.size = nonNegativeBigInt(size, 'binary source size');
@@ -109,6 +118,7 @@ export async function parseSourceRanges(source, parser, parserOptions = {}, opti
   let largestRead = 0;
   const initial = options.initial || [];
   for (const item of initial) {
+    throwIfSourceAborted(options.signal);
     const added = sparse.additionalBytes(item.offset, item.bytes.byteLength);
     if (cachedBytes + added > maxCachedBytes) throw new ByteSourceLimitError(`initial metadata exceeds the ${maxCachedBytes}-byte cache limit`);
     sparse.add(item.offset, item.bytes);
@@ -116,6 +126,7 @@ export async function parseSourceRanges(source, parser, parserOptions = {}, opti
   }
 
   for (;;) {
+    throwIfSourceAborted(options.signal);
     try {
       // Parsers remain synchronous. On a cache miss we fetch a bounded range
       // and restart deterministically. Callers may opt into a larger
@@ -123,23 +134,21 @@ export async function parseSourceRanges(source, parser, parserOptions = {}, opti
       // removing the overall metadata memory budget.
       parserPasses++;
       const image = parser(sparse, parserOptions);
+      throwIfSourceAborted(options.signal);
       image.attachSource(source, { discardBytes: true });
       image.metadata.sourceBacked = true;
       image.metadata.sourceReads = { requests: reads, parserPasses, cachedBytes, pageSize, maxPageSize, totalRequestedBytes, largestRead };
       return image;
     } catch (error) {
       if (error?.code !== 'BINARY_SOURCE_RANGE_MISSING') throw error;
+      throwIfSourceAborted(options.signal);
       const missingEnd = error.offset + error.length > source.size ? source.size : error.offset + error.length;
       let cursor = error.offset;
       let first = true;
       while (cursor < source.size && (first || cursor < missingEnd)) {
         first = false;
+        throwIfSourceAborted(options.signal);
         if (++reads > maxReads) throw new ByteSourceLimitError(`binary metadata required more than ${maxReads} range reads`);
-        if (options.signal?.aborted) {
-          const cancelled = new Error('binary metadata read aborted');
-          cancelled.name = 'AbortError';
-          throw cancelled;
-        }
         const remaining = source.size - cursor;
         const budgetRemaining = maxCachedBytes - cachedBytes;
         if (budgetRemaining <= 0) throw new ByteSourceLimitError(`binary metadata exceeds the ${maxCachedBytes}-byte cache limit`);
@@ -152,6 +161,7 @@ export async function parseSourceRanges(source, parser, parserOptions = {}, opti
         const length = Number(remaining < BigInt(requestLimit) ? remaining : BigInt(requestLimit));
         if (length <= 0) throw new ByteSourceLimitError(`binary metadata exceeds the ${maxCachedBytes}-byte cache limit`);
         const bytes = await source.readExactly(cursor, length, { signal: options.signal });
+        throwIfSourceAborted(options.signal);
         const added = sparse.additionalBytes(cursor, bytes.byteLength);
         if (added > budgetRemaining) throw new ByteSourceLimitError(`binary metadata exceeds the ${maxCachedBytes}-byte cache limit`);
         sparse.add(cursor, bytes);

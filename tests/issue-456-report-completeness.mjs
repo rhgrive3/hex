@@ -11,9 +11,10 @@ const model = buildSemanticModel(rows, {
 });
 const region = { vmAddr:BASE, size:4n };
 
-function program({ complete, callers = [] }) {
+function program({ callsComplete, statsComplete = callsComplete, callers = [] }) {
   return {
-    statsComplete: complete,
+    statsComplete,
+    graphCompleteness:{ callsComplete, refsComplete:true, statsComplete },
     functionRange() { return { start:BASE, end:BASE + 4n }; },
     callersOf() { return callers; },
     calleesOf() { return []; },
@@ -28,16 +29,17 @@ function has(xs, code) { return xs.some((x) => x.code === code); }
 
 // Complete + empty is the only case where absence is a FACT.
 {
-  const r = report({ complete:true, callers:[] });
+  const r = report({ callsComplete:true, callers:[] });
   assert.ok(has(r.facts, 'no-callers'));
   assert.ok(!has(r.unknowns, 'callers-partial'));
   assert.ok(r.nextSteps.some((x) => x.code === 'no-callers-hint'));
   assert.equal(r.facts.find((x) => x.code === 'no-callers')?.certainty, CERTAINTY.FACT);
+  assert.equal(r.completeness.callsComplete, true);
 }
 
 // Partial + empty must not be promoted to an absence fact.
 {
-  const r = report({ complete:false, callers:[] });
+  const r = report({ callsComplete:false, statsComplete:false, callers:[] });
   assert.ok(!has(r.facts, 'no-callers'));
   assert.ok(has(r.unknowns, 'callers-partial'));
   assert.ok(has(r.unknowns, 'stats-partial'));
@@ -47,12 +49,21 @@ function has(xs, code) { return xs.some((x) => x.code === code); }
 
 // Partial + hit: presence is safe, but the caller set is still incomplete.
 {
-  const r = report({ complete:false, callers:[{ addr:BASE + 0x100n, site:BASE + 0x20n, count:1 }] });
+  const r = report({ callsComplete:false, statsComplete:false, callers:[{ addr:BASE + 0x100n, site:BASE + 0x20n, count:1 }] });
   assert.ok(has(r.facts, 'callers'));
   assert.ok(!has(r.facts, 'no-callers'));
   assert.ok(has(r.unknowns, 'callers-partial'));
   assert.equal(r.callers.length, 1);
   assert.ok(r.nextSteps.some((x) => x.code === 'check-callers'));
+}
+
+// Regression: complete instruction statistics do not imply a complete call graph.
+{
+  const r = report({ callsComplete:false, statsComplete:true, callers:[] });
+  assert.ok(!has(r.facts, 'no-callers'));
+  assert.ok(has(r.unknowns, 'callers-partial'));
+  assert.ok(!has(r.unknowns, 'stats-partial'));
+  assert.ok(r.nextSteps.some((x) => x.code === 'check-callers-incomplete'));
 }
 
 console.log('issue #456 report completeness regressions passed');

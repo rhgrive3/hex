@@ -7,8 +7,19 @@ import { Emulator } from '../emu.js';
 import { symbolicExecute } from './executor.js';
 
 export const DEFAULT_OBJECT_BASE = 0x0000600000001000n;
+export const DEFAULT_SANDBOX_STEPS = 20000;
+export const MAX_SANDBOX_STEPS = 1000000;
 
 function asBig(v) { return typeof v === 'bigint' ? v : BigInt(v || 0); }
+
+function boundedStepBudget(value) {
+  if (value == null) return DEFAULT_SANDBOX_STEPS;
+  const n = Number(value);
+  if (!Number.isFinite(n) || !Number.isSafeInteger(n) || n < 1) {
+    throw new RangeError('maxSteps must be a positive finite safe integer');
+  }
+  return Math.min(n, MAX_SANDBOX_STEPS);
+}
 
 function normalizeWatch(watch, objectBase) {
   const out = [];
@@ -167,7 +178,7 @@ export class FunctionSandbox {
 
   async run(opts) {
     const o = opts || {};
-    const maxSteps = Math.max(1, Number(o.maxSteps || 20000));
+    const maxSteps = boundedStepBudget(o.maxSteps);
     const result = await this.emulator.run(maxSteps, o.onProgress);
     const after = await snapshot(this.emulator, this.watch);
     const beforeBy = new Map(this.before.map((x) => [x.address.toString() + ':' + x.size, x]));

@@ -42,7 +42,13 @@ const index = buildObjcRuntimeIndex(model);
 }
 {
   const r = resolveObjcDispatch(index, { receiverType: 'PlayerData *', selector: 'coinCount' });
-  assert.equal(r.resolved?.source, 'protocol');
+  // Protocol entries describe required methods; they do not carry an
+  // implementation IMP and must never be promoted to a resolved dispatch.
+  assert.equal(r.resolved, null);
+  assert.equal(r.candidates.length, 0);
+  assert.equal(r.requirements.length, 1);
+  assert.equal(r.requirements[0].source, 'protocol');
+  assert.equal(r.requirements[0].selector, 'coinCount');
 }
 {
   const m = objcMessage(index, { receiver: 'player', receiverType: 'PlayerData *', selector: 'addCoins:', args: ['amount'] });

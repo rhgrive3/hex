@@ -36,5 +36,78 @@ export function readableName(name){if(!name)return name;const cxx=demangleCxx(na
 export function shortName(name,opts){if(!name)return name;const o=opts||{};let s=readableName(name);if(s===name)return name.replace(/^_+/,'')||name;const paren=s.indexOf('(');if(paren>0)s=s.slice(0,paren);for(let guard=0;guard<40;guard++){const t=findTemplate(s);if(!t)break;s=s.slice(0,t.open)+s.slice(t.close+1);}s=s.replace(/\s+/g,' ').replace(/ const$/,'').trim();if(!o.keepNamespace){const parts=s.split('::');if(parts.length>2&&parts[0]!=='std')s=parts.slice(-2).join('::');}return s||name;}
 export function isMangled(name){return !!name&&(/^_?_Z/.test(name)||/^_?\$s/.test(name)||/^_?\$S/.test(name));}
 export function findCxxClasses(symbols,limit=5000){const out=new Map();if(!symbols?.names)return[];for(let i=0;i<symbols.names.length&&out.size<limit;i++){const raw=symbols.names[i],m=raw&&/^_?_Z(TV|TI|TS)(.+)$/.exec(raw);if(!m)continue;const cls=demangleCxx('_Z'+m[2].replace(/^N?/,(s)=>s))||demangleCxx('_ZN'+m[2])||m[2];if(!out.has(cls))out.set(cls,{name:cls,vtable:null,typeinfo:null,typeName:null,raw});const e=out.get(cls);if(m[1]==='TV')e.vtable=symbols.addrs[i];if(m[1]==='TI')e.typeinfo=symbols.addrs[i];if(m[1]==='TS')e.typeName=symbols.addrs[i];}return[...out.values()].sort((a,b)=>a.name.localeCompare(b.name));}
-export async function readVtable(read,vtableAddr,symbols,maxSlots=64){const bytes=await read(vtableAddr,(maxSlots+2)*8);if(!bytes||bytes.length<24)return null;const dv=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength),slots=[],offsetToTop=BigInt.asIntN(64,dv.getBigUint64(0,true)),typeinfo=sanitize(dv.getBigUint64(8,true));for(let i=2;i*8+8<=bytes.length;i++){const addr=sanitize(dv.getBigUint64(i*8,true));if(addr===0n)break;const name=symbols?(symbols.nameAt(addr)||symbols.label(addr)):null;slots.push({index:i-2,addr,name:name||null,readable:name?readableName(name):null});}return{addr:vtableAddr,offsetToTop,typeinfo,slots};}
-function sanitize(v){if(v===0n)return 0n;if(v<0x0001000000000000n)return v;return v&0x0000000fffffffffn;}
+
+function normalizeResolvedPointer(result,raw){
+  if(result==null)return{raw,addr:null,binding:null,unresolved:true,reason:'resolver-returned-null'};
+  if(typeof result==='bigint'||typeof result==='number')return{raw,addr:BigInt(result),binding:null,unresolved:false};
+  if(typeof result==='object'){
+    const addr=result.address??result.addr??null;
+    return{raw,addr:addr==null?null:BigInt(addr),binding:result.binding||result.bind||null,unresolved:addr==null&&!result.binding&&!result.bind,reason:result.reason||null,decoded:result};
+  }
+  return{raw,addr:null,binding:null,unresolved:true,reason:'invalid-resolver-result'};
+}
+
+function decodeChainedVtablePointer(raw,format,imageBase){
+  const base=imageBase==null?null:BigInt(imageBase);
+  if(format===2||format===6){
+    const bind=!!((raw>>63n)&1n);
+    if(bind)return{raw,addr:null,binding:{kind:'chained-bind',ordinal:Number(raw&0xffffffn)},unresolved:false,pointerFormat:format};
+    const target=raw&0xfffffffffn;
+    const high8=(raw>>36n)&0xffn;
+    if(format===6){
+      if(base==null)return{raw,addr:null,binding:null,unresolved:true,reason:'image-base-required',pointerFormat:format};
+      return{raw,addr:base+target,binding:null,unresolved:false,pointerFormat:format};
+    }
+    return{raw,addr:target|(high8<<56n),binding:null,unresolved:false,pointerFormat:format};
+  }
+  if([1,7,9,10,12].includes(format)){
+    const auth=!!((raw>>63n)&1n),bind=!!((raw>>62n)&1n);
+    const ordinalMask=format===12?0xffffffn:0xffffn;
+    if(bind)return{raw,addr:null,binding:{kind:'chained-bind',ordinal:Number(raw&ordinalMask),authenticated:auth},unresolved:false,pointerFormat:format};
+    if(auth){
+      if(base==null)return{raw,addr:null,binding:null,unresolved:true,reason:'image-base-required-for-auth-rebase',pointerFormat:format};
+      return{raw,addr:base+(raw&0xffffffffn),binding:null,unresolved:false,pointerFormat:format,authenticated:true};
+    }
+    const target=raw&0x7ffffffffffn;
+    const high8=(raw>>43n)&0xffn;
+    if([7,9,10,12].includes(format)){
+      if(base==null)return{raw,addr:null,binding:null,unresolved:true,reason:'image-base-required-for-offset-rebase',pointerFormat:format};
+      return{raw,addr:base+target,binding:null,unresolved:false,pointerFormat:format};
+    }
+    return{raw,addr:target|(high8<<56n),binding:null,unresolved:false,pointerFormat:format};
+  }
+  return{raw,addr:null,binding:null,unresolved:true,reason:'unsupported-chained-pointer-format',pointerFormat:format};
+}
+
+async function resolveVtablePointer(raw,address,opts){
+  if(raw===0n)return{raw,addr:0n,binding:null,unresolved:false};
+  if(typeof opts.resolvePointer==='function'){
+    try{return normalizeResolvedPointer(await opts.resolvePointer(raw,{address,pointerFormat:opts.pointerFormat??null,imageBase:opts.imageBase??null}),raw);}catch(e){return{raw,addr:null,binding:null,unresolved:true,reason:`pointer-resolver-failed:${e?.message||'unknown'}`};}
+  }
+  if(opts.pointerFormat!=null)return decodeChainedVtablePointer(raw,Number(opts.pointerFormat),opts.imageBase);
+  // Plain relocations are already materialized as canonical user-space VAs.
+  // Values with high encoding/tag bits are not safe to reinterpret by masking:
+  // without fixup context a bind ordinal and a rebase target are indistinguishable.
+  if(raw<=0x0000ffffffffffffn)return{raw,addr:raw,binding:null,unresolved:false};
+  return{raw,addr:null,binding:null,unresolved:true,reason:'encoded-pointer-without-fixup-context'};
+}
+
+export async function readVtable(read,vtableAddr,symbols,maxSlots=64,opts={}){
+  if(maxSlots&&typeof maxSlots==='object'){opts=maxSlots;maxSlots=opts.maxSlots||64;}
+  maxSlots=Math.max(1,Math.min(4096,Number(maxSlots)||64));
+  const bytes=await read(vtableAddr,(maxSlots+2)*8);
+  if(!bytes||bytes.length<24)return null;
+  const dv=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength),slots=[];
+  const offsetToTop=BigInt.asIntN(64,dv.getBigUint64(0,true));
+  const typeinfoRaw=dv.getBigUint64(8,true);
+  const typeinfoResolved=await resolveVtablePointer(typeinfoRaw,BigInt(vtableAddr)+8n,opts||{});
+  for(let i=2;i*8+8<=bytes.length;i++){
+    const raw=dv.getBigUint64(i*8,true);
+    if(raw===0n)break;
+    const resolved=await resolveVtablePointer(raw,BigInt(vtableAddr)+BigInt(i*8),opts||{});
+    const addr=resolved.addr;
+    const name=addr!=null&&addr!==0n&&symbols?(symbols.nameAt(addr)||symbols.label(addr)):null;
+    slots.push({index:i-2,raw,addr,binding:resolved.binding||null,unresolved:!!resolved.unresolved,reason:resolved.reason||null,name:name||null,readable:name?readableName(name):null});
+  }
+  return{addr:vtableAddr,offsetToTop,typeinfo:typeinfoResolved.addr,typeinfoRaw,typeinfoBinding:typeinfoResolved.binding||null,typeinfoUnresolved:!!typeinfoResolved.unresolved,slots};
+}
