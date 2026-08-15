@@ -62,9 +62,21 @@ export class ContextBroker {
 
   currentProjection(scope) {
     const current = {};
+    const selectionOnly = scope === 'selection';
     if (scope === 'selection' || scope === 'auto') current.selection = compactSelection(this.local.selection);
     const fn = this.local.activeFunction || this.local.currentFunction;
-    if (fn) current.function = compactFunction(fn, this.maxFunctionLines);
+    if (fn) {
+      if (selectionOnly) {
+        // Selection scope may expose containment identity, but never the full
+        // function's assembly/pseudocode/instructions without an explicit
+        // scope expansion.
+        current.function = removeUndefined({
+          address: addressText(fn.address ?? fn.startAddr ?? fn.identity?.startAddr),
+          name: fn.name || fn.identity?.name || null,
+          containmentOnly: true,
+        });
+      } else current.function = compactFunction(fn, this.maxFunctionLines);
+    }
     const address = this.currentAddress();
     if (address) current.address = address;
     if (this.local.binaryId) current.binaryId = String(this.local.binaryId);
@@ -123,19 +135,55 @@ function compactHypothesis(value) {
 }
 
 function compactObservations(values, maxBytes) {
-  const out = [];
+  const newest = values.slice(-12).reverse();
+  const outNewestFirst = [];
   let used = 0;
-  for (const value of values.slice(-12).reverse()) {
-    const safe = {
+  for (let index = 0; index < newest.length; index++) {
+    const value = newest[index];
+    let safe = {
       kind: 'hex-tool-data', trust: 'untrusted-data', tool: value.tool || value.request?.tool,
       summary: String(value.summary || '').slice(0, 3000), evidenceIds: (value.evidenceIds || []).slice(0, 100),
       data: jsonSafe(value.data),
     };
-    const size = byteLength(safe);
-    if (used + size > maxBytes) continue;
-    used += size; out.unshift(safe);
+    let size = byteLength(safe);
+    const remaining = maxBytes - used;
+    if (size > remaining) {
+      // The newest result is the most causally relevant observation. Preserve a
+      // bounded excerpt instead of dropping it and accidentally presenting old
+      // observations as current.
+      if (index === 0 && remaining > 256) {
+        safe = fitObservation(safe, remaining);
+        size = byteLength(safe);
+        if (size <= remaining) {
+          outNewestFirst.push(safe);
+          used += size;
+        }
+      }
+      break;
+    }
+    outNewestFirst.push(safe);
+    used += size;
   }
-  return out;
+  return outNewestFirst.reverse();
+}
+
+function fitObservation(value, maxBytes) {
+  const base = {
+    kind: value.kind,
+    trust: value.trust,
+    tool: value.tool,
+    evidenceIds: (value.evidenceIds || []).slice(0, 32),
+    data: { truncated: true },
+  };
+  let summary = String(value.summary || '');
+  let candidate = { ...base, summary };
+  while (summary.length && byteLength(candidate) > maxBytes) {
+    summary = summary.slice(0, Math.max(0, Math.floor(summary.length * 0.7)));
+    candidate = { ...base, summary, truncated: true };
+  }
+  if (byteLength(candidate) <= maxBytes) return candidate;
+  candidate = { kind: value.kind, trust: value.trust, tool: value.tool, truncated: true };
+  return candidate;
 }
 
 function compactMessages(values) {
@@ -145,7 +193,7 @@ function compactMessages(values) {
 function trimToBudget(context, maxBytes) {
   const queues = [context.recentMessages, context.recentObservations, context.activeHypotheses, context.pinnedEvidence, context.verifiedEvidence];
   for (const queue of queues) while (byteLength(context) > maxBytes && queue.length) queue.shift();
-  if (byteLength(context) > maxBytes && context.current?.function) {
+  if (byteLength(context) > maxBytes && context.current?.function && !context.current.function.containmentOnly) {
     delete context.current.function.instructions;
     if (context.current.function.assembly) context.current.function.assembly = context.current.function.assembly.slice(0, 4000);
     if (context.current.function.pseudocode) context.current.function.pseudocode = context.current.function.pseudocode.slice(0, 4000);
