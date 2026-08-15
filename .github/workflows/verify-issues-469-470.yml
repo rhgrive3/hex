@@ -21,7 +21,9 @@ jobs:
         with:
           node-version: 22
       - name: Apply worker quota integration
-        run: python3 tools/apply-issues-469-470.py
+        run: |
+          python3 tools/apply-issues-469-470.py
+          python3 tools/fix-issues-469-470-stream.py
       - name: Focused distributed quota regressions
         run: node tests/ai-quota.mjs
       - name: AI worker regressions
