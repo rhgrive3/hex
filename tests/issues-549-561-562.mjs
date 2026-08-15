@@ -110,8 +110,8 @@ assert.match(chained, /Object\.assign\(\{\}, result, \{ addrs, kinds, flags, nam
 }
 
 const appSource = fs.readFileSync(new URL('../js/app.js', import.meta.url), 'utf8');
-assert.match(appSource, /sym\.functionStartsComplete === true \|\| sym\.functionDiscovery\?\.complete === true/);
-assert.doesNotMatch(appSource, /if \(!sym \|\| sym\.functionStartsExact\) return sym/);
+assert.match(appSource, /sym\.functionStartsComplete\s*===\s*true\s*\|\|\s*sym\.functionDiscovery\?\.complete\s*===\s*true/);
+assert.doesNotMatch(appSource, /if\s*\(\s*!sym\s*\|\|\s*sym\.functionStartsExact\s*\)/);
 assert.match(platformWorker, /allSeedsExact/);
 assert.match(platformWorker, /discoveryComplete/);
 
