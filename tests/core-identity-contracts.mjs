@@ -11,6 +11,9 @@ const bytes = new TextEncoder().encode('same binary content');
 const binaryA = await createBinaryId(bytes);
 const binaryB = await createBinaryId(bytes.slice());
 assert.equal(binaryA, binaryB, 'binary identity must depend on content, not filename or object identity');
+const padded = new Uint8Array(bytes.length + 2);
+padded.set(bytes, 1);
+assert.equal(binaryA, await createBinaryId(padded.subarray(1, 1 + bytes.length)), 'binary identity must hash only the selected view bytes');
 
 const slice = createSliceId({ binaryId: binaryA, index: 0, architecture: 'arm64' });
 assert.equal(slice, createSliceId({ architecture: 'arm64', index: 0, binaryId: binaryA }), 'slice id must be deterministic');
