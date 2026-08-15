@@ -168,7 +168,8 @@ function make(lines, opts = {}) {
 }
 
 // YWP regression: detached Objective-C exception landing pads must not force
-// the ordinary message-send body back through legacy register rendering.
+// the ordinary message-send body back through legacy register rendering. The
+// catch path also jumps backward into an ordinary cleanup block, like YWP.
 {
   const MSG = 0x100010000n;
   const BEGIN_CATCH = 0x100010100n;
@@ -182,6 +183,8 @@ function make(lines, opts = {}) {
   ]);
   const symbolFor = (addr) => symbols.get(BigInt(addr).toString()) || null;
   const methodName = '-[POBRequestBuilder urlRequestWithMethod:contentType:]';
+  const catchResume = BASE + 13n * 4n;
+  const normalCleanup = BASE + 5n * 4n;
   const { model, rowOfAddress } = make([
     'mov x24, x0',
     'mov x2, #0x123', // stale ABI register: zero-arity selector must ignore it
@@ -192,16 +195,19 @@ function make(lines, opts = {}) {
     'ret',
     // No ordinary predecessor: entered only through exception unwinding metadata.
     'mov x25, x0',
+    'cmp w1, #1',
+    `b.ne #0x${catchResume.toString(16)}`,
     `bl #0x${BEGIN_CATCH.toString(16)}`,
     `bl #0x${END_CATCH.toString(16)}`,
+    `b #0x${normalCleanup.toString(16)}`,
     'mov x0, x25',
     `bl #0x${UNWIND.toString(16)}`,
   ], { name: methodName, symbolFor });
   model.calls = [
     { row: 3, name: '_objc_msgSend', selector: 'adRequest', target: MSG },
-    { row: 8, name: '_objc_begin_catch', target: BEGIN_CATCH },
-    { row: 9, name: '_objc_end_catch', target: END_CATCH },
-    { row: 11, name: '__Unwind_Resume', target: UNWIND },
+    { row: 10, name: '_objc_begin_catch', target: BEGIN_CATCH },
+    { row: 11, name: '_objc_end_catch', target: END_CATCH },
+    { row: 14, name: '__Unwind_Resume', target: UNWIND },
   ];
 
   const r = decompile(model, {
@@ -216,6 +222,7 @@ function make(lines, opts = {}) {
   assert.match(r.pseudocode, /Exception landing pads/);
   assert.match(r.pseudocode, /objc_begin_catch/);
   assert.match(r.pseudocode, /Unwind_Resume/);
+  assert.match(r.pseudocode, new RegExp(`loc_${normalCleanup.toString(16).toUpperCase()}:`));
   assert.doesNotMatch((r.warnings || []).join('\n'), /disconnected or indirect targets use the isolated faithful fallback/);
   assert.match(r.signature, /^id -\[POBRequestBuilder urlRequestWithMethod:contentType:\]\(/);
   assert.doesNotMatch(r.signature, /\ba1\b|\ba2\b/); // self/_cmd stay implicit
