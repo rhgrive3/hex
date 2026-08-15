@@ -9,7 +9,7 @@ const check = (name, ok, detail = '') => {
   if (!ok) failures++;
 };
 
-const expectedRoutes = new Set(['investigate','code','explorer','results','function','finding','settings','help','learn','advanced']);
+const expectedRoutes = new Set(['investigate','code','explorer','results','diff','function','finding','settings','help','learn','advanced']);
 check('all canonical route ids are present', expectedRoutes.size === ROUTES.length && ROUTES.every((route) => expectedRoutes.has(route.id)));
 check('each route has a screen kind', ROUTES.every((route) => route.kind === 'screen' || route.kind === 'workspace'));
 check('each primary nav destination resolves', PRIMARY_NAV.every((item) => matchRoute(ROUTES, item.route)?.route.id === item.routeId));

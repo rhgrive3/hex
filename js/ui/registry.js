@@ -5,6 +5,7 @@ export const ROUTES = Object.freeze([
   { id: 'code', pattern: '/code/:address?', title: 'コード', kind: 'screen', primary: true },
   { id: 'explorer', pattern: '/explorer/:scope?', title: '索引', kind: 'screen', primary: true },
   { id: 'results', pattern: '/results', title: '結果', kind: 'screen', primary: true },
+  { id: 'diff', pattern: '/diff', title: '差分', kind: 'screen' },
   { id: 'function', pattern: '/function/:address/:tab?', title: '関数', kind: 'workspace' },
   { id: 'finding', pattern: '/finding/:id', title: '結果', kind: 'screen' },
   { id: 'settings', pattern: '/settings', title: '設定', kind: 'screen' },
