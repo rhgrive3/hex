@@ -14,7 +14,20 @@ jobs:
         with:
           fetch-depth: 0
       - name: Apply fix
-        run: python tools/apply-issue-570.py
+        run: |
+          set +e
+          python tools/apply-issue-570.py > .issue570-apply.log 2>&1
+          status=$?
+          cat .issue570-apply.log
+          if [ "$status" -ne 0 ]; then
+            git config user.name github-actions[bot]
+            git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+            git add .issue570-apply.log
+            git commit -m "chore: capture issue 570 apply failure [skip ci]"
+            git push origin HEAD:fix/issue-570-macho-metadata-budget
+            exit "$status"
+          fi
+          rm -f .issue570-apply.log
       - name: Syntax
         run: |
           node --check js/binary/macho-budget.js
