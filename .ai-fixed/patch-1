@@ -1,0 +1,66 @@
+   if (Array.isArray(kinds) && kinds.length) {
+     const wanted = new Set(kinds);
+--- a/tests/ai-lossless-data-plane.mjs
++++ b/tests/ai-lossless-data-plane.mjs
+@@ -25,18 +25,33 @@
+   return buildSemanticModel(asm(lines, base), { startRow:0, endRow:lines.length - 1, rowOfAddress });
+ }
+ 
+-// 500 deterministic RMWs: page 1 must not be mistaken for the whole result.
+-const rmwLines = [];
+-for (let i = 0; i < 500; i++) rmwLines.push('ldr w8, [x0, #0x20]', 'add w8, w8, #1', 'str w8, [x0, #0x20]');
+-rmwLines.push('ret');
+-const rmwModel = modelFor(rmwLines);
++// A. 500 deterministic semantic facts: page 1 must not be mistaken for the whole result.
++// Use the host's deterministic fact index so this test measures Data Plane paging,
++// not O(n^2)-style stress in the Semantic IR builder.
++const indexedFacts = Array.from({ length:500 }, (_, i) => ({
++  id:`fact:rmw:${i}`, kind:FACT.RMW, row:i, address:BASE + BigInt(i * 4),
++  location:{ key:'field:0x20', kind:'field', disp:0x20n, size:4 },
++  operation:'add', evidence:[{ id:`ir:${i}`, instructionId:i, row:i, address:BASE + BigInt(i * 4) }],
++}));
++// B. A distinct 500-instruction function proves late-region and local Semantic IR access.
++const regionLines = Array.from({ length:500 }, () => 'nop');
++regionLines.push('ret');
++const regionModel = modelFor(regionLines);
+ const evidence = new EvidenceStore();
+ let signatureCalls = 0;
+ const context = {
+   binaryId:'binary:A', analysisRevision:'rev:1',
+   addressExists:() => true,
+-  analyze:async () => rmwModel,
+-  program:{ functionRange:() => ({ start:BASE, end:BASE + BigInt(rmwLines.length * 4) }) },
++  analyze:async () => regionModel,
++  semanticFactsFor:async (_address, { kinds, limit, offset }) => {
++    let rows = indexedFacts;
++    if (Array.isArray(kinds) && kinds.length) {
++      const wanted = new Set(kinds);
++      rows = rows.filter((fact) => wanted.has(fact.kind));
++    }
++    return { results:rows.slice(offset, offset + limit), total:rows.length, offset, engine:'semantic-facts-index' };
++  },
++  program:{ functionRange:() => ({ start:BASE, end:BASE + BigInt(regionLines.length * 4) }) },
+   resolveObjcDispatch:async () => ({
+     resolved:{ address:'0x100001000', method:'-[Wallet addCoins:]' }, confidence:0.74,
+     candidates:[{ address:'0x100001000', class:'Wallet' }, { address:'0x100002000', class:'WalletCategory' }],
+@@ -55,7 +70,6 @@
+ };
+ const registry = createHexToolRegistry(context, { evidenceStore:evidence, maxFunctions:8, maxDisassembly:10000 });
+ 
+-// A. Semantic facts: exact total + continuation.
+ const facts1 = await registry.execute('get_semantic_facts', { functionAddress:'0x100000000', kinds:[FACT.RMW], limit:100 }, { scope:'function' });
+ assert.equal(facts1.result.total, 500);
+ assert.equal(facts1.result.returned, 100);
+@@ -66,10 +80,10 @@
+ assert.equal(facts2.result.offset, 100);
+ assert.equal(facts2.result.total, 500);
+ assert.equal(facts2.result.returned, 100);
++assert.equal(facts2.result.engine, 'semantic-facts-index');
+ 
+-// B + semantic IR drill-down: preview is bounded, later regions are directly addressable.
+ const fn = await registry.execute('get_function', { address:'0x100000000' }, { scope:'function' });
+-assert.equal(fn.result.total, rmwLines.length);
++assert.equal(fn.result.total, regionLines.length);
+ assert.equal(fn.result.returned, 160);
+ assert.equal(fn.result.truncated, true);
+ const later = await registry.execute('inspect_function_region', { functionAddress:'0x100000000', view:'assembly', start:400, count:50 }, { scope:'function' });
