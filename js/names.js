@@ -26,10 +26,6 @@ function key(addr) {
 }
 
 /**
- * このファイルを見分けるための鍵。
- * 同じアプリを開き直したら、前に付けた名前がそのまま戻ってくる。
- */
-/**
  * 旧版（fingerprint導入前）が使っていた鍵。
  * 2026-08-13以前の版は active slice を区別せず、
  * name|size|最初に見つかったUUID だけで保存していた。
@@ -72,7 +68,6 @@ export async function noteKeyFor(file, fileInfo, sliceIndex) {
   if (globalThis.crypto && globalThis.crypto.subtle) {
     digest = new Uint8Array(await globalThis.crypto.subtle.digest('SHA-256', input));
   } else {
-    /* Very old browsers: still avoid name+size collisions, though SHA-256 is preferred. */
     let h = 2166136261;
     for (const b of input) { h ^= b; h = Math.imul(h, 16777619); }
     digest = Uint8Array.from([(h >>> 24) & 255, (h >>> 16) & 255, (h >>> 8) & 255, h & 255]);
@@ -85,16 +80,14 @@ export class NoteStore {
     this.id = id || null;
     this.legacyIds = Array.from(new Set((legacyIds || []).filter((x) => x && x !== this.id)));
     this.migratedFrom = null;
-    this.names = new Map();      // addr -> 名前
-    this.comments = new Map();   // addr -> メモ
-    this.vars = new Map();       // 'func:key' -> 呼び名
-    this.types = new Map();      // 'func:key' -> 型
-    this.structs = [];           // 自分で作った構造体（types.js が読む）
+    this.names = new Map();
+    this.comments = new Map();
+    this.vars = new Map();
+    this.types = new Map();
+    this.structs = [];
     this.dirty = false;
     this.load();
   }
-
-  /* ── 読み書き ─────────────────────────────────────────── */
 
   load() {
     if (!this.id) return;
@@ -118,8 +111,6 @@ export class NoteStore {
       for (const [k, v] of Object.entries(o.types || {})) this.types.set(k, v);
       this.structs = Array.isArray(o.structs) ? o.structs : [];
       if (sourceId !== this.id) {
-        /* Copy, do not delete. The old version can still be opened safely, and
-           a failed write never destroys the only copy of the user's notes. */
         if (this.save()) this.migratedFrom = sourceId;
       }
     } catch { /* 壊れていたら無かったことにする（消しはしない） */ }
@@ -139,24 +130,32 @@ export class NoteStore {
     try { text = JSON.stringify(o); } catch { return false; }
     if (text.length > MAX_BYTES) return false;
     try { localStorage.setItem(PREFIX + this.id, text); this.dirty = false; return true; }
-    catch { return false; }   // 容量いっぱい / プライベートモード
+    catch { return false; }
   }
 
-  /* ── 名前 ─────────────────────────────────────────────── */
+  /** Apply one map mutation transactionally with persistence as the commit point. */
+  mutate(map, k, value, { remove = false } = {}) {
+    if (!k) return false;
+    const had = map.has(k);
+    const before = map.get(k);
+    const dirtyBefore = this.dirty;
+    if (remove) map.delete(k); else map.set(k, value);
+    this.dirty = true;
+    if (this.save()) return true;
+    if (had) map.set(k, before); else map.delete(k);
+    this.dirty = dirtyBefore;
+    return false;
+  }
 
   nameOf(addr) { return this.names.get(key(addr)) || null; }
 
   setName(addr, name) {
     const k = key(addr);
-    if (!k) return;
+    if (!k) return false;
     const clean = cleanName(name);
-    if (clean) this.names.set(k, clean);
-    else this.names.delete(k);
-    this.dirty = true;
-    this.save();
+    return this.mutate(this.names, k, clean, { remove: !clean });
   }
 
-  /** 保存済みの名前をぜんぶ [{addr, name}] で返す（起動時に索引へ流し込む）。 */
   nameEntries() {
     const out = [];
     for (const [k, v] of this.names) {
@@ -165,47 +164,34 @@ export class NoteStore {
     return out;
   }
 
-  /* ── メモ ─────────────────────────────────────────────── */
-
   comment(addr) { return this.comments.get(key(addr)) || null; }
 
   setComment(addr, text) {
     const k = key(addr);
-    if (!k) return;
+    if (!k) return false;
     const clean = (text || '').toString().slice(0, 500).trim();
-    if (clean) this.comments.set(k, clean);
-    else this.comments.delete(k);
-    this.dirty = true;
-    this.save();
+    return this.mutate(this.comments, k, clean, { remove: !clean });
   }
 
   commentCount() { return this.comments.size; }
-
-  /* ── 変数と型 ─────────────────────────────────────────── */
 
   varName(func, k) { return this.vars.get(key(func) + ':' + k) || null; }
 
   setVarName(func, k, name) {
     const kk = key(func) + ':' + k;
+    if (!key(func)) return false;
     const clean = cleanName(name);
-    if (clean) this.vars.set(kk, clean);
-    else this.vars.delete(kk);
-    this.dirty = true;
-    this.save();
+    return this.mutate(this.vars, kk, clean, { remove: !clean });
   }
 
   typeOf(func, k) { return this.types.get(key(func) + ':' + k) || null; }
 
   setType(func, k, type) {
     const kk = key(func) + ':' + k;
+    if (!key(func)) return false;
     const clean = (type || '').toString().slice(0, 80).trim();
-    if (clean) this.types.set(kk, clean);
-    else this.types.delete(kk);
-    this.dirty = true;
-    this.save();
+    return this.mutate(this.types, kk, clean, { remove: !clean });
   }
-
-  /* ── まとめて ─────────────────────────────────────────── */
 
   get count() { return this.names.size + this.comments.size + this.vars.size + this.types.size; }
 
@@ -215,7 +201,6 @@ export class NoteStore {
     if (this.id) { try { localStorage.removeItem(PREFIX + this.id); } catch { /* ignore */ } }
   }
 
-  /** 書き出し（バックアップ・共有用）。 */
   toJSON() {
     return JSON.stringify({
       v: 1, id: this.id,
@@ -230,21 +215,31 @@ export class NoteStore {
   /** 読み込み（書き出したものを戻す）。既存の内容とまぜる。 */
   fromJSON(text) {
     const o = JSON.parse(text);
+    if (!o || typeof o !== 'object') throw new Error('invalid-notes-import');
+    if (o.id != null && this.id != null && String(o.id) !== String(this.id)) throw new Error('notes-file-mismatch');
+
+    const before = {
+      names: new Map(this.names), comments: new Map(this.comments), vars: new Map(this.vars), types: new Map(this.types),
+      structs: this.structs.slice(), dirty: this.dirty,
+    };
     let n = 0;
-    for (const [k, v] of Object.entries(o.names || {})) { this.names.set(k, v); n++; }
-    for (const [k, v] of Object.entries(o.comments || {})) { this.comments.set(k, v); n++; }
-    for (const [k, v] of Object.entries(o.vars || {})) { this.vars.set(k, v); n++; }
-    for (const [k, v] of Object.entries(o.types || {})) { this.types.set(k, v); n++; }
-    if (Array.isArray(o.structs)) this.structs = this.structs.concat(o.structs);
-    this.save();
-    return n;
+    try {
+      for (const [k, v] of Object.entries(o.names || {})) { this.names.set(k, v); n++; }
+      for (const [k, v] of Object.entries(o.comments || {})) { this.comments.set(k, v); n++; }
+      for (const [k, v] of Object.entries(o.vars || {})) { this.vars.set(k, v); n++; }
+      for (const [k, v] of Object.entries(o.types || {})) { this.types.set(k, v); n++; }
+      if (Array.isArray(o.structs)) this.structs = this.structs.concat(o.structs);
+      this.dirty = true;
+      if (!this.save()) throw new Error('notes-save-failed');
+      return n;
+    } catch (error) {
+      this.names = before.names; this.comments = before.comments; this.vars = before.vars; this.types = before.types;
+      this.structs = before.structs; this.dirty = before.dirty;
+      throw error;
+    }
   }
 }
 
-/**
- * 名前として使える形に整える。
- * 記号だらけの名前は、あとで検索やスクリプトから引けなくなるので落とす。
- */
 export function cleanName(name) {
   if (name == null) return '';
   let s = String(name).replace(/[\r\n\t]/g, ' ').trim();
@@ -253,5 +248,4 @@ export function cleanName(name) {
   return s;
 }
 
-/** 何も保存しない置き場（ファイル未選択のとき）。 */
 export const EMPTY_NOTES = new NoteStore(null);

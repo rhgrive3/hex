@@ -114,9 +114,7 @@ export class Backend {
     return 'platform';
   }
 
-  call(t, payload, transfer, onProgress) {
-    return this._callTo(this._engineWorker(t), t, payload, transfer, onProgress);
-  }
+  call(t, payload, transfer, onProgress) { return this._callTo(this._engineWorker(t), t, payload, transfer, onProgress); }
 
   _releaseDisassembly(error) {
     if (this._disasmWorker) { this._disasmWorker.terminate(); this._disasmWorker = null; }
@@ -129,9 +127,7 @@ export class Backend {
     this.analysisEpoch++;
     this.resetCache();
     this._releaseDisassembly(new StaleRequestError());
-    for (const worker of [this.legacyWorker, this.platformWorker]) {
-      worker.postMessage({ t: 'cancel', epoch: this.transportEpoch });
-    }
+    for (const worker of [this.legacyWorker, this.platformWorker]) worker.postMessage({ t: 'cancel', epoch: this.transportEpoch });
     for (const [id, pending] of this.pending) {
       if (pending.uiEpoch === this.gen) continue;
       this.pending.delete(id);
@@ -152,45 +148,28 @@ export class Backend {
 
     let detection = null;
     let platformError = null;
-    try {
-      detection = await this._callTo('platform', 'detect', { file });
-    } catch (error) {
-      if (error?.stale) throw error;
-      platformError = error;
-    }
+    try { detection = await this._callTo('platform', 'detect', { file }); }
+    catch (error) { if (error?.stale) throw error; platformError = error; }
 
-    // Modern iOS Mach-O is already parsed by the mature compatibility worker.
-    // Detect it through the universal ByteSource path, but do not retain a
-    // second 100k-300k-function BinaryImage beside the legacy worker on iPad.
     if (detection?.formatId === 'macho') {
       this.formatId = 'macho';
       const legacy = await this._callTo('legacy', 'open', { file });
       legacy.formatId = 'macho';
       for (const slice of legacy.slices || []) slice.capability = legacySliceCapability(slice);
       legacy.capability = legacy.slices?.[0]?.capability || legacySliceCapability(null);
-      legacy.platform = {
-        compatibility: 'legacy-macho',
-        sourceBackedDetection: true,
-        detected: detection,
-        duplicateUniversalParseAvoided: true,
-      };
+      legacy.platform = { compatibility: 'legacy-macho', sourceBackedDetection: true, detected: detection, duplicateUniversalParseAvoided: true };
       this.legacyInfo = legacy;
       this.platformInfo = { formatId: 'macho', capability: legacy.capability, detection, compatibility: 'legacy-macho' };
       return legacy;
     }
 
     let platformInfo = null;
-    try {
-      platformInfo = await this._callTo('platform', 'open', { file }, null, (p) => this.onAnalysisProgress?.(p));
-    } catch (error) {
-      if (error?.stale) throw error;
-      platformError = error;
-    }
+    try { platformInfo = await this._callTo('platform', 'open', { file }, null, (p) => this.onAnalysisProgress?.(p)); }
+    catch (error) { if (error?.stale) throw error; platformError = error; }
     if (platformInfo) {
       this.platformInfo = platformInfo;
       this.formatId = platformInfo.formatId || platformInfo.capability?.format || detection?.formatId || 'unknown';
     }
-
     if (!platformInfo) {
       const legacy = await this._callTo('legacy', 'open', { file });
       this.legacyInfo = legacy;
@@ -201,8 +180,6 @@ export class Backend {
     const capability = platformInfo.capability || platformInfo.slices?.[0]?.capability;
     this.arm64Bridge = capability?.architecture === 'arm64';
     if (this.arm64Bridge) {
-      // The legacy worker contributes ARM64 decode/scan only here. ELF/PE
-      // metadata stays owned by BinaryImage and neutral regions are injected.
       await this._callTo('legacy', 'open', { file });
       const allRegions = [...(platformInfo.slices || []).flatMap((s) => s.regions || []), platformInfo.raw].filter(Boolean);
       await this._callTo('legacy', 'setRegions', { regions: allRegions });
@@ -273,22 +250,20 @@ export class Backend {
     const capability = slice?.capability || this.platformInfo?.capability || null;
     if (kind === 'summary') {
       return Promise.resolve({
-        summary: {
-          format: 'macho', arch: capability?.architecture || 'unknown', bits: capability?.bits || 0,
-          endian: capability?.endianness || 'unknown', sections: slice?.regions?.length || 0,
-        },
-        metadata: { compatibility: 'legacy-macho', duplicateUniversalParseAvoided: true },
-        capability,
+        summary: { format: 'macho', arch: capability?.architecture || 'unknown', bits: capability?.bits || 0, endian: capability?.endianness || 'unknown', sections: slice?.regions?.length || 0 },
+        metadata: { compatibility: 'legacy-macho', duplicateUniversalParseAvoided: true }, capability,
       });
     }
     return Promise.resolve({ kind, start, total: 0, items: [], next: null, compatibility: 'legacy-macho', unsupported: true });
   }
+
   async ensureContentHash(onProgress) {
     if (this.contentHash) return this.contentHash;
     const result = await this._callTo('platform', 'hash', {}, null, onProgress);
     this.contentHash = result.hash;
     return this.contentHash;
   }
+
   async disassembleAt(addr, options = {}) {
     const uiEpoch = this.gen;
     const architecture = options.architecture || this.platformInfo?.capability?.architecture || 'arm64';
@@ -303,6 +278,7 @@ export class Backend {
     if (uiEpoch !== this.gen) throw new StaleRequestError();
     return { supported: true, architecture, found: true, ...result };
   }
+
   _disassembleBytes(bytes, address, architecture, uiEpoch = this.gen) {
     if (!this._disasmWorker) {
       this._disasmWorker = new Worker(new URL('./platform/capstone-disasm-worker.js', import.meta.url));
@@ -321,14 +297,9 @@ export class Backend {
       this._disasmWorker.postMessage({ id, architecture, address, bytes: copy }, [copy.buffer]);
     });
   }
-  async loadAnalysisCache() {
-    const hash = await this.ensureContentHash();
-    return this.analysisCache.get(hash);
-  }
-  async saveAnalysisCache(data) {
-    const hash = await this.ensureContentHash();
-    return this.analysisCache.put(hash, data);
-  }
+
+  async loadAnalysisCache() { const hash = await this.ensureContentHash(); return this.analysisCache.get(hash); }
+  async saveAnalysisCache(data) { const hash = await this.ensureContentHash(); return this.analysisCache.put(hash, data); }
   memoryStats() { return this._callTo('platform', 'memoryStats', {}); }
   cleanupMemory() {
     this.resetCache();
@@ -366,10 +337,13 @@ export class Backend {
   request(regionId, chunk, wantAsm) {
     const key = this.key(regionId, chunk);
     const inflight = this.inflight.get(key);
-    if (inflight) { if (wantAsm && !inflight.wantAsm) inflight.wantAsm = true; return; }
+    if (inflight) {
+      if (wantAsm && !inflight.wantAsm) inflight.wantAsm = true;
+      return;
+    }
     const cached = this.cache.get(key);
     if (cached && (!wantAsm || cached.mn)) return;
-    const job = { regionId, chunk, wantAsm, key, gen: this.gen };
+    const job = { regionId, chunk, wantAsm: !!wantAsm, key, gen: this.gen, dispatchedWantAsm: null };
     this.inflight.set(key, job);
     const dispatched = this.inflight.size - this.queue.length;
     if (dispatched > MAX_INFLIGHT) this.queue.push(job);
@@ -377,12 +351,25 @@ export class Backend {
   }
 
   _dispatch(job) {
-    this.call('chunk', { regionId: job.regionId, chunk: job.chunk, wantAsm: job.wantAsm })
+    // Snapshot what was actually placed on the wire. `job.wantAsm` may be
+    // upgraded while this request is already executing.
+    job.dispatchedWantAsm = !!job.wantAsm;
+    this.call('chunk', { regionId: job.regionId, chunk: job.chunk, wantAsm: job.dispatchedWantAsm })
       .then((res) => {
+        const entry = normalizeChunk(res);
         this.inflight.delete(job.key);
         if (job.gen !== this.gen) return;
-        this.cache.set(job.key, normalizeChunk(res));
+        this.cache.set(job.key, entry);
         this.onChunk?.(job.regionId, job.chunk);
+
+        if (job.wantAsm && !entry.mn) {
+          // The consumer upgraded bytes-only -> assembly after dispatch. Queue
+          // one real assembly request instead of pretending the original wire
+          // request changed retroactively. It occupies the slot freed above.
+          const retry = { ...job, wantAsm: true, dispatchedWantAsm: null };
+          this.inflight.set(job.key, retry);
+          this.queue.unshift(retry);
+        }
       })
       .catch((err) => {
         this.inflight.delete(job.key);
@@ -403,12 +390,7 @@ export class Backend {
 }
 
 function normalizeChunk(res) {
-  return {
-    bytes: res.bytes,
-    rows: res.rows,
-    mn: res.mn ? res.mn.split('\n') : null,
-    ops: res.ops ? res.ops.split('\n') : null,
-  };
+  return { bytes: res.bytes, rows: res.rows, mn: res.mn ? res.mn.split('\n') : null, ops: res.ops ? res.ops.split('\n') : null };
 }
 
 function legacySliceCapability(slice) {

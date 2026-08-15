@@ -21,6 +21,8 @@ export class ProposalStore {
       id, kind: input.kind, target: jsonSafe(input.target), before: jsonSafe(input.before), after: jsonSafe(input.after),
       reason: String(input.reason || '').slice(0, 2000), evidenceIds,
       createdAt: new Date().toISOString(), status: 'pending',
+      // Identity/staleness checks use the complete value, never jsonSafe's
+      // display-oriented depth/item truncation.
       revision: fingerprint(input.before),
     };
     this.records.set(id, record);
@@ -50,13 +52,22 @@ export class ProposalStore {
   async apply(id, { approvalToken, currentState, apply } = {}) {
     const proposal = this.require(id);
     if (proposal.status !== 'approved' || this.approvals.get(proposal.id) !== approvalToken) throw new AIError('approval_required', 'A valid user approval token is required.');
+
+    // Consume approval and move to the in-flight state synchronously before any
+    // await. A second caller with the same token can no longer pass validation.
+    proposal.status = 'applying';
+    this.approvals.delete(proposal.id);
+    this.audit.push({ type: 'proposal-applying', proposalId: proposal.id, timestamp: new Date().toISOString() });
+
     if (fingerprint(currentState) !== proposal.revision) {
       proposal.status = 'failed';
-      this.approvals.delete(proposal.id);
       this.audit.push({ type: 'proposal-stale', proposalId: proposal.id, timestamp: new Date().toISOString() });
       throw new AIError('tool_failed', 'The proposal target changed after it was created.');
     }
-    if (typeof apply !== 'function') throw new AIError('tool_failed', 'No mutation adapter is available.');
+    if (typeof apply !== 'function') {
+      proposal.status = 'failed';
+      throw new AIError('tool_failed', 'No mutation adapter is available.');
+    }
     try {
       await apply(proposal);
       proposal.status = 'applied';
@@ -66,8 +77,6 @@ export class ProposalStore {
       proposal.status = 'failed';
       this.audit.push({ type: 'proposal-failed', proposalId: proposal.id, timestamp: new Date().toISOString() });
       throw error;
-    } finally {
-      this.approvals.delete(proposal.id);
     }
   }
 
@@ -82,10 +91,33 @@ export class ProposalStore {
 }
 
 function fingerprint(value) {
-  const text = JSON.stringify(jsonSafe(value));
+  const text = canonicalIdentity(value);
   let hash = 5381;
   for (let i = 0; i < text.length; i++) hash = ((hash << 5) + hash) ^ text.charCodeAt(i);
   return (hash >>> 0).toString(16);
+}
+
+function canonicalIdentity(value, stack = new Set()) {
+  if (typeof value === 'bigint') return `{"$bigint":${JSON.stringify(value.toString())}}`;
+  if (typeof value === 'number') {
+    if (Number.isNaN(value)) return '{"$number":"NaN"}';
+    if (value === Infinity) return '{"$number":"Infinity"}';
+    if (value === -Infinity) return '{"$number":"-Infinity"}';
+    if (Object.is(value, -0)) return '{"$number":"-0"}';
+    return JSON.stringify(value);
+  }
+  if (typeof value === 'string' || typeof value === 'boolean' || value === null) return JSON.stringify(value);
+  if (value === undefined) return '{"$undefined":true}';
+  if (typeof value !== 'object') return JSON.stringify(String(value));
+  if (stack.has(value)) throw new AIError('tool_failed', 'Proposal state contains a cyclic value and cannot be fingerprinted safely.');
+  stack.add(value);
+  try {
+    if (Array.isArray(value)) return `[${value.map((item) => canonicalIdentity(item, stack)).join(',')}]`;
+    const keys = Object.keys(value).sort();
+    return `{${keys.map((key) => `${JSON.stringify(key)}:${canonicalIdentity(value[key], stack)}`).join(',')}}`;
+  } finally {
+    stack.delete(value);
+  }
 }
 
 function randomToken() {
