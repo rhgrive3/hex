@@ -22,7 +22,7 @@ import { SymbolIndex, EMPTY_INDEX } from './symbols.js';
 import { clearBriefCache } from './arm64.js';
 import { clearAnalysisCache, analyzeFunctionCached } from './analyze.js';
 import { buildOverlay } from './narrate.js';
-import { buildObjcModel } from './objc.js';
+import { buildObjcRuntimeModel } from './objc.js';
 import { FieldIndex, EMPTY_FIELDS } from './fields.js';
 import { makeSampleFile } from './sample.js';
 import { ProgramIndex } from './program.js';
@@ -67,6 +67,8 @@ class App {
     this.lastGoal = null;       // 直近に調べた目的
     // Objective-C のクラスとフィールド。x0+0x20 を self.hp と言えるようにする索引。
     this.fields = EMPTY_FIELDS;
+    this.objcModel = null;
+    this.objcRuntime = null;
     this.objcBusy = null;
     this.objcBusyEpoch = -1;
     this.symbolsReadyEpoch = -1;
@@ -523,6 +525,7 @@ class App {
       this.pinnedCache = null;
       this.fields = EMPTY_FIELDS;
       this.objcModel = null;
+      this.objcRuntime = null;
       this.program = null;
       this.programScan = null;
       this.programKey = null;
@@ -956,8 +959,15 @@ class App {
     if (this.fields && this.fields.classCount) return this.fields;
     if (this.objcBusy && this.objcBusyEpoch === epoch) return this.objcBusy;
     const regions = this.store.get('regions') || [];
-    const list = regions.find((r) => r.section === '__objc_classlist' && r.size > 0n);
-    if (!list) { this.fields = EMPTY_FIELDS; return this.fields; }
+    const list = regions.find((r) => r.section === '__objc_classlist' && r.size > 0n) || null;
+    const protocolList = regions.find((r) => r.section === '__objc_protolist' && r.size > 0n) || null;
+    const categoryList = regions.find((r) => r.section === '__objc_catlist' && r.size > 0n) || null;
+    if (!list && !protocolList && !categoryList) {
+      this.fields = EMPTY_FIELDS;
+      this.objcModel = null;
+      this.objcRuntime = null;
+      return this.fields;
+    }
     const slice = sliceIndex != null ? sliceIndex : this.store.get('sliceIndex');
 
     this.objcBusyEpoch = epoch;
@@ -970,9 +980,10 @@ class App {
         const info = this.store.get('fileInfo');
         const sl = info && info.slices ? info.slices[slice] : null;
         const imageBase = sl && sl.info ? sl.info.textVM : null;
-        const model = await buildObjcModel(read, list, null, imageBase);
+        const model = await buildObjcRuntimeModel(read, list, { protocolList, categoryList }, null, imageBase);
         if (epoch !== this.backend.gen || this.store.get('sliceIndex') !== slice) return this.fields;
         this.objcModel = model;
+        this.objcRuntime = model.runtimeIndex || null;
         this.fields = new FieldIndex(model);
         if (model.names.length) {
           const added = this.symbols.addNames(model.names);

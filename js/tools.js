@@ -283,6 +283,7 @@ export async function showDecompiler(app, addr) {
   const map = rowMapper(app);
   let showAsm = false;
   let showNotes = false;
+  try { await app.ensureObjc?.(); } catch { /* ObjC metadata is optional */ }
 
   const out = decompile(res.model, {
     name: app.symbols.nameAt(addr),
@@ -294,6 +295,8 @@ export async function showDecompiler(app, addr) {
       return n ? n : null;
     },
     fieldFor: (baseReg, offset) => fieldNameFor(app, addr, baseReg, offset),
+    objcModel: app.objcModel || null,
+    objcRuntimeIndex: app.objcRuntime || null,
     notes: app.notes,
   });
 

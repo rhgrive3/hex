@@ -14,6 +14,7 @@ import { decompile, decompiledText } from '../../decompile.js';
 import { runtimeEvidenceForApp, runtimePlatformForApp, verifyAppHypothesis } from '../../runtime/app-runtime.js';
 import { functionNameOf, selectionOf } from './workbench.js';
 import { currentFunctionAddr } from '../../tools.js';
+import { resolveObjcDispatch } from '../../objc.js';
 
 const MAX_SELECTION_ROWS = 80;
 
@@ -145,9 +146,20 @@ export function createHexAIContext(app) {
 
     async decompile(address) {
       if (!fixedRows(app)) return null;
+      try { await app.ensureObjc?.(); } catch { /* ObjC metadata is optional */ }
       const model = await analyzeModelAt(app, address);
       if (!model) return null;
       return decompiledText(pseudocode(app, model, toBigInt(address), nameOf));
+    },
+
+    async resolveObjcDispatch(receiverClass, selector, kind = 'instance') {
+      try { await app.ensureObjc?.(); } catch { /* ObjC metadata is optional */ }
+      const index = app.objcRuntime || app.objcModel?.runtimeIndex || null;
+      if (!index) return { resolved: null, reason: 'objc-runtime-unavailable', candidates: [], requirements: [], confidence: 0 };
+      const result = resolveObjcDispatch(index, {
+        receiverType: String(receiverClass || ''), selector: String(selector || ''), classMethod: kind === 'class',
+      });
+      return { ...result, candidates: (result.candidates || []).slice(0, 32), requirements: (result.requirements || []).slice(0, 32) };
     },
 
     pseudocodeFor(address, model) {
@@ -192,6 +204,8 @@ function pseudocode(app, model, addr, nameOf) {
     rowOfAddress: (a) => (region && a != null ? Number((a - region.vmAddr) / 4n) : null),
     addrOfRow: (row) => (region ? region.vmAddr + BigInt(row) * 4n : null),
     symbolFor: (a) => app.symbols?.nameAt?.(a) || null,
+    objcModel: app.objcModel || null,
+    objcRuntimeIndex: app.objcRuntime || null,
     notes: app.notes,
   });
 }
