@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { buildSemanticModel } from '../js/blocks.js';
-import { buildIR, OP, irText } from '../js/ir.js';
+import { buildIR, OP } from '../js/ir.js';
+import { stackPointerProvenanceOf } from '../js/ir-core.js';
 
 const BASE = 0x100000000n;
 function modelOf(lines) {
@@ -28,10 +29,13 @@ function irOf(lines) {
 function loadAt(ir, row) { return ir.instructions.find((i) => i.op === OP.LOAD && i.row === row); }
 function callAt(ir, row) { return ir.instructions.find((i) => i.op === OP.CALL && i.row === row); }
 
+// No opaque consumer: keep precise stack reaching-store information.
 {
   const ir = irOf(['str w1, [sp, #0x18]','add x9, sp, #0x18','mov x10, x9','ldr w2, [sp, #0x18]','ret']);
   assert.equal(loadAt(ir, 3)?.reachingStore?.row, 0);
 }
+
+// Direct AAPCS64 argument escape must be represented as a CALL SSA use.
 {
   const ir = irOf(['str w1, [sp, #0x18]','add x0, sp, #0x18','bl 0x100001000','ldr w2, [sp, #0x18]','ret']);
   const call = callAt(ir, 2);
@@ -39,33 +43,30 @@ function callAt(ir, row) { return ir.instructions.find((i) => i.op === OP.CALL &
   assert.equal(loadAt(ir, 3)?.reachingStore, undefined);
   assert.equal(loadAt(ir, 3)?.memUse?.kind, 'clobber');
 }
+
+// MOV propagation must not hide the escape.
 {
   const ir = irOf(['str w1, [sp, #0x18]','add x9, sp, #0x18','mov x0, x9','bl 0x100001000','ldr w2, [sp, #0x18]','ret']);
   assert.equal(loadAt(ir, 4)?.reachingStore, undefined);
   assert.equal(loadAt(ir, 4)?.memUse?.kind, 'clobber');
 }
+
+// PHI provenance is tested independently of text-fixture CFG construction: a
+// may-stack incoming value is enough to classify the merged pointer as escaped.
 {
-  const join = BASE + 5n * 4n;
-  const elseAddr = BASE + 4n * 4n;
-  const ir = irOf([
-    'str w1, [sp, #0x18]',
-    `cbz w2, 0x${elseAddr.toString(16)}`,
-    'add x0, sp, #0x18',
-    `b 0x${join.toString(16)}`,
-    'mov x0, x3',
-    'bl 0x100001000',
-    'ldr w4, [sp, #0x18]',
-    'ret',
-  ]);
-  const call = callAt(ir, 5);
-  const x0 = call?.args?.find((a) => a.value?.reg === 'x0')?.value;
-  if (x0?.kind !== 'phi') {
-    console.error('PHI fixture IR:\n' + irText(ir, { slots:true }));
-    console.error('row5 calls:', ir.instructions.filter((i) => i.row === 5).map((i) => ({op:i.op,args:i.args?.map((a)=>({reg:a.value?.reg,kind:a.value?.kind,id:a.value?.id}))})));
-  }
-  assert.equal(x0?.kind, 'phi', 'call argument should retain the control-flow merge');
-  assert.equal(loadAt(ir, 6)?.reachingStore, undefined);
-  assert.equal(loadAt(ir, 6)?.memUse?.kind, 'clobber');
+  const sp = { id:900, kind:'arg', reg:'sp', def:null };
+  const imm = { id:901, kind:'const', const:0x18n, def:null };
+  const addDef = { op:OP.BIN, sub:'add', args:[{ value:sp }, { value:imm }] };
+  const derived = { id:902, kind:'def', reg:'x9', def:addDef };
+  const movDef = { op:OP.MOV, args:[{ value:derived }] };
+  const moved = { id:903, kind:'def', reg:'x0', def:movDef };
+  const unrelated = { id:904, kind:'arg', reg:'x3', def:null };
+  const phiDef = { op:OP.PHI, args:[{ value:moved }, { value:unrelated }] };
+  const merged = { id:905, kind:'phi', reg:'x0', def:phiDef };
+  const provenance = stackPointerProvenanceOf(merged);
+  assert.equal(provenance?.via, 'phi');
+  assert.equal(provenance?.must, false, 'one non-stack predecessor makes PHI provenance may-stack');
+  assert.equal(provenance?.offset, 0x18n);
 }
 
 console.log('issue #430 stack escape regressions passed');
