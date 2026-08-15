@@ -1,0 +1,119 @@
+name: Integrate PR295 with latest main
+on:
+  push:
+    branches: [fix/issues-48-60]
+permissions:
+  contents: write
+jobs:
+  integrate:
+    if: ${{ contains(github.event.head_commit.message, '[integrate-pr295]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Merge latest main and resolve only audited overlaps
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'hex-integration-bot'
+          git config user.email 'actions@users.noreply.github.com'
+          git fetch origin main
+          set +e
+          git merge --no-ff --no-commit origin/main
+          merge_rc=$?
+          set -e
+          conflicts="$(git diff --name-only --diff-filter=U || true)"
+          if [ "$merge_rc" -ne 0 ] && [ -z "$conflicts" ]; then
+            echo 'merge failed without resolvable file conflicts' >&2
+            exit "$merge_rc"
+          fi
+          for f in $conflicts; do
+            case "$f" in
+              js/binary/source.js|js/binary/macho.js|js/binary/model.js) ;;
+              *) echo "unexpected conflict: $f" >&2; exit 1 ;;
+            esac
+          done
+
+          if printf '%s\n' "$conflicts" | grep -qx 'js/binary/source.js'; then
+            git checkout --ours js/binary/source.js
+            node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const p='js/binary/source.js';
+          let s=fs.readFileSync(p,'utf8');
+          const old=`export function asByteSource(input, options = {}) {\n  if (input instanceof ByteSource) return input;`;
+          const neu=`export function asByteSource(input, options = {}) {\n  if (input instanceof ByteSource) {\n    const requested = options?.maxReadLength;\n    return requested == null || requested === input.maxReadLength ? input : new DelegatingByteSource(input, options);\n  }`;
+          if(!s.includes(old)) throw new Error('source.js asByteSource integration anchor missing');
+          s=s.replace(old,neu);
+          fs.writeFileSync(p,s);
+          NODE
+            git add js/binary/source.js
+          fi
+
+          if printf '%s\n' "$conflicts" | grep -qx 'js/binary/macho.js'; then
+            git checkout --theirs js/binary/macho.js
+            node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const p='js/binary/macho.js';
+          let s=fs.readFileSync(p,'utf8');
+          const a=`      slices: selected.all.map((s) => ({ arch: cpuName(s.cpu), cpu: s.cpu, subtype: s.subtype, offset: s.offset, size: s.size })),\n      selected: { arch: cpuName(selected.cpu), offset: selected.offset, size: selected.size },`;
+          const b=`      slices: selected.all.map((s) => ({ arch: sliceArchName(s), cpu: s.cpu, subtype: s.subtype, offset: s.offset, size: s.size })),\n      selected: { arch: sliceArchName(selected), cpu: selected.cpu, subtype: selected.subtype, offset: selected.offset, size: selected.size },`;
+          if(!s.includes(a)) throw new Error('macho fat metadata anchor missing');
+          s=s.replace(a,b);
+          const cpu=`function cpuName(cpu) {\n  const u = cpu >>> 0;\n  return ({ 7: 'x86', 12: 'arm', 18: 'ppc', 0x01000007: 'x86_64', 0x0100000c: 'arm64', 0x0200000c: 'arm64_32' })[u] || \`cpu-\${u}\`;\n}`;
+          if(!s.includes('function sliceArchName(')) {
+            if(!s.includes(cpu)) throw new Error('macho cpuName anchor missing');
+            s=s.replace(cpu,cpu+`\nfunction subtypeBase(subtype) { return (subtype >>> 0) & 0x00ffffff; }\nfunction sliceArchName(slice) { return cpuName(slice.cpu) === 'arm64' && subtypeBase(slice.subtype) === 2 ? 'arm64e' : cpuName(slice.cpu); }`);
+          }
+          const oldSel=`  const want = preferredArch ? valid.find((s) => cpuName(s.cpu) === preferredArch) : null;\n  const chosen = want || valid.find((s) => cpuName(s.cpu) === 'arm64') || valid.find((s) => cpuName(s.cpu) === 'x86_64') || valid[0];`;
+          const newSel=`  const want = preferredArch ? valid.find((s) => sliceArchName(s) === preferredArch) : null;\n  if (preferredArch && !want) throw new Error(\`requested Mach-O architecture \${preferredArch} is not present in the universal binary\`);\n  const chosen = want || valid.find((s) => sliceArchName(s) === 'arm64e') || valid.find((s) => sliceArchName(s) === 'arm64') || valid.find((s) => sliceArchName(s) === 'x86_64') || valid[0];`;
+          if(!s.includes(oldSel)) throw new Error('macho selectFatSlice anchor missing');
+          s=s.replace(oldSel,newSel);
+          fs.writeFileSync(p,s);
+          NODE
+            git add js/binary/macho.js
+          fi
+
+          if printf '%s\n' "$conflicts" | grep -qx 'js/binary/model.js'; then
+            git checkout --theirs js/binary/model.js
+            node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const p='js/binary/model.js';
+          let s=fs.readFileSync(p,'utf8');
+          const oldExtent=`    if (f.size == null && i + 1 < out.length && out[i + 1].address > f.address) {\n      const delta = out[i + 1].address - f.address;\n      if (delta <= 0x1000000n) { f.size = delta; f.end = out[i + 1].address; }\n    }`;
+          const newExtent=`    if (f.size == null && i + 1 < out.length && out[i + 1].address > f.address) {\n      const next = out[i + 1];\n      const sources = new Set(f.sources || [f.source]);\n      const nextSources = new Set(next.sources || [next.source]);\n      const provenFunctionStarts = sources.has('function_starts') && nextSources.has('function_starts');\n      const delta = next.address - f.address;\n      if (provenFunctionStarts && delta <= 0x1000000n) {\n        f.size = delta; f.end = next.address;\n        f.extentInferred = true;\n        f.extentConfidence = Math.min(0.35, Number(f.confidence ?? 0.35));\n        f.extentSource = 'next-function-start';\n      }\n    }`;
+          if(!s.includes(oldExtent)) throw new Error('model extent anchor missing');
+          s=s.replace(oldExtent,newExtent);
+          const oldKey=`    const key = \`${'${i.library || \'\'}'}\\0${'${i.name || \'\'}'}\\0${'${i.ordinal ?? \'\'}'}\`;`;
+          const newKey=`    const scalar = (value) => typeof value === 'bigint' ? value.toString() : value == null ? '' : String(value);\n    const key = [i.library || '', i.name || '', scalar(i.ordinal), i.weak ? '1' : '0', scalar(i.addend ?? 0n), scalar(i.pointerFormat), scalar(i.type), scalar(i.version), i.versionLibrary || ''].join('\\0');`;
+          if(!s.includes(oldKey)) throw new Error('model import identity anchor missing');
+          s=s.replace(oldKey,newKey);
+          fs.writeFileSync(p,s);
+          NODE
+            git add js/binary/model.js
+          fi
+
+          if [ -n "$(git diff --name-only --diff-filter=U)" ]; then
+            git diff --name-only --diff-filter=U >&2
+            exit 1
+          fi
+          git diff --check
+      - name: Verify integrated tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run check
+          npm run binary:test
+          npm test
+      - name: Commit integrated PR branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/integrate-pr295.yml .integrate-pr295-trigger
+          git add -A
+          git commit -m 'Merge latest main into PR #295 with audited conflict resolution'
+          git push origin HEAD:fix/issues-48-60
