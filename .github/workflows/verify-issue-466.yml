@@ -1,0 +1,34 @@
+name: Verify issue 466 source abort
+
+on:
+  push:
+    branches:
+      - fix/issue-466-source-abort
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/issue-466-source-abort
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: python3 tools/apply-issue-466.py
+      - run: node tests/issue-466-source-abort.mjs
+      - run: npm run binary:source-test
+      - run: npm run lint
+      - name: Commit verified source
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add js/binary/source-reader.js js/binary/source-loaders.js package.json tests/issue-466-source-abort.mjs
+          git diff --cached --check
+          git commit -m 'fix: cancel structural source parsing immediately (#466)'
+          git push origin HEAD:fix/issue-466-source-abort
