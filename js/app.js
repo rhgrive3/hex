@@ -28,7 +28,7 @@ import { makeSampleFile } from './sample.js';
 import { ProgramIndex } from './program.js';
 import { foldShapes } from './shapes.js';
 import { recoverSchemas } from './schema.js';
-import { NoteStore, noteKeyFor, legacyV2NoteKeyFor, legacyNoteKeyFor, EMPTY_NOTES } from './names.js';
+import { NoteStore, noteKeyFor, legacyV2NoteKeyFor, legacyNoteKeyForSlice, EMPTY_NOTES } from './names.js';
 import { PatchSet } from './patch.js';
 import { PluginHost } from './plugins.js';
 import { showTools, prettyName } from './tools.js';
@@ -72,6 +72,7 @@ class App {
     this.symbolsReadyEpoch = -1;
     /* 自分で付けた名前・メモ・型（names.js）。ファイルごとに保存される。 */
     this.notes = EMPTY_NOTES;
+    this.noteAttachController = null;
     /* 命令の書き換え（patch.js）。保存を選ぶまでファイルには触らない。 */
     this.patches = new PatchSet();
     /* 追加した機能（plugins.js）。 */
@@ -816,67 +817,69 @@ class App {
 
   async openFile(file, opts) {
     if (!file) return;
-    if (file.size === 0) {
-      alertDialog(t('err.emptyTitle'), t('err.emptyText'));
-      return;
-    }
-    this.sampleOpen = !!(opts && opts.sample);
-    /* 前のファイルについて開いていたシートは、重なりごと片付ける。
-       1 枚だけ閉じると、下に前のファイルの画面が残って戻れてしまう。 */
-    closeAllSheets();
-    this.setBusy(true, t('status.reading', { name: file.name }));
-    this.backend.resetCache();
-    this.detailRefresh = null;
-    this.symbols = EMPTY_INDEX;
-    this.symbolsReady = null;
-    this.viewer.setSymbols(EMPTY_INDEX);
-    this.forgetSemantics(true);
-
+    if (file.size === 0) { alertDialog(t('err.emptyTitle'), t('err.emptyText')); return; }
+    const sampleOpen = !!(opts && opts.sample);
+    this.setBusy(true, t('status.reading', { name:file.name }));
     let info;
-    let openEpoch;
-    try {
-      const opening = this.backend.open(file);
-      openEpoch = this.backend.gen;
-      info = await opening;
-    } catch (err) {
+    try { info = await this.backend.open(file); }
+    catch (err) {
       if (err && err.stale) return;
       this.setBusy(false);
       alertDialog(t('err.openTitle'), friendly(err.message));
       return;
     }
-    if (openEpoch !== this.backend.gen) return;
-
-    this.store.set({ file, fileInfo: info, selectedRow: -1 });
-
-    let sliceIndex = -1;
+    const openEpoch=this.backend.gen;
+    closeAllSheets();
+    this.sampleOpen=sampleOpen;
+    this.detailRefresh=null;
+    this.symbols=EMPTY_INDEX;
+    this.symbolsReady=null;
+    this.viewer.setSymbols(EMPTY_INDEX);
+    this.forgetSemantics(true);
+    this.store.set({file,fileInfo:info,selectedRow:-1});
+    let sliceIndex=-1;
     if (info.slices.length) {
-      sliceIndex = info.slices.findIndex((s) => s.info && s.info.isArm64);
-      if (sliceIndex < 0) sliceIndex = info.slices.findIndex((s) => s.info);
+      sliceIndex=info.slices.findIndex((entry)=>entry.info && entry.info.isArm64);
+      if (sliceIndex < 0) sliceIndex=info.slices.findIndex((entry)=>entry.info);
     }
-    /* fingerprint + active sliceで、同名・同サイズやFat内の別sliceを混同しない。 */
-    const notes = new NoteStore(await noteKeyFor(file, info, sliceIndex), [await legacyV2NoteKeyFor(file, info, sliceIndex), legacyNoteKeyFor(file, info, sliceIndex)]);
-    if (openEpoch !== this.backend.gen) return;
-    this.notes = notes;
-    this.patches = new PatchSet();
+    this.noteAttachController?.abort();
+    this.notes=EMPTY_NOTES;
+    this.patches=new PatchSet();
     this.setBusy(false);
-    this.applySlice(sliceIndex, info);
-
+    this.applySlice(sliceIndex,info);
+    void this.attachNotes(file,info,sliceIndex,openEpoch);
     if (info.warnings && info.warnings.length) toast(info.warnings[0]);
-    const slice = this.currentSlice();
-    if (slice && slice.info && slice.info.encrypted) {
-      alertDialog(t('err.encryptedTitle'), t('err.encryptedText'));
+    const slice=this.currentSlice();
+    if (slice && slice.info && slice.info.encrypted) alertDialog(t('err.encryptedTitle'),t('err.encryptedText'));
+    document.dispatchEvent(new CustomEvent('hex:file-opened',{detail:{name:info.name,sample:this.sampleOpen}}));
+    if (this.sampleOpen) setTimeout(()=>showSampleGuide(this),250);
+  }
+
+  async attachNotes(file, info, sliceIndex, epoch = this.backend.gen) {
+    this.noteAttachController?.abort();
+    const controller=new AbortController();
+    this.noteAttachController=controller;
+    try {
+      const [id, legacyV2] = await Promise.all([
+        noteKeyFor(file,info,sliceIndex,{signal:controller.signal}),
+        legacyV2NoteKeyFor(file,info,sliceIndex),
+      ]);
+      if (controller.signal.aborted || epoch !== this.backend.gen || this.store.get('file') !== file || this.store.get('sliceIndex') !== sliceIndex) return null;
+      const notes=new NoteStore(id,[legacyV2,legacyNoteKeyForSlice(file,info,sliceIndex)]);
+      this.notes=notes;
+      if (this.symbols && this.symbols !== EMPTY_INDEX) {
+        for (const entry of notes.nameEntries()) this.symbols.rename(entry.addr,entry.name);
+        this.viewer.setSymbols(this.symbols);
+        this.updateChrome();
+      }
+      document.dispatchEvent(new CustomEvent('hex:notes-attached',{detail:{sliceIndex}}));
+      return notes;
+    } catch (error) {
+      if (error?.name === 'AbortError' || error?.code === 'ABORT_ERR' || controller.signal.aborted) return null;
+      return null;
+    } finally {
+      if (this.noteAttachController === controller) this.noteAttachController=null;
     }
-    /*
-     * ファイルを開いた直後に主役になるのはコード。
-     * ここで概要シートを自動で開いていたころ、開いた瞬間に全画面のシートが
-     * かぶさって、命令が 1 行も見えないまま「閉じる」を押させていた。
-     * 概要は「解析」から自分で開く（openOverview）ものにして、
-     * ここでは画面をコードへ移すことだけを知らせる。
-     */
-    document.dispatchEvent(new CustomEvent('hex:file-opened', {
-      detail: { name: info.name, sample: this.sampleOpen },
-    }));
-    if (this.sampleOpen) setTimeout(() => showSampleGuide(this), 250);
   }
 
   /** 練習用のサンプルをその場で組み立てて開く。 */
@@ -1025,18 +1028,18 @@ class App {
   }
 
   async selectSlice(index) {
-    const info = this.store.get('fileInfo');
+    const info=this.store.get('fileInfo');
     if (!info || !info.slices[index] || info.slices[index].error) return;
+    this.noteAttachController?.abort();
     this.backend.advanceEpoch();
     this.forgetSemantics(true);
-    this.symbols = EMPTY_INDEX;
+    this.symbols=EMPTY_INDEX;
     this.viewer.setSymbols(EMPTY_INDEX);
-    const file = this.store.get('file');
-    const epoch = this.backend.gen;
-    const notes = new NoteStore(await noteKeyFor(file, info, index), [await legacyV2NoteKeyFor(file, info, index), legacyNoteKeyFor(file, info, index)]);
-    if (epoch !== this.backend.gen) return;
-    this.notes = notes;
-    this.applySlice(index, info);
+    this.notes=EMPTY_NOTES;
+    const file=this.store.get('file');
+    const epoch=this.backend.gen;
+    this.applySlice(index,info);
+    void this.attachNotes(file,info,index,epoch);
   }
 
   selectRegion(region, { silent } = {}) {

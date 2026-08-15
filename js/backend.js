@@ -137,54 +137,59 @@ export class Backend {
   }
 
   async open(file) {
-    this.advanceEpoch();
     this.transportEpoch++;
-    this.file = file;
-    this.formatId = 'unknown';
-    this.platformInfo = null;
-    this.legacyInfo = null;
-    this.arm64Bridge = false;
-    this.contentHash = null;
-
     let detection = null;
     let platformError = null;
     try { detection = await this._callTo('platform', 'detect', { file }); }
     catch (error) { if (error?.stale) throw error; platformError = error; }
 
+    let nextFormat = 'unknown';
+    let nextPlatform = null;
+    let nextLegacy = null;
+    let nextBridge = false;
+    let result = null;
     if (detection?.formatId === 'macho') {
-      this.formatId = 'macho';
+      nextFormat = 'macho';
       const legacy = await this._callTo('legacy', 'open', { file });
       legacy.formatId = 'macho';
       for (const slice of legacy.slices || []) slice.capability = legacySliceCapability(slice);
       legacy.capability = legacy.slices?.[0]?.capability || legacySliceCapability(null);
-      legacy.platform = { compatibility: 'legacy-macho', sourceBackedDetection: true, detected: detection, duplicateUniversalParseAvoided: true };
-      this.legacyInfo = legacy;
-      this.platformInfo = { formatId: 'macho', capability: legacy.capability, detection, compatibility: 'legacy-macho' };
-      return legacy;
+      legacy.platform = { compatibility:'legacy-macho', sourceBackedDetection:true, detected:detection, duplicateUniversalParseAvoided:true };
+      nextLegacy = legacy;
+      nextPlatform = { formatId:'macho', capability:legacy.capability, detection, compatibility:'legacy-macho' };
+      result = legacy;
+    } else {
+      let platformInfo = null;
+      try { platformInfo = await this._callTo('platform', 'open', { file }, null, (p) => this.onAnalysisProgress?.(p)); }
+      catch (error) { if (error?.stale) throw error; platformError = error; }
+      if (platformInfo) {
+        nextPlatform = platformInfo;
+        nextFormat = platformInfo.formatId || platformInfo.capability?.format || detection?.formatId || 'unknown';
+        const capability = platformInfo.capability || platformInfo.slices?.[0]?.capability;
+        nextBridge = capability?.architecture === 'arm64';
+        if (nextBridge) {
+          try {
+            await this._callTo('legacy', 'open', { file });
+            const allRegions=[...(platformInfo.slices||[]).flatMap((slice)=>slice.regions||[]),platformInfo.raw].filter(Boolean);
+            await this._callTo('legacy','setRegions',{regions:allRegions});
+          } catch { nextBridge=false; }
+        }
+        result=platformInfo;
+      } else {
+        const legacy=await this._callTo('legacy','open',{file});
+        nextLegacy=legacy;
+        if (platformError && legacy.format === 'Raw binary') legacy.warnings=[...(legacy.warnings||[]),platformError.message];
+        result=legacy;
+      }
     }
-
-    let platformInfo = null;
-    try { platformInfo = await this._callTo('platform', 'open', { file }, null, (p) => this.onAnalysisProgress?.(p)); }
-    catch (error) { if (error?.stale) throw error; platformError = error; }
-    if (platformInfo) {
-      this.platformInfo = platformInfo;
-      this.formatId = platformInfo.formatId || platformInfo.capability?.format || detection?.formatId || 'unknown';
-    }
-    if (!platformInfo) {
-      const legacy = await this._callTo('legacy', 'open', { file });
-      this.legacyInfo = legacy;
-      if (platformError && legacy.format === 'Raw binary') legacy.warnings = [...(legacy.warnings || []), platformError.message];
-      return legacy;
-    }
-
-    const capability = platformInfo.capability || platformInfo.slices?.[0]?.capability;
-    this.arm64Bridge = capability?.architecture === 'arm64';
-    if (this.arm64Bridge) {
-      await this._callTo('legacy', 'open', { file });
-      const allRegions = [...(platformInfo.slices || []).flatMap((s) => s.regions || []), platformInfo.raw].filter(Boolean);
-      await this._callTo('legacy', 'setRegions', { regions: allRegions });
-    }
-    return platformInfo;
+    this.advanceEpoch();
+    this.file=file;
+    this.formatId=nextFormat;
+    this.platformInfo=nextPlatform;
+    this.legacyInfo=nextLegacy;
+    this.arm64Bridge=nextBridge;
+    this.contentHash=null;
+    return result;
   }
 
   probe() {

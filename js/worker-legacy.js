@@ -281,7 +281,9 @@ async function getBlock(bi) {
 /* ── open ───────────────────────────────────────────────────── */
 
 async function openFile(f) {
-  file = f;
+  const previous = { file, fileSize, regions, slices, blocks: new Map(blocks) };
+  try {
+    file = f;
   fileSize = BigInt(f.size);
   blocks.clear();
   regions = new Map();
@@ -346,7 +348,16 @@ async function openFile(f) {
   for (const s of out.slices) registerRegions(s.regions);
   slices = out.slices;
 
-  return out;
+    return out;
+  } catch (error) {
+    file = previous.file;
+    fileSize = previous.fileSize;
+    regions = previous.regions;
+    slices = previous.slices;
+    blocks.clear();
+    for (const [key, value] of previous.blocks) blocks.set(key, value);
+    throw error;
+  }
 }
 
 async function readSlice(offset, size, label) {
