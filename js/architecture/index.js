@@ -87,18 +87,21 @@ export function architectureAdapter(id) { return BUILTINS.get(canonicalId(id)) |
 export function architectureCapability(image, engine = {}) {
   const architecture = canonicalId(image?.arch || 'unknown');
   const adapter = architectureAdapter(architecture);
-  const engineSupported = !!engine[architecture];
-  const arm64Analysis = architecture === 'arm64' && engineSupported;
+  const engineSupported = !!engine[architecture] || (architecture === 'arm64e' && !!engine.arm64);
+  const arm64Analysis = (architecture === 'arm64' || architecture === 'arm64e') && engineSupported;
   const emulationSupported = !!engine.emulation?.[architecture];
+  const analysisLevel = arm64Analysis ? (architecture === 'arm64e' ? 'partial' : 'full') : 'unsupported';
   return Object.freeze({
     format: image?.format || 'unknown', architecture, endianness: image?.endian || 'unknown', bits: Number(image?.bits || 0),
     canDisassemble: engineSupported, canAnalyzeDataflow: arm64Analysis, canEmulate: emulationSupported,
     viewerCanDisassemble: engineSupported && !!adapter.viewerCompatible,
     instructionAlignment: adapter.instructionAlignment, fixedInstructionSize: adapter.fixedInstructionSize, engineVerified: !!engine.verified,
+    analysisLevel, partial: analysisLevel === 'partial',
+    limitations: architecture === 'arm64e' ? Object.freeze(['pointer-authentication data semantics are conservative']) : Object.freeze([]),
   });
 }
 
-registerArchitectureAdapter({
+const ARM64_ADAPTER = registerArchitectureAdapter({
   id: 'arm64', instructionAlignment: 4, fixedInstructionSize: 4, viewerCompatible: true,
   assemble: assembleArm64,
   controlFlow(instruction) {
@@ -111,6 +114,12 @@ registerArchitectureAdapter({
   },
   callKind(instruction) { return /^(?:bl|blr|blraa|blrab|blraaz|blrabz)$/i.test(instruction?.mnemonic || '') ? 'call' : null; },
   returnKind(instruction) { return /^ret(?:aa|ab)?$/i.test(instruction?.mnemonic || '') ? 'return' : null; },
+});
+
+registerArchitectureAdapter({
+  id: 'arm64e', instructionAlignment: ARM64_ADAPTER.instructionAlignment, fixedInstructionSize: ARM64_ADAPTER.fixedInstructionSize,
+  viewerCompatible: ARM64_ADAPTER.viewerCompatible, assemble: ARM64_ADAPTER.assemble,
+  controlFlow: ARM64_ADAPTER.controlFlow, callKind: ARM64_ADAPTER.callKind, returnKind: ARM64_ADAPTER.returnKind,
 });
 
 registerArchitectureAdapter({

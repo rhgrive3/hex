@@ -40,18 +40,22 @@ export function regionsForImage(image, prefix = 'p0_') {
 }
 
 export function describeBinaryImage(image, options = {}) {
+  const requestedEngine = options.engine || {};
   const engine = {
     ...DEPLOYED_CAPSTONE_SUPPORT,
-    ...(options.engine || {}),
-    verified: true,
+    ...requestedEngine,
+    // A bundled decoder being known-compatible is not the same thing as this
+    // runtime instance having completed its probe. Verification is opt-in.
+    verified: requestedEngine.verified === true,
   };
   const capability = architectureCapability(image, engine);
   const regions = regionsForImage(image);
   const info = {
     cpu: image.arch || 'unknown',
-    cpuSub: 'all',
+    cpuSub: image.metadata?.subtypeName || (image.metadata?.subtypeBase == null ? 'all' : String(image.metadata.subtypeBase)),
     is64: image.bits === 64,
-    isArm64: image.arch === 'arm64',
+    isArm64: image.arch === 'arm64' || image.arch === 'arm64e',
+    isArm64e: image.arch === 'arm64e',
     textVM: (regions.find((r) => r.exec)?.vmAddr ?? image.imageBase ?? 0n),
     encrypted: false,
     endian: image.endian,
