@@ -2,7 +2,10 @@ import { ByteView } from './reader.js';
 import { BinaryImage, functionSeed } from './model.js';
 import { parseEhFrameHeader } from './elf-unwind.js';
 import { parseProgramDynamic } from './elf-dynamic.js';
+import { createELFMetadataBudget } from './elf-budget.js';
+import { executableELFRange } from './elf-mapping.js';
 
+const ET_REL = 1;
 const PT_LOAD = 1;
 const PT_GNU_EH_FRAME = 0x6474e550;
 const PN_XNUM = 0xffff;
@@ -14,12 +17,15 @@ const SHT_DYNSYM = 11;
 const SHT_REL = 9;
 const SHT_SYMTAB_SHNDX = 18;
 const SHN_UNDEF = 0;
+const SHN_LORESERVE = 0xff00;
+const SHN_ABS = 0xfff1;
+const SHN_COMMON = 0xfff2;
 const SHN_XINDEX = 0xffff;
 const SHF_WRITE = 0x1n;
 const SHF_ALLOC = 0x2n;
 const SHF_EXECINSTR = 0x4n;
 
-export function parseELF(input) {
+export function parseELF(input, options = {}) {
   const initial = new ByteView(input, { littleEndian: true });
   const bytes = initial.bytes;
   if (initial.length < 16 || initial.u8(0) !== 0x7f || initial.u8(1) !== 0x45 || initial.u8(2) !== 0x4c || initial.u8(3) !== 0x46) throw new Error('not an ELF file');
@@ -43,24 +49,26 @@ export function parseELF(input) {
   const programHeaders = parseProgramHeaders(r, h, image, bits);
   const rawSections = parseSectionHeaders(r, h, bits, image);
   nameSections(r, rawSections, h);
+  if (h.type === ET_REL) assignRelocatableSectionAddresses(rawSections, image);
   for (const s of rawSections) {
     image.addSection({
       name: s.name || `section_${s.index}`, segment: null,
-      address: s.addr, size: s.size, fileOffset: s.offset,
+      address: h.type === ET_REL ? (s.syntheticAddr ?? 0n) : s.addr, size: s.size, fileOffset: s.offset,
       fileSize: s.type === 8 ? 0n : s.size,
       perms: { read: !!(s.flags & SHF_ALLOC), write: !!(s.flags & SHF_WRITE), execute: !!(s.flags & SHF_EXECINSTR) },
-      flags: s.flags, type: s.type, index: s.index, source: 'section-header',
+      flags: s.flags, type: s.type, index: s.index, source: h.type === ET_REL ? 'ET_REL-synthetic-section' : 'section-header',
     });
   }
 
-  image.imageBase = findImageBase(image);
-  if (image.entrypoint && image.entrypoint !== 0n) image.functions.push(functionSeed(image.entrypoint, { source: 'entrypoint', confidence: 0.9 }));
+  image.imageBase = h.type === ET_REL ? 0n : findImageBase(image);
+  if (h.type !== ET_REL && image.entrypoint && image.entrypoint !== 0n) image.functions.push(functionSeed(image.entrypoint, { source: 'entrypoint', confidence: 0.9 }));
+  const metadataBudget = createELFMetadataBudget(image, { signal: options.signal, limits: options.metadataLimits });
 
   const symbolTables = rawSections.filter((s) => s.type === SHT_SYMTAB || s.type === SHT_DYNSYM);
-  for (const s of symbolTables) parseSymbols(r, s, rawSections, image, bits);
+  for (const s of symbolTables) parseSymbols(r, s, rawSections, image, bits, h.type, metadataBudget);
   for (const s of rawSections) {
-    if (s.type === SHT_REL || s.type === SHT_RELA) parseRelocations(r, s, rawSections, image, bits);
-    else if (s.type === SHT_DYNAMIC) parseDynamic(r, s, rawSections, image, bits);
+    if (s.type === SHT_REL || s.type === SHT_RELA) parseRelocations(r, s, rawSections, image, bits, h.type, metadataBudget);
+    else if (s.type === SHT_DYNAMIC) parseDynamic(r, s, rawSections, image, bits, metadataBudget);
   }
   const hasDynsym = rawSections.some((s) => s.type === SHT_DYNSYM);
   const hasRelocations = rawSections.some((s) => s.type === SHT_REL || s.type === SHT_RELA);
@@ -75,9 +83,46 @@ export function parseELF(input) {
     const ph = programHeaders.find((item) => item.type === PT_GNU_EH_FRAME && item.filesz > 0n);
     if (ph) ehFrameHdr = { name: 'PT_GNU_EH_FRAME', addr: ph.vaddr, offset: ph.offset, size: ph.filesz };
   }
-  if (ehFrameHdr) parseEhFrameHeader(r, ehFrameHdr, image, bits);
+  if (ehFrameHdr) parseEhFrameHeader(r, ehFrameHdr, image, bits, metadataBudget);
+  image.metadata.elfMetadata = metadataBudget.snapshot();
 
   return image.finalize();
+}
+
+function alignUp(value, alignment) {
+  const a = alignment > 0n ? alignment : 1n;
+  const rem = value % a;
+  return rem === 0n ? value : value + (a - rem);
+}
+
+function assignRelocatableSectionAddresses(sections, image) {
+  let cursor = 0x100000000n;
+  const MAX_ALIGN = 0x1000000n;
+  for (const sec of sections) {
+    if (sec.index === 0 || sec.size <= 0n) { sec.syntheticAddr = 0n; continue; }
+    const requested = sec.addralign > 0n ? sec.addralign : 1n;
+    const alignment = requested > MAX_ALIGN ? MAX_ALIGN : requested;
+    cursor = alignUp(cursor, alignment);
+    sec.syntheticAddr = cursor;
+    cursor += sec.size > 0n ? sec.size : 1n;
+  }
+  image.metadata.relocatableAddressModel = {
+    kind:'synthetic-section-layout', base:'0x100000000', sections:sections.filter((s)=>s.syntheticAddr).length,
+  };
+}
+
+function normalSectionIndex(index, sections) {
+  return Number.isInteger(index) && index > 0 && index < sections.length && index < SHN_LORESERVE;
+}
+
+function symbolAddressForELF(elfType, value, sectionIndex, sections) {
+  if (elfType !== ET_REL) return value;
+  if (sectionIndex === SHN_ABS) return value;
+  if (sectionIndex === SHN_COMMON || sectionIndex === SHN_UNDEF) return null;
+  if (!normalSectionIndex(sectionIndex, sections)) return null;
+  const sec = sections[sectionIndex];
+  if (value > sec.size) return null;
+  return (sec.syntheticAddr ?? 0n) + value;
 }
 
 function readHeader(r, bits) {
@@ -187,110 +232,102 @@ function nameSections(r, sections, h) {
   }
 }
 
-function parseSymbols(r, table, sections, image, bits) {
+function parseSymbols(r, table, sections, image, bits, elfType, budget) {
   const str = sections[table.link];
   if (!str || str.type !== SHT_STRTAB || !table.entsize) return;
   const minEnt = BigInt(bits === 64 ? 24 : 16);
-  if (table.entsize < minEnt) { image.warnings.push(`ELF symbol table ${table.index} entry size ${table.entsize} is smaller than ${minEnt}`); return; }
-  const xindex = sections.find((s) => s.type === SHT_SYMTAB_SHNDX && s.link === table.index) || null;
+  if (table.entsize < minEnt) { budget.partial(`symbols:${table.index}:entry-size`, `ELF symbol table ${table.index} entry size ${table.entsize} is smaller than ${minEnt}`); return; }
+  const tableStart = safeOffset(table.offset), ent = safeOffset(table.entsize);
+  const strStart = safeOffset(str.offset), strBytes = safeOffset(str.size);
+  if (tableStart == null || ent == null || strStart == null || strBytes == null || tableStart > r.length || strStart > r.length || strBytes > r.length-strStart) {
+    budget.partial(`symbols:${table.index}:file-span`, `ELF symbol/string table ${table.index} exceeds the file`); return;
+  }
+  const declaredBig = table.size / table.entsize;
+  const fileCapacity = Math.floor((r.length-tableStart)/ent);
+  const declared = declaredBig > BigInt(Number.MAX_SAFE_INTEGER) ? Number.MAX_SAFE_INTEGER : Number(declaredBig);
+  const count = Math.min(declared,fileCapacity);
+  if (declaredBig > BigInt(fileCapacity)) budget.partial(`symbols:${table.index}:truncated`, `ELF symbol table ${table.index} exceeds its file-backed capacity`);
+  const xindex = sections.find((sec) => sec.type === SHT_SYMTAB_SHNDX && sec.link === table.index) || null;
   const xindexValid = !!xindex && (!xindex.entsize || xindex.entsize === 4n)
     && xindex.offset <= BigInt(r.length) && xindex.size <= BigInt(r.length) - xindex.offset;
-  if (xindex && !xindexValid) image.warnings.push(`ELF SHT_SYMTAB_SHNDX for table ${table.index} is malformed`);
-  const count = Number(table.size / table.entsize);
-  const ent = Number(table.entsize);
-  if (count > 10000000 || Number(table.offset) + count * ent > r.length) return;
-  for (let i = 0; i < count; i++) {
-    const p = Number(table.offset) + i * ent;
-    let nameOff, info, other, shndx, value, size;
-    if (bits === 64) {
-      nameOff = r.u32(p); info = r.u8(p + 4); other = r.u8(p + 5); shndx = r.u16(p + 6); value = r.u64(p + 8); size = r.u64(p + 16);
-    } else {
-      nameOff = r.u32(p); value = BigInt(r.u32(p + 4)); size = BigInt(r.u32(p + 8)); info = r.u8(p + 12); other = r.u8(p + 13); shndx = r.u16(p + 14);
+  if (xindex && !xindexValid) budget.partial(`symbols:${table.index}:xindex-malformed`, `ELF SHT_SYMTAB_SHNDX for table ${table.index} is malformed`);
+
+  for (let i=0;i<count;i++) {
+    if (!budget.take({inputBytes:ent,records:1,objects:1,operations:2,estimatedHeapBytes:224},`symbols-${table.index}`)) break;
+    const p=tableStart+i*ent;
+    let nameOff,info,other,shndx,value,size;
+    if(bits===64){nameOff=r.u32(p);info=r.u8(p+4);other=r.u8(p+5);shndx=r.u16(p+6);value=r.u64(p+8);size=r.u64(p+16);}
+    else{nameOff=r.u32(p);value=BigInt(r.u32(p+4));size=BigInt(r.u32(p+8));info=r.u8(p+12);other=r.u8(p+13);shndx=r.u16(p+14);}
+    if (BigInt(nameOff) >= str.size || nameOff >= strBytes) continue;
+    const maxName=Math.min(strBytes-nameOff,1<<20,Math.max(1,Math.floor(budget.remainingStringBytes/2)+1));
+    const name=r.cstring(strStart+nameOff,maxName);
+    if(!name)continue;
+    if(!budget.take({inputBytes:Math.min(maxName,name.length+1),stringBytes:name.length*2,estimatedHeapBytes:name.length*2+32},'symbol-name'))break;
+    const bind=info>>>4,type=info&0xf;
+    let resolvedShndx=shndx,sectionIdentityKnown=true;
+    if(shndx===SHN_XINDEX){
+      resolvedShndx=null;sectionIdentityKnown=false;
+      const xoff=xindexValid?safeOffset(xindex.offset+BigInt(i*4)):null;
+      if(xoff==null||xoff+4>r.length||BigInt((i+1)*4)>xindex.size){image.warnings.push(`ELF symbol ${i} uses SHN_XINDEX without a valid SHT_SYMTAB_SHNDX entry`);}
+      else{const candidate=r.u32(xoff);if(candidate===SHN_UNDEF||candidate===SHN_ABS||candidate===SHN_COMMON||candidate<sections.length){resolvedShndx=candidate;sectionIdentityKnown=true;}else image.warnings.push(`ELF symbol ${i} has out-of-range extended section index ${candidate}`);}
     }
-    if (BigInt(nameOff) >= str.size) continue;
-    const name = r.cstring(Number(str.offset) + nameOff, Math.min(Number(str.size) - nameOff, 1 << 20));
-    if (!name) continue;
-    const bind = info >>> 4, type = info & 0xf;
-    let resolvedShndx = shndx;
-    let sectionIdentityKnown = true;
-    if (shndx === SHN_XINDEX) {
-      resolvedShndx = null;
-      sectionIdentityKnown = false;
-      const xoff = xindexValid ? safeOffset(xindex.offset + BigInt(i * 4)) : null;
-      if (xoff == null || xoff + 4 > r.length || BigInt((i + 1) * 4) > xindex.size) {
-        image.warnings.push(`ELF symbol ${i} uses SHN_XINDEX without a valid SHT_SYMTAB_SHNDX entry`);
-      } else {
-        const candidate = r.u32(xoff);
-        if (candidate === SHN_UNDEF || candidate < sections.length) {
-          resolvedShndx = candidate;
-          sectionIdentityKnown = true;
-        } else {
-          image.warnings.push(`ELF symbol ${i} has out-of-range extended section index ${candidate}`);
-        }
-      }
-    }
-    const defined = sectionIdentityKnown ? resolvedShndx !== SHN_UNDEF : null;
-    const binding = bind === 0 ? 'local' : bind === 1 ? 'global' : bind === 2 ? 'weak' : `bind-${bind}`;
-    const kind = type === 2 ? 'function' : type === 1 ? 'object' : type === 3 ? 'section' : type === 6 ? 'tls' : `type-${type}`;
-    const sym = { name, address: value, size, kind, binding, defined, sectionIndex: sectionIdentityKnown ? resolvedShndx : null, visibility: other & 3, source: table.type === SHT_DYNSYM ? 'dynsym' : 'symtab', index: i, tableIndex: table.index };
+    const normal=sectionIdentityKnown&&normalSectionIndex(resolvedShndx,sections);
+    const specialKnown=resolvedShndx===SHN_UNDEF||resolvedShndx===SHN_ABS||resolvedShndx===SHN_COMMON;
+    if(sectionIdentityKnown&&!normal&&!specialKnown){sectionIdentityKnown=false;image.warnings.push(`ELF symbol ${i} uses unsupported reserved section index ${resolvedShndx}`);}
+    const defined=sectionIdentityKnown?(resolvedShndx!==SHN_UNDEF):null;
+    const address=sectionIdentityKnown?symbolAddressForELF(elfType,value,resolvedShndx,sections):null;
+    const binding=bind===0?'local':bind===1?'global':bind===2?'weak':`bind-${bind}`;
+    const kind=type===2?'function':type===1?'object':type===3?'section':type===6?'tls':`type-${type}`;
+    const sym={name,address:address??0n,originalValue:value,size,kind,binding,defined,sectionIndex:sectionIdentityKnown?resolvedShndx:null,visibility:other&3,source:table.type===SHT_DYNSYM?'dynsym':'symtab',index:i,tableIndex:table.index,
+      sectionRelative:elfType===ET_REL&&normal?{sectionIndex:resolvedShndx,offset:value}:null,addressDomain:elfType===ET_REL&&normal?'section-relative-synthetic':'virtual'};
     image.symbols.push(sym);
-    if (defined === false && (bind === 1 || bind === 2)) image.imports.push({ name, library: null, ordinal: null, weak: bind === 2, symbolIndex: i, tableIndex: table.index, source: 'elf-dynsym', sites: [] });
-    if (defined === true && (bind === 1 || bind === 2) && (sym.visibility === 0 || sym.visibility === 3)) image.exports.push({ name, address: value, kind, symbolIndex: i, tableIndex: table.index, source: sym.source });
-    if (defined === true && type === 2 && value !== 0n) {
-      const section = Number.isInteger(resolvedShndx) ? sections[resolvedShndx] : null;
-      if (section && !!(section.flags & SHF_EXECINSTR)) image.functions.push(functionSeed(value, {
-        size: size || null, name, source: 'symbol', confidence: 0.995, exactFunctionStart: true,
-        functionStartEvidence: 'ELF STT_FUNC with validated executable section identity',
-      }));
+    if(defined===false&&(bind===1||bind===2)){if(!budget.take({objects:1,operations:1,estimatedHeapBytes:160},'symbol-import'))break;image.imports.push({name,library:null,ordinal:null,weak:bind===2,symbolIndex:i,tableIndex:table.index,source:'elf-dynsym',sites:[]});}
+    if(defined===true&&address!=null&&(bind===1||bind===2)&&(sym.visibility===0||sym.visibility===3)){if(!budget.take({objects:1,operations:1,estimatedHeapBytes:144},'symbol-export'))break;image.exports.push({name,address,kind,symbolIndex:i,tableIndex:table.index,source:sym.source});}
+    if(defined===true&&type===2&&address!=null&&address!==0n){
+      const owner=executableELFRange(image,address,size||0n,normal?resolvedShndx:null);
+      if(owner){if(!budget.take({objects:1,operations:1,estimatedHeapBytes:128},'symbol-function'))break;image.functions.push(functionSeed(address,{size:size||null,name,source:'symbol',confidence:0.995,exactFunctionStart:true,functionStartEvidence:elfType===ET_REL?'ELF ET_REL STT_FUNC with validated executable section-relative extent':'ELF STT_FUNC with validated executable section extent'}));}
+      else image.warnings.push(`Ignored ELF STT_FUNC ${name} outside its canonical executable extent`);
     }
   }
 }
 
-function parseRelocations(r, sec, sections, image, bits) {
-  if (!sec.entsize) return;
-  const minEnt = BigInt(bits === 64 ? (sec.type === SHT_RELA ? 24 : 16) : (sec.type === SHT_RELA ? 12 : 8));
-  if (sec.entsize < minEnt) { image.warnings.push(`ELF relocation section ${sec.index} entry size ${sec.entsize} is smaller than ${minEnt}`); return; }
-  const symbols = image.symbols.filter((s) => s.tableIndex === sec.link);
-  const byIndex = new Map(symbols.map((s) => [s.index, s]));
-  const count = Number(sec.size / sec.entsize);
-  const ent = Number(sec.entsize);
-  if (count > 10000000 || Number(sec.offset) + count * ent > r.length) return;
-  for (let i = 0; i < count; i++) {
-    const p = Number(sec.offset) + i * ent;
-    let offset, addend = null, symIndex, type;
-    if (bits === 64) {
-      offset = r.u64(p); const info = r.u64(p + 8); symIndex = Number(info >> 32n); type = Number(info & 0xffffffffn);
-      if (sec.type === SHT_RELA) addend = r.i64(p + 16);
-    } else {
-      offset = BigInt(r.u32(p)); const raw = r.u32(p + 4); symIndex = raw >>> 8; type = raw & 0xff;
-      if (sec.type === SHT_RELA) addend = BigInt(r.i32(p + 8));
+function parseRelocations(r, sec, sections, image, bits, elfType, budget) {
+  if(!sec.entsize)return;
+  const minEnt=BigInt(bits===64?(sec.type===SHT_RELA?24:16):(sec.type===SHT_RELA?12:8));
+  if(sec.entsize<minEnt){budget.partial(`relocations:${sec.index}:entry-size`,`ELF relocation section ${sec.index} entry size ${sec.entsize} is smaller than ${minEnt}`);return;}
+  const tableStart=safeOffset(sec.offset),ent=safeOffset(sec.entsize);if(tableStart==null||ent==null||tableStart>r.length){budget.partial(`relocations:${sec.index}:file-span`,`ELF relocation section ${sec.index} has an invalid file span`);return;}
+  const declaredBig=sec.size/sec.entsize,fileCapacity=Math.floor((r.length-tableStart)/ent),declared=declaredBig>BigInt(Number.MAX_SAFE_INTEGER)?Number.MAX_SAFE_INTEGER:Number(declaredBig),count=Math.min(declared,fileCapacity);
+  if(declaredBig>BigInt(fileCapacity))budget.partial(`relocations:${sec.index}:truncated`,`ELF relocation section ${sec.index} exceeds its file-backed capacity`);
+  const symbols=image.symbols.filter((x)=>x.tableIndex===sec.link);
+  if(!budget.take({objects:symbols.length,operations:symbols.length,estimatedHeapBytes:symbols.length*48},'relocation-symbol-index'))return;
+  const byIndex=new Map(symbols.map((x)=>[x.index,x]));
+  const target=elfType===ET_REL?sections[sec.info]:null;
+  if(elfType===ET_REL&&!normalSectionIndex(sec.info,sections)){budget.partial(`relocations:${sec.index}:target-section`,`ELF ET_REL relocation section ${sec.index} has invalid sh_info target section ${sec.info}`);return;}
+  for(let i=0;i<count;i++){
+    if(!budget.take({inputBytes:ent,records:1,objects:1,operations:2,estimatedHeapBytes:144},`relocations-${sec.index}`))break;
+    const p=tableStart+i*ent;let offset,addend=null,symIndex,type;
+    if(bits===64){offset=r.u64(p);const info=r.u64(p+8);symIndex=Number(info>>32n);type=Number(info&0xffffffffn);if(sec.type===SHT_RELA)addend=r.i64(p+16);}
+    else{offset=BigInt(r.u32(p));const raw=r.u32(p+4);symIndex=raw>>>8;type=raw&0xff;if(sec.type===SHT_RELA)addend=BigInt(r.i32(p+8));}
+    let address=offset,fileOffset=image.addressToOffset(offset),addressDomain='virtual';
+    if(elfType===ET_REL){
+      if(offset>=target.size){budget.partial(`relocations:${sec.index}:offset-range`,`ELF ET_REL relocation offset ${offset} is outside target section ${target.index}`);continue;}
+      address=(target.syntheticAddr??0n)+offset;addressDomain='section-relative-synthetic';fileOffset=target.type===8||offset>=target.size?null:target.offset+offset;
     }
-    const sym = byIndex.get(symIndex) || null;
-    image.relocations.push({ address: offset, fileOffset: image.addressToOffset(offset), type, symbol: sym ? sym.name : null, symbolIndex: symIndex, addend, section: sec.name, source: sec.type === SHT_RELA ? 'RELA' : 'REL' });
-    if (sym && !sym.defined) {
-      const imp = image.imports.find((x) => x.name === sym.name && x.library == null);
-      if (imp) imp.sites.push({ address: offset, offset: image.addressToOffset(offset), kind: 'relocation', type });
-    }
+    const sym=byIndex.get(symIndex)||null;
+    image.relocations.push({address,fileOffset,type,symbol:sym?sym.name:null,symbolIndex:symIndex,addend,section:sec.name,source:sec.type===SHT_RELA?'RELA':'REL',sectionRelative:elfType===ET_REL?{sectionIndex:sec.info,offset}:null,addressDomain});
+    if(sym&&sym.defined===false){const imp=image.imports.find((x)=>x.name===sym.name&&x.library==null);if(imp){if(!budget.take({objects:1,operations:1,estimatedHeapBytes:96},'relocation-import-site'))break;imp.sites.push({address,offset:fileOffset,kind:'relocation',type,sectionRelative:elfType===ET_REL?{sectionIndex:sec.info,offset}:null});}}
   }
 }
 
-function parseDynamic(r, sec, sections, image, bits) {
-  const str = sections[sec.link];
-  if (!str || str.type !== SHT_STRTAB) return;
-  const ent = Number(sec.entsize || (bits === 64 ? 16n : 8n));
-  if (!ent) return;
-  const count = Math.min(Number(sec.size) / ent, 1000000);
-  for (let i = 0; i < count; i++) {
-    const p = Number(sec.offset) + i * ent;
-    const tag = bits === 64 ? r.i64(p) : BigInt(r.i32(p));
-    const val = bits === 64 ? r.u64(p + 8) : BigInt(r.u32(p + 4));
-    if (tag === 0n) break;
-    if (tag === 1n && val < str.size) {
-      const name = r.cstring(Number(str.offset + val), Math.min(Number(str.size - val), 1 << 20));
-      if (name) image.libraries.push(name);
-    } else if (tag === 14n && val < str.size) {
-      image.metadata.soname = r.cstring(Number(str.offset + val), Math.min(Number(str.size - val), 1 << 20));
-    }
+function parseDynamic(r, sec, sections, image, bits, budget) {
+  const str=sections[sec.link];if(!str||str.type!==SHT_STRTAB)return;const ent=Number(sec.entsize||(bits===64?16n:8n));if(!ent)return;
+  const start=safeOffset(sec.offset),strStart=safeOffset(str.offset),strSize=safeOffset(str.size);if(start==null||strStart==null||strSize==null||start>r.length||strStart>r.length||strSize>r.length-strStart){budget.partial(`dynamic-section:${sec.index}:span`,`ELF SHT_DYNAMIC/string table exceeds the file`);return;}
+  const fileCapacity=Math.floor((r.length-start)/ent),declared=Math.floor(Number(sec.size)/ent),count=Math.min(declared,fileCapacity);
+  if(declared>fileCapacity)budget.partial(`dynamic-section:${sec.index}:truncated`,`ELF SHT_DYNAMIC exceeds its file-backed capacity`);
+  for(let i=0;i<count;i++){
+    if(!budget.take({inputBytes:ent,records:1,operations:1,estimatedHeapBytes:32},'SHT_DYNAMIC'))break;
+    const p=start+i*ent,tag=bits===64?r.i64(p):BigInt(r.i32(p)),val=bits===64?r.u64(p+8):BigInt(r.u32(p+4));if(tag===0n)break;
+    if((tag===1n||tag===14n)&&val<str.size){const off=Number(val),max=Math.min(strSize-off,1<<20,Math.max(1,Math.floor(budget.remainingStringBytes/2)+1)),name=r.cstring(strStart+off,max);if(name&&!budget.take({inputBytes:Math.min(max,name.length+1),stringBytes:name.length*2,estimatedHeapBytes:name.length*2+32},'SHT_DYNAMIC-string'))break;if(tag===1n&&name)image.libraries.push(name);else if(tag===14n&&name)image.metadata.soname=name;}
   }
 }
 

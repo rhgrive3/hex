@@ -1,6 +1,6 @@
 import { functionSeed } from './model.js';
 
-export function parseEhFrameHeader(r, sec, image, bits) {
+export function parseEhFrameHeader(r, sec, image, bits, budget = null) {
   if (sec.size < 4n || sec.offset + sec.size > BigInt(r.length)) return;
   let p = Number(sec.offset);
   const end = Number(sec.offset + sec.size);
@@ -24,11 +24,14 @@ export function parseEhFrameHeader(r, sec, image, bits) {
     if (!Number.isSafeInteger(count) || count < 0 || count > 10_000_000) return;
     let added = 0;
     for (let i = 0; i < count && p < end; i++) {
+      if (budget && !budget.take({ records:1, operations:2, inputBytes:2, estimatedHeapBytes:32 }, 'eh-frame-table')) break;
       const initial = decodeEhValue(r, p, tableEnc, ctx, end); p = initial.next;
       const fde = decodeEhValue(r, p, tableEnc, ctx, end); p = fde.next;
       if (initial.value == null || initial.value === 0n) continue;
       const codeSec = image.sectionAt(initial.value);
-      if (codeSec && codeSec.perms.execute) {
+      const codeSeg = typeof image.segmentAt === 'function' ? image.segmentAt(initial.value) : null;
+      if (codeSec?.perms?.execute || codeSeg?.perms?.execute) {
+        if (budget && !budget.take({ objects:1, operations:1, estimatedHeapBytes:128 }, 'eh-frame-function')) break;
         image.functions.push(functionSeed(initial.value, { source: 'unwind', confidence: 0.985 }));
         added++;
       }
