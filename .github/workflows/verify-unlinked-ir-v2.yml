@@ -22,15 +22,6 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
       - run: git fetch origin main
       - run: git merge --no-edit origin/main
-      - name: Inspect current RMW implementation
-        run: |
-          node --input-type=module <<'NODE'
-          import fs from 'node:fs';
-          const s=fs.readFileSync('js/ir-core.js','utf8');
-          const a=s.indexOf('export function readModifyWrite');
-          const b=s.indexOf('\nexport function ',a+10);
-          console.log(s.slice(a,b>0?b:a+5000));
-          NODE
       - name: Make patch driver idempotent against newer main
         run: |
           python3 - <<'PY'
@@ -38,19 +29,32 @@ jobs:
           p=Path('tools/fix-unlinked-ir.py')
           s=p.read_text()
           old='''    if old not in s:\n        raise SystemExit(f"missing patch anchor {label} in {path}")\n    p.write_text(s.replace(old, new, 1))'''
-          new='''    if old not in s:\n        print(f"skip already-changed anchor {label} in {path}")\n        return\n    p.write_text(s.replace(old, new, 1))'''
+          new='''    if old not in s:\n        print(f"skip already-changed anchor {label} in {path}")\n        return\n    p.write_text(s.replace(old,new,1))'''
           if old not in s:
               raise SystemExit('patch-driver rep() anchor missing')
           p.write_text(s.replace(old,new,1))
           PY
       - run: python3 tools/fix-unlinked-ir.py
+      - name: Enforce exact Memory-SSA version for RMW
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('js/ir-core.js'); s=p.read_text()
+          guard="if (!store.memDef || !load.memUse || load.memUse !== store.memDef.prev) continue;"
+          if guard not in s:
+              start=s.index('export function readModifyWrite')
+              pos=s.index('    if (!load) continue;', start)
+              insert=pos+len('    if (!load) continue;')
+              s=s[:insert]+"\n    // A load is a current-value RMW source only when it observes the memory\n    // version immediately preceding this store.  Same-location but stale loads\n    // must not survive an intervening write.\n    "+guard+s[insert:]
+              p.write_text(s)
+          PY
       - name: Assert semantic fixes are present
         run: |
           node --input-type=module <<'NODE'
           import fs from 'node:fs';
           const checks = {
             'js/decompiler/semantic.js': ['const written = valueOf(rmw.store?.args?.[0]);'],
-            'js/ir-core.js': ['...Array.from({ length: 8 }, (_, i) => `v${i}`)', 'const extShift = (x)', "kind: 'movk'"],
+            'js/ir-core.js': ['...Array.from({ length: 8 }, (_, i) => `v${i}`)', 'const extShift = (x)', "kind: 'movk'", 'load.memUse !== store.memDef.prev'],
             'js/decompiler/pipeline-core.js': ['function returnValueFor(', "d.extra?.toward === 'left'", "d.extra?.kind === 'bfxil'", "'fcmp_' + cond", 'shiftedExtend'],
             'js/decompiler/ast/nodes.js': ["floatConstant(value"],
             'js/decompiler/pretty/c.js': ["case 'float-const'"],
@@ -58,7 +62,7 @@ jobs:
           };
           for (const [file, needles] of Object.entries(checks)) {
             const s=fs.readFileSync(file,'utf8');
-            for (const n of needles) { if (!s.includes(n)) throw new Error(`${file}: missing ${n}`); }
+            for (const n of needles) if (!s.includes(n)) throw new Error(`${file}: missing ${n}`);
           }
           NODE
       - run: node tests/issues-406-423-unlinked.mjs
