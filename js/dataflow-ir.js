@@ -73,7 +73,12 @@ function operationName(inst) {
 
 function originKey(o) {
   if (!o) return null;
-  if (o.kind === 'field' || o.kind === 'stack') return o.kind + ':' + String(o.base || '') + ':' + String(o.disp ?? '') + ':' + String(o.size ?? '');
+  if (o.kind === 'field' || o.kind === 'stack') {
+    // A physical register name is not an object identity. Include the SSA base
+    // value and Memory-SSA location so PHI arms that merely reuse x19/x20 do not
+    // collapse Player.field_20 and Enemy.field_20 into one origin.
+    return [o.kind, o.base || '', o.baseValueId ?? '', o.locationKey ?? '', o.disp ?? '', o.size ?? ''].map(String).join(':');
+  }
   if (o.kind === 'global') return 'global:' + String(o.address ?? '');
   if (o.kind === 'imm') return 'imm:' + String(o.value);
   if (o.kind === 'arg') return 'arg:' + String(o.reg || '');
@@ -99,6 +104,8 @@ function stableOrigin(value, callByRow, memo = new Map(), active = new Set()) {
       out = {
         kind: 'field',
         base: (def.addr && def.addr.baseReg) || null,
+        baseValueId: def.addr?.base?.id ?? null,
+        locationKey: def.loc.key ?? null,
         disp: def.loc.disp,
         size: def.loc.size || (def.extra && def.extra.size) || null,
         indexAddr: null,
@@ -110,6 +117,8 @@ function stableOrigin(value, callByRow, memo = new Map(), active = new Set()) {
       out = {
         kind: 'stack',
         base: (def.addr && def.addr.baseReg) || 'sp',
+        baseValueId: def.addr?.base?.id ?? null,
+        locationKey: def.loc.key ?? null,
         disp: def.loc.disp,
         size: def.loc.size || (def.extra && def.extra.size) || null,
         row: def.row,
@@ -188,7 +197,9 @@ function locationShape(rmw) {
     stack: loc.kind === MK.STACK,
     key,
     indexAddr: null,
-    self: false,
+    // IR can prove a location without proving that the base is Objective-C
+    // `self`. Unknown must remain null rather than overwriting legacy true.
+    self: null,
     irKey: loc.key,
     irKind: loc.kind,
   };
@@ -282,10 +293,12 @@ export function mergeValueUpdates(legacy, proven) {
       continue;
     }
     const old = out[pos];
+    const irLocation = { ...(ir.location || {}) };
+    if (irLocation.self == null) delete irLocation.self;
     out[pos] = {
       ...old,
       ...ir,
-      location: { ...(old.location || {}), ...(ir.location || {}) },
+      location: { ...(old.location || {}), ...irLocation },
       from: { ...(old.from || {}), ...(ir.from || {}) },
       evidence: mergeEvidence(old.evidence, ir.evidence),
       legacyConfidence: old.confidence,
