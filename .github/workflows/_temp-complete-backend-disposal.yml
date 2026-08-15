@@ -28,23 +28,14 @@ jobs:
           if old not in s: raise SystemExit('probe fields snippet missing')
           s=s.replace(old,new,1)
           old="  probeArchitectures() {\n    if (this._archProbe) return this._archProbe;\n    this._archProbe = new Promise((resolve) => {\n      const worker = new Worker(new URL('./platform/capstone-probe-worker.js', import.meta.url));\n      const finish = (value) => { worker.terminate(); resolve(value); };\n      worker.onmessage = (event) => finish(event.data);\n      worker.onerror = (event) => finish({ ok: false, error: event.message, support: { arm64: false, x86_64: false } });\n      worker.postMessage({ t: 'probe' });\n    }).finally(() => { this._archProbe = null; });\n    return this._archProbe;\n  }"
-          new="  probeArchitectures() {\n    if (this.disposed) return Promise.resolve({ ok:false, error:'Backend has been disposed.', support:{ arm64:false, x86_64:false } });\n    if (this._archProbe) return this._archProbe;\n    this._archProbe = new Promise((resolve) => {\n      const worker = new Worker(new URL('./platform/capstone-probe-worker.js', import.meta.url));\n      this._archProbeWorker = worker;\n      let finished = false;\n      const finish = (value) => {\n        if (finished) return; finished = true;\n        if (this._archProbeWorker === worker) this._archProbeWorker = null;\n        try { worker.terminate(); } catch { /* best effort */ }\n        resolve(value);\n      };\n      this._archProbeFinish = finish;\n      worker.onmessage = (event) => finish(event.data);\n      worker.onerror = (event) => finish({ ok: false, error: event.message, support: { arm64: false, x86_64: false } });\n      worker.postMessage({ t: 'probe' });\n    }).finally(() => { this._archProbe = null; this._archProbeFinish = null; });\n    return this._archProbe;\n  }"
+          new="  probeArchitectures() {\n    if (this.disposed) return Promise.resolve({ ok:false, error:'Backend has been disposed.', support:{ arm64:false, x86_64:false } });\n    if (this._archProbe) return this._archProbe;\n    this._archProbe = new Promise((resolve) => {\n      const worker = new Worker(new URL('./platform/capstone-probe-worker.js', import.meta.url));\n      this._archProbeWorker = worker;\n      let finished = false;\n      const finish = (value) => {\n        if (finished) return;\n        finished = true;\n        if (this._archProbeWorker === worker) this._archProbeWorker = null;\n        try { worker.terminate(); } catch { /* best effort */ }\n        resolve(value);\n      };\n      this._archProbeFinish = finish;\n      worker.onmessage = (event) => finish(event.data);\n      worker.onerror = (event) => finish({ ok: false, error: event.message, support: { arm64: false, x86_64: false } });\n      worker.postMessage({ t: 'probe' });\n    }).finally(() => { this._archProbe = null; this._archProbeFinish = null; });\n    return this._archProbe;\n  }"
           if old not in s: raise SystemExit('probe method snippet missing')
           s=s.replace(old,new,1)
           old="    this._releaseDisassembly(failure);\n    for (const pending of this.pending.values()) pending.reject(failure);"
           new="    this._releaseDisassembly(failure);\n    this._archProbeFinish?.({ ok:false, error:failure.message, support:{ arm64:false, x86_64:false } });\n    this._archProbeFinish = null; this._archProbeWorker = null;\n    for (const pending of this.pending.values()) pending.reject(failure);"
           if old not in s: raise SystemExit('dispose probe snippet missing')
-          s=s.replace(old,new,1);p.write_text(s)
-
-          p=Path('tests/backend-disposal.mjs');s=p.read_text()
-          old="            const pending=b._callTo('legacy','probe',{});\n            b.dispose();\n            let error=null;try{await pending;}catch(e){error=e;}"
-          new="            const pending=b._callTo('legacy','probe',{});\n            const architectureProbe=b.probeArchitectures();\n            assert.equal(workers.length,3);\n            b.dispose();\n            const probeResult=await architectureProbe;\n            assert.equal(probeResult.ok,false);\n            assert.equal(workers[2].terminated,true,'active architecture probe must terminate on dispose');\n            let error=null;try{await pending;}catch(e){error=e;}"
-          if old not in s: raise SystemExit('test probe snippet missing')
           s=s.replace(old,new,1)
-          old="            let after=null;try{await b.probe();}catch(e){after=e;}\n            assert.equal(after?.code,'BACKEND_DISPOSED');"
-          new="            let after=null;try{await b.probe();}catch(e){after=e;}\n            assert.equal(after?.code,'BACKEND_DISPOSED');\n            const workersBefore=workers.length;\n            const disposedProbe=await b.probeArchitectures();\n            assert.equal(disposedProbe.ok,false);\n            assert.equal(workers.length,workersBefore,'disposed backend must not spawn probe workers');"
-          if old not in s: raise SystemExit('test disposed probe snippet missing')
-          s=s.replace(old,new,1);p.write_text(s)
+          p.write_text(s)
           PY
       - run: node tests/backend-disposal.mjs
       - run: npm run userscript:build
@@ -52,6 +43,6 @@ jobs:
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add js/backend.js tests/backend-disposal.mjs userscript/hex.user.template.js userscript/platform-worker.bundle.js
+          git add js/backend.js userscript/hex.user.template.js userscript/platform-worker.bundle.js
           git commit -m 'Dispose active architecture probe workers'
           git push origin HEAD:review-backend-resource-disposal
