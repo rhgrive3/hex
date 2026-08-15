@@ -29,6 +29,18 @@ export class SymbolIndex {
        vtables and other metadata may add exact starts without making the list
        complete, so functionCount alone must never suppress stripped recovery. */
     this.functionStartsExact = !!r.functionStartsExact;
+    this.nameProvenance = new Map();
+    this.functionProvenance = new Map();
+    const providedNames = Array.isArray(r.nameProvenance) ? r.nameProvenance : [];
+    for (let i = 0; i < this.addrs.length; i++) {
+      const p = providedNames[i] || { source: 'binary-symbol', confidence: 1, confirmed: true };
+      this.nameProvenance.set(this.addrs[i].toString(), { ...p });
+    }
+    const providedFunctions = Array.isArray(r.functionProvenance) ? r.functionProvenance : [];
+    for (let i = 0; i < this.funcs.length; i++) {
+      const p = providedFunctions[i] || { source: this.functionStartsExact ? 'function-starts' : 'metadata', confidence: this.functionStartsExact ? 1 : 0.7, confirmed: this.functionStartsExact };
+      this.functionProvenance.set(this.funcs[i].toString(), { ...p });
+    }
     this.guessed = false;          // 関数一覧が推測によるものか
     /* 自分で付け直した名前。元の名前より優先される（IDA の Rename と同じ）。
        アドレス（10 進の文字列）→ 名前。names.js の NoteStore が中身の持ち主。 */
@@ -64,6 +76,17 @@ export class SymbolIndex {
   /** 自分で付けた名前だけを引く。 */
   renamedAt(addr) {
     return addr == null ? null : (this.renames.get(addr.toString()) || null);
+  }
+
+  nameEvidence(addr) {
+    if (addr == null) return null;
+    if (this.renames.has(addr.toString())) return { source: 'user', status: 'manual', manual: true, confirmed: false, confidence: null };
+    return this.nameProvenance.get(addr.toString()) || null;
+  }
+
+  functionEvidence(addr) {
+    if (addr == null) return null;
+    return this.functionProvenance.get(addr.toString()) || null;
   }
 
   get symbolCount() { return this.addrs.length; }
@@ -269,7 +292,7 @@ export class SymbolIndex {
    *
    * @param {Array<{addr:BigInt,name:string}>} entries
    */
-  addNames(entries) {
+  addNames(entries, provenance = { source: 'metadata', confidence: 0.9, confirmed: true }) {
     if (!entries || !entries.length) return 0;
     const have = new Set();
     for (let i = 0; i < this.addrs.length; i++) have.add(this.addrs[i]);
@@ -297,6 +320,7 @@ export class SymbolIndex {
       flags[i] = merged[i].ext || 0;
     }
     this.addrs = addrs; this.kinds = kinds; this.names = names; this.flags = flags;
+    for (const e of fresh) this.nameProvenance.set(e.addr.toString(), { ...provenance, ...(e.provenance || {}) });
     this.gen = ++SymbolIndex.gen;
     return fresh.length;
   }
@@ -305,7 +329,7 @@ export class SymbolIndex {
    * 関数の先頭を足す。Objective-C のメソッドの実装アドレスは、
    * それ自体が確実な関数の先頭なので、切れ目の情報がないファイルで特に効く。
    */
-  addFunctions(list) {
+  addFunctions(list, provenance = { source: 'metadata', confidence: 0.7, confirmed: false }) {
     if (!list || !list.length) return 0;
     const have = new Set();
     for (let i = 0; i < this.funcs.length; i++) have.add(this.funcs[i]);
@@ -314,6 +338,7 @@ export class SymbolIndex {
     for (const a of list) {
       if (a == null || have.has(a)) continue;
       have.add(a); all.push(a); added++;
+      this.functionProvenance.set(a.toString(), { ...provenance });
     }
     if (!added) return 0;
     all.sort((x, y) => (x < y ? -1 : x > y ? 1 : 0));
@@ -329,6 +354,8 @@ export class SymbolIndex {
   setGuessedFunctions(starts) {
     this.funcs = starts || new BigUint64Array(0);
     this.funcEnds = null;
+    this.functionProvenance.clear();
+    for (const addr of this.funcs) this.functionProvenance.set(addr.toString(), { source: 'heuristic', confidence: 0.55, confirmed: false });
     this.guessed = true;
     this.gen = ++SymbolIndex.gen;
   }

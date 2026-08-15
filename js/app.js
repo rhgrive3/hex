@@ -33,6 +33,7 @@ import { PatchSet } from './patch.js';
 import { PluginHost } from './plugins.js';
 import { showTools, prettyName } from './tools.js';
 import { NavigationHistory } from './navigation.js';
+import { STRING_SCAN_BUDGET, StringCollectionBudget } from './string-budget.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -585,7 +586,7 @@ class App {
         /* Keep exact starts recovered from ObjC/metadata and merge inferred C/C++/
            Swift starts around them. Replacing the list here used to throw away
            the strongest evidence as soon as partial metadata existed. */
-        sym.addFunctions(res.starts);
+        sym.addFunctions(res.starts, { source: 'heuristic', confidence: 0.55, confirmed: false });
         sym.guessed = true;
         sym.functionDiscovery = res.completeness || { complete: res.complete !== false, capped: !!res.capped };
         sym.functionStartsComplete = res.complete !== false;
@@ -733,28 +734,42 @@ class App {
       (r.cstrings || /string|cstring|objc_methname|objc_method|objc_classname|objc_class|oslogstring|const|ustring|swift5_reflstr/i.test(r.section || '')))
       .sort((a, b) => priority(a) - priority(b));
     const current = this.store.get('currentRegion');
-    let budget = 64 * 1024 * 1024;
+    const collectionBudget = new StringCollectionBudget(STRING_SCAN_BUDGET);
     const use = [];
     const skipped = [];
     for (const r of targets) {
-      if (budget <= 0) { skipped.push(r); continue; }
-      const bytes = Math.min(budget, Number(r.size));
+      const bytes = collectionBudget.requestBytes(Number(r.size));
+      if (bytes <= 0) { skipped.push(r); continue; }
       use.push({ region: r, bytes });
-      budget -= bytes;
       if (bytes < Number(r.size)) skipped.push(r);
     }
-    if (!use.length && current) use.push({ region: current, bytes: Math.min(64 * 1024 * 1024, Number(current.size)) });
+    if (!use.length && current) {
+      const bytes = collectionBudget.requestBytes(Number(current.size));
+      if (bytes > 0) use.push({ region: current, bytes });
+    }
     const out = [];
     let scannedBytes = 0;
+    let backendIncomplete = false;
     try {
-      for (const item of use) {
+      for (let itemIndex = 0; itemIndex < use.length; itemIndex++) {
         if (epoch !== this.backend.gen) return null;
+        if (collectionBudget.exhausted) {
+          for (const rest of use.slice(itemIndex)) if (!skipped.includes(rest.region)) skipped.push(rest.region);
+          break;
+        }
+        const item = use[itemIndex];
         const r = item.region;
-        const res = await this.backend.strings({ regionId: r.id, min: 4, maxBytes: item.bytes },
+        const remaining = collectionBudget.requestLimit();
+        if (remaining <= 0) { collectionBudget.truncationReason ||= 'result-budget'; break; }
+        const res = await this.backend.strings({ regionId: r.id, min: 4, maxBytes: item.bytes, limit: remaining },
           onProgress && ((p) => onProgress({ phase: 'strings', done: p.done, all: p.all, region: r.id })));
         scannedBytes += res.scannedBytes || 0;
-        if (!res.complete && !skipped.includes(r)) skipped.push(r);
-        for (const s of res.results) out.push({ addr: s.addr, text: s.text, region: r });
+        if (!res.complete) { backendIncomplete = true; if (!skipped.includes(r)) skipped.push(r); }
+        for (const s of res.results || []) {
+          if (!collectionBudget.accept(s.text)) break;
+          out.push({ addr: s.addr, text: s.text, region: r });
+        }
+        if (res.capped && !collectionBudget.truncationReason) collectionBudget.truncationReason = res.truncationReason || 'result-budget';
       }
     } finally {
       if (this.stringsBusyEpoch === epoch) {
@@ -762,8 +777,12 @@ class App {
         this.stringsBusyEpoch = -1;
       }
     }
-    out.complete = skipped.length === 0;
+    const truncated = !!collectionBudget.truncationReason || skipped.length > 0 || backendIncomplete;
+    out.complete = !truncated;
+    out.truncated = truncated;
+    out.truncationReason = collectionBudget.truncationReason || (skipped.length ? 'input-budget' : backendIncomplete ? 'backend-partial' : null);
     out.skippedRegions = skipped.map((r) => ({ id: r.id, name: r.name, section: r.section, size: r.size }));
+    out.unscannedRegions = out.skippedRegions;
     out.scannedBytes = scannedBytes;
     if (epoch === this.backend.gen) this.stringIndex = out;
     return epoch === this.backend.gen ? out : null;
@@ -986,8 +1005,8 @@ class App {
         this.objcRuntime = model.runtimeIndex || null;
         this.fields = new FieldIndex(model);
         if (model.names.length) {
-          const added = this.symbols.addNames(model.names);
-          this.symbols.addFunctions(model.names.map((n) => n.addr));
+          const added = this.symbols.addNames(model.names, { source: 'objc-runtime', confidence: 1, confirmed: true });
+          this.symbols.addFunctions(model.names.map((n) => n.addr), { source: 'objc-runtime', confidence: 1, confirmed: true });
           this.viewer.setSymbols(this.symbols);
           this.updateChrome();
           if (added) {

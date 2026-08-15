@@ -24,6 +24,9 @@ import { traceAppFunction, runtimeEvidenceForApp } from '../runtime/app-runtime.
 import { installAssistant } from '../ai/ui/assistant.js';
 import { classifyOmnibox, intentLabel } from '../ai/interaction/omnibox.js';
 import { askAiMenuItem, functionAiItems } from '../ai/interaction/contextual.js';
+import { productDescriptor } from '../platform/product-descriptor.js';
+import { queryFunctions, queryStrings } from './explorer-index.js';
+import { genericEvidenceStatus, ownerEvidence, summaryEvidenceStatus, provenanceStatus } from './evidence-model.js';
 
 const ja = () => (document.documentElement.lang || navigator.language || 'ja').toLowerCase().startsWith('ja');
 const text = (j, e) => ja() ? j : e;
@@ -225,60 +228,29 @@ function functionSource(app) {
   };
 }
 
-function matchingFunctionItems(app, query) {
-  const q = String(query || '').trim().toLowerCase();
+async function matchingFunctionItems(app, query, options) {
+  const q = String(query || '').trim();
   if (!q) return functionSource(app);
-  const sym = app.symbols;
-  if (!sym) return [];
-  const region = app.codeRegion?.() || app.store.get('currentRegion');
-  const lo = region?.vmAddr ?? 0n;
-  const hi = region ? region.vmAddr + region.size : null;
-  const out = [];
-  const seen = new Set();
-  const add = (addr, name) => {
-    if (addr == null || addr < lo || (hi != null && addr >= hi) || !sym.isFunctionStart?.(addr)) return;
-    const key = addr.toString();
-    if (seen.has(key)) return;
-    seen.add(key);
-    out.push({ addr, name: name || functionName(app, addr) });
-  };
-  const names = Array.isArray(sym.names) ? sym.names : [];
-  const addrs = sym.addrs || [];
-  for (let i = 0; i < names.length && i < addrs.length; i++) {
-    const name = String(names[i] || '');
-    if (name.toLowerCase().includes(q)) add(addrs[i], name);
-  }
-  for (const [rawAddr, name] of sym.renames || []) {
-    if (String(name || '').toLowerCase().includes(q)) {
-      try { add(BigInt(rawAddr), name); } catch { /* ignore malformed rename */ }
-    }
-  }
-  const sub = /^sub_?([0-9a-f]+)$/i.exec(q);
-  if (sub) {
-    try { add(BigInt('0x' + sub[1]), null); } catch { /* ignore */ }
-  }
-  out.sort((a, b) => a.addr < b.addr ? -1 : a.addr > b.addr ? 1 : 0);
-  return out;
+  return queryFunctions(app, q, options);
 }
 
 function sectionItems(app, query) {
   const q = String(query || '').trim().toLowerCase();
-  return (app.store.get('regions') || []).filter((r) => !q || String(r.name || r.section || '').toLowerCase().includes(q)).map((r) => ({
+  const descriptor = productDescriptor(app.store.get('fileInfo'), app.currentSlice?.());
+  return (descriptor.regions || []).filter((r) => !q || String(r.name || r.section || '').toLowerCase().includes(q)).map((r) => ({
     name: r.section || r.name, addr: r.vmAddr, size: r.size, region: r,
   }));
 }
 
-async function stringItems(app, query) {
+async function stringItems(app, query, options) {
   const rows = await app.ensureStrings();
-  const q = String(query || '').trim().toLowerCase();
-  if (!q) return rows || [];
-  return (rows || []).filter((row) => String(row.text || '').toLowerCase().includes(q));
+  return queryStrings(rows || [], query, options);
 }
 
 function externalItems(app, query) {
-  const slice = app.currentSlice();
+  const descriptor = productDescriptor(app.store.get('fileInfo'), app.currentSlice?.());
   const q = String(query || '').trim().toLowerCase();
-  return ((slice && slice.info && slice.info.dylibs) || []).filter((name) => !q || name.toLowerCase().includes(q)).map((name) => ({ name }));
+  return (descriptor.dependencies || []).filter((name) => !q || name.toLowerCase().includes(q)).map((name) => ({ name }));
 }
 
 function renderExplorer(app, router, route) {
@@ -306,6 +278,8 @@ function renderExplorer(app, router, route) {
   let disposed = false;
   let virtual = null;
   let timer = 0;
+  let queryController = null;
+  let querySerial = 0;
 
   const showRows = (items, renderRow, emptyText) => {
     virtual?.dispose(); virtual = null;
@@ -317,6 +291,11 @@ function renderExplorer(app, router, route) {
 
   const update = async () => {
     if (disposed) return;
+    queryController?.abort();
+    const controller = new AbortController();
+    queryController = controller;
+    const serial = ++querySerial;
+    const current = () => !disposed && !controller.signal.aborted && serial === querySerial;
     const q = search.value.trim();
     const parsed = parseAddress(q);
     if (parsed != null && q) {
@@ -324,8 +303,14 @@ function renderExplorer(app, router, route) {
       return;
     }
     if (scope === 'functions') {
-      const items = matchingFunctionItems(app, q);
-      showRows(items, (item) => listRow({ title: item.name, subtitle: addressText(item.addr), meta: item.size != null ? String(item.size) + ' B' : '', onClick: () => router.navigate('/function/' + BigInt(item.addr).toString() + '/overview') }), text('関数名がまだ復元されていない可能性があります。', 'Function names may not be recovered yet.'));
+      if (q) content.replaceChildren(loadingState(text('索引を検索しています…', 'Searching index…')));
+      try {
+        const items = await matchingFunctionItems(app, q, { signal: controller.signal, limit: 200 });
+        if (!current()) return;
+        showRows(items, (item) => listRow({ title: item.name, subtitle: addressText(item.addr), meta: item.size != null ? String(item.size) + ' B' : '', onClick: () => router.navigate('/function/' + BigInt(item.addr).toString() + '/overview') }), text('関数名がまだ復元されていない可能性があります。', 'Function names may not be recovered yet.'));
+      } catch (err) {
+        if (err?.name !== 'AbortError' && current()) content.replaceChildren(errorState(text('検索できませんでした', 'Search failed'), String(err?.message || err)));
+      }
       return;
     }
     if (scope === 'sections') {
@@ -341,11 +326,12 @@ function renderExplorer(app, router, route) {
     if (scope === 'strings') {
       content.replaceChildren(loadingState(text('文字列を集めています…', 'Collecting strings…')));
       try {
-        const items = await stringItems(app, q);
-        if (disposed) return;
+        const items = await stringItems(app, q, { signal: controller.signal, limit: 200 });
+        if (!current()) return;
         showRows(items, (item) => listRow({ title: item.text, subtitle: addressText(item.addr), onClick: () => { app.goToStringAddress(item.region, item.addr); router.navigate('/code/' + BigInt(item.addr).toString()); } }), text('文字列が見つかりません。', 'No strings were found.'));
+        if (items?.complete === false) content.prepend(h('p', 'ui-partial-note', text('結果はメモリ上限内の一部です。未走査領域を「該当なし」とは扱いません。', 'Results are partial within the memory budget; unscanned regions are not treated as negative evidence.')));
       } catch (err) {
-        if (!disposed) content.replaceChildren(errorState(text('文字列を表示できません', 'Could not show strings'), String(err && err.message || err)));
+        if (err?.name !== 'AbortError' && current()) content.replaceChildren(errorState(text('文字列を表示できません', 'Could not show strings'), String(err && err.message || err)));
       }
       return;
     }
@@ -368,7 +354,7 @@ function renderExplorer(app, router, route) {
     root: s.root,
     getState: () => ({ query: search.value, virtual: virtual?.getState() || null }),
     restoreState: (state) => { if (state?.query != null) search.value = state.query; setTimeout(() => virtual?.restoreState(state?.virtual), 0); },
-    dispose: () => { disposed = true; clearTimeout(timer); virtual?.dispose(); },
+    dispose: () => { disposed = true; queryController?.abort(); clearTimeout(timer); virtual?.dispose(); },
   };
 }
 
@@ -424,14 +410,7 @@ function recognitionInput(app, addr, res) {
   };
 }
 
-function evidenceStatus(item) {
-  const verdict = String(item?.verdict || item?.status || '').toLowerCase();
-  if (verdict === 'contradicted') return 'contradicted';
-  if (verdict === 'confirmed' || item?.confirmed === true) return 'confirmed';
-  const confidence = Number(item?.confidence);
-  if (verdict === 'supported' || (Number.isFinite(confidence) && confidence >= 0.75)) return 'likely';
-  return 'unverified';
-}
+function evidenceStatus(item) { return genericEvidenceStatus(item); }
 
 function evidenceTitle(item, index) {
   return String(item?.reason || item?.kind || item?.type || item?.source || item?.family || text(`根拠 ${index + 1}`, `Evidence ${index + 1}`));
@@ -475,6 +454,9 @@ function renderFunctionWorkspace(app, router, route) {
   content.append(loadingState(text('関数を解析しています…', 'Analysing function…')));
   s.body.append(content);
   let disposed = false;
+  const viewEpoch = app.backend?.gen;
+  const viewSlice = app.store.get('sliceIndex');
+  const viewCurrent = () => !disposed && app.backend?.gen === viewEpoch && app.store.get('sliceIndex') === viewSlice;
 
   const rowMapper = () => {
     const region = app.store.get('currentRegion');
@@ -488,15 +470,23 @@ function renderFunctionWorkspace(app, router, route) {
 
   const renderOverview = (res) => {
     const owner = app.ownerOf?.(addr);
+    const ownerFact = ownerEvidence(owner);
     const recognition = classifyFunction(recognitionInput(app, addr, res));
     const subsystems = discoverSubsystems(recognitionInput(app, addr, res));
     const grid = h('div', 'ui-card-grid');
     const summary = card(text('何をしている？', 'What does it do?'));
     const recovered = summaryText(res);
-    summary.body.append(h('p', 'ui-lead', recovered || (owner && owner.className
-      ? text(`${owner.className} の ${owner.sel || 'メソッド'} として認識されています。`, `Recognized as ${owner.sel || 'a method'} on ${owner.className}.`)
-      : text('命令列と参照関係から、この関数の役割を確認できます。', 'Use the instructions and references below to determine this function’s role.'))));
-    summary.body.append(evidenceBadge(owner ? 'confirmed' : recovered ? 'likely' : 'unverified'));
+    const recoveredStatus = summaryEvidenceStatus(res);
+    const ownerLead = ownerFact.unique
+      ? text(`${ownerFact.unique.className} の ${ownerFact.unique.sel || 'メソッド'} としてruntime metadataから一意に識別されています。`, `Runtime metadata uniquely identifies this as ${ownerFact.unique.sel || 'a method'} on ${ownerFact.unique.className}.`)
+      : ownerFact.candidates.length
+        ? text('この実装アドレスは複数のObjective-Cメソッドで共有されています。候補を確認してください。', 'This implementation address is shared by multiple Objective-C methods; review the candidates below.')
+        : text('命令列と参照関係から、この関数の役割を確認できます。', 'Use the instructions and references below to determine this function’s role.');
+    summary.body.append(h('p', 'ui-lead', recovered || ownerLead));
+    summary.body.append(evidenceBadge(recovered ? recoveredStatus : ownerFact.status));
+    if (ownerFact.candidates.length > 1) {
+      for (const candidate of ownerFact.candidates.slice(0, 8)) summary.body.append(listRow({ title: candidate.className || text('不明なクラス', 'Unknown class'), subtitle: candidate.sel || text('selector不明', 'Unknown selector'), badge: evidenceBadge('likely') }));
+    }
     grid.append(summary.root);
 
     const identity = card(text('コードの分類', 'Code identity'));
@@ -583,7 +573,7 @@ function renderFunctionWorkspace(app, router, route) {
   const renderCalls = async () => {
     content.replaceChildren(loadingState(text('呼び出し関係を集めています…', 'Mapping calls…')));
     await app.ensureProgram();
-    if (disposed) return;
+    if (!viewCurrent()) return;
     if (!app.program) { content.replaceChildren(emptyState(text('呼び出し関係がありません', 'No call graph available'), text('このバイナリでは呼び出し索引を作れませんでした。', 'A call index could not be built for this binary.'))); return; }
     const graph = callGraph(app.program, app.symbols, addr, {
       depth: 2, limit: 8, label: (a) => functionName(app, a),
@@ -597,8 +587,12 @@ function renderFunctionWorkspace(app, router, route) {
   const renderEvidence = (res) => {
     const stack = h('div', 'ui-evidence-stack');
     const name = app.symbols?.nameAt?.(addr);
-    stack.append(listRow({ title: text('関数境界', 'Function boundary'), subtitle: addressText(addr), badge: evidenceBadge('confirmed') }));
-    stack.append(listRow({ title: text('関数名', 'Function name'), subtitle: name || text('シンボル名なし', 'No symbol name'), badge: evidenceBadge(name ? 'confirmed' : 'unverified') }));
+    const boundaryEvidence = app.symbols?.functionEvidence?.(addr);
+    const nameEvidence = app.symbols?.nameEvidence?.(addr);
+    const boundaryStatus = provenanceStatus(boundaryEvidence);
+    const nameStatus = provenanceStatus(nameEvidence);
+    stack.append(listRow({ title: text('関数境界', 'Function boundary'), subtitle: addressText(addr), meta: boundaryEvidence?.source || text('由来不明', 'unknown source'), badge: evidenceBadge(boundaryStatus === 'manual' ? 'unverified' : boundaryStatus) }));
+    stack.append(listRow({ title: text('関数名', 'Function name'), subtitle: name || text('シンボル名なし', 'No symbol name'), meta: nameStatus === 'manual' ? text('手動 / User', 'Manual / User') : (nameEvidence?.source || ''), badge: evidenceBadge(nameStatus === 'manual' ? 'unverified' : nameStatus) }));
 
     const deterministic = Array.isArray(res.evidence) ? res.evidence : [];
     deterministic.slice(0, 80).forEach((item, index) => stack.append(listRow({
@@ -641,7 +635,7 @@ function renderFunctionWorkspace(app, router, route) {
       resultHost.replaceChildren(loadingState(text('実行して観測しています…', 'Running and collecting observations…')));
       try {
         const result = await traceAppFunction(app, addr, { maxSteps: 12000, timeoutMs: 1500, limit: 4096 });
-        if (disposed) return;
+        if (!viewCurrent()) return;
         const obs = result.observation || {};
         const stop = obs.stop?.kind || 'unknown';
         const direct = stop === 'return' ? 'confirmed' : 'unverified';
@@ -672,7 +666,7 @@ function renderFunctionWorkspace(app, router, route) {
   (async () => {
     try {
       const res = await app.analyzeFunctionAt(addr);
-      if (disposed) return;
+      if (!viewCurrent()) return;
       if (!res || !res.model) { content.replaceChildren(errorState(text('関数を解析できません', 'Could not analyse function'), text('このアドレスは現在のコード領域の関数として解析できませんでした。', 'This address could not be analysed as a function in the current code region.'))); return; }
       if (tab === 'overview') renderOverview(res);
       else if (tab === 'pseudocode') renderPseudocode(res);
@@ -681,7 +675,7 @@ function renderFunctionWorkspace(app, router, route) {
       else if (tab === 'evidence') renderEvidence(res);
       else renderRuntime(res);
     } catch (err) {
-      if (!disposed) content.replaceChildren(errorState(text('表示できませんでした', 'Could not render this view'), String(err && err.message || err)));
+      if (viewCurrent()) content.replaceChildren(errorState(text('表示できませんでした', 'Could not render this view'), String(err && err.message || err)));
     }
   })();
 
@@ -869,6 +863,19 @@ export function installProductUI(app) {
   });
 
   let assistant = null;
+  const originalSelectSlice = typeof app.selectSlice === 'function' ? app.selectSlice.bind(app) : null;
+  if (originalSelectSlice) {
+    app.selectSlice = async (...args) => {
+      const beforeEpoch = app.backend?.gen;
+      const result = await originalSelectSlice(...args);
+      if (app.backend?.gen !== beforeEpoch) {
+        router.navigate('/code', { replace: true });
+        assistant?.refresh();
+        assistant?.collapse();
+      }
+      return result;
+    };
+  }
   installCommandCenter(app, router, actions, chrome, () => assistant);
   const more = uiButton('•••', { cls: 'ui-more-button', ariaLabel: text('その他', 'More'), onClick: (event) => {
     const r = event.currentTarget.getBoundingClientRect();
@@ -928,6 +935,7 @@ export function installProductUI(app) {
     document.removeEventListener('keydown', shortcut, true);
     document.removeEventListener('hex:file-opened', onFileOpened);
     assistant?.destroy();
+    if (originalSelectSlice) app.selectSlice = originalSelectSlice;
     chrome.remove(); nav.remove(); routeHost.remove();
     document.documentElement.classList.remove('product-ui-ready');
   };

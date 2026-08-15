@@ -61,6 +61,25 @@ export function describeBinaryImage(image, options = {}) {
     capability,
   };
   const summary = image.summary();
+  const formatMetadata = {
+    format: image.format,
+    arch: image.arch,
+    bits: image.bits,
+    endian: image.endian,
+  };
+  if (image.platform != null) formatMetadata.platform = image.platform;
+  if (image.abi != null) formatMetadata.abi = image.abi;
+  if (image.entrypoint != null) formatMetadata.entrypoint = image.entrypoint;
+  if (image.imageBase != null) formatMetadata.imageBase = image.imageBase;
+  const productDescriptor = {
+    formatId: image.format || 'raw',
+    regions,
+    dependencies: [...(image.libraries || [])],
+    imports: [...(image.imports || [])],
+    exports: [...(image.exports || [])],
+    formatMetadata,
+  };
+  info.descriptor = productDescriptor;
   const raw = {
     id: 'raw', kind: 'file', name: 'Whole file (raw)', fileOffset: 0n, vmAddr: 0n,
     size: image.fileSize, declaredSize: image.fileSize, exec: false, write: false, read: true,
@@ -73,6 +92,7 @@ export function describeBinaryImage(image, options = {}) {
     formatId: image.format,
     slices: [{ name: image.arch || 'unknown', offset: image.fileOffset || 0n, size: image.fileSize, info, capability, regions }],
     raw,
+    productDescriptor,
     warnings: [...(image.warnings || [])],
     capability,
     platform: {
