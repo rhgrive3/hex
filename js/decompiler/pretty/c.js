@@ -23,12 +23,23 @@ function integerText(v, bits = 64, signed = null) {
   return signed === true ? `((__int128)${wide})` : wide;
 }
 
+function floatText(value, bits = 64) {
+  const n = Number(value);
+  if (Number.isNaN(n)) return 'NAN';
+  if (n === Infinity) return 'INFINITY';
+  if (n === -Infinity) return '-INFINITY';
+  let text = Object.is(n, -0) ? '-0.0' : String(n);
+  if (!/[.eE]/.test(text)) text += '.0';
+  return Number(bits || 64) <= 32 ? text + 'f' : text;
+}
+
 function wrap(text, p, parent) { return p < parent ? `(${text})` : text; }
 
 export function printExpression(n, parentPrec = 0, opts = {}) {
   if (!n) return 'unknown';
   switch (n.kind) {
     case 'const': return integerText(n.value, n.bits, n.signed);
+    case 'float-const': return floatText(n.value, n.bits);
     case 'var': return n.name || 'value';
     case 'field': return `${printExpression(n.base, PREC.primary, opts)}->${n.name || `field_${BigInt(n.offset || 0).toString(16).toUpperCase()}`}`;
     case 'index': return `${printExpression(n.base, PREC.primary, opts)}[${printExpression(n.index, 0, opts)}]`;

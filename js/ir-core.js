@@ -178,8 +178,8 @@ function opnd(op) {
     return { t: 'reg', reg: regKeyOf(op), bits: regBits(op), shift: op.shift || null };
   }
   if (op.k === 'imm') {
-    if (op.value == null) return op.float != null ? { t: 'imm', value: null, float: op.float } : null;
-    return { t: 'imm', value: op.value, shift: op.shift || null };
+    if (op.value == null) return op.float != null ? { t:'imm', value:null, float:Number(op.float), constKind:'float', bits:op.bits || 64, shift:op.shift || null } : null;
+    return { t:'imm', value:op.value, bits:op.bits || 64, shift:op.shift || null };
   }
   if (op.k === 'cond') return { t: 'cond', cond: op.text };
   return null;
@@ -206,6 +206,21 @@ function callResultLocation(insn, opts) {
   return null;
 }
 
+function functionReturnLocation(opts) {
+  const proto = opts?.functionPrototype || opts?.prototype || null;
+  const type = String(opts?.returnType || proto?.returnType || proto?.ret || proto?.result || '').toLowerCase();
+  const cls = String(opts?.returnClass || proto?.returnClass || proto?.abiClass || proto?.resultClass || '').toLowerCase();
+  if (opts?.returnsValue === false || proto?.returnsValue === false || proto?.void === true || type === 'void' || cls === 'void') return null;
+  if (proto?.indirectResult === true || cls === 'indirect') return null;
+  if (cls.includes('fp') || cls.includes('float') || cls.includes('vector') || /^(float|double|__fp16)/.test(type)) {
+    return { reg:'v0', bits:Number(proto?.returnBits || proto?.bits || opts?.returnBits || 64) || 64 };
+  }
+  if (type || cls || opts?.returnsValue === true || proto?.returnsValue === true) {
+    return { reg:'x0', bits:Number(proto?.returnBits || proto?.bits || opts?.returnBits || 64) || 64 };
+  }
+  return null;
+}
+
 function lift(insn, opts = {}) {
   const base = (insn.mnemonic || '').toLowerCase();
   const ops = insn.ops || [];
@@ -221,7 +236,11 @@ function lift(insn, opts = {}) {
   // AAPCS64 does not define a universal return register. Without prototype
   // evidence RET carries only control-flow semantics; consumers may recover a
   // return value from typed reaching definitions separately.
-  if (insn.isReturn) { push({ op: OP.RET, srcs: [] }); return out; }
+  if (insn.isReturn) {
+    const result = functionReturnLocation(opts);
+    push({ op:OP.RET, srcs:result ? [{ t:'reg', reg:result.reg, bits:result.bits }] : [], returnReg:result?.reg || null, returnEvidence:result ? 'prototype' : null });
+    return out;
+  }
   if (insn.isCall) {
     const result = callResultLocation(insn, opts);
     const callSrcs = Array.from({ length: 8 }, (_, i) => ({ t: 'reg', reg: `x${i}`, bits: 64 }));
@@ -364,8 +383,9 @@ function lift(insn, opts = {}) {
     const src = opnd(ops[1]);
     if (!src) { push({ op: OP.UNKNOWN, dstReg: dstReg(), dstBits: dstBits(), srcs: [] }); return out; }
     if (base === 'movn' && src.t === 'imm' && src.value != null) {
-      push({ op: OP.CONST, dstReg: dstReg(), dstBits: dstBits(),
-        value: mask(~src.value, dstBits()), srcs: [] });
+      let v = src.value;
+      if (src.shift && src.shift.op === 'lsl') v <<= BigInt(src.shift.amount || 0);
+      push({ op:OP.CONST, dstReg:dstReg(), dstBits:dstBits(), value:mask(~v, dstBits()), srcs:[] });
       return out;
     }
     if (src.t === 'imm' && src.value != null) {
@@ -379,9 +399,10 @@ function lift(insn, opts = {}) {
   }
   if (base === 'movk') {
     const src = opnd(ops[1]);
-    push({ op: OP.BFI, dstReg: dstReg(), dstBits: dstBits(),
-      lsb: src && src.shift && src.shift.op === 'lsl' ? (src.shift.amount || 0) : 0, width: 16,
-      srcs: [{ t: 'reg', reg: dstReg(), bits: dstBits() }, src || { t: 'imm', value: 0n }] });
+    const lsb = src?.shift?.op === 'lsl' ? (src.shift.amount || 0) : 0;
+    const insert = src ? { ...src, shift:null } : { t:'imm', value:0n };
+    push({ op:OP.BFI, dstReg:dstReg(), dstBits:dstBits(), lsb, width:16,
+      srcs:[{ t:'reg', reg:dstReg(), bits:dstBits() }, insert] });
     return out;
   }
 
@@ -400,8 +421,8 @@ function lift(insn, opts = {}) {
     const lsb = ops[2] && ops[2].value != null ? Number(ops[2].value) : null;
     const width = ops[3] && ops[3].value != null ? Number(ops[3].value) : null;
     if (base === 'bfi' || base === 'bfxil') {
-      push({ op: OP.BFI, dstReg: dstReg(), dstBits: dstBits(), lsb, width,
-        srcs: [{ t: 'reg', reg: dstReg(), bits: dstBits() }, opnd(ops[1])].filter(Boolean) });
+      push({ op:OP.BFI, dstReg:dstReg(), dstBits:dstBits(), lsb, width, bitfieldKind:base,
+        srcs:[{ t:'reg', reg:dstReg(), bits:dstBits() }, opnd(ops[1])].filter(Boolean) });
     } else {
       push({ op: OP.BFX, dstReg: dstReg(), dstBits: dstBits(), lsb, width,
         signed: base[0] === 's', toward: /iz$/.test(base) ? 'left' : 'right',
@@ -448,7 +469,8 @@ function lift(insn, opts = {}) {
 
 /* 呼び出しで壊れるレジスタ（AAPCS64）。 */
 const CALL_CLOBBERS = ['x0', 'x1', 'x2', 'x3', 'x4', 'x5', 'x6', 'x7', 'x8',
-  'x9', 'x10', 'x11', 'x12', 'x13', 'x14', 'x15', 'x16', 'x17', 'x30', 'nzcv'];
+  'x9', 'x10', 'x11', 'x12', 'x13', 'x14', 'x15', 'x16', 'x17', 'x30', 'nzcv',
+  ...Array.from({length:8}, (_x,i)=>`v${i}`), ...Array.from({length:16}, (_x,i)=>`v${i+16}`)];
 
 /* ── SSA ────────────────────────────────────────────────────── */
 
@@ -676,9 +698,9 @@ export function buildIR(model, opts) {
   const resolve = (src) => {
     if (!src) return null;
     if (src.t === 'imm') {
-      const v = newValue(VK.CONST, { const: src.value, bits: 64 });
-      if (src.float != null) v.float = src.float;
-      return { value: v, shift: src.shift || null, bits: src.bits || 64 };
+      const v = newValue(VK.CONST, { const:src.value, bits:src.bits || 64 });
+      if (src.float != null) { v.float=Number(src.float); v.floatConst=Number(src.float); v.constKind='float'; }
+      return { value:v, shift:src.shift || null, bits:src.bits || 64 };
     }
     if (src.t === 'cond') return { cond: src.cond };
     if (src.t === 'reg') return { value: topOf(src.reg), shift: src.shift || null, bits: src.bits || 64 };
@@ -1146,12 +1168,12 @@ function applyShift(v, shift, bits) {
     case 'lsl': return mask(v << n, bits);
     case 'lsr': return mask(mask(v, bits) >> n, bits);
     case 'asr': return mask(signedOf(mask(v, bits), bits) >> n, bits);
-    case 'uxtb': return mask(v & 0xffn, bits);
-    case 'uxth': return mask(v & 0xffffn, bits);
-    case 'uxtw': return mask(v & 0xffffffffn, bits);
-    case 'sxtb': return mask(BigInt.asIntN(8, v), bits);
-    case 'sxth': return mask(BigInt.asIntN(16, v), bits);
-    case 'sxtw': return mask(BigInt.asIntN(32, v), bits);
+    case 'uxtb': return mask((v & 0xffn) << n, bits);
+    case 'uxth': return mask((v & 0xffffn) << n, bits);
+    case 'uxtw': return mask((v & 0xffffffffn) << n, bits);
+    case 'sxtb': return mask((BigInt.asIntN(8, v)) << n, bits);
+    case 'sxth': return mask((BigInt.asIntN(16, v)) << n, bits);
+    case 'sxtw': return mask((BigInt.asIntN(32, v)) << n, bits);
     default: return null;
   }
 }
@@ -1246,6 +1268,23 @@ function propagateValues(ir) {
         if (folded != null) setConst(inst.dst, inst.extra && inst.extra.negate ? mask(-folded, bits) : folded);
         break;
       }
+      case OP.BFI: {
+        const prior = argConst(inst.args[0], bits), src = argConst(inst.args[1], bits);
+        if (prior != null && src != null) {
+          const lsb = Math.max(0, Math.min(bits - 1, Number(inst.extra?.lsb || 0)));
+          const width = Math.max(1, Math.min(bits - lsb, Number(inst.extra?.width || 16)));
+          const lowMask = (1n << BigInt(width)) - 1n;
+          if (inst.extra?.bitfieldKind === 'bfxil') {
+            const field = (mask(src, bits) >> BigInt(lsb)) & lowMask;
+            setConst(inst.dst, mask((mask(prior, bits) & ~lowMask) | field, bits));
+          } else {
+            const fieldMask = lowMask << BigInt(lsb);
+            const field = (mask(src, bits) & lowMask) << BigInt(lsb);
+            setConst(inst.dst, mask((mask(prior, bits) & ~fieldMask) | field, bits));
+          }
+        }
+        break;
+      }
       case OP.UN: setConst(inst.dst, foldUn(inst.sub, argConst(inst.args[0], bits), bits)); break;
       case OP.MAC: {
         const addend = argConst(inst.args[0], bits);
@@ -1261,8 +1300,9 @@ function propagateValues(ir) {
       case OP.LOAD: {
         const store = inst.reachingStore;
         if (store && store.args[0] && store.args[0].value && store.args[0].value.const != null) {
-          if (!inst.extra || !inst.extra.signed) setConst(inst.dst, store.args[0].value.const);
-          else setConst(inst.dst, mask(signedOf(mask(store.args[0].value.const, (inst.extra.size || 8) * 8), (inst.extra.size || 8) * 8), bits));
+          const loadBits = Math.max(1, Math.min(64, Number(inst.extra?.size || 8) * 8));
+          if (!inst.extra || !inst.extra.signed) setConst(inst.dst, mask(store.args[0].value.const, Math.min(bits, loadBits)));
+          else setConst(inst.dst, mask(signedOf(mask(store.args[0].value.const, loadBits), loadBits), bits));
         }
         break;
       }
@@ -1473,6 +1513,7 @@ export function readModifyWrite(ir) {
       for (const a of def.args) if (a.value) stack.push(a.value);
     }
     if (!load) continue;
+    if (store.memDef && load.memUse !== store.memDef.prev) continue;
     out.push({
       load, store, location: store.loc,
       chain: chain.filter((c) => c !== load && c.op !== OP.STORE),

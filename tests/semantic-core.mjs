@@ -222,7 +222,7 @@ asyncTest('Semantic and runtime evidence keep independent origins without duplic
   eq(new Set(ids).size, ids.length, 'one evidence item per IR instruction origin');
   ok(semantic.length > 0 && semantic.every((x) => groupOf(x) === GROUP.DATAFLOW), 'IR semantic proofs stay in the dataflow group');
 
-  const runtime = runtimeEvidenceItems({ touchedFields: [{ address: 0x6000n, before: 1n, after: 2n }] });
+  const runtime = runtimeEvidenceItems({ ok: true, completed: true, touchedFields: [{ address: 0x6000n, before: 1n, after: 2n }] });
   eq(runtime.length, 1, 'one runtime observation');
   eq(groupOf(runtime[0]), GROUP.RUNTIME, 'runtime stays independent from dataflow');
 });

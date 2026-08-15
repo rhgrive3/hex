@@ -142,10 +142,24 @@ function loadReachedByStore(load, store, ctx) {
     x.op === OP.STORE && x.loc?.key === store.loc?.key && x.row > store.row && x.row < load.row);
 }
 
+function returnRegisterForContext(ctx) {
+  const type=String(ctx.opts?.returnType || ctx.opts?.functionPrototype?.returnType || ctx.opts?.prototype?.returnType || ctx.types?.ret?.type || '').toLowerCase();
+  if (!type || type === 'void') return null;
+  return /^(float|double|__fp16)/.test(type) || /vector|simd/.test(type) ? 'v0' : 'x0';
+}
+function returnValueAt(ret, ctx) {
+  const explicit=valueOf(ret?.args?.[0]);
+  if (explicit) return explicit;
+  const reg=returnRegisterForContext(ctx);
+  if (reg) return reachingRegisterValue(ctx.ir, ret, reg);
+  const candidate=reachingRegisterValue(ctx.ir, ret, 'x0');
+  return candidate?.def && candidate.def.block === ret?.block ? candidate : null;
+}
+
 function feedsReturn(value, ctx) {
   if (!value) return false;
   for (const ret of ctx.returnInsts || []) {
-    const rv = reachingRegisterValue(ctx.ir, ret, 'x0') || valueOf(ret.args?.[0]);
+    const rv = returnValueAt(ret, ctx);
     if (sameValue(value, rv)) return true;
   }
   return false;
@@ -186,6 +200,16 @@ function stringLiteralForValue(value, ctx) {
   // A direct ADR/ADRP value is intrinsically address-like. For arithmetic
   // constants require the exact row+addressRef proof above.
   return value.def?.op === OP.ADDR ? stringLiteralAt(value.const, ctx) : null;
+}
+
+function formatFloatConst(v, bits = 64) {
+  const n=Number(v);
+  if (Number.isNaN(n)) return 'NAN';
+  if (n === Infinity) return 'INFINITY';
+  if (n === -Infinity) return '-INFINITY';
+  let text=Object.is(n,-0) ? '-0.0' : String(n);
+  if (!/[.eE]/.test(text)) text += '.0';
+  return Number(bits || 64) <= 32 ? text + 'f' : text;
 }
 
 function formatConst(v, bits = 64) {
@@ -469,11 +493,14 @@ export function renderValue(value, ctx, flags = {}) {
   if (ctx.exprActive.has(value.id) || ctx.exprNodes++ > MAX_EXPR_NODES) return value.reg ? safeIdent(value.reg) : `v${value.id}`;
   ctx.exprActive.add(value.id);
   let out = null;
-  if (value.const != null && value.def?.op !== OP.ADDR) out = stringLiteralForValue(value, ctx) || formatConst(value.const, value.bits);
+  if (value.constKind === 'float' || value.floatConst != null || (value.float != null && value.const == null)) out = formatFloatConst(value.floatConst ?? value.float, value.bits);
+  if (!out && value.const != null && value.def?.op !== OP.ADDR) out = stringLiteralForValue(value, ctx) || formatConst(value.const, value.bits);
   if (!out && value.kind === VK.ARG) out = argName(value, ctx);
   const d = value.def;
   if (!out && d) {
-    if (d.op === OP.CONST) out = formatConst(value.const ?? d.extra?.value ?? 0n, value.bits);
+    if (d.op === OP.CONST) out = (value.constKind === 'float' || value.floatConst != null || value.float != null)
+      ? formatFloatConst(value.floatConst ?? value.float, value.bits)
+      : formatConst(value.const ?? d.extra?.value ?? 0n, value.bits);
     else if (d.op === OP.MOV) out = renderValue(valueOf(d.args?.[0]), ctx);
     else if (d.op === OP.BIN) out = binText(d, ctx);
     else if (d.op === OP.UN) out = unaryText(d, ctx);
@@ -544,13 +571,14 @@ function materialization(ctx) {
 }
 
 function rmwOperand(rmw, ctx) {
-  const loadValue = rmw.load?.dst;
-  for (const inst of rmw.chain || []) {
-    if (inst.op !== OP.BIN || !['add', 'sub', 'mul', 'sdiv', 'udiv'].includes(inst.sub)) continue;
-    const a = valueOf(inst.args?.[0]), b = valueOf(inst.args?.[1]);
-    if (sameValue(a, loadValue)) return { op: inst.sub, other: b, reversed: false };
-    if (sameValue(b, loadValue)) return { op: inst.sub, other: a, reversed: true };
-  }
+  void ctx;
+  const loadValue=rmw.load?.dst;
+  const written=valueOf(rmw.store?.args?.[0]);
+  const inst=written?.def;
+  if (!inst || inst.op !== OP.BIN || !['add','sub','mul','sdiv','udiv'].includes(inst.sub)) return null;
+  const a=valueOf(inst.args?.[0]), b=valueOf(inst.args?.[1]);
+  if (sameValue(a,loadValue)) return { op:inst.sub, other:b, reversed:false };
+  if (sameValue(b,loadValue)) return { op:inst.sub, other:a, reversed:true };
   return null;
 }
 
@@ -677,7 +705,7 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null) {
     const term2 = emitBlockStatements(block, out, ctx, indent);
     if (!term2) { bi = block.succ.length === 1 ? block.succ[0] : null; continue; }
     if (term2.op === OP.RET) {
-      const rv = reachingRegisterValue(ctx.ir, term2, 'x0') || valueOf(term2.args?.[0]);
+      const rv = returnValueAt(term2, ctx);
       const text = rv && ((rv.uses || []).length || rv.const != null || rv.def) ? `return ${renderValue(rv, ctx)};` : 'return;';
       out.push(line('stmt', indent, text, term2.row, term2.address, { source: mergeSource(dependencySource(rv, ctx), sourceForInst(term2, 'return')) })); ctx.evidence.push(evidenceOf(term2, 'return')); return;
     }
