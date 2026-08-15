@@ -32,6 +32,7 @@ export const BASIC_TYPES = [
   { name: 'uint64',  size: 8, signed: false, ja: '8 バイトの整数（正のみ）' },
   { name: 'float',   size: 4, float: true,   ja: '4 バイトの小数' },
   { name: 'double',  size: 8, float: true,   ja: '8 バイトの小数' },
+  { name: 'vector128', size: 16, vector: true, ja: '16 バイトの SIMD / ベクトル値' },
   { name: 'bool',    size: 1, ja: '真偽（0 か 1）' },
   { name: 'char *',  size: 8, pointer: true, ja: '文字列の先頭を指す矢印' },
   { name: 'void *',  size: 8, pointer: true, ja: '何かを指す矢印' },
@@ -58,8 +59,9 @@ export function typeJa(name) {
 }
 
 /** 読み書きの幅と符号から、いちばん素直な型を選ぶ。 */
-export function typeFromAccess(bytes, { signed = false, float = false, pointer = false } = {}) {
+export function typeFromAccess(bytes, { signed = false, float = false, vector = false, pointer = false } = {}) {
   if (pointer) return 'void *';
+  if (vector || (float && bytes === 16)) return 'vector128';
   if (float) return bytes === 4 ? 'float' : 'double';
   const n = bytes || 8;
   if (n === 1) return signed ? 'int8' : 'uint8';
@@ -89,7 +91,7 @@ export function widthOfRegisterName(text) {
   if (/^h\d+$/.test(s)) return { bytes: 2 };
   if (/^s\d+$/.test(s)) return { bytes: 4, float: true };
   if (/^d\d+$/.test(s)) return { bytes: 8, float: true };
-  if (/^q\d+$|^v\d+/.test(s)) return { bytes: 16, float: true };
+  if (/^q\d+$|^v\d+(?:\.[0-9]+[bhsd])?$/.test(s)) return { bytes: 16, vector: true };
   return null;
 }
 
@@ -100,7 +102,7 @@ export function widthOfRegisterName(text) {
  * 「8 バイトで読んで、それをベースにまた読んでいる」が揃えば、
  * 単なる 64 ビット整数ではなくポインタだと言い切れる。
  */
-function newEvidence() { return { bytes: new Map(), signed: 0, unsigned: 0, float: 0, pointer: 0, text: 0, objc: 0, notes: [] }; }
+function newEvidence() { return { bytes: new Map(), signed: 0, unsigned: 0, float: 0, vector: 0, pointer: 0, text: 0, objc: 0, notes: [] }; }
 
 function noteSize(evi, bytes) {
   if (!bytes) return;
@@ -113,6 +115,7 @@ function decide(evi) {
   if (evi.text >= 1) return { type: 'char *', conf: 0.9 };
   if (evi.objc >= 1) return { type: 'id', conf: 0.85 };
   if (evi.pointer >= 1) return { type: 'void *', conf: bytes === 8 ? 0.8 : 0.6 };
+  if (evi.vector >= 1) return { type: 'vector128', conf: bytes === 16 ? 0.88 : 0.7 };
   if (evi.float >= 1) return { type: bytes === 4 ? 'float' : 'double', conf: 0.8 };
   if (!bytes) return { type: 'unknown', conf: 0.2 };
   return { type: typeFromAccess(bytes, { signed: evi.signed > evi.unsigned }), conf: 0.65 };
@@ -146,18 +149,39 @@ export function inferTypes(model) {
   // 引数レジスタの「同じ値のまま移された先」を追う（x0 → x19 が典型）
   const alias = new Map();          // reg -> 引数の reg
   for (const r of argRegs) alias.set(r, r);
+  const canonicalGpr = (value) => {
+    const text = typeof value === 'string' ? value : value && value.text;
+    const m = /^[wx](\d+)$/.exec(String(text || '').toLowerCase());
+    return m ? 'x' + Number(m[1]) : null;
+  };
 
   for (const insn of insns) {
     const base = (insn.mnemonic || '').toLowerCase();
+    let copyDest = null, copyOwner = null;
 
-    /* mov でそのまま移されたら、引数の身元を引き継ぐ */
-    if ((base === 'mov' || base === 'fmov') && insn.ops.length >= 2 &&
+    /* Proven GP-register MOV is the only operation that preserves identity. */
+    if (base === 'mov' && insn.ops.length >= 2 &&
         insn.ops[0] && insn.ops[0].k === 'reg' && insn.ops[1] && insn.ops[1].k === 'reg') {
-      const from = 'x' + insn.ops[1].num;
-      const to = 'x' + insn.ops[0].num;
-      if (alias.has(from)) alias.set(to, alias.get(from));
-      else alias.delete(to);
+      const from = canonicalGpr(insn.ops[1]);
+      copyDest = canonicalGpr(insn.ops[0]);
+      copyOwner = from ? (alias.get(from) || null) : null;
     }
+
+    const finishAliases = () => {
+      for (const written of insn.writes || []) {
+        const reg = canonicalGpr(written);
+        if (reg) alias.delete(reg);
+      }
+      if (insn.isCall) {
+        // AAPCS64: x0-x18 are caller-saved. x0 in particular becomes a return
+        // value and must never retain the entry-argument identity.
+        for (let i = 0; i <= 18; i++) alias.delete('x' + i);
+      }
+      if (copyDest) {
+        if (copyOwner) alias.set(copyDest, copyOwner);
+        else alias.delete(copyDest);
+      }
+    };
 
     /* メモリの読み書き。幅と符号がここで分かる */
     if (insn.memory) {
@@ -171,7 +195,8 @@ export function inferTypes(model) {
         const e = localEvi(slot);
         noteSize(e, bytes);
         if (shape.signed) e.signed++; else e.unsigned++;
-        if (wide && wide.float) e.float++;
+        if (wide && wide.vector) e.vector++;
+        else if (wide && wide.float) e.float++;
         e.notes.push({ row: insn.row, why: (m.kind === 'load' ? '読み出し' : '書き込み') + ' ' + bytes + ' バイト' });
       } else if (m.base) {
         // ベースに使われている = そのレジスタはポインタ
@@ -190,6 +215,7 @@ export function inferTypes(model) {
           noteSize(e, bytes);
         }
       }
+      finishAliases();
       continue;
     }
 
@@ -222,6 +248,8 @@ export function inferTypes(model) {
         }
       }
     }
+
+    finishAliases();
   }
 
   /* 戻り値: 最後に x0 / w0 / d0 に何を入れて帰るか */
@@ -233,7 +261,11 @@ export function inferTypes(model) {
     else if (insn.memory) noteSize(retEvi, insn.memory.size || 8);
     else if (insn.ops[0] && insn.ops[0].text) {
       const w = widthOfRegisterName(insn.ops[0].text);
-      if (w) { noteSize(retEvi, w.bytes); if (w.float) retEvi.float++; }
+      if (w) {
+        noteSize(retEvi, w.bytes);
+        if (w.vector) retEvi.vector++;
+        else if (w.float) retEvi.float++;
+      }
     } else noteSize(retEvi, 8);
     if (insn.isCall) retEvi.pointer++;
     retEvi.notes.push({ row: insn.row, why: '帰る直前に x0 を作っている行' });
