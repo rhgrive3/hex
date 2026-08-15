@@ -64,12 +64,17 @@ function parseThin(bytes, opts) {
   if (headerSize + sizeofcmds > r.length) throw new Error('Mach-O load commands exceed file');
   const commandEnd = headerSize + sizeofcmds;
 
+  const arch = cpuArchName(cpu, subtype);
   const image = new BinaryImage(bytes, {
-    format: 'macho', arch: cpuName(cpu), bits,
+    format: 'macho', arch, bits,
     endian: kind.littleEndian ? 'little' : 'big',
     platform: 'apple', imageBase: 0n,
     fileOffset: opts.containerOffset || 0n,
-    metadata: { cpu, subtype, filetype, flags, ncmds, sizeofcmds },
+    metadata: {
+      cpu, subtype, cpuName: cpuName(cpu), subtypeBase: subtypeBase(subtype),
+      subtypeName: arch === 'arm64e' ? 'arm64e' : String(subtypeBase(subtype)),
+      filetype, flags, ncmds, sizeofcmds,
+    },
   });
 
   const commands = [];
@@ -348,7 +353,8 @@ function cpuName(cpu) {
   return ({ 7: 'x86', 12: 'arm', 18: 'ppc', 0x01000007: 'x86_64', 0x0100000c: 'arm64', 0x0200000c: 'arm64_32' })[u] || `cpu-${u}`;
 }
 function subtypeBase(subtype) { return (subtype >>> 0) & 0x00ffffff; }
-function sliceArchName(slice) { return cpuName(slice.cpu) === 'arm64' && subtypeBase(slice.subtype) === 2 ? 'arm64e' : cpuName(slice.cpu); }
+function cpuArchName(cpu, subtype) { return cpuName(cpu) === 'arm64' && subtypeBase(subtype) === 2 ? 'arm64e' : cpuName(cpu); }
+function sliceArchName(slice) { return cpuArchName(slice.cpu, slice.subtype); }
 function platformName(p) { return ({ 1: 'macOS', 2: 'iOS', 3: 'tvOS', 4: 'watchOS', 6: 'macCatalyst', 7: 'iOS-simulator', 8: 'tvOS-simulator', 9: 'watchOS-simulator', 10: 'driverKit', 11: 'visionOS', 12: 'visionOS-simulator' })[p] || `apple-platform-${p}`; }
 function version32(v) { return `${(v >>> 16) & 0xffff}.${(v >>> 8) & 0xff}.${v & 0xff}`; }
 
