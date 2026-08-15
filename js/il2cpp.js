@@ -3,6 +3,79 @@ const SANITY = 0xFAB11BAF;
 const PAIR = { stringLiteral:0,stringLiteralData:1,string:2,events:3,properties:4,methods:5,parameterDefaultValues:6,fieldDefaultValues:7,fieldAndParameterDefaultValueData:8,fieldMarshaledSizes:9,parameters:10,fields:11,genericParameters:12,genericParameterConstraints:13,genericContainers:14,nestedTypes:15,interfaces:16,vtableMethods:17,interfaceOffsets:18,typeDefinitions:19,images:20,assemblies:21 };
 const REQUIRED_HEADER_BYTES = 8 + (Math.max(...Object.values(PAIR)) + 1) * 8;
 
+export const MAX_IL2CPP_METADATA_BYTES = 64 * 1024 * 1024;
+const DEFAULT_METADATA_BUDGET = Object.freeze({
+  maxInputBytes: MAX_IL2CPP_METADATA_BYTES,
+  maxOperations: 3_000_000,
+  maxOutputObjects: 300_000,
+  maxEstimatedHeapBytes: 96 * 1024 * 1024,
+  wallMs: 2500,
+});
+const DEFAULT_BINDING_BUDGET = Object.freeze({
+  maxScanBytes: 32 * 1024 * 1024,
+  maxOperations: 3_000_000,
+  maxCandidates: 5000,
+  maxExtraReads: 12_000,
+  maxExtraReadBytes: 64 * 1024 * 1024,
+  chunkBytes: 1024 * 1024,
+  wallMs: 3500,
+});
+
+function budgetError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+function nowMs() { return typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now(); }
+function assertMetadataPreflight(buffer, options = {}) {
+  const bytes = buffer?.byteLength ?? buffer?.length ?? 0;
+  const max = options.budget?.maxInputBytes ?? options.metadataBudget?.maxInputBytes ?? MAX_IL2CPP_METADATA_BYTES;
+  if (options.signal?.aborted) throw budgetError('ABORT_ERR', 'IL2CPP metadata parsing was cancelled.');
+  if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > max) throw budgetError('IL2CPP_METADATA_BUDGET', `global-metadata.dat is too large (${bytes} bytes).`);
+  return bytes;
+}
+function metadataBudget(options = {}, inputBytes = 0) {
+  const limit = { ...DEFAULT_METADATA_BUDGET, ...(options.budget || options.metadataBudget || {}) };
+  const started = nowMs();
+  let operations = 0, objects = 0, heap = 0;
+  const check = (ops = 0, addObjects = 0, addHeap = 0) => {
+    operations += ops; objects += addObjects; heap += addHeap;
+    if (options.signal?.aborted) throw budgetError('ABORT_ERR', 'IL2CPP metadata parsing was cancelled.');
+    if (inputBytes > limit.maxInputBytes) throw budgetError('IL2CPP_METADATA_BUDGET', `global-metadata.dat is too large (${inputBytes} bytes).`);
+    if (operations > limit.maxOperations || objects > limit.maxOutputObjects || heap > limit.maxEstimatedHeapBytes || nowMs() - started > limit.wallMs) {
+      throw budgetError('IL2CPP_METADATA_BUDGET', 'IL2CPP metadata parsing exceeded its safety budget.');
+    }
+  };
+  check();
+  return { limit, check, snapshot:()=>({ operations, objects, estimatedHeapBytes:heap, elapsedMs:nowMs()-started }) };
+}
+function bindingBudget(options = {}) {
+  const limit = { ...DEFAULT_BINDING_BUDGET, ...(options.budget || options.bindingBudget || {}) };
+  if (Number.isFinite(options.scanLimit)) limit.maxScanBytes = Math.min(limit.maxScanBytes, Math.max(0, Number(options.scanLimit)));
+  const started = nowMs();
+  let operations=0, scanBytes=0, candidates=0, extraReads=0, extraReadBytes=0;
+  const check = (ops=0) => {
+    operations += ops;
+    if (options.signal?.aborted) throw budgetError('ABORT_ERR','IL2CPP method binding was cancelled.');
+    if (operations > limit.maxOperations || nowMs()-started > limit.wallMs) throw budgetError('IL2CPP_BINDING_BUDGET','IL2CPP method binding exceeded its safety budget.');
+  };
+  const consumeScan = (bytes) => {
+    check();
+    if (scanBytes + bytes > limit.maxScanBytes) throw budgetError('IL2CPP_BINDING_BUDGET','IL2CPP scan-byte budget exhausted.');
+    scanBytes += bytes;
+  };
+  const consumeCandidate = () => {
+    check(); candidates++;
+    if (candidates > limit.maxCandidates) throw budgetError('IL2CPP_BINDING_BUDGET','IL2CPP candidate budget exhausted.');
+  };
+  const consumeExtraRead = (bytes) => {
+    check(); extraReads++; extraReadBytes += bytes;
+    if (extraReads > limit.maxExtraReads || extraReadBytes > limit.maxExtraReadBytes) throw budgetError('IL2CPP_BINDING_BUDGET','IL2CPP extra-read budget exhausted.');
+  };
+  return { limit, check, consumeScan, consumeCandidate, consumeExtraRead, snapshot:()=>({ operations,scanBytes,candidates,extraReads,extraReadBytes,elapsedMs:nowMs()-started }) };
+}
+function cooperativeYield() { return new Promise((resolve)=>setTimeout(resolve,0)); }
+
 function utf8(bytes) { try { return new TextDecoder('utf-8', { fatal: true }).decode(bytes); } catch { return null; } }
 function layoutCandidates(version) {
   if (version >= 29) return [{type:92,method:40,label:'29+'}];
@@ -50,14 +123,45 @@ function makeStringAt(ctx){
   };
 }
 
-function parseLayout(ctx,layout){
-  const {u8,dv,version}=ctx,stringAt=makeStringAt(ctx),warnings=[];
+function recordCount(pair, size) {
+  if (!pair || size < 8 || pair.size % size !== 0) return null;
+  return Math.floor(pair.size / size);
+}
+function sampleIndices(count, max = 256) {
+  if (count <= max) return Array.from({length:count},(_,i)=>i);
+  const out=[]; for(let i=0;i<max;i++) out.push(Math.floor(i*(count-1)/(max-1)));
+  return [...new Set(out)];
+}
+function scoreLayout(ctx, layout, budget) {
+  const typeDefs=ctx.pair('typeDefinitions'), methodDefs=ctx.pair('methods');
+  const typeCount=recordCount(typeDefs,layout.type), methodCount=recordCount(methodDefs,layout.method);
+  if(typeCount==null||methodCount==null||typeCount>200000||methodCount>500000)return null;
+  const stringAt=makeStringAt(ctx), tokenAt=ctx.version>=27?24:40;
+  let validTypeNames=0, validOwners=0, validMethodNames=0, validTokens=0;
+  const ti=sampleIndices(typeCount), mi=sampleIndices(methodCount);
+  for(const i of ti){ budget.check(1); const o=typeDefs.offset+i*layout.type; if(o+8>typeDefs.end)return null; if(stringAt(ctx.dv.getInt32(o,true)))validTypeNames++; }
+  for(const i of mi){
+    budget.check(1); const o=methodDefs.offset+i*layout.method; if(o+8>methodDefs.end)return null;
+    const owner=ctx.dv.getInt32(o+4,true), name=stringAt(ctx.dv.getInt32(o,true));
+    if(owner>=0&&owner<typeCount)validOwners++; if(!name)continue; validMethodNames++;
+    const token=o+tokenAt+4<=o+layout.method?ctx.dv.getUint32(o+tokenAt,true):0;
+    if((token>>>24)===0x06||token===0)validTokens++;
+  }
+  const score=(validTypeNames/Math.max(1,ti.length))*4+(validMethodNames/Math.max(1,mi.length))*3+(validOwners/Math.max(1,mi.length))*5+(validTokens/Math.max(1,validMethodNames))*2;
+  return { layout, score, typeCount, methodCount };
+}
+function parseLayout(ctx,layout,budget){
+  const {dv,version}=ctx,stringAt=makeStringAt(ctx),warnings=[];
   const typeDefs=ctx.pair('typeDefinitions'),methodDefs=ctx.pair('methods');
-  if(layout.type<8||layout.method<8||typeDefs.size%layout.type!==0||methodDefs.size%layout.method!==0)return null;
-  const typeCount=Math.floor(typeDefs.size/layout.type),methodCount=Math.floor(methodDefs.size/layout.method);
-  if(typeCount>200000||methodCount>500000)return null;
+  const typeCount=recordCount(typeDefs,layout.type),methodCount=recordCount(methodDefs,layout.method);
+  if(typeCount==null||methodCount==null||typeCount>200000||methodCount>500000)return null;
+  const literalCount=Math.floor((ctx.pair('stringLiteral')?.size||0)/8);
+  const imagePair=ctx.pair('images');
+  const estimatedObjects=typeCount+methodCount+Math.min(literalCount,200000)+Math.min(Math.floor((imagePair?.size||0)/24),10000);
+  budget.check(0,estimatedObjects,estimatedObjects*192);
   const classes=[];let validTypeNames=0;
   for(let i=0;i<typeCount;i++){
+    if((i&1023)===0)budget.check(1024);
     const o=typeDefs.offset+i*layout.type;if(o<typeDefs.offset||o+8>typeDefs.end)return null;
     const name=stringAt(dv.getInt32(o,true)),ns=stringAt(dv.getInt32(o+4,true));
     if(!name)continue;validTypeNames++;
@@ -66,28 +170,30 @@ function parseLayout(ctx,layout){
   const methods=[];let validOwners=0,validTokens=0,validMethodNames=0;
   const tokenAt=version>=27?24:40;
   for(let i=0;i<methodCount;i++){
+    if((i&1023)===0)budget.check(1024);
     const o=methodDefs.offset+i*layout.method;if(o<methodDefs.offset||o+8>methodDefs.end)return null;
     const name=stringAt(dv.getInt32(o,true)),owner=dv.getInt32(o+4,true);
-    if(owner<0||owner>=typeCount)continue;
-    validOwners++;
+    if(owner<0||owner>=typeCount)continue;validOwners++;
     if(!name)continue;validMethodNames++;
     const token=o+tokenAt+4<=o+layout.method?dv.getUint32(o+tokenAt,true):0;
     if((token>>>24)===0x06||token===0)validTokens++;
     methods.push({index:i,name,classIndex:owner,token});
   }
   const byIndex=new Map(classes.map((c)=>[c.index,c]));
-  for(const m of methods){const c=byIndex.get(m.classIndex);m.className=c?c.full:null;m.full=(c?c.full+'::':'')+m.name;}
-  const images=parseImages(ctx,ctx.pair('images'),stringAt,typeCount);
-  const literals=parseLiterals(ctx);
+  for(const m of methods){budget.check(1);const c=byIndex.get(m.classIndex);m.className=c?c.full:null;m.full=(c?c.full+'::':'')+m.name;}
+  const images=parseImages(ctx,ctx.pair('images'),stringAt,typeCount,budget);
+  const literals=parseLiterals(ctx,budget);
   const score=(validTypeNames/Math.max(1,typeCount))*4+(validMethodNames/Math.max(1,methodCount))*3+(validOwners/Math.max(1,methodCount))*5+(validTokens/Math.max(1,validMethodNames))*2+(images.length?1:0);
   return{version,classes,methods,literals,images,warnings,typeSize:layout.type,methodSize:layout.method,layout:layout.label,_layoutScore:score,_counts:{typeCount,methodCount}};
 }
 
-function parseLiterals(ctx){
+function parseLiterals(ctx,budget){
   const index=ctx.pair('stringLiteral'),data=ctx.pair('stringLiteralData'),out=[];
   if(!index.size||!data.size||index.size%8!==0)return out;
   const count=Math.floor(index.size/8);
-  for(let i=0;i<count&&i<200000;i++){
+  if(count>200000)throw budgetError('IL2CPP_METADATA_BUDGET','Too many IL2CPP string literals.');
+  for(let i=0;i<count;i++){
+    if((i&1023)===0)budget.check(1024);
     const o=index.offset+i*8;if(o+8>index.end)break;
     const len=ctx.dv.getInt32(o,true),off=ctx.dv.getInt32(o+4,true);
     if(len<0||len>1<<16||off<0||off+len>data.size)continue;
@@ -95,11 +201,14 @@ function parseLiterals(ctx){
   }return out;
 }
 
-function parseImages(ctx,table,stringAt,typeCount){
+function parseImages(ctx,table,stringAt,typeCount,budget){
   if(!table||table.size<=0)return[];let best={score:-1,out:[]};
   for(const size of [40,32,24]){
-    if(table.size%size!==0)continue;const out=[];let validRanges=0,validNames=0;const count=Math.floor(table.size/size);
-    for(let i=0;i<count&&i<10000;i++){
+    if(table.size%size!==0)continue;const count=Math.floor(table.size/size);
+    if(count>10000)continue;
+    const out=[];let validRanges=0,validNames=0;
+    for(let i=0;i<count;i++){
+      if((i&511)===0)budget.check(512);
       const o=table.offset+i*size;if(o<0||o+16>table.end)break;
       const name=stringAt(ctx.dv.getInt32(o,true)),typeStart=ctx.dv.getInt32(o+8,true),typeCountForImage=ctx.dv.getUint32(o+12,true);
       if(typeStart<0||typeCountForImage>2_000_000||typeStart>typeCount||typeStart+typeCountForImage>typeCount)continue;
@@ -109,164 +218,231 @@ function parseImages(ctx,table,stringAt,typeCount){
   }return best.out;
 }
 
-function chooseLayout(ctx,candidates){let best=null;for(const layout of candidates){let res;try{res=parseLayout(ctx,layout);}catch{continue;}if(!res)continue;if(!best||res._layoutScore>best._layoutScore)best=res;}return best;}
+function chooseLayout(ctx,candidates,budget){
+  const scored=[];
+  for(const layout of candidates){let item;try{item=scoreLayout(ctx,layout,budget);}catch(error){throw error;}if(item)scored.push(item);}
+  scored.sort((a,b)=>b.score-a.score || a.layout.type-b.layout.type || a.layout.method-b.layout.method);
+  const best=scored[0],second=scored[1]; if(!best)return null;
+  const expected=layoutCandidates(ctx.version)[0];
+  // Exact probe ties are unsafe unless the version's canonical ABI layout is one
+  // of the tied records. This keeps known versions deterministic while refusing
+  // malformed cross-layout ambiguity.
+  if(second && Math.abs(best.score-second.score)<1e-9) {
+    const canonical=scored.find((x)=>x.layout.type===expected.type&&x.layout.method===expected.method&&Math.abs(x.score-best.score)<1e-9);
+    if(canonical) return parseLayout(ctx,canonical.layout,budget);
+    throw budgetError('IL2CPP_METADATA_AMBIGUOUS','metadata record layout is ambiguous.');
+  }
+  return parseLayout(ctx,best.layout,budget);
+}
 
-export function parseMetadata(buffer){
-  const ctx=headerContext(buffer),warnings=[];
-  if(ctx.version<16||ctx.version>31)warnings.push('知らない版です（version '+ctx.version+'）。読める範囲だけ出します。');
-  const candidates=layoutCandidates(ctx.version),res=chooseLayout(ctx,candidates);
+function parseMetadataCommon(buffer,candidates,options={}){
+  const byteLength=buffer?.byteLength ?? buffer?.length ?? 0;
+  const budget=metadataBudget(options,byteLength);
+  const ctx=headerContext(buffer),res=chooseLayout(ctx,candidates,budget);
   if(!res)throw new Error('metadata record layoutを安全に判定できませんでした。');
-  res.warnings.unshift(...warnings);delete res._layoutScore;delete res._counts;
-  if(candidates.length>1)res.warnings.push(`metadata v${ctx.version} のsub-layoutを整合性検証して ${res.layout} と判定しました。`);
+  res.parseBudget=budget.snapshot();
+  delete res._layoutScore;delete res._counts;
+  return {ctx,res};
+}
+
+export function parseMetadata(buffer,options={}){
+  assertMetadataPreflight(buffer,options);
+  const ctx0=headerContext(buffer), warnings=[];
+  if(ctx0.version<16||ctx0.version>31)warnings.push('知らない版です（version '+ctx0.version+'）。読める範囲だけ出します。');
+  const {ctx,res}=parseMetadataCommon(buffer,layoutCandidates(ctx0.version),options);
+  res.warnings.unshift(...warnings);
+  if(layoutCandidates(ctx.version).length>1)res.warnings.push(`metadata v${ctx.version} のsub-layoutを整合性検証して ${res.layout} と判定しました。`);
   if(!res.classes.length)res.warnings.push('クラスの一覧を取り出せませんでした（版が違う可能性があります）。');
   if(!res.methods.length)res.warnings.push('メソッドの一覧を取り出せませんでした。');
   return res;
 }
 
-export function parseMetadataAuto(buffer){
-  const ctx=headerContext(buffer);const candidates=[...layoutCandidates(ctx.version),{type:92,method:40,label:'probe-92/40'},{type:96,method:52,label:'probe-96/52'},{type:100,method:56,label:'probe-100/56'},{type:88,method:40,label:'probe-88/40'}];
-  const unique=[...new Map(candidates.map((x)=>[`${x.type}/${x.method}`,x])).values()],res=chooseLayout(ctx,unique);if(!res)throw new Error('読み取れませんでした。');
-  const expected=layoutCandidates(ctx.version)[0];if(res.typeSize!==expected.type||res.methodSize!==expected.method)res.warnings.push(`版の既定形ではなく、owner/token/range整合性が最も高い形（${res.typeSize} / ${res.methodSize} バイト）を採用しました。`);
-  delete res._layoutScore;delete res._counts;return res;
+export function parseMetadataAuto(buffer,options={}){
+  assertMetadataPreflight(buffer,options);
+  const ctx=headerContext(buffer);
+  const candidates=[...layoutCandidates(ctx.version),{type:92,method:40,label:'probe-92/40'},{type:96,method:52,label:'probe-96/52'},{type:100,method:56,label:'probe-100/56'},{type:88,method:40,label:'probe-88/40'}];
+  const unique=[...new Map(candidates.map((x)=>[`${x.type}/${x.method}`,x])).values()];
+  const {res}=parseMetadataCommon(buffer,unique,options);
+  const expected=layoutCandidates(ctx.version)[0];
+  if(res.typeSize!==expected.type||res.methodSize!==expected.method)res.warnings.push(`版の既定形ではなく、owner/token/range整合性が最も高い形（${res.typeSize} / ${res.methodSize} バイト）を採用しました。`);
+  return res;
 }
 
-function parseMetadataWith(buffer,typeSize,methodSize){const ctx=headerContext(buffer);const res=parseLayout(ctx,{type:Number(typeSize),method:Number(methodSize),label:'explicit'});if(!res)throw new Error('指定されたmetadata layoutは整合しません。');delete res._layoutScore;delete res._counts;return res;}
+function parseMetadataWith(buffer,typeSize,methodSize,options={}){
+  const {res}=parseMetadataCommon(buffer,[{type:Number(typeSize),method:Number(methodSize),label:'explicit'}],options); return res;
+}
 
 export function looksLikeUnity(strings,slice){const hints=['il2cpp','UnityEngine','global-metadata','Il2CppCodeRegistration','mono_'];let hit=0;for(const s of(strings||[]).slice(0,200000)){for(const h of hints)if(s.text&&s.text.includes(h)){hit++;break;}if(hit>=3)return true;}const dylibs=slice&&slice.info?slice.info.dylibs||[]:[];return dylibs.some((d)=>/UnityFramework|libil2cpp/i.test(d));}
 
+function bindingFail(meta,budget,reason,message,extra={}) {
+  if(message) meta.warnings.push(message);
+  meta.methodBinding={kind:'unresolved',bound:0,verified:false,partial:budget.snapshot().scanBytes>0,truncated:true,reason,budget:budget.snapshot(),...extra};
+  return {bound:0,candidate:null,reason,partial:true,truncated:true,...extra};
+}
+async function readExtra(ctx,addr,len) {
+  ctx.budget.consumeExtraRead(len);
+  const bytes=await Promise.resolve(ctx.read(addr,len)).catch(()=>null);
+  if(!bytes || bytes.length<len) return null;
+  return bytes;
+}
+async function scanDataChunks(ctx,minimum,visit) {
+  const overlap=Math.max(48,minimum);
+  let complete=true;
+  for(const r of ctx.data){
+    let offset=0n;
+    while(offset<r.size){
+      ctx.budget.check(1);
+      const remaining=r.size-offset;
+      const left=ctx.budget.limit.maxScanBytes-ctx.budget.snapshot().scanBytes;
+      if(left<=0){complete=false;return complete;}
+      const want=Math.min(Number(remaining>BigInt(Number.MAX_SAFE_INTEGER)?BigInt(Number.MAX_SAFE_INTEGER):remaining),ctx.budget.limit.chunkBytes,left);
+      if(want<minimum){complete=false;return complete;}
+      ctx.budget.consumeScan(want);
+      const bytes=await Promise.resolve(ctx.read(r.vmAddr+offset,want)).catch(()=>null);
+      if(!bytes || bytes.length<minimum){complete=false;break;}
+      await visit(r,offset,bytes);
+      if(offset+BigInt(want)>=r.size)break;
+      const advance=Math.max(8,want-overlap);
+      offset+=BigInt(advance-(advance%8));
+      await cooperativeYield();
+    }
+  }
+  return complete;
+}
+async function pointerValues(ctx,table,count,indices) {
+  const groups=new Map();
+  for(const index of indices){if(index<0||index>=count)continue;const block=Math.floor(index/8192);if(!groups.has(block))groups.set(block,[]);groups.get(block).push(index);}
+  const out=new Map();
+  for(const [block,list] of groups){
+    ctx.budget.check(list.length);
+    const first=block*8192, entries=Math.min(8192,count-first), bytes=await readExtra(ctx,table+BigInt(first*8),entries*8);
+    if(!bytes)return null;
+    const dv=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);
+    for(const index of list)out.set(index,dv.getBigUint64((index-first)*8,true));
+  }
+  return out;
+}
+
 export async function bindMethodAddresses(meta, opts) {
-  const o = opts || {};
-  const regions = o.regions || [];
-  const read = o.read;
-  if (!meta || !meta.methods || !meta.methods.length || typeof read !== 'function') return { bound: 0, candidate: null };
+  const o=opts||{}, regions=o.regions||[], read=o.read;
+  if(!meta||!meta.methods||!meta.methods.length||typeof read!=='function')return{bound:0,candidate:null};
   meta.warnings ||= [];
-  const exec = regions.filter((r) => r.exec && r.size > 0n);
-  const data = regions.filter((r) => !r.exec && !r.zerofill && r.size >= 16n && /__(const|data|data_const|rodata)/.test(r.section || ''));
-  const inExec = (raw) => { let p = BigInt.asUintN(64, raw); p &= 0x00ffffffffffffffn; return exec.some((r) => p >= r.vmAddr && p < r.vmAddr + r.size) ? p : null; };
-  const containing = (addr, bytes) => regions.find((r) => addr >= r.vmAddr && addr + BigInt(bytes) <= r.vmAddr + r.size);
-  const scanLimit = o.scanLimit || 64 * 1024 * 1024;
-  const context = { regions, data, exec, read, containing, inExec, scanLimit };
+  const budget=bindingBudget(o);
+  const exec=regions.filter((r)=>r.exec&&r.size>0n);
+  const data=regions.filter((r)=>!r.exec&&!r.zerofill&&r.size>=16n&&/__(const|data|data_const|rodata)/.test(r.section||''));
+  const inExec=(raw)=>{let p=BigInt.asUintN(64,raw);p&=0x00ffffffffffffffn;return exec.some((r)=>p>=r.vmAddr&&p<r.vmAddr+r.size)?p:null;};
+  const containing=(addr,bytes)=>regions.find((r)=>addr>=r.vmAddr&&addr+BigInt(bytes)<=r.vmAddr+r.size);
+  const context={regions,data,exec,read,containing,inExec,budget};
+  try{
+    const modern=await bindCodeGenModules(meta,context,o);
+    if(modern.bound)return{...modern,preferred:'codegen-modules'};
+    if(modern.blocked)return modern;
 
-  // Codegen modules carry image-name and metadata-token/RID evidence, so they
-  // are strictly stronger than a shape-only global method-pointer table. Try
-  // this path first for every metadata version that exposes image records.
-  const modern = await bindCodeGenModules(meta, context);
-  if (modern.bound) {
-    meta.methodBinding = { ...(meta.methodBinding || {}), verified: true, evidence: ['image-name','token-rid','executable-pointer'] };
-    return { ...modern, preferred: 'codegen-modules' };
-  }
-
-  // A legacy table maps metadata method indexes directly, so the candidate
-  // must cover the complete method-definition slot range. meta.methods may
-  // omit malformed records; max(index)+1 is therefore safer than length.
-  const expectedSlots = meta.methods.reduce((m, method) => Math.max(m, Number(method.index) + 1), 0);
-  const maxLegacyCount = expectedSlots + Math.max(32, Math.ceil(expectedSlots * 0.01));
-  const candidates = [];
-  let scanned = 0;
-
-  const registrationNeighbors = (dv, at, byteLength) => {
-    let observed = 0, proven = 0;
-    for (let pair = 1; pair <= 3; pair++) {
-      const pos = at + pair * 16;
-      if (pos + 16 > byteLength) break;
-      observed++;
-      const count64 = dv.getBigUint64(pos, true);
-      const pointer = dv.getBigUint64(pos + 8, true) & 0x00ffffffffffffffn;
-      if (count64 < 1n || count64 > 5_000_000n) continue;
-      const count = Number(count64);
-      if (containing(pointer, Math.min(count, 16) * 8)) proven++;
-    }
-    return { observed, proven };
-  };
-
-  for (const r of data) {
-    if (scanned >= scanLimit) break;
-    const want = Math.min(Number(r.size), scanLimit - scanned);
-    const bytes = await Promise.resolve(read(r.vmAddr, want)).catch(() => null); scanned += want;
-    if (!bytes || bytes.length < 48) continue;
-    const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    for (let at = 0; at + 48 <= bytes.length; at += 8) {
-      const count64 = dv.getBigUint64(at, true);
-      if (count64 < 1n || count64 > 5_000_000n) continue;
-      const count = Number(count64);
-      // Direct method.index -> table[index] binding is not trustworthy if the
-      // table cannot cover every metadata method slot or has a large tail.
-      if (count < expectedSlots || count > maxLegacyCount) continue;
-      const table = dv.getBigUint64(at + 8, true) & 0x00ffffffffffffffn;
-      const sampleCount = Math.min(count, 128);
-      if (!containing(table, sampleCount * 8)) continue;
-      const structure = registrationNeighbors(dv, at, bytes.length);
-      if (structure.observed < 2 || structure.proven < 2) continue;
-      const sample = await Promise.resolve(read(table, sampleCount * 8)).catch(() => null);
-      if (!sample || sample.length < sampleCount * 8) continue;
-      const sdv = new DataView(sample.buffer, sample.byteOffset, sample.byteLength);
-      let executable = 0, nonzero = 0;
-      for (let i = 0; i < sampleCount; i++) {
-        const raw = sdv.getBigUint64(i * 8, true);
-        if (raw) nonzero++;
-        if (inExec(raw) != null) executable++;
+    const expectedSlots=meta.methods.reduce((m,method)=>Math.max(m,Number(method.index)+1),0);
+    const maxLegacyCount=expectedSlots+Math.max(32,Math.ceil(expectedSlots*0.01));
+    const candidates=[],seen=new Set();
+    const complete=await scanDataChunks(context,48,async(r,base,bytes)=>{
+      const dv=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);
+      for(let at=0;at+48<=bytes.length;at+=8){
+        budget.check(1);
+        const addr=r.vmAddr+base+BigInt(at); if(seen.has(addr.toString()))continue;seen.add(addr.toString());
+        const count64=dv.getBigUint64(at,true);if(count64<1n||count64>5_000_000n)continue;
+        const count=Number(count64);if(count<expectedSlots||count>maxLegacyCount)continue;
+        const table=dv.getBigUint64(at+8,true)&0x00ffffffffffffffn,sampleCount=Math.min(count,128);
+        if(!containing(table,sampleCount*8))continue;
+        let observed=0,proven=0;
+        for(let pair=1;pair<=3;pair++){
+          const pos=at+pair*16;if(pos+16>bytes.length)break;observed++;
+          const n=dv.getBigUint64(pos,true),pointer=dv.getBigUint64(pos+8,true)&0x00ffffffffffffffn;
+          if(n>=1n&&n<=5_000_000n&&containing(pointer,Math.min(Number(n),16)*8))proven++;
+        }
+        if(observed<2||proven<2)continue;
+        const sample=await readExtra(context,table,sampleCount*8);if(!sample)continue;
+        const sdv=new DataView(sample.buffer,sample.byteOffset,sample.byteLength);let executable=0,nonzero=0;
+        for(let i=0;i<sampleCount;i++){budget.check(1);const raw=sdv.getBigUint64(i*8,true);if(raw)nonzero++;if(inExec(raw)!=null)executable++;}
+        const ratio=executable/Math.max(1,nonzero);if(nonzero<Math.min(16,sampleCount)||ratio<0.95)continue;
+        budget.consumeCandidate();
+        const coveragePenalty=Math.abs(count-expectedSlots)/Math.max(1,expectedSlots);
+        candidates.push({addr,table,count,ratio,structurePairs:proven,score:ratio+proven*0.04-coveragePenalty*0.5});
       }
-      const ratio = executable / Math.max(1, nonzero);
-      if (nonzero < Math.min(16, sampleCount) || ratio < 0.95) continue;
-      const coveragePenalty = Math.abs(count - expectedSlots) / Math.max(1, expectedSlots);
-      candidates.push({
-        addr: r.vmAddr + BigInt(at), table, count, ratio,
-        structurePairs: structure.proven,
-        score: ratio + structure.proven * 0.04 - coveragePenalty * 0.5,
-      });
+    });
+    if(!complete)return bindingFail(meta,budget,'scan-budget-exhausted','IL2CPP binding scanはbudget内に全候補を検証できなかったため、自動bindingしません。');
+    candidates.sort((a,b)=>b.score-a.score||(a.addr<b.addr?-1:1));
+    const best=candidates[0],second=candidates[1];
+    if(!best){meta.warnings.push('Codegen moduleを検証した後も、構造証明できるlegacy Method→address表は見つかりませんでした。');return{bound:0,candidate:null,modernTried:true,reason:'no-proven-legacy-table'};}
+    const margin=o.legacyAmbiguityMargin??0.08;
+    if(second&&best.score-second.score<margin){meta.warnings.push(`Legacy method pointer候補が曖昧です（上位差 ${Math.max(0,best.score-second.score).toFixed(3)}）。自動bindingしません。`);return{bound:0,candidate:null,modernTried:true,reason:'ambiguous-legacy-table',ambiguousCandidates:Math.min(candidates.length,2)};}
+    const needed=meta.methods.map((m)=>Number(m.index)).filter((x)=>x>=0&&x<best.count);
+    const values=await pointerValues(context,best.table,best.count,needed);if(!values)return{bound:0,candidate:null,modernTried:true,reason:'legacy-table-unreadable'};
+    const resolved=[];
+    for(const method of meta.methods){const raw=values.get(Number(method.index));if(raw==null)continue;const address=inExec(raw);if(address!=null)resolved.push({method,address});}
+    const minResolved=Math.min(8,meta.methods.length),coverage=resolved.length/Math.max(1,meta.methods.length);
+    if(resolved.length<minResolved||coverage<0.5){meta.warnings.push(`Legacy method pointer表の全体整合性が不足しています（${resolved.length}/${meta.methods.length}）。自動bindingしません。`);return{bound:0,candidate:null,modernTried:true,reason:'legacy-coverage-insufficient'};}
+    for(const {method,address} of resolved){method.address=address;method.binding='code-registration';method.bindingVerified=true;}
+    const bound=resolved.length;
+    meta.methodBinding={kind:'code-registration',bound,count:best.count,table:best.table,verified:true,evidence:['slot-coverage','registration-neighbors','executable-pointer-ratio','unique-candidate'],executableRatio:best.ratio,structurePairs:best.structurePairs,budget:budget.snapshot()};
+    return{bound,candidate:best,modernTried:true,preferred:'verified-legacy'};
+  }catch(error){
+    if(error?.code==='ABORT_ERR')return bindingFail(meta,budget,'cancelled','IL2CPP method bindingをキャンセルしました。');
+    if(error?.code==='IL2CPP_BINDING_BUDGET')return bindingFail(meta,budget,'binding-budget-exhausted','IL2CPP bindingは安全budgetを超えたため、自動bindingしません。');
+    throw error;
+  }
+}
+
+async function bindCodeGenModules(meta,ctx,o={}){
+  const {data,containing,inExec,budget}=ctx,images=meta.images||[];if(!images.length)return{bound:0,candidate:null};
+  const raw=[],seen=new Set();
+  const complete=await scanDataChunks(ctx,24,async(r,base,bytes)=>{
+    const dv=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);
+    for(let at=0;at+24<=bytes.length;at+=8){
+      budget.check(1);const addr=r.vmAddr+base+BigInt(at);if(seen.has(addr.toString()))continue;seen.add(addr.toString());
+      const namePtr=dv.getBigUint64(at,true)&0x00ffffffffffffffn,count=dv.getUint32(at+8,true),table=dv.getBigUint64(at+16,true)&0x00ffffffffffffffn;
+      if(!count||count>meta.methods.length+4096||!containing(namePtr,1)||!containing(table,Math.min(count,32)*8))continue;
+      budget.consumeCandidate();raw.push({addr,namePtr,count,table});
     }
+  });
+  if(!complete)return{...bindingFail(meta,budget,'scan-budget-exhausted','CodeGenModule候補をbudget内に全走査できなかったため、自動bindingしません。'),blocked:true};
+  const wanted=new Map(images.map((x)=>[x.name.toLowerCase(),x])),groups=new Map();
+  for(const c of raw){
+    const nameBytes=await readExtra(ctx,c.namePtr,160);if(!nameBytes)continue;const zero=nameBytes.indexOf(0);if(zero<0)continue;
+    const name=utf8(nameBytes.subarray(0,zero)),key=name?.toLowerCase();if(!key||!wanted.has(key))continue;
+    const sampleCount=Math.min(c.count,64),sample=await readExtra(ctx,c.table,sampleCount*8);if(!sample)continue;
+    const dv=new DataView(sample.buffer,sample.byteOffset,sample.byteLength);let nonzero=0,executable=0;
+    for(let i=0;i<sampleCount;i++){budget.check(1);const p=dv.getBigUint64(i*8,true);if(p)nonzero++;if(inExec(p)!=null)executable++;}
+    if(!nonzero)continue;const executableRatio=executable/nonzero;if(executableRatio<0.85)continue;
+    const image=wanted.get(key),methods=meta.methods.filter((m)=>m.classIndex>=image.typeStart&&m.classIndex<image.typeStart+image.typeCount&&m.token);
+    const rids=methods.map((m)=>(m.token&0x00ffffff)-1).filter((rid)=>rid>=0);
+    const covered=rids.filter((rid)=>rid<c.count).length,tokenCoverage=covered/Math.max(1,Math.min(rids.length,c.count)),maxRid=rids.length?Math.max(...rids):-1;
+    const tail=maxRid>=0?Math.max(0,c.count-(maxRid+1)):c.count;
+    const tailPenalty=maxRid>=0?Math.min(1,tail/Math.max(1,maxRid+1)):0;
+    const score=executableRatio+tokenCoverage*0.75-tailPenalty*0.2;
+    const item={...c,name,key,executableRatio,tokenCoverage,score,maxRid};
+    if(!groups.has(key))groups.set(key,[]);groups.get(key).push(item);
   }
-
-  candidates.sort((a, b) => b.score - a.score || Number(a.addr - b.addr));
-  const best = candidates[0], second = candidates[1];
-  if (!best) {
-    meta.warnings.push('Codegen moduleを検証した後も、構造証明できるlegacy Method→address表は見つかりませんでした。');
-    return { bound: 0, candidate: null, modernTried: true, reason: 'no-proven-legacy-table' };
+  const selected=new Map(),ambiguous=[];const margin=o.moduleAmbiguityMargin??0.10;
+  for(const image of images){
+    const key=image.name.toLowerCase(),list=(groups.get(key)||[]).sort((a,b)=>b.score-a.score||(a.addr<b.addr?-1:1));if(!list.length)continue;
+    const best=list[0],second=list[1];
+    if(best.tokenCoverage<0.95){ambiguous.push({image:image.name,reason:'token-coverage',candidates:list.length});continue;}
+    if(second&&best.score-second.score<margin){ambiguous.push({image:image.name,reason:'candidate-margin',candidates:list.length,margin:best.score-second.score});continue;}
+    selected.set(image.index,best);
   }
-  const margin = o.legacyAmbiguityMargin ?? 0.08;
-  if (second && best.score - second.score < margin) {
-    meta.warnings.push(`Legacy method pointer候補が曖昧です（上位差 ${Math.max(0,best.score-second.score).toFixed(3)}）。自動bindingしません。`);
-    return { bound: 0, candidate: null, modernTried: true, reason: 'ambiguous-legacy-table', ambiguousCandidates: Math.min(candidates.length, 2) };
+  if(ambiguous.length){meta.warnings.push(`CodeGenModule候補が一意に証明できないimageがあります: ${ambiguous.map((x)=>x.image).join(', ')}`);}
+  if(!selected.size){
+    if(ambiguous.length){meta.methodBinding={kind:'codegen-modules',bound:0,modules:0,verified:false,ambiguousModules:ambiguous,budget:budget.snapshot()};return{bound:0,candidate:null,modules:0,blocked:true,reason:'ambiguous-codegen-modules',ambiguousModules:ambiguous};}
+    return{bound:0,candidate:null,modules:0};
   }
-
-  const tableBytes = await Promise.resolve(read(best.table, best.count * 8)).catch(() => null);
-  if (!tableBytes || tableBytes.length < best.count * 8) return { bound: 0, candidate: null, modernTried: true, reason: 'legacy-table-unreadable' };
-  const tdv = new DataView(tableBytes.buffer, tableBytes.byteOffset, tableBytes.byteLength);
-  const resolved = [];
-  for (const method of meta.methods) {
-    if (method.index < 0 || method.index >= best.count) continue;
-    const address = inExec(tdv.getBigUint64(method.index * 8, true));
-    if (address != null) resolved.push({ method, address });
+  const staged=[];
+  for(const image of images){
+    const mod=selected.get(image.index);if(!mod)continue;
+    const methods=meta.methods.filter((m)=>m.classIndex>=image.typeStart&&m.classIndex<image.typeStart+image.typeCount&&m.token);
+    const pairs=methods.map((method)=>({method,rid:(method.token&0x00ffffff)-1})).filter((x)=>x.rid>=0&&x.rid<mod.count);
+    const values=await pointerValues(ctx,mod.table,mod.count,pairs.map((x)=>x.rid));if(!values)continue;
+    for(const {method,rid} of pairs){const raw=values.get(rid);if(raw==null)continue;const address=inExec(raw);if(address!=null)staged.push({method,address,image,mod});}
   }
-  const minResolved = Math.min(8, meta.methods.length);
-  const coverage = resolved.length / Math.max(1, meta.methods.length);
-  if (resolved.length < minResolved || coverage < 0.5) {
-    meta.warnings.push(`Legacy method pointer表の全体整合性が不足しています（${resolved.length}/${meta.methods.length}）。自動bindingしません。`);
-    return { bound: 0, candidate: null, modernTried: true, reason: 'legacy-coverage-insufficient' };
-  }
-
-  for (const { method, address } of resolved) { method.address = address; method.binding = 'code-registration'; }
-  const bound = resolved.length;
-  meta.methodBinding = {
-    kind: 'code-registration', bound, count: best.count, table: best.table,
-    verified: true,
-    evidence: ['slot-coverage','registration-neighbors','executable-pointer-ratio','unique-candidate'],
-    executableRatio: best.ratio,
-    structurePairs: best.structurePairs,
-  };
-  return { bound, candidate: best, modernTried: true, preferred: 'verified-legacy' };
+  for(const {method,address,mod} of staged){method.address=address;method.binding='codegen-module';method.bindingVerified=true;method.bindingEvidence={module:mod.name,score:mod.score,executableRatio:mod.executableRatio,tokenCoverage:mod.tokenCoverage};}
+  const verified=ambiguous.length===0;
+  meta.methodBinding={kind:'codegen-modules',bound:staged.length,modules:selected.size,verified,evidence:['image-name','token-rid','executable-pointer','candidate-uniqueness'],ambiguousModules:ambiguous,budget:budget.snapshot()};
+  return{bound:staged.length,candidate:null,modules:selected.size,verified,blocked:ambiguous.length>0&&staged.length===0,ambiguousModules:ambiguous};
 }
 
-async function bindCodeGenModules(meta, ctx) {
-  const { data, read, containing, inExec, scanLimit } = ctx; const images = meta.images || []; if (!images.length) return { bound: 0, candidate: null };
-  const raw = []; let scanned = 0;
-  for (const r of data) { if (scanned >= scanLimit) break; const want = Math.min(Number(r.size), scanLimit - scanned); const bytes = await Promise.resolve(read(r.vmAddr, want)).catch(() => null); scanned += want; if (!bytes || bytes.length < 24) continue; const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    for (let at = 0; at + 24 <= bytes.length; at += 8) { const namePtr = dv.getBigUint64(at, true) & 0x00ffffffffffffffn, count = dv.getUint32(at + 8, true), table = dv.getBigUint64(at + 16, true) & 0x00ffffffffffffffn; if (!count || count > meta.methods.length + 4096 || !containing(namePtr, 1) || !containing(table, Math.min(count, 32) * 8)) continue; raw.push({ addr: r.vmAddr + BigInt(at), namePtr, count, table }); if (raw.length >= 5000) break; }
-  }
-  const wantedNames = new Set(images.map((x) => x.name.toLowerCase())), modules = new Map();
-  for (const c of raw) { const nameBytes = await Promise.resolve(read(c.namePtr, 160)).catch(() => null); if (!nameBytes) continue; const zero = nameBytes.indexOf(0); if (zero < 0) continue; const name = utf8(nameBytes.subarray(0, zero)); if (!name || !wantedNames.has(name.toLowerCase())) continue; const sampleCount = Math.min(c.count, 64), sample = await Promise.resolve(read(c.table, sampleCount * 8)).catch(() => null); if (!sample || sample.length < sampleCount * 8) continue; const dv = new DataView(sample.buffer, sample.byteOffset, sample.byteLength); let nonzero = 0, executable = 0; for (let i = 0; i < sampleCount; i++) { const p = dv.getBigUint64(i * 8, true); if (p) nonzero++; if (inExec(p) != null) executable++; } if (nonzero && executable / nonzero >= 0.85) modules.set(name.toLowerCase(), c); }
-  let bound = 0; const tables = new Map();
-  for (const image of images) { const mod = modules.get(image.name.toLowerCase()); if (!mod) continue; const bytes = await Promise.resolve(read(mod.table, mod.count * 8)).catch(() => null); if (bytes && bytes.length >= mod.count * 8) tables.set(image.index, { mod, bytes }); }
-  for (const method of meta.methods) { const image = images.find((x) => method.classIndex >= x.typeStart && method.classIndex < x.typeStart + x.typeCount); if (!image || !method.token) continue; const entry = tables.get(image.index), rid = (method.token & 0x00ffffff) - 1; if (!entry || rid < 0 || rid >= entry.mod.count) continue; const dv = new DataView(entry.bytes.buffer, entry.bytes.byteOffset, entry.bytes.byteLength), address = inExec(dv.getBigUint64(rid * 8, true)); if (address == null) continue; method.address = address; method.binding = 'codegen-module'; bound++; }
-  if (bound) meta.methodBinding = { kind: 'codegen-modules', bound, modules: tables.size }; return { bound, candidate: null, modules: tables.size };
-}

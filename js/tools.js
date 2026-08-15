@@ -34,7 +34,7 @@ import { importList, importsByFramework, exportList, findGlobals } from './linka
 import { assemble, suggestPatches, parseHexBytes, hexOf, validatePatchRange } from './patch.js';
 import { runScript, SAMPLES, makeEmulator } from './script.js';
 import { EXAMPLE_PLUGIN, MAX_PLUGIN_SOURCE_BYTES } from './plugins.js';
-import { parseMetadataAuto, looksLikeUnity, bindMethodAddresses } from './il2cpp.js';
+import { parseMetadataAuto, looksLikeUnity, bindMethodAddresses, MAX_IL2CPP_METADATA_BYTES } from './il2cpp.js';
 import { brief } from './arm64.js';
 
 /* ── 小道具 ─────────────────────────────────────────────── */
@@ -1659,11 +1659,16 @@ export function showIl2cpp(app) {
     picker.addEventListener('change', async () => {
       const f = picker.files && picker.files[0];
       if (!f) return;
+      if (f.size > MAX_IL2CPP_METADATA_BYTES) {
+        body.replaceChildren(el('div', 'hint', `global-metadata.dat が大きすぎます (${Math.ceil(f.size/1024/1024)} MiB)。安全上 ${MAX_IL2CPP_METADATA_BYTES/1024/1024} MiB までです。`));
+        return;
+      }
+      const controller = new AbortController();
       body.replaceChildren(el('div', 'hint', '読み込んでいます…'));
       try {
-        const meta = parseMetadataAuto(await f.arrayBuffer());
+        const meta = parseMetadataAuto(await f.arrayBuffer(), { signal:controller.signal });
         await bindMethodAddresses(meta, {
-          regions: app.store.get('regions') || [],
+          regions: app.store.get('regions') || [], signal:controller.signal,
           read: (addr, len) => app.backend.readAt(addr, len)
             .then((r) => (r && r.found ? r.bytes : null)),
         });

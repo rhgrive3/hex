@@ -344,7 +344,7 @@ function parseFunctionStarts(r, dc, image) {
   let p = dc.offset;
   const end = dc.offset + dc.size;
   let addr = image.imageBase;
-  const alignment = image.arch === 'arm64' ? 4n : image.arch === 'arm' ? 2n : 1n;
+  const alignment = (image.arch === 'arm64' || image.arch === 'arm64e' || image.arch === 'arm64_32') ? 4n : image.arch === 'arm' ? 2n : 1n;
   while (p < end) {
     const x = r.uleb(p);
     p = x.next;

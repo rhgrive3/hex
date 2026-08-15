@@ -139,23 +139,30 @@ export function compareExpected(caseSpec, observation) {
   return { status:'inconclusive', reason:'unsupported-expectation-shape' };
 }
 
-export function classifyHypothesis(caseResults) {
+export function classifyHypothesis(caseResults, coverage = null) {
   const results = Array.isArray(caseResults) ? caseResults : [];
-  if (!results.length) return { status:'inconclusive', confidence:0, reason:'no-runtime-cases' };
+  const cov = coverage || { planned:results.length, executed:results.length, complete:true, truncated:false, reasons:[] };
+  if (!results.length) return { status:'inconclusive', confidence:0, reason:'no-runtime-cases', coverage:cov };
   const usable = results.filter((r) => r.comparison && r.comparison.status !== 'unsupported');
   const contradicted = usable.filter((r) => r.comparison.status === 'contradicted').length;
   const supported = usable.filter((r) => r.comparison.status === 'supported').length;
-  if (contradicted) return { status:'contradicted', confidence:Math.min(0.99, 0.7 + contradicted * 0.08), supported, contradicted, total:results.length };
-  if (!usable.length) return { status:'unsupported', confidence:0, supported:0, contradicted:0, total:results.length };
-  if (supported >= 3 && supported === results.length) return { status:'confirmed', confidence:Math.min(0.98, 0.75 + supported * 0.04), supported, contradicted:0, total:results.length };
-  if (supported) return { status:'supported', confidence:Math.min(0.85, 0.55 + supported * 0.05), supported, contradicted:0, total:results.length };
-  return { status:'inconclusive', confidence:0.25, supported:0, contradicted:0, total:results.length };
+  if (contradicted) return { status:'contradicted', confidence:Math.min(0.99, 0.7 + contradicted * 0.08), supported, contradicted, total:results.length, coverage:cov };
+  if (!usable.length) return { status:'unsupported', confidence:0, supported:0, contradicted:0, total:results.length, coverage:cov };
+  if (supported >= 3 && supported === results.length && cov.complete === true && supported === cov.planned) {
+    return { status:'confirmed', confidence:Math.min(0.98, 0.75 + supported * 0.04), supported, contradicted:0, total:results.length, coverage:cov };
+  }
+  if (supported) return { status:'supported', confidence:Math.min(0.85, 0.55 + supported * 0.05), supported, contradicted:0, total:results.length, coverage:cov, reason:cov.complete ? 'supported-observations' : 'partial-runtime-coverage' };
+  return { status:'inconclusive', confidence:0.25, supported:0, contradicted:0, total:results.length, coverage:cov };
 }
 
 export class HypothesisVerifier {
   constructor(adapter, evidenceFactory = null) { this.adapter = adapter; this.evidenceFactory = evidenceFactory; }
   async verify(experiment, options = {}) {
     const results = []; const maxCases = boundedInteger(options.maxCases, experiment.cases.length, 1, 64, 'maxCases');
+    const planned = experiment.cases.length;
+    const reasons = [];
+    if (maxCases < planned) reasons.push('max-cases');
+    let cancelled = false, stoppedOnContradiction = false;
     for (const testCase of experiment.cases.slice(0,maxCases)) {
       let observation;
       if (options.signal && options.signal.aborted) {
@@ -175,9 +182,13 @@ export class HypothesisVerifier {
       const comparison = compareExpected(testCase, observation);
       const evidence = this.evidenceFactory ? this.evidenceFactory({ experiment, testCase, observation, comparison }) : null;
       results.push({ case:testCase, observation, comparison, evidence });
-      if (comparison.status === 'unsupported' && observation.stop && observation.stop.kind === 'cancelled') break;
-      if (options.stopOnContradiction !== false && comparison.status === 'contradicted') break;
+      if (comparison.status === 'unsupported' && observation.stop && observation.stop.kind === 'cancelled') { cancelled=true; reasons.push('cancelled'); break; }
+      if (options.stopOnContradiction !== false && comparison.status === 'contradicted') { stoppedOnContradiction=true; reasons.push('stop-on-contradiction'); break; }
     }
-    return { experimentId:experiment.id, verdict:classifyHypothesis(results), cases:results };
+    const unsupported=results.filter((r)=>r.comparison?.status==='unsupported').length;
+    if(unsupported) reasons.push('unsupported-cases');
+    const complete=results.length===planned && unsupported===0 && !cancelled;
+    const coverage={planned,executed:results.length,complete,truncated:results.length<planned,cancelled,stoppedOnContradiction,unsupported,reasons:[...new Set(reasons)]};
+    return { experimentId:experiment.id, verdict:classifyHypothesis(results,coverage), coverage, cases:results };
   }
 }

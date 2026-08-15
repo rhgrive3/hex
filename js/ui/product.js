@@ -57,13 +57,17 @@ function requireFile(app, action) {
 }
 
 function architectureOf(app) {
+  const capability=app?.store?.get?.('capability') || {};
   const info = app?.store?.get?.('fileInfo') || {};
-  const value = app?.capabilities?.architecture || app?.backend?.capabilities?.architecture || info.architecture || info.arch || info.cpu || 'arm64';
+  const value = capability.architecture || app?.store?.get?.('architecture') || info.architecture || info.arch || info.cpu || 'unknown';
   return String(value).toLowerCase();
 }
-
-function fixedArm64Rows(app) {
-  return /arm64|aarch64/.test(architectureOf(app));
+function instructionBytes(app) { return Math.max(1,Number(app?.store?.get?.('instructionAlignment') || app?.store?.get?.('capability')?.instructionAlignment || 4)); }
+function fixedArm64Rows(app) { return !!app?.store?.get?.('canDisassemble') && instructionBytes(app)>0; }
+const EXPLORER_SOURCE_LIMIT=50000;
+function annotateCollection(items,{complete=true,total=items?.length||0,scannedCount=items?.length||0,truncationReason=null,provenance='canonical-app-state'}={}) {
+  if(items && typeof items==='object'){items.complete=!!complete;items.total=total;items.scannedCount=scannedCount;items.truncationReason=truncationReason;items.provenance=provenance;}
+  return items;
 }
 
 function installViewportBridge() {
@@ -205,26 +209,24 @@ function lowerBoundBigInt(array, value) {
 }
 
 function functionSource(app) {
+  void app.ensureRecognition?.({maxFunctions:350000});
+  const ranked=app.recognition?.records;
+  if(Array.isArray(ranked) && ranked.length){
+    const count=Math.min(ranked.length,EXPLORER_SOURCE_LIMIT);
+    return {
+      length:count, complete:app.recognition.complete===true && ranked.length<=EXPLORER_SOURCE_LIMIT,
+      total:app.recognition.total, scannedCount:app.recognition.scannedCount,
+      truncationReason:ranked.length>EXPLORER_SOURCE_LIMIT?'explorer-source-budget':app.recognition.truncationReason,
+      provenance:'recognition/classifier+knowledge',
+      itemAt(index){const item=ranked[index];return {addr:item.address,name:item.name||functionName(app,item.address),classification:item.classification,recognitionScore:item.score,recognitionConfidence:item.confidence};}
+    };
+  }
   const sym = app.symbols;
   const funcs = sym?.funcs || [];
-  const region = app.codeRegion?.() || app.store.get('currentRegion');
-  const lo = region?.vmAddr ?? 0n;
-  const hi = region ? region.vmAddr + region.size : null;
-  const start = funcs.length ? lowerBoundBigInt(funcs, lo) : 0;
-  const end = hi == null ? funcs.length : lowerBoundBigInt(funcs, hi);
+  const total=funcs.length, count=Math.min(total,EXPLORER_SOURCE_LIMIT);
   return {
-    length: Math.max(0, end - start),
-    itemAt(index) {
-      const absolute = start + index;
-      const addr = funcs[absolute];
-      const next = absolute + 1 < end ? funcs[absolute + 1] : hi;
-      const exact = sym?.exact?.(addr);
-      return {
-        addr,
-        name: exact?.name || functionName(app, addr),
-        size: next != null && next > addr ? next - addr : null,
-      };
-    },
+    length:count, complete:count===total,total,scannedCount:count,truncationReason:count===total?null:'explorer-source-budget',provenance:'symbol-index',
+    itemAt(index){const addr=funcs[index],next=index+1<total?funcs[index+1]:null,exact=sym?.exact?.(addr);return {addr,name:exact?.name||functionName(app,addr),size:next!=null&&next>addr?next-addr:null,classification:'UNKNOWN'};}
   };
 }
 
@@ -233,7 +235,6 @@ async function matchingFunctionItems(app, query, options) {
   if (!q) return functionSource(app);
   return queryFunctions(app, q, options);
 }
-
 function sectionItems(app, query) {
   const q = String(query || '').trim().toLowerCase();
   const descriptor = productDescriptor(app.store.get('fileInfo'), app.currentSlice?.());
@@ -246,7 +247,6 @@ async function stringItems(app, query, options) {
   const rows = await app.ensureStrings();
   return queryStrings(rows || [], query, options);
 }
-
 function externalItems(app, query) {
   const descriptor = productDescriptor(app.store.get('fileInfo'), app.currentSlice?.());
   const q = String(query || '').trim().toLowerCase();
@@ -285,6 +285,7 @@ function renderExplorer(app, router, route) {
     virtual?.dispose(); virtual = null;
     content.replaceChildren();
     if (!items || !Number(items.length)) { content.append(emptyState(text('見つかりません', 'Nothing found'), emptyText)); return; }
+    if(items.complete===false){content.append(h('div','ui-hint',text(`一部のみ表示: ${Number(items.scannedCount||0).toLocaleString()} / ${Number(items.total||0).toLocaleString()} を走査 (${items.truncationReason||'incomplete'})`,`Partial results: scanned ${Number(items.scannedCount||0).toLocaleString()} / ${Number(items.total||0).toLocaleString()} (${items.truncationReason||'incomplete'})`)));}
     virtual = new VirtualList({ items, rowHeight: 64, ariaLabel: text('索引の結果', 'Explorer results'), renderRow });
     content.append(virtual.root);
   };
@@ -435,6 +436,12 @@ function renderFunctionWorkspace(app, router, route) {
     s.body.append(emptyState(text('関数が選択されていません', 'No function selected'), text('コードまたは索引から関数を開いてください。', 'Open a function from Code or Explorer.')));
     return { root: s.root };
   }
+  const verifiedRange=app.validatedFunctionRange?.(addr);
+  if(verifiedRange && !verifiedRange.ok){
+    const s=screen(functionName(app,addr),{id:'function',subtitle:addressText(addr)});
+    s.body.append(errorState(text('関数境界を検証できません','Function boundary could not be verified'),verifiedRange.reason||'unverified-function-range'));
+    return {root:s.root};
+  }
   const tab = FUNCTION_TABS.some((x) => x.id === route.params.tab) ? route.params.tab : 'overview';
   const actions = h('div', 'ui-screen-actions');
   actions.append(uiButton('•••', { cls: 'ui-icon-action', ariaLabel: text('関数の操作', 'Function actions'), onClick: (e) => {
@@ -463,8 +470,8 @@ function renderFunctionWorkspace(app, router, route) {
     if (!fixedArm64Rows(app)) return { supported: false, rowOfAddress: () => null, addrOfRow: () => null };
     return {
       supported: true,
-      rowOfAddress: (a) => !region || a == null ? null : Number((a - region.vmAddr) / 4n),
-      addrOfRow: (row) => region ? region.vmAddr + BigInt(row) * 4n : null,
+      rowOfAddress: (a) => !region || a == null ? null : Number((a - region.vmAddr) / BigInt(instructionBytes(app))),
+      addrOfRow: (row) => region ? region.vmAddr + BigInt(row) * BigInt(instructionBytes(app)) : null,
     };
   };
 
