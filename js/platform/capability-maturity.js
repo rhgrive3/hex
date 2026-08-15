@@ -233,7 +233,7 @@ function materialize(kind, id, profile, limitations = profile?.limitations || []
     kind,
     id,
     implementedLevel: profile.implementedLevel,
-    level: profile.implementedLevel,
+    level: profile.fullySatisfiedLevel,
     fullySatisfiedLevel: profile.fullySatisfiedLevel,
     status: profile.status,
     partial: profile.status === PARTIAL,
@@ -289,13 +289,20 @@ export function capabilityDisplay(maturity) {
   const labels = maturity?.kind === 'architecture' ? ARCHITECTURE_LEVEL_DISPLAY
     : maturity?.kind === 'format' ? FORMAT_LEVEL_DISPLAY : MANAGED_LEVEL_DISPLAY;
   const levelCode = maturity?.level || null;
+  const implementedLevelCode = maturity?.implementedLevel || null;
+  const levelLabel = levelCode ? labels[levelCode] || levelCode : null;
+  const implementedLevelLabel = implementedLevelCode ? labels[implementedLevelCode] || implementedLevelCode : null;
+  const statusLabel = STATUS_DISPLAY[maturity?.status] || STATUS_DISPLAY[UNSUPPORTED];
+  const partialTail = levelCode && implementedLevelCode && levelCode !== implementedLevelCode
+    ? ` (partial implementation through ${implementedLevelCode} ${implementedLevelLabel})`
+    : '';
   return Object.freeze({
     levelCode,
-    levelLabel: levelCode ? labels[levelCode] || levelCode : null,
-    statusLabel: STATUS_DISPLAY[maturity?.status] || STATUS_DISPLAY[UNSUPPORTED],
-    summary: levelCode
-      ? `${levelCode} ${labels[levelCode] || levelCode} — ${STATUS_DISPLAY[maturity?.status] || STATUS_DISPLAY[UNSUPPORTED]}`
-      : STATUS_DISPLAY[maturity?.status] || STATUS_DISPLAY[UNSUPPORTED],
+    levelLabel,
+    implementedLevelCode,
+    implementedLevelLabel,
+    statusLabel,
+    summary: levelCode ? `${levelCode} ${levelLabel} — ${statusLabel}${partialTail}` : statusLabel,
     limitations: Object.freeze((maturity?.limitations || []).map((code) => LIMITATION_DISPLAY[code] || code)),
   });
 }
