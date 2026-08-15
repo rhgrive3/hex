@@ -26,6 +26,7 @@ jobs:
           python tools/fix-il2cpp-remaining.py
           python tools/fix-il2cpp-preflight.py
           python tools/fix-il2cpp-ui.py
+          python tools/fix-il2cpp-compat.py
       - name: Existing IL2CPP regression
         run: node tests/issue-496-il2cpp-binding.mjs
       - name: New IL2CPP regressions
@@ -43,6 +44,6 @@ jobs:
           git commit -m "fix: bound IL2CPP metadata and method binding (#496 #519 #520)"
           cp tools/test-il2cpp-remaining.mjs tests/issues-496-519-520.mjs
           git add tests/issues-496-519-520.mjs
-          git rm .github/workflows/fix-il2cpp-final.yml tools/fix-il2cpp-remaining.py tools/fix-il2cpp-preflight.py tools/fix-il2cpp-ui.py tools/test-il2cpp-remaining.mjs
+          git rm .github/workflows/fix-il2cpp-final.yml tools/fix-il2cpp-remaining.py tools/fix-il2cpp-preflight.py tools/fix-il2cpp-ui.py tools/fix-il2cpp-compat.py tools/test-il2cpp-remaining.mjs
           git commit -m "test: cover IL2CPP ambiguity and budgets [autofix]"
           git push origin HEAD:fix/all-remaining-issues-20260815
