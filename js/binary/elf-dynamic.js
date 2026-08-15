@@ -1,6 +1,8 @@
 import { functionSeed } from './model.js';
+import { createDynamicSymbolBudget } from './dynamic-symbol-budget.js';
 import { createRelocationBudget } from './relocation-budget.js';
 import { collectAndroidPackedRelocations, collectRelrRelocations, parseDynamicSymbolVersions } from './elf-extended.js';
+import { mappedELFFileRangeForVa, mappedELFFileSpanForVa } from './elf-mapping.js';
 
 const PT_DYNAMIC = 2;
 const DT_NULL = 0n;
@@ -52,14 +54,16 @@ export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
   const syment = one(DT_SYMENT) ?? defaultSyment;
   const symentValid = syment >= defaultSyment;
   if (!symentValid) markDynamicPartial(image, `DT_SYMENT ${syment} is smaller than ${defaultSyment}`);
-  const strOff = strtab == null ? null : vaToOffset(image, strtab);
   const strSize = strsz == null ? 0 : toSafeNumber(strsz);
+  const strSpan = strtab == null || strSize == null ? null : mappedELFFileSpanForVa(image, strtab, strSize);
+  if (strtab != null && strSize > 0 && !strSpan) markDynamicPartial(image, 'DT_STRTAB/DT_STRSZ crosses a file-backed PT_LOAD boundary');
+  const strOff = strSpan?.start ?? null;
 
   const stringAt = (offset) => {
-    if (strOff == null || strSize == null) return '';
+    if (strOff == null || strSize == null || !strSpan) return '';
     const n = Number(offset);
-    if (!Number.isSafeInteger(n) || n < 0 || n >= strSize || strOff + n >= r.length) return '';
-    return r.cstring(strOff + n, Math.min(strSize - n, r.length - strOff - n, 1 << 20));
+    if (!Number.isSafeInteger(n) || n < 0 || n >= strSize || strOff + n >= strSpan.spanEnd) return '';
+    return r.cstring(strOff + n, Math.min(strSize - n, strSpan.spanEnd - strOff - n, 1 << 20));
   };
 
   for (const needed of tags.get(DT_NEEDED) || []) {
@@ -79,49 +83,73 @@ export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
   if (!relocationBudget.stopped) collectRelrRelocations(r, tags, image, bits, { budget: relocationBudget, out: relocs });
   if (!relocationBudget.stopped) collectAndroidPackedRelocations(r, tags, image, bits, { budget: relocationBudget, out: relocs });
   image.metadata.programDynamicRelocationBudget = relocationBudget.snapshot(relocs.length);
-  let symbolCount = 0;
+  const symbolBudget = createDynamicSymbolBudget({
+    limits: opts.dynamicSymbolLimits || {},
+    onLimit(message) { markDynamicPartial(image, `dynamic symbol decode budget exceeded: ${message}`); },
+  });
+  let declaredSymbolCount = 0;
   let symbolCountSource = 'none';
   if (symtab != null && symentValid) {
-    symbolCount = symbolCountFromHash(r, one(DT_HASH), image);
-    if (symbolCount) symbolCountSource = 'sysv-hash';
-    if (!symbolCount) { symbolCount = symbolCountFromGnuHash(r, one(DT_GNU_HASH), image, bits); if (symbolCount) symbolCountSource = 'gnu-hash'; }
-    if (!symbolCount) { symbolCount = symbolCountFromRelocations(relocs); if (symbolCount) symbolCountSource = 'relocations'; }
-    if (!symbolCount) {
-      symbolCount = symbolCountFromLayout(symtab, strtab, syment, image, r);
-      if (symbolCount) { symbolCountSource = 'layout-heuristic'; markExtendedPartial(image, 'dynamic symbol count was inferred from bounded SYMTAB/STRTAB layout'); }
+    declaredSymbolCount = symbolCountFromHash(r, one(DT_HASH), image);
+    if (declaredSymbolCount) symbolCountSource = 'sysv-hash';
+    if (!declaredSymbolCount) { declaredSymbolCount = symbolCountFromGnuHash(r, one(DT_GNU_HASH), image, bits); if (declaredSymbolCount) symbolCountSource = 'gnu-hash'; }
+    if (!declaredSymbolCount) { declaredSymbolCount = symbolCountFromRelocations(relocs); if (declaredSymbolCount) symbolCountSource = 'relocations'; }
+    if (!declaredSymbolCount) {
+      declaredSymbolCount = symbolCountFromLayout(symtab, strtab, syment, image, r);
+      if (declaredSymbolCount) { symbolCountSource = 'layout-heuristic'; markExtendedPartial(image, 'dynamic symbol count was inferred from bounded SYMTAB/STRTAB layout'); }
     }
   }
 
-  const versions = parseDynamicSymbolVersions(r, tags, image, symbolCount, stringAt);
-  let symbols = [];
-  if (opts.symbols !== false && symtab != null && symbolCount > 0) {
-    symbols = parseDynamicSymbols(r, image, bits, symtab, syment, symbolCount, stringAt, versions);
-  } else if (symtab != null && symbolCount > 0) {
-    symbols = dynamicSymbolsFromImage(image);
+  const symbolFileCapacity = symtab != null && symentValid
+    ? dynamicSymbolFileCapacity(r, image, tags, symtab, syment)
+    : 0;
+  let symbolCount = Math.min(declaredSymbolCount, symbolFileCapacity, symbolBudget.limits.maxSymbolRecords);
+  if (declaredSymbolCount > symbolFileCapacity) {
+    markDynamicPartial(image, `dynamic symbol count ${declaredSymbolCount} exceeds file-backed SYMTAB capacity ${symbolFileCapacity}; clamped`);
+  }
+  if (declaredSymbolCount > symbolBudget.limits.maxSymbolRecords) {
+    markDynamicPartial(image, `dynamic symbol count ${declaredSymbolCount} exceeds symbol record limit ${symbolBudget.limits.maxSymbolRecords}; clamped`);
   }
 
-  applyVersionMetadata(image, versions);
+  const versions = parseDynamicSymbolVersions(r, tags, image, symbolCount, stringAt, { budget: symbolBudget });
+  let symbols = [];
+  if (!symbolBudget.stopped && opts.symbols !== false && symtab != null && symbolCount > 0) {
+    symbols = parseDynamicSymbols(r, image, bits, symtab, syment, symbolCount, stringAt, versions, symbolBudget);
+  } else if (symtab != null && symbolCount > 0) {
+    symbols = dynamicSymbolsFromImage(image, symbolCount);
+  }
+
+  applyVersionMetadata(image, versions, symbolBudget);
+  image.metadata.programDynamicSymbolBudget = symbolBudget.snapshot();
   if (opts.relocations !== false) attachDynamicRelocations(image, relocs, symbols);
 
   image.metadata.programDynamic = {
     entries: ordered.length,
-    symbols: symbolCount,
+    symbols: symbols.length,
+    symbolsExpected: symbolCount,
+    symbolsDeclared: declaredSymbolCount,
+    symbolFileCapacity,
     symbolCountSource,
     relocations: relocs.length,
     sectionless: image.sections.length === 0,
     hasSysvHash: one(DT_HASH) != null,
     hasGnuHash: one(DT_GNU_HASH) != null,
   };
-  return { parsed: true, tags, symbols: symbolCount, relocations: relocs.length };
+  return { parsed: true, tags, symbols: symbols.length, relocations: relocs.length };
 }
 
-function parseDynamicSymbols(r, image, bits, symtabVa, syment, count, stringAt, versions = new Map()) {
-  const off = vaToOffset(image, symtabVa);
+function parseDynamicSymbols(r, image, bits, symtabVa, syment, count, stringAt, versions = new Map(), budget = null) {
   const ent = toSafeNumber(syment);
-  if (off == null || ent == null || ent <= 0) return [];
-  const max = Math.min(count, 10_000_000, Math.floor((r.length - off) / ent));
+  if (ent == null || ent <= 0) return [];
+  const requested = count * ent;
+  const span = Number.isSafeInteger(requested) ? mappedELFFileSpanForVa(image, symtabVa, requested) : null;
+  if (!span) { markDynamicPartial(image, 'DT_SYMTAB records cross a file-backed PT_LOAD boundary'); return []; }
+  const off = span.start;
+  const max = count;
+  if (budget && !budget.claimInput(max * ent, 'DT_SYMTAB')) return [];
   const out = [];
   for (let i = 0; i < max; i++) {
+    if (budget && !budget.step(1, 'DT_SYMTAB decode')) break;
     const p = off + i * ent;
     let nameOff, info, other, shndx, value, size;
     if (bits === 64) {
@@ -133,6 +161,7 @@ function parseDynamicSymbols(r, image, bits, symtabVa, syment, count, stringAt, 
       nameOff = r.u32(p); value = BigInt(r.u32(p + 4)); size = BigInt(r.u32(p + 8));
       info = r.u8(p + 12); other = r.u8(p + 13); shndx = r.u16(p + 14);
     }
+    if (budget && !budget.claimOutput(1, 224, 'DT_SYMTAB symbols')) break;
     const name = stringAt(BigInt(nameOff));
     const bind = info >>> 4;
     const type = info & 0xf;
@@ -144,26 +173,60 @@ function parseDynamicSymbols(r, image, bits, symtabVa, syment, count, stringAt, 
     out.push(sym);
     if (!name) continue;
     image.symbols.push(sym);
-    if (!defined && (bind === 1 || bind === 2)) image.imports.push({ name, library: null, ordinal: null, weak: bind === 2, version: ver?.name ?? null, versionLibrary: ver?.library ?? null, versionIndex: ver?.index ?? null, symbolIndex: i, source: 'PT_DYNAMIC', sites: [] });
-    if (defined && (bind === 1 || bind === 2) && (sym.visibility === 0 || sym.visibility === 3)) image.exports.push({ name, address: value, kind, version: ver?.name ?? null, versionIndex: ver?.index ?? null, symbolIndex: i, source: 'PT_DYNAMIC' });
-    if (defined && type === 2 && value !== 0n) image.functions.push(functionSeed(value, { size: size || null, name, source: 'symbol', confidence: 0.995 }));
+    if (!defined && (bind === 1 || bind === 2)) {
+      if (budget && !budget.claimOutput(1, 160, 'PT_DYNAMIC imports')) break;
+      image.imports.push({ name, library: null, ordinal: null, weak: bind === 2, version: ver?.name ?? null, versionLibrary: ver?.library ?? null, versionIndex: ver?.index ?? null, symbolIndex: i, source: 'PT_DYNAMIC', sites: [] });
+    }
+    if (defined && (bind === 1 || bind === 2) && (sym.visibility === 0 || sym.visibility === 3)) {
+      if (budget && !budget.claimOutput(1, 144, 'PT_DYNAMIC exports')) break;
+      image.exports.push({ name, address: value, kind, version: ver?.name ?? null, versionIndex: ver?.index ?? null, symbolIndex: i, source: 'PT_DYNAMIC' });
+    }
+    if (defined && type === 2 && value !== 0n) {
+      if (budget && !budget.claimOutput(1, 128, 'PT_DYNAMIC function seeds')) break;
+      const owner = (() => {
+        const start=value, extent=size||0n;
+        const section=typeof image.sectionAt==='function'?image.sectionAt(start):null;
+        if(section?.perms?.execute && (extent===0n || extent<=section.address+section.size-start))return section;
+        const segment=typeof image.segmentAt==='function'?image.segmentAt(start):null;
+        if(segment?.perms?.execute && (extent===0n || extent<=segment.address+segment.size-start))return segment;
+        return null;
+      })();
+      if (owner) image.functions.push(functionSeed(value, {
+        size: size || null, name, source: 'symbol', confidence: 0.995,
+        exactFunctionStart: true, functionStartEvidence: 'ELF PT_DYNAMIC STT_FUNC in validated executable mapping and extent',
+      }));
+      else markDynamicPartial(image, `ignored PT_DYNAMIC STT_FUNC ${name} outside executable mapping/extent`);
+    }
   }
   return out;
 }
 
-function applyVersionMetadata(image, versions) {
-  if (!versions?.size) return;
+function applyVersionMetadata(image, versions, budget = null) {
+  if (!versions?.size || budget?.stopped) return;
+  const importByIndex = new Map();
+  const exportByIndex = new Map();
+  for (const imp of image.imports) {
+    if (imp.symbolIndex == null) continue;
+    if (budget && (!budget.step(1, 'version import index') || !budget.claimOutput(1, 48, 'version import index'))) return;
+    if (!importByIndex.has(imp.symbolIndex)) importByIndex.set(imp.symbolIndex, imp);
+  }
+  for (const ex of image.exports) {
+    if (ex.symbolIndex == null) continue;
+    if (budget && (!budget.step(1, 'version export index') || !budget.claimOutput(1, 48, 'version export index'))) return;
+    if (!exportByIndex.has(ex.symbolIndex)) exportByIndex.set(ex.symbolIndex, ex);
+  }
   for (const sym of image.symbols) {
+    if (budget && !budget.step(1, 'version metadata apply')) return;
     if (sym.source !== 'dynsym' && sym.source !== 'PT_DYNAMIC') continue;
     const ver = versions.get(sym.index);
     if (!ver) continue;
     sym.versionIndex = ver.index; sym.version = ver.name; sym.versionHidden = ver.hidden; sym.versionLibrary = ver.library;
     if (!sym.defined && sym.name) {
-      const imp = image.imports.find((item) => item.name === sym.name && item.version == null && (item.symbolIndex == null || item.symbolIndex === sym.index));
-      if (imp) { imp.version = ver.name; imp.versionLibrary = ver.library; imp.versionIndex = ver.index; imp.symbolIndex ??= sym.index; }
+      const imp = importByIndex.get(sym.index);
+      if (imp && imp.name === sym.name && imp.version == null) { imp.version = ver.name; imp.versionLibrary = ver.library; imp.versionIndex = ver.index; }
     } else if (sym.defined && sym.name) {
-      const ex = image.exports.find((item) => item.name === sym.name && item.address === sym.address && item.version == null && (item.symbolIndex == null || item.symbolIndex === sym.index));
-      if (ex) { ex.version = ver.name; ex.versionIndex = ver.index; ex.symbolIndex ??= sym.index; }
+      const ex = exportByIndex.get(sym.index);
+      if (ex && ex.name === sym.name && ex.address === sym.address && ex.version == null) { ex.version = ver.name; ex.versionIndex = ver.index; }
     }
   }
 }
@@ -174,13 +237,14 @@ function collectDynamicRelocations(r, tags, image, bits, budget) {
   const one = (tag) => tags.get(tag)?.[0] ?? null;
   const addTable = (va, size, ent, rela, source) => {
     if (budget.stopped || va == null || size == null || size <= 0n) return;
-    const off = vaToOffset(image, va);
     const n = toSafeNumber(size);
     const minimum = BigInt(bits === 64 ? (rela ? 24 : 16) : (rela ? 12 : 8));
     const requested = ent ?? minimum;
     if (requested < minimum) { markDynamicPartial(image, `${source} entry size ${requested} is smaller than ${minimum}`); return; }
     const e = toSafeNumber(requested);
-    if (off == null || n == null || e == null || e <= 0 || off + n > r.length) return;
+    const span = n == null ? null : mappedELFFileSpanForVa(image, va, n);
+    if (!span || e == null || e <= 0) { markDynamicPartial(image, `${source} table crosses a file-backed PT_LOAD boundary`); return; }
+    const off = span.start;
     if (!budget.claimInput(n, source)) return;
     const count = Math.floor(n / e);
     for (let i = 0; i < count && !budget.stopped; i++) {
@@ -241,44 +305,38 @@ function attachDynamicRelocations(image, relocs, symbols) {
   }
 }
 
-function dynamicSymbolsFromImage(image) {
-  const dyn = image.symbols.filter((s) => s.source === 'dynsym' || s.source === 'PT_DYNAMIC');
-  return dyn.map((s, i) => ({ ...s, index: s.index ?? i }));
+function dynamicSymbolsFromImage(image, limit = Number.MAX_SAFE_INTEGER) {
+  const out = [];
+  for (const s of image.symbols) {
+    if (s.source !== 'dynsym' && s.source !== 'PT_DYNAMIC') continue;
+    if (out.length >= limit) break;
+    if (s.index == null) s.index = out.length;
+    out.push(s);
+  }
+  return out;
+}
+
+export function dynamicSymbolFileCapacity(r, image, tags, symtabVa, syment) {
+  const range=mappedELFFileRangeForVa(image,symtabVa),ent=toSafeNumber(syment);if(!range||ent==null||ent<=0)return 0;
+  let end=range.end;
+  const pointerTags=[4n,5n,7n,17n,23n,36n,0x6000000fn,0x60000011n,0x6ffffef5n,0x6ffffff0n,0x6ffffffcn,0x6ffffffen];
+  for(const tag of pointerTags)for(const va of tags.get(tag)||[]){if(va===symtabVa)continue;const candidate=mappedELFFileRangeForVa(image,va);if(candidate&&candidate.segment===range.segment&&candidate.start>range.start&&candidate.start<end)end=candidate.start;}
+  return Math.max(0,Math.floor((end-range.start)/ent));
 }
 
 function symbolCountFromHash(r, hashVa, image) {
-  if (hashVa == null) return 0;
-  const off = vaToOffset(image, hashVa);
-  if (off == null || off + 8 > r.length) return 0;
-  const nchain = r.u32(off + 4);
-  return nchain > 0 && nchain <= 10_000_000 ? nchain : 0;
+  if(hashVa==null)return 0;const range=mappedELFFileRangeForVa(image,hashVa);if(!range||range.start+8>range.end)return 0;
+  const nbucket=r.u32(range.start),nchain=r.u32(range.start+4);if(!nchain||nchain>10_000_000)return 0;
+  const bytes=8n+BigInt(nbucket+nchain)*4n;if(bytes>BigInt(range.end-range.start)){markDynamicPartial(image,'DT_HASH table crosses a file-backed PT_LOAD boundary');return 0;}return nchain;
 }
 
 function symbolCountFromGnuHash(r, hashVa, image, bits) {
-  if (hashVa == null) return 0;
-  const off = vaToOffset(image, hashVa);
-  if (off == null || off + 16 > r.length) return 0;
-  const nbuckets = r.u32(off), symOffset = r.u32(off + 4), bloomSize = r.u32(off + 8);
-  if (!nbuckets || nbuckets > 10_000_000 || bloomSize > 10_000_000) return 0;
-  const word = bits === 64 ? 8 : 4;
-  const bucketsOff = off + 16 + bloomSize * word;
-  const chainsOff = bucketsOff + nbuckets * 4;
-  if (chainsOff > r.length) return 0;
-  let max = symOffset;
-  let remainingSteps = Math.min(10_000_000, Math.max(4096, nbuckets * 64));
-  for (let i = 0; i < nbuckets; i++) {
-    const bucket = r.u32(bucketsOff + i * 4);
-    if (!bucket || bucket < symOffset) continue;
-    let idx = bucket;
-    let p = chainsOff + (idx - symOffset) * 4;
-    for (; p + 4 <= r.length; idx++, p += 4) {
-      if (--remainingSteps < 0) { markExtendedPartial(image, 'GNU hash chain traversal exceeded the global budget'); return 0; }
-      const chain = r.u32(p);
-      if (idx > max) max = idx;
-      if (chain & 1) break;
-    }
-  }
-  return max >= symOffset ? max + 1 : 0;
+  if(hashVa==null)return 0;const range=mappedELFFileRangeForVa(image,hashVa);if(!range||range.start+16>range.end)return 0;const off=range.start;
+  const nbuckets=r.u32(off),symOffset=r.u32(off+4),bloomSize=r.u32(off+8);if(!nbuckets||nbuckets>10_000_000||bloomSize>10_000_000)return 0;const word=bits===64?8:4;
+  const bucketsOff=off+16+bloomSize*word,chainsOff=bucketsOff+nbuckets*4;if(!Number.isSafeInteger(bucketsOff)||!Number.isSafeInteger(chainsOff)||chainsOff>range.end){markDynamicPartial(image,'DT_GNU_HASH header/buckets cross a file-backed PT_LOAD boundary');return 0;}
+  let max=symOffset,remainingSteps=Math.min(10_000_000,Math.max(4096,nbuckets*64));
+  for(let i=0;i<nbuckets;i++){const bucket=r.u32(bucketsOff+i*4);if(!bucket||bucket<symOffset)continue;let idx=bucket,p=chainsOff+(idx-symOffset)*4;for(;p+4<=range.end;idx++,p+=4){if(--remainingSteps<0){markDynamicPartial(image,'GNU hash chain traversal exceeded the global budget');return 0;}const chain=r.u32(p);if(idx>max)max=idx;if(chain&1)break;}if(p+4>range.end){markDynamicPartial(image,'DT_GNU_HASH chain crosses a file-backed PT_LOAD boundary');return 0;}}
+  return max>=symOffset?max+1:0;
 }
 
 function symbolCountFromRelocations(relocs) {
@@ -293,9 +351,10 @@ function symbolCountFromLayout(symtab, strtab, syment, image, r) {
   if (delta % syment !== 0n) return 0;
   const n = delta / syment;
   if (n <= 0n || n > 1_000_000n) return 0;
-  const symOff = vaToOffset(image, symtab), strOff = vaToOffset(image, strtab);
-  if (symOff == null || strOff == null || strOff <= symOff || strOff > r.length) return 0;
-  if (BigInt(strOff - symOff) !== delta) return 0;
+  const symRange=mappedELFFileRangeForVa(image,symtab),strRange=mappedELFFileRangeForVa(image,strtab);
+  const symOff=symRange?.start??null,strOff=strRange?.start??null;
+  if(symOff==null||strOff==null||symRange.segment!==strRange.segment||strOff<=symOff||strOff>symRange.end)return 0;
+  if(BigInt(strOff-symOff)!==delta)return 0;
   return Number(n);
 }
 
@@ -314,8 +373,7 @@ function markDynamicPartial(image, message) {
 }
 
 function vaToOffset(image, va) {
-  const off = image.addressToOffset(va);
-  return off == null ? null : toSafeNumber(off);
+  return mappedELFFileRangeForVa(image,va)?.start ?? null;
 }
 function toSafeNumber(v) {
   const n = Number(v);

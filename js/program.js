@@ -26,11 +26,98 @@ function lowerBoundDirect(values, addr) {
   }
   return lo;
 }
-function completeness(array, capped, source) {
+export const PROGRAM_MERGE_LIMITS = Object.freeze({
+  calls: 2_000_000,
+  refs: 2_000_000,
+  kindWords: 16 * 1024 * 1024,
+});
+
+function boundedCount(scan, countKey, ...arrays) {
+  const requested = Number.isSafeInteger(scan?.[countKey]) ? scan[countKey] : (arrays[0]?.length || 0);
+  return Math.max(0, Math.min(requested, ...arrays.map((x) => x?.length || 0)));
+}
+
+/** Merge independently scanned executable regions without losing provenance. */
+export function mergeProgramScans(scans = [], options = {}) {
+  const limits = { ...PROGRAM_MERGE_LIMITS, ...(options.limits || {}) };
+  const ordered = (scans || []).filter((x) => x && !x.cancelled).slice().sort((a,b) => {
+    const av=BigInt(a.vmAddr ?? 0), bv=BigInt(b.vmAddr ?? 0);
+    return av < bv ? -1 : av > bv ? 1 : String(a.regionId||'').localeCompare(String(b.regionId||''));
+  });
+  const expectedRegions = (options.regions || []).map((r) => ({ id:r.id ?? null, vmAddr:BigInt(r.vmAddr ?? 0), size:BigInt(r.size ?? 0) }));
+  const reasons = [...(options.reasons || [])];
+  const scannedIds = new Set(ordered.map((x) => x.regionId).filter((x) => x != null));
+  for (const region of expectedRegions) if (region.id != null && !scannedIds.has(region.id)) reasons.push(`program-region-unscanned:${region.id}`);
+  for (const scan of ordered) {
+    if (scan.unsupported) reasons.push('unsupported-program-analysis');
+    if (scan.completeness?.complete === false || scan.complete === false) {
+      const rs = scan.completeness?.reasons || (scan.truncationReason ? [scan.truncationReason] : ['program-region-incomplete']);
+      for (const reason of rs) reasons.push(`${scan.regionId || 'region'}:${reason}`);
+    }
+  }
+
+  const callAvailable = ordered.reduce((n,s) => n + boundedCount(s,'callCount',s.callFrom,s.callTo),0);
+  const refAvailable = ordered.reduce((n,s) => n + boundedCount(s,'refCount',s.refFrom,s.refTo,s.refKind),0);
+  const callCap = Math.max(0, Math.min(Number(limits.calls)||0, callAvailable));
+  const refCap = Math.max(0, Math.min(Number(limits.refs)||0, refAvailable));
+  const callFrom=new BigUint64Array(callCap), callTo=new BigUint64Array(callCap);
+  const refFrom=new BigUint64Array(refCap), refTo=new BigUint64Array(refCap), refKind=new Uint8Array(refCap);
+  let ci=0, ri=0;
+  for (const scan of ordered) {
+    const nc=boundedCount(scan,'callCount',scan.callFrom,scan.callTo), ct=Math.min(nc,callCap-ci);
+    if (ct>0) { callFrom.set(scan.callFrom.subarray(0,ct),ci); callTo.set(scan.callTo.subarray(0,ct),ci); ci+=ct; }
+    const nr=boundedCount(scan,'refCount',scan.refFrom,scan.refTo,scan.refKind), rt=Math.min(nr,refCap-ri);
+    if (rt>0) { refFrom.set(scan.refFrom.subarray(0,rt),ri); refTo.set(scan.refTo.subarray(0,rt),ri); refKind.set(scan.refKind.subarray(0,rt),ri); ri+=rt; }
+  }
+  if (callAvailable > callCap) reasons.push('global-call-edge-budget');
+  if (refAvailable > refCap) reasons.push('global-reference-budget');
+
+  let remainingKinds=Math.max(0,Number(limits.kindWords)||0), words=0, kindsCovered=0;
+  const kindRegions=[];
+  for (const scan of ordered) {
+    const regionWords=Math.max(0,Number(scan.words)||0), src=scan.kinds || new Uint8Array(0);
+    const sourceCovered=Math.max(0,Math.min(Number(scan.kindsCovered ?? src.length)||0,src.length,regionWords));
+    const take=Math.min(sourceCovered,remainingKinds);
+    const kinds=take>0 ? src.slice(0,take) : new Uint8Array(0);
+    kindRegions.push({ regionId:scan.regionId ?? null, vmAddr:BigInt(scan.vmAddr ?? 0), words:regionWords, kinds, kindsCovered:take });
+    words += regionWords; kindsCovered += take; remainingKinds -= take;
+    if (take < sourceCovered || take < regionWords) reasons.push(`${scan.regionId || 'region'}:kind-stat-budget`);
+  }
+
+  const uniqueReasons=[...new Set(reasons.filter(Boolean))];
+  const unsupported=ordered.length>0 && ordered.every((x)=>x.unsupported===true);
+  const callsCapped=callAvailable>callCap || ordered.some((x)=>x.callsCapped);
+  const refsCapped=refAvailable>refCap || ordered.some((x)=>x.refsCapped);
+  const complete=!unsupported && uniqueReasons.length===0 && expectedRegions.length===ordered.length;
+  return {
+    vmAddr: ordered.length ? BigInt(ordered[0].vmAddr ?? 0) : (expectedRegions[0]?.vmAddr ?? 0n),
+    regions: expectedRegions,
+    kindRegions,
+    callFrom, callTo, callCount:ci,
+    refFrom, refTo, refKind, refCount:ri,
+    kinds:new Uint8Array(0), kindsCovered, words,
+    callsCapped, refsCapped, unsupported,
+    architecture: ordered.find((x)=>x.architecture || x.arch)?.architecture || ordered.find((x)=>x.arch)?.arch || null,
+    complete, truncated:!complete,
+    completeness:{ complete, reasons:uniqueReasons, regionCount:ordered.length, expectedRegionCount:expectedRegions.length,
+      limits:{calls:callCap,refs:refCap,kindWords:Number(limits.kindWords)||0} },
+  };
+}
+
+function completeness(array, capped, source, queryLimited = false, unavailableReason = null) {
+  const sourceCapped = !!capped;
+  const locallyLimited = !!queryLimited;
+  const unavailable = unavailableReason || null;
   Object.defineProperties(array, {
-    complete: { value: !capped, enumerable: false, configurable: true },
-    capped: { value: !!capped, enumerable: false, configurable: true },
+    complete: { value: !unavailable && !sourceCapped && !locallyLimited, enumerable: false, configurable: true },
+    capped: { value: sourceCapped, enumerable: false, configurable: true },
+    queryLimited: { value: locallyLimited, enumerable: false, configurable: true },
+    unsupported: { value: unavailable === 'unsupported-program-analysis', enumerable: false, configurable: true },
     completenessSource: { value: source, enumerable: false, configurable: true },
+    incompleteReason: {
+      value: unavailable || (sourceCapped ? `${source}-source-capped` : (locallyLimited ? 'query-limit' : null)),
+      enumerable: false, configurable: true,
+    },
   });
   return array;
 }
@@ -39,26 +126,66 @@ export class ProgramIndex {
   constructor(scan, symbols, region) {
     const s = scan || {};
     this.region = region || null;
+    this.regions = Array.isArray(s.regions) && s.regions.length ? s.regions.map((r)=>({ ...r, vmAddr:BigInt(r.vmAddr ?? 0), size:BigInt(r.size ?? 0) })) : (region ? [region] : []);
     this.symbols = symbols || null;
     this.vmAddr = s.vmAddr != null ? s.vmAddr : (region ? region.vmAddr : 0n);
-    this.callFrom = s.callFrom || new BigUint64Array(0);
-    this.callTo = s.callTo || new BigUint64Array(0);
-    this.refFrom = s.refFrom || new BigUint64Array(0);
-    this.refTo = s.refTo || new BigUint64Array(0);
-    this.refKind = s.refKind || new Uint8Array(0);
-    this.kinds = s.kinds || new Uint8Array(0);
-    this.kindsCovered = s.kindsCovered || 0;
+    const rawCallFrom = s.callFrom || new BigUint64Array(0);
+    const rawCallTo = s.callTo || new BigUint64Array(0);
+    const rawRefFrom = s.refFrom || new BigUint64Array(0);
+    const rawRefTo = s.refTo || new BigUint64Array(0);
+    const rawRefKind = s.refKind || new Uint8Array(0);
+    const callCount = Math.min(Number.isSafeInteger(s.callCount) ? s.callCount : rawCallFrom.length, rawCallFrom.length, rawCallTo.length);
+    const refCount = Math.min(Number.isSafeInteger(s.refCount) ? s.refCount : rawRefFrom.length, rawRefFrom.length, rawRefTo.length, rawRefKind.length);
+    this.callFrom = rawCallFrom.subarray(0, callCount);
+    this.callTo = rawCallTo.subarray(0, callCount);
+    this.refFrom = rawRefFrom.subarray(0, refCount);
+    this.refTo = rawRefTo.subarray(0, refCount);
+    this.refKind = rawRefKind.subarray(0, refCount);
+    const singleKinds=s.kinds || new Uint8Array(0);
+    this.kindRegions = Array.isArray(s.kindRegions) && s.kindRegions.length
+      ? s.kindRegions.map((k)=>({ regionId:k.regionId ?? null, vmAddr:BigInt(k.vmAddr ?? 0), words:Math.max(0,Number(k.words)||0), kinds:k.kinds||new Uint8Array(0), kindsCovered:Math.max(0,Number(k.kindsCovered)||0) }))
+      : (singleKinds.length || s.words ? [{ regionId:s.regionId ?? region?.id ?? null, vmAddr:BigInt(s.vmAddr ?? region?.vmAddr ?? 0), words:Math.max(0,Number(s.words)||0), kinds:singleKinds, kindsCovered:Math.max(0,Number(s.kindsCovered)||0) }] : []);
+    this.kinds = this.kindRegions.length===1 ? this.kindRegions[0].kinds : singleKinds;
+    this.kindsCovered = this.kindRegions.length ? this.kindRegions.reduce((n,k)=>n+k.kindsCovered,0) : (s.kindsCovered || 0);
     this.callsCapped = !!s.callsCapped;
     this.refsCapped = !!s.refsCapped;
-    this.words = s.words || 0;
+    this.words = this.kindRegions.length ? this.kindRegions.reduce((n,k)=>n+k.words,0) : (s.words || 0);
+    this.unsupported = !!s.unsupported;
+    this.architecture = s.architecture || s.arch || null;
+    const suppliedCompleteness = s.completeness && typeof s.completeness === 'object' ? s.completeness : null;
+    const reasons = [...new Set([
+      ...(Array.isArray(suppliedCompleteness?.reasons) ? suppliedCompleteness.reasons : []),
+      ...(this.unsupported ? ['unsupported-program-analysis'] : []),
+    ])];
+    this.completeness = {
+      ...(suppliedCompleteness || {}),
+      complete: !this.unsupported && (suppliedCompleteness ? suppliedCompleteness.complete !== false : (!this.callsCapped && !this.refsCapped)),
+      reasons,
+    };
+    this.queryIncompleteReason = this.unsupported ? 'unsupported-program-analysis'
+      : (this.completeness.complete === false ? (reasons[0] || 'program-analysis-incomplete') : null);
     this.gen = symbols && symbols.gen != null ? symbols.gen : 0;
     this._byCallTo = null;
     this._byRefTo = null;
   }
   get callCount() { return this.callFrom.length; }
   get refCount() { return this.refFrom.length; }
-  get statsComplete() { return this.kindsCovered >= this.words; }
-  get graphCompleteness() { return Object.freeze({ callsComplete: !this.callsCapped, refsComplete: !this.refsCapped, statsComplete: this.statsComplete }); }
+  get statsComplete() {
+    if (this.unsupported || this.completeness.complete === false) return false;
+    return this.kindRegions.length ? this.kindRegions.every((k)=>k.kindsCovered>=k.words) : this.kindsCovered>=this.words;
+  }
+  get graphCompleteness() {
+    const sourceComplete = !this.unsupported && this.completeness.complete !== false;
+    return Object.freeze({
+      supported: !this.unsupported,
+      unsupported: this.unsupported,
+      architecture: this.architecture,
+      reasons: [...(this.completeness.reasons || [])],
+      callsComplete: sourceComplete && !this.callsCapped,
+      refsComplete: sourceComplete && !this.refsCapped,
+      statsComplete: this.statsComplete,
+    });
+  }
 
   _callToOrder() {
     if (!this._byCallTo) {
@@ -84,39 +211,54 @@ export class ProgramIndex {
     if (!fn || (fn.end != null && addr >= fn.end)) return null;
     return fn.start;
   }
+  _regionFor(addr) {
+    const a=BigInt(addr);
+    return this.regions.find((r)=>a>=BigInt(r.vmAddr) && a<BigInt(r.vmAddr)+BigInt(r.size)) || null;
+  }
   functionRange(addr) {
     if (!this.symbols || !this.symbols.functionCount) return null;
     const fn = this.symbols.functionAt(addr);
     if (!fn) return null;
-    return { start: fn.start, end: fn.end != null ? fn.end : (this.region ? this.region.vmAddr + this.region.size : null) };
+    const owner=this._regionFor(fn.start) || this.region;
+    return { start: fn.start, end: fn.end != null ? fn.end : (owner ? BigInt(owner.vmAddr) + BigInt(owner.size) : null), region:owner };
   }
   callSitesTo(target, limit = 500) {
     const order = this._callToOrder(), out = [];
-    let i = lowerBound(this.callTo, order, target);
-    for (; i < order.length && out.length < limit; i++) {
-      const k = order[i]; if (this.callTo[k] !== target) break;
+    let i = lowerBound(this.callTo, order, target), queryLimited = false;
+    for (; i < order.length; i++) {
+      const k = order[i];
+      if (this.callTo[k] !== target) break;
+      if (out.length >= limit) { queryLimited = true; break; }
       out.push({ site: this.callFrom[k], caller: this.functionStartOf(this.callFrom[k]) });
     }
-    return completeness(out, this.callsCapped, 'calls');
+    return completeness(out, this.callsCapped, 'calls', queryLimited, this.queryIncompleteReason);
   }
   callersOf(target, limit = 200) {
     const seen = new Map();
-    for (const c of this.callSitesTo(target, limit * 4)) {
+    const sites = this.callSitesTo(target, Math.max(0, limit * 4));
+    let queryLimited = sites.complete !== true;
+    for (const c of sites) {
       const key = c.caller != null ? c.caller.toString() : 's' + c.site.toString();
-      if (!seen.has(key)) { seen.set(key, { addr: c.caller, site: c.site, count: 0 }); if (seen.size >= limit) { seen.get(key).count++; break; } }
+      if (!seen.has(key)) {
+        if (seen.size >= limit) { queryLimited = true; break; }
+        seen.set(key, { addr: c.caller, site: c.site, count: 0 });
+      }
       seen.get(key).count++;
     }
-    return completeness(Array.from(seen.values()), this.callsCapped, 'calls');
+    return completeness(Array.from(seen.values()), this.callsCapped, 'calls', queryLimited, this.queryIncompleteReason);
   }
   calleesOf(start, end, limit = 200) {
-    const out = new Map(); let i = lowerBoundDirect(this.callFrom, start);
+    const out = new Map(); let i = lowerBoundDirect(this.callFrom, start), queryLimited = false;
     for (; i < this.callFrom.length; i++) {
       const from = this.callFrom[i]; if (end != null && from >= end) break;
       const to = this.callTo[i], key = to.toString();
-      if (!out.has(key)) { if (out.size >= limit) break; out.set(key, { addr: to, site: from, count: 0 }); }
+      if (!out.has(key)) {
+        if (out.size >= limit) { queryLimited = true; break; }
+        out.set(key, { addr: to, site: from, count: 0 });
+      }
       out.get(key).count++;
     }
-    return completeness(Array.from(out.values()), this.callsCapped, 'calls');
+    return completeness(Array.from(out.values()), this.callsCapped, 'calls', queryLimited, this.queryIncompleteReason);
   }
   callCountOf(target) {
     const order = this._callToOrder(); let i = lowerBound(this.callTo, order, target), n = 0;
@@ -124,40 +266,54 @@ export class ProgramIndex {
     return n;
   }
   refSitesTo(addr, span = 1n, limit = 500) {
-    const order = this._refToOrder(), out = []; let i = lowerBound(this.refTo, order, addr);
+    const order = this._refToOrder(), out = []; let i = lowerBound(this.refTo, order, addr), queryLimited = false;
     const hi = addr + (span > 0n ? span : 1n);
-    for (; i < order.length && out.length < limit; i++) {
+    for (; i < order.length; i++) {
       const k = order[i]; if (this.refTo[k] >= hi) break;
+      if (out.length >= limit) { queryLimited = true; break; }
       out.push({ site: this.refFrom[k], target: this.refTo[k], kind: this.refKind[k] });
     }
-    return completeness(out, this.refsCapped, 'refs');
+    return completeness(out, this.refsCapped, 'refs', queryLimited, this.queryIncompleteReason);
   }
   functionsReferencing(addr, span = 1n, limit = 200) {
     const seen = new Map();
-    for (const r of this.refSitesTo(addr, span, limit * 4)) {
+    const refs = this.refSitesTo(addr, span, Math.max(0, limit * 4));
+    let queryLimited = refs.complete !== true;
+    for (const r of refs) {
       const fn = this.functionStartOf(r.site), key = fn != null ? fn.toString() : 's' + r.site.toString();
-      if (!seen.has(key)) { if (seen.size >= limit) break; seen.set(key, { addr: fn, site: r.site, kind: r.kind, count: 0 }); }
+      if (!seen.has(key)) {
+        if (seen.size >= limit) { queryLimited = true; break; }
+        seen.set(key, { addr: fn, site: r.site, kind: r.kind, count: 0 });
+      }
       seen.get(key).count++;
     }
-    return completeness(Array.from(seen.values()), this.refsCapped, 'refs');
+    return completeness(Array.from(seen.values()), this.refsCapped, 'refs', queryLimited, this.queryIncompleteReason);
   }
   refsFrom(start, end, limit = 400) {
-    const out = []; let i = lowerBoundDirect(this.refFrom, start);
-    for (; i < this.refFrom.length && out.length < limit; i++) {
+    const out = []; let i = lowerBoundDirect(this.refFrom, start), queryLimited = false;
+    for (; i < this.refFrom.length; i++) {
       const from = this.refFrom[i]; if (end != null && from >= end) break;
+      if (out.length >= limit) { queryLimited = true; break; }
       out.push({ site: from, target: this.refTo[i], kind: this.refKind[i] });
     }
-    return completeness(out, this.refsCapped, 'refs');
+    return completeness(out, this.refsCapped, 'refs', queryLimited, this.queryIncompleteReason);
   }
   statsOf(start, end) {
     const stats = { total: 0, covered: true, arith: 0, mul: 0, div: 0, logic: 0, shift: 0, farith: 0, fmul: 0, fconv: 0, simd: 0, load: 0, store: 0, cmp: 0, condbr: 0, branch: 0, call: 0, indcall: 0, ret: 0, csel: 0, atomic: 0, movimm: 0, adrp: 0, trap: 0, other: 0 };
-    if (!this.kinds.length) { stats.covered = false; return stats; }
-    const first = Number((start - this.vmAddr) / 4n), lastAddr = end != null ? end : start + 4n;
-    let last = Number((lastAddr - this.vmAddr) / 4n);
-    if (!(first >= 0)) return stats;
-    if (last > this.kindsCovered) { last = this.kindsCovered; stats.covered = false; }
+    if (this.unsupported) { stats.covered = false; stats.unsupported = true; stats.incompleteReason = 'unsupported-program-analysis'; return stats; }
+    const lastAddr=end!=null?BigInt(end):BigInt(start)+4n;
+    const spans=this.kindRegions.length?this.kindRegions:[{vmAddr:BigInt(this.vmAddr||0),words:this.words,kinds:this.kinds,kindsCovered:this.kindsCovered}];
+    const span=spans.find((k)=>BigInt(start)>=k.vmAddr && BigInt(start)<k.vmAddr+BigInt(k.words)*4n);
+    if(!span || !span.kinds.length){stats.covered=false;return stats;}
+    const spanEnd=span.vmAddr+BigInt(span.words)*4n;
+    const boundedEnd=lastAddr>spanEnd?spanEnd:lastAddr;
+    if(lastAddr>spanEnd)stats.covered=false;
+    const first=Number((BigInt(start)-span.vmAddr)/4n);
+    let last=Number((boundedEnd-span.vmAddr+3n)/4n);
+    if(!(first>=0)){stats.covered=false;return stats;}
+    if(last>span.kindsCovered){last=span.kindsCovered;stats.covered=false;}
     for (let i = first; i < last; i++) {
-      const k = this.kinds[i]; stats.total++;
+      const k = span.kinds[i]; stats.total++;
       switch (k) {
         case KIND.ARITH: stats.arith++; break; case KIND.MUL: stats.mul++; break; case KIND.DIV: stats.div++; break;
         case KIND.LOGIC: stats.logic++; break; case KIND.SHIFT: stats.shift++; break; case KIND.FARITH: stats.farith++; break;
@@ -178,7 +334,7 @@ export class ProgramIndex {
     for (let i = 0; i < this.callTo.length; i++) { const key = this.callTo[i].toString(); counts.set(key, (counts.get(key) || 0) + 1); }
     const out = []; for (const [key, n] of counts) out.push({ addr: BigInt(key), count: n });
     out.sort((a, b) => b.count - a.count);
-    return completeness(out.slice(0, limit), this.callsCapped, 'calls');
+    return completeness(out.slice(0, limit), this.callsCapped, 'calls', out.length > limit, this.queryIncompleteReason);
   }
 }
 

@@ -77,7 +77,7 @@ async function handle(msg, signal) {
     case 'readAt': return readAtAddress(msg, signal);
     case 'guessFunctions': return genericFunctionSeeds();
     case 'xrefs': return { results: [], cancelled: false, capped: false, unsupported: true };
-    case 'scanProgram': return emptyProgramScan();
+    case 'scanProgram': return emptyProgramScan(msg.regionId);
     case 'fieldAccess': return msg.offsets ? { groups: Object.fromEntries((msg.offsets || []).map((x) => [String(x), []])), unsupported: true } : { results: [], unsupported: true };
     case 'valueShapes': return { groups: [], unsupported: true };
     case 'metadata': return metadataPage(msg);
@@ -197,31 +197,59 @@ function analyzeImage() {
   const kinds = new Uint8Array(sorted.length);
   const flags = new Uint8Array(sorted.length);
   for (let i = 0; i < sorted.length; i++) { addrs[i] = sorted[i].address; flags[i] = sorted[i].exported ? 1 : 0; }
-  const functions = [...new Set((image.functions || []).map((f) => BigInt(f.address).toString()))].map(BigInt).sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
+  const seedByAddress = new Map();
+  for (const seed of image.functions || []) if (seed?.address != null) seedByAddress.set(BigInt(seed.address).toString(), seed);
+  const functions = [...seedByAddress.keys()].map(BigInt).sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
   const funcs = new BigUint64Array(functions);
+  const functionProvenance = functions.map((addr) => {
+    const seed = seedByAddress.get(addr.toString()) || {};
+    const confirmed = isExactFunctionSeed(seed);
+    return { source: seed.source || 'heuristic', confidence: Number(seed.confidence ?? (confirmed ? 1 : 0.5)), confirmed };
+  });
+  const nameProvenance = sorted.map((entry) => ({ source: entry.exported ? 'export-table' : 'binary-symbol', confidence: 1, confirmed: true }));
+  const allSeedsExact = functions.length > 0 && (image.functions || []).every(isExactFunctionSeed);
+  /* ELF/PE symbol/unwind/exception seeds can all be exact while still being a
+     non-exhaustive subset. The generic platform worker has no exhaustive
+     discovery proof, so it must not suppress later heuristic completion. */
+  const discoveryComplete = image.metadata?.functionDiscovery?.complete === true;
   return {
-    addrs, kinds, flags, names: sorted.map((x) => x.name).join('\n'), funcs,
+    addrs, kinds, flags, names: sorted.map((x) => String(x.name ?? '')), funcs, functionProvenance, nameProvenance,
     symbolCount: addrs.length, funcCount: funcs.length, capped: false,
-    functionStartsExact: functions.length > 0 && (image.functions || []).every(isExactFunctionSeed),
+    allSeedsExact,
+    discoveryComplete,
+    functionStartsExact: discoveryComplete && allSeedsExact,
+    functionDiscovery: { complete: discoveryComplete, capped: false,
+      reasons: discoveryComplete ? [] : ['platform-function-seeds-not-exhaustive'] },
     __transfer: [addrs.buffer, kinds.buffer, flags.buffer, funcs.buffer],
   };
 }
 
 function emptyAnalysis() {
   const addrs = new BigUint64Array(0), kinds = new Uint8Array(0), flags = new Uint8Array(0), funcs = new BigUint64Array(0);
-  return { addrs, kinds, flags, names: '', funcs, symbolCount: 0, funcCount: 0, capped: false, functionStartsExact: false, __transfer: [addrs.buffer, kinds.buffer, flags.buffer, funcs.buffer] };
+  return { addrs, kinds, flags, names: [], funcs, symbolCount: 0, funcCount: 0, capped: false,
+    allSeedsExact: false, discoveryComplete: false, functionStartsExact: false,
+    functionDiscovery: { complete:false, capped:false, reasons:['platform-function-seeds-not-exhaustive'] },
+    __transfer: [addrs.buffer, kinds.buffer, flags.buffer, funcs.buffer] };
 }
 
 function genericFunctionSeeds() {
   const values = [...new Set((image?.functions || []).map((f) => BigInt(f.address).toString()))].map(BigInt).sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
   const starts = new BigUint64Array(values);
-  return { starts, cancelled: false, exact: values.length > 0 && (image?.functions || []).every(isExactFunctionSeed), __transfer: [starts.buffer] };
+  const allSeedsExact = values.length > 0 && (image?.functions || []).every(isExactFunctionSeed);
+  return { starts, cancelled: false, exact: allSeedsExact, allSeedsExact,
+    complete: false, discoveryComplete: false,
+    completeness: { complete:false, capped:false, reasons:['platform-function-discovery-not-exhaustive'] },
+    __transfer: [starts.buffer] };
 }
 
-function emptyProgramScan() {
+function emptyProgramScan(regionId = null) {
   const callFrom = new BigUint64Array(0), callTo = new BigUint64Array(0), refFrom = new BigUint64Array(0), refTo = new BigUint64Array(0);
   const refKind = new Uint8Array(0), kinds = new Uint8Array(0);
-  return { callFrom, callTo, refFrom, refTo, refKind, kinds, kindsCovered: 0, callsCapped: false, refsCapped: false, words: 0, unsupported: true, __transfer: [callFrom.buffer, callTo.buffer, refFrom.buffer, refTo.buffer, refKind.buffer, kinds.buffer] };
+  return { regionId, callFrom, callTo, refFrom, refTo, refKind, kinds, kindsCovered: 0,
+    callsCapped: false, refsCapped: false, words: 0, unsupported: true,
+    architecture: image?.arch || null,
+    completeness: { complete:false, reasons:['unsupported-program-analysis'] },
+    __transfer: [callFrom.buffer, callTo.buffer, refFrom.buffer, refTo.buffer, refKind.buffer, kinds.buffer] };
 }
 
 async function scanStrings(msg, signal) {
@@ -273,6 +301,7 @@ async function scanStrings(msg, signal) {
   flush();
   return {
     results: out.slice(0, cap), cancelled: false, capped: out.length >= cap,
+    truncationReason: out.length >= cap ? 'result-limit' : (total < regionBytes ? 'input-budget' : null),
     scannedBytes: exactExternalInteger(pos), complete: pos >= regionBytes && out.length < cap,
   };
 }

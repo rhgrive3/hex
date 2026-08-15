@@ -178,8 +178,8 @@ function opnd(op) {
     return { t: 'reg', reg: regKeyOf(op), bits: regBits(op), shift: op.shift || null };
   }
   if (op.k === 'imm') {
-    if (op.value == null) return op.float != null ? { t: 'imm', value: null, float: op.float } : null;
-    return { t: 'imm', value: op.value, shift: op.shift || null };
+    if (op.value == null) return op.float != null ? { t:'imm', value:null, float:Number(op.float), constKind:'float', bits:op.bits || 64, shift:op.shift || null } : null;
+    return { t:'imm', value:op.value, bits:op.bits || 64, shift:op.shift || null };
   }
   if (op.k === 'cond') return { t: 'cond', cond: op.text };
   return null;
@@ -189,11 +189,71 @@ function opnd(op) {
  * 1 命令 → IR 命令の配列（ふつうは 1 つ、ldp/stp は 2 つ）。
  * 意味を付けられない命令は OP.UNKNOWN を返す。ここで嘘を作らない。
  */
-function callResultLocation(insn, opts) {
+function callPrototypeOf(insn, opts) {
   let proto = insn?.callPrototype || null;
   if (!proto) {
-    try { proto = opts?.callPrototypeFor?.(insn.callTarget ?? null, insn) || null; } catch { proto = null; }
+    try { proto = opts?.callPrototypeFor?.(insn?.callTarget ?? null, insn) || null; } catch { proto = null; }
   }
+  return proto;
+}
+
+function callParameterList(proto) {
+  const list = proto && (proto.args || proto.parameters || proto.params || proto.arguments);
+  return Array.isArray(list) ? list : null;
+}
+
+function parameterAbiClass(param) {
+  const type = String(param?.type || param?.name || '').toLowerCase();
+  const cls = String(param?.abiClass || param?.class || param?.kind || '').toLowerCase();
+  const pointer = param?.pointer === true || param?.isPointer === true || /\*|pointer|ptr|object|class|block|closure/.test(type + ' ' + cls);
+  const hfa = param?.hfa === true || cls.includes('hfa') || cls.includes('homogeneous');
+  const vector = cls.includes('vector') || /vector|simd/.test(type);
+  const fp = hfa || vector || cls.includes('float') || cls.includes('fp') || /^(float|double|__fp16)/.test(type);
+  const members = Math.max(1, Math.min(4, Number(param?.members || param?.elements || param?.count || 1) || 1));
+  const bits = Math.max(8, Math.min(128, Number(param?.bits || param?.sizeBits || (fp ? 64 : 64)) || 64));
+  return { pointer, hfa, vector, fp, members, bits };
+}
+
+/** AAPCS64-visible call inputs. Unknown prototypes deliberately include both
+ * GP and SIMD argument banks and mark stack arguments as unknown instead of
+ * pretending x0-x7 is a complete ABI description. */
+export function classifyCallArguments(insn, opts = {}) {
+  const proto = callPrototypeOf(insn, opts);
+  const params = callParameterList(proto);
+  const srcs = [];
+  const arguments_ = [];
+  const stackArguments = [];
+  let gp = 0, fp = 0, stackOffset = 0;
+  let stackArgsMayContainPointers = false;
+  if (!params) {
+    for (let i=0;i<8;i++) { srcs.push({t:'reg',reg:`x${i}`,bits:64}); arguments_.push({index:i,location:'register',reg:`x${i}`,abiClass:'unknown-gp'}); }
+    for (let i=0;i<8;i++) { srcs.push({t:'reg',reg:`v${i}`,bits:128}); arguments_.push({index:8+i,location:'register',reg:`v${i}`,abiClass:'unknown-fp-vector'}); }
+    return { srcs, arguments:arguments_, stackArguments, stackArgsUnknown:true, stackArgsMayContainPointers:false, evidence:'conservative-aapcs64' };
+  }
+  params.forEach((param,index) => {
+    const c=parameterAbiClass(param);
+    const regsNeeded=c.hfa ? c.members : 1;
+    if (c.fp && fp + regsNeeded <= 8) {
+      const regs=[];
+      for(let n=0;n<regsNeeded;n++){const reg=`v${fp++}`;regs.push(reg);srcs.push({t:'reg',reg,bits:c.vector?128:c.bits});}
+      arguments_.push({index,location:'register',regs,reg:regs[0],abiClass:c.hfa?'hfa':c.vector?'vector':'fp',pointer:c.pointer,bits:c.bits});
+      return;
+    }
+    if (!c.fp && gp < 8) {
+      const reg=`x${gp++}`; srcs.push({t:'reg',reg,bits:64});
+      arguments_.push({index,location:'register',reg,abiClass:c.pointer?'pointer':'integer',pointer:c.pointer,bits:c.bits});
+      return;
+    }
+    const slots=Math.max(1,Math.ceil((c.hfa?c.members*c.bits:c.bits)/64));
+    const entry={index,location:'stack',offset:stackOffset,bytes:slots*8,abiClass:c.hfa?'hfa':c.vector?'vector':c.fp?'fp':c.pointer?'pointer':'integer',pointer:c.pointer,bits:c.bits};
+    stackArguments.push(entry);arguments_.push(entry);stackOffset+=slots*8;
+    if(c.pointer || param?.mayContainPointers === true || param?.containsPointers === true) stackArgsMayContainPointers=true;
+  });
+  return { srcs, arguments:arguments_, stackArguments, stackArgsUnknown:proto?.variadic===true||proto?.varargs===true, stackArgsMayContainPointers, evidence:'prototype-aapcs64' };
+}
+
+function callResultLocation(insn, opts) {
+  const proto = callPrototypeOf(insn, opts);
   if (!proto) return null;
   const type = String(proto.returnType || proto.ret || proto.result || '').toLowerCase();
   const cls = String(proto.returnClass || proto.abiClass || proto.resultClass || '').toLowerCase();
@@ -203,6 +263,21 @@ function callResultLocation(insn, opts) {
     return { reg:'v0', bits:Number(proto.returnBits || proto.bits || 64) || 64 };
   }
   if (type || cls || proto.returnsValue === true) return { reg:'x0', bits:Number(proto.returnBits || proto.bits || 64) || 64 };
+  return null;
+}
+
+function functionReturnLocation(opts) {
+  const proto = opts?.functionPrototype || opts?.prototype || null;
+  const type = String(opts?.returnType || proto?.returnType || proto?.ret || proto?.result || '').toLowerCase();
+  const cls = String(opts?.returnClass || proto?.returnClass || proto?.abiClass || proto?.resultClass || '').toLowerCase();
+  if (opts?.returnsValue === false || proto?.returnsValue === false || proto?.void === true || type === 'void' || cls === 'void') return null;
+  if (proto?.indirectResult === true || cls === 'indirect') return null;
+  if (cls.includes('fp') || cls.includes('float') || cls.includes('vector') || /^(float|double|__fp16)/.test(type)) {
+    return { reg:'v0', bits:Number(proto?.returnBits || proto?.bits || opts?.returnBits || 64) || 64 };
+  }
+  if (type || cls || opts?.returnsValue === true || proto?.returnsValue === true) {
+    return { reg:'x0', bits:Number(proto?.returnBits || proto?.bits || opts?.returnBits || 64) || 64 };
+  }
   return null;
 }
 
@@ -221,10 +296,15 @@ function lift(insn, opts = {}) {
   // AAPCS64 does not define a universal return register. Without prototype
   // evidence RET carries only control-flow semantics; consumers may recover a
   // return value from typed reaching definitions separately.
-  if (insn.isReturn) { push({ op: OP.RET, srcs: [] }); return out; }
+  if (insn.isReturn) {
+    const result = functionReturnLocation(opts);
+    push({ op:OP.RET, srcs:result ? [{ t:'reg', reg:result.reg, bits:result.bits }] : [], returnReg:result?.reg || null, returnEvidence:result ? 'prototype' : null });
+    return out;
+  }
   if (insn.isCall) {
     const result = callResultLocation(insn, opts);
-    const callSrcs = Array.from({ length: 8 }, (_, i) => ({ t: 'reg', reg: `x${i}`, bits: 64 }));
+    const callArgs = classifyCallArguments(insn, opts);
+    const callSrcs = callArgs.srcs.slice();
     if (insn.callTarget == null && ops[0] && ops[0].k === 'reg') {
       const targetReg = regKeyOf(ops[0]);
       if (targetReg && !callSrcs.some((src) => src.reg === targetReg)) callSrcs.push({ t: 'reg', reg: targetReg, bits: 64 });
@@ -234,6 +314,11 @@ function lift(insn, opts = {}) {
       target: insn.callTarget != null ? insn.callTarget : null,
       indirect: insn.callTarget == null,
       srcs: callSrcs,
+      callArguments: callArgs.arguments,
+      stackArguments: callArgs.stackArguments,
+      stackArgsUnknown: callArgs.stackArgsUnknown,
+      stackArgsMayContainPointers: callArgs.stackArgsMayContainPointers,
+      argumentEvidence: callArgs.evidence,
       dstReg: result?.reg || null, dstBits: result?.bits || 64,
       returnEvidence: result ? 'prototype' : null,
       clobbers: CALL_CLOBBERS,
@@ -266,9 +351,11 @@ function lift(insn, opts = {}) {
   /* ── メモリ ── */
   if (insn.memory) {
     const mem = ops.find((o) => o.k === 'mem');
+    const addressDispOp = mem ? (mem.addressDisp ?? mem.disp ?? null) : null;
+    const writebackDispOp = mem ? (mem.writebackDisp ?? (mem.mode === 'pre' ? addressDispOp : null)) : null;
     const addr = {
       base: mem ? regKeyOf(mem.base) : null,
-      disp: mem && mem.disp && mem.disp.value != null ? mem.disp.value : null,
+      disp: addressDispOp && addressDispOp.value != null ? addressDispOp.value : (mem?.mode === 'post' ? 0n : null),
       index: mem && mem.index ? regKeyOf(mem.index) : null,
       scale: mem && mem.shift ? (mem.shift.amount || 0) : 0,
       extend: mem && mem.shift && mem.shift.op !== 'lsl' ? mem.shift.op : null,
@@ -300,9 +387,10 @@ function lift(insn, opts = {}) {
       });
     }
     // 事前 / 事後インデックス付きは、ベースレジスタ自身も書き換わる
-    if (mem && (mem.mode === 'pre' || mem.mode === 'post') && addr.base && addr.disp != null) {
+    const writebackDisp = writebackDispOp && writebackDispOp.value != null ? writebackDispOp.value : null;
+    if (mem && (mem.mode === 'pre' || mem.mode === 'post') && addr.base && writebackDisp != null) {
       push({ op: OP.BIN, sub: 'add', dstReg: addr.base, dstBits: 64,
-        srcs: [{ t: 'reg', reg: addr.base, bits: 64 }, { t: 'imm', value: addr.disp }] });
+        srcs: [{ t: 'reg', reg: addr.base, bits: 64 }, { t: 'imm', value: writebackDisp }] });
     }
     return out;
   }
@@ -364,8 +452,9 @@ function lift(insn, opts = {}) {
     const src = opnd(ops[1]);
     if (!src) { push({ op: OP.UNKNOWN, dstReg: dstReg(), dstBits: dstBits(), srcs: [] }); return out; }
     if (base === 'movn' && src.t === 'imm' && src.value != null) {
-      push({ op: OP.CONST, dstReg: dstReg(), dstBits: dstBits(),
-        value: mask(~src.value, dstBits()), srcs: [] });
+      let v = src.value;
+      if (src.shift && src.shift.op === 'lsl') v <<= BigInt(src.shift.amount || 0);
+      push({ op:OP.CONST, dstReg:dstReg(), dstBits:dstBits(), value:mask(~v, dstBits()), srcs:[] });
       return out;
     }
     if (src.t === 'imm' && src.value != null) {
@@ -379,9 +468,10 @@ function lift(insn, opts = {}) {
   }
   if (base === 'movk') {
     const src = opnd(ops[1]);
-    push({ op: OP.BFI, dstReg: dstReg(), dstBits: dstBits(),
-      lsb: src && src.shift && src.shift.op === 'lsl' ? (src.shift.amount || 0) : 0, width: 16,
-      srcs: [{ t: 'reg', reg: dstReg(), bits: dstBits() }, src || { t: 'imm', value: 0n }] });
+    const lsb = src?.shift?.op === 'lsl' ? (src.shift.amount || 0) : 0;
+    const insert = src ? { ...src, shift:null } : { t:'imm', value:0n };
+    push({ op:OP.BFI, dstReg:dstReg(), dstBits:dstBits(), lsb, width:16,
+      srcs:[{ t:'reg', reg:dstReg(), bits:dstBits() }, insert] });
     return out;
   }
 
@@ -400,8 +490,8 @@ function lift(insn, opts = {}) {
     const lsb = ops[2] && ops[2].value != null ? Number(ops[2].value) : null;
     const width = ops[3] && ops[3].value != null ? Number(ops[3].value) : null;
     if (base === 'bfi' || base === 'bfxil') {
-      push({ op: OP.BFI, dstReg: dstReg(), dstBits: dstBits(), lsb, width,
-        srcs: [{ t: 'reg', reg: dstReg(), bits: dstBits() }, opnd(ops[1])].filter(Boolean) });
+      push({ op:OP.BFI, dstReg:dstReg(), dstBits:dstBits(), lsb, width, bitfieldKind:base,
+        srcs:[{ t:'reg', reg:dstReg(), bits:dstBits() }, opnd(ops[1])].filter(Boolean) });
     } else {
       push({ op: OP.BFX, dstReg: dstReg(), dstBits: dstBits(), lsb, width,
         signed: base[0] === 's', toward: /iz$/.test(base) ? 'left' : 'right',
@@ -448,7 +538,8 @@ function lift(insn, opts = {}) {
 
 /* 呼び出しで壊れるレジスタ（AAPCS64）。 */
 const CALL_CLOBBERS = ['x0', 'x1', 'x2', 'x3', 'x4', 'x5', 'x6', 'x7', 'x8',
-  'x9', 'x10', 'x11', 'x12', 'x13', 'x14', 'x15', 'x16', 'x17', 'x30', 'nzcv'];
+  'x9', 'x10', 'x11', 'x12', 'x13', 'x14', 'x15', 'x16', 'x17', 'x30', 'nzcv',
+  ...Array.from({length:8}, (_x,i)=>`v${i}`), ...Array.from({length:16}, (_x,i)=>`v${i+16}`)];
 
 /* ── SSA ────────────────────────────────────────────────────── */
 
@@ -676,9 +767,9 @@ export function buildIR(model, opts) {
   const resolve = (src) => {
     if (!src) return null;
     if (src.t === 'imm') {
-      const v = newValue(VK.CONST, { const: src.value, bits: 64 });
-      if (src.float != null) v.float = src.float;
-      return { value: v, shift: src.shift || null, bits: src.bits || 64 };
+      const v = newValue(VK.CONST, { const:src.value, bits:src.bits || 64 });
+      if (src.float != null) { v.float=Number(src.float); v.floatConst=Number(src.float); v.constKind='float'; }
+      return { value:v, shift:src.shift || null, bits:src.bits || 64 };
     }
     if (src.t === 'cond') return { cond: src.cond };
     if (src.t === 'reg') return { value: topOf(src.reg), shift: src.shift || null, bits: src.bits || 64 };
@@ -691,6 +782,10 @@ export function buildIR(model, opts) {
       op: p.op, sub: p.sub || null, block: p.block,
       row: p.row, address: p.address, text: p.text,
       args: [], dst: null, extra: p,
+      stackArguments: p.stackArguments || null,
+      stackArgsUnknown: !!p.stackArgsUnknown,
+      stackArgsMayContainPointers: !!p.stackArgsMayContainPointers,
+      argumentEvidence: p.argumentEvidence || null,
     };
     for (const s of p.srcs || []) {
       const r = resolve(s);
@@ -864,30 +959,127 @@ function livenessOf(ir, lifted, allRegs) {
  *   unknown            添字が実行時に決まるなど        → ここは触ると全部壊れる
  */
 
-function locationOf(inst) {
+function pointerShiftedConst(arg) {
+  if (!arg || !arg.value || arg.value.const == null) return null;
+  let v = arg.value.const;
+  const shift = arg.shift;
+  if (!shift) return v;
+  const amount = BigInt(shift.amount || 0);
+  if (shift.op === 'lsl') return v << amount;
+  if (shift.op === 'lsr') return v >> amount;
+  return null;
+}
+
+function pointerProvenanceKey(p) {
+  if (!p) return null;
+  return [p.kind, p.root, String(p.offset || 0n), p.address == null ? '' : String(p.address)].join(':');
+}
+
+const defaultPointerProvenanceMemo = new WeakMap();
+
+/**
+ * Conservative SSA pointer provenance. `must` only means every represented path
+ * has the same symbolic root+constant offset; different roots are never assumed
+ * distinct. Memory SSA passes a private memo because it runs before full value
+ * propagation, while public consumers use the default post-build memo.
+ */
+export function pointerProvenance(value, active = null, memo = defaultPointerProvenanceMemo) {
+  if (!value) return null;
+  if (memo.has(value)) return memo.get(value);
+  const visiting = active || new Set();
+  if (visiting.has(value)) return { kind:'unknown', root:'value:' + value.id, rootValue:value, offset:0n, must:false, valueId:value.id };
+  visiting.add(value);
+
+  let out = null;
+  const def = value.def;
+  const reg = String(value.reg || '');
+  if (value.kind === VK.ARG && (reg === 'sp' || reg === 'x29')) {
+    out = { kind:'stack', root:'stack', rootValue:value, offset:0n, must:true, valueId:value.id };
+  } else if (value.kind === VK.ARG && /^x[0-7]$/.test(reg)) {
+    out = { kind:'arg', root:'arg:' + reg, rootValue:value, offset:0n, arg:reg, must:true, valueId:value.id };
+  } else if (value.kind === VK.ARG && /^x(?:[89]|1\d|2\d|30)$/.test(reg)) {
+    out = { kind:'entry-register', root:'entry:' + reg, rootValue:value, offset:0n, reg, must:true, valueId:value.id };
+  } else if (def && def.op === OP.ADDR) {
+    const address = value.const != null ? value.const : def.extra?.value;
+    if (address != null) out = { kind:'global', root:'global', rootValue:value, offset:0n, address, must:true, valueId:value.id };
+  } else if (def && def.op === OP.CALL) {
+    out = { kind:'return', root:'return:' + def.id, rootValue:value, offset:0n,
+      target:def.extra?.target ?? null, must:true, valueId:value.id };
+  } else if (def && def.op === OP.LOAD) {
+    out = { kind:'field', root:'loaded:' + value.id, rootValue:value, offset:0n,
+      location:def.loc || null, must:true, valueId:value.id };
+  } else if (def && def.op === OP.MOV && def.args?.[0]?.value) {
+    const source = pointerProvenance(def.args[0].value, visiting, memo);
+    if (source) out = { ...source, valueId:value.id, via:'mov' };
+  } else if (def && def.op === OP.PHI && def.args?.length) {
+    const alternatives = def.args.map((arg) => arg?.value ? pointerProvenance(arg.value, visiting, memo) : null);
+    const keys = alternatives.map(pointerProvenanceKey);
+    if (keys[0] && keys.every((key) => key === keys[0])) {
+      out = { ...alternatives[0], valueId:value.id, via:'phi', must:alternatives.every((x) => x && x.must !== false) };
+    } else {
+      out = { kind:'phi', root:'phi:' + value.id, rootValue:value, offset:0n, must:false,
+        alternatives:alternatives.filter(Boolean), valueId:value.id };
+    }
+  } else if (def && def.op === OP.BIN && (def.sub === 'add' || def.sub === 'sub') && def.args?.length >= 2) {
+    const a = def.args[0], b = def.args[1];
+    const ac = pointerShiftedConst(a), bc = pointerShiftedConst(b);
+    if (bc != null && a?.value) {
+      const source = pointerProvenance(a.value, visiting, memo);
+      if (source && source.kind !== 'phi') {
+        const delta = def.sub === 'sub' ? -bc : bc;
+        out = { ...source, offset:(source.offset || 0n) + delta, valueId:value.id, via:def.sub + '-constant' };
+      }
+    } else if (def.sub === 'add' && ac != null && b?.value) {
+      const source = pointerProvenance(b.value, visiting, memo);
+      if (source && source.kind !== 'phi') {
+        out = { ...source, offset:(source.offset || 0n) + ac, valueId:value.id, via:'add-constant' };
+      }
+    }
+  }
+
+  if (!out) out = { kind:'unknown', root:'value:' + value.id, rootValue:value, offset:0n, must:true, valueId:value.id };
+  visiting.delete(value);
+  memo.set(value, out);
+  return out;
+}
+
+function locationOf(inst, pointerMemo = defaultPointerProvenanceMemo) {
   const a = inst.addr;
   if (!a) return null;
   const size = Number(a.size || inst.extra?.size || 0) || 0;
-  // Unknown/indexed addresses are may-alias locations, never one shared
-  // must-alias bucket. A unique key prevents unrelated unknown loads/stores
-  // from fabricating a reaching-store edge (#358).
-  if (a.index || a.disp == null || !a.base) return { key: `unknown:${inst.id}`, kind: MK.UNKNOWN, size };
+  if (a.index || a.disp == null || !a.base) return { key:`unknown:${inst.id}`, kind:MK.UNKNOWN, size };
   if (a.stack) {
     const baseReg = a.baseReg || a.base?.reg || 'stack';
     const frameEpoch = a.base?.id ?? -1;
-    return {
-      key: `stack:${baseReg}:e${frameEpoch}:${a.disp.toString()}:s${size}`,
-      kind: MK.STACK, baseReg, frameEpoch, disp: a.disp, size,
-    };
+    return { key:`stack:${baseReg}:e${frameEpoch}:${a.disp.toString()}:s${size}`, kind:MK.STACK, baseReg, frameEpoch, disp:a.disp, size };
   }
   const base = a.base;
   if (base.const != null) {
-    const addr = base.const + a.disp;
-    return { key: 'global:' + addr.toString(16) + ':s' + size, kind: MK.GLOBAL, address: addr, size };
+    const address = base.const + a.disp;
+    return { key:'global:' + address.toString(16) + ':s' + size, kind:MK.GLOBAL, address, size };
   }
+
+  const provenance = pointerProvenance(base, null, pointerMemo);
+  if (provenance?.must !== false && provenance?.kind === 'global' && provenance.address != null) {
+    const address = provenance.address + (provenance.offset || 0n) + a.disp;
+    return { key:'global:' + address.toString(16) + ':s' + size, kind:MK.GLOBAL, address, size, provenance };
+  }
+
+  // Canonicalize only proven same-root pointer arithmetic/copies. Ambiguous PHIs
+  // keep their own root and are handled as may-alias clobbers below.
+  const canonical = provenance && provenance.must !== false && provenance.kind !== 'phi';
+  const aliasRoot = canonical && provenance.root ? provenance.root : 'value:' + base.id;
+  const disp = canonical ? a.disp + (provenance.offset || 0n) : a.disp;
+  const canonicalBase = canonical && provenance.rootValue ? provenance.rootValue : base;
   return {
-    key: 'field:' + base.id + '+' + a.disp.toString() + ':s' + size,
-    kind: MK.FIELD, base, disp: a.disp, size,
+    key:'field:' + aliasRoot + '+' + disp.toString() + ':s' + size,
+    kind:MK.FIELD,
+    base:canonicalBase,
+    rawBase:base,
+    aliasRoot,
+    disp,
+    size,
+    provenance:canonical ? provenance : null,
   };
 }
 
@@ -909,8 +1101,10 @@ export function mayAlias(a, b) {
     const sa = BigInt(a.size || 8), sb = BigInt(b.size || 8);
     return !(pa + sa <= pb || pb + sb <= pa);
   }
-  // field 同士: ベースが同じ SSA 値なら、オフセットの重なりだけで判定できる
-  if (a.base && b.base && a.base.id === b.base.id) {
+  // field 同士: must-alias root が同じ場合だけoffsetでnon-overlapを証明できる。
+  const ar = a.aliasRoot || (a.base ? 'value:' + a.base.id : null);
+  const br = b.aliasRoot || (b.base ? 'value:' + b.base.id : null);
+  if (ar && br && ar === br && a.disp != null && b.disp != null) {
     const sa = BigInt(a.size || 8), sb = BigInt(b.size || 8);
     return !(a.disp + sa <= b.disp || b.disp + sb <= a.disp);
   }
@@ -941,9 +1135,16 @@ function storeOverlapsRange(storeLoc, otherLoc) {
     return overlap(storeLoc.disp,sa,otherLoc.disp,sb);
   }
   if (storeLoc.kind === MK.FIELD) {
-    if (!storeLoc.base || !otherLoc.base || storeLoc.base.id !== otherLoc.base.id) return false;
-    if (storeLoc.disp == null || otherLoc.disp == null) return false;
-    return overlap(storeLoc.disp,sa,otherLoc.disp,sb);
+    const storeRoot = storeLoc.aliasRoot || (storeLoc.base ? 'value:' + storeLoc.base.id : null);
+    const otherRoot = otherLoc.aliasRoot || (otherLoc.base ? 'value:' + otherLoc.base.id : null);
+    if (storeRoot && otherRoot && storeRoot === otherRoot) {
+      if (storeLoc.disp == null || otherLoc.disp == null) return true;
+      return overlap(storeLoc.disp,sa,otherLoc.disp,sb);
+    }
+    // Different symbolic pointer roots are *not* proof of distinct objects.
+    // Conservatively clobber the other field range so stale stores cannot become
+    // semantic truth. A future noalias/distinct-object proof may refine this.
+    return true;
   }
   return false;
 }
@@ -989,6 +1190,7 @@ export function stackPointerProvenanceOf(value, memo = new Map(), active = new S
 }
 
 function buildMemorySSA(ir, df, idom, children) {
+  const pointerMemo = new WeakMap();
   const locs = new Map();
   const defSites = new Map();      // key → Set(block)
   const clobberInsts = [];
@@ -1000,7 +1202,7 @@ function buildMemorySSA(ir, df, idom, children) {
 
   for (const inst of ir.instructions) {
     if (inst.op === OP.LOAD || inst.op === OP.STORE) {
-      const loc = locationOf(inst);
+      const loc = locationOf(inst, pointerMemo);
       if (!loc) continue;
       inst.loc = register(loc);
     } else if (inst.op === OP.CALL || inst.op === OP.UNKNOWN) {
@@ -1026,7 +1228,8 @@ function buildMemorySSA(ir, df, idom, children) {
   let stackEscaped = false;
   for (const inst of ir.instructions) {
     if (inst.op !== OP.CALL && inst.op !== OP.STORE && inst.op !== OP.UNKNOWN) continue;
-    if ((inst.args || []).some((a) => stackPointerProvenanceOf(a?.value, stackPointerMemo))) {
+    if (inst.stackArgsMayContainPointers ||
+        (inst.args || []).some((a) => stackPointerProvenanceOf(a?.value, stackPointerMemo))) {
       stackEscaped = true;
       break;
     }
@@ -1146,12 +1349,12 @@ function applyShift(v, shift, bits) {
     case 'lsl': return mask(v << n, bits);
     case 'lsr': return mask(mask(v, bits) >> n, bits);
     case 'asr': return mask(signedOf(mask(v, bits), bits) >> n, bits);
-    case 'uxtb': return mask(v & 0xffn, bits);
-    case 'uxth': return mask(v & 0xffffn, bits);
-    case 'uxtw': return mask(v & 0xffffffffn, bits);
-    case 'sxtb': return mask(BigInt.asIntN(8, v), bits);
-    case 'sxth': return mask(BigInt.asIntN(16, v), bits);
-    case 'sxtw': return mask(BigInt.asIntN(32, v), bits);
+    case 'uxtb': return mask((v & 0xffn) << n, bits);
+    case 'uxth': return mask((v & 0xffffn) << n, bits);
+    case 'uxtw': return mask((v & 0xffffffffn) << n, bits);
+    case 'sxtb': return mask((BigInt.asIntN(8, v)) << n, bits);
+    case 'sxth': return mask((BigInt.asIntN(16, v)) << n, bits);
+    case 'sxtw': return mask((BigInt.asIntN(32, v)) << n, bits);
     default: return null;
   }
 }
@@ -1246,6 +1449,23 @@ function propagateValues(ir) {
         if (folded != null) setConst(inst.dst, inst.extra && inst.extra.negate ? mask(-folded, bits) : folded);
         break;
       }
+      case OP.BFI: {
+        const prior = argConst(inst.args[0], bits), src = argConst(inst.args[1], bits);
+        if (prior != null && src != null) {
+          const lsb = Math.max(0, Math.min(bits - 1, Number(inst.extra?.lsb || 0)));
+          const width = Math.max(1, Math.min(bits - lsb, Number(inst.extra?.width || 16)));
+          const lowMask = (1n << BigInt(width)) - 1n;
+          if (inst.extra?.bitfieldKind === 'bfxil') {
+            const field = (mask(src, bits) >> BigInt(lsb)) & lowMask;
+            setConst(inst.dst, mask((mask(prior, bits) & ~lowMask) | field, bits));
+          } else {
+            const fieldMask = lowMask << BigInt(lsb);
+            const field = (mask(src, bits) & lowMask) << BigInt(lsb);
+            setConst(inst.dst, mask((mask(prior, bits) & ~fieldMask) | field, bits));
+          }
+        }
+        break;
+      }
       case OP.UN: setConst(inst.dst, foldUn(inst.sub, argConst(inst.args[0], bits), bits)); break;
       case OP.MAC: {
         const addend = argConst(inst.args[0], bits);
@@ -1261,8 +1481,9 @@ function propagateValues(ir) {
       case OP.LOAD: {
         const store = inst.reachingStore;
         if (store && store.args[0] && store.args[0].value && store.args[0].value.const != null) {
-          if (!inst.extra || !inst.extra.signed) setConst(inst.dst, store.args[0].value.const);
-          else setConst(inst.dst, mask(signedOf(mask(store.args[0].value.const, (inst.extra.size || 8) * 8), (inst.extra.size || 8) * 8), bits));
+          const loadBits = Math.max(1, Math.min(64, Number(inst.extra?.size || 8) * 8));
+          if (!inst.extra || !inst.extra.signed) setConst(inst.dst, mask(store.args[0].value.const, Math.min(bits, loadBits)));
+          else setConst(inst.dst, mask(signedOf(mask(store.args[0].value.const, loadBits), loadBits), bits));
         }
         break;
       }
@@ -1395,17 +1616,43 @@ function recoverStackVariables(ir) {
  * モデルは解析ごとに作り直されるので、WeakMap で持てば勝手に消える。
  */
 const irCache = new WeakMap();
+const irCacheIds = new WeakMap();
+let nextIrCacheId = 1;
+function irIdentity(value) {
+  if (value == null) return '-';
+  if ((typeof value !== 'object' && typeof value !== 'function')) return `${typeof value}:${String(value)}`;
+  if (!irCacheIds.has(value)) irCacheIds.set(value, nextIrCacheId++);
+  return `@${irCacheIds.get(value)}`;
+}
+function prototypeSignature(proto) {
+  if (!proto) return '-';
+  const args = Array.isArray(proto.args || proto.parameters || proto.params) ? (proto.args || proto.parameters || proto.params) : [];
+  return [irIdentity(proto), proto.returnType || proto.resultType || '', proto.returnClass || '', proto.returnsValue ?? '',
+    ...args.map((a) => `${a?.type || ''}:${a?.abiClass || a?.class || ''}:${a?.bits || ''}`)].join('|');
+}
+function irConfigurationKey(opts) {
+  if (!opts) return 'default';
+  return [
+    prototypeSignature(opts.functionPrototype || opts.prototype),
+    opts.returnType || '', opts.returnClass || '', opts.returnsValue ?? '', opts.returnBits || '',
+    irIdentity(opts.callPrototypeFor), irIdentity(opts.cfg), irIdentity(opts.rowOfAddress),
+    opts.prototypeRevision ?? '', opts.evidenceGeneration ?? '', opts.analysisGeneration ?? '', opts.cacheRevision ?? '',
+  ].join('~');
+}
 
 /**
  * モデルから IR を得る（作れなければ null）。落ちない。
- * ここが panels.js / role.js / pinpoint.js から呼ぶ唯一の入口。
+ * semantic-affecting opts are part of cache identity; failed builds are not sticky.
  */
 export function irFor(model, opts) {
   if (!model || !model.instructions || !model.instructions.length) return null;
-  if (irCache.has(model)) return irCache.get(model);
+  let entries = irCache.get(model);
+  if (!entries) { entries = new Map(); irCache.set(model, entries); }
+  const key = irConfigurationKey(opts);
+  if (entries.has(key)) return entries.get(key);
   let ir = null;
   try { ir = buildIR(model, opts); } catch { ir = null; }
-  irCache.set(model, ir);
+  if (ir != null) entries.set(key, ir);
   return ir;
 }
 
@@ -1473,6 +1720,7 @@ export function readModifyWrite(ir) {
       for (const a of def.args) if (a.value) stack.push(a.value);
     }
     if (!load) continue;
+    if (store.memDef && load.memUse !== store.memDef.prev) continue;
     out.push({
       load, store, location: store.loc,
       chain: chain.filter((c) => c !== load && c.op !== OP.STORE),

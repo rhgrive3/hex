@@ -1,4 +1,6 @@
 import { createRelocationBudget } from './relocation-budget.js';
+import { createDynamicSymbolBudget } from './dynamic-symbol-budget.js';
+import { mappedELFFileRangeForVa, mappedELFFileSpanForVa } from './elf-mapping.js';
 
 const DT_RELRSZ = 35n;
 const DT_RELR = 36n;
@@ -20,7 +22,7 @@ const GROUP_HAS_ADDEND = 8n;
 
 function one(tags, tag) { return tags.get(tag)?.[0] ?? null; }
 function safe(v) { const n=Number(v); return Number.isSafeInteger(n) && n >= 0 ? n : null; }
-function vaToOffset(image, va) { const off=image.addressToOffset(va); return off == null ? null : safe(off); }
+function vaToOffset(image, va) { return mappedELFFileRangeForVa(image,va)?.start ?? null; }
 function partial(image, message) {
   image.metadata.programDynamicPartial = true;
   const list=image.metadata.programDynamicDiagnostics ||= [];
@@ -49,8 +51,8 @@ export function collectRelrRelocations(r, tags, image, bits, context = null) {
   if (va == null || size64 == null || size64 === 0n || budget.stopped) return out;
   const word=bits===64?8:4, ent=one(tags,DT_RELRENT) ?? BigInt(word);
   if (ent !== BigInt(word)) { partial(image,`DT_RELRENT ${ent} does not match pointer size ${word}`); return out; }
-  const off=vaToOffset(image,va), size=safe(size64);
-  if (off==null||size==null||off+size>r.length) { partial(image,'DT_RELR table is outside the file'); return out; }
+  const size=safe(size64), span=size==null?null:mappedELFFileSpanForVa(image,va,size), off=span?.start??null;
+  if(off==null||size==null){partial(image,'DT_RELR table crosses a file-backed PT_LOAD boundary');return out;}
   if (!budget.claimInput(size, 'DT_RELR')) return out;
   if (size % word) partial(image,'DT_RELRSZ is not a multiple of DT_RELRENT');
   let base=0n; const wordBits=BigInt(word*8);
@@ -86,8 +88,8 @@ function readSleb(r, state, end) {
 
 function decodeAndroidTable(r, va, size64, image, bits, rela, source, budget, out) {
   if (budget.stopped) return out;
-  const off=vaToOffset(image,va), size=safe(size64);
-  if(off==null||size==null||off+size>r.length){partial(image,`${source} table is outside the file`);return out;}
+  const size=safe(size64), span=size==null?null:mappedELFFileSpanForVa(image,va,size), off=span?.start??null;
+  if(off==null||size==null){partial(image,`${source} table crosses a file-backed PT_LOAD boundary`);return out;}
   if (!budget.claimInput(size, source)) return out;
   const end=off+size;
   if(size<4||r.u8(off)!==0x41||r.u8(off+1)!==0x50||r.u8(off+2)!==0x53||r.u8(off+3)!==0x32){partial(image,`${source} is not APS2 encoded`);return out;}
@@ -126,15 +128,32 @@ export function collectAndroidPackedRelocations(r,tags,image,bits,context=null){
 }
 
 
-export function parseDynamicSymbolVersions(r,tags,image,symbolCount,stringAt){
-  const out=new Map(), versym=one(tags,DT_VERSYM); if(versym==null||symbolCount<=0)return out;
-  const voff=vaToOffset(image,versym); if(voff==null||voff+symbolCount*2>r.length){partial(image,'DT_VERSYM table is truncated');return out;}
-  const names=new Map();
-  const verdef=one(tags,DT_VERDEF), verdefnum=safe(one(tags,DT_VERDEFNUM)??0n);
-  if(verdef!=null&&verdefnum){let p=vaToOffset(image,verdef);for(let i=0;p!=null&&i<Math.min(verdefnum,65536);i++){if(p+20>r.length){partial(image,'DT_VERDEF is truncated');break;}const ndx=r.u16(p+4)&0x7fff,aux=r.u32(p+12),next=r.u32(p+16),ap=p+aux;if(ap+8>r.length){partial(image,'DT_VERDEF auxiliary entry is truncated');break;}const name=stringAt(BigInt(r.u32(ap)));if(name)names.set(ndx,{name,definition:true,library:null});if(!next)break;p+=next;}}
-  const verneed=one(tags,DT_VERNEED), verneednum=safe(one(tags,DT_VERNEEDNUM)??0n);
-  if(verneed!=null&&verneednum){let p=vaToOffset(image,verneed);for(let i=0;p!=null&&i<Math.min(verneednum,65536);i++){if(p+16>r.length){partial(image,'DT_VERNEED is truncated');break;}const cnt=r.u16(p+2),file=stringAt(BigInt(r.u32(p+4))),aux=r.u32(p+8),next=r.u32(p+12);let ap=p+aux;for(let j=0;j<cnt&&j<65536;j++){if(ap+16>r.length){partial(image,'DT_VERNEED auxiliary entry is truncated');break;}const other=r.u16(ap+6)&0x7fff,name=stringAt(BigInt(r.u32(ap+8))),anext=r.u32(ap+12);if(name)names.set(other,{name,definition:false,library:file||null});if(!anext)break;ap+=anext;}if(!next)break;p+=next;}}
-  for(let i=0;i<symbolCount;i++){const raw=r.u16(voff+i*2),index=raw&0x7fff;if(index<=1)continue;const named=names.get(index);out.set(i,{index,hidden:!!(raw&0x8000),name:named?.name||null,library:named?.library||null,definition:named?.definition??null});}
-  image.metadata.symbolVersions={entries:out.size,named:[...out.values()].filter(v=>v.name).length};
-  return out;
+function symbolBudgetContext(image, context) {
+  const c = context && typeof context === 'object' ? context : {};
+  return c.budget || createDynamicSymbolBudget({
+    limits:c.limits || {},
+    onLimit(message){ partial(image, `dynamic symbol decode budget exceeded: ${message}`); },
+  });
 }
+
+export function parseDynamicSymbolVersions(r,tags,image,symbolCount,stringAt,context=null){
+  const out=new Map(),versym=one(tags,DT_VERSYM);if(versym==null||symbolCount<=0)return out;const budget=symbolBudgetContext(image,context);const count=Math.min(symbolCount,budget.limits.maxSymbolRecords);if(symbolCount>count)partial(image,`DT_VERSYM symbol count ${symbolCount} exceeds record limit ${count}; clamped`);
+  const vspan=mappedELFFileSpanForVa(image,versym,count*2);if(!vspan){partial(image,'DT_VERSYM table crosses a file-backed PT_LOAD boundary');return out;}const voff=vspan.start;if(!budget.claimInput(count*2,'DT_VERSYM'))return out;const names=new Map();
+  const verdef=one(tags,DT_VERDEF),verdefnum=safe(one(tags,DT_VERDEFNUM)??0n);
+  if(verdef!=null&&verdefnum){const range=mappedELFFileRangeForVa(image,verdef);let p=range?.start??null;for(let i=0;p!=null&&i<Math.min(verdefnum,65536)&&!budget.stopped;i++){
+    if(!budget.step(1,'DT_VERDEF decode'))break;if(p+20>range.end){partial(image,'DT_VERDEF crosses a file-backed PT_LOAD boundary');break;}if(!budget.claimInput(20,'DT_VERDEF'))break;const ndx=r.u16(p+4)&0x7fff,aux=r.u32(p+12),next=r.u32(p+16),ap=p+aux;
+    if(ap<p||ap+8>range.end){partial(image,'DT_VERDEF auxiliary entry crosses a file-backed PT_LOAD boundary');break;}if(!budget.claimInput(8,'DT_VERDEF auxiliary'))break;const name=stringAt(BigInt(r.u32(ap)));if(name){if(!budget.claimOutput(1,96,'DT_VERDEF names'))break;names.set(ndx,{name,definition:true,library:null});}if(!next)break;if(next<20||p+next<=p||p+next>range.end){partial(image,'DT_VERDEF next pointer leaves its mapped table');break;}p+=next;
+  }}
+  const verneed=one(tags,DT_VERNEED),verneednum=safe(one(tags,DT_VERNEEDNUM)??0n);
+  if(verneed!=null&&verneednum&&!budget.stopped){const range=mappedELFFileRangeForVa(image,verneed);let p=range?.start??null;for(let i=0;p!=null&&i<Math.min(verneednum,65536)&&!budget.stopped;i++){
+    if(!budget.step(1,'DT_VERNEED decode'))break;if(p+16>range.end){partial(image,'DT_VERNEED crosses a file-backed PT_LOAD boundary');break;}if(!budget.claimInput(16,'DT_VERNEED'))break;const cnt=r.u16(p+2),file=stringAt(BigInt(r.u32(p+4))),aux=r.u32(p+8),next=r.u32(p+12);let ap=p+aux;
+    if(ap<p||ap>range.end){partial(image,'DT_VERNEED auxiliary pointer leaves its mapped table');break;}
+    for(let j=0;j<cnt&&j<65536&&!budget.stopped;j++){
+      if(!budget.step(1,'DT_VERNEED auxiliary decode'))break;if(ap+16>range.end){partial(image,'DT_VERNEED auxiliary entry crosses a file-backed PT_LOAD boundary');break;}if(!budget.claimInput(16,'DT_VERNEED auxiliary'))break;const other=r.u16(ap+6)&0x7fff,name=stringAt(BigInt(r.u32(ap+8))),anext=r.u32(ap+12);if(name){if(!budget.claimOutput(1,112,'DT_VERNEED names'))break;names.set(other,{name,definition:false,library:file||null});}if(!anext)break;if(anext<16||ap+anext<=ap||ap+anext>range.end){partial(image,'DT_VERNEED auxiliary next pointer leaves its mapped table');break;}ap+=anext;
+    }
+    if(!next)break;if(next<16||p+next<=p||p+next>range.end){partial(image,'DT_VERNEED next pointer leaves its mapped table');break;}p+=next;
+  }}
+  for(let i=0;i<count&&!budget.stopped;i++){if(!budget.step(1,'DT_VERSYM decode'))break;const raw=r.u16(voff+i*2),index=raw&0x7fff;if(index<=1)continue;if(!budget.claimOutput(1,96,'DT_VERSYM entries'))break;const named=names.get(index);out.set(i,{index,hidden:!!(raw&0x8000),name:named?.name||null,library:named?.library||null,definition:named?.definition??null});}
+  image.metadata.symbolVersions={entries:out.size,named:[...out.values()].filter((v)=>v.name).length,complete:!budget.stopped&&!image.metadata.programDynamicPartial};return out;
+}
+

@@ -7,7 +7,8 @@
  */
 'use strict';
 
-importScripts('./macho.js', './words.js', '../capstone.js');
+importScripts('./macho.js', './words.js', './worker-budget.js', './address-provenance.js', '../capstone.js');
+const WORKER_BUDGET = globalThis.HexWorkerBudget;
 
 /* ── Constants ──────────────────────────────────────────────── */
 
@@ -45,6 +46,8 @@ const MAX_EDGES = 8_000_000;         // bl の辺
 const MAX_REFS = 8_000_000;          // データへの参照
 const EDGES_INITIAL = 262_144;       // 最初に確保する数（足りなければ倍々に伸ばす）
 const MAX_KIND_WORDS = 16 * 1024 * 1024;  // 語ごとの分類を持つ上限（= 64 MiB のコード）
+const PROGRAM_INDEX_BUDGET_BYTES = WORKER_BUDGET.PROGRAM_INDEX_BYTES;
+const FUNCTION_CANDIDATE_BUDGET = WORKER_BUDGET.FUNCTION_AUX_SLOTS;
 
 /* ── State ──────────────────────────────────────────────────── */
 
@@ -281,7 +284,9 @@ async function getBlock(bi) {
 /* ── open ───────────────────────────────────────────────────── */
 
 async function openFile(f) {
-  file = f;
+  const previous = { file, fileSize, regions, slices, blocks: new Map(blocks) };
+  try {
+    file = f;
   fileSize = BigInt(f.size);
   blocks.clear();
   regions = new Map();
@@ -346,7 +351,16 @@ async function openFile(f) {
   for (const s of out.slices) registerRegions(s.regions);
   slices = out.slices;
 
-  return out;
+    return out;
+  } catch (error) {
+    file = previous.file;
+    fileSize = previous.fileSize;
+    regions = previous.regions;
+    slices = previous.slices;
+    blocks.clear();
+    for (const [key, value] of previous.blocks) blocks.set(key, value);
+    throw error;
+  }
 }
 
 async function readSlice(offset, size, label) {
@@ -416,9 +430,10 @@ async function analyzeSlice({ sliceIndex }) {
   const slice = slices[sliceIndex];
   if (!slice || !slice.info) {
     return {
-      addrs: new BigUint64Array(0), kinds: new Uint8Array(0), names: '',
+      addrs: new BigUint64Array(0), kinds: new Uint8Array(0), names: [],
       funcs: new BigUint64Array(0), symbolCount: 0, funcCount: 0, capped: false,
-      functionStartsExact: false,
+      allSeedsExact: false, discoveryComplete: false, functionStartsExact: false,
+      functionDiscovery: { complete:false, capped:false, reasons:['no-authoritative-function-starts'] },
       __transfer: [],
     };
   }
@@ -482,15 +497,28 @@ async function analyzeSlice({ sliceIndex }) {
 
   let funcs = new BigUint64Array(0);
   let functionStartsExact = false;
+  // Exact decoded starts (plus the Mach-O entry seed) are also the hard
+  // control-flow roots for ADR/ADRP provenance in the worker scans.
+  slice.functionStarts = [];
   if (info.functionStarts && info.functionStarts.datasize > 0 && info.textVM != null) {
     const buf = await readRange(base + BigInt(info.functionStarts.dataoff),
                                 Math.min(info.functionStarts.datasize, 8 * 1024 * 1024));
     try {
-      const list = MachO.parseFunctionStarts(buf, info.textVM);
-      funcs = new BigUint64Array(list.length);
-      for (let i = 0; i < list.length; i++) funcs[i] = list[i];
-      functionStartsExact = list.length > 0;
-    } catch { funcs = new BigUint64Array(0); }
+      const list = MachO.parseFunctionStarts(buf, info.textVM, { regions:slice.regions || [], architecture:info.architecture || 'arm64' });
+      const seeds = list.slice();
+      if (info.entry != null && !seeds.some((value) => value === info.entry)) seeds.push(info.entry);
+      seeds.sort((a,b)=>(a<b?-1:a>b?1:0));
+      slice.functionStarts = seeds;
+      funcs = new BigUint64Array(seeds.length);
+      for (let i = 0; i < seeds.length; i++) funcs[i] = seeds[i];
+      functionStartsExact = list.length > 0 && list.complete === true;
+    } catch { slice.functionStarts = []; funcs = new BigUint64Array(0); }
+  }
+
+  if ((!info.functionStarts || !info.functionStarts.datasize) && info.entry != null) {
+    slice.functionStarts = [info.entry];
+    funcs = new BigUint64Array([info.entry]);
+    functionStartsExact = false;
   }
 
   /* Known noreturn imports make the instruction after a call a strong boundary
@@ -509,11 +537,15 @@ async function analyzeSlice({ sliceIndex }) {
     addrs: outAddrs,
     kinds: outKinds,
     flags: outFlags,
-    names: names.slice(0, n).join('\n'),
+    names: names.slice(0, n).map((name) => String(name ?? '')),
     funcs,
     symbolCount: n,
     funcCount: funcs.length,
+    allSeedsExact: funcs.length > 0,
+    discoveryComplete: functionStartsExact,
     functionStartsExact,
+    functionDiscovery: { complete:functionStartsExact, capped:false,
+      reasons:functionStartsExact ? [] : ['no-complete-lc-function-starts'] },
     capped,
     __transfer: [outAddrs.buffer, outKinds.buffer, outFlags.buffer, funcs.buffer],
   };
@@ -697,6 +729,18 @@ async function guessFunctions({ regionId, limit, requestId, epoch }) {
   const total = Number(region.size);
   const found = new Set();
   const lo = region.vmAddr, hi = region.vmAddr + region.size;
+  const auxLimit = Math.min(FUNCTION_CANDIDATE_BUDGET, WORKER_BUDGET.functionAuxLimit(cap));
+  let auxSlots = 0;
+  let candidateBudgetHit = false;
+  const reserveAux = (count = 1) => {
+    if (candidateBudgetHit || auxSlots + count > auxLimit) { candidateBudgetHit = true; return false; }
+    auxSlots += count; return true;
+  };
+  const addAux = (set, value) => {
+    if (set.has(value)) return true;
+    if (!reserveAux()) return false;
+    set.add(value); return true;
+  };
 
   const slice = slices.find((s) => (s.regions || []).some((r) => r.id === regionId));
   const imageBase = slice && slice.info ? slice.info.textVM : null;
@@ -732,7 +776,7 @@ async function guessFunctions({ regionId, limit, requestId, epoch }) {
         for (let p = 0; p + 8 <= buf.byteLength; p += 8) {
           const t = sanitizeStubPointer(dv.getBigUint64(p, true), imageBase);
           if (t == null || t < lo || t >= hi || (t & 3n)) continue;
-          if (dataCandidates.size < cap) dataCandidates.add(t);
+          if (dataCandidates.size < cap) addAux(dataCandidates, t);
         }
       } catch { /* 読めない区画は飛ばす */ }
       if (cancelled(requestId)) return { starts: [], cancelled: true };
@@ -772,6 +816,7 @@ async function guessFunctions({ regionId, limit, requestId, epoch }) {
     Words.KIND.FCONV, Words.KIND.FARITH, Words.KIND.SIMD,
   ]);
   const beginWindow = (arr, pc, w, kind) => {
+    if (!reserveAux(2)) return;
     const c = { addr: pc, word: w, kind, nextWord: null, nextKind: null, thirdWord: null, thirdKind: null };
     arr.push(c); pendingWindows.push(c);
   };
@@ -790,7 +835,7 @@ async function guessFunctions({ regionId, limit, requestId, epoch }) {
 
       if (dataCandidates.has(pc) && prevWord != null && Words.isBr(prevWord) &&
           !looksLikePrologue(w) && !Words.isBranchImm(w) && !Words.isRet(w)) {
-        indirectFallthroughData.add(pc);
+        addAux(indirectFallthroughData, pc);
       }
 
       /* Fill the 2nd/3rd instruction of recently opened tiny-function windows. */
@@ -810,17 +855,17 @@ async function guessFunctions({ regionId, limit, requestId, epoch }) {
         beginWindow(postTrap, pc, w, currentKind);
       }
       if (prevWasNoreturnCall && looksLikePrologue(w)) {
-        postNoreturn.push(pc);
+        if (reserveAux()) postNoreturn.push(pc);
       }
 
       if (Words.isCondBranch(w)) {
         const t = Words.condBranchTarget(w, pc);
-        if (t != null && t >= lo && t < hi) conditionalTargets.add(t);
+        if (t != null && t >= lo && t < hi) addAux(conditionalTargets, t);
       }
 
       if (Words.isBranchImm(w)) {
         const t = Words.branchImm26(w, pc);
-        if (t != null && t >= lo && t < hi) directBranchTargets.add(t);
+        if (t != null && t >= lo && t < hi) addAux(directBranchTargets, t);
       }
 
       // bl の飛び先
@@ -1013,18 +1058,29 @@ async function guessFunctions({ regionId, limit, requestId, epoch }) {
   const list = Array.from(found).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
   const starts = new BigUint64Array(list.length);
   for (let i = 0; i < list.length; i++) starts[i] = list[i];
-  const capped = found.size >= cap;
+  const startCapHit = found.size >= cap;
+  const capped = startCapHit || candidateBudgetHit;
+  const truncationReason = candidateBudgetHit ? 'candidate-memory-budget' : startCapHit ? 'function-start-cap-reached' : null;
   return {
-    starts, cancelled: false, capped, truncated: capped, complete: !capped, cap,
+    starts, cancelled: false, capped, truncated: capped, complete: !capped, cap, truncationReason,
     completeness: {
       complete: !capped,
-      reason: capped ? 'function-start-cap-reached' : null,
+      reason: truncationReason,
       discovered: list.length,
       cap,
       addressRange: { regionId, vmAddr: region.vmAddr, size: region.size, complete: !capped },
     },
     __transfer: [starts.buffer],
   };
+}
+
+function functionStartsForRegion(region) {
+  if (!region) return [];
+  for (const slice of slices || []) {
+    if (!slice || !slice.functionStarts || !slice.functionStarts.length) continue;
+    if ((slice.regions || []).some((r) => r && r.id === region.id)) return slice.functionStarts;
+  }
+  return [];
 }
 
 /* ── プログラム全体の索引（1 パスで作る） ───────────────────
@@ -1040,29 +1096,39 @@ async function guessFunctions({ regionId, limit, requestId, epoch }) {
  *
  * Capstone は通さない。逆アセンブルより桁違いに速いので、数十 MB でも一気に走る。
  */
-async function scanProgram({ regionId, requestId, epoch }) {
+async function scanProgram({ regionId, requestId, epoch, callLimit, refLimit, kindLimit }) {
   const region = regions.get(regionId);
   if (!region) throw new Error('Unknown region.');
   const total = Number(region.size);
   const words = Math.floor(total / 4);
+  const capOf=(value,hard)=>value==null?hard:Math.max(0,Math.min(hard,Math.floor(Number(value)||0)));
+  const callCap=capOf(callLimit,MAX_EDGES), refCap=capOf(refLimit,MAX_REFS), kindCap=capOf(kindLimit,MAX_KIND_WORDS);
 
-  const initial = Math.min(words, EDGES_INITIAL);
-  let callFrom = new BigUint64Array(initial);
-  let callTo = new BigUint64Array(initial);
-  let refFrom = new BigUint64Array(initial);
-  let refTo = new BigUint64Array(initial);
-  let refKind = new Uint8Array(initial);               // 0 アドレス / 1 読み出し / 2 書き込み
-  const kinds = new Uint8Array(Math.min(words, MAX_KIND_WORDS));
+  const callInitial = Math.min(words, EDGES_INITIAL, callCap);
+  const refInitial = Math.min(words, EDGES_INITIAL, refCap);
+  let callFrom = new BigUint64Array(callInitial);
+  let callTo = new BigUint64Array(callInitial);
+  let refFrom = new BigUint64Array(refInitial);
+  let refTo = new BigUint64Array(refInitial);
+  let refKind = new Uint8Array(refInitial);
+  const kinds = new Uint8Array(Math.min(words, kindCap));
 
   let nCalls = 0, nRefs = 0;
   let callsCapped = false, refsCapped = false;
+  let memoryCapped = false;
   const lo = region.vmAddr, hi = region.vmAddr + region.size;
-
-  // レジスタごとに「直近の adrp が作ったページ」を覚える。ブロックをまたいでも続く。
-  const pageOf = new Array(32).fill(null);
-  const pageAt = new Array(32).fill(-1);
+  const provenance = AddressProvenance.create({
+    words: Words,
+    pairWindow: PAIR_WINDOW,
+    functionStarts: functionStartsForRegion(region),
+    rangeStart: region.vmAddr,
+    rangeEnd: region.vmAddr + region.size,
+  });
   let index = 0;
   let pos = 0;
+
+  const allocatedBytes = () => callFrom.byteLength + callTo.byteLength + refFrom.byteLength + refTo.byteLength + refKind.byteLength + kinds.byteLength;
+  const canGrow = (temporaryBytes) => WORKER_BUDGET.withinProgramBudget(allocatedBytes(), temporaryBytes) && allocatedBytes() + temporaryBytes <= PROGRAM_INDEX_BUDGET_BYTES;
 
   while (pos < total) {
     if (cancelled(requestId)) return { cancelled: true, __transfer: [] };
@@ -1075,57 +1141,52 @@ async function scanProgram({ regionId, requestId, epoch }) {
     for (let i = 0; i < n; i++, index++) {
       const w = dv.getUint32(i * 4, true);
       const pc = region.vmAddr + BigInt(pos + i * 4);
+      provenance.enter(pc);
       const kind = Words.classifyWord(w);
       if (index < kinds.length) kinds[index] = kind;
 
-      if (kind === Words.KIND.CALL) {
-        const t = Words.branchImm26(w, pc);
-        if (t != null) {
-          if (nCalls === callFrom.length && !growCalls()) callsCapped = true;
-          if (nCalls < callFrom.length) { callFrom[nCalls] = pc; callTo[nCalls] = t; nCalls++; }
+      if (kind === Words.KIND.CALL || kind === Words.KIND.INDCALL) {
+        if (kind === Words.KIND.CALL) {
+          const t = Words.branchImm26(w, pc);
+          if (t != null && !callsCapped) {
+            if (nCalls === callFrom.length && !growCalls()) callsCapped = memoryCapped = true;
+            if (nCalls < callFrom.length) { callFrom[nCalls] = pc; callTo[nCalls] = t; nCalls++; }
+          }
         }
+        provenance.control(w, pc, kind);
+        continue;
+      }
+      if (kind === Words.KIND.CONDBR || kind === Words.KIND.BRANCH ||
+          kind === Words.KIND.RET || kind === Words.KIND.TRAP) {
+        provenance.control(w, pc, kind);
         continue;
       }
 
-      // adrp / adr — アドレスの土台
       const rel = Words.pcRelTarget(w, pc);
       if (rel) {
-        pageOf[rel.reg] = rel.value;
-        pageAt[rel.reg] = index;
+        provenance.note(rel.reg, rel.value, index);
         if (!rel.page) addRef(pc, rel.value, 0);
         continue;
       }
 
-      // adrp の続き: add で場所そのもの、ldr/str でその中身
       const pair = Words.pairedOffset(w);
-      if (pair && pageOf[pair.rn] != null && index - pageAt[pair.rn] <= PAIR_WINDOW) {
-        const full = pageOf[pair.rn] + pair.imm;
+      const base = pair ? provenance.base(pair.rn, index) : null;
+      if (pair && base != null) {
+        const full = base + pair.imm;
         addRef(pc, full, pair.load ? 1 : pair.store ? 2 : 0);
-        // add の結果は別レジスタに移ることがあるので、そのまま引き継ぐ
-        if (!pair.load && !pair.store) { pageOf[pair.rd] = full; pageAt[pair.rd] = index; }
-        else if (pair.rd !== pair.rn) { pageOf[pair.rd] = null; pageAt[pair.rd] = -1; }
+        if (!pair.load && !pair.store) provenance.note(pair.rd, full, index);
+        else if (pair.load) provenance.kill(pair.rd);
         continue;
       }
 
-      // ldr literal — すぐ近くに置かれた定数
       if (kind === Words.KIND.LITERAL) {
         const t = Words.literalTarget(w, pc);
         if (t != null) addRef(pc, t, 1);
+        provenance.kill(w & 0x1f);
         continue;
       }
 
-      /*
-       * 書き換えられたレジスタのページ情報は捨てる（古い前提を持ち越さない）。
-       *
-       * 「下位 5 ビット = 書き込み先」は、書き込む命令にしか当てはまらない。
-       * `str x8, [x9]` の下位 5 ビットは x8 だが、x8 は読まれるだけで壊れない。
-       * ここで一律に捨てていたので、adrp で組んだアドレスを一度どこかへ保存すると、
-       * その後の `add x8, x8, #off` が組にならず、参照が丸ごと落ちていた。
-       */
-      if (WRITES_LOW_REG[kind]) {
-        const d = w & 0x1f;
-        if (pageAt[d] >= 0 && pageAt[d] !== index) { pageOf[d] = null; pageAt[d] = -1; }
-      }
+      if (WRITES_LOW_REG[kind]) provenance.kill(w & 0x1f);
     }
 
     pos += n * 4;
@@ -1133,46 +1194,49 @@ async function scanProgram({ regionId, requestId, epoch }) {
     await yieldToQueue();
   }
 
-  const outCallFrom = callFrom.slice(0, nCalls);
-  const outCallTo = callTo.slice(0, nCalls);
-  const outRefFrom = refFrom.slice(0, nRefs);
-  const outRefTo = refTo.slice(0, nRefs);
-  const outRefKind = refKind.slice(0, nRefs);
+  const truncationReasons = [];
+  if (callsCapped) truncationReasons.push('call-edge-memory-budget');
+  if (refsCapped) truncationReasons.push('reference-memory-budget');
+  if (kinds.length < words) truncationReasons.push('kind-stat-budget');
+  const outCallFrom=callFrom.slice(0,nCalls), outCallTo=callTo.slice(0,nCalls);
+  const outRefFrom=refFrom.slice(0,nRefs), outRefTo=refTo.slice(0,nRefs), outRefKind=refKind.slice(0,nRefs);
+  const outKinds=kinds.slice(0,Math.min(words,kinds.length));
   return {
     regionId,
     vmAddr: region.vmAddr,
     words,
-    callFrom: outCallFrom, callTo: outCallTo,
-    refFrom: outRefFrom, refTo: outRefTo, refKind: outRefKind,
-    kinds,
-    kindsCovered: Math.min(words, kinds.length),
+    callFrom:outCallFrom, callTo:outCallTo, callCount: nCalls,
+    refFrom:outRefFrom, refTo:outRefTo, refKind:outRefKind, refCount: nRefs,
+    kinds:outKinds,
+    kindsCovered: Math.min(words, outKinds.length),
     callsCapped, refsCapped,
     cancelled: false,
-    __transfer: [outCallFrom.buffer, outCallTo.buffer, outRefFrom.buffer,
-      outRefTo.buffer, outRefKind.buffer, kinds.buffer],
+    complete: truncationReasons.length === 0,
+    truncated: truncationReasons.length > 0,
+    truncationReason: truncationReasons[0] || null,
+    completeness: { complete: truncationReasons.length === 0, reasons: truncationReasons, memoryBudgetBytes: PROGRAM_INDEX_BUDGET_BYTES, allocatedBytes: allocatedBytes() },
+    __transfer: [outCallFrom.buffer, outCallTo.buffer, outRefFrom.buffer, outRefTo.buffer, outRefKind.buffer, outKinds.buffer],
   };
 
   function addRef(pc, target, k) {
-    // セクションの外を指す参照も残す（文字列は別セクションにあるのが普通）。
-    // ただしどう見てもアドレスでないものは捨てる。
-    if (target == null || target <= 0n) return;
+    if (target == null || target <= 0n || refsCapped) return;
     void lo; void hi;
-    if (nRefs === refFrom.length && !growRefs()) refsCapped = true;
+    if (nRefs === refFrom.length && !growRefs()) refsCapped = memoryCapped = true;
     if (nRefs < refFrom.length) {
       refFrom[nRefs] = pc; refTo[nRefs] = target; refKind[nRefs] = k; nRefs++;
     }
   }
 
   function growCalls() {
-    const size = Math.min(callFrom.length * 2, MAX_EDGES);
-    if (size <= callFrom.length) return false;
+    const size = Math.min(Math.max(1, callFrom.length * 2), MAX_EDGES, callCap);
+    if (size <= callFrom.length || !canGrow(size * 16)) return false;
     callFrom = grow64(callFrom, size);
     callTo = grow64(callTo, size);
     return true;
   }
   function growRefs() {
-    const size = Math.min(refFrom.length * 2, MAX_REFS);
-    if (size <= refFrom.length) return false;
+    const size = Math.min(Math.max(1, refFrom.length * 2), MAX_REFS, refCap);
+    if (size <= refFrom.length || !canGrow(size * 17)) return false;
     refFrom = grow64(refFrom, size);
     refTo = grow64(refTo, size);
     const k = new Uint8Array(size);
@@ -1212,6 +1276,7 @@ const WRITES_LOW_REG = (() => {
  * 実測（The Battle Cats）で適合率が落ちない上限を採る。
  */
 const PAIR_WINDOW = 4096;
+
 
 /* ── 値の「ふるまい」を全文走査で集める ─────────────────────
  *
@@ -1707,6 +1772,7 @@ async function scanStrings({ regionId, min, limit, maxBytes, requestId, epoch })
   flush();
   return {
     results: out.slice(0, cap), cancelled: false, capped: out.length >= cap,
+    truncationReason: out.length >= cap ? 'result-limit' : (total < regionBytes ? 'input-budget' : null),
     scannedBytes: pos, complete: pos >= regionBytes && out.length < cap,
   };
 }
@@ -1734,9 +1800,13 @@ async function findXrefs({ regionId, target, limit, requestId, epoch }) {
   const total = Number(region.size);
   const out = [];
 
-  // レジスタごとに「直近の ADRP が作ったページ」を覚えておく。
-  const pageOf = new Array(32).fill(null);
-  const pageAt = new Array(32).fill(-1);
+  const provenance = AddressProvenance.create({
+    words: Words,
+    pairWindow: PAIR_WINDOW,
+    functionStarts: functionStartsForRegion(region),
+    rangeStart: region.vmAddr,
+    rangeEnd: region.vmAddr + region.size,
+  });
   let index = 0;
 
   let pos = 0;
@@ -1751,17 +1821,23 @@ async function findXrefs({ regionId, target, limit, requestId, epoch }) {
       const w = dv.getUint32(i * 4, true);
       const byteOff = pos + i * 4;
       const pc = region.vmAddr + BigInt(byteOff);
+      provenance.enter(pc);
 
       const direct = wordTarget(w, pc);
       if (direct !== null && direct === want) {
         out.push({ row: byteOff / 4, addr: pc, kind: 'branch' });
         if (out.length >= cap) break;
+      }
+      const kind = Words.classifyWord(w);
+      if (kind === Words.KIND.CALL || kind === Words.KIND.INDCALL ||
+          kind === Words.KIND.CONDBR || kind === Words.KIND.BRANCH ||
+          kind === Words.KIND.RET || kind === Words.KIND.TRAP) {
+        provenance.control(w, pc, kind);
         continue;
       }
       const rel = pcRelTarget(w, pc);
       if (rel) {
-        pageOf[rel.reg] = rel.value;
-        pageAt[rel.reg] = index;
+        provenance.note(rel.reg, rel.value, index);
         if (!rel.page && rel.value === want) {
           out.push({ row: byteOff / 4, addr: pc, kind: 'address' });
           if (out.length >= cap) break;
@@ -1769,8 +1845,9 @@ async function findXrefs({ regionId, target, limit, requestId, epoch }) {
         continue;
       }
       const pair = pairedOffset(w);
-      if (pair && pageOf[pair.rn] != null && index - pageAt[pair.rn] <= 8) {
-        const full = pageOf[pair.rn] + pair.imm;
+      const base = pair ? provenance.base(pair.rn, index) : null;
+      if (pair && base != null) {
+        const full = base + pair.imm;
         if (full === want) {
           out.push({
             row: byteOff / 4, addr: pc,
@@ -1778,9 +1855,11 @@ async function findXrefs({ regionId, target, limit, requestId, epoch }) {
           });
           if (out.length >= cap) break;
         }
-        // ADD の結果は別レジスタに移ることがあるので、そのまま引き継ぐ
-        if (!pair.load && !pair.store) { pageOf[pair.rd] = full; pageAt[pair.rd] = index; }
+        if (!pair.load && !pair.store) provenance.note(pair.rd, full, index);
+        else if (pair.load) provenance.kill(pair.rd);
+        continue;
       }
+      if (WRITES_LOW_REG[kind]) provenance.kill(w & 0x1f);
     }
     pos += words * 4;
     scanProgress(requestId, epoch, pos, total, out.length);

@@ -21,6 +21,7 @@ import { hashByteSource, sha256TreeByteSource } from './platform/hash.js';
 
 const PREFIX = 'hex.notes.';
 const MAX_BYTES = 2 * 1024 * 1024;   // 1 ファイルぶんの上限（保存が壊れないように）
+const NOTE_KEY_CACHE = new WeakMap(); // File/ByteSource -> resolved slice identities
 
 /** BigInt でも Number でも同じ鍵になるように、10 進の文字列にそろえる。 */
 function key(addr) {
@@ -38,15 +39,28 @@ function key(addr) {
  * name|size|最初に見つかったUUID だけで保存していた。
  * 新形式へ一度だけコピーするために正確な旧式を残しておく。
  */
-export function legacyNoteKeyFor(file, fileInfo) {
-  const parts = [];
-  if (file && file.name) parts.push(file.name);
-  if (file && file.size != null) parts.push(String(file.size));
-  const slice = fileInfo && fileInfo.slices
-    ? fileInfo.slices.find((s) => s.info && s.info.uuid)
-    : null;
-  if (slice) parts.push(slice.info.uuid);
+export function legacyNoteKeyFor(file, fileInfo, _sliceIndex = null) {
+  const parts=[];
+  if (file?.name) parts.push(file.name);
+  if (file?.size != null) parts.push(String(file.size));
+  const slices=fileInfo?.slices || [];
+  const firstWithUuid=slices.find((entry)=>entry?.info?.uuid);
+  if (firstWithUuid?.info?.uuid) parts.push(firstWithUuid.info.uuid);
   return parts.length ? parts.join('|') : null;
+}
+
+export function canonicalLegacyNoteSliceIndex(fileInfo) {
+  const slices=fileInfo?.slices || [];
+  if (!slices.length) return -1;
+  let index=slices.findIndex((entry)=>entry?.info?.isArm64);
+  if (index < 0) index=slices.findIndex((entry)=>entry?.info);
+  return index;
+}
+
+export function legacyNoteKeyForSlice(file, fileInfo, sliceIndex) {
+  return canonicalLegacyNoteSliceIndex(fileInfo) === sliceIndex
+    ? legacyNoteKeyFor(file, fileInfo)
+    : null;
 }
 
 export async function legacyV2NoteKeyFor(file, fileInfo, sliceIndex) {
@@ -82,7 +96,7 @@ export async function legacyV2NoteKeyFor(file, fileInfo, sliceIndex) {
   return identity + '|sha256:' + Array.from(digest).map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-export async function noteKeyFor(file, fileInfo, sliceIndex) {
+export async function noteKeyFor(file, fileInfo, sliceIndex, options = {}) {
   if (!file) return null;
   const slices = fileInfo && fileInfo.slices || [];
   const slice = Number.isInteger(sliceIndex) && sliceIndex >= 0 ? slices[sliceIndex] : null;
@@ -97,9 +111,7 @@ export async function noteKeyFor(file, fileInfo, sliceIndex) {
       sliceSize = BigInt(slice.size);
       if (sliceOffset >= 0n && sliceSize >= 0n && sliceOffset <= source.size && sliceSize <= source.size - sliceOffset) {
         content = source.subrange(sliceOffset, sliceSize);
-      } else {
-        sliceOffset = null; sliceSize = null;
-      }
+      } else { sliceOffset = null; sliceSize = null; }
     } catch { sliceOffset = null; sliceSize = null; }
   }
   const identity = [
@@ -108,17 +120,25 @@ export async function noteKeyFor(file, fileInfo, sliceIndex) {
     sliceOffset == null ? '' : sliceOffset.toString(),
     sliceSize == null ? '' : sliceSize.toString(),
   ].join('|');
-
+  const cacheable = (typeof file === 'object' && file !== null) || typeof file === 'function';
+  let cache = cacheable ? NOTE_KEY_CACHE.get(file) : null;
+  if (cache?.has(identity)) return cache.get(identity);
+  if (options.signal?.aborted) {
+    const error=new Error('note identity cancelled'); error.name='AbortError'; error.code='ABORT_ERR'; throw error;
+  }
   let digest;
   try {
-    digest = await sha256TreeByteSource(content);
+    digest = await sha256TreeByteSource(content, { signal:options.signal, onProgress:options.onProgress });
   } catch (error) {
     if (error?.code !== 'SHA256_UNAVAILABLE') throw error;
-    // Legacy browser fallback still reads every byte. Modern Safari/iPadOS uses
-    // the cryptographic path above; this exists only to avoid making notes unusable.
-    digest = await hashByteSource(content);
+    digest = await hashByteSource(content, { signal:options.signal, onProgress:options.onProgress });
   }
-  return identity + '|' + digest;
+  const result = identity + '|' + digest;
+  if (cacheable) {
+    if (!cache) { cache=new Map(); NOTE_KEY_CACHE.set(file,cache); }
+    cache.set(identity,result);
+  }
+  return result;
 }
 
 export class NoteStore {

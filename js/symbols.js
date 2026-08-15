@@ -13,11 +13,24 @@ export const SYM_POINTER = 2;   // 外部関数のアドレスを入れる箱 (_
 export class SymbolIndex {
   constructor(result) {
     const r = result || {};
-    this.addrs = r.addrs || new BigUint64Array(0);
-    this.kinds = r.kinds || new Uint8Array(0);
-    this.names = r.names ? r.names.split('\n') : [];
+    const rawAddrs = r.addrs || new BigUint64Array(0);
+    const rawKinds = r.kinds || new Uint8Array(rawAddrs.length);
+    const rawFlags = r.flags || new Uint8Array(rawAddrs.length);
+    const rawNames = Array.isArray(r.names)
+      ? r.names.map((name) => String(name ?? ''))
+      : (typeof r.names === 'string' && r.names.length ? r.names.split('\n') : []);
+    const symbolCardinalityValid = rawNames.length === rawAddrs.length &&
+      rawKinds.length === rawAddrs.length && rawFlags.length === rawAddrs.length;
+    this.symbolTransportValid = symbolCardinalityValid;
+    this.symbolTransportError = symbolCardinalityValid ? null : 'symbol-cardinality-mismatch';
+    /* A mismatched transport can shift every subsequent name to the wrong
+       address. Fail closed for symbols while preserving independent function
+       starts, so corrupted naming evidence never enters the analysis truth. */
+    this.addrs = symbolCardinalityValid ? rawAddrs : new BigUint64Array(0);
+    this.kinds = symbolCardinalityValid ? rawKinds : new Uint8Array(0);
+    this.names = symbolCardinalityValid ? rawNames : [];
     /* 1 = 外へ公開されている名前（エクスポート）。0 = このファイルの中だけ。 */
-    this.flags = r.flags || new Uint8Array(this.addrs.length);
+    this.flags = symbolCardinalityValid ? rawFlags : new Uint8Array(0);
     this.funcs = r.funcs || new BigUint64Array(0);
     /* Optional exact function ends. A zero/missing entry means unknown. */
     this.funcEnds = r.funcEnds || null;
@@ -25,10 +38,30 @@ export class SymbolIndex {
     this.functionRegions = [];
     this.setFunctionRegions(r.regions || [], false);
     this.capped = !!r.capped;
-    /* True only when LC_FUNCTION_STARTS itself was parsed successfully. ObjC,
-       vtables and other metadata may add exact starts without making the list
-       complete, so functionCount alone must never suppress stripped recovery. */
-    this.functionStartsExact = !!r.functionStartsExact;
+    /* Exactness and exhaustiveness are independent. `functionStartsExact` is
+       retained as the legacy name for an authoritative complete start set;
+       `allSeedsExact` only describes the starts currently present. */
+    const discoveryComplete = r.discoveryComplete === true || r.functionStartsComplete === true || r.functionStartsExact === true;
+    this.allSeedsExact = r.allSeedsExact != null ? !!r.allSeedsExact : !!r.functionStartsExact;
+    this.functionStartsComplete = discoveryComplete;
+    this.functionStartsExact = discoveryComplete && (r.allSeedsExact == null || this.allSeedsExact);
+    this.functionDiscovery = r.functionDiscovery || {
+      complete: discoveryComplete,
+      capped: !!r.functionStartsCapped,
+      reasons: discoveryComplete ? [] : ['function-discovery-incomplete'],
+    };
+    this.nameProvenance = new Map();
+    this.functionProvenance = new Map();
+    const providedNames = Array.isArray(r.nameProvenance) ? r.nameProvenance : [];
+    for (let i = 0; i < this.addrs.length; i++) {
+      const p = providedNames[i] || { source: 'binary-symbol', confidence: 1, confirmed: true };
+      this.nameProvenance.set(this.addrs[i].toString(), { ...p });
+    }
+    const providedFunctions = Array.isArray(r.functionProvenance) ? r.functionProvenance : [];
+    for (let i = 0; i < this.funcs.length; i++) {
+      const p = providedFunctions[i] || { source: this.functionStartsExact ? 'function-starts' : 'metadata', confidence: this.functionStartsExact ? 1 : 0.7, confirmed: this.functionStartsExact };
+      this.functionProvenance.set(this.funcs[i].toString(), { ...p });
+    }
     this.guessed = false;          // 関数一覧が推測によるものか
     /* 自分で付け直した名前。元の名前より優先される（IDA の Rename と同じ）。
        アドレス（10 進の文字列）→ 名前。names.js の NoteStore が中身の持ち主。 */
@@ -64,6 +97,17 @@ export class SymbolIndex {
   /** 自分で付けた名前だけを引く。 */
   renamedAt(addr) {
     return addr == null ? null : (this.renames.get(addr.toString()) || null);
+  }
+
+  nameEvidence(addr) {
+    if (addr == null) return null;
+    if (this.renames.has(addr.toString())) return { source: 'user', status: 'manual', manual: true, confirmed: false, confidence: null };
+    return this.nameProvenance.get(addr.toString()) || null;
+  }
+
+  functionEvidence(addr) {
+    if (addr == null) return null;
+    return this.functionProvenance.get(addr.toString()) || null;
   }
 
   get symbolCount() { return this.addrs.length; }
@@ -269,7 +313,7 @@ export class SymbolIndex {
    *
    * @param {Array<{addr:BigInt,name:string}>} entries
    */
-  addNames(entries) {
+  addNames(entries, provenance = { source: 'metadata', confidence: 0.9, confirmed: true }) {
     if (!entries || !entries.length) return 0;
     const have = new Set();
     for (let i = 0; i < this.addrs.length; i++) have.add(this.addrs[i]);
@@ -297,6 +341,7 @@ export class SymbolIndex {
       flags[i] = merged[i].ext || 0;
     }
     this.addrs = addrs; this.kinds = kinds; this.names = names; this.flags = flags;
+    for (const e of fresh) this.nameProvenance.set(e.addr.toString(), { ...provenance, ...(e.provenance || {}) });
     this.gen = ++SymbolIndex.gen;
     return fresh.length;
   }
@@ -305,7 +350,7 @@ export class SymbolIndex {
    * 関数の先頭を足す。Objective-C のメソッドの実装アドレスは、
    * それ自体が確実な関数の先頭なので、切れ目の情報がないファイルで特に効く。
    */
-  addFunctions(list) {
+  addFunctions(list, provenance = { source: 'metadata', confidence: 0.7, confirmed: false }) {
     if (!list || !list.length) return 0;
     const have = new Set();
     for (let i = 0; i < this.funcs.length; i++) have.add(this.funcs[i]);
@@ -314,6 +359,7 @@ export class SymbolIndex {
     for (const a of list) {
       if (a == null || have.has(a)) continue;
       have.add(a); all.push(a); added++;
+      this.functionProvenance.set(a.toString(), { ...provenance });
     }
     if (!added) return 0;
     all.sort((x, y) => (x < y ? -1 : x > y ? 1 : 0));
@@ -329,6 +375,8 @@ export class SymbolIndex {
   setGuessedFunctions(starts) {
     this.funcs = starts || new BigUint64Array(0);
     this.funcEnds = null;
+    this.functionProvenance.clear();
+    for (const addr of this.funcs) this.functionProvenance.set(addr.toString(), { source: 'heuristic', confidence: 0.55, confirmed: false });
     this.guessed = true;
     this.gen = ++SymbolIndex.gen;
   }

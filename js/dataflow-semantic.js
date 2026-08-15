@@ -112,6 +112,25 @@ function sameLoadLocation(a, b) {
   return !!(a && b && a.loc && b.loc && a.loc.key && a.loc.key === b.loc.key);
 }
 
+function originFingerprint(origin) {
+  if (!origin) return 'none';
+  const value = origin.value != null ? String(origin.value) : '';
+  const address = origin.address != null ? String(origin.address) : '';
+  const location = origin.location ? String(origin.location.key || origin.location.address || origin.location.disp || '') : '';
+  return [origin.kind || '', origin.reg || '', origin.op || '', origin.sub || '', value, address, location].join('|');
+}
+
+function sameSemanticStep(a, b) {
+  if (!a || !b) return a === b;
+  return a.op === b.op && a.imm === b.imm && a.immFloat === b.immFloat &&
+    (a.other || null) === (b.other || null) && originFingerprint(a.otherOrigin) === originFingerprint(b.otherOrigin);
+}
+
+function sameComputationPath(a, b) {
+  return !!(a && b && sameLoadLocation(a.load, b.load) && a.steps.length === b.steps.length &&
+    a.steps.every((step, index) => sameSemanticStep(step, b.steps[index])));
+}
+
 /**
  * Follow the stored SSA value back to a memory source while preserving the
  * computation chain. This is def-use traversal, not a second ARM64 scanner.
@@ -127,14 +146,15 @@ function computationPath(value, active = new Set()) {
     out = computationPath(def.args[0].value, active);
   } else if (def && def.op === OP.UN && PASS_UN.has(def.sub) && def.args[0]) {
     out = computationPath(def.args[0].value, active);
-    if (out) out = { load: out.load, steps: out.steps.concat([{
+    if (out && !out.ambiguous) out = { load: out.load, steps: out.steps.concat([{
       op: operationName(def), imm: null, immFloat: null, other: null, otherOrigin: null,
       row: def.row, address: def.address, engine: 'ir-semantic',
     }]) };
   } else if (def && def.op === OP.PHI && def.args && def.args.length) {
     const paths = def.args.map((a) => computationPath(a && a.value, new Set(active))).filter(Boolean);
     if (paths.length === def.args.length && paths.length && paths.every((p) => sameLoadLocation(paths[0].load, p.load))) {
-      out = paths[0];
+      if (paths.every((p) => sameComputationPath(paths[0], p))) out = paths[0];
+      else out = { load: paths[0].load, steps: [], ambiguous: true, alternatives: paths };
     }
   } else if (def && [OP.BIN, OP.MAC, OP.UN, OP.SEL].includes(def.op)) {
     const args = (def.args || []).filter((a) => a && a.value);
@@ -145,20 +165,23 @@ function computationPath(value, active = new Set()) {
       if (p) { chosen = i; path = p; break; }
     }
     if (path) {
-      const other = args.find((_, i) => i !== chosen);
-      const ov = other && other.value || null;
-      const opname = operationName(def);
-      const step = opname ? {
-        op: opname,
-        imm: ov && ov.const != null ? ov.const : null,
-        immFloat: null,
-        other: ov && ov.reg || null,
-        otherOrigin: compatOrigin(ov),
-        row: def.row,
-        address: def.address,
-        engine: 'ir-semantic',
-      } : null;
-      out = { load: path.load, steps: step ? path.steps.concat([step]) : path.steps.slice() };
+      if (path.ambiguous) out = path;
+      else {
+        const other = args.find((_, i) => i !== chosen);
+        const ov = other && other.value || null;
+        const opname = operationName(def);
+        const step = opname ? {
+          op: opname,
+          imm: ov && ov.const != null ? ov.const : null,
+          immFloat: null,
+          other: ov && ov.reg || null,
+          otherOrigin: compatOrigin(ov),
+          row: def.row,
+          address: def.address,
+          engine: 'ir-semantic',
+        } : null;
+        out = { load: path.load, steps: step ? path.steps.concat([step]) : path.steps.slice() };
+      }
     }
   }
   active.delete(value.id);
@@ -179,9 +202,15 @@ function directWrites(ir, facts, rmwRows) {
     const isTransfer = !!(path && path.load && !mustAlias(path.load.loc, inst.loc));
     const kind = transferRows.has(inst.row) || isTransfer ? 'move' : 'write';
     const reg = value ? value.reg || null : null;
+    const ambiguous = !!path?.ambiguous;
+    const confidence = ambiguous ? SCORE.inferred : SCORE.high;
+    const alternatives = ambiguous ? (path.alternatives || []).map((candidate) => ({
+      from: candidate.load ? { row: candidate.load.row, address: candidate.load.address } : null,
+      steps: candidate.steps.map((s) => ({ op: s.op, imm: s.imm, immFloat: s.immFloat, otherOrigin: s.otherOrigin || null, row: s.row, address: s.address })),
+    })) : null;
     out.push({
       kind,
-      operationKind: kind === 'move' ? (path && path.steps.length ? 'computed-transfer' : 'copy') : null,
+      operationKind: kind === 'move' ? (ambiguous ? 'branch-transfer' : (path && path.steps.length ? 'computed-transfer' : 'copy')) : null,
       engine: 'ir-semantic',
       location,
       from: path && path.load && sourceLocation ? {
@@ -192,15 +221,18 @@ function directWrites(ir, facts, rmwRows) {
         size: sourceLocation.size,
         key: sourceLocation.key,
       } : null,
-      steps: path ? path.steps : [],
+      steps: path && !ambiguous ? path.steps : [],
+      alternatives,
+      branchDependent: ambiguous,
       store: { row: inst.row, address: inst.address, reg },
       register: reg,
       origin: compatOrigin(value),
-      confidence: SCORE.high,
-      level: levelOf(SCORE.high),
+      confidence,
+      level: levelOf(confidence),
       evidence: [
         ...(path && path.load ? updateEvidence('read', path.load) : []),
-        ...(path ? path.steps.map((s) => ev('compute', s.row, { op: s.op, imm: s.imm, engine: 'ir-semantic' })) : []),
+        ...(path && !ambiguous ? path.steps.map((s) => ev('compute', s.row, { op: s.op, imm: s.imm, engine: 'ir-semantic' })) : []),
+        ...(ambiguous ? [ev('phi-alternatives', inst.row, { alternatives: alternatives.length, engine: 'ir-semantic' })] : []),
         ...updateEvidence('write', inst),
       ],
       ir: { location: inst.loc, load: path && path.load || null, store: inst },
@@ -230,11 +262,6 @@ function returnedReads(ir) {
   const covered = new Set();
   for (const ret of ir.instructions || []) {
     if (ret.op !== OP.RET) continue;
-    // RET itself carries no universal x0 source (#130). For the compatibility
-    // getter fact only, a field load that is the reaching definition of x0 at
-    // the return site is independent structural evidence of a getter-shaped
-    // result. This does not attach x0 to RET and therefore cannot become a
-    // generic return-derived value for void functions.
     const explicit = ret.args?.[0]?.value || null;
     const candidate = explicit || valueBefore(ir, ret, 'x0');
     if (!candidate) continue;
@@ -340,9 +367,6 @@ function propertyHelperUpdates(model, ir) {
   const out = [];
   const callMeta = new Map((model.calls || []).map((c) => [c.row, c]));
   for (const inst of ir.instructions || []) {
-    // Thin ObjC accessors often tail-branch to objc_get/setProperty. The call
-    // resolver records that semantic target in model.calls even though the IR op
-    // is BR, so both CALL and resolved tail BR are valid deterministic evidence.
     if (inst.op !== OP.CALL && inst.op !== OP.BR) continue;
     const meta = callMeta.get(inst.row);
     const name = meta && meta.name || null;

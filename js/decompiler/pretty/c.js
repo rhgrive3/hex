@@ -3,7 +3,7 @@ import { effectOf } from '../ast/nodes.js';
 const PREC = { select: 2, oror: 3, andand: 4, or: 5, xor: 6, and: 7, eq: 8, ne: 8, lt: 9, le: 9, gt: 9, ge: 9, shl: 10, lshr: 10, ashr: 10, add: 11, sub: 11, mul: 12, sdiv: 12, udiv: 12, smod: 12, umod: 12, unary: 13, primary: 15 };
 const OP_TEXT = { add: '+', sub: '-', mul: '*', and: '&', or: '|', xor: '^', shl: '<<', lshr: '>>', ashr: '>>', sdiv: '/', udiv: '/', smod: '%', umod: '%', eq: '==', ne: '!=', lt: '<', le: '<=', gt: '>', ge: '>=' };
 
-function integerText(v, bits = 64, signed = null) {
+export function integerText(v, bits = 64, signed = null) {
   const n = BigInt(v);
   const width = Math.max(1, Number(bits || 64));
   const sv = BigInt.asIntN(width, n);
@@ -23,12 +23,23 @@ function integerText(v, bits = 64, signed = null) {
   return signed === true ? `((__int128)${wide})` : wide;
 }
 
+function floatText(value, bits = 64) {
+  const n = Number(value);
+  if (Number.isNaN(n)) return 'NAN';
+  if (n === Infinity) return 'INFINITY';
+  if (n === -Infinity) return '-INFINITY';
+  let text = Object.is(n, -0) ? '-0.0' : String(n);
+  if (!/[.eE]/.test(text)) text += '.0';
+  return Number(bits || 64) <= 32 ? text + 'f' : text;
+}
+
 function wrap(text, p, parent) { return p < parent ? `(${text})` : text; }
 
 export function printExpression(n, parentPrec = 0, opts = {}) {
   if (!n) return 'unknown';
   switch (n.kind) {
     case 'const': return integerText(n.value, n.bits, n.signed);
+    case 'float-const': return floatText(n.value, n.bits);
     case 'var': return n.name || 'value';
     case 'field': return `${printExpression(n.base, PREC.primary, opts)}->${n.name || `field_${BigInt(n.offset || 0).toString(16).toUpperCase()}`}`;
     case 'index': return `${printExpression(n.base, PREC.primary, opts)}[${printExpression(n.index, 0, opts)}]`;

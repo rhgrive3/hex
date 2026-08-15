@@ -22,19 +22,25 @@ import { SymbolIndex, EMPTY_INDEX } from './symbols.js';
 import { clearBriefCache } from './arm64.js';
 import { clearAnalysisCache, analyzeFunctionCached } from './analyze.js';
 import { buildOverlay } from './narrate.js';
-import { buildObjcModel } from './objc.js';
+import { buildObjcRuntimeModel, buildObjcRuntimeIndex } from './objc.js';
+import { buildSwiftMetadataModel, buildSwiftRuntimeIndex, resolveSwiftDispatch } from './swift.js';
+import { rankApplicationFunctions } from './recognition/classifier.js';
+import { KnowledgeDB } from './knowledge/index.js';
 import { FieldIndex, EMPTY_FIELDS } from './fields.js';
 import { makeSampleFile } from './sample.js';
-import { ProgramIndex } from './program.js';
+import { ProgramIndex, mergeProgramScans, PROGRAM_MERGE_LIMITS } from './program.js';
 import { foldShapes } from './shapes.js';
 import { recoverSchemas } from './schema.js';
-import { NoteStore, noteKeyFor, legacyV2NoteKeyFor, legacyNoteKeyFor, EMPTY_NOTES } from './names.js';
+import { NoteStore, noteKeyFor, legacyV2NoteKeyFor, legacyNoteKeyForSlice, EMPTY_NOTES } from './names.js';
 import { PatchSet } from './patch.js';
 import { PluginHost } from './plugins.js';
 import { showTools, prettyName } from './tools.js';
 import { NavigationHistory } from './navigation.js';
+import { STRING_SCAN_BUDGET, StringCollectionBudget } from './string-budget.js';
+import { ProductWorkspace } from './workspace.js';
 
 const $ = (id) => document.getElementById(id);
+const FUNCTION_DISCOVERY_GLOBAL_CAP = 400_000;
 
 class App {
   get analysisEpoch() { return this.backend ? this.backend.analysisEpoch : -1; }
@@ -67,11 +73,22 @@ class App {
     this.lastGoal = null;       // 直近に調べた目的
     // Objective-C のクラスとフィールド。x0+0x20 を self.hp と言えるようにする索引。
     this.fields = EMPTY_FIELDS;
+    this.objcModel = null;
+    this.objcRuntime = null;
     this.objcBusy = null;
     this.objcBusyEpoch = -1;
+    this.objcRuntime = null;
+    this.swiftModel = null;
+    this.swiftRuntime = null;
+    this.swiftBusy = null;
+    this.swiftBusyEpoch = -1;
+    this.recognition = null;
+    this.recognitionBusy = null;
+    this.knowledge = new KnowledgeDB();
     this.symbolsReadyEpoch = -1;
     /* 自分で付けた名前・メモ・型（names.js）。ファイルごとに保存される。 */
     this.notes = EMPTY_NOTES;
+    this.noteAttachController = null;
     /* 命令の書き換え（patch.js）。保存を選ぶまでファイルには触らない。 */
     this.patches = new PatchSet();
     /* 追加した機能（plugins.js）。 */
@@ -156,6 +173,8 @@ class App {
       onRangeChange: () => this.updateSelectionBar(),
     });
     this.viewer.attachScrubber(this.dom.scrubber, this.dom.thumb);
+    this.workspace = new ProductWorkspace(this);
+    this.activeProject = null;
 
     this.applyTheme(this.prefs.theme || 'system');
     this.applyTextSize(this.prefs.textSize || 'm');
@@ -385,7 +404,7 @@ class App {
       this.dom.addrRange.textContent =
         addrText(region.vmAddr) + '–' + addrText(region.vmAddr + region.size);
       this.dom.stLeft.textContent =
-        (this.store.get('canDisassemble') ? 'ARM64' : (arch || t('status.data'))) + ' · ' +
+        (this.store.get('canDisassemble') ? (arch || 'code') : (arch || t('status.data'))) + ' · ' +
         sizeText(region.size) + ' · ' + t('status.rows', { n: this.viewer.totalRows.toLocaleString() });
     }
     this.updateModeUI();
@@ -523,6 +542,13 @@ class App {
       this.pinnedCache = null;
       this.fields = EMPTY_FIELDS;
       this.objcModel = null;
+      this.objcRuntime = null;
+      this.swiftModel = null;
+      this.swiftRuntime = null;
+      this.swiftBusy = null;
+      this.swiftBusyEpoch = -1;
+      this.recognition = null;
+      this.recognitionBusy = null;
       this.program = null;
       this.programScan = null;
       this.programKey = null;
@@ -550,89 +576,104 @@ class App {
      「誰が誰を呼び、誰が何を見ているか」を 1 回だけ走査して作る。
      これがないと、このツールは名前と文字列を眺めるだけの道具に戻ってしまう。 */
 
-  /** コードのセクション（__text 優先）。 */
+  /** 全体解析の対象になる、active slice内のfile-backed executable regions。 */
+  programRegions() {
+    const candidates=(this.store.get('regions')||[]).filter((r)=>r?.exec===true && r.size>0n && !r.zerofill);
+    const sectioned=candidates.filter((r)=>!!r.section);
+    const source=sectioned.length?sectioned:candidates;
+    const seen=new Set(), out=[];
+    for(const r of source){
+      const key=`${String(r.fileOffset??'')}|${String(r.vmAddr??'')}|${String(r.size??'')}`;
+      if(seen.has(key))continue; seen.add(key); out.push(r);
+    }
+    out.sort((a,b)=>a.vmAddr<b.vmAddr?-1:a.vmAddr>b.vmAddr?1:String(a.id||'').localeCompare(String(b.id||'')));
+    return out;
+  }
+
+  /** UIの既定コードregion（全体解析自体は programRegions() 全件を使う）。 */
   codeRegion() {
-    const regions = this.store.get('regions') || [];
-    return regions.find((r) => r.section === '__text' && r.size > 0n) ||
-           regions.find((r) => r.exec && r.size > 0n) ||
-           this.store.get('currentRegion') || null;
+    const regions=this.programRegions();
+    return regions.find((r)=>r.section==='__text') || regions[0] || this.store.get('currentRegion') || null;
   }
 
   /**
-   * 関数の切れ目をそろえる。LC_FUNCTION_STARTS がないファイルでは推測に頼る。
-   * 呼び出しグラフは「その命令がどの関数の中にあるか」を必要とするので、ここが要る。
+   * 関数の切れ目をactive sliceの全exec regionで補完する。
+   * exact seedの正確さと一覧の網羅性は分離し、全region走査済みの時だけcompleteにする。
    */
   async ensureFunctions(region, onProgress) {
-    const epoch = this.backend.gen;
-    // 名前の読み込みが終わるのを待つ。先に走らせると、無駄に推測してしまう。
-    if (this.symbolsReady) { try { await this.symbolsReady; } catch { /* 名前がなくても続ける */ } }
-    if (epoch !== this.backend.gen) return null;
-    // EMPTY_INDEX は全体で共有している空の索引なので、絶対に書き換えない
-    if (this.symbols === EMPTY_INDEX) {
-      this.symbols = new SymbolIndex({});
-      this.viewer.setSymbols(this.symbols);
+    const epoch=this.backend.gen;
+    if(this.symbolsReady){try{await this.symbolsReady;}catch{/* names are optional */}}
+    if(epoch!==this.backend.gen)return null;
+    if(this.symbols===EMPTY_INDEX){this.symbols = new SymbolIndex({ regions: this.store.get('regions') || [] });this.viewer.setSymbols(this.symbols);}
+    const sym=this.symbols;
+    if(!sym || sym.functionStartsComplete===true || sym.functionDiscovery?.complete===true)return sym;
+    const targets=this.programRegions();
+    if(region && region.exec && !targets.some((r)=>r.id===region.id))targets.push(region);
+    if(!targets.length)return sym;
+    const regionSetKey=targets.map((r)=>r.id).join('|');
+    if(sym.functionDiscovery?.attempted===true && sym.functionDiscovery?.regionSetKey===regionSetKey)return sym;
+
+    let remaining= Math.max(0, FUNCTION_DISCOVERY_GLOBAL_CAP - Math.min(FUNCTION_DISCOVERY_GLOBAL_CAP, sym.functionCount||0));
+    let remainingBytes=targets.reduce((n,r)=>n+BigInt(r.size),0n);
+    const results=[], reasons=[];
+    for(let i=0;i<targets.length;i++){
+      if(epoch!==this.backend.gen)return null;
+      const r=targets[i], size=BigInt(r.size), share=remaining>0&&remainingBytes>0n
+        ? Math.max(1,Math.min(remaining,Number((BigInt(remaining)*size+remainingBytes-1n)/remainingBytes))) : 0;
+      if(share<=0){reasons.push(`function-global-budget:${r.id}`);results.push({regionId:r.id,complete:false,skipped:true});remainingBytes-=size;continue;}
+      try{
+        const res=await this.backend.guessFunctions(r.id,share,onProgress&&((p)=>onProgress({phase:'functions',done:i+(p.all?Math.min(1,p.done/p.all):0),all:targets.length,region:r.id})));
+        if(epoch!==this.backend.gen)return null;
+        if(res?.starts?.length){sym.addFunctions(res.starts,{source:'heuristic',confidence:0.55,confirmed:false});sym.guessed=true;remaining=Math.max(0,remaining-res.starts.length);}
+        const complete=res?.discoveryComplete===true || res?.completeness?.complete===true || res?.complete===true;
+        results.push({regionId:r.id,complete,capped:!!res?.capped,discovered:res?.starts?.length||0});
+        if(!complete)reasons.push(`${r.id}:${res?.completeness?.reason||res?.truncationReason||'function-discovery-incomplete'}`);
+      }catch{results.push({regionId:r.id,complete:false,error:true});reasons.push(`${r.id}:function-discovery-failed`);}
+      remainingBytes-=size;
     }
-    const sym = this.symbols;
-    if (!sym || sym.functionStartsExact) return sym;
-    if (!region) return sym;
-    try {
-      const res = await this.backend.guessFunctions(region.id, null,
-        onProgress && ((p) => onProgress({ phase: 'functions', done: p.done, all: p.all })));
-      if (epoch === this.backend.gen && res && res.starts && res.starts.length) {
-        /* Keep exact starts recovered from ObjC/metadata and merge inferred C/C++/
-           Swift starts around them. Replacing the list here used to throw away
-           the strongest evidence as soon as partial metadata existed. */
-        sym.addFunctions(res.starts);
-        sym.guessed = true;
-        sym.functionDiscovery = res.completeness || { complete: res.complete !== false, capped: !!res.capped };
-        sym.functionStartsComplete = res.complete !== false;
-        sym.functionStartsCapped = !!res.capped;
-        this.viewer.setSymbols(sym);
-      }
-    } catch { /* 推測できなくても、ほかの解析は続ける */ }
+    const complete=results.length===targets.length && results.every((x)=>x.complete===true);
+    sym.functionDiscovery={complete,attempted:true,regionSetKey,regions:results,reasons:[...new Set(reasons)],capped:results.some((x)=>x.capped)};
+    sym.functionStartsComplete=complete;
+    sym.functionStartsCapped=sym.functionDiscovery.capped || reasons.some((x)=>x.includes('budget'));
+    this.viewer.setSymbols(sym);
     return sym;
   }
 
-  /**
-   * プログラム全体の索引を用意する。すでにあれば作り直さない。
-   * シンボルだけが増えたとき（Objective-C の名前復元など）は、走査結果を使い回す。
-   */
+  /** Build one global ProgramIndex from every executable region. */
   async ensureProgram(onProgress) {
-    const region = this.codeRegion();
-    if (!region) return null;
-    const key = region.id;
-    if (this.program && this.programKey === key && this.program.gen === this.symbols.gen) {
-      return this.program;
-    }
-    if (this.programScan && this.programKey === key) {
-      this.program = new ProgramIndex(this.programScan, this.symbols, region);
-      return this.program;
-    }
-    const epoch = this.backend.gen;
-    if (this.programBusy && this.programBusyEpoch === epoch) return this.programBusy;
-
-    this.programBusyEpoch = epoch;
-    this.programBusy = (async () => {
-      await this.ensureFunctions(region, onProgress);
-      if (epoch !== this.backend.gen) return null;
-      try {
-        const scan = await this.backend.scanProgram(region.id,
-          onProgress && ((p) => onProgress({ phase: 'scan', done: p.done, all: p.all })));
-        if (epoch === this.backend.gen && scan && !scan.cancelled) {
-          this.programScan = scan;
-          this.programKey = key;
-          this.program = new ProgramIndex(scan, this.symbols, region);
-        }
-      } catch {
-        if (epoch === this.backend.gen) this.program = null;
-      } finally {
-        if (this.programBusyEpoch === epoch) {
-          this.programBusy = null;
-          this.programBusyEpoch = -1;
-        }
+    const regions=this.programRegions();
+    if(!regions.length)return null;
+    const key=regions.map((r)=>r.id).join('|');
+    const primary=regions.find((r)=>r.section==='__text')||regions[0];
+    if(this.program&&this.programKey===key&&this.program.gen===this.symbols.gen)return this.program;
+    if(this.programScan&&this.programKey===key){this.program=new ProgramIndex(this.programScan,this.symbols,primary);return this.program;}
+    const epoch=this.backend.gen;
+    if(this.programBusy&&this.programBusyEpoch===epoch)return this.programBusy;
+    this.programBusyEpoch=epoch;
+    this.programBusy=(async()=>{
+      await this.ensureFunctions(primary,onProgress);
+      if(epoch!==this.backend.gen)return null;
+      const scans=[], failures=[];
+      let calls=PROGRAM_MERGE_LIMITS.calls, refs=PROGRAM_MERGE_LIMITS.refs, kinds=PROGRAM_MERGE_LIMITS.kindWords;
+      let remainingBytes=regions.reduce((n,r)=>n+BigInt(r.size),0n);
+      const share=(remaining,size,total)=>remaining>0&&total>0n?Math.max(1,Math.min(remaining,Number((BigInt(remaining)*size+total-1n)/total))):0;
+      for(let i=0;i<regions.length;i++){
+        const r=regions[i], size=BigInt(r.size);
+        if(epoch!==this.backend.gen)return null;
+        try{
+          const scan=await this.backend.scanProgram(r.id,onProgress&&((p)=>onProgress({phase:'scan',done:i+(p.all?Math.min(1,p.done/p.all):0),all:regions.length,region:r.id})),{
+            callLimit:share(calls,size,remainingBytes),refLimit:share(refs,size,remainingBytes),kindLimit:share(kinds,size,remainingBytes),
+          });
+          if(scan&&!scan.cancelled){scans.push(scan);calls=Math.max(0,calls-(scan.callCount??scan.callFrom?.length??0));refs=Math.max(0,refs-(scan.refCount??scan.refFrom?.length??0));kinds=Math.max(0,kinds-(scan.kindsCovered??scan.kinds?.length??0));}
+          else failures.push(`${r.id}:program-scan-cancelled`);
+        }catch{failures.push(`${r.id}:program-scan-failed`);}
+        remainingBytes-=size;
       }
-      return epoch === this.backend.gen ? this.program : null;
-    })();
+      if(epoch!==this.backend.gen)return null;
+      const merged=mergeProgramScans(scans,{regions,reasons:failures,limits:PROGRAM_MERGE_LIMITS});
+      this.programScan=merged;this.programKey=key;this.program=new ProgramIndex(merged,this.symbols,primary);
+      return this.program;
+    })().finally(()=>{if(this.programBusyEpoch===epoch){this.programBusy=null;this.programBusyEpoch=-1;}});
     return this.programBusy;
   }
 
@@ -730,28 +771,42 @@ class App {
       (r.cstrings || /string|cstring|objc_methname|objc_method|objc_classname|objc_class|oslogstring|const|ustring|swift5_reflstr/i.test(r.section || '')))
       .sort((a, b) => priority(a) - priority(b));
     const current = this.store.get('currentRegion');
-    let budget = 64 * 1024 * 1024;
+    const collectionBudget = new StringCollectionBudget(STRING_SCAN_BUDGET);
     const use = [];
     const skipped = [];
     for (const r of targets) {
-      if (budget <= 0) { skipped.push(r); continue; }
-      const bytes = Math.min(budget, Number(r.size));
+      const bytes = collectionBudget.requestBytes(Number(r.size));
+      if (bytes <= 0) { skipped.push(r); continue; }
       use.push({ region: r, bytes });
-      budget -= bytes;
       if (bytes < Number(r.size)) skipped.push(r);
     }
-    if (!use.length && current) use.push({ region: current, bytes: Math.min(64 * 1024 * 1024, Number(current.size)) });
+    if (!use.length && current) {
+      const bytes = collectionBudget.requestBytes(Number(current.size));
+      if (bytes > 0) use.push({ region: current, bytes });
+    }
     const out = [];
     let scannedBytes = 0;
+    let backendIncomplete = false;
     try {
-      for (const item of use) {
+      for (let itemIndex = 0; itemIndex < use.length; itemIndex++) {
         if (epoch !== this.backend.gen) return null;
+        if (collectionBudget.exhausted) {
+          for (const rest of use.slice(itemIndex)) if (!skipped.includes(rest.region)) skipped.push(rest.region);
+          break;
+        }
+        const item = use[itemIndex];
         const r = item.region;
-        const res = await this.backend.strings({ regionId: r.id, min: 4, maxBytes: item.bytes },
+        const remaining = collectionBudget.requestLimit();
+        if (remaining <= 0) { collectionBudget.truncationReason ||= 'result-budget'; break; }
+        const res = await this.backend.strings({ regionId: r.id, min: 4, maxBytes: item.bytes, limit: remaining },
           onProgress && ((p) => onProgress({ phase: 'strings', done: p.done, all: p.all, region: r.id })));
         scannedBytes += res.scannedBytes || 0;
-        if (!res.complete && !skipped.includes(r)) skipped.push(r);
-        for (const s of res.results) out.push({ addr: s.addr, text: s.text, region: r });
+        if (!res.complete) { backendIncomplete = true; if (!skipped.includes(r)) skipped.push(r); }
+        for (const s of res.results || []) {
+          if (!collectionBudget.accept(s.text)) break;
+          out.push({ addr: s.addr, text: s.text, region: r });
+        }
+        if (res.capped && !collectionBudget.truncationReason) collectionBudget.truncationReason = res.truncationReason || 'result-budget';
       }
     } finally {
       if (this.stringsBusyEpoch === epoch) {
@@ -759,8 +814,12 @@ class App {
         this.stringsBusyEpoch = -1;
       }
     }
-    out.complete = skipped.length === 0;
+    const truncated = !!collectionBudget.truncationReason || skipped.length > 0 || backendIncomplete;
+    out.complete = !truncated;
+    out.truncated = truncated;
+    out.truncationReason = collectionBudget.truncationReason || (skipped.length ? 'input-budget' : backendIncomplete ? 'backend-partial' : null);
     out.skippedRegions = skipped.map((r) => ({ id: r.id, name: r.name, section: r.section, size: r.size }));
+    out.unscannedRegions = out.skippedRegions;
     out.scannedBytes = scannedBytes;
     if (epoch === this.backend.gen) this.stringIndex = out;
     return epoch === this.backend.gen ? out : null;
@@ -791,92 +850,95 @@ class App {
    * 同じ関数は analyze.js 側のキャッシュに載るので、二度目はすぐ返る。
    */
   async analyzeFunctionAt(addr) {
-    const region = this.store.get('currentRegion');
-    const sym = this.symbols;
-    if (!region || !this.store.get('canDisassemble') || !sym.functionCount) return null;
-    const fn = sym.functionAt(addr);
-    if (!fn || fn.start < region.vmAddr) return null;
-    const startRow = Number((fn.start - region.vmAddr) / 4n);
-    const endRow = fn.end != null
-      ? Math.min(this.viewer.totalRows - 1, Number((fn.end - region.vmAddr) / 4n) - 1)
-      : Math.min(this.viewer.totalRows - 1, startRow + 2048);
-    if (endRow < startRow) return null;
+    const sym=this.symbols, range=this.validatedFunctionRange(addr);
+    if(!range.ok || !this.store.get('canDisassemble') || !sym.functionCount) return null;
+    const region=range.region, alignment=Math.max(1,Number(this.store.get('instructionAlignment')||this.store.get('capability')?.instructionAlignment||4));
+    const width=BigInt(alignment);
+    if((range.start-region.vmAddr)%width!==0n) return null;
+    const startRow=Number((range.start-region.vmAddr)/width);
+    const endRow=Math.min(Number((range.end-region.vmAddr+width-1n)/width)-1, Math.max(0,Number(region.size/width)-1));
+    if(endRow<startRow)return null;
     try {
-      const res = await analyzeFunctionCached(this.backend, region, startRow, endRow, sym);
-      if (this.store.get('currentRegion') !== region) return null;
-      this.semantic = { regionId: region.id, model: res.model, result: res };
-      this.viewer.setBlockOverlay(region.id, buildOverlay(res.model));
+      const res=await analyzeFunctionCached(this.backend,region,startRow,endRow,sym);
+      if(this.store.get('sliceIndex')<0 || this.executableRegionFor(range.start)!==region)return null;
+      res.completeness={complete:range.complete!==false,reason:range.reason||null,provenance:range.provenance,regionId:region.id};
+      this.semantic={regionId:region.id,model:res.model,result:res};
+      if(this.store.get('currentRegion')===region)this.viewer.setBlockOverlay(region.id,buildOverlay(res.model));
       return res;
-    } catch {
-      return null;   // 解析できなくても、命令の表示はそのまま続く
-    }
+    } catch { return null; }
   }
 
   /* ── ファイルを開く ───────────────────────────────────────── */
 
   async openFile(file, opts) {
     if (!file) return;
-    if (file.size === 0) {
-      alertDialog(t('err.emptyTitle'), t('err.emptyText'));
-      return;
-    }
-    this.sampleOpen = !!(opts && opts.sample);
-    /* 前のファイルについて開いていたシートは、重なりごと片付ける。
-       1 枚だけ閉じると、下に前のファイルの画面が残って戻れてしまう。 */
-    closeAllSheets();
-    this.setBusy(true, t('status.reading', { name: file.name }));
-    this.backend.resetCache();
-    this.detailRefresh = null;
-    this.symbols = EMPTY_INDEX;
-    this.symbolsReady = null;
-    this.viewer.setSymbols(EMPTY_INDEX);
-    this.forgetSemantics(true);
-
+    if (file.size === 0) { alertDialog(t('err.emptyTitle'), t('err.emptyText')); return; }
+    const sampleOpen = !!(opts && opts.sample);
+    this.workspace?.autosave();
+    this.setBusy(true, t('status.reading', { name:file.name }));
     let info;
-    let openEpoch;
-    try {
-      const opening = this.backend.open(file);
-      openEpoch = this.backend.gen;
-      info = await opening;
-    } catch (err) {
+    try { info = await this.backend.open(file); }
+    catch (err) {
       if (err && err.stale) return;
       this.setBusy(false);
       alertDialog(t('err.openTitle'), friendly(err.message));
       return;
     }
-    if (openEpoch !== this.backend.gen) return;
-
-    this.store.set({ file, fileInfo: info, selectedRow: -1 });
-
-    let sliceIndex = -1;
+    const openEpoch=this.backend.gen;
+    closeAllSheets();
+    this.sampleOpen=sampleOpen;
+    this.detailRefresh=null;
+    this.symbols=EMPTY_INDEX;
+    this.symbolsReady=null;
+    this.viewer.setSymbols(EMPTY_INDEX);
+    this.forgetSemantics(true);
+    this.store.set({file,fileInfo:info,selectedRow:-1});
+    let sliceIndex=-1;
     if (info.slices.length) {
-      sliceIndex = info.slices.findIndex((s) => s.info && s.info.isArm64);
-      if (sliceIndex < 0) sliceIndex = info.slices.findIndex((s) => s.info);
+      sliceIndex=info.slices.findIndex((entry)=>entry.info && entry.info.isArm64);
+      if (sliceIndex < 0) sliceIndex=info.slices.findIndex((entry)=>entry.info);
     }
-    /* fingerprint + active sliceで、同名・同サイズやFat内の別sliceを混同しない。 */
-    const notes = new NoteStore(await noteKeyFor(file, info, sliceIndex), [await legacyV2NoteKeyFor(file, info, sliceIndex), legacyNoteKeyFor(file, info)]);
-    if (openEpoch !== this.backend.gen) return;
-    this.notes = notes;
-    this.patches = new PatchSet();
+    this.noteAttachController?.abort();
+    this.notes=EMPTY_NOTES;
+    this.patches=new PatchSet();
     this.setBusy(false);
-    this.applySlice(sliceIndex, info);
-
+    this.applySlice(sliceIndex,info);
+    void this.attachNotes(file,info,sliceIndex,openEpoch)
+      .then(()=>this.workspace?.bind())
+      .then((project)=>{if(project)this.activeProject=project;})
+      .catch(()=>{});
     if (info.warnings && info.warnings.length) toast(info.warnings[0]);
-    const slice = this.currentSlice();
-    if (slice && slice.info && slice.info.encrypted) {
-      alertDialog(t('err.encryptedTitle'), t('err.encryptedText'));
+    const slice=this.currentSlice();
+    if (slice && slice.info && slice.info.encrypted) alertDialog(t('err.encryptedTitle'),t('err.encryptedText'));
+    document.dispatchEvent(new CustomEvent('hex:file-opened',{detail:{name:info.name,sample:this.sampleOpen}}));
+    if (this.sampleOpen) setTimeout(()=>showSampleGuide(this),250);
+  }
+
+  async attachNotes(file, info, sliceIndex, epoch = this.backend.gen) {
+    this.noteAttachController?.abort();
+    const controller=new AbortController();
+    this.noteAttachController=controller;
+    try {
+      const [id, legacyV2] = await Promise.all([
+        noteKeyFor(file,info,sliceIndex,{signal:controller.signal}),
+        legacyV2NoteKeyFor(file,info,sliceIndex),
+      ]);
+      if (controller.signal.aborted || epoch !== this.backend.gen || this.store.get('file') !== file || this.store.get('sliceIndex') !== sliceIndex) return null;
+      const notes=new NoteStore(id,[legacyV2,legacyNoteKeyForSlice(file,info,sliceIndex)]);
+      this.notes=notes;
+      if (this.symbols && this.symbols !== EMPTY_INDEX) {
+        for (const entry of notes.nameEntries()) this.symbols.rename(entry.addr,entry.name);
+        this.viewer.setSymbols(this.symbols);
+        this.updateChrome();
+      }
+      document.dispatchEvent(new CustomEvent('hex:notes-attached',{detail:{sliceIndex}}));
+      return notes;
+    } catch (error) {
+      if (error?.name === 'AbortError' || error?.code === 'ABORT_ERR' || controller.signal.aborted) return null;
+      return null;
+    } finally {
+      if (this.noteAttachController === controller) this.noteAttachController=null;
     }
-    /*
-     * ファイルを開いた直後に主役になるのはコード。
-     * ここで概要シートを自動で開いていたころ、開いた瞬間に全画面のシートが
-     * かぶさって、命令が 1 行も見えないまま「閉じる」を押させていた。
-     * 概要は「解析」から自分で開く（openOverview）ものにして、
-     * ここでは画面をコードへ移すことだけを知らせる。
-     */
-    document.dispatchEvent(new CustomEvent('hex:file-opened', {
-      detail: { name: info.name, sample: this.sampleOpen },
-    }));
-    if (this.sampleOpen) setTimeout(() => showSampleGuide(this), 250);
   }
 
   /** 練習用のサンプルをその場で組み立てて開く。 */
@@ -894,12 +956,10 @@ class App {
     const info = infoArg || this.store.get('fileInfo');
     const slice = sliceIndex >= 0 ? info.slices[sliceIndex] : null;
     const regions = slice ? slice.regions : [];
-    const arch = slice && slice.info
-      ? slice.info.cpu + (slice.info.cpuSub && slice.info.cpuSub !== 'all' ? ' (' + slice.info.cpuSub + ')' : '')
-      : null;
-    const canDisassemble = slice && slice.info ? !!slice.info.isArm64 : true;
-
-    this.store.set({ sliceIndex, regions, architecture: arch, canDisassemble });
+    const capability = slice?.capability || info?.capability || { architecture:slice?.info?.architecture || (slice?.info?.isArm64?'arm64':'unknown'), canDisassemble:!!slice?.info?.isArm64, analysisLevel:!!slice?.info?.isArm64?'full':'data-only', limitations:[], instructionAlignment:slice?.info?.isArm64?4:1 };
+    const arch = capability.architecture || slice?.info?.architecture || slice?.info?.cpu || null;
+    const canDisassemble = capability.canDisassemble === true || capability.viewerCanDisassemble === true;
+    this.store.set({ sliceIndex, regions, architecture: arch, canDisassemble, capability, analysisLevel:capability.analysisLevel||'data-only', limitations:capability.limitations||[], instructionAlignment:Math.max(1,Number(capability.instructionAlignment||capability.fixedInstructionSize||1)) });
 
     const mode = canDisassemble ? this.preferredMode : 'hex';
     this.store.set({ displayMode: mode });
@@ -927,12 +987,20 @@ class App {
       this.symbolsReadyEpoch = epoch;
       this.symbolsReady = this.backend.analyze(sliceIndex).then((res) => {
         if (epoch !== this.backend.gen || this.store.get('sliceIndex') !== sliceIndex) return;
-        this.symbols = new SymbolIndex(res);
+        // Backend symbol results are slice-global starts, but containment needs
+        // the active slice's executable region boundaries. Bind them at the
+        // replacement point so every consumer (ProgramIndex, panels, Script)
+        // shares the same trust boundary.
+        this.symbols = new SymbolIndex({ ...res, regions });
         // 前回このファイルに付けた名前を戻す（元の名前より優先される）
         for (const e of this.notes.nameEntries()) this.symbols.rename(e.addr, e.name);
         this.viewer.setSymbols(this.symbols);
         this.updateChrome();
-        return this.ensureObjc(sliceIndex);
+        return Promise.allSettled([
+          this.ensureObjc(sliceIndex),
+          this.ensureSwift(),
+          this.ensureRecognition({ maxFunctions: 350000 }),
+        ]);
       }).catch(() => { /* シンボルがなくても読める */ });
     }
   }
@@ -953,30 +1021,35 @@ class App {
    */
   async ensureObjc(sliceIndex) {
     const epoch = this.backend.gen;
-    if (this.fields && this.fields.classCount) return this.fields;
+    if (this.objcModel && this.objcRuntime) return this.fields;
     if (this.objcBusy && this.objcBusyEpoch === epoch) return this.objcBusy;
     const regions = this.store.get('regions') || [];
-    const list = regions.find((r) => r.section === '__objc_classlist' && r.size > 0n);
-    if (!list) { this.fields = EMPTY_FIELDS; return this.fields; }
+    const list = regions.find((r) => r.section === '__objc_classlist' && r.size > 0n) || null;
+    const protocolList = regions.find((r) => r.section === '__objc_protolist' && r.size > 0n) || null;
+    const categoryList = regions.find((r) => r.section === '__objc_catlist' && r.size > 0n) || null;
+    if (!list && !protocolList && !categoryList) {
+      this.fields = EMPTY_FIELDS;
+      this.objcModel = null;
+      this.objcRuntime = null;
+      return this.fields;
+    }
     const slice = sliceIndex != null ? sliceIndex : this.store.get('sliceIndex');
-
     this.objcBusyEpoch = epoch;
     this.objcBusy = (async () => {
-      const read = (addr, len) => this.backend.readAt(addr, len)
-        .then((r) => (r && r.found ? r.bytes : null))
-        .catch(() => null);
+      const read = (addr, len) => this.backend.readAt(addr, len).then((r) => (r && r.found ? r.bytes : null)).catch(() => null);
       try {
-        // chained fixups のポインタは「イメージの先頭からの距離」なので、先頭が要る
         const info = this.store.get('fileInfo');
         const sl = info && info.slices ? info.slices[slice] : null;
         const imageBase = sl && sl.info ? sl.info.textVM : null;
-        const model = await buildObjcModel(read, list, null, imageBase);
+        const model = await buildObjcRuntimeModel(read, list, { protocolList, categoryList }, null, imageBase);
         if (epoch !== this.backend.gen || this.store.get('sliceIndex') !== slice) return this.fields;
+        model.runtimeIndex = model.runtimeIndex || buildObjcRuntimeIndex(model);
         this.objcModel = model;
+        this.objcRuntime = model.runtimeIndex || null;
         this.fields = new FieldIndex(model);
         if (model.names.length) {
-          const added = this.symbols.addNames(model.names);
-          this.symbols.addFunctions(model.names.map((n) => n.addr));
+          const added = this.symbols.addNames(model.names, { source: 'objc-runtime', confidence: 1, confirmed: true });
+          this.symbols.addFunctions(model.names.map((n) => n.addr), { source: 'objc-runtime', confidence: 1, confirmed: true });
           this.viewer.setSymbols(this.symbols);
           this.updateChrome();
           if (added) {
@@ -987,16 +1060,114 @@ class App {
                 ' field names from ' + model.count + ' classes'));
           }
         }
-      } catch { /* 読めなくても、ほかの表示には影響させない */
-      } finally {
-        if (this.objcBusyEpoch === epoch) {
-          this.objcBusy = null;
-          this.objcBusyEpoch = -1;
-        }
-      }
+      } catch { /* fail-soft on partial Apple metadata */ }
+      finally { if (this.objcBusyEpoch === epoch) { this.objcBusy=null; this.objcBusyEpoch=-1; } }
       return epoch === this.backend.gen ? this.fields : EMPTY_FIELDS;
     })();
     return this.objcBusy;
+  }
+
+  async ensureSwift() {
+    const epoch=this.backend.gen;
+    if (this.swiftModel && this.swiftRuntime) return this.swiftModel;
+    if (this.swiftBusy && this.swiftBusyEpoch===epoch) return this.swiftBusy;
+    const regions=this.store.get('regions') || [];
+    if (!regions.some((r)=>/^__swift5_/.test(r.section||''))) return null;
+    const slice=this.store.get('sliceIndex');
+    this.swiftBusyEpoch=epoch;
+    this.swiftBusy=(async()=>{
+      const read=(addr,len)=>this.backend.readAt(addr,len).then((r)=>(r&&r.found?r.bytes:null)).catch(()=>null);
+      try {
+        const model=await buildSwiftMetadataModel(read,regions,{budget:20000});
+        if(epoch!==this.backend.gen || this.store.get('sliceIndex')!==slice) return null;
+        this.swiftModel=model; this.swiftRuntime=buildSwiftRuntimeIndex(model);
+        const exec=this.executableRegions(); const names=[];
+        for(const type of model.types||[]) for(const method of type.methods||type.vtable||[]) {
+          if(method?.impl!=null && exec.some((r)=>method.impl>=r.vmAddr&&method.impl<r.vmAddr+r.size)) names.push({addr:method.impl,name:`${type.name||'SwiftType'}::method_${method.index}`,source:'swift-metadata'});
+        }
+        if(names.length){this.symbols.addNames(names);this.symbols.addFunctions(names.map((x)=>x.addr));this.viewer.setSymbols(this.symbols);}
+        return model;
+      } catch { return null; }
+      finally { if(this.swiftBusyEpoch===epoch){this.swiftBusy=null;this.swiftBusyEpoch=-1;} }
+    })();
+    return this.swiftBusy;
+  }
+
+  resolveSwiftCall(call) { return this.swiftRuntime ? resolveSwiftDispatch(this.swiftRuntime, call || {}) : {resolved:null,candidates:[],confidence:0,reason:'swift-runtime-unavailable'}; }
+
+  executableRegions() { return (this.store.get('regions') || []).filter((r)=>r?.exec===true && r.size>0n); }
+  executableRegionFor(addr) { const a=BigInt(addr); return this.executableRegions().find((r)=>a>=r.vmAddr && a<r.vmAddr+r.size) || null; }
+  validatedFunctionRange(addr) {
+    const fn=this.symbols?.functionAt?.(BigInt(addr)); if(!fn) return {ok:false,reason:'function-symbol-missing'};
+    const region=this.executableRegionFor(fn.start); if(!region) return {ok:false,reason:'function-start-not-executable',function:fn};
+    const regionEnd=region.vmAddr+region.size;
+    let end=fn.end!=null?BigInt(fn.end):regionEnd;
+    let complete=true,reason=null;
+    if(end<=fn.start){return {ok:false,reason:'invalid-function-range',function:fn,region};}
+    if(end>regionEnd){end=regionEnd;complete=false;reason='symbol-range-crosses-executable-region';}
+    return {ok:true,start:fn.start,end,region,function:fn,complete,reason,provenance:'executable-region+symbol-boundary'};
+  }
+
+  async ensureRecognition(options={}) {
+    const sym=this.symbols;
+    if(!sym || sym===EMPTY_INDEX) return null;
+    if(this.recognition && this.recognition.gen===sym.gen) return this.recognition;
+    if(this.recognitionBusy) return this.recognitionBusy;
+    const epoch=this.backend.gen;
+    const max=Math.min(500000,Math.max(1000,Number(options.maxFunctions)||350000));
+    const knowledgeLimit=Math.min(2048,Math.max(0,Number(options.knowledgeLimit ?? 512)));
+    this.recognitionBusy=(async()=>{
+      try { await this.ensureSwift(); } catch { /* Swift metadata is optional */ }
+      if(epoch!==this.backend.gen || sym!==this.symbols) return null;
+      const total=sym?.addrs?.length||0, count=Math.min(total,max), functions=new Array(count);
+      for(let i=0;i<count;i++){
+        if(epoch!==this.backend.gen || sym!==this.symbols) return null;
+        const address=sym.addrs[i], name=sym.names?.[i]||null;
+        const next=i+1<total?sym.addrs[i+1]:null;
+        const owner=this.fields?.ownerOf?.(address)||null;
+        const swiftName=name&&/^(.*)::method_(\d+)$/.exec(name);
+        functions[i]={
+          address,name,size:next!=null&&next>address?Number(next-address):0,
+          objc:owner?.className?{class:owner.className}:{},
+          swift:swiftName?{typeDescriptor:swiftName[1]}:{},
+          strings:[],calls:[],imports:[],semantic:{writes:[],thresholds:[]},fieldAccessShape:[],
+        };
+        if((i&8191)===8191) await Promise.resolve();
+      }
+      const ranked=rankApplicationFunctions(functions,()=>({notKnownVendor:true}));
+      const knowledgeCount=Math.min(knowledgeLimit,ranked.length);
+      let knowledgeMatches=0, knowledgeAmbiguous=0;
+      for(let i=0;i<knowledgeCount;i++){
+        if(epoch!==this.backend.gen || sym!==this.symbols) return null;
+        try {
+          const propagated=await this.knowledge.propagate(ranked[i].function,{threshold:0.84,ambiguityWindow:0.035});
+          if(propagated?.propagated){ranked[i].knowledge=propagated;knowledgeMatches++;}
+          else if(propagated?.ambiguous || propagated?.truncated) knowledgeAmbiguous++;
+        } catch { /* local knowledge must never block binary analysis */ }
+        if((i&63)===63) await Promise.resolve();
+      }
+      const records=ranked.map((x)=>{
+        const known=x.knowledge?.candidate||null;
+        return {
+          address:x.function.address,
+          name:known?.names?.[0]||x.function.name||null,
+          originalName:x.function.name||null,
+          score:x.score,classification:x.classification.classification,
+          confidence:x.classification.confidence,evidence:x.classification.evidence,
+          fingerprint:x.function,knowledge:known,knowledgeConfidence:x.knowledge?.confidence||0,
+          knowledgeSourceId:x.knowledge?.sourceId||null,
+        };
+      });
+      const state={
+        gen:sym.gen,records,total,scannedCount:count,complete:count===total,
+        truncationReason:count===total?null:'function-budget',binaryHash:this.backend.contentHash||null,
+        knowledge:this.knowledge,knowledgeScanned:knowledgeCount,knowledgeMatches,knowledgeAmbiguous,
+        knowledgeComplete:knowledgeCount===ranked.length,
+      };
+      if(epoch===this.backend.gen && sym===this.symbols)this.recognition=state;
+      return state;
+    })().finally(()=>{this.recognitionBusy=null;});
+    return this.recognitionBusy;
   }
 
   /** その関数がどのクラスのメソッドか。分からなければ null。 */
@@ -1021,19 +1192,41 @@ class App {
   }
 
   async selectSlice(index) {
-    const info = this.store.get('fileInfo');
+    const info=this.store.get('fileInfo');
     if (!info || !info.slices[index] || info.slices[index].error) return;
+    this.workspace?.autosave();
+    this.noteAttachController?.abort();
     this.backend.advanceEpoch();
     this.forgetSemantics(true);
-    this.symbols = EMPTY_INDEX;
+    this.symbols=EMPTY_INDEX;
     this.viewer.setSymbols(EMPTY_INDEX);
-    const file = this.store.get('file');
-    const epoch = this.backend.gen;
-    const notes = new NoteStore(await noteKeyFor(file, info, index), [await legacyV2NoteKeyFor(file, info, index), legacyNoteKeyFor(file, info)]);
-    if (epoch !== this.backend.gen) return;
-    this.notes = notes;
-    this.applySlice(index, info);
+    this.notes=EMPTY_NOTES;
+    const file=this.store.get('file');
+    const epoch=this.backend.gen;
+    this.applySlice(index,info);
+    void this.attachNotes(file,info,index,epoch)
+      .then(()=>this.workspace?.bind())
+      .then((project)=>{if(project)this.activeProject=project;})
+      .catch(()=>{});
   }
+
+  async exportProjectFile(){
+    if(!this.store.get('fileInfo'))throw new Error('open-file-first');
+    if(!this.workspace.identity)this.activeProject=await this.workspace.bind();
+    return this.workspace.exportProject();
+  }
+
+  async importProjectFile(file){
+    if(!this.store.get('fileInfo'))throw new Error('open-file-first');
+    if(!this.workspace.identity)await this.workspace.bind();
+    const project=await this.workspace.importProject(file);this.activeProject=project;this.updateChrome();return project;
+  }
+
+  async loadDiffBaseline(file){return this.workspace.loadBaseline(file);}
+  async runBinaryDiff(options){return this.workspace.diff(options);}
+  getBinaryDiff(){return this.workspace.getBinaryDiff();}
+  saveWorkspace(){return this.workspace.autosave();}
+
 
   selectRegion(region, { silent } = {}) {
     if (!region) return;

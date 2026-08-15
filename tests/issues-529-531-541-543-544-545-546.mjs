@@ -1,0 +1,17 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+const app=fs.readFileSync('js/app.js','utf8');
+assert.match(app,/buildObjcRuntimeIndex/); assert.match(app,/buildObjcRuntimeModel/); assert.match(app,/buildSwiftMetadataModel/); assert.match(app,/buildSwiftRuntimeIndex/);
+assert.match(app,/protocolList/); assert.match(app,/categoryList/); assert.match(app,/this\.objcRuntime/); assert.match(app,/this\.swiftRuntime/);
+assert.match(app,/const capability = slice\?\.capability/); assert.match(app,/instructionAlignment/); assert.match(app,/analysisLevel/);
+assert.match(app,/validatedFunctionRange/); assert.match(app,/function-start-not-executable/); assert.match(app,/symbol-range-crosses-executable-region/);
+assert.match(app,/ensureRecognition/); assert.match(app,/rankApplicationFunctions/); assert.match(app,/new KnowledgeDB/);
+const ai=fs.readFileSync('js/ai/ui/hex-context.js','utf8');
+assert.match(ai,/instructionBytes\(app\)/); assert.match(ai,/scannedCount/); assert.match(ai,/truncationReason/); assert.match(ai,/coverage/);
+assert.doesNotMatch(ai,/\(start - region\.vmAddr\) \/ 4n/);
+assert.doesNotMatch(ai,/sym\.names\.length && out\.length < limit/);
+const product=fs.readFileSync('js/ui/product.js','utf8');
+assert.match(product,/EXPLORER_SOURCE_LIMIT|queryFunctions/); assert.match(product,/annotateCollection|queryStrings/); assert.match(product,/complete\s*===?\s*false|complete===false/); assert.match(product,/classification:item\.classification|genericEvidenceStatus/); const explorer=fs.readFileSync('js/ui/explorer-index.js','utf8'); assert.match(explorer,/truncationReason/);
+assert.match(product,/validatedFunctionRange/); assert.match(product,/recognition\/classifier\+knowledge/);
+assert.equal(/maxFunctions:350000/.test(product),true);
+console.log('App/Product remaining issue guards passed');

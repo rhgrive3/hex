@@ -14,6 +14,7 @@ import { callArgumentIndices, knownCallPrototype } from './call-prototypes.js';
 import { sourceOf, mergeSource } from './ast/nodes.js';
 import { isNZCVCondition, renderNZCVCondition } from './flag-semantics.js';
 import { renderIndexedMemory } from './address-semantics.js';
+import { integerText } from './pretty/c.js';
 
 const MAX_EXPR_DEPTH = 48;
 const MAX_EXPR_NODES = 512;
@@ -142,10 +143,22 @@ function loadReachedByStore(load, store, ctx) {
     x.op === OP.STORE && x.loc?.key === store.loc?.key && x.row > store.row && x.row < load.row);
 }
 
+function returnRegisterForContext(ctx) {
+  const type=String(ctx.opts?.returnType || ctx.opts?.functionPrototype?.returnType || ctx.opts?.prototype?.returnType || ctx.types?.ret?.type || '').toLowerCase();
+  if (!type || type === 'void') return null;
+  return /^(float|double|__fp16)/.test(type) || /vector|simd/.test(type) ? 'v0' : 'x0';
+}
+function returnValueAt(ret, ctx) {
+  const explicit=valueOf(ret?.args?.[0]);
+  if (explicit) return explicit;
+  const reg=returnRegisterForContext(ctx);
+  return reg ? reachingRegisterValue(ctx.ir, ret, reg) : null;
+}
+
 function feedsReturn(value, ctx) {
   if (!value) return false;
   for (const ret of ctx.returnInsts || []) {
-    const rv = reachingRegisterValue(ctx.ir, ret, 'x0') || valueOf(ret.args?.[0]);
+    const rv = returnValueAt(ret, ctx);
     if (sameValue(value, rv)) return true;
   }
   return false;
@@ -188,13 +201,19 @@ function stringLiteralForValue(value, ctx) {
   return value.def?.op === OP.ADDR ? stringLiteralAt(value.const, ctx) : null;
 }
 
-function formatConst(v, bits = 64) {
+function formatFloatConst(v, bits = 64) {
+  const n=Number(v);
+  if (Number.isNaN(n)) return 'NAN';
+  if (n === Infinity) return 'INFINITY';
+  if (n === -Infinity) return '-INFINITY';
+  let text=Object.is(n,-0) ? '-0.0' : String(n);
+  if (!/[.eE]/.test(text)) text += '.0';
+  return Number(bits || 64) <= 32 ? text + 'f' : text;
+}
+
+function formatConst(v, bits = 64, signed = null) {
   if (v == null) return 'unknown';
-  const n = BigInt(v);
-  const signed = BigInt.asIntN(Math.min(64, Number(bits) || 64), n);
-  if (signed >= -9n && signed <= 99n) return signed.toString();
-  if (n <= 0xffffn) return '0x' + n.toString(16).toUpperCase();
-  return signed < 0n ? signed.toString() : '0x' + n.toString(16).toUpperCase();
+  return integerText(v, bits, signed);
 }
 
 function dominatorDepth(ir, block) {
@@ -346,7 +365,7 @@ function selectAsMinMax(inst, ctx) {
   if (!inst || inst.op !== OP.SEL || inst.args.length < 3) return null;
   const t = valueOf(inst.args[0]), f = valueOf(inst.args[1]), flags = valueOf(inst.args[2]);
   const cmp = cmpFromFlags(flags);
-  if (!cmp || cmp.args.length < 2) return null;
+  if (!cmp || cmp.args.length < 2 || cmp.sub !== 'sub' || cmp.extra?.conditional) return null;
   const a = valueOf(cmp.args[0]), b = valueOf(cmp.args[1]);
   const cond = inst.cond;
   const tt = renderValue(t, ctx), ff = renderValue(f, ctx), aa = renderValue(a, ctx), bb = renderValue(b, ctx);
@@ -469,21 +488,30 @@ export function renderValue(value, ctx, flags = {}) {
   if (ctx.exprActive.has(value.id) || ctx.exprNodes++ > MAX_EXPR_NODES) return value.reg ? safeIdent(value.reg) : `v${value.id}`;
   ctx.exprActive.add(value.id);
   let out = null;
-  if (value.const != null && value.def?.op !== OP.ADDR) out = stringLiteralForValue(value, ctx) || formatConst(value.const, value.bits);
+  if (value.constKind === 'float' || value.floatConst != null || (value.float != null && value.const == null)) out = formatFloatConst(value.floatConst ?? value.float, value.bits);
+  if (!out && value.const != null && value.def?.op !== OP.ADDR) out = stringLiteralForValue(value, ctx) || formatConst(value.const, value.bits);
   if (!out && value.kind === VK.ARG) out = argName(value, ctx);
   const d = value.def;
   if (!out && d) {
-    if (d.op === OP.CONST) out = formatConst(value.const ?? d.extra?.value ?? 0n, value.bits);
+    if (d.op === OP.CONST) out = (value.constKind === 'float' || value.floatConst != null || value.float != null)
+      ? formatFloatConst(value.floatConst ?? value.float, value.bits)
+      : formatConst(value.const ?? d.extra?.value ?? 0n, value.bits, value.signed ?? null);
     else if (d.op === OP.MOV) out = renderValue(valueOf(d.args?.[0]), ctx);
     else if (d.op === OP.BIN) out = binText(d, ctx);
     else if (d.op === OP.UN) out = unaryText(d, ctx);
     else if (d.op === OP.MAC) {
-      const a = renderValue(valueOf(d.args?.[0]), ctx), b = renderValue(valueOf(d.args?.[1]), ctx), c = renderValue(valueOf(d.args?.[2]), ctx);
+      const a = renderValue(valueOf(d.args?.[0]), ctx), b0 = renderValue(valueOf(d.args?.[1]), ctx), c0 = renderValue(valueOf(d.args?.[2]), ctx);
+      const widen=d.extra?.widen;
+      const b=widen==='signed'?`(int64_t)(int32_t)${paren(b0)}`:widen==='unsigned'?`(uint64_t)(uint32_t)${paren(b0)}`:b0;
+      const c=widen==='signed'?`(int64_t)(int32_t)${paren(c0)}`:widen==='unsigned'?`(uint64_t)(uint32_t)${paren(c0)}`:c0;
       out = d.sub === 'msub' ? `${paren(a)} - ${paren(b)} * ${paren(c)}` : `${paren(a)} + ${paren(b)} * ${paren(c)}`;
     } else if (d.op === OP.BFX) {
-      const a = renderValue(valueOf(d.args?.[0]), ctx); out = `bit_extract(${a}, ${d.extra?.lsb ?? 0}, ${d.extra?.width ?? '?'})`;
+      const a = renderValue(valueOf(d.args?.[0]), ctx), l=d.extra?.lsb ?? 0, w=d.extra?.width ?? '?';
+      if (d.extra?.toward === 'left') out = `${d.extra?.signed?'__arm64_sbfiz':'__arm64_ubfiz'}(${a}, ${l}, ${w})`;
+      else out = `${d.extra?.signed?'__arm64_sbfx':'bit_extract'}(${a}, ${l}, ${w})`;
     } else if (d.op === OP.BFI) {
-      const a = renderValue(valueOf(d.args?.[0]), ctx), b = renderValue(valueOf(d.args?.[1]), ctx); out = `bit_insert(${a}, ${b}, ${d.extra?.lsb ?? 0}, ${d.extra?.width ?? '?'})`;
+      const a = renderValue(valueOf(d.args?.[0]), ctx), b = renderValue(valueOf(d.args?.[1]), ctx), l=d.extra?.lsb ?? 0, w=d.extra?.width ?? '?';
+      out = d.extra?.bitfieldKind === 'bfxil' ? `bit_insert(${a}, bit_extract(${b}, ${l}, ${w}), 0, ${w})` : `bit_insert(${a}, ${b}, ${l}, ${w})`;
     } else if (d.op === OP.LOAD) {
       if (d.reachingStore && !flags.noMemoryFold && d.reachingStore !== d) out = renderValue(valueOf(d.reachingStore.args?.[0]), ctx);
       else out = renderMemoryLocation(d.loc, d, ctx);
@@ -544,13 +572,14 @@ function materialization(ctx) {
 }
 
 function rmwOperand(rmw, ctx) {
-  const loadValue = rmw.load?.dst;
-  for (const inst of rmw.chain || []) {
-    if (inst.op !== OP.BIN || !['add', 'sub', 'mul', 'sdiv', 'udiv'].includes(inst.sub)) continue;
-    const a = valueOf(inst.args?.[0]), b = valueOf(inst.args?.[1]);
-    if (sameValue(a, loadValue)) return { op: inst.sub, other: b, reversed: false };
-    if (sameValue(b, loadValue)) return { op: inst.sub, other: a, reversed: true };
-  }
+  void ctx;
+  const loadValue=rmw.load?.dst;
+  const written=valueOf(rmw.store?.args?.[0]);
+  const inst=written?.def;
+  if (!inst || inst.op !== OP.BIN || !['add','sub','mul','sdiv','udiv'].includes(inst.sub)) return null;
+  const a=valueOf(inst.args?.[0]), b=valueOf(inst.args?.[1]);
+  if (sameValue(a,loadValue)) return { op:inst.sub, other:b, reversed:false };
+  if (sameValue(b,loadValue)) return { op:inst.sub, other:a, reversed:true };
   return null;
 }
 
@@ -677,7 +706,7 @@ function emitRegion(start, stop, out, ctx, state, indent, allowed = null) {
     const term2 = emitBlockStatements(block, out, ctx, indent);
     if (!term2) { bi = block.succ.length === 1 ? block.succ[0] : null; continue; }
     if (term2.op === OP.RET) {
-      const rv = reachingRegisterValue(ctx.ir, term2, 'x0') || valueOf(term2.args?.[0]);
+      const rv = returnValueAt(term2, ctx);
       const text = rv && ((rv.uses || []).length || rv.const != null || rv.def) ? `return ${renderValue(rv, ctx)};` : 'return;';
       out.push(line('stmt', indent, text, term2.row, term2.address, { source: mergeSource(dependencySource(rv, ctx), sourceForInst(term2, 'return')) })); ctx.evidence.push(evidenceOf(term2, 'return')); return;
     }
@@ -739,7 +768,7 @@ function faithfulCfg(ctx, indent = 1) {
     const term = emitBlockStatements(block, out, ctx, indent + 1);
     if (!term) continue;
     if (term.op === OP.RET) {
-      const rv = reachingRegisterValue(ctx.ir, term, 'x0') || valueOf(term.args?.[0]);
+      const rv = returnValueAt(term, ctx);
       out.push(line('stmt', indent + 1, rv ? `return ${renderValue(rv, ctx)};` : 'return;', term.row, term.address, { source: mergeSource(dependencySource(rv, ctx), sourceForInst(term, 'return')) }));
     } else if (term.op === OP.CBR) {
       const { yes, no } = branchSucc(ctx.ir, block, term, ctx);
@@ -769,7 +798,7 @@ function pseudocode(lines) {
 function runtimeFromOpts(opts) {
   if (opts.appleRuntime?.runtime === 'mixed') return opts.appleRuntime;
   return buildAppleRuntimeIndex({
-    objc: opts.objcModel || opts.appleRuntime?.objc || null,
+    objc: opts.objcRuntimeIndex || opts.objcModel || opts.appleRuntime?.objc || null,
     swift: opts.swiftModel || opts.appleRuntime?.swift || null,
     selectorRefs: opts.selectorRefs || [], selectorStubs: opts.selectorStubs || [], fixups: opts.fixups || [],
   });

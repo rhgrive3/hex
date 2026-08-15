@@ -12,7 +12,7 @@ export function createRuntimeEvidenceRecord(input = {}) {
   const traceGroup = input.provenanceGroup || `runtime:${idPart(input.sessionId || 'session')}:${idPart(input.experimentId || input.function || 'observation')}:${idPart(input.caseId || 'case')}`;
   return {
     id:input.id || `${traceGroup}:${idPart(input.kind || 'observation')}`,
-    source:'runtime', backend:String(input.backend || 'unknown').slice(0,128), binaryHash:input.binaryHash || null,
+    source:'runtime', backend:String(input.backend || 'unknown').slice(0,128), binaryHash:input.binaryHash || null, sliceIdentity:input.sliceIdentity || null,
     function:input.function == null ? null : input.function, address:input.address == null ? null : input.address,
     input:input.input || null, initialState:input.initialState || null, observedState:input.observedState || null,
     branchPath:Array.isArray(input.branchPath) ? input.branchPath.slice(0,4096) : [], timestamp:input.timestamp || nowIso(), sessionId:input.sessionId || null,
@@ -22,15 +22,26 @@ export function createRuntimeEvidenceRecord(input = {}) {
   };
 }
 
-export function evidenceFromExperiment({ experiment, testCase, observation, comparison, backend = 'unknown', binaryHash = null, sessionId = null }) {
+export function evidenceFromExperiment({ experiment, testCase, observation, comparison, backend = 'unknown', binaryHash = null, sliceIdentity = null, sessionId = null, replayable = false }) {
   const group = `runtime:${idPart(sessionId || 'session')}:${idPart(experiment.id)}:${idPart(testCase.id)}`;
   return createRuntimeEvidenceRecord({
-    backend, binaryHash:binaryHash || experiment.binaryHash, function:experiment.functionAddress, input:testCase.input,
+    backend, binaryHash:binaryHash || experiment.binaryHash, sliceIdentity, function:experiment.functionAddress, input:testCase.input,
     initialState:testCase.initialState, observedState:{ returnValue:observation.returnValue, registerDelta:observation.registerDelta, memoryDelta:observation.memoryDelta, memoryAfter:observation.memoryAfter, stop:observation.stop },
     branchPath:observation.branches || [], sessionId, experimentId:experiment.id, caseId:testCase.id, verdict:comparison.status,
     confidence:comparison.status === 'supported' ? 0.8 : comparison.status === 'contradicted' ? 0.9 : 0.35,
-    kind:'experiment', provenanceGroup:group, reproducibility:{ replayable:true, runs:1, consistent:null }
+    kind:'experiment', provenanceGroup:group, reproducibility:{ replayable:!!replayable, runs:1, consistent:null }
   });
+}
+
+function attachFactExtractionMetadata(facts, metadata) {
+  // Preserve the original Array API (`map`, `some`, `length`, iteration) while
+  // exposing the new completeness contract. `facts` is non-enumerable so JSON
+  // serialization remains the historical plain array and cannot become cyclic.
+  Object.defineProperty(facts, 'facts', { value:facts, enumerable:false, configurable:false, writable:false });
+  for (const [key, value] of Object.entries(metadata)) {
+    Object.defineProperty(facts, key, { value, enumerable:false, configurable:false, writable:false });
+  }
+  return facts;
 }
 
 export function traceToSemanticFacts(trace, context = {}) {
@@ -38,8 +49,11 @@ export function traceToSemanticFacts(trace, context = {}) {
   const limit = boundedInteger(context.limit, 10000, 1, 50000, 'fact limit');
   const group = context.provenanceGroup || `trace:${idPart(context.sessionId || 'session')}:${idPart(context.traceId || 'trace')}`;
   const facts = [];
+  let processedEvents = 0;
+  let hitFactLimit = false;
   for (const event of events) {
-    if (facts.length >= limit) break;
+    if (facts.length >= limit) { hitFactLimit = true; break; }
+    processedEvents++;
     const common = { runtime:true, sessionId:context.sessionId || null, binaryHash:context.binaryHash || null, provenance:{ group:GROUP.RUNTIME, observationGroup:group, independent:false }, address:event.address ?? null, confidence:safeConfidence(context.confidence,0.8) };
     if (event.type === 'memory-read') facts.push({ ...common, kind:'reads-field', location:{ address:event.address, region:event.region, size:event.size }, value:event.value });
     else if (event.type === 'memory-write') facts.push({ ...common, kind:'writes-field', location:{ address:event.address, region:event.region, size:event.size }, before:event.before, value:event.after });
@@ -49,7 +63,22 @@ export function traceToSemanticFacts(trace, context = {}) {
     else if (event.type === 'objc-dispatch') facts.push({ ...common, kind:'objc-dispatch', className:event.className || null, selector:event.selector || null, imp:event.imp || null });
     else if (event.type === 'swift-dispatch') facts.push({ ...common, kind:'swift-dispatch', dynamicType:event.dynamicType || null, metadata:event.metadata || null, witnessTarget:event.witnessTarget || null, vtableTarget:event.vtableTarget || null, asyncContext:event.asyncContext || null });
   }
-  return facts;
+  const sourceTruncated = !!(trace && !Array.isArray(trace) && (trace.truncated || Number(trace.dropped || 0) > 0));
+  const truncated = hitFactLimit || sourceTruncated;
+  const reasons = [];
+  if (hitFactLimit) reasons.push('fact-limit');
+  if (sourceTruncated) reasons.push('source-trace-truncated');
+  const complete = !truncated;
+  for (const fact of facts) fact.observationComplete = complete;
+  return attachFactExtractionMetadata(facts, {
+    complete,
+    truncated,
+    processedEvents,
+    totalEvents: events.length,
+    factCount: facts.length,
+    limit,
+    reasons,
+  });
 }
 
 export function compareRuntimeDispatch(staticTargets, runtimeEvent) {
@@ -77,6 +106,7 @@ export function dynamicTypeAnnotation(event, context = {}) {
 export function fuseStaticDynamic(staticCandidate, runtimeEvidence = []) {
   const candidateHash = staticCandidate && staticCandidate.binaryHash || null;
   const candidateFunction = staticCandidate && staticCandidate.functionAddress != null ? staticCandidate.functionAddress : null;
+  const candidateSlice = staticCandidate && staticCandidate.sliceIdentity || null;
   const evidence = runtimeEvidence.filter((item) => item && (item.source === 'runtime' || item.provenance && item.provenance.group === GROUP.RUNTIME));
   if (!candidateHash || candidateFunction == null) {
     return { candidate:staticCandidate, status:'inconclusive', reason:'identity-missing', confidence:safeConfidence(staticCandidate && staticCandidate.confidence,0.5), runtimeGroups:0, support:0, contradictions:0, ignoredEvidence:evidence.length, evidence:[] };
@@ -85,6 +115,7 @@ export function fuseStaticDynamic(staticCandidate, runtimeEvidence = []) {
   let ignoredEvidence = 0;
   for (const item of evidence) {
     if (candidateHash && item.binaryHash !== candidateHash) { ignoredEvidence++; continue; }
+    if (item.sliceIdentity && (!candidateSlice || item.sliceIdentity !== candidateSlice)) { ignoredEvidence++; continue; }
     if (candidateFunction != null && (item.function == null || !sameAddress(candidateFunction,item.function))) { ignoredEvidence++; continue; }
     compatible.push(item);
   }
@@ -92,10 +123,6 @@ export function fuseStaticDynamic(staticCandidate, runtimeEvidence = []) {
   for (const item of compatible) {
     const group = item.provenance && (item.provenance.observationGroup || item.provenance.group) || item.id || Symbol('evidence');
     const existing = groups.get(group);
-    // Correlated observations are one evidence unit. If their derived verdicts
-    // disagree, keep the most conservative/decisive representative rather than
-    // making the result depend on array order. A contradiction from one runtime
-    // observation can never be hidden behind a correlated support record.
     if (!existing || verdictPriority(item.verdict) > verdictPriority(existing.verdict)) groups.set(group,item);
   }
   const independent = [...groups.values()];

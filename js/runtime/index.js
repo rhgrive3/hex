@@ -92,7 +92,11 @@ export class RuntimeAnalysisPlatform {
     const scopedExperiment = experiment.binaryHash || !session.binaryHash ? experiment : { ...experiment, binaryHash:session.binaryHash };
     session.addExperiment(scopedExperiment);
     const operation = operationController(session, options.signal);
-    const verifier = new HypothesisVerifier(session.adapter, ({experiment:testExperiment,testCase,observation,comparison}) => evidenceFromExperiment({ experiment:testExperiment,testCase,observation,comparison,backend:session.backend,binaryHash:session.binaryHash,sessionId:session.id }));
+    const verifier = new HypothesisVerifier(session.adapter, ({experiment:testExperiment,testCase,observation,comparison}) => evidenceFromExperiment({
+      experiment:testExperiment,testCase,observation,comparison,backend:session.backend,binaryHash:session.binaryHash,
+      sliceIdentity:this.options.sliceIdentity || null,sessionId:session.id,
+      replayable:isReplayable(session.adapter,observation,observation?.trace || null)
+    }));
     let result;
     try { result = await verifier.verify(scopedExperiment, { ...options, signal:operation.signal }); }
     finally { operation.release(); }
@@ -140,14 +144,15 @@ export class RuntimeAnalysisPlatform {
       }
     } finally { operation.release(); }
     for (const event of trace.events || []) session.acceptEvent(event);
-    const facts = traceToSemanticFacts(trace,{sessionId:session.id,binaryHash:session.binaryHash,traceId:`fn:${requestedAddress.toString(16)}`});
+    const factExtraction = traceToSemanticFacts(trace,{sessionId:session.id,binaryHash:session.binaryHash,traceId:`fn:${requestedAddress.toString(16)}`});
+    const facts = factExtraction.facts;
     const replayable=isReplayable(adapter,observation,trace);
-    const evidence = createRuntimeEvidenceRecord({ backend:session.backend,binaryHash:session.binaryHash,sessionId:session.id,
+    const evidence = createRuntimeEvidenceRecord({ backend:session.backend,binaryHash:session.binaryHash,sliceIdentity:this.options.sliceIdentity || null,sessionId:session.id,
       experimentId:`trace:${requestedAddress.toString(16)}`,caseId:'trace',function:requestedAddress,
-      input:launchSpec,observedState:{stop:observation.stop,returnValue:observation.returnValue},branchPath:observation.branches || [],
-      verdict:'inconclusive',confidence:0.5,kind:'trace',reproducibility:{replayable,runs:1,consistent:null} });
+      input:launchSpec,observedState:{stop:observation.stop,returnValue:observation.returnValue,factsComplete:factExtraction.complete,factExtraction:{truncated:factExtraction.truncated,processedEvents:factExtraction.processedEvents,totalEvents:factExtraction.totalEvents,reasons:factExtraction.reasons}},branchPath:observation.branches || [],
+      verdict:'inconclusive',confidence:factExtraction.complete ? 0.5 : 0.35,kind:'trace',reproducibility:{replayable,runs:1,consistent:null} });
     this._recordEvidence(evidence);
-    return { functionAddress:requestedAddress, observation, trace, facts, evidence:[evidence] };
+    return { functionAddress:requestedAddress, observation, trace, facts, factExtraction, evidence:[evidence] };
   }
   async readRuntimeField(address, size = 8) {
     const session = this.currentSession();
@@ -157,7 +162,7 @@ export class RuntimeAnalysisPlatform {
     const bytes = await session.adapter.readMemory(address, n);
     if (!(bytes instanceof Uint8Array) || bytes.length !== n) throw new DebugAdapterError('short-read',`runtime field read returned ${bytes && bytes.length || 0} of ${n} bytes`);
     const replayable=isReplayable(session.adapter);
-    const evidence = createRuntimeEvidenceRecord({ backend:session.backend,binaryHash:session.binaryHash,sessionId:session.id,
+    const evidence = createRuntimeEvidenceRecord({ backend:session.backend,binaryHash:session.binaryHash,sliceIdentity:this.options.sliceIdentity || null,sessionId:session.id,
       experimentId:`read:${asAddress(address).toString(16)}`,caseId:'read',address:asAddress(address),input:{address:asAddress(address),size:n},
       observedState:{bytes:[...bytes]},verdict:'inconclusive',confidence:0.5,kind:'memory-read',reproducibility:{replayable,runs:1,consistent:null} });
     this._recordEvidence(evidence);
@@ -181,7 +186,14 @@ export class RuntimeAnalysisPlatform {
       if (typeof resolveFunction !== 'function') return { status:'unsupported', reason:'binary-version-mismatch', sourceHash, targetHash, evidence:[] };
       const resolved = await resolveFunction({ functionAddress, fingerprint:original.functionFingerprint || source.functionFingerprint || null, sourceBinaryHash:sourceHash, targetBinaryHash:targetHash });
       if (resolved == null) return { status:'unsupported', reason:'function-re-resolution-failed', sourceHash, targetHash, evidence:[] };
-      functionAddress = asAddress(resolved.address ?? resolved);
+      const confidence = Number(resolved && typeof resolved === 'object' ? (resolved.identityConfidence ?? resolved.confidence ?? resolved.score) : NaN);
+      const margin = Number(resolved && typeof resolved === 'object' ? (resolved.ambiguityMargin ?? resolved.margin) : NaN);
+      const accepted = !!(resolved && typeof resolved === 'object' && resolved.accepted === true);
+      const ambiguous = !!(resolved && typeof resolved === 'object' && resolved.ambiguous === true);
+      if (!accepted || !Number.isFinite(confidence) || confidence < 0.85 || ambiguous || (Number.isFinite(margin) && margin < 0.10)) {
+        return { status:'unsupported', reason:'function-re-resolution-ambiguous', sourceHash, targetHash, confidence:Number.isFinite(confidence)?confidence:null, ambiguityMargin:Number.isFinite(margin)?margin:null, evidence:[] };
+      }
+      functionAddress = asAddress(resolved.address);
     }
     const experiment = { ...original, functionAddress, binaryHash:targetHash || sourceHash || null };
     return this.runExperiment(experiment,{ ...options,replay:true });

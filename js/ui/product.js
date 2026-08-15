@@ -24,6 +24,9 @@ import { traceAppFunction, runtimeEvidenceForApp } from '../runtime/app-runtime.
 import { installAssistant } from '../ai/ui/assistant.js';
 import { classifyOmnibox, intentLabel } from '../ai/interaction/omnibox.js';
 import { askAiMenuItem, functionAiItems } from '../ai/interaction/contextual.js';
+import { productDescriptor } from '../platform/product-descriptor.js';
+import { queryFunctions, queryStrings } from './explorer-index.js';
+import { genericEvidenceStatus, ownerEvidence, summaryEvidenceStatus, provenanceStatus } from './evidence-model.js';
 
 const ja = () => (document.documentElement.lang || navigator.language || 'ja').toLowerCase().startsWith('ja');
 const text = (j, e) => ja() ? j : e;
@@ -54,13 +57,17 @@ function requireFile(app, action) {
 }
 
 function architectureOf(app) {
+  const capability=app?.store?.get?.('capability') || {};
   const info = app?.store?.get?.('fileInfo') || {};
-  const value = app?.capabilities?.architecture || app?.backend?.capabilities?.architecture || info.architecture || info.arch || info.cpu || 'arm64';
+  const value = capability.architecture || app?.store?.get?.('architecture') || info.architecture || info.arch || info.cpu || 'unknown';
   return String(value).toLowerCase();
 }
-
-function fixedArm64Rows(app) {
-  return /arm64|aarch64/.test(architectureOf(app));
+function instructionBytes(app) { return Math.max(1,Number(app?.store?.get?.('instructionAlignment') || app?.store?.get?.('capability')?.instructionAlignment || 4)); }
+function fixedArm64Rows(app) { return !!app?.store?.get?.('canDisassemble') && instructionBytes(app)>0; }
+const EXPLORER_SOURCE_LIMIT=50000;
+function annotateCollection(items,{complete=true,total=items?.length||0,scannedCount=items?.length||0,truncationReason=null,provenance='canonical-app-state'}={}) {
+  if(items && typeof items==='object'){items.complete=!!complete;items.total=total;items.scannedCount=scannedCount;items.truncationReason=truncationReason;items.provenance=provenance;}
+  return items;
 }
 
 function installViewportBridge() {
@@ -202,83 +209,48 @@ function lowerBoundBigInt(array, value) {
 }
 
 function functionSource(app) {
+  void app.ensureRecognition?.({maxFunctions:350000});
+  const ranked=app.recognition?.records;
+  if(Array.isArray(ranked) && ranked.length){
+    const count=Math.min(ranked.length,EXPLORER_SOURCE_LIMIT);
+    return {
+      length:count, complete:app.recognition.complete===true && ranked.length<=EXPLORER_SOURCE_LIMIT,
+      total:app.recognition.total, scannedCount:app.recognition.scannedCount,
+      truncationReason:ranked.length>EXPLORER_SOURCE_LIMIT?'explorer-source-budget':app.recognition.truncationReason,
+      provenance:'recognition/classifier+knowledge',
+      itemAt(index){const item=ranked[index];return {addr:item.address,name:item.name||functionName(app,item.address),classification:item.classification,recognitionScore:item.score,recognitionConfidence:item.confidence};}
+    };
+  }
   const sym = app.symbols;
   const funcs = sym?.funcs || [];
-  const region = app.codeRegion?.() || app.store.get('currentRegion');
-  const lo = region?.vmAddr ?? 0n;
-  const hi = region ? region.vmAddr + region.size : null;
-  const start = funcs.length ? lowerBoundBigInt(funcs, lo) : 0;
-  const end = hi == null ? funcs.length : lowerBoundBigInt(funcs, hi);
+  const total=funcs.length, count=Math.min(total,EXPLORER_SOURCE_LIMIT);
   return {
-    length: Math.max(0, end - start),
-    itemAt(index) {
-      const absolute = start + index;
-      const addr = funcs[absolute];
-      const next = absolute + 1 < end ? funcs[absolute + 1] : hi;
-      const exact = sym?.exact?.(addr);
-      return {
-        addr,
-        name: exact?.name || functionName(app, addr),
-        size: next != null && next > addr ? next - addr : null,
-      };
-    },
+    length:count, complete:count===total,total,scannedCount:count,truncationReason:count===total?null:'explorer-source-budget',provenance:'symbol-index',
+    itemAt(index){const addr=funcs[index],next=index+1<total?funcs[index+1]:null,exact=sym?.exact?.(addr);return {addr,name:exact?.name||functionName(app,addr),size:next!=null&&next>addr?next-addr:null,classification:'UNKNOWN'};}
   };
 }
 
-function matchingFunctionItems(app, query) {
-  const q = String(query || '').trim().toLowerCase();
+async function matchingFunctionItems(app, query, options) {
+  const q = String(query || '').trim();
   if (!q) return functionSource(app);
-  const sym = app.symbols;
-  if (!sym) return [];
-  const region = app.codeRegion?.() || app.store.get('currentRegion');
-  const lo = region?.vmAddr ?? 0n;
-  const hi = region ? region.vmAddr + region.size : null;
-  const out = [];
-  const seen = new Set();
-  const add = (addr, name) => {
-    if (addr == null || addr < lo || (hi != null && addr >= hi) || !sym.isFunctionStart?.(addr)) return;
-    const key = addr.toString();
-    if (seen.has(key)) return;
-    seen.add(key);
-    out.push({ addr, name: name || functionName(app, addr) });
-  };
-  const names = Array.isArray(sym.names) ? sym.names : [];
-  const addrs = sym.addrs || [];
-  for (let i = 0; i < names.length && i < addrs.length; i++) {
-    const name = String(names[i] || '');
-    if (name.toLowerCase().includes(q)) add(addrs[i], name);
-  }
-  for (const [rawAddr, name] of sym.renames || []) {
-    if (String(name || '').toLowerCase().includes(q)) {
-      try { add(BigInt(rawAddr), name); } catch { /* ignore malformed rename */ }
-    }
-  }
-  const sub = /^sub_?([0-9a-f]+)$/i.exec(q);
-  if (sub) {
-    try { add(BigInt('0x' + sub[1]), null); } catch { /* ignore */ }
-  }
-  out.sort((a, b) => a.addr < b.addr ? -1 : a.addr > b.addr ? 1 : 0);
-  return out;
+  return queryFunctions(app, q, options);
 }
-
 function sectionItems(app, query) {
   const q = String(query || '').trim().toLowerCase();
-  return (app.store.get('regions') || []).filter((r) => !q || String(r.name || r.section || '').toLowerCase().includes(q)).map((r) => ({
+  const descriptor = productDescriptor(app.store.get('fileInfo'), app.currentSlice?.());
+  return (descriptor.regions || []).filter((r) => !q || String(r.name || r.section || '').toLowerCase().includes(q)).map((r) => ({
     name: r.section || r.name, addr: r.vmAddr, size: r.size, region: r,
   }));
 }
 
-async function stringItems(app, query) {
+async function stringItems(app, query, options) {
   const rows = await app.ensureStrings();
-  const q = String(query || '').trim().toLowerCase();
-  if (!q) return rows || [];
-  return (rows || []).filter((row) => String(row.text || '').toLowerCase().includes(q));
+  return queryStrings(rows || [], query, options);
 }
-
 function externalItems(app, query) {
-  const slice = app.currentSlice();
+  const descriptor = productDescriptor(app.store.get('fileInfo'), app.currentSlice?.());
   const q = String(query || '').trim().toLowerCase();
-  return ((slice && slice.info && slice.info.dylibs) || []).filter((name) => !q || name.toLowerCase().includes(q)).map((name) => ({ name }));
+  return (descriptor.dependencies || []).filter((name) => !q || name.toLowerCase().includes(q)).map((name) => ({ name }));
 }
 
 function renderExplorer(app, router, route) {
@@ -306,17 +278,25 @@ function renderExplorer(app, router, route) {
   let disposed = false;
   let virtual = null;
   let timer = 0;
+  let queryController = null;
+  let querySerial = 0;
 
   const showRows = (items, renderRow, emptyText) => {
     virtual?.dispose(); virtual = null;
     content.replaceChildren();
     if (!items || !Number(items.length)) { content.append(emptyState(text('見つかりません', 'Nothing found'), emptyText)); return; }
+    if(items.complete===false){content.append(h('div','ui-hint',text(`一部のみ表示: ${Number(items.scannedCount||0).toLocaleString()} / ${Number(items.total||0).toLocaleString()} を走査 (${items.truncationReason||'incomplete'})`,`Partial results: scanned ${Number(items.scannedCount||0).toLocaleString()} / ${Number(items.total||0).toLocaleString()} (${items.truncationReason||'incomplete'})`)));}
     virtual = new VirtualList({ items, rowHeight: 64, ariaLabel: text('索引の結果', 'Explorer results'), renderRow });
     content.append(virtual.root);
   };
 
   const update = async () => {
     if (disposed) return;
+    queryController?.abort();
+    const controller = new AbortController();
+    queryController = controller;
+    const serial = ++querySerial;
+    const current = () => !disposed && !controller.signal.aborted && serial === querySerial;
     const q = search.value.trim();
     const parsed = parseAddress(q);
     if (parsed != null && q) {
@@ -324,8 +304,14 @@ function renderExplorer(app, router, route) {
       return;
     }
     if (scope === 'functions') {
-      const items = matchingFunctionItems(app, q);
-      showRows(items, (item) => listRow({ title: item.name, subtitle: addressText(item.addr), meta: item.size != null ? String(item.size) + ' B' : '', onClick: () => router.navigate('/function/' + BigInt(item.addr).toString() + '/overview') }), text('関数名がまだ復元されていない可能性があります。', 'Function names may not be recovered yet.'));
+      if (q) content.replaceChildren(loadingState(text('索引を検索しています…', 'Searching index…')));
+      try {
+        const items = await matchingFunctionItems(app, q, { signal: controller.signal, limit: 200 });
+        if (!current()) return;
+        showRows(items, (item) => listRow({ title: item.name, subtitle: addressText(item.addr), meta: item.size != null ? String(item.size) + ' B' : '', onClick: () => router.navigate('/function/' + BigInt(item.addr).toString() + '/overview') }), text('関数名がまだ復元されていない可能性があります。', 'Function names may not be recovered yet.'));
+      } catch (err) {
+        if (err?.name !== 'AbortError' && current()) content.replaceChildren(errorState(text('検索できませんでした', 'Search failed'), String(err?.message || err)));
+      }
       return;
     }
     if (scope === 'sections') {
@@ -341,11 +327,12 @@ function renderExplorer(app, router, route) {
     if (scope === 'strings') {
       content.replaceChildren(loadingState(text('文字列を集めています…', 'Collecting strings…')));
       try {
-        const items = await stringItems(app, q);
-        if (disposed) return;
+        const items = await stringItems(app, q, { signal: controller.signal, limit: 200 });
+        if (!current()) return;
         showRows(items, (item) => listRow({ title: item.text, subtitle: addressText(item.addr), onClick: () => { app.goToStringAddress(item.region, item.addr); router.navigate('/code/' + BigInt(item.addr).toString()); } }), text('文字列が見つかりません。', 'No strings were found.'));
+        if (items?.complete === false) content.prepend(h('p', 'ui-partial-note', text('結果はメモリ上限内の一部です。未走査領域を「該当なし」とは扱いません。', 'Results are partial within the memory budget; unscanned regions are not treated as negative evidence.')));
       } catch (err) {
-        if (!disposed) content.replaceChildren(errorState(text('文字列を表示できません', 'Could not show strings'), String(err && err.message || err)));
+        if (err?.name !== 'AbortError' && current()) content.replaceChildren(errorState(text('文字列を表示できません', 'Could not show strings'), String(err && err.message || err)));
       }
       return;
     }
@@ -368,7 +355,7 @@ function renderExplorer(app, router, route) {
     root: s.root,
     getState: () => ({ query: search.value, virtual: virtual?.getState() || null }),
     restoreState: (state) => { if (state?.query != null) search.value = state.query; setTimeout(() => virtual?.restoreState(state?.virtual), 0); },
-    dispose: () => { disposed = true; clearTimeout(timer); virtual?.dispose(); },
+    dispose: () => { disposed = true; queryController?.abort(); clearTimeout(timer); virtual?.dispose(); },
   };
 }
 
@@ -424,14 +411,7 @@ function recognitionInput(app, addr, res) {
   };
 }
 
-function evidenceStatus(item) {
-  const verdict = String(item?.verdict || item?.status || '').toLowerCase();
-  if (verdict === 'contradicted') return 'contradicted';
-  if (verdict === 'confirmed' || item?.confirmed === true) return 'confirmed';
-  const confidence = Number(item?.confidence);
-  if (verdict === 'supported' || (Number.isFinite(confidence) && confidence >= 0.75)) return 'likely';
-  return 'unverified';
-}
+function evidenceStatus(item) { return genericEvidenceStatus(item); }
 
 function evidenceTitle(item, index) {
   return String(item?.reason || item?.kind || item?.type || item?.source || item?.family || text(`根拠 ${index + 1}`, `Evidence ${index + 1}`));
@@ -456,6 +436,12 @@ function renderFunctionWorkspace(app, router, route) {
     s.body.append(emptyState(text('関数が選択されていません', 'No function selected'), text('コードまたは索引から関数を開いてください。', 'Open a function from Code or Explorer.')));
     return { root: s.root };
   }
+  const verifiedRange=app.validatedFunctionRange?.(addr);
+  if(verifiedRange && !verifiedRange.ok){
+    const s=screen(functionName(app,addr),{id:'function',subtitle:addressText(addr)});
+    s.body.append(errorState(text('関数境界を検証できません','Function boundary could not be verified'),verifiedRange.reason||'unverified-function-range'));
+    return {root:s.root};
+  }
   const tab = FUNCTION_TABS.some((x) => x.id === route.params.tab) ? route.params.tab : 'overview';
   const actions = h('div', 'ui-screen-actions');
   actions.append(uiButton('•••', { cls: 'ui-icon-action', ariaLabel: text('関数の操作', 'Function actions'), onClick: (e) => {
@@ -475,28 +461,39 @@ function renderFunctionWorkspace(app, router, route) {
   content.append(loadingState(text('関数を解析しています…', 'Analysing function…')));
   s.body.append(content);
   let disposed = false;
+  const viewEpoch = app.backend?.gen;
+  const viewSlice = app.store.get('sliceIndex');
+  const viewCurrent = () => !disposed && app.backend?.gen === viewEpoch && app.store.get('sliceIndex') === viewSlice;
 
   const rowMapper = () => {
     const region = app.store.get('currentRegion');
     if (!fixedArm64Rows(app)) return { supported: false, rowOfAddress: () => null, addrOfRow: () => null };
     return {
       supported: true,
-      rowOfAddress: (a) => !region || a == null ? null : Number((a - region.vmAddr) / 4n),
-      addrOfRow: (row) => region ? region.vmAddr + BigInt(row) * 4n : null,
+      rowOfAddress: (a) => !region || a == null ? null : Number((a - region.vmAddr) / BigInt(instructionBytes(app))),
+      addrOfRow: (row) => region ? region.vmAddr + BigInt(row) * BigInt(instructionBytes(app)) : null,
     };
   };
 
   const renderOverview = (res) => {
     const owner = app.ownerOf?.(addr);
+    const ownerFact = ownerEvidence(owner);
     const recognition = classifyFunction(recognitionInput(app, addr, res));
     const subsystems = discoverSubsystems(recognitionInput(app, addr, res));
     const grid = h('div', 'ui-card-grid');
     const summary = card(text('何をしている？', 'What does it do?'));
     const recovered = summaryText(res);
-    summary.body.append(h('p', 'ui-lead', recovered || (owner && owner.className
-      ? text(`${owner.className} の ${owner.sel || 'メソッド'} として認識されています。`, `Recognized as ${owner.sel || 'a method'} on ${owner.className}.`)
-      : text('命令列と参照関係から、この関数の役割を確認できます。', 'Use the instructions and references below to determine this function’s role.'))));
-    summary.body.append(evidenceBadge(owner ? 'confirmed' : recovered ? 'likely' : 'unverified'));
+    const recoveredStatus = summaryEvidenceStatus(res);
+    const ownerLead = ownerFact.unique
+      ? text(`${ownerFact.unique.className} の ${ownerFact.unique.sel || 'メソッド'} としてruntime metadataから一意に識別されています。`, `Runtime metadata uniquely identifies this as ${ownerFact.unique.sel || 'a method'} on ${ownerFact.unique.className}.`)
+      : ownerFact.candidates.length
+        ? text('この実装アドレスは複数のObjective-Cメソッドで共有されています。候補を確認してください。', 'This implementation address is shared by multiple Objective-C methods; review the candidates below.')
+        : text('命令列と参照関係から、この関数の役割を確認できます。', 'Use the instructions and references below to determine this function’s role.');
+    summary.body.append(h('p', 'ui-lead', recovered || ownerLead));
+    summary.body.append(evidenceBadge(recovered ? recoveredStatus : ownerFact.status));
+    if (ownerFact.candidates.length > 1) {
+      for (const candidate of ownerFact.candidates.slice(0, 8)) summary.body.append(listRow({ title: candidate.className || text('不明なクラス', 'Unknown class'), subtitle: candidate.sel || text('selector不明', 'Unknown selector'), badge: evidenceBadge('likely') }));
+    }
     grid.append(summary.root);
 
     const identity = card(text('コードの分類', 'Code identity'));
@@ -583,7 +580,7 @@ function renderFunctionWorkspace(app, router, route) {
   const renderCalls = async () => {
     content.replaceChildren(loadingState(text('呼び出し関係を集めています…', 'Mapping calls…')));
     await app.ensureProgram();
-    if (disposed) return;
+    if (!viewCurrent()) return;
     if (!app.program) { content.replaceChildren(emptyState(text('呼び出し関係がありません', 'No call graph available'), text('このバイナリでは呼び出し索引を作れませんでした。', 'A call index could not be built for this binary.'))); return; }
     const graph = callGraph(app.program, app.symbols, addr, {
       depth: 2, limit: 8, label: (a) => functionName(app, a),
@@ -597,8 +594,12 @@ function renderFunctionWorkspace(app, router, route) {
   const renderEvidence = (res) => {
     const stack = h('div', 'ui-evidence-stack');
     const name = app.symbols?.nameAt?.(addr);
-    stack.append(listRow({ title: text('関数境界', 'Function boundary'), subtitle: addressText(addr), badge: evidenceBadge('confirmed') }));
-    stack.append(listRow({ title: text('関数名', 'Function name'), subtitle: name || text('シンボル名なし', 'No symbol name'), badge: evidenceBadge(name ? 'confirmed' : 'unverified') }));
+    const boundaryEvidence = app.symbols?.functionEvidence?.(addr);
+    const nameEvidence = app.symbols?.nameEvidence?.(addr);
+    const boundaryStatus = provenanceStatus(boundaryEvidence);
+    const nameStatus = provenanceStatus(nameEvidence);
+    stack.append(listRow({ title: text('関数境界', 'Function boundary'), subtitle: addressText(addr), meta: boundaryEvidence?.source || text('由来不明', 'unknown source'), badge: evidenceBadge(boundaryStatus === 'manual' ? 'unverified' : boundaryStatus) }));
+    stack.append(listRow({ title: text('関数名', 'Function name'), subtitle: name || text('シンボル名なし', 'No symbol name'), meta: nameStatus === 'manual' ? text('手動 / User', 'Manual / User') : (nameEvidence?.source || ''), badge: evidenceBadge(nameStatus === 'manual' ? 'unverified' : nameStatus) }));
 
     const deterministic = Array.isArray(res.evidence) ? res.evidence : [];
     deterministic.slice(0, 80).forEach((item, index) => stack.append(listRow({
@@ -641,7 +642,7 @@ function renderFunctionWorkspace(app, router, route) {
       resultHost.replaceChildren(loadingState(text('実行して観測しています…', 'Running and collecting observations…')));
       try {
         const result = await traceAppFunction(app, addr, { maxSteps: 12000, timeoutMs: 1500, limit: 4096 });
-        if (disposed) return;
+        if (!viewCurrent()) return;
         const obs = result.observation || {};
         const stop = obs.stop?.kind || 'unknown';
         const direct = stop === 'return' ? 'confirmed' : 'unverified';
@@ -672,7 +673,7 @@ function renderFunctionWorkspace(app, router, route) {
   (async () => {
     try {
       const res = await app.analyzeFunctionAt(addr);
-      if (disposed) return;
+      if (!viewCurrent()) return;
       if (!res || !res.model) { content.replaceChildren(errorState(text('関数を解析できません', 'Could not analyse function'), text('このアドレスは現在のコード領域の関数として解析できませんでした。', 'This address could not be analysed as a function in the current code region.'))); return; }
       if (tab === 'overview') renderOverview(res);
       else if (tab === 'pseudocode') renderPseudocode(res);
@@ -681,7 +682,7 @@ function renderFunctionWorkspace(app, router, route) {
       else if (tab === 'evidence') renderEvidence(res);
       else renderRuntime(res);
     } catch (err) {
-      if (!disposed) content.replaceChildren(errorState(text('表示できませんでした', 'Could not render this view'), String(err && err.message || err)));
+      if (viewCurrent()) content.replaceChildren(errorState(text('表示できませんでした', 'Could not render this view'), String(err && err.message || err)));
     }
   })();
 
@@ -710,6 +711,57 @@ function renderResults(app, router) {
   return { root: s.root };
 }
 
+function pickOneFile(accept='') {
+  return new Promise((resolve) => {
+    const input=document.createElement('input'); input.type='file'; input.accept=accept;
+    input.style.position='fixed'; input.style.left='-10000px'; document.body.append(input);
+    const finish=(file)=>{input.remove();resolve(file||null);};
+    input.addEventListener('change',()=>finish(input.files?.[0]||null),{once:true});
+    input.addEventListener('cancel',()=>finish(null),{once:true});
+    input.click();
+  });
+}
+function downloadBlob(blob,name) {
+  const url=URL.createObjectURL(blob); const a=document.createElement('a');
+  a.href=url;a.download=name||'analysis.hexproj';a.style.display='none';document.body.append(a);a.click();a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
+async function exportProjectFromProduct(app) {
+  try { const blob=await app.exportProjectFile(); downloadBlob(blob,(app.store.get('fileInfo')?.name||'analysis')+'.hexproj'); toast(text('プロジェクトを書き出しました。','Project exported.')); }
+  catch(error){toast(text('プロジェクトを書き出せませんでした: ','Could not export project: ')+String(error?.message||error));}
+}
+async function importProjectFromProduct(app) {
+  const file=await pickOneFile('.hexproj,application/json'); if(!file)return;
+  try { await app.importProjectFile(file); toast(text('プロジェクトを復元しました。','Project restored.')); }
+  catch(error){const mismatch=error?.code==='HEX_PROJECT_BINARY_MISMATCH';toast(mismatch?text('このプロジェクトは現在のバイナリ/スライス用ではありません。','This project belongs to a different binary or slice.'):text('プロジェクトを読み込めませんでした: ','Could not import project: ')+String(error?.message||error));}
+}
+
+function renderDiff(app,router) {
+  const s=screen(text('バイナリ差分','Binary Diff'),{id:'diff',subtitle:text('前のバージョンと現在のバージョンを関数単位で比較します。','Compare a previous version with the current binary at function granularity.')});
+  const host=h('div','ui-stack');s.body.append(host);
+  if(!app.store.get('fileInfo')){host.append(emptyState(text('先に現在のバイナリを開いてください','Open the current binary first'),'',uiButton(text('コードへ','Go to Code'),{onClick:()=>router.navigate('/code')})));return {root:s.root};}
+  const state=app.getBinaryDiff?.(); const baseline=app.workspace?.baseline;
+  const controls=h('div','ui-actions');
+  controls.append(uiButton(baseline?text('比較元を変更','Change baseline'):text('前のバージョンを選ぶ','Choose previous version'),{cls:'ui-primary-action',onClick:async()=>{
+    const file=await pickOneFile();if(!file)return;host.replaceChildren(loadingState(text('比較元を解析しています…','Analysing baseline…')));
+    try{await app.loadDiffBaseline(file);await app.runBinaryDiff();router.navigate('/diff',{replace:true});}
+    catch(error){host.replaceChildren(errorState(text('比較できませんでした','Could not compare'),String(error?.message||error)));}
+  }}));
+  if(baseline)controls.append(uiButton(text('再比較','Compare again'),{onClick:async()=>{host.replaceChildren(loadingState(text('比較しています…','Comparing…')));try{await app.runBinaryDiff();router.navigate('/diff',{replace:true});}catch(error){host.replaceChildren(errorState(text('比較できませんでした','Could not compare'),String(error?.message||error)));}}}));
+  host.append(controls);
+  if(!state){host.append(emptyState(text('比較元を選ぶと変更された関数を抽出します','Choose a baseline to find changed functions'),text('同一CPU/スライスだけを比較し、不完全な探索では new/deleted を断定しません。','Only matching architectures/slices are compared; incomplete matching never invents new/deleted certainty.')));return {root:s.root};}
+  const counts={same:0,moved:0,changed:0,rewritten:0,new:0,deleted:0,unresolved:0};
+  for(const c of state.changes||[])counts[c.changeType]=(counts[c.changeType]||0)+1;
+  const summary=card(text('比較結果','Diff summary'));
+  summary.body.append(h('p','ui-body',`${counts.changed||0} changed · ${counts.rewritten||0} rewritten · ${counts.moved||0} moved · ${counts.new||0} new · ${counts.deleted||0} deleted · ${counts.unresolved||0} unresolved`));
+  summary.body.append(h('p',state.completeness?.complete?'ui-sub':'ui-warning',state.completeness?.complete?text('関数集合とmatchingは完全です。','Function sets and matching are complete.'):text('部分結果です: ','Partial result: ')+(state.completeness?.reasons||[]).join(', ')));
+  host.append(summary.root);
+  const interesting=(state.changes||[]).filter((c)=>c.changeType!=='same').slice(0,5000);
+  const render=(c)=>{const current=c.after?.address??null;const previous=c.before?.address??null;const title=c.after?.name||c.before?.name||(current!=null?functionName(app,current):text('削除された関数','Deleted function'));const tags=c.semanticChange?.tags?.join(', ')||'';return listRow({title,subtitle:[c.changeType,current!=null?addressText(current):previous!=null?'old '+addressText(previous):'',tags].filter(Boolean).join(' · '),badge:evidenceBadge(c.changeType==='unresolved'?'unverified':c.confidence>=0.82?'confirmed':'likely'),onClick:current!=null?()=>router.navigate('/function/'+BigInt(current).toString()+'/overview'):null});};
+  if(interesting.length>100)host.append(new VirtualList({items:interesting,rowHeight:64,ariaLabel:text('変更関数','Changed functions'),renderRow:render}).root);else{const list=h('div','ui-list');for(const c of interesting)list.append(render(c));host.append(list);}
+  return {root:s.root};
+}
+
 function renderAdvanced(app) {
   const s = screen(text('高度な機能', 'Advanced / Lab'), { id: 'advanced', subtitle: text('通常の調査では不要な低レベル機能だけをまとめています。', 'Low-level tools that are not required for the normal question-to-answer flow.') });
   const list = h('div', 'ui-list');
@@ -717,6 +769,9 @@ function renderAdvanced(app) {
   list.append(listRow({ title: text('セクション詳細', 'Section details'), onClick: () => requireFile(app, () => showSections(app)) }));
   list.append(listRow({ title: text('構造 / 生データ', 'Structure / raw data'), onClick: () => requireFile(app, () => showStructure(app)) }));
   list.append(listRow({ title: text('解析ツール一覧', 'Analysis tools'), subtitle: text('パッチ・スクリプト・プラグイン等', 'Patching, scripting, plugins, etc.'), onClick: () => requireFile(app, () => showTools(app)) }));
+  list.append(listRow({ title:text('プロジェクトを書き出す (.hexproj)','Export project (.hexproj)'), subtitle:text('名前・メモ・型・patch・解析結果・AI調査・移動履歴を保存','Save names, notes, types, patches, findings, AI investigation and navigation'), onClick:()=>requireFile(app,()=>exportProjectFromProduct(app)) }));
+  list.append(listRow({ title:text('プロジェクトを読み込む','Import project'), subtitle:text('現在のバイナリhashとsliceが一致した場合だけ復元します','Restores only when binary hash and slice identity match'), onClick:()=>requireFile(app,()=>importProjectFromProduct(app)) }));
+  list.append(listRow({ title:text('バージョン差分','Binary Diff'), subtitle:text('前のバイナリと変更関数を比較','Compare changed functions against a previous binary'), onClick:()=>requireFile(app,()=>window.__hexUi?.router?.navigate('/diff')) }));
   s.body.append(list);
   return { root: s.root };
 }
@@ -855,6 +910,7 @@ export function installProductUI(app) {
       else if (route.route.id === 'explorer') view = renderExplorer(app, router, route);
       else if (route.route.id === 'function') view = renderFunctionWorkspace(app, router, route);
       else if (route.route.id === 'results' || route.route.id === 'finding') view = renderResults(app, router);
+      else if (route.route.id === 'diff') view = renderDiff(app, router);
       else if (route.route.id === 'advanced') view = renderAdvanced(app);
       else view = renderSecondaryRoute(app, router, route);
       routeHost.append(view.root);
@@ -869,6 +925,19 @@ export function installProductUI(app) {
   });
 
   let assistant = null;
+  const originalSelectSlice = typeof app.selectSlice === 'function' ? app.selectSlice.bind(app) : null;
+  if (originalSelectSlice) {
+    app.selectSlice = async (...args) => {
+      const beforeEpoch = app.backend?.gen;
+      const result = await originalSelectSlice(...args);
+      if (app.backend?.gen !== beforeEpoch) {
+        router.navigate('/code', { replace: true });
+        assistant?.refresh();
+        assistant?.collapse();
+      }
+      return result;
+    };
+  }
   installCommandCenter(app, router, actions, chrome, () => assistant);
   const more = uiButton('•••', { cls: 'ui-more-button', ariaLabel: text('その他', 'More'), onClick: (event) => {
     const r = event.currentTarget.getBoundingClientRect();
@@ -928,10 +997,11 @@ export function installProductUI(app) {
     document.removeEventListener('keydown', shortcut, true);
     document.removeEventListener('hex:file-opened', onFileOpened);
     assistant?.destroy();
+    if (originalSelectSlice) app.selectSlice = originalSelectSlice;
     chrome.remove(); nav.remove(); routeHost.remove();
     document.documentElement.classList.remove('product-ui-ready');
   };
-  window.addEventListener('pagehide', () => router.capture(), { passive: true });
+  window.addEventListener('pagehide', () => { router.capture(); app.saveWorkspace?.(); }, { passive: true });
   window.__hexUi = { router, actions, destroy, routes: ROUTES, assistant };
   return window.__hexUi;
 }

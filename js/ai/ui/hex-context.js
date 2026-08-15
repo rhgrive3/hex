@@ -14,6 +14,7 @@ import { decompile, decompiledText } from '../../decompile.js';
 import { runtimeEvidenceForApp, runtimePlatformForApp, verifyAppHypothesis } from '../../runtime/app-runtime.js';
 import { functionNameOf, selectionOf } from './workbench.js';
 import { currentFunctionAddr } from '../../tools.js';
+import { resolveObjcDispatch } from '../../objc.js';
 
 const MAX_SELECTION_ROWS = 80;
 
@@ -24,8 +25,10 @@ function toBigInt(value) {
 }
 
 function fixedRows(app) {
-  const arch = String(app.store.get('architecture') || 'arm64').toLowerCase();
-  return /arm64|aarch64/.test(arch) || !!app.store.get('canDisassemble');
+  return !!app.store.get('canDisassemble') && Number(app.store.get('instructionAlignment') || app.store.get('capability')?.instructionAlignment || 0) > 0;
+}
+function instructionBytes(app) {
+  return Math.max(1, Number(app.store.get('instructionAlignment') || app.store.get('capability')?.instructionAlignment || 4));
 }
 
 /** Semantic model for one function, or null when it cannot be analysed. */
@@ -38,10 +41,12 @@ export async function analyzeModelAt(app, address) {
   const fn = sym && sym.functionCount ? sym.functionAt(addr) : null;
   const start = fn ? fn.start : addr;
   if (start < region.vmAddr || start >= region.vmAddr + region.size) return null;
-  const startRow = Number((start - region.vmAddr) / 4n);
-  const totalRows = Number(region.size / 4n);
+  const step=BigInt(instructionBytes(app));
+  if ((start-region.vmAddr)%step !== 0n) return null;
+  const startRow = Number((start - region.vmAddr) / step);
+  const totalRows = Number(region.size / step);
   const endRow = fn && fn.end != null
-    ? Math.min(totalRows - 1, Number((fn.end - region.vmAddr) / 4n) - 1)
+    ? Math.min(totalRows - 1, Number((fn.end - region.vmAddr) / step) - 1)
     : Math.min(totalRows - 1, startRow + 2048);
   if (endRow < startRow) return null;
   try {
@@ -89,8 +94,12 @@ export function createHexAIContext(app) {
     },
     get symbols() { return app.symbols; },
     get program() { return app.program; },
+    get knowledge() { return app.knowledge || null; },
+    get functions() { return (app.recognition?.records || []).map((item)=>item.fingerprint).filter(Boolean).slice(0,5000); },
     get strings() { return app.stringIndex || []; },
     get candidateFunctions() {
+      const ranked=app.recognition?.records;
+      if (Array.isArray(ranked) && ranked.length) return ranked.slice(0,5000).map((item)=>item.address);
       const addr = safeCurrentFunction(app);
       return addr == null ? [] : [addr];
     },
@@ -105,11 +114,12 @@ export function createHexAIContext(app) {
     },
     get selection() { return selectionContext(app); },
     get project() {
-      return {
-        names: app.notes ? app.notes.nameEntries().slice(0, 400) : [],
-        lastGoal: app.lastGoal ? app.lastGoal.text : null,
+      return app.workspace?.project || app.activeProject || {
+        binary:null,user:{names:app.notes?app.notes.nameEntries().slice(0,400):[]},navigation:{lastQuery:app.lastGoal?.text||null},
       };
     },
+    get binaryDiff() { return app.getBinaryDiff?.() || null; },
+    getBinaryDiff: () => app.getBinaryDiff?.() || null,
 
     functionName: nameOf,
     analyze: (address) => analyzeModelAt(app, address),
@@ -129,25 +139,61 @@ export function createHexAIContext(app) {
       return out;
     },
 
-    searchFunctions(query, options = {}) {
+    async searchFunctions(query, options = {}) {
       const limit = Math.max(1, Math.min(200, Number(options.limit) || 40));
+      const q = String(query || '').toLowerCase();
+      try { await app.ensureRecognition?.({maxFunctions:350000,knowledgeLimit:512}); } catch { /* fallback below */ }
+      const ranked=app.recognition?.records || [];
+      if(ranked.length){
+        const out=[]; let matches=0;
+        for(const item of ranked){
+          const name=String(item.name||item.originalName||'');
+          const cls=String(item.classification||'');
+          const knowledge=(item.knowledge?.names||[]).concat(item.knowledge?.roles||[]).join(' ');
+          if(q && !(`${name} ${cls} ${knowledge}`.toLowerCase().includes(q)))continue;
+          matches++; if(out.length<limit)out.push({addr:item.address,name:name||null,score:item.score||0,classification:item.classification,confidence:item.confidence,knowledge:item.knowledge||null});
+        }
+        out.complete=app.recognition.complete===true && matches<=limit;
+        out.scannedCount=app.recognition.scannedCount;out.total=app.recognition.total;out.matchCount=matches;
+        out.truncationReason=app.recognition.complete!==true?(app.recognition.truncationReason||'recognition-incomplete'):matches>limit?'result-limit':null;
+        out.coverage=app.recognition.total?app.recognition.scannedCount/app.recognition.total:1;
+        return out;
+      }
       const sym = app.symbols;
       if (!sym || !Array.isArray(sym.names)) return [];
-      const q = String(query || '').toLowerCase();
-      const out = [];
-      for (let i = 0; i < sym.names.length && out.length < limit; i++) {
+      const maxScan=Math.min(sym.names.length,1_000_000), out=[]; let matches=0;
+      for (let i = 0; i < maxScan; i++) {
         const name = String(sym.names[i] || '');
         if (q && !name.toLowerCase().includes(q)) continue;
-        out.push({ addr: sym.addrs[i], name });
+        matches++; if(out.length<limit) out.push({ addr: sym.addrs[i], name });
       }
+      out.complete=maxScan===sym.names.length && matches<=limit; out.scannedCount=maxScan;out.total=sym.names.length;out.matchCount=matches;
+      out.truncationReason=maxScan<sym.names.length?'scan-budget':matches>limit?'result-limit':null;out.coverage=sym.names.length?maxScan/sym.names.length:1;
       return out;
     },
 
     async decompile(address) {
       if (!fixedRows(app)) return null;
+      try { await app.ensureObjc?.(); } catch { /* ObjC metadata is optional */ }
       const model = await analyzeModelAt(app, address);
       if (!model) return null;
       return decompiledText(pseudocode(app, model, toBigInt(address), nameOf));
+    },
+
+    async resolveObjcDispatch(receiverClass, selector, kind = 'instance') {
+      try { await app.ensureObjc?.(); } catch { /* ObjC metadata is optional */ }
+      const index = app.objcRuntime || app.objcModel?.runtimeIndex || null;
+      if (!index) return { resolved: null, reason: 'objc-runtime-unavailable', candidates: [], requirements: [], confidence: 0 };
+      const result = resolveObjcDispatch(index, {
+        receiverType: String(receiverClass || ''), selector: String(selector || ''), classMethod: kind === 'class',
+      });
+      return { ...result, candidates: (result.candidates || []).slice(0, 32), requirements: (result.requirements || []).slice(0, 32) };
+    },
+
+    async resolveSwiftDispatch(call = {}) {
+      try { await app.ensureSwift?.(); } catch { /* Swift metadata is optional */ }
+      const result=app.resolveSwiftCall?.(call) || {resolved:null,candidates:[],confidence:0,reason:'swift-runtime-unavailable'};
+      return { ...result, candidates:(result?.candidates||[]).slice(0,32), requirements:(result?.requirements||[]).slice(0,32), complete:result?.complete!==false && app.swiftModel?.complete!==false };
     },
 
     pseudocodeFor(address, model) {
@@ -168,7 +214,14 @@ export function createHexAIContext(app) {
       getObservations({ functionAddress, limit = 100 } = {}) {
         const addr = toBigInt(functionAddress);
         const results = runtimeEvidenceForApp(app, addr).slice(-limit);
-        return { results, returned: results.length, verified: results.length > 0 };
+        const completeConfirmed = results.filter((item)=>item?.verdict==='confirmed' && item?.observedState?.factsComplete !== false && item?.reproducibility?.replayable === true);
+        const contradicted = results.filter((item)=>item?.verdict==='contradicted').length;
+        return {
+          results, returned:results.length,
+          status:contradicted ? 'contradicted' : completeConfirmed.length ? 'confirmed' : results.length ? 'observed' : 'none',
+          verified:completeConfirmed.length > 0 && contradicted === 0,
+          verification:{confirmedCompleteReplayable:completeConfirmed.length,contradictions:contradicted,total:results.length}
+        };
       },
       async verifyHypothesis(hypothesis, options) {
         try { return await verifyAppHypothesis(app, hypothesis, options || {}); }
@@ -189,9 +242,14 @@ function pseudocode(app, model, addr, nameOf) {
   return decompile(model, {
     name: nameOf(addr),
     addr,
-    rowOfAddress: (a) => (region && a != null ? Number((a - region.vmAddr) / 4n) : null),
-    addrOfRow: (row) => (region ? region.vmAddr + BigInt(row) * 4n : null),
+    rowOfAddress: (a) => (region && a != null ? Number((a - region.vmAddr) / BigInt(instructionBytes(app))) : null),
+    addrOfRow: (row) => (region ? region.vmAddr + BigInt(row) * BigInt(instructionBytes(app)) : null),
     symbolFor: (a) => app.symbols?.nameAt?.(a) || null,
+    objcModel: app.objcModel || null,
+    objcRuntimeIndex: app.objcRuntime || null,
+    swiftModel: app.swiftModel || null,
+    swiftRuntimeIndex: app.swiftRuntime || null,
+    resolveSwiftDispatch: (call) => app.resolveSwiftCall?.(call) || null,
     notes: app.notes,
   });
 }
