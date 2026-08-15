@@ -163,8 +163,14 @@ requireExports(pluginApi, 'js/platform/plugin-api.js', [
     resolved === 'js/ir-core.js' || resolved === 'js/decompiler/pipeline-core.js'
   ), 'UI imports private semantic internals instead of a facade');
 
-  const aiFiles = walk('js/ai');
-  assertNoImport(aiFiles, ({ resolved }) => resolved === 'js/patch.js' || resolved.startsWith('js/patch/'), 'AI imports a direct binary-mutation implementation');
+  // The existing CapabilityExecutor is the one sanctioned AI mutation adapter.
+  // It may validate patch targets, but every agent-exposed mutating capability stays approval-gated.
+  const mutationExecutor = 'js/ai/capabilities/executor.js';
+  const aiFiles = walk('js/ai').filter((file) => file !== mutationExecutor);
+  assertNoImport(aiFiles, ({ resolved }) => resolved === 'js/patch.js' || resolved.startsWith('js/patch/'), 'AI bypasses the approval-gated mutation executor');
+  const executorSource = source(mutationExecutor);
+  assert.match(executorSource, /entry\.requiresApproval\s*&&\s*!validAuthorization\(options\.authorization\)/, 'AI mutation executor must enforce approval before execution');
+  assert.match(executorSource, /value\?\.kind\s*===\s*['"]proposal['"]/, 'AI mutation authorization must remain proposal-scoped');
 
   const decompilerCore = source('js/decompiler/pipeline-core.js');
   assert.doesNotMatch(decompilerCore, /\.(?:mnemonic|operands)\b/, 'semantic decompiler must not reinterpret instruction text');
