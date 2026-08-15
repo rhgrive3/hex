@@ -1,0 +1,38 @@
+name: Verify latest decompiler issue fixes
+
+on:
+  push:
+    branches:
+      - fix/latest-405-400
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-verify:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/latest-405-400
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Apply source patches
+        run: python3 tools/apply-latest-405-400.py
+      - name: Dedicated regressions
+        run: node tests/issues-400-405.mjs
+      - name: Decompiler suite
+        run: npm run decompiler:test
+      - name: Static checks
+        run: npm run lint
+      - name: Commit verified patch
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add js/ir-core.js js/decompiler/semantic.js js/decompiler/passes/stack-return-recovery.js js/decompiler/passes/stack-phi-recovery.js js/decompiler/switch.js js/decompiler/flag-semantics.js
+          git diff --cached --check
+          git commit -m 'fix: resolve latest issues 400-405'
+          git push origin HEAD:fix/latest-405-400
