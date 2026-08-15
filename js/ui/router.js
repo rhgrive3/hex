@@ -46,6 +46,10 @@ function queryOf(rawPath) {
   return new URLSearchParams(i >= 0 ? String(rawPath).slice(i + 1) : '');
 }
 
+function ownedState(state) {
+  return !!state && state.hexUi === true && Number.isSafeInteger(state.hexDepth) && state.hexDepth >= 0;
+}
+
 export class ProductRouter {
   constructor(routes, { defaultPath = '/investigate', onRoute, onState } = {}) {
     this.routes = routes;
@@ -55,8 +59,13 @@ export class ProductRouter {
     this.current = null;
     this.view = null;
     this.serial = 0;
+    this.depth = 0;
     this.started = false;
-    this.onPop = () => this._render(this.locationPath(), { historyNavigation: true });
+    this.onPop = () => {
+      const state = ownedState(history.state) ? history.state : null;
+      this.depth = state ? state.hexDepth : 0;
+      this._render(this.locationPath(), { historyNavigation: true });
+    };
   }
 
   locationPath() {
@@ -69,9 +78,16 @@ export class ProductRouter {
     this.started = true;
     window.addEventListener('popstate', this.onPop);
     const path = this.locationPath();
-    const state = history.state && history.state.hexUi ? history.state : null;
-    if (!state) history.replaceState({ hexUi: true, key: ++this.serial, viewState: null }, '', '#' + path);
-    else this.serial = Math.max(this.serial, Number(state.key) || 0);
+    const state = ownedState(history.state) ? history.state : null;
+    if (!state) {
+      // The browser may already have an external referrer in its global history.
+      // Mark this document as the app-owned root instead of inheriting that depth.
+      this.depth = 0;
+      history.replaceState({ hexUi: true, hexDepth: 0, key: ++this.serial, viewState: null }, '', '#' + path);
+    } else {
+      this.depth = state.hexDepth;
+      this.serial = Math.max(this.serial, Number(state.key) || 0);
+    }
     this._render(path, { replace: true, historyNavigation: true });
   }
 
@@ -85,26 +101,37 @@ export class ProductRouter {
 
   capture() {
     if (!this.view || typeof this.view.getState !== 'function') return;
-    const current = history.state && history.state.hexUi ? history.state : { hexUi: true, key: ++this.serial };
+    const current = ownedState(history.state)
+      ? history.state
+      : { hexUi: true, hexDepth: this.depth, key: ++this.serial };
     const viewState = this.view.getState();
-    try { history.replaceState({ ...current, viewState }, '', window.location.href); } catch { /* Safari private mode */ }
+    try { history.replaceState({ ...current, hexUi: true, hexDepth: this.depth, viewState }, '', window.location.href); } catch { /* Safari private mode */ }
   }
 
   navigate(rawPath, { replace = false } = {}) {
     const path = normalize(rawPath);
     if (this.current && this.current.fullPath === path) return false;
     this.capture();
-    const state = { hexUi: true, key: ++this.serial, viewState: null };
+    const nextDepth = replace ? this.depth : this.depth + 1;
+    const state = { hexUi: true, hexDepth: nextDepth, key: ++this.serial, viewState: null };
     try {
       history[replace ? 'replaceState' : 'pushState'](state, '', '#' + path);
     } catch {
+      // Hash fallback cannot provide trustworthy app-owned history semantics.
+      // Keep the conservative depth so Back is never advertised into an external page.
       window.location.hash = path;
     }
+    this.depth = nextDepth;
     this._render(path, { replace });
     return true;
   }
 
-  back() { this.capture(); history.back(); }
+  back() {
+    if (this.depth <= 0) return false;
+    this.capture();
+    history.back();
+    return true;
+  }
   forward() { this.capture(); history.forward(); }
 
   disposeView() {
@@ -119,11 +146,11 @@ export class ProductRouter {
     if (!resolved) throw new Error('No route for ' + fullPath);
     this.disposeView();
     this.current = { ...resolved, fullPath, query: queryOf(fullPath) };
-    const state = history.state && history.state.hexUi ? history.state.viewState : null;
+    const state = ownedState(history.state) ? history.state.viewState : null;
     this.view = this.onRoute(this.current, { ...meta, restoredState: state }) || null;
     if (state && this.view && typeof this.view.restoreState === 'function') {
       requestAnimationFrame(() => this.view && this.view.restoreState(state));
     }
-    this.onState({ current: this.current, canBack: history.length > 1 });
+    this.onState({ current: this.current, canBack: this.depth > 0 });
   }
 }
