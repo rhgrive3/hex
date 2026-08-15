@@ -9,6 +9,7 @@ import { compileExperiment, generateDifferentialInputs, classifyHypothesis, comp
 import { createRuntimeEvidenceRecord, fuseStaticDynamic, traceToSemanticFacts, compareRuntimeDispatch } from '../js/runtime-evidence/index.js';
 import { DebugSession, DebugSessionManager } from '../js/runtime/session.js';
 import { RuntimeAnalysisPlatform } from '../js/runtime/index.js';
+import { deterministicAnswer } from '../js/agent/runtime.js';
 
 function program(entries, fallback = null) {
   const table = new Map(entries.map(([a,mn,ops='']) => [BigInt(a).toString(), {mn,ops}]));
@@ -199,6 +200,72 @@ async function runLocal(io, address, spec = {}, maxSteps = 100) {
   assert.equal(classifyHypothesis([...supported,{comparison:{status:'unsupported'}}]).status,'supported');
   assert.equal(classifyHypothesis([{comparison:{status:'contradicted'}}]).status,'contradicted');
   assert.equal(classifyHypothesis([{comparison:{status:'inconclusive'}}]).status,'inconclusive');
+}
+
+
+
+// #557 Agent final answer must preserve runtime verdict strength.
+{
+  const approx557 = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e-12, `${actual} != ${expected}`);
+  const runtimeCases = (status, count) => Array.from({ length: count }, () => ({ comparison: { status } }));
+  const supported1 = classifyHypothesis(runtimeCases('supported', 1));
+  const supported2 = classifyHypothesis(runtimeCases('supported', 2));
+  const confirmed3 = classifyHypothesis(runtimeCases('supported', 3));
+  const contradicted = classifyHypothesis(runtimeCases('contradicted', 1));
+  const inconclusive = classifyHypothesis(runtimeCases('inconclusive', 1));
+  assert.equal(supported1.status, 'supported'); approx557(supported1.confidence, 0.60);
+  assert.equal(supported2.status, 'supported'); approx557(supported2.confidence, 0.65);
+  assert.equal(confirmed3.status, 'confirmed'); approx557(confirmed3.confidence, 0.87);
+  assert.equal(contradicted.status, 'contradicted');
+  assert.equal(inconclusive.status, 'inconclusive');
+
+  const answerFor = (verdict, semanticCount = 0, extraVerification = {}) => deterministicAnswer({
+    best: {
+      address: 0x1000n,
+      name: 'candidate',
+      score: 42,
+      semanticFacts: Array.from({ length: semanticCount }, (_, i) => ({ kind: `fact-${i}` })),
+      verification: { verdict, ...extraVerification },
+    },
+    evidence: ['fixture:evidence'],
+    missingEvidence: [],
+  });
+
+  const one = answerFor(supported1);
+  assert.equal(one.reasons.find((r) => r.kind === 'deterministic-verification').verified, false);
+  assert.equal(one.reasons.find((r) => r.kind === 'runtime-supported').status, 'supported');
+  assert.ok(one.confidence <= supported1.confidence);
+  assert.ok(one.confidence < 0.98);
+
+  const twoWithStatic = answerFor(supported2, 3);
+  approx557(twoWithStatic.confidence, supported2.confidence); // static evidence must not exceed runtime-supported source confidence
+  assert.equal(twoWithStatic.reasons.some((r) => r.kind === 'runtime-confirmed'), false);
+
+  const confirmed = answerFor(confirmed3, 1);
+  assert.equal(confirmed.reasons.find((r) => r.kind === 'deterministic-verification').verified, true);
+  assert.equal(confirmed.reasons.find((r) => r.kind === 'runtime-confirmed').verified, true);
+  approx557(confirmed.confidence, confirmed3.confidence);
+
+  const contradictedAnswer = answerFor(contradicted, 4);
+  assert.equal(contradictedAnswer.reasons.find((r) => r.kind === 'deterministic-verification').verified, false);
+  assert.ok(contradictedAnswer.confidence <= 1 - contradicted.confidence + Number.EPSILON);
+  assert.ok(contradictedAnswer.reasons.some((r) => r.kind === 'runtime-contradicted'));
+
+  const inconclusiveAnswer = answerFor(inconclusive, 2);
+  assert.ok(inconclusiveAnswer.confidence <= 0.25);
+  assert.ok(inconclusiveAnswer.reasons.some((r) => r.kind === 'runtime-inconclusive'));
+
+  const unsupported = answerFor({ status: 'unsupported', confidence: 0 }, 2);
+  assert.equal(unsupported.confidence, 0);
+  assert.equal(unsupported.reasons.find((r) => r.kind === 'deterministic-verification').verified, false);
+
+  // An explicit non-runtime verification contract remains valid, but a
+  // contradictory/supported runtime verdict still owns its confidence ceiling.
+  const explicitStatic = deterministicAnswer({ best: { address: 0x2000n, score: 1, semanticFacts: [], verification: { verified: true } }, evidence: [], missingEvidence: [] });
+  assert.equal(explicitStatic.confidence, 0.98);
+  const inconsistentSupported = answerFor(supported1, 1, { verified: true });
+  assert.ok(inconsistentSupported.confidence <= supported1.confidence);
+  assert.ok(inconsistentSupported.reasons.some((r) => r.kind === 'runtime-supported'));
 }
 
 // Evidence independence and binary scoping.

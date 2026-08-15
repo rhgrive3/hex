@@ -27,7 +27,49 @@ function evidenceFromObservation(obs, set) {
   for (const u of obs.updates || []) for (const e of u && u.evidence || []) if (typeof e === 'string') set.add(e);
 }
 
-function deterministicAnswer(plan) {
+function finiteConfidence(value, fallback = null) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(0, Math.min(1, n));
+}
+
+function verificationVerdict(verification) {
+  const raw = verification?.verdict;
+  const status = typeof raw === 'string' ? raw : (raw?.status || verification?.status || null);
+  const confidence = finiteConfidence(raw && typeof raw === 'object' ? raw.confidence : verification?.confidence, null);
+  return { status: status ? String(status) : null, confidence };
+}
+
+function confidenceFromEvidence({ semanticCount, explicitVerified, verdictStatus, verdictConfidence }) {
+  const staticConfidence = semanticCount ? 0.78 : 0.45;
+  if (!verdictStatus) return explicitVerified ? 0.98 : staticConfidence;
+
+  if (verdictStatus === 'confirmed') {
+    // Runtime confirmation is itself the strongest source. Never manufacture a
+    // confidence above the verifier's own calibrated confidence.
+    return Math.min(0.98, verdictConfidence ?? 0.98);
+  }
+  if (verdictStatus === 'supported') {
+    // Partial runtime support may strengthen a weak static candidate slightly,
+    // but it can never escape the source verdict's confidence envelope.
+    const cap = Math.min(0.85, verdictConfidence ?? 0.85);
+    return Math.min(cap, staticConfidence + 0.10);
+  }
+  if (verdictStatus === 'contradicted') {
+    // Verdict confidence measures confidence in the contradiction, so invert it
+    // when expressing confidence in the candidate conclusion.
+    const contradiction = Math.max(0.70, verdictConfidence ?? 0.70);
+    return Math.min(staticConfidence, Math.max(0, 1 - contradiction));
+  }
+  if (verdictStatus === 'inconclusive') {
+    return Math.min(staticConfidence, verdictConfidence ?? 0.25, 0.25);
+  }
+  if (verdictStatus === 'unsupported') return 0;
+  // Unknown verifier statuses are evidence, not permission to upgrade.
+  return Math.min(staticConfidence, verdictConfidence ?? staticConfidence);
+}
+
+export function deterministicAnswer(plan) {
   const best = plan && plan.best;
   if (!best) {
     return {
@@ -38,18 +80,26 @@ function deterministicAnswer(plan) {
       missingEvidence: plan && plan.missingEvidence && plan.missingEvidence.length ? plan.missingEvidence : ['no-verified-candidate'],
     };
   }
-  const verdict = best.verification?.verdict?.status || best.verification?.verdict || best.verification?.status || null;
-  const verified = best.verification?.verified === true || verdict === 'confirmed' || verdict === 'supported';
+  const { status: verdict, confidence: verdictConfidence } = verificationVerdict(best.verification);
+  const explicitVerified = best.verification?.verified === true;
+  const verified = explicitVerified || verdict === 'confirmed';
   const semanticCount = (best.semanticFacts || []).length;
+  const reasons = [
+    { kind: 'semantic-facts', count: semanticCount },
+    { kind: 'deterministic-verification', verified },
+  ];
+  if (verdict) reasons.push({
+    kind: `runtime-${verdict}`,
+    status: verdict,
+    confidence: verdictConfidence,
+    verified: verdict === 'confirmed',
+  });
+  reasons.push({ kind: 'candidate-score', score: best.score });
   return {
     conclusion: { address: best.address, name: best.name || null },
-    reasons: [
-      { kind: 'semantic-facts', count: semanticCount },
-      { kind: 'deterministic-verification', verified },
-      { kind: 'candidate-score', score: best.score },
-    ],
+    reasons,
     evidence: plan.evidence || [],
-    confidence: verified ? 0.98 : (semanticCount ? 0.78 : 0.45),
+    confidence: confidenceFromEvidence({ semanticCount, explicitVerified, verdictStatus: verdict, verdictConfidence }),
     missingEvidence: plan.missingEvidence || [],
   };
 }
