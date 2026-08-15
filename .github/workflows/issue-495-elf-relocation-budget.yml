@@ -41,6 +41,6 @@ jobs:
           if git diff --quiet; then exit 0; fi
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add js/binary/relocation-budget.js js/binary/elf-extended.js js/binary/elf-dynamic.js tests/issue-495-elf-relocation-budget.mjs package.json
+          git add js/binary/relocation-budget.js js/binary/elf-extended.js js/binary/elf-dynamic.js tests/issue-495-elf-relocation-budget.mjs
           git commit -m 'Fix #495 bounded ELF relocation decoding [issue-495-applied]'
           git push
