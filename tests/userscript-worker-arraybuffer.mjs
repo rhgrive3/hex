@@ -16,6 +16,4 @@ assert.match(source, /return b\.buffer/);
 assert.match(probe, /Capstone probe initialization/);
 assert.match(disasm, /Capstone disassembler initialization/);
 
-const generated = await readFile(new URL('../userscript/hex.user.template.js', import.meta.url));
-console.log(`TEMPLATE_BASE64=${generated.toString('base64')}`);
 console.log('userscript protected worker ArrayBuffer regression: ok');
