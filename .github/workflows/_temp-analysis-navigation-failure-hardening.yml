@@ -1,0 +1,76 @@
+name: Temp analysis navigation failure hardening
+on:
+  push:
+    branches:
+      - fix-analysis-navigation-failure-preserve-sheet
+permissions:
+  contents: write
+jobs:
+  harden:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix-analysis-navigation-failure-preserve-sheet
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Apply navigation failure hardening and regression
+        run: |
+          node --input-type=module <<'EOF'
+          import fs from 'node:fs';
+          function replaceOnce(path,before,after){
+            const source=fs.readFileSync(path,'utf8');
+            const at=source.indexOf(before);
+            if(at<0) throw new Error(`${path}: anchor not found`);
+            if(source.indexOf(before,at+1)>=0) throw new Error(`${path}: anchor not unique`);
+            fs.writeFileSync(path,source.slice(0,at)+after+source.slice(at+before.length));
+          }
+          replaceOnce('js/panels.js',
+          `    const b = button('', 'action-btn' + (view.primary ? ' strong' : ''), () => {
+                if (sheet) sheet.close();
+                const opened = openFunctionView(view, { router: productRouter(), legacy: legacyViewOpeners(app, goal) });
+                if (!opened) toast(pick('この形では開けませんでした。', 'That view could not be opened.'));
+              });`,
+          `    const b = button('', 'action-btn' + (view.primary ? ' strong' : ''), () => {
+                const opened = openFunctionView(view, { router: productRouter(), legacy: legacyViewOpeners(app, goal) });
+                if (opened) { if (sheet) sheet.close(); }
+                else toast(pick('この形では開けませんでした。', 'That view could not be opened.'));
+              });`);
+          replaceOnce('js/panels.js',
+          `  const jump = (view) => () => {
+              sheet.close();
+              const [target] = functionViews({ address: process, include: [view], ja: isJa() });
+              if (!target || !openFunctionView(target, { router: productRouter(), legacy: legacyViewOpeners(app, goal) })) {
+                toast(pick('この形では開けませんでした。', 'That view could not be opened.'));
+              }
+            };`,
+          `  const jump = (view) => () => {
+              const [target] = functionViews({ address: process, include: [view], ja: isJa() });
+              const opened = !!target && openFunctionView(target, { router: productRouter(), legacy: legacyViewOpeners(app, goal) });
+              if (opened) sheet.close();
+              else toast(pick('この形では開けませんでした。', 'That view could not be opened.'));
+            };`);
+          const testPath='tests/ui/analysis-navigation.mjs';
+          const test=fs.readFileSync(testPath,'utf8');
+          const anchor=`  check('the candidate sheet offers the same views', typography.views >= 4, String(typography.views));\n`;
+          if(!test.includes(anchor)) throw new Error('browser regression anchor not found');
+          const addition=`\n  /* ── failed legacy dispatch must preserve context ─────────── */\n  await page.evaluate(() => {\n    if (window.__hexUi) window.__hexUi.router = null;\n  });\n  const beforeFailedDispatch = await page.evaluate(() => document.querySelectorAll('#overlays .sheet:not(.parked)').length);\n  await page.evaluate(() => {\n    const button = [...document.querySelectorAll('#overlays .sheet:not(.parked) .next-views .action-btn')]\n      .find((node) => /根拠|evidence/i.test(node.textContent));\n    if (!button) throw new Error('evidence next-view button missing');\n    button.click();\n  });\n  await page.waitForTimeout(100);\n  const afterFailedDispatch = await page.evaluate(() => document.querySelectorAll('#overlays .sheet:not(.parked)').length);\n  check('a next-view with no router or legacy fallback keeps the current result open',\n    beforeFailedDispatch > 0 && afterFailedDispatch === beforeFailedDispatch,\n    JSON.stringify({ before: beforeFailedDispatch, after: afterFailedDispatch }));\n  await page.evaluate(() => {\n    if (window.__hexUi && window.__hexUi.product?.router) window.__hexUi.router = window.__hexUi.product.router;\n  });\n`;
+          fs.writeFileSync(testPath,test.replace(anchor,anchor+addition));
+          EOF
+      - run: npm ci
+      - run: npm run ui:test
+      - run: npm run ui:browser
+      - run: npm run check
+      - run: npm run userscript:test
+      - name: Commit verified fix and generated bundle
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          rm .github/workflows/_temp-analysis-navigation-failure-hardening.yml
+          git add js/panels.js tests/ui/analysis-navigation.mjs userscript/hex.user.template.js userscript/platform-worker.bundle.js .github/workflows
+          git commit -m 'Preserve result sheets when alternate-view navigation fails'
+          git push origin HEAD:fix-analysis-navigation-failure-preserve-sheet
