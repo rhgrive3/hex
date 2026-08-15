@@ -18,7 +18,9 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
       - name: Apply correction over #571
-        run: python3 tools/apply-issue-556-v2.py
+        run: |
+          python3 tools/apply-issue-556-v2.py
+          python3 tools/reconcile-issue-556-v2.py
       - name: Behavioral worker provenance regression
         run: node tests/issue-556-address-provenance.mjs
       - name: Standard ARM64 gate
