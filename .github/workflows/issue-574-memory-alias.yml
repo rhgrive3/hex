@@ -20,33 +20,30 @@ jobs:
         with:
           node-version: 22
       - name: Apply fix
-        run: python3 tools/apply-issue-574.py
+        run: |
+          python3 tools/apply-issue-574.py
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('js/ir.js'); s=p.read_text()
+          old="""    if (!load) continue;
+              const key = load.id + '>' + store.id;
+              if (seen.has(key)) continue;
+          """
+          new="""    if (!load) continue;
+              // The public provenance fallback must not resurrect a def-use RMW
+              // across a Memory-SSA clobber. Core Memory SSA is the semantic truth.
+              if (!store.memDef || store.memDef.prev !== load.memUse) continue;
+              const key = load.id + '>' + store.id;
+              if (seen.has(key)) continue;
+          """
+          if old not in s: raise SystemExit('public RMW fallback anchor missing')
+          p.write_text(s.replace(old,new,1))
+          PY
       - name: Syntax
         run: |
           node --check js/ir-core.js
           node --check js/ir.js
           node --check tests/ir-alias.mjs
-      - name: Diagnose RMW clobber chain
-        run: |
-          node --input-type=module <<'EOF'
-          import { buildSemanticModel } from './js/blocks.js';
-          import { buildIR, readModifyWrite, OP } from './js/ir.js';
-          import { findValueUpdates } from './js/dataflow.js';
-          const BASE=0x100000000n;
-          const lines=['ldr w8, [x0, #0x20]','add w8, w8, #1','mov w9, #7','str w9, [x1, #0x20]','str w8, [x0, #0x20]','ret'];
-          const rows=lines.map((line,i)=>{const p=line.indexOf(' ');return {row:i,address:BASE+BigInt(i*4),mn:p<0?line:line.slice(0,p),ops:p<0?'':line.slice(p+1)}});
-          const model=buildSemanticModel(rows,{startRow:0,endRow:rows.length-1,rowOfAddress:(a)=>Number((BigInt(a)-BASE)/4n)});
-          const ir=buildIR(model);
-          const load=ir.instructions.find(x=>x.op===OP.LOAD);
-          const stores=ir.instructions.filter(x=>x.op===OP.STORE);
-          const final=stores.find(x=>x.row===4);
-          console.log(JSON.stringify({
-            load:{row:load?.row,key:load?.loc?.key,memUse:load?.memUse?.kind,memUseRow:load?.memUse?.inst?.row},
-            stores:stores.map(x=>({row:x.row,key:x.loc?.key,memDef:x.memDef?.kind,prev:x.memDef?.prev?.kind,prevRow:x.memDef?.prev?.inst?.row})),
-            rmw:readModifyWrite(ir).map(x=>({load:x.load.row,store:x.store.row,kind:x.kind})),
-            updates:findValueUpdates(model).map(x=>({kind:x.kind,engine:x.engine,store:x.store?.row,from:x.from?.row}))
-          },null,2));
-          EOF
       - name: Focused alias regressions
         run: node tests/ir-alias.mjs
       - name: Semantic regression suite
