@@ -540,6 +540,12 @@ class App {
       this.fields = EMPTY_FIELDS;
       this.objcModel = null;
       this.objcRuntime = null;
+      this.swiftModel = null;
+      this.swiftRuntime = null;
+      this.swiftBusy = null;
+      this.swiftBusyEpoch = -1;
+      this.recognition = null;
+      this.recognitionBusy = null;
       this.program = null;
       this.programScan = null;
       this.programKey = null;
@@ -983,7 +989,11 @@ class App {
         for (const e of this.notes.nameEntries()) this.symbols.rename(e.addr, e.name);
         this.viewer.setSymbols(this.symbols);
         this.updateChrome();
-        return this.ensureObjc(sliceIndex);
+        return Promise.allSettled([
+          this.ensureObjc(sliceIndex),
+          this.ensureSwift(),
+          this.ensureRecognition({ maxFunctions: 350000 }),
+        ]);
       }).catch(() => { /* シンボルがなくても読める */ });
     }
   }
@@ -1092,23 +1102,63 @@ class App {
   }
 
   async ensureRecognition(options={}) {
-    if(this.recognition && this.recognition.gen===this.symbols.gen) return this.recognition;
+    const sym=this.symbols;
+    if(!sym || sym===EMPTY_INDEX) return null;
+    if(this.recognition && this.recognition.gen===sym.gen) return this.recognition;
     if(this.recognitionBusy) return this.recognitionBusy;
-    const epoch=this.backend.gen, sym=this.symbols, max=Math.min(500000,Math.max(1000,Number(options.maxFunctions)||350000));
+    const epoch=this.backend.gen;
+    const max=Math.min(500000,Math.max(1000,Number(options.maxFunctions)||350000));
+    const knowledgeLimit=Math.min(2048,Math.max(0,Number(options.knowledgeLimit ?? 512)));
     this.recognitionBusy=(async()=>{
-      const total=sym?.addrs?.length||0, count=Math.min(total,max), functions=[];
+      try { await this.ensureSwift(); } catch { /* Swift metadata is optional */ }
+      if(epoch!==this.backend.gen || sym!==this.symbols) return null;
+      const total=sym?.addrs?.length||0, count=Math.min(total,max), functions=new Array(count);
       for(let i=0;i<count;i++){
-        if(epoch!==this.backend.gen) return null;
+        if(epoch!==this.backend.gen || sym!==this.symbols) return null;
         const address=sym.addrs[i], name=sym.names?.[i]||null;
-        const objc=name&&/^[+-]\[([^ ]+)/.exec(name);
-        functions.push({address,name,size:0,objc:objc?{class:objc[1]}:{},strings:[],calls:[],imports:[],semantic:{writes:[],thresholds:[]},fieldAccessShape:[]});
+        const next=i+1<total?sym.addrs[i+1]:null;
+        const owner=this.fields?.ownerOf?.(address)||null;
+        const swiftName=name&&/^(.*)::method_(\d+)$/.exec(name);
+        functions[i]={
+          address,name,size:next!=null&&next>address?Number(next-address):0,
+          objc:owner?.className?{class:owner.className}:{},
+          swift:swiftName?{typeDescriptor:swiftName[1]}:{},
+          strings:[],calls:[],imports:[],semantic:{writes:[],thresholds:[]},fieldAccessShape:[],
+        };
         if((i&8191)===8191) await Promise.resolve();
       }
       const ranked=rankApplicationFunctions(functions,()=>({notKnownVendor:true}));
-      // Preserve obfuscated/unknown functions after application candidates instead of hiding them.
-      const records=ranked.map((x)=>({address:x.function.address,name:x.function.name||null,score:x.score,classification:x.classification.classification,confidence:x.classification.confidence,evidence:x.classification.evidence}));
-      const state={gen:sym.gen,records,total,scannedCount:count,complete:count===total,truncationReason:count===total?null:'function-budget',binaryHash:this.backend.contentHash||null,knowledge:this.knowledge};
-      if(epoch===this.backend.gen)this.recognition=state; return state;
+      const knowledgeCount=Math.min(knowledgeLimit,ranked.length);
+      let knowledgeMatches=0, knowledgeAmbiguous=0;
+      for(let i=0;i<knowledgeCount;i++){
+        if(epoch!==this.backend.gen || sym!==this.symbols) return null;
+        try {
+          const propagated=await this.knowledge.propagate(ranked[i].function,{threshold:0.84,ambiguityWindow:0.035});
+          if(propagated?.propagated){ranked[i].knowledge=propagated;knowledgeMatches++;}
+          else if(propagated?.ambiguous || propagated?.truncated) knowledgeAmbiguous++;
+        } catch { /* local knowledge must never block binary analysis */ }
+        if((i&63)===63) await Promise.resolve();
+      }
+      const records=ranked.map((x)=>{
+        const known=x.knowledge?.candidate||null;
+        return {
+          address:x.function.address,
+          name:known?.names?.[0]||x.function.name||null,
+          originalName:x.function.name||null,
+          score:x.score,classification:x.classification.classification,
+          confidence:x.classification.confidence,evidence:x.classification.evidence,
+          fingerprint:x.function,knowledge:known,knowledgeConfidence:x.knowledge?.confidence||0,
+          knowledgeSourceId:x.knowledge?.sourceId||null,
+        };
+      });
+      const state={
+        gen:sym.gen,records,total,scannedCount:count,complete:count===total,
+        truncationReason:count===total?null:'function-budget',binaryHash:this.backend.contentHash||null,
+        knowledge:this.knowledge,knowledgeScanned:knowledgeCount,knowledgeMatches,knowledgeAmbiguous,
+        knowledgeComplete:knowledgeCount===ranked.length,
+      };
+      if(epoch===this.backend.gen && sym===this.symbols)this.recognition=state;
+      return state;
     })().finally(()=>{this.recognitionBusy=null;});
     return this.recognitionBusy;
   }

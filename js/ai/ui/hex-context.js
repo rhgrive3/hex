@@ -94,6 +94,8 @@ export function createHexAIContext(app) {
     },
     get symbols() { return app.symbols; },
     get program() { return app.program; },
+    get knowledge() { return app.knowledge || null; },
+    get functions() { return (app.recognition?.records || []).map((item)=>item.fingerprint).filter(Boolean).slice(0,5000); },
     get strings() { return app.stringIndex || []; },
     get candidateFunctions() {
       const ranked=app.recognition?.records;
@@ -136,23 +138,36 @@ export function createHexAIContext(app) {
       return out;
     },
 
-    searchFunctions(query, options = {}) {
+    async searchFunctions(query, options = {}) {
       const limit = Math.max(1, Math.min(200, Number(options.limit) || 40));
+      const q = String(query || '').toLowerCase();
+      try { await app.ensureRecognition?.({maxFunctions:350000,knowledgeLimit:512}); } catch { /* fallback below */ }
+      const ranked=app.recognition?.records || [];
+      if(ranked.length){
+        const out=[]; let matches=0;
+        for(const item of ranked){
+          const name=String(item.name||item.originalName||'');
+          const cls=String(item.classification||'');
+          const knowledge=(item.knowledge?.names||[]).concat(item.knowledge?.roles||[]).join(' ');
+          if(q && !(`${name} ${cls} ${knowledge}`.toLowerCase().includes(q)))continue;
+          matches++; if(out.length<limit)out.push({addr:item.address,name:name||null,score:item.score||0,classification:item.classification,confidence:item.confidence,knowledge:item.knowledge||null});
+        }
+        out.complete=app.recognition.complete===true && matches<=limit;
+        out.scannedCount=app.recognition.scannedCount;out.total=app.recognition.total;out.matchCount=matches;
+        out.truncationReason=app.recognition.complete!==true?(app.recognition.truncationReason||'recognition-incomplete'):matches>limit?'result-limit':null;
+        out.coverage=app.recognition.total?app.recognition.scannedCount/app.recognition.total:1;
+        return out;
+      }
       const sym = app.symbols;
       if (!sym || !Array.isArray(sym.names)) return [];
-      const q = String(query || '').toLowerCase();
-      const maxScan=Math.min(sym.names.length,1_000_000), out=[];
-      let matches=0;
+      const maxScan=Math.min(sym.names.length,1_000_000), out=[]; let matches=0;
       for (let i = 0; i < maxScan; i++) {
         const name = String(sym.names[i] || '');
         if (q && !name.toLowerCase().includes(q)) continue;
-        matches++;
-        if(out.length<limit) out.push({ addr: sym.addrs[i], name });
+        matches++; if(out.length<limit) out.push({ addr: sym.addrs[i], name });
       }
-      out.complete=maxScan===sym.names.length && matches<=limit;
-      out.scannedCount=maxScan; out.total=sym.names.length; out.matchCount=matches;
-      out.truncationReason=maxScan<sym.names.length?'scan-budget':matches>limit?'result-limit':null;
-      out.coverage=sym.names.length?maxScan/sym.names.length:1;
+      out.complete=maxScan===sym.names.length && matches<=limit; out.scannedCount=maxScan;out.total=sym.names.length;out.matchCount=matches;
+      out.truncationReason=maxScan<sym.names.length?'scan-budget':matches>limit?'result-limit':null;out.coverage=sym.names.length?maxScan/sym.names.length:1;
       return out;
     },
 
@@ -172,6 +187,12 @@ export function createHexAIContext(app) {
         receiverType: String(receiverClass || ''), selector: String(selector || ''), classMethod: kind === 'class',
       });
       return { ...result, candidates: (result.candidates || []).slice(0, 32), requirements: (result.requirements || []).slice(0, 32) };
+    },
+
+    async resolveSwiftDispatch(call = {}) {
+      try { await app.ensureSwift?.(); } catch { /* Swift metadata is optional */ }
+      const result=app.resolveSwiftCall?.(call) || {resolved:null,candidates:[],confidence:0,reason:'swift-runtime-unavailable'};
+      return { ...result, candidates:(result?.candidates||[]).slice(0,32), requirements:(result?.requirements||[]).slice(0,32), complete:result?.complete!==false && app.swiftModel?.complete!==false };
     },
 
     pseudocodeFor(address, model) {
@@ -225,6 +246,9 @@ function pseudocode(app, model, addr, nameOf) {
     symbolFor: (a) => app.symbols?.nameAt?.(a) || null,
     objcModel: app.objcModel || null,
     objcRuntimeIndex: app.objcRuntime || null,
+    swiftModel: app.swiftModel || null,
+    swiftRuntimeIndex: app.swiftRuntime || null,
+    resolveSwiftDispatch: (call) => app.resolveSwiftCall?.(call) || null,
     notes: app.notes,
   });
 }
