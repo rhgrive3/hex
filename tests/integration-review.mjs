@@ -57,9 +57,10 @@ await test('unknown indexed memory never becomes a concrete field fact', () => {
   assert.ok(stores.length);
   assert.equal(stores[0].loc.kind, MK.UNKNOWN);
   const rmw = readModifyWrite(ir);
-  assert.equal(rmw.length,1);
-  assert.equal(rmw[0].location.kind, MK.UNKNOWN);
-  assert.ok(!semanticFacts(ir).some((f) => f.kind === FACT.RMW && f.location?.kind !== MK.UNKNOWN));
+  // Unknown/indexed addresses are may-alias only. Treating two such accesses as
+  // the same location fabricates an RMW proof (#358).
+  assert.equal(rmw.length,0);
+  assert.ok(!semanticFacts(ir).some((f) => f.kind === FACT.RMW));
 });
 
 await test('deterministic tools use Semantic IR evidence', async () => {

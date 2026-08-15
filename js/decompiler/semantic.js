@@ -209,7 +209,7 @@ export function reachingRegisterValue(ir, atInst, reg) {
   let best = ir.args?.get?.(reg) || null;
   let bestDepth = -1, bestRow = -Infinity;
   for (const v of ir.values || []) {
-    if (v.reg !== reg || !v.def || v.clobbered) continue;
+    if (v.reg !== reg || !v.def) continue;
     const d = v.def;
     if (d === atInst) continue;
     if (d.block === atInst.block) {
@@ -225,7 +225,7 @@ export function reachingRegisterValue(ir, atInst, reg) {
       best = v; bestDepth = depth; bestRow = d.row ?? -Infinity;
     }
   }
-  return best;
+  return best?.clobbered ? null : best;
 }
 
 function objcIvar(ctx, base, offset) {

@@ -119,7 +119,8 @@ export class RuntimeAnalysisPlatform {
     const requestedAddress = asAddress(functionAddress);
     const launchSpec = launchOptionsForTrace(requestedAddress,options);
     const operation = operationController(session,options.signal);
-    let observation = { stop:null, returnValue:null, branches:[] };
+    let observation = { stop:null, returnValue:null, branches:[] }, trace;
+    const started = Date.now();
     try {
       if (adapter.capabilities.launch) {
         await adapter.launch(launchSpec,{signal:operation.signal});
@@ -131,9 +132,13 @@ export class RuntimeAnalysisPlatform {
       if (adapter.capabilities.resume) {
         observation = await adapter.resume({ maxSteps:options.maxSteps ?? 20000, timeoutMs:options.timeoutMs, signal:operation.signal }) || observation;
       }
+      if (observation.trace) trace = observation.trace;
+      else {
+        if (!adapter.capabilities.traceFunction) throw new DebugAdapterError('unsupported','adapter does not provide function tracing');
+        const timeoutMs = options.timeoutMs == null ? undefined : Math.max(1, Number(options.timeoutMs) - (Date.now() - started));
+        trace = await adapter.trace({ limit:boundedInteger(options.limit,4096,1,50000,'limit'), timeoutMs, signal:operation.signal });
+      }
     } finally { operation.release(); }
-    if (!adapter.capabilities.traceFunction && !observation.trace) throw new DebugAdapterError('unsupported','adapter does not provide function tracing');
-    const trace = observation.trace || await adapter.trace({ limit:boundedInteger(options.limit,4096,1,50000,'limit') });
     for (const event of trace.events || []) session.acceptEvent(event);
     const facts = traceToSemanticFacts(trace,{sessionId:session.id,binaryHash:session.binaryHash,traceId:`fn:${requestedAddress.toString(16)}`});
     const replayable=isReplayable(adapter,observation,trace);

@@ -21,6 +21,13 @@ function resultAddress(row) {
   }
   return null;
 }
+function explicitFunctionAddress(row) {
+  if (!row) return null;
+  let a=asAddr(row.functionAddress); if (a != null) return a;
+  if (row.function && typeof row.function === 'object') a=asAddr(row.function.address ?? row.function.addr ?? row.function.start);
+  else a=asAddr(row.function);
+  return a;
+}
 
 function addCandidate(map, address, source, term, weight) {
   const addr = asAddr(address);
@@ -119,6 +126,8 @@ function budgetState(opts) {
     analyzedInstructions: 0,
     disassemblyExhausted: false,
     functionExhausted: false,
+    candidateTruncated: false,
+    candidateCount: 0,
     unaccountedToolCost: false,
     analysisAccountedExternally: !!(opts && opts.tools),
     controller,
@@ -213,7 +222,7 @@ async function lexicalCandidates(query, tools, ctx, b) {
     const ss = await invokeTool(tools, 'search_strings', b, term, { limit: b.maxSearchResults });
     if (expired(b)) break;
     for (const row of ss.results || []) {
-      const direct = resultAddress(row);
+      const direct = explicitFunctionAddress(row);
       if (direct != null) addCandidate(map, direct, 'string-reference', term, 8);
       const target = asAddr(row && (row.stringAddress != null ? row.stringAddress : row.target));
       if (target != null) {
@@ -242,7 +251,10 @@ async function expandCallNeighborhood(map, tools, b) {
 }
 
 async function analyzeCandidates(query, map, tools, b) {
-  const list = Array.from(map.values()).sort((a, b2) => b2.score - a.score).slice(0, b.maxFunctions);
+  const ordered = Array.from(map.values()).sort((a, b2) => b2.score - a.score);
+  b.candidateCount = ordered.length;
+  b.candidateTruncated = ordered.length > b.maxFunctions;
+  const list = ordered.slice(0, b.maxFunctions);
   const analyzed = [];
   for (const c of list) {
     if (expired(b)) break;
@@ -302,17 +314,18 @@ async function verifyBest(query, ranked, tools, b) {
       const thresholds = await invokeTool(tools, 'find_thresholds', b, c.address, {});
       if (expired(b)) break;
       if ((thresholds.results || []).length) {
-        c.verification = thresholds;
-        c.score += 20;
-        c.scoreComponents.evidenceScore += 20;
-        return c;
+        // A static threshold fact is useful semantic evidence, not causal/runtime
+        // verification. Keep it visible without occupying the proof slot (#386).
+        c.thresholdEvidence = thresholds;
+        c.score += 8;
+        c.scoreComponents.semanticScore += 8;
       }
     }
   }
   return ranked[0] || null;
 }
 
-function publicCandidate(c) {
+function publicCandidate(c, completeness = null) {
   if (!c) return null;
   return {
     address: c.address,
@@ -329,7 +342,10 @@ function publicCandidate(c) {
     semanticFacts: c.semantic || [],
     summary: c.summary || null,
     verification: c.verification || null,
+    thresholdEvidence: c.thresholdEvidence || null,
     evidence: Array.from(c.evidence || []),
+    complete: completeness ? completeness.complete === true : true,
+    budgetLimited: completeness ? completeness.budgetLimited === true : false,
   };
 }
 
@@ -383,22 +399,45 @@ export async function planAnalysisGoal(goalOrQuery, context, opts) {
     if (!best) missingEvidence.push('no-candidate-function');
     else if (!best.verification) missingEvidence.push('no-runtime-or-causal-verification');
     if (b.disassemblyExhausted) missingEvidence.push('disassembly-budget');
-    if (b.functionExhausted) missingEvidence.push('function-budget');
+    if (b.functionExhausted || b.candidateTruncated) missingEvidence.push('function-budget');
     if (b.unaccountedToolCost) missingEvidence.push('unaccounted-tool-cost');
     if (timedOut(b)) missingEvidence.push('timeout');
     if (cancelled(b)) missingEvidence.push('cancelled');
     if (query.confident === false) missingEvidence.push(...(query.missing || []));
 
+    const incomplete = expired(b) || b.candidateTruncated;
+    const budgetLimited = b.disassemblyExhausted || b.functionExhausted || b.candidateTruncated;
+    const candidateCount = candidates.size;
+    const analyzedCount = ranked.length;
+    const candidateCoverage = candidateCount === 0 ? 1 : Math.min(1, analyzedCount / candidateCount);
+    const reason = b.candidateTruncated || b.functionExhausted ? 'function-budget'
+      : b.disassemblyExhausted ? 'disassembly-budget'
+        : timedOut(b) ? 'timeout'
+          : cancelled(b) ? 'cancelled' : null;
+    const completeness = {
+      complete: !incomplete,
+      partial: incomplete,
+      budgetLimited,
+      reason,
+      candidateCoverage,
+      analyzedFunctions: analyzedCount,
+      candidateFunctions: candidateCount,
+      unanalyzedFunctions: Math.max(0, candidateCount - analyzedCount),
+    };
+
     return {
       query,
-      candidates: ranked.slice(0, Math.min(20, b.maxFunctions)).map(publicCandidate),
-      best: publicCandidate(best),
+      candidates: ranked.slice(0, Math.min(20, b.maxFunctions)).map((c) => publicCandidate(c, completeness)),
+      best: publicCandidate(best, completeness),
       evidence: Array.from(evidence),
       missingEvidence: Array.from(new Set(missingEvidence)),
-      exhausted: expired(b),
+      exhausted: incomplete,
+      partial: incomplete,
+      completeness,
       stats: {
-        analyzedFunctions: ranked.length,
-        candidateFunctions: candidates.size,
+        analyzedFunctions: analyzedCount,
+        candidateFunctions: candidateCount,
+        unanalyzedFunctions: Math.max(0, candidateCount - analyzedCount),
         disassembly: b.analyzedInstructions,
         elapsedMs: Date.now() - b.started,
       },

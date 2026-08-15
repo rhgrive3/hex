@@ -1,5 +1,6 @@
 import { expr, effectOf, isPure, mayDuplicate, mayReorder, sameExpr, nodeCount } from '../ast/nodes.js';
 import { evalBinary, evalUnary, fullMask, isPowerOfTwo, log2Exact, u } from '../truth/integer.js';
+import { normalizeIntegerValue, normalizeRangeDomain } from '../../range-domain.js';
 
 const isStable = (n) => ['pure', 'read'].includes(effectOf(n));
 const isConst = (n, v = null) => n?.kind === 'const' && (v == null || n.value === BigInt(v));
@@ -185,8 +186,14 @@ const rangeRules = [{
   name:'range-proven-compare', phase:'range',
   match:(n)=>{
     if (n?.kind!=='compare' || !n.left?.range || !isConst(n.right)) return null;
-    const r=n.left.range, c=n.right.value;
-    if (r.min==null || r.max==null) return null;
+    const source=n.left.range;
+    const bits=Number(n.left.bits || source.bits || 64);
+    const relational=!['eq','ne'].includes(n.op);
+    const compareSigned=relational ? n.compareSigned : (source.signed ?? n.compareSigned);
+    if (relational && compareSigned == null) return null;
+    const r=normalizeRangeDomain(source,bits,compareSigned);
+    if (!r) return null;
+    const c=normalizeIntegerValue(n.right.value,bits,compareSigned);
     let value=null;
     if (n.op==='eq' && (c<r.min || c>r.max)) value=0;
     else if (n.op==='ne' && (c<r.min || c>r.max)) value=1;
@@ -198,7 +205,11 @@ const rangeRules = [{
     else if (n.op==='gt' && r.max<=c) value=0;
     else if (n.op==='ge' && r.min>=c) value=1;
     else if (n.op==='ge' && r.max<c) value=0;
-    return value==null ? null : { value, range:{min:String(r.min),max:String(r.max)}, constant:String(c) };
+    return value==null ? null : {
+      value,
+      range:{min:String(r.min),max:String(r.max),bits:r.bits,signed:r.signed},
+      constant:String(c),
+    };
   },
   precondition:(n)=>isStable(n.left),
   rewrite:(n,m)=>c(m.value,n,1),
@@ -223,8 +234,14 @@ const selectRules = [{
   match: (n) => {
     if (n?.kind !== 'select' || n.condition?.kind !== 'compare') return null;
     const q = n.condition;
-    const ta = sameExpr(n.whenTrue, q.left), tb = sameExpr(n.whenTrue, q.right);
-    const fa = sameExpr(n.whenFalse, q.left), fb = sameExpr(n.whenFalse, q.right);
+    // Constant signedness/nominal width is metadata; select equivalence is over
+    // the result bitvector. This keeps WZR and #0 equivalent after width-aware
+    // operand reconstruction while retaining strict structural matching for
+    // non-constant expressions.
+    const sameArm = (a,b) => sameExpr(a,b) || (isConst(a) && isConst(b)
+      && BigInt.asUintN(Number(n.bits || q.left?.bits || 64), a.value) === BigInt.asUintN(Number(n.bits || q.left?.bits || 64), b.value));
+    const ta = sameArm(n.whenTrue, q.left), tb = sameArm(n.whenTrue, q.right);
+    const fa = sameArm(n.whenFalse, q.left), fb = sameArm(n.whenFalse, q.right);
     if (!(isStable(q.left) && isStable(q.right))) return null;
     if ((q.op === 'gt' || q.op === 'ge') && ta && fb) return { name: 'max' };
     if ((q.op === 'gt' || q.op === 'ge') && tb && fa) return { name: 'min' };
