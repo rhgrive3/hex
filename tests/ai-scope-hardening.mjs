@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { ScopeController } from '../js/ai/control/scope.js';
 import { assertLiveBindingsUnchanged, sessionMatchesSnapshot } from '../js/ai/control/runtime-support.js';
+import { selectToolWindow } from '../js/ai/control/tool-window.js';
 
 const snapshot = {
   binaryId: 'content:hash-a:0',
@@ -47,5 +48,23 @@ assert.equal(sessionMatchesSnapshot(persistedSession, { ...snapshot, runtimeSess
 const otherIdentity = { ...snapshot.binaryIdentity, id: 'content:hash-b:0', hash: 'hash-b' };
 assert.equal(sessionMatchesSnapshot({ ...persistedSession, binaryId: null }, snapshot), true);
 assert.equal(sessionMatchesSnapshot({ ...persistedSession, binaryId: null, binaryIdentity: otherIdentity }, snapshot), false);
+
+// Future ToolRegistry additions stay reachable without teaching the control
+// plane their names. Scope filtering happens before the rotating novel slots.
+const baseTools = ['get_current_function','get_selection_context','get_semantic_facts','trace_value','get_cfg','get_callers','get_callees']
+  .map((name) => ({ name, description: name, inputSchema: { type: 'object' }, scopeSupport: ['function'], cost: 'cheap' }));
+const novelTools = ['future_probe_a','future_probe_b','future_probe_c']
+  .map((name) => ({ name, description: name, inputSchema: { type: 'object' }, scopeSupport: ['function'], cost: 'cheap' }));
+const growingRegistry = {
+  definitionsForModel({ scope } = {}) {
+    return [...baseTools, ...novelTools].filter((tool) => scope === 'auto' || tool.scopeSupport.includes(scope));
+  },
+};
+const firstWindow = selectToolWindow(growingRegistry, { effectiveScope: 'function', intent: 'explain-current-function', maxTools: 8, observations: [] });
+assert.ok(firstWindow.tools.some((tool) => tool.name === 'future_probe_a'));
+assert.ok(firstWindow.tools.some((tool) => tool.name === 'future_probe_b'));
+const rotatedWindow = selectToolWindow(growingRegistry, { effectiveScope: 'function', intent: 'explain-current-function', maxTools: 8, observations: [{ tool: 'get_current_function' }, { tool: 'get_cfg' }] });
+assert.ok(rotatedWindow.tools.some((tool) => tool.name === 'future_probe_c'), 'new scope-valid tools rotate into the bounded model window');
+assert.ok(rotatedWindow.tools.length <= 8);
 
 console.log('ai-scope-hardening: PASS');
