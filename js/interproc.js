@@ -155,17 +155,7 @@ export function summarizeFunction(model, opts) {
   const oneReturn = returns.length === 1 ? returns[0] : null;
   const trustedReturn = oneReturn && oneReturn.trusted ? oneReturn : null;
 
-  // Pure leaf getters/arithmetic may use local structural evidence for local
-  // classification only. That never authorizes interprocedural propagation.
-  const structuralReturn = !!(
-    oneReturn && oneReturn.inferred && !oneReturn.trusted && calls.length === 0 &&
-    nonStackWrites.length === 0 && rmw.length === 0 && branches.length === 0 &&
-    unknownPointerStores.length === 0 &&
-    (oneReturn.kind === 'field' || oneReturn.kind === 'argument-arithmetic')
-  );
-  const classificationReturn = trustedReturn || (structuralReturn ? oneReturn : null);
-
-  const getter = !!(classificationReturn && classificationReturn.kind === 'field' && nonStackWrites.length === 0);
+  const getter = !!(trustedReturn && trustedReturn.kind === 'field' && nonStackWrites.length === 0);
   const setterFact = facts.find((f) => f.kind === FACT.WRITE && f.location && f.location.kind === 'field' &&
     f.value && f.value.origin && f.value.origin.kind === 'argument');
   const setter = !!(setterFact && nonStackWrites.length === 1);
@@ -196,12 +186,11 @@ export function summarizeFunction(model, opts) {
       setter,
       wrapper,
       forwarding,
-      simpleArithmeticWrapper: !!(classificationReturn && classificationReturn.kind === 'argument-arithmetic'),
+      simpleArithmeticWrapper: !!(trustedReturn && trustedReturn.kind === 'argument-arithmetic'),
       returnEvidence: !oneReturn ? 'none'
         : !oneReturn.inferred ? 'explicit'
           : oneReturn.trusted ? 'external'
-            : structuralReturn ? 'structural-side-effect-free-terminal-x0'
-              : 'inferred-terminal-x0',
+            : 'inferred-terminal-x0',
     },
     engine: 'semantic-ir',
     truncated: !!ir.truncated,
