@@ -16,7 +16,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      - name: Adapt patch to current RMW layout
+      - name: Adapt patch to current source layout
         run: |
           python3 - <<'PY'
           from pathlib import Path
@@ -25,7 +25,11 @@ jobs:
           start=s.index("# #407 — RMW proof")
           end=s.index("write(p, s)", start)+len("write(p, s)")
           replacement='''# #407 — RMW proof must use the exact Memory-SSA version read by the load.\np = 'js/ir-core.js'; s = read(p)\ns = replace_once(s, """    if (!load) continue;\n    out.push({""", """    if (!load) continue;\n    // Require the load to read the exact Memory-SSA version preceding this store.\n    if (store.memDef && load.memUse !== store.memDef.prev) continue;\n    out.push({""", '#407 memory version')\nwrite(p, s)'''
-          p.write_text(s[:start]+replacement+s[end:])
+          s=s[:start]+replacement+s[end:]
+          old='''s=replace_once(s, """  if (sub === 'sub') {""", insert + """  if (sub === 'sub') {""", '#419 fp expression')'''
+          new='''s=replace_once(s, """  if (!FLAG_SUBS.has(sub) || !CONDITIONS.has(cond) || !left || !right) return null;\n\n  if (sub === 'sub') {""", """  if (!FLAG_SUBS.has(sub) || !CONDITIONS.has(cond) || !left || !right) return null;\n\n""" + insert + """  if (sub === 'sub') {""", '#419 fp expression')'''
+          if old not in s: raise SystemExit('workflow adapter: #419 script anchor missing')
+          p.write_text(s.replace(old,new,1))
           PY
       - name: Apply fixes
         shell: bash
@@ -45,9 +49,13 @@ jobs:
           node --check js/decompiler/pipeline-core.js
           node --check js/decompiler/semantic.js
           node --check js/decompiler/flag-semantics.js
+          node --check js/decompiler/type-recovery.js
           node --check js/semantic-evidence.js
       - name: Batch regression
-        run: node tests/issues-lowest-20-20260815.mjs
+        shell: bash
+        run: |
+          set +e; node tests/issues-lowest-20-20260815.mjs > batch.log 2>&1; code=$?; cat batch.log
+          if [ "$code" -ne 0 ]; then message=$(tail -n 3 batch.log | tr '\n' ' ' | sed 's/%/%25/g; s/\r/%0D/g'); echo "::error title=Batch regression::$message"; exit "$code"; fi
       - name: Semantic suite
         run: npm run semantic:test
       - name: Decompiler suite
@@ -56,7 +64,7 @@ jobs:
         run: npm test
       - name: Commit verified changes
         run: |
-          rm -f .github/workflows/fix-lowest-20-bootstrap.yml .github/scripts/fix-lowest-20.py .github/retrigger-lowest-20 patch.log
+          rm -f .github/workflows/fix-lowest-20-bootstrap.yml .github/scripts/fix-lowest-20.py .github/retrigger-lowest-20 patch.log batch.log
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
