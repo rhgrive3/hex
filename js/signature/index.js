@@ -28,9 +28,16 @@ const LIBRARIES = [
 ];
 
 function textOf(value) { return typeof value === 'string' ? value : value?.name || value?.library || value?.text || ''; }
+function regexTest(rx, text) {
+  if (!(rx instanceof RegExp)) return false;
+  rx.lastIndex = 0;
+  const matched = rx.test(text);
+  rx.lastIndex = 0;
+  return matched;
+}
 function hits(values, regexes) {
   const out = [];
-  for (const value of values || []) { const s = textOf(value); if (s && regexes?.some((rx) => rx.test(s))) out.push(s); }
+  for (const value of values || []) { const s = textOf(value); if (s && regexes?.some((rx) => regexTest(rx, s))) out.push(s); }
   return [...new Set(out)].slice(0, 12);
 }
 export function recognizeLibraries(input = {}, signatures = LIBRARIES) {
@@ -40,7 +47,6 @@ export function recognizeLibraries(input = {}, signatures = LIBRARIES) {
     const libraryHits = hits(libraries, sig.libraries), symbolHits = hits(symbols, sig.symbols), stringHits = hits(strings, sig.strings || []);
     const kinds = Number(libraryHits.length > 0) + Number(symbolHits.length > 0) + Number(stringHits.length > 0);
     if (!kinds) continue;
-    // One exact framework/library path is strong evidence of presence, but still inferred.
     let confidence = libraryHits.length ? 0.82 : 0.52;
     if (symbolHits.length) confidence += 0.11;
     if (stringHits.length) confidence += 0.04;
@@ -62,58 +68,22 @@ export function recognizeLibraries(input = {}, signatures = LIBRARIES) {
     const evidence=[...hit.values].slice(0,12), evidenceKinds=[...hit.sources];
     let confidence = hit.sources.has('library') ? 0.82 : hit.sources.has('symbol') ? (evidence.length >= 2 ? 0.68 : 0.56) : (evidence.length >= 2 ? 0.56 : 0.46);
     if (hit.sources.size >= 2) confidence += 0.08;
-    confidence = Math.min(0.92, confidence);
-    results.push({ name, library:name, classification:hit.kind==='library'?'LIBRARY':'SDK', kind:hit.kind, confidence, confirmed:false, evidence, evidenceKinds });
+    results.push({ name, library:name, classification:hit.kind==='library'?'LIBRARY':'SDK', kind:hit.kind, confidence:Math.min(0.92, confidence), confirmed:false, evidence, evidenceKinds });
   }
   return results.sort((a,b) => b.confidence - a.confidence);
 }
 
 function clamp(value) { return Math.max(0, Math.min(1, Number(value) || 0)); }
 function normalizeSignatureEntry(entry = {}, pack = {}) {
-  return {
-    architecture: entry.architecture || pack.architecture || 'any',
-    compiler: entry.compiler ?? pack.compiler ?? null,
-    library: entry.library ?? pack.library ?? null,
-    version: entry.version ?? pack.libraryVersion ?? null,
-    fingerprint: entry.fingerprint || null,
-    symbols: Array.isArray(entry.symbols) ? [...new Set(entry.symbols.map(String))] : [],
-    provenance: entry.provenance || pack.provenance || { source:'local', author:null },
-    license: entry.license || pack.license || 'unspecified',
-    confidence: clamp(entry.confidence ?? pack.confidence ?? 1),
-    classification: entry.classification || null,
-    name: entry.name || entry.symbol || null,
-  };
+  return { architecture: entry.architecture || pack.architecture || 'any', compiler: entry.compiler ?? pack.compiler ?? null, library: entry.library ?? pack.library ?? null, version: entry.version ?? pack.libraryVersion ?? null, fingerprint: entry.fingerprint || null, symbols: Array.isArray(entry.symbols) ? [...new Set(entry.symbols.map(String))] : [], provenance: entry.provenance || pack.provenance || { source:'local', author:null }, license: entry.license || pack.license || 'unspecified', confidence: clamp(entry.confidence ?? pack.confidence ?? 1), classification: entry.classification || null, name: entry.name || entry.symbol || null };
 }
 function normalizeMappingEntry(entry = {}, pack = {}) {
-  return {
-    identity: entry.identity || entry.identityKey || null,
-    name: entry.name || null,
-    roles: Array.isArray(entry.roles) ? [...new Set(entry.roles.map(String))] : [],
-    types: Array.isArray(entry.types) ? [...new Set(entry.types.map(String))] : [],
-    comments: Array.isArray(entry.comments) ? [...new Set(entry.comments.map(String))] : [],
-    semanticLabels: Array.isArray(entry.semanticLabels) ? [...new Set(entry.semanticLabels.map(String))] : [],
-    confirmation: entry.confirmation || 'weak-inferred',
-    negative: entry.negative === true,
-    provenance: entry.provenance || pack.provenance || { source:'local', author:null },
-    license: entry.license || pack.license || 'unspecified',
-    confidence: clamp(entry.confidence ?? pack.confidence ?? 1),
-  };
+  return { identity: entry.identity || entry.identityKey || null, name: entry.name || null, roles: Array.isArray(entry.roles) ? [...new Set(entry.roles.map(String))] : [], types: Array.isArray(entry.types) ? [...new Set(entry.types.map(String))] : [], comments: Array.isArray(entry.comments) ? [...new Set(entry.comments.map(String))] : [], semanticLabels: Array.isArray(entry.semanticLabels) ? [...new Set(entry.semanticLabels.map(String))] : [], confirmation: entry.confirmation || 'weak-inferred', negative: entry.negative === true, provenance: entry.provenance || pack.provenance || { source:'local', author:null }, license: entry.license || pack.license || 'unspecified', confidence: clamp(entry.confidence ?? pack.confidence ?? 1) };
 }
 
 export function createKnowledgePack(input = {}) {
-  const metadata = {
-    architecture: input.architecture || 'any', compiler: input.compiler || null,
-    library: input.library || null, libraryVersion: input.libraryVersion || null,
-    provenance: input.provenance || { source:'local', author:null }, license: input.license || 'unspecified',
-    confidence: clamp(input.confidence ?? 1),
-  };
-  return {
-    format: SIGNATURE_PACK_FORMAT, version: SIGNATURE_PACK_VERSION,
-    createdAt: input.createdAt || new Date().toISOString(),
-    ...metadata,
-    signatures: Array.isArray(input.signatures) ? input.signatures.map((entry) => normalizeSignatureEntry(entry, metadata)) : [],
-    mappings: Array.isArray(input.mappings) ? input.mappings.map((entry) => normalizeMappingEntry(entry, metadata)) : [],
-  };
+  const metadata = { architecture: input.architecture || 'any', compiler: input.compiler || null, library: input.library || null, libraryVersion: input.libraryVersion || null, provenance: input.provenance || { source:'local', author:null }, license: input.license || 'unspecified', confidence: clamp(input.confidence ?? 1) };
+  return { format: SIGNATURE_PACK_FORMAT, version: SIGNATURE_PACK_VERSION, createdAt: input.createdAt || new Date().toISOString(), ...metadata, signatures: Array.isArray(input.signatures) ? input.signatures.map((entry) => normalizeSignatureEntry(entry, metadata)) : [], mappings: Array.isArray(input.mappings) ? input.mappings.map((entry) => normalizeMappingEntry(entry, metadata)) : [] };
 }
 export function validateKnowledgePack(pack) {
   try {
@@ -134,13 +104,14 @@ export function validateKnowledgePack(pack) {
       if (!(entry.confidence >= 0 && entry.confidence <= 1)) throw new Error('mapping confidence must be in [0,1]');
       if (!entry.provenance || typeof entry.provenance !== 'object') throw new Error('mapping provenance is required');
       if (typeof entry.license !== 'string' || !entry.license) throw new Error('mapping license is required');
+      const identity = typeof entry.identity === 'string' ? entry.identity.trim() : '';
+      const name = typeof entry.name === 'string' ? entry.name.trim() : '';
+      if (!identity && !name) throw new Error('mapping requires a stable identity or non-empty name');
+      if (entry.identity != null && typeof entry.identity !== 'string') throw new Error('mapping identity must be a string');
+      if (entry.name != null && typeof entry.name !== 'string') throw new Error('mapping name must be a string');
     }
     return { ok:true, pack };
   } catch (error) { return { ok:false, error:error.message }; }
 }
-export function importKnowledgePack(value) {
-  let parsed = value;
-  if (typeof value === 'string') { try { parsed = JSON.parse(value); } catch (error) { return { ok:false, error:'malformed knowledge pack JSON: ' + error.message }; } }
-  return validateKnowledgePack(parsed);
-}
+export function importKnowledgePack(value) { let parsed = value; if (typeof value === 'string') { try { parsed = JSON.parse(value); } catch (error) { return { ok:false, error:'malformed knowledge pack JSON: ' + error.message }; } } return validateKnowledgePack(parsed); }
 export const BUILTIN_LIBRARY_SIGNATURES = Object.freeze(LIBRARIES.slice());

@@ -25,7 +25,6 @@ export class FunctionMatchIndex {
     const selected = tokenBuckets.slice(0, Math.min(6, tokenBuckets.length));
     for (let rank = 0; rank < selected.length; rank++) {
       const { bucket } = selected[rank]; const scan = Math.min(bucket.length, maxBucketScan);
-      // For huge, low-information buckets, deterministic spread sampling avoids O(N) probes.
       const step = bucket.length > scan ? bucket.length / scan : 1;
       for (let k = 0; k < scan; k++) {
         const idx = bucket[Math.min(bucket.length - 1, Math.floor(k * step))];
@@ -68,8 +67,6 @@ export function matchFunctions(beforeFunctions, afterFunctions, options = {}) {
       all.push({ i, j, ...cmp, baseConfidence: cmp.confidence });
     }
   }
-  // Anchor only unique, very strong matches before contextual refinement.
-  // Ambiguous strong candidates are deliberately excluded to prevent graph feedback loops.
   const anchors = new Map();
   const byBefore = new Map(); const byAfter = new Map();
   for (const c of all) {
@@ -100,11 +97,24 @@ export function matchFunctions(beforeFunctions, afterFunctions, options = {}) {
     return false;
   });
   eligible.sort((a, b) => b.confidence - a.confidence || b.baseConfidence - a.baseConfidence || a.i - b.i || a.j - b.j);
+
+  // Preserve the candidate distribution before greedy one-to-one assignment.
+  // A candidate claimed by another function is still evidence that the source
+  // function was ambiguous and must not disappear from the ambiguity report.
+  const choicesByBefore = new Map();
+  for (const candidate of eligible) {
+    let choices = choicesByBefore.get(candidate.i);
+    if (!choices) choicesByBefore.set(candidate.i, choices = []);
+    choices.push(candidate);
+  }
+
   const usedBefore = new Set(), usedAfter = new Set(), matches = [];
   for (const c of eligible) {
     if (usedBefore.has(c.i) || usedAfter.has(c.j)) continue;
-    const alternatives = eligible.filter((x) => x.i === c.i && x.j !== c.j && !usedAfter.has(x.j) && c.confidence - x.confidence <= ambiguityWindow)
-      .slice(0, 4).map((x) => ({ index: x.j, address: after[x.j].address, confidence: x.confidence, identity: x.identity, reasons: x.reasons }));
+    const alternatives = (choicesByBefore.get(c.i) || [])
+      .filter((x) => x.j !== c.j && c.confidence - x.confidence <= ambiguityWindow)
+      .slice(0, 4)
+      .map((x) => ({ index: x.j, address: after[x.j].address, confidence: x.confidence, identity: x.identity, reasons: x.reasons }));
     const ambiguous = alternatives.length > 0;
     matches.push({ before: before[c.i], after: after[c.j], confidence: c.confidence, identity: c.identity, reasons: c.reasons, evidence: c.evidence, ambiguous, candidates: alternatives });
     usedBefore.add(c.i); usedAfter.add(c.j);
@@ -114,7 +124,6 @@ export function matchFunctions(beforeFunctions, afterFunctions, options = {}) {
   const added = after.filter((_x, i) => !usedAfter.has(i));
   return { matches, deleted, new: added, candidatesEvaluated: all.length, indexBuckets: index.buckets.size };
 }
-
 
 export function matchFunctionsFast(beforeFunctions, afterFunctions, options = {}) {
   return matchFunctions(beforeFunctions, afterFunctions, { ...options, mode:'fast', neighborhoodIterations:0 });
@@ -133,7 +142,6 @@ export function recognitionMetrics(expectedPairs, result) {
     ambiguousRate: result.matches?.length ? result.matches.filter((x) => x.ambiguous).length / result.matches.length : 0,
   };
 }
-
 
 export function calibrationReport(expectedPairs, result, options = {}) {
   const bins = Math.max(2, Math.min(50, Number(options.bins) || 10));
