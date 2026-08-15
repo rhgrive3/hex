@@ -12,19 +12,10 @@ import { pick } from './i18n.js';
 import { buildSemanticModel, attachTexts } from './blocks.js';
 import { LRU } from './lru.js';
 
-const MAX_INSTRUCTIONS = 40000;   // これ以上大きい関数は途中で切り上げる
-const MAX_MODEL_ROWS = 6000;      // Semantic Model を作る上限（表示は上限なしで続く）
-/*
- * 文字列を読みにいくアドレスの上限。
- *
- * 24 本だったころ、計算式を日本語で書き残している関数（参照 31 本）で
- * 後半の 7 本が黙って落ちていた。落ちるのは決まって関数の後半 —
- * つまり「最後に何をして終わるのか」の手がかりから先に消えていた。
- * 1 本読むのは worker への 1 往復なので、この程度なら開いた瞬間に終わる。
- */
+const MAX_INSTRUCTIONS = 40000;
+const MAX_MODEL_ROWS = 6000;
 const MODEL_TEXTS = 96;
 
-/** 命令の「書き込み先」がオペランドの何番目か。書き込まないものは -1。 */
 function destIndex(mn) {
   const b = mn.toLowerCase();
   if (/^(str|stp|stur|strb|strh|sturb|sturh|stnp|st1|st2|st3|st4|stlr)/.test(b)) return -1;
@@ -33,26 +24,15 @@ function destIndex(mn) {
   return 0;
 }
 
-/** そのオペランドが読んでいる汎用レジスタ番号を集める。 */
 function readRegs(op, into) {
   if (!op) return;
-  if (op.k === 'reg' && (op.cls === 'gp')) into.add(op.num);
+  if (op.k === 'reg' && op.cls === 'gp') into.add(op.num);
   else if (op.k === 'mem') {
     if (op.base && op.base.cls === 'gp') into.add(op.base.num);
     if (op.index && op.index.cls === 'gp') into.add(op.index.num);
   }
 }
 
-/**
- * 関数を解析する。
- *
- * @param {object} backend
- * @param {object} region  今のセクション
- * @param {number} startRow 関数の先頭の行番号
- * @param {number} endRow   関数の最後の行番号（含む）
- * @param {object} symbols  SymbolIndex
- * @param {function} onProgress
- */
 export async function analyzeFunction(backend, region, startRow, endRow, symbols, onProgress) {
   const rows = Math.min(endRow - startRow + 1, MAX_INSTRUCTIONS);
   const truncated = endRow - startRow + 1 > MAX_INSTRUCTIONS;
@@ -62,40 +42,21 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
     startRow, endRow: end, truncated,
     startAddr: region.vmAddr + BigInt(startRow) * 4n,
     endAddr: region.vmAddr + BigInt(end) * 4n,
-    instructions: 0,
-    dataRows: 0,
-    frameBytes: 0,
-    savesLr: false,
-    savesCallee: [],
-    calls: [],            // {addr, name, row}
-    indirectCalls: 0,
-    loops: [],            // {from, to}
-    condBranches: 0,
-    returns: 0,
-    loads: 0,
-    stores: 0,
-    stackAccess: 0,
-    argRegs: [],
-    setsReturnValue: false,
-    usesFloat: false,
-    usesSimd: false,
-    usesAtomic: false,
-    hasPac: false,
-    hasTrap: false,
-    stringRefs: [],       // {row, addr}
+    instructions: 0, dataRows: 0, frameBytes: 0,
+    savesLr: false, savesCallee: [], calls: [], indirectCalls: 0,
+    loops: [], condBranches: 0, returns: 0, loads: 0, stores: 0,
+    stackAccess: 0, argRegs: [], setsReturnValue: false,
+    usesFloat: false, usesSimd: false, usesAtomic: false,
+    hasPac: false, hasTrap: false, stringRefs: [],
   };
 
   const written = new Set();
   const argsRead = new Set();
   const calleeSaved = new Set();
   let lastX0Write = -1;
-
-  // Semantic Model の材料。既存の走査に相乗りするので、二度読みは起きない。
   const rawInsns = [];
-
   const first = Math.floor(startRow / CHUNK_ROWS);
   const last = Math.floor(end / CHUNK_ROWS);
-  // adrp のページを覚えておいて、続く add/ldr と組にする
   const pageOf = new Map();
 
   for (let c = first; c <= last; c++) {
@@ -112,10 +73,8 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
       if (!mn) continue;
       const addr = region.vmAddr + BigInt(row) * 4n;
       const b = mn.toLowerCase();
-
       if (rawInsns.length < MAX_MODEL_ROWS) rawInsns.push({ row, address: addr, mn, ops: opsStr });
-
-      if (b.charCodeAt(0) === 46) { res.dataRows++; continue; }   // .byte
+      if (b.charCodeAt(0) === 46) { res.dataRows++; continue; }
       res.instructions++;
 
       const ops = parseOperands(opsStr);
@@ -128,24 +87,20 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
       if (catg === 'load') res.loads++;
       if (catg === 'store') res.stores++;
 
-      // 引数レジスタ: 書き込まれる前に読まれていれば「受け取っている」
       const di = destIndex(mn);
+      const destReg = di >= 0 && ops[di]?.k === 'reg' && ops[di]?.cls === 'gp' ? ops[di].num : null;
       const reads = new Set();
       for (let i = 0; i < ops.length; i++) {
         if (i === di && ops[i].k === 'reg') continue;
         readRegs(ops[i], reads);
       }
-      // 書き込みつきのメモリ参照は、ベースレジスタも読んでいる
       for (const op of ops) if (op.k === 'mem') readRegs(op, reads);
-      for (const r of reads) {
-        if (r <= 7 && !written.has(r)) argsRead.add(r);
-      }
-      if (di >= 0 && ops[di] && ops[di].k === 'reg' && ops[di].cls === 'gp') {
-        written.add(ops[di].num);
-        if (ops[di].num === 0) { lastX0Write = row; }
+      for (const r of reads) if (r <= 7 && !written.has(r)) argsRead.add(r);
+      if (destReg != null) {
+        written.add(destReg);
+        if (destReg === 0) lastX0Write = row;
       }
 
-      // スタックフレーム
       if (b === 'sub' && ops[0] && ops[0].cls === 'sp' && ops[2] && ops[2].k === 'imm' && ops[2].value != null) {
         res.frameBytes += Number(ops[2].value);
       }
@@ -153,9 +108,7 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
         const mem = ops.find((x) => x.k === 'mem');
         if (mem && mem.base && mem.base.cls === 'sp') {
           res.stackAccess++;
-          if (mem.mode === 'pre' && mem.disp && mem.disp.value != null && mem.disp.value < 0n) {
-            res.frameBytes += Number(-mem.disp.value);
-          }
+          if (mem.mode === 'pre' && mem.disp && mem.disp.value != null && mem.disp.value < 0n) res.frameBytes += Number(-mem.disp.value);
         }
       }
       if (b === 'ldr' || b === 'ldp' || b === 'ldur') {
@@ -169,17 +122,11 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
         }
       }
 
-      // 呼び出し・分岐・戻り
       if (isCall(b)) {
         if (b === 'bl') {
           const t = referenceTarget(b, opsStr);
-          res.calls.push({
-            row, addr, target: t,
-            name: t != null && symbols ? symbols.nameAt(t) || symbols.label(t) : null,
-          });
-        } else {
-          res.indirectCalls++;
-        }
+          res.calls.push({ row, addr, target: t, name: t != null && symbols ? symbols.nameAt(t) || symbols.label(t) : null });
+        } else res.indirectCalls++;
       } else if (isReturn(b)) {
         res.returns++;
       } else if (/^b\./.test(b) || b === 'cbz' || b === 'cbnz' || b === 'tbz' || b === 'tbnz') {
@@ -191,30 +138,34 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
         if (t != null && t <= addr) res.loops.push({ from: addr, to: t });
       }
 
-      // adrp + add で作られたアドレス（文字列参照の候補）
-      if (b === 'adrp' && ops[0] && ops[0].k === 'reg' && ops[1] && ops[1].value != null) {
-        pageOf.set(ops[0].num, { value: ops[1].value, row });
-      } else if ((b === 'add' || b === 'ldr') && ops[0] && ops[0].k === 'reg') {
+      // Consume the previous ADRP fact before invalidating a destination. This
+      // preserves the canonical `adrp x8; add x8,x8,#imm` pair, but any later
+      // overwrite of x8 kills the stale page instead of manufacturing a ref.
+      let nextPage = null;
+      if (b === 'adrp' && destReg != null && ops[1] && ops[1].value != null) {
+        nextPage = { reg: destReg, value: ops[1].value, row };
+      } else if (b === 'add') {
         const src = ops[1];
-        const imm = ops[2] || (ops[1] && ops[1].k === 'mem' ? null : null);
-        if (b === 'add' && src && src.k === 'reg' && imm && imm.k === 'imm' && imm.value != null) {
+        const imm = ops[2];
+        if (src?.k === 'reg' && imm?.k === 'imm' && imm.value != null) {
           const p = pageOf.get(src.num);
           if (p && row - p.row <= 8) res.stringRefs.push({ row, addr: p.value + imm.value });
-        } else if (b === 'ldr') {
-          const mem = ops.find((x) => x.k === 'mem');
-          if (mem && mem.base && mem.disp && mem.disp.value != null) {
-            const p = pageOf.get(mem.base.num);
-            if (p && row - p.row <= 8) res.stringRefs.push({ row, addr: p.value + mem.disp.value, load: true });
-          }
+        }
+      } else if (b === 'ldr') {
+        const mem = ops.find((x) => x.k === 'mem');
+        if (mem?.base && mem.disp?.value != null) {
+          const p = pageOf.get(mem.base.num);
+          if (p && row - p.row <= 8) res.stringRefs.push({ row, addr: p.value + mem.disp.value, load: true });
         }
       }
+      if (destReg != null) pageOf.delete(destReg);
+      if (nextPage) pageOf.set(nextPage.reg, { value: nextPage.value, row: nextPage.row });
     }
   }
 
   res.argRegs = Array.from(argsRead).sort((a, b) => a - b);
   res.savesCallee = Array.from(calleeSaved).sort((a, b) => a - b);
   res.setsReturnValue = lastX0Write >= 0;
-  // 同じ行を二重に数えないよう、ループはまとめる
   const seen = new Set();
   res.loops = res.loops.filter((l) => {
     const k = l.from + ':' + l.to;
@@ -223,15 +174,9 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
     return true;
   });
 
-  /*
-   * Semantic Model（意味の層）。
-   * 上のループで集めた命令をそのまま渡すだけなので、逆アセンブルもチャンク読みも
-   * 二重には走らない。ここは純粋な計算で、DOM にも worker にも触らない。
-   */
   const name = symbols && symbols.nameAt ? symbols.nameAt(res.startAddr) : null;
   res.model = buildSemanticModel(rawInsns, {
-    startRow, endRow: end,
-    name,
+    startRow, endRow: end, name,
     symbolFor: (a) => (symbols ? (symbols.nameAt(a) || null) : null),
     rowOfAddress: (a) => {
       if (a == null) return null;
@@ -243,66 +188,37 @@ export async function analyzeFunction(backend, region, startRow, endRow, symbols
   return res;
 }
 
-/* ── 関数単位のキャッシュ ─────────────────────────────────────
-   同じ関数を何度も解析しない。スクロールでは絶対に走らせない。
-   （Viewer → 解析、ではなく 解析 → キャッシュ → Viewer の向きを守る） */
-
 const CACHE_MAX = 24;
 const cache = new LRU(CACHE_MAX);
 
-function cacheKey(region, startRow, symbols) {
-  return (symbols && symbols.gen != null ? symbols.gen : 0) + ':' + region.id + '#' + startRow;
+function cacheKey(region, startRow, endRow, symbols) {
+  const symbolGen = symbols && symbols.gen != null ? symbols.gen : 0;
+  const regionRevision = region?.revision ?? region?.gen ?? region?.generation ?? 0;
+  return [symbolGen, region?.id, String(region?.vmAddr ?? ''), String(region?.size ?? ''), regionRevision, startRow, endRow].join(':');
 }
 
-/** キャッシュを捨てる（ファイルやスライスを開き直したとき）。 */
 export function clearAnalysisCache() { cache.clear(); }
 
-/**
- * analyzeFunction のキャッシュつき版。参照している文字列も、上限つきで読み込む。
- *
- * @param {object} backend
- * @param {object} region
- * @param {number} startRow
- * @param {number} endRow
- * @param {object} symbols
- * @param {function} onProgress
- * @param {object} [opts] { texts: false で文字列の読み込みを省く }
- */
 export async function analyzeFunctionCached(backend, region, startRow, endRow, symbols, onProgress, opts) {
-  const key = cacheKey(region, startRow, symbols);
+  const key = cacheKey(region, startRow, endRow, symbols);
   const wantTexts = !opts || opts.texts !== false;
   const hit = cache.get(key);
   if (hit) {
     if (onProgress) onProgress(1);
-    /*
-     * 自動解析は速さのために文字列を読まずにキャッシュすることがある。
-     * あとから「文字列も込みで」求められたら、そのときに読んで足す。
-     * （文字列の欠けたモデルを、そうと知らずに使い回さないため）
-     */
     if (wantTexts && !hit.textsResolved) {
-      try {
-        await resolveModelTexts(backend, hit.model);
-        hit.textsResolved = true;
-      } catch { /* 読めなくても解析結果は返す */ }
+      try { await resolveModelTexts(backend, hit.model); hit.textsResolved = true; } catch { /* keep analysis */ }
     }
     return hit;
   }
   const res = await analyzeFunction(backend, region, startRow, endRow, symbols, onProgress);
   res.textsResolved = false;
   if (wantTexts) {
-    try {
-      await resolveModelTexts(backend, res.model);
-      res.textsResolved = true;
-    } catch { /* 読めなくても解析結果は返す */ }
+    try { await resolveModelTexts(backend, res.model); res.textsResolved = true; } catch { /* keep analysis */ }
   }
   cache.set(key, res);
   return res;
 }
 
-/**
- * モデルが指しているアドレスの中身を読んで、文字列なら流し込む。
- * 読み取りは worker 側なので、UI スレッドは待つだけ。
- */
 export async function resolveModelTexts(backend, model, limit = MODEL_TEXTS) {
   if (!model || !backend || !model.addressRefs.length) return model;
   const wanted = [];
@@ -316,15 +232,7 @@ export async function resolveModelTexts(backend, model, limit = MODEL_TEXTS) {
   }
   const texts = new Map();
   const indirect = new Set();
-  const got = await Promise.all(wanted.map((a) =>
-    backend.readAt(a, 120, true).catch(() => null)));
-
-  /*
-   * そこに文字列がなければ、「文字列を指しているポインタ」かもしれない。
-   * Objective-C のメソッド名（__objc_selrefs → __objc_methname）がこの形なので、
-   * ここを 1 段たどれるかどうかで「何というメソッドを呼んでいるか」が分かる。
-   * iOS アプリの動作はほとんど objc_msgSend なので、効き目が大きい。
-   */
+  const got = await Promise.all(wanted.map((a) => backend.readAt(a, 120, true).catch(() => null)));
   const deref = [];
   got.forEach((g, i) => {
     if (looksLikeText(g)) { texts.set(wanted[i].toString(), g.text); return; }
@@ -332,8 +240,7 @@ export async function resolveModelTexts(backend, model, limit = MODEL_TEXTS) {
   });
   if (deref.length) {
     const ptrs = deref.map((d) => pointerAt(d.bytes));
-    const got2 = await Promise.all(ptrs.map((ptr) =>
-      (ptr == null ? Promise.resolve(null) : backend.readAt(ptr, 120, true).catch(() => null))));
+    const got2 = await Promise.all(ptrs.map((ptr) => ptr == null ? Promise.resolve(null) : backend.readAt(ptr, 120, true).catch(() => null)));
     got2.forEach((g, k) => {
       if (!looksLikeText(g)) return;
       const key = wanted[deref[k].i].toString();
@@ -344,32 +251,13 @@ export async function resolveModelTexts(backend, model, limit = MODEL_TEXTS) {
   return attachTexts(model, texts, indirect);
 }
 
-/**
- * そこに本当に文字列が置いてあるか。
- *
- * ここを「1 バイトでも読める文字なら文字列」にしていたころ、
- * `_OBJC_IVAR_$_C._field` に入っている **ずらし幅 0x20** が、
- * 0x20 ＝ 空白 1 文字の文字列として拾われていた。
- * すると「メモリから読んだ値」だったものが「文字列」に化けてしまい、
- * その値を使ってフィールドを名指ししていた解析（アクセサの判定）が
- * まるごと外れる。実際、これで数百本のアクセサが「何をしているか不明」になっていた。
- *
- * 本物の文字列は、終端まで読めて、2 文字以上あって、文字か数字を含む。
- */
 function looksLikeText(g) {
   if (!g || !g.found || !g.text) return false;
-  if (!g.terminated) return false;                 // 120 バイト以内に終端が無い＝文字列ではない
+  if (!g.terminated) return false;
   if (g.text.length < 2) return false;
   return /[\p{L}\p{N}]/u.test(g.text);
 }
 
-/**
- * 8 バイトをアドレスとして読む。
- *
- * 最近の Mach-O はポインタをそのまま持たず、起動時に埋める形（chained fixups）で
- * 書いてあることがある。上位ビットに印が入るので、素直に読めなければ下位だけを見る。
- * どちらでもなければ null（読めないものを読めたことにしない）。
- */
 function pointerAt(bytes) {
   let v = 0n;
   for (let i = 7; i >= 0; i--) v = (v << 8n) | BigInt(bytes[i]);
@@ -378,9 +266,6 @@ function pointerAt(bytes) {
   return v & 0x0000000fffffffffn;
 }
 
-/* ── 要約を日本語の文にする ─────────────────────────────── */
-
-/** 呼び出している関数の名前から、何をしていそうかを一言で推測する。 */
 const HINTS = [
   [/malloc|calloc|realloc|operator new|_Znwm/i, 'メモリを確保'],
   [/free|operator delete|_ZdlPv/i, 'メモリを解放'],
@@ -411,22 +296,16 @@ export function guessPurpose(calls) {
   const hits = [];
   for (const c of calls) {
     if (!c.name) continue;
-    for (const [re, label] of HINTS) {
-      if (re.test(c.name) && !hits.includes(label)) hits.push(label);
-    }
+    for (const [re, label] of HINTS) if (re.test(c.name) && !hits.includes(label)) hits.push(label);
   }
   return hits;
 }
 
-/** 解析結果から、日本語のあらすじを組み立てる。 */
 export function describeFunction(res, name) {
   const lines = [];
   const ja = pick(true, false);
-
   const who = name ? '「' + name + '」' : 'この関数';
-
   if (!ja) {
-    // English summary
     lines.push(`${name || 'This function'} spans ${res.instructions} instructions.`);
     if (res.savesLr) lines.push('It saves the return address, so it calls other functions.');
     else lines.push('It never saves the return address — a leaf function that calls nothing.');
@@ -434,88 +313,41 @@ export function describeFunction(res, name) {
     if (res.calls.length) lines.push('It calls: ' + res.calls.slice(0, 8).map((c) => c.name || '0x' + c.target?.toString(16)).join(', '));
     return lines;
   }
+  if (res.instructions <= 6) lines.push(who + 'はとても短く、命令は ' + res.instructions + ' 個だけです。値をそのまま返すだけ、といった小さな処理でしょう。');
+  else if (res.instructions < 60) lines.push(who + 'は命令 ' + res.instructions + ' 個。ひと目で追える大きさです。');
+  else if (res.instructions < 400) lines.push(who + 'は命令 ' + res.instructions + ' 個。それなりの処理をしています。');
+  else lines.push(who + 'は命令 ' + res.instructions + ' 個もあります。大きな処理か、コンパイラが他の関数を取り込んだ結果でしょう。');
 
-  /* 1. 大きさ */
-  if (res.instructions <= 6) {
-    lines.push(who + 'はとても短く、命令は ' + res.instructions + ' 個だけです。値をそのまま返すだけ、といった小さな処理でしょう。');
-  } else if (res.instructions < 60) {
-    lines.push(who + 'は命令 ' + res.instructions + ' 個。ひと目で追える大きさです。');
-  } else if (res.instructions < 400) {
-    lines.push(who + 'は命令 ' + res.instructions + ' 個。それなりの処理をしています。');
-  } else {
-    lines.push(who + 'は命令 ' + res.instructions + ' 個もあります。大きな処理か、コンパイラが他の関数を取り込んだ結果でしょう。');
-  }
-
-  /* 2. 他の関数を呼ぶか */
   if (res.savesLr || res.calls.length || res.indirectCalls) {
     if (res.calls.length) {
       const named = res.calls.filter((c) => c.name);
       if (named.length) {
         const list = [];
         for (const c of named) if (!list.includes(c.name)) list.push(c.name);
-        lines.push('中で ' + list.slice(0, 6).map((n) => '「' + n + '」').join('、') +
-          (list.length > 6 ? ' などあわせて ' + list.length + ' 種類' : '') + ' を呼んでいます。');
-      } else {
-        lines.push(res.calls.length + ' 回、別の関数を呼んでいます（名前の情報は残っていません）。');
-      }
+        lines.push('中で ' + list.slice(0, 6).map((n) => '「' + n + '」').join('、') + (list.length > 6 ? ' などあわせて ' + list.length + ' 種類' : '') + ' を呼んでいます。');
+      } else lines.push(res.calls.length + ' 回、別の関数を呼んでいます（名前の情報は残っていません）。');
     }
-    if (res.indirectCalls) {
-      lines.push('レジスタ経由の呼び出しが ' + res.indirectCalls + ' か所あります。' +
-        '行き先は実行してみないと分かりません（関数ポインタや Objective-C のメソッド呼び出しです）。');
-    }
-  } else {
-    lines.push('他の関数は呼んでいません。自分だけで完結する末端の処理です。');
-  }
+    if (res.indirectCalls) lines.push('レジスタ経由の呼び出しが ' + res.indirectCalls + ' か所あります。行き先は実行してみないと分かりません（関数ポインタや Objective-C のメソッド呼び出しです）。');
+  } else lines.push('他の関数は呼んでいません。自分だけで完結する末端の処理です。');
 
-  /* 3. 何をしていそうか */
   const purpose = guessPurpose(res.calls);
-  if (purpose.length) {
-    lines.push('呼んでいる相手から推測すると、' + purpose.slice(0, 4).join('・') + '、といったことをしていそうです。');
-  }
+  if (purpose.length) lines.push('呼んでいる相手から推測すると、' + purpose.slice(0, 4).join('・') + '、といったことをしていそうです。');
+  if (res.loops.length) lines.push('前の行へ戻る分岐が ' + res.loops.length + ' か所あるので、ループが入っています。同じ処理を何度も繰り返す関数です。');
+  else if (res.condBranches === 0) lines.push('条件分岐がないので、上から下へ一直線に流れます。いちばん読みやすい形です。');
+  else lines.push('条件分岐が ' + res.condBranches + ' か所。if 文で枝分かれしています。');
 
-  /* 4. 流れの形 */
-  if (res.loops.length) {
-    lines.push('前の行へ戻る分岐が ' + res.loops.length + ' か所あるので、ループが入っています。' +
-      '同じ処理を何度も繰り返す関数です。');
-  } else if (res.condBranches === 0) {
-    lines.push('条件分岐がないので、上から下へ一直線に流れます。いちばん読みやすい形です。');
-  } else {
-    lines.push('条件分岐が ' + res.condBranches + ' か所。if 文で枝分かれしています。');
-  }
-
-  /* 5. 引数と戻り値 */
-  if (res.argRegs.length) {
-    const names = res.argRegs.map((n) => 'x' + n).join('、');
-    lines.push('自分で値を入れる前に ' + names + ' を読んでいるので、引数を ' + res.argRegs.length + ' 個くらい受け取っていそうです。');
-  } else {
-    lines.push('引数用のレジスタ (x0〜x7) を読んでいないので、引数はなさそうです。');
-  }
+  if (res.argRegs.length) lines.push('自分で値を入れる前に ' + res.argRegs.map((n) => 'x' + n).join('、') + ' を読んでいるので、引数を ' + res.argRegs.length + ' 個くらい受け取っていそうです。');
+  else lines.push('引数用のレジスタ (x0〜x7) を読んでいないので、引数はなさそうです。');
   if (res.setsReturnValue) lines.push('帰る前に x0 を作っているので、呼び出し元へ値を返しています。');
-
-  /* 6. スタック */
-  if (res.frameBytes > 0) {
-    lines.push('スタックを ' + res.frameBytes + ' バイト確保しています。' +
-      (res.frameBytes >= 256 ? 'かなり大きいので、配列やバッファを置いている可能性があります。' : 'ローカル変数の置き場です。'));
-  }
-  if (res.savesCallee.length >= 4) {
-    lines.push('x19〜x28 を ' + res.savesCallee.length + ' 本も退避しているので、値をたくさん抱えて動く関数です。');
-  }
-
-  /* 7. 特徴 */
+  if (res.frameBytes > 0) lines.push('スタックを ' + res.frameBytes + ' バイト確保しています。' + (res.frameBytes >= 256 ? 'かなり大きいので、配列やバッファを置いている可能性があります。' : 'ローカル変数の置き場です。'));
+  if (res.savesCallee.length >= 4) lines.push('x19〜x28 を ' + res.savesCallee.length + ' 本も退避しているので、値をたくさん抱えて動く関数です。');
   const notes = [];
   if (res.usesFloat) notes.push('小数の計算');
   if (res.usesSimd) notes.push('まとめて処理する SIMD 命令');
   if (res.usesAtomic) notes.push('スレッド間で壊れないようにする排他アクセス');
   if (res.hasTrap) notes.push('「ここには来ないはず」という停止命令');
-  if (notes.push && notes.length) {
-    lines.push(notes.join('、') + ' が出てきます。');
-  }
-  if (res.dataRows > 0) {
-    lines.push('命令として読めない 4 バイトが ' + res.dataRows + ' 行あります。定数や飛び先表などのデータが混ざっています。');
-  }
-  if (res.truncated) {
-    lines.push('※ 大きすぎるため、先頭から ' + MAX_INSTRUCTIONS.toLocaleString() + ' 命令ぶんだけを見ています。');
-  }
-
+  if (notes.length) lines.push(notes.join('、') + ' が出てきます。');
+  if (res.dataRows > 0) lines.push('命令として読めない 4 バイトが ' + res.dataRows + ' 行あります。定数や飛び先表などのデータが混ざっています。');
+  if (res.truncated) lines.push('※ 大きすぎるため、先頭から ' + MAX_INSTRUCTIONS.toLocaleString() + ' 命令ぶんだけを見ています。');
   return lines;
 }

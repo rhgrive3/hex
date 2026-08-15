@@ -3,52 +3,80 @@
  *
  * The browser page never evaluates user code. An opaque-origin sandboxed iframe
  * owns a Dedicated Worker, and the Worker is the only place where untrusted
- * JavaScript runs. The iframe itself is only a tiny relay/controller so the
- * page can always terminate a runaway worker (for example `while (true) {}`).
- *
- * Data crosses the boundary only through an explicit MessagePort RPC API.
- * Network/resource channels are blocked by CSP and common worker networking
- * globals are removed before user code starts.
+ * JavaScript runs. Data crosses the boundary only through an explicit bounded
+ * MessagePort RPC API.
  */
+
+const MAX_RPC_TOTAL = 1000;
+const MAX_RPC_CONCURRENT = 8;
+const MAX_RPC_INPUT_BYTES = 4 * 1024 * 1024;
+const MAX_RPC_OUTPUT_BYTES = 16 * 1024 * 1024;
 
 const WORKER_PRELUDE = String.raw`
 (() => {
   "use strict";
-
-  // Defense in depth. The opaque sandbox also has connect-src 'none', but make
-  // the common network/sub-worker entrypoints unavailable to user code itself.
   for (const name of [
     'fetch', 'WebSocket', 'EventSource', 'XMLHttpRequest', 'Worker',
     'SharedWorker', 'importScripts', 'WebTransport', 'BroadcastChannel'
   ]) {
-    try {
-      Object.defineProperty(globalThis, name, {
-        value: undefined, writable: false, configurable: false,
-      });
-    } catch {
-      try { globalThis[name] = undefined; } catch { /* ignore */ }
-    }
+    try { Object.defineProperty(globalThis, name, { value: undefined, writable: false, configurable: false }); }
+    catch { try { globalThis[name] = undefined; } catch {} }
   }
 
+  const MAX_OUTSTANDING_RPC = 16;
+  const MAX_TOTAL_RPC = 1000;
+  const MAX_ARGUMENT_UNITS = 4 * 1024 * 1024;
   let seq = 1;
+  let totalRpc = 0;
+  let argumentUnits = 0;
   const waiting = new Map();
 
   const send = (message) => {
     try { postMessage(message); }
     catch (err) {
-      try { postMessage({ t: 'error', error: (err && err.message) || String(err) }); }
-      catch { /* host timeout/termination is the final fallback */ }
+      try { postMessage({ t: 'error', error: (err && err.message) || String(err) }); } catch {}
     }
   };
 
+  const measure = (value, seen = new Set(), limit = MAX_ARGUMENT_UNITS + 1) => {
+    if (limit <= 0 || value == null) return 0;
+    const type = typeof value;
+    if (type === 'string') return Math.min(limit, value.length * 2);
+    if (type === 'number' || type === 'bigint' || type === 'boolean') return 16;
+    if (type !== 'object' || seen.has(value)) return 0;
+    seen.add(value);
+    let n = 16;
+    const values = Array.isArray(value) ? value : Object.values(value);
+    for (const item of values) {
+      n += measure(item, seen, limit - n);
+      if (n >= limit) break;
+    }
+    seen.delete(value);
+    return n;
+  };
+
   const rpc = (method, args) => new Promise((resolve, reject) => {
+    if (waiting.size >= MAX_OUTSTANDING_RPC) {
+      send({ t: 'budgetExceeded', error: 'RPC同時実行数の上限を超えました。' });
+      reject(new Error('RPC同時実行数の上限を超えました。'));
+      return;
+    }
+    if (++totalRpc > MAX_TOTAL_RPC) {
+      send({ t: 'budgetExceeded', error: 'RPC総数の上限を超えました。' });
+      reject(new Error('RPC総数の上限を超えました。'));
+      return;
+    }
+    argumentUnits += measure(args);
+    if (argumentUnits > MAX_ARGUMENT_UNITS) {
+      send({ t: 'budgetExceeded', error: 'RPC引数サイズの上限を超えました。' });
+      reject(new Error('RPC引数サイズの上限を超えました。'));
+      return;
+    }
     const id = seq++;
     waiting.set(id, { resolve, reject });
     send({ t: 'rpc', id, method, args });
   });
 
-  // Keep the stateful Emulator instance on the trusted page. Only a small
-  // clone-safe id crosses this boundary; scripts still get an object-like API.
   const emulatorProxy = (id) => Object.freeze({
     id,
     setup: (addr, args = []) => rpc('emulatorSetup', [id, addr, args]),
@@ -69,9 +97,7 @@ const WORKER_PRELUDE = String.raw`
   const makeHex = () => new Proxy(Object.create(null), {
     get(_target, prop) {
       if (typeof prop !== 'string' || prop === 'then' || prop === '__proto__' || prop === 'constructor') return undefined;
-      if (prop === 'hex') {
-        return (value, pad = 8) => '0x' + BigInt(value).toString(16).toUpperCase().padStart(pad, '0');
-      }
+      if (prop === 'hex') return (value, pad = 8) => '0x' + BigInt(value).toString(16).toUpperCase().padStart(pad, '0');
       if (prop === 'emulator') {
         return async (addr = null, args = []) => {
           const created = await rpc('emulatorCreate', [addr, args]);
@@ -112,7 +138,6 @@ function workerProgram(source, mode, index) {
   const user = String(source || '');
   const safeIndex = Math.max(0, Math.trunc(Number(index) || 0));
   let body;
-
   if (mode === 'discover' || mode === 'plugin') {
     body = `
   const __hexRun = async () => {
@@ -159,14 +184,9 @@ const FRAME = `<!doctype html><meta charset="utf-8">
   const workerProgram = ${workerProgram.toString()};
   let worker = null;
   let port = null;
-
   const stop = () => {
-    if (worker) {
-      try { worker.terminate(); } catch {}
-      worker = null;
-    }
+    if (worker) { try { worker.terminate(); } catch {} worker = null; }
   };
-
   const start = (m) => {
     stop();
     try {
@@ -185,7 +205,6 @@ const FRAME = `<!doctype html><meta charset="utf-8">
       stop();
     };
   };
-
   addEventListener('message', (event) => {
     const p = event.ports && event.ports[0];
     if (!p || port) return;
@@ -199,11 +218,29 @@ const FRAME = `<!doctype html><meta charset="utf-8">
     port.start();
     port.postMessage({ t: 'ready' });
   }, { once: true });
-
   addEventListener('pagehide', stop, { once: true });
   parent.postMessage({ t: 'hexSandboxFrameReady' }, '*');
 })();
 </script>`;
+
+function valueSize(value, seen = new Set(), limit = MAX_RPC_OUTPUT_BYTES + 1) {
+  if (limit <= 0 || value == null) return 0;
+  const type = typeof value;
+  if (type === 'string') return Math.min(limit, value.length * 2);
+  if (type === 'number' || type === 'bigint' || type === 'boolean') return 16;
+  if (value instanceof ArrayBuffer) return value.byteLength;
+  if (ArrayBuffer.isView(value)) return value.byteLength;
+  if (type !== 'object' || seen.has(value)) return 0;
+  seen.add(value);
+  let n = 16;
+  const values = Array.isArray(value) ? value : Object.values(value);
+  for (const item of values) {
+    n += valueSize(item, seen, limit - n);
+    if (n >= limit) break;
+  }
+  seen.delete(value);
+  return n;
+}
 
 export function runInSandbox({ source, mode = 'script', index = 0, api, out, timeout = 30000 }) {
   return new Promise((resolve) => {
@@ -212,7 +249,12 @@ export function runInSandbox({ source, mode = 'script', index = 0, api, out, tim
     frame.setAttribute('sandbox', 'allow-scripts');
     frame.referrerPolicy = 'no-referrer';
     const channel = new MessageChannel();
+    const runController = new AbortController();
     let settled = false;
+    let rpcTotal = 0;
+    let rpcConcurrent = 0;
+    let rpcInputBytes = 0;
+    let rpcOutputBytes = 0;
 
     const terminate = () => {
       try { channel.port1.postMessage({ t: 'terminate' }); } catch { /* ignore */ }
@@ -228,13 +270,19 @@ export function runInSandbox({ source, mode = 'script', index = 0, api, out, tim
     const finish = (value) => {
       if (settled) return;
       settled = true;
+      runController.abort(value?.error || 'sandbox-finished');
       clearTimeout(timer);
       window.removeEventListener('message', onFrameReady);
+      window.removeEventListener('pagehide', onPageHide);
       terminate();
       channel.port1.close();
       frame.remove();
       resolve(value);
     };
+
+    const failBudget = (message) => finish({ error: message });
+    const onPageHide = () => finish({ error: 'ページが閉じられたため実行を停止しました。' });
+    window.addEventListener('pagehide', onPageHide, { once: true });
 
     const timer = setTimeout(
       () => finish({ error: '実行が時間制限を超えたため、安全に停止しました。' }),
@@ -248,20 +296,39 @@ export function runInSandbox({ source, mode = 'script', index = 0, api, out, tim
         channel.port1.postMessage({ t: 'start', source: String(source || ''), mode, index });
       } else if (m.t === 'print') {
         try { out(...(m.args || [])); } catch { /* output must not stop the sandbox */ }
+      } else if (m.t === 'budgetExceeded') {
+        failBudget(m.error || 'sandbox RPC budget exceeded');
       } else if (m.t === 'rpc') {
+        const inputBytes = valueSize(m.args, new Set(), MAX_RPC_INPUT_BYTES + 1);
+        rpcTotal++;
+        rpcInputBytes += inputBytes;
+        if (rpcTotal > MAX_RPC_TOTAL) return failBudget('RPC総数の上限を超えたため停止しました。');
+        if (rpcConcurrent >= MAX_RPC_CONCURRENT) return failBudget('RPC同時実行数の上限を超えたため停止しました。');
+        if (rpcInputBytes > MAX_RPC_INPUT_BYTES) return failBudget('RPC引数サイズの上限を超えたため停止しました。');
+        rpcConcurrent++;
         let value, error;
         try {
-          const allowed = api && typeof m.method === 'string' &&
-            Object.prototype.hasOwnProperty.call(api, m.method);
+          const allowed = api && typeof m.method === 'string' && Object.prototype.hasOwnProperty.call(api, m.method);
           const fn = allowed ? api[m.method] : null;
           if (typeof fn !== 'function') throw new Error('許可されていないAPIです: ' + m.method);
-          value = await fn(...(m.args || []));
+          // All host APIs receive a final execution context. Existing JS APIs
+          // harmlessly ignore the extra argument; long-running adapters can
+          // observe signal and cancel backend/worker work immediately.
+          value = await fn(...(m.args || []), { signal: runController.signal });
+          if (runController.signal.aborted) return;
+          rpcOutputBytes += valueSize(value, new Set(), MAX_RPC_OUTPUT_BYTES + 1);
+          if (rpcOutputBytes > MAX_RPC_OUTPUT_BYTES) return failBudget('RPC返却データ量の上限を超えたため停止しました。');
         } catch (err) {
           error = (err && err.message) || String(err);
+        } finally {
+          rpcConcurrent = Math.max(0, rpcConcurrent - 1);
         }
         if (settled) return;
         try { channel.port1.postMessage({ t: 'rpcResult', id: m.id, value, error }); }
-        catch { channel.port1.postMessage({ t: 'rpcResult', id: m.id, error: '結果を受け渡せませんでした。' }); }
+        catch {
+          try { channel.port1.postMessage({ t: 'rpcResult', id: m.id, error: '結果を受け渡せませんでした。' }); }
+          catch { failBudget('RPC結果を返せないため停止しました。'); }
+        }
       } else if (m.t === 'done') {
         finish({ ok: true, value: m.value });
       } else if (m.t === 'error') {

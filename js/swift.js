@@ -27,17 +27,46 @@ function normalizeBudget(value, fallback = DEFAULT_BUDGET, max = 100000) { const
 
 export function demangleSwiftSymbol(symbol) {
   const original = String(symbol || ''), s = original.replace(/^_/, '');
-  if (!s.startsWith('$s') && !s.startsWith('$S')) return { original, demangled: original, parsed: false, components: [] };
-  let i = 2; const components = [];
-  while (i < s.length && components.length < 12) { const m = s.slice(i).match(/^(\d+)/); if (!m) break; const n = Number(m[1]); i += m[1].length; if (!(n > 0) || n > 512 || i + n > s.length) break; components.push(s.slice(i, i + n)); i += n; }
-  const suffix = s.slice(i);
-  const async = /Ya/.test(suffix);
-  // K is meaningful as a throwing marker only in a function encoding. Random K
-  // characters in metadata/accessor suffixes must not create a throws annotation.
-  const throws = /(?:KYa|YaK|K)F(?:$|[A-Za-z0-9_])/.test(suffix);
-  const accessor = /Ma|Mf|ML|Mn/.test(suffix) ? 'metadata' : null;
-  const demangled = components.length ? components.join('.') + (async ? ' async' : '') + (throws ? ' throws' : '') : original;
-  return { original, demangled, parsed: components.length > 0, components, suffix, async, throws, accessor };
+  if (!s.startsWith('$s') && !s.startsWith('$S')) return { original, demangled: original, parsed: false, partial: null, unsupported: false, components: [] };
+  let i = 2; const components = []; let malformed = false;
+  while (i < s.length && components.length < 12) {
+    const m = s.slice(i).match(/^(\d+)/); if (!m) break;
+    const n = Number(m[1]); i += m[1].length;
+    if (!(n > 0) || n > 512 || i + n > s.length) { malformed = true; break; }
+    components.push(s.slice(i, i + n)); i += n;
+  }
+  const suffix = s.slice(i), suffixInfo = parseSupportedSwiftSuffix(suffix);
+  const supported = !malformed && components.length > 0 && suffixInfo.supported;
+  const partial = components.length ? components.join('.') + (suffixInfo.async ? ' async' : '') + (suffixInfo.throws ? ' throws' : '') : null;
+  return {
+    original,
+    demangled: supported ? partial : original,
+    parsed: supported,
+    partial: supported ? null : partial,
+    unsupported: components.length > 0 && !supported,
+    components,
+    suffix,
+    async: supported && suffixInfo.async,
+    throws: supported && suffixInfo.throws,
+    accessor: supported ? suffixInfo.accessor : null,
+  };
+}
+
+function parseSupportedSwiftSuffix(suffix) {
+  if (!suffix) return { supported: true, async: false, throws: false, accessor: null };
+  let rest = suffix, async = false, sawThrows = false, sawFunction = false, accessor = null;
+  const atoms = ['Ya', 'Ma', 'Mf', 'ML', 'Mn', 'vg', 'vs', 'fC', 'fD', 'K', 'F'];
+  while (rest) {
+    const atom = atoms.find((value) => rest.startsWith(value));
+    const throws = sawThrows && sawFunction;
+    if (!atom) return { supported: false, async, throws, accessor };
+    rest = rest.slice(atom.length);
+    if (atom === 'Ya') async = true;
+    else if (atom === 'K') sawThrows = true;
+    else if (atom === 'F') sawFunction = true;
+    else if (atom === 'Ma' || atom === 'Mf' || atom === 'ML' || atom === 'Mn') accessor = 'metadata';
+  }
+  return { supported: true, async, throws: sawThrows && sawFunction, accessor };
 }
 
 async function relativeString(read, fieldAddr, raw) { const target = rel(fieldAddr, raw); return target == null ? null : cstring(read, target); }

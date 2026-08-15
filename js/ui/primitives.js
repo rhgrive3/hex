@@ -82,21 +82,64 @@ export function evidenceBadge(status, { ja = true, detail } = {}) {
   return node;
 }
 
-export function tabs(items, active, onChange) {
+export function tabs(items, active, onChange, { orientation = 'horizontal' } = {}) {
   const root = h('div', 'ui-tabs');
   root.setAttribute('role', 'tablist');
-  for (const item of items) {
+  root.setAttribute('aria-orientation', orientation === 'vertical' ? 'vertical' : 'horizontal');
+  const buttons = [];
+  const activate = (index, { focus = true } = {}) => {
+    const button = buttons[index];
+    const item = items[index];
+    if (!button || !item || button.disabled) return;
+    if (typeof onChange === 'function') onChange(item.id);
+    if (focus) button.focus({ preventScroll: true });
+  };
+  for (let index = 0; index < items.length; index++) {
+    const item = items[index];
     const selected = item.id === active;
     const b = uiButton(item.label, {
       cls: 'ui-tab' + (selected ? ' active' : ''),
-      onClick: () => onChange(item.id),
+      onClick: () => activate(index, { focus: false }),
     });
     b.setAttribute('role', 'tab');
     b.setAttribute('aria-selected', String(selected));
     b.tabIndex = selected ? 0 : -1;
+    if (item.disabled) b.disabled = true;
+    if (item.tabId) b.id = String(item.tabId);
+    if (item.panelId) b.setAttribute('aria-controls', String(item.panelId));
+    buttons.push(b);
     root.append(b);
   }
+  root.addEventListener('keydown', (event) => {
+    const current = buttons.indexOf(document.activeElement);
+    if (current < 0) return;
+    const vertical = orientation === 'vertical';
+    const previousKey = vertical ? 'ArrowUp' : 'ArrowLeft';
+    const nextKey = vertical ? 'ArrowDown' : 'ArrowRight';
+    let target = null;
+    if (event.key === 'Home') target = firstEnabled(buttons);
+    else if (event.key === 'End') target = lastEnabled(buttons);
+    else if (event.key === previousKey) target = nextEnabled(buttons, current, -1);
+    else if (event.key === nextKey) target = nextEnabled(buttons, current, 1);
+    if (target == null) return;
+    event.preventDefault();
+    activate(target);
+  });
   return root;
+}
+
+function firstEnabled(buttons) { return buttons.findIndex((button) => !button.disabled); }
+function lastEnabled(buttons) {
+  for (let index = buttons.length - 1; index >= 0; index--) if (!buttons[index].disabled) return index;
+  return -1;
+}
+function nextEnabled(buttons, start, direction) {
+  if (!buttons.length) return -1;
+  for (let step = 1; step <= buttons.length; step++) {
+    const index = (start + direction * step + buttons.length) % buttons.length;
+    if (!buttons[index].disabled) return index;
+  }
+  return -1;
 }
 
 export function sectionTitle(title, detail) {
@@ -173,6 +216,8 @@ export class VirtualList {
   }
 
   render(reset = false) {
+    const active = document.activeElement;
+    const focusedIndex = active && this.window.contains(active) ? Number(active.dataset.virtualIndex) : null;
     if (reset) this.root.scrollTop = 0;
     const height = this.root.clientHeight || 480;
     const length = sourceLength(this.items);
@@ -186,17 +231,32 @@ export class VirtualList {
       const row = this.renderRow(sourceItem(this.items, index), index);
       row.classList.add('ui-virtual-row');
       row.setAttribute('role', 'listitem');
+      row.dataset.virtualIndex = String(index);
+      if (!row.id) row.id = `ui-virtual-row-${index}`;
       row.style.height = this.rowHeight + 'px'; // virtualization geometry
       frag.append(row);
     }
     this.window.replaceChildren(frag);
     this.window.style.transform = `translateY(${first * this.rowHeight}px)`; // virtualization geometry
+
+    if (Number.isInteger(focusedIndex)) {
+      const replacement = this.window.querySelector(`[data-virtual-index="${focusedIndex}"]`);
+      if (replacement && typeof replacement.focus === 'function') {
+        replacement.focus({ preventScroll: true });
+      } else {
+        // Never allow virtualization alone to dump keyboard/VoiceOver focus on
+        // document.body. Preserve the logical list as the focus owner.
+        this.root.dataset.activeVirtualIndex = String(focusedIndex);
+        this.root.focus({ preventScroll: true });
+      }
+    }
   }
 
-  getState() { return { scrollTop: this.root.scrollTop }; }
+  getState() { return { scrollTop: this.root.scrollTop, activeIndex: this.root.dataset.activeVirtualIndex || null }; }
   restoreState(state) {
     if (!state) return;
     this.root.scrollTop = Number(state.scrollTop) || 0;
+    if (state.activeIndex != null) this.root.dataset.activeVirtualIndex = String(state.activeIndex);
     this.render();
   }
   dispose() { this.root.removeEventListener('scroll', this.onScroll); }
