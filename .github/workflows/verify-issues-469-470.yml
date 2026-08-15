@@ -24,6 +24,7 @@ jobs:
         run: |
           python3 tools/apply-issues-469-470.py
           python3 tools/fix-issues-469-470-stream.py
+          python3 tools/patch-gemini-tests-quota.py
       - name: Focused distributed quota regressions
         run: node tests/ai-quota.mjs
       - name: AI worker regressions
@@ -44,6 +45,6 @@ jobs:
           if git diff --quiet; then exit 0; fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add worker.js wrangler.jsonc tests/ai-worker.mjs package.json
+          git add worker.js wrangler.jsonc tests/ai-worker.mjs tests/gemini.mjs package.json
           git commit -m "fix: enforce distributed AI quota on both proxy routes (#469 #470)"
           git push origin HEAD:fix/latest-470-469-distributed-quota
