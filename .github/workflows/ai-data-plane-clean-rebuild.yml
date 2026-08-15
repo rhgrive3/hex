@@ -79,11 +79,14 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Targeted AI data-plane tests
-        run: |
-          node tests/ai-lossless-data-plane.mjs
-          node tests/ai-planner-data-plane.mjs
-          node tests/issue-425-planner-budget.mjs
+      - name: Lossless data-plane regression
+        run: node tests/ai-lossless-data-plane.mjs
+
+      - name: Planner data-plane regression
+        run: node tests/ai-planner-data-plane.mjs
+
+      - name: Planner budget regression
+        run: node tests/issue-425-planner-budget.mjs
 
       - name: Full repository tests
         run: npm run check
