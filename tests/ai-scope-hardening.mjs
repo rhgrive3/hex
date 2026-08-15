@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { ScopeController } from '../js/ai/control/scope.js';
+import { createTurnSnapshot } from '../js/ai/control/snapshot.js';
 import { assertLiveBindingsUnchanged, sessionMatchesSnapshot } from '../js/ai/control/runtime-support.js';
 import { selectToolWindow } from '../js/ai/control/tool-window.js';
 
@@ -21,6 +22,21 @@ assert.equal(functionScope.scopeAllowsTool('function', 'lookup_signature', { fun
 assert.throws(() => functionScope.assertToolCall('lookup_signature', { targetAddress: '0x2000' }), /scope/i);
 assert.equal(functionScope.scopeContainsAddress('function', '0x10ff'), true, 'last byte before exclusive function end stays in scope');
 assert.equal(functionScope.scopeContainsAddress('function', '0x1100'), false, 'exclusive function end must not admit the next function start');
+
+// ProgramIndex may use executable-region end as a display/analysis fallback
+// when the exact function end is unknown. TurnSnapshot must prefer the exact
+// SymbolIndex boundary source so function scope does not inherit that widening.
+const unknownEndSnapshot = createTurnSnapshot({
+  currentAddress: 0x2000n,
+  binaryFingerprint: { hash: 'range-test' },
+  symbols: { functionAt: () => ({ start: 0x2000n, end: null }) },
+  program: { functionRange: () => ({ start: 0x2000n, end: 0x9000n }) },
+}, { scope: 'function' });
+assert.equal(unknownEndSnapshot.currentFunction.range.start, '0x2000');
+assert.equal(unknownEndSnapshot.currentFunction.range.end, null, 'unknown exact end must not become executable-region end');
+const unknownEndScope = new ScopeController(unknownEndSnapshot, 'function');
+assert.equal(unknownEndScope.scopeContainsAddress('function', '0x2000'), true);
+assert.equal(unknownEndScope.scopeContainsAddress('function', '0x2004'), false, 'unknown function end fails closed instead of widening to the region');
 
 // Bound project/runtime identities are part of the investigation boundary.
 // Closing or replacing either during a turn must fail closed.
