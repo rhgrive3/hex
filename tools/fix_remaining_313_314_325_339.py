@@ -8,37 +8,40 @@ def rep(path, old, new, count=1):
 
 # #313 — correlated evidence from one family receives diminishing weight.
 rep('js/report.js',
-"""      hits.push({ type: 'string-ref', row: r.row, addr: r.value, term: hit });""",
-"""      hits.push({ type: 'string-ref', sourceGroup: 'strings', row: r.row, addr: r.value, term: hit });""")
+"""      if (m) hits.push({ code: 'string-ref', detail: { text: s.text, addr: s.addr, term: m.term } });""",
+"""      if (m) hits.push({ code: 'string-ref', sourceGroup: 'strings', detail: { text: s.text, addr: s.addr, term: m.term } });""")
 rep('js/report.js',
-"""      if (hit) hits.push({ type: 'selector', row: c.row, selector: c.selector, term: hit });""",
-"""      if (hit) hits.push({ type: 'selector', sourceGroup: 'selectors', row: c.row, selector: c.selector, term: hit });""")
+"""      if (m) hits.push({ code: 'selector', detail: { selector: sel, term: m.term } });""",
+"""      if (m) hits.push({ code: 'selector', sourceGroup: 'selectors', detail: { selector: sel, term: m.term } });""")
 rep('js/report.js',
-"""    if (hit) hits.push({ type: 'name-match', term: hit });""",
-"""    if (hit) hits.push({ type: 'name-match', sourceGroup: 'symbol-name', term: hit });""")
+"""      if (m) hits.push({ code: 'name-match', detail: { name: o.name, term: m.term } });""",
+"""      if (m) hits.push({ code: 'name-match', sourceGroup: 'symbol-name', detail: { name: o.name, term: m.term } });""")
 rep('js/report.js',
-"""      if (hit) hits.push({ type: 'caller-name', addr: c.from, term: hit });""",
-"""      if (hit) hits.push({ type: 'caller-name', sourceGroup: 'caller-names', addr: c.from, term: hit });""")
+"""      if (m) hits.push({ code: 'caller-name', detail: { name: c.name, term: m.term } });""",
+"""      if (m) hits.push({ code: 'caller-name', sourceGroup: 'caller-names', detail: { name: c.name, term: m.term } });""")
 rep('js/report.js',
-"""  if (hits.length) {
-    const conf = Math.min(0.92, 0.35 + 0.18 * hits.length);
-    out.push(inference('goal-related', conf, hits.slice(0, 6), 'evidence', { goal: goal.id }));
-  }""",
-"""  if (hits.length) {
-    const byGroup = new Map();
-    for (const hit of hits) {
-      const key = hit.sourceGroup || hit.type;
-      byGroup.set(key, (byGroup.get(key) || 0) + 1);
-    }
-    // First independent source carries full weight. Repeated observations from
-    // the same family are correlated and add only diminishing support.
-    let effective = 0;
-    for (const n of byGroup.values()) effective += 1 + Math.min(0.5, Math.max(0, n - 1) * 0.15);
-    const conf = Math.min(0.92, 0.35 + 0.18 * effective);
-    out.push(inference('goal-related', conf, hits.slice(0, 6), 'evidence', {
-      goal: goal.id, independentEvidenceGroups: byGroup.size, rawEvidenceCount: hits.length,
-    }));
-  }""")
+"""    if (hits.length) {
+      // 証拠が独立に何本あるかで確度を決める。1 本だけなら断定しない。
+      const conf = Math.min(0.92, 0.35 + 0.18 * hits.length);
+      inferences.push(inference('goal-related', conf, hits.slice(0, 6),
+        { goal: goal.id, label: goal.text || goal.ja }));
+    }""",
+"""    if (hits.length) {
+      const byGroup = new Map();
+      for (const hit of hits) {
+        const key = hit.sourceGroup || hit.code;
+        byGroup.set(key, (byGroup.get(key) || 0) + 1);
+      }
+      // Repeated observations from one evidence family are correlated; they
+      // add only diminishing support instead of masquerading as independence.
+      let effective = 0;
+      for (const n of byGroup.values()) effective += 1 + Math.min(0.5, Math.max(0, n - 1) * 0.15);
+      const conf = Math.min(0.92, 0.35 + 0.18 * effective);
+      inferences.push(inference('goal-related', conf, hits.slice(0, 6), {
+        goal: goal.id, label: goal.text || goal.ja,
+        independentEvidenceGroups: byGroup.size, rawEvidenceCount: hits.length,
+      }));
+    }""")
 
 # #314 — hard-cap state is explicit and propagated to the SymbolIndex owner.
 rep('js/worker.js',
@@ -78,14 +81,14 @@ rep('js/emu.js',
       }
       this.x[30] = at + 4n;""")
 rep('js/adapters/index.js',
-"""function callsFromTrace(trace) {
+r"""function callsFromTrace(trace) {
   return (trace || []).filter((e) => /^(bl|blr)\b/i.test(e.text || '')).map((e) => {
     const match = /^bl\s+#?(0x[0-9a-f]+|[0-9]+)/i.exec(e.text || '');
     let target = null; try { if (match) target = BigInt(match[1]); } catch { target = null; }
     return { type:'call', address:e.addr ?? e.address, target, text:e.text };
   });
 }""",
-"""function callsFromTrace(trace) {
+r"""function callsFromTrace(trace) {
   const out = [];
   for (const e of trace || []) {
     if (e?.type === 'call') {
