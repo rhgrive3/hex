@@ -152,8 +152,10 @@ const source = async (path) => readFile(new URL(`../${path}`, import.meta.url), 
   assert.match(linkage, /declaredSize \?\? r\.size/);                         // #319
 
   const dataflow = await source('js/dataflow-semantic.js');
-  assert.match(dataflow, /const offsetReg = 'x2'/);                            // #323
-  assert.match(dataflow, /reg: read \? 'x0' : 'x3'/);
+  assert.match(dataflow, /PROPERTY_HELPER_ABI/);                               // #323
+  assert.match(dataflow, /getProperty: Object\.freeze\(\{ kind: 'read', offsetReg: 'x2', valueReg: 'x0' \}\)/);
+  assert.match(dataflow, /setProperty: Object\.freeze\(\{ kind: 'write', offsetReg: 'x2', valueReg: 'x3' \}\)/);
+  assert.match(dataflow, /register: abi\.valueReg/);
 
   const emu = await source('js/emu.js');
   assert.match(emu, /type:'call'.*target.*indirect/s);                         // #325
