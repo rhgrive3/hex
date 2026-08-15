@@ -34,6 +34,48 @@ if old not in s:
     raise SystemExit('BFI propagation anchor missing')
 p.write_text(s.replace(old, new, 1))
 
+# #411: unknown functions are not inherently x0-returning, but an x0 value
+# actually defined in the RET block is strong local evidence for an integer return.
+p = Path('js/decompiler/pipeline-core.js')
+s = p.read_text()
+old = """function returnValueAt(inst, state) {
+  const explicit=valueOf(inst?.args?.[0]);
+  if (explicit) return explicit;
+  const reg=returnRegisterForState(state);
+  return reg ? reachingRegisterValue(state.ir, inst, reg) : null;
+}"""
+new = """function returnValueAt(inst, state) {
+  const explicit=valueOf(inst?.args?.[0]);
+  if (explicit) return explicit;
+  const reg=returnRegisterForState(state);
+  if (reg) return reachingRegisterValue(state.ir, inst, reg);
+  const candidate=reachingRegisterValue(state.ir, inst, 'x0');
+  return candidate?.def && candidate.def.block === inst?.block ? candidate : null;
+}"""
+if old not in s:
+    raise SystemExit('pipeline return inference anchor missing')
+p.write_text(s.replace(old, new, 1))
+
+p = Path('js/decompiler/semantic.js')
+s = p.read_text()
+old = """function returnValueAt(ret, ctx) {
+  const explicit=valueOf(ret?.args?.[0]);
+  if (explicit) return explicit;
+  const reg=returnRegisterForContext(ctx);
+  return reg ? reachingRegisterValue(ctx.ir, ret, reg) : null;
+}"""
+new = """function returnValueAt(ret, ctx) {
+  const explicit=valueOf(ret?.args?.[0]);
+  if (explicit) return explicit;
+  const reg=returnRegisterForContext(ctx);
+  if (reg) return reachingRegisterValue(ctx.ir, ret, reg);
+  const candidate=reachingRegisterValue(ctx.ir, ret, 'x0');
+  return candidate?.def && candidate.def.block === ret?.block ? candidate : null;
+}"""
+if old not in s:
+    raise SystemExit('semantic return inference anchor missing')
+p.write_text(s.replace(old, new, 1))
+
 # #423 intentionally requires an explicit successful/completed runtime result.
 p = Path('tests/semantic-core.mjs')
 s = p.read_text()
