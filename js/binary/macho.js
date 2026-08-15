@@ -313,13 +313,26 @@ function parseSymbolTable(r, st, image, bits) {
     if (!name) continue;
     const ntype = type & 0x0e;
     const external = !!(type & 1);
-    const undefinedSymbol = ntype === 0 && value === 0n;
-    const sym = { name, address: value, size: null, kind: ntype === 0x0e ? 'section' : undefinedSymbol ? 'undefined' : 'other', binding: external ? 'global' : 'local', defined: !undefinedSymbol, sectionIndex: sect, desc, source: 'LC_SYMTAB' };
+    const isUndefinedType = ntype === 0;
+    // For N_UNDF with non-zero n_value, Mach-O defines a tentative/common
+    // symbol: n_value is the requested byte size, never a VM address.
+    const commonSymbol = isUndefinedType && value !== 0n;
+    const undefinedSymbol = isUndefinedType && !commonSymbol;
+    const sym = {
+      name,
+      address: isUndefinedType ? 0n : value,
+      size: commonSymbol ? value : null,
+      common: commonSymbol,
+      kind: ntype === 0x0e ? 'section' : commonSymbol ? 'common' : undefinedSymbol ? 'undefined' : 'other',
+      binding: external ? 'global' : 'local',
+      defined: !isUndefinedType,
+      sectionIndex: sect, desc, source: 'LC_SYMTAB',
+    };
     image.symbols.push(sym);
     if (undefinedSymbol && external) {
       const ordinal = (desc >>> 8) & 0xff;
       image.imports.push({ name, library: dylibForOrdinal(image, ordinal), ordinal, weak: !!(desc & 0x40), source: 'symbol-table', sites: [] });
-    } else if (external && value !== 0n) {
+    } else if (!isUndefinedType && external && value !== 0n) {
       image.exports.push({ name, address: value, kind: 'symbol', source: 'symbol-table' });
     }
     void sect;
