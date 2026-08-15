@@ -129,7 +129,7 @@ function makeFixture({
 }
 
 const macho = fs.readFileSync(new URL('../js/binary/macho.js', import.meta.url), 'utf8');
-assert.match(macho, /parseChainedBindingSites\([^;]+segmentOrder\)/);
+assert.match(macho, /parseChainedBindingSites\([^;]+segmentOrder(?:,\s*metadataBudget)?\)/);
 const dyld = fs.readFileSync(new URL('../js/binary/macho-dyld.js', import.meta.url), 'utf8');
 assert.match(dyld, /overflowBase = p \+ 22 \+ pageCount \* 2/);
 assert.match(dyld, /segmentOffset !== segAddress - image\.imageBase/);
