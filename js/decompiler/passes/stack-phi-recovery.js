@@ -2,6 +2,7 @@ import { expr, structuralKey } from '../ast/nodes.js';
 import { RewriteEngine } from '../rewrite/engine.js';
 import { DEFAULT_RULES } from '../rewrite/rules.js';
 import { printExpression, printProgram } from '../pretty/c.js';
+import { buildNZCVConditionExpression } from '../flag-semantics.js';
 
 function valueOf(arg) { return arg?.value || null; }
 
@@ -100,17 +101,7 @@ function simplify(expression, engine) {
   return engine.rewrite(expression).root;
 }
 
-const CONDITION_OP = Object.freeze({
-  eq: 'eq', ne: 'ne', hs: 'ge', cs: 'ge', lo: 'lt', cc: 'lt', hi: 'gt', ls: 'le',
-  ge: 'ge', lt: 'lt', gt: 'gt', le: 'le',
-});
 const INVERT_OP = Object.freeze({ eq: 'ne', ne: 'eq', lt: 'ge', le: 'gt', gt: 'le', ge: 'lt' });
-
-function signednessForCondition(cond) {
-  if (['ge', 'lt', 'gt', 'le'].includes(cond)) return true;
-  if (['hs', 'cs', 'lo', 'cc', 'hi', 'ls'].includes(cond)) return false;
-  return null;
-}
 
 function expressionOfValue(value, maps) {
   return value ? maps.values.get(value.id) || null : null;
@@ -156,33 +147,15 @@ function repairedFlagComparison(flagsValue, cond, maps, ir) {
 
   const left = expressionOfValue(leftValue, maps);
   const right = expressionOfValue(rightValue, maps);
-  const op = CONDITION_OP[cond];
-  if (!left || !right || !op) return null;
-
-  if (cmp.sub === 'sub') {
-    return expr.compare(op, left, right, signednessForCondition(cond), {
-      address: cmp.address,
-      row: cmp.row,
-      ir: cmp.id,
-      ssaUses: [leftValue?.id, rightValue?.id].filter((x) => x != null),
-      evidence: [{ reason: producer ? 'same-row flag producer operands' : 'NZCV comparison' }],
-    });
-  }
-
-  // TST/ANDS compare the bitwise result with zero. For CMN/ADDS, only
-  // conditions whose truth is expressible as the arithmetic result vs zero are
-  // reconstructed here; carry/borrow forms remain conservative.
-  const bits = Math.max(Number(left.bits || 0), Number(right.bits || 0), 1);
-  if (cmp.sub === 'and' && ['eq', 'ne'].includes(cond)) {
-    const result = expr.binary('and', left, right, bits, false, cmp.source);
-    return expr.compare(op, result, expr.constant(0, bits, false), false, cmp.source);
-  }
-  if (cmp.sub === 'add' && ['eq', 'ne', 'ge', 'lt', 'gt', 'le'].includes(cond)) {
-    const signed = signednessForCondition(cond);
-    const result = expr.binary('add', left, right, bits, signed, cmp.source);
-    return expr.compare(op, result, expr.constant(0, bits, signed), signed, cmp.source);
-  }
-  return null;
+  if (!left || !right) return null;
+  const bits = Math.max(Number(cmp.bits || 0), Number(left.bits || 0), Number(right.bits || 0), 1);
+  return buildNZCVConditionExpression(cmp.sub || 'sub', cond, left, right, bits, {
+    address: cmp.address,
+    row: cmp.row,
+    ir: cmp.id,
+    ssaUses: [leftValue?.id, rightValue?.id].filter((x) => x != null),
+    evidence: [{ reason: producer ? 'same-row flag producer operands' : 'NZCV comparison' }],
+  });
 }
 
 function invertCondition(condition) {
