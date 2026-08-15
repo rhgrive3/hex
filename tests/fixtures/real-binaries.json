@@ -4,19 +4,19 @@
     "battlecats": {
       "file": "battlecats",
       "size": 28153072,
-      "sha256": "1efc3397f08b99283ec2202cd66e7f30f52ce19400d3f8f971118472a87a50a1",
+      "sha256": "567234909b2a33d62548257c4148290d9215d7edf414fa17c6b06fcf8c7cdf13",
       "urlEnv": "HEX_FIXTURE_BATTLECATS_URL"
     },
     "TsumTsum": {
       "file": "TsumTsum",
       "size": 45994784,
-      "sha256": "8c3fed835010dce1d1bc71e690582bd55cd63d20b7c4bbcd7aa71e87d8a37c7",
+      "sha256": "4f877bb1d4e1503b439ce07c601a1fddd6a38a6f32395bfd3071b056f77839b3",
       "urlEnv": "HEX_FIXTURE_TSUMTSUM_URL"
     },
     "YWP": {
       "file": "YWP",
       "size": 63455952,
-      "sha256": "0ff90943cd8c3709c6ef2bceae801e466ef04f9775c49c788999466e2e6ffcf6",
+      "sha256": "cd1c72a30ba29f423a670f9e534c8865689ca09890769a95822869c162d240a6",
       "urlEnv": "HEX_FIXTURE_YWP_URL"
     }
   }
