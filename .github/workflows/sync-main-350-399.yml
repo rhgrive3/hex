@@ -1,0 +1,49 @@
+name: Sync main for issues 350-399
+
+on:
+  push:
+    branches: [fix/issues-350-399]
+    paths:
+      - '.github/workflows/sync-main-350-399.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  merge-and-verify:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/issues-350-399
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Merge latest main
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch origin main
+          if ! git merge --no-commit --no-ff origin/main; then
+            echo '=== MERGE CONFLICTS ==='
+            git diff --name-only --diff-filter=U
+            echo '=== CONFLICT MARKERS ==='
+            for f in $(git diff --name-only --diff-filter=U); do
+              echo "--- $f"
+              git diff --cc -- "$f" || true
+            done
+            exit 1
+          fi
+      - name: Focused regression
+        run: node tests/issues-350-399.mjs
+      - name: Full non-browser check
+        run: npm run check
+      - name: Commit integrated main
+        run: |
+          git commit -m 'merge: integrate latest main into issues 350-399'
+          git push origin HEAD:fix/issues-350-399
