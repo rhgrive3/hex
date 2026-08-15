@@ -35,6 +35,7 @@ jobs:
           python3 tools/fix_linkage_318_319.py
           python3 tools/fix_remaining_313_314_325_339.py
           python3 tools/fix_ui_329_332_335.py
+          python3 tools/fix_regressions_300_349.py
           git diff --check
 
       - name: Run issue regression suite
@@ -53,6 +54,7 @@ jobs:
             tools/fix_linkage_318_319.py \
             tools/fix_remaining_313_314_325_339.py \
             tools/fix_ui_329_332_335.py \
+            tools/fix_regressions_300_349.py \
             .github/workflows/fix-issues-300-349.yml
           git add -A
           git diff --cached --check
