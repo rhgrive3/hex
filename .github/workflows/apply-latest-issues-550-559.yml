@@ -18,6 +18,11 @@ jobs:
         with:
           ref: fix-latest-issues-550-559
           fetch-depth: 0
+      - name: Sync latest main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git merge --no-edit origin/main
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -31,9 +36,7 @@ jobs:
         run: npm test
       - name: Commit verified changes
         run: |
-          git rm tools/apply-latest-issue-fixes.py tools/hotfix-latest-issue-patcher.py .github/workflows/apply-latest-issues-550-559.yml
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm -f tools/apply-latest-issue-fixes.py tools/hotfix-latest-issue-patcher.py .github/workflows/apply-latest-issues-550-559.yml
           git add -A
           git commit -m "fix: resolve issues 550 through 559"
           git push origin HEAD:fix-latest-issues-550-559
