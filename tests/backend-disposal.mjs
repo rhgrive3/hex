@@ -14,7 +14,12 @@ const { Backend }=await import('../js/backend.js');
   const b=new Backend();
   assert.equal(added,1);
   const pending=b._callTo('legacy','probe',{});
+  const architectureProbe=b.probeArchitectures();
+  assert.equal(workers.length,3);
   b.dispose();
+  const probeResult=await architectureProbe;
+  assert.equal(probeResult.ok,false);
+  assert.equal(workers[2].terminated,true,'active architecture probe must terminate on dispose');
   let error=null;try{await pending;}catch(e){error=e;}
   assert.equal(error?.code,'BACKEND_DISPOSED');
   assert.ok(workers.slice(0,2).every((w)=>w.terminated));
@@ -23,6 +28,10 @@ const { Backend }=await import('../js/backend.js');
   assert.equal(removed,1,'dispose must be idempotent');
   let after=null;try{await b.probe();}catch(e){after=e;}
   assert.equal(after?.code,'BACKEND_DISPOSED');
+  const workersBefore=workers.length;
+  const disposedProbe=await b.probeArchitectures();
+  assert.equal(disposedProbe.ok,false);
+  assert.equal(workers.length,workersBefore,'disposed backend must not spawn probe workers');
 }
 
 delete globalThis.document;
