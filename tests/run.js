@@ -3769,6 +3769,12 @@ test('IL2CPP: 検証できたCodeRegistrationだけMethod→addressへ結ぶ', a
   const dv = new DataView(data.buffer);
   dv.setBigUint64(0, 3n, true);
   dv.setBigUint64(8, 0x2100n, true);
+  // Verified legacy CodeRegistration requires neighboring count/pointer pairs,
+  // not just one executable-looking table.
+  dv.setBigUint64(16, 1n, true);
+  dv.setBigUint64(24, 0x2180n, true);
+  dv.setBigUint64(32, 1n, true);
+  dv.setBigUint64(40, 0x2190n, true);
   for (let i = 0; i < 3; i++) dv.setBigUint64(0x100 + i * 8, 0x1000n + BigInt(i * 4), true);
   const regions = [
     { vmAddr: 0x1000n, size: 0x100n, exec: true, section: '__text' },
