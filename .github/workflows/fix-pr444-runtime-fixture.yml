@@ -1,0 +1,35 @@
+name: Fix PR444 runtime fixture
+
+on:
+  push:
+    branches:
+      - fix/first-50-unreferenced-open-issues
+
+permissions:
+  contents: write
+
+jobs:
+  fix-runtime-fixture:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Make synthetic program executable map explicit
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('tests/runtime-platform.mjs')
+          text = path.read_text()
+          old = """    fetch: async (addr) => table.get(BigInt(addr).toString()) || (fallback ? fallback(addr) : null),\n    read: async () => null,\n    symbolFor: () => null,"""
+          new = """    fetch: async (addr) => table.get(BigInt(addr).toString()) || (fallback ? fallback(addr) : null),\n    read: async () => null,\n    isExecutable: (addr) => table.has(BigInt(addr).toString()),\n    symbolFor: () => null,"""
+          if old not in text:
+              raise SystemExit('target block not found; refusing unsafe edit')
+          path.write_text(text.replace(old, new, 1))
+          PY
+          node tests/runtime-platform.mjs
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tests/runtime-platform.mjs
+          git commit -m "test: declare executable addresses in runtime fixture"
+          git push origin HEAD:fix/first-50-unreferenced-open-issues
