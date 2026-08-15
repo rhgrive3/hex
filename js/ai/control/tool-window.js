@@ -5,13 +5,23 @@ const WINDOWS = Object.freeze({
   project: ['project_search','get_binary_diff','compare_functions','lookup_known_function','lookup_signature','get_function'],
   runtime: ['get_runtime_observations','verify_runtime_hypothesis','get_current_function','get_semantic_facts','trace_value'],
 });
+const AUTO_ESCAPE_TOOLS = Object.freeze(['search_functions']);
 
 export function selectToolWindow(registry, { mode = 'agent', requestedScope = 'auto', effectiveScope = 'function', intent = 'unknown', observations = [], hypotheses = [], maxTools = 10 } = {}) {
-  // In Auto, expose only a tiny escape hatch from the wider registry so the
-  // model can request evidence that legitimately triggers a controlled scope
-  // expansion. Explicit scopes never receive out-of-scope definitions.
-  const definitionScope = requestedScope === 'auto' ? 'auto' : effectiveScope;
-  const available = registry.definitionsForModel({ scope: definitionScope });
+  let available = registry.definitionsForModel({ scope: effectiveScope });
+  if (requestedScope === 'auto') {
+    // Auto may expose a tiny, deliberate escape hatch from the wider registry
+    // so the model can request evidence that triggers controlled expansion.
+    // Everything else must already be valid in the current effective scope.
+    const effectiveNames = new Set(available.map((tool) => tool.name));
+    const wider = registry.definitionsForModel({ scope: 'auto' });
+    for (const tool of wider) {
+      if (AUTO_ESCAPE_TOOLS.includes(tool.name) && !effectiveNames.has(tool.name)) {
+        available.push(tool);
+        effectiveNames.add(tool.name);
+      }
+    }
+  }
   const phase = choosePhase({ intent, observations, hypotheses, effectiveScope });
   const preferred = WINDOWS[phase] || WINDOWS.current;
   const byName = new Map(available.map((tool) => [tool.name, tool]));

@@ -51,13 +51,16 @@ assert.equal(auto.expansions.length, 1);
 
 // G/H: phase-specific windows stay small but discovery can reach deep tools.
 const names = ['search_functions','search_strings','lookup_known_function','lookup_signature','get_function','get_current_function','get_selection_context','get_semantic_facts','trace_value','get_cfg','get_callers','get_callees','get_related_functions','verify_field_update','get_runtime_observations','verify_runtime_hypothesis'];
-const registry = { definitionsForModel: () => names.map((name) => ({ name, inputSchema: { type: 'object' } })) };
+const registry = { definitionsForModel: ({ scope } = {}) => names.filter((name) => !(scope === 'selection' && ['get_current_function','get_semantic_facts','get_cfg','trace_value'].includes(name))).map((name) => ({ name, inputSchema: { type: 'object' } })) };
 const currentWindow = selectToolWindow(registry, { effectiveScope: 'function', intent: 'explain-current-function', maxTools: 8 });
 assert.equal(currentWindow.phase, 'current');
 assert.ok(currentWindow.tools.length <= 8);
 assert.ok(currentWindow.tools.some((tool) => tool.name === 'get_current_function'));
 const autoEscape = selectToolWindow(registry, { requestedScope: 'auto', effectiveScope: 'function', intent: 'unknown', maxTools: 9 });
 assert.ok(autoEscape.tools.some((tool) => tool.name === 'search_functions'), 'Auto has a bounded escape hatch that can trigger controlled expansion');
+const selectionWindow = selectToolWindow(registry, { requestedScope: 'auto', effectiveScope: 'selection', intent: 'explain-selection', maxTools: 9 });
+assert.ok(selectionWindow.tools.some((tool) => tool.name === 'search_functions'));
+assert.equal(selectionWindow.tools.some((tool) => tool.name === 'get_current_function'), false, 'Auto escape must not leak unrelated full-function tools into selection scope');
 const discovery = selectToolWindow(registry, { effectiveScope: 'binary', intent: 'find-function', maxTools: 9 });
 assert.equal(discovery.phase, 'discovery');
 assert.ok(discovery.tools.some((tool) => tool.name === 'search_functions'));
