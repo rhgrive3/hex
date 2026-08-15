@@ -101,7 +101,10 @@ await run(async ({ browser }) => {
 
   /* ── failed legacy dispatch must preserve context ─────────── */
   await page.evaluate(() => {
-    if (window.__hexUi) window.__hexUi.router = null;
+    if (window.__hexUi) {
+      window.__hexUi.__analysisNavigationSavedRouter = window.__hexUi.router;
+      window.__hexUi.router = null;
+    }
   });
   const beforeFailedDispatch = await page.evaluate(() => document.querySelectorAll('#overlays .sheet:not(.parked)').length);
   await page.evaluate(() => {
@@ -116,7 +119,10 @@ await run(async ({ browser }) => {
     beforeFailedDispatch > 0 && afterFailedDispatch === beforeFailedDispatch,
     JSON.stringify({ before: beforeFailedDispatch, after: afterFailedDispatch }));
   await page.evaluate(() => {
-    if (window.__hexUi && window.__hexUi.product?.router) window.__hexUi.router = window.__hexUi.product.router;
+    if (window.__hexUi?.__analysisNavigationSavedRouter) {
+      window.__hexUi.router = window.__hexUi.__analysisNavigationSavedRouter;
+      delete window.__hexUi.__analysisNavigationSavedRouter;
+    }
   });
 
   /* ── the settled-answer overlay ──────────────────────────── */
