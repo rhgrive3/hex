@@ -1,5 +1,6 @@
 name: Sync main for issues 350-399
 
+# Temporary integration gate; removed after the branch is verified against main.
 on:
   push:
     branches: [fix/issues-350-399]
