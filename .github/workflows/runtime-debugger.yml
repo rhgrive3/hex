@@ -43,6 +43,6 @@ jobs:
             tail -n 80 /tmp/hex-check.log
             while IFS= read -r line; do
               printf '::error::%s\n' "${line//'%'/'%25'}"
-            done < <(tail -n 40 /tmp/hex-check.log)
+            done < <(tail -n 8 /tmp/hex-check.log)
             exit 1
           fi
