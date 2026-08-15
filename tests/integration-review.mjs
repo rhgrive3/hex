@@ -12,7 +12,7 @@ import { findValueUpdates } from '../js/dataflow.js';
 let rowSeq = 0;
 function I(mn, ops = '', addr = null) {
   const row = rowSeq++;
-  return { row, address: addr == null ? 0x100000000n + BigInt(row * 4) : BigInt(addr), mnemonic:mn, operands:ops };
+  return { row, address: addr == null ? 0x100000000n + BigInt(row * 4) : BigInt(addr), mn, ops };
 }
 function modelOf(instructions, calls = [], edges = [], opts = {}) {
   return buildSemanticModel(instructions, calls, edges, opts);
