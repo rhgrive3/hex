@@ -11,7 +11,7 @@
     "decompiler:test": "node tests/issues-400-405.mjs && node tests/decompile-cfg.mjs && node tests/decompiler-semantic.mjs && node tests/decompiler-switch.mjs && node tests/decompiler-rewrite.mjs && node tests/decompiler-pipeline.mjs && node tests/compiler-truth/run.mjs && node tests/objc-metadata.mjs && node tests/objc-runtime.mjs && node tests/swift-runtime.mjs",
     "compiler-truth": "node tests/compiler-truth/run.mjs",
     "recognition:test": "node tests/recognition-intelligence.mjs",
-    "platform:test": "node tests/platform-bytesource.mjs && node tests/project-roundtrip.mjs && node tests/diff-platform.mjs && node tests/knowledge-platform.mjs && node tests/cache-platform.mjs && node tests/plugin-platform.mjs && node tests/capstone-capability.mjs && npm run recognition:test",
+    "platform:test": "node tests/issues-454-455-script-architecture.mjs && node tests/platform-bytesource.mjs && node tests/project-roundtrip.mjs && node tests/diff-platform.mjs && node tests/knowledge-platform.mjs && node tests/cache-platform.mjs && node tests/plugin-platform.mjs && node tests/capstone-capability.mjs && npm run recognition:test",
     "runtime:test": "node tests/runtime-platform.mjs && node tests/runtime-evidence-fusion.mjs",
     "integration:test": "npm run semantic:test && npm run decompiler:test && npm run platform:test && npm run runtime:test",
     "browser": "node tests/browser.mjs",
