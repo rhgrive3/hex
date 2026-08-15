@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hex for ChatGPT
 // @namespace    https://github.com/rhgrive3/hex
-// @version      1.0.1786795194
+// @version      1.0.1786800418
 // @description  Run the Hex binary analysis workbench on ChatGPT Web.
 // @match        https://chatgpt.com/*
 // @run-at       document-idle
@@ -849,6 +849,8 @@
           this.onChunk = null;
           this.onFatal = null;
           this._archProbe = null;
+          this._archProbeWorker = null;
+          this._archProbeFinish = null;
           this._disasmWorker = null;
           this._disasmSeq = 1;
           this._disasmPending = /* @__PURE__ */ new Map();
@@ -1038,18 +1040,29 @@
           return this._callTo("platform", "probe", {});
         }
         probeArchitectures() {
+          if (this.disposed) return Promise.resolve({ ok: false, error: "Backend has been disposed.", support: { arm64: false, x86_64: false } });
           if (this._archProbe) return this._archProbe;
           this._archProbe = new Promise((resolve2) => {
             const worker = new Worker(new URL("./platform/capstone-probe-worker.js", "__HEX_ORIGIN__/userscript-assets/js/backend.js"));
+            this._archProbeWorker = worker;
+            let finished = false;
             const finish = (value2) => {
-              worker.terminate();
+              if (finished) return;
+              finished = true;
+              if (this._archProbeWorker === worker) this._archProbeWorker = null;
+              try {
+                worker.terminate();
+              } catch {
+              }
               resolve2(value2);
             };
+            this._archProbeFinish = finish;
             worker.onmessage = (event) => finish(event.data);
             worker.onerror = (event) => finish({ ok: false, error: event.message, support: { arm64: false, x86_64: false } });
             worker.postMessage({ t: "probe" });
           }).finally(() => {
             this._archProbe = null;
+            this._archProbeFinish = null;
           });
           return this._archProbe;
         }
@@ -1194,6 +1207,9 @@
           this.transportEpoch++;
           this.resetCache();
           this._releaseDisassembly(failure);
+          this._archProbeFinish?.({ ok: false, error: failure.message, support: { arm64: false, x86_64: false } });
+          this._archProbeFinish = null;
+          this._archProbeWorker = null;
           for (const pending of this.pending.values()) pending.reject(failure);
           this.pending.clear();
           for (const worker of [this.legacyWorker, this.platformWorker]) {

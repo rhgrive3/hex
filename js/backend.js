@@ -40,6 +40,8 @@ export class Backend {
     this.onChunk = null;
     this.onFatal = null;
     this._archProbe = null;
+    this._archProbeWorker = null;
+    this._archProbeFinish = null;
     this._disasmWorker = null;
     this._disasmSeq = 1;
     this._disasmPending = new Map();
@@ -213,14 +215,24 @@ export class Backend {
   }
 
   probeArchitectures() {
+    if (this.disposed) return Promise.resolve({ ok:false, error:'Backend has been disposed.', support:{ arm64:false, x86_64:false } });
     if (this._archProbe) return this._archProbe;
     this._archProbe = new Promise((resolve) => {
       const worker = new Worker(new URL('./platform/capstone-probe-worker.js', import.meta.url));
-      const finish = (value) => { worker.terminate(); resolve(value); };
+      this._archProbeWorker = worker;
+      let finished = false;
+      const finish = (value) => {
+        if (finished) return;
+        finished = true;
+        if (this._archProbeWorker === worker) this._archProbeWorker = null;
+        try { worker.terminate(); } catch { /* best effort */ }
+        resolve(value);
+      };
+      this._archProbeFinish = finish;
       worker.onmessage = (event) => finish(event.data);
       worker.onerror = (event) => finish({ ok: false, error: event.message, support: { arm64: false, x86_64: false } });
       worker.postMessage({ t: 'probe' });
-    }).finally(() => { this._archProbe = null; });
+    }).finally(() => { this._archProbe = null; this._archProbeFinish = null; });
     return this._archProbe;
   }
 
@@ -342,6 +354,8 @@ export class Backend {
     this.analysisEpoch++; this.transportEpoch++;
     this.resetCache();
     this._releaseDisassembly(failure);
+    this._archProbeFinish?.({ ok:false, error:failure.message, support:{ arm64:false, x86_64:false } });
+    this._archProbeFinish = null; this._archProbeWorker = null;
     for (const pending of this.pending.values()) pending.reject(failure);
     this.pending.clear();
     for (const worker of [this.legacyWorker, this.platformWorker]) { try { worker.terminate(); } catch { /* best effort */ } }
