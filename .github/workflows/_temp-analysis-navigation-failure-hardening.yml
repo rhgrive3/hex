@@ -9,6 +9,7 @@ jobs:
   harden:
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@v4
         with:
@@ -62,8 +63,15 @@ jobs:
           fs.writeFileSync(testPath,test.replace(anchor,anchor+addition));
           EOF
       - run: npm ci
+      - name: Install pinned Playwright engines
+        run: |
+          npm install --no-save --save-exact playwright@1.55.0
+          npx --no-install playwright install-deps webkit
+          npx --no-install playwright install chromium webkit
       - run: npm run ui:test
       - run: npm run ui:browser
+        env:
+          CI: '1'
       - run: npm run check
       - run: npm run userscript:test
       - name: Commit verified fix and generated bundle
