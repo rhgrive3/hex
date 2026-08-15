@@ -95,6 +95,10 @@ export async function executeTurn(input = {}, options = {}) {
 
         if (!this.provider || typeof this.provider.nextTurn !== 'function') decision = deterministicDecision(plan, request);
         else {
+          if (typeof this.provider.prepareCapabilities === 'function') {
+            await this.provider.prepareCapabilities({ signal, timeoutMs: Math.min(5000, remainingTime(started, budget.timeoutMs)) });
+            ensureRunning(signal, started, budget.timeoutMs);
+          }
           const seenCalls = new Map(); let repairs = 0;
           while (modelCalls < budget.maxModelCalls) {
             ensureRunning(signal, started, budget.timeoutMs);
