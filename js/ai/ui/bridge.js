@@ -20,9 +20,20 @@ async function loadCoreRuntime(localContext) {
   if (!runtimeModule || typeof runtimeModule.createAIRuntime !== 'function') return null;
   let provider = null;
   try {
-    const providerModule = await import('../provider/index.js');
-    if (providerModule && typeof providerModule.WorkerAIProvider === 'function') {
-      provider = new providerModule.WorkerAIProvider();
+    /* The normal web app keeps its existing same-origin Gemini worker path.
+       The userscript host injects a browser-local ChatGPT bridge instead; in
+       that environment UserscriptAIProvider owns the ChatGPT/Gemini switch. */
+    if (globalThis.__HEX_CHATGPT_BRIDGE__) {
+      const userscriptModule = await import('../provider/chatgpt-web.js');
+      if (userscriptModule && typeof userscriptModule.UserscriptAIProvider === 'function') {
+        provider = new userscriptModule.UserscriptAIProvider({ bridge: globalThis.__HEX_CHATGPT_BRIDGE__ });
+      }
+    }
+    if (!provider) {
+      const providerModule = await import('../provider/index.js');
+      if (providerModule && typeof providerModule.WorkerAIProvider === 'function') {
+        provider = new providerModule.WorkerAIProvider();
+      }
     }
   } catch { /* no provider: the core still answers deterministically */ }
   return runtimeModule.createAIRuntime({ context: localContext, provider });
