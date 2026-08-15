@@ -182,7 +182,14 @@ export class RuntimeAnalysisPlatform {
       if (typeof resolveFunction !== 'function') return { status:'unsupported', reason:'binary-version-mismatch', sourceHash, targetHash, evidence:[] };
       const resolved = await resolveFunction({ functionAddress, fingerprint:original.functionFingerprint || source.functionFingerprint || null, sourceBinaryHash:sourceHash, targetBinaryHash:targetHash });
       if (resolved == null) return { status:'unsupported', reason:'function-re-resolution-failed', sourceHash, targetHash, evidence:[] };
-      functionAddress = asAddress(resolved.address ?? resolved);
+      const confidence = Number(resolved && typeof resolved === 'object' ? (resolved.identityConfidence ?? resolved.confidence ?? resolved.score) : NaN);
+      const margin = Number(resolved && typeof resolved === 'object' ? (resolved.ambiguityMargin ?? resolved.margin) : NaN);
+      const accepted = !!(resolved && typeof resolved === 'object' && resolved.accepted === true);
+      const ambiguous = !!(resolved && typeof resolved === 'object' && resolved.ambiguous === true);
+      if (!accepted || !Number.isFinite(confidence) || confidence < 0.85 || ambiguous || (Number.isFinite(margin) && margin < 0.10)) {
+        return { status:'unsupported', reason:'function-re-resolution-ambiguous', sourceHash, targetHash, confidence:Number.isFinite(confidence)?confidence:null, ambiguityMargin:Number.isFinite(margin)?margin:null, evidence:[] };
+      }
+      functionAddress = asAddress(resolved.address);
     }
     const experiment = { ...original, functionAddress, binaryHash:targetHash || sourceHash || null };
     return this.runExperiment(experiment,{ ...options,replay:true });

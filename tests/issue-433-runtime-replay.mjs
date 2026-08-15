@@ -1,0 +1,12 @@
+import assert from 'node:assert/strict';
+import { RuntimeAnalysisPlatform } from '../js/runtime/index.js';
+const platform=Object.create(RuntimeAnalysisPlatform.prototype);
+platform.options={}; platform.currentSession=()=>({binaryHash:'target'});
+platform.runExperiment=async experiment=>({status:'ran',experiment});
+const recording={binaryHash:'source',experiment:{id:'e',functionAddress:0x1000n,cases:[]}};
+let r=await platform.replayExperiment(recording,{resolveFunction:async()=>0x2000n});
+assert.equal(r.reason,'function-re-resolution-ambiguous');
+r=await platform.replayExperiment(recording,{resolveFunction:async()=>({address:0x2000n,accepted:true,confidence:.7,ambiguityMargin:.4})}); assert.equal(r.status,'unsupported');
+r=await platform.replayExperiment(recording,{resolveFunction:async()=>({address:0x2000n,accepted:true,confidence:.95,ambiguityMargin:.02})}); assert.equal(r.status,'unsupported');
+r=await platform.replayExperiment(recording,{resolveFunction:async()=>({address:0x2000n,accepted:true,confidence:.95,ambiguityMargin:.3})}); assert.equal(r.status,'ran'); assert.equal(r.experiment.functionAddress,0x2000n);
+console.log('issue #433 replay trust passed');
