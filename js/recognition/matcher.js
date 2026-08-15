@@ -5,18 +5,31 @@ import { createMatchBudget } from './match-budget.js';
 export class FunctionMatchIndex {
   constructor(functions = [], options = {}) {
     const mode = options.mode || 'fast';
-    this.items = functions.map((x) => mode === 'full' ? fingerprintFunction(x) : fingerprintFunctionFast(x));
+    this.budget = options.budget || createMatchBudget(options.matchBudget || {});
+    this.items = [];
     this.buckets = new Map();
-    for (let i = 0; i < this.items.length; i++) {
-      for (const token of coarseTokens(this.items[i])) {
+    this.complete = true;
+    indexBuild:
+    for (const raw of functions || []) {
+      if (!this.budget.preprocess(raw, 'after fingerprint preprocessing')) { this.complete = false; break; }
+      const fp = mode === 'full' ? fingerprintFunction(raw) : fingerprintFunctionFast(raw);
+      this.budget.fingerprinted();
+      const index = this.items.length;
+      this.items.push(fp);
+      for (const token of coarseTokens(fp)) {
+        if (!this.budget.indexEntry()) { this.complete = false; break indexBuild; }
         let bucket = this.buckets.get(token);
         if (!bucket) this.buckets.set(token, bucket = []);
-        bucket.push(i);
+        bucket.push(index);
       }
+      if (!this.budget.checkPreprocessWall('fingerprint index construction')) { this.complete = false; break; }
     }
+    if (this.budget.preprocessingIncomplete) this.complete = false;
   }
   candidates(input, options = {}) {
-    const fp = fingerprintFunctionFast(input);
+    const fp = input?.schema === 'hex.function-fingerprint' || input?.schema === 'hex.function-fingerprint-fast'
+      ? input
+      : fingerprintFunctionFast(input);
     const maxCandidates = Math.max(1, options.maxCandidates ?? 128);
     const maxBucketScan = Math.max(maxCandidates, options.maxBucketScan ?? 1024);
     const tokenBuckets = coarseTokens(fp).map((token) => ({token,bucket:this.buckets.get(token)})).filter((x) => x.bucket?.length).sort((a,b) => a.bucket.length - b.bucket.length);
@@ -58,17 +71,62 @@ export function maximumWeightCandidateMatching(candidates = [], options = {}) {
   return maximumWeightCandidateMatchingBounded(candidates, options);
 }
 
-export function matchFunctions(beforeFunctions, afterFunctions, options = {}) {
+export function matchFunctions(beforeFunctions = [], afterFunctions = [], options = {}) {
   const fastMode = options.mode === 'fast';
-  const before = beforeFunctions.map((x) => fastMode ? fingerprintFunctionFast(x) : fingerprintFunction(x));
-  const after = afterFunctions.map((x) => fastMode ? fingerprintFunctionFast(x) : fingerprintFunction(x));
-  const index = new FunctionMatchIndex(after, { mode: fastMode ? 'fast' : 'full' });
+  // Start every time/abort/memory/work budget before the first raw function is
+  // fingerprinted. This is the trust boundary for the full matching pipeline.
+  const budget = createMatchBudget(options.matchBudget || {});
+  const incompletePreprocessing = (index = null) => {
+    const matchingBudget = budget.snapshot();
+    return {
+      matches: [],
+      // Do not allocate another O(N) copy on the failure path. Consumers must
+      // inspect matching.truncated / candidateGraphIncomplete before treating
+      // these unmatched inputs as definitive deletions/additions.
+      deleted: beforeFunctions,
+      new: afterFunctions,
+      unresolvedBefore: beforeFunctions,
+      unresolvedAfter: afterFunctions,
+      candidatesEvaluated: 0,
+      candidateComparisons: matchingBudget.candidateEvaluations,
+      indexBuckets: index?.buckets?.size || 0,
+      truncated: true,
+      ambiguous: true,
+      matching: {
+        truncated: true,
+        candidateGraphIncomplete: true,
+        preprocessingIncomplete: true,
+        ambiguousBefore: beforeFunctions.length,
+        ambiguousAfter: afterFunctions.length,
+        truncatedComponents: [],
+        budget: matchingBudget,
+      },
+    };
+  };
+
+  // Build the after-side fingerprint/index incrementally. No all-function map
+  // exists before the budget can stop the work.
+  const index = new FunctionMatchIndex(afterFunctions, { mode: fastMode ? 'fast' : 'full', budget });
+  if (!index.complete || budget.preprocessingIncomplete) return incompletePreprocessing(index);
+  const after = index.items;
+
+  // Fingerprint the before side incrementally under the same aggregate budget.
+  const before = [];
+  for (const raw of beforeFunctions) {
+    if (!budget.preprocess(raw, 'before fingerprint preprocessing')) return incompletePreprocessing(index);
+    before.push(fastMode ? fingerprintFunctionFast(raw) : fingerprintFunction(raw));
+    budget.fingerprinted();
+    if (!budget.checkPreprocessWall('before fingerprint preprocessing')) return incompletePreprocessing(index);
+  }
+
   const threshold = options.threshold ?? 0.62;
   const ambiguityWindow = options.ambiguityWindow ?? 0.035;
-  const budget = createMatchBudget(options.matchBudget || {});
   const all = [];
   candidateGeneration:
   for (let i = 0; i < before.length; i++) {
+    // A zero-candidate lookup still performs bounded bucket work; check the
+    // wall/abort budget before every lookup so empty graphs cannot bypass it.
+    if (!budget.checkCandidateWall()) break candidateGeneration;
     const candidateIds = index.candidates(before[i], options);
     for (const j of candidateIds) {
       if (!budget.candidate()) break candidateGeneration;
@@ -86,8 +144,11 @@ export function matchFunctions(beforeFunctions, afterFunctions, options = {}) {
       matches: [], deleted: before.slice(), new: after.slice(),
       candidatesEvaluated: all.length, candidateComparisons: matchingBudget.candidateEvaluations,
       indexBuckets: index.buckets.size, truncated: true, ambiguous: true,
+      unresolvedBefore: before,
+      unresolvedAfter: after,
       matching: {
         truncated: true, candidateGraphIncomplete: true,
+        preprocessingIncomplete: !!matchingBudget.preprocessingIncomplete,
         ambiguousBefore: before.length, ambiguousAfter: after.length,
         truncatedComponents: [], budget: matchingBudget,
       },
@@ -166,9 +227,12 @@ export function matchFunctions(beforeFunctions, afterFunctions, options = {}) {
     indexBuckets: index.buckets.size,
     truncated,
     ambiguous: truncated,
+    unresolvedBefore: truncated ? before.filter((_x, i) => solved.ambiguousLeft.has(i)) : [],
+    unresolvedAfter: truncated ? after.filter((_x, i) => solved.ambiguousRight.has(i)) : [],
     matching: {
       truncated,
       candidateGraphIncomplete: false,
+      preprocessingIncomplete: false,
       ambiguousBefore: solved.ambiguousLeft.size,
       ambiguousAfter: solved.ambiguousRight.size,
       truncatedComponents,
