@@ -23,7 +23,12 @@ assert.equal(reducedBudget.timeoutMs, 2000);
 
 const evidence = new EvidenceStore();
 assert.equal(evidence.add({ id: 'model_fake', kind: 'write', status: 'verified', sourceTool: 'model', title: 'fake' }).status, 'supported');
-const verified = evidence.ingest('verify_field_update', { verified: true, address: '0x1000', evidence: ['semantic:write:1'], results: [{ id: 'ev_real', kind: 'write', functionAddress: '0x1000', evidence: ['semantic:write:1'] }] }, { verifier: true })[0];
+const verified = evidence.ingest('verify_field_update', {
+  verified: true,
+  address: '0x1000',
+  evidence: ['semantic:write:1'],
+  results: [{ id: 'ev_real', kind: 'write', verified: true, functionAddress: '0x1000', evidence: ['semantic:write:1'] }],
+}, { verifier: true })[0];
 assert.equal(verified.status, 'verified');
 const hypotheses = new HypothesisStore(evidence);
 assert.equal(hypotheses.upsert({ claim: 'model-only claim', status: 'verified', supportEvidenceIds: [] }).status, 'open');
