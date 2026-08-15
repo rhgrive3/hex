@@ -16,6 +16,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
       - run: git fetch origin main
       - run: git merge --no-edit origin/main
       - run: python3 tools/fix-unlinked-ir.py
@@ -23,8 +27,6 @@ jobs:
       - run: npm run check
       - name: Commit verified implementation
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           rm -f tools/fix-unlinked-ir.py .github/workflows/fix-unlinked-ir-406-423.yml .github/workflows/verify-unlinked-ir-v2.yml
           git add -A
           git commit -m "fix: harden semantic IR and evidence correctness (#406-#419, #422-#423)"
