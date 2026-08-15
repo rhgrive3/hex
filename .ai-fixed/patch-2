@@ -1,0 +1,11 @@
+--- a/tests/ai-lossless-data-plane.mjs
++++ b/tests/ai-lossless-data-plane.mjs
+@@ -34,7 +34,7 @@
+   operation:'add', evidence:[{ id:`ir:${i}`, instructionId:i, row:i, address:BASE + BigInt(i * 4) }],
+ }));
+ // B. A distinct 500-instruction function proves late-region and local Semantic IR access.
+-const regionLines = Array.from({ length:500 }, () => 'nop');
++const regionLines = Array.from({ length:500 }, () => 'mov x8, x0');
+ regionLines.push('ret');
+ const regionModel = modelFor(regionLines);
+ const evidence = new EvidenceStore();
