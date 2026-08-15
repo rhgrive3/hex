@@ -255,8 +255,7 @@ export function showSections(app) {
         const hintText = sectionHint(region.section || region.name);
         ul.append(tapRow(region.section || region.name, {
           indent: true,
-          sub: (hintText ? hintText + '
-' : '') + extra.join('  ·  '),
+          sub: (hintText ? hintText + '\n' : '') + extra.join('  ·  '),
           tag: region.exec ? t('sections.tagCode') : (region.zerofill ? 'bss' : ''),
           tagClass: region.exec ? 'exec' : '',
           right: current && current.id === region.id ? '✓' : '',
