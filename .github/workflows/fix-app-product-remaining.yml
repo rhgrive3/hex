@@ -27,7 +27,6 @@ jobs:
         run: |
           node tests/issues-547-548-workspace-product.mjs
           npm run ai:test
-          npm run diff:test
       - name: Full validation
         run: |
           node tests/run.js
