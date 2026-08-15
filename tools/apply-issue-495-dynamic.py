@@ -9,9 +9,11 @@ new="""  const relocationBudget = createRelocationBudget({\n    onLimit(message)
 if new not in text:
     if old not in text: raise SystemExit('parseProgramDynamic relocation anchor not found')
     text=text.replace(old,new,1)
-start=text.index('function collectDynamicRelocations(r, tags, image, bits) {')
-end=text.index('\nfunction attachDynamicRelocations(',start)
-replacement=r'''function collectDynamicRelocations(r, tags, image, bits, budget) {
+start_marker='function collectDynamicRelocations(r, tags, image, bits) {'
+if start_marker in text:
+    start=text.index(start_marker)
+    end=text.index('\nfunction attachDynamicRelocations(',start)
+    replacement=r'''function collectDynamicRelocations(r, tags, image, bits, budget) {
   const out = [];
   const seen = new Set();
   const one = (tag) => tags.get(tag)?.[0] ?? null;
@@ -55,14 +57,5 @@ replacement=r'''function collectDynamicRelocations(r, tags, image, bits, budget)
   return out;
 }
 '''
-text=text[:start]+replacement+text[end:]
-p.write_text(text)
-
-p=Path('package.json')
-text=p.read_text()
-old='"binary:test": "node tests/issues-461-463-binary.mjs && node tests/universal-binary.mjs'
-new='"binary:test": "node tests/issue-495-elf-relocation-budget.mjs && node tests/issues-461-463-binary.mjs && node tests/universal-binary.mjs'
-if new not in text:
-    if old not in text: raise SystemExit('binary:test anchor not found')
-    text=text.replace(old,new,1)
+    text=text[:start]+replacement+text[end:]
 p.write_text(text)
