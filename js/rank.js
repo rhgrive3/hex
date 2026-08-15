@@ -220,7 +220,7 @@ export function rankCandidates({ goal, strings, program, symbols, region, limit 
   if (matcher && symbols && symbols.symbolCount) {
     const lo = region ? region.vmAddr : null;
     const hi = region ? region.vmAddr + region.size : null;
-    let scanned = 0;
+    const matches = [];
     for (let i = 0; i < symbols.addrs.length; i++) {
       const a = symbols.addrs[i];
       if (lo != null && (a < lo || a >= hi)) continue;
@@ -228,12 +228,16 @@ export function rankCandidates({ goal, strings, program, symbols, region, limit 
       if (!name || !matcher.test(name)) continue;
       const m = matchName(goal, name);
       if (!m) continue;
+      matches.push({ a, name, m });
+    }
+    matches.sort((a, b) => b.m.score - a.m.score || String(a.name).localeCompare(String(b.name)));
+    if (matches.length > 400) notes.push('name-matches-capped');
+    for (const { a, name, m } of matches.slice(0, 400)) {
       const start = symbols.functionCount ? (symbols.isFunctionStart(a) ? a : null) : a;
       const c = candidate(start != null ? start : a, a);
       if (!c) continue;
       c.name = c.name || name;
       addReason(c, REASON.NAME, POINTS[REASON.NAME] * m.score, { name, term: m.term });
-      if (++scanned >= 400) { notes.push('name-matches-capped'); break; }
     }
   }
 

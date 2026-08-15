@@ -1169,12 +1169,13 @@ test('FLOW: 別の場所へ移しているだけなら「往復」と言わな�
 test('FLOW: ARC property helper への tail-call setter を getter と逆判定しない', () => {
   const m = build([
     'adrp x8, #0x100004000',
-    'ldrsw x3, [x8, #0x20]',
+    'ldrsw x2, [x8, #0x20]',
     'b #0x100000100',
   ], { '0x100000100': '_objc_setProperty_nonatomic_copy' });
   const ups = findValueUpdates(m);
   eq(ups.length, 1, '薄い property setter を拾えていない');
   eq(ups[0].kind, 'write', 'objc_setProperty* を getter と逆判定している');
+  eq(ups[0].register, 'x3', 'setter の newValue register は x3 でなければならない');
   ok(ups[0].location.indexAddr != null, 'ivar offset variable の場所を失っている');
 });
 

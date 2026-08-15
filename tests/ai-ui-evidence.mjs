@@ -91,8 +91,9 @@ check('every status the core can emit maps to a UI state with a word and a glyph
   }
   assert.equal(normalizeStatus('rejected'), STATUS.CONTRADICTED);
   assert.equal(normalizeStatus('something-new'), STATUS.UNKNOWN);
-  assert.equal(normalizeStatus(null, 0.99), STATUS.VERIFIED);
+  assert.equal(normalizeStatus(null, 0.99), STATUS.SUPPORTED);
   assert.equal(normalizeStatus(null, 0.8), STATUS.SUPPORTED);
+  assert.equal(normalizeStatus('verified', 0.2), STATUS.VERIFIED, 'verification requires explicit provenance/status');
 });
 
 check('every action kind the core can emit is renderable', () => {
