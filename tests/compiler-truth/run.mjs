@@ -5,3 +5,4 @@ if (typeof BigInt.prototype.toJSON !== 'function') {
 await import('./run-core.mjs');
 await import('./extended.mjs');
 await import('./language-matrix.mjs');
+await import('./mneg.mjs');
