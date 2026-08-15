@@ -1,0 +1,57 @@
+name: ChatGPT userscript host
+
+on:
+  pull_request:
+    paths:
+      - 'js/userscript/**'
+      - 'js/ai/provider/**'
+      - 'js/ai/ui/bridge.js'
+      - 'scripts/build-userscript.mjs'
+      - 'userscript/**'
+      - 'worker-entry.js'
+      - 'wrangler.jsonc'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'index.html'
+      - 'css/**'
+      - '.github/workflows/userscript-host.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'js/userscript/**'
+      - 'js/ai/provider/**'
+      - 'js/ai/ui/bridge.js'
+      - 'scripts/build-userscript.mjs'
+      - 'userscript/**'
+      - 'worker-entry.js'
+      - 'wrangler.jsonc'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'index.html'
+      - 'css/**'
+      - '.github/workflows/userscript-host.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  userscript:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Build and userscript tests
+        run: npm run userscript:test
+      - name: AI and worker regressions
+        run: |
+          npm run ai:test
+          node tests/gemini.mjs
+          node tests/worker-classic-harness.mjs
+      - name: Verify committed deployment bundles are current
+        run: git diff --exit-code -- userscript/hex.user.template.js userscript/platform-worker.bundle.js
