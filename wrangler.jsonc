@@ -9,6 +9,7 @@
     "run_worker_first": [
       "/api/*",
       "/hex.user.js",
+      "/hex.meta.js",
       "/userscript-assets/*"
     ]
   },
