@@ -153,8 +153,6 @@ function decodeChainedPointer(raw, format) {
       if (a & 0x40000) a -= 0x80000;
       addend = BigInt(a);
     }
-    // Apple fixup-chains ABI: ARM64E_KERNEL(7) and ARM64E_FIRMWARE(10)
-    // encode `next` in 4-byte units. ARM64E/USERLAND/USERLAND24 use 8.
     const stride = format === 7 || format === 10 ? 4 : 8;
     return { bind, ordinal, addend, next, stride };
   }
@@ -220,6 +218,7 @@ export function parseClassicBindings(r, dc, image, segments, source) {
   };
   while (p < end) {
     const byte = r.u8(p++);
+    const op = byte & BIND_OPCODE_MASK;
     const imm = byte & BIND_IMMEDIATE_MASK;
     if (op === 0x00) {
       if (source === 'lazy-bind') { symbol = ''; symbolFlags = 0; libOrdinal = 0; addend = 0n; continue; }
