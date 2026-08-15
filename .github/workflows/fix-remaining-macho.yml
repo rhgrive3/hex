@@ -24,7 +24,9 @@ jobs:
           cache: npm
       - run: npm ci
       - name: Apply focused fixes
-        run: python3 .github/scripts/fix_remaining_macho.py
+        run: |
+          python3 .github/scripts/fix_remaining_macho.py
+          python3 .github/scripts/fix_remaining_macho_followup.py
       - name: Syntax checks
         run: |
           node --check js/platform/analysis-result.js
@@ -52,7 +54,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git rm .github/workflows/fix-remaining-macho.yml .github/scripts/fix_remaining_macho.py
+          git rm .github/workflows/fix-remaining-macho.yml .github/scripts/fix_remaining_macho.py .github/scripts/fix_remaining_macho_followup.py
           git add -A
           git commit -m "Fix Mach-O symbol truth and recovery budgets (#521 #527)"
           git push origin HEAD:fix-remaining-macho-issues
