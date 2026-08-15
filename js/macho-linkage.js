@@ -28,31 +28,31 @@ export function normalizeMachOLinkage(image, limits = {}) {
   const cap={...MACHO_LINKAGE_LIMITS,...limits};
   const reasons=sourceCompleteness(image);
   const imports=[]; const exports=[];
-  let sites=0;
+  let sites=0, importTruncated=false, siteTruncated=false, exportTruncated=false;
   const rawImports=image?.imports||[];
   const rawExports=image?.exports||[];
   for(let i=0;i<rawImports.length;i++){
-    if(imports.length>=cap.imports){reasons.push('linkage-import-transport-limit');break;}
+    if(imports.length>=cap.imports){importTruncated=true;reasons.push('linkage-import-transport-limit');break;}
     const imp=rawImports[i]; if(!imp?.name)continue;
     const kept=[];
     for(const site of imp.sites||[]){
-      if(sites>=cap.sites){reasons.push('linkage-site-transport-limit');break;}
       if(site?.address==null)continue;
+      if(sites>=cap.sites){siteTruncated=true;reasons.push('linkage-site-transport-limit');break;}
       kept.push({address:BigInt(site.address),offset:site.offset==null?null:BigInt(site.offset),kind:site.kind||imp.source||'bind',pointerFormat:site.pointerFormat??null,addend:site.addend??imp.addend??0n});
       sites++;
     }
     imports.push({name:String(imp.name),library:imp.library||null,ordinal:imp.ordinal??null,weak:!!imp.weak,source:imp.source||'macho-import',addend:imp.addend??0n,sites:kept});
-    if(sites>=cap.sites&&i+1<rawImports.length)break;
+    if(siteTruncated)break;
   }
   for(const exp of rawExports){
-    if(exports.length>=cap.exports){reasons.push('linkage-export-transport-limit');break;}
+    if(exports.length>=cap.exports){exportTruncated=true;reasons.push('linkage-export-transport-limit');break;}
     if(!exp?.name)continue;
     exports.push({name:String(exp.name),address:exp.address==null?null:BigInt(exp.address),kind:exp.kind||'export',source:exp.source||'macho-export',flags:exp.flags??0,ordinal:exp.ordinal??null,imported:exp.imported||null,resolver:exp.resolver==null?null:BigInt(exp.resolver)});
   }
   const unique=[...new Set(reasons)];
   const canonicalComplete=unique.length===0;
-  const importTransportComplete=rawImports.length<=cap.imports&&sites<cap.sites||rawImports.every((imp)=>!(imp?.sites?.length));
-  const exportTransportComplete=rawExports.length<=cap.exports;
+  const importTransportComplete=!importTruncated&&!siteTruncated;
+  const exportTransportComplete=!exportTruncated;
   return {
     format:'macho',architecture:image?.arch||null,libraries:(image?.libraries||[]).slice(0,4096),imports,exports,
     completeness:{
