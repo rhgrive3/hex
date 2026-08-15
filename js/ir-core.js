@@ -266,7 +266,7 @@ function lift(insn, opts = {}) {
       base: mem ? regKeyOf(mem.base) : null,
       disp: mem && mem.disp && mem.disp.value != null ? mem.disp.value : null,
       index: mem && mem.index ? regKeyOf(mem.index) : null,
-      scale: mem && mem.shift && mem.shift.op === 'lsl' ? mem.shift.amount : 0,
+      scale: mem && mem.shift ? (mem.shift.amount || 0) : 0,
       extend: mem && mem.shift && mem.shift.op !== 'lsl' ? mem.shift.op : null,
       mode: mem ? mem.mode : 'offset',
       stack: !!insn.memory.stack,
@@ -702,6 +702,7 @@ export function buildIR(model, opts) {
         disp: p.addr.disp,
         index: p.addr.index ? topOf(p.addr.index) : null,
         scale: p.addr.scale || 0,
+        extend: p.addr.extend || null,
         size: p.addr.size,
         stack: !!p.addr.stack,
       };

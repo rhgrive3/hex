@@ -2,12 +2,21 @@ import { assemble as assembleArm64 } from '../patch.js';
 
 const BUILTINS = new Map();
 
+function canonicalId(value) { return String(value || '').trim().toLowerCase(); }
+function positiveInteger(value, name, { nullable = false } = {}) {
+  if (nullable && value == null) return null;
+  const n = Number(value);
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) throw new TypeError(`${name} must be a finite positive integer`);
+  return n;
+}
+
 export class ArchitectureAdapter {
   constructor(definition) {
-    if (!definition?.id) throw new TypeError('architecture id is required');
-    this.id = definition.id;
-    this.instructionAlignment = Math.max(1, Number(definition.instructionAlignment || 1));
-    this.fixedInstructionSize = definition.fixedInstructionSize == null ? null : Number(definition.fixedInstructionSize);
+    const id = canonicalId(definition?.id);
+    if (!id) throw new TypeError('architecture id is required');
+    this.id = id;
+    this.instructionAlignment = positiveInteger(definition.instructionAlignment ?? 1, 'instructionAlignment');
+    this.fixedInstructionSize = positiveInteger(definition.fixedInstructionSize, 'fixedInstructionSize', { nullable: true });
     this.viewerCompatible = !!definition.viewerCompatible;
     this.decode = definition.decode || null;
     this.assemble = definition.assemble || null;
@@ -49,7 +58,7 @@ export class UnsupportedArchitectureError extends Error {
     this.code = 'unsupported-architecture';
     this.unsupported = true;
     this.operation = operation;
-    this.architecture = String(architecture || 'unknown').toLowerCase();
+    this.architecture = canonicalId(architecture || 'unknown');
   }
 }
 
@@ -67,33 +76,25 @@ export function unsupportedArchitectureResult(operation, architecture) {
 
 export function registerArchitectureAdapter(definition, { replace = false } = {}) {
   const adapter = definition instanceof ArchitectureAdapter ? definition : new ArchitectureAdapter(definition);
-  if (BUILTINS.has(adapter.id) && !replace) throw new Error(`architecture already registered: ${adapter.id}`);
-  BUILTINS.set(adapter.id, adapter);
+  const id = canonicalId(adapter.id);
+  if (BUILTINS.has(id) && !replace) throw new Error(`architecture already registered: ${id}`);
+  BUILTINS.set(id, adapter);
   return adapter;
 }
 
-export function architectureAdapter(id) {
-  return BUILTINS.get(String(id || '').toLowerCase()) || BUILTINS.get('unknown');
-}
+export function architectureAdapter(id) { return BUILTINS.get(canonicalId(id)) || BUILTINS.get('unknown'); }
 
 export function architectureCapability(image, engine = {}) {
-  const architecture = String(image?.arch || 'unknown').toLowerCase();
+  const architecture = canonicalId(image?.arch || 'unknown');
   const adapter = architectureAdapter(architecture);
   const engineSupported = !!engine[architecture];
   const arm64Analysis = architecture === 'arm64' && engineSupported;
   const emulationSupported = !!engine.emulation?.[architecture];
   return Object.freeze({
-    format: image?.format || 'unknown',
-    architecture,
-    endianness: image?.endian || 'unknown',
-    bits: Number(image?.bits || 0),
-    canDisassemble: engineSupported,
-    canAnalyzeDataflow: arm64Analysis,
-    canEmulate: emulationSupported,
+    format: image?.format || 'unknown', architecture, endianness: image?.endian || 'unknown', bits: Number(image?.bits || 0),
+    canDisassemble: engineSupported, canAnalyzeDataflow: arm64Analysis, canEmulate: emulationSupported,
     viewerCanDisassemble: engineSupported && !!adapter.viewerCompatible,
-    instructionAlignment: adapter.instructionAlignment,
-    fixedInstructionSize: adapter.fixedInstructionSize,
-    engineVerified: !!engine.verified,
+    instructionAlignment: adapter.instructionAlignment, fixedInstructionSize: adapter.fixedInstructionSize, engineVerified: !!engine.verified,
   });
 }
 
@@ -102,14 +103,14 @@ registerArchitectureAdapter({
   assemble: assembleArm64,
   controlFlow(instruction) {
     const op = String(instruction?.mnemonic || '').toLowerCase();
-    if (op === 'ret') return 'return';
-    if (op === 'bl' || op === 'blr') return 'call';
-    if (op === 'b' || op === 'br') return 'branch';
+    if (/^ret(?:aa|ab)?$/.test(op)) return 'return';
+    if (/^(?:bl|blr|blraa|blrab|blraaz|blrabz)$/.test(op)) return 'call';
+    if (/^(?:b|br|braa|brab|braaz|brabz)$/.test(op)) return 'branch';
     if (op.startsWith('b.') || op === 'cbz' || op === 'cbnz' || op === 'tbz' || op === 'tbnz') return 'conditional-branch';
     return 'fallthrough';
   },
-  callKind(instruction) { return /^(bl|blr)$/i.test(instruction?.mnemonic || '') ? 'call' : null; },
-  returnKind(instruction) { return /^ret$/i.test(instruction?.mnemonic || '') ? 'return' : null; },
+  callKind(instruction) { return /^(?:bl|blr|blraa|blrab|blraaz|blrabz)$/i.test(instruction?.mnemonic || '') ? 'call' : null; },
+  returnKind(instruction) { return /^ret(?:aa|ab)?$/i.test(instruction?.mnemonic || '') ? 'return' : null; },
 });
 
 registerArchitectureAdapter({

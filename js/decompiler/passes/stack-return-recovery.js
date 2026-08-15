@@ -2,13 +2,8 @@ import { expr, structuralKey } from '../ast/nodes.js';
 import { RewriteEngine } from '../rewrite/engine.js';
 import { DEFAULT_RULES } from '../rewrite/rules.js';
 import { printExpression, printProgram } from '../pretty/c.js';
+import { buildNZCVConditionExpression } from '../flag-semantics.js';
 
-const COND = Object.freeze({
-  eq: ['eq', null], ne: ['ne', null],
-  hs: ['ge', false], cs: ['ge', false], lo: ['lt', false], cc: ['lt', false],
-  hi: ['gt', false], ls: ['le', false],
-  ge: ['ge', true], lt: ['lt', true], gt: ['gt', true], le: ['le', true],
-});
 const INVERSE = Object.freeze({ eq:'ne', ne:'eq', lt:'ge', le:'gt', gt:'le', ge:'lt' });
 
 function valueOf(a) { return a?.value || null; }
@@ -58,8 +53,7 @@ function sameRowArithmetic(ir, cmp) {
 
 function compareFromFlags(ir, flagsValue, cond, values) {
   const cmp = flagsValue?.def;
-  const spec = COND[cond];
-  if (cmp?.op !== 'cmp' || !spec) return null;
+  if (cmp?.op !== 'cmp') return null;
 
   // Flag-setting arithmetic is lifted as BIN then CMP on the same ARM64 row.
   // SSA renaming can make CMP read the just-written destination. The preceding
@@ -70,8 +64,9 @@ function compareFromFlags(ir, flagsValue, cond, values) {
   const left = expressionOf(leftValue, values);
   const right = expressionOf(rightValue, values);
   if (!left || !right) return null;
+  const bits = Number(cmp.bits || leftValue?.bits || rightValue?.bits || left.bits || right.bits || 64);
 
-  return expr.compare(spec[0], left, right, spec[1], {
+  return buildNZCVConditionExpression(cmp.sub || 'sub', cond, left, right, bits, {
     address: cmp.address,
     row: cmp.row,
     ir: cmp.id,

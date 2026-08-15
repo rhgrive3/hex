@@ -15,6 +15,7 @@ export function parseEhFrameHeader(r, sec, image, bits) {
     textBase: (image.segments.find((s) => s.perms.execute) || image.segments[0] || { address: 0n }).address,
     image,
     bits,
+    functionBase: null,
   };
   try {
     const frame = decodeEhValue(r, p, ehFrameEnc, ctx); p = frame.next;
@@ -65,11 +66,15 @@ function decodeEhValue(r, p0, enc, ctx) {
   if (application === 0x10) value += fieldAddress;
   else if (application === 0x20) value += ctx.textBase;
   else if (application === 0x30) value += ctx.secAddress;
-  else if (application === 0x40) { }
+  else if (application === 0x40) {
+    if (ctx.functionBase == null) throw new Error('DW_EH_PE_funcrel requires a function base');
+    value += ctx.functionBase;
+  }
   else if (application !== 0 && application !== 0x50) throw new Error(`unsupported DW_EH_PE application 0x${application.toString(16)}`);
   if (indirect) {
     const off = ctx.image.addressToOffset(value);
-    if (off != null && off + BigInt(ptrBytes) <= BigInt(r.length)) value = ctx.bits === 64 ? r.u64(Number(off)) : BigInt(r.u32(Number(off)));
+    if (off == null || off + BigInt(ptrBytes) > BigInt(r.length)) throw new Error(`DW_EH_PE_indirect target 0x${value.toString(16)} is not readable`);
+    value = ctx.bits === 64 ? r.u64(Number(off)) : BigInt(r.u32(Number(off)));
   }
   return { value, raw, next };
 }
