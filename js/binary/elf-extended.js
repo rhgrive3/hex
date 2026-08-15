@@ -1,3 +1,5 @@
+import { createRelocationBudget } from './relocation-budget.js';
+
 const DT_RELRSZ = 35n;
 const DT_RELR = 36n;
 const DT_RELRENT = 37n;
@@ -26,20 +28,47 @@ function partial(image, message) {
   image.warnings.push(`PT_DYNAMIC: ${message}`);
 }
 
-export function collectRelrRelocations(r, tags, image, bits) {
+function dynamicBudget(image, limits = {}) {
+  return createRelocationBudget({
+    limits,
+    onLimit(message) { partial(image, `relocation decode budget exceeded: ${message}`); },
+  });
+}
+
+function relocationContext(image, context) {
+  const c = context && typeof context === 'object' ? context : {};
+  return {
+    out: Array.isArray(c.out) ? c.out : [],
+    budget: c.budget || dynamicBudget(image, c.limits || {}),
+  };
+}
+
+export function collectRelrRelocations(r, tags, image, bits, context = null) {
+  const { out, budget } = relocationContext(image, context);
   const va=one(tags,DT_RELR), size64=one(tags,DT_RELRSZ);
-  if (va == null || size64 == null || size64 === 0n) return [];
+  if (va == null || size64 == null || size64 === 0n || budget.stopped) return out;
   const word=bits===64?8:4, ent=one(tags,DT_RELRENT) ?? BigInt(word);
-  if (ent !== BigInt(word)) { partial(image,`DT_RELRENT ${ent} does not match pointer size ${word}`); return []; }
+  if (ent !== BigInt(word)) { partial(image,`DT_RELRENT ${ent} does not match pointer size ${word}`); return out; }
   const off=vaToOffset(image,va), size=safe(size64);
-  if (off==null||size==null||off+size>r.length) { partial(image,'DT_RELR table is outside the file'); return []; }
+  if (off==null||size==null||off+size>r.length) { partial(image,'DT_RELR table is outside the file'); return out; }
+  if (!budget.claimInput(size, 'DT_RELR')) return out;
   if (size % word) partial(image,'DT_RELRSZ is not a multiple of DT_RELRENT');
-  const out=[]; let base=0n; const wordBits=BigInt(word*8);
-  const count=Math.min(Math.floor(size/word),10_000_000);
-  for(let i=0;i<count;i++){
+  let base=0n; const wordBits=BigInt(word*8);
+  const count=Math.floor(size/word);
+  outer: for(let i=0;i<count;i++){
+    if (!budget.step()) break;
     const entry=word===8?r.u64(off+i*word):BigInt(r.u32(off+i*word));
-    if((entry&1n)===0n){ out.push({address:entry,symIndex:0,type:null,addend:null,source:'PT_DYNAMIC-RELR',relative:true}); base=entry+BigInt(word); continue; }
-    for(let bit=1n;bit<wordBits;bit++) if(entry&(1n<<bit)) out.push({address:base+(bit-1n)*BigInt(word),symIndex:0,type:null,addend:null,source:'PT_DYNAMIC-RELR',relative:true});
+    if((entry&1n)===0n){
+      if (!budget.push(out,{address:entry,symIndex:0,type:null,addend:null,source:'PT_DYNAMIC-RELR',relative:true},'DT_RELR')) break;
+      base=entry+BigInt(word);
+      continue;
+    }
+    for(let bit=1n;bit<wordBits;bit++) {
+      if (!budget.step()) break outer;
+      if(entry&(1n<<bit)) {
+        if (!budget.push(out,{address:base+(bit-1n)*BigInt(word),symIndex:0,type:null,addend:null,source:'PT_DYNAMIC-RELR',relative:true},'DT_RELR')) break outer;
+      }
+    }
     base+=(wordBits-1n)*BigInt(word);
   }
   return out;
@@ -55,37 +84,47 @@ function readSleb(r, state, end) {
   throw new Error('SLEB128 exceeds 10 bytes');
 }
 
-function decodeAndroidTable(r, va, size64, image, bits, rela, source) {
-  const off=vaToOffset(image,va), size=safe(size64); if(off==null||size==null||off+size>r.length){partial(image,`${source} table is outside the file`);return [];}
-  const end=off+size; if(size<4||r.u8(off)!==0x41||r.u8(off+1)!==0x50||r.u8(off+2)!==0x53||r.u8(off+3)!==0x32){partial(image,`${source} is not APS2 encoded`);return [];}
-  const st={p:off+4}, out=[];
+function decodeAndroidTable(r, va, size64, image, bits, rela, source, budget, out) {
+  if (budget.stopped) return out;
+  const off=vaToOffset(image,va), size=safe(size64);
+  if(off==null||size==null||off+size>r.length){partial(image,`${source} table is outside the file`);return out;}
+  if (!budget.claimInput(size, source)) return out;
+  const end=off+size;
+  if(size<4||r.u8(off)!==0x41||r.u8(off+1)!==0x50||r.u8(off+2)!==0x53||r.u8(off+3)!==0x32){partial(image,`${source} is not APS2 encoded`);return out;}
+  const st={p:off+4};
   try {
-    const relocationCount=readSleb(r,st,end); if(relocationCount<0n||relocationCount>10_000_000n) throw new Error('relocation count exceeds budget');
+    const relocationCount=readSleb(r,st,end);
+    if(relocationCount<0n) throw new Error('negative relocation count');
     let relocationOffset=readSleb(r,st,end), relocationAddend=0n, decoded=0n;
-    while(decoded<relocationCount){
-      const groupSize=readSleb(r,st,end), flags=readSleb(r,st,end); if(groupSize<=0n||groupSize>relocationCount-decoded) throw new Error('invalid relocation group size');
+    while(decoded<relocationCount && !budget.stopped){
+      if (!budget.step()) break;
+      const groupSize=readSleb(r,st,end), flags=readSleb(r,st,end);
+      if(groupSize<=0n||groupSize>relocationCount-decoded) throw new Error('invalid relocation group size');
       const groupedDelta=!!(flags&GROUPED_BY_OFFSET_DELTA), groupedInfo=!!(flags&GROUPED_BY_INFO), hasAddend=!!(flags&GROUP_HAS_ADDEND), groupedAddend=!!(flags&GROUPED_BY_ADDEND);
       const groupDelta=groupedDelta?readSleb(r,st,end):0n, groupInfo=groupedInfo?readSleb(r,st,end):0n, groupAddend=hasAddend&&groupedAddend?readSleb(r,st,end):0n;
-      for(let i=0n;i<groupSize;i++,decoded++){
+      for(let i=0n;i<groupSize && !budget.stopped;i++,decoded++){
+        if (!budget.step()) break;
         relocationOffset+=groupedDelta?groupDelta:readSleb(r,st,end);
         const info=groupedInfo?groupInfo:readSleb(r,st,end);
         if(hasAddend) relocationAddend+=groupedAddend?groupAddend:readSleb(r,st,end); else if(rela) relocationAddend=0n;
         if(relocationOffset<0n||info<0n) throw new Error('negative relocation field');
         const symIndex=bits===64?Number(info>>32n):Number(info>>8n), type=bits===64?Number(info&0xffffffffn):Number(info&0xffn);
         if(!Number.isSafeInteger(symIndex)||!Number.isSafeInteger(type)) throw new Error('relocation info exceeds safe integer range');
-        out.push({address:relocationOffset,symIndex,type,addend:rela?relocationAddend:null,source});
+        if (!budget.push(out,{address:relocationOffset,symIndex,type,addend:rela?relocationAddend:null,source},source)) break;
       }
     }
-  } catch(error){partial(image,`${source}: ${error.message}`);}
+  } catch(error){ if (!budget.stopped) partial(image,`${source}: ${error.message}`); }
   return out;
 }
 
-export function collectAndroidPackedRelocations(r,tags,image,bits){
-  const out=[]; const rel=one(tags,DT_ANDROID_REL), relsz=one(tags,DT_ANDROID_RELSZ), rela=one(tags,DT_ANDROID_RELA), relasz=one(tags,DT_ANDROID_RELASZ);
-  if(rel!=null&&relsz!=null) out.push(...decodeAndroidTable(r,rel,relsz,image,bits,false,'PT_DYNAMIC-ANDROID-REL'));
-  if(rela!=null&&relasz!=null) out.push(...decodeAndroidTable(r,rela,relasz,image,bits,true,'PT_DYNAMIC-ANDROID-RELA'));
+export function collectAndroidPackedRelocations(r,tags,image,bits,context=null){
+  const { out, budget } = relocationContext(image, context);
+  const rel=one(tags,DT_ANDROID_REL), relsz=one(tags,DT_ANDROID_RELSZ), rela=one(tags,DT_ANDROID_RELA), relasz=one(tags,DT_ANDROID_RELASZ);
+  if(rel!=null&&relsz!=null) decodeAndroidTable(r,rel,relsz,image,bits,false,'PT_DYNAMIC-ANDROID-REL',budget,out);
+  if(!budget.stopped&&rela!=null&&relasz!=null) decodeAndroidTable(r,rela,relasz,image,bits,true,'PT_DYNAMIC-ANDROID-RELA',budget,out);
   return out;
 }
+
 
 export function parseDynamicSymbolVersions(r,tags,image,symbolCount,stringAt){
   const out=new Map(), versym=one(tags,DT_VERSYM); if(versym==null||symbolCount<=0)return out;
