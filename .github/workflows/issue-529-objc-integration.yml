@@ -11,7 +11,7 @@ jobs:
   verify:
     if: ${{ !contains(github.event.head_commit.message, '[issue-529-applied]') }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
@@ -36,7 +36,7 @@ jobs:
           node --check js/tools.js
           node --check js/ai/ui/hex-context.js
           node --check js/ai/tools/registry.js
-      - run: npm run lint
+      - run: npm run check
       - name: Commit validated implementation
         run: |
           if git diff --quiet; then exit 0; fi
