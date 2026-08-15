@@ -1,7 +1,7 @@
 name: Cross-binary accuracy
 
-# Core regression checks always run. Heavy real Mach-O fixtures are opt-in and
-# fetched from externally configured HTTPS URLs with pinned size/SHA-256 checks.
+# This required accuracy job is fail-closed: it may only pass when all pinned
+# real-binary fixtures are configured and their heavyweight oracle checks run.
 on:
   workflow_dispatch:
   pull_request:
@@ -28,6 +28,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - name: Workflow contract regression
+        run: node tests/issue-497-cross-binary-workflow.mjs
       - name: Core checks
         run: npm run check
       - name: Detect real fixture configuration
@@ -38,8 +40,13 @@ jobs:
             echo "enabled=true" >> "$GITHUB_OUTPUT"
           else
             echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Real-binary fixture URLs are not configured; heavyweight accuracy checks are skipped."
           fi
+      - name: Require all real fixture URLs
+        if: steps.fixtures.outputs.enabled != 'true'
+        shell: bash
+        run: |
+          echo "::error::Cross-binary accuracy is a required real-binary gate; configure BattleCats, TsumTsum, and YWP fixture URLs."
+          exit 1
       - name: Fetch and verify pinned real fixtures
         if: steps.fixtures.outputs.enabled == 'true'
         run: npm run fixtures:fetch
