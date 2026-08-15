@@ -55,6 +55,11 @@ function stringArray(value, code) {
   if (!Array.isArray(value)) fail(code);
   return [...new Set(value.map(String).filter(Boolean))].sort();
 }
+function safeArray(value, code) {
+  if (value == null) return [];
+  if (!Array.isArray(value)) fail(code);
+  return value;
+}
 function confidence(value) {
   if (value == null) return null;
   const n = Number(value);
@@ -110,7 +115,7 @@ export function createClaimNode(input = {}) {
     supportingEvidenceIds,
     contradictingEvidenceIds,
     confirmedByEvidenceIds,
-    assumptions: Array.isArray(input.assumptions) ? jsonSafe(input.assumptions) : [],
+    assumptions: jsonSafe(safeArray(input.assumptions, 'evidence-invalid-assumptions')),
     completeness: enumValue(input.completeness, EVIDENCE_COMPLETENESS, 'partial', 'evidence-invalid-completeness'),
     verdict,
     confidence: confidence(input.confidence),
@@ -133,45 +138,49 @@ export function createEvidenceEdge(input = {}) {
 function equalValue(a, b) { return stableStringify(a) === stableStringify(b); }
 
 export class EvidenceGraph {
+  #nodes = new Map();
+  #edges = [];
+
   constructor(initial = {}) {
-    this.nodes = new Map();
-    this.edges = [];
-    for (const node of initial.nodes || []) this.addNode(node);
-    for (const edge of initial.edges || []) this.addEdge(edge);
+    if (!initial || typeof initial !== 'object' || Array.isArray(initial)) fail('evidence-invalid-graph');
+    const nodes = safeArray(initial.nodes, 'evidence-invalid-nodes');
+    const edges = safeArray(initial.edges, 'evidence-invalid-edges');
+    for (const node of nodes) this.addNode(node);
+    for (const edge of edges) this.addEdge(edge);
   }
 
   addNode(input) {
     const node = createEvidenceNode(input);
-    const existing = this.nodes.get(node.id);
+    const existing = this.#nodes.get(node.id);
     if (existing) {
       if (!equalValue(existing, node)) fail('evidence-id-conflict');
       return existing;
     }
-    this.nodes.set(node.id, node);
+    this.#nodes.set(node.id, node);
     return node;
   }
 
   addEdge(input) {
     const edge = createEvidenceEdge(input);
-    if (!this.edges.some((item) => equalValue(item, edge))) this.edges.push(edge);
+    if (!this.#edges.some((item) => equalValue(item, edge))) this.#edges.push(edge);
     return edge;
   }
 
-  getNode(id) { return this.nodes.get(String(id)) || null; }
-  hasNode(id) { return this.nodes.has(String(id)); }
-  allNodes() { return Array.from(this.nodes.values()); }
-  allEdges() { return this.edges.slice(); }
+  getNode(id) { return this.#nodes.get(String(id)) || null; }
+  hasNode(id) { return this.#nodes.has(String(id)); }
+  allNodes() { return Array.from(this.#nodes.values()); }
+  allEdges() { return this.#edges.slice(); }
 
   unresolvedReferences() {
     const missing = new Set();
-    for (const edge of this.edges) {
-      if (!this.nodes.has(edge.from)) missing.add(edge.from);
-      if (!this.nodes.has(edge.to)) missing.add(edge.to);
+    for (const edge of this.#edges) {
+      if (!this.#nodes.has(edge.from)) missing.add(edge.from);
+      if (!this.#nodes.has(edge.to)) missing.add(edge.to);
     }
-    for (const node of this.nodes.values()) {
+    for (const node of this.#nodes.values()) {
       if (node.family !== 'Claim') continue;
       for (const id of [...node.supportingEvidenceIds, ...node.contradictingEvidenceIds, ...node.confirmedByEvidenceIds]) {
-        if (!this.nodes.has(id)) missing.add(id);
+        if (!this.#nodes.has(id)) missing.add(id);
       }
     }
     return Array.from(missing).sort();
@@ -185,7 +194,7 @@ export class EvidenceGraph {
     const supporting = new Set(claim.supportingEvidenceIds);
     const contradicting = new Set(claim.contradictingEvidenceIds);
     const confirmedBy = new Set(claim.confirmedByEvidenceIds);
-    for (const edge of this.edges) {
+    for (const edge of this.#edges) {
       if (edge.from !== claim.id) continue;
       if (edge.type === 'supports') supporting.add(edge.to);
       else if (edge.type === 'contradicts') contradicting.add(edge.to);
@@ -193,11 +202,11 @@ export class EvidenceGraph {
     }
     const missingEvidenceIds = new Set();
     for (const evidenceId of [...supporting, ...contradicting, ...confirmedBy]) {
-      if (!this.nodes.has(evidenceId)) missingEvidenceIds.add(evidenceId);
+      if (!this.#nodes.has(evidenceId)) missingEvidenceIds.add(evidenceId);
     }
-    const knownContradictions = [...contradicting].filter((evidenceId) => this.nodes.has(evidenceId));
-    const knownSupport = [...supporting].filter((evidenceId) => this.nodes.has(evidenceId));
-    const deterministicConfirmations = [...confirmedBy].filter((evidenceId) => this.nodes.get(evidenceId)?.deterministic === true);
+    const knownContradictions = [...contradicting].filter((evidenceId) => this.#nodes.has(evidenceId));
+    const knownSupport = [...supporting].filter((evidenceId) => this.#nodes.has(evidenceId));
+    const deterministicConfirmations = [...confirmedBy].filter((evidenceId) => this.#nodes.get(evidenceId)?.deterministic === true);
     let verdict = claim.verdict;
     if (knownContradictions.length || claim.verdict === 'contradicted') verdict = 'contradicted';
     else if (deterministicConfirmations.length) verdict = 'confirmed';
