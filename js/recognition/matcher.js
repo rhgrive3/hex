@@ -185,9 +185,13 @@ export function matchFunctions(beforeFunctions = [], afterFunctions = [], option
     if (c.baseConfidence >= 0.7 && c.confidence >= 0.78 && c.reasons.includes('call-neighborhood')) { c.identity = 'probable-same'; return true; }
     return false;
   });
-  const eligibleByBefore = new Map();
-  for (const c of eligible) { let list=eligibleByBefore.get(c.i); if (!list) eligibleByBefore.set(c.i,list=[]); list.push(c); }
+  const eligibleByBefore = new Map(), eligibleByAfter = new Map();
+  for (const c of eligible) {
+    let left=eligibleByBefore.get(c.i); if (!left) eligibleByBefore.set(c.i,left=[]); left.push(c);
+    let right=eligibleByAfter.get(c.j); if (!right) eligibleByAfter.set(c.j,right=[]); right.push(c);
+  }
   for (const list of eligibleByBefore.values()) list.sort((a,b)=>b.confidence-a.confidence || b.baseConfidence-a.baseConfidence || a.j-b.j);
+  for (const list of eligibleByAfter.values()) list.sort((a,b)=>b.confidence-a.confidence || b.baseConfidence-a.baseConfidence || a.i-b.i);
 
   const solved = solveCandidateMatching(eligible, budget);
   const selected = solved.selected;
@@ -196,8 +200,12 @@ export function matchFunctions(beforeFunctions = [], afterFunctions = [], option
     // Ambiguity is evidence about the original candidate distribution, not a
     // side-effect of assignment order. Keep candidates even when another match
     // consumes their after-function.
-    const alternatives = (eligibleByBefore.get(c.i) || []).filter((x) => x.j !== c.j && x.confidence >= c.confidence - ambiguityWindow)
-      .slice(0, 4).map((x) => ({ index: x.j, address: after[x.j].address, confidence: x.confidence, identity: x.identity, reasons: x.reasons }));
+    const forwardAlternatives = (eligibleByBefore.get(c.i) || []).filter((x) => x.j !== c.j && x.confidence >= c.confidence - ambiguityWindow)
+      .slice(0, 4).map((x) => ({ side:'after', index:x.j, address:after[x.j].address, confidence:x.confidence, identity:x.identity, reasons:x.reasons }));
+    const reverseAlternatives = (eligibleByAfter.get(c.j) || []).filter((x) => x.i !== c.i && x.confidence >= c.confidence - ambiguityWindow)
+      .slice(0, 4).map((x) => ({ side:'before', index:x.i, address:before[x.i].address, confidence:x.confidence, identity:x.identity, reasons:x.reasons }));
+    const alternatives = [...forwardAlternatives, ...reverseAlternatives]
+      .sort((a,b)=>b.confidence-a.confidence || String(a.side).localeCompare(String(b.side)) || a.index-b.index).slice(0, 4);
     const ambiguous = alternatives.length > 0;
     matches.push({ before: before[c.i], after: after[c.j], confidence: c.confidence, identity: c.identity, reasons: c.reasons, evidence: c.evidence, ambiguous, candidates: alternatives });
     usedBefore.add(c.i); usedAfter.add(c.j);
