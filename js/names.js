@@ -256,6 +256,7 @@ export class NoteStore {
 
   setVarName(func, k, name) {
     const kk = key(func) + ':' + k;
+    if (!key(func)) return this._saveFailure('INVALID_KEY');
     const clean = cleanName(name);
     if (clean) this.vars.set(kk, clean);
     else this.vars.delete(kk);
@@ -267,6 +268,7 @@ export class NoteStore {
 
   setType(func, k, type) {
     const kk = key(func) + ':' + k;
+    if (!key(func)) return this._saveFailure('INVALID_KEY');
     const clean = (type || '').toString().slice(0, 80).trim();
     if (clean) this.types.set(kk, clean);
     else this.types.delete(kk);
@@ -312,6 +314,8 @@ export class NoteStore {
   /** 読み込み（書き出したものを戻す）。既存の内容とまぜる。 */
   fromJSON(text) {
     const o = JSON.parse(text);
+    if (!o || typeof o !== 'object') throw new Error('invalid-notes-import');
+    if (o.id != null && this.id != null && String(o.id) !== String(this.id)) throw new Error('notes-file-mismatch');
     let n = 0;
     for (const [k, v] of Object.entries(o.names || {})) { this.names.set(k, v); n++; }
     for (const [k, v] of Object.entries(o.comments || {})) { this.comments.set(k, v); n++; }
