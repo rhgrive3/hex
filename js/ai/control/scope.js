@@ -7,7 +7,6 @@ const FULL_FUNCTION_TOOLS = new Set(['get_function','get_current_function','get_
 const BINARY_TOOLS = new Set(['search_functions','search_strings','compare_functions','lookup_known_function']);
 const PROJECT_TOOLS = new Set(['project_search','get_binary_diff']);
 const RUNTIME_TOOLS = new Set(['get_runtime_observations','verify_runtime_hypothesis']);
-const ADDRESS_KEYS = /(^|_)(address|addr|start|end|from|to|target)$/i;
 
 export class ScopeController {
   constructor(snapshot, requestedScope = 'auto', { onExpand } = {}) {
@@ -104,9 +103,15 @@ function atLeast(scope, minimum) { return (RANK[scope] ?? -1) >= RANK[minimum]; 
 function collectAddresses(value, key = '') {
   const out = [];
   if (Array.isArray(value)) { for (const item of value) out.push(...collectAddresses(item, key)); return out; }
-  if (!value || typeof value !== 'object') { if (ADDRESS_KEYS.test(key) && toBigInt(value) != null) out.push(value); return out; }
+  if (!value || typeof value !== 'object') { if (isAddressKey(key) && toBigInt(value) != null) out.push(value); return out; }
   for (const [childKey, child] of Object.entries(value)) out.push(...collectAddresses(child, childKey));
   return out;
+}
+function isAddressKey(key) {
+  const text = String(key || '');
+  return /^(address|addr|start|end|from|to|target)$/i.test(text)
+    || /_(address|addr|start|end|from|to|target)$/i.test(text)
+    || /(Address|Addr|Start|End|From|To|Target)$/.test(text);
 }
 function inFunction(target, fn) {
   if (!fn?.address) return false;
