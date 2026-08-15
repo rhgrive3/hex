@@ -35,15 +35,17 @@ function minimalPE({ entry = 0, sectionName = '.text', longName = null } = {}) {
   const bytes = new Uint8Array(0x400); const v = new DataView(bytes.buffer); const u32 = (o, x) => v.setUint32(o, x, true); const u64 = (o, x) => v.setBigUint64(o, BigInt(x), true); const enc = new TextEncoder();
   u32(0x100, 1); u32(0x104, 0x180); u32(0x10c, 0x240); u32(0x110, 0x200); bytes.set(enc.encode('delay.dll\0'), 0x180); u64(0x200, 0x280n); u64(0x208, 0x3ffn); u64(0x210, 0n); v.setUint16(0x280, 7, true); bytes.set(enc.encode('DelayedApi\0'), 0x282);
   const imageBase = 0x10000000n;
-  const image = { bits: 64, imageBase, imports: [], libraries: [], warnings: [], addressToOffset(address) { const delta = BigInt(address) - imageBase; return delta >= 0n && delta < BigInt(bytes.length) ? delta : null; } };
+  const mapped = { address: imageBase, size: BigInt(bytes.length), fileOffset: 0n, fileSize: BigInt(bytes.length), perms: { read: true, write: true } };
+  const image = { bits: 64, imageBase, sections: [mapped], segments: [mapped], imports: [], libraries: [], warnings: [], addressToOffset(address) { const delta = BigInt(address) - imageBase; return delta >= 0n && delta < BigInt(bytes.length) ? delta : null; } };
   parseDelayImports(new ByteView(bytes, { littleEndian: true }), { rva: 0x100, size: 0x40 }, image);
   assert.equal(image.libraries.includes('delay.dll'), true); assert.equal(image.imports.length, 1); assert.equal(image.imports[0].name, 'DelayedApi'); assert.equal(image.imports[0].source, 'PE-delay-import'); assert.equal(image.imports[0].sites[0].kind, 'delay-iat'); assert.equal(image.imports[0].sites[0].address, imageBase + 0x240n); assert.ok(image.warnings.some((w) => /malformed PE delay-import thunk/.test(w)));
 }
 {
   const bytes = new Uint8Array(0x400); const v = new DataView(bytes.buffer); const put = (p, begin, finish) => { v.setUint32(p, begin, true); v.setUint32(p + 4, finish, true); v.setUint32(p + 8, 0x3000, true); };
   put(0x200, 0x1000, 0x1040); put(0x20c, 0x1030, 0x1060); put(0x218, 0x1080, 0x1090); put(0x224, 0x1020, 0x1030);
-  const imageBase = 0x10000000n; const exec = { address: imageBase + 0x1000n, size: 0x100n, perms: { execute: true } };
-  const image = { imageBase, functions: [], warnings: [], metadata: {}, addressToOffset(address) { const delta = BigInt(address) - imageBase; return delta >= 0n && delta < BigInt(bytes.length) ? delta : null; }, sectionAt(address) { const a = BigInt(address); return a >= exec.address && a < exec.address + exec.size ? exec : null; } };
+  const imageBase = 0x10000000n; const exec = { address: imageBase + 0x1000n, size: 0x100n, fileOffset: 0x1000n, fileSize: 0x100n, perms: { execute: true } };
+  const meta = { address: imageBase + 0x200n, size: 0x100n, fileOffset: 0x200n, fileSize: 0x100n, perms: { read: true } };
+  const image = { imageBase, sections: [exec, meta], segments: [exec, meta], functions: [], warnings: [], metadata: {}, addressToOffset(address) { const a=BigInt(address); for (const owner of [exec, meta]) if (a >= owner.address && a < owner.address + owner.fileSize) return owner.fileOffset + (a-owner.address); return null; }, sectionAt(address) { const a = BigInt(address); return a >= exec.address && a < exec.address + exec.size ? exec : null; } };
   parseExceptionFunctions(new ByteView(bytes, { littleEndian: true }), { rva: 0x200, size: 48 }, image, 0x8664);
   assert.deepEqual(image.functions.map((f) => f.address), [imageBase + 0x1000n, imageBase + 0x1080n]); assert.equal(image.metadata.exceptionDirectory.count, 2); assert.ok(image.warnings.some((w) => /overlapping\/out-of-order/.test(w)));
 }

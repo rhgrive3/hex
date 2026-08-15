@@ -17,9 +17,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
-      HEX_FIXTURE_BATTLECATS_URL: ${{ secrets.HEX_FIXTURE_BATTLECATS_URL }}
-      HEX_FIXTURE_TSUMTSUM_URL: ${{ secrets.HEX_FIXTURE_TSUMTSUM_URL }}
-      HEX_FIXTURE_YWP_URL: ${{ secrets.HEX_FIXTURE_YWP_URL }}
+      # These immutable URLs point at the exact Git blobs already used by
+      # tools/fetch-large-fixtures.mjs. scripts/fetch-real-fixtures.mjs then
+      # independently verifies size + SHA-256 before any oracle can run.
+      HEX_FIXTURE_BATTLECATS_URL: https://raw.githubusercontent.com/rhgrive3/hex/bd7bd61d093592d07fdd9e9b14a859e19dd4c3a9/tests/battlecats
+      HEX_FIXTURE_TSUMTSUM_URL: https://raw.githubusercontent.com/rhgrive3/hex/bd7bd61d093592d07fdd9e9b14a859e19dd4c3a9/tests/TsumTsum
+      HEX_FIXTURE_YWP_URL: https://raw.githubusercontent.com/rhgrive3/hex/bd7bd61d093592d07fdd9e9b14a859e19dd4c3a9/tests/YWP
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -63,22 +66,37 @@ jobs:
           ls -lh tests/.real-fixtures/battlecats tests/.real-fixtures/YWP tests/.real-fixtures/TsumTsum
       - name: BattleCats oracle
         if: steps.fixtures.outputs.enabled == 'true'
-        run: python tests/oracle.py tests/.real-fixtures/battlecats tests/oracle.battlecats.ci.json.gz
+        run: |
+          python tests/oracle.py tests/.real-fixtures/battlecats tests/oracle.battlecats.ci.json.gz
+          python tests/oracle-cfg-normalize.py tests/.real-fixtures/battlecats tests/oracle.battlecats.ci.json.gz
       - name: BattleCats accuracy
         if: steps.fixtures.outputs.enabled == 'true'
-        run: node --max-old-space-size=6000 tests/accuracy.mjs --target=tests/.real-fixtures/battlecats --oracle=tests/oracle.battlecats.ci.json.gz --json | tee accuracy-BattleCats.json
+        shell: bash
+        run: |
+          set -o pipefail
+          node --max-old-space-size=6000 tests/accuracy.mjs --target=tests/.real-fixtures/battlecats --oracle=tests/oracle.battlecats.ci.json.gz --json | tee accuracy-BattleCats.json
       - name: YWP oracle
         if: steps.fixtures.outputs.enabled == 'true'
-        run: python tests/oracle.py tests/.real-fixtures/YWP tests/oracle.YWP.json.gz
+        run: |
+          python tests/oracle.py tests/.real-fixtures/YWP tests/oracle.YWP.json.gz
+          python tests/oracle-cfg-normalize.py tests/.real-fixtures/YWP tests/oracle.YWP.json.gz
       - name: YWP accuracy
         if: steps.fixtures.outputs.enabled == 'true'
-        run: node --max-old-space-size=6000 tests/accuracy.mjs --target=tests/.real-fixtures/YWP --oracle=tests/oracle.YWP.json.gz --json | tee accuracy-YWP.json
+        shell: bash
+        run: |
+          set -o pipefail
+          node --max-old-space-size=6000 tests/accuracy.mjs --target=tests/.real-fixtures/YWP --oracle=tests/oracle.YWP.json.gz --json | tee accuracy-YWP.json
       - name: TsumTsum oracle
         if: steps.fixtures.outputs.enabled == 'true'
-        run: python tests/oracle.py tests/.real-fixtures/TsumTsum tests/oracle.TsumTsum.json.gz
+        run: |
+          python tests/oracle.py tests/.real-fixtures/TsumTsum tests/oracle.TsumTsum.json.gz
+          python tests/oracle-cfg-normalize.py tests/.real-fixtures/TsumTsum tests/oracle.TsumTsum.json.gz
       - name: TsumTsum accuracy
         if: steps.fixtures.outputs.enabled == 'true'
-        run: node --max-old-space-size=6000 tests/accuracy.mjs --target=tests/.real-fixtures/TsumTsum --oracle=tests/oracle.TsumTsum.json.gz --json | tee accuracy-TsumTsum.json
+        shell: bash
+        run: |
+          set -o pipefail
+          node --max-old-space-size=6000 tests/accuracy.mjs --target=tests/.real-fixtures/TsumTsum --oracle=tests/oracle.TsumTsum.json.gz --json | tee accuracy-TsumTsum.json
       - name: Accuracy regression gate
         if: steps.fixtures.outputs.enabled == 'true'
         run: node tests/accuracy-gate.mjs
