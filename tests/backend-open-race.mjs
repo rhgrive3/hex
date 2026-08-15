@@ -24,8 +24,12 @@ const find=(worker,predicate)=>worker.sent.find((m)=>predicate(m));
 const fileA={name:'A.bin',size:4096};
 const fileB={name:'B.bin',size:4096};
 
-// A gets far enough to wait on the legacy open under transport epoch 1.
+// Attach the rejection observer immediately: the whole point of the regression
+// is that A becomes stale before B finishes, and Node treats a temporarily
+// unobserved rejection as fatal.
+let staleA=null;
 const openA=backend.open(fileA);
+const openAObserved=openA.catch((error)=>{staleA=error;return null;});
 await tick();
 const detectA=find(platform,(m)=>m.t==='detect'&&m.file===fileA);
 assert.equal(detectA.epoch,1);
@@ -47,9 +51,7 @@ const platformOpenB=find(platform,(m)=>m.t==='open'&&m.file===fileB);
 assert.equal(platformOpenB.epoch,2);
 
 legacy.reply(legacyOpenA,{format:'Mach-O 64-bit',slices:[],raw:{id:'raw'}});
-await tick();
-let staleA=null;
-try{await openA;}catch(error){staleA=error;}
+await openAObserved;
 assert.equal(staleA?.stale,true,'superseded open must reject as stale');
 assert.equal(platform.sent.some((m)=>m.t==='open'&&m.file===fileA),false,'stale A must not dispatch another open under B epoch');
 
