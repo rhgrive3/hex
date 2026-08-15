@@ -8,8 +8,8 @@ function consume(chunk, stream) {
   const text = String(chunk);
   for (const line of text.split(/\r?\n/)) {
     if (!line) continue;
-    tail.push(line);
-    if (tail.length > 60) tail.shift();
+    tail.push(line.length > 1200 ? line.slice(0, 1200) + '…<clipped>' : line);
+    if (tail.length > 80) tail.shift();
   }
 }
 child.stdout.on('data', (chunk) => consume(chunk, process.stdout));
