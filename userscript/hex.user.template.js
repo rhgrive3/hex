@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hex for ChatGPT
 // @namespace    https://github.com/rhgrive3/hex
-// @version      1.0.1786804508
+// @version      1.0.1786804768
 // @description  Run the Hex binary analysis workbench on ChatGPT Web.
 // @match        https://chatgpt.com/*
 // @run-at       document-idle
@@ -946,6 +946,7 @@
           this._disasmPending.clear();
         }
         advanceEpoch() {
+          if (this.disposed) return this.analysisEpoch;
           this.analysisEpoch++;
           this.resetCache();
           this._releaseDisassembly(new StaleRequestError());
