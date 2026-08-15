@@ -23,20 +23,28 @@ jobs:
           new = "a,b,part=fn_slice(s,'export function parseExportTrie', '\\nfunction rawCString')"
           if old not in s:
               raise SystemExit('expected export-trie marker not found')
-          s = s.replace(old, new, 1)
-          old_call = ' "parseChainedBindingSites(r, linkeditData.chainedFixups, image, chainedImports, segmentOrder);":"parseChainedBindingSites(r, linkeditData.chainedFixups, image, chainedImports, segmentOrder, metadataBudget);",\n'
-          if old_call not in s:
-              raise SystemExit('expected chained-site call rewrite not found')
-          s = s.replace(old_call, '', 1)
-          p.write_text(s)
+          p.write_text(s.replace(old, new, 1))
           PY
       - name: Apply fix
         run: python tools/apply-issue-570-v3.py
+      - name: Update chained ownership regression for shared budget
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('tests/issue-569-chained-segment-bounds.mjs')
+          s = p.read_text()
+          old = "assert.match(macho, /parseChainedBindingSites\\([^;]+segmentOrder\\)/);"
+          new = "assert.match(macho, /parseChainedBindingSites\\([^;]+segmentOrder(?:,\\s*metadataBudget)?\\)/);"
+          if old not in s:
+              raise SystemExit('issue-569 chained-call assertion anchor not found')
+          p.write_text(s.replace(old, new, 1))
+          PY
       - name: Syntax
         run: |
           node --check js/binary/macho-budget.js
           node --check js/binary/macho.js
           node --check js/binary/macho-dyld.js
+          node --check tests/issue-569-chained-segment-bounds.mjs
           node --check tests/issue-570-macho-metadata-budget.mjs
       - name: Focused validation
         run: |
@@ -53,7 +61,7 @@ jobs:
           set -euo pipefail
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add js/binary/macho-budget.js js/binary/macho.js js/binary/macho-dyld.js tests/issue-570-macho-metadata-budget.mjs
+          git add js/binary/macho-budget.js js/binary/macho.js js/binary/macho-dyld.js tests/issue-569-chained-segment-bounds.mjs tests/issue-570-macho-metadata-budget.mjs
           git commit -m "fix: share decoded-output budget across Mach-O metadata (#570)"
           git rm -f .github/workflows/fix-app-product-remaining.yml tools/apply-issue-570-v3.py
           git commit -m "chore: finalize issue 570 v3"
