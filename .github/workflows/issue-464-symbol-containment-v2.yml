@@ -23,12 +23,14 @@ jobs:
         run: |
           python3 tools/apply-issue-464.py
           python3 tools/update-issue-464-contract.py
+          python3 tools/reconcile-issue-464-script.py
       - name: Focused regression
         run: node tests/symbol-identity.mjs
       - name: Static checks
         run: |
           node --check js/symbols.js
           node --check js/app.js
+          node --check js/script.js
           node --check tests/run.js
       - name: Full check suite
         run: npm run check
@@ -37,6 +39,6 @@ jobs:
           if git diff --quiet; then exit 0; fi
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add js/symbols.js js/app.js tests/symbol-identity.mjs tests/run.js
+          git add js/symbols.js js/app.js js/script.js tests/symbol-identity.mjs tests/run.js
           git commit -m 'Fix #464 function containment [issue-464-applied]'
           git push
