@@ -2,6 +2,17 @@ import assert from 'node:assert/strict';
 import worker, { __test } from '../worker.js';
 import { buildGeminiPayload, streamGemini } from '../js/gemini.js';
 
+let quotaTokenSerial = 0;
+const ALLOW_QUOTA = {
+  getByName() {
+    return {
+      async acquire() { return { allowed: true, token: `gemini-test-${++quotaTokenSerial}` }; },
+      async release() { return { released: true }; },
+    };
+  },
+};
+const quotaEnv = (extra = {}) => ({ ...extra, AI_QUOTA: ALLOW_QUOTA });
+
 let passed = 0;
 async function test(name, fn) {
   await fn();
@@ -134,7 +145,7 @@ await test('WorkerはGETを拒否し、CORSワイルドカードを付けない'
 await test('WorkerはJSON Content-Type以外を拒否する', async () => {
   const response = await worker.fetch(new Request('https://example.test/api/gemini', {
     method: 'POST', body: '{}', headers: { 'content-type': 'text/plain' },
-  }), { GEMINI_API_KEY: 'not-exposed', ASSETS: { fetch: () => new Response('asset') } });
+  }), quotaEnv({ GEMINI_API_KEY: 'not-exposed', ASSETS: { fetch: () => new Response('asset') } }));
   assert.equal(response.status, 415);
   assert.equal((await response.json()).error.code, 'unsupported_media_type');
 });
@@ -142,7 +153,7 @@ await test('WorkerはJSON Content-Type以外を拒否する', async () => {
 await test('Workerは不正JSONを明確に拒否する', async () => {
   const response = await worker.fetch(new Request('https://example.test/api/gemini', {
     method: 'POST', body: '{', headers: { 'content-type': 'application/json' },
-  }), { GEMINI_API_KEY: 'not-exposed', ASSETS: { fetch: () => new Response('asset') } });
+  }), quotaEnv({ GEMINI_API_KEY: 'not-exposed', ASSETS: { fetch: () => new Response('asset') } }));
   assert.equal(response.status, 400);
   assert.equal((await response.json()).error.code, 'invalid_json');
 });
@@ -167,7 +178,7 @@ await test('WorkerはGeminiのSSEを同一オリジンのクライアントへ�
     });
   };
   try {
-    const response = await worker.fetch(workerRequest(), { GEMINI_API_KEY: 'not-exposed', ASSETS: { fetch: () => new Response('asset') } });
+    const response = await worker.fetch(workerRequest(), quotaEnv({ GEMINI_API_KEY: 'not-exposed', ASSETS: { fetch: () => new Response('asset') } }));
     assert.equal(response.status, 200);
     assert.equal(response.headers.get('content-type'), 'text/event-stream; charset=utf-8');
     assert.equal(response.headers.get('access-control-allow-origin'), null);
@@ -200,7 +211,7 @@ await test('Workerは一時的503をRetry-Afterに従って再試行する', asy
     });
   };
   try {
-    const response = await worker.fetch(workerRequest(), { GEMINI_API_KEY: 'not-exposed', ASSETS: { fetch: () => new Response('asset') } });
+    const response = await worker.fetch(workerRequest(), quotaEnv({ GEMINI_API_KEY: 'not-exposed', ASSETS: { fetch: () => new Response('asset') } }));
     assert.equal(response.status, 200);
     assert.equal(calls, 2);
     assert.match(await response.text(), /interaction\.completed/);
@@ -220,7 +231,7 @@ await test('日次quota_exceededは無駄に再試行しない', async () => {
     });
   };
   try {
-    const response = await worker.fetch(workerRequest(), { GEMINI_API_KEY: 'not-exposed', ASSETS: { fetch: () => new Response('asset') } });
+    const response = await worker.fetch(workerRequest(), quotaEnv({ GEMINI_API_KEY: 'not-exposed', ASSETS: { fetch: () => new Response('asset') } }));
     assert.equal(response.status, 429);
     assert.equal(calls, 1);
     assert.equal((await response.json()).error.code, 'upstream_quota_exceeded');
@@ -240,7 +251,7 @@ await test('一時的rate_limit_exceededは最大3回まで再試行して停止
     });
   };
   try {
-    const response = await worker.fetch(workerRequest(), { GEMINI_API_KEY: 'not-exposed', ASSETS: { fetch: () => new Response('asset') } });
+    const response = await worker.fetch(workerRequest(), quotaEnv({ GEMINI_API_KEY: 'not-exposed', ASSETS: { fetch: () => new Response('asset') } }));
     assert.equal(response.status, 429);
     assert.equal(calls, 3);
     assert.equal((await response.json()).error.code, 'upstream_rate_limited');
