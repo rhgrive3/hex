@@ -1,0 +1,49 @@
+name: Validate ELF/function trust fixes
+on:
+  push:
+    branches:
+      - fix/elf-function-trust-80-112-current
+permissions:
+  contents: write
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Import reviewed #80/#112 files from PR 579
+        run: |
+          set -euo pipefail
+          git fetch origin 29c9058b24fe0287591bbec06db5979ff030b01a
+          git checkout 29c9058b24fe0287591bbec06db5979ff030b01a -- \
+            js/binary/elf-dynamic.js \
+            js/binary/elf.js \
+            js/binary/model.js \
+            js/binary/pe-loader.js \
+            js/platform/worker-validation.js \
+            tests/issues-reopened-binary-80-112.mjs
+      - name: Focused validation
+        run: |
+          node --check js/binary/elf.js
+          node --check js/binary/elf-dynamic.js
+          node --check js/binary/model.js
+          node --check js/binary/pe-loader.js
+          node --check js/platform/worker-validation.js
+          node tests/issues-reopened-binary-80-112.mjs
+          npm run binary:test
+      - name: Full validation
+        run: |
+          node tests/run.js
+          npm run check
+      - name: Finalize
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add js/binary/elf-dynamic.js js/binary/elf.js js/binary/model.js js/binary/pe-loader.js js/platform/worker-validation.js tests/issues-reopened-binary-80-112.mjs
+          git commit -m "fix: fail closed on ELF XINDEX and exact function seeds (#80 #112)"
+          git rm -f .github/workflows/fix-app-product-remaining.yml
+          git commit -m "chore: finalize ELF/function trust fixes"
+          git push origin HEAD:fix/elf-function-trust-80-112-current
