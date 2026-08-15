@@ -1,0 +1,67 @@
+name: Validate decompiler IR open issue batch 1
+on:
+  push:
+    branches: [fix/decompiler-ir-open-issues-20260815]
+permissions:
+  contents: write
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply fixes
+        run: |
+          set -euo pipefail
+          python tools/fix-decompiler-ir-open-1.py
+      - name: Syntax
+        run: |
+          node --check js/decompiler/pipeline-core.js
+          node --check js/decompiler/semantic.js
+          node --check js/decompiler/loop-repair.js
+          node --check js/decompiler/pretty/c.js
+          node --check js/ir-core.js
+      - name: Focused guards
+        run: |
+          cat > tests/issues-decompiler-ir-open-1.mjs <<'EOF'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          const pipe=fs.readFileSync('js/decompiler/pipeline-core.js','utf8');
+          const sem=fs.readFileSync('js/decompiler/semantic.js','utf8');
+          const loop=fs.readFileSync('js/decompiler/loop-repair.js','utf8');
+          const ir=fs.readFileSync('js/ir-core.js','utf8');
+          const pretty=fs.readFileSync('js/decompiler/pretty/c.js','utf8');
+          assert.doesNotMatch(pipe,/if \(d\.negate\)/); assert.match(pipe,/d\.extra\?\.negate/);
+          const bs=pipe.slice(pipe.indexOf('function branchSucc'),pipe.indexOf('function branchCondition'));
+          assert.match(bs,/succ\.length !== 2/); assert.doesNotMatch(bs,/yes:\s*succ\[0\]/); assert.match(bs,/yes:\s*null, no:\s*null/);
+          assert.match(pipe,/function postDominators/); assert.match(pipe,/candidates\.length === 1/); assert.doesNotMatch(pipe,/candidates\.sort\(\(a, b\) => b\.row - a\.row\)/);
+          assert.match(ir,/addressDispOp/); assert.match(ir,/writebackDispOp/); assert.match(ir,/mem\?\.mode === 'post' \? 0n/); assert.match(ir,/value: writebackDisp/);
+          assert.doesNotMatch(ir,/if \(irCache\.has\(model\)\)/); assert.match(ir,/function irConfigurationKey/); assert.match(ir,/prototypeRevision/); assert.match(ir,/evidenceGeneration/);
+          const ret=sem.slice(sem.indexOf('function returnValueAt'),sem.indexOf('function feedsReturn'));
+          assert.doesNotMatch(ret,/candidate=reachingRegisterValue/); assert.match(ret,/return reg \? reachingRegisterValue/);
+          const faithful=sem.slice(sem.indexOf('function faithfulCfg'));
+          assert.match(faithful,/const rv = returnValueAt\(term, ctx\)/);
+          assert.match(pretty,/export function integerText/); assert.match(sem,/import \{ integerText \}/); assert.match(sem,/return integerText\(v, bits, signed\)/);
+          assert.match(sem,/d\.extra\?\.widen/); assert.match(sem,/__arm64_ubfiz/); assert.match(sem,/bitfieldKind === 'bfxil'/);
+          const minmax=sem.slice(sem.indexOf('function selectAsMinMax'),sem.indexOf('function renderValue'));
+          assert.match(minmax,/cmp\.sub !== 'sub'/);
+          assert.match(loop,/renderNZCVCondition/); assert.match(loop,/renderNZCVCondition\(cmp\.sub \|\| 'sub'/);
+          console.log('decompiler/IR open issue batch 1 guards passed');
+          EOF
+          node tests/issues-decompiler-ir-open-1.mjs
+      - name: Full validation
+        run: |
+          node tests/run.js
+          npm run check
+      - name: Finalize
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add js/decompiler/pipeline-core.js js/decompiler/semantic.js js/decompiler/loop-repair.js js/decompiler/pretty/c.js js/ir-core.js tests/issues-decompiler-ir-open-1.mjs
+          git commit -m "fix: decompiler and IR correctness batch 1 (#130 #139 #140 #317 #347 #353 #401 #417 #418 #573 #575)"
+          git rm -f .github/workflows/fix-app-product-remaining.yml tools/fix-decompiler-ir-open-1.py
+          git commit -m "chore: finalize decompiler IR batch 1"
+          git push origin HEAD:fix/decompiler-ir-open-issues-20260815
