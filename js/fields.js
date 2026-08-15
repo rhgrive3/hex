@@ -28,7 +28,7 @@ export class FieldIndex {
    */
   constructor(model) {
     this.classes = new Map();      // クラス名 -> {name, instanceSize, ivars, byOffset}
-    this.methodOwner = new Map();  // 実装アドレス(string) -> {className, sel, kind}
+    this.methodOwner = new Map();  // 実装アドレス(string) -> owner[]（同一IMP共有を保持）
     this.classOfName = new Map();  // クラス名 -> クラス情報（別名）
     /*
      * 「位置が書いてある場所」→ フィールド。
@@ -104,20 +104,32 @@ export class FieldIndex {
       };
       for (const m of (c.methods || []).concat(c.classMethods || [])) {
         if (m.addr == null) continue;
-        this.methodOwner.set(m.addr.toString(), {
+        const key = m.addr.toString();
+        const owner = {
           className: c.name, sel: m.sel || null, kind: m.kind || '-',
           accessorField: accessorField(m.sel),
-        });
+        };
+        const owners = this.methodOwner.get(key) || [];
+        if (!owners.some((x) => x.className === owner.className && x.sel === owner.sel && x.kind === owner.kind)) owners.push(owner);
+        this.methodOwner.set(key, owners);
       }
     }
   }
 
   get classCount() { return this.classes.size; }
 
-  /** この関数はどのクラスのメソッドか。分からなければ null。 */
+  /** この関数はどのクラスのメソッドか。共有IMPなら曖昧さを明示する。 */
   ownerOf(funcAddr) {
-    if (funcAddr == null) return null;
-    return this.methodOwner.get(funcAddr.toString()) || null;
+    const owners = this.ownersOf(funcAddr);
+    if (!owners.length) return null;
+    if (owners.length === 1) return owners[0];
+    return { className: null, sel: null, kind: null, accessorField: null, ambiguous: true, owners };
+  }
+
+  /** 同じIMPを共有する全owner。呼び出し側が文脈で絞り込めるよう保持する。 */
+  ownersOf(funcAddr) {
+    if (funcAddr == null) return [];
+    return (this.methodOwner.get(funcAddr.toString()) || []).slice();
   }
 
   /** クラスの情報。 */
@@ -128,21 +140,28 @@ export class FieldIndex {
    * ちょうど一致しなければ、その位置を含むフィールドを探す（構造体の途中を触る形）。
    */
   fieldAt(className, offset) {
-    const c = this.classes.get(className);
-    if (!c || offset == null) return null;
+    if (offset == null) return null;
     const off = Number(offset);
-    const exact = c.byOffset.get(off);
-    if (exact) return { field: exact, className, exact: true, delta: 0 };
-    for (const iv of c.ivars) {
-      const size = iv.size || (iv.type && iv.type.bytes) || 0;
-      if (size > 0 && off > iv.offset && off < iv.offset + size) {
-        return { field: iv, className, exact: false, delta: off - iv.offset };
+    if (!Number.isFinite(off)) return null;
+    const visited = new Set();
+    let currentName = className;
+    let depth = 0;
+    while (currentName && depth++ < 256) {
+      if (visited.has(currentName)) return null;
+      visited.add(currentName);
+      const c = this.classes.get(currentName);
+      if (!c) return null;
+      const exact = c.byOffset.get(off);
+      if (exact) return { field: exact, className: currentName, exact: true, delta: 0 };
+      for (const iv of c.ivars) {
+        const size = iv.size || (iv.type && iv.type.bytes) || 0;
+        if (size > 0 && off > iv.offset && off < iv.offset + size) {
+          return { field: iv, className: currentName, exact: false, delta: off - iv.offset };
+        }
       }
-    }
-    // 親クラスの領域（自分の ivar の手前）は、親が持っている
-    if (c.superName && off < (c.ivars.length ? c.ivars[0].offset : c.instanceSize)) {
-      const up = this.fieldAt(c.superName, offset);
-      if (up) return up;
+      const firstOwnOffset = c.ivars.length ? c.ivars[0].offset : c.instanceSize;
+      if (!c.superName || !(off < firstOwnOffset)) return null;
+      currentName = c.superName;
     }
     return null;
   }
@@ -157,6 +176,7 @@ export class FieldIndex {
     const out = [];
     for (const c of this.classes.values()) {
       for (const iv of c.ivars) {
+        re.lastIndex = 0;
         if (!re.test(iv.name)) continue;
         out.push({ className: c.name, field: iv });
         if (out.length >= limit) return out;
@@ -170,6 +190,7 @@ export class FieldIndex {
     const re = query instanceof RegExp ? query : new RegExp(escapeRe(String(query)), 'i');
     const out = [];
     for (const c of this.classes.values()) {
+      re.lastIndex = 0;
       if (re.test(c.name)) out.push(c);
       if (out.length >= limit) break;
     }
