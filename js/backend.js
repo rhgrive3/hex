@@ -1,7 +1,7 @@
 /* Format-neutral backend facade. Legacy ARM64/Mach-O worker remains a compatibility engine. */
 import { LRU } from './lru.js';
-import { augmentAnalysisResultWithChainedImports } from './chained.js';
 import { AnalysisCache } from './cache/analysis-cache.js';
+import { mergeMachoAnalysisTruth, unavailableMachOLinkage } from './macho-linkage.js';
 
 export const CHUNK_ROWS = 1024;
 export const CHUNK_BYTES = CHUNK_ROWS * 4;
@@ -227,11 +227,17 @@ export class Backend {
   cancelSearch(request) { this.cancel(request); }
 
   analyze(sliceIndex) {
-    const worker = this.formatId === 'macho' ? 'legacy' : 'platform';
-    const file = this.file;
-    return this._callTo(worker, 'analyze', { sliceIndex }).then((result) => {
-      if (this.formatId !== 'macho') return result;
-      return augmentAnalysisResultWithChainedImports(file, sliceIndex, result);
+    if (this.formatId !== 'macho') return this._callTo('platform', 'analyze', { sliceIndex });
+    const file=this.file;
+    const legacy=this._callTo('legacy','analyze',{sliceIndex});
+    const canonical=this._callTo('platform','machoAnalysis',{file,sliceIndex});
+    return Promise.allSettled([legacy,canonical]).then(([l,c])=>{
+      if(l.status==='rejected')throw l.reason;
+      if(c.status==='rejected'){
+        if(c.reason?.stale)throw c.reason;
+        return {...l.value,linkage:unavailableMachOLinkage('canonical-macho-analysis-failed'),canonicalError:String(c.reason?.message||c.reason||'canonical analysis failed')};
+      }
+      return mergeMachoAnalysisTruth(l.value,c.value);
     });
   }
 

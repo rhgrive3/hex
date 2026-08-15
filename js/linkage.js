@@ -64,29 +64,24 @@ export function frameworkOf(name) {
  * @param {object} program ProgramIndex（あれば呼ばれた回数も数える）
  */
 export function importList(symbols, program, limit = 4000) {
-  if (!symbols || !symbols.symbolCount) return [];
-  const seen = new Map();
-  for (const kind of [SYM_STUB, SYM_POINTER]) {
-    for (const s of symbols.symbolList({ kind, max: limit })) {
-      const key = s.name;
-      if (!seen.has(key)) {
-        const fw = frameworkOf(s.name);
-        seen.set(key, {
-          name: s.name,
-          readable: readableName(s.name),
-          addr: s.addr,
-          stub: kind === SYM_STUB,
-          framework: fw ? fw.label : null,
-          cat: fw ? fw.cat : null,
-          calls: 0,
-        });
-      }
-      const e = seen.get(key);
-      if (program) e.calls += program.callCountOf(s.addr);
-      if (kind === SYM_STUB) { e.addr = s.addr; e.stub = true; }
-    }
+  if (!symbols) return [];
+  const cap=Math.max(1,Number(limit)||4000),seen=new Map();
+  const add=(name,addr,{stub=false,library=null,source=null,siteKind=null}={})=>{
+    if(!name)return;
+    let e=seen.get(name);
+    if(!e){const fw=frameworkOf(name);e={name,readable:readableName(name),addr:addr??null,stub,framework:library||fw?.label||null,library:library||null,cat:fw?.cat||null,calls:0,source,sites:0};seen.set(name,e);}
+    if(library&&!e.library){e.library=library;e.framework=library;}
+    if(addr!=null){e.sites++;if(program)e.calls+=program.callCountOf(BigInt(addr));if(stub||e.addr==null){e.addr=BigInt(addr);e.stub=e.stub||stub;}}
+    if(siteKind)e.siteKind=siteKind;
+  };
+  for(const imp of symbols.linkage?.imports||[]){for(const site of imp.sites||[])add(imp.name,site.address,{library:imp.library,source:imp.source,siteKind:site.kind});if(!(imp.sites||[]).length)add(imp.name,null,{library:imp.library,source:imp.source});}
+  if(symbols.symbolCount){
+    for(const kind of [SYM_STUB,SYM_POINTER])for(const item of symbols.symbolList({kind,max:Math.max(cap,4000)}))add(item.name,item.addr,{stub:kind===SYM_STUB,source:'symbol-index'});
   }
-  return Array.from(seen.values()).sort((a, b) => b.calls - a.calls || a.name.localeCompare(b.name));
+  const out=Array.from(seen.values()).sort((a,b)=>b.calls-a.calls||a.name.localeCompare(b.name)).slice(0,cap);
+  const truth=symbols.linkageCompleteness||symbols.linkage?.completeness||null;
+  Object.defineProperties(out,{complete:{value:truth?.importsComplete===true&&seen.size<=cap,enumerable:false},completeness:{value:{complete:truth?.importsComplete===true&&seen.size<=cap,reasons:[...(truth?.reasons||[]),...(seen.size>cap?['result-limit']:[])]},enumerable:false},total:{value:seen.size,enumerable:false}});
+  return out;
 }
 
 /** 借りている先を framework ごとにまとめる（アプリの性格が見える）。 */
@@ -108,15 +103,12 @@ export function importsByFramework(imports) {
  * 中身を開いたときは、ここがそのまま「使える API の一覧」になります。
  */
 export function exportList(symbols, limit = 4000) {
-  if (!symbols || !symbols.symbolCount) return [];
-  const out = [];
-  for (let i = 0; i < symbols.addrs.length && out.length < limit; i++) {
-    if (symbols.kinds[i] !== 0) continue;
-    if (!symbols.isExported(i)) continue;
-    const name = symbols.names[i];
-    if (!name) continue;
-    out.push({ addr: symbols.addrs[i], name, readable: readableName(name) });
-  }
+  if (!symbols) return [];
+  const cap=Math.max(1,Number(limit)||4000),seen=new Map();
+  for(const exp of symbols.linkage?.exports||[]){if(!exp?.name)continue;const key=exp.name+'@'+String(exp.address??'reexport');if(seen.has(key))continue;seen.set(key,{addr:exp.address==null||BigInt(exp.address)===0n?null:BigInt(exp.address),name:exp.name,readable:readableName(exp.name),kind:exp.kind||'export',source:exp.source||'canonical-macho',reexport:exp.kind==='reexport',imported:exp.imported||null});}
+  if(symbols.symbolCount){for(let i=0;i<symbols.addrs.length;i++){if(symbols.kinds[i]!==0||!symbols.isExported(i))continue;const name=symbols.names[i];if(!name)continue;const key=name+'@'+symbols.addrs[i].toString();if(!seen.has(key))seen.set(key,{addr:symbols.addrs[i],name,readable:readableName(name),kind:'symbol',source:'symbol-index'});}}
+  const out=Array.from(seen.values()).slice(0,cap);const truth=symbols.linkageCompleteness||symbols.linkage?.completeness||null;
+  Object.defineProperties(out,{complete:{value:truth?.exportsComplete===true&&seen.size<=cap,enumerable:false},completeness:{value:{complete:truth?.exportsComplete===true&&seen.size<=cap,reasons:[...(truth?.reasons||[]),...(seen.size>cap?['result-limit']:[])]},enumerable:false},total:{value:seen.size,enumerable:false}});
   return out;
 }
 

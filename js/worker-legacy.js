@@ -426,7 +426,9 @@ async function getChunk({ regionId, chunk, wantAsm }) {
  *
  * 結果は転送可能な型付き配列で返す。数十万件あっても main 側でコピーが起きない。
  */
-async function analyzeSlice({ sliceIndex }) {
+async function analyzeSlice(msg) {
+  const { sliceIndex } = msg;
+  const supplementalBudget = createSupplementalBudget(msg);
   const slice = slices[sliceIndex];
   if (!slice || !slice.info) {
     return {
@@ -476,10 +478,10 @@ async function analyzeSlice({ sliceIndex }) {
    * バイナリを読んで自分で名前を作る（詳しくは objcStubNames）。
    */
   try {
-    for (const s of await objcStubNames(slice, entries)) {
+    for (const s of await objcStubNames(slice, entries, supplementalBudget)) {
       entries.push({ addr: s.addr, name: s.name, kind: 1 });
     }
-  } catch { /* 読めなければ名前を足さないだけ */ }
+  } catch (error) { supplementalBudget.partial(error?.name==='AbortError'?'cancelled':'objc-stub-recovery-failed'); }
 
   // 同じアドレスに複数の名前が付くことがある。先に来たものを優先。
   entries.sort((a, b) => (a.addr < b.addr ? -1 : a.addr > b.addr ? 1 : a.kind - b.kind));
@@ -546,6 +548,7 @@ async function analyzeSlice({ sliceIndex }) {
     functionStartsExact,
     functionDiscovery: { complete:functionStartsExact, capped:false,
       reasons:functionStartsExact ? [] : ['no-complete-lc-function-starts'] },
+    supplementalCompleteness: supplementalBudget.snapshot(),
     capped,
     __transfer: [outAddrs.buffer, outKinds.buffer, outFlags.buffer, funcs.buffer],
   };
@@ -579,109 +582,77 @@ async function analyzeSlice({ sliceIndex }) {
  * 読めなかった中継地点には、何も付けない。
  */
 
+function createSupplementalBudget(msg) {
+  const started=Date.now(),reasons=[];let readBytes=0,residentBytes=0,regions=0,names=0,operations=0;
+  const partial=(reason)=>{if(reason&&!reasons.includes(reason))reasons.push(reason);return false;};
+  const alive=()=>{
+    if(cancelled(msg?.id))return partial('cancelled');
+    if(Date.now()-started>WORKER_BUDGET.SUPPLEMENTAL_WALL_MS)return partial('wall-clock-budget');
+    return true;
+  };
+  return {
+    partial,alive,
+    take({read=0,resident=0,region=0,name=0,ops=0}={}){
+      if(!alive())return false;
+      if(readBytes+read>WORKER_BUDGET.SUPPLEMENTAL_READ_BYTES)return partial('read-byte-budget');
+      if(residentBytes+resident>WORKER_BUDGET.SUPPLEMENTAL_RESIDENT_BYTES)return partial('resident-byte-budget');
+      if(regions+region>WORKER_BUDGET.SUPPLEMENTAL_REGIONS)return partial('region-budget');
+      if(names+name>WORKER_BUDGET.SUPPLEMENTAL_NAMES)return partial('name-budget');
+      if(operations+ops>WORKER_BUDGET.SUPPLEMENTAL_OPERATIONS)return partial('operation-budget');
+      readBytes+=Math.max(0,read);residentBytes+=Math.max(0,resident);regions+=Math.max(0,region);names+=Math.max(0,name);operations+=Math.max(0,ops);return true;
+    },
+    releaseResident(bytes){residentBytes=Math.max(0,residentBytes-Math.max(0,Number(bytes)||0));},
+    snapshot(){return{complete:reasons.length===0,reasons:[...reasons],used:{readBytes,residentBytes,regions,names,operations},limits:{readBytes:WORKER_BUDGET.SUPPLEMENTAL_READ_BYTES,residentBytes:WORKER_BUDGET.SUPPLEMENTAL_RESIDENT_BYTES,regions:WORKER_BUDGET.SUPPLEMENTAL_REGIONS,names:WORKER_BUDGET.SUPPLEMENTAL_NAMES,operations:WORKER_BUDGET.SUPPLEMENTAL_OPERATIONS,wallClockMs:WORKER_BUDGET.SUPPLEMENTAL_WALL_MS}};},
+  };
+}
+
 const MAX_OBJC_STUBS = 80_000;
 const OBJC_STUB_MAX_BYTES = 8 * 1024 * 1024;
 
-async function objcStubNames(slice, known) {
-  const regs = (slice && slice.regions) || [];
-  const find = (name) => regs.find((r) => r.section === name && r.size > 0n);
-  const stubs = find('__objc_stubs');
-  if (!stubs || stubs.size > BigInt(OBJC_STUB_MAX_BYTES)) return [];
-
-  /* selref（メソッド名へのポインタの表）と、文字列そのものを丸ごと持っておく。
-     飛び飛びに読むと往復が数万回になるため。 */
-  const pointerRegions = [];
-  for (const r of regs) {
-    if (r.size <= 0n || r.size > BigInt(OBJC_STUB_MAX_BYTES)) continue;
-    if (/^__objc_(selrefs|superrefs|classrefs)$/.test(r.section || '')) {
-      pointerRegions.push(r);
-    }
-  }
-  const textRegions = [];
-  for (const r of regs) {
-    if (r.size <= 0n || r.size > BigInt(OBJC_STUB_MAX_BYTES)) continue;
-    if (r.cstrings || /^__objc_(methname|classname)$/.test(r.section || '')) textRegions.push(r);
-  }
-  if (!pointerRegions.length || !textRegions.length) return [];
-
-  const loaded = [];
-  for (const r of pointerRegions.concat(textRegions)) {
-    const buf = await readRange(r.fileOffset, Number(r.size));
-    if (buf && buf.length) loaded.push({ vm: r.vmAddr, buf, ptr: pointerRegions.includes(r) });
-  }
-  const slotOf = (addr) => {
-    for (const l of loaded) {
-      if (!l.ptr) continue;
-      if (addr >= l.vm && addr + 8n <= l.vm + BigInt(l.buf.length)) {
-        const o = Number(addr - l.vm);
-        let v = 0n;
-        for (let i = 7; i >= 0; i--) v = (v << 8n) | BigInt(l.buf[o + i]);
-        return v;
-      }
-    }
-    return null;
+async function objcStubNames(slice, known, budget) {
+  const regs=(slice&&slice.regions)||[];
+  const validRegion=(r)=>{
+    if(!r||r.size<=0n||r.fileOffset==null||r.vmAddr==null)return false;
+    const off=BigInt(r.fileOffset),size=BigInt(r.size);return off>=0n&&size>0n&&off<=fileSize&&size<=fileSize-off;
   };
-  const textAt = (addr) => {
-    for (const l of loaded) {
-      if (l.ptr) continue;
-      if (addr < l.vm || addr >= l.vm + BigInt(l.buf.length)) continue;
-      let o = Number(addr - l.vm);
-      let out = '';
-      while (o < l.buf.length && l.buf[o] !== 0 && out.length < MAX_SELECTOR) {
-        out += String.fromCharCode(l.buf[o++]);
-      }
-      return out || null;
-    }
-    return null;
+  const dedupe=(items)=>{const seen=new Set(),out=[];for(const r of items){if(!validRegion(r))continue;const key=`${r.fileOffset}:${r.size}:${r.vmAddr}:${r.section||''}`;if(seen.has(key))continue;if(!budget.take({region:1,ops:1}))break;seen.add(key);out.push(r);}return out;};
+  const stubs=regs.find((r)=>r.section==='__objc_stubs'&&validRegion(r));
+  if(!stubs)return [];
+  const pointerRegions=dedupe(regs.filter((r)=>/^__objc_(selrefs|superrefs|classrefs)$/.test(r.section||'')));
+  const textRegions=dedupe(regs.filter((r)=>r.cstrings||/^__objc_(methname|classname)$/.test(r.section||'')));
+  if(!pointerRegions.length||!textRegions.length)return [];
+  const owner=(list,addr,width=1n)=>{for(const r of list){const size=BigInt(r.size);if(addr>=r.vmAddr&&addr+width<=r.vmAddr+size)return r;}return null;};
+  const readVm=async(r,addr,length)=>{
+    const delta=addr-r.vmAddr,remain=BigInt(r.size)-delta,want=Math.min(Number(remain>BigInt(length)?BigInt(length):remain),length);
+    if(want<=0||!budget.take({read:want,resident:want,ops:1}))return null;
+    const bytes=await readRange(BigInt(r.fileOffset)+delta,want);budget.releaseResident(want);return bytes&&bytes.length===want?bytes:null;
   };
-
-  /* __got 越しに呼ぶ相手（_objc_msgSend / _objc_msgSendSuper2 …）。
-     名前が分かれば、中継地点の名前もそれに合わせる。 */
-  const gotName = new Map();
-  for (const e of known || []) if (e.kind === 2) gotName.set(e.addr.toString(), e.name);
-
-  const imageBase = slice.info && slice.info.textVM != null ? slice.info.textVM : null;
-  const code = await readRange(stubs.fileOffset, Number(stubs.size));
-  const words = Math.floor(code.length / 4);
-  const dv = new DataView(code.buffer, code.byteOffset, words * 4);
-
-  const out = [];
-  const pageOf = new Array(32).fill(null);
-  let start = null;
-  let selref = null;
-  let target = null;
-  for (let i = 0; i < words && out.length < MAX_OBJC_STUBS; i++) {
-    const w = dv.getUint32(i * 4, true);
-    const pc = stubs.vmAddr + BigInt(i * 4);
-    const rel = Words.pcRelTarget(w, pc);
-    if (rel) {
-      if (start === null) start = pc;
-      pageOf[rel.reg] = rel.value;
-      continue;
-    }
-    const pair = Words.pairedOffset(w);
-    if (pair && pair.load && pageOf[pair.rn] != null) {
-      const at = pageOf[pair.rn] + pair.imm;
-      // x1 に積まれるのがメソッド名、x16/x17 に積まれるのが呼ぶ相手
-      if (pair.rd === 1) selref = at;
-      else target = at;
-      pageOf[pair.rd] = null;
-      continue;
-    }
-    if (Words.classifyWord(w) === Words.KIND.BRANCH || Words.classifyWord(w) === Words.KIND.RET) {
-      if (start !== null && selref != null) {
-        const p = sanitizeStubPointer(slotOf(selref), imageBase);
-        const sel = p == null ? null : textAt(p);
-        if (sel) {
-          const via = target == null ? null : gotName.get(target.toString());
-          const send = via && /msgSend/.test(via) ? via.replace(/^_/, '') : 'objc_msgSend';
-          out.push({ addr: start, name: '_' + send + '$' + sel });
-        }
+  const slotOf=async(addr)=>{const r=owner(pointerRegions,addr,8n);if(!r)return null;const b=await readVm(r,addr,8);if(!b)return null;let v=0n;for(let i=7;i>=0;i--)v=(v<<8n)|BigInt(b[i]);return v;};
+  const textAt=async(addr)=>{const r=owner(textRegions,addr,1n);if(!r)return null;const max=Math.min(MAX_SELECTOR+1,Number(BigInt(r.size)-(addr-r.vmAddr)));const b=await readVm(r,addr,max);if(!b)return null;let out='';for(let i=0;i<b.length&&b[i]!==0&&out.length<MAX_SELECTOR;i++)out+=String.fromCharCode(b[i]);return out||null;};
+  const gotName=new Map();
+  for(const e of known||[]){if(e.kind!==2||!e.name)continue;if(!budget.take({name:1,ops:1}))break;gotName.set(e.addr.toString(),e.name);}
+  const codeSize=Number(stubs.size);
+  if(codeSize>OBJC_STUB_MAX_BYTES||!budget.take({read:codeSize,resident:codeSize,ops:1}))return [];
+  const code=await readRange(stubs.fileOffset,codeSize);
+  if(!code||!code.length){budget.releaseResident(codeSize);return [];}
+  const words=Math.floor(code.length/4),dv=new DataView(code.buffer,code.byteOffset,words*4),out=[],pageOf=new Array(32).fill(null);
+  const imageBase=slice.info&&slice.info.textVM!=null?slice.info.textVM:null;
+  let start=null,selref=null,target=null;
+  for(let i=0;i<words&&out.length<MAX_OBJC_STUBS;i++){
+    if(!budget.take({ops:1}))break;
+    const w=dv.getUint32(i*4,true),pc=stubs.vmAddr+BigInt(i*4),rel=Words.pcRelTarget(w,pc);
+    if(rel){if(start===null)start=pc;pageOf[rel.reg]=rel.value;continue;}
+    const pair=Words.pairedOffset(w);
+    if(pair&&pair.load&&pageOf[pair.rn]!=null){const at=pageOf[pair.rn]+pair.imm;if(pair.rd===1)selref=at;else target=at;pageOf[pair.rd]=null;continue;}
+    if(Words.classifyWord(w)===Words.KIND.BRANCH||Words.classifyWord(w)===Words.KIND.RET){
+      if(start!==null&&selref!=null&&budget.alive()){
+        const p=sanitizeStubPointer(await slotOf(selref),imageBase),sel=p==null?null:await textAt(p);
+        if(sel&&budget.take({name:1,ops:2})){const via=target==null?null:gotName.get(target.toString()),send=via&&/msgSend/.test(via)?via.replace(/^_/,''):'objc_msgSend';out.push({addr:start,name:'_'+send+'$'+sel});}
       }
-      start = null; selref = null; target = null;
-      pageOf.fill(null);
+      start=null;selref=null;target=null;pageOf.fill(null);
     }
   }
+  budget.releaseResident(codeSize);
   return out;
 }
 

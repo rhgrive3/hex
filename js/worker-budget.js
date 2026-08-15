@@ -11,6 +11,12 @@
      * metadata candidates consume the entire new budget before code scanning.
      */
     FUNCTION_AUX_SLOTS: 800_000,
+    SUPPLEMENTAL_READ_BYTES: 24 * MiB,
+    SUPPLEMENTAL_RESIDENT_BYTES: 12 * MiB,
+    SUPPLEMENTAL_REGIONS: 128,
+    SUPPLEMENTAL_NAMES: 100_000,
+    SUPPLEMENTAL_OPERATIONS: 2_000_000,
+    SUPPLEMENTAL_WALL_MS: 4_000,
     functionAuxLimit(requested) {
       const n = Number.isFinite(Number(requested)) ? Math.max(0, Math.floor(Number(requested))) : 0;
       return Math.min(800_000, Math.max(32_768, n * 2));

@@ -1,6 +1,8 @@
+import { ensureMachOMetadataBudget } from './macho-budget.js';
 import { functionSeed } from './model.js';
 
-export function parseChainedImports(r, dc, image) {
+export function parseChainedImports(r,dc,image,sharedBudget=null){
+  const budget=ensureMachOMetadataBudget(image,sharedBudget);
   if (!dc.size || dc.offset + dc.size > r.length || dc.size < 28) return null;
   const base = dc.offset;
   const version = r.u32(base);
@@ -24,7 +26,8 @@ export function parseChainedImports(r, dc, image) {
   if (!entrySize) { image.warnings.push(`unknown chained import format ${importsFormat}`); return null; }
   if (importsBase + importsCount * entrySize > base + dc.size) { image.warnings.push('chained imports are truncated'); return null; }
   const parsed = [];
-  for (let i = 0; i < importsCount; i++) {
+  for(let i=0;i<importsCount;i++){
+    if(!budget.take({inputBytes:entrySize,records:1,objects:1,operations:2,estimatedHeapBytes:224},'chained-import-record')){image.metadata.chainedFixups.importsComplete=false;image.metadata.chainedFixups.importsPartialReason='metadata-budget';break;}
     const p = importsBase + i * entrySize;
     let ordinal, weak, nameOffset, addend = 0n;
     if (importsFormat === 1 || importsFormat === 2) {
@@ -44,6 +47,7 @@ export function parseChainedImports(r, dc, image) {
     if (strp < base || strp >= base + dc.size) continue;
     const name = r.cstring(strp, base + dc.size - strp);
     if (!name) continue;
+    if(!budget.take({stringBytes:name.length*2,estimatedHeapBytes:name.length*2+32},'chained-import-name'))break;
     const imp = { name, library: dylibForOrdinal(image, ordinal), ordinal, weak, addend, source: 'chained-fixups', sites: [], chainedIndex: i };
     image.imports.push(imp);
     parsed[i] = imp;
@@ -51,7 +55,8 @@ export function parseChainedImports(r, dc, image) {
   return parsed;
 }
 
-export function parseChainedBindingSites(r, dc, image, imports, segments = image.segments || []) {
+export function parseChainedBindingSites(r,dc,image,imports,segments=image.segments||[],sharedBudget=null){
+  const budget=ensureMachOMetadataBudget(image,sharedBudget);
   const base = dc.offset;
   const payloadEnd = base + dc.size;
   image.metadata.chainedFixups ||= {};
@@ -119,6 +124,7 @@ export function parseChainedBindingSites(r, dc, image, imports, segments = image
     const overflowCount = (structEnd - overflowBase) / 2;
 
     for (let page = 0; page < pageCount; page++) {
+      if(!budget.take({inputBytes:2,records:1,operations:1,estimatedHeapBytes:16},'chained-page')){fail('shared metadata budget exhausted while decoding pages');status.bindingSites=decoded;return status;}
       const start = r.u16(p + 22 + page * 2);
       if (start === 0xffff) continue;
       const pageOffset = BigInt(page) * pageSizeBig;
@@ -151,6 +157,7 @@ export function parseChainedBindingSites(r, dc, image, imports, segments = image
         let address = pageAddress + BigInt(chainStart);
         let terminated = false;
         for (let guard = 0; guard < 100000; guard++) {
+          if(!budget.take({inputBytes:8,records:1,operations:1,estimatedHeapBytes:16},'chained-pointer')){fail('shared metadata budget exhausted while decoding pointer chain');status.bindingSites=decoded;return status;}
           if (address < pageAddress || address + BigInt(width) > pageAddressEnd || address + BigInt(width) > fileBackedAddressEnd) {
             fail(`segment ${segIndex} page ${page} chain leaves its page or file-backed segment range`); break;
           }
@@ -163,6 +170,7 @@ export function parseChainedBindingSites(r, dc, image, imports, segments = image
           const d = decodeChainedPointer(raw, pointerFormat);
           if (!d) { markUnsupportedChainedFormat(image, pointerFormat); fail(`segment ${segIndex} pointer format ${pointerFormat} could not be decoded`); break; }
           if (d.bind && d.ordinal >= 0 && d.ordinal < imports.length && imports[d.ordinal]) {
+            if(!budget.take({objects:1,operations:1,estimatedHeapBytes:112},'chained-bind-site')){fail('shared metadata budget exhausted while recording bind site');status.bindingSites=decoded;return status;}
             imports[d.ordinal].sites.push({ address, offset: expectedOff, kind: 'chained-bind', pointerFormat, addend: d.addend });
             decoded++;
           }
@@ -233,7 +241,8 @@ function decodeChainedPointer(raw, format) {
   return null;
 }
 
-export function parseClassicBindings(r, dc, image, segments, source) {
+export function parseClassicBindings(r,dc,image,segments,source,sharedBudget=null){
+  const budget=ensureMachOMetadataBudget(image,sharedBudget);
   if (!dc || !dc.size || dc.offset + dc.size > r.length) return null;
   const BIND_OPCODE_MASK = 0xf0, BIND_IMMEDIATE_MASK = 0x0f;
   const ptrSize = image.bits === 64 ? 8n : 4n;
@@ -262,6 +271,7 @@ export function parseClassicBindings(r, dc, image, segments, source) {
     const address = seg.address + segOffset;
     const imp = snapshotImport();
     imp.sites.push({ address, offset: image.addressToOffset(address), kind: source, type, addend, weak: imp.weak });
+    if(!budget.take({objects:2,operations:1,estimatedHeapBytes:320},'classic-bind-output')){fail('shared metadata budget exhausted while recording bind');return;}
     image.imports.push(imp); status.decodedBinds++;
   };
   const applyThreaded = () => {
@@ -281,7 +291,8 @@ export function parseClassicBindings(r, dc, image, segments, source) {
         if (!template) fail(`threaded bind ordinal ${ordinal} is outside table`);
         else {
           const imp = { ...template, sites: [{ address, offset: off, kind: 'threaded-bind', type: template.type, addend: template.addend, weak: template.weak }] };
-          image.imports.push(imp); status.decodedBinds++;
+          if(!budget.take({objects:2,operations:1,estimatedHeapBytes:320},'classic-bind-output')){fail('shared metadata budget exhausted while recording bind');return;}
+    image.imports.push(imp); status.decodedBinds++;
         }
       }
       if (!delta) { status.threadedApplies++; return; }
@@ -292,6 +303,7 @@ export function parseClassicBindings(r, dc, image, segments, source) {
   };
   try {
     while (p < end) {
+    if(!budget.take({inputBytes:1,records:1,operations:1,estimatedHeapBytes:8},'classic-bind-opcode')){fail('shared metadata budget exhausted while decoding bind stream');break;}
     const byte = r.u8(p++);
     const op = byte & BIND_OPCODE_MASK;
     const imm = byte & BIND_IMMEDIATE_MASK;
@@ -311,8 +323,13 @@ export function parseClassicBindings(r, dc, image, segments, source) {
     else if (op === 0xb0) { bind(); segOffset += ptrSize + BigInt(imm) * ptrSize; }
     else if (op === 0xc0) {
       const a = r.uleb(p, 10, end); p = a.next; const b = r.uleb(p, 10, end); p = b.next;
-      if (a.value > 10_000_000n) { fail('bind repeat count exceeds budget'); break; }
-      for (let i = 0n; i < a.value; i++) { bind(); segOffset += ptrSize + b.value; }
+      if(a.value>BigInt(Number.MAX_SAFE_INTEGER)){fail('bind repeat count exceeds safe integer range');break;}
+      const repeat=Number(a.value),step=ptrSize+b.value,owner=segments[segIndex];
+      const maxBySegment=owner&&step>0n&&segOffset>=0n&&segOffset+ptrSize<=owner.size?Number(((owner.size-segOffset-ptrSize)/step)+1n):0;
+      const maxByBudget=Math.min(budget.remaining('operations'),Math.floor(budget.remaining('objects')/2));
+      const allowed=Math.max(0,Math.min(repeat,maxBySegment,maxByBudget));
+      for(let i=0;i<allowed;i++){bind();segOffset+=step;}
+      if(allowed<repeat){fail(`bind repeat count ${repeat} exceeds segment/shared metadata capacity ${allowed}`);break;}
     } else if (op === 0xd0) {
       if (imm === 0) {
         const x = r.uleb(p, 10, end); p = x.next;
@@ -330,7 +347,8 @@ export function parseClassicBindings(r, dc, image, segments, source) {
   return status;
 }
 
-export function parseExportTrie(r, dc, image) {
+export function parseExportTrie(r,dc,image,sharedBudget=null){
+  const budget=ensureMachOMetadataBudget(image,sharedBudget);
   if (!dc || !dc.size || dc.offset + dc.size > r.length) return null;
   const base = dc.offset, end = dc.offset + dc.size;
   const active = new Set();
@@ -341,7 +359,7 @@ export function parseExportTrie(r, dc, image) {
     if (depth > 256) { markPartial('depth budget exceeded', 'budgetExceeded'); return; }
     if (!Number.isSafeInteger(nodeOff) || nodeOff < 0 || base + nodeOff >= end) { markPartial('child node offset is outside trie'); return; }
     if (active.has(nodeOff)) { markPartial(`cycle detected at node 0x${nodeOff.toString(16)}`, 'cycleDetected'); return; }
-    if (++status.nodes > 1_000_000) { markPartial('node budget exceeded', 'budgetExceeded'); return; }
+    if(!budget.take({records:1,objects:1,operations:1,estimatedHeapBytes:48},'export-trie-node')){markPartial('shared metadata node budget exceeded','budgetExceeded');return;} status.nodes++;
     active.add(nodeOff);
     try {
       let p = base + nodeOff;
@@ -360,14 +378,14 @@ export function parseExportTrie(r, dc, image) {
           const kind = exportKind === 1 ? 'thread-local' : exportKind === 2 ? 'absolute' : 'export';
           const ex = { name: prefix, address, kind, flags, source: 'exports-trie' };
           if (flags & 0x10) { const resolverX = r.uleb(p, 10, terminalEnd); p = resolverX.next; ex.resolver = image.imageBase + resolverX.value; }
-          image.exports.push(ex);
-          if (exportKind === 0) { const sec = image.sectionAt(address); if (sec && sec.perms.execute) image.functions.push(functionSeed(address, { name: prefix, source: 'export', confidence: 0.9 })); }
+          if(!budget.take({objects:1,operations:1,stringBytes:prefix.length*2,estimatedHeapBytes:prefix.length*2+160},'export-trie-output')){markPartial('shared metadata output budget exceeded','budgetExceeded');return;} image.exports.push(ex);
+          if (exportKind === 0) { const sec = image.sectionAt(address); if (sec && sec.perms.execute) if(!budget.take({objects:1,operations:1,estimatedHeapBytes:128},'export-function')){markPartial('shared metadata function budget exceeded','budgetExceeded');return;} image.functions.push(functionSeed(address, { name: prefix, source: 'export', confidence: 0.9 })); }
         }
       }
       p = terminalEnd; if (p >= end) return;
       const children = r.u8(p++);
       for (let i = 0; i < children; i++) {
-        if (++status.edges > 2_000_000) { markPartial('edge budget exceeded', 'budgetExceeded'); return; }
+        if(!budget.take({records:1,operations:1,estimatedHeapBytes:32},'export-trie-edge')){markPartial('shared metadata edge budget exceeded','budgetExceeded');return;} status.edges++;
         const edgeX = rawCString(r, p, end); const edge = edgeX.text; p = edgeX.next;
         if (p >= end) { markPartial('child offset is truncated'); return; }
         const child = r.uleb(p, 10, end); p = child.next; walk(Number(child.value), prefix + edge, depth + 1);

@@ -3,6 +3,7 @@ import { CachedByteSource } from '../bytesource/cached.js';
 import { describeBinaryImage } from './describe.js';
 import { fingerprintVendors } from '../knowledge/index.js';
 import { hashByteSource } from './hash.js';
+import { normalizeMachOLinkage, MACHO_LINKAGE_LIMITS } from '../macho-linkage.js';
 import { boundedOffset, checkedChunkIndex, chunkLength, exactExternalInteger, regionSize, utf8Len, isExactFunctionSeed } from './worker-validation.js';
 
 const ROW_BYTES = 4;
@@ -72,6 +73,7 @@ async function handle(msg, signal) {
     case 'setRegions': return setRegions(msg.regions);
     case 'chunk': return getChunk(msg, signal);
     case 'analyze': return analyzeImage();
+    case 'machoAnalysis': return analyzeMachOFile(msg, signal);
     case 'strings': return scanStrings(msg, signal);
     case 'search': return runSearch(msg, signal);
     case 'readAt': return readAtAddress(msg, signal);
@@ -155,6 +157,26 @@ async function openFile(msg, signal) {
   }
 }
 
+async function analyzeMachOFile(msg, signal) {
+  const candidateFile=msg.file;
+  if(!candidateFile || !Number.isSafeInteger(candidateFile.size) || candidateFile.size<=0) throw new Error('Mach-O canonical analysis requires a valid file.');
+  const temporary=createSource(candidateFile);
+  const cancellable={size:temporary.size,maxReadLength:temporary.maxReadLength,read:(offset,length,options={})=>temporary.read(offset,length,{...options,signal})};
+  try {
+    const selected=await openBinarySource(cancellable,{
+      sliceIndex:msg.sliceIndex,
+      ranges:{pageSize:64*1024,maxPageSize:2*1024*1024,maxCachedBytes:16*1024*1024,maxReads:4096},
+    });
+    if(signal.aborted)throw new Error('Canonical Mach-O analysis cancelled');
+    if(selected?.format!=='macho')throw new Error('Canonical Mach-O parser did not return a Mach-O image');
+    const result=analyzeImage(selected,{includeImportSites:true});
+    result.linkage=normalizeMachOLinkage(selected);
+    result.canonicalMetadata={machoMetadata:selected.metadata?.machoMetadata||null,chainedFixups:selected.metadata?.chainedFixups||null,dyldBindings:selected.metadata?.dyldBindings||null,exportTrie:selected.metadata?.exportTrie||null};
+    result.architecture=selected.arch||null;
+    return result;
+  } finally { temporary.clear?.(); }
+}
+
 function setRegions(list) {
   for (const region of list || []) if (region?.id) regions.set(region.id, region);
   return { ok: true };
@@ -178,49 +200,46 @@ async function getChunk({ regionId, chunk }, signal) {
   return { regionId, chunk, bytes: copy, mn: '', ops: '', rows: Math.ceil(copy.length / ROW_BYTES), __transfer: [copy.buffer] };
 }
 
-function analyzeImage() {
-  if (!image) return emptyAnalysis();
+function analyzeImage(sourceImage = image, options = {}) {
+  if (!sourceImage) return emptyAnalysis();
   const entries = new Map();
-  for (const symbol of image.symbols || []) {
-    if (symbol?.address == null || !symbol.name) continue;
-    entries.set(BigInt(symbol.address).toString(), { address: BigInt(symbol.address), name: symbol.name, exported: !!symbol.exported });
+  const addEntry=(address,name,kind=0,exported=false,source='binary-symbol')=>{
+    if(address==null||!name)return;
+    const addr=BigInt(address),key=addr.toString(),hit=entries.get(key);
+    if(hit){
+      if(!hit.name)hit.name=String(name);
+      if(!hit.kind&&kind)hit.kind=kind;
+      hit.exported=hit.exported||!!exported;
+      if(hit.source==='binary-symbol'&&source!=='binary-symbol')hit.source=source;
+      return;
+    }
+    if(entries.size>=MACHO_LINKAGE_LIMITS.mergedSymbols)return;
+    entries.set(key,{address:addr,name:String(name),kind,exported:!!exported,source});
+  };
+  for (const symbol of sourceImage.symbols || []) addEntry(symbol?.address,symbol?.name,0,!!symbol?.exported,'binary-symbol');
+  for (const exp of sourceImage.exports || []) if(exp?.address!=null&&BigInt(exp.address)!==0n)addEntry(exp.address,exp.name,0,true,exp.source||'export-table');
+  if(options.includeImportSites){
+    for(const imp of sourceImage.imports||[]){
+      for(const site of imp?.sites||[])addEntry(site?.address,imp?.name,2,false,imp?.source||'macho-import');
+    }
   }
-  for (const exp of image.exports || []) {
-    if (exp?.address == null || !exp.name) continue;
-    const key = BigInt(exp.address).toString();
-    const existing = entries.get(key);
-    if (existing) existing.exported = true;
-    else entries.set(key, { address: BigInt(exp.address), name: exp.name, exported: true });
-  }
-  const sorted = [...entries.values()].sort((a, b) => a.address < b.address ? -1 : a.address > b.address ? 1 : 0);
-  const addrs = new BigUint64Array(sorted.length);
-  const kinds = new Uint8Array(sorted.length);
-  const flags = new Uint8Array(sorted.length);
-  for (let i = 0; i < sorted.length; i++) { addrs[i] = sorted[i].address; flags[i] = sorted[i].exported ? 1 : 0; }
-  const seedByAddress = new Map();
-  for (const seed of image.functions || []) if (seed?.address != null) seedByAddress.set(BigInt(seed.address).toString(), seed);
-  const functions = [...seedByAddress.keys()].map(BigInt).sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
-  const funcs = new BigUint64Array(functions);
-  const functionProvenance = functions.map((addr) => {
-    const seed = seedByAddress.get(addr.toString()) || {};
-    const confirmed = isExactFunctionSeed(seed);
-    return { source: seed.source || 'heuristic', confidence: Number(seed.confidence ?? (confirmed ? 1 : 0.5)), confirmed };
-  });
-  const nameProvenance = sorted.map((entry) => ({ source: entry.exported ? 'export-table' : 'binary-symbol', confidence: 1, confirmed: true }));
-  const allSeedsExact = functions.length > 0 && (image.functions || []).every(isExactFunctionSeed);
-  /* ELF/PE symbol/unwind/exception seeds can all be exact while still being a
-     non-exhaustive subset. The generic platform worker has no exhaustive
-     discovery proof, so it must not suppress later heuristic completion. */
-  const discoveryComplete = image.metadata?.functionDiscovery?.complete === true;
+  const sorted=[...entries.values()].sort((a,b)=>a.address<b.address?-1:a.address>b.address?1:0);
+  const addrs=new BigUint64Array(sorted.length),kinds=new Uint8Array(sorted.length),flags=new Uint8Array(sorted.length);
+  for(let i=0;i<sorted.length;i++){addrs[i]=sorted[i].address;kinds[i]=sorted[i].kind||0;flags[i]=sorted[i].exported?1:0;}
+  const seedByAddress=new Map();
+  for(const seed of sourceImage.functions||[])if(seed?.address!=null)seedByAddress.set(BigInt(seed.address).toString(),seed);
+  const functions=[...seedByAddress.keys()].map(BigInt).sort((a,b)=>a<b?-1:a>b?1:0);
+  const funcs=new BigUint64Array(functions);
+  const functionProvenance=functions.map((addr)=>{const seed=seedByAddress.get(addr.toString())||{};const confirmed=isExactFunctionSeed(seed);return{source:seed.source||'heuristic',confidence:Number(seed.confidence??(confirmed?1:0.5)),confirmed};});
+  const nameProvenance=sorted.map((entry)=>({source:entry.source||'canonical-macho',confidence:1,confirmed:true}));
+  const allSeedsExact=functions.length>0&&(sourceImage.functions||[]).every(isExactFunctionSeed);
+  const discoveryComplete=sourceImage.metadata?.functionDiscovery?.complete===true;
   return {
-    addrs, kinds, flags, names: sorted.map((x) => String(x.name ?? '')), funcs, functionProvenance, nameProvenance,
-    symbolCount: addrs.length, funcCount: funcs.length, capped: false,
-    allSeedsExact,
-    discoveryComplete,
-    functionStartsExact: discoveryComplete && allSeedsExact,
-    functionDiscovery: { complete: discoveryComplete, capped: false,
-      reasons: discoveryComplete ? [] : ['platform-function-seeds-not-exhaustive'] },
-    __transfer: [addrs.buffer, kinds.buffer, flags.buffer, funcs.buffer],
+    addrs,kinds,flags,names:sorted.map((x)=>String(x.name??'')),funcs,functionProvenance,nameProvenance,
+    symbolCount:addrs.length,funcCount:funcs.length,capped:entries.size>=MACHO_LINKAGE_LIMITS.mergedSymbols,
+    allSeedsExact,discoveryComplete,functionStartsExact:discoveryComplete&&allSeedsExact,
+    functionDiscovery:{complete:discoveryComplete,capped:false,reasons:discoveryComplete?[]:['platform-function-seeds-not-exhaustive']},
+    __transfer:[addrs.buffer,kinds.buffer,flags.buffer,funcs.buffer],
   };
 }
 

@@ -50,6 +50,7 @@ export async function parseMachOSource(input, opts = {}, prefix = null, rangeOpt
   const magic = prefix || await source.readExactly(0n, Number(source.size < 16n ? source.size : 16n), { signal: opts.signal });
   const fat = fatKind(magic);
   if (!fat) {
+    if (opts.sliceIndex != null && Number(opts.sliceIndex) !== 0) throw new Error(`Mach-O thin binary has no slice ${opts.sliceIndex}`);
     const image = await parseSourceRanges(source, parseMachO, opts, withInitial(magic, ranges));
     return withStrings(image, source, opts);
   }
@@ -72,9 +73,14 @@ export async function parseMachOSource(input, opts = {}, prefix = null, rangeOpt
     all.push({ cpu, subtype, offset, size });
   }
   const valid = all.filter((slice) => slice.size > 0n && slice.offset <= source.size && slice.size <= source.size - slice.offset);
+  const requestedIndex = opts.sliceIndex == null ? null : Number(opts.sliceIndex);
+  if (requestedIndex != null && (!Number.isSafeInteger(requestedIndex) || requestedIndex < 0 || requestedIndex >= all.length)) throw new Error(`invalid Mach-O slice index ${opts.sliceIndex}`);
+  const indexed = requestedIndex == null ? null : all[requestedIndex];
+  const selectedByIndex = indexed && indexed.size > 0n && indexed.offset <= source.size && indexed.size <= source.size - indexed.offset ? indexed : null;
+  if (requestedIndex != null && !selectedByIndex) throw new Error(`Mach-O slice ${requestedIndex} is not readable`);
   const requested = opts.arch ? valid.find((slice) => sliceArchName(slice) === opts.arch) : null;
-  if (opts.arch && !requested) throw new Error(`requested Mach-O architecture ${opts.arch} is not present in the universal binary`);
-  const selected = requested || valid.find((slice) => sliceArchName(slice) === 'arm64e') || valid.find((slice) => sliceArchName(slice) === 'arm64') || valid.find((slice) => sliceArchName(slice) === 'x86_64') || valid[0];
+  if (opts.arch && !requested && requestedIndex == null) throw new Error(`requested Mach-O architecture ${opts.arch} is not present in the universal binary`);
+  const selected = selectedByIndex || requested || valid.find((slice) => sliceArchName(slice) === 'arm64e') || valid.find((slice) => sliceArchName(slice) === 'arm64') || valid.find((slice) => sliceArchName(slice) === 'x86_64') || valid[0];
   if (!selected) throw new Error('Mach-O universal binary has no readable slice');
   const sliceSource = source.subrange(selected.offset, selected.size);
   const slicePrefix = await readPrefix(sliceSource, opts.signal);

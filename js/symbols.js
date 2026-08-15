@@ -32,6 +32,9 @@ export class SymbolIndex {
     /* 1 = 外へ公開されている名前（エクスポート）。0 = このファイルの中だけ。 */
     this.flags = symbolCardinalityValid ? rawFlags : new Uint8Array(0);
     this.funcs = r.funcs || new BigUint64Array(0);
+    this.linkage = r.linkage || null;
+    this.linkageCompleteness = this.linkage?.completeness || { complete:false, importsComplete:false, exportsComplete:false, symbolSitesComplete:false, reasons:['linkage-unavailable'] };
+    this.supplementalCompleteness = r.supplementalCompleteness || null;
     /* Optional exact function ends. A zero/missing entry means unknown. */
     this.funcEnds = r.funcEnds || null;
     /* Executable regions are the trust boundary for containment. */
