@@ -22,8 +22,8 @@ const expectedFixtures = Object.fromEntries(Object.entries(fixtureManifest.fixtu
   sha256: spec.sha256,
 }]));
 assert.deepEqual(baseline.fixtures, expectedFixtures, 'baseline fixture identity must exactly match the canonical pinned manifest');
-assert.equal(baseline.baseline.sourceCommit, '9c20307faf02a56326fdb888db455eb8917612e2');
-assert.equal(baseline.baseline.sourceTree, '624d2ee019184d6fbdf306d6415ab92ac5c939fe');
+assert.equal(baseline.baseline.sourceCommit, '33a2d3311ffdaf1e0b0b9cda21d79f1a361eca0a');
+assert.equal(baseline.baseline.sourceTree, '5160ae16f21d0e62a428a1e193357189dd76e9f0');
 assert.deepEqual(Object.keys(baseline.observations.accuracy.targets).sort(), ['BattleCats', 'TsumTsum', 'YWP']);
 assert.deepEqual(Object.keys(baseline.observations.binary.targets).sort(), ['TsumTsum', 'YWP', 'battlecats']);
 assert.equal(baseline.observations.compilerTruth.semanticMismatches, 0);
