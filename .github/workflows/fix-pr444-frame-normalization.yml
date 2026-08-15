@@ -1,0 +1,43 @@
+name: Fix PR444 frame normalization
+
+on:
+  push:
+    branches:
+      - fix/first-50-unreferenced-open-issues
+
+permissions:
+  contents: write
+
+jobs:
+  fix-frame-normalization:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Restore stack-frame canonicalization lost in v4
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('js/fingerprint/index.js')
+          text = path.read_text()
+          old = """  const parsed = structured || parseOperands(operandText);\n  const normalized = parsed.map((op, index) => canonicalOperand(op, mnemonic, index, options)).join(', ');\n  return { mnemonic, operands: normalized.replace(/\\s+/g, ' ').trim() };"""
+          new = """  const parsed = structured || parseOperands(operandText);\n  const normalizedOperands = parsed.map((op, index) => canonicalOperand(op, mnemonic, index, options));\n  // Stack-frame size is compiler layout noise, not function identity. Preserve\n  // the v3 contract when using the v4 structured-operand canonicalizer.\n  if (/^(add|sub)$/.test(mnemonic) && normalizedOperands[0] === 'SP' && normalizedOperands[1] === 'SP' &&\n      parsed[2] && (parsed[2].k === 'imm' || numericOther(parsed[2]) != null)) normalizedOperands[2] = '@frame';\n  const normalized = normalizedOperands.join(', ');\n  return { mnemonic, operands: normalized.replace(/\\s+/g, ' ').trim() };"""
+          if old not in text:
+              raise SystemExit('target block not found; refusing unsafe edit')
+          path.write_text(text.replace(old, new, 1))
+          PY
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { normalizeInstruction } from './js/fingerprint/index.js';
+          assert.equal(normalizeInstruction('sub sp, sp, #0x40').operands, 'SP, SP, @frame');
+          assert.equal(normalizeInstruction('sub sp, sp, #0x80').operands, 'SP, SP, @frame');
+          assert.notEqual(normalizeInstruction('sub x0, x0, #0x40').operands, normalizeInstruction('sub x0, x0, #0x80').operands);
+          NODE
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add js/fingerprint/index.js
+          git commit -m "fix: preserve stack-frame normalization in fingerprint v4"
+          git push origin HEAD:fix/first-50-unreferenced-open-issues
