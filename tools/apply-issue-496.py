@@ -2,6 +2,8 @@ from pathlib import Path
 
 p=Path('js/il2cpp.js')
 text=p.read_text()
+if "preferred: 'verified-legacy'" in text and "preferred: 'codegen-modules'" in text:
+    raise SystemExit(0)
 start=text.index('export async function bindMethodAddresses(meta, opts) {')
 end=text.index('\nasync function bindCodeGenModules(meta, ctx)',start)
 new=r'''export async function bindMethodAddresses(meta, opts) {
@@ -42,12 +44,8 @@ new=r'''export async function bindMethodAddresses(meta, opts) {
       observed++;
       const count64 = dv.getBigUint64(pos, true);
       const pointer = dv.getBigUint64(pos + 8, true) & 0x00ffffffffffffffn;
-      if (count64 > 5_000_000n) continue;
+      if (count64 < 1n || count64 > 5_000_000n) continue;
       const count = Number(count64);
-      if (count === 0) {
-        if (pointer === 0n) proven++;
-        continue;
-      }
       if (containing(pointer, Math.min(count, 16) * 8)) proven++;
     }
     return { observed, proven };
