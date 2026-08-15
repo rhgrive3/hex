@@ -8,6 +8,12 @@ import {
   upstreamError, waitForRetry,
 } from './worker-transport.js';
 
+export function handleAICapabilities(request, env) {
+  if (request.method !== 'GET') return jsonError(405, 'method_not_allowed', 'Only GET is allowed.', { Allow: 'GET' });
+  const adapter = resolveInferenceAdapter(env);
+  return jsonResponse({ configured: adapter.configured, capabilities: clientSafeCapabilities(adapter.capabilities) });
+}
+
 export async function handleAITurn(request, env) {
   if (request.method !== 'POST') return jsonError(405, 'method_not_allowed', 'Only POST is allowed.', { Allow: 'POST' });
   if (!isJsonRequest(request)) return jsonError(415, 'unsupported_media_type', 'Content-Type must be application/json.');
