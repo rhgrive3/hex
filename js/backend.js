@@ -138,11 +138,28 @@ export class Backend {
   }
 
   async open(file) {
-    this.transportEpoch++;
+    const previousTransportEpoch = this.transportEpoch;
+    const openTransportEpoch = ++this.transportEpoch;
+    for (const worker of [this.legacyWorker, this.platformWorker]) worker.postMessage({ t: 'cancel', epoch: previousTransportEpoch });
+    const assertCurrent = () => {
+      if (this.transportEpoch !== openTransportEpoch) throw new StaleRequestError();
+    };
+    const step = async (promise) => {
+      try {
+        const value = await promise;
+        assertCurrent();
+        return value;
+      } catch (error) {
+        assertCurrent();
+        throw error;
+      }
+    };
+
     let detection = null;
     let platformError = null;
-    try { detection = await this._callTo('platform', 'detect', { file }); }
+    try { detection = await step(this._callTo('platform', 'detect', { file })); }
     catch (error) { if (error?.stale) throw error; platformError = error; }
+    assertCurrent();
 
     let nextFormat = 'unknown';
     let nextPlatform = null;
@@ -151,10 +168,11 @@ export class Backend {
     let result = null;
     if (detection?.formatId === 'macho') {
       nextFormat = 'macho';
-      const legacy = await this._callTo('legacy', 'open', { file });
+      const legacy = await step(this._callTo('legacy', 'open', { file }));
       let normalized = null;
-      try { normalized = await this._callTo('platform', 'open', { file }, null, (p) => this.onAnalysisProgress?.(p)); }
+      try { normalized = await step(this._callTo('platform', 'open', { file }, null, (p) => this.onAnalysisProgress?.(p))); }
       catch (error) { if (error?.stale) throw error; platformError = error; }
+      assertCurrent();
       legacy.formatId = 'macho';
       for (const slice of legacy.slices || []) slice.capability = legacySliceCapability(slice);
       legacy.capability = legacy.slices?.[0]?.capability || legacySliceCapability(null);
@@ -170,8 +188,9 @@ export class Backend {
       result = legacy;
     } else {
       let platformInfo = null;
-      try { platformInfo = await this._callTo('platform', 'open', { file }, null, (p) => this.onAnalysisProgress?.(p)); }
+      try { platformInfo = await step(this._callTo('platform', 'open', { file }, null, (p) => this.onAnalysisProgress?.(p))); }
       catch (error) { if (error?.stale) throw error; platformError = error; }
+      assertCurrent();
       if (platformInfo) {
         nextPlatform = platformInfo;
         nextFormat = platformInfo.formatId || platformInfo.capability?.format || detection?.formatId || 'unknown';
@@ -179,19 +198,23 @@ export class Backend {
         nextBridge = capability?.architecture === 'arm64';
         if (nextBridge) {
           try {
-            await this._callTo('legacy', 'open', { file });
+            await step(this._callTo('legacy', 'open', { file }));
             const allRegions=[...(platformInfo.slices||[]).flatMap((slice)=>slice.regions||[]),platformInfo.raw].filter(Boolean);
-            await this._callTo('legacy','setRegions',{regions:allRegions});
-          } catch { nextBridge=false; }
+            await step(this._callTo('legacy','setRegions',{regions:allRegions}));
+          } catch (error) {
+            if (error?.stale) throw error;
+            nextBridge=false;
+          }
         }
         result=platformInfo;
       } else {
-        const legacy=await this._callTo('legacy','open',{file});
+        const legacy=await step(this._callTo('legacy','open',{file}));
         nextLegacy=legacy;
         if (platformError && legacy.format === 'Raw binary') legacy.warnings=[...(legacy.warnings||[]),platformError.message];
         result=legacy;
       }
     }
+    assertCurrent();
     this.advanceEpoch();
     this.file=file;
     this.formatId=nextFormat;
