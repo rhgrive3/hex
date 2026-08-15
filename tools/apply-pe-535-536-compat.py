@@ -23,7 +23,6 @@ new="""  const imageBase = 0x10000000n;
   parseDelayImports(new ByteView(bytes, { littleEndian: true }), { rva: 0x100, size: 0x40 }, image);"""
 if old not in s: raise SystemExit('direct delay-import fixture anchor missing')
 s=s.replace(old,new,1)
-
 old="""  const imageBase = 0x10000000n; const exec = { address: imageBase + 0x1000n, size: 0x100n, perms: { execute: true } };
   const image = { imageBase, functions: [], warnings: [], metadata: {}, addressToOffset(address) { const delta = BigInt(address) - imageBase; return delta >= 0n && delta < BigInt(bytes.length) ? delta : null; }, sectionAt(address) { const a = BigInt(address); return a >= exec.address && a < exec.address + exec.size ? exec : null; } };
   parseExceptionFunctions(new ByteView(bytes, { littleEndian: true }), { rva: 0x200, size: 48 }, image, 0x8664);"""
@@ -32,5 +31,27 @@ new="""  const imageBase = 0x10000000n; const exec = { address: imageBase + 0x10
   const image = { imageBase, sections: [exec, meta], segments: [exec, meta], functions: [], warnings: [], metadata: {}, addressToOffset(address) { const a=BigInt(address); for (const owner of [exec, meta]) if (a >= owner.address && a < owner.address + owner.fileSize) return owner.fileOffset + (a-owner.address); return null; }, sectionAt(address) { const a = BigInt(address); return a >= exec.address && a < exec.address + exec.size ? exec : null; } };
   parseExceptionFunctions(new ByteView(bytes, { littleEndian: true }), { rva: 0x200, size: 48 }, image, 0x8664);"""
 if old not in s: raise SystemExit('direct exception fixture anchor missing')
+s=s.replace(old,new,1)
+p.write_text(s)
+
+p=Path('tests/issues-101-112.mjs')
+s=p.read_text()
+old="""function fixture(size=0x400){
+  const bytes=new Uint8Array(size), view=new DataView(bytes.buffer);
+  const image={imageBase:BASE,bits:64,functions:[],relocations:[],warnings:[],metadata:{},
+    addressToOffset(address){const d=BigInt(address)-BASE; return d>=0n&&d<BigInt(bytes.length)?d:null;},
+    sectionAt(address){const d=BigInt(address)-BASE; return d>=0x200n&&d<0x300n?{address:BASE+0x200n,size:0x100n,perms:{execute:true}}:null;}};
+  return {bytes,view,r:new ByteView(bytes,{littleEndian:true}),image};
+}"""
+new="""function fixture(size=0x400){
+  const bytes=new Uint8Array(size), view=new DataView(bytes.buffer);
+  const mapped={address:BASE,size:BigInt(bytes.length),fileOffset:0n,fileSize:BigInt(bytes.length),perms:{read:true,write:true}};
+  const exec={address:BASE+0x200n,size:0x100n,fileOffset:0x200n,fileSize:0x100n,perms:{read:true,execute:true}};
+  const image={imageBase:BASE,bits:64,sections:[mapped,exec],segments:[mapped],functions:[],relocations:[],warnings:[],metadata:{},
+    addressToOffset(address){const d=BigInt(address)-BASE; return d>=0n&&d<BigInt(bytes.length)?d:null;},
+    sectionAt(address){const a=BigInt(address); return a>=exec.address&&a<exec.address+exec.size?exec:null;}};
+  return {bytes,view,r:new ByteView(bytes,{littleEndian:true}),image};
+}"""
+if old not in s: raise SystemExit('issues-101-112 PE fixture anchor missing')
 s=s.replace(old,new,1)
 p.write_text(s)
