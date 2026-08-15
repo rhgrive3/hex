@@ -34,12 +34,27 @@ export function createAiEngine(app, options = {}) {
       const prompt = composePrompt({ mode, style, scope, question, context });
       const engine = await runtime();
       if (engine && typeof engine.turn === 'function') {
+        const runCore = () => engine.turn({ goal: question, mode, style, scope, sessionId, task: prompt.task }, { signal, onActivity: (event) => onActivity && onActivity(event) });
         try {
-          const result = await engine.turn({ goal: question, mode, style, scope, sessionId, task: prompt.task }, { signal, onActivity: (event) => onActivity && onActivity(event) });
+          let result;
+          try {
+            result = await runCore();
+          } catch (error) {
+            if (!isSessionBindingMismatch(error)) throw error;
+            // A new user turn after a binary/project switch must start a new
+            // investigation rather than repeatedly presenting the old session.
+            sessionId = null;
+            onActivity?.({ type: 'session-rebind', label: '新しい解析対象へAIセッションを切り替え' });
+            result = await runCore();
+          }
           if (result?.sessionId) sessionId = result.sessionId;
           return result;
         } catch (error) {
           if (signal?.aborted) throw error;
+          // Scope/binding failures are safety boundaries. Falling through to a
+          // live local engine here would re-run the same turn against a newly
+          // visible function/binary and defeat TurnSnapshot semantics.
+          if (isSafetyBoundaryError(error)) throw error;
           onActivity?.({ type: 'error', label: 'AI core unavailable', detail: String(error?.message || error).slice(0, 120) });
         }
       }
@@ -68,6 +83,13 @@ function exposeStableIdentityInputs(context, app) {
   define('sliceIndex', () => app.store?.get?.('sliceIndex') ?? null);
   define('architecture', () => app.store?.get?.('architecture') || app.store?.get?.('capability')?.architecture || null);
   define('fileInfo', () => app.store?.get?.('fileInfo') || null);
+}
+
+function isSessionBindingMismatch(error) {
+  return error?.type === 'scope_violation' && /requested AI session belongs to a different binary or project/i.test(String(error?.message || ''));
+}
+function isSafetyBoundaryError(error) {
+  return error?.type === 'scope_violation' || error?.type === 'cancelled' || error?.type === 'context_too_large';
 }
 
 export default createAiEngine;
