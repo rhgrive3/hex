@@ -83,7 +83,22 @@ jobs:
         run: npm install
 
       - name: Lossless data-plane regression
-        run: node tests/ai-lossless-data-plane.mjs
+        shell: bash
+        run: |
+          set +e
+          node tests/ai-lossless-data-plane.mjs > /tmp/lossless.log 2>&1
+          rc=$?
+          cat /tmp/lossless.log
+          exit $rc
+
+      - name: Upload lossless diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lossless-diagnostics
+          path: /tmp/lossless.log
+          if-no-files-found: error
+          retention-days: 1
 
       - name: Planner data-plane regression
         run: node tests/ai-planner-data-plane.mjs
