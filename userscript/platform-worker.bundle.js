@@ -1300,7 +1300,7 @@
         sizeofcmds
       }
     });
-    const metadataBudget = ensureMachOMetadataBudget(image2);
+    const metadataBudget = ensureMachOMetadataBudget(image2, createMachOMetadataBudget(image2, { signal: opts.signal }));
     const commands = [];
     const segmentOrder = [];
     const symtabs = [];
@@ -4389,8 +4389,14 @@
       all.push({ cpu, subtype, offset, size });
     }
     const valid = all.filter((slice) => slice.size > 0n && slice.offset <= source2.size && slice.size <= source2.size - slice.offset);
-    const requested = opts.arch ? valid.find((slice) => sliceArchName2(slice) === opts.arch) : null;
-    if (opts.arch && !requested) throw new Error(`requested Mach-O architecture ${opts.arch} is not present in the universal binary`);
+    const requestedIndex = opts.sliceIndex == null ? null : Number(opts.sliceIndex);
+    if (requestedIndex != null && (!Number.isSafeInteger(requestedIndex) || requestedIndex < 0 || requestedIndex >= all.length)) {
+      throw new Error(`requested Mach-O slice index ${opts.sliceIndex} is not present in the universal binary`);
+    }
+    const indexed = requestedIndex == null ? null : all[requestedIndex];
+    if (indexed && !valid.includes(indexed)) throw new Error(`requested Mach-O slice index ${requestedIndex} is outside the active file`);
+    const requested = indexed || (opts.arch ? valid.find((slice) => sliceArchName2(slice) === opts.arch) : null);
+    if (requestedIndex == null && opts.arch && !requested) throw new Error(`requested Mach-O architecture ${opts.arch} is not present in the universal binary`);
     const selected = requested || valid.find((slice) => sliceArchName2(slice) === "arm64e") || valid.find((slice) => sliceArchName2(slice) === "arm64") || valid.find((slice) => sliceArchName2(slice) === "x86_64") || valid[0];
     if (!selected) throw new Error("Mach-O universal binary has no readable slice");
     const sliceSource = source2.subrange(selected.offset, selected.size);
@@ -6759,6 +6765,134 @@
     return [...sources].some((s) => ["entrypoint", "export", "exception", "unwind", "function_starts", "tls-callback", "guard-cf"].includes(s));
   }
 
+  // js/platform/analysis-result.js
+  function provenance(source2, confidence = 1) {
+    return { source: source2 || "binary-metadata", confidence, confirmed: true };
+  }
+  function statusReasons(value, prefix, out) {
+    if (!value || typeof value !== "object") return;
+    if (value.complete === false) out.push(`${prefix}:incomplete`);
+    if (value.bindingSitesComplete === false) out.push(`${prefix}:binding-sites-incomplete`);
+    if (value.partialReason) out.push(`${prefix}:${value.partialReason}`);
+    for (const reason of value.reasons || value.bindingSiteReasons || []) out.push(`${prefix}:${reason}`);
+  }
+  function machoSymbolTruth(image2) {
+    if (!image2 || image2.format !== "macho") return null;
+    const metadata = image2.metadata || {};
+    const reasons = [];
+    statusReasons(metadata.machoMetadata, "metadata-budget", reasons);
+    statusReasons(metadata.chainedFixups, "chained-fixups", reasons);
+    statusReasons(metadata.exportTrie, "export-trie", reasons);
+    if (metadata.dyldBindings && typeof metadata.dyldBindings === "object") {
+      for (const [kind, status] of Object.entries(metadata.dyldBindings)) statusReasons(status, `dyld-${kind}`, reasons);
+    }
+    const unique = [...new Set(reasons)].slice(0, 64);
+    return {
+      source: "BinaryImage",
+      normalized: true,
+      complete: unique.length === 0,
+      reasons: unique,
+      components: {
+        chainedFixups: metadata.chainedFixups || null,
+        dyldBindings: metadata.dyldBindings || null,
+        exportTrie: metadata.exportTrie || null,
+        metadataBudget: metadata.machoMetadata || null
+      }
+    };
+  }
+  function analysisFromBinaryImage(image2) {
+    if (!image2) return emptyAnalysis();
+    const entries = /* @__PURE__ */ new Map();
+    const add = (address, name, kind, exported, prov, priority) => {
+      if (address == null || !name) return;
+      const addr = BigInt(address), key = addr.toString();
+      const next = { address: addr, name: String(name), kind, exported: !!exported, provenance: prov, priority };
+      const current2 = entries.get(key);
+      if (!current2) {
+        entries.set(key, next);
+        return;
+      }
+      current2.exported ||= next.exported;
+      if (next.priority > current2.priority) {
+        current2.name = next.name;
+        current2.kind = next.kind;
+        current2.provenance = next.provenance;
+        current2.priority = next.priority;
+      }
+    };
+    for (const symbol of image2.symbols || []) {
+      if (symbol?.defined === false || symbol?.address == null || !symbol.name) continue;
+      add(symbol.address, symbol.name, 0, !!symbol.exported, provenance(symbol.source || "symbol-table", 0.99), 10);
+    }
+    for (const exp of image2.exports || []) {
+      if (exp?.address == null || !exp.name) continue;
+      add(exp.address, exp.name, 0, true, provenance(exp.source || "exports-trie", 1), 20);
+    }
+    for (const imp of image2.imports || []) {
+      if (!imp?.name) continue;
+      for (const site of imp.sites || []) {
+        if (site?.address == null) continue;
+        add(site.address, imp.name, 2, false, provenance(site.kind || imp.source || "dyld-bind", 1), 30);
+      }
+    }
+    const sorted = [...entries.values()].sort((a, b) => a.address < b.address ? -1 : a.address > b.address ? 1 : 0);
+    const addrs = new BigUint64Array(sorted.length), kinds = new Uint8Array(sorted.length), flags = new Uint8Array(sorted.length);
+    for (let i = 0; i < sorted.length; i++) {
+      addrs[i] = sorted[i].address;
+      kinds[i] = sorted[i].kind;
+      flags[i] = sorted[i].exported ? 1 : 0;
+    }
+    const seedByAddress = /* @__PURE__ */ new Map();
+    for (const seed of image2.functions || []) if (seed?.address != null) seedByAddress.set(BigInt(seed.address).toString(), seed);
+    const functions = [...seedByAddress.keys()].map(BigInt).sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
+    const funcs = new BigUint64Array(functions);
+    const functionProvenance = functions.map((addr) => {
+      const seed = seedByAddress.get(addr.toString()) || {};
+      const confirmed = isExactFunctionSeed(seed);
+      return { source: seed.source || "heuristic", confidence: Number(seed.confidence ?? (confirmed ? 1 : 0.5)), confirmed };
+    });
+    const nameProvenance = sorted.map((entry) => entry.provenance);
+    const allSeedsExact = functions.length > 0 && (image2.functions || []).every(isExactFunctionSeed);
+    const discoveryComplete = image2.metadata?.functionDiscovery?.complete === true;
+    return {
+      addrs,
+      kinds,
+      flags,
+      names: sorted.map((x) => x.name),
+      funcs,
+      functionProvenance,
+      nameProvenance,
+      symbolCount: addrs.length,
+      funcCount: funcs.length,
+      capped: false,
+      allSeedsExact,
+      discoveryComplete,
+      functionStartsExact: discoveryComplete && allSeedsExact,
+      functionDiscovery: { complete: discoveryComplete, capped: false, reasons: discoveryComplete ? [] : ["platform-function-seeds-not-exhaustive"] },
+      symbolTruth: machoSymbolTruth(image2),
+      __transfer: [addrs.buffer, kinds.buffer, flags.buffer, funcs.buffer]
+    };
+  }
+  function emptyAnalysis() {
+    const addrs = new BigUint64Array(0), kinds = new Uint8Array(0), flags = new Uint8Array(0), funcs = new BigUint64Array(0);
+    return {
+      addrs,
+      kinds,
+      flags,
+      names: [],
+      funcs,
+      symbolCount: 0,
+      funcCount: 0,
+      capped: false,
+      allSeedsExact: false,
+      discoveryComplete: false,
+      functionStartsExact: false,
+      functionDiscovery: { complete: false, capped: false, reasons: ["platform-function-seeds-not-exhaustive"] },
+      symbolTruth: null,
+      __transfer: [addrs.buffer, kinds.buffer, flags.buffer, funcs.buffer]
+    };
+  }
+
   // js/platform/worker.js
   var ROW_BYTES = 4;
   var CHUNK_ROWS = 1024;
@@ -6829,7 +6963,7 @@
       case "chunk":
         return getChunk(msg, signal);
       case "analyze":
-        return analyzeImage();
+        return analyzeImage(msg, signal);
       case "strings":
         return scanStrings2(msg, signal);
       case "search":
@@ -6944,79 +7078,18 @@
     const copy = bytes.slice();
     return { regionId, chunk, bytes: copy, mn: "", ops: "", rows: Math.ceil(copy.length / ROW_BYTES), __transfer: [copy.buffer] };
   }
-  function analyzeImage() {
+  async function analyzeImage(msg, signal) {
     if (!image) return emptyAnalysis();
-    const entries = /* @__PURE__ */ new Map();
-    for (const symbol of image.symbols || []) {
-      if (symbol?.address == null || !symbol.name) continue;
-      entries.set(BigInt(symbol.address).toString(), { address: BigInt(symbol.address), name: symbol.name, exported: !!symbol.exported });
+    let selected = image;
+    if (image.metadata?.fat?.slices?.length && msg.sliceIndex != null) {
+      selected = await parseMachOSource(source, {
+        sliceIndex: msg.sliceIndex,
+        signal,
+        ranges: { pageSize: 64 * 1024, maxPageSize: 2 * 1024 * 1024, maxCachedBytes: 16 * 1024 * 1024, maxReads: 4096 }
+      });
     }
-    for (const exp of image.exports || []) {
-      if (exp?.address == null || !exp.name) continue;
-      const key = BigInt(exp.address).toString();
-      const existing = entries.get(key);
-      if (existing) existing.exported = true;
-      else entries.set(key, { address: BigInt(exp.address), name: exp.name, exported: true });
-    }
-    const sorted = [...entries.values()].sort((a, b) => a.address < b.address ? -1 : a.address > b.address ? 1 : 0);
-    const addrs = new BigUint64Array(sorted.length);
-    const kinds = new Uint8Array(sorted.length);
-    const flags = new Uint8Array(sorted.length);
-    for (let i = 0; i < sorted.length; i++) {
-      addrs[i] = sorted[i].address;
-      flags[i] = sorted[i].exported ? 1 : 0;
-    }
-    const seedByAddress = /* @__PURE__ */ new Map();
-    for (const seed of image.functions || []) if (seed?.address != null) seedByAddress.set(BigInt(seed.address).toString(), seed);
-    const functions = [...seedByAddress.keys()].map(BigInt).sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
-    const funcs = new BigUint64Array(functions);
-    const functionProvenance = functions.map((addr) => {
-      const seed = seedByAddress.get(addr.toString()) || {};
-      const confirmed = isExactFunctionSeed(seed);
-      return { source: seed.source || "heuristic", confidence: Number(seed.confidence ?? (confirmed ? 1 : 0.5)), confirmed };
-    });
-    const nameProvenance = sorted.map((entry) => ({ source: entry.exported ? "export-table" : "binary-symbol", confidence: 1, confirmed: true }));
-    const allSeedsExact = functions.length > 0 && (image.functions || []).every(isExactFunctionSeed);
-    const discoveryComplete = image.metadata?.functionDiscovery?.complete === true;
-    return {
-      addrs,
-      kinds,
-      flags,
-      names: sorted.map((x) => String(x.name ?? "")),
-      funcs,
-      functionProvenance,
-      nameProvenance,
-      symbolCount: addrs.length,
-      funcCount: funcs.length,
-      capped: false,
-      allSeedsExact,
-      discoveryComplete,
-      functionStartsExact: discoveryComplete && allSeedsExact,
-      functionDiscovery: {
-        complete: discoveryComplete,
-        capped: false,
-        reasons: discoveryComplete ? [] : ["platform-function-seeds-not-exhaustive"]
-      },
-      __transfer: [addrs.buffer, kinds.buffer, flags.buffer, funcs.buffer]
-    };
-  }
-  function emptyAnalysis() {
-    const addrs = new BigUint64Array(0), kinds = new Uint8Array(0), flags = new Uint8Array(0), funcs = new BigUint64Array(0);
-    return {
-      addrs,
-      kinds,
-      flags,
-      names: [],
-      funcs,
-      symbolCount: 0,
-      funcCount: 0,
-      capped: false,
-      allSeedsExact: false,
-      discoveryComplete: false,
-      functionStartsExact: false,
-      functionDiscovery: { complete: false, capped: false, reasons: ["platform-function-seeds-not-exhaustive"] },
-      __transfer: [addrs.buffer, kinds.buffer, flags.buffer, funcs.buffer]
-    };
+    if (signal.aborted) throw new Error("Analysis cancelled");
+    return analysisFromBinaryImage(selected);
   }
   function genericFunctionSeeds() {
     const values = [...new Set((image?.functions || []).map((f) => BigInt(f.address).toString()))].map(BigInt).sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
