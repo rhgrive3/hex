@@ -2,17 +2,18 @@ import assert from 'node:assert/strict';
 import { readFile, readdir, stat } from 'node:fs/promises';
 import { webcrypto } from 'node:crypto';
 import { gunzipSync } from 'node:zlib';
+import { toExactArrayBuffer } from '../js/userscript/array-buffer.js';
 import {
   publicRuntimeManifest, signRuntimeSession, validateRuntimeBootstrap, verifyRuntimeSession,
 } from '../js/userscript/runtime-security.js';
 
 const root = new URL('../', import.meta.url);
-const [wranglerText, workerEntry, entry, bridge, adapter, selectors, buildScript, template, secretsModule, embedded] = await Promise.all([
+const [wranglerText, workerEntry, entry, bridge, adapter, selectors, buildScript, loaderSource, template, secretsModule, embedded] = await Promise.all([
   readFile(new URL('wrangler.jsonc', root), 'utf8'), readFile(new URL('worker-entry.js', root), 'utf8'),
   readFile(new URL('js/userscript/entry.js', root), 'utf8'), readFile(new URL('js/userscript/chatgpt-bridge.js', root), 'utf8'),
   readFile(new URL('js/userscript/chatgpt-adapter.js', root), 'utf8'), readFile(new URL('js/userscript/chatgpt-selectors.js', root), 'utf8'),
-  readFile(new URL('scripts/build-userscript.mjs', root), 'utf8'), readFile(new URL('userscript/hex.user.template.js', root), 'utf8'),
-  import('../.runtime-build/runtime-secrets.js'), import('../.runtime-build/embedded-assets.js'),
+  readFile(new URL('scripts/build-userscript.mjs', root), 'utf8'), readFile(new URL('js/userscript/loader.js', root), 'utf8'),
+  readFile(new URL('userscript/hex.user.template.js', root), 'utf8'), import('../.runtime-build/runtime-secrets.js'), import('../.runtime-build/embedded-assets.js'),
 ]);
 
 const wrangler = JSON.parse(wranglerText.replace(/^\s*\/\/.*$/gm, ''));
@@ -50,14 +51,28 @@ assert.match(buildScript, /createCipheriv\('aes-256-gcm'/);
 assert.match(buildScript, /gzipSync/);
 assert.match(buildScript, /MAX_LOADER_BYTES/);
 assert.match(buildScript, /bundleCss/);
+assert.match(loaderSource, /async function fetchBytes/);
+assert.match(loaderSource, /credentials:\s*'omit'/);
+assert.match(loaderSource, /toExactArrayBuffer/);
+assert.match(loaderSource, /SHA-256 integrity digest/);
+assert.doesNotMatch(loaderSource, /responseType:\s*'arraybuffer'/);
+assert.doesNotMatch(loaderSource, /subtle\.digest\('SHA-256',\s*bytes\)/);
 assert.doesNotMatch(embedded.PROTECTED_HOST.css, /@import\b/);
 assert.match(embedded.PROTECTED_HOST.scopedCss, /@scope \(#hex-userscript-host\)/);
 assert.doesNotMatch(embedded.PROTECTED_HOST.scopedCss, /(?:^|[},])\s*(?:html|body)(?=[\s.#:[,{>+~])/);
+
+const backing = new Uint8Array([9, 1, 2, 3, 8]);
+const exact = toExactArrayBuffer(backing.subarray(1, 4));
+assert.ok(exact instanceof ArrayBuffer);
+assert.notEqual(exact, backing.buffer);
+assert.deepEqual([...new Uint8Array(exact)], [1, 2, 3]);
+assert.equal(toExactArrayBuffer(exact), exact);
 
 assert.match(template, /^\/\/ ==UserScript==/);
 assert.match(template, /@match\s+https:\/\/chatgpt\.com\/\*/);
 assert.match(template, /@grant\s+GM\.xmlHttpRequest/);
 assert.match(template, /__HEX_ORIGIN__\/hex\.meta\.js/);
+assert.doesNotMatch(template, /responseType:"arraybuffer"/);
 assert.ok(Buffer.byteLength(template) < 64 * 1024, `loader is ${Buffer.byteLength(template)} bytes`);
 for (const forbidden of ['Semantic IR', 'createHexToolRegistry', 'decompileFunction', 'EvidenceStore', 'platform-worker.bundle', '__HEX_WORKER_MANIFEST__']) assert.doesNotMatch(template, new RegExp(forbidden));
 
@@ -92,7 +107,9 @@ assert.equal(validateRuntimeBootstrap({ ...bootstrapInput, buildId: 'wrong-build
 const signingKey = fromB64(build.signingKey), now = Date.now();
 const sessionToken = await signRuntimeSession({ v: 1, sid: 'session-valid', bid: build.manifest.buildId, rid: 'request-valid', exp: Math.floor(now / 1000) + 60 }, signingKey);
 assert.equal((await verifyRuntimeSession(sessionToken, signingKey, { now })).sid, 'session-valid');
-assert.equal(await verifyRuntimeSession(sessionToken.slice(0, -1) + (sessionToken.endsWith('A') ? 'B' : 'A'), signingKey, { now }), null);
+const [payloadPart, signaturePart] = sessionToken.split('.');
+const tamperedSignature = `${signaturePart[0] === 'A' ? 'B' : 'A'}${signaturePart.slice(1)}`;
+assert.equal(await verifyRuntimeSession(`${payloadPart}.${tamperedSignature}`, signingKey, { now }), null);
 const expired = await signRuntimeSession({ v: 1, sid: 'session-expired', bid: build.manifest.buildId, rid: 'request-expired', exp: Math.floor(now / 1000) - 1 }, signingKey);
 assert.equal(await verifyRuntimeSession(expired, signingKey, { now }), null);
 assert.equal(publicRuntimeManifest(build.manifest).assetPath, undefined);
