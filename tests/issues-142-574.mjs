@@ -29,30 +29,20 @@ function multiReturnFixture({ ambiguous = false, single = false } = {}) {
     semantic:true,
     ir:{instructions,blocks},
     semanticAst:{values:[{valueId:1,expression:expr.constant(11n,32,true)},{valueId:2,expression:expr.constant(22n,32,true)}],conditions:[],outputs:[{name:'return',expression:load1}]},
-    cAst:{body},
-    rewriteProof:[], metrics:{},
+    cAst:{body}, rewriteProof:[], metrics:{},
   };
 }
 
-// #142: each source-level return is bound to its own physical RET; last RET
-// must never overwrite every C-AST return.
 {
-  const r=multiReturnFixture();
-  recoverExactStackPhiExpressions(r,{decompilerTimeBudgetMs:50});
-  assert.match(r.cAst.body[0].text,/return 11;/);
-  assert.match(r.cAst.body[1].text,/return 22;/);
-  assert.notEqual(r.cAst.body[0].text,r.cAst.body[1].text);
+  const r=multiReturnFixture(); recoverExactStackPhiExpressions(r,{decompilerTimeBudgetMs:50});
+  assert.match(r.cAst.body[0].text,/return 11;/); assert.match(r.cAst.body[1].text,/return 22;/); assert.notEqual(r.cAst.body[0].text,r.cAst.body[1].text);
 }
 {
-  const r=multiReturnFixture({ambiguous:true});
-  recoverExactStackPhiExpressions(r,{decompilerTimeBudgetMs:50});
-  assert.equal(r.cAst.body[0].text,'return local_a;');
-  assert.equal(r.cAst.body[1].text,'return local_b;');
+  const r=multiReturnFixture({ambiguous:true}); recoverExactStackPhiExpressions(r,{decompilerTimeBudgetMs:50});
+  assert.equal(r.cAst.body[0].text,'return local_a;'); assert.equal(r.cAst.body[1].text,'return local_b;');
 }
 {
-  const r=multiReturnFixture({ambiguous:true,single:true});
-  recoverExactStackPhiExpressions(r,{decompilerTimeBudgetMs:50});
-  assert.match(r.cAst.body[0].text,/return 11;/);
+  const r=multiReturnFixture({ambiguous:true,single:true}); recoverExactStackPhiExpressions(r,{decompilerTimeBudgetMs:50}); assert.match(r.cAst.body[0].text,/return 11;/);
 }
 
 const BASE=0x100000000n;
@@ -64,43 +54,25 @@ function modelOf(lines) {
 function build(lines){const {model,rowOfAddress}=modelOf(lines);return irFor(model,{rowOfAddress,cacheRevision:'issue-574'});}
 function atRow(ir,row,op){return (ir.instructions||[]).find((x)=>x.row===row&&x.op===op);}
 
-// #574: must-alias copies/zero-offset arithmetic share a canonical field key.
 {
   const ir=build(['mov x20, x19','str w8, [x20, #0x20]','ldr w9, [x19, #0x20]','ret']);
-  const st=atRow(ir,1,'store'), ld=atRow(ir,2,'load');
-  assert.ok(st&&ld); assert.equal(st.loc.key,ld.loc.key); assert.equal(ld.reachingStore,st);
+  const st=atRow(ir,1,'store'), ld=atRow(ir,2,'load'); assert.ok(st&&ld); assert.equal(st.loc.key,ld.loc.key); assert.equal(ld.reachingStore,st);
 }
 {
   const ir=build(['add x20, x19, #0','str w8, [x20, #0x20]','ldr w9, [x19, #0x20]','ret']);
-  const st=atRow(ir,1,'store'), ld=atRow(ir,2,'load');
-  assert.ok(st&&ld); assert.equal(st.loc.key,ld.loc.key); assert.equal(ld.reachingStore,st);
+  const st=atRow(ir,1,'store'), ld=atRow(ir,2,'load'); assert.ok(st&&ld); assert.equal(st.loc.key,ld.loc.key); assert.equal(ld.reachingStore,st);
 }
-
-// Different SSA roots are only MAY-distinct. A store through q must kill a
-// stale reaching store through p rather than proving p/q cannot alias.
 {
   const ir=build(['str w8, [x19, #0x20]','str w9, [x20, #0x20]','ldr w10, [x19, #0x20]','ret']);
   const first=atRow(ir,0,'store'), second=atRow(ir,1,'store'), ld=atRow(ir,2,'load');
-  assert.ok(first&&second&&ld); assert.notEqual(first.loc.key,second.loc.key);
-  assert.notEqual(ld.reachingStore,first,'potentially aliasing store must clobber stale reaching store');
-  assert.equal(ld.memUse?.kind,'clobber');
+  assert.ok(first&&second&&ld); assert.notEqual(first.loc.key,second.loc.key); assert.notEqual(ld.reachingStore,first,'potentially aliasing store must clobber stale reaching store'); assert.equal(ld.memUse?.kind,'clobber');
 }
-
-// Same-root PHI provenance remains must-alias after control-flow merge.
 {
   const t=(row)=>'0x'+(BASE+BigInt(row*4)).toString(16);
-  const ir=build([
-    `cbz w0, ${t(4)}`,
-    'mov x21, x19',
-    `b ${t(5)}`,
-    'nop',
-    'mov x21, x19',
-    'str w8, [x21, #0x20]',
-    'ldr w9, [x19, #0x20]',
-    'ret',
-  ]);
+  const ir=build([`cbz w0, ${t(4)}`,'mov x21, x19',`b ${t(5)}`,'nop','mov x21, x19','str w8, [x21, #0x20]','ldr w9, [x19, #0x20]','ret']);
   const st=atRow(ir,5,'store'), ld=atRow(ir,6,'load');
-  assert.ok(st&&ld); assert.equal(st.loc.key,ld.loc.key); assert.equal(ld.reachingStore,st);
+  const shape=(ir.instructions||[]).map((x)=>({row:x.row,op:x.op,sub:x.sub,block:x.block,loc:x.loc?.key,dst:x.dst?.reg,args:(x.args||[]).map((a)=>a?.value?.reg||a?.value?.id||a?.reg||a?.value||null)}));
+  assert.ok(st&&ld,JSON.stringify(shape)); assert.equal(st.loc.key,ld.loc.key); assert.equal(ld.reachingStore,st);
 }
 
 console.log('issues #142/#574 regressions passed');
