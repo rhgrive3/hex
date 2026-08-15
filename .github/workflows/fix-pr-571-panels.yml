@@ -1,0 +1,45 @@
+name: Repair PR 571 panels syntax
+
+on:
+  push:
+    branches:
+      - fix-latest-issues-550-559
+
+permissions:
+  contents: write
+
+jobs:
+  repair-and-check:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix-latest-issues-550-559
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Repair escaped newline
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('js/panels.js')
+          s = p.read_text()
+          old = "sub: (hintText ? hintText + '\n' : '')"
+          new = "sub: (hintText ? hintText + '\\n' : '')"
+          if s.count(old) != 1:
+              raise SystemExit(f'expected one malformed Product section subtitle, found {s.count(old)}')
+          p.write_text(s.replace(old, new, 1))
+          PY
+      - name: Lint and full regression suite
+        run: npm run check
+      - name: Commit verified repair
+        run: |
+          git rm -f .github/workflows/fix-pr-571-panels.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix: repair Product section subtitle syntax"
+          git push origin HEAD:fix-latest-issues-550-559
