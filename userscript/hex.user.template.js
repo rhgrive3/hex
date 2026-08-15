@@ -41829,9 +41829,10 @@ ${rendered}` : rendered,
     const bar = el("div", "action-bar");
     for (const view of views) {
       const b = button("", "action-btn" + (view.primary ? " strong" : ""), () => {
-        if (sheet) sheet.close();
         const opened = openFunctionView(view, { router: productRouter(), legacy: legacyViewOpeners(app2, goal) });
-        if (!opened) toast(pick("この形では開けませんでした。", "That view could not be opened."));
+        if (opened) {
+          if (sheet) sheet.close();
+        } else toast(pick("この形では開けませんでした。", "That view could not be opened."));
       });
       b.replaceChildren(el("span", "action-label", view.label), el("span", "action-hint", view.hint));
       if (!view.available) {
@@ -42894,11 +42895,10 @@ ${rendered}` : rendered,
     const next = block(pick("次に見るなら", "What to look at next"));
     const nextList = list();
     const jump = (view) => () => {
-      sheet.close();
       const [target] = functionViews({ address: process, include: [view], ja: isJa() });
-      if (!target || !openFunctionView(target, { router: productRouter(), legacy: legacyViewOpeners(app2, goal) })) {
-        toast(pick("この形では開けませんでした。", "That view could not be opened."));
-      }
+      const opened = !!target && openFunctionView(target, { router: productRouter(), legacy: legacyViewOpeners(app2, goal) });
+      if (opened) sheet.close();
+      else toast(pick("この形では開けませんでした。", "That view could not be opened."));
     };
     if (process != null) {
       nextList.append(tapRow(pick("この値を書き換えている処理を読む", "Read the routine that changes this value"), {
