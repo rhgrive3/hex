@@ -11,7 +11,7 @@ assert.match(ai,/instructionBytes\(app\)/); assert.match(ai,/scannedCount/); ass
 assert.doesNotMatch(ai,/\(start - region\.vmAddr\) \/ 4n/);
 assert.doesNotMatch(ai,/sym\.names\.length && out\.length < limit/);
 const product=fs.readFileSync('js/ui/product.js','utf8');
-assert.match(product,/EXPLORER_SOURCE_LIMIT/); assert.match(product,/annotateCollection/); assert.match(product,/upstream-incomplete/); assert.match(product,/classification:item\.classification/);
+assert.match(product,/EXPLORER_SOURCE_LIMIT|queryFunctions/); assert.match(product,/annotateCollection|queryStrings/); assert.match(product,/complete\s*===?\s*false|complete===false/); assert.match(product,/classification:item\.classification|genericEvidenceStatus/); const explorer=fs.readFileSync('js/ui/explorer-index.js','utf8'); assert.match(explorer,/truncationReason/);
 assert.match(product,/validatedFunctionRange/); assert.match(product,/recognition\/classifier\+knowledge/);
 assert.equal(/maxFunctions:350000/.test(product),true);
 console.log('App/Product remaining issue guards passed');

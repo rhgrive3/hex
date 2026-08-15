@@ -148,7 +148,7 @@ export function classifyHypothesis(caseResults, coverage = null) {
   const supported = usable.filter((r) => r.comparison.status === 'supported').length;
   if (contradicted) return { status:'contradicted', confidence:Math.min(0.99, 0.7 + contradicted * 0.08), supported, contradicted, total:results.length, coverage:cov };
   if (!usable.length) return { status:'unsupported', confidence:0, supported:0, contradicted:0, total:results.length, coverage:cov };
-  if (supported && supported === results.length && cov.complete === true && supported === cov.planned) {
+  if (supported >= 3 && supported === results.length && cov.complete === true && supported === cov.planned) {
     return { status:'confirmed', confidence:Math.min(0.98, 0.75 + supported * 0.04), supported, contradicted:0, total:results.length, coverage:cov };
   }
   if (supported) return { status:'supported', confidence:Math.min(0.85, 0.55 + supported * 0.05), supported, contradicted:0, total:results.length, coverage:cov, reason:cov.complete ? 'supported-observations' : 'partial-runtime-coverage' };
