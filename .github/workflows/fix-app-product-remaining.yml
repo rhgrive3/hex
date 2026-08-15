@@ -43,9 +43,23 @@ jobs:
           s=s[:a]+s[b:]
           s=s.replace('  const pdom = postDominators(state.ir);\n','',1)
           s=s.replace('    if (!pdom[yes]?.has(phi.block) || !pdom[no]?.has(phi.block)) continue;\n','',1)
+          old_ret="""function returnValueAt(inst, state) {
+            const explicit=valueOf(inst?.args?.[0]);
+            if (explicit) return explicit;
+            const reg=returnRegisterForState(state);
+            if (reg) return reachingRegisterValue(state.ir, inst, reg);
+            const candidate=reachingRegisterValue(state.ir, inst, 'x0');
+            return candidate?.def && candidate.def.block === inst?.block ? candidate : null;
+          }"""
+          new_ret="""function returnValueAt(inst, state) {
+            const explicit=valueOf(inst?.args?.[0]);
+            if (explicit) return explicit;
+            const reg=returnRegisterForState(state);
+            return reg ? reachingRegisterValue(state.ir, inst, reg) : null;
+          }"""
+          if old_ret not in s and new_ret not in s: raise SystemExit('pipeline returnValueAt anchor missing')
+          if old_ret in s: s=s.replace(old_ret,new_ret,1)
           p.write_text(s)
-          # #130 changes the contract: this fixture intentionally returns hp, so
-          # provide trusted return type evidence instead of relying on incidental x0.
           p=Path('tests/decompiler-semantic.mjs'); s=p.read_text()
           old="addr: base, name: 'apply_damage', rowOfAddress, receiverType: 'Unit', beginner: false,"
           new="addr: base, name: 'apply_damage', rowOfAddress, returnType: 'int32', receiverType: 'Unit', beginner: false,"
@@ -81,14 +95,14 @@ jobs:
           assert.doesNotMatch(ir,/if \(irCache\.has\(model\)\)/); assert.match(ir,/function irConfigurationKey/); assert.match(ir,/prototypeRevision/); assert.match(ir,/evidenceGeneration/);
           const ret=sem.slice(sem.indexOf('function returnValueAt'),sem.indexOf('function feedsReturn'));
           assert.doesNotMatch(ret,/candidate=reachingRegisterValue/); assert.match(ret,/return reg \? reachingRegisterValue/);
+          const pret=pipe.slice(pipe.indexOf('function returnValueAt(inst, state)'),pipe.indexOf('function semanticFacts'));
+          assert.doesNotMatch(pret,/candidate=reachingRegisterValue/); assert.match(pret,/return reg \? reachingRegisterValue/);
           const faithful=sem.slice(sem.indexOf('function faithfulCfg'));
           assert.match(faithful,/const rv = returnValueAt\(term, ctx\)/);
           assert.match(pretty,/export function integerText/); assert.match(sem,/import \{ integerText \}/); assert.match(sem,/return integerText\(v, bits, signed\)/);
           assert.match(sem,/d\.extra\?\.widen/); assert.match(sem,/__arm64_ubfiz/); assert.match(sem,/bitfieldKind === 'bfxil'/);
           assert.match(sem,/cmp\.sub !== 'sub'/);
           assert.match(loop,/renderNZCVCondition/); assert.match(loop,/renderNZCVCondition\(cmp\.sub \|\| 'sub'/);
-          // #130 functional contract: an incidental same-block x0 definition is not
-          // a return proof; trusted ABI/type evidence is.
           function make(lines) {
             const base=0x100000000n;
             const raw=lines.map((text,row)=>{const p=text.indexOf(' ');return {row,address:base+BigInt(row*4),mn:p<0?text:text.slice(0,p),ops:p<0?'':text.slice(p+1)}});
