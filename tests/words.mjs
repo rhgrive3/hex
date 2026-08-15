@@ -44,3 +44,5 @@ eq(0x1e22c020, KIND.FCONV,  'fcvt d0, s1');
 eq(0x1e624020, KIND.FCONV,  'fcvt s0, d1');
 
 process.stdout.write(`ARM64 word classification: ${passed} regressions ok\n`);
+
+await import('./issue-556-address-provenance.mjs');
