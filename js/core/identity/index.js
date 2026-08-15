@@ -77,6 +77,14 @@ function bytesOf(value) {
   fail('binary-id-bytes-required');
 }
 
+function exactArrayBuffer(value) {
+  const bytes = bytesOf(value);
+  if (bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength && bytes.buffer instanceof ArrayBuffer) return bytes.buffer;
+  const exact = new Uint8Array(bytes.byteLength);
+  exact.set(bytes);
+  return exact.buffer;
+}
+
 function hex(bytes) {
   let out = '';
   for (const byte of bytes) out += byte.toString(16).padStart(2, '0');
@@ -90,10 +98,9 @@ export function createBinaryIdFromDigest(digest) {
 }
 
 export async function createBinaryId(content) {
-  const bytes = bytesOf(content);
   const subtle = globalThis.crypto?.subtle;
   if (!subtle) fail('binary-id-sha256-unavailable');
-  const digest = await subtle.digest('SHA-256', bytes);
+  const digest = await subtle.digest('SHA-256', exactArrayBuffer(content));
   return createBinaryIdFromDigest(hex(new Uint8Array(digest)));
 }
 
