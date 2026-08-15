@@ -29,11 +29,12 @@ jobs:
               raise SystemExit('userscript version anchor not unique')
           p.write_text(s.replace(old,new,1))
           PY
-      - name: Verify build is now current
+      - name: Verify build preserves synchronized version
         run: |
           npm ci
           npm run userscript:test
-          git diff --exit-code -- userscript/hex.user.template.js userscript/platform-worker.bundle.js
+          grep -Fx '// @version      1.0.1786806403' userscript/hex.user.template.js
+          git diff --exit-code -- userscript/platform-worker.bundle.js
       - name: Commit version sync and remove temporary workflow
         run: |
           git config user.name 'github-actions[bot]'
