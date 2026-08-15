@@ -168,6 +168,7 @@ export async function executeTurn(input = {}, options = {}) {
       const result = this.finalize({ request, decision, plan, activity, modelCalls, toolCalls, contextBytes, wireUsage, started, limitReason, registry, snapshot, effectiveScope: scopeController.effectiveScope });
       await this.sessionStore.appendMessage(session.id, { role: 'assistant', content: result.answer });
       await this.sessionStore.updateMemory(session.id, {
+        anchor: memoryAnchor(snapshot, scopeController.effectiveScope, this.localContext),
         confirmedFacts: result.evidence.filter((item) => item.status === 'verified').map((item) => ({ id: item.id, summary: item.summary || item.title, functionAddress: item.functionAddress })),
         activeHypotheses: result.hypotheses.filter((item) => item.status === 'open' || item.status === 'supported'),
         rejectedHypotheses: result.hypotheses.filter((item) => item.status === 'rejected'),
