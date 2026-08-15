@@ -23,10 +23,12 @@ jobs:
           node --check js/binary/pe.js
           node --check tests/issues-535-536-pe-bounds-budget.mjs
           node --check tests/issues-97-100-146-147.mjs
+          node --check tests/issues-101-112.mjs
       - name: Focused validation
         run: |
           node tests/issues-535-536-pe-bounds-budget.mjs
           node tests/issues-97-100-146-147.mjs
+          node tests/issues-101-112.mjs
           node tests/issues-434-450-regressions.mjs
           npm run binary:test
       - name: Full validation
@@ -38,7 +40,7 @@ jobs:
           set -euo pipefail
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add js/binary/pe-loader.js js/binary/pe.js tests/issues-535-536-pe-bounds-budget.mjs tests/issues-97-100-146-147.mjs
+          git add js/binary/pe-loader.js js/binary/pe.js tests/issues-535-536-pe-bounds-budget.mjs tests/issues-97-100-146-147.mjs tests/issues-101-112.mjs
           git commit -m "fix: bound PE metadata spans and resource use (#535 #536)"
           git rm -f .github/workflows/fix-app-product-remaining.yml tools/apply-pe-535-536.py tools/apply-pe-535-536-compat.py
           git commit -m "chore: finalize PE metadata hardening"
