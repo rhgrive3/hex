@@ -1,0 +1,44 @@
+name: fix-lowest-20-bootstrap
+on:
+  push:
+    branches: [fix-lowest-20-issues-20260815]
+permissions:
+  contents: write
+jobs:
+  apply-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix-lowest-20-issues-20260815
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Apply fixes
+        run: python3 .github/scripts/fix-lowest-20.py
+      - name: Syntax check
+        run: |
+          node --check js/ir-core.js
+          node --check js/decompiler/pipeline-core.js
+          node --check js/decompiler/semantic.js
+          node --check js/decompiler/flag-semantics.js
+          node --check js/semantic-evidence.js
+      - name: Batch regression
+        run: node tests/issues-lowest-20-20260815.mjs
+      - name: Semantic suite
+        run: npm run semantic:test
+      - name: Decompiler suite
+        run: npm run decompiler:test
+      - name: Full tests
+        run: npm test
+      - name: Commit verified changes
+        run: |
+          rm -f .github/workflows/fix-lowest-20-bootstrap.yml .github/scripts/fix-lowest-20.py
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'fix: resolve lowest open issue batch'
+          git push origin HEAD:fix-lowest-20-issues-20260815
