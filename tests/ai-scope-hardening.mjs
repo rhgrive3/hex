@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { ScopeController } from '../js/ai/control/scope.js';
 import { createTurnSnapshot } from '../js/ai/control/snapshot.js';
-import { assertLiveBindingsUnchanged, sessionMatchesSnapshot } from '../js/ai/control/runtime-support.js';
+import { assertLiveBindingsUnchanged, memoryAnchor, sessionMatchesSnapshot } from '../js/ai/control/runtime-support.js';
 import { selectToolWindow } from '../js/ai/control/tool-window.js';
 
 const snapshot = {
@@ -10,6 +10,7 @@ const snapshot = {
   legacyBinaryId: 'app:0',
   projectIdentity: 'project-a',
   runtimeSessionIdentity: 'runtime-a',
+  runtimeSessionState: 'bound',
   currentFunction: { address: '0x1000', range: { start: '0x1000', end: '0x1100' } },
   selection: null,
 };
@@ -44,21 +45,34 @@ const liveSame = {
   binaryIdentity: snapshot.binaryIdentity,
   projectId: 'project-a',
   runtimeSessionId: 'runtime-a',
+  runtimeSessionKnown: true,
 };
 assert.doesNotThrow(() => assertLiveBindingsUnchanged(liveSame, snapshot));
 assert.throws(() => assertLiveBindingsUnchanged({ ...liveSame, projectId: null }, snapshot), /project changed/i);
 assert.throws(() => assertLiveBindingsUnchanged({ ...liveSame, runtimeSessionId: null }, snapshot), /runtime session changed/i);
 assert.throws(() => assertLiveBindingsUnchanged({ ...liveSame, runtimeSessionId: 'runtime-b' }, snapshot), /runtime session changed/i);
 
+// A runtime session may be created lazily by this turn if the start snapshot
+// had never observed one. The observed ID is then promoted into the memory
+// anchor so the next turn can enforce it.
+const runtimeUnknown = { ...snapshot, runtimeSessionIdentity: null, runtimeSessionState: 'unknown' };
+assert.doesNotThrow(() => assertLiveBindingsUnchanged({ ...liveSame, runtimeSessionId: 'runtime-new' }, runtimeUnknown));
+const promotedAnchor = memoryAnchor(runtimeUnknown, 'runtime', { ...liveSame, runtimeSessionId: 'runtime-new' });
+assert.equal(promotedAnchor.runtimeSessionState, 'bound');
+assert.equal(promotedAnchor.runtimeSessionId, 'runtime-new');
+const promotedSession = { binaryId: snapshot.binaryId, binaryIdentity: snapshot.binaryIdentity, projectId: 'project-a', investigationMemory: { anchor: promotedAnchor } };
+assert.equal(sessionMatchesSnapshot(promotedSession, { ...snapshot, runtimeSessionIdentity: 'runtime-new', runtimeSessionState: 'bound' }), true);
+assert.equal(sessionMatchesSnapshot(promotedSession, { ...snapshot, runtimeSessionIdentity: 'runtime-other', runtimeSessionState: 'bound' }), false);
+
 const persistedSession = {
   binaryId: snapshot.binaryId,
   binaryIdentity: snapshot.binaryIdentity,
   projectId: 'project-a',
-  investigationMemory: { anchor: { runtimeSessionId: 'runtime-a' } },
+  investigationMemory: { anchor: { runtimeSessionId: 'runtime-a', runtimeSessionState: 'bound' } },
 };
 assert.equal(sessionMatchesSnapshot(persistedSession, snapshot), true);
 assert.equal(sessionMatchesSnapshot(persistedSession, { ...snapshot, projectIdentity: null }), false);
-assert.equal(sessionMatchesSnapshot(persistedSession, { ...snapshot, runtimeSessionIdentity: null }), false);
+assert.equal(sessionMatchesSnapshot(persistedSession, { ...snapshot, runtimeSessionIdentity: null, runtimeSessionState: 'unknown' }), false);
 
 // Some historical persistence shapes contain binaryIdentity but no binaryId.
 // A strong identity must still bind the session rather than being treated as
