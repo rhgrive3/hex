@@ -12,7 +12,7 @@ import { irFor, readModifyWrite, OP, MK, VK } from './ir.js';
 
 const BIN_NAME = {
   add: 'add', sub: 'sub', mul: 'mul', sdiv: 'sdiv', udiv: 'udiv',
-  smull: 'smull', umull: 'umull', smulh: 'smulh', umulh: 'umulh',
+  smull: 'smull', umull: 'umull', smulh: 'smulh', umulh: 'umull',
   and: 'and', or: 'orr', xor: 'eor', bic: 'bic', orn: 'orn', eon: 'eon',
   shl: 'lsl', lshr: 'lsr', ashr: 'asr', ror: 'ror',
   fadd: 'fadd', fsub: 'fsub', fmul: 'fmul', fdiv: 'fdiv',
@@ -230,9 +230,10 @@ export function findIrValueUpdates(model, opts) {
     const store = rmw.store;
     if (!load || !store || !load.dst) continue;
 
+    // readModifyWrite() already returns the SSA def-use dependency order. Re-sorting
+    // by disassembly row is invalid across branches/loops because textual row order
+    // is not an execution order. Preserve the proof chain exactly as constructed.
     const steps = (rmw.chain || [])
-      .slice()
-      .sort((a, b) => (a.row || 0) - (b.row || 0))
       .map((inst) => stepFrom(inst, load.dst, callByRow, originMemo))
       .filter(Boolean);
 

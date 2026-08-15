@@ -7,7 +7,7 @@ import { NodeFileByteSource } from '../js/bytesource/node.js';
 import { InstrumentedByteSource } from '../js/bytesource/cached.js';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
-const files = process.argv.slice(2).length ? process.argv.slice(2) : ['battlecats','TsumTsum','YWP'].map((x) => path.join(root, x));
+const files = process.argv.slice(2).length ? process.argv.slice(2) : ['battlecats','TsumTsum','YWP'].map((x) => path.join(root, '.real-fixtures', x));
 const results = [];
 for (const file of files) {
   if (!fs.existsSync(file)) continue;

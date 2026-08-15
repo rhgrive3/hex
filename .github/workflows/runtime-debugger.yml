@@ -34,4 +34,15 @@ jobs:
         with:
           node-version: '22'
       - name: Full repository checks
-        run: npm run check
+        shell: bash
+        run: |
+          set -o pipefail
+          if npm run check > /tmp/hex-check.log 2>&1; then
+            cat /tmp/hex-check.log
+          else
+            tail -n 80 /tmp/hex-check.log
+            while IFS= read -r line; do
+              printf '::error::%s\n' "${line//'%'/'%25'}"
+            done < <(tail -n 8 /tmp/hex-check.log)
+            exit 1
+          fi
