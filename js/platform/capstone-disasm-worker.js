@@ -10,7 +10,7 @@ async function getModule() {
   if (!modulePromise) modulePromise = MCapstone({
     locateFile: (p) => new URL('../../' + p, self.location.href).href,
     print: () => {}, printErr: () => {},
-  });
+  }).catch((error) => { throw new Error(`Capstone disassembler initialization: ${error?.message || String(error)}`); });
   return modulePromise;
 }
 
