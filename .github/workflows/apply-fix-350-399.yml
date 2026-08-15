@@ -10,6 +10,7 @@ on:
       - 'tools/fix-350-399-part3.mjs'
       - 'tools/fix-350-399-part4.mjs'
       - 'tools/fix-350-399-part5.mjs'
+      - 'tools/fix-350-399-part6.mjs'
       - '.github/workflows/apply-fix-350-399.yml'
   workflow_dispatch:
 
@@ -37,7 +38,8 @@ jobs:
           node tools/fix-350-399-part3.mjs
           node tools/fix-350-399-part4.mjs
           node tools/fix-350-399-part5.mjs
-          rm tools/fix-350-399.mjs tools/fix-350-399-part2.mjs tools/fix-350-399-repair.mjs tools/fix-350-399-part3.mjs tools/fix-350-399-part4.mjs tools/fix-350-399-part5.mjs .github/workflows/apply-fix-350-399.yml
+          node tools/fix-350-399-part6.mjs
+          rm tools/fix-350-399.mjs tools/fix-350-399-part2.mjs tools/fix-350-399-repair.mjs tools/fix-350-399-part3.mjs tools/fix-350-399-part4.mjs tools/fix-350-399-part5.mjs tools/fix-350-399-part6.mjs .github/workflows/apply-fix-350-399.yml
       - name: Syntax check changed modules
         run: |
           node --check js/ir-core.js
