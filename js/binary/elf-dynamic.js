@@ -177,7 +177,13 @@ function parseDynamicSymbols(r, image, bits, symtabVa, syment, count, stringAt, 
     }
     if (defined && type === 2 && value !== 0n) {
       if (budget && !budget.claimOutput(1, 128, 'PT_DYNAMIC function seeds')) break;
-      image.functions.push(functionSeed(value, { size: size || null, name, source: 'symbol', confidence: 0.995 }));
+      const section = typeof image.sectionAt === 'function' ? image.sectionAt(value) : null;
+      const segment = typeof image.segmentAt === 'function' ? image.segmentAt(value) : null;
+      const exactFunctionStart = !!(section || segment)?.perms?.execute;
+      image.functions.push(functionSeed(value, {
+        size: size || null, name, source: 'symbol', confidence: exactFunctionStart ? 0.995 : 0.8,
+        exactFunctionStart, functionStartEvidence: exactFunctionStart ? 'ELF STT_FUNC in validated executable mapping' : null,
+      }));
     }
   }
   return out;

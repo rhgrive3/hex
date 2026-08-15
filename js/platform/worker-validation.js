@@ -58,8 +58,8 @@ export function utf8Len(buf, index) {
 }
 
 export function isExactFunctionSeed(seed) {
-  if (!seed) return false;
+  if (!seed || Number(seed.confidence ?? 0) < 0.9) return false;
+  if (seed.exactFunctionStart === true) return true;
   const sources = new Set([seed.source, ...(seed.sources || [])]);
-  return [...sources].some((s) => ['entrypoint', 'export', 'exception', 'unwind', 'function_starts', 'symbol', 'tls-callback', 'guard-cf'].includes(s))
-    && Number(seed.confidence ?? 0) >= 0.9;
+  return [...sources].some((s) => ['entrypoint', 'export', 'exception', 'unwind', 'function_starts', 'tls-callback', 'guard-cf'].includes(s));
 }

@@ -206,6 +206,8 @@ export function functionSeed(address, opts = {}) {
   return {
     address: BigInt(address), size, end, name: opts.name || null,
     source, confidence, kind: opts.kind || 'function',
+    exactFunctionStart: opts.exactFunctionStart === true,
+    functionStartEvidence: opts.functionStartEvidence || null,
     extentSource: opts.extentSource || (hasExtent ? source : null),
     extentConfidence: opts.extentConfidence == null ? (hasExtent ? confidence : null)
       : Math.max(0, Math.min(1, Number(opts.extentConfidence))),
@@ -229,6 +231,8 @@ export function mergeFunctionSeeds(input, context = {}) {
     const best = curRank > prevRank || (curRank === prevRank && (f.confidence || 0) > (prev.confidence || 0)) ? f : prev;
     const other = best === f ? prev : f;
     if (!best.name && other.name) best.name = other.name;
+    best.exactFunctionStart = !!(prev.exactFunctionStart || f.exactFunctionStart);
+    if (!best.functionStartEvidence) best.functionStartEvidence = other.functionStartEvidence || null;
     let inheritedExtent = false;
     if (best.size == null && other.size != null) { best.size = other.size; inheritedExtent = true; }
     if (best.end == null && other.end != null) { best.end = other.end; inheritedExtent = true; }
