@@ -13,11 +13,24 @@ export const SYM_POINTER = 2;   // 外部関数のアドレスを入れる箱 (_
 export class SymbolIndex {
   constructor(result) {
     const r = result || {};
-    this.addrs = r.addrs || new BigUint64Array(0);
-    this.kinds = r.kinds || new Uint8Array(0);
-    this.names = r.names ? r.names.split('\n') : [];
+    const rawAddrs = r.addrs || new BigUint64Array(0);
+    const rawKinds = r.kinds || new Uint8Array(rawAddrs.length);
+    const rawFlags = r.flags || new Uint8Array(rawAddrs.length);
+    const rawNames = Array.isArray(r.names)
+      ? r.names.map((name) => String(name ?? ''))
+      : (typeof r.names === 'string' && r.names.length ? r.names.split('\n') : []);
+    const symbolCardinalityValid = rawNames.length === rawAddrs.length &&
+      rawKinds.length === rawAddrs.length && rawFlags.length === rawAddrs.length;
+    this.symbolTransportValid = symbolCardinalityValid;
+    this.symbolTransportError = symbolCardinalityValid ? null : 'symbol-cardinality-mismatch';
+    /* A mismatched transport can shift every subsequent name to the wrong
+       address. Fail closed for symbols while preserving independent function
+       starts, so corrupted naming evidence never enters the analysis truth. */
+    this.addrs = symbolCardinalityValid ? rawAddrs : new BigUint64Array(0);
+    this.kinds = symbolCardinalityValid ? rawKinds : new Uint8Array(0);
+    this.names = symbolCardinalityValid ? rawNames : [];
     /* 1 = 外へ公開されている名前（エクスポート）。0 = このファイルの中だけ。 */
-    this.flags = r.flags || new Uint8Array(this.addrs.length);
+    this.flags = symbolCardinalityValid ? rawFlags : new Uint8Array(0);
     this.funcs = r.funcs || new BigUint64Array(0);
     /* Optional exact function ends. A zero/missing entry means unknown. */
     this.funcEnds = r.funcEnds || null;
@@ -25,10 +38,18 @@ export class SymbolIndex {
     this.functionRegions = [];
     this.setFunctionRegions(r.regions || [], false);
     this.capped = !!r.capped;
-    /* True only when LC_FUNCTION_STARTS itself was parsed successfully. ObjC,
-       vtables and other metadata may add exact starts without making the list
-       complete, so functionCount alone must never suppress stripped recovery. */
-    this.functionStartsExact = !!r.functionStartsExact;
+    /* Exactness and exhaustiveness are independent. `functionStartsExact` is
+       retained as the legacy name for an authoritative complete start set;
+       `allSeedsExact` only describes the starts currently present. */
+    const discoveryComplete = r.discoveryComplete === true || r.functionStartsComplete === true || r.functionStartsExact === true;
+    this.allSeedsExact = r.allSeedsExact != null ? !!r.allSeedsExact : !!r.functionStartsExact;
+    this.functionStartsComplete = discoveryComplete;
+    this.functionStartsExact = discoveryComplete && (r.allSeedsExact == null || this.allSeedsExact);
+    this.functionDiscovery = r.functionDiscovery || {
+      complete: discoveryComplete,
+      capped: !!r.functionStartsCapped,
+      reasons: discoveryComplete ? [] : ['function-discovery-incomplete'],
+    };
     this.nameProvenance = new Map();
     this.functionProvenance = new Map();
     const providedNames = Array.isArray(r.nameProvenance) ? r.nameProvenance : [];

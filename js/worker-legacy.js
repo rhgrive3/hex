@@ -430,9 +430,10 @@ async function analyzeSlice({ sliceIndex }) {
   const slice = slices[sliceIndex];
   if (!slice || !slice.info) {
     return {
-      addrs: new BigUint64Array(0), kinds: new Uint8Array(0), names: '',
+      addrs: new BigUint64Array(0), kinds: new Uint8Array(0), names: [],
       funcs: new BigUint64Array(0), symbolCount: 0, funcCount: 0, capped: false,
-      functionStartsExact: false,
+      allSeedsExact: false, discoveryComplete: false, functionStartsExact: false,
+      functionDiscovery: { complete:false, capped:false, reasons:['no-authoritative-function-starts'] },
       __transfer: [],
     };
   }
@@ -536,11 +537,15 @@ async function analyzeSlice({ sliceIndex }) {
     addrs: outAddrs,
     kinds: outKinds,
     flags: outFlags,
-    names: names.slice(0, n).join('\n'),
+    names: names.slice(0, n).map((name) => String(name ?? '')),
     funcs,
     symbolCount: n,
     funcCount: funcs.length,
+    allSeedsExact: funcs.length > 0,
+    discoveryComplete: functionStartsExact,
     functionStartsExact,
+    functionDiscovery: { complete:functionStartsExact, capped:false,
+      reasons:functionStartsExact ? [] : ['no-complete-lc-function-starts'] },
     capped,
     __transfer: [outAddrs.buffer, outKinds.buffer, outFlags.buffer, funcs.buffer],
   };
