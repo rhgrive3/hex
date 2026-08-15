@@ -797,7 +797,7 @@ function pseudocode(lines) {
 function runtimeFromOpts(opts) {
   if (opts.appleRuntime?.runtime === 'mixed') return opts.appleRuntime;
   return buildAppleRuntimeIndex({
-    objc: opts.objcModel || opts.appleRuntime?.objc || null,
+    objc: opts.objcRuntimeIndex || opts.objcModel || opts.appleRuntime?.objc || null,
     swift: opts.swiftModel || opts.appleRuntime?.swift || null,
     selectorRefs: opts.selectorRefs || [], selectorStubs: opts.selectorStubs || [], fixups: opts.fixups || [],
   });

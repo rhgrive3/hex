@@ -108,10 +108,24 @@ async function parseCategory(get, address, classByAddress) {
 }
 
 async function pointerTable(get, range, budget, parse) {
-  const out = []; if (!range || range.vmAddr == null || !range.size) return out;
-  const count = Math.min(Math.floor(Number(range.size) / PTR), budget);
-  for (let i = 0; i < count; i++) { const address = await ptr(get, BigInt(range.vmAddr) + BigInt(i * PTR)); if (address == null) continue; try { const item = await parse(address); if (item) out.push(item); } catch { /* malformed entry is not evidence */ } }
-  return out;
+  const items = [];
+  if (!range || range.vmAddr == null || !range.size) {
+    return { items, completeness: { present: false, declared: 0, scanned: 0, parsed: 0, capped: false, unreadableSlots: 0, complete: true } };
+  }
+  const declared = Math.max(0, Math.floor(Number(range.size) / PTR));
+  const count = Math.min(declared, budget);
+  let scanned = 0, unreadableSlots = 0;
+  for (let i = 0; i < count; i++) {
+    const slot = BigInt(range.vmAddr) + BigInt(i * PTR);
+    const raw = await get(slot, PTR);
+    if (!raw) { unreadableSlots++; continue; }
+    scanned++;
+    const address = await decodedPointer(get, u64(raw), slot);
+    if (address == null) continue;
+    try { const item = await parse(address); if (item) items.push(item); } catch { /* malformed entry is not evidence */ }
+  }
+  const capped = declared > budget;
+  return { items, completeness: { present: true, declared, scanned, parsed: items.length, capped, unreadableSlots, complete: !capped && unreadableSlots === 0 } };
 }
 
 export async function parseObjcExtendedMetadata(read, sections = {}, opts = {}) {
@@ -119,7 +133,12 @@ export async function parseObjcExtendedMetadata(read, sections = {}, opts = {}) 
   get.base = opts.imageBase != null ? BigInt(opts.imageBase) : null;
   get.resolvePointer = opts.resolvePointer || opts.binaryImage?.resolvePointer || opts.binaryImage?.decodePointer || null;
   const classByAddress = new Map((opts.classes || []).filter((c) => c?.addr != null).map((c) => [c.addr.toString(), c]));
-  const protocols = await pointerTable(get, sections.protocolList, MAX_PROTOCOLS, (address) => parseProtocol(get, address));
-  const categories = await pointerTable(get, sections.categoryList, MAX_CATEGORIES, (address) => parseCategory(get, address, classByAddress));
-  return { runtime: 'objc', protocols, categories };
+  const protocolTable = await pointerTable(get, sections.protocolList, MAX_PROTOCOLS, (address) => parseProtocol(get, address));
+  const categoryTable = await pointerTable(get, sections.categoryList, MAX_CATEGORIES, (address) => parseCategory(get, address, classByAddress));
+  const completeness = {
+    protocols: protocolTable.completeness,
+    categories: categoryTable.completeness,
+    complete: protocolTable.completeness.complete && categoryTable.completeness.complete,
+  };
+  return { runtime: 'objc', protocols: protocolTable.items, categories: categoryTable.items, completeness };
 }
