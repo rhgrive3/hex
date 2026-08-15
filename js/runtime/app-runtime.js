@@ -5,10 +5,28 @@ const states = new WeakMap();
 function currentFileToken(app) {
   return app?.store?.get?.('fileInfo') || null;
 }
-
-function binaryHashOf(app) {
-  const info = currentFileToken(app);
-  return info?.hash || info?.sha256 || app?.project?.binaryHash || null;
+function activeSliceIdentity(app) {
+  const info=currentFileToken(app);
+  const index=Number(app?.store?.get?.('sliceIndex') ?? -1);
+  const slice=index>=0 ? info?.slices?.[index] : null;
+  const detail=slice?.info || {};
+  const arch=String(slice?.capability?.architecture || detail.architecture || detail.cpuSub || detail.cpu || app?.store?.get?.('architecture') || 'unknown');
+  const uuid=detail.uuid || null;
+  return `slice:${index}:${uuid || '-'}:${arch}`;
+}
+async function binaryHashOf(app) {
+  const info=currentFileToken(app);
+  const existing=info?.hash || info?.sha256 || app?.project?.binaryHash || app?.backend?.contentHash || null;
+  if(existing) return existing;
+  if(typeof app?.backend?.ensureContentHash === 'function') {
+    try { return await app.backend.ensureContentHash(); } catch { return null; }
+  }
+  return null;
+}
+export async function runtimeIdentityForApp(app) {
+  const contentHash=await binaryHashOf(app);
+  const sliceIdentity=activeSliceIdentity(app);
+  return {contentHash,sliceIdentity,key:`${contentHash || 'unhashed'}|${sliceIdentity}`};
 }
 
 /**
@@ -51,9 +69,10 @@ async function disposeState(state) {
 
 export async function runtimePlatformForApp(app) {
   if (!app) throw new Error('runtime app is required');
-  const token = currentFileToken(app);
+  const identity = await runtimeIdentityForApp(app);
+  if (!identity.contentHash) throw new Error('runtime binary identity is unavailable');
   let state = states.get(app);
-  if (state && state.fileToken !== token) {
+  if (state && state.identityKey !== identity.key) {
     await disposeState(state);
     states.delete(app);
     state = null;
@@ -62,20 +81,22 @@ export async function runtimePlatformForApp(app) {
     const platform = new RuntimeAnalysisPlatform({
       localIO: createAppRuntimeIO(app),
       sessions: { maxSessions: 2 },
+      sliceIdentity: identity.sliceIdentity,
     });
-    state = { platform, fileToken: token };
+    state = { platform, fileToken:currentFileToken(app), identityKey:identity.key, identity };
     states.set(app, state);
   }
   if (!state.platform.sessions.current) {
-    await state.platform.startSession({ adapter: 'local', binaryHash: binaryHashOf(app), connect: true });
+    await state.platform.startSession({ adapter:'local', binaryHash:identity.contentHash, connect:true });
   }
   return state.platform;
 }
 
 export function runtimeEvidenceForApp(app, functionAddress = null) {
   const state = states.get(app);
-  if (!state || state.fileToken !== currentFileToken(app)) return [];
-  const evidence = Array.isArray(state.platform?.evidence) ? state.platform.evidence : [];
+  const sliceIdentity=activeSliceIdentity(app);
+  if (!state || state.fileToken !== currentFileToken(app) || state.identity?.sliceIdentity !== sliceIdentity) return [];
+  const evidence = (Array.isArray(state.platform?.evidence) ? state.platform.evidence : []).filter((item)=>item?.sliceIdentity===sliceIdentity && item?.binaryHash===state.identity?.contentHash);
   if (functionAddress == null) return evidence.slice();
   let address;
   try { address = BigInt(functionAddress); } catch { return []; }

@@ -1,0 +1,202 @@
+  ok  A: 関数入口・呼び出し・後片付け・出口を検出できる
+  ok  A: 説明にレジスタ名も命令名も出てこない
+  ok  B: adrp+add+mov+mov+bl memcpy が 1 つの「データをコピー」になる
+  ok  B: 呼び出しの引数がデータフローとして残る
+  ok  C: 比較と条件分岐が 1 つの「条件を確認」になる
+  ok  D: 前へ戻る分岐をループとして検出できる
+  ok  E: adrp+add がアドレスになり、文字列を流し込める
+  ok  E: adrp 単体では「完成していない住所」として扱う
+  ok  F: 確保したメモリが別レジスタへ渡っても意味を保つ
+  ok  G: 呼び出し直後の判定を「結果を確認」にする
+  ok  DF: register→register / immediate→register
+  ok  DF: memory→register / register→memory / stack local
+  ok  DF: function return→register / register→call argument
+  ok  DF: address calculation
+  ok  DF: 引数レジスタを、書く前に読んでいれば引数とみなす
+  ok  DF: 分岐で飛び込まれる場所では推測を捨てる
+  ok  API: 名前から意味を引ける／知らない名前は null
+  ok  API: 機能（アプリから見た分類）まで集約される
+  ok  STORY: 流れが日本語のステップとして並ぶ
+  ok  STORY: 手がかりがなければ「特定できません」と言う
+  ok  OVERLAY: 行 → 見出しの表ができ、先頭行だけに題が付く
+  ok  異常: 空の命令列
+  ok  異常: 不完全な命令列（オペランドなし・途中で終わる）
+  ok  異常: 知らないニーモニック
+  ok  異常: 命令として読めないデータ (.byte)
+  ok  異常: 分岐先が分からない (br/blr)
+  ok  異常: シンボルなし・API 名なしでも断定しない
+  ok  異常: データフローを追えないときは「不明な値」
+  ok  異常: 巨大な入力でも上限で打ち切る
+  ok  異常: 壊れたオペランド文字列でも makeInstruction は落ちない
+  ok  異常: すべての役割で説明文が作れる（欠けがない）
+  ok  FEATURE: ゲームの言葉を機能に振り分けられる
+  ok  FEATURE: 機能ごとに束ね、濃い手がかりを先に出す
+  ok  FEATURE: 実行エンジンの見当がつく／分からなければ null
+  ok  OBJC: セレクタをポインタごしに解決して「何を呼ぶか」まで言える
+  ok  OBJC: chained fixups で上位ビットが立ったポインタをほどく
+  ok  OBJC: chained fixups の距離形式は、イメージ先頭を足して初めて読める
+  ok  SYMBOLS: 復元した名前と関数の先頭を、順番を保ったまま足せる
+  ok  SYMBOLS: 部分的なmetadata関数一覧をLC_FUNCTION_STARTS完全表と取り違えない
+  ok  OBJC: 従来形式のクラス表も読める
+  ok  WORDS: 実物のエンコードを正しく分類できる
+  ok  WORDS: 分岐と呼び出しの飛び先を計算できる
+  ok  WORDS: メモリアクセスの大きさとずらし幅を正しく読む
+  ok  WORDS: adrp + add / adrp + ldr でアドレスを組み立てられる
+  ok  WORDS: 分からない語は分類しない（でっちあげない）
+  ok  OBJC: 相対形式のクラス表から -[Class method] を取り出せる
+  ok  PROGRAM: 呼び出し元・呼び出し先を辺からたどれる
+  ok  PROGRAM: 文字列を参照している関数を、参照命令から特定できる
+  ok  PROGRAM: 関数ごとの命令の内訳を数えられる（推測ではなく計数）
+  ok  PROGRAM: 索引がなくても落ちない
+  ok  OBJC: 距離形式で書かれたクラス表から、名前とフィールドを取り戻せる
+  ok  GOAL: 自由入力を、探せる語に開ける
+  ok  GOAL: 手がかりの濃さで点が変わる（記号だらけは下げる）
+  ok  RANK: 名前だけの一致より、参照と命令の裏づけがある関数を上に出す
+  ok  RANK: 点数の内訳の合計が、表示している点数と一致する
+  ok  RANK: 手がかりがなければ候補を作らない（無理に埋めない）
+  ok  RANK: 一致した文字列を誰も参照していないときは、そう言える
+  ok  FLOW: 読む → 足す → 同じ場所へ書き戻す、をひとつながりに拾える
+  ok  FLOW: 別の場所へ移しているだけなら「往復」と言わない
+  ok  FLOW: ARC property helper への tail-call setter を getter と逆判定しない
+  ok  FLOW: lazy getter は同じ field への書き込みがあっても return-read を残す
+  ok  FLOW: 掛け算をはさむ計算も追える（ダメージ計算の形）
+  ok  FLOW: この値が次にどこで使われるかを追える
+  ok  FLOW: しきい値との比較を拾える
+  ok  FLOW: よく触っている場所をまとめられる
+  ok  FLOW 異常: 読み出しのない書き込み・壊れた列でも落ちない
+  ok  CFG: if / else と合流を見分けられる
+  ok  CFG: ループ（後ろへの分岐）を見分けられる
+  ok  CFG: 途中で帰る道（early return）を見分けられる
+  ok  CFG: 行き先が実行時に決まる分岐は「分からない」ままにする
+  ok  REPORT: 事実・推測・不明が混ざらない
+  ok  REPORT: 変更候補には必ず但し書きが付く
+  ok  REPORT: 目的を渡すと、関係の有無を根拠つきで言う
+  ok  REPORT: 次に何をすればいいかを必ず出す
+  ok  REPORT 異常: 空の関数でも落ちず、分からないと言える
+  ok  NARRATE: 新しいコードがすべて日本語になる（言い漏らしがない）
+  ok  AUTO: 通信先や改造検知を、参照元つきで拾う
+  ok  AUTO: 名前や文字列に頼らず「注目すべき処理」を選べる
+  ok  OBJC: プロパティの属性から、型と裏の ivar 名を取り出せる
+  ok  OBJC: 型の書き方を、意味の分かる形にほどける
+  ok  FIELDS 異常: クラス表がなくても落ちない
+  ok  MAP: クラス名から担当を見分けられる
+  ok  MAP: アプリを部品ごとに束ねる（1 画面に出るものを減らす）
+  ok  MAP: クラスがないバイナリでも、文字列から粗い地図を作れる
+  ok  ONELINER: 変更がなければ、別の言い方に落とす
+  ok  ONELINER: 演算の言い換えに漏れがない
+  ok  ONELINER: 型と場所の言い換え
+  ok  EVIDENCE: 候補が多いほど、同じ証拠でも確からしさは低くなる
+  ok  EVIDENCE: 同じ系統の証拠をいくら並べても確定にはならない
+  ok  EVIDENCE: 打ち消す証拠は確からしさを下げる
+  ok  EVIDENCE: 確定を名乗るには、検証・独立性・差の 3 つがそろう必要がある
+  ok  EVIDENCE: 名前が読めない相手を「確定」と呼ばせない
+  ok  EVIDENCE: 内訳の掛け算が、出している確からしさと一致する
+  ok  VERIFY: getter を逆アセンブルして、位置が合っているか確かめられる
+  ok  VERIFY: setter が、引数の値を書いているところまで見る
+  ok  VERIFY: 長すぎる関数をアクセサとは呼ばない
+  ok  VERIFY: self を持ち回っているレジスタだけを self として数える
+  ok  VERIFY: 読んで計算して書き戻す形と、しきい値の判定を拾える
+  ok  VERIFY 異常: 空・壊れた命令列でも落ちない
+  ok  OBJC: クラス表から、値の名前・型・位置まで取り出せる
+  ok  FIELDS: [x0, #0x20] を self の hp として解決できる
+  ok  FIELDS: 名前で値を探せる（HP を探したい、に答える）
+  ok  ONELINER: 値の変更を、まず 1 行で言える
+  ok  PINPOINT: 裏づけだけの証拠は、目的への結びつきが無いと効かない
+  ok  PINPOINT 語彙: 変数名を正規化してから当てる
+  ok  NARRATE: 特定まわりの言葉に、言い漏らしがない
+  ok  ROLE: 名前が読めるなら「アイテムを 1 増やす処理」まで名指しできる
+  ok  ROLE: なぜそう言えるのかを、証拠のまま並べられる
+  ok  ROLE: 名前が残っていないバイナリでも、動作と場所までは言う
+  ok  ROLE: 「+1 しているから」だけでは、機能を名乗らない
+  ok  ROLE: 機能の手がかりが割れているときは、言い切らない
+  ok  ROLE: 手がかりが無ければ「名指しできません」と言う
+  ok  ROLE: 減らす処理・保存する処理も、それぞれの言葉になる
+  ok  ROLE: 一覧向けの下見からは、絶対に「確定」を出さない
+  ok  ROLE: 値を触らない処理は、日本語として読める形で名指しする
+  ok  ROLE: 動作の言葉と、足りない理由に、言い漏らしがない
+  ok  PINPOINT: 型が合わない値は候補から外す
+  ok  PINPOINT: 逆アセンブルできないときは、確定ではなく「足りない」と言う
+  ok  PINPOINT: 途中でやめられる
+  ok  PINPOINT: スタックの一時置き場を「アプリが持っている値」と言わない
+  ok  PINPOINT: クラス表がなくても、形から場所を特定できる
+  ok  PINPOINT: 当てはまる値がなければ、無いと言う
+  ok  PINPOINT: 逆アセンブルの回数は予算で頭打ちになる
+  ok  PINPOINT: 特定した値を書き換えている処理を、命令で確かめて選ぶ
+  ok  PINPOINT: プロパティ表から、潰された ivar 名を補える
+  ok  VENDORS: Swift の記号名からモジュール名を取り出せる
+  ok  VENDORS: 名前の分かる SDK は、接頭辞ごとまとめて見分けられる
+  ok  VENDORS: 長い接頭辞と短い接頭辞の両方が当たったら、裏の取れているほうを採る
+  ok  VENDORS: 名前が分からないライブラリも、まとまり方だけで見分けられる
+  ok  VENDORS: 広告を調べているときは、広告 SDK を外さない
+  ok  PINPOINT: 広告 SDK の「報酬の数」を、ゲームの所持金として確定しない
+  ok  PINPOINT: HP を選ぶだけで BattleManager.hp が 1 個に決まる
+  ok  PINPOINT: 上限（maxHp）を、今の値（hp）より上に出さない
+  ok  PINPOINT: アクセサが位置と食い違うときは確定させない
+  ok  PINPOINT: 書き換えている場所まで出す
+  ok  SHAPES: 減って増えて 0 で止まる値を、資源として拾える
+  ok  SHAPES: 他人の資源を減らす量を、攻撃力として拾える
+  ok  SHAPES: C++ の容器の頭（要素数・参照カウンタ）を、ゲームの値と間違えない
+  ok  SHAPES: 大きな構造体の中にある同じ位置なら、ゲームの値として残す
+  ok  SHAPES: 8 バイトで持たれている値を、ゲームの数値として出さない
+  ok  SHAPES: 目的に合ったふるまいだけを証拠にする
+  ok  SHAPES: 所持金は、自分の中だけで増減する値として分ける
+  ok  SHAPES: 何も無い走査結果でも落ちない
+  ok  ROLE: 下見は、関数の先頭でないアドレスには何も言わない
+  ok  PINPOINT: 目的に結びつかない値を「確定」と言わない（防御力を探して HP を出さない）
+  ok  SCHEMA: 読み込みの命令から「何列目がどこか」を読み取れる
+  ok  SCHEMA: 列番号とずらし幅を、どちらからでも引ける
+  ok  SCHEMA: つじつまが合わないときは、合わないと言う
+  ok  SCHEMA: 1 ずつ増えていない添字を、列数として使わない
+  ok  SCHEMA: 読み込んだあとに掛かる倍率を拾える
+  ok  SCHEMA: SUBを増加と扱わず、別tableの倍率・別loopの比較を混ぜない
+  ok  SCHEMA: SP baseの固定storeをtableとして拾わない
+  ok  SCHEMA: 展開して書いてある表（添字を使わない形）も読める
+  ok  SCHEMA: 表が無い関数には、表があることにしない
+  ok  SCHEMA: データファイルらしい名前だけを拾う
+  ok  SCHEMA: 材料が無くても落ちない
+  ok  SCHEMA: ファイル名から読み込み処理をたどって表を組み立てる
+  ok  PINPOINT: 本物のクラス表（練習用サンプル）から、アクセサ無しでも確定できる
+  ok  EXPR: 掛けてずらす形から、割り算を逆算できる（32 ビット・符号あり）
+  ok  EXPR: 大小を選ぶ定型は、min / max として読む
+  ok  EXPR: 条件つき代入の条件を、比べた式として書く
+  ok  EXPR: 比べたものが分からなければ、min とは言わない
+  ok  EXPR: ずらしが 2 命令に割れていても、割り算に戻せる
+  ok  EXPR: 割り算でないずらしを、割り算だと言わない
+  ok  EXPR: ずらしと足し算でできた掛け算を、掛け算に戻す
+  ok  EXPR: movz と movk で組み立てた定数を 1 つの数にする
+  ok  EXPR: 分岐で飛ばされる範囲が値を壊さないなら、値を持ち越す
+  ok  COMPREHEND: 持ち回っている値と、その作り変えを並べられる
+  ok  COMPREHEND: 文言に書かれた計算式と、復元した式を突き合わせる
+  ok  COMPREHEND: 記号 * / が入っているだけの文字列を、計算式と呼ばない
+  ok  COMPREHEND: 計算式が無ければ、合ったことにしない
+  ok  COMPREHEND: レジスタが別の用途に移ったら、そこで区間を切る
+  ok  DECOMPILE: 同じ置き場は、どの書き方で来ても同じ名前になる
+  ok  DECOMPILE: sp を定数で動かさない関数では、置き場に名前を付けない
+  ok  PATCH: SP moveはADD alias、幅違いはerrorになる
+  ok  PATCH: branch alignmentとstrict hexを検証する
+  ok  PATCH: range外を登録・保存成功にしない
+  ok  EVIDENCE: hold-out calibrationのBrier/reliabilityを計算できる
+  ok  NAMES: fingerprint導入前のメモを新しいkeyへ安全に移す
+  ok  BACKEND: epochで古いrequestを破棄し、progressをrequest単位へ送る
+FAIL  IL2CPP: modern codegen moduleをimage名とtokenで結ぶ
+      not equal: got 0, want 3
+  ok  IL2CPP: 検証できたCodeRegistrationだけMethod→addressへ結ぶ
+  ok  OBJC: 壊れた表では名前を付けずに黙って飛ばす
+  ok  SCRIPT: Emulatorはclone可能なhandle RPCで操作できる
+issue #496 IL2CPP binding trust: PASS
+  ok  IL2CPP: #496 binding trust regressions stay fail-closed
+  ok  NAMES: fingerprintは同名同サイズの別内容・別sliceを分離する
+  ok  AUTO: 何も指示しなくても、目的ごとの最有力候補まで出す
+  ok  AUTO: 途中でやめられる（大きなファイルで待たせない）
+  ok  AUTO: 上位だけ中身まで読み、値の書き換えを自動で見つける
+  ok  PINPOINT: 自動解析に組み込まれ、決着したものが先に出る
+  ok  AUTO 異常: 手がかりが何もなくても落ちず、そう言える
+
+190 passed, 1 failed
+
+--- IL2CPP: modern codegen moduleをimage名とtokenで結ぶ
+Error: not equal: got 0, want 3
+    at eq (file:///home/runner/work/hex/hex/tests/run.js:52:22)
+    at file:///home/runner/work/hex/hex/tests/run.js:3816:3
+    at async Promise.all (index 54)
+    at async file:///home/runner/work/hex/hex/tests/run.js:3834:1

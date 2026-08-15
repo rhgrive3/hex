@@ -229,6 +229,24 @@ function composeReturn(wrapper, callee) {
   return null;
 }
 
+
+function cacheScopeOf(context) {
+  const generation=context?.analysisGeneration ?? context?.generation ?? context?.epoch ?? '';
+  const session=context?.sessionId ?? context?.binaryHash ?? context?.binaryIdentity ?? '';
+  return String(session)+'@'+String(generation);
+}
+function hasContextSensitiveSummaryInputs(context, opts) {
+  return opts?.returnEvidence != null || opts?.returnsValue != null || opts?.ir != null ||
+    opts?.functionPrototype != null || opts?.prototype != null || typeof context?.returnEvidenceFor === 'function';
+}
+function calleeOptions(opts, depth) {
+  const next={...(opts||{}),depth};
+  // All function-local evidence must be re-resolved for the callee identity.
+  delete next.returnEvidence; delete next.returnsValue; delete next.ir;
+  delete next.functionPrototype; delete next.prototype; delete next.returnType; delete next.returnClass;
+  return next;
+}
+
 export class FunctionSummaryCache {
   constructor(context, opts) {
     this.context = context || {};
@@ -248,17 +266,19 @@ export class FunctionSummaryCache {
 
   async summaryFor(address, opts) {
     if (address == null) return null;
-    const key = address.toString();
-    if (this.cache.has(key)) {
+    const addressKey = address.toString();
+    const cacheable = !hasContextSensitiveSummaryInputs(this.context, opts);
+    const key = cacheScopeOf(this.context) + ':' + addressKey;
+    if (cacheable && this.cache.has(key)) {
       const hit = this.cache.get(key);
       this._touch(key, hit);
       return hit;
     }
-    if (this.active.has(key)) return { address, cycle: true, engine: 'semantic-ir', reads: [], writes: [], returns: [], calls: [], effects: {}, argumentRoles: [], classification: {} };
+    if (this.active.has(addressKey)) return { address, cycle: true, engine: 'semantic-ir', reads: [], writes: [], returns: [], calls: [], effects: {}, argumentRoles: [], classification: {} };
     const depth = opts && opts.depth != null ? opts.depth : 0;
     const cancelled = opts && opts.isCancelled || (() => false);
     if (cancelled()) return null;
-    this.active.add(key);
+    this.active.add(addressKey);
     try {
       let range = null;
       try { range = this.context.program && this.context.program.functionRange ? this.context.program.functionRange(address) : null; } catch { range = null; }
@@ -276,7 +296,7 @@ export class FunctionSummaryCache {
       if (depth < this.maxDepth && summary.calls.length === 1 && summary.classification.forwarding) {
         const target = summary.calls[0].target;
         if (target != null && !cancelled()) {
-          const callee = await this.summaryFor(target, { ...(opts || {}), depth: depth + 1 });
+          const callee = await this.summaryFor(target, calleeOptions(opts, depth + 1));
           const propagated = composeReturn(summary, callee);
           if (propagated) {
             summary.propagatedReturn = propagated;
@@ -285,10 +305,10 @@ export class FunctionSummaryCache {
           if (callee && !callee.cycle) summary.forwardedEffects = callee.effects;
         }
       }
-      this._touch(key, summary);
+      if (cacheable) this._touch(key, summary);
       return summary;
     } finally {
-      this.active.delete(key);
+      this.active.delete(addressKey);
     }
   }
 }

@@ -26,11 +26,18 @@ function lowerBoundDirect(values, addr) {
   }
   return lo;
 }
-function completeness(array, capped, source) {
+function completeness(array, capped, source, queryLimited = false) {
+  const sourceCapped = !!capped;
+  const locallyLimited = !!queryLimited;
   Object.defineProperties(array, {
-    complete: { value: !capped, enumerable: false, configurable: true },
-    capped: { value: !!capped, enumerable: false, configurable: true },
+    complete: { value: !sourceCapped && !locallyLimited, enumerable: false, configurable: true },
+    capped: { value: sourceCapped, enumerable: false, configurable: true },
+    queryLimited: { value: locallyLimited, enumerable: false, configurable: true },
     completenessSource: { value: source, enumerable: false, configurable: true },
+    incompleteReason: {
+      value: sourceCapped ? `${source}-source-capped` : (locallyLimited ? 'query-limit' : null),
+      enumerable: false, configurable: true,
+    },
   });
   return array;
 }
@@ -100,31 +107,41 @@ export class ProgramIndex {
   }
   callSitesTo(target, limit = 500) {
     const order = this._callToOrder(), out = [];
-    let i = lowerBound(this.callTo, order, target);
-    for (; i < order.length && out.length < limit; i++) {
-      const k = order[i]; if (this.callTo[k] !== target) break;
+    let i = lowerBound(this.callTo, order, target), queryLimited = false;
+    for (; i < order.length; i++) {
+      const k = order[i];
+      if (this.callTo[k] !== target) break;
+      if (out.length >= limit) { queryLimited = true; break; }
       out.push({ site: this.callFrom[k], caller: this.functionStartOf(this.callFrom[k]) });
     }
-    return completeness(out, this.callsCapped, 'calls');
+    return completeness(out, this.callsCapped, 'calls', queryLimited);
   }
   callersOf(target, limit = 200) {
     const seen = new Map();
-    for (const c of this.callSitesTo(target, limit * 4)) {
+    const sites = this.callSitesTo(target, Math.max(0, limit * 4));
+    let queryLimited = sites.complete !== true;
+    for (const c of sites) {
       const key = c.caller != null ? c.caller.toString() : 's' + c.site.toString();
-      if (!seen.has(key)) { seen.set(key, { addr: c.caller, site: c.site, count: 0 }); if (seen.size >= limit) { seen.get(key).count++; break; } }
+      if (!seen.has(key)) {
+        if (seen.size >= limit) { queryLimited = true; break; }
+        seen.set(key, { addr: c.caller, site: c.site, count: 0 });
+      }
       seen.get(key).count++;
     }
-    return completeness(Array.from(seen.values()), this.callsCapped, 'calls');
+    return completeness(Array.from(seen.values()), this.callsCapped, 'calls', queryLimited);
   }
   calleesOf(start, end, limit = 200) {
-    const out = new Map(); let i = lowerBoundDirect(this.callFrom, start);
+    const out = new Map(); let i = lowerBoundDirect(this.callFrom, start), queryLimited = false;
     for (; i < this.callFrom.length; i++) {
       const from = this.callFrom[i]; if (end != null && from >= end) break;
       const to = this.callTo[i], key = to.toString();
-      if (!out.has(key)) { if (out.size >= limit) break; out.set(key, { addr: to, site: from, count: 0 }); }
+      if (!out.has(key)) {
+        if (out.size >= limit) { queryLimited = true; break; }
+        out.set(key, { addr: to, site: from, count: 0 });
+      }
       out.get(key).count++;
     }
-    return completeness(Array.from(out.values()), this.callsCapped, 'calls');
+    return completeness(Array.from(out.values()), this.callsCapped, 'calls', queryLimited);
   }
   callCountOf(target) {
     const order = this._callToOrder(); let i = lowerBound(this.callTo, order, target), n = 0;
@@ -132,30 +149,37 @@ export class ProgramIndex {
     return n;
   }
   refSitesTo(addr, span = 1n, limit = 500) {
-    const order = this._refToOrder(), out = []; let i = lowerBound(this.refTo, order, addr);
+    const order = this._refToOrder(), out = []; let i = lowerBound(this.refTo, order, addr), queryLimited = false;
     const hi = addr + (span > 0n ? span : 1n);
-    for (; i < order.length && out.length < limit; i++) {
+    for (; i < order.length; i++) {
       const k = order[i]; if (this.refTo[k] >= hi) break;
+      if (out.length >= limit) { queryLimited = true; break; }
       out.push({ site: this.refFrom[k], target: this.refTo[k], kind: this.refKind[k] });
     }
-    return completeness(out, this.refsCapped, 'refs');
+    return completeness(out, this.refsCapped, 'refs', queryLimited);
   }
   functionsReferencing(addr, span = 1n, limit = 200) {
     const seen = new Map();
-    for (const r of this.refSitesTo(addr, span, limit * 4)) {
+    const refs = this.refSitesTo(addr, span, Math.max(0, limit * 4));
+    let queryLimited = refs.complete !== true;
+    for (const r of refs) {
       const fn = this.functionStartOf(r.site), key = fn != null ? fn.toString() : 's' + r.site.toString();
-      if (!seen.has(key)) { if (seen.size >= limit) break; seen.set(key, { addr: fn, site: r.site, kind: r.kind, count: 0 }); }
+      if (!seen.has(key)) {
+        if (seen.size >= limit) { queryLimited = true; break; }
+        seen.set(key, { addr: fn, site: r.site, kind: r.kind, count: 0 });
+      }
       seen.get(key).count++;
     }
-    return completeness(Array.from(seen.values()), this.refsCapped, 'refs');
+    return completeness(Array.from(seen.values()), this.refsCapped, 'refs', queryLimited);
   }
   refsFrom(start, end, limit = 400) {
-    const out = []; let i = lowerBoundDirect(this.refFrom, start);
-    for (; i < this.refFrom.length && out.length < limit; i++) {
+    const out = []; let i = lowerBoundDirect(this.refFrom, start), queryLimited = false;
+    for (; i < this.refFrom.length; i++) {
       const from = this.refFrom[i]; if (end != null && from >= end) break;
+      if (out.length >= limit) { queryLimited = true; break; }
       out.push({ site: from, target: this.refTo[i], kind: this.refKind[i] });
     }
-    return completeness(out, this.refsCapped, 'refs');
+    return completeness(out, this.refsCapped, 'refs', queryLimited);
   }
   statsOf(start, end) {
     const stats = { total: 0, covered: true, arith: 0, mul: 0, div: 0, logic: 0, shift: 0, farith: 0, fmul: 0, fconv: 0, simd: 0, load: 0, store: 0, cmp: 0, condbr: 0, branch: 0, call: 0, indcall: 0, ret: 0, csel: 0, atomic: 0, movimm: 0, adrp: 0, trap: 0, other: 0 };
@@ -186,7 +210,7 @@ export class ProgramIndex {
     for (let i = 0; i < this.callTo.length; i++) { const key = this.callTo[i].toString(); counts.set(key, (counts.get(key) || 0) + 1); }
     const out = []; for (const [key, n] of counts) out.push({ addr: BigInt(key), count: n });
     out.sort((a, b) => b.count - a.count);
-    return completeness(out.slice(0, limit), this.callsCapped, 'calls');
+    return completeness(out.slice(0, limit), this.callsCapped, 'calls', out.length > limit);
   }
 }
 
