@@ -58,6 +58,22 @@ import { mergeMachOAnalysisResults } from '../js/macho-analysis-merge.js';
 }
 
 {
+  const truth = machoSymbolTruth({
+    format:'macho',
+    metadata:{
+      machoMetadata:{ complete:true },
+      dyldBindings:{
+        complete:false,
+        streams:{ lazy:{ source:'lazy-bind', complete:false, decodedBinds:3 } },
+      },
+    },
+  });
+  assert.equal(truth.complete, false);
+  assert.ok(truth.reasons.includes('dyld-bindings:incomplete'));
+  assert.ok(truth.reasons.includes('dyld-lazy:incomplete'));
+}
+
+{
   const legacy = {
     addrs:new BigUint64Array([0x3000n]), kinds:new Uint8Array([1]), flags:new Uint8Array([0]),
     names:['_objc_msgSend$foo:'], funcs:new BigUint64Array(0), symbolCount:1, funcCount:0,
