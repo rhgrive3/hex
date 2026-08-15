@@ -41,4 +41,37 @@ function makeIndex() {
   assert.equal(index.label(0x1104n), null, 'local rename must not leak into the next function');
 }
 
+
+{
+  const index = new SymbolIndex({
+    funcs: new BigUint64Array([0x1000n, 0x1100n, 0x3000n, 0x90000n]),
+    regions: [
+      { id:'text-a', vmAddr:0x1000n, size:0x1000n, exec:true },
+      { id:'text-b', vmAddr:0x3000n, size:0x100000n, exec:true },
+      { id:'data', vmAddr:0x2000n, size:0x1000n, exec:false },
+    ],
+  });
+  assert.deepEqual(index.functionAt(0x1080n), { start:0x1000n, end:0x1100n, index:0 },
+    'normal same-region next-start interval should be contained');
+  assert.deepEqual(index.functionAt(0x1100n), { start:0x1100n, end:null, index:1 },
+    'an exact last start in an executable region remains identifiable');
+  assert.equal(index.functionAt(0x1180n), null,
+    'last function must not absorb trailing padding when no end is known');
+  assert.equal(index.functionAt(0x2800n), null,
+    'addresses in another/non-executable region must not be attributed to a previous function');
+  assert.equal(index.functionAt(0x5000n), null,
+    'a huge next-start gap must not be treated as one giant function');
+}
+
+{
+  const index = new SymbolIndex({
+    funcs: new BigUint64Array([0x1000n]),
+    funcEnds: new BigUint64Array([0x1080n]),
+    regions: [{ id:'text', vmAddr:0x1000n, size:0x1000n, exec:true }],
+  });
+  assert.deepEqual(index.functionAt(0x107cn), { start:0x1000n, end:0x1080n, index:0 },
+    'explicit function end should permit bounded interior containment');
+  assert.equal(index.functionAt(0x1080n), null, 'explicit function end is exclusive');
+}
+
 console.log('symbol identity regression: PASS');

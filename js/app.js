@@ -569,7 +569,7 @@ class App {
     if (epoch !== this.backend.gen) return null;
     // EMPTY_INDEX は全体で共有している空の索引なので、絶対に書き換えない
     if (this.symbols === EMPTY_INDEX) {
-      this.symbols = new SymbolIndex({});
+      this.symbols = new SymbolIndex({ regions: this.store.get('regions') || [] });
       this.viewer.setSymbols(this.symbols);
     }
     const sym = this.symbols;
@@ -927,7 +927,7 @@ class App {
       this.symbolsReadyEpoch = epoch;
       this.symbolsReady = this.backend.analyze(sliceIndex).then((res) => {
         if (epoch !== this.backend.gen || this.store.get('sliceIndex') !== sliceIndex) return;
-        this.symbols = new SymbolIndex(res);
+        this.symbols = new SymbolIndex({ ...res, regions: this.store.get('regions') || [] });
         // 前回このファイルに付けた名前を戻す（元の名前より優先される）
         for (const e of this.notes.nameEntries()) this.symbols.rename(e.addr, e.name);
         this.viewer.setSymbols(this.symbols);
