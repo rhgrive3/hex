@@ -1,0 +1,37 @@
+name: Verify semantic correctness batch v3
+on:
+  push:
+    branches:
+      - fix/unlinked-ir-406-423-20260815
+permissions:
+  contents: write
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git merge --no-edit origin/main
+      - name: Make semantic patch idempotent
+        run: python3 -c "from pathlib import Path;p=Path('tools/fix-unlinked-ir.py');s=p.read_text();s=s.replace('    if old not in s:\\n        raise SystemExit(f\"missing patch anchor {label} in {path}\")\\n    p.write_text(s.replace(old, new, 1))','    if old not in s:\\n        print(f\"skip already-changed anchor {label} in {path}\")\\n        return\\n    p.write_text(s.replace(old, new, 1))');p.write_text(s)"
+      - run: python3 tools/fix-unlinked-ir.py
+      - run: python3 tools/fix-rmw-407.py
+      - run: node tests/issues-406-423-unlinked.mjs
+      - run: npm run check
+      - name: Commit verified changes
+        run: |
+          rm -f tools/fix-unlinked-ir.py tools/fix-rmw-407.py
+          rm -f .github/workflows/fix-unlinked-ir-406-423.yml .github/workflows/verify-unlinked-ir-v2.yml .github/workflows/verify-semantic-v3.yml
+          git add -A
+          git commit -m "fix: harden semantic IR and evidence correctness (#406-#419, #422-#423)"
+          git push origin HEAD
