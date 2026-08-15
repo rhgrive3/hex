@@ -1,0 +1,1 @@
+External fixture moved to tests/.real-fixtures/battlecats. Run: npm run fixtures:fetch
