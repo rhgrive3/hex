@@ -159,8 +159,9 @@ test('#446 ARM64E kernel chained stride', () => {
   dv.setBigUint64(0x108,(1n<<62n)|1n,true);
   const r=new ByteView(bytes);
   const imports=[{sites:[]},{sites:[]}];
-  const image={imageBase:BASE,metadata:{chainedFixups:{}},warnings:[],addressToOffset:(a)=>a-BASE};
-  parseChainedBindingSites(r,{offset:0,size:0x80},image,imports);
+  const segment={address:BASE+0x100n,size:0x1000n,fileOffset:0x100n,fileSize:0x100n};
+  const image={imageBase:BASE,segments:[segment],metadata:{chainedFixups:{}},warnings:[],addressToOffset:(a)=>a-BASE};
+  parseChainedBindingSites(r,{offset:0,size:0x80},image,imports,[segment]);
   assert.equal(imports[0].sites.length,1); assert.equal(imports[1].sites.length,1);
 });
 
