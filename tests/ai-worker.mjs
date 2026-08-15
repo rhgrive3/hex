@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import worker, { __test } from '../worker.js';
+import { WorkerAIProvider } from '../js/ai/provider/index.js';
 
 const normalized = __test.normalizeAITurnRequest({
   mode: 'chat', style: 'analyst', scope: 'auto', messages: [{ role: 'user', content: 'general question' }],
@@ -13,6 +14,29 @@ assert.throws(() => __test.normalizeAITurnRequest({ mode: 'chat', context: {}, m
 
 assert.deepEqual(__test.normalizeAIInteraction({ steps: [{ type: 'function_call', name: 'search_functions', arguments: { query: 'coin' } }] }, ['search_functions']), { type: 'tool', tool: 'search_functions', arguments: { query: 'coin' }, purpose: '' });
 assert.equal(__test.normalizeAIInteraction({ steps: [{ type: 'function_call', name: 'submit_hex_result', arguments: { answer: 'done', evidenceIds: ['ev1'] } }] }, []).type, 'final');
+
+// Capability discovery is quota-free and available before the first model turn.
+const capabilityResponse = await worker.fetch(new Request('https://example.test/api/ai/capabilities', { method: 'GET' }), {
+  GEMINI_API_KEY: 'server-only', AI_REQUEST_LIMIT_BYTES: '100000',
+});
+assert.equal(capabilityResponse.status, 200);
+const capabilityBody = await capabilityResponse.json();
+assert.equal(capabilityBody.configured, true);
+assert.ok(capabilityBody.capabilities.maxRequestBytes < capabilityBody.capabilities.upstreamMaxRequestBytes);
+
+let capabilityFetches = 0;
+const provider = new WorkerAIProvider({
+  fetchImpl: async (_url, options) => {
+    capabilityFetches++;
+    assert.equal(options.method, 'GET');
+    return new Response(JSON.stringify({ capabilities: { provider: 'gemini', contextTokens: 100000, maxOutputTokens: 4096, maxTools: 7, maxRequestBytes: 24000 } }), { status: 200 });
+  },
+});
+await provider.prepareCapabilities();
+await provider.prepareCapabilities();
+assert.equal(capabilityFetches, 1, 'provider capability preflight is cached');
+assert.equal(provider.getCapabilities().maxRequestBytes, 24000);
+assert.equal(provider.getCapabilities().maxTools, 7);
 
 const originalFetch = globalThis.fetch;
 globalThis.fetch = async (_url, options) => {
