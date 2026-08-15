@@ -5,6 +5,15 @@ import { demangleCxx } from '../js/rtti.js';
 import { validateSchema } from '../js/ai/validation.js';
 import { fitCalibration } from '../js/calib.js';
 
+// #245: UI browser dependency is deterministic and npx cannot auto-fetch a
+// different package version behind the workflow's back.
+{
+  const workflow = fs.readFileSync(new URL('../.github/workflows/ui-regression.yml', import.meta.url), 'utf8');
+  assert.match(workflow, /playwright@1\.55\.0/);
+  assert.match(workflow, /npx --no-install playwright install/);
+  assert.doesNotMatch(workflow, /npm install --no-save playwright\s*$/m);
+}
+
 // #248: unsupported Itanium grammar/substitutions must fail closed.
 assert.equal(demangleCxx('__ZN3Foo3barEiX'), null);
 assert.equal(demangleCxx('__ZN3Foo3barESZZ_'), null);
@@ -38,10 +47,10 @@ assert.equal(validateSchema(12, { type: 'integer' }).ok, true);
   const add = (p, hits, n = 20) => {
     for (let i = 0; i < n; i++) samples.push({ probability: p, correct: i < hits });
   };
-  add(0.15, 4);   // 0.20
-  add(0.45, 17);  // 0.85
-  add(0.75, 10);  // 0.50 -- deliberate inversion
-  add(0.95, 19);  // 0.95
+  add(0.15, 4);
+  add(0.45, 17);
+  add(0.75, 10); // deliberate inversion
+  add(0.95, 19);
   const curve = fitCalibration(samples, 5);
   assert.ok(curve && curve.length >= 2);
   for (let i = 1; i < curve.length; i++) {
@@ -51,21 +60,52 @@ assert.equal(validateSchema(12, { type: 'integer' }).ok, true);
   }
 }
 
-// #274/#298: wrappers must preserve their audited semantic boundaries.
+// #274: the real verification engine, not just its facade, must use one prior
+// candidate universe for initial fusion and every verification round.
 {
-  const pinpoint = fs.readFileSync(new URL('../js/pinpoint.js', import.meta.url), 'utf8');
-  assert.match(pinpoint, /priorStableAcrossVerification:\s*true/);
-  assert.match(pinpoint, /fuse\(c\.evidence\s*\|\|\s*\[\],\s*\{ candidates: priorCandidates \}\)/);
+  const core = fs.readFileSync(new URL('../js/pinpoint-legacy.js', import.meta.url), 'utf8');
+  const fieldStart = core.indexOf('export async function pinpointField');
+  const fieldEnd = core.indexOf('/* ── クラスの前提', fieldStart);
+  assert.ok(fieldStart >= 0 && fieldEnd > fieldStart);
+  const fieldBody = core.slice(fieldStart, fieldEnd);
+  assert.match(fieldBody, /const priorCandidates = narrowed \? asked\.length : universe/);
+  assert.equal((fieldBody.match(/candidates: priorCandidates/g) || []).length, 2);
+  assert.doesNotMatch(fieldBody, /candidates: narrowed \? asked\.length : universe/);
 
+  const facade = fs.readFileSync(new URL('../js/pinpoint.js', import.meta.url), 'utf8');
+  assert.match(facade, /priorStableAcrossVerification:\s*true/);
+}
+
+// #271/#292: unknown function ranges cannot be expanded to EOF and string
+// expansion is explicitly sampled beyond a fixed head prefix.
+{
+  const rank = fs.readFileSync(new URL('../js/rank.js', import.meta.url), 'utf8');
+  assert.match(rank, /range && range\.start === seed\.addr && range\.end != null/);
+  assert.match(rank, /STRING_EXPANSION_BUDGET = 1200/);
+  assert.match(rank, /string-matches-sampled/);
+  assert.match(rank, /matchedStringsComplete/);
+}
+
+// #280/#281: missing object identity may retain recall only behind a strong
+// confidence penalty, and capped shape scans remain explicitly incomplete.
+{
+  const shapes = fs.readFileSync(new URL('../js/shapes.js', import.meta.url), 'utf8');
+  assert.match(shapes, /function provenancePenalty\(e\) \{ return e\.identityKnown \? 1 : 0\.25; \}/);
+  assert.match(shapes, /loc-object-identity-unknown/);
+  assert.match(shapes, /complete: \{ value: !scan\?\.capped/);
+}
+
+// #298: uncertain FieldIndex resolutions are inference candidates, never FACT.
+{
   const report = fs.readFileSync(new URL('../js/report.js', import.meta.url), 'utf8');
   assert.match(report, /fieldCertaintyBoundary\s*=\s*true/);
   assert.match(report, /candidate\.certain\s*===\s*true/);
   assert.match(report, /f\.detail\.field\s*=\s*null/);
 }
 
-// #287/#288/#289: worker hardening must parse as classic-worker JavaScript and
-// retain the three fail-closed guards. Functional browser coverage exercises the
-// actual message protocol; these assertions prevent accidental shim removal.
+// #287/#288/#289: worker hardening parses as classic-worker JavaScript and
+// retains UTF-8 search, control-boundary invalidation, and independent function
+// evidence. Functional browser coverage exercises the message protocol.
 {
   const worker = fs.readFileSync(new URL('../js/worker-fixes.js', import.meta.url), 'utf8');
   assert.doesNotThrow(() => new Function(worker));
