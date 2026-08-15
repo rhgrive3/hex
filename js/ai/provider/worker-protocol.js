@@ -1,4 +1,3 @@
-import { AI_TOOL_NAMES } from '../tools/names.js';
 import { boundedText, byteLength, HttpError, MAX_CONTEXT_CHARS } from './worker-transport.js';
 
 const MAX_QUESTION_CHARS = 6000;
@@ -6,7 +5,8 @@ const THINKING_LEVELS = new Set(['minimal', 'low', 'medium', 'high']);
 const AI_MODES = new Set(['chat', 'agent']);
 const AI_STYLES = new Set(['beginner', 'analyst']);
 const AI_SCOPES = new Set(['auto', 'selection', 'function', 'neighborhood', 'binary', 'project', 'runtime']);
-const AI_TOOL_ALLOWLIST = new Set(AI_TOOL_NAMES);
+const TOOL_NAME = /^[a-z][a-z0-9_]{1,63}$/;
+const RESERVED_TOOL_NAMES = new Set(['submit_hex_result']);
 
 export function normalizeAITurnRequest(value) {
   if (!isObject(value)) throw new HttpError(400, 'invalid_request', 'The request body must be an object.');
@@ -35,7 +35,11 @@ export function normalizeAITools(value) {
   for (const raw of value.slice(0, 40)) {
     if (!isObject(raw)) continue;
     const name = boundedText(raw.name, 64);
-    if (!AI_TOOL_ALLOWLIST.has(name) || seen.has(name)) continue;
+    // The browser ToolRegistry is the authority for which read-only tools are
+    // visible in this turn. The Worker validates the transport surface rather
+    // than duplicating a static tool-name list that would make future Registry
+    // additions unreachable. The Worker-owned final-result tool is reserved.
+    if (!TOOL_NAME.test(name) || RESERVED_TOOL_NAMES.has(name) || seen.has(name)) continue;
     seen.add(name); out.push({ name, description: boundedText(raw.description, 2000), inputSchema: sanitizeToolSchema(raw.inputSchema) });
   }
   return out;
