@@ -224,13 +224,10 @@ function lift(insn, opts = {}) {
   if (insn.isReturn) { push({ op: OP.RET, srcs: [] }); return out; }
   if (insn.isCall) {
     const result = callResultLocation(insn, opts);
-    // AAPCS64 integer/pointer arguments are live in x0-x7 at the call boundary.
-    // Unknown prototypes intentionally keep all eight uses: conservative liveness
-    // is required for pointer escape and PHI correctness.
     const callSrcs = Array.from({ length: 8 }, (_, i) => ({ t: 'reg', reg: `x${i}`, bits: 64 }));
     if (insn.callTarget == null && ops[0] && ops[0].k === 'reg') {
       const targetReg = regKeyOf(ops[0]);
-      if (targetReg && !callSrcs.some((s) => s.reg === targetReg)) callSrcs.push({ t: 'reg', reg: targetReg, bits: 64 });
+      if (targetReg && !callSrcs.some((src) => src.reg === targetReg)) callSrcs.push({ t: 'reg', reg: targetReg, bits: 64 });
     }
     push({
       op: OP.CALL,
@@ -328,9 +325,11 @@ function lift(insn, opts = {}) {
   }
   if (base === 'ccmp' || base === 'ccmn') {
     const cond = ops.find((o) => o.k === 'cond');
+    const fallback = ops.find((o, index) => index >= 2 && o.k === 'imm' && o.value != null);
     push(Object.assign(flags(), {
       op: OP.CMP, sub: base === 'ccmp' ? 'sub' : 'add', conditional: true,
       cond: cond ? cond.text : null, bits: regBits(ops[0]),
+      fallbackNzcv: fallback ? Number(fallback.value & 0xfn) : null,
       srcs: [opnd(ops[0]), opnd(ops[1]), { t: 'reg', reg: 'nzcv', bits: 4 }].filter(Boolean),
     }));
     return out;
@@ -868,25 +867,27 @@ function livenessOf(ir, lifted, allRegs) {
 function locationOf(inst) {
   const a = inst.addr;
   if (!a) return null;
-  if (a.index) return { key: 'unknown', kind: MK.UNKNOWN };
-  if (a.disp == null) return { key: 'unknown', kind: MK.UNKNOWN };
-  if (!a.base) return { key: 'unknown', kind: MK.UNKNOWN };
+  const size = Number(a.size || inst.extra?.size || 0) || 0;
+  // Unknown/indexed addresses are may-alias locations, never one shared
+  // must-alias bucket. A unique key prevents unrelated unknown loads/stores
+  // from fabricating a reaching-store edge (#358).
+  if (a.index || a.disp == null || !a.base) return { key: `unknown:${inst.id}`, kind: MK.UNKNOWN, size };
   if (a.stack) {
     const baseReg = a.baseReg || a.base?.reg || 'stack';
     const frameEpoch = a.base?.id ?? -1;
     return {
-      key: `stack:${baseReg}:e${frameEpoch}:${a.disp.toString()}`,
-      kind: MK.STACK, baseReg, frameEpoch, disp: a.disp, size: a.size,
+      key: `stack:${baseReg}:e${frameEpoch}:${a.disp.toString()}:s${size}`,
+      kind: MK.STACK, baseReg, frameEpoch, disp: a.disp, size,
     };
   }
   const base = a.base;
   if (base.const != null) {
     const addr = base.const + a.disp;
-    return { key: 'global:' + addr.toString(16), kind: MK.GLOBAL, address: addr, size: a.size };
+    return { key: 'global:' + addr.toString(16) + ':s' + size, kind: MK.GLOBAL, address: addr, size };
   }
   return {
-    key: 'field:' + base.id + '+' + a.disp.toString(),
-    kind: MK.FIELD, base, disp: a.disp, size: a.size,
+    key: 'field:' + base.id + '+' + a.disp.toString() + ':s' + size,
+    kind: MK.FIELD, base, disp: a.disp, size,
   };
 }
 
@@ -914,6 +915,37 @@ export function mayAlias(a, b) {
     return !(a.disp + sa <= b.disp || b.disp + sb <= a.disp);
   }
   return true;
+}
+
+/**
+ * A concrete store may *define/clobber* another Memory-SSA range only when
+ * overlap is established, not merely possible. mayAlias() intentionally answers
+ * conservatively for query safety (e.g. an object pointer could theoretically
+ * point at a stack slot); using that predicate for every store destroys stack
+ * promotion. Unknown-address stores remain conservative and clobber all ranges.
+ */
+function storeOverlapsRange(storeLoc, otherLoc) {
+  if (!storeLoc || !otherLoc) return true;
+  if (storeLoc.kind === MK.UNKNOWN) return true;
+  if (otherLoc.kind === MK.UNKNOWN) return false;
+  if (storeLoc.kind !== otherLoc.kind) return false;
+  const overlap = (pa, sa, pb, sb) => !(pa + sa <= pb || pb + sb <= pa);
+  const sa=BigInt(storeLoc.size || 8), sb=BigInt(otherLoc.size || 8);
+  if (storeLoc.kind === MK.GLOBAL) {
+    if (storeLoc.address == null || otherLoc.address == null) return false;
+    return overlap(storeLoc.address,sa,otherLoc.address,sb);
+  }
+  if (storeLoc.kind === MK.STACK) {
+    if (storeLoc.baseReg !== otherLoc.baseReg || storeLoc.frameEpoch !== otherLoc.frameEpoch) return false;
+    if (storeLoc.disp == null || otherLoc.disp == null) return false;
+    return overlap(storeLoc.disp,sa,otherLoc.disp,sb);
+  }
+  if (storeLoc.kind === MK.FIELD) {
+    if (!storeLoc.base || !otherLoc.base || storeLoc.base.id !== otherLoc.base.id) return false;
+    if (storeLoc.disp == null || otherLoc.disp == null) return false;
+    return overlap(storeLoc.disp,sa,otherLoc.disp,sb);
+  }
+  return false;
 }
 
 export function stackPointerProvenanceOf(value, memo = new Map(), active = new Set()) {
@@ -971,34 +1003,35 @@ function buildMemorySSA(ir, df, idom, children) {
       const loc = locationOf(inst);
       if (!loc) continue;
       inst.loc = register(loc);
-      if (inst.op === OP.STORE) {
-        let s = defSites.get(loc.key);
-        if (!s) { s = new Set(); defSites.set(loc.key, s); }
-        s.add(inst.block);
-      }
     } else if (inst.op === OP.CALL || inst.op === OP.UNKNOWN) {
       clobberInsts.push(inst);
+    }
+  }
+  // Every store defines its exact range and clobbers every registered range it
+  // may overlap. This is what makes byte/halfword stores kill wider reaching
+  // loads without pretending the partial store supplied the entire value (#359).
+  for (const inst of ir.instructions) {
+    if (inst.op !== OP.STORE || !inst.loc) continue;
+    for (const [key, loc] of locs) {
+      if (!storeOverlapsRange(inst.loc, loc)) continue;
+      let defs = defSites.get(key);
+      if (!defs) { defs = new Set(); defSites.set(key, defs); }
+      defs.add(inst.block);
     }
   }
 
   ir.locations = locs;
 
-  /* Stack pointers may flow through ADD/SUB constants, MOV, and PHI before
-   * crossing an opaque boundary. Follow SSA provenance instead of only direct
-   * uses of the original ADD result. A may-stack PHI is sufficient to escape. */
   const stackPointerMemo = new Map();
   let stackEscaped = false;
   for (const inst of ir.instructions) {
     if (inst.op !== OP.CALL && inst.op !== OP.STORE && inst.op !== OP.UNKNOWN) continue;
-    // STORE args are stored values; address operands live in inst.addr and are
-    // intentionally excluded so an ordinary local store is not an escape.
     if ((inst.args || []).some((a) => stackPointerProvenanceOf(a?.value, stackPointerMemo))) {
       stackEscaped = true;
       break;
     }
   }
 
-  // Calls/unknown effects clobber stack state only after a proven/may escape.
   for (const inst of clobberInsts) {
     for (const [key, loc] of locs) {
       if (loc.kind === MK.STACK && !stackEscaped) continue;
@@ -1070,10 +1103,16 @@ function buildMemorySSA(ir, df, idom, children) {
         // 「その場所を最後に書いたのは誰か」— これが store → load の辺
         if (inst.memUse && inst.memUse.kind === 'store') inst.reachingStore = inst.memUse.inst;
       } else if (inst.op === OP.STORE && inst.loc) {
-        const node = { kind: 'store', key: inst.loc.key, inst, block: bi, prev: top(inst.loc.key) };
-        inst.memDef = node;
-        stacks.get(inst.loc.key).push(node);
-        mark.push(inst.loc.key);
+        for (const [key, loc] of locs) {
+          if (!storeOverlapsRange(inst.loc, loc)) continue;
+          const exact = inst.loc.kind !== MK.UNKNOWN && key === inst.loc.key;
+          const node = exact
+            ? { kind: 'store', key, inst, block: bi, prev: top(key) }
+            : { kind: 'clobber', key, inst, block: bi, reason: 'overlap-store', unknownAlias: inst.loc.kind === MK.UNKNOWN };
+          if (exact) inst.memDef = node;
+          stacks.get(key).push(node);
+          mark.push(key);
+        }
       } else if (inst.memKills) {
         for (const loc of inst.memKills) {
           const node = { kind: 'clobber', key: loc.key, inst, block: bi };
@@ -1141,9 +1180,9 @@ function foldBin(sub, a, b, bits) {
     case 'bic': return mask(a & ~b, bits);
     case 'orn': return mask(a | ~b, bits);
     case 'eon': return mask(~(a ^ b), bits);
-    case 'shl': return mask(a << (mask(b, bits) & 63n), bits);
-    case 'lshr': return mask(mask(a, bits) >> (mask(b, bits) & 63n), bits);
-    case 'ashr': return mask(sa >> (mask(b, bits) & 63n), bits);
+    case 'shl': { const sh = mask(b, bits) & BigInt(bits === 32 ? 31 : 63); return mask(a << sh, bits); }
+    case 'lshr': { const sh = mask(b, bits) & BigInt(bits === 32 ? 31 : 63); return mask(mask(a, bits) >> sh, bits); }
+    case 'ashr': { const sh = mask(b, bits) & BigInt(bits === 32 ? 31 : 63); return mask(sa >> sh, bits); }
     case 'smull': return mask(BigInt.asIntN(32, a) * BigInt.asIntN(32, b), 64);
     case 'umull': return mask((a & 0xffffffffn) * (b & 0xffffffffn), 64);
     default: return null;
@@ -1209,11 +1248,13 @@ function propagateValues(ir) {
       }
       case OP.UN: setConst(inst.dst, foldUn(inst.sub, argConst(inst.args[0], bits), bits)); break;
       case OP.MAC: {
-        const a = argConst(inst.args[0], bits);
-        const b = argConst(inst.args[1], bits);
-        const c = argConst(inst.args[2], bits);
-        if (a != null && b != null && c != null) {
-          setConst(inst.dst, mask(inst.sub === 'msub' ? a - b * c : a + b * c, bits));
+        const addend = argConst(inst.args[0], bits);
+        let a = argConst(inst.args[1], bits);
+        let b = argConst(inst.args[2], bits);
+        if (addend != null && a != null && b != null) {
+          if (inst.extra?.widen === 'signed') { a = BigInt.asIntN(32, a); b = BigInt.asIntN(32, b); }
+          else if (inst.extra?.widen === 'unsigned') { a = BigInt.asUintN(32, a); b = BigInt.asUintN(32, b); }
+          setConst(inst.dst, mask(inst.sub === 'msub' ? addend - a * b : addend + a * b, bits));
         }
         break;
       }
@@ -1258,7 +1299,11 @@ function propagateValues(ir) {
 function inferSignedness(ir) {
   for (const inst of ir.instructions) {
     if (!inst.dst) continue;
-    if (inst.op === OP.LOAD) inst.dst.signed = !!(inst.extra && inst.extra.signed);
+    if (inst.op === OP.LOAD) {
+      // Plain LDR has no signedness evidence. Only sign-extending load opcodes
+      // may positively mark the SSA value signed; absence of that flag is unknown.
+      if (inst.extra && inst.extra.signed === true) inst.dst.signed = true;
+    }
     else if (inst.op === OP.BIN) {
       if (inst.sub === 'sdiv' || inst.sub === 'ashr' || inst.sub === 'smull' || inst.sub === 'smulh') inst.dst.signed = true;
       else if (inst.sub === 'udiv' || inst.sub === 'lshr' || inst.sub === 'umull' || inst.sub === 'umulh') inst.dst.signed = false;

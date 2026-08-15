@@ -1,67 +1,13 @@
 /*
  * calib.js — 「確からしさ」を、飾りではなく測れる数にする。
  *
- * ここには 2 つの仕事がある。
- *
- * 1. 独立した証拠群（Evidence Group）
- *
- *    evidence.js は系統（family）ごとに割引と上限を持っているが、系統はまだ細かい。
- *
- *        field 名 = hp
- *        getter 名 = hp
- *        setter 名 = setHp
- *
- *    これは 3 つの証拠に見えて、出どころは 1 つ（Objective-C のメタデータ）。
- *    相関した証拠を独立した証拠として掛けると、必ず過信する。
- *    だから系統をさらに「出どころ」でまとめ、群ごとに上限を置く。
- *
- *        metadata     クラス表・シンボル・セレクタ  ← 1 つの出どころ
- *        structural   型・大きさ・オフセットの整合
- *        dataflow     読み書きの形・値の流れ
- *        controlflow  分岐・ループの形
- *        runtime      実際に動かして確かめた
- *        semantic     開発者が書いた文言・復元した計算式
- *        external     AI や外部の知識
- *
- *    「確定」を名乗るのに要るのは、証拠の**数**ではなく、独立した**群の数**。
- *
- * 2. 校正（calibration）
- *
- *    「99.9%」と出すなら、そう出したものの 999/1000 が当たっていなければ嘘。
- *    Brier / ECE / 誤確定率をここで測る。とくに大事なのは
- *
- *        「確定」と表示したものの誤答率
- *
- *    これを 0 に近づけることが、このツールの信用そのもの。
- */
-
-/*
- * 群の定義そのものは evidence.js が持つ（証拠の表と同じ場所に置く）。
- * ここは、その群を使って合成し、当たり具合を測る側。
- *
- * 判断基準を 2 つ持たないための取り決め:
- *
- *   GROUP / groupOf          … evidence.js が唯一の定義元。ここは再輸出するだけ。
- *   fuse()                   … **本番の合成**。系統で割り引き、群の数を数えて返す。
- *   decide()                 … 確定の判定。fuse() の independentGroups だけを見る。
- *   groupedFusion()          … 群を主にした参照実装。同じ材料で
- *                              「出どころだけで束ねたらどうなるか」を測るためのもの。
- *                              **本番の判定には使わない**（使うなら fuse() を置き換える）。
- *
- * groupedFusion が fuse と食い違ってよいのは合算の仕方だけで、
- * 「裏取りが無ければ天井を下げる」という安全側の歯止めは両方に要る。
+ * 相関した証拠を独立扱いしない group fusion と、Brier/ECE/誤確定率を
+ * 測る calibration utilities をここに集約する。
  */
 import { GROUP, groupOf, UNVERIFIED_CEIL } from './evidence.js';
 
 export { GROUP, groupOf };
 
-/*
- * 群 1 つだけで到達できる尤度比の上限。
- *
- * メタデータがどれだけ一致しても、それだけでは 60 倍を超えられない。
- * 実際に動かして確かめた（runtime）だけは強い。ただし群が 1 つしかないときは
- * decide() 側が確定を名乗らせない。
- */
 const GROUP_CAP = {
   [GROUP.METADATA]: 60,
   [GROUP.STRUCTURAL]: 12,
@@ -72,28 +18,15 @@ const GROUP_CAP = {
   [GROUP.EXTERNAL]: 8,
 };
 
-/* 同じ群のなかで重なった証拠の割引。1 件目はそのまま、2 件目から効きを落とす。 */
 function damp(nth) { return 1 / (1 + nth * 1.2); }
-
 const LN = Math.log;
 
-/**
- * 独立した証拠群にまとめてから合成する。
- *
- * evidence.js の fuse() と違うのは、系統ではなく**出どころ**で束ねること。
- * 相関した証拠を掛け算しないので、過信しにくい。
- *
- * @param {Array} items evidence() の配列（code / lr / strength / family）
- * @param {object} opts { candidates, absent, prior }
- * @returns {{probability, logOdds, groups, byGroup, verified}}
- */
 export function groupedFusion(items, opts) {
   const o = opts || {};
   const absent = o.absent != null ? o.absent : 40;
   const n = Math.max(2, (o.candidates != null ? o.candidates : 200) + absent);
   const prior = o.prior != null ? Math.max(1e-9, Math.min(0.5, o.prior)) : 1 / n;
   let logOdds = LN(prior / (1 - prior));
-
   const byGroup = new Map();
   const counted = new Map();
   const applied = [];
@@ -109,17 +42,11 @@ export function groupedFusion(items, opts) {
     const group = groupOf(item);
     const nth = counted.get(group) || 0;
     counted.set(group, nth + 1);
-
     let delta = LN(Math.max(1e-6, item.lr || 1)) * (item.strength == null ? 1 : item.strength);
-    // 打ち消す証拠（尤度比 < 1）は割り引かない。危険側に倒さないため。
     if (delta > 0) delta *= damp(nth);
-
     const cap = LN(GROUP_CAP[group] != null ? GROUP_CAP[group] : 20);
     const already = byGroup.get(group) || 0;
-    if (delta > 0) {
-      const room = Math.max(0, cap - already);
-      if (delta > room) delta = room;
-    }
+    if (delta > 0) delta = Math.min(delta, Math.max(0, cap - already));
     if (delta === 0) continue;
     byGroup.set(group, already + delta);
     logOdds += delta;
@@ -131,17 +58,7 @@ export function groupedFusion(items, opts) {
     .filter(([, v]) => v > 0)
     .map(([g, v]) => ({ group: g, logOdds: v, factor: Math.exp(v) }))
     .sort((a, b) => b.logOdds - a.logOdds);
-
-  /*
-   * 命令まで降りて確かめていないものの天井。fuse() と同じ値を使う。
-   *
-   * ここが無かったころ、semantic の上限が 1e9 なので、開発者が書いた文言が
-   * 1 本あるだけで（裏取りゼロで）99.99% を返せてしまった。fuse() は 97% で
-   * 止めるので、同じ材料に対して 2 つの答えが出ることになる。
-   * 合算の仕方は違ってよいが、安全側の歯止めまで違ってはいけない。
-   */
   if (!verified) logOdds = Math.min(logOdds, UNVERIFIED_CEIL);
-
   return {
     logOdds,
     probability: 1 / (1 + Math.exp(-logOdds)),
@@ -154,34 +71,30 @@ export function groupedFusion(items, opts) {
   };
 }
 
-/* ── 校正の指標 ────────────────────────────────────────────── */
+function finiteProbabilityRows(samples) {
+  return (samples || []).filter((s) => s && Number.isFinite(s.probability));
+}
 
-/**
- * Brier score。0 が完璧、0.25 が「いつも 50% と言う」。
- * @param {Array<{probability:number, correct:boolean}>} samples
- */
 export function brierScore(samples) {
-  const rows = (samples || []).filter((s) => s && typeof s.probability === 'number');
+  const rows = finiteProbabilityRows(samples);
   if (!rows.length) return null;
   let sum = 0;
   for (const s of rows) {
+    const p = Math.max(0, Math.min(1, s.probability));
     const y = s.correct ? 1 : 0;
-    sum += (s.probability - y) ** 2;
+    sum += (p - y) ** 2;
   }
   return sum / rows.length;
 }
 
-/**
- * ECE（Expected Calibration Error）。
- * 「90% と言ったものが本当に 9 割当たっているか」のずれの平均。
- */
 export function expectedCalibrationError(samples, binCount = 10) {
-  const rows = (samples || []).filter((s) => s && typeof s.probability === 'number');
+  const rows = finiteProbabilityRows(samples);
   if (!rows.length) return null;
-  const bins = Array.from({ length: binCount }, () => ({ n: 0, conf: 0, hits: 0 }));
+  const count = normalizeBinCount(binCount);
+  const bins = Array.from({ length: count }, () => ({ n: 0, conf: 0, hits: 0 }));
   for (const s of rows) {
     const p = Math.max(0, Math.min(0.999999, s.probability));
-    const b = bins[Math.min(binCount - 1, Math.floor(p * binCount))];
+    const b = bins[Math.min(count - 1, Math.floor(p * count))];
     b.n++; b.conf += p; b.hits += s.correct ? 1 : 0;
   }
   let ece = 0;
@@ -192,15 +105,15 @@ export function expectedCalibrationError(samples, binCount = 10) {
   return ece;
 }
 
-/** 校正の中身を、そのまま画面に出せる形で返す。 */
 export function reliabilityBins(samples, binCount = 10) {
-  const rows = (samples || []).filter((s) => s && typeof s.probability === 'number');
-  const bins = Array.from({ length: binCount }, (_, i) => ({
-    from: i / binCount, to: (i + 1) / binCount, n: 0, confidence: 0, accuracy: 0,
+  const rows = finiteProbabilityRows(samples);
+  const count = normalizeBinCount(binCount);
+  const bins = Array.from({ length: count }, (_, i) => ({
+    from: i / count, to: (i + 1) / count, n: 0, confidence: 0, accuracy: 0,
   }));
   for (const s of rows) {
     const p = Math.max(0, Math.min(0.999999, s.probability));
-    const b = bins[Math.min(binCount - 1, Math.floor(p * binCount))];
+    const b = bins[Math.min(count - 1, Math.floor(p * count))];
     b.n++; b.confidence += p; b.accuracy += s.correct ? 1 : 0;
   }
   for (const b of bins) {
@@ -211,13 +124,11 @@ export function reliabilityBins(samples, binCount = 10) {
   return bins;
 }
 
-/**
- * 精度の総まとめ。accuracy harness がそのまま出せる形。
- *
- * @param {Array} rows [{ probability, verdict, correct, rank }]
- *   verdict … 'confirmed' | 'likely' | 'ambiguous' | 'none'
- *   rank    … 正解が何位に来たか（1 始まり。見つからなければ null）
- */
+function normalizeBinCount(value) {
+  const n = Number(value);
+  return Number.isSafeInteger(n) && n >= 2 && n <= 100 ? n : 10;
+}
+
 export function accuracyReport(rows) {
   const all = (rows || []).filter(Boolean);
   const total = all.length;
@@ -229,7 +140,6 @@ export function accuracyReport(rows) {
   const confirmed = all.filter((r) => r.verdict === 'confirmed');
   const confirmedWrong = confirmed.filter((r) => !r.correct);
   const inTop = (r, k) => r.rank != null && r.rank >= 1 && r.rank <= k;
-
   return {
     total,
     top1: all.filter((r) => inTop(r, 1)).length / total,
@@ -239,11 +149,8 @@ export function accuracyReport(rows) {
     brier: brierScore(all),
     ece: expectedCalibrationError(all),
     confirmed: confirmed.length,
-    /* いちばん大事な数。「確定」と言って外した割合。0 に近づけるのが目標。 */
     falseConfirmRate: confirmed.length ? confirmedWrong.length / confirmed.length : null,
-    /* 答えを出さなかった数。出さないのは負けではない。間違えるより良い。 */
     abstentions: total - answered.length,
-    /* 出さなかったもののうち、そもそも正解が無かった割合（棄権が正しかったか）。 */
     abstentionAccuracy: (total - answered.length)
       ? all.filter((r) => (!r.verdict || r.verdict === 'none') && !r.correct).length / (total - answered.length)
       : null,
@@ -251,26 +158,58 @@ export function accuracyReport(rows) {
 }
 
 /**
- * 実測から補正曲線を作る。
- *
- * 返す形は evidence.js の calibrateProbability(score, curve) が食える形、
- * すなわち `[{score, observed}]` の配列そのもの。
- * 以前ここは `{points:[{from,to,n}]}` を返していて、docstring は
- * 「calibrateProbability に渡せる形」と言っていたが、実際に渡すと
- * `curve.filter is not a function` で落ちた（配列ではなくオブジェクトなので）。
- * 校正を有効にした瞬間に、確からしさの計算がまるごと例外になる形だった。
- *
- * サンプルが足りないときは null（＝補正しない）。嘘の補正はしない。
- *
- * @param {Array<{probability:number, correct:boolean}>} samples
- * @returns {Array<{score:number, observed:number, n:number}>|null}
+ * Weighted pool-adjacent-violators (PAV) isotonic regression.
+ * Raw empirical bins can go 0.90 -> 0.55 merely from sampling noise. A
+ * calibration function must be monotone: raising the model score must never
+ * lower the fitted correctness probability. Adjacent violating bins are pooled
+ * using their sample counts as weights.
+ */
+function isotonic(points) {
+  const blocks = [];
+  for (const point of points) {
+    const weight = Math.max(1, Number(point.n) || 1);
+    blocks.push({
+      scoreWeight: point.score * weight,
+      hitWeight: point.observed * weight,
+      weight,
+      fromScore: point.score,
+      toScore: point.score,
+    });
+    while (blocks.length >= 2) {
+      const right = blocks[blocks.length - 1];
+      const left = blocks[blocks.length - 2];
+      if (left.hitWeight / left.weight <= right.hitWeight / right.weight) break;
+      blocks.splice(blocks.length - 2, 2, {
+        scoreWeight: left.scoreWeight + right.scoreWeight,
+        hitWeight: left.hitWeight + right.hitWeight,
+        weight: left.weight + right.weight,
+        fromScore: left.fromScore,
+        toScore: right.toScore,
+      });
+    }
+  }
+  return blocks.map((block) => ({
+    score: block.scoreWeight / block.weight,
+    observed: block.hitWeight / block.weight,
+    n: block.weight,
+    fromScore: block.fromScore,
+    toScore: block.toScore,
+  }));
+}
+
+/**
+ * Return the exact array shape consumed by evidence.js calibrateProbability().
+ * At least 40 samples and 3 populated raw bins are required; otherwise we keep
+ * the uncalibrated probability rather than fitting noise.
  */
 export function fitCalibration(samples, binCount = 10) {
-  const rows = (samples || []).filter((s) => s && typeof s.probability === 'number');
+  const rows = finiteProbabilityRows(samples);
   if (rows.length < 40) return null;
-  const bins = reliabilityBins(rows, binCount);
-  const curve = bins.filter((b) => b.n >= 3)
+  const raw = reliabilityBins(rows, binCount)
+    .filter((b) => b.n >= 3)
     .map((b) => ({ score: b.confidence, observed: b.accuracy, n: b.n }))
     .sort((a, b) => a.score - b.score);
-  return curve.length >= 3 ? curve : null;
+  if (raw.length < 3) return null;
+  const curve = isotonic(raw);
+  return curve.length >= 2 ? curve : null;
 }

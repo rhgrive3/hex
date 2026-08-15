@@ -1,50 +1,24 @@
 /*
  * データファイルの表を、命令から読み取る層。
- *
- * ここがこのツールでいちばん「確定」に近づける場所。
- *
- * 現代のモバイルゲームは、数値をコードに書かない。CSV や JSON で持っていて、
- * 起動時に読み込む。だからバイナリの中に「攻撃力」という言葉は 1 つも無いのに、
- * **どこに何番目の数値が入るか** は命令にはっきり書いてある。
- *
- *     bl   0x10027c37c              ; 1 列ぶんを整数にする
- *     str  w0, [x28, x21, lsl #2]   ; ← i 列目を +i*4 に置く
- *     add  x21, x21, #0x1
- *     cmp  x21, #0x75               ; 117 列
- *
- * この 4 行が読めれば「unit%03d.csv の i 列目は、この表の +i*4 にある」と
- * **言い切れる**。推測が 1 つも要らない。名前が消してあっても、文字列が
- * 1 つも残っていなくても、読み込む以上この形は消せない。
- *
- * さらに 1 レコードの大きさ（0x1d4）とレコード数（4）も同じ場所に書いてあるので、
- * 表の形がまるごと復元できる。あとは利用者が手元の CSV を開いて
- * 「4 列目が攻撃力」と分かれば、+0xC という答えがそのまま出る。
- *
- * 逆アセンブラは通さない。命令語のビットを直接読む（words.js と同じ流儀）。
- * 日本語は作らない。返すのは構造と、その根拠になった命令の位置だけ。
+ * 名前ではなく命令の構造から列・stride・record shapeを復元する。
  */
 import './words.js';
 
 const W = globalThis.Words;
-
-/* ── 命令のビットを読む小道具 ───────────────────────────────── */
-
 const rd = (w) => w & 31;
 const rn = (w) => (w >>> 5) & 31;
 const rm = (w) => (w >>> 16) & 31;
 
-/** add/sub Xd, Xn, #imm（シフトつき）。違えば null。 */
 function addSubImm(w) {
   if (W.masked(w, 0x1f000000) !== 0x11000000) return null;
-  if (((w >>> 29) & 1) === 1 && rd(w) === 31) return null;      // cmp
+  if (((w >>> 29) & 1) === 1 && rd(w) === 31) return null;
   const imm = ((w >>> 10) & 0xfff) << (((w >>> 22) & 1) ? 12 : 0);
   return { d: rd(w), n: rn(w), imm, sub: ((w >>> 30) & 1) === 1 };
 }
 
-/** movz / movk。定数を組み立てている途中も追えるようにする。 */
 function moveWide(w) {
   if (!W.isMoveWide(w)) return null;
-  const opc = (w >>> 29) & 3;                 // 00 movn / 10 movz / 11 movk
+  const opc = (w >>> 29) & 3;
   const shift = ((w >>> 21) & 3) * 16;
   const imm16 = (w >>> 5) & 0xffff;
   if (opc === 2) return { d: rd(w), kind: 'movz', value: imm16 * 2 ** shift };
@@ -52,38 +26,18 @@ function moveWide(w) {
   return null;
 }
 
-/**
- * 添字つきの読み書き — `str w0, [x28, x21, lsl #2]`。
- *
- * ここが表の要。ずらし幅が **列番号 × 何バイト** で決まっていることが、
- * この 1 命令から読み取れる。
- */
 function indexedAccess(w) {
   if (W.masked(w, 0x3b200c00) !== 0x38200800) return null;
   const size = 1 << ((w >>> 30) & 3);
-  const scaled = ((w >>> 12) & 1) === 1;      // S ビット。立っていれば大きさぶん左シフト
-  return {
-    load: ((w >>> 22) & 1) === 1,
-    size,
-    base: rn(w),
-    index: rm(w),
-    reg: rd(w),
-    // lsl #2 の 2 は「その転送の大きさの log2」。S が 0 なら添字はバイト単位。
-    stride: scaled ? size : 1,
-  };
+  return { load: ((w >>> 22) & 1) === 1, size, base: rn(w), index: rm(w), reg: rd(w), stride: ((w >>> 12) & 1) === 1 ? size : 1 };
 }
 
-/** 素の（添字なし）読み書き。 */
 function plainAccess(w) {
   const m = W.memoryAccess(w);
   if (!m || m.indexed || m.pair || m.disp == null) return null;
   return { load: m.load, size: m.size, base: m.base, disp: Number(m.disp), reg: m.reg };
 }
 
-/* Lightweight GPR lifetime tracking for the raw-word schema pass. This is not a
- * replacement for Semantic SSA; it is a fail-closed generation marker so the
- * same architectural register number cannot join stores across an observed
- * redefinition. */
 function writtenGpr(w) {
   const pcRel = W.pcRelTarget(w, 0n);
   if (pcRel) return pcRel.reg;
@@ -95,110 +49,106 @@ function writtenGpr(w) {
   return null;
 }
 
-/* ── 表の形を組み立てる ─────────────────────────────────────── */
+const MAX_COLUMNS = 4096;
+const MAX_RECORD = 1 << 20;
 
-const MAX_COLUMNS = 4096;        // これを超える「列数」は読み違い
-const MAX_RECORD = 1 << 20;      // 1 レコードがこれより大きいのも読み違い
+function writesRegister(w, reg) {
+  const kind = W.classifyWord ? W.classifyWord(w) : null;
+  // Stores, branches, compares, calls and returns do not write Rd as a normal
+  // destination. Everything else that decodes with Rd==reg conservatively
+  // invalidates prior value provenance.
+  const noDest = new Set([
+    W.KIND?.STORE, W.KIND?.CMP, W.KIND?.CONDBR, W.KIND?.BRANCH,
+    W.KIND?.CALL, W.KIND?.INDCALL, W.KIND?.RET, W.KIND?.TRAP,
+  ]);
+  if (kind != null && noDest.has(kind)) return false;
+  const mem = W.memoryAccess(w);
+  if (mem?.load && mem.reg === reg) return true;
+  if (mem && !mem.load) return false;
+  if (W.isCallImm(w) || W.isIndirectCall(w)) return reg <= 18;
+  if (W.compareImmediate(w) != null) return false;
+  return rd(w) === reg;
+}
 
-/**
- * 関数 1 つぶんの命令語から、データファイルの表の形を読み取る。
- *
- * @param {Uint32Array} words  その関数の命令語（先頭から順に）
- * @param {BigInt} base        先頭の仮想アドレス
- * @returns {object|null} 読み取れた形。読み取れなければ null（作り話はしない）
- */
 export function decodeSchema(words, base) {
   const konst = new Int32Array(32).fill(0);
-  const known = new Uint8Array(32);            // その定数が信用できるか
-  const bumped = [];                           // {reg,imm,row,loop}（レコード送り）
-  const loops = [];                            // 添字つき書き込みの候補
-  const fixed = [];                            // 展開されている固定ずらしの書き込み
-  const scales = [];                           // 読み込みのあとに掛かる倍率
-  const cmps = [];                             // {reg,value,row,loop}
+  const known = new Uint8Array(32);
+  const bumped = [], loops = [], fixed = [], scales = [], cmps = [];
   const flow = controlContext(words, base);
   const baseGeneration = new Uint32Array(32);
-
   let lastCall = -1;
+
   for (let i = 0; i < words.length; i++) {
     const w = words[i];
     const written = writtenGpr(w);
     if (written != null && written >= 0 && written < 31) baseGeneration[written]++;
-
-    /* 定数の組み立て */
     const mw = moveWide(w);
     if (mw) {
       if (mw.kind === 'movz') { konst[mw.d] = mw.value; known[mw.d] = 1; }
       else if (known[mw.d]) konst[mw.d] |= mw.imm16 * 2 ** mw.shift;
+      if (mw.d === 0) lastCall = -1;
       continue;
     }
 
-    /* cmp Xn, #imm — 列数・レコード数はここに出る */
     const ci = W.compareImmediate(w);
-    if (ci != null) {
-      cmps.push({ reg: rn(w), value: Number(ci), row: i, loop: flow.loopOf[i] });
-      continue;
-    }
+    if (ci != null) { cmps.push({ reg: rn(w), value: Number(ci), row: i, loop: flow.loopOf[i] }); continue; }
 
     if (W.isCallImm(w) || W.isIndirectCall(w)) {
       lastCall = i;
-      // 呼び出しで壊れるレジスタの定数とlifetimeは捨てる（x0-x18）。
       for (let r = 0; r <= 18; r++) { known[r] = 0; baseGeneration[r]++; }
       continue;
     }
 
-    /* add Xd, Xn, #imm — 同じレジスタへの加算はレコード送り */
     const as = addSubImm(w);
     if (as) {
-      if (!as.sub && as.d === as.n && as.imm > 0) {
-        bumped.push({ reg: as.d, imm: as.imm, row: i, loop: flow.loopOf[i] });
-      }
+      if (!as.sub && as.d === as.n && as.imm > 0) bumped.push({ reg: as.d, imm: as.imm, row: i, loop: flow.loopOf[i] });
       konst[as.d] = 0; known[as.d] = 0;
+      if (as.d === 0) lastCall = -1;
       continue;
     }
 
-    /* 添字つきの書き込み — 表の 1 列ぶん */
     const ix = indexedAccess(w);
     if (ix) {
       if (ix.load) {
-        // 読み込み → 掛け算 → 同じ場所へ書き戻す（読み込んだあとの倍率）
-        scales.push({
-          row: i, base: ix.base, index: ix.index, stride: ix.stride,
-          loadedReg: ix.reg, block: flow.blockOf[i], loop: flow.loopOf[i], mul: null,
-        });
+        scales.push({ row: i, base: ix.base, index: ix.index, stride: ix.stride, loadedReg: ix.reg, block: flow.blockOf[i], loop: flow.loopOf[i], mul: null });
+        if (ix.reg === 0) lastCall = -1;
       } else {
         loops.push({
-          row: i, addr: base + BigInt(i * 4),
-          base: ix.base, index: ix.index, stride: ix.stride, size: ix.size,
-          block: flow.blockOf[i], loop: flow.loopOf[i],
-          // 直前が呼び出しなら、その戻り値をそのまま置いている＝1 列ぶんの値
+          row: i, addr: base + BigInt(i * 4), base: ix.base, index: ix.index, stride: ix.stride,
+          size: ix.size, block: flow.blockOf[i], loop: flow.loopOf[i],
           fromCall: lastCall >= 0 && i - lastCall <= 3 && ix.reg === 0,
         });
       }
       continue;
     }
 
-    /* 固定ずらしの書き込みが、呼び出しの直後に並んでいる形（展開されている表） */
     const pa = plainAccess(w);
-    if (pa && !pa.load && pa.reg === 0 && lastCall >= 0 && i - lastCall <= 3 && pa.base !== 31) {
-      fixed.push({
-        row: i, addr: base + BigInt(i * 4), base: pa.base, disp: pa.disp, size: pa.size,
-        block: flow.blockOf[i], loop: flow.loopOf[i], baseGeneration: baseGeneration[pa.base],
-        fromCall: true, callRow: lastCall, callAddr: base + BigInt(lastCall * 4),
-      });
+    if (pa) {
+      if (!pa.load && pa.reg === 0 && lastCall >= 0 && i - lastCall <= 3 && pa.base !== 31) {
+        fixed.push({
+          row: i, addr: base + BigInt(i * 4), base: pa.base, disp: pa.disp, size: pa.size,
+          block: flow.blockOf[i], loop: flow.loopOf[i], baseGeneration: baseGeneration[pa.base],
+          fromCall: true, callRow: lastCall, callAddr: base + BigInt(lastCall * 4),
+        });
+      }
+      if (pa.load && pa.reg === 0) lastCall = -1;
       continue;
     }
 
-    /* mul Wd, Wn, Wm — 読み込んだ列に掛かる倍率 */
     if (W.isMultiply(w) && scales.length) {
       const last = scales[scales.length - 1];
-      if (last.mul == null && i - last.row <= 6 && last.block === flow.blockOf[i] &&
-          (rn(w) === last.loadedReg || rm(w) === last.loadedReg)) {
+      if (last.mul == null && i - last.row <= 6 && last.block === flow.blockOf[i] && (rn(w) === last.loadedReg || rm(w) === last.loadedReg)) {
         const other = rn(w) === last.loadedReg ? rm(w) : rn(w);
         const k = known[other] ? konst[other] : null;
         if (k) last.mul = k;
       }
+      if (rd(w) === 0) lastCall = -1;
       continue;
     }
+
+    // A nearby store of x0 is a call return only if x0 still contains that
+    // exact return. Any intervening write invalidates provenance immediately.
+    if (lastCall >= 0 && writesRegister(w, 0)) lastCall = -1;
   }
 
   return buildSchema({ loops, fixed, scales, cmps, bumped, base, words });
@@ -222,7 +172,6 @@ function splitLocalRuns(list, maxGap = 16) {
   return runs;
 }
 
-/** Build only provenance-coherent unrolled tables. Exported for deterministic regression tests. */
 export function unrolledTablesFromFixed(fixed) {
   const groups = new Map();
   for (const f of fixed || []) {
@@ -232,7 +181,6 @@ export function unrolledTablesFromFixed(fixed) {
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(f);
   }
-
   const tables = [];
   for (const list of groups.values()) {
     for (const run of splitLocalRuns(list)) {
@@ -244,23 +192,12 @@ export function unrolledTablesFromFixed(fixed) {
       if (new Set(offsets).size !== offsets.length) continue;
       const region = fixedRegion(sorted[0]);
       tables.push({
-        kind: 'unrolled',
-        columns: offsets.length,
-        columnStride: stride,
-        columnSize: sorted[0].size,
-        recordStride: null,
-        records: null,
-        consistent: true,
-        fromCall: true,
-        storeAddr: sorted[0].addr,
-        offsets,
-        scaled: [],
+        kind: 'unrolled', columns: offsets.length, columnStride: stride, columnSize: sorted[0].size,
+        recordStride: null, records: null, consistent: true, fromCall: true,
+        storeAddr: sorted[0].addr, offsets, scaled: [],
         provenance: {
-          base: sorted[0].base,
-          baseGeneration: sorted[0].baseGeneration,
-          region,
-          callRows: sorted.map((f) => f.callRow),
-          callAddrs: sorted.map((f) => f.callAddr ?? null),
+          base: sorted[0].base, baseGeneration: sorted[0].baseGeneration, region,
+          callRows: sorted.map((f) => f.callRow), callAddrs: sorted.map((f) => f.callAddr ?? null),
           storeRows: sorted.map((f) => f.row),
         },
         offsetOf(i) { return i >= 0 && i < offsets.length ? offsets[i] : null; },
@@ -270,95 +207,41 @@ export function unrolledTablesFromFixed(fixed) {
   return tables;
 }
 
-/**
- * 拾った断片から、表としてつじつまの合うものを組み立てる。
- *
- * 1 つの関数が何本ものファイルを読むことがある（unitlevel / unitbuy / unitexp が
- * 同じ関数の中にある）。表も 1 つとは限らないので、見つかったぶんだけ全部返す。
- * つじつまが合わないものも隠さないが、合ったものを先に置く。
- */
 function buildSchema({ loops, fixed, scales, cmps, bumped, base }) {
   const tables = [];
-
-  /* いちばん確かなのは「呼び出しの戻り値を、添字つきで並べて置いている」形 */
   const seen = new Set();
   for (const l of loops) {
     const key = l.base + ':' + l.index + ':' + l.stride;
     if (seen.has(key)) continue;
     seen.add(key);
-
-    /*
-     * 列数は、添字レジスタの比較から取る。ただし
-     * **その添字が 1 ずつ増えていること** を確かめてから使う。
-     * ここを見ないと、たまたま同じレジスタを使っていた別の比較を列数にしてしまう。
-     */
     const step = nearestFact(bumped, l.index, l, (x) => x.imm === 1);
     const bound = nearestFact(cmps, l.index, l, (x) => x.value > 1 && x.value <= MAX_COLUMNS);
-    const columns = (step && step.imm === 1 && bound && bound.value > 1 &&
-      bound.value <= MAX_COLUMNS) ? bound.value : null;
-
+    const columns = (step && step.imm === 1 && bound && bound.value > 1 && bound.value <= MAX_COLUMNS) ? bound.value : null;
     const rec = nearestFact(bumped, l.base, l, (x) => x.imm > l.stride && x.imm <= MAX_RECORD);
     const recordStride = rec && rec.imm > l.stride && rec.imm <= MAX_RECORD ? rec.imm : null;
-
-    /*
-     * つじつま合わせ。1 レコードの大きさが、列数 × 1 列の大きさと合っているか。
-     * ここが合えば、読み違いはまず無い。合わなければ、合わないと言う。
-     */
-    const consistent = columns != null && recordStride != null
-      ? recordStride === columns * l.stride
-      : null;
-
-    tables.push(makeIndexedTable({
-      columns, stride: l.stride, size: l.size, recordStride, consistent,
-      storeAddr: l.addr,
-      records: recordCountOf(cmps, bumped, l),
-      scaled: scaledColumns(scales, l),
-      fromCall: l.fromCall,
-    }));
+    const consistent = columns != null && recordStride != null ? recordStride === columns * l.stride : null;
+    tables.push(makeIndexedTable({ columns, stride: l.stride, size: l.size, recordStride, consistent, storeAddr: l.addr, records: recordCountOf(cmps, bumped, l), scaled: scaledColumns(scales, l), fromCall: l.fromCall }));
   }
 
-  /* 展開形はCFG region + base lifetime + call-return provenanceを共有するrunだけ。 */
   tables.push(...unrolledTablesFromFixed(fixed));
 
   if (!tables.length) return null;
-  // つじつまの合ったもの、列の多いものから
-  tables.sort((a, b) => (b.consistent === true) - (a.consistent === true) ||
-    (b.fromCall === true) - (a.fromCall === true) ||
-    (b.columns || 0) - (a.columns || 0));
+  tables.sort((a, b) => (b.consistent === true) - (a.consistent === true) || (b.fromCall === true) - (a.fromCall === true) || (b.columns || 0) - (a.columns || 0));
   void base;
   return { tables, best: tables[0] };
 }
 
 function makeIndexedTable(t) {
   return {
-    kind: 'indexed',
-    columns: t.columns,
-    columnStride: t.stride,
-    columnSize: t.size,
-    recordStride: t.recordStride,
-    records: t.records,
-    consistent: t.consistent,
-    storeAddr: t.storeAddr,
-    scaled: t.scaled,
-    fromCall: t.fromCall,
-    /** i 列目のずらし幅。表の外の列には答えない。 */
-    offsetOf(i) {
-      if (!(i >= 0) || (t.columns != null && i >= t.columns)) return null;
-      return i * t.stride;
-    },
+    kind: 'indexed', columns: t.columns, columnStride: t.stride, columnSize: t.size,
+    recordStride: t.recordStride, records: t.records, consistent: t.consistent,
+    storeAddr: t.storeAddr, scaled: t.scaled, fromCall: t.fromCall,
+    offsetOf(i) { if (!(i >= 0) || (t.columns != null && i >= t.columns)) return null; return i * t.stride; },
   };
 }
 
-/**
- * レコード数。表の基点を送っているレジスタとは別に、1 ずつ増えて
- * 小さな数と比べられているレジスタがあれば、それがレコードの回し。
- *
- * 列の添字そのものを数えないよう、必ず除いておく
- * （そうしないと「117 レコード」のような答えになる）。
- */
 function recordCountOf(cmps, bumped, table) {
-  const candidates = cmps.filter((c) => c.reg !== table.base && c.reg !== table.index &&
-    c.value > 1 && c.value <= 4096 && sameLoopOrNearby(c, table));
+  const candidates = cmps.filter((c) => c.reg !== table.base && c.reg !== table.index && c.value > 1 && c.value <= 4096 && sameLoopOrNearby(c, table));
   candidates.sort((a, b) => Math.abs(a.row - table.row) - Math.abs(b.row - table.row));
   for (const c of candidates) {
     const step = nearestFact(bumped, c.reg, c, (x) => x.imm === 1);
@@ -367,18 +250,15 @@ function recordCountOf(cmps, bumped, table) {
   return null;
 }
 
-/** 読み込んだあとに倍率が掛かる列（「％の値を 100 倍して持つ」など）。 */
 function scaledColumns(scales, table) {
   const out = [];
   for (const s of scales) {
-    if (s.mul == null || s.base !== table.base || s.index !== table.index) continue;
-    if (!sameLoopOrNearby(s, table)) continue;
+    if (s.mul == null || s.base !== table.base || s.index !== table.index || !sameLoopOrNearby(s, table)) continue;
     out.push({ factor: s.mul, columnStride: s.stride || table.stride, loadedReg: s.loadedReg });
   }
   return out;
 }
 
-/** Pick a register fact from the same natural loop; loop-less tiny fixtures use locality. */
 function nearestFact(facts, reg, anchor, accept) {
   const list = facts.filter((x) => x.reg === reg && (!accept || accept(x)) && sameLoopOrNearby(x, anchor));
   list.sort((a, b) => Math.abs(a.row - anchor.row) - Math.abs(b.row - anchor.row));
@@ -390,10 +270,8 @@ function sameLoopOrNearby(a, b) {
   return Math.abs(a.row - b.row) <= 64;
 }
 
-/** Basic blocks and natural-loop ranges, derived from backward branch edges. */
 function controlContext(words, base) {
-  const leaders = new Set([0]);
-  const ranges = [];
+  const leaders = new Set([0]), ranges = [];
   for (let i = 0; i < words.length; i++) {
     const w = words[i], pc = base + BigInt(i * 4);
     const target = (W.isCallImm(w) ? null : W.branchImm26(w, pc)) ?? W.condBranchTarget(w, pc);
@@ -412,44 +290,19 @@ function controlContext(words, base) {
   }
   const loopOf = new Array(words.length).fill(null);
   ranges.sort((a, b) => (a.end - a.start) - (b.end - b.start));
-  for (let id = 0; id < ranges.length; id++) {
-    const r = ranges[id];
-    for (let i = r.start; i <= r.end; i++) if (loopOf[i] == null) loopOf[i] = id;
-  }
+  for (let id = 0; id < ranges.length; id++) for (let i = ranges[id].start; i <= ranges[id].end; i++) if (loopOf[i] == null) loopOf[i] = id;
   return { blockOf, loopOf };
 }
 
-/* ── バイナリ全体から、データファイルの表を集める ──────────── */
+export function looksLikeDataFile(text) { return /\.(csv|tsv|json|plist|dat|txt)$/i.test(String(text || '')); }
 
-/** データファイルらしい名前か。拡張子だけで見る（中身は読まない）。 */
-export function looksLikeDataFile(text) {
-  return /\.(csv|tsv|json|plist|dat|txt)$/i.test(String(text || ''));
-}
-
-/**
- * バイナリの中のデータファイル名から、その読み込み処理と表の形を集める。
- *
- * @param {object} opts
- *   strings  [{addr, text}]
- *   program  ProgramIndex
- *   read     async (addr:BigInt, len:number) => Uint8Array|null
- *   limit    いくつまで調べるか
- * @returns {Promise<Array<object>>} 表の形（読み取れたものだけ）
- */
 export async function recoverSchemas(opts) {
   const o = opts || {};
   const { strings, program, read } = o;
   if (!strings || !program || !read) return [];
-  /*
-   * 読み込み処理は 1 つ 1 つが小さいので、上限は広めでよい。
-   * ここを絞ると「1 本のファイルしか読まないが、いちばん大事な表」
-   * （unit%03d.csv がまさにそれ）を取り逃がす。
-   */
   const limit = o.limit || 300;
   const cancelled = o.isCancelled || (() => false);
   const progress = o.onProgress || (() => {});
-
-  /* 1. データファイル名 → それを参照している関数 */
   const byFunction = new Map();
   for (const s of strings) {
     if (!looksLikeDataFile(s.text)) continue;
@@ -463,19 +316,10 @@ export async function recoverSchemas(opts) {
     }
   }
   if (!byFunction.size) return [];
-
-  /*
-   * 読む順番。ファイル名を多く抱えている関数ほど、まとめ読みの本体である公算が高い。
-   * ただし大きすぎる関数は読まない（表の復元より先に時間が尽きる）。
-   */
-  const targets = Array.from(byFunction.values())
-    .map((e) => {
-      const r = program.functionRange(e.addr);
-      return Object.assign({}, e, { range: r, size: r ? Number(r.end - r.start) : 0 });
-    })
-    .filter((e) => e.range && e.size > 16 && e.size <= 64 * 1024)
-    .sort((a, b) => b.files.length - a.files.length)
-    .slice(0, limit);
+  const targets = Array.from(byFunction.values()).map((e) => {
+    const r = program.functionRange(e.addr);
+    return Object.assign({}, e, { range: r, size: r ? Number(r.end - r.start) : 0 });
+  }).filter((e) => e.range && e.size > 16 && e.size <= 64 * 1024).sort((a, b) => b.files.length - a.files.length).slice(0, limit);
 
   const out = [];
   for (let i = 0; i < targets.length; i++) {
@@ -485,64 +329,28 @@ export async function recoverSchemas(opts) {
     let bytes = null;
     try { bytes = await read(t.range.start, t.size); } catch { bytes = null; }
     if (!bytes || bytes.length < 16) continue;
-    const n = bytes.length >> 2;
-    const words = new Uint32Array(n);
-    const dv = new DataView(bytes.buffer, bytes.byteOffset, n * 4);
+    const n = bytes.length >> 2, words = new Uint32Array(n), dv = new DataView(bytes.buffer, bytes.byteOffset, n * 4);
     for (let k = 0; k < n; k++) words[k] = dv.getUint32(k * 4, true);
-
     let schema = null;
     try { schema = decodeSchema(words, t.range.start); } catch { schema = null; }
     if (!schema) continue;
-    out.push({
-      loader: t.addr,
-      files: t.files,
-      loaderSize: t.size,
-      tables: schema.tables,
-      // いちばん確かな 1 本。画面はまずこれを見せればよい。
-      best: schema.best,
-    });
+    out.push({ loader: t.addr, files: t.files, loaderSize: t.size, tables: schema.tables, best: schema.best });
   }
   progress({ phase: 'schema', done: targets.length, all: targets.length });
-
-  /* つじつまの合ったものから見せる。合っていないものも残すが、後ろに置く。 */
-  out.sort((a, b) => (b.best.consistent === true) - (a.best.consistent === true) ||
-    (b.best.columns || 0) - (a.best.columns || 0));
+  out.sort((a, b) => (b.best.consistent === true) - (a.best.consistent === true) || (b.best.columns || 0) - (a.best.columns || 0));
   return out;
 }
 
-/** そのファイル名を読み込んでいる表を引く。 */
 export function schemaForFile(schemas, filename) {
-  for (const s of schemas || []) {
-    if ((s.files || []).includes(filename)) return s;
-  }
+  for (const s of schemas || []) if ((s.files || []).includes(filename)) return s;
   return null;
 }
-
-/**
- * 「その値は何列目か」から「どのずらし幅か」へ。逆も引ける。
- *
- * 利用者が手元の CSV を開いて「4 列目が攻撃力」と分かったとき、
- * ここが答えを出す入口になる。
- */
-/** 表そのものでも、recoverSchemas が返した 1 件でも受け取れるようにする。 */
-function tableOf(x) {
-  if (!x) return null;
-  if (typeof x.offsetOf === 'function') return x;
-  return x.best || null;
-}
-
-export function columnToOffset(schema, column) {
-  const t = tableOf(schema);
-  return t ? t.offsetOf(column) : null;
-}
-
+function tableOf(x) { if (!x) return null; if (typeof x.offsetOf === 'function') return x; return x.best || null; }
+export function columnToOffset(schema, column) { const t = tableOf(schema); return t ? t.offsetOf(column) : null; }
 export function offsetToColumn(schema, offset) {
   const t = tableOf(schema);
   if (!t) return null;
-  if (t.kind === 'unrolled') {
-    const i = (t.offsets || []).indexOf(offset);
-    return i < 0 ? null : i;
-  }
+  if (t.kind === 'unrolled') { const i = (t.offsets || []).indexOf(offset); return i < 0 ? null : i; }
   const stride = t.columnStride;
   if (!stride || offset % stride !== 0) return null;
   const i = offset / stride;

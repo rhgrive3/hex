@@ -203,13 +203,13 @@ async function runLocal(io, address, spec = {}, maxSteps = 100) {
 
 // Evidence independence and binary scoping.
 {
-  const common={backend:'fake',binaryHash:'abc',sessionId:'s',experimentId:'e',caseId:'c',provenanceGroup:'runtime:s:e:c',verdict:'supported',confidence:.8};
+  const common={backend:'fake',binaryHash:'abc',function:0x1000n,sessionId:'s',experimentId:'e',caseId:'c',provenanceGroup:'runtime:s:e:c',verdict:'supported',confidence:.8};
   const ev=[createRuntimeEvidenceRecord({...common,id:'e1',kind:'register'}),createRuntimeEvidenceRecord({...common,id:'e2',kind:'memory'}),createRuntimeEvidenceRecord({...common,id:'e3',kind:'branch'})];
-  const fused=fuseStaticDynamic({confidence:.5,binaryHash:'abc'},ev);
+  const fused=fuseStaticDynamic({confidence:.5,binaryHash:'abc',functionAddress:0x1000n},ev);
   assert.equal(fused.runtimeGroups,1); assert.equal(fused.support,1);
-  const mismatch=fuseStaticDynamic({confidence:.5,binaryHash:'new'},ev);
+  const mismatch=fuseStaticDynamic({confidence:.5,binaryHash:'new',functionAddress:0x1000n},ev);
   assert.equal(mismatch.support,0); assert.equal(mismatch.ignoredEvidence,3); assert.equal(mismatch.confidence,.5);
-  const contradiction=fuseStaticDynamic({confidence:.9,binaryHash:'abc'},[createRuntimeEvidenceRecord({...common,id:'x',provenanceGroup:'other',verdict:'contradicted'})]);
+  const contradiction=fuseStaticDynamic({confidence:.9,binaryHash:'abc',functionAddress:0x1000n},[createRuntimeEvidenceRecord({...common,id:'x',provenanceGroup:'other',verdict:'contradicted'})]);
   assert.equal(contradiction.status,'contradicted'); assert.ok(contradiction.confidence<.9);
 }
 

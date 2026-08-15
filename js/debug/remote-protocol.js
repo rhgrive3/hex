@@ -160,6 +160,9 @@ export class RemoteProtocolClient {
     this.nextId = 1;
     this.pending = new Map();
     this.listeners = new Set();
+    this.maxEventsPerSecond = boundedInteger(options.maxEventsPerSecond, 256, 1, 10000, 'maxEventsPerSecond');
+    this.maxEventBytesPerSecond = boundedInteger(options.maxEventBytesPerSecond, 4 * 1024 * 1024, 1024, 64 * 1024 * 1024, 'maxEventBytesPerSecond');
+    this.eventWindowStart = Date.now(); this.eventWindowCount = 0; this.eventWindowBytes = 0; this.droppedEvents = 0;
     this.epoch = 0;
     this.closed = false;
     this.unsubscribe = typeof transport.onMessage === 'function' ? transport.onMessage((packet) => this.receive(packet)) : null;
@@ -254,6 +257,18 @@ export class RemoteProtocolClient {
       return true;
     }
     if (packet.type === 'event') {
+      const now=Date.now();
+      if (now-this.eventWindowStart >= 1000) { this.eventWindowStart=now; this.eventWindowCount=0; this.eventWindowBytes=0; this.droppedEvents=0; }
+      const bytes=jsonByteSize(packet);
+      if (this.eventWindowCount + 1 > this.maxEventsPerSecond || this.eventWindowBytes + bytes > this.maxEventBytesPerSecond) {
+        this.droppedEvents++;
+        if (this.droppedEvents === 1) {
+          const notice={version:DEBUG_PROTOCOL_VERSION,type:'event',epoch:this.epoch,event:'stream-truncated',data:{reason:'event-backpressure'}};
+          for (const fn of this.listeners) { try { fn(notice); } catch {} }
+        }
+        return false;
+      }
+      this.eventWindowCount++; this.eventWindowBytes+=bytes;
       for (const fn of this.listeners) { try { fn(packet); } catch { /* listener isolation */ } }
       return true;
     }

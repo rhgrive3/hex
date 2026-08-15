@@ -78,6 +78,9 @@ export function fuseStaticDynamic(staticCandidate, runtimeEvidence = []) {
   const candidateHash = staticCandidate && staticCandidate.binaryHash || null;
   const candidateFunction = staticCandidate && staticCandidate.functionAddress != null ? staticCandidate.functionAddress : null;
   const evidence = runtimeEvidence.filter((item) => item && (item.source === 'runtime' || item.provenance && item.provenance.group === GROUP.RUNTIME));
+  if (!candidateHash || candidateFunction == null) {
+    return { candidate:staticCandidate, status:'inconclusive', reason:'identity-missing', confidence:safeConfidence(staticCandidate && staticCandidate.confidence,0.5), runtimeGroups:0, support:0, contradictions:0, ignoredEvidence:evidence.length, evidence:[] };
+  }
   const compatible = [];
   let ignoredEvidence = 0;
   for (const item of evidence) {
