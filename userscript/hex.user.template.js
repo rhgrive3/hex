@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hex for ChatGPT
 // @namespace    https://github.com/rhgrive3/hex
-// @version      1.0.1786802391
+// @version      1.0.1786803135
 // @description  Run the Hex binary analysis workbench on ChatGPT Web.
 // @match        https://chatgpt.com/*
 // @run-at       document-idle
@@ -8602,6 +8602,14 @@
   });
 
   // js/analyze.js
+  function supportsArm64SemanticAnalysis(architecture) {
+    return ARM64_SEMANTIC_ARCHES.has(String(architecture || "").toLowerCase());
+  }
+  function rowBudget(opts = {}) {
+    const raw = Number(opts?.maxRows);
+    if (!Number.isFinite(raw)) return MAX_INSTRUCTIONS;
+    return Math.max(1, Math.min(MAX_INSTRUCTIONS, Math.floor(raw)));
+  }
   function destIndex(mn) {
     const b = mn.toLowerCase();
     if (/^(str|stp|stur|strb|strh|sturb|sturh|stnp|st1|st2|st3|st4|stlr)/.test(b)) return -1;
@@ -8617,9 +8625,11 @@
       if (op2.index && op2.index.cls === "gp") into.add(op2.index.num);
     }
   }
-  async function analyzeFunction(backend, region, startRow, endRow, symbols, onProgress) {
-    const rows = Math.min(endRow - startRow + 1, MAX_INSTRUCTIONS);
-    const truncated = endRow - startRow + 1 > MAX_INSTRUCTIONS;
+  async function analyzeFunction(backend, region, startRow, endRow, symbols, onProgress, opts = {}) {
+    const requestedRows = Math.max(0, endRow - startRow + 1);
+    const rows = Math.min(requestedRows, rowBudget(opts));
+    if (rows <= 0) throw new Error("analysis-range-empty");
+    const truncated = requestedRows > rows;
     const end = startRow + rows - 1;
     const res = {
       startRow,
@@ -8670,7 +8680,7 @@
         if (!mn) continue;
         const addr = region.vmAddr + BigInt(row) * 4n;
         const b = mn.toLowerCase();
-        if (rawInsns.length < MAX_MODEL_ROWS) rawInsns.push({ row, address: addr, mn, ops: opsStr });
+        if (rawInsns.length <= MAX_MODEL_ROWS) rawInsns.push({ row, address: addr, mn, ops: opsStr });
         if (b.charCodeAt(0) === 46) {
           res.dataRows++;
           continue;
@@ -8777,19 +8787,24 @@
         return Number(rel2 / 4n);
       }
     });
+    if (truncated && res.model) res.model.truncated = true;
+    res.truncated = truncated || !!res.model?.truncated;
+    res.requestedRows = requestedRows;
+    res.analyzedRows = rows;
     return res;
   }
-  function cacheKey(region, startRow, endRow, symbols) {
+  function cacheKey(region, startRow, endRow, symbols, maxRows = MAX_INSTRUCTIONS) {
     const symbolGen = symbols && symbols.gen != null ? symbols.gen : 0;
     const regionRevision = region?.revision ?? region?.gen ?? region?.generation ?? 0;
-    return [symbolGen, region?.id, String(region?.vmAddr ?? ""), String(region?.size ?? ""), regionRevision, startRow, endRow].join(":");
+    return [symbolGen, region?.id, String(region?.vmAddr ?? ""), String(region?.size ?? ""), regionRevision, startRow, endRow, "rows=" + maxRows].join(":");
   }
   function clearAnalysisCache() {
     cache.clear();
   }
-  async function analyzeFunctionCached(backend, region, startRow, endRow, symbols, onProgress, opts) {
-    const key2 = cacheKey(region, startRow, endRow, symbols);
-    const wantTexts = !opts || opts.texts !== false;
+  async function analyzeFunctionCached(backend, region, startRow, endRow, symbols, onProgress, opts = {}) {
+    const budget = rowBudget(opts);
+    const key2 = cacheKey(region, startRow, endRow, symbols, budget);
+    const wantTexts = opts.texts !== false;
     const hit = cache.get(key2);
     if (hit) {
       if (onProgress) onProgress(1);
@@ -8802,7 +8817,7 @@
       }
       return hit;
     }
-    const res = await analyzeFunction(backend, region, startRow, endRow, symbols, onProgress);
+    const res = await analyzeFunction(backend, region, startRow, endRow, symbols, onProgress, { ...opts, maxRows: budget });
     res.textsResolved = false;
     if (wantTexts) {
       try {
@@ -8916,7 +8931,7 @@
     if (res.truncated) lines.push("※ 大きすぎるため、先頭から " + MAX_INSTRUCTIONS.toLocaleString() + " 命令ぶんだけを見ています。");
     return lines;
   }
-  var MAX_INSTRUCTIONS, MAX_MODEL_ROWS, MODEL_TEXTS, CACHE_MAX, cache, HINTS;
+  var MAX_INSTRUCTIONS, MAX_MODEL_ROWS, MODEL_TEXTS, ARM64_SEMANTIC_ARCHES, CACHE_MAX, cache, HINTS;
   var init_analyze = __esm({
     "js/analyze.js"() {
       init_backend();
@@ -8927,6 +8942,7 @@
       MAX_INSTRUCTIONS = 4e4;
       MAX_MODEL_ROWS = 6e3;
       MODEL_TEXTS = 96;
+      ARM64_SEMANTIC_ARCHES = /* @__PURE__ */ new Set(["arm64", "arm64e", "arm64_32"]);
       CACHE_MAX = 24;
       cache = new LRU(CACHE_MAX);
       HINTS = [
@@ -50489,7 +50505,8 @@ ${rendered}` : rendered,
          */
         async analyzeFunctionAt(addr) {
           const sym = this.symbols, range2 = this.validatedFunctionRange(addr);
-          if (!range2.ok || !this.store.get("canDisassemble") || !sym.functionCount) return null;
+          const architecture = this.store.get("architecture") || this.store.get("capability")?.architecture || null;
+          if (!supportsArm64SemanticAnalysis(architecture) || !range2.ok || !this.store.get("canDisassemble") || !sym.functionCount) return null;
           const region = range2.region, alignment = Math.max(1, Number(this.store.get("instructionAlignment") || this.store.get("capability")?.instructionAlignment || 4));
           const width2 = BigInt(alignment);
           if ((range2.start - region.vmAddr) % width2 !== 0n) return null;
@@ -57015,9 +57032,11 @@ ${escapeTagText(clip(intent, 120))}
     const matches = (app2.store.get("regions") || []).filter((region) => containsAddress(region, addr));
     return matches.find((region) => region.exec === true) || matches.find((region) => region.exec !== false) || matches[0] || null;
   }
-  async function analyzeModelAt(app2, address) {
+  async function analyzeModelAt(app2, address, end = null, options = {}) {
     const addr = toBigInt(address);
     if (addr == null) return null;
+    const architecture = app2.store.get("architecture") || app2.store.get("capability")?.architecture || null;
+    if (!supportsArm64SemanticAnalysis(architecture)) return null;
     const region = regionForAddress(app2, addr);
     if (!region || !app2.store.get("canDisassemble")) return null;
     const sym = app2.symbols;
@@ -57025,14 +57044,29 @@ ${escapeTagText(clip(intent, 120))}
     const start = fn ? fn.start : addr;
     if (!containsAddress(region, start)) return null;
     const step = BigInt(instructionBytes(app2));
-    if ((start - region.vmAddr) % step !== 0n) return null;
+    if (step !== 4n || (start - region.vmAddr) % step !== 0n) return null;
     const startRow = Number((start - region.vmAddr) / step);
     const totalRows = Number(region.size / step);
-    const endRow = fn && fn.end != null ? Math.min(totalRows - 1, Number((fn.end - region.vmAddr) / step) - 1) : Math.min(totalRows - 1, startRow + 2048);
+    const regionEnd = region.vmAddr + region.size;
+    const provenEnd = fn?.end == null ? null : toBigInt(fn.end);
+    const requestedEnd = toBigInt(end);
+    let boundedEnd = provenEnd;
+    if (requestedEnd != null) boundedEnd = boundedEnd == null ? requestedEnd : requestedEnd < boundedEnd ? requestedEnd : boundedEnd;
+    if (boundedEnd == null) boundedEnd = start + 2048n * step;
+    if (boundedEnd > regionEnd) boundedEnd = regionEnd;
+    if (boundedEnd <= start) return null;
+    const endRow = Math.min(totalRows - 1, Number((boundedEnd - region.vmAddr + step - 1n) / step) - 1);
     if (endRow < startRow) return null;
+    const rawMax = Number(options?.maxInstructions);
+    if (Number.isFinite(rawMax) && Math.floor(rawMax) <= 0) return null;
+    const maxRows = Number.isFinite(rawMax) ? Math.max(1, Math.floor(rawMax)) : void 0;
+    const coversProvenEnd = provenEnd != null && provenEnd <= regionEnd && boundedEnd >= provenEnd;
     try {
-      const res = await analyzeFunctionCached(app2.backend, region, startRow, endRow, sym);
-      return res && res.model ? res.model : null;
+      const res = await analyzeFunctionCached(app2.backend, region, startRow, endRow, sym, null, { maxRows });
+      const model = res?.model;
+      if (!model) return null;
+      const incomplete = !coversProvenEnd || res.truncated === true || model.truncated === true;
+      return incomplete && model.truncated !== true ? { ...model, truncated: true } : model;
     } catch {
       return null;
     }
@@ -57108,7 +57142,7 @@ ${escapeTagText(clip(intent, 120))}
       },
       getBinaryDiff: () => app2.getBinaryDiff?.() || null,
       functionName: nameOf,
-      analyze: (address) => analyzeModelAt(app2, address),
+      analyze: (address, end, options) => analyzeModelAt(app2, address, end, options),
       async searchStrings(query, options = {}) {
         const limit2 = Math.max(1, Math.min(200, Number(options.limit) || 50));
         const rows = await app2.ensureStrings();
