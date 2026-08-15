@@ -82,42 +82,74 @@ export function parseExports(r, dir, image) {
   }
 }
 
+function executableRvaRange(image, beginRva, size = 1) {
+  if (!Number.isInteger(beginRva) || beginRva <= 0 || !Number.isInteger(size) || size <= 0) return false;
+  const begin = image.imageBase + BigInt(beginRva);
+  const end = begin + BigInt(size);
+  const sec = image.sectionAt(begin);
+  return !!(sec?.perms?.execute && end <= sec.address + sec.size);
+}
+
 export function parseExceptionFunctions(r, dir, image, machine) {
   if (!dir || !dir.rva || !dir.size) return;
   const off = rvaToOffset(image, dir.rva);
   if (off == null) return;
   const end = Math.min(r.length, off + dir.size);
   if (machine === 0x8664) {
+    let previousBegin = null;
+    let previousEnd = null;
     for (let p = off; p + 12 <= end; p += 12) {
       const begin = r.u32(p), finish = r.u32(p + 4), unwind = r.u32(p + 8);
-      if (!begin || finish <= begin) continue;
+      const ordered = previousBegin == null || (begin > previousBegin && begin >= previousEnd);
+      if (!begin || finish <= begin || !ordered || !executableRvaRange(image, begin, finish - begin)) {
+        if (begin || finish) {
+          const why = !ordered ? 'overlapping/out-of-order' : 'invalid/unmapped';
+          image.warnings.push(`Ignored ${why} x64 exception range RVA 0x${begin.toString(16)}..0x${finish.toString(16)}`);
+        }
+        continue;
+      }
       image.functions.push(functionSeed(image.imageBase + BigInt(begin), { size: BigInt(finish - begin), source: 'exception', confidence: 0.999 }));
       image.metadata.exceptionDirectory = image.metadata.exceptionDirectory || { count: 0, kind: 'x64-pdata' };
       image.metadata.exceptionDirectory.count++;
+      previousBegin = begin;
+      previousEnd = finish;
       void unwind;
     }
   } else if (machine === 0xaa64 || machine === 0xa641) {
+    let previousBegin = null;
+    let previousEnd = null;
     for (let p = off; p + 8 <= end; p += 8) {
       const begin = r.u32(p), unwindData = r.u32(p + 4);
-      if (!begin) continue;
+      if (!begin || (previousBegin != null && begin <= previousBegin) || !executableRvaRange(image, begin, 1)) {
+        if (begin) image.warnings.push(`Ignored ARM64 exception entry outside executable order/range at RVA 0x${begin.toString(16)}`);
+        continue;
+      }
       let size = null;
       if ((unwindData & 3) !== 0) {
         const functionLength = (unwindData >>> 2) & 0x7ff;
-        if (functionLength) size = BigInt(functionLength * 4);
+        if (functionLength) {
+          const bytes = functionLength * 4;
+          if ((previousEnd != null && begin < previousEnd) || !executableRvaRange(image, begin, bytes)) {
+            image.warnings.push(`Ignored overlapping/unmapped ARM64 exception range at RVA 0x${begin.toString(16)}`);
+            continue;
+          }
+          size = BigInt(bytes);
+        }
       }
       image.functions.push(functionSeed(image.imageBase + BigInt(begin), { size, source: 'exception', confidence: 0.995 }));
       image.metadata.exceptionDirectory = image.metadata.exceptionDirectory || { count: 0, kind: 'arm64-pdata' };
       image.metadata.exceptionDirectory.count++;
+      previousBegin = begin;
+      previousEnd = size == null ? null : begin + Number(size);
     }
   }
 }
 
 function allowedBaseRelocationTypes(machine) {
-  // IMAGE_REL_BASED_* values defined for the corresponding PE machine.
-  if (machine === 0x014c) return new Set([1, 2, 3, 4]);                 // x86
-  if (machine === 0x8664) return new Set([1, 2, 3, 4, 10]);            // x86-64
-  if (machine === 0x01c0 || machine === 0x01c4) return new Set([3, 5, 7]); // ARM/Thumb
-  if (machine === 0xaa64 || machine === 0xa641) return new Set([4, 5, 6, 7, 8, 10]); // ARM64/ARM64EC
+  if (machine === 0x014c) return new Set([1, 2, 3, 4]);
+  if (machine === 0x8664) return new Set([1, 2, 3, 4, 10]);
+  if (machine === 0x01c0 || machine === 0x01c4) return new Set([3, 5, 7]);
+  if (machine === 0xaa64 || machine === 0xa641) return new Set([4, 5, 6, 7, 8, 10]);
   return new Set([1, 2, 3, 4, 5, 6, 7, 8, 10]);
 }
 
@@ -180,6 +212,96 @@ function rvaToOffset(image, rva) {
 }
 export function peMachineName(m) {
   return ({ 0x014c: 'x86', 0x8664: 'x86_64', 0x01c0: 'arm', 0x01c4: 'armv7', 0xaa64: 'arm64', 0xa641: 'arm64ec', 0x5032: 'riscv32', 0x5064: 'riscv64' })[m] || `machine-${m.toString(16)}`;
+}
+
+export function resolveCoffSectionName(r, inlineName, ptrSymbols, count) {
+  const raw = String(inlineName || '');
+  const m = /^\/(\d+)$/.exec(raw);
+  if (!m) return raw;
+  if (!ptrSymbols || !Number.isInteger(count) || count < 0) return raw;
+  const stringBase = ptrSymbols + count * 18;
+  if (!Number.isSafeInteger(stringBase) || stringBase < 0 || stringBase + 4 > r.length) return raw;
+  const stringSize = r.u32(stringBase);
+  const offset = Number(m[1]);
+  if (!Number.isSafeInteger(offset) || offset < 4 || offset >= stringSize || stringBase + offset >= r.length) return raw;
+  return r.cstring(stringBase + offset, Math.min(stringSize - offset, r.length - stringBase - offset)) || raw;
+}
+
+function rvaFromDelayField(value, attrs, image) {
+  if (!value) return 0;
+  if (attrs & 1) return value >>> 0;
+  const va = BigInt(value >>> 0), base = image.imageBase;
+  if (va < base || va - base > 0xffffffffn) return 0;
+  return Number(va - base);
+}
+
+export function parseDelayImports(r, dir, image) {
+  if (!dir || !dir.rva || dir.size < 32) return;
+  let off = rvaToOffset(image, dir.rva);
+  if (off == null) return;
+  const end = Math.min(r.length, off + dir.size);
+  const ptrSize = image.bits === 64 ? 8 : 4;
+  for (let guard = 0; guard < 65536 && off + 32 <= end; guard++, off += 32) {
+    const attrs = r.u32(off);
+    const nameField = r.u32(off + 4);
+    const iatField = r.u32(off + 12);
+    const intField = r.u32(off + 16);
+    const bound = r.u32(off + 20);
+    const unload = r.u32(off + 24);
+    const stamp = r.u32(off + 28);
+    if (!(attrs || nameField || iatField || intField || bound || unload || stamp)) break;
+    const nameRva = rvaFromDelayField(nameField, attrs, image);
+    const iatRva = rvaFromDelayField(iatField, attrs, image);
+    const intRva = rvaFromDelayField(intField, attrs, image);
+    const nameOff = rvaToOffset(image, nameRva);
+    const iatOff0 = rvaToOffset(image, iatRva);
+    const thunkOff0 = rvaToOffset(image, intRva || iatRva);
+    if (nameOff == null || iatOff0 == null || thunkOff0 == null || !iatRva) {
+      image.warnings.push('Ignored malformed PE delay-import descriptor');
+      continue;
+    }
+    const library = r.cstring(nameOff, Math.min(1 << 16, r.length - nameOff));
+    if (!library) {
+      image.warnings.push('Ignored PE delay-import descriptor with empty library name');
+      continue;
+    }
+    image.libraries.push(library);
+    for (let index = 0, thunkOff = thunkOff0; index < 100000; index++, thunkOff += ptrSize) {
+      if (thunkOff + ptrSize > r.length) break;
+      const raw = image.bits === 64 ? r.u64(thunkOff) : BigInt(r.u32(thunkOff));
+      if (raw === 0n) break;
+      const ordinalMask = image.bits === 64 ? 0x8000000000000000n : 0x80000000n;
+      let name = null, ordinal = null, hint = null;
+      if (raw & ordinalMask) {
+        ordinal = Number(raw & 0xffffn);
+      } else {
+        let ibnRva;
+        if (attrs & 1) {
+          const masked = raw & (image.bits === 64 ? 0x7fffffffffffffffn : 0x7fffffffn);
+          if (masked > 0xffffffffn) {
+            image.warnings.push('Ignored PE delay-import thunk with out-of-range name RVA');
+            continue;
+          }
+          ibnRva = Number(masked);
+        } else {
+          const va = raw & (image.bits === 64 ? 0x7fffffffffffffffn : 0x7fffffffn);
+          ibnRva = va >= image.imageBase && va - image.imageBase <= 0xffffffffn ? Number(va - image.imageBase) : 0;
+        }
+        const ibnOff = rvaToOffset(image, ibnRva);
+        if (ibnOff != null && ibnOff + 2 < r.length) {
+          hint = r.u16(ibnOff);
+          name = r.cstring(ibnOff + 2, Math.min(1 << 16, r.length - ibnOff - 2));
+        }
+        if (!name) {
+          image.warnings.push(`Ignored malformed PE delay-import thunk for ${library}`);
+          continue;
+        }
+      }
+      const iatAddress = image.imageBase + BigInt(iatRva + index * ptrSize);
+      image.imports.push({ name: name || `#${ordinal}`, library, ordinal, hint, source: 'PE-delay-import', sites: [{ address: iatAddress, offset: image.addressToOffset(iatAddress), kind: 'delay-iat' }] });
+    }
+    void iatOff0;
+  }
 }
 
 function readPointer(r, off, bits) { return bits===64?r.u64(off):BigInt(r.u32(off)); }
