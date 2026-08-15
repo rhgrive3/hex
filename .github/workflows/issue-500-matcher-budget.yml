@@ -21,7 +21,9 @@ jobs:
         with:
           node-version: 22
       - name: Apply bounded matcher integration
-        run: python3 tools/apply-issue-500.py
+        run: |
+          python3 tools/apply-issue-500.py
+          python3 tools/cleanup-issue-500.py
       - name: Focused matcher budget regression
         run: node tests/issue-500-matcher-budget.mjs
       - name: Recognition regression suite
