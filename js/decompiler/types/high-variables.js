@@ -39,6 +39,21 @@ function candidateName(group, index, opts = {}) {
     // HighVariable identity itself remains SSA/proof based.
     return { name: `a${n + 1}`, confidence: 0.72, reason: 'AAPCS64 argument origin' };
   }
+
+  // A no-def SSA value in x0-x7 is an ABI live-in at function entry. It is safe
+  // to give that *single SSA value* an argument-like source name, but it is not
+  // safe to use the physical register as HighVariable identity: the same xN may
+  // later hold a call result or an unrelated temporary. This preserves `self`
+  // readability without reintroducing the register-reuse coalescing bug.
+  const liveIn = !v?.def ? /^x([0-7])$/.exec(v?.reg || '') : null;
+  if (liveIn) {
+    const n = Number(liveIn[1]);
+    const explicit = opts.argNames?.[n] || null;
+    if (explicit) return { name: explicit, confidence: 0.9, reason: 'AAPCS64 live-in SSA value' };
+    if (n === 0 && opts.receiverType) return { name: 'self', confidence: 0.9, reason: 'typed AAPCS64 receiver live-in' };
+    return { name: `a${n + 1}`, confidence: 0.68, reason: 'AAPCS64 live-in SSA value' };
+  }
+
   if (group.fieldName) return { name: group.fieldName, confidence: group.fieldConfidence || 0.9, reason: 'field metadata' };
   if (group.stackOffset != null) {
     const off = BigInt(group.stackOffset);
