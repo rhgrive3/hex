@@ -36,6 +36,15 @@ export function selectToolWindow(registry, { mode = 'agent', requestedScope = 'a
   const previousTool = previousToolName(observations);
   if (previousTool && byName.has(previousTool)) selected.push(byName.get(previousTool));
 
+  // Auto escape is a control-plane liveness guarantee, not an ordinary phase
+  // preference. Reserve it before novel/filler slots so future-tool rotation
+  // can never push the only legal path to wider evidence out of the window.
+  if (requestedScope === 'auto') {
+    for (const name of AUTO_ESCAPE_TOOLS) {
+      if (byName.has(name) && !selected.some((item) => item.name === name) && selected.length < limit) selected.push(byName.get(name));
+    }
+  }
+
   // ToolRegistry is allowed to grow independently of this control plane. Keep
   // a small rotating slot for scope-valid definitions not known when this file
   // was written. This is metadata-driven (already filtered by effectiveScope),
