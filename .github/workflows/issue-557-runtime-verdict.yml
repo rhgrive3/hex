@@ -18,7 +18,9 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
       - name: Apply fix
-        run: python3 tools/apply-issue-557.py
+        run: |
+          python3 tools/apply-issue-557.py
+          python3 tools/reconcile-issue-557.py
       - name: Focused runtime verdict regression
         run: node tests/runtime-platform.mjs
       - name: Static check
