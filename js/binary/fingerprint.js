@@ -47,34 +47,47 @@ export function fingerprintBytes(bytes) {
   return digestHex(fnv1a64State(bytes));
 }
 
-export function fingerprintFunction(image, fn, opts = {}) {
+export async function fingerprintFunction(image, fn, opts = {}) {
   const maxBytes = Math.max(16, opts.maxBytes || 1 << 20);
-  let size = fn.size == null ? BigInt(opts.fallbackBytes || 64) : fn.size;
+  let size = fn.size == null ? BigInt(opts.fallbackBytes || 64) : BigInt(fn.size);
   if (size <= 0n) return null;
   if (size > BigInt(maxBytes)) size = BigInt(maxBytes);
-  const bytes = image.readVirtual(fn.address, Number(size));
+  const bytes = typeof image.readVirtualAsync === 'function'
+    ? await image.readVirtualAsync(fn.address, Number(size))
+    : image.readVirtual(fn.address, Number(size));
   if (!bytes || !bytes.length) return null;
-  return {
-    algorithm: 'fnv1a64',
-    hash: fingerprintBytes(bytes),
-    bytes: bytes.length,
-    truncated: fn.size != null && fn.size > BigInt(bytes.length),
-  };
+  return { algorithm:'fnv1a64', hash:fingerprintBytes(bytes), bytes:bytes.length,
+    truncated:fn.size != null && BigInt(fn.size) > BigInt(bytes.length) };
 }
 
-export function fingerprintImage(image, opts = {}) {
-  const executableOnly = opts.executableOnly !== false;
-  let state = { hi: FNV_OFFSET_HI, lo: FNV_OFFSET_LO };
-  let total = 0;
-  let ranges = image.sections.filter((s) => s.fileSize > 0n && (!executableOnly || s.perms.execute));
-  if (!ranges.length) ranges = image.segments.filter((s) => s.fileSize > 0n && (!executableOnly || s.perms.execute));
-  for (const s of ranges) {
-    const start = Number(s.fileOffset), size = Number(s.fileSize);
-    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(size) || start < 0 || start + size > image.bytes.length) continue;
-    state = fnv1a64State(image.bytes.subarray(start, start + size), state);
-    total += size;
+async function mappingChunk(image, mapping, offset, length) {
+  const fileOffset = BigInt(mapping.fileOffset) + BigInt(offset);
+  if (image.bytes) {
+    const start=Number(fileOffset);
+    if (!Number.isSafeInteger(start) || start < 0 || start + length > image.bytes.length) return null;
+    return image.bytes.subarray(start,start+length);
   }
-  return { algorithm: 'fnv1a64', hash: digestHex(state), bytes: total, scope: executableOnly ? 'executable-mappings' : 'all-mappings' };
+  if (image.source) return image.source.readExactly(fileOffset,length);
+  if (mapping.address != null && typeof image.readVirtualAsync === 'function') return image.readVirtualAsync(BigInt(mapping.address)+BigInt(offset),length);
+  return null;
+}
+
+export async function fingerprintImage(image, opts = {}) {
+  const executableOnly = opts.executableOnly !== false;
+  const chunkBytes = Math.max(4096, Math.min(1 << 20, Number(opts.chunkBytes || 256 * 1024)));
+  let state={hi:FNV_OFFSET_HI,lo:FNV_OFFSET_LO}, total=0;
+  let ranges=image.sections.filter((x)=>x.fileSize>0n && (!executableOnly || x.perms.execute));
+  if (!ranges.length) ranges=image.segments.filter((x)=>x.fileSize>0n && (!executableOnly || x.perms.execute));
+  for (const mapping of ranges) {
+    const size=BigInt(mapping.fileSize);
+    for (let off=0n;off<size;) {
+      const take=Number(size-off < BigInt(chunkBytes) ? size-off : BigInt(chunkBytes));
+      const bytes=await mappingChunk(image,mapping,off,take);
+      if (!bytes || bytes.length !== take) break;
+      state=fnv1a64State(bytes,state); total+=bytes.length; off+=BigInt(bytes.length);
+    }
+  }
+  return {algorithm:'fnv1a64',hash:digestHex(state),bytes:total,scope:executableOnly?'executable-mappings':'all-mappings'};
 }
 
 function digestHex(state) {

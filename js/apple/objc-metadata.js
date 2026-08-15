@@ -7,15 +7,13 @@
  * records are skipped rather than named heuristically.
  */
 
-import { pagedReader, sanitizePointer } from '../objc-legacy.js';
+import { pagedReader, sanitizePointer, decodeMethodListHeader } from '../objc-legacy.js';
 
 const PTR = 8;
 const MAX_NAME = 256;
 const MAX_PROTOCOLS = 20000;
 const MAX_CATEGORIES = 20000;
 const MAX_METHODS = 60000;
-const REL_FLAG = 0x80000000;
-const ENTSIZE_MASK = 0xfffc;
 
 function u32(b, o = 0) { return (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0; }
 function i32(b, o = 0) { return u32(b, o) | 0; }
@@ -52,8 +50,7 @@ async function methodList(get, listAddr, owner, classMethod, source) {
   const rawEntsize = u32(h, 0);
   const count = u32(h, 4);
   if (!count || count > MAX_METHODS) return out;
-  const relative = !!(rawEntsize & REL_FLAG);
-  const stride = rawEntsize & ENTSIZE_MASK;
+  const { relative, directSelector, stride } = decodeMethodListHeader(rawEntsize);
   if ((relative && stride < 12) || (!relative && stride < 24)) return out;
 
   for (let i = 0; i < count; i++) {
@@ -63,8 +60,11 @@ async function methodList(get, listAddr, owner, classMethod, source) {
     let nameAddr = null, typeAddr = null, imp = null;
     if (relative) {
       const nameTarget = at + BigInt(i32(b, 0));
-      nameAddr = await ptr(get, nameTarget);
-      if (nameAddr == null || await cstring(get, nameAddr) == null) nameAddr = nameTarget;
+      if (directSelector) nameAddr = nameTarget;
+      else {
+        nameAddr = await ptr(get, nameTarget);
+        if (nameAddr == null || await cstring(get, nameAddr) == null) nameAddr = nameTarget;
+      }
       typeAddr = at + 4n + BigInt(i32(b, 4));
       imp = at + 8n + BigInt(i32(b, 8));
     } else {

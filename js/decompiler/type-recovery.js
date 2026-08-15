@@ -67,17 +67,24 @@ export function typeNameOf(t) {
 }
 
 export function mergeRecoveredTypes(a, b) {
-  if (!a || a.name === 'unknown') return b || a;
-  if (!b || b.name === 'unknown') return a;
-  if (a.name === b.name) return { ...a, confidence: Math.max(a.confidence || 0, b.confidence || 0) };
-  const ac = a.confidence || 0, bc = b.confidence || 0;
-  if (Math.abs(ac - bc) < 0.12) {
-    return {
-      name: 'unknown', kind: 'ambiguous', confidence: Math.max(ac, bc) * 0.7,
-      candidates: [a, b], warning: `conflicting type evidence: ${a.name} vs ${b.name}`,
-    };
+  const flatten = (t) => {
+    if (!t) return [];
+    const list=Array.isArray(t.candidates) && t.candidates.length ? t.candidates : [t];
+    return list.flatMap((x) => x && Array.isArray(x.candidates) && x.candidates.length ? x.candidates : [x]).filter(Boolean);
+  };
+  const byName=new Map();
+  for (const candidate of [...flatten(a),...flatten(b)]) {
+    if (!candidate || candidate.name === 'unknown' && candidate.kind !== 'ambiguous') continue;
+    const key=candidate.name || candidate.kind || 'unknown';
+    const prev=byName.get(key);
+    if (!prev || (candidate.confidence||0) > (prev.confidence||0)) byName.set(key,candidate);
   }
-  return ac > bc ? a : b;
+  if (!byName.size) return b || a;
+  const all=[...byName.values()].sort((x,y)=>(y.confidence||0)-(x.confidence||0));
+  if (all.length === 1) return {...all[0],candidates:all};
+  const top=all[0], second=all[1], ac=top.confidence||0, bc=second.confidence||0;
+  if (Math.abs(ac-bc) < 0.12) return {name:'unknown',kind:'ambiguous',confidence:Math.max(ac,bc)*0.7,candidates:all,warning:'conflicting type evidence: '+all.map((x)=>x.name).join(' vs ')};
+  return {...top,candidates:all};
 }
 
 function decide(e, fallbackBits = 64) {

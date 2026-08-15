@@ -93,8 +93,10 @@ function observedFieldValue(observation, offset) {
   const after = (observation && observation.memoryAfter) || [];
   const final = after.find((f) => f && f.offset != null && BigInt(f.offset) === offset);
   if (final && final.value != null) return { observed:true, value:final.value, source:'final-state' };
-  const touched = ((observation && observation.memoryDelta) || []).find((f) => f && f.offset != null && BigInt(f.offset) === offset);
-  if (touched && touched.after != null) return { observed:true, value:touched.after, source:'delta' };
+  const deltas = (observation && observation.memoryDelta) || [];
+  let touched = null;
+  for (const delta of deltas) if (delta && delta.offset != null && BigInt(delta.offset) === offset && delta.after != null) touched=delta;
+  if (touched) return { observed:true, value:touched.after, source:'delta-final' };
   return { observed:false, value:null, source:null };
 }
 

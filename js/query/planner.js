@@ -21,6 +21,13 @@ function resultAddress(row) {
   }
   return null;
 }
+function explicitFunctionAddress(row) {
+  if (!row) return null;
+  let a=asAddr(row.functionAddress); if (a != null) return a;
+  if (row.function && typeof row.function === 'object') a=asAddr(row.function.address ?? row.function.addr ?? row.function.start);
+  else a=asAddr(row.function);
+  return a;
+}
 
 function addCandidate(map, address, source, term, weight) {
   const addr = asAddr(address);
@@ -136,7 +143,7 @@ async function lexicalCandidates(query, tools, ctx, b) {
     const ss = await tools.search_strings(term, { limit: b.maxSearchResults });
     if (expired(b)) break;
     for (const row of ss.results || []) {
-      const direct = resultAddress(row);
+      const direct = explicitFunctionAddress(row);
       if (direct != null) addCandidate(map, direct, 'string-reference', term, 8);
       const target = asAddr(row && (row.stringAddress != null ? row.stringAddress : row.target));
       if (target != null) {
@@ -229,10 +236,11 @@ async function verifyBest(query, ranked, tools, b) {
       const thresholds = await tools.find_thresholds(c.address);
       if (expired(b)) break;
       if ((thresholds.results || []).length) {
-        c.verification = thresholds;
-        c.score += 20;
-        c.scoreComponents.evidenceScore += 20;
-        return c;
+        // A static threshold fact is useful semantic evidence, not causal/runtime
+        // verification. Keep it visible without occupying the proof slot (#386).
+        c.thresholdEvidence = thresholds;
+        c.score += 8;
+        c.scoreComponents.semanticScore += 8;
       }
     }
   }
@@ -256,6 +264,7 @@ function publicCandidate(c) {
     semanticFacts: c.semantic || [],
     summary: c.summary || null,
     verification: c.verification || null,
+    thresholdEvidence: c.thresholdEvidence || null,
     evidence: Array.from(c.evidence || []),
   };
 }

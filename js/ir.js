@@ -105,7 +105,17 @@ function hardenUnknownStores(ir) {
 
   let blocked = 0;
   for (const load of ir.instructions) {
-    if (load.op !== OP.LOAD || !load.reachingStore) continue;
+    if (load.op !== OP.LOAD) continue;
+    // Core Memory-SSA may already have materialized the unknown indexed store as
+    // the reaching clobber. Count that blocked proof instead of requiring a stale
+    // reachingStore to still be attached (#358). This keeps telemetry aligned
+    // with the actual proof state without re-running alias inference.
+    if (load.memUse?.kind === 'clobber' && load.memUse.unknownAlias) {
+      load.unknownAliasBarrier = load.memUse.inst || null;
+      blocked++;
+      continue;
+    }
+    if (!load.reachingStore) continue;
     const barrier = unknownStoreBetween(ir, load.reachingStore, load);
     if (!barrier) continue;
     load.reachingStore = null;

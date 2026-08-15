@@ -111,12 +111,17 @@ export class RuntimeAnalysisPlatform {
     const requestedAddress = asAddress(functionAddress);
     const launchSpec = launchOptionsForTrace(requestedAddress,options);
     const operation = operationController(session,options.signal);
-    let observation;
+    let observation, trace;
+    const started=Date.now();
     try {
       await session.adapter.launch(launchSpec,{signal:operation.signal});
       observation = await session.adapter.resume({ maxSteps:options.maxSteps ?? 20000, timeoutMs:options.timeoutMs, signal:operation.signal });
+      if (observation.trace) trace=observation.trace;
+      else {
+        const timeoutMs=options.timeoutMs == null ? undefined : Math.max(1, Number(options.timeoutMs) - (Date.now()-started));
+        trace = await session.adapter.trace({ limit:boundedInteger(options.limit,4096,1,50000,'limit'), timeoutMs, signal:operation.signal });
+      }
     } finally { operation.release(); }
-    const trace = observation.trace || await session.adapter.trace({ limit:boundedInteger(options.limit,4096,1,50000,'limit') });
     for (const event of trace.events || []) session.acceptEvent(event);
     const facts = traceToSemanticFacts(trace,{sessionId:session.id,binaryHash:session.binaryHash,traceId:`fn:${requestedAddress.toString(16)}`});
     const evidence = createRuntimeEvidenceRecord({ backend:session.backend,binaryHash:session.binaryHash,sessionId:session.id,

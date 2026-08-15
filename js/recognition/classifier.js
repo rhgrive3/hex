@@ -9,17 +9,21 @@ const RUNTIME_NAMES = [/^_?(?:objc_|swift_|dyld_|__?cxa_|pthread_)/i];
 export function classifyFunction(input = {}, context = {}) {
   const fp = fingerprintFunction(input);
   const evidence = [];
-  if (context.signature?.classification && FUNCTION_CLASSES.includes(context.signature.classification)) {
-    return { classification: context.signature.classification, confidence: context.signature.confidence ?? 0.95, evidence: ['signature:' + (context.signature.library || context.signature.name || 'known')] };
+  const signature = context.signature?.classification && FUNCTION_CLASSES.includes(context.signature.classification) ? context.signature : null;
+  const signatureConfidence = Number(signature?.confidence ?? 0);
+  const signatureExact = signature?.exact === true || ['exact','normalized-identical'].includes(signature?.identity);
+  if (signature && signatureExact && signatureConfidence >= 0.9) {
+    return { classification:signature.classification, confidence:signatureConfidence, evidence:['signature:'+ (signature.library||signature.name||'known')], hardSuppress:true };
   }
   const name = fp.name || '';
-  if (context.owningLibrary && SYSTEM_LIBS.some((rx) => rx.test(String(context.owningLibrary)))) return { classification:'SYSTEM', confidence:0.92, evidence:['system-library:' + context.owningLibrary] };
-  if (GENERATED.some((rx) => rx.test(name))) return { classification: 'GENERATED', confidence: 0.9, evidence: ['compiler-generated-name'] };
-  if (RUNTIME_NAMES.some((rx) => rx.test(name))) return { classification:'RUNTIME', confidence:0.88, evidence:['runtime-symbol-name'] };
+  if (signature) evidence.push('signature-hint:' + (signature.library || signature.name || signature.classification));
+  if (context.owningLibrary && SYSTEM_LIBS.some((rx) => rx.test(String(context.owningLibrary)))) return { classification:'SYSTEM', confidence:0.92, evidence:['system-library:' + context.owningLibrary], hardSuppress:true };
+  if (GENERATED.some((rx) => rx.test(name))) return { classification: 'GENERATED', confidence: 0.9, evidence: ['compiler-generated-name'], hardSuppress:true };
+  if (RUNTIME_NAMES.some((rx) => rx.test(name))) return { classification:'RUNTIME', confidence:0.88, evidence:['runtime-symbol-name'], hardSuppress:true };
   const runtimeImports = fp.imports.filter((x) => RUNTIME_IMPORTS.some((rx) => rx.test(String(x))));
   if (context.vendor?.confidence >= 0.8) {
     const classification = FUNCTION_CLASSES.includes(context.vendor.classification) ? context.vendor.classification : context.vendor.kind === 'runtime' ? 'RUNTIME' : context.vendor.kind === 'library' ? 'LIBRARY' : 'SDK';
-    return { classification, confidence: context.vendor.confidence, evidence: context.vendor.evidence || [] };
+    return { classification, confidence: context.vendor.confidence, evidence: context.vendor.evidence || [], hardSuppress:true };
   }
   let appScore = 0;
   if (fp.objc.class && !context.vendor) { appScore += 0.22; evidence.push('custom-objc-type'); }
@@ -29,8 +33,9 @@ export function classifyFunction(input = {}, context = {}) {
   if (context.calledFromApplication) { appScore += 0.16; evidence.push('application-entry-path'); }
   if (context.notKnownVendor) { appScore += 0.14; evidence.push('not-known-vendor'); }
   if (runtimeImports.length) evidence.push('uses-runtime-api');
-  if (appScore >= 0.38) return { classification: 'APPLICATION', confidence: Math.min(0.95, 0.5 + appScore / 2), evidence };
-  return { classification: 'UNKNOWN', confidence: 0.35, evidence };
+  if (appScore >= 0.38) return { classification: 'APPLICATION', confidence: Math.min(0.95, 0.5 + appScore / 2), evidence, hardSuppress:false };
+  if (signature) return { classification:signature.classification, confidence:Math.min(0.79, Math.max(0.35, signatureConfidence)), evidence, hardSuppress:false };
+  return { classification: 'UNKNOWN', confidence: 0.35, evidence, hardSuppress:false };
 }
 
 export function applicationCodeScore(input = {}, context = {}) {
@@ -41,7 +46,9 @@ export function applicationCodeScore(input = {}, context = {}) {
   if (fp.semantic.writes.length || fp.fieldAccessShape.length) score += 0.12;
   if (fp.strings.some((s) => context.appStrings?.has?.(s))) score += 0.1;
   if (context.calledFromApplication) score += 0.08;
-  if (cls.classification === 'SDK' || cls.classification === 'RUNTIME' || cls.classification === 'SYSTEM') score -= 0.55;
+  if (cls.classification === 'SDK' || cls.classification === 'RUNTIME' || cls.classification === 'SYSTEM') {
+    score -= cls.hardSuppress === true && cls.confidence >= 0.8 ? 0.55 : 0.08 * Math.max(0,Math.min(1,cls.confidence || 0));
+  }
   return Math.max(0, Math.min(1, score));
 }
 
@@ -76,7 +83,7 @@ export function clusterFunctions(functions = []) {
     const fp = fingerprintFunction(raw);
     const cls = classifyFunction(fp, raw.context || {});
     const subs = discoverSubsystems(fp);
-    const suppressed = ['SYSTEM','RUNTIME','SDK','LIBRARY','GENERATED'].includes(cls.classification);
+    const suppressed = ['SYSTEM','RUNTIME','SDK','LIBRARY','GENERATED'].includes(cls.classification) && cls.hardSuppress === true && cls.confidence >= 0.8;
     const key = suppressed ? `class:${cls.classification}` : subs[0]?.confidence >= 0.6 ? `sub:${subs[0].subsystem}` : fp.cfgHash ? `cfg:${fp.cfgHash}` : cls.classification === 'APPLICATION' ? 'class:APPLICATION' : `unknown:size:${Math.floor(Math.log2(Math.max(1,fp.size)))}`;
     let group = groups.get(key); if (!group) groups.set(key, group = { key, classification: cls.classification, subsystem: subs[0]?.subsystem || null, functions: [] });
     group.functions.push(fp);
