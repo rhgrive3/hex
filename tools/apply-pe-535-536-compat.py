@@ -10,6 +10,19 @@ old="if(!name)continue;}\n      const iatAddress=image.imageBase+BigInt(iatRva+i
 new="if(!name){image.warnings.push(`Ignored malformed PE delay-import thunk for ${library||'<unknown>'}`);continue;}}\n      const iatAddress=image.imageBase+BigInt(iatRva+index*ptrSize);"
 if old not in s: raise SystemExit('delay import malformed diagnostic anchor missing')
 s=s.replace(old,new,1)
+if 'function allowedBaseRelocationTypes(machine)' not in s:
+  anchor='export function parseBaseRelocations(r, dir, image, machine = null, sharedBudget = null) {'
+  helper="""function allowedBaseRelocationTypes(machine) {
+  if (machine === 0x014c) return new Set([1, 2, 3, 4]);
+  if (machine === 0x8664) return new Set([1, 2, 3, 4, 10]);
+  if (machine === 0x01c0 || machine === 0x01c4) return new Set([3, 5, 7]);
+  if (machine === 0xaa64 || machine === 0xa641) return new Set([4, 5, 6, 7, 8, 10]);
+  return new Set([1, 2, 3, 4, 5, 6, 7, 8, 10]);
+}
+
+"""
+  if anchor not in s: raise SystemExit('base relocation insertion anchor missing')
+  s=s.replace(anchor,helper+anchor,1)
 p.write_text(s)
 
 p=Path('tests/issues-97-100-146-147.mjs')
