@@ -16,6 +16,9 @@ import { pick, isJa } from '../../i18n.js';
 import { menu } from '../../ui.js';
 import { MODE_ITEMS, STYLE_ITEMS, SCOPE_ITEMS, scopeLabel } from './modes.js';
 import { renderTurn } from '../render/message.js';
+import { conversationTitle } from './conversations.js';
+import { applyStatus, capabilityApi, callSafely, normalizeCapabilities, selectionLabel } from './model-picker.js';
+import { openModelMenu, openSessionMenu } from './session-menu.js';
 
 const MAX_RENDERED_TURNS = 40;
 
@@ -47,17 +50,37 @@ export function createPanel({ session, handlers }) {
 
   /* ── header ─────────────────────────────────────────────── */
   const head = h('header', 'ai-panel-head');
+  /*
+   * Which chat you are in comes first, because it is the one thing the
+   * transcript itself never tells you. The title button carries the whole
+   * history menu, so New chat stays a single tap next to it instead of
+   * hiding one level down.
+   */
+  const sessionButton = uiButton('', { cls: 'ai-session-button' });
+  sessionButton.setAttribute('aria-haspopup', 'menu');
+  sessionButton.setAttribute('aria-expanded', 'false');
+  const sessionTitle = h('span', 'ai-session-title', '');
+  sessionButton.replaceChildren(sessionTitle, h('span', 'ai-caret', '▾'));
+  sessionButton.addEventListener('click', () => {
+    openSessionMenu({ button: sessionButton, session, ja: isJa(), onChange: () => refresh() });
+  });
+  const newChat = uiButton('＋', {
+    cls: 'ai-icon-button ai-new-chat',
+    ariaLabel: pick('新しいチャット', 'New chat'),
+    onClick: () => { if (session.newConversation()) refresh({ focus: true }); },
+  });
   const modes = segmented(MODE_ITEMS, session.mode, (id) => handlers.onMode(id), pick('モード', 'Mode'));
   const styles = segmented(STYLE_ITEMS, session.style, (id) => handlers.onStyle(id), pick('答え方', 'Answer style'));
   const close = uiButton('✕', {
     cls: 'ai-icon-button', ariaLabel: pick('閉じる', 'Close'), onClick: () => handlers.onClose(),
   });
   /*
-   * Mode is the primary decision and stays in the header with Close. Style and
-   * scope are turn settings and live in the scrollable context row: at a 340px
-   * docked width all four controls in one row clipped their own labels.
+   * Mode is the primary decision and stays in the header with Close, now
+   * behind which chat you are in. Style and scope are turn settings and live
+   * in the scrollable context row: at a 340px docked width all four controls
+   * in one row clipped their own labels.
    */
-  head.append(modes, close);
+  head.append(sessionButton, newChat, modes, close);
 
   /* ── context bar ────────────────────────────────────────── */
   const contextBar = h('div', 'ai-context-bar');
@@ -98,7 +121,20 @@ export function createPanel({ session, handlers }) {
   send.type = 'submit';
   const stop = uiButton(pick('停止', 'Stop'), { cls: 'ai-chip ai-stop', onClick: () => handlers.onCancel() });
   stop.hidden = true;
-  composer.append(input, send, stop);
+  /*
+   * The model sits under the box you type into, where it is read as a property
+   * of the next question rather than as another top-bar control competing with
+   * mode. Stop takes the same row, so nothing moves while an answer runs.
+   */
+  const composerBar = h('div', 'ai-composer-bar');
+  const modelChip = uiButton('', { cls: 'ai-chip ai-model-chip' });
+  modelChip.setAttribute('aria-haspopup', 'menu');
+  modelChip.setAttribute('aria-expanded', 'false');
+  modelChip.addEventListener('click', () => {
+    openModelMenu({ button: modelChip, session, capabilities, ja: isJa(), onChange: () => applySelection() });
+  });
+  composerBar.append(modelChip, stop);
+  composer.append(input, send, composerBar);
 
   const coarse = typeof window !== 'undefined' && typeof window.matchMedia === 'function'
     && window.matchMedia('(pointer: coarse)').matches;
@@ -145,10 +181,61 @@ export function createPanel({ session, handlers }) {
     else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
   });
 
+  /* ── provider / model ───────────────────────────────────── */
+  /*
+   * Nothing here assumes the engine has a selection API yet. When it does not,
+   * the picker still records provider/model/reasoning on the conversation and
+   * hands them to engine.run(); when it does, that API is the truth and this
+   * only mirrors it.
+   */
+  const capabilityFns = capabilityApi(session.engine);
+  let capabilities = normalizeCapabilities(null);
+  let capabilityRequest = null;
+
+  function loadCapabilities() {
+    if (capabilityRequest) return capabilityRequest;
+    capabilityRequest = (async () => {
+      const advertised = await callSafely(capabilityFns.capabilities);
+      const status = await callSafely(capabilityFns.status);
+      capabilities = applyStatus(normalizeCapabilities(advertised), status);
+      const current = await callSafely(capabilityFns.get);
+      if (current && typeof current === 'object' && !session.current.provider) {
+        session.setSelection({
+          provider: current.provider == null ? null : current.provider,
+          model: current.model == null ? null : current.model,
+          reasoning: current.reasoning == null ? null : current.reasoning,
+        });
+      }
+      update({ stick: false });
+    })().catch(() => {});
+    return capabilityRequest;
+  }
+
+  /** A pick is conversation metadata first; the engine is told if it listens. */
+  function applySelection() {
+    callSafely(capabilityFns.set, session.selectionOf());
+    update({ stick: false });
+  }
+
+  function refresh({ focus = false } = {}) {
+    update({ stick: false });
+    if (focus) input.focus();
+  }
+
   /* ── incremental rendering ──────────────────────────────── */
   const rendered = new Map();
+  let renderedConversation = null;
 
   function renderConversation() {
+    /*
+     * A chat switch is the only time the transcript is thrown away: within a
+     * chat the cache keeps a streaming answer from re-creating every turn.
+     */
+    if (renderedConversation !== session.current.id) {
+      for (const entry of rendered.values()) entry.node.remove();
+      rendered.clear();
+      renderedConversation = session.current.id;
+    }
     const turns = session.visibleTurns().slice(-MAX_RENDERED_TURNS);
     empty.hidden = turns.length > 0;
     const seen = new Set();
@@ -187,6 +274,8 @@ export function createPanel({ session, handlers }) {
 
   function update({ stick = true } = {}) {
     const shouldStick = stick && atBottom();
+    if (typeof session.syncNamespace === 'function') session.syncNamespace();
+    loadCapabilities();
     for (const button of modes.querySelectorAll('.ai-seg')) {
       const on = button.dataset.value === session.mode;
       button.classList.toggle('active', on);
@@ -202,6 +291,20 @@ export function createPanel({ session, handlers }) {
     contextChip.textContent = context.label;
     contextChip.hidden = !context.label;
     contextChip.disabled = !context.actionable;
+    const ja = isJa();
+    sessionTitle.textContent = conversationTitle(session.current, ja);
+    sessionButton.setAttribute('aria-label',
+      (ja ? '会話: ' : 'Conversation: ') + conversationTitle(session.current, ja));
+    sessionButton.dataset.conversation = session.current.id;
+    /* A running turn owns this chat: switching or renaming the model under it
+       would file the answer somewhere the question never was. */
+    newChat.disabled = session.busy;
+    const model = selectionLabel(capabilities, session.selectionOf(), ja);
+    modelChip.textContent = model.text;
+    modelChip.title = model.note ? model.text + ' · ' + model.note : model.text;
+    modelChip.dataset.unavailable = String(!!model.unavailable);
+    modelChip.setAttribute('aria-label', (ja ? 'モデル: ' : 'Model: ') + modelChip.title);
+    modelChip.disabled = session.busy;
     root.dataset.mode = session.mode;
     root.dataset.style = session.style;
     send.disabled = session.busy;
@@ -230,8 +333,17 @@ export function createPanel({ session, handlers }) {
     },
     header: head,
     body,
+    refresh,
+    capabilities: () => capabilities,
     describeState() {
-      return { mode: session.mode, style: session.style, scope: session.scope, busy: session.busy, turns: session.turns.length };
+      return {
+        mode: session.mode, style: session.style, scope: session.scope, busy: session.busy,
+        turns: session.turns.length,
+        conversationId: session.current.id,
+        conversationTitle: conversationTitle(session.current, isJa()),
+        conversations: session.list().length,
+        selection: session.selectionOf(),
+      };
     },
   };
 }

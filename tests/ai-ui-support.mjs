@@ -101,7 +101,12 @@ export async function stubEngine(page, response, options = {}) {
     window.__hexStub = { calls: [] };
     window.__hexAi.session.engine = {
       async run(input) {
-        window.__hexStub.calls.push({ question: input.question, mode: input.mode, style: input.style, scope: input.scope });
+        window.__hexStub.calls.push({
+          question: input.question, mode: input.mode, style: input.style, scope: input.scope,
+          conversationId: input.conversationId,
+          provider: input.provider ?? null, model: input.model ?? null, reasoning: input.reasoning ?? null,
+          fields: Object.keys(input),
+        });
         for (const event of opts.activity || []) input.onActivity(event);
         if (opts.hang) return new Promise((resolve, reject) => {
           input.signal.addEventListener('abort', () => reject(new Error('cancelled')));
