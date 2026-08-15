@@ -40,6 +40,16 @@ function unknown(code, detail) {
   return { certainty: CERTAINTY.UNKNOWN, code, detail: detail || null };
 }
 
+function completenessOf(program) {
+  if (!program) return { callsComplete: false, refsComplete: false, statsComplete: false };
+  const graph = program.graphCompleteness || null;
+  return {
+    callsComplete: graph?.callsComplete === true,
+    refsComplete: graph?.refsComplete === true,
+    statsComplete: graph?.statsComplete === true || (!graph && program.statsComplete === true),
+  };
+}
+
 /**
  * @param {object} opts
  *   model    buildSemanticModel の結果
@@ -57,6 +67,7 @@ export function buildFunctionReport(opts) {
   const symbols = o.symbols || null;
   const program = o.program || null;
   const goal = o.goal || null;
+  const completeness = completenessOf(program);
 
   const startAddr = model.startAddress != null ? model.startAddress
     : (region ? region.vmAddr + BigInt(model.startRow) * 4n : null);
@@ -160,7 +171,7 @@ export function buildFunctionReport(opts) {
       name: symbols ? symbols.nameAt(c.addr) : null,
     }));
     if (callers.length) facts.push(fact('callers', { n: callers.length }));
-    if (!callers.length && program.statsComplete === true) facts.push(fact('no-callers', null));
+    if (!callers.length && completeness.callsComplete) facts.push(fact('no-callers', null));
     const stats = program.statsOf(range.start, range.end);
     if (stats.numeric) {
       facts.push(fact('numeric', {
@@ -249,9 +260,12 @@ export function buildFunctionReport(opts) {
   if (f.calls > f.namedCalls) unknowns.push(unknown('unnamed-calls', { n: f.calls - f.namedCalls }));
   if (!strings.length) unknowns.push(unknown('no-strings', null));
   if (model.truncated) unknowns.push(unknown('truncated', null));
-  if (program && !program.statsComplete) {
-    unknowns.push(unknown('stats-partial', null));
-    unknowns.push(unknown('callers-partial', { reason: 'program-index-incomplete', observed: callers.length }));
+  if (program && !completeness.statsComplete) unknowns.push(unknown('stats-partial', null));
+  if (program && !completeness.callsComplete) {
+    unknowns.push(unknown('callers-partial', {
+      reason: program.graphCompleteness?.callsComplete === false ? 'call-graph-capped' : 'call-graph-completeness-unknown',
+      observed: callers.length,
+    }));
   }
   // 静的解析だけでは、実行時にその値が何であるかまでは決められない。必ず言う。
   unknowns.push(unknown('runtime-meaning', null));
@@ -260,8 +274,9 @@ export function buildFunctionReport(opts) {
 
   const nextSteps = [];
   if (callers.length) nextSteps.push({ code: 'check-callers', detail: { n: callers.length } });
-  else if (program && program.statsComplete !== true) nextSteps.push({ code: 'check-callers-incomplete', detail: { reason: 'program-index-incomplete' } });
-  else nextSteps.push({ code: 'no-callers-hint', detail: null });
+  else if (program && !completeness.callsComplete) {
+    nextSteps.push({ code: 'check-callers-incomplete', detail: { reason: 'call-graph-incomplete' } });
+  } else nextSteps.push({ code: 'no-callers-hint', detail: null });
   if (f.argRegs && f.argRegs.length) nextSteps.push({ code: 'check-inputs', detail: { regs: f.argRegs } });
   if (f.setsReturnValue) nextSteps.push({ code: 'check-return', detail: null });
   if (updates.length) {
@@ -316,6 +331,7 @@ export function buildFunctionReport(opts) {
       startRow: model.startRow, endRow: model.endRow,
       instructions: f.instructionCount || 0,
     },
+    completeness,
     facts, inferences, unknowns,
     callers, callees,
     strings, selectors,
