@@ -45,10 +45,8 @@ function summaryReturnCandidate(ir, ret) {
   const explicit = ret?.args?.[0]?.value || null;
   if (explicit) return { value: explicit, inferred: false };
 
-  // #130 deliberately makes an untyped RET carry no x0 SSA use. Interprocedural
-  // summaries may still expose a terminal x0 definition as a *hint*, but it is
-  // not ABI return evidence. Downstream propagation must never use this inferred
-  // candidate as if it were an explicit return contract.
+  // Untyped RET carries no x0 SSA use. A terminal x0 definition is useful as a
+  // local hint, but it is not an ABI return contract by itself.
   const value = valueBefore(ir, ret, 'x0');
   if (!value || value.kind === VK.ARG || !value.def) return { value: null, inferred: false };
   if (value.def.row == null || ret.row == null || value.def.row >= ret.row) return { value: null, inferred: false };
@@ -123,11 +121,17 @@ function callsOf(model, ir) {
   return out;
 }
 
+function trustedExternalReturnEvidence(opts) {
+  const evidence = opts && opts.returnEvidence;
+  return evidence === true || !!(evidence && typeof evidence === 'object' && evidence.trusted === true) || opts?.returnsValue === true;
+}
+
 export function summarizeFunction(model, opts) {
   const ir = irFor(model, opts && opts.ir);
   if (!ir) return null;
   const facts = semanticFacts(ir);
   const calls = callsOf(model, ir);
+  const hasExternalReturnEvidence = trustedExternalReturnEvidence(opts);
   const returns = [];
   for (const ret of ir.instructions || []) {
     if (ret.op !== OP.RET) continue;
@@ -135,7 +139,9 @@ export function summarizeFunction(model, opts) {
     const descriptor = returnDescriptor(candidate.value);
     const expr = simpleReturnExpression(candidate.value);
     const summary = expr || descriptor;
-    returns.push(candidate.inferred ? { ...summary, inferred: true, evidence: 'terminal-x0-definition' } : summary);
+    returns.push(candidate.inferred
+      ? { ...summary, inferred: true, trusted: hasExternalReturnEvidence, evidence: hasExternalReturnEvidence ? 'external-return-evidence' : 'terminal-x0-definition' }
+      : { ...summary, trusted: true });
   }
 
   const reads = uniqueLocations(facts, FACT.READ);
@@ -147,14 +153,12 @@ export function summarizeFunction(model, opts) {
   const nonStackReads = reads.filter((l) => l.kind !== 'stack');
   void nonStackReads;
   const oneReturn = returns.length === 1 ? returns[0] : null;
-  const trustedReturn = oneReturn && !oneReturn.inferred ? oneReturn : null;
+  const trustedReturn = oneReturn && oneReturn.trusted ? oneReturn : null;
 
-  // A pure getter or pure argument-arithmetic leaf can be recognized from its
-  // side-effect-free structure even when RET itself is untyped and therefore
-  // carries no explicit x0 SSA use. This evidence is local only: unlike an
-  // explicit/prototype-backed return, it must never cross a call boundary.
+  // Pure leaf getters/arithmetic may use local structural evidence for local
+  // classification only. That never authorizes interprocedural propagation.
   const structuralReturn = !!(
-    oneReturn && oneReturn.inferred && calls.length === 0 &&
+    oneReturn && oneReturn.inferred && !oneReturn.trusted && calls.length === 0 &&
     nonStackWrites.length === 0 && rmw.length === 0 && branches.length === 0 &&
     unknownPointerStores.length === 0 &&
     (oneReturn.kind === 'field' || oneReturn.kind === 'argument-arithmetic')
@@ -165,10 +169,14 @@ export function summarizeFunction(model, opts) {
   const setterFact = facts.find((f) => f.kind === FACT.WRITE && f.location && f.location.kind === 'field' &&
     f.value && f.value.origin && f.value.origin.kind === 'argument');
   const setter = !!(setterFact && nonStackWrites.length === 1);
-  const wrapper = calls.length === 1 && nonStackWrites.length === 0 && branches.length === 0 && unknownPointerStores.length === 0 &&
-    (trustedReturn && (trustedReturn.kind === 'call' || trustedReturn.kind === 'argument' || trustedReturn.kind === 'constant'));
-  const forwarding = calls.length === 1 && nonStackWrites.length === 0 && rmw.length === 0 &&
-    branches.length === 0 && unknownPointerStores.length === 0 && !!trustedReturn;
+  const wrapper = !!(
+    calls.length === 1 && nonStackWrites.length === 0 && branches.length === 0 && unknownPointerStores.length === 0 &&
+    trustedReturn && (trustedReturn.kind === 'call' || trustedReturn.kind === 'argument' || trustedReturn.kind === 'constant')
+  );
+  const forwarding = !!(
+    calls.length === 1 && nonStackWrites.length === 0 && rmw.length === 0 &&
+    branches.length === 0 && unknownPointerStores.length === 0 && trustedReturn
+  );
 
   return {
     address: opts && opts.address != null ? opts.address : (model.startAddress != null ? model.startAddress : ir.startAddress),
@@ -191,8 +199,9 @@ export function summarizeFunction(model, opts) {
       simpleArithmeticWrapper: !!(classificationReturn && classificationReturn.kind === 'argument-arithmetic'),
       returnEvidence: !oneReturn ? 'none'
         : !oneReturn.inferred ? 'explicit'
-          : structuralReturn ? 'structural-side-effect-free-terminal-x0'
-            : 'inferred-terminal-x0',
+          : oneReturn.trusted ? 'external'
+            : structuralReturn ? 'structural-side-effect-free-terminal-x0'
+              : 'inferred-terminal-x0',
     },
     engine: 'semantic-ir',
     truncated: !!ir.truncated,
@@ -215,9 +224,7 @@ function normalizeBitvector(value, bits, signed) {
 function composeReturn(wrapper, callee) {
   if (!wrapper || !callee || wrapper.calls.length !== 1 || callee.returns.length !== 1) return null;
   const r = callee.returns[0];
-  // A terminal x0 definition without prototype/caller return evidence is a hint,
-  // not a return contract. Never propagate it across a call boundary.
-  if (!r || r.inferred) return null;
+  if (!r || !r.trusted) return null;
   const call = wrapper.calls[0];
   if (r.kind === 'constant') return r;
   if (r.kind === 'argument') return actualForArgument(call, r.index);
@@ -225,7 +232,7 @@ function composeReturn(wrapper, callee) {
     const actual = actualForArgument(call, r.argument);
     if (actual.kind === 'constant') {
       const raw = r.op === 'sub' ? actual.value - r.constant : actual.value + r.constant;
-      return { kind: 'constant', value: normalizeBitvector(raw, r.bits, r.signed), bits: r.bits || null, signed: r.signed ?? null, via: 'callee-summary' };
+      return { kind: 'constant', value: normalizeBitvector(raw, r.bits, r.signed), bits: r.bits || null, signed: r.signed ?? null, trusted: true, via: 'callee-summary' };
     }
     return { ...r, input: actual, via: 'callee-summary' };
   }
@@ -270,7 +277,11 @@ export class FunctionSummaryCache {
       if (typeof analyze !== 'function') return null;
       const model = await analyze(address, range ? range.end : null);
       if (!model) return null;
-      const summary = summarizeFunction(model, { address });
+      let returnEvidence = opts && opts.returnEvidence;
+      if (returnEvidence == null && typeof this.context.returnEvidenceFor === 'function') {
+        try { returnEvidence = await this.context.returnEvidenceFor(address, model); } catch { returnEvidence = null; }
+      }
+      const summary = summarizeFunction(model, { address, returnEvidence });
       if (!summary) return null;
 
       if (depth < this.maxDepth && summary.calls.length === 1 && summary.classification.forwarding) {
