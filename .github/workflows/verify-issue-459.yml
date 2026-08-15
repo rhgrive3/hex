@@ -1,0 +1,49 @@
+name: Verify issue 459
+on:
+  push:
+    branches:
+      - fix/issue-459-objc-direct-selectors
+permissions:
+  contents: write
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Configure and sync
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git merge --no-edit origin/main
+      - name: Patch oracle selector decoding
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('tests/oracle.py'); s=p.read_text()
+          old="""    small = bool(entsize_raw & 0x80000000)\n    entsize = entsize_raw & 0xFFFC"""
+          new="""    small = bool(entsize_raw & 0x80000000)\n    direct_selectors = bool(entsize_raw & 0x40000000)\n    entsize = entsize_raw & 0xFFFC"""
+          if 'direct_selectors = bool(entsize_raw & 0x40000000)' not in s:
+              if old not in s: raise SystemExit('method-list flags anchor missing')
+              s=s.replace(old,new,1)
+          old2="""            # name は selector 参照（*const char**）\n            sel_ref = p + n_off\n            sel_p = rebase.get(sel_ref, img.u64(sel_ref) or 0)\n            name = img.cstr(sel_p) if img.off(sel_p) is not None else None\n            imp = p + 8 + i_off"""
+          new2="""            # Relative method lists have two selector encodings.  With\n            # METHOD_LIST_FLAG_RELATIVE_DIRECT_SELECTORS (0x40000000), the\n            # name relative pointer targets the selector string directly.\n            # Otherwise it targets a selref whose pointee is the string.\n            sel_ref = p + n_off\n            if direct_selectors:\n                sel_p = sel_ref\n            else:\n                sel_p = rebase.get(sel_ref, img.u64(sel_ref) or 0)\n            name = img.cstr(sel_p) if img.off(sel_p) is not None else None\n            imp = p + 8 + i_off"""
+          if 'if direct_selectors:' not in s:
+              if old2 not in s: raise SystemExit('small-method selector anchor missing')
+              s=s.replace(old2,new2,1)
+          p.write_text(s)
+          PY
+      - run: python3 tests/issue-459-oracle-methods.py
+      - run: npm run check
+      - name: Commit verified implementation
+        run: |
+          rm -f .github/workflows/verify-issue-459.yml
+          git add -A
+          git commit -m "fix: decode direct ObjC small selectors in oracle (#459)"
+          git push origin HEAD
