@@ -121,7 +121,6 @@ jobs:
           npm run check
 
       - name: Browser validation
-        continue-on-error: true
         run: |
           npm install --no-save --save-exact playwright@1.55.0
           npx --no-install playwright install-deps chromium webkit
@@ -139,4 +138,19 @@ jobs:
           git add -A
           git status --short
           git commit -m "Merge latest main and finalize ChatGPT userscript integration"
-          git push origin HEAD:chatgpt-userscript-host
+
+          # The workflow file itself can advance the remote branch while this run
+          # is executing. Never overwrite real concurrent work: accept only a
+          # finalizer-only advance, then lease exactly that observed remote SHA.
+          git fetch origin chatgpt-userscript-host
+          remote_sha="$(git rev-parse origin/chatgpt-userscript-host)"
+          if [ "$remote_sha" != "$GITHUB_SHA" ]; then
+            changed="$(git diff --name-only "$GITHUB_SHA" "$remote_sha" || true)"
+            unexpected="$(printf '%s\n' "$changed" | grep -v '^\.github/workflows/finalize-pr603\.yml$' | sed '/^$/d' || true)"
+            if [ -n "$unexpected" ]; then
+              echo 'Branch advanced with non-finalizer changes; refusing to overwrite:'
+              printf '%s\n' "$unexpected"
+              exit 1
+            fi
+          fi
+          git push --force-with-lease=refs/heads/chatgpt-userscript-host:"$remote_sha" origin HEAD:chatgpt-userscript-host
