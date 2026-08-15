@@ -20,8 +20,6 @@ jobs:
         with:
           node-version: 22
       - run: npm run check
-      - name: Fetch pinned real Mach-O fixtures
-        run: node tools/fetch-large-fixtures.mjs
       - run: npm run binary:test
       - run: npm run binary:gate
 

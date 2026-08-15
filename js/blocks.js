@@ -451,7 +451,8 @@ export function makeInstruction(raw) {
     insn.memory = {
       kind: LOAD_MN.test(base) ? 'load' : 'store',
       base: regKey(mem.base),
-      disp: mem.disp && mem.disp.value != null ? mem.disp.value : null,
+      disp: mem.addressDisp && mem.addressDisp.value != null ? mem.addressDisp.value : (mem.disp && mem.disp.value != null ? mem.disp.value : null),
+      writebackDisp: mem.writebackDisp && mem.writebackDisp.value != null ? mem.writebackDisp.value : null,
       indexed: !!mem.index,
       // 添字レジスタ。フィールドの位置がここに載ってくる形（非固定 ABI）を解くのに要る
       index: mem.index ? regKey(mem.index) : null,

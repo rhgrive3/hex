@@ -19,10 +19,10 @@ const identityRules = [
   binRule('sub-zero', 'canonical', 'sub', (n) => isConst(n.right, 0) ? {} : null, (n) => n.left),
   binRule('mul-one-right', 'canonical', 'mul', (n) => isConst(n.right, 1) ? {} : null, (n) => n.left),
   binRule('mul-one-left', 'canonical', 'mul', (n) => isConst(n.left, 1) ? {} : null, (n) => n.right),
-  binRule('mul-zero-right', 'canonical', 'mul', (n) => isConst(n.right, 0) ? {} : null, (n) => c(0, n)),
-  binRule('mul-zero-left', 'canonical', 'mul', (n) => isConst(n.left, 0) ? {} : null, (n) => c(0, n)),
-  binRule('and-zero-right', 'canonical', 'and', (n) => isConst(n.right, 0) ? {} : null, (n) => c(0, n)),
-  binRule('and-zero-left', 'canonical', 'and', (n) => isConst(n.left, 0) ? {} : null, (n) => c(0, n)),
+  binRule('mul-zero-right', 'canonical', 'mul', (n) => isConst(n.right, 0) && isPure(n.left) ? {} : null, (n) => c(0, n)),
+  binRule('mul-zero-left', 'canonical', 'mul', (n) => isConst(n.left, 0) && isPure(n.right) ? {} : null, (n) => c(0, n)),
+  binRule('and-zero-right', 'canonical', 'and', (n) => isConst(n.right, 0) && isPure(n.left) ? {} : null, (n) => c(0, n)),
+  binRule('and-zero-left', 'canonical', 'and', (n) => isConst(n.left, 0) && isPure(n.right) ? {} : null, (n) => c(0, n)),
   binRule('or-zero-right', 'canonical', 'or', (n) => isConst(n.right, 0) ? {} : null, (n) => n.left),
   binRule('or-zero-left', 'canonical', 'or', (n) => isConst(n.left, 0) ? {} : null, (n) => n.right),
   binRule('xor-zero-right', 'canonical', 'xor', (n) => isConst(n.right, 0) ? {} : null, (n) => n.left),
@@ -37,8 +37,8 @@ const identityRules = [
   binRule('or-self', 'canonical', 'or', (n) => sameExpr(n.left, n.right) && isStable(n.left) ? {} : null, (n) => n.left),
   binRule('udiv-one', 'canonical', 'udiv', (n) => isConst(n.right, 1) ? {} : null, (n) => n.left),
   binRule('sdiv-one', 'canonical', 'sdiv', (n) => isConst(n.right, 1) ? {} : null, (n) => n.left),
-  binRule('umod-one', 'canonical', 'umod', (n) => isConst(n.right, 1) ? {} : null, (n) => c(0, n)),
-  binRule('smod-one', 'canonical', 'smod', (n) => isConst(n.right, 1) ? {} : null, (n) => c(0, n)),
+  binRule('umod-one', 'canonical', 'umod', (n) => isConst(n.right, 1) && isPure(n.left) ? {} : null, (n) => c(0, n)),
+  binRule('smod-one', 'canonical', 'smod', (n) => isConst(n.right, 1) && isPure(n.left) ? {} : null, (n) => c(0, n)),
   {
     name: 'neg-zero', phase: 'canonical', match: (n) => n?.kind === 'unary' && n.op === 'neg' && isConst(n.arg, 0) ? {} : null,
     rewrite: (n) => c(0, n), proof: proof('integer-algebra', '-0 == 0'), cost,
@@ -219,7 +219,7 @@ const rangeRules = [{
 
 const selectRules = [{
   name: 'select-identical-arms', phase: 'select',
-  match: (n) => n?.kind === 'select' && sameExpr(n.whenTrue, n.whenFalse) && mayDuplicate(n.whenTrue) ? {} : null,
+  match: (n) => n?.kind === 'select' && sameExpr(n.whenTrue, n.whenFalse) && isPure(n.condition) && mayDuplicate(n.whenTrue) ? {} : null,
   rewrite: (n) => n.whenTrue, proof: proof('conditional-identity', 'both select arms identical'), cost,
 }, {
   name: 'select-bool-materialize', phase: 'select',

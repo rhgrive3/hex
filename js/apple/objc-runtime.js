@@ -128,21 +128,33 @@ export function resolveObjcDispatch(index, { receiverType = null, selector, clas
   const all = (index.methodsBySelector.get(methodKey(classMethod, selector)) || []).slice();
   if (!all.length) return { resolved: null, candidates: [], confidence: 0.1, reason: 'selector not present in parsed metadata' };
 
-  const chain = hierarchy(index, receiverType);
+  const cleanReceiver = cleanClassName(receiverType);
+  const chain = hierarchy(index, cleanReceiver);
   const ranks = new Map(chain.map((n, i) => [n, i]));
   const allowedProtocols = protocolSet(index, chain, protocols);
   let candidates = all.map((m) => {
     let score = 0.25;
     let reason = m.source;
-    if (ranks.has(m.className)) { score = Math.max(0.6, 0.98 - ranks.get(m.className) * 0.08); reason = ranks.get(m.className) ? 'superclass method' : 'receiver class method'; }
-    else if (m.source === 'category' && m.className && ranks.has(m.className)) { score = 0.91; reason = 'category on receiver hierarchy'; }
+    if (m.source === 'category' && m.className && ranks.has(m.className)) { score = 0.91; reason = 'category on receiver hierarchy'; }
+    else if (ranks.has(m.className)) { score = Math.max(0.6, 0.98 - ranks.get(m.className) * 0.08); reason = ranks.get(m.className) ? 'superclass method' : 'receiver class method'; }
     else if (m.source === 'protocol' && allowedProtocols.has(m.className)) { score = 0.78; reason = 'receiver protocol requirement'; }
     return { ...m, score, reason };
   });
 
-  if (receiverType) {
+  if (cleanReceiver) {
     const narrowed = candidates.filter((m) => ranks.has(m.className) || (m.source === 'protocol' && allowedProtocols.has(m.className)));
-    if (narrowed.length) candidates = narrowed;
+    if (!narrowed.length) {
+      return {
+        resolved: null,
+        candidates: [],
+        confidence: 0,
+        receiverType: cleanReceiver,
+        selector,
+        classMethod: !!classMethod,
+        reason: 'selector candidates contradict the explicit receiver type',
+      };
+    }
+    candidates = narrowed;
   }
   candidates.sort((a, b) => b.score - a.score || String(a.className).localeCompare(String(b.className)));
 
@@ -153,7 +165,7 @@ export function resolveObjcDispatch(index, { receiverType = null, selector, clas
     resolved: unambiguous ? top : null,
     candidates,
     confidence: top ? top.score : 0,
-    receiverType: cleanClassName(receiverType),
+    receiverType: cleanReceiver,
     selector,
     classMethod: !!classMethod,
     reason: unambiguous ? top.reason : 'multiple plausible Objective-C targets',

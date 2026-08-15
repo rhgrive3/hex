@@ -1013,7 +1013,18 @@ async function guessFunctions({ regionId, limit, requestId, epoch }) {
   const list = Array.from(found).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
   const starts = new BigUint64Array(list.length);
   for (let i = 0; i < list.length; i++) starts[i] = list[i];
-  return { starts, cancelled: false, __transfer: [starts.buffer] };
+  const capped = found.size >= cap;
+  return {
+    starts, cancelled: false, capped, truncated: capped, complete: !capped, cap,
+    completeness: {
+      complete: !capped,
+      reason: capped ? 'function-start-cap-reached' : null,
+      discovered: list.length,
+      cap,
+      addressRange: { regionId, vmAddr: region.vmAddr, size: region.size, complete: !capped },
+    },
+    __transfer: [starts.buffer],
+  };
 }
 
 /* ── プログラム全体の索引（1 パスで作る） ───────────────────

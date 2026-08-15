@@ -15,6 +15,7 @@ function program(entries, fallback = null) {
   return {
     fetch: async (addr) => table.get(BigInt(addr).toString()) || (fallback ? fallback(addr) : null),
     read: async () => null,
+    isExecutable: (addr) => table.has(BigInt(addr).toString()),
     symbolFor: () => null,
   };
 }
@@ -298,7 +299,7 @@ class FakeAdapter extends DebugAdapter {
   const transport={send:async(p)=>sent.push(p),onMessage:(fn)=>{receiver=fn;return()=>{}},close:()=>{}};
   const client=new RemoteProtocolClient(transport,{timeoutMs:100}); client.setEpoch(7);
   const p=client.request('readRegisters',{address:0x1234n}); await new Promise((r)=>setTimeout(r,0));
-  const req=sent.find((x)=>x.type==='request'); assert.equal(req.params.address,'4660');
+  const req=sent.find((x)=>x.type==='request'); assert.deepEqual(req.params.address,{__hex_wire_type__:'bigint',value:'4660'});
   receiver({version:1,type:'response',id:req.id,epoch:6,result:{x0:'1'}});
   assert.equal(client.pending.size,1);
   receiver({version:1,type:'response',id:req.id,epoch:7,result:{x0:'2'}});

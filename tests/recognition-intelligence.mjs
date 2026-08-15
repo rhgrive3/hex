@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
-import { fingerprintFunction, compareFingerprints, normalizeInstruction } from '../js/fingerprint/index.js';
+import { FUNCTION_FINGERPRINT_VERSION, fingerprintFunction, compareFingerprints, normalizeInstruction } from '../js/fingerprint/index.js';
 import { FunctionMatchIndex, matchFunctions, matchFunctionsFast, recognitionMetrics, calibrationReport } from '../js/recognition/matcher.js';
 import { classifyFunction, discoverSubsystems, applicationCodeScore, rankApplicationFunctions, clusterFunctions, classificationMetrics } from '../js/recognition/classifier.js';
 import { recognizeLibraries, createKnowledgePack, importKnowledgePack } from '../js/signature/index.js';
@@ -19,8 +19,9 @@ assert.equal(d.matches[0].changeType,'moved');
 assert.equal(matchFunctionsFast([base],[{...base,address:0x9010n}]).matches[0].identity,'exact');
 
 // relocation normalization and missing/empty safety
-const relocA=fingerprintFunction({...base,bytes:Uint8Array.from([1,2,3,4,5,6,7,8]),relocationOffsets:[0],instructions:[]});
-const relocB=fingerprintFunction({...base,bytes:Uint8Array.from([9,9,9,9,9,9,9,9]),relocationOffsets:[0],instructions:[]});
+const relocation=[{offset:0,width:8}];
+const relocA=fingerprintFunction({...base,bytes:Uint8Array.from([1,2,3,4,5,6,7,8]),relocationOffsets:relocation,instructions:[]});
+const relocB=fingerprintFunction({...base,bytes:Uint8Array.from([9,9,9,9,9,9,9,9]),relocationOffsets:relocation,instructions:[]});
 assert.equal(relocA.normalizedBytesHash,relocB.normalizedBytesHash);
 assert.equal(compareFingerprints(relocA,relocB).identity,'normalized-identical');
 const emptyA=fingerprintFunction({address:1n,bytes:new Uint8Array(0)}), emptyB=fingerprintFunction({address:2n,bytes:new Uint8Array(0)});
@@ -32,7 +33,7 @@ assert.equal(compareFingerprints(emptyA,emptyB).reasons.includes('strings'),fals
 const regA=fingerprintFunction({...base,bytes:Uint8Array.from([1,2,3,4]),instructions:['add x3, x1, x2','str x3, [x0,#0x20]']});
 const regB=fingerprintFunction({...base,bytes:Uint8Array.from([9,8,7,6]),instructions:['add x11, x8, x9','str x11, [x4,#0x20]']});
 assert.equal(regA.normalizedOperandsHash,regB.normalizedOperandsHash);
-assert.equal(normalizeInstruction('str x3, [x0, #0x20]').operands.includes('#0x20'), true, 'field offsets must remain semantic constants');
+assert.equal(normalizeInstruction('str x3, [x0, #0x20]').operands.includes('#32'), true, 'field offsets must remain semantic constants');
 assert.equal(normalizeInstruction('adrp x8, #0x100120000').operands.includes('@address'), true, 'relocatable addresses normalize');
 const aliasSame=fingerprintFunction({...base,bytes:null,semantic:{},cfg:{},strings:[],imports:[],calls:[],constants:[],instructions:['add x3,x1,x1','ret']});
 const aliasDifferent=fingerprintFunction({...base,bytes:null,semantic:{},cfg:{},strings:[],imports:[],calls:[],constants:[],instructions:['add x3,x1,x2','ret']});
@@ -70,7 +71,7 @@ const instructionOnlyA={address:42n,architecture:'arm64',size:16,instructions:['
 const instructionOnlyB={address:43n,architecture:'arm64',size:16,instructions:['mov x20,x21','add x20,x20,#1','ret']};
 assert.equal(matchFunctions([instructionOnlyA],[instructionOnlyB]).matches.length,0,'correlated instruction evidence alone is not identity');
 const staleFast={schema:'hex.function-fingerprint-fast',version:2,address:44n,architecture:'arm64',size:16,instructionSequenceHash:'legacy'};
-assert.equal(new FunctionMatchIndex([staleFast]).items[0].version,3,'stale fast fingerprints are upgraded before indexing');
+assert.equal(new FunctionMatchIndex([staleFast]).items[0].version,FUNCTION_FINGERPRINT_VERSION,'stale fast fingerprints are upgraded before indexing');
 
 // unrelated collision resistance: same size/empty metadata alone cannot match.
 const unrelated1=fingerprintFunction({address:10n,architecture:'arm64',size:64,bytes:Uint8Array.from({length:64},(_,i)=>i),cfg:{blocks:4,edges:3,exits:1}});

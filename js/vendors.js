@@ -314,5 +314,6 @@ export function vendorOf(className, learned) {
 export function vendorConflicts(goalId, vendor) {
   if (!vendor) return false;
   if (!GAME_VALUE_GOALS.has(goalId)) return false;
+  if (vendor.via === 'cluster' || vendor.confidence === 'low') return false;
   return true;
 }

@@ -112,13 +112,37 @@ export class CodeViewer {
                     this.baseRow + Math.floor(this.vp.scrollTop / this.rowH));
   }
 
+  fixedInstructionSize() {
+    const cap = this.region?.capability || this.backend?.platformInfo?.capability || this.backend?.legacyInfo?.capability || null;
+    if (cap && Object.prototype.hasOwnProperty.call(cap, 'fixedInstructionSize')) {
+      const n = cap.fixedInstructionSize;
+      return Number.isInteger(n) && n > 0 ? n : null;
+    }
+    // Legacy viewer is ARM64-only.
+    return this.region?.disasm === false ? null : 4;
+  }
+
+  rowOfAddress(addr) {
+    if (!this.region || addr == null) return null;
+    const rel = addr - this.region.vmAddr;
+    if (rel < 0n || rel >= this.region.size) return null;
+    const width = this.fixedInstructionSize();
+    if (!width) return null;
+    const w = BigInt(width);
+    if (rel % w !== 0n) return null;
+    return Number(rel / w);
+  }
+
   topAddress() {
     if (!this.region) return null;
-    return this.region.vmAddr + BigInt(this.topRow()) * 4n;
+    return this.rowAddress(this.topRow());
   }
 
   rowAddress(row) {
-    return this.region.vmAddr + BigInt(row) * 4n;
+    if (!this.region) return null;
+    const width = this.fixedInstructionSize();
+    if (!width) return null;
+    return this.region.vmAddr + BigInt(row) * BigInt(width);
   }
 
   /* ── content ──────────────────────────────────────────────── */
@@ -274,10 +298,9 @@ export class CodeViewer {
   }
 
   goToAddress(addr) {
-    if (!this.region) return false;
-    const rel = addr - this.region.vmAddr;
-    if (rel < 0n || rel >= this.region.size) return false;
-    this.goToRow(Number(rel / 4n), 'third');
+    const row = this.rowOfAddress(addr);
+    if (row == null) return false;
+    this.goToRow(row, 'third');
     return true;
   }
 
