@@ -9,6 +9,7 @@ export function createTurnSnapshot(local = {}, request = {}) {
   const identity = resolveBinaryIdentity(local, request);
   const projectId = first(request.projectId, local.projectId, local.project?.id, local.project?.binaryHash);
   const runtimeId = first(local.runtimeSession?.id, local.runtime?.sessionId, local.runtimeSessionId);
+  const runtimeKnown = local.runtimeSessionKnown === true || runtimeId != null;
   const requestedScope = String(request.scope || 'auto');
   return deepFreeze({
     id: `turn_${Date.now().toString(36)}_${turnSequence++}`,
@@ -26,6 +27,7 @@ export function createTurnSnapshot(local = {}, request = {}) {
     },
     selection,
     runtimeSessionIdentity: runtimeId == null ? null : String(runtimeId),
+    runtimeSessionState: runtimeKnown ? (runtimeId == null ? 'none' : 'bound') : 'unknown',
     requestedScope,
     capabilities: snapshotCapabilities(local),
     neighborhood: snapshotNeighborhood(local, current),
