@@ -5,6 +5,7 @@ import { AI_QUOTA, acquireQuotaState, releaseQuotaState } from './js/ai/quota.js
 const STATE_KEY = 'quota';
 const CHATGPT_ORIGINS = new Set(['https://chatgpt.com', 'https://chat.openai.com']);
 const USER_SCRIPT_PATH = '/hex.user.js';
+const USER_SCRIPT_META_PATH = '/hex.meta.js';
 const USER_SCRIPT_TEMPLATE = '/userscript/hex.user.template.js';
 const USER_SCRIPT_ASSET_PREFIX = '/userscript-assets/';
 
@@ -39,7 +40,8 @@ export default {
   async fetch(request, env, executionCtx) {
     const url = new URL(request.url);
 
-    if (url.pathname === USER_SCRIPT_PATH) return serveUserscript(request, env, url);
+    if (url.pathname === USER_SCRIPT_PATH) return serveUserscript(request, env, url, false);
+    if (url.pathname === USER_SCRIPT_META_PATH) return serveUserscript(request, env, url, true);
     if (url.pathname.startsWith(USER_SCRIPT_ASSET_PREFIX)) return serveUserscriptAsset(request, env, url);
 
     if (url.pathname.startsWith('/api/')) {
@@ -53,7 +55,7 @@ export default {
   },
 };
 
-async function serveUserscript(request, env, url) {
+async function serveUserscript(request, env, url, metadataOnly) {
   if (request.method !== 'GET' && request.method !== 'HEAD') {
     return new Response('Method Not Allowed', { status: 405, headers: { Allow: 'GET, HEAD' } });
   }
@@ -62,7 +64,13 @@ async function serveUserscript(request, env, url) {
   const templateUrl = new URL(USER_SCRIPT_TEMPLATE, url.origin);
   const source = await env.ASSETS.fetch(new Request(templateUrl, { method: 'GET' }));
   if (!source.ok) return new Response('Hex userscript has not been built.', { status: 503 });
-  const text = (await source.text()).split('__HEX_ORIGIN__').join(url.origin);
+  let text = (await source.text()).split('__HEX_ORIGIN__').join(url.origin);
+  if (metadataOnly) {
+    const marker = '// ==/UserScript==';
+    const end = text.indexOf(marker);
+    if (end < 0) return new Response('Hex userscript metadata is invalid.', { status: 500 });
+    text = text.slice(0, end + marker.length) + '\n';
+  }
   const headers = new Headers({
     'content-type': 'application/javascript; charset=utf-8',
     'cache-control': 'no-cache, no-store, must-revalidate',
