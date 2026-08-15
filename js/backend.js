@@ -278,17 +278,24 @@ export class Backend {
 
   async analyze(sliceIndex) {
     if (this.formatId !== 'macho') return this._callTo('platform', 'analyze', { sliceIndex });
-    const file = this.file;
+    const uiEpoch = this.gen, transportEpoch = this.transportEpoch, file = this.file;
+    const assertCurrent = () => {
+      if (uiEpoch !== this.gen || transportEpoch !== this.transportEpoch || file !== this.file) throw new StaleRequestError();
+    };
     const legacy = await this._callTo('legacy', 'analyze', { sliceIndex });
+    assertCurrent();
     const enriched = await augmentAnalysisResultWithChainedImports(file, sliceIndex, legacy);
+    assertCurrent();
     if (!this.platformInfo?.normalizedDyldTruth) {
       return markMachOSymbolTruthIncomplete(enriched, this.legacyInfo?.platform?.normalizedDyldError || 'normalized-macho-analysis-unavailable');
     }
     try {
       const normalized = await this._callTo('platform', 'analyze', { sliceIndex });
+      assertCurrent();
       return mergeMachOAnalysisResults(enriched, normalized);
     } catch (error) {
       if (error?.stale) throw error;
+      assertCurrent();
       return markMachOSymbolTruthIncomplete(enriched, error?.message || 'normalized-macho-analysis-failed');
     }
   }

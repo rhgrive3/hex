@@ -61,4 +61,38 @@ assert.equal(resultB.formatId,'pe');
 assert.equal(backend.file,fileB,'latest open must own committed backend state');
 assert.equal(backend.formatId,'pe');
 
+
+
+// Multi-stage Mach-O analysis must keep the epoch captured at start. The local
+// chained-import read is asynchronous; a slice switch during that read must not
+// let the old analysis return under the new epoch.
+{
+  const analysisBackend=new Backend();
+  const legacyAnalysisWorker=workers[workers.length-2];
+  let releaseRead=null;
+  const fakeFile={
+    size:8,
+    slice(){return {arrayBuffer(){return new Promise((resolve)=>{releaseRead=()=>resolve(new ArrayBuffer(8));});}};},
+  };
+  analysisBackend.formatId='macho';
+  analysisBackend.file=fakeFile;
+  analysisBackend.platformInfo={normalizedDyldTruth:false};
+  analysisBackend.legacyInfo={platform:{}};
+  let staleAnalysis=null;
+  const analysis=analysisBackend.analyze(0);
+  const observed=analysis.catch((error)=>{staleAnalysis=error;return null;});
+  await tick();
+  const request=find(legacyAnalysisWorker,(m)=>m.t==='analyze'&&m.sliceIndex===0);
+  assert.ok(request);
+  legacyAnalysisWorker.reply(request,{
+    addrs:new BigUint64Array(0),kinds:new Uint8Array(0),flags:new Uint8Array(0),names:[],funcs:new BigUint64Array(0),
+  });
+  for(let i=0;i<10&&!releaseRead;i++)await tick();
+  assert.ok(releaseRead,'chained-import augmentation should have started a file read');
+  analysisBackend.advanceEpoch();
+  releaseRead();
+  await observed;
+  assert.equal(staleAnalysis?.stale,true,'analysis crossing a slice epoch must reject as stale');
+}
+
 console.log('backend concurrent-open epoch regression: PASS');
