@@ -12,6 +12,10 @@ function keyOf(value){return value==null?'':String(value);}
 function cleanName(name){return String(name||'analysis').replace(/[^a-z0-9._-]+/gi,'_').replace(/^_+|_+$/g,'').slice(0,120)||'analysis';}
 function asBigInt(value){try{return value==null?null:BigInt(value);}catch{return null;}}
 function bytesOf(value){return Array.from(value||[],(x)=>Number(x)&255);}
+function identityKey(identity){
+  const meta=identity?.metadata||{};
+  return [identity?.hash||'',meta.sliceIndex,meta.sliceOffset,meta.sliceSize,meta.uuid,meta.architecture].map(keyOf).join('\0');
+}
 
 export function binaryIdentity(app, hash=null){
   const info=app?.store?.get?.('fileInfo')||null;
@@ -157,10 +161,13 @@ export class ProductWorkspace{
   constructor(app,{backendFactory=()=>new Backend(),storage=globalThis.localStorage}={}){
     this.app=app;this.backendFactory=backendFactory;this.storage=storage||null;this.project=null;this.identity=null;this.baseline=null;this.diffState=null;this.busy=null;
   }
+  _resetBoundState(){this.project=null;this.baseline=null;this.diffState=null;this.busy=null;}
   async bind(){
-    if(!this.app?.store?.get?.('fileInfo')){this.identity=null;this.project=null;return null;}
+    if(!this.app?.store?.get?.('fileInfo')){this.identity=null;this._resetBoundState();return null;}
     const hash=await this.app.backend.ensureContentHash();
-    this.identity=binaryIdentity(this.app,hash);
+    const nextIdentity=binaryIdentity(this.app,hash);
+    if(this.identity&&identityKey(this.identity)!==identityKey(nextIdentity))this._resetBoundState();
+    this.identity=nextIdentity;
     const saved=this._loadLocal(this.identity);
     if(saved){const ok=sameProjectIdentity(saved,this.identity);if(ok.ok){try{applyWorkspaceProject(this.app,saved);this.project=saved;}catch{/* local restore is best effort */}}}
     if(!this.project)this.project=snapshotWorkspace(this.app,this.identity);
