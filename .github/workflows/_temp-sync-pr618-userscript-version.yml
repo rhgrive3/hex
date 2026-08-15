@@ -1,0 +1,44 @@
+name: Temp sync PR618 userscript version
+on:
+  push:
+    branches:
+      - fix-analysis-navigation-failure-preserve-sheet
+permissions:
+  contents: write
+jobs:
+  sync:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix-analysis-navigation-failure-preserve-sheet
+          fetch-depth: 0
+      - name: Sync version-only bundle drift
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('userscript/hex.user.template.js')
+          s=p.read_text()
+          old='// @version      1.0.1786804768'
+          new='// @version      1.0.1786806403'
+          if old not in s:
+              raise SystemExit('expected current userscript version not found')
+          if s.count(old) != 1:
+              raise SystemExit('userscript version anchor not unique')
+          p.write_text(s.replace(old,new,1))
+          PY
+      - name: Verify build is now current
+        run: |
+          npm ci
+          npm run userscript:test
+          git diff --exit-code -- userscript/hex.user.template.js userscript/platform-worker.bundle.js
+      - name: Commit version sync and remove temporary workflow
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          rm .github/workflows/_temp-sync-pr618-userscript-version.yml
+          git add userscript/hex.user.template.js .github/workflows
+          git commit -m 'Sync userscript version after navigation hardening'
+          git push origin HEAD:fix-analysis-navigation-failure-preserve-sheet
