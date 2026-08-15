@@ -1,0 +1,44 @@
+name: Validate Project Diff product integration
+on:
+  push:
+    branches:
+      - fix/project-diff-product-547-548
+permissions:
+  contents: write
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply integration fix
+        run: python tools/apply-project-diff-product.py
+      - name: Syntax
+        run: |
+          node --check js/workspace.js
+          node --check js/app.js
+          node --check js/ui/registry.js
+          node --check js/ui/product.js
+          node --check js/ai/ui/hex-context.js
+          node --check tests/issues-547-548-workspace-product.mjs
+      - name: Focused regressions
+        run: |
+          node tests/issues-547-548-workspace-product.mjs
+          npm run ai:test
+          npm run diff:test
+      - name: Full validation
+        run: |
+          node tests/run.js
+          npm run check
+      - name: Finalize
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add js/workspace.js js/app.js js/ui/registry.js js/ui/product.js js/ai/ui/hex-context.js tests/issues-547-548-workspace-product.mjs
+          git commit -m "fix: integrate project persistence and binary diff (#547 #548)"
+          git rm -f .github/workflows/fix-app-product-remaining.yml tools/apply-project-diff-product.py
+          git commit -m "chore: finalize project diff integration"
+          git push origin HEAD:fix/project-diff-product-547-548
