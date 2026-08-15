@@ -34,6 +34,23 @@ s = s.replace(
     1,
 )
 
+# A stale ADRP value must not survive a long straight-line gap into an adjacent
+# function. Keep the shared path-aware contract fail-closed even when metadata
+# does not expose an explicit function boundary to the worker scan.
+s = s.replace(
+    "function addressProvenanceBase(state, reg, index, window = PAIR_WINDOW) {",
+    "function addressProvenanceBase(state, reg, index, window = 16) {",
+    1,
+)
+
+# Ambiguous Objective-C ownership remains visible even when a separate recovered
+# summary exists; the summary's certainty and the owner candidates are independent.
+s = s.replace(
+    "    if (!recovered && ownerFact.candidates.length > 1) {",
+    "    if (ownerFact.candidates.length > 1) {",
+    1,
+)
+
 # The old UX check hard-coded the unsafe rule that every displayed function name
 # is Confirmed. #558 intentionally replaces that with provenance-aware semantics,
 # so update the architecture assertion to guard the new contract instead.
