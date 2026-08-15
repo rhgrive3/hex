@@ -12,14 +12,16 @@ function modelOf(lines){
 
 const arithmetic=modelOf(['add x0, x0, #5','ret']);
 assert.equal(irFor(arithmetic).instructions.find((i)=>i.op===OP.RET).args?.length||0,0,'IR RET stays ABI-unknown');
-const wrapper=summarizeFunction(arithmetic);
+const wrapper=summarizeFunction(arithmetic,{returnEvidence:{trusted:true,source:'prototype-fixture'}});
 assert.equal(wrapper.classification.simpleArithmeticWrapper,true);
 assert.equal(wrapper.returns[0].kind,'argument-arithmetic');
 assert.equal(wrapper.returns[0].inferred,true);
+assert.equal(wrapper.returns[0].trusted,true);
 
-const getter=summarizeFunction(modelOf(['ldr x0, [x0, #0x20]','ret']));
+const getter=summarizeFunction(modelOf(['ldr x0, [x0, #0x20]','ret']),{returnEvidence:{trusted:true,source:'prototype-fixture'}});
 assert.equal(getter.classification.getter,true);
 assert.equal(getter.returns[0].kind,'field');
+assert.equal(getter.returns[0].trusted,true);
 
 // x0 surviving from function entry is not enough to invent a return value.
 const setter=summarizeFunction(modelOf(['str x2, [x0, #0x20]','ret']));
