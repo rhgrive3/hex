@@ -1,0 +1,133 @@
+{
+  "schema": 1,
+  "baseline": {
+    "sourceCommit": "9c20307faf02a56326fdb888db455eb8917612e2",
+    "capturedOn": "2026-08-16",
+    "environment": { "ci": "ubuntu-latest", "node": "22", "binarySamplesPerTarget": 3 },
+    "note": "Phase 0 reproducible baseline. Measurement-only branch changes do not alter production semantic/decompiler/architecture code.",
+    "sourceTree": "624d2ee019184d6fbdf306d6415ab92ac5c939fe",
+    "measurementRuns": {
+      "accuracy": 31898222630,
+      "compilerTruthGhidra": 31898062912,
+      "binaryBenchmark": 31898004742
+    }
+  },
+  "fixtures": {
+    "battlecats": { "size": 28153072, "sha256": "567234909b2a33d62548257c4148290d9215d7edf414fa17c6b06fcf8c7cdf13" },
+    "TsumTsum": { "size": 45994784, "sha256": "4f877bb1d4e1503b439ce07c601a1fddd6a38a6f32395bfd3071b056f77839b3" },
+    "YWP": { "size": 63455952, "sha256": "cd1c72a30ba29f423a670f9e534c8865689ca09890769a95822869c162d240a6" }
+  },
+  "regressionPolicy": {
+    "accuracy": "fail-closed",
+    "missingAccuracyData": "fail",
+    "ghidraDifferential": "mandatory",
+    "wallClock": "informational",
+    "deterministicWork": { "gate": "blocking", "maxRatio": 1.05, "metrics": ["rangeReads", "totalRequestedBytes"] }
+  },
+  "metrics": {
+    "accuracy": {
+      "functionStartPrecision": {
+        "status": "measured", "gate": "blocking", "unit": "ratio",
+        "values": { "YWP": 1.0, "BattleCats": 1.0, "TsumTsum": 1.0 },
+        "reason": "Cross-binary oracle compares Hex function starts with independently generated LIEF/Capstone truth."
+      },
+      "functionStartRecall": {
+        "status": "measured", "gate": "blocking", "unit": "ratio",
+        "values": { "YWP": 1.0, "BattleCats": 1.0, "TsumTsum": 1.0 },
+        "reason": "Cross-binary oracle compares Hex function starts with independently generated LIEF/Capstone truth."
+      },
+      "extentPrecision": { "status": "unmeasured", "gate": "none", "reason": "The current oracle exposes function starts but no independently validated function extents." },
+      "extentRecall": { "status": "unmeasured", "gate": "none", "reason": "The current oracle exposes function starts but no independently validated function extents." },
+      "cfgEdges": { "status": "unmeasured", "gate": "none", "reason": "Current accuracy metrics cover call edges, not a complete independently validated CFG-edge oracle." },
+      "semanticMismatches": { "status": "measured", "gate": "blocking", "unit": "count", "value": 0, "reason": "compiler-truth checks semantic equivalence and fails on counterexamples." },
+      "decompilerSemanticRegressions": { "status": "measured", "gate": "blocking", "unit": "count", "value": 0, "reason": "compiler-truth plus mandatory Ghidra differential must complete without semantic regression." },
+      "falseCertainty": { "status": "unmeasured", "gate": "none", "reason": "No current ground-truth benchmark separates confident wrong claims from ordinary unknown/incorrect results." }
+    },
+    "performance": {
+      "coldOpen": { "status": "unmeasured", "gate": "none", "reason": "Current loader microbenchmark does not isolate a fresh-process/file-cache cold start." },
+      "warmOpen": { "status": "unmeasured", "gate": "none", "reason": "Current benchmark does not exercise ArtifactStore/project warm reopen semantics." },
+      "activeFunctionAnalysis": { "status": "unmeasured", "gate": "none", "reason": "No stable active-function lifecycle timer is exposed by the current benchmark harness." },
+      "decompilerLatency": { "status": "unmeasured", "gate": "none", "reason": "Compiler-truth enforces correctness but does not emit a stable decompiler latency distribution." },
+      "searchLatency": { "status": "unmeasured", "gate": "none", "reason": "No real-fixture search benchmark exists yet." },
+      "peakMemory": { "status": "unmeasured", "gate": "none", "reason": "Current heap delta is not peak resident memory and is intentionally not relabeled as peak memory." },
+      "cancellationLatency": { "status": "unmeasured", "gate": "none", "reason": "No cancellation-latency oracle exists yet." },
+      "ttfua": { "status": "unmeasured", "gate": "none", "reason": "No end-to-end Time To First Useful Answer instrumentation exists yet." },
+      "loaderOpenLatency": {
+        "status": "measured", "gate": "informational", "unit": "ms",
+        "values": { "battlecats": 6116.685, "TsumTsum": 3969.698, "YWP": 3011.629 },
+        "reason": "Three source-backed loader samples are reported by median; wall-clock never blocks a PR."
+      },
+      "loaderRangeReads": {
+        "status": "measured", "gate": "blocking", "unit": "reads",
+        "values": { "battlecats": 15, "TsumTsum": 12, "YWP": 9 },
+        "reason": "Instrumented ByteSource read count is deterministic across repeated samples and detects I/O work amplification."
+      },
+      "loaderRequestedBytes": {
+        "status": "measured", "gate": "blocking", "unit": "bytes",
+        "values": { "battlecats": 2883600, "TsumTsum": 1572880, "YWP": 786448 },
+        "reason": "Instrumented ByteSource requested bytes are deterministic across repeated samples and detect I/O work amplification."
+      }
+    }
+  },
+  "observations": {
+    "accuracy": {
+      "targets": {
+        "BattleCats": {
+          "functionStartPrecision": 1,
+          "functionStartRecall": 1,
+          "featureFloors": {
+            "sections": 1, "funcs": 1, "funcs-guess": 0.9968745131640442, "disasm": 1, "kinds": 1, "calls": 1, "refs": 1, "imports": 1,
+            "objc": 1, "selstub": 1, "strings": 1, "xrefs": 1, "funcname": 1, "selffield": 1, "role": 1, "pinpoint": 1, "pinpoint-partial": 1,
+            "apimeaning": 1, "summary": 1, "expr": 1, "formula": 1, "pseudoc": 1
+          },
+          "unmeasuredFeatures": []
+        },
+        "TsumTsum": {
+          "functionStartPrecision": 1,
+          "functionStartRecall": 1,
+          "featureFloors": {
+            "sections": 1, "funcs": 1, "funcs-guess": 0.9941073795556256, "disasm": 1, "kinds": 0.9994435685801725, "calls": 1,
+            "refs": 0.9999984721791462, "imports": 1, "objc": 0.9995778096766023, "selstub": 1, "strings": 1, "xrefs": 1, "funcname": 1,
+            "selffield": 0.9987234042553191, "role": 1, "pinpoint": 1, "pinpoint-partial": 1, "apimeaning": 0.9984817571914346,
+            "summary": 0.995, "expr": 1, "pseudoc": 0.9978510028653295
+          },
+          "unmeasuredFeatures": ["formula"]
+        },
+        "YWP": {
+          "functionStartPrecision": 1,
+          "functionStartRecall": 1,
+          "featureFloors": {
+            "sections": 1, "funcs": 1, "funcs-guess": 0.9747791554692281, "disasm": 1, "kinds": 0.999957457670382, "calls": 1, "refs": 1,
+            "imports": 1, "strings": 1, "xrefs": 1, "apimeaning": 0.9983282246187818, "expr": 1, "pseudoc": 0.9991641125661744
+          },
+          "unmeasuredFeatures": ["objc", "selstub", "funcname", "selffield", "role", "pinpoint", "pinpoint-partial", "summary", "formula"]
+        }
+      }
+    },
+    "compilerTruth": {
+      "semanticMismatches": 0,
+      "semanticUnverified": 0,
+      "decompilerSemanticRegressions": 0,
+      "ghidra": { "status": "ok", "parsed": 6, "expected": 6 }
+    },
+    "binary": {
+      "targets": {
+        "battlecats": {
+          "timing": { "loaderMsMedian": 6116.685, "loaderMsSamples": [6155.441, 6116.685, 6082.073] },
+          "work": { "rangeReads": 15, "totalRequestedBytes": 2883600, "largestSingleRead": 524288 },
+          "identity": { "bytes": 28153072, "format": "macho", "arch": "arm64", "sourceBacked": true, "sections": 55, "imports": 3079, "importSites": 25660, "functionSeeds": 102852, "symbols": 3119, "exports": 496, "auditErrors": 0, "auditWarnings": 0 }
+        },
+        "TsumTsum": {
+          "timing": { "loaderMsMedian": 3969.698, "loaderMsSamples": [4015.292, 3969.698, 3756.105] },
+          "work": { "rangeReads": 12, "totalRequestedBytes": 1572880, "largestSingleRead": 262144 },
+          "identity": { "bytes": 45994784, "format": "macho", "arch": "arm64", "sourceBacked": true, "sections": 57, "imports": 3189, "importSites": 3941, "functionSeeds": 152488, "symbols": 0, "exports": 0, "auditErrors": 0, "auditWarnings": 0 }
+        },
+        "YWP": {
+          "timing": { "loaderMsMedian": 3011.629, "loaderMsSamples": [2859.493, 3011.629, 3112.78] },
+          "work": { "rangeReads": 9, "totalRequestedBytes": 786448, "largestSingleRead": 131072 },
+          "identity": { "bytes": 63455952, "format": "macho", "arch": "arm64", "sourceBacked": true, "sections": 51, "imports": 2841, "importSites": 0, "functionSeeds": 246932, "symbols": 2946, "exports": 105, "auditErrors": 0, "auditWarnings": 0 }
+        }
+      }
+    }
+  }
+}

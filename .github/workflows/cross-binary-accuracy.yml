@@ -8,6 +8,7 @@ on:
     paths:
       - 'js/**'
       - 'tests/**'
+      - 'tools/benchmark/**'
       - 'scripts/fetch-real-fixtures.mjs'
       - 'package.json'
       - '.github/workflows/cross-binary-accuracy.yml'
@@ -97,9 +98,15 @@ jobs:
         run: |
           set -o pipefail
           node --max-old-space-size=6000 tests/accuracy.mjs --target=tests/.real-fixtures/TsumTsum --oracle=tests/oracle.TsumTsum.json.gz --json | tee accuracy-TsumTsum.json
-      - name: Accuracy regression gate
+      - name: Existing accuracy regression gate
         if: steps.fixtures.outputs.enabled == 'true'
         run: node tests/accuracy-gate.mjs
+      - name: Structured baseline report
+        if: steps.fixtures.outputs.enabled == 'true'
+        run: node tools/benchmark/accuracy-report.mjs --output=accuracy-baseline-report.json
+      - name: Current-main baseline regression gate
+        if: steps.fixtures.outputs.enabled == 'true'
+        run: node tools/benchmark/compare.mjs --accuracy=accuracy-baseline-report.json
       - name: Upload results
         if: always() && steps.fixtures.outputs.enabled == 'true'
         uses: actions/upload-artifact@v4
@@ -109,4 +116,5 @@ jobs:
             accuracy-BattleCats.json
             accuracy-YWP.json
             accuracy-TsumTsum.json
-          if-no-files-found: ignore
+            accuracy-baseline-report.json
+          if-no-files-found: error
