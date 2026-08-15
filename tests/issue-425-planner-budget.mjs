@@ -6,6 +6,7 @@ const addresses = Array.from({ length:49 }, (_, i) => 0x100000000n + BigInt(i * 
 const exact = addresses[48];
 const analyzed = [];
 
+// External analysis tools are metered: fixtures must report the work they consume.
 const tools = {
   async search_functions() {
     return { results:addresses.map((address, i) => ({ address, name:`candidate_${i + 1}` })) };
