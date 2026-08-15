@@ -1,131 +1,251 @@
-import { build, transform } from 'esbuild';
-import { createCipheriv, createHash, randomBytes } from 'node:crypto';
-import { gzipSync } from 'node:zlib';
-import { readFile, mkdir, rm, writeFile } from 'node:fs/promises';
+import { build } from 'esbuild';
+import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { dirname, posix, relative, resolve } from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const dist = resolve(root, 'dist');
-const generated = resolve(root, '.runtime-build');
-const committedTemplate = resolve(root, 'userscript/hex.user.template.js');
+const output = resolve(root, 'userscript/hex.user.template.js');
+const platformWorkerOutput = resolve(root, 'userscript/platform-worker.bundle.js');
 const ORIGIN_TOKEN = '__HEX_ORIGIN__';
-let LOADER_VERSION = '2.0.0';
-const MAX_LOADER_BYTES = 64 * 1024;
-const CLASSIC_ENTRIES = ['js/worker.js', 'js/platform/capstone-probe-worker.js', 'js/platform/capstone-disasm-worker.js'];
+const CLASSIC_ENTRIES = [
+  'js/worker.js',
+  'js/platform/capstone-probe-worker.js',
+  'js/platform/capstone-disasm-worker.js',
+];
 
-await Promise.all([rm(dist, { recursive: true, force: true }), rm(generated, { recursive: true, force: true })]);
-await Promise.all([mkdir(resolve(dist, 'assets'), { recursive: true }), mkdir(resolve(dist, '.runtime'), { recursive: true }), mkdir(resolve(dist, 'userscript'), { recursive: true }), mkdir(generated, { recursive: true })]);
+const [html, appCss, uxCss, classicManifest, platformWorker] = await Promise.all([
+  readFile(resolve(root, 'index.html'), 'utf8'),
+  readFile(resolve(root, 'css/app.css'), 'utf8'),
+  readFile(resolve(root, 'css/ux.css'), 'utf8'),
+  collectClassicManifest(CLASSIC_ENTRIES),
+  buildPlatformWorker(),
+]);
 
-const [htmlSource, css, workerAssets] = await Promise.all([readFile(resolve(root, 'index.html'), 'utf8'), bundleCss(), buildWorkerAssets()]);
-const body = extractBody(htmlSource);
-const scopedCss = scopeCss(css);
-await writeGeneratedModule('embedded-assets.js', `export const PROTECTED_HOST=${JSON.stringify({ html: body, css, scopedCss })};\nexport const PROTECTED_WORKER_ASSETS=${JSON.stringify(workerAssets)};\n`);
+const bodyMatch = html.match(/<body\b[^>]*>([\s\S]*?)<\/body>/i);
+if (!bodyMatch) throw new Error('index.html does not contain a body element.');
+const body = bodyMatch[1]
+  .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
+  .trim();
 
-const runtime = await bundle('js/userscript/protected-entry.js', { format: 'esm', rewriteImportMeta: true });
-const contentHash = sha256(runtime), buildId = contentHash.slice(0, 24);
-LOADER_VERSION = `2.0.${Number.parseInt(buildId.slice(0, 8), 16)}`;
-const compressed = gzipSync(runtime, { level: 9 });
-const contentKey = randomBytes(32), iv = randomBytes(12);
-const runtimeVersion = `2.${LOADER_VERSION}`;
-const aad = `hex-runtime:${buildId}:${runtimeVersion}`;
-const cipher = createCipheriv('aes-256-gcm', contentKey, iv); cipher.setAAD(Buffer.from(aad));
-const ciphertext = Buffer.concat([cipher.update(compressed), cipher.final(), cipher.getAuthTag()]);
-const assetPath = `/.runtime/runtime.${buildId}.bin`;
-const manifest = Object.freeze({ buildId, runtimeVersion, ciphertextHash: sha256(ciphertext), contentHash, iv: b64(iv), aad, compression: 'gzip', assetPath, byteLength: ciphertext.length });
-await writeFile(resolve(dist, assetPath.slice(1)), ciphertext);
-await writeGeneratedModule('runtime-secrets.js', `export const RUNTIME_BUILD=Object.freeze(${JSON.stringify({ manifest, contentKey: b64(contentKey), signingKey: b64(randomBytes(32)) })});\n`);
+const workerManifest = {
+  classicEntries: CLASSIC_ENTRIES,
+  classicAssets: classicManifest.assets,
+  classicDependencies: classicManifest.dependencies,
+  moduleBundles: { 'js/platform/worker.js': 'userscript/platform-worker.bundle.js' },
+  wasm: 'capstone.wasm',
+};
+const css = scopeCss(`${appCss}\n${uxCss}\n${userscriptCss()}`);
+const banner = hostBootstrap(body, css, workerManifest);
 
-const loaderBundle = await bundle('js/userscript/loader.js', { format: 'iife' });
-const loaderForOrigin = (origin) => loaderBundle.toString('utf8')
-  .replaceAll(ORIGIN_TOKEN, origin)
-  .replaceAll('__HEX_LOADER_VERSION__', LOADER_VERSION)
-  .replaceAll('__HEX_BUILD_ID__', buildId);
-const publicLoader = loaderForOrigin('https://ida.rhgrive.workers.dev');
-if (Buffer.byteLength(publicLoader) > MAX_LOADER_BYTES) throw new Error(`Tiny loader exceeds ${MAX_LOADER_BYTES} bytes.`);
-const loaderName = `loader.${sha256(publicLoader).slice(0, 12)}.js`;
-await writeFile(resolve(dist, 'assets', loaderName), publicLoader);
+const result = await build({
+  absWorkingDir: root,
+  entryPoints: ['js/userscript/entry.js'],
+  bundle: true,
+  write: false,
+  format: 'iife',
+  platform: 'browser',
+  target: ['safari17.4'],
+  charset: 'utf8',
+  legalComments: 'none',
+  minify: false,
+  sourcemap: false,
+  banner: { js: banner },
+  plugins: [remoteImportMetaPlugin()],
+});
 
-const metadata = userscriptMetadata();
-const template = metadata + loaderForOrigin(ORIGIN_TOKEN);
-if (Buffer.byteLength(template) > MAX_LOADER_BYTES) throw new Error(`hex.user.js template exceeds ${MAX_LOADER_BYTES} bytes.`);
-await Promise.all([writeFile(resolve(dist, 'userscript/hex.user.template.js'), template), writeFile(committedTemplate, template)]);
+const js = result.outputFiles?.[0]?.text;
+if (!js) throw new Error('esbuild did not produce a JavaScript bundle.');
 
-const index = standaloneIndex(htmlSource, `/assets/${loaderName}`);
-await writeFile(resolve(dist, 'index.html'), index);
-await writeFile(resolve(dist, 'runtime-manifest.json'), JSON.stringify(publicManifest(manifest), null, 2));
+const version = userscriptVersion();
+const metadata = `// ==UserScript==\n` +
+  `// @name         Hex for ChatGPT\n` +
+  `// @namespace    https://github.com/rhgrive3/hex\n` +
+  `// @version      ${version}\n` +
+  `// @description  Run the Hex binary analysis workbench on ChatGPT Web.\n` +
+  `// @match        https://chatgpt.com/*\n` +
+  `// @run-at       document-idle\n` +
+  `// @inject-into  content\n` +
+  `// @grant        GM.addStyle\n` +
+  `// @grant        GM.xmlHttpRequest\n` +
+  `// @updateURL    ${ORIGIN_TOKEN}/hex.meta.js\n` +
+  `// @downloadURL  ${ORIGIN_TOKEN}/hex.user.js\n` +
+  `// ==/UserScript==\n\n`;
 
-console.log(`built tiny userscript loader (${Buffer.byteLength(template)} bytes)`);
-console.log(`built protected runtime ${buildId} (${runtime.length} -> ${ciphertext.length} bytes)`);
-console.log(`built dist/ with ${manifest.ciphertextHash}`);
+await mkdir(dirname(output), { recursive: true });
+await Promise.all([
+  writeFile(output, metadata + js, 'utf8'),
+  writeFile(platformWorkerOutput, platformWorker, 'utf8'),
+]);
+console.log(`built ${relative(root, output)} (${Buffer.byteLength(metadata + js)} bytes)`);
+console.log(`built ${relative(root, platformWorkerOutput)} (${Buffer.byteLength(platformWorker)} bytes)`);
 
-async function bundleCss() {
-  const result = await build({ absWorkingDir: root, stdin: { contents: '@import "./css/app.css";\n@import "./css/ux.css";', resolveDir: root, loader: 'css' }, bundle: true, write: false, minify: true, sourcemap: false, legalComments: 'none', target: ['safari17.4'] });
-  const output = result.outputFiles?.find((file) => file.path.endsWith('.css')) || result.outputFiles?.[0];
-  if (!output) throw new Error('CSS bundling produced no output.');
-  return output.text;
+async function buildPlatformWorker() {
+  const result = await build({
+    absWorkingDir: root,
+    entryPoints: ['js/platform/worker.js'],
+    bundle: true,
+    write: false,
+    format: 'iife',
+    platform: 'browser',
+    target: ['safari17.4'],
+    charset: 'utf8',
+    legalComments: 'none',
+    minify: false,
+    sourcemap: false,
+  });
+  const source = result.outputFiles?.[0]?.text;
+  if (!source) throw new Error('esbuild did not produce the platform worker bundle.');
+  return source;
 }
 
-async function bundle(entry, { format = 'iife', rewriteImportMeta = false } = {}) {
-  const result = await build({ absWorkingDir: root, entryPoints: [entry], bundle: true, write: false, format, platform: 'browser', target: ['safari17.4'], charset: 'utf8', legalComments: 'none', minify: true, minifyIdentifiers: true, minifySyntax: true, minifyWhitespace: true, sourcemap: false, plugins: rewriteImportMeta ? [protectedImportMetaPlugin()] : [] });
-  const source = result.outputFiles?.[0]?.contents;
-  if (!source) throw new Error(`esbuild produced no output for ${entry}`);
-  return Buffer.from(source);
+async function collectClassicManifest(entries) {
+  const dependencies = {};
+  const seen = new Set();
+
+  const visit = async (path) => {
+    path = normalizeRepoPath(path);
+    if (seen.has(path)) return;
+    seen.add(path);
+    const source = await readFile(resolve(root, path), 'utf8');
+    const deps = parseImportScripts(source, path);
+    dependencies[path] = deps;
+    for (const dependency of deps) await visit(dependency);
+  };
+
+  for (const entry of entries) await visit(entry);
+  return { assets: [...seen], dependencies };
 }
 
-function protectedImportMetaPlugin() {
-  return { name: 'hex-protected-import-meta', setup(api) {
-    api.onLoad({ filter: /\.js$/ }, async (args) => {
-      if (!args.path.startsWith(root)) return null;
-      let source = await readFile(args.path, 'utf8');
-      if (!source.includes('import.meta.url')) return null;
-      const logical = relative(root, args.path).split('\\').join('/');
-      source = source.replace(/\bimport\.meta\.url\b/g, JSON.stringify(`https://hex.invalid/${logical}`));
-      return { contents: source, loader: 'js' };
-    });
-  } };
-}
-
-async function buildWorkerAssets() {
-  const sources = new Map();
-  for (const entry of CLASSIC_ENTRIES) await collectClassic(entry, sources);
-  const classic = {};
-  for (const entry of CLASSIC_ENTRIES) {
-    const minified = await transform(inlineImports(entry, sources), { loader: 'js', target: 'safari17.4', minify: true, legalComments: 'none', sourcemap: false });
-    classic[entry] = minified.code;
-  }
-  const platform = await bundle('js/platform/worker.js', { format: 'iife' });
-  const wasm = await readFile(resolve(root, 'capstone.wasm'));
-  return { classic, modules: { 'js/platform/worker.js': platform.toString('utf8') }, wasm: wasm.toString('base64') };
-}
-async function collectClassic(path, sources) {
-  path = normalizePath(path); if (sources.has(path)) return;
-  const source = await readFile(resolve(root, path), 'utf8'); sources.set(path, source);
-  for (const dependency of parseImports(source, path)) await collectClassic(dependency, sources);
-}
-function parseImports(source, from) {
+function parseImportScripts(source, sourcePath) {
   const out = [];
-  for (const call of source.matchAll(/\bimportScripts\s*\(([^;]*?)\)\s*;/gs)) for (const match of call[1].matchAll(/(['"])([^'"]+)\1/g)) out.push(normalizePath(posix.join(posix.dirname(from), match[2])));
+  for (const call of source.matchAll(/\bimportScripts\s*\(([^;]*?)\)\s*;/gs)) {
+    const args = call[1];
+    for (const literal of args.matchAll(/(['"])([^'"]+)\1/g)) {
+      const specifier = literal[2];
+      if (/^[a-zA-Z][a-zA-Z\d+.-]*:/.test(specifier) || specifier.startsWith('//')) {
+        throw new Error(`External importScripts dependency is not supported in userscript workers: ${specifier}`);
+      }
+      const resolved = normalizeRepoPath(posix.join(posix.dirname(sourcePath), specifier));
+      if (!out.includes(resolved)) out.push(resolved);
+    }
+  }
   return out;
 }
-function inlineImports(path, sources, stack = []) {
-  if (stack.includes(path)) throw new Error(`Worker import cycle: ${[...stack, path].join(' -> ')}`);
-  const source = sources.get(path); if (source == null) throw new Error(`Missing worker source: ${path}`);
-  return source.replace(/\bimportScripts\s*\(([^;]*?)\)\s*;/gs, (_all, args) => [...args.matchAll(/(['"])([^'"]+)\1/g)].map((match) => inlineImports(normalizePath(posix.join(posix.dirname(path), match[2])), sources, [...stack, path])).join('\n'));
-}
-function normalizePath(value) { const path = posix.normalize(String(value).replaceAll('\\', '/')).replace(/^\.\//, '').replace(/^\//, ''); if (!path || path.startsWith('../')) throw new Error(`Path escapes repository: ${value}`); return path; }
 
-function extractBody(html) { const match = html.match(/<body\b[^>]*>([\s\S]*?)<\/body>/i); if (!match) throw new Error('index.html has no body'); return match[1].replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '').trim(); }
-function standaloneIndex(html, loaderPath) { return html.replace(/<link\s+rel="stylesheet"\s+href="\.\/css\/(?:app|ux)\.css">\s*/g, '').replace(/<script\s+type="module"\s+src="\.\/js\/(?:app|ux)\.js"><\/script>\s*/g, '').replace('</body>', `<script type="module" src="${loaderPath}"></script>\n</body>`); }
-function scopeCss(source) {
-  const translated = source
-    .replace(/(^|[{},])\s*:root\b/g, '$1:scope')
-    .replace(/(^|[{},])\s*html(?=[\s.#:[,{>+~])/g, '$1:scope')
-    .replace(/(^|[{},])\s*body(?=[\s.#:[,{>+~])/g, '$1:scope');
-  return `@scope (#hex-userscript-host){${translated}}#hex-userscript-host{position:fixed;inset:0;width:100vw;height:100dvh;z-index:2147483646;overflow:hidden;background:var(--bg);isolation:isolate}`;
+function normalizeRepoPath(path) {
+  const normalized = posix.normalize(String(path).replaceAll('\\', '/')).replace(/^\.\//, '').replace(/^\//, '');
+  if (!normalized || normalized === '..' || normalized.startsWith('../')) throw new Error(`Worker asset escapes repository root: ${path}`);
+  return normalized;
 }
-function userscriptMetadata() { return `// ==UserScript==\n// @name         Hex for ChatGPT\n// @namespace    https://github.com/rhgrive3/hex\n// @version      ${LOADER_VERSION}\n// @description  Securely load the Hex binary analysis workbench on ChatGPT Web.\n// @match        https://chatgpt.com/*\n// @run-at       document-idle\n// @inject-into  content\n// @grant        GM.xmlHttpRequest\n// @connect      ida.rhgrive.workers.dev\n// @updateURL    ${ORIGIN_TOKEN}/hex.meta.js\n// @downloadURL  ${ORIGIN_TOKEN}/hex.user.js\n// ==/UserScript==\n\n`; }
-function publicManifest(value) { const { assetPath: _private, ...safe } = value; return safe; }
-function sha256(value) { return createHash('sha256').update(value).digest('hex'); }
-function b64(value) { return Buffer.from(value).toString('base64url'); }
-async function writeGeneratedModule(name, source) { const path = resolve(generated, name); await mkdir(dirname(path), { recursive: true }); await writeFile(path, source); }
+
+function remoteImportMetaPlugin() {
+  return {
+    name: 'hex-userscript-remote-import-meta',
+    setup(buildApi) {
+      buildApi.onLoad({ filter: /\.js$/ }, async (args) => {
+        if (!args.path.startsWith(root)) return null;
+        let source = await readFile(args.path, 'utf8');
+        if (source.includes('import.meta.url')) {
+          const rel = relative(root, args.path).split('\\').join('/');
+          const remote = `${ORIGIN_TOKEN}/userscript-assets/${rel}`;
+          source = source.replace(/\bimport\.meta\.url\b/g, JSON.stringify(remote));
+        }
+        return { contents: source, loader: 'js' };
+      });
+    },
+  };
+}
+
+function scopeCss(source) {
+  /* Hex's normal stylesheet intentionally targets html/body/:root. On ChatGPT
+     that would restyle the host page and can break the composer. @scope keeps
+     every ordinary rule inside the injected Hex subtree. Root selectors are
+     translated to the scope root; global name-defining rules remain valid. */
+  const translated = source
+    .replace(/:root/g, ':scope')
+    .replace(/\bhtml\s*,\s*body\b/g, ':scope');
+  return `@scope (#hex-userscript-host) {\n${translated}\n}`;
+}
+
+function userscriptCss() {
+  return `
+:root {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100dvh;
+  z-index: 2147483646;
+  overflow: hidden;
+  background: var(--bg);
+  isolation: isolate;
+}
+.hex-userscript-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+.hex-provider-select {
+  max-width: 142px;
+  min-height: 34px;
+  border: 0;
+  border-radius: 8px;
+  padding: 0 8px;
+  background: var(--fill);
+  color: var(--label);
+  font: inherit;
+}
+.hex-host-toggle { font-size: 12px; }
+`;
+}
+
+function hostBootstrap(bodyHtml, scopedCss, workerManifest) {
+  return `(function(){\n` +
+    `  if (location.hostname !== 'chatgpt.com') return;\n` +
+    `  const HEX_ORIGIN = ${JSON.stringify(ORIGIN_TOKEN)};\n` +
+    `  globalThis.__HEX_API_BASE__ = HEX_ORIGIN;\n` +
+    `  globalThis.__HEX_WORKER_MANIFEST__ = ${JSON.stringify(workerManifest)};\n` +
+    `  if (!document.getElementById('hex-userscript-host')) {\n` +
+    `    const host = document.createElement('div');\n` +
+    `    host.id = 'hex-userscript-host';\n` +
+    `    host.style.cssText = 'position:fixed;inset:0;z-index:2147483646;visibility:hidden;pointer-events:none;background:#fff;';\n` +
+    `    host.setAttribute('aria-hidden','true');\n` +
+    `    host.innerHTML = ${JSON.stringify(bodyHtml)};\n` +
+    `    const css = ${JSON.stringify(scopedCss)};\n` +
+    `    const fallbackStyle = () => {\n` +
+    `      if (document.getElementById('hex-userscript-style')) return;\n` +
+    `      const style = document.createElement('style');\n` +
+    `      style.id = 'hex-userscript-style';\n` +
+    `      style.textContent = css;\n` +
+    `      (document.head || document.documentElement).append(style);\n` +
+    `    };\n` +
+    `    if (globalThis.GM && typeof globalThis.GM.addStyle === 'function') {\n` +
+    `      Promise.resolve(globalThis.GM.addStyle(css)).catch(fallbackStyle);\n` +
+    `    } else fallbackStyle();\n` +
+    `    document.documentElement.append(host);\n` +
+    `  }\n` +
+    `})();`;
+}
+
+function userscriptVersion() {
+  try {
+    /* Only non-merge source commits affect @version. A merge commit changes
+       repository history but not the already-built source tree; counting it
+       would make a green PR bundle stale immediately after merging to main.
+       Workflow/test/docs commits likewise cannot create false bundle drift. */
+    const stamp = execFileSync('git', [
+      'log', '--no-merges', '-1', '--format=%ct', '--',
+      'index.html',
+      'css',
+      'js',
+      'capstone.js',
+      'capstone.wasm',
+      'package.json',
+      'package-lock.json',
+      'scripts/build-userscript.mjs',
+    ], { cwd: root, encoding: 'utf8' }).trim();
+    if (/^\d+$/.test(stamp)) return `1.0.${stamp}`;
+  } catch { /* deterministic fallback for source archives */ }
+  return '1.0.0';
+}
