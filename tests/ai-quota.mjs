@@ -29,7 +29,6 @@ import { AI_QUOTA, acquireQuotaState, releaseQuotaState } from '../js/ai/quota.j
   const sessionDenied = acquireQuotaState(state, { now, token: 'same-over', sessionId: 'same' });
   assert.equal(sessionDenied.result.allowed, false);
   assert.equal(sessionDenied.result.reason, 'concurrency');
-
   let n = AI_QUOTA.sessionConcurrencyLimit;
   while (n < AI_QUOTA.ipConcurrencyLimit) {
     const acquired = acquireQuotaState(state, { now, token: `other-${n}`, sessionId: `other-${n}` });
@@ -40,11 +39,8 @@ import { AI_QUOTA, acquireQuotaState, releaseQuotaState } from '../js/ai/quota.j
   const ipDenied = acquireQuotaState(state, { now, token: 'ip-over', sessionId: 'new-session' });
   assert.equal(ipDenied.result.allowed, false);
   assert.equal(ipDenied.result.reason, 'concurrency');
-
   const afterExpiry = acquireQuotaState(state, {
-    now: now + AI_QUOTA.leaseMs + 1,
-    token: 'after-expiry',
-    sessionId: 'same',
+    now: now + AI_QUOTA.leaseMs + 1, token: 'after-expiry', sessionId: 'same',
   });
   assert.equal(afterExpiry.result.allowed, true, 'expired concurrency leases must self-heal after crashes');
 }
@@ -52,10 +48,14 @@ import { AI_QUOTA, acquireQuotaState, releaseQuotaState } from '../js/ai/quota.j
 function createSharedQuotaBinding() {
   const records = new Map();
   let serial = 0;
+  let acquireCalls = 0;
+  let releaseCalls = 0;
+  let successfulReleases = 0;
   return {
     getByName(name) {
       return {
         async acquire({ sessionId }) {
+          acquireCalls++;
           const key = String(name);
           const acquired = acquireQuotaState(records.get(key), {
             now: Date.now(), token: `lease-${++serial}`, sessionId,
@@ -64,14 +64,17 @@ function createSharedQuotaBinding() {
           return acquired.result;
         },
         async release(token) {
+          releaseCalls++;
           const key = String(name);
           const released = releaseQuotaState(records.get(key), token, Date.now());
+          if (released.released) successfulReleases++;
           records.set(key, released.state);
           return { released: released.released };
         },
       };
     },
     record(name) { return records.get(name); },
+    stats() { return { acquireCalls, releaseCalls, successfulReleases }; },
   };
 }
 
@@ -125,13 +128,15 @@ try {
     );
     if (response.status !== 200) {
       const detail = await response.text();
-      const state = shared.record(primaryKey);
-      throw new Error(`shared request ${i + 1} ${route} failed ${response.status}: ${detail}; active leases=${JSON.stringify(state?.leases || {})}`);
+      throw new Error(`shared request ${i + 1} ${route} failed ${response.status}: ${detail}; leases=${JSON.stringify(shared.record(primaryKey)?.leases || {})}; stats=${JSON.stringify(shared.stats())}`);
     }
     if (isTurn) await response.json(); else await response.text();
-    const state = shared.record(primaryKey);
-    assert.equal(Object.keys(state?.leases || {}).length, 0,
-      `completed sequential request ${i + 1} ${route} must release its concurrency lease before completion`);
+    const leases = Object.keys(shared.record(primaryKey)?.leases || {}).length;
+    const stats = shared.stats();
+    assert.equal(leases, 0,
+      `request ${i + 1} ${route} leaked quota lease; stats=${JSON.stringify(stats)}; state=${JSON.stringify(shared.record(primaryKey))}`);
+    assert.equal(stats.successfulReleases, i + 1,
+      `request ${i + 1} ${route} must complete a matching release RPC before client completion`);
   }
   const over = await worker.fetch(request('/api/gemini', legacyBody), envB);
   assert.equal(over.status, 429, '31st request must be rejected across routes/isolate facades');
