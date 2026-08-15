@@ -16,7 +16,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      - name: Adapt patch to current source layout
+      - name: Adapt patch anchors
         run: |
           python3 - <<'PY'
           from pathlib import Path
@@ -24,7 +24,7 @@ jobs:
           s=p.read_text()
           start=s.index("# #407 — RMW proof")
           end=s.index("write(p, s)", start)+len("write(p, s)")
-          replacement='''# #407 — RMW proof must use the exact Memory-SSA version read by the load.\np = 'js/ir-core.js'; s = read(p)\ns = replace_once(s, """    if (!load) continue;\n    out.push({""", """    if (!load) continue;\n    // Require the load to read the exact Memory-SSA version preceding this store.\n    if (store.memDef && load.memUse !== store.memDef.prev) continue;\n    out.push({""", '#407 memory version')\nwrite(p, s)'''
+          replacement='''# #407 — RMW proof must use the exact Memory-SSA version read by the load.\np = 'js/ir-core.js'; s = read(p)\ns = replace_once(s, """    if (!load) continue;\n    out.push({""", """    if (!load) continue;\n    if (store.memDef && load.memUse !== store.memDef.prev) continue;\n    out.push({""", '#407 memory version')\nwrite(p, s)'''
           s=s[:start]+replacement+s[end:]
           old='''s=replace_once(s, """  if (sub === 'sub') {""", insert + """  if (sub === 'sub') {""", '#419 fp expression')'''
           new='''s=replace_once(s, """  if (!FLAG_SUBS.has(sub) || !CONDITIONS.has(cond) || !left || !right) return null;\n\n  if (sub === 'sub') {""", """  if (!FLAG_SUBS.has(sub) || !CONDITIONS.has(cond) || !left || !right) return null;\n\n""" + insert + """  if (sub === 'sub') {""", '#419 fp expression')'''
@@ -43,36 +43,8 @@ jobs:
             echo "::error title=Patch failure::$message"
             exit "$code"
           fi
-      - name: Complete regression/product patches
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          t=Path('tests/issues-lowest-20-20260815.mjs'); s=t.read_text(); old="'str x8, [sp, #8]'"
-          if old not in s: raise SystemExit('narrow-load fixture anchor missing')
-          t.write_text(s.replace(old,"'strb w8, [sp, #8]'",1))
-          p=Path('js/ir-core.js'); s=p.read_text()
-          old="""      case OP.UN: setConst(inst.dst, foldUn(inst.sub, argConst(inst.args[0], bits), bits)); break;"""
-          new="""      case OP.BFI: {
-        const prior=argConst(inst.args[0],bits), src=argConst(inst.args[1],bits);
-        if (prior != null && src != null) {
-          const lsb=Math.max(0,Math.min(bits-1,Number(inst.extra?.lsb || 0)));
-          const width=Math.max(1,Math.min(bits-lsb,Number(inst.extra?.width || 16)));
-          const lowMask=(1n << BigInt(width)) - 1n;
-          if (inst.extra?.bitfieldKind === 'bfxil') {
-            const field=(mask(src,bits) >> BigInt(lsb)) & lowMask;
-            setConst(inst.dst, mask((mask(prior,bits) & ~lowMask) | field,bits));
-          } else {
-            const fieldMask=lowMask << BigInt(lsb);
-            const field=(mask(src,bits) & lowMask) << BigInt(lsb);
-            setConst(inst.dst, mask((mask(prior,bits) & ~fieldMask) | field,bits));
-          }
-        }
-        break;
-      }
-      case OP.UN: setConst(inst.dst, foldUn(inst.sub, argConst(inst.args[0], bits), bits)); break;"""
-          if old not in s: raise SystemExit('BFI propagation anchor missing')
-          p.write_text(s.replace(old,new,1))
-          PY
+      - name: Complete fixes
+        run: python3 .github/scripts/complete-lowest-20.py
       - name: Syntax check
         run: |
           node --check js/ir-core.js
@@ -101,7 +73,7 @@ jobs:
         run: npm test
       - name: Commit verified changes
         run: |
-          rm -f .github/workflows/fix-lowest-20-bootstrap.yml .github/scripts/fix-lowest-20.py .github/retrigger-lowest-20 patch.log batch.log
+          rm -f .github/workflows/fix-lowest-20-bootstrap.yml .github/scripts/fix-lowest-20.py .github/scripts/complete-lowest-20.py .github/retrigger-lowest-20 patch.log batch.log
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
