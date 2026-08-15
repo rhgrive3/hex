@@ -959,30 +959,127 @@ function livenessOf(ir, lifted, allRegs) {
  *   unknown            添字が実行時に決まるなど        → ここは触ると全部壊れる
  */
 
-function locationOf(inst) {
+function pointerShiftedConst(arg) {
+  if (!arg || !arg.value || arg.value.const == null) return null;
+  let v = arg.value.const;
+  const shift = arg.shift;
+  if (!shift) return v;
+  const amount = BigInt(shift.amount || 0);
+  if (shift.op === 'lsl') return v << amount;
+  if (shift.op === 'lsr') return v >> amount;
+  return null;
+}
+
+function pointerProvenanceKey(p) {
+  if (!p) return null;
+  return [p.kind, p.root, String(p.offset || 0n), p.address == null ? '' : String(p.address)].join(':');
+}
+
+const defaultPointerProvenanceMemo = new WeakMap();
+
+/**
+ * Conservative SSA pointer provenance. `must` only means every represented path
+ * has the same symbolic root+constant offset; different roots are never assumed
+ * distinct. Memory SSA passes a private memo because it runs before full value
+ * propagation, while public consumers use the default post-build memo.
+ */
+export function pointerProvenance(value, active = null, memo = defaultPointerProvenanceMemo) {
+  if (!value) return null;
+  if (memo.has(value)) return memo.get(value);
+  const visiting = active || new Set();
+  if (visiting.has(value)) return { kind:'unknown', root:'value:' + value.id, rootValue:value, offset:0n, must:false, valueId:value.id };
+  visiting.add(value);
+
+  let out = null;
+  const def = value.def;
+  const reg = String(value.reg || '');
+  if (value.kind === VK.ARG && (reg === 'sp' || reg === 'x29')) {
+    out = { kind:'stack', root:'stack', rootValue:value, offset:0n, must:true, valueId:value.id };
+  } else if (value.kind === VK.ARG && /^x[0-7]$/.test(reg)) {
+    out = { kind:'arg', root:'arg:' + reg, rootValue:value, offset:0n, arg:reg, must:true, valueId:value.id };
+  } else if (value.kind === VK.ARG && /^x(?:[89]|1\d|2\d|30)$/.test(reg)) {
+    out = { kind:'entry-register', root:'entry:' + reg, rootValue:value, offset:0n, reg, must:true, valueId:value.id };
+  } else if (def && def.op === OP.ADDR) {
+    const address = value.const != null ? value.const : def.extra?.value;
+    if (address != null) out = { kind:'global', root:'global', rootValue:value, offset:0n, address, must:true, valueId:value.id };
+  } else if (def && def.op === OP.CALL) {
+    out = { kind:'return', root:'return:' + def.id, rootValue:value, offset:0n,
+      target:def.extra?.target ?? null, must:true, valueId:value.id };
+  } else if (def && def.op === OP.LOAD) {
+    out = { kind:'field', root:'loaded:' + value.id, rootValue:value, offset:0n,
+      location:def.loc || null, must:true, valueId:value.id };
+  } else if (def && def.op === OP.MOV && def.args?.[0]?.value) {
+    const source = pointerProvenance(def.args[0].value, visiting, memo);
+    if (source) out = { ...source, valueId:value.id, via:'mov' };
+  } else if (def && def.op === OP.PHI && def.args?.length) {
+    const alternatives = def.args.map((arg) => arg?.value ? pointerProvenance(arg.value, visiting, memo) : null);
+    const keys = alternatives.map(pointerProvenanceKey);
+    if (keys[0] && keys.every((key) => key === keys[0])) {
+      out = { ...alternatives[0], valueId:value.id, via:'phi', must:alternatives.every((x) => x && x.must !== false) };
+    } else {
+      out = { kind:'phi', root:'phi:' + value.id, rootValue:value, offset:0n, must:false,
+        alternatives:alternatives.filter(Boolean), valueId:value.id };
+    }
+  } else if (def && def.op === OP.BIN && (def.sub === 'add' || def.sub === 'sub') && def.args?.length >= 2) {
+    const a = def.args[0], b = def.args[1];
+    const ac = pointerShiftedConst(a), bc = pointerShiftedConst(b);
+    if (bc != null && a?.value) {
+      const source = pointerProvenance(a.value, visiting, memo);
+      if (source && source.kind !== 'phi') {
+        const delta = def.sub === 'sub' ? -bc : bc;
+        out = { ...source, offset:(source.offset || 0n) + delta, valueId:value.id, via:def.sub + '-constant' };
+      }
+    } else if (def.sub === 'add' && ac != null && b?.value) {
+      const source = pointerProvenance(b.value, visiting, memo);
+      if (source && source.kind !== 'phi') {
+        out = { ...source, offset:(source.offset || 0n) + ac, valueId:value.id, via:'add-constant' };
+      }
+    }
+  }
+
+  if (!out) out = { kind:'unknown', root:'value:' + value.id, rootValue:value, offset:0n, must:true, valueId:value.id };
+  visiting.delete(value);
+  memo.set(value, out);
+  return out;
+}
+
+function locationOf(inst, pointerMemo = defaultPointerProvenanceMemo) {
   const a = inst.addr;
   if (!a) return null;
   const size = Number(a.size || inst.extra?.size || 0) || 0;
-  // Unknown/indexed addresses are may-alias locations, never one shared
-  // must-alias bucket. A unique key prevents unrelated unknown loads/stores
-  // from fabricating a reaching-store edge (#358).
-  if (a.index || a.disp == null || !a.base) return { key: `unknown:${inst.id}`, kind: MK.UNKNOWN, size };
+  if (a.index || a.disp == null || !a.base) return { key:`unknown:${inst.id}`, kind:MK.UNKNOWN, size };
   if (a.stack) {
     const baseReg = a.baseReg || a.base?.reg || 'stack';
     const frameEpoch = a.base?.id ?? -1;
-    return {
-      key: `stack:${baseReg}:e${frameEpoch}:${a.disp.toString()}:s${size}`,
-      kind: MK.STACK, baseReg, frameEpoch, disp: a.disp, size,
-    };
+    return { key:`stack:${baseReg}:e${frameEpoch}:${a.disp.toString()}:s${size}`, kind:MK.STACK, baseReg, frameEpoch, disp:a.disp, size };
   }
   const base = a.base;
   if (base.const != null) {
-    const addr = base.const + a.disp;
-    return { key: 'global:' + addr.toString(16) + ':s' + size, kind: MK.GLOBAL, address: addr, size };
+    const address = base.const + a.disp;
+    return { key:'global:' + address.toString(16) + ':s' + size, kind:MK.GLOBAL, address, size };
   }
+
+  const provenance = pointerProvenance(base, null, pointerMemo);
+  if (provenance?.must !== false && provenance?.kind === 'global' && provenance.address != null) {
+    const address = provenance.address + (provenance.offset || 0n) + a.disp;
+    return { key:'global:' + address.toString(16) + ':s' + size, kind:MK.GLOBAL, address, size, provenance };
+  }
+
+  // Canonicalize only proven same-root pointer arithmetic/copies. Ambiguous PHIs
+  // keep their own root and are handled as may-alias clobbers below.
+  const canonical = provenance && provenance.must !== false && provenance.kind !== 'phi';
+  const aliasRoot = canonical && provenance.root ? provenance.root : 'value:' + base.id;
+  const disp = canonical ? a.disp + (provenance.offset || 0n) : a.disp;
+  const canonicalBase = canonical && provenance.rootValue ? provenance.rootValue : base;
   return {
-    key: 'field:' + base.id + '+' + a.disp.toString() + ':s' + size,
-    kind: MK.FIELD, base, disp: a.disp, size,
+    key:'field:' + aliasRoot + '+' + disp.toString() + ':s' + size,
+    kind:MK.FIELD,
+    base:canonicalBase,
+    rawBase:base,
+    aliasRoot,
+    disp,
+    size,
+    provenance:canonical ? provenance : null,
   };
 }
 
@@ -1004,8 +1101,10 @@ export function mayAlias(a, b) {
     const sa = BigInt(a.size || 8), sb = BigInt(b.size || 8);
     return !(pa + sa <= pb || pb + sb <= pa);
   }
-  // field 同士: ベースが同じ SSA 値なら、オフセットの重なりだけで判定できる
-  if (a.base && b.base && a.base.id === b.base.id) {
+  // field 同士: must-alias root が同じ場合だけoffsetでnon-overlapを証明できる。
+  const ar = a.aliasRoot || (a.base ? 'value:' + a.base.id : null);
+  const br = b.aliasRoot || (b.base ? 'value:' + b.base.id : null);
+  if (ar && br && ar === br && a.disp != null && b.disp != null) {
     const sa = BigInt(a.size || 8), sb = BigInt(b.size || 8);
     return !(a.disp + sa <= b.disp || b.disp + sb <= a.disp);
   }
@@ -1036,9 +1135,16 @@ function storeOverlapsRange(storeLoc, otherLoc) {
     return overlap(storeLoc.disp,sa,otherLoc.disp,sb);
   }
   if (storeLoc.kind === MK.FIELD) {
-    if (!storeLoc.base || !otherLoc.base || storeLoc.base.id !== otherLoc.base.id) return false;
-    if (storeLoc.disp == null || otherLoc.disp == null) return false;
-    return overlap(storeLoc.disp,sa,otherLoc.disp,sb);
+    const storeRoot = storeLoc.aliasRoot || (storeLoc.base ? 'value:' + storeLoc.base.id : null);
+    const otherRoot = otherLoc.aliasRoot || (otherLoc.base ? 'value:' + otherLoc.base.id : null);
+    if (storeRoot && otherRoot && storeRoot === otherRoot) {
+      if (storeLoc.disp == null || otherLoc.disp == null) return true;
+      return overlap(storeLoc.disp,sa,otherLoc.disp,sb);
+    }
+    // Different symbolic pointer roots are *not* proof of distinct objects.
+    // Conservatively clobber the other field range so stale stores cannot become
+    // semantic truth. A future noalias/distinct-object proof may refine this.
+    return true;
   }
   return false;
 }
@@ -1084,6 +1190,7 @@ export function stackPointerProvenanceOf(value, memo = new Map(), active = new S
 }
 
 function buildMemorySSA(ir, df, idom, children) {
+  const pointerMemo = new WeakMap();
   const locs = new Map();
   const defSites = new Map();      // key → Set(block)
   const clobberInsts = [];
@@ -1095,7 +1202,7 @@ function buildMemorySSA(ir, df, idom, children) {
 
   for (const inst of ir.instructions) {
     if (inst.op === OP.LOAD || inst.op === OP.STORE) {
-      const loc = locationOf(inst);
+      const loc = locationOf(inst, pointerMemo);
       if (!loc) continue;
       inst.loc = register(loc);
     } else if (inst.op === OP.CALL || inst.op === OP.UNKNOWN) {

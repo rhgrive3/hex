@@ -13,7 +13,7 @@ export * from './ir-core.js';
 import {
   buildIR as buildCoreIR,
   readModifyWrite as coreReadModifyWrite,
-  OP, MK, VK, COND,
+  OP, MK, VK, COND, pointerProvenance,
 } from './ir-core.js';
 import { mergeRangeDomain, normalizeIntegerValue, normalizeRangeDomain, rangeWithDomain } from './range-domain.js';
 
@@ -178,79 +178,6 @@ function shiftedConst(arg) {
   if (s.op === 'lsl') return v << n;
   if (s.op === 'lsr') return v >> n;
   return null;
-}
-
-function provenanceKey(p) {
-  if (!p) return null;
-  return [p.kind, p.root, String(p.offset || 0n), p.address == null ? '' : String(p.address)].join(':');
-}
-
-const provenanceMemo = new WeakMap();
-
-/**
- * Conservative pointer provenance for an SSA value.
- * `must` means every represented path has the same root+offset. Entry registers
- * are distinct symbolic roots: preserving x19 -> x20 does not claim x19 aliases
- * any other register, but it lets later MOV/ADD/SUB retain proven identity.
- */
-export function pointerProvenance(value, active) {
-  if (!value) return null;
-  if (provenanceMemo.has(value)) return provenanceMemo.get(value);
-  const visiting = active || new Set();
-  if (visiting.has(value)) return { kind: 'unknown', root: 'value:' + value.id, offset: 0n, must: false };
-  visiting.add(value);
-
-  let out = null;
-  const def = value.def;
-  const reg = String(value.reg || '');
-
-  if (value.kind === VK.ARG && (reg === 'sp' || reg === 'x29')) {
-    out = { kind: 'stack', root: 'stack', offset: 0n, must: true, valueId: value.id };
-  } else if (value.kind === VK.ARG && /^x[0-7]$/.test(reg)) {
-    out = { kind: 'arg', root: 'arg:' + reg, offset: 0n, arg: reg, must: true, valueId: value.id };
-  } else if (value.kind === VK.ARG && /^x(?:[89]|1\d|2\d|30)$/.test(reg)) {
-    out = { kind: 'entry-register', root: 'entry:' + reg, offset: 0n, reg, must: true, valueId: value.id };
-  } else if (def && def.op === OP.ADDR && value.const != null) {
-    out = { kind: 'global', root: 'global', offset: 0n, address: value.const, must: true, valueId: value.id };
-  } else if (def && def.op === OP.CALL) {
-    out = { kind: 'return', root: 'return:' + def.id, offset: 0n,
-      target: def.extra && def.extra.target != null ? def.extra.target : null, must: true, valueId: value.id };
-  } else if (def && def.op === OP.LOAD) {
-    out = { kind: 'field', root: 'loaded:' + value.id, offset: 0n,
-      location: def.loc || null, must: true, valueId: value.id };
-  } else if (def && def.op === OP.MOV && def.args && def.args[0] && def.args[0].value) {
-    const p = pointerProvenance(def.args[0].value, visiting);
-    if (p) out = { ...p, valueId: value.id, via: 'mov' };
-  } else if (def && def.op === OP.PHI && def.args && def.args.length) {
-    const ps = def.args.map((a) => a && a.value ? pointerProvenance(a.value, visiting) : null);
-    const keys = ps.map(provenanceKey);
-    if (keys[0] && keys.every((k) => k === keys[0])) {
-      out = { ...ps[0], valueId: value.id, via: 'phi', must: ps.every((p) => p && p.must !== false) };
-    } else {
-      out = { kind: 'phi', root: 'phi:' + value.id, offset: 0n, must: false,
-        alternatives: ps.filter(Boolean), valueId: value.id };
-    }
-  } else if (def && def.op === OP.BIN && (def.sub === 'add' || def.sub === 'sub') && def.args && def.args.length >= 2) {
-    const a = def.args[0], b = def.args[1];
-    const ac = shiftedConst(a), bc = shiftedConst(b);
-    if (bc != null && a && a.value) {
-      const p = pointerProvenance(a.value, visiting);
-      if (p && p.kind !== 'unknown' && p.kind !== 'phi') {
-        const delta = def.sub === 'sub' ? -bc : bc;
-        out = { ...p, offset: (p.offset || 0n) + delta, valueId: value.id, via: def.sub + '-constant' };
-      }
-    } else if (def.sub === 'add' && ac != null && b && b.value) {
-      const p = pointerProvenance(b.value, visiting);
-      if (p && p.kind !== 'unknown' && p.kind !== 'phi') {
-        out = { ...p, offset: (p.offset || 0n) + ac, valueId: value.id, via: 'add-constant' };
-      }
-    }
-  }
-
-  if (!out) out = { kind: 'unknown', root: 'value:' + value.id, offset: 0n, must: true, valueId: value.id };
-  visiting.delete(value);
-  provenanceMemo.set(value, out);
-  return out;
 }
 
 function effectiveLocation(loc) {
@@ -645,6 +572,9 @@ export function readModifyWrite(ir) {
       for (const a of def.args || []) if (a && a.value) work.push(a.value);
     }
     if (!load) continue;
+    // The public provenance fallback must not resurrect a def-use RMW
+    // across a Memory-SSA clobber. Core Memory SSA is the semantic truth.
+    if (!store.memDef || store.memDef.prev !== load.memUse) continue;
     const key = load.id + '>' + store.id;
     if (seen.has(key)) continue;
     seen.add(key);
