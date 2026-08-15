@@ -590,7 +590,7 @@ async function objcStubNames(slice, known, requestId = null) {
   });
 }
 
-const MAX_SELECTOR = 240;
+const MAX_SELECTOR = 512;
 
 /**
  * chained fixups で書かれたポインタをほどく。objc.js の sanitizePointer と同じ考え方
@@ -598,12 +598,209 @@ const MAX_SELECTOR = 240;
  */
 function sanitizeStubPointer(v, base) {
   if (v == null || v === 0n) return null;
+  // Some chained-fixup slots contain only the image-relative low target.
+  // With a known image base, values below it are offsets, not VM addresses.
+  if (base != null && v < BigInt(base)) return BigInt(base) + v;
   if (v < 0x0001000000000000n) return v;
   const low = v & 0x0000000fffffffffn;
   if (low === 0n) return null;
   if (v & 0x8000000000000000n) return null;      // 外部から入る値。メソッド名ではない
   if (base != null && low < base) return base + low;
   return low;
+}
+
+
+/**
+ * Recover Objective-C method implementation starts from the dedicated
+ * __objc_methlist section.  This remains available even when symbols and
+ * LC_FUNCTION_STARTS are stripped.  Relative method lists encode each IMP as
+ * an int32 displacement from the IMP field itself, so no selector/name parsing
+ * is needed to recover an exact code address.
+ *
+ * The section is purpose-specific, but still validate every header and every
+ * entry before accepting a list.  A malformed/unknown list is skipped rather
+ * than guessed.
+ */
+async function objcMethodImplementationStarts(slice, lo, hi, imageBase, requestId) {
+  const out = new Set();
+  if (!slice) return out;
+  const methodSections = (slice.regions || []).filter((r) => r.section === '__objc_methlist' && r.size > 0n);
+  for (const r of methodSections) {
+    if (r.size > 16n * 1024n * 1024n) continue;
+    let buf;
+    try { buf = await readRange(r.fileOffset, Number(r.size)); }
+    catch { continue; }
+    const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+    for (let p = 0; p + 8 <= buf.byteLength; p += 4) {
+      const raw = dv.getUint32(p, true);
+      const relative = !!(raw & 0x80000000);
+      const stride = raw & 0xfffc;
+      const count = dv.getUint32(p + 4, true);
+      if (!count || count > 8192) continue;
+      if ((relative && stride !== 12) || (!relative && stride !== 24)) continue;
+      const bytes = 8 + count * stride;
+      if (p + bytes > buf.byteLength) continue;
+
+      const list = [];
+      let valid = true;
+      for (let i = 0; i < count; i++) {
+        const entry = p + 8 + i * stride;
+        let imp = null;
+        if (relative) {
+          const impFieldVM = r.vmAddr + BigInt(entry + 8);
+          imp = impFieldVM + BigInt(dv.getInt32(entry + 8, true));
+        } else {
+          imp = sanitizeStubPointer(dv.getBigUint64(entry + 16, true), imageBase);
+        }
+        if (imp == null || imp < lo || imp >= hi || (imp & 3n)) { valid = false; break; }
+        list.push(imp);
+      }
+      if (!valid) continue;
+      for (const imp of list) out.add(imp);
+      /* Dedicated method lists are packed consecutively/aligned. Skip the body
+         we just validated so entry payload cannot be reinterpreted as a header. */
+      p += bytes - 4;
+    }
+    if (cancelled(requestId)) return out;
+  }
+  return out;
+}
+
+
+/** Resolve a VM range through the parsed Mach-O regions without relying on
+ * symbols. Metadata records use VM-relative pointers, while readRange() takes
+ * file offsets. */
+function mappedFileOffset(slice, vm, len = 1) {
+  if (!slice || vm == null || len <= 0) return null;
+  const a = BigInt(vm), n = BigInt(len);
+  for (const r of slice.regions || []) {
+    if (r.zerofill || r.size <= 0n) continue;
+    if (a < r.vmAddr || a + n > r.vmAddr + r.size) continue;
+    return r.fileOffset + (a - r.vmAddr);
+  }
+  return null;
+}
+
+async function readMappedVM(slice, vm, len) {
+  const off = mappedFileOffset(slice, vm, len);
+  if (off == null) return null;
+  try {
+    const b = await readRange(off, len);
+    return b && b.length >= len ? b.subarray(0, len) : null;
+  } catch { return null; }
+}
+
+/**
+ * LC_ROUTINES was replaced on modern Darwin binaries by __init_offsets.
+ * Each entry is a uint32 image-relative offset to an initializer function.
+ * This metadata remains valid when the symbol table and LC_FUNCTION_STARTS are
+ * absent, so every validated entry is exact function-boundary evidence.
+ */
+async function initializerFunctionStarts(slice, lo, hi, imageBase, requestId) {
+  const out = new Set();
+  if (!slice || imageBase == null) return out;
+  for (const r of slice.regions || []) {
+    if (r.section !== '__init_offsets' || r.size <= 0n || r.size > 4n * 1024n * 1024n) continue;
+    let b;
+    try { b = await readRange(r.fileOffset, Number(r.size)); } catch { continue; }
+    const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
+    for (let p = 0; p + 4 <= b.byteLength; p += 4) {
+      const target = BigInt(imageBase) + BigInt(dv.getUint32(p, true));
+      if (target >= lo && target < hi && !(target & 3n)) out.add(target);
+    }
+    if (cancelled(requestId)) break;
+  }
+  return out;
+}
+
+/**
+ * Recover function pointers encoded by stable Swift reflection metadata.
+ * No mangled names are needed: __swift5_types records are relative pointers
+ * to nominal descriptors whose metadata accessor/completion/vtable entries are
+ * themselves signed 32-bit relative function pointers in the Swift ABI.
+ *
+ * We intentionally handle only layouts whose trailing-object position is
+ * statically unambiguous (non-generic, non-resilient descriptors for the
+ * optional initialization/vtable records). Unknown/future layouts are skipped
+ * rather than guessed.
+ */
+async function swiftReflectionFunctionStarts(slice, lo, hi, requestId) {
+  const out = new Set();
+  if (!slice) return out;
+  const typeSections = (slice.regions || []).filter((r) => r.section === '__swift5_types' && r.size > 0n);
+  const addRelative = (field, raw) => {
+    if (!raw) return;
+    const target = field + BigInt(raw);
+    if (target >= lo && target < hi && !(target & 3n)) out.add(target);
+  };
+  for (const sec of typeSections) {
+    if (sec.size > 16n * 1024n * 1024n) continue;
+    let records;
+    try { records = await readRange(sec.fileOffset, Number(sec.size)); } catch { continue; }
+    const rv = new DataView(records.buffer, records.byteOffset, records.byteLength);
+    for (let p = 0; p + 4 <= records.byteLength; p += 4) {
+      const rel = rv.getInt32(p, true);
+      if (!rel) continue;
+      const field = sec.vmAddr + BigInt(p);
+      const desc = field + BigInt(rel);
+      const head = await readMappedVM(slice, desc, 20);
+      if (!head) continue;
+      const hv = new DataView(head.buffer, head.byteOffset, head.byteLength);
+      const flags = hv.getUint32(0, true);
+      const kind = flags & 0x1f; // class=16, struct=17, enum=18
+      if (kind !== 16 && kind !== 17 && kind !== 18) continue;
+
+      // TargetTypeContextDescriptor::AccessFunction (metadata accessor).
+      addRelative(desc + 12n, hv.getInt32(12, true));
+
+      const generic = !!(flags & 0x80);
+      const specific = (flags >>> 16) & 0xffff;
+      const metadataInit = specific & 0x3;
+      const resilientSuperclass = kind === 16 && !!(specific & (1 << 13));
+      const fixedSize = kind === 16 ? 44 : 28;
+
+      // For non-generic/non-resilient descriptors the initialization record is
+      // the first trailing object. Singleton init is 3 relative int32 fields;
+      // foreign init is one compact relative completion-function pointer.
+      if (!generic && !resilientSuperclass && metadataInit === 1) {
+        const init = await readMappedVM(slice, desc + BigInt(fixedSize), 12);
+        if (init) {
+          const iv = new DataView(init.buffer, init.byteOffset, init.byteLength);
+          addRelative(desc + BigInt(fixedSize + 8), iv.getInt32(8, true));
+        }
+      } else if (!generic && !resilientSuperclass && metadataInit === 2) {
+        const init = await readMappedVM(slice, desc + BigInt(fixedSize), 4);
+        if (init) {
+          const iv = new DataView(init.buffer, init.byteOffset, init.byteLength);
+          addRelative(desc + BigInt(fixedSize), iv.getInt32(0, true));
+        }
+      }
+
+      // Simple class descriptors place VTableDescriptorHeader immediately
+      // after the 44-byte fixed record: uint32 offset, uint32 count, then
+      // {flags, relative-impl} method descriptors.
+      const hasVTable = kind === 16 && !!(specific & (1 << 15));
+      if (hasVTable && !generic && !resilientSuperclass && metadataInit === 0) {
+        const vh = await readMappedVM(slice, desc + 44n, 8);
+        if (vh) {
+          const vv = new DataView(vh.buffer, vh.byteOffset, vh.byteLength);
+          const count = vv.getUint32(4, true);
+          if (count <= 4096) {
+            const methods = await readMappedVM(slice, desc + 52n, count * 8);
+            if (methods) {
+              const mv = new DataView(methods.buffer, methods.byteOffset, methods.byteLength);
+              for (let i = 0; i < count; i++) {
+                const fieldAddr = desc + 52n + BigInt(i * 8 + 4);
+                addRelative(fieldAddr, mv.getInt32(i * 8 + 4, true));
+              }
+            }
+          }
+        }
+      }
+      if (cancelled(requestId)) return out;
+    }
+  }
+  return out;
 }
 
 /* ── 名前がないファイルで、関数の切れ目を推測する ───────────── */
@@ -659,6 +856,24 @@ async function guessFunctions({ regionId, limit, requestId, epoch }) {
     } catch { /* 読めなければ推測だけで進む */ }
   }
 
+
+  /* Objective-C method-list IMPs are exact metadata evidence independent of
+     LC_FUNCTION_STARTS. They are especially important for tiny accessors that
+     are never reached by a direct BL. */
+  for (const a of await objcMethodImplementationStarts(slice, lo, hi, imageBase, requestId)) {
+    if (found.size >= cap) break;
+    found.add(a);
+  }
+
+  for (const a of await initializerFunctionStarts(slice, lo, hi, imageBase, requestId)) {
+    if (found.size >= cap) break;
+    found.add(a);
+  }
+  for (const a of await swiftReflectionFunctionStarts(slice, lo, hi, requestId)) {
+    if (found.size >= cap) break;
+    found.add(a);
+  }
+
   /*
    * C++ の仮想関数表。__const / __data に、コードを指すポインタが並んでいる。
    * Cocos2d-x や Unreal のようなアプリでは、メソッドの大半がここにしか現れない
@@ -706,6 +921,7 @@ async function guessFunctions({ regionId, limit, requestId, epoch }) {
    */
   const postRet = [];
   const postBranch = [];
+  const postIndirectBranch = [];
   const postTrap = [];
   const postNoreturn = [];
   const pendingWindows = [];
@@ -756,6 +972,8 @@ async function guessFunctions({ regionId, limit, requestId, epoch }) {
       if (prevWasRet) beginWindow(postRet, pc, w, currentKind);
       else if (prevKind === Words.KIND.BRANCH && prevWord != null && Words.isBranchImm(prevWord)) {
         beginWindow(postBranch, pc, w, currentKind);
+      } else if (prevKind === Words.KIND.BRANCH && prevWord != null && Words.isBr(prevWord)) {
+        beginWindow(postIndirectBranch, pc, w, currentKind);
       } else if (prevKind === Words.KIND.TRAP) {
         beginWindow(postTrap, pc, w, currentKind);
       }
@@ -781,7 +999,7 @@ async function guessFunctions({ regionId, limit, requestId, epoch }) {
       }
 
       prevWasRet = Words.isRet(w);
-      prevWasEnd = Words.looksLikeEnd(w);
+      prevWasEnd = Words.looksLikeEnd(w) || Words.isBr(w) || currentKind === Words.KIND.TRAP;
       prevWasNoreturnCall = callTarget != null && noreturnTargets.has(callTarget);
       prevKind = currentKind;
       prevWord = w;
@@ -795,6 +1013,7 @@ async function guessFunctions({ regionId, limit, requestId, epoch }) {
   const isBlocked = (c) => conditionalTargets.has(c.addr) || directBranchTargets.has(c.addr);
   const rdOf = (w) => w == null ? -1 : (w & 0x1f);
   const rnOf = (w) => w == null ? -1 : ((w >>> 5) & 0x1f);
+  const rmOf = (w) => w == null ? -1 : ((w >>> 16) & 0x1f);
   const branchToKnown = (w, pc) => {
     if (w == null || !Words.isBranchImm(w)) return false;
     const t = Words.branchImm26(w, pc);
@@ -802,7 +1021,6 @@ async function guessFunctions({ regionId, limit, requestId, epoch }) {
   };
 
   const POST_RET_START_PAIRS = new Set([
-    Words.KIND.MOVREG + ':' + Words.KIND.ARITH,
     Words.KIND.MOVREG + ':' + Words.KIND.ADRP,
     Words.KIND.MOVIMM + ':' + Words.KIND.BRANCH,
     Words.KIND.BRANCH + ':' + Words.KIND.STORE,
@@ -813,6 +1031,14 @@ async function guessFunctions({ regionId, limit, requestId, epoch }) {
   ]);
   for (const c of postRet) {
     if (found.size >= cap) break;
+    const preIndexGlobalLookup = c.kind === Words.KIND.SHIFT && rdOf(c.word) === 8 && rnOf(c.word) === 0 &&
+      c.nextKind === Words.KIND.ADRP && rdOf(c.nextWord) === 9 &&
+      c.thirdKind === Words.KIND.ARITH && rdOf(c.thirdWord) === 9 && rnOf(c.thirdWord) === 9;
+    /* A direct tail-call may legitimately target a separate leaf that happens
+       to follow another RET. Conditional targets remain internal CFG evidence,
+       but this register-constrained table-lookup prefix is safe even when some
+       other function reaches it with an unconditional B. */
+    if (preIndexGlobalLookup && !conditionalTargets.has(c.addr)) { found.add(c.addr); continue; }
     if (isBlocked(c)) continue;
     const strongFirst = POST_RET_START_KINDS.has(c.kind);
     const strongPair = c.nextKind != null && POST_RET_START_PAIRS.has(c.kind + ':' + c.nextKind);
@@ -834,10 +1060,66 @@ async function guessFunctions({ regionId, limit, requestId, epoch }) {
     const trapBody = c.kind === Words.KIND.TRAP && c.nextKind === Words.KIND.TRAP && c.thirdKind === Words.KIND.TRAP;
     const storeConstStore = c.kind === Words.KIND.STORE && c.nextKind === Words.KIND.MOVIMM && c.thirdKind === Words.KIND.STORE;
     const cmpCondAdrp = c.kind === Words.KIND.CMP && c.nextKind === Words.KIND.CONDBR && c.thirdKind === Words.KIND.ADRP;
+    /* Table lookup leaf: scale/index x0 into x8, materialize a global base in
+       x9, then add the page offset. This is a common ABI shape for returning
+       entries from parallel global tables without a stack frame. */
+    const indexGlobalLookupPrefix = c.kind === Words.KIND.SHIFT && rdOf(c.word) === 8 && rnOf(c.word) === 0 &&
+      c.nextKind === Words.KIND.ADRP && rdOf(c.nextWord) === 9 &&
+      c.thirdKind === Words.KIND.ARITH && rdOf(c.thirdWord) === 9 && rnOf(c.thirdWord) === 9;
 
     if (!strongFirst && !strongPair && !objcSetterLeaf && !tinySetterChain && !arithConst &&
         !movStoreLoad && !constConstTail && !condLeaf && !cmpSelectRet && !constStoreRet && !trapBody &&
-        !storeConstStore && !cmpCondAdrp) continue;
+        !storeConstStore && !cmpCondAdrp && !indexGlobalLookupPrefix) continue;
+    found.add(c.addr);
+  }
+
+  /*
+   * An indirect `br xN` is a hard control-flow terminator.  Compilers commonly
+   * place a one-instruction tail thunk (`b target`) immediately after such a
+   * dispatch/thunk, followed by the next real function.  Do not accept every
+   * indirect-branch fallthrough: switch tables also use `br`.  Requiring the
+   * candidate itself to be an unconditional branch plus a plausible following
+   * function-start kind keeps this narrow, and explicit branch targets remain
+   * excluded by `isBlocked`.
+   */
+  const POST_INDIRECT_TAIL_NEXT = new Set([
+    Words.KIND.STORE, Words.KIND.ADRP, Words.KIND.ARITH,
+    Words.KIND.RET, Words.KIND.CMP, Words.KIND.MOVREG,
+  ]);
+  for (const c of postIndirectBranch) {
+    if (found.size >= cap) break;
+    const preMem = c.kind === Words.KIND.LOAD ? Words.memoryAccess(c.word) : null;
+    const directTargetSafeMemArgs = preMem && preMem.load && preMem.reg === 1 && preMem.base === 1 &&
+      c.nextKind === Words.KIND.ARITH && rdOf(c.nextWord) === 0 && rnOf(c.nextWord) === 0 &&
+      c.thirdKind === Words.KIND.MOVIMM && rdOf(c.thirdWord) === 2;
+    if (directTargetSafeMemArgs && !conditionalTargets.has(c.addr)) { found.add(c.addr); continue; }
+    if (isBlocked(c)) continue;
+
+    /* Virtual-dispatch forwarding thunk:
+       ldp ...,obj,[x0,#off]; ldr fn,[obj,#off]; mov x0,obj; ...
+       The first three instructions already establish the ABI dataflow; the
+       eventual indirect branch is deliberately not required so the boundary
+       can be recognized without extending the tiny candidate window. */
+    const m0 = c.kind === Words.KIND.LOAD ? Words.memoryAccess(c.word) : null;
+    const m1 = c.nextKind === Words.KIND.LOAD ? Words.memoryAccess(c.nextWord) : null;
+    const virtualDispatchPrefix = m0 && m0.load && m0.pair && m0.base === 0 && m0.reg2 != null &&
+      m1 && m1.load && m1.base === m0.reg2 &&
+      c.thirdKind === Words.KIND.MOVREG && rdOf(c.thirdWord) === 0 && rmOf(c.thirdWord) === m0.reg2;
+
+    /* Global dispatch-table thunk.  The ADRP destination is loaded through
+       itself, then a separate non-indexed/self-indexed load supplies runtime
+       state.  Excluding a self-indexed second load distinguishes this from an
+       internal table-walk block observed after indirect dispatch. */
+    const d = c.kind === Words.KIND.ADRP ? rdOf(c.word) : -1;
+    const g1 = c.nextKind === Words.KIND.LOAD ? Words.memoryAccess(c.nextWord) : null;
+    const g2 = c.thirdKind === Words.KIND.LOAD ? Words.memoryAccess(c.thirdWord) : null;
+    const globalDispatchPrefix = d >= 0 && g1 && g1.load && g1.base === d && g1.reg === d &&
+      g2 && g2.load && (!g2.indexed || g2.reg !== g2.base);
+
+    if (virtualDispatchPrefix || globalDispatchPrefix) { found.add(c.addr); continue; }
+
+    if (c.kind !== Words.KIND.BRANCH || c.word == null || !Words.isBranchImm(c.word)) continue;
+    if (!POST_INDIRECT_TAIL_NEXT.has(c.nextKind)) continue;
     found.add(c.addr);
   }
 
@@ -859,9 +1141,33 @@ async function guessFunctions({ regionId, limit, requestId, epoch }) {
   ]);
   for (const c of postBranch) {
     if (found.size >= cap) break;
+    const preMem = (c.kind === Words.KIND.LOAD || c.kind === Words.KIND.STORE) ? Words.memoryAccess(c.word) : null;
+    const directTargetSafeAddressArgs = c.kind === Words.KIND.ADRP && rdOf(c.word) === 1 &&
+      c.nextKind === Words.KIND.ARITH && rdOf(c.nextWord) === 1 && rnOf(c.nextWord) === 1 &&
+      c.thirdKind === Words.KIND.ARITH && rdOf(c.thirdWord) === 2 && rnOf(c.thirdWord) === 1;
+    const directTargetSafeMemArgs = preMem && preMem.load && preMem.reg === 1 && preMem.base === 1 &&
+      c.nextKind === Words.KIND.ARITH && rdOf(c.nextWord) === 0 && rnOf(c.nextWord) === 0 &&
+      c.thirdKind === Words.KIND.MOVIMM && rdOf(c.thirdWord) === 2;
+    if ((directTargetSafeAddressArgs || directTargetSafeMemArgs) && !conditionalTargets.has(c.addr)) {
+      found.add(c.addr); continue;
+    }
     if (isBlocked(c)) continue;
     let strong = false;
-    const mem = (c.kind === Words.KIND.LOAD || c.kind === Words.KIND.STORE) ? Words.memoryAccess(c.word) : null;
+    const mem = preMem;
+
+    /* ABI address-materialization wrapper prefix:
+       adrp x1; add x1,x1,#off; add x2,x1,#off.  This is the compiler form for
+       preparing two related pointer arguments before a tail helper call. */
+    if (c.kind === Words.KIND.ADRP && rdOf(c.word) === 1 &&
+        c.nextKind === Words.KIND.ARITH && rdOf(c.nextWord) === 1 && rnOf(c.nextWord) === 1 &&
+        c.thirdKind === Words.KIND.ARITH && rdOf(c.thirdWord) === 2 && rnOf(c.thirdWord) === 1) strong = true;
+
+    /* Small forwarding wrapper: load argument 1 through itself, adjust x0,
+       materialize argument 2.  The following instruction is normally the tail
+       branch, but these three ABI-constrained writes are sufficient evidence. */
+    if (mem && mem.load && mem.reg === 1 && mem.base === 1 &&
+        c.nextKind === Words.KIND.ARITH && rdOf(c.nextWord) === 0 && rnOf(c.nextWord) === 0 &&
+        c.thirdKind === Words.KIND.MOVIMM && rdOf(c.thirdWord) === 2) strong = true;
 
     // ldr x0/w0, [x0,...] — canonical tiny getter / object forwarding leaf.
     if (c.kind === Words.KIND.LOAD && mem && mem.load && mem.base === 0 && mem.reg === 0) strong = true;
@@ -874,6 +1180,13 @@ async function guessFunctions({ regionId, limit, requestId, epoch }) {
       const m2 = Words.memoryAccess(c.nextWord);
       if (m2 && m2.base === rdOf(c.word)) strong = true;
     }
+    /* Direct-ivar offset setter: adrp d; ldrsw d,[d,#off]; str x2,[x0,d]. */
+    if (c.kind === Words.KIND.ADRP && c.nextKind === Words.KIND.LOAD && c.thirdKind === Words.KIND.STORE) {
+      const d = rdOf(c.word);
+      const m1 = Words.memoryAccess(c.nextWord), m2 = Words.memoryAccess(c.thirdWord);
+      if (m1 && m1.load && m1.base === d && m1.reg === d &&
+          m2 && m2.store && m2.base === 0 && m2.indexed) strong = true;
+    }
     if (c.kind === Words.KIND.ADRP && c.nextKind === Words.KIND.ARITH &&
         rdOf(c.nextWord) === rdOf(c.word) && rnOf(c.nextWord) === rdOf(c.word)) {
       const d = rdOf(c.word);
@@ -881,6 +1194,7 @@ async function guessFunctions({ regionId, limit, requestId, epoch }) {
         ? Words.memoryAccess(c.thirdWord) : null;
       if ((c.thirdKind === Words.KIND.LOAD && m3 && m3.base === d) ||
           c.thirdKind === Words.KIND.MOVIMM ||
+          c.thirdKind === Words.KIND.RET ||
           (c.thirdKind === Words.KIND.BRANCH && branchToKnown(c.thirdWord, c.addr + 8n))) strong = true;
     }
     if (c.kind === Words.KIND.ARITH &&
@@ -888,6 +1202,10 @@ async function guessFunctions({ regionId, limit, requestId, epoch }) {
     /* Complete tiny leaves / wrapper prefixes that remain unambiguous even
        without a conventional prologue. */
     if (c.kind === Words.KIND.MOVREG && c.nextKind === Words.KIND.MOVREG && c.thirdKind === Words.KIND.ADRP) strong = true;
+    /* ARC/ObjC offset setter wrapper: mov x1,x2; add x0,x0,#off; b helper. */
+    if (c.kind === Words.KIND.MOVREG && rdOf(c.word) === 1 && rnOf(c.word) === 31 && rmOf(c.word) === 2 &&
+        c.nextKind === Words.KIND.ARITH && rdOf(c.nextWord) === 0 && rnOf(c.nextWord) === 0 &&
+        c.thirdKind === Words.KIND.BRANCH && c.thirdWord != null && Words.isBranchImm(c.thirdWord)) strong = true;
     if (c.kind === Words.KIND.LOAD && c.nextKind === Words.KIND.LOGIC && c.thirdKind === Words.KIND.RET) strong = true;
     if (c.kind === Words.KIND.LOAD && c.nextKind === Words.KIND.CMP && c.thirdKind === Words.KIND.CSEL) strong = true;
     if (c.kind === Words.KIND.CONDBR && c.nextKind === Words.KIND.STORE && c.thirdKind === Words.KIND.STORE) strong = true;
@@ -1080,7 +1398,7 @@ async function scanProgram({ regionId, requestId, epoch, callLimit, refLimit, ki
         const full = base + pair.imm;
         addRef(pc, full, pair.load ? 1 : pair.store ? 2 : 0);
         if (!pair.load && !pair.store) provenance.note(pair.rd, full, index);
-        else if (pair.load) provenance.kill(pair.rd);
+        else if (pair.load && pair.gpDest !== false) provenance.kill(pair.rd);
         continue;
       }
 
@@ -1091,6 +1409,21 @@ async function scanProgram({ regionId, requestId, epoch, callLimit, refLimit, ki
         continue;
       }
 
+      const memWrite = Words.memoryAccess(w);
+      if (memWrite) {
+        // FP/SIMD register numbers share the low encoding bits with xN/wN, but
+        // writing d8/q8 must not destroy an address held in x8.  Conversely,
+        // integer pair loads can overwrite both GP destinations, and pre/post
+        // indexed memory operations overwrite their base register.
+        if (memWrite.load && !memWrite.vector) {
+          provenance.kill(memWrite.reg);
+          if (memWrite.pair && memWrite.reg2 != null) provenance.kill(memWrite.reg2);
+        }
+        if (memWrite.mode === 'pre' || memWrite.mode === 'post') provenance.kill(memWrite.base);
+        continue;
+      }
+      if (kind === Words.KIND.FARITH || kind === Words.KIND.FMUL || kind === Words.KIND.SIMD ||
+          (kind === Words.KIND.CSEL && Words.isFpCondSelect?.(w))) continue;
       if (WRITES_LOW_REG[kind]) provenance.kill(w & 0x1f);
     }
 
@@ -1180,7 +1513,7 @@ const WRITES_LOW_REG = (() => {
  * 取りこぼしていた。長くしすぎると別の値を組み合わせてしまうので、
  * 実測（The Battle Cats）で適合率が落ちない上限を採る。
  */
-const PAIR_WINDOW = 4096;
+const PAIR_WINDOW = Number.MAX_SAFE_INTEGER;
 
 
 /* ── 値の「ふるまい」を全文走査で集める ─────────────────────
@@ -1599,7 +1932,7 @@ function decodeUtf8Text(bytes) {
     n += need + 1;
   }
   if (!n) return '';
-  return UTF8.decode(bytes.subarray(0, n)).replace(/\t/g, '\\t').replace(/\n/g, '\\n');
+  return UTF8.decode(bytes.subarray(0, n)).replace(/\t/g, '\\t').replace(/\r/g, '\\r').replace(/\n/g, '\\n');
 }
 
 async function scanStrings({ regionId, min, limit, maxBytes, requestId, epoch }) {
@@ -1617,7 +1950,7 @@ async function scanStrings({ regionId, min, limit, maxBytes, requestId, epoch })
   const flush = () => {
     if (runStart >= 0 && runBytes.length) {
       const text = UTF8.decode(new Uint8Array(runBytes))
-        .replace(/\t/g, '\\t').replace(/\n/g, '\\n');
+        .replace(/\t/g, '\\t').replace(/\r/g, '\\r').replace(/\n/g, '\\n');
       if (text.length >= minLen) {
         out.push({ addr: region.vmAddr + BigInt(runStart), offset: runStart, text });
       }
@@ -1629,7 +1962,7 @@ async function scanStrings({ regionId, min, limit, maxBytes, requestId, epoch })
   /** buf[i] から始まる UTF-8 の並びの長さ。文字として読めないなら 0。 */
   const utf8Len = (buf, i) => {
     const c = buf[i];
-    if (c < 0x80) return (c >= 0x20 && c < 0x7f) || c === 9 || c === 10 ? 1 : 0;
+    if (c < 0x80) return (c >= 0x20 && c < 0x7f) || c === 9 || c === 10 || c === 13 ? 1 : 0;
     let need = 0;
     if (c >= 0xc2 && c <= 0xdf) need = 1;
     else if (c >= 0xe0 && c <= 0xef) need = 2;
@@ -1761,9 +2094,24 @@ async function findXrefs({ regionId, target, limit, requestId, epoch }) {
           if (out.length >= cap) break;
         }
         if (!pair.load && !pair.store) provenance.note(pair.rd, full, index);
-        else if (pair.load) provenance.kill(pair.rd);
+        else if (pair.load && pair.gpDest !== false) provenance.kill(pair.rd);
         continue;
       }
+      const memWrite = Words.memoryAccess(w);
+      if (memWrite) {
+        // FP/SIMD register numbers share the low encoding bits with xN/wN, but
+        // writing d8/q8 must not destroy an address held in x8.  Conversely,
+        // integer pair loads can overwrite both GP destinations, and pre/post
+        // indexed memory operations overwrite their base register.
+        if (memWrite.load && !memWrite.vector) {
+          provenance.kill(memWrite.reg);
+          if (memWrite.pair && memWrite.reg2 != null) provenance.kill(memWrite.reg2);
+        }
+        if (memWrite.mode === 'pre' || memWrite.mode === 'post') provenance.kill(memWrite.base);
+        continue;
+      }
+      if (kind === Words.KIND.FARITH || kind === Words.KIND.FMUL || kind === Words.KIND.SIMD ||
+          (kind === Words.KIND.CSEL && Words.isFpCondSelect?.(w))) continue;
       if (WRITES_LOW_REG[kind]) provenance.kill(w & 0x1f);
     }
     pos += words * 4;

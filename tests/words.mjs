@@ -33,6 +33,19 @@ eq(0x2a2103e0, KIND.LOGIC,  'mvn w0, w1 is logic, not mov');
 eq(0xaa0107e0, KIND.LOGIC,  'orr x0, xzr, x1, lsl #1 is logic');
 eq(0x2a0107e0, KIND.LOGIC,  'orr w0, wzr, w1, lsl #1 is logic');
 
+eq(0xb27be7ea, KIND.MOVIMM, 'mov x10, #logical-immediate alias');
+eq(0x32183fe9, KIND.MOVIMM, 'mov w9, #logical-immediate alias');
+
+// Integer one-source bit transforms are semantic shifts/bit operations.
+eq(0xdac01108, KIND.SHIFT, 'clz x8, x8');
+eq(0xdac002c8, KIND.SHIFT, 'rbit x8, x22');
+eq(0xdac00d08, KIND.SHIFT, 'rev x8, x8');
+
+// Fixed-point and Advanced-SIMD scalar integer/FP conversions are conversions.
+eq(0x1e02fc00, KIND.FCONV, 'scvtf s0, w0, #1');
+eq(0x1e42fd00, KIND.FCONV, 'scvtf d0, w8, #1');
+eq(0x5e21d800, KIND.FCONV, 'scvtf s0, s0');
+
 // FP one-source arithmetic and conversion instructions share an encoding family.
 eq(0x1e20c020, KIND.FARITH, 'fabs s0, s1');
 eq(0x1e214020, KIND.FARITH, 'fneg s0, s1');

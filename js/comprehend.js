@@ -304,8 +304,23 @@ function labelFor(labels, row) {
  * ×÷ の記号と、その直後の数（括弧の中の先頭の数も含む）だけを見る。
  * 「:%d」のような書式指定の数は式ではないので拾わない。
  */
-const MUL_RE = /[×*]\s*\(?\s*(\d+)/g;
-const DIV_RE = /[÷/]\s*\(?\s*(\d+)/g;
+const MUL_RE = /[×*]\s*(\d+)/g;
+const DIV_RE = /[÷/]\s*(\d+)/g;
+/* A coefficient immediately multiplied by a placeholder and then divided by a
+ * constant is commonly folded by the compiler (4*x/400 -> x/100,
+ * 400*x/400 -> x). Normalize that rational factor before matching machine
+ * arithmetic so equivalent optimized code still verifies the developer text. */
+const RATIO_TERM_RE = /(\d+)\s*[×*]\s*(?:\[[^\]]+\]|%[-+ #0-9.]*[diufFgGeEsxX@])\s*[÷/]\s*(\d+)/g;
+
+function gcdBig(a, b) {
+  let x = a < 0n ? -a : a, y = b < 0n ? -b : b;
+  while (y) { const t = x % y; x = y; y = t; }
+  return x || 1n;
+}
+function removeOne(list, value) {
+  const i = list.findIndex((x) => x === value);
+  if (i >= 0) list.splice(i, 1);
+}
 
 /*
  * ASCII の `*` と `/` だけで「式だ」と言ってはいけない。
@@ -343,6 +358,17 @@ export function formulaOf(text) {
   const mul = [], div = [];
   for (const m of s.matchAll(MUL_RE)) mul.push(BigInt(m[1]));
   for (const m of s.matchAll(DIV_RE)) div.push(BigInt(m[1]));
+  for (const m of s.matchAll(RATIO_TERM_RE)) {
+    const numerator = BigInt(m[1]), denominator = BigInt(m[2]);
+    if (denominator === 0n) continue;
+    // The raw denominator was already collected by DIV_RE. Replace that one
+    // occurrence with the reduced ratio that an optimizer is free to emit.
+    removeOne(div, denominator);
+    const g = gcdBig(numerator, denominator);
+    const n = numerator / g, d = denominator / g;
+    if (n > 1n) mul.push(n);
+    if (d > 1n) div.push(d);
+  }
   if (!mul.length && !div.length) return null;
   return { text: s, mul, div };
 }
@@ -461,7 +487,7 @@ function arithConstants(n) {
      * ここを数えていたころ、「魔女キラー … ÷400」がフレームの大きさと
      * たまたま一致して、一致の証拠に混ざっていた。
      */
-    if (isAddressMath(x)) return;
+    if ((x.op === 'add' || x.op === 'sub') && isAddressMath(x)) return;
     if (x.op === 'mul') out.push({ kind: 'mul', v: c });
     else if (x.op === 'sdiv' || x.op === 'udiv') out.push({ kind: 'div', v: c });
     else if (x.op === 'add' || x.op === 'sub') {

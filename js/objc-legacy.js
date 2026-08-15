@@ -46,7 +46,7 @@ export function decodeMethodListHeader(rawEntsize) {
 
 const MAX_CLASSES = 20000;
 const MAX_METHODS = 60000;
-const MAX_NAME = 200;
+const MAX_NAME = 512;
 
 /**
  * ポインタとして読む。
@@ -70,6 +70,13 @@ const MAX_NAME = 200;
  */
 export function sanitizePointer(v, base) {
   if (v === 0n) return null;
+  /* Some modern Mach-O metadata fields contain a bare image-relative offset
+     without the chained-pointer next/high bits.  When the image base is known,
+     a non-zero value below that base cannot be a valid in-image VM address;
+     interpret it as the same image-relative form instead of trying to read
+     page zero.  Plain legacy VM pointers remain unchanged because they are
+     already >= base. */
+  if (base != null && v < BigInt(base)) return BigInt(base) + v;
   if (v < 0x0001000000000000n) return v;          // 素のポインタ（古い形式）
   const low = v & 0x0000000fffffffffn;
   if (low === 0n) return null;
@@ -270,7 +277,7 @@ export function decodeTypeEncoding(enc) {
 /** ivar のオフセットは、__objc_ivar に置かれた変数の中身。1 段たどって読む。 */
 async function ivarOffset(get, slotAddr) {
   if (slotAddr == null) return null;
-  const b = await get(slotAddr, 8);
+  const b = await get(slotAddr, 4);
   if (!b) return null;
   // 実体は 32 ビットだが、8 バイト確保されていることがある。下位 32 ビットを読む。
   const v = u32(b, 0);
@@ -310,7 +317,7 @@ async function readIvars(get, listAddr) {
     const offsetVar = sanitizePointer(u64(b, 0), get.base);
     const offset = await ivarOffset(get, offsetVar);
     const name = await cstring(get, sanitizePointer(u64(b, 8), get.base));
-    if (offset == null || !name) continue;     // 位置か名前が読めないものは採らない
+    if (!name) continue;                      // 名前が読めないものだけ採らない
     const typeEnc = await cstring(get, sanitizePointer(u64(b, 16), get.base));
     const size = u32(b, 28);
     out.push({
@@ -321,7 +328,11 @@ async function readIvars(get, listAddr) {
       type: decodeTypeEncoding(typeEnc),
     });
   }
-  out.sort((a, b2) => a.offset - b2.offset);
+  out.sort((a, b2) => {
+    if (a.offset == null) return b2.offset == null ? 0 : 1;
+    if (b2.offset == null) return -1;
+    return a.offset - b2.offset;
+  });
   return out;
 }
 

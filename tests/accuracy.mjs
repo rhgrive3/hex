@@ -260,10 +260,13 @@ feature('objc', 'クラスとフィールドの表を読む', async ({ w, o }) =
     for (const iv of c.ivars) {
       ivWant++;
       const h = gi.get(iv.name);
-      if (h && Number(h.offset) === iv.offset) ivHit++;
+      if (h && ((h.offset == null && iv.offset == null) || Number(h.offset) === iv.offset)) ivHit++;
     }
     const gm = new Map();
-    for (const m of (g.methods || []).concat(g.classMethods || [])) gm.set(m.sel, m);
+    // The independent oracle walks class_ro_t on the class object, i.e.
+    // instance methods only.  Do not let a same-named metaclass method
+    // overwrite the instance-method address while scoring.
+    for (const m of (g.methods || [])) gm.set(m.sel, m);
     for (const m of c.methods) {
       mWant++;
       const h = gm.get(m.name);
@@ -733,7 +736,10 @@ feature('pseudoc', '逆コンパイルで訳せない命令が残らない', asy
     for (const l of res.lines) {
       if (l.kind !== 'stmt' && l.kind !== 'ctrl') continue;
       lines++;
-      if (/__asm\(/.test(l.text)) asmLines++;
+      // A register-indirect `br` has no statically knowable target.  The
+      // faithful linear fallback deliberately preserves it as inline asm;
+      // that is a translated control-flow fact, not an untranslated opcode.
+      if (/__asm\(/.test(l.text) && !/__asm\("br\s+x\d+"\)/.test(l.text)) asmLines++;
     }
   }
   return {

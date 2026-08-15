@@ -741,6 +741,8 @@ test('OBJC: chained fixups の距離形式は、イメージ先頭を足して�
   eq(sanitizePointer(raw), 0x4000n);
   // bind（他のライブラリの記号）は、番号をアドレスと取り違えない
   eq(sanitizePointer(0x8010000000000ac4n, 0x100000000n), null, 'bind をアドレスとして採っている');
+  // Some ObjC metadata emits the image-relative target without chained high bits.
+  eq(sanitizePointer(0x18ba120n, 0x100000000n), 0x1018ba120n, 'bare image-relative pointerを復元できない');
 });
 
 test('OBJC: 距離形式で書かれたクラス表から、名前とフィールドを取り戻せる', async () => {
