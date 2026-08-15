@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { pathToFileURL } from 'node:url';
 import { openBinary, auditBinary, fingerprintImage } from '../js/binary/index.js';
+import { makeElf64Fixture } from './universal-binary.mjs';
 
 export function makeSectionlessElf64Fixture() {
   const b = new Uint8Array(0x500);
@@ -27,6 +28,29 @@ export function makeSectionlessElf64Fixture() {
   return b;
 }
 
+function issue74To85Regressions() {
+  const malformed = (mutate, pattern) => { const b=makeElf64Fixture(); mutate(new DataView(b.buffer),b); assert.throws(()=>openBinary(b),pattern); };
+  malformed((v)=>v.setUint16(52,63,true),/e_ehsize/);
+  const withPh=makeElf64Fixture(); const wpv=new DataView(withPh.buffer); wpv.setBigUint64(32,0x40n,true); wpv.setUint16(56,1,true); wpv.setUint16(54,55,true); assert.throws(()=>openBinary(withPh),/e_phentsize/);
+  malformed((v)=>v.setUint16(58,63,true),/e_shentsize/);
+
+  const xnum=makeElf64Fixture(), xv=new DataView(xnum.buffer); xv.setBigUint64(32,0x40n,true); xv.setUint16(56,0xffff,true); xv.setUint32(0x280+44,1,true); xv.setUint32(0x40,1,true); xv.setUint32(0x44,5,true); xv.setBigUint64(0x48,0n,true); xv.setBigUint64(0x50,0x400000n,true); xv.setBigUint64(0x60,BigInt(xnum.length),true); xv.setBigUint64(0x68,BigInt(xnum.length),true); xv.setBigUint64(0x70,0x1000n,true);
+  const xnumImage=openBinary(xnum); assert.equal(xnumImage.metadata.extendedProgramHeaderCount,1); assert.ok(xnumImage.segments.length>=1);
+
+  const shortSym=makeElf64Fixture(), ssv=new DataView(shortSym.buffer); ssv.setBigUint64(0x280+3*64+56,8n,true); const shortSymImage=openBinary(shortSym); assert.ok(shortSymImage.warnings.some(x=>x.includes('symbol table')&&x.includes('entry size')));
+  const shortRel=makeElf64Fixture(), srv=new DataView(shortRel.buffer), relSec=0x280+4*64; srv.setUint32(relSec+4,4,true); srv.setBigUint64(relSec+56,8n,true); srv.setUint32(relSec+40,3,true); const shortRelImage=openBinary(shortRel); assert.ok(shortRelImage.warnings.some(x=>x.includes('relocation section')&&x.includes('entry size')));
+
+  const xidx=makeElf64Fixture(), xiv=new DataView(xidx.buffer); xiv.setUint16(60,7,true); const xp=0x280+6*64; xiv.setUint32(xp+4,18,true); xiv.setBigUint64(xp+24,0x440n,true); xiv.setBigUint64(xp+32,12n,true); xiv.setUint32(xp+40,3,true); xiv.setBigUint64(xp+56,4n,true); xiv.setUint16(0x190+6,0xffff,true); xiv.setUint32(0x440+8,1,true); const xi=openBinary(xidx); assert.equal(xi.symbols.find(s=>s.name==='myfunc')?.sectionIndex,1);
+
+  const merged=makeElf64Fixture(), mv=new DataView(merged.buffer); mv.setBigUint64(32,0x40n,true); mv.setUint16(56,1,true); mv.setUint32(0x40,2,true); mv.setUint32(0x44,6,true); mv.setBigUint64(0x48,0x1c0n,true); mv.setBigUint64(0x50,0x404000n,true); mv.setBigUint64(0x60,32n,true); mv.setBigUint64(0x68,32n,true); mv.setBigUint64(0x70,8n,true); mv.setUint16(60,7,true); const mp=0x280+6*64; mv.setUint32(mp+4,4,true); mv.setBigUint64(mp+32,0n,true); mv.setUint32(mp+40,3,true); mv.setBigUint64(mp+56,24n,true); const mergedImage=openBinary(merged); assert.ok(mergedImage.metadata.programDynamic);
+
+  const eh=makeElf64Fixture(), ev=new DataView(eh.buffer); ev.setBigUint64(32,0x40n,true); ev.setUint16(56,1,true); ev.setUint32(0x40,0x6474e550,true); ev.setUint32(0x44,4,true); ev.setBigUint64(0x48,0x200n,true); ev.setBigUint64(0x50,0x405000n,true); ev.setBigUint64(0x60,16n,true); ev.setBigUint64(0x68,16n,true); ev.setBigUint64(0x70,4n,true); eh.set([1,0xff,3,3],0x200); ev.setUint32(0x204,1,true); ev.setUint32(0x208,0x401000,true); ev.setUint32(0x20c,0,true); const ehImage=openBinary(eh); assert.equal(ehImage.metadata.ehFrameHeader?.declaredFunctions,1); assert.ok(ehImage.functions.find(f=>f.address===0x401000n)?.sources?.includes('unwind'));
+
+  const syment=makeSectionlessElf64Fixture(), syv=new DataView(syment.buffer); syv.setBigUint64(0x200+4*16+8,8n,true); const sy=openBinary(syment); assert.ok(sy.warnings.some(x=>x.includes('DT_SYMENT')));
+  const relent=makeSectionlessElf64Fixture(), rv=new DataView(relent.buffer); rv.setBigUint64(0x200+8*16+8,8n,true); const ri=openBinary(relent); assert.ok(ri.warnings.some(x=>x.includes('entry size'))); assert.equal(ri.relocations.length,0);
+  const plt=makeSectionlessElf64Fixture(), pv=new DataView(plt.buffer); pv.setBigUint64(64+56+32,0xd0n,true); pv.setBigUint64(64+56+40,0xd0n,true); const dyn=(i,tag,val)=>{const p=0x200+i*16;pv.setBigInt64(p,BigInt(tag),true);pv.setBigUint64(p+8,BigInt(val),true);}; dyn(9,23,0x4003a0); dyn(10,2,24); dyn(11,20,999); dyn(12,0,0); const pi=openBinary(plt); assert.ok(pi.warnings.some(x=>x.includes('DT_PLTREL'))); assert.equal(pi.metadata.programDynamicPartial,true);
+}
+
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   const image=openBinary(makeSectionlessElf64Fixture());
   assert.equal(image.format,'elf');
@@ -42,5 +66,6 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   assert.equal(image.metadata.programDynamic?.symbols,2);
   assert.equal(auditBinary(image).errors,0);
   assert.ok(fingerprintImage(image).bytes>0);
+  issue74To85Regressions();
   console.log('universal-binary-sectionless: PASS');
 }
