@@ -1,0 +1,58 @@
+name: Apply issues 350-399 fixes
+
+on:
+  push:
+    branches: [fix/issues-350-399]
+    paths:
+      - 'tools/fix-350-399.mjs'
+      - 'tools/fix-350-399-part2.mjs'
+      - '.github/workflows/apply-fix-350-399.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-test:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/issues-350-399
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Apply audited fixes
+        run: |
+          node tools/fix-350-399.mjs
+          node tools/fix-350-399-part2.mjs
+          rm tools/fix-350-399.mjs tools/fix-350-399-part2.mjs .github/workflows/apply-fix-350-399.yml
+      - name: Syntax check changed modules
+        run: |
+          node --check js/ir-core.js
+          node --check js/decompiler/pipeline-core.js
+          node --check js/decompiler/semantic.js
+          node --check js/symbolic/executor.js
+          node --check js/emu.js
+          node --check js/sandbox.js
+          node --check js/query/planner.js
+          node --check js/binary/fingerprint.js
+          node --check js/binary/strings.js
+          node --check js/binary/model.js
+          node --check js/knowledge/index.js
+          node --check tests/issues-350-399.mjs
+      - name: Focused regression
+        run: node tests/issues-350-399.mjs
+      - name: Full non-browser check
+        run: npm run check
+      - name: Commit verified fixes
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'fix: resolve issues 350-399'
+          git push origin HEAD:fix/issues-350-399
