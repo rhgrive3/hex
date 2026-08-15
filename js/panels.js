@@ -64,6 +64,7 @@ import { stepText } from './comprehend.js';
 import { render as renderExpr } from './expr.js';
 import { callGraph, graphLegend, renderGraph } from './graphview.js';
 import { buildGeminiPayload, streamGemini } from './gemini.js';
+import { productDescriptor } from './platform/product-descriptor.js';
 
 /* ── ファイル情報 ────────────────────────────────────────── */
 
@@ -81,8 +82,10 @@ export function showFileInfo(app) {
   const slice = app.currentSlice();
   if (slice && slice.info) {
     const m = slice.info;
-    ul.append(groupRow(t('file.group.macho')));
-    ul.append(kvRow(t('file.type'), m.filetypeName + (m.filetypeName === 'MH_EXECUTE'
+    const descriptor = productDescriptor(info, slice);
+    if (descriptor.formatId === 'macho') {
+      ul.append(groupRow(t('file.group.macho')));
+      ul.append(kvRow(t('file.type'), m.filetypeName + (m.filetypeName === 'MH_EXECUTE'
       ? pick('（アプリ本体）', ' (an application)')
       : m.filetypeName === 'MH_DYLIB' ? pick('（ライブラリ）', ' (a library)') : '')));
     ul.append(kvRow(t('file.cpu'), m.cpu));
@@ -92,17 +95,26 @@ export function showFileInfo(app) {
     if (m.platform) ul.append(kvRow(t('file.platform'), m.platform + (m.minos ? ' ' + m.minos : ''), m.sdk ? 'SDK ' + m.sdk : null));
     if (m.uuid) ul.append(kvRow(t('file.uuid'), m.uuid));
     ul.append(kvRow(t('file.loadCommands'), String(m.ncmds) + ' (' + sizeText(m.sizeofcmds) + ')'));
-    ul.append(kvRow(t('file.codeSignature'), m.hasCodeSignature ? t('file.present') : t('file.none')));
-    if (slice.offset > 0n) ul.append(kvRow(t('file.sliceOffset'), addrHex(slice.offset)));
+      ul.append(kvRow(t('file.codeSignature'), m.hasCodeSignature ? t('file.present') : t('file.none')));
+      if (slice.offset > 0n) ul.append(kvRow(t('file.sliceOffset'), addrHex(slice.offset)));
+    } else {
+      const fm = descriptor.formatMetadata || {};
+      ul.append(groupRow(pick('バイナリ形式', 'Binary format')));
+      if (fm.arch || m.cpu) ul.append(kvRow(t('file.cpu'), String(fm.arch || m.cpu)));
+      if (fm.bits != null) ul.append(kvRow(pick('ビット幅', 'Bits'), String(fm.bits)));
+      if (fm.endian) ul.append(kvRow(pick('エンディアン', 'Endianness'), String(fm.endian)));
+      if (fm.platform) ul.append(kvRow(t('file.platform'), String(fm.platform)));
+    }
 
-    if (m.entry != null) {
+    const entry = descriptor.formatMetadata?.entrypoint ?? m.entry;
+    if (entry != null) {
       ul.append(tapRow(t('file.entry'), {
         sub: pick('プログラムが最初に実行する場所です', 'where execution begins'),
-        right: addrHex(m.entry),
-        onTap: () => { sheet.close(); app.goToAddress(m.entry, { announce: true }); },
+        right: addrHex(entry),
+        onTap: () => { sheet.close(); app.goToAddress(entry, { announce: true }); },
       }));
     }
-    if (m.encryption) {
+    if (descriptor.formatId === 'macho' && m.encryption) {
       ul.append(kvRow(t('file.encryption'),
         m.encrypted ? 'cryptid ' + m.encryption.cryptid + pick('（暗号化されている）', ' (encrypted)') : 'cryptid 0'));
       if (m.encrypted) {
@@ -129,14 +141,14 @@ export function showFileInfo(app) {
     }
 
     /* リンクしているライブラリ */
-    if (m.dylibs && m.dylibs.length) {
-      ul.append(groupRow(t('file.dylibs') + '  (' + m.dylibs.length + ')'));
+    if (descriptor.dependencies.length) {
+      ul.append(groupRow(t('file.dylibs') + '  (' + descriptor.dependencies.length + ')'));
       const li0 = el('li');
       li0.append(el('span', 'sub', pick(
         'このアプリが借りている外部の部品です。何を使っているか（通信・暗号・位置情報…）の手がかりになります。',
         'The external components this binary borrows.')));
       ul.append(li0);
-      for (const d of m.dylibs) {
+      for (const d of descriptor.dependencies) {
         const short = d.split('/').pop();
         ul.append(kvRow(short, '', d));
       }
@@ -225,29 +237,29 @@ export function showSections(app) {
   }
 
   const slice = app.currentSlice();
-  if (slice && slice.info) {
-    for (const seg of slice.info.segments) {
-      ul.append(groupRow(seg.name + '   ' + addrHex(seg.vmaddr) + ' · ' + sizeText(seg.vmsize)));
-      if (!seg.sections.length) {
-        ul.append(tapRow(t('sections.noSections'), { disabled: true, indent: true }));
-      }
-      for (const sec of seg.sections) {
-        const region = app.store.get('regions').find(
-          (r) => r.segment === sec.segment && r.section === sec.name && r.vmAddr === sec.addr);
+  if (slice) {
+    const descriptor = productDescriptor(info, slice);
+    const grouped = new Map();
+    for (const region of descriptor.regions || []) {
+      const key = region.segment || pick('セクション', 'Sections');
+      if (!grouped.has(key)) grouped.set(key, []);
+      grouped.get(key).push(region);
+    }
+    for (const [group, rows] of grouped) {
+      ul.append(groupRow(group));
+      for (const region of rows) {
         const disabled = !region || region.size === 0n;
-        const extra = [
-          addrHex(sec.addr) + ' – ' + addrHex(sec.addr + sec.size),
-          sizeText(sec.size),
-        ];
-        if (sec.zerofill) extra.push(t('sections.zerofill'));
-        if (region && region.truncated) extra.push(t('sections.truncated'));
-        const hintText = sectionHint(sec.name);
-        ul.append(tapRow(sec.name, {
+        const extra = [addrHex(region.vmAddr) + ' – ' + addrHex(region.vmAddr + region.size), sizeText(region.size)];
+        if (region.zerofill) extra.push(t('sections.zerofill'));
+        if (region.truncated) extra.push(t('sections.truncated'));
+        const hintText = sectionHint(region.section || region.name);
+        ul.append(tapRow(region.section || region.name, {
           indent: true,
-          sub: (hintText ? hintText + '\n' : '') + extra.join('  ·  '),
-          tag: sec.exec ? t('sections.tagCode') : (sec.zerofill ? 'bss' : ''),
-          tagClass: sec.exec ? 'exec' : '',
-          right: current && region && current.id === region.id ? '✓' : '',
+          sub: (hintText ? hintText + '
+' : '') + extra.join('  ·  '),
+          tag: region.exec ? t('sections.tagCode') : (region.zerofill ? 'bss' : ''),
+          tagClass: region.exec ? 'exec' : '',
+          right: current && current.id === region.id ? '✓' : '',
           disabled,
           onTap: () => { sheet.close(); app.selectRegion(region); },
         }));

@@ -68,7 +68,7 @@ check('function workspace renders canonical tabs', product.includes('FUNCTION_TA
 check('Explorer uses windowed rendering', product.includes('new VirtualList'));
 check('visualViewport keyboard bridge exists', product.includes('window.visualViewport') && product.includes('--ui-keyboard-inset'));
 check('route views save state instead of DOM nodes', product.includes('getState:') && product.includes('restoreState:'));
-check('evidence semantic state is separate from ranking', product.includes("evidenceBadge('confirmed'") && product.includes("evidenceBadge(name ? 'confirmed' : 'unverified')"));
+check('evidence semantic state is separate from ranking', product.includes('functionEvidence?.(addr)') && product.includes('nameEvidence?.(addr)') && product.includes('provenanceStatus(nameEvidence)'));
 
 check('canonical z-index layers are tokenized', ['--ui-z-sticky','--ui-z-inspector','--ui-z-backdrop','--ui-z-sheet','--ui-z-popover','--ui-z-dialog','--ui-z-toast'].every((token) => read('css/tokens.css').includes(token)));
 check('new screens do not horizontally overflow body by design', shell.includes('min-width: 0') && read('css/base.css').includes('overflow-x: hidden'));

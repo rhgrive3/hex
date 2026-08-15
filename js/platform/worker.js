@@ -197,10 +197,18 @@ function analyzeImage() {
   const kinds = new Uint8Array(sorted.length);
   const flags = new Uint8Array(sorted.length);
   for (let i = 0; i < sorted.length; i++) { addrs[i] = sorted[i].address; flags[i] = sorted[i].exported ? 1 : 0; }
-  const functions = [...new Set((image.functions || []).map((f) => BigInt(f.address).toString()))].map(BigInt).sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
+  const seedByAddress = new Map();
+  for (const seed of image.functions || []) if (seed?.address != null) seedByAddress.set(BigInt(seed.address).toString(), seed);
+  const functions = [...seedByAddress.keys()].map(BigInt).sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
   const funcs = new BigUint64Array(functions);
+  const functionProvenance = functions.map((addr) => {
+    const seed = seedByAddress.get(addr.toString()) || {};
+    const confirmed = isExactFunctionSeed(seed);
+    return { source: seed.source || 'heuristic', confidence: Number(seed.confidence ?? (confirmed ? 1 : 0.5)), confirmed };
+  });
+  const nameProvenance = sorted.map((entry) => ({ source: entry.exported ? 'export-table' : 'binary-symbol', confidence: 1, confirmed: true }));
   return {
-    addrs, kinds, flags, names: sorted.map((x) => x.name).join('\n'), funcs,
+    addrs, kinds, flags, names: sorted.map((x) => x.name).join('\n'), funcs, functionProvenance, nameProvenance,
     symbolCount: addrs.length, funcCount: funcs.length, capped: false,
     functionStartsExact: functions.length > 0 && (image.functions || []).every(isExactFunctionSeed),
     __transfer: [addrs.buffer, kinds.buffer, flags.buffer, funcs.buffer],
@@ -273,6 +281,7 @@ async function scanStrings(msg, signal) {
   flush();
   return {
     results: out.slice(0, cap), cancelled: false, capped: out.length >= cap,
+    truncationReason: out.length >= cap ? 'result-limit' : (total < regionBytes ? 'input-budget' : null),
     scannedBytes: exactExternalInteger(pos), complete: pos >= regionBytes && out.length < cap,
   };
 }
