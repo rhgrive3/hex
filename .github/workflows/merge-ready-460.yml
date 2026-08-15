@@ -24,10 +24,148 @@ jobs:
           status=$?
           set -e
           if [ "$status" -ne 0 ]; then
-            echo 'MERGE_CONFLICTS:'
-            git diff --name-only --diff-filter=U
-            exit "$status"
+            conflicts="$(git diff --name-only --diff-filter=U)"
+            expected=$'js/report.js\njs/schema.js\npackage.json'
+            test "$conflicts" = "$expected" || { echo "Unexpected conflicts: $conflicts"; exit 1; }
+            # #484 moved the implementation behind a certainty-scrubbing facade.
+            # Keep the latest facade/schema/package as the base and port only the
+            # unique #460-family semantics into their current homes.
+            git checkout --theirs js/report.js js/schema.js package.json
+            python3 <<'PY'
+          from pathlib import Path
+
+          def replace_once(s, old, new, label):
+              if s.count(old) != 1:
+                  raise SystemExit(f'{label}: expected exactly one match, got {s.count(old)}')
+              return s.replace(old, new, 1)
+
+          # Report completeness now belongs in report-legacy.js; report.js is the
+          # #484 certainty facade and must remain untouched.
+          p = Path('js/report-legacy.js')
+          s = p.read_text()
+          s = replace_once(s,
+              "    if (!callers.length) facts.push(fact('no-callers', null));",
+              "    if (!callers.length && program.statsComplete === true) facts.push(fact('no-callers', null));",
+              'report no-callers')
+          s = replace_once(s,
+              "  if (program && !program.statsComplete) unknowns.push(unknown('stats-partial', null));",
+              "  if (program && !program.statsComplete) {\n    unknowns.push(unknown('stats-partial', null));\n    unknowns.push(unknown('callers-partial', { reason: 'program-index-incomplete', observed: callers.length }));\n  }",
+              'report partial callers')
+          s = replace_once(s,
+              "  if (callers.length) nextSteps.push({ code: 'check-callers', detail: { n: callers.length } });\n  else nextSteps.push({ code: 'no-callers-hint', detail: null });",
+              "  if (callers.length) nextSteps.push({ code: 'check-callers', detail: { n: callers.length } });\n  else if (program && program.statsComplete !== true) nextSteps.push({ code: 'check-callers-incomplete', detail: { reason: 'program-index-incomplete' } });\n  else nextSteps.push({ code: 'no-callers-hint', detail: null });",
+              'report next-step')
+          p.write_text(s)
+
+          # Preserve #484's x0 call-return invalidation while adding #449's
+          # provenance-coherent base-register lifetime tracking.
+          p = Path('js/schema.js')
+          s = p.read_text()
+          marker = "function plainAccess(w) {\n  const m = W.memoryAccess(w);\n  if (!m || m.indexed || m.pair || m.disp == null) return null;\n  return { load: m.load, size: m.size, base: m.base, disp: Number(m.disp), reg: m.reg };\n}\n"
+          addition = marker + "\nfunction writtenGpr(w) {\n  const pcRel = W.pcRelTarget(w, 0n);\n  if (pcRel) return pcRel.reg;\n  const mw = moveWide(w);\n  if (mw) return mw.d;\n  const kind = W.classifyWord(w);\n  if ([W.KIND.MOVREG, W.KIND.ARITH, W.KIND.MUL, W.KIND.DIV, W.KIND.LOGIC, W.KIND.SHIFT, W.KIND.CSEL].includes(kind)) return rd(w);\n  if ((kind === W.KIND.LOAD || kind === W.KIND.LITERAL) && ((w >>> 26) & 1) === 0) return rd(w);\n  return null;\n}\n"
+          s = replace_once(s, marker, addition, 'schema writtenGpr')
+          s = replace_once(s,
+              "  const flow = controlContext(words, base);\n  let lastCall = -1;",
+              "  const flow = controlContext(words, base);\n  const baseGeneration = new Uint32Array(32);\n  let lastCall = -1;",
+              'schema base generations')
+          s = replace_once(s,
+              "  for (let i = 0; i < words.length; i++) {\n    const w = words[i];\n    const mw = moveWide(w);",
+              "  for (let i = 0; i < words.length; i++) {\n    const w = words[i];\n    const written = writtenGpr(w);\n    if (written != null && written >= 0 && written < 31) baseGeneration[written]++;\n    const mw = moveWide(w);",
+              'schema generation updates')
+          s = replace_once(s,
+              "      for (let r = 0; r <= 18; r++) known[r] = 0;",
+              "      for (let r = 0; r <= 18; r++) { known[r] = 0; baseGeneration[r]++; }",
+              'schema call clobbers')
+          s = replace_once(s,
+              "        fixed.push({ row: i, addr: base + BigInt(i * 4), base: pa.base, disp: pa.disp, size: pa.size });",
+              "        fixed.push({\n          row: i, addr: base + BigInt(i * 4), base: pa.base, disp: pa.disp, size: pa.size,\n          block: flow.blockOf[i], loop: flow.loopOf[i], baseGeneration: baseGeneration[pa.base],\n          fromCall: true, callRow: lastCall, callAddr: base + BigInt(lastCall * 4),\n        });",
+              'schema fixed provenance')
+          helper = """
+function fixedRegion(f) {
+  if (f?.loop != null && f.loop >= 0) return `loop:${f.loop}`;
+  if (f?.block != null && f.block >= 0) return `block:${f.block}`;
+  return null;
+}
+
+function splitLocalRuns(list, maxGap = 16) {
+  const sorted = list.slice().sort((a, b) => a.row - b.row);
+  const runs = [];
+  let run = [];
+  for (const item of sorted) {
+    if (run.length && item.row - run[run.length - 1].row > maxGap) { runs.push(run); run = []; }
+    run.push(item);
+  }
+  if (run.length) runs.push(run);
+  return runs;
+}
+
+export function unrolledTablesFromFixed(fixed) {
+  const groups = new Map();
+  for (const f of fixed || []) {
+    const region = fixedRegion(f);
+    if (!region || f.base == null || f.baseGeneration == null || f.callRow == null || f.fromCall !== true) continue;
+    const key = `${region}:x${f.base}:v${f.baseGeneration}:s${f.size}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(f);
+  }
+  const tables = [];
+  for (const list of groups.values()) {
+    for (const run of splitLocalRuns(list)) {
+      if (run.length < 3) continue;
+      const sorted = run.slice().sort((a, b) => a.row - b.row);
+      const offsets = sorted.map((f) => f.disp);
+      const stride = offsets[1] - offsets[0];
+      if (!(stride > 0) || offsets.some((off, i) => i > 0 && off - offsets[i - 1] !== stride)) continue;
+      if (new Set(offsets).size !== offsets.length) continue;
+      const region = fixedRegion(sorted[0]);
+      tables.push({
+        kind: 'unrolled', columns: offsets.length, columnStride: stride, columnSize: sorted[0].size,
+        recordStride: null, records: null, consistent: true, fromCall: true,
+        storeAddr: sorted[0].addr, offsets, scaled: [],
+        provenance: {
+          base: sorted[0].base, baseGeneration: sorted[0].baseGeneration, region,
+          callRows: sorted.map((f) => f.callRow), callAddrs: sorted.map((f) => f.callAddr ?? null),
+          storeRows: sorted.map((f) => f.row),
+        },
+        offsetOf(i) { return i >= 0 && i < offsets.length ? offsets[i] : null; },
+      });
+    }
+  }
+  return tables;
+}
+
+"""
+          s = replace_once(s, "function buildSchema({ loops, fixed, scales, cmps, bumped, base }) {", helper + "function buildSchema({ loops, fixed, scales, cmps, bumped, base }) {", 'schema unrolled helpers')
+          old_group = """  const byBase = new Map();
+  for (const f of fixed) {
+    if (!byBase.has(f.base)) byBase.set(f.base, []);
+    byBase.get(f.base).push(f);
+  }
+  for (const list of byBase.values()) {
+    if (list.length < 3) continue;
+    const sorted = list.slice().sort((a, b) => a.row - b.row);
+    const offsets = sorted.map((f) => f.disp);
+    tables.push({ kind: 'unrolled', columns: offsets.length, columnStride: null, columnSize: sorted[0].size, recordStride: null, records: null, consistent: null, storeAddr: sorted[0].addr, offsets, scaled: [], offsetOf(i) { return i >= 0 && i < offsets.length ? offsets[i] : null; } });
+  }
+"""
+          s = replace_once(s, old_group, "  tables.push(...unrolledTablesFromFixed(fixed));\n", 'schema unrolled grouping')
+          p.write_text(s)
+          PY
+            node <<'NODE'
+          const fs = require('fs');
+          const p = JSON.parse(fs.readFileSync('package.json','utf8'));
+          const add = (script, tokens) => {
+            const parts = String(p.scripts[script] || '').split(' && ').filter(Boolean);
+            p.scripts[script] = [...tokens, ...parts.filter(x => !tokens.includes(x))].join(' && ');
+          };
+          add('test', ['node tests/issue-193-matching.mjs','node tests/issue-456-report-completeness.mjs','node tests/issue-428-schema-provenance.mjs']);
+          add('semantic:test', ['node tests/issue-425-planner-budget.mjs','node tests/issues-426-427-semantic-facts.mjs','node tests/issue-430-memory-escape.mjs']);
+          add('decompiler:test', ['node tests/issue-429-range-domain.mjs']);
+          fs.writeFileSync('package.json', JSON.stringify(p, null, 2) + '\n');
+          NODE
+            git add js/report.js js/report-legacy.js js/schema.js package.json
           fi
+          test -z "$(git diff --name-only --diff-filter=U)"
           rm .github/workflows/merge-ready-460.yml
           npm run check
           git add -A
