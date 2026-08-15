@@ -38,11 +38,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Install Playwright engines
+      - name: Install pinned Playwright engines
         run: |
-          npm install --no-save playwright
-          npx playwright install-deps webkit
-          npx playwright install chromium webkit
+          # Keep CI reproducible: do not resolve the moving `latest` tag.
+          # playwright-core is an exact-version dependency of this package.
+          npm install --no-save --package-lock=false --ignore-scripts playwright@1.62.0
+          npx --no-install playwright install-deps webkit
+          npx --no-install playwright install chromium webkit
       - name: Run existing browser regression
         run: npm run browser
       - name: Run UI viewport matrix
