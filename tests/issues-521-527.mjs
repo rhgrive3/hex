@@ -119,7 +119,7 @@ function testImage(bytes = new Uint8Array(128)) {
   const truth = machoSymbolTruth(image);
   assert.equal(truth.complete, false);
   assert.ok(truth.reasons.includes('dyld-bindings:incomplete'));
-  assert.ok(truth.reasons.includes('dyld-lazy:incomplete'));
+  assert.ok(truth.reasons.includes('dyld-lazy-bind:incomplete'));
 }
 
 {
