@@ -18,14 +18,14 @@ export function parseEhFrameHeader(r, sec, image, bits) {
     functionBase: null,
   };
   try {
-    const frame = decodeEhValue(r, p, ehFrameEnc, ctx); p = frame.next;
-    const countX = decodeEhValue(r, p, countEnc, ctx); p = countX.next;
+    const frame = decodeEhValue(r, p, ehFrameEnc, ctx, end); p = frame.next;
+    const countX = decodeEhValue(r, p, countEnc, ctx, end); p = countX.next;
     const count = Number(countX.raw);
     if (!Number.isSafeInteger(count) || count < 0 || count > 10_000_000) return;
     let added = 0;
     for (let i = 0; i < count && p < end; i++) {
-      const initial = decodeEhValue(r, p, tableEnc, ctx); p = initial.next;
-      const fde = decodeEhValue(r, p, tableEnc, ctx); p = fde.next;
+      const initial = decodeEhValue(r, p, tableEnc, ctx, end); p = initial.next;
+      const fde = decodeEhValue(r, p, tableEnc, ctx, end); p = fde.next;
       if (initial.value == null || initial.value === 0n) continue;
       const codeSec = image.sectionAt(initial.value);
       if (codeSec && codeSec.perms.execute) {
@@ -42,7 +42,7 @@ export function parseEhFrameHeader(r, sec, image, bits) {
   }
 }
 
-function decodeEhValue(r, p0, enc, ctx) {
+function decodeEhValue(r, p0, enc, ctx, end = r.length) {
   if (enc === 0xff) return { value: null, raw: 0n, next: p0 };
   const format = enc & 0x0f;
   const application = enc & 0x70;
@@ -50,16 +50,20 @@ function decodeEhValue(r, p0, enc, ctx) {
   const ptrBytes = ctx.bits === 64 ? 8 : 4;
   let p = p0;
   if (application === 0x50) p = Math.ceil(p / ptrBytes) * ptrBytes;
+  const requireSpan = (n) => {
+    if (!Number.isSafeInteger(p) || !Number.isSafeInteger(end) || p < 0 || n < 0 || p > end || n > end - p)
+      throw new Error('DW_EH_PE value crosses .eh_frame_hdr boundary');
+  };
   let raw, next;
-  if (format === 0x00) { raw = ctx.bits === 64 ? r.u64(p) : BigInt(r.u32(p)); next = p + ptrBytes; }
-  else if (format === 0x01) { const x = r.uleb(p); raw = x.value; next = x.next; }
-  else if (format === 0x02) { raw = BigInt(r.u16(p)); next = p + 2; }
-  else if (format === 0x03) { raw = BigInt(r.u32(p)); next = p + 4; }
-  else if (format === 0x04) { raw = r.u64(p); next = p + 8; }
-  else if (format === 0x09) { const x = r.sleb(p); raw = x.value; next = x.next; }
-  else if (format === 0x0a) { raw = BigInt(r.i16(p)); next = p + 2; }
-  else if (format === 0x0b) { raw = BigInt(r.i32(p)); next = p + 4; }
-  else if (format === 0x0c) { raw = r.i64(p); next = p + 8; }
+  if (format === 0x00) { requireSpan(ptrBytes); raw = ctx.bits === 64 ? r.u64(p) : BigInt(r.u32(p)); next = p + ptrBytes; }
+  else if (format === 0x01) { const x = r.uleb(p, 10, end); raw = x.value; next = x.next; }
+  else if (format === 0x02) { requireSpan(2); raw = BigInt(r.u16(p)); next = p + 2; }
+  else if (format === 0x03) { requireSpan(4); raw = BigInt(r.u32(p)); next = p + 4; }
+  else if (format === 0x04) { requireSpan(8); raw = r.u64(p); next = p + 8; }
+  else if (format === 0x09) { const x = r.sleb(p, 10, end); raw = x.value; next = x.next; }
+  else if (format === 0x0a) { requireSpan(2); raw = BigInt(r.i16(p)); next = p + 2; }
+  else if (format === 0x0b) { requireSpan(4); raw = BigInt(r.i32(p)); next = p + 4; }
+  else if (format === 0x0c) { requireSpan(8); raw = r.i64(p); next = p + 8; }
   else throw new Error(`unsupported DW_EH_PE format 0x${format.toString(16)}`);
   let value = raw;
   const fieldAddress = ctx.secAddress + BigInt(p - ctx.secOffset);

@@ -345,8 +345,15 @@ function parseFunctionStarts(r, dc, image) {
   const end = dc.offset + dc.size;
   let addr = image.imageBase;
   const alignment = (image.arch === 'arm64' || image.arch === 'arm64e' || image.arch === 'arm64_32') ? 4n : image.arch === 'arm' ? 2n : 1n;
+  const status = image.metadata.functionStarts = { complete: true, recovered: 0, partialReason: null };
   while (p < end) {
-    const x = r.uleb(p);
+    let x;
+    try { x = r.uleb(p, 10, end); }
+    catch (e) {
+      if (e?.code === 'BINARY_SOURCE_RANGE_MISSING') throw e;
+      status.complete = false; status.partialReason = 'truncated-leb';
+      image.warnings.push(`LC_FUNCTION_STARTS: ${e.message}`); break;
+    }
     p = x.next;
     if (x.value === 0n) break;
     const next = addr + x.value;
@@ -358,6 +365,7 @@ function parseFunctionStarts(r, dc, image) {
       continue;
     }
     image.functions.push(functionSeed(addr, { source: 'function_starts', confidence: 0.995 }));
+    status.recovered++;
   }
 }
 

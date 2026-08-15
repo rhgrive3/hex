@@ -216,7 +216,8 @@ export function parseClassicBindings(r, dc, image, segments, source) {
     }
     fail('threaded binding chain exceeded the 100000-entry budget');
   };
-  while (p < end) {
+  try {
+    while (p < end) {
     const byte = r.u8(p++);
     const op = byte & BIND_OPCODE_MASK;
     const imm = byte & BIND_IMMEDIATE_MASK;
@@ -224,28 +225,32 @@ export function parseClassicBindings(r, dc, image, segments, source) {
       if (source === 'lazy-bind') { symbol = ''; symbolFlags = 0; libOrdinal = 0; addend = 0n; continue; }
       break;
     } else if (op === 0x10) libOrdinal = imm;
-    else if (op === 0x20) { const x = r.uleb(p); p = x.next; libOrdinal = Number(x.value); }
+    else if (op === 0x20) { const x = r.uleb(p, 10, end); p = x.next; libOrdinal = Number(x.value); }
     else if (op === 0x30) libOrdinal = imm === 0 ? 0 : signExtend(imm | 0xf0, 8);
     else if (op === 0x40) { const x = rawCString(r, p, end); symbol = x.text; symbolFlags = imm; p = x.next; }
     else if (op === 0x50) type = imm;
-    else if (op === 0x60) { const x = r.sleb(p); p = x.next; addend = x.value; }
-    else if (op === 0x70) { segIndex = imm; const x = r.uleb(p); p = x.next; segOffset = x.value; }
-    else if (op === 0x80) { const x = r.uleb(p); p = x.next; segOffset += x.value; }
+    else if (op === 0x60) { const x = r.sleb(p, 10, end); p = x.next; addend = x.value; }
+    else if (op === 0x70) { segIndex = imm; const x = r.uleb(p, 10, end); p = x.next; segOffset = x.value; }
+    else if (op === 0x80) { const x = r.uleb(p, 10, end); p = x.next; segOffset += x.value; }
     else if (op === 0x90) { bind(); segOffset += ptrSize; }
-    else if (op === 0xa0) { bind(); const x = r.uleb(p); p = x.next; segOffset += ptrSize + x.value; }
+    else if (op === 0xa0) { bind(); const x = r.uleb(p, 10, end); p = x.next; segOffset += ptrSize + x.value; }
     else if (op === 0xb0) { bind(); segOffset += ptrSize + BigInt(imm) * ptrSize; }
     else if (op === 0xc0) {
-      const a = r.uleb(p); p = a.next; const b = r.uleb(p); p = b.next;
+      const a = r.uleb(p, 10, end); p = a.next; const b = r.uleb(p, 10, end); p = b.next;
       if (a.value > 10_000_000n) { fail('bind repeat count exceeds budget'); break; }
       for (let i = 0n; i < a.value; i++) { bind(); segOffset += ptrSize + b.value; }
     } else if (op === 0xd0) {
       if (imm === 0) {
-        const x = r.uleb(p); p = x.next;
+        const x = r.uleb(p, 10, end); p = x.next;
         if (x.value > 65536n) { fail('threaded ordinal table exceeds 65536 entries'); break; }
         threadedTableLimit = Number(x.value); threadedTable = [];
       } else if (imm === 1) applyThreaded();
       else { fail(`unknown threaded bind subopcode 0x${imm.toString(16)}`, byte); break; }
     } else { fail(`unknown dyld bind opcode 0x${op.toString(16)}`, byte); break; }
+    }
+  } catch (e) {
+    if (e?.code === 'BINARY_SOURCE_RANGE_MISSING') throw e;
+    fail(`bounded stream operand is truncated: ${e.message}`);
   }
   if (threadedTable && threadedTable.length !== threadedTableLimit) fail(`threaded ordinal table expected ${threadedTableLimit} entries, decoded ${threadedTable.length}`);
   return status;
@@ -266,21 +271,21 @@ export function parseExportTrie(r, dc, image) {
     active.add(nodeOff);
     try {
       let p = base + nodeOff;
-      const term = r.uleb(p); p = term.next;
+      const term = r.uleb(p, 10, end); p = term.next;
       const terminalSize = Number(term.value);
       if (!Number.isSafeInteger(terminalSize) || terminalSize < 0 || p + terminalSize > end) { markPartial('terminal payload is truncated'); return; }
       const terminalEnd = p + terminalSize;
       if (term.value) {
-        const flagsX = r.uleb(p); p = flagsX.next; const flags = Number(flagsX.value);
+        const flagsX = r.uleb(p, 10, terminalEnd); p = flagsX.next; const flags = Number(flagsX.value);
         if (flags & 0x08) {
-          const ord = r.uleb(p); p = ord.next; const importedX = rawCString(r, p, terminalEnd);
+          const ord = r.uleb(p, 10, terminalEnd); p = ord.next; const importedX = rawCString(r, p, terminalEnd);
           image.exports.push({ name: prefix, address: 0n, kind: 'reexport', flags, ordinal: Number(ord.value), imported: importedX.text || null, source: 'exports-trie' });
         } else {
-          const addrX = r.uleb(p); p = addrX.next; const exportKind = flags & 0x03;
+          const addrX = r.uleb(p, 10, terminalEnd); p = addrX.next; const exportKind = flags & 0x03;
           const address = exportKind === 0 ? image.imageBase + addrX.value : addrX.value;
           const kind = exportKind === 1 ? 'thread-local' : exportKind === 2 ? 'absolute' : 'export';
           const ex = { name: prefix, address, kind, flags, source: 'exports-trie' };
-          if (flags & 0x10) { const resolverX = r.uleb(p); p = resolverX.next; ex.resolver = image.imageBase + resolverX.value; }
+          if (flags & 0x10) { const resolverX = r.uleb(p, 10, terminalEnd); p = resolverX.next; ex.resolver = image.imageBase + resolverX.value; }
           image.exports.push(ex);
           if (exportKind === 0) { const sec = image.sectionAt(address); if (sec && sec.perms.execute) image.functions.push(functionSeed(address, { name: prefix, source: 'export', confidence: 0.9 })); }
         }
@@ -291,7 +296,7 @@ export function parseExportTrie(r, dc, image) {
         if (++status.edges > 2_000_000) { markPartial('edge budget exceeded', 'budgetExceeded'); return; }
         const edgeX = rawCString(r, p, end); const edge = edgeX.text; p = edgeX.next;
         if (p >= end) { markPartial('child offset is truncated'); return; }
-        const child = r.uleb(p); p = child.next; walk(Number(child.value), prefix + edge, depth + 1);
+        const child = r.uleb(p, 10, end); p = child.next; walk(Number(child.value), prefix + edge, depth + 1);
       }
     } finally { active.delete(nodeOff); }
   };
