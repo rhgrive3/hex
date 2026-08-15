@@ -19,6 +19,7 @@ assert.deepEqual(Object.keys(MANAGED_LEVELS), ['M0', 'M1', 'M2', 'M3', 'M4', 'M5
 
 const arm64 = architectureMaturity('arm64');
 assert.equal(arm64.level, 'A6');
+assert.equal(arm64.implementedLevel, 'A6');
 assert.equal(arm64.fullySatisfiedLevel, 'A6');
 assert.equal(arm64.status, CAPABILITY_STATUS.SUPPORTED);
 assert.equal(arm64.partial, false);
@@ -30,7 +31,8 @@ assert.equal(arm64.features.decompiler, 'supported');
 assert.equal(arm64.features.runtimeDebugPatchValidation, 'partial');
 
 const arm64e = architectureMaturity('arm64e');
-assert.equal(arm64e.level, 'A6');
+assert.equal(arm64e.level, 'A1');
+assert.equal(arm64e.implementedLevel, 'A6');
 assert.equal(arm64e.fullySatisfiedLevel, 'A1');
 assert.equal(arm64e.status, CAPABILITY_STATUS.PARTIAL);
 assert.equal(arm64e.partial, true);
@@ -41,6 +43,7 @@ assert.ok(arm64e.limitations.includes('arm64e-pointer-authentication-semantics-p
 
 const x86 = architectureMaturity('x86_64');
 assert.equal(x86.level, 'A1');
+assert.equal(x86.implementedLevel, 'A1');
 assert.equal(x86.fullySatisfiedLevel, 'A1');
 assert.equal(x86.status, CAPABILITY_STATUS.SUPPORTED);
 assert.equal(x86.features.decode, 'supported');
@@ -52,6 +55,7 @@ assert.equal(x86.features.decompiler, 'unsupported');
 const unknown = architectureMaturity('made-up-cpu');
 assert.equal(unknown.id, 'made-up-cpu');
 assert.equal(unknown.level, null);
+assert.equal(unknown.implementedLevel, null);
 assert.equal(unknown.status, CAPABILITY_STATUS.UNSUPPORTED);
 assert.ok(unknown.limitations.includes('unknown-architecture'));
 
@@ -78,7 +82,8 @@ assert.equal(x86Truth.architecture.features.lowLevelEffects, 'unsupported');
 assert.equal(x86Truth.architecture.features.cfgSemanticIR, 'unsupported');
 assert.equal(x86Truth.architecture.features.ssaMemoryDataflow, 'unsupported');
 assert.equal(x86Truth.architecture.features.decompiler, 'unsupported');
-assert.equal(x86Truth.format.level, 'F4');
+assert.equal(x86Truth.format.level, 'F3');
+assert.equal(x86Truth.format.implementedLevel, 'F4');
 
 const unavailableTruth = supportTruthForImage(
   { arch: 'arm64', format: 'macho' },
@@ -93,7 +98,8 @@ const arm64eTruth = supportTruthForImage(
   { arch: 'arm64e', format: 'macho' },
   { engine: { arm64: true, verified: true } },
 );
-assert.equal(arm64eTruth.architecture.level, 'A6');
+assert.equal(arm64eTruth.architecture.level, 'A1');
+assert.equal(arm64eTruth.architecture.implementedLevel, 'A6');
 assert.equal(arm64eTruth.architecture.fullySatisfiedLevel, 'A1');
 assert.equal(arm64eTruth.architecture.partial, true);
 assert.equal(arm64eTruth.architecture.features.lowLevelEffects, 'partial');
@@ -112,25 +118,30 @@ assert.equal(arm64eCapability.canAnalyzeDataflow, true);
 assert.equal(arm64eCapability.partial, true);
 
 const macho = formatMaturity('macho');
-assert.equal(macho.level, 'F5');
+assert.equal(macho.level, 'F3');
+assert.equal(macho.implementedLevel, 'F5');
 assert.equal(macho.status, CAPABILITY_STATUS.PARTIAL);
 assert.equal(macho.features.parseStructures, 'supported');
 assert.equal(macho.features.correctMapping, 'supported');
 assert.equal(macho.features.importsExportsRelocations, 'supported');
+assert.equal(macho.features.functionDebugUnwind, 'partial');
 assert.equal(macho.features.runtimeLanguageMetadata, 'partial');
 assert.equal(macho.features.validatedRebuildPatch, 'unsupported');
 
 for (const format of ['elf', 'pe']) {
   const maturity = formatMaturity(format);
-  assert.equal(maturity.level, 'F4');
+  assert.equal(maturity.level, 'F3');
+  assert.equal(maturity.implementedLevel, 'F4');
   assert.equal(maturity.features.parseStructures, 'supported');
   assert.equal(maturity.features.correctMapping, 'supported');
   assert.equal(maturity.features.importsExportsRelocations, 'supported');
+  assert.equal(maturity.features.functionDebugUnwind, 'partial');
   assert.equal(maturity.features.validatedRebuildPatch, 'unsupported');
 }
 
 const managed = managedMaturity('dex');
 assert.equal(managed.level, null);
+assert.equal(managed.implementedLevel, null);
 assert.equal(managed.status, CAPABILITY_STATUS.UNSUPPORTED);
 assert.ok(managed.limitations.includes('managed-frontend-unsupported'));
 
@@ -139,18 +150,26 @@ assert.equal(arm64.display, undefined);
 const arm64Display = capabilityDisplay(arm64);
 assert.equal(arm64Display.levelCode, 'A6');
 assert.equal(arm64Display.levelLabel, 'Decompiler');
+assert.equal(arm64Display.implementedLevelCode, 'A6');
 assert.equal(arm64Display.statusLabel, 'Supported');
 const projectedDisplay = supportDisplayForTruth(arm64eTruth);
+assert.equal(projectedDisplay.architecture.levelCode, 'A1');
+assert.equal(projectedDisplay.architecture.implementedLevelCode, 'A6');
 assert.equal(projectedDisplay.architecture.statusLabel, 'Partial');
+assert.match(projectedDisplay.architecture.summary, /partial implementation through A6/);
 assert.ok(projectedDisplay.architecture.limitations.some((text) => text.includes('pointer-authentication')));
 
 const matrix = currentSupportMatrix({ decoderSupport: { arm64: true, x86_64: true } });
-assert.deepEqual(matrix.architectures.map((entry) => [entry.id, entry.level, entry.status]), [
-  ['arm64', 'A6', 'supported'],
-  ['arm64e', 'A6', 'partial'],
-  ['x86_64', 'A1', 'supported'],
+assert.deepEqual(matrix.architectures.map((entry) => [entry.id, entry.level, entry.implementedLevel, entry.status]), [
+  ['arm64', 'A6', 'A6', 'supported'],
+  ['arm64e', 'A1', 'A6', 'partial'],
+  ['x86_64', 'A1', 'A1', 'supported'],
 ]);
-assert.deepEqual(matrix.formats.map((entry) => entry.id), ['macho', 'elf', 'pe']);
+assert.deepEqual(matrix.formats.map((entry) => [entry.id, entry.level, entry.implementedLevel]), [
+  ['macho', 'F3', 'F5'],
+  ['elf', 'F3', 'F4'],
+  ['pe', 'F3', 'F4'],
+]);
 assert.deepEqual(matrix.managed, []);
 
 console.log('capability-maturity: PASS');
