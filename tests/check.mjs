@@ -6,7 +6,10 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const files = [];
-for (const dir of ['js', 'tests']) walk(path.join(root, dir));
+for (const dir of ['js', 'tests', 'tools/validation']) {
+  const full = path.join(root, dir);
+  if (fs.existsSync(full)) walk(full);
+}
 
 let failed = 0;
 for (const file of files.sort()) {
