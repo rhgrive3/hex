@@ -33,6 +33,7 @@ import { foldShapes } from './shapes.js';
 import { recoverSchemas } from './schema.js';
 import { NoteStore, noteKeyFor, legacyV2NoteKeyFor, legacyNoteKeyForSlice, EMPTY_NOTES } from './names.js';
 import { PatchSet } from './patch.js';
+import { uiRoot } from './ui-root.js';
 import { PluginHost } from './plugins.js';
 import { showTools, prettyName } from './tools.js';
 import { NavigationHistory } from './navigation.js';
@@ -475,8 +476,8 @@ class App {
 
   applyTheme(theme) {
     this.store.set({ theme });
-    if (theme === 'system') document.documentElement.removeAttribute('data-theme');
-    else document.documentElement.setAttribute('data-theme', theme);
+    if (theme === 'system') uiRoot()?.removeAttribute('data-theme');
+    else uiRoot()?.setAttribute('data-theme', theme);
   }
 
   setTextSize(size) {
@@ -486,7 +487,7 @@ class App {
   }
 
   applyTextSize(size) {
-    const root = document.documentElement;
+    const root = uiRoot();
     for (const s of ['s', 'm', 'l', 'xl']) root.classList.toggle('size-' + s, s === size);
     if (this.viewer) this.viewer.measure();
   }

@@ -18,6 +18,7 @@ import { workbenchContext } from './workbench.js';
 import { createActionRunner } from '../interaction/actions.js';
 import { renderProposal } from '../render/proposal.js';
 import { showTerm } from '../../panels.js';
+import { uiRoot } from '../../ui-root.js';
 
 const DOCK_MIN_WIDTH = 900;
 const SHEET_MIN_WIDTH = 600;
@@ -110,44 +111,18 @@ export function installAssistant(app, ui) {
   const launcher = createLauncher({ onToggle: () => (open ? close() : openPanel()) });
   panel.setSuggestions(suggestionsFor(app));
 
-  const host = document.body;
+  const root = uiRoot();
+  const host = root === document.documentElement ? document.body : root;
   host.append(panel.root, launcher.root);
 
   /* ── proposals ────────────────────────────────────────── */
-  function liveValueFor(proposal) {
-    const store = engine.proposals();
-    if (!store) return proposal.before;
-    try {
-      const addr = BigInt(String(proposal.target && proposal.target.address ? proposal.target.address : proposal.target));
-      if (proposal.kind === 'rename') return app.notes.nameOf(addr) || app.symbols.nameAt(addr) || null;
-      if (proposal.kind === 'comment') return app.notes.comment(addr) || null;
-    } catch { /* non-address target */ }
-    return proposal.before;
-  }
-
   async function applyProposal(proposal) {
-    const store = engine.proposals();
-    if (!store) throw new Error(pick('提案を適用できる状態ではありません。', 'No proposal store is available.'));
-    const { approvalToken } = store.approve(proposal.id);
-    await store.apply(proposal.id, {
-      approvalToken,
-      currentState: liveValueFor(proposal),
-      apply: async (item) => {
-        const addr = BigInt(String(item.target && item.target.address ? item.target.address : item.target));
-        if (item.kind === 'rename') {
-          app.notes.setName(addr, String(item.after || ''));
-          app.symbols.rename(addr, String(item.after || ''));
-          app.viewer.setSymbols(app.symbols);
-          app.updateChrome();
-          return;
-        }
-        if (item.kind === 'comment') {
-          app.notes.setComment(addr, String(item.after || ''));
-          return;
-        }
-        throw new Error(pick('この種類の変更はまだ適用できません。', 'This change kind cannot be applied yet.'));
-      },
-    });
+    // `proposals()` is an established UI/test integration seam. Pass the
+    // currently exposed store explicitly so custom persistence adapters keep
+    // the same approval semantics as AIRuntime-owned stores.
+    const executor = engine.proposalExecutor?.(engine.proposals?.());
+    if (!executor) throw new Error(pick('提案を適用できる状態ではありません。', 'No proposal executor is available.'));
+    await executor.approveAndApply(proposal.id);
     toast(pick('変更を適用しました', 'Change applied'));
   }
 
@@ -163,7 +138,7 @@ export function installAssistant(app, ui) {
       panel.root.setAttribute('role', 'dialog');
       panel.root.setAttribute('aria-modal', 'true');
     }
-    document.documentElement.classList.toggle('ai-docked', open && layout === 'dock');
+    uiRoot()?.classList.toggle('ai-docked', open && layout === 'dock');
   }
 
   function openPanel({ focus = true } = {}) {
@@ -172,7 +147,7 @@ export function installAssistant(app, ui) {
     unread = 0;
     launcher.setUnread(0);
     panel.root.hidden = false;
-    document.documentElement.classList.add('ai-open');
+    uiRoot()?.classList.add('ai-open');
     applyLayout();
     launcher.setOpen(true);
     panel.update();
@@ -183,7 +158,7 @@ export function installAssistant(app, ui) {
     if (!open) return;
     open = false;
     panel.root.hidden = true;
-    document.documentElement.classList.remove('ai-open', 'ai-docked');
+    uiRoot()?.classList.remove('ai-open', 'ai-docked');
     launcher.setOpen(false);
     launcher.root.focus({ preventScroll: true });
   }
@@ -258,7 +233,7 @@ export function installAssistant(app, ui) {
         if (unsubscribe) unsubscribe();
         panel.root.remove();
         launcher.destroy();
-        document.documentElement.classList.remove('ai-open', 'ai-docked');
+        uiRoot()?.classList.remove('ai-open', 'ai-docked');
         if (window.__hexAi && window.__hexAi.panel === panel) delete window.__hexAi;
       },
     };

@@ -29,10 +29,14 @@ export class ChatGPTWebProvider extends AIProvider {
     }
     this.controllers.add(controller);
     try {
-      const text = await this.bridge.request(buildChatGPTTurnPrompt(request), {
+      const response = await this.bridge.request(buildChatGPTTurnPrompt(request), {
         signal: controller.signal,
         timeoutMs: options.timeoutMs || this.timeoutMs,
+        sessionKey: request.sessionId,
+        model: request.model || null,
+        reasoning: request.reasoning || null,
       });
+      const text = response && typeof response === 'object' ? response.text : response;
       const decision = parseChatGPTDecision(text);
       return validateModelDecision(decision, (request.tools || []).map((tool) => tool.name));
     } catch (error) {
@@ -40,7 +44,8 @@ export class ChatGPTWebProvider extends AIProvider {
         throw new AIError('cancelled', 'AI investigation was cancelled.');
       }
       if (error instanceof AIError) throw error;
-      throw new AIError('provider_error', error?.message || String(error));
+      const type = error?.code === 'timeout' ? 'model_timeout' : 'provider_error';
+      throw new AIError(type, error?.message || String(error), { bridgeCode: error?.code || null, bridgeDetails: error?.details || null });
     } finally {
       this.controllers.delete(controller);
       if (options.signal) options.signal.removeEventListener('abort', onAbort);
@@ -70,12 +75,15 @@ export class UserscriptAIProvider extends AIProvider {
     this.gemini = new WorkerAIProvider({ endpoint: workerEndpoint, fetchImpl, timeoutMs });
   }
 
-  selected() {
-    return globalThis.__HEX_AI_PROVIDER__ === 'gemini' ? this.gemini : this.chatgpt;
+  selected(request = {}) {
+    const requested = String(request.provider || globalThis.__HEX_AI_PROVIDER__ || 'chatgpt-web').toLowerCase();
+    if (requested === 'gemini' || requested === 'worker') return this.gemini;
+    if (requested === 'chatgpt' || requested === 'chatgpt-web') return this.chatgpt;
+    throw new AIError('provider_error', `Unknown AI provider: ${requested}`);
   }
 
   async nextTurn(request, options = {}) {
-    const provider = this.selected();
+    const provider = this.selected(request);
     if (provider === this.chatgpt && !this.chatgpt.available()) {
       throw new AIError('provider_error', 'ChatGPT Web bridge is not ready.');
     }
@@ -85,6 +93,45 @@ export class UserscriptAIProvider extends AIProvider {
   cancel() {
     this.chatgpt.cancel();
     this.gemini.cancel();
+  }
+
+  async capabilities(options = {}) {
+    const chatgpt = this.bridgeCapabilities(options);
+    return {
+      providers: [
+        { id: 'chatgpt-web', displayName: 'ChatGPT Web', available: this.chatgpt.available(), ...(await chatgpt) },
+        { id: 'gemini', displayName: 'Gemini', available: true },
+      ],
+    };
+  }
+
+  bridgeCapabilities(options = {}) {
+    const bridge = this.chatgpt.bridge;
+    return typeof bridge?.capabilities === 'function' ? bridge.capabilities(options) : Promise.resolve({});
+  }
+
+  status() {
+    const bridge = this.chatgpt.bridge;
+    const chatgpt = bridge?.status?.() || { ready: false };
+    const provider = globalThis.__HEX_AI_PROVIDER__ || 'chatgpt-web';
+    return { provider, ready: provider === 'gemini' ? true : !!chatgpt.ready, busy: !!chatgpt.busy, selection: chatgpt.selection || null, chatgpt };
+  }
+
+  getSelection() {
+    const provider = globalThis.__HEX_AI_PROVIDER__ === 'gemini' ? 'gemini' : 'chatgpt-web';
+    return { provider, ...(provider === 'chatgpt-web' ? (this.chatgpt.bridge?.getSelection?.() || {}) : {}) };
+  }
+
+  async setSelection(selection = {}, options = {}) {
+    const requested = String(selection.provider || globalThis.__HEX_AI_PROVIDER__ || 'chatgpt-web').toLowerCase();
+    if (!['chatgpt', 'chatgpt-web', 'gemini', 'worker'].includes(requested)) throw new AIError('provider_error', `Unknown AI provider: ${requested}`);
+    const provider = requested === 'gemini' || requested === 'worker' ? 'gemini' : 'chatgpt';
+    globalThis.__HEX_AI_PROVIDER__ = provider;
+    try { globalThis.localStorage?.setItem?.('hex.ai.provider', provider); } catch { /* private mode */ }
+    if (provider === 'gemini') return { provider: 'gemini', model: null, reasoning: null };
+    if (typeof this.chatgpt.bridge?.setSelection !== 'function') throw new AIError('provider_error', 'ChatGPT Web model selection is unavailable.');
+    const selected = await this.chatgpt.bridge.setSelection(selection, options);
+    return { provider: 'chatgpt-web', ...selected };
   }
 }
 

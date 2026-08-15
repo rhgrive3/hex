@@ -5,8 +5,9 @@ const PROPOSAL_KINDS = new Set(['rename', 'comment', 'type', 'struct-field', 'pa
 let proposalSequence = 1;
 
 export class ProposalStore {
-  constructor({ evidenceStore } = {}) {
+  constructor({ evidenceStore, binding = null } = {}) {
     this.evidenceStore = evidenceStore;
+    this.binding = typeof binding === 'function' ? binding : null;
     this.records = new Map();
     this.approvals = new Map();
     this.audit = [];
@@ -17,6 +18,7 @@ export class ProposalStore {
     const evidenceIds = Array.from(new Set((input.evidenceIds || []).map(String).filter((id) => this.evidenceStore?.has(id))));
     if (!evidenceIds.length) throw new AIError('invalid_tool_call', 'A proposal requires deterministic evidence.');
     const id = String(input.id || `proposal_${proposalSequence++}`);
+    const binding = this.binding?.() || null;
     const record = {
       id, kind: input.kind, target: jsonSafe(input.target), before: jsonSafe(input.before), after: jsonSafe(input.after),
       reason: String(input.reason || '').slice(0, 2000), evidenceIds,
@@ -24,6 +26,8 @@ export class ProposalStore {
       // Identity/staleness checks use the complete value, never jsonSafe's
       // display-oriented depth/item truncation.
       revision: fingerprint(input.before),
+      binding: jsonSafe(binding),
+      bindingRevision: fingerprint(binding),
     };
     this.records.set(id, record);
     this.audit.push({ type: 'proposal-created', proposalId: id, timestamp: record.createdAt });
@@ -58,6 +62,12 @@ export class ProposalStore {
     proposal.status = 'applying';
     this.approvals.delete(proposal.id);
     this.audit.push({ type: 'proposal-applying', proposalId: proposal.id, timestamp: new Date().toISOString() });
+
+    if (proposal.bindingRevision !== fingerprint(this.binding?.() || null)) {
+      proposal.status = 'failed';
+      this.audit.push({ type: 'proposal-binding-mismatch', proposalId: proposal.id, timestamp: new Date().toISOString() });
+      throw new AIError('scope_violation', 'The proposal belongs to a different binary, project, or runtime session.');
+    }
 
     if (fingerprint(currentState) !== proposal.revision) {
       proposal.status = 'failed';

@@ -41,7 +41,7 @@ function goToCode(app, ui, addr, { select = false } = {}) {
 export function createActionRunner(app, { ui, assistant } = {}) {
   return async function runAction(action) {
     if (!action) return;
-    const addr = action.address != null ? action.address : null;
+    const addr = action.address != null ? action.address : action.target != null ? action.target : null;
     switch (action.kind) {
       case 'open-function': {
         if (addr == null) return;
@@ -68,6 +68,18 @@ export function createActionRunner(app, { ui, assistant } = {}) {
       case 'show-callees': {
         if (addr == null || !ui || !ui.router) return;
         ui.router.navigate('/function/' + addr.toString() + '/calls');
+        if (narrow() && assistant) assistant.collapse();
+        return;
+      }
+      case 'show-cfg':
+      case 'show-pseudocode': {
+        if (addr == null || !ui?.router) return;
+        ui.router.navigate('/function/' + BigInt(addr).toString() + (action.kind === 'show-cfg' ? '/flow' : '/pseudocode'));
+        if (narrow() && assistant) assistant.collapse();
+        return;
+      }
+      case 'open-evidence': {
+        if (!goToCode(app, ui, BigInt(addr), { select: true })) return;
         if (narrow() && assistant) assistant.collapse();
         return;
       }

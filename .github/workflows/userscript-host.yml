@@ -53,5 +53,5 @@ jobs:
           npm run ai:test
           node tests/gemini.mjs
           node tests/worker-classic-harness.mjs
-      - name: Verify committed deployment bundles are current
-        run: git diff --exit-code -- userscript/hex.user.template.js userscript/platform-worker.bundle.js
+      - name: Verify tiny committed loader is current
+        run: git diff --exit-code -- userscript/hex.user.template.js

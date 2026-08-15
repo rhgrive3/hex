@@ -1,5 +1,10 @@
 # graft's local graph cache — regenerable, not committed (run `graft build`).
 graft/
+/dist/
+/.runtime-build/
+/.local/chatgpt-web-reference/
+/node_modules/
+/.wrangler/
 
 # 正解表（tests/oracle.py で作り直せる。数 MB あるので置かない）
 tests/oracle.*.json.gz

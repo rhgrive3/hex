@@ -167,12 +167,16 @@ try {
 {
   const cfg = JSON.parse(fs.readFileSync(new URL('../wrangler.jsonc', import.meta.url), 'utf8'));
   assert.equal(cfg.main, './worker-entry.js');
-  assert.deepEqual(cfg.durable_objects?.bindings, [{ name: 'AI_QUOTA', class_name: 'AIQuota' }]);
+  assert.deepEqual(cfg.durable_objects?.bindings, [
+    { name: 'AI_QUOTA', class_name: 'AIQuota' },
+    { name: 'RUNTIME_BOOTSTRAP', class_name: 'RuntimeBootstrap' },
+  ]);
   assert.deepEqual(cfg.exports?.AIQuota, { type: 'durable-object', storage: 'sqlite' });
+  assert.deepEqual(cfg.exports?.RuntimeBootstrap, { type: 'durable-object', storage: 'sqlite' });
   const entry = fs.readFileSync(new URL('../worker-entry.js', import.meta.url), 'utf8');
   assert.match(entry, /extends DurableObject/);
-  assert.match(entry, /storage\.get\(STATE_KEY\)/);
-  assert.match(entry, /storage\.put\(STATE_KEY, state\)/);
+  assert.match(entry, /storage\.get\(QUOTA_STATE_KEY\)/);
+  assert.match(entry, /storage\.put\(QUOTA_STATE_KEY, state\)/);
 }
 
 console.log('issues #469-#470 distributed AI quota regressions PASS');

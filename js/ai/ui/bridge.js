@@ -2,6 +2,9 @@
 import { createHexAIContext } from './hex-context.js';
 import { createLocalEngine } from './local-engine.js';
 import { composePrompt } from '../prompts/compose.js';
+import { createCapabilityCatalog } from '../capabilities/catalog.js';
+import { createCapabilityExecutor } from '../capabilities/executor.js';
+import { createProposalExecutor } from '../interaction/proposal-executor.js';
 
 async function loadCoreRuntime(localContext) {
   const runtimeModule = await import('../runtime.js');
@@ -29,8 +32,12 @@ export function createAiEngine(app, options = {}) {
   exposeStableIdentityInputs(localContext, app);
   exposeRuntimeSessionBinding(localContext);
   const local = createLocalEngine(app, localContext);
+  const capabilityCatalog = createCapabilityCatalog();
+  const capabilityExecutor = createCapabilityExecutor({ catalog: capabilityCatalog, app, binaryId: () => localContext.binaryId, runtimePlatform: () => localContext.runtime?.platform?.() });
   const loadCore = options.loadCore || loadCoreRuntime;
-  let corePromise = null, core = null, sessionId = null;
+  let corePromise = null, core = null;
+  const sessions = loadConversationBindings();
+  let defaultSessionId = null;
 
   const runtime = () => {
     if (!corePromise) corePromise = Promise.resolve().then(() => loadCore(localContext)).then((value) => { core = value || null; return core; }).catch(() => { core = null; return null; });
@@ -40,12 +47,24 @@ export function createAiEngine(app, options = {}) {
   return {
     id: 'bridge', localContext, runtime,
     proposals: () => (core && core.proposalStore) || null,
+    capabilities: () => capabilityCatalog.list(capabilityExecutor.context()),
+    capabilityExecutor,
+    proposalExecutor: (store = null) => {
+      const target = store || core?.proposalStore || null;
+      return target ? createProposalExecutor({ store: target, capabilityExecutor, app }) : null;
+    },
     async run(input) {
       const { question, mode, style, scope, signal, onActivity, context } = input;
+      const conversationKey = input.conversationId == null ? null : String(input.conversationId);
+      let sessionId = conversationKey ? (sessions.get(conversationKey) || null) : defaultSessionId;
       const prompt = composePrompt({ mode, style, scope, question, context });
       const engine = await runtime();
       if (engine && typeof engine.turn === 'function') {
-        const runCore = () => engine.turn({ goal: question, mode, style, scope, sessionId, task: prompt.task }, { signal, onActivity: (event) => onActivity && onActivity(event) });
+        const runCore = () => engine.turn({
+          goal: question, mode, style, scope, sessionId, task: prompt.task,
+          conversationId: conversationKey, provider: input.provider || null,
+          model: input.model || null, reasoning: input.reasoning || null,
+        }, { signal, onActivity: (event) => onActivity && onActivity(event) });
         try {
           let result;
           try {
@@ -55,10 +74,14 @@ export function createAiEngine(app, options = {}) {
             // A new user turn after a binary/project switch must start a new
             // investigation rather than repeatedly presenting the old session.
             sessionId = null;
+            if (conversationKey) { sessions.delete(conversationKey); persistConversationBindings(sessions); } else defaultSessionId = null;
             onActivity?.({ type: 'session-rebind', label: '新しい解析対象へAIセッションを切り替え' });
             result = await runCore();
           }
-          if (result?.sessionId) sessionId = result.sessionId;
+          if (result?.sessionId) {
+            if (conversationKey) { sessions.set(conversationKey, result.sessionId); persistConversationBindings(sessions); }
+            else defaultSessionId = result.sessionId;
+          }
           return result;
         } catch (error) {
           if (signal?.aborted) throw error;
@@ -74,6 +97,39 @@ export function createAiEngine(app, options = {}) {
       return local.run(input);
     },
     cancel() { if (core && typeof core.cancel === 'function') core.cancel(); },
+    async createAgentJob(input = {}) {
+      const engine = await runtime();
+      const key = input.conversationId == null ? null : String(input.conversationId);
+      return engine.createJob({ ...input, sessionId: input.sessionId || (key ? sessions.get(key) : defaultSessionId) || null });
+    },
+    async runAgentJobSlice(jobOrId, options = {}) {
+      const engine = await runtime(); const checkpoint = await engine.runJobSlice(jobOrId, options);
+      bindJobSession(checkpoint, sessions, (value) => { defaultSessionId = value; }); persistConversationBindings(sessions); return checkpoint;
+    },
+    async resumeAgentJob(id, options = {}) {
+      const engine = await runtime(); const checkpoint = await engine.resumeJob(id, options);
+      bindJobSession(checkpoint, sessions, (value) => { defaultSessionId = value; }); persistConversationBindings(sessions); return checkpoint;
+    },
+    async aiCapabilities(options = {}) {
+      const engine = await runtime();
+      const provider = engine?.provider;
+      return typeof provider?.capabilities === 'function' ? provider.capabilities(options) : { providers: [] };
+    },
+    async aiStatus() {
+      const engine = await runtime();
+      const provider = engine?.provider;
+      return typeof provider?.status === 'function' ? provider.status() : { ready: !!engine };
+    },
+    getAISelection() { return core?.provider?.getSelection?.() || null; },
+    async setAISelection(selection, options = {}) {
+      const engine = await runtime();
+      if (typeof engine?.provider?.setSelection !== 'function') throw new Error('The active AI provider does not support model selection.');
+      return engine.provider.setSelection(selection, options);
+    },
+    forgetAIConversation(conversationId) {
+      if (conversationId == null) return false;
+      const removed = sessions.delete(String(conversationId)); persistConversationBindings(sessions); return removed;
+    },
   };
 }
 
@@ -166,6 +222,25 @@ function isSessionBindingMismatch(error) {
 }
 function isSafetyBoundaryError(error) {
   return error?.type === 'scope_violation' || error?.type === 'cancelled' || error?.type === 'context_too_large';
+}
+
+function bindJobSession(checkpoint, sessions, setDefault) {
+  if (!checkpoint?.sessionId) return;
+  if (checkpoint.conversationId != null) sessions.set(String(checkpoint.conversationId), checkpoint.sessionId);
+  else setDefault(checkpoint.sessionId);
+}
+
+const CONVERSATION_BINDING_KEY = 'hex.ai.conversation-sessions.v1';
+function loadConversationBindings() {
+  const out = new Map();
+  try {
+    const raw = JSON.parse(globalThis.localStorage?.getItem?.(CONVERSATION_BINDING_KEY) || '{}');
+    for (const [conversationId, sessionId] of Object.entries(raw || {})) if (conversationId && typeof sessionId === 'string' && sessionId) out.set(conversationId, sessionId);
+  } catch { /* optional persistence */ }
+  return out;
+}
+function persistConversationBindings(bindings) {
+  try { globalThis.localStorage?.setItem?.(CONVERSATION_BINDING_KEY, JSON.stringify(Object.fromEntries(bindings))); } catch { /* private mode */ }
 }
 
 export default createAiEngine;

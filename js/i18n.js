@@ -5,6 +5,8 @@
  * 日本語が第一言語で、英語は補助。t('key', {変数}) で文字列を取り出す。
  */
 
+import { uiRoot } from './ui-root.js';
+
 const STRINGS = {
   ja: {
     /* ── アプリの骨格 ── */
@@ -755,7 +757,7 @@ let current = 'ja';
 
 export function setLang(l) {
   current = STRINGS[l] ? l : 'ja';
-  document.documentElement.setAttribute('lang', current);
+  uiRoot()?.setAttribute('lang', current);
 }
 
 export function lang() { return current; }

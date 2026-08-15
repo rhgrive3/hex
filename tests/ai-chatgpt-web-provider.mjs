@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {
   ChatGPTWebProvider,
+  UserscriptAIProvider,
   buildChatGPTTurnPrompt,
   parseChatGPTDecision,
 } from '../js/ai/provider/chatgpt-web.js';
@@ -16,6 +17,23 @@ const tools = [{
   assert.equal(decision.type, 'tool');
   assert.equal(decision.tool, 'search_functions');
   assert.equal(decision.arguments.query, 'coin');
+}
+
+{
+  const previous = globalThis.__HEX_AI_PROVIDER__;
+  const selections = [];
+  const bridge = {
+    request: async () => '{"type":"final","answer":"ok","confidence":1,"evidenceIds":[]}',
+    getSelection: () => ({ model: 'chatgpt-web/sol', reasoning: 'high' }),
+    setSelection: async (selection) => { selections.push(selection); return { model: selection.model, reasoning: selection.reasoning }; },
+  };
+  const provider = new UserscriptAIProvider({ bridge, fetchImpl: async () => { throw new Error('unused'); } });
+  assert.deepEqual(provider.getSelection(), { provider: 'chatgpt-web', model: 'chatgpt-web/sol', reasoning: 'high' });
+  assert.deepEqual(await provider.setSelection({ provider: 'gemini' }), { provider: 'gemini', model: null, reasoning: null });
+  assert.equal(provider.getSelection().provider, 'gemini');
+  assert.deepEqual(await provider.setSelection({ provider: 'chatgpt-web', model: 'chatgpt-web/sol', reasoning: 'high' }), { provider: 'chatgpt-web', model: 'chatgpt-web/sol', reasoning: 'high' });
+  assert.equal(selections.length, 1);
+  globalThis.__HEX_AI_PROVIDER__ = previous;
 }
 
 {

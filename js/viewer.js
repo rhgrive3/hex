@@ -20,6 +20,7 @@ import { addrText, bytesHex, bytesAscii, mnemonicClass } from './format.js';
 import { brief, categoryOf, explain } from './arm64.js';
 import { EMPTY_INDEX } from './symbols.js';
 import { lang } from './i18n.js';
+import { uiRoot } from './ui-root.js';
 
 const WINDOW_PX = 6_000_000;    // well inside every browser's scroll limit
 const OVERSCAN = 6;             // rows rendered above/below the viewport
@@ -83,11 +84,12 @@ export class CodeViewer {
    * calc() のまま読むと parseFloat できないので、計算は JS 側で持つ。
    */
   measure() {
-    const cs = getComputedStyle(document.documentElement);
+    const root = uiRoot();
+    const cs = getComputedStyle(root);
     const line = parseFloat(cs.getPropertyValue('--line-h')) || 24;
     const note = parseFloat(cs.getPropertyValue('--note-h')) || 18;
     const h = (this.showNotes && this.mode === 'asm') ? line + note : line;
-    document.documentElement.style.setProperty('--row-h', h + 'px');
+    root.style.setProperty('--row-h', h + 'px');
     this.rowH = h;
     this._recomputeWindow(true);
   }
@@ -188,7 +190,7 @@ export class CodeViewer {
     const changed = this.showNotes !== !!on;
     this.showNotes = !!on;
     if (style) this.noteStyle = style;
-    document.documentElement.classList.toggle('with-notes', this.showNotes);
+    uiRoot()?.classList.toggle('with-notes', this.showNotes);
     for (const el of this.pool) el._note = null;
     if (changed) this.measure();
     else this.invalidate();

@@ -5,9 +5,10 @@
  */
 
 import { t } from './i18n.js';
+import { uiRoot } from './ui-root.js';
 
 const overlays = () => document.getElementById('overlays');
-const pickUi = (ja, en) => (document.documentElement.lang || navigator.language || 'ja')
+const pickUi = (ja, en) => (uiRoot()?.lang || navigator.language || 'ja')
   .toLowerCase().startsWith('ja') ? ja : en;
 
 export function el(tag, cls, text) {
@@ -105,7 +106,7 @@ export class Sheet {
     this.updateHistoryChrome();
     this.armSwipe(head);
     this.root.addEventListener('keydown', (e) => this.trapFocus(e));
-    document.documentElement.classList.add('sheet-open');
+    uiRoot()?.classList.add('sheet-open');
     requestAnimationFrame(() => {
       if (!this.root.isConnected || openSheet !== this) return;
       const first = this.root.querySelector('input:not([disabled]), textarea:not([disabled])');
@@ -228,7 +229,7 @@ export class Sheet {
     if (parkedSheet === this) parkedSheet = null;
     if (this.onClose) this.onClose();
     if (!openSheet && !parkedSheet && !overlays().querySelector('.sheet')) {
-      document.documentElement.classList.remove('sheet-open');
+      uiRoot()?.classList.remove('sheet-open');
       if (this.returnFocus && this.returnFocus.isConnected && typeof this.returnFocus.focus === 'function') {
         try { this.returnFocus.focus({ preventScroll: true }); } catch { /* best effort */ }
       }
