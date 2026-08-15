@@ -19,6 +19,10 @@ const linkage=normalizeMachOLinkage(image);
 assert.equal(linkage.completeness.importsComplete,true);
 assert.equal(linkage.completeness.exportsComplete,true);
 assert.equal(linkage.imports.length,3);
+const exactCap=normalizeMachOLinkage(image,{imports:3,exports:1,sites:3});
+assert.equal(exactCap.completeness.complete,true,'exactly filling a transport cap is not truncation when no record was omitted');
+const belowCap=normalizeMachOLinkage(image,{imports:2,exports:1,sites:3});
+assert.equal(belowCap.completeness.importsComplete,false,'omitting an import at the hard cap must be explicit');
 
 const legacy={
   addrs:BigUint64Array.from([0x1000n,0x2000n]),kinds:Uint8Array.from([SYM_STUB,SYM_POINTER]),flags:Uint8Array.from([0,0]),names:['_stubbed','_legacy_got'],
