@@ -1,0 +1,33 @@
+name: Temp final backend disposed epoch guard
+on:
+  push:
+    branches:
+      - review-all-hardening-integration
+permissions:
+  contents: write
+jobs:
+  harden:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: review-all-hardening-integration
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: node scripts/_final-backend-disposed-epoch.mjs
+      - run: npm ci
+      - run: node tests/backend-disposal.mjs
+      - run: npm run check
+      - run: npm run userscript:test
+      - name: Commit source, regression and regenerated bundles
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          rm scripts/_final-backend-disposed-epoch.mjs .github/workflows/_temp-final-backend-disposed-epoch.yml
+          git add js/backend.js tests/backend-disposal.mjs userscript/hex.user.template.js userscript/platform-worker.bundle.js scripts .github/workflows
+          git commit -m 'Make disposed backend epoch transitions inert'
+          git push origin HEAD:review-all-hardening-integration
