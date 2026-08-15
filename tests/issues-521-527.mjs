@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import { MemoryByteSource } from '../js/binary/source.js';
 import { parseMachOSource } from '../js/binary/source-loaders.js';
-import { analysisFromBinaryImage } from '../js/platform/analysis-result.js';
+import { analysisFromBinaryImage, machoSymbolTruth } from '../js/platform/analysis-result.js';
 import { mergeMachOAnalysisResults } from '../js/macho-analysis-merge.js';
 
 {
@@ -42,6 +42,19 @@ import { mergeMachOAnalysisResults } from '../js/macho-analysis-merge.js';
   });
   assert.equal(result.symbolTruth.complete, false);
   assert.ok(result.symbolTruth.reasons.some((x) => /binding-sites-incomplete/.test(x)));
+}
+
+{
+  const truth = machoSymbolTruth({
+    format:'macho',
+    metadata:{
+      machoMetadata:{ complete:true },
+      chainedFixups:{ complete:true, importsComplete:false, importsPartialReason:'metadata-budget', bindingSitesComplete:true },
+    },
+  });
+  assert.equal(truth.complete, false);
+  assert.ok(truth.reasons.includes('chained-fixups:imports-incomplete'));
+  assert.ok(truth.reasons.includes('chained-fixups:metadata-budget'));
 }
 
 {
