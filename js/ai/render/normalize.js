@@ -30,7 +30,7 @@ export const STATUS_TEXT = Object.freeze({
 
 const KNOWN_FIELDS = new Set([
   'mode', 'style', 'answer', 'confidence', 'evidence', 'hypotheses', 'actions',
-  'followups', 'activity', 'usage', 'limits', 'sessionId', 'error', 'task', 'proposals',
+  'followups', 'activity', 'usage', 'limits', 'sessionId', 'scope', 'turnSnapshotId', 'error', 'task', 'proposals',
 ]);
 
 const STATUS_ALIASES = new Map(Object.entries({
@@ -300,6 +300,8 @@ export function normalizeResponse(raw, fallback = {}) {
     usage: source.usage && typeof source.usage === 'object' ? source.usage : null,
     limits: source.limits && typeof source.limits === 'object' ? source.limits : null,
     sessionId: source.sessionId ? String(source.sessionId) : null,
+    scope: source.scope ? String(source.scope) : null,
+    turnSnapshotId: source.turnSnapshotId ? String(source.turnSnapshotId) : null,
     error: source.error ? text(source.error, 400) : null,
     unknownFields,
   };

@@ -6,7 +6,7 @@ import { assertSchema, addressText, jsonSafe } from '../validation.js';
 import { ObservationStore } from './storage/observation-store.js';
 import { shortHash, stableSerialize } from './paging/cursor.js';
 import {
-  completenessOf, projectBounded, projectCompare, projectDetail, projectFunction, projectGraph,
+  completenessOf, projectBinaryDiff, projectBounded, projectCompare, projectDetail, projectFunction, projectGraph,
   projectKnowledge, projectObjcDispatch, projectRuntime, projectSearch, projectSemanticFacts,
   projectSignature, projectSlice, projectSymbolic, projectVerification,
 } from './projections/index.js';

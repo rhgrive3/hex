@@ -8,8 +8,18 @@ async function loadCoreRuntime(localContext) {
   if (!runtimeModule || typeof runtimeModule.createAIRuntime !== 'function') return null;
   let provider = null;
   try {
-    const providerModule = await import('../provider/index.js');
-    if (providerModule && typeof providerModule.WorkerAIProvider === 'function') provider = new providerModule.WorkerAIProvider();
+    // Standalone Web keeps the Worker provider. The userscript host injects a
+    // browser-local ChatGPT bridge and owns the ChatGPT/Gemini selection.
+    if (globalThis.__HEX_CHATGPT_BRIDGE__) {
+      const userscriptModule = await import('../provider/chatgpt-web.js');
+      if (userscriptModule && typeof userscriptModule.UserscriptAIProvider === 'function') {
+        provider = new userscriptModule.UserscriptAIProvider({ bridge: globalThis.__HEX_CHATGPT_BRIDGE__ });
+      }
+    }
+    if (!provider) {
+      const providerModule = await import('../provider/index.js');
+      if (providerModule && typeof providerModule.WorkerAIProvider === 'function') provider = new providerModule.WorkerAIProvider();
+    }
   } catch { /* deterministic core remains available */ }
   return runtimeModule.createAIRuntime({ context: localContext, provider });
 }
@@ -57,6 +67,8 @@ export function createAiEngine(app, options = {}) {
           // visible function/binary and defeat TurnSnapshot semantics.
           if (isSafetyBoundaryError(error)) throw error;
           onActivity?.({ type: 'error', label: 'AI core unavailable', detail: String(error?.message || error).slice(0, 120) });
+          // Never label a local/Gemini fallback as a ChatGPT answer.
+          if (globalThis.__HEX_CHATGPT_BRIDGE__ && globalThis.__HEX_AI_PROVIDER__ !== 'gemini') throw error;
         }
       }
       return local.run(input);
