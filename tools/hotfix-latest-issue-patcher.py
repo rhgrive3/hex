@@ -34,5 +34,21 @@ s = s.replace(
     1,
 )
 
+# The old UX check hard-coded the unsafe rule that every displayed function name
+# is Confirmed. #558 intentionally replaces that with provenance-aware semantics,
+# so update the architecture assertion to guard the new contract instead.
+marker = "# ---------------------------------------------------------------------------\n# Regression tests and test-suite registration"
+injection = r'''# #558: the UX architecture test must assert provenance semantics, not the old
+# unconditional Confirmed-name source string.
+replace_once('tests/ux.mjs',
+  "check('evidence semantic state is separate from ranking', product.includes(\"evidenceBadge('confirmed'\") && product.includes(\"evidenceBadge(name ? 'confirmed' : 'unverified')\"));",
+  "check('evidence semantic state is separate from ranking', product.includes('functionEvidence?.(addr)') && product.includes('nameEvidence?.(addr)') && product.includes('provenanceStatus(nameEvidence)'));",
+)
+
+'''
+if marker not in s:
+    raise SystemExit('hotfix: regression-test marker not found')
+s = s.replace(marker, injection + marker, 1)
+
 p.write_text(s)
 print('hotfixed issue patcher')
