@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { createTurnSnapshot, createSnapshotContext, resolveBinaryIdentity } from '../js/ai/control/snapshot.js';
 import { ScopeController } from '../js/ai/control/scope.js';
+import { sessionMatchesSnapshot, assertLiveBindingsUnchanged } from '../js/ai/control/runtime-support.js';
 import { routeIntent, shouldRunPlanner } from '../js/ai/routing/intent.js';
 import { selectToolWindow } from '../js/ai/control/tool-window.js';
 import { assertWireBudget, measureWirePayload } from '../js/ai/budget/wire.js';
@@ -29,6 +30,13 @@ assert.notEqual(
   resolveBinaryIdentity({ binaryFingerprint: { hash: 'B' }, binaryId: 'same.ipa:0' }).id,
 );
 assert.equal(snap.binaryIdentity.kind, 'content-derived');
+const identityA = resolveBinaryIdentity({ binaryFingerprint: { hash: 'A' }, binaryId: 'same.ipa:0' });
+const identityB = resolveBinaryIdentity({ binaryFingerprint: { hash: 'B' }, binaryId: 'same.ipa:0' });
+const snapshotA = { binaryId: identityA.id, binaryIdentity: identityA, legacyBinaryId: identityA.legacyId, projectIdentity: null };
+const snapshotB = { binaryId: identityB.id, binaryIdentity: identityB, legacyBinaryId: identityB.legacyId, projectIdentity: null };
+assert.equal(sessionMatchesSnapshot({ binaryId: identityA.id, binaryIdentity: identityA }, snapshotB), false, 'same legacy name must not equate different strong content identities');
+assert.equal(sessionMatchesSnapshot({ binaryId: 'same.ipa:0' }, snapshotB), true, 'legacy-only sessions remain upgrade-compatible');
+assert.throws(() => assertLiveBindingsUnchanged({ binaryIdentity: identityB }, snapshotA), /binary changed/i, 'mid-turn same-name binary replacement must fail closed');
 
 // C/D: address-level explicit scope enforcement.
 const fnSnap = { ...snap, selection: null };
