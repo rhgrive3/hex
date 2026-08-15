@@ -1,0 +1,39 @@
+name: Remaining issue ProgramIndex completeness
+
+on:
+  push:
+    branches: [fix/all-remaining-issues-20260815]
+
+permissions:
+  contents: write
+
+jobs:
+  integrate:
+    if: ${{ !contains(github.event.head_commit.message, '[autofix]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - name: Integrate ProgramIndex completeness fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git fetch origin fix/issue-456-caller-completeness-v2:refs/remotes/origin/fix/issue-456-caller-completeness-v2 || git fetch origin fix/issue-456-caller-completeness:refs/remotes/origin/fix/issue-456-caller-completeness
+          B=fix/issue-456-caller-completeness-v2
+          git show-ref --verify --quiet refs/remotes/origin/$B || B=fix/issue-456-caller-completeness
+          git merge --no-edit --no-ff origin/$B
+      - name: Validate
+        run: |
+          node tests/issue-456-caller-completeness.mjs
+          node tests/run.js
+          npm run check
+      - name: Finalize
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm .github/workflows/remaining-issues-program-completeness.yml
+          git commit -m "Integrate ProgramIndex query completeness [autofix]"
+          git push origin HEAD:fix/all-remaining-issues-20260815
