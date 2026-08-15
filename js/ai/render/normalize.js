@@ -166,7 +166,7 @@ export function parseAnswer(value) {
 
 const ACTION_KINDS = new Set([
   'open-function', 'open-address', 'show-xrefs', 'show-callers', 'show-callees',
-  'trace-value', 'run-agent', 'review-proposal',
+  'show-cfg', 'show-pseudocode', 'open-evidence', 'trace-value', 'run-agent', 'review-proposal',
 ]);
 
 const ACTION_LABELS = Object.freeze({
@@ -175,6 +175,9 @@ const ACTION_LABELS = Object.freeze({
   'show-xrefs': { ja: '参照元を見る', en: 'Show xrefs' },
   'show-callers': { ja: '呼び出し元', en: 'Callers' },
   'show-callees': { ja: '呼び出し先', en: 'Callees' },
+  'show-cfg': { ja: '制御フローを見る', en: 'Show CFG' },
+  'show-pseudocode': { ja: '疑似コードを見る', en: 'Show pseudocode' },
+  'open-evidence': { ja: '根拠を開く', en: 'Open evidence' },
   'trace-value': { ja: '値を追う', en: 'Trace value' },
   'run-agent': { ja: 'エージェントで調べる', en: 'Investigate with Agent' },
   'review-proposal': { ja: '変更案を確認', en: 'Review proposal' },

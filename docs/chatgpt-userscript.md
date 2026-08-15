@@ -1,24 +1,27 @@
 # Hex on ChatGPT Web
 
-Hex can run as a full-screen userscript on `https://chatgpt.com/*` without duplicating the application or moving the binary-analysis backend out of the browser.
+Hex runs on `https://chatgpt.com/*` as a thin userscript loader. The loader does not contain the Hex application, analysis engines, agent tools, workers, or CSS. It bootstraps a protected, versioned runtime and then keeps all binary-analysis hot paths in browser memory.
 
-## Architecture
+## Runtime architecture
 
 ```text
 chatgpt.com
-  └─ Hex userscript host
-      └─ existing Hex app / AIRuntime / deterministic tools
-          ├─ ChatGPT Web (default) -> DOM bridge -> selected ChatGPT model
-          └─ Gemini 3.7 Flash -> ida Worker -> Gemini API
+  └─ 5–64 KiB userscript loader
+      └─ POST /runtime/bootstrap (nonce + build + ECDH public key)
+          └─ signed, short-lived, one-use runtime session + wrapped key
+              └─ encrypted/minified runtime → WebCrypto verify/decrypt → Blob URL
+                  └─ canonical Hex UI / AIRuntime / local workers
+                      ├─ ChatGPT Web → visible DOM adapter
+                      └─ Gemini → Worker provider
 ```
 
-ChatGPT Web is a planner/explainer only. Hex still executes every deterministic analysis tool, validates model decisions, owns evidence, and enforces investigation scope.
+The build resolves the canonical CSS import graph, bundles and minifies the application with identifier mangling, embeds the local Worker/WASM graph, gzip-compresses it, and encrypts it with AES-256-GCM. Source maps are disabled. The content key and signing key are generated into `.runtime-build/`, outside `dist/`, and are bundled into the Cloudflare Worker rather than the public loader or static assets.
 
-The ChatGPT bridge does not read cookies, access tokens, internal ChatGPT API endpoints, Sentinel/Turnstile data, or browser credentials. It uses the visible ChatGPT composer, send/stop controls, and assistant turns.
+Client-side decryption cannot make source cryptographically secret from the person running the client. The protection goal is narrower: raw source is not deployed, casual/direct inspection is prevented, bulk scraping costs more, and accidental repository exposure is blocked.
 
-## Build and deploy
+## Deployment boundary
 
-The Cloudflare Worker name remains `ida` in `wrangler.jsonc`.
+`wrangler.jsonc` publishes only `dist/`; the repository root is never a Static Assets directory. `run_worker_first` is enabled for every route. Raw `/js/*`, `/css/*`, `/scripts/*`, `/tests/*`, configuration files, the userscript template, old `/userscript-assets/*`, and the private ciphertext path return 404 unless reached by the authenticated runtime handler.
 
 ```sh
 npm ci
@@ -26,42 +29,35 @@ npm run userscript:test
 npx wrangler deploy
 ```
 
-Wrangler runs `npm run userscript:build` before deployment. The generated deployment files are also committed and checked by CI:
+The build produces:
 
-- `userscript/hex.user.template.js`
-- `userscript/platform-worker.bundle.js`
+- `dist/index.html` and a tiny standalone bootstrap loader;
+- `dist/userscript/hex.user.template.js`, served only as `/hex.user.js` or metadata-only `/hex.meta.js`;
+- `dist/.runtime/runtime.<buildId>.bin`, reachable only through a valid one-use session;
+- `.runtime-build/runtime-secrets.js`, a server bundle input that is never deployed as a static asset.
 
-The Worker serves:
+Install `https://ida.rhgrive.workers.dev/hex.user.js`.
 
-- `/hex.user.js` — installable userscript with the deployed origin substituted into the template
-- `/hex.meta.js` — lightweight update metadata
-- `/userscript-assets/*` — Hex Worker/WASM assets consumed by the userscript transport
-- `/api/*` — existing Hex backend routes
+## Bootstrap and integrity
 
-Install from:
+The loader creates an ephemeral P-256 ECDH key pair and submits a nonce, loader version, expected build ID, request ID, session identity, and public JWK. `RuntimeBootstrap` rejects reused nonces. The Worker returns a two-minute HMAC-signed session, immutable manifest, protected locator, ephemeral server public key, and an ECDH/HKDF-derived AES-GCM key envelope. The ciphertext route verifies signature, expiry, build, request identity, and consumes the session once.
 
-```text
-https://<ida-deployment-origin>/hex.user.js
-```
+The loader verifies the ciphertext SHA-256, unwraps the content key, performs authenticated AES-GCM decryption with manifest AAD, decompresses gzip, verifies the plaintext SHA-256, and executes through a temporary Blob URL. It never falls back to plaintext and does not store decrypted runtime bytes in localStorage, IndexedDB, or Cache Storage. Buffers are cleared and the Blob URL is revoked after module evaluation.
 
-## Runtime behavior
+Origin and Referer checks are supplementary controls only; session signatures, expiry, build binding, ECDH key possession, and replay state form the authorization boundary.
 
-1. Open and sign in to ChatGPT normally.
-2. Select the ChatGPT model/reasoning mode you want to use.
-3. The userscript prepares the Hex worker graph and opens Hex over the ChatGPT UI.
-4. `ChatGPT Web` is the default AI provider. `Gemini 3.7 Flash` remains selectable from the Hex title bar.
-5. Use the `ChatGPT` title-bar button to reveal the underlying ChatGPT UI for account/model changes. Use the floating `HEX` button to return.
+## ChatGPT DOM provider
 
-If ChatGPT Web is selected and its bridge cannot complete a turn, Hex fails closed. It does not silently label a Gemini answer as ChatGPT output.
+Selectors live in `js/userscript/chatgpt-selectors.js`. `ChatGPTDOMAdapter`, `ChatGPTConversationRouter`, `ChatGPTModelController`, and `ChatGPTTurnController` separately own DOM access, Hex-session/ChatGPT-URL routing, dynamic model selection, and turn completion.
 
-## CSP and Worker isolation
+One ChatGPT tab permits one in-flight Hex request. Completion requires a new assistant-turn identity, a matching submitted user turn, non-empty stable content, a DOM quiet period, and a stopped generating state. Errors, cancellation, navigation, multiple new turns, manual interference, and timeout are explicit failures; an old assistant turn is never returned.
 
-Hex network traffic to its deployment origin is performed through the userscript manager's `GM.xmlHttpRequest` transport. Classic Hex Worker dependencies are fetched, expanded into local Worker source, and launched through Blob URLs. The module platform worker is prebundled and launched through a Blob URL. Capstone WASM is fetched through the same userscript transport and exposed to its Worker through a local Blob URL.
+Available model/reasoning choices are discovered from the visible picker. Canonical IDs such as `chatgpt-web/sol`, `chatgpt-web/terra`, and `chatgpt-web/luna` are exposed only when matching UI options are observed. A requested model and reasoning level are re-read after selection; mismatch fails closed without fallback.
 
-This avoids making Hex's analysis data plane depend on ChatGPT's normal page `connect-src` or external worker/script permissions.
+Each Hex `conversationId` binds to an AIRuntime session, and each AIRuntime/Hex session key binds to a ChatGPT `/c/<id>` URL. Switching A → B → A restores both layers independently. ChatGPT history provides reasoning continuity only; Hex EvidenceStore and deterministic tools remain truth.
 
-## Updating
+The bridge never reads cookies/tokens, calls undocumented ChatGPT APIs, or implements Cloudflare/Sentinel/Turnstile bypasses.
 
-The userscript declares `/hex.meta.js` as `@updateURL` and `/hex.user.js` as `@downloadURL`. `@version` is derived only from files that can alter the installed userscript, so generated-artifact, documentation, test, and workflow-only commits do not create false updates.
+## Host UI isolation
 
-The `ChatGPT userscript host` GitHub Actions gate rebuilds the userscript and fails if the committed deployment bundles differ from source.
+The userscript and standalone site use the same application and CSS. In the userscript, the fully resolved stylesheet is wrapped in `@scope (#hex-userscript-host)`. `uiRoot()` owns product readiness, AI/keyboard/sheet state, size classes, theme, language, and CSS variables on the Hex host instead of `chatgpt.com`'s `<html>`. Provider/model controls belong to the AI panel contract; there is no userscript-only title-bar picker.

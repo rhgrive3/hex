@@ -27,8 +27,9 @@ import { askAiMenuItem, functionAiItems } from '../ai/interaction/contextual.js'
 import { productDescriptor } from '../platform/product-descriptor.js';
 import { queryFunctions, queryStrings } from './explorer-index.js';
 import { genericEvidenceStatus, ownerEvidence, summaryEvidenceStatus, provenanceStatus } from './evidence-model.js';
+import { uiRoot } from '../ui-root.js';
 
-const ja = () => (document.documentElement.lang || navigator.language || 'ja').toLowerCase().startsWith('ja');
+const ja = () => (uiRoot()?.lang || navigator.language || 'ja').toLowerCase().startsWith('ja');
 const text = (j, e) => ja() ? j : e;
 
 function addressText(value) {
@@ -71,7 +72,7 @@ function annotateCollection(items,{complete=true,total=items?.length||0,scannedC
 }
 
 function installViewportBridge() {
-  const root = document.documentElement;
+  const root = uiRoot();
   const viewport = window.visualViewport;
   const sync = () => {
     const height = viewport ? viewport.height : window.innerHeight;
@@ -863,7 +864,7 @@ function installCommandCenter(app, router, actions, host, getAssistant) {
 }
 
 export function installProductUI(app) {
-  if (!app || document.documentElement.classList.contains('product-ui-ready')) return null;
+  if (!app || uiRoot()?.classList.contains('product-ui-ready')) return null;
   const appRoot = document.getElementById('app');
   if (!appRoot) return null;
   const actions = createActionRegistry();
@@ -971,7 +972,7 @@ export function installProductUI(app) {
   };
   document.addEventListener('keydown', shortcut, true);
 
-  document.documentElement.classList.add('product-ui-ready');
+  uiRoot()?.classList.add('product-ui-ready');
   router.start();
 
   /*
@@ -999,7 +1000,7 @@ export function installProductUI(app) {
     assistant?.destroy();
     if (originalSelectSlice) app.selectSlice = originalSelectSlice;
     chrome.remove(); nav.remove(); routeHost.remove();
-    document.documentElement.classList.remove('product-ui-ready');
+    uiRoot()?.classList.remove('product-ui-ready');
   };
   window.addEventListener('pagehide', () => { router.capture(); app.saveWorkspace?.(); }, { passive: true });
   window.__hexUi = { router, actions, destroy, routes: ROUTES, assistant };

@@ -30,12 +30,13 @@
     "binary:source-test": "node tests/universal-binary-source.mjs && node tests/binary-platform.mjs",
     "binary:gate": "node tests/universal-binary-gate.mjs",
     "binary:benchmark": "node tests/universal-binary-benchmark.mjs",
-    "ai:test": "node tests/ai-quota.mjs && node tests/ai-worker.mjs && node tests/ai-prompt-compose.mjs && node tests/ai-ui-mode.mjs && node tests/ai-ui-evidence.mjs && node tests/issue-467-ai-context.mjs && node tests/ai-control-plane.mjs && node tests/ai-scope-hardening.mjs && node tests/ai-chatgpt-web-provider.mjs",
+    "ai:test": "node tests/ai-quota.mjs && node tests/ai-worker.mjs && node tests/ai-prompt-compose.mjs && node tests/ai-ui-mode.mjs && node tests/ai-ui-evidence.mjs && node tests/issue-467-ai-context.mjs && node tests/ai-control-plane.mjs && node tests/ai-scope-hardening.mjs && node tests/ai-chatgpt-web-provider.mjs && node tests/chatgpt-web-runtime.mjs && node tests/chatgpt-web-agent-loop.mjs && node tests/ai-conversation-routing.mjs && node tests/agent-capability-plane.mjs",
     "ai:browser": "node tests/ai-ui-launcher.mjs && node tests/ai-ui-panel.mjs && node tests/ai-ui-proposal.mjs && node tests/ai-ui-fallback.mjs && node tests/ai-ui-core-integration.mjs",
     "userscript:build": "node scripts/build-userscript.mjs",
-    "userscript:test": "npm run userscript:build && node --check userscript/hex.user.template.js && node --check userscript/platform-worker.bundle.js && node --check worker-entry.js && node tests/userscript-host.mjs && node tests/userscript-network.mjs && node tests/ai-chatgpt-web-provider.mjs"
+    "userscript:test": "npm run userscript:build && node --check userscript/hex.user.template.js && node --check worker-entry.js && node tests/userscript-host.mjs && node tests/userscript-network.mjs && node tests/chatgpt-web-runtime.mjs && node tests/ai-chatgpt-web-provider.mjs && node tests/userscript-routes.mjs"
   },
   "devDependencies": {
-    "esbuild": "0.28.1"
+    "esbuild": "0.28.1",
+    "wrangler": "^4.123.0"
   }
 }

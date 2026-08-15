@@ -1,0 +1,110 @@
+const HUMAN_ONLY_REASONS = Object.freeze({
+  FILE_PICKER: 'browser-security-user-gesture: opening a system file picker requires a trusted human gesture',
+  OS_DEBUG_TRANSPORT: 'external-os-facility-unavailable: the browser cannot create an OS debugger transport by itself',
+  VISUAL_SETTING: 'inherently-visual-only-setting: this appearance choice has no deterministic analysis effect',
+});
+
+const READ_SCOPES = Object.freeze(['auto', 'selection', 'function', 'neighborhood', 'binary', 'project']);
+const MUTATION_SCOPES = Object.freeze(['function', 'binary', 'project']);
+
+function capability(id, category, description, extra = {}) {
+  return Object.freeze({
+    id, category, description,
+    mutability: 'read-only', risk: 'low', reversible: false, requiresApproval: false,
+    scopeSupport: READ_SCOPES, inputSchema: { type: 'object', additionalProperties: true },
+    humanSurface: id, agentExposed: true, ...extra,
+  });
+}
+
+const ANALYSIS_TOOLS = [
+  ['analysis.search-functions', 'search_functions'], ['analysis.search-strings', 'search_strings'],
+  ['analysis.get-function', 'get_function'], ['analysis.decompile-function', 'decompile_function'], ['analysis.semantic-facts', 'get_semantic_facts'],
+  ['analysis.cfg', 'get_cfg'], ['analysis.callers', 'get_callers'], ['analysis.callees', 'get_callees'],
+  ['analysis.xrefs', 'get_xrefs'], ['analysis.value-trace', 'trace_value'],
+  ['analysis.backward-slice', 'slice_backward'], ['analysis.forward-slice', 'slice_forward'],
+  ['analysis.symbolic-execution', 'symbolic_execute'], ['analysis.known-function', 'lookup_known_function'],
+  ['analysis.binary-diff', 'get_binary_diff'], ['analysis.runtime-observations', 'get_runtime_observations'],
+  ['analysis.verify-runtime-hypothesis', 'verify_runtime_hypothesis'],
+].map(([id, agentTool]) => capability(id, 'analysis', `Deterministic ${id.slice(9).replaceAll('-', ' ')} operation.`, { agentTool }));
+
+const NAVIGATION = [
+  ['navigation.open-function', 'open-function'], ['navigation.open-address', 'open-address'],
+  ['navigation.show-xrefs', 'show-xrefs'], ['navigation.show-callers', 'show-callers'],
+  ['navigation.show-callees', 'show-callees'], ['navigation.show-cfg', 'show-cfg'],
+  ['navigation.show-pseudocode', 'show-pseudocode'], ['navigation.trace-value', 'trace-value'],
+  ['navigation.open-evidence', 'open-evidence'],
+].map(([id, actionKind]) => capability(id, 'navigation', `Navigate the workbench using ${actionKind}.`, {
+  actionKind, mutability: 'navigation', reversible: true,
+  inputSchema: { type: 'object', additionalProperties: false, properties: { address: { type: ['string', 'integer'] }, target: { type: 'string' } } },
+}));
+
+const CATALOG = Object.freeze([
+  ...ANALYSIS_TOOLS, ...NAVIGATION,
+  capability('annotation.rename', 'annotation', 'Rename a symbol after an approved proposal.', mutation({ reversible: true })),
+  capability('annotation.comment', 'annotation', 'Set a disassembly comment after an approved proposal.', mutation({ reversible: true })),
+  capability('annotation.set-type', 'annotation', 'Set a recovered or manual type after an approved proposal.', mutation({ reversible: true })),
+  capability('annotation.struct-field', 'annotation', 'Define or update a structure field after an approved proposal.', mutation({ reversible: true })),
+  capability('annotation.project', 'annotation', 'Persist an analysis annotation in the project.', mutation({ reversible: true, scopeSupport: ['project'] })),
+  capability('patch.create', 'patch', 'Create a byte patch only after target and original-byte verification.', mutation({ reversible: true, risk: 'high' })),
+  capability('patch.preview', 'patch', 'Preview a validated patch without changing the patch set.'),
+  capability('patch.apply', 'patch', 'Apply the current verified patch set to an in-memory output Blob.', mutation({ reversible: true, risk: 'high' })),
+  capability('patch.revert', 'patch', 'Remove a patch while preserving its revert metadata.', mutation({ reversible: true, risk: 'medium' })),
+  capability('patch.inspect', 'patch', 'Inspect the current ordered patch set.'),
+  capability('runtime.status', 'runtime', 'Read active runtime adapter and session status.'),
+  capability('runtime.connect', 'runtime', 'Connect a known runtime adapter with an explicit binary binding.', { mutability: 'runtime-dangerous', risk: 'high', requiresApproval: true, scopeSupport: ['binary'] }),
+  capability('runtime.attach', 'runtime', 'Attach the active runtime adapter to a target.', runtimeMutation('high')),
+  capability('runtime.detach', 'runtime', 'Disconnect the bound runtime session.', runtimeMutation('medium', true)),
+  capability('runtime.breakpoint-create', 'runtime', 'Create a bound runtime breakpoint.', runtimeMutation('medium', true)),
+  capability('runtime.breakpoint-remove', 'runtime', 'Remove a bound runtime breakpoint.', runtimeMutation('medium', true)),
+  capability('runtime.watchpoint-create', 'runtime', 'Create a bound runtime memory watchpoint.', runtimeMutation('high', true)),
+  capability('runtime.watchpoint-remove', 'runtime', 'Remove a bound runtime watchpoint.', runtimeMutation('medium', true)),
+  capability('runtime.continue', 'runtime', 'Continue the bound runtime session.', runtimeMutation('high')),
+  capability('runtime.pause', 'runtime', 'Pause the bound runtime session.', runtimeMutation('medium', true)),
+  capability('runtime.step-in', 'runtime', 'Step into one instruction in the bound runtime session.', runtimeMutation('medium')),
+  capability('runtime.step-over', 'runtime', 'Step over one instruction in the bound runtime session.', runtimeMutation('medium')),
+  capability('runtime.step-out', 'runtime', 'Step out of the current frame in the bound runtime session.', runtimeMutation('medium')),
+  capability('runtime.registers', 'runtime', 'Read registers from the bound runtime session.', { runtimeBound: true, scopeSupport: ['function', 'binary'] }),
+  capability('runtime.memory-read', 'runtime', 'Read a bounded memory range from the bound runtime session.', { runtimeBound: true, scopeSupport: ['function', 'binary'] }),
+  capability('runtime.memory-write', 'runtime', 'Write bounded runtime memory with expected-before and postcondition checks.', runtimeMutation('high', true)),
+  capability('runtime.experiment', 'runtime', 'Run a deterministic runtime experiment and capture evidence.', runtimeMutation('high')),
+  capability('project.save', 'project', 'Autosave the current bound Hex project.', { mutability: 'reversible', reversible: true, scopeSupport: ['project'] }),
+  capability('project.snapshot', 'project', 'Create an in-memory deterministic project snapshot.', { scopeSupport: ['project'] }),
+  capability('project.restore-known', 'project', 'Restore a previously parsed, binary-matched project state.', mutation({ reversible: true, scopeSupport: ['project'] })),
+  capability('project.binary-diff', 'project', 'Run a binary diff against the already-loaded baseline.', { scopeSupport: ['project'] }),
+  capability('project.export-report', 'project', 'Export deterministic analysis/report data without a file picker.', { scopeSupport: ['project'] }),
+  capability('human.open-binary-file', 'human-only', 'Open a new binary through the browser file picker.', { agentExposed: false, humanOnlyReason: HUMAN_ONLY_REASONS.FILE_PICKER }),
+  capability('human.create-debug-transport', 'human-only', 'Create an OS debugger transport outside the browser.', { agentExposed: false, humanOnlyReason: HUMAN_ONLY_REASONS.OS_DEBUG_TRANSPORT }),
+  capability('human.appearance', 'human-only', 'Change theme or visual density.', { agentExposed: false, humanOnlyReason: HUMAN_ONLY_REASONS.VISUAL_SETTING }),
+]);
+
+function mutation(extra = {}) {
+  return { mutability: 'mutation', risk: 'medium', reversible: false, requiresApproval: true, scopeSupport: MUTATION_SCOPES, ...extra };
+}
+function runtimeMutation(risk, reversible = false) {
+  return { mutability: 'runtime-dangerous', risk, reversible, requiresApproval: true, scopeSupport: ['function', 'binary'], runtimeBound: true };
+}
+
+export class CapabilityCatalog {
+  constructor(entries = CATALOG) {
+    this.entries = new Map(entries.map((entry) => [entry.id, entry]));
+    if (this.entries.size !== entries.length) throw new Error('duplicate capability id');
+  }
+  get(id) { return this.entries.get(String(id)) || null; }
+  has(id) { return this.entries.has(String(id)); }
+  list(context = null) {
+    return [...this.entries.values()].map((entry) => ({ ...entry, available: availability(entry, context) }));
+  }
+  agent(context = null) { return this.list(context).filter((entry) => entry.agentExposed && entry.available.ok); }
+}
+
+export function availability(entry, context) {
+  if (!entry.agentExposed) return { ok: false, reason: entry.humanOnlyReason };
+  if (typeof entry.available === 'function') return normalizeAvailability(entry.available(context));
+  if (entry.agentTool && !context?.toolRegistry?.has?.(entry.agentTool)) return { ok: false, reason: `analysis-tool-unavailable:${entry.agentTool}` };
+  if (entry.category === 'runtime' && entry.id !== 'runtime.status' && !context?.runtimePlatform) return { ok: false, reason: 'runtime-adapter-unavailable' };
+  return { ok: true };
+}
+function normalizeAvailability(value) { return value === true ? { ok: true } : value === false ? { ok: false, reason: 'capability-unavailable' } : value || { ok: true }; }
+
+export function createCapabilityCatalog(entries) { return new CapabilityCatalog(entries); }
+export { CATALOG as HEX_CAPABILITIES, HUMAN_ONLY_REASONS };

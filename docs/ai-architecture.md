@@ -79,9 +79,13 @@ The final consistency check removes missing evidence IDs and invented UI actions
 
 Mutations are not model-callable tools. `ProposalStore` creates a pending proposal for rename, comment, type, struct field, patch, or project annotation. A proposal requires evidence. The UI (or another human-facing owner) approves it and receives an opaque approval token. Apply requires the token and verifies that the target's current state still matches the proposal's `before` fingerprint. Rejected or stale proposals fail without mutation, and every transition creates an audit event.
 
+`CapabilityCatalog` is the canonical inventory for analysis-relevant human and agent operations. Read operations delegate to the existing deterministic tool registry. Navigation, annotation, patch, runtime, and project operations use `CapabilityExecutor`; approval is authorization state, never model text. Patch execution verifies address/range/alignment, expected original bytes, postconditions, and revert metadata. Runtime operations additionally require the exact binary and runtime session identities. Parity CI requires every human capability to have an agent adapter or one of the narrow concrete human-only reasons (trusted file-picker gesture, unavailable external OS facility, or inherently visual setting).
+
 ## Sessions and persistence
 
 An investigation session stores the binary ID, mode/style/scope, goal, compact messages and summary, pinned evidence, hypotheses, confirmed findings, rejected hypotheses, proposals, and timestamps. Secret-looking keys are stripped before persistence. `.hexproj` findings now accept `investigationSessions` while remaining backward compatible with version 1 projects; binaries remain external and are never embedded.
+
+UI `conversationId` values map independently to AIRuntime session IDs. Provider requests also carry `conversationId`, `provider`, `model`, and `reasoning`; older callers may omit them. `AgentJobManager` extends a large investigation as a sequence of bounded turns. Each checkpoint retains the goal, effective scope, AIRuntime session, evidence/hypothesis IDs, completed tools, continuation/detail references, unresolved work, and cumulative budget. A slice budget creates a resumable `checkpointed` state; only the explicit job-wide slice/elapsed limits produce `hard-limit`.
 
 ## Provider and Worker boundary
 

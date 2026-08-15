@@ -124,6 +124,10 @@ export async function executeTurn(input = {}, options = {}) {
               addActivity({ type: 'model-start', label: '次の解析手順を選択', phase: window.phase, toolCount: tools.length, effectiveScope: scopeController.effectiveScope });
               next = await this.provider.nextTurn({
                 sessionId: session.id, mode: request.mode, style: request.style,
+                conversationId: request.conversationId || null,
+                provider: request.provider || null,
+                model: request.model || null,
+                reasoning: request.reasoning || null,
                 scope: scopeController.effectiveScope, requestedScope: request.scope, effectiveScope: scopeController.effectiveScope,
                 intent, task: request.task || null, messages, context: built.context, tools,
               }, { signal, timeoutMs: remainingTime(started, budget.timeoutMs) });

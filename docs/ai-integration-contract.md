@@ -58,6 +58,8 @@ style = beginner | analyst
 scope = auto | selection | function | neighborhood | binary | project | runtime
 ```
 
+`engine.run(input)` also accepts optional `conversationId`, `provider`, `model`, and `reasoning`. Existing callers remain valid. The core exposes feature-detectable `aiCapabilities()`, `aiStatus()`, `getAISelection()`, and `setAISelection(selection)` methods, plus bounded Agent Job create/run/resume methods.
+
 Beginner and Analyst change presentation, not the underlying deterministic analysis budget or truth standard.
 
 ## 4. Result envelope
@@ -140,6 +142,9 @@ open-address
 show-xrefs
 show-callers
 show-callees
+show-cfg
+show-pseudocode
+open-evidence
 trace-value
 run-agent
 review-proposal
@@ -211,3 +216,11 @@ Before merging the two implementation branches together:
 - Mutating actions cannot be invoked directly from unvalidated model output.
 - Agent activity contains no hidden reasoning.
 - The 43-case evaluation corpus is run after integration.
+
+## 14. Capability and job contract
+
+The capability catalog classifies every entry by category, mutability, risk, reversibility, approval, scope, schema, human surface, and agent exposure. Analysis tools remain provider-neutral and read-only. Side effects are never added to the model tool window; the model proposes, a human approves, and the executor verifies bindings and postconditions.
+
+Human-only entries require a specific platform reason. `not implemented` is not valid and fails parity CI.
+
+An Agent Job checkpoint is a serializable resume boundary, not a claim of completion. `limits.exhausted` on a slice means more bounded work may remain. UI surfaces must distinguish `checkpointed`, `complete`, `hard-limit`, and `failed`, and must not present a budget-derived deterministic fallback as a completed investigation.

@@ -8,7 +8,7 @@ export const HYPOTHESIS_STATUSES = Object.freeze(['open', 'supported', 'rejected
 export const PROPOSAL_STATUSES = Object.freeze(['pending', 'approved', 'rejected', 'applied', 'failed']);
 export const AI_ACTION_KINDS = Object.freeze([
   'open-function', 'open-address', 'show-xrefs', 'show-callers', 'show-callees',
-  'trace-value', 'run-agent', 'review-proposal',
+  'show-cfg', 'show-pseudocode', 'open-evidence', 'trace-value', 'run-agent', 'review-proposal',
 ]);
 export const AI_ERROR_TYPES = Object.freeze([
   'model_timeout', 'provider_error', 'invalid_model_output', 'invalid_tool_call',

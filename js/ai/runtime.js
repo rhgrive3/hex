@@ -3,6 +3,7 @@ import { ContextBroker } from './context/index.js';
 import { EvidenceStore } from './evidence.js';
 import { HypothesisStore } from './hypothesis.js';
 import { ProposalStore } from './proposals.js';
+import { createAgentJobManager } from './jobs/index.js';
 import { InvestigationSessionStore } from './session-core/index.js';
 import { sanitizeActions } from './validation.js';
 import { executeTurn } from './control/turn-executor.js';
@@ -15,13 +16,14 @@ export class AIRuntime {
     this.sessionStore = options.sessionStore || new InvestigationSessionStore({ persistence: options.persistence });
     this.evidenceStore = options.evidenceStore || new EvidenceStore();
     this.hypothesisStore = options.hypothesisStore || new HypothesisStore(this.evidenceStore);
-    this.proposalStore = options.proposalStore || new ProposalStore({ evidenceStore: this.evidenceStore });
+    this.proposalStore = options.proposalStore || new ProposalStore({ evidenceStore: this.evidenceStore, binding: () => proposalBinding(this.localContext) });
     this.initialStores = { evidenceStore: this.evidenceStore, hypothesisStore: this.hypothesisStore, proposalStore: this.proposalStore };
     this.storeNamespaces = new Map();
     this.contextBroker = options.contextBroker || new ContextBroker(this.localContext, options.contextOptions);
     this.planner = options.planner === false ? null : (options.planner || planAnalysisGoal);
     this.development = !!options.development;
     this.activeControllers = new Set();
+    this.jobs = createAgentJobManager({ runtime: this, persistence: options.jobPersistence, maxSlices: options.maxJobSlices, maxElapsedMs: options.maxJobElapsedMs });
   }
 
   storesFor(session, binaryId) {
@@ -32,13 +34,16 @@ export class AIRuntime {
     else {
       const evidenceStore = new EvidenceStore(session.confirmedFindings || []);
       const hypothesisStore = new HypothesisStore(evidenceStore, session.hypotheses || []);
-      stores = { evidenceStore, hypothesisStore, proposalStore: new ProposalStore({ evidenceStore }) };
+      stores = { evidenceStore, hypothesisStore, proposalStore: new ProposalStore({ evidenceStore, binding: () => proposalBinding(this.localContext) }) };
     }
     this.storeNamespaces.set(key, stores);
     return stores;
   }
 
   async turn(input = {}, options = {}) { return executeTurn.call(this, input, options); }
+  async createJob(input = {}) { return this.jobs.create(input); }
+  async runJobSlice(jobOrId, options = {}) { return this.jobs.runSlice(jobOrId, options); }
+  async resumeJob(id, options = {}) { return this.jobs.resume(id, options); }
 
   finalize({ request, decision, plan, activity, modelCalls, toolCalls, contextBytes, wireUsage, started, limitReason, registry, snapshot, effectiveScope }) {
     // The final model call can overlap a workbench binary/project/runtime switch
@@ -71,3 +76,11 @@ export class AIRuntime {
 }
 
 export function createAIRuntime(options) { return new AIRuntime(options); }
+
+function proposalBinding(context) {
+  return {
+    binaryId: context?.binaryId == null ? null : String(context.binaryId),
+    projectId: context?.projectId == null ? null : String(context.projectId),
+    runtimeSessionId: context?.runtimeSessionId == null ? null : String(context.runtimeSessionId),
+  };
+}
