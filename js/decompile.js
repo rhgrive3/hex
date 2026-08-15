@@ -331,6 +331,25 @@ function lineBelongsToRows(line, rows, opts) {
 }
 
 /*
+ * The linear renderer deliberately coalesces some register moves and redundant
+ * branches.  In a detached EH block that would leave no visible line even
+ * though the instructions are real and unwind-only.  Keep those instructions
+ * as exact assembly comments instead of discarding the semantic body or
+ * pretending that the omitted transfer has no effect.
+ */
+function exactExceptionAssemblyLines(model, block) {
+  const instructions = (model?.instructions || []).filter((insn) =>
+    insn?.row != null && insn.row >= block.startRow && insn.row <= block.endRow);
+  if (!instructions.length) return [];
+  return instructions.map((insn) => {
+    const mnemonic = String(insn.mnemonic || insn.mn || 'unknown').trim();
+    const operands = String(insn.operands || insn.opsText || '').trim();
+    const text = `/* Exception-path assembly: ${mnemonic}${operands ? ` ${operands}` : ''} */`;
+    return { kind: 'comment', indent: 2, text, row: insn.row, addr: insn.address ?? null, note: 'Detached exception-path instruction preserved verbatim.' };
+  });
+}
+
+/*
  * Preserve detached EH code without replacing the normal Semantic IR body with
  * legacy register expressions. Legacy is used only to render the EH rows that
  * are unreachable through ordinary CFG edges. Runtime-only entry labels make
@@ -350,9 +369,12 @@ function graftDetachedExceptionRegions(model, semanticModel, opts, semantic, cla
       .sort((a, b) => a.startRow - b.startRow);
     for (const block of blocks) {
       const rows = componentRows(semantic.ir, [block.index]);
-      const rendered = (legacy.lines || []).filter((l) =>
+      let rendered = (legacy.lines || []).filter((l) =>
         l.kind !== 'sig' && !(l.kind === 'ctrl' && (l.text === '{' || l.text === '}')) && l.kind !== 'label' && lineBelongsToRows(l, rows, opts));
-      if (!rendered.length && block.endRow >= block.startRow) return null; // never silently omit an EH block
+      if (!rendered.length && block.endRow >= block.startRow) {
+        rendered = exactExceptionAssemblyLines(model, block);
+        if (!rendered.length) return null; // never silently omit an EH block
+      }
       regionLines.push({
         kind: 'label', indent: 1,
         text: `${labelAddress(semantic, semanticModel, opts, block.index)}:`,

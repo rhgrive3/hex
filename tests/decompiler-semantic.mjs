@@ -230,6 +230,42 @@ function make(lines, opts = {}) {
   assert.match(r.signature, /\ba4\b/);
 }
 
+// Generic EH regression: a renderer may legally coalesce a branch-only landing-pad
+// block.  It still has to remain visible as exact assembly instead of forcing the
+// whole ordinary body back to the legacy renderer.
+{
+  const BEGIN_CATCH = 0x100010100n;
+  const UNWIND = 0x100010200n;
+  const symbols = new Map([
+    [BEGIN_CATCH.toString(), '_objc_begin_catch'],
+    [UNWIND.toString(), '__Unwind_Resume'],
+  ]);
+  const symbolFor = (addr) => symbols.get(BigInt(addr).toString()) || null;
+  const { model, rowOfAddress } = make([
+    'mov x0, x0',
+    'ret',
+    `b #0x${(BASE + 16n).toString(16)}`,
+    `b #0x${(BASE + 16n).toString(16)}`, // the linear renderer coalesces this duplicate branch
+    'mov x19, x0',
+    `bl #0x${BEGIN_CATCH.toString(16)}`,
+    'mov x0, x19',
+    `bl #0x${UNWIND.toString(16)}`,
+  ], { name: 'empty_detached_exception_block', symbolFor });
+  model.calls = [
+    { row: 5, name: '_objc_begin_catch', target: BEGIN_CATCH },
+    { row: 7, name: '__Unwind_Resume', target: UNWIND },
+  ];
+
+  const r = decompile(model, {
+    addr: BASE, name: 'empty_detached_exception_block', rowOfAddress, symbolFor, beginner: false,
+  });
+  assert.equal(r.semantic, true, r.warnings?.join('\n'));
+  assert.equal(r.legacyFallback, undefined, r.pseudocode);
+  assert.ok((r.coverage?.detachedExceptionBlocks || 0) >= 1, JSON.stringify(r.coverage));
+  assert.match(r.pseudocode, /Exception landing pads/);
+  assert.match(r.pseudocode, /Exception-path assembly: b #0x100000010/);
+}
+
 // Safety regression: ordinary unreachable/dead code is not silently blessed as
 // an exception region. Unknown disconnected control flow still takes the
 // historical faithful whole-function fallback.
