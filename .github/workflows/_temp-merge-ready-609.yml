@@ -18,12 +18,36 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - name: Merge current main
+      - name: Merge current main and resolve package script union
+        shell: bash
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git fetch origin main
-          git merge --no-edit origin/main
+          if ! git merge --no-edit origin/main; then
+            conflicts="$(git diff --name-only --diff-filter=U)"
+            if [ "$conflicts" != "package.json" ]; then
+              echo "Unexpected conflicts: $conflicts" >&2
+              git merge --abort
+              exit 1
+            fi
+            git checkout --theirs package.json
+            node --input-type=module <<'EOF'
+          import fs from 'node:fs';
+          const path='package.json';
+          const pkg=JSON.parse(fs.readFileSync(path,'utf8'));
+          const token='node tests/ai-ui-conversations.mjs';
+          if (!pkg.scripts['ai:test'].includes(token)) {
+            const anchor='node tests/ai-ui-mode.mjs';
+            pkg.scripts['ai:test']=pkg.scripts['ai:test'].includes(anchor)
+              ? pkg.scripts['ai:test'].replace(anchor, `${anchor} && ${token}`)
+              : `${pkg.scripts['ai:test']} && ${token}`;
+          }
+          fs.writeFileSync(path,JSON.stringify(pkg,null,2)+'\n');
+          EOF
+            git add package.json
+            git commit --no-edit
+          fi
       - run: npm ci
       - run: npm run userscript:build
       - run: npm run check
