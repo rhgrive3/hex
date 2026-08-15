@@ -237,6 +237,8 @@ function userscriptVersion() {
       'index.html',
       'css',
       'js',
+      'capstone.js',
+      'capstone.wasm',
       'package.json',
       'package-lock.json',
       'scripts/build-userscript.mjs',
