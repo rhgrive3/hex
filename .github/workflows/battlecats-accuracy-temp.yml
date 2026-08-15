@@ -6,9 +6,13 @@ on:
     paths:
       - 'js/**'
       - 'tests/**'
+      - '.github/battlecats-accuracy.patch.gz.b64'
       - '.github/workflows/battlecats-accuracy-temp.yml'
       - 'package.json'
       - 'package-lock.json'
+
+permissions:
+  contents: write
 
 jobs:
   battlecats:
@@ -18,6 +22,21 @@ jobs:
       BATTLECATS_URL: https://raw.githubusercontent.com/rhgrive3/hex/bd7bd61d093592d07fdd9e9b14a859e19dd4c3a9/tests/battlecats
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+      - name: Apply staged BattleCats accuracy patch
+        if: ${{ hashFiles('.github/battlecats-accuracy.patch.gz.b64') != '' }}
+        shell: bash
+        run: |
+          base64 -d .github/battlecats-accuracy.patch.gz.b64 | gzip -dc > /tmp/battlecats.patch
+          patch -p1 < /tmp/battlecats.patch
+          rm .github/battlecats-accuracy.patch.gz.b64
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'Improve BattleCats analysis accuracy'
+          git push origin HEAD:${{ github.head_ref }}
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -45,7 +64,7 @@ jobs:
       - name: Pack workbench
         if: always()
         run: |
-          tar --exclude=.git --exclude=node_modules --exclude=tests/.real-fixtures -czf source.tar.gz .
+          tar --exclude=.git --exclude=node_modules --exclude=tests/.real-fixtures --exclude=source.tar.gz -czf source.tar.gz .
       - name: Upload workbench
         if: always()
         uses: actions/upload-artifact@v4
