@@ -20,7 +20,11 @@ export function resolveInferenceAdapter(env = {}) {
 
 export function clientSafeCapabilities(capabilities = {}) {
   const upstreamMax = positiveNumber(capabilities.maxRequestBytes, 160000);
-  const safeClientMax = Math.max(4096, Math.floor((upstreamMax - PROVIDER_ENVELOPE_RESERVE_BYTES) / PROVIDER_WIRE_EXPANSION_FACTOR));
+  const reservedBudget = upstreamMax - PROVIDER_ENVELOPE_RESERVE_BYTES;
+  const derived = reservedBudget > 0
+    ? Math.floor(reservedBudget / PROVIDER_WIRE_EXPANSION_FACTOR)
+    : Math.floor(upstreamMax / PROVIDER_WIRE_EXPANSION_FACTOR);
+  const safeClientMax = Math.max(1, Math.min(upstreamMax, derived));
   return {
     ...capabilities,
     maxRequestBytes: safeClientMax,
