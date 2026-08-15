@@ -56,6 +56,10 @@ const MAX_NODES = 160;     // 1 つの式が抱えてよいノード数
 function node(k, extra) { return Object.assign({ k }, extra); }
 
 export function constNode(v) { return node('const', { v: BigInt(v) }); }
+export function floatNode(v, bits = 64) {
+  const value = Number(v);
+  return Number.isFinite(value) ? node('float', { v: value, bits: Number(bits || 64) }) : null;
+}
 export function regNode(reg, row) { return node('reg', { reg, row: row == null ? -1 : row }); }
 
 const ZERO = constNode(0n);
@@ -120,6 +124,7 @@ export function same(a, b) {
   if (!a || !b || a.k !== b.k) return false;
   switch (a.k) {
     case 'const': return a.v === b.v;
+    case 'float': return Object.is(a.v, b.v) && a.bits === b.bits;
     case 'arg': return a.n === b.n;
     case 'reg': return a.reg === b.reg && a.row === b.row;
     case 'addr': return a.addr === b.addr;
@@ -129,6 +134,8 @@ export function same(a, b) {
     case 'call': return a.row === b.row;
     case 'mem':
       return a.baseReg === b.baseReg && a.disp === b.disp && a.size === b.size &&
+        a.signed === b.signed && a.resultBits === b.resultBits && a.extension === b.extension &&
+        a.scale === b.scale && JSON.stringify(a.indexShift || null) === JSON.stringify(b.indexShift || null) &&
         (!!a.base === !!b.base) && (!a.base || same(a.base, b.base)) &&
         (!!a.index === !!b.index) && (!a.index || same(a.index, b.index));
     default: return false;
@@ -382,7 +389,7 @@ const BIN_MN = {
   and: 'and', ands: 'and', orr: 'or', eor: 'xor',
   lsl: 'shl', lslv: 'shl', lsr: 'shr', lsrv: 'shr', asr: 'sar', asrv: 'sar',
   ror: 'ror', rorv: 'ror',
-  fadd: 'add', fsub: 'sub', fmul: 'mul', fdiv: 'sdiv',
+  fadd: 'fadd', fsub: 'fsub', fmul: 'fmul', fdiv: 'fdiv',
 };
 
 /**
@@ -467,7 +474,7 @@ export function buildValues(model, opts) {
   const valueOf = (op, row, bits) => {
     if (!op) return null;
     if (op.k === 'imm') {
-      if (op.value == null) return op.float != null ? constNode(0n) : null;
+      if (op.value == null) return op.float != null ? floatNode(op.float, bits) : null;
       return applyShift(constNode(op.value), op.shift, bits);
     }
     if (op.k === 'reg') {
@@ -531,6 +538,12 @@ export function buildValues(model, opts) {
     const made = {};
     const emit = (key, v) => {
       if (!key || key === 'zr' || !v) return;
+      // A write to Wn architecturally clears Xn[63:32]. Keep that fact in the
+      // value graph instead of letting stale upper bits survive.
+      const writtenOp = insn.ops && insn.ops[0];
+      if (writtenOp && writtenOp.k === 'reg' && writtenOp.cls === 'gp' && writtenOp.bits === 32 && key === regKeyOf(writtenOp)) {
+        v = un('uxt32', v);
+      }
       set(key, v, row);
       made[key] = regs.get(key);
       // どの命令がこの値を作ったか。擬似 C が「変数として残すか、埋め込むか」を決めるのに要る。
@@ -539,6 +552,7 @@ export function buildValues(model, opts) {
 
     /* ── 呼び出し ── */
     if (insn.isCall) {
+      flags = null; // NZCV is caller-clobbered and cannot be reused after a call.
       const call = callRows.get(row);
       const args = [];
       for (let a = 0; a <= 7; a++) {
@@ -632,8 +646,12 @@ export function buildValues(model, opts) {
                */
               base: (m.stack || baseVal == null || baseVal.k === 'reg') ? null : baseVal,
               disp: m.disp != null ? m.disp + BigInt(k * (m.size / (pair ? 2 : 1))) : null,
-              index: m.index ? regs.get(m.index) || regNode(m.index, row) : null,
+              index: m.index ? applyShift(regs.get(m.index) || regNode(m.index, row), memOp && memOp.shift, 64) : null,
+              indexShift: memOp && memOp.shift ? { ...memOp.shift } : null,
+              scale: m.scale ?? null,
               size: pair ? m.size / 2 : m.size,
+              resultBits: regBits(dop),
+              extension: /^(ldrs|ldurs|ldpsw)/.test(base) ? 'sign' : (regBits(dop) === 32 ? 'zero' : null),
               signed: /^(ldrs|ldurs|ldpsw)/.test(base),
               stack: !!m.stack, addr: absolute, row,
             });
@@ -641,8 +659,8 @@ export function buildValues(model, opts) {
           emit(key, v);
         });
         // 後置・前置インデックスはベースも進む
-        if (memOp && (memOp.mode === 'pre' || memOp.mode === 'post') && m.base && m.disp != null) {
-          emit(m.base, bin('add', get(m.base, row), constNode(m.disp), 64));
+        if (memOp && (memOp.mode === 'pre' || memOp.mode === 'post') && m.base && m.writebackDisp != null) {
+          emit(m.base, bin('add', get(m.base, row), constNode(m.writebackDisp), 64));
         }
       } else {
         const srcs = insn.ops.filter((x) => x.k === 'reg');
@@ -659,8 +677,8 @@ export function buildValues(model, opts) {
             index: m.index || null, value: v,
           });
         });
-        if (memOp && (memOp.mode === 'pre' || memOp.mode === 'post') && m.base && m.disp != null) {
-          emit(m.base, bin('add', get(m.base, row), constNode(m.disp), 64));
+        if (memOp && (memOp.mode === 'pre' || memOp.mode === 'post') && m.base && m.writebackDisp != null) {
+          emit(m.base, bin('add', get(m.base, row), constNode(m.writebackDisp), 64));
         }
       }
       defs.set(row, made);
@@ -680,9 +698,15 @@ export function buildValues(model, opts) {
     const A = () => valueOf(insn.ops[1], row, bits);
     const B = () => valueOf(insn.ops[2], row, bits);
     /* 末尾に s の付く演算（subs / adds / ands …）もフラグを立てる。 */
+    const knownFlagWriter = /^(subs|adds|ands|bics|negs|cmp|cmn|tst|fcmp|fcmpe|ccmp|ccmn)$/.test(base);
+    const unsupportedFlagWriter = /^(adcs|sbcs|ngcs|rmif|setf8|setf16)$/.test(base);
+    if (unsupportedFlagWriter) flags = null;
     if (/^(subs|adds|ands|bics|negs)$/.test(base)) {
       flags = { op: base, a: A(), b: B() };
     }
+    // Unknown instructions explicitly reported as writing NZCV must invalidate
+    // the remembered predicate even when their mnemonic is not in our table.
+    if (!knownFlagWriter && (insn.writes || []).includes('nzcv')) flags = null;
 
     if (base === 'mov' || base === 'fmov' || base === 'movz') {
       const txt = textOf.get(row);
@@ -713,21 +737,29 @@ export function buildValues(model, opts) {
           : node('addr', { addr: full, partial: false, sym: o.symbolFor ? o.symbolFor(full) : null }));
       } else emit(dst, bin('add', A(), B(), bits));
     } else if (BIN_MN[base]) {
-      emit(dst, bin(BIN_MN[base], A(), B(), bits));
+      const variableShift = /^(lslv|lsrv|asrv|rorv)$/.test(base);
+      const rhs = variableShift ? bin('and', B(), constNode(BigInt(bits - 1)), bits) : B();
+      emit(dst, bin(BIN_MN[base], A(), rhs, bits));
     } else if (base === 'bic' || base === 'bics') {
       emit(dst, bin('and', A(), un('not', B()), bits));
     } else if (base === 'orn') {
       emit(dst, bin('or', A(), un('not', B()), bits));
     } else if (base === 'eon') {
       emit(dst, bin('xor', A(), un('not', B()), bits));
-    } else if (base === 'neg' || base === 'negs' || base === 'fneg') {
+    } else if (base === 'neg' || base === 'negs') {
       emit(dst, un('neg', A()));
+    } else if (base === 'fneg') {
+      emit(dst, node('un', { op: 'fneg', a: A() }));
     } else if (base === 'mvn') {
       emit(dst, un('not', A()));
-    } else if (base === 'madd' || base === 'fmadd') {
+    } else if (base === 'madd') {
       emit(dst, bin('add', valueOf(insn.ops[3], row, bits), bin('mul', A(), B(), bits), bits));
-    } else if (base === 'msub' || base === 'fmsub') {
+    } else if (base === 'fmadd') {
+      emit(dst, bin('fadd', valueOf(insn.ops[3], row, bits), bin('fmul', A(), B(), bits), bits));
+    } else if (base === 'msub') {
       emit(dst, bin('sub', valueOf(insn.ops[3], row, bits), bin('mul', A(), B(), bits), bits));
+    } else if (base === 'fmsub') {
+      emit(dst, bin('fsub', valueOf(insn.ops[3], row, bits), bin('fmul', A(), B(), bits), bits));
     } else if (base === 'mneg') {
       emit(dst, un('neg', bin('mul', A(), B(), bits)));
     } else if (base === 'smull' || base === 'umull') {
@@ -756,8 +788,13 @@ export function buildValues(model, opts) {
     } else if (base === 'csel' || base === 'csinc' || base === 'csinv' || base === 'csneg' ||
                base === 'cset' || base === 'csetm' || base === 'cinc') {
       emit(dst, selectNode(insn, row, valueOf, bits, flags));
+    } else if (base === 'ccmp' || base === 'ccmn') {
+      // CCMP/CCMN writes compare flags only when its condition is true and an
+      // encoded NZCV literal otherwise. Treating it as CMP invents a predicate.
+      // Until the flag state is represented as a conditional value, forget it.
+      flags = null;
     } else if (base === 'cmp' || base === 'cmn' || base === 'tst' || base === 'fcmp' ||
-               base === 'fcmpe' || base === 'ccmp' || base === 'ccmn') {
+               base === 'fcmpe') {
       /*
        * フラグだけで、値は作らない。ただし **何と何を比べたか** は覚えておく。
        *
@@ -881,9 +918,9 @@ function escapesStack(n) {
 /** w レジスタとして読む＝下 32 ビットだけ。 */
 function narrow32(v) {
   if (!v) return v;
-  if (v.k === 'const') return constNode(wrap(v.v, 32));
-  if (v.k === 'un' && (v.op === 'sxt32' || v.op === 'uxt32')) return v.a;
-  return v;
+  if (v.k === 'const') return constNode(v.v & 0xffffffffn);
+  if (v.k === 'un' && v.op === 'uxt32') return v;
+  return un('uxt32', v);
 }
 
 function selectNode(insn, row, valueOf, bits, flags) {
@@ -914,8 +951,12 @@ function selectNode(insn, row, valueOf, bits, flags) {
   }
   const a = valueOf(ops[1], row, bits);
   const b = ops[2] && ops[2].k !== 'cond' ? valueOf(ops[2], row, bits) : a;
+  if (base === 'cinc') {
+    const inc = bin('add', a, constNode(1n), bits);
+    return node('sel', { cc: cond, cmp, a: inc, b: a });
+  }
   let alt = b;
-  if (base === 'csinc' || base === 'cinc') alt = bin('add', b, constNode(1n), bits);
+  if (base === 'csinc') alt = bin('add', b, constNode(1n), bits);
   else if (base === 'csinv') alt = un('not', b);
   else if (base === 'csneg') alt = un('neg', b);
   /*
@@ -1049,8 +1090,16 @@ function soloMagic(n) {
   return asMagicDivision(u.inner, u.shift, n.op === 'shr' ? 'udiv' : 'sdiv');
 }
 
+function stripPatternUxt32(n) {
+  let cur = n;
+  while (cur && cur.k === 'un' && cur.op === 'uxt32') cur = cur.a;
+  return cur;
+}
+
 /** `(X >> s) + (X >>> 63)` の形なら、X を割り算として読み直す。 */
 function signFix(shifted, signBit) {
+  shifted = stripPatternUxt32(shifted);
+  signBit = stripPatternUxt32(signBit);
   if (!shifted || !signBit) return null;
   if (shifted.k !== 'bin' || (shifted.op !== 'sar' && shifted.op !== 'mul')) return null;
   if (signBit.k !== 'bin' || signBit.op !== 'shr') return null;
@@ -1062,7 +1111,7 @@ function signFix(shifted, signBit) {
   if (shifted.op === 'sar') {
     const s = constOf(shifted.b);
     if (s == null) return null;
-    inner = shifted.a; shift = s;
+    inner = stripPatternUxt32(shifted.a); shift = s;
   } else {
     // shl → mul に直したあとに sar が消えている形は扱わない
     return null;
@@ -1231,11 +1280,11 @@ function magicHigh(n) {
 const PREC = {
   min: 14, max: 14, umin: 14, umax: 14,
   or: 4, xor: 5, and: 6, shl: 8, shr: 8, sar: 8, ror: 8,
-  add: 9, sub: 9, mul: 10, sdiv: 10, udiv: 10, smod: 10, umod: 10,
+  add: 9, sub: 9, fadd: 9, fsub: 9, mul: 10, fmul: 10, fdiv: 10, sdiv: 10, udiv: 10, smod: 10, umod: 10,
   smulh: 10, umulh: 10,
 };
 const SYM = {
-  add: '+', sub: '-', mul: '*', sdiv: '/', udiv: '/', smod: '%', umod: '%',
+  add: '+', sub: '-', fadd: '+', fsub: '-', mul: '*', fmul: '*', fdiv: '/', sdiv: '/', udiv: '/', smod: '%', umod: '%',
   and: '&', or: '|', xor: '^', shl: '<<', shr: '>>', sar: '>>', ror: '>>>',
   smulh: '*hi', umulh: '*hi',
 };
@@ -1272,6 +1321,7 @@ function emit(n, prec, o, depth) {
   }
   switch (n.k) {
     case 'const': return hexOf(n.v);
+    case 'float': return Number.isInteger(n.v) ? n.v.toFixed(1) : String(n.v);
     case 'arg': return 'a' + (n.n + 1);
     case 'reg': return n.reg;
     case 'str': return '"' + escapeText(n.text) + '"';
@@ -1306,6 +1356,7 @@ function emitUn(n, prec, o, depth) {
   const inner = emit(n.a, 11, o, depth + 1);
   switch (n.op) {
     case 'neg': return '-' + inner;
+    case 'fneg': return '-' + inner;
     case 'not': return '~' + inner;
     case 'sxt8': return '(int8)' + inner;
     case 'sxt16': return '(int16)' + inner;

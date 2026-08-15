@@ -28,158 +28,228 @@ import { parseOperands } from './arm64.js';
 const MASK64 = (1n << 64n) - 1n;
 const MASK32 = 0xFFFFFFFFn;
 const PAGE = 4096;
+const TRACE_MAX = 4000;
 
-/* 練習用のスタック。実機のアドレスとは関係のない、このエミュレータ専用の場所。 */
 export const STACK_TOP = 0x0000700000000000n;
-const STACK_SIZE = 1 << 20;          // 1 MiB
-
-/* 外部関数を呼んだときに「それらしく」振る舞わせるもの。 */
+const STACK_SIZE = 1 << 20;
 const HEAP_BASE = 0x0000600000000000n;
+const HEAP_SIZE = 0x100000n;
+
+export class EmulatorFault extends Error {
+  constructor(code, message, details = null) {
+    super(message || code);
+    this.name = 'EmulatorFault';
+    this.code = code;
+    this.details = details;
+  }
+}
+
+function normalizeMemorySize(size) {
+  const n = Number(size);
+  if (!Number.isSafeInteger(n) || n < 1 || n > 1024 * 1024) throw new EmulatorFault('invalid-memory-size', 'memory size must be an integer in 1..1048576', { size });
+  return n;
+}
 
 export class Emulator {
-  /**
-   * @param {object} io
-   *   read(addr, len) → Promise<Uint8Array|null>   ファイルの中身を読む
-   *   fetch(addr)     → Promise<{mn, ops}|null>    その場所の命令
-   *   symbolFor(addr) → 名前 | null
-   */
   constructor(io) {
     this.io = io || {};
     this.reset();
   }
 
   reset() {
-    this.x = new Array(31).fill(0n);       // x0〜x30
+    this.x = new Array(31).fill(0n);
     this.sp = STACK_TOP;
     this.pc = 0n;
     this.nzcv = { n: false, z: false, c: false, v: false };
-    this.v = new Array(32).fill(0);        // 小数/SIMD はJS Numberとして保持
-    this.exclusive = null;                  // ARM64 local exclusive monitor
-    this.mem = new Map();                  // ページ番号 → Uint8Array（書き換えた分）
-    this.loaded = new Map();               // ページ番号 → Uint8Array（ファイルから読んだ分）
+    this.v = new Array(32).fill(0);
+    this.exclusive = null;
+    this.mem = new Map();
+    this.loaded = new Map();
+    this.loadedValid = new Map();
+    this.syntheticPages = new Set();
     this.steps = 0;
-    this.stopped = null;                   // 止まった理由
+    this.stopped = null;
     this.callStack = [];
-    this.trace = [];                       // 通った道（最大 TRACE_MAX）
-    this.heap = HEAP_BASE;
+    this.trace = [];
+    this.traceTruncated = false;
+    this.traceDropped = 0;
+    this.heapBase = this.io.heapBase != null ? BigInt(this.io.heapBase) : HEAP_BASE;
+    this.heap = this.heapBase;
+    this.heapAllocations = 0;
     this.log = [];
     this.breakpoints = new Set();
   }
 
-  /* ── レジスタ ─────────────────────────────────────────── */
+  _normalizeReg(reg) {
+    const name = String(reg || '').toLowerCase();
+    if (name === 'fp') return 'x29';
+    if (name === 'lr') return 'x30';
+    return name;
+  }
 
   get(reg) {
-    if (reg === 'sp') return this.sp;
-    if (reg === 'pc') return this.pc;
-    if (/^[xw]zr$/.test(reg)) return 0n;
-    const m = /^([xw])(\d+)$/.exec(reg);
-    if (!m) return 0n;
+    const name = this._normalizeReg(reg);
+    if (name === 'sp') return this.sp;
+    if (name === 'pc') return this.pc;
+    if (/^[xw]zr$/.test(name)) return 0n;
+    const m = /^([xw])(\d+)$/.exec(name);
+    if (!m) throw new EmulatorFault('invalid-register', `unknown register: ${reg}`, { register: reg });
     const n = Number(m[2]);
-    if (n === 31) return 0n;
-    const v = this.x[n] || 0n;
+    if (!Number.isInteger(n) || n < 0 || n > 30) throw new EmulatorFault('invalid-register', `unknown register: ${reg}`, { register: reg });
+    const v = this.x[n];
     return m[1] === 'w' ? v & MASK32 : v;
   }
 
   set(reg, value) {
-    const v = BigInt.asUintN(64, value);
-    if (reg === 'sp') { this.sp = v; return; }
-    if (/^[xw]zr$/.test(reg)) return;
-    const m = /^([xw])(\d+)$/.exec(reg);
-    if (!m) return;
+    const name = this._normalizeReg(reg);
+    const v = BigInt.asUintN(64, BigInt(value));
+    if (name === 'sp') { this.sp = v; return; }
+    if (name === 'pc') { this.pc = v; return; }
+    if (/^[xw]zr$/.test(name)) return;
+    const m = /^([xw])(\d+)$/.exec(name);
+    if (!m) throw new EmulatorFault('invalid-register', `unknown register: ${reg}`, { register: reg });
     const n = Number(m[2]);
-    if (n === 31) return;
-    // w レジスタへ書くと、上の 32 ビットは 0 になる（ARM64 の決まり）
+    if (!Number.isInteger(n) || n < 0 || n > 30) throw new EmulatorFault('invalid-register', `unknown register: ${reg}`, { register: reg });
     this.x[n] = m[1] === 'w' ? (v & MASK32) : v;
   }
 
-  /* ── メモリ ───────────────────────────────────────────── */
+  _syncHeapBase() {
+    if (this.heapAllocations === 0 && this.heap !== this.heapBase) this.heapBase = BigInt(this.heap);
+  }
 
-  /** そのアドレスのページを手元に用意する。 */
+  mapZero(start, size, kind = 'synthetic') {
+    const base = BigInt(start);
+    const len = normalizeMemorySize(size);
+    const end = base + BigInt(len);
+    let page = (base / BigInt(PAGE)) * BigInt(PAGE);
+    while (page < end) {
+      const key = page.toString();
+      if (!this.loaded.has(key)) this.loaded.set(key, new Uint8Array(PAGE));
+      this.loadedValid.set(key, PAGE);
+      this.syntheticPages.add(key);
+      page += BigInt(PAGE);
+    }
+    return { start: base, size: len, kind };
+  }
+
   async ensure(addr) {
-    const page = (addr / BigInt(PAGE)) * BigInt(PAGE);
+    const address = BigInt(addr);
+    const page = (address / BigInt(PAGE)) * BigInt(PAGE);
     const key = page.toString();
     if (this.mem.has(key) || this.loaded.has(key)) return;
     if (page >= STACK_TOP - BigInt(STACK_SIZE) && page < STACK_TOP + BigInt(PAGE)) {
-      this.loaded.set(key, new Uint8Array(PAGE));      // スタックは 0 で初期化
-      return;
-    }
-    if (page >= HEAP_BASE && page < HEAP_BASE + 0x100000n) {
       this.loaded.set(key, new Uint8Array(PAGE));
+      this.loadedValid.set(key, PAGE);
+      this.syntheticPages.add(key);
       return;
     }
-    let bytes = null;
-    try { bytes = this.io.read ? await this.io.read(page, PAGE) : null; } catch { bytes = null; }
-    this.loaded.set(key, bytes && bytes.length ? padTo(bytes, PAGE) : new Uint8Array(PAGE));
+    this._syncHeapBase();
+    if (page >= this.heapBase && page < this.heapBase + HEAP_SIZE) {
+      this.loaded.set(key, new Uint8Array(PAGE));
+      this.loadedValid.set(key, PAGE);
+      this.syntheticPages.add(key);
+      return;
+    }
+    if (typeof this.io.read !== 'function') {
+      throw new EmulatorFault('unmapped-memory', `no backing memory for 0x${address.toString(16)}`, { address, page });
+    }
+    let bytes;
+    try { bytes = await this.io.read(page, PAGE); }
+    catch (error) {
+      throw new EmulatorFault('memory-read-failed', `backing read failed at 0x${page.toString(16)}`, { address, page, cause:String(error && error.message || error) });
+    }
+    if (!(bytes instanceof Uint8Array) || bytes.length === 0) {
+      throw new EmulatorFault('unmapped-memory', `backing memory is unavailable at 0x${page.toString(16)}`, { address, page });
+    }
+    const valid = Math.min(PAGE, bytes.length);
+    this.loaded.set(key, padTo(bytes, PAGE));
+    this.loadedValid.set(key, valid);
   }
 
   byteAt(addr) {
-    const page = (addr / BigInt(PAGE)) * BigInt(PAGE);
+    const address = BigInt(addr);
+    const page = (address / BigInt(PAGE)) * BigInt(PAGE);
     const key = page.toString();
-    const off = Number(addr - page);
+    const off = Number(address - page);
     const w = this.mem.get(key);
     if (w && w.mask[off]) return w.data[off];
     const l = this.loaded.get(key);
-    return l ? l[off] : 0;
+    const valid = this.loadedValid.get(key) || 0;
+    if (!l || off < 0 || off >= valid) throw new EmulatorFault('unmapped-memory', `byte is outside backed memory at 0x${address.toString(16)}`, { address });
+    return l[off];
   }
 
   writeByte(addr, value) {
-    const page = (addr / BigInt(PAGE)) * BigInt(PAGE);
+    const address = BigInt(addr);
+    const page = (address / BigInt(PAGE)) * BigInt(PAGE);
     const key = page.toString();
     let w = this.mem.get(key);
     if (!w) { w = { data: new Uint8Array(PAGE), mask: new Uint8Array(PAGE) }; this.mem.set(key, w); }
-    const off = Number(addr - page);
-    w.data[off] = value & 0xff;
+    const off = Number(address - page);
+    if (off < 0 || off >= PAGE) throw new EmulatorFault('unmapped-memory', 'write offset is outside page', { address });
+    w.data[off] = Number(value) & 0xff;
     w.mask[off] = 1;
   }
 
   async load(addr, size) {
-    await this.ensure(addr);
-    if (Number((addr + BigInt(size - 1)) / BigInt(PAGE)) !== Number(addr / BigInt(PAGE))) {
-      await this.ensure(addr + BigInt(size - 1));
-    }
+    const n = normalizeMemorySize(size);
+    const start = BigInt(addr);
+    await this.ensure(start);
+    const end = start + BigInt(n - 1);
+    if (end / BigInt(PAGE) !== start / BigInt(PAGE)) await this.ensure(end);
     let v = 0n;
-    for (let i = size - 1; i >= 0; i--) v = (v << 8n) | BigInt(this.byteAt(addr + BigInt(i)));
+    for (let i = n - 1; i >= 0; i--) v = (v << 8n) | BigInt(this.byteAt(start + BigInt(i)));
     return v;
   }
 
   async store(addr, size, value) {
+    const n = normalizeMemorySize(size);
+    const start = BigInt(addr);
     if (this.exclusive) {
-      const a0=BigInt(addr), a1=a0+BigInt(size), e0=this.exclusive.addr, e1=e0+BigInt(this.exclusive.size);
-      if (!(a1 <= e0 || e1 <= a0)) this.exclusive = null;
+      const endExclusive = start + BigInt(n), monitorEnd = this.exclusive.addr + BigInt(this.exclusive.size);
+      if (!(endExclusive <= this.exclusive.addr || monitorEnd <= start)) this.exclusive = null;
     }
-    await this.ensure(addr);
-    if (Number((addr + BigInt(size - 1)) / BigInt(PAGE)) !== Number(addr / BigInt(PAGE))) {
-      await this.ensure(addr + BigInt(size - 1));
+    await this.ensure(start);
+    const end = start + BigInt(n - 1);
+    if (end / BigInt(PAGE) !== start / BigInt(PAGE)) await this.ensure(end);
+    if (value instanceof Uint8Array) {
+      if (value.length < n) throw new EmulatorFault('short-write-value', `byte vector has ${value.length} bytes but store needs ${n}`, { size:n, length:value.length });
+      for (let i = 0; i < n; i++) this.writeByte(start + BigInt(i), value[i]);
+      return;
     }
-    let v = BigInt.asUintN(64, value);
-    for (let i = 0; i < size; i++) { this.writeByte(addr + BigInt(i), Number(v & 0xffn)); v >>= 8n; }
+    let v = BigInt(value);
+    for (let i = 0; i < n; i++) { this.writeByte(start + BigInt(i), Number(v & 0xffn)); v >>= 8n; }
   }
 
-  /** 画面に見せる用: そのアドレスから len バイト。 */
   async dump(addr, len) {
-    const out = new Uint8Array(len);
-    for (let i = 0; i < len; i += PAGE) await this.ensure(addr + BigInt(i));
-    await this.ensure(addr + BigInt(Math.max(0, len - 1)));
-    for (let i = 0; i < len; i++) out[i] = this.byteAt(addr + BigInt(i));
+    const n = len === 0 ? 0 : normalizeMemorySize(len);
+    const start = BigInt(addr);
+    const out = new Uint8Array(n);
+    if (!n) return out;
+    for (let i = 0; i < n; i += PAGE) await this.ensure(start + BigInt(i));
+    await this.ensure(start + BigInt(n - 1));
+    for (let i = 0; i < n; i++) out[i] = this.byteAt(start + BigInt(i));
     return out;
   }
 
-  /* ── 実行 ─────────────────────────────────────────────── */
-
-  /** 関数を呼ぶ形に整える。引数は x0〜x7 に入れる。 */
   setup(addr, args) {
-    this.pc = addr;
+    this.pc = BigInt(addr);
     this.sp = STACK_TOP - 0x400n;
-    this.x[30] = 0n;                       // 戻り先 0 = ここまで来たら終わり
-    (args || []).forEach((a, i) => { if (i <= 7) this.x[i] = BigInt.asUintN(64, BigInt(a)); });
+    this.x[30] = 0n;
+    const values = args || [];
+    for (let i = 0; i < values.length; i++) {
+      const value = BigInt.asUintN(64, BigInt(values[i]));
+      if (i <= 7) this.x[i] = value;
+      else {
+        const stackAddress = this.sp + BigInt((i - 8) * 8);
+        let v = value;
+        for (let j = 0; j < 8; j++) { this.writeByte(stackAddress + BigInt(j), Number(v & 0xffn)); v >>= 8n; }
+      }
+    }
     this.stopped = null;
-    this.callStack = [{ addr, ret: 0n }];
+    this.callStack = [{ addr: BigInt(addr), ret: 0n }];
   }
 
-  /**
-   * 1 命令進める。
-   * @returns {Promise<{ok:boolean, text:string, reason:string|null}>}
-   */
   async step() {
     if (this.stopped) return { ok: false, text: '', reason: this.stopped };
     const at = this.pc;
@@ -189,7 +259,8 @@ export class Emulator {
       return { ok: false, text: '', reason: this.stopped };
     }
     const text = (insn.mn + ' ' + (insn.ops || '')).trim();
-    if (this.trace.length < 4000) this.trace.push({ addr: at, text });
+    if (this.trace.length < TRACE_MAX) this.trace.push({ addr: at, text });
+    else { this.traceTruncated = true; this.traceDropped++; }
     this.steps++;
 
     let next = at + 4n;
@@ -198,43 +269,40 @@ export class Emulator {
       if (jumped != null) next = jumped;
     } catch (err) {
       this.stopped = (err && err.message) || String(err);
-      return { ok: false, text, reason: this.stopped };
+      return { ok: false, text, reason: this.stopped, code:err && err.code || null };
     }
     this.pc = next;
     if (this.pc === 0n) this.stopped = '最初の呼び出し元まで戻ってきました（実行おわり）。';
     return { ok: !this.stopped, text, reason: this.stopped };
   }
 
-  /**
-   * ブレークポイントか上限まで走らせる。
-   * @param {number} maxSteps
-   */
   async run(maxSteps = 20000, onProgress) {
+    const limit = Number(maxSteps);
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000000) throw new EmulatorFault('invalid-step-budget', 'maxSteps must be an integer in 1..1000000');
     let n = 0;
-    while (n < maxSteps && !this.stopped) {
+    while (n < limit && !this.stopped) {
+      if (this.breakpoints.has(this.pc.toString())) {
+        return { hitBreakpoint: true, steps: n, traceTruncated:this.traceTruncated, traceDropped:this.traceDropped };
+      }
       const r = await this.step();
       n++;
       if (!r.ok) break;
-      if (this.breakpoints.has(this.pc.toString())) {
-        this.stopped = null;
-        return { hitBreakpoint: true, steps: n };
-      }
       if (onProgress && (n % 500) === 0) { onProgress(n); await new Promise((res) => setTimeout(res, 0)); }
     }
-    if (n >= maxSteps && !this.stopped) this.stopped = maxSteps.toLocaleString() + ' 命令ぶん進んだので、いったん止めました。';
-    return { hitBreakpoint: false, steps: n };
+    if (n >= limit && !this.stopped) this.stopped = limit.toLocaleString() + ' 命令ぶん進んだので、いったん止めました。';
+    return { hitBreakpoint: false, steps: n, traceTruncated:this.traceTruncated, traceDropped:this.traceDropped };
   }
 
-  /* ── 命令ごとの動き ───────────────────────────────────── */
+  traceSnapshot() {
+    return { events:this.trace.slice(), truncated:this.traceTruncated, dropped:this.traceDropped, limit:TRACE_MAX };
+  }
 
   async execute(mn, opsStr, at) {
     const ops = parseOperands(opsStr);
     const R = (op) => this.valueOf(op);
 
-    /* 何もしない命令 */
     if (/^(nop|hint|bti|paciasp|pacibsp|autiasp|autibsp|xpaclri|dmb|dsb|isb|prfm|pacia|autia|pacibz)$/.test(mn)) return null;
 
-    /* 分岐 */
     if (mn === 'b') return this.branchTarget(ops);
     if (/^b\.(\w+)$/.test(mn)) {
       const cc = /^b\.(\w+)$/.exec(mn)[1];
@@ -253,18 +321,26 @@ export class Emulator {
     }
     if (mn === 'bl' || mn === 'blr') {
       const target = mn === 'bl' ? this.branchTarget(ops) : R(ops[0]);
+      if (target != null && this.trace.length < 4000) {
+        this.trace.push({ type:'call', addr:at, address:at, target, indirect:mn === 'blr', text:(mn + ' ' + opsStr).trim() });
+      }
       this.x[30] = at + 4n;
-      if (target == null) throw new Error('呼び出し先が分かりませんでした。');
+      if (target == null) throw new EmulatorFault('unknown-call-target', '呼び出し先が分かりませんでした。');
       const hooked = await this.hookedCall(target);
       if (hooked) return at + 4n;
-      if (!this.mapped(target)) return this.externalReturn(at, target);
+      const executable = this.mapped(target);
+      if (executable === false) return this.externalReturn(at, target);
+      if (executable == null) throw new EmulatorFault('unknown-executable', `0x${target.toString(16)} が実行可能か確認できません`, { target });
       this.callStack.push({ addr: target, ret: at + 4n });
       if (this.callStack.length > 256) throw new Error('呼び出しが深くなりすぎました（無限に呼び合っている可能性）。');
       return target;
     }
     if (mn === 'br') {
       const target = R(ops[0]);
-      if (!this.mapped(target)) return this.externalReturn(at, target);
+      const executable = this.mapped(target);
+      if (executable !== true) {
+        throw new EmulatorFault(executable === false ? 'unmapped-tail-branch' : 'unknown-executable', `間接分岐先 0x${target.toString(16)} を安全に実行できません`, { target, branch:'br' });
+      }
       return target;
     }
     if (/^(ret|retaa|retab)$/.test(mn)) {
@@ -273,14 +349,12 @@ export class Emulator {
       return target;
     }
 
-    /* アドレス */
     if (mn === 'adrp' || mn === 'adr') {
       const t = ops[1] && ops[1].value != null ? ops[1].value : 0n;
       this.set(ops[0].text, t);
       return null;
     }
 
-    /* 代入 */
     if (mn === 'mov' || mn === 'movz') { this.set(ops[0].text, R(ops[1])); return null; }
     if (mn === 'movn') { this.set(ops[0].text, ~R(ops[1])); return null; }
     if (mn === 'movk') {
@@ -291,7 +365,6 @@ export class Emulator {
       return null;
     }
 
-    /* 計算 */
     const arith = {
       add: (a, b) => a + b, adds: (a, b) => a + b,
       sub: (a, b) => a - b, subs: (a, b) => a - b,
@@ -349,7 +422,6 @@ export class Emulator {
     }
     if (/^(csel|csinc|csinv|csneg|cset|csetm|cinc|cinv|cneg)$/.test(mn)) return this.conditionalSelect(mn, ops);
 
-    /* 条件つきの比較（ccmp）。条件が成り立てば比較し、外れたら決め打ちのフラグを置く */
     if (mn === 'ccmp' || mn === 'ccmn') {
       const ccOp = ops[ops.length - 1];
       const cc = ccOp && ccOp.k === 'cond' ? ccOp.text : 'al';
@@ -365,7 +437,6 @@ export class Emulator {
       return null;
     }
 
-    /* 長い掛け算 */
     if (/^(smaddl|umaddl|smsubl|umsubl)$/.test(mn)) {
       const a = mn[0] === 's' ? BigInt.asIntN(32, R(ops[1])) : (R(ops[1]) & MASK32);
       const b = mn[0] === 's' ? BigInt.asIntN(32, R(ops[2])) : (R(ops[2]) & MASK32);
@@ -380,7 +451,6 @@ export class Emulator {
       return null;
     }
 
-    /* ビットの取り出し・差し込み */
     if (/^(ubfx|sbfx|ubfiz|sbfiz|bfi|bfxil|lsl|lsr)$/.test(mn) && ops.length >= 4) {
       const src = R(ops[1]);
       const lsb = BigInt(ops[2].value || 0n);
@@ -398,7 +468,6 @@ export class Emulator {
       return null;
     }
 
-    /* 数え上げ・並べ替え */
     if (mn === 'clz' || mn === 'rbit' || /^rev/.test(mn)) {
       const wide = isWide(ops[0]);
       const bits = wide ? 64 : 32;
@@ -409,20 +478,14 @@ export class Emulator {
       else {
         const n = bits / 8;
         const elementBytes = mn === 'rev16' ? 2 : mn === 'rev32' ? 4 : n;
-        for (let base = 0; base < n; base += elementBytes) {
-          for (let i = 0; i < elementBytes; i++) {
-            r |= ((v >> BigInt((base + i) * 8)) & 0xffn) << BigInt((base + elementBytes - 1 - i) * 8);
-          }
-        }
+        for (let base = 0; base < n; base += elementBytes) for (let i = 0; i < elementBytes; i++) r |= ((v >> BigInt((base + i) * 8)) & 0xffn) << BigInt((base + elementBytes - 1 - i) * 8);
       }
       this.set(ops[0].text, r);
       return null;
     }
 
-    /* 小数（下位 64 ビットぶんだけ、JS の数として扱う） */
     if (/^f/.test(mn) || /^[su]cvtf$/.test(mn)) return this.floatInsn(mn, ops);
 
-    /* メモリ */
     if (/^(ldr|ldrb|ldrh|ldrsb|ldrsh|ldrsw|ldur|ldurb|ldurh|ldursb|ldursh|ldursw|ldp|ldnp|ldxr|ldaxr|ldar)/.test(mn)) {
       return this.loadInsn(mn, ops);
     }
@@ -430,26 +493,19 @@ export class Emulator {
       return this.storeInsn(mn, ops);
     }
 
-    /* まだ動かせない命令。黙って進むと嘘になるので、必ず止める */
     throw new Error('この命令はまだ実行できません: ' + mn + ' ' + opsStr);
   }
 
-  /** その番地に命令があるか（このファイルの中か）。 */
   mapped(addr) {
     if (addr == null) return false;
-    if (!this.io.isExecutable) return true;
-    return !!this.io.isExecutable(addr);
+    if (typeof this.io.isExecutable !== 'function') return null;
+    try {
+      const result = this.io.isExecutable(BigInt(addr));
+      if (result && typeof result.then === 'function') return null;
+      return result === true ? true : result === false ? false : null;
+    } catch { return null; }
   }
 
-  /**
-   * このファイルの外（システムのライブラリ）へ出てしまったときの扱い。
-   *
-   * iOS アプリの実行ファイルには、UIKit や libSystem の中身は入っていません。
-   * 呼び出しは __stubs から「起動時に埋められるアドレス」を経由するので、
-   * ファイルを読んだだけでは行き先が決まりません。
-   * ここでは止まらずに「戻り値 0 で帰ってきた」ことにして先へ進めます。
-   * どの関数をそう扱ったかは log に残ります。
-   */
   externalReturn(at, target) {
     const label = (this.io.labelFor && this.io.labelFor(at)) ||
       (target != null ? '0x' + target.toString(16).toUpperCase() : '不明');
@@ -469,9 +525,8 @@ export class Emulator {
     return null;
   }
 
-  /** オペランド 1 つの「今の値」。 */
   valueOf(op) {
-    if (!op) return 0n;
+    if (!op) throw new EmulatorFault('missing-operand', 'operand is missing');
     if (op.k === 'imm') {
       let v = op.value != null ? op.value : 0n;
       if (op.shift && op.shift.amount) {
@@ -503,17 +558,14 @@ export class Emulator {
       }
       return BigInt.asUintN(64, v);
     }
-    return 0n;
+    throw new EmulatorFault('unsupported-operand', `unsupported operand kind: ${op.k || 'unknown'}`, { operand:op });
   }
 
-  /** メモリの実効アドレス。書き戻し（pre/post）もここで面倒を見る。 */
   effectiveAddress(mem, after) {
     const base = mem.base ? this.get(mem.base.text) : 0n;
     const disp = mem.disp && mem.disp.value != null ? mem.disp.value : 0n;
     let index = 0n;
-    if (mem.index) {
-      index = this.valueOf(Object.assign({}, mem.index, { shift: mem.shift }));
-    }
+    if (mem.index) index = this.valueOf(Object.assign({}, mem.index, { shift: mem.shift }));
     if (mem.mode === 'post') {
       if (after && mem.base) this.set(mem.base.text, base + disp);
       return base + index;
@@ -561,109 +613,79 @@ export class Emulator {
       const success = !!monitor && monitor.addr === BigInt(addr) && monitor.size === size;
       this.exclusive = null;
       if (success) {
-        if (isFloatReg(ops[first])) await this.store(addr, size, floatToBits(this.fget(ops[first]), size));
-        else await this.store(addr, size, this.get(ops[first].text));
+        if (isFloatReg(ops[first])) await this.store(addr,size,floatToBits(this.fget(ops[first]),size));
+        else await this.store(addr,size,this.get(ops[first].text));
       }
       this.set(ops[0].text, success ? 0n : 1n);
-      this.effectiveAddress(mem, true);
+      this.effectiveAddress(mem,true);
       return null;
     }
     if (pair) {
       const each = isWide(ops[0]) ? 8 : 4;
-      await this.store(addr, each, this.get(ops[0].text));
-      await this.store(addr + BigInt(each), each, this.get(ops[1].text));
-    } else if (isFloatReg(ops[first])) {
-      await this.store(addr, size, floatToBits(this.fget(ops[first]), size));
-    } else await this.store(addr, size, this.get(ops[first].text));
-    this.effectiveAddress(mem, true);
+      await this.store(addr,each,this.get(ops[0].text));
+      await this.store(addr + BigInt(each),each,this.get(ops[1].text));
+    } else if (isFloatReg(ops[first])) await this.store(addr,size,floatToBits(this.fget(ops[first]),size));
+    else await this.store(addr,size,this.get(ops[first].text));
+    this.effectiveAddress(mem,true);
     return null;
   }
-
-  /* ── 小数 ─────────────────────────────────────────────
-     s0 / d0 は「JS の数」として持ちます。ビット単位の再現ではないので、
-     極端な値では実機と細かく違うことがあります（その旨は画面にも出します）。 */
 
   fget(op) {
     if (!op || op.k !== 'reg') return 0;
     if (op.cls === 'gp' || op.cls === 'sp') {
       const bits = op.bits === 32 ? 32 : 64;
-      return Number(BigInt.asIntN(bits, this.get(op.text)));
+      return Number(BigInt.asIntN(bits,this.get(op.text)));
     }
-    const value = this.v[op.num];
+    const value=this.v[op.num];
     return value === undefined ? 0 : value;
   }
 
-  fset(op, value) {
+  fset(op,value) {
     if (!op || op.k !== 'reg') return;
-    if (op.cls === 'gp') { this.set(op.text, BigInt(Math.trunc(value))); return; }
+    if (op.cls === 'gp') { this.set(op.text,BigInt(Math.trunc(value))); return; }
     this.v[op.num] = op.bits === 32 || /^s\d+$/i.test(op.text || '') ? Math.fround(value) : value;
   }
 
-  floatInsn(mn, ops) {
+  floatInsn(mn,ops) {
     if (mn === 'fcmp' || mn === 'fcmpe') {
-      const lhs = this.fget(ops[0]);
-      const rhs = ops[1]?.k === 'imm'
-        ? (ops[1].float != null ? Number(ops[1].float) : Number(ops[1].value ?? 0n))
-        : this.fget(ops[1]);
-      if (Number.isNaN(lhs) || Number.isNaN(rhs)) this.nzcv = { n:false, z:false, c:true, v:true };
-      else if (lhs < rhs) this.nzcv = { n:true, z:false, c:false, v:false };
-      else if (lhs === rhs) this.nzcv = { n:false, z:true, c:true, v:false };
-      else this.nzcv = { n:false, z:false, c:true, v:false };
+      const lhs=this.fget(ops[0]);
+      const rhs=ops[1]?.k === 'imm' ? (ops[1].float != null ? Number(ops[1].float) : Number(ops[1].value ?? 0n)) : this.fget(ops[1]);
+      if (Number.isNaN(lhs) || Number.isNaN(rhs)) this.nzcv={n:false,z:false,c:true,v:true};
+      else if (lhs < rhs) this.nzcv={n:true,z:false,c:false,v:false};
+      else if (lhs === rhs) this.nzcv={n:false,z:true,c:true,v:false};
+      else this.nzcv={n:false,z:false,c:true,v:false};
       return null;
     }
-    const a = this.fget(ops[1]);
-    const b = ops[2] ? this.fget(ops[2]) : 0;
-    if (mn === 'fmov') {
-      if (ops[1] && ops[1].k === 'imm') this.fset(ops[0], ops[1].float != null ? ops[1].float : Number(ops[1].value || 0n));
-      else this.fset(ops[0], a);
-      return null;
-    }
-    if (mn === 'fadd') { this.fset(ops[0], a + b); return null; }
-    if (mn === 'fsub') { this.fset(ops[0], a - b); return null; }
-    if (mn === 'fmul') { this.fset(ops[0], a * b); return null; }
-    if (mn === 'fdiv') { this.fset(ops[0], a / b); return null; }
-    if (mn === 'fneg') { this.fset(ops[0], -a); return null; }
-    if (mn === 'fabs') { this.fset(ops[0], Math.abs(a)); return null; }
-    if (mn === 'fsqrt') { this.fset(ops[0], Math.sqrt(a)); return null; }
-    if (mn === 'fmadd') { this.fset(ops[0], this.fget(ops[3]) + a * b); return null; }
-    if (mn === 'fmsub') { this.fset(ops[0], this.fget(ops[3]) - a * b); return null; }
-    if (mn === 'fcvt' || mn === 'fcvtd' || mn === 'fcvts') { this.fset(ops[0], a); return null; }
+    const a=this.fget(ops[1]), b=ops[2] ? this.fget(ops[2]) : 0;
+    if (mn === 'fmov') { if (ops[1]?.k === 'imm') this.fset(ops[0],ops[1].float != null ? ops[1].float : Number(ops[1].value || 0n)); else this.fset(ops[0],a); return null; }
+    if (mn === 'fadd') { this.fset(ops[0],a+b); return null; }
+    if (mn === 'fsub') { this.fset(ops[0],a-b); return null; }
+    if (mn === 'fmul') { this.fset(ops[0],a*b); return null; }
+    if (mn === 'fdiv') { this.fset(ops[0],a/b); return null; }
+    if (mn === 'fneg') { this.fset(ops[0],-a); return null; }
+    if (mn === 'fabs') { this.fset(ops[0],Math.abs(a)); return null; }
+    if (mn === 'fsqrt') { this.fset(ops[0],Math.sqrt(a)); return null; }
+    if (mn === 'fmadd') { this.fset(ops[0],this.fget(ops[3])+a*b); return null; }
+    if (mn === 'fmsub') { this.fset(ops[0],this.fget(ops[3])-a*b); return null; }
+    if (mn === 'fcvt' || mn === 'fcvtd' || mn === 'fcvts') { this.fset(ops[0],a); return null; }
     if (/^(scvtf|ucvtf)$/.test(mn)) {
-      const bits = ops[1]?.bits === 32 ? 32 : 64;
-      const raw = this.get(ops[1].text);
-      const integer = mn === 'scvtf' ? BigInt.asIntN(bits, raw) : BigInt.asUintN(bits, raw);
-      this.fset(ops[0], Number(integer));
-      return null;
+      const bits=ops[1]?.bits === 32 ? 32 : 64, raw=this.get(ops[1].text);
+      this.fset(ops[0],Number(mn === 'scvtf' ? BigInt.asIntN(bits,raw) : BigInt.asUintN(bits,raw))); return null;
     }
     if (/^fcvtz[su]$/.test(mn)) {
-      const bits = ops[0]?.bits === 32 || /^w/.test(ops[0]?.text || '') ? 32 : 64;
-      const unsigned = mn === 'fcvtzu';
-      let result = 0n;
+      const bits=ops[0]?.bits === 32 || /^w/.test(ops[0]?.text || '') ? 32 : 64, unsigned=mn === 'fcvtzu'; let result=0n;
       if (!Number.isNaN(a)) {
-        const t = Math.trunc(a);
-        if (unsigned) {
-          const max = (1n << BigInt(bits)) - 1n;
-          if (t <= 0) result = 0n;
-          else if (!Number.isFinite(t)) result = max;
-          else { const integer=BigInt(t); result=integer>max?max:integer; }
-        } else {
-          const min = -(1n << BigInt(bits - 1)), max = (1n << BigInt(bits - 1)) - 1n;
-          if (!Number.isFinite(t)) result = t < 0 ? min : max;
-          else { const integer=BigInt(t); result=integer<min?min:integer>max?max:integer; }
-        }
+        const t=Math.trunc(a);
+        if (unsigned) { const max=(1n<<BigInt(bits))-1n; if (t<=0) result=0n; else if (!Number.isFinite(t)) result=max; else { const n=BigInt(t); result=n>max?max:n; } }
+        else { const min=-(1n<<BigInt(bits-1)), max=(1n<<BigInt(bits-1))-1n; if (!Number.isFinite(t)) result=t<0?min:max; else { const n=BigInt(t); result=n<min?min:n>max?max:n; } }
       }
-      this.set(ops[0].text, result);
-      return null;
+      this.set(ops[0].text,result); return null;
     }
     if (/^(fmin|fmax|fminnm|fmaxnm)$/.test(mn)) {
       let value;
-      if (/nm$/.test(mn)) {
-        if (Number.isNaN(a) && !Number.isNaN(b)) value = b;
-        else if (!Number.isNaN(a) && Number.isNaN(b)) value = a;
-        else value = /min/.test(mn) ? Math.min(a,b) : Math.max(a,b);
-      } else value = /min/.test(mn) ? Math.min(a,b) : Math.max(a,b);
-      this.fset(ops[0], value);
-      return null;
+      if (/nm$/.test(mn)) { if (Number.isNaN(a) && !Number.isNaN(b)) value=b; else if (!Number.isNaN(a) && Number.isNaN(b)) value=a; else value=/min/.test(mn)?Math.min(a,b):Math.max(a,b); }
+      else value=/min/.test(mn)?Math.min(a,b):Math.max(a,b);
+      this.fset(ops[0],value); return null;
     }
     throw new Error('この小数命令はまだ実行できません: ' + mn);
   }
@@ -682,13 +704,10 @@ export class Emulator {
     if (mn === 'csinc' || mn === 'cinc') alt = b + 1n;
     if (mn === 'csinv' || mn === 'cinv') alt = ~b;
     if (mn === 'csneg' || mn === 'cneg') alt = -b;
-    // cinc / cinv / cneg は「条件が成り立ったら」加工する形（条件が逆）
     const inverted = /^c(inc|inv|neg)$/.test(mn);
     this.set(ops[0].text, (inverted ? !taken : taken) ? a : alt);
     return null;
   }
-
-  /* ── フラグ ───────────────────────────────────────────── */
 
   setFlags(mn, a, b, result, wide) {
     const bits = wide ? 64 : 32;
@@ -732,87 +751,53 @@ export class Emulator {
     }
   }
 
-  /* ── よく呼ばれる外部関数の代役 ─────────────────────────
-     malloc の中身まで実行しても意味がないので、それらしい値を返して先へ進めます。
-     代役を使ったことは log に残すので、結果を読むときに区別できます。 */
-
   async hookedCall(target) {
-    const name = this.io.symbolFor ? this.io.symbolFor(target) : null;
+    const name=this.io.symbolFor ? this.io.symbolFor(target) : null;
     if (!name) return false;
-    const plain = name.replace(/^_+/, '');
-    const MAX_HOOK_BYTES = 65536n;
-    const allocate = async (size, zero = false) => {
-      if (size < 0n || size > 0x100000n) throw new Error('外部メモリ確保が安全上限を超えました: ' + size);
-      const addr = this.heap;
-      this.heap += (size + 15n) & ~15n;
+    const plain=name.replace(/^_+/, '');
+    const MAX_HOOK_BYTES=65536n;
+    const allocate=async(size,zero=false)=>{
+      this._syncHeapBase();
+      if (size < 0n || size > HEAP_SIZE) throw new EmulatorFault('heap-exhausted','synthetic allocation exceeds 1 MiB',{size});
+      const addr=this.heap, next=addr+((size+15n)&~15n);
+      if (next > this.heapBase + HEAP_SIZE) throw new EmulatorFault('heap-exhausted','synthetic heap exceeded 1 MiB',{heapBase:this.heapBase,heap:next});
+      this.heap=next; this.heapAllocations++;
       if (zero) for (let i=0n;i<size;i++) { await this.ensure(addr+i); this.writeByte(addr+i,0); }
       return addr;
     };
     if (/^(malloc|operator new|Znwm|Znam)$/.test(plain)) {
-      const size = this.x[0] || 16n;
-      const addr = await allocate(size, false);
-      this.x[0] = addr;
-      this.log.push({ call: plain, note: 'メモリを ' + size + ' バイト確保したことにしました → 0x' + addr.toString(16) });
-      return true;
+      const size=this.x[0] || 16n, addr=await allocate(size,false); this.x[0]=addr;
+      this.log.push({call:plain,note:'メモリを '+size+' バイト確保したことにしました → 0x'+addr.toString(16)}); return true;
     }
     if (plain === 'calloc') {
-      const count=this.x[0], each=this.x[1];
-      if (count !== 0n && each > MASK64 / count) throw new Error('calloc のサイズがオーバーフローしました');
-      const size=count*each;
-      const addr=await allocate(size,true);
-      this.x[0]=addr;
-      this.log.push({call:'calloc',note:size+' バイトをゼロ初期化して確保しました'});
-      return true;
+      const count=this.x[0], each=this.x[1]; if (count !== 0n && each > MASK64/count) throw new EmulatorFault('allocation-overflow','calloc size overflow');
+      const size=count*each, addr=await allocate(size,true); this.x[0]=addr; this.log.push({call:'calloc',note:size+' バイトをゼロ初期化して確保しました'}); return true;
     }
-    if (/^(free|operator delete|ZdlPv|ZdaPv)$/.test(plain)) {
-      this.log.push({ call: plain, note: '解放は何もしません' });
-      return true;
-    }
+    if (/^(free|operator delete|ZdlPv|ZdaPv)$/.test(plain)) { this.log.push({call:plain,note:'解放は何もしません'}); return true; }
     if (plain === 'strlen') {
-      const p=this.x[0]; let n=0n;
-      while (n < 4096n) { await this.ensure(p+n); if (this.byteAt(p+n) === 0) { this.x[0]=n; this.log.push({call:'strlen',note:'長さ '+n+' を返しました'}); return true; } n++; }
-      throw new Error('strlen: 4096 バイト以内に終端NULがありません');
+      const p=this.x[0]; let n=0n; while (n<4096n) { await this.ensure(p+n); if (this.byteAt(p+n)===0) { this.x[0]=n; this.log.push({call:'strlen',note:'長さ '+n+' を返しました'}); return true; } n++; }
+      throw new EmulatorFault('unterminated-string','strlen: 4096 バイト以内に終端NULがありません',{address:p});
     }
     if (/^(memcpy|memmove)$/.test(plain)) {
-      const d=this.x[0], src=this.x[1], n=this.x[2];
-      if (n > MAX_HOOK_BYTES) throw new Error(plain + ': コピー長が安全上限65536バイトを超えました');
-      const snapshot = plain === 'memmove' ? new Uint8Array(Number(n)) : null;
-      if (snapshot) for (let i=0;i<snapshot.length;i++) { await this.ensure(src+BigInt(i)); snapshot[i]=this.byteAt(src+BigInt(i)); }
-      for (let i=0n;i<n;i++) {
-        await this.ensure(src+i); await this.ensure(d+i);
-        this.writeByte(d+i, snapshot ? snapshot[Number(i)] : this.byteAt(src+i));
-      }
-      this.x[0]=d;
-      this.log.push({call:plain,note:n+' バイトをコピーしました'});
-      return true;
+      const d=this.x[0],src=this.x[1],n=this.x[2]; if (n>MAX_HOOK_BYTES) throw new EmulatorFault('hook-copy-too-large',plain+': コピー長が安全上限65536バイトを超えました',{size:n});
+      const snapshot=plain==='memmove'?new Uint8Array(Number(n)):null;
+      if (snapshot) for(let i=0;i<snapshot.length;i++){await this.ensure(src+BigInt(i));snapshot[i]=this.byteAt(src+BigInt(i));}
+      for(let i=0n;i<n;i++){await this.ensure(src+i);await this.ensure(d+i);this.writeByte(d+i,snapshot?snapshot[Number(i)]:this.byteAt(src+i));}
+      this.x[0]=d; this.log.push({call:plain,note:n+' バイトをコピーしました'}); return true;
     }
     if (/^(memset|bzero)$/.test(plain)) {
-      const d=this.x[0], c=plain==='bzero'?0n:this.x[1], n=plain==='bzero'?this.x[1]:this.x[2];
-      if (n > MAX_HOOK_BYTES) throw new Error(plain + ': 書込長が安全上限65536バイトを超えました');
-      for (let i=0n;i<n;i++) { await this.ensure(d+i); this.writeByte(d+i,Number(c&0xffn)); }
-      this.x[0]=d;
-      this.log.push({call:plain,note:n+' バイトを埋めました'});
-      return true;
+      const d=this.x[0],c=plain==='bzero'?0n:this.x[1],n=plain==='bzero'?this.x[1]:this.x[2]; if(n>MAX_HOOK_BYTES) throw new EmulatorFault('hook-write-too-large',plain+': 書込長が安全上限65536バイトを超えました',{size:n});
+      for(let i=0n;i<n;i++){await this.ensure(d+i);this.writeByte(d+i,Number(c&0xffn));} this.x[0]=d; this.log.push({call:plain,note:n+' バイトを埋めました'}); return true;
     }
-    if (/^(arc4random|rand|random)$/.test(plain)) {
-      this.x[0]=4n; this.log.push({call:plain,note:'乱数は毎回 4 を返します（結果を比べられるように）'}); return true;
-    }
-    if (plain === 'objc_storeStrong') {
-      await this.store(this.x[0], 8, this.x[1]);
-      this.log.push({call:plain,note:'strong参照先へ新しいobject pointerを書き込みました'});
-      return true;
-    }
-    if (/^objc_(retain|release|autorelease|retainAutoreleasedReturnValue)$/.test(plain)) {
-      this.log.push({call:plain,note:'参照カウントの操作は素通りします'}); return true;
-    }
+    if (/^(arc4random|rand|random)$/.test(plain)) { this.x[0]=4n; this.log.push({call:plain,note:'乱数は毎回 4 を返します（結果を比べられるように）'}); return true; }
+    if (plain === 'objc_storeStrong') { await this.store(this.x[0],8,this.x[1]); this.log.push({call:plain,note:'strong参照先へ新しいobject pointerを書き込みました'}); return true; }
+    if (/^objc_(retain|release|autorelease|retainAutoreleasedReturnValue)$/.test(plain)) { this.log.push({call:plain,note:'参照カウントの操作は素通りします'}); return true; }
     return false;
   }
 
-  /* ── 見せるための小道具 ─────────────────────────────── */
-
   registerList() {
     const out = [];
-    for (let i = 0; i <= 30; i++) out.push({ name: 'x' + i, value: this.x[i] || 0n });
+    for (let i = 0; i <= 30; i++) out.push({ name: 'x' + i, value: this.x[i] });
     out.push({ name: 'sp', value: this.sp });
     out.push({ name: 'pc', value: this.pc });
     return out;
@@ -823,8 +808,6 @@ export class Emulator {
     return (f.n ? 'N' : '-') + (f.z ? 'Z' : '-') + (f.c ? 'C' : '-') + (f.v ? 'V' : '-');
   }
 }
-
-/* ── 小道具 ─────────────────────────────────────────────── */
 
 function isWide(op) {
   if (!op || op.k !== 'reg') return true;
@@ -846,7 +829,6 @@ function storeSize(mn, src) {
 
 function isFloatReg(op) { return !!op && op.k === 'reg' && (op.cls === 'fp' || op.cls === 'vec'); }
 
-/** メモリのビット列を小数として読む（s は 4 バイト、d は 8 バイト）。 */
 function bitsToFloat(bits, size) {
   const buf = new ArrayBuffer(8);
   const dv = new DataView(buf);

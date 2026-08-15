@@ -12,6 +12,8 @@ import { inferSemanticTypes, semanticSignature, typeNameOf } from './type-recove
 import { buildAppleRuntimeIndex, resolveAppleCall, shouldFoldRuntimeCall, runtimeOriginForSymbol } from '../apple/runtime.js';
 import { callArgumentIndices, knownCallPrototype } from './call-prototypes.js';
 import { sourceOf, mergeSource } from './ast/nodes.js';
+import { isNZCVCondition, renderNZCVCondition } from './flag-semantics.js';
+import { renderIndexedMemory } from './address-semantics.js';
 
 const MAX_EXPR_DEPTH = 48;
 const MAX_EXPR_NODES = 512;
@@ -259,13 +261,14 @@ export function renderMemoryLocation(loc, inst, ctx) {
   }
   const addr = inst?.addr || {};
   if (loc.kind === MK.UNKNOWN) {
-    if (addr.base && addr.index && addr.scale != null) {
+    if (addr.base && addr.index) {
       const base = renderValue(addr.base, ctx);
       const index = renderValue(addr.index, ctx);
-      const size = Number(addr.size || 0);
-      const scaleBytes = 1 << Number(addr.scale || 0);
-      if (size && scaleBytes === size) return `${paren(base)}[${index}]`;
-      return `memory[${base} + (${index} << ${Number(addr.scale || 0)})]`;
+      return renderIndexedMemory(base, index, {
+        extend: addr.extend || null,
+        scale: addr.scale || 0,
+        size: Number(addr.size || 0),
+      });
     }
     return 'memory_unknown';
   }
@@ -298,12 +301,18 @@ function cmpFromFlags(flagValue) {
 
 function renderCmp(cmp, cond, ctx, atInst = cmp) {
   if (!cmp) return cond ? `condition_${cond}` : 'condition';
-  const info = COND[cond] || null;
-  const a = renderValueAt(valueOf(cmp.args?.[0]), atInst, ctx);
-  const b = renderValueAt(valueOf(cmp.args?.[1]), atInst, ctx);
-  if (!info) return `${a} /* ${cond || 'flags'} */`;
-  if (info.vsZero) return `${a} ${info.op} 0`;
-  return `${a} ${info.op} ${b}`;
+  const aValue = valueOf(cmp.args?.[0]);
+  const bValue = valueOf(cmp.args?.[1]);
+  const a = renderValueAt(aValue, atInst, ctx);
+  const b = renderValueAt(bValue, atInst, ctx);
+  const bits = Number(cmp.bits || aValue?.bits || bValue?.bits || 64);
+  const rendered = renderNZCVCondition(cmp.sub || 'sub', cond, a, b, bits, {
+    address: cmp.address,
+    row: cmp.row,
+    ir: cmp.id,
+    evidence: [{ reason: `AArch64 ${cmp.sub || 'unknown'} NZCV semantics` }],
+  });
+  return rendered || `${a} /* ${cond || 'flags'} */`;
 }
 
 export function renderBranchCondition(inst, ctx, invert = false) {
@@ -317,12 +326,12 @@ export function renderBranchCondition(inst, ctx, invert = false) {
     s = `((${renderValueAt(valueOf(inst.args?.[0]), inst, ctx)} >> ${bit}) & 1) ${kind === 'tbz' ? '==' : '!='} 0`;
   } else {
     let cond = inst.cond || inst.extra?.cond || null;
-    if (!cond || !Object.prototype.hasOwnProperty.call(COND, cond) || !COND[cond]) {
+    if (!cond || !isNZCVCondition(cond)) {
       return `__arm64_condition_${safeIdent(cond || 'unknown')}(/* NZCV */)`;
     }
     if (invert) {
       const inverse = inverseCondition(cond);
-      if (!inverse || !Object.prototype.hasOwnProperty.call(COND, inverse) || !COND[inverse]) {
+      if (!inverse || !isNZCVCondition(inverse)) {
         return `!(__arm64_condition_${safeIdent(cond)}(/* NZCV */))`;
       }
       cond = inverse;

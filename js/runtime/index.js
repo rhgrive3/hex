@@ -26,10 +26,16 @@ function operationController(session, externalSignal) {
 function launchOptionsForTrace(functionAddress, options) {
   const source = options && options.launch ? options.launch : options || {};
   const launch = { ...source };
-  for (const key of ['maxSteps','limit','timeoutMs','signal','onProgress','launch']) delete launch[key];
+  for (const key of ['maxSteps','limit','timeoutMs','signal','onProgress','launch','attach']) delete launch[key];
   launch.address = asAddress(functionAddress);
   delete launch.functionAddress;
   return launch;
+}
+
+function isReplayable(adapter, observation = null, trace = null) {
+  if (adapter?.capabilities?.replay) return true;
+  if (observation?.recordingId || observation?.recording || trace?.recordingId || trace?.recording) return true;
+  return false;
 }
 
 export class RuntimeAnalysisPlatform {
@@ -49,7 +55,10 @@ export class RuntimeAnalysisPlatform {
   adapter(name = null) {
     if (name) return this.adapters.get(String(name)) || null;
     const session = this.sessions.current;
-    return session ? session.adapter : this.adapters.get('local') || this.adapters.values().next().value || null;
+    if (session) return session.adapter;
+    // Prefer local only when it actually exists; otherwise insertion order is
+    // deterministic and lets symbolic-only configurations start successfully.
+    return this.adapters.get('local') || this.adapters.values().next().value || null;
   }
   createRemote(name, transport, options = {}) {
     const kind = options.kind || 'remote';
@@ -57,9 +66,9 @@ export class RuntimeAnalysisPlatform {
     return this.registerAdapter(name, adapter);
   }
   createReplay(name, recording, options = {}) { return this.registerAdapter(name, new ReplayAdapter(recording, options)); }
-  async startSession({ adapter = 'local', binaryHash = null, trace = {}, connect = true } = {}) {
-    const instance = typeof adapter === 'string' ? this.adapter(adapter) : adapter;
-    if (!instance) throw new DebugAdapterError('adapter-not-found',`debug adapter not found: ${adapter}`);
+  async startSession({ adapter = null, binaryHash = null, trace = {}, connect = true } = {}) {
+    const instance = adapter == null ? this.adapter() : (typeof adapter === 'string' ? this.adapter(adapter) : adapter);
+    if (!instance) throw new DebugAdapterError('adapter-not-found',`debug adapter not found: ${adapter ?? '<default>'}`);
     const session = this.sessions.create(instance,{binaryHash,trace});
     if (!connect) return session;
     try { await session.connect(); return session; }
@@ -102,32 +111,41 @@ export class RuntimeAnalysisPlatform {
     const hypothesis = options.hypothesis || { id:`verify:${asAddress(functionAddress).toString(16)}`, functionAddress,
       fieldOffset:options.fieldOffset ?? null, fieldSize:options.fieldSize ?? 8, initial:options.initial ?? 100,
       argumentIndex:options.argumentIndex ?? 1, operation:options.operation || 'set' };
-    // Without a semantic expectation this is an execution observation, not a
-    // semantic confirmation. compileExperiment emits cases with expected=null.
     return this.verifyHypothesis(hypothesis, options);
   }
   async traceFunction(functionAddress, options = {}) {
     const session = this.currentSession();
+    const adapter = session.adapter;
     const requestedAddress = asAddress(functionAddress);
     const launchSpec = launchOptionsForTrace(requestedAddress,options);
     const operation = operationController(session,options.signal);
-    let observation, trace;
-    const started=Date.now();
+    let observation = { stop:null, returnValue:null, branches:[] }, trace;
+    const started = Date.now();
     try {
-      await session.adapter.launch(launchSpec,{signal:operation.signal});
-      observation = await session.adapter.resume({ maxSteps:options.maxSteps ?? 20000, timeoutMs:options.timeoutMs, signal:operation.signal });
-      if (observation.trace) trace=observation.trace;
+      if (adapter.capabilities.launch) {
+        await adapter.launch(launchSpec,{signal:operation.signal});
+      } else if (adapter.capabilities.attach && options.attach) {
+        await adapter.attach(options.attach,{signal:operation.signal});
+      } else if (!adapter.capabilities.attach && !adapter.capabilities.traceFunction) {
+        throw new DebugAdapterError('unsupported','adapter cannot launch, attach, or trace an existing target');
+      }
+      if (adapter.capabilities.resume) {
+        observation = await adapter.resume({ maxSteps:options.maxSteps ?? 20000, timeoutMs:options.timeoutMs, signal:operation.signal }) || observation;
+      }
+      if (observation.trace) trace = observation.trace;
       else {
-        const timeoutMs=options.timeoutMs == null ? undefined : Math.max(1, Number(options.timeoutMs) - (Date.now()-started));
-        trace = await session.adapter.trace({ limit:boundedInteger(options.limit,4096,1,50000,'limit'), timeoutMs, signal:operation.signal });
+        if (!adapter.capabilities.traceFunction) throw new DebugAdapterError('unsupported','adapter does not provide function tracing');
+        const timeoutMs = options.timeoutMs == null ? undefined : Math.max(1, Number(options.timeoutMs) - (Date.now() - started));
+        trace = await adapter.trace({ limit:boundedInteger(options.limit,4096,1,50000,'limit'), timeoutMs, signal:operation.signal });
       }
     } finally { operation.release(); }
     for (const event of trace.events || []) session.acceptEvent(event);
     const facts = traceToSemanticFacts(trace,{sessionId:session.id,binaryHash:session.binaryHash,traceId:`fn:${requestedAddress.toString(16)}`});
+    const replayable=isReplayable(adapter,observation,trace);
     const evidence = createRuntimeEvidenceRecord({ backend:session.backend,binaryHash:session.binaryHash,sessionId:session.id,
       experimentId:`trace:${requestedAddress.toString(16)}`,caseId:'trace',function:requestedAddress,
       input:launchSpec,observedState:{stop:observation.stop,returnValue:observation.returnValue},branchPath:observation.branches || [],
-      verdict:'inconclusive',confidence:0.5,kind:'trace',reproducibility:{replayable:true,runs:1,consistent:null} });
+      verdict:'inconclusive',confidence:0.5,kind:'trace',reproducibility:{replayable,runs:1,consistent:null} });
     this._recordEvidence(evidence);
     return { functionAddress:requestedAddress, observation, trace, facts, evidence:[evidence] };
   }
@@ -138,9 +156,10 @@ export class RuntimeAnalysisPlatform {
     if (n > 4096) throw new DebugAdapterError('too-large','runtime field read exceeds 4096 bytes');
     const bytes = await session.adapter.readMemory(address, n);
     if (!(bytes instanceof Uint8Array) || bytes.length !== n) throw new DebugAdapterError('short-read',`runtime field read returned ${bytes && bytes.length || 0} of ${n} bytes`);
+    const replayable=isReplayable(session.adapter);
     const evidence = createRuntimeEvidenceRecord({ backend:session.backend,binaryHash:session.binaryHash,sessionId:session.id,
       experimentId:`read:${asAddress(address).toString(16)}`,caseId:'read',address:asAddress(address),input:{address:asAddress(address),size:n},
-      observedState:{bytes:[...bytes]},verdict:'inconclusive',confidence:0.5,kind:'memory-read',reproducibility:{replayable:true,runs:1,consistent:null} });
+      observedState:{bytes:[...bytes]},verdict:'inconclusive',confidence:0.5,kind:'memory-read',reproducibility:{replayable,runs:1,consistent:null} });
     this._recordEvidence(evidence);
     return { address:asAddress(address), bytes, evidence:[evidence] };
   }
@@ -153,14 +172,18 @@ export class RuntimeAnalysisPlatform {
     if (!original) throw new DebugAdapterError('replay-missing-experiment','replay recording has no experiment');
     let functionAddress = asAddress(original.functionAddress);
     const sourceHash = source.binaryHash || original.binaryHash || null;
-    if (sourceHash && session.binaryHash && sourceHash !== session.binaryHash) {
+    const targetHash = session.binaryHash || null;
+    if ((!sourceHash || !targetHash) && options.allowUnverifiedBinary !== true) {
+      throw new DebugAdapterError('replay-unverified-binary','replay requires source and target binary identity; pass allowUnverifiedBinary only for an explicit unsafe replay',{sourceHash,targetHash});
+    }
+    if (sourceHash && targetHash && sourceHash !== targetHash) {
       const resolveFunction = options.resolveFunction || this.options.resolveFunction;
-      if (typeof resolveFunction !== 'function') return { status:'unsupported', reason:'binary-version-mismatch', sourceHash, targetHash:session.binaryHash, evidence:[] };
-      const resolved = await resolveFunction({ functionAddress, fingerprint:original.functionFingerprint || source.functionFingerprint || null, sourceBinaryHash:sourceHash, targetBinaryHash:session.binaryHash });
-      if (resolved == null) return { status:'unsupported', reason:'function-re-resolution-failed', sourceHash, targetHash:session.binaryHash, evidence:[] };
+      if (typeof resolveFunction !== 'function') return { status:'unsupported', reason:'binary-version-mismatch', sourceHash, targetHash, evidence:[] };
+      const resolved = await resolveFunction({ functionAddress, fingerprint:original.functionFingerprint || source.functionFingerprint || null, sourceBinaryHash:sourceHash, targetBinaryHash:targetHash });
+      if (resolved == null) return { status:'unsupported', reason:'function-re-resolution-failed', sourceHash, targetHash, evidence:[] };
       functionAddress = asAddress(resolved.address ?? resolved);
     }
-    const experiment = { ...original, functionAddress, binaryHash:session.binaryHash || sourceHash };
+    const experiment = { ...original, functionAddress, binaryHash:targetHash || sourceHash || null };
     return this.runExperiment(experiment,{ ...options,replay:true });
   }
 }

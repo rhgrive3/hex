@@ -208,26 +208,36 @@ export function buildFunctionReport(opts) {
     const hits = [];
     for (const s of strings) {
       const m = matchText(goal, s.text);
-      if (m) hits.push({ code: 'string-ref', detail: { text: s.text, addr: s.addr, term: m.term } });
+      if (m) hits.push({ code: 'string-ref', sourceGroup: 'strings', detail: { text: s.text, addr: s.addr, term: m.term } });
     }
     for (const sel of selectors) {
       const m = matchText(goal, sel);
-      if (m) hits.push({ code: 'selector', detail: { selector: sel, term: m.term } });
+      if (m) hits.push({ code: 'selector', sourceGroup: 'selectors', detail: { selector: sel, term: m.term } });
     }
     if (o.name) {
       const m = matchText(goal, o.name);
-      if (m) hits.push({ code: 'name-match', detail: { name: o.name, term: m.term } });
+      if (m) hits.push({ code: 'name-match', sourceGroup: 'symbol-name', detail: { name: o.name, term: m.term } });
     }
     for (const c of callers.slice(0, 20)) {
       if (!c.name) continue;
       const m = matchText(goal, c.name);
-      if (m) hits.push({ code: 'caller-name', detail: { name: c.name, term: m.term } });
+      if (m) hits.push({ code: 'caller-name', sourceGroup: 'caller-names', detail: { name: c.name, term: m.term } });
     }
     if (hits.length) {
-      // 証拠が独立に何本あるかで確度を決める。1 本だけなら断定しない。
-      const conf = Math.min(0.92, 0.35 + 0.18 * hits.length);
-      inferences.push(inference('goal-related', conf, hits.slice(0, 6),
-        { goal: goal.id, label: goal.text || goal.ja }));
+      const byGroup = new Map();
+      for (const hit of hits) {
+        const key = hit.sourceGroup || hit.code;
+        byGroup.set(key, (byGroup.get(key) || 0) + 1);
+      }
+      // Repeated observations from one evidence family are correlated; they
+      // add only diminishing support instead of masquerading as independence.
+      let effective = 0;
+      for (const n of byGroup.values()) effective += 1 + Math.min(0.5, Math.max(0, n - 1) * 0.15);
+      const conf = Math.min(0.92, 0.35 + 0.18 * effective);
+      inferences.push(inference('goal-related', conf, hits.slice(0, 6), {
+        goal: goal.id, label: goal.text || goal.ja,
+        independentEvidenceGroups: byGroup.size, rawEvidenceCount: hits.length,
+      }));
     } else {
       unknowns.push(unknown('goal-unrelated', { goal: goal.id }));
     }

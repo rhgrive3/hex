@@ -7,7 +7,46 @@ import { createApi } from './script.js';
 import { runInSandbox } from './sandbox.js';
 
 const STORE_KEY = 'hex.plugins';
-const MAX_SOURCE = 512 * 1024;
+export const MAX_PLUGIN_SOURCE_BYTES = 512 * 1024;
+const sourceBytes = (source) => new TextEncoder().encode(String(source || '')).byteLength;
+
+async function boundedResponseText(res, maxBytes = MAX_PLUGIN_SOURCE_BYTES) {
+  const rawLength = res.headers?.get?.('content-length');
+  if (rawLength != null && rawLength !== '') {
+    const n = Number(rawLength);
+    if (Number.isFinite(n) && n > maxBytes) throw new Error('PLUGIN_TOO_LARGE');
+  }
+  if (!res.body?.getReader) {
+    // Without a streaming body there is no way to enforce a hard boundary on an
+    // unknown chunked response before materialization. Refuse that unsafe case.
+    const n = Number(rawLength);
+    if (!Number.isFinite(n) || n < 0 || n > maxBytes) throw new Error('PLUGIN_UNBOUNDED_RESPONSE');
+    const text = await res.text();
+    if (sourceBytes(text) > maxBytes) throw new Error('PLUGIN_TOO_LARGE');
+    return text;
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let total = 0;
+  let text = '';
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value?.byteLength || 0;
+      if (total > maxBytes) {
+        try { await reader.cancel('plugin source exceeds limit'); } catch {}
+        throw new Error('PLUGIN_TOO_LARGE');
+      }
+      text += decoder.decode(value, { stream: true });
+    }
+    text += decoder.decode();
+  } finally {
+    try { reader.releaseLock?.(); } catch {}
+  }
+  if (sourceBytes(text) > maxBytes) throw new Error('PLUGIN_TOO_LARGE');
+  return text;
+}
 
 export class PluginHost {
   constructor(app) {
@@ -31,12 +70,17 @@ export class PluginHost {
 
   save() {
     const list = this.plugins.map((p) => ({ source: p.source, origin: p.origin }));
-    try { localStorage.setItem(STORE_KEY, JSON.stringify(list)); } catch { /* quota */ }
+    try {
+      localStorage.setItem(STORE_KEY, JSON.stringify(list));
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, error: (error && error.message) || 'plugin storage failed' };
+    }
   }
 
   async install(source, origin, opts) {
     if (typeof source !== 'string' || !source.trim()) return { error: '中身が空です。' };
-    if (source.length > MAX_SOURCE) return { error: 'プラグインが大きすぎます（512 KB まで）。' };
+    if (sourceBytes(source) > MAX_PLUGIN_SOURCE_BYTES) return { error: 'プラグインが大きすぎます（512 KB まで）。' };
     const discovered = await runInSandbox({
       source, mode: 'discover', api: Object.create(null), out: () => {}, timeout: 10000,
     });
@@ -50,8 +94,15 @@ export class PluginHost {
       origin: origin || '不明',
     }));
     if (!added.length) return { error: 'プラグインが 1 つも登録されませんでした（hex.plugin({…}) を呼んでください）。' };
+    const before = this.plugins.slice();
     this.plugins.push(...added);
-    if (!opts || !opts.silent) this.save();
+    if (!opts || !opts.silent) {
+      const saved = this.save();
+      if (!saved.ok) {
+        this.plugins = before;
+        return { error: 'プラグインを保存できませんでした: ' + saved.error, persistenceError: true };
+      }
+    }
     return { ok: true, added };
   }
 
@@ -60,16 +111,30 @@ export class PluginHost {
     try {
       const res = await fetch(url, { credentials: 'omit', referrerPolicy: 'no-referrer' });
       if (!res.ok) return { error: '取り寄せられませんでした（' + res.status + '）。' };
-      text = await res.text();
+      text = await boundedResponseText(res);
     } catch (err) {
+      if (err?.message === 'PLUGIN_TOO_LARGE') return { error: 'プラグインが大きすぎます（512 KB まで）。' };
+      if (err?.message === 'PLUGIN_UNBOUNDED_RESPONSE') return { error: 'サイズを安全に確認できない応答だったため読み込みませんでした。' };
       return { error: '取り寄せに失敗しました: ' + ((err && err.message) || err) };
     }
-    if (text.length > MAX_SOURCE) return { error: 'プラグインが大きすぎます（512 KB まで）。' };
     return { ok: true, source: text, origin: url, needsConfirmation: true };
   }
 
-  remove(id) { this.plugins = this.plugins.filter((p) => p.id !== id); this.save(); }
-  clear() { this.plugins = []; this.save(); }
+  remove(id) {
+    const before = this.plugins.slice();
+    this.plugins = this.plugins.filter((p) => p.id !== id);
+    const saved = this.save();
+    if (!saved.ok) { this.plugins = before; return { ok: false, error: saved.error, persistenceError: true }; }
+    return { ok: true };
+  }
+
+  clear() {
+    const before = this.plugins.slice();
+    this.plugins = [];
+    const saved = this.save();
+    if (!saved.ok) { this.plugins = before; return { ok: false, error: saved.error, persistenceError: true }; }
+    return { ok: true };
+  }
 
   async run(id, out) {
     const p = this.plugins.find((x) => x.id === id);

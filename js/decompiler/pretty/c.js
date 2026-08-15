@@ -5,11 +5,22 @@ const OP_TEXT = { add: '+', sub: '-', mul: '*', and: '&', or: '|', xor: '^', shl
 
 function integerText(v, bits = 64, signed = null) {
   const n = BigInt(v);
-  const sv = BigInt.asIntN(Math.min(64, Number(bits || 64)), n);
+  const width = Math.max(1, Number(bits || 64));
+  const sv = BigInt.asIntN(width, n);
   if (signed === true && sv >= -9n && sv <= 99n) return sv.toString();
-  if (n >= 0n && n <= 99n) return n.toString();
-  if (sv < 0n && signed === true) return sv.toString();
-  return `0x${BigInt.asUintN(Math.min(64, Number(bits || 64)), n).toString(16).toUpperCase()}`;
+  if (width <= 64) {
+    if (n >= 0n && n <= 99n) return n.toString();
+    if (sv < 0n && signed === true) return sv.toString();
+    return `0x${BigInt.asUintN(width, n).toString(16).toUpperCase()}`;
+  }
+
+  // C has no portable integer-literal suffix for __int128.  Build the value
+  // from 64-bit chunks so the printed program preserves every source bit.
+  const uv = BigInt.asUintN(width, n);
+  const lo = uv & ((1n << 64n) - 1n);
+  const hi = uv >> 64n;
+  const wide = `(((unsigned __int128)0x${hi.toString(16).toUpperCase()}ULL << 64) | 0x${lo.toString(16).toUpperCase()}ULL)`;
+  return signed === true ? `((__int128)${wide})` : wide;
 }
 
 function wrap(text, p, parent) { return p < parent ? `(${text})` : text; }
@@ -24,8 +35,14 @@ export function printExpression(n, parentPrec = 0, opts = {}) {
     case 'load': return n.location?.text || n.location?.name || `memory_${String(n.location?.key || 'unknown').replace(/[^A-Za-z0-9_]/g, '_')}`;
     case 'call': return `${n.callee || 'unknown_call'}(${(n.args || []).map((a) => printExpression(a, 0, opts)).join(', ')})`;
     case 'intrinsic': {
-      if (n.name === 'madd' && n.args?.length === 3) return `${printExpression(n.args[0], PREC.mul, opts)} * ${printExpression(n.args[1], PREC.mul, opts)} + ${printExpression(n.args[2], PREC.add, opts)}`;
-      if (n.name === 'msub' && n.args?.length === 3) return `${printExpression(n.args[0], PREC.mul, opts)} * ${printExpression(n.args[1], PREC.mul, opts)} - ${printExpression(n.args[2], PREC.add, opts)}`;
+      if (n.name === 'madd' && n.args?.length === 3) {
+        const text = `${printExpression(n.args[0], PREC.mul, opts)} * ${printExpression(n.args[1], PREC.mul, opts)} + ${printExpression(n.args[2], PREC.add + 1, opts)}`;
+        return wrap(text, PREC.add, parentPrec);
+      }
+      if (n.name === 'msub' && n.args?.length === 3) {
+        const text = `${printExpression(n.args[0], PREC.mul, opts)} * ${printExpression(n.args[1], PREC.mul, opts)} - ${printExpression(n.args[2], PREC.add + 1, opts)}`;
+        return wrap(text, PREC.sub, parentPrec);
+      }
       return `${n.name}(${(n.args || []).map((a) => printExpression(a, 0, opts)).join(', ')})`;
     }
     case 'unary': {

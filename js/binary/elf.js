@@ -4,13 +4,17 @@ import { parseEhFrameHeader } from './elf-unwind.js';
 import { parseProgramDynamic } from './elf-dynamic.js';
 
 const PT_LOAD = 1;
+const PT_GNU_EH_FRAME = 0x6474e550;
+const PN_XNUM = 0xffff;
 const SHT_SYMTAB = 2;
 const SHT_STRTAB = 3;
 const SHT_RELA = 4;
 const SHT_DYNAMIC = 6;
 const SHT_DYNSYM = 11;
 const SHT_REL = 9;
+const SHT_SYMTAB_SHNDX = 18;
 const SHN_UNDEF = 0;
+const SHN_XINDEX = 0xffff;
 const SHF_WRITE = 0x1n;
 const SHF_ALLOC = 0x2n;
 const SHF_EXECINSTR = 0x4n;
@@ -27,11 +31,13 @@ export function parseELF(input) {
   const littleEndian = data === 1;
   const r = new ByteView(bytes, { littleEndian });
   const h = readHeader(r, bits);
+  validateHeaderTableSizes(r, h, bits);
+  resolveExtendedProgramHeaderCount(r, h, bits);
   const image = new BinaryImage(bytes, {
     format: 'elf', arch: elfMachineName(h.machine), bits,
     endian: littleEndian ? 'little' : 'big', platform: elfOsAbi(r.u8(7)),
     entrypoint: h.entry, imageBase: 0n,
-    metadata: { type: h.type, machine: h.machine, flags: h.flags, osabi: r.u8(7), abiVersion: r.u8(8) },
+    metadata: { type: h.type, machine: h.machine, flags: h.flags, osabi: r.u8(7), abiVersion: r.u8(8), extendedProgramHeaderCount: h.extendedPhnum ?? null },
   });
 
   const programHeaders = parseProgramHeaders(r, h, image, bits);
@@ -59,13 +65,16 @@ export function parseELF(input) {
   const hasDynsym = rawSections.some((s) => s.type === SHT_DYNSYM);
   const hasRelocations = rawSections.some((s) => s.type === SHT_REL || s.type === SHT_RELA);
   const hasDynamic = rawSections.some((s) => s.type === SHT_DYNAMIC);
-  if (!hasDynsym || !hasRelocations || !hasDynamic) {
-    parseProgramDynamic(r, programHeaders, image, bits, {
-      symbols: !hasDynsym,
-      relocations: !hasRelocations,
-    });
+  parseProgramDynamic(r, programHeaders, image, bits, {
+    symbols: !hasDynsym,
+    relocations: !hasRelocations,
+    sectionDynamicPresent: hasDynamic,
+  });
+  let ehFrameHdr = rawSections.find((s) => s.name === '.eh_frame_hdr') || null;
+  if (!ehFrameHdr) {
+    const ph = programHeaders.find((item) => item.type === PT_GNU_EH_FRAME && item.filesz > 0n);
+    if (ph) ehFrameHdr = { name: 'PT_GNU_EH_FRAME', addr: ph.vaddr, offset: ph.offset, size: ph.filesz };
   }
-  const ehFrameHdr = rawSections.find((s) => s.name === '.eh_frame_hdr');
   if (ehFrameHdr) parseEhFrameHeader(r, ehFrameHdr, image, bits);
 
   return image.finalize();
@@ -88,6 +97,28 @@ function readHeader(r, bits) {
   };
 }
 
+function validateHeaderTableSizes(r, h, bits) {
+  const minHeader = bits === 64 ? 64 : 52;
+  const minProgram = bits === 64 ? 56 : 32;
+  const minSection = bits === 64 ? 64 : 40;
+  if (h.ehsize < minHeader) throw new Error(`ELF e_ehsize ${h.ehsize} is smaller than ${minHeader}`);
+  if (h.phoff !== 0n && h.phnum !== 0 && h.phentsize < minProgram) throw new Error(`ELF e_phentsize ${h.phentsize} is smaller than ${minProgram}`);
+  if (h.shoff !== 0n && h.shentsize < minSection) throw new Error(`ELF e_shentsize ${h.shentsize} is smaller than ${minSection}`);
+  if (h.phnum === PN_XNUM && h.shoff === 0n) throw new Error('ELF PN_XNUM requires section header 0');
+  void r;
+}
+
+function resolveExtendedProgramHeaderCount(r, h, bits) {
+  if (h.phnum !== PN_XNUM) return;
+  const off = safeOffset(h.shoff);
+  const minSection = bits === 64 ? 64 : 40;
+  if (off == null || off <= 0 || off + minSection > r.length) throw new Error('ELF PN_XNUM section header 0 is truncated');
+  const actual = r.u32(off + (bits === 64 ? 44 : 28));
+  if (actual > 1_000_000) throw new Error(`invalid ELF extended program header count ${actual}`);
+  h.extendedPhnum = actual;
+  h.phnum = actual;
+}
+
 function parseProgramHeaders(r, h, image, bits) {
   const out = [];
   const off = safeOffset(h.phoff);
@@ -101,6 +132,15 @@ function parseProgramHeaders(r, h, image, bits) {
       ph = { type: r.u32(p), flags: r.u32(p + 4), offset: r.u64(p + 8), vaddr: r.u64(p + 16), filesz: r.u64(p + 32), memsz: r.u64(p + 40), align: r.u64(p + 48) };
     } else {
       ph = { type: r.u32(p), offset: BigInt(r.u32(p + 4)), vaddr: BigInt(r.u32(p + 8)), filesz: BigInt(r.u32(p + 16)), memsz: BigInt(r.u32(p + 20)), flags: r.u32(p + 24), align: BigInt(r.u32(p + 28)) };
+    }
+    if (ph.type === PT_LOAD) {
+      const fileLength = BigInt(r.length);
+      const invalidSize = ph.filesz > ph.memsz;
+      const invalidRange = ph.offset > fileLength || ph.filesz > fileLength - ph.offset;
+      if (invalidSize || invalidRange) {
+        image.warnings.push(`invalid ELF PT_LOAD ${i}: ${invalidSize ? 'p_filesz > p_memsz' : 'file range exceeds input'}`);
+        continue;
+      }
     }
     out.push(ph);
     if (ph.type === PT_LOAD) {
@@ -150,6 +190,10 @@ function nameSections(r, sections, h) {
 function parseSymbols(r, table, sections, image, bits) {
   const str = sections[table.link];
   if (!str || str.type !== SHT_STRTAB || !table.entsize) return;
+  const minEnt = BigInt(bits === 64 ? 24 : 16);
+  if (table.entsize < minEnt) { image.warnings.push(`ELF symbol table ${table.index} entry size ${table.entsize} is smaller than ${minEnt}`); return; }
+  const xindex = sections.find((s) => s.type === SHT_SYMTAB_SHNDX && s.link === table.index) || null;
+  if (xindex && (xindex.entsize && xindex.entsize < 4n || xindex.offset + xindex.size > BigInt(r.length))) { image.warnings.push(`ELF SHT_SYMTAB_SHNDX for table ${table.index} is malformed`); }
   const count = Number(table.size / table.entsize);
   const ent = Number(table.entsize);
   if (count > 10000000 || Number(table.offset) + count * ent > r.length) return;
@@ -165,19 +209,29 @@ function parseSymbols(r, table, sections, image, bits) {
     const name = r.cstring(Number(str.offset) + nameOff, Math.min(Number(str.size) - nameOff, 1 << 20));
     if (!name) continue;
     const bind = info >>> 4, type = info & 0xf;
-    const defined = shndx !== SHN_UNDEF;
+    let resolvedShndx = shndx;
+    if (shndx === SHN_XINDEX) {
+      const xoff = xindex ? safeOffset(xindex.offset + BigInt(i * 4)) : null;
+      if (xoff == null || !xindex || xoff + 4 > r.length || BigInt((i + 1) * 4) > xindex.size) {
+        image.warnings.push(`ELF symbol ${i} uses SHN_XINDEX without a valid SHT_SYMTAB_SHNDX entry`);
+        resolvedShndx = null;
+      } else resolvedShndx = r.u32(xoff);
+    }
+    const defined = resolvedShndx == null ? true : resolvedShndx !== SHN_UNDEF;
     const binding = bind === 0 ? 'local' : bind === 1 ? 'global' : bind === 2 ? 'weak' : `bind-${bind}`;
     const kind = type === 2 ? 'function' : type === 1 ? 'object' : type === 3 ? 'section' : type === 6 ? 'tls' : `type-${type}`;
-    const sym = { name, address: value, size, kind, binding, defined, sectionIndex: shndx, visibility: other & 3, source: table.type === SHT_DYNSYM ? 'dynsym' : 'symtab', index: i, tableIndex: table.index };
+    const sym = { name, address: value, size, kind, binding, defined, sectionIndex: resolvedShndx ?? shndx, visibility: other & 3, source: table.type === SHT_DYNSYM ? 'dynsym' : 'symtab', index: i, tableIndex: table.index };
     image.symbols.push(sym);
-    if (!defined && (bind === 1 || bind === 2)) image.imports.push({ name, library: null, ordinal: null, weak: bind === 2, source: 'elf-dynsym', sites: [] });
-    if (defined && (bind === 1 || bind === 2) && sym.visibility !== 2) image.exports.push({ name, address: value, kind, source: sym.source });
+    if (!defined && (bind === 1 || bind === 2)) image.imports.push({ name, library: null, ordinal: null, weak: bind === 2, symbolIndex: i, tableIndex: table.index, source: 'elf-dynsym', sites: [] });
+    if (defined && (bind === 1 || bind === 2) && (sym.visibility === 0 || sym.visibility === 3)) image.exports.push({ name, address: value, kind, symbolIndex: i, tableIndex: table.index, source: sym.source });
     if (defined && type === 2 && value !== 0n) image.functions.push(functionSeed(value, { size: size || null, name, source: 'symbol', confidence: 0.995 }));
   }
 }
 
 function parseRelocations(r, sec, sections, image, bits) {
   if (!sec.entsize) return;
+  const minEnt = BigInt(bits === 64 ? (sec.type === SHT_RELA ? 24 : 16) : (sec.type === SHT_RELA ? 12 : 8));
+  if (sec.entsize < minEnt) { image.warnings.push(`ELF relocation section ${sec.index} entry size ${sec.entsize} is smaller than ${minEnt}`); return; }
   const symbols = image.symbols.filter((s) => s.tableIndex === sec.link);
   const byIndex = new Map(symbols.map((s) => [s.index, s]));
   const count = Number(sec.size / sec.entsize);

@@ -15,6 +15,15 @@ function integerInRange(value, fallback, min, max, name) {
   return n;
 }
 
+function normalizeInteger(value, bits, signed) {
+  const width = BigInt(bits);
+  const mod = 1n << width;
+  let n = BigInt(value) % mod;
+  if (n < 0n) n += mod;
+  if (signed && n >= (1n << (width - 1n))) n -= mod;
+  return n;
+}
+
 export function generateDifferentialInputs(spec = {}) {
   const bits = spec.bits === 32 ? 32 : 64;
   const signed = spec.signed !== false;
@@ -42,9 +51,9 @@ export function generateDifferentialInputs(spec = {}) {
   return out.slice(0, limit + (spec.pointer === true ? 2 : 0));
 }
 
-function relationExpected(hypothesis, initial, input) {
+function relationExpected(hypothesis, initial, input, bits, signed) {
   const op = hypothesis.operation || hypothesis.relation || 'set';
-  const x = BigInt(initial ?? 0); const v = BigInt(input ?? 0);
+  const x = normalizeInteger(initial ?? 0, bits, signed); const v = normalizeInteger(input ?? 0, bits, signed);
   let result;
   if (op === 'add' || op === 'increment') result = x + v;
   else if (op === 'sub' || op === 'damage' || op === 'decrement') result = x - v;
@@ -53,9 +62,10 @@ function relationExpected(hypothesis, initial, input) {
   else if (op === 'or') result = x | v;
   else if (op === 'set' || op === 'assign') result = v;
   else return null;
+  result = normalizeInteger(result, bits, signed);
   if (hypothesis.clampMin != null && result < BigInt(hypothesis.clampMin)) result = BigInt(hypothesis.clampMin);
   if (hypothesis.clampMax != null && result > BigInt(hypothesis.clampMax)) result = BigInt(hypothesis.clampMax);
-  return result;
+  return normalizeInteger(result, bits, signed);
 }
 
 export function compileExperiment(hypothesis, options = {}) {
@@ -63,29 +73,33 @@ export function compileExperiment(hypothesis, options = {}) {
   const functionAddress = asAddress(hypothesis.functionAddress ?? hypothesis.function ?? options.functionAddress, 'functionAddress');
   const fieldOffset = hypothesis.fieldOffset == null ? null : asAddress(hypothesis.fieldOffset, 'fieldOffset');
   const fieldSize = integerInRange(hypothesis.fieldSize, 8, 1, 8, 'fieldSize');
+  const fieldBits = fieldSize * 8;
+  const signed = hypothesis.signed !== false;
   const objectBase = asAddress(options.objectBase ?? hypothesis.objectBase ?? 0x600000001000n, 'objectBase');
-  const initial = BigInt(hypothesis.initial ?? options.initial ?? 100);
-  const argIndex = integerInRange(hypothesis.argumentIndex, 1, 0, 7, 'argumentIndex');
+  const initial = normalizeInteger(hypothesis.initial ?? options.initial ?? 100, fieldBits, signed);
+  // AArch64 passes x0..x7 in registers; later scalar arguments live in the
+  // caller stack argument area. Keep a bounded upper limit for generated tests.
+  const argIndex = integerInRange(hypothesis.argumentIndex, 1, 0, 31, 'argumentIndex');
   const pointerInput = hypothesis.argumentKind === 'pointer' || hypothesis.pointer === true;
-  const inputs = options.inputs || generateDifferentialInputs({ bits:fieldSize <= 4 ? 32 : 64, signed:hypothesis.signed !== false, boundary:hypothesis.boundary ?? hypothesis.clampMin ?? hypothesis.clampMax, pointer:pointerInput, limit:options.limit ?? 12 });
+  const inputs = options.inputs || generateDifferentialInputs({ bits:fieldSize <= 4 ? 32 : 64, signed, boundary:hypothesis.boundary ?? hypothesis.clampMin ?? hypothesis.clampMax, pointer:pointerInput, limit:options.limit ?? 12 });
   const cases = [];
   for (const item of inputs) {
     if (item.kind !== 'scalar' && !(pointerInput && item.kind === 'pointer')) continue;
     const args = Array.from({length:Math.max(argIndex + 1, 2)}, () => 0n); args[0] = objectBase; args[argIndex] = BigInt(item.value);
-    const expected = item.kind === 'scalar' && fieldOffset != null ? relationExpected(hypothesis, initial, item.value) : null;
+    const expected = item.kind === 'scalar' && fieldOffset != null ? relationExpected(hypothesis, initial, item.value, fieldBits, signed) : null;
     cases.push({
       id:`${hypothesis.id || 'hypothesis'}:${item.id}`,
       input:{ arguments:args, scalar:BigInt(item.value) },
       initialState:{ objectBase, fields:fieldOffset == null ? [] : [{ offset:fieldOffset, size:fieldSize, value:initial }] },
       watch:fieldOffset == null ? [] : [{ name:hypothesis.fieldName || null, offset:fieldOffset, size:fieldSize }],
-      expected: expected == null ? null : { field:{ offset:fieldOffset, value:expected } },
+      expected: expected == null ? null : { field:{ offset:fieldOffset, value:expected, bits:fieldBits, signed } },
     });
   }
   return {
     id:String(hypothesis.id || `experiment:${functionAddress.toString(16)}`),
     hypothesis:{ ...hypothesis, functionAddress, fieldOffset },
     functionAddress, binaryHash:options.binaryHash || hypothesis.binaryHash || null,
-    cases, generated:true, compiler:'runtime-experiment-v1'
+    cases, generated:true, compiler:'runtime-experiment-v2'
   };
 }
 
@@ -109,8 +123,12 @@ export function compareExpected(caseSpec, observation) {
     const offset = BigInt(expected.field.offset);
     const actual = observedFieldValue(observation, offset);
     if (!actual.observed) return { status:'inconclusive', reason:'expected-field-final-state-not-observed', expected:expected.field.value };
-    if (BigInt(actual.value) === BigInt(expected.field.value)) return { status:'supported', reason:'observed-field-matches', observed:actual.value, expected:expected.field.value, source:actual.source };
-    return { status:'contradicted', reason:'observed-field-mismatch', observed:actual.value, expected:expected.field.value, source:actual.source };
+    const bits = Number(expected.field.bits || 64);
+    const signed = expected.field.signed !== false;
+    const observed = normalizeInteger(actual.value, bits, signed);
+    const wanted = normalizeInteger(expected.field.value, bits, signed);
+    if (observed === wanted) return { status:'supported', reason:'observed-field-matches', observed, expected:wanted, source:actual.source };
+    return { status:'contradicted', reason:'observed-field-mismatch', observed, expected:wanted, source:actual.source };
   }
   if (expected.returnValue != null) {
     if (observation == null || observation.returnValue == null) return { status:'inconclusive', reason:'return-value-not-observed', expected:expected.returnValue };

@@ -3,7 +3,7 @@ import { CachedByteSource } from '../bytesource/cached.js';
 import { describeBinaryImage } from './describe.js';
 import { fingerprintVendors } from '../knowledge/index.js';
 import { hashByteSource } from './hash.js';
-import { checkedChunkIndex, safeRegionLength, utf8Len, isExactFunctionSeed } from './worker-validation.js';
+import { boundedOffset, checkedChunkIndex, chunkLength, exactExternalInteger, regionSize, utf8Len, isExactFunctionSeed } from './worker-validation.js';
 
 const ROW_BYTES = 4;
 const CHUNK_ROWS = 1024;
@@ -34,9 +34,6 @@ self.onmessage = async (event) => {
   }
   const serialized = msg.t === 'open' || msg.t === 'detect';
   if (serialized) {
-    // Advance the lifecycle epoch when the request arrives, not when its queued
-    // work eventually starts. This makes older queued opens stale immediately
-    // and aborts an old parse that is already consuming iPad CPU/memory.
     currentEpoch = msg.epoch;
     for (const entry of active.values()) if (entry.epoch !== currentEpoch) entry.controller.abort();
   }
@@ -45,15 +42,11 @@ self.onmessage = async (event) => {
     const controller = new AbortController();
     const requestKey = msg.id == null ? null : `${msg.epoch}:${msg.id}`;
     if (requestKey != null && active.has(requestKey)) throw new Error(`Duplicate active request id ${msg.id} for epoch ${msg.epoch}.`);
-    if (requestKey != null) active.set(requestKey, { id:msg.id, epoch:msg.epoch, controller });
+    if (requestKey != null) active.set(requestKey, { id: msg.id, epoch: msg.epoch, controller });
     try { return await handle(msg, controller.signal); }
     finally { if (requestKey != null && active.get(requestKey)?.controller === controller) active.delete(requestKey); }
   };
   try {
-    // Non-lifecycle work must observe the image produced by the open/detect that
-    // was already queued when the request arrived. It is not itself appended to
-    // openChain, so independent reads/searches can still run concurrently after
-    // the lifecycle gate has completed.
     const result = serialized ? (openChain = openChain.then(execute, execute)) : openChain.then(execute);
     const resolved = await result;
     post({ t: 'ok', id: msg.id, epoch: msg.epoch, result: resolved }, resolved?.__transfer);
@@ -144,9 +137,12 @@ async function openFile(msg, signal) {
     progress(msg, 'functions', 5, 7, { count: candidateImage.functions.length });
     progress(msg, 'expensive', 5, 7, { deferred: true });
 
-    // Commit the new session only after every parsing/description step succeeds.
     const previousSource = source;
-    file = candidateFile; source = candidateSource; image = candidateImage; descriptor = candidateDescriptor; regions = candidateRegions;
+    file = candidateFile;
+    source = candidateSource;
+    image = candidateImage;
+    descriptor = candidateDescriptor;
+    regions = candidateRegions;
     if (previousSource && previousSource !== candidateSource) previousSource.clear?.();
     return candidateDescriptor;
   } catch (error) {
@@ -170,9 +166,9 @@ async function getChunk({ regionId, chunk }, signal) {
   if (!region) throw new Error('Unknown region.');
   const chunkIndex = checkedChunkIndex(chunk);
   const rel = BigInt(chunkIndex) * BigInt(CHUNK_BYTES);
-  const remaining = BigInt(region.size) - rel;
+  const remaining = regionSize(region.size) - rel;
   if (remaining <= 0n) return { regionId, chunk, bytes: new Uint8Array(0), mn: '', ops: '', rows: 0 };
-  const length = Number(remaining < BigInt(CHUNK_BYTES) ? remaining : BigInt(CHUNK_BYTES));
+  const length = chunkLength(remaining, CHUNK_BYTES);
   const bytes = await readFileRange(BigInt(region.fileOffset) + rel, length, signal);
   const copy = bytes.slice();
   return { regionId, chunk, bytes: copy, mn: '', ops: '', rows: Math.ceil(copy.length / ROW_BYTES), __transfer: [copy.buffer] };
@@ -209,8 +205,7 @@ function analyzeImage() {
 
 function emptyAnalysis() {
   const addrs = new BigUint64Array(0), kinds = new Uint8Array(0), flags = new Uint8Array(0), funcs = new BigUint64Array(0);
-  return { addrs, kinds, flags, names: '', funcs, symbolCount: 0, funcCount: 0, capped: false, functionStartsExact: false,
-    __transfer: [addrs.buffer, kinds.buffer, flags.buffer, funcs.buffer] };
+  return { addrs, kinds, flags, names: '', funcs, symbolCount: 0, funcCount: 0, capped: false, functionStartsExact: false, __transfer: [addrs.buffer, kinds.buffer, flags.buffer, funcs.buffer] };
 }
 
 function genericFunctionSeeds() {
@@ -222,8 +217,7 @@ function genericFunctionSeeds() {
 function emptyProgramScan() {
   const callFrom = new BigUint64Array(0), callTo = new BigUint64Array(0), refFrom = new BigUint64Array(0), refTo = new BigUint64Array(0);
   const refKind = new Uint8Array(0), kinds = new Uint8Array(0);
-  return { callFrom, callTo, refFrom, refTo, refKind, kinds, kindsCovered: 0, callsCapped: false, refsCapped: false, words: 0, unsupported: true,
-    __transfer: [callFrom.buffer, callTo.buffer, refFrom.buffer, refTo.buffer, refKind.buffer, kinds.buffer] };
+  return { callFrom, callTo, refFrom, refTo, refKind, kinds, kindsCovered: 0, callsCapped: false, refsCapped: false, words: 0, unsupported: true, __transfer: [callFrom.buffer, callTo.buffer, refFrom.buffer, refTo.buffer, refKind.buffer, kinds.buffer] };
 }
 
 async function scanStrings(msg, signal) {
@@ -231,54 +225,60 @@ async function scanStrings(msg, signal) {
   if (!region) throw new Error('Unknown region.');
   const minLength = Math.max(2, Number(msg.min) || 4);
   const cap = Math.min(Math.max(1, Number(msg.limit) || STRINGS_LIMIT), STRINGS_LIMIT);
-  const regionBytes = safeRegionLength(region.size);
-  const total = Math.min(regionBytes, Math.max(0, Number(msg.maxBytes == null ? regionBytes : msg.maxBytes)));
+  const regionBytes = regionSize(region.size);
+  const total = msg.maxBytes == null ? regionBytes : boundedOffset(msg.maxBytes, regionBytes, 'maxBytes');
   const out = [];
-  let pos = 0, runStart = -1, runBytes = [];
+  let pos = 0n, runStart = null, runBytes = [];
   const flush = () => {
-    if (runStart >= 0 && runBytes.length) {
+    if (runStart != null && runBytes.length) {
       const text = decoder.decode(new Uint8Array(runBytes)).replace(/\t/g, '\\t').replace(/\n/g, '\\n');
-      if (text.length >= minLength) out.push({ addr: BigInt(region.vmAddr) + BigInt(runStart), offset: runStart, text });
+      if (text.length >= minLength) out.push({ addr: BigInt(region.vmAddr) + runStart, offset: exactExternalInteger(runStart), text });
     }
-    runStart = -1; runBytes = [];
+    runStart = null;
+    runBytes = [];
   };
-  let carry = new Uint8Array(0), carryAt = 0;
+  let carry = new Uint8Array(0), carryAt = 0n;
   while (pos < total && out.length < cap) {
-    if (signal.aborted) return { results: out, cancelled: true, capped: false, scannedBytes: pos, complete: false };
-    const want = Math.min(SCAN_BLOCK, total - pos);
-    const block = await readFileRange(BigInt(region.fileOffset) + BigInt(pos), want, signal);
+    if (signal.aborted) return { results: out, cancelled: true, capped: false, scannedBytes: exactExternalInteger(pos), complete: false };
+    const want = chunkLength(total - pos, SCAN_BLOCK);
+    const block = await readFileRange(BigInt(region.fileOffset) + pos, want, signal);
     if (!block.length) break;
     let buffer = block, base = pos;
     if (carry.length) {
       buffer = new Uint8Array(carry.length + block.length);
-      buffer.set(carry); buffer.set(block, carry.length); base = carryAt;
+      buffer.set(carry);
+      buffer.set(block, carry.length);
+      base = carryAt;
     }
-    const last = pos + block.length >= total;
+    const last = pos + BigInt(block.length) >= total;
     let i = 0;
     for (; i < buffer.length; i++) {
       const n = utf8Len(buffer, i);
       if (n === -1 && !last) break;
       if (n <= 0) { flush(); if (out.length >= cap) break; continue; }
-      if (runStart < 0) { runStart = base + i; runBytes = []; }
+      if (runStart == null) { runStart = base + BigInt(i); runBytes = []; }
       if (runBytes.length < MAX_STRING_CHARS * 4) for (let k = 0; k < n; k++) runBytes.push(buffer[i + k]);
       i += n - 1;
     }
     carry = i < buffer.length ? buffer.slice(i) : new Uint8Array(0);
-    carryAt = base + i;
-    pos += block.length;
-    self.postMessage({ t: 'scanProgress', requestId: msg.id, epoch: msg.epoch, done: pos, all: total, hits: out.length });
+    carryAt = base + BigInt(i);
+    pos += BigInt(block.length);
+    self.postMessage({ t: 'scanProgress', requestId: msg.id, epoch: msg.epoch, done: exactExternalInteger(pos), all: exactExternalInteger(total), hits: out.length });
     await Promise.resolve();
   }
   flush();
-  return { results: out.slice(0, cap), cancelled: false, capped: out.length >= cap, scannedBytes: pos, complete: pos >= regionBytes && out.length < cap };
+  return {
+    results: out.slice(0, cap), cancelled: false, capped: out.length >= cap,
+    scannedBytes: exactExternalInteger(pos), complete: pos >= regionBytes && out.length < cap,
+  };
 }
 
 async function runSearch(msg, signal) {
   const region = regions.get(msg.regionId);
   if (!region) throw new Error('Unknown region.');
   if (msg.kind !== 'hex' && msg.kind !== 'text') return { cancelled: false, results: [], scanned: 0, capped: false, unsupported: true };
-  const total = safeRegionLength(region.size);
-  const start = Math.max(0, Math.min(total, Number(msg.from || 0)));
+  const total = regionSize(region.size);
+  const start = boundedOffset(msg.from ?? 0, total, 'search start');
   let pattern, mask = null;
   if (msg.kind === 'hex') {
     pattern = msg.hex?.bytes;
@@ -292,10 +292,10 @@ async function runSearch(msg, signal) {
   const results = [];
   let pos = start, carry = new Uint8Array(0), capped = false;
   while (pos < total && !capped) {
-    if (signal.aborted) return { cancelled: true, results, scanned: pos - start, capped: false };
-    const block = await readFileRange(BigInt(region.fileOffset) + BigInt(pos), Math.min(SCAN_BLOCK, total - pos), signal);
+    if (signal.aborted) return { cancelled: true, results, scanned: exactExternalInteger(pos - start), capped: false };
+    const block = await readFileRange(BigInt(region.fileOffset) + pos, chunkLength(total - pos, SCAN_BLOCK), signal);
     const joined = carry.length ? concat(carry, block) : block;
-    const base = pos - carry.length;
+    const base = pos - BigInt(carry.length);
     for (let i = 0; i <= joined.length - pattern.length; i++) {
       let ok = true;
       for (let j = 0; j < pattern.length; j++) {
@@ -304,15 +304,18 @@ async function runSearch(msg, signal) {
         if (msg.kind === 'hex' ? ((actual & mask[j]) !== expected) : actual !== expected) { ok = false; break; }
       }
       if (!ok) continue;
-      const byteOff = base + i;
-      results.push({ row: Math.floor(byteOff / ROW_BYTES), addr: BigInt(region.vmAddr) + BigInt(byteOff), byteOff });
+      const byteOff = base + BigInt(i);
+      results.push({ row: exactExternalInteger(byteOff / BigInt(ROW_BYTES)), addr: BigInt(region.vmAddr) + byteOff, byteOff: exactExternalInteger(byteOff) });
       if (results.length >= SEARCH_LIMIT) { capped = true; break; }
     }
-    pos += block.length;
+    pos += BigInt(block.length);
     carry = pattern.length > 1 ? joined.slice(Math.max(0, joined.length - pattern.length + 1)) : new Uint8Array(0);
-    self.postMessage({ t: 'searchProgress', requestId: msg.id, epoch: msg.epoch, done: pos - start, all: total - start, hits: results.length });
+    self.postMessage({
+      t: 'searchProgress', requestId: msg.id, epoch: msg.epoch,
+      done: exactExternalInteger(pos - start), all: exactExternalInteger(total - start), hits: results.length,
+    });
   }
-  return { cancelled: false, results, scanned: pos - start, capped };
+  return { cancelled: false, results, scanned: exactExternalInteger(pos - start), capped };
 }
 
 function lower(byte) { return byte >= 65 && byte <= 90 ? byte + 32 : byte; }

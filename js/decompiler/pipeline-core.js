@@ -56,13 +56,17 @@ function memoryLocation(inst, state) {
     try { known = state.opts?.fieldFor?.(addr.baseReg || loc.base?.reg || null, off, inst?.row) || null; } catch { known = null; }
     const base = buildValue(loc.base || addr.base, state, { forAddress: true });
     const name = safeIdent(known?.name || `field_${off.toString(16).toUpperCase()}`);
-    return { kind: 'field', key: loc.key, offset: off, base, name, text: `${printExpression(base)}->${name}` };
+    const access = expr.field(base, name, off, Number(loc.size || inst?.size || 64), origin(inst));
+    return { kind: 'field', key: loc.key, offset: off, base, name, expression: access, text: printExpression(access) };
   }
   if (addr.base && addr.index) {
     const base = buildValue(addr.base, state, { forAddress: true });
     const index = buildValue(addr.index, state, { forAddress: true });
     const scale = 1 << Number(addr.scale || 0);
-    if (Number(addr.size || inst?.size || 0) === scale) return { kind: 'index', key: loc.key, base, index, scale, text: `${printExpression(base)}[${printExpression(index)}]` };
+    if (Number(addr.size || inst?.size || 0) === scale) {
+      const access = expr.index(base, index, scale, Number(addr.size || inst?.size || 64), origin(inst));
+      return { kind: 'index', key: loc.key, base, index, scale, expression: access, text: printExpression(access) };
+    }
   }
   return { kind: 'unknown', key: loc.key || `memory:${inst?.id || '?'}`, name: 'memory_unknown', text: 'memory_unknown' };
 }
