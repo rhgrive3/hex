@@ -22,6 +22,15 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
       - run: git fetch origin main
       - run: git merge --no-edit origin/main
+      - name: Inspect current RMW implementation
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const s=fs.readFileSync('js/ir-core.js','utf8');
+          const a=s.indexOf('export function readModifyWrite');
+          const b=s.indexOf('\nexport function ',a+10);
+          console.log(s.slice(a,b>0?b:a+5000));
+          NODE
       - name: Make patch driver idempotent against newer main
         run: |
           python3 - <<'PY'
