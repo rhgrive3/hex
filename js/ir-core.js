@@ -189,7 +189,24 @@ function opnd(op) {
  * 1 命令 → IR 命令の配列（ふつうは 1 つ、ldp/stp は 2 つ）。
  * 意味を付けられない命令は OP.UNKNOWN を返す。ここで嘘を作らない。
  */
-function lift(insn) {
+function callResultLocation(insn, opts) {
+  let proto = insn?.callPrototype || null;
+  if (!proto) {
+    try { proto = opts?.callPrototypeFor?.(insn.callTarget ?? null, insn) || null; } catch { proto = null; }
+  }
+  if (!proto) return null;
+  const type = String(proto.returnType || proto.ret || proto.result || '').toLowerCase();
+  const cls = String(proto.returnClass || proto.abiClass || proto.resultClass || '').toLowerCase();
+  if (proto.void === true || type === 'void' || cls === 'void') return null;
+  if (proto.indirectResult === true || cls === 'indirect') return null;
+  if (cls.includes('fp') || cls.includes('float') || cls.includes('vector') || /^(float|double|__fp16)/.test(type)) {
+    return { reg:'v0', bits:Number(proto.returnBits || proto.bits || 64) || 64 };
+  }
+  if (type || cls || proto.returnsValue === true) return { reg:'x0', bits:Number(proto.returnBits || proto.bits || 64) || 64 };
+  return null;
+}
+
+function lift(insn, opts = {}) {
   const base = (insn.mnemonic || '').toLowerCase();
   const ops = insn.ops || [];
   const at = { row: insn.row, address: insn.address, text: base + ' ' + (insn.operands || '') };
@@ -201,15 +218,20 @@ function lift(insn) {
   const flags = () => ({ dstReg: 'nzcv', dstBits: 4 });
 
   /* ── 分岐と呼び出し ── */
-  if (insn.isReturn) { push({ op: OP.RET, srcs: [{ t: 'reg', reg: 'x0', bits: 64 }] }); return out; }
+  // AAPCS64 does not define a universal return register. Without prototype
+  // evidence RET carries only control-flow semantics; consumers may recover a
+  // return value from typed reaching definitions separately.
+  if (insn.isReturn) { push({ op: OP.RET, srcs: [] }); return out; }
   if (insn.isCall) {
+    const result = callResultLocation(insn, opts);
     push({
       op: OP.CALL,
       target: insn.callTarget != null ? insn.callTarget : null,
       indirect: insn.callTarget == null,
       srcs: (insn.callTarget == null && ops[0] && ops[0].k === 'reg')
         ? [{ t: 'reg', reg: regKeyOf(ops[0]), bits: 64 }] : [],
-      dstReg: 'x0', dstBits: 64,
+      dstReg: result?.reg || null, dstBits: result?.bits || 64,
+      returnEvidence: result ? 'prototype' : null,
       clobbers: CALL_CLOBBERS,
     });
     return out;
@@ -472,11 +494,24 @@ let nextIrId = 1;
 export function buildIR(model, opts) {
   const o = opts || {};
   if (!model || !model.instructions || !model.instructions.length) return null;
-  const insns = model.instructions.length > MAX_INSTRUCTIONS
-    ? model.instructions.slice(0, MAX_INSTRUCTIONS)
-    : model.instructions;
+  const truncatedByBudget = model.instructions.length > MAX_INSTRUCTIONS;
+  const insns = truncatedByBudget ? model.instructions.slice(0, MAX_INSTRUCTIONS) : model.instructions;
 
-  const cfg = o.cfg || buildCfg(model, o);
+  // The CFG and lifted instruction universe must be identical. A full-function
+  // CFG paired with a 6000-instruction IR creates successors/PHIs whose defining
+  // instructions do not exist. Clip block metadata to the same final row and
+  // deliberately ignore a caller-supplied full CFG when the IR budget truncates.
+  const maxRow = insns.length ? insns[insns.length - 1].row : -1;
+  const cfgModel = truncatedByBudget ? {
+    ...model,
+    instructions: insns,
+    basicBlocks: (model.basicBlocks || []).filter((b) => b.startRow <= maxRow).map((b) => ({
+      ...b, endRow: Math.min(b.endRow, maxRow),
+      rows: Array.isArray(b.rows) ? b.rows.filter((r) => r <= maxRow) : b.rows,
+    })),
+    semantic: (model.semantic || []).filter((b) => b.startRow <= maxRow).map((b) => ({ ...b, endRow: Math.min(b.endRow, maxRow) })),
+  } : model;
+  const cfg = truncatedByBudget ? buildCfg(cfgModel, o) : (o.cfg || buildCfg(cfgModel, o));
   const nodes = cfg.nodes || [];
   if (!nodes.length) return null;
 
@@ -534,7 +569,7 @@ export function buildIR(model, opts) {
     const bi = rowToBlock.get(insn.row);
     if (bi == null) continue;
     let parts;
-    try { parts = lift(insn); } catch { parts = []; }
+    try { parts = lift(insn, o); } catch { parts = []; }
     for (const p of parts) {
       p.block = bi;
       p.insn = insn;
@@ -829,7 +864,12 @@ function locationOf(inst) {
   if (a.disp == null) return { key: 'unknown', kind: MK.UNKNOWN };
   if (!a.base) return { key: 'unknown', kind: MK.UNKNOWN };
   if (a.stack) {
-    return { key: 'stack:' + a.disp.toString(), kind: MK.STACK, disp: a.disp, size: a.size };
+    const baseReg = a.baseReg || a.base?.reg || 'stack';
+    const frameEpoch = a.base?.id ?? -1;
+    return {
+      key: `stack:${baseReg}:e${frameEpoch}:${a.disp.toString()}`,
+      kind: MK.STACK, baseReg, frameEpoch, disp: a.disp, size: a.size,
+    };
   }
   const base = a.base;
   if (base.const != null) {
@@ -853,6 +893,7 @@ export function mayAlias(a, b) {
     return false;
   }
   if (a.kind === MK.STACK || a.kind === MK.GLOBAL) {
+    if (a.kind === MK.STACK && (a.baseReg !== b.baseReg || a.frameEpoch !== b.frameEpoch)) return true;
     const pa = a.kind === MK.STACK ? a.disp : a.address;
     const pb = b.kind === MK.STACK ? b.disp : b.address;
     if (pa == null || pb == null) return true;
@@ -1211,7 +1252,7 @@ function recoverStackVariables(ir) {
   for (const [key, loc] of ir.locations) {
     if (loc.kind !== MK.STACK) continue;
     slots.set(key, {
-      key, disp: loc.disp, size: loc.size || 8,
+      key, baseReg: loc.baseReg || 'stack', frameEpoch: loc.frameEpoch ?? -1, disp: loc.disp, size: loc.size || 8,
       reads: 0, writes: 0, name: null, escapes: false,
     });
   }
@@ -1227,10 +1268,28 @@ function recoverStackVariables(ir) {
     const db = b.disp == null ? 0n : b.disp;
     return da < db ? -1 : da > db ? 1 : 0;
   });
-  ordered.forEach((s) => {
-    const d = s.disp == null ? 0n : (s.disp < 0n ? -s.disp : s.disp);
-    s.name = 'var_' + d.toString(16);
-  });
+  // Keep the long-standing compact name when it is unambiguous. Identity is
+  // still the full base+epoch+signed-displacement key; only collisions need the
+  // disambiguating display suffix. This preserves existing UI/API names without
+  // reintroducing the +/- displacement collision fixed by #137.
+  const displayGroups = new Map();
+  for (const s of ordered) {
+    const disp = s.disp == null ? 0n : s.disp;
+    const d = disp < 0n ? -disp : disp;
+    const legacy = `var_${d.toString(16)}`;
+    if (!displayGroups.has(legacy)) displayGroups.set(legacy, []);
+    displayGroups.get(legacy).push(s);
+  }
+  for (const [legacy, group] of displayGroups) {
+    if (group.length === 1) { group[0].name = legacy; continue; }
+    for (const s of group) {
+      const disp = s.disp == null ? 0n : s.disp;
+      const d = disp < 0n ? -disp : disp;
+      const sign = disp < 0n ? 'm' : 'p';
+      const base = String(s.baseReg || 'stack').replace(/[^A-Za-z0-9_]/g, '_');
+      s.name = `var_${base}_e${s.frameEpoch}_${sign}${d.toString(16)}`;
+    }
+  }
   ir.stackSlots = ordered;
   for (const inst of ir.instructions) {
     if (inst.loc && slots.has(inst.loc.key)) inst.slot = slots.get(inst.loc.key);

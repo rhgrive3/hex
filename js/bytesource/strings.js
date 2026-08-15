@@ -9,7 +9,7 @@ export async function scanSourceStrings(image, input, opts = {}) {
   const min = Math.max(2, Number(opts.minLength) || 4);
   const max = Math.max(min, Math.min(64 * 1024, Number(opts.maxLength) || 4096));
   const limit = Math.max(1, Math.min(1_000_000, Number(opts.limit) || 200_000));
-  const includeUtf16 = opts.utf16 !== false;
+  const utf16Encodings = chooseUtf16Encodings(image, opts.utf16);
   const includeExecutable = !!opts.includeExecutable;
   const chunkSize = Math.min(source.maxReadLength, Math.max(64 * 1024, Number(opts.chunkSize) || 256 * 1024));
   const ranges = mappedRanges(image, source.size, includeExecutable);
@@ -24,11 +24,19 @@ export async function scanSourceStrings(image, input, opts = {}) {
       if (opts.signal?.aborted) return { results: out, cancelled: true, capped: false };
       const remaining = range.end - offset;
       const length = Number(remaining < BigInt(chunkSize) ? remaining : BigInt(chunkSize));
-      const block = await source.readExactly(offset, length);
+      let block;
+      try { block = await source.readExactly(offset, length, { signal: opts.signal }); }
+      catch (error) {
+        if (opts.signal?.aborted || error?.name === 'AbortError' || error?.code === 'BYTE_SOURCE_CANCELLED') return { results: out, cancelled: true, capped: false };
+        throw error;
+      }
       const bytes = carry.length ? concat(carry, block) : block;
       const base = offset - BigInt(carry.length);
       scanAscii(image, bytes, base, range, min, max, out, seen, limit);
-      if (includeUtf16 && out.length < limit) scanUtf16(image, bytes, base, range, min, max, out, seen, limit);
+      for (const encoding of utf16Encodings) {
+        if (out.length >= limit) break;
+        scanUtf16(image, bytes, base, range, min, max, out, seen, limit, encoding);
+      }
       const keep = Math.min(overlapBytes, bytes.length);
       carry = bytes.slice(bytes.length - keep);
       offset += BigInt(block.length);
@@ -68,19 +76,29 @@ function scanAscii(image, bytes, base, range, min, max, out, seen, limit) {
     let q = p;
     while (q < bytes.length && q - start < max && printableAscii(bytes[q])) q++;
     if (q - start >= min) emit(image, bytes, base, start, q - start, 'utf8', range, out, seen);
-    p = Math.max(q + 1, p + 1);
+    p = q < bytes.length && printableAscii(bytes[q]) ? q : Math.max(q + 1, p + 1);
   }
 }
 
-function scanUtf16(image, bytes, base, range, min, max, out, seen, limit) {
+function chooseUtf16Encodings(image, option) {
+  if (option === false) return [];
+  if (option === 'be' || option === 'utf16be' || option === 'utf-16be') return ['utf16be'];
+  if (option === 'le' || option === 'utf16le' || option === 'utf-16le') return ['utf16le'];
+  if (option === 'both') return ['utf16le', 'utf16be'];
+  return [image?.endian === 'big' ? 'utf16be' : 'utf16le'];
+}
+
+function scanUtf16(image, bytes, base, range, min, max, out, seen, limit, encoding) {
+  const be = encoding === 'utf16be';
+  const printableAt = (p) => p + 1 < bytes.length && (be ? bytes[p] === 0 && printableAscii(bytes[p + 1]) : printableAscii(bytes[p]) && bytes[p + 1] === 0);
   for (let p = 0; p + 1 < bytes.length && out.length < limit;) {
-    if (!printableAscii(bytes[p]) || bytes[p + 1] !== 0) { p++; continue; }
+    if (!printableAt(p)) { p++; continue; }
     const start = p;
     let q = p;
     let chars = 0;
-    while (q + 1 < bytes.length && chars < max && printableAscii(bytes[q]) && bytes[q + 1] === 0) { chars++; q += 2; }
-    if (chars >= min) emit(image, bytes, base, start, q - start, 'utf16le', range, out, seen);
-    p = Math.max(q + 2, p + 1);
+    while (q + 1 < bytes.length && chars < max && printableAt(q)) { chars++; q += 2; }
+    if (chars >= min) emit(image, bytes, base, start, q - start, encoding, range, out, seen);
+    p = q + 1 < bytes.length && printableAt(q) ? q : Math.max(q + 2, p + 1);
   }
 }
 
@@ -92,7 +110,7 @@ function emit(image, bytes, base, localStart, byteLength, encoding, range, out, 
   seen.add(key);
   const raw = bytes.subarray(localStart, localStart + byteLength);
   let text;
-  try { text = new TextDecoder(encoding === 'utf16le' ? 'utf-16le' : 'utf-8').decode(raw); }
+  try { text = new TextDecoder(encoding === 'utf16le' ? 'utf-16le' : encoding === 'utf16be' ? 'utf-16be' : 'utf-8').decode(raw); }
   catch { text = ''; }
   out.push({ text, encoding, fileOffset, address: image.offsetToAddress(fileOffset), byteLength, section: range.section });
 }

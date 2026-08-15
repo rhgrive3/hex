@@ -3,9 +3,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
-  ByteView, detectBinary, openBinary, auditBinary,
+  BinaryImage, ByteView, detectBinary, openBinary, auditBinary,
   fingerprintFunction, fingerprintImage, fnv1a64, fingerprintBytes,
 } from '../js/binary/index.js';
+import { parseChainedImports, parseChainedBindingSites, parseClassicBindings, parseExportTrie } from '../js/binary/macho-dyld.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -57,6 +58,62 @@ export function makeFatMachOFixture() {
   v.setUint32(8,0x0100000c,false); v.setUint32(12,0,false); v.setUint32(16,0x100,false); v.setUint32(20,thin.length,false); v.setUint32(24,2,false);
   b.set(thin,0x100);
   return b;
+}
+
+function makeLegacyThreadMachOFixture() {
+  const b = new Uint8Array(0x400), v = new DataView(b.buffer);
+  const w16=(o,x)=>v.setUint16(o,x,true), w32=(o,x)=>v.setUint32(o,x,true), wi32=(o,x)=>v.setInt32(o,x,true), w64=(o,x)=>v.setBigUint64(o,BigInt(x),true);
+  w32(0,0xfeedfacf); wi32(4,0x0100000c); wi32(8,0); w32(12,2); w32(16,3); w32(20,72+288+16); w32(24,0); w32(28,0);
+  let p=32; w32(p,0x19); w32(p+4,72); for (const [i,c] of [...'__TEXT'].entries()) b[p+8+i]=c.charCodeAt(0); w64(p+24,0x100000000n); w64(p+32,0x1000n); w64(p+40,0); w64(p+48,0x400n); wi32(p+56,5); wi32(p+60,5); w32(p+64,0); w32(p+68,0);
+  p+=72; w32(p,0x5); w32(p+4,288); w32(p+8,6); w32(p+12,68); w64(p+16+264,0x100000180n);
+  p+=288; w32(p,0x25); w32(p+4,16); w32(p+8,0x00110002); w32(p+12,0x00120000);
+  return b;
+}
+
+function testMachOIssueRegressions() {
+  const legacy=openBinary(makeLegacyThreadMachOFixture());
+  assert.equal(legacy.entrypoint,0x100000180n); assert.equal(legacy.metadata.entrypointSource,'LC_UNIXTHREAD');
+  assert.equal(legacy.platform,'iOS'); assert.equal(legacy.metadata.buildVersion.minos,'17.0.2'); assert.equal(legacy.metadata.buildVersion.source,'LC_VERSION_MIN');
+
+  const siteImage=new BinaryImage(new Uint8Array(1),{format:'test'});
+  siteImage.imports.push({name:'x',library:'L',ordinal:1,sites:[
+    {address:1n,offset:0n,kind:'bind',type:1,addend:0n,pointerFormat:1},
+    {address:1n,offset:0n,kind:'bind',type:2,addend:0n,pointerFormat:1},
+    {address:1n,offset:0n,kind:'bind',type:1,addend:4n,pointerFormat:1},
+    {address:1n,offset:0n,kind:'bind',type:1,addend:0n,pointerFormat:2},
+  ]}); siteImage.finalize(); assert.equal(siteImage.imports[0].sites.length,4);
+  siteImage.metadata.negative=-1n; assert.equal(siteImage.toJSON().metadata.negative,'-0x1');
+
+  const bindBytes=new Uint8Array(0x200), bv=new DataView(bindBytes.buffer);
+  const segmentImage=new BinaryImage(bindBytes,{format:'macho',bits:64,imageBase:0x1000n});
+  const seg=segmentImage.addSegment({name:'DATA',address:0x1000n,size:0x100n,fileOffset:0n,fileSize:0x100n,perms:{read:true,write:true}}); segmentImage.libraries=['libX'];
+  let s=0x100; bindBytes.set([0x11,0x41,0x66,0x6f,0x6f,0x00,0x70,0x00,0x90,0x00],s);
+  parseClassicBindings(new ByteView(bindBytes),{offset:s,size:10},segmentImage,[seg],'bind');
+  assert.equal(segmentImage.imports[0].weak,true); assert.equal(segmentImage.imports[0].symbolFlags,1);
+
+  const invalidImage=new BinaryImage(bindBytes,{format:'macho',bits:64,imageBase:0x1000n}); const invalidSeg=invalidImage.addSegment({address:0x1000n,size:0x100n,fileOffset:0n,fileSize:0x100n,perms:{read:true,write:true}}); invalidImage.libraries=['libX'];
+  s=0x120; bindBytes.set([0x11,0x40,0x66,0x80,0x6f,0x00,0x70,0x00,0x90,0x00],s);
+  parseClassicBindings(new ByteView(bindBytes),{offset:s,size:10},invalidImage,[invalidSeg],'bind'); assert.equal(invalidImage.imports.length,1);
+  s=0x140; bindBytes.set([0x40,0x78,0x00,0x70,0x82,0x02,0x90,0x00],s);
+  const oobImage=new BinaryImage(bindBytes,{format:'macho',bits:64,imageBase:0x1000n}); const oobSeg=oobImage.addSegment({address:0x1000n,size:0x100n,fileOffset:0n,fileSize:0x100n,perms:{read:true,write:true}});
+  const oobStatus=parseClassicBindings(new ByteView(bindBytes),{offset:s,size:8},oobImage,[oobSeg],'bind'); assert.equal(oobImage.imports.length,0); assert.equal(oobStatus.complete,false);
+  s=0x150; bindBytes[s]=0xe0; const unknown=parseClassicBindings(new ByteView(bindBytes),{offset:s,size:1},oobImage,[oobSeg],'weak-bind'); assert.equal(unknown.complete,false); assert.ok(unknown.unsupportedOpcodes.length);
+
+  const threadedImage=new BinaryImage(bindBytes,{format:'macho',bits:64,imageBase:0x1000n}); const threadedSeg=threadedImage.addSegment({address:0x1000n,size:0x100n,fileOffset:0n,fileSize:0x100n,perms:{read:true,write:true}}); threadedImage.libraries=['libX'];
+  bv.setBigUint64(0x20,1n<<62n,true); s=0x170; bindBytes.set([0x11,0x40,0x74,0x00,0xd0,0x01,0x90,0x70,0x20,0xd1,0x00],s);
+  const threaded=parseClassicBindings(new ByteView(bindBytes),{offset:s,size:11},threadedImage,[threadedSeg],'bind'); assert.equal(threaded.complete,true); assert.equal(threadedImage.imports[0].sites[0].kind,'threaded-bind');
+
+  const cycleBytes=Uint8Array.of(0,1,0x61,0,0); const cycleImage=new BinaryImage(cycleBytes,{format:'macho'});
+  const cycle=parseExportTrie(new ByteView(cycleBytes),{offset:0,size:cycleBytes.length},cycleImage); assert.equal(cycle.complete,false); assert.equal(cycle.cycleDetected,true);
+  const absBytes=Uint8Array.of(0,1,0x61,0x62,0x73,0,7,2,2,5,0); const absImage=new BinaryImage(absBytes,{format:'macho',imageBase:0x100000000n});
+  parseExportTrie(new ByteView(absBytes),{offset:0,size:absBytes.length},absImage); assert.equal(absImage.exports[0].kind,'absolute'); assert.equal(absImage.exports[0].address,5n);
+
+  const chained=new Uint8Array(0x100), cv=new DataView(chained.buffer); cv.setUint32(4,28,true); cv.setUint32(28,1,true); cv.setUint32(32,8,true); cv.setUint32(36,24,true); cv.setUint16(40,0x1000,true); cv.setUint16(42,99,true); cv.setBigUint64(44,0x80n,true); cv.setUint16(56,1,true); cv.setUint16(58,0,true);
+  const chainImage=new BinaryImage(chained,{format:'macho',bits:64,imageBase:0x1000n}); chainImage.addSegment({address:0x1000n,size:0x200n,fileOffset:0n,fileSize:0x100n,perms:{read:true}}); chainImage.metadata.chainedFixups={};
+  parseChainedBindingSites(new ByteView(chained),{offset:0,size:0x80},chainImage,[]); assert.deepEqual(chainImage.metadata.chainedFixups.unsupportedPointerFormats,[99]); assert.equal(chainImage.metadata.chainedFixups.complete,false);
+
+  const compressed=new Uint8Array(64), cmpv=new DataView(compressed.buffer); cmpv.setUint32(16,1,true); cmpv.setUint32(20,1,true); cmpv.setUint32(24,1,true); const compressedImage=new BinaryImage(compressed,{format:'macho'});
+  assert.equal(parseChainedImports(new ByteView(compressed),{offset:0,size:64},compressedImage),null); assert.equal(compressedImage.metadata.chainedFixups.symbolsComplete,false);
 }
 
 function testMachO() {
@@ -162,6 +219,6 @@ function testRealMachO() {
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
-  testReader(); testDetection(); testFingerprint(); testMachO(); testElf(); testPe(); testRealMachO();
+  testReader(); testDetection(); testFingerprint(); testMachO(); testMachOIssueRegressions(); testElf(); testPe(); testRealMachO();
   console.log('universal-binary: PASS');
 }

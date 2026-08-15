@@ -1,1 +1,2 @@
-External fixture moved to tests/.real-fixtures/YWP. Run: npm run fixtures:fetch
+HEX_LARGE_FIXTURE_PLACEHOLDER YWP
+Run: npm run fixtures:large

@@ -5,6 +5,11 @@ graft/
 tests/oracle.*.json.gz
 tests/current.json
 
+# Large real-app fixtures are fetched on demand with tools/fetch-large-fixtures.mjs.
+/tests/battlecats
+/tests/TsumTsum
+/tests/YWP
+
 # 画面の写し（KEEP=1 npm run browser で作り直せる）
 tests/.shots/
 

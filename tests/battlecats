@@ -1,1 +1,2 @@
-External fixture moved to tests/.real-fixtures/battlecats. Run: npm run fixtures:fetch
+HEX_LARGE_FIXTURE_PLACEHOLDER battlecats
+Run: npm run fixtures:large

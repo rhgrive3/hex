@@ -5,6 +5,7 @@
  * not pretend that an unknown instruction preserved registers/memory.
  */
 import { OP, MK, COND } from '../ir.js';
+import { valueBefore } from '../dataflow-semantic.js';
 
 export const SYM = Object.freeze({ CONST: 'const', SYMBOL: 'symbol', OP: 'op', ITE: 'ite', UNKNOWN: 'unknown' });
 
@@ -324,12 +325,30 @@ export function symbolicExecute(ir, opts) {
         paths.push(stopResult(state, 'unsupported-instruction', inst)); transferred = true; break;
       }
       if (inst.op === OP.RET) {
-        const value = inst.args[0] ? evalValue(inst.args[0].value, state, ir, opts, memo, new Set()) : null;
+        const explicit = inst.args[0]?.value || null;
+        let candidate = explicit;
+        let inferredReturn = false;
+        if (!candidate) {
+          const terminal = valueBefore(ir, inst, 'x0');
+          // Keep #130's ABI truth intact: RET has no implicit x0 operand. The
+          // symbolic layer may expose a local terminal x0 expression only when
+          // it was actually defined inside this function and evaluates to a
+          // non-constant expression. This preserves field/dataflow experiments
+          // while refusing the weakest `mov x0,#imm; ret` void-like ambiguity.
+          if (terminal?.def && terminal.kind !== 'arg' && terminal.def.row != null && inst.row != null && terminal.def.row < inst.row) {
+            const evaluated = evalValue(terminal, state, ir, opts, memo, new Set());
+            if (evaluated && evaluated.kind !== SYM.UNKNOWN && evaluated.kind !== SYM.CONST) {
+              candidate = terminal; inferredReturn = true;
+            }
+          }
+        }
+        const value = candidate ? evalValue(candidate, state, ir, opts, memo, new Set()) : null;
         paths.push({
           status: value && value.kind === SYM.UNKNOWN ? 'unknown' : 'complete',
           reason: value && value.kind === SYM.UNKNOWN ? value.reason : null,
           returnValue: value,
           returnText: expressionText(value),
+          returnInferred: inferredReturn,
           constraints: state.constraints.slice(),
           constraintText: state.constraints.map(expressionText),
           takenBranches: state.branches.slice(),

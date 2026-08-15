@@ -1,11 +1,14 @@
 import { ByteView } from './reader.js';
 import { BinaryImage, functionSeed } from './model.js';
-import { parseImports, parseExports, parseExceptionFunctions, parseBaseRelocations, parseCoffSymbols, directory, peMachineName } from './pe-loader.js';
+import { parseImports, parseExports, parseExceptionFunctions, parseBaseRelocations, parseCoffSymbols, parseDelayImports, parseTlsDirectory, parseLoadConfig, resolveCoffSectionName, directory, peMachineName } from './pe-loader.js';
 
 const IMAGE_DIRECTORY_ENTRY_EXPORT = 0;
 const IMAGE_DIRECTORY_ENTRY_IMPORT = 1;
 const IMAGE_DIRECTORY_ENTRY_EXCEPTION = 3;
 const IMAGE_DIRECTORY_ENTRY_BASERELOC = 5;
+const IMAGE_DIRECTORY_ENTRY_TLS = 9;
+const IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG = 10;
+const IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT = 13;
 
 export function parsePE(input) {
   const bytes = new ByteView(input).bytes;
@@ -23,9 +26,12 @@ export function parsePE(input) {
   const characteristics = r.u16(coff + 18);
   const opt = coff + 20;
   if (opt + sizeOptional > r.length) throw new Error('PE optional header is truncated');
+  if (sizeOptional < 2) throw new Error('PE optional header is too small for its magic');
   const magic = r.u16(opt);
   if (magic !== 0x10b && magic !== 0x20b) throw new Error(`unsupported PE optional magic 0x${magic.toString(16)}`);
   const bits = magic === 0x20b ? 64 : 32;
+  const minimumOptionalSize = bits === 64 ? 112 : 96;
+  if (sizeOptional < minimumOptionalSize) throw new Error(`PE optional header size ${sizeOptional} is smaller than ${minimumOptionalSize}`);
   const entryRva = r.u32(opt + 16);
   const imageBase = bits === 64 ? r.u64(opt + 24) : BigInt(r.u32(opt + 28));
   const sectionAlignment = r.u32(opt + 32);
@@ -41,7 +47,7 @@ export function parsePE(input) {
 
   const image = new BinaryImage(bytes, {
     format: 'pe', arch: peMachineName(machine), bits, endian: 'little', platform: 'windows',
-    imageBase, entrypoint: imageBase + BigInt(entryRva),
+    imageBase, entrypoint: entryRva ? imageBase + BigInt(entryRva) : null,
     metadata: { machine, timestamp, characteristics, subsystem, sectionAlignment, fileAlignment, sizeOfImage, sizeOfHeaders, directories },
   });
 
@@ -50,17 +56,19 @@ export function parsePE(input) {
   if (numberOfSections > 4096 || secBase + numberOfSections * 40 > r.length) throw new Error('PE section table is invalid');
   for (let i = 0; i < numberOfSections; i++) {
     const p = secBase + i * 40;
-    const name = r.ascii(p, 8);
+    const name = resolveCoffSectionName(r, r.ascii(p, 8), ptrSymbols, numberOfSymbols);
     const virtualSize = r.u32(p + 8);
     const virtualAddress = r.u32(p + 12);
     const sizeRaw = r.u32(p + 16);
     const ptrRaw = r.u32(p + 20);
     const flags = r.u32(p + 36);
     const address = imageBase + BigInt(virtualAddress);
-    const size = BigInt(Math.max(virtualSize, sizeRaw));
+    const virtualExtent = BigInt(virtualSize || sizeRaw);
+    const rawAvailable = BigInt(Math.min(sizeRaw, Math.max(0, bytes.length - ptrRaw)));
+    const mappedFileSize = rawAvailable < virtualExtent ? rawAvailable : virtualExtent;
     const perms = { read: !!(flags & 0x40000000), write: !!(flags & 0x80000000), execute: !!(flags & 0x20000000) };
-    image.addSegment({ name, address, size, fileOffset: BigInt(ptrRaw), fileSize: BigInt(Math.min(sizeRaw, Math.max(0, bytes.length - ptrRaw))), perms, flags, source: 'PE-section' });
-    image.addSection({ name, address, size: BigInt(virtualSize || sizeRaw), fileOffset: BigInt(ptrRaw), fileSize: BigInt(sizeRaw), perms, flags, type: null, index: i + 1, source: 'PE-section' });
+    image.addSegment({ name, address, size: virtualExtent, fileOffset: BigInt(ptrRaw), fileSize: mappedFileSize, perms, flags, source: 'PE-section' });
+    image.addSection({ name, address, size: virtualExtent, fileOffset: BigInt(ptrRaw), fileSize: mappedFileSize, perms, flags, type: null, index: i + 1, source: 'PE-section' });
   }
 
   if (entryRva) image.functions.push(functionSeed(image.entrypoint, { source: 'entrypoint', confidence: 0.9 }));
@@ -68,6 +76,9 @@ export function parsePE(input) {
   parseImports(r, directory(directories, IMAGE_DIRECTORY_ENTRY_IMPORT), image);
   parseExports(r, directory(directories, IMAGE_DIRECTORY_ENTRY_EXPORT), image);
   parseExceptionFunctions(r, directory(directories, IMAGE_DIRECTORY_ENTRY_EXCEPTION), image, machine);
-  parseBaseRelocations(r, directory(directories, IMAGE_DIRECTORY_ENTRY_BASERELOC), image);
+  parseBaseRelocations(r, directory(directories, IMAGE_DIRECTORY_ENTRY_BASERELOC), image, machine);
+  parseDelayImports(r, directory(directories, IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT), image);
+  parseTlsDirectory(r, directory(directories, IMAGE_DIRECTORY_ENTRY_TLS), image);
+  parseLoadConfig(r, directory(directories, IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG), image);
   return image.finalize();
 }
