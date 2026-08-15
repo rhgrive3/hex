@@ -1,0 +1,28 @@
+name: Diagnose PR603 merge conflicts
+on:
+  push:
+    branches:
+      - chatgpt-userscript-host
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Attempt latest-main merge
+        run: |
+          set +e
+          git fetch origin main
+          git merge --no-commit --no-ff origin/main
+          code=$?
+          echo "MERGE_EXIT=$code"
+          echo "CONFLICTS_BEGIN"
+          git diff --name-only --diff-filter=U
+          echo "CONFLICTS_END"
+          for f in $(git diff --name-only --diff-filter=U); do
+            echo "===== $f ====="
+            git checkout --conflict=merge -- "$f" || true
+            grep -n -C 6 -E '^(<<<<<<<|=======|>>>>>>>)' "$f" || true
+          done
+          exit $code
