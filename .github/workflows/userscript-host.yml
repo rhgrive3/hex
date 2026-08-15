@@ -53,5 +53,11 @@ jobs:
           npm run ai:test
           node tests/gemini.mjs
           node tests/worker-classic-harness.mjs
+      - name: Upload generated loader for merge repair
+        uses: actions/upload-artifact@v4
+        with:
+          name: generated-userscript-loader
+          path: userscript/hex.user.template.js
+          if-no-files-found: error
       - name: Verify tiny committed loader is current
         run: git diff --exit-code -- userscript/hex.user.template.js
