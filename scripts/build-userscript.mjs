@@ -222,7 +222,14 @@ function hostBootstrap(bodyHtml, scopedCss, workerManifest) {
 
 function userscriptVersion() {
   try {
-    const stamp = execFileSync('git', ['show', '-s', '--format=%ct', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
+    /* Generated bundles are committed so Cloudflare can serve them directly.
+       Excluding those files makes a rebuild on the generated commit produce
+       the exact same @version instead of creating an endless self-update. */
+    const stamp = execFileSync('git', [
+      'log', '-1', '--format=%ct', '--', '.',
+      ':(exclude)userscript/hex.user.template.js',
+      ':(exclude)userscript/platform-worker.bundle.js',
+    ], { cwd: root, encoding: 'utf8' }).trim();
     if (/^\d+$/.test(stamp)) return `1.0.${stamp}`;
   } catch { /* deterministic fallback for source archives */ }
   return '1.0.0';
