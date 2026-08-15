@@ -21,8 +21,8 @@ const RETRYABLE_STREAM_CODES = new Set([
 
 export function buildGeminiPayload(report, model, question, thinkingLevel) {
   if (!report || !model) throw new Error('解析対象の関数情報がありません。');
-  const assembly = assemblyText(model);
-  if (!assembly) throw new Error('この関数のARM64命令を取り出せませんでした。');
+  const assembly = assemblyContext(model);
+  if (!assembly.text) throw new Error('この関数のARM64命令を取り出せませんでした。');
 
   return {
     question: String(question || '').trim(),
@@ -30,7 +30,8 @@ export function buildGeminiPayload(report, model, question, thinkingLevel) {
     currentFunction: {
       address: addressText(report.identity && report.identity.startAddr),
       name: report.identity && report.identity.name ? String(report.identity.name) : null,
-      assembly,
+      assembly: assembly.text,
+      assemblyMeta: assembly.meta,
       pseudocode: pseudocodeText(report),
     },
     xrefs: xrefsFor(model),
@@ -122,12 +123,32 @@ async function waitForStreamRetry(attempt, signal) {
   });
 }
 
-function assemblyText(model) {
-  return (model.instructions || []).slice(0, MAX_ASSEMBLY_LINES).map((insn) => {
+function assemblyContext(model) {
+  const all = Array.isArray(model?.instructions) ? model.instructions : [];
+  const rows = all.slice(0, MAX_ASSEMBLY_LINES);
+  const totalInstructions = all.length;
+  const includedInstructions = rows.length;
+  const truncated = totalInstructions > includedInstructions;
+  const startRow = includedInstructions ? (Number.isInteger(rows[0]?.row) ? rows[0].row : 0) : null;
+  const endRow = includedInstructions ? (Number.isInteger(rows[rows.length - 1]?.row) ? rows[rows.length - 1].row : includedInstructions - 1) : null;
+  const rendered = rows.map((insn) => {
     const address = addressText(insn.address);
     return [address, insn.mnemonic || '', insn.operands || ''].filter(Boolean).join('  ');
   }).join('\n');
+  const marker = truncated
+    ? `// [Hex context incomplete: showing ${includedInstructions} of ${totalInstructions} instructions; trailing instructions omitted]`
+    : '';
+  return {
+    text: marker ? `${marker}\n${rendered}` : rendered,
+    meta: {
+      totalInstructions, includedInstructions, startRow, endRow, truncated,
+      omittedInstructions: Math.max(0, totalInstructions - includedInstructions),
+      selection: 'head',
+    },
+  };
 }
+
+function assemblyText(model) { return assemblyContext(model).text; }
 
 function pseudocodeText(report) {
   const comprehension = report.comprehension;

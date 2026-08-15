@@ -198,14 +198,18 @@ export class BinaryImage {
 }
 
 export function functionSeed(address, opts = {}) {
+  const source = opts.source || 'heuristic';
+  const confidence = Math.max(0, Math.min(1, Number(opts.confidence ?? 0.5)));
+  const size = opts.size == null ? null : BigInt(opts.size);
+  const end = opts.end == null ? null : BigInt(opts.end);
+  const hasExtent = size != null || end != null;
   return {
-    address: BigInt(address),
-    size: opts.size == null ? null : BigInt(opts.size),
-    end: opts.end == null ? null : BigInt(opts.end),
-    name: opts.name || null,
-    source: opts.source || 'heuristic',
-    confidence: Math.max(0, Math.min(1, Number(opts.confidence ?? 0.5))),
-    kind: opts.kind || 'function',
+    address: BigInt(address), size, end, name: opts.name || null,
+    source, confidence, kind: opts.kind || 'function',
+    extentSource: opts.extentSource || (hasExtent ? source : null),
+    extentConfidence: opts.extentConfidence == null ? (hasExtent ? confidence : null)
+      : Math.max(0, Math.min(1, Number(opts.extentConfidence))),
+    extentInherited: !!opts.extentInherited,
   };
 }
 
@@ -215,6 +219,8 @@ export function mergeFunctionSeeds(input, context = {}) {
   for (const f0 of input || []) {
     if (f0 == null || f0.address == null) continue;
     const f = { ...f0, address: BigInt(f0.address) };
+    if ((f.size != null || f.end != null) && !f.extentSource) f.extentSource = f.source || 'unknown';
+    if ((f.size != null || f.end != null) && f.extentConfidence == null) f.extentConfidence = Number(f.confidence ?? 0);
     const k = f.address.toString();
     const prev = m.get(k);
     if (!prev) { m.set(k, f); continue; }
@@ -223,8 +229,17 @@ export function mergeFunctionSeeds(input, context = {}) {
     const best = curRank > prevRank || (curRank === prevRank && (f.confidence || 0) > (prev.confidence || 0)) ? f : prev;
     const other = best === f ? prev : f;
     if (!best.name && other.name) best.name = other.name;
-    if (best.size == null && other.size != null) best.size = other.size;
-    if (best.end == null && other.end != null) best.end = other.end;
+    let inheritedExtent = false;
+    if (best.size == null && other.size != null) { best.size = other.size; inheritedExtent = true; }
+    if (best.end == null && other.end != null) { best.end = other.end; inheritedExtent = true; }
+    if (inheritedExtent) {
+      best.extentSource = other.extentSource || other.source || 'unknown';
+      best.extentConfidence = Number(other.extentConfidence ?? other.confidence ?? 0);
+      best.extentInherited = true;
+    } else if ((best.size != null || best.end != null) && !best.extentSource) {
+      best.extentSource = best.source || 'unknown';
+      best.extentConfidence = Number(best.confidence ?? 0);
+    }
     best.sources = [...new Set([...(prev.sources || [prev.source]), ...(f.sources || [f.source])])];
     best.confidence = Math.max(prev.confidence || 0, f.confidence || 0);
     m.set(k, best);

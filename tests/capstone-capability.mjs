@@ -45,7 +45,7 @@ try {
     format: 'elf', arch: 'x86_64', bits: 64, endian: 'little',
     sections: [], segments: [], imageBase: 0n, fileOffset: 0n, fileSize: 0n,
     warnings: [], metadata: {}, summary: () => ({ format: 'elf', arch: 'x86_64', bits: 64 }),
-  });
+  }, { engine: { ...support, verified: true } });
   assert.equal(x86Descriptor.capability.canDisassemble, true);
   assert.equal(x86Descriptor.capability.canAnalyzeDataflow, false);
   assert.equal(x86Descriptor.capability.canEmulate, false);
