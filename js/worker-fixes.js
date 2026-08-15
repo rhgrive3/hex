@@ -230,8 +230,6 @@ async function __functionEvidence(region, slice, requestId) {
   const directCalls = __addressBitmap(region);
   const prologues = __addressBitmap(region);
   const terminalStarts = __addressBitmap(region);
-  const indirectTailStarts = __addressBitmap(region);
-  const metadataFunctions = __addressBitmap(region);
   const indirectTerminalStarts = __addressBitmap(region);
   const trapTerminalStarts = __addressBitmap(region);
   const conditionalTargets = __addressBitmap(region);
@@ -251,10 +249,12 @@ async function __functionEvidence(region, slice, requestId) {
   let ehFrameRanges = [];
 
   if (slice && imageBase != null) {
-    for (const a of await objcMethodImplementationStarts(slice, lo, hi, imageBase, requestId)) metadataFunctions.add(a);
-    for (const a of await initializerFunctionStarts(slice, lo, hi, imageBase, requestId)) metadataFunctions.add(a);
-    for (const a of await swiftReflectionFunctionStarts(slice, lo, hi, requestId)) metadataFunctions.add(a);
-
+    // Merge exact runtime metadata collectors from the current branch with
+    // the hardened boundary evidence below. These helpers parse ABI-defined
+    // Objective-C, initializer, and Swift reflection function references.
+    for (const a of await objcMethodImplementationStarts(slice, lo, hi, imageBase, requestId)) exactMetadata.add(a);
+    for (const a of await initializerFunctionStarts(slice, lo, hi, imageBase, requestId)) exactMetadata.add(a);
+    for (const a of await swiftReflectionFunctionStarts(slice, lo, hi, requestId)) exactMetadata.add(a);
     const unwindRegion = (slice.regions || []).find((r) => r.section === '__unwind_info' && r.size > 0n);
     let unwindLsdaEntries = [];
     if (unwindRegion && unwindRegion.size < 16n * 1024n * 1024n) {
@@ -481,11 +481,6 @@ async function __functionEvidence(region, slice, requestId) {
     }
     trapRunStart = null; trapRunValues = [];
   };
-  let prevIndirectBr = false, pendingIndirectTail = null;
-  const indirectTailNext = new Set([
-    Words.KIND.STORE, Words.KIND.ADRP, Words.KIND.ARITH,
-    Words.KIND.RET, Words.KIND.CMP, Words.KIND.MOVREG,
-  ]);
   while (pos < Number(region.size)) {
     if (cancelled(requestId)) break;
     const blk = await readRange(region.fileOffset + BigInt(pos), Math.min(1024 * 1024, Number(region.size) - pos));
@@ -687,8 +682,7 @@ async function __functionEvidence(region, slice, requestId) {
         betweenIndirectKinds = [];
       }
 
-      prevEnd = Words.looksLikeEnd(w);
-      prevIndirectBr = Words.isBr(w);
+      prevEnd = Words.looksLikeEnd(w) || currentKind === Words.KIND.TRAP;
       prevThirdWord = prevPrevWord;
       prevPrevWord = prevWord;
       prevWord = w;
@@ -723,7 +717,7 @@ async function __functionEvidence(region, slice, requestId) {
   for (const target of imageRelativeCodeCandidates) {
     if (indirectTerminalStarts.has(target) || trapTerminalStarts.has(target)) structured.add(target);
   }
-  return { data, structured, exactMetadata, directBranches, trapPeriodicGroups, trapStrideGroups, adrpReturnGroups, ehFrameRanges, exceptionLandingPads, interiorFrameSetups, denseAddressLeafStarts, unwind, directCalls, prologues, terminalStarts, indirectTailStarts, metadataFunctions, indirectTerminalStarts, conditionalTargets, tailCalls, indirectThunkStarts, repeatedThunkStarts, repeatedDirectTailStarts };
+  return { data, structured, exactMetadata, directBranches, trapPeriodicGroups, trapStrideGroups, adrpReturnGroups, ehFrameRanges, exceptionLandingPads, interiorFrameSetups, denseAddressLeafStarts, unwind, directCalls, prologues, terminalStarts, indirectTerminalStarts, conditionalTargets, tailCalls, indirectThunkStarts, repeatedThunkStarts, repeatedDirectTailStarts };
 }
 
 const __FUNCTION_DIRECT_BYTES = 24n * 1024n * 1024n;
@@ -853,7 +847,7 @@ guessFunctions = async function guessFunctionsHardened(args) {
   const kept = new Set();
   let filteredDataCandidates = 0;
   for (const a of result.starts) {
-    const exact = ev.unwind.has(a) || ev.directCalls.has(a) || ev.exactMetadata.has(a) || ev.metadataFunctions.has(a);
+    const exact = ev.unwind.has(a) || ev.directCalls.has(a) || ev.exactMetadata.has(a);
     const strong = exact || ev.structured.has(a) || ev.tailCalls.has(a);
     if (!strong && (ev.interiorFrameSetups.has(a) || ev.denseAddressLeafStarts.has(a))) {
       if (ev.data.has(a)) filteredDataCandidates++;
@@ -879,7 +873,7 @@ guessFunctions = async function guessFunctionsHardened(args) {
       continue;
     }
     if (!ev.data.has(a)) { kept.add(a); continue; }
-    const confirmed = strong || ev.prologues.has(a) || ev.terminalStarts.has(a) || ev.indirectTailStarts.has(a);
+    const confirmed = strong || ev.prologues.has(a) || ev.terminalStarts.has(a);
     if (confirmed) kept.add(a);
     else filteredDataCandidates++;
   }
