@@ -83,7 +83,8 @@ import '../js/worker-budget.js';
 }
 
 // #554/#555/#556 structural worker invariants: shared byte budget, counted transport,
-// bounded candidate slots, and a single control-flow provenance contract for both scans.
+// bounded candidate slots, and a single provenance implementation shared by both scans.
+// Detailed control-flow behavior is tested by issue-556-address-provenance.mjs.
 {
   const budget = globalThis.HexWorkerBudget;
   assert.equal(budget.withinProgramBudget(budget.PROGRAM_INDEX_BYTES - 1, 1), true);
@@ -93,9 +94,11 @@ import '../js/worker-budget.js';
   assert.match(source, /callCount: nCalls/);
   assert.match(source, /refCount: nRefs/);
   assert.doesNotMatch(source, /callFrom\.slice\(0, nCalls\)/);
-  assert.match(source, /makeAddressProvenance\(\)/g);
-  assert.match(source, /isAddressFlowBarrier/);
-  assert.match(source, /pathOf/);
+  assert.match(source, /importScripts\([^\n]*address-provenance\.js/);
+  assert.ok((source.match(/AddressProvenance\.create\(/g) || []).length >= 2);
+  assert.ok((source.match(/provenance\.enter\(pc\)/g) || []).length >= 2);
+  assert.doesNotMatch(source, /function makeAddressProvenance\(/);
+  assert.doesNotMatch(source, /function addressProvenanceBase\(/);
 }
 
 console.log('issues 550-559 regressions: ok');
