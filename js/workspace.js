@@ -16,6 +16,7 @@ function identityKey(identity){
   const meta=identity?.metadata||{};
   return [identity?.hash||'',meta.sliceIndex,meta.sliceOffset,meta.sliceSize,meta.uuid,meta.architecture].map(keyOf).join('\0');
 }
+function staleWorkspaceError(){const error=new Error('workspace-binding-changed');error.code='HEX_WORKSPACE_STALE';return error;}
 
 export function binaryIdentity(app, hash=null){
   const info=app?.store?.get?.('fileInfo')||null;
@@ -160,11 +161,21 @@ function chooseSlice(info,architecture){
 export class ProductWorkspace{
   constructor(app,{backendFactory=()=>new Backend(),storage=globalThis.localStorage}={}){
     this.app=app;this.backendFactory=backendFactory;this.storage=storage||null;this.project=null;this.identity=null;this.baseline=null;this.diffState=null;this.busy=null;
+    this.bindingRevision=0;this.bindSequence=0;this.baselineSequence=0;
   }
-  _resetBoundState(){this.project=null;this.baseline=null;this.diffState=null;this.busy=null;}
+  _resetBoundState(){this.bindingRevision++;this.baselineSequence++;this.project=null;this.baseline=null;this.diffState=null;this.busy=null;}
+  _assertBinding(revision){if(revision!==this.bindingRevision)throw staleWorkspaceError();}
   async bind(){
-    if(!this.app?.store?.get?.('fileInfo')){this.identity=null;this._resetBoundState();return null;}
+    const sequence=++this.bindSequence;
+    const sourceInfo=this.app?.store?.get?.('fileInfo')||null;
+    if(!sourceInfo){this.identity=null;this._resetBoundState();return null;}
+    const sourceSlice=this.app?.store?.get?.('sliceIndex')??-1;
+    const sourceBackendGen=this.app?.backend?.gen;
     const hash=await this.app.backend.ensureContentHash();
+    const superseded=sequence!==this.bindSequence || this.app?.store?.get?.('fileInfo')!==sourceInfo ||
+      (this.app?.store?.get?.('sliceIndex')??-1)!==sourceSlice ||
+      (sourceBackendGen!=null&&this.app?.backend?.gen!==sourceBackendGen);
+    if(superseded){if(sequence===this.bindSequence){this.identity=null;this._resetBoundState();}return null;}
     const nextIdentity=binaryIdentity(this.app,hash);
     if(this.identity&&identityKey(this.identity)!==identityKey(nextIdentity))this._resetBoundState();
     this.identity=nextIdentity;
@@ -190,31 +201,43 @@ export class ProductWorkspace{
   async loadBaseline(file,{backend=null}={}){
     if(!file)throw new Error('baseline-file-required');
     if(!this.identity)await this.bind();
+    if(!this.identity)throw staleWorkspaceError();
+    const revision=this.bindingRevision, request=++this.baselineSequence;
+    const assertCurrent=()=>{this._assertBinding(revision);if(request!==this.baselineSequence)throw staleWorkspaceError();};
     const other=backend||this.backendFactory();
-    const info=await other.open(file);const currentArch=this.identity?.metadata?.architecture||null;const sliceIndex=chooseSlice(info,currentArch);
+    const info=await other.open(file);assertCurrent();
+    const currentArch=this.identity?.metadata?.architecture||null;const sliceIndex=chooseSlice(info,currentArch);
     if(sliceIndex<0)throw new Error('baseline-slice-unavailable');
     const slice=info.slices[sliceIndex];const arch=slice?.capability?.architecture||slice?.info?.architecture||slice?.info?.cpu||null;
     if(currentArch&&arch&&currentArch!==arch){const error=new Error(`architecture mismatch: ${currentArch} vs ${arch}`);error.code='DIFF_ARCH_MISMATCH';throw error;}
-    const hash=await other.ensureContentHash();const result=await other.analyze(sliceIndex);const symbols=new SymbolIndex({...result,regions:slice?.regions||[]});
-    const functions=functionsFromSymbols(symbols);
+    const hash=await other.ensureContentHash();assertCurrent();
+    const result=await other.analyze(sliceIndex);assertCurrent();
+    const symbols=new SymbolIndex({...result,regions:slice?.regions||[]});
+    const functions=functionsFromSymbols(symbols);assertCurrent();
     this.baseline={file,backend:other,info,sliceIndex,slice,architecture:arch,hash,symbols,functions,complete:functions.complete===true};
     this.diffState=null;return this.baseline;
   }
   async diff(options={}){
     if(this.busy)return this.busy;
-    this.busy=(async()=>{
+    const revision=this.bindingRevision;
+    let task;
+    task=(async()=>{
       if(!this.baseline)throw new Error('baseline-not-loaded');
       try{await this.app.ensureRecognition?.({maxFunctions:MAX_DIFF_FUNCTIONS,knowledgeLimit:0});}catch{/* symbol fallback remains valid */}
+      this._assertBinding(revision);
       const current=currentDiffFunctions(this.app), before=this.baseline.functions;
       const result=diffFunctions(before,current,{mode:'fast',threshold:options.threshold??0.62,matchBudget:options.matchBudget||{maxCandidateEvaluations:1500000,maxEdges:300000,maxComponentNodes:4096,maxComponentEdges:65536}});
+      this._assertBinding(revision);
       const inputsComplete=before.complete===true&&current.complete===true;
       result.completeness={complete:inputsComplete&&result.truncated!==true,reasons:[],baseline:{complete:before.complete===true,total:before.total,scanned:before.scanned,reason:before.truncationReason},current:{complete:current.complete===true,total:current.total,scanned:current.scanned,reason:current.truncationReason}};
       if(!before.complete)result.completeness.reasons.push('baseline-function-set-incomplete');
       if(!current.complete)result.completeness.reasons.push('current-function-set-incomplete');
       if(result.truncated)result.completeness.reasons.push('matcher-truncated');
       result.provenance={baselineHash:this.baseline.hash,currentHash:this.identity?.hash||null,architecture:this.baseline.architecture,currentArchitecture:this.identity?.metadata?.architecture||null,baselineName:this.baseline.info?.name||this.baseline.file?.name||null,currentName:this.identity?.metadata?.name||null,complete:result.completeness.complete};
+      this._assertBinding(revision);
       this.diffState=result;return result;
-    })().finally(()=>{this.busy=null;});return this.busy;
+    })().finally(()=>{if(this.busy===task)this.busy=null;});
+    this.busy=task;return task;
   }
   getBinaryDiff(){return this.diffState;}
 }
