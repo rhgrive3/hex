@@ -11,6 +11,7 @@ import {
   capabilityDisplay,
   currentSupportMatrix,
 } from '../js/platform/capability-maturity.js';
+import { supportDisplayForTruth, supportTruthForImage } from '../js/platform/support-capability.js';
 
 assert.deepEqual(Object.keys(ARCHITECTURE_LEVELS), ['A0', 'A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7']);
 assert.deepEqual(Object.keys(FORMAT_LEVELS), ['F0', 'F1', 'F2', 'F3', 'F4', 'F5', 'F6']);
@@ -66,31 +67,49 @@ assert.equal(noDecoder.features.ssaMemoryDataflow, 'unavailable');
 assert.equal(noDecoder.features.decompiler, 'unavailable');
 assert.ok(noDecoder.limitations.includes('decoder-unavailable'));
 
-// A working decoder is only A1 for x86-64. It must never imply semantics.
+// Canonical truth: a working decoder is only A1 for x86-64. It must never imply semantics.
+const x86Truth = supportTruthForImage(
+  { arch: 'x86_64', format: 'elf' },
+  { engine: { x86_64: true, verified: true } },
+);
+assert.equal(x86Truth.architecture.level, 'A1');
+assert.equal(x86Truth.architecture.features.decode, 'supported');
+assert.equal(x86Truth.architecture.features.lowLevelEffects, 'unsupported');
+assert.equal(x86Truth.architecture.features.cfgSemanticIR, 'unsupported');
+assert.equal(x86Truth.architecture.features.ssaMemoryDataflow, 'unsupported');
+assert.equal(x86Truth.architecture.features.decompiler, 'unsupported');
+assert.equal(x86Truth.format.level, 'F4');
+
+const unavailableTruth = supportTruthForImage(
+  { arch: 'arm64', format: 'macho' },
+  { engine: { arm64: false, verified: true } },
+);
+assert.equal(unavailableTruth.architecture.level, 'A0');
+assert.equal(unavailableTruth.architecture.features.decode, 'unavailable');
+assert.equal(unavailableTruth.architecture.features.lowLevelEffects, 'unavailable');
+assert.equal(unavailableTruth.architecture.features.decompiler, 'unavailable');
+
+const arm64eTruth = supportTruthForImage(
+  { arch: 'arm64e', format: 'macho' },
+  { engine: { arm64: true, verified: true } },
+);
+assert.equal(arm64eTruth.architecture.level, 'A6');
+assert.equal(arm64eTruth.architecture.fullySatisfiedLevel, 'A1');
+assert.equal(arm64eTruth.architecture.partial, true);
+assert.equal(arm64eTruth.architecture.features.lowLevelEffects, 'partial');
+assert.equal(arm64eTruth.architecture.features.decompiler, 'partial');
+
+// Legacy API stays compatible while callers migrate to the canonical support object.
 const x86Capability = architectureCapability({ arch: 'x86_64', format: 'elf', endian: 'little', bits: 64 }, { x86_64: true, verified: true });
 assert.equal(x86Capability.canDisassemble, true);
-assert.equal(x86Capability.canLiftSemantics, false);
-assert.equal(x86Capability.canBuildCFG, false);
-assert.equal(x86Capability.canBuildSSA, false);
 assert.equal(x86Capability.canAnalyzeDataflow, false);
-assert.equal(x86Capability.canDecompile, false);
-assert.equal(x86Capability.maturity.level, 'A1');
-
 const unavailableCapability = architectureCapability({ arch: 'arm64', format: 'macho', endian: 'little', bits: 64 }, { arm64: false, verified: true });
 assert.equal(unavailableCapability.canDisassemble, false);
-assert.equal(unavailableCapability.canLiftSemantics, false);
-assert.equal(unavailableCapability.canBuildCFG, false);
-assert.equal(unavailableCapability.canBuildSSA, false);
 assert.equal(unavailableCapability.canAnalyzeDataflow, false);
-assert.equal(unavailableCapability.canDecompile, false);
-assert.equal(unavailableCapability.maturity.level, 'A0');
-
 const arm64eCapability = architectureCapability({ arch: 'arm64e', format: 'macho', endian: 'little', bits: 64 }, { arm64: true, verified: true });
 assert.equal(arm64eCapability.canDisassemble, true);
 assert.equal(arm64eCapability.canAnalyzeDataflow, true);
-assert.equal(arm64eCapability.canDecompile, true);
 assert.equal(arm64eCapability.partial, true);
-assert.equal(arm64eCapability.maturity.fullySatisfiedLevel, 'A1');
 
 const macho = formatMaturity('macho');
 assert.equal(macho.level, 'F5');
@@ -121,6 +140,9 @@ const arm64Display = capabilityDisplay(arm64);
 assert.equal(arm64Display.levelCode, 'A6');
 assert.equal(arm64Display.levelLabel, 'Decompiler');
 assert.equal(arm64Display.statusLabel, 'Supported');
+const projectedDisplay = supportDisplayForTruth(arm64eTruth);
+assert.equal(projectedDisplay.architecture.statusLabel, 'Partial');
+assert.ok(projectedDisplay.architecture.limitations.some((text) => text.includes('pointer-authentication')));
 
 const matrix = currentSupportMatrix({ decoderSupport: { arm64: true, x86_64: true } });
 assert.deepEqual(matrix.architectures.map((entry) => [entry.id, entry.level, entry.status]), [
