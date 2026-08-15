@@ -1,4 +1,8 @@
-import { assemble as assembleArm64 } from '../patch.js';
+import {
+  architecturePluginV2,
+  architecturePluginsV2,
+  ArchitecturePluginV2,
+} from '../targets/architecture/index.js';
 
 const BUILTINS = new Map();
 
@@ -87,8 +91,11 @@ export function architectureAdapter(id) { return BUILTINS.get(canonicalId(id)) |
 export function architectureCapability(image, engine = {}) {
   const architecture = canonicalId(image?.arch || 'unknown');
   const adapter = architectureAdapter(architecture);
+  const target = architecturePluginV2(architecture);
   const engineSupported = !!engine[architecture] || (architecture === 'arm64e' && !!engine.arm64);
-  const arm64Analysis = (architecture === 'arm64' || architecture === 'arm64e') && engineSupported;
+  const legacyArm64Analysis = (architecture === 'arm64' || architecture === 'arm64e') && engineSupported;
+  const semanticCapability = target?.capabilities?.semanticAnalysis || 'unsupported';
+  const arm64Analysis = legacyArm64Analysis && semanticCapability !== 'unsupported';
   const emulationSupported = !!engine.emulation?.[architecture];
   const analysisLevel = arm64Analysis ? (architecture === 'arm64e' ? 'partial' : 'full') : 'unsupported';
   return Object.freeze({
@@ -101,39 +108,21 @@ export function architectureCapability(image, engine = {}) {
   });
 }
 
-const ARM64_ADAPTER = registerArchitectureAdapter({
-  id: 'arm64', instructionAlignment: 4, fixedInstructionSize: 4, viewerCompatible: true,
-  assemble: assembleArm64,
-  controlFlow(instruction) {
-    const op = String(instruction?.mnemonic || '').toLowerCase();
-    if (/^ret(?:aa|ab)?$/.test(op)) return 'return';
-    if (/^(?:bl|blr|blraa|blrab|blraaz|blrabz)$/.test(op)) return 'call';
-    if (/^(?:b|br|braa|brab|braaz|brabz)$/.test(op)) return 'branch';
-    if (op.startsWith('b.') || op === 'cbz' || op === 'cbnz' || op === 'tbz' || op === 'tbnz') return 'conditional-branch';
-    return 'fallthrough';
-  },
-  callKind(instruction) { return /^(?:bl|blr|blraa|blrab|blraaz|blrabz)$/i.test(instruction?.mnemonic || '') ? 'call' : null; },
-  returnKind(instruction) { return /^ret(?:aa|ab)?$/i.test(instruction?.mnemonic || '') ? 'return' : null; },
-});
+function legacyDefinition(plugin) {
+  const controlFlow = (instruction) => plugin.classifyControlFlow(instruction);
+  return {
+    id:plugin.id,
+    instructionAlignment:plugin.instructionAlignment,
+    fixedInstructionSize:plugin.fixedInstructionSize,
+    viewerCompatible:plugin.viewerCompatible,
+    decode:plugin.decode,
+    assemble:plugin.assemble,
+    controlFlow,
+    callKind(instruction) { return controlFlow(instruction) === 'call' ? 'call' : null; },
+    returnKind(instruction) { return controlFlow(instruction) === 'return' ? 'return' : null; },
+  };
+}
 
-registerArchitectureAdapter({
-  id: 'arm64e', instructionAlignment: ARM64_ADAPTER.instructionAlignment, fixedInstructionSize: ARM64_ADAPTER.fixedInstructionSize,
-  viewerCompatible: ARM64_ADAPTER.viewerCompatible, assemble: ARM64_ADAPTER.assemble,
-  controlFlow: ARM64_ADAPTER.controlFlow, callKind: ARM64_ADAPTER.callKind, returnKind: ARM64_ADAPTER.returnKind,
-});
+for (const plugin of architecturePluginsV2()) registerArchitectureAdapter(legacyDefinition(plugin));
 
-registerArchitectureAdapter({
-  id: 'x86_64', instructionAlignment: 1, fixedInstructionSize: null, viewerCompatible: false,
-  controlFlow(instruction) {
-    const op = String(instruction?.mnemonic || '').toLowerCase();
-    if (op.startsWith('ret')) return 'return';
-    if (op === 'call') return 'call';
-    if (op === 'jmp') return 'branch';
-    if (/^j[^m]/.test(op)) return 'conditional-branch';
-    return 'fallthrough';
-  },
-  callKind(instruction) { return /^call$/i.test(instruction?.mnemonic || '') ? 'call' : null; },
-  returnKind(instruction) { return /^ret/.test(String(instruction?.mnemonic || '').toLowerCase()) ? 'return' : null; },
-});
-
-registerArchitectureAdapter({ id: 'unknown', instructionAlignment: 1, fixedInstructionSize: null, viewerCompatible: false });
+export { ArchitecturePluginV2, architecturePluginV2, architecturePluginsV2 };
