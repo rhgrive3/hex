@@ -40,8 +40,14 @@ function caseLiteral(v) {
   return null;
 }
 
-function caseIdentity(literal) {
-  try { return `n:${BigInt(literal).toString()}`; } catch { return null; }
+function caseIdentity(literal, sw = {}, c = {}) {
+  let raw;
+  try { raw = BigInt(literal); } catch { return null; }
+  const requestedBits = c.bits ?? c.width ?? sw.bits ?? sw.width ?? sw.valueBits ?? null;
+  const numericBits = Number(requestedBits);
+  const bits = Number.isInteger(numericBits) && numericBits > 0 && numericBits <= 128 ? numericBits : null;
+  const canonical = bits ? BigInt.asUintN(bits, raw) : raw;
+  return `n:${bits || 'integer'}:${canonical.toString()}`;
 }
 
 function targetIndex(result, model) {
@@ -108,8 +114,29 @@ export function structureKnownSwitches(result, model, opts = {}) {
     const cases = sw.cases.map((c) => normalizedCase(c, result, opts, index));
     if (cases.some((c) => !c)) continue;
     const values = cases.map((c) => caseLiteral(c.value));
-    const identities = values.map(caseIdentity);
-    if (values.some((v) => v == null) || identities.some((v) => v == null) || new Set(identities).size !== identities.length) continue;
+    const identities = values.map((v, i) => caseIdentity(v, sw, sw.cases[i] || {}));
+    if (values.some((v) => v == null) || identities.some((v) => v == null)) continue;
+    const seenIdentities = new Map();
+    let duplicateIdentity = null;
+    for (let i = 0; i < identities.length; i++) {
+      const identity = identities[i];
+      if (seenIdentities.has(identity)) {
+        duplicateIdentity = { first: seenIdentities.get(identity), second: i, identity };
+        break;
+      }
+      seenIdentities.set(identity, i);
+    }
+    if (duplicateIdentity) {
+      result.warnings = [...(result.warnings || []), `Switch at row ${sw.row} descriptor conflict: duplicate case values after integer canonicalization (${duplicateIdentity.identity}).`];
+      result.evidence = [...(result.evidence || []), {
+        row: sw.row,
+        address: sw.address ?? null,
+        op: 'switch-conflict',
+        reason: 'duplicate case values after width-aware integer canonicalization',
+        cases: cases.map((c, i) => ({ value: values[i], target: c.address })),
+      }];
+      continue;
+    }
     let defaultAddress = sw.defaultAddress ?? sw.defaultTarget ?? null;
     if (defaultAddress == null && sw.defaultBlock != null) defaultAddress = addressForBlock(result, opts, sw.defaultBlock, index);
     try { if (defaultAddress != null) defaultAddress = BigInt(defaultAddress); } catch { defaultAddress = null; }
