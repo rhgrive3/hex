@@ -12,15 +12,17 @@ export function wireMeta(request, controller, intent, sessionId = null) { return
 export function maxWireUsage(a, b) { return Object.fromEntries(Object.keys(a).map((key) => [key, Math.max(Number(a[key] || 0), Number(b[key] || 0))])); }
 export function memoryAnchor(snapshot, effectiveScope) { return { snapshotId: snapshot.id, binaryId: snapshot.binaryId, functionAddress: snapshot.currentFunction?.address || null, selection: snapshot.selection ? { start: snapshot.selection.start, end: snapshot.selection.end } : null, runtimeSessionId: snapshot.runtimeSessionIdentity || null, effectiveScope }; }
 export function sessionMatchesSnapshot(session, snapshot) {
-  const sessionId = session.binaryId == null ? null : String(session.binaryId);
-  const snapshotId = snapshot.binaryId == null ? null : String(snapshot.binaryId);
-  let binaryMatches = sessionId == null || sessionId === snapshotId;
+  const sessionIdentity = session.binaryIdentity || null;
+  const snapshotIdentity = snapshot.binaryIdentity || null;
+  const sessionId = session.binaryId ?? sessionIdentity?.id ?? null;
+  const snapshotId = snapshot.binaryId ?? snapshotIdentity?.id ?? null;
+  const sessionBindingId = sessionId == null ? null : String(sessionId);
+  const snapshotBindingId = snapshotId == null ? null : String(snapshotId);
+  let binaryMatches = sessionBindingId == null || sessionBindingId === snapshotBindingId;
   if (!binaryMatches) {
-    const sessionIdentity = session.binaryIdentity || null;
-    const snapshotIdentity = snapshot.binaryIdentity || null;
-    const sessionStrong = strongIdentity(sessionIdentity, sessionId);
-    const snapshotStrong = strongIdentity(snapshotIdentity, snapshotId);
-    const sessionLegacy = sessionIdentity?.legacyId ?? (!sessionIdentity ? sessionId : null);
+    const sessionStrong = strongIdentity(sessionIdentity, sessionBindingId);
+    const snapshotStrong = strongIdentity(snapshotIdentity, snapshotBindingId);
+    const sessionLegacy = sessionIdentity?.legacyId ?? (!sessionIdentity ? sessionBindingId : null);
     const snapshotLegacy = snapshot.legacyBinaryId ?? snapshotIdentity?.legacyId ?? null;
 
     // Backward compatibility: an old session that only stored filename:slice,
