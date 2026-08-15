@@ -24,6 +24,7 @@ jobs:
         run: |
           python3 tools/apply-issue-500-preprocessing.py
           python3 tools/update-issue-500-preprocessing-tests.py
+          python3 tools/reconcile-issue-500-main.py
       - name: Focused matcher regression including raw 100k fixture
         run: node tests/issue-500-matcher-budget.mjs
       - name: Recognition regression suite
