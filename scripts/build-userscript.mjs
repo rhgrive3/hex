@@ -66,6 +66,7 @@ const metadata = `// ==UserScript==\n` +
   `// @match        https://chatgpt.com/*\n` +
   `// @run-at       document-idle\n` +
   `// @inject-into  content\n` +
+  `// @grant        GM.addStyle\n` +
   `// @grant        GM.xmlHttpRequest\n` +
   `// @updateURL    ${ORIGIN_TOKEN}/hex.meta.js\n` +
   `// @downloadURL  ${ORIGIN_TOKEN}/hex.user.js\n` +
@@ -211,10 +212,17 @@ function hostBootstrap(bodyHtml, scopedCss, workerManifest) {
     `    host.style.cssText = 'position:fixed;inset:0;z-index:2147483646;visibility:hidden;pointer-events:none;background:#fff;';\n` +
     `    host.setAttribute('aria-hidden','true');\n` +
     `    host.innerHTML = ${JSON.stringify(bodyHtml)};\n` +
-    `    const style = document.createElement('style');\n` +
-    `    style.id = 'hex-userscript-style';\n` +
-    `    style.textContent = ${JSON.stringify(scopedCss)};\n` +
-    `    (document.head || document.documentElement).append(style);\n` +
+    `    const css = ${JSON.stringify(scopedCss)};\n` +
+    `    const fallbackStyle = () => {\n` +
+    `      if (document.getElementById('hex-userscript-style')) return;\n` +
+    `      const style = document.createElement('style');\n` +
+    `      style.id = 'hex-userscript-style';\n` +
+    `      style.textContent = css;\n` +
+    `      (document.head || document.documentElement).append(style);\n` +
+    `    };\n` +
+    `    if (globalThis.GM && typeof globalThis.GM.addStyle === 'function') {\n` +
+    `      Promise.resolve(globalThis.GM.addStyle(css)).catch(fallbackStyle);\n` +
+    `    } else fallbackStyle();\n` +
     `    document.documentElement.append(host);\n` +
     `  }\n` +
     `})();`;
