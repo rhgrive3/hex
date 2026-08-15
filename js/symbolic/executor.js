@@ -247,15 +247,25 @@ function stopResult(state, reason, inst) {
   };
 }
 
+function executionBudget(value, fallback, min, max, name) {
+  const n = value == null ? fallback : Number(value);
+  if (!Number.isFinite(n) || !Number.isSafeInteger(n)) throw new TypeError(`${name} must be a finite safe integer`);
+  if (n < min) return min;
+  return Math.min(n, max);
+}
+
 /** Explore bounded Semantic IR paths. */
 export function symbolicExecute(ir, opts) {
   if (!ir || !ir.blocks || !ir.blocks.length) return { paths: [], truncated: false, engine: 'semantic-ir-symbolic' };
-  const maxPaths = Math.max(1, opts && opts.maxPaths || 16);
-  const maxSteps = Math.max(8, opts && opts.maxSteps || 2000);
-  const maxBranches = Math.max(1, opts && opts.maxBranches || 32);
-  const maxBlockVisits = Math.max(1, opts && opts.maxBlockVisits || 3);
-  const cancelled = opts && opts.isCancelled || (() => false);
-  const deadline = Date.now() + Math.max(10, opts && opts.timeoutMs || 250);
+  const maxPaths = executionBudget(opts && opts.maxPaths, 16, 1, 64, 'maxPaths');
+  const maxSteps = executionBudget(opts && opts.maxSteps, 2000, 8, 20000, 'maxSteps');
+  const maxBranches = executionBudget(opts && opts.maxBranches, 32, 1, 256, 'maxBranches');
+  const maxBlockVisits = executionBudget(opts && opts.maxBlockVisits, 3, 1, 32, 'maxBlockVisits');
+  const timeoutMs = executionBudget(opts && opts.timeoutMs, 250, 10, 5000, 'timeoutMs');
+  const cancelledFn = opts && opts.isCancelled || (() => false);
+  const signal = opts && opts.signal || null;
+  const cancelled = () => !!(signal && signal.aborted) || cancelledFn();
+  const deadline = Date.now() + timeoutMs;
   const addressMap = addressBlockMap(ir);
   const queue = [{ block: ir.entry || 0, prevBlock: -1, memory: new Map(), values: new Map(), constraints: [], branches: [], touchedFields: [], visits: new Map(), steps: 0 }];
   const paths = [];
@@ -274,8 +284,6 @@ export function symbolicExecute(ir, opts) {
     const memo = new Map();
     let transferred = false;
 
-    // PHI choice is defined by the edge entering this block. Capture it now so
-    // later descendant blocks cannot accidentally reinterpret the predecessor.
     for (const phi of block.phis || []) {
       if (!phi.dst) continue;
       const value = evalValue(phi.dst, state, ir, opts, memo, new Set());
@@ -286,8 +294,6 @@ export function symbolicExecute(ir, opts) {
       state.steps++;
       if (state.steps > maxSteps) { paths.push(stopResult(state, 'step-budget', inst)); transferred = true; break; }
 
-      // A load observes memory at its program point, not when its SSA value is
-      // eventually consumed. Snapshot the symbolic value immediately.
       if (inst.op === OP.LOAD) {
         if (!inst.dst || !inst.loc) {
           paths.push(stopResult(state, 'unsupported-load', inst)); transferred = true; break;
