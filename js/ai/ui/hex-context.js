@@ -114,11 +114,12 @@ export function createHexAIContext(app) {
     },
     get selection() { return selectionContext(app); },
     get project() {
-      return {
-        names: app.notes ? app.notes.nameEntries().slice(0, 400) : [],
-        lastGoal: app.lastGoal ? app.lastGoal.text : null,
+      return app.workspace?.project || app.activeProject || {
+        binary:null,user:{names:app.notes?app.notes.nameEntries().slice(0,400):[]},navigation:{lastQuery:app.lastGoal?.text||null},
       };
     },
+    get binaryDiff() { return app.getBinaryDiff?.() || null; },
+    getBinaryDiff: () => app.getBinaryDiff?.() || null,
 
     functionName: nameOf,
     analyze: (address) => analyzeModelAt(app, address),

@@ -37,6 +37,7 @@ import { PluginHost } from './plugins.js';
 import { showTools, prettyName } from './tools.js';
 import { NavigationHistory } from './navigation.js';
 import { STRING_SCAN_BUDGET, StringCollectionBudget } from './string-budget.js';
+import { ProductWorkspace } from './workspace.js';
 
 const $ = (id) => document.getElementById(id);
 const FUNCTION_DISCOVERY_GLOBAL_CAP = 400_000;
@@ -172,6 +173,8 @@ class App {
       onRangeChange: () => this.updateSelectionBar(),
     });
     this.viewer.attachScrubber(this.dom.scrubber, this.dom.thumb);
+    this.workspace = new ProductWorkspace(this);
+    this.activeProject = null;
 
     this.applyTheme(this.prefs.theme || 'system');
     this.applyTextSize(this.prefs.textSize || 'm');
@@ -871,6 +874,7 @@ class App {
     if (!file) return;
     if (file.size === 0) { alertDialog(t('err.emptyTitle'), t('err.emptyText')); return; }
     const sampleOpen = !!(opts && opts.sample);
+    this.workspace?.autosave();
     this.setBusy(true, t('status.reading', { name:file.name }));
     let info;
     try { info = await this.backend.open(file); }
@@ -899,7 +903,10 @@ class App {
     this.patches=new PatchSet();
     this.setBusy(false);
     this.applySlice(sliceIndex,info);
-    void this.attachNotes(file,info,sliceIndex,openEpoch);
+    void this.attachNotes(file,info,sliceIndex,openEpoch)
+      .then(()=>this.workspace?.bind())
+      .then((project)=>{if(project)this.activeProject=project;})
+      .catch(()=>{});
     if (info.warnings && info.warnings.length) toast(info.warnings[0]);
     const slice=this.currentSlice();
     if (slice && slice.info && slice.info.encrypted) alertDialog(t('err.encryptedTitle'),t('err.encryptedText'));
@@ -1187,6 +1194,7 @@ class App {
   async selectSlice(index) {
     const info=this.store.get('fileInfo');
     if (!info || !info.slices[index] || info.slices[index].error) return;
+    this.workspace?.autosave();
     this.noteAttachController?.abort();
     this.backend.advanceEpoch();
     this.forgetSemantics(true);
@@ -1196,8 +1204,29 @@ class App {
     const file=this.store.get('file');
     const epoch=this.backend.gen;
     this.applySlice(index,info);
-    void this.attachNotes(file,info,index,epoch);
+    void this.attachNotes(file,info,index,epoch)
+      .then(()=>this.workspace?.bind())
+      .then((project)=>{if(project)this.activeProject=project;})
+      .catch(()=>{});
   }
+
+  async exportProjectFile(){
+    if(!this.store.get('fileInfo'))throw new Error('open-file-first');
+    if(!this.workspace.identity)this.activeProject=await this.workspace.bind();
+    return this.workspace.exportProject();
+  }
+
+  async importProjectFile(file){
+    if(!this.store.get('fileInfo'))throw new Error('open-file-first');
+    if(!this.workspace.identity)await this.workspace.bind();
+    const project=await this.workspace.importProject(file);this.activeProject=project;this.updateChrome();return project;
+  }
+
+  async loadDiffBaseline(file){return this.workspace.loadBaseline(file);}
+  async runBinaryDiff(options){return this.workspace.diff(options);}
+  getBinaryDiff(){return this.workspace.getBinaryDiff();}
+  saveWorkspace(){return this.workspace.autosave();}
+
 
   selectRegion(region, { silent } = {}) {
     if (!region) return;
