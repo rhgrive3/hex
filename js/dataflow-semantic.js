@@ -229,13 +229,22 @@ function returnedReads(ir) {
   const out = [];
   const covered = new Set();
   for (const ret of ir.instructions || []) {
-    if (ret.op !== OP.RET || !ret.args[0] || !ret.args[0].value) continue;
-    const load = rootLoad(ret.args[0].value);
+    if (ret.op !== OP.RET) continue;
+    // RET itself carries no universal x0 source (#130). For the compatibility
+    // getter fact only, a field load that is the reaching definition of x0 at
+    // the return site is independent structural evidence of a getter-shaped
+    // result. This does not attach x0 to RET and therefore cannot become a
+    // generic return-derived value for void functions.
+    const explicit = ret.args?.[0]?.value || null;
+    const candidate = explicit || valueBefore(ir, ret, 'x0');
+    if (!candidate) continue;
+    const load = rootLoad(candidate);
     if (!load || !load.loc || load.loc.kind !== MK.FIELD) continue;
     const location = locationShape(load, load.loc);
     if (!location || location.key == null || covered.has(location.key)) continue;
     covered.add(location.key);
-    const reg = ret.args[0].value.reg || 'x0';
+    const reg = candidate.reg || 'x0';
+    const confidence = explicit ? SCORE.high : SCORE.inferred;
     out.push({
       kind: 'read',
       engine: 'ir-semantic',
@@ -248,10 +257,13 @@ function returnedReads(ir) {
       steps: [],
       store: { row: load.row, address: load.address, reg },
       register: reg,
-      confidence: SCORE.high,
-      level: levelOf(SCORE.high),
-      evidence: updateEvidence('read', load),
-      ir: { location: load.loc, load, ret },
+      confidence,
+      level: levelOf(confidence),
+      evidence: [
+        ...updateEvidence('read', load),
+        ...(explicit ? [] : [ev('return-candidate', ret.row, { reg:'x0', reason:'terminal-field-load', engine:'ir-semantic' })]),
+      ],
+      ir: { location: load.loc, load, ret, returnCandidate: !explicit },
     });
   }
   return out;

@@ -112,18 +112,35 @@ export function parseExceptionFunctions(r, dir, image, machine) {
   }
 }
 
-export function parseBaseRelocations(r, dir, image) {
+function allowedBaseRelocationTypes(machine) {
+  // IMAGE_REL_BASED_* values defined for the corresponding PE machine.
+  if (machine === 0x014c) return new Set([1, 2, 3, 4]);                 // x86
+  if (machine === 0x8664) return new Set([1, 2, 3, 4, 10]);            // x86-64
+  if (machine === 0x01c0 || machine === 0x01c4) return new Set([3, 5, 7]); // ARM/Thumb
+  if (machine === 0xaa64 || machine === 0xa641) return new Set([4, 5, 6, 7, 8, 10]); // ARM64/ARM64EC
+  return new Set([1, 2, 3, 4, 5, 6, 7, 8, 10]);
+}
+
+export function parseBaseRelocations(r, dir, image, machine = null) {
   if (!dir || !dir.rva || dir.size < 8) return;
   let off = rvaToOffset(image, dir.rva);
   if (off == null) return;
   const end = Math.min(r.length, off + dir.size);
+  const allowed = allowedBaseRelocationTypes(machine);
   while (off + 8 <= end) {
     const pageRva = r.u32(off), blockSize = r.u32(off + 4);
-    if (blockSize < 8 || off + blockSize > end) break;
-    const count = Math.floor((blockSize - 8) / 2);
+    if (blockSize < 8 || (blockSize & 1) !== 0 || off + blockSize > end) {
+      image.warnings.push(`Malformed PE base-relocation block at file offset 0x${off.toString(16)}`);
+      break;
+    }
+    const count = (blockSize - 8) / 2;
     for (let i = 0; i < count; i++) {
       const raw = r.u16(off + 8 + i * 2), type = raw >>> 12, within = raw & 0xfff;
       if (!type) continue;
+      if (!allowed.has(type)) {
+        image.warnings.push(`Ignored reserved/unsupported PE base relocation type ${type} at RVA 0x${(pageRva + within).toString(16)}`);
+        continue;
+      }
       const address = image.imageBase + BigInt(pageRva + within);
       image.relocations.push({ address, fileOffset: image.addressToOffset(address), type, symbol: null, addend: null, section: null, source: 'PE-base-reloc' });
     }
@@ -163,4 +180,62 @@ function rvaToOffset(image, rva) {
 }
 export function peMachineName(m) {
   return ({ 0x014c: 'x86', 0x8664: 'x86_64', 0x01c0: 'arm', 0x01c4: 'armv7', 0xaa64: 'arm64', 0xa641: 'arm64ec', 0x5032: 'riscv32', 0x5064: 'riscv64' })[m] || `machine-${m.toString(16)}`;
+}
+
+function readPointer(r, off, bits) { return bits===64?r.u64(off):BigInt(r.u32(off)); }
+
+export function parseTlsDirectory(r, dir, image) {
+  const need=image.bits===64?40:24;
+  if (!dir || !dir.rva || dir.size<need) return;
+  const off=rvaToOffset(image,dir.rva);
+  if (off==null || off+need>r.length) return;
+  const callbacksVa=readPointer(r,off+(image.bits===64?24:12),image.bits);
+  const callbacks=[];
+  if (callbacksVa) {
+    const ptrSize=image.bits===64?8:4;
+    const tableOff=image.addressToOffset(callbacksVa);
+    if (tableOff!=null && tableOff<=BigInt(Number.MAX_SAFE_INTEGER)) {
+      let p=Number(tableOff);
+      for (let i=0;i<65536 && p+ptrSize<=r.length;i++,p+=ptrSize) {
+        const target=readPointer(r,p,image.bits);
+        if (!target) break;
+        const sec=image.sectionAt(target);
+        if (!sec?.perms?.execute) { image.warnings.push(`Ignored TLS callback outside executable section: 0x${target.toString(16)}`); continue; }
+        callbacks.push(target);
+        image.functions.push(functionSeed(target,{source:'tls-callback',confidence:0.999}));
+      }
+    }
+  }
+  image.metadata.tls={callbacks,callbacksAddress:callbacksVa||null};
+}
+
+export function parseLoadConfig(r, dir, image) {
+  if (!dir || !dir.rva || dir.size<4) return;
+  const off=rvaToOffset(image,dir.rva);
+  if (off==null || off+4>r.length) return;
+  const declared=Math.min(r.u32(off),dir.size,r.length-off);
+  const is64=image.bits===64;
+  const tableOffset=is64?128:80, countOffset=is64?136:84, flagsOffset=is64?144:88;
+  const ptrSize=is64?8:4;
+  if (declared<countOffset+ptrSize) return;
+  const tableVa=readPointer(r,off+tableOffset,image.bits);
+  const count64=readPointer(r,off+countOffset,image.bits);
+  const guardFlags=declared>=flagsOffset+4?r.u32(off+flagsOffset):0;
+  const extra=(guardFlags>>>28)&0xf;
+  const entrySize=4+extra;
+  const count=count64>10000000n?10000000:Number(count64);
+  const functions=[];
+  const tableFile=tableVa?image.addressToOffset(tableVa):null;
+  if (tableFile!=null && tableFile<=BigInt(Number.MAX_SAFE_INTEGER)) {
+    let p=Number(tableFile);
+    for (let i=0;i<count && p+4<=r.length;i++,p+=entrySize) {
+      const rva=r.u32(p);
+      if (!rva) continue;
+      const address=image.imageBase+BigInt(rva), sec=image.sectionAt(address);
+      if (!sec?.perms?.execute) { image.warnings.push(`Ignored GuardCF target outside executable section at RVA 0x${rva.toString(16)}`); continue; }
+      functions.push(address);
+      image.functions.push(functionSeed(address,{source:'guard-cf',confidence:0.995}));
+    }
+  }
+  image.metadata.loadConfig={guardFlags,guardCFFunctionTable:tableVa||null,guardCFFunctionCount:count64,guardCFFunctions:functions};
 }

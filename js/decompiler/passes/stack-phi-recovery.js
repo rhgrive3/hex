@@ -23,10 +23,10 @@ function terminal(block) {
 
 function branchSuccessors(ir, block, term, opts) {
   const successors = block?.succ || [];
-  if (term?.op !== 'cbr' || successors.length < 2) return { yes: successors[0] ?? null, no: successors[1] ?? null };
+  if (term?.op !== 'cbr' || successors.length < 2) return { yes: successors[0] ?? null, no: successors[1] ?? null, exact: term?.op !== 'cbr' };
   const yes = targetBlock(ir, term, opts);
-  if (yes == null || !successors.includes(yes)) return { yes: successors[0] ?? null, no: successors[1] ?? null };
-  return { yes, no: successors.find((x) => x !== yes) ?? null };
+  if (yes == null || !successors.includes(yes)) return { yes: null, no: null, exact: false };
+  return { yes, no: successors.find((x) => x !== yes) ?? null, exact: true };
 }
 
 function canReach(ir, start, target, blocked, cap = 256) {
@@ -48,19 +48,41 @@ function armIndex(ir, controller, successor, mergeBlock, predecessors) {
   return predecessors.findIndex((pred) => canReach(ir, successor, pred, mergeBlock));
 }
 
+function dominates(ir, candidate, node) {
+  if (candidate == null || node == null) return false;
+  const view = ir.dominators?.[node];
+  if (view?.has) return view.has(candidate);
+  let cur = node, guard = (ir.blocks?.length || 0) + 2;
+  while (cur != null && cur >= 0 && guard-- > 0) {
+    if (cur === candidate) return true;
+    cur = ir.idom?.[cur] ?? ir.blocks?.[cur]?.idom ?? -1;
+  }
+  return false;
+}
+
+function domDepth(ir, block) {
+  let depth = 0, cur = block, guard = (ir.blocks?.length || 0) + 2;
+  while (cur != null && cur >= 0 && guard-- > 0) { depth++; cur = ir.idom?.[cur] ?? ir.blocks?.[cur]?.idom ?? -1; }
+  return depth;
+}
+
 function controllerForMerge(ir, mergeBlock, predecessors, opts) {
   const candidates = [];
   for (const block of ir.blocks || []) {
+    if (!dominates(ir, block.index, mergeBlock)) continue;
     const term = terminal(block);
     if (term?.op !== 'cbr' || (block.succ || []).length < 2) continue;
-    const { yes, no } = branchSuccessors(ir, block, term, opts);
-    const yesIndex = armIndex(ir, block, yes, mergeBlock, predecessors);
-    const noIndex = armIndex(ir, block, no, mergeBlock, predecessors);
+    const arms = branchSuccessors(ir, block, term, opts);
+    if (!arms.exact) continue;
+    const yesIndex = armIndex(ir, block, arms.yes, mergeBlock, predecessors);
+    const noIndex = armIndex(ir, block, arms.no, mergeBlock, predecessors);
     if (yesIndex < 0 || noIndex < 0 || yesIndex === noIndex) continue;
-    candidates.push({ term, yesIndex, noIndex, row: term.row ?? -1 });
+    candidates.push({ term, yesIndex, noIndex, depth: domDepth(ir, block.index) });
   }
-  candidates.sort((a, b) => b.row - a.row);
-  return candidates[0] || null;
+  candidates.sort((a, b) => b.depth - a.depth);
+  if (!candidates.length) return null;
+  if (candidates.length > 1 && candidates[0].depth === candidates[1].depth) return null;
+  return candidates[0];
 }
 
 function expressionMaps(result) {
