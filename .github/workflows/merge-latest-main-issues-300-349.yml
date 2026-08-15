@@ -1,0 +1,51 @@
+name: Verify issues 300-349 against latest main
+
+on:
+  push:
+    branches: [fix-issues-300-349]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: verify-issues-300-349-latest-main
+  cancel-in-progress: false
+
+jobs:
+  merge-and-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix-issues-300-349
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Merge latest main
+        run: |
+          set -euxo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch origin main
+          git merge --no-edit origin/main
+          git diff --check
+
+      - name: Run issue regression suite
+        run: node tests/issues-300-349.mjs
+
+      - name: Run repository checks
+        run: npm run check
+
+      - name: Publish verified integration
+        run: |
+          set -euxo pipefail
+          rm -f .github/workflows/merge-latest-main-issues-300-349.yml
+          git add -A
+          if ! git diff --cached --quiet; then
+            git commit -m 'Remove temporary latest-main verification workflow'
+          fi
+          git push origin HEAD:fix-issues-300-349
