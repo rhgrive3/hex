@@ -1,0 +1,41 @@
+name: Validate decompiler IR batch 2
+on:
+  push:
+    branches:
+      - fix/decompiler-ir-open-issues-batch2-20260815
+permissions:
+  contents: write
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply batch
+        run: python tools/apply-decompiler-ir-batch2.py
+      - name: Syntax
+        run: |
+          node --check js/decompiler/passes/stack-phi-recovery.js
+          node --check js/ir-core.js
+          node --check tests/issues-142-574.mjs
+      - name: Focused regressions
+        run: |
+          node tests/issues-142-574.mjs
+          node tests/ir-alias.mjs
+          node tests/semantic-core.mjs
+      - name: Full validation
+        run: |
+          node tests/run.js
+          npm run check
+      - name: Finalize
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add js/decompiler/passes/stack-phi-recovery.js js/ir-core.js tests/issues-142-574.mjs
+          git commit -m "fix: per-return stack PHI and sound field aliasing (#142 #574)"
+          git rm -f .github/workflows/fix-app-product-remaining.yml tools/apply-decompiler-ir-batch2.py
+          git commit -m "chore: finalize decompiler IR batch 2"
+          git push origin HEAD:fix/decompiler-ir-open-issues-batch2-20260815
