@@ -41,8 +41,8 @@ export function parseMachO(input, opts = {}) {
     const sub = bytes.subarray(Number(selected.offset), Number(selected.offset + selected.size));
     const image = parseThin(sub, { ...opts, containerOffset: selected.offset });
     image.metadata.fat = {
-      slices: selected.all.map((s) => ({ arch: cpuName(s.cpu), cpu: s.cpu, subtype: s.subtype, offset: s.offset, size: s.size })),
-      selected: { arch: cpuName(selected.cpu), offset: selected.offset, size: selected.size },
+      slices: selected.all.map((s) => ({ arch: sliceArchName(s), cpu: s.cpu, subtype: s.subtype, offset: s.offset, size: s.size })),
+      selected: { arch: sliceArchName(selected), cpu: selected.cpu, subtype: selected.subtype, offset: selected.offset, size: selected.size },
     };
     return image;
   }
@@ -318,6 +318,8 @@ function cpuName(cpu) {
   const u = cpu >>> 0;
   return ({ 7: 'x86', 12: 'arm', 18: 'ppc', 0x01000007: 'x86_64', 0x0100000c: 'arm64', 0x0200000c: 'arm64_32' })[u] || `cpu-${u}`;
 }
+function subtypeBase(subtype) { return (subtype >>> 0) & 0x00ffffff; }
+function sliceArchName(slice) { return cpuName(slice.cpu) === 'arm64' && subtypeBase(slice.subtype) === 2 ? 'arm64e' : cpuName(slice.cpu); }
 function platformName(p) { return ({ 1: 'macOS', 2: 'iOS', 3: 'tvOS', 4: 'watchOS', 6: 'macCatalyst', 7: 'iOS-simulator', 8: 'tvOS-simulator', 9: 'watchOS-simulator', 10: 'driverKit', 11: 'visionOS', 12: 'visionOS-simulator' })[p] || `apple-platform-${p}`; }
 function version32(v) { return `${(v >>> 16) & 0xffff}.${(v >>> 8) & 0xff}.${v & 0xff}`; }
 
@@ -352,7 +354,8 @@ function selectFatSlice(bytes, kind, preferredArch) {
     }
   }
   const valid = all.filter((s) => s.offset >= 0n && s.size > 0n && s.offset + s.size <= BigInt(bytes.length));
-  const want = preferredArch ? valid.find((s) => cpuName(s.cpu) === preferredArch) : null;
-  const chosen = want || valid.find((s) => cpuName(s.cpu) === 'arm64') || valid.find((s) => cpuName(s.cpu) === 'x86_64') || valid[0];
+  const want = preferredArch ? valid.find((s) => sliceArchName(s) === preferredArch) : null;
+  if (preferredArch && !want) throw new Error(`requested Mach-O architecture ${preferredArch} is not present in the universal binary`);
+  const chosen = want || valid.find((s) => sliceArchName(s) === 'arm64e') || valid.find((s) => sliceArchName(s) === 'arm64') || valid.find((s) => sliceArchName(s) === 'x86_64') || valid[0];
   return chosen ? { ...chosen, all } : null;
 }

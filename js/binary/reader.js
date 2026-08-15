@@ -1,6 +1,19 @@
+const MAX_SAFE_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
+
+function nonNegativeOffset(value, label = 'offset') {
+  if (typeof value === 'bigint') {
+    if (value < 0n) throw new TypeError(`${label} must be non-negative`);
+    return value;
+  }
+  if (!Number.isSafeInteger(value) || value < 0) throw new TypeError(`${label} must be a non-negative safe integer or bigint`);
+  return BigInt(value);
+}
+
 export class BinaryReadError extends Error {
   constructor(message, offset = null) {
-    const shown = offset == null ? null : (typeof offset === 'bigint' ? offset : BigInt(Number.isFinite(Number(offset)) ? Math.max(0, Math.trunc(Number(offset))) : 0));
+    let shown = null;
+    if (typeof offset === 'bigint' && offset >= 0n) shown = offset;
+    else if (Number.isSafeInteger(offset) && offset >= 0) shown = BigInt(offset);
     super(shown == null ? message : `${message} @ 0x${shown.toString(16)}`);
     this.name = 'BinaryReadError';
     this.offset = offset;
@@ -12,14 +25,15 @@ export class ByteView {
     if (input instanceof Uint8Array) this.bytes = input;
     else if (input instanceof ArrayBuffer) this.bytes = new Uint8Array(input);
     else if (ArrayBuffer.isView(input)) this.bytes = new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
-    else if (input?.__binaryByteBacking === true && Number.isSafeInteger(input.length) && input.length >= 0 && typeof input.subarray === 'function') this.bytes = input;
+    else if (input?.__binaryByteBacking === true && (typeof input.size === 'bigint' || Number.isSafeInteger(input.length)) && typeof input.subarray === 'function') this.bytes = input;
     else throw new TypeError('ByteView expects bytes or a binary byte backing');
     this.view = this.bytes instanceof Uint8Array ? new DataView(this.bytes.buffer, this.bytes.byteOffset, this.bytes.byteLength) : null;
     this.littleEndian = !!littleEndian;
-    this.base = Number(base) || 0;
+    this.base = nonNegativeOffset(base, 'ByteView base');
+    this.lengthBigInt = typeof this.bytes.size === 'bigint' ? this.bytes.size : BigInt(this.bytes.length);
   }
 
-  get length() { return this.bytes.length; }
+  get length() { return this.lengthBigInt > MAX_SAFE_BIGINT ? Number.MAX_SAFE_INTEGER : Number(this.lengthBigInt); }
 
   endian(littleEndian) {
     return new ByteView(this.bytes, { littleEndian, base: this.base });
@@ -28,8 +42,10 @@ export class ByteView {
   check(offset, size = 1) {
     const o = Number(offset);
     const n = Number(size);
-    if (!Number.isSafeInteger(o) || !Number.isSafeInteger(n) || o < 0 || n < 0 || o > this.length || n > this.length - o) {
-      throw new BinaryReadError(`read outside file (${n} bytes)`, this.base + Math.max(0, o || 0));
+    const ob = Number.isSafeInteger(o) && o >= 0 ? BigInt(o) : -1n;
+    const nb = Number.isSafeInteger(n) && n >= 0 ? BigInt(n) : -1n;
+    if (ob < 0n || nb < 0n || ob > this.lengthBigInt || nb > this.lengthBigInt - ob) {
+      throw new BinaryReadError(`read outside file (${n} bytes)`, this.base + (ob >= 0n ? ob : 0n));
     }
     return o;
   }
@@ -59,7 +75,7 @@ export class ByteView {
     const o = this.check(offset, size);
     return new ByteView(this.bytes.subarray(o, o + Number(size)), {
       littleEndian: opts.littleEndian ?? this.littleEndian,
-      base: this.base + o,
+      base: this.base + BigInt(o),
     });
   }
 
@@ -107,7 +123,7 @@ export class ByteView {
       if ((b & 0x80) === 0) return { value, next: p + 1, bytes: p + 1 - Number(offset) };
       shift += 7n;
     }
-    throw new BinaryReadError('ULEB128 is too long', this.base + Number(offset));
+    throw new BinaryReadError('ULEB128 is too long', this.base + BigInt(Number(offset)));
   }
 
   sleb(offset, maxBytes = 10) {
@@ -125,7 +141,7 @@ export class ByteView {
         return { value, next: p + 1, bytes: p + 1 - Number(offset) };
       }
     }
-    throw new BinaryReadError('SLEB128 is too long', this.base + Number(offset));
+    throw new BinaryReadError('SLEB128 is too long', this.base + BigInt(Number(offset)));
   }
 }
 
