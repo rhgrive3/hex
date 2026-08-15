@@ -1,0 +1,232 @@
+import { deepFreeze, jsonSafe, stableStringify } from '../identity/index.js';
+import { createOriginSet } from '../identity/origin.js';
+
+export const EVIDENCE_NODE_FAMILIES = Object.freeze([
+  'BinaryEvidence',
+  'DecodeEvidence',
+  'SemanticEvidence',
+  'DataflowEvidence',
+  'TypeEvidence',
+  'ControlFlowEvidence',
+  'SignatureEvidence',
+  'KnowledgeEvidence',
+  'SymbolicEvidence',
+  'RuntimeEvidence',
+  'UserEvidence',
+  'Claim',
+]);
+
+export const EVIDENCE_EDGE_FAMILIES = Object.freeze([
+  'derived-from',
+  'supports',
+  'contradicts',
+  'refines',
+  'observed-at',
+  'originates-from',
+  'verified-by',
+  'matched-by',
+  'supersedes',
+]);
+
+export const EVIDENCE_VERDICTS = Object.freeze([
+  'confirmed',
+  'supported',
+  'unverified',
+  'contradicted',
+  'unknown',
+]);
+
+export const EVIDENCE_COMPLETENESS = Object.freeze([
+  'complete',
+  'bounded',
+  'partial',
+  'truncated',
+  'unsupported',
+]);
+
+function fail(code) { throw new TypeError(code); }
+function required(value, code) {
+  const text = String(value ?? '').trim();
+  if (!text) fail(code);
+  return text;
+}
+function stringArray(value, code) {
+  if (value == null) return [];
+  if (!Array.isArray(value)) fail(code);
+  return [...new Set(value.map(String).filter(Boolean))].sort();
+}
+function confidence(value) {
+  if (value == null) return null;
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0 || n > 1) fail('evidence-invalid-confidence');
+  return n;
+}
+function enumValue(value, allowed, fallback, code) {
+  const normalized = value == null ? fallback : String(value);
+  if (!allowed.includes(normalized)) fail(code);
+  return normalized;
+}
+
+export function createEvidenceNode(input = {}) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) fail('evidence-invalid-node');
+  const family = enumValue(input.family, EVIDENCE_NODE_FAMILIES, null, 'evidence-invalid-family');
+  if (family === 'Claim') return createClaimNode(input);
+  const node = {
+    id: required(input.id, 'evidence-id-required'),
+    family,
+    binaryId: input.binaryId == null ? null : String(input.binaryId),
+    targetEntityIds: stringArray(input.targetEntityIds, 'evidence-invalid-targets'),
+    semanticKind: input.semanticKind == null ? null : String(input.semanticKind),
+    completeness: enumValue(input.completeness, EVIDENCE_COMPLETENESS, 'partial', 'evidence-invalid-completeness'),
+    confidence: confidence(input.confidence),
+    deterministic: input.deterministic === true,
+    origin: createOriginSet(input.origin ?? {}),
+    payload: jsonSafe(input.payload ?? {}),
+    createdAt: input.createdAt == null ? null : String(input.createdAt),
+  };
+  return deepFreeze(node);
+}
+
+export function createClaimNode(input = {}) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) fail('evidence-invalid-claim');
+  const supportingEvidenceIds = stringArray(input.supportingEvidenceIds, 'evidence-invalid-support-ids');
+  const contradictingEvidenceIds = stringArray(input.contradictingEvidenceIds, 'evidence-invalid-contradiction-ids');
+  const confirmedByEvidenceIds = stringArray(input.confirmedByEvidenceIds, 'evidence-invalid-confirmation-ids');
+  const requestedVerdict = enumValue(input.verdict, EVIDENCE_VERDICTS, 'unknown', 'evidence-invalid-verdict');
+  let verdict = requestedVerdict;
+  if (contradictingEvidenceIds.length || requestedVerdict === 'contradicted') verdict = 'contradicted';
+  else if (requestedVerdict === 'confirmed') verdict = supportingEvidenceIds.length || confirmedByEvidenceIds.length ? 'supported' : 'unverified';
+  const targetEntityIds = stringArray(input.targetEntityIds, 'evidence-invalid-targets');
+  const scope = input.scope == null ? null : jsonSafe(input.scope);
+  if (!targetEntityIds.length && scope == null) fail('evidence-claim-target-required');
+  const semanticKind = required(input.semanticKind, 'evidence-claim-semantic-kind-required');
+  return deepFreeze({
+    id: required(input.id, 'evidence-id-required'),
+    family: 'Claim',
+    binaryId: input.binaryId == null ? null : String(input.binaryId),
+    targetEntityIds,
+    scope,
+    semanticKind,
+    supportingEvidenceIds,
+    contradictingEvidenceIds,
+    confirmedByEvidenceIds,
+    assumptions: Array.isArray(input.assumptions) ? jsonSafe(input.assumptions) : [],
+    completeness: enumValue(input.completeness, EVIDENCE_COMPLETENESS, 'partial', 'evidence-invalid-completeness'),
+    verdict,
+    confidence: confidence(input.confidence),
+    origin: createOriginSet(input.origin ?? {}),
+    payload: jsonSafe(input.payload ?? {}),
+    createdAt: input.createdAt == null ? null : String(input.createdAt),
+  });
+}
+
+export function createEvidenceEdge(input = {}) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) fail('evidence-invalid-edge');
+  return deepFreeze({
+    type: enumValue(input.type, EVIDENCE_EDGE_FAMILIES, null, 'evidence-invalid-edge-family'),
+    from: required(input.from, 'evidence-edge-from-required'),
+    to: required(input.to, 'evidence-edge-to-required'),
+    metadata: jsonSafe(input.metadata ?? {}),
+  });
+}
+
+function equalValue(a, b) { return stableStringify(a) === stableStringify(b); }
+
+export class EvidenceGraph {
+  constructor(initial = {}) {
+    this.nodes = new Map();
+    this.edges = [];
+    for (const node of initial.nodes || []) this.addNode(node);
+    for (const edge of initial.edges || []) this.addEdge(edge);
+  }
+
+  addNode(input) {
+    const node = createEvidenceNode(input);
+    const existing = this.nodes.get(node.id);
+    if (existing) {
+      if (!equalValue(existing, node)) fail('evidence-id-conflict');
+      return existing;
+    }
+    this.nodes.set(node.id, node);
+    return node;
+  }
+
+  addEdge(input) {
+    const edge = createEvidenceEdge(input);
+    if (!this.edges.some((item) => equalValue(item, edge))) this.edges.push(edge);
+    return edge;
+  }
+
+  getNode(id) { return this.nodes.get(String(id)) || null; }
+  hasNode(id) { return this.nodes.has(String(id)); }
+  allNodes() { return Array.from(this.nodes.values()); }
+  allEdges() { return this.edges.slice(); }
+
+  unresolvedReferences() {
+    const missing = new Set();
+    for (const edge of this.edges) {
+      if (!this.nodes.has(edge.from)) missing.add(edge.from);
+      if (!this.nodes.has(edge.to)) missing.add(edge.to);
+    }
+    for (const node of this.nodes.values()) {
+      if (node.family !== 'Claim') continue;
+      for (const id of [...node.supportingEvidenceIds, ...node.contradictingEvidenceIds, ...node.confirmedByEvidenceIds]) {
+        if (!this.nodes.has(id)) missing.add(id);
+      }
+    }
+    return Array.from(missing).sort();
+  }
+
+  evaluateClaim(id) {
+    const claim = this.getNode(id);
+    if (!claim || claim.family !== 'Claim') {
+      return deepFreeze({ verdict: 'unknown', claimId: String(id), supportingEvidenceIds: [], contradictingEvidenceIds: [], confirmedByEvidenceIds: [], missingEvidenceIds: [String(id)] });
+    }
+    const supporting = new Set(claim.supportingEvidenceIds);
+    const contradicting = new Set(claim.contradictingEvidenceIds);
+    const confirmedBy = new Set(claim.confirmedByEvidenceIds);
+    for (const edge of this.edges) {
+      if (edge.from !== claim.id) continue;
+      if (edge.type === 'supports') supporting.add(edge.to);
+      else if (edge.type === 'contradicts') contradicting.add(edge.to);
+      else if (edge.type === 'verified-by') confirmedBy.add(edge.to);
+    }
+    const missingEvidenceIds = new Set();
+    for (const evidenceId of [...supporting, ...contradicting, ...confirmedBy]) {
+      if (!this.nodes.has(evidenceId)) missingEvidenceIds.add(evidenceId);
+    }
+    const knownContradictions = [...contradicting].filter((evidenceId) => this.nodes.has(evidenceId));
+    const knownSupport = [...supporting].filter((evidenceId) => this.nodes.has(evidenceId));
+    const deterministicConfirmations = [...confirmedBy].filter((evidenceId) => this.nodes.get(evidenceId)?.deterministic === true);
+    let verdict = claim.verdict;
+    if (knownContradictions.length || claim.verdict === 'contradicted') verdict = 'contradicted';
+    else if (deterministicConfirmations.length) verdict = 'confirmed';
+    else if (knownSupport.length || claim.verdict === 'supported') verdict = 'supported';
+    else if (claim.verdict === 'unverified') verdict = 'unverified';
+    else verdict = 'unknown';
+    return deepFreeze({
+      verdict,
+      claimId: claim.id,
+      supportingEvidenceIds: Array.from(supporting).sort(),
+      contradictingEvidenceIds: Array.from(contradicting).sort(),
+      confirmedByEvidenceIds: Array.from(confirmedBy).sort(),
+      missingEvidenceIds: Array.from(missingEvidenceIds).sort(),
+      completeness: claim.completeness,
+    });
+  }
+
+  toJSON() {
+    return {
+      schemaVersion: 1,
+      nodes: this.allNodes().map((node) => jsonSafe(node)),
+      edges: this.allEdges().map((edge) => jsonSafe(edge)),
+    };
+  }
+
+  static fromJSON(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) fail('evidence-invalid-graph');
+    if (value.schemaVersion != null && Number(value.schemaVersion) !== 1) fail('evidence-schema-mismatch');
+    if (!Array.isArray(value.nodes) || !Array.isArray(value.edges)) fail('evidence-invalid-graph');
+    return new EvidenceGraph({ nodes: value.nodes, edges: value.edges });
+  }
+}
