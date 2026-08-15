@@ -3,6 +3,9 @@ from pathlib import Path
 p=Path('js/recognition/matcher.js')
 text=p.read_text()
 
+if "from './bounded-matching.js'" in text and 'const budget = createMatchBudget(options.matchBudget || {});' in text and 'const solved = solveCandidateMatching(eligible, budget);' in text:
+    raise SystemExit(0)
+
 old="import { coarseTokens, compareFingerprints, fingerprintFunction, fingerprintFunctionFast } from '../fingerprint/index.js';\n"
 new="""import { coarseTokens, compareFingerprints, fingerprintFunction, fingerprintFunctionFast } from '../fingerprint/index.js';
 import { maximumWeightCandidateMatchingBounded, solveCandidateMatching } from './bounded-matching.js';
