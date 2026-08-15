@@ -28,8 +28,8 @@ replace_once('js/ir-core.js',
 """  if (insn.isCall) {
     const result = callResultLocation(insn, opts);
     // AAPCS64 integer/pointer arguments are live in x0-x7 at the call boundary.
-    // Keep them as explicit SSA uses even when the prototype is unknown: this is
-    // conservative, preserves PHIs, and lets Memory SSA see escaped pointers.
+    // Unknown prototypes intentionally keep all eight uses: conservative liveness
+    // is required for pointer escape and PHI correctness.
     const callSrcs = Array.from({ length: 8 }, (_, i) => ({ t: 'reg', reg: `x${i}`, bits: 64 }));
     if (insn.callTarget == null && ops[0] && ops[0].k === 'reg') {
       const targetReg = regKeyOf(ops[0]);
@@ -46,6 +46,50 @@ replace_once('js/ir-core.js',
     });
     return out;
   }""")
+
+replace_once('js/ir-core.js',
+"""function buildMemorySSA(ir, df, idom, children) {""",
+"""export function stackPointerProvenanceOf(value, memo = new Map(), active = new Set()) {
+  if (!value) return null;
+  if (memo.has(value.id)) return memo.get(value.id);
+  if (active.has(value.id)) return null;
+  active.add(value.id);
+  let out = null;
+  const reg = String(value.reg || '');
+  const def = value.def;
+  if (value.kind === VK.ARG && (reg === 'sp' || reg === 'x29')) {
+    out = { offset: 0n, must: true, via: 'root' };
+  } else if (def?.op === OP.MOV && def.args?.[0]?.value) {
+    const p = stackPointerProvenanceOf(def.args[0].value, memo, active);
+    if (p) out = { ...p, via: 'mov' };
+  } else if (def?.op === OP.PHI && def.args?.length) {
+    const incoming = def.args.map((a) => stackPointerProvenanceOf(a?.value, memo, active));
+    const stackIncoming = incoming.filter(Boolean);
+    if (stackIncoming.length) {
+      const first = stackIncoming[0].offset;
+      out = {
+        offset: stackIncoming.every((p) => p.offset === first) ? first : null,
+        must: stackIncoming.length === incoming.length && stackIncoming.every((p) => p.must !== false),
+        via: 'phi',
+      };
+    }
+  } else if (def?.op === OP.BIN && (def.sub === 'add' || def.sub === 'sub') && def.args?.length >= 2) {
+    const left = def.args[0], right = def.args[1];
+    const lc = left?.value?.const, rc = right?.value?.const;
+    if (rc != null && left?.value) {
+      const p = stackPointerProvenanceOf(left.value, memo, active);
+      if (p) out = { ...p, offset: p.offset == null ? null : p.offset + (def.sub === 'sub' ? -rc : rc), via: def.sub };
+    } else if (def.sub === 'add' && lc != null && right?.value) {
+      const p = stackPointerProvenanceOf(right.value, memo, active);
+      if (p) out = { ...p, offset: p.offset == null ? null : p.offset + lc, via: 'add' };
+    }
+  }
+  active.delete(value.id);
+  memo.set(value.id, out);
+  return out;
+}
+
+function buildMemorySSA(ir, df, idom, children) {""")
 
 replace_once('js/ir-core.js',
 """  /*
@@ -66,63 +110,22 @@ replace_once('js/ir-core.js',
 
   // 呼び出しは、スタック以外のすべてと、番地が漏れたスタックを壊す
 """,
-"""  /*
-   * A stack address can flow through MOV/PHI and pointer-preserving constant
-   * arithmetic before it crosses an opaque boundary.  Escape analysis therefore
-   * follows SSA definitions instead of looking only at a direct ADD result use.
-   * A PHI is a may-escape if any incoming value is stack-derived.
-   */
+"""  /* Stack pointers may flow through ADD/SUB constants, MOV, and PHI before
+   * crossing an opaque boundary. Follow SSA provenance instead of only direct
+   * uses of the original ADD result. A may-stack PHI is sufficient to escape. */
   const stackPointerMemo = new Map();
-  const stackPointerProvenance = (value, active = new Set()) => {
-    if (!value) return null;
-    if (stackPointerMemo.has(value.id)) return stackPointerMemo.get(value.id);
-    if (active.has(value.id)) return null;
-    active.add(value.id);
-    let out = null;
-    const reg = String(value.reg || '');
-    const def = value.def;
-    if (value.kind === VK.ARG && (reg === 'sp' || reg === 'x29')) {
-      out = { offset: 0n, must: true };
-    } else if (def?.op === OP.MOV && def.args?.[0]?.value) {
-      const p = stackPointerProvenance(def.args[0].value, active);
-      if (p) out = { ...p, via: 'mov' };
-    } else if (def?.op === OP.PHI && def.args?.length) {
-      const incoming = def.args.map((a) => stackPointerProvenance(a?.value, active));
-      const stackIncoming = incoming.filter(Boolean);
-      if (stackIncoming.length) {
-        const first = stackIncoming[0].offset;
-        out = { offset: stackIncoming.every((p) => p.offset === first) ? first : null,
-          must: stackIncoming.length === incoming.length && stackIncoming.every((p) => p.must !== false), via: 'phi' };
-      }
-    } else if (def?.op === OP.BIN && (def.sub === 'add' || def.sub === 'sub') && def.args?.length >= 2) {
-      const left = def.args[0], right = def.args[1];
-      const lc = left?.value?.const, rc = right?.value?.const;
-      if (rc != null && left?.value) {
-        const p = stackPointerProvenance(left.value, active);
-        if (p) out = { ...p, offset: p.offset == null ? null : p.offset + (def.sub === 'sub' ? -rc : rc), via: def.sub };
-      } else if (def.sub === 'add' && lc != null && right?.value) {
-        const p = stackPointerProvenance(right.value, active);
-        if (p) out = { ...p, offset: p.offset == null ? null : p.offset + lc, via: 'add' };
-      }
-    }
-    active.delete(value.id);
-    stackPointerMemo.set(value.id, out);
-    return out;
-  };
-
   let stackEscaped = false;
   for (const inst of ir.instructions) {
     if (inst.op !== OP.CALL && inst.op !== OP.STORE && inst.op !== OP.UNKNOWN) continue;
-    // STORE args contain the value being stored, not the address operands. Thus
-    // storing through a local pointer is not mistaken for leaking the pointer.
-    if ((inst.args || []).some((a) => stackPointerProvenance(a?.value))) {
+    // STORE args are stored values; address operands live in inst.addr and are
+    // intentionally excluded so an ordinary local store is not an escape.
+    if ((inst.args || []).some((a) => stackPointerProvenanceOf(a?.value, stackPointerMemo))) {
       stackEscaped = true;
       break;
     }
   }
 
-  // Calls/unknown effects clobber all non-stack state, and stack state only when
-  // a stack-derived pointer may have escaped to an opaque consumer.
+  // Calls/unknown effects clobber stack state only after a proven/may escape.
 """)
 
 replace_once('js/ir-core.js',
