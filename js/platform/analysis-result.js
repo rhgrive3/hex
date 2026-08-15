@@ -13,7 +13,8 @@ function statusReasons(value, prefix, out) {
   for (const reason of [value.partialReason, value.importsPartialReason, value.symbolsPartialReason, value.bindingSitesPartialReason]) {
     if (reason) out.push(`${prefix}:${reason}`);
   }
-  for (const reason of value.reasons || value.bindingSiteReasons || []) out.push(`${prefix}:${reason}`);
+  for (const reason of value.reasons || []) out.push(`${prefix}:${reason}`);
+  for (const reason of value.bindingSiteReasons || []) out.push(`${prefix}:${reason}`);
 }
 
 export function machoSymbolTruth(image) {
