@@ -56,7 +56,9 @@ await test('unknown indexed memory never becomes a concrete field fact', () => {
   const stores = ir.instructions.filter((i) => i.op === OP.STORE);
   assert.ok(stores.length);
   assert.equal(stores[0].loc.kind, MK.UNKNOWN);
-  assert.equal(readModifyWrite(ir).length,0);
+  const rmw = readModifyWrite(ir);
+  assert.equal(rmw.length,1);
+  assert.equal(rmw[0].location.kind, MK.UNKNOWN);
   assert.ok(!semanticFacts(ir).some((f) => f.kind === FACT.RMW));
 });
 
