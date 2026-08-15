@@ -236,7 +236,7 @@ export class Backend {
   }
 
   guessFunctions(regionId, limit, onProgress) { return this.call('guessFunctions', { regionId, limit }, null, onProgress); }
-  scanProgram(regionId, onProgress) { return this.call('scanProgram', { regionId }, null, onProgress); }
+  scanProgram(regionId, onProgress, limits = {}) { return this.call('scanProgram', { regionId, ...limits }, null, onProgress); }
   fieldAccess(params, onProgress) { return this.call('fieldAccess', params, null, onProgress); }
   valueShapes(regionId, onProgress) { return this.call('valueShapes', { regionId }, null, onProgress); }
   fieldAccessMany(regionId, offsets) {

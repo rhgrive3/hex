@@ -1096,19 +1096,22 @@ function functionStartsForRegion(region) {
  *
  * Capstone は通さない。逆アセンブルより桁違いに速いので、数十 MB でも一気に走る。
  */
-async function scanProgram({ regionId, requestId, epoch }) {
+async function scanProgram({ regionId, requestId, epoch, callLimit, refLimit, kindLimit }) {
   const region = regions.get(regionId);
   if (!region) throw new Error('Unknown region.');
   const total = Number(region.size);
   const words = Math.floor(total / 4);
+  const capOf=(value,hard)=>value==null?hard:Math.max(0,Math.min(hard,Math.floor(Number(value)||0)));
+  const callCap=capOf(callLimit,MAX_EDGES), refCap=capOf(refLimit,MAX_REFS), kindCap=capOf(kindLimit,MAX_KIND_WORDS);
 
-  const initial = Math.min(words, EDGES_INITIAL);
-  let callFrom = new BigUint64Array(initial);
-  let callTo = new BigUint64Array(initial);
-  let refFrom = new BigUint64Array(initial);
-  let refTo = new BigUint64Array(initial);
-  let refKind = new Uint8Array(initial);
-  const kinds = new Uint8Array(Math.min(words, MAX_KIND_WORDS));
+  const callInitial = Math.min(words, EDGES_INITIAL, callCap);
+  const refInitial = Math.min(words, EDGES_INITIAL, refCap);
+  let callFrom = new BigUint64Array(callInitial);
+  let callTo = new BigUint64Array(callInitial);
+  let refFrom = new BigUint64Array(refInitial);
+  let refTo = new BigUint64Array(refInitial);
+  let refKind = new Uint8Array(refInitial);
+  const kinds = new Uint8Array(Math.min(words, kindCap));
 
   let nCalls = 0, nRefs = 0;
   let callsCapped = false, refsCapped = false;
@@ -1195,21 +1198,24 @@ async function scanProgram({ regionId, requestId, epoch }) {
   if (callsCapped) truncationReasons.push('call-edge-memory-budget');
   if (refsCapped) truncationReasons.push('reference-memory-budget');
   if (kinds.length < words) truncationReasons.push('kind-stat-budget');
+  const outCallFrom=callFrom.slice(0,nCalls), outCallTo=callTo.slice(0,nCalls);
+  const outRefFrom=refFrom.slice(0,nRefs), outRefTo=refTo.slice(0,nRefs), outRefKind=refKind.slice(0,nRefs);
+  const outKinds=kinds.slice(0,Math.min(words,kinds.length));
   return {
     regionId,
     vmAddr: region.vmAddr,
     words,
-    callFrom, callTo, callCount: nCalls,
-    refFrom, refTo, refKind, refCount: nRefs,
-    kinds,
-    kindsCovered: Math.min(words, kinds.length),
+    callFrom:outCallFrom, callTo:outCallTo, callCount: nCalls,
+    refFrom:outRefFrom, refTo:outRefTo, refKind:outRefKind, refCount: nRefs,
+    kinds:outKinds,
+    kindsCovered: Math.min(words, outKinds.length),
     callsCapped, refsCapped,
     cancelled: false,
     complete: truncationReasons.length === 0,
     truncated: truncationReasons.length > 0,
     truncationReason: truncationReasons[0] || null,
     completeness: { complete: truncationReasons.length === 0, reasons: truncationReasons, memoryBudgetBytes: PROGRAM_INDEX_BUDGET_BYTES, allocatedBytes: allocatedBytes() },
-    __transfer: [callFrom.buffer, callTo.buffer, refFrom.buffer, refTo.buffer, refKind.buffer, kinds.buffer],
+    __transfer: [outCallFrom.buffer, outCallTo.buffer, outRefFrom.buffer, outRefTo.buffer, outRefKind.buffer, outKinds.buffer],
   };
 
   function addRef(pc, target, k) {
@@ -1222,14 +1228,14 @@ async function scanProgram({ regionId, requestId, epoch }) {
   }
 
   function growCalls() {
-    const size = Math.min(Math.max(1, callFrom.length * 2), MAX_EDGES);
+    const size = Math.min(Math.max(1, callFrom.length * 2), MAX_EDGES, callCap);
     if (size <= callFrom.length || !canGrow(size * 16)) return false;
     callFrom = grow64(callFrom, size);
     callTo = grow64(callTo, size);
     return true;
   }
   function growRefs() {
-    const size = Math.min(Math.max(1, refFrom.length * 2), MAX_REFS);
+    const size = Math.min(Math.max(1, refFrom.length * 2), MAX_REFS, refCap);
     if (size <= refFrom.length || !canGrow(size * 17)) return false;
     refFrom = grow64(refFrom, size);
     refTo = grow64(refTo, size);
