@@ -10,7 +10,7 @@ export function requiredScopeForTool(tool) {
 }
 export function wireMeta(request, controller, intent, sessionId = null) { return { sessionId, mode: request.mode, style: request.style, scope: controller.effectiveScope, requestedScope: request.scope, effectiveScope: controller.effectiveScope, intent, task: request.task || null, responseSchema: null }; }
 export function maxWireUsage(a, b) { return Object.fromEntries(Object.keys(a).map((key) => [key, Math.max(Number(a[key] || 0), Number(b[key] || 0))])); }
-export function memoryAnchor(snapshot, effectiveScope) { return { snapshotId: snapshot.id, binaryId: snapshot.binaryId, functionAddress: snapshot.currentFunction?.address || null, selection: snapshot.selection ? { start: snapshot.selection.start, end: snapshot.selection.end } : null, runtimeSessionId: snapshot.runtimeSessionIdentity || null, effectiveScope }; }
+export function memoryAnchor(snapshot, effectiveScope) { return { snapshotId: snapshot.id, binaryId: snapshot.binaryId, functionAddress: snapshot.currentFunction?.address || null, selection: snapshot.selection ? { start: snapshot.selection.start, end: snapshot.selection.end } : null, runtimeSessionId: snapshot.runtimeSessionIdentity || null, runtimeSessionState: snapshot.runtimeSessionState || (snapshot.runtimeSessionIdentity != null ? 'bound' : 'unknown'), effectiveScope }; }
 export function sessionMatchesSnapshot(session, snapshot) {
   const sessionIdentity = session.binaryIdentity || null;
   const snapshotIdentity = snapshot.binaryIdentity || null;
@@ -34,8 +34,13 @@ export function sessionMatchesSnapshot(session, snapshot) {
     else binaryMatches = false;
   }
   const projectMatches = session.projectId == null || (snapshot.projectIdentity != null && String(session.projectId) === String(snapshot.projectIdentity));
-  const priorRuntime = session.investigationMemory?.anchor?.runtimeSessionId ?? null;
-  const runtimeMatches = priorRuntime == null || (snapshot.runtimeSessionIdentity != null && String(priorRuntime) === String(snapshot.runtimeSessionIdentity));
+  const priorAnchor = session.investigationMemory?.anchor || null;
+  const priorRuntime = priorAnchor?.runtimeSessionId ?? null;
+  const priorRuntimeState = priorAnchor?.runtimeSessionState || (priorRuntime != null ? 'bound' : 'unknown');
+  const snapshotRuntimeState = snapshot.runtimeSessionState || (snapshot.runtimeSessionIdentity != null ? 'bound' : 'unknown');
+  let runtimeMatches = true;
+  if (priorRuntimeState === 'bound') runtimeMatches = snapshotRuntimeState === 'bound' && String(priorRuntime) === String(snapshot.runtimeSessionIdentity);
+  else if (priorRuntimeState === 'none') runtimeMatches = snapshotRuntimeState === 'none';
   return binaryMatches && projectMatches && runtimeMatches;
 }
 export function assertLiveBindingsUnchanged(local, snapshot) {
@@ -50,7 +55,18 @@ export function assertLiveBindingsUnchanged(local, snapshot) {
     throw new AIError('scope_violation', 'The project changed while this AI turn was running; refusing to mix workbench states.');
   }
   const liveRuntime = local.runtimeSession?.id ?? local.runtime?.sessionId ?? local.runtimeSessionId ?? null;
-  if (!sameNullableBinding(liveRuntime, snapshot.runtimeSessionIdentity)) {
+  const liveRuntimeKnown = local.runtimeSessionKnown === true || liveRuntime != null;
+  const liveRuntimeState = liveRuntimeKnown ? (liveRuntime == null ? 'none' : 'bound') : 'unknown';
+  const snapshotRuntimeState = snapshot.runtimeSessionState || (snapshot.runtimeSessionIdentity != null ? 'bound' : 'unknown');
+  // An unknown runtime binding is intentionally permissive for this turn: the
+  // first runtime-verification tool may lazily create the session. Once a
+  // concrete session has been observed, subsequent turns snapshot and enforce
+  // that exact ID. A known binding may never disappear or change mid-turn.
+  if (snapshotRuntimeState === 'bound') {
+    if (liveRuntimeState !== 'bound' || String(liveRuntime) !== String(snapshot.runtimeSessionIdentity)) {
+      throw new AIError('scope_violation', 'The runtime session changed while this AI turn was running; refusing to mix workbench states.');
+    }
+  } else if (snapshotRuntimeState === 'none' && liveRuntimeState !== 'none') {
     throw new AIError('scope_violation', 'The runtime session changed while this AI turn was running; refusing to mix workbench states.');
   }
 }
