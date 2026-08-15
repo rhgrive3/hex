@@ -44,7 +44,15 @@ jobs:
             exit "$code"
           fi
       - name: Correct regression fixture
-        run: sed -i "s/'str x8, \[sp, #8\]'/'strb w8, [sp, #8]'/" tests/issues-lowest-20-20260815.mjs
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('tests/issues-lowest-20-20260815.mjs')
+          s=p.read_text()
+          old="'str x8, [sp, #8]'"
+          if old not in s: raise SystemExit('narrow-load fixture anchor missing')
+          p.write_text(s.replace(old,"'strb w8, [sp, #8]'",1))
+          PY
       - name: Syntax check
         run: |
           node --check js/ir-core.js
