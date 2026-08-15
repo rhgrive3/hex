@@ -9,6 +9,7 @@ on:
       - 'tools/fix-350-399-repair.mjs'
       - 'tools/fix-350-399-part3.mjs'
       - 'tools/fix-350-399-part4.mjs'
+      - 'tools/fix-350-399-part5.mjs'
       - '.github/workflows/apply-fix-350-399.yml'
   workflow_dispatch:
 
@@ -35,7 +36,8 @@ jobs:
           node tools/fix-350-399-part2.mjs
           node tools/fix-350-399-part3.mjs
           node tools/fix-350-399-part4.mjs
-          rm tools/fix-350-399.mjs tools/fix-350-399-part2.mjs tools/fix-350-399-repair.mjs tools/fix-350-399-part3.mjs tools/fix-350-399-part4.mjs .github/workflows/apply-fix-350-399.yml
+          node tools/fix-350-399-part5.mjs
+          rm tools/fix-350-399.mjs tools/fix-350-399-part2.mjs tools/fix-350-399-repair.mjs tools/fix-350-399-part3.mjs tools/fix-350-399-part4.mjs tools/fix-350-399-part5.mjs .github/workflows/apply-fix-350-399.yml
       - name: Syntax check changed modules
         run: |
           node --check js/ir-core.js
@@ -50,6 +52,7 @@ jobs:
           node --check js/binary/model.js
           node --check js/knowledge/index.js
           node --check tests/issues-350-399.mjs
+          node --check tests/decompiler-semantic.mjs
       - name: Focused regression
         run: node tests/issues-350-399.mjs
       - name: Full non-browser check
