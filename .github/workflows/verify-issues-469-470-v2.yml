@@ -1,0 +1,72 @@
+name: Verify distributed AI quota on latest main
+
+on:
+  push:
+    branches:
+      - fix/latest-470-469-distributed-quota-v2
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/latest-470-469-distributed-quota-v2
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Confirm concurrent main did not edit quota-owned paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin fix/latest-470-469-distributed-quota main
+          BASE=5b04ee02755e32e0e043585b43d03fb06dc02c4d
+          paths=(worker.js wrangler.jsonc tests/ai-worker.mjs tests/gemini.mjs)
+          if ! git diff --quiet "$BASE"..origin/main -- "${paths[@]}"; then
+            echo 'Current main changed a quota-owned path; refusing blind replay.' >&2
+            git diff --name-only "$BASE"..origin/main -- "${paths[@]}"
+            exit 1
+          fi
+      - name: Apply verified quota source to latest main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout origin/fix/latest-470-469-distributed-quota -- \
+            js/ai/quota.js worker-entry.js tests/ai-quota.mjs tests/ai-worker.mjs \
+            tests/gemini.mjs worker.js wrangler.jsonc
+          node - <<'NODE'
+          const fs = require('fs');
+          const p = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          const tests = ['node tests/ai-quota.mjs', 'node tests/ai-worker.mjs'];
+          let cmd = p.scripts['ai:test'];
+          for (const test of tests.reverse()) if (!cmd.includes(test)) cmd = `${test} && ${cmd}`;
+          p.scripts['ai:test'] = cmd;
+          fs.writeFileSync('package.json', JSON.stringify(p, null, 2) + '\n');
+          NODE
+      - name: Focused distributed quota regressions
+        run: node tests/ai-quota.mjs
+      - name: AI regressions
+        run: npm run ai:test
+      - name: Legacy Gemini regressions
+        run: node tests/gemini.mjs
+      - name: Static checks
+        run: |
+          node --check worker.js
+          node --check js/ai/quota.js
+          npm run lint
+      - name: Validate Cloudflare production bundle
+        run: npx --yes wrangler@latest deploy --dry-run --outdir /tmp/hex-worker-build
+      - name: Commit verified latest-main source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add js/ai/quota.js worker-entry.js tests/ai-quota.mjs tests/ai-worker.mjs tests/gemini.mjs worker.js wrangler.jsonc package.json
+          git commit -m "fix: enforce distributed AI quota on both proxy routes (#469 #470)"
+          git push origin HEAD:fix/latest-470-469-distributed-quota-v2
