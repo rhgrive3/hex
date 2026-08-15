@@ -26,7 +26,7 @@ function makeRelocatableElf64() {
 // represented by a deterministic non-overlapping synthetic layout.
 {
   const image=parseELF(makeRelocatableElf64());
-  assert.equal(image.metadata.elfType,1);
+  assert.equal(image.metadata.type,1);
   assert.equal(image.metadata.relocatableAddressModel?.kind,'synthetic-section-layout');
   const text=image.sections.find((s)=>s.name==='.text');assert.ok(text);assert.notEqual(text.address,0n);
   const fn=image.symbols.find((s)=>s.name==='func');assert.ok(fn);
