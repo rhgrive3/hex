@@ -218,27 +218,28 @@ export class ProductWorkspace{
       const previous=this.baseline;
       this.baseline={file,backend:other,ownedBackend,info,sliceIndex,slice,architecture:arch,hash,symbols,functions,complete:functions.complete===true};
       if(previous?.ownedBackend&&previous.backend!==other)previous.backend?.dispose?.();
-      this.diffState=null;return this.baseline;
+      this.diffState=null;this.busy=null;return this.baseline;
     }catch(error){if(ownedBackend)other?.dispose?.();throw error;}
   }
   async diff(options={}){
     if(this.busy)return this.busy;
-    const revision=this.bindingRevision;
+    const revision=this.bindingRevision, baseline=this.baseline;
     let task;
     task=(async()=>{
-      if(!this.baseline)throw new Error('baseline-not-loaded');
+      if(!baseline)throw new Error('baseline-not-loaded');
+      const assertCurrent=()=>{this._assertBinding(revision);if(this.baseline!==baseline)throw staleWorkspaceError();};
       try{await this.app.ensureRecognition?.({maxFunctions:MAX_DIFF_FUNCTIONS,knowledgeLimit:0});}catch{/* symbol fallback remains valid */}
-      this._assertBinding(revision);
-      const current=currentDiffFunctions(this.app), before=this.baseline.functions;
+      assertCurrent();
+      const current=currentDiffFunctions(this.app), before=baseline.functions;
       const result=diffFunctions(before,current,{mode:'fast',threshold:options.threshold??0.62,matchBudget:options.matchBudget||{maxCandidateEvaluations:1500000,maxEdges:300000,maxComponentNodes:4096,maxComponentEdges:65536}});
-      this._assertBinding(revision);
+      assertCurrent();
       const inputsComplete=before.complete===true&&current.complete===true;
       result.completeness={complete:inputsComplete&&result.truncated!==true,reasons:[],baseline:{complete:before.complete===true,total:before.total,scanned:before.scanned,reason:before.truncationReason},current:{complete:current.complete===true,total:current.total,scanned:current.scanned,reason:current.truncationReason}};
       if(!before.complete)result.completeness.reasons.push('baseline-function-set-incomplete');
       if(!current.complete)result.completeness.reasons.push('current-function-set-incomplete');
       if(result.truncated)result.completeness.reasons.push('matcher-truncated');
-      result.provenance={baselineHash:this.baseline.hash,currentHash:this.identity?.hash||null,architecture:this.baseline.architecture,currentArchitecture:this.identity?.metadata?.architecture||null,baselineName:this.baseline.info?.name||this.baseline.file?.name||null,currentName:this.identity?.metadata?.name||null,complete:result.completeness.complete};
-      this._assertBinding(revision);
+      result.provenance={baselineHash:baseline.hash,currentHash:this.identity?.hash||null,architecture:baseline.architecture,currentArchitecture:this.identity?.metadata?.architecture||null,baselineName:baseline.info?.name||baseline.file?.name||null,currentName:this.identity?.metadata?.name||null,complete:result.completeness.complete};
+      assertCurrent();
       this.diffState=result;return result;
     })().finally(()=>{if(this.busy===task)this.busy=null;});
     this.busy=task;return task;
