@@ -8,6 +8,7 @@ const originalLocation = globalThis.location;
 const requests = [];
 
 function mockRequest(details) {
+  assert.equal(details.responseType, 'text');
   requests.push(details);
   let aborted = false;
   const handle = {
@@ -18,11 +19,11 @@ function mockRequest(details) {
   };
   queueMicrotask(() => {
     if (aborted) return;
-    const bytes = new TextEncoder().encode('gm-ok');
     details.onload?.({
       status: 200,
       statusText: 'OK',
-      response: bytes.buffer,
+      response: 'gm-ok',
+      responseText: 'gm-ok',
       responseHeaders: 'content-type: text/plain\r\nx-test: yes\r\n',
     });
   });

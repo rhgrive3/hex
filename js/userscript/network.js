@@ -59,14 +59,15 @@ export async function gmFetch(input, init = {}, requestInput = null) {
         url,
         headers: Object.fromEntries(headers.entries()),
         data: body == null ? undefined : body,
-        responseType: 'arraybuffer',
+        responseType: 'text',
         onload: (response) => {
           const status = Number(response?.status) || 0;
           if (!status) {
             finish(reject, new TypeError(`Hex request failed before an HTTP response was received: ${url}`));
             return;
           }
-          finish(resolve, new Response(response.response || new ArrayBuffer(0), {
+          const responseBody = response.responseText ?? (typeof response.response === 'string' ? response.response : '');
+          finish(resolve, new Response(responseBody, {
             status,
             statusText: response.statusText || '',
             headers: parseHeaders(response.responseHeaders),
