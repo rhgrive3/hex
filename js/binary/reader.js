@@ -112,36 +112,52 @@ export class ByteView {
     }
   }
 
-  uleb(offset, maxBytes = 10) {
-    let p = this.check(offset, 0);
+  _lebEnd(end) {
+    if (end == null) return this.length;
+    const n = Number(end);
+    if (!Number.isSafeInteger(n) || n < 0 || BigInt(n) > this.lengthBigInt)
+      throw new BinaryReadError('invalid bounded substream end', this.base);
+    return n;
+  }
+
+  uleb(offset, maxBytes = 10, end = null) {
+    const start = this.check(offset, 0);
+    const hardEnd = this._lebEnd(end);
+    if (start > hardEnd) throw new BinaryReadError('ULEB128 starts outside bounded substream', this.base + BigInt(start));
+    let p = start;
     let value = 0n;
     let shift = 0n;
     for (let i = 0; i < maxBytes; i++, p++) {
+      if (p >= hardEnd) throw new BinaryReadError('ULEB128 crosses bounded substream', this.base + BigInt(p));
       this.check(p, 1);
       const b = this.u8(p);
       value |= BigInt(b & 0x7f) << shift;
-      if ((b & 0x80) === 0) return { value, next: p + 1, bytes: p + 1 - Number(offset) };
+      if ((b & 0x80) === 0) return { value, next: p + 1, bytes: p + 1 - start };
       shift += 7n;
     }
-    throw new BinaryReadError('ULEB128 is too long', this.base + BigInt(Number(offset)));
+    throw new BinaryReadError('ULEB128 is too long', this.base + BigInt(start));
   }
 
-  sleb(offset, maxBytes = 10) {
-    let p = this.check(offset, 0);
+  sleb(offset, maxBytes = 10, end = null) {
+    const start = this.check(offset, 0);
+    const hardEnd = this._lebEnd(end);
+    if (start > hardEnd) throw new BinaryReadError('SLEB128 starts outside bounded substream', this.base + BigInt(start));
+    let p = start;
     let value = 0n;
     let shift = 0n;
     let b = 0;
     for (let i = 0; i < maxBytes; i++, p++) {
+      if (p >= hardEnd) throw new BinaryReadError('SLEB128 crosses bounded substream', this.base + BigInt(p));
       this.check(p, 1);
       b = this.u8(p);
       value |= BigInt(b & 0x7f) << shift;
       shift += 7n;
       if ((b & 0x80) === 0) {
         if (shift < 64n && (b & 0x40)) value |= (-1n) << shift;
-        return { value, next: p + 1, bytes: p + 1 - Number(offset) };
+        return { value, next: p + 1, bytes: p + 1 - start };
       }
     }
-    throw new BinaryReadError('SLEB128 is too long', this.base + BigInt(Number(offset)));
+    throw new BinaryReadError('SLEB128 is too long', this.base + BigInt(start));
   }
 }
 
