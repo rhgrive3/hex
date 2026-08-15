@@ -31,7 +31,7 @@ eq(0x2a0103e0, KIND.MOVREG, 'mov w0, w1');
 eq(0xaa2103e0, KIND.LOGIC,  'mvn x0, x1 is logic, not mov');
 eq(0x2a2103e0, KIND.LOGIC,  'mvn w0, w1 is logic, not mov');
 eq(0xaa0107e0, KIND.LOGIC,  'orr x0, xzr, x1, lsl #1 is logic');
-eq(0x2a0107e0, KIND.LOGIC,  'orr w0, wzr, x1, lsl #1 is logic');
+eq(0x2a0107e0, KIND.LOGIC,  'orr w0, wzr, w1, lsl #1 is logic');
 
 // FP one-source arithmetic and conversion instructions share an encoding family.
 eq(0x1e20c020, KIND.FARITH, 'fabs s0, s1');
