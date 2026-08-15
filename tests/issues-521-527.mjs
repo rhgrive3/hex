@@ -3,8 +3,18 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import { MemoryByteSource } from '../js/binary/source.js';
 import { parseMachOSource } from '../js/binary/source-loaders.js';
+import { ByteView } from '../js/binary/reader.js';
+import { BinaryImage } from '../js/binary/model.js';
+import { parseMachO } from '../js/binary/macho.js';
+import { parseChainedImports, parseClassicBindings, parseExportTrie } from '../js/binary/macho-dyld.js';
 import { analysisFromBinaryImage, machoSymbolTruth } from '../js/platform/analysis-result.js';
 import { mergeMachOAnalysisResults } from '../js/macho-analysis-merge.js';
+
+function testImage(bytes = new Uint8Array(128)) {
+  return new BinaryImage(bytes, {
+    format:'macho', arch:'arm64', bits:64, endian:'little', platform:'apple', imageBase:0n, metadata:{},
+  });
+}
 
 {
   const image = {
@@ -71,6 +81,82 @@ import { mergeMachOAnalysisResults } from '../js/macho-analysis-merge.js';
   assert.equal(truth.complete, false);
   assert.ok(truth.reasons.includes('dyld-bindings:incomplete'));
   assert.ok(truth.reasons.includes('dyld-lazy:incomplete'));
+}
+
+// Parser entry failures must themselves create incomplete truth. Warning-only
+// failure paths are unsafe because downstream AI treats complete=true as proof
+// that symbol/import evidence is exhaustive.
+{
+  const bytes = new Uint8Array(16);
+  const image = testImage(bytes);
+  parseChainedImports(new ByteView(bytes), { offset:0, size:64 }, image);
+  const truth = machoSymbolTruth(image);
+  assert.equal(truth.complete, false);
+  assert.ok(truth.reasons.includes('chained-fixups:incomplete'));
+}
+
+{
+  const bytes = new Uint8Array(64), dv = new DataView(bytes.buffer);
+  dv.setUint32(0, 0, true);   // version
+  dv.setUint32(4, 28, true);  // starts_offset
+  dv.setUint32(8, 28, true);  // imports_offset
+  dv.setUint32(12, 40, true); // symbols_offset
+  dv.setUint32(16, 1, true);  // imports_count
+  dv.setUint32(20, 99, true); // unsupported imports_format
+  dv.setUint32(24, 0, true);  // symbols_format
+  const image = testImage(bytes);
+  parseChainedImports(new ByteView(bytes), { offset:0, size:64 }, image);
+  const truth = machoSymbolTruth(image);
+  assert.equal(truth.complete, false);
+  assert.ok(truth.reasons.includes('chained-fixups:imports-incomplete'));
+  assert.ok(truth.reasons.includes('chained-fixups:unsupported-import-format'));
+}
+
+{
+  const bytes = new Uint8Array(32);
+  const image = testImage(bytes);
+  parseClassicBindings(new ByteView(bytes), { offset:16, size:64 }, image, [], 'lazy-bind');
+  const truth = machoSymbolTruth(image);
+  assert.equal(truth.complete, false);
+  assert.ok(truth.reasons.includes('dyld-bindings:incomplete'));
+  assert.ok(truth.reasons.includes('dyld-lazy:incomplete'));
+}
+
+{
+  const bytes = new Uint8Array(32);
+  const image = testImage(bytes);
+  parseExportTrie(new ByteView(bytes), { offset:16, size:64 }, image);
+  const truth = machoSymbolTruth(image);
+  assert.equal(truth.complete, false);
+  assert.ok(truth.reasons.includes('export-trie:incomplete'));
+}
+
+{
+  const bytes = new Uint8Array(56), dv = new DataView(bytes.buffer);
+  const CPU_ARM64 = 0x0100000c;
+  dv.setUint32(0, 0xfeedfacf, true);
+  dv.setInt32(4, CPU_ARM64, true); dv.setInt32(8, 0, true);
+  dv.setUint32(12, 2, true); dv.setUint32(16, 1, true); dv.setUint32(20, 24, true);
+  dv.setUint32(32, 2, true); dv.setUint32(36, 24, true); // LC_SYMTAB
+  dv.setUint32(40, 0x1000, true); dv.setUint32(44, 1, true);
+  dv.setUint32(48, 0x2000, true); dv.setUint32(52, 16, true);
+  const image = parseMachO(bytes);
+  const truth = machoSymbolTruth(image);
+  assert.equal(truth.complete, false);
+  assert.ok(truth.reasons.some((x) => x.includes('symbol-table-truncated')));
+}
+
+{
+  const bytes = new Uint8Array(40), dv = new DataView(bytes.buffer);
+  const CPU_ARM64 = 0x0100000c;
+  dv.setUint32(0, 0xfeedfacf, true);
+  dv.setInt32(4, CPU_ARM64, true); dv.setInt32(8, 0, true);
+  dv.setUint32(12, 2, true); dv.setUint32(16, 1, true); dv.setUint32(20, 8, true);
+  dv.setUint32(32, 2, true); dv.setUint32(36, 4, true); // invalid cmdsize
+  const image = parseMachO(bytes);
+  const truth = machoSymbolTruth(image);
+  assert.equal(truth.complete, false);
+  assert.ok(truth.reasons.some((x) => x.includes('load-command-invalid-size')));
 }
 
 {
