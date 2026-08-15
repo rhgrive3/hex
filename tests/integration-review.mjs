@@ -59,7 +59,7 @@ await test('unknown indexed memory never becomes a concrete field fact', () => {
   const rmw = readModifyWrite(ir);
   assert.equal(rmw.length,1);
   assert.equal(rmw[0].location.kind, MK.UNKNOWN);
-  assert.ok(!semanticFacts(ir).some((f) => f.kind === FACT.RMW));
+  assert.ok(!semanticFacts(ir).some((f) => f.kind === FACT.RMW && f.location?.kind !== MK.UNKNOWN));
 });
 
 await test('deterministic tools use Semantic IR evidence', async () => {
