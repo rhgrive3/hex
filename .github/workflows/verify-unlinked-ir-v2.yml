@@ -22,7 +22,36 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
       - run: git fetch origin main
       - run: git merge --no-edit origin/main
+      - name: Make patch driver idempotent against newer main
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('tools/fix-unlinked-ir.py')
+          s=p.read_text()
+          old='''    if old not in s:\n        raise SystemExit(f"missing patch anchor {label} in {path}")\n    p.write_text(s.replace(old, new, 1))'''
+          new='''    if old not in s:\n        print(f"skip already-changed anchor {label} in {path}")\n        return\n    p.write_text(s.replace(old, new, 1))'''
+          if old not in s:
+              raise SystemExit('patch-driver rep() anchor missing')
+          p.write_text(s.replace(old,new,1))
+          PY
       - run: python3 tools/fix-unlinked-ir.py
+      - name: Assert semantic fixes are present
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const checks = {
+            'js/decompiler/semantic.js': ['const written = valueOf(rmw.store?.args?.[0]);'],
+            'js/ir-core.js': ['...Array.from({ length: 8 }, (_, i) => `v${i}`)', 'const extShift = (x)', "kind: 'movk'", 'load.memUse !== store.memDef.prev'],
+            'js/decompiler/pipeline-core.js': ['function returnValueFor(', "d.extra?.toward === 'left'", "d.extra?.kind === 'bfxil'", "'fcmp_' + cond", 'shiftedExtend'],
+            'js/decompiler/ast/nodes.js': ["floatConstant(value"],
+            'js/decompiler/pretty/c.js': ["case 'float-const'"],
+            'js/semantic-evidence.js': ['semanticProofVerified', 'runtimeComplete(runtimeResult)']
+          };
+          for (const [file, needles] of Object.entries(checks)) {
+            const s=fs.readFileSync(file,'utf8');
+            for (const n of needles) { if (!s.includes(n)) throw new Error(`${file}: missing ${n}`); }
+          }
+          NODE
       - run: node tests/issues-406-423-unlinked.mjs
       - run: npm run check
       - name: Commit verified implementation
