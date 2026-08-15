@@ -24,6 +24,7 @@ jobs:
         run: |
           python3 tools/apply-issue-496.py
           python3 tools/update-issue-496-contract.py
+          python3 tools/gate-issue-496.py
       - name: Focused IL2CPP binding regression
         run: node tests/issue-496-il2cpp-binding.mjs
       - name: Core regression suite
@@ -32,6 +33,7 @@ jobs:
         run: |
           node --check js/il2cpp.js
           node --check tests/issue-496-il2cpp-binding.mjs
+          node --check tests/run.js
       - name: Full lint
         run: npm run lint
       - name: Commit validated implementation
