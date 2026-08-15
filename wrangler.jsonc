@@ -3,6 +3,9 @@
   "name": "ida",
   "main": "./worker-entry.js",
   "compatibility_date": "2026-08-14",
+  "build": {
+    "command": "npm run userscript:build"
+  },
   "assets": {
     "directory": ".",
     "binding": "ASSETS",
