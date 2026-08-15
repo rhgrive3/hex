@@ -145,6 +145,10 @@ export class Backend {
   }
 
   async open(file) {
+    if (this.disposed) {
+      const error = new Error('Backend has been disposed.'); error.code = 'BACKEND_DISPOSED';
+      throw error;
+    }
     const previousTransportEpoch = this.transportEpoch;
     const openTransportEpoch = ++this.transportEpoch;
     for (const worker of [this.legacyWorker, this.platformWorker]) worker.postMessage({ t: 'cancel', epoch: previousTransportEpoch });

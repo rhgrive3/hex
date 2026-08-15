@@ -32,6 +32,10 @@ const { Backend }=await import('../js/backend.js');
   const disposedProbe=await b.probeArchitectures();
   assert.equal(disposedProbe.ok,false);
   assert.equal(workers.length,workersBefore,'disposed backend must not spawn probe workers');
+  const messagesBefore=workers.slice(0,2).reduce((sum,w)=>sum+w.sent.length,0);
+  await assert.rejects(()=>b.open({name:'disposed.bin',size:1}), (error)=>error?.code==='BACKEND_DISPOSED');
+  const messagesAfter=workers.slice(0,2).reduce((sum,w)=>sum+w.sent.length,0);
+  assert.equal(messagesAfter,messagesBefore,'disposed backend open must not post to terminated workers');
 }
 
 delete globalThis.document;
