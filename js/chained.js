@@ -292,7 +292,9 @@ export async function augmentAnalysisResultWithChainedImports(file, sliceIndex, 
   catch { return result; }
   if (!extra.length) return result;
 
-  const oldNames = typeof result.names === 'string' ? result.names.split('\n') : [];
+  const oldNames = Array.isArray(result.names)
+    ? result.names.map((name) => String(name ?? ''))
+    : (typeof result.names === 'string' && result.names.length ? result.names.split('\n') : []);
   const entries = [];
   const occupied = new Set();
   const existing = new Map();
@@ -330,5 +332,5 @@ export async function augmentAnalysisResultWithChainedImports(file, sliceIndex, 
     flags[i] = entries[i].flag || 0;
     names[i] = entries[i].name;
   }
-  return Object.assign({}, result, { addrs, kinds, flags, names: names.join('\n') });
+  return Object.assign({}, result, { addrs, kinds, flags, names });
 }

@@ -26,16 +26,18 @@ function lowerBoundDirect(values, addr) {
   }
   return lo;
 }
-function completeness(array, capped, source, queryLimited = false) {
+function completeness(array, capped, source, queryLimited = false, unavailableReason = null) {
   const sourceCapped = !!capped;
   const locallyLimited = !!queryLimited;
+  const unavailable = unavailableReason || null;
   Object.defineProperties(array, {
-    complete: { value: !sourceCapped && !locallyLimited, enumerable: false, configurable: true },
+    complete: { value: !unavailable && !sourceCapped && !locallyLimited, enumerable: false, configurable: true },
     capped: { value: sourceCapped, enumerable: false, configurable: true },
     queryLimited: { value: locallyLimited, enumerable: false, configurable: true },
+    unsupported: { value: unavailable === 'unsupported-program-analysis', enumerable: false, configurable: true },
     completenessSource: { value: source, enumerable: false, configurable: true },
     incompleteReason: {
-      value: sourceCapped ? `${source}-source-capped` : (locallyLimited ? 'query-limit' : null),
+      value: unavailable || (sourceCapped ? `${source}-source-capped` : (locallyLimited ? 'query-limit' : null)),
       enumerable: false, configurable: true,
     },
   });
@@ -65,15 +67,39 @@ export class ProgramIndex {
     this.callsCapped = !!s.callsCapped;
     this.refsCapped = !!s.refsCapped;
     this.words = s.words || 0;
-    this.completeness = s.completeness || { complete: !this.callsCapped && !this.refsCapped, reasons: [] };
+    this.unsupported = !!s.unsupported;
+    this.architecture = s.architecture || s.arch || null;
+    const suppliedCompleteness = s.completeness && typeof s.completeness === 'object' ? s.completeness : null;
+    const reasons = [...new Set([
+      ...(Array.isArray(suppliedCompleteness?.reasons) ? suppliedCompleteness.reasons : []),
+      ...(this.unsupported ? ['unsupported-program-analysis'] : []),
+    ])];
+    this.completeness = {
+      ...(suppliedCompleteness || {}),
+      complete: !this.unsupported && (suppliedCompleteness ? suppliedCompleteness.complete !== false : (!this.callsCapped && !this.refsCapped)),
+      reasons,
+    };
+    this.queryIncompleteReason = this.unsupported ? 'unsupported-program-analysis'
+      : (this.completeness.complete === false ? (reasons[0] || 'program-analysis-incomplete') : null);
     this.gen = symbols && symbols.gen != null ? symbols.gen : 0;
     this._byCallTo = null;
     this._byRefTo = null;
   }
   get callCount() { return this.callFrom.length; }
   get refCount() { return this.refFrom.length; }
-  get statsComplete() { return this.kindsCovered >= this.words; }
-  get graphCompleteness() { return Object.freeze({ callsComplete: !this.callsCapped, refsComplete: !this.refsCapped, statsComplete: this.statsComplete }); }
+  get statsComplete() { return !this.unsupported && this.completeness.complete !== false && this.kindsCovered >= this.words; }
+  get graphCompleteness() {
+    const sourceComplete = !this.unsupported && this.completeness.complete !== false;
+    return Object.freeze({
+      supported: !this.unsupported,
+      unsupported: this.unsupported,
+      architecture: this.architecture,
+      reasons: [...(this.completeness.reasons || [])],
+      callsComplete: sourceComplete && !this.callsCapped,
+      refsComplete: sourceComplete && !this.refsCapped,
+      statsComplete: this.statsComplete,
+    });
+  }
 
   _callToOrder() {
     if (!this._byCallTo) {
@@ -114,7 +140,7 @@ export class ProgramIndex {
       if (out.length >= limit) { queryLimited = true; break; }
       out.push({ site: this.callFrom[k], caller: this.functionStartOf(this.callFrom[k]) });
     }
-    return completeness(out, this.callsCapped, 'calls', queryLimited);
+    return completeness(out, this.callsCapped, 'calls', queryLimited, this.queryIncompleteReason);
   }
   callersOf(target, limit = 200) {
     const seen = new Map();
@@ -128,7 +154,7 @@ export class ProgramIndex {
       }
       seen.get(key).count++;
     }
-    return completeness(Array.from(seen.values()), this.callsCapped, 'calls', queryLimited);
+    return completeness(Array.from(seen.values()), this.callsCapped, 'calls', queryLimited, this.queryIncompleteReason);
   }
   calleesOf(start, end, limit = 200) {
     const out = new Map(); let i = lowerBoundDirect(this.callFrom, start), queryLimited = false;
@@ -141,7 +167,7 @@ export class ProgramIndex {
       }
       out.get(key).count++;
     }
-    return completeness(Array.from(out.values()), this.callsCapped, 'calls', queryLimited);
+    return completeness(Array.from(out.values()), this.callsCapped, 'calls', queryLimited, this.queryIncompleteReason);
   }
   callCountOf(target) {
     const order = this._callToOrder(); let i = lowerBound(this.callTo, order, target), n = 0;
@@ -156,7 +182,7 @@ export class ProgramIndex {
       if (out.length >= limit) { queryLimited = true; break; }
       out.push({ site: this.refFrom[k], target: this.refTo[k], kind: this.refKind[k] });
     }
-    return completeness(out, this.refsCapped, 'refs', queryLimited);
+    return completeness(out, this.refsCapped, 'refs', queryLimited, this.queryIncompleteReason);
   }
   functionsReferencing(addr, span = 1n, limit = 200) {
     const seen = new Map();
@@ -170,7 +196,7 @@ export class ProgramIndex {
       }
       seen.get(key).count++;
     }
-    return completeness(Array.from(seen.values()), this.refsCapped, 'refs', queryLimited);
+    return completeness(Array.from(seen.values()), this.refsCapped, 'refs', queryLimited, this.queryIncompleteReason);
   }
   refsFrom(start, end, limit = 400) {
     const out = []; let i = lowerBoundDirect(this.refFrom, start), queryLimited = false;
@@ -183,6 +209,7 @@ export class ProgramIndex {
   }
   statsOf(start, end) {
     const stats = { total: 0, covered: true, arith: 0, mul: 0, div: 0, logic: 0, shift: 0, farith: 0, fmul: 0, fconv: 0, simd: 0, load: 0, store: 0, cmp: 0, condbr: 0, branch: 0, call: 0, indcall: 0, ret: 0, csel: 0, atomic: 0, movimm: 0, adrp: 0, trap: 0, other: 0 };
+    if (this.unsupported) { stats.covered = false; stats.unsupported = true; stats.incompleteReason = 'unsupported-program-analysis'; return stats; }
     if (!this.kinds.length) { stats.covered = false; return stats; }
     const first = Number((start - this.vmAddr) / 4n), lastAddr = end != null ? end : start + 4n;
     let last = Number((lastAddr - this.vmAddr) / 4n);
@@ -210,7 +237,7 @@ export class ProgramIndex {
     for (let i = 0; i < this.callTo.length; i++) { const key = this.callTo[i].toString(); counts.set(key, (counts.get(key) || 0) + 1); }
     const out = []; for (const [key, n] of counts) out.push({ addr: BigInt(key), count: n });
     out.sort((a, b) => b.count - a.count);
-    return completeness(out.slice(0, limit), this.callsCapped, 'calls', out.length > limit);
+    return completeness(out.slice(0, limit), this.callsCapped, 'calls', out.length > limit, this.queryIncompleteReason);
   }
 }
 

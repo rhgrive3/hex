@@ -586,7 +586,7 @@ class App {
       this.viewer.setSymbols(this.symbols);
     }
     const sym = this.symbols;
-    if (!sym || sym.functionStartsExact) return sym;
+    if (!sym || sym.functionStartsComplete === true || sym.functionDiscovery?.complete === true) return sym;
     if (!region) return sym;
     try {
       const res = await this.backend.guessFunctions(region.id, null,
@@ -597,8 +597,12 @@ class App {
            the strongest evidence as soon as partial metadata existed. */
         sym.addFunctions(res.starts, { source: 'heuristic', confidence: 0.55, confirmed: false });
         sym.guessed = true;
-        sym.functionDiscovery = res.completeness || { complete: res.complete !== false, capped: !!res.capped };
-        sym.functionStartsComplete = res.complete !== false;
+        sym.functionDiscovery = res.completeness || {
+          complete: res.discoveryComplete === true || res.complete === true,
+          capped: !!res.capped,
+          reasons: res.discoveryComplete === true || res.complete === true ? [] : ['heuristic-function-discovery-incomplete'],
+        };
+        sym.functionStartsComplete = sym.functionDiscovery.complete === true;
         sym.functionStartsCapped = !!res.capped;
         this.viewer.setSymbols(sym);
       }
