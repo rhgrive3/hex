@@ -1,0 +1,67 @@
+name: Temp fix userscript merge version
+on:
+  push:
+    branches: [fix-userscript-merge-version-drift]
+permissions:
+  contents: write
+jobs:
+  fix:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix-userscript-merge-version-drift
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Make userscript version merge-stable
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('scripts/build-userscript.mjs');s=p.read_text()
+          old="      'log', '-1', '--format=%ct', '--',"
+          new="      'log', '--no-merges', '-1', '--format=%ct', '--',"
+          if old not in s: raise SystemExit('userscript git log snippet missing')
+          s=s.replace(old,new,1)
+          oldc="    /* Only changes that can alter the installed userscript affect @version.\n       Workflow/test/docs commits therefore cannot create false bundle drift. */"
+          newc="    /* Only non-merge source commits affect @version. A merge commit changes\n       repository history but not the already-built source tree; counting it\n       would make a green PR bundle stale immediately after merging to main.\n       Workflow/test/docs commits likewise cannot create false bundle drift. */"
+          if oldc not in s: raise SystemExit('userscript version comment missing')
+          s=s.replace(oldc,newc,1);p.write_text(s)
+
+          p=Path('package.json');s=p.read_text()
+          old='node tests/userscript-host.mjs && node tests/userscript-network.mjs && node tests/ai-chatgpt-web-provider.mjs'
+          new='node tests/userscript-host.mjs && node tests/userscript-network.mjs && node tests/userscript-version.mjs && node tests/ai-chatgpt-web-provider.mjs'
+          if old not in s: raise SystemExit('userscript:test snippet missing')
+          p.write_text(s.replace(old,new,1))
+          PY
+          cat > tests/userscript-version.mjs <<'EOF'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          import { execFileSync } from 'node:child_process';
+
+          const paths=[
+            'index.html','css','js','capstone.js','capstone.wasm','package.json','package-lock.json','scripts/build-userscript.mjs',
+          ];
+          const expected=execFileSync('git',['log','--no-merges','-1','--format=%ct','--',...paths],{encoding:'utf8'}).trim();
+          assert.match(expected,/^\d+$/);
+          const source=fs.readFileSync(new URL('../userscript/hex.user.template.js',import.meta.url),'utf8');
+          const match=/^\/\/ @version\s+1\.0\.(\d+)$/m.exec(source);
+          assert.ok(match,'userscript must contain a numeric 1.0.<source epoch> version');
+          assert.equal(match[1],expected,'userscript version must follow the latest non-merge source commit');
+
+          const build=fs.readFileSync(new URL('../scripts/build-userscript.mjs',import.meta.url),'utf8');
+          assert.match(build,/'log', '--no-merges', '-1', '--format=%ct'/,
+            'merge commits must not invalidate an otherwise current userscript bundle');
+          console.log('userscript merge-stable version regression: PASS');
+          EOF
+      - name: Commit source fix
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add scripts/build-userscript.mjs package.json tests/userscript-version.mjs
+          git commit -m 'Keep userscript version stable across merge commits'
+          git push origin HEAD:fix-userscript-merge-version-drift
