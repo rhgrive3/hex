@@ -61,7 +61,6 @@ new="""  const rawSections = parseSectionHeaders(r, h, bits, image);
 if old not in s: raise SystemExit('ELF main parse anchor missing')
 s=s.replace(old,new,1)
 s=s.replace('if (ehFrameHdr) parseEhFrameHeader(r, ehFrameHdr, image, bits);\n\n  return image.finalize();', "if (ehFrameHdr) parseEhFrameHeader(r, ehFrameHdr, image, bits, metadataBudget);\n  image.metadata.elfMetadata = metadataBudget.snapshot();\n\n  return image.finalize();",1)
-# Insert ET_REL layout helpers before readHeader.
 anchor='function readHeader(r, bits) {'
 helpers=r'''function alignUp(value, alignment) {
   const a = alignment > 0n ? alignment : 1n;
@@ -104,7 +103,6 @@ if anchor not in s: raise SystemExit('ELF helper insertion anchor missing')
 s=s.replace(anchor,helpers+anchor,1)
 p.write_text(s)
 
-# Replace parseSymbols wholesale.
 p=Path('js/binary/elf.js'); s=p.read_text(); a=s.index('function parseSymbols('); b=s.index('\nfunction parseRelocations(',a)
 new_symbols=r'''function parseSymbols(r, table, sections, image, bits, elfType, budget) {
   const str = sections[table.link];
@@ -167,7 +165,6 @@ new_symbols=r'''function parseSymbols(r, table, sections, image, bits, elfType, 
 '''
 p.write_text(s[:a]+new_symbols+s[b:])
 
-# Replace relocation parser.
 p=Path('js/binary/elf.js'); s=p.read_text(); a=s.index('function parseRelocations('); b=s.index('\nfunction parseDynamic(',a)
 new_reloc=r'''function parseRelocations(r, sec, sections, image, bits, elfType, budget) {
   if(!sec.entsize)return;
@@ -199,9 +196,7 @@ new_reloc=r'''function parseRelocations(r, sec, sections, image, bits, elfType, 
 '''
 p.write_text(s[:a]+new_reloc+s[b:])
 
-# Section dynamic entries also consume the shared metadata work budget.
 p=Path('js/binary/elf.js'); s=p.read_text(); a=s.index('function parseDynamic('); b=s.index('\nfunction findImageBase',a)
-old_dyn=s[a:b]
 new_dyn=r'''function parseDynamic(r, sec, sections, image, bits, budget) {
   const str=sections[sec.link];if(!str||str.type!==SHT_STRTAB)return;const ent=Number(sec.entsize||(bits===64?16n:8n));if(!ent)return;
   const start=safeOffset(sec.offset),strStart=safeOffset(str.offset),strSize=safeOffset(str.size);if(start==null||strStart==null||strSize==null||start>r.length||strStart>r.length||strSize>r.length-strStart){budget.partial(`dynamic-section:${sec.index}:span`,`ELF SHT_DYNAMIC/string table exceeds the file`);return;}
@@ -216,9 +211,6 @@ new_dyn=r'''function parseDynamic(r, sec, sections, image, bits, budget) {
 '''
 p.write_text(s[:a]+new_dyn+s[b:])
 
-# ---------------------------------------------------------------------------
-# elf-unwind.js — consume shared budget for every table pair and function seed.
-# ---------------------------------------------------------------------------
 p=Path('js/binary/elf-unwind.js'); s=p.read_text()
 s=s.replace('export function parseEhFrameHeader(r, sec, image, bits) {','export function parseEhFrameHeader(r, sec, image, bits, budget = null) {',1)
 s=s.replace("    const count = Number(countX.raw);\n    if (!Number.isSafeInteger(count) || count < 0 || count > 10000000) return;", "    const count = Number(countX.raw);\n    if (!Number.isSafeInteger(count) || count < 0) return;",1)
@@ -244,9 +236,6 @@ if old not in s: raise SystemExit('eh frame loop anchor missing')
 s=s.replace(old,new,1)
 p.write_text(s)
 
-# ---------------------------------------------------------------------------
-# elf-dynamic.js — every pointer-valued table is bounded to one PT_LOAD span.
-# ---------------------------------------------------------------------------
 p=Path('js/binary/elf-dynamic.js'); s=p.read_text()
 s=s.replace("import { collectAndroidPackedRelocations, collectRelrRelocations, parseDynamicSymbolVersions } from './elf-extended.js';", "import { collectAndroidPackedRelocations, collectRelrRelocations, parseDynamicSymbolVersions } from './elf-extended.js';\nimport { mappedELFFileRangeForVa, mappedELFFileSpanForVa } from './elf-mapping.js';",1)
 old="""  const strOff = strtab == null ? null : vaToOffset(image, strtab);
@@ -271,7 +260,6 @@ new="""  const strSize = strsz == null ? 0 : toSafeNumber(strsz);
   };"""
 if old not in s: raise SystemExit('dynamic strtab anchor missing')
 s=s.replace(old,new,1)
-# Dynamic symbol parser full-span check.
 s=s.replace("""  const off = vaToOffset(image, symtabVa);
   const ent = toSafeNumber(syment);
   if (off == null || ent == null || ent <= 0) return [];
@@ -282,7 +270,6 @@ s=s.replace("""  const off = vaToOffset(image, symtabVa);
   if (!span) { markDynamicPartial(image, 'DT_SYMTAB records cross a file-backed PT_LOAD boundary'); return []; }
   const off = span.start;
   const max = count;""",1)
-# Function seed: only create for validated executable full extent.
 old="""      const section = typeof image.sectionAt === 'function' ? image.sectionAt(value) : null;
       const segment = typeof image.segmentAt === 'function' ? image.segmentAt(value) : null;
       const exactFunctionStart = !!(section || segment)?.perms?.execute;
@@ -305,7 +292,6 @@ new="""      const owner = (() => {
       else markDynamicPartial(image, `ignored PT_DYNAMIC STT_FUNC ${name} outside executable mapping/extent`);"""
 if old not in s: raise SystemExit('dynamic STT_FUNC anchor missing')
 s=s.replace(old,new,1)
-# Relocation tables full span.
 old="""    const off = vaToOffset(image, va);
     const n = toSafeNumber(size);
     const minimum = BigInt(bits === 64 ? (rela ? 24 : 16) : (rela ? 12 : 8));
@@ -323,7 +309,6 @@ new="""    const n = toSafeNumber(size);
     const off = span.start;"""
 if old not in s: raise SystemExit('dynamic relocation span anchor missing')
 s=s.replace(old,new,1)
-# Capacity + hash helpers replace via function ranges.
 p.write_text(s)
 
 p=Path('js/binary/elf-dynamic.js'); s=p.read_text(); a=s.index('export function dynamicSymbolFileCapacity'); b=s.index('\nfunction symbolCountFromHash',a)
@@ -336,7 +321,6 @@ new_capacity=r'''export function dynamicSymbolFileCapacity(r, image, tags, symta
 }
 '''
 s=s[:a]+new_capacity+s[b:]
-# SysV hash function.
 a=s.index('function symbolCountFromHash'); b=s.index('\nfunction symbolCountFromGnuHash',a)
 new_hash=r'''function symbolCountFromHash(r, hashVa, image) {
   if(hashVa==null)return 0;const range=mappedELFFileRangeForVa(image,hashVa);if(!range||range.start+8>range.end)return 0;
@@ -345,19 +329,17 @@ new_hash=r'''function symbolCountFromHash(r, hashVa, image) {
 }
 '''
 s=s[:a]+new_hash+s[b:]
-# GNU hash function.
 a=s.index('function symbolCountFromGnuHash'); b=s.index('\nfunction symbolCountFromRelocations',a)
 new_gnu=r'''function symbolCountFromGnuHash(r, hashVa, image, bits) {
   if(hashVa==null)return 0;const range=mappedELFFileRangeForVa(image,hashVa);if(!range||range.start+16>range.end)return 0;const off=range.start;
   const nbuckets=r.u32(off),symOffset=r.u32(off+4),bloomSize=r.u32(off+8);if(!nbuckets||nbuckets>10_000_000||bloomSize>10_000_000)return 0;const word=bits===64?8:4;
   const bucketsOff=off+16+bloomSize*word,chainsOff=bucketsOff+nbuckets*4;if(!Number.isSafeInteger(bucketsOff)||!Number.isSafeInteger(chainsOff)||chainsOff>range.end){markDynamicPartial(image,'DT_GNU_HASH header/buckets cross a file-backed PT_LOAD boundary');return 0;}
   let max=symOffset,remainingSteps=Math.min(10_000_000,Math.max(4096,nbuckets*64));
-  for(let i=0;i<nbuckets;i++){const bucket=r.u32(bucketsOff+i*4);if(!bucket||bucket<symOffset)continue;let idx=bucket,p=chainsOff+(idx-symOffset)*4;for(;p+4<=range.end;idx++,p+=4){if(--remainingSteps<0){markExtendedPartial(image,'GNU hash chain traversal exceeded the global budget');return 0;}const chain=r.u32(p);if(idx>max)max=idx;if(chain&1)break;}if(p+4>range.end){markDynamicPartial(image,'DT_GNU_HASH chain crosses a file-backed PT_LOAD boundary');return 0;}}
+  for(let i=0;i<nbuckets;i++){const bucket=r.u32(bucketsOff+i*4);if(!bucket||bucket<symOffset)continue;let idx=bucket,p=chainsOff+(idx-symOffset)*4;for(;p+4<=range.end;idx++,p+=4){if(--remainingSteps<0){markDynamicPartial(image,'GNU hash chain traversal exceeded the global budget');return 0;}const chain=r.u32(p);if(idx>max)max=idx;if(chain&1)break;}if(p+4>range.end){markDynamicPartial(image,'DT_GNU_HASH chain crosses a file-backed PT_LOAD boundary');return 0;}}
   return max>=symOffset?max+1:0;
 }
 '''
 s=s[:a]+new_gnu+s[b:]
-# Layout inference uses mapped ranges.
 old="""  const symOff = vaToOffset(image, symtab), strOff = vaToOffset(image, strtab);
   if (symOff == null || strOff == null || strOff <= symOff || strOff > r.length) return 0;
   if (BigInt(strOff - symOff) !== delta) return 0;"""
@@ -367,7 +349,6 @@ new="""  const symRange=mappedELFFileRangeForVa(image,symtab),strRange=mappedELF
   if(BigInt(strOff-symOff)!==delta)return 0;"""
 if old not in s: raise SystemExit('dynamic layout anchor missing')
 s=s.replace(old,new,1)
-# Remove obsolete vaToOffset helper only if no call remains; keep compatibility helper bounded otherwise.
 old="""function vaToOffset(image, va) {
   const off = image.addressToOffset(va);
   return off == null ? null : toSafeNumber(off);
@@ -379,9 +360,6 @@ if old not in s: raise SystemExit('dynamic vaToOffset anchor missing')
 s=s.replace(old,new,1)
 p.write_text(s)
 
-# ---------------------------------------------------------------------------
-# elf-extended.js — RELR/Android/version tables use the same PT_LOAD bounds.
-# ---------------------------------------------------------------------------
 p=Path('js/binary/elf-extended.js'); s=p.read_text()
 s=s.replace("import { createDynamicSymbolBudget } from './dynamic-symbol-budget.js';", "import { createDynamicSymbolBudget } from './dynamic-symbol-budget.js';\nimport { mappedELFFileRangeForVa, mappedELFFileSpanForVa } from './elf-mapping.js';",1)
 s=s.replace("function vaToOffset(image, va) { const off=image.addressToOffset(va); return off == null ? null : safe(off); }", "function vaToOffset(image, va) { return mappedELFFileRangeForVa(image,va)?.start ?? null; }",1)
@@ -397,7 +375,6 @@ new="""  const size=safe(size64), span=size==null?null:mappedELFFileSpanForVa(im
   if(off==null||size==null){partial(image,`${source} table crosses a file-backed PT_LOAD boundary`);return out;}"""
 if old not in s: raise SystemExit('Android relocation span anchor missing')
 s=s.replace(old,new,1)
-# Replace version parser wholesale.
 a=s.index('export function parseDynamicSymbolVersions'); b=len(s)
 new_versions=r'''export function parseDynamicSymbolVersions(r,tags,image,symbolCount,stringAt,context=null){
   const out=new Map(),versym=one(tags,DT_VERSYM);if(versym==null||symbolCount<=0)return out;const budget=symbolBudgetContext(image,context);const count=Math.min(symbolCount,budget.limits.maxSymbolRecords);if(symbolCount>count)partial(image,`DT_VERSYM symbol count ${symbolCount} exceeds record limit ${count}; clamped`);
