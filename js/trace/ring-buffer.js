@@ -5,6 +5,33 @@ function estimateBytes(event) {
   catch { return 256; }
 }
 
+function cloneTraceValue(value, state = null, depth = 0) {
+  const s = state || { seen: new WeakMap(), nodes: 0 };
+  if (value == null || typeof value !== 'object') return value;
+  if (depth > 48 || ++s.nodes > 20000) throw new RangeError('trace event is too deeply nested');
+  if (s.seen.has(value)) return s.seen.get(value);
+  if (ArrayBuffer.isView(value)) {
+    if (value instanceof DataView) return new DataView(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength));
+    return new value.constructor(value);
+  }
+  if (value instanceof ArrayBuffer) return value.slice(0);
+  if (value instanceof Date) return new Date(value.getTime());
+  const out = Array.isArray(value) ? [] : Object.create(Object.getPrototypeOf(value) === null ? null : Object.prototype);
+  s.seen.set(value, out);
+  if (Array.isArray(value)) {
+    for (const item of value) out.push(cloneTraceValue(item, s, depth + 1));
+  } else {
+    for (const [key, item] of Object.entries(value)) out[key] = cloneTraceValue(item, s, depth + 1);
+  }
+  return out;
+}
+
+function publicEvent(event) {
+  const copy = cloneTraceValue(event);
+  if (copy && typeof copy === 'object') { delete copy.__bytes; delete copy.__aggregateKey; }
+  return copy;
+}
+
 export class TraceRingBuffer {
   constructor(options = {}) {
     this.maxEvents = boundedInteger(options.maxEvents, 4096, 16, 100000, 'maxEvents');
@@ -26,7 +53,9 @@ export class TraceRingBuffer {
     this.seen++;
     if (this.sampleRate > 1 && ((this.seen - 1) % this.sampleRate)) { this.dropped++; return false; }
     if (this.filter && !this.filter(event)) { this.dropped++; return false; }
-    const safe = event && typeof event === 'object' ? { ...event } : { type:'event', value:event };
+    let safe;
+    try { safe = event && typeof event === 'object' ? cloneTraceValue(event) : { type:'event', value:event }; }
+    catch { this.dropped++; return false; }
     const size = estimateBytes(safe);
     if (size > this.maxBytes) { this.dropped++; return false; }
     const aggregateKey = String(safe.type || 'event').slice(0,128);
@@ -42,6 +71,6 @@ export class TraceRingBuffer {
   snapshot({ limit = this.maxEvents } = {}) {
     const requested = Number(limit);
     const n = Number.isFinite(requested) ? Math.max(0, Math.min(this.events.length, Math.floor(requested))) : this.events.length;
-    return { events:this.events.slice(this.events.length - n).map(({__bytes,__aggregateKey,...e}) => e), seen:this.seen, dropped:this.dropped, bytes:this.bytes, aggregates:Object.fromEntries(this.aggregates) };
+    return { events:this.events.slice(this.events.length - n).map(publicEvent), seen:this.seen, dropped:this.dropped, bytes:this.bytes, aggregates:Object.fromEntries(this.aggregates) };
   }
 }
