@@ -1,18 +1,25 @@
 name: Cross-binary accuracy
 
-# Permanent regression gate: production analysis is checked against three real Mach-O binaries.
+# Core regression checks always run. Heavy real Mach-O fixtures are opt-in and
+# fetched from externally configured HTTPS URLs with pinned size/SHA-256 checks.
 on:
   workflow_dispatch:
   pull_request:
     paths:
       - 'js/**'
       - 'tests/**'
+      - 'scripts/fetch-real-fixtures.mjs'
+      - 'package.json'
       - '.github/workflows/cross-binary-accuracy.yml'
 
 jobs:
   accuracy:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    env:
+      HEX_FIXTURE_BATTLECATS_URL: ${{ secrets.HEX_FIXTURE_BATTLECATS_URL }}
+      HEX_FIXTURE_TSUMTSUM_URL: ${{ secrets.HEX_FIXTURE_TSUMTSUM_URL }}
+      HEX_FIXTURE_YWP_URL: ${{ secrets.HEX_FIXTURE_YWP_URL }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -23,28 +30,51 @@ jobs:
           node-version: '22'
       - name: Core checks
         run: npm run check
+      - name: Detect real fixture configuration
+        id: fixtures
+        shell: bash
+        run: |
+          if [[ -n "$HEX_FIXTURE_BATTLECATS_URL" && -n "$HEX_FIXTURE_TSUMTSUM_URL" && -n "$HEX_FIXTURE_YWP_URL" ]]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Real-binary fixture URLs are not configured; heavyweight accuracy checks are skipped."
+          fi
+      - name: Fetch and verify pinned real fixtures
+        if: steps.fixtures.outputs.enabled == 'true'
+        run: npm run fixtures:fetch
       - name: Install oracle dependencies
+        if: steps.fixtures.outputs.enabled == 'true'
         run: python -m pip install --disable-pip-version-check lief capstone
       - name: Verify inputs
+        if: steps.fixtures.outputs.enabled == 'true'
         run: |
-          file tests/battlecats tests/YWP tests/TsumTsum
-          ls -lh tests/battlecats tests/YWP tests/TsumTsum
+          npm run fixtures:check
+          file tests/.real-fixtures/battlecats tests/.real-fixtures/YWP tests/.real-fixtures/TsumTsum
+          ls -lh tests/.real-fixtures/battlecats tests/.real-fixtures/YWP tests/.real-fixtures/TsumTsum
       - name: BattleCats oracle
-        run: python tests/oracle.py tests/battlecats tests/oracle.battlecats.ci.json.gz
+        if: steps.fixtures.outputs.enabled == 'true'
+        run: python tests/oracle.py tests/.real-fixtures/battlecats tests/oracle.battlecats.ci.json.gz
       - name: BattleCats accuracy
-        run: node --max-old-space-size=6000 tests/accuracy.mjs --target=tests/battlecats --oracle=tests/oracle.battlecats.ci.json.gz --json | tee accuracy-BattleCats.json
+        if: steps.fixtures.outputs.enabled == 'true'
+        run: node --max-old-space-size=6000 tests/accuracy.mjs --target=tests/.real-fixtures/battlecats --oracle=tests/oracle.battlecats.ci.json.gz --json | tee accuracy-BattleCats.json
       - name: YWP oracle
-        run: python tests/oracle.py tests/YWP tests/oracle.YWP.json.gz
+        if: steps.fixtures.outputs.enabled == 'true'
+        run: python tests/oracle.py tests/.real-fixtures/YWP tests/oracle.YWP.json.gz
       - name: YWP accuracy
-        run: node --max-old-space-size=6000 tests/accuracy.mjs --target=tests/YWP --oracle=tests/oracle.YWP.json.gz --json | tee accuracy-YWP.json
+        if: steps.fixtures.outputs.enabled == 'true'
+        run: node --max-old-space-size=6000 tests/accuracy.mjs --target=tests/.real-fixtures/YWP --oracle=tests/oracle.YWP.json.gz --json | tee accuracy-YWP.json
       - name: TsumTsum oracle
-        run: python tests/oracle.py tests/TsumTsum tests/oracle.TsumTsum.json.gz
+        if: steps.fixtures.outputs.enabled == 'true'
+        run: python tests/oracle.py tests/.real-fixtures/TsumTsum tests/oracle.TsumTsum.json.gz
       - name: TsumTsum accuracy
-        run: node --max-old-space-size=6000 tests/accuracy.mjs --target=tests/TsumTsum --oracle=tests/oracle.TsumTsum.json.gz --json | tee accuracy-TsumTsum.json
+        if: steps.fixtures.outputs.enabled == 'true'
+        run: node --max-old-space-size=6000 tests/accuracy.mjs --target=tests/.real-fixtures/TsumTsum --oracle=tests/oracle.TsumTsum.json.gz --json | tee accuracy-TsumTsum.json
       - name: Accuracy regression gate
+        if: steps.fixtures.outputs.enabled == 'true'
         run: node tests/accuracy-gate.mjs
       - name: Upload results
-        if: always()
+        if: always() && steps.fixtures.outputs.enabled == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: accuracy-results
