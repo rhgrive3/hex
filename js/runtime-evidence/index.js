@@ -33,6 +33,17 @@ export function evidenceFromExperiment({ experiment, testCase, observation, comp
   });
 }
 
+function attachFactExtractionMetadata(facts, metadata) {
+  // Preserve the original Array API (`map`, `some`, `length`, iteration) while
+  // exposing the new completeness contract. `facts` is non-enumerable so JSON
+  // serialization remains the historical plain array and cannot become cyclic.
+  Object.defineProperty(facts, 'facts', { value:facts, enumerable:false, configurable:false, writable:false });
+  for (const [key, value] of Object.entries(metadata)) {
+    Object.defineProperty(facts, key, { value, enumerable:false, configurable:false, writable:false });
+  }
+  return facts;
+}
+
 export function traceToSemanticFacts(trace, context = {}) {
   const events = trace && Array.isArray(trace.events) ? trace.events : Array.isArray(trace) ? trace : [];
   const limit = boundedInteger(context.limit, 10000, 1, 50000, 'fact limit');
@@ -58,12 +69,8 @@ export function traceToSemanticFacts(trace, context = {}) {
   if (hitFactLimit) reasons.push('fact-limit');
   if (sourceTruncated) reasons.push('source-trace-truncated');
   const complete = !truncated;
-  // Every derived fact carries the observation completeness so downstream
-  // evidence/absence reasoning cannot accidentally treat a partial trace as a
-  // complete negative observation after metadata is detached from the array.
   for (const fact of facts) fact.observationComplete = complete;
-  return {
-    facts,
+  return attachFactExtractionMetadata(facts, {
     complete,
     truncated,
     processedEvents,
@@ -71,7 +78,7 @@ export function traceToSemanticFacts(trace, context = {}) {
     factCount: facts.length,
     limit,
     reasons,
-  };
+  });
 }
 
 export function compareRuntimeDispatch(staticTargets, runtimeEvent) {
@@ -113,10 +120,6 @@ export function fuseStaticDynamic(staticCandidate, runtimeEvidence = []) {
   const groups = new Map();
   for (const item of compatible) {
     const group = item.provenance && (item.provenance.observationGroup || item.provenance.group) || item.id || Symbol('evidence');
-    // Correlated observations are one evidence unit. If their derived verdicts
-    // disagree, keep the most conservative/decisive representative rather than
-    // making the result depend on array order. A contradiction from one runtime
-    // observation can never be hidden behind a correlated support record.
     const existing = groups.get(group);
     if (!existing || verdictPriority(item.verdict) > verdictPriority(existing.verdict)) groups.set(group,item);
   }
