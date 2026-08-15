@@ -2,6 +2,36 @@ from pathlib import Path
 
 p = Path('worker.js')
 s = p.read_text()
+
+# The generic idempotence helper in the primary patch can see the already-patched
+# /api/ai/turn cleanup and incorrectly skip the structurally identical cleanup
+# inside handleGemini. Patch the legacy handler *within its own lexical range*.
+gemini_start = s.index('async function handleGemini')
+gemini_end = s.index('\nfunction isJsonRequest', gemini_start)
+gemini = s[gemini_start:gemini_end]
+legacy_sync_cleanup = """  const cleanup = () => {
+    clearTimeout(timeout);
+    request.signal.removeEventListener('abort', abortOnDisconnect);
+  };
+"""
+legacy_async_cleanup = """  const cleanup = async () => {
+    clearTimeout(timeout);
+    request.signal.removeEventListener('abort', abortOnDisconnect);
+    await releaseQuota();
+  };
+"""
+if legacy_async_cleanup not in gemini:
+    if legacy_sync_cleanup not in gemini:
+        raise SystemExit('legacy cleanup patch anchor missing')
+    gemini = gemini.replace(legacy_sync_cleanup, legacy_async_cleanup, 1)
+
+# Any error path after quota acquisition must finish the lease before returning.
+gemini = gemini.replace('cleanup();\n        return ', 'await cleanup();\n        return ')
+gemini = gemini.replace('cleanup();\n      return ', 'await cleanup();\n      return ')
+gemini = gemini.replace('cleanup();\n    return ', 'await cleanup();\n    return ')
+gemini = gemini.replace('cleanup();\n    ', 'await cleanup();\n    ')
+s = s[:gemini_start] + gemini + s[gemini_end:]
+
 old_plain = """  const { readable, writable } = new TransformStream();
   const piping = upstream.body.pipeTo(writable, { signal: upstreamAbort.signal })
     .catch(() => {})
@@ -70,11 +100,22 @@ new = """  const upstreamReader = upstream.body.getReader();
     },
   });
 """
-if new in s:
-    raise SystemExit(0)
-for old in (old_pull, old_flush, old_plain):
-    if old in s:
-        p.write_text(s.replace(old, new, 1))
-        break
-else:
-    raise SystemExit('stream lifecycle patch anchor missing')
+if new not in s:
+    for old in (old_pull, old_flush, old_plain):
+        if old in s:
+            s = s.replace(old, new, 1)
+            break
+    else:
+        raise SystemExit('stream lifecycle patch anchor missing')
+
+# Fail the patch immediately if the legacy route still contains a synchronous
+# cleanup or a pipeTo().finally(cleanup) lifecycle.
+legacy = s[s.index('async function handleGemini'):s.index('\nfunction isJsonRequest', s.index('async function handleGemini'))]
+if 'const cleanup = () =>' in legacy:
+    raise SystemExit('legacy cleanup remained synchronous')
+if 'await releaseQuota();' not in legacy:
+    raise SystemExit('legacy cleanup does not release quota')
+if '.finally(cleanup)' in legacy:
+    raise SystemExit('legacy stream still defers cleanup to pipeTo.finally')
+
+p.write_text(s)
