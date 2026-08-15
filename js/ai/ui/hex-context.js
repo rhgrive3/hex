@@ -30,17 +30,32 @@ function fixedRows(app) {
 function instructionBytes(app) {
   return Math.max(1, Number(app.store.get('instructionAlignment') || app.store.get('capability')?.instructionAlignment || 4));
 }
+function containsAddress(region, addr) {
+  try { return !!region && region.size > 0n && addr >= region.vmAddr && addr < region.vmAddr + region.size; } catch { return false; }
+}
+function regionForAddress(app, address) {
+  const addr = toBigInt(address);
+  if (addr == null) return null;
+  // Keep the fast path for the currently displayed region, but never require it:
+  // a TurnSnapshot may still be analysing function A after the UI navigates to
+  // function B in another executable region of the same binary.
+  let current = null;
+  try { current = app.codeRegion?.() || app.store.get('currentRegion'); } catch { current = app.store.get('currentRegion'); }
+  if (containsAddress(current, addr)) return current;
+  const matches = (app.store.get('regions') || []).filter((region) => containsAddress(region, addr));
+  return matches.find((region) => region.exec === true) || matches.find((region) => region.exec !== false) || matches[0] || null;
+}
 
 /** Semantic model for one function, or null when it cannot be analysed. */
 export async function analyzeModelAt(app, address) {
   const addr = toBigInt(address);
   if (addr == null) return null;
-  const region = app.codeRegion?.() || app.store.get('currentRegion');
+  const region = regionForAddress(app, addr);
   if (!region || !app.store.get('canDisassemble')) return null;
   const sym = app.symbols;
   const fn = sym && sym.functionCount ? sym.functionAt(addr) : null;
   const start = fn ? fn.start : addr;
-  if (start < region.vmAddr || start >= region.vmAddr + region.size) return null;
+  if (!containsAddress(region, start)) return null;
   const step=BigInt(instructionBytes(app));
   if ((start-region.vmAddr)%step !== 0n) return null;
   const startRow = Number((start - region.vmAddr) / step);
@@ -78,11 +93,10 @@ function selectionContext(app) {
 }
 
 /**
- * Build the capability object the AI core expects.
- *
- * Live getters, not a snapshot: the user keeps navigating while a turn runs,
- * and a stale "current function" is the fastest way to produce a confident
- * answer about the wrong code.
+ * Build the live capability object the AI core consumes. AIRuntime creates an
+ * immutable TurnSnapshot from these getters at user-turn start; capability
+ * methods below therefore accept explicit addresses and must not depend on the
+ * workbench's subsequently selected function/region.
  */
 export function createHexAIContext(app) {
   const nameOf = (addr) => functionNameOf(app, addr);
@@ -205,7 +219,7 @@ export function createHexAIContext(app) {
       const addr = toBigInt(address);
       if (addr == null) return false;
       for (const region of app.store.get('regions') || []) {
-        if (region.size > 0n && addr >= region.vmAddr && addr < region.vmAddr + region.size) return true;
+        if (containsAddress(region, addr)) return true;
       }
       return false;
     },
@@ -238,11 +252,11 @@ function safeCurrentFunction(app) {
 }
 
 function pseudocode(app, model, addr, nameOf) {
-  const region = app.store.get('currentRegion');
+  const region = regionForAddress(app, addr);
   return decompile(model, {
     name: nameOf(addr),
     addr,
-    rowOfAddress: (a) => (region && a != null ? Number((a - region.vmAddr) / BigInt(instructionBytes(app))) : null),
+    rowOfAddress: (a) => (region && a != null && containsAddress(region, a) ? Number((a - region.vmAddr) / BigInt(instructionBytes(app))) : null),
     addrOfRow: (row) => (region ? region.vmAddr + BigInt(row) * BigInt(instructionBytes(app)) : null),
     symbolFor: (a) => app.symbols?.nameAt?.(a) || null,
     objcModel: app.objcModel || null,
