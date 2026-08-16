@@ -1,0 +1,119 @@
+name: Validate conversation binding storage isolation
+
+on:
+  push:
+    branches:
+      - hex/security-conversation-binding-storage
+
+permissions:
+  contents: write
+
+jobs:
+  validate-and-commit:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Prove page-origin storage controls routing before fix
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { ChatGPTConversationRouter } from './js/userscript/chatgpt-adapter.js';
+          const values = new Map();
+          const storage = {
+            getItem(key) { return values.has(key) ? values.get(key) : null; },
+            setItem(key, value) { values.set(key, String(value)); },
+          };
+          storage.setItem('hex.chatgpt.conversations.v1', JSON.stringify({
+            victim: { id: 'attacker-chat', url: 'https://chatgpt.com/c/attacker-chat' },
+          }));
+          const previous = globalThis.localStorage;
+          globalThis.localStorage = storage;
+          try {
+            const router = new ChatGPTConversationRouter({ conversation: () => null }, { navigationTimeoutMs: 10 });
+            assert.equal(router.binding('victim')?.id, 'attacker-chat');
+            console.log('pre-fix reproduction: page-origin storage binding accepted');
+          } finally {
+            if (previous === undefined) delete globalThis.localStorage;
+            else globalThis.localStorage = previous;
+          }
+          NODE
+      - name: Apply minimal fix and permanent regression
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          source = Path('js/userscript/chatgpt-adapter.js')
+          text = source.read_text()
+          old = "constructor(adapter, { storage = globalThis.localStorage, storageKey = 'hex.chatgpt.conversations.v1', navigationTimeoutMs = 12000 } = {})"
+          new = "constructor(adapter, { storage = null, storageKey = 'hex.chatgpt.conversations.v1', navigationTimeoutMs = 12000 } = {})"
+          if text.count(old) != 1:
+              raise SystemExit('expected ChatGPTConversationRouter constructor not found exactly once')
+          source.write_text(text.replace(old, new, 1))
+
+          test = Path('tests/chatgpt-web-runtime.mjs')
+          text = test.read_text()
+          anchor = "await testConversationRouting();\n"
+          if text.count(anchor) != 1:
+              raise SystemExit('test call anchor not found exactly once')
+          text = text.replace(anchor, anchor + "await testConversationRoutingIgnoresPageOriginStorageByDefault();\n", 1)
+
+          insert_before = "\nasync function testNewConversationRouteWaitsForOldTurns() {"
+          if text.count(insert_before) != 1:
+              raise SystemExit('test insertion anchor not found exactly once')
+          regression = r'''
+
+async function testConversationRoutingIgnoresPageOriginStorageByDefault() {
+  const storage = memoryStorage();
+  storage.setItem('hex.chatgpt.conversations.v1', JSON.stringify({
+    victim: { id: 'attacker-chat', url: 'https://chatgpt.com/c/attacker-chat' },
+  }));
+  const previous = globalThis.localStorage;
+  globalThis.localStorage = storage;
+  try {
+    const router = new ChatGPTConversationRouter({ conversation: () => null }, { navigationTimeoutMs: 30 });
+    assert.equal(router.binding('victim'), null, 'page-origin storage must not define Hex session routing');
+  } finally {
+    if (previous === undefined) delete globalThis.localStorage;
+    else globalThis.localStorage = previous;
+  }
+}
+'''
+          test.write_text(text.replace(insert_before, regression + insert_before, 1))
+          PY
+      - name: Focused regression
+        run: node tests/chatgpt-web-runtime.mjs
+      - name: Lint
+        run: npm run lint
+      - name: AI regressions
+        run: npm run ai:test
+      - name: Userscript regressions
+        run: npm run userscript:test
+      - name: Build generated userscript
+        run: npm run userscript:build
+      - name: Generated loader determinism
+        shell: bash
+        run: |
+          git add userscript/hex.user.template.js
+          npm run userscript:build
+          git diff --exit-code -- userscript/hex.user.template.js
+      - name: Diff hygiene
+        run: git diff --check
+      - name: Commit validated fix
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git rm .github/workflows/security-conversation-binding-validation.yml
+          git add js/userscript/chatgpt-adapter.js tests/chatgpt-web-runtime.mjs userscript/hex.user.template.js
+          git commit -m "Fix ChatGPT conversation binding trust boundary"
+          git push origin HEAD:hex/security-conversation-binding-storage
