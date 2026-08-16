@@ -301,8 +301,18 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
       active.delete(value.id);
       return base;
     };
+    const state = projected.instructions.filter((inst) => inst.extra?.stateRead || inst.extra?.stateWrite).map((inst) => ({
+      op: inst.op,
+      row: inst.row,
+      publicStateIdentity: inst.extra?.publicStateIdentity ?? null,
+      localPhysicalViewProjection: inst.extra?.localPhysicalViewProjection ?? null,
+      reason: inst.extra?.reason ?? null,
+      dst: shapeValue(inst.dst),
+      args: (inst.args || []).map((arg) => shapeValue(arg?.value)),
+    }));
     console.log('V1_CMPSEL_DIAG ' + JSON.stringify({
       functionId: projected.functionId,
+      state,
       instructions: cmpSel.map((inst) => ({
         op: inst.op,
         sub: inst.sub,
