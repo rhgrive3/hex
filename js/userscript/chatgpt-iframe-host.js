@@ -129,7 +129,6 @@ export function createChatGPTIframeHost(options = {}) {
   });
 
   wrapper.append(iframe, closeButton, statusBox, errorBox);
-  documentRef.documentElement.append(wrapper, launcher);
 
   let lifecycle = 'idle';
   let generation = 0;
@@ -149,6 +148,9 @@ export function createChatGPTIframeHost(options = {}) {
   closeButton.addEventListener('click', onCloseClick);
   retryButton.addEventListener('click', onRetryClick);
 
+  navigate();
+  documentRef.documentElement.append(wrapper, launcher);
+
   function state() {
     return Object.freeze({
       status: lifecycle,
@@ -167,8 +169,7 @@ export function createChatGPTIframeHost(options = {}) {
     wrapper.style.pointerEvents = 'auto';
     wrapper.removeAttribute('aria-hidden');
     launcher.hidden = true;
-    if (lifecycle === 'idle') navigate();
-    else if (lifecycle === 'ready' || lifecycle === 'hidden') lifecycle = 'visible';
+    if (lifecycle === 'ready' || lifecycle === 'hidden') lifecycle = 'visible';
     safeFocus(iframe.contentWindow);
     return state();
   }
