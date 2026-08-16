@@ -88,34 +88,38 @@ jobs:
 
           p = Path('js/slice.js')
           s = p.read_text()
-          old = """  const addressOnly = new Set();
-          for (const inst of slice.instructions) {
-            if (!inst.addr) continue;
-            if (inst.addr.base) addressOnly.add(inst.addr.base.id);
-            if (inst.addr.index) addressOnly.add(inst.addr.index.id);
-          }
-          for (const inst of slice.instructions) for (const a of inst.args || []) if (a && a.value) addressOnly.delete(a.value.id);"""
-          new = """  const addressOnly = new Set();
-          const addressQueue = [];
-          const rememberAddressValue = (value) => {
-            if (!value || addressOnly.has(value.id)) return;
-            addressOnly.add(value.id);
-            addressQueue.push(value);
-          };
-          for (const inst of slice.instructions) {
-            if (inst.addr && inst.addr.base) rememberAddressValue(inst.addr.base);
-            if (inst.addr && inst.addr.index) rememberAddressValue(inst.addr.index);
-          }
-          while (addressQueue.length) {
-            const value = addressQueue.pop();
-            const def = value && value.def;
-            if (!def) continue;
-            for (const a of def.args || []) if (a && a.value) rememberAddressValue(a.value);
-          }
-          for (const inst of slice.instructions) {
-            if (inst.dst && addressOnly.has(inst.dst.id)) continue;
-            for (const a of inst.args || []) if (a && a.value) addressOnly.delete(a.value.id);
-          }"""
+          old = (
+              "  const addressOnly = new Set();\n"
+              "  for (const inst of slice.instructions) {\n"
+              "    if (!inst.addr) continue;\n"
+              "    if (inst.addr.base) addressOnly.add(inst.addr.base.id);\n"
+              "    if (inst.addr.index) addressOnly.add(inst.addr.index.id);\n"
+              "  }\n"
+              "  for (const inst of slice.instructions) for (const a of inst.args || []) if (a && a.value) addressOnly.delete(a.value.id);"
+          )
+          new = (
+              "  const addressOnly = new Set();\n"
+              "  const addressQueue = [];\n"
+              "  const rememberAddressValue = (value) => {\n"
+              "    if (!value || addressOnly.has(value.id)) return;\n"
+              "    addressOnly.add(value.id);\n"
+              "    addressQueue.push(value);\n"
+              "  };\n"
+              "  for (const inst of slice.instructions) {\n"
+              "    if (inst.addr && inst.addr.base) rememberAddressValue(inst.addr.base);\n"
+              "    if (inst.addr && inst.addr.index) rememberAddressValue(inst.addr.index);\n"
+              "  }\n"
+              "  while (addressQueue.length) {\n"
+              "    const value = addressQueue.pop();\n"
+              "    const def = value && value.def;\n"
+              "    if (!def) continue;\n"
+              "    for (const a of def.args || []) if (a && a.value) rememberAddressValue(a.value);\n"
+              "  }\n"
+              "  for (const inst of slice.instructions) {\n"
+              "    if (inst.dst && addressOnly.has(inst.dst.id)) continue;\n"
+              "    for (const a of inst.args || []) if (a && a.value) addressOnly.delete(a.value.id);\n"
+              "  }"
+          )
           if old in s:
               s = s.replace(old, new)
           elif new not in s:
