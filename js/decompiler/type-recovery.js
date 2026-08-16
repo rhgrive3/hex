@@ -201,8 +201,16 @@ export function inferSemanticTypes(ir, model, opts = {}) {
 
     if (inst.op === OP.BIN) {
       const args = (inst.args || []).map(valueOf).filter(Boolean);
-      if (/^s(div|mul)|ashr/.test(inst.sub || '')) for (const a of args) score(eFor(a), 'signed', 4, `row ${inst.row}: ${inst.sub}`);
-      if (/^u(div|mul)|lshr/.test(inst.sub || '')) for (const a of args) score(eFor(a), 'unsigned', 4, `row ${inst.row}: ${inst.sub}`);
+      const signedIntegerOp = /^s(div|mul)|ashr/.test(inst.sub || '');
+      const unsignedIntegerOp = /^u(div|mul)|lshr/.test(inst.sub || '');
+      if (signedIntegerOp) {
+        for (const a of args) score(eFor(a), 'signed', 4, `row ${inst.row}: ${inst.sub}`);
+        if (dst) score(dst, 'signed', 4, `row ${inst.row}: ${inst.sub} result`);
+      }
+      if (unsignedIntegerOp) {
+        for (const a of args) score(eFor(a), 'unsigned', 4, `row ${inst.row}: ${inst.sub}`);
+        if (dst) score(dst, 'unsigned', 4, `row ${inst.row}: ${inst.sub} result`);
+      }
       if (/^f(add|sub|mul|div)/.test(inst.sub || '')) { for (const a of args) score(eFor(a), 'floating', 5, `row ${inst.row}: ${inst.sub}`); if (dst) score(dst, 'floating', 5, `row ${inst.row}: ${inst.sub}`); }
       if (/^(and|or|xor|bic)$/.test(inst.sub || '') && inst.dst && inst.dst.bits === 1) score(dst, 'bool', 3, `row ${inst.row}: bitwise boolean`);
     }
