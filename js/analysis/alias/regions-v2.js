@@ -209,6 +209,29 @@ export function deriveMemoryRegion(input = {}) {
   });
 }
 
+function irForAddressRootDerivation(ir) {
+  const nodes = Array.isArray(ir?.nodes) ? ir.nodes : [];
+  // A flags-only unknown state effect cannot mutate a non-flag physical root.
+  // Only apply this projection when no flag state value is read anywhere in the
+  // function, so a flag-derived address can never gain precision accidentally.
+  const readsFlagState = nodes.some((node) => node?.kind === 'state-read' && node.variable?.physicalIdentity?.kind === 'flag');
+  if (readsFlagState) return ir;
+  const ignored = new Set(nodes.filter((node) => {
+    if (node?.kind !== 'unknown-state-write') return false;
+    const categories = Array.isArray(node.unknown?.categories) ? node.unknown.categories.map(String) : [];
+    return categories.length > 0 && categories.every((category) => category === 'flags');
+  }).map((node) => String(node.id)));
+  if (!ignored.size) return ir;
+  return {
+    ...ir,
+    nodes: nodes.filter((node) => !ignored.has(String(node.id))),
+    blocks: (ir.blocks ?? []).map((block) => ({
+      ...block,
+      nodeIds: (block.nodeIds ?? []).filter((nodeId) => !ignored.has(String(nodeId))),
+    })),
+  };
+}
+
 export function classifySemanticMemoryRegion(ir, nodeOrId, options = {}) {
   const nodes = Array.isArray(ir?.nodes) ? ir.nodes : [];
   const values = Array.isArray(ir?.values) ? ir.values : [];
@@ -234,7 +257,7 @@ export function classifySemanticMemoryRegion(ir, nodeOrId, options = {}) {
   let proof = null;
   let graphDescriptor = null;
   if (!explicitDescriptor && addressValueId) {
-    proof = deriveCanonicalAddressProof(ir, addressValueId, {
+    proof = deriveCanonicalAddressProof(irForAddressRootDerivation(ir), addressValueId, {
       addressSpace: node.memory.addressSpace,
       ssa: options.ssa,
       rootDescriptors: options.rootDescriptors,
