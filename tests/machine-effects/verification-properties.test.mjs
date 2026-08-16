@@ -57,8 +57,10 @@ assert.equal(arm64GpRegisterWrite('wzr', 123n, 32).ignored, true);
 
 // Condition-code truth table samples from independently calculated NZCV.
 const signedOverflow = addWithFlags(0x7fffffffn, 1n, 32);
-assert.equal(conditionHolds(signedOverflow, 'lt'), true, 'N != V after signed positive overflow');
-assert.equal(conditionHolds(signedOverflow, 'ge'), false);
+assert.equal(signedOverflow.N, 1);
+assert.equal(signedOverflow.V, 1);
+assert.equal(conditionHolds(signedOverflow, 'lt'), false, 'LT is N != V; overflow correction makes this false');
+assert.equal(conditionHolds(signedOverflow, 'ge'), true, 'GE is N == V');
 const unsignedBorrow = subWithFlags(0n, 1n, 32);
 assert.equal(conditionHolds(unsignedBorrow, 'lo'), true);
 assert.equal(conditionHolds(unsignedBorrow, 'hs'), false);
