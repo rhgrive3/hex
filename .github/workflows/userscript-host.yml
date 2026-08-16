@@ -34,7 +34,7 @@ on:
       - '.github/workflows/userscript-host.yml'
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   userscript:
@@ -50,16 +50,6 @@ jobs:
       - run: npm ci
       - name: Opaque sandbox storage contract
         run: node tests/userscript-sandbox-storage.mjs
-      - name: Regenerate committed userscript loader
-        run: |
-          npm run userscript:build
-          if ! git diff --quiet -- userscript/hex.user.template.js; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add userscript/hex.user.template.js
-            git commit -m "Regenerate userscript loader"
-            git push origin HEAD:${GITHUB_HEAD_REF}
-          fi
       - name: Build and userscript tests
         run: npm run userscript:test
       - name: AI and worker regressions
