@@ -1,9 +1,9 @@
 /*
  * Semantic IR public-core compatibility facade.
  *
- * Legacy ARM64 remains the default/oracle until the Phase 3 shadow
- * differential is complete. The explicit semantic-v2-compat mode exercises
- * the canonical Phase 3 pipeline without a catch-and-fallback path.
+ * Semantic IR v2 compatibility is the Phase 3 production default after the
+ * completed shadow differential. Legacy ARM64 remains an explicit oracle mode;
+ * there is still no catch-and-fallback path between the engines.
  */
 export * from './architecture/compat/ir-core-arm64-aapcs64-v1.js';
 
@@ -25,7 +25,7 @@ import { AAPCS64_ABI, classifyAAPCS64Arguments } from './targets/abi/aapcs64.js'
 
 export { classifyAAPCS64Arguments as classifyCallArguments };
 
-let semanticMigrationMode = SEMANTIC_V2_MIGRATION_MODES.LEGACY;
+let semanticMigrationMode = SEMANTIC_V2_MIGRATION_MODES.V2_COMPAT;
 let lastSemanticV2Instrumentation = null;
 
 function normalizeMode(mode) {
@@ -34,7 +34,7 @@ function normalizeMode(mode) {
   throw new TypeError('semantic-migration-mode-unsupported');
 }
 
-/** Explicit process/session migration switch. Default remains legacy-v1. */
+/** Explicit process/session migration switch. Legacy-v1 remains available as the compatibility oracle. */
 export function setSemanticMigrationMode(mode) {
   semanticMigrationMode = normalizeMode(mode);
   lastSemanticV2Instrumentation = null;
