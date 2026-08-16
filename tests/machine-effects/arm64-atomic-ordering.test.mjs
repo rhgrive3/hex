@@ -5,7 +5,9 @@ import { liftArm64AtomicEffects, ARM64_ATOMIC_INSTRUCTION_INVENTORY } from '../.
 let sequence = 0;
 const x = (n) => ({ k:'reg', text:`x${n}`, cls:'gp', bits:64, num:n });
 const w = (n) => ({ k:'reg', text:`w${n}`, cls:'gp', bits:32, num:n });
-const mem = (base) => ({ k:'mem', text:'[...]', base, index:null, shift:null, mode:'offset', disp:null, addressDisp:null, writebackDisp:null });
+const sp = () => ({ k:'reg', text:'sp', cls:'sp', bits:64, num:31 });
+const imm = (value) => ({ k:'imm', text:`#${value}`, value:BigInt(value) });
+const mem = (base, { disp=null, index=null } = {}) => ({ k:'mem', text:'[...]', base, index, shift:null, mode:'offset', disp:disp == null ? null : imm(disp), addressDisp:disp == null ? null : imm(disp), writebackDisp:null });
 const other = (text) => ({ k:'other', text });
 function context() { const instructionId=`arm64-atomic-test-${sequence++}`; return { instructionId, origin:{ instructionIds:[instructionId] } }; }
 function liftMem(mnemonic, ops) { return liftArm64MemoryEffects({ mnemonic, ops }, context()); }
@@ -18,6 +20,8 @@ function liftAtomic(mnemonic, ops) { return liftArm64AtomicEffects({ mnemonic, o
   const sa = release.operations.find((op) => op.kind === 'memory-write').access;
   assert.deepEqual({ atomic:la.atomic, ordering:la.ordering, endian:la.endian, alignment:la.alignment }, { atomic:true, ordering:'acquire', endian:'little', alignment:4 });
   assert.deepEqual({ atomic:sa.atomic, ordering:sa.ordering, endian:sa.endian, alignment:sa.alignment }, { atomic:true, ordering:'release', endian:'little', alignment:4 });
+  assert.equal('volatility' in la, false);
+  assert.equal('volatility' in sa, false);
 }
 
 {
@@ -28,6 +32,13 @@ function liftAtomic(mnemonic, ops) { return liftArm64AtomicEffects({ mnemonic, o
   assert.equal(acquire.operations.find((op) => op.kind === 'memory-read').access.ordering, 'acquire');
   assert.ok(acquire.operations.some((op) => op.kind === 'intrinsic' && op.intrinsicId === 'arm64.exclusive-monitor-set'));
   assert.ok(acquire.possibleFaults.some((fault) => fault.kind === 'alignment-fault'));
+}
+
+{
+  const b = liftAtomic('ldxr', [x(0), mem(sp())]);
+  assert.equal(b.completeness, 'exact-with-intrinsic');
+  assert.ok(b.possibleFaults.some((fault) => fault.kind === 'stack-pointer-alignment-fault'));
+  assert.equal(b.operations.find((op) => op.kind === 'memory-read').metadata.tagChecked, false);
 }
 
 {
@@ -61,6 +72,16 @@ function liftAtomic(mnemonic, ops) { return liftArm64AtomicEffects({ mnemonic, o
 }
 
 {
+  const addByte = liftAtomic('ldaddb', [w(0), w(2), mem(x(1))]);
+  const trunc = addByte.operations.find((op) => op.kind === 'value' && op.opcode === 'truncate');
+  assert.equal(addByte.completeness, 'exact-with-intrinsic');
+  assert.ok(trunc, 'byte atomic source must explicitly truncate the W view');
+  assert.equal(trunc.metadata.fromBits, 32);
+  assert.equal(trunc.metadata.toBits, 8);
+  assert.equal(addByte.operations.find((op) => op.kind === 'intrinsic').effectSummary.memoryRead.accesses[0].widthBits, 8);
+}
+
+{
   const swap = liftAtomic('swpal', [x(0), x(2), mem(x(1))]);
   const rmw = swap.operations.find((op) => op.kind === 'intrinsic');
   assert.equal(rmw.metadata.operation, 'swap');
@@ -86,9 +107,15 @@ function liftAtomic(mnemonic, ops) { return liftArm64AtomicEffects({ mnemonic, o
 }
 
 {
-  const malformed = liftAtomic('stxr', [w(0), x(2), { k:'mem', base:x(1), mode:'post', addressDisp:null, writebackDisp:null }]);
-  assert.equal(malformed.completeness, 'partial');
-  assert.ok(malformed.unknownEffects.categories.includes('memory'));
+  const malformedWriteback = liftAtomic('stxr', [w(0), x(2), { k:'mem', base:x(1), mode:'post', addressDisp:null, writebackDisp:null }]);
+  const malformedOffset = liftAtomic('cas', [x(0), x(2), mem(x(1), { disp:8n })]);
+  const malformedIndex = liftAtomic('ldxr', [x(0), mem(x(1), { index:x(3) })]);
+  const malformedByteRegister = liftAtomic('ldaddb', [x(0), x(2), mem(x(1))]);
+  assert.equal(malformedWriteback.completeness, 'partial');
+  assert.equal(malformedOffset.completeness, 'partial');
+  assert.equal(malformedIndex.completeness, 'partial');
+  assert.equal(malformedByteRegister.completeness, 'partial');
+  assert.ok(malformedWriteback.unknownEffects.categories.includes('memory'));
 }
 
 assert.deepEqual(ARM64_ATOMIC_INSTRUCTION_INVENTORY.compareSwap, ['cas','casa','casl','casal']);
