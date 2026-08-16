@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
-import { ChatGPTConversationRouter, ChatGPTModelController } from '../js/userscript/chatgpt-adapter.js';
-import { ResilientChatGPTTurnController as ChatGPTTurnController } from '../js/userscript/chatgpt-turn-controller.js';
+import { ChatGPTConversationRouter, ChatGPTModelController, ChatGPTTurnController } from '../js/userscript/chatgpt-adapter.js';
 import { installChatGPTWebBridge } from '../js/userscript/chatgpt-bridge.js';
 
 await testConversationRouting();
