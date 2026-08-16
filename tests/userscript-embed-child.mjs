@@ -245,9 +245,11 @@ function testRuntimeResponsibilityBoundaries() {
   assert.doesNotMatch(legacyBlock, /PROTECTED_HOST\.html|scopedCss|installProtectedWorkers/);
   assert.match(entrySource, /ensureLegacyHost/);
   assert.match(entrySource, /PROTECTED_HOST\.scopedCss/);
-  assert.match(entrySource, /createChatGPTIframeHost/);
+  assert.match(entrySource, /createChatGPTSandboxHost/);
+  assert.doesNotMatch(entrySource, /createChatGPTIframeHost/);
   assert.match(entrySource, /createChatGPTParentRpc/);
-  assert.match(entrySource, /falling back to legacy light DOM/);
+  assert.doesNotMatch(entrySource, /falling back to legacy light DOM/);
+  assert.match(entrySource, /readEmbedMode\(\) === LEGACY_MODE/);
 }
 
 function proxyPair(handlers) {
