@@ -11,6 +11,26 @@ import {
 } from '../js/userscript/embed-bootstrap.js';
 import { createChatGPTIframeHost } from '../js/userscript/chatgpt-iframe-host.js';
 
+class FakeElement {
+  constructor(tag) {
+    this.tagName = String(tag).toUpperCase(); this.children = []; this.parentElement = null;
+    this.style = {}; this.hidden = false; this.attributes = new Map(); this.listeners = new Map();
+    this.textContent = ''; this._src = ''; this.focusCalls = 0;
+  }
+  set src(value) { this._src = String(value); }
+  get src() { return this._src; }
+  append(...nodes) { for (const node of nodes) { node.parentElement = this; this.children.push(node); } }
+  remove() { if (!this.parentElement) return; const i = this.parentElement.children.indexOf(this); if (i >= 0) this.parentElement.children.splice(i, 1); this.parentElement = null; }
+  setAttribute(name, value) { this.attributes.set(name, String(value)); }
+  removeAttribute(name) { this.attributes.delete(name); }
+  addEventListener(type, fn) { if (!this.listeners.has(type)) this.listeners.set(type, new Set()); this.listeners.get(type).add(fn); }
+  removeEventListener(type, fn) { this.listeners.get(type)?.delete(fn); }
+  dispatchEvent(event) { for (const fn of [...(this.listeners.get(event.type) || [])]) fn.call(this, event); }
+  click() { this.dispatchEvent({ type: 'click', target: this }); }
+  contains(node) { return this === node || this.children.some((child) => child.contains?.(node)); }
+  focus() { this.focusCalls++; }
+}
+
 await testHttpsAndPersistentLifecycle();
 await testBootstrapMustPrecedeAttach();
 await testAttachOrderAndReady();
@@ -232,26 +252,6 @@ function fakeEnvironment(options = {}) {
     });
   };
   return env;
-}
-
-class FakeElement {
-  constructor(tag) {
-    this.tagName = String(tag).toUpperCase(); this.children = []; this.parentElement = null;
-    this.style = {}; this.hidden = false; this.attributes = new Map(); this.listeners = new Map();
-    this.textContent = ''; this._src = ''; this.focusCalls = 0;
-  }
-  set src(value) { this._src = String(value); }
-  get src() { return this._src; }
-  append(...nodes) { for (const node of nodes) { node.parentElement = this; this.children.push(node); } }
-  remove() { if (!this.parentElement) return; const i = this.parentElement.children.indexOf(this); if (i >= 0) this.parentElement.children.splice(i, 1); this.parentElement = null; }
-  setAttribute(name, value) { this.attributes.set(name, String(value)); }
-  removeAttribute(name) { this.attributes.delete(name); }
-  addEventListener(type, fn) { if (!this.listeners.has(type)) this.listeners.set(type, new Set()); this.listeners.get(type).add(fn); }
-  removeEventListener(type, fn) { this.listeners.get(type)?.delete(fn); }
-  dispatchEvent(event) { for (const fn of [...(this.listeners.get(event.type) || [])]) fn.call(this, event); }
-  click() { this.dispatchEvent({ type: 'click', target: this }); }
-  contains(node) { return this === node || this.children.some((child) => child.contains?.(node)); }
-  focus() { this.focusCalls++; }
 }
 
 function countTags(root, tag) { return collectTags(root).filter((value) => value === tag).length; }
