@@ -10,7 +10,7 @@ const dist = resolve(root, 'dist');
 const generated = resolve(root, '.runtime-build');
 const committedTemplate = resolve(root, 'userscript/hex.user.template.js');
 const ORIGIN_TOKEN = '__HEX_ORIGIN__';
-const LOADER_VERSION = '2.0.2322241683';
+const LOADER_VERSION = '2.0.2322241684';
 const MAX_LOADER_BYTES = 64 * 1024;
 const CLASSIC_ENTRIES = ['js/worker.js', 'js/platform/capstone-probe-worker.js', 'js/platform/capstone-disasm-worker.js'];
 
@@ -20,7 +20,12 @@ await Promise.all([mkdir(resolve(dist, 'assets'), { recursive: true }), mkdir(re
 const [htmlSource, css, workerAssets] = await Promise.all([readFile(resolve(root, 'index.html'), 'utf8'), bundleCss(), buildWorkerAssets()]);
 const body = extractBody(htmlSource);
 const scopedCss = scopeCss(css);
-await writeGeneratedModule('embedded-assets.js', `export const PROTECTED_HOST=${JSON.stringify({ html: body, css, scopedCss })};\nexport const PROTECTED_WORKER_ASSETS=${JSON.stringify(workerAssets)};\n`);
+/* The opaque child bundle itself imports the generated host/worker assets. Write
+   that base module first, bundle the child, then add the resulting self-contained
+   module source to the assets consumed by the protected parent coordinator. */
+await writeEmbeddedAssets({ body, css, scopedCss, workerAssets, opaqueEmbedRuntime: '' });
+const opaqueEmbedRuntime = await bundle('js/userscript/opaque-embed-entry.js', { format: 'esm', rewriteImportMeta: true });
+await writeEmbeddedAssets({ body, css, scopedCss, workerAssets, opaqueEmbedRuntime: opaqueEmbedRuntime.toString('utf8') });
 
 const runtime = await bundle('js/userscript/protected-entry.js', { format: 'esm', rewriteImportMeta: true });
 const contentHash = sha256(runtime), buildId = contentHash.slice(0, 24);
@@ -55,6 +60,7 @@ await writeFile(resolve(dist, 'index.html'), index);
 await writeFile(resolve(dist, 'runtime-manifest.json'), JSON.stringify(publicManifest(manifest), null, 2));
 
 console.log(`built tiny userscript loader (${Buffer.byteLength(template)} bytes)`);
+console.log(`built protected opaque embed runtime (${opaqueEmbedRuntime.length} bytes)`);
 console.log(`built protected runtime ${buildId} (${runtime.length} -> ${ciphertext.length} bytes)`);
 console.log(`built dist/ with ${manifest.ciphertextHash}`);
 
@@ -128,3 +134,6 @@ function publicManifest(value) { const { assetPath: _private, ...safe } = value;
 function sha256(value) { return createHash('sha256').update(value).digest('hex'); }
 function b64(value) { return Buffer.from(value).toString('base64url'); }
 async function writeGeneratedModule(name, source) { const path = resolve(generated, name); await mkdir(dirname(path), { recursive: true }); await writeFile(path, source); }
+async function writeEmbeddedAssets({ body, css, scopedCss, workerAssets, opaqueEmbedRuntime }) {
+  await writeGeneratedModule('embedded-assets.js', `export const PROTECTED_HOST=${JSON.stringify({ html: body, css, scopedCss })};\nexport const PROTECTED_WORKER_ASSETS=${JSON.stringify(workerAssets)};\nexport const PROTECTED_OPAQUE_EMBED_RUNTIME=${JSON.stringify(String(opaqueEmbedRuntime || ''))};\n`);
+}
