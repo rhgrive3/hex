@@ -483,6 +483,49 @@ function deriveArithmetic(ctx, value, node, expectedAddressSpace, state) {
   return unknown('canonical-address-arithmetic-operator-unsupported');
 }
 
+function operationMetadata(node) {
+  return node?.attributes?.machineEffects?.operationMetadata ?? {};
+}
+
+function deriveAddWithCarry(ctx, value, node, expectedAddressSpace, state) {
+  if (!Array.isArray(node.inputs) || node.inputs.length < 3) return unknown('canonical-address-add-with-carry-arity');
+  const metadata = operationMetadata(node);
+  const subtract = metadata.subtract === true;
+  const carry = deriveValue(ctx, node.inputs[2], expectedAddressSpace, state);
+  const expectedCarry = subtract ? 1n : 0n;
+  if (constantValue(carry) !== expectedCarry) return unknown('canonical-address-add-with-carry-noncanonical-carry');
+
+  let rhsId = node.inputs[1];
+  if (subtract) {
+    const rhsValue = ctx.values.get(String(rhsId));
+    const rhsNode = rhsValue?.definitionNodeId == null ? null : ctx.nodes.get(String(rhsValue.definitionNodeId));
+    if (rhsNode?.kind !== 'unary' || String(rhsNode.operator ?? '').toLowerCase() !== 'not' || rhsNode.inputs?.length !== 1) {
+      return unknown('canonical-address-add-with-carry-subtract-rhs-not-proven');
+    }
+    rhsId = rhsNode.inputs[0];
+  }
+
+  const left = deriveValue(ctx, node.inputs[0], expectedAddressSpace, state);
+  const right = deriveValue(ctx, rhsId, expectedAddressSpace, state);
+  const widthBits = addressWidth(value, node) ?? left.widthBits ?? right.widthBits ?? null;
+  const leftConstant = constantValue(left);
+  const rightConstant = constantValue(right);
+
+  if (leftConstant != null && rightConstant != null) {
+    const result = subtract ? leftConstant - rightConstant : leftConstant + rightConstant;
+    return scalarConstant(normalizeModulo(result, widthBits), widthBits, node.id);
+  }
+  if (rightConstant != null && left.kind !== 'unknown' && left.kind !== 'constant') {
+    if (rightConstant === 0n) return left;
+    return addToRoot(left, subtract ? -rightConstant : rightConstant, widthBits, true);
+  }
+  if (!subtract && leftConstant != null && right.kind !== 'unknown' && right.kind !== 'constant') {
+    if (leftConstant === 0n) return right;
+    return addToRoot(right, leftConstant, widthBits, true);
+  }
+  return unknown('canonical-address-add-with-carry-nonconstant-offset');
+}
+
 function deriveValue(ctx, valueId, expectedAddressSpace, state) {
   const id = String(valueId);
   const visitKey = `semantic:${id}`;
@@ -519,6 +562,9 @@ function deriveValue(ctx, valueId, expectedAddressSpace, state) {
   if (node.kind === 'copy') {
     if (!Array.isArray(node.inputs) || node.inputs.length !== 1) return unknown('canonical-address-copy-arity');
     return deriveValue(ctx, node.inputs[0], expectedAddressSpace, nextState);
+  }
+  if (node.kind === 'binary' && String(node.operator ?? '').toLowerCase() === 'add-with-carry') {
+    return deriveAddWithCarry(ctx, value, node, expectedAddressSpace, nextState);
   }
   if (node.kind === 'address' || node.kind === 'binary') {
     return deriveArithmetic(ctx, value, node, expectedAddressSpace, nextState);
