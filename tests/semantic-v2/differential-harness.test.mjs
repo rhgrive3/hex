@@ -29,6 +29,12 @@ const cases = [
     },
     safetyFloorPreserved() { return true; },
   },
+  {
+    name:'representation-without-proof', input:{ legacy:{ target:'0x20' }, v2:{ target:32 } },
+    explainRepresentationDifference(legacy, projected) {
+      return Number.parseInt(legacy.target, 16) === projected.target ? 'looks representational but has no safety proof' : '';
+    },
+  },
   { name:'mismatch', input:{ legacy:{ op:'load' }, v2:{ op:'store' } } },
 ];
 
@@ -37,9 +43,12 @@ assert.equal(result.exactEquivalentCount, 1);
 assert.equal(result.stricterConservativeCount, 1);
 assert.equal(result.explainedRepresentationDifferenceCount, 1);
 assert.equal(result.differentialMatchCount, 2);
-assert.equal(result.mismatchCount, 1);
+assert.equal(result.mismatchCount, 2);
 assert.equal(result.blocking, true);
 assert.equal(result.results.find((item) => item.caseName === 'mismatch').blocking, true);
+const unproved = result.results.find((item) => item.caseName === 'representation-without-proof');
+assert.equal(unproved.classification, 'mismatch');
+assert.equal(unproved.blocking, true);
 assert.equal(result.results.find((item) => item.caseName === 'exact').pathProof.passed, true);
 
 const notIntegrated = await runDifferentialHarness({ cases:[cases[0]], adapters:{ legacy:adapters.legacy, v2:{} } });
