@@ -17,6 +17,7 @@ assert.deepEqual(Object.keys(ARCHITECTURE_LEVELS), ['A0', 'A1', 'A2', 'A3', 'A4'
 assert.deepEqual(Object.keys(FORMAT_LEVELS), ['F0', 'F1', 'F2', 'F3', 'F4', 'F5', 'F6']);
 assert.deepEqual(Object.keys(MANAGED_LEVELS), ['M0', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6']);
 
+// Legacy ARM64 analysis is real, but it must not mint A2 before exact MachineEffects exist.
 const arm64 = architectureMaturity('arm64');
 assert.equal(arm64.level, 'A1');
 assert.equal(arm64.implementedLevel, 'A6');
@@ -106,6 +107,7 @@ const arm64Capability = architectureCapability({ arch: 'arm64', format: 'macho',
 assert.equal(arm64Capability.canDisassemble, true);
 assert.equal(arm64Capability.canAnalyzeDataflow, true);
 
+// F3 is cumulative too: partial link metadata keeps maturity at F2.
 const macho = formatMaturity('macho');
 assert.equal(macho.level, 'F2');
 assert.equal(macho.implementedLevel, 'F5');
