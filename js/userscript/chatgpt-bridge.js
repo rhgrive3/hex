@@ -3,8 +3,6 @@ import {
   ChatGPTTurnController,
 } from './chatgpt-adapter.js';
 
-const DEFAULT_TIMEOUT_MS = 110000;
-
 export function installChatGPTWebBridge(options = {}) {
   const existing = globalThis.__HEX_CHATGPT_BRIDGE__;
   if (existing && typeof existing.request === 'function') return existing;
@@ -29,7 +27,7 @@ export function installChatGPTWebBridge(options = {}) {
         const selection = await models.select({ model: requestOptions.model, reasoning: requestOptions.reasoning }, { signal: controller.signal });
         const result = await turns.run(String(prompt || ''), {
           signal: controller.signal,
-          timeoutMs: requestOptions.timeoutMs || options.timeoutMs || DEFAULT_TIMEOUT_MS,
+          timeoutMs: explicitTimeout(requestOptions.timeoutMs ?? options.timeoutMs) ?? Infinity,
           expectedConversation: routed.conversation,
           newConversation: routed.isNew === true,
         });
@@ -87,3 +85,8 @@ export function installChatGPTWebBridge(options = {}) {
 }
 
 export default installChatGPTWebBridge;
+
+function explicitTimeout(value) {
+  const raw = Number(value);
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : null;
+}

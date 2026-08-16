@@ -2,14 +2,13 @@ import { AIError } from '../schema.js';
 import { validateModelDecision } from '../validation.js';
 import { AIProvider, WorkerAIProvider } from './index.js';
 
-const DEFAULT_TIMEOUT_MS = 120000;
+const DEFAULT_WORKER_TIMEOUT_MS = 120000;
 const PROTOCOL_VERSION = 'hex-chatgpt-web-v1';
 
 export class ChatGPTWebProvider extends AIProvider {
-  constructor({ bridge = globalThis.__HEX_CHATGPT_BRIDGE__, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
+  constructor({ bridge = globalThis.__HEX_CHATGPT_BRIDGE__ } = {}) {
     super({ capabilities: { provider: 'chatgpt-web' } });
     this.bridge = bridge || null;
-    this.timeoutMs = timeoutMs;
     this.controllers = new Set();
   }
 
@@ -17,7 +16,7 @@ export class ChatGPTWebProvider extends AIProvider {
     return !!this.bridge && typeof this.bridge.request === 'function';
   }
 
-  turnTimeoutMs(mode) { return mode === 'agent' ? 600000 : 240000; }
+  turnTimeoutMs() { return null; }
 
   async nextTurn(request, options = {}) {
     if (!this.available()) throw new AIError('provider_error', 'ChatGPT Web bridge is not available.');
@@ -31,9 +30,10 @@ export class ChatGPTWebProvider extends AIProvider {
     }
     this.controllers.add(controller);
     try {
+      const timeoutMs = explicitTimeout(options.timeoutMs);
       const response = await this.bridge.request(buildChatGPTTurnPrompt(request), {
         signal: controller.signal,
-        timeoutMs: boundedTimeout(options.timeoutMs, this.timeoutMs),
+        ...(timeoutMs == null ? {} : { timeoutMs }),
         sessionKey: request.sessionId,
         model: request.model || null,
         reasoning: request.reasoning || null,
@@ -82,10 +82,10 @@ export class UserscriptAIProvider extends AIProvider {
     bridge = globalThis.__HEX_CHATGPT_BRIDGE__,
     workerEndpoint = apiEndpoint('/api/ai/turn'),
     fetchImpl = globalThis.fetch,
-    timeoutMs = DEFAULT_TIMEOUT_MS,
+    timeoutMs = DEFAULT_WORKER_TIMEOUT_MS,
   } = {}) {
     super();
-    this.chatgpt = new ChatGPTWebProvider({ bridge, timeoutMs });
+    this.chatgpt = new ChatGPTWebProvider({ bridge });
     this.gemini = new WorkerAIProvider({ endpoint: workerEndpoint, fetchImpl, timeoutMs });
   }
 
@@ -314,12 +314,9 @@ function interruptionError(signal) {
   );
 }
 
-function boundedTimeout(requested, ceiling) {
-  const rawCeiling = Number(ceiling);
-  const cap = Number.isFinite(rawCeiling) && rawCeiling > 0 ? Math.floor(rawCeiling) : DEFAULT_TIMEOUT_MS;
-  const rawRequested = Number(requested);
-  if (!Number.isFinite(rawRequested) || rawRequested <= 0) return cap;
-  return Math.max(1, Math.min(cap, Math.floor(rawRequested)));
+function explicitTimeout(value) {
+  const raw = Number(value);
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : null;
 }
 
 function apiEndpoint(path) {
