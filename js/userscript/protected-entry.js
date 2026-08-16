@@ -2,6 +2,7 @@ import { PROTECTED_HOST } from '../../.runtime-build/embedded-assets.js';
 import { setUiRoot } from '../ui-root.js';
 import { installProtectedWorkers } from './protected-workers.js';
 import { runtimeHostSnapshotFromGlobals, runtimeLocationFromSnapshot } from './runtime-host-location.js';
+import { installOpaqueSandboxStorage } from './sandbox-storage.js';
 import {
   PROTECTED_RUNTIME_CONTEXT,
   classifyProtectedRuntime,
@@ -44,7 +45,14 @@ export async function startProtectedRuntime(options = {}) {
 }
 
 const sandboxAutoStart = readSandboxAutoStart();
-if (sandboxAutoStart) await startProtectedRuntime(sandboxAutoStart);
+if (sandboxAutoStart) {
+  /* A sandbox without allow-same-origin intentionally has an opaque origin, so
+     Web Storage getters throw before app modules can even apply their normal
+     try/catch fallbacks. Install an ephemeral Storage-compatible facade before
+     any Hex module imports. Persistent project data remains outside this shim. */
+  installOpaqueSandboxStorage(globalThis);
+  await startProtectedRuntime(sandboxAutoStart);
+}
 
 function readSandboxAutoStart() {
   let actualOrigin = '';
