@@ -88,8 +88,9 @@ async function run(name, browserType) {
     assert.equal(bootCount, 1, `${name}: one secure bootstrap`);
     assert.equal(runtimeCount, 1, `${name}: one encrypted runtime fetch`);
     assert.equal(await page.evaluate(() => !!document.getElementById('hex-userscript-host')), false, `${name}: legacy DOM absent after ready`);
+    assert.equal(await page.evaluate(() => !!document.getElementById('hex-userscript-emergency-close')), false, `${name}: emergency close overlay must stay absent`);
 
-    await page.click('#hex-userscript-emergency-close');
+    await child.evaluate(() => globalThis.__HEX_CHATGPT_BRIDGE__.requestUiClose());
     await page.waitForFunction(() => document.getElementById('hex-userscript-iframe-host')?.getAttribute('aria-hidden') === 'true');
     await page.click('#hex-userscript-launcher');
     await page.waitForFunction(() => document.getElementById('hex-userscript-iframe-host')?.getAttribute('aria-hidden') !== 'true');
