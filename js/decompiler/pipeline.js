@@ -121,20 +121,29 @@ function reanchorRecoveredReturnSource(result, opts = {}) {
   let changed = false;
   for (const node of result.cAst.body || []) {
     if (!(node.semantic?.op === 'return' || /^return\b/.test(String(node.text || '').trim()))) continue;
-    const addresses = new Set((node.source?.addresses || []).map((address) => String(address)));
+    const current = sourceOf(node.source);
+    const sourceRows = new Set((current.rows || []).map((row) => String(row)));
     let load = null;
     for (const inst of result.ir.instructions || []) {
       if (inst?.op !== 'load' || inst?.loc?.kind !== 'stack' || inst?.row == null || ret.row == null || inst.row >= ret.row) continue;
-      if (!addresses.has(String(inst.address))) continue;
+      if (!sourceRows.has(String(inst.row))) continue;
       if (!load || inst.row > load.row) load = inst;
     }
     if (!load) continue;
-    node.source = mergeSource(
-      sourceOf({ address:load.address, row:load.row, ir:load.id, ssaDef:load.dst?.id ?? null,
-        evidence:[{ reason:'exact recovered return load' }] }),
-      sourceOf({ address:ret.address, row:ret.row, ir:ret.id,
-        evidence:[{ reason:'return transfer' }] }),
-    );
+    const keepRows = new Set([String(load.row), String(ret.row)]);
+    const alignedAddresses = current.addresses.length === current.rows.length;
+    const alignedIr = current.ir.length === current.rows.length;
+    node.source = {
+      ...current,
+      rows:current.rows.filter((row) => keepRows.has(String(row))),
+      addresses:alignedAddresses
+        ? current.addresses.filter((_, index) => keepRows.has(String(current.rows[index])))
+        : current.addresses,
+      ir:alignedIr
+        ? current.ir.filter((_, index) => keepRows.has(String(current.rows[index])))
+        : current.ir,
+      evidence:[...(current.evidence || []), { reason:'exact recovered return source ownership' }],
+    };
     changed = true;
   }
   if (!changed) return result;
