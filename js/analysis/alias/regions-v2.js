@@ -6,6 +6,10 @@ import {
 } from '../../core/identity/index.js';
 import { createOriginSet, mergeOriginSets } from '../../core/identity/origin.js';
 import { createMemoryRegionRef } from '../../semantics/memoryssa/contract.js';
+import {
+  canonicalAddressProofToRegionEvidence,
+  deriveCanonicalAddressProof,
+} from './canonical-address-v2.js';
 
 export const REGION_ALIAS_FLOOR_VERSION = '1.0.0';
 
@@ -220,9 +224,26 @@ export function classifySemanticMemoryRegion(ir, nodeOrId, options = {}) {
   const value = addressValueId ? values.find((item) => item.id === addressValueId) : null;
   const definingNode = value?.definitionNodeId ? nodes.find((item) => item.id === value.definitionNodeId) : null;
   const origin = normalizedOrigin(node.origin, value?.origin, definingNode?.origin);
-  const descriptor = descriptorCandidates(node, value, definingNode, options.regionEvidence)
+  const explicitDescriptor = descriptorCandidates(node, value, definingNode, options.regionEvidence)
     .map(normalizeDescriptor)
     .find(Boolean) ?? null;
+
+  let proof = null;
+  let graphDescriptor = null;
+  if (!explicitDescriptor && addressValueId) {
+    proof = deriveCanonicalAddressProof(ir, addressValueId, {
+      addressSpace: node.memory.addressSpace,
+      ssa: options.ssa,
+      rootDescriptors: options.rootDescriptors,
+      rootDescriptorProvider: options.rootDescriptorProvider,
+    });
+    graphDescriptor = canonicalAddressProofToRegionEvidence(proof);
+  }
+  const descriptor = explicitDescriptor ?? graphDescriptor;
+  const derivationMetadata = proof == null ? null : {
+    canonicalAddressKind: proof.kind,
+    ...(proof.reason == null ? {} : { canonicalAddressReason: proof.reason }),
+  };
 
   return deriveMemoryRegion({
     functionId: ir.functionId,
@@ -232,7 +253,10 @@ export function classifySemanticMemoryRegion(ir, nodeOrId, options = {}) {
     sourceEntityId: node.id,
     addressValueId,
     regionEvidence: descriptor,
-    unknownMetadata: options.unknownMetadata,
+    unknownMetadata: {
+      ...(object(options.unknownMetadata) ?? {}),
+      ...(derivationMetadata ?? {}),
+    },
   });
 }
 
