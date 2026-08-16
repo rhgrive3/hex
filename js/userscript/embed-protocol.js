@@ -12,12 +12,11 @@ export const CHATGPT_RPC_METHODS = Object.freeze([
   'chatgpt.setSelection',
   'chatgpt.status',
   'chatgpt.conversationFor',
-  'ui.close',
 ]);
+export const EMBED_RPC_METHODS = Object.freeze([...CHATGPT_RPC_METHODS, 'ui.close']);
 
-const ALLOWED_METHODS = new Set(CHATGPT_RPC_METHODS);
+const ALLOWED_METHODS = new Set(EMBED_RPC_METHODS);
 const ATTACHED_SOURCES = new WeakSet();
-const ATTACHED_NON_OBJECT_SOURCES = new Set();
 const VALID_KINDS = new Set(['request', 'result', 'error', 'cancel', 'control']);
 const CONTROL_READY = 'ready';
 const CONTROL_CLOSE = 'close';
@@ -39,7 +38,7 @@ export function validateAttachEvent(event, options = {}) {
   const expectedSource = options.expectedSource;
   const allowedOrigins = normalizeOrigins(options.allowedOrigins ?? CHATGPT_PARENT_ORIGINS);
   if (!event || typeof event !== 'object') return rejectAttach('invalid-event');
-  if (!expectedSource) return rejectAttach('missing-expected-source');
+  if (!isObjectLike(expectedSource)) return rejectAttach('missing-expected-source');
   if (!allowedOrigins.has(event.origin)) return rejectAttach('wrong-origin');
   if (event.source !== expectedSource) return rejectAttach('wrong-source');
 
@@ -337,12 +336,9 @@ function normalizeOrigins(input) {
   return out;
 }
 
-function sourceWasAttached(source) {
-  return isObjectLike(source) ? ATTACHED_SOURCES.has(source) : ATTACHED_NON_OBJECT_SOURCES.has(source);
-}
-function markSourceAttached(source) {
-  if (isObjectLike(source)) ATTACHED_SOURCES.add(source); else ATTACHED_NON_OBJECT_SOURCES.add(source);
-}
+function sourceWasAttached(source) { return ATTACHED_SOURCES.has(source); }
+function markSourceAttached(source) { ATTACHED_SOURCES.add(source); }
+
 function rejectAttach(code) { return Object.freeze({ ok: false, code }); }
 
 function createRequestId() {
