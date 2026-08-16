@@ -58,6 +58,15 @@ assert.equal(unsupported.status, 'unsupported');
 assert.equal(unsupported.coverage, 'unsupported');
 assert.equal(unsupported.matched, null);
 
+const inferredPending = await compareDecodedInstruction({
+  decodedInstruction:decoded,
+  semanticVersions:TEST_SEMANTIC_VERSIONS,
+});
+assert.equal(inferredPending.status, INTEGRATION_STATE.NOT_INTEGRATED);
+assert.equal(inferredPending.blocking, true);
+assert.deepEqual(inferredPending.missingAdapters, ['machineLifter', 'compatibilityLowering', 'legacyV1Oracle']);
+assert.throws(() => assertDifferentialReady(inferredPending), /machine-effects-differential-not-integrated/);
+
 let accidentallyCalled = false;
 const pending = await compareDecodedInstruction({
   decodedInstruction:decoded,
