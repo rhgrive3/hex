@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { applyStatus, normalizeCapabilities, selectionLabel } from '../js/ai/ui/model-picker.js';
 import { installChatGPTWebBridge } from '../js/userscript/chatgpt-bridge.js';
 import { CHATGPT_SELECTORS } from '../js/userscript/chatgpt-selectors.js';
 
@@ -12,6 +13,7 @@ await testCancelStopsAdapter();
 await testExceptionCleanup();
 await testCapabilities();
 await testErrorSelectorContract();
+await testProviderAvailabilityStatusSemantics();
 await testSelectionContract();
 await testStatusAndConversationLookup();
 await testBridgeDoesNotReachCookiesOrPrivateBackend();
@@ -230,6 +232,23 @@ async function testErrorSelectorContract() {
   assert.deepEqual(CHATGPT_SELECTORS.error, ['[data-testid="conversation-turn-error"]']);
   assert.ok(!CHATGPT_SELECTORS.error.some((selector) => selector.includes('[role="alert"]')));
   assert.ok(!CHATGPT_SELECTORS.error.some((selector) => selector.includes('*="error"')));
+}
+
+async function testProviderAvailabilityStatusSemantics() {
+  const advertised = normalizeCapabilities({
+    providers: [{ id: 'chatgpt-web', displayName: 'ChatGPT Web', available: true }],
+  });
+  assert.equal(advertised.providers[0].label, 'ChatGPT Web');
+
+  const settling = applyStatus(advertised, { provider: 'chatgpt', ready: false });
+  assert.equal(
+    selectionLabel(settling, { provider: 'chatgpt-web' }, true).unavailable,
+    false,
+    'transient composer readiness must not turn a proven bridge into 利用不可',
+  );
+
+  const unavailable = applyStatus(advertised, { provider: 'chatgpt', available: false, ready: false });
+  assert.equal(selectionLabel(unavailable, { provider: 'chatgpt-web' }, true).unavailable, true);
 }
 
 async function testSelectionContract() {
