@@ -8,8 +8,8 @@ import { assertWireBudget, providerCapabilities, semanticBudgetFor } from '../bu
 import { createHexToolRegistry } from '../tools/index.js';
 import {
   addressString, assertLiveBindingsUnchanged, compactCandidate, deterministicDecision,
-  ensureRunning, humanError, maxWireUsage, memoryAnchor, normalizeError, remainingTime,
-  requiredScopeForTool, sessionMatchesSnapshot, stableStringify, wireMeta,
+  ensureRunning, humanError, maxWireUsage, memoryAnchor, normalizeError, providerDiagnostics,
+  remainingTime, requiredScopeForTool, sessionMatchesSnapshot, stableStringify, wireMeta,
 } from './runtime-support.js';
 
 export async function executeTurn(input = {}, options = {}) {
@@ -174,7 +174,7 @@ export async function executeTurn(input = {}, options = {}) {
       } catch (error) {
         const normalized = normalizeError(error, signal);
         limitReason = normalized.type;
-        addActivity({ type: 'error', errorType: normalized.type, label: humanError(normalized) });
+        addActivity({ type: 'error', errorType: normalized.type, label: humanError(normalized), ...(providerDiagnostics(normalized) || {}) });
         if (!decision) decision = deterministicDecision(plan, request, normalized);
       }
 

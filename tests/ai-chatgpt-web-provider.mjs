@@ -157,4 +157,52 @@ assert.throws(() => parseChatGPTDecision('{oops}'), /malformed JSON/);
   );
 }
 
+{
+  /*
+   * Every ChatGPT bridge guard reduces to the same beginner-facing
+   * `provider_error`. Production incidents are only diagnosable when the bridge
+   * subtype, the guard that fired, and the deployed runtime survive that
+   * reduction, so assert them for the exact codes seen in the field.
+   */
+  const previousLoader = globalThis.__HEX_SECURE_LOADER__;
+  globalThis.__HEX_SECURE_LOADER__ = { version: '2.0.0', buildId: 'cba66f0787cd4fcefd3297c6' };
+  try {
+    for (const [code, stage] of [['manual-interference', 'turn-controller'], ['conversation-switched', 'turn-controller'], ['already-active', 'bridge'], ['RPC_UNSAFE_RESULT', null]]) {
+      const provider = new ChatGPTWebProvider({
+        bridge: {
+          async request() { throw Object.assign(new Error(`bridge refused: ${code}`), { code, ...(stage ? { stage } : {}) }); },
+        },
+      });
+      await assert.rejects(
+        () => provider.nextTurn({ tools }),
+        (error) => error?.type === 'provider_error'
+          && error?.details?.provider === 'chatgpt-web'
+          && error?.details?.bridgeCode === code
+          && error?.details?.bridgeStage === stage
+          && error?.details?.runtimeBuildId === 'cba66f0787cd4fcefd3297c6',
+        `bridge code ${code} must stay observable after provider normalization`,
+      );
+    }
+  } finally {
+    if (previousLoader === undefined) delete globalThis.__HEX_SECURE_LOADER__;
+    else globalThis.__HEX_SECURE_LOADER__ = previousLoader;
+  }
+}
+
+{
+  /* A hostile bridge must not be able to smuggle free text into diagnostics. */
+  const provider = new ChatGPTWebProvider({
+    bridge: {
+      async request() {
+        throw Object.assign(new Error('bridge refused'), { code: 'ok-code', stage: 'querySelector("#prompt-textarea") saw あなた:' });
+      },
+    },
+  });
+  await assert.rejects(
+    () => provider.nextTurn({ tools }),
+    (error) => error?.details?.bridgeStage === null,
+    'only closed-vocabulary stage tokens may be carried into diagnostics',
+  );
+}
+
 console.log('ai-chatgpt-web-provider: ok');

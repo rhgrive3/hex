@@ -83,3 +83,5 @@ jobs:
         run: node tests/userscript-srcdoc-probe.mjs
       - name: Run full secure sandbox startup
         run: node tests/userscript-sandbox-browser-e2e.mjs
+      - name: Capture a ChatGPT turn against the production DOM
+        run: node tests/chatgpt-web-production-dom.mjs

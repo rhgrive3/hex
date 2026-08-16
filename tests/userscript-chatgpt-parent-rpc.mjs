@@ -11,6 +11,7 @@ await testMethods();
 await testUnknownAndNoForwarding();
 await testUnsafeResults();
 await testErrorSanitization();
+await testBridgeStageCrossesRpc();
 await testCloseCleanup();
 await testFailureRecovery();
 await testPrototypePollution();
@@ -148,6 +149,32 @@ async function testErrorSanitization() {
   assert.equal(Object.hasOwn(message.error, 'stack'), false);
   assert.equal(Object.hasOwn(message.error, 'details'), false);
   parent.close(); channel.port2.close();
+}
+
+async function testBridgeStageCrossesRpc() {
+  /*
+   * `code` alone already crossed the boundary, but a production report needs to
+   * name the guard that fired. `stage` is the only structured field allowed
+   * through, and only as a closed token — anything else stays dropped so DOM,
+   * prompt and storage text can never ride along.
+   */
+  const refuse = (extra) => fakeBridge({ request() { throw Object.assign(new Error('ChatGPT conversation changed while a Hex request was in flight.'), { code: 'conversation-switched', ...extra }); } });
+
+  const good = pair(refuse({ stage: 'turn-controller', details: { expected: { id: 'secret-conversation' } } }));
+  await assert.rejects(
+    good.client.call('chatgpt.request', { prompt: 'x' }),
+    (error) => error.code === 'conversation-switched' && error.details?.stage === 'turn-controller' && error.details?.expected === undefined,
+    'the bridge stage must survive the parent RPC while free-form details stay dropped',
+  );
+  good.close();
+
+  const hostile = pair(refuse({ stage: 'querySelector("#prompt-textarea")' }));
+  await assert.rejects(
+    hostile.client.call('chatgpt.request', { prompt: 'x' }),
+    (error) => error.code === 'conversation-switched' && error.details === undefined,
+    'a stage that is not a closed token must not cross the RPC boundary',
+  );
+  hostile.close();
 }
 
 async function testCloseCleanup() {

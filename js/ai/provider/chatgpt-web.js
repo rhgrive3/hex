@@ -45,7 +45,19 @@ export class ChatGPTWebProvider extends AIProvider {
       }
       if (error instanceof AIError) throw error;
       const type = error?.code === 'timeout' ? 'model_timeout' : 'provider_error';
-      throw new AIError(type, error?.message || String(error), { bridgeCode: error?.code || null, bridgeDetails: error?.details || null });
+      /*
+       * The user-facing label stays friendly, but the browser bridge subtype must
+       * survive here. Without it every guard in the ChatGPT bridge — manual
+       * interference, a conversation switch, a stale response, an RPC integrity
+       * refusal — is indistinguishable in production as a bare `provider_error`.
+       */
+      throw new AIError(type, error?.message || String(error), {
+        provider: 'chatgpt-web',
+        bridgeCode: error?.code || null,
+        bridgeStage: bridgeStage(error),
+        bridgeDetails: error?.details || null,
+        runtimeBuildId: runtimeBuildId(),
+      });
     } finally {
       this.controllers.delete(controller);
       if (options.signal) options.signal.removeEventListener('abort', onAbort);
@@ -271,6 +283,21 @@ function safeJSONStringify(value) {
     .replace(/&/g, '\\u0026')
     .replace(/</g, '\\u003c')
     .replace(/>/g, '\\u003e');
+}
+
+function bridgeStage(error) {
+  const value = typeof error?.stage === 'string' ? error.stage : error?.details?.stage;
+  return typeof value === 'string' && /^[a-z][a-z0-9-]{0,63}$/.test(value) ? value : null;
+}
+
+/*
+ * Production incidents are only actionable when the report names the runtime
+ * that produced them: a repaired source tree and a stale deployed bundle look
+ * identical from the outside otherwise.
+ */
+function runtimeBuildId() {
+  const value = globalThis.__HEX_SECURE_LOADER__?.buildId;
+  return typeof value === 'string' && /^[a-f0-9]{1,64}$/i.test(value) ? value : null;
 }
 
 function interruptionError(signal) {

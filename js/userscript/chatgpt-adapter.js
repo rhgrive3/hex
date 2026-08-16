@@ -16,11 +16,18 @@ const REASONING_PATTERNS = Object.freeze([
 ]);
 
 export class ChatGPTBridgeError extends Error {
-  constructor(code, message, details = null) {
+  /*
+   * `stage` names the bridge component that refused the turn. It is the only
+   * structured diagnostic that is allowed to cross the parent RPC boundary
+   * alongside `code`, so a production `provider_error` can always be traced
+   * back to the exact guard that fired without exposing DOM or prompt text.
+   */
+  constructor(code, message, details = null, stage = null) {
     super(message);
     this.name = 'ChatGPTBridgeError';
     this.code = code;
     this.details = details;
+    this.stage = stage ? String(stage) : null;
   }
 }
 
@@ -108,12 +115,33 @@ export class ChatGPTDOMAdapter {
     return { id: match[1], url: `${url.origin}/c/${match[1]}` };
   }
 
-  errorState() {
-    for (const node of this.all('error')) {
+  /*
+   * A conversation keeps every historical turn in the DOM, including turns that
+   * failed long before the current Hex request. Reading a document-wide error
+   * marker therefore lets a stale failure abort an unrelated, healthy turn. When
+   * the caller knows which turns belong to the in-flight request it passes them
+   * here, and only markers inside those turns are authoritative.
+   */
+  errorState(scopeNodes = null) {
+    for (const node of scopeNodes ? this.errorNodesWithin(scopeNodes) : this.all('error')) {
       const text = this.text(node);
       if (text && /error|failed|try again|something went wrong|エラー|失敗|再試行/i.test(text)) return text.slice(0, 1000);
     }
     return null;
+  }
+
+  errorNodesWithin(scopeNodes) {
+    const seen = new Set(), out = [];
+    for (const root of scopeNodes || []) {
+      if (!root) continue;
+      for (const selector of this.selectors.error || []) {
+        let values = [];
+        try { values = root.querySelectorAll?.(selector) || []; } catch { values = []; }
+        for (const node of values) if (!seen.has(node)) { seen.add(node); out.push(node); }
+        try { if (root.matches?.(selector) && !seen.has(root)) { seen.add(root); out.push(root); } } catch { /* selector unsupported */ }
+      }
+    }
+    return out;
   }
 
   currentSelection() {
@@ -141,7 +169,7 @@ export class ChatGPTDOMAdapter {
   }
 
   setComposerText(node, value) {
-    if (!node) throw new ChatGPTBridgeError('composer-not-found', 'ChatGPT composer was not found.');
+    if (!node) throw bridgeError('dom-adapter', 'composer-not-found', 'ChatGPT composer was not found.');
     node.focus?.();
     if ('value' in node && typeof node.value === 'string') {
       const proto = node.tagName === 'TEXTAREA' ? globalThis.HTMLTextAreaElement?.prototype : globalThis.HTMLInputElement?.prototype;
@@ -205,27 +233,27 @@ export class ChatGPTConversationRouter {
 
   async route(sessionKey, { signal, timeoutMs = this.navigationTimeoutMs } = {}) {
     const key = String(sessionKey || '').trim();
-    if (!key) throw new ChatGPTBridgeError('session-required', 'A Hex/AIRuntime session key is required.');
+    if (!key) throw bridgeError('conversation-router', 'session-required', 'A Hex/AIRuntime session key is required.');
     const known = this.binding(key);
     const current = this.adapter.conversation();
     if (known && current?.id === known.id) return { conversation: current, isNew: false };
     if (known) {
       const link = this.findConversationLink(known);
       if (link) link.click();
-      else throw new ChatGPTBridgeError('conversation-unreachable', 'The bound ChatGPT conversation is not present in the visible ChatGPT history.', { sessionKey: key, conversation: known });
+      else throw bridgeError('conversation-router', 'conversation-unreachable', 'The bound ChatGPT conversation is not present in the visible ChatGPT history.', { sessionKey: key, conversation: known });
       const reached = await waitFor(() => {
         const value = this.adapter.conversation();
         return value?.id === known.id ? value : null;
       }, timeoutMs, signal);
-      if (!reached) throw new ChatGPTBridgeError('conversation-mismatch', 'ChatGPT did not switch to the conversation bound to this Hex session.', { expected: known });
+      if (!reached) throw bridgeError('conversation-router', 'conversation-mismatch', 'ChatGPT did not switch to the conversation bound to this Hex session.', { expected: known });
       return { conversation: reached, isNew: false };
     }
 
     const fresh = this.adapter.newChatButton();
     if (fresh) fresh.click();
-    else throw new ChatGPTBridgeError('new-chat-unavailable', 'ChatGPT New Chat control was not found.');
+    else throw bridgeError('conversation-router', 'new-chat-unavailable', 'ChatGPT New Chat control was not found.');
     const ready = await waitFor(() => !this.adapter.conversation() && this.adapter.composer(), timeoutMs, signal);
-    if (!ready) throw new ChatGPTBridgeError('new-chat-timeout', 'ChatGPT did not open a new conversation.');
+    if (!ready) throw bridgeError('conversation-router', 'new-chat-timeout', 'ChatGPT did not open a new conversation.');
     return { conversation: null, isNew: true };
   }
 
@@ -259,8 +287,8 @@ export class ChatGPTModelController {
     if (reasoning) await this.selectOne('reasoning', reasoning, signal);
     await delay(this.settleMs, signal);
     const observed = this.adapter.currentSelection();
-    if (model && observed.model !== model) throw new ChatGPTBridgeError('model-mismatch', `Requested model ${model} could not be verified in the ChatGPT UI.`, { requested: model, observed });
-    if (reasoning && observed.reasoning !== reasoning) throw new ChatGPTBridgeError('reasoning-mismatch', `Requested reasoning ${reasoning} could not be verified in the ChatGPT UI.`, { requested: reasoning, observed });
+    if (model && observed.model !== model) throw bridgeError('model-controller', 'model-mismatch', `Requested model ${model} could not be verified in the ChatGPT UI.`, { requested: model, observed });
+    if (reasoning && observed.reasoning !== reasoning) throw bridgeError('model-controller', 'reasoning-mismatch', `Requested reasoning ${reasoning} could not be verified in the ChatGPT UI.`, { requested: reasoning, observed });
     return observed;
   }
 
@@ -269,7 +297,7 @@ export class ChatGPTModelController {
     if (current[kind] === requested) return;
     const options = await this.discoverOptions({ signal, close: false, kind });
     const target = options.find((item) => item[kind] === requested);
-    if (!target) throw new ChatGPTBridgeError(`${kind}-unavailable`, `Requested ${kind} ${requested} is not present in the visible ChatGPT picker.`, { available: uniqueOptions(options.filter((item) => item[kind]).map((item) => ({ id: item[kind], displayName: item.label }))) });
+    if (!target) throw bridgeError('model-controller', `${kind}-unavailable`, `Requested ${kind} ${requested} is not present in the visible ChatGPT picker.`, { available: uniqueOptions(options.filter((item) => item[kind]).map((item) => ({ id: item[kind], displayName: item.label }))) });
     target.node.click();
     await delay(this.settleMs, signal);
   }
@@ -307,8 +335,8 @@ export class ChatGPTTurnController {
     const started = Date.now();
     const normalizedPrompt = normalizeText(prompt);
     const composer = await waitFor(() => this.adapter.composer(), Math.min(timeoutMs, this.startTimeoutMs), signal);
-    if (!composer) throw new ChatGPTBridgeError('composer-not-found', 'ChatGPT composer was not found.');
-    if (this.adapter.isGenerating()) throw new ChatGPTBridgeError('already-generating', 'ChatGPT is already generating a response.');
+    if (!composer) throw bridgeError('turn-controller', 'composer-not-found', 'ChatGPT composer was not found.');
+    if (this.adapter.isGenerating()) throw bridgeError('turn-controller', 'already-generating', 'ChatGPT is already generating a response.');
 
     const baselineAssistant = new Set(this.assistantTurns().map((turn) => turn.id));
     const baselineUsers = new Set(this.userTurns().map((turn) => turn.id));
@@ -318,15 +346,15 @@ export class ChatGPTTurnController {
       const node = this.adapter.sendButton();
       return node && !node.disabled && node.getAttribute?.('aria-disabled') !== 'true' ? node : null;
     }, Math.min(this.startTimeoutMs, remaining(started, timeoutMs)), signal);
-    if (!send) throw new ChatGPTBridgeError('send-unavailable', 'ChatGPT send button did not become available.');
+    if (!send) throw bridgeError('turn-controller', 'send-unavailable', 'ChatGPT send button did not become available.');
     send.click();
 
     let requestUserTurn = null;
     const submitted = await waitFor(() => {
       const explicit = this.userTurns().filter((turn) => !baselineUsers.has(turn.id));
-      if (explicit.length > 1) throw new ChatGPTBridgeError('manual-interference', 'Another user turn appeared while Hex was submitting its request.');
+      if (explicit.length > 1) throw bridgeError('turn-controller', 'manual-interference', 'Another user turn appeared while Hex was submitting its request.');
       if (explicit.length === 1) {
-        if (normalizeText(explicit[0].text) !== normalizedPrompt) throw new ChatGPTBridgeError('manual-interference', 'The submitted ChatGPT turn does not match the Hex request.');
+        if (normalizeText(explicit[0].text) !== normalizedPrompt) throw bridgeError('turn-controller', 'manual-interference', 'The submitted ChatGPT turn does not match the Hex request.');
         requestUserTurn = explicit[0];
         return true;
       }
@@ -334,34 +362,45 @@ export class ChatGPTTurnController {
       // Some ChatGPT builds temporarily omit data-message-author-role while
       // retaining conversation-turn test ids. Accept only an exact prompt match.
       const generic = this.conversationTurns().filter((turn) => !baselineConversation.has(turn.id) && normalizeText(turn.text) === normalizedPrompt);
-      if (generic.length > 1) throw new ChatGPTBridgeError('manual-interference', 'Multiple matching user turns appeared while Hex was submitting its request.');
+      if (generic.length > 1) throw bridgeError('turn-controller', 'manual-interference', 'Multiple matching user turns appeared while Hex was submitting its request.');
       if (generic.length === 1) {
         requestUserTurn = generic[0];
         return true;
       }
       return false;
     }, Math.min(this.startTimeoutMs, remaining(started, timeoutMs)), signal);
-    if (!submitted || !requestUserTurn) throw new ChatGPTBridgeError('submission-unverified', 'The ChatGPT user turn could not be matched to the Hex request.');
+    if (!submitted || !requestUserTurn) throw bridgeError('turn-controller', 'submission-unverified', 'The ChatGPT user turn could not be matched to the Hex request.');
 
     let latest = '', latestId = null, lastChangedAt = Date.now(), sawGenerating = this.adapter.isGenerating(), observedConversation = expectedConversation;
     let stopObserving = NOOP;
     try {
       while (Date.now() - started < timeoutMs) {
         if (signal?.aborted) throw abortError(signal.reason);
-        const error = this.adapter.errorState();
-        if (error) throw new ChatGPTBridgeError('response-error', 'ChatGPT reported an error while generating the Hex turn.', { error });
+        // Scope error detection to the turns this request created. Fall back to
+        // the unscoped read when no turn node is known, so a build whose turn
+        // wrappers Hex cannot resolve loses no error detection at all.
+        const activeNodes = this.conversationTurns()
+          .filter((turn) => !baselineConversation.has(turn.id))
+          .map((turn) => turn.node)
+          .filter(Boolean);
+        if (!activeNodes.length && requestUserTurn?.node) activeNodes.push(requestUserTurn.node);
+        const error = this.adapter.errorState(activeNodes.length ? activeNodes : null);
+        if (error) throw bridgeError('turn-controller', 'response-error', 'ChatGPT reported an error while generating the Hex turn.', { error });
         const conversation = this.adapter.conversation();
         if (!observedConversation && conversation) { observedConversation = conversation; onConversation?.(conversation); }
-        if (observedConversation && conversation?.id !== observedConversation.id) {
-          throw new ChatGPTBridgeError('conversation-switched', 'ChatGPT conversation changed while a Hex request was in flight.', { expected: observedConversation, actual: conversation });
+        // A routing gap reports no conversation at all. Unknown must stay
+        // unknown: only a different, concretely identified conversation proves
+        // that ChatGPT moved this request somewhere else.
+        if (observedConversation && conversation && conversation.id !== observedConversation.id) {
+          throw bridgeError('turn-controller', 'conversation-switched', 'ChatGPT conversation changed while a Hex request was in flight.', { expected: observedConversation, actual: conversation });
         }
         if (this.adapter.isGenerating()) sawGenerating = true;
 
         const explicit = this.assistantTurns().filter((turn) => !baselineAssistant.has(turn.id));
-        if (explicit.length > 1) throw new ChatGPTBridgeError('manual-interference', 'Multiple assistant turns appeared while one Hex request was in flight.');
+        if (explicit.length > 1) throw bridgeError('turn-controller', 'manual-interference', 'Multiple assistant turns appeared while one Hex request was in flight.');
         const turn = explicit[0] || this.fallbackResponseTurn({ baselineConversation, baselineUsers, requestUserTurn, normalizedPrompt });
         if (turn) {
-          if (latestId && turn.id !== latestId) throw new ChatGPTBridgeError('stale-response', 'The assistant turn identity changed before the Hex response settled.');
+          if (latestId && turn.id !== latestId) throw bridgeError('turn-controller', 'stale-response', 'The assistant turn identity changed before the Hex response settled.');
           latestId = turn.id;
           if (turn.node && stopObserving === NOOP) stopObserving = this.adapter.observeMutations?.(turn.node, () => { lastChangedAt = Date.now(); }) || NOOP;
           if (turn.text !== latest) { latest = turn.text; lastChangedAt = Date.now(); }
@@ -377,7 +416,7 @@ export class ChatGPTTurnController {
         }
         await delay(this.pollMs, signal);
       }
-      throw new ChatGPTBridgeError('timeout', 'ChatGPT response capture timed out.', {
+      throw bridgeError('turn-controller', 'timeout', 'ChatGPT response capture timed out.', {
         sawResponseText: !!latest.trim(), responseTurnId: latestId, sawGenerating, conversation: observedConversation || null,
       });
     } finally { stopObserving(); }
@@ -438,6 +477,7 @@ function canonicalTurns(adapter, turns) {
   return out;
 }
 
+function bridgeError(stage, code, message, details = null) { return new ChatGPTBridgeError(code, message, details, stage); }
 function validConversation(value) { return !!value && typeof value.id === 'string' && conversationIdentity(value.url)?.id === value.id; }
 function normalizeText(value) { return String(value || '').replace(/\s+/g, ' ').trim(); }
 function uniqueOptions(values) { return [...new Map(values.map((item) => [item.id, item])).values()]; }

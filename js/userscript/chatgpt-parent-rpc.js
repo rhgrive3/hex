@@ -211,11 +211,21 @@ function safeBridgeError(error, method) {
   const code = safeErrorCode(error?.code);
   let message = safeErrorMessage(error?.message);
   if (!message) message = `ChatGPT parent RPC failed: ${method}`;
-  return rpcError(code, message);
+  /*
+   * Arbitrary bridge details never cross this boundary: they can carry DOM,
+   * prompt or storage text. `stage` is a closed token vocabulary naming the
+   * bridge component that refused the turn, so Hex can report which guard fired
+   * instead of collapsing every failure into an opaque provider error.
+   */
+  return rpcError(code, message, safeErrorStage(error?.stage));
 }
 
 function safeErrorCode(value) {
   return typeof value === 'string' && /^[A-Za-z0-9_.-]{1,64}$/.test(value) ? value : BRIDGE_ERROR_CODE;
+}
+
+function safeErrorStage(value) {
+  return typeof value === 'string' && /^[a-z][a-z0-9-]{0,63}$/.test(value) ? value : null;
 }
 
 function safeErrorMessage(value) {
@@ -229,15 +239,16 @@ function unsafeResult() {
   return rpcError(UNSAFE_RESULT_CODE, 'ChatGPT parent bridge returned unsafe RPC data.');
 }
 
-function rpcError(code, message) {
-  return new ChatGPTParentRpcError(code, message);
+function rpcError(code, message, stage = null) {
+  return new ChatGPTParentRpcError(code, message, stage);
 }
 
 class ChatGPTParentRpcError extends Error {
-  constructor(code, message) {
+  constructor(code, message, stage = null) {
     super(message);
     this.name = 'ChatGPTParentRpcError';
     this.code = code;
+    if (stage) this.details = { stage };
   }
 }
 
