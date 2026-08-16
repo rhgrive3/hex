@@ -129,4 +129,32 @@ assert.throws(() => parseChatGPTDecision('{oops}'), /malformed JSON/);
   assert.equal(cancelled, true);
 }
 
+{
+  const controller = new AbortController();
+  controller.abort('timeout');
+  const provider = new ChatGPTWebProvider({ bridge: { request: async () => '{"type":"final","answer":"late"}' } });
+  await assert.rejects(
+    () => provider.nextTurn({ tools }, { signal: controller.signal }),
+    (error) => error?.type === 'budget_exhausted' && /timed out/i.test(error.message),
+    'a whole-turn deadline must remain a budget/time limit, not become a user cancellation',
+  );
+}
+
+{
+  const provider = new ChatGPTWebProvider({
+    bridge: {
+      async request() {
+        const error = new Error('ChatGPT response capture timed out.');
+        error.code = 'timeout';
+        throw error;
+      },
+    },
+  });
+  await assert.rejects(
+    () => provider.nextTurn({ tools }),
+    (error) => error?.type === 'model_timeout' && error?.details?.bridgeCode === 'timeout',
+    'a bridge response timeout must stay distinct from the whole investigation deadline',
+  );
+}
+
 console.log('ai-chatgpt-web-provider: ok');
