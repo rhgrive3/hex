@@ -90,8 +90,9 @@ jobs:
           s = p.read_text()
           old = """  const addressOnly = new Set();
           for (const inst of slice.instructions) {
-            if (inst.addr && inst.addr.base) addressOnly.add(inst.addr.base.id);
-            if (inst.addr && inst.addr.index) addressOnly.add(inst.addr.index.id);
+            if (!inst.addr) continue;
+            if (inst.addr.base) addressOnly.add(inst.addr.base.id);
+            if (inst.addr.index) addressOnly.add(inst.addr.index.id);
           }
           for (const inst of slice.instructions) for (const a of inst.args || []) if (a && a.value) addressOnly.delete(a.value.id);"""
           new = """  const addressOnly = new Set();
