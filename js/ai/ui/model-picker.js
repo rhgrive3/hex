@@ -22,6 +22,13 @@ export const FALLBACK_PROVIDERS = Object.freeze([
 
 const text = (value) => (value == null ? '' : String(value));
 
+function normalizeProviderId(value) {
+  const id = text(value).trim().toLowerCase();
+  if (id === 'chatgpt' || id === 'chatgpt-web') return 'chatgpt-web';
+  if (id === 'worker' || id === 'gemini') return 'gemini';
+  return id;
+}
+
 function normalizeEntry(raw, fallbackLabel) {
   if (raw == null) return null;
   if (typeof raw === 'string') return { id: raw, label: fallbackLabel || raw, available: true };
@@ -29,7 +36,7 @@ function normalizeEntry(raw, fallbackLabel) {
   if (!id) return null;
   return {
     id,
-    label: text(raw.label || raw.title || raw.name || id) || id,
+    label: text(raw.label || raw.displayName || raw.title || raw.name || id) || id,
     available: raw.available === undefined ? true : !!raw.available,
     detail: text(raw.detail || raw.description || ''),
   };
@@ -54,6 +61,8 @@ export function normalizeCapabilities(raw) {
   const providers = normalizeList(providersRaw, (item) => {
     const base = normalizeEntry(item, null);
     if (!base) return null;
+    const providerId = normalizeProviderId(base.id);
+    if (!providerId) return null;
     const models = normalizeList(item && typeof item === 'object' ? (item.models || item.model) : null, (m) => {
       const model = normalizeEntry(m);
       if (!model) return null;
@@ -64,7 +73,7 @@ export function normalizeCapabilities(raw) {
     });
     const reasoning = normalizeList(item && typeof item === 'object' ? (item.reasoning || item.reasoningLevels || item.effort) : null, (r) => normalizeEntry(r));
     const defaultModel = item && typeof item === 'object' ? text(item.defaultModel || item.default) : '';
-    return { ...base, models, reasoning, defaultModel: defaultModel || null };
+    return { ...base, id: providerId, models, reasoning, defaultModel: defaultModel || null };
   });
   if (!providers.length) {
     return { known: false, providers: FALLBACK_PROVIDERS.map((item) => ({ ...item, available: false, models: [], reasoning: [], defaultModel: null })) };
@@ -83,11 +92,27 @@ export function applyStatus(capabilities, status) {
   if (!status || typeof status !== 'object') return capabilities;
   const byId = new Map();
   const collect = (raw) => {
-    for (const entry of normalizeList(raw, (item) => normalizeEntry(item))) byId.set(entry.id, entry.available);
+    if (!raw) return;
+    if (typeof raw === 'string') {
+      const id = normalizeProviderId(raw);
+      if (id) byId.set(id, true);
+      return;
+    }
+    for (const entry of normalizeList(raw, (item) => normalizeEntry(item))) {
+      const id = normalizeProviderId(entry.id);
+      if (id) byId.set(id, entry.available);
+    }
   };
-  collect(status.providers || status.provider || null);
-  const active = text(status.providerId || (typeof status.provider === 'string' ? status.provider : ''));
-  if (active && status.available !== undefined) byId.set(active, !!status.available);
+  collect(status.providers || (typeof status.provider === 'object' ? status.provider : null));
+  const active = normalizeProviderId(status.providerId || (typeof status.provider === 'string' ? status.provider : ''));
+  if (active) {
+    const available = status.available !== undefined
+      ? !!status.available
+      : status.ready !== undefined
+        ? !!status.ready
+        : true;
+    byId.set(active, available);
+  }
   if (!byId.size) return capabilities;
   return {
     ...capabilities,
@@ -99,7 +124,8 @@ export function applyStatus(capabilities, status) {
 
 export function findProvider(capabilities, id) {
   if (!capabilities || !id) return null;
-  return capabilities.providers.find((item) => item.id === String(id)) || null;
+  const normalized = normalizeProviderId(id);
+  return capabilities.providers.find((item) => item.id === normalized) || null;
 }
 
 export function findModel(provider, id) {
@@ -146,11 +172,13 @@ export function selectionLabel(capabilities, selection = {}, ja = true) {
  * a provider's advertised default is taken only when it advertises one.
  */
 export function selectionForProvider(capabilities, providerId, previous = {}) {
-  const provider = findProvider(capabilities, providerId);
-  if (!provider) return { provider: providerId == null ? null : String(providerId), model: null, reasoning: null };
-  const keptModel = previous.provider === provider.id ? findModel(provider, previous.model) : null;
+  const normalizedProvider = normalizeProviderId(providerId);
+  const provider = findProvider(capabilities, normalizedProvider);
+  if (!provider) return { provider: normalizedProvider || null, model: null, reasoning: null };
+  const sameProvider = normalizeProviderId(previous.provider) === provider.id;
+  const keptModel = sameProvider ? findModel(provider, previous.model) : null;
   const model = keptModel || findModel(provider, provider.defaultModel);
-  const keptReasoning = previous.provider === provider.id ? findReasoning(provider, model, previous.reasoning) : null;
+  const keptReasoning = sameProvider ? findReasoning(provider, model, previous.reasoning) : null;
   return { provider: provider.id, model: model ? model.id : null, reasoning: keptReasoning ? keptReasoning.id : null };
 }
 
