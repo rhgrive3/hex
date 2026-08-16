@@ -5,23 +5,21 @@ import { MessageChannel } from 'node:worker_threads';
 if (!globalThis.crypto) globalThis.crypto = webcrypto;
 
 import { EMBED_PROTOCOL, EMBED_PROTOCOL_VERSION } from '../js/userscript/embed-protocol.js';
-import {
-  EMBED_BOOTSTRAP_TYPE,
-  EMBED_GENERATION_PARAM,
-} from '../js/userscript/embed-bootstrap.js';
-import { createChatGPTIframeHost } from '../js/userscript/chatgpt-iframe-host.js';
+import { EMBED_BOOTSTRAP_TYPE } from '../js/userscript/embed-bootstrap.js';
+import { createChatGPTIframeHost, createOpaqueBootstrapDocument } from '../js/userscript/chatgpt-iframe-host.js';
 
 class FakeElement {
   constructor(tag) {
     this.tagName = String(tag).toUpperCase(); this.children = []; this.parentElement = null;
     this.style = {}; this.hidden = false; this.attributes = new Map(); this.listeners = new Map();
-    this.textContent = ''; this._src = ''; this.focusCalls = 0;
+    this.textContent = ''; this._src = ''; this.focusCalls = 0; this.srcdoc = '';
   }
   set src(value) { this._src = String(value); }
   get src() { return this._src; }
   append(...nodes) { for (const node of nodes) { node.parentElement = this; this.children.push(node); } }
   remove() { if (!this.parentElement) return; const i = this.parentElement.children.indexOf(this); if (i >= 0) this.parentElement.children.splice(i, 1); this.parentElement = null; }
   setAttribute(name, value) { this.attributes.set(name, String(value)); }
+  getAttribute(name) { return this.attributes.get(name) ?? null; }
   removeAttribute(name) { this.attributes.delete(name); }
   addEventListener(type, fn) { if (!this.listeners.has(type)) this.listeners.set(type, new Set()); this.listeners.get(type).add(fn); }
   removeEventListener(type, fn) { this.listeners.get(type)?.delete(fn); }
@@ -32,6 +30,7 @@ class FakeElement {
 }
 
 await testHttpsAndPersistentLifecycle();
+await testOpaqueBootstrapDocument();
 await testBootstrapMustPrecedeAttach();
 await testAttachOrderAndReady();
 await testBootstrapTimeout();
@@ -46,10 +45,15 @@ console.log('userscript chatgpt iframe host: ok');
 async function testHttpsAndPersistentLifecycle() {
   const env = fakeEnvironment();
   assert.throws(() => makeHost(env, { src: 'http://worker.example/embed/chatgpt' }), /HTTPS/);
+  assert.throws(() => makeHost(env, { cspNonce: '' }), /CSP nonce/);
   const host = makeHost(env, { loadTimeoutMs: 0 });
   const iframe = host.iframe;
-  assert.equal(host.state().childOrigin, 'https://worker.example');
+  assert.equal(host.state().childOrigin, 'null');
+  assert.equal(host.state().apiOrigin, 'https://worker.example');
   assert.equal(iframe.referrerPolicy, 'no-referrer');
+  assert.equal(iframe.getAttribute('sandbox'), 'allow-scripts allow-downloads');
+  assert.match(iframe.srcdoc, /hex\.embed\.child-bootstrap-ready/);
+  assert.doesNotMatch(iframe.srcdoc, /https:\/\/worker\.example\/embed\/chatgpt/);
   assert.equal(countTags(env.documentRef.documentElement, 'IFRAME'), 1);
   for (let i = 0; i < 10; i++) host.show();
   host.hide();
@@ -60,12 +64,24 @@ async function testHttpsAndPersistentLifecycle() {
   assert.equal(env.documentRef.documentElement.contains(iframe), false);
 }
 
+async function testOpaqueBootstrapDocument() {
+  const html = createOpaqueBootstrapDocument({
+    cspNonce: 'nonce0123456789', generation: '7', apiOrigin: 'https://worker.example',
+    allowedParentOrigins: ['https://chatgpt.com'],
+  });
+  assert.match(html, /sandbox|child-bootstrap-ready|runtimeSource/);
+  assert.match(html, /nonce="nonce0123456789"/);
+  assert.match(html, /https:\/\/chatgpt\.com/);
+  assert.match(html, /https:\/\/worker\.example/);
+  assert.doesNotMatch(html, /allow-same-origin/);
+}
+
 async function testBootstrapMustPrecedeAttach() {
   const env = fakeEnvironment();
   const host = makeHost(env, { loadTimeoutMs: 200 });
   await delay(10);
-  assert.equal(env.postMessages.length, 0, 'parent must not attach on document load/navigation alone');
-  const generation = currentGeneration(host.iframe.src);
+  assert.equal(env.postMessages.length, 0, 'parent must not attach on document navigation alone');
+  const generation = currentGeneration(host);
   env.signalBootstrap(host.iframe, generation);
   await waitFor(() => env.postMessages.length === 1);
   assert.equal(env.postMessages[0].data.type, 'hex.embed.attach');
@@ -85,18 +101,21 @@ async function testAttachOrderAndReady() {
     onPort(port, context) {
       order.push('onPort');
       assert.equal(context.generation, 1);
+      assert.equal(context.childOrigin, 'null');
+      assert.equal(context.apiOrigin, 'https://worker.example');
       port.start?.();
       return () => order.push('cleanup');
     },
   });
   assert.equal(host.state().status, 'loading');
-  const generation = currentGeneration(host.iframe.src);
-  env.signalBootstrap(host.iframe, generation);
+  env.signalBootstrap(host.iframe, currentGeneration(host));
   await waitFor(() => host.state().status === 'hidden');
   assert.deepEqual(order.slice(0, 2), ['onPort', 'attach']);
-  assert.equal(env.postMessages[0].targetOrigin, 'https://worker.example');
-  assert.notEqual(env.postMessages[0].targetOrigin, '*');
+  assert.equal(env.postMessages[0].targetOrigin, '*', 'opaque origins require wildcard targetOrigin; exact WindowProxy is the target');
   assert.equal(env.postMessages[0].data.generation, '1');
+  assert.equal(env.postMessages[0].data.apiOrigin, 'https://worker.example');
+  assert.equal(env.postMessages[0].data.provider, 'chatgpt');
+  assert.equal(env.postMessages[0].data.runtimeSource, 'globalThis.__HEX_TEST_CHILD__=true;');
   host.show();
   assert.equal(host.state().status, 'visible');
   host.hide();
@@ -123,7 +142,7 @@ async function testReadyTimeout() {
     readyTimeoutMs: 15,
     onPort(_port, context) { return () => cleanups.push(context.generation); },
   });
-  env.signalBootstrap(host.iframe, currentGeneration(host.iframe.src));
+  env.signalBootstrap(host.iframe, currentGeneration(host));
   await waitFor(() => host.state().status === 'failed');
   assert.equal(host.state().failure.stage, 'handshake/app-ready');
   assert.deepEqual(cleanups, [1]);
@@ -139,9 +158,9 @@ async function testReloadRejectsStaleGeneration() {
   });
   const cleanups = [];
   const host = makeHost(env, { onPort(_port, context) { return () => cleanups.push(context.generation); } });
-  const first = currentGeneration(host.iframe.src);
+  const first = currentGeneration(host);
   host.reload();
-  const second = currentGeneration(host.iframe.src);
+  const second = currentGeneration(host);
   assert.equal(first, '1');
   assert.equal(second, '2');
   env.signalBootstrap(host.iframe, first);
@@ -159,7 +178,7 @@ async function testReloadRejectsStaleGeneration() {
 async function testOnPortFailure() {
   const env = fakeEnvironment();
   const host = makeHost(env, { onPort() { throw new Error('rpc install failed'); } });
-  env.signalBootstrap(host.iframe, currentGeneration(host.iframe.src));
+  env.signalBootstrap(host.iframe, currentGeneration(host));
   await waitFor(() => host.state().status === 'failed');
   assert.equal(env.postMessages.length, 0, 'attach is forbidden when parent RPC did not install');
   assert.match(host.state().failure.message, /rpc install failed/);
@@ -192,6 +211,8 @@ async function testDestroyIdempotent() {
 function makeHost(env, overrides = {}) {
   return createChatGPTIframeHost({
     src: 'https://worker.example/embed/chatgpt?__hex_ai_provider=chatgpt',
+    runtimeSource: 'globalThis.__HEX_TEST_CHILD__=true;',
+    cspNonce: 'nonce0123456789',
     onPort: () => {},
     documentRef: env.documentRef,
     windowRef: env.windowRef,
@@ -205,7 +226,7 @@ function makeHost(env, overrides = {}) {
 function ready(nonce, id) {
   return { protocol: EMBED_PROTOCOL, version: EMBED_PROTOCOL_VERSION, kind: 'control', id, method: 'ready', nonce };
 }
-function currentGeneration(src) { return new URL(src).searchParams.get(EMBED_GENERATION_PARAM); }
+function currentGeneration(host) { return String(host.state().generation); }
 
 function fakeEnvironment(options = {}) {
   const postMessages = [];
@@ -220,6 +241,7 @@ function fakeEnvironment(options = {}) {
   const documentRef = {
     documentElement: root,
     activeElement: null,
+    querySelector() { return null; },
     createElement(tag) {
       const element = new FakeElement(tag);
       if (String(tag).toLowerCase() === 'iframe') {
@@ -241,7 +263,7 @@ function fakeEnvironment(options = {}) {
   env.signalBootstrap = (iframe, generation, patch = {}) => {
     windowRef.dispatchMessage({
       source: iframe.contentWindow,
-      origin: 'https://worker.example',
+      origin: 'null',
       data: {
         type: EMBED_BOOTSTRAP_TYPE,
         protocol: EMBED_PROTOCOL,
