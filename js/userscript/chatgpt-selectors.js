@@ -29,13 +29,13 @@ export const CHATGPT_SELECTORS = Object.freeze({
   ]),
   assistantTurn: Object.freeze([
     '[data-message-author-role="assistant"]',
-    'section[data-testid^="conversation-turn-"]:has([data-message-author-role="assistant"])',
+    '[data-testid^="conversation-turn-"]:has([data-message-author-role="assistant"])',
   ]),
   userTurn: Object.freeze([
     '[data-message-author-role="user"]',
-    'section[data-testid^="conversation-turn-"]:has([data-message-author-role="user"])',
+    '[data-testid^="conversation-turn-"]:has([data-message-author-role="user"])',
   ]),
-  conversationTurn: Object.freeze(['section[data-testid^="conversation-turn-"]']),
+  conversationTurn: Object.freeze(['[data-testid^="conversation-turn-"]']),
   newChat: Object.freeze([
     '[data-testid="create-new-chat-button"]',
     'button[aria-label*="New chat" i]',
