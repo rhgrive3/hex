@@ -355,13 +355,13 @@ export function projectNode(node, context) {
       const use = stateProjection.readUseByNodeId.get(node.id) ?? null;
       const canonical = use == null ? null : valuesById.get(use.valueId) ?? null;
       const local = localPhysicalStateSource(node, context);
-      const reaching = local ?? canonical;
+      const reaching = canonical ?? local;
       setBasic(V1_OP.MOV, null, reaching ? [reaching] : []);
       inst.extra.stateRead = node.variable;
       inst.extra.publicStateIdentity = legacyPublicStateIdentity(node.variable);
       inst.extra.reachingStateSsaValueId = use?.valueId ?? null;
       inst.extra.stateReadProof = use?.proof ?? null;
-      inst.extra.localPhysicalViewProjection = local != null;
+      inst.extra.localPhysicalViewProjection = canonical == null && local != null;
       if (!reaching) inst.extra.entryStateRead = true;
       break;
     }
