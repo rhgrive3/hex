@@ -1,0 +1,147 @@
+name: Temporary refine ChatGPT Web hardening
+on:
+  push:
+    branches: [hex/chatgpt-web-production-hardening-final]
+permissions:
+  contents: write
+jobs:
+  refine:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: hex/chatgpt-web-production-hardening-final
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Apply final self-review refinements
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path); text = p.read_text()
+              if text.count(old) != 1:
+                  raise SystemExit(f'{path}: expected one anchor, got {text.count(old)} for {old[:100]!r}')
+              p.write_text(text.replace(old, new, 1))
+
+          # Provider-specific latency defaults. AI_BUDGETS remains the hard ceiling,
+          # but non-ChatGPT providers keep the previous 30s/120s default behavior.
+          replace_once(
+              'js/ai/provider/index.js',
+              "  getCapabilities() { return { ...this.capabilities }; }\n  async prepareCapabilities()",
+              "  getCapabilities() { return { ...this.capabilities }; }\n  turnTimeoutMs(mode) { return mode === 'agent' ? 120000 : 30000; }\n  async prepareCapabilities()",
+          )
+          replace_once(
+              'js/ai/provider/chatgpt-web.js',
+              "    super();\n    this.bridge = bridge || null;",
+              "    super({ capabilities: { provider: 'chatgpt-web' } });\n    this.bridge = bridge || null;",
+          )
+          replace_once(
+              'js/ai/provider/chatgpt-web.js',
+              "  available() {\n    return !!this.bridge && typeof this.bridge.request === 'function';\n  }\n\n  async nextTurn",
+              "  available() {\n    return !!this.bridge && typeof this.bridge.request === 'function';\n  }\n\n  turnTimeoutMs(mode) { return mode === 'agent' ? 600000 : 240000; }\n\n  async nextTurn",
+          )
+          replace_once(
+              'js/ai/provider/chatgpt-web.js',
+              "  selected(request = {}) {\n    const requested = String(request.provider || globalThis.__HEX_AI_PROVIDER__ || 'chatgpt-web').toLowerCase();\n    if (requested === 'gemini' || requested === 'worker') return this.gemini;\n    if (requested === 'chatgpt' || requested === 'chatgpt-web') return this.chatgpt;\n    throw new AIError('provider_error', `Unknown AI provider: ${requested}`);\n  }\n\n  async nextTurn",
+              "  selected(request = {}) {\n    const requested = String(request.provider || globalThis.__HEX_AI_PROVIDER__ || 'chatgpt-web').toLowerCase();\n    if (requested === 'gemini' || requested === 'worker') return this.gemini;\n    if (requested === 'chatgpt' || requested === 'chatgpt-web') return this.chatgpt;\n    throw new AIError('provider_error', `Unknown AI provider: ${requested}`);\n  }\n\n  turnTimeoutMs(mode, request = {}) {\n    return this.selected(request).turnTimeoutMs(mode, request);\n  }\n\n  async nextTurn",
+          )
+          replace_once(
+              'js/ai/control/turn-executor.js',
+              "    const request = normalizeTurnRequest(input);\n    const budget = aiBudget(request.mode, { ...request.budget, ...options.budget });",
+              "    const request = normalizeTurnRequest(input);\n    const budgetOverrides = { ...request.budget, ...options.budget };\n    if (budgetOverrides.timeoutMs == null) {\n      const providerDefault = Number(this.provider?.turnTimeoutMs?.(request.mode, request));\n      budgetOverrides.timeoutMs = Number.isFinite(providerDefault) && providerDefault > 0\n        ? Math.floor(providerDefault)\n        : (request.mode === 'agent' ? 120000 : 30000);\n    }\n    const budget = aiBudget(request.mode, budgetOverrides);",
+          )
+
+          # Only use the longer textContent path when a semantic user body was
+          # actually found. If selectors ever miss, do not consume hidden role UI.
+          replace_once(
+              'js/userscript/chatgpt-adapter.js',
+              "    if (roleName === 'user') {\n      // iOS/WebKit can report a line-clamped innerText before the collapsible",
+              "    if (roleName === 'user' && body) {\n      // iOS/WebKit can report a line-clamped innerText before the collapsible",
+          )
+
+          # Bound the mismatch grace by wall time even if renderer identities churn.
+          replace_once(
+              'js/userscript/chatgpt-adapter.js',
+              "    let requestUserTurn = null;\n    let mismatchCandidateId = null, mismatchSince = null;",
+              "    let requestUserTurn = null;\n    let mismatchSince = null;",
+          )
+          replace_once(
+              'js/userscript/chatgpt-adapter.js',
+              "            mismatchCandidateId = null;\n            mismatchSince = null;\n            return true;",
+              "            mismatchSince = null;\n            return true;",
+          )
+          replace_once(
+              'js/userscript/chatgpt-adapter.js',
+              "          const candidateId = String(candidate.id || '');\n          if (mismatchCandidateId !== candidateId) {\n            mismatchCandidateId = candidateId;\n            mismatchSince = Date.now();\n          }",
+              "          if (mismatchSince === null) mismatchSince = Date.now();",
+          )
+          replace_once(
+              'js/userscript/chatgpt-adapter.js',
+              "        mismatchCandidateId = null;\n        mismatchSince = null;",
+              "        mismatchSince = null;",
+          )
+
+          # Provider policy tests: hard ceiling is large, standard defaults remain
+          # old values, ChatGPT gets the longer production defaults, wrapper delegates.
+          replace_once(
+              'tests/ai-chatgpt-web-provider.mjs',
+              "import { aiBudget } from '../js/ai/schema.js';",
+              "import { aiBudget } from '../js/ai/schema.js';\nimport { AIProvider } from '../js/ai/provider/index.js';",
+          )
+          replace_once(
+              'tests/ai-chatgpt-web-provider.mjs',
+              "assert.equal(aiBudget('chat').timeoutMs, 240000, 'interactive chat needs enough wall time for real reasoning plus a second model call');\nassert.equal(aiBudget('agent').timeoutMs, 600000, 'agent mode must not inherit the old two-minute whole-investigation ceiling');\nassert.equal(aiBudget('chat', { timeoutMs: 999999 }).timeoutMs, 240000, 'caller overrides cannot exceed the reviewed chat ceiling');",
+              "assert.equal(aiBudget('chat').timeoutMs, 240000, 'the reviewed chat hard ceiling must fit realistic ChatGPT reasoning');\nassert.equal(aiBudget('agent').timeoutMs, 600000, 'the reviewed agent hard ceiling must fit multi-step ChatGPT work');\nassert.equal(aiBudget('chat', { timeoutMs: 999999 }).timeoutMs, 240000, 'caller overrides cannot exceed the reviewed chat ceiling');\nconst standardProvider = new AIProvider();\nassert.equal(standardProvider.turnTimeoutMs('chat'), 30000, 'ordinary providers keep the previous 30-second chat default');\nassert.equal(standardProvider.turnTimeoutMs('agent'), 120000, 'ordinary providers keep the previous two-minute agent default');\nconst chatgptPolicy = new ChatGPTWebProvider({ bridge: { request: async () => '{\\\"type\\\":\\\"final\\\",\\\"answer\\\":\\\"ok\\\"}' } });\nassert.equal(chatgptPolicy.turnTimeoutMs('chat'), 240000);\nassert.equal(chatgptPolicy.turnTimeoutMs('agent'), 600000);",
+          )
+          replace_once(
+              'tests/ai-chatgpt-web-provider.mjs',
+              "  const provider = new UserscriptAIProvider({ bridge, fetchImpl: async () => { throw new Error('unused'); } });\n  assert.deepEqual(provider.getSelection()",
+              "  const provider = new UserscriptAIProvider({ bridge, fetchImpl: async () => { throw new Error('unused'); } });\n  assert.equal(provider.turnTimeoutMs('chat', { provider: 'chatgpt-web' }), 240000);\n  assert.equal(provider.turnTimeoutMs('chat', { provider: 'gemini' }), 30000);\n  assert.deepEqual(provider.getSelection()",
+          )
+
+          # Add identity-churn regression: a persistent wrong user turn may change
+          # renderer id, but the 1.5s-style integrity grace remains wall-clock bounded.
+          replace_once(
+              'tests/chatgpt-web-runtime.mjs',
+              "  await assert.rejects(\n    new ChatGPTTurnController(badAdapter, { pollMs: 2, startTimeoutMs: 60, submissionMismatchGraceMs: 10 })\n      .run('prompt', { timeoutMs: 100, expectedConversation: conversation }),\n    (error) => error.code === 'manual-interference',\n    'a persistent single-turn mismatch must remain a hard integrity failure',\n  );\n}",
+              "  await assert.rejects(\n    new ChatGPTTurnController(badAdapter, { pollMs: 2, startTimeoutMs: 60, submissionMismatchGraceMs: 10 })\n      .run('prompt', { timeoutMs: 100, expectedConversation: conversation }),\n    (error) => error.code === 'manual-interference',\n    'a persistent single-turn mismatch must remain a hard integrity failure',\n  );\n\n  const churn = { generating: false, assistants: [], users: [], turns: [], conversation };\n  const churnAdapter = turnAdapter(churn, () => {\n    churn.generating = true;\n    let seq = 0;\n    const rotate = () => {\n      const wrong = { id: `wrong-${++seq}`, text: 'still not the Hex prompt', node: plainNode(`wrong-${seq}`) };\n      churn.users = [wrong]; churn.turns = [wrong];\n      if (seq < 8) setTimeout(rotate, 2);\n    };\n    rotate();\n  });\n  const churnStarted = Date.now();\n  await assert.rejects(\n    new ChatGPTTurnController(churnAdapter, { pollMs: 2, startTimeoutMs: 80, submissionMismatchGraceMs: 12 })\n      .run('prompt', { timeoutMs: 100, expectedConversation: conversation }),\n    (error) => error.code === 'manual-interference',\n    'renderer id churn must not keep extending a persistent prompt-mismatch grace window',\n  );\n  assert.ok(Date.now() - churnStarted < 70, 'prompt mismatch must fail on the fixed grace window, not the submit timeout');\n}",
+          )
+
+          print('final refinements applied')
+          PY
+      - name: Install dependencies and browsers
+        run: |
+          npm ci
+          npm install --no-save playwright@1.55.0
+          npx playwright install --with-deps chromium webkit
+      - name: Focused regressions
+        run: |
+          node tests/chatgpt-web-runtime.mjs
+          node tests/ai-chatgpt-web-provider.mjs
+          node tests/chatgpt-web-agent-loop.mjs
+          node tests/chatgpt-web-production-dom.mjs
+      - name: Full relevant gates
+        run: |
+          npm run ai:test
+          npm run userscript:test
+          npm run lint
+      - name: Regenerate and verify
+        run: |
+          npm run userscript:build
+          git checkout 80c2b5d0a4d9a79ecdbd2e5aa075609e12ec2346 -- node_modules/.package-lock.json || true
+          rm .github/workflows/tmp-chatgpt-hardening-refine.yml
+          git diff --check
+          git status --short
+      - name: Commit final refinements
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Refine ChatGPT latency and integrity policy"
+          git push origin HEAD:hex/chatgpt-web-production-hardening-final
