@@ -540,20 +540,23 @@ export function projectNode(node, context) {
     }
     case 'intrinsic': {
       const carrier = comparisonCarrierByNodeId.get(node.id) ?? null;
-      const addSub = carrier ? addWithCarryOperands(node, context) : null;
-      if (carrier && addSub) {
+      const addSub = addWithCarryOperands(node, context);
+      if (addSub) {
         const resultIsWritten = node.outputs?.[0] && hasRegisterStateWriteForValue(node.outputs[0], context);
         const args = [addSub.lhs, addSub.rhs];
-        if (resultIsWritten) {
-          setBasic(V1_OP.BIN, addSub.subtract ? 'sub' : 'add', args);
-          const cmp = appendComparisonInstruction(node, context, inst, carrier, args, addSub.subtract ? 'sub' : 'add', row, blockIndex);
-          if (cmp) extraInstructions.push(cmp);
-        } else {
+        if (carrier && !resultIsWritten) {
           setBasic(V1_OP.CMP, addSub.subtract ? 'sub' : 'add', args, carrier);
           inst.bits = Math.max(1, ...args.map((value) => value.bits || 1));
           inst.extra.comparison = 'semantic-flag-result';
           inst.extra.semanticComparisonCarrier = true;
           carrier.def = inst;
+        } else {
+          setBasic(V1_OP.BIN, addSub.subtract ? 'sub' : 'add', args);
+          inst.extra.compatSource = 'exact-add-with-carry-intrinsic';
+          if (carrier) {
+            const cmp = appendComparisonInstruction(node, context, inst, carrier, args, addSub.subtract ? 'sub' : 'add', row, blockIndex);
+            if (cmp) extraInstructions.push(cmp);
+          }
         }
         for (const value of outputValues) representedExtraValueIds.add(value.semanticValueId);
       } else if (!deterministicIntrinsicProjection(node, context, inst, setBasic, primaryOutput, inputValues)) {
