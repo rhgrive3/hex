@@ -85,6 +85,20 @@ function normalizeDescriptor(raw) {
   return { ...descriptor, kind };
 }
 
+function descriptorWithProofMetadata(descriptor, proof) {
+  if (!descriptor || !proof) return descriptor;
+  const rootIdentity = object(proof.rootIdentity);
+  const storageClass = nonEmpty(rootIdentity?.storageClass);
+  if (!storageClass) return descriptor;
+  return {
+    ...descriptor,
+    metadata: {
+      ...(object(descriptor.metadata) ?? {}),
+      canonicalRootStorageClass: storageClass,
+    },
+  };
+}
+
 function unknownRegion({ functionId, binaryId, widthBits, origin, sourceEntityId, addressValueId, addressSpace, reason, metadata }) {
   const normalizedWidth = Number.isSafeInteger(Number(widthBits)) && Number(widthBits) > 0 ? Number(widthBits) : null;
   const uncertaintyIdentity = {
@@ -265,7 +279,7 @@ export function classifySemanticMemoryRegion(ir, nodeOrId, options = {}) {
       rootDescriptors: options.rootDescriptors,
       rootDescriptorProvider: options.rootDescriptorProvider,
     });
-    graphDescriptor = canonicalAddressProofToRegionEvidence(proof);
+    graphDescriptor = descriptorWithProofMetadata(canonicalAddressProofToRegionEvidence(proof), proof);
   }
   const descriptor = explicitDescriptor ?? graphDescriptor;
   const derivationMetadata = proof == null ? null : {
