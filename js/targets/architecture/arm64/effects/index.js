@@ -8,17 +8,19 @@ import { liftArm64SystemEffects } from './system.js';
 
 export const ARM64_MACHINE_EFFECTS_SEMANTIC_VERSION = '2';
 
-// This order is part of the Phase 2 semantic contract. A family may only return
-// a bundle for instructions it owns. Memory intentionally precedes system so
-// DMB/DSB/ISB/CLREX have one canonical implementation: the atomic/memory model,
-// which validates barrier options and models exclusive-monitor state.
+// This order is part of the Phase 2 semantic contract. Shape-sensitive families
+// precede scalar families when A64 reuses a mnemonic (for example ADD/MOV in
+// SIMD versus integer code). They must return null when the operand shape is not
+// theirs. Memory intentionally precedes system so DMB/DSB/ISB/CLREX have one
+// canonical implementation: the atomic/memory model, which validates barrier
+// options and models exclusive-monitor state.
 const ARM64_EFFECT_FAMILIES = Object.freeze([
   Object.freeze({ id:'flags', lift:liftArm64FlagEffects }),
   Object.freeze({ id:'control', lift:liftArm64ControlEffects }),
   Object.freeze({ id:'memory', lift:liftArm64MemoryEffects }),
-  Object.freeze({ id:'integer', lift:liftArm64IntegerEffects }),
-  Object.freeze({ id:'fp', lift:liftArm64FpEffects }),
   Object.freeze({ id:'simd', lift:liftArm64SimdEffects }),
+  Object.freeze({ id:'fp', lift:liftArm64FpEffects }),
+  Object.freeze({ id:'integer', lift:liftArm64IntegerEffects }),
   Object.freeze({ id:'system', lift:liftArm64SystemEffects }),
 ]);
 
