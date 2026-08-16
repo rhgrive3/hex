@@ -15,7 +15,7 @@ class StrictArrayBufferDecompressionStream {
         return {
           write(value) {
             assert.ok(value instanceof ArrayBuffer, 'decompressor input must be an exact ArrayBuffer');
-            return writer.write(value);
+            return writer.write(new Uint8Array(value));
           },
           close() { return writer.close(); },
         };
@@ -24,17 +24,21 @@ class StrictArrayBufferDecompressionStream {
   }
 }
 
+const source = 'Hex strict iOS decompression bridge';
+const gz = gzipSync(Buffer.from(source));
+const backing = new Uint8Array(gz.length + 4);
+backing.set(gz, 2);
+const view = backing.subarray(2, 2 + gz.length);
+
 globalThis.DecompressionStream = StrictArrayBufferDecompressionStream;
 try {
-  const source = 'Hex strict iOS decompression bridge';
-  const gz = gzipSync(Buffer.from(source));
-  const backing = new Uint8Array(gz.length + 4);
-  backing.set(gz, 2);
-  const view = backing.subarray(2, 2 + gz.length);
   const result = await decompressGzipExact(view);
   assert.equal(new TextDecoder().decode(result), source);
 } finally {
   globalThis.DecompressionStream = NativeDecompressionStream;
 }
 
-console.log('userscript-decompress exact ArrayBuffer: ok');
+const nativeResult = await decompressGzipExact(view);
+assert.equal(new TextDecoder().decode(nativeResult), source, 'standard typed-array DecompressionStream fallback must remain compatible');
+
+console.log('userscript-decompress ArrayBuffer compatibility: ok');
