@@ -165,6 +165,14 @@ assert.throws(() => exactBundle({ statePreservation: { proven: true, reason: 'co
   assert.equal(bundle.operations[0].flag.widthBits, 1);
 }
 
+assert.throws(() => createMachineOperation({
+  kind: 'register-write', register: reg(), value: createBitVectorValue(64, 1n), intrinsicId: 'ignored-before-fix',
+}), /unexpected-operation-field/, 'kind-incompatible operation fields must fail closed');
+assert.throws(() => createIntrinsicEffectSummary({
+  inputs: [], outputs: [], registersRead: [], registersWritten: [],
+  memoryRead: { scope: 'none', accesses: [{ space: 'memory', addressExpr: {}, widthBits: 8, endian: 'little' }] },
+  memoryWrite: { scope: 'none' }, controlEffects: [], determinism: 'deterministic', symbolicDetail: 'available',
+}), /accesses-not-allowed/, 'intrinsic memory scope must reject ignored access metadata');
 assert.throws(() => createMachineOperation({ kind: 'intrinsic', intrinsicId: 'opaque' }), /intrinsic-summary-required/);
 assert.throws(() => exactBundle({
   completeness: 'exact-with-intrinsic',
