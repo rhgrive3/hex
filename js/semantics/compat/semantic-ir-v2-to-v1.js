@@ -56,7 +56,7 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
     origin: block.origin ?? ir.origin,
   }));
   const blockBySemanticId = new Map(legacyBlocks.map((block) => [block.semanticBlockId, block]));
-  const graph = graphFacts(legacyBlocks, blockIndexById, blockIndexById.get(ir.entryBlockId) ?? 0);
+  const graph = graphFacts(legacyBlocks, blockIndexById, blockIndexById.get(ir.entryBlockId) ?? 0, ir.functionId);
   for (const block of legacyBlocks) block.isExit = block.succ.length === 0;
 
   const { values, byId: valuesById } = buildLegacyValues(ir, ssa);
@@ -86,11 +86,17 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
       scalarSsa: !!ssa,
       memorySsa: !!memorySsa,
       semanticNodeToLegacyInstructionIds: {},
-      semanticValueToLegacyValueId: Object.fromEntries(values.map((value) => [value.semanticValueId, value.id])),
+      semanticValueToLegacyValueId: Object.fromEntries(ir.values
+        .map((value) => [value.id, valuesById.get(value.id)?.id])
+        .filter(([, id]) => id != null)),
+      ssaValueToLegacyValueId: Object.fromEntries((ssa?.definitions ?? [])
+        .map((definition) => [definition.valueId, valuesById.get(definition.valueId)?.id])
+        .filter(([, id]) => id != null)),
       origins: {
         function: ir.origin,
         nodes: Object.fromEntries(ir.nodes.map((node) => [node.id, node.origin])),
         values: Object.fromEntries(ir.values.map((value) => [value.id, value.origin])),
+        ssaDefinitions: Object.fromEntries((ssa?.definitions ?? []).map((definition) => [definition.definitionId, definition.origin])),
         functionUnknowns: ir.unknowns.map(() => ir.origin),
       },
     },
