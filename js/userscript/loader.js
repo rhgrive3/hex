@@ -1,4 +1,5 @@
 import { toExactArrayBuffer } from './array-buffer.js';
+import { decompressGzipExact } from './decompress.js';
 
 const HEX_ORIGIN = '__HEX_ORIGIN__';
 const LOADER_VERSION = '__HEX_LOADER_VERSION__';
@@ -52,7 +53,8 @@ async function loadRuntime() {
     additionalData: toExactArrayBuffer(utf8(bootstrap.manifest.aad)),
     tagLength: 128,
   }, contentKey, toExactArrayBuffer(ciphertext))));
-  const plaintext = await runtimeStage('protected runtime decompress', () => decompress(compressed, bootstrap.manifest.compression));
+  if (bootstrap.manifest.compression !== 'gzip') throw new Error('The protected runtime compression format is unsupported.');
+  const plaintext = await runtimeStage('protected runtime decompress', () => decompressGzipExact(compressed));
   await assertHash(plaintext, bootstrap.manifest.contentHash);
   const blobUrl = await runtimeStage('protected runtime Blob creation', () => URL.createObjectURL(new Blob([toExactArrayBuffer(plaintext)], { type: 'text/javascript' })));
   try { await runtimeStage('protected runtime import', () => import(blobUrl)); }
@@ -68,11 +70,6 @@ async function cryptoStage(stage, operation) {
 async function runtimeStage(stage, operation) {
   try { return await operation(); }
   catch (error) { throw new Error(`${stage}: ${String(error?.message || error || 'runtime failed.')}`); }
-}
-async function decompress(bytes, algorithm) {
-  if (algorithm !== 'gzip' || typeof DecompressionStream !== 'function') throw new Error('The protected runtime compression format is unsupported.');
-  const stream = new Blob([toExactArrayBuffer(bytes)]).stream().pipeThrough(new DecompressionStream('gzip'));
-  return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 async function assertHash(bytes, expected) {
   const digest = await cryptoStage('SHA-256 integrity digest', () => crypto.subtle.digest('SHA-256', toExactArrayBuffer(bytes)));
