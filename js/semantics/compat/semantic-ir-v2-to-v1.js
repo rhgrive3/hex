@@ -3,7 +3,7 @@ import { createSemanticSsaContract } from '../ssa/contract.js';
 import { createMemorySsaContract } from '../memoryssa/contract.js';
 import {
   V1_OP, V1_VK, V1_MK, firstAddress, sourceInstructionIds, blockOrder, explicitTargetsForBlock,
-  graphFacts, buildLegacyValues, buildStateProjectionIndex, legacyPublicStateIdentity,
+  graphFacts, buildLegacyValues, buildStateProjectionIndex, legacyPublicStateIdentity, makeArg, addUse,
 } from './semantic-ir-v2-to-v1-core.js';
 import { projectNode } from './semantic-ir-v2-to-v1-nodes.js';
 import {
@@ -97,6 +97,69 @@ function preserveStateReadTemporaryIdentity(ir, valuesById) {
       if (value.label === identity) value.label = node.id;
       value.compatDerived = 'state-read-temporary';
     }
+  }
+}
+
+function valueDominatesInstruction(value, inst, projected) {
+  if (!value || !inst) return false;
+  if (value.kind === V1_VK.ARG) return true;
+  const definition = value.def;
+  if (!definition || definition === inst) return false;
+  if (definition.block === inst.block) return Number(definition.row) <= Number(inst.row);
+  const dominators = projected.dominators?.[inst.block];
+  return dominators instanceof Set && dominators.has(definition.block);
+}
+
+function abiRegisterDescriptors(argument) {
+  if (!argument || typeof argument !== 'object') return [];
+  if (argument.reg != null) return [{ reg: String(argument.reg), bits: Number(argument.bits ?? 0) || null }];
+  if (!Array.isArray(argument.regs)) return [];
+  return argument.regs.filter(Boolean).map((reg) => ({ reg: String(reg), bits: Number(argument.bits ?? 0) || null }));
+}
+
+function projectedAbiArgumentValue(argument, inst, projected) {
+  if (argument && typeof argument === 'object' && Array.isArray(argument.uses) && argument.kind) {
+    return valueDominatesInstruction(argument, inst, projected) ? argument : null;
+  }
+  const descriptors = abiRegisterDescriptors(argument);
+  for (const descriptor of descriptors) {
+    const candidates = projected.values
+      .filter((value) => value.reg === descriptor.reg && valueDominatesInstruction(value, inst, projected))
+      .sort((left, right) => {
+        const leftWidth = descriptor.bits != null && left.bits === descriptor.bits ? 1 : 0;
+        const rightWidth = descriptor.bits != null && right.bits === descriptor.bits ? 1 : 0;
+        if (leftWidth !== rightWidth) return rightWidth - leftWidth;
+        if ((left.version ?? 0) !== (right.version ?? 0)) return (right.version ?? 0) - (left.version ?? 0);
+        return (right.id ?? 0) - (left.id ?? 0);
+      });
+    if (candidates.length) return candidates[0];
+  }
+  return null;
+}
+
+/**
+ * MachineEffects keeps calls ABI-neutral. When the integration boundary supplies
+ * an ABI adapter, #665 stores the adapter's physical argument locations on the
+ * projected call. Bind those locations to already-projected state values only
+ * when the value definition dominates the call (or is an incoming ARG). This is
+ * compatibility projection of ABI knowledge; no instruction text is decoded and
+ * no register name is embedded in generic code.
+ */
+function attachAbiProjectedArguments(projected) {
+  for (const inst of projected.instructions) {
+    if (inst.op !== V1_OP.CALL || inst.args?.length || !Array.isArray(inst.callArguments)) continue;
+    const seen = new Set();
+    const values = [];
+    for (const argument of inst.callArguments) {
+      const value = projectedAbiArgumentValue(argument, inst, projected);
+      if (!value || seen.has(value.id)) continue;
+      seen.add(value.id);
+      values.push(value);
+    }
+    if (!values.length) continue;
+    inst.args = values.map(makeArg);
+    for (const value of values) addUse(value, inst);
+    inst.extra.abiProjectedArgumentValueIds = values.map((value) => value.semanticSsaValueId ?? value.semanticValueId ?? value.id);
   }
 }
 
@@ -251,7 +314,7 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
     semanticIrVersion: ir.contractVersion,
     compat: {
       projection: 'semantic-ir-v2-to-v1',
-      version: '1.1.0',
+      version: '1.1.1',
       semanticFunctionId: ir.functionId,
       scalarSsa: !!ssa,
       memorySsa: !!memorySsa,
@@ -337,6 +400,7 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
     if (!list) list = projected.compat.semanticNodeToLegacyInstructionIds[semanticId] = [];
     list.push(inst.id);
   }
+  attachAbiProjectedArguments(projected);
   populateLegacyArguments(projected);
   projected.memorySafety = memorySafetySummary(projected);
   projected.defUse = () => projected.values;
@@ -344,7 +408,7 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
 }
 
 export const SEMANTIC_IR_V2_V1_COMPAT = Object.freeze({
-  contractVersion: '1.1.0',
+  contractVersion: '1.1.1',
   legacyOps: V1_OP,
   legacyValueKinds: V1_VK,
   legacyMemoryKinds: V1_MK,
