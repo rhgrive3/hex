@@ -21,7 +21,7 @@ export async function startChatGPTUserscript(options = {}) {
 
   cleanupPreviousSession();
 
-  if (readTrustedEmbedMode() === LEGACY_MODE) {
+  if (readEmbedMode() === LEGACY_MODE) {
     const result = await startLegacy({ bridge });
     return Object.freeze({ mode: LEGACY_MODE, ...result });
   }
@@ -220,6 +220,8 @@ function readProvider() {
   try { return localStorage.getItem(PROVIDER_KEY) === 'gemini' ? 'gemini' : 'chatgpt'; }
   catch { return 'chatgpt'; }
 }
+
+function readEmbedMode() { return readTrustedEmbedMode(); }
 
 function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 
