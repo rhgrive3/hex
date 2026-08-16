@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile, readdir, stat } from 'node:fs/promises';
 import { webcrypto } from 'node:crypto';
 import { gunzipSync } from 'node:zlib';
+import { toExactArrayBuffer } from '../js/userscript/array-buffer.js';
 import {
   publicRuntimeManifest, signRuntimeSession, validateRuntimeBootstrap, verifyRuntimeSession,
 } from '../js/userscript/runtime-security.js';
@@ -50,12 +51,33 @@ assert.match(buildScript, /createCipheriv\('aes-256-gcm'/);
 assert.match(buildScript, /gzipSync/);
 assert.match(buildScript, /MAX_LOADER_BYTES/);
 assert.match(buildScript, /bundleCss/);
+assert.match(loaderSource, /async function fetchJson/);
 assert.match(loaderSource, /async function fetchBytes/);
 assert.match(loaderSource, /credentials:\s*'omit'/);
+assert.match(loaderSource, /mode:\s*'cors'/);
+assert.match(loaderSource, /cache:\s*'no-store'/);
+assert.match(loaderSource, /runtime bootstrap fetch/);
+assert.match(loaderSource, /protected runtime fetch/);
+assert.match(loaderSource, /protected runtime decompress/);
+assert.match(loaderSource, /protected runtime Blob creation/);
+assert.match(loaderSource, /protected runtime import/);
+assert.match(loaderSource, /__HEX_SECURE_LOADER__/);
+assert.match(loaderSource, /hexLoaderVersion/);
+assert.match(loaderSource, /toExactArrayBuffer/);
+assert.match(loaderSource, /SHA-256 integrity digest/);
 assert.doesNotMatch(loaderSource, /responseType:\s*'arraybuffer'/);
+assert.doesNotMatch(loaderSource, /GM\?\.xmlHttpRequest|GM_xmlhttpRequest|gmTextRequest|gmJson/);
+assert.doesNotMatch(loaderSource, /subtle\.digest\('SHA-256',\s*bytes\)/);
 assert.doesNotMatch(embedded.PROTECTED_HOST.css, /@import\b/);
 assert.match(embedded.PROTECTED_HOST.scopedCss, /@scope \(#hex-userscript-host\)/);
 assert.doesNotMatch(embedded.PROTECTED_HOST.scopedCss, /(?:^|[},])\s*(?:html|body)(?=[\s.#:[,{>+~])/);
+
+const backing = new Uint8Array([9, 1, 2, 3, 8]);
+const exact = toExactArrayBuffer(backing.subarray(1, 4));
+assert.ok(exact instanceof ArrayBuffer);
+assert.notEqual(exact, backing.buffer);
+assert.deepEqual([...new Uint8Array(exact)], [1, 2, 3]);
+assert.equal(toExactArrayBuffer(exact), exact);
 
 assert.match(template, /^\/\/ ==UserScript==/);
 assert.match(template, /@match\s+https:\/\/chatgpt\.com\/\*/);
