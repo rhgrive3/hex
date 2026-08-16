@@ -21,6 +21,20 @@ jobs:
         with:
           node-version: 22
       - run: npm ci
+      - name: Apply current final repair script
+        shell: python
+        run: |
+          from pathlib import Path
+          lines = Path('.github/workflows/p3-final-public-ir-repair-v7.yml').read_text().splitlines()
+          marker = '      - name: Apply final projection and address-lineage value-chain repair'
+          start = lines.index(marker)
+          run_index = next(i for i in range(start + 1, len(lines)) if lines[i] == '        run: |')
+          body = []
+          for line in lines[run_index + 1:]:
+              if line.startswith('      - name:'):
+                  break
+              body.append(line[10:] if line.startswith('          ') else line)
+          exec(compile('\n'.join(body), '<phase3-final-repair>', 'exec'), {'__name__':'__main__'})
       - name: Print compact issue 430 provenance
         shell: bash
         run: |
