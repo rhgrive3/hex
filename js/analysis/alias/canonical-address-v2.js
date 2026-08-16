@@ -267,8 +267,8 @@ function sameRoot(left, right) {
 
 function mergeAlternatives(proofs, reason) {
   if (!proofs.length) return unknown(reason);
-  if (proofs.some((proof) => proof.kind === 'unknown' || proof.kind === 'constant')) return unknown(reason);
   if (proofs.length === 1) return proofs[0];
+  if (proofs.some((proof) => proof.kind === 'unknown' || proof.kind === 'constant')) return unknown(reason);
   if (proofs.every((proof) => proof.kind === 'absolute')) {
     const first = proofs[0];
     return proofs.every((proof) => proof.addressSpace === first.addressSpace && proof.address === first.address)
