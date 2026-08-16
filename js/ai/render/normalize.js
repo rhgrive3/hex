@@ -268,10 +268,33 @@ function normalizeActivity(list) {
       label,
       detail: item.count != null ? String(item.count) : text(item.detail || '', 120),
       error: item.errorType ? text(item.errorType, 60) : null,
+      diagnostics: normalizeDiagnostics(item),
     });
   }
   return out.slice(-40);
 }
+
+/*
+ * `provider_error` alone cannot be acted on: every browser-bridge guard reduces
+ * to it. Carry the closed-vocabulary subtype through to the activity view so a
+ * production report names the guard and the deployed runtime that produced it.
+ * Only token-shaped values survive, so no DOM or prompt text can reach the UI.
+ */
+function normalizeDiagnostics(item) {
+  const out = {};
+  for (const [key, pattern] of DIAGNOSTIC_FIELDS) {
+    const value = item[key];
+    if (typeof value === 'string' && pattern.test(value)) out[key] = value;
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+const DIAGNOSTIC_FIELDS = Object.freeze([
+  ['provider', /^[a-z][a-z0-9-]{0,63}$/],
+  ['bridgeCode', /^[A-Za-z0-9_.-]{1,64}$/],
+  ['bridgeStage', /^[a-z][a-z0-9-]{0,63}$/],
+  ['runtimeBuildId', /^[a-f0-9]{1,64}$/i],
+]);
 
 /**
  * Raw AI result (any schema version) -> the model every renderer consumes.

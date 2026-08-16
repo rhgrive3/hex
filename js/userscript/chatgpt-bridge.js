@@ -1,5 +1,5 @@
 import {
-  ChatGPTDOMAdapter, ChatGPTConversationRouter, ChatGPTModelController,
+  ChatGPTBridgeError, ChatGPTDOMAdapter, ChatGPTConversationRouter, ChatGPTModelController,
   ChatGPTTurnController,
 } from './chatgpt-adapter.js';
 
@@ -17,7 +17,7 @@ export function installChatGPTWebBridge(options = {}) {
 
   const bridge = {
     async request(prompt, requestOptions = {}) {
-      if (active) throw new Error('ChatGPT Web is already handling another Hex turn.');
+      if (active) throw new ChatGPTBridgeError('already-active', 'ChatGPT Web is already handling another Hex turn.', null, 'bridge');
       const controller = new AbortController();
       const externalSignal = requestOptions.signal;
       const onExternalAbort = () => controller.abort(externalSignal?.reason || 'cancelled');

@@ -10,6 +10,9 @@ await testCollapsibleUserMessageTextExtraction();
 await testTurnCompletionAndStaleProtection();
 await testRolelessTurnFallback();
 await testCancelTimeoutAndSingleInflight();
+await testTransientConversationGapIsNotASwitch();
+await testHistoricalErrorTurnDoesNotPoisonARequest();
+await testBridgeErrorsCarryTheirStage();
 console.log('chatgpt-web-runtime: ok');
 
 async function testConversationRouting() {
@@ -285,12 +288,107 @@ function realChatGPTTurnFixture(role, id, text) {
 function option(label, click) { return { label, model: /Sol/.test(label) ? 'chatgpt-web/sol' : null, reasoning: /High/.test(label) ? 'high' : null, node: { click } }; }
 function conversationLink(id, click) { return { getAttribute: (name) => name === 'href' ? `/c/${id}` : null, click }; }
 function memoryStorage() { const values = new Map(); return { getItem: (key) => values.get(key) || null, setItem: (key, value) => values.set(key, value) }; }
+async function testTransientConversationGapIsNotASwitch() {
+  /*
+   * ChatGPT can briefly report no conversation at all while its SPA router is
+   * between routes. "Unknown" is not "somewhere else": inventing a conversation
+   * switch from a missing reading throws away a healthy, in-flight model turn.
+   */
+  const conversation = { id: 'alpha', url: 'https://chatgpt.com/c/alpha' };
+  const state = { generating: false, assistants: [], users: [], conversation };
+  const adapter = turnAdapter(state, () => {
+    state.users.push({ id: 'hex-user', text: 'prompt' });
+    state.generating = true;
+    setTimeout(() => { state.conversation = null; }, 4);
+    setTimeout(() => { state.conversation = conversation; }, 12);
+    setTimeout(() => { state.assistants.push({ id: 'new', text: '{"type":"final"}' }); state.generating = false; }, 20);
+  });
+  const result = await new ChatGPTTurnController(adapter, { quietMs: 5, pollMs: 2, startTimeoutMs: 40 })
+    .run('prompt', { timeoutMs: 400, expectedConversation: conversation });
+  assert.equal(result.turnId, 'new');
+  assert.equal(result.conversation.id, 'alpha');
+
+  /* A different, concretely identified conversation is still a hard failure. */
+  const switched = { generating: false, assistants: [], users: [], conversation };
+  const switchedAdapter = turnAdapter(switched, () => {
+    switched.users.push({ id: 'hex-user', text: 'prompt' });
+    switched.generating = true;
+    setTimeout(() => { switched.conversation = { id: 'beta', url: 'https://chatgpt.com/c/beta' }; }, 4);
+  });
+  await assert.rejects(
+    new ChatGPTTurnController(switchedAdapter, { quietMs: 5, pollMs: 2, startTimeoutMs: 40 }).run('prompt', { timeoutMs: 200, expectedConversation: conversation }),
+    (error) => error.code === 'conversation-switched' && error.stage === 'turn-controller',
+  );
+}
+
+async function testHistoricalErrorTurnDoesNotPoisonARequest() {
+  /*
+   * A conversation keeps every failed turn in the DOM forever. Only an error
+   * marker inside a turn created by THIS request may abort it; a failure from
+   * an earlier turn must not.
+   */
+  const conversation = { id: 'alpha', url: 'https://chatgpt.com/c/alpha' };
+  const historical = errorTurn('conversation-turn-old', 'Something went wrong. Try again.');
+  const state = { generating: false, assistants: [], users: [], turns: [historical], conversation, scopes: [] };
+  const adapter = turnAdapter(state, () => {
+    state.users.push({ id: 'hex-user', text: 'prompt' });
+    state.turns.push({ id: 'hex-user', text: 'prompt', node: plainNode('hex-user') });
+    state.generating = true;
+    setTimeout(() => {
+      state.assistants.push({ id: 'new', text: '{"type":"final"}' });
+      state.turns.push({ id: 'new', text: '{"type":"final"}', node: plainNode('new') });
+      state.generating = false;
+    }, 8);
+  });
+  const result = await new ChatGPTTurnController(adapter, { quietMs: 5, pollMs: 2, startTimeoutMs: 40 })
+    .run('prompt', { timeoutMs: 400, expectedConversation: conversation });
+  assert.equal(result.turnId, 'new');
+  assert.ok(state.scopes.length, 'the controller must ask for a turn-scoped error reading');
+  assert.ok(state.scopes.every((scope) => Array.isArray(scope)), 'error detection must be scoped to explicit turn nodes');
+  assert.ok(state.scopes.every((scope) => !scope.includes(historical.node)), 'a historical error turn must never be in the active error scope');
+
+  /* An error marker inside the live response is still fatal. */
+  const live = { generating: false, assistants: [], users: [], turns: [], conversation, scopes: [], liveError: false };
+  const liveAdapter = turnAdapter(live, () => {
+    live.users.push({ id: 'hex-user', text: 'prompt' });
+    live.turns.push({ id: 'hex-user', text: 'prompt', node: plainNode('hex-user') });
+    live.generating = true;
+    setTimeout(() => { live.liveError = true; }, 4);
+  });
+  await assert.rejects(
+    new ChatGPTTurnController(liveAdapter, { quietMs: 5, pollMs: 2, startTimeoutMs: 40 }).run('prompt', { timeoutMs: 200, expectedConversation: conversation }),
+    (error) => error.code === 'response-error' && error.stage === 'turn-controller',
+  );
+}
+
+async function testBridgeErrorsCarryTheirStage() {
+  const adapter = { composer: () => null };
+  await assert.rejects(
+    new ChatGPTTurnController(adapter, { startTimeoutMs: 5, pollMs: 2 }).run('prompt', { timeoutMs: 40 }),
+    (error) => error.code === 'composer-not-found' && error.stage === 'turn-controller',
+  );
+  const router = new ChatGPTConversationRouter({ conversation: () => null, newChatButton: () => null, all: () => [] }, { storage: memoryStorage() });
+  await assert.rejects(router.route(''), (error) => error.code === 'session-required' && error.stage === 'conversation-router');
+  await assert.rejects(router.route('key'), (error) => error.code === 'new-chat-unavailable' && error.stage === 'conversation-router');
+}
+
+function plainNode(id) { return { id, querySelectorAll: () => [], matches: () => false }; }
+function errorTurn(id, text) {
+  const node = { id, matches: (selector) => selector.includes('conversation-turn-error'), querySelectorAll: () => [] };
+  return { id, text, node };
+}
+
 function turnAdapter(state, onSend) {
   const composer = { value: '' };
   return {
     composer: () => composer, setComposerText: (_node, text) => { composer.value = text; }, composerText: () => composer.value,
     sendButton: () => ({ disabled: false, getAttribute: () => null, click: () => { composer.value = ''; onSend(); } }),
     assistantTurns: () => state.assistants, userTurns: () => state.users, conversationTurns: () => state.turns || [], isGenerating: () => state.generating,
-    errorState: () => null, conversation: () => state.conversation,
+    errorState: (scopeNodes) => {
+      if (state.scopes) state.scopes.push(scopeNodes);
+      if (state.liveError) return 'Something went wrong. Try again.';
+      return null;
+    },
+    conversation: () => state.conversation,
   };
 }
