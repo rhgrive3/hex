@@ -1,0 +1,73 @@
+name: Phase 3 final public IR repair v2
+
+on:
+  push:
+    branches:
+      - hex/p3-semantic-ir-integration
+    paths:
+      - '.github/workflows/p3-final-public-ir-repair-v2.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: hex/p3-semantic-ir-integration
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Wire validated public-shape finalizer into the compatibility projection
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('js/semantics/compat/semantic-ir-v2-to-v1.js')
+          s = p.read_text()
+          imp = "import { finalizeLegacyProjection } from './semantic-ir-v2-to-v1-finalize.js';\n"
+          if imp not in s:
+              anchor = "import { projectNode } from './semantic-ir-v2-to-v1-nodes.js';\n"
+              if anchor not in s: raise SystemExit('projection import anchor missing')
+              s = s.replace(anchor, anchor + imp)
+          old = "  attachAbiProjectedArguments(projected);\n  populateLegacyArguments(projected);"
+          new = "  attachAbiProjectedArguments(projected);\n  finalizeLegacyProjection(projected);\n  populateLegacyArguments(projected);"
+          if new not in s:
+              if old not in s: raise SystemExit('finalization call anchor missing')
+              s = s.replace(old, new)
+          s = s.replace("version: '1.1.1'", "version: '1.1.2'")
+          s = s.replace("contractVersion: '1.1.1'", "contractVersion: '1.1.2'")
+          p.write_text(s)
+      - name: Focused legacy public IR regression
+        run: node tests/ir.mjs
+      - name: Phase 3 semantic exit proof
+        run: npm run semantic-v2:test
+      - name: Core semantic and compiler regressions
+        run: |
+          npm run effects:test
+          npm run core:test
+          npm run invariants:test
+          npm run migration:test
+          npm run semantic:test
+          npm run decompiler:test
+          npm run compiler-truth
+      - name: Rebuild exact userscript artifact
+        run: npm run userscript:build
+      - name: Commit validated repair and remove temporary workflows
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm -f .github/workflows/p3-final-public-ir-repair-v2.yml
+          git rm -f .github/workflows/p3-final-public-ir-repair.yml || true
+          git rm -f .github/workflows/p3-debug-cutover-ir.yml || true
+          git rm -f .github/workflows/p3-final-validation.yml || true
+          git add js/semantics/compat/semantic-ir-v2-to-v1-finalize.js js/semantics/compat/semantic-ir-v2-to-v1.js userscript/hex.user.template.js
+          git diff --cached --check
+          git commit -m "Phase 3: restore legacy public IR shape after v2 cutover"
+          git push origin HEAD:hex/p3-semantic-ir-integration
