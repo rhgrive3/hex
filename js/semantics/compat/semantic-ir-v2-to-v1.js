@@ -275,55 +275,6 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
   }
   projected.memorySafety = memorySafetySummary(projected);
   projected.defUse = () => projected.values;
-
-  const cmpSel = projected.instructions.filter((inst) => inst.op === V1_OP.CMP || inst.op === V1_OP.SEL);
-  const registerWrites = projected.instructions.filter((inst) => inst.extra?.stateWrite?.physicalIdentity?.kind === 'register');
-  if (cmpSel.length && registerWrites.length) {
-    const shapeValue = (value, depth = 0, active = new Set()) => {
-      if (!value) return null;
-      const base = {
-        reg: value.reg,
-        bits: value.bits,
-        const: value.const == null ? null : String(value.const),
-        semanticValueId: value.semanticValueId,
-        semanticSsaValueId: value.semanticSsaValueId,
-      };
-      if (!value.def || depth >= 3 || active.has(value.id)) return base;
-      active.add(value.id);
-      base.def = {
-        op: value.def.op,
-        sub: value.def.sub,
-        row: value.def.row,
-        localPhysicalViewProjection: value.def.extra?.localPhysicalViewProjection ?? null,
-        publicStateIdentity: value.def.extra?.publicStateIdentity ?? null,
-        args: (value.def.args || []).map((arg) => shapeValue(arg?.value, depth + 1, active)),
-      };
-      active.delete(value.id);
-      return base;
-    };
-    const registerState = projected.instructions
-      .filter((inst) => inst.extra?.stateRead?.physicalIdentity?.kind === 'register' || inst.extra?.stateWrite?.physicalIdentity?.kind === 'register')
-      .map((inst) => ({
-        kind: inst.extra?.stateWrite ? 'write' : 'read',
-        row: inst.row,
-        publicStateIdentity: inst.extra?.publicStateIdentity ?? null,
-        localPhysicalViewProjection: inst.extra?.localPhysicalViewProjection ?? null,
-        reason: inst.extra?.reason ?? null,
-        dst: shapeValue(inst.dst),
-        args: (inst.args || []).map((arg) => shapeValue(arg?.value)),
-      }));
-    console.log('V1_STATE_CMPSEL_DIAG ' + JSON.stringify({
-      functionId: projected.functionId,
-      registerState,
-      cmpSel: cmpSel.map((inst) => ({
-        op: inst.op,
-        row: inst.row,
-        cond: inst.cond ?? null,
-        dst: shapeValue(inst.dst),
-        args: (inst.args || []).map((arg) => shapeValue(arg?.value)),
-      })),
-    }));
-  }
   return projected;
 }
 
