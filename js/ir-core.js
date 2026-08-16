@@ -241,38 +241,9 @@ function replaceLegacyArg(inst, from, to) {
 }
 
 /*
- * A W-register read is projected as physical X-state read + exact truncation.
- * If the reaching X state was itself an exact zero-extension of a 32-bit value,
- * trunc(zext(v32)) is exactly v32. Collapse only that proven compatibility view
- * so repeated W reads of one SSA state reuse the same public v1 value identity.
- */
-function canonicalizeExactViewReads(projected) {
-  for (const trunc of projected.instructions ?? []) {
-    if (trunc.op !== LEGACY_OP.MOV || trunc.sub !== 'trunc' || !trunc.dst || trunc.args?.length !== 1) continue;
-    const readValue = trunc.args[0]?.value;
-    const read = readValue?.def;
-    if (read?.op !== LEGACY_OP.MOV || !read.extra?.stateRead || read.args?.length !== 1) continue;
-    const stateValue = read.args[0]?.value;
-    const stateWrite = stateValue?.def;
-    if (stateWrite?.op !== LEGACY_OP.MOV || !stateWrite.extra?.stateWrite || stateWrite.args?.length !== 1) continue;
-    const written = stateWrite.args[0]?.value;
-    const extension = written?.def;
-    if (extension?.op !== LEGACY_OP.MOV || extension.sub !== 'zext' || extension.args?.length !== 1) continue;
-    const inner = extension.args[0]?.value;
-    if (!inner || inner.bits !== trunc.dst.bits) continue;
-    for (const use of [...(trunc.dst.uses ?? [])]) {
-      if (use === trunc) continue;
-      replaceLegacyArg(use, trunc.dst, inner);
-    }
-    trunc.dst.compatCanonicalValueId = inner.id;
-  }
-}
-
-/*
- * MachineEffects keeps calls ABI-neutral, so generic SSA correctly treats the
- * call's unknown state category conservatively. At this explicitly AAPCS64
- * compatibility boundary we can recover only states the ABI proves preserved.
- * Memory clobber information is intentionally untouched.
+ * Generic SSA is deliberately ABI-neutral and therefore treats an unknown call's
+ * state category as a broad clobber. At this AAPCS64 facade we may recover only
+ * a callee-preserved physical register state. Memory effects are not changed.
  */
 function restoreAapcs64PreservedStateReads(projected) {
   const callerSaved = new Set(AAPCS64_ABI.callerSaved().map(String));
@@ -353,10 +324,8 @@ function canonicalAddressBase(value, active = new Set()) {
 }
 
 /*
- * MemorySSA alias conclusions remain authoritative. This postpass restores only
- * the legacy public location shape when ABI-preserved SP provenance or an exact
- * loaded-pointer address already proves the base+constant form. memUse/memKills
- * are never removed or upgraded.
+ * MemorySSA alias conclusions remain authoritative. This restores only the
+ * legacy public location shape from already-proven precise address metadata.
  */
 function restoreAapcs64PublicLocations(projected) {
   for (const inst of projected.instructions ?? []) {
@@ -425,12 +394,60 @@ function attachAapcs64CallArguments(projected) {
   }
 }
 
+function valueMayCarryStackAddress(value) {
+  const proof = legacyStackPointerProvenanceOf(value);
+  return proof?.must === true || proof?.may === true;
+}
+
+function storeMayEscapeStackAddress(inst) {
+  return inst?.op === LEGACY_OP.STORE && valueMayCarryStackAddress(inst.args?.[0]?.value);
+}
+
+/*
+ * Keep canonical MemorySSA conservative across unknown calls. For the legacy-v1
+ * compatibility shape only, reconnect one same-block stack load to its previous
+ * stack store when the address of caller-local stack storage is proven not to
+ * escape across any intervening call/barrier. The canonical memUse remains the
+ * call-clobber node, so this cannot turn MemorySSA's unknown into NoAlias.
+ */
+function restoreProvenNoEscapeStackForwarding(projected) {
+  for (const load of projected.instructions ?? []) {
+    if (load.op !== LEGACY_OP.LOAD || load.loc?.kind !== LEGACY_MK.STACK || load.reachingStore) continue;
+    const block = projected.blocks?.[load.block];
+    if (!block) continue;
+    const priorStores = (block.insts ?? [])
+      .filter((inst) => inst.op === LEGACY_OP.STORE && inst.loc?.kind === LEGACY_MK.STACK
+        && inst.loc.key === load.loc.key && Number(inst.row) < Number(load.row))
+      .sort((left, right) => Number(right.row) - Number(left.row));
+    const store = priorStores[0] ?? null;
+    if (!store) continue;
+    let blocked = false;
+    const evidence = [];
+    for (const inst of block.insts ?? []) {
+      if (Number(inst.row) <= Number(store.row) || Number(inst.row) >= Number(load.row)) continue;
+      if (inst.op === LEGACY_OP.UNKNOWN) { blocked = true; break; }
+      if (inst.op === LEGACY_OP.STORE) {
+        if (inst.loc?.key === load.loc.key || storeMayEscapeStackAddress(inst)) { blocked = true; break; }
+        continue;
+      }
+      if (inst.op !== LEGACY_OP.CALL) continue;
+      if ((inst.args ?? []).some((arg) => valueMayCarryStackAddress(arg?.value))) { blocked = true; break; }
+      evidence.push({ callInstructionId:inst.id, row:inst.row, proof:'no-stack-derived-call-argument' });
+    }
+    if (blocked) continue;
+    load.reachingStore = store;
+    load.extra = {
+      ...(load.extra ?? {}),
+      compatNoEscapeStackForwarding: true,
+      compatNoEscapeStackEvidence: evidence,
+      canonicalMemoryUsePreserved: load.memUse?.definitionId ?? null,
+    };
+  }
+}
+
 /**
  * Semantic IR return nodes carry the architectural control target (for A64 RET,
  * typically the link register). That is not a source-language return value.
- * Match the legacy AAPCS64 facade: expose a return data value only when function
- * prototype/return-type evidence declares one, then bind that ABI location to an
- * already-existing dominating projected value. No value is synthesized.
  */
 function attachAapcs64FunctionReturns(projected, adapter) {
   const result = adapter?.classifyFunctionReturn?.() ?? null;
@@ -516,11 +533,11 @@ function buildV2CompatFromLegacyModel(model, opts = {}) {
       ...(opts.compatOptions ?? {}),
     },
   });
-  canonicalizeExactViewReads(result.legacyV1);
   restoreAapcs64PreservedStateReads(result.legacyV1);
   restoreAapcs64PublicLocations(result.legacyV1);
   propagateExactLegacyConstants(result.legacyV1);
   attachAapcs64CallArguments(result.legacyV1);
+  restoreProvenNoEscapeStackForwarding(result.legacyV1);
   attachAapcs64FunctionReturns(result.legacyV1, abiAdapter);
   lastSemanticV2Instrumentation = result.instrumentation;
   return result.legacyV1;
