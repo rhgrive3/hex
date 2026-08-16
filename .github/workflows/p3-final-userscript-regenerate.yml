@@ -1,0 +1,44 @@
+name: Phase 3 final userscript regenerate
+
+on:
+  push:
+    branches:
+      - hex/p3-semantic-ir-integration
+    paths:
+      - '.github/workflows/p3-final-userscript-regenerate.yml'
+      - 'js/**'
+      - 'scripts/build-userscript.mjs'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'userscript/hex.user.template.js'
+
+permissions:
+  contents: write
+
+jobs:
+  regenerate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Regenerate exact protected userscript artifact
+        run: npm run userscript:build
+      - name: Commit exact generated template if changed
+        shell: bash
+        run: |
+          if git diff --quiet -- userscript/hex.user.template.js; then
+            echo "userscript template already current"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add userscript/hex.user.template.js
+          git commit -m "Phase 3: regenerate userscript after final main sync"
+          git push origin HEAD:hex/p3-semantic-ir-integration
