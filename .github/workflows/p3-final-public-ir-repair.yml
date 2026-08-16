@@ -1,6 +1,11 @@
 name: Phase 3 final public IR compatibility repair
 
 on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/p3-final-public-ir-repair.yml'
+      - 'js/semantics/compat/**'
   push:
     branches:
       - hex/p3-semantic-ir-integration
@@ -12,6 +17,7 @@ permissions:
 
 jobs:
   repair:
+    if: github.event_name == 'push' || github.head_ref == 'hex/p3-semantic-ir-integration'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
