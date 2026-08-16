@@ -45,6 +45,20 @@ export function immediateOf(op) {
   try { return BigInt(op.value); } catch { return null; }
 }
 
+function decodedAbsoluteTargetOf(op) {
+  const immediate = immediateOf(op);
+  if (immediate != null) return immediate;
+  // Some current decoded-model fixtures retain an absolute direct target as a
+  // typed `other` operand without Capstone's leading '#'. Normalize that decode
+  // representation here, inside the ARM64 target boundary, before MachineEffects
+  // are created. Generic semantic/SSA/compat consumers never inspect instruction
+  // text and the resulting control effect remains the single semantic truth.
+  if (!op || op.k !== 'other') return null;
+  const text = String(op.text ?? '').trim();
+  if (!/^#?(?:0x[0-9a-f]+|\d+)$/i.test(text)) return null;
+  try { return BigInt(text.replace(/^#/, '')); } catch { return null; }
+}
+
 export function conditionOf(instruction) {
   const operand = (instruction?.ops || []).find((op) => op?.k === 'cond');
   if (operand?.text) return String(operand.text).toLowerCase();
@@ -60,7 +74,7 @@ export function directTargetOf(instruction, kind = 'branch') {
   }
   const ops = instruction?.ops || [];
   for (let i = ops.length - 1; i >= 0; i--) {
-    const value = immediateOf(ops[i]);
+    const value = decodedAbsoluteTargetOf(ops[i]);
     if (value != null) return value;
   }
   return null;
