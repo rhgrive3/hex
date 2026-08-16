@@ -14,6 +14,7 @@ on:
       - 'package-lock.json'
       - 'index.html'
       - 'css/**'
+      - 'tests/userscript-*.mjs'
       - '.github/workflows/userscript-host.yml'
   push:
     branches: [main]
@@ -29,6 +30,7 @@ on:
       - 'package-lock.json'
       - 'index.html'
       - 'css/**'
+      - 'tests/userscript-*.mjs'
       - '.github/workflows/userscript-host.yml'
 
 permissions:
@@ -46,6 +48,8 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Opaque sandbox storage contract
+        run: node tests/userscript-sandbox-storage.mjs
       - name: Build and userscript tests
         run: npm run userscript:test
       - name: AI and worker regressions
@@ -55,3 +59,27 @@ jobs:
           node tests/worker-classic-harness.mjs
       - name: Verify tiny committed loader is current
         run: git diff --exit-code -- userscript/hex.user.template.js
+
+  embed-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Build secure userscript runtime
+        run: npm run userscript:build
+      - name: Install pinned browser engines
+        run: |
+          npm install --no-save --save-exact playwright@1.55.0
+          npx --no-install playwright install-deps chromium webkit
+          npx --no-install playwright install chromium webkit
+      - name: Verify opaque srcdoc module and storage execution
+        run: node tests/userscript-srcdoc-probe.mjs
+      - name: Run full secure sandbox startup
+        run: node tests/userscript-sandbox-browser-e2e.mjs

@@ -17,6 +17,12 @@ export function normalizeEmbedGeneration(value) {
   return String(number);
 }
 
+export function normalizeSandboxToken(value) {
+  const text = String(value ?? '').trim();
+  if (!/^[a-f0-9]{64}$/i.test(text)) throw new TypeError('Invalid Hex sandbox token.');
+  return text.toLowerCase();
+}
+
 export function withEmbedGeneration(src, generation) {
   const url = new URL(String(src || ''));
   url.searchParams.set(EMBED_GENERATION_PARAM, normalizeEmbedGeneration(generation));
@@ -29,13 +35,15 @@ export function readEmbedGeneration(locationRef = globalThis.location) {
   try { return normalizeEmbedGeneration(raw); } catch { return null; }
 }
 
-export function createEmbedBootstrapMessage(generation) {
-  return Object.freeze({
+export function createEmbedBootstrapMessage(generation, sandboxToken = null) {
+  const message = {
     type: EMBED_BOOTSTRAP_TYPE,
     protocol: EMBED_PROTOCOL,
     version: EMBED_PROTOCOL_VERSION,
     generation: normalizeEmbedGeneration(generation),
-  });
+  };
+  if (sandboxToken != null) message.sandboxToken = normalizeSandboxToken(sandboxToken);
+  return Object.freeze(message);
 }
 
 export function announceEmbedChildBootstrapReady(options = {}) {
@@ -43,8 +51,9 @@ export function announceEmbedChildBootstrapReady(options = {}) {
   const parent = options.parent || windowRef?.parent;
   const generation = normalizeEmbedGeneration(options.generation);
   const targetOrigins = normalizeOrigins(options.targetOrigins || CHATGPT_PARENT_ORIGINS);
+  const sandboxToken = options.sandboxToken == null ? null : normalizeSandboxToken(options.sandboxToken);
   if (!parent || parent === windowRef || typeof parent.postMessage !== 'function') throw new Error('Hex embed parent window is unavailable.');
-  const message = createEmbedBootstrapMessage(generation);
+  const message = createEmbedBootstrapMessage(generation, sandboxToken);
   let attempts = 0;
   for (const origin of targetOrigins) { parent.postMessage(message, origin); attempts += 1; }
   if (!attempts) throw new Error('Hex embed has no allowed parent origin.');
@@ -54,8 +63,10 @@ export function announceEmbedChildBootstrapReady(options = {}) {
 export function waitForEmbedChildBootstrap(options = {}) {
   const windowRef = options.windowRef || options.window || globalThis.window;
   const expectedSource = options.expectedSource;
-  const childOrigin = normalizeOrigin(options.childOrigin);
+  const opaque = options.opaque === true;
+  const childOrigin = opaque ? 'null' : normalizeOrigin(options.childOrigin);
   const generation = normalizeEmbedGeneration(options.generation);
+  const sandboxToken = opaque ? normalizeSandboxToken(options.sandboxToken) : null;
   const timeoutMs = normalizeTimeout(options.timeoutMs, DEFAULT_EMBED_BOOTSTRAP_TIMEOUT_MS);
   const signal = options.signal;
   if (!windowRef?.addEventListener || !windowRef?.removeEventListener) return Promise.reject(new TypeError('A parent window event target is required.'));
@@ -82,7 +93,8 @@ export function waitForEmbedChildBootstrap(options = {}) {
       if (!isPlainRecord(data) || data.type !== EMBED_BOOTSTRAP_TYPE) return;
       if (data.protocol !== EMBED_PROTOCOL || data.version !== EMBED_PROTOCOL_VERSION) return;
       if (String(data.generation) !== generation) return;
-      settle(null, Object.freeze({ generation, origin: childOrigin, source: expectedSource }));
+      if (sandboxToken && String(data.sandboxToken || '').toLowerCase() !== sandboxToken) return;
+      settle(null, Object.freeze({ generation, origin: childOrigin, source: expectedSource, sandboxToken }));
     }
     windowRef.addEventListener('message', onMessage);
     signal?.addEventListener?.('abort', onAbort, { once: true });

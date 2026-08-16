@@ -97,12 +97,19 @@ for (const field of ['HREF', 'ORIGIN', 'PATHNAME', 'SEARCH']) {
 assert.match(loaderSource, /__HEX_RUNTIME_HOST_LOCATION__\s*=\s*RUNTIME_HOST_LOCATION/);
 assert.ok(loaderSource.indexOf('__HEX_RUNTIME_HOST_HREF__ = RUNTIME_HOST_LOCATION.href') < loaderSource.indexOf('import(blobUrl)'),
   'primitive host href must be published before protected runtime import');
-assert.match(protectedEntrySource, /runtimeLocationFromSnapshot\(runtimeHostSnapshotFromGlobals\(\)\)/,
-  'protected runtime must restore host identity from primitive globals before consulting Blob-world location');
+assert.match(loaderSource, /runtimeModule\.startProtectedRuntime\(/,
+  'loader must explicitly start the imported protected runtime');
+assert.match(loaderSource, /runtimeSourceProvider\(\)/,
+  'verified plaintext must be handed to the ChatGPT sandbox through a private provider closure');
+assert.match(protectedEntrySource, /runtimeLocationFromSnapshot\(options\.hostLocation \|\| runtimeHostSnapshotFromGlobals\(\)\)/,
+  'protected runtime must prefer the explicit pre-Blob host identity');
+assert.match(protectedEntrySource, /export async function startProtectedRuntime/);
 assert.match(protectedEntrySource, /startEmbedChildRuntime\(\{\s*cssText:\s*PROTECTED_HOST\.css,\s*location:\s*runtimeLocation\s*\}\)/);
 assert.doesNotMatch(protectedEntrySource, /globalThis\.document\?\.location\s*\|\|\s*globalThis\.location/,
   'protected entry must not directly re-read the post-import Blob-world location');
 assert.match(protectedEntrySource, /runtimeLocation\.origin\s*!==\s*apiOrigin/,
   'strict runtime origin matching must remain enforced for Worker contexts');
+assert.match(protectedEntrySource, /actualOrigin !== 'null'/,
+  'protected auto-start must be restricted to the opaque sandbox realm');
 
 console.log('userscript runtime host location: ok');
