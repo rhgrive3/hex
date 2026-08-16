@@ -46,7 +46,7 @@ function sameAbsoluteTarget(target, reference) {
  */
 function conditionalControlEffect(target, fallthrough, condition) {
   if (sameAbsoluteTarget(target, fallthrough)) {
-    return { kind:'branch', target:addressRef(target), degenerateCondition:condition };
+    return { kind:'branch', target:addressRef(target) };
   }
   return { kind:'conditional-branch', target:addressRef(target), fallthrough, condition };
 }
