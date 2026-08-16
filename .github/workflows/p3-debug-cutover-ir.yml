@@ -1,0 +1,41 @@
+name: Phase 3 cutover IR diagnostic
+
+on:
+  push:
+    branches:
+      - hex/p3-semantic-ir-integration
+    paths:
+      - '.github/workflows/p3-debug-cutover-ir.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  debug:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Dump minimal public IR fixtures
+        shell: bash
+        run: |
+          cat > /tmp/p3-debug.mjs <<'EOF'
+          import { buildSemanticModel } from './js/blocks.js';
+          import { buildIR } from './js/ir.js';
+          const BASE=0x100000000n;
+          function asm(lines){return lines.map((line,i)=>{const s=line.trim(),sp=s.indexOf(' ');return {row:i,address:BASE+BigInt(i)*4n,mn:sp<0?s:s.slice(0,sp),ops:sp<0?'':s.slice(sp+1).trim()};});}
+          function build(lines){const rowOfAddress=(addr)=>{const rel=addr-BASE;if(rel<0n||rel>=BigInt(lines.length)*4n)return null;return Number(rel/4n)};const model=buildSemanticModel(asm(lines),{startRow:0,endRow:lines.length-1,rowOfAddress});return buildIR(model,{rowOfAddress});}
+          const json=(x)=>JSON.stringify(x,(k,v)=>typeof v==='bigint'?`0x${v.toString(16)}n`:v,2);
+          function slim(ir){return {values:ir.values.map(v=>({id:v.id,kind:v.kind,reg:v.reg,stateKey:v.stateKey,version:v.version,const:v.const,label:v.label,def:v.def&&{id:v.def.id,op:v.def.op,sub:v.def.sub,row:v.def.row,semanticNodeId:v.def.semanticNodeId},uses:(v.uses||[]).map(u=>({id:u.id,op:u.op,sub:u.sub,row:u.row,semanticNodeId:u.semanticNodeId}))})),instructions:ir.instructions.map(i=>({id:i.id,op:i.op,sub:i.sub,row:i.row,dst:i.dst&&{id:i.dst.id,reg:i.dst.reg,kind:i.dst.kind,version:i.dst.version,const:i.dst.const},args:(i.args||[]).map(a=>a.value&&({id:a.value.id,reg:a.value.reg,kind:a.value.kind,version:a.value.version,const:a.value.const})),loc:i.loc,addr:i.addr,extra:i.extra&&{stateRead:i.extra.stateRead,publicStateIdentity:i.extra.publicStateIdentity,reachingStateSsaValueId:i.extra.reachingStateSsaValueId,entryStateRead:i.extra.entryStateRead,localPhysicalViewProjection:i.extra.localPhysicalViewProjection}})),locations:[...(ir.locations||new Map()).values()],stackSlots:ir.stackSlots,memorySafety:ir.memorySafety};}
+          console.log('=== SSA FIXTURE ===');
+          console.log(json(slim(build(['mov w8, #1','add w8, w8, #2','add w8, w8, #3','ret']))));
+          console.log('=== CONST FIXTURE ===');
+          console.log(json(slim(build(['mov w8, #1','add w8, w8, #2','lsl w8, w8, #3','ret']))));
+          console.log('=== STACK FIXTURE ===');
+          console.log(json(slim(build(['mov w8, #5','str w8, [sp, #0x8]','bl #0x100001000','ldr w9, [sp, #0x8]','ret']))));
+          EOF
+          node /tmp/p3-debug.mjs
