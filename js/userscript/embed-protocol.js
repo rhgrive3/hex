@@ -21,7 +21,8 @@ const VALID_KINDS = new Set(['request', 'result', 'error', 'cancel', 'control'])
 const CONTROL_READY = 'ready';
 const CONTROL_CLOSE = 'close';
 const DEFAULT_TIMEOUT_MS = 30000;
-const MAX_SEEN_REQUEST_IDS = 4096;
+const DEFAULT_REQUEST_ID_TTL_MS = 5 * 60 * 1000;
+const DEFAULT_RECENT_REQUEST_ID_LIMIT = 4096;
 const MAX_DETAILS_DEPTH = 4;
 const TOKEN_RE = /^[A-Za-z0-9._:~-]+$/;
 const NONCE_RE = /^[a-f0-9]{64}$/;
@@ -63,40 +64,65 @@ export function validateAttachEvent(event, options = {}) {
   });
 }
 
+export function sendEmbedReady(port, options = {}) {
+  assertUsablePort(port);
+  const nonce = String(options.nonce || '');
+  if (!validNonce(nonce)) throw rpcLocalError('RPC_INVALID_NONCE', 'Invalid embed nonce.');
+  safeStart(port);
+  const message = { ...envelope('control', createControlId('ready'), CONTROL_READY), nonce };
+  if (!safePost(port, message)) throw rpcLocalError('RPC_CLOSED', 'RPC port is not available.');
+  return message.id;
+}
+
+export function waitForEmbedReady(port, options = {}) {
+  assertUsablePort(port);
+  const nonce = String(options.nonce || '');
+  if (!validNonce(nonce)) return Promise.reject(rpcLocalError('RPC_INVALID_NONCE', 'Invalid embed nonce.'));
+  const timeoutMs = normalizeTimeout(options.timeoutMs, DEFAULT_TIMEOUT_MS);
+  const signal = options.signal;
+  if (signal?.aborted) return Promise.reject(abortError(signal.reason));
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let timer = null;
+    const detach = listenPort(port, onMessage);
+    const detachAbort = () => signal?.removeEventListener?.('abort', onAbort);
+
+    const settle = (error, value) => {
+      if (settled) return;
+      settled = true;
+      if (timer !== null) clearTimeout(timer);
+      detachAbort();
+      detach();
+      if (error) reject(error); else resolve(value);
+    };
+    const onAbort = () => settle(abortError(signal?.reason));
+
+    function onMessage(event) {
+      const message = event?.data;
+      if (!validEnvelopeBase(message) || message.kind !== 'control') return;
+      if (message.method === CONTROL_CLOSE) {
+        settle(rpcLocalError('RPC_REMOTE_CLOSED', safeMessage(message.reason, 'RPC peer closed.')));
+        return;
+      }
+      if (message.method !== CONTROL_READY || message.nonce !== nonce) return;
+      settle(null, Object.freeze({ id: message.id, protocol: EMBED_PROTOCOL, version: EMBED_PROTOCOL_VERSION, nonce }));
+    }
+
+    signal?.addEventListener?.('abort', onAbort, { once: true });
+    if (timeoutMs > 0) timer = setTimeout(() => settle(rpcLocalError('RPC_READY_TIMEOUT', 'RPC ready handshake timed out.')), timeoutMs);
+    safeStart(port);
+  });
+}
+
 export function createRpcClient(port, options = {}) {
   assertUsablePort(port);
   const timeoutMs = normalizeTimeout(options.timeoutMs, DEFAULT_TIMEOUT_MS);
-  const readyTimeoutMs = normalizeTimeout(options.readyTimeoutMs, timeoutMs);
-  const nonce = options.nonce == null ? null : String(options.nonce);
-  if (nonce !== null && !validNonce(nonce)) throw rpcLocalError('RPC_INVALID_NONCE', 'Invalid embed nonce.');
-
   const pending = new Map();
   let closed = false;
-  let readySettled = nonce === null;
-  let readyResolve;
-  let readyReject;
-  let readyTimer = null;
-  const ready = nonce === null
-    ? Promise.resolve()
-    : new Promise((resolve, reject) => { readyResolve = resolve; readyReject = reject; });
-
-  if (nonce !== null && readyTimeoutMs > 0) {
-    readyTimer = setTimeout(() => {
-      if (readySettled || closed) return;
-      readySettled = true;
-      readyReject(rpcLocalError('RPC_READY_TIMEOUT', 'RPC ready handshake timed out.'));
-    }, readyTimeoutMs);
-  }
 
   const detach = listenPort(port, onMessage);
   safeStart(port);
-
-  function finishReady(error = null) {
-    if (readySettled) return;
-    readySettled = true;
-    if (readyTimer !== null) { clearTimeout(readyTimer); readyTimer = null; }
-    if (error) readyReject(error); else readyResolve();
-  }
 
   function onMessage(event) {
     if (closed) return;
@@ -104,11 +130,7 @@ export function createRpcClient(port, options = {}) {
     if (!validEnvelopeBase(message)) return;
 
     if (message.kind === 'control') {
-      if (message.method === CONTROL_READY && nonce !== null && message.nonce === nonce) {
-        finishReady();
-      } else if (message.method === CONTROL_CLOSE) {
-        closeInternal('RPC_REMOTE_CLOSED', safeMessage(message.reason, 'RPC peer closed.'), false);
-      }
+      if (message.method === CONTROL_CLOSE) closeInternal('RPC_REMOTE_CLOSED', safeMessage(message.reason, 'RPC peer closed.'), false);
       return;
     }
 
@@ -126,8 +148,6 @@ export function createRpcClient(port, options = {}) {
   async function call(method, params, callOptions = {}) {
     if (closed) throw rpcLocalError('RPC_CLOSED', 'RPC client is closed.');
     if (!ALLOWED_METHODS.has(method)) throw rpcLocalError('RPC_METHOD_NOT_ALLOWED', `RPC method is not allowed: ${String(method)}`);
-    await ready;
-    if (closed) throw rpcLocalError('RPC_CLOSED', 'RPC client is closed.');
 
     const id = createRequestId();
     const signal = callOptions.signal;
@@ -175,7 +195,6 @@ export function createRpcClient(port, options = {}) {
     if (notifyPeer) safePost(port, { ...envelope('control', createControlId('close'), CONTROL_CLOSE), reason: message });
     detach();
     safeClose(port);
-    if (!readySettled) finishReady(rpcLocalError(code, message));
     for (const current of pending.values()) {
       if (current.timer !== null) clearTimeout(current.timer);
       current.detachAbort?.();
@@ -187,23 +206,22 @@ export function createRpcClient(port, options = {}) {
   return Object.freeze({
     call,
     close,
-    ready,
     get closed() { return closed; },
   });
 }
 
 export function createRpcServer(port, options = {}) {
   assertUsablePort(port);
-  const nonce = options.nonce == null ? null : String(options.nonce);
-  if (nonce !== null && !validNonce(nonce)) throw rpcLocalError('RPC_INVALID_NONCE', 'Invalid embed nonce.');
   const handlers = normalizeHandlers(options.handlers);
+  const requestIdTtlMs = normalizeTimeout(options.requestIdTtlMs, DEFAULT_REQUEST_ID_TTL_MS);
+  const recentRequestIdLimit = normalizePositiveInteger(options.recentRequestIdLimit, DEFAULT_RECENT_REQUEST_ID_LIMIT);
+  const now = typeof options.now === 'function' ? options.now : Date.now;
   const active = new Map();
-  const seenRequestIds = new Set();
+  const recentRequestIds = new Map();
   let closed = false;
 
   const detach = listenPort(port, onMessage);
   safeStart(port);
-  if (nonce !== null) safePost(port, { ...envelope('control', createControlId('ready'), CONTROL_READY), nonce });
 
   function onMessage(event) {
     if (closed) return;
@@ -225,15 +243,13 @@ export function createRpcServer(port, options = {}) {
 
   async function handleRequest(message) {
     const { id, method } = message;
-    if (seenRequestIds.has(id)) {
+    const currentTime = safeNow(now);
+    pruneRecentRequestIds(currentTime);
+    if (active.has(id) || recentRequestIds.has(id)) {
       sendError(id, method, 'RPC_DUPLICATE_ID', 'Duplicate RPC request id.');
       return;
     }
-    if (seenRequestIds.size >= MAX_SEEN_REQUEST_IDS) {
-      sendError(id, method, 'RPC_CAPACITY', 'RPC request id capacity reached for this port.');
-      return;
-    }
-    seenRequestIds.add(id);
+    rememberRequestId(id, currentTime);
 
     if (!ALLOWED_METHODS.has(method)) {
       sendError(id, method, 'RPC_METHOD_NOT_ALLOWED', 'RPC method is not allowed.');
@@ -255,6 +271,30 @@ export function createRpcServer(port, options = {}) {
     } finally {
       const current = active.get(id);
       if (current?.controller === controller) active.delete(id);
+      rememberRequestId(id, safeNow(now));
+    }
+  }
+
+  function pruneRecentRequestIds(currentTime) {
+    if (requestIdTtlMs === 0) {
+      recentRequestIds.clear();
+      return;
+    }
+    const cutoff = currentTime - requestIdTtlMs;
+    for (const [id, seenAt] of recentRequestIds) {
+      if (seenAt > cutoff) break;
+      recentRequestIds.delete(id);
+    }
+  }
+
+  function rememberRequestId(id, seenAt) {
+    if (requestIdTtlMs === 0 || recentRequestIdLimit === 0) return;
+    recentRequestIds.delete(id);
+    recentRequestIds.set(id, seenAt);
+    while (recentRequestIds.size > recentRequestIdLimit) {
+      const oldest = recentRequestIds.keys().next().value;
+      if (oldest === undefined) break;
+      recentRequestIds.delete(oldest);
     }
   }
 
@@ -281,6 +321,7 @@ export function createRpcServer(port, options = {}) {
     detach();
     for (const request of active.values()) request.controller.abort('rpc-closed');
     active.clear();
+    recentRequestIds.clear();
     safeClose(port);
   }
 
@@ -338,7 +379,6 @@ function normalizeOrigins(input) {
 
 function sourceWasAttached(source) { return ATTACHED_SOURCES.has(source); }
 function markSourceAttached(source) { ATTACHED_SOURCES.add(source); }
-
 function rejectAttach(code) { return Object.freeze({ ok: false, code }); }
 
 function createRequestId() {
@@ -421,6 +461,16 @@ function normalizeTimeout(value, fallback) {
   const number = Number(value);
   if (!Number.isFinite(number) || number < 0) throw new TypeError('RPC timeout must be a non-negative finite number.');
   return Math.floor(number);
+}
+function normalizePositiveInteger(value, fallback) {
+  if (value == null) return fallback;
+  const number = Number(value);
+  if (!Number.isSafeInteger(number) || number < 0) throw new TypeError('RPC request id cache limit must be a non-negative safe integer.');
+  return number;
+}
+function safeNow(now) {
+  const value = Number(now());
+  return Number.isFinite(value) ? value : Date.now();
 }
 function isPlainRecord(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
