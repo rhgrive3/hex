@@ -54,7 +54,7 @@ export function announceEmbedChildBootstrapReady(options = {}) {
 export function waitForEmbedChildBootstrap(options = {}) {
   const windowRef = options.windowRef || options.window || globalThis.window;
   const expectedSource = options.expectedSource;
-  const childOrigin = normalizeOrigin(options.childOrigin);
+  const childOrigin = normalizeBootstrapOrigin(options.childOrigin);
   const generation = normalizeEmbedGeneration(options.generation);
   const timeoutMs = normalizeTimeout(options.timeoutMs, DEFAULT_EMBED_BOOTSTRAP_TIMEOUT_MS);
   const signal = options.signal;
@@ -77,6 +77,9 @@ export function waitForEmbedChildBootstrap(options = {}) {
     };
     const onAbort = () => settle(abortError(signal?.reason));
     function onMessage(event) {
+      /* An iframe sandboxed without allow-same-origin has the serialized origin
+         "null". Source identity + generation are therefore mandatory and remain
+         part of the check; accepting opaque origin alone would be insufficient. */
       if (event?.source !== expectedSource || event?.origin !== childOrigin) return;
       const data = event?.data;
       if (!isPlainRecord(data) || data.type !== EMBED_BOOTSTRAP_TYPE) return;
@@ -125,6 +128,10 @@ function normalizeOrigins(values) {
     try { const origin = normalizeOrigin(value); if (!out.includes(origin)) out.push(origin); } catch {}
   }
   return out;
+}
+function normalizeBootstrapOrigin(value) {
+  if (String(value) === 'null') return 'null';
+  return normalizeOrigin(value);
 }
 function normalizeOrigin(value) {
   const text = String(value || '');
