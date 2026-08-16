@@ -112,7 +112,7 @@ const opsOf = (bundle, kind) => bundle.operations.filter((op) => op.kind === kin
 {
   const malformed = lift('ldr', [x(0), { k:'mem', base:x(1), mode:'post', disp:null, addressDisp:null, writebackDisp:null }]);
   assert.equal(malformed.completeness, 'partial');
-  assert.deepEqual(malformed.unknownEffects.categories.sort(), ['faults','memory','registers']);
+  assert.deepEqual([...malformed.unknownEffects.categories].sort(), ['faults','memory','registers']);
   assert.equal(opsOf(malformed, 'memory-read').length, 0, 'malformed addressing must fail closed');
 }
 
