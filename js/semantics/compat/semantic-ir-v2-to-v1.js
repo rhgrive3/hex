@@ -275,6 +275,44 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
   }
   projected.memorySafety = memorySafetySummary(projected);
   projected.defUse = () => projected.values;
+
+  const cmpSel = projected.instructions.filter((inst) => inst.op === V1_OP.CMP || inst.op === V1_OP.SEL);
+  if (cmpSel.length) {
+    const shapeValue = (value, depth = 0, active = new Set()) => {
+      if (!value) return null;
+      const base = {
+        id: value.id,
+        reg: value.reg,
+        bits: value.bits,
+        const: value.const == null ? null : String(value.const),
+        semanticValueId: value.semanticValueId,
+        semanticSsaValueId: value.semanticSsaValueId,
+      };
+      if (!value.def || depth >= 5 || active.has(value.id)) return base;
+      active.add(value.id);
+      base.def = {
+        op: value.def.op,
+        sub: value.def.sub,
+        row: value.def.row,
+        cond: value.def.cond ?? null,
+        extra: value.def.extra ?? null,
+        args: (value.def.args || []).map((arg) => shapeValue(arg?.value, depth + 1, active)),
+      };
+      active.delete(value.id);
+      return base;
+    };
+    console.log('V1_CMPSEL_DIAG ' + JSON.stringify({
+      functionId: projected.functionId,
+      instructions: cmpSel.map((inst) => ({
+        op: inst.op,
+        sub: inst.sub,
+        row: inst.row,
+        cond: inst.cond ?? null,
+        dst: shapeValue(inst.dst),
+        args: (inst.args || []).map((arg) => shapeValue(arg?.value)),
+      })),
+    }));
+  }
   return projected;
 }
 
