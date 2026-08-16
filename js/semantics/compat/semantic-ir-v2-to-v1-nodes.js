@@ -330,8 +330,7 @@ export function projectNode(node, context) {
     case 'state-read': {
       const use = stateProjection.readUseByNodeId.get(node.id) ?? null;
       const canonical = use == null ? null : valuesById.get(use.valueId) ?? null;
-      const canonicalDefinition = use == null ? null : stateProjection.definitionByValueId.get(use.valueId) ?? null;
-      const local = canonicalDefinition?.proof?.kind === 'implicit-undef' ? localPhysicalStateSource(node, context) : null;
+      const local = localPhysicalStateSource(node, context);
       const reaching = local ?? canonical;
       setBasic(V1_OP.MOV, null, reaching ? [reaching] : []);
       inst.extra.stateRead = node.variable;
