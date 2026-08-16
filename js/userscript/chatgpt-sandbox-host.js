@@ -44,12 +44,14 @@ export function createChatGPTSandboxHost(options = {}) {
   if (typeof MessageChannelCtor !== 'function') throw new TypeError('MessageChannel is required.');
   if (typeof runtimeSourceProvider !== 'function') throw new TypeError('A protected runtime source provider is required.');
 
+  const protectedRuntimeSource = normalizeRuntimeSource(runtimeSourceProvider());
   let destroyed = false;
   let generation = 0;
   let iframe = null;
   let port = null;
   let portCleanup = null;
   let generationAbort = null;
+  let sandboxMonitor = null;
   let wantedVisible = true;
   let state = 'idle';
   let failure = null;
@@ -61,6 +63,7 @@ export function createChatGPTSandboxHost(options = {}) {
   const status = ensureStatus(documentRef, wrapper);
   close.onclick = () => hide();
   launcher.onclick = () => show();
+  status.onclick = () => { if (state === 'failed') void startGeneration(); };
   wrapper.style.visibility = 'visible';
   wrapper.style.pointerEvents = 'auto';
   launcher.hidden = true;
@@ -89,7 +92,7 @@ export function createChatGPTSandboxHost(options = {}) {
     state = 'sandbox-loading';
     setStatus(status, 'Loading Hex…', false);
 
-    if (iframe) { try { iframe.remove(); } catch {} }
+    try { documentRef.getElementById?.(IFRAME_ID)?.remove(); } catch {}
     iframe = createSandboxIframe(documentRef, {
       hostHtml,
       cspNonce,
@@ -101,24 +104,33 @@ export function createChatGPTSandboxHost(options = {}) {
       buildId,
     });
     const token = normalizeSandboxToken(iframe.dataset.hexSandboxToken);
+
+    sandboxMonitor = createSandboxMonitor({
+      windowRef,
+      iframe,
+      generation: currentGeneration,
+      sandboxToken: token,
+      timeoutMs: bootstrapTimeoutMs,
+      signal: generationAbort.signal,
+    });
     wrapper.insertBefore(iframe, status);
 
     try {
-      await waitForSandboxReady({
-        windowRef,
-        expectedSource: iframe.contentWindow,
-        generation: currentGeneration,
-        sandboxToken: token,
-        timeoutMs: bootstrapTimeoutMs,
-        signal: generationAbort.signal,
-      });
+      await sandboxMonitor.ready;
       if (!isCurrent(currentGeneration)) return;
 
       state = 'runtime-transfer';
       setStatus(status, 'Starting Hex…', false);
-      const runtimeSource = runtimeSourceProvider();
-      const runtimeBuffer = normalizeRuntimeSource(runtimeSource);
-      const transfer = runtimeBuffer.slice(0);
+      const childBootstrapPromise = waitForEmbedChildBootstrap({
+        windowRef,
+        expectedSource: iframe.contentWindow,
+        opaque: true,
+        sandboxToken: token,
+        generation: currentGeneration,
+        timeoutMs: bootstrapTimeoutMs,
+        signal: generationAbort.signal,
+      });
+      const transfer = protectedRuntimeSource.slice(0);
       iframe.contentWindow.postMessage({
         type: SANDBOX_RUNTIME,
         protocol: EMBED_PROTOCOL,
@@ -129,15 +141,7 @@ export function createChatGPTSandboxHost(options = {}) {
       }, '*', [transfer]);
 
       state = 'handshaking';
-      const childBootstrap = await waitForEmbedChildBootstrap({
-        windowRef,
-        expectedSource: iframe.contentWindow,
-        opaque: true,
-        sandboxToken: token,
-        generation: currentGeneration,
-        timeoutMs: bootstrapTimeoutMs,
-        signal: generationAbort.signal,
-      });
+      const childBootstrap = await raceSandboxFailure(childBootstrapPromise, sandboxMonitor.failure);
       if (!isCurrent(currentGeneration)) return;
 
       const channel = new MessageChannelCtor();
@@ -155,9 +159,11 @@ export function createChatGPTSandboxHost(options = {}) {
         generation: normalizeEmbedGeneration(currentGeneration),
         sandboxToken: token,
       }, '*', [channel.port2]);
-      await readyPromise;
+      await raceSandboxFailure(readyPromise, sandboxMonitor.failure);
       if (!isCurrent(currentGeneration)) return;
 
+      sandboxMonitor.close();
+      sandboxMonitor = null;
       state = wantedVisible ? 'visible' : 'hidden';
       setStatus(status, '', true);
       iframe.style.visibility = 'visible';
@@ -196,9 +202,10 @@ export function createChatGPTSandboxHost(options = {}) {
   function fail(failedGeneration, stage, error) {
     if (!isCurrent(failedGeneration)) return;
     const message = String(error?.message || error || 'Hex iframe failed.');
+    cleanupGeneration();
     state = 'failed';
     failure = Object.freeze({ stage, message, generation: failedGeneration });
-    setStatus(status, `Hex failed · ${stage}\n${message}`, false, true);
+    setStatus(status, `Hex failed · ${stage}\n${message}\nTap here to retry.`, false, true);
     wrapper.style.visibility = 'visible';
     wrapper.style.pointerEvents = 'auto';
     launcher.hidden = true;
@@ -211,6 +218,7 @@ export function createChatGPTSandboxHost(options = {}) {
     destroyed = true;
     state = 'destroyed';
     cleanupGeneration();
+    new Uint8Array(protectedRuntimeSource).fill(0);
     try { iframe?.remove(); } catch {}
     iframe = null;
     try { wrapper.remove(); } catch {}
@@ -222,6 +230,8 @@ export function createChatGPTSandboxHost(options = {}) {
   function cleanupGeneration() {
     try { generationAbort?.abort('superseded'); } catch {}
     generationAbort = null;
+    try { sandboxMonitor?.close?.(); } catch {}
+    sandboxMonitor = null;
     try { if (typeof portCleanup === 'function') portCleanup(); } catch {}
     portCleanup = null;
     closePort(port);
@@ -275,47 +285,63 @@ export function buildSandboxSrcdoc(config) {
 
 function sandboxBootstrapSource(config) {
   const literal = JSON.stringify(config).replaceAll('<', '\\u003c');
-  return `(()=>{const c=${literal},P=${JSON.stringify(CHATGPT_PARENT_ORIGINS)};let used=false;function post(type,extra={}){parent.postMessage({type,protocol:${JSON.stringify(EMBED_PROTOCOL)},version:${EMBED_PROTOCOL_VERSION},generation:c.generation,sandboxToken:c.sandboxToken,...extra},'*')}function fail(message){post(${JSON.stringify(SANDBOX_FAILURE)},{message:String(message||'sandbox runtime failed')})}addEventListener('message',async e=>{if(used||e.source!==parent||!P.includes(e.origin))return;const d=e.data;if(!d||d.type!==${JSON.stringify(SANDBOX_RUNTIME)}||d.protocol!==${JSON.stringify(EMBED_PROTOCOL)}||d.version!==${EMBED_PROTOCOL_VERSION}||String(d.generation)!==c.generation||String(d.sandboxToken||'').toLowerCase()!==c.sandboxToken||!(d.runtime instanceof ArrayBuffer))return;used=true;try{globalThis.__HEX_EMBED_SANDBOX_TOKEN__=c.sandboxToken;globalThis.__HEX_RUNTIME_ORIGIN__=c.apiOrigin;const u=new URL(c.virtualHref);const host={origin:u.origin,pathname:u.pathname,search:u.search,href:u.href};globalThis.__HEX_RUNTIME_HOST_HREF__=host.href;globalThis.__HEX_RUNTIME_HOST_ORIGIN__=host.origin;globalThis.__HEX_RUNTIME_HOST_PATHNAME__=host.pathname;globalThis.__HEX_RUNTIME_HOST_SEARCH__=host.search;globalThis.__HEX_RUNTIME_HOST_LOCATION__=host;globalThis.__HEX_SECURE_LOADER__={version:c.loaderVersion,buildId:c.buildId};globalThis.__HEX_PROTECTED_AUTO_START__={sandboxAuto:true,sandboxToken:c.sandboxToken,hostLocation:host,apiOrigin:c.apiOrigin,loaderVersion:c.loaderVersion,buildId:c.buildId};const b=new Uint8Array(d.runtime),source=new TextDecoder().decode(b);b.fill(0);const s=document.createElement('script');s.type='module';s.nonce=c.nonce;s.textContent=source;s.addEventListener('load',()=>{try{s.textContent='';s.remove()}catch{}},{once:true});s.addEventListener('error',()=>fail('protected runtime module execution failed'),{once:true});document.head.append(s)}catch(err){fail(err&&err.message||err)}},{capture:false});post(${JSON.stringify(SANDBOX_READY)})})()`;
+  return `(()=>{const c=${literal},P=${JSON.stringify(CHATGPT_PARENT_ORIGINS)};let used=false;function post(type,extra={}){parent.postMessage({type,protocol:${JSON.stringify(EMBED_PROTOCOL)},version:${EMBED_PROTOCOL_VERSION},generation:c.generation,sandboxToken:c.sandboxToken,...extra},'*')}function fail(message){post(${JSON.stringify(SANDBOX_FAILURE)},{message:String(message||'sandbox runtime failed')})}addEventListener('error',e=>fail(e&&e.message||'sandbox script error'));addEventListener('unhandledrejection',e=>fail(e&&e.reason&&e.reason.message||e&&e.reason||'sandbox promise rejection'));addEventListener('message',async e=>{if(used||e.source!==parent||!P.includes(e.origin))return;const d=e.data;if(!d||d.type!==${JSON.stringify(SANDBOX_RUNTIME)}||d.protocol!==${JSON.stringify(EMBED_PROTOCOL)}||d.version!==${EMBED_PROTOCOL_VERSION}||String(d.generation)!==c.generation||String(d.sandboxToken||'').toLowerCase()!==c.sandboxToken||!(d.runtime instanceof ArrayBuffer))return;used=true;try{globalThis.__HEX_EMBED_SANDBOX_TOKEN__=c.sandboxToken;globalThis.__HEX_RUNTIME_ORIGIN__=c.apiOrigin;const u=new URL(c.virtualHref);const host={origin:u.origin,pathname:u.pathname,search:u.search,href:u.href};globalThis.__HEX_RUNTIME_HOST_HREF__=host.href;globalThis.__HEX_RUNTIME_HOST_ORIGIN__=host.origin;globalThis.__HEX_RUNTIME_HOST_PATHNAME__=host.pathname;globalThis.__HEX_RUNTIME_HOST_SEARCH__=host.search;globalThis.__HEX_RUNTIME_HOST_LOCATION__=host;globalThis.__HEX_SECURE_LOADER__={version:c.loaderVersion,buildId:c.buildId};globalThis.__HEX_PROTECTED_AUTO_START__={sandboxAuto:true,sandboxToken:c.sandboxToken,hostLocation:host,apiOrigin:c.apiOrigin,loaderVersion:c.loaderVersion,buildId:c.buildId};const b=new Uint8Array(d.runtime),source=new TextDecoder().decode(b);b.fill(0);const s=document.createElement('script');s.type='module';s.nonce=c.nonce;s.textContent=source;s.addEventListener('load',()=>{try{s.textContent='';s.remove()}catch{}},{once:true});s.addEventListener('error',()=>fail('protected runtime module execution failed'),{once:true});document.head.append(s)}catch(err){fail(err&&err.message||err)}},{capture:false});post(${JSON.stringify(SANDBOX_READY)})})()`;
 }
 
-function waitForSandboxReady(options) {
-  const { windowRef, expectedSource, generation, sandboxToken, timeoutMs, signal } = options;
+function createSandboxMonitor(options) {
+  const { windowRef, iframe, generation, sandboxToken, timeoutMs, signal } = options;
   const expectedGeneration = normalizeEmbedGeneration(generation);
   const token = normalizeSandboxToken(sandboxToken);
-  if (signal?.aborted) return Promise.reject(abortError(signal.reason));
-  return new Promise((resolve, reject) => {
-    let timer = null;
-    let settled = false;
-    const cleanup = () => {
-      windowRef.removeEventListener('message', onMessage);
-      signal?.removeEventListener?.('abort', onAbort);
-      if (timer !== null) clearTimeout(timer);
-    };
-    const settle = (error, value) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      error ? reject(error) : resolve(value);
-    };
-    const onAbort = () => settle(abortError(signal?.reason));
-    function onMessage(event) {
-      if (event?.source !== expectedSource || event?.origin !== 'null') return;
-      const data = event?.data;
-      if (!data || typeof data !== 'object') return;
-      if (data.protocol !== EMBED_PROTOCOL || data.version !== EMBED_PROTOCOL_VERSION) return;
-      if (String(data.generation) !== expectedGeneration) return;
-      if (String(data.sandboxToken || '').toLowerCase() !== token) return;
-      if (data.type === SANDBOX_FAILURE) {
-        settle(stageError('sandbox-runtime', data.message || 'Hex sandbox runtime failed.'));
-        return;
-      }
-      if (data.type !== SANDBOX_READY) return;
-      settle(null, Object.freeze({ generation: expectedGeneration, sandboxToken: token }));
+  let closed = false;
+  let readyResolve;
+  let readyReject;
+  let failureResolve;
+  let timer = null;
+  const ready = new Promise((resolve, reject) => { readyResolve = resolve; readyReject = reject; });
+  const failure = new Promise((resolve) => { failureResolve = resolve; });
+  const cleanup = () => {
+    if (closed) return;
+    closed = true;
+    windowRef.removeEventListener('message', onMessage);
+    signal?.removeEventListener?.('abort', onAbort);
+    if (timer !== null) clearTimeout(timer);
+  };
+  const onAbort = () => {
+    const error = abortError(signal?.reason);
+    readyReject(error);
+    failureResolve(error);
+    cleanup();
+  };
+  function onMessage(event) {
+    if (event?.source !== iframe?.contentWindow || event?.origin !== 'null') return;
+    const data = event?.data;
+    if (!data || typeof data !== 'object') return;
+    if (data.protocol !== EMBED_PROTOCOL || data.version !== EMBED_PROTOCOL_VERSION) return;
+    if (String(data.generation) !== expectedGeneration) return;
+    if (String(data.sandboxToken || '').toLowerCase() !== token) return;
+    if (data.type === SANDBOX_FAILURE) {
+      const error = stageError('sandbox-runtime', data.message || 'Hex sandbox runtime failed.');
+      failureResolve(error);
+      readyReject(error);
+      return;
     }
-    windowRef.addEventListener('message', onMessage);
-    signal?.addEventListener?.('abort', onAbort, { once: true });
-    if (timeoutMs > 0) timer = setTimeout(() => settle(stageError('sandbox-bootstrap', 'Hex sandbox bootstrap timed out.')), timeoutMs);
-  });
+    if (data.type === SANDBOX_READY) readyResolve(Object.freeze({ generation: expectedGeneration, sandboxToken: token }));
+  }
+  windowRef.addEventListener('message', onMessage);
+  signal?.addEventListener?.('abort', onAbort, { once: true });
+  if (timeoutMs > 0) {
+    timer = setTimeout(() => {
+      const error = stageError('sandbox-bootstrap', 'Hex sandbox bootstrap timed out.');
+      readyReject(error);
+      failureResolve(error);
+      cleanup();
+    }, timeoutMs);
+  }
+  return Object.freeze({ ready, failure, close: cleanup });
+}
+
+async function raceSandboxFailure(operation, failure) {
+  return Promise.race([operation, failure.then((error) => Promise.reject(error))]);
 }
 
 function normalizeRuntimeSource(value) {
@@ -396,7 +422,7 @@ function ensureStatus(documentRef, wrapper) {
   node = documentRef.createElement('div');
   node.id = STATUS_ID;
   node.setAttribute('role', 'status');
-  node.style.cssText = 'position:absolute;left:16px;bottom:max(16px,env(safe-area-inset-bottom));z-index:2;max-width:min(88vw,620px);padding:10px 14px;border-radius:12px;background:#111827;color:#fff;font:600 13px/1.35 system-ui;white-space:pre-wrap;box-shadow:0 4px 18px rgba(0,0,0,.22);';
+  node.style.cssText = 'position:absolute;left:16px;bottom:max(16px,env(safe-area-inset-bottom));z-index:2;max-width:min(88vw,620px);padding:10px 14px;border-radius:12px;background:#111827;color:#fff;font:600 13px/1.35 system-ui;white-space:pre-wrap;box-shadow:0 4px 18px rgba(0,0,0,.22);cursor:default;';
   wrapper.append(node);
   return node;
 }
@@ -405,4 +431,5 @@ function setStatus(node, text, hidden, failed = false) {
   node.textContent = text;
   node.hidden = !!hidden;
   node.dataset.failed = failed ? 'true' : 'false';
+  node.style.cursor = failed ? 'pointer' : 'default';
 }
