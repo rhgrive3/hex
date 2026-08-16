@@ -58,8 +58,7 @@ export function createChatGPTParentRpc({ port, bridge, onUiClose } = {}) {
 
   const server = createRpcServer(port, { handlers });
   return Object.freeze({
-    close(reason) { server.close(reason); },
-    server,
+    close() { server.close('ChatGPT parent RPC closed.'); },
   });
 }
 
