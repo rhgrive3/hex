@@ -150,6 +150,49 @@ jobs:
           s = s.replace("contractVersion: '1.1.1'", "contractVersion: '1.1.2'")
           p.write_text(s)
 
+          p = Path('js/ir-core.js')
+          s = p.read_text()
+          old = """  if (definition.block === inst.block) return Number(definition.row) <= Number(inst.row);"""
+          new = """  if (definition.block === inst.block) {
+            const definitionRow = Number(definition.row);
+            const instructionRow = Number(inst.row);
+            if (definitionRow !== instructionRow) return definitionRow < instructionRow;
+            const block = projected.blocks?.[inst.block];
+            const instructions = block?.insts ?? projected.instructions ?? [];
+            const definitionIndex = instructions.indexOf(definition);
+            const instructionIndex = instructions.indexOf(inst);
+            return definitionIndex >= 0 && instructionIndex >= 0 && definitionIndex < instructionIndex;
+          }"""
+          if new not in s:
+              if old not in s: raise SystemExit('legacy dominance same-row anchor missing')
+              s = s.replace(old, new, 1)
+          old = """  if (definition.block === inst.block) {
+            return { scope:2, depth:Number.MAX_SAFE_INTEGER, row:Number(definition.row ?? Number.NEGATIVE_INFINITY) };
+          }"""
+          new = """  if (definition.block === inst.block) {
+            const block = projected.blocks?.[inst.block];
+            const instructions = block?.insts ?? projected.instructions ?? [];
+            const order = instructions.indexOf(definition);
+            return {
+              scope:2,
+              depth:Number.MAX_SAFE_INTEGER,
+              row:Number(definition.row ?? Number.NEGATIVE_INFINITY),
+              order,
+            };
+          }"""
+          if new not in s:
+              if old not in s: raise SystemExit('legacy recency same-row anchor missing')
+              s = s.replace(old, new, 1)
+          old = """      if (leftRecency.row !== rightRecency.row) return rightRecency.row - leftRecency.row;
+      const leftWidth = Number(bits) > 0 && left.bits === Number(bits) ? 1 : 0;"""
+          new = """      if (leftRecency.row !== rightRecency.row) return rightRecency.row - leftRecency.row;
+      if ((leftRecency.order ?? -1) !== (rightRecency.order ?? -1)) return (rightRecency.order ?? -1) - (leftRecency.order ?? -1);
+      const leftWidth = Number(bits) > 0 && left.bits === Number(bits) ? 1 : 0;"""
+          if new not in s:
+              if old not in s: raise SystemExit('legacy recency ordering anchor missing')
+              s = s.replace(old, new, 1)
+          p.write_text(s)
+
           p = Path('js/slice.js')
           s = p.read_text()
           old = (
@@ -221,7 +264,7 @@ jobs:
             .github/workflows/p3-final-validation.yml; do
             git rm -f "$f" 2>/dev/null || true
           done
-          git add js/semantics/compat/semantic-ir-v2-to-v1-finalize.js js/semantics/compat/semantic-ir-v2-to-v1.js js/slice.js userscript/hex.user.template.js
+          git add js/semantics/compat/semantic-ir-v2-to-v1-finalize.js js/semantics/compat/semantic-ir-v2-to-v1.js js/ir-core.js js/slice.js userscript/hex.user.template.js
           git diff --cached --check
           git commit -m "Phase 3: complete legacy public projection after v2 cutover"
           git push origin HEAD:hex/p3-semantic-ir-integration
