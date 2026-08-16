@@ -51,6 +51,9 @@ function run(address, instructions) {
   });
 }
 
+let unknownStoreSafetyFailures = 0;
+let unknownCallSafetyFailures = 0;
+
 const unknownStore = run(0x2000n, [
   { decoded: { address: 0x2000n, mode: 'test', testKind: 'store', memoryAddress: 0x5000n, value: 7 } },
   { decoded: { address: 0x2004n, mode: 'test', testKind: 'unknown-store' } },
@@ -60,9 +63,9 @@ const unknownStore = run(0x2000n, [
 const loadNode = unknownStore.semanticIr.nodes.find((node) => node.kind === 'load');
 const loadUse = unknownStore.memorySsa.uses.find((use) => use.sourceEntityId === loadNode.id);
 assert.ok(loadUse);
-assert.equal(reachingConcreteStore(unknownStore.memorySsa, loadUse), null,
-  'an unknown store must prevent stale reaching-store proof');
-assert.notEqual(reachingMemoryDefinition(unknownStore.memorySsa, loadUse).kind, 'memory-def');
+if (reachingConcreteStore(unknownStore.memorySsa, loadUse) !== null) unknownStoreSafetyFailures += 1;
+if (reachingMemoryDefinition(unknownStore.memorySsa, loadUse).kind === 'memory-def') unknownStoreSafetyFailures += 1;
+assert.equal(unknownStoreSafetyFailures, 0, 'an unknown store must prevent stale reaching-store proof');
 assert.equal(unknownStore.instrumentation.semanticUnknownCount > 0, true);
 
 const unknownCall = run(0x3000n, [
@@ -74,6 +77,12 @@ const unknownCall = run(0x3000n, [
 const callLoadNode = unknownCall.semanticIr.nodes.find((node) => node.kind === 'load');
 const callLoadUse = unknownCall.memorySsa.uses.find((use) => use.sourceEntityId === callLoadNode.id);
 assert.ok(callLoadUse);
-assert.equal(reachingConcreteStore(unknownCall.memorySsa, callLoadUse), null, 'unknown call must not be treated as pure');
-assert.equal(unknownCall.memorySsa.definitions.some((definition) => definition.kind === 'call-clobber'), true);
+if (reachingConcreteStore(unknownCall.memorySsa, callLoadUse) !== null) unknownCallSafetyFailures += 1;
+if (!unknownCall.memorySsa.definitions.some((definition) => definition.kind === 'call-clobber')) unknownCallSafetyFailures += 1;
+assert.equal(unknownCallSafetyFailures, 0, 'unknown call must not be treated as pure');
+
+globalThis.__HEX_PHASE3_MEMORY_SAFETY__ = Object.freeze({
+  unknownStoreSafetyFailures,
+  unknownCallSafetyFailures,
+});
 console.log('Phase 3 MemorySSA integration safety: PASS');
