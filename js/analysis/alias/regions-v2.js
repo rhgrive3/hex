@@ -6,6 +6,7 @@ import {
 } from '../../core/identity/index.js';
 import { createOriginSet, mergeOriginSets } from '../../core/identity/origin.js';
 import { createMemoryRegionRef } from '../../semantics/memoryssa/contract.js';
+import { normalizeAddressProofIr } from './address-ir-normalize-v2.js';
 import {
   canonicalAddressProofToRegionEvidence,
   deriveCanonicalAddressProof,
@@ -257,7 +258,8 @@ export function classifySemanticMemoryRegion(ir, nodeOrId, options = {}) {
   let proof = null;
   let graphDescriptor = null;
   if (!explicitDescriptor && addressValueId) {
-    proof = deriveCanonicalAddressProof(irForAddressRootDerivation(ir), addressValueId, {
+    const proofIr = normalizeAddressProofIr(irForAddressRootDerivation(ir));
+    proof = deriveCanonicalAddressProof(proofIr, addressValueId, {
       addressSpace: node.memory.addressSpace,
       ssa: options.ssa,
       rootDescriptors: options.rootDescriptors,
