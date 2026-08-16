@@ -7,7 +7,11 @@
  */
 export * from './architecture/compat/ir-core-arm64-aapcs64-v1.js';
 
-import { buildIR as buildLegacyIR } from './architecture/compat/ir-core-arm64-aapcs64-v1.js';
+import {
+  buildIR as buildLegacyIR,
+  OP as LEGACY_OP,
+  VK as LEGACY_VK,
+} from './architecture/compat/ir-core-arm64-aapcs64-v1.js';
 import { buildCfg, EDGE } from './cfg.js';
 import { stableDigest } from './core/identity/index.js';
 import {
@@ -74,6 +78,21 @@ function ephemeralBinaryId(model) {
   return `migration-model-${stableDigest(identity)}`;
 }
 
+function aapcs64FunctionReturnLocation(options = {}) {
+  const proto = options.functionPrototype || options.prototype || null;
+  const type = String(options.returnType || proto?.returnType || proto?.ret || proto?.result || '').toLowerCase();
+  const cls = String(options.returnClass || proto?.returnClass || proto?.abiClass || proto?.resultClass || '').toLowerCase();
+  if (options.returnsValue === false || proto?.returnsValue === false || proto?.void === true || type === 'void' || cls === 'void') return null;
+  if (proto?.indirectResult === true || cls === 'indirect') return null;
+  if (cls.includes('fp') || cls.includes('float') || cls.includes('vector') || /^(float|double|__fp16)/.test(type)) {
+    return { reg:'v0', bits:Number(proto?.returnBits || proto?.bits || options.returnBits || 64) || 64 };
+  }
+  if (type || cls || options.returnsValue === true || proto?.returnsValue === true) {
+    return { reg:'x0', bits:Number(proto?.returnBits || proto?.bits || options.returnBits || 64) || 64 };
+  }
+  return null;
+}
+
 function aapcs64CompatAbiAdapter(options) {
   return {
     classifyCall({ node }) {
@@ -99,7 +118,69 @@ function aapcs64CompatAbiAdapter(options) {
         returnEvidence: returnValue == null ? null : 'aapcs64-plugin',
       };
     },
+    classifyFunctionReturn() {
+      const result = aapcs64FunctionReturnLocation(options);
+      return result == null ? null : { ...result, evidence:'prototype-aapcs64' };
+    },
   };
+}
+
+function valueDominatesLegacyInstruction(value, inst, projected) {
+  if (!value || !inst) return false;
+  if (value.kind === LEGACY_VK.ARG) return true;
+  const definition = value.def;
+  if (!definition || definition === inst) return false;
+  if (definition.block === inst.block) return Number(definition.row) <= Number(inst.row);
+  const dominators = projected.dominators?.[inst.block];
+  return dominators instanceof Set && dominators.has(definition.block);
+}
+
+function detachLegacyArguments(inst) {
+  for (const arg of inst.args ?? []) {
+    const value = arg?.value;
+    if (!Array.isArray(value?.uses)) continue;
+    value.uses = value.uses.filter((use) => use !== inst);
+  }
+  inst.args = [];
+}
+
+/**
+ * Semantic IR return nodes carry the architectural control target (for A64 RET,
+ * typically the link register). That is not a source-language return value.
+ * Match the legacy AAPCS64 facade: expose a return data value only when function
+ * prototype/return-type evidence declares one, then bind that ABI location to an
+ * already-existing dominating projected value. No value is synthesized.
+ */
+function attachAapcs64FunctionReturns(projected, adapter) {
+  const result = adapter?.classifyFunctionReturn?.() ?? null;
+  for (const inst of projected?.instructions ?? []) {
+    if (inst.op !== LEGACY_OP.RET) continue;
+    detachLegacyArguments(inst);
+    inst.returnReg = null;
+    inst.returnEvidence = null;
+    if (!result?.reg) continue;
+    const candidates = (projected.values ?? [])
+      .filter((value) => value.reg === result.reg && valueDominatesLegacyInstruction(value, inst, projected))
+      .sort((left, right) => {
+        const leftWidth = Number(result.bits) > 0 && left.bits === Number(result.bits) ? 1 : 0;
+        const rightWidth = Number(result.bits) > 0 && right.bits === Number(result.bits) ? 1 : 0;
+        if (leftWidth !== rightWidth) return rightWidth - leftWidth;
+        if ((left.version ?? 0) !== (right.version ?? 0)) return (right.version ?? 0) - (left.version ?? 0);
+        return (right.id ?? 0) - (left.id ?? 0);
+      });
+    const value = candidates[0] ?? null;
+    if (!value) continue;
+    inst.args = [{ value, bits:value.bits || result.bits || 64 }];
+    if (!Array.isArray(value.uses)) value.uses = [];
+    if (!value.uses.includes(inst)) value.uses.push(inst);
+    inst.returnReg = result.reg;
+    inst.returnEvidence = result.evidence ?? 'aapcs64-plugin';
+    inst.extra = {
+      ...(inst.extra ?? {}),
+      abiProjectedReturnValueId: value.semanticSsaValueId ?? value.semanticValueId ?? value.id,
+      abiProjectedReturnEvidence: inst.returnEvidence,
+    };
+  }
 }
 
 function buildV2CompatFromLegacyModel(model, opts = {}) {
@@ -132,6 +213,7 @@ function buildV2CompatFromLegacyModel(model, opts = {}) {
   });
   const binaryId = String(opts.binaryId ?? model.binaryId ?? ephemeralBinaryId(model));
   const sliceId = String(opts.sliceId ?? model.sliceId ?? `migration-slice-${stableDigest({ binaryId, architecture: 'arm64' })}`);
+  const abiAdapter = opts.abiAdapter ?? aapcs64CompatAbiAdapter(opts);
   const result = buildSemanticV2CompatibilityPipeline({
     architecturePlugin: ARM64_ARCHITECTURE,
     decoderSemanticVersion: String(opts.decoderSemanticVersion ?? 'legacy-model-decoder-v1'),
@@ -141,7 +223,7 @@ function buildV2CompatFromLegacyModel(model, opts = {}) {
     canonicalStartIdentity: { address: model.startAddress ?? model.instructions[0].address },
     entryBlockKey: legacyCfg.entry >= 0 ? `legacy-block-${legacyCfg.entry}` : blocks[0]?.key,
     blocks,
-    abiAdapter: opts.abiAdapter ?? aapcs64CompatAbiAdapter(opts),
+    abiAdapter,
   }, {
     signal: opts.signal,
     semanticIrOptions: opts.semanticIrOptions,
@@ -161,6 +243,7 @@ function buildV2CompatFromLegacyModel(model, opts = {}) {
       ...(opts.compatOptions ?? {}),
     },
   });
+  attachAapcs64FunctionReturns(result.legacyV1, abiAdapter);
   lastSemanticV2Instrumentation = result.instrumentation;
   return result.legacyV1;
 }
