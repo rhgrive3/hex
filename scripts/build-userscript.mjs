@@ -10,7 +10,7 @@ const dist = resolve(root, 'dist');
 const generated = resolve(root, '.runtime-build');
 const committedTemplate = resolve(root, 'userscript/hex.user.template.js');
 const ORIGIN_TOKEN = '__HEX_ORIGIN__';
-const LOADER_VERSION = '2.0.2322241675';
+const LOADER_VERSION = '2.0.2322241680';
 const MAX_LOADER_BYTES = 64 * 1024;
 const CLASSIC_ENTRIES = ['js/worker.js', 'js/platform/capstone-probe-worker.js', 'js/platform/capstone-disasm-worker.js'];
 

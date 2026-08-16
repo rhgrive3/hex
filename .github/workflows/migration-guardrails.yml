@@ -1,0 +1,57 @@
+name: Migration guardrails
+
+on:
+  pull_request:
+    paths:
+      - 'js/architecture/**'
+      - 'js/ir.js'
+      - 'js/ir-core.js'
+      - 'js/dataflow*.js'
+      - 'js/decompiler/**'
+      - 'js/binary/**'
+      - 'js/bytesource/**'
+      - 'js/platform/**'
+      - 'js/project/**'
+      - 'js/runtime/**'
+      - 'js/runtime-evidence/**'
+      - 'js/symbolic/**'
+      - 'js/ai/**'
+      - 'js/ui/**'
+      - 'js/ui.js'
+      - 'js/ui-root.js'
+      - 'js/panels.js'
+      - 'js/app.js'
+      - 'js/backend.js'
+      - 'js/worker*.js'
+      - 'worker-entry.js'
+      - 'package.json'
+      - 'tests/migration-guardrails.mjs'
+      - 'docs/MIGRATION_GUARDRAILS.md'
+      - '.github/workflows/migration-guardrails.yml'
+  workflow_dispatch:
+
+jobs:
+  guardrails:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Migration compatibility contracts
+        run: npm run migration:test
+      - name: General checks
+        run: npm run check
+      - name: Semantic regressions
+        run: npm run semantic:test
+      - name: Decompiler regressions
+        run: npm run decompiler:test
+      - name: Platform compatibility
+        run: npm run platform:test
+      - name: Runtime separation
+        run: npm run runtime:test
+      - name: AI trust boundary
+        run: npm run ai:test
+      - name: Source-backed loader
+        run: npm run binary:source-test
