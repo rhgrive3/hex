@@ -72,6 +72,8 @@ export const MANAGED_FEATURE_LEVEL = Object.freeze({
 function freezeFeatures(features) { return Object.freeze({ ...features }); }
 function freezeCodes(codes) { return Object.freeze([...new Set(codes)]); }
 
+// A2 is the Master Architecture exact MachineEffects contract. Legacy Semantic IR
+// provides useful downstream analysis, but does not satisfy A2 until Phase 2 lands.
 const ARCHITECTURE_PROFILES = Object.freeze({
   arm64: Object.freeze({
     implementedLevel: 'A6',
@@ -130,6 +132,8 @@ const ARCHITECTURE_PROFILES = Object.freeze({
   }),
 });
 
+// F3 requires the imports/exports/relocations contract as a whole. Current
+// parsers expose substantial coverage plus explicit incomplete/unsupported cases.
 const FORMAT_PROFILES = Object.freeze({
   macho: Object.freeze({
     implementedLevel: 'F5',
