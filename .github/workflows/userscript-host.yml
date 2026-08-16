@@ -15,6 +15,7 @@ on:
       - 'index.html'
       - 'css/**'
       - 'tests/userscript-*.mjs'
+      - 'tests/chatgpt-*.mjs'
       - '.github/workflows/userscript-host.yml'
   push:
     branches: [main]
@@ -31,6 +32,7 @@ on:
       - 'index.html'
       - 'css/**'
       - 'tests/userscript-*.mjs'
+      - 'tests/chatgpt-*.mjs'
       - '.github/workflows/userscript-host.yml'
 
 permissions:
@@ -52,6 +54,8 @@ jobs:
         run: node tests/userscript-sandbox-storage.mjs
       - name: Embed mode security boundary
         run: node tests/userscript-embed-mode-security.mjs
+      - name: Conversation routing storage boundary
+        run: node tests/chatgpt-conversation-storage-security.mjs
       - name: Build and userscript tests
         run: npm run userscript:test
       - name: AI and worker regressions
