@@ -49,7 +49,10 @@ export class ChatGPTDOMAdapter {
       let values = [];
       try { values = this.document?.querySelectorAll?.(selector) || []; } catch { values = []; }
       for (const raw of values) {
-        const node = raw.closest?.('[data-message-author-role]') || raw;
+        // A ChatGPT turn can match both its role node and its conversation-turn
+        // wrapper. Canonicalize both to one logical turn before deduplication so
+        // Hex never mistakes one DOM turn for concurrent user/model activity.
+        const node = raw.closest?.('[data-testid^="conversation-turn-"]') || raw.closest?.('[data-message-author-role]') || raw;
         if (!seen.has(node)) { seen.add(node); out.push(node); }
       }
     }
@@ -81,6 +84,7 @@ export class ChatGPTDOMAdapter {
 
   assistantTurns() { return this.all('assistantTurn').map((node) => ({ node, id: this.identity(node), text: this.text(node) })); }
   userTurns() { return this.all('userTurn').map((node) => ({ node, id: this.identity(node), text: this.text(node) })); }
+  conversationTurns() { return this.all('conversationTurn').map((node) => ({ node, id: this.identity(node), text: this.text(node) })); }
 
   conversation() {
     const href = String(this.location?.href || '');
@@ -278,18 +282,24 @@ export class ChatGPTModelController {
 }
 
 export class ChatGPTTurnController {
-  constructor(adapter, { quietMs = 1500, pollMs = 120, startTimeoutMs = 10000 } = {}) {
-    this.adapter = adapter; this.quietMs = quietMs; this.pollMs = pollMs; this.startTimeoutMs = startTimeoutMs;
+  constructor(adapter, { quietMs = 1500, pollMs = 120, startTimeoutMs = 10000, conversationGraceMs = 3000 } = {}) {
+    this.adapter = adapter;
+    this.quietMs = quietMs;
+    this.pollMs = pollMs;
+    this.startTimeoutMs = startTimeoutMs;
+    this.conversationGraceMs = conversationGraceMs;
   }
 
   async run(prompt, { signal, timeoutMs = 110000, expectedConversation = null, onConversation } = {}) {
     const started = Date.now();
+    const normalizedPrompt = normalizeText(prompt);
     const composer = await waitFor(() => this.adapter.composer(), Math.min(timeoutMs, this.startTimeoutMs), signal);
     if (!composer) throw new ChatGPTBridgeError('composer-not-found', 'ChatGPT composer was not found.');
     if (this.adapter.isGenerating()) throw new ChatGPTBridgeError('already-generating', 'ChatGPT is already generating a response.');
 
-    const baselineAssistant = new Set(this.adapter.assistantTurns().map((turn) => turn.id));
-    const baselineUsers = new Set(this.adapter.userTurns().map((turn) => turn.id));
+    const baselineAssistant = new Set(this.assistantTurns().map((turn) => turn.id));
+    const baselineUsers = new Set(this.userTurns().map((turn) => turn.id));
+    const baselineConversation = new Set(this.conversationTurns().map((turn) => turn.id));
     this.adapter.setComposerText(composer, prompt);
     const send = await waitFor(() => {
       const node = this.adapter.sendButton();
@@ -300,11 +310,21 @@ export class ChatGPTTurnController {
 
     let requestUserTurn = null;
     const submitted = await waitFor(() => {
-      const candidates = this.adapter.userTurns().filter((turn) => !baselineUsers.has(turn.id));
-      if (candidates.length > 1) throw new ChatGPTBridgeError('manual-interference', 'Another user turn appeared while Hex was submitting its request.');
-      if (candidates.length === 1) {
-        if (normalizeText(candidates[0].text) !== normalizeText(prompt)) throw new ChatGPTBridgeError('manual-interference', 'The submitted ChatGPT turn does not match the Hex request.');
-        requestUserTurn = candidates[0]; return true;
+      const explicit = this.userTurns().filter((turn) => !baselineUsers.has(turn.id));
+      if (explicit.length > 1) throw new ChatGPTBridgeError('manual-interference', 'Another user turn appeared while Hex was submitting its request.');
+      if (explicit.length === 1) {
+        if (normalizeText(explicit[0].text) !== normalizedPrompt) throw new ChatGPTBridgeError('manual-interference', 'The submitted ChatGPT turn does not match the Hex request.');
+        requestUserTurn = explicit[0];
+        return true;
+      }
+
+      // Some ChatGPT builds temporarily omit data-message-author-role while
+      // retaining conversation-turn test ids. Accept only an exact prompt match.
+      const generic = this.conversationTurns().filter((turn) => !baselineConversation.has(turn.id) && normalizeText(turn.text) === normalizedPrompt);
+      if (generic.length > 1) throw new ChatGPTBridgeError('manual-interference', 'Multiple matching user turns appeared while Hex was submitting its request.');
+      if (generic.length === 1) {
+        requestUserTurn = generic[0];
+        return true;
       }
       return false;
     }, Math.min(this.startTimeoutMs, remaining(started, timeoutMs)), signal);
@@ -312,32 +332,63 @@ export class ChatGPTTurnController {
 
     let latest = '', latestId = null, lastChangedAt = Date.now(), sawGenerating = this.adapter.isGenerating(), observedConversation = expectedConversation;
     let stopObserving = NOOP;
-    try { while (Date.now() - started < timeoutMs) {
-      if (signal?.aborted) throw abortError(signal.reason);
-      const error = this.adapter.errorState();
-      if (error) throw new ChatGPTBridgeError('response-error', 'ChatGPT reported an error while generating the Hex turn.', { error });
-      const conversation = this.adapter.conversation();
-      if (!observedConversation && conversation) { observedConversation = conversation; onConversation?.(conversation); }
-      if (observedConversation && conversation?.id !== observedConversation.id) {
-        throw new ChatGPTBridgeError('conversation-switched', 'ChatGPT conversation changed while a Hex request was in flight.', { expected: observedConversation, actual: conversation });
-      }
-      if (this.adapter.isGenerating()) sawGenerating = true;
-      const fresh = this.adapter.assistantTurns().filter((turn) => !baselineAssistant.has(turn.id));
-      if (fresh.length > 1) throw new ChatGPTBridgeError('manual-interference', 'Multiple assistant turns appeared while one Hex request was in flight.');
-      const turn = fresh[0] || null;
-      if (turn) {
-        if (latestId && turn.id !== latestId) throw new ChatGPTBridgeError('stale-response', 'The assistant turn identity changed before the Hex response settled.');
-        latestId = turn.id;
-        if (turn.node && stopObserving === NOOP) stopObserving = this.adapter.observeMutations?.(turn.node, () => { lastChangedAt = Date.now(); }) || NOOP;
-        if (turn.text !== latest) { latest = turn.text; lastChangedAt = Date.now(); }
-        if (latest.trim() && (conversation || observedConversation) && !this.adapter.isGenerating() && Date.now() - lastChangedAt >= this.quietMs && (sawGenerating || requestUserTurn)) {
-          return { text: latest.trim(), conversation: conversation || observedConversation, turnId: turn.id };
+    try {
+      while (Date.now() - started < timeoutMs) {
+        if (signal?.aborted) throw abortError(signal.reason);
+        const error = this.adapter.errorState();
+        if (error) throw new ChatGPTBridgeError('response-error', 'ChatGPT reported an error while generating the Hex turn.', { error });
+        const conversation = this.adapter.conversation();
+        if (!observedConversation && conversation) { observedConversation = conversation; onConversation?.(conversation); }
+        if (observedConversation && conversation?.id !== observedConversation.id) {
+          throw new ChatGPTBridgeError('conversation-switched', 'ChatGPT conversation changed while a Hex request was in flight.', { expected: observedConversation, actual: conversation });
         }
+        if (this.adapter.isGenerating()) sawGenerating = true;
+
+        const explicit = this.assistantTurns().filter((turn) => !baselineAssistant.has(turn.id));
+        if (explicit.length > 1) throw new ChatGPTBridgeError('manual-interference', 'Multiple assistant turns appeared while one Hex request was in flight.');
+        const turn = explicit[0] || this.fallbackResponseTurn({ baselineConversation, baselineUsers, requestUserTurn, normalizedPrompt });
+        if (turn) {
+          if (latestId && turn.id !== latestId) throw new ChatGPTBridgeError('stale-response', 'The assistant turn identity changed before the Hex response settled.');
+          latestId = turn.id;
+          if (turn.node && stopObserving === NOOP) stopObserving = this.adapter.observeMutations?.(turn.node, () => { lastChangedAt = Date.now(); }) || NOOP;
+          if (turn.text !== latest) { latest = turn.text; lastChangedAt = Date.now(); }
+
+          const settledFor = Date.now() - lastChangedAt;
+          const settled = latest.trim() && !this.adapter.isGenerating() && settledFor >= this.quietMs && (sawGenerating || requestUserTurn);
+          if (settled) {
+            const identity = conversation || observedConversation;
+            if (identity || settledFor >= Math.max(this.quietMs, this.conversationGraceMs)) {
+              return { text: latest.trim(), conversation: identity || null, turnId: turn.id };
+            }
+          }
+        }
+        await delay(this.pollMs, signal);
       }
-      await delay(this.pollMs, signal);
-    }
-    throw new ChatGPTBridgeError('timeout', 'ChatGPT response or conversation identity timed out.');
+      throw new ChatGPTBridgeError('timeout', 'ChatGPT response capture timed out.', {
+        sawResponseText: !!latest.trim(), responseTurnId: latestId, sawGenerating, conversation: observedConversation || null,
+      });
     } finally { stopObserving(); }
+  }
+
+  fallbackResponseTurn({ baselineConversation, baselineUsers, requestUserTurn, normalizedPrompt }) {
+    const freshUsers = new Set(this.userTurns().filter((turn) => !baselineUsers.has(turn.id)).map((turn) => turn.id));
+    const candidates = this.conversationTurns().filter((turn) => {
+      if (baselineConversation.has(turn.id)) return false;
+      if (turn.id === requestUserTurn?.id || freshUsers.has(turn.id)) return false;
+      const text = normalizeText(turn.text);
+      return !!text && text !== normalizedPrompt;
+    });
+    return candidates.length ? candidates[candidates.length - 1] : null;
+  }
+
+  assistantTurns() { return canonicalTurns(this.adapter, this.adapter.assistantTurns?.() || []); }
+  userTurns() { return canonicalTurns(this.adapter, this.adapter.userTurns?.() || []); }
+  conversationTurns() {
+    if (typeof this.adapter.conversationTurns === 'function') return canonicalTurns(this.adapter, this.adapter.conversationTurns() || []);
+    if (typeof this.adapter.all !== 'function') return [];
+    return canonicalTurns(this.adapter, (this.adapter.all('conversationTurn') || []).map((node) => ({
+      node, id: this.adapter.identity?.(node), text: this.adapter.text?.(node) || '',
+    })));
   }
 }
 
@@ -357,6 +408,21 @@ export function conversationIdentity(value) {
     const match = CONVERSATION_PATH.exec(url.pathname);
     return match ? { id: match[1], url: `${url.origin}/c/${match[1]}` } : null;
   } catch { return null; }
+}
+
+function canonicalTurns(adapter, turns) {
+  const out = [];
+  const seen = new Set();
+  for (const source of turns || []) {
+    if (!source) continue;
+    const root = source.node?.closest?.('[data-testid^="conversation-turn-"]') || source.node || null;
+    const id = root && root !== source.node ? (adapter.identity?.(root) || source.id) : source.id;
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    const text = root && root !== source.node ? (adapter.text?.(root) || source.text || '') : (source.text || '');
+    out.push({ ...source, node: root || source.node || null, id: String(id), text: String(text || '').trim() });
+  }
+  return out;
 }
 
 function validConversation(value) { return !!value && typeof value.id === 'string' && conversationIdentity(value.url)?.id === value.id; }
