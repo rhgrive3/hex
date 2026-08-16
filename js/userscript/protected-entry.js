@@ -8,22 +8,31 @@ import {
   startEmbedChildRuntime,
 } from './embed-child.js';
 
-const runtimeLocation = runtimeLocationFromSnapshot(runtimeHostSnapshotFromGlobals());
-const apiOrigin = normalizeApiOrigin(globalThis.__HEX_RUNTIME_ORIGIN__ || runtimeLocation.origin);
-const context = classifyProtectedRuntime({ location: runtimeLocation, apiOrigin, window });
-if (context !== PROTECTED_RUNTIME_CONTEXT.LEGACY_CHATGPT && runtimeLocation.origin !== apiOrigin) {
-  throw new Error(`Hex protected runtime origin mismatch (${runtimeLocation.origin || 'unknown'} != ${apiOrigin}).`);
-}
-globalThis.__HEX_API_BASE__ = apiOrigin;
+export async function startProtectedRuntime(options = {}) {
+  const runtimeLocation = runtimeLocationFromSnapshot(options.hostLocation || runtimeHostSnapshotFromGlobals());
+  const apiOrigin = normalizeApiOrigin(options.apiOrigin || globalThis.__HEX_RUNTIME_ORIGIN__ || runtimeLocation.origin);
+  const context = classifyProtectedRuntime({ location: runtimeLocation, apiOrigin, window });
+  if (context !== PROTECTED_RUNTIME_CONTEXT.LEGACY_CHATGPT && runtimeLocation.origin !== apiOrigin) {
+    throw new Error(`Hex protected runtime origin mismatch (${runtimeLocation.origin || 'unknown'} != ${apiOrigin}).`);
+  }
+  globalThis.__HEX_API_BASE__ = apiOrigin;
 
-if (context === PROTECTED_RUNTIME_CONTEXT.LEGACY_CHATGPT) {
-  /* The parent coordinator decides iframe-v1 vs the legacy light-DOM fallback.
-     Do not create Hex app DOM, CSS or workers in the ChatGPT realm before that
-     decision: successful iframe mode must keep the parent privilege-only. */
-  await import('./entry.js');
-} else if (context === PROTECTED_RUNTIME_CONTEXT.EMBED_CHATGPT) {
-  await startEmbedChildRuntime({ cssText: PROTECTED_HOST.css, location: runtimeLocation });
-} else {
+  if (context === PROTECTED_RUNTIME_CONTEXT.LEGACY_CHATGPT) {
+    const entry = await import('./entry.js');
+    if (typeof entry?.startChatGPTUserscript !== 'function') throw new Error('ChatGPT userscript entry point is unavailable.');
+    return entry.startChatGPTUserscript({
+      apiOrigin,
+      runtimeLocation,
+      runtimeSourceProvider: options.runtimeSourceProvider,
+      loaderVersion: String(options.loaderVersion || globalThis.__HEX_SECURE_LOADER__?.version || ''),
+      buildId: String(options.buildId || globalThis.__HEX_SECURE_LOADER__?.buildId || ''),
+    });
+  }
+
+  if (context === PROTECTED_RUNTIME_CONTEXT.EMBED_CHATGPT) {
+    return startEmbedChildRuntime({ cssText: PROTECTED_HOST.css, location: runtimeLocation });
+  }
+
   const host = document.documentElement;
   setUiRoot(host);
   host.lang = navigator.language || 'ja';
@@ -31,6 +40,22 @@ if (context === PROTECTED_RUNTIME_CONTEXT.LEGACY_CHATGPT) {
   installProtectedWorkers();
   await import('../app.js');
   await import('../ux.js');
+  return Object.freeze({ context, runtimeLocation, apiOrigin });
+}
+
+const sandboxAutoStart = readSandboxAutoStart();
+if (sandboxAutoStart) await startProtectedRuntime(sandboxAutoStart);
+
+function readSandboxAutoStart() {
+  let actualOrigin = '';
+  try { actualOrigin = String(globalThis.document?.location?.origin || globalThis.location?.origin || ''); } catch {}
+  if (actualOrigin !== 'null') return null;
+  const value = globalThis.__HEX_PROTECTED_AUTO_START__;
+  if (!value || typeof value !== 'object' || value.sandboxAuto !== true) return null;
+  const token = String(globalThis.__HEX_EMBED_SANDBOX_TOKEN__ || '');
+  if (!token || String(value.sandboxToken || '') !== token) return null;
+  try { delete globalThis.__HEX_PROTECTED_AUTO_START__; } catch { globalThis.__HEX_PROTECTED_AUTO_START__ = null; }
+  return value;
 }
 
 function normalizeApiOrigin(value) {
