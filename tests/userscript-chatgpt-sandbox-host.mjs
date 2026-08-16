@@ -27,7 +27,7 @@ assert.match(html, new RegExp(token), 'sandbox bootstrap must bind the per-gener
 assert.match(html, /hex\.embed\.sandbox-ready/, 'sandbox must announce its bootstrap stage');
 assert.match(html, /hex\.embed\.runtime/, 'sandbox must accept only the authenticated runtime-transfer message');
 assert.match(html, /__HEX_PROTECTED_AUTO_START__/, 'transferred runtime must receive an opaque-sandbox-only start marker');
-assert.match(html, /script.*type='module'|type='module'.*script/s, 'protected runtime must execute as a module inside the sandbox');
+assert.match(html, /\.type='module'/, 'protected runtime must execute as a module inside the sandbox');
 assert.doesNotMatch(html, /<iframe[^>]+src=["']https:\/\/ida\.rhgrive\.workers\.dev/i,
   'sandbox document must not navigate a nested frame to the Worker origin');
 
