@@ -6,7 +6,7 @@ import {
   stableStringify,
 } from '../../core/identity/index.js';
 
-export const CANONICAL_ADDRESS_DERIVATION_VERSION = '1.0.0';
+export const CANONICAL_ADDRESS_DERIVATION_VERSION = '1.0.1';
 export const GENERIC_ROOT_DESCRIPTOR_KINDS = Object.freeze([
   'stack-like',
   'rooted-object',
@@ -388,6 +388,11 @@ function deriveSsaValue(ctx, ssaValueId, expectedAddressSpace, state) {
   return deriveValue(ctx, sourceSemanticValueId, expectedAddressSpace, nextState);
 }
 
+function isImplicitEntryUndef(ctx, ssaValueId) {
+  const definition = ctx.ssaDefinitions.get(String(ssaValueId));
+  return definition?.kind === 'undef' && definition.proof?.kind === 'implicit-undef';
+}
+
 function deriveStateRead(ctx, value, node, expectedAddressSpace, state) {
   const variable = node.variable;
   const variableKey = String(variable?.key ?? '');
@@ -397,12 +402,19 @@ function deriveStateRead(ctx, value, node, expectedAddressSpace, state) {
     const uses = (ctx.ssaUsesByEntity.get(String(node.id)) ?? [])
       .filter((use) => String(use.proof?.variableIdentity?.key ?? use.proof?.sourceVariableKey ?? '') === variableKey);
     const reaching = [...new Set(uses.map((use) => String(use.valueId)))].sort();
-    if (reaching.length) {
+    if (reaching.length && !reaching.every((ssaValueId) => isImplicitEntryUndef(ctx, ssaValueId))) {
       return mergeAlternatives(
         reaching.map((ssaValueId) => deriveSsaValue(ctx, ssaValueId, expectedAddressSpace, state)),
         'canonical-address-state-ssa-uses-disagree',
       );
     }
+    // Generic SSA uses an explicit implicit-undef seed when the IR did not
+    // materialize incoming machine state as an entry value. That sentinel
+    // means "no earlier semantic definition", not "a clobber occurred". Let
+    // the state-read variable identity (and any architecture-neutral root
+    // descriptor supplied by the target boundary) establish the incoming root.
+    // Any real definition/unknown/phi above still takes the SSA path and keeps
+    // conservative clobber behavior.
   }
 
   const local = earlierLocalStateSource(ctx, node, variableKey);
@@ -542,9 +554,6 @@ export function canonicalAddressProofToRegionEvidence(proof) {
       offset: proof.offset.toString(),
     });
   }
-  // When wrap/separation is not proven, preserve only exact address equality.
-  // Folding the canonical offset into the root identity makes equal expressions
-  // MustAlias while different offsets remain MayAlias under the legacy floor.
   return deepFreeze({
     kind: 'rooted-offset',
     rootEntityId: exactAddressRootId(proof),
