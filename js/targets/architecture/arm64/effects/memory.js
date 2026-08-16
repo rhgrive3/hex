@@ -32,6 +32,10 @@ const ALL_NON_ATOMIC = new Set([...SIMPLE_LOADS, ...SIMPLE_STORES, ...PAIR_LOADS
 const SIGNED_LOADS = new Set(['ldrsb','ldrsh','ldrsw','ldursb','ldursh','ldursw','ldpsw']);
 const ACQUIRE_LOADS = new Set(['ldar','ldarb','ldarh']);
 const RELEASE_STORES = new Set(['stlr','stlrb','stlrh']);
+const BASE_ONLY = new Set([...ACQUIRE_LOADS, ...RELEASE_STORES]);
+const UNSCALED_ONLY = /^(?:ldur|stur|ldtr|sttr)/;
+const NON_TEMPORAL_PAIR = new Set(['ldnp','stnp']);
+const UNPRIVILEGED = new Set(['ldtr','sttr']);
 
 const WIDTH_OVERRIDE = Object.freeze({
   ldrb:8, ldrsb:8, ldurb:8, ldursb:8, ldarb:8,
@@ -50,7 +54,7 @@ function contextOf(decoded, context = {}) {
     architectureId: String(context.architectureId || decoded?.architectureId || 'arm64'),
     mode: String(context.mode || decoded?.mode || 'a64'),
     endian: String(context.endian || decoded?.endian || 'little'),
-    origin: context.origin || decoded?.origin || { instructionIds: [instructionId] },
+    origin: context.origin || decoded?.origin || { instructionIds:[instructionId] },
     options: context.options || {},
   };
 }
@@ -58,16 +62,16 @@ function contextOf(decoded, context = {}) {
 function bundle(decoded, context, body) {
   const ctx = contextOf(decoded, context);
   return createMachineEffectBundle({
-    instructionId: ctx.instructionId,
-    architectureId: ctx.architectureId,
-    mode: ctx.mode,
-    operations: body.operations || [],
-    controlEffect: body.controlEffect || { kind:'fallthrough' },
-    possibleFaults: body.possibleFaults || [],
-    origin: ctx.origin,
-    completeness: body.completeness || 'exact',
-    ...(body.unknownEffects ? { unknownEffects: body.unknownEffects } : {}),
-    ...(body.metadata ? { metadata: body.metadata } : {}),
+    instructionId:ctx.instructionId,
+    architectureId:ctx.architectureId,
+    mode:ctx.mode,
+    operations:body.operations || [],
+    controlEffect:body.controlEffect || { kind:'fallthrough' },
+    possibleFaults:body.possibleFaults || [],
+    origin:ctx.origin,
+    completeness:body.completeness || 'exact',
+    ...(body.unknownEffects ? { unknownEffects:body.unknownEffects } : {}),
+    ...(body.metadata ? { metadata:body.metadata } : {}),
   }, ctx.options);
 }
 
@@ -83,19 +87,9 @@ function partial(decoded, context, reason, categories = ['memory','registers','f
 function operands(decoded) {
   return Array.isArray(decoded?.ops) ? decoded.ops : Array.isArray(decoded?.operands) ? decoded.operands : [];
 }
-
-function dataRegisters(decoded) {
-  return operands(decoded).map((operand) => arm64RegisterOperand(operand)).filter(Boolean);
-}
-
-function memoryOperand(decoded) {
-  return operands(decoded).find((operand) => operand?.k === 'mem' || operand?.kind === 'memory') || null;
-}
-
-function immediateOperand(decoded) {
-  return operands(decoded).find((operand, index) => index > 0 && (operand?.k === 'imm' || operand?.kind === 'immediate')) || null;
-}
-
+function dataRegisters(decoded) { return operands(decoded).map((operand) => arm64RegisterOperand(operand)).filter(Boolean); }
+function memoryOperand(decoded) { return operands(decoded).find((operand) => operand?.k === 'mem' || operand?.kind === 'memory') || null; }
+function immediateOperand(decoded) { return operands(decoded).find((operand, index) => index > 0 && (operand?.k === 'imm' || operand?.kind === 'immediate')) || null; }
 function immediateValue(operand) {
   const value = operand?.value;
   if (typeof value === 'bigint') return value;
@@ -109,42 +103,39 @@ function memoryWidthBits(mnemonic, reg) {
   if (!reg) return null;
   return Number(reg.bits || 0) || null;
 }
-
 function accessAlignment(mnemonic, widthBits) {
   if (ACQUIRE_LOADS.has(mnemonic) || RELEASE_STORES.has(mnemonic)) return Math.max(1, widthBits / 8);
   return undefined;
 }
-
-function accessFor({ ctx, addressExpr, widthBits, atomic = false, ordering = null, alignment = null }) {
-  const input = {
-    space:'memory',
-    addressExpr,
-    widthBits,
-    endian:ctx.endian,
-    atomic,
-    volatility:false,
-  };
+function accessFor({ ctx, addressExpr, widthBits, atomic = null, ordering = null, alignment = null, volatility = null }) {
+  const input = { space:'memory', addressExpr, widthBits, endian:ctx.endian };
   if (alignment) input.alignment = alignment;
+  if (typeof atomic === 'boolean') input.atomic = atomic;
   if (ordering) input.ordering = ordering;
+  if (typeof volatility === 'boolean') input.volatility = volatility;
   return createMemoryAccess(input, ctx.options);
 }
 
-function possibleFaults(direction, { alignment = null, addressExpr = null, accessIndex = 0 } = {}) {
+function isTagChecked(addressing) {
+  return addressing?.base?.kind !== 'sp' || addressing?.mode !== 'offset';
+}
+function possibleFaults(direction, { alignment = null, addressExpr = null, accessIndex = 0, tagChecked = false } = {}) {
+  const causes = ['address-size','translation','access-flag','permission','external'];
+  if (tagChecked) causes.push('tag-check');
   const faults = [{
     kind:'data-abort',
     condition:{ kind:'memory-access-fault', access:direction, accessIndex },
-    detail:{ causes:['address-size','translation','access-flag','permission','external','tag-check'], ...(addressExpr ? { addressExpr } : {}) },
+    detail:{ causes, tagChecked, ...(addressExpr ? { addressExpr } : {}) },
   }];
   if (alignment && alignment > 1) {
     faults.push({
       kind:'alignment-fault',
       condition:{ kind:'misaligned', alignment, accessIndex },
-      detail:{ access:direction },
+      detail:{ access:direction, alignment },
     });
   }
   return faults;
 }
-
 function stackPointerAlignmentFault(addressing, accessIndex = 0) {
   if (addressing?.base?.kind !== 'sp') return [];
   return [{
@@ -155,14 +146,12 @@ function stackPointerAlignmentFault(addressing, accessIndex = 0) {
 }
 
 function zeroConstant(widthBits) { return createBitVectorValue(widthBits, 0n); }
-
 function valueOp(opcode, input, fromBits, toBits, id, metadata = {}) {
   const output = arm64Temporary(id, toBits);
   return {
     output,
     operation:createMachineOperation({
-      kind:'value', opcode,
-      inputs:[input], outputs:[output],
+      kind:'value', opcode, inputs:[input], outputs:[output],
       metadata:{ architecture:'arm64', fromBits, toBits, ...metadata },
     }),
   };
@@ -178,7 +167,6 @@ function loadedValueToRegister(regInput, rawValue, memoryBits, { signed = false,
   let value = rawValue;
   const viewBits = Number(reg.bits);
   if (memoryBits > viewBits) throw new TypeError('arm64-load-width-exceeds-destination-view');
-
   if (memoryBits < viewBits) {
     const ext = valueOp(signed ? 'sign-extend' : 'zero-extend', value, memoryBits, viewBits, `${idPrefix}.view`, { signed });
     operations.push(ext.operation);
@@ -211,7 +199,6 @@ function loadedValueToRegister(regInput, rawValue, memoryBits, { signed = false,
     }));
     return { operations, discarded:false };
   }
-
   throw new TypeError('arm64-unsupported-load-register-class');
 }
 
@@ -221,8 +208,15 @@ function storeValueFromRegister(regInput, widthBits, idPrefix) {
   if (reg.zero) return { operations:[], value:zeroConstant(widthBits) };
   if (reg.kind === 'sp') throw new TypeError('arm64-store-from-sp-unsupported');
   if (widthBits > reg.bits) throw new TypeError('arm64-store-width-exceeds-source-view');
-  const read = createArm64RegisterRead(reg, `${idPrefix}.source`, widthBits);
-  return { operations:[read.operation], value:read.value };
+  const read = createArm64RegisterRead(reg, `${idPrefix}.source`, reg.bits);
+  const operations = [read.operation];
+  let value = read.value;
+  if (widthBits < reg.bits) {
+    const trunc = valueOp('truncate', value, reg.bits, widthBits, `${idPrefix}.truncated`, { purpose:'memory-store-width' });
+    operations.push(trunc.operation);
+    value = trunc.output;
+  }
+  return { operations, value };
 }
 
 function overlapIsConstrained(addressing, regs) {
@@ -232,17 +226,27 @@ function overlapIsConstrained(addressing, regs) {
     return reg && !reg.zero && reg.physicalId === addressing.base.physicalId;
   });
 }
+function zeroDisplacement(addressing) {
+  const raw = addressing?.metadata?.addressDisplacement;
+  return raw == null || BigInt(raw) === 0n;
+}
+function validateSimpleAddressing(mnemonic, addressing) {
+  if (BASE_ONLY.has(mnemonic)) {
+    if (addressing.mode !== 'offset' || addressing.index || !zeroDisplacement(addressing)) return `${mnemonic} requires base-only addressing`;
+  }
+  if (UNSCALED_ONLY.test(mnemonic)) {
+    if (addressing.mode !== 'offset' || addressing.index) return `${mnemonic} requires unscaled immediate offset addressing without writeback`;
+  }
+  return null;
+}
 
 function simpleMemory(decoded, context, mnemonic, isLoad) {
   const ctx = contextOf(decoded, context);
-  const regs = dataRegisters(decoded);
-  const reg = regs[0];
+  const reg = dataRegisters(decoded)[0];
   if (!reg) return partial(decoded, context, 'memory instruction data register is missing');
   const widthBits = memoryWidthBits(mnemonic, reg);
   if (![8,16,32,64,128].includes(widthBits)) return partial(decoded, context, 'unsupported memory transfer width');
-  if ((mnemonic === 'ldrsw' || mnemonic === 'ldursw') && (reg.kind !== 'gp' || reg.bits !== 64)) {
-    return partial(decoded, context, `${mnemonic} requires an X destination register`);
-  }
+  if ((mnemonic === 'ldrsw' || mnemonic === 'ldursw') && (reg.kind !== 'gp' || reg.bits !== 64)) return partial(decoded, context, `${mnemonic} requires an X destination register`);
 
   let addressing;
   try { addressing = buildArm64EffectiveAddress(decoded, { prefix:'addr', accessWidthBits:widthBits }); }
@@ -250,46 +254,51 @@ function simpleMemory(decoded, context, mnemonic, isLoad) {
     if (error instanceof Arm64AddressingError) return partial(decoded, context, error.code);
     throw error;
   }
+  const addressError = validateSimpleAddressing(mnemonic, addressing);
+  if (addressError) return partial(decoded, context, addressError);
   if (overlapIsConstrained(addressing, [reg])) return partial(decoded, context, 'writeback overlaps data register and is constrained-unpredictable');
 
   const signed = isLoad && SIGNED_LOADS.has(mnemonic);
-  const atomic = ACQUIRE_LOADS.has(mnemonic) || RELEASE_STORES.has(mnemonic);
+  const atomic = BASE_ONLY.has(mnemonic) ? true : null;
   const ordering = ACQUIRE_LOADS.has(mnemonic) ? 'acquire' : RELEASE_STORES.has(mnemonic) ? 'release' : null;
   const alignment = accessAlignment(mnemonic, widthBits);
   const access = accessFor({ ctx, addressExpr:addressing.addressExpr, widthBits, atomic, ordering, alignment });
   const operations = [...addressing.readOperations];
   const faults = [
     ...stackPointerAlignmentFault(addressing, 0),
-    ...possibleFaults(isLoad?'read':'write', { alignment, addressExpr:addressing.addressExpr }),
+    ...possibleFaults(isLoad?'read':'write', { alignment, addressExpr:addressing.addressExpr, tagChecked:isTagChecked(addressing) }),
   ];
+  const accessMetadata = {
+    architecture:'arm64', mnemonic, signed, addressing:addressing.metadata, accessIndex:0,
+    ...(UNPRIVILEGED.has(mnemonic) ? { unprivileged:true } : {}),
+  };
 
   if (isLoad) {
     const raw = arm64Temporary('load.raw.0', widthBits);
-    operations.push(createMachineOperation({
-      kind:'memory-read', access, value:raw,
-      metadata:{ architecture:'arm64', mnemonic, signed, addressing:addressing.metadata, accessIndex:0 },
-    }));
+    operations.push(createMachineOperation({ kind:'memory-read', access, value:raw, metadata:accessMetadata }));
     try {
       const write = loadedValueToRegister(reg, raw, widthBits, { signed, idPrefix:'load.0' });
       operations.push(...write.operations);
-    } catch (error) {
-      return partial(decoded, context, error.message || 'unsupported load destination');
-    }
+    } catch (error) { return partial(decoded, context, error.message || 'unsupported load destination'); }
   } else {
     let source;
     try { source = storeValueFromRegister(reg, widthBits, 'store.0'); }
     catch (error) { return partial(decoded, context, error.message || 'unsupported store source'); }
     operations.push(...source.operations);
-    operations.push(createMachineOperation({
-      kind:'memory-write', access, value:source.value,
-      metadata:{ architecture:'arm64', mnemonic, addressing:addressing.metadata, accessIndex:0 },
-    }));
+    operations.push(createMachineOperation({ kind:'memory-write', access, value:source.value, metadata:accessMetadata }));
   }
 
   if (addressing.mode !== 'offset') operations.push(...addressing.writebackOperations);
   return bundle(decoded, context, {
-    operations, possibleFaults:faults,
-    metadata:{ family:'arm64-memory', mnemonic, transfer:'single', widthBits, signed, addressing:addressing.metadata, atomic, ...(ordering ? { ordering } : {}) },
+    operations,
+    possibleFaults:faults,
+    metadata:{
+      family:'arm64-memory', mnemonic, transfer:'single', widthBits, signed,
+      addressing:addressing.metadata,
+      ...(atomic === true ? { atomic:true } : {}),
+      ...(ordering ? { ordering } : {}),
+      ...(UNPRIVILEGED.has(mnemonic) ? { unprivileged:true } : {}),
+    },
   });
 }
 
@@ -301,6 +310,7 @@ function pairMemory(decoded, context, mnemonic, isLoad) {
   const secondWidth = mnemonic === 'ldpsw' ? 32 : memoryWidthBits(mnemonic, regs[1]);
   if (!widthBits || widthBits !== secondWidth || ![32,64,128].includes(widthBits)) return partial(decoded, context, 'unsupported or mismatched pair widths');
   if (mnemonic === 'ldpsw' && regs.some((reg) => reg.kind !== 'gp' || reg.bits !== 64)) return partial(decoded, context, 'ldpsw requires two X destination registers');
+  if (isLoad && !regs[0].zero && !regs[1].zero && regs[0].physicalId === regs[1].physicalId) return partial(decoded, context, 'pair load destinations overlap and are constrained-unpredictable');
 
   let addressing;
   try { addressing = buildArm64EffectiveAddress(decoded, { prefix:'addr', accessWidthBits:widthBits }); }
@@ -308,21 +318,26 @@ function pairMemory(decoded, context, mnemonic, isLoad) {
     if (error instanceof Arm64AddressingError) return partial(decoded, context, error.code);
     throw error;
   }
+  if (addressing.index) return partial(decoded, context, `${mnemonic} does not support register-offset addressing`);
+  if (NON_TEMPORAL_PAIR.has(mnemonic) && addressing.mode !== 'offset') return partial(decoded, context, `${mnemonic} does not support writeback addressing`);
   if (overlapIsConstrained(addressing, regs)) return partial(decoded, context, 'pair writeback overlaps data register and is constrained-unpredictable');
+
   const strideBytes = widthBits / 8;
   const signed = mnemonic === 'ldpsw';
+  const nonTemporal = NON_TEMPORAL_PAIR.has(mnemonic);
   const operations = [...addressing.readOperations];
   const faults = [...stackPointerAlignmentFault(addressing, 0)];
   for (let i = 0; i < 2; i++) {
     const addressExpr = arm64AddressOffset(addressing.addressExpr, BigInt(i * strideBytes));
-    const access = accessFor({ ctx, addressExpr, widthBits, atomic:false });
-    faults.push(...possibleFaults(isLoad?'read':'write', { addressExpr, accessIndex:i }));
+    const access = accessFor({ ctx, addressExpr, widthBits });
+    faults.push(...possibleFaults(isLoad?'read':'write', { addressExpr, accessIndex:i, tagChecked:isTagChecked(addressing) }));
+    const metadata = {
+      architecture:'arm64', mnemonic, pair:true, pairIndex:i, pairStrideBytes:strideBytes,
+      accessOrder:i, signed, addressing:addressing.metadata, ...(nonTemporal ? { nonTemporal:true } : {}),
+    };
     if (isLoad) {
       const raw = arm64Temporary(`load.raw.${i}`, widthBits);
-      operations.push(createMachineOperation({
-        kind:'memory-read', access, value:raw,
-        metadata:{ architecture:'arm64', mnemonic, pair:true, pairIndex:i, pairStrideBytes:strideBytes, accessOrder:i, signed, addressing:addressing.metadata },
-      }));
+      operations.push(createMachineOperation({ kind:'memory-read', access, value:raw, metadata }));
       try {
         const write = loadedValueToRegister(regs[i], raw, widthBits, { signed, idPrefix:`load.${i}` });
         operations.push(...write.operations);
@@ -332,24 +347,21 @@ function pairMemory(decoded, context, mnemonic, isLoad) {
       try { source = storeValueFromRegister(regs[i], widthBits, `store.${i}`); }
       catch (error) { return partial(decoded, context, error.message || 'unsupported pair store source'); }
       operations.push(...source.operations);
-      operations.push(createMachineOperation({
-        kind:'memory-write', access, value:source.value,
-        metadata:{ architecture:'arm64', mnemonic, pair:true, pairIndex:i, pairStrideBytes:strideBytes, accessOrder:i, addressing:addressing.metadata },
-      }));
+      operations.push(createMachineOperation({ kind:'memory-write', access, value:source.value, metadata }));
     }
   }
 
   if (addressing.mode !== 'offset') operations.push(...addressing.writebackOperations);
   return bundle(decoded, context, {
-    operations, possibleFaults:faults,
-    metadata:{ family:'arm64-memory', mnemonic, transfer:'pair', elementWidthBits:widthBits, pairStrideBytes:strideBytes, signed, addressing:addressing.metadata },
+    operations,
+    possibleFaults:faults,
+    metadata:{ family:'arm64-memory', mnemonic, transfer:'pair', elementWidthBits:widthBits, pairStrideBytes:strideBytes, signed, addressing:addressing.metadata, ...(nonTemporal ? { nonTemporal:true } : {}) },
   });
 }
 
 function literalLoad(decoded, context, mnemonic) {
   const ctx = contextOf(decoded, context);
-  const regs = dataRegisters(decoded);
-  const reg = regs[0];
+  const reg = dataRegisters(decoded)[0];
   if (!reg) return partial(decoded, context, 'literal load destination register is missing');
   const immediate = immediateValue(immediateOperand(decoded));
   let target = decoded?.pcRelTarget ?? decoded?.literalTarget ?? immediate;
@@ -362,11 +374,11 @@ function literalLoad(decoded, context, mnemonic) {
   if (mnemonic === 'ldrsw' && (reg.kind !== 'gp' || reg.bits !== 64)) return partial(decoded, context, 'literal ldrsw requires an X destination register');
   const signed = SIGNED_LOADS.has(mnemonic);
   const addressExpr = arm64ConstantExpr(target, 64);
-  const access = accessFor({ ctx, addressExpr, widthBits, atomic:false });
+  const access = accessFor({ ctx, addressExpr, widthBits });
   const raw = arm64Temporary('load.literal.raw', widthBits);
   const operations = [createMachineOperation({
     kind:'memory-read', access, value:raw,
-    metadata:{ architecture:'arm64', mnemonic, literal:true, signed, target:target.toString() },
+    metadata:{ architecture:'arm64', mnemonic, literal:true, signed, target:target.toString(), tagChecked:false },
   })];
   try {
     const write = loadedValueToRegister(reg, raw, widthBits, { signed, idPrefix:'load.literal' });
@@ -374,7 +386,7 @@ function literalLoad(decoded, context, mnemonic) {
   } catch (error) { return partial(decoded, context, error.message || 'unsupported literal load destination'); }
   return bundle(decoded, context, {
     operations,
-    possibleFaults:possibleFaults('read', { addressExpr }),
+    possibleFaults:possibleFaults('read', { addressExpr, tagChecked:false }),
     metadata:{ family:'arm64-memory', mnemonic, transfer:'literal', widthBits, signed, target:target.toString() },
   });
 }
@@ -386,6 +398,7 @@ function prefetch(decoded, context) {
     if (error instanceof Arm64AddressingError) return partial(decoded, context, error.code, ['memory','other']);
     throw error;
   }
+  if (addressing.mode !== 'offset') return partial(decoded, context, 'prfm does not support writeback addressing', ['memory','other']);
   return bundle(decoded, context, {
     operations:[...addressing.readOperations],
     completeness:'partial',
