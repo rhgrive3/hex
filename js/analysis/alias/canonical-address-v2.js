@@ -42,10 +42,6 @@ function normalizeModulo(value, widthBits) {
   return BigInt.asUintN(widthBits, value);
 }
 
-function sameJson(left, right) {
-  return stableStringify(left) === stableStringify(right);
-}
-
 function unknown(reason, detail = null) {
   return deepFreeze({
     kind: 'unknown',
@@ -63,10 +59,15 @@ function scalarConstant(value, widthBits, sourceEntityId) {
   });
 }
 
+function proofRootKind(root) {
+  return root?.kind === 'root-only' ? root.rootKind : root?.kind;
+}
+
 function rootIdentityKey(root) {
-  if (!root || !['rooted', 'stack-like'].includes(root.kind)) return null;
+  const kind = proofRootKind(root);
+  if (!root || !['rooted', 'stack-like'].includes(kind)) return null;
   return stableStringify({
-    kind: root.kind,
+    kind,
     addressSpace: root.addressSpace,
     rootIdentity: root.rootIdentity,
     rootEntityId: root.rootEntityId ?? null,
@@ -257,14 +258,17 @@ function constantFromNode(value, node) {
 }
 
 function sameRoot(left, right) {
-  if (!left || !right || left.kind !== right.kind) return false;
-  if (!['rooted', 'stack-like'].includes(left.kind)) return false;
+  const leftKind = proofRootKind(left);
+  const rightKind = proofRootKind(right);
+  if (!left || !right || leftKind !== rightKind) return false;
+  if (!['rooted', 'stack-like'].includes(leftKind)) return false;
   return rootIdentityKey(left) === rootIdentityKey(right);
 }
 
 function mergeAlternatives(proofs, reason) {
   if (!proofs.length) return unknown(reason);
   if (proofs.some((proof) => proof.kind === 'unknown' || proof.kind === 'constant')) return unknown(reason);
+  if (proofs.length === 1) return proofs[0];
   if (proofs.every((proof) => proof.kind === 'absolute')) {
     const first = proofs[0];
     return proofs.every((proof) => proof.addressSpace === first.addressSpace && proof.address === first.address)
@@ -283,7 +287,7 @@ function mergeAlternatives(proofs, reason) {
   return deepFreeze({
     kind: 'root-only',
     addressSpace: first.addressSpace,
-    rootKind: first.kind,
+    rootKind: proofRootKind(first),
     rootIdentity: first.rootIdentity,
     ...(first.rootEntityId == null ? {} : { rootEntityId: first.rootEntityId }),
     widthBits: first.widthBits,
