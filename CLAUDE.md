@@ -31,6 +31,10 @@ When running as Opus 5: optimize for wall-clock speed. Finish tasks quickly.
 - Speed never trades away quality: same rigor, same verification, same "done means done". If parallelizing risks a worse result, slow down.
 - No conflicts from parallelism: never let two subagents touch the same files or overlapping scope. Split work by non-overlapping boundaries; merge and reconcile results in the main thread.
 
+### Dev Supervisor overlap exception
+
+The no-overlap rule above remains the default. For the Admin Dev subsystem only, an explicit Dev Supervisor decision may intentionally assign overlapping Worker ownership when the Supervisor determines that overlap improves the result. Do not infer this exception without that explicit Dev Supervisor decision.
+
 ## Short responses
 
 It's been a long day and my brain is fried, talk to me like I'm 5.
