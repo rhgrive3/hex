@@ -19,6 +19,25 @@ function rowForNode(node, fallback, options) {
   return fallback;
 }
 
+function semanticSsaContractInput(input) {
+  return {
+    contractVersion: input.contractVersion,
+    functionId: input.functionId,
+    definitions: input.definitions,
+    uses: input.uses,
+  };
+}
+
+function memorySsaContractInput(input) {
+  return {
+    contractVersion: input.contractVersion,
+    functionId: input.functionId,
+    regions: input.regions,
+    definitions: input.definitions,
+    uses: input.uses,
+  };
+}
+
 /**
  * Semantic IR v2 -> legacy Semantic IR v1 compatibility projection.
  *
@@ -29,9 +48,13 @@ function rowForNode(node, fallback, options) {
 export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
   const ir = validateSemanticIrFunction(input, options.validationOptions || {});
   const ssaInput = options.ssa ?? options.semanticSsa ?? null;
-  const ssa = ssaInput == null ? null : createSemanticSsaContract(ssaInput, options.ssaValidationOptions || {});
+  const ssa = ssaInput == null ? null : createSemanticSsaContract(
+    semanticSsaContractInput(ssaInput), options.ssaValidationOptions || {},
+  );
   const memorySsaInput = options.memorySsa ?? null;
-  const memorySsa = memorySsaInput == null ? null : createMemorySsaContract(memorySsaInput, options.memorySsaValidationOptions || {});
+  const memorySsa = memorySsaInput == null ? null : createMemorySsaContract(
+    memorySsaContractInput(memorySsaInput), options.memorySsaValidationOptions || {},
+  );
   if (ssa && ssa.functionId !== ir.functionId) throw new TypeError('semantic-v2-v1-compat-ssa-function-mismatch');
   if (memorySsa && memorySsa.functionId !== ir.functionId) throw new TypeError('semantic-v2-v1-compat-memoryssa-function-mismatch');
 
