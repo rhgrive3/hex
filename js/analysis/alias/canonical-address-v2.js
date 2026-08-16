@@ -563,7 +563,7 @@ function deriveValue(ctx, valueId, expectedAddressSpace, state) {
     if (!Array.isArray(node.inputs) || node.inputs.length !== 1) return unknown('canonical-address-copy-arity');
     return deriveValue(ctx, node.inputs[0], expectedAddressSpace, nextState);
   }
-  if (node.kind === 'binary' && String(node.operator ?? '').toLowerCase() === 'add-with-carry') {
+  if ((node.kind === 'intrinsic' || node.kind === 'binary') && String(node.operator ?? '').toLowerCase() === 'add-with-carry') {
     return deriveAddWithCarry(ctx, value, node, expectedAddressSpace, nextState);
   }
   if (node.kind === 'address' || node.kind === 'binary') {
