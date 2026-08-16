@@ -29,6 +29,7 @@ import {
 const protectedEntrySource = await readFile(new URL('../js/userscript/protected-entry.js', import.meta.url), 'utf8');
 const entrySource = await readFile(new URL('../js/userscript/entry.js', import.meta.url), 'utf8');
 const childSource = await readFile(new URL('../js/userscript/embed-child.js', import.meta.url), 'utf8');
+const opaqueEntrySource = await readFile(new URL('../js/userscript/opaque-embed-entry.js', import.meta.url), 'utf8');
 
 await testContextClassification();
 await testAttachAnnouncementAndValidation();
@@ -247,7 +248,14 @@ function testRuntimeResponsibilityBoundaries() {
   assert.match(entrySource, /PROTECTED_HOST\.scopedCss/);
   assert.match(entrySource, /createChatGPTIframeHost/);
   assert.match(entrySource, /createChatGPTParentRpc/);
-  assert.match(entrySource, /falling back to legacy light DOM/);
+  assert.match(entrySource, /PROTECTED_OPAQUE_EMBED_RUNTIME/);
+  assert.match(entrySource, /readEmbedMode\(\) === LEGACY_MODE/);
+  assert.doesNotMatch(entrySource, /falling back to legacy light DOM/);
+  assert.match(opaqueEntrySource, /createEmbedBridgeProxy/);
+  assert.match(opaqueEntrySource, /installProtectedWorkers/);
+  assert.match(opaqueEntrySource, /import\('\.\.\/app\.js'\)/);
+  assert.match(opaqueEntrySource, /import\('\.\.\/ux\.js'\)/);
+  assert.doesNotMatch(opaqueEntrySource, /ChatGPTDOMAdapter|prompt-textarea|send-button/);
 }
 
 function proxyPair(handlers) {
