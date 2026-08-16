@@ -15,7 +15,9 @@ on:
       - 'js/dataflow-*.js'
       - 'js/blocks.js'
       - 'tools/decompiler/**'
+      - 'tools/benchmark/**'
       - 'tests/compiler-truth/**'
+      - 'tests/benchmark-baseline*'
       - 'tests/issue-458-ghidra-trigger.mjs'
       - 'package.json'
   workflow_dispatch:
@@ -93,6 +95,8 @@ jobs:
             echo 'Ghidra differential failed.' >&2
             exit 1
           fi
+          node tools/benchmark/compiler-truth-report.mjs --input=compiler-truth-ghidra.log --output=compiler-truth-baseline-report.json
+          node tools/benchmark/compare.mjs --compiler-truth=compiler-truth-baseline-report.json
 
       - name: Upload differential diagnostics
         if: always()
@@ -102,5 +106,6 @@ jobs:
           path: |
             ghidra-availability.log
             compiler-truth-ghidra.log
+            compiler-truth-baseline-report.json
           if-no-files-found: ignore
           retention-days: 14

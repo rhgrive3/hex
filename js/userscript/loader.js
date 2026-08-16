@@ -1,3 +1,6 @@
+import { toExactArrayBuffer } from './array-buffer.js';
+import { decompressGzipExact } from './decompress.js';
+
 const HEX_ORIGIN = '__HEX_ORIGIN__';
 const LOADER_VERSION = '__HEX_LOADER_VERSION__';
 const EXPECTED_BUILD = '__HEX_BUILD_ID__';
@@ -7,7 +10,7 @@ boot().catch(showFailure);
 
 async function boot() {
   if (!globalThis.crypto?.subtle) throw new Error('WebCrypto is required to start Hex.');
-  const status = launcher('Loading Hex…', true);
+  const status = launcher(`Loading Hex ${LOADER_VERSION}…`, true);
   let error = null;
   for (let attempt = 0; attempt <= RETRIES; attempt++) {
     try { await loadRuntime(); status.remove(); return; }
@@ -18,62 +21,70 @@ async function boot() {
 
 async function loadRuntime() {
   globalThis.__HEX_RUNTIME_ORIGIN__ = HEX_ORIGIN;
-  const keyPair = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, false, ['deriveBits']);
-  const clientPublicKey = await crypto.subtle.exportKey('jwk', keyPair.publicKey);
+  globalThis.__HEX_SECURE_LOADER__ = { version: LOADER_VERSION, buildId: EXPECTED_BUILD };
+  const keyPair = await cryptoStage('ECDH key generation', () => crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, false, ['deriveBits']));
+  const clientPublicKey = await cryptoStage('ECDH public-key export', () => crypto.subtle.exportKey('jwk', keyPair.publicKey));
   const nonce = randomToken(24), requestId = randomToken(18), sessionIdentity = randomToken(18);
-  const bootstrap = await gmJson(`${HEX_ORIGIN}/runtime/bootstrap`, {
+  const bootstrap = await runtimeStage('runtime bootstrap fetch', () => fetchJson(`${HEX_ORIGIN}/runtime/bootstrap`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ nonce, loaderVersion: LOADER_VERSION, buildId: EXPECTED_BUILD, requestId, sessionIdentity, clientPublicKey }),
-  });
+  }));
   if (!bootstrap || bootstrap.buildId !== EXPECTED_BUILD || Date.parse(bootstrap.expiry) <= Date.now()) throw new Error('Runtime bootstrap identity or expiry could not be verified.');
-  const serverPublicKey = await crypto.subtle.importKey('jwk', bootstrap.serverPublicKey, { name: 'ECDH', namedCurve: 'P-256' }, false, []);
-  const shared = await crypto.subtle.deriveBits({ name: 'ECDH', public: serverPublicKey }, keyPair.privateKey, 256);
-  const material = await crypto.subtle.importKey('raw', shared, 'HKDF', false, ['deriveKey']);
-  const wrappingKey = await crypto.subtle.deriveKey({ name: 'HKDF', hash: 'SHA-256', salt: fromB64(bootstrap.keyEnvelope.salt), info: utf8(`hex-runtime-wrap:${bootstrap.buildId}`) }, material, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
-  const contentKeyRaw = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: fromB64(bootstrap.keyEnvelope.iv), additionalData: utf8(`${bootstrap.buildId}:${bootstrap.sessionId}`), tagLength: 128 }, wrappingKey, fromB64(bootstrap.keyEnvelope.ciphertext));
-  const contentKey = await crypto.subtle.importKey('raw', contentKeyRaw, { name: 'AES-GCM' }, false, ['decrypt']);
-  const ciphertext = new Uint8Array(await fetchBytes(new URL(bootstrap.runtimeLocator, HEX_ORIGIN).href, { headers: { authorization: `Bearer ${bootstrap.session}` } }));
+  const serverPublicKey = await cryptoStage('ECDH server-key import', () => crypto.subtle.importKey('jwk', bootstrap.serverPublicKey, { name: 'ECDH', namedCurve: 'P-256' }, false, []));
+  const shared = await cryptoStage('ECDH shared-secret derivation', () => crypto.subtle.deriveBits({ name: 'ECDH', public: serverPublicKey }, keyPair.privateKey, 256));
+  const material = await cryptoStage('HKDF material import', () => crypto.subtle.importKey('raw', toExactArrayBuffer(shared), 'HKDF', false, ['deriveKey']));
+  const wrappingKey = await cryptoStage('HKDF wrapping-key derivation', () => crypto.subtle.deriveKey({
+    name: 'HKDF', hash: 'SHA-256',
+    salt: toExactArrayBuffer(fromB64(bootstrap.keyEnvelope.salt)),
+    info: toExactArrayBuffer(utf8(`hex-runtime-wrap:${bootstrap.buildId}`)),
+  }, material, { name: 'AES-GCM', length: 256 }, false, ['decrypt']));
+  const contentKeyRaw = await cryptoStage('AES-GCM content-key unwrap', () => crypto.subtle.decrypt({
+    name: 'AES-GCM',
+    iv: toExactArrayBuffer(fromB64(bootstrap.keyEnvelope.iv)),
+    additionalData: toExactArrayBuffer(utf8(`${bootstrap.buildId}:${bootstrap.sessionId}`)),
+    tagLength: 128,
+  }, wrappingKey, toExactArrayBuffer(fromB64(bootstrap.keyEnvelope.ciphertext))));
+  const contentKey = await cryptoStage('AES-GCM content-key import', () => crypto.subtle.importKey('raw', toExactArrayBuffer(contentKeyRaw), { name: 'AES-GCM' }, false, ['decrypt']));
+  const ciphertext = new Uint8Array(await runtimeStage('protected runtime fetch', () => fetchBytes(new URL(bootstrap.runtimeLocator, HEX_ORIGIN).href, { headers: { authorization: `Bearer ${bootstrap.session}` } })));
   await assertHash(ciphertext, bootstrap.manifest.ciphertextHash);
-  const compressed = new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: fromB64(bootstrap.manifest.iv), additionalData: utf8(bootstrap.manifest.aad), tagLength: 128 }, contentKey, ciphertext));
-  const plaintext = await decompress(compressed, bootstrap.manifest.compression);
+  const compressed = new Uint8Array(await cryptoStage('AES-GCM runtime decrypt', () => crypto.subtle.decrypt({
+    name: 'AES-GCM',
+    iv: toExactArrayBuffer(fromB64(bootstrap.manifest.iv)),
+    additionalData: toExactArrayBuffer(utf8(bootstrap.manifest.aad)),
+    tagLength: 128,
+  }, contentKey, toExactArrayBuffer(ciphertext))));
+  if (bootstrap.manifest.compression !== 'gzip') throw new Error('The protected runtime compression format is unsupported.');
+  const plaintext = await runtimeStage('protected runtime decompress', () => decompressGzipExact(compressed));
   await assertHash(plaintext, bootstrap.manifest.contentHash);
-  const blobUrl = URL.createObjectURL(new Blob([plaintext], { type: 'text/javascript' }));
-  try { await import(blobUrl); }
+  const blobUrl = await runtimeStage('protected runtime Blob creation', () => URL.createObjectURL(new Blob([toExactArrayBuffer(plaintext)], { type: 'text/javascript' })));
+  try { await runtimeStage('protected runtime import', () => import(blobUrl)); }
   finally {
     URL.revokeObjectURL(blobUrl); ciphertext.fill(0); compressed.fill(0); plaintext.fill(0); new Uint8Array(contentKeyRaw).fill(0); new Uint8Array(shared).fill(0);
   }
 }
 
-async function decompress(bytes, algorithm) {
-  if (algorithm !== 'gzip' || typeof DecompressionStream !== 'function') throw new Error('The protected runtime compression format is unsupported.');
-  const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
-  return new Uint8Array(await new Response(stream).arrayBuffer());
+async function cryptoStage(stage, operation) {
+  try { return await operation(); }
+  catch (error) { throw new Error(`${stage}: ${String(error?.message || error || 'WebCrypto failed.')}`); }
+}
+async function runtimeStage(stage, operation) {
+  try { return await operation(); }
+  catch (error) { throw new Error(`${stage}: ${String(error?.message || error || 'runtime failed.')}`); }
 }
 async function assertHash(bytes, expected) {
-  const actual = toHex(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)));
+  const digest = await cryptoStage('SHA-256 integrity digest', () => crypto.subtle.digest('SHA-256', toExactArrayBuffer(bytes)));
+  const actual = toHex(new Uint8Array(digest));
   if (!constantTimeEqual(actual, String(expected || '').toLowerCase())) throw new Error('Protected runtime integrity verification failed.');
 }
 function constantTimeEqual(a, b) { if (a.length !== b.length) return false; let diff = 0; for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i); return diff === 0; }
 
-function userscriptRequest() {
-  const modern = globalThis.GM?.xmlHttpRequest;
-  if (typeof modern === 'function') return modern.bind(globalThis.GM);
-  const legacy = globalThis.GM_xmlhttpRequest;
-  return typeof legacy === 'function' ? legacy : null;
+async function fetchJson(url, init = {}) {
+  const response = await fetch(url, { ...init, method: init.method || 'GET', credentials: 'omit', mode: 'cors', cache: 'no-store' });
+  if (response.status !== 200) throw new Error(`Hex runtime bootstrap failed (${response.status}).`);
+  return response.json();
 }
-function gmTextRequest(url, init = {}) {
-  const gm = userscriptRequest();
-  if (!gm) return fetch(url, init).then(async (response) => ({ status: response.status, body: await response.text() }));
-  return new Promise((resolve, reject) => {
-    const request = gm({ method: init.method || 'GET', url, headers: init.headers || {}, data: init.body, responseType: 'text',
-      onload: (value) => resolve({ status: Number(value.status), body: value.responseText ?? (typeof value.response === 'string' ? value.response : '') }),
-      onerror: () => reject(new Error('Hex runtime network request failed.')), ontimeout: () => reject(new Error('Hex runtime network request timed out.')) });
-    request?.catch?.(reject);
-  });
-}
-async function gmJson(url, init) { const result = await gmTextRequest(url, init); if (result.status !== 200) throw new Error(`Hex runtime bootstrap failed (${result.status}).`); return JSON.parse(result.body); }
 async function fetchBytes(url, init = {}) {
-  const response = await fetch(url, { ...init, method: init.method || 'GET', credentials: 'omit' });
+  const response = await fetch(url, { ...init, method: init.method || 'GET', credentials: 'omit', mode: 'cors', cache: 'no-store' });
   if (response.status !== 200) throw new Error(`Hex protected runtime fetch failed (${response.status}).`);
   return response.arrayBuffer();
 }
@@ -81,9 +92,9 @@ async function fetchBytes(url, init = {}) {
 function launcher(text, busy) {
   let button = document.getElementById('hex-secure-loader');
   if (!button) { button = document.createElement('button'); button.id = 'hex-secure-loader'; Object.assign(button.style, { position:'fixed',right:'12px',bottom:'12px',zIndex:'2147483647',minHeight:'44px',maxWidth:'min(92vw,520px)',padding:'8px 12px',border:'0',borderRadius:'12px',background:'#111827',color:'#fff',font:'600 13px system-ui',boxShadow:'0 4px 18px rgba(0,0,0,.28)' }); document.documentElement.append(button); }
-  button.textContent = text; button.disabled = !!busy; return button;
+  button.textContent = text; button.disabled = !!busy; button.dataset.hexLoaderVersion = LOADER_VERSION; return button;
 }
-function showFailure(error) { const message = String(error?.message || error || 'Unknown startup error.'); const button = launcher(`Hex failed — retry · ${message.slice(0, 120)}`, false); button.title = message; button.onclick = () => { button.remove(); boot().catch(showFailure); }; }
+function showFailure(error) { const message = String(error?.message || error || 'Unknown startup error.'); const button = launcher(`Hex ${LOADER_VERSION} failed — retry · ${message.slice(0, 120)}`, false); button.title = message; button.onclick = () => { button.remove(); boot().catch(showFailure); }; }
 function randomToken(size) { const bytes = crypto.getRandomValues(new Uint8Array(size)); return b64(bytes); }
 function b64(bytes) { let binary = ''; for (const value of bytes) binary += String.fromCharCode(value); return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/g, ''); }
 function fromB64(value) { const raw = String(value).replaceAll('-', '+').replaceAll('_', '/'); const binary = atob(raw + '='.repeat((4 - raw.length % 4) % 4)); return Uint8Array.from(binary, (char) => char.charCodeAt(0)); }

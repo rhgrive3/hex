@@ -19,6 +19,6 @@ self.onmessage = async () => {
       x86_64: probe(M.ARCH_X86, M.MODE_64 | M.MODE_LITTLE_ENDIAN),
     }});
   } catch (error) {
-    self.postMessage({ ok: false, error: error?.message || String(error), support: { arm64: false, x86_64: false } });
+    self.postMessage({ ok: false, error: `Capstone probe initialization: ${error?.message || String(error)}`, support: { arm64: false, x86_64: false } });
   }
 };
