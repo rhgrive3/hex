@@ -25,13 +25,23 @@ for (const [name, browserType] of [['chromium', chromium], ['webkit', webkit]]) 
   await page.goto(PARENT_URL, { waitUntil: 'domcontentloaded' });
   const result = await page.evaluate(({ nonce }) => new Promise((resolve) => {
     const marker = `probe-${Math.random().toString(16).slice(2)}`;
-    const seen = { bootstrap: false, module: false, origin: null };
+    const seen = {
+      bootstrap: false,
+      module: false,
+      origin: null,
+      nativeStorageBlocked: false,
+      storageShim: false,
+    };
     const timer = setTimeout(() => finish(), 7000);
     let iframe;
     const onMessage = (event) => {
       if (event.data?.marker !== marker) return;
       seen.origin = event.data.origin;
-      if (event.data.stage === 'bootstrap') seen.bootstrap = true;
+      if (event.data.stage === 'bootstrap') {
+        seen.bootstrap = true;
+        seen.nativeStorageBlocked = event.data.nativeStorageBlocked === true;
+        seen.storageShim = event.data.storageShim === true;
+      }
       if (event.data.stage === 'module') seen.module = true;
       if (seen.bootstrap && seen.module) finish();
     };
@@ -45,7 +55,19 @@ for (const [name, browserType] of [['chromium', chromium], ['webkit', webkit]]) 
     iframe = document.createElement('iframe');
     iframe.sandbox = 'allow-scripts';
     iframe.srcdoc = `<!doctype html><meta charset="utf-8"><script nonce="${nonce}">
-      parent.postMessage({marker:${JSON.stringify(marker)},stage:'bootstrap',origin:location.origin},'*');
+      let nativeStorageBlocked=false;
+      try { void localStorage.length; } catch { nativeStorageBlocked=true; }
+      const makeStorage=()=>{const m=new Map;return {get length(){return m.size},key(i){return [...m.keys()][i]??null},getItem(k){k=String(k);return m.has(k)?m.get(k):null},setItem(k,v){m.set(String(k),String(v))},removeItem(k){m.delete(String(k))},clear(){m.clear()}}};
+      let storageShim=false;
+      try {
+        const s=makeStorage();
+        Object.defineProperty(window,'localStorage',{value:s,configurable:true});
+        localStorage.setItem('hex','ok');
+        storageShim=localStorage.getItem('hex')==='ok'&&localStorage.length===1&&localStorage.key(0)==='hex';
+        localStorage.removeItem('hex');
+        storageShim=storageShim&&localStorage.getItem('hex')===null&&localStorage.length===0;
+      } catch {}
+      parent.postMessage({marker:${JSON.stringify(marker)},stage:'bootstrap',origin:location.origin,nativeStorageBlocked,storageShim},'*');
       const s=document.createElement('script');
       s.type='module';
       s.nonce=${JSON.stringify(nonce)};
@@ -55,8 +77,13 @@ for (const [name, browserType] of [['chromium', chromium], ['webkit', webkit]]) 
     document.documentElement.append(iframe);
   }), { nonce: NONCE });
   console.log(`srcdoc-probe ${name}: ${JSON.stringify(result)}`);
-  assert.deepEqual(result, { bootstrap: true, module: true, origin: 'null' },
-    `${name} must support nonce-authorized opaque srcdoc and dynamic module execution under ChatGPT-like frame-src`);
+  assert.deepEqual(result, {
+    bootstrap: true,
+    module: true,
+    origin: 'null',
+    nativeStorageBlocked: true,
+    storageShim: true,
+  }, `${name} must support nonce-authorized opaque srcdoc, dynamic modules, and an in-memory storage shim under ChatGPT-like frame-src`);
   await context.close();
   await browser.close();
 }
