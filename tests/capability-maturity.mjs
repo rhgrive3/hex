@@ -30,7 +30,7 @@ assert.equal(arm64.features.ssaMemoryDataflow, 'supported');
 assert.equal(arm64.features.typesInterprocedural, 'supported');
 assert.equal(arm64.features.decompiler, 'supported');
 assert.equal(arm64.features.runtimeDebugPatchValidation, 'partial');
-assert.ok(arm64.limitations.includes('exact-machine-effects-not-implemented'));
+assert.ok(arm64.limitations.includes('exact-machine-effects-partial-coverage'));
 
 const arm64e = architectureMaturity('arm64e');
 assert.equal(arm64e.level, 'A1');
@@ -41,7 +41,7 @@ assert.equal(arm64e.features.decode, 'supported');
 assert.equal(arm64e.features.lowLevelEffects, 'partial');
 assert.equal(arm64e.features.cfgSemanticIR, 'partial');
 assert.equal(arm64e.features.decompiler, 'partial');
-assert.ok(arm64e.limitations.includes('exact-machine-effects-not-implemented'));
+assert.ok(arm64e.limitations.includes('exact-machine-effects-partial-coverage'));
 assert.ok(arm64e.limitations.includes('arm64e-pointer-authentication-semantics-partial'));
 
 const x86 = architectureMaturity('x86_64');
