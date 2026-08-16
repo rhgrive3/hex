@@ -11,6 +11,8 @@ import {
   buildIR as buildLegacyIR,
   OP as LEGACY_OP,
   VK as LEGACY_VK,
+  MK as LEGACY_MK,
+  stackPointerProvenanceOf as legacyStackPointerProvenanceOf,
 } from './architecture/compat/ir-core-arm64-aapcs64-v1.js';
 import { buildCfg, EDGE } from './cfg.js';
 import { stableDigest } from './core/identity/index.js';
@@ -204,6 +206,225 @@ function detachLegacyArguments(inst) {
   inst.args = [];
 }
 
+function selectReachingRegisterValue(projected, inst, reg, bits = null, excluded = null) {
+  const candidates = (projected.values ?? [])
+    .filter((value) => value !== excluded && value.reg === reg && value.kind !== LEGACY_VK.UNDEF
+      && valueDominatesLegacyInstruction(value, inst, projected))
+    .sort((left, right) => {
+      const leftRecency = legacyDefinitionRecency(left, inst, projected);
+      const rightRecency = legacyDefinitionRecency(right, inst, projected);
+      if (leftRecency.scope !== rightRecency.scope) return rightRecency.scope - leftRecency.scope;
+      if (leftRecency.depth !== rightRecency.depth) return rightRecency.depth - leftRecency.depth;
+      if (leftRecency.row !== rightRecency.row) return rightRecency.row - leftRecency.row;
+      const leftWidth = Number(bits) > 0 && left.bits === Number(bits) ? 1 : 0;
+      const rightWidth = Number(bits) > 0 && right.bits === Number(bits) ? 1 : 0;
+      if (leftWidth !== rightWidth) return rightWidth - leftWidth;
+      return (right.id ?? 0) - (left.id ?? 0);
+    });
+  return candidates[0] ?? null;
+}
+
+function replaceLegacyArg(inst, from, to) {
+  if (!inst || !from || !to || from === to) return false;
+  let changed = false;
+  for (const arg of inst.args ?? []) {
+    if (arg?.value !== from) continue;
+    arg.value = to;
+    arg.bits = to.bits || arg.bits;
+    changed = true;
+  }
+  if (!changed) return false;
+  if (Array.isArray(from.uses)) from.uses = from.uses.filter((use) => use !== inst);
+  if (!Array.isArray(to.uses)) to.uses = [];
+  if (!to.uses.includes(inst)) to.uses.push(inst);
+  return true;
+}
+
+/*
+ * A W-register read is projected as physical X-state read + exact truncation.
+ * If the reaching X state was itself an exact zero-extension of a 32-bit value,
+ * trunc(zext(v32)) is exactly v32. Collapse only that proven compatibility view
+ * so repeated W reads of one SSA state reuse the same public v1 value identity.
+ */
+function canonicalizeExactViewReads(projected) {
+  for (const trunc of projected.instructions ?? []) {
+    if (trunc.op !== LEGACY_OP.MOV || trunc.sub !== 'trunc' || !trunc.dst || trunc.args?.length !== 1) continue;
+    const readValue = trunc.args[0]?.value;
+    const read = readValue?.def;
+    if (read?.op !== LEGACY_OP.MOV || !read.extra?.stateRead || read.args?.length !== 1) continue;
+    const stateValue = read.args[0]?.value;
+    const stateWrite = stateValue?.def;
+    if (stateWrite?.op !== LEGACY_OP.MOV || !stateWrite.extra?.stateWrite || stateWrite.args?.length !== 1) continue;
+    const written = stateWrite.args[0]?.value;
+    const extension = written?.def;
+    if (extension?.op !== LEGACY_OP.MOV || extension.sub !== 'zext' || extension.args?.length !== 1) continue;
+    const inner = extension.args[0]?.value;
+    if (!inner || inner.bits !== trunc.dst.bits) continue;
+    for (const use of [...(trunc.dst.uses ?? [])]) {
+      if (use === trunc) continue;
+      replaceLegacyArg(use, trunc.dst, inner);
+    }
+    trunc.dst.compatCanonicalValueId = inner.id;
+  }
+}
+
+/*
+ * MachineEffects keeps calls ABI-neutral, so generic SSA correctly treats the
+ * call's unknown state category conservatively. At this explicitly AAPCS64
+ * compatibility boundary we can recover only states the ABI proves preserved.
+ * Memory clobber information is intentionally untouched.
+ */
+function restoreAapcs64PreservedStateReads(projected) {
+  const callerSaved = new Set(AAPCS64_ABI.callerSaved().map(String));
+  for (const inst of projected.instructions ?? []) {
+    if (inst.op !== LEGACY_OP.MOV || !inst.extra?.stateRead || inst.args?.length !== 1) continue;
+    const identity = inst.extra.stateRead?.physicalIdentity;
+    if (identity?.kind !== 'register') continue;
+    const reg = String(identity.registerId ?? '');
+    if (!reg || callerSaved.has(reg)) continue;
+    const unknown = inst.args[0]?.value;
+    const call = unknown?.def;
+    if (unknown?.kind !== LEGACY_VK.UNDEF || call?.op !== LEGACY_OP.CALL) continue;
+    const reaching = selectReachingRegisterValue(projected, call, reg, inst.dst?.bits ?? unknown.bits, unknown);
+    if (!reaching) continue;
+    replaceLegacyArg(inst, unknown, reaching);
+    inst.extra.abiPreservedState = true;
+    inst.extra.abiPreservedStateEvidence = 'aapcs64-callee-preserved';
+  }
+}
+
+function exactLegacyConstant(value, active = new Set()) {
+  if (!value || active.has(value.id)) return null;
+  if (value.const != null) {
+    try { return BigInt(value.const); } catch { return null; }
+  }
+  const def = value.def;
+  if (!def) return null;
+  active.add(value.id);
+  let result = null;
+  if (def.op === LEGACY_OP.CONST || def.op === LEGACY_OP.ADDR) {
+    try { result = BigInt(def.extra?.value ?? def.extra?.target); } catch { result = null; }
+  } else if (def.op === LEGACY_OP.MOV && def.args?.length === 1) {
+    const inner = exactLegacyConstant(def.args[0]?.value, active);
+    if (inner != null) {
+      if (def.sub === 'trunc' || def.sub === 'zext') result = BigInt.asUintN(Number(value.bits || 64), inner);
+      else if (def.sub == null || def.sub === 'copy' || def.sub === 'bitcast') result = inner;
+    }
+  } else if (def.op === LEGACY_OP.BIN && def.args?.length >= 2) {
+    const left = exactLegacyConstant(def.args[0]?.value, active);
+    const right = exactLegacyConstant(def.args[1]?.value, active);
+    if (left != null && right != null) {
+      const bits = Number(value.bits || 64);
+      if (def.sub === 'add') result = left + right;
+      else if (def.sub === 'sub') result = left - right;
+      else if (def.sub === 'mul') result = left * right;
+      else if (def.sub === 'and') result = left & right;
+      else if (def.sub === 'or') result = left | right;
+      else if (def.sub === 'xor') result = left ^ right;
+      else if (def.sub === 'shl') result = left << right;
+      else if (def.sub === 'lshr') result = BigInt.asUintN(bits, left) >> right;
+      if (result != null) result = BigInt.asUintN(bits, result);
+    }
+  }
+  active.delete(value.id);
+  return result;
+}
+
+function propagateExactLegacyConstants(projected) {
+  for (const value of projected.values ?? []) {
+    if (value.const != null) continue;
+    const constant = exactLegacyConstant(value);
+    if (constant != null) value.const = BigInt.asUintN(Number(value.bits || 64), constant);
+  }
+}
+
+function canonicalAddressBase(value, active = new Set()) {
+  if (!value || active.has(value.id)) return value;
+  active.add(value.id);
+  const def = value.def;
+  if (def?.op === LEGACY_OP.MOV && def.args?.length === 1
+      && (def.extra?.stateRead || def.extra?.stateWrite || def.sub == null)) {
+    const inner = canonicalAddressBase(def.args[0]?.value, active);
+    active.delete(value.id);
+    return inner || value;
+  }
+  active.delete(value.id);
+  return value;
+}
+
+/*
+ * MemorySSA alias conclusions remain authoritative. This postpass restores only
+ * the legacy public location shape when ABI-preserved SP provenance or an exact
+ * loaded-pointer address already proves the base+constant form. memUse/memKills
+ * are never removed or upgraded.
+ */
+function restoreAapcs64PublicLocations(projected) {
+  for (const inst of projected.instructions ?? []) {
+    if (inst.op !== LEGACY_OP.LOAD && inst.op !== LEGACY_OP.STORE) continue;
+    if (inst.loc?.kind !== LEGACY_MK.UNKNOWN || inst.addr?.precise !== true || inst.addr.index != null) continue;
+    const stack = legacyStackPointerProvenanceOf(inst.addr.base);
+    if (stack?.must === true) {
+      const offset = BigInt(stack.offset ?? 0n) + BigInt(inst.addr.disp ?? 0n);
+      const key = `stack:${BigInt.asUintN(64, offset).toString()}`;
+      const existing = projected.locations?.get?.(key) ?? null;
+      const loc = existing ?? {
+        key,
+        kind: LEGACY_MK.STACK,
+        disp: inst.addr.disp ?? offset,
+        size: inst.addr.size ?? inst.extra?.size ?? null,
+        regionId: inst.loc?.regionId ?? null,
+        origin: inst.loc?.origin ?? inst.addr?.origin ?? null,
+        compatAbiPreservedAddress: true,
+      };
+      if (!existing) projected.locations?.set?.(key, loc);
+      inst.loc = loc;
+      inst.extra = { ...(inst.extra ?? {}), compatAbiPreservedAddress: true };
+      continue;
+    }
+    const base = canonicalAddressBase(inst.addr.base);
+    if (base?.def?.op !== LEGACY_OP.LOAD || !base.def.reachingStore) continue;
+    const disp = BigInt(inst.addr.disp ?? 0n);
+    const size = inst.addr.size ?? inst.extra?.size ?? null;
+    const key = `field:loaded:${base.id}+${disp.toString()}:s${size ?? '?'}`;
+    const loc = {
+      key,
+      kind: LEGACY_MK.FIELD,
+      base,
+      disp,
+      size,
+      regionId: inst.loc?.regionId ?? null,
+      origin: inst.loc?.origin ?? inst.addr?.origin ?? null,
+      aliasUncertain: true,
+      compatibilityShapeOnly: true,
+    };
+    projected.locations?.set?.(key, loc);
+    inst.loc = loc;
+    inst.extra = { ...(inst.extra ?? {}), compatibilityShapeOnly: true };
+  }
+}
+
+function attachAapcs64CallArguments(projected) {
+  for (const inst of projected.instructions ?? []) {
+    if (inst.op !== LEGACY_OP.CALL || !Array.isArray(inst.callArguments)) continue;
+    detachLegacyArguments(inst);
+    const seen = new Set();
+    for (const descriptor of inst.callArguments) {
+      const reg = descriptor?.reg == null ? null : String(descriptor.reg);
+      if (!reg) continue;
+      const value = selectReachingRegisterValue(projected, inst, reg, descriptor.bits ?? null);
+      if (!value || seen.has(value.id)) continue;
+      seen.add(value.id);
+      inst.args.push({ value, bits:value.bits || descriptor.bits || 64 });
+      if (!Array.isArray(value.uses)) value.uses = [];
+      if (!value.uses.includes(inst)) value.uses.push(inst);
+    }
+    inst.extra = {
+      ...(inst.extra ?? {}),
+      abiProjectedArgumentValueIds: inst.args.map((arg) => arg.value?.semanticSsaValueId ?? arg.value?.semanticValueId ?? arg.value?.id),
+    };
+  }
+}
+
 /**
  * Semantic IR return nodes carry the architectural control target (for A64 RET,
  * typically the link register). That is not a source-language return value.
@@ -219,20 +440,7 @@ function attachAapcs64FunctionReturns(projected, adapter) {
     inst.returnReg = null;
     inst.returnEvidence = null;
     if (!result?.reg) continue;
-    const candidates = (projected.values ?? [])
-      .filter((value) => value.reg === result.reg && valueDominatesLegacyInstruction(value, inst, projected))
-      .sort((left, right) => {
-        const leftRecency = legacyDefinitionRecency(left, inst, projected);
-        const rightRecency = legacyDefinitionRecency(right, inst, projected);
-        if (leftRecency.scope !== rightRecency.scope) return rightRecency.scope - leftRecency.scope;
-        if (leftRecency.depth !== rightRecency.depth) return rightRecency.depth - leftRecency.depth;
-        if (leftRecency.row !== rightRecency.row) return rightRecency.row - leftRecency.row;
-        const leftWidth = Number(result.bits) > 0 && left.bits === Number(result.bits) ? 1 : 0;
-        const rightWidth = Number(result.bits) > 0 && right.bits === Number(result.bits) ? 1 : 0;
-        if (leftWidth !== rightWidth) return rightWidth - leftWidth;
-        return (right.id ?? 0) - (left.id ?? 0);
-      });
-    const value = candidates[0] ?? null;
+    const value = selectReachingRegisterValue(projected, inst, result.reg, result.bits ?? null);
     if (!value) continue;
     inst.args = [{ value, bits:value.bits || result.bits || 64 }];
     if (!Array.isArray(value.uses)) value.uses = [];
@@ -308,6 +516,11 @@ function buildV2CompatFromLegacyModel(model, opts = {}) {
       ...(opts.compatOptions ?? {}),
     },
   });
+  canonicalizeExactViewReads(result.legacyV1);
+  restoreAapcs64PreservedStateReads(result.legacyV1);
+  restoreAapcs64PublicLocations(result.legacyV1);
+  propagateExactLegacyConstants(result.legacyV1);
+  attachAapcs64CallArguments(result.legacyV1);
   attachAapcs64FunctionReturns(result.legacyV1, abiAdapter);
   lastSemanticV2Instrumentation = result.instrumentation;
   return result.legacyV1;
