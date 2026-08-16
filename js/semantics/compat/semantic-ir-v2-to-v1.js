@@ -100,6 +100,34 @@ function preserveStateReadTemporaryIdentity(ir, valuesById) {
   }
 }
 
+/**
+ * Semantic IR separates a computed value from the following physical state
+ * assignment. Legacy v1 names the computed destination itself with the register
+ * identity. Restore that public role only when canonical SSA proves an exact
+ * state-write assignment, the producer and write come from the same machine
+ * instruction, and their widths are identical. This deliberately excludes
+ * architectural view conversions such as W32 -> X64 zero-extension.
+ */
+function preserveExactStateWriteSourceIdentity(ir, producerByValueId, stateProjection, valuesById) {
+  for (const node of ir.nodes) {
+    if (node.kind !== 'state-write' || node.completeness !== 'complete' || node.inputs?.length !== 1) continue;
+    if (node.variable?.physicalIdentity?.kind !== 'register') continue;
+    const definition = stateProjection.writeDefinitionByNodeId.get(node.id) ?? null;
+    if (!definition || definition.proof?.sourceSemanticValueId !== node.inputs[0]) continue;
+    const source = valuesById.get(node.inputs[0]) ?? null;
+    const destination = valuesById.get(definition.valueId) ?? null;
+    const producer = producerByValueId.get(node.inputs[0]) ?? null;
+    const identity = legacyPublicStateIdentity(node.variable);
+    if (!source || !destination || !producer || !identity || source.bits !== destination.bits) continue;
+    const instructionIds = new Set(sourceInstructionIds(node.origin));
+    if (!instructionIds.size || !sameInstruction(producer, instructionIds)) continue;
+    if (source.reg != null && source.reg !== identity) continue;
+    source.reg = identity;
+    if (source.label == null || source.label === producer.id) source.label = identity;
+    source.compatDerived = 'exact-state-write-source';
+  }
+}
+
 function valueDominatesInstruction(value, inst, projected) {
   if (!value || !inst) return false;
   if (value.kind === V1_VK.ARG) return true;
@@ -291,6 +319,7 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
   preserveIncomingPhysicalState(ssa, valuesById);
   preserveStateReadTemporaryIdentity(ir, valuesById);
   const stateProjection = buildStateProjectionIndex(ssa);
+  preserveExactStateWriteSourceIdentity(ir, producerByValueId, stateProjection, valuesById);
   const comparisonCarrierByNodeId = addComparisonCarriers(ir, values, valuesById);
   const projected = {
     name: options.name ?? ir.functionId,
