@@ -1,0 +1,39 @@
+name: Semantic IR v2 contracts
+
+on:
+  pull_request:
+    paths:
+      - 'js/core/identity/**'
+      - 'js/semantics/**'
+      - 'tests/semantic-v2/**'
+      - 'package.json'
+      - '.github/workflows/semantic-v2-contract.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'js/core/identity/**'
+      - 'js/semantics/**'
+      - 'tests/semantic-v2/**'
+      - 'package.json'
+      - '.github/workflows/semantic-v2-contract.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  release-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run semantic-v2:test
+      - run: npm run effects:test
+      - run: npm run core:test
+      - run: npm run invariants:test
+      - run: npm run migration:test
+      - run: npm run check
