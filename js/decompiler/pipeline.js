@@ -1,6 +1,7 @@
 import { enhanceSemanticDecompilation as enhanceCore } from './pipeline-core.js';
 import { recoverExactStackReturn } from './passes/stack-return-recovery.js';
-import { expr } from './ast/nodes.js';
+import { expr, mergeSource, sourceOf } from './ast/nodes.js';
+import { printProgram } from './pretty/c.js';
 
 export { buildExpressionForTesting } from './pipeline-core.js';
 
@@ -108,10 +109,52 @@ function reanchorExactStackReturn(result) {
   return result;
 }
 
+/* Exact stack-return recovery deliberately replaces a compiler spill with the
+ * committed high-level lvalue. Keep the semantic expression's deep proof, but
+ * source-map the emitted `return` statement to the machine LOAD that materialized
+ * the return value plus RET. The eliminated spill STORE is proof provenance, not
+ * source ownership of the reconstructed C statement. */
+function reanchorRecoveredReturnSource(result, opts = {}) {
+  if (!result?.ctx?.decompilerPipeline?.exactStackReturnRecovered || !result?.ir || !result?.cAst) return result;
+  const ret = [...(result.ir.instructions || [])].reverse().find((inst) => inst.op === 'ret');
+  if (!ret) return result;
+  let changed = false;
+  for (const node of result.cAst.body || []) {
+    if (!(node.semantic?.op === 'return' || /^return\b/.test(String(node.text || '').trim()))) continue;
+    const addresses = new Set((node.source?.addresses || []).map((address) => String(address)));
+    let load = null;
+    for (const inst of result.ir.instructions || []) {
+      if (inst?.op !== 'load' || inst?.loc?.kind !== 'stack' || inst?.row == null || ret.row == null || inst.row >= ret.row) continue;
+      if (!addresses.has(String(inst.address))) continue;
+      if (!load || inst.row > load.row) load = inst;
+    }
+    if (!load) continue;
+    node.source = mergeSource(
+      sourceOf({ address:load.address, row:load.row, ir:load.id, ssaDef:load.dst?.id ?? null,
+        evidence:[{ reason:'exact recovered return load' }] }),
+      sourceOf({ address:ret.address, row:ret.row, ir:ret.id,
+        evidence:[{ reason:'return transfer' }] }),
+    );
+    changed = true;
+  }
+  if (!changed) return result;
+  const printed = printProgram(result.cAst, { columnWidth:opts.columnWidth || opts.prettyColumnWidth || 88 });
+  result.pseudocode = printed.text;
+  result.sourceMap = printed.mapping;
+  result.lines = result.cAst.body.map((node) => ({
+    kind:node.kind, indent:node.indent, text:node.text,
+    row:node.source?.rows?.[0] ?? null, addr:node.source?.addresses?.[0] ?? null,
+    note:null, source:node.source,
+  }));
+  result.metrics = { ...(result.metrics || {}), sourceMappedNodes:result.sourceMap?.length || 0 };
+  return result;
+}
+
 export function enhanceSemanticDecompilation(result, model, opts = {}) {
   const restore = normalizeConditionalSelectAliases(result?.ir);
   let core;
   try { core = constrainSemanticValueWidths(enhanceCore(result, model, opts)); }
   finally { restore(); }
-  return recoverExactStackReturn(reanchorExactStackReturn(core), opts);
+  const recovered = recoverExactStackReturn(reanchorExactStackReturn(core), opts);
+  return reanchorRecoveredReturnSource(recovered, opts);
 }
