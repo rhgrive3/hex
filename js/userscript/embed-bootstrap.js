@@ -19,24 +19,14 @@ export function normalizeEmbedGeneration(value) {
 
 export function withEmbedGeneration(src, generation) {
   const url = new URL(String(src || ''));
-  const normalized = normalizeEmbedGeneration(generation);
-  url.searchParams.set(EMBED_GENERATION_PARAM, normalized);
+  url.searchParams.set(EMBED_GENERATION_PARAM, normalizeEmbedGeneration(generation));
   return url.href;
 }
 
 export function readEmbedGeneration(locationRef = globalThis.location) {
-  try {
-    const url = new URL(locationRef?.href || String(locationRef || ''), locationRef?.origin || undefined);
-    const raw = url.searchParams.get(EMBED_GENERATION_PARAM);
-    return raw == null ? null : normalizeEmbedGeneration(raw);
-  } catch {
-    try {
-      const raw = new URLSearchParams(String(locationRef?.search || '')).get(EMBED_GENERATION_PARAM);
-      return raw == null ? null : normalizeEmbedGeneration(raw);
-    } catch {
-      return null;
-    }
-  }
+  const raw = readLocationParam(locationRef, EMBED_GENERATION_PARAM);
+  if (raw == null) return null;
+  try { return normalizeEmbedGeneration(raw); } catch { return null; }
 }
 
 export function createEmbedBootstrapMessage(generation) {
@@ -53,15 +43,10 @@ export function announceEmbedChildBootstrapReady(options = {}) {
   const parent = options.parent || windowRef?.parent;
   const generation = normalizeEmbedGeneration(options.generation);
   const targetOrigins = normalizeOrigins(options.targetOrigins || CHATGPT_PARENT_ORIGINS);
-  if (!parent || parent === windowRef || typeof parent.postMessage !== 'function') {
-    throw new Error('Hex embed parent window is unavailable.');
-  }
+  if (!parent || parent === windowRef || typeof parent.postMessage !== 'function') throw new Error('Hex embed parent window is unavailable.');
   const message = createEmbedBootstrapMessage(generation);
   let attempts = 0;
-  for (const origin of targetOrigins) {
-    parent.postMessage(message, origin);
-    attempts += 1;
-  }
+  for (const origin of targetOrigins) { parent.postMessage(message, origin); attempts += 1; }
   if (!attempts) throw new Error('Hex embed has no allowed parent origin.');
   return message;
 }
@@ -73,10 +58,7 @@ export function waitForEmbedChildBootstrap(options = {}) {
   const generation = normalizeEmbedGeneration(options.generation);
   const timeoutMs = normalizeTimeout(options.timeoutMs, DEFAULT_EMBED_BOOTSTRAP_TIMEOUT_MS);
   const signal = options.signal;
-
-  if (!windowRef?.addEventListener || !windowRef?.removeEventListener) {
-    return Promise.reject(new TypeError('A parent window event target is required.'));
-  }
+  if (!windowRef?.addEventListener || !windowRef?.removeEventListener) return Promise.reject(new TypeError('A parent window event target is required.'));
   if (!expectedSource) return Promise.reject(new TypeError('Expected iframe source is required.'));
   if (signal?.aborted) return Promise.reject(abortError(signal.reason));
 
@@ -90,22 +72,18 @@ export function waitForEmbedChildBootstrap(options = {}) {
     };
     const settle = (error, value) => {
       if (settled) return;
-      settled = true;
-      cleanup();
+      settled = true; cleanup();
       if (error) reject(error); else resolve(value);
     };
     const onAbort = () => settle(abortError(signal?.reason));
     function onMessage(event) {
-      if (event?.source !== expectedSource) return;
-      if (event?.origin !== childOrigin) return;
+      if (event?.source !== expectedSource || event?.origin !== childOrigin) return;
       const data = event?.data;
-      if (!isPlainRecord(data)) return;
-      if (data.type !== EMBED_BOOTSTRAP_TYPE) return;
+      if (!isPlainRecord(data) || data.type !== EMBED_BOOTSTRAP_TYPE) return;
       if (data.protocol !== EMBED_PROTOCOL || data.version !== EMBED_PROTOCOL_VERSION) return;
       if (String(data.generation) !== generation) return;
       settle(null, Object.freeze({ generation, origin: childOrigin, source: expectedSource }));
     }
-
     windowRef.addEventListener('message', onMessage);
     signal?.addEventListener?.('abort', onAbort, { once: true });
     if (timeoutMs > 0) timer = setTimeout(() => settle(localError('EMBED_BOOTSTRAP_TIMEOUT', 'Hex iframe bootstrap timed out.')), timeoutMs);
@@ -113,14 +91,7 @@ export function waitForEmbedChildBootstrap(options = {}) {
 }
 
 export function readEmbedProvider(locationRef = globalThis.location) {
-  let value = null;
-  try {
-    const url = new URL(locationRef?.href || String(locationRef || ''), locationRef?.origin || undefined);
-    value = url.searchParams.get(EMBED_PROVIDER_PARAM);
-  } catch {
-    try { value = new URLSearchParams(String(locationRef?.search || '')).get(EMBED_PROVIDER_PARAM); } catch {}
-  }
-  return normalizeEmbedProvider(value);
+  return normalizeEmbedProvider(readLocationParam(locationRef, EMBED_PROVIDER_PARAM));
 }
 
 export function setEmbedProvider(src, provider) {
@@ -138,43 +109,41 @@ export function normalizeEmbedProvider(value) {
   return null;
 }
 
+function readLocationParam(locationRef, name) {
+  try {
+    if (typeof locationRef?.search === 'string' && locationRef.search) return new URLSearchParams(locationRef.search).get(name);
+  } catch {}
+  try {
+    if (typeof locationRef?.href === 'string' && locationRef.href) return new URL(locationRef.href).searchParams.get(name);
+  } catch {}
+  return null;
+}
 function normalizeOrigins(values) {
   const input = typeof values === 'string' ? [values] : values;
   const out = [];
   for (const value of input || []) {
-    try {
-      const origin = normalizeOrigin(value);
-      if (!out.includes(origin)) out.push(origin);
-    } catch {}
+    try { const origin = normalizeOrigin(value); if (!out.includes(origin)) out.push(origin); } catch {}
   }
   return out;
 }
-
 function normalizeOrigin(value) {
-  const url = new URL(String(value || ''));
-  if (url.protocol !== 'https:' || url.origin !== String(value)) throw new TypeError('Expected an exact HTTPS origin.');
+  const text = String(value || '');
+  const url = new URL(text);
+  if (url.protocol !== 'https:' || url.origin !== text) throw new TypeError('Expected an exact HTTPS origin.');
   return url.origin;
 }
-
 function normalizeTimeout(value, fallback) {
   if (value == null) return fallback;
   const number = Number(value);
   if (!Number.isFinite(number) || number < 0) throw new TypeError('Embed timeout must be a non-negative finite number.');
   return Math.floor(number);
 }
-
 function abortError(reason) {
   const error = localError('EMBED_BOOTSTRAP_ABORTED', typeof reason === 'string' && reason ? reason : 'Hex iframe bootstrap was aborted.');
   error.name = 'AbortError';
   return error;
 }
-
-function localError(code, message) {
-  const error = new Error(message);
-  error.code = code;
-  return error;
-}
-
+function localError(code, message) { const error = new Error(message); error.code = code; return error; }
 function isPlainRecord(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const prototype = Object.getPrototypeOf(value);
