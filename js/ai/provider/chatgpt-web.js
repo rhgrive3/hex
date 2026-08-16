@@ -19,7 +19,7 @@ export class ChatGPTWebProvider extends AIProvider {
 
   async nextTurn(request, options = {}) {
     if (!this.available()) throw new AIError('provider_error', 'ChatGPT Web bridge is not available.');
-    if (options.signal?.aborted) throw new AIError('cancelled', 'AI investigation was cancelled.');
+    if (options.signal?.aborted) throw interruptionError(options.signal);
 
     const controller = new AbortController();
     const onAbort = () => controller.abort(options.signal?.reason || 'cancelled');
@@ -41,7 +41,7 @@ export class ChatGPTWebProvider extends AIProvider {
       return validateModelDecision(decision, (request.tools || []).map((tool) => tool.name));
     } catch (error) {
       if (controller.signal.aborted || error?.name === 'AbortError') {
-        throw new AIError('cancelled', 'AI investigation was cancelled.');
+        throw interruptionError(controller.signal);
       }
       if (error instanceof AIError) throw error;
       const type = error?.code === 'timeout' ? 'model_timeout' : 'provider_error';
@@ -271,6 +271,14 @@ function safeJSONStringify(value) {
     .replace(/&/g, '\\u0026')
     .replace(/</g, '\\u003c')
     .replace(/>/g, '\\u003e');
+}
+
+function interruptionError(signal) {
+  const timedOut = signal?.reason === 'timeout';
+  return new AIError(
+    timedOut ? 'budget_exhausted' : 'cancelled',
+    timedOut ? 'The AI investigation timed out.' : 'AI investigation was cancelled.',
+  );
 }
 
 function apiEndpoint(path) {

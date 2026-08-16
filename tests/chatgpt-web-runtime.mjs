@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
-import { ChatGPTConversationRouter, ChatGPTModelController, ChatGPTTurnController } from '../js/userscript/chatgpt-adapter.js';
+import { ChatGPTConversationRouter, ChatGPTDOMAdapter, ChatGPTModelController, ChatGPTTurnController } from '../js/userscript/chatgpt-adapter.js';
 import { installChatGPTWebBridge } from '../js/userscript/chatgpt-bridge.js';
 
 await testConversationRouting();
 await testModelSelection();
+await testLogicalTurnCanonicalization();
 await testTurnCompletionAndStaleProtection();
+await testRolelessTurnFallback();
 await testCancelTimeoutAndSingleInflight();
 console.log('chatgpt-web-runtime: ok');
 
@@ -50,6 +52,24 @@ async function testModelSelection() {
   await assert.rejects(controller.select({ model: 'chatgpt-web/sol' }), (error) => error.code === 'model-mismatch');
 }
 
+async function testLogicalTurnCanonicalization() {
+  const fixture = logicalTurnFixture('assistant', '42', '{"type":"final","answer":"ok"}');
+  const document = {
+    querySelector: () => null,
+    querySelectorAll(selector) {
+      if (selector === '[data-message-author-role="assistant"]') return [fixture.roleNode];
+      if (selector.includes('conversation-turn-') && selector.includes('assistant')) return [fixture.root];
+      return [];
+    },
+  };
+  const adapter = new ChatGPTDOMAdapter({ document, location: { href: 'https://chatgpt.com/c/alpha' } });
+  const turns = adapter.assistantTurns();
+  assert.equal(turns.length, 1, 'role node + conversation wrapper must be one logical assistant turn');
+  assert.equal(turns[0].id, 'conversation-turn-42');
+  assert.equal(turns[0].text, '{"type":"final","answer":"ok"}');
+  assert.equal(turns[0].node, fixture.root);
+}
+
 async function testTurnCompletionAndStaleProtection() {
   const state = { generating: false, assistants: [{ id: 'old', text: 'old response' }], users: [], sent: false, conversation: { id: 'alpha', url: 'https://chatgpt.com/c/alpha' } };
   const adapter = turnAdapter(state, () => {
@@ -63,6 +83,34 @@ async function testTurnCompletionAndStaleProtection() {
   const stale = { ...state, assistants: [{ id: 'old', text: 'old response' }], users: [], generating: false };
   const staleAdapter = turnAdapter(stale, () => { stale.users.push({ id: 'u', text: 'prompt' }); stale.assistants.push({ id: 'first', text: 'one' }); setTimeout(() => stale.assistants.push({ id: 'second', text: 'two' }), 2); });
   await assert.rejects(new ChatGPTTurnController(staleAdapter, { quietMs: 20, pollMs: 2 }).run('prompt', { timeoutMs: 50, expectedConversation: stale.conversation }), (error) => error.code === 'manual-interference');
+}
+
+async function testRolelessTurnFallback() {
+  const state = {
+    generating: false,
+    assistants: [],
+    users: [],
+    turns: [{ id: 'old-general', text: 'old response' }],
+    conversation: null,
+  };
+  const adapter = turnAdapter(state, () => {
+    state.turns.push({ id: 'hex-user-general', text: 'prompt' });
+    state.generating = true;
+    setTimeout(() => {
+      state.turns.push({ id: 'assistant-general', text: '{"type":"final","answer":"ok","confidence":1,"evidenceIds":[]}' });
+      state.generating = false;
+    }, 8);
+  });
+  const controller = new ChatGPTTurnController(adapter, {
+    quietMs: 5,
+    pollMs: 2,
+    startTimeoutMs: 30,
+    conversationGraceMs: 8,
+  });
+  const result = await controller.run('prompt', { timeoutMs: 100 });
+  assert.equal(result.turnId, 'assistant-general');
+  assert.match(result.text, /"answer":"ok"/);
+  assert.equal(result.conversation, null, 'a captured model response must not be discarded solely because the SPA URL has not settled');
 }
 
 async function testCancelTimeoutAndSingleInflight() {
@@ -88,6 +136,26 @@ async function testCancelTimeoutAndSingleInflight() {
   delete globalThis.__HEX_CHATGPT_BRIDGE__;
 }
 
+function logicalTurnFixture(role, id, text) {
+  const content = { innerText: text, textContent: text };
+  const root = {
+    id: '',
+    getAttribute(name) { return name === 'data-testid' ? `conversation-turn-${id}` : null; },
+    closest(selector) { return selector.includes('conversation-turn-') ? root : null; },
+    querySelector() { return content; },
+  };
+  const roleNode = {
+    id: '',
+    getAttribute(name) { return name === 'data-message-author-role' ? role : null; },
+    closest(selector) {
+      if (selector.includes('conversation-turn-')) return root;
+      if (selector.includes('data-message-author-role')) return roleNode;
+      return null;
+    },
+  };
+  return { root, roleNode, content };
+}
+
 function option(label, click) { return { label, model: /Sol/.test(label) ? 'chatgpt-web/sol' : null, reasoning: /High/.test(label) ? 'high' : null, node: { click } }; }
 function conversationLink(id, click) { return { getAttribute: (name) => name === 'href' ? `/c/${id}` : null, click }; }
 function memoryStorage() { const values = new Map(); return { getItem: (key) => values.get(key) || null, setItem: (key, value) => values.set(key, value) }; }
@@ -96,7 +164,7 @@ function turnAdapter(state, onSend) {
   return {
     composer: () => composer, setComposerText: (_node, text) => { composer.value = text; }, composerText: () => composer.value,
     sendButton: () => ({ disabled: false, getAttribute: () => null, click: () => { composer.value = ''; onSend(); } }),
-    assistantTurns: () => state.assistants, userTurns: () => state.users, isGenerating: () => state.generating,
+    assistantTurns: () => state.assistants, userTurns: () => state.users, conversationTurns: () => state.turns || [], isGenerating: () => state.generating,
     errorState: () => null, conversation: () => state.conversation,
   };
 }
