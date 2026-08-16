@@ -143,8 +143,8 @@ assert.ok(usage.toolSchemaBytes > 0);
 assert.throws(() => assertWireBudget({ messages: [{ role: 'user', content: 'x'.repeat(50000) }], context: {}, tools: [] }, { contextTokens: 100000, maxOutputTokens: 1, maxRequestBytes: 16384 }), /payload/i);
 
 // O: only real budget ceilings are rendered as exhausted budgets. Provider and
-// protocol failures remain operational errors and must not produce the misleading
-// "budget exhausted: provider_error" line in the assistant UI.
+// protocol failures retain their diagnostic reason but must not produce the
+// misleading "budget exhausted: provider_error" line in the assistant UI.
 {
   const runtime = new AIRuntime({ context: local, planner: false });
   const decision = {
@@ -157,9 +157,9 @@ assert.throws(() => assertWireBudget({ messages: [{ role: 'user', content: 'x'.r
     snapshot: snap, effectiveScope: 'selection',
   };
   const providerFailure = runtime.finalize({ ...common, activity: [], limitReason: 'provider_error' });
-  assert.deepEqual(providerFailure.limits, { exhausted: false, reason: undefined });
+  assert.deepEqual(providerFailure.limits, { exhausted: false, reason: 'provider_error' });
   const modelTimeout = runtime.finalize({ ...common, activity: [], limitReason: 'model_timeout' });
-  assert.deepEqual(modelTimeout.limits, { exhausted: false, reason: undefined });
+  assert.deepEqual(modelTimeout.limits, { exhausted: false, reason: 'model_timeout' });
   const budgetFailure = runtime.finalize({ ...common, activity: [], limitReason: 'model-call-budget' });
   assert.deepEqual(budgetFailure.limits, { exhausted: true, reason: 'model-call-budget' });
   const deadline = runtime.finalize({ ...common, activity: [], limitReason: 'budget_exhausted' });
