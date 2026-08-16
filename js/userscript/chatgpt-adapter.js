@@ -415,7 +415,7 @@ export class ChatGPTTurnController {
             // request that started from New Chat may migrate its provisional CID,
             // and only while the exact submitted user turn is still present and
             // no competing user turn appeared.
-            if (!newConversation || !requestPresent || freshUsers.length !== 1) {
+            if (!newConversation || !this.adapter.isGenerating() || !requestPresent || freshUsers.length !== 1) {
               throw bridgeError('turn-controller', 'conversation-switched', 'ChatGPT conversation changed while a Hex request was in flight.', { expected: observedConversation, actual: conversation });
             }
             observedConversation = conversation;
