@@ -230,6 +230,26 @@ async function testSubmittedUserHydrationGrace() {
     (error) => error.code === 'manual-interference',
     'a persistent single-turn mismatch must remain a hard integrity failure',
   );
+
+  const churn = { generating: false, assistants: [], users: [], turns: [], conversation };
+  const churnAdapter = turnAdapter(churn, () => {
+    churn.generating = true;
+    let seq = 0;
+    const rotate = () => {
+      const wrong = { id: `wrong-${++seq}`, text: 'still not the Hex prompt', node: plainNode(`wrong-${seq}`) };
+      churn.users = [wrong]; churn.turns = [wrong];
+      if (seq < 8) setTimeout(rotate, 2);
+    };
+    rotate();
+  });
+  const churnStarted = Date.now();
+  await assert.rejects(
+    new ChatGPTTurnController(churnAdapter, { pollMs: 2, startTimeoutMs: 80, submissionMismatchGraceMs: 12 })
+      .run('prompt', { timeoutMs: 100, expectedConversation: conversation }),
+    (error) => error.code === 'manual-interference',
+    'renderer id churn must not keep extending a persistent prompt-mismatch grace window',
+  );
+  assert.ok(Date.now() - churnStarted < 170, 'prompt mismatch must fail on the fixed grace window, not the submit timeout');
 }
 
 async function testTurnCompletionAndStaleProtection() {

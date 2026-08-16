@@ -108,7 +108,7 @@ export class ChatGPTDOMAdapter {
     const semanticBody = body || scope;
     const inner = String(semanticBody.innerText || '');
     const raw = String(semanticBody.textContent || '');
-    if (roleName === 'user') {
+    if (roleName === 'user' && body) {
       // iOS/WebKit can report a line-clamped innerText before the collapsible
       // renderer has fully hydrated. The semantic content node's textContent is
       // not layout-clipped. Prefer it only when it clearly carries more content;
@@ -447,7 +447,7 @@ export class ChatGPTTurnController {
     send.click();
 
     let requestUserTurn = null;
-    let mismatchCandidateId = null, mismatchSince = null;
+    let mismatchSince = null;
     let pageErrorObserved = null;
     const capturePageError = (signal = null) => {
       if (pageErrorObserved) return;
@@ -472,21 +472,15 @@ export class ChatGPTTurnController {
           const candidate = explicit[0];
           if (normalizeText(candidate.text) === normalizedPrompt) {
             requestUserTurn = candidate;
-            mismatchCandidateId = null;
             mismatchSince = null;
             return true;
           }
-          const candidateId = String(candidate.id || '');
-          if (mismatchCandidateId !== candidateId) {
-            mismatchCandidateId = candidateId;
-            mismatchSince = Date.now();
-          }
+          if (mismatchSince === null) mismatchSince = Date.now();
           if (Date.now() - mismatchSince >= this.submissionMismatchGraceMs) {
             throw bridgeError('turn-controller', 'manual-interference', 'The submitted ChatGPT turn does not match the Hex request.');
           }
           return false;
         }
-        mismatchCandidateId = null;
         mismatchSince = null;
 
       // Some ChatGPT builds temporarily omit data-message-author-role while

@@ -16,7 +16,14 @@ const MIN_MODEL_REPAIR_REMAINING_MS = 45000;
 
 export async function executeTurn(input = {}, options = {}) {
     const request = normalizeTurnRequest(input);
-    const budget = aiBudget(request.mode, { ...request.budget, ...options.budget });
+    const budgetOverrides = { ...request.budget, ...options.budget };
+    if (budgetOverrides.timeoutMs == null) {
+      const providerDefault = Number(this.provider?.turnTimeoutMs?.(request.mode, request));
+      budgetOverrides.timeoutMs = Number.isFinite(providerDefault) && providerDefault > 0
+        ? Math.floor(providerDefault)
+        : (request.mode === 'agent' ? 120000 : 30000);
+    }
+    const budget = aiBudget(request.mode, budgetOverrides);
     const started = Date.now(), activity = [], observations = [];
     let modelCalls = 0, toolCalls = 0, contextBytes = 0, plan = null, decision = null, limitReason = null;
     let wireUsage = { semanticContextBytes: 0, toolSchemaBytes: 0, historyBytes: 0, wireBytes: 0, estimatedInputTokens: 0 };

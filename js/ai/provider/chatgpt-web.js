@@ -7,7 +7,7 @@ const PROTOCOL_VERSION = 'hex-chatgpt-web-v1';
 
 export class ChatGPTWebProvider extends AIProvider {
   constructor({ bridge = globalThis.__HEX_CHATGPT_BRIDGE__, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
-    super();
+    super({ capabilities: { provider: 'chatgpt-web' } });
     this.bridge = bridge || null;
     this.timeoutMs = timeoutMs;
     this.controllers = new Set();
@@ -16,6 +16,8 @@ export class ChatGPTWebProvider extends AIProvider {
   available() {
     return !!this.bridge && typeof this.bridge.request === 'function';
   }
+
+  turnTimeoutMs(mode) { return mode === 'agent' ? 600000 : 240000; }
 
   async nextTurn(request, options = {}) {
     if (!this.available()) throw new AIError('provider_error', 'ChatGPT Web bridge is not available.');
@@ -92,6 +94,10 @@ export class UserscriptAIProvider extends AIProvider {
     if (requested === 'gemini' || requested === 'worker') return this.gemini;
     if (requested === 'chatgpt' || requested === 'chatgpt-web') return this.chatgpt;
     throw new AIError('provider_error', `Unknown AI provider: ${requested}`);
+  }
+
+  turnTimeoutMs(mode, request = {}) {
+    return this.selected(request).turnTimeoutMs(mode, request);
   }
 
   async nextTurn(request, options = {}) {

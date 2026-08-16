@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { aiBudget } from '../js/ai/schema.js';
+import { AIProvider } from '../js/ai/provider/index.js';
 import {
   ChatGPTWebProvider,
   UserscriptAIProvider,
@@ -7,9 +8,15 @@ import {
   parseChatGPTDecision,
 } from '../js/ai/provider/chatgpt-web.js';
 
-assert.equal(aiBudget('chat').timeoutMs, 240000, 'interactive chat needs enough wall time for real reasoning plus a second model call');
-assert.equal(aiBudget('agent').timeoutMs, 600000, 'agent mode must not inherit the old two-minute whole-investigation ceiling');
+assert.equal(aiBudget('chat').timeoutMs, 240000, 'the reviewed chat hard ceiling must fit realistic ChatGPT reasoning');
+assert.equal(aiBudget('agent').timeoutMs, 600000, 'the reviewed agent hard ceiling must fit multi-step ChatGPT work');
 assert.equal(aiBudget('chat', { timeoutMs: 999999 }).timeoutMs, 240000, 'caller overrides cannot exceed the reviewed chat ceiling');
+const standardProvider = new AIProvider();
+assert.equal(standardProvider.turnTimeoutMs('chat'), 30000, 'ordinary providers keep the previous 30-second chat default');
+assert.equal(standardProvider.turnTimeoutMs('agent'), 120000, 'ordinary providers keep the previous two-minute agent default');
+const chatgptPolicy = new ChatGPTWebProvider({ bridge: { request: async () => '{\"type\":\"final\",\"answer\":\"ok\"}' } });
+assert.equal(chatgptPolicy.turnTimeoutMs('chat'), 240000);
+assert.equal(chatgptPolicy.turnTimeoutMs('agent'), 600000);
 
 const tools = [{
   name: 'search_functions',
@@ -33,6 +40,8 @@ const tools = [{
     setSelection: async (selection) => { selections.push(selection); return { model: selection.model, reasoning: selection.reasoning }; },
   };
   const provider = new UserscriptAIProvider({ bridge, fetchImpl: async () => { throw new Error('unused'); } });
+  assert.equal(provider.turnTimeoutMs('chat', { provider: 'chatgpt-web' }), 240000);
+  assert.equal(provider.turnTimeoutMs('chat', { provider: 'gemini' }), 30000);
   assert.deepEqual(provider.getSelection(), { provider: 'chatgpt-web', model: 'chatgpt-web/sol', reasoning: 'high' });
   assert.deepEqual(await provider.setSelection({ provider: 'gemini' }), { provider: 'gemini', model: null, reasoning: null });
   assert.equal(provider.getSelection().provider, 'gemini');
