@@ -85,35 +85,32 @@ async function runtimeStage(stage, operation) {
   catch (error) { throw new Error(`${stage}: ${String(error?.message || error || 'runtime failed.')}`); }
 }
 async function assertHash(bytes, expected) {
-  const actual = await cryptoStage('SHA-256 integrity digest', () => crypto.subtle.digest('SHA-256', toExactArrayBuffer(bytes)));
-  if (hex(actual) !== expected) throw new Error('Protected runtime integrity verification failed.');
+  const digest = await cryptoStage('SHA-256 integrity digest', () => crypto.subtle.digest('SHA-256', toExactArrayBuffer(bytes)));
+  const actual = toHex(new Uint8Array(digest));
+  if (!constantTimeEqual(actual, String(expected || '').toLowerCase())) throw new Error('Protected runtime integrity verification failed.');
 }
+function constantTimeEqual(a, b) { if (a.length !== b.length) return false; let diff = 0; for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i); return diff === 0; }
+
 async function fetchJson(url, init = {}) {
-  const response = await fetch(url, { ...init, mode: 'cors', credentials: 'omit', cache: 'no-store' });
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  const response = await fetch(url, { ...init, method: init.method || 'GET', credentials: 'omit', mode: 'cors', cache: 'no-store' });
+  if (response.status !== 200) throw new Error(`Hex runtime bootstrap failed (${response.status}).`);
   return response.json();
 }
 async function fetchBytes(url, init = {}) {
-  const response = await fetch(url, { ...init, mode: 'cors', credentials: 'omit', cache: 'no-store' });
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  const response = await fetch(url, { ...init, method: init.method || 'GET', credentials: 'omit', mode: 'cors', cache: 'no-store' });
+  if (response.status !== 200) throw new Error(`Hex protected runtime fetch failed (${response.status}).`);
   return response.arrayBuffer();
 }
+
 function launcher(text, busy) {
-  let node = document.getElementById('hex-secure-loader-status');
-  if (!node) {
-    node = document.createElement('button'); node.id = 'hex-secure-loader-status'; node.type = 'button';
-    Object.assign(node.style, { position: 'fixed', left: '12px', bottom: '12px', zIndex: '2147483647', border: '0', borderRadius: '8px', background: '#111827', color: '#fff', padding: '8px 10px', font: '600 13px/1.2 -apple-system,BlinkMacSystemFont,system-ui,sans-serif' });
-    document.documentElement.append(node);
-  }
-  node.textContent = text; node.disabled = !!busy; node.dataset.hexLoaderVersion = LOADER_VERSION; return node;
+  let button = document.getElementById('hex-secure-loader');
+  if (!button) { button = document.createElement('button'); button.id = 'hex-secure-loader'; Object.assign(button.style, { position:'fixed',right:'12px',bottom:'12px',zIndex:'2147483647',minHeight:'44px',maxWidth:'min(92vw,520px)',padding:'8px 12px',border:'0',borderRadius:'12px',background:'#111827',color:'#fff',font:'600 13px system-ui',boxShadow:'0 4px 18px rgba(0,0,0,.28)' }); document.documentElement.append(button); }
+  button.textContent = text; button.disabled = !!busy; button.dataset.hexLoaderVersion = LOADER_VERSION; return button;
 }
-function showFailure(error) {
-  const message = String(error?.message || error || 'Unknown startup error.');
-  const node = launcher(`Hex ${LOADER_VERSION} failed — retry · ${message}`, false);
-  node.onclick = () => { node.remove(); boot().catch(showFailure); };
-}
-function fromB64(value) { const text = String(value || '').replaceAll('-', '+').replaceAll('_', '/'); const binary = atob(text + '='.repeat((4 - text.length % 4) % 4)); const out = new Uint8Array(binary.length); for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i); return out; }
+function showFailure(error) { const message = String(error?.message || error || 'Unknown startup error.'); const button = launcher(`Hex ${LOADER_VERSION} failed — retry · ${message.slice(0, 120)}`, false); button.title = message; button.onclick = () => { button.remove(); boot().catch(showFailure); }; }
+function randomToken(size) { const bytes = crypto.getRandomValues(new Uint8Array(size)); return b64(bytes); }
+function b64(bytes) { let binary = ''; for (const value of bytes) binary += String.fromCharCode(value); return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/g, ''); }
+function fromB64(value) { const raw = String(value).replaceAll('-', '+').replaceAll('_', '/'); const binary = atob(raw + '='.repeat((4 - raw.length % 4) % 4)); return Uint8Array.from(binary, (char) => char.charCodeAt(0)); }
+function toHex(bytes) { return Array.from(bytes, (value) => value.toString(16).padStart(2, '0')).join(''); }
 function utf8(value) { return new TextEncoder().encode(String(value)); }
-function randomToken(bytes) { const data = new Uint8Array(bytes); crypto.getRandomValues(data); return btoa(String.fromCharCode(...data)).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', ''); }
-function hex(value) { return [...new Uint8Array(value)].map((byte) => byte.toString(16).padStart(2, '0')).join(''); }
 function delay(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
