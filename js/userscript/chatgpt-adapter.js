@@ -78,18 +78,21 @@ export class ChatGPTDOMAdapter {
 
   text(node) {
     if (!node) return '';
-    // Turn canonicalization deliberately returns the conversation-turn wrapper.
-    // ChatGPT places an accessibility-only speaker heading (for example
-    // "あなた:" / "ChatGPT:") next to the real message node. Reading the
-    // wrapper's innerText therefore corrupts exact prompt matching. Re-scope
-    // text extraction to the semantic message node when one is present, then
-    // keep the existing content-body preference inside that message.
+    // Canonical turns are conversation wrappers, while the semantic message is
+    // nested below data-message-author-role. Never read wrapper/UI chrome when a
+    // message-specific content node exists: long user prompts are rendered in a
+    // collapsible container whose sibling toggle contributes localized labels
+    // (for example "表示を増やす" / "表示を減らす") to role.innerText.
     const role = node.getAttribute?.('data-message-author-role')
       ? node
       : node.querySelector?.('[data-message-author-role="assistant"], [data-message-author-role="user"], [data-message-author-role]');
     const scope = role || node;
-    const body = scope.querySelector?.('.markdown, [data-testid="markdown"], [data-message-content-part="assistant"], [data-message-content]') || scope;
-    return String(body.innerText || body.textContent || '').trim();
+    const roleName = String(role?.getAttribute?.('data-message-author-role') || '');
+    const body = roleName === 'user'
+      ? scope.querySelector?.('[data-testid="collapsible-user-message-content"], [data-message-content-part="user"], [data-message-content]')
+      : scope.querySelector?.('.markdown, [data-testid="markdown"], [data-message-content-part="assistant"], [data-message-content]');
+    const semanticBody = body || scope;
+    return String(semanticBody.innerText || semanticBody.textContent || '').trim();
   }
 
   assistantTurns() { return this.all('assistantTurn').map((node) => ({ node, id: this.identity(node), text: this.text(node) })); }
