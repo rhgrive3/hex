@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
-import { ChatGPTConversationRouter, ChatGPTModelController, ChatGPTTurnController } from '../js/userscript/chatgpt-adapter.js';
+import { ChatGPTConversationRouter, ChatGPTModelController } from '../js/userscript/chatgpt-adapter.js';
+import { ResilientChatGPTTurnController as ChatGPTTurnController } from '../js/userscript/chatgpt-turn-controller.js';
 import { installChatGPTWebBridge } from '../js/userscript/chatgpt-bridge.js';
 
 await testConversationRouting();
 await testModelSelection();
 await testTurnCompletionAndStaleProtection();
+await testRolelessTurnFallback();
 await testCancelTimeoutAndSingleInflight();
 console.log('chatgpt-web-runtime: ok');
 
@@ -65,6 +67,34 @@ async function testTurnCompletionAndStaleProtection() {
   await assert.rejects(new ChatGPTTurnController(staleAdapter, { quietMs: 20, pollMs: 2 }).run('prompt', { timeoutMs: 50, expectedConversation: stale.conversation }), (error) => error.code === 'manual-interference');
 }
 
+async function testRolelessTurnFallback() {
+  const state = {
+    generating: false,
+    assistants: [],
+    users: [],
+    turns: [{ id: 'old-general', text: 'old response' }],
+    conversation: null,
+  };
+  const adapter = turnAdapter(state, () => {
+    state.turns.push({ id: 'hex-user-general', text: 'prompt' });
+    state.generating = true;
+    setTimeout(() => {
+      state.turns.push({ id: 'assistant-general', text: '{"type":"final","answer":"ok","confidence":1,"evidenceIds":[]}' });
+      state.generating = false;
+    }, 8);
+  });
+  const controller = new ChatGPTTurnController(adapter, {
+    quietMs: 5,
+    pollMs: 2,
+    startTimeoutMs: 30,
+    conversationGraceMs: 8,
+  });
+  const result = await controller.run('prompt', { timeoutMs: 100 });
+  assert.equal(result.turnId, 'assistant-general');
+  assert.match(result.text, /"answer":"ok"/);
+  assert.equal(result.conversation, null, 'a captured model response must not be discarded solely because the SPA URL has not settled');
+}
+
 async function testCancelTimeoutAndSingleInflight() {
   const state = { generating: false, assistants: [], users: [], conversation: { id: 'alpha', url: 'https://chatgpt.com/c/alpha' } };
   const adapter = turnAdapter(state, () => { state.users.push({ id: 'u', text: 'prompt' }); state.generating = true; });
@@ -96,7 +126,7 @@ function turnAdapter(state, onSend) {
   return {
     composer: () => composer, setComposerText: (_node, text) => { composer.value = text; }, composerText: () => composer.value,
     sendButton: () => ({ disabled: false, getAttribute: () => null, click: () => { composer.value = ''; onSend(); } }),
-    assistantTurns: () => state.assistants, userTurns: () => state.users, isGenerating: () => state.generating,
+    assistantTurns: () => state.assistants, userTurns: () => state.users, conversationTurns: () => state.turns || [], isGenerating: () => state.generating,
     errorState: () => null, conversation: () => state.conversation,
   };
 }
