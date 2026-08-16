@@ -20,6 +20,8 @@ jobs:
         with:
           node-version: 22
       - run: npm run check
+      - run: node tests/capability-maturity.mjs
+      - run: npm run platform:test
       - run: node tests/issue-495-elf-relocation-budget.mjs
       - run: node tests/issue-513-elf-symbol-budget.mjs
       - run: npm run binary:test
