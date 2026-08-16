@@ -36,8 +36,19 @@ export function setSemanticMigrationMode(mode) {
 export function getSemanticMigrationMode() { return semanticMigrationMode; }
 export function getLastSemanticV2Instrumentation() { return lastSemanticV2Instrumentation; }
 
+function asLegacyAddress(address) {
+  if (address == null) return null;
+  try { return typeof address === 'bigint' ? address : BigInt(address); }
+  catch { return null; }
+}
+
 function rowResolver(model, opts) {
-  if (typeof opts?.rowOfAddress === 'function') return opts.rowOfAddress;
+  if (typeof opts?.rowOfAddress === 'function') {
+    return (address) => {
+      const normalized = asLegacyAddress(address);
+      return normalized == null ? null : opts.rowOfAddress(normalized);
+    };
+  }
   const rows = new Map();
   for (const instruction of model?.instructions ?? []) {
     if (instruction?.address != null && Number.isSafeInteger(instruction.row)) rows.set(instruction.address.toString(), instruction.row);
