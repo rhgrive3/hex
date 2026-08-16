@@ -3,7 +3,7 @@ import { createSemanticSsaContract } from '../ssa/contract.js';
 import { createMemorySsaContract } from '../memoryssa/contract.js';
 import {
   V1_OP, V1_VK, V1_MK, firstAddress, sourceInstructionIds, blockOrder, explicitTargetsForBlock,
-  graphFacts, buildLegacyValues, buildStateProjectionIndex,
+  graphFacts, buildLegacyValues, buildStateProjectionIndex, legacyPublicStateIdentity,
 } from './semantic-ir-v2-to-v1-core.js';
 import { projectNode } from './semantic-ir-v2-to-v1-nodes.js';
 import {
@@ -55,6 +55,48 @@ function preserveIncomingPhysicalState(ssa, valuesById) {
     value.kind = V1_VK.ARG;
     value.version = 0;
     delete value.undefined;
+  }
+}
+
+/**
+ * A state-read result is a value produced while observing physical state, not a
+ * second public write to that state. When the same machine operation both reads
+ * and writes one physical state identity (for example a read/modify/select/write
+ * operation), keeping the read result's legacy `reg` creates two same-row public
+ * definitions and can hide the proven write from legacy reaching-value queries.
+ *
+ * MachineEffects v1 already represents register-read results as temporaries. Do
+ * the equivalent projection here only when the canonical origins prove that a
+ * read and write belong to the same machine operation and physical identity.
+ * The physical identity remains available on the state-read instruction and on
+ * its reaching state SSA value; no architecture name or mnemonic is consulted.
+ */
+function preserveStateReadTemporaryIdentity(ir, valuesById) {
+  const writes = new Set();
+  for (const node of ir.nodes) {
+    if (node.kind !== 'state-write') continue;
+    const identity = legacyPublicStateIdentity(node.variable);
+    if (!identity) continue;
+    for (const instructionId of sourceInstructionIds(node.origin)) writes.add(`${instructionId}\u0000${identity}`);
+  }
+  if (!writes.size) return;
+
+  for (const node of ir.nodes) {
+    if (node.kind !== 'state-read') continue;
+    const identity = legacyPublicStateIdentity(node.variable);
+    if (!identity) continue;
+    const sameOperationWrite = sourceInstructionIds(node.origin)
+      .some((instructionId) => writes.has(`${instructionId}\u0000${identity}`));
+    if (!sameOperationWrite) continue;
+    for (const outputId of node.outputs ?? []) {
+      const value = valuesById.get(outputId);
+      if (!value) continue;
+      value.reg = null;
+      value.stateKey = null;
+      value.version = 0;
+      if (value.label === identity) value.label = node.id;
+      value.compatDerived = 'state-read-temporary';
+    }
   }
 }
 
@@ -161,6 +203,7 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
 
   const { values, byId: valuesById } = buildLegacyValues(ir, ssa);
   preserveIncomingPhysicalState(ssa, valuesById);
+  preserveStateReadTemporaryIdentity(ir, valuesById);
   const stateProjection = buildStateProjectionIndex(ssa);
   const comparisonCarrierByNodeId = addComparisonCarriers(ir, values, valuesById);
   const projected = {
@@ -275,28 +318,6 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
   }
   projected.memorySafety = memorySafetySummary(projected);
   projected.defUse = () => projected.values;
-
-  const selects = projected.instructions.filter((inst) => inst.op === V1_OP.SEL);
-  if (selects.length) {
-    const v = (value) => value == null ? null : {
-      id: value.id,
-      reg: value.reg,
-      bits: value.bits,
-      kind: value.kind,
-      const: value.const == null ? null : String(value.const),
-      def: value.def == null ? null : { op: value.def.op, sub: value.def.sub, row: value.def.row, block: value.def.block,
-        args: (value.def.args || []).map((arg) => arg?.value?.id ?? null) },
-    };
-    console.log('V1_SELECT_CHAIN_DIAG ' + JSON.stringify({
-      functionId: projected.functionId,
-      args: [...projected.args.entries()].map(([reg, value]) => [reg, v(value)]),
-      selects: selects.map((inst) => ({ row: inst.row, block: inst.block, cond: inst.cond, dst: v(inst.dst), args: (inst.args || []).map((arg) => v(arg?.value)) })),
-      x0Values: projected.values.filter((value) => value.reg === 'x0').map(v),
-      stateWrites: projected.instructions.filter((inst) => inst.extra?.stateWrite).map((inst) => ({ row: inst.row, block: inst.block,
-        publicStateIdentity: inst.extra?.publicStateIdentity, op: inst.op, dst: v(inst.dst), args: (inst.args || []).map((arg) => v(arg?.value)) })),
-      returns: projected.instructions.filter((inst) => inst.op === V1_OP.RET).map((inst) => ({ row: inst.row, block: inst.block, args: (inst.args || []).map((arg) => v(arg?.value)) })),
-    }));
-  }
   return projected;
 }
 
