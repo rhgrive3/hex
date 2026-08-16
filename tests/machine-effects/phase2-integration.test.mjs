@@ -12,6 +12,8 @@ import {
 } from '../../js/targets/architecture/arm64/effects/index.js';
 
 const gp = (num, bits = 64) => ({ k:'reg', cls:'gp', num, bits, text:`${bits === 32 ? 'w' : 'x'}${num}` });
+const fp = (num, bits = 32, prefix = bits === 32 ? 's' : 'd') => ({ k:'reg', cls:'fp', num, bits, text:`${prefix}${num}` });
+const vec = (num, arr) => ({ k:'reg', cls:'vec', num, bits:128, arr, text:`v${num}.${arr}` });
 
 assert.equal(MACHINE_EFFECTS_SCHEMA_VERSION, 1);
 assert.equal(ARM64_MACHINE_EFFECTS_SEMANTIC_VERSION, '2');
@@ -25,7 +27,7 @@ assert.equal(X86_64_ARCHITECTURE.semanticVersion, '1');
 assert.equal(X86_64_ARCHITECTURE.capabilities.exactEffects, 'unsupported');
 assert.equal(X86_64_ARCHITECTURE.capabilities.semanticAnalysis, 'unsupported');
 assert.equal(X86_64_ARCHITECTURE.liftExact, null);
-assert.deepEqual(arm64MachineEffectFamilies(), ['flags','control','memory','integer','fp','simd','system']);
+assert.deepEqual(arm64MachineEffectFamilies(), ['flags','control','memory','simd','fp','integer','system']);
 assert.equal(architecturePluginV2('arm64'), ARM64_ARCHITECTURE);
 assert.equal(architecturePluginV2('arm64e'), ARM64E_ARCHITECTURE);
 
@@ -35,8 +37,25 @@ const add = ARM64_ARCHITECTURE.liftExact({
 });
 assert.equal(add.architectureId, 'arm64');
 assert.equal(add.completeness, 'exact');
+assert.equal(add.metadata.family, 'integer');
 assert.ok(add.operations.some((operation) => operation.kind === 'register-write' && operation.register.registerId === 'x0'));
 assert.ok(add.origin.instructionIds.includes('phase2:add'));
+
+// A64 reuses ADD across scalar integer and Advanced SIMD. Operand shape, not
+// dispatcher accident, chooses the semantic family.
+const vectorAdd = ARM64_ARCHITECTURE.liftExact({
+  instructionId:'phase2:vector-add', mnemonic:'add', mode:'a64',
+  ops:[vec(0,'4s'), vec(1,'4s'), vec(2,'4s')],
+});
+assert.equal(vectorAdd.metadata.family, 'arm64-simd');
+assert.equal(vectorAdd.completeness, 'exact-with-intrinsic');
+
+const scalarFpAdd = ARM64_ARCHITECTURE.liftExact({
+  instructionId:'phase2:fp-add', mnemonic:'fadd', mode:'a64',
+  ops:[fp(0), fp(1), fp(2)],
+});
+assert.equal(scalarFpAdd.metadata.family, 'arm64-fp');
+assert.equal(scalarFpAdd.completeness, 'exact-with-intrinsic');
 
 // DMB exists in both parallel family implementations. The composed dispatcher
 // must choose exactly the atomic/memory implementation, which validates options.
