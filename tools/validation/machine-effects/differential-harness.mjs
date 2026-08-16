@@ -65,6 +65,14 @@ async function invoke(fn, ...args) {
   return await fn(...args);
 }
 
+function missingDifferentialAdapters({ machineLifter, compatibilityLowering, legacyV1Oracle }) {
+  const missing = [];
+  if (typeof machineLifter !== 'function') missing.push('machineLifter');
+  if (typeof compatibilityLowering !== 'function') missing.push('compatibilityLowering');
+  if (typeof legacyV1Oracle !== 'function') missing.push('legacyV1Oracle');
+  return missing;
+}
+
 export async function compareDecodedInstruction({
   decodedInstruction,
   semanticVersions = {},
@@ -72,16 +80,23 @@ export async function compareDecodedInstruction({
   compatibilityLowering,
   legacyV1Oracle,
   normalizeV1 = canonicalV1Result,
-  integrationState = INTEGRATION_STATE.INTEGRATED,
+  integrationState = null,
   family = null,
   recognized = true,
 } = {}) {
   const decodedKey = canonicalDecodedInstruction(decodedInstruction);
   const versionsKey = canonicalSemanticVersions(semanticVersions);
   const mnemonic = String(decodedInstruction?.mnemonic || decodedInstruction?.opcode || '').toLowerCase() || null;
+  const missingAdapters = missingDifferentialAdapters({ machineLifter, compatibilityLowering, legacyV1Oracle });
+  const effectiveIntegrationState = integrationState == null
+    ? (missingAdapters.length ? INTEGRATION_STATE.NOT_INTEGRATED : INTEGRATION_STATE.INTEGRATED)
+    : integrationState;
 
-  if (integrationState !== INTEGRATION_STATE.INTEGRATED) {
-    if (integrationState !== INTEGRATION_STATE.NOT_INTEGRATED) fail('invalid-integration-state', String(integrationState));
+  if (effectiveIntegrationState !== INTEGRATION_STATE.INTEGRATED && effectiveIntegrationState !== INTEGRATION_STATE.NOT_INTEGRATED) {
+    fail('invalid-integration-state', String(effectiveIntegrationState));
+  }
+
+  if (effectiveIntegrationState === INTEGRATION_STATE.NOT_INTEGRATED) {
     return Object.freeze({
       status: INTEGRATION_STATE.NOT_INTEGRATED,
       matched: null,
@@ -92,7 +107,10 @@ export async function compareDecodedInstruction({
       coverage: COVERAGE_STATUS.UNKNOWN,
       family,
       mnemonic,
-      reason: 'composed ARM64 MachineEffects lifter and/or compatibility lowering not injected',
+      missingAdapters: Object.freeze(missingAdapters),
+      reason: missingAdapters.length
+        ? `composed differential adapters not injected: ${missingAdapters.join(', ')}`
+        : 'composed ARM64 MachineEffects integration explicitly marked not-integrated',
     });
   }
 
