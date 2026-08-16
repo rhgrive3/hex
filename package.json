@@ -37,7 +37,7 @@
     "ai:test": "node tests/ai-analysis-boundary.mjs && node tests/ai-quota.mjs && node tests/ai-worker.mjs && node tests/ai-prompt-compose.mjs && node tests/ai-ui-mode.mjs && node tests/ai-ui-conversations.mjs && node tests/ai-ui-evidence.mjs && node tests/issue-467-ai-context.mjs && node tests/ai-control-plane.mjs && node tests/ai-scope-hardening.mjs && node tests/ai-chatgpt-web-provider.mjs && node tests/chatgpt-web-runtime.mjs && node tests/chatgpt-web-agent-loop.mjs && node tests/ai-conversation-routing.mjs && node tests/agent-capability-plane.mjs",
     "ai:browser": "node tests/ai-ui-launcher.mjs && node tests/ai-ui-panel.mjs && node tests/ai-ui-proposal.mjs && node tests/ai-ui-fallback.mjs && node tests/ai-ui-core-integration.mjs",
     "userscript:build": "node scripts/build-userscript.mjs",
-    "userscript:test": "npm run userscript:build && node --check userscript/hex.user.template.js && node --check worker-entry.js && node tests/userscript-host.mjs && node tests/userscript-decompress.mjs && node tests/userscript-worker-arraybuffer.mjs && node tests/userscript-network.mjs && node tests/chatgpt-web-runtime.mjs && node tests/ai-chatgpt-web-provider.mjs && node tests/userscript-routes.mjs"
+    "userscript:test": "npm run userscript:build && node --check userscript/hex.user.template.js && node --check worker-entry.js && node tests/userscript-embed-protocol.mjs && node tests/userscript-host.mjs && node tests/userscript-decompress.mjs && node tests/userscript-worker-arraybuffer.mjs && node tests/userscript-network.mjs && node tests/chatgpt-web-runtime.mjs && node tests/ai-chatgpt-web-provider.mjs && node tests/userscript-routes.mjs"
   },
   "devDependencies": {
     "esbuild": "0.28.1",
