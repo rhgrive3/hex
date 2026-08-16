@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createMachineEffectBundle } from '../../js/semantics/effects/index.js';
 import { buildSemanticV2CompatibilityPipeline } from '../../js/semantics/compat/index.js';
 import { verifyProvenance, verifyDeterminism } from '../../tools/validation/semantic-v2/provenance.mjs';
@@ -20,10 +21,22 @@ function commandsFor(scriptName) {
   return script.split(/\s*&&\s*/).map((command) => command.trim()).filter(Boolean);
 }
 
+const legacyPreloadFile = path.join(os.tmpdir(), `hex-phase3-legacy-preload-${process.pid}.mjs`);
+const irUrl = pathToFileURL(path.join(root, 'js/ir.js')).href;
+fs.writeFileSync(legacyPreloadFile,
+  `import { setSemanticMigrationMode } from ${JSON.stringify(irUrl)};\n` +
+  `setSemanticMigrationMode('legacy-v1');\n`);
+const legacyPreloadUrl = pathToFileURL(legacyPreloadFile).href;
+const inheritedNodeOptions = String(process.env.NODE_OPTIONS ?? '').trim();
+const legacyEnv = {
+  ...process.env,
+  NODE_OPTIONS: [inheritedNodeOptions, `--import=${legacyPreloadUrl}`].filter(Boolean).join(' '),
+};
+
 function runLegacyCommand(suite, command) {
   const child = spawnSync('bash', ['-lc', command], {
     cwd: root,
-    env: { ...process.env },
+    env: legacyEnv,
     encoding: 'utf8',
     maxBuffer: 64 * 1024 * 1024,
     timeout: 180_000,
@@ -38,6 +51,7 @@ function runLegacyCommand(suite, command) {
 
 const legacySemantic = commandsFor('semantic:test').map((command) => runLegacyCommand('semantic', command));
 const legacyDecompiler = commandsFor('decompiler:test').map((command) => runLegacyCommand('decompiler', command));
+try { fs.rmSync(legacyPreloadFile, { force: true }); } catch {}
 const v2ByCommand = new Map([
   ...v2Corpus.semantic.results.map((item) => [`semantic\u0000${item.command}`, item]),
   ...v2Corpus.decompiler.results.map((item) => [`decompiler\u0000${item.command}`, item]),
