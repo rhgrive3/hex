@@ -5,20 +5,42 @@ import {
 
 const MEMORY_CLOBBER_KINDS = new Set(['may-alias-clobber', 'unknown-clobber', 'call-clobber', 'intrinsic-clobber']);
 
-function legacyLocation(region, valuesById) {
+function preciseProjectedAddress(address) {
+  return address?.precise === true && address.index == null ? address : null;
+}
+
+function legacyLocation(region, valuesById, projectedAddress = null) {
   const size = region.widthBits == null ? null : bytesForBits(region.widthBits);
+  const address = preciseProjectedAddress(projectedAddress);
   if (region.kind === 'stack-fixed') {
-    const disp = safeBigInt(region.offset) ?? 0n;
-    return { key: `stack:${disp.toString()}`, kind: V1_MK.STACK, disp, size, regionId: region.id, origin: region.origin ?? null };
+    const disp = safeBigInt(address?.disp) ?? safeBigInt(region.offset) ?? 0n;
+    return { key: `stack:${region.id}`, kind: V1_MK.STACK, disp, size, regionId: region.id, origin: region.origin ?? null };
   }
   if (region.kind === 'global-absolute') {
-    const address = safeBigInt(region.address);
-    if (address != null) return { key: `global:${address.toString(16)}`, kind: V1_MK.GLOBAL, address, size, regionId: region.id, origin: region.origin ?? null };
+    const absolute = safeBigInt(region.address);
+    if (absolute != null) return { key: `global:${absolute.toString(16)}`, kind: V1_MK.GLOBAL, address: absolute, size, regionId: region.id, origin: region.origin ?? null };
   }
   if (region.kind === 'rooted-offset') {
-    const disp = safeBigInt(region.offset) ?? 0n;
-    const base = valuesById.get(region.rootEntityId) ?? null;
-    return { key: `field:${region.rootEntityId}+${disp.toString()}`, kind: V1_MK.FIELD, base, baseEntityId: region.rootEntityId, disp, size, regionId: region.id, origin: region.origin ?? null };
+    // The region offset is an alias-analysis identity component. For a root that
+    // is not separation-safe, canonical region derivation deliberately folds an
+    // exact displacement into rootEntityId and leaves region.offset at zero so
+    // distinct offsets cannot become an unjustified NoAlias result. Legacy v1,
+    // however, also exposes the already-proven address expression to consumers.
+    // Preserve that public shape from the Semantic-IR-derived address projection
+    // without changing MemorySSA identity or alias conservatism.
+    const disp = safeBigInt(address?.disp) ?? safeBigInt(region.offset) ?? 0n;
+    const base = address?.base ?? valuesById.get(region.rootEntityId) ?? null;
+    return {
+      key: `field:${region.id}`,
+      kind: V1_MK.FIELD,
+      base,
+      baseEntityId: region.rootEntityId,
+      disp,
+      size,
+      regionId: region.id,
+      origin: region.origin ?? address?.origin ?? null,
+      addressMetadataSource: address ? 'semantic-ir-address-projection' : 'memory-region',
+    };
   }
   return { key: `unknown:${region.id}`, kind: V1_MK.UNKNOWN, size, regionId: region.id, uncertaintyIdentity: region.uncertaintyIdentity ?? region.rootIdentity ?? region.addressSpace ?? region.id, origin: region.origin ?? null };
 }
@@ -33,10 +55,24 @@ function fallbackLocation(inst) {
   return { key: `unknown:${inst.semanticNodeId ?? inst.id ?? 'memory'}`, kind: V1_MK.UNKNOWN, size: inst.addr.size ?? null };
 }
 
+function representativeProjectedAddress(regionId, memorySsa, instructionBySemanticId) {
+  for (const definition of memorySsa.definitions) {
+    if (definition.regionId !== regionId || definition.sourceEntityId == null) continue;
+    const address = instructionBySemanticId.get(definition.sourceEntityId)?.addr ?? null;
+    if (preciseProjectedAddress(address)) return address;
+  }
+  for (const use of memorySsa.uses) {
+    if (use.regionId !== regionId) continue;
+    const address = instructionBySemanticId.get(use.sourceEntityId)?.addr ?? null;
+    if (preciseProjectedAddress(address)) return address;
+  }
+  return null;
+}
+
 export function attachMemorySsa(projected, memorySsa, valuesById, instructionBySemanticId, blockIndexById) {
   const locationByRegion = new Map();
   for (const region of memorySsa.regions) {
-    const loc = legacyLocation(region, valuesById);
+    const loc = legacyLocation(region, valuesById, representativeProjectedAddress(region.id, memorySsa, instructionBySemanticId));
     locationByRegion.set(region.id, loc);
     projected.locations.set(loc.key, loc);
   }
