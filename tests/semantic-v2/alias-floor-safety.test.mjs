@@ -44,7 +44,7 @@ const fieldOverlap = region({ kind: 'rooted-offset', rootEntityId: 'entity_root_
 const fieldOtherRoot = region({ kind: 'rooted-offset', rootEntityId: 'entity_root_b', offset: 16 }, 32);
 assert.equal(aliasMemoryRegions(fieldA, fieldSame), 'must', 'same rooted field');
 assert.equal(aliasMemoryRegions(fieldA, fieldOverlap), 'may', 'same root overlapping offsets');
-assert.equal(aliasMemoryRegions(fieldA, fieldOtherRoot), 'no', 'different proven root identities');
+assert.equal(aliasMemoryRegions(fieldA, fieldOtherRoot), 'may', 'different root identities are not a NoAlias proof');
 
 const unknownRoot = region({ kind: 'rooted-offset', offset: 16 }, 32);
 assert.equal(unknownRoot.kind, 'unknown');
