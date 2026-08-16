@@ -26,6 +26,17 @@ function irOptionsFromDecompilerOptions(opts = {}) {
   };
 }
 
+/*
+ * Keep the public decompiler facade's historical runtime-model compatibility:
+ * callers may supply the canonical runtime index directly, the ObjC model that
+ * owns it, or the mixed Apple runtime aggregate. Normalize that evidence before
+ * delegating so the split facade does not weaken issue #529 runtime wiring.
+ */
+function canonicalRuntimeOptions(opts = {}) {
+  const objcRuntimeIndex = opts.objcRuntimeIndex || opts.objcModel || opts.appleRuntime?.objc || null;
+  return objcRuntimeIndex === opts.objcRuntimeIndex ? opts : { ...opts, objcRuntimeIndex };
+}
+
 /**
  * Preserve function-level ABI/prototype evidence when the decompiler asks the
  * Semantic IR facade to build IR. The prior facade forwarded only rowOfAddress,
@@ -33,6 +44,7 @@ function irOptionsFromDecompilerOptions(opts = {}) {
  * O0 epilogues even though the caller had already supplied returnType.
  */
 export function decompileSemantic(model, opts = {}) {
-  const ir = opts.ir || irFor(model, irOptionsFromDecompilerOptions(opts));
-  return decompileSemanticCore(model, { ...opts, ir });
+  const semanticOpts = canonicalRuntimeOptions(opts);
+  const ir = semanticOpts.ir || irFor(model, irOptionsFromDecompilerOptions(semanticOpts));
+  return decompileSemanticCore(model, { ...semanticOpts, ir });
 }
