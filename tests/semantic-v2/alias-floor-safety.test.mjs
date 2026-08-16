@@ -61,20 +61,20 @@ assert.equal(unknownStoreAliasRelation(unknownIndexed, fieldA), 'may');
 assert.equal(unknownStoreAliasRelation(unknownIndexed, globalA), 'may');
 assert.equal(unknownStoreClobbersRegion(unknownIndexed, fieldA), true, 'unknown store must clobber object proof');
 assert.equal(unknownStoreClobbersRegion(unknownIndexed, globalA), true, 'unknown store must clobber global proof');
-assert.equal(unknownStoreClobbersRegion(unknownIndexed, stackA), true, 'stack is clobbered unless disjointness is proven');
+assert.equal(unknownStoreClobbersRegion(unknownIndexed, stackA), true, 'stack is clobbered unless canonical disjointness is modeled');
 
-const stackDisjointUnknown = deriveMemoryRegion({
+const hintedUnknown = deriveMemoryRegion({
   functionId,
   binaryId,
-  memory: { addressSpace: 'memory', addressExpr: { valueId: 'value_non_stack_unknown' }, widthBits: 64 },
+  memory: { addressSpace: 'memory', addressExpr: { valueId: 'value_hinted_unknown' }, widthBits: 64 },
   origin,
-  sourceEntityId: 'node_unknown_non_stack',
-  unknownMetadata: { provenDisjointRegionKinds: ['stack-fixed'] },
+  sourceEntityId: 'node_unknown_hint',
+  unknownMetadata: { provenDisjointRegionKinds: ['stack-fixed'], prettyName: 'not-stack' },
 });
-assert.equal(unknownStoreAliasRelation(stackDisjointUnknown, stackA), 'no');
-assert.equal(unknownStoreClobbersRegion(stackDisjointUnknown, stackA), false);
-assert.equal(unknownStoreAliasRelation(stackDisjointUnknown, globalA), 'may');
-assert.equal(unknownStoreAliasRelation(stackDisjointUnknown, fieldA), 'may');
+assert.equal(unknownStoreAliasRelation(hintedUnknown, stackA), 'may', 'unvalidated metadata cannot create NoAlias');
+assert.equal(unknownStoreClobbersRegion(hintedUnknown, stackA), true);
+assert.equal(unknownStoreAliasRelation(hintedUnknown, globalA), 'may');
+assert.equal(unknownStoreAliasRelation(hintedUnknown, fieldA), 'may');
 
 const tls = deriveMemoryRegion({
   functionId,
@@ -97,6 +97,8 @@ assert.equal(effectSummaryAliasRelation({ scope: 'unknown' }, globalA), 'may', '
 assert.equal(effectSummaryAliasRelation({ scope: 'none' }, globalA), 'no', 'explicit no-write summary may prove NoAlias');
 assert.equal(effectSummaryAliasRelation({ scope: 'all', addressSpaces: ['io'] }, globalA), 'no');
 assert.equal(effectSummaryAliasRelation({ scope: 'all', addressSpaces: ['memory'] }, globalA), 'may');
+assert.equal(effectSummaryAliasRelation({ scope: 'accesses', accesses: [{ id: 'a' }] }, fieldA, () => fieldSame), 'must');
+assert.equal(effectSummaryAliasRelation({ scope: 'accesses', accesses: [{ id: 'a' }] }, fieldA, () => { throw new Error('bad summary'); }), 'unknown');
 
 const malformed = region({ kind: 'global-absolute', address: 'bad' }, 32);
 const missingProvenance = region({ kind: 'stack-fixed', offset: 0 }, 32, { origin: null });
