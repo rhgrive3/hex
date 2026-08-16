@@ -10,6 +10,16 @@ const CHATGPT_ORIGIN = 'https://chatgpt.com';
 const WORKER_ORIGIN = 'https://ida.rhgrive.workers.dev';
 const PARENT_URL = `${CHATGPT_ORIGIN}/__hex_embed_e2e__`;
 const TIMEOUT_MS = 45_000;
+const CHATGPT_LIKE_CSP = [
+  "default-src 'self'",
+  "script-src 'self' 'unsafe-inline' blob:",
+  "script-src-elem 'self' 'unsafe-inline' blob:",
+  "style-src 'self' 'unsafe-inline' blob:",
+  `connect-src 'self' ${WORKER_ORIGIN}`,
+  "frame-src 'self' https://*.embed.chatgpt.site https://*.web-sandbox.oaiusercontent.com",
+  "worker-src 'self' blob:",
+  "img-src 'self' data: blob:",
+].join('; ');
 const buildModule = await import('../.runtime-build/runtime-secrets.js');
 const { RUNTIME_BUILD } = buildModule;
 const template = (await readFile(path.join(ROOT, 'userscript/hex.user.template.js'), 'utf8'))
@@ -47,30 +57,23 @@ async function runBrowser(name, browserType) {
 
   try {
     await page.goto(PARENT_URL, { waitUntil: 'domcontentloaded', timeout: TIMEOUT_MS });
+    const blobProbe = await probeSandboxBlob(page);
+    diagnostics.push(`sandbox-blob-probe: ${JSON.stringify(blobProbe)}`);
+    assert.equal(blobProbe.ready, true, `${name}: sandboxed same-origin Blob iframe must execute script under ChatGPT-like CSP`);
+    assert.equal(blobProbe.origin, 'null', `${name}: sandboxed Blob iframe must have an opaque origin`);
+
     await page.addScriptTag({ content: template });
 
-    await page.waitForSelector('#hex-userscript-iframe-host iframe', { timeout: TIMEOUT_MS });
+    await page.waitForSelector('#hex-userscript-iframe-host iframe', { state: 'attached', timeout: TIMEOUT_MS });
     const iframeElement = await page.$('#hex-userscript-iframe-host iframe');
     assert.ok(iframeElement, `${name}: iframe host was not created`);
 
-    await page.waitForFunction(() => {
-      const iframe = document.querySelector('#hex-userscript-iframe-host iframe');
-      const legacy = document.getElementById('hex-userscript-host');
-      if (legacy) return 'fallback';
-      try {
-        const child = iframe?.contentWindow;
-        return child && child.location.href.includes('/embed/chatgpt') ? 'navigated' : false;
-      } catch {
-        return iframe ? 'navigated' : false;
-      }
-    }, null, { timeout: TIMEOUT_MS });
-
-    const childFrame = await waitForWorkerFrame(page);
-    assert.ok(childFrame, `${name}: Worker-origin iframe never became available`);
+    const childFrame = await waitForHexFrame(page);
+    assert.ok(childFrame, `${name}: Hex iframe never became available`);
 
     const outcome = await Promise.race([
       childFrame.waitForFunction(() => !!globalThis.__app && !!document.querySelector('#app') && !!document.getElementById('hex-userscript-style'), null, { timeout: TIMEOUT_MS }).then(() => 'ready'),
-      page.waitForSelector('#hex-userscript-host', { timeout: TIMEOUT_MS }).then(() => 'fallback'),
+      page.waitForSelector('#hex-userscript-host', { state: 'attached', timeout: TIMEOUT_MS }).then(() => 'fallback'),
     ]);
 
     const parentState = await page.evaluate(() => ({
@@ -81,6 +84,7 @@ async function runBrowser(name, browserType) {
     }));
     const childState = await childFrame.evaluate(() => ({
       href: location.href,
+      origin: location.origin,
       app: !!globalThis.__app,
       apiBase: globalThis.__HEX_API_BASE__ || null,
       bridge: !!globalThis.__HEX_CHATGPT_BRIDGE__,
@@ -89,7 +93,7 @@ async function runBrowser(name, browserType) {
       secureLoader: globalThis.__HEX_SECURE_LOADER__ || null,
     }));
 
-    assert.equal(outcome, 'ready', `${name}: iframe-v1 fell back before the canonical child app became ready\n${formatDiagnostics(diagnostics, parentState, childState)}`);
+    assert.equal(outcome, 'ready', `${name}: canonical iframe fell back before the child app became ready\n${formatDiagnostics(diagnostics, parentState, childState)}`);
     assert.equal(parentState.legacy, false, `${name}: legacy light-DOM fallback must not be created`);
     assert.equal(parentState.iframeHost, true, `${name}: persistent iframe host must remain mounted`);
     assert.equal(childState.apiBase, WORKER_ORIGIN, `${name}: child API base must stay on Worker origin`);
@@ -99,7 +103,7 @@ async function runBrowser(name, browserType) {
 
     const bodyBg = await childFrame.evaluate(() => getComputedStyle(document.body).backgroundColor);
     assert.notEqual(bodyBg, '', `${name}: canonical CSS must be computed in the iframe`);
-    console.log(`ok  ${name}: secure loader -> Worker iframe -> RPC attach -> app ready`);
+    console.log(`ok  ${name}: secure loader -> sandbox iframe -> RPC attach -> app ready`);
   } catch (error) {
     const parentState = await safeEvaluate(page, () => ({
       legacy: !!document.getElementById('hex-userscript-host'),
@@ -114,16 +118,44 @@ async function runBrowser(name, browserType) {
   }
 }
 
+async function probeSandboxBlob(page) {
+  return page.evaluate(() => new Promise((resolve) => {
+    const marker = `probe-${Math.random().toString(16).slice(2)}`;
+    const timer = setTimeout(() => resolve({ ready: false, origin: null }), 5000);
+    const onMessage = (event) => {
+      if (event.data?.marker !== marker) return;
+      clearTimeout(timer);
+      removeEventListener('message', onMessage);
+      event.source?.frameElement?.remove?.();
+      resolve({ ready: true, origin: event.data.origin });
+    };
+    addEventListener('message', onMessage);
+    const html = `<!doctype html><meta charset="utf-8"><script>parent.postMessage({marker:${JSON.stringify(marker)},origin:location.origin},'*')<\/script>`;
+    const url = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
+    const iframe = document.createElement('iframe');
+    iframe.sandbox = 'allow-scripts';
+    iframe.src = url;
+    iframe.hidden = true;
+    iframe.addEventListener('load', () => setTimeout(() => URL.revokeObjectURL(url), 0), { once: true });
+    document.documentElement.append(iframe);
+  }));
+}
+
 async function routeRequest(route) {
   const request = route.request();
   const url = new URL(request.url());
   const method = request.method();
 
+  if (url.protocol === 'blob:' || url.protocol === 'data:') {
+    await route.continue();
+    return;
+  }
+
   if (request.url() === PARENT_URL) {
     await route.fulfill({
       status: 200,
       contentType: 'text/html; charset=utf-8',
-      headers: { 'cache-control': 'no-store' },
+      headers: { 'cache-control': 'no-store', 'content-security-policy': CHATGPT_LIKE_CSP },
       body: '<!doctype html><html><head><meta charset="utf-8"><title>Fake ChatGPT</title></head><body><main><div id="prompt-textarea" role="textbox" contenteditable="true"></div><button data-testid="send-button" type="button">Send</button></main></body></html>',
     });
     return;
@@ -249,10 +281,12 @@ async function createBootstrap(input) {
   };
 }
 
-async function waitForWorkerFrame(page) {
+async function waitForHexFrame(page) {
   const deadline = Date.now() + TIMEOUT_MS;
   while (Date.now() < deadline) {
-    const found = page.frames().find((frame) => frame.url().startsWith(`${WORKER_ORIGIN}/embed/chatgpt`));
+    const frames = page.frames().filter((frame) => frame !== page.mainFrame());
+    const found = frames.find((frame) => frame.url().startsWith(`${WORKER_ORIGIN}/embed/chatgpt`))
+      || frames.find((frame) => frame.url().startsWith('blob:') || frame.url() === 'about:srcdoc');
     if (found) return found;
     await page.waitForTimeout(50);
   }
