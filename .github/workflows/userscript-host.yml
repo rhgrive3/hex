@@ -77,5 +77,7 @@ jobs:
           npm install --no-save --save-exact playwright@1.55.0
           npx --no-install playwright install-deps chromium webkit
           npx --no-install playwright install chromium webkit
+      - name: Verify opaque srcdoc bootstrap in Chromium and WebKit
+        run: node tests/userscript-srcdoc-probe.mjs
       - name: Run secure cross-origin embed in real browsers
         run: node tests/userscript-embed-browser.mjs
