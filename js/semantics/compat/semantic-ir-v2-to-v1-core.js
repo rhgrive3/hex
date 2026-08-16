@@ -265,7 +265,7 @@ export function buildLegacyValues(ir, ssa) {
     if (semanticValue.kind === 'unknown' || directDefinition?.kind === 'unknown') value.unknown = true;
     if (semanticValue.kind === 'undef' || directDefinition?.kind === 'undef') value.undefined = true;
     byId.set(semanticValue.id, value);
-    if (directDefinition?.variableKey == null) byId.set(directDefinition.valueId, value);
+    if (directDefinition && directDefinition.variableKey == null) byId.set(directDefinition.valueId, value);
   }
 
   // Generic SSA also creates state-version ValueIds (entry/def/phi/unknown)
