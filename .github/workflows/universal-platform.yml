@@ -30,13 +30,28 @@ jobs:
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      HEX_FIXTURE_BATTLECATS_URL: https://raw.githubusercontent.com/rhgrive3/hex/bd7bd61d093592d07fdd9e9b14a859e19dd4c3a9/tests/battlecats
+      HEX_FIXTURE_TSUMTSUM_URL: https://raw.githubusercontent.com/rhgrive3/hex/bd7bd61d093592d07fdd9e9b14a859e19dd4c3a9/tests/TsumTsum
+      HEX_FIXTURE_YWP_URL: https://raw.githubusercontent.com/rhgrive3/hex/bd7bd61d093592d07fdd9e9b14a859e19dd4c3a9/tests/YWP
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: npm run binary:benchmark | tee universal-platform-benchmark.json
+      - name: Fetch and verify pinned real fixtures
+        run: |
+          npm run fixtures:fetch
+          npm run fixtures:check
+      - name: Run reproducible binary benchmark
+        shell: bash
+        run: |
+          set -o pipefail
+          npm --silent run binary:benchmark | tee universal-platform-benchmark.json
+      - name: Deterministic work regression gate
+        run: node tools/benchmark/compare.mjs --binary=universal-platform-benchmark.json
       - uses: actions/upload-artifact@v4
         with:
           name: universal-platform-benchmark
           path: universal-platform-benchmark.json
+          if-no-files-found: error
