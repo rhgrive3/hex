@@ -1,0 +1,145 @@
+{
+  "schemaVersion": "legacy-arm64-v1-semantic-inventory/v1",
+  "sourcePath": "js/architecture/compat/ir-core-arm64-aapcs64-v1.js",
+  "sourceBaseline": "6aa4400a2dd1278a26fe717d8d4886cf8a2198c2",
+  "oracleRole": "compatibility-oracle-not-isa-truth",
+  "scope": {
+    "legacySemanticSupportOnly": true,
+    "decoderSupportIncluded": false,
+    "newMachineEffectsSupportIncluded": false
+  },
+  "families": [
+    {
+      "id": "return",
+      "match": { "trigger": "insn.isReturn" },
+      "legacyBehavior": "semantic-v1",
+      "sourceMarkers": ["if (insn.isReturn)"]
+    },
+    {
+      "id": "call",
+      "match": { "trigger": "insn.isCall" },
+      "legacyBehavior": "semantic-v1-with-aapcs64-compatibility-knowledge",
+      "sourceMarkers": ["if (insn.isCall)"]
+    },
+    {
+      "id": "compare-and-branch",
+      "match": { "mnemonics": ["cbnz", "cbz"] },
+      "legacyBehavior": "semantic-v1",
+      "sourceMarkers": ["base === 'cbz' || base === 'cbnz'"]
+    },
+    {
+      "id": "test-bit-and-branch",
+      "match": { "mnemonics": ["tbnz", "tbz"] },
+      "legacyBehavior": "semantic-v1",
+      "sourceMarkers": ["base === 'tbz' || base === 'tbnz'"]
+    },
+    {
+      "id": "condition-code-branch",
+      "match": { "pattern": "^b\\.[a-z]{2}$" },
+      "legacyBehavior": "semantic-v1",
+      "sourceMarkers": ["/^b\\.[a-z]{2}$/.test(base)"]
+    },
+    {
+      "id": "branch",
+      "match": { "mnemonics": ["b", "br"] },
+      "legacyBehavior": "semantic-v1",
+      "sourceMarkers": ["base === 'b' || base === 'br'"]
+    },
+    {
+      "id": "memory",
+      "match": {
+        "trigger": "insn.memory",
+        "pairMnemonics": ["ldnp", "ldp", "ldpsw", "stnp", "stp"],
+        "signedLoadPattern": "^(ldrs|ldurs|ldpsw)",
+        "addressModes": ["offset", "post", "pre"]
+      },
+      "legacyBehavior": "semantic-v1-load-store-plus-writeback",
+      "sourceMarkers": ["if (insn.memory)", "const pair = base === 'ldp'", "const signedLoad = /^(ldrs|ldurs|ldpsw)/.test(base)"]
+    },
+    {
+      "id": "pc-relative-address",
+      "match": { "mnemonics": ["adr", "adrp"] },
+      "legacyBehavior": "semantic-v1",
+      "sourceMarkers": ["base === 'adrp' || base === 'adr'"]
+    },
+    {
+      "id": "integer-compare-test",
+      "match": { "mnemonics": ["cmn", "cmp", "tst"] },
+      "legacyBehavior": "semantic-v1-nzcv",
+      "sourceMarkers": ["base === 'cmp' || base === 'cmn' || base === 'tst'"]
+    },
+    {
+      "id": "conditional-compare",
+      "match": { "mnemonics": ["ccmn", "ccmp"] },
+      "legacyBehavior": "semantic-v1-nzcv",
+      "sourceMarkers": ["base === 'ccmp' || base === 'ccmn'"]
+    },
+    {
+      "id": "floating-compare",
+      "match": { "mnemonics": ["fcmp", "fcmpe"] },
+      "legacyBehavior": "semantic-v1-nzcv",
+      "sourceMarkers": ["base === 'fcmp' || base === 'fcmpe'"]
+    },
+    {
+      "id": "conditional-select",
+      "match": { "mnemonics": ["cinc", "cinv", "cneg", "csel", "cset", "csetm", "csinc", "csinv", "csneg", "fcsel"] },
+      "legacyBehavior": "semantic-v1",
+      "sourceMarkers": ["const SEL_OF =", "if (SEL_OF[base])"]
+    },
+    {
+      "id": "vector-zero-immediate",
+      "match": { "mnemonics": ["movi"], "constraint": "immediate zero only" },
+      "legacyBehavior": "semantic-v1-zero-only",
+      "sourceMarkers": ["base === 'movi' && ops[1]?.k === 'imm' && ops[1].value === 0n"]
+    },
+    {
+      "id": "move",
+      "match": { "mnemonics": ["fmov", "mov", "movn", "movz"] },
+      "legacyBehavior": "semantic-v1",
+      "sourceMarkers": ["base === 'mov' || base === 'movz' || base === 'movn' || base === 'fmov'"]
+    },
+    {
+      "id": "move-keep",
+      "match": { "mnemonics": ["movk"] },
+      "legacyBehavior": "semantic-v1-bitfield-insert",
+      "sourceMarkers": ["if (base === 'movk')"]
+    },
+    {
+      "id": "multiply-accumulate",
+      "match": { "mnemonics": ["madd", "msub", "smaddl", "smsubl", "umaddl", "umsubl"] },
+      "legacyBehavior": "semantic-v1",
+      "sourceMarkers": ["base === 'madd' || base === 'msub' || base === 'smaddl' || base === 'smsubl'"]
+    },
+    {
+      "id": "bitfield",
+      "match": { "mnemonics": ["bfi", "bfxil", "sbfiz", "sbfx", "ubfiz", "ubfx"] },
+      "legacyBehavior": "semantic-v1",
+      "sourceMarkers": ["/^[su]bfx$/.test(base)", "/^[su]bfiz$/.test(base)"]
+    },
+    {
+      "id": "unary",
+      "match": { "mnemonics": ["abs", "asr", "clz", "fabs", "fcvtzs", "fcvtzu", "fmov", "fneg", "fsqrt", "mvn", "neg", "negs", "rbit", "rev", "rev16", "rev32", "scvtf", "sxtb", "sxth", "sxtw", "ucvtf", "uxtb", "uxth", "uxtw"] },
+      "legacyBehavior": "semantic-v1",
+      "sourceMarkers": ["const UN_OF =", "if (UN_OF[base])"]
+    },
+    {
+      "id": "binary",
+      "match": { "mnemonics": ["add", "adds", "and", "ands", "asr", "asrv", "bic", "bics", "eon", "eor", "fadd", "fdiv", "fmul", "fsub", "lsl", "lslv", "lsr", "lsrv", "mneg", "mul", "orn", "orr", "ror", "rorv", "sdiv", "smulh", "smull", "sub", "subs", "udiv", "umulh", "umull"] },
+      "legacyBehavior": "semantic-v1",
+      "sourceMarkers": ["const BIN_OF =", "if (BIN_OF[base])"]
+    },
+    {
+      "id": "legacy-explicit-empty",
+      "match": { "mnemonics": ["autiasp", "autibsp", "bti", "dmb", "dsb", "hint", "isb", "nop", "paciasp", "pacibsp", "prfm", "sev", "wfe", "wfi", "xpaclri", "yield"] },
+      "legacyBehavior": "empty-v1-output",
+      "semanticWarning": "Compatibility behavior only. Empty legacy output is not ISA proof of state preservation.",
+      "sourceMarkers": ["何も起きない命令", "paciasp|pacibsp|autiasp|autibsp|xpaclri|dmb|dsb|isb|prfm"]
+    },
+    {
+      "id": "fallback-unknown",
+      "match": { "fallback": true },
+      "legacyBehavior": "unknown-with-declared-register-writes",
+      "sourceMarkers": ["ここへ来たものは「分からない」。書き込み先だけ壊す。", "op: OP.UNKNOWN, mnemonic: base"]
+    }
+  ]
+}
