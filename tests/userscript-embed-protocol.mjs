@@ -7,6 +7,7 @@ if (!globalThis.crypto) globalThis.crypto = webcrypto;
 import {
   CHATGPT_PARENT_ORIGINS,
   CHATGPT_RPC_METHODS,
+  EMBED_RPC_METHODS,
   EMBED_PROTOCOL,
   EMBED_PROTOCOL_VERSION,
   createEmbedNonce,
@@ -18,7 +19,11 @@ import {
 assert.equal(EMBED_PROTOCOL, 'hex-embed-v1');
 assert.equal(EMBED_PROTOCOL_VERSION, 1);
 assert.deepEqual([...CHATGPT_PARENT_ORIGINS], ['https://chatgpt.com', 'https://chat.openai.com']);
-assert.ok(CHATGPT_RPC_METHODS.includes('ui.close'));
+assert.deepEqual([...CHATGPT_RPC_METHODS], [
+  'chatgpt.request', 'chatgpt.cancel', 'chatgpt.capabilities', 'chatgpt.getSelection',
+  'chatgpt.setSelection', 'chatgpt.status', 'chatgpt.conversationFor',
+]);
+assert.ok(EMBED_RPC_METHODS.includes('ui.close'));
 
 await testAttachValidation();
 await testKnownRpc();
