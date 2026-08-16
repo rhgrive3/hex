@@ -8,13 +8,25 @@ import { assertWireBudget, providerCapabilities, semanticBudgetFor } from '../bu
 import { createHexToolRegistry } from '../tools/index.js';
 import {
   addressString, assertLiveBindingsUnchanged, compactCandidate, deterministicDecision,
-  ensureRunning, humanError, maxWireUsage, memoryAnchor, normalizeError, remainingTime,
-  requiredScopeForTool, sessionMatchesSnapshot, stableStringify, wireMeta,
+  ensureRunning, humanError, maxWireUsage, memoryAnchor, normalizeError, providerDiagnostics,
+  remainingTime, requiredScopeForTool, sessionMatchesSnapshot, stableStringify, wireMeta,
 } from './runtime-support.js';
+
+const MIN_MODEL_REPAIR_REMAINING_MS = 45000;
 
 export async function executeTurn(input = {}, options = {}) {
     const request = normalizeTurnRequest(input);
-    const budget = aiBudget(request.mode, { ...request.budget, ...options.budget });
+    const budgetOverrides = { ...request.budget, ...options.budget };
+    const providerTimeout = this.provider?.turnTimeoutMs?.(request.mode, request);
+    const providerHasNoDefaultTimeout = providerTimeout == null;
+    if (budgetOverrides.timeoutMs == null && !providerHasNoDefaultTimeout) {
+      const providerDefault = Number(providerTimeout);
+      budgetOverrides.timeoutMs = Number.isFinite(providerDefault) && providerDefault > 0
+        ? Math.floor(providerDefault)
+        : (request.mode === 'agent' ? 120000 : 30000);
+    }
+    const budget = aiBudget(request.mode, budgetOverrides);
+    const turnTimeoutMs = providerHasNoDefaultTimeout && budgetOverrides.timeoutMs == null ? Infinity : budget.timeoutMs;
     const started = Date.now(), activity = [], observations = [];
     let modelCalls = 0, toolCalls = 0, contextBytes = 0, plan = null, decision = null, limitReason = null;
     let wireUsage = { semanticContextBytes: 0, toolSchemaBytes: 0, historyBytes: 0, wireBytes: 0, estimatedInputTokens: 0 };
@@ -23,7 +35,7 @@ export async function executeTurn(input = {}, options = {}) {
     const turnController = new AbortController();
     const externalAbort = () => turnController.abort(externalSignal?.reason || 'cancelled');
     if (externalSignal) { externalSignal.addEventListener('abort', externalAbort, { once: true }); if (externalSignal.aborted) externalAbort(); }
-    const deadline = setTimeout(() => turnController.abort('timeout'), budget.timeoutMs);
+    const deadline = Number.isFinite(turnTimeoutMs) ? setTimeout(() => turnController.abort('timeout'), turnTimeoutMs) : null;
     this.activeControllers.add(turnController);
     const signal = turnController.signal;
     const addActivity = (event) => {
@@ -32,7 +44,7 @@ export async function executeTurn(input = {}, options = {}) {
     };
 
     try {
-      ensureRunning(signal, started, budget.timeoutMs);
+      ensureRunning(signal, started, turnTimeoutMs);
       // Snapshot is intentionally first: all anchoring/scope decisions in this
       // turn are derived from this immutable workbench state.
       const snapshot = createTurnSnapshot(this.localContext, request);
@@ -44,7 +56,7 @@ export async function executeTurn(input = {}, options = {}) {
       const snapshotContext = createSnapshotContext(this.localContext, snapshot, scopeController);
 
       let session = request.sessionId ? await this.sessionStore.get(request.sessionId) : null;
-      ensureRunning(signal, started, budget.timeoutMs);
+      ensureRunning(signal, started, turnTimeoutMs);
       if (session && !sessionMatchesSnapshot(session, snapshot)) {
         // Never attach an old binary investigation to the newly visible binary.
         // For an explicit session id this is a hard boundary rather than a silent reset.
@@ -74,14 +86,14 @@ export async function executeTurn(input = {}, options = {}) {
       addActivity({ type: 'turn-start', label: request.mode === 'agent' ? '調査を開始' : '質問を解析', intent, requestedScope: request.scope, effectiveScope: scopeController.effectiveScope, snapshotId: snapshot.id });
 
       try {
-        ensureRunning(signal, started, budget.timeoutMs);
+        ensureRunning(signal, started, turnTimeoutMs);
         if (this.planner && shouldRunPlanner(request, snapshot, intent)) {
           addActivity({ type: 'plan-start', label: '決定論的候補探索を開始' });
           plan = await this.planner(request.goal, snapshotContext, {
             maxFunctions: budget.maxFunctions, maxDisassembly: budget.maxDisassembly,
             maxSearchResults: request.maxSearchResults || 40,
-            timeoutMs: Math.max(1, Math.min(budget.timeoutMs, request.plannerTimeoutMs || 15000)),
-            isCancelled: () => !!signal?.aborted || Date.now() - started >= budget.timeoutMs,
+            timeoutMs: Math.max(1, Math.min(turnTimeoutMs, request.plannerTimeoutMs || 15000)),
+            isCancelled: () => !!signal?.aborted || Date.now() - started >= turnTimeoutMs,
             tools: registry.legacyTools,
           });
           const plannedEvidence = this.evidenceStore.ingestPlan(plan);
@@ -96,12 +108,12 @@ export async function executeTurn(input = {}, options = {}) {
         if (!this.provider || typeof this.provider.nextTurn !== 'function') decision = deterministicDecision(plan, request);
         else {
           if (typeof this.provider.prepareCapabilities === 'function') {
-            await this.provider.prepareCapabilities({ signal, timeoutMs: Math.min(5000, remainingTime(started, budget.timeoutMs)) });
-            ensureRunning(signal, started, budget.timeoutMs);
+            await this.provider.prepareCapabilities({ signal, timeoutMs: Math.min(5000, remainingTime(started, turnTimeoutMs)) });
+            ensureRunning(signal, started, turnTimeoutMs);
           }
           const seenCalls = new Map(); let repairs = 0;
           while (modelCalls < budget.maxModelCalls) {
-            ensureRunning(signal, started, budget.timeoutMs);
+            ensureRunning(signal, started, turnTimeoutMs);
             request.effectiveScope = scopeController.effectiveScope;
             const caps = providerCapabilities(this.provider);
             const maxTools = Math.max(1, Math.min(10, Number(caps.maxTools || 10)));
@@ -130,7 +142,10 @@ export async function executeTurn(input = {}, options = {}) {
                 reasoning: request.reasoning || null,
                 scope: scopeController.effectiveScope, requestedScope: request.scope, effectiveScope: scopeController.effectiveScope,
                 intent, task: request.task || null, messages, context: built.context, tools,
-              }, { signal, timeoutMs: remainingTime(started, budget.timeoutMs) });
+              }, {
+                signal,
+                ...(Number.isFinite(turnTimeoutMs) ? { timeoutMs: remainingTime(started, turnTimeoutMs) } : {}),
+              });
               const visibleToolNames = tools.map((tool) => tool.name);
               const previousTool = observations.length ? observations[observations.length - 1]?.tool : null;
               if (
@@ -144,9 +159,16 @@ export async function executeTurn(input = {}, options = {}) {
               next = validateModelDecision(next, visibleToolNames);
             } catch (error) {
               const normalized = normalizeError(error, signal);
-              if ((normalized.type === 'invalid_model_output' || normalized.type === 'invalid_tool_call') && repairs++ === 0 && modelCalls < budget.maxModelCalls) {
-                observations.push({ tool: 'protocol_guardrail', summary: `Previous model response rejected: ${normalized.message}`, evidenceIds: [] });
-                addActivity({ type: 'model-repair', label: '不正なモデル出力を1回だけ修復' }); continue;
+              const repairable = normalized.type === 'invalid_model_output' || normalized.type === 'invalid_tool_call';
+              if (repairable && repairs === 0 && modelCalls < budget.maxModelCalls) {
+                const repairRemainingMs = Number.isFinite(turnTimeoutMs) ? remainingTime(started, turnTimeoutMs) : null;
+                if (repairRemainingMs == null || repairRemainingMs >= MIN_MODEL_REPAIR_REMAINING_MS) {
+                  repairs++;
+                  observations.push({ tool: 'protocol_guardrail', summary: `Previous model response rejected: ${normalized.message}`, evidenceIds: [] });
+                  addActivity({ type: 'model-repair', label: 'モデル出力の形式を1回だけ再確認', ...(repairRemainingMs == null ? {} : { remainingMs: repairRemainingMs }) });
+                  continue;
+                }
+                addActivity({ type: 'model-repair-skip', label: '残り時間が少ないためモデル出力の再確認を省略', remainingMs: repairRemainingMs });
               }
               throw normalized;
             }
@@ -174,7 +196,7 @@ export async function executeTurn(input = {}, options = {}) {
       } catch (error) {
         const normalized = normalizeError(error, signal);
         limitReason = normalized.type;
-        addActivity({ type: 'error', errorType: normalized.type, label: humanError(normalized) });
+        addActivity({ type: 'error', errorType: normalized.type, label: humanError(normalized), ...(providerDiagnostics(normalized) || {}) });
         if (!decision) decision = deterministicDecision(plan, request, normalized);
       }
 

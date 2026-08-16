@@ -1,11 +1,24 @@
 import assert from 'node:assert/strict';
-import { ChatGPTConversationRouter, ChatGPTModelController, ChatGPTTurnController } from '../js/userscript/chatgpt-adapter.js';
+import { ChatGPTConversationRouter, ChatGPTDOMAdapter, ChatGPTModelController, ChatGPTTurnController } from '../js/userscript/chatgpt-adapter.js';
 import { installChatGPTWebBridge } from '../js/userscript/chatgpt-bridge.js';
 
 await testConversationRouting();
+await testNewConversationRouteWaitsForOldTurns();
 await testModelSelection();
+await testLogicalTurnCanonicalization();
+await testStableTurnIdentityUsesDataTurnId();
+await testRoleScopedTurnTextExtraction();
+await testCollapsibleUserMessageTextExtraction();
+await testSubmittedUserHydrationGrace();
 await testTurnCompletionAndStaleProtection();
+await testRolelessTurnFallback();
 await testCancelTimeoutAndSingleInflight();
+await testTransientConversationGapIsNotASwitch();
+await testNewConversationIdentityMigration();
+await testNewConversationNavigationAwayIsRejected();
+await testPersistentConversationGapIsRejected();
+await testHistoricalErrorTurnDoesNotPoisonARequest();
+await testBridgeErrorsCarryTheirStage();
 console.log('chatgpt-web-runtime: ok');
 
 async function testConversationRouting() {
@@ -31,6 +44,29 @@ async function testConversationRouting() {
   assert.equal(JSON.parse(storage.getItem('hex.chatgpt.conversations.v1')).A.url, 'https://chatgpt.com/c/alpha');
 }
 
+async function testNewConversationRouteWaitsForOldTurns() {
+  let current = { id: 'old', url: 'https://chatgpt.com/c/old' };
+  let turns = [{ id: 'old-user' }, { id: 'old-assistant' }];
+  let clicks = 0;
+  const adapter = {
+    conversation: () => current,
+    conversationTurns: () => turns,
+    composer: () => ({}),
+    newChatButton: () => ({ click() {
+      clicks++;
+      current = null;
+      setTimeout(() => { turns = []; }, 20);
+    } }),
+    all: () => [],
+  };
+  const router = new ChatGPTConversationRouter(adapter, { storage: memoryStorage(), navigationTimeoutMs: 250 });
+  const routed = await router.route('fresh-session');
+  assert.equal(clicks, 1);
+  assert.equal(routed.isNew, true);
+  assert.equal(routed.conversation, null);
+  assert.equal(turns.length, 0, 'new-chat routing must wait for the old conversation DOM to leave');
+}
+
 async function testModelSelection() {
   let selection = { model: 'chatgpt-web/terra', reasoning: 'standard', observedText: 'GPT-5.6 Terra Standard' };
   const options = [
@@ -50,6 +86,172 @@ async function testModelSelection() {
   await assert.rejects(controller.select({ model: 'chatgpt-web/sol' }), (error) => error.code === 'model-mismatch');
 }
 
+async function testLogicalTurnCanonicalization() {
+  const fixture = logicalTurnFixture('assistant', '42', '{"type":"final","answer":"ok"}');
+  const document = {
+    querySelector: () => null,
+    querySelectorAll(selector) {
+      if (selector === '[data-message-author-role="assistant"]') return [fixture.roleNode];
+      if (selector.includes('conversation-turn-') && selector.includes('assistant')) return [fixture.root];
+      return [];
+    },
+  };
+  const adapter = new ChatGPTDOMAdapter({ document, location: { href: 'https://chatgpt.com/c/alpha' } });
+  const turns = adapter.assistantTurns();
+  assert.equal(turns.length, 1, 'role node + conversation wrapper must be one logical assistant turn');
+  assert.equal(turns[0].id, 'conversation-turn-42');
+  assert.equal(turns[0].text, '{"type":"final","answer":"ok"}');
+  assert.equal(turns[0].node, fixture.root);
+}
+
+async function testStableTurnIdentityUsesDataTurnId() {
+  let testId = 'conversation-turn-2';
+  const node = {
+    id: '',
+    getAttribute(name) {
+      if (name === 'data-turn-id') return 'request-WEB:stable-turn';
+      if (name === 'data-testid') return testId;
+      return null;
+    },
+  };
+  const adapter = new ChatGPTDOMAdapter({ document: null, location: { href: 'https://chatgpt.com/c/alpha' } });
+  assert.equal(adapter.identity(node), 'request-WEB:stable-turn');
+  testId = 'conversation-turn-5';
+  assert.equal(adapter.identity(node), 'request-WEB:stable-turn', 'renderer test-id churn must not change logical turn identity');
+}
+
+async function testRoleScopedTurnTextExtraction() {
+  const prompt = 'HEX CONTROL PROTOCOL hex-chatgpt-web-v1\n\n<HEX_DATA>{"messages":[{"role":"user","content":"こんばんは"}]}</HEX_DATA>';
+  const response = '{"type":"final","answer":"こんばんは！","confidence":1,"evidenceIds":[],"hypothesisIds":[],"suggestedActions":[],"followups":[]}';
+  const user = realChatGPTTurnFixture('user', '1', prompt);
+  const assistant = realChatGPTTurnFixture('assistant', '2', response);
+  const document = {
+    querySelector: () => null,
+    querySelectorAll(selector) {
+      if (selector === '[data-message-author-role="user"]') return [user.roleNode];
+      if (selector === '[data-message-author-role="assistant"]') return [assistant.roleNode];
+      if (selector.includes('conversation-turn-') && selector.includes('user')) return [user.root];
+      if (selector.includes('conversation-turn-') && selector.includes('assistant')) return [assistant.root];
+      if (selector === '[data-testid^="conversation-turn-"]') return [user.root, assistant.root];
+      return [];
+    },
+  };
+  const adapter = new ChatGPTDOMAdapter({ document, location: { href: 'https://chatgpt.com/c/alpha' } });
+  const controller = new ChatGPTTurnController(adapter);
+
+  assert.match(user.root.innerText, /^あなた:/, 'fixture must include ChatGPT accessibility speaker text outside the message node');
+  assert.match(assistant.root.innerText, /^ChatGPT:/, 'fixture must include assistant accessibility speaker text outside the message node');
+  assert.equal(adapter.userTurns()[0].text, prompt, 'adapter must read only the user message, not the conversation wrapper heading');
+  assert.equal(controller.userTurns()[0].text, prompt, 'canonical turn projection must preserve the exact submitted prompt');
+  assert.equal(controller.assistantTurns()[0].text, response, 'assistant capture must exclude the accessibility speaker heading too');
+}
+
+async function testCollapsibleUserMessageTextExtraction() {
+  const prompt = 'HEX CONTROL PROTOCOL hex-chatgpt-web-v1\n\n<HEX_DATA>{"messages":[{"role":"user","content":"解析の始め方を教えて"}]}</HEX_DATA>';
+  const content = { innerText: prompt.slice(0, 72), textContent: prompt };
+  let root;
+  const roleNode = {
+    id: '',
+    innerText: `${prompt}\n表示を増やす\n表示を減らす`,
+    textContent: `${prompt}\n表示を増やす\n表示を減らす`,
+    getAttribute(name) {
+      if (name === 'data-message-author-role') return 'user';
+      if (name === 'data-message-id') return 'message-collapsible';
+      return null;
+    },
+    closest(selector) {
+      if (selector.includes('conversation-turn-')) return root;
+      if (selector.includes('data-message-author-role')) return roleNode;
+      return null;
+    },
+    querySelector(selector) {
+      if (selector.includes('collapsible-user-message-content')) return content;
+      return null;
+    },
+  };
+  root = {
+    id: '',
+    innerText: `あなた:\n${roleNode.innerText}`,
+    textContent: `あなた:\n${roleNode.textContent}`,
+    getAttribute(name) {
+      if (name === 'data-testid') return 'conversation-turn-collapsible';
+      if (name === 'data-turn') return 'user';
+      return null;
+    },
+    closest(selector) { return selector.includes('conversation-turn-') ? root : null; },
+    querySelector(selector) {
+      if (selector.includes('[data-message-author-role')) return roleNode;
+      return null;
+    },
+  };
+  const document = {
+    querySelector: () => null,
+    querySelectorAll(selector) {
+      if (selector === '[data-message-author-role="user"]') return [roleNode];
+      if (selector.includes('conversation-turn-') && selector.includes('user')) return [root];
+      if (selector === '[data-testid^="conversation-turn-"]') return [root];
+      return [];
+    },
+  };
+  const adapter = new ChatGPTDOMAdapter({ document, location: { href: 'https://chatgpt.com/c/alpha' } });
+  const controller = new ChatGPTTurnController(adapter);
+
+  assert.ok(content.innerText.length < content.textContent.length, 'fixture must reproduce a WebKit-clipped semantic innerText');
+  assert.match(roleNode.innerText, /表示を増やす/, 'fixture must reproduce ChatGPT collapsible-message UI text inside the user role');
+  assert.match(roleNode.innerText, /表示を減らす/, 'fixture must reproduce both localized toggle labels');
+  assert.equal(adapter.userTurns()[0].text, prompt, 'adapter must extract only collapsible user message content');
+  assert.equal(controller.userTurns()[0].text, prompt, 'exact prompt verification must ignore collapsible toggle labels');
+}
+
+async function testSubmittedUserHydrationGrace() {
+  const conversation = { id: 'alpha', url: 'https://chatgpt.com/c/alpha' };
+  const state = { generating: false, assistants: [], users: [], turns: [], conversation };
+  const user = { id: 'hex-user', text: 'partial', node: plainNode('hex-user') };
+  const adapter = turnAdapter(state, () => {
+    state.users.push(user); state.turns.push(user); state.generating = true;
+    setTimeout(() => { user.text = 'prompt'; }, 8);
+    setTimeout(() => {
+      const assistant = { id: 'hex-assistant', text: '{"type":"final"}', node: plainNode('hex-assistant') };
+      state.assistants.push(assistant); state.turns.push(assistant); state.generating = false;
+    }, 16);
+  });
+  const result = await new ChatGPTTurnController(adapter, { quietMs: 5, pollMs: 2, startTimeoutMs: 50, submissionMismatchGraceMs: 20 })
+    .run('prompt', { timeoutMs: 200, expectedConversation: conversation });
+  assert.equal(result.turnId, 'hex-assistant', 'a partial first DOM frame must hydrate into the exact Hex request');
+
+  const bad = { generating: false, assistants: [], users: [], turns: [], conversation };
+  const badAdapter = turnAdapter(bad, () => {
+    const wrong = { id: 'wrong-user', text: 'not the Hex prompt', node: plainNode('wrong-user') };
+    bad.users.push(wrong); bad.turns.push(wrong); bad.generating = true;
+  });
+  await assert.rejects(
+    new ChatGPTTurnController(badAdapter, { pollMs: 2, startTimeoutMs: 60, submissionMismatchGraceMs: 10 })
+      .run('prompt', { timeoutMs: 100, expectedConversation: conversation }),
+    (error) => error.code === 'manual-interference',
+    'a persistent single-turn mismatch must remain a hard integrity failure',
+  );
+
+  const churn = { generating: false, assistants: [], users: [], turns: [], conversation };
+  const churnAdapter = turnAdapter(churn, () => {
+    churn.generating = true;
+    let seq = 0;
+    const rotate = () => {
+      const wrong = { id: `wrong-${++seq}`, text: 'still not the Hex prompt', node: plainNode(`wrong-${seq}`) };
+      churn.users = [wrong]; churn.turns = [wrong];
+      if (seq < 8) setTimeout(rotate, 2);
+    };
+    rotate();
+  });
+  const churnStarted = Date.now();
+  await assert.rejects(
+    new ChatGPTTurnController(churnAdapter, { pollMs: 2, startTimeoutMs: 80, submissionMismatchGraceMs: 12 })
+      .run('prompt', { timeoutMs: 100, expectedConversation: conversation }),
+    (error) => error.code === 'manual-interference',
+    'renderer id churn must not keep extending a persistent prompt-mismatch grace window',
+  );
+  assert.ok(Date.now() - churnStarted < 170, 'prompt mismatch must fail on the fixed grace window, not the submit timeout');
+}
+
 async function testTurnCompletionAndStaleProtection() {
   const state = { generating: false, assistants: [{ id: 'old', text: 'old response' }], users: [], sent: false, conversation: { id: 'alpha', url: 'https://chatgpt.com/c/alpha' } };
   const adapter = turnAdapter(state, () => {
@@ -65,14 +267,45 @@ async function testTurnCompletionAndStaleProtection() {
   await assert.rejects(new ChatGPTTurnController(staleAdapter, { quietMs: 20, pollMs: 2 }).run('prompt', { timeoutMs: 50, expectedConversation: stale.conversation }), (error) => error.code === 'manual-interference');
 }
 
+async function testRolelessTurnFallback() {
+  const state = {
+    generating: false,
+    assistants: [],
+    users: [],
+    turns: [{ id: 'old-general', text: 'old response' }],
+    conversation: null,
+  };
+  const adapter = turnAdapter(state, () => {
+    state.turns.push({ id: 'hex-user-general', text: 'prompt' });
+    state.generating = true;
+    setTimeout(() => {
+      state.turns.push({ id: 'assistant-general', text: '{"type":"final","answer":"ok","confidence":1,"evidenceIds":[]}' });
+      state.generating = false;
+    }, 8);
+  });
+  const controller = new ChatGPTTurnController(adapter, {
+    quietMs: 5,
+    pollMs: 2,
+    startTimeoutMs: 30,
+    conversationGraceMs: 8,
+  });
+  const result = await controller.run('prompt', { timeoutMs: 100 });
+  assert.equal(result.turnId, 'assistant-general');
+  assert.match(result.text, /"answer":"ok"/);
+  assert.equal(result.conversation, null, 'a captured model response must not be discarded solely because the SPA URL has not settled');
+}
+
 async function testCancelTimeoutAndSingleInflight() {
-  const state = { generating: false, assistants: [], users: [], conversation: { id: 'alpha', url: 'https://chatgpt.com/c/alpha' } };
+  const state = { generating: false, assistants: [], users: [], stopCalls: 0, conversation: { id: 'alpha', url: 'https://chatgpt.com/c/alpha' } };
   const adapter = turnAdapter(state, () => { state.users.push({ id: 'u', text: 'prompt' }); state.generating = true; });
   await assert.rejects(new ChatGPTTurnController(adapter, { pollMs: 2, quietMs: 3 }).run('prompt', { timeoutMs: 15, expectedConversation: state.conversation }), (error) => error.code === 'timeout');
+  assert.equal(state.stopCalls, 1, 'a timed-out owned ChatGPT generation must be stopped');
   state.generating = false; state.users = [];
   const controller = new AbortController();
   const pending = new ChatGPTTurnController(adapter, { pollMs: 2 }).run('prompt', { timeoutMs: 100, signal: controller.signal, expectedConversation: state.conversation });
+  await new Promise((resolve) => setTimeout(resolve, 5));
   controller.abort('cancel'); await assert.rejects(pending, (error) => error.name === 'AbortError');
+  assert.equal(state.stopCalls, 2, 'a cancelled owned ChatGPT generation must be stopped');
 
   delete globalThis.__HEX_CHATGPT_BRIDGE__;
   let release;
@@ -88,15 +321,249 @@ async function testCancelTimeoutAndSingleInflight() {
   delete globalThis.__HEX_CHATGPT_BRIDGE__;
 }
 
+function logicalTurnFixture(role, id, text) {
+  const content = { innerText: text, textContent: text };
+  const root = {
+    id: '',
+    getAttribute(name) { return name === 'data-testid' ? `conversation-turn-${id}` : null; },
+    closest(selector) { return selector.includes('conversation-turn-') ? root : null; },
+    querySelector() { return content; },
+  };
+  const roleNode = {
+    id: '',
+    getAttribute(name) { return name === 'data-message-author-role' ? role : null; },
+    closest(selector) {
+      if (selector.includes('conversation-turn-')) return root;
+      if (selector.includes('data-message-author-role')) return roleNode;
+      return null;
+    },
+  };
+  return { root, roleNode, content };
+}
+
+function realChatGPTTurnFixture(role, id, text) {
+  const speaker = role === 'user' ? 'あなた:' : 'ChatGPT:';
+  const content = { innerText: text, textContent: text };
+  let root;
+  const roleNode = {
+    id: '',
+    innerText: text,
+    textContent: text,
+    getAttribute(name) {
+      if (name === 'data-message-author-role') return role;
+      if (name === 'data-message-id') return `message-${id}`;
+      return null;
+    },
+    closest(selector) {
+      if (selector.includes('conversation-turn-')) return root;
+      if (selector.includes('data-message-author-role')) return roleNode;
+      return null;
+    },
+    querySelector(selector) {
+      if (role === 'assistant' && selector.includes('.markdown')) return content;
+      return null;
+    },
+  };
+  root = {
+    id: '',
+    innerText: `${speaker}\n${text}`,
+    textContent: `${speaker}\n${text}`,
+    getAttribute(name) {
+      if (name === 'data-testid') return `conversation-turn-${id}`;
+      if (name === 'data-turn') return role;
+      return null;
+    },
+    closest(selector) { return selector.includes('conversation-turn-') ? root : null; },
+    querySelector(selector) {
+      if (selector.includes('[data-message-author-role')) return roleNode;
+      if (role === 'assistant' && selector.includes('.markdown')) return content;
+      return null;
+    },
+  };
+  return { root, roleNode, content };
+}
+
 function option(label, click) { return { label, model: /Sol/.test(label) ? 'chatgpt-web/sol' : null, reasoning: /High/.test(label) ? 'high' : null, node: { click } }; }
 function conversationLink(id, click) { return { getAttribute: (name) => name === 'href' ? `/c/${id}` : null, click }; }
 function memoryStorage() { const values = new Map(); return { getItem: (key) => values.get(key) || null, setItem: (key, value) => values.set(key, value) }; }
+async function testTransientConversationGapIsNotASwitch() {
+  /*
+   * ChatGPT can briefly report no conversation at all while its SPA router is
+   * between routes. "Unknown" is not "somewhere else": inventing a conversation
+   * switch from a missing reading throws away a healthy, in-flight model turn.
+   */
+  const conversation = { id: 'alpha', url: 'https://chatgpt.com/c/alpha' };
+  const state = { generating: false, assistants: [], users: [], conversation };
+  const adapter = turnAdapter(state, () => {
+    state.users.push({ id: 'hex-user', text: 'prompt' });
+    state.generating = true;
+    setTimeout(() => { state.conversation = null; }, 4);
+    setTimeout(() => { state.conversation = conversation; }, 12);
+    setTimeout(() => { state.assistants.push({ id: 'new', text: '{"type":"final"}' }); state.generating = false; }, 20);
+  });
+  const result = await new ChatGPTTurnController(adapter, { quietMs: 5, pollMs: 2, startTimeoutMs: 40 })
+    .run('prompt', { timeoutMs: 400, expectedConversation: conversation });
+  assert.equal(result.turnId, 'new');
+  assert.equal(result.conversation.id, 'alpha');
+
+  /* A different, concretely identified conversation is still a hard failure. */
+  const switched = { generating: false, assistants: [], users: [], conversation };
+  const switchedAdapter = turnAdapter(switched, () => {
+    switched.users.push({ id: 'hex-user', text: 'prompt' });
+    switched.generating = true;
+    setTimeout(() => { switched.conversation = { id: 'beta', url: 'https://chatgpt.com/c/beta' }; }, 4);
+  });
+  await assert.rejects(
+    new ChatGPTTurnController(switchedAdapter, { quietMs: 5, pollMs: 2, startTimeoutMs: 40 }).run('prompt', { timeoutMs: 200, expectedConversation: conversation }),
+    (error) => error.code === 'conversation-switched' && error.stage === 'turn-controller',
+  );
+}
+
+async function testNewConversationIdentityMigration() {
+  const alpha = { id: 'alpha', url: 'https://chatgpt.com/c/alpha' };
+  const beta = { id: 'beta', url: 'https://chatgpt.com/c/beta' };
+  const state = { generating: false, assistants: [], users: [], turns: [], conversation: null };
+  const user = { id: 'hex-user-turn', text: 'prompt', node: plainNode('hex-user-turn') };
+  const assistant = { id: 'hex-assistant-turn', text: '', node: plainNode('hex-assistant-turn') };
+  const adapter = turnAdapter(state, () => {
+    state.users.push(user);
+    state.assistants.push(assistant);
+    state.turns.push(user, assistant);
+    state.generating = true;
+    setTimeout(() => { state.conversation = alpha; }, 4);
+    setTimeout(() => { state.conversation = beta; }, 12);
+    setTimeout(() => { assistant.text = '{"type":"final"}'; state.generating = false; }, 24);
+  });
+  const seen = [];
+  const result = await new ChatGPTTurnController(adapter, { quietMs: 5, pollMs: 2, startTimeoutMs: 40, conversationGraceMs: 20 })
+    .run('prompt', { timeoutMs: 400, newConversation: true, onConversation: (conversation) => seen.push(conversation.id) });
+  assert.equal(result.conversation.id, 'beta', 'the final CID must replace the provisional CID');
+  assert.equal(result.turnId, 'hex-assistant-turn');
+  assert.ok(seen.includes('alpha'));
+  assert.ok(seen.includes('beta'));
+}
+
+async function testNewConversationNavigationAwayIsRejected() {
+  const alpha = { id: 'alpha', url: 'https://chatgpt.com/c/alpha' };
+  const beta = { id: 'beta', url: 'https://chatgpt.com/c/beta' };
+  const state = { generating: false, assistants: [], users: [], turns: [], conversation: null };
+  const requestUser = { id: 'hex-user-turn', text: 'prompt', node: plainNode('hex-user-turn') };
+  const requestAssistant = { id: 'hex-assistant-turn', text: 'partial', node: plainNode('hex-assistant-turn') };
+  const adapter = turnAdapter(state, () => {
+    state.users.push(requestUser);
+    state.assistants.push(requestAssistant);
+    state.turns.push(requestUser, requestAssistant);
+    state.generating = true;
+    setTimeout(() => { state.conversation = alpha; }, 4);
+    // The URL can change before ChatGPT replaces the old DOM. This first looks
+    // like bootstrap migration; the disappearing request turn proves navigation.
+    setTimeout(() => { state.conversation = beta; }, 12);
+    setTimeout(() => {
+      const otherUser = { id: 'other-user', text: 'other prompt', node: plainNode('other-user') };
+      const otherAssistant = { id: 'other-assistant', text: 'other response', node: plainNode('other-assistant') };
+      state.users = [otherUser];
+      state.assistants = [otherAssistant];
+      state.turns = [otherUser, otherAssistant];
+      state.generating = false;
+    }, 24);
+  });
+  await assert.rejects(
+    new ChatGPTTurnController(adapter, { quietMs: 20, pollMs: 2, startTimeoutMs: 40, conversationGraceMs: 20 })
+      .run('prompt', { timeoutMs: 300, newConversation: true }),
+    (error) => error.code === 'conversation-switched' && error.stage === 'turn-controller',
+  );
+}
+
+async function testPersistentConversationGapIsRejected() {
+  const alpha = { id: 'alpha', url: 'https://chatgpt.com/c/alpha' };
+  const state = { generating: false, assistants: [], users: [], turns: [], conversation: alpha };
+  const user = { id: 'hex-user', text: 'prompt', node: plainNode('hex-user') };
+  const assistant = { id: 'hex-assistant', text: 'partial', node: plainNode('hex-assistant') };
+  const adapter = turnAdapter(state, () => {
+    state.users.push(user);
+    state.assistants.push(assistant);
+    state.turns.push(user, assistant);
+    state.generating = true;
+    setTimeout(() => { state.conversation = null; }, 4);
+    setTimeout(() => { assistant.text = '{"type":"final"}'; state.generating = false; }, 8);
+  });
+  await assert.rejects(
+    new ChatGPTTurnController(adapter, { quietMs: 3, pollMs: 2, startTimeoutMs: 40, conversationGraceMs: 12 })
+      .run('prompt', { timeoutMs: 200, expectedConversation: alpha }),
+    (error) => error.code === 'conversation-switched',
+    'a persistent /c/<id> -> / transition must not finalize against the old conversation',
+  );
+}
+
+async function testHistoricalErrorTurnDoesNotPoisonARequest() {
+  /*
+   * A conversation keeps every failed turn in the DOM forever. Only an error
+   * marker inside a turn created by THIS request may abort it; a failure from
+   * an earlier turn must not.
+   */
+  const conversation = { id: 'alpha', url: 'https://chatgpt.com/c/alpha' };
+  const historical = errorTurn('conversation-turn-old', 'Something went wrong. Try again.');
+  const state = { generating: false, assistants: [], users: [], turns: [historical], conversation, scopes: [] };
+  const adapter = turnAdapter(state, () => {
+    state.users.push({ id: 'hex-user', text: 'prompt' });
+    state.turns.push({ id: 'hex-user', text: 'prompt', node: plainNode('hex-user') });
+    state.generating = true;
+    setTimeout(() => {
+      state.assistants.push({ id: 'new', text: '{"type":"final"}' });
+      state.turns.push({ id: 'new', text: '{"type":"final"}', node: plainNode('new') });
+      state.generating = false;
+    }, 8);
+  });
+  const result = await new ChatGPTTurnController(adapter, { quietMs: 5, pollMs: 2, startTimeoutMs: 40 })
+    .run('prompt', { timeoutMs: 400, expectedConversation: conversation });
+  assert.equal(result.turnId, 'new');
+  assert.ok(state.scopes.length, 'the controller must ask for a turn-scoped error reading');
+  assert.ok(state.scopes.every((scope) => Array.isArray(scope)), 'error detection must be scoped to explicit turn nodes');
+  assert.ok(state.scopes.every((scope) => !scope.includes(historical.node)), 'a historical error turn must never be in the active error scope');
+
+  /* An error marker inside the live response is still fatal. */
+  const live = { generating: false, assistants: [], users: [], turns: [], conversation, scopes: [], liveError: false };
+  const liveAdapter = turnAdapter(live, () => {
+    live.users.push({ id: 'hex-user', text: 'prompt' });
+    live.turns.push({ id: 'hex-user', text: 'prompt', node: plainNode('hex-user') });
+    live.generating = true;
+    setTimeout(() => { live.liveError = true; }, 4);
+  });
+  await assert.rejects(
+    new ChatGPTTurnController(liveAdapter, { quietMs: 5, pollMs: 2, startTimeoutMs: 40 }).run('prompt', { timeoutMs: 200, expectedConversation: conversation }),
+    (error) => error.code === 'response-error' && error.stage === 'turn-controller',
+  );
+}
+
+async function testBridgeErrorsCarryTheirStage() {
+  const adapter = { composer: () => null };
+  await assert.rejects(
+    new ChatGPTTurnController(adapter, { startTimeoutMs: 5, pollMs: 2 }).run('prompt', { timeoutMs: 40 }),
+    (error) => error.code === 'composer-not-found' && error.stage === 'turn-controller',
+  );
+  const router = new ChatGPTConversationRouter({ conversation: () => null, newChatButton: () => null, all: () => [] }, { storage: memoryStorage() });
+  await assert.rejects(router.route(''), (error) => error.code === 'session-required' && error.stage === 'conversation-router');
+  await assert.rejects(router.route('key'), (error) => error.code === 'new-chat-unavailable' && error.stage === 'conversation-router');
+}
+
+function plainNode(id) { return { id, querySelectorAll: () => [], matches: () => false }; }
+function errorTurn(id, text) {
+  const node = { id, matches: (selector) => selector.includes('conversation-turn-error'), querySelectorAll: () => [] };
+  return { id, text, node };
+}
+
 function turnAdapter(state, onSend) {
   const composer = { value: '' };
   return {
     composer: () => composer, setComposerText: (_node, text) => { composer.value = text; }, composerText: () => composer.value,
     sendButton: () => ({ disabled: false, getAttribute: () => null, click: () => { composer.value = ''; onSend(); } }),
-    assistantTurns: () => state.assistants, userTurns: () => state.users, isGenerating: () => state.generating,
-    errorState: () => null, conversation: () => state.conversation,
+    assistantTurns: () => state.assistants, userTurns: () => state.users, conversationTurns: () => state.turns || [], isGenerating: () => state.generating,
+    errorState: (scopeNodes) => {
+      if (state.scopes) state.scopes.push(scopeNodes);
+      if (state.liveError) return 'Something went wrong. Try again.';
+      return null;
+    },
+    conversation: () => state.conversation,
+    stop: () => { state.stopCalls = Number(state.stopCalls || 0) + 1; state.generating = false; return true; },
   };
 }

@@ -29,13 +29,13 @@ export const CHATGPT_SELECTORS = Object.freeze({
   ]),
   assistantTurn: Object.freeze([
     '[data-message-author-role="assistant"]',
-    'section[data-testid^="conversation-turn-"]:has([data-message-author-role="assistant"])',
+    '[data-testid^="conversation-turn-"]:has([data-message-author-role="assistant"])',
   ]),
   userTurn: Object.freeze([
     '[data-message-author-role="user"]',
-    'section[data-testid^="conversation-turn-"]:has([data-message-author-role="user"])',
+    '[data-testid^="conversation-turn-"]:has([data-message-author-role="user"])',
   ]),
-  conversationTurn: Object.freeze(['section[data-testid^="conversation-turn-"]']),
+  conversationTurn: Object.freeze(['[data-testid^="conversation-turn-"]']),
   newChat: Object.freeze([
     '[data-testid="create-new-chat-button"]',
     'button[aria-label*="New chat" i]',
@@ -71,10 +71,20 @@ export const CHATGPT_SELECTORS = Object.freeze({
     '[role="option"][aria-selected="true"]',
     '[data-state="checked"]',
   ]),
+  // Only a turn-scoped hard-error marker is authoritative. ChatGPT keeps
+  // global role=alert / aria-live nodes for accessibility announcements; those
+  // are not model failures and must never terminate a successful Hex turn.
   error: Object.freeze([
     '[data-testid="conversation-turn-error"]',
-    '[data-testid*="error"]',
+  ]),
+  // Page-level failures (for example a transient invalid-input toast) are only
+  // authoritative when they are newly observed after Hex submits its turn.
+  // The turn controller baselines these nodes before send, so historical ARIA
+  // announcements cannot poison later requests.
+  pageError: Object.freeze([
     '[role="alert"]',
+    '[aria-live="assertive"]',
+    '[data-testid*="error"]',
   ]),
 });
 

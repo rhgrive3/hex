@@ -9,6 +9,13 @@ import { sanitizeActions } from './validation.js';
 import { executeTurn } from './control/turn-executor.js';
 import { addressExistsSync, assertLiveBindingsUnchanged, deterministicConfidence, fallbackEvidence, presentAnswer } from './control/runtime-support.js';
 
+const BUDGET_LIMIT_REASONS = new Set([
+  'budget_exhausted',
+  'model-call-budget',
+  'tool-call-budget',
+  'tool-cost-budget',
+]);
+
 export class AIRuntime {
   constructor(options = {}) {
     this.localContext = options.context || {};
@@ -62,13 +69,14 @@ export class AIRuntime {
     const actions = sanitizeActions(decision.suggestedActions, { evidenceStore: this.evidenceStore, proposalStore: this.proposalStore, addressExists: (address) => addressExistsSync(this.localContext, address) });
     let confidence = Number.isFinite(decision.confidence) ? Math.max(0, Math.min(1, decision.confidence)) : deterministicConfidence(plan);
     if (!finalEvidence.length) confidence = Math.min(confidence, 0.5);
+    const budgetReason = BUDGET_LIMIT_REASONS.has(limitReason) ? limitReason : null;
     return {
       mode: request.mode, style: request.style,
       answer: presentAnswer(String(decision.answer || ''), request.style, finalEvidence, plan), confidence, evidence: finalEvidence, hypotheses, actions,
       followups: (decision.followups || []).map(String).slice(0, 8), activity,
       usage: { modelCalls, toolCalls, elapsedMs: Date.now() - started, contextBytes, ...wireUsage, candidateCount: plan?.candidates?.length || 0, analyzedFunctions: plan?.stats?.analyzedFunctions || 0, disassembly: Math.max(plan?.stats?.disassembly || 0, registry.analysisStats?.disassembly || 0), toolCost: registry.accounting.cost },
       scope: { requested: request.scope, effective: effectiveScope }, turnSnapshotId: snapshot.id,
-      limits: { exhausted: !!limitReason, reason: limitReason || undefined },
+      limits: { exhausted: !!budgetReason, reason: limitReason || undefined },
     };
   }
 

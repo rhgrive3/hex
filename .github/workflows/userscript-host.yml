@@ -50,6 +50,8 @@ jobs:
       - run: npm ci
       - name: Opaque sandbox storage contract
         run: node tests/userscript-sandbox-storage.mjs
+      - name: Embed mode security boundary
+        run: node tests/userscript-embed-mode-security.mjs
       - name: Build and userscript tests
         run: npm run userscript:test
       - name: AI and worker regressions
@@ -83,3 +85,5 @@ jobs:
         run: node tests/userscript-srcdoc-probe.mjs
       - name: Run full secure sandbox startup
         run: node tests/userscript-sandbox-browser-e2e.mjs
+      - name: Capture a ChatGPT turn against the production DOM
+        run: node tests/chatgpt-web-production-dom.mjs

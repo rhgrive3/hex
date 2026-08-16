@@ -1,15 +1,20 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { applyStatus, normalizeCapabilities, selectionLabel } from '../js/ai/ui/model-picker.js';
 import { installChatGPTWebBridge } from '../js/userscript/chatgpt-bridge.js';
+import { CHATGPT_SELECTORS } from '../js/userscript/chatgpt-selectors.js';
 
 const BRIDGE_KEY = '__HEX_CHATGPT_BRIDGE__';
 
 await testRequestContract();
+await testNewConversationBindingIsDeferred();
 await testSingleInflightAndBusyCleanup();
 await testExternalAbortSignal();
 await testCancelStopsAdapter();
 await testExceptionCleanup();
 await testCapabilities();
+await testErrorSelectorContract();
+await testProviderAvailabilityStatusSemantics();
 await testSelectionContract();
 await testStatusAndConversationLookup();
 await testBridgeDoesNotReachCookiesOrPrivateBackend();
@@ -19,7 +24,6 @@ console.log('chatgpt-web-bridge-contract: ok');
 async function testRequestContract() {
   const calls = { routes: [], selections: [], runs: [], binds: [] };
   const routedConversation = { id: 'conversation-route', url: 'https://chatgpt.com/c/conversation-route' };
-  const interimConversation = { id: 'conversation-interim', url: 'https://chatgpt.com/c/conversation-interim' };
   const finalConversation = { id: 'conversation-final', url: 'https://chatgpt.com/c/conversation-final' };
   const selected = { model: 'chatgpt-web/sol', reasoning: 'high', observedText: 'GPT-5.6 Sol High' };
   const adapter = fakeAdapter();
@@ -44,7 +48,6 @@ async function testRequestContract() {
   const turns = {
     async run(prompt, requestOptions) {
       calls.runs.push({ prompt, ...requestOptions });
-      requestOptions.onConversation(interimConversation);
       return { text: 'contract result', conversation: finalConversation, turnId: 'turn-contract-1' };
     },
   };
@@ -70,9 +73,10 @@ async function testRequestContract() {
   assert.equal(calls.runs[0].signal, calls.routes[0].signal);
   assert.equal(calls.runs[0].timeoutMs, 4321);
   assert.equal(calls.runs[0].expectedConversation, routedConversation);
+  assert.equal(calls.runs[0].newConversation, false);
+  assert.equal(calls.runs[0].onConversation, undefined);
 
   assert.deepEqual(calls.binds, [
-    { sessionKey: 'session-contract', conversation: interimConversation },
     { sessionKey: 'session-contract', conversation: finalConversation },
   ]);
   assert.deepEqual(result, {
@@ -82,6 +86,33 @@ async function testRequestContract() {
     turnId: 'turn-contract-1',
   });
   assert.equal(bridge.status().busy, false);
+  clearBridge();
+}
+
+async function testNewConversationBindingIsDeferred() {
+  const finalConversation = { id: 'conversation-final-new', url: 'https://chatgpt.com/c/conversation-final-new' };
+  const binds = [];
+  const bridge = freshBridge({
+    adapter: fakeAdapter(),
+    router: {
+      route: async () => ({ conversation: null, isNew: true }),
+      bind(sessionKey, conversation) { binds.push({ sessionKey, conversation }); return conversation; },
+      binding: () => null,
+    },
+    models: fakeModels(),
+    turns: {
+      async run(_prompt, options) {
+        assert.equal(options.expectedConversation, null);
+        assert.equal(options.newConversation, true);
+        assert.equal(options.onConversation, undefined, 'provisional CIDs must not be persisted by the bridge');
+        return { text: 'new result', conversation: finalConversation, turnId: 'turn-new-final' };
+      },
+    },
+  });
+
+  const result = await bridge.request('new conversation', { sessionKey: 'session-new' });
+  assert.deepEqual(binds, [{ sessionKey: 'session-new', conversation: finalConversation }]);
+  assert.equal(result.conversation, finalConversation);
   clearBridge();
 }
 
@@ -196,34 +227,55 @@ async function testExceptionCleanup() {
 }
 
 async function testCapabilities() {
-  const requestOptions = { signal: new AbortController().signal, probe: 'contract' };
-  let observedOptions = null;
-  const discovered = {
-    models: [{ id: 'chatgpt-web/sol', displayName: 'GPT-5.6 Sol' }],
-    reasoning: [{ id: 'high', displayName: 'High' }],
-    current: { model: 'chatgpt-web/sol', reasoning: 'high' },
-  };
+  const current = { model: 'chatgpt-web/sol', reasoning: 'high', observedText: 'GPT-5.6 Sol High' };
+  let discoveryCalls = 0;
   const bridge = freshBridge({
-    adapter: fakeAdapter(),
+    adapter: fakeAdapter({ composer: () => ({}), currentSelection: () => current }),
     router: fakeRouter(),
     models: {
       ...fakeModels(),
-      async capabilities(options) {
-        observedOptions = options;
-        return discovered;
+      async capabilities() {
+        discoveryCalls++;
+        throw new Error('capability polling must not open the model picker');
       },
     },
     turns: fakeTurns(),
   });
 
-  assert.deepEqual(await bridge.capabilities(requestOptions), {
+  assert.deepEqual(await bridge.capabilities({ probe: 'contract' }), {
     provider: 'chatgpt-web',
+    ready: true,
     maxConcurrentRequests: 1,
     conversationRouting: true,
-    ...discovered,
+    models: [{ id: 'chatgpt-web/sol', displayName: 'chatgpt-web/sol', current: true }],
+    reasoning: [{ id: 'high', displayName: 'high', current: true }],
+    current,
   });
-  assert.equal(observedOptions, requestOptions);
+  assert.equal(discoveryCalls, 0, 'capability polling is passive');
   clearBridge();
+}
+
+async function testErrorSelectorContract() {
+  assert.deepEqual(CHATGPT_SELECTORS.error, ['[data-testid="conversation-turn-error"]']);
+  assert.ok(!CHATGPT_SELECTORS.error.some((selector) => selector.includes('[role="alert"]')));
+  assert.ok(!CHATGPT_SELECTORS.error.some((selector) => selector.includes('*="error"')));
+}
+
+async function testProviderAvailabilityStatusSemantics() {
+  const advertised = normalizeCapabilities({
+    providers: [{ id: 'chatgpt-web', displayName: 'ChatGPT Web', available: true }],
+  });
+  assert.equal(advertised.providers[0].label, 'ChatGPT Web');
+
+  const settling = applyStatus(advertised, { provider: 'chatgpt', ready: false });
+  assert.equal(
+    selectionLabel(settling, { provider: 'chatgpt-web' }, true).unavailable,
+    false,
+    'transient composer readiness must not turn a proven bridge into 利用不可',
+  );
+
+  const unavailable = applyStatus(advertised, { provider: 'chatgpt', available: false, ready: false });
+  assert.equal(selectionLabel(unavailable, { provider: 'chatgpt-web' }, true).unavailable, true);
 }
 
 async function testSelectionContract() {

@@ -2,14 +2,13 @@ import { AIError } from '../schema.js';
 import { validateModelDecision } from '../validation.js';
 import { AIProvider, WorkerAIProvider } from './index.js';
 
-const DEFAULT_TIMEOUT_MS = 110000;
+const DEFAULT_WORKER_TIMEOUT_MS = 120000;
 const PROTOCOL_VERSION = 'hex-chatgpt-web-v1';
 
 export class ChatGPTWebProvider extends AIProvider {
-  constructor({ bridge = globalThis.__HEX_CHATGPT_BRIDGE__, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
-    super();
+  constructor({ bridge = globalThis.__HEX_CHATGPT_BRIDGE__ } = {}) {
+    super({ capabilities: { provider: 'chatgpt-web' } });
     this.bridge = bridge || null;
-    this.timeoutMs = timeoutMs;
     this.controllers = new Set();
   }
 
@@ -17,9 +16,11 @@ export class ChatGPTWebProvider extends AIProvider {
     return !!this.bridge && typeof this.bridge.request === 'function';
   }
 
+  turnTimeoutMs() { return null; }
+
   async nextTurn(request, options = {}) {
     if (!this.available()) throw new AIError('provider_error', 'ChatGPT Web bridge is not available.');
-    if (options.signal?.aborted) throw new AIError('cancelled', 'AI investigation was cancelled.');
+    if (options.signal?.aborted) throw interruptionError(options.signal);
 
     const controller = new AbortController();
     const onAbort = () => controller.abort(options.signal?.reason || 'cancelled');
@@ -29,9 +30,10 @@ export class ChatGPTWebProvider extends AIProvider {
     }
     this.controllers.add(controller);
     try {
+      const timeoutMs = explicitTimeout(options.timeoutMs);
       const response = await this.bridge.request(buildChatGPTTurnPrompt(request), {
         signal: controller.signal,
-        timeoutMs: options.timeoutMs || this.timeoutMs,
+        ...(timeoutMs == null ? {} : { timeoutMs }),
         sessionKey: request.sessionId,
         model: request.model || null,
         reasoning: request.reasoning || null,
@@ -41,11 +43,23 @@ export class ChatGPTWebProvider extends AIProvider {
       return validateModelDecision(decision, (request.tools || []).map((tool) => tool.name));
     } catch (error) {
       if (controller.signal.aborted || error?.name === 'AbortError') {
-        throw new AIError('cancelled', 'AI investigation was cancelled.');
+        throw interruptionError(controller.signal);
       }
       if (error instanceof AIError) throw error;
       const type = error?.code === 'timeout' ? 'model_timeout' : 'provider_error';
-      throw new AIError(type, error?.message || String(error), { bridgeCode: error?.code || null, bridgeDetails: error?.details || null });
+      /*
+       * The user-facing label stays friendly, but the browser bridge subtype must
+       * survive here. Without it every guard in the ChatGPT bridge — manual
+       * interference, a conversation switch, a stale response, an RPC integrity
+       * refusal — is indistinguishable in production as a bare `provider_error`.
+       */
+      throw new AIError(type, error?.message || String(error), {
+        provider: 'chatgpt-web',
+        bridgeCode: error?.code || null,
+        bridgeStage: bridgeStage(error),
+        bridgeDetails: error?.details || null,
+        runtimeBuildId: runtimeBuildId(),
+      });
     } finally {
       this.controllers.delete(controller);
       if (options.signal) options.signal.removeEventListener('abort', onAbort);
@@ -68,10 +82,10 @@ export class UserscriptAIProvider extends AIProvider {
     bridge = globalThis.__HEX_CHATGPT_BRIDGE__,
     workerEndpoint = apiEndpoint('/api/ai/turn'),
     fetchImpl = globalThis.fetch,
-    timeoutMs = DEFAULT_TIMEOUT_MS,
+    timeoutMs = DEFAULT_WORKER_TIMEOUT_MS,
   } = {}) {
     super();
-    this.chatgpt = new ChatGPTWebProvider({ bridge, timeoutMs });
+    this.chatgpt = new ChatGPTWebProvider({ bridge });
     this.gemini = new WorkerAIProvider({ endpoint: workerEndpoint, fetchImpl, timeoutMs });
   }
 
@@ -80,6 +94,10 @@ export class UserscriptAIProvider extends AIProvider {
     if (requested === 'gemini' || requested === 'worker') return this.gemini;
     if (requested === 'chatgpt' || requested === 'chatgpt-web') return this.chatgpt;
     throw new AIError('provider_error', `Unknown AI provider: ${requested}`);
+  }
+
+  turnTimeoutMs(mode, request = {}) {
+    return this.selected(request).turnTimeoutMs(mode, request);
   }
 
   async nextTurn(request, options = {}) {
@@ -271,6 +289,34 @@ function safeJSONStringify(value) {
     .replace(/&/g, '\\u0026')
     .replace(/</g, '\\u003c')
     .replace(/>/g, '\\u003e');
+}
+
+function bridgeStage(error) {
+  const value = typeof error?.stage === 'string' ? error.stage : error?.details?.stage;
+  return typeof value === 'string' && /^[a-z][a-z0-9-]{0,63}$/.test(value) ? value : null;
+}
+
+/*
+ * Production incidents are only actionable when the report names the runtime
+ * that produced them: a repaired source tree and a stale deployed bundle look
+ * identical from the outside otherwise.
+ */
+function runtimeBuildId() {
+  const value = globalThis.__HEX_SECURE_LOADER__?.buildId;
+  return typeof value === 'string' && /^[a-f0-9]{1,64}$/i.test(value) ? value : null;
+}
+
+function interruptionError(signal) {
+  const timedOut = signal?.reason === 'timeout';
+  return new AIError(
+    timedOut ? 'budget_exhausted' : 'cancelled',
+    timedOut ? 'The AI investigation timed out.' : 'AI investigation was cancelled.',
+  );
+}
+
+function explicitTimeout(value) {
+  const raw = Number(value);
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : null;
 }
 
 function apiEndpoint(path) {

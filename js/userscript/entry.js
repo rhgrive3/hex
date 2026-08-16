@@ -3,15 +3,12 @@ import { setUiRoot } from '../ui-root.js';
 import { installChatGPTWebBridge } from './chatgpt-bridge.js';
 import { createChatGPTParentRpc } from './chatgpt-parent-rpc.js';
 import { createChatGPTSandboxHost, findChatGPTCspNonce } from './chatgpt-sandbox-host.js';
+import { LEGACY_MODE, SANDBOX_MODE, readTrustedEmbedMode } from './embed-mode.js';
 import { setEmbedProvider } from './embed-bootstrap.js';
 import { installProtectedWorkers } from './protected-workers.js';
 import { installUserscriptNetworkBridge } from './network.js';
 
 const PROVIDER_KEY = 'hex.ai.provider';
-const EMBED_MODE_KEY = 'hex.embed.mode';
-const SANDBOX_MODE = 'sandbox-v2';
-const OLD_IFRAME_MODE = 'iframe-v1';
-const LEGACY_MODE = 'legacy-light-dom';
 const SESSION_CLEANUP_KEY = '__HEX_CHATGPT_EMBED_CLEANUP__';
 const SANDBOX_BOOTSTRAP_TIMEOUT_MS = 60000;
 const SANDBOX_READY_TIMEOUT_MS = 60000;
@@ -82,6 +79,11 @@ async function startSandbox(options) {
       rejectReady(error);
     },
   });
+
+  // The protected Hex panel already owns its own visibility controls. The
+  // full-screen host's extra floating emergency close button obscures ChatGPT
+  // on iPad and is not needed for normal operation.
+  try { document.getElementById('hex-userscript-emergency-close')?.remove(); } catch {}
 
   installSessionCleanup(() => host.destroy());
   const info = await ready;
@@ -219,17 +221,7 @@ function readProvider() {
   catch { return 'chatgpt'; }
 }
 
-function readEmbedMode() {
-  const forced = globalThis.__HEX_EMBED_MODE__;
-  if (forced === LEGACY_MODE) return LEGACY_MODE;
-  if (forced === SANDBOX_MODE || forced === OLD_IFRAME_MODE) return SANDBOX_MODE;
-  try {
-    const stored = localStorage.getItem(EMBED_MODE_KEY);
-    return stored === LEGACY_MODE ? LEGACY_MODE : SANDBOX_MODE;
-  } catch {
-    return SANDBOX_MODE;
-  }
-}
+function readEmbedMode() { return readTrustedEmbedMode(); }
 
 function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 
