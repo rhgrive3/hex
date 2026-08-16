@@ -13,6 +13,8 @@ const SANDBOX_MODE = 'sandbox-v2';
 const OLD_IFRAME_MODE = 'iframe-v1';
 const LEGACY_MODE = 'legacy-light-dom';
 const SESSION_CLEANUP_KEY = '__HEX_CHATGPT_EMBED_CLEANUP__';
+const SANDBOX_BOOTSTRAP_TIMEOUT_MS = 60000;
+const SANDBOX_READY_TIMEOUT_MS = 60000;
 
 export async function startChatGPTUserscript(options = {}) {
   const apiOrigin = normalizeApiOrigin(options.apiOrigin || globalThis.__HEX_API_BASE__ || globalThis.__HEX_RUNTIME_ORIGIN__ || location.origin);
@@ -57,6 +59,8 @@ async function startSandbox(options) {
     loaderVersion: String(options.loaderVersion || ''),
     buildId: String(options.buildId || ''),
     runtimeSourceProvider: options.runtimeSourceProvider,
+    bootstrapTimeoutMs: SANDBOX_BOOTSTRAP_TIMEOUT_MS,
+    readyTimeoutMs: SANDBOX_READY_TIMEOUT_MS,
     onPort(port) {
       const parentRpc = createChatGPTParentRpc({
         port,
