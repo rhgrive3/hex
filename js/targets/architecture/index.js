@@ -43,14 +43,14 @@ export const ARM64_ARCHITECTURE = registerArchitecturePlugin({
   // Phase 2 exposes exact low-level effects where implemented. Coverage is not
   // complete yet, so the proven legacy v1 path remains active and MachineEffects
   // stays a shadow semantic source until the compatibility differential is zero.
-  capabilities:{ decode:'external', exactEffects:'partial', semanticAnalysis:'legacy-v1-shadow' },
+  capabilities:{ decode:'external', exactEffects:'partial', semanticAnalysis:'legacy-v1' },
 });
 
 export const ARM64E_ARCHITECTURE = registerArchitecturePlugin({
   id:'arm64e', semanticVersion:ARM64_MACHINE_EFFECTS_SEMANTIC_VERSION, instructionAlignment:4, fixedInstructionSize:4, viewerCompatible:true,
   modes:()=>Object.freeze(['a64','arm64e']), registerFile:()=>ARM64_REGISTERS,
   decodeProvider:'capstone/backend', liftExact:liftArm64eMachineEffects, assemble:assembleArm64, classifyControlFlow:arm64ControlFlow,
-  capabilities:{ decode:'external', exactEffects:'partial', semanticAnalysis:'legacy-v1-shadow-partial' },
+  capabilities:{ decode:'external', exactEffects:'partial', semanticAnalysis:'legacy-v1-partial' },
 });
 
 export const X86_64_ARCHITECTURE = registerArchitecturePlugin({
