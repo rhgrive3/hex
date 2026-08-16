@@ -178,6 +178,25 @@ function deterministicIntrinsicProjection(node, context, inst, setBasic, primary
     inst.extra.signed = false;
     return true;
   }
+  if (inputValues.length >= 1) {
+    const metadata = operationMetadata(node);
+    const alias = String(metadata.alias ?? '').toLowerCase();
+    if (alias === 'ubfx' || alias === 'sbfx') {
+      const lsb = Number(metadata.immr);
+      const imms = Number(metadata.imms);
+      const fieldWidth = Number.isInteger(lsb) && Number.isInteger(imms) && imms >= lsb ? imms - lsb + 1 : null;
+      const outputBits = Number(primaryOutput?.bits ?? 0);
+      if (!Number.isInteger(lsb) || lsb < 0 || !Number.isInteger(fieldWidth) || fieldWidth <= 0
+          || !Number.isInteger(outputBits) || outputBits <= 0 || lsb + fieldWidth > outputBits) return false;
+      setBasic(V1_OP.BFX, 'extract');
+      inst.extra.lsb = lsb;
+      inst.extra.width = fieldWidth;
+      inst.extra.signed = alias === 'sbfx';
+      inst.extra.bitfieldKind = alias;
+      inst.extra.compatSource = 'exact-machine-bitfield-metadata';
+      return true;
+    }
+  }
   if (op === 'insert-bits' && inputValues.length >= 2) {
     setBasic(V1_OP.BFI, 'insert');
     const metadata = operationMetadata(node);
@@ -296,9 +315,6 @@ export function projectNode(node, context) {
       break;
     }
     case 'zext': {
-      // Zero extension preserves the mathematical unsigned value. Legacy v1 has
-      // no standalone cast opcode consumed by current analyses, so serialize it
-      // as a width-carrying MOV rather than losing the copy/constant chain.
       setBasic(V1_OP.MOV, 'zext');
       inst.extra.castKind = 'zext';
       inst.extra.sourceBits = Number(attrs.fromBits ?? opMeta.fromBits ?? inputValues[0]?.bits ?? 0) || null;
