@@ -191,12 +191,26 @@ export function valueChain(ir, seed, opts) {
   const steps = [];
   for (const inst of slice.instructions) { const step = stepOf(inst); if (step) steps.push(step); }
   const addressOnly = new Set();
+  const addressQueue = [];
+  const rememberAddressValue = (value) => {
+    if (!value || addressOnly.has(value.id)) return;
+    addressOnly.add(value.id);
+    addressQueue.push(value);
+  };
   for (const inst of slice.instructions) {
-    if (!inst.addr) continue;
-    if (inst.addr.base) addressOnly.add(inst.addr.base.id);
-    if (inst.addr.index) addressOnly.add(inst.addr.index.id);
+    if (inst.addr && inst.addr.base) rememberAddressValue(inst.addr.base);
+    if (inst.addr && inst.addr.index) rememberAddressValue(inst.addr.index);
   }
-  for (const inst of slice.instructions) for (const a of inst.args || []) if (a && a.value) addressOnly.delete(a.value.id);
+  while (addressQueue.length) {
+    const value = addressQueue.pop();
+    const def = value && value.def;
+    if (!def) continue;
+    for (const a of def.args || []) if (a && a.value) rememberAddressValue(a.value);
+  }
+  for (const inst of slice.instructions) {
+    if (inst.dst && addressOnly.has(inst.dst.id)) continue;
+    for (const a of inst.args || []) if (a && a.value) addressOnly.delete(a.value.id);
+  }
   const argValues = slice.values.filter((v) => v.kind === VK.ARG && v.reg && v.reg !== 'sp' && v.reg !== 'nzcv' && v.reg !== 'x29' && !addressOnly.has(v.id));
   for (const v of argValues) {
     if (steps.some((s) => s.value === v)) continue;

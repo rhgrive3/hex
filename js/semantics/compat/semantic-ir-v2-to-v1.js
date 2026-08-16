@@ -6,6 +6,7 @@ import {
   graphFacts, buildLegacyValues, buildStateProjectionIndex, legacyPublicStateIdentity, makeArg, addUse,
 } from './semantic-ir-v2-to-v1-core.js';
 import { projectNode } from './semantic-ir-v2-to-v1-nodes.js';
+import { finalizeLegacyProjection } from './semantic-ir-v2-to-v1-finalize.js';
 import {
   attachMemorySsa, attachFallbackMemory, addScalarSsaPhis, appendFunctionUnknowns,
   assignInstructionIds, memorySafetySummary,
@@ -343,7 +344,7 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
     semanticIrVersion: ir.contractVersion,
     compat: {
       projection: 'semantic-ir-v2-to-v1',
-      version: '1.1.1',
+      version: '1.1.2',
       semanticFunctionId: ir.functionId,
       scalarSsa: !!ssa,
       memorySsa: !!memorySsa,
@@ -430,6 +431,7 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
     list.push(inst.id);
   }
   attachAbiProjectedArguments(projected);
+  finalizeLegacyProjection(projected);
   populateLegacyArguments(projected);
   projected.memorySafety = memorySafetySummary(projected);
   projected.defUse = () => projected.values;
@@ -437,7 +439,7 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
 }
 
 export const SEMANTIC_IR_V2_V1_COMPAT = Object.freeze({
-  contractVersion: '1.1.1',
+  contractVersion: '1.1.2',
   legacyOps: V1_OP,
   legacyValueKinds: V1_VK,
   legacyMemoryKinds: V1_MK,

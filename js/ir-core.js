@@ -410,6 +410,40 @@ function storeMayEscapeStackAddress(inst) {
  * escape across any intervening call/barrier. The canonical memUse remains the
  * call-clobber node, so this cannot turn MemorySSA's unknown into NoAlias.
  */
+
+function invalidateEscapedStackForwarding(projected) {
+  for (const load of projected.instructions ?? []) {
+    if (load.op !== LEGACY_OP.LOAD || load.loc?.kind !== LEGACY_MK.STACK || !load.reachingStore) continue;
+    const store = load.reachingStore;
+    const block = projected.blocks?.[load.block];
+    if (!block || store.block !== load.block) continue;
+    for (const inst of block.insts ?? []) {
+      if (Number(inst.row) <= Number(store.row) || Number(inst.row) >= Number(load.row)) continue;
+      if (inst.op !== LEGACY_OP.CALL) continue;
+      if (!(inst.args ?? []).some((arg) => valueMayCarryStackAddress(arg?.value))) continue;
+      const priorMemoryUse = load.memUse ?? null;
+      load.reachingStore = undefined;
+      load.memUse = {
+        kind:'clobber',
+        definitionId:null,
+        regionId:priorMemoryUse?.regionId ?? load.loc?.regionId ?? null,
+        clobberingInstructionId:inst.id,
+        previousDefinitionId:priorMemoryUse?.definitionId ?? null,
+        compatibilityDerived:true,
+        evidence:'aapcs64-stack-argument-escape',
+      };
+      load.extra = {
+        ...(load.extra ?? {}),
+        compatStackEscapeInvalidation:true,
+        compatStackEscapeCallInstructionId:inst.id,
+        canonicalMemoryUseKind:priorMemoryUse?.kind ?? null,
+        canonicalMemoryDefinitionId:priorMemoryUse?.definitionId ?? null,
+      };
+      break;
+    }
+  }
+}
+
 function restoreProvenNoEscapeStackForwarding(projected) {
   for (const load of projected.instructions ?? []) {
     if (load.op !== LEGACY_OP.LOAD || load.loc?.kind !== LEGACY_MK.STACK || load.reachingStore) continue;
@@ -537,6 +571,7 @@ function buildV2CompatFromLegacyModel(model, opts = {}) {
   restoreAapcs64PublicLocations(result.legacyV1);
   propagateExactLegacyConstants(result.legacyV1);
   attachAapcs64CallArguments(result.legacyV1);
+  invalidateEscapedStackForwarding(result.legacyV1);
   restoreProvenNoEscapeStackForwarding(result.legacyV1);
   attachAapcs64FunctionReturns(result.legacyV1, abiAdapter);
   lastSemanticV2Instrumentation = result.instrumentation;

@@ -19,23 +19,55 @@ function samePublicState(inst, source, destination) {
     && Number(source.bits || 0) === Number(destination.bits || 0);
 }
 
+
+function valueFeedsAddressOrCall(projected, root) {
+  const queue = [root];
+  const seen = new Set();
+  while (queue.length) {
+    const value = queue.shift();
+    if (!value || seen.has(value.id)) continue;
+    seen.add(value.id);
+    for (const inst of projected.instructions) {
+      if (inst.addr?.base === value || inst.addr?.index === value || inst.loc?.base === value) return true;
+      const consumes = (inst.args || []).some((arg) => arg?.value === value);
+      if (!consumes) continue;
+      if (inst.op === V1_OP.CALL) return true;
+      if (inst.op === V1_OP.MOV && inst.dst) queue.push(inst.dst);
+    }
+  }
+  return false;
+}
+
 function compactProjectedState(projected) {
   const aliases = new Map();
   for (const inst of projected.instructions) {
     if (inst.op !== V1_OP.MOV || !inst.dst || inst.args?.length !== 1) continue;
-    const source = resolveAlias(inst.args[0]?.value, aliases);
+    const rawSource = inst.args[0]?.value;
+    const source = resolveAlias(rawSource, aliases);
     if (!source) continue;
+    const addressStateAlias = rawSource != null && aliases.has(rawSource.id);
     if (inst.extra?.stateWrite && samePublicState(inst, source, inst.dst)) {
       const shadow = inst.dst;
-      aliases.set(shadow.id, source);
-      if (source.stateKey == null && shadow.stateKey != null) source.stateKey = shadow.stateKey;
-      shadow.reg = null;
-      shadow.stateKey = null;
-      shadow.version = 0;
-      shadow.compatDerived = 'state-ssa-shadow';
-      inst.extra.compatPublicStateSourceValueId = source.id;
-      inst.extra.compatStateShadowValueId = shadow.id;
-    } else if (inst.extra?.stateRead && Number(source.bits || 0) === Number(inst.dst.bits || 0)) {
+      if (valueFeedsAddressOrCall(projected, shadow)) {
+        aliases.set(shadow.id, source);
+        if (source.stateKey == null && shadow.stateKey != null) source.stateKey = shadow.stateKey;
+        shadow.compatPublicIdentity = shadow.reg;
+        shadow.reg = null;
+        shadow.stateKey = null;
+        shadow.version = 0;
+        shadow.compatDerived = 'state-ssa-address-shadow';
+        inst.extra.compatPublicStateSourceValueId = source.id;
+        inst.extra.compatStateShadowValueId = shadow.id;
+      } else if (source.kind !== V1_VK.ARG && source.def && source !== shadow) {
+        source.compatPublicIdentity = source.reg;
+        source.reg = null;
+        source.stateKey = null;
+        source.version = 0;
+        source.compatDerived = 'state-write-source-shadow';
+        inst.extra.compatPublicStateSourceValueId = source.id;
+        inst.extra.compatStateDestinationValueId = shadow.id;
+      }
+    } else if (inst.extra?.stateRead && (inst.extra?.localPhysicalViewProjection === true || addressStateAlias) && Number(source.bits || 0) === Number(inst.dst.bits || 0)) {
       const read = inst.dst;
       aliases.set(read.id, source);
       read.reg = null;
@@ -104,6 +136,27 @@ function suppressUnusedIncomingState(projected) {
     value.version = 0;
     value.compatDerived = 'unused-entry-state-shadow';
   }
+}
+
+
+function normalizePublicStateDefinitionOrder(projected) {
+  const slots = [];
+  const definitions = [];
+  for (let index = 0; index < projected.values.length; index++) {
+    const value = projected.values[index];
+    if (!value?.reg || value.kind !== V1_VK.DEF || !value.def) continue;
+    slots.push(index);
+    definitions.push(value);
+  }
+  definitions.sort((left, right) => {
+    const a = left.def;
+    const b = right.def;
+    if ((a.block ?? 0) !== (b.block ?? 0)) return (a.block ?? 0) - (b.block ?? 0);
+    if ((a.row ?? 0) !== (b.row ?? 0)) return (a.row ?? 0) - (b.row ?? 0);
+    if ((a.id ?? 0) !== (b.id ?? 0)) return (a.id ?? 0) - (b.id ?? 0);
+    return (left.id ?? 0) - (right.id ?? 0);
+  });
+  for (let index = 0; index < slots.length; index++) projected.values[slots[index]] = definitions[index];
 }
 
 function renumberPublicStateVersions(projected) {
@@ -313,6 +366,7 @@ export function finalizeLegacyProjection(projected) {
   compactProjectedState(projected);
   rebuildDefUse(projected);
   suppressUnusedIncomingState(projected);
+  normalizePublicStateDefinitionOrder(projected);
   renumberPublicStateVersions(projected);
   recoverLocalStackFlow(projected);
   propagateConstants(projected);
