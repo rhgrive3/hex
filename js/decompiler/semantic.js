@@ -1,6 +1,6 @@
 export * from './semantic-core.js';
 
-import { irFor, OP, MK } from '../ir.js';
+import { irFor, getSemanticMigrationMode, OP, MK } from '../ir.js';
 import { decompileSemantic as decompileSemanticCore } from './semantic-core.js';
 
 function irOptionsFromDecompilerOptions(opts = {}) {
@@ -184,12 +184,15 @@ function projectCommittedPhiSnapshots(ir) {
     if (stores.some((store) => !store)) continue;
     const first = stores[0];
     if (!stores.every((store) => sameCommittedFieldLocation(first.loc, store.loc))) continue;
+    const viewBits = Number((first.loc?.size ?? first.addr?.size ?? first.extra?.size ?? 0) * 8)
+      || Number(first.args?.[0]?.value?.bits ?? 0) || null;
     phi.extra = {
       ...(phi.extra ?? {}),
       compatOriginalOp: OP.PHI,
       committedPhiSnapshot: true,
       committedStoreRows: stores.map((store) => store.row),
       committedLocationKey: first.loc.key,
+      committedViewBits: viewBits,
     };
     phi.op = OP.LOAD;
     phi.sub = null;
@@ -197,6 +200,40 @@ function projectCommittedPhiSnapshots(ir) {
     phi.addr = first.addr ?? null;
     phi.reachingStore = null;
     phi.memUse = null;
+  }
+  return ir;
+}
+
+/*
+ * Once a committed PHI snapshot is proven to represent a narrower memory field,
+ * an exact truncation of that snapshot to the field width is not a source-level
+ * cast. Re-express only that exact view as a decompiler-facing LOAD with the
+ * existing 32/16/8-bit destination. The physical-state SSA remains unchanged.
+ */
+function projectCommittedSnapshotViews(ir) {
+  for (const inst of ir?.instructions || []) {
+    if (inst.op !== OP.MOV || inst.sub !== 'trunc' || !inst.dst || inst.args?.length !== 1) continue;
+    const source = inst.args[0]?.value ?? null;
+    const trace = exactViewTrace(source);
+    const snapshot = trace?.root?.def;
+    const viewBits = Number(snapshot?.extra?.committedViewBits ?? 0);
+    if (snapshot?.op !== OP.LOAD || snapshot.extra?.committedPhiSnapshot !== true
+        || viewBits <= 0 || Number(inst.dst.bits || 0) !== viewBits) continue;
+    detachUse(source, inst);
+    inst.op = OP.LOAD;
+    inst.sub = null;
+    inst.args = [];
+    inst.loc = snapshot.loc;
+    inst.addr = snapshot.addr ?? null;
+    inst.reachingStore = null;
+    inst.memUse = null;
+    inst.extra = {
+      ...(inst.extra ?? {}),
+      compatOriginalOp: OP.MOV,
+      compatOriginalSub: 'trunc',
+      committedSnapshotView: true,
+      committedViewBits: viewBits,
+    };
   }
   return ir;
 }
@@ -222,8 +259,8 @@ function projectCommittedComparisonViews(ir) {
         .sort((left, right) => Number(right.row) - Number(left.row));
       const store = stores[0] ?? null;
       if (!store) continue;
-      const blocked = (block.insts || []).some((inst) => Number(inst.row) > Number(store.row) && Number(inst.row) < Number(cmp.row)
-        && (inst.op === OP.STORE || inst.op === OP.CALL || inst.op === OP.UNKNOWN));
+      const blocked = (block.insts || []).some((candidate) => Number(candidate.row) > Number(store.row) && Number(candidate.row) < Number(cmp.row)
+        && (candidate.op === OP.STORE || candidate.op === OP.CALL || candidate.op === OP.UNKNOWN));
       if (blocked) continue;
       replaceArgValue(cmp, index, store.args[0].value);
       cmp.extra = { ...(cmp.extra ?? {}), committedComparisonView: true, committedStoreRow: store.row };
@@ -269,14 +306,22 @@ function projectDeclaredReturnView(ir, opts) {
 }
 
 /**
- * Preserve function-level ABI/prototype evidence when the decompiler asks the
- * Semantic IR facade to build IR.
+ * Preserve the historical legacy decompiler construction exactly. Full ABI /
+ * prototype context and the committed-snapshot compatibility projections are
+ * enabled only for the explicit semantic-v2-to-v1 route.
  */
 export function decompileSemantic(model, opts = {}) {
   const semanticOpts = canonicalRuntimeOptions(opts);
-  let ir = semanticOpts.ir || irFor(model, irOptionsFromDecompilerOptions(semanticOpts));
-  ir = projectCommittedComparisonViews(ir);
-  ir = projectCommittedPhiSnapshots(ir);
-  ir = projectDeclaredReturnView(ir, semanticOpts);
+  const v2Requested = getSemanticMigrationMode() === 'semantic-v2-compat';
+  let ir = semanticOpts.ir || irFor(model, v2Requested
+    ? irOptionsFromDecompilerOptions(semanticOpts)
+    : { rowOfAddress: semanticOpts.rowOfAddress });
+  const isV2Compat = ir?.compat?.projection === 'semantic-ir-v2-to-v1';
+  if (isV2Compat) {
+    ir = projectCommittedComparisonViews(ir);
+    ir = projectCommittedPhiSnapshots(ir);
+    ir = projectCommittedSnapshotViews(ir);
+    ir = projectDeclaredReturnView(ir, semanticOpts);
+  }
   return decompileSemanticCore(model, { ...semanticOpts, ir });
 }
