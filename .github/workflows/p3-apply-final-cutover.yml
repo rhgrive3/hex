@@ -1,0 +1,64 @@
+name: Phase 3 apply final semantic cutover
+
+on:
+  push:
+    branches:
+      - hex/p3-semantic-ir-integration
+    paths:
+      - '.github/workflows/p3-apply-final-cutover.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  cutover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: hex/p3-semantic-ir-integration
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Switch the public semantic default while retaining legacy oracle mode
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('js/ir-core.js')
+          s = p.read_text()
+          old = 'let semanticMigrationMode = SEMANTIC_V2_MIGRATION_MODES.LEGACY;'
+          new = 'let semanticMigrationMode = SEMANTIC_V2_MIGRATION_MODES.V2_COMPAT;'
+          if s.count(old) != 1:
+              raise SystemExit(f'expected exactly one legacy default, found {s.count(old)}')
+          s = s.replace(old, new)
+          old_comment = ''' * Legacy ARM64 remains the default/oracle until the Phase 3 shadow\n * differential is complete. The explicit semantic-v2-compat mode exercises\n * the canonical Phase 3 pipeline without a catch-and-fallback path.'''
+          new_comment = ''' * Semantic IR v2 compatibility is the Phase 3 production default after the\n * completed shadow differential. Legacy ARM64 remains an explicit oracle mode;\n * there is still no catch-and-fallback path between the engines.'''
+          if old_comment not in s:
+              raise SystemExit('expected pre-cutover facade comment not found')
+          s = s.replace(old_comment, new_comment)
+          old_doc = '/** Explicit process/session migration switch. Default remains legacy-v1. */'
+          new_doc = '/** Explicit process/session migration switch. Legacy-v1 remains available as the compatibility oracle. */'
+          if old_doc not in s:
+              raise SystemExit('expected migration-switch comment not found')
+          s = s.replace(old_doc, new_doc)
+          p.write_text(s)
+      - name: Verify default mode and rebuild exact userscript artifact
+        run: |
+          node --input-type=module -e "import { getSemanticMigrationMode } from './js/ir.js'; if (getSemanticMigrationMode() !== 'semantic-v2-compat') throw new Error('phase3-cutover-default-not-v2')"
+          npm run userscript:build
+      - name: Run local Phase 3 exit proof on the cutover tree
+        run: npm run semantic-v2:test
+      - name: Commit cutover and exact generated artifact, removing this temporary workflow
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/p3-apply-final-cutover.yml
+          git add js/ir-core.js userscript/hex.user.template.js
+          git diff --cached --check
+          git commit -m "Phase 3: cut over public semantic default to Semantic IR v2"
+          git push origin HEAD:hex/p3-semantic-ir-integration
