@@ -8,6 +8,7 @@ import { installProtectedWorkers } from './protected-workers.js';
 const bootstrap = takeBootstrap();
 const apiOrigin = normalizeApiOrigin(bootstrap.apiOrigin);
 const provider = bootstrap.provider === 'gemini' ? 'gemini' : 'chatgpt';
+stageSync('opaque embed storage shim', () => installOpaqueStorageShims(globalThis));
 const bridge = stageSync('opaque embed bridge proxy', () => createEmbedBridgeProxy({ port: bootstrap.port }));
 
 globalThis.__HEX_API_BASE__ = apiOrigin;
@@ -37,6 +38,72 @@ globalThis.__HEX_OPAQUE_EMBED_READY__ = Object.freeze({
   apiOrigin,
   provider,
 });
+
+export function installOpaqueStorageShims(globalObject = globalThis) {
+  installStorageShim(globalObject, 'localStorage');
+  installStorageShim(globalObject, 'sessionStorage');
+  return Object.freeze({ localStorage: globalObject.localStorage, sessionStorage: globalObject.sessionStorage });
+}
+
+function installStorageShim(globalObject, name) {
+  try {
+    const existing = globalObject[name];
+    if (existing && typeof existing.getItem === 'function' && typeof existing.setItem === 'function') return existing;
+  } catch {}
+
+  const storage = createMemoryStorage();
+  let installed = false;
+  try {
+    Object.defineProperty(globalObject, name, {
+      value: storage,
+      configurable: true,
+      enumerable: true,
+      writable: false,
+    });
+    installed = true;
+  } catch {}
+  if (!installed) {
+    let prototype = null;
+    try { prototype = Object.getPrototypeOf(globalObject); } catch {}
+    if (prototype) {
+      try {
+        Object.defineProperty(prototype, name, {
+          value: storage,
+          configurable: true,
+          enumerable: true,
+          writable: false,
+        });
+        installed = true;
+      } catch {}
+    }
+  }
+  if (!installed) throw new Error(`${name} is unavailable in the sandbox`);
+  try {
+    if (globalObject[name] !== storage) throw new Error(`${name} shim did not take effect`);
+  } catch (error) {
+    throw new Error(`${name} shim did not take effect: ${String(error?.message || error)}`);
+  }
+  return storage;
+}
+
+function createMemoryStorage() {
+  const values = new Map();
+  return Object.freeze({
+    get length() { return values.size; },
+    key(index) {
+      const number = Number(index);
+      if (!Number.isInteger(number) || number < 0) return null;
+      return [...values.keys()][number] ?? null;
+    },
+    getItem(key) {
+      const normalized = String(key);
+      return values.has(normalized) ? values.get(normalized) : null;
+    },
+    setItem(key, value) { values.set(String(key), String(value)); },
+    removeItem(key) { values.delete(String(key)); },
+    clear() { values.clear(); },
+  });
+}
 
 function takeBootstrap() {
   const value = globalThis.__HEX_OPAQUE_EMBED__;
