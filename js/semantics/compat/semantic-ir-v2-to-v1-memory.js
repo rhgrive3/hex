@@ -13,8 +13,9 @@ function legacyLocation(region, valuesById, projectedAddress = null) {
   const size = region.widthBits == null ? null : bytesForBits(region.widthBits);
   const address = preciseProjectedAddress(projectedAddress);
   if (region.kind === 'stack-fixed') {
-    const disp = safeBigInt(address?.disp) ?? safeBigInt(region.offset) ?? 0n;
-    return { key: `stack:${region.id}`, kind: V1_MK.STACK, disp, size, regionId: region.id, origin: region.origin ?? null };
+    const regionOffset = safeBigInt(region.offset) ?? 0n;
+    const disp = safeBigInt(address?.disp) ?? regionOffset;
+    return { key: `stack:${regionOffset.toString()}`, kind: V1_MK.STACK, disp, size, regionId: region.id, origin: region.origin ?? null };
   }
   if (region.kind === 'global-absolute') {
     const absolute = safeBigInt(region.address);
@@ -28,10 +29,11 @@ function legacyLocation(region, valuesById, projectedAddress = null) {
     // however, also exposes the already-proven address expression to consumers.
     // Preserve that public shape from the Semantic-IR-derived address projection
     // without changing MemorySSA identity or alias conservatism.
-    const disp = safeBigInt(address?.disp) ?? safeBigInt(region.offset) ?? 0n;
+    const regionOffset = safeBigInt(region.offset) ?? 0n;
+    const disp = safeBigInt(address?.disp) ?? regionOffset;
     const base = address?.base ?? valuesById.get(region.rootEntityId) ?? null;
     return {
-      key: `field:${region.id}`,
+      key: `field:${region.rootEntityId}+${regionOffset.toString()}`,
       kind: V1_MK.FIELD,
       base,
       baseEntityId: region.rootEntityId,
