@@ -37,6 +37,6 @@ jobs:
           console.log(json(slim(build(['mov w8, #1','add w8, w8, #2','lsl w8, w8, #3','ret']))));
           console.log('=== STACK FIXTURE ===');
           console.log(json(slim(build(['mov w8, #5','str w8, [sp, #0x8]','bl #0x100001000','ldr w9, [sp, #0x8]','ret']))));
-          rm -f .p3-debug.mjs
           EOF
           node .p3-debug.mjs
+          rm -f .p3-debug.mjs
