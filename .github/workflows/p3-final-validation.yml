@@ -4,8 +4,6 @@ on:
   push:
     branches:
       - hex/p3-semantic-ir-integration
-    paths:
-      - '.github/workflows/p3-final-validation.yml'
 
 permissions:
   contents: read
