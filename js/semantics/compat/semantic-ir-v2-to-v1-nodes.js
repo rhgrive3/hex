@@ -105,6 +105,41 @@ function zeroCondition(valueId, context) {
   return null;
 }
 
+function localPhysicalStateSource(node, context) {
+  const identity = legacyPublicStateIdentity(node.variable);
+  if (!identity) return null;
+  const current = context.physicalStateCurrent?.get(identity) ?? null;
+  if (!current) return null;
+  const readBits = context.valuesById.get(node.outputs?.[0])?.bits ?? null;
+  const sourceValueId = current.sourceSemanticValueId ?? null;
+  const source = sourceValueId == null ? null : context.valuesById.get(sourceValueId) ?? null;
+  if (source && source.bits === readBits) return source;
+  const producer = sourceValueId == null ? null : context.producerByValueId.get(sourceValueId) ?? null;
+  if (producer?.kind === 'zext' && producer.inputs?.length === 1) {
+    const inner = context.valuesById.get(producer.inputs[0]) ?? null;
+    const fromBits = Number(producer.attributes?.fromBits ?? operationMetadata(producer).fromBits ?? inner?.bits ?? 0) || null;
+    const toBits = Number(producer.attributes?.toBits ?? operationMetadata(producer).toBits ?? source?.bits ?? 0) || null;
+    if (inner && readBits != null && fromBits === readBits && toBits === source?.bits) return inner;
+  }
+  if (current.value?.bits === readBits) return current.value;
+  return null;
+}
+
+function recordPhysicalStateWrite(node, destination, context) {
+  const identity = legacyPublicStateIdentity(node.variable);
+  if (!identity || !context.physicalStateCurrent) return;
+  context.physicalStateCurrent.set(identity, {
+    value: destination,
+    sourceSemanticValueId: node.inputs?.[0] ?? null,
+    origin: node.origin,
+  });
+}
+
+function clearPhysicalState(variable, context) {
+  const identity = legacyPublicStateIdentity(variable);
+  if (identity && context.physicalStateCurrent) context.physicalStateCurrent.delete(identity);
+}
+
 function addWithCarryOperands(node, context) {
   if (node.operator !== 'add-with-carry' || (node.inputs || []).length < 3) return null;
   const metadata = operationMetadata(node);
@@ -142,6 +177,14 @@ function deterministicIntrinsicProjection(node, context, inst, setBasic, primary
     inst.extra.width = 1;
     inst.extra.signed = false;
     return true;
+  }
+  if (op === 'insert-bits' && inputValues.length >= 2) {
+    setBasic(V1_OP.BFI, 'insert');
+    const metadata = operationMetadata(node);
+    inst.extra.lsb = Number.isInteger(Number(metadata.lsb)) ? Number(metadata.lsb) : null;
+    inst.extra.width = Number.isInteger(Number(metadata.fieldWidth ?? metadata.width)) ? Number(metadata.fieldWidth ?? metadata.width) : null;
+    inst.extra.bitfieldKind = 'bfi';
+    return inst.extra.lsb != null && inst.extra.width != null;
   }
   void context; void primaryOutput;
   return false;
@@ -252,7 +295,17 @@ export function projectNode(node, context) {
       }
       break;
     }
-    case 'zext': case 'sext': case 'trunc':
+    case 'zext': {
+      // Zero extension preserves the mathematical unsigned value. Legacy v1 has
+      // no standalone cast opcode consumed by current analyses, so serialize it
+      // as a width-carrying MOV rather than losing the copy/constant chain.
+      setBasic(V1_OP.MOV, 'zext');
+      inst.extra.castKind = 'zext';
+      inst.extra.sourceBits = Number(attrs.fromBits ?? opMeta.fromBits ?? inputValues[0]?.bits ?? 0) || null;
+      inst.extra.targetBits = Number(attrs.toBits ?? opMeta.toBits ?? primaryOutput?.bits ?? 0) || null;
+      break;
+    }
+    case 'sext': case 'trunc':
       setBasic(V1_OP.UN, node.kind);
       inst.extra.sourceBits = Number(attrs.fromBits ?? opMeta.fromBits ?? inputValues[0]?.bits ?? 0) || null;
       inst.extra.targetBits = Number(attrs.toBits ?? opMeta.toBits ?? primaryOutput?.bits ?? 0) || null;
@@ -276,12 +329,16 @@ export function projectNode(node, context) {
     }
     case 'state-read': {
       const use = stateProjection.readUseByNodeId.get(node.id) ?? null;
-      const reaching = use == null ? null : valuesById.get(use.valueId) ?? null;
+      const canonical = use == null ? null : valuesById.get(use.valueId) ?? null;
+      const canonicalDefinition = use == null ? null : stateProjection.definitionByValueId.get(use.valueId) ?? null;
+      const local = canonicalDefinition?.proof?.kind === 'implicit-undef' ? localPhysicalStateSource(node, context) : null;
+      const reaching = local ?? canonical;
       setBasic(V1_OP.MOV, null, reaching ? [reaching] : []);
       inst.extra.stateRead = node.variable;
       inst.extra.publicStateIdentity = legacyPublicStateIdentity(node.variable);
       inst.extra.reachingStateSsaValueId = use?.valueId ?? null;
       inst.extra.stateReadProof = use?.proof ?? null;
+      inst.extra.localPhysicalViewProjection = local != null;
       if (!reaching) inst.extra.entryStateRead = true;
       break;
     }
@@ -299,6 +356,7 @@ export function projectNode(node, context) {
         inst.extra.stateSsaDefinitionId = definition.definitionId;
         inst.extra.stateWriteProof = definition.proof ?? null;
         destination.def = inst;
+        recordPhysicalStateWrite(node, destination, context);
       } else {
         setBasic(V1_OP.CLOBBER, null, inputValues, null);
         const identity = legacyPublicStateIdentity(node.variable);
@@ -307,6 +365,7 @@ export function projectNode(node, context) {
         inst.extra.stateWrite = node.variable;
         inst.extra.publicStateIdentity = identity;
         inst.extra.reason = 'semantic-state-write-assignment-not-proven';
+        clearPhysicalState(node.variable, context);
       }
       break;
     }
@@ -396,6 +455,7 @@ export function projectNode(node, context) {
       if (abi.returnBits != null) inst.returnBits = abi.returnBits;
       if (abi.returnEvidence != null) inst.returnEvidence = abi.returnEvidence;
       if (node.call.memoryWrite.scope !== 'none' || node.call.completeness !== 'complete') inst.memoryBarrier = true;
+      for (const state of node.call.stateWrites || []) clearPhysicalState(state, context);
       break;
     }
     case 'return':
@@ -487,6 +547,7 @@ export function projectNode(node, context) {
         inst.intrinsicId = attrs.intrinsicId ?? node.operator ?? node.id;
         inst.clobbers = node.intrinsic.stateWrites.map((state) => legacyPublicStateIdentity(state) ?? state.key);
         if (node.intrinsic.memoryWrite.scope !== 'none') inst.memoryBarrier = true;
+        for (const state of node.intrinsic.stateWrites || []) clearPhysicalState(state, context);
       }
       break;
     }
