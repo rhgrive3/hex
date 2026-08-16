@@ -1,0 +1,36 @@
+name: Temporary provider diagnostics loader sync
+
+on:
+  push:
+    branches:
+      - hex/chatgpt-provider-visible-diagnostics
+
+permissions:
+  contents: write
+
+jobs:
+  sync-loader:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: hex/chatgpt-provider-visible-diagnostics
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run userscript:build
+      - name: Commit generated loader if changed
+        run: |
+          if git diff --quiet -- userscript/hex.user.template.js; then
+            echo 'loader already current'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add userscript/hex.user.template.js
+          git commit -m 'Regenerate userscript loader for visible provider diagnostics'
+          git push origin HEAD:hex/chatgpt-provider-visible-diagnostics
