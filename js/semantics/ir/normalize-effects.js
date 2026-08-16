@@ -129,28 +129,25 @@ export function machineValueReferenceKey(value) {
 export function createPhysicalStateVariable(value) {
   if (!value || typeof value !== 'object') fail('semantic-ir-lowering-invalid-physical-state');
   if (value.kind === 'register' && value.registerId != null) {
+    const registerId = String(value.registerId);
     return deepFreeze({
-      key: `physical-state:${stableDigest({ kind: 'register', registerId: String(value.registerId) })}`,
+      key: `physical-state:${stableDigest({ kind: 'register', registerId })}`,
       kind: 'physical-state',
       scope: 'function',
-      physicalIdentity: {
-        kind: 'register',
-        registerId: String(value.registerId),
-        widthBits: Number(value.widthBits),
-        ...(value.view == null ? {} : { view: String(value.view) }),
-      },
+      // widthBits/view describe an access view of the register, not the
+      // identity of the physical state cell. MachineType preserves width on
+      // values; keeping view metadata here would give the same canonical key
+      // multiple identities (for example AArch64 w8 versus x8).
+      physicalIdentity: { kind: 'register', registerId },
     });
   }
   if (value.kind === 'flag' && value.flagId != null) {
+    const flagId = String(value.flagId);
     return deepFreeze({
-      key: `physical-state:${stableDigest({ kind: 'flag', flagId: String(value.flagId) })}`,
+      key: `physical-state:${stableDigest({ kind: 'flag', flagId })}`,
       kind: 'physical-state',
       scope: 'function',
-      physicalIdentity: {
-        kind: 'flag',
-        flagId: String(value.flagId),
-        widthBits: Number(value.widthBits ?? 1),
-      },
+      physicalIdentity: { kind: 'flag', flagId },
     });
   }
   fail('semantic-ir-lowering-nonphysical-machine-value');
