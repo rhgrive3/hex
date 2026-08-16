@@ -69,8 +69,18 @@ jobs:
             def:value.def == null ? null : { id:value.def.id, row:value.def.row, op:value.def.op, sub:value.def.sub ?? null, extra:{ stateRead:!!value.def.extra?.stateRead, stateWrite:!!value.def.extra?.stateWrite, publicStateIdentity:value.def.extra?.publicStateIdentity ?? null } },
             provenance:stackPointerProvenanceOf(value),
           };
+          const memBrief = (m) => m == null ? null : {
+            id:m.id ?? null,
+            kind:m.kind ?? null,
+            definitionId:m.definitionId ?? null,
+            regionId:m.regionId ?? null,
+            instructionId:m.instructionId ?? m.instId ?? null,
+            row:m.row ?? null,
+            previousDefinitionId:m.previousDefinitionId ?? null,
+          };
           console.log('CALL_ARGS', JSON.stringify((call?.args ?? []).map((a) => brief(a.value)), (_, v) => typeof v === 'bigint' ? v.toString() : v));
           console.log('X0_VALUES', JSON.stringify((ir.values ?? []).filter((v) => v.reg === 'x0' || v.compatPublicIdentity === 'x0').map(brief), (_, v) => typeof v === 'bigint' ? v.toString() : v));
           console.log('CALL_ARGUMENT_DESCRIPTORS', JSON.stringify(call?.callArguments ?? null));
-          console.log('LOAD', JSON.stringify({ reachingStore:load?.reachingStore?.id ?? null, memUse:load?.memUse?.kind ?? null, compatNoEscapeStackForwarding:load?.extra?.compatNoEscapeStackForwarding ?? false }));
+          console.log('CALL_MEMORY', JSON.stringify({ memUse:memBrief(call?.memUse), memDef:memBrief(call?.memDef), extraMemDef:memBrief(call?.extra?.memoryDefinition) }));
+          console.log('LOAD_MEMORY', JSON.stringify({ reachingStore:load?.reachingStore?.id ?? null, memUse:memBrief(load?.memUse), memDef:memBrief(load?.memDef), compatNoEscapeStackForwarding:load?.extra?.compatNoEscapeStackForwarding ?? false }));
           EOF
