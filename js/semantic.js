@@ -77,17 +77,38 @@ function fact(kind, inst, extra = {}) {
     relation: extra.relation || null,
     confidence: extra.confidence == null ? 1 : extra.confidence,
     confidenceSource: extra.confidenceSource || 'semantic-ir',
-    evidence, ...extra, evidence,
+    ...extra, evidence,
   };
 }
 
-function sameSemanticValue(a, b) {
+function sameSemanticValue(a, b, seen = new Set()) {
   if (!a || !b) return false;
   if (a === b) return true;
-  if (a.id != null && b.id != null) return a.id === b.id;
-  if (a.const != null && b.const != null) {
-    return a.const === b.const && Number(a.bits || 64) === Number(b.bits || 64);
+  if (a.id != null && b.id != null && a.id === b.id) return true;
+  if (a.const != null || b.const != null) {
+    return a.const != null && b.const != null
+      && a.const === b.const
+      && Number(a.bits || 64) === Number(b.bits || 64);
   }
+  const bitsA = Number(a.bits || 64), bitsB = Number(b.bits || 64);
+  if (bitsA !== bitsB) return false;
+  const pairKey = String(a.id ?? '?') + ':' + String(b.id ?? '?');
+  if (seen.has(pairKey)) return false;
+  const next = new Set(seen).add(pairKey);
+  const ad = a.def, bd = b.def;
+  const as = ad?.op === OP.MOV ? ad.args?.[0]?.value ?? null : null;
+  const bs = bd?.op === OP.MOV ? bd.args?.[0]?.value ?? null : null;
+
+  // Equal exact casts of equal sources are equal. This is a compatibility-shape
+  // proof, not a new semantic engine: the casts are already explicit IR nodes.
+  if (as && bs && ad.sub === bd.sub) {
+    const sourceBitsA = Number(as.bits || bitsA), sourceBitsB = Number(bs.bits || bitsB);
+    if (sourceBitsA === sourceBitsB && sameSemanticValue(as, bs, next)) return true;
+  }
+  // Plain same-width MOVs are transparent and may appear on only one side when
+  // state reads are materialized at different consumer rows.
+  if (as && ad.sub == null && Number(as.bits || bitsA) === bitsA && sameSemanticValue(as, b, next)) return true;
+  if (bs && bd.sub == null && Number(bs.bits || bitsB) === bitsB && sameSemanticValue(a, bs, next)) return true;
   return false;
 }
 
