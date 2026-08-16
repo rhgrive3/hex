@@ -32,7 +32,9 @@ assert.equal(match.matched, true);
 assert.equal(match.oracleRole, LEGACY_ORACLE_ROLE);
 assert.equal(match.coverage, 'exact');
 assert.equal(assertDifferentialMatch(match), true);
-assert.match(match.machineEffectsCanonical, /machine-effects/);
+const serializedEffects = JSON.parse(match.machineEffectsCanonical);
+assert.equal(serializedEffects.schemaVersion, 1);
+assert.equal(serializedEffects.contractVersion, '1.0.0');
 
 const mismatch = await compareDecodedInstruction({
   decodedInstruction:decoded,
