@@ -1,3 +1,4 @@
+import './repair-region-provenance-core.test.mjs';
 import assert from 'node:assert/strict';
 import {
   aliasMemoryRegions,
