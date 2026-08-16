@@ -31,6 +31,30 @@ jobs:
 
           p = Path('js/semantics/compat/semantic-ir-v2-to-v1-finalize.js')
           s = p.read_text()
+          helper = r'''
+          function valueFeedsAddressOrCall(projected, root) {
+            const queue = [root];
+            const seen = new Set();
+            while (queue.length) {
+              const value = queue.shift();
+              if (!value || seen.has(value.id)) continue;
+              seen.add(value.id);
+              for (const inst of projected.instructions) {
+                if (inst.addr?.base === value || inst.addr?.index === value || inst.loc?.base === value) return true;
+                const consumes = (inst.args || []).some((arg) => arg?.value === value);
+                if (!consumes) continue;
+                if (inst.op === V1_OP.CALL) return true;
+                if (inst.op === V1_OP.MOV && inst.dst) queue.push(inst.dst);
+              }
+            }
+            return false;
+          }
+
+          '''
+          helper_anchor = 'function compactProjectedState(projected) {'
+          if 'function valueFeedsAddressOrCall(projected, root)' not in s:
+              if helper_anchor not in s: raise SystemExit('state compaction helper anchor missing')
+              s = s.replace(helper_anchor, helper + helper_anchor)
           old_write = (
               "    if (inst.extra?.stateWrite && samePublicState(inst, source, inst.dst)) {\n"
               "      const shadow = inst.dst;\n"
@@ -45,15 +69,27 @@ jobs:
               "    } else if (inst.extra?.stateRead && Number(source.bits || 0) === Number(inst.dst.bits || 0)) {"
           )
           new_write = (
-              "    if (inst.extra?.stateWrite && samePublicState(inst, source, inst.dst)\n"
-              "        && source.kind !== V1_VK.ARG && source.def && source !== inst.dst) {\n"
-              "      source.compatPublicIdentity = source.reg;\n"
-              "      source.reg = null;\n"
-              "      source.stateKey = null;\n"
-              "      source.version = 0;\n"
-              "      source.compatDerived = 'state-write-source-shadow';\n"
-              "      inst.extra.compatPublicStateSourceValueId = source.id;\n"
-              "      inst.extra.compatStateDestinationValueId = inst.dst.id;\n"
+              "    if (inst.extra?.stateWrite && samePublicState(inst, source, inst.dst)) {\n"
+              "      const shadow = inst.dst;\n"
+              "      if (valueFeedsAddressOrCall(projected, shadow)) {\n"
+              "        aliases.set(shadow.id, source);\n"
+              "        if (source.stateKey == null && shadow.stateKey != null) source.stateKey = shadow.stateKey;\n"
+              "        shadow.compatPublicIdentity = shadow.reg;\n"
+              "        shadow.reg = null;\n"
+              "        shadow.stateKey = null;\n"
+              "        shadow.version = 0;\n"
+              "        shadow.compatDerived = 'state-ssa-address-shadow';\n"
+              "        inst.extra.compatPublicStateSourceValueId = source.id;\n"
+              "        inst.extra.compatStateShadowValueId = shadow.id;\n"
+              "      } else if (source.kind !== V1_VK.ARG && source.def && source !== shadow) {\n"
+              "        source.compatPublicIdentity = source.reg;\n"
+              "        source.reg = null;\n"
+              "        source.stateKey = null;\n"
+              "        source.version = 0;\n"
+              "        source.compatDerived = 'state-write-source-shadow';\n"
+              "        inst.extra.compatPublicStateSourceValueId = source.id;\n"
+              "        inst.extra.compatStateDestinationValueId = shadow.id;\n"
+              "      }\n"
               "    } else if (inst.extra?.stateRead && inst.extra?.localPhysicalViewProjection === true && Number(source.bits || 0) === Number(inst.dst.bits || 0)) {"
           )
           if old_write in s:
