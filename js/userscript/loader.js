@@ -64,8 +64,22 @@ async function loadRuntime() {
   const plaintext = await runtimeStage('protected runtime decompress', () => decompressGzipExact(compressed));
   await assertHash(plaintext, bootstrap.manifest.contentHash);
   const blobUrl = await runtimeStage('protected runtime Blob creation', () => URL.createObjectURL(new Blob([toExactArrayBuffer(plaintext)], { type: 'text/javascript' })));
-  try { await runtimeStage('protected runtime import', () => import(blobUrl)); }
-  finally {
+  try {
+    const runtimeModule = await runtimeStage('protected runtime import', () => import(blobUrl));
+    if (typeof runtimeModule?.startProtectedRuntime !== 'function') throw new Error('Protected runtime entry point is unavailable.');
+    let sourceCopies = 0;
+    await runtimeStage('protected runtime start', () => runtimeModule.startProtectedRuntime({
+      hostLocation: RUNTIME_HOST_LOCATION,
+      apiOrigin: HEX_ORIGIN,
+      loaderVersion: LOADER_VERSION,
+      buildId: EXPECTED_BUILD,
+      runtimeSourceProvider() {
+        sourceCopies += 1;
+        if (sourceCopies > 1) throw new Error('Protected runtime source was requested more than once.');
+        return toExactArrayBuffer(plaintext);
+      },
+    }));
+  } finally {
     URL.revokeObjectURL(blobUrl); ciphertext.fill(0); compressed.fill(0); plaintext.fill(0); new Uint8Array(contentKeyRaw).fill(0); new Uint8Array(shared).fill(0);
   }
 }
