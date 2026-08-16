@@ -8,7 +8,17 @@ import { decompile } from '../../js/decompile.js';
 import { SEMANTIC_V2_MIGRATION_MODES } from '../../js/semantics/compat/index.js';
 
 const BASE = 0x100000000n;
-const json = (value) => JSON.stringify(value, (_key, v) => typeof v === 'bigint' ? `${v}n` : v);
+function json(value) {
+  const seen = new WeakSet();
+  return JSON.stringify(value, (_key, v) => {
+    if (typeof v === 'bigint') return `${v}n`;
+    if (v && typeof v === 'object') {
+      if (seen.has(v)) return '[Circular]';
+      seen.add(v);
+    }
+    return v;
+  });
+}
 function modelOf(lines, opts = {}) {
   const base = opts.base ?? BASE;
   const rows = lines.map((line, row) => {
