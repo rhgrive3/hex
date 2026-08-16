@@ -73,10 +73,13 @@ export async function runDifferentialCase(testCase, adapters) {
 
   if (typeof testCase.explainRepresentationDifference === 'function') {
     const explanation = await testCase.explainRepresentationDifference(legacyCanonical, v2Canonical);
+    // A representation difference is acceptable only with an explicit safety
+    // proof. Missing proof must fail closed; prose alone is not evidence of
+    // semantic equivalence or conservative behavior.
     const safetyOk = typeof testCase.safetyFloorPreserved === 'function'
       ? await testCase.safetyFloorPreserved(legacyCanonical, v2Canonical)
-      : true;
-    if (typeof explanation === 'string' && explanation.trim() && safetyOk) {
+      : false;
+    if (typeof explanation === 'string' && explanation.trim() && safetyOk === true) {
       return classificationRecord(testCase, 'explained-representation-difference', { blocking: false, explanation: explanation.trim(), pathProof });
     }
   }
