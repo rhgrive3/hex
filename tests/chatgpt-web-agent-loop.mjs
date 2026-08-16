@@ -115,4 +115,22 @@ assert.equal(result.limits.exhausted, false);
   }
 }
 
+{
+  let invalidCalls = 0;
+  const invalid = new ChatGPTWebProvider({
+    bridge: { async request() { invalidCalls++; return 'not-json'; }, cancel() {} },
+  });
+  const invalidRuntime = new AIRuntime({
+    context: { binaryId: 'chatgpt-repair-budget', searchStrings: async () => [], addressExists: () => true },
+    provider: invalid, planner: false,
+  });
+  const failed = await invalidRuntime.turn({
+    mode: 'chat', scope: 'binary', goal: 'test repair budget', provider: 'chatgpt-web',
+    budget: { timeoutMs: 1000, maxModelCalls: 2 },
+  });
+  assert.equal(invalidCalls, 1, 'a repair must not start when the remaining whole-turn budget is too small');
+  assert.equal(failed.activity.find((item) => item.type === 'error')?.errorType, 'invalid_model_output');
+  assert.ok(failed.activity.some((item) => item.type === 'model-repair-skip'));
+}
+
 console.log('chatgpt-web-agent-loop: ok');

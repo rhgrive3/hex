@@ -2,7 +2,7 @@ import { AIError } from '../schema.js';
 import { validateModelDecision } from '../validation.js';
 import { AIProvider, WorkerAIProvider } from './index.js';
 
-const DEFAULT_TIMEOUT_MS = 110000;
+const DEFAULT_TIMEOUT_MS = 120000;
 const PROTOCOL_VERSION = 'hex-chatgpt-web-v1';
 
 export class ChatGPTWebProvider extends AIProvider {
@@ -31,7 +31,7 @@ export class ChatGPTWebProvider extends AIProvider {
     try {
       const response = await this.bridge.request(buildChatGPTTurnPrompt(request), {
         signal: controller.signal,
-        timeoutMs: options.timeoutMs || this.timeoutMs,
+        timeoutMs: boundedTimeout(options.timeoutMs, this.timeoutMs),
         sessionKey: request.sessionId,
         model: request.model || null,
         reasoning: request.reasoning || null,
@@ -306,6 +306,14 @@ function interruptionError(signal) {
     timedOut ? 'budget_exhausted' : 'cancelled',
     timedOut ? 'The AI investigation timed out.' : 'AI investigation was cancelled.',
   );
+}
+
+function boundedTimeout(requested, ceiling) {
+  const rawCeiling = Number(ceiling);
+  const cap = Number.isFinite(rawCeiling) && rawCeiling > 0 ? Math.floor(rawCeiling) : DEFAULT_TIMEOUT_MS;
+  const rawRequested = Number(requested);
+  if (!Number.isFinite(rawRequested) || rawRequested <= 0) return cap;
+  return Math.max(1, Math.min(cap, Math.floor(rawRequested)));
 }
 
 function apiEndpoint(path) {

@@ -108,6 +108,16 @@ window.__CHATGPT__ = (() => {
     return section;
   }
 
+  function flashPageError(text, durationMs = 40) {
+    const node = document.createElement('div');
+    node.setAttribute('role', 'alert');
+    node.setAttribute('data-testid', 'toast-error');
+    node.textContent = text;
+    document.body.append(node);
+    if (durationMs > 0) setTimeout(() => node.remove(), durationMs);
+    return node;
+  }
+
   function appendErrorTurn(text) {
     const section = document.createElement('section');
     section.setAttribute('data-testid', 'conversation-turn-' + (++turnIndex));
@@ -173,7 +183,17 @@ window.__CHATGPT__ = (() => {
     /* A human message that lands in the same tab inside Hex's submit window:
        two fresh user turns appear between the baseline and the first probe. */
     if (options.manualInterference) appendUserTurn('人が手で入力した別の質問', 'manual-' + turnId);
-    const user = appendUserTurn(text, turnId);
+    const initialUserText = options.userHydrationDelayMs ? text.slice(0, Math.max(1, Math.floor(text.length / 3))) : text;
+    const user = appendUserTurn(initialUserText, turnId);
+    if (options.userHydrationDelayMs) {
+      setTimeout(() => {
+        const role = user.querySelector('[data-message-author-role="user"]');
+        if (role) role.innerHTML = userBody(text);
+      }, options.userHydrationDelayMs);
+    }
+    if (options.pageErrorText) {
+      setTimeout(() => flashPageError(options.pageErrorText, options.pageErrorDurationMs ?? 40), options.pageErrorAtMs ?? 10);
+    }
     const assistant = appendAssistantTurn('request-WEB:' + turnId + '-0');
     state = { user, assistant };
 
@@ -225,7 +245,10 @@ window.__CHATGPT__ = (() => {
   });
 
   return {
-    configure(next) { options = next; },
+    configure(next) {
+      options = next;
+      if (options.seedPageErrorText) flashPageError(options.seedPageErrorText, 0);
+    },
     /* Seeded turns belong to an already-open conversation: this is the shape
        that lets a failure from an earlier turn sit in the DOM while a new,
        healthy Hex request runs. */

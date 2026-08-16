@@ -1,10 +1,15 @@
 import assert from 'node:assert/strict';
+import { aiBudget } from '../js/ai/schema.js';
 import {
   ChatGPTWebProvider,
   UserscriptAIProvider,
   buildChatGPTTurnPrompt,
   parseChatGPTDecision,
 } from '../js/ai/provider/chatgpt-web.js';
+
+assert.equal(aiBudget('chat').timeoutMs, 240000, 'interactive chat needs enough wall time for real reasoning plus a second model call');
+assert.equal(aiBudget('agent').timeoutMs, 600000, 'agent mode must not inherit the old two-minute whole-investigation ceiling');
+assert.equal(aiBudget('chat', { timeoutMs: 999999 }).timeoutMs, 240000, 'caller overrides cannot exceed the reviewed chat ceiling');
 
 const tools = [{
   name: 'search_functions',
@@ -141,6 +146,18 @@ assert.throws(() => parseChatGPTDecision('{oops}'), /malformed JSON/);
 }
 
 {
+  let observedTimeout = null;
+  const provider = new ChatGPTWebProvider({
+    timeoutMs: 120,
+    bridge: {
+      async request(_prompt, options) { observedTimeout = options.timeoutMs; return '{"type":"final","answer":"ok"}'; },
+    },
+  });
+  await provider.nextTurn({ tools: [] }, { timeoutMs: 5000 });
+  assert.equal(observedTimeout, 120, 'whole-turn budget must be capped by the per-ChatGPT-call timeout');
+}
+
+{
   const provider = new ChatGPTWebProvider({
     bridge: {
       async request() {
@@ -167,7 +184,7 @@ assert.throws(() => parseChatGPTDecision('{oops}'), /malformed JSON/);
   const previousLoader = globalThis.__HEX_SECURE_LOADER__;
   globalThis.__HEX_SECURE_LOADER__ = { version: '2.0.0', buildId: 'cba66f0787cd4fcefd3297c6' };
   try {
-    for (const [code, stage] of [['manual-interference', 'turn-controller'], ['conversation-switched', 'turn-controller'], ['already-active', 'bridge'], ['RPC_UNSAFE_RESULT', null]]) {
+    for (const [code, stage] of [['manual-interference', 'turn-controller'], ['conversation-switched', 'turn-controller'], ['page-error', 'turn-controller'], ['already-active', 'bridge'], ['RPC_UNSAFE_RESULT', null]]) {
       const provider = new ChatGPTWebProvider({
         bridge: {
           async request() { throw Object.assign(new Error(`bridge refused: ${code}`), { code, ...(stage ? { stage } : {}) }); },

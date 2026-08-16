@@ -109,6 +109,7 @@ const BRIDGE_DIAGNOSTIC_MESSAGES = Object.freeze({
   'conversation-switched': 'The active ChatGPT conversation changed while Hex was waiting.',
   'already-active': 'Another Hex ChatGPT request is already active.',
   'response-error': 'ChatGPT reported an error for the active response.',
+  'page-error': 'ChatGPT reported a page-level error for the active request.',
   timeout: 'ChatGPT response capture timed out.',
   RPC_UNSAFE_RESULT: 'The ChatGPT bridge rejected an unsafe RPC result.',
 });
