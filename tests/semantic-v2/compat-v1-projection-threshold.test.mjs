@@ -8,6 +8,7 @@ const BASE = 0x100000000n;
 const lines = [
   'mov w9, #100',
   'cmp w8, w9',
+  'b.hi #0x10000000c',
   'ret',
 ];
 const rows = lines.map((line, row) => {
@@ -48,6 +49,12 @@ try {
         row:inst.row,
         args:(inst.args || []).map((arg) => shape(arg?.value)),
       })),
+      branch:(ir.instructions || []).filter((inst) => inst.op === OP.CBR).map((inst) => ({
+        row:inst.row,
+        cond:inst.cond,
+        args:(inst.args || []).map((arg) => shape(arg?.value)),
+        extra:inst.extra,
+      })),
       state:(ir.instructions || []).filter((inst) => inst.extra?.stateRead || inst.extra?.stateWrite).map((inst) => ({
         row:inst.row,
         op:inst.op,
@@ -58,7 +65,7 @@ try {
       })),
     }));
   }
-  assert.equal(comparisons.length, 1, 'register-held constant threshold must survive explicit v2 projection');
+  assert.equal(comparisons.length, 1, 'register-held constant threshold must survive explicit v2 projection and flag-consuming branch');
   assert.equal(comparisons[0].row, 1);
   assert.equal(comparisons[0].value, 100n);
   assert.equal(comparisons[0].register, 'x8');
