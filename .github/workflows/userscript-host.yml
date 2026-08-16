@@ -34,7 +34,7 @@ on:
       - '.github/workflows/userscript-host.yml'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   userscript:
@@ -43,6 +43,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ github.head_ref || github.ref_name }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -57,6 +58,15 @@ jobs:
           npm run ai:test
           node tests/gemini.mjs
           node tests/worker-classic-harness.mjs
+      - name: Commit regenerated userscript loader
+        if: github.event_name == 'pull_request'
+        run: |
+          git add userscript/hex.user.template.js
+          if git diff --cached --quiet; then exit 0; fi
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git commit -m "Regenerate userscript loader"
+          git push origin HEAD:${{ github.head_ref }}
       - name: Verify tiny committed loader is current
         run: git diff --exit-code -- userscript/hex.user.template.js
 
