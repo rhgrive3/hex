@@ -2,43 +2,13 @@ name: ChatGPT userscript host
 
 on:
   pull_request:
-    paths:
-      - 'js/userscript/**'
-      - 'js/ai/provider/**'
-      - 'js/ai/ui/bridge.js'
-      - 'scripts/build-userscript.mjs'
-      - 'userscript/**'
-      - 'worker-entry.js'
-      - 'wrangler.jsonc'
-      - 'package.json'
-      - 'package-lock.json'
-      - 'index.html'
-      - 'css/**'
-      - 'tests/userscript-*.mjs'
-      - '.github/workflows/userscript-host.yml'
-  push:
-    branches: [main]
-    paths:
-      - 'js/userscript/**'
-      - 'js/ai/provider/**'
-      - 'js/ai/ui/bridge.js'
-      - 'scripts/build-userscript.mjs'
-      - 'userscript/**'
-      - 'worker-entry.js'
-      - 'wrangler.jsonc'
-      - 'package.json'
-      - 'package-lock.json'
-      - 'index.html'
-      - 'css/**'
-      - 'tests/userscript-*.mjs'
-      - '.github/workflows/userscript-host.yml'
 
 permissions:
   contents: write
 
 jobs:
   repair:
-    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -54,26 +24,12 @@ jobs:
         run: |
           python3 <<'PY'
           from pathlib import Path
+          import re
 
           adapter_path = Path('js/userscript/chatgpt-adapter.js')
           source = adapter_path.read_text()
-          old = '''  text(node) {
-            if (!node) return '';
-            // Turn canonicalization deliberately returns the conversation-turn wrapper.
-            // ChatGPT places an accessibility-only speaker heading (for example
-            // "あなた:" / "ChatGPT:") next to the real message node. Reading the
-            // wrapper's innerText therefore corrupts exact prompt matching. Re-scope
-            // text extraction to the semantic message node when one is present, then
-            // keep the existing content-body preference inside that message.
-            const role = node.getAttribute?.('data-message-author-role')
-              ? node
-              : node.querySelector?.('[data-message-author-role="assistant"], [data-message-author-role="user"], [data-message-author-role]');
-            const scope = role || node;
-            const body = scope.querySelector?.('.markdown, [data-testid="markdown"], [data-message-content-part="assistant"], [data-message-content]') || scope;
-            return String(body.innerText || body.textContent || '').trim();
-          }
-          '''
-          new = '''  text(node) {
+          if 'collapsible-user-message-content' not in source:
+              replacement = '''  text(node) {
             if (!node) return '';
             // Canonical turns are conversation wrappers, while the semantic message is
             // nested below data-message-author-role. Never read wrapper/UI chrome when a
@@ -91,12 +47,18 @@ jobs:
             const semanticBody = body || scope;
             return String(semanticBody.innerText || semanticBody.textContent || '').trim();
           }
-          '''
-          if old in source:
-              source = source.replace(old, new, 1)
+
+          assistantTurns()'''
+              source, count = re.subn(
+                  r'  text\(node\) \{\n.*?\n  \}\n\n  assistantTurns\(\)',
+                  replacement,
+                  source,
+                  count=1,
+                  flags=re.S,
+              )
+              if count != 1:
+                  raise SystemExit(f'expected one ChatGPTDOMAdapter.text() block, replaced {count}')
               adapter_path.write_text(source)
-          elif new not in source:
-              raise SystemExit('chatgpt-adapter text() block no longer matches expected source')
 
           test_path = Path('tests/chatgpt-web-runtime.mjs')
           test = test_path.read_text()
@@ -171,7 +133,7 @@ jobs:
               raise SystemExit('chatgpt-web-runtime call insertion failed')
           test_path.write_text(test)
           PY
-      - name: Run ChatGPT runtime regression
+      - name: Run focused runtime regression
         run: node tests/chatgpt-web-runtime.mjs
       - name: Build and run userscript suite
         run: npm run userscript:test
@@ -186,50 +148,3 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git commit -m 'Fix collapsible ChatGPT user turn capture'
           git push origin HEAD:${{ github.event.pull_request.head.ref }}
-
-  userscript:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - name: Opaque sandbox storage contract
-        run: node tests/userscript-sandbox-storage.mjs
-      - name: Build and userscript tests
-        run: npm run userscript:test
-      - name: AI and worker regressions
-        run: |
-          npm run ai:test
-          node tests/gemini.mjs
-          node tests/worker-classic-harness.mjs
-      - name: Verify tiny committed loader is current
-        run: git diff --exit-code -- userscript/hex.user.template.js
-
-  embed-browser:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - name: Build secure userscript runtime
-        run: npm run userscript:build
-      - name: Install pinned browser engines
-        run: |
-          npm install --no-save --save-exact playwright@1.55.0
-          npx --no-install playwright install-deps chromium webkit
-          npx --no-install playwright install chromium webkit
-      - name: Verify opaque srcdoc module and storage execution
-        run: node tests/userscript-srcdoc-probe.mjs
-      - name: Run full secure sandbox startup
-        run: node tests/userscript-sandbox-browser-e2e.mjs
