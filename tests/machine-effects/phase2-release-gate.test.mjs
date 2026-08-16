@@ -145,9 +145,8 @@ function normalizeV1Observable(list) {
   };
   const define = (dst, expr, bits) => {
     if (!dst) return;
-    const normalized = ['value', Number(bits || 64), expr];
-    env.set(dst, normalized);
-    if (!isSynthetic(dst) && dst !== 'nzcv') writes.push([String(dst), normalized]);
+    env.set(dst, expr);
+    if (!isSynthetic(dst) && dst !== 'nzcv') writes.push([String(dst), ['value', Number(bits || 64), expr]]);
   };
 
   for (const item of Array.isArray(list) ? list : []) {
@@ -199,6 +198,9 @@ function normalizeV1Observable(list) {
         control.push(['conditional-branch', String(item.kind || ''), item.target == null ? null : String(item.target), srcs]);
         break;
       case OP.UNKNOWN:
+        if (item.reason === 'possible-faults-not-representable-in-v1') break;
+        unknown.push([item.op, String(item.mnemonic || item.reason || item.intrinsicId || '')]);
+        break;
       case OP.CLOBBER:
         unknown.push([item.op, String(item.mnemonic || item.reason || item.intrinsicId || '')]);
         break;
@@ -238,6 +240,14 @@ assert.equal(differential.notIntegrated, 0);
 assert.equal(differential.unsupported, 0);
 assert.equal(differential.mismatches, 0, JSON.stringify(differential.results.filter((result) => result.status === 'mismatch'), null, 2));
 
+let conservativeCompatibilityBarriers = 0;
+for (const { decodedInstruction } of shadowCases) {
+  const bundle = ARM64_ARCHITECTURE.liftExact(decodedInstruction);
+  conservativeCompatibilityBarriers += lowerMachineEffectsToLegacyV1(bundle)
+    .filter((item) => item.op === OP.UNKNOWN && item.reason === 'possible-faults-not-representable-in-v1').length;
+}
+assert.ok(conservativeCompatibilityBarriers > 0, 'fault information must remain conservative when v1 cannot represent it');
+
 const releaseGate = Object.freeze({
   schemaVersion:'phase2-machine-effects-release-gate/v1',
   machineEffectsSchemaVersion:'1.0.0',
@@ -250,6 +260,7 @@ const releaseGate = Object.freeze({
     matches:differential.matches,
     mismatches:differential.mismatches,
     unsupported:differential.unsupported,
+    conservativeCompatibilityBarriers,
   }),
   cutover:Object.freeze({
     eligible:false,
