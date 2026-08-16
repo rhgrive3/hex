@@ -7,6 +7,13 @@ const LOADER_VERSION = '__HEX_LOADER_VERSION__';
 const EXPECTED_BUILD = '__HEX_BUILD_ID__';
 const RETRIES = 2;
 const RUNTIME_HOST_LOCATION = captureRuntimeHostLocation();
+const stopSmartAppBannerSuppression = suppressSmartAppBanner();
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', stopSmartAppBannerSuppression, { once: true });
+} else {
+  stopSmartAppBannerSuppression();
+}
 
 if (isTopLevelWindow()) boot().catch(showFailure);
 else globalThis.__HEX_SECURE_LOADER_SKIPPED__ = 'nested-frame';
@@ -17,6 +24,7 @@ function isTopLevelWindow() {
 }
 
 async function boot() {
+  await waitForDocumentElement();
   if (!globalThis.crypto?.subtle) throw new Error('WebCrypto is required to start Hex.');
   const status = launcher(`Loading Hex ${LOADER_VERSION}…`, true);
   let error = null;
@@ -114,6 +122,41 @@ async function fetchBytes(url, init = {}) {
   const response = await fetch(url, { ...init, method: init.method || 'GET', credentials: 'omit', mode: 'cors', cache: 'no-store' });
   if (response.status !== 200) throw new Error(`Hex protected runtime fetch failed (${response.status}).`);
   return response.arrayBuffer();
+}
+
+function suppressSmartAppBanner() {
+  const remove = () => {
+    let nodes = [];
+    try { nodes = document.querySelectorAll?.('meta[name="apple-itunes-app"]') || []; } catch { nodes = []; }
+    for (const node of nodes) {
+      try { node.remove(); } catch { /* best effort */ }
+    }
+  };
+  remove();
+  const Observer = globalThis.MutationObserver;
+  if (typeof Observer !== 'function') return () => {};
+  const observer = new Observer(remove);
+  try { observer.observe(document, { childList: true, subtree: true }); }
+  catch { return () => {}; }
+  return () => { remove(); observer.disconnect(); };
+}
+
+function waitForDocumentElement() {
+  if (document.documentElement) return Promise.resolve(document.documentElement);
+  return new Promise((resolve) => {
+    const Observer = globalThis.MutationObserver;
+    if (typeof Observer !== 'function') {
+      const poll = () => document.documentElement ? resolve(document.documentElement) : setTimeout(poll, 0);
+      poll();
+      return;
+    }
+    const observer = new Observer(() => {
+      if (!document.documentElement) return;
+      observer.disconnect();
+      resolve(document.documentElement);
+    });
+    observer.observe(document, { childList: true });
+  });
 }
 
 function launcher(text, busy) {

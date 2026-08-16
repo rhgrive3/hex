@@ -8,6 +8,7 @@ import { assertWireBudget, measureWirePayload } from '../js/ai/budget/wire.js';
 import { ContextBroker } from '../js/ai/context/broker.js';
 import { InvestigationSessionStore } from '../js/ai/session-core/index.js';
 import { createAiEngine } from '../js/ai/ui/bridge.js';
+import { AIRuntime } from '../js/ai/runtime.js';
 
 // A: current UI navigation after turn start cannot move the turn anchor.
 let current = 0x1000n;
@@ -140,5 +141,29 @@ assert.ok(usage.wireBytes > usage.semanticContextBytes);
 assert.ok(usage.wireBytes > usage.historyBytes);
 assert.ok(usage.toolSchemaBytes > 0);
 assert.throws(() => assertWireBudget({ messages: [{ role: 'user', content: 'x'.repeat(50000) }], context: {}, tools: [] }, { contextTokens: 100000, maxOutputTokens: 1, maxRequestBytes: 16384 }), /payload/i);
+
+// O: only real budget ceilings are rendered as exhausted budgets. Provider and
+// protocol failures retain their diagnostic reason but must not produce the
+// misleading "budget exhausted: provider_error" line in the assistant UI.
+{
+  const runtime = new AIRuntime({ context: local, planner: false });
+  const decision = {
+    answer: 'fallback', confidence: 0, evidenceIds: [], hypothesisIds: [], hypotheses: [], suggestedActions: [], followups: [],
+  };
+  const common = {
+    request: { mode: 'chat', style: 'analyst', scope: 'auto' }, decision, plan: null,
+    modelCalls: 1, toolCalls: 0, contextBytes: 0, wireUsage: {}, started: Date.now(),
+    registry: { analysisStats: { disassembly: 0 }, accounting: { cost: 0 } },
+    snapshot: snap, effectiveScope: 'selection',
+  };
+  const providerFailure = runtime.finalize({ ...common, activity: [], limitReason: 'provider_error' });
+  assert.deepEqual(providerFailure.limits, { exhausted: false, reason: 'provider_error' });
+  const modelTimeout = runtime.finalize({ ...common, activity: [], limitReason: 'model_timeout' });
+  assert.deepEqual(modelTimeout.limits, { exhausted: false, reason: 'model_timeout' });
+  const budgetFailure = runtime.finalize({ ...common, activity: [], limitReason: 'model-call-budget' });
+  assert.deepEqual(budgetFailure.limits, { exhausted: true, reason: 'model-call-budget' });
+  const deadline = runtime.finalize({ ...common, activity: [], limitReason: 'budget_exhausted' });
+  assert.deepEqual(deadline.limits, { exhausted: true, reason: 'budget_exhausted' });
+}
 
 console.log('ai-control-plane: PASS');
