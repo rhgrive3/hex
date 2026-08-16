@@ -10,6 +10,7 @@ import {
 } from '../../js/semantics/effects/index.js';
 import { canonicalSerializeSemanticIr } from '../../js/semantics/ir/function.js';
 import { lowerMachineEffectBundleToSemanticIr } from '../../js/semantics/ir/from-machine-effects.js';
+import { createPhysicalStateVariable } from '../../js/semantics/ir/normalize-effects.js';
 
 const functionId = 'function_lowering_core';
 const blockId = 'block_lowering_core';
@@ -26,7 +27,16 @@ const origin = {
 };
 const bv = (bits, value) => createBitVectorValue(bits, value);
 const tmp = (id, bits) => createTemporaryValue(id, bv(bits));
-const reg = (id, bits = 32) => createRegisterValue(id, bits, { view: `view:${id}` });
+const reg = (id, bits = 32, view = `view:${id}`) => createRegisterValue(id, bits, { view });
+
+// A register view is not a second state identity. This is required for
+// architectures such as AArch64 where w8 and x8 address one physical register
+// while individual reads/writes retain different machine widths.
+const view32 = createPhysicalStateVariable(reg('bank.same', 32, 'view32'));
+const view64 = createPhysicalStateVariable(reg('bank.same', 64, 'view64'));
+assert.equal(view32.key, view64.key);
+assert.deepEqual(view32.physicalIdentity, { kind: 'register', registerId: 'bank.same' });
+assert.deepEqual(view64.physicalIdentity, view32.physicalIdentity);
 
 const tLeft = tmp('left', 32);
 const tRight = tmp('right', 32);
@@ -88,8 +98,7 @@ assert.equal(constantSevenValue.machineType.widthBits, 32);
 
 const resultWrite = lowered.nodes.find((node) => node.sourceEffectIds.includes('effect.write.result'));
 assert.equal(resultWrite.kind, 'state-write');
-assert.equal(resultWrite.variable.physicalIdentity.registerId, 'bank.result');
-assert.equal(resultWrite.variable.physicalIdentity.widthBits, 16);
+assert.deepEqual(resultWrite.variable.physicalIdentity, { kind: 'register', registerId: 'bank.result' });
 assert.equal(resultWrite.attributes.machineEffects.architectureId, 'synthetic-neutral-isa');
 
 const flagNodes = lowered.nodes.filter((node) => node.variable?.physicalIdentity?.flagId === 'condition-bit');
