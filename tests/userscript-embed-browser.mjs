@@ -71,7 +71,8 @@ async function runBrowser(name, browserType) {
 
   try {
     await page.goto(PARENT_URL, { waitUntil: 'domcontentloaded', timeout: TIMEOUT_MS });
-    await page.waitForSelector('#hex-userscript-iframe-host iframe', { state: 'attached', timeout: TIMEOUT_MS });
+    const iframeLocator = page.locator('#hex-userscript-iframe-host iframe').first();
+    await iframeLocator.waitFor({ state: 'attached', timeout: TIMEOUT_MS });
 
     const parentBefore = await page.evaluate(() => {
       const iframe = document.querySelector('#hex-userscript-iframe-host iframe');
@@ -89,7 +90,7 @@ async function runBrowser(name, browserType) {
     assert.equal(parentBefore.sandbox.includes('allow-same-origin'), false, `${name}: sandbox must remain opaque`);
     assert.equal(parentBefore.legacy, false, `${name}: legacy light DOM must not appear during sandbox startup`);
 
-    const childFrame = await waitForSrcdocFrame(page);
+    const childFrame = await waitForIframeContentFrame(iframeLocator);
     assert.ok(childFrame, `${name}: opaque srcdoc child was not created`);
 
     await childFrame.waitForFunction(() => {
@@ -117,6 +118,7 @@ async function runBrowser(name, browserType) {
       return {
         actualOrigin: location.origin,
         actualHref: location.href,
+        routeHash: location.hash,
         apiBase: globalThis.__HEX_API_BASE__ || null,
         app: !!globalThis.__app,
         bridge: !!globalThis.__HEX_CHATGPT_BRIDGE__,
@@ -130,7 +132,8 @@ async function runBrowser(name, browserType) {
     assert.equal(parentReady.legacy, false, `${name}: successful sandbox startup must not create legacy light DOM`);
     assert.equal(parentReady.iframeHost, true, `${name}: persistent sandbox host must remain mounted`);
     assert.equal(childReady.actualOrigin, 'null', `${name}: sandbox child must have an opaque origin`);
-    assert.equal(childReady.actualHref, 'about:srcdoc', `${name}: child must stay inside srcdoc instead of Worker navigation`);
+    assert.equal(childReady.actualHref.startsWith('about:srcdoc'), true, `${name}: child must stay inside srcdoc instead of Worker navigation`);
+    assert.equal(childReady.routeHash, '#/code', `${name}: canonical router must keep its route inside the srcdoc document`);
     assert.equal(childReady.apiBase, WORKER_ORIGIN, `${name}: child must use the verified virtual Worker API origin`);
     assert.equal(childReady.app, true, `${name}: Hex app must finish startup`);
     assert.equal(childReady.bridge, true, `${name}: ChatGPT RPC bridge must exist in the child`);
@@ -139,8 +142,8 @@ async function runBrowser(name, browserType) {
     assert.ok(childReady.cssBytes > 10_000, `${name}: full canonical CSS must be installed, got ${childReady.cssBytes} bytes`);
     assert.notEqual(childReady.bodyBackground, '', `${name}: canonical CSS must compute in the child`);
     assert.equal(externalEmbedRequests, 0, `${name}: ChatGPT CSP-blocked /embed/chatgpt navigation must never be requested`);
-    assert.ok(bootstrapRequests >= 1, `${name}: secure runtime bootstrap must run`);
-    assert.ok(runtimeRequests >= 1, `${name}: encrypted protected runtime must be fetched`);
+    assert.equal(bootstrapRequests, 1, `${name}: secure runtime bootstrap must run exactly once`);
+    assert.equal(runtimeRequests, 1, `${name}: encrypted protected runtime must be fetched exactly once`);
 
     await page.click('#hex-userscript-emergency-close');
     await page.waitForFunction(() => {
@@ -281,12 +284,12 @@ async function createBootstrap(input) {
   };
 }
 
-async function waitForSrcdocFrame(page) {
+async function waitForIframeContentFrame(iframeLocator) {
   const deadline = Date.now() + TIMEOUT_MS;
   while (Date.now() < deadline) {
-    const found = page.frames().find((frame) => frame !== page.mainFrame() && frame.url() === 'about:srcdoc');
-    if (found) return found;
-    await page.waitForTimeout(50);
+    const frame = await iframeLocator.contentFrame();
+    if (frame) return frame;
+    await new Promise((resolve) => setTimeout(resolve, 50));
   }
   return null;
 }
