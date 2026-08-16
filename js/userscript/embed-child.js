@@ -8,6 +8,7 @@ import {
 import {
   announceEmbedChildBootstrapReady,
   normalizeEmbedProvider,
+  normalizeSandboxToken,
   readEmbedGeneration,
   readEmbedProvider,
 } from './embed-bootstrap.js';
@@ -48,6 +49,7 @@ export function waitForEmbedParentAttach(options = {}) {
   const validate = options.validateAttachEvent || validateAttachEvent;
   const generation = String(options.generation || readEmbedGeneration(locationRef) || '');
   const announce = options.announceEmbedChildBootstrapReady || announceEmbedChildBootstrapReady;
+  const sandboxToken = readSandboxToken(options.globalObject || globalThis);
   if (!generation) return Promise.reject(new Error('embed navigation generation is missing'));
 
   return new Promise((resolve, reject) => {
@@ -68,18 +70,19 @@ export function waitForEmbedParentAttach(options = {}) {
       const data = event?.data;
       if (!isAttachLike(data)) return;
       if (String(data.generation || '') !== generation) return;
+      if (sandboxToken && String(data.sandboxToken || '').toLowerCase() !== sandboxToken) return;
       if (data.protocol !== EMBED_PROTOCOL || data.version !== EMBED_PROTOCOL_VERSION) {
         settle(new Error('embed parent attach protocol/version mismatch'));
         return;
       }
       const result = validate(event, { expectedSource: expectedParent, allowedOrigins });
       if (!result?.ok) return;
-      settle(null, Object.freeze({ ...result, generation }));
+      settle(null, Object.freeze({ ...result, generation, sandboxToken }));
     }
 
     currentWindow?.addEventListener?.('message', onMessage);
     try {
-      announce({ windowRef: currentWindow, parent: expectedParent, generation, targetOrigins: allowedOrigins });
+      announce({ windowRef: currentWindow, parent: expectedParent, generation, targetOrigins: allowedOrigins, sandboxToken });
     } catch (error) {
       settle(error);
       return;
@@ -114,6 +117,7 @@ export async function startEmbedChildRuntime(options = {}) {
   const attach = await stage('embed parent attach', () => waitAttach({
     window: currentWindow,
     location: locationRef,
+    globalObject,
     expectedParent: currentWindow.parent,
     generation,
     timeoutMs: options.attachTimeoutMs,
@@ -140,7 +144,7 @@ export async function startEmbedChildRuntime(options = {}) {
     requiredSelectors: options.requiredSelectors,
   }));
   stageSync('embed ready', () => sendReady(attach.port, { nonce: attach.nonce }));
-  return Object.freeze({ bridge, nonce: attach.nonce, port: attach.port, generation });
+  return Object.freeze({ bridge, nonce: attach.nonce, port: attach.port, generation, sandboxToken: attach.sandboxToken || null });
 }
 
 export function installCanonicalCss(documentRef, cssText) {
@@ -174,6 +178,11 @@ export function waitForCanonicalAppReady(options = {}) {
   });
 }
 
+function readSandboxToken(globalObject) {
+  const value = globalObject?.__HEX_EMBED_SANDBOX_TOKEN__;
+  if (!value) return null;
+  try { return normalizeSandboxToken(value); } catch { return null; }
+}
 function readInitialProvider(locationRef, globalObject) {
   let stored = null;
   try { stored = normalizeEmbedProvider(globalObject.localStorage?.getItem?.('hex.ai.provider')); } catch {}
