@@ -59,11 +59,7 @@ export function aliasMemoryRegions(a, b) {
   }
 
   const pair = new Set([a.kind, b.kind]);
-  // Preserve the established alias floor: a proven function-local stack slot is
-  // a different storage class from both a proven absolute global and a proven
-  // rooted object field. This rule applies only after both regions passed the
-  // precise-region proof above; unknown stores and unproven roots remain may-alias.
-  if (pair.has('stack-fixed') && (pair.has('global-absolute') || pair.has('rooted-offset'))) return 'no';
+  if (pair.has('stack-fixed') && pair.has('global-absolute')) return 'no';
 
   const physicalKinds = new Set(['tls', 'io', 'physical-space']);
   if (physicalKinds.has(a.kind) && physicalKinds.has(b.kind) && a.addressSpace && b.addressSpace && a.addressSpace !== b.addressSpace) {
