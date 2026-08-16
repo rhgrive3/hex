@@ -75,19 +75,22 @@ function freezeCodes(codes) { return Object.freeze([...new Set(codes)]); }
 const ARCHITECTURE_PROFILES = Object.freeze({
   arm64: Object.freeze({
     implementedLevel: 'A6',
-    fullySatisfiedLevel: 'A6',
-    status: SUPPORTED,
+    fullySatisfiedLevel: 'A1',
+    status: PARTIAL,
     features: freezeFeatures({
       detect: SUPPORTED,
       decode: SUPPORTED,
-      lowLevelEffects: SUPPORTED,
+      lowLevelEffects: PARTIAL,
       cfgSemanticIR: SUPPORTED,
       ssaMemoryDataflow: SUPPORTED,
       typesInterprocedural: SUPPORTED,
       decompiler: SUPPORTED,
       runtimeDebugPatchValidation: PARTIAL,
     }),
-    limitations: freezeCodes(['runtime-debug-patch-validation-incomplete']),
+    limitations: freezeCodes([
+      'exact-machine-effects-not-implemented',
+      'runtime-debug-patch-validation-incomplete',
+    ]),
   }),
   arm64e: Object.freeze({
     implementedLevel: 'A6',
@@ -104,6 +107,7 @@ const ARCHITECTURE_PROFILES = Object.freeze({
       runtimeDebugPatchValidation: PARTIAL,
     }),
     limitations: freezeCodes([
+      'exact-machine-effects-not-implemented',
       'arm64e-pointer-authentication-semantics-partial',
       'runtime-debug-patch-validation-incomplete',
     ]),
@@ -129,18 +133,19 @@ const ARCHITECTURE_PROFILES = Object.freeze({
 const FORMAT_PROFILES = Object.freeze({
   macho: Object.freeze({
     implementedLevel: 'F5',
-    fullySatisfiedLevel: 'F3',
+    fullySatisfiedLevel: 'F2',
     status: PARTIAL,
     features: freezeFeatures({
       detect: SUPPORTED,
       parseStructures: SUPPORTED,
       correctMapping: SUPPORTED,
-      importsExportsRelocations: SUPPORTED,
+      importsExportsRelocations: PARTIAL,
       functionDebugUnwind: PARTIAL,
       runtimeLanguageMetadata: PARTIAL,
       validatedRebuildPatch: UNSUPPORTED,
     }),
     limitations: freezeCodes([
+      'link-metadata-partial',
       'function-debug-unwind-partial',
       'macho-runtime-language-metadata-partial',
       'validated-rebuild-patch-unsupported',
@@ -148,33 +153,41 @@ const FORMAT_PROFILES = Object.freeze({
   }),
   elf: Object.freeze({
     implementedLevel: 'F4',
-    fullySatisfiedLevel: 'F3',
+    fullySatisfiedLevel: 'F2',
     status: PARTIAL,
     features: freezeFeatures({
       detect: SUPPORTED,
       parseStructures: SUPPORTED,
       correctMapping: SUPPORTED,
-      importsExportsRelocations: SUPPORTED,
+      importsExportsRelocations: PARTIAL,
       functionDebugUnwind: PARTIAL,
       runtimeLanguageMetadata: UNSUPPORTED,
       validatedRebuildPatch: UNSUPPORTED,
     }),
-    limitations: freezeCodes(['function-debug-unwind-partial', 'validated-rebuild-patch-unsupported']),
+    limitations: freezeCodes([
+      'link-metadata-partial',
+      'function-debug-unwind-partial',
+      'validated-rebuild-patch-unsupported',
+    ]),
   }),
   pe: Object.freeze({
     implementedLevel: 'F4',
-    fullySatisfiedLevel: 'F3',
+    fullySatisfiedLevel: 'F2',
     status: PARTIAL,
     features: freezeFeatures({
       detect: SUPPORTED,
       parseStructures: SUPPORTED,
       correctMapping: SUPPORTED,
-      importsExportsRelocations: SUPPORTED,
+      importsExportsRelocations: PARTIAL,
       functionDebugUnwind: PARTIAL,
       runtimeLanguageMetadata: UNSUPPORTED,
       validatedRebuildPatch: UNSUPPORTED,
     }),
-    limitations: freezeCodes(['function-debug-unwind-partial', 'validated-rebuild-patch-unsupported']),
+    limitations: freezeCodes([
+      'link-metadata-partial',
+      'function-debug-unwind-partial',
+      'validated-rebuild-patch-unsupported',
+    ]),
   }),
 });
 
@@ -195,11 +208,13 @@ const STATUS_DISPLAY = Object.freeze({
   [SUPPORTED]: 'Supported', [PARTIAL]: 'Partial', [UNSUPPORTED]: 'Unsupported', [UNAVAILABLE]: 'Unavailable',
 });
 const LIMITATION_DISPLAY = Object.freeze({
+  'exact-machine-effects-not-implemented': 'Exact MachineEffects are not implemented yet; current ARM64 semantics are legacy Semantic IR, not A2 exact low-level effects.',
   'runtime-debug-patch-validation-incomplete': 'Runtime/debug/patch validation does not meet A7.',
   'arm64e-pointer-authentication-semantics-partial': 'arm64e pointer-authentication data semantics are partial.',
   'x86-64-semantic-analysis-unsupported': 'x86-64 is decode-only; semantic lifting, CFG/SSA analysis, and decompilation are not supported.',
   'decoder-unavailable': 'The decoder is unavailable in the current runtime.',
   'unknown-architecture': 'The architecture is not recognized by the current capability registry.',
+  'link-metadata-partial': 'Imports/exports/relocations are implemented only partially; known incomplete or unsupported cases remain.',
   'function-debug-unwind-partial': 'Function/debug/unwind evidence is implemented only partially for this format.',
   'macho-runtime-language-metadata-partial': 'Mach-O runtime/language metadata coverage is partial.',
   'validated-rebuild-patch-unsupported': 'Validated format rebuild/patch support is not implemented.',
@@ -294,7 +309,7 @@ export function capabilityDisplay(maturity) {
   const implementedLevelLabel = implementedLevelCode ? labels[implementedLevelCode] || implementedLevelCode : null;
   const statusLabel = STATUS_DISPLAY[maturity?.status] || STATUS_DISPLAY[UNSUPPORTED];
   const partialTail = levelCode && implementedLevelCode && levelCode !== implementedLevelCode
-    ? ` (partial implementation through ${implementedLevelCode} ${implementedLevelLabel})`
+    ? ` (partial/legacy implementation through ${implementedLevelCode} ${implementedLevelLabel})`
     : '';
   return Object.freeze({
     levelCode,
