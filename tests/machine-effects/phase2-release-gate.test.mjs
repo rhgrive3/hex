@@ -112,7 +112,7 @@ function legacyV1Oracle(instruction) {
     instructions:[insn],
     basicBlocks:[{ startRow:0, endRow:0, rows:[0] }],
     semantic:[],
-  }, { cfg:singleInstructionCfg() });
+  }, { cfg:singleInstructionCfg(), semanticMigrationMode:'legacy-v1' });
   return (ir?.instructions || []).map((item) => item.extra).filter(Boolean);
 }
 
