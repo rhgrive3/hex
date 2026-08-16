@@ -8,7 +8,13 @@ const EXPECTED_BUILD = '__HEX_BUILD_ID__';
 const RETRIES = 2;
 const RUNTIME_HOST_LOCATION = captureRuntimeHostLocation();
 
-boot().catch(showFailure);
+if (isTopLevelWindow()) boot().catch(showFailure);
+else globalThis.__HEX_SECURE_LOADER_SKIPPED__ = 'nested-frame';
+
+function isTopLevelWindow() {
+  try { return globalThis.self === globalThis.top; }
+  catch { return false; }
+}
 
 async function boot() {
   if (!globalThis.crypto?.subtle) throw new Error('WebCrypto is required to start Hex.');
