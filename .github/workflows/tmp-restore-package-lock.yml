@@ -1,0 +1,26 @@
+name: Temporary restore validation lockfile side effect
+on:
+  push:
+    branches: [hex/chatgpt-conversation-bootstrap-fix]
+permissions:
+  contents: write
+jobs:
+  restore:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: hex/chatgpt-conversation-bootstrap-fix
+          fetch-depth: 0
+      - name: Restore unrelated tracked lockfile and commit
+        run: |
+          git fetch origin main
+          git checkout origin/main -- node_modules/.package-lock.json
+          rm .github/workflows/tmp-restore-package-lock.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "Remove ChatGPT repair validation side effects"
+          git push origin HEAD:hex/chatgpt-conversation-bootstrap-fix
