@@ -31,4 +31,6 @@ function decodeArrayBuffer(value) {
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
   return bytes.buffer;
 }
-function capstonePrelude(wasmURL) { return `;(()=>{const N=globalThis.URL,W=${JSON.stringify(wasmURL)};globalThis.URL=class extends N{constructor(p,b){if(typeof p==='string'&&/(?:^|\\/)capstone\\.wasm(?:[?#].*)?$/.test(p)){super(W);return}super(p,b)}}})();\n`; }
+function capstonePrelude(wasmURL) {
+  return `;(()=>{const N=globalThis.URL,W=${JSON.stringify(wasmURL)},I=WebAssembly.instantiate.bind(WebAssembly);const E=v=>{if(v instanceof ArrayBuffer)return v;if(ArrayBuffer.isView(v)){const b=new Uint8Array(v.byteLength);b.set(new Uint8Array(v.buffer,v.byteOffset,v.byteLength));return b.buffer}return v};WebAssembly.instantiate=(s,i)=>I(E(s),i);globalThis.URL=class extends N{constructor(p,b){if(typeof p==='string'&&/(?:^|\\/)capstone\\.wasm(?:[?#].*)?$/.test(p)){super(W);return}super(p,b)}}})();\n`;
+}
