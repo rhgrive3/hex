@@ -31,6 +31,7 @@ for (const [name, browserType] of [['chromium', chromium], ['webkit', webkit]]) 
       origin: null,
       nativeStorageBlocked: false,
       storageShim: false,
+      historyRoute: false,
     };
     const timer = setTimeout(() => finish(), 7000);
     let iframe;
@@ -41,6 +42,7 @@ for (const [name, browserType] of [['chromium', chromium], ['webkit', webkit]]) 
         seen.bootstrap = true;
         seen.nativeStorageBlocked = event.data.nativeStorageBlocked === true;
         seen.storageShim = event.data.storageShim === true;
+        seen.historyRoute = event.data.historyRoute === true;
       }
       if (event.data.stage === 'module') seen.module = true;
       if (seen.bootstrap && seen.module) finish();
@@ -67,7 +69,14 @@ for (const [name, browserType] of [['chromium', chromium], ['webkit', webkit]]) 
         localStorage.removeItem('hex');
         storageShim=storageShim&&localStorage.getItem('hex')===null&&localStorage.length===0;
       } catch {}
-      parent.postMessage({marker:${JSON.stringify(marker)},stage:'bootstrap',origin:location.origin,nativeStorageBlocked,storageShim},'*');
+      let historyRoute=false;
+      try {
+        const ownBase=location.href.split('#')[0];
+        history.replaceState({hexUi:true},'',ownBase+'#/code');
+        historyRoute=location.href===ownBase+'#/code'&&location.hash==='#/code';
+        history.replaceState(null,'',ownBase);
+      } catch {}
+      parent.postMessage({marker:${JSON.stringify(marker)},stage:'bootstrap',origin:location.origin,nativeStorageBlocked,storageShim,historyRoute},'*');
       const s=document.createElement('script');
       s.type='module';
       s.nonce=${JSON.stringify(nonce)};
@@ -83,7 +92,8 @@ for (const [name, browserType] of [['chromium', chromium], ['webkit', webkit]]) 
     origin: 'null',
     nativeStorageBlocked: true,
     storageShim: true,
-  }, `${name} must support nonce-authorized opaque srcdoc, dynamic modules, and an in-memory storage shim under ChatGPT-like frame-src`);
+    historyRoute: true,
+  }, `${name} must support nonce-authorized opaque srcdoc, dynamic modules, in-memory storage, and same-document history routing under ChatGPT-like CSP`);
   await context.close();
   await browser.close();
 }
