@@ -321,7 +321,15 @@ export function projectNode(node, context) {
       inst.extra.targetBits = Number(attrs.toBits ?? opMeta.toBits ?? primaryOutput?.bits ?? 0) || null;
       break;
     }
-    case 'sext': case 'trunc':
+    case 'trunc': {
+      setBasic(V1_OP.MOV, 'trunc');
+      inst.extra.castKind = 'trunc';
+      inst.extra.sourceBits = Number(attrs.fromBits ?? opMeta.fromBits ?? inputValues[0]?.bits ?? 0) || null;
+      inst.extra.targetBits = Number(attrs.toBits ?? opMeta.toBits ?? primaryOutput?.bits ?? 0) || null;
+      inst.extra.compatSource = 'exact-truncation';
+      break;
+    }
+    case 'sext':
       setBasic(V1_OP.UN, node.kind);
       inst.extra.sourceBits = Number(attrs.fromBits ?? opMeta.fromBits ?? inputValues[0]?.bits ?? 0) || null;
       inst.extra.targetBits = Number(attrs.toBits ?? opMeta.toBits ?? primaryOutput?.bits ?? 0) || null;
