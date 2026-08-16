@@ -52,6 +52,12 @@ jobs:
         run: node tests/userscript-sandbox-storage.mjs
       - name: Build and userscript tests
         run: npm run userscript:test
+      - name: Upload generated userscript template
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: generated-userscript-template
+          path: userscript/hex.user.template.js
       - name: AI and worker regressions
         run: |
           npm run ai:test
@@ -82,4 +88,13 @@ jobs:
       - name: Verify opaque srcdoc module and storage execution
         run: node tests/userscript-srcdoc-probe.mjs
       - name: Run full secure sandbox startup
-        run: node tests/userscript-embed-browser.mjs
+        shell: bash
+        run: |
+          set -o pipefail
+          node tests/userscript-embed-browser.mjs 2>&1 | tee embed-browser.log
+      - name: Upload secure sandbox diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: embed-browser-diagnostics
+          path: embed-browser.log
