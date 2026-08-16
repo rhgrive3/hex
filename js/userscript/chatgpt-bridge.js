@@ -1,5 +1,6 @@
 import {
-  ChatGPTDOMAdapter, ChatGPTConversationRouter, ChatGPTModelController, ChatGPTTurnController,
+  ChatGPTDOMAdapter, ChatGPTConversationRouter, ChatGPTModelController,
+  ChatGPTTurnController,
 } from './chatgpt-adapter.js';
 
 const DEFAULT_TIMEOUT_MS = 110000;
