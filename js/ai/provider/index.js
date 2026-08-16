@@ -6,6 +6,7 @@ import { SAFE_PROVIDER_CAPABILITIES } from '../budget/wire.js';
 export class AIProvider {
   constructor({ capabilities } = {}) { this.capabilities = { ...SAFE_PROVIDER_CAPABILITIES, ...(capabilities || {}) }; }
   getCapabilities() { return { ...this.capabilities }; }
+  turnTimeoutMs(mode) { return mode === 'agent' ? 120000 : 30000; }
   async prepareCapabilities() { return this.getCapabilities(); }
   async nextTurn() { throw new AIError('provider_error', 'AIProvider.nextTurn is not implemented.'); }
   async streamTurn() { throw new AIError('provider_error', 'Streaming is not implemented by this provider.'); }

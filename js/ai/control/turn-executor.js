@@ -12,9 +12,18 @@ import {
   remainingTime, requiredScopeForTool, sessionMatchesSnapshot, stableStringify, wireMeta,
 } from './runtime-support.js';
 
+const MIN_MODEL_REPAIR_REMAINING_MS = 45000;
+
 export async function executeTurn(input = {}, options = {}) {
     const request = normalizeTurnRequest(input);
-    const budget = aiBudget(request.mode, { ...request.budget, ...options.budget });
+    const budgetOverrides = { ...request.budget, ...options.budget };
+    if (budgetOverrides.timeoutMs == null) {
+      const providerDefault = Number(this.provider?.turnTimeoutMs?.(request.mode, request));
+      budgetOverrides.timeoutMs = Number.isFinite(providerDefault) && providerDefault > 0
+        ? Math.floor(providerDefault)
+        : (request.mode === 'agent' ? 120000 : 30000);
+    }
+    const budget = aiBudget(request.mode, budgetOverrides);
     const started = Date.now(), activity = [], observations = [];
     let modelCalls = 0, toolCalls = 0, contextBytes = 0, plan = null, decision = null, limitReason = null;
     let wireUsage = { semanticContextBytes: 0, toolSchemaBytes: 0, historyBytes: 0, wireBytes: 0, estimatedInputTokens: 0 };
@@ -144,9 +153,16 @@ export async function executeTurn(input = {}, options = {}) {
               next = validateModelDecision(next, visibleToolNames);
             } catch (error) {
               const normalized = normalizeError(error, signal);
-              if ((normalized.type === 'invalid_model_output' || normalized.type === 'invalid_tool_call') && repairs++ === 0 && modelCalls < budget.maxModelCalls) {
-                observations.push({ tool: 'protocol_guardrail', summary: `Previous model response rejected: ${normalized.message}`, evidenceIds: [] });
-                addActivity({ type: 'model-repair', label: '不正なモデル出力を1回だけ修復' }); continue;
+              const repairable = normalized.type === 'invalid_model_output' || normalized.type === 'invalid_tool_call';
+              if (repairable && repairs === 0 && modelCalls < budget.maxModelCalls) {
+                const repairRemainingMs = remainingTime(started, budget.timeoutMs);
+                if (repairRemainingMs >= MIN_MODEL_REPAIR_REMAINING_MS) {
+                  repairs++;
+                  observations.push({ tool: 'protocol_guardrail', summary: `Previous model response rejected: ${normalized.message}`, evidenceIds: [] });
+                  addActivity({ type: 'model-repair', label: 'モデル出力の形式を1回だけ再確認', remainingMs: repairRemainingMs });
+                  continue;
+                }
+                addActivity({ type: 'model-repair-skip', label: '残り時間が少ないためモデル出力の再確認を省略', remainingMs: repairRemainingMs });
               }
               throw normalized;
             }

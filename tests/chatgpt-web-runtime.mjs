@@ -9,6 +9,7 @@ await testLogicalTurnCanonicalization();
 await testStableTurnIdentityUsesDataTurnId();
 await testRoleScopedTurnTextExtraction();
 await testCollapsibleUserMessageTextExtraction();
+await testSubmittedUserHydrationGrace();
 await testTurnCompletionAndStaleProtection();
 await testRolelessTurnFallback();
 await testCancelTimeoutAndSingleInflight();
@@ -147,7 +148,7 @@ async function testRoleScopedTurnTextExtraction() {
 
 async function testCollapsibleUserMessageTextExtraction() {
   const prompt = 'HEX CONTROL PROTOCOL hex-chatgpt-web-v1\n\n<HEX_DATA>{"messages":[{"role":"user","content":"解析の始め方を教えて"}]}</HEX_DATA>';
-  const content = { innerText: prompt, textContent: prompt };
+  const content = { innerText: prompt.slice(0, 72), textContent: prompt };
   let root;
   const roleNode = {
     id: '',
@@ -195,10 +196,60 @@ async function testCollapsibleUserMessageTextExtraction() {
   const adapter = new ChatGPTDOMAdapter({ document, location: { href: 'https://chatgpt.com/c/alpha' } });
   const controller = new ChatGPTTurnController(adapter);
 
+  assert.ok(content.innerText.length < content.textContent.length, 'fixture must reproduce a WebKit-clipped semantic innerText');
   assert.match(roleNode.innerText, /表示を増やす/, 'fixture must reproduce ChatGPT collapsible-message UI text inside the user role');
   assert.match(roleNode.innerText, /表示を減らす/, 'fixture must reproduce both localized toggle labels');
   assert.equal(adapter.userTurns()[0].text, prompt, 'adapter must extract only collapsible user message content');
   assert.equal(controller.userTurns()[0].text, prompt, 'exact prompt verification must ignore collapsible toggle labels');
+}
+
+async function testSubmittedUserHydrationGrace() {
+  const conversation = { id: 'alpha', url: 'https://chatgpt.com/c/alpha' };
+  const state = { generating: false, assistants: [], users: [], turns: [], conversation };
+  const user = { id: 'hex-user', text: 'partial', node: plainNode('hex-user') };
+  const adapter = turnAdapter(state, () => {
+    state.users.push(user); state.turns.push(user); state.generating = true;
+    setTimeout(() => { user.text = 'prompt'; }, 8);
+    setTimeout(() => {
+      const assistant = { id: 'hex-assistant', text: '{"type":"final"}', node: plainNode('hex-assistant') };
+      state.assistants.push(assistant); state.turns.push(assistant); state.generating = false;
+    }, 16);
+  });
+  const result = await new ChatGPTTurnController(adapter, { quietMs: 5, pollMs: 2, startTimeoutMs: 50, submissionMismatchGraceMs: 20 })
+    .run('prompt', { timeoutMs: 200, expectedConversation: conversation });
+  assert.equal(result.turnId, 'hex-assistant', 'a partial first DOM frame must hydrate into the exact Hex request');
+
+  const bad = { generating: false, assistants: [], users: [], turns: [], conversation };
+  const badAdapter = turnAdapter(bad, () => {
+    const wrong = { id: 'wrong-user', text: 'not the Hex prompt', node: plainNode('wrong-user') };
+    bad.users.push(wrong); bad.turns.push(wrong); bad.generating = true;
+  });
+  await assert.rejects(
+    new ChatGPTTurnController(badAdapter, { pollMs: 2, startTimeoutMs: 60, submissionMismatchGraceMs: 10 })
+      .run('prompt', { timeoutMs: 100, expectedConversation: conversation }),
+    (error) => error.code === 'manual-interference',
+    'a persistent single-turn mismatch must remain a hard integrity failure',
+  );
+
+  const churn = { generating: false, assistants: [], users: [], turns: [], conversation };
+  const churnAdapter = turnAdapter(churn, () => {
+    churn.generating = true;
+    let seq = 0;
+    const rotate = () => {
+      const wrong = { id: `wrong-${++seq}`, text: 'still not the Hex prompt', node: plainNode(`wrong-${seq}`) };
+      churn.users = [wrong]; churn.turns = [wrong];
+      if (seq < 8) setTimeout(rotate, 2);
+    };
+    rotate();
+  });
+  const churnStarted = Date.now();
+  await assert.rejects(
+    new ChatGPTTurnController(churnAdapter, { pollMs: 2, startTimeoutMs: 80, submissionMismatchGraceMs: 12 })
+      .run('prompt', { timeoutMs: 100, expectedConversation: conversation }),
+    (error) => error.code === 'manual-interference',
+    'renderer id churn must not keep extending a persistent prompt-mismatch grace window',
+  );
+  assert.ok(Date.now() - churnStarted < 170, 'prompt mismatch must fail on the fixed grace window, not the submit timeout');
 }
 
 async function testTurnCompletionAndStaleProtection() {
@@ -245,13 +296,16 @@ async function testRolelessTurnFallback() {
 }
 
 async function testCancelTimeoutAndSingleInflight() {
-  const state = { generating: false, assistants: [], users: [], conversation: { id: 'alpha', url: 'https://chatgpt.com/c/alpha' } };
+  const state = { generating: false, assistants: [], users: [], stopCalls: 0, conversation: { id: 'alpha', url: 'https://chatgpt.com/c/alpha' } };
   const adapter = turnAdapter(state, () => { state.users.push({ id: 'u', text: 'prompt' }); state.generating = true; });
   await assert.rejects(new ChatGPTTurnController(adapter, { pollMs: 2, quietMs: 3 }).run('prompt', { timeoutMs: 15, expectedConversation: state.conversation }), (error) => error.code === 'timeout');
+  assert.equal(state.stopCalls, 1, 'a timed-out owned ChatGPT generation must be stopped');
   state.generating = false; state.users = [];
   const controller = new AbortController();
   const pending = new ChatGPTTurnController(adapter, { pollMs: 2 }).run('prompt', { timeoutMs: 100, signal: controller.signal, expectedConversation: state.conversation });
+  await new Promise((resolve) => setTimeout(resolve, 5));
   controller.abort('cancel'); await assert.rejects(pending, (error) => error.name === 'AbortError');
+  assert.equal(state.stopCalls, 2, 'a cancelled owned ChatGPT generation must be stopped');
 
   delete globalThis.__HEX_CHATGPT_BRIDGE__;
   let release;
@@ -510,5 +564,6 @@ function turnAdapter(state, onSend) {
       return null;
     },
     conversation: () => state.conversation,
+    stop: () => { state.stopCalls = Number(state.stopCalls || 0) + 1; state.generating = false; return true; },
   };
 }

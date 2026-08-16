@@ -68,6 +68,28 @@ async function run(name, browserType) {
       assert.equal(result.value.text, ANSWER);
     });
 
+    await scenario(context, name, 'a submitted user turn may hydrate after its wrapper appears', {
+      prompt: LONG_PROMPT, chatgpt: { userHydrationDelayMs: 120 },
+    }, (result) => {
+      assert.equal(result.ok, true, `${name}: a partial first user DOM frame must not become manual-interference (${result.error?.code})`);
+      assert.equal(result.value.text, ANSWER);
+    });
+
+    await scenario(context, name, 'a historical page alert does not poison a new request', {
+      prompt: LONG_PROMPT, chatgpt: { seedPageErrorText: 'Something went wrong in an older operation.' },
+    }, (result) => {
+      assert.equal(result.ok, true, `${name}: unchanged pre-submit page alerts must be ignored (${result.error?.code})`);
+      assert.equal(result.value.text, ANSWER);
+    });
+
+    await scenario(context, name, 'a short-lived page-level invalid-input alert is captured', {
+      prompt: LONG_PROMPT, chatgpt: { pageErrorText: 'Invalid input.', pageErrorAtMs: 8, pageErrorDurationMs: 25, streamMs: 20 },
+    }, (result) => {
+      assert.equal(result.ok, false, `${name}: a new invalid-input alert must abort the active Hex turn`);
+      assert.equal(result.error.code, 'page-error');
+      assert.equal(result.error.stage, 'turn-controller');
+    });
+
     await scenario(context, name, 'a transient route gap is not a conversation switch', {
       prompt: LONG_PROMPT, chatgpt: { transientRouteGapMs: 120, transientRouteAtMs: 20 },
     }, (result) => {
