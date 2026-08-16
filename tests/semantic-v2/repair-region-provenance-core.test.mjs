@@ -17,16 +17,16 @@ import { reachingMemoryDefinition } from '../../js/semantics/memoryssa/queries.j
 
 const functionId = 'function_region_repair_fixture';
 const binaryId = 'binary_region_repair_fixture';
-const origin = (id) => ({ instructionIds: [`instruction_${id}`] });
 const bit64 = { kind: 'bitvector', widthBits: 64 };
 const addr64 = { kind: 'address', widthBits: 64, addressSpace: 'memory' };
+const origin = (id) => ({ instructionIds: [`instruction_${id}`] });
 
-function semanticValue(id, definitionNodeId, machineType = bit64, extra = {}) {
+function value(id, definitionNodeId = null, machineType = bit64, extra = {}) {
   return {
     id,
     kind: definitionNodeId == null ? 'entry' : 'definition',
     machineType,
-    definitionNodeId: definitionNodeId ?? null,
+    definitionNodeId,
     sourceEntityId: null,
     variableKey: null,
     origin: origin(id),
@@ -34,7 +34,7 @@ function semanticValue(id, definitionNodeId, machineType = bit64, extra = {}) {
   };
 }
 
-function semanticNode(id, kind, extra = {}) {
+function node(id, kind, extra = {}) {
   return {
     id,
     kind,
@@ -49,35 +49,31 @@ function semanticNode(id, kind, extra = {}) {
   };
 }
 
-function stateRead(id, valueId, key) {
-  return semanticNode(id, 'state-read', {
-    outputs: [valueId],
-    variable: { key, kind: 'logical-state', scope: 'function' },
+function stateRead(id, outputId, key, extraVariable = {}) {
+  return node(id, 'state-read', {
+    outputs: [outputId],
+    variable: { key, kind: 'logical-state', scope: 'function', ...extraVariable },
   });
 }
 
-function constant(id, valueId, value, machineType = bit64) {
+function constant(id, outputId, integer, machineType = bit64) {
+  const encoded = { kind: 'bitvector', widthBits: machineType.widthBits, value: String(integer) };
   return {
-    node: semanticNode(id, 'const', {
-      outputs: [valueId],
-      attributes: { constant: { kind: 'bitvector', widthBits: machineType.widthBits, value: String(value) } },
-    }),
-    value: semanticValue(valueId, id, machineType, {
-      metadata: { constant: { kind: 'bitvector', widthBits: machineType.widthBits, value: String(value) } },
-    }),
+    node: node(id, 'const', { outputs: [outputId], attributes: { constant: encoded } }),
+    value: value(outputId, id, machineType, { metadata: { constant: encoded } }),
   };
 }
 
-function op(id, valueId, kind, operator, inputs, machineType = addr64) {
+function operation(id, outputId, kind, operator, inputs, machineType = addr64) {
   return {
-    node: semanticNode(id, kind, { operator, inputs, outputs: [valueId] }),
-    value: semanticValue(valueId, id, machineType),
+    node: node(id, kind, { operator, inputs, outputs: [outputId] }),
+    value: value(outputId, id, machineType),
   };
 }
 
 function memoryNode(id, kind, addressValueId, widthBits = 32) {
-  return semanticNode(id, kind, {
-    inputs: kind === 'store' ? [addressValueId] : [addressValueId],
+  return node(id, kind, {
+    inputs: [addressValueId],
     memory: {
       addressSpace: 'memory',
       addressExpr: { valueId: addressValueId },
@@ -92,111 +88,103 @@ function memoryNode(id, kind, addressValueId, widthBits = 32) {
   });
 }
 
-function rawIr({ values, nodes, nodeIds = nodes.map((node) => node.id) }) {
+function ir({ values, nodes, nodeIds = nodes.map((item) => item.id) }) {
   return {
     functionId,
     origin: origin('function'),
-    blocks: [{ id: 'block.entry', nodeIds, origin: origin('block') }],
+    blocks: [{ id: 'block.entry', nodeIds, origin: origin('block.entry') }],
     values,
     nodes,
   };
 }
 
-function classify(ir, nodeId, options = {}) {
-  return classifySemanticMemoryRegion(ir, nodeId, { binaryId, ...options });
+function classify(functionIr, nodeId, options = {}) {
+  return classifySemanticMemoryRegion(functionIr, nodeId, { binaryId, ...options });
 }
 
-function basicRootIr(key = 'root.a') {
+function rootLoad(key = 'root.a') {
   const read = stateRead('node.read.root', 'value.root', key);
   const load = memoryNode('node.load.root', 'load', 'value.root');
-  return rawIr({
-    values: [semanticValue('value.root', read.id, bit64)],
-    nodes: [read, load],
-  });
+  return ir({ values: [value('value.root', read.id)], nodes: [read, load] });
 }
 
-// A semantic copy must preserve the canonical root.
+// copy(root) retains the exact canonical root.
 {
-  const read = stateRead('node.read.copy', 'value.root.copy', 'root.a');
-  const copied = op('node.copy', 'value.copy', 'copy', 'copy', ['value.root.copy'], bit64);
-  const directLoad = memoryNode('node.load.direct', 'load', 'value.root.copy');
-  const copiedLoad = memoryNode('node.load.copy', 'load', 'value.copy');
-  const ir = rawIr({
-    values: [semanticValue('value.root.copy', read.id, bit64), copied.value],
-    nodes: [read, copied.node, directLoad, copiedLoad],
-  });
-  const direct = classify(ir, directLoad.id);
-  const throughCopy = classify(ir, copiedLoad.id);
-  assert.equal(direct.kind, 'rooted-offset');
-  assert.equal(throughCopy.id, direct.id, 'copy(root) must preserve one canonical memory identity');
+  const read = stateRead('node.copy.read', 'value.copy.root', 'root.a');
+  const copy = operation('node.copy', 'value.copy', 'copy', 'copy', ['value.copy.root'], bit64);
+  const directLoad = memoryNode('node.copy.direct', 'load', 'value.copy.root');
+  const copiedLoad = memoryNode('node.copy.copied', 'load', 'value.copy');
+  const functionIr = ir({ values: [value('value.copy.root', read.id), copy.value], nodes: [read, copy.node, directLoad, copiedLoad] });
+  assert.equal(classify(functionIr, directLoad.id).id, classify(functionIr, copiedLoad.id).id);
 }
 
-// Adding zero must not create a new alias class.
+// root + 0 retains identity.
 {
-  const read = stateRead('node.read.zero', 'value.root.zero', 'root.a');
-  const zero = constant('node.const.zero', 'value.zero', 0);
-  const plusZero = op('node.addr.zero', 'value.addr.zero', 'address', 'add', ['value.root.zero', 'value.zero']);
-  const directLoad = memoryNode('node.load.zero.direct', 'load', 'value.root.zero');
-  const zeroLoad = memoryNode('node.load.zero.add', 'load', 'value.addr.zero');
-  const ir = rawIr({
-    values: [semanticValue('value.root.zero', read.id, bit64), zero.value, plusZero.value],
-    nodes: [read, zero.node, plusZero.node, directLoad, zeroLoad],
-  });
-  assert.equal(classify(ir, directLoad.id).id, classify(ir, zeroLoad.id).id);
+  const read = stateRead('node.zero.read', 'value.zero.root', 'root.a');
+  const zero = constant('node.zero.const', 'value.zero.const', 0);
+  const add = operation('node.zero.add', 'value.zero.addr', 'address', 'add', ['value.zero.root', 'value.zero.const']);
+  const directLoad = memoryNode('node.zero.direct', 'load', 'value.zero.root');
+  const addLoad = memoryNode('node.zero.load', 'load', 'value.zero.addr');
+  const functionIr = ir({ values: [value('value.zero.root', read.id), zero.value, add.value], nodes: [read, zero.node, add.node, directLoad, addLoad] });
+  assert.equal(classify(functionIr, directLoad.id).id, classify(functionIr, addLoad.id).id);
 }
 
-// Constant displacements accumulate canonically, including nested additions.
+// Constant and nested displacements canonicalize to one address proof.
 {
-  const read = stateRead('node.read.offset', 'value.root.offset', 'root.a');
-  const c4 = constant('node.const.4', 'value.const.4', 4);
-  const c8 = constant('node.const.8', 'value.const.8', 8);
-  const c12 = constant('node.const.12', 'value.const.12', 12);
-  const plus4 = op('node.addr.4', 'value.addr.4', 'address', 'add', ['value.root.offset', 'value.const.4']);
-  const nested = op('node.addr.12.nested', 'value.addr.12.nested', 'address', 'add', ['value.addr.4', 'value.const.8']);
-  const flat = op('node.addr.12.flat', 'value.addr.12.flat', 'address', 'add', ['value.root.offset', 'value.const.12']);
-  const nestedLoad = memoryNode('node.load.12.nested', 'load', 'value.addr.12.nested');
-  const flatLoad = memoryNode('node.load.12.flat', 'load', 'value.addr.12.flat');
-  const ir = rawIr({
-    values: [semanticValue('value.root.offset', read.id, bit64), c4.value, c8.value, c12.value, plus4.value, nested.value, flat.value],
-    nodes: [read, c4.node, c8.node, c12.node, plus4.node, nested.node, flat.node, nestedLoad, flatLoad],
+  const read = stateRead('node.offset.read', 'value.offset.root', 'root.a');
+  const c4 = constant('node.offset.c4', 'value.offset.c4', 4);
+  const c8 = constant('node.offset.c8', 'value.offset.c8', 8);
+  const c12 = constant('node.offset.c12', 'value.offset.c12', 12);
+  const add4 = operation('node.offset.add4', 'value.offset.add4', 'address', 'add', ['value.offset.root', 'value.offset.c4']);
+  const nested = operation('node.offset.nested', 'value.offset.nested', 'address', 'add', ['value.offset.add4', 'value.offset.c8']);
+  const flat = operation('node.offset.flat', 'value.offset.flat', 'address', 'add', ['value.offset.root', 'value.offset.c12']);
+  const nestedLoad = memoryNode('node.offset.nested.load', 'load', 'value.offset.nested');
+  const flatLoad = memoryNode('node.offset.flat.load', 'load', 'value.offset.flat');
+  const functionIr = ir({
+    values: [value('value.offset.root', read.id), c4.value, c8.value, c12.value, add4.value, nested.value, flat.value],
+    nodes: [read, c4.node, c8.node, c12.node, add4.node, nested.node, flat.node, nestedLoad, flatLoad],
   });
-  const nestedProof = deriveCanonicalAddressProof(ir, 'value.addr.12.nested');
-  const flatProof = deriveCanonicalAddressProof(ir, 'value.addr.12.flat');
+  const nestedProof = deriveCanonicalAddressProof(functionIr, 'value.offset.nested');
+  const flatProof = deriveCanonicalAddressProof(functionIr, 'value.offset.flat');
   assert.equal(nestedProof.offset, 12n);
   assert.equal(flatProof.offset, 12n);
   assert.equal(sameCanonicalAddressProof(nestedProof, flatProof), true);
-  assert.equal(classify(ir, nestedLoad.id).id, classify(ir, flatLoad.id).id);
+  assert.equal(classify(functionIr, nestedLoad.id).id, classify(functionIr, flatLoad.id).id);
 }
 
-function phiFixture({ incomingKinds }) {
-  const state = stateRead('node.read.merge', 'value.merge.read', 'state.merge');
-  const load = memoryNode('node.load.merge', 'load', 'value.merge.read');
-  const rootA = semanticValue('value.entry.a', null, bit64, { variableKey: 'root.a' });
-  const rootB = semanticValue('value.entry.b', null, bit64, { variableKey: 'root.b' });
-  const c4 = constant('node.phi.const.4', 'value.phi.const.4', 4);
-  const c8 = constant('node.phi.const.8', 'value.phi.const.8', 8);
-  const a4 = op('node.phi.a4', 'value.phi.a4', 'address', 'add', ['value.entry.a', 'value.phi.const.4']);
-  const a4b = op('node.phi.a4b', 'value.phi.a4b', 'address', 'add', ['value.entry.a', 'value.phi.const.4']);
-  const a8 = op('node.phi.a8', 'value.phi.a8', 'address', 'add', ['value.entry.a', 'value.phi.const.8']);
-  const b4 = op('node.phi.b4', 'value.phi.b4', 'address', 'add', ['value.entry.b', 'value.phi.const.4']);
-  const ir = rawIr({
-    values: [rootA, rootB, semanticValue('value.merge.read', state.id, bit64), c4.value, c8.value, a4.value, a4b.value, a8.value, b4.value],
-    nodes: [c4.node, c8.node, a4.node, a4b.node, a8.node, b4.node, state, load],
+function phiFixture(incomingKinds) {
+  const read = stateRead('node.phi.read', 'value.phi.read', 'state.merge');
+  const load = memoryNode('node.phi.load', 'load', 'value.phi.read');
+  const c4 = constant('node.phi.c4', 'value.phi.c4', 4);
+  const c8 = constant('node.phi.c8', 'value.phi.c8', 8);
+  const a4 = operation('node.phi.a4', 'value.phi.a4', 'address', 'add', ['value.phi.root.a', 'value.phi.c4']);
+  const a4b = operation('node.phi.a4b', 'value.phi.a4b', 'address', 'add', ['value.phi.root.a', 'value.phi.c4']);
+  const a8 = operation('node.phi.a8', 'value.phi.a8', 'address', 'add', ['value.phi.root.a', 'value.phi.c8']);
+  const b4 = operation('node.phi.b4', 'value.phi.b4', 'address', 'add', ['value.phi.root.b', 'value.phi.c4']);
+  const functionIr = ir({
+    values: [
+      value('value.phi.root.a', null, bit64, { variableKey: 'root.a' }),
+      value('value.phi.root.b', null, bit64, { variableKey: 'root.b' }),
+      value('value.phi.read', read.id),
+      c4.value, c8.value, a4.value, a4b.value, a8.value, b4.value,
+    ],
+    nodes: [c4.node, c8.node, a4.node, a4b.node, a8.node, b4.node, read, load],
   });
-  const sourceByKind = {
-    a4: 'value.phi.a4',
-    a4b: 'value.phi.a4b',
-    a8: 'value.phi.a8',
-    b4: 'value.phi.b4',
-    unknown: null,
-  };
-  const definitions = incomingKinds.map((kind, index) => {
-    const valueId = `ssa.in.${index}`;
-    if (kind === 'unknown') {
-      return { definitionId: `def.in.${index}`, valueId, kind: 'unknown', blockId: 'pred', variableKey: 'state.merge', sourceEntityId: null, incoming: [], origin: origin(`ssa.unknown.${index}`), proof: { variableIdentity: { key: 'state.merge', kind: 'logical-state', scope: 'function' } } };
-    }
-    return { definitionId: `def.in.${index}`, valueId, kind: 'definition', blockId: 'pred', variableKey: 'state.merge', sourceEntityId: `source.${index}`, incoming: [], origin: origin(`ssa.in.${index}`), proof: { variableIdentity: { key: 'state.merge', kind: 'logical-state', scope: 'function' }, sourceSemanticValueId: sourceByKind[kind] } };
-  });
+  const sourceByKind = { a4: 'value.phi.a4', a4b: 'value.phi.a4b', a8: 'value.phi.a8', b4: 'value.phi.b4' };
+  const incoming = incomingKinds.map((kind, index) => ({
+    definitionId: `def.in.${index}`,
+    valueId: `ssa.in.${index}`,
+    kind: kind === 'unknown' ? 'unknown' : 'definition',
+    blockId: `pred.${index}`,
+    variableKey: 'state.merge',
+    sourceEntityId: null,
+    incoming: [],
+    origin: origin(`ssa.in.${index}`),
+    proof: {
+      variableIdentity: { key: 'state.merge', kind: 'logical-state', scope: 'function' },
+      ...(kind === 'unknown' ? {} : { sourceSemanticValueId: sourceByKind[kind] }),
+    },
+  }));
   const phi = {
     definitionId: 'def.phi',
     valueId: 'ssa.phi',
@@ -204,88 +192,78 @@ function phiFixture({ incomingKinds }) {
     blockId: 'block.entry',
     variableKey: 'state.merge',
     sourceEntityId: null,
-    incoming: definitions.map((definition, index) => ({ predecessorBlockId: `pred.${index}`, valueId: definition.valueId })),
+    incoming: incoming.map((definition, index) => ({ predecessorBlockId: `pred.${index}`, valueId: definition.valueId })),
     origin: origin('ssa.phi'),
     proof: { variableIdentity: { key: 'state.merge', kind: 'logical-state', scope: 'function' } },
   };
   const ssa = {
     functionId,
-    definitions: [...definitions, phi],
+    definitions: [...incoming, phi],
     uses: [{
-      useId: 'use.merge',
-      valueId: 'ssa.phi',
+      useId: 'use.phi',
+      valueId: phi.valueId,
       blockId: 'block.entry',
-      sourceEntityId: state.id,
-      origin: origin('ssa.use.merge'),
+      sourceEntityId: read.id,
+      origin: origin('ssa.use.phi'),
       proof: { kind: 'renamed-use', variableIdentity: { key: 'state.merge', kind: 'logical-state', scope: 'function' } },
     }],
   };
-  return { ir, load, ssa };
+  return { functionIr, load, ssa };
 }
 
-// Same-root, same-offset PHI keeps exact identity.
+// Same-root/same-offset PHI is exact; differing offsets retain root-only proof.
 {
-  const { ir, load, ssa } = phiFixture({ incomingKinds: ['a4', 'a4b'] });
-  const region = classify(ir, load.id, { ssa });
-  assert.equal(region.kind, 'rooted-offset');
-}
-
-// Same-root differing-offset PHI keeps only root knowledge and cannot mint an exact region.
-{
-  const { ir, load, ssa } = phiFixture({ incomingKinds: ['a4', 'a8'] });
-  const region = classify(ir, load.id, { ssa });
+  const exact = phiFixture(['a4', 'a4b']);
+  assert.equal(classify(exact.functionIr, exact.load.id, { ssa: exact.ssa }).kind, 'rooted-offset');
+  const differingOffset = phiFixture(['a4', 'a8']);
+  const region = classify(differingOffset.functionIr, differingOffset.load.id, { ssa: differingOffset.ssa });
   assert.equal(region.kind, 'unknown');
   assert.equal(region.metadata.canonicalAddressKind, 'root-only');
 }
 
-// Different-root and unknown incoming PHIs remain conservative.
+// Different roots or an unknown PHI input stay unknown/may.
 {
-  const differing = phiFixture({ incomingKinds: ['a4', 'b4'] });
-  assert.equal(classify(differing.ir, differing.load.id, { ssa: differing.ssa }).kind, 'unknown');
-  const unknownIncoming = phiFixture({ incomingKinds: ['a4', 'unknown'] });
-  assert.equal(classify(unknownIncoming.ir, unknownIncoming.load.id, { ssa: unknownIncoming.ssa }).kind, 'unknown');
+  const roots = phiFixture(['a4', 'b4']);
+  assert.equal(classify(roots.functionIr, roots.load.id, { ssa: roots.ssa }).kind, 'unknown');
+  const unknownIncoming = phiFixture(['a4', 'unknown']);
+  assert.equal(classify(unknownIncoming.functionIr, unknownIncoming.load.id, { ssa: unknownIncoming.ssa }).kind, 'unknown');
 }
 
-// An exact constant used as the validated memory address is a deterministic absolute/global address.
+// A validated constant address expression creates deterministic global identity.
 {
   const base = constant('node.global.base', 'value.global.base', 4096);
-  const disp = constant('node.global.disp', 'value.global.disp', 32);
-  const address = op('node.global.addr', 'value.global.addr', 'address', 'add', ['value.global.base', 'value.global.disp']);
+  const displacement = constant('node.global.disp', 'value.global.disp', 32);
+  const address = operation('node.global.addr', 'value.global.addr', 'address', 'add', ['value.global.base', 'value.global.disp']);
   const load = memoryNode('node.global.load', 'load', 'value.global.addr');
-  const ir = rawIr({ values: [base.value, disp.value, address.value], nodes: [base.node, disp.node, address.node, load] });
-  const region = classify(ir, load.id);
+  const functionIr = ir({ values: [base.value, displacement.value, address.value], nodes: [base.node, displacement.node, address.node, load] });
+  const region = classify(functionIr, load.id);
   assert.equal(region.kind, 'global-absolute');
   assert.equal(region.address, '0x1020');
 }
 
-// Stack classification is accepted only from generic root metadata/provider, never from a state spelling heuristic.
+// Stack classification requires architecture-neutral supplied metadata/provider.
 {
   const read = stateRead('node.stack.read', 'value.stack.root', 'state.stack');
-  const c16 = constant('node.stack.const', 'value.stack.const', 16);
-  const address = op('node.stack.addr', 'value.stack.addr', 'address', 'add', ['value.stack.root', 'value.stack.const']);
+  const c16 = constant('node.stack.c16', 'value.stack.c16', 16);
+  const address = operation('node.stack.addr', 'value.stack.addr', 'address', 'add', ['value.stack.root', 'value.stack.c16']);
   const load = memoryNode('node.stack.load', 'load', 'value.stack.addr', 64);
-  const ir = rawIr({ values: [semanticValue('value.stack.root', read.id, bit64), c16.value, address.value], nodes: [read, c16.node, address.node, load] });
-  const withoutProvider = classify(ir, load.id);
-  assert.equal(withoutProvider.kind, 'rooted-offset');
-  const withProvider = classify(ir, load.id, {
+  const functionIr = ir({ values: [value('value.stack.root', read.id), c16.value, address.value], nodes: [read, c16.node, address.node, load] });
+  assert.equal(classify(functionIr, load.id).kind, 'rooted-offset');
+  const stack = classify(functionIr, load.id, {
     rootDescriptorProvider(request) {
-      return request.variable?.key === 'state.stack'
-        ? { kind: 'stack-like', baseOffset: 0, linearOffsets: true }
-        : null;
+      return request.variable?.key === 'state.stack' ? { kind: 'stack-like', baseOffset: 0, linearOffsets: true } : null;
     },
   });
-  assert.equal(withProvider.kind, 'stack-fixed');
-  assert.equal(withProvider.offset, '16');
+  assert.equal(stack.kind, 'stack-fixed');
+  assert.equal(stack.offset, '16');
 }
 
-// Generic stack and rooted-object descriptors remain different identities without inventing NoAlias.
+// Stack/rooted-object identities differ, but identity difference alone is not NoAlias.
 {
-  const stackIr = basicRootIr('state.stack');
-  const objectIr = basicRootIr('root.object');
-  const stack = classify(stackIr, 'node.load.root', {
+  const stack = classify(rootLoad('state.stack'), 'node.load.root', {
     rootDescriptors: { 'state.stack': { kind: 'stack-like', baseOffset: 0 } },
   });
-  const rooted = classify(objectIr, 'node.load.root', {
+  const rooted = classify(rootLoad('root.object'), 'node.load.root', {
     rootDescriptors: { 'root.object': { kind: 'rooted-object', rootEntityId: 'object.a', linearOffsets: true } },
   });
   assert.equal(stack.kind, 'stack-fixed');
@@ -294,50 +272,47 @@ function phiFixture({ incomingKinds }) {
   assert.notEqual(aliasMemoryRegions(stack, rooted), 'no');
 }
 
-// Overlapping ranges on one proven linear root are MayAlias, not NoAlias.
+// Proven linear rooted ranges preserve overlap width.
 {
-  const root = semanticValue('value.overlap.root', null, bit64, { variableKey: 'root.overlap' });
   const c0 = constant('node.overlap.c0', 'value.overlap.c0', 0);
   const c4 = constant('node.overlap.c4', 'value.overlap.c4', 4);
-  const a0 = op('node.overlap.a0', 'value.overlap.a0', 'address', 'add', ['value.overlap.root', 'value.overlap.c0']);
-  const a4 = op('node.overlap.a4', 'value.overlap.a4', 'address', 'add', ['value.overlap.root', 'value.overlap.c4']);
+  const a0 = operation('node.overlap.a0', 'value.overlap.a0', 'address', 'add', ['value.overlap.root', 'value.overlap.c0']);
+  const a4 = operation('node.overlap.a4', 'value.overlap.a4', 'address', 'add', ['value.overlap.root', 'value.overlap.c4']);
   const l0 = memoryNode('node.overlap.l0', 'load', 'value.overlap.a0', 64);
   const l4 = memoryNode('node.overlap.l4', 'load', 'value.overlap.a4', 64);
-  const ir = rawIr({ values: [root, c0.value, c4.value, a0.value, a4.value], nodes: [c0.node, c4.node, a0.node, a4.node, l0, l4] });
+  const functionIr = ir({
+    values: [value('value.overlap.root', null, bit64, { variableKey: 'root.overlap' }), c0.value, c4.value, a0.value, a4.value],
+    nodes: [c0.node, c4.node, a0.node, a4.node, l0, l4],
+  });
   const options = { rootDescriptors: { 'root.overlap': { kind: 'rooted-object', rootEntityId: 'object.overlap', linearOffsets: true } } };
-  const r0 = classify(ir, l0.id, options);
-  const r4 = classify(ir, l4.id, options);
+  const r0 = classify(functionIr, l0.id, options);
+  const r4 = classify(functionIr, l4.id, options);
   assert.equal(r0.offset, '0');
   assert.equal(r4.offset, '4');
   assert.equal(aliasMemoryRegions(r0, r4), 'may');
 }
 
-// Different pointer arguments are not disjoint merely because their root identities differ.
+// Different pointer arguments remain conservative.
 {
-  const a = basicRootIr('root.a');
-  const b = basicRootIr('root.b');
-  const ra = classify(a, 'node.load.root');
-  const rb = classify(b, 'node.load.root');
-  assert.notEqual(ra.id, rb.id);
-  assert.equal(aliasMemoryRegions(ra, rb), 'may');
+  const a = classify(rootLoad('root.a'), 'node.load.root');
+  const b = classify(rootLoad('root.b'), 'node.load.root');
+  assert.notEqual(a.id, b.id);
+  assert.equal(aliasMemoryRegions(a, b), 'may');
 }
 
-// Indexed/nonconstant addressing remains unknown.
+// Nonconstant/indexed address is not promoted to a precise region.
 {
-  const readA = stateRead('node.index.read.a', 'value.index.a', 'root.a');
-  const readB = stateRead('node.index.read.b', 'value.index.b', 'root.b');
-  const indexed = op('node.index.addr', 'value.index.addr', 'address', 'add', ['value.index.a', 'value.index.b']);
+  const readA = stateRead('node.index.a', 'value.index.a', 'root.a');
+  const readB = stateRead('node.index.b', 'value.index.b', 'root.b');
+  const address = operation('node.index.addr', 'value.index.addr', 'address', 'add', ['value.index.a', 'value.index.b']);
   const load = memoryNode('node.index.load', 'load', 'value.index.addr');
-  const ir = rawIr({
-    values: [semanticValue('value.index.a', readA.id, bit64), semanticValue('value.index.b', readB.id, bit64), indexed.value],
-    nodes: [readA, readB, indexed.node, load],
-  });
-  assert.equal(classify(ir, load.id).kind, 'unknown');
+  const functionIr = ir({ values: [value('value.index.a', readA.id), value('value.index.b', readB.id), address.value], nodes: [readA, readB, address.node, load] });
+  assert.equal(classify(functionIr, load.id).kind, 'unknown');
 }
 
-// Unknown stores and calls remain barriers.
+// Unknown store and unknown call summaries remain barriers.
 {
-  const known = classify(basicRootIr('root.barrier'), 'node.load.root');
+  const known = classify(rootLoad('root.barrier'), 'node.load.root');
   const unknown = deriveMemoryRegion({
     functionId,
     binaryId,
@@ -350,7 +325,7 @@ function phiFixture({ incomingKinds }) {
   assert.equal(effectSummaryAliasRelation({ scope: 'unknown' }, known, () => unknown), 'may');
 }
 
-// A later unknown store must not retroactively clobber an earlier load.
+// A later unknown store does not travel backward and replace the reaching def of an earlier load.
 {
   const knownRegion = createMemoryRegionRef({
     id: 'region.temporal.known',
@@ -359,6 +334,7 @@ function phiFixture({ incomingKinds }) {
     rootEntityId: 'root.temporal',
     offset: 0,
     widthBits: 32,
+    origin: origin('region.temporal.known'),
   });
   const unknownRegion = createMemoryRegionRef({
     id: 'region.temporal.unknown',
@@ -366,17 +342,18 @@ function phiFixture({ incomingKinds }) {
     functionId,
     uncertaintyIdentity: { source: 'later-indexed-store' },
     widthBits: 32,
+    origin: origin('region.temporal.unknown'),
   });
   const memory = (addressValueId) => ({ addressSpace: 'memory', addressValueId, widthBits: 32, endian: 'little', volatility: false, atomic: false, ordering: 'unknown' });
   const nodes = [
-    { id: 'node.temporal.store', kind: 'store', blockId: 'entry', inputs: [], outputs: [], memory: memory('addr.known'), origin: origin('temporal.store') },
-    { id: 'node.temporal.load', kind: 'load', blockId: 'entry', inputs: [], outputs: [], memory: memory('addr.known'), origin: origin('temporal.load') },
-    { id: 'node.temporal.unknown', kind: 'store', blockId: 'entry', inputs: [], outputs: [], memory: memory('addr.unknown'), origin: origin('temporal.unknown') },
+    { id: 'node.temporal.store', kind: 'store', blockId: 'entry', inputs: [], outputs: [], memory: memory('addr.known'), origin: origin('node.temporal.store') },
+    { id: 'node.temporal.load', kind: 'load', blockId: 'entry', inputs: [], outputs: [], memory: memory('addr.known'), origin: origin('node.temporal.load') },
+    { id: 'node.temporal.unknown', kind: 'store', blockId: 'entry', inputs: [], outputs: [], memory: memory('addr.unknown'), origin: origin('node.temporal.unknown') },
   ];
-  const ir = createSemanticIrFunction({
+  const functionIr = createSemanticIrFunction({
     functionId,
     entryBlockId: 'entry',
-    blocks: [{ id: 'entry', nodeIds: nodes.map((node) => node.id), origin: origin('temporal.block') }],
+    blocks: [{ id: 'entry', nodeIds: nodes.map((item) => item.id), origin: origin('temporal.block') }],
     values: [
       { id: 'addr.known', kind: 'entry', machineType: addr64, origin: origin('addr.known') },
       { id: 'addr.unknown', kind: 'entry', machineType: addr64, origin: origin('addr.unknown') },
@@ -387,7 +364,7 @@ function phiFixture({ incomingKinds }) {
     origin: origin('temporal.function'),
   });
   const cfg = createSemanticCfg({ functionId, entryBlockId: 'entry', blocks: [{ id: 'entry', successors: [] }] });
-  const memorySsa = buildMemorySsa(ir, cfg, {
+  const memorySsa = buildMemorySsa(functionIr, cfg, {
     resolveRegion(access) {
       return access.addressExpr.valueId === 'addr.known' ? knownRegion : unknownRegion;
     },
@@ -398,37 +375,23 @@ function phiFixture({ incomingKinds }) {
   const use = memorySsa.uses.find((item) => item.sourceEntityId === 'node.temporal.load' && item.regionId === knownRegion.id);
   assert.ok(use);
   const reaching = reachingMemoryDefinition(memorySsa, use);
-  assert.equal(reaching.sourceEntityId, 'node.temporal.store');
   assert.equal(reaching.kind, 'memory-def');
+  assert.equal(reaching.sourceEntityId, 'node.temporal.store');
 }
 
-// MemoryRegionId and canonical proofs must be deterministic across collection/object insertion order.
+// Region IDs and descriptors are insertion-order deterministic.
 {
-  const irA = basicRootIr('root.deterministic');
-  const irB = {
-    ...irA,
-    values: irA.values.slice().reverse(),
-    nodes: irA.nodes.slice().reverse(),
+  const firstIr = rootLoad('root.deterministic');
+  const secondIr = { ...firstIr, values: firstIr.values.slice().reverse(), nodes: firstIr.nodes.slice().reverse() };
+  const objectDescriptorA = {
+    'root.deterministic': { kind: 'rooted-object', rootEntityId: 'object.deterministic', rootIdentity: { alpha: 1, beta: 2 }, linearOffsets: true },
   };
-  const descriptorsA = {
-    'root.deterministic': {
-      kind: 'rooted-object',
-      rootEntityId: 'object.deterministic',
-      rootIdentity: { alpha: 1, beta: 2 },
-      linearOffsets: true,
-    },
-  };
-  const descriptorsB = new Map([[
+  const objectDescriptorB = new Map([[
     'root.deterministic',
-    {
-      linearOffsets: true,
-      rootIdentity: { beta: 2, alpha: 1 },
-      rootEntityId: 'object.deterministic',
-      kind: 'rooted-object',
-    },
+    { linearOffsets: true, rootIdentity: { beta: 2, alpha: 1 }, rootEntityId: 'object.deterministic', kind: 'rooted-object' },
   ]]);
-  const first = classify(irA, 'node.load.root', { rootDescriptors: descriptorsA });
-  const second = classify(irB, 'node.load.root', { rootDescriptors: descriptorsB });
+  const first = classify(firstIr, 'node.load.root', { rootDescriptors: objectDescriptorA });
+  const second = classify(secondIr, 'node.load.root', { rootDescriptors: objectDescriptorB });
   assert.equal(first.id, second.id);
   assert.equal(stableStringify(first), stableStringify(second));
 }
