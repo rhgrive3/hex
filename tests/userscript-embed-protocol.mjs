@@ -93,8 +93,9 @@ async function testUnknownRpcRejection() {
   pair.close();
 
   const raw = await rawServer({ 'chatgpt.status': () => 'ok' });
+  const responsePromise = onceMessage(raw.port);
   raw.port.postMessage(request('unknown-1', 'danger.eval'));
-  const message = await onceMessage(raw.port);
+  const message = await responsePromise;
   assert.equal(message.kind, 'error');
   assert.equal(message.error.code, 'RPC_METHOD_NOT_ALLOWED');
   raw.close();
@@ -167,9 +168,10 @@ async function testDuplicateRequestId() {
     'chatgpt.request': async () => { await delay(25); return 'first'; },
   });
   const duplicate = request('same-id', 'chatgpt.request', { n: 1 });
+  const messagesPromise = collectMessages(raw.port, 2);
   raw.port.postMessage(duplicate);
   raw.port.postMessage(duplicate);
-  const messages = await collectMessages(raw.port, 2);
+  const messages = await messagesPromise;
   assert.ok(messages.some((message) => message.kind === 'error' && message.error.code === 'RPC_DUPLICATE_ID'));
   raw.close();
 }
@@ -209,8 +211,9 @@ async function testStackNeverCrossesWire() {
       throw error;
     },
   });
+  const responsePromise = onceMessage(raw.port);
   raw.port.postMessage(request('stack-test', 'chatgpt.status'));
-  const message = await onceMessage(raw.port);
+  const message = await responsePromise;
   assert.equal(message.kind, 'error');
   assert.equal(message.error.code, 'WIRE_SAFE');
   assert.equal(message.error.details.keep, 'yes');
@@ -226,8 +229,9 @@ async function testArbitraryMethodCannotExecute() {
   try {
     const handlers = { 'chatgpt.status': () => 'safe' };
     const raw = await rawServer(handlers);
+    const responsePromise = onceMessage(raw.port);
     raw.port.postMessage(request('arbitrary-1', 'danger.eval'));
-    const message = await onceMessage(raw.port);
+    const message = await responsePromise;
     assert.equal(message.kind, 'error');
     assert.equal(message.error.code, 'RPC_METHOD_NOT_ALLOWED');
     assert.equal(executed, 0);
@@ -250,8 +254,9 @@ async function rawServer(handlers) {
   const channel = new MessageChannel();
   const nonce = createEmbedNonce();
   const server = createRpcServer(channel.port1, { handlers, nonce });
+  const readyPromise = onceMessage(channel.port2);
   channel.port2.start();
-  const ready = await onceMessage(channel.port2);
+  const ready = await readyPromise;
   assert.equal(ready.kind, 'control');
   assert.equal(ready.method, 'ready');
   assert.equal(ready.nonce, nonce);
