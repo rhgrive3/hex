@@ -77,25 +77,25 @@ export class ChatGPTDOMAdapter {
   }
 
   text(node) {
-  if (!node) return '';
-  // Canonical turns are conversation wrappers, while the semantic message is
-  // nested below data-message-author-role. Never read wrapper/UI chrome when a
-  // message-specific content node exists: long user prompts are rendered in a
-  // collapsible container whose sibling toggle contributes localized labels
-  // (for example "表示を増やす" / "表示を減らす") to role.innerText.
-  const role = node.getAttribute?.('data-message-author-role')
-    ? node
-    : node.querySelector?.('[data-message-author-role="assistant"], [data-message-author-role="user"], [data-message-author-role]');
-  const scope = role || node;
-  const roleName = String(role?.getAttribute?.('data-message-author-role') || '');
-  const body = roleName === 'user'
-    ? scope.querySelector?.('[data-testid="collapsible-user-message-content"], [data-message-content-part="user"], [data-message-content]')
-    : scope.querySelector?.('.markdown, [data-testid="markdown"], [data-message-content-part="assistant"], [data-message-content]');
-  const semanticBody = body || scope;
-  return String(semanticBody.innerText || semanticBody.textContent || '').trim();
-}
+    if (!node) return '';
+    // Canonical turns are conversation wrappers, while the semantic message is
+    // nested below data-message-author-role. Never read wrapper/UI chrome when a
+    // message-specific content node exists: long user prompts are rendered in a
+    // collapsible container whose sibling toggle contributes localized labels
+    // (for example "表示を増やす" / "表示を減らす") to role.innerText.
+    const role = node.getAttribute?.('data-message-author-role')
+      ? node
+      : node.querySelector?.('[data-message-author-role="assistant"], [data-message-author-role="user"], [data-message-author-role]');
+    const scope = role || node;
+    const roleName = String(role?.getAttribute?.('data-message-author-role') || '');
+    const body = roleName === 'user'
+      ? scope.querySelector?.('[data-testid="collapsible-user-message-content"], [data-message-content-part="user"], [data-message-content]')
+      : scope.querySelector?.('.markdown, [data-testid="markdown"], [data-message-content-part="assistant"], [data-message-content]');
+    const semanticBody = body || scope;
+    return String(semanticBody.innerText || semanticBody.textContent || '').trim();
+  }
 
-assistantTurns() { return this.all('assistantTurn').map((node) => ({ node, id: this.identity(node), text: this.text(node) })); }
+  assistantTurns() { return this.all('assistantTurn').map((node) => ({ node, id: this.identity(node), text: this.text(node) })); }
   userTurns() { return this.all('userTurn').map((node) => ({ node, id: this.identity(node), text: this.text(node) })); }
   conversationTurns() { return this.all('conversationTurn').map((node) => ({ node, id: this.identity(node), text: this.text(node) })); }
 
