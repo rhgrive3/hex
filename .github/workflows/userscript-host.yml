@@ -50,6 +50,8 @@ jobs:
       - run: npm ci
       - name: Opaque sandbox storage contract
         run: node tests/userscript-sandbox-storage.mjs
+      - name: Embed mode security boundary
+        run: node tests/userscript-embed-mode-security.mjs
       - name: Build and userscript tests
         run: npm run userscript:test
       - name: AI and worker regressions
