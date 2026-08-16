@@ -1,6 +1,6 @@
 import {
   V1_OP, V1_VK, V1_MK, safeBigInt, bytesForBits, firstAddress,
-  sourceInstructionIds, unique, asArray, makeArg, addUse,
+  sourceInstructionIds, unique, asArray, makeArg, addUse, legacyPublicStateIdentity,
 } from './semantic-ir-v2-to-v1-core.js';
 
 const MEMORY_CLOBBER_KINDS = new Set(['may-alias-clobber', 'unknown-clobber', 'call-clobber', 'intrinsic-clobber']);
@@ -79,6 +79,7 @@ export function attachMemorySsa(projected, memorySsa, valuesById, instructionByS
     if (definition.kind === 'memory-phi') {
       memoryNode.incoming = definition.incoming.map((item) => ({
         from: blockIndexById.get(item.predecessorBlockId) ?? null,
+        semanticPredecessorBlockId: item.predecessorBlockId,
         node: memoryNodeById.get(item.definitionId) ?? null,
       }));
       const block = projected.blocks[memoryNode.block];
@@ -148,6 +149,7 @@ export function addScalarSsaPhis(projected, ssa, valuesById, blockIndexById, ins
     if (!value) continue;
     const block = blockIndexById.get(definition.blockId);
     if (block == null) continue;
+    const publicIdentity = legacyPublicStateIdentity(definition.proof?.variableIdentity) ?? value.reg ?? definition.variableKey;
     const inst = {
       id: -1,
       op: V1_OP.PHI,
@@ -155,26 +157,38 @@ export function addScalarSsaPhis(projected, ssa, valuesById, blockIndexById, ins
       block,
       row: projected.blocks[block]?.startRow ?? block,
       address: firstAddress(definition.origin),
-      text: `phi ${definition.variableKey ?? definition.valueId}`,
+      text: `phi ${publicIdentity ?? definition.valueId}`,
       args: [],
       dst: value,
       incoming: [],
-      reg: definition.variableKey ?? value.reg,
+      reg: publicIdentity,
+      semanticSsaValueId: definition.valueId,
       semanticNodeId: definition.sourceEntityId,
       sourceEntityId: definition.sourceEntityId,
       sourceInstructionIds: sourceInstructionIds(definition.origin),
       instructionId: sourceInstructionIds(definition.origin)[0] ?? null,
       origin: definition.origin,
-      extra: { semanticSsaDefinitionId: definition.definitionId, proof: definition.proof ?? null },
+      extra: {
+        semanticSsaDefinitionId: definition.definitionId,
+        semanticVariableKey: definition.variableKey,
+        publicStateIdentity: publicIdentity,
+        proof: definition.proof ?? null,
+      },
     };
     for (const incoming of definition.incoming) {
       const incomingValue = valuesById.get(incoming.valueId);
       if (!incomingValue) continue;
-      inst.incoming.push({ from: blockIndexById.get(incoming.predecessorBlockId) ?? null, value: incomingValue });
+      inst.incoming.push({
+        from: blockIndexById.get(incoming.predecessorBlockId) ?? null,
+        semanticPredecessorBlockId: incoming.predecessorBlockId,
+        semanticSsaValueId: incoming.valueId,
+        value: incomingValue,
+      });
       inst.args.push(makeArg(incomingValue));
       addUse(incomingValue, inst);
     }
     value.kind = V1_VK.PHI;
+    value.reg = publicIdentity;
     value.def = inst;
     projected.blocks[block].phis.push(inst);
     projected.instructions.unshift(inst);
