@@ -1,0 +1,81 @@
+name: Phase 3 exact projection patch
+
+on:
+  push:
+    branches:
+      - hex/p3-semantic-ir-exit-repair
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: hex/p3-semantic-ir-exit-repair
+          fetch-depth: 0
+      - name: Apply exact source patch
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('js/semantics/compat/semantic-ir-v2-to-v1-nodes.js')
+          text = path.read_text()
+          old = '''    case 'intrinsic': {
+      const carrier = comparisonCarrierByNodeId.get(node.id) ?? null;
+      const addSub = carrier ? addWithCarryOperands(node, context) : null;
+      if (carrier && addSub) {
+        const resultIsWritten = node.outputs?.[0] && hasRegisterStateWriteForValue(node.outputs[0], context);
+        const args = [addSub.lhs, addSub.rhs];
+        if (resultIsWritten) {
+          setBasic(V1_OP.BIN, addSub.subtract ? 'sub' : 'add', args);
+          const cmp = appendComparisonInstruction(node, context, inst, carrier, args, addSub.subtract ? 'sub' : 'add', row, blockIndex);
+          if (cmp) extraInstructions.push(cmp);
+        } else {
+          setBasic(V1_OP.CMP, addSub.subtract ? 'sub' : 'add', args, carrier);
+          inst.bits = Math.max(1, ...args.map((value) => value.bits || 1));
+          inst.extra.comparison = 'semantic-flag-result';
+          inst.extra.semanticComparisonCarrier = true;
+          carrier.def = inst;
+        }
+        for (const value of outputValues) representedExtraValueIds.add(value.semanticValueId);
+      } else if (!deterministicIntrinsicProjection(node, context, inst, setBasic, primaryOutput, inputValues)) {'''
+          new = '''    case 'intrinsic': {
+      const carrier = comparisonCarrierByNodeId.get(node.id) ?? null;
+      const addSub = addWithCarryOperands(node, context);
+      if (addSub) {
+        const resultIsWritten = node.outputs?.[0] && hasRegisterStateWriteForValue(node.outputs[0], context);
+        const args = [addSub.lhs, addSub.rhs];
+        if (carrier && !resultIsWritten) {
+          setBasic(V1_OP.CMP, addSub.subtract ? 'sub' : 'add', args, carrier);
+          inst.bits = Math.max(1, ...args.map((value) => value.bits || 1));
+          inst.extra.comparison = 'semantic-flag-result';
+          inst.extra.semanticComparisonCarrier = true;
+          carrier.def = inst;
+        } else {
+          setBasic(V1_OP.BIN, addSub.subtract ? 'sub' : 'add', args);
+          inst.extra.compatSource = 'exact-add-with-carry-intrinsic';
+          if (carrier) {
+            const cmp = appendComparisonInstruction(node, context, inst, carrier, args, addSub.subtract ? 'sub' : 'add', row, blockIndex);
+            if (cmp) extraInstructions.push(cmp);
+          }
+        }
+        for (const value of outputValues) representedExtraValueIds.add(value.semanticValueId);
+      } else if (!deterministicIntrinsicProjection(node, context, inst, setBasic, primaryOutput, inputValues)) {'''
+          if text.count(old) != 1:
+              raise SystemExit(f'expected exact intrinsic projection block once, found {text.count(old)}')
+          path.write_text(text.replace(old, new))
+          PY
+          git diff --check
+          git diff -- js/semantics/compat/semantic-ir-v2-to-v1-nodes.js
+      - name: Commit patch and remove temporary workflow
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git rm .github/workflows/phase3-exit-repair-self-patch.yml
+          git add js/semantics/compat/semantic-ir-v2-to-v1-nodes.js
+          git commit -m "Phase 3: project exact add-with-carry arithmetic without flag carrier"
+          git push origin HEAD:hex/p3-semantic-ir-exit-repair
