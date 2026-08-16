@@ -26,7 +26,8 @@ const opsOf = (bundle, kind) => bundle.operations.filter((op) => op.kind === kin
   assert.equal(load.access.space, 'memory');
   assert.equal(load.access.widthBits, 64);
   assert.equal(load.access.endian, 'little');
-  assert.equal(load.access.atomic, false);
+  assert.equal('atomic' in load.access, false, 'ordinary LDR atomicity is not inferred');
+  assert.equal('volatility' in load.access, false, 'volatility is unknown from the instruction alone');
   assert.equal(load.access.addressExpr.kind, 'add');
   assert.equal(load.access.addressExpr.right.value, '16');
   assert.equal(b.possibleFaults[0].kind, 'data-abort');
@@ -77,6 +78,13 @@ const opsOf = (bundle, kind) => bundle.operations.filter((op) => op.kind === kin
 }
 
 {
+  const b = lift('ldnp', [x(0), x(1), mem(x(2), { disp:16n })]);
+  assert.equal(b.completeness, 'exact');
+  assert.equal(b.metadata.nonTemporal, true);
+  assert.equal(opsOf(b, 'memory-read')[0].metadata.nonTemporal, true);
+}
+
+{
   const signed = lift('ldrsb', [w(0), mem(x(1))]);
   const unsigned = lift('ldrb', [w(0), mem(x(1))]);
   const signedOps = signed.operations.filter((op) => op.kind === 'value').map((op) => op.opcode);
@@ -101,12 +109,29 @@ const opsOf = (bundle, kind) => bundle.operations.filter((op) => op.kind === kin
 }
 
 {
+  const b = lift('strb', [w(0), mem(x(1))]);
+  const trunc = b.operations.find((op) => op.kind === 'value' && op.opcode === 'truncate');
+  const store = b.operations.find((op) => op.kind === 'memory-write');
+  assert.ok(trunc, 'STRB explicitly truncates the W source view');
+  assert.equal(trunc.metadata.fromBits, 32);
+  assert.equal(trunc.metadata.toBits, 8);
+  assert.equal(store.access.widthBits, 8);
+  assert.equal(store.value.valueType.widthBits, 8);
+}
+
+{
   const b = lift('ldrsw', [x(3), { k:'imm', value:0x2000n }], { literalTarget:0x2000n });
   const [load] = opsOf(b, 'memory-read');
   assert.equal(load.access.widthBits, 32);
   assert.equal(load.access.addressExpr.kind, 'bitvector');
   assert.equal(load.access.addressExpr.value, '8192');
   assert.ok(b.operations.some((op) => op.kind === 'value' && op.opcode === 'sign-extend'));
+}
+
+{
+  const b = lift('ldtr', [w(0), mem(x(1), { disp:-4n })]);
+  assert.equal(b.completeness, 'exact');
+  assert.equal(opsOf(b, 'memory-read')[0].metadata.unprivileged, true);
 }
 
 {
@@ -122,6 +147,23 @@ const opsOf = (bundle, kind) => bundle.operations.filter((op) => op.kind === kin
   assert.equal(opsOf(malformedScale, 'memory-read').length, 0);
   const malformedSignedWord = lift('ldrsw', [w(0), mem(x(1))]);
   assert.equal(malformedSignedWord.completeness, 'partial');
+}
+
+{
+  const pairRegisterOffset = lift('ldp', [x(0), x(1), mem(x(2), { index:x(3) })]);
+  const pairDuplicateDestination = lift('ldp', [x(0), x(0), mem(x(2))]);
+  const nonTemporalWriteback = lift('stnp', [x(0), x(1), mem(x(2), { mode:'pre', disp:-16n })]);
+  assert.equal(pairRegisterOffset.completeness, 'partial');
+  assert.equal(pairDuplicateDestination.completeness, 'partial');
+  assert.equal(nonTemporalWriteback.completeness, 'partial');
+  assert.equal(opsOf(pairRegisterOffset, 'memory-read').length, 0);
+}
+
+{
+  const acquireOffset = lift('ldar', [w(0), mem(x(1), { disp:4n })]);
+  const unscaledWriteback = lift('ldur', [x(0), mem(x(1), { mode:'pre', disp:-8n })]);
+  assert.equal(acquireOffset.completeness, 'partial');
+  assert.equal(unscaledWriteback.completeness, 'partial');
 }
 
 assert.ok(LEGACY_ARM64_MEMORY_INVENTORY.loads.includes('ldpsw'));
