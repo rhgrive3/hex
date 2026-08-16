@@ -6,6 +6,7 @@ await testConversationRouting();
 await testModelSelection();
 await testLogicalTurnCanonicalization();
 await testRoleScopedTurnTextExtraction();
+await testCollapsibleUserMessageTextExtraction();
 await testTurnCompletionAndStaleProtection();
 await testRolelessTurnFallback();
 await testCancelTimeoutAndSingleInflight();
@@ -95,6 +96,62 @@ async function testRoleScopedTurnTextExtraction() {
   assert.equal(adapter.userTurns()[0].text, prompt, 'adapter must read only the user message, not the conversation wrapper heading');
   assert.equal(controller.userTurns()[0].text, prompt, 'canonical turn projection must preserve the exact submitted prompt');
   assert.equal(controller.assistantTurns()[0].text, response, 'assistant capture must exclude the accessibility speaker heading too');
+}
+
+async function testCollapsibleUserMessageTextExtraction() {
+  const prompt = 'HEX CONTROL PROTOCOL hex-chatgpt-web-v1\n\n<HEX_DATA>{"messages":[{"role":"user","content":"解析の始め方を教えて"}]}</HEX_DATA>';
+  const content = { innerText: prompt, textContent: prompt };
+  let root;
+  const roleNode = {
+    id: '',
+    innerText: `${prompt}\n表示を増やす\n表示を減らす`,
+    textContent: `${prompt}\n表示を増やす\n表示を減らす`,
+    getAttribute(name) {
+      if (name === 'data-message-author-role') return 'user';
+      if (name === 'data-message-id') return 'message-collapsible';
+      return null;
+    },
+    closest(selector) {
+      if (selector.includes('conversation-turn-')) return root;
+      if (selector.includes('data-message-author-role')) return roleNode;
+      return null;
+    },
+    querySelector(selector) {
+      if (selector.includes('collapsible-user-message-content')) return content;
+      return null;
+    },
+  };
+  root = {
+    id: '',
+    innerText: `あなた:\n${roleNode.innerText}`,
+    textContent: `あなた:\n${roleNode.textContent}`,
+    getAttribute(name) {
+      if (name === 'data-testid') return 'conversation-turn-collapsible';
+      if (name === 'data-turn') return 'user';
+      return null;
+    },
+    closest(selector) { return selector.includes('conversation-turn-') ? root : null; },
+    querySelector(selector) {
+      if (selector.includes('[data-message-author-role')) return roleNode;
+      return null;
+    },
+  };
+  const document = {
+    querySelector: () => null,
+    querySelectorAll(selector) {
+      if (selector === '[data-message-author-role="user"]') return [roleNode];
+      if (selector.includes('conversation-turn-') && selector.includes('user')) return [root];
+      if (selector === '[data-testid^="conversation-turn-"]') return [root];
+      return [];
+    },
+  };
+  const adapter = new ChatGPTDOMAdapter({ document, location: { href: 'https://chatgpt.com/c/alpha' } });
+  const controller = new ChatGPTTurnController(adapter);
+
+  assert.match(roleNode.innerText, /表示を増やす/, 'fixture must reproduce ChatGPT collapsible-message UI text inside the user role');
+  assert.match(roleNode.innerText, /表示を減らす/, 'fixture must reproduce both localized toggle labels');
+  assert.equal(adapter.userTurns()[0].text, prompt, 'adapter must extract only collapsible user message content');
+  assert.equal(controller.userTurns()[0].text, prompt, 'exact prompt verification must ignore collapsible toggle labels');
 }
 
 async function testTurnCompletionAndStaleProtection() {
