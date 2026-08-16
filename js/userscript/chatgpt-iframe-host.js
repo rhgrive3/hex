@@ -4,6 +4,10 @@ import {
   createEmbedNonce,
   waitForEmbedReady,
 } from './embed-protocol.js';
+import {
+  waitForEmbedChildBootstrap,
+  withEmbedGeneration,
+} from './embed-bootstrap.js';
 
 const DEFAULT_LOAD_TIMEOUT_MS = 20000;
 const DEFAULT_READY_TIMEOUT_MS = 30000;
@@ -14,6 +18,8 @@ export function createChatGPTIframeHost(options = {}) {
   const {
     src,
     onPort,
+    onReady,
+    onFailure,
     documentRef = globalThis.document,
     windowRef = globalThis.window,
     MessageChannelCtor = globalThis.MessageChannel,
@@ -22,67 +28,49 @@ export function createChatGPTIframeHost(options = {}) {
   } = options;
 
   if (typeof onPort !== 'function') throw new TypeError('onPort must be a synchronous function.');
+  if (onReady != null && typeof onReady !== 'function') throw new TypeError('onReady must be a function.');
+  if (onFailure != null && typeof onFailure !== 'function') throw new TypeError('onFailure must be a function.');
   if (!documentRef?.createElement || !documentRef?.documentElement) throw new TypeError('A document is required.');
+  if (!windowRef?.addEventListener || !windowRef?.removeEventListener) throw new TypeError('A window event target is required.');
   if (typeof MessageChannelCtor !== 'function') throw new TypeError('MessageChannel is required.');
 
   const parsedSrc = new URL(String(src || ''));
   if (parsedSrc.protocol !== 'https:') throw new TypeError('Hex iframe src must use HTTPS.');
-  const iframeSrc = parsedSrc.href;
+  const iframeBaseSrc = parsedSrc.href;
   const childOrigin = parsedSrc.origin;
-  const normalizedLoadTimeoutMs = normalizeTimeout(loadTimeoutMs, DEFAULT_LOAD_TIMEOUT_MS);
-  const normalizedReadyTimeoutMs = normalizeTimeout(readyTimeoutMs, DEFAULT_READY_TIMEOUT_MS);
-  const setTimer = typeof windowRef?.setTimeout === 'function' ? windowRef.setTimeout.bind(windowRef) : setTimeout;
-  const clearTimer = typeof windowRef?.clearTimeout === 'function' ? windowRef.clearTimeout.bind(windowRef) : clearTimeout;
+  const bootstrapTimeoutMs = normalizeTimeout(loadTimeoutMs, DEFAULT_LOAD_TIMEOUT_MS);
+  const appReadyTimeoutMs = normalizeTimeout(readyTimeoutMs, DEFAULT_READY_TIMEOUT_MS);
 
   const wrapper = documentRef.createElement('div');
   wrapper.id = HOST_ID;
   wrapper.setAttribute('aria-hidden', 'true');
   Object.assign(wrapper.style, {
-    position: 'fixed',
-    inset: '0',
-    height: '100dvh',
-    zIndex: '2147483646',
-    overflow: 'hidden',
-    visibility: 'hidden',
-    pointerEvents: 'none',
-    background: '#fff',
+    position: 'fixed', inset: '0', height: '100dvh', zIndex: '2147483646',
+    overflow: 'hidden', visibility: 'hidden', pointerEvents: 'none', background: '#fff',
   });
 
   const iframe = documentRef.createElement('iframe');
   iframe.title = 'Hex';
   iframe.referrerPolicy = 'no-referrer';
-  Object.assign(iframe.style, {
-    display: 'block',
-    width: '100%',
-    height: '100%',
-    border: '0',
-  });
+  Object.assign(iframe.style, { display: 'block', width: '100%', height: '100%', border: '0' });
 
   const closeButton = documentRef.createElement('button');
   closeButton.type = 'button';
-  closeButton.textContent = 'Close Hex';
+  closeButton.textContent = '×';
   closeButton.setAttribute('aria-label', 'Close Hex');
   Object.assign(closeButton.style, {
-    position: 'absolute',
-    top: 'calc(8px + env(safe-area-inset-top, 0px))',
-    right: 'calc(8px + env(safe-area-inset-right, 0px))',
-    zIndex: '2',
-    minWidth: '44px',
-    minHeight: '44px',
+    position: 'absolute', top: 'calc(8px + env(safe-area-inset-top, 0px))',
+    right: 'calc(8px + env(safe-area-inset-right, 0px))', zIndex: '3',
+    minWidth: '44px', minHeight: '44px', border: '0', borderRadius: '12px',
+    background: 'rgba(17,24,39,.88)', color: '#fff', font: '700 20px/1 system-ui',
   });
 
   const statusBox = documentRef.createElement('div');
   statusBox.setAttribute('role', 'status');
   Object.assign(statusBox.style, {
-    position: 'absolute',
-    left: '12px',
-    bottom: 'calc(12px + env(safe-area-inset-bottom, 0px))',
-    zIndex: '2',
-    padding: '8px 10px',
-    background: 'rgba(17,24,39,.9)',
-    color: '#fff',
-    font: '600 13px/1.3 -apple-system,BlinkMacSystemFont,system-ui,sans-serif',
-    borderRadius: '8px',
+    position: 'absolute', left: '12px', bottom: 'calc(12px + env(safe-area-inset-bottom, 0px))',
+    zIndex: '2', padding: '8px 10px', background: 'rgba(17,24,39,.9)', color: '#fff',
+    font: '600 13px/1.3 -apple-system,BlinkMacSystemFont,system-ui,sans-serif', borderRadius: '8px',
   });
   statusBox.textContent = 'Loading Hex…';
 
@@ -90,73 +78,49 @@ export function createChatGPTIframeHost(options = {}) {
   errorBox.setAttribute('role', 'alert');
   errorBox.hidden = true;
   Object.assign(errorBox.style, {
-    position: 'absolute',
-    left: '50%',
-    top: '50%',
-    transform: 'translate(-50%, -50%)',
-    zIndex: '3',
-    maxWidth: 'min(420px, calc(100% - 32px))',
-    padding: '16px',
-    background: '#fff',
-    color: '#111827',
-    border: '1px solid rgba(0,0,0,.18)',
-    borderRadius: '12px',
-    boxShadow: '0 8px 30px rgba(0,0,0,.25)',
+    position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%, -50%)', zIndex: '4',
+    maxWidth: 'min(420px, calc(100% - 32px))', padding: '16px', background: '#fff', color: '#111827',
+    border: '1px solid rgba(0,0,0,.18)', borderRadius: '12px', boxShadow: '0 8px 30px rgba(0,0,0,.25)',
     font: '14px/1.4 -apple-system,BlinkMacSystemFont,system-ui,sans-serif',
   });
-  const errorTitle = documentRef.createElement('strong');
-  errorTitle.textContent = 'Hex failed';
+  const errorTitle = documentRef.createElement('strong'); errorTitle.textContent = 'Hex failed';
   const errorStage = documentRef.createElement('div');
   const errorMessage = documentRef.createElement('div');
   const retryButton = documentRef.createElement('button');
-  retryButton.type = 'button';
-  retryButton.textContent = 'Retry';
-  retryButton.style.minWidth = '44px';
-  retryButton.style.minHeight = '44px';
+  retryButton.type = 'button'; retryButton.textContent = 'Retry';
+  Object.assign(retryButton.style, { minWidth: '44px', minHeight: '44px', marginTop: '10px' });
   errorBox.append(errorTitle, errorStage, errorMessage, retryButton);
 
   const launcher = documentRef.createElement('button');
   launcher.id = LAUNCHER_ID;
-  launcher.type = 'button';
-  launcher.textContent = 'HEX';
+  launcher.type = 'button'; launcher.textContent = 'HEX';
   Object.assign(launcher.style, {
-    position: 'fixed',
-    right: '12px',
-    bottom: 'calc(12px + env(safe-area-inset-bottom, 0px))',
-    zIndex: '2147483647',
-    minWidth: '54px',
-    minHeight: '44px',
+    position: 'fixed', right: '12px', bottom: 'calc(12px + env(safe-area-inset-bottom, 0px))',
+    zIndex: '2147483647', minWidth: '54px', minHeight: '44px', padding: '8px 12px', border: '0',
+    borderRadius: '12px', background: '#111827', color: '#fff',
+    font: '600 13px/1.2 -apple-system,BlinkMacSystemFont,system-ui,sans-serif',
+    boxShadow: '0 4px 18px rgba(0,0,0,.28)', cursor: 'pointer',
   });
 
   wrapper.append(iframe, closeButton, statusBox, errorBox);
+  documentRef.documentElement.append(wrapper, launcher);
 
   let lifecycle = 'idle';
   let generation = 0;
   let desiredVisible = false;
   let previousActiveElement = null;
   let destroyed = false;
-  let loadTimer = null;
   let activeGeneration = null;
   let failure = null;
 
-  const onLoad = () => startHandshake();
-  const onLauncherClick = () => show();
-  const onCloseClick = () => hide();
-  const onRetryClick = () => reload();
-  iframe.addEventListener('load', onLoad);
-  launcher.addEventListener('click', onLauncherClick);
-  closeButton.addEventListener('click', onCloseClick);
-  retryButton.addEventListener('click', onRetryClick);
-
-  navigate();
-  documentRef.documentElement.append(wrapper, launcher);
+  launcher.addEventListener('click', show);
+  closeButton.addEventListener('click', hide);
+  retryButton.addEventListener('click', reload);
+  beginNavigation();
 
   function state() {
     return Object.freeze({
-      status: lifecycle,
-      generation,
-      visible: desiredVisible,
-      childOrigin,
+      status: lifecycle, generation, visible: desiredVisible, childOrigin,
       failure: failure ? Object.freeze({ ...failure }) : null,
     });
   }
@@ -187,8 +151,7 @@ export function createChatGPTIframeHost(options = {}) {
   }
 
   function reload() {
-    if (destroyed) return state();
-    navigate();
+    if (!destroyed) beginNavigation();
     return state();
   }
 
@@ -196,101 +159,93 @@ export function createChatGPTIframeHost(options = {}) {
     if (destroyed) return;
     destroyed = true;
     lifecycle = 'destroyed';
-    clearLoadTimer();
     cleanupGeneration(activeGeneration);
-    iframe.removeEventListener('load', onLoad);
-    launcher.removeEventListener('click', onLauncherClick);
-    closeButton.removeEventListener('click', onCloseClick);
-    retryButton.removeEventListener('click', onRetryClick);
-    safeRemove(wrapper);
-    safeRemove(launcher);
+    launcher.removeEventListener('click', show);
+    closeButton.removeEventListener('click', hide);
+    retryButton.removeEventListener('click', reload);
+    safeRemove(wrapper); safeRemove(launcher);
   }
 
-  function navigate() {
-    clearLoadTimer();
+  function beginNavigation() {
     cleanupGeneration(activeGeneration);
+    if (destroyed) return;
+    const currentGeneration = ++generation;
+    const generationText = String(currentGeneration);
+    const controller = new AbortController();
+    const targetWindow = iframe.contentWindow;
     failure = null;
     lifecycle = 'loading';
-    statusBox.hidden = false;
-    statusBox.textContent = 'Loading Hex…';
-    errorBox.hidden = true;
-    armLoadTimer();
-    iframe.src = iframeSrc;
-  }
-
-  function startHandshake() {
-    if (destroyed) return;
-    clearLoadTimer();
-    cleanupGeneration(activeGeneration);
-    const currentGeneration = ++generation;
-    lifecycle = 'handshaking';
-    statusBox.hidden = false;
-    statusBox.textContent = 'Starting Hex…';
-    errorBox.hidden = true;
-
-    const controller = new AbortController();
-    const channel = new MessageChannelCtor();
-    const nonce = createEmbedNonce();
-    const current = {
-      generation: currentGeneration,
-      controller,
-      parentPort: channel.port1,
-      childPort: channel.port2,
-      cleanup: null,
-      transferred: false,
-    };
-    activeGeneration = current;
-
-    try {
-      const cleanup = onPort(channel.port1, Object.freeze({
-        nonce,
-        generation: currentGeneration,
-        childOrigin,
-        iframe,
-      }));
-      if (cleanup && typeof cleanup.then === 'function') {
-        throw new TypeError('onPort must install RPC listeners synchronously.');
-      }
-      if (cleanup !== undefined && typeof cleanup !== 'function') {
-        throw new TypeError('onPort must return a cleanup function or undefined.');
-      }
-      current.cleanup = cleanup || null;
-
-      const targetWindow = iframe.contentWindow;
-      if (!targetWindow || typeof targetWindow.postMessage !== 'function') throw new Error('Hex iframe window is unavailable.');
-      targetWindow.postMessage({
-        type: 'hex.embed.attach',
-        protocol: EMBED_PROTOCOL,
-        version: EMBED_PROTOCOL_VERSION,
-        nonce,
-      }, childOrigin, [channel.port2]);
-      current.transferred = true;
-    } catch (error) {
-      fail(currentGeneration, 'handshake/app-ready', error);
+    statusBox.hidden = false; statusBox.textContent = 'Loading Hex…'; errorBox.hidden = true;
+    if (!targetWindow || typeof targetWindow.postMessage !== 'function') {
+      fail(currentGeneration, 'iframe-bootstrap', new Error('Hex iframe window is unavailable.'));
       return;
     }
 
-    waitForEmbedReady(channel.port1, {
-      nonce,
-      timeoutMs: normalizedReadyTimeoutMs,
+    const current = {
+      generation: currentGeneration, generationText, controller,
+      parentPort: null, childPort: null, cleanup: null, transferred: false,
+    };
+    activeGeneration = current;
+
+    const bootstrap = waitForEmbedChildBootstrap({
+      windowRef,
+      expectedSource: targetWindow,
+      childOrigin,
+      generation: generationText,
+      timeoutMs: bootstrapTimeoutMs,
       signal: controller.signal,
-    }).then(() => {
-      if (!isCurrentGeneration(currentGeneration)) return;
-      failure = null;
-      statusBox.hidden = true;
-      errorBox.hidden = true;
-      lifecycle = 'ready';
-      lifecycle = desiredVisible ? 'visible' : 'hidden';
-    }).catch((error) => {
+    });
+
+    iframe.src = withEmbedGeneration(iframeBaseSrc, generationText);
+
+    bootstrap.then(() => startChannel(current)).catch((error) => {
       if (!isCurrentGeneration(currentGeneration) || controller.signal.aborted) return;
-      fail(currentGeneration, 'handshake/app-ready', error);
+      fail(currentGeneration, 'iframe-bootstrap', error);
     });
   }
 
+  function startChannel(current) {
+    if (!isCurrentGeneration(current.generation)) return;
+    lifecycle = 'handshaking';
+    statusBox.textContent = 'Starting Hex…';
+    const channel = new MessageChannelCtor();
+    const nonce = createEmbedNonce();
+    current.parentPort = channel.port1;
+    current.childPort = channel.port2;
+
+    try {
+      const cleanup = onPort(channel.port1, Object.freeze({
+        nonce, generation: current.generation, childOrigin, iframe,
+      }));
+      if (cleanup && typeof cleanup.then === 'function') throw new TypeError('onPort must install RPC listeners synchronously.');
+      if (cleanup !== undefined && typeof cleanup !== 'function') throw new TypeError('onPort must return a cleanup function or undefined.');
+      current.cleanup = cleanup || null;
+
+      const readyPromise = waitForEmbedReady(channel.port1, {
+        nonce, timeoutMs: appReadyTimeoutMs, signal: current.controller.signal,
+      });
+      iframe.contentWindow.postMessage({
+        type: 'hex.embed.attach', protocol: EMBED_PROTOCOL, version: EMBED_PROTOCOL_VERSION,
+        nonce, generation: current.generationText,
+      }, childOrigin, [channel.port2]);
+      current.transferred = true;
+
+      readyPromise.then(() => {
+        if (!isCurrentGeneration(current.generation)) return;
+        failure = null; statusBox.hidden = true; errorBox.hidden = true;
+        lifecycle = desiredVisible ? 'visible' : 'hidden';
+        try { onReady?.(state()); } catch {}
+      }).catch((error) => {
+        if (!isCurrentGeneration(current.generation) || current.controller.signal.aborted) return;
+        fail(current.generation, 'handshake/app-ready', error);
+      });
+    } catch (error) {
+      fail(current.generation, 'handshake/app-ready', error);
+    }
+  }
+
   function fail(failedGeneration, stage, error) {
-    if (destroyed) return;
-    if (failedGeneration != null && activeGeneration?.generation !== failedGeneration) return;
-    clearLoadTimer();
+    if (destroyed || (failedGeneration != null && activeGeneration?.generation !== failedGeneration)) return;
     cleanupGeneration(activeGeneration);
     lifecycle = 'failed';
     failure = { stage, message: safeErrorMessage(error) };
@@ -299,21 +254,7 @@ export function createChatGPTIframeHost(options = {}) {
     errorMessage.textContent = failure.message;
     errorBox.hidden = false;
     if (!desiredVisible) launcher.hidden = false;
-  }
-
-  function armLoadTimer() {
-    if (normalizedLoadTimeoutMs === 0) return;
-    loadTimer = setTimer(() => {
-      loadTimer = null;
-      if (destroyed || lifecycle !== 'loading') return;
-      fail(null, 'iframe-load', new Error('Hex iframe load timed out.'));
-    }, normalizedLoadTimeoutMs);
-  }
-
-  function clearLoadTimer() {
-    if (loadTimer === null) return;
-    clearTimer(loadTimer);
-    loadTimer = null;
+    try { onFailure?.(Object.freeze({ ...failure, generation: failedGeneration })); } catch {}
   }
 
   function cleanupGeneration(current) {
@@ -332,58 +273,30 @@ export function createChatGPTIframeHost(options = {}) {
   function restorePreviousFocus() {
     const target = previousActiveElement;
     previousActiveElement = null;
-    if (!target || typeof target.focus !== 'function') return;
-    if (!isConnectedToDocument(documentRef, target)) return;
+    if (!target || typeof target.focus !== 'function' || !isConnectedToDocument(documentRef, target)) return;
     safeFocus(target);
   }
 
-  return Object.freeze({
-    show,
-    hide,
-    reload,
-    destroy,
-    state,
-    iframe,
-    wrapper,
-    launcher,
-    closeButton,
-    retryButton,
-  });
+  return Object.freeze({ show, hide, reload, destroy, state, iframe, wrapper, launcher, closeButton, retryButton });
 }
 
 function normalizeTimeout(value, fallback) {
+  if (value == null) return fallback;
   const number = Number(value);
-  if (!Number.isFinite(number) || number < 0) return fallback;
+  if (!Number.isFinite(number) || number < 0) throw new TypeError('Iframe timeout must be a non-negative finite number.');
   return Math.floor(number);
 }
-
 function safeErrorMessage(error) {
   const message = error?.message;
-  if (typeof message === 'string' && message.trim()) return message.slice(0, 240);
-  return 'Hex could not start.';
+  return typeof message === 'string' && message.trim() ? message.slice(0, 240) : 'Hex could not start.';
 }
-
-function safeClose(port) {
-  try { port?.close?.(); } catch {}
-}
-
-function safeRemove(node) {
-  try { node?.remove?.(); } catch {}
-}
-
-function safeFocus(target) {
-  try { target?.focus?.(); } catch {}
-}
-
-function safeActiveElement(documentRef) {
-  try { return documentRef.activeElement || null; } catch { return null; }
-}
-
+function safeClose(port) { try { port?.close?.(); } catch {} }
+function safeRemove(node) { try { node?.remove?.(); } catch {} }
+function safeFocus(target) { try { target?.focus?.(); } catch {} }
+function safeActiveElement(documentRef) { try { return documentRef.activeElement || null; } catch { return null; } }
 function isConnectedToDocument(documentRef, node) {
   try {
     if (typeof documentRef.contains === 'function') return documentRef.contains(node);
     return documentRef.documentElement?.contains?.(node) === true;
-  } catch {
-    return false;
-  }
+  } catch { return false; }
 }
