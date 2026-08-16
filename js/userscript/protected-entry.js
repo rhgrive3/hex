@@ -1,15 +1,15 @@
 import { PROTECTED_HOST } from '../../.runtime-build/embedded-assets.js';
 import { setUiRoot } from '../ui-root.js';
 import { installProtectedWorkers } from './protected-workers.js';
-import { runtimeLocationFromSnapshot } from './runtime-host-location.js';
+import { runtimeHostSnapshotFromGlobals, runtimeLocationFromSnapshot } from './runtime-host-location.js';
 import {
   PROTECTED_RUNTIME_CONTEXT,
   classifyProtectedRuntime,
   startEmbedChildRuntime,
 } from './embed-child.js';
 
-const runtimeLocation = runtimeLocationFromSnapshot(globalThis.__HEX_RUNTIME_HOST_LOCATION__, globalThis.document?.location || globalThis.location);
-const apiOrigin = new URL(globalThis.__HEX_RUNTIME_ORIGIN__ || runtimeLocation.origin || globalThis.location?.origin, runtimeLocation.href || globalThis.location?.href).origin;
+const runtimeLocation = runtimeLocationFromSnapshot(runtimeHostSnapshotFromGlobals());
+const apiOrigin = normalizeApiOrigin(globalThis.__HEX_RUNTIME_ORIGIN__ || runtimeLocation.origin);
 const context = classifyProtectedRuntime({ location: runtimeLocation, apiOrigin, window });
 if (context !== PROTECTED_RUNTIME_CONTEXT.LEGACY_CHATGPT && runtimeLocation.origin !== apiOrigin) {
   throw new Error(`Hex protected runtime origin mismatch (${runtimeLocation.origin || 'unknown'} != ${apiOrigin}).`);
@@ -31,6 +31,16 @@ if (context === PROTECTED_RUNTIME_CONTEXT.LEGACY_CHATGPT) {
   installProtectedWorkers();
   await import('../app.js');
   await import('../ux.js');
+}
+
+function normalizeApiOrigin(value) {
+  try {
+    const parsed = new URL(String(value || ''));
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') throw new Error('invalid protocol');
+    return parsed.origin;
+  } catch {
+    throw new Error('Hex protected runtime API origin is invalid.');
+  }
 }
 
 function installStyle(cssText) {
