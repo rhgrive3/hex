@@ -22,13 +22,6 @@ function legacyLocation(region, valuesById, projectedAddress = null) {
     if (absolute != null) return { key: `global:${absolute.toString(16)}`, kind: V1_MK.GLOBAL, address: absolute, size, regionId: region.id, origin: region.origin ?? null };
   }
   if (region.kind === 'rooted-offset') {
-    // The region offset is an alias-analysis identity component. For a root that
-    // is not separation-safe, canonical region derivation deliberately folds an
-    // exact displacement into rootEntityId and leaves region.offset at zero so
-    // distinct offsets cannot become an unjustified NoAlias result. Legacy v1,
-    // however, also exposes the already-proven address expression to consumers.
-    // Preserve that public shape from the Semantic-IR-derived address projection
-    // without changing MemorySSA identity or alias conservatism.
     const regionOffset = safeBigInt(region.offset) ?? 0n;
     const disp = safeBigInt(address?.disp) ?? regionOffset;
     const base = address?.base ?? valuesById.get(region.rootEntityId) ?? null;
@@ -253,6 +246,18 @@ export function addScalarSsaPhis(projected, ssa, valuesById, blockIndexById, ins
   }
 }
 
+function representedCallContextUnknown(projected, unknown) {
+  if (unknown?.reason !== 'call-context-effects-not-enriched') return false;
+  const calls = projected.instructions.filter((inst) => inst.op === V1_OP.CALL);
+  if (!calls.length) return false;
+  return calls.every((call) => {
+    const controlRepresented = call.extra?.target != null || call.extra?.indirect === true;
+    const stateRepresented = call.extra?.abiAdapterStatus === 'used' && Array.isArray(call.clobbers) && call.clobbers.length > 0;
+    const memoryRepresented = call.memoryBarrier === true && call.extra?.memoryWrite?.scope !== 'none';
+    return controlRepresented && stateRepresented && memoryRepresented;
+  });
+}
+
 export function appendFunctionUnknowns(projected, ir) {
   if (!ir.unknowns.length) return;
   const block = projected.blocks[projected.entry];
@@ -260,6 +265,13 @@ export function appendFunctionUnknowns(projected, ir) {
   const instructionIds = sourceInstructionIds(ir.origin);
   const row = block.endRow;
   ir.unknowns.forEach((unknown, index) => {
+    // `call-context-effects-not-enriched` is a function-level marker emitted
+    // before an ABI adapter is available. If every projected CALL already
+    // carries the exact control target plus ABI clobbers and a conservative
+    // memory barrier, emitting another UNKNOWN duplicates the same uncertainty
+    // and incorrectly forces legacy fallback. The CALL remains conservative;
+    // no memory/state/control uncertainty is discarded.
+    if (representedCallContextUnknown(projected, unknown)) return;
     const categories = unique(asArray(unknown.categories).map(String)).sort();
     const semanticNodeId = `${ir.functionId}:function-unknown:${index}`;
     const inst = {
