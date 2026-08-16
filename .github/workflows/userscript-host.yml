@@ -48,6 +48,8 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Opaque sandbox storage contract
+        run: node tests/userscript-sandbox-storage.mjs
       - name: Build and userscript tests
         run: npm run userscript:test
       - name: AI and worker regressions
@@ -77,7 +79,7 @@ jobs:
           npm install --no-save --save-exact playwright@1.55.0
           npx --no-install playwright install-deps chromium webkit
           npx --no-install playwright install chromium webkit
-      - name: Verify opaque srcdoc module execution
+      - name: Verify opaque srcdoc module and storage execution
         run: node tests/userscript-srcdoc-probe.mjs
       - name: Run full secure sandbox startup
         run: node tests/userscript-embed-browser.mjs
