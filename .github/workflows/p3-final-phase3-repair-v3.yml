@@ -1,0 +1,134 @@
+name: Phase 3 final scoped repair v3
+
+on:
+  push:
+    branches:
+      - hex/p3-semantic-ir-integration
+    paths:
+      - '.github/workflows/p3-final-phase3-repair-v3.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  repair-and-validate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: hex/p3-semantic-ir-integration
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+
+      - name: Apply scoped public projection and argument-lineage repairs
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path('js/semantics/compat/semantic-ir-v2-to-v1-finalize.js')
+          s = p.read_text()
+          decl = "    const addressStateAlias = rawSource != null && aliases.has(rawSource.id);\n"
+          old = "    } else if (inst.extra?.stateRead && (inst.extra?.localPhysicalViewProjection === true || addressStateAlias) && Number(source.bits || 0) === Number(inst.dst.bits || 0)) {"
+          new = "    } else if (inst.extra?.stateRead && inst.extra?.localPhysicalViewProjection === true && Number(source.bits || 0) === Number(inst.dst.bits || 0)) {"
+          if s.count(decl) != 1 or s.count(old) != 1:
+              raise SystemExit('expected broad state-read compaction shape not found exactly once')
+          p.write_text(s.replace(decl, '', 1).replace(old, new, 1))
+
+          p = Path('js/interproc.js')
+          s = p.read_text()
+          marker = '''function simpleReturnExpression(value) {\n'''
+          helper = '''function returnExpressionSource(value) {\n  const source = transparentMoveSource(value);\n  if (!source || source.kind === VK.ARG) return source;\n  const def = source.def;\n  const reaching = def?.args?.[0]?.value ?? null;\n  const stateIdentity = def?.extra?.publicStateIdentity ?? null;\n  const sourceBits = Number(reaching?.bits || 0);\n  const viewBits = Number(source.bits || 0);\n  const argumentStateView = def?.op === OP.MOV\n    && def.extra?.stateRead != null\n    && stateIdentity != null\n    && reaching?.kind === VK.ARG\n    && reaching.reg === stateIdentity\n    && sourceBits > 0\n    && viewBits > 0\n    && sourceBits >= viewBits;\n  return argumentStateView ? reaching : source;\n}\n\n'''
+          if s.count(marker) != 1 or 'function returnExpressionSource(value)' in s:
+              raise SystemExit('unexpected interproc helper shape')
+          s = s.replace(marker, helper + marker, 1)
+          old_args = '''  const a = transparentMoveSource(aArg && aArg.value);\n  const b = transparentMoveSource(bArg && bArg.value);'''
+          new_args = '''  const a = returnExpressionSource(aArg && aArg.value);\n  const b = returnExpressionSource(bArg && bArg.value);'''
+          if s.count(old_args) != 1:
+              raise SystemExit('simpleReturnExpression source extraction shape changed')
+          p.write_text(s.replace(old_args, new_args, 1))
+          PY
+
+      - name: Synchronize canonical userscript before release gates
+        run: npm run userscript:build
+
+      - name: Focused public regressions
+        shell: bash
+        run: |
+          set -o pipefail
+          node tests/ir.mjs | tee /tmp/p3-ir.log
+          node tests/issues-434-450-regressions.mjs | tee /tmp/p3-434-450.log
+
+      - name: Semantic IR v2 full gate
+        shell: bash
+        run: |
+          set -o pipefail
+          npm run semantic-v2:test | tee /tmp/p3-semantic-v2.log
+
+      - name: Full Phase 3 repository gates
+        run: |
+          npm run effects:test
+          npm run core:test
+          npm run invariants:test
+          npm run migration:test
+          npm run semantic:test
+          npm run decompiler:test
+          npm run compiler-truth
+          npm run platform:test
+          npm run runtime:test
+          npm run ui:test
+          npm run benchmark:baseline
+          npm run ai:test
+          npm run userscript:test
+          npm run check
+
+      - name: Canonical userscript rebuild and retest
+        run: |
+          npm run userscript:build
+          npm run userscript:test
+
+      - name: Assert temporary Phase 3 workflow cleanup target
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          allowed = {Path('.github/workflows/p3-final-phase3-repair-v3.yml')}
+          temporary = {
+              p for p in Path('.github/workflows').glob('p3-*.yml')
+              if any(k in p.name for k in ('final', 'debug', 'repair', 'validation'))
+          }
+          extra = temporary - allowed
+          if extra:
+              raise SystemExit('unexpected temporary Phase 3 workflows: ' + ', '.join(map(str, sorted(extra))))
+          PY
+
+      - name: Commit validated product repair and generated userscript
+        shell: bash
+        run: |
+          BUILD_ID="$(grep -oE 'buildId["'"']?[:=][[:space:]]*["'"'][0-9a-f]+' userscript/hex.user.template.js | head -n1 | grep -oE '[0-9a-f]{12,}' || true)"
+          IR_SUMMARY="$(tail -n 4 /tmp/p3-ir.log | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g')"
+          SEM_SUMMARY="$(tail -n 10 /tmp/p3-semantic-v2.log | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g')"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm .github/workflows/p3-final-phase3-repair-v3.yml
+          git add js/semantics/compat/semantic-ir-v2-to-v1-finalize.js js/interproc.js userscript/hex.user.template.js
+          git diff --cached --check
+          git commit -m "Phase 3: finalize public v1 projection after semantic-v2 cutover" -m "Keep canonical state-read results public, collapse only local physical-view bridges, and preserve ABI argument lineage for width-specific public state reads without treating arbitrary width conversions as transparent.\nIR: ${IR_SUMMARY}\nSemantic-v2: ${SEM_SUMMARY}\nCanonical userscript buildId: ${BUILD_ID:-unparsed}"
+          git push origin HEAD:hex/p3-semantic-ir-integration
+
+      - name: Remove temporary workflow after failed validation
+        if: failure()
+        shell: bash
+        run: |
+          git reset --hard HEAD
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          if [ -f .github/workflows/p3-final-phase3-repair-v3.yml ]; then
+            git rm .github/workflows/p3-final-phase3-repair-v3.yml
+            git commit -m 'Phase 3: remove failed temporary final repair gate v3'
+            git push origin HEAD:hex/p3-semantic-ir-integration
+          fi
