@@ -63,7 +63,7 @@ function descriptorFrom(value) {
 
 function descriptorCandidates(node, value, definingNode, explicit) {
   return [
-    object(explicit) ?? descriptorFrom(explicit),
+    descriptorFrom(explicit) ?? object(explicit),
     descriptorFrom(node?.attributes),
     descriptorFrom(node?.metadata),
     descriptorFrom(value?.metadata),
@@ -77,15 +77,7 @@ function normalizeDescriptor(raw) {
   if (!descriptor) return null;
   const kind = nonEmpty(descriptor.kind);
   if (!kind) return null;
-  const aliases = new Map([
-    ['stack', 'stack-fixed'],
-    ['global', 'global-absolute'],
-    ['absolute', 'global-absolute'],
-    ['field', 'rooted-offset'],
-    ['object-offset', 'rooted-offset'],
-    ['rooted', 'rooted-offset'],
-  ]);
-  return { ...descriptor, kind: aliases.get(kind) ?? kind };
+  return { ...descriptor, kind };
 }
 
 function unknownRegion({ functionId, binaryId, widthBits, origin, sourceEntityId, addressValueId, addressSpace, reason, metadata }) {
@@ -97,7 +89,7 @@ function unknownRegion({ functionId, binaryId, widthBits, origin, sourceEntityId
   };
   const scope = functionId ? { functionId, binaryId } : { binaryId };
   if (!scope.functionId && !scope.binaryId) {
-    scope.functionId = 'unknown-function-scope';
+    throw new TypeError('alias-region-scope-required');
   }
   const id = createMemoryRegionId({
     ...scope,
