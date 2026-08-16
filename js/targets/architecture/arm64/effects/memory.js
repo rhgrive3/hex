@@ -208,11 +208,28 @@ function storeValueFromRegister(regInput, widthBits, idPrefix) {
   if (reg.zero) return { operations:[], value:zeroConstant(widthBits) };
   if (reg.kind === 'sp') throw new TypeError('arm64-store-from-sp-unsupported');
   if (widthBits > reg.bits) throw new TypeError('arm64-store-width-exceeds-source-view');
-  const read = createArm64RegisterRead(reg, `${idPrefix}.source`, reg.bits);
+
+  // A W source is a low-32 view of the same 64-bit physical X register. Read
+  // the physical cell at storage width and project the architectural view with
+  // an explicit truncation, matching the integer-effects path and W writes.
+  // This keeps generic SSA architecture-neutral and prevents parallel 32/64
+  // state variants for one physical GP register.
+  const physicalBits = reg.kind === 'gp' && reg.bits === 32 ? 64 : reg.bits;
+  const read = createArm64RegisterRead(reg, `${idPrefix}.source`, physicalBits);
   const operations = [read.operation];
   let value = read.value;
-  if (widthBits < reg.bits) {
-    const trunc = valueOp('truncate', value, reg.bits, widthBits, `${idPrefix}.truncated`, { purpose:'memory-store-width' });
+  let valueBits = physicalBits;
+  if (valueBits !== reg.bits) {
+    const view = valueOp('truncate', value, valueBits, reg.bits, `${idPrefix}.view`, {
+      purpose:'memory-store-register-view',
+      reason:'a64-w-register-read-is-low-32-of-physical-x',
+    });
+    operations.push(view.operation);
+    value = view.output;
+    valueBits = reg.bits;
+  }
+  if (widthBits < valueBits) {
+    const trunc = valueOp('truncate', value, valueBits, widthBits, `${idPrefix}.truncated`, { purpose:'memory-store-width' });
     operations.push(trunc.operation);
     value = trunc.output;
   }

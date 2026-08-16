@@ -45,6 +45,20 @@ export function immediateOf(op) {
   try { return BigInt(op.value); } catch { return null; }
 }
 
+function decodedAbsoluteTargetOf(op) {
+  const immediate = immediateOf(op);
+  if (immediate != null) return immediate;
+  // Some current decoded-model fixtures retain an absolute direct target as a
+  // typed `other` operand without Capstone's leading '#'. Normalize that decode
+  // representation here, inside the ARM64 target boundary, before MachineEffects
+  // are created. Generic semantic/SSA/compat consumers never inspect instruction
+  // text and the resulting control effect remains the single semantic truth.
+  if (!op || op.k !== 'other') return null;
+  const text = String(op.text ?? '').trim();
+  if (!/^#?(?:0x[0-9a-f]+|\d+)$/i.test(text)) return null;
+  try { return BigInt(text.replace(/^#/, '')); } catch { return null; }
+}
+
 export function conditionOf(instruction) {
   const operand = (instruction?.ops || []).find((op) => op?.k === 'cond');
   if (operand?.text) return String(operand.text).toLowerCase();
@@ -60,7 +74,7 @@ export function directTargetOf(instruction, kind = 'branch') {
   }
   const ops = instruction?.ops || [];
   for (let i = ops.length - 1; i >= 0; i--) {
-    const value = immediateOf(ops[i]);
+    const value = decodedAbsoluteTargetOf(ops[i]);
     if (value != null) return value;
   }
   return null;
@@ -143,9 +157,25 @@ export function createArm64EffectContext(instruction, options = {}) {
     const descriptor = registerDescriptor(op);
     if (!descriptor) return null;
     if (descriptor.kind === 'zero') return constant(descriptor.bits, 0n);
-    const register = createRegisterValue(descriptor.registerId, descriptor.bits, { view: descriptor.view });
-    const output = temp(descriptor.bits, `read-${descriptor.view}`);
+    // AArch64 W registers are low-32 views of the same 64-bit physical X
+    // register. Model the physical state read at storage width, then project the
+    // W view with an explicit truncation. This matches W writes (which already
+    // zext into the 64-bit physical state) and lets generic SSA see one physical
+    // state cell without architecture-specific W/X alias rules.
+    const physicalBits = descriptor.bits === 32 ? 64 : descriptor.bits;
+    const physicalView = descriptor.bits === 32
+      ? (descriptor.registerId === 'sp' ? 'sp' : descriptor.registerId)
+      : descriptor.view;
+    const register = createRegisterValue(descriptor.registerId, physicalBits, { view: physicalView });
+    const output = temp(physicalBits, `read-${physicalView}`);
     addOperation({ kind: 'register-read', register, value: output });
+    if (descriptor.bits === 32) {
+      return valueOp('trunc', [output], 32, {
+        fromBits: 64,
+        toBits: 32,
+        reason: 'a64-w-register-read-is-low-32-of-physical-x',
+      });
+    }
     return output;
   }
 

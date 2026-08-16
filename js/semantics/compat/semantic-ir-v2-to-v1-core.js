@@ -1,4 +1,5 @@
 import { analyzeSemanticDominance, createSemanticCfg } from '../cfg/index.js';
+import { analyzeGraph } from '../../controlflow.js';
 
 /** Internal architecture-neutral helpers for the Semantic IR v2 -> v1 projection. */
 
@@ -14,6 +15,11 @@ const CONTROL_KINDS = new Set(['branch', 'conditional-branch', 'switch', 'return
 
 export function safeBigInt(value) {
   if (value == null) return null;
+  if (typeof value === 'object') {
+    if (value.kind === 'bitvector' && value.value != null) return safeBigInt(value.value);
+    if ((value.kind === 'absolute-address' || value.kind === 'address') && value.value != null) return safeBigInt(value.value);
+    return null;
+  }
   try { return typeof value === 'bigint' ? value : BigInt(value); } catch { return null; }
 }
 function machineWidth(type) {
@@ -48,6 +54,34 @@ function textForNode(node, options) {
     if (value != null) return String(value);
   }
   return `semantic-v2 ${node.kind}`;
+}
+
+/**
+ * v1 exposes the physical state name, not Semantic SSA's internal variable key.
+ * Width/view information deliberately stays on the value itself. This means two
+ * access views of one physical register keep one public identity without any
+ * architecture-specific register-name rule in compatibility code.
+ */
+export function legacyPublicStateIdentity(variable) {
+  const physical = variable?.physicalIdentity;
+  if (physical?.kind === 'register' && physical.registerId != null) return String(physical.registerId);
+  if (physical?.kind === 'flag' && physical.flagId != null) return String(physical.flagId);
+  return variable?.key == null ? null : String(variable.key);
+}
+
+function stateIdentityByVariableKey(ir, ssa) {
+  const map = new Map();
+  for (const node of ir.nodes) {
+    if (!node.variable?.key) continue;
+    map.set(node.variable.key, node.variable);
+  }
+  for (const definition of ssa?.definitions ?? []) {
+    const variable = definition.proof?.variableIdentity ?? null;
+    if (!variable) continue;
+    if (definition.variableKey) map.set(definition.variableKey, variable);
+    if (variable.key) map.set(variable.key, variable);
+  }
+  return map;
 }
 
 function normalizeAbiResult(raw) {
@@ -122,17 +156,11 @@ export function explicitTargetsForBlock(block, nodeById) {
   return unique(out).sort();
 }
 
-/**
- * Project canonical Semantic CFG/dominance facts into the integer-indexed v1
- * shape. This intentionally delegates graph analysis to the canonical Phase 3
- * CFG implementation; compatibility code must not maintain a second
- * dominance algorithm.
- */
-export function graphFacts(blocks, blockIndex, entryIndex, functionId = 'semantic-v2-v1-compat') {
+function fallbackCfg(blocks, entryIndex, functionId) {
   const semanticIdByIndex = new Map(blocks.map((block) => [block.index, block.semanticBlockId]));
   const entryBlockId = semanticIdByIndex.get(entryIndex);
   if (entryBlockId == null) throw new TypeError('semantic-v2-v1-compat-entry-block-required');
-  const cfg = createSemanticCfg({
+  return createSemanticCfg({
     functionId,
     entryBlockId,
     blocks: blocks.map((block) => ({
@@ -143,17 +171,49 @@ export function graphFacts(blocks, blockIndex, entryIndex, functionId = 'semanti
         .map((to) => ({ to, kind: 'branch' })),
     })),
   });
-  const dominance = analyzeSemanticDominance(cfg);
+}
+
+/**
+ * Project canonical Semantic CFG/dominance facts into the integer-indexed v1
+ * shape. A supplied canonical CFG is never rediscovered from instructions.
+ * The existing graph utility is used only to serialize the already-proven edge
+ * graph into the established v1 loop/backedge shape.
+ */
+export function graphFacts(blocks, blockIndex, entryIndex, functionId = 'semantic-v2-v1-compat', canonicalCfg = null) {
+  const cfg = canonicalCfg == null ? fallbackCfg(blocks, entryIndex, functionId) : createSemanticCfg(canonicalCfg);
+  if (cfg.functionId !== functionId) throw new TypeError('semantic-v2-v1-compat-cfg-function-mismatch');
   const cfgById = new Map(cfg.blocks.map((block) => [block.id, block]));
+  const edgeFacts = [];
 
   for (const block of blocks) {
     const cfgBlock = cfgById.get(block.semanticBlockId);
-    block.pred = (cfgBlock?.predecessors ?? [])
+    if (!cfgBlock) throw new TypeError('semantic-v2-v1-compat-cfg-block-mismatch');
+    block.succ = cfgBlock.successors
+      .map((edge) => blockIndex.get(edge.to))
+      .filter((index) => index != null);
+    block.successorEdges = cfgBlock.successors
+      .map((edge) => ({
+        to: blockIndex.get(edge.to),
+        semanticTo: edge.to,
+        kind: edge.kind,
+        metadata: edge.metadata ?? null,
+      }))
+      .filter((edge) => edge.to != null);
+    block.pred = cfgBlock.predecessors
       .map((id) => blockIndex.get(id))
       .filter((index) => index != null)
       .sort((a, b) => a - b);
+    for (const edge of block.successorEdges) edgeFacts.push({
+      from: block.index,
+      to: edge.to,
+      semanticFrom: block.semanticBlockId,
+      semanticTo: edge.semanticTo,
+      kind: edge.kind,
+      metadata: edge.metadata,
+    });
   }
 
+  const dominance = analyzeSemanticDominance(cfg);
   const reachable = new Set(dominance.reachable
     .map((id) => blockIndex.get(id))
     .filter((index) => index != null));
@@ -167,37 +227,56 @@ export function graphFacts(blocks, blockIndex, entryIndex, functionId = 'semanti
     return parent == null ? -1 : (blockIndex.get(parent) ?? -1);
   });
   for (const block of blocks) block.idom = idom[block.index] ?? -1;
-  return { reachable, dominators, idom, loops: [], blockIndex };
+
+  const legacyGraph = analyzeGraph(blocks.map((block) => block.succ), entryIndex);
+  for (const loop of legacyGraph.loops) {
+    const header = blocks[loop.header];
+    if (header) header.isLoopHeader = true;
+  }
+  return {
+    reachable,
+    dominators,
+    idom,
+    loops: legacyGraph.loops,
+    backEdges: legacyGraph.backEdges,
+    blockIndex,
+    cfg,
+    edges: edgeFacts,
+  };
 }
 
-function variableVersions(ir, ssa) {
+function variableVersions(ir, ssa, stateByKey) {
   const map = new Map();
   if (ssa) {
     const groups = new Map();
     for (const definition of ssa.definitions) {
       if (!definition.variableKey) continue;
-      let list = groups.get(definition.variableKey);
-      if (!list) { list = []; groups.set(definition.variableKey, list); }
+      const variable = definition.proof?.variableIdentity ?? stateByKey.get(definition.variableKey) ?? null;
+      const publicIdentity = legacyPublicStateIdentity(variable) ?? definition.variableKey;
+      let list = groups.get(publicIdentity);
+      if (!list) { list = []; groups.set(publicIdentity, list); }
       list.push(definition);
     }
-    for (const [key, definitions] of [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+    for (const [publicIdentity, definitions] of [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
       const entries = definitions.filter((definition) => definition.kind === 'entry').sort((a, b) => a.valueId.localeCompare(b.valueId));
       const others = definitions.filter((definition) => definition.kind !== 'entry').sort((a, b) => a.definitionId.localeCompare(b.definitionId));
-      for (const definition of entries) map.set(definition.valueId, { reg: key, version: 0 });
-      others.forEach((definition, index) => map.set(definition.valueId, { reg: key, version: index + 1 }));
+      for (const definition of entries) map.set(definition.valueId, { reg: publicIdentity, version: 0, stateKey: definition.variableKey });
+      others.forEach((definition, index) => map.set(definition.valueId, { reg: publicIdentity, version: index + 1, stateKey: definition.variableKey }));
     }
   }
   const fallbackGroups = new Map();
   for (const value of ir.values) {
     if (map.has(value.id) || !value.variableKey) continue;
-    let list = fallbackGroups.get(value.variableKey);
-    if (!list) { list = []; fallbackGroups.set(value.variableKey, list); }
+    const variable = stateByKey.get(value.variableKey) ?? null;
+    const publicIdentity = legacyPublicStateIdentity(variable) ?? value.variableKey;
+    let list = fallbackGroups.get(publicIdentity);
+    if (!list) { list = []; fallbackGroups.set(publicIdentity, list); }
     list.push(value);
   }
-  for (const [key, values] of [...fallbackGroups.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+  for (const [publicIdentity, values] of [...fallbackGroups.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
     values.sort((a, b) => a.id.localeCompare(b.id));
     let version = 0;
-    for (const value of values) map.set(value.id, { reg: key, version: value.kind === 'entry' ? 0 : ++version });
+    for (const value of values) map.set(value.id, { reg: publicIdentity, version: value.kind === 'entry' ? 0 : ++version, stateKey: value.variableKey });
   }
   return map;
 }
@@ -222,11 +301,30 @@ function canonicalScalarDefinitionBySemanticValue(ssa) {
   return map;
 }
 
+export function buildStateProjectionIndex(ssa) {
+  const definitionByValueId = new Map((ssa?.definitions ?? []).map((definition) => [definition.valueId, definition]));
+  const writeDefinitionByNodeId = new Map();
+  const readUseByNodeId = new Map();
+  for (const definition of ssa?.definitions ?? []) {
+    if (!definition.variableKey || !definition.sourceEntityId) continue;
+    if (definition.kind === 'definition' && definition.proof?.kind === 'renamed-definition'
+        && definition.proof?.sourceSemanticValueId != null) {
+      writeDefinitionByNodeId.set(definition.sourceEntityId, definition);
+    }
+  }
+  for (const use of ssa?.uses ?? []) {
+    if (!use.sourceEntityId || use.proof?.kind !== 'renamed-use') continue;
+    if (!readUseByNodeId.has(use.sourceEntityId)) readUseByNodeId.set(use.sourceEntityId, use);
+  }
+  return { definitionByValueId, writeDefinitionByNodeId, readUseByNodeId };
+}
+
 export function buildLegacyValues(ir, ssa) {
   const ssaByValue = new Map(ssa?.definitions?.map((definition) => [definition.valueId, definition]) || []);
   const scalarBySemanticValue = canonicalScalarDefinitionBySemanticValue(ssa);
   const semanticById = new Map(ir.values.map((value) => [value.id, value]));
-  const versions = variableVersions(ir, ssa);
+  const stateByKey = stateIdentityByVariableKey(ir, ssa);
+  const versions = variableVersions(ir, ssa, stateByKey);
   const values = [];
   const byId = new Map();
 
@@ -237,15 +335,15 @@ export function buildLegacyValues(ir, ssa) {
     return value;
   };
 
-  // Preserve the v1 node operand vocabulary: every Semantic IR value has one
-  // legacy value. When generic SSA created a canonical ValueId for that exact
-  // scalar value, alias that canonical ID to the same legacy value.
   for (const semanticValue of ir.values) {
     const directDefinition = ssaByValue.get(semanticValue.id) ?? scalarBySemanticValue.get(semanticValue.id) ?? null;
     const version = versions.get(semanticValue.id) || {};
+    const variable = semanticValue.variableKey == null ? null : stateByKey.get(semanticValue.variableKey) ?? null;
+    const publicIdentity = version.reg ?? legacyPublicStateIdentity(variable) ?? semanticValue.variableKey ?? null;
     const value = pushValue({
       kind: legacyKind(semanticValue.kind, directDefinition?.kind ?? null),
-      reg: version.reg ?? semanticValue.variableKey ?? null,
+      reg: publicIdentity,
+      stateKey: version.stateKey ?? semanticValue.variableKey ?? null,
       version: version.version ?? 0,
       bits: machineWidth(semanticValue.machineType),
       def: null,
@@ -255,7 +353,7 @@ export function buildLegacyValues(ir, ssa) {
       signed: null,
       nullable: null,
       type: null,
-      label: version.reg ?? semanticValue.variableKey ?? semanticValue.sourceEntityId ?? null,
+      label: publicIdentity ?? semanticValue.sourceEntityId ?? null,
       semanticValueId: semanticValue.id,
       semanticSsaValueId: directDefinition?.valueId ?? null,
       sourceEntityId: semanticValue.sourceEntityId,
@@ -268,18 +366,18 @@ export function buildLegacyValues(ir, ssa) {
     if (directDefinition && directDefinition.variableKey == null) byId.set(directDefinition.valueId, value);
   }
 
-  // Generic SSA also creates state-version ValueIds (entry/def/phi/unknown)
-  // that do not exist as raw Semantic IR values. Project those explicitly so
-  // phi incoming edges and use/def links use the canonical ValueId identity.
   for (const definition of ssa?.definitions ?? []) {
     if (byId.has(definition.valueId)) continue;
     const sourceSemanticValueId = definition.proof?.sourceSemanticValueId ?? null;
     const sourceSemanticValue = sourceSemanticValueId == null ? null : semanticById.get(sourceSemanticValueId) ?? null;
     const version = versions.get(definition.valueId) || {};
     const machineType = definition.proof?.machineType ?? sourceSemanticValue?.machineType ?? null;
+    const variable = definition.proof?.variableIdentity ?? stateByKey.get(definition.variableKey) ?? null;
+    const publicIdentity = version.reg ?? legacyPublicStateIdentity(variable) ?? definition.variableKey ?? sourceSemanticValue?.variableKey ?? null;
     const value = pushValue({
       kind: legacyKind(sourceSemanticValue?.kind ?? null, definition.kind),
-      reg: version.reg ?? definition.variableKey ?? sourceSemanticValue?.variableKey ?? null,
+      reg: publicIdentity,
+      stateKey: version.stateKey ?? definition.variableKey ?? variable?.key ?? null,
       version: version.version ?? 0,
       bits: machineWidth(machineType),
       def: null,
@@ -289,7 +387,7 @@ export function buildLegacyValues(ir, ssa) {
       signed: null,
       nullable: null,
       type: null,
-      label: version.reg ?? definition.variableKey ?? sourceSemanticValue?.sourceEntityId ?? definition.sourceEntityId ?? null,
+      label: publicIdentity ?? sourceSemanticValue?.sourceEntityId ?? definition.sourceEntityId ?? null,
       semanticValueId: null,
       semanticSsaValueId: definition.valueId,
       sourceSemanticValueId,

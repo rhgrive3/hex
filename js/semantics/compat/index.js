@@ -45,7 +45,7 @@ export const SEMANTIC_V2_MIGRATION_MODES = Object.freeze({
   SHADOW_DIFFERENTIAL: 'semantic-v2-shadow-differential',
 });
 
-export const SEMANTIC_V2_COMPAT_PIPELINE_VERSION = '1.0.0';
+export const SEMANTIC_V2_COMPAT_PIPELINE_VERSION = '1.1.0';
 export const SEMANTIC_V2_COMPAT_PATH = Object.freeze([
   'machine-effects',
   'semantic-ir-v2',
@@ -157,6 +157,46 @@ function normalizeSuccessor(input) {
     to: nonEmpty(input.to, 'semantic-v2-integration-successor-target-required'),
     kind: nonEmpty(input.kind ?? 'fallthrough', 'semantic-v2-integration-successor-kind-required'),
     ...(input.metadata == null ? {} : { metadata: input.metadata }),
+  };
+}
+
+function architectureRegisterDescriptors(architecturePlugin) {
+  if (typeof architecturePlugin.registerFile !== 'function') return [];
+  let descriptors;
+  try { descriptors = architecturePlugin.registerFile(); }
+  catch { return []; }
+  return Array.isArray(descriptors) ? descriptors : [];
+}
+
+function createRegionRootDescriptorProvider(architecturePlugin, architectureId, input, options) {
+  const explicitProvider = input.rootDescriptorProvider
+    ?? options.regionOptions?.rootDescriptorProvider
+    ?? options.rootDescriptorProvider
+    ?? null;
+  const stackRegisterIds = new Set(architectureRegisterDescriptors(architecturePlugin)
+    .filter((descriptor) => descriptor && String(descriptor.kind ?? '') === 'stack-pointer' && descriptor.id != null)
+    .map((descriptor) => String(descriptor.id)));
+
+  if (typeof explicitProvider !== 'function' && !stackRegisterIds.size) return null;
+  return (request) => {
+    if (typeof explicitProvider === 'function') {
+      const supplied = explicitProvider(request);
+      if (supplied != null) return supplied;
+    }
+    const identity = request?.variable?.physicalIdentity;
+    if (identity?.kind !== 'register' || !stackRegisterIds.has(String(identity.registerId ?? ''))) return null;
+    return {
+      kind: 'stack-like',
+      addressSpace: request.expectedAddressSpace ?? 'memory',
+      baseOffset: 0,
+      linearOffsets: true,
+      rootIdentity: {
+        kind: 'architecture-register-role',
+        architectureId,
+        role: 'stack-pointer',
+        registerId: String(identity.registerId),
+      },
+    };
   };
 }
 
@@ -367,10 +407,18 @@ export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
   const ssa = buildSemanticSsa(ir, cfg, options.ssaOptions ?? {});
   validateSemanticSsa(ssa, ir, cfg, options.ssaValidationOptions ?? {});
 
+  const regionOptions = options.regionOptions ?? {};
+  const rootDescriptors = input.rootDescriptors ?? regionOptions.rootDescriptors ?? options.rootDescriptors;
+  const rootDescriptorProvider = createRegionRootDescriptorProvider(architecturePlugin, architectureId, input, options);
   const memorySsa = buildMemorySsa(ir, cfg, {
     ...(options.memorySsaOptions ?? {}),
     resolveRegion(memory, context) {
-      return classifySemanticMemoryRegion(ir, context.node, { binaryId });
+      return classifySemanticMemoryRegion(ir, context.node, {
+        binaryId,
+        ssa,
+        ...(rootDescriptors == null ? {} : { rootDescriptors }),
+        ...(rootDescriptorProvider == null ? {} : { rootDescriptorProvider }),
+      });
     },
     queryAlias(left, right) {
       return aliasMemoryRegions(left, right);
@@ -379,10 +427,11 @@ export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
   validateMemorySsa(memorySsa, { cfg, ...(options.memorySsaValidationOptions ?? {}) });
 
   const legacyV1 = projectSemanticIrV2ToLegacyV1(ir, {
+    ...(options.compatOptions ?? {}),
+    cfg,
     ssa,
     memorySsa,
-    abiAdapter: input.abiAdapter ?? options.abiAdapter,
-    ...(options.compatOptions ?? {}),
+    abiAdapter: input.abiAdapter ?? options.abiAdapter ?? options.compatOptions?.abiAdapter,
   });
 
   // The wrapper object is immutable, and every canonical v2 artifact is already

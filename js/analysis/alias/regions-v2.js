@@ -6,6 +6,11 @@ import {
 } from '../../core/identity/index.js';
 import { createOriginSet, mergeOriginSets } from '../../core/identity/origin.js';
 import { createMemoryRegionRef } from '../../semantics/memoryssa/contract.js';
+import { normalizeAddressProofIr } from './address-ir-normalize-v2.js';
+import {
+  canonicalAddressProofToRegionEvidence,
+  deriveCanonicalAddressProof,
+} from './canonical-address-v2.js';
 
 export const REGION_ALIAS_FLOOR_VERSION = '1.0.0';
 
@@ -80,11 +85,27 @@ function normalizeDescriptor(raw) {
   return { ...descriptor, kind };
 }
 
+function descriptorWithProofMetadata(descriptor, proof) {
+  if (!descriptor || !proof) return descriptor;
+  const rootIdentity = object(proof.rootIdentity);
+  const storageClass = nonEmpty(rootIdentity?.storageClass);
+  if (!storageClass) return descriptor;
+  return {
+    ...descriptor,
+    metadata: {
+      ...(object(descriptor.metadata) ?? {}),
+      canonicalRootStorageClass: storageClass,
+    },
+  };
+}
+
 function unknownRegion({ functionId, binaryId, widthBits, origin, sourceEntityId, addressValueId, addressSpace, reason, metadata }) {
+  const normalizedWidth = Number.isSafeInteger(Number(widthBits)) && Number(widthBits) > 0 ? Number(widthBits) : null;
   const uncertaintyIdentity = {
     sourceEntityId: nonEmpty(sourceEntityId),
     addressValueId: nonEmpty(addressValueId),
     addressSpace: nonEmpty(addressSpace),
+    ...(normalizedWidth == null ? {} : { widthBits: normalizedWidth }),
     reason: nonEmpty(reason) ?? 'unproven-memory-region',
   };
   const scope = functionId ? { functionId, binaryId } : { binaryId };
@@ -101,7 +122,7 @@ function unknownRegion({ functionId, binaryId, widthBits, origin, sourceEntityId
     kind: 'unknown',
     ...scope,
     uncertaintyIdentity,
-    ...(Number.isSafeInteger(Number(widthBits)) && Number(widthBits) > 0 ? { widthBits: Number(widthBits) } : {}),
+    ...(normalizedWidth == null ? {} : { widthBits: normalizedWidth }),
     ...(originHasEvidence(origin) ? { origin } : {}),
     metadata: jsonSafe({ reason: uncertaintyIdentity.reason, ...(object(metadata) ?? {}) }),
   });
@@ -110,15 +131,16 @@ function unknownRegion({ functionId, binaryId, widthBits, origin, sourceEntityId
 function preciseRegion({ descriptor, functionId, binaryId, widthBits, origin, addressSpace, addressValueId }) {
   const kind = descriptor.kind;
   if (!PRECISE_KINDS.has(kind) || !originHasEvidence(origin)) return null;
+  const normalizedWidth = Number(widthBits);
   const scope = { functionId: functionId ?? null, binaryId: binaryId ?? null };
-  const common = { kind, widthBits: Number(widthBits), origin };
+  const common = { kind, widthBits: normalizedWidth, origin };
   let canonicalRegionIdentity;
   let specific;
 
   if (kind === 'stack-fixed') {
     const offset = toBigIntString(descriptor.offset);
     if (!scope.functionId || offset == null) return null;
-    canonicalRegionIdentity = { offset };
+    canonicalRegionIdentity = { offset, widthBits: normalizedWidth };
     specific = { functionId: scope.functionId, ...(scope.binaryId ? { binaryId: scope.binaryId } : {}), offset };
   } else if (kind === 'global-absolute') {
     const rawAddress = descriptor.address ?? descriptor.absoluteAddress;
@@ -126,19 +148,19 @@ function preciseRegion({ descriptor, functionId, binaryId, widthBits, origin, ad
     let address;
     try { address = canonicalAddress(rawAddress); }
     catch { return null; }
-    canonicalRegionIdentity = { address };
+    canonicalRegionIdentity = { address, widthBits: normalizedWidth };
     specific = { binaryId: scope.binaryId, ...(scope.functionId ? { functionId: scope.functionId } : {}), address };
   } else if (kind === 'rooted-offset') {
     const rootEntityId = nonEmpty(descriptor.rootEntityId ?? descriptor.rootId);
     const offset = toBigIntString(descriptor.offset ?? 0);
     if (!rootEntityId || offset == null || (!scope.functionId && !scope.binaryId)) return null;
-    canonicalRegionIdentity = { rootEntityId, offset };
+    canonicalRegionIdentity = { rootEntityId, offset, widthBits: normalizedWidth };
     specific = { ...(scope.functionId ? { functionId: scope.functionId } : {}), ...(scope.binaryId ? { binaryId: scope.binaryId } : {}), rootEntityId, offset };
   } else {
     const explicitSpace = nonEmpty(descriptor.addressSpace ?? addressSpace);
     if (!explicitSpace || (!scope.functionId && !scope.binaryId)) return null;
     const rootIdentity = descriptor.rootIdentity ?? (addressValueId ? { addressValueId } : null);
-    canonicalRegionIdentity = { addressSpace: explicitSpace, rootIdentity: jsonSafe(rootIdentity) };
+    canonicalRegionIdentity = { addressSpace: explicitSpace, rootIdentity: jsonSafe(rootIdentity), widthBits: normalizedWidth };
     specific = {
       ...(scope.functionId ? { functionId: scope.functionId } : {}),
       ...(scope.binaryId ? { binaryId: scope.binaryId } : {}),
@@ -202,6 +224,29 @@ export function deriveMemoryRegion(input = {}) {
   });
 }
 
+function irForAddressRootDerivation(ir) {
+  const nodes = Array.isArray(ir?.nodes) ? ir.nodes : [];
+  // A flags-only unknown state effect cannot mutate a non-flag physical root.
+  // Only apply this projection when no flag state value is read anywhere in the
+  // function, so a flag-derived address can never gain precision accidentally.
+  const readsFlagState = nodes.some((node) => node?.kind === 'state-read' && node.variable?.physicalIdentity?.kind === 'flag');
+  if (readsFlagState) return ir;
+  const ignored = new Set(nodes.filter((node) => {
+    if (node?.kind !== 'unknown-state-write') return false;
+    const categories = Array.isArray(node.unknown?.categories) ? node.unknown.categories.map(String) : [];
+    return categories.length > 0 && categories.every((category) => category === 'flags');
+  }).map((node) => String(node.id)));
+  if (!ignored.size) return ir;
+  return {
+    ...ir,
+    nodes: nodes.filter((node) => !ignored.has(String(node.id))),
+    blocks: (ir.blocks ?? []).map((block) => ({
+      ...block,
+      nodeIds: (block.nodeIds ?? []).filter((nodeId) => !ignored.has(String(nodeId))),
+    })),
+  };
+}
+
 export function classifySemanticMemoryRegion(ir, nodeOrId, options = {}) {
   const nodes = Array.isArray(ir?.nodes) ? ir.nodes : [];
   const values = Array.isArray(ir?.values) ? ir.values : [];
@@ -219,20 +264,45 @@ export function classifySemanticMemoryRegion(ir, nodeOrId, options = {}) {
   const addressValueId = nonEmpty(node.memory.addressExpr?.valueId);
   const value = addressValueId ? values.find((item) => item.id === addressValueId) : null;
   const definingNode = value?.definitionNodeId ? nodes.find((item) => item.id === value.definitionNodeId) : null;
-  const origin = normalizedOrigin(node.origin, value?.origin, definingNode?.origin);
-  const descriptor = descriptorCandidates(node, value, definingNode, options.regionEvidence)
+  const accessOrigin = normalizedOrigin(node.origin, value?.origin, definingNode?.origin);
+  const explicitDescriptor = descriptorCandidates(node, value, definingNode, options.regionEvidence)
     .map(normalizeDescriptor)
     .find(Boolean) ?? null;
+
+  let proof = null;
+  let graphDescriptor = null;
+  if (!explicitDescriptor && addressValueId) {
+    const proofIr = normalizeAddressProofIr(irForAddressRootDerivation(ir));
+    proof = deriveCanonicalAddressProof(proofIr, addressValueId, {
+      addressSpace: node.memory.addressSpace,
+      ssa: options.ssa,
+      rootDescriptors: options.rootDescriptors,
+      rootDescriptorProvider: options.rootDescriptorProvider,
+    });
+    graphDescriptor = descriptorWithProofMetadata(canonicalAddressProofToRegionEvidence(proof), proof);
+  }
+  const descriptor = explicitDescriptor ?? graphDescriptor;
+  const derivationMetadata = proof == null ? null : {
+    canonicalAddressKind: proof.kind,
+    ...(proof.reason == null ? {} : { canonicalAddressReason: proof.reason }),
+  };
+  // A canonical region is shared by every equivalent access. Its descriptor
+  // therefore uses the function-level IR origin instead of an access-local
+  // origin; otherwise equal MemoryRegionIds would carry conflicting objects.
+  const regionOrigin = graphDescriptor ? normalizedOrigin(ir.origin) : accessOrigin;
 
   return deriveMemoryRegion({
     functionId: ir.functionId,
     binaryId: options.binaryId ?? ir.binaryId ?? ir.metadata?.binaryId,
     memory: node.memory,
-    origin,
+    origin: regionOrigin,
     sourceEntityId: node.id,
     addressValueId,
     regionEvidence: descriptor,
-    unknownMetadata: options.unknownMetadata,
+    unknownMetadata: {
+      ...(object(options.unknownMetadata) ?? {}),
+      ...(derivationMetadata ?? {}),
+    },
   });
 }
 

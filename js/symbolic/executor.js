@@ -222,9 +222,13 @@ function conditionFromCmp(cmpInst, condCode, state, ir, opts, memo, active) {
 }
 
 function conditionFromFlags(inst, state, ir, opts, memo, active) {
-  const flagsArg = (inst.args || []).find((a) => a && a.value && a.value.reg === 'nzcv');
-  const flags = flagsArg && flagsArg.value;
-  return conditionFromCmp(flags && flags.def, inst.cond, state, ir, opts, memo, active);
+  // Semantic-v2 compatibility carries the comparison result explicitly as a
+  // value whose defining instruction is CMP. Prefer that architecture-neutral
+  // proof. The legacy nzcv register identity remains a fallback for the old IR.
+  const carrierArg = (inst.args || []).find((a) => a?.value?.def?.op === OP.CMP)
+    ?? (inst.args || []).find((a) => a?.value?.reg === 'nzcv');
+  const carrier = carrierArg?.value ?? null;
+  return conditionFromCmp(carrier?.def, inst.cond, state, ir, opts, memo, active);
 }
 
 function branchCondition(inst, state, ir, opts, memo) {

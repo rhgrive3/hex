@@ -69,6 +69,41 @@ export function classifyMachineValueOpcode(opcode) {
   return deepFreeze({ kind: 'intrinsic', operator: normalized });
 }
 
+/*
+ * MachineEffects may qualify a canonical scalar opcode with the bundle's
+ * architecture id or execution mode when the operation also carries target-
+ * specific edge-case metadata. Semantic IR must not learn those architecture
+ * names. Strip only the namespace declared by this very bundle, and only when
+ * the remaining opcode is already a known canonical Semantic IR operation.
+ * Preserve the original opcode in metadata so target-specific behavior (for
+ * example division edge cases) remains inspectable after normalization.
+ */
+function canonicalMachineValueOperation(operation, bundle) {
+  if (operation?.kind !== 'value') return operation;
+  const originalOpcode = String(operation.opcode ?? '');
+  const normalized = normalizeOpcode(originalOpcode);
+  const namespaces = [bundle?.architectureId, bundle?.mode]
+    .map(normalizeOpcode)
+    .filter(Boolean)
+    .sort((left, right) => right.length - left.length);
+  for (const namespace of namespaces) {
+    const prefix = `${namespace}-`;
+    if (!normalized.startsWith(prefix)) continue;
+    const canonicalOpcode = normalized.slice(prefix.length);
+    if (!canonicalOpcode || classifyMachineValueOpcode(canonicalOpcode).kind === 'intrinsic') continue;
+    return deepFreeze({
+      ...operation,
+      opcode: canonicalOpcode,
+      metadata: {
+        ...(operation.metadata || {}),
+        qualifiedMachineOpcode: originalOpcode,
+        semanticOpcodeNormalization: 'declared-bundle-namespace',
+      },
+    });
+  }
+  return operation;
+}
+
 export function machineValueMachineType(value, options = {}) {
   if (!value || typeof value !== 'object') return null;
   switch (value.kind) {
@@ -184,7 +219,7 @@ export function normalizeMachineEffectBundleForSemanticIr(input, options = {}) {
     return deepFreeze({
       index,
       sourceEffectId,
-      operation,
+      operation: canonicalMachineValueOperation(operation, bundle),
       origin: mergeOriginSets(bundle.origin, createOriginSet({ operationIds: [sourceEffectId] })),
     });
   });

@@ -55,6 +55,21 @@ function summaryReturnCandidate(ir, ret) {
   return { value, inferred: true };
 }
 
+function transparentMoveSource(value) {
+  let current = value;
+  for (let guard = 0; guard < 8 && current?.def?.op === OP.MOV; guard++) {
+    const def = current.def;
+    const source = def.args?.[0]?.value ?? null;
+    if (!source) break;
+    // Only same-width, semantics-preserving copies are transparent here. Width
+    // conversions such as trunc/zext remain explicit and cannot turn an
+    // arbitrary value into a source-language argument.
+    if (def.sub != null || Number(source.bits || 0) !== Number(current.bits || 0)) break;
+    current = source;
+  }
+  return current;
+}
+
 function simpleReturnExpression(value) {
   if (!value) return null;
   let v = value;
@@ -63,8 +78,8 @@ function simpleReturnExpression(value) {
   if (!v || !v.def || v.def.op !== OP.BIN || (v.def.sub !== 'add' && v.def.sub !== 'sub')) return null;
   const aArg = v.def.args[0] || null;
   const bArg = v.def.args[1] || null;
-  const a = aArg && aArg.value;
-  const b = bArg && bArg.value;
+  const a = transparentMoveSource(aArg && aArg.value);
+  const b = transparentMoveSource(bArg && bArg.value);
   if (!a || !b) return null;
   const bits = Number(v.bits || v.def.extra?.dstBits || aArg?.bits || 64);
   const signed = v.signed ?? null;

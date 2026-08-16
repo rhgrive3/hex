@@ -1,4 +1,5 @@
 import { liftArm64ControlEffects } from './control.js';
+import { directTargetOf, immediateOf, instructionMnemonic } from './common.js';
 import { liftArm64FlagEffects } from './flags.js';
 import { liftArm64FpEffects } from './fp.js';
 import { liftArm64IntegerEffects } from './integer.js';
@@ -29,12 +30,24 @@ function normalizedInstruction(decoded, context) {
   const instructionId = decoded.instructionId ?? context?.instructionId;
   const origin = decoded.origin ?? context?.origin;
   const mode = decoded.mode ?? context?.mode;
-  if (instructionId == null && origin == null && mode == null) return decoded;
+  const mnemonic = instructionMnemonic(decoded);
+  // Current decoded-model producers are allowed to carry ADR/ADRP's resolved
+  // absolute target either in pcRelTarget or in the already-decoded immediate
+  // operand. Normalize those architecture-layer representations before
+  // MachineEffects are created, so generic Semantic IR/SSA consumers never need
+  // to inspect instruction text or reconstruct PC-relative semantics.
+  const operands = Array.isArray(decoded.ops) ? decoded.ops : Array.isArray(decoded.operands) ? decoded.operands : [];
+  const adrImmediate = operands.length > 1 ? immediateOf(operands[1]) : null;
+  const normalizedPcRelTarget = (mnemonic === 'adr' || mnemonic === 'adrp') && decoded.pcRelTarget == null
+    ? (adrImmediate ?? directTargetOf(decoded))
+    : decoded.pcRelTarget;
+  if (instructionId == null && origin == null && mode == null && normalizedPcRelTarget === decoded.pcRelTarget) return decoded;
   return {
     ...decoded,
     ...(instructionId == null ? {} : { instructionId }),
     ...(origin == null ? {} : { origin }),
     ...(mode == null ? {} : { mode }),
+    ...(normalizedPcRelTarget == null ? {} : { pcRelTarget: normalizedPcRelTarget }),
   };
 }
 

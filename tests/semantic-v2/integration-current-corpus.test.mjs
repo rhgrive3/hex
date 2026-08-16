@@ -17,8 +17,6 @@ const root = path.resolve(directory, '../..');
 const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 const proofPath = ['machine-effects','semantic-ir-v2','scalar-ssa','region-resolver','memoryssa','v1-compat'];
 
-// Prove the public facade itself is selecting the explicit v2 route before the
-// unchanged current corpus is launched in isolated child processes.
 const BASE = 0x100000000n;
 const rows = ['mov x20, x19', 'ldr w8, [x20, #0x20]', 'ret'].map((line, row) => {
   const split = line.indexOf(' ');
@@ -79,12 +77,15 @@ if (!report) {
     process.stdout.write(`\n[phase3-v2-${suite} ${index + 1}] ${command}\n`);
     if (child.stdout) process.stdout.write(child.stdout);
     if (child.stderr) process.stderr.write(child.stderr);
+    const passed = child.status === 0;
+    const combined = `${child.stdout ?? ''}\n${child.stderr ?? ''}`;
     return {
       command,
       status: child.status,
       signal: child.signal ?? null,
       timedOut: child.error?.code === 'ETIMEDOUT',
-      passed: child.status === 0,
+      passed,
+      ...(passed ? {} : { failureTail:combined.slice(-3500) }),
     };
   };
 
@@ -107,7 +108,13 @@ if (!report) {
 }
 
 globalThis.__HEX_PHASE3_CURRENT_CORPUS__ = report;
-console.log('[phase3-current-corpus]', JSON.stringify({
+const corpusSummary = {
   semantic: { total:report.semantic.total, passed:report.semantic.passed, failed:report.semantic.failed },
   decompiler: { total:report.decompiler.total, passed:report.decompiler.passed, failed:report.decompiler.failed },
-}));
+};
+const failedDetails = [
+  ...report.semantic.results.filter((result) => !result.passed).map((result) => ({ suite:'semantic', command:result.command, failureTail:result.failureTail ?? '' })),
+  ...report.decompiler.results.filter((result) => !result.passed).map((result) => ({ suite:'decompiler', command:result.command, failureTail:result.failureTail ?? '' })),
+];
+console.log('[phase3-current-corpus]', JSON.stringify(corpusSummary));
+console.log(`::warning title=P3_CORPUS::${JSON.stringify({ ...corpusSummary, failedDetails }).replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A')}`);
