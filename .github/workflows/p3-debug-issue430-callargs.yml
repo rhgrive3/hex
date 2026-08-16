@@ -1,0 +1,62 @@
+name: Phase 3 debug issue430 call arguments
+
+on:
+  push:
+    branches:
+      - hex/p3-semantic-ir-integration
+    paths:
+      - '.github/workflows/p3-debug-issue430-callargs.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: hex/p3-semantic-ir-integration
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - name: Print compact issue 430 provenance
+        shell: bash
+        run: |
+          node --input-type=module <<'EOF'
+          import { buildSemanticModel } from './js/blocks.js';
+          import { buildIR, OP } from './js/ir.js';
+          import { stackPointerProvenanceOf } from './js/ir-core.js';
+
+          const BASE = 0x100000000n;
+          const lines = ['str w1, [sp, #0x18]','add x0, sp, #0x18','bl 0x100001000','ldr w2, [sp, #0x18]','ret'];
+          const rows = lines.map((line, i) => {
+            const s = String(line).trim();
+            const p = s.indexOf(' ');
+            return { row:i, address:BASE + BigInt(i * 4), mn:p < 0 ? s : s.slice(0, p), ops:p < 0 ? '' : s.slice(p + 1) };
+          });
+          const rowOfAddress = (addr) => {
+            const d = BigInt(addr) - BASE;
+            if (d < 0n || d >= BigInt(lines.length * 4)) return null;
+            return Number(d / 4n);
+          };
+          const model = buildSemanticModel(rows, { startRow:0, endRow:rows.length - 1, rowOfAddress });
+          const ir = buildIR(model, { rowOfAddress });
+          const call = ir.instructions.find((i) => i.op === OP.CALL && i.row === 2);
+          const load = ir.instructions.find((i) => i.op === OP.LOAD && i.row === 3);
+          const brief = (value) => value == null ? null : {
+            id:value.id,
+            reg:value.reg,
+            compatPublicIdentity:value.compatPublicIdentity ?? null,
+            compatDerived:value.compatDerived ?? null,
+            kind:value.kind,
+            bits:value.bits,
+            def:value.def == null ? null : { id:value.def.id, row:value.def.row, op:value.def.op, sub:value.def.sub ?? null, extra:{ stateRead:!!value.def.extra?.stateRead, stateWrite:!!value.def.extra?.stateWrite, publicStateIdentity:value.def.extra?.publicStateIdentity ?? null } },
+            provenance:stackPointerProvenanceOf(value),
+          };
+          console.log('CALL_ARGS', JSON.stringify((call?.args ?? []).map((a) => brief(a.value)), (_, v) => typeof v === 'bigint' ? v.toString() : v));
+          console.log('X0_VALUES', JSON.stringify((ir.values ?? []).filter((v) => v.reg === 'x0' || v.compatPublicIdentity === 'x0').map(brief), (_, v) => typeof v === 'bigint' ? v.toString() : v));
+          console.log('CALL_ARGUMENT_DESCRIPTORS', JSON.stringify(call?.callArguments ?? null));
+          console.log('LOAD', JSON.stringify({ reachingStore:load?.reachingStore?.id ?? null, memUse:load?.memUse?.kind ?? null, compatNoEscapeStackForwarding:load?.extra?.compatNoEscapeStackForwarding ?? false }));
+          EOF
