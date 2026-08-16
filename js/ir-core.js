@@ -6,7 +6,6 @@
  * the canonical Phase 3 pipeline without a catch-and-fallback path.
  */
 export * from './architecture/compat/ir-core-arm64-aapcs64-v1.js';
-export { classifyAAPCS64Arguments as classifyCallArguments } from './targets/abi/aapcs64.js';
 
 import { buildIR as buildLegacyIR } from './architecture/compat/ir-core-arm64-aapcs64-v1.js';
 import { buildCfg, EDGE } from './cfg.js';
@@ -16,6 +15,9 @@ import {
   buildSemanticV2CompatibilityPipeline,
 } from './semantics/compat/index.js';
 import { ARM64_ARCHITECTURE } from './targets/architecture/index.js';
+import { AAPCS64_ABI, classifyAAPCS64Arguments } from './targets/abi/aapcs64.js';
+
+export { classifyAAPCS64Arguments as classifyCallArguments };
 
 let semanticMigrationMode = SEMANTIC_V2_MIGRATION_MODES.LEGACY;
 let lastSemanticV2Instrumentation = null;
@@ -72,6 +74,34 @@ function ephemeralBinaryId(model) {
   return `migration-model-${stableDigest(identity)}`;
 }
 
+function aapcs64CompatAbiAdapter(options) {
+  return {
+    classifyCall({ node }) {
+      const control = node?.attributes?.machineControlEffect ?? null;
+      const callSite = {
+        callTarget: control?.target ?? null,
+        callPrototype: node?.attributes?.callPrototype ?? null,
+      };
+      const classified = classifyAAPCS64Arguments(callSite, options);
+      const returnValue = AAPCS64_ABI.classifyCallReturn(callSite, options);
+      const callArguments = (classified.srcs ?? [])
+        .filter((source) => source?.t === 'reg' && source.reg)
+        .map((source) => ({ reg: String(source.reg), bits: Number(source.bits ?? 0) || null }));
+      return {
+        callArguments,
+        stackArguments: classified.stackArguments ?? [],
+        stackArgsUnknown: classified.stackArgsUnknown !== false,
+        stackArgsMayContainPointers: classified.stackArgsMayContainPointers !== false,
+        argumentEvidence: classified.evidence ?? 'aapcs64-plugin',
+        clobbers: AAPCS64_ABI.callerSaved(),
+        returnReg: returnValue?.reg ?? null,
+        returnBits: returnValue?.bits ?? null,
+        returnEvidence: returnValue == null ? null : 'aapcs64-plugin',
+      };
+    },
+  };
+}
+
 function buildV2CompatFromLegacyModel(model, opts = {}) {
   if (!model?.instructions?.length) return null;
   const rowOfAddress = rowResolver(model, opts);
@@ -111,7 +141,7 @@ function buildV2CompatFromLegacyModel(model, opts = {}) {
     canonicalStartIdentity: { address: model.startAddress ?? model.instructions[0].address },
     entryBlockKey: legacyCfg.entry >= 0 ? `legacy-block-${legacyCfg.entry}` : blocks[0]?.key,
     blocks,
-    abiAdapter: opts.abiAdapter,
+    abiAdapter: opts.abiAdapter ?? aapcs64CompatAbiAdapter(opts),
   }, {
     signal: opts.signal,
     semanticIrOptions: opts.semanticIrOptions,
