@@ -106,7 +106,18 @@ export class ChatGPTDOMAdapter {
       ? scope.querySelector?.('[data-testid="collapsible-user-message-content"], [data-message-content-part="user"], [data-message-content]')
       : scope.querySelector?.('.markdown, [data-testid="markdown"], [data-message-content-part="assistant"], [data-message-content]');
     const semanticBody = body || scope;
-    return String(semanticBody.innerText || semanticBody.textContent || '').trim();
+    const inner = String(semanticBody.innerText || '');
+    const raw = String(semanticBody.textContent || '');
+    if (roleName === 'user' && body) {
+      // iOS/WebKit can report a line-clamped innerText before the collapsible
+      // renderer has fully hydrated. The semantic content node's textContent is
+      // not layout-clipped. Prefer it only when it clearly carries more content;
+      // otherwise keep innerText so block separators remain intact.
+      const innerLength = normalizeText(inner).length;
+      const rawLength = normalizeText(raw).length;
+      return String(rawLength > innerLength ? raw : (inner || raw)).trim();
+    }
+    return String(inner || raw).trim();
   }
 
   assistantTurns() { return this.all('assistantTurn').map((node) => ({ node, id: this.identity(node), text: this.text(node) })); }
@@ -132,9 +143,76 @@ export class ChatGPTDOMAdapter {
   errorState(scopeNodes = null) {
     for (const node of scopeNodes ? this.errorNodesWithin(scopeNodes) : this.all('error')) {
       const text = this.text(node);
-      if (text && /error|failed|try again|something went wrong|エラー|失敗|再試行/i.test(text)) return text.slice(0, 1000);
+      if (isFailureText(text)) return text.slice(0, 1000);
     }
     return null;
+  }
+
+  pageErrorSignal(node) {
+    if (!node) return null;
+    try { if (node.closest?.('[data-testid^="conversation-turn-"]')) return null; } catch { /* selector unsupported */ }
+    try { if (node.closest?.('[id^="hex-"], [data-hex]')) return null; } catch { /* selector unsupported */ }
+    if (node.hidden || node.getAttribute?.('aria-hidden') === 'true') return null;
+    const text = String(node.innerText || node.textContent || '').replace(/\s+/g, ' ').trim();
+    if (!isFailureText(text)) return null;
+    return { node, id: this.identity(node), text: text.slice(0, 1000) };
+  }
+
+  pageErrorSignals() {
+    const seen = new Set(), out = [];
+    for (const selector of this.selectors.pageError || []) {
+      let values = [];
+      try { values = this.document?.querySelectorAll?.(selector) || []; } catch { values = []; }
+      for (const node of values) {
+        if (seen.has(node)) continue;
+        seen.add(node);
+        const signal = this.pageErrorSignal(node);
+        if (signal) out.push(signal);
+      }
+    }
+    return out;
+  }
+
+  pageErrorState(baseline = null) {
+    for (const signal of this.pageErrorSignals()) {
+      if (baseline?.has?.(pageErrorSignature(signal))) continue;
+      return signal.text;
+    }
+    return null;
+  }
+
+  observePageErrors(callback) {
+    const Observer = globalThis.MutationObserver;
+    const root = this.document?.documentElement || this.document?.body || null;
+    if (!root || typeof Observer !== 'function') return () => {};
+    const selectors = this.selectors.pageError || [];
+    const candidates = (raw) => {
+      const element = raw?.nodeType === 1 ? raw : raw?.parentElement;
+      if (!element) return [];
+      const found = new Set();
+      for (const selector of selectors) {
+        try { if (element.matches?.(selector)) found.add(element); } catch { /* selector unsupported */ }
+        try { const enclosing = element.closest?.(selector); if (enclosing) found.add(enclosing); } catch { /* selector unsupported */ }
+        try { for (const node of element.querySelectorAll?.(selector) || []) found.add(node); } catch { /* selector unsupported */ }
+      }
+      return [...found];
+    };
+    const observer = new Observer((records) => {
+      for (const record of records || []) {
+        const values = [record.target, ...(record.addedNodes || [])];
+        for (const raw of values) {
+          for (const node of candidates(raw)) {
+            const signal = this.pageErrorSignal(node);
+            if (signal) { callback?.(signal); return; }
+          }
+        }
+      }
+    });
+    observer.observe(root, {
+      subtree: true, childList: true, characterData: true, attributes: true,
+      attributeFilter: ['role', 'aria-live', 'aria-hidden', 'data-testid'],
+    });
+    return () => observer.disconnect();
   }
 
   errorNodesWithin(scopeNodes) {
@@ -340,12 +418,13 @@ export class ChatGPTModelController {
 }
 
 export class ChatGPTTurnController {
-  constructor(adapter, { quietMs = 1500, pollMs = 120, startTimeoutMs = 10000, conversationGraceMs = 3000 } = {}) {
+  constructor(adapter, { quietMs = 1500, pollMs = 120, startTimeoutMs = 10000, conversationGraceMs = 3000, submissionMismatchGraceMs = 1500 } = {}) {
     this.adapter = adapter;
     this.quietMs = quietMs;
     this.pollMs = pollMs;
     this.startTimeoutMs = startTimeoutMs;
     this.conversationGraceMs = conversationGraceMs;
+    this.submissionMismatchGraceMs = submissionMismatchGraceMs;
   }
 
   async run(prompt, { signal, timeoutMs = 110000, expectedConversation = null, newConversation = expectedConversation === null, onConversation } = {}) {
@@ -358,6 +437,7 @@ export class ChatGPTTurnController {
     const baselineAssistant = new Set(this.assistantTurns().map((turn) => turn.id));
     const baselineUsers = new Set(this.userTurns().map((turn) => turn.id));
     const baselineConversation = new Set(this.conversationTurns().map((turn) => turn.id));
+    const baselinePageErrors = pageErrorSignatures(this.adapter);
     this.adapter.setComposerText(composer, prompt);
     const send = await waitFor(() => {
       const node = this.adapter.sendButton();
@@ -367,14 +447,41 @@ export class ChatGPTTurnController {
     send.click();
 
     let requestUserTurn = null;
-    const submitted = await waitFor(() => {
-      const explicit = this.userTurns().filter((turn) => !baselineUsers.has(turn.id));
-      if (explicit.length > 1) throw bridgeError('turn-controller', 'manual-interference', 'Another user turn appeared while Hex was submitting its request.');
-      if (explicit.length === 1) {
-        if (normalizeText(explicit[0].text) !== normalizedPrompt) throw bridgeError('turn-controller', 'manual-interference', 'The submitted ChatGPT turn does not match the Hex request.');
-        requestUserTurn = explicit[0];
-        return true;
+    let mismatchSince = null;
+    let pageErrorObserved = null;
+    const capturePageError = (signal = null) => {
+      if (pageErrorObserved) return;
+      if (signal && !baselinePageErrors.has(pageErrorSignature(signal))) {
+        pageErrorObserved = signal.text;
+        return;
       }
+      const current = this.adapter.pageErrorState?.(baselinePageErrors);
+      if (current) pageErrorObserved = current;
+    };
+    const stopObservingPageErrors = this.adapter.observePageErrors?.(capturePageError) || NOOP;
+    capturePageError();
+
+    let submitted = null;
+    try {
+      submitted = await waitFor(() => {
+        capturePageError();
+        if (pageErrorObserved) throw bridgeError('turn-controller', 'page-error', 'ChatGPT reported a page-level error while handling the Hex turn.', { error: pageErrorObserved });
+        const explicit = this.userTurns().filter((turn) => !baselineUsers.has(turn.id));
+        if (explicit.length > 1) throw bridgeError('turn-controller', 'manual-interference', 'Another user turn appeared while Hex was submitting its request.');
+        if (explicit.length === 1) {
+          const candidate = explicit[0];
+          if (normalizeText(candidate.text) === normalizedPrompt) {
+            requestUserTurn = candidate;
+            mismatchSince = null;
+            return true;
+          }
+          if (mismatchSince === null) mismatchSince = Date.now();
+          if (Date.now() - mismatchSince >= this.submissionMismatchGraceMs) {
+            throw bridgeError('turn-controller', 'manual-interference', 'The submitted ChatGPT turn does not match the Hex request.');
+          }
+          return false;
+        }
+        mismatchSince = null;
 
       // Some ChatGPT builds temporarily omit data-message-author-role while
       // retaining conversation-turn test ids. Accept only an exact prompt match.
@@ -384,16 +491,25 @@ export class ChatGPTTurnController {
         requestUserTurn = generic[0];
         return true;
       }
-      return false;
-    }, Math.min(this.startTimeoutMs, remaining(started, timeoutMs)), signal);
-    if (!submitted || !requestUserTurn) throw bridgeError('turn-controller', 'submission-unverified', 'The ChatGPT user turn could not be matched to the Hex request.');
+        return false;
+      }, Math.min(this.startTimeoutMs, remaining(started, timeoutMs)), signal);
+    } catch (error) {
+      stopObservingPageErrors();
+      throw error;
+    }
+    if (!submitted || !requestUserTurn) {
+      stopObservingPageErrors();
+      throw bridgeError('turn-controller', 'submission-unverified', 'The ChatGPT user turn could not be matched to the Hex request.');
+    }
 
     let latest = '', latestId = null, lastChangedAt = Date.now(), sawGenerating = this.adapter.isGenerating(), observedConversation = expectedConversation;
-    let missingConversationSince = null, bootstrapMigrated = false;
+    let missingConversationSince = null, bootstrapMigrated = false, completed = false;
     let stopObserving = NOOP;
     try {
       while (Date.now() - started < timeoutMs) {
         if (signal?.aborted) throw abortError(signal.reason);
+        capturePageError();
+        if (pageErrorObserved) throw bridgeError('turn-controller', 'page-error', 'ChatGPT reported a page-level error while handling the Hex turn.', { error: pageErrorObserved });
 
         // Read one logical snapshot before judging navigation. The production
         // lifecycle proves that a brand-new chat can move provisional CID A ->
@@ -471,6 +587,7 @@ export class ChatGPTTurnController {
             }
             const identity = conversation || observedConversation;
             if (identity || settledFor >= Math.max(this.quietMs, this.conversationGraceMs)) {
+              completed = true;
               return { text: latest.trim(), conversation: identity || null, turnId: turn.id };
             }
           }
@@ -480,7 +597,23 @@ export class ChatGPTTurnController {
       throw bridgeError('turn-controller', 'timeout', 'ChatGPT response capture timed out.', {
         sawResponseText: !!latest.trim(), responseTurnId: latestId, sawGenerating, conversation: observedConversation || null,
       });
-    } finally { stopObserving(); }
+    } finally {
+      stopObserving();
+      stopObservingPageErrors();
+      if (!completed) this.stopOwnedGeneration({ requestUserTurn, normalizedPrompt, observedConversation });
+    }
+  }
+
+  stopOwnedGeneration({ requestUserTurn, normalizedPrompt, observedConversation } = {}) {
+    if (!requestUserTurn || !this.adapter.isGenerating?.()) return false;
+    const current = this.adapter.conversation?.() || null;
+    // Never click Stop after navigation to a concretely different conversation:
+    // that button can belong to the user's unrelated ChatGPT turn.
+    if (observedConversation && current && current.id !== observedConversation.id) return false;
+    const users = this.userTurns();
+    const turns = this.conversationTurns();
+    if (!requestTurnIsPresent(requestUserTurn, users, turns, normalizedPrompt)) return false;
+    try { return this.adapter.stop?.() === true; } catch { return false; }
   }
 
   fallbackResponseTurn({ baselineConversation, baselineUsers, requestUserTurn, normalizedPrompt }) {
@@ -556,6 +689,14 @@ function requestTurnIsPresent(request, userTurns, conversationTurns, normalizedP
     return sameIdentity && normalizeText(turn.text) === normalizedPrompt;
   };
   return (userTurns || []).some(matches) || (conversationTurns || []).some(matches);
+}
+function isFailureText(value) {
+  return /error|failed|invalid input|invalid request|unable to|something went wrong|try again|エラー|失敗|不正な入力|無効な入力|問題が発生|送信できません|処理できません|再試行/i.test(String(value || ''));
+}
+function pageErrorSignature(value) { return `${String(value?.id || '')}\u0000${normalizeText(value?.text || '')}`; }
+function pageErrorSignatures(adapter) {
+  if (typeof adapter?.pageErrorSignals !== 'function') return new Set();
+  return new Set((adapter.pageErrorSignals() || []).map(pageErrorSignature));
 }
 function bridgeError(stage, code, message, details = null) { return new ChatGPTBridgeError(code, message, details, stage); }
 function validConversation(value) { return !!value && typeof value.id === 'string' && conversationIdentity(value.url)?.id === value.id; }

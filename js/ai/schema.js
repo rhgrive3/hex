@@ -44,8 +44,8 @@ export const ACTION_SCHEMA = Object.freeze({
    may reduce work for latency or battery reasons, but untrusted callers cannot
    enlarge an investigation beyond the mode's reviewed iPad-safe envelope. */
 export const AI_BUDGETS = Object.freeze({
-  chat: Object.freeze({ maxModelCalls: 2, maxToolCalls: 2, maxFunctions: 4, maxDisassembly: 8000, maxCost: 12, timeoutMs: 30000, contextBytes: 64 * 1024 }),
-  agent: Object.freeze({ maxModelCalls: 12, maxToolCalls: 24, maxFunctions: 48, maxDisassembly: 50000, maxCost: 160, timeoutMs: 120000, contextBytes: 128 * 1024 }),
+  chat: Object.freeze({ maxModelCalls: 2, maxToolCalls: 2, maxFunctions: 4, maxDisassembly: 8000, maxCost: 12, timeoutMs: 240000, contextBytes: 64 * 1024 }),
+  agent: Object.freeze({ maxModelCalls: 12, maxToolCalls: 24, maxFunctions: 48, maxDisassembly: 50000, maxCost: 160, timeoutMs: 600000, contextBytes: 128 * 1024 }),
 });
 
 export const AI_RESULT_SCHEMA = Object.freeze({

@@ -77,6 +77,15 @@ export const CHATGPT_SELECTORS = Object.freeze({
   error: Object.freeze([
     '[data-testid="conversation-turn-error"]',
   ]),
+  // Page-level failures (for example a transient invalid-input toast) are only
+  // authoritative when they are newly observed after Hex submits its turn.
+  // The turn controller baselines these nodes before send, so historical ARIA
+  // announcements cannot poison later requests.
+  pageError: Object.freeze([
+    '[role="alert"]',
+    '[aria-live="assertive"]',
+    '[data-testid*="error"]',
+  ]),
 });
 
 export default CHATGPT_SELECTORS;

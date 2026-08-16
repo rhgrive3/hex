@@ -2,12 +2,12 @@ import { AIError } from '../schema.js';
 import { validateModelDecision } from '../validation.js';
 import { AIProvider, WorkerAIProvider } from './index.js';
 
-const DEFAULT_TIMEOUT_MS = 110000;
+const DEFAULT_TIMEOUT_MS = 120000;
 const PROTOCOL_VERSION = 'hex-chatgpt-web-v1';
 
 export class ChatGPTWebProvider extends AIProvider {
   constructor({ bridge = globalThis.__HEX_CHATGPT_BRIDGE__, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
-    super();
+    super({ capabilities: { provider: 'chatgpt-web' } });
     this.bridge = bridge || null;
     this.timeoutMs = timeoutMs;
     this.controllers = new Set();
@@ -16,6 +16,8 @@ export class ChatGPTWebProvider extends AIProvider {
   available() {
     return !!this.bridge && typeof this.bridge.request === 'function';
   }
+
+  turnTimeoutMs(mode) { return mode === 'agent' ? 600000 : 240000; }
 
   async nextTurn(request, options = {}) {
     if (!this.available()) throw new AIError('provider_error', 'ChatGPT Web bridge is not available.');
@@ -31,7 +33,7 @@ export class ChatGPTWebProvider extends AIProvider {
     try {
       const response = await this.bridge.request(buildChatGPTTurnPrompt(request), {
         signal: controller.signal,
-        timeoutMs: options.timeoutMs || this.timeoutMs,
+        timeoutMs: boundedTimeout(options.timeoutMs, this.timeoutMs),
         sessionKey: request.sessionId,
         model: request.model || null,
         reasoning: request.reasoning || null,
@@ -92,6 +94,10 @@ export class UserscriptAIProvider extends AIProvider {
     if (requested === 'gemini' || requested === 'worker') return this.gemini;
     if (requested === 'chatgpt' || requested === 'chatgpt-web') return this.chatgpt;
     throw new AIError('provider_error', `Unknown AI provider: ${requested}`);
+  }
+
+  turnTimeoutMs(mode, request = {}) {
+    return this.selected(request).turnTimeoutMs(mode, request);
   }
 
   async nextTurn(request, options = {}) {
@@ -306,6 +312,14 @@ function interruptionError(signal) {
     timedOut ? 'budget_exhausted' : 'cancelled',
     timedOut ? 'The AI investigation timed out.' : 'AI investigation was cancelled.',
   );
+}
+
+function boundedTimeout(requested, ceiling) {
+  const rawCeiling = Number(ceiling);
+  const cap = Number.isFinite(rawCeiling) && rawCeiling > 0 ? Math.floor(rawCeiling) : DEFAULT_TIMEOUT_MS;
+  const rawRequested = Number(requested);
+  if (!Number.isFinite(rawRequested) || rawRequested <= 0) return cap;
+  return Math.max(1, Math.min(cap, Math.floor(rawRequested)));
 }
 
 function apiEndpoint(path) {
