@@ -14,6 +14,7 @@ on:
       - 'package-lock.json'
       - 'index.html'
       - 'css/**'
+      - 'tests/userscript-*.mjs'
       - '.github/workflows/userscript-host.yml'
   push:
     branches: [main]
@@ -29,6 +30,7 @@ on:
       - 'package-lock.json'
       - 'index.html'
       - 'css/**'
+      - 'tests/userscript-*.mjs'
       - '.github/workflows/userscript-host.yml'
 
 permissions:
@@ -55,3 +57,25 @@ jobs:
           node tests/worker-classic-harness.mjs
       - name: Verify tiny committed loader is current
         run: git diff --exit-code -- userscript/hex.user.template.js
+
+  embed-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Build secure userscript runtime
+        run: npm run userscript:build
+      - name: Install pinned browser engines
+        run: |
+          npm install --no-save --save-exact playwright@1.55.0
+          npx --no-install playwright install-deps chromium webkit
+          npx --no-install playwright install chromium webkit
+      - name: Run secure cross-origin embed in real browsers
+        run: node tests/userscript-embed-browser.mjs
