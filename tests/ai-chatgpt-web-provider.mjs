@@ -15,8 +15,8 @@ const standardProvider = new AIProvider();
 assert.equal(standardProvider.turnTimeoutMs('chat'), 30000, 'ordinary providers keep the previous 30-second chat default');
 assert.equal(standardProvider.turnTimeoutMs('agent'), 120000, 'ordinary providers keep the previous two-minute agent default');
 const chatgptPolicy = new ChatGPTWebProvider({ bridge: { request: async () => '{\"type\":\"final\",\"answer\":\"ok\"}' } });
-assert.equal(chatgptPolicy.turnTimeoutMs('chat'), 240000);
-assert.equal(chatgptPolicy.turnTimeoutMs('agent'), 600000);
+assert.equal(chatgptPolicy.turnTimeoutMs('chat'), null, 'ChatGPT Web must not impose a default chat timeout');
+assert.equal(chatgptPolicy.turnTimeoutMs('agent'), null, 'ChatGPT Web must not impose a default agent timeout');
 
 const tools = [{
   name: 'search_functions',
@@ -40,7 +40,7 @@ const tools = [{
     setSelection: async (selection) => { selections.push(selection); return { model: selection.model, reasoning: selection.reasoning }; },
   };
   const provider = new UserscriptAIProvider({ bridge, fetchImpl: async () => { throw new Error('unused'); } });
-  assert.equal(provider.turnTimeoutMs('chat', { provider: 'chatgpt-web' }), 240000);
+  assert.equal(provider.turnTimeoutMs('chat', { provider: 'chatgpt-web' }), null, 'userscript ChatGPT routing must preserve the no-default-timeout contract');
   assert.equal(provider.turnTimeoutMs('chat', { provider: 'gemini' }), 30000);
   assert.deepEqual(provider.getSelection(), { provider: 'chatgpt-web', model: 'chatgpt-web/sol', reasoning: 'high' });
   assert.deepEqual(await provider.setSelection({ provider: 'gemini' }), { provider: 'gemini', model: null, reasoning: null });
@@ -155,15 +155,28 @@ assert.throws(() => parseChatGPTDecision('{oops}'), /malformed JSON/);
 }
 
 {
+  let timeoutFieldPresent = null;
+  const provider = new ChatGPTWebProvider({
+    bridge: {
+      async request(_prompt, options) {
+        timeoutFieldPresent = Object.prototype.hasOwnProperty.call(options, 'timeoutMs');
+        return '{"type":"final","answer":"ok"}';
+      },
+    },
+  });
+  await provider.nextTurn({ tools: [] });
+  assert.equal(timeoutFieldPresent, false, 'ChatGPT Web must not synthesize a response timeout when none was requested');
+}
+
+{
   let observedTimeout = null;
   const provider = new ChatGPTWebProvider({
-    timeoutMs: 120,
     bridge: {
       async request(_prompt, options) { observedTimeout = options.timeoutMs; return '{"type":"final","answer":"ok"}'; },
     },
   });
   await provider.nextTurn({ tools: [] }, { timeoutMs: 5000 });
-  assert.equal(observedTimeout, 120, 'whole-turn budget must be capped by the per-ChatGPT-call timeout');
+  assert.equal(observedTimeout, 5000, 'an explicit whole-turn deadline must be forwarded unchanged to the ChatGPT bridge');
 }
 
 {
