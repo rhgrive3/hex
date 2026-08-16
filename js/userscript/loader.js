@@ -23,6 +23,10 @@ async function boot() {
 
 async function loadRuntime() {
   globalThis.__HEX_RUNTIME_ORIGIN__ = HEX_ORIGIN;
+  globalThis.__HEX_RUNTIME_HOST_HREF__ = RUNTIME_HOST_LOCATION.href;
+  globalThis.__HEX_RUNTIME_HOST_ORIGIN__ = RUNTIME_HOST_LOCATION.origin;
+  globalThis.__HEX_RUNTIME_HOST_PATHNAME__ = RUNTIME_HOST_LOCATION.pathname;
+  globalThis.__HEX_RUNTIME_HOST_SEARCH__ = RUNTIME_HOST_LOCATION.search;
   globalThis.__HEX_RUNTIME_HOST_LOCATION__ = RUNTIME_HOST_LOCATION;
   globalThis.__HEX_SECURE_LOADER__ = { version: LOADER_VERSION, buildId: EXPECTED_BUILD };
   const keyPair = await cryptoStage('ECDH key generation', () => crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, false, ['deriveBits']));
