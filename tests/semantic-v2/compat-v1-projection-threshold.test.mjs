@@ -8,7 +8,6 @@ const BASE = 0x100000000n;
 const lines = [
   'mov w9, #100',
   'cmp w8, w9',
-  'b.hi #0x10000000c',
   'ret',
 ];
 const rows = lines.map((line, row) => {
