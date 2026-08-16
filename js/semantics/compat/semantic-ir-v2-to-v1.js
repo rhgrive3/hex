@@ -275,6 +275,39 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
   }
   projected.memorySafety = memorySafetySummary(projected);
   projected.defUse = () => projected.values;
+
+  const diagnosticInstructions = projected.instructions.filter((inst) => inst.op === V1_OP.CMP || inst.op === V1_OP.SEL || inst.extra?.stateWrite || inst.extra?.stateRead);
+  if (diagnosticInstructions.length && projected.instructions.length <= 80) {
+    const valueShape = (value) => value == null ? null : {
+      id: value.id,
+      kind: value.kind,
+      reg: value.reg,
+      stateKey: value.stateKey,
+      version: value.version,
+      bits: value.bits,
+      const: value.const == null ? null : String(value.const),
+      semanticValueId: value.semanticValueId,
+      semanticSsaValueId: value.semanticSsaValueId,
+      sourceSemanticValueId: value.sourceSemanticValueId,
+      def: value.def == null ? null : { op: value.def.op, sub: value.def.sub, row: value.def.row, semanticNodeId: value.def.semanticNodeId },
+    };
+    console.log('V1_PROJECTION_DIAG ' + JSON.stringify({
+      functionId: projected.functionId,
+      instructionCount: projected.instructions.length,
+      instructions: diagnosticInstructions.map((inst) => ({
+        op: inst.op,
+        sub: inst.sub,
+        row: inst.row,
+        block: inst.block,
+        semanticNodeId: inst.semanticNodeId,
+        cond: inst.cond ?? null,
+        dst: valueShape(inst.dst),
+        args: inst.args.map((arg) => valueShape(arg.value)),
+        stateRead: inst.extra?.stateRead ? { publicIdentity: inst.extra.publicStateIdentity, reaching: inst.extra.reachingStateSsaValueId, localPhysicalViewProjection: inst.extra.localPhysicalViewProjection } : null,
+        stateWrite: inst.extra?.stateWrite ? { publicIdentity: inst.extra.publicStateIdentity, ssaDefinition: inst.extra.stateSsaDefinitionId } : null,
+      })),
+    }));
+  }
   return projected;
 }
 
