@@ -38,6 +38,30 @@ function directPipeline() {
   });
 }
 
+function semanticValueTree(pipeline, valueId, depth = 0, active = new Set()) {
+  if (valueId == null || depth > 8 || active.has(String(valueId))) return { valueId, cycleOrDepth:true };
+  const id = String(valueId);
+  const value = pipeline.semanticIr.values.find((candidate) => String(candidate.id) === id) ?? null;
+  if (!value) return { valueId:id, missing:true };
+  const node = value.definitionNodeId == null ? null : pipeline.semanticIr.nodes.find((candidate) => String(candidate.id) === String(value.definitionNodeId)) ?? null;
+  const next = new Set(active).add(id);
+  return {
+    valueId:id,
+    valueKind:value.kind,
+    machineType:value.machineType,
+    variableKey:value.variableKey ?? null,
+    metadata:value.metadata ?? null,
+    node:node == null ? null : {
+      id:node.id,
+      kind:node.kind,
+      operator:node.operator ?? null,
+      variable:node.variable ?? null,
+      attributes:node.attributes ?? null,
+      inputs:(node.inputs ?? []).map((input) => semanticValueTree(pipeline, input, depth + 1, next)),
+    },
+  };
+}
+
 try {
   setSemanticMigrationMode(SEMANTIC_V2_MIGRATION_MODES.V2_COMPAT);
   const ir = irFor(model, { rowOfAddress, decoderSemanticVersion:'global-rmw-explicit-v2' });
@@ -48,8 +72,10 @@ try {
     const x19Reads = pipeline.semanticIr.nodes.filter((node) => node.kind === 'state-read' && node.variable?.physicalIdentity?.registerId === 'x19');
     const x19Writes = pipeline.semanticIr.nodes.filter((node) => node.kind === 'state-write' && node.variable?.physicalIdentity?.registerId === 'x19');
     const relevantIds = new Set([...x19Reads, ...x19Writes].map((node) => node.id));
+    const memoryNodes = pipeline.semanticIr.nodes.filter((node) => node.kind === 'load' || node.kind === 'store');
     console.log('V2_GLOBAL_RMW_DIAG ' + JSON.stringify({
       regions:pipeline.regions.map((region) => ({ id:region.id, kind:region.kind, address:region.address ?? null, offset:region.offset ?? null, rootEntityId:region.rootEntityId ?? null, metadata:region.metadata ?? null })),
+      memoryAddressTrees:memoryNodes.map((node) => ({ nodeId:node.id, kind:node.kind, addressValueId:node.memory?.addressExpr?.valueId ?? node.memory?.addressValueId ?? null, tree:semanticValueTree(pipeline, node.memory?.addressExpr?.valueId ?? node.memory?.addressValueId ?? null) })),
       x19Reads:x19Reads.map((node) => ({ id:node.id, outputs:node.outputs, variableKey:node.variable?.key })),
       x19Writes:x19Writes.map((node) => ({ id:node.id, inputs:node.inputs, variableKey:node.variable?.key })),
       x19SsaUses:pipeline.ssa.uses.filter((use) => relevantIds.has(use.sourceEntityId)).map((use) => ({ sourceEntityId:use.sourceEntityId, valueId:use.valueId, proof:use.proof })),
