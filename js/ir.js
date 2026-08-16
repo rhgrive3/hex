@@ -13,6 +13,7 @@ export * from './ir-core.js';
 import {
   buildIR as buildCoreIR,
   readModifyWrite as coreReadModifyWrite,
+  getSemanticMigrationMode,
   OP, MK, VK, COND, pointerProvenance,
 } from './ir-core.js';
 import { mergeRangeDomain, normalizeIntegerValue, normalizeRangeDomain, rangeWithDomain } from './range-domain.js';
@@ -512,11 +513,17 @@ export function buildIR(model, opts) {
 const irCache = new WeakMap();
 export function irFor(model, opts) {
   if (!model || !model.instructions || !model.instructions.length) return null;
-  const custom = !!(opts && (opts.cfg || opts.rowOfAddress));
-  if (!custom && irCache.has(model)) return irCache.get(model);
+  const cacheable = opts == null || Object.keys(opts).length === 0;
+  const mode = getSemanticMigrationMode();
+  const byMode = cacheable ? irCache.get(model) : null;
+  if (byMode?.has(mode)) return byMode.get(mode);
   let ir = null;
   try { ir = buildIR(model, opts); } catch { ir = null; }
-  if (!custom) irCache.set(model, ir);
+  if (cacheable) {
+    const next = byMode ?? new Map();
+    next.set(mode, ir);
+    if (!byMode) irCache.set(model, next);
+  }
   return ir;
 }
 
