@@ -55,6 +55,11 @@ jobs:
           if 'function valueFeedsAddressOrCall(projected, root)' not in s:
               if helper_anchor not in s: raise SystemExit('state compaction helper anchor missing')
               s = s.replace(helper_anchor, helper + helper_anchor)
+          source_anchor = "    const source = resolveAlias(inst.args[0]?.value, aliases);\n    if (!source) continue;"
+          source_replacement = "    const rawSource = inst.args[0]?.value;\n    const source = resolveAlias(rawSource, aliases);\n    if (!source) continue;\n    const addressStateAlias = rawSource != null && aliases.has(rawSource.id);"
+          if source_replacement not in s:
+              if source_anchor not in s: raise SystemExit('state source alias anchor missing')
+              s = s.replace(source_anchor, source_replacement, 1)
           old_write = (
               "    if (inst.extra?.stateWrite && samePublicState(inst, source, inst.dst)) {\n"
               "      const shadow = inst.dst;\n"
@@ -90,7 +95,7 @@ jobs:
               "        inst.extra.compatPublicStateSourceValueId = source.id;\n"
               "        inst.extra.compatStateDestinationValueId = shadow.id;\n"
               "      }\n"
-              "    } else if (inst.extra?.stateRead && inst.extra?.localPhysicalViewProjection === true && Number(source.bits || 0) === Number(inst.dst.bits || 0)) {"
+              "    } else if (inst.extra?.stateRead && (inst.extra?.localPhysicalViewProjection === true || addressStateAlias) && Number(source.bits || 0) === Number(inst.dst.bits || 0)) {"
           )
           if old_write in s:
               s = s.replace(old_write, new_write)
