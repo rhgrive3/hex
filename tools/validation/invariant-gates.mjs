@@ -20,6 +20,7 @@ const gates = Object.freeze([
   { name:'capability-grading', invariants:['INV-010'], file:'tests/capstone-capability.mjs' },
   { name:'large-input-source-backed', invariants:['INV-011','INV-012','INV-015'], file:'tests/universal-binary-source.mjs' },
   { name:'analysis-budget-fail-closed', invariants:['INV-010','INV-011','INV-012','INV-015'], file:'tests/ai-analysis-boundary.mjs' },
+  { name:'machine-effects-contract', invariants:['INV-002','INV-003','INV-004','INV-005','INV-012','INV-014','INV-015'], file:'tests/machine-effects/run.mjs' },
   { name:'arm64-compiler-truth', invariants:['INV-014'], file:'tests/compiler-truth/run.mjs' },
 ]);
 

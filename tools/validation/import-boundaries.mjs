@@ -22,6 +22,7 @@ const CURRENT_GENERIC_FILES = [
 const FUTURE_GENERIC_DIRS = [
   'js/core/identity',
   'js/core/evidence',
+  'js/semantics/effects',
   'js/semantics/ssa',
   'js/semantics/memoryssa',
   'js/analysis/alias',
