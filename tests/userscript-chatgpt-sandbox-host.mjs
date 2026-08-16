@@ -67,7 +67,7 @@ assert.doesNotMatch(entrySource, /createChatGPTIframeHost/,
   'production ChatGPT entry must not use the CSP-blocked Worker iframe host');
 assert.doesNotMatch(entrySource, /falling back to legacy|startLegacy\(error\)|startLegacy\(cause/,
   'sandbox failure must stay explicit instead of silently entering legacy light DOM');
-assert.match(entrySource, /readTrustedEmbedMode\(\) === LEGACY_MODE/,
+assert.match(entrySource, /readEmbedMode\(\) === LEGACY_MODE/,
   'legacy light DOM must remain available only as an explicit rollback mode');
 
 console.log('userscript ChatGPT opaque sandbox host: ok');
