@@ -15,7 +15,8 @@ function fixture(lines, base, opts = {}) {
   };
   return { model:buildSemanticModel(rows, { startRow:0, endRow:rows.length-1, rowOfAddress, name:opts.name || null, symbolFor:opts.symbolFor || (() => null) }), rowOfAddress };
 }
-function iv(i) { return i ? {op:i.op,sub:i.sub,row:i.row,reg:i.reg,cond:i.cond,returnReg:i.returnReg,args:(i.args||[]).map((a)=>({reg:a?.value?.reg,kind:a?.value?.kind,bits:a?.value?.bits,def:a?.value?.def ? {op:a.value.def.op,sub:a.value.def.sub,row:a.value.def.row}:null})),loc:i.loc?{kind:i.loc.kind,disp:i.loc.disp,key:i.loc.key}:null,extra:i.extra,sourceInstructionIds:i.sourceInstructionIds}:null; }
+function iv(i) { return i ? {op:i.op,sub:i.sub,row:i.row,block:i.block,reg:i.reg,cond:i.cond,returnReg:i.returnReg,args:(i.args||[]).map((a)=>({id:a?.value?.id,reg:a?.value?.reg,kind:a?.value?.kind,bits:a?.value?.bits,def:a?.value?.def ? {op:a.value.def.op,sub:a.value.def.sub,row:a.value.def.row,block:a.value.def.block}:null})),loc:i.loc?{kind:i.loc.kind,disp:i.loc.disp,key:i.loc.key,base:i.loc.base?{id:i.loc.base.id,reg:i.loc.base.reg,kind:i.loc.base.kind}:null,baseEntityId:i.loc.baseEntityId,regionId:i.loc.regionId}:null,extra:i.extra,sourceInstructionIds:i.sourceInstructionIds}:null; }
+function vv(v) { return {id:v.id,kind:v.kind,reg:v.reg,bits:v.bits,version:v.version,compatDerived:v.compatDerived,def:v.def?{op:v.def.op,sub:v.def.sub,row:v.def.row,block:v.def.block}:null,uses:(v.uses||[]).map((u)=>({op:u.op,row:u.row,block:u.block}))}; }
 
 setSemanticMigrationMode(SEMANTIC_V2_MIGRATION_MODES.V2_COMPAT);
 try {
@@ -26,7 +27,7 @@ try {
   console.log(`::warning title=P3_O0_PUBLIC::${clean({
     ret:iv(o0ir?.instructions?.find((i)=>i.op===OP.RET)),
     memory:o0ir?.instructions?.filter((i)=>i.op===OP.LOAD||i.op===OP.STORE).map(iv),
-    x0values:o0ir?.values?.filter((v)=>v.reg==='x0').map((v)=>({id:v.id,kind:v.kind,bits:v.bits,def:v.def?{op:v.def.op,sub:v.def.sub,row:v.def.row}:null,uses:(v.uses||[]).map((u)=>({op:u.op,row:u.row}))})),
+    x0values:o0ir?.values?.filter((v)=>v.reg==='x0').map(vv),
     semantic:o0d.semantic,legacyFallback:o0d.legacyFallback,warnings:o0d.warnings,
     outputs:o0d.semanticAst?.outputs,inputs:o0d.semanticAst?.inputs,pseudocode:o0d.pseudocode,
   })}`);
@@ -38,10 +39,27 @@ try {
   const opts={addr:base,name:'apply_damage',rowOfAddress:x.rowOfAddress,returnType:'int32',receiverType:'Unit',beginner:false,symbolFor:(a)=>BigInt(a)===PUTS?'_puts':null,fieldFor:(_b,off)=>off===0x20n?{name:'hp',type:'int32'}:off===0x24n?{name:'damageRate',type:'uint32'}:null};
   const ir=buildIR(x.model,opts);
   const d=decompile(x.model,opts);
-  console.log(`::warning title=P3_PROJECTED_UNKNOWN::${clean({
+  console.log(`::warning title=P3_APPLY_PUBLIC::${clean({
     unknowns:ir?.instructions?.filter((i)=>i.op===OP.UNKNOWN||i.op===OP.CLOBBER).map(iv),
+    ret:iv(ir?.instructions?.find((i)=>i.op===OP.RET)),
+    memory:ir?.instructions?.filter((i)=>i.op===OP.LOAD||i.op===OP.STORE).map(iv),
+    phis:ir?.instructions?.filter((i)=>i.op===OP.PHI).map(iv),
+    x0values:ir?.values?.filter((v)=>v.reg==='x0').map(vv),
+    x8values:ir?.values?.filter((v)=>v.reg==='x8').map(vv),
     semantic:d.semantic,legacyFallback:d.legacyFallback,warnings:d.warnings,ctxUnknown:d.ctx?.unknownInstructions,
     pseudocode:d.pseudocode,
+  })}`);
+
+  const PRE = 0x200000n;
+  const pre = fixture(['cmp w0, w1','csel w0, w0, w1, gt','ret'], PRE, {name:'max_prebuilt'});
+  const preir=buildIR(pre.model,{rowOfAddress:pre.rowOfAddress,returnType:'int32',decoderSemanticVersion:'pre-diag'});
+  const pred=decompile(pre.model,{addr:PRE,name:'max_prebuilt',rowOfAddress:pre.rowOfAddress,returnType:'int32',beginner:false});
+  console.log(`::warning title=P3_PREBUILT_RETURN::${clean({
+    ret:iv(preir?.instructions?.find((i)=>i.op===OP.RET)),
+    x0values:preir?.values?.filter((v)=>v.reg==='x0').map(vv),
+    x1values:preir?.values?.filter((v)=>v.reg==='x1').map(vv),
+    pseudocode:pred.pseudocode,
+    outputs:pred.semanticAst?.outputs,
   })}`);
 } finally {
   setSemanticMigrationMode(SEMANTIC_V2_MIGRATION_MODES.LEGACY);
