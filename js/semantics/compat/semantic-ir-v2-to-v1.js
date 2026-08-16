@@ -42,6 +42,22 @@ function sameInstruction(node, instructionIds) {
   return sourceInstructionIds(node.origin).some((id) => instructionIds.has(id));
 }
 
+/**
+ * Generic SSA represents an unseeded physical-state entry as an explicit undef.
+ * Legacy v1 represents that same incoming symbolic machine state as version-0
+ * ARG. This is a shape projection only: no concrete value or ABI role is added.
+ */
+function preserveIncomingPhysicalState(ssa, valuesById) {
+  for (const definition of ssa?.definitions ?? []) {
+    if (!definition.variableKey || definition.proof?.kind !== 'implicit-undef') continue;
+    const value = valuesById.get(definition.valueId);
+    if (!value) continue;
+    value.kind = V1_VK.ARG;
+    value.version = 0;
+    delete value.undefined;
+  }
+}
+
 function addComparisonCarriers(ir, values, valuesById) {
   const flagWriteInstructionIds = new Set();
   for (const node of ir.nodes) {
@@ -144,6 +160,7 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
   for (const block of legacyBlocks) block.isExit = block.succ.length === 0;
 
   const { values, byId: valuesById } = buildLegacyValues(ir, ssa);
+  preserveIncomingPhysicalState(ssa, valuesById);
   const stateProjection = buildStateProjectionIndex(ssa);
   const comparisonCarrierByNodeId = addComparisonCarriers(ir, values, valuesById);
   const projected = {
