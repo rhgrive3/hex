@@ -127,4 +127,4 @@ function userscriptMetadata() { return `// ==UserScript==\n// @name         Hex 
 function publicManifest(value) { const { assetPath: _private, ...safe } = value; return safe; }
 function sha256(value) { return createHash('sha256').update(value).digest('hex'); }
 function b64(value) { return Buffer.from(value).toString('base64url'); }
-async function writeGeneratedModule(name, source) { const path = resolve(root, generated, name); await mkdir(dirname(path), { recursive: true }); await writeFile(path, source); }
+async function writeGeneratedModule(name, source) { const path = resolve(generated, name); await mkdir(dirname(path), { recursive: true }); await writeFile(path, source); }
