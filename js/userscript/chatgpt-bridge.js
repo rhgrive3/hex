@@ -8,7 +8,14 @@ export function installChatGPTWebBridge(options = {}) {
   if (existing && typeof existing.request === 'function') return existing;
 
   const adapter = options.adapter || new ChatGPTDOMAdapter(options);
-  const router = options.router || new ChatGPTConversationRouter(adapter, options);
+  // ChatGPT page-origin Web Storage is writable by the page we are isolating
+  // from the protected Hex runtime. It must not be an authority for mapping a
+  // Hex session to a ChatGPT conversation. Trusted hosts/tests can still opt in
+  // to persistence by explicitly injecting a storage implementation.
+  const routerOptions = Object.prototype.hasOwnProperty.call(options, 'storage')
+    ? options
+    : { ...options, storage: null };
+  const router = options.router || new ChatGPTConversationRouter(adapter, routerOptions);
   const models = options.models || new ChatGPTModelController(adapter, options);
   const turns = options.turns || new ChatGPTTurnController(adapter, options);
   let active = null;
