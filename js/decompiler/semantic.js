@@ -308,6 +308,14 @@ function projectDeclaredReturnView(ir, opts) {
   return ir;
 }
 
+function projectLegacyCfgSetShape(ir) {
+  for (const block of ir?.blocks || []) {
+    if (Array.isArray(block.succ)) block.succ = [...new Set(block.succ)];
+    if (Array.isArray(block.pred)) block.pred = [...new Set(block.pred)];
+  }
+  return ir;
+}
+
 function compatBlockTerm(block) {
   const insts = block?.insts || [];
   for (let index = insts.length - 1; index >= 0; index--) {
@@ -389,6 +397,7 @@ export function decompileSemantic(model, opts = {}) {
     : { rowOfAddress: semanticOpts.rowOfAddress });
   const isV2Compat = ir?.compat?.projection === 'semantic-ir-v2-to-v1';
   if (isV2Compat) {
+    ir = projectLegacyCfgSetShape(ir);
     ir = projectCommittedComparisonViews(ir);
     ir = projectCommittedPhiSnapshots(ir);
     ir = projectCommittedSnapshotViews(ir);
