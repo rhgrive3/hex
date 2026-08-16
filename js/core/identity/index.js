@@ -127,6 +127,10 @@ export function createArtifactId(input = {}) {
   return typedId('artifact', {
     binaryId: nonEmpty(input.binaryId, 'artifact-binary-id-required'),
     sliceId: input.sliceId == null ? null : String(input.sliceId),
+    loaderVersion: nonEmpty(input.loaderVersion, 'artifact-loader-version-required'),
+    architectureSemanticVersion: nonEmpty(input.architectureSemanticVersion, 'artifact-architecture-semantic-version-required'),
+    abiSemanticVersion: nonEmpty(input.abiSemanticVersion, 'artifact-abi-semantic-version-required'),
+    semanticSchemaVersion: nonEmpty(input.semanticSchemaVersion, 'artifact-semantic-schema-version-required'),
     entityId: input.entityId == null ? null : String(input.entityId),
     passId: nonEmpty(input.passId, 'artifact-pass-id-required'),
     passVersion: nonEmpty(input.passVersion ?? '1', 'artifact-pass-version-required'),
