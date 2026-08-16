@@ -1,22 +1,23 @@
 import {
+  CHATGPT_PARENT_ORIGINS,
   EMBED_PROTOCOL,
   EMBED_PROTOCOL_VERSION,
   createEmbedNonce,
   waitForEmbedReady,
 } from './embed-protocol.js';
-import {
-  waitForEmbedChildBootstrap,
-  withEmbedGeneration,
-} from './embed-bootstrap.js';
+import { waitForEmbedChildBootstrap } from './embed-bootstrap.js';
 
 const DEFAULT_LOAD_TIMEOUT_MS = 20000;
 const DEFAULT_READY_TIMEOUT_MS = 30000;
 const HOST_ID = 'hex-userscript-iframe-host';
 const LAUNCHER_ID = 'hex-userscript-launcher';
+const OPAQUE_CHILD_ORIGIN = 'null';
 
 export function createChatGPTIframeHost(options = {}) {
   const {
     src,
+    runtimeSource,
+    provider = 'chatgpt',
     onPort,
     onReady,
     onFailure,
@@ -33,11 +34,15 @@ export function createChatGPTIframeHost(options = {}) {
   if (!documentRef?.createElement || !documentRef?.documentElement) throw new TypeError('A document is required.');
   if (!windowRef?.addEventListener || !windowRef?.removeEventListener) throw new TypeError('A window event target is required.');
   if (typeof MessageChannelCtor !== 'function') throw new TypeError('MessageChannel is required.');
+  if (typeof runtimeSource !== 'string' || !runtimeSource.trim()) throw new TypeError('Protected opaque embed runtime is required.');
 
   const parsedSrc = new URL(String(src || ''));
-  if (parsedSrc.protocol !== 'https:') throw new TypeError('Hex iframe src must use HTTPS.');
-  const iframeBaseSrc = parsedSrc.href;
-  const childOrigin = parsedSrc.origin;
+  if (parsedSrc.protocol !== 'https:') throw new TypeError('Hex iframe API origin must use HTTPS.');
+  const apiOrigin = parsedSrc.origin;
+  const normalizedProvider = provider === 'gemini' ? 'gemini' : 'chatgpt';
+  const cspNonce = normalizeCspNonce(options.cspNonce ?? discoverCspNonce(documentRef));
+  if (!cspNonce) throw new Error('ChatGPT CSP nonce is unavailable; secure opaque iframe bootstrap cannot start.');
+  const childOrigin = OPAQUE_CHILD_ORIGIN;
   const bootstrapTimeoutMs = normalizeTimeout(loadTimeoutMs, DEFAULT_LOAD_TIMEOUT_MS);
   const appReadyTimeoutMs = normalizeTimeout(readyTimeoutMs, DEFAULT_READY_TIMEOUT_MS);
 
@@ -52,6 +57,7 @@ export function createChatGPTIframeHost(options = {}) {
   const iframe = documentRef.createElement('iframe');
   iframe.title = 'Hex';
   iframe.referrerPolicy = 'no-referrer';
+  iframe.setAttribute('sandbox', 'allow-scripts allow-downloads');
   Object.assign(iframe.style, { display: 'block', width: '100%', height: '100%', border: '0' });
 
   const closeButton = documentRef.createElement('button');
@@ -120,7 +126,7 @@ export function createChatGPTIframeHost(options = {}) {
 
   function state() {
     return Object.freeze({
-      status: lifecycle, generation, visible: desiredVisible, childOrigin,
+      status: lifecycle, generation, visible: desiredVisible, childOrigin, apiOrigin,
       failure: failure ? Object.freeze({ ...failure }) : null,
     });
   }
@@ -196,7 +202,12 @@ export function createChatGPTIframeHost(options = {}) {
       signal: controller.signal,
     });
 
-    iframe.src = withEmbedGeneration(iframeBaseSrc, generationText);
+    iframe.srcdoc = createOpaqueBootstrapDocument({
+      cspNonce,
+      generation: generationText,
+      apiOrigin,
+      allowedParentOrigins: CHATGPT_PARENT_ORIGINS,
+    });
 
     bootstrap.then(() => startChannel(current)).catch((error) => {
       if (!isCurrentGeneration(currentGeneration) || controller.signal.aborted) return;
@@ -215,7 +226,7 @@ export function createChatGPTIframeHost(options = {}) {
 
     try {
       const cleanup = onPort(channel.port1, Object.freeze({
-        nonce, generation: current.generation, childOrigin, iframe,
+        nonce, generation: current.generation, childOrigin, apiOrigin, iframe,
       }));
       if (cleanup && typeof cleanup.then === 'function') throw new TypeError('onPort must install RPC listeners synchronously.');
       if (cleanup !== undefined && typeof cleanup !== 'function') throw new TypeError('onPort must return a cleanup function or undefined.');
@@ -225,9 +236,15 @@ export function createChatGPTIframeHost(options = {}) {
         nonce, timeoutMs: appReadyTimeoutMs, signal: current.controller.signal,
       });
       iframe.contentWindow.postMessage({
-        type: 'hex.embed.attach', protocol: EMBED_PROTOCOL, version: EMBED_PROTOCOL_VERSION,
-        nonce, generation: current.generationText,
-      }, childOrigin, [channel.port2]);
+        type: 'hex.embed.attach',
+        protocol: EMBED_PROTOCOL,
+        version: EMBED_PROTOCOL_VERSION,
+        nonce,
+        generation: current.generationText,
+        apiOrigin,
+        provider: normalizedProvider,
+        runtimeSource,
+      }, '*', [channel.port2]);
       current.transferred = true;
 
       readyPromise.then(() => {
@@ -280,6 +297,68 @@ export function createChatGPTIframeHost(options = {}) {
   return Object.freeze({ show, hide, reload, destroy, state, iframe, wrapper, launcher, closeButton, retryButton });
 }
 
+export function createOpaqueBootstrapDocument(options = {}) {
+  const cspNonce = normalizeCspNonce(options.cspNonce);
+  const generation = String(options.generation || '');
+  const apiOrigin = normalizeHttpsOrigin(options.apiOrigin);
+  const allowedParentOrigins = normalizeParentOrigins(options.allowedParentOrigins || CHATGPT_PARENT_ORIGINS);
+  if (!cspNonce) throw new Error('A CSP nonce is required for the opaque embed bootstrap.');
+  if (!/^[1-9]\d{0,14}$/.test(generation)) throw new Error('Opaque embed generation is invalid.');
+  if (!allowedParentOrigins.length) throw new Error('Opaque embed parent origin allowlist is empty.');
+
+  const script = `(()=>{\n` +
+    `const P=${JSON.stringify(EMBED_PROTOCOL)},V=${JSON.stringify(EMBED_PROTOCOL_VERSION)},G=${JSON.stringify(generation)},N=${JSON.stringify(cspNonce)},A=${JSON.stringify(allowedParentOrigins)},E=${JSON.stringify(apiOrigin)};\n` +
+    `let port=null,attached=false;\n` +
+    `const msg=e=>String(e&&e.message||e||'opaque embed failed').slice(0,220);\n` +
+    `const close=r=>{if(globalThis.__HEX_OPAQUE_EMBED_READY__)return;try{port&&port.postMessage({protocol:P,version:V,kind:'control',id:'opaque-boot-error',method:'close',reason:msg(r)})}catch{}};\n` +
+    `addEventListener('error',e=>close(e&&e.error||e&&e.message||'opaque embed script error'));\n` +
+    `addEventListener('unhandledrejection',e=>close(e&&e.reason||'opaque embed rejected'));\n` +
+    `addEventListener('message',function on(e){const d=e&&e.data;if(attached||e.source!==parent||!A.includes(e.origin)||!d||d.type!=='hex.embed.attach'||d.protocol!==P||d.version!==V||String(d.generation)!==G||d.apiOrigin!==E||!/^[a-f0-9]{64}$/.test(String(d.nonce||''))||typeof d.runtimeSource!=='string'||!d.runtimeSource)return;const ps=e.ports;if(!ps||ps.length!==1||!ps[0])return;attached=true;removeEventListener('message',on);port=ps[0];try{port.start&&port.start()}catch{}globalThis.__HEX_OPAQUE_EMBED__={port,nonce:d.nonce,generation:G,apiOrigin:E,provider:d.provider==='gemini'?'gemini':'chatgpt'};const s=document.createElement('script');s.type='module';s.nonce=N;s.textContent=d.runtimeSource;s.addEventListener('error',()=>close('opaque embed module was blocked or failed to load'),{once:true});document.head.append(s);});\n` +
+    `for(const o of A)parent.postMessage({type:'hex.embed.child-bootstrap-ready',protocol:P,version:V,generation:G},o);\n` +
+    `})();`;
+
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><script nonce="${escapeHtmlAttribute(cspNonce)}">${script}</script></head><body></body></html>`;
+}
+
+export function discoverCspNonce(documentRef = globalThis.document) {
+  for (const selector of ['script[nonce]', 'style[nonce]']) {
+    let node = null;
+    try { node = documentRef?.querySelector?.(selector); } catch {}
+    const value = safeNonceValue(node);
+    if (value) return value;
+  }
+  return '';
+}
+
+function safeNonceValue(node) {
+  if (!node) return '';
+  try {
+    const value = node.nonce || node.getAttribute?.('nonce') || '';
+    return normalizeCspNonce(value);
+  } catch { return ''; }
+}
+function normalizeCspNonce(value) {
+  const text = String(value || '').trim();
+  return /^[A-Za-z0-9+/_=-]{8,256}$/.test(text) ? text : '';
+}
+function normalizeHttpsOrigin(value) {
+  const url = new URL(String(value || ''));
+  if (url.protocol !== 'https:' || url.origin !== String(value || '')) throw new TypeError('Expected an exact HTTPS API origin.');
+  return url.origin;
+}
+function normalizeParentOrigins(values) {
+  const out = [];
+  for (const value of values || []) {
+    try {
+      const url = new URL(String(value));
+      if (url.protocol === 'https:' && url.origin === String(value) && !out.includes(url.origin)) out.push(url.origin);
+    } catch {}
+  }
+  return out;
+}
+function escapeHtmlAttribute(value) {
+  return String(value).replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
+}
 function normalizeTimeout(value, fallback) {
   if (value == null) return fallback;
   const number = Number(value);
