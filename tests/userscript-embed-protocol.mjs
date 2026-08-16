@@ -13,7 +13,9 @@ import {
   createEmbedNonce,
   createRpcClient,
   createRpcServer,
+  sendEmbedReady,
   validateAttachEvent,
+  waitForEmbedReady,
 } from '../js/userscript/embed-protocol.js';
 
 assert.equal(EMBED_PROTOCOL, 'hex-embed-v1');
@@ -26,6 +28,8 @@ assert.deepEqual([...CHATGPT_RPC_METHODS], [
 assert.ok(EMBED_RPC_METHODS.includes('ui.close'));
 
 await testAttachValidation();
+await testExplicitReadyHandshake();
+await testReadyTimeoutRejectsStaleAndWrongMessages();
 await testKnownRpc();
 await testUnknownRpcRejection();
 await testConcurrentIndependentRequests();
@@ -33,6 +37,7 @@ await testCancellationIsolation();
 await testTimeout();
 await testRemoteErrorSanitization();
 await testDuplicateRequestId();
+await testRequestIdReplayWindowPrunes();
 await testStaleResponse();
 await testCloseCleanup();
 await testStackNeverCrossesWire();
@@ -63,15 +68,41 @@ async function testAttachValidation() {
   validChannel.port1.close(); validChannel.port2.close(); duplicateChannel.port1.close(); duplicateChannel.port2.close();
 }
 
+async function testExplicitReadyHandshake() {
+  const channel = new MessageChannel();
+  const nonce = createEmbedNonce();
+  const parentServer = createRpcServer(channel.port1, { handlers: { 'chatgpt.status': () => ({ ready: true }) } });
+  const childClient = createRpcClient(channel.port2, { timeoutMs: 200 });
+
+  assert.equal(await noMessageWithin(channel.port2, 15), true, 'createRpcServer must not auto-send ready');
+  const ready = waitForEmbedReady(channel.port1, { nonce, timeoutMs: 100 });
+
+  channel.port2.postMessage({ ...control('wrong-protocol', 'ready'), protocol: 'other', nonce });
+  channel.port2.postMessage({ ...control('stale-ready', 'ready'), nonce: createEmbedNonce() });
+  const readyId = sendEmbedReady(channel.port2, { nonce });
+  assert.deepEqual(await ready, { id: readyId, protocol: EMBED_PROTOCOL, version: EMBED_PROTOCOL_VERSION, nonce });
+
+  assert.deepEqual(await childClient.call('chatgpt.status'), { ready: true });
+  childClient.close(); parentServer.close();
+}
+
+async function testReadyTimeoutRejectsStaleAndWrongMessages() {
+  const channel = new MessageChannel();
+  const nonce = createEmbedNonce();
+  const ready = waitForEmbedReady(channel.port1, { nonce, timeoutMs: 25 });
+  channel.port2.start();
+  channel.port2.postMessage({ ...control('stale', 'ready'), nonce: createEmbedNonce() });
+  channel.port2.postMessage({ ...control('wrong-version', 'ready'), version: 2, nonce });
+  channel.port2.postMessage({ ...control('wrong-method', 'not-ready'), nonce });
+  await assert.rejects(ready, (error) => error?.code === 'RPC_READY_TIMEOUT');
+  channel.port1.close(); channel.port2.close();
+}
+
 async function assertAttachRejected(code, patch = {}, optionPatch = {}) {
   const source = patch.source ?? {};
   const channel = new MessageChannel();
   const base = attachEvent({ source, nonce: createEmbedNonce(), port: channel.port1 });
-  const event = {
-    ...base,
-    ...patch,
-    data: { ...base.data, ...(patch.data || {}) },
-  };
+  const event = { ...base, ...patch, data: { ...base.data, ...(patch.data || {}) } };
   const result = validateAttachEvent(event, { expectedSource: source, ...optionPatch });
   assert.deepEqual(result, { ok: false, code });
   channel.port1.close(); channel.port2.close();
@@ -79,25 +110,24 @@ async function assertAttachRejected(code, patch = {}, optionPatch = {}) {
 
 function attachEvent({ source, nonce, port }) {
   return {
-    origin: 'https://chatgpt.com',
-    source,
+    origin: 'https://chatgpt.com', source,
     data: { type: 'hex.embed.attach', protocol: EMBED_PROTOCOL, version: EMBED_PROTOCOL_VERSION, nonce },
     ports: [port],
   };
 }
 
 async function testKnownRpc() {
-  const pair = await rpcPair({ 'chatgpt.status': async (params) => ({ ready: true, echo: params }) });
+  const pair = rpcPair({ 'chatgpt.status': async (params) => ({ ready: true, echo: params }) });
   assert.deepEqual(await pair.client.call('chatgpt.status', { n: 7 }), { ready: true, echo: { n: 7 } });
   pair.close();
 }
 
 async function testUnknownRpcRejection() {
-  const pair = await rpcPair({ 'chatgpt.status': () => 'ok' });
+  const pair = rpcPair({ 'chatgpt.status': () => 'ok' });
   await assert.rejects(pair.client.call('danger.eval'), (error) => error?.code === 'RPC_METHOD_NOT_ALLOWED');
   pair.close();
 
-  const raw = await rawServer({ 'chatgpt.status': () => 'ok' });
+  const raw = rawServer({ 'chatgpt.status': () => 'ok' });
   const responsePromise = onceMessage(raw.port);
   raw.port.postMessage(request('unknown-1', 'danger.eval'));
   const message = await responsePromise;
@@ -107,9 +137,9 @@ async function testUnknownRpcRejection() {
 }
 
 async function testConcurrentIndependentRequests() {
-  const pair = await rpcPair({
-    'chatgpt.request': async ({ value, delay }, { signal }) => {
-      await sleep(delay, signal);
+  const pair = rpcPair({
+    'chatgpt.request': async ({ value, delay: wait }, { signal }) => {
+      await sleep(wait, signal);
       return value;
     },
   });
@@ -122,9 +152,9 @@ async function testConcurrentIndependentRequests() {
 }
 
 async function testCancellationIsolation() {
-  const pair = await rpcPair({
-    'chatgpt.request': async ({ value, delay }, { signal }) => {
-      await sleep(delay, signal);
+  const pair = rpcPair({
+    'chatgpt.request': async ({ value, delay: wait }, { signal }) => {
+      await sleep(wait, signal);
       return value;
     },
   });
@@ -139,7 +169,7 @@ async function testCancellationIsolation() {
 
 async function testTimeout() {
   let aborted = false;
-  const pair = await rpcPair({
+  const pair = rpcPair({
     'chatgpt.request': async (_params, { signal }) => {
       try { await sleep(1000, signal); }
       finally { aborted = signal.aborted; }
@@ -151,7 +181,7 @@ async function testTimeout() {
 }
 
 async function testRemoteErrorSanitization() {
-  const pair = await rpcPair({
+  const pair = rpcPair({
     'chatgpt.status': () => {
       const error = new Error('safe-message');
       error.code = 'EXPECTED_FAILURE';
@@ -169,9 +199,7 @@ async function testRemoteErrorSanitization() {
 }
 
 async function testDuplicateRequestId() {
-  const raw = await rawServer({
-    'chatgpt.request': async () => { await delay(25); return 'first'; },
-  });
+  const raw = rawServer({ 'chatgpt.request': async () => { await delay(25); return 'first'; } });
   const duplicate = request('same-id', 'chatgpt.request', { n: 1 });
   const messagesPromise = collectMessages(raw.port, 2);
   raw.port.postMessage(duplicate);
@@ -181,13 +209,37 @@ async function testDuplicateRequestId() {
   raw.close();
 }
 
+async function testRequestIdReplayWindowPrunes() {
+  let now = 0;
+  const raw = rawServer({ 'chatgpt.status': ({ value }) => value }, {
+    requestIdTtlMs: 5,
+    recentRequestIdLimit: 2,
+    now: () => now,
+  });
+
+  assert.equal((await rawRequest(raw.port, 'old-a', 'chatgpt.status', { value: 'a' })).result, 'a');
+  now = 1;
+  assert.equal((await rawRequest(raw.port, 'old-b', 'chatgpt.status', { value: 'b' })).result, 'b');
+  now = 2;
+  assert.equal((await rawRequest(raw.port, 'old-c', 'chatgpt.status', { value: 'c' })).result, 'c');
+
+  const duplicate = await rawRequest(raw.port, 'old-c', 'chatgpt.status', { value: 'duplicate' });
+  assert.equal(duplicate.kind, 'error');
+  assert.equal(duplicate.error.code, 'RPC_DUPLICATE_ID');
+
+  const evicted = await rawRequest(raw.port, 'old-a', 'chatgpt.status', { value: 'reused-after-lru' });
+  assert.equal(evicted.result, 'reused-after-lru');
+
+  now = 20;
+  const expired = await rawRequest(raw.port, 'old-c', 'chatgpt.status', { value: 'reused-after-ttl' });
+  assert.equal(expired.result, 'reused-after-ttl');
+  raw.close();
+}
+
 async function testStaleResponse() {
   const channel = new MessageChannel();
-  const nonce = createEmbedNonce();
-  const client = createRpcClient(channel.port1, { nonce, timeoutMs: 200 });
+  const client = createRpcClient(channel.port1, { timeoutMs: 200 });
   channel.port2.start();
-  channel.port2.postMessage({ ...control('ready:peer', 'ready'), nonce });
-  await client.ready;
   channel.port2.postMessage({ ...response('stale-id', 'chatgpt.status'), result: 'stale' });
   channel.port2.addEventListener('message', (event) => {
     const message = event.data;
@@ -198,7 +250,7 @@ async function testStaleResponse() {
 }
 
 async function testCloseCleanup() {
-  const pair = await rpcPair({ 'chatgpt.request': async (_params, { signal }) => sleep(1000, signal) });
+  const pair = rpcPair({ 'chatgpt.request': async (_params, { signal }) => sleep(1000, signal) });
   const pending = pair.client.call('chatgpt.request', {});
   await delay(5);
   pair.client.close('test-close');
@@ -208,7 +260,7 @@ async function testCloseCleanup() {
 }
 
 async function testStackNeverCrossesWire() {
-  const raw = await rawServer({
+  const raw = rawServer({
     'chatgpt.status': () => {
       const error = new Error('wire-safe');
       error.code = 'WIRE_SAFE';
@@ -216,9 +268,7 @@ async function testStackNeverCrossesWire() {
       throw error;
     },
   });
-  const responsePromise = onceMessage(raw.port);
-  raw.port.postMessage(request('stack-test', 'chatgpt.status'));
-  const message = await responsePromise;
+  const message = await rawRequest(raw.port, 'stack-test', 'chatgpt.status');
   assert.equal(message.kind, 'error');
   assert.equal(message.error.code, 'WIRE_SAFE');
   assert.equal(message.error.details.keep, 'yes');
@@ -232,11 +282,8 @@ async function testArbitraryMethodCannotExecute() {
   let executed = 0;
   Object.prototype['danger.eval'] = () => { executed += 1; };
   try {
-    const handlers = { 'chatgpt.status': () => 'safe' };
-    const raw = await rawServer(handlers);
-    const responsePromise = onceMessage(raw.port);
-    raw.port.postMessage(request('arbitrary-1', 'danger.eval'));
-    const message = await responsePromise;
+    const raw = rawServer({ 'chatgpt.status': () => 'safe' });
+    const message = await rawRequest(raw.port, 'arbitrary-1', 'danger.eval');
     assert.equal(message.kind, 'error');
     assert.equal(message.error.code, 'RPC_METHOD_NOT_ALLOWED');
     assert.equal(executed, 0);
@@ -246,25 +293,17 @@ async function testArbitraryMethodCannotExecute() {
   }
 }
 
-async function rpcPair(handlers, options = {}) {
+function rpcPair(handlers, options = {}) {
   const channel = new MessageChannel();
-  const nonce = createEmbedNonce();
-  const server = createRpcServer(channel.port1, { handlers, nonce });
-  const client = createRpcClient(channel.port2, { nonce, timeoutMs: options.timeoutMs ?? 200, readyTimeoutMs: 200 });
-  await client.ready;
+  const server = createRpcServer(channel.port1, { handlers, ...options.server });
+  const client = createRpcClient(channel.port2, { timeoutMs: options.timeoutMs ?? 200 });
   return { client, server, close() { client.close(); server.close(); } };
 }
 
-async function rawServer(handlers) {
+function rawServer(handlers, options = {}) {
   const channel = new MessageChannel();
-  const nonce = createEmbedNonce();
-  const server = createRpcServer(channel.port1, { handlers, nonce });
-  const readyPromise = onceMessage(channel.port2);
+  const server = createRpcServer(channel.port1, { handlers, ...options });
   channel.port2.start();
-  const ready = await readyPromise;
-  assert.equal(ready.kind, 'control');
-  assert.equal(ready.method, 'ready');
-  assert.equal(ready.nonce, nonce);
   return { port: channel.port2, server, close() { server.close(); channel.port2.close(); } };
 }
 
@@ -272,6 +311,11 @@ function request(id, method, params) { return { protocol: EMBED_PROTOCOL, versio
 function response(id, method) { return { protocol: EMBED_PROTOCOL, version: EMBED_PROTOCOL_VERSION, kind: 'result', id, method }; }
 function control(id, method) { return { protocol: EMBED_PROTOCOL, version: EMBED_PROTOCOL_VERSION, kind: 'control', id, method }; }
 function onceMessage(port) { return new Promise((resolve) => port.addEventListener('message', (event) => resolve(event.data), { once: true })); }
+async function rawRequest(port, id, method, params) {
+  const responsePromise = onceMessage(port);
+  port.postMessage(request(id, method, params));
+  return responsePromise;
+}
 function collectMessages(port, count) {
   return new Promise((resolve) => {
     const messages = [];
@@ -280,6 +324,26 @@ function collectMessages(port, count) {
       if (messages.length >= count) { port.removeEventListener('message', onMessage); resolve(messages); }
     };
     port.addEventListener('message', onMessage);
+  });
+}
+function noMessageWithin(port, ms) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const onMessage = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      port.removeEventListener('message', onMessage);
+      resolve(false);
+    };
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      port.removeEventListener('message', onMessage);
+      resolve(true);
+    }, ms);
+    port.addEventListener('message', onMessage);
+    port.start();
   });
 }
 function delay(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
