@@ -44,6 +44,20 @@ function ownedState(state) {
   return !!state && state.hexUi === true && Number.isSafeInteger(state.hexDepth) && state.hexDepth >= 0;
 }
 
+/* `srcdoc` documents inherit the embedding document's base URL for resolving
+   relative URLs even though their own location is `about:srcdoc`. WebKit
+   therefore resolves `'# /code'`-style History API URLs against chatgpt.com and
+   rejects the cross-origin replaceState/pushState. Always derive the history URL
+   from the document's actual location instead of its inherited base URL. */
+export function routeHistoryUrl(path, locationRef = globalThis.location) {
+  const route = normalize(path);
+  try {
+    const href = String(locationRef?.href || '');
+    if (href) return `${href.split('#')[0]}#${route}`;
+  } catch {}
+  return '#' + route;
+}
+
 export class ProductRouter {
   constructor(routes, { defaultPath = '/investigate', onRoute, onState, onError } = {}) {
     this.routes = routes; this.defaultPath = normalize(defaultPath); this.onRoute = onRoute || (() => null); this.onState = onState || (() => {}); this.onError = onError || (() => {});
@@ -61,7 +75,7 @@ export class ProductRouter {
     window.addEventListener('hashchange', this.onHash);
     const path = this.locationPath();
     const state = history.state && history.state.hexUi ? history.state : null;
-    if (!state) { this.depth = 0; history.replaceState({ hexUi: true, key: ++this.serial, depth: 0, viewState: null }, '', '#' + path); }
+    if (!state) { this.depth = 0; history.replaceState({ hexUi: true, key: ++this.serial, depth: 0, viewState: null }, '', routeHistoryUrl(path, window.location)); }
     else { this.serial = Math.max(this.serial, Number(state.key) || 0); this.depth = Math.max(0, Number(state.depth) || 0); }
     this._render(path, { replace: true, historyNavigation: true });
   }
@@ -87,7 +101,7 @@ export class ProductRouter {
     this.capture();
     const nextDepth = replace ? this.depth : this.depth + 1;
     const state = { hexUi: true, key: ++this.serial, depth: nextDepth, viewState: null };
-    try { history[replace ? 'replaceState' : 'pushState'](state, '', '#' + path); this.depth = nextDepth; }
+    try { history[replace ? 'replaceState' : 'pushState'](state, '', routeHistoryUrl(path, window.location)); this.depth = nextDepth; }
     catch { this.depth = nextDepth; window.location.hash = path; }
     this._render(path, { replace });
     return true;
@@ -109,7 +123,7 @@ export class ProductRouter {
       fullPath = this.defaultPath;
       if (!resolved) { const error = new Error('No route for ' + requestedPath); this._handleError(error, { phase: 'match', requestedPath }); throw error; }
       const state = history.state?.hexUi ? { ...history.state, depth: this.depth } : { hexUi: true, key: ++this.serial, depth: this.depth, viewState: null };
-      try { history.replaceState(state, '', '#' + fullPath); } catch { /* URL correction is best effort */ }
+      try { history.replaceState(state, '', routeHistoryUrl(fullPath, window.location)); } catch { /* URL correction is best effort */ }
     }
 
     const nextCurrent = { ...resolved, fullPath, query: queryOf(fullPath) };
