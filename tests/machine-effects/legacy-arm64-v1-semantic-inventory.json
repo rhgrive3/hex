@@ -118,7 +118,8 @@
     },
     {
       "id": "unary",
-      "match": { "mnemonics": ["abs", "asr", "clz", "fabs", "fcvtzs", "fcvtzu", "fmov", "fneg", "fsqrt", "mvn", "neg", "negs", "rbit", "rev", "rev16", "rev32", "scvtf", "sxtb", "sxth", "sxtw", "ucvtf", "uxtb", "uxth", "uxtw"] },
+      "match": { "mnemonics": ["abs", "clz", "fabs", "fcvtzs", "fcvtzu", "fneg", "fsqrt", "mvn", "neg", "negs", "rbit", "rev", "rev16", "rev32", "scvtf", "sxtb", "sxth", "sxtw", "ucvtf", "uxtb", "uxth", "uxtw"] },
+      "shadowedSourceEntries": ["fmov"],
       "legacyBehavior": "semantic-v1",
       "sourceMarkers": ["const UN_OF =", "if (UN_OF[base])"]
     },
