@@ -62,7 +62,8 @@ function bundle(decoded, context, body) {
 
 function partial(decoded, context, reason, categories = ['memory','registers','faults','other']) {
   return bundle(decoded, context, {
-    completeness:'partial', operations:[],
+    completeness:'partial',
+    operations:[],
     unknownEffects:{ categories, reason },
     metadata:{ family:'arm64-atomic', mnemonic:mnemonicOf(decoded), unsupported:true },
   });
@@ -72,8 +73,19 @@ function operands(decoded) {
   return Array.isArray(decoded?.ops) ? decoded.ops : Array.isArray(decoded?.operands) ? decoded.operands : [];
 }
 function registers(decoded) { return operands(decoded).map((op) => arm64RegisterOperand(op)).filter(Boolean); }
-
 function isGpOrZero(reg) { return !!reg && (reg.kind === 'gp' || reg.zero === true || reg.kind === 'zero'); }
+function zeroDisplacement(addressing) {
+  const raw = addressing?.metadata?.addressDisplacement;
+  return raw == null || BigInt(raw) === 0n;
+}
+function isBaseOnly(addressing) {
+  return addressing.mode === 'offset' && !addressing.index && zeroDisplacement(addressing) && addressing.writebackOperations.length === 0;
+}
+function registerMatchesSizeSuffix(reg, sizeSuffix) {
+  if (!isGpOrZero(reg)) return false;
+  if (sizeSuffix === 'b' || sizeSuffix === 'h') return reg.bits === 32;
+  return reg.bits === 32 || reg.bits === 64;
+}
 
 function orderingFromSuffix(suffix = '') {
   return {
@@ -82,7 +94,6 @@ function orderingFromSuffix(suffix = '') {
     summary:suffix === 'al' ? 'acq-rel' : suffix === 'a' ? 'acquire' : suffix === 'l' ? 'release' : 'relaxed',
   };
 }
-
 function widthFromSuffixOrReg(sizeSuffix, reg) {
   if (sizeSuffix === 'b') return 8;
   if (sizeSuffix === 'h') return 16;
@@ -92,36 +103,78 @@ function widthFromSuffixOrReg(sizeSuffix, reg) {
 
 function access(ctx, addressExpr, widthBits, ordering) {
   return createMemoryAccess({
-    space:'memory', addressExpr, widthBits,
+    space:'memory',
+    addressExpr,
+    widthBits,
     alignment:Math.max(1, widthBits / 8),
-    endian:ctx.endian, volatility:false, atomic:true, ordering,
+    endian:ctx.endian,
+    atomic:true,
+    ordering,
   }, ctx.options);
 }
-
-function faults(direction, alignment, addressExpr) {
-  return [
-    { kind:'data-abort', condition:{ kind:'memory-access-fault', access:direction }, detail:{ causes:['address-size','translation','access-flag','permission','external','tag-check'], addressExpr } },
-    { kind:'alignment-fault', condition:{ kind:'misaligned', alignment }, detail:{ access:direction, atomic:true } },
+function tagChecked(addressing) { return addressing?.base?.kind !== 'sp'; }
+function faults(direction, alignment, addressExpr, addressing) {
+  const causes = ['address-size','translation','access-flag','permission','external'];
+  if (tagChecked(addressing)) causes.push('tag-check');
+  const out = [
+    {
+      kind:'data-abort',
+      condition:{ kind:'memory-access-fault', access:direction },
+      detail:{ causes, tagChecked:tagChecked(addressing), addressExpr },
+    },
+    {
+      kind:'alignment-fault',
+      condition:{ kind:'misaligned', alignment },
+      detail:{ access:direction, atomic:true, alignment },
+    },
   ];
+  if (addressing?.base?.kind === 'sp') {
+    out.unshift({
+      kind:'stack-pointer-alignment-fault',
+      condition:{ kind:'sp-misaligned', alignment:16 },
+      detail:{ baseRegister:'sp', architecturalCheck:'CheckSPAlignment' },
+    });
+  }
+  return out;
 }
 
 function unique(values) { return [...new Set(values.filter(Boolean))]; }
-
 function intrinsicSummary({ inputs = [], outputs = [], registersRead = [], registersWritten = [], memoryRead = null, memoryWrite = null, determinism = 'input-dependent' }) {
   return createIntrinsicEffectSummary({
-    inputs, outputs,
+    inputs,
+    outputs,
     registersRead:unique(registersRead),
     registersWritten:unique(registersWritten),
     memoryRead:memoryRead || { scope:'none' },
     memoryWrite:memoryWrite || { scope:'none' },
-    controlEffects:[], determinism, symbolicDetail:'summary-only',
+    controlEffects:[],
+    determinism,
+    symbolicDetail:'summary-only',
   });
 }
 
+function valueOp(opcode, input, fromBits, toBits, id, metadata = {}) {
+  const output = arm64Temporary(id, toBits);
+  return {
+    output,
+    operation:createMachineOperation({
+      kind:'value', opcode, inputs:[input], outputs:[output],
+      metadata:{ architecture:'arm64', fromBits, toBits, ...metadata },
+    }),
+  };
+}
 function readRegister(reg, id, widthBits = reg.bits) {
   if (reg.zero) return { operations:[], value:createBitVectorValue(widthBits, 0n), registerId:null };
-  const read = createArm64RegisterRead(reg, id, widthBits);
-  return { operations:[read.operation], value:read.value, registerId:reg.physicalId };
+  if (widthBits > reg.bits) throw new TypeError('arm64-atomic-source-width-exceeds-register-view');
+  const read = createArm64RegisterRead(reg, id, reg.bits);
+  const operations = [read.operation];
+  let value = read.value;
+  if (widthBits < reg.bits) {
+    const trunc = valueOp('truncate', value, reg.bits, widthBits, `${id}.truncated`, { purpose:'atomic-source-width' });
+    operations.push(trunc.operation);
+    value = trunc.output;
+  }
+  return { operations, value, registerId:reg.physicalId };
 }
 
 function writeLoadedGp(reg, value, valueBits, idPrefix) {
@@ -130,21 +183,16 @@ function writeLoadedGp(reg, value, valueBits, idPrefix) {
   const operations = [];
   let result = value;
   const viewBits = Number(reg.bits);
+  if (valueBits > viewBits) throw new TypeError('arm64-atomic-result-width-exceeds-register-view');
   if (valueBits < viewBits) {
-    const widened = arm64Temporary(`${idPrefix}.view`, viewBits);
-    operations.push(createMachineOperation({
-      kind:'value', opcode:'zero-extend', inputs:[result], outputs:[widened],
-      metadata:{ architecture:'arm64', fromBits:valueBits, toBits:viewBits, atomicResult:true },
-    }));
-    result = widened;
+    const widened = valueOp('zero-extend', result, valueBits, viewBits, `${idPrefix}.view`, { atomicResult:true });
+    operations.push(widened.operation);
+    result = widened.output;
   }
   if (viewBits === 32) {
-    const physical = arm64Temporary(`${idPrefix}.physical`, 64);
-    operations.push(createMachineOperation({
-      kind:'value', opcode:'zero-extend', inputs:[result], outputs:[physical],
-      metadata:{ architecture:'arm64', fromBits:32, toBits:64, writePolicy:'zero-upper-32', atomicResult:true },
-    }));
-    result = physical;
+    const physical = valueOp('zero-extend', result, 32, 64, `${idPrefix}.physical`, { writePolicy:'zero-upper-32', atomicResult:true });
+    operations.push(physical.operation);
+    result = physical.output;
   }
   operations.push(createArm64RegisterWrite(reg, result, {
     physicalWidth:64,
@@ -155,15 +203,19 @@ function writeLoadedGp(reg, value, valueBits, idPrefix) {
 
 function exclusiveLoad(decoded, context, match) {
   const ctx = contextOf(decoded, context);
-  const regs = registers(decoded);
-  const dest = regs[0];
-  if (!isGpOrZero(dest)) return partial(decoded, context, 'exclusive load destination must be a GP register');
-  const widthBits = widthFromSuffixOrReg(match[1] || '', dest);
+  const dest = registers(decoded)[0];
+  const sizeSuffix = match[1] || '';
+  if (!registerMatchesSizeSuffix(dest, sizeSuffix)) return partial(decoded, context, 'exclusive load destination width is invalid');
+  const widthBits = widthFromSuffixOrReg(sizeSuffix, dest);
   if (!widthBits) return partial(decoded, context, 'exclusive load width is unsupported');
+
   let addr;
   try { addr = buildArm64EffectiveAddress(decoded, { prefix:'atomic.addr' }); }
-  catch (error) { return error instanceof Arm64AddressingError ? partial(decoded, context, error.code) : (() => { throw error; })(); }
-  if (addr.mode !== 'offset' || addr.writebackOperations.length) return partial(decoded, context, 'exclusive loads do not support writeback addressing');
+  catch (error) {
+    if (error instanceof Arm64AddressingError) return partial(decoded, context, error.code);
+    throw error;
+  }
+  if (!isBaseOnly(addr)) return partial(decoded, context, 'exclusive loads require base-only addressing');
 
   const acquire = mnemonicOf(decoded).startsWith('ldaxr');
   const ordering = acquire ? 'acquire' : 'relaxed';
@@ -171,18 +223,26 @@ function exclusiveLoad(decoded, context, match) {
   const raw = arm64Temporary('exclusive.load.raw', widthBits);
   const monitor = arm64Temporary('exclusive.monitor.token', 1);
   const ops = [...addr.readOperations];
-  ops.push(createMachineOperation({ kind:'memory-read', access:memAccess, value:raw, metadata:{ architecture:'arm64', exclusive:true, ordering } }));
   ops.push(createMachineOperation({
-    kind:'intrinsic', intrinsicId:'arm64.exclusive-monitor-set',
-    effectSummary:intrinsicSummary({ outputs:[monitor], registersRead:[addr.base.physicalId], determinism:'deterministic' }),
-    metadata:{ addressExpr:addr.addressExpr, widthBits },
+    kind:'memory-read', access:memAccess, value:raw,
+    metadata:{ architecture:'arm64', exclusive:true, ordering, tagChecked:tagChecked(addr) },
+  }));
+  ops.push(createMachineOperation({
+    kind:'intrinsic',
+    intrinsicId:'arm64.exclusive-monitor-set',
+    effectSummary:intrinsicSummary({
+      outputs:[monitor],
+      registersRead:[addr.base.physicalId],
+      determinism:'deterministic',
+    }),
+    metadata:{ addressExpr:addr.addressExpr, widthBits, hiddenState:'exclusive-monitor' },
   }));
   try { ops.push(...writeLoadedGp(dest, raw, widthBits, 'exclusive.load')); }
   catch (error) { return partial(decoded, context, error.message); }
 
   return bundle(decoded, context, {
     operations:ops,
-    possibleFaults:faults('read', widthBits / 8, addr.addressExpr),
+    possibleFaults:faults('read', widthBits / 8, addr.addressExpr, addr),
     completeness:'exact-with-intrinsic',
     metadata:{ family:'arm64-atomic', kind:'exclusive-load', mnemonic:mnemonicOf(decoded), widthBits, ordering, addressing:addr.metadata },
   });
@@ -191,38 +251,58 @@ function exclusiveLoad(decoded, context, match) {
 function exclusiveStore(decoded, context, match) {
   const ctx = contextOf(decoded, context);
   const regs = registers(decoded);
-  const status = regs[0], data = regs[1];
-  if (!status || !isGpOrZero(status) || status.bits !== 32 || !isGpOrZero(data)) return partial(decoded, context, 'exclusive store requires W status and GP data registers');
-  const widthBits = widthFromSuffixOrReg(match[1] || '', data);
+  const status = regs[0];
+  const data = regs[1];
+  const sizeSuffix = match[1] || '';
+  if (!status || !isGpOrZero(status) || status.bits !== 32 || !registerMatchesSizeSuffix(data, sizeSuffix)) {
+    return partial(decoded, context, 'exclusive store requires W status and correctly-sized GP data registers');
+  }
+  const widthBits = widthFromSuffixOrReg(sizeSuffix, data);
   if (!widthBits) return partial(decoded, context, 'exclusive store width is unsupported');
+
   let addr;
   try { addr = buildArm64EffectiveAddress(decoded, { prefix:'atomic.addr' }); }
-  catch (error) { return error instanceof Arm64AddressingError ? partial(decoded, context, error.code) : (() => { throw error; })(); }
-  if (addr.mode !== 'offset' || addr.writebackOperations.length) return partial(decoded, context, 'exclusive stores do not support writeback addressing');
+  catch (error) {
+    if (error instanceof Arm64AddressingError) return partial(decoded, context, error.code);
+    throw error;
+  }
+  if (!isBaseOnly(addr)) return partial(decoded, context, 'exclusive stores require base-only addressing');
 
   const release = mnemonicOf(decoded).startsWith('stlxr');
   const ordering = release ? 'release' : 'relaxed';
   const memAccess = access(ctx, addr.addressExpr, widthBits, ordering);
-  const dataRead = readRegister(data, 'exclusive.store.data', widthBits);
+  let dataRead;
+  try { dataRead = readRegister(data, 'exclusive.store.data', widthBits); }
+  catch (error) { return partial(decoded, context, error.message); }
   const statusValue = arm64Temporary('exclusive.store.status', 32);
   const ops = [...addr.readOperations, ...dataRead.operations];
   ops.push(createMachineOperation({
-    kind:'intrinsic', intrinsicId:'arm64.exclusive-store-conditional',
+    kind:'intrinsic',
+    intrinsicId:'arm64.exclusive-store-conditional',
     effectSummary:intrinsicSummary({
-      inputs:[dataRead.value], outputs:[statusValue],
+      inputs:[dataRead.value],
+      outputs:[statusValue],
       registersRead:[addr.base.physicalId, dataRead.registerId],
-      registersWritten:[status.physicalId],
       memoryWrite:{ scope:'accesses', accesses:[memAccess] },
       determinism:'nondeterministic',
     }),
-    metadata:{ conditional:true, condition:'exclusive-monitor-pass', successValue:0, failureValue:1, widthBits, ordering },
+    metadata:{
+      conditional:true,
+      condition:'exclusive-monitor-pass',
+      successValue:0,
+      failureValue:1,
+      widthBits,
+      ordering,
+      hiddenState:'exclusive-monitor',
+      tagChecked:tagChecked(addr),
+    },
   }));
   try { ops.push(...writeLoadedGp(status, statusValue, 32, 'exclusive.store.status')); }
   catch (error) { return partial(decoded, context, error.message); }
 
   return bundle(decoded, context, {
     operations:ops,
-    possibleFaults:faults('write', widthBits / 8, addr.addressExpr),
+    possibleFaults:faults('write', widthBits / 8, addr.addressExpr, addr),
     completeness:'exact-with-intrinsic',
     metadata:{ family:'arm64-atomic', kind:'exclusive-store', mnemonic:mnemonicOf(decoded), widthBits, ordering, addressing:addr.metadata },
   });
@@ -231,38 +311,48 @@ function exclusiveStore(decoded, context, match) {
 function atomicRmw(decoded, context, { family, suffix = '', sizeSuffix = '' }) {
   const ctx = contextOf(decoded, context);
   const regs = registers(decoded);
-  const source = regs[0], result = regs[1];
-  if (!isGpOrZero(source) || !isGpOrZero(result)) return partial(decoded, context, `${family} requires two GP registers`);
+  const source = regs[0];
+  const result = regs[1];
+  if (!registerMatchesSizeSuffix(source, sizeSuffix) || !registerMatchesSizeSuffix(result, sizeSuffix)) {
+    return partial(decoded, context, `${family} requires correctly-sized GP registers`);
+  }
   const widthBits = widthFromSuffixOrReg(sizeSuffix, source);
   if (!widthBits || (sizeSuffix === '' && result.bits !== source.bits)) return partial(decoded, context, `${family} register widths do not match`);
+
   let addr;
   try { addr = buildArm64EffectiveAddress(decoded, { prefix:'atomic.addr' }); }
-  catch (error) { return error instanceof Arm64AddressingError ? partial(decoded, context, error.code) : (() => { throw error; })(); }
-  if (addr.mode !== 'offset' || addr.writebackOperations.length) return partial(decoded, context, `${family} does not support writeback addressing`);
+  catch (error) {
+    if (error instanceof Arm64AddressingError) return partial(decoded, context, error.code);
+    throw error;
+  }
+  if (!isBaseOnly(addr)) return partial(decoded, context, `${family} requires base-only addressing`);
 
   const order = orderingFromSuffix(suffix);
   const readAccess = access(ctx, addr.addressExpr, widthBits, order.read);
   const writeAccess = access(ctx, addr.addressExpr, widthBits, order.write);
-  const sourceRead = readRegister(source, `${family}.source`, widthBits);
+  let sourceRead;
+  try { sourceRead = readRegister(source, `${family}.source`, widthBits); }
+  catch (error) { return partial(decoded, context, error.message); }
   const oldValue = arm64Temporary(`${family}.old`, widthBits);
   const ops = [...addr.readOperations, ...sourceRead.operations];
   ops.push(createMachineOperation({
-    kind:'intrinsic', intrinsicId:`arm64.atomic.${family}`,
+    kind:'intrinsic',
+    intrinsicId:`arm64.atomic.${family}`,
     effectSummary:intrinsicSummary({
-      inputs:[sourceRead.value], outputs:[oldValue],
+      inputs:[sourceRead.value],
+      outputs:[oldValue],
       registersRead:[addr.base.physicalId, sourceRead.registerId],
-      registersWritten:result.zero ? [] : [result.physicalId],
       memoryRead:{ scope:'accesses', accesses:[readAccess] },
       memoryWrite:{ scope:'accesses', accesses:[writeAccess] },
     }),
-    metadata:{ operation:family, widthBits, ordering:order.summary, readOrdering:order.read, writeOrdering:order.write, atomic:true },
+    metadata:{ operation:family, widthBits, ordering:order.summary, readOrdering:order.read, writeOrdering:order.write, atomic:true, tagChecked:tagChecked(addr) },
   }));
   try { ops.push(...writeLoadedGp(result, oldValue, widthBits, `${family}.result`)); }
   catch (error) { return partial(decoded, context, error.message); }
 
   return bundle(decoded, context, {
     operations:ops,
-    possibleFaults:[...faults('read', widthBits / 8, addr.addressExpr), ...faults('write', widthBits / 8, addr.addressExpr)],
+    possibleFaults:[...faults('read', widthBits / 8, addr.addressExpr, addr), ...faults('write', widthBits / 8, addr.addressExpr, addr)],
     completeness:'exact-with-intrinsic',
     metadata:{ family:'arm64-atomic', kind:'read-modify-write', operation:family, mnemonic:mnemonicOf(decoded), widthBits, ordering:order.summary, addressing:addr.metadata },
   });
@@ -270,41 +360,62 @@ function atomicRmw(decoded, context, { family, suffix = '', sizeSuffix = '' }) {
 
 function compareSwap(decoded, context, match) {
   const ctx = contextOf(decoded, context);
-  const suffix = match[1] || '', sizeSuffix = match[2] || '';
+  const suffix = match[1] || '';
+  const sizeSuffix = match[2] || '';
   const regs = registers(decoded);
-  const expected = regs[0], replacement = regs[1];
-  if (!isGpOrZero(expected) || !isGpOrZero(replacement)) return partial(decoded, context, 'CAS requires expected and replacement GP registers');
+  const expected = regs[0];
+  const replacement = regs[1];
+  if (!registerMatchesSizeSuffix(expected, sizeSuffix) || !registerMatchesSizeSuffix(replacement, sizeSuffix)) {
+    return partial(decoded, context, 'CAS requires correctly-sized expected and replacement GP registers');
+  }
   const widthBits = widthFromSuffixOrReg(sizeSuffix, expected);
   if (!widthBits || (sizeSuffix === '' && expected.bits !== replacement.bits)) return partial(decoded, context, 'CAS register widths do not match');
+
   let addr;
   try { addr = buildArm64EffectiveAddress(decoded, { prefix:'atomic.addr' }); }
-  catch (error) { return error instanceof Arm64AddressingError ? partial(decoded, context, error.code) : (() => { throw error; })(); }
-  if (addr.mode !== 'offset' || addr.writebackOperations.length) return partial(decoded, context, 'CAS does not support writeback addressing');
+  catch (error) {
+    if (error instanceof Arm64AddressingError) return partial(decoded, context, error.code);
+    throw error;
+  }
+  if (!isBaseOnly(addr)) return partial(decoded, context, 'CAS requires base-only addressing');
 
   const order = orderingFromSuffix(suffix);
   const readAccess = access(ctx, addr.addressExpr, widthBits, order.read);
   const writeAccess = access(ctx, addr.addressExpr, widthBits, order.write);
-  const expectedRead = readRegister(expected, 'cas.expected', widthBits);
-  const replacementRead = readRegister(replacement, 'cas.replacement', widthBits);
+  let expectedRead;
+  let replacementRead;
+  try {
+    expectedRead = readRegister(expected, 'cas.expected', widthBits);
+    replacementRead = readRegister(replacement, 'cas.replacement', widthBits);
+  } catch (error) { return partial(decoded, context, error.message); }
   const oldValue = arm64Temporary('cas.old', widthBits);
   const ops = [...addr.readOperations, ...expectedRead.operations, ...replacementRead.operations];
   ops.push(createMachineOperation({
-    kind:'intrinsic', intrinsicId:'arm64.atomic.compare-swap',
+    kind:'intrinsic',
+    intrinsicId:'arm64.atomic.compare-swap',
     effectSummary:intrinsicSummary({
-      inputs:[expectedRead.value, replacementRead.value], outputs:[oldValue],
+      inputs:[expectedRead.value, replacementRead.value],
+      outputs:[oldValue],
       registersRead:[addr.base.physicalId, expectedRead.registerId, replacementRead.registerId],
-      registersWritten:expected.zero ? [] : [expected.physicalId],
       memoryRead:{ scope:'accesses', accesses:[readAccess] },
       memoryWrite:{ scope:'accesses', accesses:[writeAccess] },
     }),
-    metadata:{ condition:'memory-equals-expected', conditionalWrite:true, widthBits, ordering:order.summary, readOrdering:order.read, writeOrdering:order.write },
+    metadata:{
+      condition:'memory-equals-expected',
+      conditionalWrite:true,
+      widthBits,
+      ordering:order.summary,
+      readOrdering:order.read,
+      writeOrdering:order.write,
+      tagChecked:tagChecked(addr),
+    },
   }));
   try { ops.push(...writeLoadedGp(expected, oldValue, widthBits, 'cas.result')); }
   catch (error) { return partial(decoded, context, error.message); }
 
   return bundle(decoded, context, {
     operations:ops,
-    possibleFaults:[...faults('read', widthBits / 8, addr.addressExpr), ...faults('write', widthBits / 8, addr.addressExpr)],
+    possibleFaults:[...faults('read', widthBits / 8, addr.addressExpr, addr), ...faults('write', widthBits / 8, addr.addressExpr, addr)],
     completeness:'exact-with-intrinsic',
     metadata:{ family:'arm64-atomic', kind:'compare-swap', mnemonic:mnemonicOf(decoded), widthBits, ordering:order.summary, addressing:addr.metadata },
   });
@@ -315,12 +426,19 @@ function barrierOption(decoded) {
   const raw = String(op?.text || op?.value || decoded?.barrierOption || decoded?.operandsText || '').trim().toLowerCase();
   return raw.replace(/^#/, '') || 'sy';
 }
-
 const BARRIER_OPTIONS = Object.freeze({
-  sy:{ domain:'full-system', access:'all' }, st:{ domain:'full-system', access:'stores' }, ld:{ domain:'full-system', access:'loads' },
-  ish:{ domain:'inner-shareable', access:'all' }, ishst:{ domain:'inner-shareable', access:'stores' }, ishld:{ domain:'inner-shareable', access:'loads' },
-  nsh:{ domain:'non-shareable', access:'all' }, nshst:{ domain:'non-shareable', access:'stores' }, nshld:{ domain:'non-shareable', access:'loads' },
-  osh:{ domain:'outer-shareable', access:'all' }, oshst:{ domain:'outer-shareable', access:'stores' }, oshld:{ domain:'outer-shareable', access:'loads' },
+  sy:{ domain:'full-system', access:'all' },
+  st:{ domain:'full-system', access:'stores' },
+  ld:{ domain:'full-system', access:'loads' },
+  ish:{ domain:'inner-shareable', access:'all' },
+  ishst:{ domain:'inner-shareable', access:'stores' },
+  ishld:{ domain:'inner-shareable', access:'loads' },
+  nsh:{ domain:'non-shareable', access:'all' },
+  nshst:{ domain:'non-shareable', access:'stores' },
+  nshld:{ domain:'non-shareable', access:'loads' },
+  osh:{ domain:'outer-shareable', access:'all' },
+  oshst:{ domain:'outer-shareable', access:'stores' },
+  oshld:{ domain:'outer-shareable', access:'loads' },
 });
 
 function barrier(decoded, context, mnemonic) {
@@ -344,7 +462,8 @@ function clearExclusive(decoded, context) {
   const token = arm64Temporary('exclusive.monitor.cleared', 1);
   return bundle(decoded, context, {
     operations:[createMachineOperation({
-      kind:'intrinsic', intrinsicId:'arm64.exclusive-monitor-clear',
+      kind:'intrinsic',
+      intrinsicId:'arm64.exclusive-monitor-clear',
       effectSummary:intrinsicSummary({ outputs:[token], determinism:'deterministic' }),
       metadata:{ architecture:'arm64', hiddenState:'exclusive-monitor' },
     })],
