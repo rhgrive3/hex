@@ -22,8 +22,8 @@ const immFloat = (value, text = `#${value}`) => ({ k:'imm', value:null, float:va
   assert.equal(effect.completeness, 'exact-with-intrinsic', 'FP arithmetic must not pretend primitive IEEE exactness');
   const intrinsic = effect.operations.find((op) => op.kind === 'intrinsic');
   assert.equal(intrinsic.intrinsicId, 'arm64.fp.fadd');
-  assert.deepEqual(intrinsic.effectSummary.registersRead.sort(), ['fpcr','fpsr','v1','v2'].sort());
-  assert.deepEqual(intrinsic.effectSummary.registersWritten.sort(), ['fpsr','v0'].sort());
+  assert.deepEqual([...intrinsic.effectSummary.registersRead].sort(), ['fpcr','fpsr','v1','v2'].sort());
+  assert.deepEqual([...intrinsic.effectSummary.registersWritten].sort(), ['fpsr','v0'].sort());
   const result = intrinsic.effectSummary.outputs[0];
   assert.equal(result.valueType.kind, 'float');
   assert.equal(result.valueType.widthBits, 32, 'S-register FP width must remain 32-bit');
