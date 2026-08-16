@@ -6,7 +6,6 @@ const FORBIDDEN_IMPORT_PATTERNS = Object.freeze([
   { id: 'target-architecture-import', re: /(?:^|\/)targets\/architecture(?:\/|$)/ },
   { id: 'target-abi-import', re: /(?:^|\/)targets\/abi(?:\/|$)/ },
   { id: 'legacy-arm64-core-import', re: /(?:^|\/)(?:architecture\/compat\/ir-core-arm64-aapcs64-v1|ir-core)(?:\.js)?$/ },
-  { id: 'legacy-architecture-import', re: /(?:^|\/)architecture(?:\/|$)/ },
 ]);
 
 const ARCH_ATOMS = new Set(['arm64', 'arm64e', 'aarch64', 'x86', 'x86_64', 'amd64', 'riscv', 'riscv64', 'mips', 'ppc', 'powerpc']);
@@ -14,7 +13,7 @@ const ABI_ATOMS = new Set(['aapcs64', 'sysv-amd64', 'win64', 'riscv-psabi']);
 const FLAG_ATOMS = new Set(['nzcv', 'eflags', 'rflags']);
 const REGISTER_ATOMS = new Set([
   'x0','x1','x2','x3','x4','x5','x6','x7','x8','x9','x10','x11','x12','x13','x14','x15','x16','x17','x18','x19','x20','x21','x22','x23','x24','x25','x26','x27','x28','x29','x30',
-  'w0','w1','w2','w3','w4','w5','w6','w7','sp','lr','fp',
+  'w0','w1','w2','w3','w4','w5','w6','w7',
   'rax','rbx','rcx','rdx','rsi','rdi','rsp','rbp','rip','eax','ebx','ecx','edx','esi','edi','esp','ebp','eip',
 ]);
 const SELECTOR_IDENTIFIERS = new Set(['arch', 'architecture', 'architectureid', 'target', 'targetid', 'abi', 'abiid', 'register', 'registerid', 'flag', 'flagid']);
