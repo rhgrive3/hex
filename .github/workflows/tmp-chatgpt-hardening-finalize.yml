@@ -1,0 +1,56 @@
+name: Temporary finalize ChatGPT Web hardening
+on:
+  push:
+    branches: [hex/chatgpt-web-production-hardening-final]
+permissions:
+  contents: write
+jobs:
+  finalize:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: hex/chatgpt-web-production-hardening-final
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Apply reviewed refinements
+        run: |
+          git show 50b7098f795aa5f97d0c27899ac6f44344590d99:.github/workflows/tmp-chatgpt-hardening-refine.yml > /tmp/refine.yml
+          sed -n "/python3 - <<'PY'/,/^          PY$/p" /tmp/refine.yml | sed '1d;$d;s/^          //' > /tmp/refine.py
+          sed -i "s/Date.now() - churnStarted < 70/Date.now() - churnStarted < 170/" /tmp/refine.py
+          python3 /tmp/refine.py
+      - name: Install dependencies and browsers
+        run: |
+          npm ci
+          npm install --no-save playwright@1.55.0
+          npx playwright install --with-deps chromium webkit
+      - name: Focused regressions
+        run: |
+          node tests/chatgpt-web-runtime.mjs
+          node tests/ai-chatgpt-web-provider.mjs
+          node tests/chatgpt-web-agent-loop.mjs
+          node tests/chatgpt-web-production-dom.mjs
+      - name: Full relevant gates
+        run: |
+          npm run ai:test
+          npm run userscript:test
+          npm run lint
+      - name: Regenerate and verify
+        run: |
+          npm run userscript:build
+          git checkout 80c2b5d0a4d9a79ecdbd2e5aa075609e12ec2346 -- node_modules/.package-lock.json || true
+          rm .github/workflows/tmp-chatgpt-hardening-finalize.yml
+          git diff --check
+          git status --short
+      - name: Commit validated final hardening
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Finalize ChatGPT Web production hardening"
+          git push origin HEAD:hex/chatgpt-web-production-hardening-final
