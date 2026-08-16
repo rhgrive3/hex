@@ -275,6 +275,28 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
   }
   projected.memorySafety = memorySafetySummary(projected);
   projected.defUse = () => projected.values;
+
+  const selects = projected.instructions.filter((inst) => inst.op === V1_OP.SEL);
+  if (selects.length) {
+    const v = (value) => value == null ? null : {
+      id: value.id,
+      reg: value.reg,
+      bits: value.bits,
+      kind: value.kind,
+      const: value.const == null ? null : String(value.const),
+      def: value.def == null ? null : { op: value.def.op, sub: value.def.sub, row: value.def.row, block: value.def.block,
+        args: (value.def.args || []).map((arg) => arg?.value?.id ?? null) },
+    };
+    console.log('V1_SELECT_CHAIN_DIAG ' + JSON.stringify({
+      functionId: projected.functionId,
+      args: [...projected.args.entries()].map(([reg, value]) => [reg, v(value)]),
+      selects: selects.map((inst) => ({ row: inst.row, block: inst.block, cond: inst.cond, dst: v(inst.dst), args: (inst.args || []).map((arg) => v(arg?.value)) })),
+      x0Values: projected.values.filter((value) => value.reg === 'x0').map(v),
+      stateWrites: projected.instructions.filter((inst) => inst.extra?.stateWrite).map((inst) => ({ row: inst.row, block: inst.block,
+        publicStateIdentity: inst.extra?.publicStateIdentity, op: inst.op, dst: v(inst.dst), args: (inst.args || []).map((arg) => v(arg?.value)) })),
+      returns: projected.instructions.filter((inst) => inst.op === V1_OP.RET).map((inst) => ({ row: inst.row, block: inst.block, args: (inst.args || []).map((arg) => v(arg?.value)) })),
+    }));
+  }
   return projected;
 }
 
