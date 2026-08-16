@@ -10,10 +10,11 @@ const CHATGPT_ORIGIN = 'https://chatgpt.com';
 const WORKER_ORIGIN = 'https://ida.rhgrive.workers.dev';
 const PARENT_URL = `${CHATGPT_ORIGIN}/__hex_embed_e2e__`;
 const TIMEOUT_MS = 45_000;
+const TEST_NONCE = 'hex-e2e-nonce';
 const CHATGPT_LIKE_CSP = [
   "default-src 'self'",
-  "script-src 'self' 'unsafe-inline' blob:",
-  "script-src-elem 'self' 'unsafe-inline' blob:",
+  `script-src 'nonce-${TEST_NONCE}' 'self' 'wasm-unsafe-eval'`,
+  `script-src-elem 'nonce-${TEST_NONCE}' 'self' blob:`,
   "style-src 'self' 'unsafe-inline' blob:",
   `connect-src 'self' ${WORKER_ORIGIN}`,
   "frame-src 'self' https://*.embed.chatgpt.site https://*.web-sandbox.oaiusercontent.com",
@@ -40,6 +41,7 @@ async function runBrowser(name, browserType) {
     locale: 'ja-JP',
     ignoreHTTPSErrors: true,
   });
+  await context.addInitScript({ content: `addEventListener('DOMContentLoaded',()=>{${template}\n},{once:true});` });
   const page = await context.newPage();
   const diagnostics = [];
   page.on('console', (message) => diagnostics.push(`console:${message.type()}: ${message.text()}`));
@@ -57,12 +59,12 @@ async function runBrowser(name, browserType) {
 
   try {
     await page.goto(PARENT_URL, { waitUntil: 'domcontentloaded', timeout: TIMEOUT_MS });
-    const blobProbe = await probeSandboxBlob(page);
-    diagnostics.push(`sandbox-blob-probe: ${JSON.stringify(blobProbe)}`);
-    assert.equal(blobProbe.ready, true, `${name}: sandboxed same-origin Blob iframe must execute script under ChatGPT-like CSP`);
-    assert.equal(blobProbe.origin, 'null', `${name}: sandboxed Blob iframe must have an opaque origin`);
-
-    await page.addScriptTag({ content: template });
+    const probe = await probeSandboxBootPaths(page);
+    diagnostics.push(`sandbox-probe: ${JSON.stringify(probe)}`);
+    assert.equal(probe.srcdocNonce.ready || probe.srcdocBlobScript.ready, true,
+      `${name}: ChatGPT-like CSP must expose at least one executable opaque srcdoc bootstrap path`);
+    assert.equal(probe.srcdocNonce.ready ? probe.srcdocNonce.origin : probe.srcdocBlobScript.origin, 'null',
+      `${name}: CSP-compatible sandbox bootstrap must stay opaque`);
 
     await page.waitForSelector('#hex-userscript-iframe-host iframe', { state: 'attached', timeout: TIMEOUT_MS });
     const iframeElement = await page.$('#hex-userscript-iframe-host iframe');
@@ -118,27 +120,45 @@ async function runBrowser(name, browserType) {
   }
 }
 
-async function probeSandboxBlob(page) {
-  return page.evaluate(() => new Promise((resolve) => {
-    const marker = `probe-${Math.random().toString(16).slice(2)}`;
-    const timer = setTimeout(() => resolve({ ready: false, origin: null }), 5000);
-    const onMessage = (event) => {
-      if (event.data?.marker !== marker) return;
-      clearTimeout(timer);
-      removeEventListener('message', onMessage);
-      event.source?.frameElement?.remove?.();
-      resolve({ ready: true, origin: event.data.origin });
+async function probeSandboxBootPaths(page) {
+  return page.evaluate(async ({ nonce }) => {
+    async function probe(kind) {
+      return new Promise((resolve) => {
+        const marker = `${kind}-${Math.random().toString(16).slice(2)}`;
+        const timer = setTimeout(() => finish({ ready: false, origin: null }), 3000);
+        let iframe = null;
+        let blobUrl = null;
+        const onMessage = (event) => {
+          if (event.data?.marker !== marker) return;
+          finish({ ready: true, origin: event.data.origin });
+        };
+        function finish(result) {
+          clearTimeout(timer);
+          removeEventListener('message', onMessage);
+          try { iframe?.remove(); } catch {}
+          try { if (blobUrl) URL.revokeObjectURL(blobUrl); } catch {}
+          resolve(result);
+        }
+        addEventListener('message', onMessage);
+        iframe = document.createElement('iframe');
+        iframe.sandbox = 'allow-scripts';
+        iframe.hidden = true;
+        if (kind === 'srcdocNonce') {
+          iframe.srcdoc = `<!doctype html><meta charset="utf-8"><script nonce="${nonce}">parent.postMessage({marker:${JSON.stringify(marker)},origin:location.origin},'*')<\/script>`;
+        } else {
+          blobUrl = URL.createObjectURL(new Blob([
+            `parent.postMessage({marker:${JSON.stringify(marker)},origin:location.origin},'*')`,
+          ], { type: 'text/javascript' }));
+          iframe.srcdoc = `<!doctype html><meta charset="utf-8"><script src="${blobUrl}"><\/script>`;
+        }
+        document.documentElement.append(iframe);
+      });
+    }
+    return {
+      srcdocNonce: await probe('srcdocNonce'),
+      srcdocBlobScript: await probe('srcdocBlobScript'),
     };
-    addEventListener('message', onMessage);
-    const html = `<!doctype html><meta charset="utf-8"><script>parent.postMessage({marker:${JSON.stringify(marker)},origin:location.origin},'*')<\/script>`;
-    const url = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
-    const iframe = document.createElement('iframe');
-    iframe.sandbox = 'allow-scripts';
-    iframe.src = url;
-    iframe.hidden = true;
-    iframe.addEventListener('load', () => setTimeout(() => URL.revokeObjectURL(url), 0), { once: true });
-    document.documentElement.append(iframe);
-  }));
+  }, { nonce: TEST_NONCE });
 }
 
 async function routeRequest(route) {
@@ -146,7 +166,7 @@ async function routeRequest(route) {
   const url = new URL(request.url());
   const method = request.method();
 
-  if (url.protocol === 'blob:' || url.protocol === 'data:') {
+  if (url.protocol === 'blob:' || url.protocol === 'data:' || url.protocol === 'about:') {
     await route.continue();
     return;
   }
@@ -156,7 +176,7 @@ async function routeRequest(route) {
       status: 200,
       contentType: 'text/html; charset=utf-8',
       headers: { 'cache-control': 'no-store', 'content-security-policy': CHATGPT_LIKE_CSP },
-      body: '<!doctype html><html><head><meta charset="utf-8"><title>Fake ChatGPT</title></head><body><main><div id="prompt-textarea" role="textbox" contenteditable="true"></div><button data-testid="send-button" type="button">Send</button></main></body></html>',
+      body: `<!doctype html><html><head><meta charset="utf-8"><title>Fake ChatGPT</title><script nonce="${TEST_NONCE}"><\/script></head><body><main><div id="prompt-textarea" role="textbox" contenteditable="true"></div><button data-testid="send-button" type="button">Send</button></main></body></html>`,
     });
     return;
   }
@@ -286,7 +306,7 @@ async function waitForHexFrame(page) {
   while (Date.now() < deadline) {
     const frames = page.frames().filter((frame) => frame !== page.mainFrame());
     const found = frames.find((frame) => frame.url().startsWith(`${WORKER_ORIGIN}/embed/chatgpt`))
-      || frames.find((frame) => frame.url().startsWith('blob:') || frame.url() === 'about:srcdoc');
+      || frames.find((frame) => frame.url() === 'about:srcdoc' || frame.url() === 'about:blank');
     if (found) return found;
     await page.waitForTimeout(50);
   }
