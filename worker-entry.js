@@ -65,6 +65,7 @@ export default {
     const url = new URL(request.url);
     if (url.pathname === '/hex.user.js') return serveUserscript(request, env, url, false);
     if (url.pathname === '/hex.meta.js') return serveUserscript(request, env, url, true);
+    if (url.pathname === '/embed/chatgpt') return serveChatGPTEmbed(request, env, url);
     if (url.pathname === '/runtime/bootstrap') return runtimeBootstrap(request, env, url);
     if (url.pathname.startsWith('/_runtime/')) return protectedRuntime(request, env, url);
     if (isPrivatePath(url.pathname)) return new Response('Not Found', { status: 404, headers: securityHeaders() });
@@ -84,6 +85,17 @@ async function serveUserscript(request, env, url, metadataOnly) {
   let body = (await source.text()).replaceAll('__HEX_ORIGIN__', url.origin);
   if (metadataOnly) { const marker = '// ==/UserScript=='; const end = body.indexOf(marker); if (end < 0) return new Response('Invalid userscript metadata.', { status: 500 }); body = body.slice(0, end + marker.length) + '\n'; }
   return new Response(request.method === 'HEAD' ? null : body, { headers: { ...securityHeaders(), 'content-type': 'application/javascript; charset=utf-8', 'cache-control': 'no-cache, no-store, must-revalidate' } });
+}
+
+async function serveChatGPTEmbed(request, env, url) {
+  const headers = embedDocumentHeaders();
+  if (!['GET', 'HEAD'].includes(request.method)) {
+    headers.set('allow', 'GET, HEAD');
+    return new Response('Method Not Allowed', { status: 405, headers });
+  }
+  if (!env.ASSETS?.fetch) return new Response(request.method === 'HEAD' ? null : 'Hex shell is unavailable.', { status: 503, headers });
+  const source = await env.ASSETS.fetch(new Request(new URL('/index.html', url.origin), { method: request.method }));
+  return new Response(request.method === 'HEAD' ? null : source.body, { status: source.status, statusText: source.statusText, headers });
 }
 
 async function runtimeBootstrap(request, env, url) {
@@ -151,6 +163,7 @@ function isPrivatePath(path) { return PRIVATE_FILES.has(path) || PRIVATE_PREFIXE
 async function asset(env, url, path) { if (!env.ASSETS?.fetch) return new Response(null, { status: 503 }); return env.ASSETS.fetch(new Request(new URL(path, url.origin), { method: 'GET' })); }
 function methodNotAllowed(allow) { return new Response('Method Not Allowed', { status: 405, headers: { ...securityHeaders(), allow } }); }
 function securityHeaders() { return { 'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer', 'cross-origin-resource-policy': 'same-site' }; }
+function embedDocumentHeaders() { return new Headers({ 'content-security-policy': 'frame-ancestors https://chatgpt.com https://chat.openai.com', 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer' }); }
 function utf8(value) { return new TextEncoder().encode(String(value)); }
 async function shortHash(value) { const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', utf8(value))); return encodeBase64URL(digest.slice(0, 12)); }
 
