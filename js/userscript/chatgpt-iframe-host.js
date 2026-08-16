@@ -149,8 +149,6 @@ export function createChatGPTIframeHost(options = {}) {
   closeButton.addEventListener('click', onCloseClick);
   retryButton.addEventListener('click', onRetryClick);
 
-  navigate();
-
   function state() {
     return Object.freeze({
       status: lifecycle,
@@ -169,7 +167,8 @@ export function createChatGPTIframeHost(options = {}) {
     wrapper.style.pointerEvents = 'auto';
     wrapper.removeAttribute('aria-hidden');
     launcher.hidden = true;
-    if (lifecycle === 'ready' || lifecycle === 'hidden') lifecycle = 'visible';
+    if (lifecycle === 'idle') navigate();
+    else if (lifecycle === 'ready' || lifecycle === 'hidden') lifecycle = 'visible';
     safeFocus(iframe.contentWindow);
     return state();
   }
@@ -279,6 +278,7 @@ export function createChatGPTIframeHost(options = {}) {
       failure = null;
       statusBox.hidden = true;
       errorBox.hidden = true;
+      lifecycle = 'ready';
       lifecycle = desiredVisible ? 'visible' : 'hidden';
     }).catch((error) => {
       if (!isCurrentGeneration(currentGeneration) || controller.signal.aborted) return;
