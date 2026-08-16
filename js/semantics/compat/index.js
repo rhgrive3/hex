@@ -385,7 +385,11 @@ export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
     ...(options.compatOptions ?? {}),
   });
 
-  return deepFreeze({
+  // The wrapper object is immutable, and every canonical v2 artifact is already
+  // frozen by its contract constructor. The legacy v1 compatibility projection
+  // intentionally remains mutable because the existing public js/ir.js facade
+  // attaches conservative safety/query caches to it after construction.
+  return Object.freeze({
     mode: SEMANTIC_V2_MIGRATION_MODES.V2_COMPAT,
     pipelineVersion: SEMANTIC_V2_COMPAT_PIPELINE_VERSION,
     path: SEMANTIC_V2_COMPAT_PATH,
