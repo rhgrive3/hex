@@ -100,6 +100,29 @@ function preserveStateReadTemporaryIdentity(ir, valuesById) {
   }
 }
 
+/**
+ * Canonical SSA can contain multiple entry values for one physical identity when
+ * different typed access views are observed. Legacy v1 exposes one `args` value
+ * per public identity. Choose that representative only after def-use projection,
+ * preferring the entry view that is actually consumed. This avoids an unused
+ * wider entry view shadowing the live narrower view while preserving deterministic
+ * first-seen behavior when candidates are otherwise equivalent.
+ */
+function populateLegacyArguments(projected) {
+  projected.args.clear();
+  for (const value of projected.values) {
+    if (value.kind !== V1_VK.ARG || !value.reg) continue;
+    const current = projected.args.get(value.reg) ?? null;
+    if (!current) {
+      projected.args.set(value.reg, value);
+      continue;
+    }
+    const currentUses = current.uses?.length ?? 0;
+    const candidateUses = value.uses?.length ?? 0;
+    if (candidateUses > currentUses) projected.args.set(value.reg, value);
+  }
+}
+
 function addComparisonCarriers(ir, values, valuesById) {
   const flagWriteInstructionIds = new Set();
   for (const node of ir.nodes) {
@@ -254,8 +277,6 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
     },
   };
 
-  for (const value of values) if (value.kind === V1_VK.ARG && value.reg && !projected.args.has(value.reg)) projected.args.set(value.reg, value);
-
   const instructionBySemanticId = new Map();
   let fallbackRow = 0;
   for (const block of legacyBlocks) {
@@ -316,6 +337,7 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
     if (!list) list = projected.compat.semanticNodeToLegacyInstructionIds[semanticId] = [];
     list.push(inst.id);
   }
+  populateLegacyArguments(projected);
   projected.memorySafety = memorySafetySummary(projected);
   projected.defUse = () => projected.values;
   return projected;
