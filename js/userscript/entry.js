@@ -83,6 +83,11 @@ async function startSandbox(options) {
     },
   });
 
+  // The protected Hex panel already owns its own visibility controls. The
+  // full-screen host's extra floating emergency close button obscures ChatGPT
+  // on iPad and is not needed for normal operation.
+  try { document.getElementById('hex-userscript-emergency-close')?.remove(); } catch {}
+
   installSessionCleanup(() => host.destroy());
   const info = await ready;
   host.show();

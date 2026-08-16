@@ -43,9 +43,28 @@ export function installChatGPTWebBridge(options = {}) {
     },
 
     cancel() { if (active) { active.controller.abort('cancelled'); adapter.stop(); } },
-    async capabilities(requestOptions = {}) {
-      const discovered = await models.capabilities(requestOptions);
-      return { provider: 'chatgpt-web', maxConcurrentRequests: 1, conversationRouting: true, ...discovered };
+    async capabilities() {
+      // Capability/status polling runs during Hex startup and must be read-only.
+      // Opening ChatGPT's model menu here can take longer than the parent RPC
+      // capability deadline and can race a real turn. Enumerate only the
+      // selection already visible in the page; explicit setSelection() remains
+      // responsible for opening the picker when the user asks to change it.
+      const current = adapter.currentSelection();
+      const modelList = current.model
+        ? [{ id: current.model, displayName: current.model, current: true }]
+        : [];
+      const reasoning = current.reasoning
+        ? [{ id: current.reasoning, displayName: current.reasoning, current: true }]
+        : [];
+      return {
+        provider: 'chatgpt-web',
+        ready: !!adapter.composer(),
+        maxConcurrentRequests: 1,
+        conversationRouting: true,
+        models: modelList,
+        reasoning,
+        current,
+      };
     },
     getSelection() { return adapter.currentSelection(); },
     setSelection(selection, requestOptions = {}) { return models.select(selection, requestOptions); },

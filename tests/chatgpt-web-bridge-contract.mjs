@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { applyStatus, normalizeCapabilities, selectionLabel } from '../js/ai/ui/model-picker.js';
 import { installChatGPTWebBridge } from '../js/userscript/chatgpt-bridge.js';
+import { CHATGPT_SELECTORS } from '../js/userscript/chatgpt-selectors.js';
 
 const BRIDGE_KEY = '__HEX_CHATGPT_BRIDGE__';
 
@@ -10,6 +12,8 @@ await testExternalAbortSignal();
 await testCancelStopsAdapter();
 await testExceptionCleanup();
 await testCapabilities();
+await testErrorSelectorContract();
+await testProviderAvailabilityStatusSemantics();
 await testSelectionContract();
 await testStatusAndConversationLookup();
 await testBridgeDoesNotReachCookiesOrPrivateBackend();
@@ -196,34 +200,55 @@ async function testExceptionCleanup() {
 }
 
 async function testCapabilities() {
-  const requestOptions = { signal: new AbortController().signal, probe: 'contract' };
-  let observedOptions = null;
-  const discovered = {
-    models: [{ id: 'chatgpt-web/sol', displayName: 'GPT-5.6 Sol' }],
-    reasoning: [{ id: 'high', displayName: 'High' }],
-    current: { model: 'chatgpt-web/sol', reasoning: 'high' },
-  };
+  const current = { model: 'chatgpt-web/sol', reasoning: 'high', observedText: 'GPT-5.6 Sol High' };
+  let discoveryCalls = 0;
   const bridge = freshBridge({
-    adapter: fakeAdapter(),
+    adapter: fakeAdapter({ composer: () => ({}), currentSelection: () => current }),
     router: fakeRouter(),
     models: {
       ...fakeModels(),
-      async capabilities(options) {
-        observedOptions = options;
-        return discovered;
+      async capabilities() {
+        discoveryCalls++;
+        throw new Error('capability polling must not open the model picker');
       },
     },
     turns: fakeTurns(),
   });
 
-  assert.deepEqual(await bridge.capabilities(requestOptions), {
+  assert.deepEqual(await bridge.capabilities({ probe: 'contract' }), {
     provider: 'chatgpt-web',
+    ready: true,
     maxConcurrentRequests: 1,
     conversationRouting: true,
-    ...discovered,
+    models: [{ id: 'chatgpt-web/sol', displayName: 'chatgpt-web/sol', current: true }],
+    reasoning: [{ id: 'high', displayName: 'high', current: true }],
+    current,
   });
-  assert.equal(observedOptions, requestOptions);
+  assert.equal(discoveryCalls, 0, 'capability polling is passive');
   clearBridge();
+}
+
+async function testErrorSelectorContract() {
+  assert.deepEqual(CHATGPT_SELECTORS.error, ['[data-testid="conversation-turn-error"]']);
+  assert.ok(!CHATGPT_SELECTORS.error.some((selector) => selector.includes('[role="alert"]')));
+  assert.ok(!CHATGPT_SELECTORS.error.some((selector) => selector.includes('*="error"')));
+}
+
+async function testProviderAvailabilityStatusSemantics() {
+  const advertised = normalizeCapabilities({
+    providers: [{ id: 'chatgpt-web', displayName: 'ChatGPT Web', available: true }],
+  });
+  assert.equal(advertised.providers[0].label, 'ChatGPT Web');
+
+  const settling = applyStatus(advertised, { provider: 'chatgpt', ready: false });
+  assert.equal(
+    selectionLabel(settling, { provider: 'chatgpt-web' }, true).unavailable,
+    false,
+    'transient composer readiness must not turn a proven bridge into 利用不可',
+  );
+
+  const unavailable = applyStatus(advertised, { provider: 'chatgpt', available: false, ready: false });
+  assert.equal(selectionLabel(unavailable, { provider: 'chatgpt-web' }, true).unavailable, true);
 }
 
 async function testSelectionContract() {

@@ -71,10 +71,11 @@ export const CHATGPT_SELECTORS = Object.freeze({
     '[role="option"][aria-selected="true"]',
     '[data-state="checked"]',
   ]),
+  // Only a turn-scoped hard-error marker is authoritative. ChatGPT keeps
+  // global role=alert / aria-live nodes for accessibility announcements; those
+  // are not model failures and must never terminate a successful Hex turn.
   error: Object.freeze([
     '[data-testid="conversation-turn-error"]',
-    '[data-testid*="error"]',
-    '[role="alert"]',
   ]),
 });
 
