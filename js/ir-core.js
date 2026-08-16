@@ -177,6 +177,24 @@ function valueDominatesLegacyInstruction(value, inst, projected) {
   return dominators instanceof Set && dominators.has(definition.block);
 }
 
+function legacyDefinitionRecency(value, inst, projected) {
+  if (!value || value.kind === LEGACY_VK.ARG || !value.def) return { scope:0, depth:0, row:Number.NEGATIVE_INFINITY };
+  const definition = value.def;
+  if (definition.block === inst.block) {
+    return { scope:2, depth:Number.MAX_SAFE_INTEGER, row:Number(definition.row ?? Number.NEGATIVE_INFINITY) };
+  }
+  const dominators = projected.dominators?.[inst.block];
+  if (!(dominators instanceof Set) || !dominators.has(definition.block)) {
+    return { scope:-1, depth:-1, row:Number.NEGATIVE_INFINITY };
+  }
+  const definitionDominators = projected.dominators?.[definition.block];
+  return {
+    scope:1,
+    depth:definitionDominators instanceof Set ? definitionDominators.size : 0,
+    row:Number(definition.row ?? Number.NEGATIVE_INFINITY),
+  };
+}
+
 function detachLegacyArguments(inst) {
   for (const arg of inst.args ?? []) {
     const value = arg?.value;
@@ -204,10 +222,14 @@ function attachAapcs64FunctionReturns(projected, adapter) {
     const candidates = (projected.values ?? [])
       .filter((value) => value.reg === result.reg && valueDominatesLegacyInstruction(value, inst, projected))
       .sort((left, right) => {
+        const leftRecency = legacyDefinitionRecency(left, inst, projected);
+        const rightRecency = legacyDefinitionRecency(right, inst, projected);
+        if (leftRecency.scope !== rightRecency.scope) return rightRecency.scope - leftRecency.scope;
+        if (leftRecency.depth !== rightRecency.depth) return rightRecency.depth - leftRecency.depth;
+        if (leftRecency.row !== rightRecency.row) return rightRecency.row - leftRecency.row;
         const leftWidth = Number(result.bits) > 0 && left.bits === Number(result.bits) ? 1 : 0;
         const rightWidth = Number(result.bits) > 0 && right.bits === Number(result.bits) ? 1 : 0;
         if (leftWidth !== rightWidth) return rightWidth - leftWidth;
-        if ((left.version ?? 0) !== (right.version ?? 0)) return (right.version ?? 0) - (left.version ?? 0);
         return (right.id ?? 0) - (left.id ?? 0);
       });
     const value = candidates[0] ?? null;
