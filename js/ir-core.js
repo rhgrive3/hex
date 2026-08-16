@@ -125,6 +125,48 @@ function aapcs64CompatAbiAdapter(options) {
   };
 }
 
+function aapcs64RegionRootDescriptorProvider(options = {}) {
+  const explicit = options.rootDescriptorProvider ?? options.regionOptions?.rootDescriptorProvider ?? null;
+  return (request) => {
+    if (typeof explicit === 'function') {
+      const supplied = explicit(request);
+      if (supplied != null) return supplied;
+    }
+    const identity = request?.variable?.physicalIdentity;
+    if (identity?.kind !== 'register') return null;
+    const registerId = String(identity.registerId ?? '');
+    if (registerId === 'sp') {
+      return {
+        kind: 'stack-like',
+        addressSpace: request.expectedAddressSpace ?? 'memory',
+        baseOffset: 0,
+        linearOffsets: true,
+        rootIdentity: {
+          kind: 'abi-storage-root',
+          abi: 'aapcs64',
+          storageClass: 'function-local-stack',
+          registerId,
+        },
+      };
+    }
+    const argument = /^x([0-7])$/.exec(registerId);
+    if (!argument) return null;
+    return {
+      kind: 'rooted-object',
+      addressSpace: request.expectedAddressSpace ?? 'memory',
+      baseOffset: 0,
+      linearOffsets: true,
+      rootIdentity: {
+        kind: 'abi-entry-argument-root',
+        abi: 'aapcs64',
+        storageClass: 'external-entry-memory',
+        argumentIndex: Number(argument[1]),
+        registerId,
+      },
+    };
+  };
+}
+
 function valueDominatesLegacyInstruction(value, inst, projected) {
   if (!value || !inst) return false;
   if (value.kind === LEGACY_VK.ARG) return true;
@@ -224,6 +266,7 @@ function buildV2CompatFromLegacyModel(model, opts = {}) {
     entryBlockKey: legacyCfg.entry >= 0 ? `legacy-block-${legacyCfg.entry}` : blocks[0]?.key,
     blocks,
     abiAdapter,
+    rootDescriptorProvider: aapcs64RegionRootDescriptorProvider(opts),
   }, {
     signal: opts.signal,
     semanticIrOptions: opts.semanticIrOptions,
