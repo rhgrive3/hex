@@ -71,7 +71,16 @@ function representativeProjectedAddress(regionId, memorySsa, instructionBySemant
   return null;
 }
 
+function accessLocation(regionId, source, regionById, locationByRegion, valuesById) {
+  const canonical = locationByRegion.get(regionId) ?? null;
+  const region = regionById.get(regionId) ?? null;
+  if (!region || !source) return canonical;
+  const address = preciseProjectedAddress(source.addr);
+  return address ? legacyLocation(region, valuesById, address) : canonical;
+}
+
 export function attachMemorySsa(projected, memorySsa, valuesById, instructionBySemanticId, blockIndexById) {
+  const regionById = new Map(memorySsa.regions.map((region) => [region.id, region]));
   const locationByRegion = new Map();
   for (const region of memorySsa.regions) {
     const loc = legacyLocation(region, valuesById, representativeProjectedAddress(region.id, memorySsa, instructionBySemanticId));
@@ -126,7 +135,7 @@ export function attachMemorySsa(projected, memorySsa, valuesById, instructionByS
     const source = definition.sourceEntityId == null ? null : instructionBySemanticId.get(definition.sourceEntityId);
     if (!source) continue;
     if (definition.kind === 'memory-def' && source.op === V1_OP.STORE) {
-      const loc = locationByRegion.get(definition.regionId);
+      const loc = accessLocation(definition.regionId, source, regionById, locationByRegion, valuesById);
       if (loc) source.loc = loc;
       if (!source.memDefs) source.memDefs = [];
       source.memDefs.push(memoryNode);
@@ -142,7 +151,7 @@ export function attachMemorySsa(projected, memorySsa, valuesById, instructionByS
   for (const use of memorySsa.uses) {
     const source = instructionBySemanticId.get(use.sourceEntityId);
     if (!source) continue;
-    const loc = locationByRegion.get(use.regionId);
+    const loc = accessLocation(use.regionId, source, regionById, locationByRegion, valuesById);
     if (loc && (source.op === V1_OP.LOAD || source.op === V1_OP.STORE)) source.loc = loc;
     const reaching = memoryNodeById.get(use.reachingDefinitionId) ?? null;
     source.memUse = reaching;
