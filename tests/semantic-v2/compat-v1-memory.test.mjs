@@ -58,7 +58,6 @@ function callSummary({ args = [], returns = [], memoryWrite = 'none', completene
   };
 }
 
-
 function memoryFixture({ includeUnknownStore = false, includeCall = false } = {}) {
   const addr = defValue('addr', 'n_addr', addr64, null, 0x3000n);
   const unknownAddr = entryValue('unknown_addr', addr64, 'ptr:unknown', 0x3004n);
@@ -127,7 +126,7 @@ function memorySsaFor({ barrierKind = null, barrierSource = null } = {}) {
   const load = out.instructions.find((inst) => inst.semanticNodeId === 'n_load');
   assert.equal(unknownStore.op, OP.STORE);
   assert.equal(unknownStore.loc.kind, MK.UNKNOWN);
-  assert.equal(load.reachingStore, null);
+  assert.equal(load.reachingStore, undefined);
   assert.equal(load.memUse.kind, 'clobber');
   assert.equal(load.memUse.unknownAlias, true);
   assert.equal(load.unknownAliasBarrier, unknownStore);
@@ -144,7 +143,7 @@ function memorySsaFor({ barrierKind = null, barrierSource = null } = {}) {
   const load = out.instructions.find((inst) => inst.semanticNodeId === 'n_load');
   assert.equal(barrier.memoryBarrier, true);
   assert.ok(barrier.memKills.some((loc) => loc.kind === MK.GLOBAL));
-  assert.equal(load.reachingStore, null);
+  assert.equal(load.reachingStore, undefined);
   assert.equal(load.memUse.kind, 'clobber');
   assert.equal(load.memUse.reason, 'may-alias-clobber');
 }
@@ -161,7 +160,7 @@ function memorySsaFor({ barrierKind = null, barrierSource = null } = {}) {
   assert.ok(call.memKills.length >= 1);
   assert.equal(call.callArguments, null);
   assert.equal(call.stackArgsUnknown, true);
-  assert.equal(load.reachingStore, null);
+  assert.equal(load.reachingStore, undefined);
   assert.equal(load.memUse.kind, 'clobber');
 }
 
@@ -185,7 +184,6 @@ function memorySsaFor({ barrierKind = null, barrierSource = null } = {}) {
   assert.ok(intrinsic.memKills.some((loc) => loc.kind === MK.UNKNOWN));
 }
 
-
 // Deterministic projection for the data-bearing public shape.
 {
   const ir = memoryFixture({ includeUnknownStore: true });
@@ -201,7 +199,6 @@ function memorySsaFor({ barrierKind = null, barrierSource = null } = {}) {
   });
   assert.deepEqual(snapshot(projectSemanticIrV2ToLegacyV1(ir, { memorySsa: mssa })), snapshot(projectSemanticIrV2ToLegacyV1(ir, { memorySsa: mssa })));
 }
-
 
 assert.equal(SEMANTIC_IR_V2_V1_COMPAT.legacyMemoryKinds.UNKNOWN, MK.UNKNOWN);
 console.log('semantic-v2 legacy v1 memory compatibility projection: PASS');
