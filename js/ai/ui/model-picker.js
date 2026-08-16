@@ -23,9 +23,10 @@ export const FALLBACK_PROVIDERS = Object.freeze([
 const text = (value) => (value == null ? '' : String(value));
 
 function normalizeProviderId(value) {
-  const id = text(value).trim().toLowerCase();
-  if (id === 'chatgpt' || id === 'chatgpt-web') return 'chatgpt-web';
-  if (id === 'worker' || id === 'gemini') return 'gemini';
+  const id = text(value).trim();
+  const key = id.toLowerCase();
+  if (key === 'chatgpt' || key === 'chatgpt-web') return 'chatgpt-web';
+  if (key === 'worker' || key === 'gemini') return 'gemini';
   return id;
 }
 
