@@ -25,21 +25,9 @@ function sameScope(a, b) {
   return true;
 }
 
-function explicitDisjointUnknown(unknown, target) {
-  const metadata = unknown?.metadata;
-  if (!metadata || typeof metadata !== 'object') return false;
-  const kinds = metadata.provenDisjointRegionKinds;
-  return Array.isArray(kinds) && kinds.includes(target.kind);
-}
-
 export function aliasMemoryRegions(a, b) {
   if (!a || !b) return 'unknown';
-  if (a.kind === 'unknown' || b.kind === 'unknown') {
-    const unknown = a.kind === 'unknown' ? a : b;
-    const other = unknown === a ? b : a;
-    if (explicitDisjointUnknown(unknown, other)) return 'no';
-    return 'may';
-  }
+  if (a.kind === 'unknown' || b.kind === 'unknown') return 'may';
   if (!isPreciseMemoryRegion(a) || !isPreciseMemoryRegion(b)) return 'unknown';
 
   if (a.kind === b.kind) {
@@ -79,7 +67,6 @@ export function aliasMemoryRegions(a, b) {
 export function unknownStoreAliasRelation(storeRegion, targetRegion) {
   if (!targetRegion) return 'unknown';
   if (!storeRegion || storeRegion.kind !== 'unknown') return aliasMemoryRegions(storeRegion, targetRegion);
-  if (explicitDisjointUnknown(storeRegion, targetRegion)) return 'no';
   return 'may';
 }
 
@@ -109,7 +96,9 @@ export function effectSummaryAliasRelation(memoryWrite, targetRegion, classifyAc
 
   let sawUnknown = false;
   for (const access of memoryWrite.accesses) {
-    const region = classifyAccess(access);
+    let region;
+    try { region = classifyAccess(access); }
+    catch { sawUnknown = true; continue; }
     const relation = aliasMemoryRegions(region, targetRegion);
     if (relation === 'must') return 'must';
     if (relation === 'may') return 'may';
