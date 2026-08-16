@@ -179,6 +179,32 @@ export function createVmOperationId(input = {}) {
   });
 }
 
+export function createBlockId(input = {}) {
+  return typedId('block', {
+    functionId: nonEmpty(input.functionId, 'block-function-id-required'),
+    canonicalBlockIdentity: normalizeIdentity(input.canonicalBlockIdentity, 'block-canonical-identity-required'),
+  });
+}
+
+export function createValueId(input = {}) {
+  return typedId('value', {
+    functionId: nonEmpty(input.functionId, 'value-function-id-required'),
+    canonicalDefinitionIdentity: normalizeIdentity(input.canonicalDefinitionIdentity, 'value-definition-identity-required'),
+  });
+}
+
+export function createMemoryRegionId(input = {}) {
+  const functionId = input.functionId == null ? null : nonEmpty(input.functionId, 'memory-region-function-id-required');
+  const binaryId = input.binaryId == null ? null : nonEmpty(input.binaryId, 'memory-region-binary-id-required');
+  if (functionId == null && binaryId == null) fail('memory-region-scope-required');
+  return typedId('memoryregion', {
+    functionId,
+    binaryId,
+    regionKind: nonEmpty(input.regionKind, 'memory-region-kind-required'),
+    canonicalRegionIdentity: normalizeIdentity(input.canonicalRegionIdentity, 'memory-region-identity-required'),
+  });
+}
+
 export function createEvidenceId(input = {}) {
   return typedId('evidence', {
     binaryId: input.binaryId == null ? null : String(input.binaryId),
