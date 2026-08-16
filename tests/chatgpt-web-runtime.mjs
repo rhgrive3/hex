@@ -5,6 +5,7 @@ import { installChatGPTWebBridge } from '../js/userscript/chatgpt-bridge.js';
 await testConversationRouting();
 await testModelSelection();
 await testLogicalTurnCanonicalization();
+await testRoleScopedTurnTextExtraction();
 await testTurnCompletionAndStaleProtection();
 await testRolelessTurnFallback();
 await testCancelTimeoutAndSingleInflight();
@@ -68,6 +69,32 @@ async function testLogicalTurnCanonicalization() {
   assert.equal(turns[0].id, 'conversation-turn-42');
   assert.equal(turns[0].text, '{"type":"final","answer":"ok"}');
   assert.equal(turns[0].node, fixture.root);
+}
+
+async function testRoleScopedTurnTextExtraction() {
+  const prompt = 'HEX CONTROL PROTOCOL hex-chatgpt-web-v1\n\n<HEX_DATA>{"messages":[{"role":"user","content":"こんばんは"}]}</HEX_DATA>';
+  const response = '{"type":"final","answer":"こんばんは！","confidence":1,"evidenceIds":[],"hypothesisIds":[],"suggestedActions":[],"followups":[]}';
+  const user = realChatGPTTurnFixture('user', '1', prompt);
+  const assistant = realChatGPTTurnFixture('assistant', '2', response);
+  const document = {
+    querySelector: () => null,
+    querySelectorAll(selector) {
+      if (selector === '[data-message-author-role="user"]') return [user.roleNode];
+      if (selector === '[data-message-author-role="assistant"]') return [assistant.roleNode];
+      if (selector.includes('conversation-turn-') && selector.includes('user')) return [user.root];
+      if (selector.includes('conversation-turn-') && selector.includes('assistant')) return [assistant.root];
+      if (selector === '[data-testid^="conversation-turn-"]') return [user.root, assistant.root];
+      return [];
+    },
+  };
+  const adapter = new ChatGPTDOMAdapter({ document, location: { href: 'https://chatgpt.com/c/alpha' } });
+  const controller = new ChatGPTTurnController(adapter);
+
+  assert.match(user.root.innerText, /^あなた:/, 'fixture must include ChatGPT accessibility speaker text outside the message node');
+  assert.match(assistant.root.innerText, /^ChatGPT:/, 'fixture must include assistant accessibility speaker text outside the message node');
+  assert.equal(adapter.userTurns()[0].text, prompt, 'adapter must read only the user message, not the conversation wrapper heading');
+  assert.equal(controller.userTurns()[0].text, prompt, 'canonical turn projection must preserve the exact submitted prompt');
+  assert.equal(controller.assistantTurns()[0].text, response, 'assistant capture must exclude the accessibility speaker heading too');
 }
 
 async function testTurnCompletionAndStaleProtection() {
@@ -150,6 +177,48 @@ function logicalTurnFixture(role, id, text) {
     closest(selector) {
       if (selector.includes('conversation-turn-')) return root;
       if (selector.includes('data-message-author-role')) return roleNode;
+      return null;
+    },
+  };
+  return { root, roleNode, content };
+}
+
+function realChatGPTTurnFixture(role, id, text) {
+  const speaker = role === 'user' ? 'あなた:' : 'ChatGPT:';
+  const content = { innerText: text, textContent: text };
+  let root;
+  const roleNode = {
+    id: '',
+    innerText: text,
+    textContent: text,
+    getAttribute(name) {
+      if (name === 'data-message-author-role') return role;
+      if (name === 'data-message-id') return `message-${id}`;
+      return null;
+    },
+    closest(selector) {
+      if (selector.includes('conversation-turn-')) return root;
+      if (selector.includes('data-message-author-role')) return roleNode;
+      return null;
+    },
+    querySelector(selector) {
+      if (role === 'assistant' && selector.includes('.markdown')) return content;
+      return null;
+    },
+  };
+  root = {
+    id: '',
+    innerText: `${speaker}\n${text}`,
+    textContent: `${speaker}\n${text}`,
+    getAttribute(name) {
+      if (name === 'data-testid') return `conversation-turn-${id}`;
+      if (name === 'data-turn') return role;
+      return null;
+    },
+    closest(selector) { return selector.includes('conversation-turn-') ? root : null; },
+    querySelector(selector) {
+      if (selector.includes('[data-message-author-role')) return roleNode;
+      if (role === 'assistant' && selector.includes('.markdown')) return content;
       return null;
     },
   };

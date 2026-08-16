@@ -78,7 +78,17 @@ export class ChatGPTDOMAdapter {
 
   text(node) {
     if (!node) return '';
-    const body = node.querySelector?.('.markdown, [data-testid="markdown"], [data-message-content-part="assistant"], [data-message-content]') || node;
+    // Turn canonicalization deliberately returns the conversation-turn wrapper.
+    // ChatGPT places an accessibility-only speaker heading (for example
+    // "あなた:" / "ChatGPT:") next to the real message node. Reading the
+    // wrapper's innerText therefore corrupts exact prompt matching. Re-scope
+    // text extraction to the semantic message node when one is present, then
+    // keep the existing content-body preference inside that message.
+    const role = node.getAttribute?.('data-message-author-role')
+      ? node
+      : node.querySelector?.('[data-message-author-role="assistant"], [data-message-author-role="user"], [data-message-author-role]');
+    const scope = role || node;
+    const body = scope.querySelector?.('.markdown, [data-testid="markdown"], [data-message-content-part="assistant"], [data-message-content]') || scope;
     return String(body.innerText || body.textContent || '').trim();
   }
 
