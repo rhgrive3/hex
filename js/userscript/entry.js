@@ -1,4 +1,4 @@
-import { PROTECTED_HOST } from '../../.runtime-build/embedded-assets.js';
+import { PROTECTED_HOST, PROTECTED_OPAQUE_EMBED_RUNTIME } from '../../.runtime-build/embedded-assets.js';
 import { setUiRoot } from '../ui-root.js';
 import { installChatGPTWebBridge } from './chatgpt-bridge.js';
 import { createChatGPTParentRpc } from './chatgpt-parent-rpc.js';
@@ -27,14 +27,11 @@ async function boot() {
     await startLegacy();
     return;
   }
-  try {
-    await startIframe();
-  } catch (error) {
-    console.warn('[hex userscript] iframe-v1 unavailable; falling back to legacy light DOM', error);
-    try { iframeHost?.destroy(); } catch {}
-    iframeHost = null;
-    await startLegacy(error);
-  }
+  /* iframe-v1 is the production path. Never silently replace a failed canonical
+     iframe with the old scoped light-DOM renderer: that hid startup defects and
+     produced a visibly incomplete UI on iOS. Legacy remains an explicit opt-in
+     escape hatch only. */
+  await startIframe();
 }
 
 async function startIframe() {
@@ -42,9 +39,12 @@ async function startIframe() {
   let rejectReady;
   const ready = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
   const src = setEmbedProvider(new URL('/embed/chatgpt', apiOrigin).href, globalThis.__HEX_AI_PROVIDER__);
+  if (!PROTECTED_OPAQUE_EMBED_RUNTIME) throw new Error('Protected opaque embed runtime is unavailable.');
 
   iframeHost = createChatGPTIframeHost({
     src,
+    runtimeSource: PROTECTED_OPAQUE_EMBED_RUNTIME,
+    provider: globalThis.__HEX_AI_PROVIDER__,
     onPort(port) {
       const parentRpc = createChatGPTParentRpc({
         port,
