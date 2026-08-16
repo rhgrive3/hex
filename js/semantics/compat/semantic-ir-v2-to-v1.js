@@ -218,6 +218,7 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
   for (const block of legacyBlocks) {
     let firstRow = null;
     let lastRow = null;
+    const physicalStateCurrent = new Map();
     for (const nodeId of block.semanticNodeIds) {
       const node = nodeById.get(nodeId);
       if (!node) continue;
@@ -233,6 +234,7 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
         producerByValueId,
         stateProjection,
         comparisonCarrierByNodeId,
+        physicalStateCurrent,
         blockBySemanticId,
         options,
       });
