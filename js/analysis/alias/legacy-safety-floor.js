@@ -40,7 +40,11 @@ export function aliasMemoryRegions(a, b) {
     }
     if (a.kind === 'rooted-offset') {
       if (!a.rootEntityId || !b.rootEntityId) return 'unknown';
-      if (a.rootEntityId !== b.rootEntityId) return 'no';
+      // A different provenance/root identity is not, by itself, a proof that
+      // two runtime pointers cannot alias. Preserve the legacy conservative
+      // safety floor unless a later alias analysis supplies a real separation
+      // proof (for example, distinct proven non-escaping allocations).
+      if (a.rootEntityId !== b.rootEntityId) return 'may';
       return intervalRelation(toBigInt(a.offset), widthBytes(a), toBigInt(b.offset), widthBytes(b));
     }
     if (a.kind === 'tls' || a.kind === 'io' || a.kind === 'physical-space') {
