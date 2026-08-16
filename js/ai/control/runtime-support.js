@@ -104,7 +104,34 @@ export function normalizeError(error, signal) { if (error instanceof AIError) re
  */
 export function providerDiagnostics(error) { const details = error instanceof AIError ? error.details : error; const provider = safeDiagnosticToken(details?.provider, /^[a-z][a-z0-9-]{0,63}$/); const bridgeCode = safeDiagnosticToken(details?.bridgeCode ?? error?.code, /^[A-Za-z0-9_.-]{1,64}$/); const bridgeStage = safeDiagnosticToken(details?.bridgeStage ?? error?.stage, /^[a-z][a-z0-9-]{0,63}$/); const runtimeBuildId = safeDiagnosticToken(details?.runtimeBuildId, /^[a-f0-9]{1,64}$/i); const out = {}; if (provider) out.provider = provider; if (bridgeCode) out.bridgeCode = bridgeCode; if (bridgeStage) out.bridgeStage = bridgeStage; if (runtimeBuildId) out.runtimeBuildId = runtimeBuildId; return Object.keys(out).length ? out : null; }
 function safeDiagnosticToken(value, pattern) { return typeof value === 'string' && pattern.test(value) ? value : null; }
-export function humanError(error) { const labels = { cancelled: '解析を停止しました。保存済みの証拠とセッションは保持されています。', budget_exhausted: '解析予算または時間上限に達しました。得られた根拠までを返します。', context_too_large: 'provider へ送る入力全体が安全な上限を超えたため、送信前に停止しました。', model_timeout: 'モデル応答が時間内に完了しませんでした。ローカル解析結果は保持されています。', provider_error: 'AI provider を利用できませんでした。ローカル解析結果は保持されています。', invalid_model_output: 'モデル出力を安全に検証できませんでした。', invalid_tool_call: 'モデルが要求したツール呼び出しを検証できませんでした。', scope_violation: '指定された解析範囲を越える要求を拒否しました。', tool_failed: 'Hex ツールの実行に失敗しました。'}; return labels[error?.type] || error?.message || 'AI 解析を完了できませんでした。'; }
+const BRIDGE_DIAGNOSTIC_MESSAGES = Object.freeze({
+  'manual-interference': 'The submitted ChatGPT turn does not match the Hex request.',
+  'conversation-switched': 'The active ChatGPT conversation changed while Hex was waiting.',
+  'already-active': 'Another Hex ChatGPT request is already active.',
+  'response-error': 'ChatGPT reported an error for the active response.',
+  timeout: 'ChatGPT response capture timed out.',
+  RPC_UNSAFE_RESULT: 'The ChatGPT bridge rejected an unsafe RPC result.',
+});
+function safeBridgeDiagnosticMessage(code) { return code ? BRIDGE_DIAGNOSTIC_MESSAGES[code] || null : null; }
+export function visibleProviderDiagnostics(error) {
+  if (error?.type !== 'provider_error' && error?.type !== 'model_timeout') return '';
+  const diagnostics = providerDiagnostics(error);
+  if (!diagnostics) return '';
+  const lines = ['Hex AI diagnostics:'];
+  if (diagnostics.provider) lines.push(`provider: ${diagnostics.provider}`);
+  if (diagnostics.bridgeCode) lines.push(`code: ${diagnostics.bridgeCode}`);
+  if (diagnostics.bridgeStage) lines.push(`stage: ${diagnostics.bridgeStage}`);
+  if (diagnostics.runtimeBuildId) lines.push(`runtimeBuildId: ${diagnostics.runtimeBuildId}`);
+  const message = safeBridgeDiagnosticMessage(diagnostics.bridgeCode);
+  if (message) lines.push(`message: ${message}`);
+  return lines.join('\n');
+}
+export function humanError(error) {
+  const labels = { cancelled: '解析を停止しました。保存済みの証拠とセッションは保持されています。', budget_exhausted: '解析予算または時間上限に達しました。得られた根拠までを返します。', context_too_large: 'provider へ送る入力全体が安全な上限を超えたため、送信前に停止しました。', model_timeout: 'モデル応答が時間内に完了しませんでした。ローカル解析結果は保持されています。', provider_error: 'AI provider を利用できませんでした。ローカル解析結果は保持されています。', invalid_model_output: 'モデル出力を安全に検証できませんでした。', invalid_tool_call: 'モデルが要求したツール呼び出しを検証できませんでした。', scope_violation: '指定された解析範囲を越える要求を拒否しました。', tool_failed: 'Hex ツールの実行に失敗しました。' };
+  const label = labels[error?.type] || error?.message || 'AI 解析を完了できませんでした。';
+  const diagnostics = visibleProviderDiagnostics(error);
+  return diagnostics ? `${label}\n\n${diagnostics}` : label;
+}
 export function addressExistsSync(context, address) { if (typeof context.addressExists === 'function') { const result = context.addressExists(address); if (typeof result === 'boolean') return result; } try { if (context.program?.functionRange) return !!context.program.functionRange(BigInt(address)); if (context.symbols?.functionAt) return !!context.symbols.functionAt(BigInt(address)); } catch { return false; } return true; }
 export function stableStringify(value) { if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`; if (value && typeof value === 'object') return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(',')}}`; return JSON.stringify(value); }
 export function addressString(value) { try { return `0x${BigInt(value).toString(16)}`; } catch { return null; } }

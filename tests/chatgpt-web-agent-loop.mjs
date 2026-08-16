@@ -74,6 +74,41 @@ assert.equal(result.limits.exhausted, false);
       provider: 'chatgpt-web', bridgeCode: 'manual-interference', bridgeStage: 'turn-controller', runtimeBuildId: '33e3b7a70d995e874c432974',
     }, 'the activity renderer must not erase the bridge subtype');
     assert.match(failed.answer, /AI provider を利用できませんでした/);
+    assert.match(failed.answer, /Hex AI diagnostics:/);
+    assert.match(failed.answer, /provider: chatgpt-web/);
+    assert.match(failed.answer, /code: manual-interference/);
+    assert.match(failed.answer, /stage: turn-controller/);
+    assert.match(failed.answer, /runtimeBuildId: 33e3b7a70d995e874c432974/);
+    assert.match(failed.answer, /message: The submitted ChatGPT turn does not match the Hex request\./);
+  } finally {
+    if (previousLoader === undefined) delete globalThis.__HEX_SECURE_LOADER__;
+    else globalThis.__HEX_SECURE_LOADER__ = previousLoader;
+  }
+}
+
+{
+  /*
+   * Unknown/free-form bridge messages can contain DOM or prompt text. Show the
+   * validated code, but never copy that raw text into the beginner answer.
+   */
+  const previousLoader = globalThis.__HEX_SECURE_LOADER__;
+  globalThis.__HEX_SECURE_LOADER__ = { version: '2.0.0', buildId: '33e3b7a70d995e874c432974' };
+  try {
+    const failing = new ChatGPTWebProvider({
+      bridge: {
+        async request() {
+          throw Object.assign(new Error('SECRET_PROMPT_TEXT from #prompt-textarea'), { code: 'unknown-bridge-guard', stage: 'turn-controller' });
+        },
+        cancel() {},
+      },
+    });
+    const failingRuntime = new AIRuntime({
+      context: { binaryId: 'chatgpt-loop-fixture', searchStrings: async () => [], addressExists: () => true },
+      provider: failing, planner: false,
+    });
+    const failed = await failingRuntime.turn({ mode: 'chat', scope: 'binary', goal: 'test diagnostics safety', provider: 'chatgpt-web' });
+    assert.match(failed.answer, /code: unknown-bridge-guard/);
+    assert.doesNotMatch(failed.answer, /SECRET_PROMPT_TEXT|#prompt-textarea/);
   } finally {
     if (previousLoader === undefined) delete globalThis.__HEX_SECURE_LOADER__;
     else globalThis.__HEX_SECURE_LOADER__ = previousLoader;
