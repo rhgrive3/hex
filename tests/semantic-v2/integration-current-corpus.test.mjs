@@ -107,7 +107,13 @@ if (!report) {
 }
 
 globalThis.__HEX_PHASE3_CURRENT_CORPUS__ = report;
-console.log('[phase3-current-corpus]', JSON.stringify({
+const corpusSummary = {
   semantic: { total:report.semantic.total, passed:report.semantic.passed, failed:report.semantic.failed },
   decompiler: { total:report.decompiler.total, passed:report.decompiler.passed, failed:report.decompiler.failed },
-}));
+};
+const failedCommands = [
+  ...report.semantic.results.filter((result) => !result.passed).map((result) => `semantic:${result.command}`),
+  ...report.decompiler.results.filter((result) => !result.passed).map((result) => `decompiler:${result.command}`),
+];
+console.log('[phase3-current-corpus]', JSON.stringify(corpusSummary));
+console.log(`::warning title=P3_CORPUS::${JSON.stringify({ ...corpusSummary, failedCommands }).replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A')}`);
