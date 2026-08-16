@@ -1,0 +1,158 @@
+name: Phase 3 final public IR repair v7
+
+on:
+  push:
+    branches:
+      - hex/p3-semantic-ir-integration
+    paths:
+      - '.github/workflows/p3-final-public-ir-repair-v7.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: hex/p3-semantic-ir-integration
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Apply final projection and address-lineage value-chain repair
+        shell: python
+        run: |
+          from pathlib import Path
+
+          p = Path('js/semantics/compat/semantic-ir-v2-to-v1-finalize.js')
+          s = p.read_text()
+          old_read = "} else if (inst.extra?.stateRead && Number(source.bits || 0) === Number(inst.dst.bits || 0)) {"
+          new_read = "} else if (inst.extra?.stateRead && inst.extra?.localPhysicalViewProjection === true && Number(source.bits || 0) === Number(inst.dst.bits || 0)) {"
+          if old_read in s:
+              s = s.replace(old_read, new_read)
+          elif new_read not in s:
+              raise SystemExit('state-read compaction anchor missing')
+          fn = r'''
+          function normalizePublicStateDefinitionOrder(projected) {
+            const slots = [];
+            const definitions = [];
+            for (let index = 0; index < projected.values.length; index++) {
+              const value = projected.values[index];
+              if (!value?.reg || value.kind !== V1_VK.DEF || !value.def) continue;
+              slots.push(index);
+              definitions.push(value);
+            }
+            definitions.sort((left, right) => {
+              const a = left.def;
+              const b = right.def;
+              if ((a.block ?? 0) !== (b.block ?? 0)) return (a.block ?? 0) - (b.block ?? 0);
+              if ((a.row ?? 0) !== (b.row ?? 0)) return (a.row ?? 0) - (b.row ?? 0);
+              if ((a.id ?? 0) !== (b.id ?? 0)) return (a.id ?? 0) - (b.id ?? 0);
+              return (left.id ?? 0) - (right.id ?? 0);
+            });
+            for (let index = 0; index < slots.length; index++) projected.values[slots[index]] = definitions[index];
+          }
+
+          '''
+          anchor = 'function renumberPublicStateVersions(projected) {'
+          if 'function normalizePublicStateDefinitionOrder(projected)' not in s:
+              if anchor not in s: raise SystemExit('public state version anchor missing')
+              s = s.replace(anchor, fn + anchor)
+          old = '  suppressUnusedIncomingState(projected);\n  renumberPublicStateVersions(projected);'
+          new = '  suppressUnusedIncomingState(projected);\n  normalizePublicStateDefinitionOrder(projected);\n  renumberPublicStateVersions(projected);'
+          if new not in s:
+              if old not in s: raise SystemExit('public state finalization anchor missing')
+              s = s.replace(old, new)
+          p.write_text(s)
+
+          p = Path('js/semantics/compat/semantic-ir-v2-to-v1.js')
+          s = p.read_text()
+          imp = "import { finalizeLegacyProjection } from './semantic-ir-v2-to-v1-finalize.js';\n"
+          if imp not in s:
+              anchor = "import { projectNode } from './semantic-ir-v2-to-v1-nodes.js';\n"
+              if anchor not in s: raise SystemExit('projection import anchor missing')
+              s = s.replace(anchor, anchor + imp)
+          old = "  attachAbiProjectedArguments(projected);\n  populateLegacyArguments(projected);"
+          new = "  attachAbiProjectedArguments(projected);\n  finalizeLegacyProjection(projected);\n  populateLegacyArguments(projected);"
+          if new not in s:
+              if old not in s: raise SystemExit('projection finalization anchor missing')
+              s = s.replace(old, new)
+          s = s.replace("version: '1.1.1'", "version: '1.1.2'")
+          s = s.replace("contractVersion: '1.1.1'", "contractVersion: '1.1.2'")
+          p.write_text(s)
+
+          p = Path('js/slice.js')
+          s = p.read_text()
+          old = """  const addressOnly = new Set();
+          for (const inst of slice.instructions) {
+            if (inst.addr && inst.addr.base) addressOnly.add(inst.addr.base.id);
+            if (inst.addr && inst.addr.index) addressOnly.add(inst.addr.index.id);
+          }
+          for (const inst of slice.instructions) for (const a of inst.args || []) if (a && a.value) addressOnly.delete(a.value.id);"""
+          new = """  const addressOnly = new Set();
+          const addressQueue = [];
+          const rememberAddressValue = (value) => {
+            if (!value || addressOnly.has(value.id)) return;
+            addressOnly.add(value.id);
+            addressQueue.push(value);
+          };
+          for (const inst of slice.instructions) {
+            if (inst.addr && inst.addr.base) rememberAddressValue(inst.addr.base);
+            if (inst.addr && inst.addr.index) rememberAddressValue(inst.addr.index);
+          }
+          while (addressQueue.length) {
+            const value = addressQueue.pop();
+            const def = value && value.def;
+            if (!def) continue;
+            for (const a of def.args || []) if (a && a.value) rememberAddressValue(a.value);
+          }
+          for (const inst of slice.instructions) {
+            if (inst.dst && addressOnly.has(inst.dst.id)) continue;
+            for (const a of inst.args || []) if (a && a.value) addressOnly.delete(a.value.id);
+          }"""
+          if old in s:
+              s = s.replace(old, new)
+          elif new not in s:
+              raise SystemExit('valueChain address-lineage anchor missing')
+          p.write_text(s)
+      - name: Focused legacy public IR regression
+        run: node tests/ir.mjs
+      - name: Phase 3 semantic exit proof
+        run: npm run semantic-v2:test
+      - name: Core semantic and compiler regressions
+        run: |
+          npm run effects:test
+          npm run core:test
+          npm run invariants:test
+          npm run migration:test
+          npm run semantic:test
+          npm run decompiler:test
+          npm run compiler-truth
+      - name: Rebuild exact userscript artifact
+        run: npm run userscript:build
+      - name: Commit validated repair and remove all Phase 3 temporary workflows
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          for f in \
+            .github/workflows/p3-final-public-ir-repair-v7.yml \
+            .github/workflows/p3-final-public-ir-repair-v6.yml \
+            .github/workflows/p3-final-public-ir-repair-v5.yml \
+            .github/workflows/p3-final-public-ir-repair-v4.yml \
+            .github/workflows/p3-final-public-ir-repair-v3.yml \
+            .github/workflows/p3-final-public-ir-repair-v2.yml \
+            .github/workflows/p3-final-public-ir-repair.yml \
+            .github/workflows/p3-debug-cutover-ir.yml \
+            .github/workflows/p3-final-validation.yml; do
+            git rm -f "$f" 2>/dev/null || true
+          done
+          git add js/semantics/compat/semantic-ir-v2-to-v1-finalize.js js/semantics/compat/semantic-ir-v2-to-v1.js js/slice.js userscript/hex.user.template.js
+          git diff --cached --check
+          git commit -m "Phase 3: complete legacy public projection after v2 cutover"
+          git push origin HEAD:hex/p3-semantic-ir-integration
