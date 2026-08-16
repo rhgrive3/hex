@@ -2,76 +2,84 @@ name: ChatGPT userscript host
 
 on:
   pull_request:
+    paths:
+      - 'js/userscript/**'
+      - 'js/ai/provider/**'
+      - 'js/ai/ui/bridge.js'
+      - 'scripts/build-userscript.mjs'
+      - 'userscript/**'
+      - 'worker-entry.js'
+      - 'wrangler.jsonc'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'index.html'
+      - 'css/**'
+      - 'tests/userscript-*.mjs'
+      - '.github/workflows/userscript-host.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'js/userscript/**'
+      - 'js/ai/provider/**'
+      - 'js/ai/ui/bridge.js'
+      - 'scripts/build-userscript.mjs'
+      - 'userscript/**'
+      - 'worker-entry.js'
+      - 'wrangler.jsonc'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'index.html'
+      - 'css/**'
+      - 'tests/userscript-*.mjs'
+      - '.github/workflows/userscript-host.yml'
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  repair-format:
-    if: github.event.pull_request.head.repo.full_name == github.repository
+  userscript:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: ${{ github.event.pull_request.head.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Normalize ChatGPT adapter repair
+      - name: Opaque sandbox storage contract
+        run: node tests/userscript-sandbox-storage.mjs
+      - name: Build and userscript tests
+        run: npm run userscript:test
+      - name: AI and worker regressions
         run: |
-          python3 <<'PY'
-          from pathlib import Path
-          import re
+          npm run ai:test
+          node tests/gemini.mjs
+          node tests/worker-classic-harness.mjs
+      - name: Verify tiny committed loader is current
+        run: git diff --exit-code -- userscript/hex.user.template.js
 
-          path = Path('js/userscript/chatgpt-adapter.js')
-          source = path.read_text()
-          lines = [
-              "  text(node) {",
-              "    if (!node) return '';",
-              "    // Canonical turns are conversation wrappers, while the semantic message is",
-              "    // nested below data-message-author-role. Never read wrapper/UI chrome when a",
-              "    // message-specific content node exists: long user prompts are rendered in a",
-              "    // collapsible container whose sibling toggle contributes localized labels",
-              "    // (for example \"表示を増やす\" / \"表示を減らす\") to role.innerText.",
-              "    const role = node.getAttribute?.('data-message-author-role')",
-              "      ? node",
-              "      : node.querySelector?.('[data-message-author-role=\"assistant\"], [data-message-author-role=\"user\"], [data-message-author-role]');",
-              "    const scope = role || node;",
-              "    const roleName = String(role?.getAttribute?.('data-message-author-role') || '');",
-              "    const body = roleName === 'user'",
-              "      ? scope.querySelector?.('[data-testid=\"collapsible-user-message-content\"], [data-message-content-part=\"user\"], [data-message-content]')",
-              "      : scope.querySelector?.('.markdown, [data-testid=\"markdown\"], [data-message-content-part=\"assistant\"], [data-message-content]');",
-              "    const semanticBody = body || scope;",
-              "    return String(semanticBody.innerText || semanticBody.textContent || '').trim();",
-              "  }",
-              "",
-              "  assistantTurns()",
-          ]
-          replacement = '\n'.join(lines)
-          source, count = re.subn(
-              r'  text\(node\) \{\n.*?\n\s*assistantTurns\(\)',
-              replacement,
-              source,
-              count=1,
-              flags=re.S,
-          )
-          if count != 1:
-              raise SystemExit(f'expected one adapter text/assistant boundary, replaced {count}')
-          path.write_text(source)
-          PY
-      - run: node tests/chatgpt-web-runtime.mjs
-      - run: npm run userscript:test
-      - name: Commit formatting and regenerated loader
+  embed-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Build secure userscript runtime
+        run: npm run userscript:build
+      - name: Install pinned browser engines
         run: |
-          git add js/userscript/chatgpt-adapter.js userscript/hex.user.template.js
-          if git diff --cached --quiet; then
-            echo 'No formatting changes to commit.'
-            exit 0
-          fi
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git commit -m 'Normalize ChatGPT adapter repair'
-          git push origin HEAD:${{ github.event.pull_request.head.ref }}
+          npm install --no-save --save-exact playwright@1.55.0
+          npx --no-install playwright install-deps chromium webkit
+          npx --no-install playwright install chromium webkit
+      - name: Verify opaque srcdoc module and storage execution
+        run: node tests/userscript-srcdoc-probe.mjs
+      - name: Run full secure sandbox startup
+        run: node tests/userscript-sandbox-browser-e2e.mjs
