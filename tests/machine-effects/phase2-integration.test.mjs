@@ -66,7 +66,7 @@ const arm64eBase = ARM64E_ARCHITECTURE.liftExact({
 assert.equal(arm64eBase.architectureId, 'arm64');
 assert.equal(arm64eBase.metadata.family, 'integer');
 
-// No family claims an unknown instruction as state preserving.
-assert.equal(ARM64_ARCHITECTURE.liftExact({ instructionId:'phase2:unknown', mnemonic:'future-op', ops:[] }), null);
+// No family claims an unrelated unknown instruction as state preserving.
+assert.equal(ARM64_ARCHITECTURE.liftExact({ instructionId:'phase2:unknown', mnemonic:'zzfuture', ops:[] }), null);
 
 console.log('Phase 2 MachineEffects central integration: PASS');
