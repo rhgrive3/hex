@@ -347,6 +347,8 @@ function normalizeIntrinsicMemoryScope(input, options = {}) {
   input = object(input, 'machine-effects-intrinsic-memory-scope-required');
   assertAllowedKeys(input, new Set(['scope','accesses','spaces','detail']), 'machine-effects-unexpected-intrinsic-memory-field');
   const scope = enumValue(input.scope, SETS.intrinsicMemoryScopes, 'machine-effects-invalid-intrinsic-memory-scope');
+  if (scope !== 'accesses' && input.accesses != null) fail('machine-effects-intrinsic-memory-accesses-not-allowed');
+  if (scope !== 'all' && input.spaces != null) fail('machine-effects-intrinsic-memory-spaces-not-allowed');
   const out = { scope };
   if (scope === 'accesses') {
     const accesses = array(input.accesses, 'machine-effects-intrinsic-memory-accesses-required').map((access) => createMemoryAccess(access, options));
@@ -390,8 +392,20 @@ function intrinsicSummaryIsComplete(summary) {
 export function createMachineOperation(input, options = {}) {
   assertNotAborted(options);
   input = object(input, 'machine-effects-invalid-operation');
-  assertAllowedKeys(input, new Set(['kind','id','opcode','inputs','outputs','register','flag','access','value','intrinsicId','effectSummary','scope','reason','categories','metadata']), 'machine-effects-unexpected-operation-field');
   const kind = enumValue(input.kind, SETS.operations, 'machine-effects-invalid-operation-kind');
+  const fieldsByKind = {
+    value: ['opcode','inputs','outputs'],
+    'register-read': ['register','value'],
+    'register-write': ['register','value'],
+    'flag-read': ['flag','value'],
+    'flag-write': ['flag','value'],
+    'memory-read': ['access','value'],
+    'memory-write': ['access','value'],
+    intrinsic: ['intrinsicId','effectSummary'],
+    barrier: ['scope'],
+    unknown: ['reason','categories'],
+  };
+  assertAllowedKeys(input, new Set(['kind','id','metadata', ...fieldsByKind[kind]]), 'machine-effects-unexpected-operation-field');
   const out = { kind };
   if (input.id != null) out.id = nonEmpty(input.id, 'machine-effects-invalid-operation-id');
 
