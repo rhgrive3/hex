@@ -110,11 +110,19 @@ const opsOf = (bundle, kind) => bundle.operations.filter((op) => op.kind === kin
 
 {
   const b = lift('strb', [w(0), mem(x(1))]);
-  const trunc = b.operations.find((op) => op.kind === 'value' && op.opcode === 'truncate');
+  const registerRead = b.operations.find((op) => op.kind === 'register-read' && op.register.registerId === 'x0');
+  const viewTrunc = b.operations.find((op) => op.kind === 'value' && op.opcode === 'truncate'
+    && op.metadata?.purpose === 'memory-store-register-view');
+  const widthTrunc = b.operations.find((op) => op.kind === 'value' && op.opcode === 'truncate'
+    && op.metadata?.purpose === 'memory-store-width');
   const store = b.operations.find((op) => op.kind === 'memory-write');
-  assert.ok(trunc, 'STRB explicitly truncates the W source view');
-  assert.equal(trunc.metadata.fromBits, 32);
-  assert.equal(trunc.metadata.toBits, 8);
+  assert.equal(registerRead?.register.widthBits, 64, 'W store sources read the canonical physical X state');
+  assert.ok(viewTrunc, 'W store source is explicitly projected to its 32-bit architectural view');
+  assert.equal(viewTrunc.metadata.fromBits, 64);
+  assert.equal(viewTrunc.metadata.toBits, 32);
+  assert.ok(widthTrunc, 'STRB explicitly truncates the W source view to the transfer width');
+  assert.equal(widthTrunc.metadata.fromBits, 32);
+  assert.equal(widthTrunc.metadata.toBits, 8);
   assert.equal(store.access.widthBits, 8);
   assert.equal(store.value.valueType.widthBits, 8);
 }
