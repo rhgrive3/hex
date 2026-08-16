@@ -10,7 +10,7 @@ const dist = resolve(root, 'dist');
 const generated = resolve(root, '.runtime-build');
 const committedTemplate = resolve(root, 'userscript/hex.user.template.js');
 const ORIGIN_TOKEN = '__HEX_ORIGIN__';
-const LOADER_VERSION = '2.0.2322241683';
+const LOADER_VERSION = '2.0.2322241684';
 const MAX_LOADER_BYTES = 64 * 1024;
 const CLASSIC_ENTRIES = ['js/worker.js', 'js/platform/capstone-probe-worker.js', 'js/platform/capstone-disasm-worker.js'];
 
@@ -127,4 +127,4 @@ function userscriptMetadata() { return `// ==UserScript==\n// @name         Hex 
 function publicManifest(value) { const { assetPath: _private, ...safe } = value; return safe; }
 function sha256(value) { return createHash('sha256').update(value).digest('hex'); }
 function b64(value) { return Buffer.from(value).toString('base64url'); }
-async function writeGeneratedModule(name, source) { const path = resolve(generated, name); await mkdir(dirname(path), { recursive: true }); await writeFile(path, source); }
+async function writeGeneratedModule(name, source) { const path = resolve(root, generated, name); await mkdir(dirname(path), { recursive: true }); await writeFile(path, source); }
