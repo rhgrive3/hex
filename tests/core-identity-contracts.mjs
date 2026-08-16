@@ -28,7 +28,40 @@ assert.ok(createVmOperationId({ binaryId: binaryA, sliceId: slice, vm: 'dex', me
 assert.ok(createEntityId({ binaryId: binaryA, sliceId: slice, kind: 'value', identity: { index: 1 } }).startsWith('entity_'));
 assert.ok(createEvidenceId({ binaryId: binaryA, kind: 'semantic', identity: { value: 1 } }).startsWith('evidence_'));
 assert.ok(createRuntimeSessionId({ binaryId: binaryA, provider: 'fake', targetIdentity: { pid: 123 }, sessionNonce: 'run-1' }).startsWith('runtime_'));
-assert.ok(createArtifactId({ binaryId: binaryA, sliceId: slice, entityId: functionId, passId: 'cfg', passVersion: '1', inputArtifactIds: ['a','b'] }).startsWith('artifact_'));
+
+const artifactIdentity = {
+  binaryId: binaryA,
+  sliceId: slice,
+  entityId: functionId,
+  loaderVersion: 'macho-loader-1',
+  architectureSemanticVersion: 'arm64-semantics-1',
+  abiSemanticVersion: 'darwin-arm64-abi-1',
+  semanticSchemaVersion: 'semantic-ir-1',
+  passId: 'cfg',
+  passVersion: '1',
+  optionsHash: 'cfg-options-1',
+  inputArtifactIds: ['a', 'b'],
+};
+const canonicalArtifactId = createArtifactId(artifactIdentity);
+assert.ok(canonicalArtifactId.startsWith('artifact_'));
+assert.equal(canonicalArtifactId, createArtifactId({ ...artifactIdentity, inputArtifactIds: ['b', 'a'] }), 'artifact id must be deterministic');
+for (const [field, changed] of [
+  ['loaderVersion', 'macho-loader-2'],
+  ['architectureSemanticVersion', 'arm64-semantics-2'],
+  ['abiSemanticVersion', 'darwin-arm64-abi-2'],
+  ['semanticSchemaVersion', 'semantic-ir-2'],
+]) {
+  assert.notEqual(
+    canonicalArtifactId,
+    createArtifactId({ ...artifactIdentity, [field]: changed }),
+    `${field} changes must invalidate ArtifactId/cache identity`,
+  );
+}
+for (const field of ['loaderVersion', 'architectureSemanticVersion', 'abiSemanticVersion', 'semanticSchemaVersion']) {
+  const malformed = { ...artifactIdentity };
+  delete malformed[field];
+  assert.throws(() => createArtifactId(malformed), /artifact-.*-required/, `${field} must be required by canonical ArtifactId`);
+}
 
 const transform = createTransformRecord({
   passId: 'fold', passVersion: '1', ruleId: 'add-zero', consumedEntityIds: ['e1'], producedEntityIds: ['e2'],
@@ -54,7 +87,14 @@ assert.throws(() => merged.byteRanges.push({}), TypeError);
 assert.doesNotThrow(() => JSON.stringify(merged), 'origin schema must be serialization-safe');
 assert.throws(() => createOriginSet({ byteRanges: [{ offset: 10, length: -1 }] }), /origin-invalid-byte-range/);
 
-const artifactId = createArtifactId({ binaryId: binaryA, sliceId: slice, passId: 'ssa', passVersion: '2' });
+const artifactId = createArtifactId({
+  ...artifactIdentity,
+  entityId: null,
+  passId: 'ssa',
+  passVersion: '2',
+  optionsHash: 'ssa-options-1',
+  inputArtifactIds: [],
+});
 const determinism = createDeterminismMetadata({
   engineBuild: 'test-build', schemaVersion: '1', passVersions: { ssa: '2' }, targetSemanticVersions: { arm64: '1' },
   optionsHash: 'opts', inputArtifactIds: ['input-b','input-a'], outputArtifactId: artifactId,
