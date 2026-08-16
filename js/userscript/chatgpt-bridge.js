@@ -1,7 +1,6 @@
 import {
-  ChatGPTDOMAdapter, ChatGPTConversationRouter, ChatGPTModelController,
+  ChatGPTDOMAdapter, ChatGPTConversationRouter, ChatGPTModelController, ChatGPTTurnController,
 } from './chatgpt-adapter.js';
-import { ResilientChatGPTTurnController } from './chatgpt-turn-controller.js';
 
 const DEFAULT_TIMEOUT_MS = 110000;
 
@@ -12,7 +11,7 @@ export function installChatGPTWebBridge(options = {}) {
   const adapter = options.adapter || new ChatGPTDOMAdapter(options);
   const router = options.router || new ChatGPTConversationRouter(adapter, options);
   const models = options.models || new ChatGPTModelController(adapter, options);
-  const turns = options.turns || new ResilientChatGPTTurnController(adapter, options);
+  const turns = options.turns || new ChatGPTTurnController(adapter, options);
   let active = null;
 
   const bridge = {
