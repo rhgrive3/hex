@@ -76,7 +76,7 @@ export class AIRuntime {
       followups: (decision.followups || []).map(String).slice(0, 8), activity,
       usage: { modelCalls, toolCalls, elapsedMs: Date.now() - started, contextBytes, ...wireUsage, candidateCount: plan?.candidates?.length || 0, analyzedFunctions: plan?.stats?.analyzedFunctions || 0, disassembly: Math.max(plan?.stats?.disassembly || 0, registry.analysisStats?.disassembly || 0), toolCost: registry.accounting.cost },
       scope: { requested: request.scope, effective: effectiveScope }, turnSnapshotId: snapshot.id,
-      limits: { exhausted: !!budgetReason, reason: budgetReason || undefined },
+      limits: { exhausted: !!budgetReason, reason: limitReason || undefined },
     };
   }
 
