@@ -130,6 +130,24 @@ window.__CHATGPT__ = (() => {
     return section.querySelector('[data-message-author-role="assistant"]');
   }
 
+  function openNewChat(domDelayMs = 0) {
+    history.replaceState({}, '', '/');
+    showSend();
+    const clear = () => { thread.replaceChildren(); turnIndex = 0; };
+    if (domDelayMs > 0) setTimeout(clear, domDelayMs);
+    else clear();
+  }
+
+  function replaceWithConversation(conversationId) {
+    history.replaceState({}, '', '/c/' + conversationId);
+    thread.replaceChildren();
+    turnIndex = 0;
+    appendUserTurn('別の既存会話', 'other-user-' + conversationId);
+    const assistant = appendAssistantTurn('other-assistant-' + conversationId);
+    assistantBody(assistant).innerHTML = '<div class="markdown">別の既存会話の回答</div>';
+    showSend();
+  }
+
   function stream(section, chunks, done) {
     const body = assistantBody(section);
     let index = 0;
@@ -171,8 +189,19 @@ window.__CHATGPT__ = (() => {
           setTimeout(() => history.replaceState({}, '', '/c/' + options.conversationId), options.transientRouteGapMs);
         }, options.transientRouteAtMs ?? 30);
       }
-      if (options.switchToConversation) {
-        setTimeout(() => history.replaceState({}, '', '/c/' + options.switchToConversation), options.switchAtMs ?? 40);
+      if (options.migrateToConversation) {
+        // Real new-chat traces keep the exact user/assistant data-turn-id while
+        // ChatGPT replaces a provisional conversation id with its final id.
+        setTimeout(() => history.replaceState({}, '', '/c/' + options.migrateToConversation), options.migrateAtMs ?? 40);
+      }
+      if (options.navigateToConversation) {
+        // A real switch loads another turn set; the active Hex request identity
+        // disappears instead of migrating with the route.
+        setTimeout(() => replaceWithConversation(options.navigateToConversation), options.navigateAtMs ?? 40);
+      }
+      if (options.navigateToNewChat) {
+        // Production changes the route before tearing down the old turn DOM.
+        setTimeout(() => openNewChat(options.navigationDomDelayMs ?? 300), options.navigateAtMs ?? 40);
       }
       if (options.failActiveTurn) {
         const body = assistantBody(assistant);
@@ -192,10 +221,7 @@ window.__CHATGPT__ = (() => {
 
   history_nav.addEventListener('click', (event) => {
     if (!event.target.closest('[data-testid="create-new-chat-button"]')) return;
-    thread.replaceChildren();
-    turnIndex = 0;
-    history.replaceState({}, '', '/');
-    showSend();
+    openNewChat(options.newChatDomDelayMs || 0);
   });
 
   return {

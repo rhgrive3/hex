@@ -27,14 +27,18 @@ export function installChatGPTWebBridge(options = {}) {
       try {
         const routed = await router.route(requestOptions.sessionKey, { signal: controller.signal });
         const selection = await models.select({ model: requestOptions.model, reasoning: requestOptions.reasoning }, { signal: controller.signal });
-        let bound = routed.conversation;
         const result = await turns.run(String(prompt || ''), {
           signal: controller.signal,
           timeoutMs: requestOptions.timeoutMs || options.timeoutMs || DEFAULT_TIMEOUT_MS,
           expectedConversation: routed.conversation,
-          onConversation: (conversation) => { bound = router.bind(requestOptions.sessionKey, conversation); },
+          newConversation: routed.isNew === true,
         });
-        bound = result.conversation ? router.bind(requestOptions.sessionKey, result.conversation) : bound;
+        // New Chat can expose a provisional /c/<id> and replace it while the
+        // same logical request is generating. Never persist that intermediate
+        // identity; bind only the settled conversation returned by the turn.
+        const bound = result.conversation
+          ? router.bind(requestOptions.sessionKey, result.conversation)
+          : routed.conversation;
         return { text: result.text, conversation: bound, selection, turnId: result.turnId };
       } finally {
         externalSignal?.removeEventListener?.('abort', onExternalAbort);

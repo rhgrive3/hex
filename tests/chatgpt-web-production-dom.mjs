@@ -75,6 +75,14 @@ async function run(name, browserType) {
       assert.equal(result.value.conversation.id, CONVERSATION);
     });
 
+    await scenario(context, name, 'a new chat may replace its provisional conversation id', {
+      prompt: LONG_PROMPT, chatgpt: { migrateToConversation: OTHER_CONVERSATION, migrateAtMs: 40, streamMs: 12 },
+    }, (result) => {
+      assert.equal(result.ok, true, `${name}: a same-request CID migration must stay attached (${result.error?.code})`);
+      assert.equal(result.value.text, ANSWER);
+      assert.equal(result.value.conversation.id, OTHER_CONVERSATION);
+    });
+
     await scenario(context, name, 'a stale historical error turn does not poison a healthy request', {
       prompt: LONG_PROMPT,
       seed: [{ kind: 'user', text: '前の質問' }, { kind: 'error', text: 'Something went wrong while generating the response.' }],
@@ -99,10 +107,22 @@ async function run(name, browserType) {
       assert.equal(result.error.stage, 'turn-controller');
     });
 
-    await scenario(context, name, 'a real conversation switch is still rejected', {
-      prompt: LONG_PROMPT, chatgpt: { switchToConversation: OTHER_CONVERSATION, switchAtMs: 40, streamMs: 40 },
+    await scenario(context, name, 'a real existing-conversation switch is still rejected', {
+      prompt: LONG_PROMPT,
+      seed: [{ kind: 'user', text: '前の既存チャット' }],
+      chatgpt: { navigateToConversation: OTHER_CONVERSATION, navigateAtMs: 40, streamMs: 40 },
     }, (result) => {
       assert.equal(result.ok, false, `${name}: a different conversation must abort the turn`);
+      assert.equal(result.error.code, 'conversation-switched');
+      assert.equal(result.error.stage, 'turn-controller');
+    });
+
+    await scenario(context, name, 'opening New Chat during a known conversation is rejected', {
+      prompt: LONG_PROMPT,
+      seed: [{ kind: 'user', text: '前の既存チャット' }],
+      chatgpt: { navigateToNewChat: true, navigateAtMs: 40, navigationDomDelayMs: 300, streamMs: 40 },
+    }, (result) => {
+      assert.equal(result.ok, false, `${name}: a persistent route loss must abort the turn`);
       assert.equal(result.error.code, 'conversation-switched');
       assert.equal(result.error.stage, 'turn-controller');
     });

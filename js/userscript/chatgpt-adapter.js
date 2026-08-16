@@ -77,7 +77,14 @@ export class ChatGPTDOMAdapter {
 
   identity(node) {
     if (!node) return null;
-    const explicit = node.getAttribute?.('data-message-id') || node.getAttribute?.('data-testid') || node.id;
+    // Production traces show that ChatGPT can rewrite both the renderer's
+    // conversation-turn test id and data-message-id while one logical response
+    // is still alive. data-turn-id survives those re-hydrations, so it is the
+    // strongest DOM-provided identity when a conversation wrapper exposes it.
+    const explicit = node.getAttribute?.('data-turn-id')
+      || node.getAttribute?.('data-message-id')
+      || node.getAttribute?.('data-testid')
+      || node.id;
     if (explicit) return String(explicit);
     if (!this.nodeIds.has(node)) this.nodeIds.set(node, `dom-turn-${this.nodeSequence++}`);
     return this.nodeIds.get(node);
@@ -249,10 +256,20 @@ export class ChatGPTConversationRouter {
       return { conversation: reached, isNew: false };
     }
 
+    // ChatGPT changes /c/<id> -> / before it removes the old turn DOM.
+    // If Hex starts the next request in that gap, the old conversation becomes
+    // the new request's baseline. Wait until every previously visible logical
+    // turn is gone; an already-empty home page still resolves immediately.
+    const priorTurns = conversationTurnIds(this.adapter);
     const fresh = this.adapter.newChatButton();
     if (fresh) fresh.click();
     else throw bridgeError('conversation-router', 'new-chat-unavailable', 'ChatGPT New Chat control was not found.');
-    const ready = await waitFor(() => !this.adapter.conversation() && this.adapter.composer(), timeoutMs, signal);
+    const ready = await waitFor(() => {
+      if (this.adapter.conversation()) return null;
+      const composer = this.adapter.composer();
+      if (!composer) return null;
+      return priorTurnsCleared(this.adapter, priorTurns) ? composer : null;
+    }, timeoutMs, signal);
     if (!ready) throw bridgeError('conversation-router', 'new-chat-timeout', 'ChatGPT did not open a new conversation.');
     return { conversation: null, isNew: true };
   }
@@ -331,7 +348,7 @@ export class ChatGPTTurnController {
     this.conversationGraceMs = conversationGraceMs;
   }
 
-  async run(prompt, { signal, timeoutMs = 110000, expectedConversation = null, onConversation } = {}) {
+  async run(prompt, { signal, timeoutMs = 110000, expectedConversation = null, newConversation = expectedConversation === null, onConversation } = {}) {
     const started = Date.now();
     const normalizedPrompt = normalizeText(prompt);
     const composer = await waitFor(() => this.adapter.composer(), Math.min(timeoutMs, this.startTimeoutMs), signal);
@@ -372,28 +389,65 @@ export class ChatGPTTurnController {
     if (!submitted || !requestUserTurn) throw bridgeError('turn-controller', 'submission-unverified', 'The ChatGPT user turn could not be matched to the Hex request.');
 
     let latest = '', latestId = null, lastChangedAt = Date.now(), sawGenerating = this.adapter.isGenerating(), observedConversation = expectedConversation;
+    let missingConversationSince = null, bootstrapMigrated = false;
     let stopObserving = NOOP;
     try {
       while (Date.now() - started < timeoutMs) {
         if (signal?.aborted) throw abortError(signal.reason);
+
+        // Read one logical snapshot before judging navigation. The production
+        // lifecycle proves that a brand-new chat can move provisional CID A ->
+        // final CID B while the same user turn and data-turn-id stay alive. A
+        // real navigation replaces that request turn instead.
+        const conversationTurns = this.conversationTurns();
+        const userTurns = this.userTurns();
+        const freshUsers = userTurns.filter((turn) => !baselineUsers.has(turn.id));
+        const requestPresent = requestTurnIsPresent(requestUserTurn, userTurns, conversationTurns, normalizedPrompt);
+        const conversation = this.adapter.conversation();
+
+        if (conversation) {
+          missingConversationSince = null;
+          if (!observedConversation) {
+            observedConversation = conversation;
+            onConversation?.(conversation);
+          } else if (conversation.id !== observedConversation.id) {
+            // Existing sessions keep strict conversation isolation. Only a
+            // request that started from New Chat may migrate its provisional CID,
+            // and only while the exact submitted user turn is still present and
+            // no competing user turn appeared.
+            if (!newConversation || !requestPresent || freshUsers.length !== 1) {
+              throw bridgeError('turn-controller', 'conversation-switched', 'ChatGPT conversation changed while a Hex request was in flight.', { expected: observedConversation, actual: conversation });
+            }
+            observedConversation = conversation;
+            bootstrapMigrated = true;
+            onConversation?.(conversation);
+          }
+        } else if (observedConversation) {
+          if (missingConversationSince === null) missingConversationSince = Date.now();
+          if (Date.now() - missingConversationSince >= this.conversationGraceMs) {
+            throw bridgeError('turn-controller', 'conversation-switched', 'ChatGPT conversation disappeared while a Hex request was in flight.', { expected: observedConversation });
+          }
+        }
+
+        // If a provisional CID was accepted and the request turn then disappears,
+        // this was navigation to another conversation, not bootstrap migration.
+        if (bootstrapMigrated && !requestPresent) {
+          throw bridgeError('turn-controller', 'conversation-switched', 'ChatGPT left the Hex request after a new-conversation identity migration.', { expected: observedConversation });
+        }
+        if (freshUsers.length > 1) {
+          throw bridgeError('turn-controller', 'manual-interference', 'Another user turn appeared while one Hex request was in flight.');
+        }
+
         // Scope error detection to the turns this request created. Fall back to
         // the unscoped read when no turn node is known, so a build whose turn
         // wrappers Hex cannot resolve loses no error detection at all.
-        const activeNodes = this.conversationTurns()
+        const activeNodes = conversationTurns
           .filter((turn) => !baselineConversation.has(turn.id))
           .map((turn) => turn.node)
           .filter(Boolean);
         if (!activeNodes.length && requestUserTurn?.node) activeNodes.push(requestUserTurn.node);
         const error = this.adapter.errorState(activeNodes.length ? activeNodes : null);
         if (error) throw bridgeError('turn-controller', 'response-error', 'ChatGPT reported an error while generating the Hex turn.', { error });
-        const conversation = this.adapter.conversation();
-        if (!observedConversation && conversation) { observedConversation = conversation; onConversation?.(conversation); }
-        // A routing gap reports no conversation at all. Unknown must stay
-        // unknown: only a different, concretely identified conversation proves
-        // that ChatGPT moved this request somewhere else.
-        if (observedConversation && conversation && conversation.id !== observedConversation.id) {
-          throw bridgeError('turn-controller', 'conversation-switched', 'ChatGPT conversation changed while a Hex request was in flight.', { expected: observedConversation, actual: conversation });
-        }
         if (this.adapter.isGenerating()) sawGenerating = true;
 
         const explicit = this.assistantTurns().filter((turn) => !baselineAssistant.has(turn.id));
@@ -408,6 +462,13 @@ export class ChatGPTTurnController {
           const settledFor = Date.now() - lastChangedAt;
           const settled = latest.trim() && !this.adapter.isGenerating() && settledFor >= this.quietMs && (sawGenerating || requestUserTurn);
           if (settled) {
+            // A known conversation that temporarily reads as null is not safe to
+            // finalize. A short SPA gap will recover; a real New Chat navigation
+            // is rejected above after conversationGraceMs.
+            if (observedConversation && !conversation) {
+              await delay(this.pollMs, signal);
+              continue;
+            }
             const identity = conversation || observedConversation;
             if (identity || settledFor >= Math.max(this.quietMs, this.conversationGraceMs)) {
               return { text: latest.trim(), conversation: identity || null, turnId: turn.id };
@@ -477,6 +538,25 @@ function canonicalTurns(adapter, turns) {
   return out;
 }
 
+function conversationTurnIds(adapter) {
+  if (typeof adapter?.conversationTurns !== 'function') return new Set();
+  return new Set((adapter.conversationTurns() || []).map((turn) => String(turn?.id || '')).filter(Boolean));
+}
+function priorTurnsCleared(adapter, priorTurns) {
+  if (!priorTurns?.size) return true;
+  const current = conversationTurnIds(adapter);
+  for (const id of priorTurns) if (current.has(id)) return false;
+  return true;
+}
+function requestTurnIsPresent(request, userTurns, conversationTurns, normalizedPrompt) {
+  if (!request) return false;
+  const matches = (turn) => {
+    if (!turn) return false;
+    const sameIdentity = turn.id === request.id || (!!turn.node && !!request.node && turn.node === request.node);
+    return sameIdentity && normalizeText(turn.text) === normalizedPrompt;
+  };
+  return (userTurns || []).some(matches) || (conversationTurns || []).some(matches);
+}
 function bridgeError(stage, code, message, details = null) { return new ChatGPTBridgeError(code, message, details, stage); }
 function validConversation(value) { return !!value && typeof value.id === 'string' && conversationIdentity(value.url)?.id === value.id; }
 function normalizeText(value) { return String(value || '').replace(/\s+/g, ' ').trim(); }
