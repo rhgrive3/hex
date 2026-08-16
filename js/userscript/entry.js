@@ -2,103 +2,113 @@ import { PROTECTED_HOST } from '../../.runtime-build/embedded-assets.js';
 import { setUiRoot } from '../ui-root.js';
 import { installChatGPTWebBridge } from './chatgpt-bridge.js';
 import { createChatGPTParentRpc } from './chatgpt-parent-rpc.js';
-import { createChatGPTIframeHost } from './chatgpt-iframe-host.js';
+import { createChatGPTSandboxHost, findChatGPTCspNonce } from './chatgpt-sandbox-host.js';
 import { setEmbedProvider } from './embed-bootstrap.js';
 import { installProtectedWorkers } from './protected-workers.js';
 import { installUserscriptNetworkBridge } from './network.js';
 
 const PROVIDER_KEY = 'hex.ai.provider';
 const EMBED_MODE_KEY = 'hex.embed.mode';
-const IFRAME_MODE = 'iframe-v1';
+const SANDBOX_MODE = 'sandbox-v2';
+const OLD_IFRAME_MODE = 'iframe-v1';
 const LEGACY_MODE = 'legacy-light-dom';
-const apiOrigin = new URL(globalThis.__HEX_API_BASE__ || globalThis.__HEX_RUNTIME_ORIGIN__ || location.origin, location.href).origin;
-const bridge = installChatGPTWebBridge();
+const SESSION_CLEANUP_KEY = '__HEX_CHATGPT_EMBED_CLEANUP__';
 
-globalThis.__HEX_API_BASE__ = apiOrigin;
-globalThis.__HEX_AI_PROVIDER__ = readProvider();
+export async function startChatGPTUserscript(options = {}) {
+  const apiOrigin = normalizeApiOrigin(options.apiOrigin || globalThis.__HEX_API_BASE__ || globalThis.__HEX_RUNTIME_ORIGIN__ || location.origin);
+  const bridge = installChatGPTWebBridge();
+  globalThis.__HEX_API_BASE__ = apiOrigin;
+  globalThis.__HEX_AI_PROVIDER__ = readProvider();
 
-let iframeHost = null;
-let legacyPromise = null;
+  cleanupPreviousSession();
 
-boot().catch((error) => showFatal(error));
-
-async function boot() {
   if (readEmbedMode() === LEGACY_MODE) {
-    await startLegacy();
-    return;
+    const result = await startLegacy({ bridge });
+    return Object.freeze({ mode: LEGACY_MODE, ...result });
   }
-  try {
-    await startIframe();
-  } catch (error) {
-    console.warn('[hex userscript] iframe-v1 unavailable; falling back to legacy light DOM', error);
-    try { iframeHost?.destroy(); } catch {}
-    iframeHost = null;
-    await startLegacy(error);
-  }
+
+  const result = await startSandbox({
+    apiOrigin,
+    bridge,
+    runtimeSourceProvider: options.runtimeSourceProvider,
+    loaderVersion: options.loaderVersion,
+    buildId: options.buildId,
+  });
+  return Object.freeze({ mode: SANDBOX_MODE, ...result });
 }
 
-async function startIframe() {
+async function startSandbox(options) {
+  if (typeof options.runtimeSourceProvider !== 'function') {
+    throw new Error('Protected runtime source is unavailable for the ChatGPT sandbox.');
+  }
+  const cspNonce = findChatGPTCspNonce(document);
+  if (!cspNonce) throw new Error('ChatGPT CSP nonce is unavailable for the Hex sandbox.');
+
+  const virtualSrc = setEmbedProvider(new URL('/embed/chatgpt', options.apiOrigin).href, globalThis.__HEX_AI_PROVIDER__);
   let resolveReady;
   let rejectReady;
+  let settled = false;
   const ready = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
-  const src = setEmbedProvider(new URL('/embed/chatgpt', apiOrigin).href, globalThis.__HEX_AI_PROVIDER__);
 
-  iframeHost = createChatGPTIframeHost({
-    src,
+  const host = createChatGPTSandboxHost({
+    hostHtml: PROTECTED_HOST.html,
+    cspNonce,
+    virtualSrc,
+    loaderVersion: String(options.loaderVersion || ''),
+    buildId: String(options.buildId || ''),
+    runtimeSourceProvider: options.runtimeSourceProvider,
     onPort(port) {
       const parentRpc = createChatGPTParentRpc({
         port,
-        bridge,
-        onUiClose: () => iframeHost?.hide(),
+        bridge: options.bridge,
+        onUiClose: () => host.hide(),
       });
       return () => parentRpc.close();
     },
-    onReady: () => resolveReady(),
-    onFailure: (failure) => {
+    onReady(info) {
+      if (settled) return;
+      settled = true;
+      resolveReady(info);
+    },
+    onFailure(failure) {
+      if (settled) return;
+      settled = true;
       const error = new Error(`${failure.stage}: ${failure.message}`);
       error.stage = failure.stage;
       rejectReady(error);
     },
   });
 
-  await ready;
-  await revealIframeWhenReady(iframeHost);
+  installSessionCleanup(() => host.destroy());
+  const info = await ready;
+  host.show();
+  return Object.freeze({ host, bridge: options.bridge, info });
 }
 
-async function revealIframeWhenReady(host) {
-  if (!host) return;
-  if (bridge.status().ready) { host.show(); return; }
-  const deadline = Date.now() + 15000;
-  while (Date.now() < deadline && host.state().status !== 'destroyed') {
-    await sleep(200);
-    if (bridge.status().ready) { host.show(); return; }
+async function startLegacy({ bridge }) {
+  const host = ensureLegacyHost();
+  setUiRoot(host);
+  host.lang = navigator.language || 'ja';
+  ensureLegacyStyle();
+  installUserscriptNetworkBridge();
+  installProtectedWorkers();
+  const launcher = installLegacyLauncher(host);
+  installSessionCleanup(() => {
+    try { host.remove(); } catch {}
+    try { launcher.remove(); } catch {}
+    try { document.getElementById('hex-userscript-style')?.remove(); } catch {}
+  });
+  try {
+    setLegacyLauncherState(launcher, 'Preparing Hex…', true);
+    await import('../app.js');
+    await import('../ux.js');
+    setLegacyLauncherState(launcher, 'HEX', false);
+    await revealLegacyWhenReady(host, launcher, bridge);
+    return Object.freeze({ host, launcher, bridge });
+  } catch (error) {
+    showLegacyFailure(launcher, error);
+    throw error;
   }
-  /* The host launcher remains visible. This preserves manual access for Gemini
-     and for ChatGPT pages whose composer is intentionally not ready yet. */
-}
-
-function startLegacy(cause = null) {
-  if (legacyPromise) return legacyPromise;
-  legacyPromise = (async () => {
-    const host = ensureLegacyHost();
-    setUiRoot(host);
-    host.lang = navigator.language || 'ja';
-    ensureLegacyStyle();
-    installUserscriptNetworkBridge();
-    installProtectedWorkers();
-    const launcher = installLegacyLauncher(host);
-    try {
-      setLegacyLauncherState(launcher, 'Preparing Hex…', true);
-      await import('../app.js');
-      await import('../ux.js');
-      setLegacyLauncherState(launcher, 'HEX', false);
-      await revealLegacyWhenReady(host, launcher);
-    } catch (error) {
-      showLegacyFailure(launcher, error, cause);
-      throw error;
-    }
-  })();
-  return legacyPromise;
 }
 
 function ensureLegacyHost() {
@@ -143,7 +153,7 @@ function installLegacyLauncher(host) {
   return button;
 }
 
-async function revealLegacyWhenReady(host, launcher) {
+async function revealLegacyWhenReady(host, launcher, bridge) {
   if (bridge.status().ready) { showLegacy(host, launcher); return; }
   launcher.hidden = false;
   const deadline = Date.now() + 15000;
@@ -167,27 +177,37 @@ function setLegacyLauncherState(launcher, text, busy) {
   launcher.style.opacity = busy ? '0.72' : '1';
 }
 
-function showLegacyFailure(launcher, error, iframeCause) {
+function showLegacyFailure(launcher, error) {
   const message = String(error?.message || error || 'Unknown startup error.');
-  const prefix = iframeCause ? 'iframe fallback failed; ' : '';
   launcher.hidden = false;
   launcher.disabled = false;
   launcher.textContent = 'Hex failed — tap for details';
-  launcher.onclick = () => alert(`Hex failed to start:\n${prefix}${message}`);
+  launcher.onclick = () => alert(`Hex failed to start:\n${message}`);
 }
 
-function showFatal(error) {
-  console.error('[hex userscript] boot failed', error);
-  let button = document.getElementById('hex-userscript-launcher');
-  if (!button) {
-    button = document.createElement('button');
-    button.id = 'hex-userscript-launcher';
-    document.documentElement.append(button);
+function cleanupPreviousSession() {
+  try {
+    const cleanup = globalThis[SESSION_CLEANUP_KEY];
+    if (typeof cleanup === 'function') cleanup();
+  } catch {}
+  try { delete globalThis[SESSION_CLEANUP_KEY]; } catch { globalThis[SESSION_CLEANUP_KEY] = null; }
+  for (const id of ['hex-userscript-iframe-host', 'hex-userscript-iframe', 'hex-userscript-launcher', 'hex-userscript-emergency-close', 'hex-userscript-host']) {
+    try { document.getElementById(id)?.remove(); } catch {}
   }
-  button.hidden = false;
-  button.disabled = false;
-  button.textContent = 'Hex failed — tap for details';
-  button.onclick = () => alert(`Hex failed to start:\n${error?.message || error}`);
+}
+
+function installSessionCleanup(cleanup) {
+  globalThis[SESSION_CLEANUP_KEY] = () => {
+    try { cleanup(); } finally {
+      try { delete globalThis[SESSION_CLEANUP_KEY]; } catch { globalThis[SESSION_CLEANUP_KEY] = null; }
+    }
+  };
+}
+
+function normalizeApiOrigin(value) {
+  const url = new URL(String(value || ''));
+  if (url.protocol !== 'https:' || url.origin !== String(value || '')) throw new Error('Hex API origin is invalid.');
+  return url.origin;
 }
 
 function readProvider() {
@@ -197,9 +217,16 @@ function readProvider() {
 
 function readEmbedMode() {
   const forced = globalThis.__HEX_EMBED_MODE__;
-  if (forced === LEGACY_MODE || forced === IFRAME_MODE) return forced;
-  try { return localStorage.getItem(EMBED_MODE_KEY) === LEGACY_MODE ? LEGACY_MODE : IFRAME_MODE; }
-  catch { return IFRAME_MODE; }
+  if (forced === LEGACY_MODE) return LEGACY_MODE;
+  if (forced === SANDBOX_MODE || forced === OLD_IFRAME_MODE) return SANDBOX_MODE;
+  try {
+    const stored = localStorage.getItem(EMBED_MODE_KEY);
+    return stored === LEGACY_MODE ? LEGACY_MODE : SANDBOX_MODE;
+  } catch {
+    return SANDBOX_MODE;
+  }
 }
 
 function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
+
+export default startChatGPTUserscript;
