@@ -3,14 +3,19 @@ import { ChatGPTConversationRouter, ChatGPTDOMAdapter, ChatGPTModelController, C
 import { installChatGPTWebBridge } from '../js/userscript/chatgpt-bridge.js';
 
 await testConversationRouting();
+await testNewConversationRouteWaitsForOldTurns();
 await testModelSelection();
 await testLogicalTurnCanonicalization();
+await testStableTurnIdentityUsesDataTurnId();
 await testRoleScopedTurnTextExtraction();
 await testCollapsibleUserMessageTextExtraction();
 await testTurnCompletionAndStaleProtection();
 await testRolelessTurnFallback();
 await testCancelTimeoutAndSingleInflight();
 await testTransientConversationGapIsNotASwitch();
+await testNewConversationIdentityMigration();
+await testNewConversationNavigationAwayIsRejected();
+await testPersistentConversationGapIsRejected();
 await testHistoricalErrorTurnDoesNotPoisonARequest();
 await testBridgeErrorsCarryTheirStage();
 console.log('chatgpt-web-runtime: ok');
@@ -36,6 +41,29 @@ async function testConversationRouting() {
   await router.route('A'); assert.equal(current.id, 'alpha');
   await router.route('B'); assert.equal(current.id, 'beta');
   assert.equal(JSON.parse(storage.getItem('hex.chatgpt.conversations.v1')).A.url, 'https://chatgpt.com/c/alpha');
+}
+
+async function testNewConversationRouteWaitsForOldTurns() {
+  let current = { id: 'old', url: 'https://chatgpt.com/c/old' };
+  let turns = [{ id: 'old-user' }, { id: 'old-assistant' }];
+  let clicks = 0;
+  const adapter = {
+    conversation: () => current,
+    conversationTurns: () => turns,
+    composer: () => ({}),
+    newChatButton: () => ({ click() {
+      clicks++;
+      current = null;
+      setTimeout(() => { turns = []; }, 20);
+    } }),
+    all: () => [],
+  };
+  const router = new ChatGPTConversationRouter(adapter, { storage: memoryStorage(), navigationTimeoutMs: 250 });
+  const routed = await router.route('fresh-session');
+  assert.equal(clicks, 1);
+  assert.equal(routed.isNew, true);
+  assert.equal(routed.conversation, null);
+  assert.equal(turns.length, 0, 'new-chat routing must wait for the old conversation DOM to leave');
 }
 
 async function testModelSelection() {
@@ -73,6 +101,22 @@ async function testLogicalTurnCanonicalization() {
   assert.equal(turns[0].id, 'conversation-turn-42');
   assert.equal(turns[0].text, '{"type":"final","answer":"ok"}');
   assert.equal(turns[0].node, fixture.root);
+}
+
+async function testStableTurnIdentityUsesDataTurnId() {
+  let testId = 'conversation-turn-2';
+  const node = {
+    id: '',
+    getAttribute(name) {
+      if (name === 'data-turn-id') return 'request-WEB:stable-turn';
+      if (name === 'data-testid') return testId;
+      return null;
+    },
+  };
+  const adapter = new ChatGPTDOMAdapter({ document: null, location: { href: 'https://chatgpt.com/c/alpha' } });
+  assert.equal(adapter.identity(node), 'request-WEB:stable-turn');
+  testId = 'conversation-turn-5';
+  assert.equal(adapter.identity(node), 'request-WEB:stable-turn', 'renderer test-id churn must not change logical turn identity');
 }
 
 async function testRoleScopedTurnTextExtraction() {
@@ -318,6 +362,82 @@ async function testTransientConversationGapIsNotASwitch() {
   await assert.rejects(
     new ChatGPTTurnController(switchedAdapter, { quietMs: 5, pollMs: 2, startTimeoutMs: 40 }).run('prompt', { timeoutMs: 200, expectedConversation: conversation }),
     (error) => error.code === 'conversation-switched' && error.stage === 'turn-controller',
+  );
+}
+
+async function testNewConversationIdentityMigration() {
+  const alpha = { id: 'alpha', url: 'https://chatgpt.com/c/alpha' };
+  const beta = { id: 'beta', url: 'https://chatgpt.com/c/beta' };
+  const state = { generating: false, assistants: [], users: [], turns: [], conversation: null };
+  const user = { id: 'hex-user-turn', text: 'prompt', node: plainNode('hex-user-turn') };
+  const assistant = { id: 'hex-assistant-turn', text: '', node: plainNode('hex-assistant-turn') };
+  const adapter = turnAdapter(state, () => {
+    state.users.push(user);
+    state.assistants.push(assistant);
+    state.turns.push(user, assistant);
+    state.generating = true;
+    setTimeout(() => { state.conversation = alpha; }, 4);
+    setTimeout(() => { state.conversation = beta; }, 12);
+    setTimeout(() => { assistant.text = '{"type":"final"}'; state.generating = false; }, 24);
+  });
+  const seen = [];
+  const result = await new ChatGPTTurnController(adapter, { quietMs: 5, pollMs: 2, startTimeoutMs: 40, conversationGraceMs: 20 })
+    .run('prompt', { timeoutMs: 400, newConversation: true, onConversation: (conversation) => seen.push(conversation.id) });
+  assert.equal(result.conversation.id, 'beta', 'the final CID must replace the provisional CID');
+  assert.equal(result.turnId, 'hex-assistant-turn');
+  assert.ok(seen.includes('alpha'));
+  assert.ok(seen.includes('beta'));
+}
+
+async function testNewConversationNavigationAwayIsRejected() {
+  const alpha = { id: 'alpha', url: 'https://chatgpt.com/c/alpha' };
+  const beta = { id: 'beta', url: 'https://chatgpt.com/c/beta' };
+  const state = { generating: false, assistants: [], users: [], turns: [], conversation: null };
+  const requestUser = { id: 'hex-user-turn', text: 'prompt', node: plainNode('hex-user-turn') };
+  const requestAssistant = { id: 'hex-assistant-turn', text: 'partial', node: plainNode('hex-assistant-turn') };
+  const adapter = turnAdapter(state, () => {
+    state.users.push(requestUser);
+    state.assistants.push(requestAssistant);
+    state.turns.push(requestUser, requestAssistant);
+    state.generating = true;
+    setTimeout(() => { state.conversation = alpha; }, 4);
+    // The URL can change before ChatGPT replaces the old DOM. This first looks
+    // like bootstrap migration; the disappearing request turn proves navigation.
+    setTimeout(() => { state.conversation = beta; }, 12);
+    setTimeout(() => {
+      const otherUser = { id: 'other-user', text: 'other prompt', node: plainNode('other-user') };
+      const otherAssistant = { id: 'other-assistant', text: 'other response', node: plainNode('other-assistant') };
+      state.users = [otherUser];
+      state.assistants = [otherAssistant];
+      state.turns = [otherUser, otherAssistant];
+      state.generating = false;
+    }, 24);
+  });
+  await assert.rejects(
+    new ChatGPTTurnController(adapter, { quietMs: 20, pollMs: 2, startTimeoutMs: 40, conversationGraceMs: 20 })
+      .run('prompt', { timeoutMs: 300, newConversation: true }),
+    (error) => error.code === 'conversation-switched' && error.stage === 'turn-controller',
+  );
+}
+
+async function testPersistentConversationGapIsRejected() {
+  const alpha = { id: 'alpha', url: 'https://chatgpt.com/c/alpha' };
+  const state = { generating: false, assistants: [], users: [], turns: [], conversation: alpha };
+  const user = { id: 'hex-user', text: 'prompt', node: plainNode('hex-user') };
+  const assistant = { id: 'hex-assistant', text: 'partial', node: plainNode('hex-assistant') };
+  const adapter = turnAdapter(state, () => {
+    state.users.push(user);
+    state.assistants.push(assistant);
+    state.turns.push(user, assistant);
+    state.generating = true;
+    setTimeout(() => { state.conversation = null; }, 4);
+    setTimeout(() => { assistant.text = '{"type":"final"}'; state.generating = false; }, 8);
+  });
+  await assert.rejects(
+    new ChatGPTTurnController(adapter, { quietMs: 3, pollMs: 2, startTimeoutMs: 40, conversationGraceMs: 12 })
+      .run('prompt', { timeoutMs: 200, expectedConversation: alpha }),
+    (error) => error.code === 'conversation-switched',
+    'a persistent /c/<id> -> / transition must not finalize against the old conversation',
   );
 }
 

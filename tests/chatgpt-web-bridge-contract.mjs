@@ -7,6 +7,7 @@ import { CHATGPT_SELECTORS } from '../js/userscript/chatgpt-selectors.js';
 const BRIDGE_KEY = '__HEX_CHATGPT_BRIDGE__';
 
 await testRequestContract();
+await testNewConversationBindingIsDeferred();
 await testSingleInflightAndBusyCleanup();
 await testExternalAbortSignal();
 await testCancelStopsAdapter();
@@ -23,7 +24,6 @@ console.log('chatgpt-web-bridge-contract: ok');
 async function testRequestContract() {
   const calls = { routes: [], selections: [], runs: [], binds: [] };
   const routedConversation = { id: 'conversation-route', url: 'https://chatgpt.com/c/conversation-route' };
-  const interimConversation = { id: 'conversation-interim', url: 'https://chatgpt.com/c/conversation-interim' };
   const finalConversation = { id: 'conversation-final', url: 'https://chatgpt.com/c/conversation-final' };
   const selected = { model: 'chatgpt-web/sol', reasoning: 'high', observedText: 'GPT-5.6 Sol High' };
   const adapter = fakeAdapter();
@@ -48,7 +48,6 @@ async function testRequestContract() {
   const turns = {
     async run(prompt, requestOptions) {
       calls.runs.push({ prompt, ...requestOptions });
-      requestOptions.onConversation(interimConversation);
       return { text: 'contract result', conversation: finalConversation, turnId: 'turn-contract-1' };
     },
   };
@@ -74,9 +73,10 @@ async function testRequestContract() {
   assert.equal(calls.runs[0].signal, calls.routes[0].signal);
   assert.equal(calls.runs[0].timeoutMs, 4321);
   assert.equal(calls.runs[0].expectedConversation, routedConversation);
+  assert.equal(calls.runs[0].newConversation, false);
+  assert.equal(calls.runs[0].onConversation, undefined);
 
   assert.deepEqual(calls.binds, [
-    { sessionKey: 'session-contract', conversation: interimConversation },
     { sessionKey: 'session-contract', conversation: finalConversation },
   ]);
   assert.deepEqual(result, {
@@ -86,6 +86,33 @@ async function testRequestContract() {
     turnId: 'turn-contract-1',
   });
   assert.equal(bridge.status().busy, false);
+  clearBridge();
+}
+
+async function testNewConversationBindingIsDeferred() {
+  const finalConversation = { id: 'conversation-final-new', url: 'https://chatgpt.com/c/conversation-final-new' };
+  const binds = [];
+  const bridge = freshBridge({
+    adapter: fakeAdapter(),
+    router: {
+      route: async () => ({ conversation: null, isNew: true }),
+      bind(sessionKey, conversation) { binds.push({ sessionKey, conversation }); return conversation; },
+      binding: () => null,
+    },
+    models: fakeModels(),
+    turns: {
+      async run(_prompt, options) {
+        assert.equal(options.expectedConversation, null);
+        assert.equal(options.newConversation, true);
+        assert.equal(options.onConversation, undefined, 'provisional CIDs must not be persisted by the bridge');
+        return { text: 'new result', conversation: finalConversation, turnId: 'turn-new-final' };
+      },
+    },
+  });
+
+  const result = await bridge.request('new conversation', { sessionKey: 'session-new' });
+  assert.deepEqual(binds, [{ sessionKey: 'session-new', conversation: finalConversation }]);
+  assert.equal(result.conversation, finalConversation);
   clearBridge();
 }
 
