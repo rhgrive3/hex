@@ -37,7 +37,7 @@ Important limitations:
 | ELF | Supported | Supported | Supported | **Partial** | Partial | Unsupported | Unsupported | **F2** | **F4 partial** |
 | PE/PE+ | Supported | Supported | Supported | **Partial** | Partial | Unsupported | Unsupported | **F2** | **F4 partial** |
 
-F3 is intentionally conservative. Current loaders do parse substantial import/export/relocation metadata, but source/tests also retain incomplete or unsupported cases, so the full Master Architecture F3 contract is not claimed. Examples include incomplete Mach-O classic/chained binding and export-trie states, ELF partial dynamic metadata paths, and format-specific relocation coverage. F4/F5 remain partial where useful evidence exists without complete debug/unwind or runtime/language coverage. F6 is unsupported.
+F3 is intentionally conservative. Current loaders do parse substantial import/export/relocation metadata, but source/tests retain incomplete or unsupported cases, so the full Master Architecture F3 contract is not claimed. Mach-O regression tests explicitly exercise incomplete classic binding, export-trie cycles, unsupported chained pointer formats, and incomplete chained symbols. ELF regression tests preserve partial dynamic-metadata paths. PE parses imports, exports, delay imports, and base relocations, but there is no source/test basis for claiming complete relocation/import/export coverage across the PE contract. F4/F5 remain partial where useful evidence exists without complete debug/unwind or runtime/language coverage. F6 is unsupported.
 
 ## Managed / VM frontends
 
