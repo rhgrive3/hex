@@ -65,6 +65,7 @@ assert.match(loaderSource, /__HEX_SECURE_LOADER__/);
 assert.match(loaderSource, /hexLoaderVersion/);
 assert.match(loaderSource, /toExactArrayBuffer/);
 assert.match(loaderSource, /SHA-256 integrity digest/);
+assert.match(loaderSource, /meta\[name="apple-itunes-app"\]/, 'loader must suppress the ChatGPT iOS Smart App Banner before normal page startup');
 assert.doesNotMatch(loaderSource, /responseType:\s*'arraybuffer'/);
 assert.doesNotMatch(loaderSource, /GM\?\.xmlHttpRequest|GM_xmlhttpRequest|gmTextRequest|gmJson/);
 assert.doesNotMatch(loaderSource, /subtle\.digest\('SHA-256',\s*bytes\)/);
@@ -81,6 +82,7 @@ assert.equal(toExactArrayBuffer(exact), exact);
 
 assert.match(template, /^\/\/ ==UserScript==/);
 assert.match(template, /@match\s+https:\/\/chatgpt\.com\/\*/);
+assert.match(template, /@run-at\s+document-start/, 'Smart App Banner suppression must run while ChatGPT head markup is being parsed');
 assert.match(template, /@grant\s+GM\.xmlHttpRequest/);
 assert.match(template, /__HEX_ORIGIN__\/hex\.meta\.js/);
 assert.doesNotMatch(template, /responseType:"arraybuffer"/);
