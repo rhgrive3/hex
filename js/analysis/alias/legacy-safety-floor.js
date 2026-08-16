@@ -25,6 +25,16 @@ function sameScope(a, b) {
   return true;
 }
 
+function storageClass(region) {
+  const value = region?.metadata?.canonicalRootStorageClass;
+  return value == null ? null : String(value);
+}
+
+function provenStackExternalSeparation(a, b) {
+  const classes = new Set([storageClass(a), storageClass(b)]);
+  return classes.has('function-local-stack') && classes.has('external-entry-memory');
+}
+
 export function aliasMemoryRegions(a, b) {
   if (!a || !b) return 'unknown';
   if (a.kind === 'unknown' || b.kind === 'unknown') return 'may';
@@ -60,6 +70,11 @@ export function aliasMemoryRegions(a, b) {
 
   const pair = new Set([a.kind, b.kind]);
   if (pair.has('stack-fixed') && pair.has('global-absolute')) return 'no';
+  // Do not infer NoAlias from root identity alone. This applies only when an
+  // architecture/ABI boundary supplied explicit, architecture-neutral storage
+  // classes proving that one region is this function's local stack and the
+  // other is externally supplied entry memory.
+  if (pair.has('stack-fixed') && pair.has('rooted-offset') && provenStackExternalSeparation(a, b)) return 'no';
 
   const physicalKinds = new Set(['tls', 'io', 'physical-space']);
   if (physicalKinds.has(a.kind) && physicalKinds.has(b.kind) && a.addressSpace && b.addressSpace && a.addressSpace !== b.addressSpace) {
