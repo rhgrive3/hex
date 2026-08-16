@@ -72,8 +72,9 @@ export const MANAGED_FEATURE_LEVEL = Object.freeze({
 function freezeFeatures(features) { return Object.freeze({ ...features }); }
 function freezeCodes(codes) { return Object.freeze([...new Set(codes)]); }
 
-// A2 is the Master Architecture exact MachineEffects contract. Legacy Semantic IR
-// provides useful downstream analysis, but does not satisfy A2 until Phase 2 lands.
+// A2 is the Master Architecture exact MachineEffects contract. Phase 2 now
+// provides explicit effects for a measured ARM64 subset, but incomplete
+// coverage deliberately remains PARTIAL and therefore does not fully satisfy A2.
 const ARCHITECTURE_PROFILES = Object.freeze({
   arm64: Object.freeze({
     implementedLevel: 'A6',
@@ -90,7 +91,7 @@ const ARCHITECTURE_PROFILES = Object.freeze({
       runtimeDebugPatchValidation: PARTIAL,
     }),
     limitations: freezeCodes([
-      'exact-machine-effects-not-implemented',
+      'exact-machine-effects-partial-coverage',
       'runtime-debug-patch-validation-incomplete',
     ]),
   }),
@@ -109,7 +110,7 @@ const ARCHITECTURE_PROFILES = Object.freeze({
       runtimeDebugPatchValidation: PARTIAL,
     }),
     limitations: freezeCodes([
-      'exact-machine-effects-not-implemented',
+      'exact-machine-effects-partial-coverage',
       'arm64e-pointer-authentication-semantics-partial',
       'runtime-debug-patch-validation-incomplete',
     ]),
@@ -212,7 +213,7 @@ const STATUS_DISPLAY = Object.freeze({
   [SUPPORTED]: 'Supported', [PARTIAL]: 'Partial', [UNSUPPORTED]: 'Unsupported', [UNAVAILABLE]: 'Unavailable',
 });
 const LIMITATION_DISPLAY = Object.freeze({
-  'exact-machine-effects-not-implemented': 'Exact MachineEffects are not implemented yet; current ARM64 semantics are legacy Semantic IR, not A2 exact low-level effects.',
+  'exact-machine-effects-partial-coverage': 'MachineEffects are implemented for a measured ARM64 subset; remaining partial or unsupported instructions keep A2 from being fully satisfied.',
   'runtime-debug-patch-validation-incomplete': 'Runtime/debug/patch validation does not meet A7.',
   'arm64e-pointer-authentication-semantics-partial': 'arm64e pointer-authentication data semantics are partial.',
   'x86-64-semantic-analysis-unsupported': 'x86-64 is decode-only; semantic lifting, CFG/SSA analysis, and decompilation are not supported.',

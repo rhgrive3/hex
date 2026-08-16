@@ -96,7 +96,7 @@ function directTargetOf(value) {
     return n == null ? value : n;
   }
   if (typeof value !== 'object') return null;
-  if (value.kind === 'bitvector') return safeBigInt(value.value);
+  if (value.kind === 'bitvector' || value.kind === 'absolute-address') return safeBigInt(value.value);
   if (value.address != null) return safeBigInt(value.address) ?? value.address;
   if (value.value != null && value.kind == null) return safeBigInt(value.value) ?? value.value;
   return null;
@@ -186,9 +186,57 @@ function opcodeHead(opcode) {
   return opcode.split(/[.:/]/, 1)[0];
 }
 
+function outputIsUsed(value, options) {
+  return value?.kind === 'temporary' && options.usedTemporaryIds?.has(String(value.temporaryId));
+}
+
+function outputsAreDeadTemporaries(operation, options) {
+  const outputs = Array.isArray(operation.outputs) ? operation.outputs : [];
+  return outputs.length > 0 && outputs.every((value) => value?.kind === 'temporary' && !outputIsUsed(value, options));
+}
+
+function addWithCarryOperands(operation, options) {
+  const inputs = operation.inputs || [];
+  if (inputs.length < 3) return null;
+  const subtract = operation.metadata?.subtract === true;
+  const carry = directTargetOf(inputs[2]);
+  if (carry !== (subtract ? 1n : 0n)) return null;
+
+  let rhsValue = inputs[1];
+  if (subtract && rhsValue?.kind === 'temporary') {
+    const producer = options.producerByTemporary?.get(String(rhsValue.temporaryId));
+    if (producer && opcodeHead(normalizeOpcode(producer.opcode)) === 'not' && producer.inputs?.[0]) rhsValue = producer.inputs[0];
+  }
+  const lhs = sourceOf(inputs[0]);
+  const rhs = sourceOf(rhsValue);
+  return lhs && rhs ? { subtract, lhs, rhs } : null;
+}
+
 function lowerValue(bundle, operation, options) {
   const opcode = normalizeOpcode(operation.opcode);
   const head = opcodeHead(opcode);
+  if (outputsAreDeadTemporaries(operation, options)) return [];
+
+  if (head === 'add-with-carry') {
+    const operands = addWithCarryOperands(operation, options);
+    const outputs = operation.outputs || [];
+    const primaryWrites = writeFields(outputs.slice(0, 1));
+    if (!operands || !primaryWrites.dstReg) {
+      return [unknownInstruction(bundle, operation, options, 'unrepresentable-value-op:add-with-carry', ['registers', 'flags'], writeFields(outputs))];
+    }
+    const out = [legacy(bundle, operation, options, OP.BIN, {
+      ...primaryWrites,
+      sub: operands.subtract ? 'sub' : 'add',
+      srcs: [operands.lhs, operands.rhs],
+    })];
+    const liveFlagOutputs = outputs.slice(1).filter((value) => outputIsUsed(value, options));
+    if (liveFlagOutputs.length) {
+      out.push(unknownInstruction(bundle, operation, options,
+        'add-with-carry-flag-results-not-representable-in-v1', ['flags'], writeFields(liveFlagOutputs)));
+    }
+    return out;
+  }
+
   const writes = writeFields(operation.outputs || []);
   const srcs = (operation.inputs || []).map(sourceOf);
   if (!writes.dstReg || srcs.some((src) => !src)) {
@@ -271,6 +319,25 @@ function addressPart(value) {
   return src?.t === 'reg' ? src : null;
 }
 
+function addressIndexTerm(value) {
+  if (!value || typeof value !== 'object') return null;
+  if (value.kind === 'register' || value.kind === 'temporary' || value.kind === 'flag') {
+    const src = addressPart(value);
+    return src ? { reg:src.reg, scale:0, extend:null } : null;
+  }
+  if (value.kind === 'zero-extend' || value.kind === 'sign-extend') {
+    const nested = addressIndexTerm(value.value);
+    if (!nested) return null;
+    return { ...nested, extend:value.kind === 'zero-extend' ? 'uxtw' : 'sxtw' };
+  }
+  if (value.kind === 'shift-left') {
+    const nested = addressIndexTerm(value.value);
+    if (!nested) return null;
+    return { ...nested, scale:Number(value.amount || 0) || 0 };
+  }
+  return null;
+}
+
 function lowerAddressExpr(addressExpr, access) {
   const base = {
     base: null,
@@ -293,6 +360,24 @@ function lowerAddressExpr(addressExpr, access) {
   if (addressExpr.kind === 'bitvector') {
     const absolute = safeBigInt(addressExpr.value);
     if (absolute != null) return { ...base, absolute, disp: absolute };
+  }
+  if (addressExpr.kind === 'add') {
+    const left = lowerAddressExpr(addressExpr.left, access);
+    const rightImmediate = addressExpr.right?.kind === 'bitvector' ? safeBigInt(addressExpr.right.value) : null;
+    if (rightImmediate != null && (left.base || left.index || left.absolute != null)) {
+      return { ...left, rawAddressExpr:addressExpr, disp:(left.disp ?? 0n) + rightImmediate };
+    }
+    const rightIndex = addressIndexTerm(addressExpr.right);
+    if (rightIndex && left.base && !left.index) {
+      return {
+        ...left,
+        rawAddressExpr:addressExpr,
+        index:rightIndex.reg,
+        scale:rightIndex.scale,
+        extend:rightIndex.extend,
+        disp:left.disp ?? 0n,
+      };
+    }
   }
 
   const baseValue = addressExpr.base ?? addressExpr.baseValue ?? null;
@@ -447,6 +532,31 @@ function lowerControl(bundle, options, unknownControlAlreadyRepresented) {
   }
 }
 
+function addTemporaryUse(used, value) {
+  if (!value || typeof value !== 'object') return;
+  if (value.kind === 'temporary' && value.temporaryId != null) used.add(String(value.temporaryId));
+  for (const key of ['value', 'input', 'source', 'left', 'right', 'base', 'baseValue', 'index', 'indexValue']) {
+    if (value[key] && value[key] !== value) addTemporaryUse(used, value[key]);
+  }
+}
+
+function loweringContext(bundle, options) {
+  const producerByTemporary = new Map();
+  const usedTemporaryIds = new Set();
+  for (const operation of bundle.operations) {
+    for (const output of operation.outputs || []) {
+      if (output?.kind === 'temporary' && output.temporaryId != null) producerByTemporary.set(String(output.temporaryId), operation);
+    }
+    for (const input of operation.inputs || []) addTemporaryUse(usedTemporaryIds, input);
+    addTemporaryUse(usedTemporaryIds, operation.value);
+    addTemporaryUse(usedTemporaryIds, operation.access?.addressExpr);
+  }
+  addTemporaryUse(usedTemporaryIds, bundle.controlEffect?.target);
+  addTemporaryUse(usedTemporaryIds, bundle.controlEffect?.condition);
+  addTemporaryUse(usedTemporaryIds, bundle.controlEffect?.fallthrough);
+  return { ...options, producerByTemporary, usedTemporaryIds };
+}
+
 /**
  * Deterministically lower one canonical MachineEffectBundle into the raw
  * instruction vocabulary consumed by the current legacy ARM64 Semantic IR v1.
@@ -461,20 +571,21 @@ export function lowerMachineEffectsToLegacyV1(input, options = {}) {
     throw new TypeError('machine-effects-v1-compat-unsupported-architecture');
   }
 
+  const context = loweringContext(bundle, options);
   const out = [];
-  for (const operation of bundle.operations) out.push(...lowerOperation(bundle, operation, options));
+  for (const operation of bundle.operations) out.push(...lowerOperation(bundle, operation, context));
 
   let unknownControlAlreadyRepresented = false;
   if (bundle.unknownEffects) {
-    out.push(unknownInstruction(bundle, null, options, bundle.unknownEffects.reason, bundle.unknownEffects.categories, {}));
+    out.push(unknownInstruction(bundle, null, context, bundle.unknownEffects.reason, bundle.unknownEffects.categories, {}));
     unknownControlAlreadyRepresented = bundle.unknownEffects.categories.includes('control');
   }
 
   if (bundle.possibleFaults.length) {
-    out.push(unknownInstruction(bundle, null, options, 'possible-faults-not-representable-in-v1', ['faults'], {}));
+    out.push(unknownInstruction(bundle, null, context, 'possible-faults-not-representable-in-v1', ['faults'], {}));
   }
 
-  out.push(...lowerControl(bundle, options, unknownControlAlreadyRepresented));
+  out.push(...lowerControl(bundle, context, unknownControlAlreadyRepresented));
   return out;
 }
 

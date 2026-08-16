@@ -1,0 +1,109 @@
+name: Phase 2 MachineEffects Integration
+
+on:
+  pull_request:
+    paths:
+      - 'js/targets/architecture/**'
+      - 'js/semantics/effects/**'
+      - 'js/semantics/compat/**'
+      - 'js/ir-core.js'
+      - 'tests/machine-effects/**'
+      - 'tools/validation/machine-effects/**'
+      - '.github/workflows/phase2-effects-integration.yml'
+      - '.github/workflows/ghidra-differential.yml'
+      - 'userscript/hex.user.template.js'
+      - 'package.json'
+  push:
+    branches: [main]
+    paths:
+      - 'js/targets/architecture/**'
+      - 'js/semantics/effects/**'
+      - 'js/semantics/compat/**'
+      - 'js/ir-core.js'
+      - 'tests/machine-effects/**'
+      - 'tools/validation/machine-effects/**'
+      - '.github/workflows/phase2-effects-integration.yml'
+      - '.github/workflows/ghidra-differential.yml'
+      - 'userscript/hex.user.template.js'
+      - 'package.json'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phase2-machine-effects-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  effects-core:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run effects:test
+      - run: npm run invariants:test
+      - run: npm run migration:test
+      - run: npm run core:test
+
+  semantic-decompiler:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run semantic:test
+      - run: npm run decompiler:test
+      - name: Run compiler truth command
+        run: npm run compiler-truth
+
+  platform-runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run platform:test
+      - run: npm run runtime:test
+
+  baseline-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run benchmark:baseline
+      - run: npm run check
+
+  userscript-ios:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Build and test protected userscript runtime
+        run: npm run userscript:test
+      - name: Require committed loader synchronization
+        run: git diff --exit-code -- userscript/hex.user.template.js

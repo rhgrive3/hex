@@ -1,4 +1,6 @@
 import { assemble as assembleArm64 } from '../../patch.js';
+import { extendArm64WithArm64eEffects } from './arm64e/effects.js';
+import { ARM64_MACHINE_EFFECTS_SEMANTIC_VERSION, liftArm64MachineEffects } from './arm64/effects/index.js';
 import { ArchitecturePluginV2, registerArchitecturePlugin, architecturePluginV2, architecturePluginsV2 } from './registry.js';
 
 function arm64ControlFlow(instruction) {
@@ -32,20 +34,23 @@ const X86_64_REGISTERS = Object.freeze([
   ...Array.from({length:16}, (_x,i) => Object.freeze({ id:`xmm${i}`, bits:128, kind:'vector' })),
 ]);
 
+const liftArm64eMachineEffects = extendArm64WithArm64eEffects(liftArm64MachineEffects);
+
 export const ARM64_ARCHITECTURE = registerArchitecturePlugin({
-  id:'arm64', semanticVersion:'1', instructionAlignment:4, fixedInstructionSize:4, viewerCompatible:true,
+  id:'arm64', semanticVersion:ARM64_MACHINE_EFFECTS_SEMANTIC_VERSION, instructionAlignment:4, fixedInstructionSize:4, viewerCompatible:true,
   modes:()=>Object.freeze(['a64']), registerFile:()=>ARM64_REGISTERS,
-  decodeProvider:'capstone/backend', assemble:assembleArm64, classifyControlFlow:arm64ControlFlow,
-  // Phase 1 only: exact MachineEffects arrive in Phase 2. Existing ARM64 semantic
-  // analysis remains behind the v1 compatibility path until then.
-  capabilities:{ decode:'external', exactEffects:'unsupported', semanticAnalysis:'legacy-v1' },
+  decodeProvider:'capstone/backend', liftExact:liftArm64MachineEffects, assemble:assembleArm64, classifyControlFlow:arm64ControlFlow,
+  // Phase 2 exposes exact low-level effects where implemented. Coverage is not
+  // complete yet, so the proven legacy v1 path remains active and MachineEffects
+  // stays a shadow semantic source until the compatibility differential is zero.
+  capabilities:{ decode:'external', exactEffects:'partial', semanticAnalysis:'legacy-v1' },
 });
 
 export const ARM64E_ARCHITECTURE = registerArchitecturePlugin({
-  id:'arm64e', semanticVersion:'1', instructionAlignment:4, fixedInstructionSize:4, viewerCompatible:true,
+  id:'arm64e', semanticVersion:ARM64_MACHINE_EFFECTS_SEMANTIC_VERSION, instructionAlignment:4, fixedInstructionSize:4, viewerCompatible:true,
   modes:()=>Object.freeze(['a64','arm64e']), registerFile:()=>ARM64_REGISTERS,
-  decodeProvider:'capstone/backend', assemble:assembleArm64, classifyControlFlow:arm64ControlFlow,
-  capabilities:{ decode:'external', exactEffects:'unsupported', semanticAnalysis:'legacy-v1-partial' },
+  decodeProvider:'capstone/backend', liftExact:liftArm64eMachineEffects, assemble:assembleArm64, classifyControlFlow:arm64ControlFlow,
+  capabilities:{ decode:'external', exactEffects:'partial', semanticAnalysis:'legacy-v1-partial' },
 });
 
 export const X86_64_ARCHITECTURE = registerArchitecturePlugin({
