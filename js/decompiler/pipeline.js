@@ -1,6 +1,6 @@
 import { enhanceSemanticDecompilation as enhanceCore } from './pipeline-core.js';
 import { recoverExactStackReturn } from './passes/stack-return-recovery.js';
-import { expr, mergeSource, sourceOf } from './ast/nodes.js';
+import { expr, sourceOf } from './ast/nodes.js';
 import { printProgram } from './pretty/c.js';
 
 export { buildExpressionForTesting } from './pipeline-core.js';
@@ -109,40 +109,44 @@ function reanchorExactStackReturn(result) {
   return result;
 }
 
-/* Exact stack-return recovery deliberately replaces a compiler spill with the
- * committed high-level lvalue. Keep the semantic expression's deep proof, but
- * source-map the emitted `return` statement to the machine LOAD that materialized
- * the return value plus RET. The eliminated spill STORE is proof provenance, not
- * source ownership of the reconstructed C statement. */
+/* When a return stack LOAD has a proven same-slot reaching STORE, the spill
+ * STORE remains proof provenance but does not own the reconstructed C return
+ * statement after the stack temporary has been eliminated. Drop only that one
+ * statement-level source row; every other source/proof entry is preserved. */
 function reanchorRecoveredReturnSource(result, opts = {}) {
-  if (!result?.ctx?.decompilerPipeline?.exactStackReturnRecovered || !result?.ir || !result?.cAst) return result;
+  if (!result?.ir || !result?.cAst) return result;
   const ret = [...(result.ir.instructions || [])].reverse().find((inst) => inst.op === 'ret');
   if (!ret) return result;
   let changed = false;
   for (const node of result.cAst.body || []) {
     if (!(node.semantic?.op === 'return' || /^return\b/.test(String(node.text || '').trim()))) continue;
+    if (/\blocal_[0-9A-F]+\b/i.test(String(node.text || ''))) continue;
     const current = sourceOf(node.source);
     const sourceRows = new Set((current.rows || []).map((row) => String(row)));
     let load = null;
     for (const inst of result.ir.instructions || []) {
       if (inst?.op !== 'load' || inst?.loc?.kind !== 'stack' || inst?.row == null || ret.row == null || inst.row >= ret.row) continue;
       if (!sourceRows.has(String(inst.row))) continue;
+      const store = inst.reachingStore;
+      if (store?.op !== 'store' || store?.loc?.kind !== 'stack' || store.loc.key !== inst.loc.key || store.row == null) continue;
+      if (!sourceRows.has(String(store.row))) continue;
       if (!load || inst.row > load.row) load = inst;
     }
-    if (!load) continue;
-    const keepRows = new Set([String(load.row), String(ret.row)]);
+    const spill = load?.reachingStore;
+    if (!load || !spill) continue;
+    const spillRow = String(spill.row);
     const alignedAddresses = current.addresses.length === current.rows.length;
     const alignedIr = current.ir.length === current.rows.length;
     node.source = {
       ...current,
-      rows:current.rows.filter((row) => keepRows.has(String(row))),
+      rows:current.rows.filter((row) => String(row) !== spillRow),
       addresses:alignedAddresses
-        ? current.addresses.filter((_, index) => keepRows.has(String(current.rows[index])))
+        ? current.addresses.filter((_, index) => String(current.rows[index]) !== spillRow)
         : current.addresses,
       ir:alignedIr
-        ? current.ir.filter((_, index) => keepRows.has(String(current.rows[index])))
+        ? current.ir.filter((_, index) => String(current.rows[index]) !== spillRow)
         : current.ir,
-      evidence:[...(current.evidence || []), { reason:'exact recovered return source ownership' }],
+      evidence:[...(current.evidence || []), { reason:'eliminated stack spill is proof-only provenance' }],
     };
     changed = true;
   }
