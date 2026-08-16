@@ -1,4 +1,5 @@
 import './repair-region-provenance-core.test.mjs';
+import './repair-region-provenance-add-with-carry.test.mjs';
 import assert from 'node:assert/strict';
 import {
   aliasMemoryRegions,
