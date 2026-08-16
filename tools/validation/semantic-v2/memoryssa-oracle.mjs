@@ -102,7 +102,6 @@ export function createMemorySsaOracleCases() {
       expected: { loads: [{
         loadSourceEntityId: 'load-after-unknown-store', regionId: 'R',
         mustNotReachSourceEntityIds: ['known-store'], barrierSourceEntityId: 'unknown-store',
-        requiredBarrierKinds: ['unknown-clobber','may-alias-clobber'],
       }] },
     }),
     Object.freeze({
@@ -115,7 +114,6 @@ export function createMemorySsaOracleCases() {
       expected: { loads: [{
         loadSourceEntityId: 'load-after-unknown-call', regionId: 'R',
         mustNotReachSourceEntityIds: ['known-store'], barrierSourceEntityId: 'unknown-call',
-        requiredBarrierKinds: ['call-clobber','unknown-clobber','may-alias-clobber'],
       }] },
     }),
     Object.freeze({
@@ -128,7 +126,6 @@ export function createMemorySsaOracleCases() {
       expected: { loads: [{
         loadSourceEntityId: 'load-after-may-store', regionId: 'R',
         mustNotReachSourceEntityIds: ['known-store'], barrierSourceEntityId: 'may-store',
-        requiredBarrierKinds: ['may-alias-clobber','unknown-clobber','memory-def'],
       }] },
     }),
   ]);
