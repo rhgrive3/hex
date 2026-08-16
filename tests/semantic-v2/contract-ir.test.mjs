@@ -16,7 +16,7 @@ function baseFunction(overrides={}){return{schemaVersion:2,contractVersion:'2.0.
  const variable=createSemanticVariableRef({key:'state:arg0',kind:'physical-state',scope:'function',physicalIdentity:{bank:'opaque-bank',slot:0}});assert.equal(variable.key,'state:arg0');assert.equal(variable.physicalIdentity.bank,'opaque-bank');
 }
 {
- const access=createSemanticMemoryAccess({addressSpace:'io',addressValueId:addrId,widthBits:16,endian:'big',alignment:2,volatility:true,atomic:'unknown',ordering:'unknown',faults:[{kind:'device-fault'}]});assert.equal(access.addressExpr.valueId,addrId);assert.equal(access.volatility,true);assert.equal(access.atomic,'unknown');
+ const access=createSemanticMemoryAccess({addressSpace:'io',addressValueId:addrId,widthBits:16,endian:'big',alignment:2,volatility:true,atomic:'unknown',ordering:'unknown',faults:[{kind:'device-fault'}]});assert.equal(access.addressExpr.valueId,addrId);assert.equal(access.volatility,true);assert.equal(access.atomic,'unknown');const unspecified=createSemanticMemoryAccess({addressSpace:'memory',addressValueId:addrId,widthBits:8,endian:'little'});assert.equal(unspecified.volatility,'unknown');assert.equal(unspecified.atomic,'unknown');assert.equal(unspecified.ordering,'unknown');
 }
 {
  const summary=createSemanticIntrinsicSummary({inputs:[loadId],outputs:[loadId],stateReads:[{key:'state:opaque',kind:'logical-state',scope:'function'}],stateWrites:[{key:'state:opaque',kind:'logical-state',scope:'function'}],memoryRead:{scope:'all',addressSpaces:['memory']},memoryWrite:{scope:'unknown',detail:{reason:'summary lacks address precision'}},controlEffects:[{kind:'fallthrough'}],determinism:'input-dependent',symbolicDetail:'summary-only'});const node=createSemanticNode({id:'node_intrinsic',kind:'intrinsic',blockId:entryBlockId,inputs:[loadId],outputs:[],intrinsic:summary,completeness:'partial',unknown:{reason:'intrinsic memory scope unresolved',categories:['memory']},origin});assert.equal(node.intrinsic.memoryWrite.scope,'unknown');assert.equal(node.intrinsic.stateWrites.length,1);
@@ -30,6 +30,7 @@ assert.throws(()=>createSemanticMachineType({kind:'bitvector',widthBits:0}),/inv
 assert.throws(()=>createSemanticMemoryAccess({addressSpace:'memory',addressValueId:addrId,widthBits:-1,endian:'little'}),/invalid-memory-width/);
 assert.throws(()=>createSemanticNode({id:'missing_origin',kind:'copy',blockId:entryBlockId,inputs:[],outputs:[]}),/node-origin-required/);
 assert.throws(()=>createSemanticValue({id:'missing_value_origin',kind:'entry',machineType:bit32}),/value-origin-required/);
+assert.throws(()=>createSemanticNode({id:'empty_origin',kind:'copy',blockId:entryBlockId,inputs:[],outputs:[],origin:{}}),/empty-origin/);
 assert.throws(()=>createSemanticIrFunction({...baseFunction(),schemaVersion:1}),/schema-version-mismatch/);
 {
  const malformed=baseFunction();malformed.blocks=[malformed.blocks[0],{id:entryBlockId,nodeIds:[],origin}];assert.throws(()=>createSemanticIrFunction(malformed),/duplicate-block-id/);

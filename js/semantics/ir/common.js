@@ -118,7 +118,11 @@ export function serializable(value, code) {
 }
 export function requiredOrigin(input, code) {
   if (!Object.hasOwn(input, 'origin')) fail(code);
-  return createOriginSet(input.origin);
+  const origin = createOriginSet(input.origin);
+  const hasOrigin = origin.byteRanges.length || origin.virtualRanges.length || origin.instructionIds.length
+    || origin.operationIds.length || origin.sourceLocations.length || origin.parentEntityIds.length || origin.transforms.length;
+  if (!hasOrigin) fail('semantic-ir-empty-origin');
+  return origin;
 }
 export function normalizeBooleanKnowledge(value, code) {
   if (value == null) return null;

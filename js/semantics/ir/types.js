@@ -53,6 +53,7 @@ function normalizeFaults(value) {
   if (value == null) return [];
   return array(value, 'semantic-ir-invalid-faults').map((item) => {
     item = object(item, 'semantic-ir-invalid-fault');
+    assertAllowedKeys(item, new Set(['kind', 'condition', 'detail']), 'semantic-ir-unexpected-fault-field');
     const out = { kind: nonEmpty(item.kind, 'semantic-ir-fault-kind-required') };
     if (item.condition != null) out.condition = serializable(item.condition, 'semantic-ir-invalid-fault-condition');
     if (item.detail != null) out.detail = serializable(item.detail, 'semantic-ir-invalid-fault-detail');
@@ -72,8 +73,8 @@ export function createSemanticMemoryAccess(input) {
     widthBits: positiveInteger(input.widthBits, 'semantic-ir-invalid-memory-width'),
     endian: enumValue(input.endian, SEMANTIC_SETS.endian, 'semantic-ir-invalid-memory-endian'),
     alignment: optionalPositiveInteger(input.alignment, 'semantic-ir-invalid-memory-alignment'),
-    volatility: normalizeBooleanKnowledge(input.volatility, 'semantic-ir-invalid-memory-volatility'),
-    atomic: normalizeBooleanKnowledge(input.atomic, 'semantic-ir-invalid-memory-atomic'),
+    volatility: input.volatility == null ? 'unknown' : normalizeBooleanKnowledge(input.volatility, 'semantic-ir-invalid-memory-volatility'),
+    atomic: input.atomic == null ? 'unknown' : normalizeBooleanKnowledge(input.atomic, 'semantic-ir-invalid-memory-atomic'),
     ordering: input.ordering == null ? 'unknown' : enumValue(input.ordering, SEMANTIC_SETS.orderings, 'semantic-ir-invalid-memory-ordering'),
     faults: normalizeFaults(input.faults),
   };
@@ -121,6 +122,7 @@ export function createSemanticCallSummary(input) {
   let unknownEffects = null;
   if (input.unknownEffects != null) {
     const unknown = object(input.unknownEffects, 'semantic-ir-invalid-call-unknown-effects');
+    assertAllowedKeys(unknown, new Set(['reason', 'categories']), 'semantic-ir-unexpected-call-unknown-effect-field');
     unknownEffects = deepFreeze({
       reason: nonEmpty(unknown.reason, 'semantic-ir-call-unknown-reason-required'),
       categories: sortedUniqueStrings(unknown.categories ?? [], 'semantic-ir-invalid-call-unknown-categories'),
