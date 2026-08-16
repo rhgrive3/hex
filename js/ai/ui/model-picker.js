@@ -85,9 +85,11 @@ export function normalizeCapabilities(raw) {
 /**
  * Fold `aiStatus()` into what `aiCapabilities()` advertised.
  *
- * Capabilities say what exists; status says what is reachable right now. Only
- * availability is taken from status — a provider that stops answering must
- * read as unavailable, not disappear from the list.
+ * `available` is provider reachability. `ready` is deliberately not the same
+ * thing: the userscript proxy can briefly cache ready=false while the parent
+ * page/composer is still settling. That transient state must not downgrade a
+ * bridge that capabilities already proved exists. An explicit available=false
+ * remains authoritative; ready=true may positively confirm availability.
  */
 export function applyStatus(capabilities, status) {
   if (!status || typeof status !== 'object') return capabilities;
@@ -107,12 +109,8 @@ export function applyStatus(capabilities, status) {
   collect(status.providers || (typeof status.provider === 'object' ? status.provider : null));
   const active = normalizeProviderId(status.providerId || (typeof status.provider === 'string' ? status.provider : ''));
   if (active) {
-    const available = status.available !== undefined
-      ? !!status.available
-      : status.ready !== undefined
-        ? !!status.ready
-        : true;
-    byId.set(active, available);
+    if (status.available !== undefined) byId.set(active, !!status.available);
+    else if (status.ready === true) byId.set(active, true);
   }
   if (!byId.size) return capabilities;
   return {
