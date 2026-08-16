@@ -1,10 +1,12 @@
 import { toExactArrayBuffer } from './array-buffer.js';
 import { decompressGzipExact } from './decompress.js';
+import { captureRuntimeHostLocation } from './runtime-host-location.js';
 
 const HEX_ORIGIN = '__HEX_ORIGIN__';
 const LOADER_VERSION = '__HEX_LOADER_VERSION__';
 const EXPECTED_BUILD = '__HEX_BUILD_ID__';
 const RETRIES = 2;
+const RUNTIME_HOST_LOCATION = captureRuntimeHostLocation();
 
 boot().catch(showFailure);
 
@@ -21,6 +23,7 @@ async function boot() {
 
 async function loadRuntime() {
   globalThis.__HEX_RUNTIME_ORIGIN__ = HEX_ORIGIN;
+  globalThis.__HEX_RUNTIME_HOST_LOCATION__ = RUNTIME_HOST_LOCATION;
   globalThis.__HEX_SECURE_LOADER__ = { version: LOADER_VERSION, buildId: EXPECTED_BUILD };
   const keyPair = await cryptoStage('ECDH key generation', () => crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, false, ['deriveBits']));
   const clientPublicKey = await cryptoStage('ECDH public-key export', () => crypto.subtle.exportKey('jwk', keyPair.publicKey));
