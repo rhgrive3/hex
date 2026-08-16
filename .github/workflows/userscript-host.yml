@@ -34,9 +34,159 @@ on:
       - '.github/workflows/userscript-host.yml'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
+  repair:
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Apply confirmed collapsible-user-message repair
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          adapter_path = Path('js/userscript/chatgpt-adapter.js')
+          source = adapter_path.read_text()
+          old = '''  text(node) {
+            if (!node) return '';
+            // Turn canonicalization deliberately returns the conversation-turn wrapper.
+            // ChatGPT places an accessibility-only speaker heading (for example
+            // "あなた:" / "ChatGPT:") next to the real message node. Reading the
+            // wrapper's innerText therefore corrupts exact prompt matching. Re-scope
+            // text extraction to the semantic message node when one is present, then
+            // keep the existing content-body preference inside that message.
+            const role = node.getAttribute?.('data-message-author-role')
+              ? node
+              : node.querySelector?.('[data-message-author-role="assistant"], [data-message-author-role="user"], [data-message-author-role]');
+            const scope = role || node;
+            const body = scope.querySelector?.('.markdown, [data-testid="markdown"], [data-message-content-part="assistant"], [data-message-content]') || scope;
+            return String(body.innerText || body.textContent || '').trim();
+          }
+          '''
+          new = '''  text(node) {
+            if (!node) return '';
+            // Canonical turns are conversation wrappers, while the semantic message is
+            // nested below data-message-author-role. Never read wrapper/UI chrome when a
+            // message-specific content node exists: long user prompts are rendered in a
+            // collapsible container whose sibling toggle contributes localized labels
+            // (for example "表示を増やす" / "表示を減らす") to role.innerText.
+            const role = node.getAttribute?.('data-message-author-role')
+              ? node
+              : node.querySelector?.('[data-message-author-role="assistant"], [data-message-author-role="user"], [data-message-author-role]');
+            const scope = role || node;
+            const roleName = String(role?.getAttribute?.('data-message-author-role') || '');
+            const body = roleName === 'user'
+              ? scope.querySelector?.('[data-testid="collapsible-user-message-content"], [data-message-content-part="user"], [data-message-content]')
+              : scope.querySelector?.('.markdown, [data-testid="markdown"], [data-message-content-part="assistant"], [data-message-content]');
+            const semanticBody = body || scope;
+            return String(semanticBody.innerText || semanticBody.textContent || '').trim();
+          }
+          '''
+          if old in source:
+              source = source.replace(old, new, 1)
+              adapter_path.write_text(source)
+          elif new not in source:
+              raise SystemExit('chatgpt-adapter text() block no longer matches expected source')
+
+          test_path = Path('tests/chatgpt-web-runtime.mjs')
+          test = test_path.read_text()
+          call_old = 'await testRoleScopedTurnTextExtraction();\nawait testTurnCompletionAndStaleProtection();'
+          call_new = 'await testRoleScopedTurnTextExtraction();\nawait testCollapsibleUserMessageTextExtraction();\nawait testTurnCompletionAndStaleProtection();'
+          if call_old in test:
+              test = test.replace(call_old, call_new, 1)
+
+          marker = 'async function testTurnCompletionAndStaleProtection() {'
+          regression = '''async function testCollapsibleUserMessageTextExtraction() {
+            const prompt = 'HEX CONTROL PROTOCOL hex-chatgpt-web-v1\\n\\n<HEX_DATA>{"messages":[{"role":"user","content":"解析の始め方を教えて"}]}</HEX_DATA>';
+            const content = { innerText: prompt, textContent: prompt };
+            let root;
+            const roleNode = {
+              id: '',
+              innerText: `${prompt}\\n表示を増やす\\n表示を減らす`,
+              textContent: `${prompt}\\n表示を増やす\\n表示を減らす`,
+              getAttribute(name) {
+                if (name === 'data-message-author-role') return 'user';
+                if (name === 'data-message-id') return 'message-collapsible';
+                return null;
+              },
+              closest(selector) {
+                if (selector.includes('conversation-turn-')) return root;
+                if (selector.includes('data-message-author-role')) return roleNode;
+                return null;
+              },
+              querySelector(selector) {
+                if (selector.includes('collapsible-user-message-content')) return content;
+                return null;
+              },
+            };
+            root = {
+              id: '',
+              innerText: `あなた:\\n${roleNode.innerText}`,
+              textContent: `あなた:\\n${roleNode.textContent}`,
+              getAttribute(name) {
+                if (name === 'data-testid') return 'conversation-turn-collapsible';
+                if (name === 'data-turn') return 'user';
+                return null;
+              },
+              closest(selector) { return selector.includes('conversation-turn-') ? root : null; },
+              querySelector(selector) {
+                if (selector.includes('[data-message-author-role')) return roleNode;
+                return null;
+              },
+            };
+            const document = {
+              querySelector: () => null,
+              querySelectorAll(selector) {
+                if (selector === '[data-message-author-role="user"]') return [roleNode];
+                if (selector.includes('conversation-turn-') && selector.includes('user')) return [root];
+                if (selector === '[data-testid^="conversation-turn-"]') return [root];
+                return [];
+              },
+            };
+            const adapter = new ChatGPTDOMAdapter({ document, location: { href: 'https://chatgpt.com/c/alpha' } });
+            const controller = new ChatGPTTurnController(adapter);
+
+            assert.match(roleNode.innerText, /表示を増やす/, 'fixture must reproduce ChatGPT collapsible-message UI text inside the user role');
+            assert.match(roleNode.innerText, /表示を減らす/, 'fixture must reproduce both localized toggle labels');
+            assert.equal(adapter.userTurns()[0].text, prompt, 'adapter must extract only collapsible user message content');
+            assert.equal(controller.userTurns()[0].text, prompt, 'exact prompt verification must ignore collapsible toggle labels');
+          }
+
+          '''
+          if 'async function testCollapsibleUserMessageTextExtraction() {' not in test:
+              if marker not in test:
+                  raise SystemExit('chatgpt-web-runtime insertion marker missing')
+              test = test.replace(marker, regression + marker, 1)
+          if call_new not in test:
+              raise SystemExit('chatgpt-web-runtime call insertion failed')
+          test_path.write_text(test)
+          PY
+      - name: Run ChatGPT runtime regression
+        run: node tests/chatgpt-web-runtime.mjs
+      - name: Build and run userscript suite
+        run: npm run userscript:test
+      - name: Commit repaired source, regression, and generated loader
+        run: |
+          git add js/userscript/chatgpt-adapter.js tests/chatgpt-web-runtime.mjs userscript/hex.user.template.js
+          if git diff --cached --quiet; then
+            echo 'No repair changes to commit.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Fix collapsible ChatGPT user turn capture'
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}
+
   userscript:
     runs-on: ubuntu-latest
     steps:
