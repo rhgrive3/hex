@@ -152,42 +152,49 @@ jobs:
 
           p = Path('js/ir-core.js')
           s = p.read_text()
-          old = "  if (definition.block === inst.block) return Number(definition.row) <= Number(inst.row);"
-          new = (
-              "  if (definition.block === inst.block) {\n"
-              "    const definitionRow = Number(definition.row);\n"
-              "    const instructionRow = Number(inst.row);\n"
-              "    if (definitionRow !== instructionRow) return definitionRow < instructionRow;\n"
-              "    const block = projected.blocks?.[inst.block];\n"
-              "    const instructions = block?.insts ?? projected.instructions ?? [];\n"
-              "    const definitionIndex = instructions.indexOf(definition);\n"
-              "    const instructionIndex = instructions.indexOf(inst);\n"
-              "    return definitionIndex >= 0 && instructionIndex >= 0 && definitionIndex < instructionIndex;\n"
-              "  }"
-          )
+          escape_fn = r'''
+          function invalidateEscapedStackForwarding(projected) {
+            for (const load of projected.instructions ?? []) {
+              if (load.op !== LEGACY_OP.LOAD || load.loc?.kind !== LEGACY_MK.STACK || !load.reachingStore) continue;
+              const store = load.reachingStore;
+              const block = projected.blocks?.[load.block];
+              if (!block || store.block !== load.block) continue;
+              for (const inst of block.insts ?? []) {
+                if (Number(inst.row) <= Number(store.row) || Number(inst.row) >= Number(load.row)) continue;
+                if (inst.op !== LEGACY_OP.CALL) continue;
+                if (!(inst.args ?? []).some((arg) => valueMayCarryStackAddress(arg?.value))) continue;
+                const priorMemoryUse = load.memUse ?? null;
+                load.reachingStore = undefined;
+                load.memUse = {
+                  kind:'clobber',
+                  definitionId:null,
+                  regionId:priorMemoryUse?.regionId ?? load.loc?.regionId ?? null,
+                  clobberingInstructionId:inst.id,
+                  previousDefinitionId:priorMemoryUse?.definitionId ?? null,
+                  compatibilityDerived:true,
+                  evidence:'aapcs64-stack-argument-escape',
+                };
+                load.extra = {
+                  ...(load.extra ?? {}),
+                  compatStackEscapeInvalidation:true,
+                  compatStackEscapeCallInstructionId:inst.id,
+                  canonicalMemoryUseKind:priorMemoryUse?.kind ?? null,
+                  canonicalMemoryDefinitionId:priorMemoryUse?.definitionId ?? null,
+                };
+                break;
+              }
+            }
+          }
+
+          '''
+          escape_anchor = 'function restoreProvenNoEscapeStackForwarding(projected) {'
+          if 'function invalidateEscapedStackForwarding(projected)' not in s:
+              if escape_anchor not in s: raise SystemExit('stack forwarding repair anchor missing')
+              s = s.replace(escape_anchor, escape_fn + escape_anchor)
+          old = "  attachAapcs64CallArguments(result.legacyV1);\n  restoreProvenNoEscapeStackForwarding(result.legacyV1);"
+          new = "  attachAapcs64CallArguments(result.legacyV1);\n  invalidateEscapedStackForwarding(result.legacyV1);\n  restoreProvenNoEscapeStackForwarding(result.legacyV1);"
           if new not in s:
-              if old not in s: raise SystemExit('legacy dominance same-row anchor missing')
-              s = s.replace(old, new, 1)
-          old = (
-              "  if (definition.block === inst.block) {\n"
-              "    return { scope:2, depth:Number.MAX_SAFE_INTEGER, row:Number(definition.row ?? Number.NEGATIVE_INFINITY) };\n"
-              "  }"
-          )
-          new = (
-              "  if (definition.block === inst.block) {\n"
-              "    const block = projected.blocks?.[inst.block];\n"
-              "    const instructions = block?.insts ?? projected.instructions ?? [];\n"
-              "    const order = instructions.indexOf(definition);\n"
-              "    return { scope:2, depth:Number.MAX_SAFE_INTEGER, row:Number(definition.row ?? Number.NEGATIVE_INFINITY), order };\n"
-              "  }"
-          )
-          if new not in s:
-              if old not in s: raise SystemExit('legacy recency same-row anchor missing')
-              s = s.replace(old, new, 1)
-          old = "      if (leftRecency.row !== rightRecency.row) return rightRecency.row - leftRecency.row;\n      const leftWidth = Number(bits) > 0 && left.bits === Number(bits) ? 1 : 0;"
-          new = "      if (leftRecency.row !== rightRecency.row) return rightRecency.row - leftRecency.row;\n      if ((leftRecency.order ?? -1) !== (rightRecency.order ?? -1)) return (rightRecency.order ?? -1) - (leftRecency.order ?? -1);\n      const leftWidth = Number(bits) > 0 && left.bits === Number(bits) ? 1 : 0;"
-          if new not in s:
-              if old not in s: raise SystemExit('legacy recency ordering anchor missing')
+              if old not in s: raise SystemExit('stack escape integration anchor missing')
               s = s.replace(old, new, 1)
           p.write_text(s)
 
@@ -259,6 +266,7 @@ jobs:
             .github/workflows/p3-final-public-ir-repair-v2.yml \
             .github/workflows/p3-final-public-ir-repair.yml \
             .github/workflows/p3-debug-cutover-ir.yml \
+            .github/workflows/p3-debug-issue430-callargs.yml \
             .github/workflows/p3-final-validation.yml; do
             git rm -f "$f" 2>/dev/null || true
           done
