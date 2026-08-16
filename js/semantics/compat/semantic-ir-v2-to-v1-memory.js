@@ -147,7 +147,6 @@ export function attachMemorySsa(projected, memorySsa, valuesById, instructionByS
     const reaching = memoryNodeById.get(use.reachingDefinitionId) ?? null;
     source.memUse = reaching;
     source.memoryAliasRelation = use.aliasRelation;
-    source.reachingStore = null;
     if (source.op === V1_OP.LOAD && use.aliasRelation === 'must' && reaching?.kind === 'store' && reaching.inst?.op === V1_OP.STORE) {
       source.reachingStore = reaching.inst;
     } else if (source.op === V1_OP.LOAD && reaching?.kind === 'clobber') {
@@ -175,7 +174,6 @@ export function attachFallbackMemory(projected) {
     if (inst.op !== V1_OP.LOAD && inst.op !== V1_OP.STORE) continue;
     inst.loc = fallbackLocation(inst);
     projected.locations.set(inst.loc.key, inst.loc);
-    inst.reachingStore = null;
   }
 }
 
