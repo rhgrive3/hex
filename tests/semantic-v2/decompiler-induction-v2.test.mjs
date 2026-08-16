@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { buildSemanticModel } from '../../js/blocks.js';
 import { buildIR, setSemanticMigrationMode } from '../../js/ir.js';
-import { recoverInductionVariables } from '../../js/decompiler/semantic.js';
+import { decompileSemantic, recoverInductionVariables } from '../../js/decompiler/semantic.js';
 import { SEMANTIC_V2_MIGRATION_MODES } from '../../js/semantics/compat/index.js';
 
 const BASE = 0x100000000n;
@@ -33,21 +33,19 @@ try {
   const ir = buildIR(model, { rowOfAddress });
   assert.equal(ir?.compat?.projection, 'semantic-ir-v2-to-v1');
   const induction = recoverInductionVariables(ir);
-  if (!induction.length) {
-    console.warn('P3_INDUCTION_IR', JSON.stringify((ir?.instructions || []).map((inst) => ({
-      op:inst.op, sub:inst.sub ?? null, row:inst.row, block:inst.block,
-      dst:inst.dst ? { id:inst.dst.id, kind:inst.dst.kind, reg:inst.dst.reg, bits:inst.dst.bits, const:inst.dst.const == null ? null : String(inst.dst.const) } : null,
-      args:(inst.args || []).map((arg) => {
-        const value = arg?.value;
-        return value ? { id:value.id, kind:value.kind, reg:value.reg, bits:value.bits, const:value.const == null ? null : String(value.const), def:value.def ? { op:value.def.op, sub:value.def.sub ?? null, row:value.def.row, block:value.def.block } : null } : null;
-      }),
-      incoming:(inst.incoming || []).map((edge) => ({ from:edge.from, value:edge.value ? { id:edge.value.id, kind:edge.value.kind, reg:edge.value.reg, bits:edge.value.bits, const:edge.value.const == null ? null : String(edge.value.const), def:edge.value.def ? { op:edge.value.def.op, sub:edge.value.def.sub ?? null, row:edge.value.def.row, block:edge.value.def.block } : null } : null })),
-      cond:inst.cond ?? null,
-      target:inst.extra?.target == null ? null : String(inst.extra.target),
-    }))));
-  }
   assert.ok(induction.length >= 1, 'explicit-v2 compatibility IR must preserve SSA PHI induction recovery');
   assert.equal(induction[0].step, 1n);
+  const decompiled = decompileSemantic(model, { rowOfAddress, name:'loop' });
+  if (!/\b(?:for|while)\s*\(/.test(decompiled?.pseudocode || '')) {
+    console.warn('P3_LOOP_STRUCTURE', JSON.stringify({
+      coverage:decompiled?.coverage,
+      inductions:(decompiled?.ctx?.inductions || []).map((item) => ({ header:item.loop?.header, step:item.step == null ? null : String(item.step) })),
+      loops:(decompiled?.ir?.loops || []).map((loop) => ({ header:loop.header, nodes:[...loop.nodes], exits:[...loop.exits] })),
+      blocks:(decompiled?.ir?.blocks || []).map((block) => ({ index:block.index, startRow:block.startRow, endRow:block.endRow, succ:block.succ, pred:block.pred })),
+      pseudocode:decompiled?.pseudocode,
+    }));
+  }
+  assert.ok(/\b(?:for|while)\s*\(/.test(decompiled?.pseudocode || ''), decompiled?.pseudocode || 'missing decompilation');
 } finally {
   setSemanticMigrationMode(SEMANTIC_V2_MIGRATION_MODES.LEGACY);
 }
