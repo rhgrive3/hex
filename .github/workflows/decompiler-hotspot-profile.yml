@@ -5,6 +5,7 @@ on:
     paths:
       - 'js/decompile*.js'
       - 'js/decompiler/**'
+      - 'js/semantics/**'
       - 'tests/profile-decompile-hotspot.mjs'
       - '.github/workflows/decompiler-hotspot-profile.yml'
 
