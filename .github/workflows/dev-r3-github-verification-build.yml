@@ -1,0 +1,58 @@
+name: Validate Round 3 GitHub verification capability
+
+on:
+  push:
+    branches:
+      - hex/dev-agent-r3-github-verification
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: hex/dev-agent-r3-github-verification
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Finish Round 3 wiring
+        shell: python
+        run: |
+          from pathlib import Path
+
+          def replace(path, old, new):
+              p = Path(path)
+              text = p.read_text()
+              if old not in text:
+                  raise SystemExit(f'expected patch anchor missing: {path}')
+              p.write_text(text.replace(old, new, 1))
+
+          replace('js/userscript/dev/github-read-runtime.js', "  if (legacy === 'failure' || legacy === 'error') return 'failure';\n  if (legacy === 'pending') return 'pending';\n", "  if (commitStatuses.length && (legacy === 'failure' || legacy === 'error')) return 'failure';\n  if (commitStatuses.length && legacy === 'pending') return 'pending';\n")
+          replace('js/userscript/dev/github-read-runtime.js', "  const observed = workflowRuns.length + checkRuns.length + commitStatuses.length;\n  return observed || legacy === 'success' ? 'success' : 'none';\n", "  const observed = workflowRuns.length + checkRuns.length + commitStatuses.length;\n  return observed ? 'success' : 'none';\n")
+          replace('scripts/build-userscript.mjs', "// @connect      ida.rhgrive.workers.dev\\n// @updateURL", "// @connect      ida.rhgrive.workers.dev\\n// @connect      api.github.com\\n// @updateURL")
+          replace('package.json', 'node tests/dev-agent/round2-single-tab-supervisor.mjs && node tests/dev-agent/supervisor-conversation-continuity.mjs', 'node tests/dev-agent/round2-single-tab-supervisor.mjs && node tests/dev-agent/supervisor-conversation-continuity.mjs && node tests/dev-agent/round3-github-verification.mjs')
+          replace('package.json', 'node tests/userscript-dev-worker-runtime.mjs && node tests/userscript-runtime-host-location.mjs', 'node tests/userscript-dev-worker-runtime.mjs && node tests/userscript-dev-github-verification.mjs && node tests/userscript-runtime-host-location.mjs')
+      - name: Run focused Round 3 regressions
+        run: |
+          npm run dev-agent:test
+          node tests/userscript-dev-github-verification.mjs
+      - name: Build protected userscript and run full userscript suite
+        run: |
+          npm run userscript:build
+          npm run userscript:test
+      - name: Commit canonical source and generated userscript
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm .github/workflows/dev-r3-github-verification-build.yml
+          git add -A
+          git diff --cached --check
+          git commit -m 'feat: add Supervisor GitHub verification capability'
+          git push origin HEAD:hex/dev-agent-r3-github-verification
