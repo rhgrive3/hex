@@ -39,14 +39,31 @@ const children = new Set();
 const started = Date.now();
 
 function assign(child) {
-  if (failed) return;
-  if (next >= samples.length) {
-    child.send({ type: 'stop' });
-    return;
-  }
+  if (failed || next >= samples.length) return false;
   const index = next++;
   const [a, end] = samples[index];
-  child.send({ type: 'task', index, a, end });
+  try {
+    child.send({ type: 'task', index, a, end }, (error) => {
+      if (error && !failed && finished < samples.length) {
+        failed = error;
+        shutdown();
+      }
+    });
+  } catch (error) {
+    if (!failed) failed = error;
+    shutdown();
+    throw error;
+  }
+  return true;
+}
+
+function disconnectChild(child) {
+  if (!child.connected) return;
+  try { child.disconnect(); } catch { /* channel may close between check and disconnect */ }
+}
+
+function disconnectAll() {
+  for (const child of children) disconnectChild(child);
 }
 
 function shutdown() {
@@ -56,6 +73,13 @@ function shutdown() {
 }
 
 const completion = new Promise((resolve, reject) => {
+  const fail = (error) => {
+    if (failed && failed !== error) return;
+    failed = error;
+    shutdown();
+    reject(error);
+  };
+
   for (let worker = 0; worker < workers; worker++) {
     const child = fork(path.join(HERE, 'accuracy-pseudoc-worker.mjs'), [target], {
       stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
@@ -64,24 +88,24 @@ const completion = new Promise((resolve, reject) => {
     children.add(child);
     child.stderr.on('data', (chunk) => process.stderr.write(`[pseudoc worker ${worker}] ${chunk}`));
 
+    child.on('error', (error) => {
+      if (!failed && finished < samples.length) fail(error);
+    });
+
     child.on('message', (message) => {
       if (!message || failed) return;
       if (message.type === 'ready') {
         process.stderr.write(`pseudoc worker ${worker} ready in ${message.bootMs}ms\n`);
-        assign(child);
+        try { assign(child); } catch (error) { fail(error); }
         return;
       }
       if (message.type === 'fatal') {
-        failed = new Error(`pseudoc worker ${worker} failed sample ${message.index}: ${message.message}`);
-        shutdown();
-        reject(failed);
+        fail(new Error(`pseudoc worker ${worker} failed sample ${message.index}: ${message.message}`));
         return;
       }
       if (message.type !== 'result') return;
       if (seen.has(message.index)) {
-        failed = new Error(`duplicate pseudoc result for sample ${message.index}`);
-        shutdown();
-        reject(failed);
+        fail(new Error(`duplicate pseudoc result for sample ${message.index}`));
         return;
       }
       seen.add(message.index);
@@ -99,19 +123,21 @@ const completion = new Promise((resolve, reject) => {
       });
 
       if (finished === samples.length) {
-        for (const c of children) c.send({ type: 'stop' });
+        // Workers that ran out of queued tasks remain idle but connected until
+        // the last in-flight function completes. Disconnect once, here, rather
+        // than sending repeated stop messages to channels that may already be
+        // closing (the old scheme caused ERR_IPC_CHANNEL_CLOSED on YWP).
+        disconnectAll();
         resolve();
       } else {
-        assign(child);
+        try { assign(child); } catch (error) { fail(error); }
       }
     });
 
     child.on('exit', (code, signal) => {
       children.delete(child);
-      if (!failed && finished < samples.length && code !== 0) {
-        failed = new Error(`pseudoc worker ${worker} exited early (${code ?? signal})`);
-        shutdown();
-        reject(failed);
+      if (!failed && finished < samples.length) {
+        fail(new Error(`pseudoc worker ${worker} exited early (${code ?? signal ?? 'unknown'})`));
       }
     });
   }
