@@ -22,7 +22,6 @@ export class DevSupervisorV0 {
     let run = createDevRun({
       ...identity,
       runId: identity.runId || this.idFactory('run'),
-      workerId: identity.workerId || this.idFactory('worker'),
       supervisorSessionKey: identity.supervisorSessionKey || this.idFactory('supervisor-session'),
       goal,
       decisionPolicy,
@@ -66,10 +65,14 @@ export class DevSupervisorV0 {
     if (!this.workerTools?.has(applied.decision.tool)) {
       throw new TypeError(`No Dev tool executor is registered for: ${applied.decision.tool}`);
     }
-    const argumentsForTool = runtimeOwnedWorkerArguments(applied.run, applied.decision);
+    let runtimeRun = applied.run;
+    if (applied.decision.tool !== DEV_WORKER_TOOL.DISCOVER && !runtimeRun.workerId) {
+      runtimeRun = bindDevRunIdentity(runtimeRun, { workerId: this.idFactory('worker') }, { now: this.now() });
+    }
+    const argumentsForTool = runtimeOwnedWorkerArguments(runtimeRun, applied.decision);
     const result = await this.workerTools.execute(applied.decision.tool, argumentsForTool);
     return Object.freeze({
-      run: this.bindWorkerResult(applied.run, result),
+      run: this.bindWorkerResult(runtimeRun, result),
       decision: applied.decision,
       result,
     });
