@@ -1,4 +1,4 @@
-name: P3 local debug 350 concise
+name: P3 local debug 350 focused
 on:
   push:
     branches: [hex/p3-local-debug-350]
@@ -8,8 +8,6 @@ jobs:
   inspect:
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -18,23 +16,6 @@ jobs:
         with:
           node-version: 22
       - run: python3 tools/validation/p3-debug-apply.py
-      - name: Expose raw v2 artifacts in instrumentation for this debug run only
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          p=Path('js/ir-core.js')
-          s=p.read_text()
-          old="  lastSemanticV2Instrumentation = result.instrumentation;\n  return result.legacyV1;"
-          new="  lastSemanticV2Instrumentation = { instrumentation: result.instrumentation, semanticIr: result.semanticIr, ssa: result.ssa };\n  return result.legacyV1;"
-          if s.count(old)!=1: raise SystemExit('debug instrumentation source shape mismatch')
-          p.write_text(s.replace(old,new,1))
-          PY
-      - name: Persist concise row-3 semantic/state projection chain
-        run: node tools/validation/p3-debug-359.mjs > tools/validation/p3-debug-359-output.json
-      - name: Commit debug output only to debug branch
-        run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add tools/validation/p3-debug-359-output.json
-          git commit -m 'Debug: refresh concise row-3 semantic chain output'
-          git push origin HEAD:hex/p3-local-debug-350
+      - run: node tests/issues-350-399.mjs
+      - run: node tests/ir.mjs
+      - run: npm run effects:test
