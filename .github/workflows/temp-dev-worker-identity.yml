@@ -1,0 +1,35 @@
+name: Temporary Dev Worker runtime identity
+on:
+  push:
+    branches: [hex/fix-dev-worker-runtime-owned-identity]
+permissions:
+  contents: write
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: hex/fix-dev-worker-runtime-owned-identity
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - name: Dev Agent regression
+        run: npm run dev-agent:test
+      - name: AI regression
+        run: npm run ai:test
+      - name: Build userscript
+        run: npm run userscript:build
+      - name: Userscript regression
+        run: npm run userscript:test
+      - run: git diff --check
+      - name: Commit generated release and remove temporary workflow
+        run: |
+          rm .github/workflows/temp-dev-worker-identity.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add userscript/hex.user.template.js userscript/release-version.json .github/workflows/temp-dev-worker-identity.yml
+          git commit -m "Regenerate userscript for runtime-owned Worker identity"
+          git push origin HEAD:hex/fix-dev-worker-runtime-owned-identity
