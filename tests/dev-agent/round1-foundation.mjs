@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import './round4-bootstrap-gate.mjs';
 import { AdminAuthProvider, AllowAllAdminProvider, readAdminIdentity } from '../../js/ai/dev/auth/admin-provider.js';
 import { availableAgentProfiles, canSelectAgentProfile } from '../../js/ai/dev/policy/agent-profile.js';
 import { DEV_DECISION_POLICIES, assertDevDecisionPolicy, devDecisionPolicyContract } from '../../js/ai/dev/policy/decision-policy.js';
