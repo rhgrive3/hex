@@ -13,7 +13,7 @@
     "semantic-v2:test": "node tests/semantic-v2/run.mjs",
     "phase4:test": "node tests/phase4/run.mjs",
     "phase4:verify": "node tools/validation/phase4/verify.mjs",
-    "phase4:rehearsal": "HEX_ANALYSIS_ROUTE=artifact npm run check",
+    "phase4:rehearsal": "npm run check && HEX_ANALYSIS_ROUTE=artifact node tests/phase4/integration/public-artifact-route.test.mjs && node tests/phase4/migration/orchestration.test.mjs",
     "phase4:browser": "node tests/phase4/browser-persistence.mjs",
     "dev-agent:test": "node tests/dev-agent/round1-foundation.mjs && node tests/dev-agent/round2-single-worker.mjs && node tests/dev-agent/round2-single-tab-supervisor.mjs && node tests/dev-agent/supervisor-conversation-continuity.mjs",
     "test": "node tests/backend-open-race.mjs && node tests/review-cross-binary-state.mjs && node tests/backend-disposal.mjs && node tests/issues-521-527.mjs && node tests/worker-classic-harness.mjs && node tests/issues-550-559.mjs && node tests/issue-193-matching.mjs && node tests/issue-456-report-completeness.mjs && node tests/issues-434-450-regressions.mjs && node tests/issues-437-438-interproc.mjs && node tests/issue-428-schema-provenance.mjs && node tests/issues-350-399.mjs && node tests/issues-245-298.mjs && node tests/issues-194-244.mjs && node tests/issues-97-100-146-147.mjs && node tests/issues-101-145.mjs && node tests/run.js && node tests/evidence-verdict.mjs && npm run core:test && node tests/ir.mjs && node tests/cfg-structuring.mjs && node tests/graph-routing.mjs && node tests/ux.mjs && node tests/ui/routes.mjs && node tests/ui/integration-hardening.mjs && npm run ai:test && node tests/gemini.mjs && node tests/words.mjs && node tests/api.mjs && node tests/symbol-identity.mjs && npm run integration:test",
