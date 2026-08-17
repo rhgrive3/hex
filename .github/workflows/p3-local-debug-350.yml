@@ -1,4 +1,4 @@
-name: P3 combined repair validation v5
+name: P3 combined repair validation v6
 on:
   push:
     branches: [hex/p3-local-debug-350]
@@ -22,11 +22,12 @@ jobs:
       - run: npm run userscript:build
       - run: node tests/issues-129-134.mjs
       - run: node tests/issues-130-interproc.mjs
+      - run: node tests/issues-135-145.mjs
       - run: node tests/issues-350-399.mjs
       - run: node tests/issues-434-450-regressions.mjs
       - run: node tests/issues-437-438-interproc.mjs
       - run: node tests/ir.mjs
+      - run: npm test
       - run: npm run effects:test
       - run: npm run semantic-v2:test
-      - run: npm test
       - run: npm run check
