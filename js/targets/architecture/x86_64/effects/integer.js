@@ -11,6 +11,21 @@ import {
   emitX86RotateFlags,
   emitX86ShiftFlags,
 } from './flags.js';
+import {
+  canonicalX86Shift,
+  emitX86ImplicitDivide,
+  emitX86ImplicitMultiply,
+  emitX86TruncatedImul,
+  resolveX86EffectiveCount,
+  x86DivisionFault,
+  x86DivisionRules,
+  x86ImplicitDivideRegisters,
+  x86ImplicitMultiplyRegisters,
+  x86MultiplyRules,
+  x86ShiftCountMask,
+  x86ShiftResultRule,
+  x86TruncatedImulRules,
+} from './scalar.js';
 
 const MOVES = new Set(['mov','movabs']);
 const EXTENDS = new Map([
@@ -28,9 +43,6 @@ const WIDTHS = new Set([8,16,32,64]);
 function supportedWidth(widthBits) { return WIDTHS.has(Number(widthBits)); }
 function hasMemory(operands) { return operands.some((operand) => operand?.type === 'memory'); }
 function registerOrImmediate(operand) { return operand?.type === 'register' || operand?.type === 'immediate'; }
-function canonicalShift(family) { return family === 'sal' ? 'shl' : family; }
-function maskForCount(widthBits) { return widthBits === 64 ? 0x3fn : 0x1fn; }
-
 function physicalValueForViewWrite(ctx, descriptor, oldPhysical, viewValue, metadata = {}) {
   if (descriptor.writePolicy === 'zero-extend-32') {
     return ctx.coerce(viewValue, descriptor.viewBits, descriptor.physicalBits, false);
@@ -67,78 +79,6 @@ function writeConditionalRegister(ctx, destination, condition, trueValue, { fals
     falsePathViewWrite:falseValue != null,
   });
   return ctx.writeRegister(physical, finalPhysical);
-}
-
-function effectiveCount(ctx, operand, widthBits, { rotate = false } = {}) {
-  if (!operand) return null;
-  const mask = maskForCount(widthBits);
-  if (operand.type === 'immediate') {
-    const masked = Number(BigInt(operand.value) & mask);
-    const count = rotate ? masked % widthBits : masked;
-    return Object.freeze({ value:ctx.constant(8, BigInt(count)), knownCount:count });
-  }
-  if (operand.type !== 'register' || operand.register?.id !== 'cl') return null;
-  const raw = ctx.readRegister(operand);
-  if (!raw) return null;
-  let value = ctx.valueOp('and', [raw,ctx.constant(8,mask)], 8, {
-    semantic:'x86-effective-count-mask',
-    source:'cl',
-    mask:Number(mask),
-  });
-  if (rotate && widthBits < 32) {
-    value = ctx.valueOp('urem', [value,ctx.constant(8,BigInt(widthBits))], 8, {
-      semantic:'x86-rotate-count-modulo-width',
-      widthBits,
-    });
-  }
-  return Object.freeze({ value, knownCount:null });
-}
-
-function shiftResultRule(operation) {
-  switch (operation) {
-    case 'shl': return 'destination << effectiveCount, truncated to destination width';
-    case 'shr': return 'unsigned(destination) >> effectiveCount with zero fill';
-    case 'sar': return 'signed(destination) >> effectiveCount with sign fill';
-    case 'rol': return 'destination bits rotated left by effectiveCount modulo operand width';
-    case 'ror': return 'destination bits rotated right by effectiveCount modulo operand width';
-    default: return 'unsupported';
-  }
-}
-
-function implicitMultiplyRegisters(widthBits) {
-  switch (widthBits) {
-    case 8: return Object.freeze({ accumulator:'al', combined:'ax' });
-    case 16: return Object.freeze({ accumulator:'ax', high:'dx' });
-    case 32: return Object.freeze({ accumulator:'eax', high:'edx' });
-    case 64: return Object.freeze({ accumulator:'rax', high:'rdx' });
-    default: return null;
-  }
-}
-
-function implicitDivideRegisters(widthBits) {
-  switch (widthBits) {
-    case 8: return Object.freeze({ low:'al', high:'ah', dividend:'ax', quotient:'al', remainder:'ah', combinedResult:'ax' });
-    case 16: return Object.freeze({ low:'ax', high:'dx', quotient:'ax', remainder:'dx' });
-    case 32: return Object.freeze({ low:'eax', high:'edx', quotient:'eax', remainder:'edx' });
-    case 64: return Object.freeze({ low:'rax', high:'rdx', quotient:'rax', remainder:'rdx' });
-    default: return null;
-  }
-}
-
-function divisionFault(operation, divisor, dividend, widthBits) {
-  return Object.freeze({
-    kind:'divide-error',
-    condition:Object.freeze({
-      kind:'x86-divide-error',
-      operation,
-      widthBits,
-      anyOf:Object.freeze([
-        Object.freeze({ kind:'divisor-zero', divisor }),
-        Object.freeze({ kind:'quotient-out-of-range', dividend, divisor, quotientWidthBits:widthBits, signed:operation === 'idiv' }),
-      ]),
-    }),
-    detail:Object.freeze({ vector:'#DE', faultClass:'fault', architecturallyPossible:true }),
-  });
 }
 
 export function liftX86IntegerEffects(instruction, context = {}) {
@@ -272,11 +212,11 @@ export function liftX86IntegerEffects(instruction, context = {}) {
 
   if (SHIFTS.has(family) || ROTATES.has(family)) {
     const rotate = ROTATES.has(family);
-    const operation = canonicalShift(family);
+    const operation = canonicalX86Shift(family);
     if (destination?.type !== 'register' || !source || !supportedWidth(destination.widthBits)) {
       return ctx.partial(`x86-${family}-operand-shape-unmodelled`, ['registers','flags']);
     }
-    const count = effectiveCount(ctx, source, destination.widthBits, { rotate });
+    const count = resolveX86EffectiveCount(ctx, source, destination.widthBits, { rotate });
     if (!count) return ctx.partial(`x86-${family}-count-source-unmodelled`, ['registers','flags']);
     if (count.knownCount === 0) {
       if (destination.widthBits === 32) {
@@ -310,9 +250,9 @@ export function liftX86IntegerEffects(instruction, context = {}) {
       metadata:{
         operation,
         widthBits:destination.widthBits,
-        effectiveCountMask:Number(maskForCount(destination.widthBits)),
+        effectiveCountMask:Number(x86ShiftCountMask(destination.widthBits)),
         ...(rotate ? { effectiveCountModuloWidth:destination.widthBits } : {}),
-        semanticRules:Object.freeze({ result:shiftResultRule(operation) }),
+        semanticRules:Object.freeze({ result:x86ShiftResultRule(operation) }),
         exactArchitecturalSummary:true,
       },
     });
@@ -338,49 +278,14 @@ export function liftX86IntegerEffects(instruction, context = {}) {
     if (ctx.operands.length === 1) {
       const operand = destination;
       const widthBits = Number(operand?.widthBits);
-      const registers = implicitMultiplyRegisters(widthBits);
-      if (!registers || operand?.type !== 'register') return ctx.partial(`x86-${family}-implicit-form-unmodelled`, ['registers','flags']);
-      const accumulator = ctx.readRegister(x86RegisterOperand(registers.accumulator));
-      const multiplier = ctx.readOperand(operand, widthBits);
-      if (!accumulator || !multiplier) return ctx.partial(`x86-${family}-implicit-source-unmodelled`, ['registers','flags']);
-      const multiplyRules = Object.freeze({
-        product:signed ? 'signed two-complement accumulator multiplied by signed two-complement source' : 'unsigned accumulator multiplied by unsigned source',
-        overflow:signed ? 'CF=OF=1 iff upper half is not the sign-extension of the low half' : 'CF=OF=1 iff upper half is nonzero',
-      });
-      if (widthBits === 8) {
-        const [product,overflow] = ctx.intrinsic(`x86.integer.${family}.implicit`, [accumulator,multiplier], [16,1], {
-          determinism:'input-dependent', symbolicDetail:'summary-only',
-          metadata:{
-            signed,
-            operandWidthBits:8,
-            productWidthBits:16,
-            implicitAccumulator:'al',
-            destination:'ax',
-            semanticRules:multiplyRules,
-            exactArchitecturalSummary:true,
-          },
-        });
-        if (!ctx.writeRegister(x86RegisterOperand(registers.combined), product)) return ctx.partial(`x86-${family}-implicit-destination-unmodelled`, ['registers','flags']);
-        emitX86MultiplyFlags(ctx, family, overflow, 8);
-      } else {
-        const [low,high,overflow] = ctx.intrinsic(`x86.integer.${family}.implicit`, [accumulator,multiplier], [widthBits,widthBits,1], {
-          determinism:'input-dependent', symbolicDetail:'summary-only',
-          metadata:{
-            signed,
-            operandWidthBits:widthBits,
-            productWidthBits:widthBits * 2,
-            implicitAccumulator:registers.accumulator,
-            highDestination:registers.high,
-            semanticRules:multiplyRules,
-            exactArchitecturalSummary:true,
-          },
-        });
-        if (!ctx.writeRegister(x86RegisterOperand(registers.accumulator), low) || !ctx.writeRegister(x86RegisterOperand(registers.high), high)) {
-          return ctx.partial(`x86-${family}-implicit-destination-unmodelled`, ['registers','flags']);
-        }
-        emitX86MultiplyFlags(ctx, family, overflow, widthBits);
+      if (!x86ImplicitMultiplyRegisters(widthBits) || operand?.type !== 'register') {
+        return ctx.partial(`x86-${family}-implicit-form-unmodelled`, ['registers','flags']);
       }
-      return ctx.finish({ family:'integer', metadata:{ operation:family, form:'one-operand-implicit', signed, widthBits } });
+      const multiplier = ctx.readOperand(operand, widthBits);
+      if (!multiplier) return ctx.partial(`x86-${family}-implicit-source-unmodelled`, ['registers','flags']);
+      const summary = emitX86ImplicitMultiply(ctx, family, multiplier, widthBits);
+      if (!summary) return ctx.partial(`x86-${family}-implicit-destination-unmodelled`, ['registers','flags']);
+      return ctx.finish({ family:'integer', metadata:{ operation:family, ...summary } });
     }
 
     if (family !== 'imul' || (ctx.operands.length !== 2 && ctx.operands.length !== 3)) {
@@ -402,78 +307,25 @@ export function liftX86IntegerEffects(instruction, context = {}) {
       form = 'three-operand';
     }
     if (!left || !right) return ctx.partial(`x86-imul-${form}-source-unmodelled`, ['registers','flags']);
-    const [result,overflow] = ctx.intrinsic('x86.integer.imul.truncated', [left,right], [destination.widthBits,1], {
-      determinism:'input-dependent', symbolicDetail:'summary-only',
-      metadata:{
-        signed:true,
-        form,
-        widthBits:destination.widthBits,
-        semanticRules:Object.freeze({
-          result:'low destination-width bits of signed two-complement product',
-          overflow:'CF=OF=1 iff full signed product is not the sign-extension of the truncated destination',
-        }),
-        exactArchitecturalSummary:true,
-      },
-    });
-    if (!ctx.writeRegister(destination, result)) return ctx.partial(`x86-imul-${form}-destination-unmodelled`, ['registers','flags']);
-    emitX86MultiplyFlags(ctx, 'imul', overflow, destination.widthBits);
+    const result = emitX86TruncatedImul(ctx, left, right, destination.widthBits, form);
+    if (!result || !ctx.writeRegister(destination, result)) return ctx.partial(`x86-imul-${form}-destination-unmodelled`, ['registers','flags']);
     return ctx.finish({ family:'integer', metadata:{ operation:'imul', form, signed:true, widthBits:destination.widthBits } });
   }
 
   if (DIVIDE.has(family)) {
     const divisorOperand = destination;
     const widthBits = Number(divisorOperand?.widthBits);
-    const registers = implicitDivideRegisters(widthBits);
-    if (ctx.operands.length !== 1 || !registers || divisorOperand?.type !== 'register') {
+    if (ctx.operands.length !== 1 || !x86ImplicitDivideRegisters(widthBits) || divisorOperand?.type !== 'register') {
       return ctx.partial(`x86-${family}-operand-shape-unmodelled`, ['registers','flags','faults']);
     }
     const divisor = ctx.readOperand(divisorOperand, widthBits);
     if (!divisor) return ctx.partial(`x86-${family}-divisor-unmodelled`, ['registers','flags','faults']);
-    let dividend;
-    if (widthBits === 8) {
-      dividend = ctx.readRegister(x86RegisterOperand(registers.dividend));
-    } else {
-      const low = ctx.readRegister(x86RegisterOperand(registers.low));
-      const high = ctx.readRegister(x86RegisterOperand(registers.high));
-      if (!low || !high) return ctx.partial(`x86-${family}-implicit-dividend-unmodelled`, ['registers','flags','faults']);
-      dividend = ctx.valueOp('concat', [high,low], widthBits * 2, {
-        high:registers.high,
-        low:registers.low,
-        semantic:'x86-implicit-dividend',
-      });
-    }
-    if (!dividend) return ctx.partial(`x86-${family}-implicit-dividend-unmodelled`, ['registers','flags','faults']);
-    const signed = family === 'idiv';
-    const [quotient,remainder] = ctx.intrinsic(`x86.integer.${family}`, [dividend,divisor], [widthBits,widthBits], {
-      determinism:'input-dependent', symbolicDetail:'summary-only',
-      metadata:{
-        signed,
-        dividendWidthBits:widthBits * 2,
-        divisorWidthBits:widthBits,
-        quotientWidthBits:widthBits,
-        semanticRules:Object.freeze(signed ? {
-          quotient:'signed two-complement dividend / signed divisor, truncated toward zero',
-          remainder:'dividend - quotient*divisor; zero or same sign as dividend',
-          fault:'divide error if divisor is zero or signed quotient does not fit destination width',
-        } : {
-          quotient:'unsigned dividend / unsigned divisor, integer quotient',
-          remainder:'unsigned dividend modulo unsigned divisor',
-          fault:'divide error if divisor is zero or unsigned quotient does not fit destination width',
-        }),
-        exactArchitecturalSummary:true,
-      },
-    });
-    if (widthBits === 8) {
-      const combined = ctx.valueOp('concat', [remainder,quotient], 16, { high:'ah', low:'al', semantic:'x86-div-result-ax' });
-      if (!ctx.writeRegister(x86RegisterOperand(registers.combinedResult), combined)) return ctx.partial(`x86-${family}-result-registers-unmodelled`, ['registers','flags']);
-    } else if (!ctx.writeRegister(x86RegisterOperand(registers.quotient), quotient) || !ctx.writeRegister(x86RegisterOperand(registers.remainder), remainder)) {
-      return ctx.partial(`x86-${family}-result-registers-unmodelled`, ['registers','flags']);
-    }
-    emitX86DivisionUndefinedFlags(ctx, family, widthBits);
+    const summary = emitX86ImplicitDivide(ctx, family, divisor, widthBits);
+    if (!summary) return ctx.partial(`x86-${family}-implicit-dividend-unmodelled`, ['registers','flags','faults']);
     return ctx.finish({
       family:'integer',
-      possibleFaults:[divisionFault(family, divisor, dividend, widthBits)],
-      metadata:{ operation:family, form:'implicit-dividend-pair', signed, widthBits },
+      possibleFaults:[summary.possibleFault],
+      metadata:{ operation:family, form:summary.form, signed:summary.signed, widthBits:summary.widthBits },
     });
   }
 

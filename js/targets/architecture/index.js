@@ -50,12 +50,12 @@ export const ARM64E_ARCHITECTURE = registerArchitecturePlugin({
 });
 
 export const X86_64_ARCHITECTURE = registerArchitecturePlugin({
-  id:'x86_64', semanticVersion:X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION, instructionAlignment:1, fixedInstructionSize:null, viewerCompatible:false,
+  id:'x86_64', semanticVersion:X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION, instructionAlignment:1, fixedInstructionSize:null, viewerCompatible:true,
   modes:()=>Object.freeze(['long-64']), registerFile:x86RegisterFile,
   decodeProvider:'capstone/backend', liftExact:liftX86MachineEffects, classifyControlFlow:x86ControlFlow,
-  // P5-0 exposes a real shadow spine for its bounded seed only. Production
-  // cutover and viewer compatibility remain disabled until the full Phase 5
-  // corpus and release evidence are green.
+  // Phase 5 now has an integrated bounded variable-length x86 viewer. This flag
+  // asserts viewer compatibility only; semantic A6/cutover remains separately
+  // gated by the mandatory corpus and release evidence.
   capabilities:{ decode:'external-structured-v1', exactEffects:'partial', semanticAnalysis:'phase5-shadow-partial' },
 });
 

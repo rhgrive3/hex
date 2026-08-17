@@ -141,10 +141,13 @@ test('CMOVcc uses a conditional physical-register write and preserves false-path
   assert.equal(bundle.metadata.falsePathPreservesPhysicalRegister, true);
 });
 
-test('unsupported memory and malformed structured forms remain explicit/non-exact', () => {
+test('integrated memory INC preserves CF while malformed structured forms remain explicit/non-exact', () => {
   const memoryInc = lift('inc', [mem(64, { access:'read-write' })]);
-  assert.equal(memoryInc.completeness, 'partial');
-  assert.match(memoryInc.unknownEffects.reason, /deferred-to-p5-2/);
+  assert.equal(memoryInc.completeness, 'exact-with-intrinsic');
+  assert.equal(flagReads(memoryInc,'CF').length, 0);
+  assert.equal(flagWrites(memoryInc,'CF').length, 0);
+  assert.equal(operations(memoryInc,'memory-read').length, 1);
+  assert.equal(operations(memoryInc,'memory-write').length, 1);
 
   const badCmp = lift('cmp', [imm(1n,32), reg('eax','read')]);
   assert.equal(badCmp.completeness, 'partial');

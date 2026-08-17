@@ -1,6 +1,25 @@
 import { createX86EffectContext, x86MemoryFaults, x86RegisterOperand } from './common.js';
 import { materializeX86Address, x86EffectiveAddressExpression } from './addressing.js';
-import { emitX86ArithmeticFlags, emitX86Condition, emitX86LogicalFlags } from './flags.js';
+import {
+  emitX86ArithmeticFlags,
+  emitX86Condition,
+  emitX86IncDecFlags,
+  emitX86LogicalFlags,
+  emitX86NegFlags,
+  emitX86RotateFlags,
+  emitX86ShiftFlags,
+} from './flags.js';
+import {
+  canonicalX86Shift,
+  emitX86ImplicitDivide,
+  emitX86ImplicitMultiply,
+  emitX86TruncatedImul,
+  resolveX86EffectiveCount,
+  x86ImplicitDivideRegisters,
+  x86ImplicitMultiplyRegisters,
+  x86ShiftCountMask,
+  x86ShiftResultRule,
+} from './scalar.js';
 
 const MOVES = new Set(['mov','movabs','movzx','movsx','movsxd']);
 const BINARY_ARITHMETIC = new Set(['add','sub']);
@@ -81,6 +100,159 @@ function crossLanePartial(ctx, family) {
       address:address?.metadata ?? null,
     },
   });
+}
+
+
+function finishRmw(ctx, family, memory, address, relationshipId, { locked = false, metadata = {} } = {}) {
+  const faults = x86MemoryFaults('read-write', memory.widthBits);
+  const common = { rmwId:relationshipId, sameCanonicalAddress:true, address:address.metadata, ...metadata };
+  if (locked) return atomicOrderingPartial(ctx, family, faults, common);
+  return ctx.finish({ family:'memory', possibleFaults:faults, metadata:{ operation:family, ...common } });
+}
+
+function liftCrossLaneArithmetic(ctx, family) {
+  const [destination,source] = ctx.operands;
+  const locked = hasLock(ctx.instruction);
+  if (!source || memoryOperands(ctx.operands).length !== 1 || !supportedWidth(destination?.widthBits)) {
+    return ctx.partial(`x86-${family}-memory-shape-unmodelled`, ['memory','registers','flags']);
+  }
+  if (destination.type === 'memory') {
+    if (!['register','immediate'].includes(source.type)) return ctx.partial(`x86-${family}-memory-source-unmodelled`, ['memory','registers','flags']);
+    const address = addressFor(ctx,destination), right = ctx.readOperand(source,destination.widthBits);
+    if (!address || !right) return ctx.partial(`x86-${family}-memory-source-unmodelled`, ['memory','registers','flags']);
+    const relationshipId = rmwId(ctx,family);
+    const left = ctx.readMemory(address.expression,destination.widthBits,memoryConfig(address,{operation:family,rmwId:relationshipId,rmwPhase:'read',sameInstructionRelationship:true},{atomic:locked}));
+    const carryIn = ctx.readFlag('CF');
+    const result = ctx.valueOp(family,[left,right,carryIn],destination.widthBits,{widthBits:destination.widthBits,carryInput:true,semantic:family === 'adc' ? 'left + right + CF' : 'left - (right + CF)',rmwId:relationshipId});
+    emitX86ArithmeticFlags(ctx,family,left,right,result,destination.widthBits,{carryIn});
+    ctx.writeMemory(address.expression,destination.widthBits,result,memoryConfig(address,{operation:family,rmwId:relationshipId,rmwPhase:'write',sameInstructionRelationship:true},{atomic:locked}));
+    return finishRmw(ctx,family,destination,address,relationshipId,{locked,metadata:{carryDependency:true}});
+  }
+  if (destination.type === 'register' && source.type === 'memory' && destination.widthBits === source.widthBits) {
+    if (locked) return invalidLockPartial(ctx,family,'x86-lock-requires-memory-destination');
+    const read = readMemoryOperand(ctx,source,{operation:family,direction:'source'});
+    const left = ctx.readRegister(destination);
+    if (!read || !left) return ctx.partial(`x86-${family}-memory-source-unmodelled`, ['memory','registers','flags']);
+    const carryIn = ctx.readFlag('CF');
+    const result = ctx.valueOp(family,[left,read.value,carryIn],destination.widthBits,{widthBits:destination.widthBits,carryInput:true,semantic:family === 'adc' ? 'left + right + CF' : 'left - (right + CF)'});
+    if (!ctx.writeRegister(destination,result)) return ctx.partial(`x86-${family}-register-write-unmodelled`, ['registers','flags']);
+    emitX86ArithmeticFlags(ctx,family,left,read.value,result,destination.widthBits,{carryIn});
+    return ctx.finish({family:'memory',possibleFaults:x86MemoryFaults('read',source.widthBits),metadata:{operation:family,carryDependency:true,address:read.address.metadata}});
+  }
+  return ctx.partial(`x86-${family}-memory-shape-unmodelled`, ['memory','registers','flags']);
+}
+
+function liftCrossLaneUnary(ctx, family) {
+  const [destination] = ctx.operands;
+  const locked = hasLock(ctx.instruction);
+  if (destination?.type !== 'memory' || memoryOperands(ctx.operands).length !== 1 || !supportedWidth(destination.widthBits)) {
+    return ctx.partial(`x86-${family}-memory-shape-unmodelled`, ['memory','registers','flags']);
+  }
+  const address = addressFor(ctx,destination);
+  if (!address) return ctx.partial(`x86-${family}-memory-address-unmodelled`, ['memory','registers','flags']);
+  const relationshipId = rmwId(ctx,family);
+  const sourceValue = ctx.readMemory(address.expression,destination.widthBits,memoryConfig(address,{operation:family,rmwId:relationshipId,rmwPhase:'read',sameInstructionRelationship:true},{atomic:locked}));
+  let result;
+  if (family === 'inc' || family === 'dec') {
+    result = ctx.valueOp(family === 'inc' ? 'add' : 'sub',[sourceValue,ctx.constant(destination.widthBits,1n)],destination.widthBits,{widthBits:destination.widthBits,semantic:family,rmwId:relationshipId});
+    emitX86IncDecFlags(ctx,family,sourceValue,result,destination.widthBits);
+  } else {
+    result = ctx.valueOp('neg',[sourceValue],destination.widthBits,{widthBits:destination.widthBits,rmwId:relationshipId});
+    emitX86NegFlags(ctx,sourceValue,result,destination.widthBits);
+  }
+  ctx.writeMemory(address.expression,destination.widthBits,result,memoryConfig(address,{operation:family,rmwId:relationshipId,rmwPhase:'write',sameInstructionRelationship:true},{atomic:locked}));
+  return finishRmw(ctx,family,destination,address,relationshipId,{locked,metadata:{cfPreserved:family !== 'neg'}});
+}
+
+function liftCrossLaneShiftRotate(ctx, family) {
+  const [destination,countOperand] = ctx.operands;
+  const rotate = family === 'rol' || family === 'ror';
+  const operation = canonicalX86Shift(family);
+  if (destination?.type !== 'memory' || !countOperand || memoryOperands(ctx.operands).length !== 1 || !supportedWidth(destination.widthBits)) {
+    return ctx.partial(`x86-${family}-memory-shape-unmodelled`, ['memory','registers','flags']);
+  }
+  const count = resolveX86EffectiveCount(ctx,countOperand,destination.widthBits,{rotate});
+  const address = addressFor(ctx,destination);
+  if (!count || !address) return ctx.partial(`x86-${family}-memory-count-or-address-unmodelled`, ['memory','registers','flags']);
+  const relationshipId = rmwId(ctx,family);
+  const value = ctx.readMemory(address.expression,destination.widthBits,memoryConfig(address,{operation:family,rmwId:relationshipId,rmwPhase:'read',sameInstructionRelationship:true}));
+  const faults = x86MemoryFaults('read-write',destination.widthBits);
+  if (count.knownCount === 0) {
+    return ctx.finish({
+      family:'memory', possibleFaults:faults,
+      metadata:{operation:family,widthBits:destination.widthBits,effectiveCount:0,flagsPreserved:true,destinationPreserved:true,memoryReadForFaultSemantics:true,rmwId:relationshipId,address:address.metadata},
+    });
+  }
+  const [result] = ctx.intrinsic(`x86.integer.${operation}`,[value,count.value],[destination.widthBits],{
+    determinism:'input-dependent',symbolicDetail:'summary-only',
+    metadata:{operation,widthBits:destination.widthBits,effectiveCountMask:Number(x86ShiftCountMask(destination.widthBits)),...(rotate?{effectiveCountModuloWidth:destination.widthBits}:{}),semanticRules:Object.freeze({result:x86ShiftResultRule(operation)}),exactArchitecturalSummary:true,rmwId:relationshipId},
+  });
+  if (rotate) emitX86RotateFlags(ctx,operation,result,count.value,destination.widthBits,{knownCount:count.knownCount});
+  else emitX86ShiftFlags(ctx,operation,value,result,count.value,destination.widthBits,{knownCount:count.knownCount});
+  if (count.knownCount == null) {
+    const zero = ctx.valueOp('is-zero',[count.value],1,{widthBits:8,semantic:'x86-effective-count-zero'});
+    const selected = ctx.valueOp('select',[zero,value,result],destination.widthBits,{semantic:'x86-memory-shift-count-dependent-result',zeroCountPreservesDestination:true});
+    ctx.writeMemory(address.expression,destination.widthBits,selected,memoryConfig(address,{operation:family,rmwId:relationshipId,rmwPhase:'conditional-write-overapproximation',sameInstructionRelationship:true,conditionalWrite:true,writeCondition:'effective count != 0',representationIsConservativeMayWrite:true}));
+    return ctx.partial('x86-variable-count-memory-shift-conditional-write-not-exactly-representable',['memory'],{
+      possibleFaults:faults,
+      detail:{valueAndFlags:'exact',zeroCount:'destination and flags preserved',memoryWrite:'generic MachineEffects has no conditional memory-write operation; emitted selected-value write is a conservative may-write'},
+      metadata:{family:'memory',operation:family,widthBits:destination.widthBits,effectiveCount:null,rmwId:relationshipId,sameCanonicalAddress:true,address:address.metadata},
+    });
+  }
+  ctx.writeMemory(address.expression,destination.widthBits,result,memoryConfig(address,{operation:family,rmwId:relationshipId,rmwPhase:'write',sameInstructionRelationship:true}));
+  return ctx.finish({family:'memory',possibleFaults:faults,metadata:{operation:family,widthBits:destination.widthBits,effectiveCount:count.knownCount,rmwId:relationshipId,sameCanonicalAddress:true,address:address.metadata}});
+}
+
+function liftCrossLaneMultiply(ctx, family) {
+  const [destination,source,third] = ctx.operands;
+  if (ctx.operands.length === 1) {
+    if (destination?.type !== 'memory' || !x86ImplicitMultiplyRegisters(destination.widthBits)) return ctx.partial(`x86-${family}-memory-implicit-form-unmodelled`, ['memory','registers','flags']);
+    const read = readMemoryOperand(ctx,destination,{operation:family,form:'one-operand-implicit'});
+    if (!read) return ctx.partial(`x86-${family}-memory-source-unmodelled`, ['memory','registers','flags']);
+    const summary = emitX86ImplicitMultiply(ctx,family,read.value,destination.widthBits);
+    if (!summary) return ctx.partial(`x86-${family}-implicit-state-unmodelled`, ['registers','flags']);
+    return ctx.finish({family:'memory',possibleFaults:x86MemoryFaults('read',destination.widthBits),metadata:{operation:family,...summary,address:read.address.metadata}});
+  }
+  if (family !== 'imul' || (ctx.operands.length !== 2 && ctx.operands.length !== 3) || destination?.type !== 'register' || source?.type !== 'memory' || ![16,32,64].includes(destination.widthBits) || source.widthBits !== destination.widthBits) {
+    return ctx.partial('x86-imul-memory-form-unmodelled', ['memory','registers','flags']);
+  }
+  const read = readMemoryOperand(ctx,source,{operation:'imul',form:ctx.operands.length === 2?'two-operand':'three-operand'});
+  if (!read) return ctx.partial('x86-imul-memory-source-unmodelled', ['memory','registers','flags']);
+  let left,right,form;
+  if (ctx.operands.length === 2) {
+    left = ctx.readRegister(destination); right = read.value; form = 'two-operand';
+  } else {
+    if (third?.type !== 'immediate') return ctx.partial('x86-imul-three-operand-memory-immediate-unmodelled', ['memory','registers','flags']);
+    left = read.value; right = ctx.readOperand(third,destination.widthBits,{signed:true}); form = 'three-operand';
+  }
+  const result = emitX86TruncatedImul(ctx,left,right,destination.widthBits,form);
+  if (!result || !ctx.writeRegister(destination,result)) return ctx.partial(`x86-imul-${form}-memory-destination-unmodelled`, ['memory','registers','flags']);
+  return ctx.finish({family:'memory',possibleFaults:x86MemoryFaults('read',source.widthBits),metadata:{operation:'imul',form,signed:true,widthBits:destination.widthBits,address:read.address.metadata}});
+}
+
+function liftCrossLaneDivide(ctx, family) {
+  const [divisorOperand] = ctx.operands;
+  if (ctx.operands.length !== 1 || divisorOperand?.type !== 'memory' || !x86ImplicitDivideRegisters(divisorOperand.widthBits)) {
+    return ctx.partial(`x86-${family}-memory-operand-shape-unmodelled`, ['memory','registers','flags','faults']);
+  }
+  const read = readMemoryOperand(ctx,divisorOperand,{operation:family,form:'implicit-dividend-pair'});
+  if (!read) return ctx.partial(`x86-${family}-memory-divisor-unmodelled`, ['memory','registers','flags','faults']);
+  const summary = emitX86ImplicitDivide(ctx,family,read.value,divisorOperand.widthBits);
+  if (!summary) return ctx.partial(`x86-${family}-memory-implicit-state-unmodelled`, ['registers','flags','faults']);
+  return ctx.finish({
+    family:'memory',
+    possibleFaults:[...x86MemoryFaults('read',divisorOperand.widthBits),summary.possibleFault],
+    metadata:{operation:family,form:summary.form,signed:summary.signed,widthBits:summary.widthBits,address:read.address.metadata},
+  });
+}
+
+function liftIntegratedCrossLane(ctx, family) {
+  if (family === 'adc' || family === 'sbb') return liftCrossLaneArithmetic(ctx,family);
+  if (family === 'inc' || family === 'dec' || family === 'neg') return liftCrossLaneUnary(ctx,family);
+  if (['shl','sal','shr','sar','rol','ror'].includes(family)) return liftCrossLaneShiftRotate(ctx,family);
+  if (family === 'mul' || family === 'imul') return liftCrossLaneMultiply(ctx,family);
+  if (family === 'div' || family === 'idiv') return liftCrossLaneDivide(ctx,family);
+  return crossLanePartial(ctx,family);
 }
 
 function liftMove(ctx, family) {
@@ -431,7 +603,7 @@ export function liftX86MemoryEffects(instruction, context = {}) {
     if (ctx.operands[0]?.type !== 'memory') return invalidLockPartial(ctx, family, 'x86-lock-requires-memory-destination');
   }
 
-  if (CROSS_LANE_REQUIRED.has(family)) return crossLanePartial(ctx, family);
+  if (CROSS_LANE_REQUIRED.has(family)) return liftIntegratedCrossLane(ctx, family);
   if (family === 'push') return liftPush(ctx);
   if (family === 'pop') return liftPop(ctx);
   if (MOVES.has(family)) return liftMove(ctx, family);

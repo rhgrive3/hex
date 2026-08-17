@@ -49,7 +49,7 @@ try {
   assert.equal(x86Descriptor.capability.canDisassemble, true);
   assert.equal(x86Descriptor.capability.canAnalyzeDataflow, false);
   assert.equal(x86Descriptor.capability.canEmulate, false);
-  assert.equal(x86Descriptor.capability.viewerCanDisassemble, false, 'fixed-width viewer must not claim x86 support');
+  assert.equal(x86Descriptor.capability.viewerCanDisassemble, true, 'integrated variable-length viewer may claim x86 viewer support independently of semantic A6');
   assert.equal(x86Descriptor.capability.engineVerified, true);
 
   console.log('capstone-capability:', JSON.stringify(support));

@@ -2,9 +2,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import test from 'node:test';
 
-import { imm, lift, mem, operations, reg, registerWrites } from './helpers.mjs';
+import { flagReads, imm, lift, mem, operations, reg, registerWrites } from './helpers.mjs';
 
-test('P5-0 MOV/add memory seed remains available without P5-1 memory expansion', () => {
+test('P5-0 MOV/add seed and integrated ADC memory source share canonical semantics', () => {
   const mov = lift('mov', [reg('eax','write'), mem(32, { base:'rbx' })]);
   assert.notEqual(mov.completeness,'unknown');
   assert.equal(operations(mov,'memory-read').length,1);
@@ -15,8 +15,10 @@ test('P5-0 MOV/add memory seed remains available without P5-1 memory expansion',
   assert.equal(operations(add,'memory-read').length,1);
 
   const adc = lift('adc', [reg('rax','read-write'), mem(64, { base:'rbx' })]);
-  assert.equal(adc.completeness,'partial');
-  assert.match(adc.unknownEffects.reason,/deferred-to-p5-2/);
+  assert.equal(adc.completeness,'exact-with-intrinsic');
+  assert.equal(operations(adc,'memory-read').length,1);
+  assert.equal(registerWrites(adc,'rax').length,1);
+  assert.equal(flagReads(adc,'CF').length,1);
 });
 
 test('LEA uses structured address components without semantic memory access', () => {
