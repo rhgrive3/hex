@@ -75,7 +75,7 @@ export class SingleConversationWorkerCoordinator {
     return this.runWorkerTurn(() => this.controller.send(required(args.instruction, 'instruction'), {
       runId: claim.runId,
       workerId: claim.workerId,
-    }), { waitForTerminal: false });
+    }));
   }
 
   async observe(args = {}) {
@@ -157,12 +157,11 @@ export class SingleConversationWorkerCoordinator {
     this.claimed = null;
   }
 
-  async runWorkerTurn(operation, { allowImmediate = false, waitForTerminal = true } = {}) {
+  async runWorkerTurn(operation, { allowImmediate = false } = {}) {
     const pending = this.armTerminal();
     try {
       const initial = await operation();
       if (allowImmediate && initial?.outcome === 'still-working') return this.withIdentity(initial);
-      if (!waitForTerminal) return this.lastResult || this.withIdentity(initial);
       await pending.promise;
       return this.lastResult || this.withIdentity(this.controller.result());
     } catch (error) {
