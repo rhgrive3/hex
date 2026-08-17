@@ -1,5 +1,7 @@
 import { ABIPlugin, registerABIPlugin, abiPlugin, abiPlugins, findABIPlugin } from './registry.js';
 import { AAPCS64_ABI } from './aapcs64.js';
+import { SYSV_AMD64_ABI } from './sysv-amd64.js';
+import { MICROSOFT_X64_ABI } from './microsoft-x64.js';
 
 const UNKNOWN_ABI = new ABIPlugin({
   id:'unknown', semanticVersion:'1', architectureId:'unknown', supported:false,
@@ -17,9 +19,14 @@ const UNKNOWN_ABI = new ABIPlugin({
 });
 
 registerABIPlugin(AAPCS64_ABI);
+registerABIPlugin(SYSV_AMD64_ABI);
+registerABIPlugin(MICROSOFT_X64_ABI);
 registerABIPlugin(UNKNOWN_ABI);
 
-export { ABIPlugin, registerABIPlugin, abiPlugin, abiPlugins, findABIPlugin, AAPCS64_ABI, UNKNOWN_ABI };
+export {
+  ABIPlugin, registerABIPlugin, abiPlugin, abiPlugins, findABIPlugin,
+  AAPCS64_ABI, SYSV_AMD64_ABI, MICROSOFT_X64_ABI, UNKNOWN_ABI,
+};
 
 export function resolveABIPlugin(target = {}, { legacyDefault = false } = {}) {
   if (target?.abiPlugin && typeof target.abiPlugin === 'object') return target.abiPlugin;

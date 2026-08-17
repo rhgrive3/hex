@@ -1,0 +1,252 @@
+import {
+  createBitVectorValue,
+  createFlagValue,
+  createIntrinsicEffectSummary,
+  createMachineEffectBundle,
+  createMachineOperation,
+  createMemoryAccess,
+  createRegisterValue,
+  createTemporaryValue,
+} from '../../../../semantics/effects/index.js';
+import { createX86DecodedInstruction } from '../decoded-instruction.js';
+import { x86RegisterDescriptor } from '../registers.js';
+
+export const X86_64_ARCHITECTURE_ID = 'x86_64';
+export const X86_64_MODE = 'long-64';
+export const X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION = '5.0.0-foundation';
+
+function mask(bits) { return (1n << BigInt(bits)) - 1n; }
+function unsigned(value, bits) { return BigInt(value) & mask(bits); }
+
+function valueWidth(value) {
+  if (value?.kind === 'temporary') return Number(value.valueType?.widthBits || 0);
+  return Number(value?.widthBits || 0);
+}
+
+function registerOperand(value) {
+  if (value?.type === 'register' && value.register) return value;
+  const register = x86RegisterDescriptor(value);
+  return register ? Object.freeze({ type:'register', register, widthBits:register.viewBits, access:'unknown' }) : null;
+}
+
+export function normalizeX86Instruction(decoded, context = {}) {
+  return createX86DecodedInstruction({
+    ...decoded,
+    ...(decoded?.instructionId == null && context.instructionId != null ? { instructionId:context.instructionId } : {}),
+    ...(decoded?.mode == null && context.mode != null ? { mode:context.mode } : {}),
+    ...(decoded?.origin == null && context.origin != null ? { origin:context.origin } : {}),
+  });
+}
+
+export function createX86EffectContext(decoded, context = {}) {
+  const instruction = normalizeX86Instruction(decoded, context);
+  const instructionId = String(instruction.instructionId ?? '').trim();
+  if (!instructionId) throw new TypeError('x86-effects-instruction-id-required');
+  const mode = String(instruction.mode || X86_64_MODE);
+  const options = context.machineEffectsOptions ?? context.options ?? {};
+  const family = String(instruction.instructionFamily || '').toLowerCase();
+  const operands = instruction.detail.operands;
+  const operations = [];
+  let operationCounter = 0;
+  let temporaryCounter = 0;
+  let hasIntrinsic = false;
+
+  function temporary(widthBits, label = 'tmp') {
+    temporaryCounter++;
+    return createTemporaryValue(`${instructionId}:${label}:${temporaryCounter}`, createBitVectorValue(widthBits));
+  }
+
+  function constant(widthBits, value) { return createBitVectorValue(widthBits, unsigned(value, widthBits)); }
+
+  function addOperation(input) {
+    operationCounter++;
+    const operation = createMachineOperation({
+      ...input,
+      id:`${instructionId}:effect:${operationCounter}`,
+      metadata:{ sourceInstructionFamily:family, originInstructionId:instructionId, ...(input.metadata || {}) },
+    }, options);
+    if (operation.kind === 'intrinsic') hasIntrinsic = true;
+    operations.push(operation);
+    return operation;
+  }
+
+  function valueOp(opcode, inputs, widthBits, metadata = {}) {
+    const output = temporary(widthBits, opcode.replace(/[^a-z0-9]+/gi, '-'));
+    addOperation({ kind:'value', opcode, inputs, outputs:[output], metadata });
+    return output;
+  }
+
+  function intrinsic(intrinsicId, inputs, outputWidths, config = {}) {
+    const outputs = outputWidths.map((widthBits, index) => temporary(widthBits, `${intrinsicId}-${index}`));
+    addOperation({
+      kind:'intrinsic',
+      intrinsicId,
+      effectSummary:createIntrinsicEffectSummary({
+        inputs,
+        outputs,
+        registersRead:config.registersRead ?? [],
+        registersWritten:config.registersWritten ?? [],
+        memoryRead:config.memoryRead ?? { scope:'none' },
+        memoryWrite:config.memoryWrite ?? { scope:'none' },
+        controlEffects:config.controlEffects ?? [],
+        determinism:config.determinism ?? 'input-dependent',
+        symbolicDetail:config.symbolicDetail ?? 'summary-only',
+      }, options),
+      metadata:{ summaryContractVersion:'x86-intrinsic-summary/v1', ...(config.metadata || {}) },
+    });
+    return outputs;
+  }
+
+  function readRegister(input) {
+    const operand = registerOperand(input);
+    if (!operand) return null;
+    const descriptor = operand.register;
+    const physical = createRegisterValue(descriptor.physicalId, descriptor.physicalBits, { view:descriptor.id });
+    const full = temporary(descriptor.physicalBits, `read-${descriptor.id}`);
+    addOperation({ kind:'register-read', register:physical, value:full, metadata:{ view:descriptor.id } });
+    if (descriptor.viewBits === descriptor.physicalBits && descriptor.lsb === 0) return full;
+    return valueOp('extract', [full], descriptor.viewBits, {
+      lsb:descriptor.lsb,
+      widthBits:descriptor.viewBits,
+      physicalBits:descriptor.physicalBits,
+      physicalId:descriptor.physicalId,
+      view:descriptor.id,
+    });
+  }
+
+  function coerce(value, fromBits, toBits, signed = false) {
+    if (fromBits === toBits) return value;
+    if (fromBits > toBits) return valueOp('trunc', [value], toBits, { fromBits, toBits });
+    return valueOp(signed ? 'sext' : 'zext', [value], toBits, { fromBits, toBits });
+  }
+
+  function writeRegister(input, value) {
+    const operand = registerOperand(input);
+    if (!operand) return false;
+    const descriptor = operand.register;
+    let source = value;
+    let bits = valueWidth(source) || descriptor.viewBits;
+    source = coerce(source, bits, descriptor.viewBits, false);
+    bits = descriptor.viewBits;
+    if (descriptor.kind === 'vector' && descriptor.viewBits !== descriptor.physicalBits) return false;
+    if (descriptor.writePolicy === 'zero-extend-32') {
+      source = coerce(source, bits, descriptor.physicalBits, false);
+    } else if (descriptor.viewBits !== descriptor.physicalBits || descriptor.lsb !== 0) {
+      const old = readRegister(descriptor.physicalId);
+      source = valueOp('insert', [old, source], descriptor.physicalBits, {
+        lsb:descriptor.lsb,
+        widthBits:descriptor.viewBits,
+        physicalBits:descriptor.physicalBits,
+        physicalId:descriptor.physicalId,
+        view:descriptor.id,
+        writePolicy:'preserve-unaffected',
+      });
+    }
+    const physical = createRegisterValue(descriptor.physicalId, descriptor.physicalBits, { view:descriptor.id });
+    addOperation({ kind:'register-write', register:physical, value:source, metadata:{ view:descriptor.id, writePolicy:descriptor.writePolicy } });
+    return true;
+  }
+
+  function readFlag(name) {
+    const normalized = String(name).toUpperCase();
+    const flag = createFlagValue(`RFLAGS.${normalized}`, 1);
+    const output = temporary(1, `read-${normalized}`);
+    addOperation({ kind:'flag-read', flag, value:output });
+    return output;
+  }
+
+  function writeFlag(name, value, metadata = {}) {
+    addOperation({ kind:'flag-write', flag:createFlagValue(`RFLAGS.${String(name).toUpperCase()}`, 1), value, metadata });
+  }
+
+  function memoryAccess(addressExpr, widthBits, config = {}) {
+    return createMemoryAccess({
+      space:config.space ?? 'memory',
+      addressExpr,
+      widthBits,
+      endian:'little',
+      ...(config.alignment == null ? {} : { alignment:config.alignment }),
+      ...(config.atomic == null ? {} : { atomic:config.atomic }),
+      ...(config.ordering == null ? {} : { ordering:config.ordering }),
+      ...(config.volatility == null ? {} : { volatility:config.volatility }),
+    }, options);
+  }
+
+  function readMemory(addressExpr, widthBits, config = {}) {
+    const value = temporary(widthBits, 'memory-read');
+    addOperation({ kind:'memory-read', access:memoryAccess(addressExpr, widthBits, config), value, metadata:config.metadata });
+    return value;
+  }
+
+  function writeMemory(addressExpr, widthBits, value, config = {}) {
+    addOperation({ kind:'memory-write', access:memoryAccess(addressExpr, widthBits, config), value, metadata:config.metadata });
+  }
+
+  function readOperand(operand, targetBits = operand?.widthBits, config = {}) {
+    if (!operand) return null;
+    if (operand.type === 'register') {
+      const value = readRegister(operand);
+      return value ? coerce(value, operand.widthBits, targetBits, config.signed === true) : null;
+    }
+    if (operand.type === 'immediate') return constant(targetBits, operand.value);
+    return null;
+  }
+
+  function finish(config = {}) {
+    const completeness = config.completeness ?? (hasIntrinsic ? 'exact-with-intrinsic' : 'exact');
+    return createMachineEffectBundle({
+      instructionId,
+      architectureId:X86_64_ARCHITECTURE_ID,
+      mode,
+      operations,
+      controlEffect:config.controlEffect ?? { kind:'fallthrough' },
+      possibleFaults:config.possibleFaults ?? [],
+      origin:instruction.origin ?? { instructionIds:[instructionId] },
+      completeness,
+      ...(config.unknownEffects == null ? {} : { unknownEffects:config.unknownEffects }),
+      ...(config.statePreservation == null ? {} : { statePreservation:config.statePreservation }),
+      metadata:{ family:config.family ?? 'foundation', instructionFamily:family, decoderContractVersion:instruction.contractVersion, ...(config.metadata || {}) },
+    }, options);
+  }
+
+  function partial(reason, categories = ['other'], config = {}) {
+    return finish({
+      ...config,
+      completeness:'partial',
+      unknownEffects:{ categories, reason, preservation:'not-assumed', ...(config.detail == null ? {} : { detail:config.detail }) },
+      metadata:{ failClosed:true, ...(config.metadata || {}) },
+    });
+  }
+
+  return {
+    instruction,
+    instructionId,
+    family,
+    operands,
+    operations,
+    constant,
+    temporary,
+    addOperation,
+    valueOp,
+    intrinsic,
+    readRegister,
+    writeRegister,
+    readFlag,
+    writeFlag,
+    coerce,
+    readOperand,
+    readMemory,
+    writeMemory,
+    finish,
+    partial,
+  };
+}
+
+export function x86RegisterOperand(name) { return registerOperand(name); }
+export function x86MemoryFaults(direction, widthBits) {
+  return Object.freeze([{
+    kind:'memory-access-fault',
+    condition:{ kind:'x86-memory-fault', direction, widthBits },
+    detail:{ causes:['segment','non-canonical-address','page','protection','alignment-check'] },
+  }]);
+}

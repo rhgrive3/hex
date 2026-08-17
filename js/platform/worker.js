@@ -5,6 +5,7 @@ import { fingerprintVendors } from '../knowledge/index.js';
 import { hashByteSource } from './hash.js';
 import { boundedOffset, checkedChunkIndex, chunkLength, exactExternalInteger, regionSize, utf8Len, isExactFunctionSeed } from './worker-validation.js';
 import { analysisFromBinaryImage, emptyAnalysis } from './analysis-result.js';
+import { analyzeDecodedSemanticFunction } from '../targets/architecture/x86_64/semantic-function.js';
 
 const ROW_BYTES = 4;
 const CHUNK_ROWS = 1024;
@@ -73,6 +74,7 @@ async function handle(msg, signal) {
     case 'setRegions': return setRegions(msg.regions);
     case 'chunk': return getChunk(msg, signal);
     case 'analyze': return analyzeImage(msg, signal);
+    case 'semanticFunction': return analyzeDecodedSemanticFunction(msg.input, { signal });
     case 'strings': return scanStrings(msg, signal);
     case 'search': return runSearch(msg, signal);
     case 'readAt': return readAtAddress(msg, signal);

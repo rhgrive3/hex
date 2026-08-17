@@ -12,6 +12,13 @@ import {
   createWorkerAnalysisArtifactDescriptor,
   normalizeAnalysisRoute,
 } from './cache/artifact-orchestration.js';
+import { X86_DECODER_SEMANTIC_VERSION } from './targets/architecture/x86_64/decoded-instruction.js';
+import { X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION } from './targets/architecture/x86_64/effects/common.js';
+import {
+  X86_SEMANTIC_FUNCTION_ANALYSIS_VERSION,
+  X86_SEMANTIC_FUNCTION_MAX_DECODE_BYTES,
+  X86_SEMANTIC_FUNCTION_SCHEMA_VERSION,
+} from './targets/architecture/x86_64/semantic-function-contract.js';
 
 export const CHUNK_ROWS = 1024;
 export const CHUNK_BYTES = CHUNK_ROWS * 4;
@@ -406,6 +413,104 @@ export class Backend {
     });
   }
 
+  _semanticFunctionArtifactDescriptor(options = {}) {
+    const abiId = String(options.abiId || '');
+    if (!abiId) throw new TypeError('semantic-function-abi-id-required');
+    return createWorkerAnalysisArtifactDescriptor({
+      binaryId:options.binaryId,
+      sliceIndex:Number(options.sliceIndex ?? 0),
+      architecture:'x86_64',
+      artifactKind:'phase5-x86-semantic-function',
+      producerVersion:X86_SEMANTIC_FUNCTION_ANALYSIS_VERSION,
+      loaderVersion:BACKEND_ANALYSIS_ARTIFACT_VERSIONS.loader,
+      architectureSemanticVersion:X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION,
+      abiSemanticVersion:`${abiId}@${String(options.abiSemanticVersion || '1')}`,
+      semanticSchemaVersion:X86_SEMANTIC_FUNCTION_SCHEMA_VERSION,
+      config:{
+        address:BigInt(options.address).toString(),
+        length:Number(options.length),
+        architecture:'x86_64',
+        abiId,
+        platform:String(options.platform || 'unknown'),
+        decoderSemanticVersion:X86_DECODER_SEMANTIC_VERSION,
+        analysisVersion:X86_SEMANTIC_FUNCTION_ANALYSIS_VERSION,
+        functionPrototype:options.functionPrototype ?? null,
+      },
+      keyExtras:{
+        decoderContract:'x86-64-decoded-instruction/v1',
+        decoderSemanticVersion:X86_DECODER_SEMANTIC_VERSION,
+        semanticRoute:'machine-effects>semantic-ir-v2>cfg>ssa>memoryssa>compat>shared-decompiler',
+      },
+      upstreamArtifactIds:options.upstreamArtifactIds ?? [],
+      originRefs:[`binary:${String(options.binaryId)}`, `virtual-address:${BigInt(options.address).toString()}`],
+    });
+  }
+
+  /**
+   * Explicit Phase-5 shadow route. It is production Backend/API orchestration,
+   * but does not change public x86 capability or add a legacy fallback.
+   */
+  async analyzeSemanticFunction(options = {}) {
+    const address = BigInt(options.address);
+    const length = Number(options.length);
+    if (!Number.isSafeInteger(length) || length < 1 || length > X86_SEMANTIC_FUNCTION_MAX_DECODE_BYTES) {
+      throw new TypeError('semantic-function-bounded-length-required');
+    }
+    const abiId = String(options.abiId || '');
+    if (!['sysv-amd64','microsoft-x64'].includes(abiId)) throw new TypeError('semantic-function-x86-abi-required');
+    const binaryId = options.binaryId ?? await this.ensureBinaryId({ signal:options.signal, onProgress:options.onIdentityProgress });
+    const descriptor = this._semanticFunctionArtifactDescriptor({ ...options, binaryId, address, length, abiId });
+    const uiEpoch = this.gen, transportEpoch = this.transportEpoch, file = this.file;
+    const result = await this._artifactRuntime().request({
+      descriptor,
+      signal:options.signal ?? null,
+      budget:options.budget ?? null,
+      priority:options.priority ?? 'current',
+      // Artifact completeness describes whether this bounded analysis request
+      // finished, not whether every decoded instruction has exact semantics.
+      completeness:options.completeness ?? 'complete',
+      validate:(payload) => payload?.route === 'phase5-shadow-v2'
+        && payload?.pipeline?.instrumentation?.v2Executed === true
+        && payload?.abiId === abiId,
+      creation:{ backend:'Backend', route:'phase5-shadow-v2', abiId, address:address.toString(), length },
+      produce:async ({ signal }) => {
+        const decoded = await this.disassembleAt(address, { architecture:'x86_64', length, signal });
+        if (!decoded?.supported || !decoded?.found || !decoded.instructions?.length) throw new Error('semantic-function-x86-decode-unavailable');
+        const decodedWithOrigins = decoded.instructions.map((instruction) => {
+          const instructionAddress = BigInt(instruction.address);
+          const instructionLength = Number(instruction.length ?? instruction.size);
+          const relative = instructionAddress - address;
+          const byteStart = decoded.fileOffset == null ? null : BigInt(decoded.fileOffset) + relative;
+          return {
+            ...instruction,
+            origin:{
+              byteRanges:byteStart == null ? [] : [{ binaryId, start:byteStart, length:instructionLength }],
+              virtualRanges:[{ sliceId:descriptor.sliceId, start:instructionAddress, length:instructionLength }],
+            },
+          };
+        });
+        return await awaitCancellableProducer(this._callTo('platform', 'semanticFunction', {
+          input:{
+            binaryId,
+            sliceId:descriptor.sliceId,
+            architecture:'x86_64',
+            platform:options.platform || (this.formatId === 'pe' ? 'windows' : 'linux'),
+            abiId,
+            decoderSemanticVersion:X86_DECODER_SEMANTIC_VERSION,
+            instructions:decodedWithOrigins,
+            name:options.name,
+            functionPrototype:options.functionPrototype ?? null,
+          },
+        }), signal);
+      },
+    });
+    if (uiEpoch !== this.gen || transportEpoch !== this.transportEpoch || file !== this.file) {
+      await this._artifactRuntime().store.delete(descriptor.artifactId).catch(() => {});
+      throw new StaleRequestError();
+    }
+    return Object.freeze({ ...result.payload, artifactId:descriptor.artifactId, reused:result.reused === true });
+  }
+
   async ensureBinaryId(options = {}) {
     if (this.binaryId) return this.binaryId;
     if (!this.file) throw new Error('binary-id-file-unavailable');
@@ -501,12 +606,12 @@ export class Backend {
     if (uiEpoch !== this.gen) throw new StaleRequestError();
     if (!support?.support?.[architecture]) return { supported: false, architecture, instructions: [] };
     if (this.formatId === 'macho') return { supported: false, architecture, instructions: [], compatibility: 'legacy-viewer' };
-    const read = await this._callTo('platform', 'readAt', { addr, len: Math.min(1024 * 1024, options.length || 4096), text: false });
+    const read = await awaitCancellableProducer(this._callTo('platform', 'readAt', { addr, len: Math.min(1024 * 1024, options.length || 4096), text: false }), options.signal ?? null);
     if (uiEpoch !== this.gen) throw new StaleRequestError();
     if (!read?.found) return { supported: true, architecture, instructions: [], found: false };
-    const result = await this._disassembleBytes(read.bytes, addr, architecture, uiEpoch);
+    const result = await awaitCancellableProducer(this._disassembleBytes(read.bytes, addr, architecture, uiEpoch), options.signal ?? null);
     if (uiEpoch !== this.gen) throw new StaleRequestError();
-    return { supported: true, architecture, found: true, ...result };
+    return { supported: true, architecture, found: true, region:read.region ?? null, fileOffset:read.fileOffset ?? null, ...result };
   }
 
   _disassembleBytes(bytes, address, architecture, uiEpoch = this.gen) {
@@ -522,10 +627,18 @@ export class Backend {
     }
     const id = this._disasmSeq++;
     const copy = bytes instanceof Uint8Array ? bytes.slice() : new Uint8Array(bytes);
-    return new Promise((resolve, reject) => {
+    const promise = new Promise((resolve, reject) => {
       this._disasmPending.set(id, { resolve, reject, uiEpoch });
       this._disasmWorker.postMessage({ id, architecture, address, bytes: copy }, [copy.buffer]);
     });
+    promise.cancel = () => {
+      const pending = this._disasmPending.get(id);
+      if (!pending) return;
+      this._disasmPending.delete(id);
+      const error = new Error('disassembly cancelled'); error.name = 'AbortError';
+      pending.reject(error);
+    };
+    return promise;
   }
 
   async loadAnalysisCache(options = {}) {
