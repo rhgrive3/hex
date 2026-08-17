@@ -270,26 +270,49 @@ function stackRootIds(projected) {
   return roots;
 }
 
-function valueDependsOnRoots(value, roots, seen = new Set()) {
-  if (!value || seen.has(value.id)) return false;
-  if (roots.has(value.id)) return true;
-  seen.add(value.id);
-  const def = value.def;
-  if (!def) return false;
-  for (const arg of def.args || []) if (valueDependsOnRoots(arg?.value, roots, new Set(seen))) return true;
-  if (def.addr?.base && valueDependsOnRoots(def.addr.base, roots, new Set(seen))) return true;
-  if (def.addr?.index && valueDependsOnRoots(def.addr.index, roots, new Set(seen))) return true;
-  return false;
+function stackDependentValueIds(projected, roots) {
+  const dependentsByValueId = new Map();
+  const addDependent = (dependency, value) => {
+    if (!dependency || !value) return;
+    let dependents = dependentsByValueId.get(dependency.id);
+    if (!dependents) {
+      dependents = new Set();
+      dependentsByValueId.set(dependency.id, dependents);
+    }
+    dependents.add(value.id);
+  };
+  for (const value of projected.values) {
+    const def = value?.def;
+    if (!def) continue;
+    for (const arg of def.args || []) addDependent(arg?.value, value);
+    addDependent(def.addr?.base, value);
+    addDependent(def.addr?.index, value);
+  }
+  const dependent = new Set(roots);
+  const queue = [...roots];
+  let cursor = 0;
+  while (cursor < queue.length) {
+    const sourceId = queue[cursor++];
+    for (const valueId of dependentsByValueId.get(sourceId) || []) {
+      if (dependent.has(valueId)) continue;
+      dependent.add(valueId);
+      queue.push(valueId);
+    }
+  }
+  return dependent;
 }
 
-function callEscapesLocalStack(inst, roots) {
+function callEscapesLocalStack(inst, stackDependent) {
   if (inst.op !== V1_OP.CALL) return false;
-  for (const arg of inst.args || []) if (valueDependsOnRoots(arg?.value, roots)) return true;
+  for (const arg of inst.args || []) {
+    if (arg?.value && stackDependent.has(arg.value.id)) return true;
+  }
   return false;
 }
 
 function recoverLocalStackFlow(projected) {
   const roots = stackRootIds(projected);
+  const stackDependent = stackDependentValueIds(projected, roots);
   for (const block of projected.blocks) {
     const ordered = projected.instructions
       .filter((inst) => inst.block === block.index)
@@ -307,7 +330,7 @@ function recoverLocalStackFlow(projected) {
         continue;
       }
       if (inst.op === V1_OP.CALL) {
-        if (callEscapesLocalStack(inst, roots)) stores.clear();
+        if (callEscapesLocalStack(inst, stackDependent)) stores.clear();
         continue;
       }
       if (inst.op === V1_OP.UNKNOWN && inst.memoryBarrier === true) {
