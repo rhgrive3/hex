@@ -12,7 +12,14 @@ export function validateAccuracyRows(rows, expectedIds = null) {
     if (typeof row.id !== 'string' || !row.id) {
       throw new TypeError(`accuracy-result-id-invalid:${index}`);
     }
-    if (typeof row.score !== 'number' || !Number.isFinite(row.score) || row.score < 0 || row.score > 1) {
+    if (!Object.prototype.hasOwnProperty.call(row, 'score')) {
+      throw new TypeError(`accuracy-result-score-missing:${row.id}`);
+    }
+    // Some feature families legitimately report null when the pinned fixture
+    // contains no applicable samples. Preserve that existing accuracy contract
+    // while rejecting malformed numeric scores.
+    if (row.score !== null &&
+        (typeof row.score !== 'number' || !Number.isFinite(row.score) || row.score < 0 || row.score > 1)) {
       throw new TypeError(`accuracy-result-score-invalid:${row.id}`);
     }
     ids.push(row.id);
@@ -38,8 +45,8 @@ export function validateAccuracyFile(file, expectedIds = null) {
 }
 
 function selfTest() {
-  const valid = [{ id: 'a', score: 1 }, { id: 'b', score: 0.5 }];
-  validateAccuracyRows(valid, ['a', 'b']);
+  const valid = [{ id: 'a', score: 1 }, { id: 'b', score: 0.5 }, { id: 'c', score: null }];
+  validateAccuracyRows(valid, ['a', 'b', 'c']);
   const expectFailure = (fn, pattern) => {
     let error = null;
     try { fn(); } catch (caught) { error = caught; }
@@ -50,7 +57,8 @@ function selfTest() {
   expectFailure(() => validateAccuracyRows([]), /accuracy-result-empty/);
   expectFailure(() => validateAccuracyRows([{ id: 'a', score: 1 }, { id: 'a', score: 1 }]), /duplicate-id/);
   expectFailure(() => validateAccuracyRows([{ id: 'a', score: NaN }]), /score-invalid/);
-  expectFailure(() => validateAccuracyRows(valid, ['a', 'c']), /id-mismatch/);
+  expectFailure(() => validateAccuracyRows([{ id: 'a' }]), /score-missing/);
+  expectFailure(() => validateAccuracyRows(valid, ['a', 'b', 'd']), /id-mismatch/);
   console.log('accuracy result validation self-test passed');
 }
 
