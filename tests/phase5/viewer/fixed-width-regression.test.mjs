@@ -36,7 +36,9 @@ test('ARM64 fixed-width row/address/goTo/bytes behavior remains exact O(1)',()=>
   assert.equal(viewer.rowOfAddress(0x101cn),7);
   assert.equal(viewer.rowOfAddress(0x101dn),null);
   assert.equal(viewer.goToAddress(0x1020n),true);
-  assert.equal(viewer.topAddress(),0x1000n,'third placement may keep the first row at top in a short local window');
+  assert.equal(viewer.topRow(),5,'legacy third-placement keeps target row 8 three rows below viewport top');
+  assert.equal(viewer.topAddress(),0x1014n);
+  assert.equal(viewer.rowAddress(viewer.rowOfAddress(0x1020n)),0x1020n);
   const row=viewer.rowData(1);
   assert.equal(row.address,0x1004n);
   assert.equal(row.bytes,'1F 20 03 D5');
