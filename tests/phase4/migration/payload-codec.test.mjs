@@ -9,11 +9,13 @@ import {
   encodeWorkerAnalysisPayload,
 } from '../../../js/cache/artifact-orchestration.js';
 
+const BINARY_ID = `bin_sha256_${'22'.repeat(32)}`;
+
 function descriptor() {
   return createWorkerAnalysisArtifactDescriptor({
-    binaryId:'binary:codec',
-    sliceId:'0',
-    entityId:'analysis:codec',
+    binaryId:BINARY_ID,
+    sliceIndex:0,
+    architecture:'arm64',
     producerVersion:'producer-v1',
     loaderVersion:'loader-v1',
     architectureSemanticVersion:'arch-v1',
