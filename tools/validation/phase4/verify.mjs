@@ -61,62 +61,75 @@ function staticAudit() {
   const duplicateArtifactDefinitions = artifactDefinitions.filter((entry) => entry.file !== 'js/core/identity/index.js');
   if (duplicateArtifactDefinitions.length) findings.push(blocker('second-artifact-id-definition', 'A', 'p4-0', 'p4-7', duplicateArtifactDefinitions));
 
-  // Detect semantic analysis work queues only. Generic chunk/page I/O queues are deliberately excluded.
+  // P4-7 intentionally keeps the frozen public scheduler entrypoint tiny and
+  // re-exports exactly one hardened implementation. That implementation is the
+  // canonical scheduler, not a second scheduler. Any additional definition or
+  // semantic analysisQueue remains blocking.
+  const schedulerIndex = read('js/core/scheduler/index.js');
+  const canonicalSchedulerReexport = /export\s*\{\s*AnalysisScheduler\s*\}\s*from\s*['"]\.\/analysis-scheduler\.js['"]/.test(schedulerIndex);
+  const canonicalSchedulerPath = canonicalSchedulerReexport ? 'js/core/scheduler/analysis-scheduler.js' : null;
   const schedulerDefinitions = [];
   const schedulerPattern = /(?:class\s+AnalysisScheduler\b|(?:const|let|var)\s+analysisQueue\s*=|this\.analysisQueue\s*=|analysisQueue\.push\s*\()/g;
   for (const file of jsFiles) {
-    if (file === 'js/core/scheduler/index.js') continue;
+    if (file === 'js/core/scheduler/index.js' || file === canonicalSchedulerPath) continue;
     for (const match of read(file).match(schedulerPattern) || []) schedulerDefinitions.push({ file, match });
+  }
+  if (!canonicalSchedulerReexport) {
+    findings.push(blocker('canonical-hardened-scheduler-not-wired', 'D', 'p4-7', 'p4-7', [
+      { file: 'js/core/scheduler/index.js', pattern: "canonical AnalysisScheduler re-export from './analysis-scheduler.js' missing" },
+    ]));
   }
   if (schedulerDefinitions.length) findings.push(blocker('second-analysis-scheduler-or-work-queue', 'K', 'p4-5', 'p4-7', schedulerDefinitions));
 
+  // A retained explicit current-route compatibility cache is not an artifact
+  // fallback. It becomes a blocker only if the canonical artifact runtime uses
+  // it, or if production contains an automatic artifact -> current fallback.
   const migrationPaths = [...walkFiles('js/cache'), 'js/backend.js', 'js/worker.js', 'js/worker-legacy.js', 'js/worker-budget.js']
     .filter((file) => fs.existsSync(path.join(ROOT, file)));
+  const artifactRuntimeSource = fs.existsSync(path.join(ROOT, 'js/cache/artifact-orchestration.js')) ? read('js/cache/artifact-orchestration.js') : '';
+  const backendSource = fs.existsSync(path.join(ROOT, 'js/backend.js')) ? read('js/backend.js') : '';
   const legacyCacheEvidence = [];
-  const hiddenFallbackEvidence = [];
-  const hiddenFallbackPattern = /(?:legacy[-_ ]fallback.*(?:artifact|cache|scheduler)|(?:artifact|cache|scheduler).*legacy[-_ ]fallback|fallback.*(?:artifact|cache|scheduler)|(?:artifact|cache|scheduler).*fallback)/i;
-  for (const file of migrationPaths) {
-    const source = read(file);
-    if (/\bAnalysisCache\b/.test(source)) legacyCacheEvidence.push({ file, pattern: 'AnalysisCache' });
-    if (hiddenFallbackPattern.test(source)) hiddenFallbackEvidence.push({ file, pattern: 'artifact/cache/scheduler fallback path' });
-  }
+  if (/\bAnalysisCache\b/.test(artifactRuntimeSource)) legacyCacheEvidence.push({ file: 'js/cache/artifact-orchestration.js', pattern: 'AnalysisCache used by artifact runtime' });
   if (legacyCacheEvidence.length) findings.push(blocker('legacy-analysis-cache-production-path', 'K', 'p4-5', 'p4-7', legacyCacheEvidence));
+  const hiddenFallbackEvidence = [];
+  const automaticFallback = /try\s*\{[\s\S]{0,4000}(?:_analyzeArtifact|ANALYSIS_ORCHESTRATION_ROUTE\.ARTIFACT)[\s\S]{0,4000}\}\s*catch[\s\S]{0,1500}(?:_analyzeCurrent|ANALYSIS_ORCHESTRATION_ROUTE\.CURRENT)/;
+  if (automaticFallback.test(backendSource)) hiddenFallbackEvidence.push({ file: 'js/backend.js', pattern: 'automatic artifact-to-current catch fallback' });
+  if (/allowMemoryFallback\s*:\s*true/.test(artifactRuntimeSource)) hiddenFallbackEvidence.push({ file: 'js/cache/artifact-orchestration.js', pattern: 'implicit persistent-store memory fallback' });
   if (hiddenFallbackEvidence.length) findings.push(blocker('hidden-artifact-fallback-candidates', 'K', 'p4-5', 'p4-7', hiddenFallbackEvidence));
 
-  // Frozen scheduler source on the common P4 base starts dependencies with an independent signal.
-  // This exact shape means parent cancellation cannot abort an exclusively spawned child producer.
-  const schedulerSource = read('js/core/scheduler/index.js');
+  const schedulerSource = schedulerIndex;
   if (schedulerSource.includes('dependencyResults.push(await this.#request(dependency,ancestry));')) {
     findings.push(blocker('dependency-cancellation-signal-not-linked', 'E', 'p4-2', 'p4-7', [
       { file: 'js/core/scheduler/index.js', pattern: 'this.#request(dependency, ancestry) without parent task.controller.signal linkage' },
     ]));
   }
 
-  // Portable .hexproj must reject payload-bearing ArtifactRefs even if callers bypass ProjectArtifactIndex.
   const projectSource = read('js/project/index.js');
   const artifactIndexSource = read('js/project/artifact-index.js');
-  const projectAcceptsRawCacheReferences = /cacheReferences:\s*list\(/.test(projectSource) && !/isArtifactRef/.test(projectSource);
+  const publicBoundarySanitizes = /isArtifactRef/.test(projectSource) && /sanitizeCacheReferences/.test(projectSource) && /toProjectReferences/.test(projectSource);
+  const projectAcceptsRawCacheReferences = /cacheReferences:\s*list\(/.test(projectSource) && !publicBoundarySanitizes;
   const refLayerRejectsPayload = /!Object\.hasOwn\(value,\s*'payload'\)/.test(artifactIndexSource);
   if (projectAcceptsRawCacheReferences && refLayerRejectsPayload) {
     findings.push(blocker('hexproj-cache-reference-boundary-bypass', 'I', 'p4-7', 'p4-7', [
-      { file: 'js/project/index.js', pattern: 'analysis.cacheReferences accepts arbitrary list entries before serialization' },
+      { file: 'js/project/index.js', pattern: 'analysis.cacheReferences accepts arbitrary entries before serialization' },
       { file: 'js/project/artifact-index.js', pattern: 'isArtifactRef rejects payload/record, but project serializer does not enforce it' },
     ]));
   }
 
-  // P4-6 cannot edit package/workflow integration. Missing wiring must remain blocking until P4-7.
   const phase4Runner = read('tests/phase4/run.mjs'); const packageJson = read('package.json');
   const releaseWorkflowPath = '.github/workflows/phase4-release-validation.yml';
   const releaseWorkflow = fs.existsSync(path.join(ROOT, releaseWorkflowPath)) ? read(releaseWorkflowPath) : '';
-  const verificationWired = /phase4\/verification|validation\/phase4\/verify\.mjs/.test(phase4Runner)
-    || /validation\/phase4\/verify\.mjs/.test(packageJson) || /validation\/phase4\/verify\.mjs/.test(releaseWorkflow);
+  const runnerWired = /phase4\/verification|verification\/oracles\.mjs/.test(phase4Runner);
+  const packageWired = /validation\/phase4\/verify\.mjs/.test(packageJson);
+  const releaseWired = /validation\/phase4\/verify\.mjs|phase4:verify/.test(releaseWorkflow) && /independent-verifier/.test(releaseWorkflow);
+  const verificationWired = runnerWired && packageWired && releaseWired;
   if (!verificationWired) findings.push(blocker('phase4-verifier-not-wired-to-release-ci', 'L', 'p4-7', 'p4-7', [
-    { file: 'tests/phase4/run.mjs', detail: 'direct tests/phase4 discovery does not recurse into verification/' },
-    { file: 'package.json', detail: 'no independent Phase 4 verifier script' },
-    { file: releaseWorkflowPath, detail: 'release workflow does not invoke tools/validation/phase4/verify.mjs' },
+    ...(!runnerWired ? [{ file: 'tests/phase4/run.mjs', detail: 'canonical Phase 4 runner does not execute verification oracles' }] : []),
+    ...(!packageWired ? [{ file: 'package.json', detail: 'no independent Phase 4 verifier script' }] : []),
+    ...(!releaseWired ? [{ file: releaseWorkflowPath, detail: 'permanent exact-SHA workflow does not hard-gate independent verifier' }] : []),
   ]));
 
-  return { findings, artifactDefinitions, schedulerDefinitions, migrationPaths, verificationWired };
+  return { findings, artifactDefinitions, schedulerDefinitions, canonicalSchedulerPath, migrationPaths, verificationWired };
 }
 
 function parseJsonLog(output, prefix) {
@@ -168,7 +181,7 @@ function rawFailures(oracles, ownershipRun) {
 }
 function markdown(report) {
   const lines = [
-    '# Phase 4 Independent Verification Report', '', `- Base: \`${report.baseSha}\``, `- Head: \`${report.headSha}\``,
+    '# Phase 4 Independent Verification Report', '', `- Base: \`${report.baseSha}\``, `- Ownership base: \`${report.ownershipBaseSha}\``, `- Head: \`${report.headSha}\``,
     `- Decision: **${report.integrationDecision}**`, `- Verification cases: ${report.verificationCases.length}`, '', '## Raw failures', '',
   ];
   const failures = Object.entries(report.rawFailures).filter(([, value]) => Number(value) > 0);
@@ -182,6 +195,8 @@ function markdown(report) {
 
 const baseSha = arg('base', process.env.PHASE4_BASE || '9c67832485f8e9b6101915d460fae2a74bccfec5');
 const headSha = arg('head', git(['rev-parse', 'HEAD'], 'unknown'));
+const ownershipLane = arg('lane', process.env.PHASE4_LANE || 'p4-7');
+const ownershipBaseSha = arg('ownership-base', git(['merge-base', headSha, 'origin/main'], baseSha));
 const noCommands = process.argv.includes('--no-commands');
 const oracles = await runVerificationOracles(); const audit = staticAudit();
 const notRun = (label, commandText) => ({ label, command: commandText, passed: false, status: null, signal: null, timedOut: false, elapsedMs: 0, stdout: '', stderr: 'NOT-RUN (--no-commands)' });
@@ -193,8 +208,9 @@ if (!noCommands) validation.push(
   command('npm run invariants:test', 'npm', ['run', 'invariants:test']),
   command('npm run migration:test', 'npm', ['run', 'migration:test']),
 );
-const ownershipRun = noCommands ? notRun('ownership gate', `node tools/validation/phase4-ownership.mjs --lane p4-6 --base ${baseSha}`)
-  : command('ownership gate', process.execPath, ['tools/validation/phase4-ownership.mjs', '--lane', 'p4-6', '--base', baseSha]);
+const ownershipCommand = `node tools/validation/phase4-ownership.mjs --lane ${ownershipLane} --base ${ownershipBaseSha}`;
+const ownershipRun = noCommands ? notRun('ownership gate', ownershipCommand)
+  : command('ownership gate', process.execPath, ['tools/validation/phase4-ownership.mjs', '--lane', ownershipLane, '--base', ownershipBaseSha]);
 validation.push(ownershipRun);
 
 const raw = rawFailures(oracles, ownershipRun);
@@ -210,7 +226,8 @@ const rawTotal = Object.values(raw).reduce((sum, value) => sum + (Number(value) 
 const integrationDecision = firstDivergences.length || rawTotal ? 'NOT-INTEGRATED / BLOCKING' : 'READY-FOR-P4-7-INTEGRATION';
 const productionBlockersByOwnerLane = firstDivergences.reduce((out, item) => { const key = item.ownerLane || 'unknown'; (out[key] ||= []).push(item); return out; }, {});
 const report = {
-  schemaVersion: 1, phase: 4, lane: 'p4-6-artifact-verification', baseSha, headSha, generatedAt: new Date().toISOString(),
+  schemaVersion: 1, phase: 4, lane: 'p4-6-artifact-verification', verificationLane: ownershipLane,
+  baseSha, ownershipBaseSha, headSha, generatedAt: new Date().toISOString(),
   integrationDecision, verificationCases: oracles.verificationCases, rawFailures: raw, performance: oracles.performance,
   firstDivergences, productionBlockersByOwnerLane, staticAudit: audit, phase3, validation: validation.map(publicCommand),
 };
@@ -219,5 +236,5 @@ const stem = `verification-${String(headSha).slice(0, 12) || 'unknown'}`;
 const jsonPath = path.join(REPORT_DIR, `${stem}.json`); const mdPath = path.join(REPORT_DIR, `${stem}.md`);
 fs.writeFileSync(jsonPath, JSON.stringify(report, null, 2) + '\n'); fs.writeFileSync(mdPath, markdown(report));
 console.log(`PHASE4_VERIFICATION_REPORT ${path.relative(ROOT, jsonPath)} ${integrationDecision}`);
-console.log(JSON.stringify({ baseSha, headSha, integrationDecision, rawFailures: raw, firstDivergenceCount: firstDivergences.length, phase3: phase3.satisfied }));
+console.log(JSON.stringify({ baseSha, ownershipBaseSha, headSha, integrationDecision, rawFailures: raw, firstDivergenceCount: firstDivergences.length, phase3: phase3.satisfied }));
 if (integrationDecision !== 'READY-FOR-P4-7-INTEGRATION') process.exitCode = 1;
