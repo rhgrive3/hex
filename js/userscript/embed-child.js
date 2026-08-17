@@ -13,6 +13,7 @@ import {
   readEmbedProvider,
 } from './embed-bootstrap.js';
 import { createEmbedBridgeProxy } from './embed-bridge-proxy.js';
+import { createDevWorkerParentRpcClient } from './dev/parent-rpc.js';
 import { setUiRoot } from '../ui-root.js';
 
 export const EMBED_PATH = '/embed/chatgpt';
@@ -103,6 +104,7 @@ export async function startEmbedChildRuntime(options = {}) {
     return module.installProtectedWorkers();
   });
   const createBridge = options.createEmbedBridgeProxy || createEmbedBridgeProxy;
+  const createDevClient = options.createDevWorkerParentRpcClient || createDevWorkerParentRpcClient;
   const importApp = options.importApp || (() => import('../app.js'));
   const importUx = options.importUx || (() => import('../ux.js'));
   const sendReady = options.sendEmbedReady || sendEmbedReady;
@@ -124,7 +126,9 @@ export async function startEmbedChildRuntime(options = {}) {
     allowedOrigins: options.allowedOrigins,
   }));
   const bridge = stageSync('embed bridge proxy', () => createBridge({ port: attach.port }));
+  const devWorkerClient = createOptionalDevWorkerClient(createDevClient, attach.port);
   globalObject.__HEX_CHATGPT_BRIDGE__ = bridge;
+  globalObject.__HEX_DEV_WORKER_CLIENT__ = devWorkerClient;
   globalObject.__HEX_API_BASE__ = locationRef.origin;
   globalObject.__HEX_AI_PROVIDER__ = readInitialProvider(locationRef, globalObject);
 
@@ -144,7 +148,7 @@ export async function startEmbedChildRuntime(options = {}) {
     requiredSelectors: options.requiredSelectors,
   }));
   stageSync('embed ready', () => sendReady(attach.port, { nonce: attach.nonce }));
-  return Object.freeze({ bridge, nonce: attach.nonce, port: attach.port, generation, sandboxToken: attach.sandboxToken || null });
+  return Object.freeze({ bridge, devWorkerClient, nonce: attach.nonce, port: attach.port, generation, sandboxToken: attach.sandboxToken || null });
 }
 
 export function installCanonicalCss(documentRef, cssText) {
@@ -178,6 +182,38 @@ export function waitForCanonicalAppReady(options = {}) {
   });
 }
 
+function createOptionalDevWorkerClient(createClient, port) {
+  try {
+    return createClient({ port });
+  } catch (error) {
+    const code = safeDevFailureCode(error?.code);
+    const message = String(error?.message || 'Dev Worker parent RPC is unavailable.').slice(0, 512);
+    const fail = async () => {
+      const failure = new Error(message);
+      failure.code = code;
+      throw failure;
+    };
+    return Object.freeze({
+      enabled: false,
+      error: Object.freeze({ code, message }),
+      discover: fail,
+      claim: fail,
+      createChat: fail,
+      send: fail,
+      observe: fail,
+      followup: fail,
+      nudge: fail,
+      stop: fail,
+      result: fail,
+      release: fail,
+      waitEvent: fail,
+      close() {},
+    });
+  }
+}
+function safeDevFailureCode(value) {
+  return typeof value === 'string' && /^[a-z0-9.-]{1,64}$/i.test(value) ? value : 'transport-failure';
+}
 function readSandboxToken(globalObject) {
   const value = globalObject?.__HEX_EMBED_SANDBOX_TOKEN__;
   if (!value) return null;

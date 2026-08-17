@@ -1,13 +1,18 @@
 import { DEV_DECISION_POLICY } from '../policy/decision-policy.js';
 import { createDevAnalysisScopeRequest } from '../run/analysis-scope.js';
-import { createDevRun, DEV_RUN_STATUS, transitionDevRun } from '../run/dev-run.js';
+import { bindDevRunIdentity, createDevRun, DEV_RUN_STATUS, transitionDevRun } from '../run/dev-run.js';
 import { validateDevSupervisorDecision } from '../protocol/hex-dev-supervisor-v1.js';
+import { createDevWorkerToolSurface } from '../workers/tool-surface.js';
 
 let fallbackSequence = 0;
 
 export class DevSupervisorV0 {
-  constructor({ availableTools = [], idFactory = defaultIdFactory, now = () => new Date().toISOString() } = {}) {
-    this.availableTools = Object.freeze([...availableTools].map(String));
+  constructor({ availableTools = [], workerTools = null, workerClient = null, idFactory = defaultIdFactory, now = () => new Date().toISOString() } = {}) {
+    this.workerTools = workerTools || createDevWorkerToolSurface(workerClient || globalThis.__HEX_DEV_WORKER_CLIENT__ || null);
+    this.availableTools = Object.freeze([...new Set([
+      ...availableTools.map(String),
+      ...(this.workerTools?.toolNames || []),
+    ])]);
     this.idFactory = idFactory;
     this.now = now;
   }
@@ -52,6 +57,29 @@ export class DevSupervisorV0 {
     }
     const finalStatus = decision.remaining.length ? DEV_RUN_STATUS.PAUSED : DEV_RUN_STATUS.COMPLETED;
     return { run: transitionDevRun(active, finalStatus, { now: this.now() }), decision };
+  }
+
+  async executeToolDecision(run, input) {
+    const applied = this.applyDecision(run, input);
+    if (applied.decision.type !== 'tool') throw new TypeError('executeToolDecision requires a Dev tool decision.');
+    if (!this.workerTools?.has(applied.decision.tool)) {
+      throw new TypeError(`No Dev tool executor is registered for: ${applied.decision.tool}`);
+    }
+    const result = await this.workerTools.execute(applied.decision.tool, applied.decision.arguments);
+    return Object.freeze({
+      run: this.bindWorkerResult(applied.run, result),
+      decision: applied.decision,
+      result,
+    });
+  }
+
+  bindWorkerResult(run, result) {
+    if (!result || typeof result !== 'object') return run;
+    const patch = {};
+    if (result.workerId != null) patch.workerId = result.workerId;
+    if (result.tabNodeId != null) patch.tabNodeId = result.tabNodeId;
+    if (result.chatgptConversationId != null) patch.chatgptConversationId = result.chatgptConversationId;
+    return Object.keys(patch).length ? bindDevRunIdentity(run, patch, { now: this.now() }) : run;
   }
 }
 

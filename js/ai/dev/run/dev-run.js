@@ -77,6 +77,20 @@ export function transitionDevRun(run, nextStatus, { now = new Date().toISOString
   return deepFreeze({ ...run, plan: nextPlan, status: nextStatus, updatedAt: normalizeTimestamp(now) });
 }
 
+export function bindDevRunIdentity(run, patch = {}, { now = new Date().toISOString() } = {}) {
+  if (!run || run.agentProfile !== AGENT_PROFILE.DEV) throw new TypeError('A DevRun is required.');
+  if (!patch || typeof patch !== 'object' || Array.isArray(patch)) throw new TypeError('DevRun identity patch must be an object.');
+  const mutableFields = new Set(['taskId', 'workerId', 'tabNodeId', 'hexConversationId', 'chatgptConversationId']);
+  for (const key of Object.keys(patch)) {
+    if (!mutableFields.has(key)) throw new TypeError(`Unsupported DevRun identity field: ${key}`);
+  }
+  const next = { ...run, updatedAt: normalizeTimestamp(now) };
+  for (const key of mutableFields) {
+    if (Object.prototype.hasOwnProperty.call(patch, key)) next[key] = nullableId(patch[key]);
+  }
+  return deepFreeze(next);
+}
+
 export function isTerminalDevRun(run) {
   return TERMINAL.has(run?.status);
 }
