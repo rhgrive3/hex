@@ -24,52 +24,54 @@ export class ArtifactError extends Error {
     this.detail = detail;
   }
 }
+export class ArtifactCorruptionError extends ArtifactError { constructor(code, message = code, detail = null) { super(code, message, detail); this.name = 'ArtifactCorruptionError'; } }
+export class ArtifactStorageError extends ArtifactError { constructor(code, message = code, detail = null) { super(code, message, detail); this.name = 'ArtifactStorageError'; } }
+export class ArtifactUnsupportedError extends ArtifactError { constructor(code = 'artifact-storage-unsupported', message = code, detail = null) { super(code, message, detail); this.name = 'ArtifactUnsupportedError'; } }
 
-export class ArtifactCorruptionError extends ArtifactError {
-  constructor(code, message = code, detail = null) {
-    super(code, message, detail);
-    this.name = 'ArtifactCorruptionError';
-  }
-}
-
-export class ArtifactStorageError extends ArtifactError {
-  constructor(code, message = code, detail = null) {
-    super(code, message, detail);
-    this.name = 'ArtifactStorageError';
-  }
-}
-
-export class ArtifactUnsupportedError extends ArtifactError {
-  constructor(code = 'artifact-storage-unsupported', message = code, detail = null) {
-    super(code, message, detail);
-    this.name = 'ArtifactUnsupportedError';
-  }
-}
-
-function required(value, code) {
-  const text = String(value ?? '').trim();
-  if (!text) throw new ArtifactError(code);
-  return text;
-}
-
-function optional(value) {
-  return value == null ? null : String(value);
-}
-
-function version(value, relevant = true) {
-  if (!relevant) return ARTIFACT_NOT_APPLICABLE_VERSION;
-  return required(value, 'artifact-version-required');
-}
-
+function required(value, code) { const text = String(value ?? '').trim(); if (!text) throw new ArtifactError(code); return text; }
+function optional(value) { return value == null ? null : String(value); }
+function version(value, relevant = true) { if (!relevant) return ARTIFACT_NOT_APPLICABLE_VERSION; return required(value, 'artifact-version-required'); }
 function sortedStrings(values) {
   if (values == null) return [];
   if (!Array.isArray(values)) throw new ArtifactError('artifact-upstream-ids-invalid');
   return [...new Set(values.map(String).filter(Boolean))].sort();
 }
 
-export function canonicalConfigHash(config = {}) {
-  return stableDigest(jsonSafe(config));
+/** Canonicalizes JS containers before handing them to the one repository digest. */
+export function canonicalArtifactKeyValue(value, seen = new WeakSet()) {
+  if (typeof value === 'bigint') return value.toString();
+  if (value == null || typeof value === 'string' || typeof value === 'boolean') return value;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value === 'undefined' || typeof value === 'function' || typeof value === 'symbol') return null;
+  if (ArrayBuffer.isView(value)) return Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength));
+  if (value instanceof ArrayBuffer) return Array.from(new Uint8Array(value));
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value !== 'object') return String(value);
+  if (seen.has(value)) throw new ArtifactError('artifact-key-cyclic-value');
+  seen.add(value);
+  let out;
+  if (value instanceof Map) {
+    out = [...value.entries()].map(([key, entryValue]) => [canonicalArtifactKeyValue(key, seen), canonicalArtifactKeyValue(entryValue, seen)]);
+    out.sort((a, b) => stableStringify(a[0]).localeCompare(stableStringify(b[0])) || stableStringify(a[1]).localeCompare(stableStringify(b[1])));
+    out = { $map:out };
+  } else if (value instanceof Set) {
+    const values = [...value].map((entry) => canonicalArtifactKeyValue(entry, seen));
+    values.sort((a, b) => stableStringify(a).localeCompare(stableStringify(b)));
+    out = { $set:values };
+  } else if (Array.isArray(value)) {
+    out = value.map((entry) => canonicalArtifactKeyValue(entry, seen));
+  } else {
+    out = {};
+    for (const key of Object.keys(value).sort()) {
+      const normalized = canonicalArtifactKeyValue(value[key], seen);
+      if (normalized !== null || value[key] === null) out[key] = normalized;
+    }
+  }
+  seen.delete(value);
+  return out;
 }
+
+export function canonicalConfigHash(config = {}) { return stableDigest(canonicalArtifactKeyValue(config)); }
 
 /**
  * Normalizes only behavior-affecting key material. Callers explicitly mark
@@ -78,12 +80,11 @@ export function canonicalConfigHash(config = {}) {
 export function createArtifactDescriptor(input = {}) {
   const relevance = input.relevance || {};
   const versions = input.versions || {};
-  const config = jsonSafe(input.config ?? {});
-  const keyExtras = jsonSafe(input.keyExtras ?? {});
+  const config = canonicalArtifactKeyValue(input.config ?? {});
+  const keyExtras = canonicalArtifactKeyValue(input.keyExtras ?? {});
   const upstreamArtifactIds = sortedStrings(input.upstreamArtifactIds ?? input.inputArtifactIds ?? []);
   const canonicalConfig = canonicalConfigHash(config);
   const keyMaterialHash = stableDigest({ config, keyExtras });
-
   const descriptor = {
     contractVersion: ARTIFACT_CONTRACT_VERSION,
     binaryId: required(input.binaryId, 'artifact-binary-id-required'),
@@ -102,55 +103,43 @@ export function createArtifactDescriptor(input = {}) {
       plugin: version(versions.plugin ?? input.pluginVersion, relevance.plugin === true),
       provider: version(versions.provider ?? input.providerVersion, relevance.provider === true),
     },
-    runtimeSnapshotId: relevance.runtimeSnapshot === true
-      ? required(input.runtimeSnapshotId, 'artifact-runtime-snapshot-required')
-      : null,
-    canonicalConfigHash: canonicalConfig,
+    runtimeSnapshotId: relevance.runtimeSnapshot === true ? required(input.runtimeSnapshotId, 'artifact-runtime-snapshot-required') : null,
+    canonicalConfigHash:canonicalConfig,
     keyMaterialHash,
     upstreamArtifactIds,
-    originRefs: sortedStrings(input.originRefs ?? []),
+    originRefs:sortedStrings(input.originRefs ?? []),
   };
-
-  // Canonical ArtifactId remains the single repository identity truth. Optional
-  // Phase 4 dimensions are folded into optionsHash only when explicitly relevant.
   const optionsHash = stableDigest({
-    configHash: canonicalConfig,
-    keyExtrasHash: stableDigest(keyExtras),
-    platformVersion: descriptor.versions.platform,
-    runtimeVersion: descriptor.versions.runtime,
-    pluginVersion: descriptor.versions.plugin,
-    providerVersion: descriptor.versions.provider,
-    runtimeSnapshotId: descriptor.runtimeSnapshotId,
+    configHash:canonicalConfig,
+    keyExtrasHash:stableDigest(keyExtras),
+    platformVersion:descriptor.versions.platform,
+    runtimeVersion:descriptor.versions.runtime,
+    pluginVersion:descriptor.versions.plugin,
+    providerVersion:descriptor.versions.provider,
+    runtimeSnapshotId:descriptor.runtimeSnapshotId,
   });
   descriptor.artifactId = createArtifactId({
-    binaryId: descriptor.binaryId,
-    sliceId: descriptor.sliceId,
-    loaderVersion: descriptor.versions.loader,
-    architectureSemanticVersion: descriptor.versions.architectureSemantic,
-    abiSemanticVersion: descriptor.versions.abiSemantic,
-    semanticSchemaVersion: descriptor.versions.semanticSchema,
-    entityId: descriptor.entityId,
-    passId: descriptor.producerId,
-    passVersion: descriptor.producerVersion,
+    binaryId:descriptor.binaryId,
+    sliceId:descriptor.sliceId,
+    loaderVersion:descriptor.versions.loader,
+    architectureSemanticVersion:descriptor.versions.architectureSemantic,
+    abiSemanticVersion:descriptor.versions.abiSemantic,
+    semanticSchemaVersion:descriptor.versions.semanticSchema,
+    entityId:descriptor.entityId,
+    passId:descriptor.producerId,
+    passVersion:descriptor.producerVersion,
     optionsHash,
-    inputArtifactIds: upstreamArtifactIds,
+    inputArtifactIds:upstreamArtifactIds,
   });
   return deepFreeze(descriptor);
 }
 
-export function encodeArtifactPayload(payload) {
-  return encoder.encode(stableStringify(payload));
-}
-
+export function encodeArtifactPayload(payload) { return encoder.encode(stableStringify(payload)); }
 export function decodeArtifactPayload(bytes) {
   const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-  try {
-    return JSON.parse(decoder.decode(view));
-  } catch (error) {
-    throw new ArtifactCorruptionError('artifact-payload-malformed', 'Artifact payload is not valid canonical JSON', { cause: String(error) });
-  }
+  try { return JSON.parse(decoder.decode(view)); }
+  catch (error) { throw new ArtifactCorruptionError('artifact-payload-malformed', 'Artifact payload is not valid canonical JSON', { cause:String(error) }); }
 }
-
 export function artifactPayloadChecksum(bytes) {
   const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
   return stableDigest(Array.from(view));
@@ -161,29 +150,28 @@ export function createArtifactRecord(descriptor, payloadBytes, metadata = {}) {
   const bytes = payloadBytes instanceof Uint8Array ? payloadBytes : new Uint8Array(payloadBytes);
   const completeness = metadata.completeness ?? 'complete';
   if (!COMPLETENESS.has(completeness)) throw new ArtifactError('artifact-completeness-invalid');
-  const record = {
-    recordSchemaVersion: ARTIFACT_RECORD_SCHEMA_VERSION,
-    artifactContractVersion: ARTIFACT_CONTRACT_VERSION,
-    artifactId: descriptor.artifactId,
-    artifactKind: descriptor.artifactKind,
-    producerId: descriptor.producerId,
-    producerVersion: descriptor.producerVersion,
-    versions: descriptor.versions,
-    canonicalConfigHash: descriptor.canonicalConfigHash,
-    upstreamArtifactIds: descriptor.upstreamArtifactIds,
-    binaryId: descriptor.binaryId,
-    sliceId: descriptor.sliceId,
-    entityId: descriptor.entityId,
-    runtimeSnapshotId: descriptor.runtimeSnapshotId,
-    originRefs: descriptor.originRefs,
-    payloadEncoding: ARTIFACT_PAYLOAD_ENCODING,
-    payloadEncodingVersion: 1,
-    payloadChecksum: artifactPayloadChecksum(bytes),
-    payloadSize: bytes.byteLength,
+  return deepFreeze({
+    recordSchemaVersion:ARTIFACT_RECORD_SCHEMA_VERSION,
+    artifactContractVersion:ARTIFACT_CONTRACT_VERSION,
+    artifactId:descriptor.artifactId,
+    artifactKind:descriptor.artifactKind,
+    producerId:descriptor.producerId,
+    producerVersion:descriptor.producerVersion,
+    versions:descriptor.versions,
+    canonicalConfigHash:descriptor.canonicalConfigHash,
+    upstreamArtifactIds:descriptor.upstreamArtifactIds,
+    binaryId:descriptor.binaryId,
+    sliceId:descriptor.sliceId,
+    entityId:descriptor.entityId,
+    runtimeSnapshotId:descriptor.runtimeSnapshotId,
+    originRefs:descriptor.originRefs,
+    payloadEncoding:ARTIFACT_PAYLOAD_ENCODING,
+    payloadEncodingVersion:1,
+    payloadChecksum:artifactPayloadChecksum(bytes),
+    payloadSize:bytes.byteLength,
     completeness,
-    creation: jsonSafe(metadata.creation ?? {}),
-  };
-  return deepFreeze(record);
+    creation:jsonSafe(metadata.creation ?? {}),
+  });
 }
 
 export function validateArtifactRecord(record, payloadBytes, expected = {}) {
@@ -201,7 +189,4 @@ export function validateArtifactRecord(record, payloadBytes, expected = {}) {
   if (expected.semanticSchemaVersion && record.versions?.semanticSchema !== expected.semanticSchemaVersion) throw new ArtifactCorruptionError('artifact-semantic-schema-mismatch');
   return true;
 }
-
-export function canonicalSerializeArtifactRecord(record) {
-  return stableStringify(record);
-}
+export function canonicalSerializeArtifactRecord(record) { return stableStringify(record); }
