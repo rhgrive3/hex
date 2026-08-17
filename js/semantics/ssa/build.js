@@ -583,36 +583,26 @@ function phiSkeleton(ir, block, variant) {
 }
 
 function resolvePhiOrigins(phiDefinitions, definitionByValue, irBlocks, tick) {
-  const base = new Map();
-  const current = new Map();
-  for (const phi of phiDefinitions) {
-    const origin = safeOrigin(irBlocks.get(phi.blockId)?.origin, createOriginSet({ parentEntityIds: [phi.blockId] }));
-    base.set(phi.valueId, origin);
-    current.set(phi.valueId, origin);
+  const sorted = phiDefinitions.slice().sort((a, b) => a.valueId.localeCompare(b.valueId));
+  const phiIds = new Set(sorted.map((phi) => phi.valueId));
+  const origins = []; const originByKey = new Map(); const roots = new Map();
+  const dependents = new Map(sorted.map((phi) => [phi.valueId, new Set()]));
+  const addOrigin = (key, origin) => { if (originByKey.has(key)) return originByKey.get(key); const index = origins.length; origins.push(origin); originByKey.set(key, index); return index; };
+  for (const phi of sorted) {
+    tick(); const set = new Set([addOrigin('base:' + phi.valueId, safeOrigin(irBlocks.get(phi.blockId)?.origin, createOriginSet({ parentEntityIds: [phi.blockId] })))]);
+    const incoming = phi.incoming.slice().sort((a, b) => a.predecessorBlockId.localeCompare(b.predecessorBlockId) || a.valueId.localeCompare(b.valueId));
+    for (const item of incoming) { tick(); const definition = definitionByValue.get(item.valueId); if (!definition) fail('semantic-ssa-dangling-phi-value-id');
+      if (definition.kind === 'phi') { if (!phiIds.has(definition.valueId)) fail('semantic-ssa-dangling-phi-value-id'); dependents.get(definition.valueId).add(phi.valueId); } else set.add(addOrigin('definition:' + definition.valueId, definition.origin)); }
+    roots.set(phi.valueId, set);
   }
-  const maximumRounds = phiDefinitions.length + 2;
-  for (let round = 0; round < maximumRounds; round++) {
-    let changed = false;
-    for (const phi of phiDefinitions.slice().sort((a, b) => a.valueId.localeCompare(b.valueId))) {
-      tick();
-      const incomingOrigins = [];
-      for (const incoming of phi.incoming) {
-        tick();
-        const incomingDefinition = definitionByValue.get(incoming.valueId);
-        if (!incomingDefinition) fail('semantic-ssa-dangling-phi-value-id');
-        incomingOrigins.push(incomingDefinition.kind === 'phi' ? current.get(incoming.valueId) : incomingDefinition.origin);
-      }
-      const next = safeOrigin(base.get(phi.valueId), ...incomingOrigins);
-      if (stableStringify(next) !== stableStringify(current.get(phi.valueId))) {
-        current.set(phi.valueId, next);
-        changed = true;
-      }
-    }
-    if (!changed) return current;
+  const queue = sorted.map((phi) => phi.valueId); const queued = new Set(queue);
+  for (let cursor = 0; cursor < queue.length; cursor++) { tick(); const sourceId = queue[cursor]; queued.delete(sourceId); const source = roots.get(sourceId);
+    for (const targetId of [...dependents.get(sourceId)].sort()) { tick(); const target = roots.get(targetId); const before = target.size; for (const index of source) target.add(index); if (target.size !== before && !queued.has(targetId)) { queue.push(targetId); queued.add(targetId); } }
   }
-  fail('semantic-ssa-phi-origin-did-not-converge');
+  const resolved = new Map();
+  for (const phi of sorted) { tick(); resolved.set(phi.valueId, safeOrigin(...[...roots.get(phi.valueId)].sort((a, b) => a - b).map((index) => origins[index]))); }
+  return resolved;
 }
-
 function finalizePhi(phi, resolvedOrigin) {
   const incoming = phi.incoming.slice().sort((a, b) => a.predecessorBlockId.localeCompare(b.predecessorBlockId) || a.valueId.localeCompare(b.valueId));
   const origin = transformOrigin(resolvedOrigin, {

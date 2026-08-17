@@ -1645,6 +1645,12 @@ function statementFor(insn, ctx, node) {
   if ((base === 'neg' || base === 'negs' || base === 'fneg') && dst) {
     return mk(varOf(dst, ctx) + ' = -' + operandText(insn.ops[1], ctx, insn) + ';', { dst, pure: true });
   }
+  if (base === 'rbit' && dst && insn.ops[1]) {
+    return mk(varOf(dst, ctx) + ' = reverse_bits(' + operandText(insn.ops[1], ctx, insn) + ');', { dst, pure: true });
+  }
+  if (base === 'clz' && dst && insn.ops[1]) {
+    return mk(varOf(dst, ctx) + ' = count_leading_zeros(' + operandText(insn.ops[1], ctx, insn) + ');', { dst, pure: true });
+  }
   if (base === 'mvn' && dst) {
     return mk(varOf(dst, ctx) + ' = ~' + operandText(insn.ops[1], ctx, insn) + ';', { dst, pure: true });
   }

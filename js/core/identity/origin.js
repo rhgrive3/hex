@@ -1,6 +1,7 @@
 import { canonicalAddress, deepFreeze, jsonSafe, stableStringify } from './index.js';
 
 export const ORIGIN_SCHEMA_VERSION = 1;
+const CANONICAL_ORIGIN_SETS = new WeakSet();
 
 function fail(code) { throw new TypeError(code); }
 function stringList(values, code) {
@@ -13,8 +14,8 @@ function bigintValue(value, code) {
   catch { fail(code); }
 }
 function uniqueSorted(values) {
-  return Array.from(new Map(values.map((value) => [stableStringify(value), value])).values())
-    .sort((a, b) => stableStringify(a).localeCompare(stableStringify(b)));
+  const byKey = new Map(values.map((value) => [stableStringify(value), value]));
+  return [...byKey.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([, value]) => value);
 }
 
 function byteRange(range) {
@@ -66,6 +67,7 @@ export function createTransformRecord(input = {}) {
 }
 
 export function createOriginSet(input = {}) {
+  if (input && typeof input === 'object' && CANONICAL_ORIGIN_SETS.has(input)) return input;
   if (input == null) input = {};
   if (typeof input !== 'object' || Array.isArray(input)) fail('origin-invalid-set');
   const byteRanges = uniqueSorted((input.byteRanges || []).map(byteRange));
@@ -81,7 +83,9 @@ export function createOriginSet(input = {}) {
     parentEntityIds: uniqueSorted(stringList(input.parentEntityIds, 'origin-invalid-parent-ids')),
     transforms,
   };
-  return deepFreeze(out);
+  const frozen = deepFreeze(out);
+  CANONICAL_ORIGIN_SETS.add(frozen);
+  return frozen;
 }
 
 export function mergeOriginSets(...sets) {
