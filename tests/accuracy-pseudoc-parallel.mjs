@@ -38,21 +38,17 @@ const timings = [];
 const children = new Set();
 const started = Date.now();
 
-function assign(child) {
+function assign(child, onError) {
   if (failed || next >= samples.length) return false;
   const index = next++;
   const [a, end] = samples[index];
   try {
     child.send({ type: 'task', index, a, end }, (error) => {
-      if (error && !failed && finished < samples.length) {
-        failed = error;
-        shutdown();
-      }
+      if (error && !failed && finished < samples.length) onError(error);
     });
   } catch (error) {
-    if (!failed) failed = error;
-    shutdown();
-    throw error;
+    onError(error);
+    return false;
   }
   return true;
 }
@@ -74,10 +70,10 @@ function shutdown() {
 
 const completion = new Promise((resolve, reject) => {
   const fail = (error) => {
-    if (failed && failed !== error) return;
-    failed = error;
+    if (failed) return;
+    failed = error instanceof Error ? error : new Error(String(error));
     shutdown();
-    reject(error);
+    reject(failed);
   };
 
   for (let worker = 0; worker < workers; worker++) {
@@ -96,7 +92,7 @@ const completion = new Promise((resolve, reject) => {
       if (!message || failed) return;
       if (message.type === 'ready') {
         process.stderr.write(`pseudoc worker ${worker} ready in ${message.bootMs}ms\n`);
-        try { assign(child); } catch (error) { fail(error); }
+        assign(child, fail);
         return;
       }
       if (message.type === 'fatal') {
@@ -123,14 +119,14 @@ const completion = new Promise((resolve, reject) => {
       });
 
       if (finished === samples.length) {
-        // Workers that ran out of queued tasks remain idle but connected until
+        // Workers that run out of queued tasks remain idle but connected until
         // the last in-flight function completes. Disconnect once, here, rather
         // than sending repeated stop messages to channels that may already be
         // closing (the old scheme caused ERR_IPC_CHANNEL_CLOSED on YWP).
         disconnectAll();
         resolve();
       } else {
-        try { assign(child); } catch (error) { fail(error); }
+        assign(child, fail);
       }
     });
 
