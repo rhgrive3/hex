@@ -58,6 +58,23 @@ jobs:
               ;;
           esac
           echo "lane=$lane" >> "$GITHUB_OUTPUT"
+      - name: Prove direct Phase 4 ownership simulations
+        shell: bash
+        run: |
+          set -euo pipefail
+          expect_fail() {
+            if "$@"; then
+              echo "::error::expected ownership command to fail: $*"
+              exit 1
+            fi
+          }
+
+          node tools/validation/phase4-ownership.mjs --lane p4-3 --files js/project/artifact-index.js
+          expect_fail node tools/validation/phase4-ownership.mjs --lane p4-2 --files js/core/scheduler/index.js
+          node tools/validation/phase4-ownership.mjs --lane p4-7 --files js/core/scheduler/index.js
+          expect_fail node tools/validation/phase4-ownership.mjs --lane p4-7 --files js/core/artifacts/contracts.js
+          node tools/validation/phase4-ownership.mjs --lane p4-r --files tools/validation/phase-ownership/phase4.json
+          expect_fail node tools/validation/phase4-ownership.mjs --lane p4-r --files js/backend.js
       - name: Run Phase 4 ownership governance regressions
         run: node --test tests/phase4/ownership/integration-contract-repair.test.mjs
       - name: Enforce machine-readable ownership manifest
