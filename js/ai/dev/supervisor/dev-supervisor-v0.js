@@ -22,6 +22,7 @@ export class DevSupervisorV0 {
     let run = createDevRun({
       ...identity,
       runId: identity.runId || this.idFactory('run'),
+      workerId: identity.workerId || this.idFactory('worker'),
       supervisorSessionKey: identity.supervisorSessionKey || this.idFactory('supervisor-session'),
       goal,
       decisionPolicy,
