@@ -81,6 +81,7 @@ html.ai-docked .ai-launcher { right: calc(var(--ai-panel-width) + var(--ui-space
   border-radius: var(--ui-radius-sm);
   background: var(--ui-surface-2);
 }
+.ai-agent-profile[hidden], .ai-dev-policy[hidden] { display: none; }
 
 .ai-seg {
   min-height: 32px;
