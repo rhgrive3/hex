@@ -3,6 +3,7 @@ import { buildIR, readModifyWrite } from '../../js/ir.js';
 import { findValueUpdates } from '../../js/dataflow.js';
 
 const BASE=0x100000000n;
+const safe=(value)=>JSON.stringify(value,(_k,v)=>typeof v==='bigint'?String(v):v);
 function build(lines,names={}) {
   const table=new Map(Object.entries(names));
   const raw=lines.map((text,row)=>{const p=text.indexOf(' ');return {row,address:BASE+BigInt(row*4),mn:p<0?text:text.slice(0,p),ops:p<0?'':text.slice(p+1)}});
@@ -16,14 +17,18 @@ function i(x){return {id:x.id,row:x.row,op:x.op,sub:x.sub,sem:x.semanticNodeId,s
 {
  const {model,rowOfAddress}=build(['ldr w8, [x0, #0x20]','add w8, w8, #0xa','str w8, [x0, #0x20]','ret']);
  const ir=buildIR(model,{rowOfAddress});
- console.log('RMW_INSTRUCTIONS '+JSON.stringify(ir.instructions.map(i)));
- console.log('RMW_CORE '+JSON.stringify(readModifyWrite(ir).map(r=>({load:i(r.load),store:i(r.store),chain:(r.chain||[]).map(i),loc:r.location?{key:r.location.key,kind:r.location.kind,disp:String(r.location.disp)}:null,kind:r.kind}))));
- console.log('RMW_PUBLIC '+JSON.stringify(findValueUpdates(model).map(u=>({kind:u.kind,engine:u.engine,store:u.store,from:u.from,steps:(u.steps||[]).map(s=>({op:s.op,imm:s.imm==null?null:String(s.imm),row:s.row})),location:u.location?{key:u.location.key,irKey:u.location.irKey,disp:String(u.location.disp),base:u.location.base}:null}))));
+ console.log('RMW_CORE_COUNT '+readModifyWrite(ir).length);
+ console.log('RMW_CORE '+safe(readModifyWrite(ir).map(r=>({load:i(r.load),store:i(r.store),chain:(r.chain||[]).map(i),loc:r.location?{key:r.location.key,kind:r.location.kind,disp:String(r.location.disp)}:null,kind:r.kind}))));
+ const updates=findValueUpdates(model);
+ console.log('RMW_PUBLIC_COUNT '+updates.length);
+ console.log('RMW_PUBLIC '+safe(updates.map(u=>({kind:u.kind,engine:u.engine,store:u.store,from:u.from,steps:(u.steps||[]).map(s=>({op:s.op,imm:s.imm==null?null:String(s.imm),row:s.row})),location:u.location?{key:u.location.key,irKey:u.location.irKey,disp:String(u.location.disp),base:u.location.base}:null})));
 }
 {
  const {model,rowOfAddress}=build(['adrp x8, #0x100004000','ldrsw x2, [x8, #0x20]','b #0x100000100'],{'0x100000100':'_objc_setProperty_nonatomic_copy'});
  const ir=buildIR(model,{rowOfAddress});
- console.log('ARC_CALLS '+JSON.stringify(model.calls));
- console.log('ARC_INSTRUCTIONS '+JSON.stringify(ir.instructions.map(i)));
- console.log('ARC_PUBLIC '+JSON.stringify(findValueUpdates(model).map(u=>({kind:u.kind,engine:u.engine,register:u.register,helper:u.helper,store:u.store,location:u.location?{key:u.location.key,disp:u.location.disp==null?null:String(u.location.disp),indexAddr:u.location.indexAddr==null?null:String(u.location.indexAddr)}:null}))));
+ console.log('ARC_CALLS '+safe(model.calls));
+ console.log('ARC_INSTRUCTIONS '+safe(ir.instructions.map(i)));
+ const updates=findValueUpdates(model);
+ console.log('ARC_PUBLIC_COUNT '+updates.length);
+ console.log('ARC_PUBLIC '+safe(updates.map(u=>({kind:u.kind,engine:u.engine,register:u.register,helper:u.helper,store:u.store,location:u.location?{key:u.location.key,disp:u.location.disp==null?null:String(u.location.disp),indexAddr:u.location.indexAddr==null?null:String(u.location.indexAddr)}:null})));
 }
