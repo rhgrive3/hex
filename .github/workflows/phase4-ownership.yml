@@ -17,9 +17,9 @@ on:
       - 'tools/validation/phase-ownership/phase4.json'
       - 'reports/phase4/**'
       - '.github/workflows/phase4-*.yml'
+      # Shared generated userscript outputs remain manifest-governed when a
+      # real Phase 4 lane runs, but must not alone require a Phase 4 branch.
       - 'package.json'
-      - 'userscript/hex.user.template.js'
-      - 'userscript/release-version.json'
 
 permissions:
   contents: read
