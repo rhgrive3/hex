@@ -10,18 +10,34 @@ import {
   DEV_WORKER_STATE,
 } from '../../../ai/dev/workers/contracts.js';
 
+const CONVERSATION_ANCHOR_LIMIT = 64;
+const DEFAULT_HYDRATION_SETTLE_MS = 240;
+const DEFAULT_HYDRATION_TIMEOUT_MS = 6000;
+
 export class WorkerChatController {
-  constructor({ adapter, router, turns, now = () => new Date().toISOString(), document = globalThis.document } = {}) {
+  constructor({
+    adapter,
+    router,
+    turns,
+    now = () => new Date().toISOString(),
+    document = globalThis.document,
+    hydrationSettleMs = DEFAULT_HYDRATION_SETTLE_MS,
+    hydrationTimeoutMs = DEFAULT_HYDRATION_TIMEOUT_MS,
+  } = {}) {
     this.adapter = adapter || new ChatGPTDOMAdapter({ document });
     this.router = router || new ChatGPTConversationRouter(this.adapter, { storage: null });
     this.turns = turns || new ChatGPTTurnController(this.adapter);
     this.now = now;
+    this.hydrationSettleMs = positiveMs(hydrationSettleMs, DEFAULT_HYDRATION_SETTLE_MS);
+    this.hydrationTimeoutMs = positiveMs(hydrationTimeoutMs, DEFAULT_HYDRATION_TIMEOUT_MS);
     this.state = DEV_WORKER_STATE.STARTING;
     this.conversation = this.adapter.conversation?.() || null;
     this.responseText = '';
     this.active = null;
     this.lastProgress = null;
     this.listeners = new Set();
+    this.conversationAnchors = new Map();
+    this.prepared = false;
   }
 
   on(listener) {
@@ -32,7 +48,19 @@ export class WorkerChatController {
 
   currentConversation() {
     const value = this.adapter.conversation?.() || null;
-    return value ? { id: String(value.id), url: String(value.url) } : null;
+    if (!value?.id || !value?.url) return null;
+    const conversation = { id: String(value.id), url: String(value.url) };
+    const currentAnchors = this.currentUserAnchors();
+    const expectedAnchors = this.conversationAnchors.get(conversation.id) || [];
+
+    // A route match is not enough on iOS/WebKit. ChatGPT can expose the old
+    // /c/<id> hundreds of milliseconds before React has rehydrated that
+    // conversation's turns. During that window an empty user-turn baseline would
+    // make historical turns look like manual interference. Treat the route as
+    // unavailable until the user-turn anchors captured before navigation return.
+    if (expectedAnchors.length && !conversationAnchorsPresent(expectedAnchors, currentAnchors)) return null;
+    if (currentAnchors.length) this.rememberConversationAnchors(conversation, currentAnchors);
+    return conversation;
   }
 
   workerConversation() {
@@ -45,32 +73,102 @@ export class WorkerChatController {
     if (!conversation?.id || !conversation?.url) {
       throw workerError(DEV_WORKER_FAILURE.CONVERSATION_MISMATCH, 'A concrete ChatGPT conversation is required for Worker navigation.');
     }
-    const key = String(sessionKey || `dev-worker-navigation:${conversation.id}`);
-    this.router.bind(key, conversation);
+    const expected = { id: String(conversation.id), url: String(conversation.url) };
+    const anchors = this.conversationAnchors.get(expected.id) || [];
+    const key = String(sessionKey || `dev-worker-navigation:${expected.id}`);
+    this.router.bind(key, expected);
     const routed = await this.router.route(key, { signal, ...(timeoutMs == null ? {} : { timeoutMs }) });
-    if (!routed?.conversation || routed.conversation.id !== String(conversation.id)) {
+    if (!routed?.conversation || routed.conversation.id !== expected.id) {
       throw workerError(DEV_WORKER_FAILURE.CONVERSATION_MISMATCH, 'ChatGPT did not reach the requested conversation.');
     }
-    return routed.conversation;
+    if (!anchors.length) return routed.conversation;
+
+    const hydrated = await this.waitForConversationHydration(expected, anchors, { signal, timeoutMs });
+    if (!hydrated) {
+      throw workerError(
+        DEV_WORKER_FAILURE.CONVERSATION_MISMATCH,
+        'ChatGPT reached the requested conversation route before its prior turns finished rehydrating.',
+      );
+    }
+    return hydrated;
   }
 
-  async createChat({ runId, workerId } = {}) {
+  currentUserAnchors() {
+    let turns = [];
+    try { turns = this.adapter.userTurns?.() || []; } catch { turns = []; }
+    return turns
+      .map((turn) => ({ id: String(turn?.id || ''), text: normalizeText(turn?.text || '') }))
+      .filter((turn) => turn.id || turn.text)
+      .slice(-CONVERSATION_ANCHOR_LIMIT);
+  }
+
+  rememberConversationAnchors(conversation, anchors = this.currentUserAnchors()) {
+    const id = String(conversation?.id || '');
+    if (!id || !anchors.length) return;
+    this.conversationAnchors.set(id, Object.freeze(anchors.slice(-CONVERSATION_ANCHOR_LIMIT).map((anchor) => Object.freeze({ ...anchor }))));
+  }
+
+  async waitForConversationHydration(conversation, anchors, { signal, timeoutMs } = {}) {
+    const wanted = String(conversation?.id || '');
+    if (!wanted || !anchors?.length) return conversation || null;
+    const waitMs = positiveMs(timeoutMs, this.hydrationTimeoutMs);
+    let stableSignature = null;
+    let stableSince = null;
+    const ready = await waitFor(() => {
+      const visible = this.adapter.conversation?.() || null;
+      const current = this.currentUserAnchors();
+      const composer = this.adapter.composer?.() || null;
+      if (String(visible?.id || '') !== wanted
+        || !composer
+        || this.adapter.isGenerating?.()
+        || !conversationAnchorsPresent(anchors, current)) {
+        stableSignature = null;
+        stableSince = null;
+        return null;
+      }
+
+      const signature = conversationAnchorSignature(current);
+      if (signature !== stableSignature) {
+        stableSignature = signature;
+        stableSince = Date.now();
+        return null;
+      }
+      if (stableSince === null || Date.now() - stableSince < this.hydrationSettleMs) return null;
+
+      const hydrated = { id: String(visible.id), url: String(visible.url || conversation.url) };
+      this.rememberConversationAnchors(hydrated, current);
+      return hydrated;
+    }, waitMs, signal);
+    return ready || null;
+  }
+
+  async createChat() {
     if (this.active) throw workerError(DEV_WORKER_FAILURE.WORKER_BUSY, 'Worker is already handling a ChatGPT turn.');
+    // In one Safari tab, a blank ChatGPT New Chat has no durable conversation
+    // identity. Navigating there during worker.create_chat and then asking the
+    // Supervisor for its next decision creates a race: the Supervisor must steal
+    // the same tab back while the blank route is still hydrating. Prepare the
+    // logical Worker here and perform the physical New Chat transition atomically
+    // with worker.send instead.
     this.state = DEV_WORKER_STATE.STARTING;
     this.responseText = '';
     this.conversation = null;
-    const sessionKey = `dev-worker:${String(runId || '')}:${String(workerId || '')}:${Date.now().toString(36)}`;
-    try {
-      const routed = await this.router.route(sessionKey, {});
-      this.conversation = routed.conversation || null;
-      return this.snapshot();
-    } catch (error) {
-      this.state = DEV_WORKER_STATE.FAILED;
-      throw mapCreateChatError(error, 'Worker Chat could not be created safely.');
-    }
+    this.prepared = true;
+    return Object.freeze({ ...this.snapshot(), prepared: true });
   }
 
   async send(instruction, context = {}) {
+    if (this.prepared && !this.conversation?.id) {
+      const sessionKey = `dev-worker:${String(context.runId || '')}:${String(context.workerId || '')}:${Date.now().toString(36)}`;
+      try {
+        const routed = await this.router.route(sessionKey, {});
+        this.conversation = routed.conversation || null;
+        this.prepared = false;
+      } catch (error) {
+        this.state = DEV_WORKER_STATE.FAILED;
+        throw mapCreateChatError(error, 'Worker Chat could not be created safely before message submission.');
+      }
+    }
     return this.startTurn(instruction, { ...context, requireConversation: false });
   }
 
@@ -340,6 +438,15 @@ export class WorkerChatController {
   }
 }
 
+function conversationAnchorsPresent(expected, current) {
+  return (expected || []).every((anchor) => (current || []).some((turn) => {
+    if (anchor.id && turn.id === anchor.id) return true;
+    return !!anchor.text && turn.text === anchor.text;
+  }));
+}
+function conversationAnchorSignature(anchors) {
+  return (anchors || []).map((anchor) => `${anchor.id}\u0000${anchor.text}`).join('\u0001');
+}
 function mapCreateChatError(error, fallback) {
   const code = String(error?.code || '');
   if (/new-chat|composer|send|dom/i.test(code)) return workerError(DEV_WORKER_FAILURE.DOM_CHANGED, fallback);
@@ -366,5 +473,9 @@ function mapFailureCode(error, { submitted = false } = {}) {
   return submitted ? DEV_WORKER_FAILURE.RESPONSE_FAILURE : DEV_WORKER_FAILURE.PROVIDER_ERROR;
 }
 
+function positiveMs(value, fallback) {
+  const raw = Number(value);
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : fallback;
+}
 function workerError(code, message) { const error = new Error(message); error.code = code; return error; }
 function normalizeText(value) { return String(value || '').replace(/\s+/g, ' ').trim(); }
