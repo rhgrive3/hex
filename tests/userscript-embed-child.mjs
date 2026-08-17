@@ -195,11 +195,13 @@ async function testReadyOrdering() {
   const storage = new Map([['hex.ai.provider', 'gemini']]);
   const globalObject = { navigator: { language: 'ja' }, localStorage: { getItem: (key) => storage.get(key) || null } };
   const bridge = { refresh: async () => { order.push('refresh'); }, request() {}, cancel() {}, capabilities() {}, getSelection() {}, setSelection() {}, status() {}, conversationFor() {} };
+  const devWorkerClient = fakeDevWorkerClient();
   let readySent = false;
   const result = await startEmbedChildRuntime({
     window, document, location: locationForGeneration(12, 'chatgpt'), globalObject, cssText: ':root{color-scheme:dark}',
     waitForEmbedParentAttach: async () => { order.push('attach'); return { port: {}, nonce: 'a'.repeat(64), generation: '12' }; },
     createEmbedBridgeProxy: () => { order.push('bridge'); return bridge; },
+    createDevWorkerParentRpcClient: () => { order.push('dev-rpc'); return devWorkerClient; },
     setUiRoot: (root) => { assert.equal(root, document.documentElement); order.push('root'); },
     installProtectedWorkers: () => { order.push('workers'); },
     importApp: async () => { assert.equal(readySent, false); order.push('app'); globalObject.__app = {}; },
@@ -209,8 +211,9 @@ async function testReadyOrdering() {
   });
   assert.equal(result.generation, '12');
   assert.equal(globalObject.__HEX_CHATGPT_BRIDGE__, bridge);
+  assert.equal(globalObject.__HEX_DEV_WORKER_CLIENT__, devWorkerClient);
   assert.equal(globalObject.__HEX_AI_PROVIDER__, 'gemini', 'Worker-origin stored provider wins, preserving iframe preference');
-  assert.deepEqual(order, ['attach', 'bridge', 'refresh', 'root', 'css', 'workers', 'app', 'ux', 'readiness', 'ready']);
+  assert.deepEqual(order, ['attach', 'bridge', 'dev-rpc', 'refresh', 'root', 'css', 'workers', 'app', 'ux', 'readiness', 'ready']);
 }
 
 async function testFailedAppDoesNotSendReady() {
@@ -224,6 +227,7 @@ async function testFailedAppDoesNotSendReady() {
     globalObject: { navigator: { language: 'ja' } },
     waitForEmbedParentAttach: async () => ({ port: {}, nonce: 'b'.repeat(64), generation: '13' }),
     createEmbedBridgeProxy: () => ({ refresh: async () => {} }),
+    createDevWorkerParentRpcClient: () => fakeDevWorkerClient(),
     setUiRoot: () => {}, installProtectedWorkers: () => {},
     importApp: async () => { throw new Error('boom'); }, importUx: async () => {},
     sendEmbedReady: () => { ready++; },
@@ -240,6 +244,7 @@ async function testDirectEmbedFailsBounded() {
 
 function testRuntimeResponsibilityBoundaries() {
   assert.doesNotMatch(childSource, /installUserscriptNetworkBridge/);
+  assert.match(childSource, /createDevWorkerParentRpcClient/);
   assert.match(protectedEntrySource, /LEGACY_CHATGPT[\s\S]*await import\('\.\/entry\.js'\)/);
   const legacyBlock = protectedEntrySource.slice(protectedEntrySource.indexOf('LEGACY_CHATGPT'), protectedEntrySource.indexOf('EMBED_CHATGPT'));
   assert.doesNotMatch(legacyBlock, /PROTECTED_HOST\.html|scopedCss|installProtectedWorkers/);
@@ -248,6 +253,7 @@ function testRuntimeResponsibilityBoundaries() {
   assert.match(entrySource, /createChatGPTSandboxHost/);
   assert.doesNotMatch(entrySource, /createChatGPTIframeHost/);
   assert.match(entrySource, /createChatGPTParentRpc/);
+  assert.match(entrySource, /createDevWorkerParentRpc/);
   assert.doesNotMatch(entrySource, /falling back to legacy light DOM/);
   assert.match(entrySource, /readEmbedMode\(\) === LEGACY_MODE/);
 }
@@ -257,6 +263,13 @@ function proxyPair(handlers) {
   const server = createRpcServer(channel.port1, { handlers });
   const proxy = createEmbedBridgeProxy({ port: channel.port2, rpcOptions: { timeoutMs: 200 }, refreshMinIntervalMs: 0 });
   return { proxy, server, close() { try { proxy.close(); } catch {} try { server.close(); } catch {} } };
+}
+
+function fakeDevWorkerClient() {
+  return {
+    discover() {}, claim() {}, createChat() {}, send() {}, observe() {},
+    followup() {}, nudge() {}, stop() {}, result() {}, release() {}, waitEvent() {}, close() {},
+  };
 }
 
 function locationForGeneration(generation, provider = null) {

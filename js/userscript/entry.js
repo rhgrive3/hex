@@ -7,6 +7,8 @@ import { LEGACY_MODE, SANDBOX_MODE, readTrustedEmbedMode } from './embed-mode.js
 import { setEmbedProvider } from './embed-bootstrap.js';
 import { installProtectedWorkers } from './protected-workers.js';
 import { installUserscriptNetworkBridge } from './network.js';
+import { startParentDevWorkerRuntime } from './dev/parent-worker-runtime.js';
+import { createDevWorkerParentRpc } from './dev/parent-rpc.js';
 
 const PROVIDER_KEY = 'hex.ai.provider';
 const SESSION_CLEANUP_KEY = '__HEX_CHATGPT_EMBED_CLEANUP__';
@@ -15,25 +17,42 @@ const SANDBOX_READY_TIMEOUT_MS = 60000;
 
 export async function startChatGPTUserscript(options = {}) {
   const apiOrigin = normalizeApiOrigin(options.apiOrigin || globalThis.__HEX_API_BASE__ || globalThis.__HEX_RUNTIME_ORIGIN__ || location.origin);
-  const bridge = installChatGPTWebBridge();
   globalThis.__HEX_API_BASE__ = apiOrigin;
-  globalThis.__HEX_AI_PROVIDER__ = readProvider();
 
   cleanupPreviousSession();
 
-  if (readEmbedMode() === LEGACY_MODE) {
-    const result = await startLegacy({ bridge });
-    return Object.freeze({ mode: LEGACY_MODE, ...result });
+  const devWorkerRuntime = await startParentDevWorkerRuntime({
+    ...(options.devWorkerOptions || {}),
+    secret: options.devTabMeshSecret || options.devWorkerOptions?.secret,
+  });
+  if (devWorkerRuntime.role === 'worker') {
+    installSessionCleanup(() => devWorkerRuntime.close());
+    return Object.freeze({ mode: 'dev-worker', devWorkerRuntime });
   }
 
-  const result = await startSandbox({
-    apiOrigin,
-    bridge,
-    runtimeSourceProvider: options.runtimeSourceProvider,
-    loaderVersion: options.loaderVersion,
-    buildId: options.buildId,
-  });
-  return Object.freeze({ mode: SANDBOX_MODE, ...result });
+  const bridge = installChatGPTWebBridge();
+  globalThis.__HEX_AI_PROVIDER__ = readProvider();
+
+  if (readEmbedMode() === LEGACY_MODE) {
+    globalThis.__HEX_DEV_WORKER_CLIENT__ = devWorkerRuntime;
+    const result = await startLegacy({ bridge, devWorkerRuntime });
+    return Object.freeze({ mode: LEGACY_MODE, ...result, devWorkerRuntime });
+  }
+
+  try {
+    const result = await startSandbox({
+      apiOrigin,
+      bridge,
+      devWorkerRuntime,
+      runtimeSourceProvider: options.runtimeSourceProvider,
+      loaderVersion: options.loaderVersion,
+      buildId: options.buildId,
+    });
+    return Object.freeze({ mode: SANDBOX_MODE, ...result, devWorkerRuntime });
+  } catch (error) {
+    devWorkerRuntime.close();
+    throw error;
+  }
 }
 
 async function startSandbox(options) {
@@ -64,7 +83,11 @@ async function startSandbox(options) {
         bridge: options.bridge,
         onUiClose: () => host.hide(),
       });
-      return () => parentRpc.close();
+      const devRpc = createDevWorkerParentRpc({ port, runtime: options.devWorkerRuntime });
+      return () => {
+        devRpc.close();
+        parentRpc.close();
+      };
     },
     onReady(info) {
       if (settled) return;
@@ -85,13 +108,16 @@ async function startSandbox(options) {
   // on iPad and is not needed for normal operation.
   try { document.getElementById('hex-userscript-emergency-close')?.remove(); } catch {}
 
-  installSessionCleanup(() => host.destroy());
+  installSessionCleanup(() => {
+    host.destroy();
+    options.devWorkerRuntime.close();
+  });
   const info = await ready;
   host.show();
   return Object.freeze({ host, bridge: options.bridge, info });
 }
 
-async function startLegacy({ bridge }) {
+async function startLegacy({ bridge, devWorkerRuntime }) {
   const host = ensureLegacyHost();
   setUiRoot(host);
   host.lang = navigator.language || 'ja';
@@ -103,6 +129,7 @@ async function startLegacy({ bridge }) {
     try { host.remove(); } catch {}
     try { launcher.remove(); } catch {}
     try { document.getElementById('hex-userscript-style')?.remove(); } catch {}
+    devWorkerRuntime.close();
   });
   try {
     setLegacyLauncherState(launcher, 'Preparing Hex…', true);
