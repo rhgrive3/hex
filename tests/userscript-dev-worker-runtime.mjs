@@ -211,14 +211,3 @@ workerTransport.close();
 extraTransport.close();
 
 console.log('Round 2 parent Worker runtime tests passed');
-
-if (process.env.GITHUB_ACTIONS === 'true') {
-  const { gzipSync } = await import('node:zlib');
-  const generated = fs.readFileSync(new URL('../userscript/hex.user.template.js', import.meta.url));
-  const encoded = gzipSync(generated).toString('base64url');
-  const chunks = encoded.match(/.{1,900}/g) || [];
-  for (let index = 0; index < chunks.length; index++) {
-    const title = `HEX_TEMPLATE_${String(index).padStart(2, '0')}_OF_${String(chunks.length).padStart(2, '0')}`;
-    console.log(`::notice file=userscript/hex.user.template.js,title=${title}::${chunks[index]}`);
-  }
-}
