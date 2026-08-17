@@ -28,6 +28,7 @@ export async function startProtectedRuntime(options = {}) {
       devTabMeshSecret: options.devTabMeshSecret,
       loaderVersion: String(options.loaderVersion || globalThis.__HEX_SECURE_LOADER__?.version || ''),
       buildId: String(options.buildId || globalThis.__HEX_SECURE_LOADER__?.buildId || ''),
+      runtimeContentHash: String(options.runtimeContentHash || ''),
     });
   }
 

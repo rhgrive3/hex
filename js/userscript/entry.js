@@ -47,6 +47,7 @@ export async function startChatGPTUserscript(options = {}) {
       runtimeSourceProvider: options.runtimeSourceProvider,
       loaderVersion: options.loaderVersion,
       buildId: options.buildId,
+      runtimeContentHash: options.runtimeContentHash,
     });
     return Object.freeze({ mode: SANDBOX_MODE, ...result, devWorkerRuntime });
   } catch (error) {
@@ -75,6 +76,7 @@ async function startSandbox(options) {
     loaderVersion: String(options.loaderVersion || ''),
     buildId: String(options.buildId || ''),
     runtimeSourceProvider: options.runtimeSourceProvider,
+    runtimeContentHash: String(options.runtimeContentHash || ''),
     bootstrapTimeoutMs: SANDBOX_BOOTSTRAP_TIMEOUT_MS,
     readyTimeoutMs: SANDBOX_READY_TIMEOUT_MS,
     onPort(port) {

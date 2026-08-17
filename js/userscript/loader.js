@@ -88,6 +88,7 @@ async function loadRuntime() {
       apiOrigin: HEX_ORIGIN,
       loaderVersion: LOADER_VERSION,
       buildId: EXPECTED_BUILD,
+      runtimeContentHash: String(bootstrap.manifest.contentHash || '').toLowerCase(),
       devTabMeshSecret: toExactArrayBuffer(devTabMeshSecretRaw),
       runtimeSourceProvider() {
         sourceCopies += 1;
