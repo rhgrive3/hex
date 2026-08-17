@@ -9,6 +9,8 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../.
 const VALIDATOR = path.join(ROOT, 'tools/validation/phase4-ownership.mjs');
 const MANIFEST = JSON.parse(fs.readFileSync(path.join(ROOT, 'tools/validation/phase-ownership/phase4.json'), 'utf8'));
 const WORKFLOW = fs.readFileSync(path.join(ROOT, '.github/workflows/phase4-ownership.yml'), 'utf8');
+const RELEASE_WORKFLOW = fs.readFileSync(path.join(ROOT, '.github/workflows/phase4-release-validation.yml'), 'utf8');
+const VERIFIER = fs.readFileSync(path.join(ROOT, 'tools/validation/phase4/verify.mjs'), 'utf8');
 
 const COMPONENT_INVENTORY = Object.freeze({
   'p4-1@eb0d116cdc05eb4d6925e4ce2c9cb7ec7f9aaef6': [
@@ -118,6 +120,19 @@ test('workflow resolves canonical Phase 4 and Phase 5 branches and remains fail-
   assert.match(WORKFLOW, /phase5-ownership\.mjs/);
   assert.match(WORKFLOW, /--base-sha "\$\{\{ github\.event\.pull_request\.base\.sha \}\}"/);
   assert.match(WORKFLOW, /--head-sha "\$\{\{ github\.event\.pull_request\.head\.sha \}\}"/);
+});
+
+test('exact-SHA release verifier preserves Phase 4 checks while delegating only ownership to Phase 5', () => {
+  assert.match(RELEASE_WORKFLOW, /hex\/p5-0-x86-foundation\) mode=phase5; lane=p5-0 ;;/);
+  assert.match(RELEASE_WORKFLOW, /hex\/p5-x86-integration\) mode=phase5; lane=p5-i ;;/);
+  assert.match(RELEASE_WORKFLOW, /--ownership-base "\$OWNERSHIP_BASE_SHA"/);
+  assert.match(RELEASE_WORKFLOW, /--phase5-lane "\$\{\{ steps\.ownership\.outputs\.lane \}\}"/);
+  assert.match(RELEASE_WORKFLOW, /github\.event\.pull_request\.base\.sha/);
+  assert.match(VERIFIER, /phase5-ownership\.mjs/);
+  assert.match(VERIFIER, /--base-sha/);
+  assert.match(VERIFIER, /--head-sha/);
+  assert.match(VERIFIER, /READY-FOR-CROSS-PHASE-INTEGRATION/);
+  assert.doesNotMatch(RELEASE_WORKFLOW, /--no-commands/);
 });
 
 test('shared generated userscript outputs do not alone force an unrelated PR into a Phase 4 lane', () => {

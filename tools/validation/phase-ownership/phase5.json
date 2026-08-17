@@ -33,8 +33,10 @@
       "tools/validation/phase-ownership/phase5.json",
       "tools/validation/phase5-ownership.mjs",
       "tools/validation/phase5/release-evidence.schema.json",
+      "tools/validation/phase4/verify.mjs",
       ".github/workflows/phase5-ownership.yml",
       ".github/workflows/phase4-ownership.yml",
+      ".github/workflows/phase4-release-validation.yml",
       "package.json",
       "userscript/hex.user.template.js",
       "userscript/release-version.json"
@@ -71,6 +73,7 @@
     "p5-6": [
       "tests/phase5/verification/**",
       "tools/validation/phase5/**",
+      "tools/validation/phase4/verify.mjs",
       "reports/phase5/**"
     ],
     "p5-i": [
@@ -101,6 +104,7 @@
       "reports/phase5/**",
       ".github/workflows/phase5-*.yml",
       ".github/workflows/phase4-ownership.yml",
+      ".github/workflows/phase4-release-validation.yml",
       "package.json",
       "userscript/hex.user.template.js",
       "userscript/release-version.json",
@@ -158,6 +162,8 @@
     "js/analysis/alias/**",
     "js/decompiler/**",
     ".github/workflows/phase4-ownership.yml",
+    ".github/workflows/phase4-release-validation.yml",
+    "tools/validation/phase4/verify.mjs",
     "tests/phase4/ownership/integration-contract-repair.test.mjs",
     "package.json"
   ],
@@ -183,6 +189,8 @@
     "js/analysis/alias/**": ["p5-i"],
     "js/decompiler/**": ["p5-i"],
     ".github/workflows/phase4-ownership.yml": ["p5-0", "p5-i"],
+    ".github/workflows/phase4-release-validation.yml": ["p5-0", "p5-i"],
+    "tools/validation/phase4/verify.mjs": ["p5-0", "p5-i"],
     "tests/phase4/ownership/integration-contract-repair.test.mjs": ["p5-0", "p5-i"],
     "package.json": ["p5-0", "p5-i"]
   },
