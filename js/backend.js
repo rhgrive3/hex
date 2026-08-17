@@ -18,9 +18,10 @@ export const CHUNK_BYTES = CHUNK_ROWS * 4;
 const CHUNK_CACHE = 64;
 const MAX_INFLIGHT = 6;
 
-// P4-7 cutover knob. Keep CURRENT through full shadow + rehearsal; the final
-// production cutover changes this one constant to ARTIFACT.
-export const BACKEND_DEFAULT_ANALYSIS_ROUTE = ANALYSIS_ORCHESTRATION_ROUTE.CURRENT;
+// Phase 4 production cutover: ArtifactStore/scheduler is the default analysis
+// route. CURRENT remains available only through explicit route selection as the
+// differential/compatibility oracle; there is no automatic fallback.
+export const BACKEND_DEFAULT_ANALYSIS_ROUTE = ANALYSIS_ORCHESTRATION_ROUTE.ARTIFACT;
 const DEFAULT_ARTIFACT_COMPLETENESS = 'complete';
 
 function configuredAnalysisRoute() {
