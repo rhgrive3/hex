@@ -99,11 +99,14 @@ const { port1, port2 } = new MessageChannel();
 const rpcRuntime = {
   ...Object.fromEntries(['discover', 'claim', 'createChat', 'send', 'observe', 'followup', 'nudge', 'stop', 'result', 'release']
     .map((name) => [name, async (args) => ({ op: name, args })])),
+  send: async (args) => { await delay(25); return { op: 'send', args }; },
+  followup: async (args) => { await delay(25); return { op: 'followup', args }; },
   waitEvent: async (args) => ({ type: args.events[0], data: { runId: args.runId }, observedAt: new Date().toISOString() }),
 };
 const server = createDevWorkerParentRpc({ port: port1, runtime: rpcRuntime });
-const client = createDevWorkerParentRpcClient({ port: port2 });
-assert.equal((await client.send({ instruction: 'rpc' })).op, 'send');
+const client = createDevWorkerParentRpcClient({ port: port2, timeoutMs: 5 });
+assert.equal((await client.send({ instruction: 'rpc' })).op, 'send', 'worker.send must outlive the generic RPC timeout while ChatGPT is generating');
+assert.equal((await client.followup({ text: 'rpc follow-up' })).op, 'followup', 'worker.followup must outlive the generic RPC timeout while ChatGPT is generating');
 assert.equal((await client.waitEvent({ events: ['worker.completed'], runId: 'run-1' })).type, 'worker.completed');
 client.close(); server.close();
 
