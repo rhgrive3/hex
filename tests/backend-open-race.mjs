@@ -61,11 +61,11 @@ assert.equal(resultB.formatId,'pe');
 assert.equal(backend.file,fileB,'latest open must own committed backend state');
 assert.equal(backend.formatId,'pe');
 
-// Multi-stage Mach-O analysis must keep the epoch captured at start. This is an
-// explicit current-route compatibility-oracle regression: the production
-// default is artifact now, while this test specifically exercises the existing
-// current producer's chained-import race boundary without adding the async
-// BinaryId hashing boundary in front of it.
+
+
+// Multi-stage Mach-O analysis must keep the epoch captured at start. The local
+// chained-import read is asynchronous; a slice switch during that read must not
+// let the old analysis return under the new epoch.
 {
   const analysisBackend=new Backend();
   const legacyAnalysisWorker=workers[workers.length-2];
@@ -79,7 +79,7 @@ assert.equal(backend.formatId,'pe');
   analysisBackend.platformInfo={normalizedDyldTruth:false};
   analysisBackend.legacyInfo={platform:{}};
   let staleAnalysis=null;
-  const analysis=analysisBackend.analyze(0,{route:'current'});
+  const analysis=analysisBackend.analyze(0);
   const observed=analysis.catch((error)=>{staleAnalysis=error;return null;});
   await tick();
   const request=find(legacyAnalysisWorker,(m)=>m.t==='analyze'&&m.sliceIndex===0);
