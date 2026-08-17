@@ -80,5 +80,6 @@ const useA=(m,id)=>m.uses.find((use)=>use.sourceEntityId===id&&use.regionId===re
 }
 {
  const here=path.dirname(fileURLToPath(import.meta.url)),root=path.resolve(here,'../..');for(const relative of ['js/semantics/memoryssa/build.js','js/semantics/memoryssa/queries.js','js/semantics/memoryssa/validate.js']){const source=fs.readFileSync(path.join(root,relative),'utf8');assert.doesNotMatch(source,/\b(?:arm64|aapcs64|nzcv|rax|rflags|x0|w8)\b/i,`${relative} must remain architecture-neutral`);assert.doesNotMatch(source,/\b(?:stack-fixed|global-absolute|rooted-offset)\b/i,`${relative} must not special-case production region kinds`);}
+ const validator=fs.readFileSync(path.join(root,'js/semantics/memoryssa/validate.js'),'utf8');assert.doesNotMatch(validator,/accessMetadata\.some\s*\(/,'MemorySSA metadata coverage validation must not regress to per-entity linear scans');assert.match(validator,/metadataEntityIdsByKind/,'MemorySSA metadata validation must keep one-pass coverage indexes');
 }
 console.log('semantic-v2 generic MemorySSA core: PASS');
