@@ -18,15 +18,14 @@ for (const variable of [
   'HEX_FIXTURE_BATTLECATS_URL',
   'HEX_FIXTURE_TSUMTSUM_URL',
   'HEX_FIXTURE_YWP_URL',
-]) {
-  assert.ok(workflow.includes(variable), `${variable} must participate in the required gate`);
-}
+]) assert.ok(workflow.includes(variable), `${variable} must participate in the required gate`);
 
 for (const fixture of ['battlecats', 'YWP', 'TsumTsum']) {
   assert.ok(workflow.includes(`fixture: ${fixture}`), `${fixture} must participate in cross-binary accuracy`);
 }
 assert.match(workflow, /max-parallel:\s*3/, 'the three independent oracles must run concurrently');
-assert.match(workflow, /max-parallel:\s*90/, 'accuracy shards must be allowed to run aggressively in parallel');
+assert.match(workflow, /max-parallel:\s*12/, 'measurement must leave free-tier runner slots for other workflows');
+assert.doesNotMatch(workflow, /max-parallel:\s*90/, 'the workflow must not recreate the 90-job fanout');
 assert.match(workflow, /fail-fast:\s*false/g, 'parallel jobs must keep collecting diagnostics after one failure');
 
 assert.match(requirements, /^lief==1\.0\.0$/m, 'LIEF oracle version must remain pinned');
@@ -43,9 +42,7 @@ for (const input of [
   'tests/oracle.py',
   'tests/oracle-cfg-normalize.py',
   'tests/oracle-requirements.txt',
-]) {
-  assert.ok(oracleKey.includes(input), `oracle cache key must include ${input}`);
-}
+]) assert.ok(oracleKey.includes(input), `oracle cache key must include ${input}`);
 assert.match(oracleKey, /runner\.os/);
 assert.match(oracleKey, /runner\.arch/);
 assert.match(oracleKey, /ORACLE_PYTHON_VERSION/);
@@ -66,24 +63,19 @@ assert.match(generate, /if:\s*steps\.oracle-cache\.outputs\.cache-hit\s*!=\s*'tr
 assert.match(generate, /python tests\/oracle\.py/);
 assert.match(generate, /python tests\/oracle-cfg-normalize\.py/);
 
-const save = workflow.slice(
-  workflow.indexOf('name: Save exact oracle cache'),
-  workflow.indexOf('\n\n  measure:'),
-);
-assert.match(save, /actions\/cache\/save@v4/);
-assert.match(save, /steps\.oracle-key\.outputs\.key/);
-
 const measure = workflow.slice(workflow.indexOf('\n  measure:'), workflow.indexOf('\n  accuracy:'));
-for (const partition of ['core-1', 'core-2', 'core-3', 'core-4', 'pinpoint', 'pinpoint-partial']) {
+for (const partition of ['core', 'pinpoint', 'pinpoint-partial', 'pseudoc-1', 'pseudoc-2']) {
   assert.ok(measure.includes(`name: ${partition}`), `${partition} accuracy partition must exist`);
 }
-for (let i = 1; i <= 24; i++) {
-  assert.ok(measure.includes(`name: pseudoc-${i}\n`), `pseudoc-${i} accuracy partition must exist`);
-}
-assert.equal((measure.match(/shardCount:\s*24/g) || []).length, 24,
-  'every pseudoc partition must use the 24-way five-function shard count');
-assert.match(measure, /--only="\$\{\{ matrix\.partition\.only \}\}"/,
-  'partitioning must use accuracy.mjs built-in --only semantics');
+assert.doesNotMatch(measure, /name: pseudoc-3\n/, 'pseudoc must not consume extra GitHub job slots');
+assert.equal((measure.match(/shardCount:\s*2/g) || []).length, 2,
+  'only two outer pseudoc jobs per target should consume GitHub runner slots');
+assert.match(measure, /LOCAL_PSEUDOC_WORKERS:\s*4/,
+  'each pseudoc job must use the four CPUs inside its runner');
+assert.match(measure, /LOCAL_PSEUDOC_SHARDS:\s*8/,
+  'two outer jobs times four local workers must cover eight exact local shards');
+assert.match(measure, /LOCAL_CORE_WORKERS:\s*4/,
+  'the monolithic core partition must use runner-local CPU parallelism');
 assert.match(measure, /accuracy-pseudoc-shard-oracle\.mjs/,
   'pseudoc shards must derive from the exact serial sample set');
 assert.match(measure, /Restore exact accuracy result cache[\s\S]*actions\/cache\/restore@v4/,
@@ -97,9 +89,9 @@ assert.match(measure, /name:\s*cross-binary-oracle-\$\{\{ matrix\.target\.name \
 
 const aggregate = workflow.slice(workflow.indexOf('\n  accuracy:'));
 assert.match(aggregate, /accuracy-pseudoc-shard-merge\.mjs accuracy-part-BattleCats-pseudoc\.json/,
-  'pseudoc shards must be exactly reassembled before normal accuracy merging');
+  'pseudoc outer shards must be exactly reassembled before normal accuracy merging');
 assert.match(aggregate, /accuracy-part-BattleCats-pseudoc-\*\.json/,
-  'aggregate must consume every pseudoc shard, not a fixed four-shard range');
+  'aggregate must consume every outer pseudoc shard');
 assert.match(aggregate, /node tests\/accuracy-merge\.mjs accuracy-BattleCats\.json/);
 assert.match(aggregate, /node tests\/accuracy-merge\.mjs accuracy-YWP\.json/);
 assert.match(aggregate, /node tests\/accuracy-merge\.mjs accuracy-TsumTsum\.json/);
