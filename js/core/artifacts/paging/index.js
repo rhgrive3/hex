@@ -39,6 +39,7 @@ export class PagedArtifactReader {
       maxCachedBytes:this.maxRetainedPageBytes,
       maxReadLength:this.maxRangeBytes,
       maxPrefetchPages:this.maxPrefetchPages,
+      abortUnobservedReads:true,
     });
   }
 
