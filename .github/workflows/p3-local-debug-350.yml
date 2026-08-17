@@ -1,44 +1,18 @@
-name: P3 FLOW regression isolation v14
+name: P3 baseline FLOW check v15
 on:
   push:
     branches: [hex/p3-local-debug-350]
     paths:
       - '.github/workflows/p3-local-debug-350.yml'
 jobs:
-  isolate:
+  baseline:
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - label: all-candidate
-            restore: ''
-          - label: restore-finalize
-            restore: js/semantics/compat/semantic-ir-v2-to-v1-finalize.js
-          - label: restore-core
-            restore: js/semantics/compat/semantic-ir-v2-to-v1-core.js
-          - label: restore-nodes
-            restore: js/semantics/compat/semantic-ir-v2-to-v1-nodes.js
-          - label: restore-integer
-            restore: js/targets/architecture/arm64/effects/integer.js
-          - label: restore-ir-core
-            restore: js/ir-core.js
-          - label: restore-interproc
-            restore: js/interproc.js
-    name: ${{ matrix.label }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.sha }}
+          ref: hex/p3-semantic-ir-integration
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: python3 tools/validation/p3-debug-apply.py
-      - run: python3 tools/validation/p3-debug-apply-interproc.py
-      - run: python3 tools/validation/p3-debug-apply-137.py
-      - run: python3 tools/validation/p3-debug-stackname-collision.py
-      - name: Restore one candidate file
-        if: ${{ matrix.restore != '' }}
-        run: git checkout HEAD -- "${{ matrix.restore }}"
       - run: node tests/run.js
