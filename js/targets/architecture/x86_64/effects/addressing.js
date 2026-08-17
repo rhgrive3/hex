@@ -31,7 +31,6 @@ function add(left, right, widthBits, metadata = {}) {
 }
 
 function scaledIndex(index, scale, widthBits) {
-  if (scale === 1) return index;
   return Object.freeze({
     kind:'scaled-index',
     index,
