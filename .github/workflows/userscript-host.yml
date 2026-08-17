@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - 'js/userscript/**'
+      - 'js/ai/dev/**'
       - 'js/ai/provider/**'
       - 'js/ai/ui/bridge.js'
       - 'scripts/build-userscript.mjs'
@@ -14,6 +15,7 @@ on:
       - 'package-lock.json'
       - 'index.html'
       - 'css/**'
+      - 'tests/dev-agent/**'
       - 'tests/userscript-*.mjs'
       - 'tests/chatgpt-*.mjs'
       - '.github/workflows/userscript-host.yml'
@@ -21,6 +23,7 @@ on:
     branches: [main]
     paths:
       - 'js/userscript/**'
+      - 'js/ai/dev/**'
       - 'js/ai/provider/**'
       - 'js/ai/ui/bridge.js'
       - 'scripts/build-userscript.mjs'
@@ -31,6 +34,7 @@ on:
       - 'package-lock.json'
       - 'index.html'
       - 'css/**'
+      - 'tests/dev-agent/**'
       - 'tests/userscript-*.mjs'
       - 'tests/chatgpt-*.mjs'
       - '.github/workflows/userscript-host.yml'
