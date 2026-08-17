@@ -6,9 +6,15 @@ export function createAgentProfileEngine({ standardEngine, settings, supervisor 
   if (!standardEngine || typeof standardEngine.run !== 'function') throw new TypeError('standardEngine.run is required.');
   if (!settings) throw new TypeError('DevAgentUiSettings is required.');
   const dev = devEngine || new DevSupervisorEngineV0({ supervisor, settings });
+  const devBootstrap = Object.freeze({
+    prepare: () => dev.prepareBootstrapExtension(),
+    activateAtSafeBoundary: (options) => dev.activateBootstrapAtSafeBoundary(options),
+    invoke: (name) => dev.invokeBootstrapCapability(name),
+  });
 
   return new Proxy(standardEngine, {
     get(target, property, receiver) {
+      if (property === 'devBootstrap') return devBootstrap;
       if (property !== 'run') {
         const value = Reflect.get(target, property, receiver);
         return typeof value === 'function' ? value.bind(target) : value;
