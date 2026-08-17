@@ -9,7 +9,9 @@
   "reconciliation": {
     "sharedScalarContractCommit": "c8c45b02bcb193b683ca9e1e309e1b63bce5a009",
     "scalarRepairAndGeneratedSyncCommit": "150cb100b80ff9ba23cdbd4fa69b1f959ea3c89e",
-    "viewerCompatible": true,
+    "capabilityOwnershipRepairCommit": "c9755205ac0bf3e7493dbdec027e9ddb7920b135",
+    "viewerImplementationIntegrated": true,
+    "publicViewerCapabilityClaimed": false,
     "semanticA6Claimed": false,
     "atomicOrdering": "partial-not-seq-cst-overclaimed"
   },
