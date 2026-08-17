@@ -10,6 +10,7 @@ import {
   createDevBootstrapHandoff,
   verifyDevBootstrapIdentity,
 } from '../../js/ai/dev/bootstrap/dev-bootstrap-gate.js';
+import { DevSupervisorEngineV0 } from '../../js/ai/dev/supervisor/dev-supervisor-engine-v0.js';
 import { createAgentProfileEngine } from '../../js/ai/dev/ui/engine-router.js';
 
 const COMMIT = 'a'.repeat(40);
@@ -43,6 +44,16 @@ tampered.capabilities[0].name = 'dev.bootstrap.tampered';
 const integrityLoader = new DevExtensionLoader({ sha256 });
 await assert.rejects(() => integrityLoader.stage(tampered), (error) => error.code === 'dev-extension-integrity-mismatch');
 assert.equal(integrityLoader.stagedVersion, null, 'failed integrity must never stage an extension');
+const untrusted = structuredClone(DEV_BOOTSTRAP_EXTENSION);
+untrusted.id = 'dev.bootstrap-untrusted';
+untrusted.integrity = `sha256-${await sha256(JSON.stringify({
+  apiVersion: untrusted.apiVersion,
+  id: untrusted.id,
+  version: untrusted.version,
+  requiresReload: untrusted.requiresReload,
+  capabilities: untrusted.capabilities,
+}))}`;
+await assert.rejects(() => integrityLoader.stage(untrusted), (error) => error.code === 'dev-extension-untrusted', 'a self-consistent checksum must not bypass the runtime trust anchor');
 
 const loader = new DevExtensionLoader({ sha256 });
 const staged = await loader.stage(DEV_BOOTSTRAP_EXTENSION);
@@ -67,6 +78,18 @@ assert.throws(
 );
 loader.endToolCall();
 assert.equal(loader.toolCallActive, false);
+
+const boundaryLoader = new DevExtensionLoader({ sha256 });
+await boundaryLoader.stage(DEV_BOOTSTRAP_EXTENSION);
+const boundaryEngine = new DevSupervisorEngineV0({ supervisor: {}, settings: {}, bridge: null, extensionLoader: boundaryLoader });
+await boundaryEngine.executeWithinToolBoundary(async () => {
+  assert.equal(boundaryLoader.toolCallActive, true, 'the engine must enter the activation guard before invoking a tool');
+  assert.throws(
+    () => boundaryEngine.activateBootstrapAtSafeBoundary({ checkpoint, activeIdentity: { commit: COMMIT, buildId: BUILD_ID }, reinitialized: true }),
+    (error) => error.code === 'dev-extension-tool-call-active',
+  );
+});
+assert.equal(boundaryLoader.toolCallActive, false, 'the engine must leave the activation guard after a tool settles');
 
 const reload = loader.activateAtSafeBoundary({ checkpoint, activeIdentity: { commit: COMMIT, buildId: BUILD_ID } });
 assert.equal(reload.status, 'reload-required');
