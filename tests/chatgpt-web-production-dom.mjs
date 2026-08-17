@@ -91,6 +91,13 @@ async function run(name, browserType) {
       assert.equal(result.value.text, ANSWER);
     });
 
+    await scenario(context, name, 'a long submitted user turn may hydrate beyond the short mismatch window', {
+      prompt: LONG_PROMPT, chatgpt: { userHydrationDelayMs: 2200 },
+    }, (result) => {
+      assert.equal(result.ok, true, `${name}: long collapsible user hydration must not become manual-interference (${result.error?.code})`);
+      assert.equal(result.value.text, ANSWER);
+    });
+
     await scenario(context, name, 'a historical page alert does not poison a new request', {
       prompt: LONG_PROMPT, chatgpt: { seedPageErrorText: 'Something went wrong in an older operation.' },
     }, (result) => {
