@@ -29,13 +29,17 @@ export class ArtifactStore {
     this.hotCache = hotCache;
     this.corruptionPolicy = corruptionPolicy;
     this.metrics = {
-      requests:0, hotHits:0, persistentHits:0, misses:0, corruptions:0, incompatibilities:0,
-      publishes:0, publishBytes:0, partialPublishFailures:0, staleDependencyMisses:0,
+      requests:0, hotHits:0, persistentHits:0, memoryHits:0, misses:0, corruptions:0, incompatibilities:0,
+      publishes:0, publishBytes:0, staleDependencyMisses:0,
     };
   }
 
   capabilities() {
     return Object.freeze({ storeVersion:ARTIFACT_STORE_VERSION, ...this.backend.capabilities() });
+  }
+
+  #backendSource() {
+    return this.capabilities().persistent ? 'persistent' : 'memory';
   }
 
   async get(descriptorOrId, options = {}) {
@@ -64,11 +68,12 @@ export class ArtifactStore {
       }
     }
 
+    const source = this.#backendSource();
     const raw = await this.backend.getRaw(artifactId);
     aborted(options.signal);
     if (!raw) {
       this.metrics.misses++;
-      return { status:'miss', source:'persistent', artifactId, reason:'not-found' };
+      return { status:'miss', source, artifactId, reason:'not-found' };
     }
 
     try {
@@ -78,14 +83,15 @@ export class ArtifactStore {
         semanticSchemaVersion:descriptor?.versions?.semanticSchema,
         allowIncomplete:options.allowIncomplete,
       });
-      if (!(await this.#upstreamsValid(raw.record, options))) return this.#staleDependency(artifactId, 'persistent');
+      if (!(await this.#upstreamsValid(raw.record, options))) return this.#staleDependency(artifactId, source);
       const payload = decodeArtifactPayload(raw.payload);
       const value = { record:raw.record, payloadBytes:raw.payload, payload };
       this.hotCache.put(artifactId, value, raw.payload.byteLength);
-      this.metrics.persistentHits++;
-      return { status:'hit', source:'persistent', artifactId, record:raw.record, payload };
+      if (source === 'persistent') this.metrics.persistentHits++;
+      else this.metrics.memoryHits++;
+      return { status:'hit', source, artifactId, record:raw.record, payload };
     } catch (error) {
-      if (error instanceof ArtifactCorruptionError) return this.#invalidResult(artifactId, error, 'persistent');
+      if (error instanceof ArtifactCorruptionError) return this.#invalidResult(artifactId, error, source);
       throw error;
     }
   }
@@ -126,11 +132,15 @@ export class ArtifactStore {
     if (!descriptor?.artifactId) throw new TypeError('artifact-descriptor-required');
     aborted(options.signal);
     const payloadBytes = encodeArtifactPayload(payload);
+    // Cold and reopened results must expose the same canonical serialization
+    // contract. Returning the original mutable/BigInt-rich JS object here would
+    // make a cold result observably different from a persistent JSON decode.
+    const canonicalPayload = decodeArtifactPayload(payloadBytes);
     const record = createArtifactRecord(descriptor, payloadBytes, {
       completeness:options.completeness ?? 'complete',
       creation:options.creation,
     });
-    if (typeof options.validate === 'function') await options.validate(payload, record, { signal:options.signal });
+    if (typeof options.validate === 'function') await options.validate(canonicalPayload, record, { signal:options.signal });
     aborted(options.signal);
 
     // Payload and metadata are staged in-memory and become visible through one
@@ -148,11 +158,11 @@ export class ArtifactStore {
       throw error;
     }
 
-    const cached = { record, payloadBytes, payload };
+    const cached = { record, payloadBytes, payload:canonicalPayload };
     this.hotCache.put(descriptor.artifactId, cached, payloadBytes.byteLength);
     this.metrics.publishes++;
     this.metrics.publishBytes += payloadBytes.byteLength;
-    return { status:'published', artifactId:descriptor.artifactId, record, payload };
+    return { status:'published', artifactId:descriptor.artifactId, record, payload:canonicalPayload };
   }
 
   async delete(artifactId) {
