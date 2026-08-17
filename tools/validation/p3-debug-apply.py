@@ -46,6 +46,38 @@ if s.count(old_stack_name) != 1:
 s = s.replace(old_stack_name, new_stack_name, 1)
 p.write_text(s)
 
+# Address constants are bitvectors, so a negative architectural displacement is
+# serialized as its two's-complement unsigned value. For a proven affine
+# base+constant address projection, normalize that offset to the signed value of
+# the address width. This changes only the v1 affine display/location shape; the
+# canonical bitvector address semantics remain unchanged.
+p = Path("js/semantics/compat/semantic-ir-v2-to-v1-address.js")
+s = p.read_text()
+old_right = """      if (left && left.precise) {
+        const delta = producer.operator === 'sub' ? -rightConst : rightConst;
+        result = { ...left, disp: (left.disp ?? 0n) + delta, origin: mergeOrigins(left.origin, producer.origin, rightNode.origin, semanticValue?.origin) };
+      }"""
+new_right = """      if (left && left.precise) {
+        const addressBits = Math.max(1, Number(left.addressWidthBits || 64));
+        const signedOffset = BigInt.asIntN(addressBits, rightConst);
+        const delta = producer.operator === 'sub' ? -signedOffset : signedOffset;
+        result = { ...left, disp: (left.disp ?? 0n) + delta, origin: mergeOrigins(left.origin, producer.origin, rightNode.origin, semanticValue?.origin) };
+      }"""
+if s.count(old_right) != 1:
+    raise SystemExit("right affine offset source shape mismatch")
+s = s.replace(old_right, new_right, 1)
+old_left = """      if (right && right.precise) {
+        result = { ...right, disp: (right.disp ?? 0n) + leftConst, origin: mergeOrigins(right.origin, producer.origin, leftNode.origin, semanticValue?.origin) };
+      }"""
+new_left = """      if (right && right.precise) {
+        const addressBits = Math.max(1, Number(right.addressWidthBits || 64));
+        const signedOffset = BigInt.asIntN(addressBits, leftConst);
+        result = { ...right, disp: (right.disp ?? 0n) + signedOffset, origin: mergeOrigins(right.origin, producer.origin, leftNode.origin, semanticValue?.origin) };
+      }"""
+if s.count(old_left) != 1:
+    raise SystemExit("left affine offset source shape mismatch")
+p.write_text(s.replace(old_left, new_left, 1))
+
 # 2. Unknown physical-state SSA definitions are public clobber boundaries.
 replace_once(
     "js/semantics/compat/semantic-ir-v2-to-v1-core.js",
