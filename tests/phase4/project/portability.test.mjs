@@ -20,6 +20,20 @@ index.bind({
   arbitraryMetadata:{ nested:{ graph:[1,2,3] } },
 });
 
+// Persistence is defensive even if a caller bypasses bind() and mutates the
+// public Map inherited from the P4-0 contract surface directly.
+index.refs.set(ProjectArtifactIndex.key('function:injected', kind), {
+  version:1,
+  scope:'function:injected',
+  kind,
+  artifactId:newArtifactId,
+  payload:{ directInjectionMustNotPersist:true },
+  record:{ giantInjectedGraph:true },
+});
+const exportedRefs = index.toProjectReferences();
+assert.equal(exportedRefs.length, 2);
+assert.deepEqual(Object.keys(exportedRefs.find((ref) => ref.scope === 'function:injected')).sort(), ['artifactId', 'kind', 'scope', 'version']);
+
 const userFacts = {
   names:[{ entityId:'function:portable', name:'currency_update' }],
   comments:[{ entityId:'function:portable', text:'analyst comment' }],
@@ -35,11 +49,11 @@ const project = createHexProject({
   user:userFacts,
   confirmedFindings,
   investigationSessions,
-  cacheReferences:index.toProjectReferences(),
+  cacheReferences:exportedRefs,
 });
 const serialized = serializeHexProject(project);
 assert.match(serialized, new RegExp(oldArtifactId));
-assert.doesNotMatch(serialized, /mustNeverPersist|giantAnalysisGraph|arbitraryMetadata/, 'derived payload/graphs must not enter .hexproj');
+assert.doesNotMatch(serialized, /mustNeverPersist|giantAnalysisGraph|arbitraryMetadata|directInjectionMustNotPersist|giantInjectedGraph/, 'derived payload/graphs must not enter .hexproj');
 
 const reopened = parseHexProject(serialized);
 const assertUserFactsIntact = () => {
