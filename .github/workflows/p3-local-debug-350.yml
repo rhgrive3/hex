@@ -1,11 +1,13 @@
-name: P3 legacy corpus validation v11
+name: P3 npm test diagnostic v12
 on:
   push:
     branches: [hex/p3-local-debug-350]
     paths:
       - '.github/workflows/p3-local-debug-350.yml'
+permissions:
+  contents: write
 jobs:
-  validate:
+  diagnose:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -22,14 +24,18 @@ jobs:
       - run: python3 tools/validation/p3-debug-apply-137.py
       - run: python3 tools/validation/p3-debug-stackname-collision.py
       - run: npm run userscript:build
-      - run: node tests/issues-129-134.mjs
-      - run: node tests/issues-130-interproc.mjs
-      - run: node tests/issues-135-145.mjs
-      - run: node tests/issues-350-399.mjs
-      - run: node tests/issues-434-450-regressions.mjs
-      - run: node tests/issues-437-438-interproc.mjs
-      - run: node tests/ir.mjs
-      - run: npm test
-      - run: npm run effects:test
-      - run: npm run semantic-v2:test
-      - run: npm run check
+      - name: Capture npm test output on scratch only
+        shell: bash
+        run: |
+          set +e
+          npm test > /tmp/p3-npm-test-v12.log 2>&1
+          status=$?
+          set -e
+          tail -n 1000 /tmp/p3-npm-test-v12.log || true
+          cp /tmp/p3-npm-test-v12.log tools/validation/p3-debug-npm-test-output.txt
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add tools/validation/p3-debug-npm-test-output.txt
+          git commit -m "Debug: persist current Phase 3 npm test output" || true
+          git push origin HEAD:hex/p3-local-debug-350
+          exit "$status"
