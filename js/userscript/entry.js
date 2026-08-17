@@ -32,6 +32,7 @@ export async function startChatGPTUserscript(options = {}) {
     runtimeSourceProvider: options.runtimeSourceProvider,
     loaderVersion: options.loaderVersion,
     buildId: options.buildId,
+    runtimeContentHash: options.runtimeContentHash,
   });
   return Object.freeze({ mode: SANDBOX_MODE, ...result });
 }
@@ -58,6 +59,7 @@ async function startSandbox(options) {
     runtimeSourceProvider: options.runtimeSourceProvider,
     bootstrapTimeoutMs: SANDBOX_BOOTSTRAP_TIMEOUT_MS,
     readyTimeoutMs: SANDBOX_READY_TIMEOUT_MS,
+    runtimeContentHash: String(options.runtimeContentHash || ''),
     onPort(port) {
       const parentRpc = createChatGPTParentRpc({
         port,
