@@ -26,7 +26,7 @@ for (const fixture of ['battlecats', 'YWP', 'TsumTsum']) {
   assert.ok(workflow.includes(`fixture: ${fixture}`), `${fixture} must participate in cross-binary accuracy`);
 }
 assert.match(workflow, /max-parallel:\s*3/, 'the three independent oracles must run concurrently');
-assert.match(workflow, /max-parallel:\s*20/, 'target/feature shards must be allowed to run concurrently');
+assert.match(workflow, /max-parallel:\s*90/, 'accuracy shards must be allowed to run aggressively in parallel');
 assert.match(workflow, /fail-fast:\s*false/g, 'parallel jobs must keep collecting diagnostics after one failure');
 
 assert.match(requirements, /^lief==1\.0\.0$/m, 'LIEF oracle version must remain pinned');
@@ -74,9 +74,14 @@ assert.match(save, /actions\/cache\/save@v4/);
 assert.match(save, /steps\.oracle-key\.outputs\.key/);
 
 const measure = workflow.slice(workflow.indexOf('\n  measure:'), workflow.indexOf('\n  accuracy:'));
-for (const partition of ['core', 'pinpoint', 'pinpoint-partial', 'pseudoc-1', 'pseudoc-2', 'pseudoc-3', 'pseudoc-4']) {
+for (const partition of ['core-1', 'core-2', 'core-3', 'core-4', 'pinpoint', 'pinpoint-partial']) {
   assert.ok(measure.includes(`name: ${partition}`), `${partition} accuracy partition must exist`);
 }
+for (let i = 1; i <= 24; i++) {
+  assert.ok(measure.includes(`name: pseudoc-${i}\n`), `pseudoc-${i} accuracy partition must exist`);
+}
+assert.equal((measure.match(/shardCount:\s*24/g) || []).length, 24,
+  'every pseudoc partition must use the 24-way five-function shard count');
 assert.match(measure, /--only="\$\{\{ matrix\.partition\.only \}\}"/,
   'partitioning must use accuracy.mjs built-in --only semantics');
 assert.match(measure, /accuracy-pseudoc-shard-oracle\.mjs/,
@@ -93,6 +98,8 @@ assert.match(measure, /name:\s*cross-binary-oracle-\$\{\{ matrix\.target\.name \
 const aggregate = workflow.slice(workflow.indexOf('\n  accuracy:'));
 assert.match(aggregate, /accuracy-pseudoc-shard-merge\.mjs accuracy-part-BattleCats-pseudoc\.json/,
   'pseudoc shards must be exactly reassembled before normal accuracy merging');
+assert.match(aggregate, /accuracy-part-BattleCats-pseudoc-\*\.json/,
+  'aggregate must consume every pseudoc shard, not a fixed four-shard range');
 assert.match(aggregate, /node tests\/accuracy-merge\.mjs accuracy-BattleCats\.json/);
 assert.match(aggregate, /node tests\/accuracy-merge\.mjs accuracy-YWP\.json/);
 assert.match(aggregate, /node tests\/accuracy-merge\.mjs accuracy-TsumTsum\.json/);
