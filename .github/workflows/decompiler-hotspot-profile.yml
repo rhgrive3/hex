@@ -28,4 +28,10 @@ jobs:
           node scripts/fetch-real-fixtures.mjs battlecats
           node scripts/fetch-real-fixtures.mjs battlecats --check
       - name: Profile pathological production decompile stages
-        run: node tests/profile-decompile-hotspot.mjs tests/.real-fixtures/battlecats 0x100d13b84 1024
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --prof tests/profile-decompile-hotspot.mjs tests/.real-fixtures/battlecats 0x100d13b84 1024
+          logfile="$(ls -1t isolate-*-v8.log | head -1)"
+          echo '=== V8 CPU PROFILE TOP ==='
+          node --prof-process "$logfile" | sed -n '1,220p'
