@@ -1,64 +1,145 @@
-name: P3 finalizer isolate
+name: P3 compact projection benchmark
 on:
   push:
-    branches: [hex/p3-local-debug-350]
-    paths: ['.github/workflows/p3-local-debug-350.yml']
+    branches:
+      - hex/p3-local-debug-350
+    paths:
+      - .github/workflows/p3-local-debug-350.yml
 permissions:
   contents: read
 env:
   HEX_FIXTURE_BATTLECATS_URL: https://raw.githubusercontent.com/rhgrive3/hex/bd7bd61d093592d07fdd9e9b14a859e19dd4c3a9/tests/battlecats
 jobs:
-  isolate:
+  benchmark:
     runs-on: ubuntu-latest
-    timeout-minutes: 2
+    timeout-minutes: 3
     steps:
       - uses: actions/checkout@v4
-        with: { ref: 3aa37912a67c0b6d3efb03c93d19ed64b5dad0ff, fetch-depth: 1 }
+        with:
+          ref: 3aa37912a67c0b6d3efb03c93d19ed64b5dad0ff
+          fetch-depth: 1
       - uses: actions/setup-node@v4
-        with: { node-version: '22' }
-      - run: node scripts/fetch-real-fixtures.mjs battlecats
-      - name: Instrument finalizer
+        with:
+          node-version: '22'
+      - name: Fetch BattleCats fixture
+        run: |
+          node scripts/fetch-real-fixtures.mjs battlecats
+          node scripts/fetch-real-fixtures.mjs battlecats --check
+      - name: Apply candidate compact-state performance fix
         run: |
           python - <<'PY'
           from pathlib import Path
-          p=Path('js/semantics/compat/semantic-ir-v2-to-v1-finalize.js'); s=p.read_text()
-          old='''export function finalizeLegacyProjection(projected) {
-  compactProjectedState(projected);
-  rebuildDefUse(projected);
-  suppressUnusedIncomingState(projected);
-  normalizePublicStateDefinitionOrder(projected);
-  renumberPublicStateVersions(projected);
-  recoverLocalStackFlow(projected);
-  propagateConstants(projected);
-  recoverStackSlots(projected);
-  return projected;
-}'''
-          new='''export function finalizeLegacyProjection(projected) {
-  process.stderr.write('[P3FIN compact:start]\\n');
-  compactProjectedState(projected);
-  process.stderr.write('[P3FIN compact:end]\\n[P3FIN defuse:start]\\n');
-  rebuildDefUse(projected);
-  process.stderr.write('[P3FIN defuse:end]\\n[P3FIN suppress:start]\\n');
-  suppressUnusedIncomingState(projected);
-  process.stderr.write('[P3FIN suppress:end]\\n[P3FIN order:start]\\n');
-  normalizePublicStateDefinitionOrder(projected);
-  process.stderr.write('[P3FIN order:end]\\n[P3FIN versions:start]\\n');
-  renumberPublicStateVersions(projected);
-  process.stderr.write('[P3FIN versions:end]\\n[P3FIN stackflow:start]\\n');
-  recoverLocalStackFlow(projected);
-  process.stderr.write('[P3FIN stackflow:end]\\n[P3FIN constants:start]\\n');
-  propagateConstants(projected);
-  process.stderr.write('[P3FIN constants:end]\\n[P3FIN slots:start]\\n');
-  recoverStackSlots(projected);
-  process.stderr.write('[P3FIN slots:end]\\n');
-  return projected;
-}'''
-          assert old in s; p.write_text(s.replace(old,new,1))
+          p = Path('js/semantics/compat/semantic-ir-v2-to-v1-finalize.js')
+          s = p.read_text()
+          old = '''function valueFeedsAddressOrCall(projected, root) {
+  const queue = [root];
+  const seen = new Set();
+  while (queue.length) {
+    const value = queue.shift();
+    if (!value || seen.has(value.id)) continue;
+    seen.add(value.id);
+    for (const inst of projected.instructions) {
+      if (inst.addr?.base === value || inst.addr?.index === value || inst.loc?.base === value) return true;
+      const consumes = (inst.args || []).some((arg) => arg?.value === value);
+      if (!consumes) continue;
+      if (inst.op === V1_OP.CALL) return true;
+      if (inst.op === V1_OP.MOV && inst.dst) queue.push(inst.dst);
+    }
+  }
+  return false;
+}
+'''
+          new = '''function buildProjectedConsumerIndex(projected) {
+  const consumers = new Map();
+  const add = (value, kind, inst) => {
+    if (!value) return;
+    let list = consumers.get(value.id);
+    if (!list) {
+      list = [];
+      consumers.set(value.id, list);
+    }
+    list.push({ kind, inst });
+  };
+  for (const inst of projected.instructions) {
+    if (inst.addr?.base) add(inst.addr.base, 'address', inst);
+    if (inst.addr?.index) add(inst.addr.index, 'address', inst);
+    if (inst.loc?.base) add(inst.loc.base, 'address', inst);
+    for (const arg of inst.args || []) if (arg?.value) add(arg.value, 'arg', inst);
+  }
+  return consumers;
+}
+
+function valueFeedsAddressOrCall(root, consumers, memo) {
+  if (!root) return false;
+  if (memo.has(root.id)) return memo.get(root.id);
+  const queue = [root];
+  const seen = new Set();
+  let cursor = 0;
+  while (cursor < queue.length) {
+    const value = queue[cursor++];
+    if (!value || seen.has(value.id)) continue;
+    if (memo.get(value.id) === true) {
+      for (const id of seen) memo.set(id, true);
+      memo.set(root.id, true);
+      return true;
+    }
+    seen.add(value.id);
+    for (const use of consumers.get(value.id) || []) {
+      if (use.kind === 'address' || use.inst.op === V1_OP.CALL) {
+        for (const id of seen) memo.set(id, true);
+        memo.set(root.id, true);
+        return true;
+      }
+      if (use.inst.op === V1_OP.MOV && use.inst.dst) queue.push(use.inst.dst);
+    }
+  }
+  for (const id of seen) memo.set(id, false);
+  memo.set(root.id, false);
+  return false;
+}
+'''
+          if old not in s:
+            raise SystemExit('old valueFeedsAddressOrCall block not found')
+          s = s.replace(old, new, 1)
+          old = '''function compactProjectedState(projected) {
+  const aliases = new Map();
+  for (const inst of projected.instructions) {'''
+          new = '''function compactProjectedState(projected) {
+  const aliases = new Map();
+  const consumers = buildProjectedConsumerIndex(projected);
+  const feedMemo = new Map();
+  for (const inst of projected.instructions) {'''
+          if old not in s:
+            raise SystemExit('compactProjectedState anchor not found')
+          s = s.replace(old, new, 1)
+          old = 'if (provenExactLoadSource || valueFeedsAddressOrCall(projected, shadow)) {'
+          new = 'if (provenExactLoadSource || valueFeedsAddressOrCall(shadow, consumers, feedMemo)) {'
+          if old not in s:
+            raise SystemExit('call site not found')
+          s = s.replace(old, new, 1)
+          p.write_text(s)
           PY
-      - name: Probe
+      - name: Run exact pathological function
         run: |
           cat > tests/.p3-probe.mjs <<'EOF'
-          import { openBinary } from './harness.mjs'; import { decompile } from '../js/decompile.js'; import { setSemanticMigrationMode } from '../js/ir.js';
-          setSemanticMigrationMode('semantic-v2-compat'); const w=await openBinary('tests/.real-fixtures/battlecats'); const a=0x10033fd24n,end=0x100340074n; const m=await w.analyze(a,end); console.error('[P3PROBE go]'); const t=Date.now(); const r=decompile(m,{addr:a,rowOfAddress:x=>w.rowOf(x),addrOfRow:r=>w.region.vmAddr+BigInt(r)*4n,symbolFor:x=>w.symbols.nameAt(x)}); console.error(`[P3PROBE done] ${Date.now()-t}ms ${r?.lines?.length??-1}`);
+          import { openBinary } from './harness.mjs';
+          import { decompile } from '../js/decompile.js';
+          import { setSemanticMigrationMode } from '../js/ir.js';
+          setSemanticMigrationMode('semantic-v2-compat');
+          const world = await openBinary('tests/.real-fixtures/battlecats');
+          const start = 0x10033fd24n;
+          const end = 0x100340074n;
+          const model = await world.analyze(start, end);
+          const t = Date.now();
+          const result = decompile(model, {
+            addr: start,
+            rowOfAddress: (value) => world.rowOf(value),
+            addrOfRow: (row) => world.region.vmAddr + BigInt(row) * 4n,
+            symbolFor: (value) => world.symbols.nameAt(value),
+          });
+          console.error(`[P3BENCH exact] ms=${Date.now() - t} lines=${result?.lines?.length ?? -1} semantic=${!!result?.semantic}`);
           EOF
-          timeout --signal=TERM --kill-after=3s 20s node --max-old-space-size=6000 tests/.p3-probe.mjs
+          timeout --signal=TERM --kill-after=5s 20s node --max-old-space-size=6000 tests/.p3-probe.mjs
+      - name: Run focused semantic tests
+        run: |
+          timeout --signal=TERM --kill-after=5s 60s node tests/ir.mjs
