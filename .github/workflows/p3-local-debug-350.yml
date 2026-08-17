@@ -1,87 +1,93 @@
-name: P3 cross-binary hang pinpoint
+name: P3 semantic-v2 stage isolate
 on:
   push:
     branches: [hex/p3-local-debug-350]
-    paths:
-      - '.github/workflows/p3-local-debug-350.yml'
+    paths: ['.github/workflows/p3-local-debug-350.yml']
 permissions:
   contents: read
-  actions: read
 env:
   HEX_FIXTURE_BATTLECATS_URL: https://raw.githubusercontent.com/rhgrive3/hex/bd7bd61d093592d07fdd9e9b14a859e19dd4c3a9/tests/battlecats
-  HEX_FIXTURE_TSUMTSUM_URL: https://raw.githubusercontent.com/rhgrive3/hex/bd7bd61d093592d07fdd9e9b14a859e19dd4c3a9/tests/TsumTsum
-  HEX_FIXTURE_YWP_URL: https://raw.githubusercontent.com/rhgrive3/hex/bd7bd61d093592d07fdd9e9b14a859e19dd4c3a9/tests/YWP
 jobs:
-  pinpoint:
+  isolate:
     runs-on: ubuntu-latest
     timeout-minutes: 3
     strategy:
       fail-fast: false
       matrix:
         include:
-          - name: BattleCats-pseudoc
-            fixture: battlecats
-            file: battlecats
-            oracle_artifact: cross-binary-oracle-BattleCats
-            oracle: tests/oracle.battlecats.ci.json.gz
-            only: pseudoc
-          - name: TsumTsum-core
-            fixture: TsumTsum
-            file: TsumTsum
-            oracle_artifact: cross-binary-oracle-TsumTsum
-            oracle: tests/oracle.TsumTsum.ci.json.gz
-            only: sections,funcs,funcs-guess,disasm,kinds,calls,refs,imports,objc,selstub,strings,xrefs,funcname,selffield,role,apimeaning,summary,expr,formula
+          - label: head-v2
+            ref: 3aa37912a67c0b6d3efb03c93d19ed64b5dad0ff
+            mode: semantic-v2-compat
+          - label: pre-final-cutover-v2
+            ref: e678eedf3bdebd7fc89d5aa069beb5a319fc6703
+            mode: semantic-v2-compat
+          - label: head-legacy
+            ref: 3aa37912a67c0b6d3efb03c93d19ed64b5dad0ff
+            mode: legacy-v1
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 3aa37912a67c0b6d3efb03c93d19ed64b5dad0ff
+          ref: ${{ matrix.ref }}
           fetch-depth: 1
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Fetch exact real fixture
-        run: |
-          node scripts/fetch-real-fixtures.mjs "${{ matrix.fixture }}"
-          node scripts/fetch-real-fixtures.mjs "${{ matrix.fixture }}" --check
-      - name: Download oracle from failing canonical run
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh run download 31985496555 -n "${{ matrix.oracle_artifact }}" -D tests
-          test -s "${{ matrix.oracle }}"
-          gzip -t "${{ matrix.oracle }}"
-      - name: Inject temporary stderr diagnostics
-        shell: bash
+      - run: |
+          node scripts/fetch-real-fixtures.mjs battlecats
+          node scripts/fetch-real-fixtures.mjs battlecats --check
+      - name: Inject stage diagnostics
+        if: matrix.mode == 'semantic-v2-compat'
         run: |
           python - <<'PY'
           from pathlib import Path
-          p = Path('tests/accuracy.mjs')
-          s = p.read_text()
-          old = """    const t = Date.now();\n    let r;\n    try {\n      r = await f.fn({ w, o });\n"""
-          new = """    const t = Date.now();\n    process.stderr.write(`[P3DIAG feature:start] ${f.id}\\n`);\n    let r;\n    try {\n      r = await f.fn({ w, o });\n"""
-          assert old in s
-          s = s.replace(old, new, 1)
-          old = """    r.id = f.id; r.label = f.label; r.ms = Date.now() - t;\n    rows.push(r);\n"""
-          new = """    r.id = f.id; r.label = f.label; r.ms = Date.now() - t;\n    process.stderr.write(`[P3DIAG feature:end] ${f.id} ${r.ms}ms\\n`);\n    rows.push(r);\n"""
-          assert old in s
-          s = s.replace(old, new, 1)
-          old = """  for (const [a, end] of samples) {\n    const model = await w.analyze(BigInt(a), BigInt(end));\n    if (!model) continue;\n    let res;\n    try {\n      res = decompile(model, {\n"""
-          new = """  for (const [a, end] of samples) {\n    process.stderr.write(`[P3DIAG pseudoc:analyze:start] 0x${BigInt(a).toString(16)}-0x${BigInt(end).toString(16)}\\n`);\n    const model = await w.analyze(BigInt(a), BigInt(end));\n    process.stderr.write(`[P3DIAG pseudoc:analyze:end] 0x${BigInt(a).toString(16)}\\n`);\n    if (!model) continue;\n    let res;\n    try {\n      process.stderr.write(`[P3DIAG pseudoc:decompile:start] 0x${BigInt(a).toString(16)}\\n`);\n      res = decompile(model, {\n"""
-          assert old in s
-          s = s.replace(old, new, 1)
-          old = """        symbolFor: (x) => w.symbols.nameAt(x),\n      });\n    } catch { continue; }\n"""
-          new = """        symbolFor: (x) => w.symbols.nameAt(x),\n      });\n      process.stderr.write(`[P3DIAG pseudoc:decompile:end] 0x${BigInt(a).toString(16)}\\n`);\n    } catch (err) {\n      process.stderr.write(`[P3DIAG pseudoc:decompile:error] 0x${BigInt(a).toString(16)} ${err?.stack || err}\\n`);\n      continue;\n    }\n"""
-          assert old in s
-          s = s.replace(old, new, 1)
+          p=Path('js/semantics/compat/index.js')
+          s=p.read_text()
+          reps=[
+            ("  for (const block of blockRecords) {\n    for (const item of block.instructions) {", "  process.stderr.write(`[P3PIPE lift:start] blocks=${blockRecords.length}\\n`);\n  for (const block of blockRecords) {\n    for (const item of block.instructions) {"),
+            ("  if (!bundles.length) fail('semantic-v2-integration-function-has-no-instructions');", "  process.stderr.write(`[P3PIPE lift:end] bundles=${bundles.length}\\n`);\n  if (!bundles.length) fail('semantic-v2-integration-function-has-no-instructions');"),
+            ("  const ir = createSemanticIrFunction({", "  process.stderr.write('[P3PIPE ir-contract:start]\\n');\n  const ir = createSemanticIrFunction({"),
+            ("  const nodeById = new Map(ir.nodes.map((node) => [node.id, node]));", "  process.stderr.write(`[P3PIPE ir-contract:end] nodes=${ir.nodes.length} values=${ir.values.length}\\n`);\n  const nodeById = new Map(ir.nodes.map((node) => [node.id, node]));"),
+            ("  const cfg = createSemanticCfg({", "  process.stderr.write('[P3PIPE cfg:start]\\n');\n  const cfg = createSemanticCfg({"),
+            ("  const ssa = buildSemanticSsa(ir, cfg, options.ssaOptions ?? {});", "  process.stderr.write('[P3PIPE cfg:end]\\n');\n  process.stderr.write('[P3PIPE ssa:start]\\n');\n  const ssa = buildSemanticSsa(ir, cfg, options.ssaOptions ?? {});"),
+            ("  validateSemanticSsa(ssa, ir, cfg, options.ssaValidationOptions ?? {});", "  validateSemanticSsa(ssa, ir, cfg, options.ssaValidationOptions ?? {});\n  process.stderr.write(`[P3PIPE ssa:end] defs=${ssa.definitions?.length ?? -1}\\n`);"),
+            ("  const memorySsa = buildMemorySsa(ir, cfg, {", "  process.stderr.write('[P3PIPE memoryssa:start]\\n');\n  const memorySsa = buildMemorySsa(ir, cfg, {"),
+            ("  validateMemorySsa(memorySsa, { cfg, ...(options.memorySsaValidationOptions ?? {}) });", "  validateMemorySsa(memorySsa, { cfg, ...(options.memorySsaValidationOptions ?? {}) });\n  process.stderr.write('[P3PIPE memoryssa:end]\\n');"),
+            ("  const legacyV1 = projectSemanticIrV2ToLegacyV1(ir, {", "  process.stderr.write('[P3PIPE projection:start]\\n');\n  const legacyV1 = projectSemanticIrV2ToLegacyV1(ir, {"),
+            ("  // The wrapper object is immutable", "  process.stderr.write(`[P3PIPE projection:end] inst=${legacyV1.instructions?.length ?? -1} values=${legacyV1.values?.length ?? -1}\\n`);\n\n  // The wrapper object is immutable"),
+          ]
+          for old,new in reps:
+            if old not in s:
+              raise SystemExit('diagnostic anchor missing: '+old[:80])
+            s=s.replace(old,new,1)
           p.write_text(s)
           PY
-      - name: Run diagnostic partition with short hard timeout
-        shell: bash
+      - name: Create exact-function probe
+        run: |
+          cat > tests/.p3-stage-probe.mjs <<'EOF'
+          import { openBinary } from './harness.mjs';
+          import { decompile } from '../js/decompile.js';
+          import { setSemanticMigrationMode } from '../js/ir.js';
+          const mode = process.env.P3_MODE;
+          setSemanticMigrationMode(mode);
+          const t0=Date.now();
+          const w=await openBinary('tests/.real-fixtures/battlecats');
+          console.error(`[P3PROBE open] ${Date.now()-t0}ms mode=${mode}`);
+          const a=0x10033fd24n, end=0x100340074n;
+          const t1=Date.now();
+          const model=await w.analyze(a,end);
+          console.error(`[P3PROBE analyze] ${Date.now()-t1}ms insns=${model?.instructions?.length ?? -1}`);
+          const t2=Date.now();
+          const res=decompile(model, {
+            addr:a,
+            rowOfAddress:(x)=>w.rowOf(x),
+            addrOfRow:(r)=>w.region.vmAddr+BigInt(r)*4n,
+            symbolFor:(x)=>w.symbols.nameAt(x),
+          });
+          console.error(`[P3PROBE decompile] ${Date.now()-t2}ms semantic=${!!res?.semantic} lines=${res?.lines?.length ?? -1}`);
+          EOF
+      - name: Run exact function
+        env:
+          P3_MODE: ${{ matrix.mode }}
         run: |
           set -o pipefail
-          timeout --signal=TERM --kill-after=5s 30s \
-            node --max-old-space-size=6000 tests/accuracy.mjs \
-              --target="tests/.real-fixtures/${{ matrix.file }}" \
-              --oracle="${{ matrix.oracle }}" \
-              --only="${{ matrix.only }}" \
-              --json 2>&1 | tee "diag-${{ matrix.name }}.log"
+          timeout --signal=TERM --kill-after=5s 45s node --max-old-space-size=6000 tests/.p3-stage-probe.mjs 2>&1 | tee stage.log
