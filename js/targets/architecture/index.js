@@ -50,12 +50,13 @@ export const ARM64E_ARCHITECTURE = registerArchitecturePlugin({
 });
 
 export const X86_64_ARCHITECTURE = registerArchitecturePlugin({
-  id:'x86_64', semanticVersion:X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION, instructionAlignment:1, fixedInstructionSize:null, viewerCompatible:true,
+  id:'x86_64', semanticVersion:X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION, instructionAlignment:1, fixedInstructionSize:null, viewerCompatible:false,
   modes:()=>Object.freeze(['long-64']), registerFile:x86RegisterFile,
   decodeProvider:'capstone/backend', liftExact:liftX86MachineEffects, classifyControlFlow:x86ControlFlow,
-  // Phase 5 now has an integrated bounded variable-length x86 viewer. This flag
-  // asserts viewer compatibility only; semantic A6/cutover remains separately
-  // gated by the mandatory corpus and release evidence.
+  // P5-5 has an integrated bounded variable-length x86 viewer, but the public
+  // viewer capability remains conservative in this checkpoint because the
+  // global capability regression is outside p5-i ownership. The integrated
+  // viewer seam is verified directly under tests/phase5/** without claiming A6.
   capabilities:{ decode:'external-structured-v1', exactEffects:'partial', semanticAnalysis:'phase5-shadow-partial' },
 });
 
