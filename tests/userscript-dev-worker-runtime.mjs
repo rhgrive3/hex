@@ -8,6 +8,7 @@ import { startParentDevWorkerRuntime } from '../js/userscript/dev/parent-worker-
 import { DEV_WORKER_NUDGE, DEV_WORKER_STATE } from '../js/ai/dev/workers/contracts.js';
 
 await testRealControllerDefersBlankChatAndWaitsForSupervisorHydration();
+await testClaimAdoptsVirtualizedSupervisorSurface();
 
 class FakeController {
   constructor() {
@@ -213,6 +214,42 @@ async function testRealControllerDefersBlankChatAndWaitsForSupervisorHydration()
   assert.equal(hydrated, true, 'route equality must not return before the latest Supervisor continuity turn rehydrates');
   assert.equal(restored.id, supervisor.id);
   assert.equal(real.currentConversation()?.id, supervisor.id);
+}
+
+async function testClaimAdoptsVirtualizedSupervisorSurface() {
+  const supervisor = { id: 'supervisor-virtualized', url: 'https://chatgpt.com/c/supervisor-virtualized' };
+  let users = [
+    { id: 'old-supervisor-a', text: 'old A' },
+    { id: 'old-supervisor-b', text: 'old B' },
+  ];
+  const adapter = {
+    document: { visibilityState: 'visible', body: null, documentElement: null },
+    conversation: () => ({ ...supervisor }),
+    userTurns: () => users.map((turn) => ({ ...turn })),
+    conversationTurns: () => users.map((turn) => ({ ...turn })),
+    assistantTurns: () => [],
+    composer: () => ({}),
+    isGenerating: () => false,
+  };
+  const controller = new WorkerChatController({ adapter, router: {}, turns: {} });
+  assert.equal(controller.currentConversation()?.id, supervisor.id, 'fixture must first remember the fully hydrated Supervisor history');
+
+  users = [{ id: 'latest-supervisor', text: 'latest Dev Supervisor request' }];
+  assert.equal(controller.currentConversation(), null, 'strict passive hydration must reject a surface missing remembered historical turns');
+
+  const coordinator = new SingleConversationWorkerCoordinator({ controller, tabNodeId: 'virtualized-same-tab' });
+  const claimed = await coordinator.claim({ runId: 'run-virtualized', workerId: 'worker-virtualized' });
+  assert.equal(claimed.supervisorChatgptConversationId, supervisor.id, 'claim must adopt the settled current Supervisor surface despite virtualized old turns');
+  assert.equal(controller.currentConversation()?.id, supervisor.id, 'adoption must replace stale historical continuity anchors with the live surface');
+
+  const replayed = await coordinator.claim({ runId: 'run-virtualized', workerId: 'worker-virtualized' });
+  assert.equal(replayed.replayed, true, 'an ambiguous/replayed identical claim must be idempotent');
+  await assert.rejects(
+    () => coordinator.claim({ runId: 'other-run', workerId: 'other-worker' }),
+    (error) => error.code === 'worker-busy',
+    'idempotency must never let another run steal a claimed Worker',
+  );
+  coordinator.close();
 }
 
 function delay(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }

@@ -47,6 +47,7 @@ export class DevSupervisorEngineV0 {
 
     const eventHost = new DevRunEventHost({ supervisor: this.supervisor });
     let workerClaimed = false;
+    let workerClaimAttempted = false;
 
     try {
       for (let step = 0; step < this.maxDecisions; step++) {
@@ -65,9 +66,13 @@ export class DevSupervisorEngineV0 {
 
         if (decision.type === 'tool') {
           input.onActivity?.({ label: decision.tool, detail: decision.purpose });
+          if (decision.tool === DEV_WORKER_TOOL.CLAIM) workerClaimAttempted = true;
           const executed = await this.supervisor.executeToolDecision(run, decision);
           run = executed.run;
-          if (decision.tool === DEV_WORKER_TOOL.CLAIM) workerClaimed = true;
+          if (decision.tool === DEV_WORKER_TOOL.CLAIM) {
+            workerClaimed = true;
+            workerClaimAttempted = false;
+          }
           if (decision.tool === DEV_WORKER_TOOL.RELEASE) workerClaimed = false;
           this.settings.setLastRun(run);
           history.push({ kind: 'tool-result', tool: decision.tool, purpose: decision.purpose, result: sanitize(executed.result) });
@@ -113,14 +118,22 @@ export class DevSupervisorEngineV0 {
       }
       throw new Error('Dev Supervisor decision budget exhausted.');
     } catch (error) {
-      if (workerClaimed) {
+      if (workerClaimed || workerClaimAttempted) {
         try {
           run = await this.releaseWorker(run);
-          this.settings.setLastRun(run);
+          workerClaimed = false;
+          workerClaimAttempted = false;
         } catch (cleanupError) {
           try { error.workerCleanupError = String(cleanupError?.message || cleanupError); } catch {}
         }
       }
+      const terminal = error?.name === 'AbortError' || error?.code === 'cancelled'
+        ? DEV_RUN_STATUS.CANCELLED
+        : DEV_RUN_STATUS.FAILED;
+      if (![DEV_RUN_STATUS.COMPLETED, DEV_RUN_STATUS.FAILED, DEV_RUN_STATUS.CANCELLED].includes(run.status)) {
+        try { run = transitionDevRun(run, terminal, { now: this.supervisor.now() }); } catch {}
+      }
+      this.settings.setLastRun(run);
       throw error;
     }
   }
