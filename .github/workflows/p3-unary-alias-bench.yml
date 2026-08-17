@@ -1,0 +1,67 @@
+name: P3 unary alias validation
+on:
+  push:
+    branches: [hex/p3-local-debug-350]
+    paths: ['.github/workflows/p3-unary-alias-bench.yml']
+permissions:
+  contents: read
+env:
+  HEX_FIXTURE_TSUMTSUM_URL: https://raw.githubusercontent.com/rhgrive3/hex/bd7bd61d093592d07fdd9e9b14a859e19dd4c3a9/tests/TsumTsum
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 75c393a7e89a1154963b03a34b8e2ada0bebe9f9
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci
+      - run: node scripts/fetch-real-fixtures.mjs TsumTsum
+      - name: Apply generic unary alias candidate
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('js/semantics/ir/normalize-effects.js'); s=p.read_text()
+          old="  'neg', 'not', 'abs', 'fneg', 'fabs', 'fsqrt', 'clz', 'rbit', 'rev', 'rev16', 'rev32',\n"
+          new="  'neg', 'not', 'abs', 'fneg', 'fabs', 'fsqrt', 'clz', 'rbit', 'rev', 'rev16', 'rev32',\n  'count-leading-zeroes', 'reverse-bits',\n"
+          assert old in s; p.write_text(s.replace(old,new,1))
+
+          p=Path('js/semantics/compat/semantic-ir-v2-to-v1-nodes.js'); s=p.read_text()
+          anchor="function machineControl(node) { return node?.attributes?.machineControlEffect ?? null; }\n"
+          helper="""function machineControl(node) { return node?.attributes?.machineControlEffect ?? null; }
+function legacyUnaryOperator(operator) {
+  const op = String(operator ?? 'unknown');
+  if (op === 'count-leading-zeroes') return 'clz';
+  if (op === 'reverse-bits') return 'rbit';
+  return op;
+}
+"""
+          assert anchor in s; s=s.replace(anchor,helper,1)
+          old="      setBasic(V1_OP.UN, node.operator || attrs.operator || 'unknown');"
+          new="      setBasic(V1_OP.UN, legacyUnaryOperator(node.operator || attrs.operator || 'unknown'));"
+          assert old in s; p.write_text(s.replace(old,new,1))
+          PY
+      - name: Check exact regressed function
+        run: |
+          cat > tests/.p3-unary-probe.mjs <<'EOF'
+          import { openBinary } from './harness.mjs';
+          import { decompile } from '../js/decompile.js';
+          import { setSemanticMigrationMode } from '../js/ir.js';
+          setSemanticMigrationMode('semantic-v2-compat');
+          const w=await openBinary('tests/.real-fixtures/TsumTsum');
+          const a=0x1011af0d4n,end=0x1011af380n;
+          const model=await w.analyze(a,end);
+          const t=Date.now();
+          const res=decompile(model,{addr:a,rowOfAddress:x=>x==null?null:Number((x-w.region.vmAddr)/4n),addrOfRow:r=>w.region.vmAddr+BigInt(r)*4n,symbolFor:x=>w.symbols.nameAt(x)});
+          const lines=(res.lines||[]).filter(l=>l.kind==='stmt'||l.kind==='ctrl');
+          const asm=lines.filter(l=>/__asm\(/.test(l.text)&&!/__asm\("br\s+x\d+"\)/.test(l.text));
+          console.error(`[P3UNARY exact] ms=${Date.now()-t} lines=${lines.length} asm=${asm.length}`);
+          for(const l of asm) console.error(`[P3UNARY asm] ${l.text}`);
+          EOF
+          node --max-old-space-size=6000 tests/.p3-unary-probe.mjs
+      - run: node tests/ir.mjs
+      - run: npm run semantic-v2:test
