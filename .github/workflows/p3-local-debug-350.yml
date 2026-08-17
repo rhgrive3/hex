@@ -1,15 +1,32 @@
-name: P3 FLOW regression isolation v13
+name: P3 FLOW regression isolation v14
 on:
   push:
     branches: [hex/p3-local-debug-350]
     paths:
       - '.github/workflows/p3-local-debug-350.yml'
-permissions:
-  contents: write
 jobs:
   isolate:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: all-candidate
+            restore: ''
+          - label: restore-finalize
+            restore: js/semantics/compat/semantic-ir-v2-to-v1-finalize.js
+          - label: restore-core
+            restore: js/semantics/compat/semantic-ir-v2-to-v1-core.js
+          - label: restore-nodes
+            restore: js/semantics/compat/semantic-ir-v2-to-v1-nodes.js
+          - label: restore-integer
+            restore: js/targets/architecture/arm64/effects/integer.js
+          - label: restore-ir-core
+            restore: js/ir-core.js
+          - label: restore-interproc
+            restore: js/interproc.js
+    name: ${{ matrix.label }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -17,49 +34,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Isolate candidate file causing legacy FLOW regressions
-        shell: bash
-        run: |
-          set -u
-          files=(
-            js/semantics/compat/semantic-ir-v2-to-v1-finalize.js
-            js/semantics/compat/semantic-ir-v2-to-v1-core.js
-            js/semantics/compat/semantic-ir-v2-to-v1-nodes.js
-            js/targets/architecture/arm64/effects/integer.js
-            js/ir-core.js
-            js/interproc.js
-          )
-          : > tools/validation/p3-debug-flow-isolation.txt
-          apply_all() {
-            git checkout HEAD -- "${files[@]}"
-            python3 tools/validation/p3-debug-apply.py >/dev/null
-            python3 tools/validation/p3-debug-apply-interproc.py >/dev/null
-            python3 tools/validation/p3-debug-apply-137.py >/dev/null
-            python3 tools/validation/p3-debug-stackname-collision.py >/dev/null
-          }
-          run_case() {
-            local label="$1"
-            local restore="${2:-}"
-            apply_all
-            if [[ -n "$restore" ]]; then git checkout HEAD -- "$restore"; fi
-            set +e
-            node tests/run.js > "/tmp/${label}.log" 2>&1
-            local status=$?
-            set -e
-            echo "=== ${label} status=${status} ===" >> tools/validation/p3-debug-flow-isolation.txt
-            grep -E 'FAIL  |passed, [0-9]+ failed|passed$' "/tmp/${label}.log" >> tools/validation/p3-debug-flow-isolation.txt || true
-          }
-          run_case all-candidate
-          run_case restore-finalize js/semantics/compat/semantic-ir-v2-to-v1-finalize.js
-          run_case restore-core js/semantics/compat/semantic-ir-v2-to-v1-core.js
-          run_case restore-nodes js/semantics/compat/semantic-ir-v2-to-v1-nodes.js
-          run_case restore-integer js/targets/architecture/arm64/effects/integer.js
-          run_case restore-ir-core js/ir-core.js
-          run_case restore-interproc js/interproc.js
-          cat tools/validation/p3-debug-flow-isolation.txt
-          git checkout HEAD -- "${files[@]}"
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add tools/validation/p3-debug-flow-isolation.txt
-          git commit -m "Debug: persist Phase 3 FLOW isolation matrix" || true
-          git push origin HEAD:hex/p3-local-debug-350
+      - run: python3 tools/validation/p3-debug-apply.py
+      - run: python3 tools/validation/p3-debug-apply-interproc.py
+      - run: python3 tools/validation/p3-debug-apply-137.py
+      - run: python3 tools/validation/p3-debug-stackname-collision.py
+      - name: Restore one candidate file
+        if: ${{ matrix.restore != '' }}
+        run: git checkout HEAD -- "${{ matrix.restore }}"
+      - run: node tests/run.js
