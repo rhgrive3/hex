@@ -184,7 +184,9 @@ window.__CHATGPT__ = (() => {
     /* A human message that lands in the same tab inside Hex's submit window:
        two fresh user turns appear between the baseline and the first probe. */
     if (options.manualInterference) appendUserTurn('人が手で入力した別の質問', 'manual-' + turnId);
-    const initialUserText = options.userHydrationDelayMs ? text.slice(0, Math.max(1, Math.floor(text.length / 3))) : text;
+    const initialUserText = options.userInitialText != null
+      ? String(options.userInitialText)
+      : (options.userHydrationDelayMs ? text.slice(0, Math.max(1, Math.floor(text.length / 3))) : text);
     const user = appendUserTurn(initialUserText, turnId);
     if (options.userHydrationDelayMs) {
       setTimeout(() => {
