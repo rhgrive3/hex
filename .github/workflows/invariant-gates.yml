@@ -69,6 +69,21 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Prepare generated userscript for canonical Phase 5 component semantic check
+        if: >-
+          github.event_name == 'pull_request' &&
+          github.base_ref == 'hex/p5-x86-integration' &&
+          matrix.name == 'semantic-v2:test' &&
+          (
+            github.head_ref == 'hex/p5-1-x86-int-control' ||
+            github.head_ref == 'hex/p5-2-x86-memory-atomic' ||
+            github.head_ref == 'hex/p5-3-x86-fp-simd-system' ||
+            github.head_ref == 'hex/p5-4-x86-abis' ||
+            github.head_ref == 'hex/p5-5-variable-viewer' ||
+            github.head_ref == 'hex/p5-6-x86-verification'
+          )
+        run: npm run userscript:build
+
       - name: Run exact check shard
         run: ${{ matrix.command }}
 
