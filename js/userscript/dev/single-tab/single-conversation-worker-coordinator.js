@@ -45,10 +45,17 @@ export class SingleConversationWorkerCoordinator {
     if (!supervisorConversation?.id) {
       throw workerError(DEV_WORKER_FAILURE.CONVERSATION_MISMATCH, 'Supervisor ChatGPT conversation identity is unavailable.');
     }
+    const supervisorAnchors = this.controller.currentUserAnchors?.() || [];
     this.claimed = {
       runId: normalizedRun,
       workerId: normalizedWorker,
       supervisorConversation,
+      // iOS ChatGPT may virtualize older turns when returning to a conversation.
+      // The most recent Supervisor user turn is enough to prove that the target
+      // conversation body, not only its /c/<id> route, has rehydrated. Requiring
+      // every historical user turn creates false failures on partially hydrated
+      // but already-usable conversations.
+      supervisorAnchor: supervisorAnchors.length ? Object.freeze({ ...supervisorAnchors[supervisorAnchors.length - 1] }) : null,
       workerConversation: null,
     };
     this.lastResult = null;
@@ -270,9 +277,29 @@ export class SingleConversationWorkerCoordinator {
     if (!claim?.supervisorConversation?.id) return null;
     const current = this.controller.currentConversation();
     if (current?.id === claim.supervisorConversation.id) return current;
-    return this.controller.navigateToConversation(claim.supervisorConversation, {
-      sessionKey: `dev-supervisor-return:${claim.runId}`,
-    });
+
+    // Worker navigation needs the controller's full remembered-history guard,
+    // but returning to the Supervisor only needs one strong continuity anchor:
+    // the latest user turn that existed immediately before delegation. ChatGPT
+    // on iPad can virtualize older history indefinitely even though the route,
+    // composer, latest turn and conversation context are already usable.
+    const expected = claim.supervisorConversation;
+    const key = `dev-supervisor-return:${claim.runId}`;
+    this.controller.router.bind(key, expected);
+    const routed = await this.controller.router.route(key, {});
+    if (!routed?.conversation || routed.conversation.id !== expected.id) {
+      throw workerError(DEV_WORKER_FAILURE.CONVERSATION_MISMATCH, 'ChatGPT did not reach the requested Supervisor conversation.');
+    }
+    if (!claim.supervisorAnchor) return routed.conversation;
+
+    const hydrated = await this.controller.waitForConversationHydration(expected, [claim.supervisorAnchor], {});
+    if (!hydrated) {
+      throw workerError(
+        DEV_WORKER_FAILURE.CONVERSATION_MISMATCH,
+        'ChatGPT reached the requested Supervisor conversation route before its latest continuity turn finished rehydrating.',
+      );
+    }
+    return hydrated;
   }
 
   async safeRestoreSupervisor() {
