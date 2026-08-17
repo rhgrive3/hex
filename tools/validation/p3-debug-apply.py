@@ -86,9 +86,9 @@ replace_once(
     "register-valued shift",
 )
 
-# 5. A typed ABI return is positive evidence. Reuse the call's existing canonical
-# physical-state definition instead of inventing a second semantic value. Unknown
-# calls without typed return evidence remain dst=null.
+# 5. A typed ABI return is positive evidence. Reuse an existing call state value
+# when possible; otherwise synthesize only the legacy-v1 compatibility value.
+# Untyped/unknown calls remain dst=null, so this does not fabricate return values.
 p = Path("js/ir-core.js")
 s = p.read_text()
 call_marker = """function valueMayCarryStackAddress(value) {
@@ -101,10 +101,36 @@ helper = """function attachAapcs64TypedCallResults(projected) {
         && value?.sourceEntityId === inst.semanticNodeId
         && value?.def == null)
       .sort((left, right) => Number(right.id ?? -1) - Number(left.id ?? -1));
-    const value = candidates[0] ?? null;
-    if (!value) continue;
+    const bits = Number(inst.returnBits || candidates[0]?.bits || 64);
+    const priorVersion = Math.max(-1, ...(projected.values ?? [])
+      .filter((value) => value?.reg === inst.returnReg)
+      .map((value) => Number(value.version ?? -1)));
+    const value = candidates[0] ?? {
+      id: (projected.values ?? []).length,
+      vid: (projected.values ?? []).length + 1,
+      kind: LEGACY_VK.DEF,
+      reg: inst.returnReg,
+      stateKey: null,
+      version: priorVersion + 1,
+      bits,
+      def: null,
+      uses: [],
+      const: null,
+      range: null,
+      signed: null,
+      nullable: null,
+      type: null,
+      label: inst.returnReg,
+      semanticValueId: null,
+      semanticSsaValueId: null,
+      sourceEntityId: inst.semanticNodeId,
+      machineType: null,
+      origin: inst.origin ?? null,
+      compatibilityShapeOnly: true,
+    };
+    if (!candidates[0]) projected.values.push(value);
     value.kind = LEGACY_VK.DEF;
-    value.bits = Number(inst.returnBits || value.bits || 64);
+    value.bits = bits;
     value.def = inst;
     value.unknown = true;
     delete value.undefined;
