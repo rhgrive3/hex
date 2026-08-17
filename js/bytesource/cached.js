@@ -160,11 +160,11 @@ export class CachedByteSource extends ByteSource {
     const controller = typeof AbortController === 'function' ? new AbortController() : null;
     const entry = { controller, waiters:0, settled:false, promise:null };
     this.stats.rangeRequestCount++;
-    this.stats.pagesFetched++;
     if (prefetch) this.stats.prefetchCount++;
     entry.promise = (async () => {
       try {
         const bytes = await this.source.readExactly(offset, length, controller ? { signal:controller.signal } : {});
+        this.stats.pagesFetched++;
         this.stats.backendBytesRead += bytes.byteLength;
         if (generation === this.generation) this.#remember(key, bytes);
         return bytes;
