@@ -140,7 +140,7 @@ export function emitX86TruncatedImul(ctx, left, right, widthBits, form) {
   return result;
 }
 
-export function emitX86ImplicitDivide(ctx, family, divisor, widthBits, {
+export function emitX86ImplicitDivide(ctx, family, divisor, widthBits) {
   const width = Number(widthBits);
   const registers = x86ImplicitDivideRegisters(width);
   if (!registers || !divisor) return null;
