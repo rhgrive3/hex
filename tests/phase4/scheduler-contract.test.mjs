@@ -58,7 +58,11 @@ async function waitState(scheduler, artifactId, state) {
   requestA.dependencies=[requestB];
   await assert.rejects(
     scheduler.request(requestA),
-    (error)=>error instanceof SchedulerCycleError && error.code==='artifact-dependency-cycle' && error.path.at(-1)==='artifact_cycle_a',
+    (error)=>error instanceof SchedulerCycleError
+      && error.code==='artifact-dependency-cycle'
+      && error.path[0]===error.path.at(-1)
+      && error.path.includes('artifact_cycle_a')
+      && error.path.includes('artifact_cycle_b'),
   );
   assert.equal(scheduler.stats().producerInvocations,0);
 }
