@@ -61,13 +61,11 @@ assert.equal(resultB.formatId,'pe');
 assert.equal(backend.file,fileB,'latest open must own committed backend state');
 assert.equal(backend.formatId,'pe');
 
-
-
-// Multi-stage Mach-O analysis must keep the epoch captured at start. The local
-// chained-import read is asynchronous; a slice switch during that read must not
-// let the old analysis return under the new epoch.
+// Multi-stage Mach-O analysis must keep the epoch captured at start. This test
+// exercises the current compatibility producer directly; ambient route selection
+// belongs to the Phase 4 cutover/rehearsal tests and must not alter this race oracle.
 {
-  const analysisBackend=new Backend();
+  const analysisBackend=new Backend({analysisRoute:'current'});
   const legacyAnalysisWorker=workers[workers.length-2];
   let releaseRead=null;
   const fakeFile={
