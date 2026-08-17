@@ -19,7 +19,7 @@ test('real Capstone bytes feed structured x86 integer/control MachineEffects', a
     assert.equal(adc.instructionFamily,'adc');
     assert.equal(adc.length,3);
     assert.equal(adc.detail.operands.length,2);
-    assert.equal(adc.detail.operands[0].register.id,'rax');
+    assert.equal(adc.detail.operands[0].registerId,'rax');
     const adcEffects = effects(adc,'p5-1:bytes:adc');
     assert.equal(flagReads(adcEffects,'CF').length,1);
     assert.equal(registerWrites(adcEffects,'rax').length,1);
