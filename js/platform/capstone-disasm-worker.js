@@ -1,5 +1,5 @@
 'use strict';
-importScripts('../../capstone.js');
+importScripts('../targets/architecture/x86_64/capstone-structured.js', '../../capstone.js');
 
 const CS_INSN_STRUCT = 240;
 const OFF_SIZE = 16, OFF_MNEMONIC = 42, OFF_OP_STR = 74;
@@ -26,6 +26,11 @@ async function handleFor(architecture) {
   if (rc !== 0) { M._free(hp); throw new Error(`Capstone cannot open ${architecture} (error ${rc})`); }
   const handle = M.getValue(hp, 'i32');
   M.ccall('cs_option', 'number', ['number', 'number', 'number'], [handle, M.OPT_SKIPDATA, M.OPT_ON]);
+  if (architecture === 'x86_64') {
+    globalThis.HexX86CapstoneStructured.verifyVersion(M);
+    const detailRc = M.ccall('cs_option', 'number', ['number', 'number', 'number'], [handle, M.OPT_DETAIL, M.OPT_ON]);
+    if (detailRc !== 0) throw new Error(`Capstone cannot enable x86 detail (error ${detailRc})`);
+  }
   const state = { M, hp, handle, out: M._malloc(4) };
   handles.set(architecture, state);
   return state;
@@ -45,19 +50,29 @@ self.onmessage = async (event) => {
       const base = count ? M.getValue(out, 'i32') : 0;
       const instructions = [];
       let consumed = 0;
-      for (let i = 0; i < count; i++) {
-        const p = base + i * CS_INSN_STRUCT;
-        const size = M.getValue(p + OFF_SIZE, 'i16');
-        if (!(size > 0)) break;
-        instructions.push({
-          address: BigInt(msg.address) + BigInt(consumed),
-          size,
-          mnemonic: M.UTF8ToString(p + OFF_MNEMONIC),
-          opStr: M.UTF8ToString(p + OFF_OP_STR),
-        });
-        consumed += size;
+      try {
+        for (let i = 0; i < count; i++) {
+          const p = base + i * CS_INSN_STRUCT;
+          const size = M.getValue(p + OFF_SIZE, 'i16');
+          if (!(size > 0)) break;
+          if (msg.architecture === 'x86_64') {
+            instructions.push(globalThis.HexX86CapstoneStructured.parseInstruction(M, handle, p, {
+              address:BigInt(msg.address) + BigInt(consumed),
+              mode:'long-64',
+            }));
+          } else {
+            instructions.push({
+              address: BigInt(msg.address) + BigInt(consumed),
+              size,
+              mnemonic: M.UTF8ToString(p + OFF_MNEMONIC),
+              opStr: M.UTF8ToString(p + OFF_OP_STR),
+            });
+          }
+          consumed += size;
+        }
+      } finally {
+        if (base) M.ccall('cs_free', 'void', ['number','number'], [base, count]);
       }
-      if (base) M.ccall('cs_free', 'void', ['number','number'], [base, count]);
       self.postMessage({ id: msg.id, ok: true, instructions, bytesConsumed: consumed });
     } finally { M._free(buf); }
   } catch (error) {

@@ -195,7 +195,9 @@ function markdown(report) {
 
 const baseSha = arg('base', process.env.PHASE4_BASE || '9c67832485f8e9b6101915d460fae2a74bccfec5');
 const headSha = arg('head', git(['rev-parse', 'HEAD'], 'unknown'));
-const ownershipLane = arg('lane', process.env.PHASE4_LANE || 'p4-7');
+const delegatedPhase5Lane = arg('phase5-lane');
+const ownershipPhase = delegatedPhase5Lane ? 5 : 4;
+const ownershipLane = delegatedPhase5Lane || arg('lane', process.env.PHASE4_LANE || 'p4-7');
 const ownershipBaseSha = arg('ownership-base', git(['merge-base', headSha, 'origin/main'], baseSha));
 const noCommands = process.argv.includes('--no-commands');
 const oracles = await runVerificationOracles(); const audit = staticAudit();
@@ -208,9 +210,13 @@ if (!noCommands) validation.push(
   command('npm run invariants:test', 'npm', ['run', 'invariants:test']),
   command('npm run migration:test', 'npm', ['run', 'migration:test']),
 );
-const ownershipCommand = `node tools/validation/phase4-ownership.mjs --lane ${ownershipLane} --base ${ownershipBaseSha}`;
+const ownershipCommand = ownershipPhase === 5
+  ? `node tools/validation/phase5-ownership.mjs --lane ${ownershipLane} --base-sha ${ownershipBaseSha} --head-sha ${headSha}`
+  : `node tools/validation/phase4-ownership.mjs --lane ${ownershipLane} --base ${ownershipBaseSha}`;
 const ownershipRun = noCommands ? notRun('ownership gate', ownershipCommand)
-  : command('ownership gate', process.execPath, ['tools/validation/phase4-ownership.mjs', '--lane', ownershipLane, '--base', ownershipBaseSha]);
+  : ownershipPhase === 5
+    ? command('ownership gate', process.execPath, ['tools/validation/phase5-ownership.mjs', '--lane', ownershipLane, '--base-sha', ownershipBaseSha, '--head-sha', headSha])
+    : command('ownership gate', process.execPath, ['tools/validation/phase4-ownership.mjs', '--lane', ownershipLane, '--base', ownershipBaseSha]);
 validation.push(ownershipRun);
 
 const raw = rawFailures(oracles, ownershipRun);
@@ -223,10 +229,11 @@ const failedCommands = validation.filter((item) => !item.passed);
 if (!phase3.satisfied) firstDivergences.push({ category: 'M', categoryName: FIRST_DIVERGENCE.M, id: 'phase3-regression-oracle', ownerLane: 'integration', repairLane: 'p4-7', status: 'BLOCKING' });
 if (failedCommands.length) firstDivergences.push({ category: 'L', categoryName: FIRST_DIVERGENCE.L, id: 'required-validation-command-failure', ownerLane: 'integration', repairLane: 'p4-7', status: 'BLOCKING', evidence: failedCommands.map((item) => item.command) });
 const rawTotal = Object.values(raw).reduce((sum, value) => sum + (Number(value) || 0), 0);
-const integrationDecision = firstDivergences.length || rawTotal ? 'NOT-INTEGRATED / BLOCKING' : 'READY-FOR-P4-7-INTEGRATION';
+const readyDecision = ownershipPhase === 5 ? 'READY-FOR-CROSS-PHASE-INTEGRATION' : 'READY-FOR-P4-7-INTEGRATION';
+const integrationDecision = firstDivergences.length || rawTotal ? 'NOT-INTEGRATED / BLOCKING' : readyDecision;
 const productionBlockersByOwnerLane = firstDivergences.reduce((out, item) => { const key = item.ownerLane || 'unknown'; (out[key] ||= []).push(item); return out; }, {});
 const report = {
-  schemaVersion: 1, phase: 4, lane: 'p4-6-artifact-verification', verificationLane: ownershipLane,
+  schemaVersion: 1, phase: 4, lane: 'p4-6-artifact-verification', ownershipPhase, verificationLane: ownershipLane,
   baseSha, ownershipBaseSha, headSha, generatedAt: new Date().toISOString(),
   integrationDecision, verificationCases: oracles.verificationCases, rawFailures: raw, performance: oracles.performance,
   firstDivergences, productionBlockersByOwnerLane, staticAudit: audit, phase3, validation: validation.map(publicCommand),
@@ -237,4 +244,4 @@ const jsonPath = path.join(REPORT_DIR, `${stem}.json`); const mdPath = path.join
 fs.writeFileSync(jsonPath, JSON.stringify(report, null, 2) + '\n'); fs.writeFileSync(mdPath, markdown(report));
 console.log(`PHASE4_VERIFICATION_REPORT ${path.relative(ROOT, jsonPath)} ${integrationDecision}`);
 console.log(JSON.stringify({ baseSha, ownershipBaseSha, headSha, integrationDecision, rawFailures: raw, firstDivergenceCount: firstDivergences.length, phase3: phase3.satisfied }));
-if (integrationDecision !== 'READY-FOR-P4-7-INTEGRATION') process.exitCode = 1;
+if (integrationDecision !== readyDecision) process.exitCode = 1;

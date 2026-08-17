@@ -10,6 +10,10 @@ import {
   ARM64_MACHINE_EFFECTS_SEMANTIC_VERSION,
   arm64MachineEffectFamilies,
 } from '../../js/targets/architecture/arm64/effects/index.js';
+import {
+  X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION,
+  x86MachineEffectFamilies,
+} from '../../js/targets/architecture/x86_64/effects/index.js';
 
 const gp = (num, bits = 64) => ({ k:'reg', cls:'gp', num, bits, text:`${bits === 32 ? 'w' : 'x'}${num}` });
 const fp = (num, bits = 32, prefix = bits === 32 ? 's' : 'd') => ({ k:'reg', cls:'fp', num, bits, text:`${prefix}${num}` });
@@ -23,10 +27,12 @@ assert.equal(ARM64_ARCHITECTURE.capabilities.exactEffects, 'partial');
 assert.equal(ARM64E_ARCHITECTURE.capabilities.exactEffects, 'partial');
 assert.equal(ARM64_ARCHITECTURE.capabilities.semanticAnalysis, 'legacy-v1');
 assert.equal(ARM64E_ARCHITECTURE.capabilities.semanticAnalysis, 'legacy-v1-partial');
-assert.equal(X86_64_ARCHITECTURE.semanticVersion, '1');
-assert.equal(X86_64_ARCHITECTURE.capabilities.exactEffects, 'unsupported');
-assert.equal(X86_64_ARCHITECTURE.capabilities.semanticAnalysis, 'unsupported');
-assert.equal(X86_64_ARCHITECTURE.liftExact, null);
+assert.equal(X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION, '5.0.0-foundation');
+assert.equal(X86_64_ARCHITECTURE.semanticVersion, X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION);
+assert.equal(X86_64_ARCHITECTURE.capabilities.exactEffects, 'partial');
+assert.equal(X86_64_ARCHITECTURE.capabilities.semanticAnalysis, 'phase5-shadow-partial');
+assert.equal(typeof X86_64_ARCHITECTURE.liftExact, 'function');
+assert.deepEqual(x86MachineEffectFamilies(), ['control','memory','lea','integer','string','atomic','fp','simd','system']);
 assert.deepEqual(arm64MachineEffectFamilies(), ['flags','control','memory','simd','fp','integer','system']);
 assert.equal(architecturePluginV2('arm64'), ARM64_ARCHITECTURE);
 assert.equal(architecturePluginV2('arm64e'), ARM64E_ARCHITECTURE);

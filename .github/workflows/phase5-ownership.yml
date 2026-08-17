@@ -1,0 +1,107 @@
+name: Phase 5 ownership
+
+on:
+  pull_request:
+    paths:
+      - 'js/targets/architecture/**'
+      - 'js/targets/abi/**'
+      - 'js/architecture/**'
+      - 'js/platform/capstone-disasm-worker.js'
+      - 'js/platform/capability-maturity.js'
+      - 'js/platform/worker.js'
+      - 'js/backend.js'
+      - 'js/worker*.js'
+      - 'js/cache/artifact-orchestration.js'
+      - 'js/viewer.js'
+      - 'js/viewer/**'
+      - 'js/semantics/**'
+      - 'js/analysis/alias/**'
+      - 'js/analysis/semantic-function.js'
+      - 'js/decompiler/**'
+      - 'js/core/**'
+      - 'js/analyze.js'
+      - 'tests/phase5/**'
+      - 'tests/phase6/**'
+      - 'tools/validation/phase5/**'
+      - 'tools/validation/phase6/**'
+      - 'tools/validation/phase5-ownership.mjs'
+      - 'tools/validation/phase-ownership/phase5.json'
+      - 'reports/phase5/**'
+      - 'reports/phase6/**'
+      - '.github/workflows/phase5-*.yml'
+      - '.github/workflows/phase6-*.yml'
+      - 'docs/SUPPORT_MATRIX.md'
+      - 'docs/universal-platform.md'
+      - 'package.json'
+      - 'userscript/hex.user.template.js'
+      - 'userscript/release-version.json'
+
+permissions:
+  contents: read
+
+jobs:
+  ownership:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Resolve exact Phase 5 lane and target
+        id: lane
+        shell: bash
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          lane=''
+          case "$HEAD_REF" in
+            hex/p5-0-x86-foundation)
+              test "$BASE_REF" = main || { echo "::error::P5-0 must target main."; exit 1; }
+              lane=p5-0
+              ;;
+            hex/p5-1-x86-int-control) lane=p5-1 ;;
+            hex/p5-2-x86-memory-atomic) lane=p5-2 ;;
+            hex/p5-3-x86-fp-simd-system) lane=p5-3 ;;
+            hex/p5-4-x86-abis) lane=p5-4 ;;
+            hex/p5-5-variable-viewer) lane=p5-5 ;;
+            hex/p5-6-x86-verification) lane=p5-6 ;;
+            hex/p5-x86-integration)
+              test "$BASE_REF" = main || { echo "::error::P5 integration must target main."; exit 1; }
+              lane=p5-i
+              ;;
+            hex/p5-*)
+              echo "::error::Non-canonical Phase 5 branch '$HEAD_REF'."
+              exit 1
+              ;;
+            *)
+              if test "$BASE_REF" = hex/p5-x86-integration; then
+                echo "::error::Only canonical Phase 5 component branches may target integration."
+                exit 1
+              fi
+              ;;
+          esac
+          if [[ "$lane" =~ ^p5-[1-6]$ ]] && test "$BASE_REF" != hex/p5-x86-integration; then
+            echo "::error::Phase 5 component lanes must target hex/p5-x86-integration."
+            exit 1
+          fi
+          echo "lane=$lane" >> "$GITHUB_OUTPUT"
+      - name: Validate ownership manifest structure
+        run: node tools/validation/phase5-ownership.mjs --check-manifest
+      - name: Run Phase 5 governance regressions
+        run: node tests/phase5/run.mjs --group ownership
+      - name: Enforce exact-SHA changed-file inventory
+        if: steps.lane.outputs.lane != ''
+        env:
+          PHASE5_LANE: ${{ steps.lane.outputs.lane }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: node tools/validation/phase5-ownership.mjs --lane "$PHASE5_LANE" --base-sha "$BASE_SHA" --head-sha "$HEAD_SHA"
+      - name: Record unrelated moving-main change
+        if: steps.lane.outputs.lane == ''
+        run: echo 'Not a Phase 5 lane; moving-main reconciliation will inspect this change if it merges.'

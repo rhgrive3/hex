@@ -1,0 +1,261 @@
+import { architecturePluginV2 } from '../index.js';
+import { resolveABIPlugin } from '../../abi/index.js';
+import { buildSemanticV2CompatibilityPipeline } from '../../../semantics/compat/index.js';
+import { decompileSemantic } from '../../../decompiler/semantic.js';
+import { X86_SEMANTIC_FUNCTION_ANALYSIS_VERSION } from './semantic-function-contract.js';
+
+export { X86_SEMANTIC_FUNCTION_ANALYSIS_VERSION as SEMANTIC_FUNCTION_ANALYSIS_VERSION };
+
+function abortIfRequested(signal) {
+  if (!signal?.aborted) return;
+  const error = signal.reason instanceof Error ? signal.reason : new Error('semantic-function-analysis-cancelled');
+  error.name = 'AbortError';
+  throw error;
+}
+
+function addressOf(instruction) { return BigInt(instruction.address); }
+function endOf(instruction) { return addressOf(instruction) + BigInt(instruction.length ?? instruction.size); }
+function keyOf(address) { return `block-${BigInt(address).toString(16)}`; }
+
+function directTarget(instruction) {
+  const operand = instruction?.detail?.operands?.[0];
+  if (operand?.type !== 'immediate' || operand.value == null) return null;
+  try { return BigInt(operand.value); } catch { return null; }
+}
+
+function controlKind(plugin, instruction) {
+  try { return String(plugin.classifyControlFlow?.(instruction) || 'fallthrough'); }
+  catch { return 'unknown'; }
+}
+
+/**
+ * Convert decoder-proven instruction starts into discovery facts for the shared
+ * semantic pipeline. This is architecture-front-end work: generic CFG/SSA never
+ * inspect x86 register names or mnemonics.
+ */
+export function partitionDecodedFunction(instructions, architecturePlugin) {
+  if (!Array.isArray(instructions) || !instructions.length) throw new TypeError('semantic-function-decoded-instructions-required');
+  const ordered = instructions.slice().sort((left, right) => addressOf(left) < addressOf(right) ? -1 : addressOf(left) > addressOf(right) ? 1 : 0);
+  const byAddress = new Map();
+  for (const instruction of ordered) {
+    const address = addressOf(instruction);
+    if (byAddress.has(address.toString())) throw new TypeError('semantic-function-duplicate-instruction-address');
+    byAddress.set(address.toString(), instruction);
+  }
+
+  const starts = new Set([addressOf(ordered[0]).toString()]);
+  for (let index = 0; index < ordered.length; index++) {
+    const instruction = ordered[index];
+    const kind = controlKind(architecturePlugin, instruction);
+    const target = directTarget(instruction);
+    if (target != null && byAddress.has(target.toString()) && ['branch','conditional-branch'].includes(kind)) starts.add(target.toString());
+    if (['branch','conditional-branch','return','unknown'].includes(kind) && ordered[index + 1]) starts.add(addressOf(ordered[index + 1]).toString());
+  }
+
+  const blocks = [];
+  let current = null;
+  for (const instruction of ordered) {
+    const address = addressOf(instruction);
+    if (!current || starts.has(address.toString())) {
+      current = { key:keyOf(address), startAddress:address, instructions:[], successors:[] };
+      blocks.push(current);
+    }
+    current.instructions.push({ decoded:instruction });
+  }
+  const byStart = new Map(blocks.map((block) => [block.startAddress.toString(), block]));
+  for (let index = 0; index < blocks.length; index++) {
+    const block = blocks[index];
+    const instruction = block.instructions.at(-1).decoded;
+    const kind = controlKind(architecturePlugin, instruction);
+    const target = directTarget(instruction);
+    const targetBlock = target == null ? null : byStart.get(target.toString());
+    const fallthroughBlock = byStart.get(endOf(instruction).toString()) || blocks[index + 1] || null;
+    if (kind === 'conditional-branch') {
+      if (targetBlock) block.successors.push({ to:targetBlock.key, kind:'conditional-true' });
+      if (fallthroughBlock) block.successors.push({ to:fallthroughBlock.key, kind:'conditional-false' });
+    } else if (kind === 'branch') {
+      if (targetBlock) block.successors.push({ to:targetBlock.key, kind:'branch' });
+    } else if (kind !== 'return' && fallthroughBlock) {
+      block.successors.push({ to:fallthroughBlock.key, kind:'fallthrough' });
+    }
+  }
+  return blocks;
+}
+
+export function semanticAbiAdapter(abiPlugin, options = {}) {
+  return Object.freeze({
+    id:abiPlugin.id,
+    semanticVersion:abiPlugin.semanticVersion,
+    classifyCall({ call }) {
+      const instruction = { callTarget:call?.target ?? null, callPrototype:options.callPrototype ?? null };
+      const classified = abiPlugin.classifyArguments(instruction, options);
+      const returned = abiPlugin.classifyCallReturn(instruction, options) ?? null;
+      return {
+        arguments:classified.arguments ?? null,
+        stackArguments:classified.stackArguments ?? null,
+        stackArgsUnknown:classified.stackArgsUnknown ?? true,
+        stackArgsMayContainPointers:classified.stackArgsMayContainPointers ?? true,
+        argumentEvidence:classified.evidence ?? `phase5-${abiPlugin.id}`,
+        clobbers:abiPlugin.callerSaved(),
+        returnReg:returned?.reg ?? null,
+        returnBits:returned?.bits ?? null,
+        returnEvidence:returned == null ? null : `phase5-${abiPlugin.id}-return`,
+      };
+    },
+  });
+}
+
+function legacyProjectionSnapshot(legacy) {
+  return {
+    name:legacy.name,
+    functionId:legacy.functionId,
+    startAddress:legacy.startAddress,
+    truncated:legacy.truncated === true,
+    entry:legacy.entry,
+    instructions:(legacy.instructions || []).map((instruction) => ({
+      id:instruction.id,
+      op:instruction.op,
+      sub:instruction.sub ?? null,
+      row:instruction.row,
+      address:instruction.address ?? null,
+      block:instruction.block,
+      semanticNodeId:instruction.semanticNodeId ?? null,
+      sourceInstructionIds:instruction.sourceInstructionIds ?? [],
+      origin:instruction.origin ?? null,
+    })),
+    blocks:(legacy.blocks || []).map((block) => ({
+      index:block.index,
+      semanticBlockId:block.semanticBlockId,
+      startRow:block.startRow,
+      endRow:block.endRow,
+      succ:block.succ ?? [],
+      successorEdges:block.successorEdges ?? [],
+      pred:block.pred ?? [],
+      isEntry:block.isEntry === true,
+      isExit:block.isExit === true,
+      origin:block.origin ?? null,
+    })),
+    origin:legacy.origin,
+    compat:{
+      projection:legacy.compat?.projection,
+      version:legacy.compat?.version,
+      semanticFunctionId:legacy.compat?.semanticFunctionId,
+      scalarSsa:legacy.compat?.scalarSsa === true,
+      memorySsa:legacy.compat?.memorySsa === true,
+      origins:legacy.compat?.origins ?? {},
+    },
+  };
+}
+
+function pipelineSnapshot(pipeline) {
+  return {
+    mode:pipeline.mode,
+    pipelineVersion:pipeline.pipelineVersion,
+    path:pipeline.path,
+    semanticSchemaVersion:pipeline.semanticSchemaVersion,
+    architectureId:pipeline.architectureId,
+    architectureSemanticVersion:pipeline.architectureSemanticVersion,
+    decoderSemanticVersion:pipeline.decoderSemanticVersion,
+    scalarSsaPassVersion:pipeline.scalarSsaPassVersion,
+    memorySsaPassVersion:pipeline.memorySsaPassVersion,
+    binaryId:pipeline.binaryId,
+    sliceId:pipeline.sliceId,
+    functionId:pipeline.functionId,
+    machineEffects:pipeline.machineEffects,
+    semanticIr:pipeline.semanticIr,
+    cfg:pipeline.cfg,
+    ssa:pipeline.ssa,
+    regions:pipeline.regions,
+    memorySsa:pipeline.memorySsa,
+    legacyV1:legacyProjectionSnapshot(pipeline.legacyV1),
+    instrumentation:pipeline.instrumentation,
+  };
+}
+
+function decompilerSnapshot(result) {
+  return {
+    semantic:result.semantic === true,
+    signature:result.signature,
+    summary:result.summary,
+    pseudocode:result.pseudocode,
+    lines:result.lines,
+    evidence:result.evidence,
+    warnings:result.warnings,
+    labels:[...(result.labels || [])],
+    coverage:result.coverage,
+    unknownInstructions:result.ctx?.unknownInstructions ?? 0,
+  };
+}
+
+export function analyzeDecodedSemanticFunction(input = {}, options = {}) {
+  abortIfRequested(options.signal);
+  const architectureId = String(input.architecture || 'x86_64').toLowerCase();
+  const architecturePlugin = architecturePluginV2(architectureId);
+  if (!architecturePlugin || typeof architecturePlugin.liftExact !== 'function') throw new TypeError('semantic-function-architecture-lifter-required');
+  const abiPlugin = resolveABIPlugin({ architecture:architectureId, platform:input.platform, abiId:input.abiId });
+  if (!abiPlugin?.supported) throw new TypeError('semantic-function-supported-abi-required');
+  const blocks = partitionDecodedFunction(input.instructions, architecturePlugin);
+  const abiAdapter = semanticAbiAdapter(abiPlugin, input);
+  const pipeline = buildSemanticV2CompatibilityPipeline({
+    architecturePlugin,
+    decoderSemanticVersion:String(input.decoderSemanticVersion),
+    binaryId:String(input.binaryId),
+    sliceId:String(input.sliceId),
+    addressWidthBits:64,
+    mode:input.mode ?? 'long-64',
+    entryBlockKey:blocks[0].key,
+    blocks,
+    abiAdapter,
+  }, { signal:options.signal, abiAdapter });
+  abortIfRequested(options.signal);
+  const decodedByInstructionId = new Map(pipeline.machineEffects.map((bundle, index) => [bundle.instructionId, input.instructions[index]]));
+  const legacyRows = new Map();
+  for (const legacy of pipeline.legacyV1.instructions) {
+    const candidates = (legacy.origin?.instructionIds || []).map((id) => decodedByInstructionId.get(id)).filter(Boolean);
+    const decoded = candidates.sort((left, right) => addressOf(left) < addressOf(right) ? -1 : addressOf(left) > addressOf(right) ? 1 : 0)[0] ?? input.instructions[0];
+    if (!legacyRows.has(legacy.row)) legacyRows.set(legacy.row, {
+      row:legacy.row,
+      address:legacy.address == null ? addressOf(decoded) : BigInt(legacy.address),
+      size:Number(decoded.length ?? decoded.size),
+      mn:String(decoded.mnemonic || decoded.instructionFamily || ''),
+      ops:String(decoded.opStr || ''),
+    });
+  }
+  const maximumRow = Math.max(...legacyRows.keys());
+  for (const block of pipeline.legacyV1.blocks) {
+    const proven = (block.insts || []).map((instruction) => instruction.address).filter((address) => address != null).map(BigInt)
+      .sort((left, right) => left < right ? -1 : left > right ? 1 : 0)[0];
+    if (proven == null) continue;
+    const prior = legacyRows.get(block.startRow);
+    legacyRows.set(block.startRow, { ...(prior || { row:block.startRow, size:0, mn:'', ops:'' }), address:proven });
+  }
+  const model = {
+    name:String(input.name || `sub_${addressOf(input.instructions[0]).toString(16)}`),
+    instructions:Array.from({ length:maximumRow + 1 }, (_unused, row) => legacyRows.get(row) ?? {
+      row, address:addressOf(input.instructions[0]), size:0, mn:'', ops:'',
+    }),
+    switches:[],
+  };
+  const decompiler = decompileSemantic(model, {
+    ir:pipeline.legacyV1,
+    abiAdapter,
+    decoderSemanticVersion:String(input.decoderSemanticVersion),
+    binaryId:String(input.binaryId),
+    sliceId:String(input.sliceId),
+    addr:addressOf(input.instructions[0]),
+    name:model.name,
+    functionPrototype:input.functionPrototype ?? null,
+  });
+  if (!decompiler) throw new Error('semantic-function-shared-decompiler-produced-no-result');
+  return Object.freeze({
+    route:'phase5-shadow-v2',
+    version:X86_SEMANTIC_FUNCTION_ANALYSIS_VERSION,
+    architectureId,
+    architectureSemanticVersion:architecturePlugin.semanticVersion,
+    abiId:abiPlugin.id,
+    abiSemanticVersion:abiPlugin.semanticVersion,
+    decoderSemanticVersion:String(input.decoderSemanticVersion),
+    pipeline:pipelineSnapshot(pipeline),
+    decompiler:decompilerSnapshot(decompiler),
+  });
+}

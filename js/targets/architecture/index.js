@@ -1,6 +1,8 @@
 import { assemble as assembleArm64 } from '../../patch.js';
 import { extendArm64WithArm64eEffects } from './arm64e/effects.js';
 import { ARM64_MACHINE_EFFECTS_SEMANTIC_VERSION, liftArm64MachineEffects } from './arm64/effects/index.js';
+import { X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION, liftX86MachineEffects } from './x86_64/effects/index.js';
+import { x86RegisterFile } from './x86_64/registers.js';
 import { ArchitecturePluginV2, registerArchitecturePlugin, architecturePluginV2, architecturePluginsV2 } from './registry.js';
 
 function arm64ControlFlow(instruction) {
@@ -13,7 +15,7 @@ function arm64ControlFlow(instruction) {
 }
 
 function x86ControlFlow(instruction) {
-  const op = String(instruction?.mnemonic || '').toLowerCase();
+  const op = String(instruction?.instructionFamily || instruction?.mnemonic || '').toLowerCase();
   if (op.startsWith('ret')) return 'return';
   if (op === 'call') return 'call';
   if (op === 'jmp') return 'branch';
@@ -26,12 +28,6 @@ const ARM64_REGISTERS = Object.freeze([
   Object.freeze({ id:'sp', bits:64, kind:'stack-pointer' }),
   Object.freeze({ id:'nzcv', bits:4, kind:'flags' }),
   ...Array.from({length:32}, (_x,i) => Object.freeze({ id:`v${i}`, bits:128, kind:'vector' })),
-]);
-
-const X86_64_REGISTERS = Object.freeze([
-  ...['rax','rbx','rcx','rdx','rsi','rdi','rbp','rsp','r8','r9','r10','r11','r12','r13','r14','r15','rip'].map((id) => Object.freeze({ id, bits:64, kind:id === 'rsp' ? 'stack-pointer' : id === 'rip' ? 'program-counter' : 'gp' })),
-  Object.freeze({ id:'rflags', bits:64, kind:'flags' }),
-  ...Array.from({length:16}, (_x,i) => Object.freeze({ id:`xmm${i}`, bits:128, kind:'vector' })),
 ]);
 
 const liftArm64eMachineEffects = extendArm64WithArm64eEffects(liftArm64MachineEffects);
@@ -54,11 +50,13 @@ export const ARM64E_ARCHITECTURE = registerArchitecturePlugin({
 });
 
 export const X86_64_ARCHITECTURE = registerArchitecturePlugin({
-  id:'x86_64', semanticVersion:'1', instructionAlignment:1, fixedInstructionSize:null, viewerCompatible:false,
-  modes:()=>Object.freeze(['long-64']), registerFile:()=>X86_64_REGISTERS,
-  decodeProvider:'capstone/backend', classifyControlFlow:x86ControlFlow,
-  // Decode availability is intentionally not semantic-analysis availability.
-  capabilities:{ decode:'external', exactEffects:'unsupported', semanticAnalysis:'unsupported' },
+  id:'x86_64', semanticVersion:X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION, instructionAlignment:1, fixedInstructionSize:null, viewerCompatible:false,
+  modes:()=>Object.freeze(['long-64']), registerFile:x86RegisterFile,
+  decodeProvider:'capstone/backend', liftExact:liftX86MachineEffects, classifyControlFlow:x86ControlFlow,
+  // P5-0 exposes a real shadow spine for its bounded seed only. Production
+  // cutover and viewer compatibility remain disabled until the full Phase 5
+  // corpus and release evidence are green.
+  capabilities:{ decode:'external-structured-v1', exactEffects:'partial', semanticAnalysis:'phase5-shadow-partial' },
 });
 
 export const UNKNOWN_ARCHITECTURE = registerArchitecturePlugin({

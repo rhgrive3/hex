@@ -6,7 +6,8 @@ import {
 } from '../js/architecture/index.js';
 import {
   AAPCS64_ABI,
-  UNKNOWN_ABI,
+  MICROSOFT_X64_ABI,
+  SYSV_AMD64_ABI,
   resolveABIPlugin,
 } from '../js/targets/abi/index.js';
 import { platformProfile } from '../js/targets/platform/index.js';
@@ -60,14 +61,15 @@ const region = { vmAddr:BASE, size:0x100n };
 {
   assert.equal(platformProfile('darwin').defaultABI({ architecture:'arm64' }), 'aapcs64');
   assert.equal(resolveABIPlugin({ architecture:'arm64', platform:'darwin' }).id, 'aapcs64');
-  assert.equal(resolveABIPlugin({ architecture:'x86_64', platform:'windows' }), UNKNOWN_ABI);
+  assert.equal(resolveABIPlugin({ architecture:'x86_64', platform:'windows' }), MICROSOFT_X64_ABI);
+  assert.equal(resolveABIPlugin({ architecture:'x86_64', platform:'linux' }), SYSV_AMD64_ABI);
 }
 
 // Decode support is not semantic-analysis support for x86-64.
 {
   const x86 = architecturePluginV2('x86_64');
-  assert.equal(x86.capabilities.decode, 'external');
-  assert.equal(x86.capabilities.semanticAnalysis, 'unsupported');
+  assert.equal(x86.capabilities.decode, 'external-structured-v1');
+  assert.equal(x86.capabilities.semanticAnalysis, 'phase5-shadow-partial');
   const capability = architectureCapability({ format:'pe', arch:'x86_64', endian:'little', bits:64 }, { x86_64:true, verified:true });
   assert.equal(capability.canDisassemble, true);
   assert.equal(capability.canAnalyzeDataflow, false);

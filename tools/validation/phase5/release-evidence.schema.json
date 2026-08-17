@@ -1,0 +1,162 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hex.invalid/schemas/phase5-release-evidence-v1.json",
+  "title": "Hex Master Architecture Phase 5 release evidence",
+  "description": "A null measurement is explicitly NOT-PROVEN. Producers must never replace a missing measurement with zero.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "phase",
+    "startMainSha",
+    "foundationMergeSha",
+    "lastReconciledMainSha",
+    "productSha",
+    "decoderContractVersion",
+    "x86SemanticVersion",
+    "sysvAbiVersion",
+    "microsoftX64AbiVersion",
+    "mandatoryCorpusTotal",
+    "mandatoryCorpusPassed",
+    "mandatoryCorpusFailed",
+    "instructionTotal",
+    "exactCount",
+    "exactWithIntrinsicCount",
+    "partialCount",
+    "unknownCount",
+    "unsupportedCount",
+    "decodeMismatchCount",
+    "machineEffectsMismatchCount",
+    "semanticIrMismatchCount",
+    "cfgMismatchCount",
+    "ssaMismatchCount",
+    "memorySsaMismatchCount",
+    "abiMismatchCount",
+    "decompilerMismatchCount",
+    "viewerMismatchCount",
+    "provenanceLossCount",
+    "unknownStoreSafetyFailures",
+    "unknownCallSafetyFailures",
+    "silentPreserveFallbackCount",
+    "hiddenFallbackCount",
+    "genericArchitectureLeakCount",
+    "arm64RegressionFailures",
+    "phase4RegressionFailures",
+    "wholeFileMaterializationFailures",
+    "viewerPeakRetainedBytes",
+    "viewerBoundedDecodeFailures",
+    "artifactDeterminismFailures",
+    "cancellationFailures",
+    "budgetFailures",
+    "firstDivergenceCount",
+    "finalCutoverStatus",
+    "phase5ExitGateFullySatisfied",
+    "phase6Started",
+    "evidenceProvenance"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "phase": { "const": 5 },
+    "startMainSha": { "$ref": "#/$defs/nullableSha" },
+    "foundationMergeSha": { "$ref": "#/$defs/nullableSha" },
+    "lastReconciledMainSha": { "$ref": "#/$defs/nullableSha" },
+    "productSha": { "$ref": "#/$defs/nullableSha" },
+    "decoderContractVersion": { "$ref": "#/$defs/nullableVersion" },
+    "x86SemanticVersion": { "$ref": "#/$defs/nullableVersion" },
+    "sysvAbiVersion": { "$ref": "#/$defs/nullableVersion" },
+    "microsoftX64AbiVersion": { "$ref": "#/$defs/nullableVersion" },
+    "mandatoryCorpusTotal": { "$ref": "#/$defs/nullableCount" },
+    "mandatoryCorpusPassed": { "$ref": "#/$defs/nullableCount" },
+    "mandatoryCorpusFailed": { "$ref": "#/$defs/nullableCount" },
+    "instructionTotal": { "$ref": "#/$defs/nullableCount" },
+    "exactCount": { "$ref": "#/$defs/nullableCount" },
+    "exactWithIntrinsicCount": { "$ref": "#/$defs/nullableCount" },
+    "partialCount": { "$ref": "#/$defs/nullableCount" },
+    "unknownCount": { "$ref": "#/$defs/nullableCount" },
+    "unsupportedCount": { "$ref": "#/$defs/nullableCount" },
+    "decodeMismatchCount": { "$ref": "#/$defs/nullableCount" },
+    "machineEffectsMismatchCount": { "$ref": "#/$defs/nullableCount" },
+    "semanticIrMismatchCount": { "$ref": "#/$defs/nullableCount" },
+    "cfgMismatchCount": { "$ref": "#/$defs/nullableCount" },
+    "ssaMismatchCount": { "$ref": "#/$defs/nullableCount" },
+    "memorySsaMismatchCount": { "$ref": "#/$defs/nullableCount" },
+    "abiMismatchCount": { "$ref": "#/$defs/nullableCount" },
+    "decompilerMismatchCount": { "$ref": "#/$defs/nullableCount" },
+    "viewerMismatchCount": { "$ref": "#/$defs/nullableCount" },
+    "provenanceLossCount": { "$ref": "#/$defs/nullableCount" },
+    "unknownStoreSafetyFailures": { "$ref": "#/$defs/nullableCount" },
+    "unknownCallSafetyFailures": { "$ref": "#/$defs/nullableCount" },
+    "silentPreserveFallbackCount": { "$ref": "#/$defs/nullableCount" },
+    "hiddenFallbackCount": { "$ref": "#/$defs/nullableCount" },
+    "genericArchitectureLeakCount": { "$ref": "#/$defs/nullableCount" },
+    "arm64RegressionFailures": { "$ref": "#/$defs/nullableCount" },
+    "phase4RegressionFailures": { "$ref": "#/$defs/nullableCount" },
+    "wholeFileMaterializationFailures": { "$ref": "#/$defs/nullableCount" },
+    "viewerPeakRetainedBytes": { "$ref": "#/$defs/nullableCount" },
+    "viewerBoundedDecodeFailures": { "$ref": "#/$defs/nullableCount" },
+    "artifactDeterminismFailures": { "$ref": "#/$defs/nullableCount" },
+    "cancellationFailures": { "$ref": "#/$defs/nullableCount" },
+    "budgetFailures": { "$ref": "#/$defs/nullableCount" },
+    "firstDivergenceCount": { "$ref": "#/$defs/nullableCount" },
+    "finalCutoverStatus": {
+      "enum": [null, "not-proven", "blocking", "ready", "cutover-verified"]
+    },
+    "phase5ExitGateFullySatisfied": {
+      "type": ["boolean", "null"],
+      "description": "null means not proven; true is legal only after the complete exit predicate is measured."
+    },
+    "phase6Started": { "const": false },
+    "evidenceProvenance": {
+      "type": "object",
+      "description": "Per-field deterministic measurement records. At least one record is required; release validation must require every exit field before cutover.",
+      "minProperties": 1,
+      "additionalProperties": { "$ref": "#/$defs/measurement" }
+    }
+  },
+  "$defs": {
+    "nullableSha": {
+      "oneOf": [
+        { "type": "null" },
+        { "type": "string", "pattern": "^[0-9a-f]{40}$" }
+      ]
+    },
+    "nullableVersion": {
+      "oneOf": [
+        { "type": "null" },
+        { "type": "string", "minLength": 1, "maxLength": 128 }
+      ]
+    },
+    "nullableCount": {
+      "oneOf": [
+        { "type": "null" },
+        { "type": "integer", "minimum": 0 }
+      ]
+    },
+    "measurement": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "sourceArtifact", "command", "productSha"],
+          "properties": {
+            "status": { "const": "not-proven" },
+            "sourceArtifact": { "type": "null" },
+            "command": { "type": "null" },
+            "productSha": { "type": "null" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "sourceArtifact", "command", "productSha"],
+          "properties": {
+            "status": { "const": "measured" },
+            "sourceArtifact": { "type": "string", "minLength": 1 },
+            "command": { "type": "string", "minLength": 1 },
+            "productSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" }
+          }
+        }
+      ]
+    }
+  }
+}

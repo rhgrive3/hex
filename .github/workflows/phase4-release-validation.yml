@@ -108,9 +108,41 @@ jobs:
           node-version: '22'
           cache: npm
       - run: npm ci
+      - name: Resolve exact ownership verifier for the product branch
+        id: ownership
+        shell: bash
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          set -euo pipefail
+          case "$HEAD_REF" in
+            hex/p5-0-x86-foundation) mode=phase5; lane=p5-0 ;;
+            hex/p5-1-*) mode=phase5; lane=p5-1 ;;
+            hex/p5-2-*) mode=phase5; lane=p5-2 ;;
+            hex/p5-3-*) mode=phase5; lane=p5-3 ;;
+            hex/p5-4-*) mode=phase5; lane=p5-4 ;;
+            hex/p5-5-*) mode=phase5; lane=p5-5 ;;
+            hex/p5-6-*) mode=phase5; lane=p5-6 ;;
+            hex/p5-x86-integration) mode=phase5; lane=p5-i ;;
+            *) mode=phase4; lane=p4-7 ;;
+          esac
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "lane=$lane" >> "$GITHUB_OUTPUT"
       - name: Independent Phase 4 verifier — blocking release gate
+        if: steps.ownership.outputs.mode == 'phase4'
         shell: bash
         run: npm run phase4:verify -- --base "$PHASE4_BASE" --head "$PRODUCT_SHA" --lane p4-7
+      - name: Independent Phase 4 verifier with exact Phase 5 ownership — blocking release gate
+        if: steps.ownership.outputs.mode == 'phase5'
+        shell: bash
+        env:
+          OWNERSHIP_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: >-
+          npm run phase4:verify --
+          --base "$PHASE4_BASE"
+          --head "$PRODUCT_SHA"
+          --ownership-base "$OWNERSHIP_BASE_SHA"
+          --phase5-lane "${{ steps.ownership.outputs.lane }}"
       - name: Upload independent verifier evidence
         if: always()
         uses: actions/upload-artifact@v4
