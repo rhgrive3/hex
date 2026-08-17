@@ -30,6 +30,30 @@ export class WorkerChatController {
     return () => this.listeners.delete(listener);
   }
 
+  currentConversation() {
+    const value = this.adapter.conversation?.() || null;
+    return value ? { id: String(value.id), url: String(value.url) } : null;
+  }
+
+  workerConversation() {
+    return this.conversation ? { id: String(this.conversation.id), url: String(this.conversation.url) } : null;
+  }
+
+  isActive() { return !!this.active; }
+
+  async navigateToConversation(conversation, { sessionKey = null, signal, timeoutMs } = {}) {
+    if (!conversation?.id || !conversation?.url) {
+      throw workerError(DEV_WORKER_FAILURE.CONVERSATION_MISMATCH, 'A concrete ChatGPT conversation is required for Worker navigation.');
+    }
+    const key = String(sessionKey || `dev-worker-navigation:${conversation.id}`);
+    this.router.bind(key, conversation);
+    const routed = await this.router.route(key, { signal, ...(timeoutMs == null ? {} : { timeoutMs }) });
+    if (!routed?.conversation || routed.conversation.id !== String(conversation.id)) {
+      throw workerError(DEV_WORKER_FAILURE.CONVERSATION_MISMATCH, 'ChatGPT did not reach the requested conversation.');
+    }
+    return routed.conversation;
+  }
+
   async createChat({ runId, workerId } = {}) {
     if (this.active) throw workerError(DEV_WORKER_FAILURE.WORKER_BUSY, 'Worker is already handling a ChatGPT turn.');
     this.state = DEV_WORKER_STATE.STARTING;
@@ -81,8 +105,11 @@ export class WorkerChatController {
   }
 
   observe() {
-    const currentConversation = this.adapter.conversation?.() || this.conversation || null;
-    if (currentConversation) this.conversation = currentConversation;
+    const pageConversation = this.adapter.conversation?.() || null;
+    // Only an active Worker turn may adopt the currently visible ChatGPT route.
+    // After completion the single tab is deliberately restored to Supervisor;
+    // that route must never overwrite the retained Worker conversation identity.
+    if (this.active && pageConversation) this.conversation = pageConversation;
     let state = this.state;
     const hidden = this.adapter.document?.visibilityState === 'hidden';
     if (this.active && hidden) state = DEV_WORKER_STATE.OBSERVABILITY_DEGRADED;
@@ -91,6 +118,7 @@ export class WorkerChatController {
     return Object.freeze({
       ...this.snapshot(),
       state,
+      pageChatgptConversationId: pageConversation?.id || null,
       generating: !!this.adapter.isGenerating?.(),
       visibility: hidden ? 'background' : 'foreground',
       observability: hidden ? 'degraded' : 'live',

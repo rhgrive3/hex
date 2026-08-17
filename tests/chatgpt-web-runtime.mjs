@@ -33,10 +33,12 @@ async function testConversationRouting() {
   };
   const storage = memoryStorage();
   const router = new ChatGPTConversationRouter(adapter, { storage, navigationTimeoutMs: 30 });
-  await router.route('A'); assert.equal(fresh, 1);
+  await router.route('A');
+  assert.equal(fresh, 0, 'an already-clean ChatGPT surface must be adopted without a redundant New Chat click');
   current = { id: 'alpha', url: 'https://chatgpt.com/c/alpha' }; router.bind('A', current);
   links.set('alpha', conversationLink('alpha', () => { current = { id: 'alpha', url: 'https://chatgpt.com/c/alpha' }; }));
-  await router.route('B'); assert.equal(fresh, 2);
+  await router.route('B');
+  assert.equal(fresh, 1, 'routing away from an existing conversation must still explicitly create a fresh ChatGPT conversation');
   current = { id: 'beta', url: 'https://chatgpt.com/c/beta' }; router.bind('B', current);
   links.set('beta', conversationLink('beta', () => { current = { id: 'beta', url: 'https://chatgpt.com/c/beta' }; }));
   await router.route('A'); assert.equal(current.id, 'alpha');

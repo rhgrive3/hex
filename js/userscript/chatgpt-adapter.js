@@ -69,7 +69,43 @@ export class ChatGPTDOMAdapter {
   composer() { return this.first('composer'); }
   sendButton() { return this.first('send'); }
   stopButton() { return this.first('stop'); }
-  newChatButton() { return this.first('newChat'); }
+  newChatButton() {
+    return this.first('newChat') || this.semanticAction([
+      /new\s+chat/i,
+      /start\s+(?:a\s+)?new\s+chat/i,
+      /新しいチャット/,
+      /新規チャット/,
+      /新しい会話/,
+      /新規作成/,
+    ], { homeHref: true });
+  }
+  sidebarToggle() {
+    return this.first('sidebarToggle') || this.semanticAction([
+      /sidebar/i,
+      /サイドバー/,
+      /メニュー/,
+    ]);
+  }
+  semanticAction(patterns, { homeHref = false } = {}) {
+    let nodes = [];
+    try { nodes = this.document?.querySelectorAll?.('button, a[href], [role="button"]') || []; } catch { nodes = []; }
+    for (const node of nodes) {
+      try {
+        if (node.closest?.('[id^="hex-"], [data-hex], [data-testid^="conversation-turn-"], [data-message-author-role]')) continue;
+      } catch {}
+      const href = String(node.getAttribute?.('href') || '');
+      const label = [
+        node.getAttribute?.('aria-label'),
+        node.getAttribute?.('title'),
+        node.getAttribute?.('data-testid'),
+        node.innerText,
+        node.textContent,
+      ].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+      if (homeHref && (href === '/' || href.startsWith('/?'))) return node;
+      if (patterns.some((pattern) => pattern.test(label))) return node;
+    }
+    return null;
+  }
   modelPicker() { return this.first('modelPicker'); }
   reasoningControl() { return this.first('reasoningControl'); }
   isGenerating() { return !!this.stopButton(); }
@@ -323,9 +359,10 @@ export class ChatGPTConversationRouter {
     const current = this.adapter.conversation();
     if (known && current?.id === known.id) return { conversation: current, isNew: false };
     if (known) {
-      const link = this.findConversationLink(known);
+      let link = this.findConversationLink(known);
+      if (!link) link = await this.revealConversationLink(known, { signal, timeoutMs });
       if (link) link.click();
-      else throw bridgeError('conversation-router', 'conversation-unreachable', 'The bound ChatGPT conversation is not present in the visible ChatGPT history.', { sessionKey: key, conversation: known });
+      else throw bridgeError('conversation-router', 'conversation-unreachable', 'The bound ChatGPT conversation is not reachable from the current ChatGPT navigation.', { sessionKey: key, conversation: known });
       const reached = await waitFor(() => {
         const value = this.adapter.conversation();
         return value?.id === known.id ? value : null;
@@ -334,14 +371,26 @@ export class ChatGPTConversationRouter {
       return { conversation: reached, isNew: false };
     }
 
-    // ChatGPT changes /c/<id> -> / before it removes the old turn DOM.
-    // If Hex starts the next request in that gap, the old conversation becomes
-    // the new request's baseline. Wait until every previously visible logical
-    // turn is gone; an already-empty home page still resolves immediately.
+    // A Hex-side New Chat creates a new Hex conversation first. If ChatGPT is
+    // already on a clean / surface, adopt it instead of requiring a redundant
+    // New Chat control that may not exist on mobile. When old turns are still
+    // draining after an SPA route transition, give them a short grace window.
     const priorTurns = conversationTurnIds(this.adapter);
-    const fresh = this.adapter.newChatButton();
-    if (fresh) fresh.click();
-    else throw bridgeError('conversation-router', 'new-chat-unavailable', 'ChatGPT New Chat control was not found.');
+    if (!current && typeof this.adapter.composer === 'function') {
+      const alreadyFresh = await waitFor(() => {
+        if (this.adapter.conversation()) return null;
+        const composer = this.adapter.composer();
+        if (!composer) return null;
+        return priorTurnsCleared(this.adapter, priorTurns) ? composer : null;
+      }, Math.min(timeoutMs, 1500), signal);
+      if (alreadyFresh) return { conversation: null, isNew: true };
+    }
+
+    const fresh = await this.revealNewChatControl({ signal, timeoutMs });
+    if (!fresh) {
+      throw bridgeError('conversation-router', 'new-chat-unavailable', 'ChatGPT New Chat control was not found, including after opening mobile navigation.');
+    }
+    fresh.click();
     const ready = await waitFor(() => {
       if (this.adapter.conversation()) return null;
       const composer = this.adapter.composer();
@@ -350,6 +399,26 @@ export class ChatGPTConversationRouter {
     }, timeoutMs, signal);
     if (!ready) throw bridgeError('conversation-router', 'new-chat-timeout', 'ChatGPT did not open a new conversation.');
     return { conversation: null, isNew: true };
+  }
+
+  async revealNewChatControl({ signal, timeoutMs } = {}) {
+    let control = this.adapter.newChatButton?.();
+    if (control) return control;
+    const toggle = this.adapter.sidebarToggle?.();
+    if (!toggle) return null;
+    try { toggle.click?.(); } catch {}
+    control = await waitFor(() => this.adapter.newChatButton?.() || null, Math.min(timeoutMs ?? this.navigationTimeoutMs, 2500), signal);
+    return control || null;
+  }
+
+  async revealConversationLink(conversation, { signal, timeoutMs } = {}) {
+    let link = this.findConversationLink(conversation);
+    if (link) return link;
+    const toggle = this.adapter.sidebarToggle?.();
+    if (!toggle) return null;
+    try { toggle.click?.(); } catch {}
+    link = await waitFor(() => this.findConversationLink(conversation) || null, Math.min(timeoutMs ?? this.navigationTimeoutMs, 2500), signal);
+    return link || null;
   }
 
   findConversationLink(conversation) {

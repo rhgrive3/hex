@@ -5,9 +5,6 @@ export const TAB_NODE_ROLE = Object.freeze({
 });
 export const TAB_NODE_ROLES = Object.freeze(Object.values(TAB_NODE_ROLE));
 
-export const MANUAL_WORKER_QUERY = 'hex-worker';
-export const MANUAL_WORKER_WINDOW_NAME = 'hex-dev-worker-v1';
-
 export function createTabNode({
   role = TAB_NODE_ROLE.SUPERVISOR,
   runId = null,
@@ -50,27 +47,6 @@ export function updateTabNode(node, patch = {}, { now = () => new Date().toISOSt
       : nullable(patch.chatgptProjectIdentity),
     lastHeartbeat: timestamp(patch.lastHeartbeat || now()),
   });
-}
-
-export function isManualWorkerTab({
-  location = globalThis.location,
-  window = globalThis.window,
-} = {}) {
-  let marked = false;
-  try {
-    marked = new URL(String(location?.href || ''), 'https://chatgpt.com')
-      .searchParams.get(MANUAL_WORKER_QUERY) === '1';
-  } catch {}
-
-  if (marked) {
-    // window.name is only a session-scoped provisioning marker. It is not a
-    // routing or ownership authority; authenticated Tab Mesh envelopes are.
-    try { window.name = MANUAL_WORKER_WINDOW_NAME; } catch {}
-    return true;
-  }
-
-  try { return window?.name === MANUAL_WORKER_WINDOW_NAME; }
-  catch { return false; }
 }
 
 export function createSecureId(prefix = 'id', cryptoRef = globalThis.crypto) {

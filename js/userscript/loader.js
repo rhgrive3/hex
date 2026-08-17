@@ -65,7 +65,6 @@ async function loadRuntime() {
     additionalData: toExactArrayBuffer(utf8(`${bootstrap.buildId}:${bootstrap.sessionId}`)),
     tagLength: 128,
   }, wrappingKey, toExactArrayBuffer(fromB64(bootstrap.keyEnvelope.ciphertext))));
-  const devTabMeshSecretRaw = await cryptoStage('Dev Tab Mesh key derivation', () => deriveDevTabMeshSecret(contentKeyRaw));
   const contentKey = await cryptoStage('AES-GCM content-key import', () => crypto.subtle.importKey('raw', toExactArrayBuffer(contentKeyRaw), { name: 'AES-GCM' }, false, ['decrypt']));
   const ciphertext = new Uint8Array(await runtimeStage('protected runtime fetch', () => fetchBytes(new URL(bootstrap.runtimeLocator, HEX_ORIGIN).href, { headers: { authorization: `Bearer ${bootstrap.session}` } })));
   await assertHash(ciphertext, bootstrap.manifest.ciphertextHash);
@@ -89,7 +88,6 @@ async function loadRuntime() {
       loaderVersion: LOADER_VERSION,
       buildId: EXPECTED_BUILD,
       runtimeContentHash: String(bootstrap.manifest.contentHash || '').toLowerCase(),
-      devTabMeshSecret: toExactArrayBuffer(devTabMeshSecretRaw),
       runtimeSourceProvider() {
         sourceCopies += 1;
         if (sourceCopies > 1) throw new Error('Protected runtime source was requested more than once.');
@@ -97,17 +95,8 @@ async function loadRuntime() {
       },
     }));
   } finally {
-    URL.revokeObjectURL(blobUrl); ciphertext.fill(0); compressed.fill(0); plaintext.fill(0); new Uint8Array(devTabMeshSecretRaw).fill(0); new Uint8Array(contentKeyRaw).fill(0); new Uint8Array(shared).fill(0);
+    URL.revokeObjectURL(blobUrl); ciphertext.fill(0); compressed.fill(0); plaintext.fill(0); new Uint8Array(contentKeyRaw).fill(0); new Uint8Array(shared).fill(0);
   }
-}
-
-async function deriveDevTabMeshSecret(contentKeyRaw) {
-  const material = await crypto.subtle.importKey('raw', toExactArrayBuffer(contentKeyRaw), 'HKDF', false, ['deriveBits']);
-  return crypto.subtle.deriveBits({
-    name: 'HKDF', hash: 'SHA-256',
-    salt: toExactArrayBuffer(utf8(`hex-dev-tab-mesh:${EXPECTED_BUILD}`)),
-    info: toExactArrayBuffer(utf8('hex-dev-tab-mesh-v1')),
-  }, material, 256);
 }
 
 async function cryptoStage(stage, operation) {
