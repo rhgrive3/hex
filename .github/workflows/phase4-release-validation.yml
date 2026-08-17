@@ -8,6 +8,10 @@ on:
         required: true
         type: string
   pull_request:
+    # Post-cutover generated userscript updates are intentionally not triggers.
+    # Generic product changes rebuild these files, and must not be reclassified
+    # as P4-7 ownership work. They are still verified whenever a real Phase 4
+    # path triggers this workflow, and by explicit workflow_dispatch.
     paths:
       - 'js/core/artifacts/**'
       - 'js/core/scheduler/**'
@@ -22,8 +26,6 @@ on:
       - 'tools/validation/phase-ownership/phase4.json'
       - '.github/workflows/phase4-*.yml'
       - 'package.json'
-      - 'userscript/hex.user.template.js'
-      - 'userscript/release-version.json'
 
 permissions:
   contents: read
