@@ -27,4 +27,5 @@ jobs:
           if s.count(old)!=1: raise SystemExit('debug instrumentation source shape mismatch')
           p.write_text(s.replace(old,new,1))
           PY
-      - run: node tools/validation/p3-debug-359.mjs
+      - name: Inspect row-3 semantic/state projection chain
+        run: node tools/validation/p3-debug-359.mjs
