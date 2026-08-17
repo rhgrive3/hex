@@ -43,7 +43,7 @@ async function testDelayedConversationIdentityStaysOnOneSupervisorChat() {
         turnsInDom = [{ id: 'assistant-supervisor-1', text: '{"type":"tool","tool":"worker.claim"}' }];
         setTimeout(() => {
           current = { id: 'supervisor-chat', url: 'https://chatgpt.com/c/supervisor-chat' };
-        }, 20);
+        }, 100);
         return {
           text: '{"type":"tool","tool":"worker.claim","arguments":{},"purpose":"claim"}',
           conversation: null,
@@ -67,12 +67,12 @@ async function testDelayedConversationIdentityStaysOnOneSupervisorChat() {
     router,
     models,
     turns,
-    lateBindingWaitMs: 5,
+    lateBindingWaitMs: 1,
   });
 
   const first = await bridge.request('first supervisor decision', { sessionKey: 'supervisor-session' });
   assert.equal(first.conversation, null, 'fixture must reproduce a response settling before /c/<id> becomes observable');
-  await delay(35);
+  await delay(40);
 
   const second = await bridge.request('second supervisor decision', { sessionKey: 'supervisor-session' });
   assert.equal(second.conversation?.id, 'supervisor-chat');
