@@ -7,6 +7,7 @@ import { DEV_RUN_STATUS } from '../../js/ai/dev/run/dev-run.js';
 import { DevSupervisorEngineV0 } from '../../js/ai/dev/supervisor/dev-supervisor-engine-v0.js';
 
 await testSingleTabWorkerLoopReleasesClaim();
+await testRuntimeRejectsWorkerIdentityOverride();
 await testWaitingHumanResumesSameSupervisorRun();
 console.log('Round 2 single-tab Supervisor loop passed');
 
@@ -22,9 +23,11 @@ async function testSingleTabWorkerLoopReleasesClaim() {
     async request(prompt) {
       calls.push(prompt);
       const n = calls.length;
-      if (n === 1) return { text: JSON.stringify({ type: 'tool', tool: 'worker.claim', arguments: { runId: 'run-1', workerId: 'worker-1' }, purpose: 'claim logical Worker' }) };
-      if (n === 2) return { text: JSON.stringify({ type: 'tool', tool: 'worker.create_chat', arguments: { runId: 'run-1', workerId: 'worker-1' }, purpose: 'create Worker conversation' }) };
-      if (n === 3) return { text: JSON.stringify({ type: 'tool', tool: 'worker.send', arguments: { runId: 'run-1', workerId: 'worker-1', instruction: 'Return one line.' }, purpose: 'delegate task' }) };
+      // Real-device regression: the model is allowed to omit runtime-owned
+      // runId/workerId. The runtime must inject the active DevRun identities.
+      if (n === 1) return { text: JSON.stringify({ type: 'tool', tool: 'worker.claim', arguments: {}, purpose: 'claim logical Worker' }) };
+      if (n === 2) return { text: JSON.stringify({ type: 'tool', tool: 'worker.create_chat', arguments: {}, purpose: 'create Worker conversation' }) };
+      if (n === 3) return { text: JSON.stringify({ type: 'tool', tool: 'worker.send', arguments: { instruction: 'Return one line.' }, purpose: 'delegate task' }) };
       return { text: JSON.stringify({ type: 'final', answer: 'worker answer accepted', completedTasks: ['delegated'], remaining: [] }) };
     },
   };
@@ -39,11 +42,40 @@ async function testSingleTabWorkerLoopReleasesClaim() {
   assert.equal(result.answer, 'worker answer accepted');
   assert.equal(calls.length, 4, 'Supervisor must continue after Worker result in the restored conversation');
   assert.match(calls[0], /single-tab/i);
+  assert.match(calls[0], /runtime-owned identities/i);
+  assert.match(calls[0], /worker\.send: arguments=\{\"instruction\"/);
   assert.match(calls[2], /worker.send/);
   assert.equal(settings.lastRun.status, DEV_RUN_STATUS.COMPLETED);
   assert.equal(settings.lastRun.workerId, 'worker-1');
+  assert.deepEqual(workerOps.find((item) => item.op === 'claim')?.args, { runId: 'run-1', workerId: 'worker-1' });
+  assert.deepEqual(workerOps.find((item) => item.op === 'createChat')?.args, { runId: 'run-1', workerId: 'worker-1' });
+  const send = workerOps.find((item) => item.op === 'send')?.args;
+  assert.equal(send.runId, 'run-1');
+  assert.equal(send.workerId, 'worker-1');
+  assert.match(send.instruction, /ASSIGNED TASK\nReturn one line\./);
   assert.equal(workerOps.filter((item) => item.op === 'release').length, 1, 'final completion must release the logical Worker claim');
   assert.deepEqual(workerOps.find((item) => item.op === 'release')?.args, { runId: 'run-1', workerId: 'worker-1' });
+}
+
+async function testRuntimeRejectsWorkerIdentityOverride() {
+  const ops = [];
+  const supervisor = new DevSupervisorV0({
+    workerClient: createWorkerClient(ops),
+    idFactory: (kind) => ({ run: 'authoritative-run', worker: 'authoritative-worker', 'supervisor-session': 'authoritative-supervisor' }[kind] || `${kind}-id`),
+    now: () => '2026-08-17T00:00:00.000Z',
+  });
+  let run = supervisor.createRun({ goal: 'test identity ownership' });
+  run = supervisor.activate(run);
+  await assert.rejects(
+    () => supervisor.executeToolDecision(run, {
+      type: 'tool',
+      tool: 'worker.claim',
+      arguments: { runId: 'fabricated-run', workerId: 'authoritative-worker' },
+      purpose: 'attempt wrong identity',
+    }),
+    /may not override runtime-owned runId/,
+  );
+  assert.equal(ops.length, 0, 'conflicting model-supplied identity must be rejected before reaching Worker runtime');
 }
 
 async function testWaitingHumanResumesSameSupervisorRun() {
