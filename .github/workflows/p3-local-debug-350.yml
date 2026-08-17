@@ -25,17 +25,19 @@ jobs:
         shell: bash
         run: |
           integration=2b8d91d4d3642529d5df0558177e724e788f6ff4
-          base=5d513e17b846879b0085c99fe38013e939650529
+          base=25a38914053d78f6909a4692c332ccf78a5a4d98
           git fetch origin \
             refs/heads/hex/p3-semantic-ir-integration:refs/remotes/origin/hex/p3-semantic-ir-integration \
             refs/heads/main:refs/remotes/origin/main
           test "$(git rev-parse refs/remotes/origin/hex/p3-semantic-ir-integration)" = "$integration"
           test "$(git rev-parse refs/remotes/origin/main)" = "$base"
           git checkout --detach "$integration"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
       - name: Merge current main without overwriting Phase 3 repairs
         shell: bash
         run: |
-          base=5d513e17b846879b0085c99fe38013e939650529
+          base=25a38914053d78f6909a4692c332ccf78a5a4d98
           set +e
           git merge --no-commit --no-ff "$base"
           rc=$?
@@ -66,7 +68,6 @@ jobs:
         run: |
           npm run userscript:build
           sha256sum userscript/hex.user.template.js > /tmp/final-userscript.sha256
-          grep -Eo '[0-9a-f]{24}' userscript/hex.user.template.js | head -n 5 || true
       - name: Public IR 30/30
         run: node tests/ir.mjs
       - name: Semantic IR v2 full gate
@@ -107,8 +108,6 @@ jobs:
         shell: bash
         run: |
           git checkout -- node_modules/.package-lock.json 2>/dev/null || true
-          # Only the intentional release-gate tests and regenerated userscript may
-          # remain unstaged beyond the already-staged main merge.
           unstaged=$(git diff --name-only | grep -Ev '^(tests/semantic-v2/integration-current-corpus\.test\.mjs|tests/semantic-v2/integration-release-report\.test\.mjs|userscript/hex\.user\.template\.js)$' || true)
           if [ -n "$unstaged" ]; then
             echo "Unexpected post-test changes:" >&2
@@ -131,10 +130,8 @@ jobs:
           git fetch origin \
             refs/heads/main:refs/remotes/origin/main-final \
             refs/heads/hex/p3-semantic-ir-integration:refs/remotes/origin/p3-final
-          test "$(git rev-parse refs/remotes/origin/main-final)" = 5d513e17b846879b0085c99fe38013e939650529
+          test "$(git rev-parse refs/remotes/origin/main-final)" = 25a38914053d78f6909a4692c332ccf78a5a4d98
           test "$(git rev-parse refs/remotes/origin/p3-final)" = 2b8d91d4d3642529d5df0558177e724e788f6ff4
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git commit -m 'merge(main): finalize Phase 3 semantic cutover'
           git push origin HEAD:hex/p3-semantic-ir-integration
           echo "FINAL_RESYNC_HEAD=$(git rev-parse HEAD)"
