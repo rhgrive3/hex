@@ -32,6 +32,23 @@ if (!coordinator.includes('this.claim = null;') || !coordinator.includes('async 
 coordinator = coordinator.replaceAll('this.claim', 'this.claimed');
 fs.writeFileSync(coordinatorPath, coordinator);
 
+const adapterPath = 'js/userscript/chatgpt-adapter.js';
+let adapter = fs.readFileSync(adapterPath, 'utf8');
+const freshAnchor = `    const priorTurns = conversationTurnIds(this.adapter);
+    if (!current) {
+      const alreadyFresh = await waitFor(() => {
+        if (this.adapter.conversation()) return null;
+        const composer = this.adapter.composer();
+`;
+if (!adapter.includes(freshAnchor)) throw new Error('Fresh-surface adapter anchor missing');
+adapter = adapter.replace(freshAnchor, `    const priorTurns = conversationTurnIds(this.adapter);
+    if (!current && typeof this.adapter.composer === 'function') {
+      const alreadyFresh = await waitFor(() => {
+        if (this.adapter.conversation()) return null;
+        const composer = this.adapter.composer();
+`, 1);
+fs.writeFileSync(adapterPath, adapter);
+
 const routingTestPath = 'tests/chatgpt-web-runtime.mjs';
 let routingTest = fs.readFileSync(routingTestPath, 'utf8');
 const firstExpectation = `  await router.route('A'); assert.equal(fresh, 1);
@@ -50,4 +67,4 @@ routingTest = routingTest.replace(secondExpectation,
 `, 1);
 fs.writeFileSync(routingTestPath, routingTest);
 
-console.log('Round 1 compatibility, Worker claim-state, and clean-surface routing regression staged.');
+console.log('Round 1 compatibility, Worker claim-state, fresh-surface routing, and adapter contract staged.');
