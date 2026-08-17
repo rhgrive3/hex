@@ -319,4 +319,5 @@ function remoteError(value) {
 function abortError(reason) {
   const error = rpcError('cancelled', String(reason || 'cancelled'));
   error.name = 'AbortError';
+  return error;
 }
