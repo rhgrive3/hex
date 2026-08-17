@@ -1,0 +1,48 @@
+name: P3 origin canonicalization benchmark
+on:
+  push:
+    branches: [hex/p3-local-debug-350]
+    paths: ['.github/workflows/p3-origin-bench.yml']
+permissions:
+  contents: read
+env:
+  HEX_FIXTURE_BATTLECATS_URL: https://raw.githubusercontent.com/rhgrive3/hex/bd7bd61d093592d07fdd9e9b14a859e19dd4c3a9/tests/battlecats
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 75c393a7e89a1154963b03a34b8e2ada0bebe9f9
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node scripts/fetch-real-fixtures.mjs battlecats
+      - name: Cache canonical sort keys once
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('js/core/identity/origin.js'); s=p.read_text()
+          old="function uniqueSorted(values) {\n  return Array.from(new Map(values.map((value) => [stableStringify(value), value])).values())\n    .sort((a, b) => stableStringify(a).localeCompare(stableStringify(b)));\n}"
+          new="function uniqueSorted(values) {\n  const byKey = new Map(values.map((value) => [stableStringify(value), value]));\n  return [...byKey.entries()]\n    .sort(([a], [b]) => a.localeCompare(b))\n    .map(([, value]) => value);\n}"
+          assert old in s; p.write_text(s.replace(old,new,1))
+          PY
+      - name: Create pathological probe
+        run: |
+          cat > tests/.p3-origin-probe.mjs <<'EOF'
+          import { openBinary } from './harness.mjs';
+          import { decompile } from '../js/decompile.js';
+          import { setSemanticMigrationMode } from '../js/ir.js';
+          setSemanticMigrationMode('semantic-v2-compat');
+          const w=await openBinary('tests/.real-fixtures/battlecats');
+          const a=0x10033fd24n,end=0x100340074n;
+          const m=await w.analyze(a,end);
+          const t=Date.now();
+          const r=decompile(m,{addr:a,rowOfAddress:x=>w.rowOf(x),addrOfRow:r=>w.region.vmAddr+BigInt(r)*4n,symbolFor:x=>w.symbols.nameAt(x)});
+          console.error(`[P3ORIGIN total] ${Date.now()-t}ms lines=${r?.lines?.length??-1}`);
+          EOF
+          timeout --signal=TERM --kill-after=5s 20s node --max-old-space-size=6000 tests/.p3-origin-probe.mjs
+      - name: Focused IR regression
+        run: node tests/ir.mjs
