@@ -40,7 +40,7 @@ const releaseIdentity = sha256(Buffer.concat([
 const previousRelease = JSON.parse(await readFile(releaseStatePath, 'utf8'));
 const release = resolveUserscriptReleaseVersion(previousRelease, { releaseIdentity, buildId });
 const LOADER_VERSION = release.version;
-if (release.changed) await writeFile(releaseStatePath, `${JSON.stringify(release.state, null, 2)}\\n`);
+if (release.changed) await writeFile(releaseStatePath, JSON.stringify(release.state, null, 2) + '\\n');
 const compressed = gzipSync(runtime, { level: 9 });
 `,
 'compute release identity and monotonic version',
@@ -82,7 +82,7 @@ export function resolveUserscriptReleaseVersion(previous, { releaseIdentity, bui
   const state = Object.freeze({ serial: nextSerial, releaseIdentity: identity, buildId: runtimeBuildId });
   return Object.freeze({
     changed: !unchanged,
-    version: `${VERSION_PREFIX}.${nextSerial}`,
+    version: VERSION_PREFIX + '.' + nextSerial,
     state,
   });
 }
@@ -120,8 +120,7 @@ assert.throws(() => resolveUserscriptReleaseVersion({ serial: 41, releaseIdentit
 const releaseState = JSON.parse(fs.readFileSync(new URL('../userscript/release-version.json', import.meta.url), 'utf8'));
 const template = fs.readFileSync(new URL('../userscript/hex.user.template.js', import.meta.url), 'utf8');
 const version = /^\\/\\/ @version\\s+(\\S+)/m.exec(template)?.[1];
-const buildId = /__HEX_SECURE_LOADER__=\\{version:[^,]+,buildId:([A-Za-z_$][\\w$]*|"[a-f0-9]{24}")\\}/.exec(template);
-assert.equal(version, `2.0.${releaseState.serial}`, 'committed userscript metadata must match release-version state');
+assert.equal(version, '2.0.' + releaseState.serial, 'committed userscript metadata must match release-version state');
 assert.match(releaseState.releaseIdentity, /^[a-f0-9]{64}$/);
 assert.match(releaseState.buildId, /^[a-f0-9]{24}$/);
 assert.ok(template.includes(releaseState.buildId), 'committed userscript loader must embed the release state buildId');
