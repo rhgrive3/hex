@@ -20,8 +20,13 @@ on:
       - '.github/workflows/ui-regression.yml'
   workflow_dispatch:
 
+concurrency:
+  group: ui-regression-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   architecture:
+    name: architecture
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -30,7 +35,8 @@ jobs:
           node-version: 22
       - run: npm run ui:test
 
-  browser-matrix:
+  browser-regression:
+    name: browser-regression
     runs-on: ubuntu-latest
     timeout-minutes: 50
     steps:
@@ -38,13 +44,30 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Install pinned Playwright engines
+          cache: npm
+      - name: Install pinned Playwright Chromium
+        run: |
+          npm install --no-save --save-exact playwright@1.55.0
+          npx --no-install playwright install-deps chromium
+          npx --no-install playwright install chromium
+      - name: Run existing browser regression
+        run: npm run browser
+
+  viewport-regression:
+    name: viewport-regression
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install pinned Playwright viewport engines
         run: |
           npm install --no-save --save-exact playwright@1.55.0
           npx --no-install playwright install-deps webkit
           npx --no-install playwright install chromium webkit
-      - name: Run existing browser regression
-        run: npm run browser
       - name: Run UI viewport matrix
         env:
           CI: '1'
@@ -62,3 +85,21 @@ jobs:
           path: tests/ui-shots
           if-no-files-found: error
           retention-days: 7
+
+  browser-matrix:
+    name: browser-matrix
+    if: always()
+    needs: [browser-regression, viewport-regression]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require both browser projections
+        env:
+          BROWSER_RESULT: ${{ needs.browser-regression.result }}
+          VIEWPORT_RESULT: ${{ needs.viewport-regression.result }}
+        shell: bash
+        run: |
+          if [[ "$BROWSER_RESULT" != "success" || "$VIEWPORT_RESULT" != "success" ]]; then
+            echo "::error::UI browser regression failed (browser=$BROWSER_RESULT, viewport=$VIEWPORT_RESULT)."
+            exit 1
+          fi
