@@ -1,10 +1,32 @@
 export const PROJECT_ARTIFACT_REF_VERSION = 1;
 export const PROJECT_ARTIFACT_INDEX_VERSION = 'hex-project-artifact-index-v1';
+export const MAX_PROJECT_ARTIFACT_REFS = 50_000;
 
 function required(value, code) {
   const text = String(value ?? '').trim();
   if (!text) throw new TypeError(code);
   return text;
+}
+
+function normalizeMaxEntries(value = MAX_PROJECT_ARTIFACT_REFS) {
+  const number = Number(value);
+  if (!Number.isSafeInteger(number) || number < 1 || number > MAX_PROJECT_ARTIFACT_REFS) {
+    throw new RangeError('artifact-index-max-entries-invalid');
+  }
+  return number;
+}
+
+function expectedArtifactId(options = {}) {
+  const value = options.expectedArtifactId ?? options.expectedRef?.artifactId ?? null;
+  return value == null ? null : required(value, 'artifact-ref-expected-id-required');
+}
+
+function portableStoreError(error) {
+  return Object.freeze({
+    name:String(error?.name || 'Error'),
+    code:error?.code == null ? null : String(error.code),
+    message:String(error?.message || error || 'local artifact store unavailable'),
+  });
 }
 
 export function createArtifactRef(input = {}) {
@@ -26,21 +48,57 @@ export function isArtifactRef(value) {
 }
 
 export class ProjectArtifactIndex {
-  constructor(refs = []) {
+  constructor(refs = [], options = {}) {
+    this.maxEntries = normalizeMaxEntries(options.maxEntries);
     this.refs = new Map();
+    this.metrics = { binds:0, replacements:0, evictions:0, invalidations:0 };
     for (const ref of refs) this.bind(ref);
   }
 
   static key(scope, kind) { return `${String(scope)}\u0000${String(kind)}`; }
 
+  get size() { return this.refs.size; }
+
   bind(input) {
-    const ref = isArtifactRef(input) ? Object.freeze({ ...input }) : createArtifactRef(input);
-    this.refs.set(ProjectArtifactIndex.key(ref.scope, ref.kind), ref);
+    // Always reconstruct the portable v1 ref. This deliberately strips any
+    // caller-owned metadata/graphs so the project index never becomes an
+    // accidental ArtifactStore or analysis payload container.
+    const ref = createArtifactRef(input);
+    const key = ProjectArtifactIndex.key(ref.scope, ref.kind);
+    const replacing = this.refs.has(key);
+    if (replacing) {
+      this.refs.delete(key);
+      this.metrics.replacements++;
+    }
+    this.refs.set(key, ref);
+    this.metrics.binds++;
+
+    if (!replacing && this.refs.size > this.maxEntries) {
+      const oldestKey = this.refs.keys().next().value;
+      this.refs.delete(oldestKey);
+      this.metrics.evictions++;
+    }
     return ref;
   }
 
   unbind(scope, kind) { return this.refs.delete(ProjectArtifactIndex.key(scope, kind)); }
   get(scope, kind) { return this.refs.get(ProjectArtifactIndex.key(scope, kind)) || null; }
+  has(scope, kind) { return this.refs.has(ProjectArtifactIndex.key(scope, kind)); }
+
+  isCurrent(scope, kind, artifactId) {
+    const ref = this.get(scope, kind);
+    return !!ref && ref.artifactId === required(artifactId, 'artifact-ref-expected-id-required');
+  }
+
+  invalidateStale(scope, kind, artifactId) {
+    const ref = this.get(scope, kind);
+    if (!ref) return Object.freeze({ status:'miss', reason:'no-ref', ref:null });
+    const expected = required(artifactId, 'artifact-ref-expected-id-required');
+    if (ref.artifactId === expected) return Object.freeze({ status:'kept', reason:'current', ref });
+    this.refs.delete(ProjectArtifactIndex.key(scope, kind));
+    this.metrics.invalidations++;
+    return Object.freeze({ status:'invalidated', reason:'artifact-id-changed', ref, expectedArtifactId:expected });
+  }
 
   list() {
     return Object.freeze([...this.refs.values()].sort((a, b) => a.scope.localeCompare(b.scope) || a.kind.localeCompare(b.kind) || a.artifactId.localeCompare(b.artifactId)));
@@ -49,17 +107,63 @@ export class ProjectArtifactIndex {
   async resolve(scope, kind, store, options = {}) {
     const ref = this.get(scope, kind);
     if (!ref) return { status:'miss', reason:'no-ref', ref:null };
-    const result = await store.get(ref.artifactId, options);
-    if (result.status !== 'hit') return { status:'miss', reason:result.reason || result.status, ref, storeResult:result };
+
+    const expected = expectedArtifactId(options);
+    if (expected != null && ref.artifactId !== expected) {
+      if (options.invalidateStaleRef === true) this.invalidateStale(scope, kind, expected);
+      return { status:'miss', reason:'stale-ref', ref, expectedArtifactId:expected };
+    }
+
+    // Local derived state is optional. A portable project remains usable when
+    // there is no local store, the store was deleted, or the backend cannot be
+    // opened in the current browser.
+    if (!store || typeof store.get !== 'function') {
+      return { status:'miss', reason:'store-unavailable', ref };
+    }
+
+    let result;
+    try {
+      result = await store.get(ref.artifactId, options);
+    } catch (error) {
+      if (options.signal?.aborted || error?.name === 'AbortError') throw error;
+      return { status:'miss', reason:'store-unavailable', ref, storeError:portableStoreError(error) };
+    }
+    if (result?.status !== 'hit') {
+      return { status:'miss', reason:result?.reason || result?.status || 'not-found', ref, storeResult:result ?? null };
+    }
     return { status:'hit', ref, artifact:result };
   }
 
-  toProjectReferences() { return this.list().map((ref) => ({ ...ref })); }
+  toProjectReferences() {
+    return Object.freeze(this.list().map((ref) => Object.freeze({ ...ref })));
+  }
+
+  stats() {
+    return Object.freeze({
+      version:PROJECT_ARTIFACT_INDEX_VERSION,
+      size:this.refs.size,
+      maxEntries:this.maxEntries,
+      ...this.metrics,
+    });
+  }
 }
 
-export function artifactIndexFromProject(project) {
-  const refs = Array.isArray(project?.analysis?.cacheReferences)
-    ? project.analysis.cacheReferences.filter(isArtifactRef)
-    : [];
-  return new ProjectArtifactIndex(refs);
+export function artifactIndexFromProject(project, options = {}) {
+  const maxEntries = normalizeMaxEntries(options.maxEntries);
+  const source = Array.isArray(project?.analysis?.cacheReferences) ? project.analysis.cacheReferences : [];
+
+  // Prefer the newest project refs while bounding both retained references and
+  // duplicate-key bookkeeping. Import never copies the whole project list.
+  const selected = [];
+  const seenKeys = new Set();
+  for (let i = source.length - 1; i >= 0 && selected.length < maxEntries; i--) {
+    const candidate = source[i];
+    if (!isArtifactRef(candidate)) continue;
+    const key = ProjectArtifactIndex.key(candidate.scope, candidate.kind);
+    if (seenKeys.has(key)) continue;
+    seenKeys.add(key);
+    selected.push(candidate);
+  }
+  selected.reverse();
+  return new ProjectArtifactIndex(selected, { maxEntries });
 }
