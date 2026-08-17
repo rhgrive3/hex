@@ -96,8 +96,6 @@ export class CachedByteSource extends ByteSource {
       promise = (async () => {
         const bytes = await this.source.readExactly(offset, length);
         this.stats.backendBytesRead += bytes.byteLength;
-        // clear() is a memory-pressure/file-lifecycle boundary. An older read is
-        // allowed to finish for its caller, but must never repopulate the cache.
         if (generation === this.generation) this.#remember(key, bytes);
         return bytes;
       })().finally(() => {
@@ -165,6 +163,6 @@ export class InstrumentedByteSource extends ByteSource {
       const end = read.offset + BigInt(read.length);
       if (end > peakRequestedRange) peakRequestedRange = end;
     }
-    return { reads: this.reads.length, totalRequested, largestSingleRead, peakRequestedRange };
+    return { reads: this.reads.length, totalRequested, largestSingleRead, peakRequestedRange: peakRequestedRange.toString() };
   }
 }
