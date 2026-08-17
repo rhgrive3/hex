@@ -35,6 +35,13 @@ export class DevSupervisorEngineV0 {
     return this.extensionLoader.invoke(name);
   }
 
+  availableTools() {
+    return Object.freeze([...new Set([
+      ...(this.supervisor.availableTools || []),
+      ...(this.extensionLoader.activeCapabilities || []),
+    ])]);
+  }
+
   async executeWithinToolBoundary(operation) {
     if (typeof operation !== 'function') throw new TypeError('Dev tool operation must be a function.');
     this.extensionLoader.beginToolCall();
@@ -80,9 +87,10 @@ export class DevSupervisorEngineV0 {
 
     try {
       for (let step = 0; step < this.maxDecisions; step++) {
+        const availableTools = this.availableTools();
         const response = await this.bridge.request(buildDevSupervisorPrompt({
           run,
-          availableTools: this.supervisor.availableTools,
+          availableTools,
           history,
         }), {
           signal: input.signal,
@@ -91,10 +99,15 @@ export class DevSupervisorEngineV0 {
           reasoning: input.reasoning || null,
         });
         const text = response && typeof response === 'object' ? response.text : response;
-        const decision = parseDevSupervisorDecision(text, { availableTools: this.supervisor.availableTools });
+        const decision = parseDevSupervisorDecision(text, { availableTools });
 
         if (decision.type === 'tool') {
           input.onActivity?.({ label: decision.tool, detail: decision.purpose });
+          if (this.extensionLoader.activeCapabilities?.includes(decision.tool)) {
+            const result = await this.executeWithinToolBoundary(() => this.invokeBootstrapCapability(decision.tool));
+            history.push({ kind: 'tool-result', tool: decision.tool, purpose: decision.purpose, result: sanitize(result) });
+            continue;
+          }
           if (decision.tool === DEV_WORKER_TOOL.CLAIM) workerClaimAttempted = true;
           const executed = await this.executeWithinToolBoundary(
             () => this.supervisor.executeToolDecision(run, decision),
