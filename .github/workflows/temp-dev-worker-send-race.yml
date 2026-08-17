@@ -1,0 +1,45 @@
+name: Temporary Dev Worker send race
+on:
+  push:
+    branches: [hex/fix-dev-worker-runtime-owned-identity-main]
+permissions:
+  contents: write
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: hex/fix-dev-worker-runtime-owned-identity-main
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - name: Apply staged source and production DOM regression
+        run: python3 .github/tmp/patch-dev-worker-send-race.py
+      - name: Install pinned browser engines
+        run: |
+          npm install --no-save --save-exact playwright@1.55.0
+          npx --no-install playwright install-deps chromium webkit
+          npx --no-install playwright install chromium webkit
+      - name: Reproduce iOS composer rehydration in real engines
+        run: node tests/chatgpt-web-production-dom.mjs
+      - name: Dev and AI regressions
+        run: |
+          npm run dev-agent:test
+          npm run ai:test
+      - name: Rebuild and test userscript
+        run: |
+          npm run userscript:build
+          npm run userscript:test
+      - run: git diff --check
+      - name: Commit validated repair and cleanup temporary helpers
+        run: |
+          rm .github/tmp/patch-dev-worker-send-race.py .github/workflows/temp-dev-worker-send-race.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add js/userscript/chatgpt-adapter.js tests/fixtures/chatgpt-production-dom.mjs tests/chatgpt-web-production-dom.mjs userscript/hex.user.template.js userscript/release-version.json .github/tmp/patch-dev-worker-send-race.py .github/workflows/temp-dev-worker-send-race.yml
+          git commit -m "Retry Worker submission after ChatGPT composer hydration"
+          git push origin HEAD:hex/fix-dev-worker-runtime-owned-identity-main
