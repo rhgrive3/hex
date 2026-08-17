@@ -3,15 +3,27 @@ import { createDevAnalysisScopeRequest } from '../run/analysis-scope.js';
 import { bindDevRunIdentity, createDevRun, DEV_RUN_STATUS, transitionDevRun } from '../run/dev-run.js';
 import { validateDevSupervisorDecision } from '../protocol/hex-dev-supervisor-v1.js';
 import { createDevWorkerToolSurface, DEV_WORKER_TOOL } from '../workers/tool-surface.js';
+import { createDevGithubToolSurface } from '../github/tool-surface.js';
 
 let fallbackSequence = 0;
 
 export class DevSupervisorV0 {
-  constructor({ availableTools = [], workerTools = null, workerClient = null, idFactory = defaultIdFactory, now = () => new Date().toISOString() } = {}) {
-    this.workerTools = workerTools || createDevWorkerToolSurface(workerClient || globalThis.__HEX_DEV_WORKER_CLIENT__ || null);
+  constructor({
+    availableTools = [],
+    workerTools = null,
+    workerClient = null,
+    githubTools = null,
+    githubClient = null,
+    idFactory = defaultIdFactory,
+    now = () => new Date().toISOString(),
+  } = {}) {
+    const parentClient = workerClient || globalThis.__HEX_DEV_WORKER_CLIENT__ || null;
+    this.workerTools = workerTools || createDevWorkerToolSurface(parentClient);
+    this.githubTools = githubTools || createDevGithubToolSurface(githubClient || parentClient);
     this.availableTools = Object.freeze([...new Set([
       ...availableTools.map(String),
       ...(this.workerTools?.toolNames || []),
+      ...(this.githubTools?.toolNames || []),
     ])]);
     this.idFactory = idFactory;
     this.now = now;
@@ -62,20 +74,27 @@ export class DevSupervisorV0 {
   async executeToolDecision(run, input) {
     const applied = this.applyDecision(run, input);
     if (applied.decision.type !== 'tool') throw new TypeError('executeToolDecision requires a Dev tool decision.');
-    if (!this.workerTools?.has(applied.decision.tool)) {
-      throw new TypeError(`No Dev tool executor is registered for: ${applied.decision.tool}`);
+
+    if (this.workerTools?.has(applied.decision.tool)) {
+      let runtimeRun = applied.run;
+      if (applied.decision.tool !== DEV_WORKER_TOOL.DISCOVER && !runtimeRun.workerId) {
+        runtimeRun = bindDevRunIdentity(runtimeRun, { workerId: this.idFactory('worker') }, { now: this.now() });
+      }
+      const argumentsForTool = runtimeOwnedWorkerArguments(runtimeRun, applied.decision);
+      const result = await this.workerTools.execute(applied.decision.tool, argumentsForTool);
+      return Object.freeze({
+        run: this.bindWorkerResult(runtimeRun, result),
+        decision: applied.decision,
+        result,
+      });
     }
-    let runtimeRun = applied.run;
-    if (applied.decision.tool !== DEV_WORKER_TOOL.DISCOVER && !runtimeRun.workerId) {
-      runtimeRun = bindDevRunIdentity(runtimeRun, { workerId: this.idFactory('worker') }, { now: this.now() });
+
+    if (this.githubTools?.has(applied.decision.tool)) {
+      const result = await this.githubTools.execute(applied.decision.tool, plainToolArguments(applied.decision));
+      return Object.freeze({ run: applied.run, decision: applied.decision, result });
     }
-    const argumentsForTool = runtimeOwnedWorkerArguments(runtimeRun, applied.decision);
-    const result = await this.workerTools.execute(applied.decision.tool, argumentsForTool);
-    return Object.freeze({
-      run: this.bindWorkerResult(runtimeRun, result),
-      decision: applied.decision,
-      result,
-    });
+
+    throw new TypeError(`No Dev tool executor is registered for: ${applied.decision.tool}`);
   }
 
   bindWorkerResult(run, result) {
@@ -89,9 +108,7 @@ export class DevSupervisorV0 {
 }
 
 function runtimeOwnedWorkerArguments(run, decision) {
-  const supplied = decision?.arguments && typeof decision.arguments === 'object' && !Array.isArray(decision.arguments)
-    ? decision.arguments
-    : {};
+  const supplied = plainToolArguments(decision);
   const args = { ...supplied };
   if (decision?.tool === DEV_WORKER_TOOL.DISCOVER) return args;
 
@@ -104,19 +121,22 @@ function runtimeOwnedWorkerArguments(run, decision) {
   return args;
 }
 
+function plainToolArguments(decision) {
+  return decision?.arguments && typeof decision.arguments === 'object' && !Array.isArray(decision.arguments)
+    ? decision.arguments
+    : {};
+}
 function rejectIdentityOverride(supplied, authoritative, field) {
   if (supplied == null) return;
   if (String(supplied) !== authoritative) {
     throw new TypeError(`Dev Worker tool may not override runtime-owned ${field}.`);
   }
 }
-
 function requiredRuntimeIdentity(value, field) {
   const text = String(value ?? '').trim();
   if (!text) throw new TypeError(`DevRun ${field} is required for Worker tool execution.`);
   return text;
 }
-
 function defaultIdFactory(kind) {
   const prefix = String(kind || 'id').replace(/[^a-z0-9-]/gi, '-').toLowerCase();
   if (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function') return `${prefix}-${globalThis.crypto.randomUUID()}`;
