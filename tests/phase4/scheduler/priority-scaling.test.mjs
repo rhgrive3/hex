@@ -107,16 +107,22 @@ import { deferred, descriptor, scheduler, waitState } from './helpers.mjs';
   assert.equal(stats.producerInvocations,count);
 }
 
-// Independent queue scaling: 10 / 100 / 1,000 / 10,000 nodes remains heap-bounded, not repeated full-array sorting.
+// Wide-DAG scaling: 10 / 100 / 1,000 / 10,000 nodes remains heap-bounded, not repeated full-array sorting.
 const scaling=[];
 for (const count of [10,100,1000,10000]) {
   const {scheduler:s}=scheduler({maxConcurrency:64,starvationInterval:8});
-  const promises=Array.from({length:count},(_,i)=>s.request({descriptor:descriptor(`scale-${count}-${String(i).padStart(5,'0')}`),priority:i%5,produce:async()=>({i})}));
-  await Promise.all(promises);
+  const leaves=Array.from({length:count-1},(_,i)=>descriptor(`scale-${count}-${String(i).padStart(5,'0')}`));
+  const root=descriptor(`scale-${count}-root`,leaves);
+  await s.request({
+    descriptor:root,
+    dependencies:leaves.map((leaf,i)=>({descriptor:leaf,priority:i%5,produce:async()=>({i})})),
+    produce:async()=>({done:true}),
+  });
   const stats=s.stats();
   assert.equal(stats.dagNodes,count);
-  assert.equal(stats.dagEdges,0);
+  assert.equal(stats.dagEdges,count-1);
   assert.equal(stats.producerInvocations,count);
+  assert.equal(stats.cycleChecks,count-1);
   assert.ok(stats.queueOperations<=count*2+64,`queue ops grew unexpectedly: ${JSON.stringify(stats)}`);
   const comparisonBound=Math.max(64,count*Math.max(1,Math.ceil(Math.log2(count+1)))*4);
   assert.ok(stats.queueComparisons<=comparisonBound,`heap comparisons exceeded O(N log N) guard: ${JSON.stringify(stats)}`);
