@@ -85,3 +85,49 @@ replace_once(
     "  const variable = mnemonic.endsWith('v') || ops[2]?.k === 'reg';",
     "register-valued shift",
 )
+
+# 5. A typed ABI return is positive evidence. Reuse the call's existing canonical
+# physical-state definition instead of inventing a second semantic value. Unknown
+# calls without typed return evidence remain dst=null.
+p = Path("js/ir-core.js")
+s = p.read_text()
+call_marker = """function valueMayCarryStackAddress(value) {
+"""
+helper = """function attachAapcs64TypedCallResults(projected) {
+  for (const inst of projected.instructions ?? []) {
+    if (inst.op !== LEGACY_OP.CALL || inst.dst || !inst.returnReg || !inst.returnEvidence) continue;
+    const candidates = (projected.values ?? [])
+      .filter((value) => value?.reg === inst.returnReg
+        && value?.sourceEntityId === inst.semanticNodeId
+        && value?.def == null)
+      .sort((left, right) => Number(right.id ?? -1) - Number(left.id ?? -1));
+    const value = candidates[0] ?? null;
+    if (!value) continue;
+    value.kind = LEGACY_VK.DEF;
+    value.bits = Number(inst.returnBits || value.bits || 64);
+    value.def = inst;
+    value.unknown = true;
+    delete value.undefined;
+    delete value.clobbered;
+    value.compatDerived = 'typed-abi-call-result';
+    inst.dst = value;
+    inst.extra = {
+      ...(inst.extra ?? {}),
+      compatTypedCallResult: true,
+      compatTypedCallResultEvidence: inst.returnEvidence,
+    };
+  }
+}
+
+"""
+if s.count(call_marker) != 1 or "function attachAapcs64TypedCallResults(projected)" in s:
+    raise SystemExit("typed call result insertion source shape mismatch")
+s = s.replace(call_marker, helper + call_marker, 1)
+old_call = """  attachAapcs64CallArguments(result.legacyV1);
+  invalidateEscapedStackForwarding(result.legacyV1);"""
+new_call = """  attachAapcs64CallArguments(result.legacyV1);
+  attachAapcs64TypedCallResults(result.legacyV1);
+  invalidateEscapedStackForwarding(result.legacyV1);"""
+if s.count(old_call) != 1:
+    raise SystemExit("typed call result wiring source shape mismatch")
+p.write_text(s.replace(old_call, new_call, 1))
