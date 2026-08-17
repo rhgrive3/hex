@@ -26,10 +26,11 @@ jobs:
           git fetch origin main hex/p3-semantic-ir-integration
           test "$(git rev-parse origin/main)" = "3f168f8a5d4009074c868ee34608d3f168f0a81a"
           if ! git merge --no-ff --no-edit origin/main; then
-            conflicts="$(git diff --name-only --diff-filter=U)"
-            test "$conflicts" = "userscript/hex.user.template.js"
-            git checkout --theirs userscript/hex.user.template.js
-            git add userscript/hex.user.template.js
+            conflicts="$(git diff --name-only --diff-filter=U | sort)"
+            expected="$(printf '%s\n%s\n' 'userscript/hex.user.template.js' 'userscript/release-version.json' | sort)"
+            test "$conflicts" = "$expected"
+            git checkout --theirs userscript/hex.user.template.js userscript/release-version.json
+            git add userscript/hex.user.template.js userscript/release-version.json
             git commit --no-edit
           fi
       - run: npm ci
