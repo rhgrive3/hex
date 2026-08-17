@@ -1,4 +1,4 @@
-name: P3 unary alias TsumTsum accuracy
+name: P3 exact legacy unary TsumTsum accuracy
 on:
   push:
     branches: [hex/p3-local-debug-350]
@@ -28,19 +28,32 @@ jobs:
           node scripts/fetch-real-fixtures.mjs TsumTsum --check
           gh run download 31988122265 -n cross-binary-oracle-TsumTsum -D tests
           test -s tests/oracle.TsumTsum.ci.json.gz
-      - name: Apply unary alias candidate
+      - name: Apply exact legacy unary renderer candidate
         run: |
           python - <<'PY'
           from pathlib import Path
-          p=Path('js/semantics/ir/normalize-effects.js'); s=p.read_text()
-          old="  'neg', 'not', 'abs', 'fneg', 'fabs', 'fsqrt', 'clz', 'rbit', 'rev', 'rev16', 'rev32',\n"
-          new="  'neg', 'not', 'abs', 'fneg', 'fabs', 'fsqrt', 'clz', 'rbit', 'rev', 'rev16', 'rev32',\n  'count-leading-zeroes', 'reverse-bits',\n"
-          assert old in s; p.write_text(s.replace(old,new,1))
-          p=Path('js/semantics/compat/semantic-ir-v2-to-v1-nodes.js'); s=p.read_text()
-          old="      setBasic(V1_OP.UN, node.operator || attrs.operator || 'unknown');"
-          new="      setBasic(V1_OP.UN, ({ 'count-leading-zeroes': 'clz', 'reverse-bits': 'rbit' }[node.operator] || node.operator || attrs.operator || 'unknown'));"
-          assert old in s; p.write_text(s.replace(old,new,1))
+          p=Path('js/decompile-legacy.js'); s=p.read_text()
+          anchor="  if (base === 'mvn' && dst) {\n"
+          insert="  if (base === 'rbit' && dst && insn.ops[1]) {\n    return mk(varOf(dst, ctx) + ' = reverse_bits(' + operandText(insn.ops[1], ctx, insn) + ');', { dst, pure: true });\n  }\n  if (base === 'clz' && dst && insn.ops[1]) {\n    return mk(varOf(dst, ctx) + ' = count_leading_zeros(' + operandText(insn.ops[1], ctx, insn) + ');', { dst, pure: true });\n  }\n"
+          assert anchor in s
+          p.write_text(s.replace(anchor,insert+anchor,1))
           PY
+      - name: Verify exact regression function
+        run: |
+          cat > tests/.p3-exact-unary.mjs <<'EOF'
+          import { openBinary } from './harness.mjs';
+          import { decompile } from '../js/decompile.js';
+          const w=await openBinary('tests/.real-fixtures/TsumTsum');
+          const a=0x1011af0d4n,end=0x1011af380n;
+          const m=await w.analyze(a,end);
+          const r=decompile(m,{addr:a,rowOfAddress:x=>x==null?null:Number((x-w.region.vmAddr)/4n),addrOfRow:n=>w.region.vmAddr+BigInt(n)*4n,symbolFor:x=>w.symbols.nameAt(x)});
+          const asm=(r.lines||[]).filter(l=>/__asm\(.*(?:rbit|clz)/.test(l.text||''));
+          const rendered=(r.lines||[]).filter(l=>/(?:reverse_bits|count_leading_zeros)\(/.test(l.text||''));
+          console.error(`[P3EXACT] semantic=${r.semantic} legacy=${r.legacyFallback||false} unaryAsm=${asm.length} rendered=${rendered.length}`);
+          for(const l of rendered) console.error(`[P3EXACT-LINE] ${l.text}`);
+          if(asm.length||rendered.length<8) process.exit(2);
+          EOF
+          node --max-old-space-size=6000 tests/.p3-exact-unary.mjs
       - name: Run canonical pseudoc sample set
         run: |
-          /usr/bin/time -f 'P3_UNARY_ELAPSED=%e' node --max-old-space-size=6000 tests/accuracy.mjs --target=tests/.real-fixtures/TsumTsum --oracle=tests/oracle.TsumTsum.ci.json.gz --only=pseudoc --json
+          /usr/bin/time -f 'P3_EXACT_UNARY_ELAPSED=%e' node --max-old-space-size=6000 tests/accuracy.mjs --target=tests/.real-fixtures/TsumTsum --oracle=tests/oracle.TsumTsum.ci.json.gz --only=pseudoc --json
