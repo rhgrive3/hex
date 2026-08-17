@@ -182,7 +182,7 @@ function oraclePayload() {
       if (message.t === 'hash') { metrics.hash++; return; }
       if (message.t !== 'analyze') return;
       metrics.analyze++;
-      if (message.sliceIndex === 99) return;
+      if (message.sliceIndex === 98 || message.sliceIndex === 99) return;
       const result = message.sliceIndex === 77 ? null : oraclePayload();
       queueMicrotask(() => this.onmessage?.({ data:result
         ? { t:'ok', id:message.id, epoch:message.epoch, result }
@@ -216,12 +216,23 @@ function oraclePayload() {
     try { await backend.analyze(77, { ...opts, config:{ errorCase:true } }); } catch (e) { newError = e; }
     assert.equal(oldError?.message, 'worker-crash'); assert.equal(newError?.message, 'worker-crash');
 
-    const controller = new AbortController();
-    const cancelling = backend.analyze(99, { ...opts, signal:controller.signal, config:{ cancelCase:true } });
+    const oldController = new AbortController();
+    const oldCancelBefore = metrics.cancel;
+    const oldCancelling = backend.analyze(98, { route:'current', signal:oldController.signal });
     for (let i=0;i<10 && metrics.analyze<5;i++) await Promise.resolve();
-    controller.abort(new DOMException('backend-cancel', 'AbortError'));
+    oldController.abort(new DOMException('current-cancel', 'AbortError'));
+    await assert.rejects(oldCancelling, (e) => e?.name === 'AbortError');
+    assert.equal(metrics.cancel, oldCancelBefore + 1, 'current oracle must cancel its worker exactly once');
+    report.cancellationChecks++;
+
+    const controller = new AbortController();
+    const artifactCancelBefore = metrics.cancel;
+    const cancelling = backend.analyze(99, { ...opts, signal:controller.signal, config:{ cancelCase:true } });
+    for (let i=0;i<10 && metrics.analyze<6;i++) await Promise.resolve();
+    controller.abort(new DOMException('artifact-cancel', 'AbortError'));
     await assert.rejects(cancelling, (e) => e?.name === 'AbortError');
-    assert.ok(metrics.cancel >= 1); report.cancellationChecks++;
+    assert.equal(metrics.cancel, artifactCancelBefore + 1, 'artifact route must drive the same worker cancel exactly once');
+    report.cancellationChecks++;
     backend.dispose();
   } finally { globalThis.Worker = originalWorker; }
 }
