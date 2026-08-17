@@ -36,6 +36,14 @@ new_state_write = """    if (inst.extra?.stateWrite && samePublicState(inst, sou
 if s.count(old_state_write) != 1:
     raise SystemExit("state-write compaction source shape mismatch")
 s = s.replace(old_state_write, new_state_write, 1)
+
+# Preserve the legacy signed stack-slot display convention. Stack identity and
+# offsets remain canonical/signed; this changes only the v1 human-facing name.
+old_stack_name = "name: `${disp < 0n ? 'var_m' : 'var_'}${magnitude.toString(16)}`"
+new_stack_name = "name: `${disp < 0n ? 'var_m' : 'var_p'}${magnitude.toString(16)}`"
+if s.count(old_stack_name) != 1:
+    raise SystemExit("stack slot display source shape mismatch")
+s = s.replace(old_stack_name, new_stack_name, 1)
 p.write_text(s)
 
 # 2. Unknown physical-state SSA definitions are public clobber boundaries.
