@@ -1,4 +1,4 @@
-name: P3 semantic-v2 stage isolate
+name: P3 projection isolate
 on:
   push:
     branches: [hex/p3-local-debug-350]
@@ -11,23 +11,10 @@ jobs:
   isolate:
     runs-on: ubuntu-latest
     timeout-minutes: 3
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - label: head-v2
-            ref: 3aa37912a67c0b6d3efb03c93d19ed64b5dad0ff
-            mode: semantic-v2-compat
-          - label: pre-final-cutover-v2
-            ref: e678eedf3bdebd7fc89d5aa069beb5a319fc6703
-            mode: semantic-v2-compat
-          - label: head-legacy
-            ref: 3aa37912a67c0b6d3efb03c93d19ed64b5dad0ff
-            mode: legacy-v1
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ matrix.ref }}
+          ref: 3aa37912a67c0b6d3efb03c93d19ed64b5dad0ff
           fetch-depth: 1
       - uses: actions/setup-node@v4
         with:
@@ -35,31 +22,43 @@ jobs:
       - run: |
           node scripts/fetch-real-fixtures.mjs battlecats
           node scripts/fetch-real-fixtures.mjs battlecats --check
-      - name: Inject stage diagnostics
-        if: matrix.mode == 'semantic-v2-compat'
+      - name: Inject projection diagnostics
         run: |
           python - <<'PY'
           from pathlib import Path
-          p=Path('js/semantics/compat/index.js')
+          p=Path('js/semantics/compat/semantic-ir-v2-to-v1.js')
           s=p.read_text()
           reps=[
-            ("  for (const block of blockRecords) {\n    for (const item of block.instructions) {", "  process.stderr.write(`[P3PIPE lift:start] blocks=${blockRecords.length}\\n`);\n  for (const block of blockRecords) {\n    for (const item of block.instructions) {"),
-            ("  if (!bundles.length) fail('semantic-v2-integration-function-has-no-instructions');", "  process.stderr.write(`[P3PIPE lift:end] bundles=${bundles.length}\\n`);\n  if (!bundles.length) fail('semantic-v2-integration-function-has-no-instructions');"),
-            ("  const ir = createSemanticIrFunction({", "  process.stderr.write('[P3PIPE ir-contract:start]\\n');\n  const ir = createSemanticIrFunction({"),
-            ("  const nodeById = new Map(ir.nodes.map((node) => [node.id, node]));", "  process.stderr.write(`[P3PIPE ir-contract:end] nodes=${ir.nodes.length} values=${ir.values.length}\\n`);\n  const nodeById = new Map(ir.nodes.map((node) => [node.id, node]));"),
-            ("  const cfg = createSemanticCfg({", "  process.stderr.write('[P3PIPE cfg:start]\\n');\n  const cfg = createSemanticCfg({"),
-            ("  const ssa = buildSemanticSsa(ir, cfg, options.ssaOptions ?? {});", "  process.stderr.write('[P3PIPE cfg:end]\\n');\n  process.stderr.write('[P3PIPE ssa:start]\\n');\n  const ssa = buildSemanticSsa(ir, cfg, options.ssaOptions ?? {});"),
-            ("  validateSemanticSsa(ssa, ir, cfg, options.ssaValidationOptions ?? {});", "  validateSemanticSsa(ssa, ir, cfg, options.ssaValidationOptions ?? {});\n  process.stderr.write(`[P3PIPE ssa:end] defs=${ssa.definitions?.length ?? -1}\\n`);"),
-            ("  const memorySsa = buildMemorySsa(ir, cfg, {", "  process.stderr.write('[P3PIPE memoryssa:start]\\n');\n  const memorySsa = buildMemorySsa(ir, cfg, {"),
-            ("  validateMemorySsa(memorySsa, { cfg, ...(options.memorySsaValidationOptions ?? {}) });", "  validateMemorySsa(memorySsa, { cfg, ...(options.memorySsaValidationOptions ?? {}) });\n  process.stderr.write('[P3PIPE memoryssa:end]\\n');"),
-            ("  const legacyV1 = projectSemanticIrV2ToLegacyV1(ir, {", "  process.stderr.write('[P3PIPE projection:start]\\n');\n  const legacyV1 = projectSemanticIrV2ToLegacyV1(ir, {"),
-            ("  // The wrapper object is immutable", "  process.stderr.write(`[P3PIPE projection:end] inst=${legacyV1.instructions?.length ?? -1} values=${legacyV1.values?.length ?? -1}\\n`);\n\n  // The wrapper object is immutable"),
+            ("export function projectSemanticIrV2ToLegacyV1(input, options = {}) {\n  const ir = validateSemanticIrFunction(input, options.validationOptions || {});", "export function projectSemanticIrV2ToLegacyV1(input, options = {}) {\n  process.stderr.write('[P3PROJ validate-ir:start]\\n');\n  const ir = validateSemanticIrFunction(input, options.validationOptions || {});\n  process.stderr.write('[P3PROJ validate-ir:end]\\n');"),
+            ("  const ssaInput = options.ssa ?? options.semanticSsa ?? null;", "  process.stderr.write('[P3PROJ ssa-contract:start]\\n');\n  const ssaInput = options.ssa ?? options.semanticSsa ?? null;"),
+            ("  const memorySsaInput = options.memorySsa ?? null;", "  process.stderr.write(`[P3PROJ ssa-contract:end] defs=${ssa?.definitions?.length ?? -1}\\n`);\n  process.stderr.write('[P3PROJ memory-contract:start]\\n');\n  const memorySsaInput = options.memorySsa ?? null;"),
+            ("  const canonicalCfg = options.cfg ?? options.semanticCfg ?? null;", "  process.stderr.write(`[P3PROJ memory-contract:end] defs=${memorySsa?.definitions?.length ?? -1} uses=${memorySsa?.uses?.length ?? -1}\\n`);\n  const canonicalCfg = options.cfg ?? options.semanticCfg ?? null;"),
+            ("  const graph = graphFacts(", "  process.stderr.write('[P3PROJ graph:start]\\n');\n  const graph = graphFacts("),
+            ("  for (const block of legacyBlocks) block.isExit = block.succ.length === 0;", "  process.stderr.write('[P3PROJ graph:end]\\n');\n  for (const block of legacyBlocks) block.isExit = block.succ.length === 0;"),
+            ("  const { values, byId: valuesById } = buildLegacyValues(ir, ssa);", "  process.stderr.write('[P3PROJ values:start]\\n');\n  const { values, byId: valuesById } = buildLegacyValues(ir, ssa);"),
+            ("  preserveIncomingPhysicalState(ssa, valuesById);", "  process.stderr.write(`[P3PROJ values:end] values=${values.length}\\n`);\n  preserveIncomingPhysicalState(ssa, valuesById);"),
+            ("  const projected = {", "  process.stderr.write('[P3PROJ metadata:start]\\n');\n  const projected = {"),
+            ("  const instructionBySemanticId = new Map();", "  process.stderr.write('[P3PROJ metadata:end]\\n');\n  process.stderr.write('[P3PROJ nodes:start]\\n');\n  const instructionBySemanticId = new Map();"),
+            ("  addScalarSsaPhis(projected, ssa, valuesById, blockIndexById, instructionBySemanticId);", "  process.stderr.write(`[P3PROJ nodes:end] inst=${projected.instructions.length}\\n`);\n  process.stderr.write('[P3PROJ scalar-phis:start]\\n');\n  addScalarSsaPhis(projected, ssa, valuesById, blockIndexById, instructionBySemanticId);"),
+            ("  appendFunctionUnknowns(projected, ir);", "  appendFunctionUnknowns(projected, ir);\n  process.stderr.write('[P3PROJ scalar-phis:end]\\n');"),
+            ("  if (memorySsa) attachMemorySsa(projected, memorySsa, valuesById, instructionBySemanticId, blockIndexById);", "  process.stderr.write('[P3PROJ attach-memory:start]\\n');\n  if (memorySsa) attachMemorySsa(projected, memorySsa, valuesById, instructionBySemanticId, blockIndexById);"),
+            ("  else attachFallbackMemory(projected);", "  else attachFallbackMemory(projected);\n  process.stderr.write('[P3PROJ attach-memory:end]\\n');"),
+            ("  assignInstructionIds(projected);", "  process.stderr.write('[P3PROJ ids:start]\\n');\n  assignInstructionIds(projected);"),
+            ("  attachAbiProjectedArguments(projected);", "  process.stderr.write('[P3PROJ ids:end]\\n');\n  attachAbiProjectedArguments(projected);\n  process.stderr.write('[P3PROJ finalize:start]\\n');"),
+            ("  finalizeLegacyProjection(projected);", "  finalizeLegacyProjection(projected);\n  process.stderr.write('[P3PROJ finalize:end]\\n');"),
           ]
           for old,new in reps:
             if old not in s:
-              raise SystemExit('diagnostic anchor missing: '+old[:80])
+              raise SystemExit('missing '+old[:90])
             s=s.replace(old,new,1)
           p.write_text(s)
+          PY
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('js/semantics/compat/index.js'); s=p.read_text()
+          old="  const legacyV1 = projectSemanticIrV2ToLegacyV1(ir, {"
+          new="  process.stderr.write('[P3PIPE projection:start]\\n');\n  const legacyV1 = projectSemanticIrV2ToLegacyV1(ir, {"
+          assert old in s; p.write_text(s.replace(old,new,1))
           PY
       - name: Create exact-function probe
         run: |
@@ -67,27 +66,16 @@ jobs:
           import { openBinary } from './harness.mjs';
           import { decompile } from '../js/decompile.js';
           import { setSemanticMigrationMode } from '../js/ir.js';
-          const mode = process.env.P3_MODE;
-          setSemanticMigrationMode(mode);
-          const t0=Date.now();
+          setSemanticMigrationMode('semantic-v2-compat');
           const w=await openBinary('tests/.real-fixtures/battlecats');
-          console.error(`[P3PROBE open] ${Date.now()-t0}ms mode=${mode}`);
           const a=0x10033fd24n, end=0x100340074n;
-          const t1=Date.now();
           const model=await w.analyze(a,end);
-          console.error(`[P3PROBE analyze] ${Date.now()-t1}ms insns=${model?.instructions?.length ?? -1}`);
-          const t2=Date.now();
-          const res=decompile(model, {
-            addr:a,
-            rowOfAddress:(x)=>w.rowOf(x),
-            addrOfRow:(r)=>w.region.vmAddr+BigInt(r)*4n,
-            symbolFor:(x)=>w.symbols.nameAt(x),
-          });
-          console.error(`[P3PROBE decompile] ${Date.now()-t2}ms semantic=${!!res?.semantic} lines=${res?.lines?.length ?? -1}`);
+          console.error(`[P3PROBE model] insns=${model?.instructions?.length ?? -1}`);
+          const t=Date.now();
+          const res=decompile(model,{addr:a,rowOfAddress:(x)=>w.rowOf(x),addrOfRow:(r)=>w.region.vmAddr+BigInt(r)*4n,symbolFor:(x)=>w.symbols.nameAt(x)});
+          console.error(`[P3PROBE done] ${Date.now()-t}ms lines=${res?.lines?.length ?? -1}`);
           EOF
       - name: Run exact function
-        env:
-          P3_MODE: ${{ matrix.mode }}
         run: |
           set -o pipefail
-          timeout --signal=TERM --kill-after=5s 45s node --max-old-space-size=6000 tests/.p3-stage-probe.mjs 2>&1 | tee stage.log
+          timeout --signal=TERM --kill-after=5s 50s node --max-old-space-size=6000 tests/.p3-stage-probe.mjs 2>&1 | tee stage.log
