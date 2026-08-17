@@ -63,6 +63,25 @@ export class WorkerChatController {
     return conversation;
   }
 
+  adoptCurrentConversation() {
+    const value = this.adapter.conversation?.() || null;
+    if (!value?.id || !value?.url) return null;
+    if (this.adapter.isGenerating?.()) return null;
+    if (!this.adapter.composer?.()) return null;
+    const currentAnchors = this.currentUserAnchors();
+    if (!currentAnchors.length) return null;
+
+    // worker.claim runs only after the owned Supervisor model turn has settled.
+    // On iPad/WebKit, older remembered user turns may already be virtualized by
+    // then even though the current route, composer and latest Supervisor turn
+    // are live. Re-adopt only this settled visible surface and replace stale
+    // historical hydration requirements with the anchors that are authoritative
+    // now. Ordinary navigation keeps the stricter currentConversation() policy.
+    const conversation = { id: String(value.id), url: String(value.url) };
+    this.rememberConversationAnchors(conversation, currentAnchors);
+    return conversation;
+  }
+
   workerConversation() {
     return this.conversation ? { id: String(this.conversation.id), url: String(this.conversation.url) } : null;
   }

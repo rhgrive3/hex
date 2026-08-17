@@ -9,6 +9,7 @@ import { SingleConversationWorkerCoordinator } from '../../js/userscript/dev/sin
 
 await testSingleTabWorkerLoopReleasesClaim();
 await testRuntimeRejectsWorkerIdentityOverride();
+await testAmbiguousClaimFailureCleansUpAndFailsRun();
 await testWaitingHumanResumesSameSupervisorRun();
 await testSupervisorRestoreAcceptsPartialHistoryHydration();
 console.log('Round 2 single-tab Supervisor loop passed');
@@ -78,6 +79,37 @@ async function testRuntimeRejectsWorkerIdentityOverride() {
     /may not override runtime-owned runId/,
   );
   assert.equal(ops.length, 0, 'conflicting model-supplied identity must be rejected before reaching Worker runtime');
+}
+
+
+async function testAmbiguousClaimFailureCleansUpAndFailsRun() {
+  const ops = [];
+  const client = createWorkerClient(ops);
+  client.claim = async (args) => {
+    ops.push({ op: 'claim', args });
+    const error = new Error('Dev Worker RPC timed out: dev.worker.claim');
+    error.code = 'transport-failure';
+    throw error;
+  };
+  const supervisor = new DevSupervisorV0({
+    workerClient: client,
+    idFactory: (kind) => ({ run: 'ambiguous-run', worker: 'ambiguous-worker', 'supervisor-session': 'ambiguous-supervisor' }[kind] || `${kind}-id`),
+    now: () => '2026-08-17T00:00:00.000Z',
+  });
+  const settings = devSettings();
+  const bridge = {
+    async request() {
+      return { text: JSON.stringify({ type: 'tool', tool: 'worker.claim', arguments: {}, purpose: 'claim once' }) };
+    },
+  };
+  const engine = new DevSupervisorEngineV0({ supervisor, settings, bridge });
+  await assert.rejects(
+    () => engine.run({ mode: 'agent', question: 'claim safely', conversationId: 'hex-ambiguous' }),
+    /timed out/,
+  );
+  assert.equal(ops.filter((item) => item.op === 'claim').length, 1);
+  assert.equal(ops.filter((item) => item.op === 'release').length, 1, 'ambiguous claim failure must attempt deterministic cleanup');
+  assert.equal(settings.lastRun.status, DEV_RUN_STATUS.FAILED, 'failed Dev tooling must not leave a phantom ACTIVE run');
 }
 
 async function testWaitingHumanResumesSameSupervisorRun() {

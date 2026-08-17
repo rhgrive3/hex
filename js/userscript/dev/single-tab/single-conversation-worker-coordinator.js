@@ -2,6 +2,7 @@ import { DEV_WORKER_FAILURE, DEV_WORKER_STATE } from '../../../ai/dev/workers/co
 import { waitFor } from '../../chatgpt-adapter.js';
 
 const EVENT_QUEUE_LIMIT = 128;
+const SUPERVISOR_CLAIM_TIMEOUT_MS = 30000;
 const TERMINAL_KINDS = new Set(['completed', 'failed', 'cancelled']);
 
 export class SingleConversationWorkerCoordinator {
@@ -40,8 +41,22 @@ export class SingleConversationWorkerCoordinator {
   async claim({ runId, workerId } = {}) {
     const normalizedRun = required(runId, 'runId');
     const normalizedWorker = required(workerId, 'workerId');
-    if (this.claimed) throw workerError(DEV_WORKER_FAILURE.WORKER_BUSY, 'The single-tab Worker slot is already claimed.');
-    const supervisorConversation = await waitFor(() => this.controller.currentConversation() || null, 3000);
+    if (this.claimed) {
+      if (this.claimed.runId === normalizedRun && this.claimed.workerId === normalizedWorker) {
+        return this.withIdentity({
+          state: this.controller.observe().state,
+          claimed: true,
+          replayed: true,
+        });
+      }
+      throw workerError(DEV_WORKER_FAILURE.WORKER_BUSY, 'The single-tab Worker slot is already claimed.');
+    }
+    const supervisorConversation = await waitFor(() => {
+      if (typeof this.controller.adoptCurrentConversation === 'function') {
+        return this.controller.adoptCurrentConversation() || null;
+      }
+      return this.controller.currentConversation() || null;
+    }, SUPERVISOR_CLAIM_TIMEOUT_MS);
     if (!supervisorConversation?.id) {
       throw workerError(DEV_WORKER_FAILURE.CONVERSATION_MISMATCH, 'Supervisor ChatGPT conversation identity is unavailable.');
     }
