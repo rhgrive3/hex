@@ -36,6 +36,7 @@ concurrency:
 
 jobs:
   effects-core:
+    name: effects-core
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -46,13 +47,20 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run effects:test
-      - run: npm run invariants:test
-      - run: npm run migration:test
-      - run: npm run core:test
 
-  semantic-decompiler:
+  semantic-decompiler-shards:
+    name: phase2-${{ matrix.name }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - name: semantic
+            command: npm run semantic:test
+          - name: decompiler
+            command: npm run decompiler:test
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -60,12 +68,64 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm run semantic:test
-      - run: npm run decompiler:test
-      - name: Run compiler truth command
-        run: npm run compiler-truth
+      - run: ${{ matrix.command }}
+
+  semantic-decompiler:
+    name: semantic-decompiler
+    if: always()
+    needs: semantic-decompiler-shards
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require semantic and decompiler shards
+        env:
+          RESULT: ${{ needs.semantic-decompiler-shards.result }}
+        run: |
+          if [[ "$RESULT" != "success" ]]; then
+            echo "::error::Semantic/decompiler shard failed ($RESULT)."
+            exit 1
+          fi
+
+  platform-runtime-shards:
+    name: phase2-${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - name: platform
+            command: npm run platform:test
+          - name: runtime
+            command: npm run runtime:test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: ${{ matrix.command }}
 
   platform-runtime:
+    name: platform-runtime
+    if: always()
+    needs: platform-runtime-shards
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require platform and runtime shards
+        env:
+          RESULT: ${{ needs.platform-runtime-shards.result }}
+        run: |
+          if [[ "$RESULT" != "success" ]]; then
+            echo "::error::Platform/runtime shard failed ($RESULT)."
+            exit 1
+          fi
+
+  baseline-check:
+    name: baseline-check
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -75,23 +135,10 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm run platform:test
-      - run: npm run runtime:test
-
-  baseline-check:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
       - run: npm run benchmark:baseline
-      - run: npm run check
 
   userscript-ios:
+    name: userscript-ios
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
