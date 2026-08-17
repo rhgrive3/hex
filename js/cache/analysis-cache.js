@@ -1,6 +1,7 @@
 export const ANALYSIS_CACHE_SCHEMA = 1;
 export const ANALYSIS_CACHE_FALLBACK = Object.freeze({ MEMORY:'memory', ERROR:'error' });
 const ALLOWED_FIELDS = new Set(['formatMetadata', 'functionSeeds', 'stringsIndex', 'imports', 'analysisSummaries']);
+const CANONICAL_ARTIFACT_ID = /^artifact_[0-9a-f]{32}$/i;
 
 function stableValue(value) {
   if (value == null || typeof value !== 'object') return value;
@@ -18,7 +19,9 @@ function analysisIdentity(options = {}) {
 
 function canonicalArtifactId(options = {}) {
   const value = options?.artifactId == null ? '' : String(options.artifactId).trim();
-  return value || null;
+  if (!value) return null;
+  if (!CANONICAL_ARTIFACT_ID.test(value)) throw new TypeError('analysis-cache-artifact-id-not-canonical');
+  return value.toLowerCase();
 }
 
 export class AnalysisCache {
@@ -36,7 +39,7 @@ export class AnalysisCache {
 
   legacyKey(hash) { return `${this.schemaVersion}:${this.analysisIdentity}:${hash}`; }
   canonicalKey(artifactId) {
-    const id = String(artifactId ?? '').trim();
+    const id = canonicalArtifactId({ artifactId });
     if (!id) throw new TypeError('canonical artifact id is required');
     return `artifact:${id}`;
   }
@@ -126,7 +129,10 @@ export class AnalysisCache {
 
   async invalidateStale() {
     const stale = (key, record) => {
-      if (record?.canonicalArtifactId) return record.schemaVersion !== this.schemaVersion || key !== this.canonicalKey(record.canonicalArtifactId);
+      if (record?.canonicalArtifactId) {
+        if (!CANONICAL_ARTIFACT_ID.test(record.canonicalArtifactId)) return true;
+        return record.schemaVersion !== this.schemaVersion || key !== this.canonicalKey(record.canonicalArtifactId);
+      }
       return record?.schemaVersion !== this.schemaVersion || record?.analysisIdentity !== this.analysisIdentity || !key.startsWith(`${this.schemaVersion}:${this.analysisIdentity}:`);
     };
     if (this.memory) {
