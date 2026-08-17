@@ -30,14 +30,37 @@ export function validateAccuracyRows(rows, expectedIds = null) {
 }
 
 export function validateAccuracyFile(file, expectedIds = null) {
-  const stat = fs.statSync(file);
+  let stat;
+  try { stat = fs.statSync(file); } catch { throw new TypeError(`accuracy-result-file-missing:${file}`); }
   if (!stat.isFile() || stat.size === 0) throw new TypeError(`accuracy-result-file-empty:${file}`);
   const rows = JSON.parse(fs.readFileSync(file, 'utf8'));
   return validateAccuracyRows(rows, expectedIds);
 }
 
+function selfTest() {
+  const valid = [{ id: 'a', score: 1 }, { id: 'b', score: 0.5 }];
+  validateAccuracyRows(valid, ['a', 'b']);
+  const expectFailure = (fn, pattern) => {
+    let error = null;
+    try { fn(); } catch (caught) { error = caught; }
+    if (!error || !pattern.test(String(error.message))) {
+      throw new Error(`expected ${pattern}, got ${error?.message ?? 'success'}`);
+    }
+  };
+  expectFailure(() => validateAccuracyRows([]), /accuracy-result-empty/);
+  expectFailure(() => validateAccuracyRows([{ id: 'a', score: 1 }, { id: 'a', score: 1 }]), /duplicate-id/);
+  expectFailure(() => validateAccuracyRows([{ id: 'a', score: NaN }]), /score-invalid/);
+  expectFailure(() => validateAccuracyRows(valid, ['a', 'c']), /id-mismatch/);
+  console.log('accuracy result validation self-test passed');
+}
+
 function main() {
-  const [file, ...args] = process.argv.slice(2);
+  const argv = process.argv.slice(2);
+  if (argv.includes('--self-test')) {
+    selfTest();
+    return;
+  }
+  const [file, ...args] = argv;
   if (!file) {
     console.error('usage: node tests/accuracy-result-validate.mjs <result.json> [--expect=id1,id2,...]');
     process.exit(2);
