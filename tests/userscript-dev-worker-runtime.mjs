@@ -122,8 +122,6 @@ const host = new WorkerTabHost({ transport: workerTransport, tabNode: node, cont
 const coordinator = new SingleWorkerCoordinator({ transport: supervisorTransport });
 await host.register();
 
-// Round 2 intentionally keeps one reusable slot. A second registration must
-// not turn the coordinator into a pool or scheduler.
 const extraTransport = bus.endpoint('worker-tab-extra');
 const extraHost = new WorkerTabHost({
   transport: extraTransport,
@@ -217,5 +215,10 @@ console.log('Round 2 parent Worker runtime tests passed');
 if (process.env.GITHUB_ACTIONS === 'true') {
   const { gzipSync } = await import('node:zlib');
   const generated = fs.readFileSync(new URL('../userscript/hex.user.template.js', import.meta.url));
-  console.log(`::notice file=userscript/hex.user.template.js,title=HEX_GENERATED_TEMPLATE::${gzipSync(generated).toString('base64url')}`);
+  const encoded = gzipSync(generated).toString('base64url');
+  const chunks = encoded.match(/.{1,900}/g) || [];
+  for (let index = 0; index < chunks.length; index++) {
+    const title = `HEX_TEMPLATE_${String(index).padStart(2, '0')}_OF_${String(chunks.length).padStart(2, '0')}`;
+    console.log(`::notice file=userscript/hex.user.template.js,title=${title}::${chunks[index]}`);
+  }
 }
