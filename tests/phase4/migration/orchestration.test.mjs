@@ -179,7 +179,8 @@ function oraclePayload() {
   await a.close(); await b.close();
 }
 
-// Real Backend route: current is default, artifact is opt-in and uses the same worker producer.
+// Real Backend route: production default remains current pre-cutover, while the
+// CI rehearsal may deliberately force the ambient configured route to artifact.
 {
   const originalWorker = globalThis.Worker;
   const metrics = { analyze:0, hash:0, cancel:0 };
@@ -200,13 +201,18 @@ function oraclePayload() {
   }
   globalThis.Worker = FakeWorker;
   try {
-    const { Backend } = await import(`../../../js/backend.js?migration-test=${Date.now()}`);
+    const { Backend, BACKEND_DEFAULT_ANALYSIS_ROUTE } = await import(`../../../js/backend.js?migration-test=${Date.now()}`);
     const r = runtime('backend');
     const backend = new Backend({ artifactOrchestrator:r });
     backend.formatId = 'elf';
     backend.platformInfo = { capability:{ architecture:'arm64' }, slices:[{ capability:{ architecture:'arm64' } }] };
     const info = backend.analysisRouteInfo();
-    assert.equal(info.route, 'current'); assert.equal(info.defaultCutover, false);
+    const expectedConfiguredRoute = process.env.HEX_ANALYSIS_ROUTE === ANALYSIS_ORCHESTRATION_ROUTE.ARTIFACT
+      ? ANALYSIS_ORCHESTRATION_ROUTE.ARTIFACT
+      : BACKEND_DEFAULT_ANALYSIS_ROUTE;
+    assert.equal(BACKEND_DEFAULT_ANALYSIS_ROUTE, ANALYSIS_ORCHESTRATION_ROUTE.CURRENT);
+    assert.equal(info.route, expectedConfiguredRoute);
+    assert.equal(info.defaultCutover, false);
     assert.equal(info.canonicalIdentityRequired, true); assert.equal(info.completenessRequired, true);
 
     const oldResult = await backend.analyze(0, { route:'current' }); report.oldRouteRuns++;
