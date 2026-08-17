@@ -23,14 +23,14 @@ jobs:
           PY
       - name: Dump narrowed shapes
         run: |
-          cat >/tmp/debug.mjs <<'NODE'
+          cat >.p3-debug.mjs <<'NODE'
           import { buildSemanticModel } from './js/blocks.js';
           import { buildIR, OP, originOf } from './js/ir.js';
           import { reachingRegisterValue } from './js/decompiler/semantic.js';
           const BASE=0x100000000n;
           function asm(lines){return lines.map((line,i)=>{const s=line.trim();const p=s.indexOf(' ');return {row:i,address:BASE+BigInt(i*4),mn:p<0?s:s.slice(0,p),ops:p<0?'':s.slice(p+1)}})}
           function build(lines){const rowOfAddress=(a)=>{const d=a-BASE;return d<0n||d>=BigInt(lines.length*4)?null:Number(d/4n)};const model=buildSemanticModel(asm(lines),{startRow:0,endRow:lines.length-1,rowOfAddress});return buildIR(model,{rowOfAddress})}
-          function v(x){if(!x)return null;return {id:x.id,kind:x.kind,reg:x.reg??null,stateKey:x.stateKey??null,bits:x.bits??null,version:x.version??null,const:x.const==null?null:String(x.const),clobbered:!!x.clobbered,unknown:!!x.unknown,origin:originOf(x),def:x.def?{id:x.def.id,row:x.def.row,op:x.def.op,sub:x.def.sub,stateRead:!!x.def.extra?.stateRead,stateWrite:!!x.def.extra?.stateWrite,public:x.def.extra?.publicStateIdentity??null,local:x.def.extra?.localPhysicalViewProjection??null}:null}}
+          function v(x){if(!x)return null;return {id:x.id,kind:x.kind,reg:x.reg??null,stateKey:x.stateKey??null,bits:x.bits??null,version:x.version??null,const:x.const==null?null:String(x.const),clobbered:!!x.clobbered,unknown:!!x.unknown,semanticValueId:x.semanticValueId??null,semanticSsaValueId:x.semanticSsaValueId??null,sourceSemanticValueId:x.sourceSemanticValueId??null,origin:originOf(x),def:x.def?{id:x.def.id,row:x.def.row,op:x.def.op,sub:x.def.sub,stateRead:!!x.def.extra?.stateRead,stateWrite:!!x.def.extra?.stateWrite,public:x.def.extra?.publicStateIdentity??null,local:x.def.extra?.localPhysicalViewProjection??null}:null}}
           function i(x){if(!x)return null;return {id:x.id,row:x.row,block:x.block,op:x.op,sub:x.sub,dst:v(x.dst),args:(x.args||[]).map(a=>v(a?.value)),clobbers:x.clobbers??x.extra?.clobbers??null,reachingStore:x.reachingStore?.id??null,loc:x.loc?{kind:x.loc.kind,key:x.loc.key,size:x.loc.size,base:v(x.loc.base),disp:x.loc.disp==null?null:String(x.loc.disp)}:null,addr:x.addr?{base:v(x.addr.base),index:v(x.addr.index),disp:x.addr.disp==null?null:String(x.addr.disp),size:x.addr.size}:null,extra:{conditional:x.extra?.conditional??null,fallbackNzcv:x.extra?.fallbackNzcv??null,stateRead:!!x.extra?.stateRead,stateWrite:!!x.extra?.stateWrite,public:x.extra?.publicStateIdentity??null,local:x.extra?.localPhysicalViewProjection??null,attrs:x.extra?.attributes?.machineEffects?.bundleMetadata??null}}}
           function out(name,obj){console.log('###'+name+' '+JSON.stringify(obj,(_,z)=>typeof z==='bigint'?z.toString():z))}
           let ir=build(['cmp w0, #0','ccmp w1, w2, #6, eq','b.ne #0x10000000c','ret']);out('351',{cmps:ir.instructions.filter(x=>x.op===OP.CMP).map(i),row1:ir.instructions.filter(x=>x.row===1).map(i)});
@@ -38,4 +38,5 @@ jobs:
           ir=build(['mov x2, #7','bl #0x200000000','add x0, x2, #1','ret']);const add=ir.instructions.find(x=>x.op===OP.BIN&&x.row===2);out('355',{x2:ir.values.filter(x=>x.reg==='x2').map(v),call:i(ir.instructions.find(x=>x.op===OP.CALL)),add:i(add),reaching:v(reachingRegisterValue(ir,add,'x2'))});
           ir=build(['sub sp, sp, #32','str x0, [sp, #16]','str w2, [x0, #32]','ldr x3, [sp, #16]','add sp, sp, #32','ret']);const stores=ir.instructions.filter(x=>x.op===OP.STORE);const load=ir.instructions.find(x=>x.op===OP.LOAD&&x.row===3);out('359',{stores:stores.map(i),load:i(load),sp:ir.values.filter(x=>x.reg==='sp').map(v)});
           NODE
-          node /tmp/debug.mjs
+          node .p3-debug.mjs
+          rm .p3-debug.mjs
