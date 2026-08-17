@@ -163,9 +163,15 @@ export function createDevWorkerParentRpcClient({ port, timeoutMs = 20000 } = {})
     discover: (args = {}, opts = {}) => call('dev.worker.discover', args, opts),
     claim: (args = {}, opts = {}) => call('dev.worker.claim', args, opts),
     createChat: (args = {}, opts = {}) => call('dev.worker.create_chat', args, opts),
-    send: (args = {}, opts = {}) => call('dev.worker.send', args, opts),
+    send: (args = {}, opts = {}) => call('dev.worker.send', args, {
+      ...opts,
+      timeoutMs: 0,
+    }),
     observe: (args = {}, opts = {}) => call('dev.worker.observe', args, opts),
-    followup: (args = {}, opts = {}) => call('dev.worker.followup', args, opts),
+    followup: (args = {}, opts = {}) => call('dev.worker.followup', args, {
+      ...opts,
+      timeoutMs: 0,
+    }),
     nudge: (args = {}, opts = {}) => call('dev.worker.nudge', args, opts),
     stop: (args = {}, opts = {}) => call('dev.worker.stop', args, opts),
     result: (args = {}, opts = {}) => call('dev.worker.result', args, opts),
