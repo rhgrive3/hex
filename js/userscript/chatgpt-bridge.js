@@ -36,8 +36,17 @@ export function installChatGPTWebBridge(options = {}) {
       const sessionKey = String(requestOptions.sessionKey || '').trim();
       active = { controller, sessionKey: requestOptions.sessionKey || null };
       try {
-        await adoptLateBinding({ adapter, router, lateBindings, sessionKey, signal: controller.signal, waitMs: lateBindingWaitMs });
-        const routed = await router.route(requestOptions.sessionKey, { signal: controller.signal });
+        const recovered = await adoptLateBinding({
+          adapter, router, lateBindings, sessionKey, signal: controller.signal, waitMs: lateBindingWaitMs,
+        });
+        // If the exact prior Supervisor assistant turn is still present but
+        // ChatGPT has not exposed a /c/<id> yet, the current unbound surface is
+        // already proven to be this same logical session. Do not click New Chat
+        // merely because the SPA route identity is late. Continue on that surface
+        // and keep trying to bind a concrete identity after this turn settles.
+        const routed = recovered?.reuseCurrentSurface
+          ? { conversation: null, isNew: true }
+          : await router.route(requestOptions.sessionKey, { signal: controller.signal });
         const selection = await models.select({ model: requestOptions.model, reasoning: requestOptions.reasoning }, { signal: controller.signal });
         const result = await turns.run(String(prompt || ''), {
           signal: controller.signal,
@@ -51,7 +60,7 @@ export function installChatGPTWebBridge(options = {}) {
         // not be mistaken for another New Chat. First wait briefly for the late
         // identity; if it still is not visible, retain only the previous turn id
         // in trusted in-memory state so the next same-session request can safely
-        // adopt the route iff that exact turn is still present.
+        // recover only from that exact prior turn.
         const bound = await settleConversationBinding({
           adapter,
           router,
@@ -145,10 +154,15 @@ async function adoptLateBinding({ adapter, router, lateBindings, sessionKey, sig
     Math.min(waitMs, 1500),
     signal,
   );
-  if (!conversation) return null;
-  const bound = router.bind(sessionKey, conversation) || conversation;
-  lateBindings.delete(sessionKey);
-  return bound;
+  if (conversation) {
+    const bound = router.bind(sessionKey, conversation) || conversation;
+    lateBindings.delete(sessionKey);
+    return Object.freeze({ conversation: bound, reuseCurrentSurface: false });
+  }
+  if (!adapter.conversation?.() && turnIdentityPresent(adapter, pending.turnId)) {
+    return Object.freeze({ conversation: null, reuseCurrentSurface: true });
+  }
+  return null;
 }
 
 function matchingCurrentConversation(adapter, turnId) {
