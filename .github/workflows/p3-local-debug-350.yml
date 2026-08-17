@@ -1,18 +1,22 @@
-name: P3 baseline FLOW check v15
+name: P3 RMW projection diagnostic v16
 on:
   push:
     branches: [hex/p3-local-debug-350]
     paths:
       - '.github/workflows/p3-local-debug-350.yml'
 jobs:
-  baseline:
+  diagnose:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: hex/p3-semantic-ir-integration
+          ref: ${{ github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: node tests/run.js
+      - run: python3 tools/validation/p3-debug-apply.py
+      - run: python3 tools/validation/p3-debug-apply-interproc.py
+      - run: python3 tools/validation/p3-debug-apply-137.py
+      - run: python3 tools/validation/p3-debug-stackname-collision.py
+      - run: node tools/validation/p3-debug-rmw-diag.mjs
