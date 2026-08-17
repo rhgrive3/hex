@@ -69,12 +69,25 @@ export class WorkerChatController {
 
   isActive() { return !!this.active; }
 
-  async navigateToConversation(conversation, { sessionKey = null, signal, timeoutMs } = {}) {
+  async navigateToConversation(conversation, {
+    sessionKey = null,
+    signal,
+    timeoutMs,
+    continuityAnchor = undefined,
+  } = {}) {
     if (!conversation?.id || !conversation?.url) {
       throw workerError(DEV_WORKER_FAILURE.CONVERSATION_MISMATCH, 'A concrete ChatGPT conversation is required for Worker navigation.');
     }
     const expected = { id: String(conversation.id), url: String(conversation.url) };
-    const anchors = this.conversationAnchors.get(expected.id) || [];
+    const rememberedAnchors = this.conversationAnchors.get(expected.id) || [];
+    // Default navigation remains strict and requires every remembered user-turn
+    // anchor. A caller may provide one explicit continuity anchor when that is
+    // the strongest stable proof available (the single-tab Supervisor restore
+    // path on iPad, where older turns may stay virtualized after the chat is
+    // already usable). `null` explicitly means route/composer stability only.
+    const anchors = continuityAnchor === undefined
+      ? rememberedAnchors
+      : normalizeContinuityAnchors(continuityAnchor);
     const key = String(sessionKey || `dev-worker-navigation:${expected.id}`);
     this.router.bind(key, expected);
     const routed = await this.router.route(key, { signal, ...(timeoutMs == null ? {} : { timeoutMs }) });
@@ -87,7 +100,7 @@ export class WorkerChatController {
     if (!hydrated) {
       throw workerError(
         DEV_WORKER_FAILURE.CONVERSATION_MISMATCH,
-        'ChatGPT reached the requested conversation route before its prior turns finished rehydrating.',
+        'ChatGPT reached the requested conversation route before its required continuity turns finished rehydrating.',
       );
     }
     return hydrated;
@@ -446,6 +459,12 @@ function conversationAnchorsPresent(expected, current) {
 }
 function conversationAnchorSignature(anchors) {
   return (anchors || []).map((anchor) => `${anchor.id}\u0000${anchor.text}`).join('\u0001');
+}
+function normalizeContinuityAnchors(value) {
+  if (value == null) return [];
+  const id = String(value?.id || '');
+  const text = normalizeText(value?.text || '');
+  return id || text ? [Object.freeze({ id, text })] : [];
 }
 function mapCreateChatError(error, fallback) {
   const code = String(error?.code || '');
