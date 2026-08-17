@@ -2,7 +2,8 @@ name: Cross-binary accuracy
 
 # Required real-binary accuracy gate. Precision is unchanged: every pinned
 # fixture and every accuracy feature still runs. Wall-clock time is reduced by
-# caching exact independent oracles/results and by running independent work in parallel.
+# caching exact independent oracles/results and by using the CPUs inside each
+# hosted runner before consuming more GitHub job slots.
 on:
   workflow_dispatch:
   pull_request:
@@ -32,6 +33,9 @@ env:
   HEX_FIXTURE_TSUMTSUM_URL: https://raw.githubusercontent.com/rhgrive3/hex/bd7bd61d093592d07fdd9e9b14a859e19dd4c3a9/tests/TsumTsum
   HEX_FIXTURE_YWP_URL: https://raw.githubusercontent.com/rhgrive3/hex/bd7bd61d093592d07fdd9e9b14a859e19dd4c3a9/tests/YWP
   ORACLE_PYTHON_VERSION: '3.12.13'
+  LOCAL_PSEUDOC_WORKERS: 4
+  LOCAL_PSEUDOC_SHARDS: 8
+  LOCAL_CORE_WORKERS: 4
 
 jobs:
   preflight-lint:
@@ -171,7 +175,7 @@ jobs:
     timeout-minutes: 20
     strategy:
       fail-fast: false
-      max-parallel: 90
+      max-parallel: 12
       matrix:
         target:
           - name: BattleCats
@@ -187,14 +191,8 @@ jobs:
             file: TsumTsum
             oracle: tests/oracle.TsumTsum.ci.json.gz
         partition:
-          - name: core-1
-            only: sections,funcs,funcs-guess,disasm,kinds
-          - name: core-2
-            only: calls,refs,imports,objc,selstub
-          - name: core-3
-            only: strings,xrefs,funcname,selffield,role
-          - name: core-4
-            only: apimeaning,summary,expr,formula
+          - name: core
+            only: sections,funcs,funcs-guess,disasm,kinds,calls,refs,imports,objc,selstub,strings,xrefs,funcname,selffield,role,apimeaning,summary,expr,formula
           - name: pinpoint
             only: pinpoint
           - name: pinpoint-partial
@@ -202,99 +200,11 @@ jobs:
           - name: pseudoc-1
             only: pseudoc
             shardIndex: 0
-            shardCount: 24
+            shardCount: 2
           - name: pseudoc-2
             only: pseudoc
             shardIndex: 1
-            shardCount: 24
-          - name: pseudoc-3
-            only: pseudoc
-            shardIndex: 2
-            shardCount: 24
-          - name: pseudoc-4
-            only: pseudoc
-            shardIndex: 3
-            shardCount: 24
-          - name: pseudoc-5
-            only: pseudoc
-            shardIndex: 4
-            shardCount: 24
-          - name: pseudoc-6
-            only: pseudoc
-            shardIndex: 5
-            shardCount: 24
-          - name: pseudoc-7
-            only: pseudoc
-            shardIndex: 6
-            shardCount: 24
-          - name: pseudoc-8
-            only: pseudoc
-            shardIndex: 7
-            shardCount: 24
-          - name: pseudoc-9
-            only: pseudoc
-            shardIndex: 8
-            shardCount: 24
-          - name: pseudoc-10
-            only: pseudoc
-            shardIndex: 9
-            shardCount: 24
-          - name: pseudoc-11
-            only: pseudoc
-            shardIndex: 10
-            shardCount: 24
-          - name: pseudoc-12
-            only: pseudoc
-            shardIndex: 11
-            shardCount: 24
-          - name: pseudoc-13
-            only: pseudoc
-            shardIndex: 12
-            shardCount: 24
-          - name: pseudoc-14
-            only: pseudoc
-            shardIndex: 13
-            shardCount: 24
-          - name: pseudoc-15
-            only: pseudoc
-            shardIndex: 14
-            shardCount: 24
-          - name: pseudoc-16
-            only: pseudoc
-            shardIndex: 15
-            shardCount: 24
-          - name: pseudoc-17
-            only: pseudoc
-            shardIndex: 16
-            shardCount: 24
-          - name: pseudoc-18
-            only: pseudoc
-            shardIndex: 17
-            shardCount: 24
-          - name: pseudoc-19
-            only: pseudoc
-            shardIndex: 18
-            shardCount: 24
-          - name: pseudoc-20
-            only: pseudoc
-            shardIndex: 19
-            shardCount: 24
-          - name: pseudoc-21
-            only: pseudoc
-            shardIndex: 20
-            shardCount: 24
-          - name: pseudoc-22
-            only: pseudoc
-            shardIndex: 21
-            shardCount: 24
-          - name: pseudoc-23
-            only: pseudoc
-            shardIndex: 22
-            shardCount: 24
-          - name: pseudoc-24
-            only: pseudoc
-            shardIndex: 23
-            shardCount: 24
+            shardCount: 2
     steps:
       - uses: actions/checkout@v4
       - name: Restore exact accuracy result cache
@@ -302,7 +212,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: accuracy-part-${{ matrix.target.name }}-${{ matrix.partition.name }}.json
-          key: accuracy-result-v3-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target.name }}-${{ matrix.partition.name }}-${{ hashFiles('js/**', 'tests/accuracy.mjs', 'tests/harness.mjs', 'tests/accuracy-pseudoc-shard-oracle.mjs', 'tests/accuracy-pseudoc-shard-merge.mjs', 'tests/fixtures/real-binaries.json', 'tests/oracle.py', 'tests/oracle-cfg-normalize.py', 'tests/oracle-requirements.txt', '.github/workflows/cross-binary-accuracy.yml') }}
+          key: accuracy-result-v4-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target.name }}-${{ matrix.partition.name }}-${{ hashFiles('js/**', 'tests/accuracy.mjs', 'tests/harness.mjs', 'tests/accuracy-pseudoc-shard-oracle.mjs', 'tests/accuracy-pseudoc-shard-merge.mjs', 'tests/fixtures/real-binaries.json', 'tests/oracle.py', 'tests/oracle-cfg-normalize.py', 'tests/oracle-requirements.txt', '.github/workflows/cross-binary-accuracy.yml') }}
       - uses: actions/setup-node@v4
         if: steps.result-cache.outputs.cache-hit != 'true'
         with:
@@ -323,32 +233,88 @@ jobs:
         run: |
           test -s "${{ matrix.target.oracle }}"
           gzip -t "${{ matrix.target.oracle }}"
-      - name: Build exact pseudoc sample shard
+      - name: Build exact runner-local pseudoc shards
         if: steps.result-cache.outputs.cache-hit != 'true' && matrix.partition.shardCount != null
+        shell: bash
         run: |
-          node tests/accuracy-pseudoc-shard-oracle.mjs \
-            "${{ matrix.target.oracle }}" \
-            "tests/pseudoc-shard-oracle.json.gz" \
-            "${{ matrix.partition.shardIndex }}" \
-            "${{ matrix.partition.shardCount }}"
+          set -euo pipefail
+          base=${{ matrix.partition.shardIndex }}
+          for worker in 0 1 2 3; do
+            global_index=$((base + worker * 2))
+            node tests/accuracy-pseudoc-shard-oracle.mjs \
+              "${{ matrix.target.oracle }}" \
+              "tests/pseudoc-local-${worker}.json.gz" \
+              "$global_index" \
+              "$LOCAL_PSEUDOC_SHARDS"
+          done
       - name: Measure Hex accuracy partition
         if: steps.result-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
-          set -o pipefail
-          ORACLE="${{ matrix.target.oracle }}"
-          if [[ "${{ matrix.partition.shardCount }}" != "" ]]; then ORACLE="tests/pseudoc-shard-oracle.json.gz"; fi
-          node --max-old-space-size=6000 tests/accuracy.mjs \
-            --target="tests/.real-fixtures/${{ matrix.target.file }}" \
-            --oracle="$ORACLE" \
-            --only="${{ matrix.partition.only }}" \
-            --json | tee "accuracy-part-${{ matrix.target.name }}-${{ matrix.partition.name }}.json"
+          set -euo pipefail
+          output="accuracy-part-${{ matrix.target.name }}-${{ matrix.partition.name }}.json"
+          target="tests/.real-fixtures/${{ matrix.target.file }}"
+          oracle="${{ matrix.target.oracle }}"
+
+          run_parallel() {
+            local mode="$1"
+            shift
+            local -a pids=()
+            local status=0
+            local i=0
+            while (( "$#" )); do
+              local only="$1"
+              local local_oracle="$2"
+              shift 2
+              node --max-old-space-size=2600 tests/accuracy.mjs \
+                --target="$target" \
+                --oracle="$local_oracle" \
+                --only="$only" \
+                --json > "accuracy-local-${mode}-${i}.json" \
+                2> "accuracy-local-${mode}-${i}.log" &
+              pids+=("$!")
+              i=$((i + 1))
+            done
+            for i in "${!pids[@]}"; do
+              if ! wait "${pids[$i]}"; then status=1; fi
+              cat "accuracy-local-${mode}-${i}.log"
+            done
+            return "$status"
+          }
+
+          if [[ "${{ matrix.partition.name }}" == "core" ]]; then
+            run_parallel core \
+              'sections,funcs,funcs-guess,disasm,kinds' "$oracle" \
+              'calls,refs,imports,objc,selstub' "$oracle" \
+              'strings,xrefs,funcname,selffield,role' "$oracle" \
+              'apimeaning,summary,expr,formula' "$oracle"
+            node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const rows = [0, 1, 2, 3].flatMap((i) => JSON.parse(fs.readFileSync(`accuracy-local-core-${i}.json`, 'utf8')));
+          fs.writeFileSync('accuracy-part-${{ matrix.target.name }}-core.json', JSON.stringify(rows, null, 2) + '\n');
+          NODE
+          elif [[ "${{ matrix.partition.shardCount }}" != "" ]]; then
+            run_parallel pseudoc \
+              pseudoc tests/pseudoc-local-0.json.gz \
+              pseudoc tests/pseudoc-local-1.json.gz \
+              pseudoc tests/pseudoc-local-2.json.gz \
+              pseudoc tests/pseudoc-local-3.json.gz
+            node tests/accuracy-pseudoc-shard-merge.mjs \
+              "$output" accuracy-local-pseudoc-0.json accuracy-local-pseudoc-1.json \
+              accuracy-local-pseudoc-2.json accuracy-local-pseudoc-3.json
+          else
+            node --max-old-space-size=6000 tests/accuracy.mjs \
+              --target="$target" \
+              --oracle="$oracle" \
+              --only="${{ matrix.partition.only }}" \
+              --json | tee "$output"
+          fi
       - name: Save exact accuracy result cache
         if: steps.result-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: accuracy-part-${{ matrix.target.name }}-${{ matrix.partition.name }}.json
-          key: accuracy-result-v3-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target.name }}-${{ matrix.partition.name }}-${{ hashFiles('js/**', 'tests/accuracy.mjs', 'tests/harness.mjs', 'tests/accuracy-pseudoc-shard-oracle.mjs', 'tests/accuracy-pseudoc-shard-merge.mjs', 'tests/fixtures/real-binaries.json', 'tests/oracle.py', 'tests/oracle-cfg-normalize.py', 'tests/oracle-requirements.txt', '.github/workflows/cross-binary-accuracy.yml') }}
+          key: accuracy-result-v4-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target.name }}-${{ matrix.partition.name }}-${{ hashFiles('js/**', 'tests/accuracy.mjs', 'tests/harness.mjs', 'tests/accuracy-pseudoc-shard-oracle.mjs', 'tests/accuracy-pseudoc-shard-merge.mjs', 'tests/fixtures/real-binaries.json', 'tests/oracle.py', 'tests/oracle-cfg-normalize.py', 'tests/oracle-requirements.txt', '.github/workflows/cross-binary-accuracy.yml') }}
       - name: Upload partition result
         if: always()
         uses: actions/upload-artifact@v4
