@@ -1,4 +1,4 @@
-name: P3 final gated promotion
+name: P3 latest-main resync gate
 on:
   push:
     branches: [hex/p3-local-debug-350]
@@ -7,7 +7,7 @@ permissions:
   contents: write
   actions: read
 jobs:
-  promote:
+  resync:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -18,12 +18,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Verify head and merge current main
+      - name: Verify validated head and merge current main
         run: |
-          test "$(git rev-parse HEAD)" = "75c393a7e89a1154963b03a34b8e2ada0bebe9f9"
+          test "$(git rev-parse HEAD)" = "03bdd329eb5db68c2f12adce7e0ac98a83d7e67b"
           git config user.name 'rhgrive3'
           git config user.email 'rhgrive@gmail.com'
           git fetch origin main hex/p3-semantic-ir-integration
+          test "$(git rev-parse origin/main)" = "3f168f8a5d4009074c868ee34608d3f168f0a81a"
           if ! git merge --no-ff --no-edit origin/main; then
             conflicts="$(git diff --name-only --diff-filter=U)"
             test "$conflicts" = "userscript/hex.user.template.js"
@@ -31,99 +32,22 @@ jobs:
             git add userscript/hex.user.template.js
             git commit --no-edit
           fi
-      - name: Apply validated Phase 3 fixes
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          p=Path('js/decompile-legacy.js'); s=p.read_text()
-          anchor="  if (base === 'mvn' && dst) {\n"
-          insert="  if (base === 'rbit' && dst && insn.ops[1]) {\n    return mk(varOf(dst, ctx) + ' = reverse_bits(' + operandText(insn.ops[1], ctx, insn) + ');', { dst, pure: true });\n  }\n  if (base === 'clz' && dst && insn.ops[1]) {\n    return mk(varOf(dst, ctx) + ' = count_leading_zeros(' + operandText(insn.ops[1], ctx, insn) + ');', { dst, pure: true });\n  }\n"
-          assert anchor in s; p.write_text(s.replace(anchor,insert+anchor,1))
-
-          p=Path('js/core/identity/origin.js'); s=p.read_text()
-          s=s.replace("export const ORIGIN_SCHEMA_VERSION = 1;\n", "export const ORIGIN_SCHEMA_VERSION = 1;\nconst CANONICAL_ORIGIN_SETS = new WeakSet();\n", 1)
-          old="function uniqueSorted(values) {\n  return Array.from(new Map(values.map((value) => [stableStringify(value), value])).values())\n    .sort((a, b) => stableStringify(a).localeCompare(stableStringify(b)));\n}"
-          new="function uniqueSorted(values) {\n  const byKey = new Map(values.map((value) => [stableStringify(value), value]));\n  return [...byKey.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([, value]) => value);\n}"
-          assert old in s; s=s.replace(old,new,1)
-          old="export function createOriginSet(input = {}) {\n  if (input == null) input = {};"
-          new="export function createOriginSet(input = {}) {\n  if (input && typeof input === 'object' && CANONICAL_ORIGIN_SETS.has(input)) return input;\n  if (input == null) input = {};"
-          assert old in s; s=s.replace(old,new,1)
-          old="  return deepFreeze(out);\n}\n\nexport function mergeOriginSets"
-          new="  const frozen = deepFreeze(out);\n  CANONICAL_ORIGIN_SETS.add(frozen);\n  return frozen;\n}\n\nexport function mergeOriginSets"
-          assert old in s; s=s.replace(old,new,1)
-          p.write_text(s)
-
-          p=Path('js/semantics/ssa/build.js'); s=p.read_text()
-          start=s.index('function resolvePhiOrigins('); end=s.index('\nfunction finalizePhi(',start)
-          lines=[
-            "function resolvePhiOrigins(phiDefinitions, definitionByValue, irBlocks, tick) {",
-            "  const sorted = phiDefinitions.slice().sort((a, b) => a.valueId.localeCompare(b.valueId));",
-            "  const phiIds = new Set(sorted.map((phi) => phi.valueId));",
-            "  const origins = []; const originByKey = new Map(); const roots = new Map();",
-            "  const dependents = new Map(sorted.map((phi) => [phi.valueId, new Set()]));",
-            "  const addOrigin = (key, origin) => { if (originByKey.has(key)) return originByKey.get(key); const index = origins.length; origins.push(origin); originByKey.set(key, index); return index; };",
-            "  for (const phi of sorted) {",
-            "    tick(); const set = new Set([addOrigin('base:' + phi.valueId, safeOrigin(irBlocks.get(phi.blockId)?.origin, createOriginSet({ parentEntityIds: [phi.blockId] })))]);",
-            "    const incoming = phi.incoming.slice().sort((a, b) => a.predecessorBlockId.localeCompare(b.predecessorBlockId) || a.valueId.localeCompare(b.valueId));",
-            "    for (const item of incoming) { tick(); const definition = definitionByValue.get(item.valueId); if (!definition) fail('semantic-ssa-dangling-phi-value-id');",
-            "      if (definition.kind === 'phi') { if (!phiIds.has(definition.valueId)) fail('semantic-ssa-dangling-phi-value-id'); dependents.get(definition.valueId).add(phi.valueId); } else set.add(addOrigin('definition:' + definition.valueId, definition.origin)); }",
-            "    roots.set(phi.valueId, set);",
-            "  }",
-            "  const queue = sorted.map((phi) => phi.valueId); const queued = new Set(queue);",
-            "  for (let cursor = 0; cursor < queue.length; cursor++) { tick(); const sourceId = queue[cursor]; queued.delete(sourceId); const source = roots.get(sourceId);",
-            "    for (const targetId of [...dependents.get(sourceId)].sort()) { tick(); const target = roots.get(targetId); const before = target.size; for (const index of source) target.add(index); if (target.size !== before && !queued.has(targetId)) { queue.push(targetId); queued.add(targetId); } }",
-            "  }",
-            "  const resolved = new Map();",
-            "  for (const phi of sorted) { tick(); resolved.set(phi.valueId, safeOrigin(...[...roots.get(phi.valueId)].sort((a, b) => a - b).map((index) => origins[index]))); }",
-            "  return resolved;",
-            "}",
-          ]
-          p.write_text(s[:start]+'\n'.join(lines)+s[end:])
-          PY
-      - name: Add regression coverage
-        run: |
-          cat > tests/semantic-v2/compat-v1-legacy-fallback-unary.test.mjs <<'EOF'
-          import assert from 'node:assert/strict';
-          import { buildSemanticModel } from '../../js/blocks.js';
-          import { decompile } from '../../js/decompile.js';
-
-          const raw = [
-            { row: 0, address: 0x1000n, mn: 'rbit', ops: 'x1, x0' },
-            { row: 1, address: 0x1004n, mn: 'clz', ops: 'x2, x1' },
-            { row: 2, address: 0x1008n, mn: 'ret', ops: '' },
-          ];
-          const rowByAddress = new Map(raw.map((r) => [r.address.toString(), r.row]));
-          const opts = {
-            startRow: 0,
-            endRow: raw.length - 1,
-            rowOfAddress: (addr) => rowByAddress.get(BigInt(addr).toString()) ?? null,
-            addrOfRow: (row) => raw[row]?.address ?? null,
-            symbolFor: () => null,
-            name: 'legacy_unary_fallback',
-          };
-          const model = buildSemanticModel(raw, opts);
-          const result = decompile(model, { ...opts, addr: raw[0].address, forceLegacyDecompiler: true });
-          const text = result.lines.map((line) => line.text || '').join('\n');
-          assert.match(text, /reverse_bits\(x0\)/);
-          assert.match(text, /count_leading_zeros\(x1\)/);
-          assert.doesNotMatch(text, /__asm\([^\n]*(?:rbit|clz)/i);
-          console.log('semantic-v2 legacy fallback exact unary rendering: PASS');
-          EOF
       - run: npm ci
-      - run: npm run userscript:build
+      - name: Rebuild canonical userscript from combined source
+        run: npm run userscript:build
       - run: node tests/ir.mjs
       - run: node tests/semantic-v2/compat-v1-legacy-fallback-unary.test.mjs
       - run: npm run semantic-v2:test
       - run: npm test
       - run: npm run check
-      - name: Guard clean promotion contents
+      - name: Guard clean resync contents
         run: |
-          ! git status --short | grep -E 'p3-(unary|origin|opcode|fallback|diagnostic|promote-trigger)'
+          ! git status --short | grep -E 'p3-(unary|origin|opcode|fallback|diagnostic|promote-trigger|hotspot)'
           git diff --check
-      - name: Commit and push canonical integration branch
+      - name: Commit generated synchronization and push canonical branch
         run: |
           git config user.name 'rhgrive3'
           git config user.email 'rhgrive@gmail.com'
           git add -A
-          git commit -m 'perf(phase3): finalize semantic compatibility accuracy and scaling'
+          if ! git diff --cached --quiet; then git commit -m 'chore(phase3): resync generated userscript after latest main'; fi
           git push origin HEAD:hex/p3-semantic-ir-integration
