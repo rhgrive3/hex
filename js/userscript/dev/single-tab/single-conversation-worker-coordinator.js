@@ -277,29 +277,14 @@ export class SingleConversationWorkerCoordinator {
     if (!claim?.supervisorConversation?.id) return null;
     const current = this.controller.currentConversation();
     if (current?.id === claim.supervisorConversation.id) return current;
-
-    // Worker navigation needs the controller's full remembered-history guard,
-    // but returning to the Supervisor only needs one strong continuity anchor:
-    // the latest user turn that existed immediately before delegation. ChatGPT
-    // on iPad can virtualize older history indefinitely even though the route,
-    // composer, latest turn and conversation context are already usable.
-    const expected = claim.supervisorConversation;
-    const key = `dev-supervisor-return:${claim.runId}`;
-    this.controller.router.bind(key, expected);
-    const routed = await this.controller.router.route(key, {});
-    if (!routed?.conversation || routed.conversation.id !== expected.id) {
-      throw workerError(DEV_WORKER_FAILURE.CONVERSATION_MISMATCH, 'ChatGPT did not reach the requested Supervisor conversation.');
-    }
-    if (!claim.supervisorAnchor) return routed.conversation;
-
-    const hydrated = await this.controller.waitForConversationHydration(expected, [claim.supervisorAnchor], {});
-    if (!hydrated) {
-      throw workerError(
-        DEV_WORKER_FAILURE.CONVERSATION_MISMATCH,
-        'ChatGPT reached the requested Supervisor conversation route before its latest continuity turn finished rehydrating.',
-      );
-    }
-    return hydrated;
+    // Keep navigation authority inside WorkerChatController. Worker return uses
+    // its default strict remembered-history policy; Supervisor return explicitly
+    // uses only the latest pre-delegation continuity anchor because iPad ChatGPT
+    // may leave older history virtualized after the conversation is already live.
+    return this.controller.navigateToConversation(claim.supervisorConversation, {
+      sessionKey: `dev-supervisor-return:${claim.runId}`,
+      continuityAnchor: claim.supervisorAnchor,
+    });
   }
 
   async safeRestoreSupervisor() {
