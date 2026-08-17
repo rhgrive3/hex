@@ -59,6 +59,12 @@ export class SingleConversationWorkerCoordinator {
     const claim = this.assertClaim(args);
     try {
       const result = await this.controller.createChat({ runId: claim.runId, workerId: claim.workerId });
+      // worker.create_chat is a Supervisor tool call. It must finish with the
+      // single Safari tab back on the Supervisor surface; otherwise the very
+      // next Supervisor decision races ChatGPT's New Chat SPA hydration. The
+      // real Worker controller prepares the logical Worker here and performs
+      // the physical New Chat transition atomically with worker.send.
+      await this.restoreSupervisor();
       return this.withIdentity(result);
     } catch (error) {
       await this.safeRestoreSupervisor();
