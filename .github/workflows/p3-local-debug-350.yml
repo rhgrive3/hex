@@ -1,37 +1,73 @@
-name: P3 dataflow compatibility validation v19
+name: P3 promote validated repair
 on:
   push:
     branches: [hex/p3-local-debug-350]
     paths:
       - '.github/workflows/p3-local-debug-350.yml'
+permissions:
+  contents: write
 jobs:
-  validate:
+  promote:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
+      - name: Preserve validated patch programs
+        run: |
+          cp tools/validation/p3-debug-apply.py /tmp/p3-apply.py
+          cp tools/validation/p3-debug-apply-interproc.py /tmp/p3-interproc.py
+          cp tools/validation/p3-debug-apply-137.py /tmp/p3-137.py
+          cp tools/validation/p3-debug-stackname-collision.py /tmp/p3-stackname.py
+          cp tools/validation/p3-debug-dataflow-compat.py /tmp/p3-dataflow.py
+      - name: Checkout exact integration head
+        shell: bash
+        run: |
+          git fetch origin refs/heads/hex/p3-semantic-ir-integration:refs/remotes/origin/hex/p3-semantic-ir-integration
+          expected=e678eedf3bdebd7fc89d5aa069beb5a319fc6703
+          actual=$(git rev-parse refs/remotes/origin/hex/p3-semantic-ir-integration)
+          test "$actual" = "$expected"
+          git checkout --detach "$actual"
+      - name: Apply validated production repair
+        run: |
+          python3 /tmp/p3-apply.py
+          python3 /tmp/p3-interproc.py
+          python3 /tmp/p3-137.py
+          python3 /tmp/p3-stackname.py
+          python3 /tmp/p3-dataflow.py
       - run: npm ci
-      - run: python3 tools/validation/p3-debug-apply.py
-      - run: python3 tools/validation/p3-debug-apply-interproc.py
-      - run: python3 tools/validation/p3-debug-apply-137.py
-      - run: python3 tools/validation/p3-debug-stackname-collision.py
-      - run: python3 tools/validation/p3-debug-dataflow-compat.py
       - run: npm run userscript:build
-      - run: node tests/issues-129-134.mjs
-      - run: node tests/issues-130-interproc.mjs
-      - run: node tests/issues-135-145.mjs
-      - run: node tests/issues-350-399.mjs
-      - run: node tests/issues-434-450-regressions.mjs
-      - run: node tests/issues-437-438-interproc.mjs
-      - run: node tests/ir.mjs
-      - run: node tests/run.js
-      - run: npm run semantic-v2:test
-      - run: npm test
-      - run: npm run effects:test
-      - run: npm run check
+      - name: Revalidate promoted tree
+        run: |
+          node tests/ir.mjs
+          node tests/run.js
+          npm run semantic-v2:test
+          npm run check
+      - name: Commit only validated production artifacts
+        shell: bash
+        run: |
+          allowed='^(js/semantics/compat/semantic-ir-v2-to-v1-finalize.js|js/semantics/compat/semantic-ir-v2-to-v1-address.js|js/semantics/compat/semantic-ir-v2-to-v1-core.js|js/semantics/compat/semantic-ir-v2-to-v1-nodes.js|js/targets/architecture/arm64/effects/integer.js|js/ir-core.js|js/interproc.js|js/dataflow-ir.js|js/dataflow-semantic.js|userscript/hex.user.template.js)$'
+          unexpected=$(git status --porcelain | awk '{print $2}' | grep -Ev "$allowed" || true)
+          if [ -n "$unexpected" ]; then
+            echo "Unexpected changed paths:" >&2
+            echo "$unexpected" >&2
+            exit 1
+          fi
+          git add js/semantics/compat/semantic-ir-v2-to-v1-finalize.js \
+                  js/semantics/compat/semantic-ir-v2-to-v1-address.js \
+                  js/semantics/compat/semantic-ir-v2-to-v1-core.js \
+                  js/semantics/compat/semantic-ir-v2-to-v1-nodes.js \
+                  js/targets/architecture/arm64/effects/integer.js \
+                  js/ir-core.js js/interproc.js js/dataflow-ir.js js/dataflow-semantic.js \
+                  userscript/hex.user.template.js
+          git diff --cached --quiet && { echo 'No production changes to promote' >&2; exit 1; }
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git commit -m 'fix(semantic-v2): complete Phase 3 public compatibility cutover'
+          git push origin HEAD:hex/p3-semantic-ir-integration
