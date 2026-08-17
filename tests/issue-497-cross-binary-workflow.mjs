@@ -26,7 +26,7 @@ for (const fixture of ['battlecats', 'YWP', 'TsumTsum']) {
   assert.ok(workflow.includes(`fixture: ${fixture}`), `${fixture} must participate in cross-binary accuracy`);
 }
 assert.match(workflow, /max-parallel:\s*3/, 'the three independent oracles must run concurrently');
-assert.match(workflow, /max-parallel:\s*12/, 'target/feature partitions must be allowed to run concurrently');
+assert.match(workflow, /max-parallel:\s*20/, 'target/feature shards must be allowed to run concurrently');
 assert.match(workflow, /fail-fast:\s*false/g, 'parallel jobs must keep collecting diagnostics after one failure');
 
 assert.match(requirements, /^lief==1\.0\.0$/m, 'LIEF oracle version must remain pinned');
@@ -74,11 +74,15 @@ assert.match(save, /actions\/cache\/save@v4/);
 assert.match(save, /steps\.oracle-key\.outputs\.key/);
 
 const measure = workflow.slice(workflow.indexOf('\n  measure:'), workflow.indexOf('\n  accuracy:'));
-for (const partition of ['core', 'pinpoint', 'pinpoint-partial', 'pseudoc']) {
+for (const partition of ['core', 'pinpoint', 'pinpoint-partial', 'pseudoc-1', 'pseudoc-2', 'pseudoc-3', 'pseudoc-4']) {
   assert.ok(measure.includes(`name: ${partition}`), `${partition} accuracy partition must exist`);
 }
 assert.match(measure, /--only="\$\{\{ matrix\.partition\.only \}\}"/,
   'partitioning must use accuracy.mjs built-in --only semantics');
+assert.match(measure, /accuracy-pseudoc-shard-oracle\.mjs/,
+  'pseudoc shards must derive from the exact serial sample set');
+assert.match(measure, /Restore exact accuracy result cache[\s\S]*actions\/cache\/restore@v4/,
+  'deterministic partition results should reuse an exact input-keyed cache');
 assert.match(workflow, /name:\s*Publish oracle for this run[\s\S]*actions\/upload-artifact@v4/,
   'oracle jobs must publish their exact oracle as an intra-run artifact');
 assert.match(measure, /name:\s*Download required oracle[\s\S]*actions\/download-artifact@v4/,
@@ -87,6 +91,8 @@ assert.match(measure, /name:\s*cross-binary-oracle-\$\{\{ matrix\.target\.name \
   'each measurement target must download only its matching oracle');
 
 const aggregate = workflow.slice(workflow.indexOf('\n  accuracy:'));
+assert.match(aggregate, /accuracy-pseudoc-shard-merge\.mjs accuracy-part-BattleCats-pseudoc\.json/,
+  'pseudoc shards must be exactly reassembled before normal accuracy merging');
 assert.match(aggregate, /node tests\/accuracy-merge\.mjs accuracy-BattleCats\.json/);
 assert.match(aggregate, /node tests\/accuracy-merge\.mjs accuracy-YWP\.json/);
 assert.match(aggregate, /node tests\/accuracy-merge\.mjs accuracy-TsumTsum\.json/);
