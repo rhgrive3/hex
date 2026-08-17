@@ -38,7 +38,7 @@ function fixture() {
     words:new Uint32Array([1, 0xffffffff]),
     floats:new Float64Array([1.5, -2.25]),
     buffer,
-    view:new DataView(viewBytes.buffer, 1, 2),
+    view:new DataView(viewBytes.buffer),
     map:new Map([['x', 1n], ['y', new Uint16Array([7, 8])]]),
     set:new Set(['a', 3n]),
     date:new Date('2026-08-17T00:00:00.000Z'),
