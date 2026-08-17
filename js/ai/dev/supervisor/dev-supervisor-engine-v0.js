@@ -35,6 +35,16 @@ export class DevSupervisorEngineV0 {
     return this.extensionLoader.invoke(name);
   }
 
+  async executeWithinToolBoundary(operation) {
+    if (typeof operation !== 'function') throw new TypeError('Dev tool operation must be a function.');
+    this.extensionLoader.beginToolCall();
+    try {
+      return await operation();
+    } finally {
+      this.extensionLoader.endToolCall();
+    }
+  }
+
   async run(input = {}) {
     const resumedHumanRun = this.resumableHumanRun(input);
     let run;
@@ -86,13 +96,9 @@ export class DevSupervisorEngineV0 {
         if (decision.type === 'tool') {
           input.onActivity?.({ label: decision.tool, detail: decision.purpose });
           if (decision.tool === DEV_WORKER_TOOL.CLAIM) workerClaimAttempted = true;
-          let executed;
-          this.extensionLoader.beginToolCall();
-          try {
-            executed = await this.supervisor.executeToolDecision(run, decision);
-          } finally {
-            this.extensionLoader.endToolCall();
-          }
+          const executed = await this.executeWithinToolBoundary(
+            () => this.supervisor.executeToolDecision(run, decision),
+          );
           run = executed.run;
           if (decision.tool === DEV_WORKER_TOOL.CLAIM) {
             workerClaimed = true;
@@ -175,10 +181,10 @@ export class DevSupervisorEngineV0 {
     if (!this.supervisor.workerTools?.has?.(DEV_WORKER_TOOL.RELEASE)) {
       throw new Error('Dev Worker release tool is unavailable while a Worker claim is active.');
     }
-    const result = await this.supervisor.workerTools.execute(DEV_WORKER_TOOL.RELEASE, {
+    const result = await this.executeWithinToolBoundary(() => this.supervisor.workerTools.execute(DEV_WORKER_TOOL.RELEASE, {
       runId: run.runId,
       workerId: run.workerId,
-    });
+    }));
     return this.supervisor.bindWorkerResult(run, result);
   }
 }
