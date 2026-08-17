@@ -24,7 +24,13 @@ jobs:
           git config user.name 'rhgrive3'
           git config user.email 'rhgrive@gmail.com'
           git fetch origin main hex/p3-semantic-ir-integration
-          git merge --no-ff --no-edit origin/main
+          if ! git merge --no-ff --no-edit origin/main; then
+            conflicts="$(git diff --name-only --diff-filter=U)"
+            test "$conflicts" = "userscript/hex.user.template.js"
+            git checkout --theirs userscript/hex.user.template.js
+            git add userscript/hex.user.template.js
+            git commit --no-edit
+          fi
       - name: Apply validated Phase 3 fixes
         run: |
           python - <<'PY'
