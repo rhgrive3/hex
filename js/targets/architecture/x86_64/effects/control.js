@@ -39,6 +39,7 @@ function trapEffect(ctx, family) {
 
 function resolveIndirectTarget(ctx, operand, operation) {
   if (operand?.type === 'register') {
+    if (operand.widthBits !== 64) return null;
     const target = ctx.readRegister(operand);
     return target == null ? null : Object.freeze({ target, faults:[] });
   }
