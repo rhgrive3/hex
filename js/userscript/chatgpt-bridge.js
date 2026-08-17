@@ -1,7 +1,10 @@
 import {
   ChatGPTBridgeError, ChatGPTDOMAdapter, ChatGPTConversationRouter, ChatGPTModelController,
-  ChatGPTTurnController,
+  ChatGPTTurnController, waitFor,
 } from './chatgpt-adapter.js';
+
+const LATE_BINDING_LIMIT = 32;
+const DEFAULT_LATE_BINDING_WAIT_MS = 2500;
 
 export function installChatGPTWebBridge(options = {}) {
   const existing = globalThis.__HEX_CHATGPT_BRIDGE__;
@@ -18,6 +21,8 @@ export function installChatGPTWebBridge(options = {}) {
   const router = options.router || new ChatGPTConversationRouter(adapter, routerOptions);
   const models = options.models || new ChatGPTModelController(adapter, options);
   const turns = options.turns || new ChatGPTTurnController(adapter, options);
+  const lateBindings = new Map();
+  const lateBindingWaitMs = positiveMs(options.lateBindingWaitMs, DEFAULT_LATE_BINDING_WAIT_MS);
   let active = null;
 
   const bridge = {
@@ -28,9 +33,20 @@ export function installChatGPTWebBridge(options = {}) {
       const onExternalAbort = () => controller.abort(externalSignal?.reason || 'cancelled');
       externalSignal?.addEventListener?.('abort', onExternalAbort, { once: true });
       if (externalSignal?.aborted) onExternalAbort();
+      const sessionKey = String(requestOptions.sessionKey || '').trim();
       active = { controller, sessionKey: requestOptions.sessionKey || null };
       try {
-        const routed = await router.route(requestOptions.sessionKey, { signal: controller.signal });
+        const recovered = await adoptLateBinding({
+          adapter, router, lateBindings, sessionKey, signal: controller.signal, waitMs: lateBindingWaitMs,
+        });
+        // If the exact prior Supervisor assistant turn is still present but
+        // ChatGPT has not exposed a /c/<id> yet, the current unbound surface is
+        // already proven to be this same logical session. Do not click New Chat
+        // merely because the SPA route identity is late. Continue on that surface
+        // and keep trying to bind a concrete identity after this turn settles.
+        const routed = recovered?.reuseCurrentSurface
+          ? { conversation: null, isNew: true }
+          : await router.route(requestOptions.sessionKey, { signal: controller.signal });
         const selection = await models.select({ model: requestOptions.model, reasoning: requestOptions.reasoning }, { signal: controller.signal });
         const result = await turns.run(String(prompt || ''), {
           signal: controller.signal,
@@ -38,12 +54,23 @@ export function installChatGPTWebBridge(options = {}) {
           expectedConversation: routed.conversation,
           newConversation: routed.isNew === true,
         });
-        // New Chat can expose a provisional /c/<id> and replace it while the
-        // same logical request is generating. Never persist that intermediate
-        // identity; bind only the settled conversation returned by the turn.
-        const bound = result.conversation
-          ? router.bind(requestOptions.sessionKey, result.conversation)
-          : routed.conversation;
+        // New Chat can expose its settled /c/<id> slightly after the assistant
+        // response itself has become quiet. If we return before that route
+        // identity appears, the next request for the same logical session must
+        // not be mistaken for another New Chat. First wait briefly for the late
+        // identity; if it still is not visible, retain only the previous turn id
+        // in trusted in-memory state so the next same-session request can safely
+        // recover only from that exact prior turn.
+        const bound = await settleConversationBinding({
+          adapter,
+          router,
+          lateBindings,
+          sessionKey,
+          result,
+          routedConversation: routed.conversation,
+          signal: controller.signal,
+          waitMs: lateBindingWaitMs,
+        });
         return { text: result.text, conversation: bound, selection, turnId: result.turnId };
       } finally {
         externalSignal?.removeEventListener?.('abort', onExternalAbort);
@@ -93,7 +120,80 @@ export function installChatGPTWebBridge(options = {}) {
 
 export default installChatGPTWebBridge;
 
+async function settleConversationBinding({ adapter, router, lateBindings, sessionKey, result, routedConversation, signal, waitMs }) {
+  if (!sessionKey) return result.conversation || routedConversation || null;
+  if (result.conversation) {
+    lateBindings.delete(sessionKey);
+    return router.bind(sessionKey, result.conversation) || result.conversation;
+  }
+  if (routedConversation) {
+    lateBindings.delete(sessionKey);
+    return router.bind(sessionKey, routedConversation) || routedConversation;
+  }
+
+  const turnId = String(result.turnId || '').trim();
+  if (!turnId) return null;
+  const late = await waitFor(() => matchingCurrentConversation(adapter, turnId), waitMs, signal);
+  if (late) {
+    lateBindings.delete(sessionKey);
+    return router.bind(sessionKey, late) || late;
+  }
+  rememberLateBinding(lateBindings, sessionKey, turnId);
+  return null;
+}
+
+async function adoptLateBinding({ adapter, router, lateBindings, sessionKey, signal, waitMs }) {
+  if (!sessionKey || router.binding(sessionKey)) {
+    lateBindings.delete(sessionKey);
+    return null;
+  }
+  const pending = lateBindings.get(sessionKey);
+  if (!pending?.turnId) return null;
+  const conversation = await waitFor(
+    () => matchingCurrentConversation(adapter, pending.turnId),
+    Math.min(waitMs, 1500),
+    signal,
+  );
+  if (conversation) {
+    const bound = router.bind(sessionKey, conversation) || conversation;
+    lateBindings.delete(sessionKey);
+    return Object.freeze({ conversation: bound, reuseCurrentSurface: false });
+  }
+  if (!adapter.conversation?.() && turnIdentityPresent(adapter, pending.turnId)) {
+    return Object.freeze({ conversation: null, reuseCurrentSurface: true });
+  }
+  return null;
+}
+
+function matchingCurrentConversation(adapter, turnId) {
+  const current = adapter.conversation?.() || null;
+  if (!current?.id || !current?.url) return null;
+  return turnIdentityPresent(adapter, turnId) ? current : null;
+}
+
+function turnIdentityPresent(adapter, turnId) {
+  const wanted = String(turnId || '');
+  if (!wanted) return false;
+  for (const method of ['assistantTurns', 'conversationTurns']) {
+    let turns = [];
+    try { turns = adapter?.[method]?.() || []; } catch { turns = []; }
+    if (turns.some((turn) => String(turn?.id || '') === wanted)) return true;
+  }
+  return false;
+}
+
+function rememberLateBinding(map, sessionKey, turnId) {
+  map.delete(sessionKey);
+  map.set(sessionKey, Object.freeze({ turnId: String(turnId) }));
+  while (map.size > LATE_BINDING_LIMIT) map.delete(map.keys().next().value);
+}
+
 function explicitTimeout(value) {
   const raw = Number(value);
   return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : null;
+}
+
+function positiveMs(value, fallback) {
+  const raw = Number(value);
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : fallback;
 }
