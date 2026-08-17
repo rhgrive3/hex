@@ -2,7 +2,7 @@ import { DEV_DECISION_POLICY } from '../policy/decision-policy.js';
 import { createDevAnalysisScopeRequest } from '../run/analysis-scope.js';
 import { bindDevRunIdentity, createDevRun, DEV_RUN_STATUS, transitionDevRun } from '../run/dev-run.js';
 import { validateDevSupervisorDecision } from '../protocol/hex-dev-supervisor-v1.js';
-import { createDevWorkerToolSurface } from '../workers/tool-surface.js';
+import { createDevWorkerToolSurface, DEV_WORKER_TOOL } from '../workers/tool-surface.js';
 
 let fallbackSequence = 0;
 
@@ -65,7 +65,8 @@ export class DevSupervisorV0 {
     if (!this.workerTools?.has(applied.decision.tool)) {
       throw new TypeError(`No Dev tool executor is registered for: ${applied.decision.tool}`);
     }
-    const result = await this.workerTools.execute(applied.decision.tool, applied.decision.arguments);
+    const argumentsForTool = runtimeOwnedWorkerArguments(applied.run, applied.decision);
+    const result = await this.workerTools.execute(applied.decision.tool, argumentsForTool);
     return Object.freeze({
       run: this.bindWorkerResult(applied.run, result),
       decision: applied.decision,
@@ -81,6 +82,35 @@ export class DevSupervisorV0 {
     if (result.chatgptConversationId != null) patch.chatgptConversationId = result.chatgptConversationId;
     return Object.keys(patch).length ? bindDevRunIdentity(run, patch, { now: this.now() }) : run;
   }
+}
+
+function runtimeOwnedWorkerArguments(run, decision) {
+  const supplied = decision?.arguments && typeof decision.arguments === 'object' && !Array.isArray(decision.arguments)
+    ? decision.arguments
+    : {};
+  const args = { ...supplied };
+  if (decision?.tool === DEV_WORKER_TOOL.DISCOVER) return args;
+
+  const runId = requiredRuntimeIdentity(run?.runId, 'runId');
+  const workerId = requiredRuntimeIdentity(run?.workerId, 'workerId');
+  rejectIdentityOverride(args.runId, runId, 'runId');
+  rejectIdentityOverride(args.workerId, workerId, 'workerId');
+  args.runId = runId;
+  args.workerId = workerId;
+  return args;
+}
+
+function rejectIdentityOverride(supplied, authoritative, field) {
+  if (supplied == null) return;
+  if (String(supplied) !== authoritative) {
+    throw new TypeError(`Dev Worker tool may not override runtime-owned ${field}.`);
+  }
+}
+
+function requiredRuntimeIdentity(value, field) {
+  const text = String(value ?? '').trim();
+  if (!text) throw new TypeError(`DevRun ${field} is required for Worker tool execution.`);
+  return text;
 }
 
 function defaultIdFactory(kind) {
