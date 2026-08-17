@@ -108,7 +108,13 @@ export class ChatGPTDOMAdapter {
   }
   modelPicker() { return this.first('modelPicker'); }
   reasoningControl() { return this.first('reasoningControl'); }
-  isGenerating() { return !!this.stopButton(); }
+  isGenerating() {
+    const stop = this.stopButton();
+    return !!stop
+      && stop.isConnected !== false
+      && !stop.disabled
+      && stop.getAttribute?.('aria-disabled') !== 'true';
+  }
   stop() { try { this.stopButton()?.click?.(); return true; } catch { return false; } }
 
   identity(node) {
@@ -487,16 +493,31 @@ export class ChatGPTModelController {
 }
 
 export class ChatGPTTurnController {
-  constructor(adapter, { quietMs = 1500, pollMs = 120, startTimeoutMs = 10000, conversationGraceMs = 3000, submissionMismatchGraceMs = 1500 } = {}) {
+  constructor(adapter, {
+    quietMs = 1500,
+    pollMs = 120,
+    startTimeoutMs = 10000,
+    conversationGraceMs = 3000,
+    submissionMismatchGraceMs = 1500,
+    structuredCompletionQuietMs = 1000,
+  } = {}) {
     this.adapter = adapter;
     this.quietMs = quietMs;
     this.pollMs = pollMs;
     this.startTimeoutMs = startTimeoutMs;
     this.conversationGraceMs = conversationGraceMs;
     this.submissionMismatchGraceMs = submissionMismatchGraceMs;
+    this.structuredCompletionQuietMs = structuredCompletionQuietMs;
   }
 
-  async run(prompt, { signal, timeoutMs = 110000, expectedConversation = null, newConversation = expectedConversation === null, onConversation } = {}) {
+  async run(prompt, {
+    signal,
+    timeoutMs = 110000,
+    expectedConversation = null,
+    newConversation = expectedConversation === null,
+    onConversation,
+    completionMode = null,
+  } = {}) {
     const started = Date.now();
     const normalizedPrompt = normalizeText(prompt);
     let composer = await waitFor(() => this.adapter.composer(), Math.min(timeoutMs, this.startTimeoutMs), signal);
@@ -583,6 +604,7 @@ export class ChatGPTTurnController {
     }
 
     let latest = '', latestId = null, lastChangedAt = Date.now(), sawGenerating = this.adapter.isGenerating(), observedConversation = expectedConversation;
+    let structuredPayload = null, structuredStableSince = null, structuredStopIssued = false;
     let missingConversationSince = null, bootstrapMigrated = false, completed = false;
     let stopObserving = NOOP;
     try {
@@ -655,6 +677,54 @@ export class ChatGPTTurnController {
           if (turn.node && stopObserving === NOOP) stopObserving = this.adapter.observeMutations?.(turn.node, () => { lastChangedAt = Date.now(); }) || NOOP;
           if (turn.text !== latest) { latest = turn.text; lastChangedAt = Date.now(); }
 
+          // Dev Supervisor responses have a stricter contract than ordinary Chat
+          // or Worker prose: exactly one JSON object. A real iPad Safari trace
+          // showed the complete JSON decision become visible, then ChatGPT
+          // re-lit its Stop control and appended only a renderer cursor "_" for
+          // about 112 seconds. Preserve a stable parsed object across cursor-only
+          // DOM churn, then stop only this verified Hex-owned generation.
+          const structured = completionMode === 'single-json-object'
+            ? extractSingleJsonObject(turn.text)
+            : null;
+          if (structured !== structuredPayload) {
+            structuredPayload = structured;
+            structuredStableSince = structured ? Date.now() : null;
+            structuredStopIssued = false;
+          }
+          const structuredSettledFor = structuredPayload && structuredStableSince !== null
+            ? Date.now() - structuredStableSince
+            : 0;
+          if (structuredPayload && structuredSettledFor >= this.structuredCompletionQuietMs) {
+            if (this.adapter.isGenerating()) {
+              if (!structuredStopIssued) {
+                structuredStopIssued = this.stopOwnedGeneration({
+                  requestUserTurn,
+                  normalizedPrompt,
+                  observedConversation,
+                });
+              }
+              // stopOwnedGeneration() synchronously changes the DOM in the real
+              // ChatGPT surface. Never fall through to the ordinary free-text
+              // settled path in this same poll, or cursor residue (for example
+              // the observed trailing "_") can win before the next structured
+              // poll returns the parsed object.
+              if (structuredStopIssued) {
+                await delay(this.pollMs, signal);
+                continue;
+              }
+            } else {
+              if (observedConversation && !conversation) {
+                await delay(this.pollMs, signal);
+                continue;
+              }
+              const identity = conversation || observedConversation;
+              if (identity || structuredSettledFor >= Math.max(this.structuredCompletionQuietMs, this.conversationGraceMs)) {
+                completed = true;
+                return { text: structuredPayload, conversation: identity || null, turnId: turn.id };
+              }
+            }
+          }
+
           const settledFor = Date.now() - lastChangedAt;
           const settled = latest.trim() && !this.adapter.isGenerating() && settledFor >= this.quietMs && (sawGenerating || requestUserTurn);
           if (settled) {
@@ -716,6 +786,22 @@ export class ChatGPTTurnController {
       node, id: this.adapter.identity?.(node), text: this.adapter.text?.(node) || '',
     })));
   }
+}
+
+function extractSingleJsonObject(value) {
+  const text = String(value || '').trimStart();
+  if (!text.startsWith('{')) return null;
+  const close = text.lastIndexOf('}');
+  if (close <= 0) return null;
+  const candidate = text.slice(0, close + 1);
+  const suffix = text.slice(close + 1);
+  // Only known streaming cursor/decorative glyphs are tolerated.
+  // Prose, Markdown, a second object, or any other token remains in-flight.
+  if (!/^[\s_▌▍▎▏▋▊▉█▮▯▰]*$/u.test(suffix)) return null;
+  let parsed;
+  try { parsed = JSON.parse(candidate); } catch { return null; }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  return candidate.trim();
 }
 
 export function normalizeModel(label) {

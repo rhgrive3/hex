@@ -35,6 +35,7 @@ const LONG_PROMPT = [
   '</HEX_DATA>',
 ].join('\n');
 const SHORT_PROMPT = '短い質問です';
+const DEV_SUPERVISOR_PROMPT = 'HEX DEV SUPERVISOR PROTOCOL hex-dev-supervisor-v1\n<HEX_DEV_DATA>{"history":[]}</HEX_DEV_DATA>';
 const ANSWER = '{"type":"final","answer":"まず関数一覧を確認します。","confidence":1.0,"evidenceIds":[],"hypothesisIds":[],"suggestedActions":[],"followups":[]}';
 
 assert.ok(LONG_PROMPT.length >= COLLAPSIBLE_PROMPT_THRESHOLD, 'the long prompt must trigger the collapsible renderer');
@@ -73,6 +74,14 @@ async function run(name, browserType) {
     }, (result) => {
       assert.equal(result.ok, true, `${name}: a provisional iOS composer must not strand Worker submission (${result.error?.code})`);
       assert.equal(result.value.text, ANSWER);
+    });
+
+    await scenario(context, name, 'a Dev Supervisor JSON decision survives a stuck generating indicator', {
+      prompt: DEV_SUPERVISOR_PROMPT,
+      chatgpt: { stuckGeneratingAfterComplete: true, stuckRestartAfterMs: 40 },
+    }, (result) => {
+      assert.equal(result.ok, true, `${name}: complete Dev JSON must beat a cursor-only stuck Stop indicator (${result.error?.code})`);
+      assert.equal(result.value.text, ANSWER, `${name}: cursor residue must be stripped`);
     });
 
     await scenario(context, name, 'a submitted user turn may hydrate after its wrapper appears', {

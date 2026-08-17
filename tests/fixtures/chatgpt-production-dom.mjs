@@ -231,13 +231,29 @@ window.__CHATGPT__ = (() => {
         return;
       }
       stream(assistant, options.chunks, () => {
+        if (options.stuckGeneratingAfterComplete) {
+          // Real iPad trace: complete structured JSON, then ~363 ms later
+          // a cursor-only "_" and Stop reappearance with no semantic progress.
+          showSend();
+          setTimeout(() => {
+            const body = assistantBody(assistant);
+            const markdown = body.querySelector('.markdown');
+            if (markdown) markdown.textContent += (options.stuckCursor || '_');
+            showStop();
+          }, options.stuckRestartAfterMs ?? 40);
+          return;
+        }
         showSend();
       });
     }, options.adoptAfterMs ?? 20);
   }
 
   document.getElementById('composer-form').addEventListener('click', (event) => {
-    if (event.target.closest('[data-testid="send-button"]')) onSend();
+    if (event.target.closest('[data-testid="send-button"]')) {
+      onSend();
+      return;
+    }
+    if (event.target.closest('[data-testid="stop-button"]')) showSend();
   });
 
   history_nav.addEventListener('click', (event) => {
