@@ -29,8 +29,8 @@ export const DEV_WORKER_MAY_SPAWN_WORKER = false;
 export const DEV_WORKER_NUDGE = 'If you stopped unexpectedly, continue the assigned task. If you are still working normally, continue normally. Do not start or manage any other workers or subagents.';
 
 export function buildDevWorkerInstruction(instruction) {
-  const task = String(instruction || '').trim();
-  if (!task) throw new TypeError('Worker instruction is required.');
+  const task = String(instruction ?? '');
+  if (!task.trim()) throw new TypeError('Worker instruction is required.');
   return [
     'You are a Worker reporting to the Hex Dev Supervisor.',
     'Complete the assigned task yourself.',
