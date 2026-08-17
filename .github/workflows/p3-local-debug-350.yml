@@ -1,10 +1,8 @@
 name: P3 compact projection benchmark
 on:
   push:
-    branches:
-      - hex/p3-local-debug-350
-    paths:
-      - .github/workflows/p3-local-debug-350.yml
+    branches: [hex/p3-local-debug-350]
+    paths: ['.github/workflows/p3-local-debug-350.yml']
 permissions:
   contents: read
 env:
@@ -21,8 +19,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Fetch BattleCats fixture
-        run: |
+      - run: |
           node scripts/fetch-real-fixtures.mjs battlecats
           node scripts/fetch-real-fixtures.mjs battlecats --check
       - name: Apply candidate compact-state performance fix
@@ -31,115 +28,82 @@ jobs:
           from pathlib import Path
           p = Path('js/semantics/compat/semantic-ir-v2-to-v1-finalize.js')
           s = p.read_text()
-          old = '''function valueFeedsAddressOrCall(projected, root) {
-  const queue = [root];
-  const seen = new Set();
-  while (queue.length) {
-    const value = queue.shift();
-    if (!value || seen.has(value.id)) continue;
-    seen.add(value.id);
-    for (const inst of projected.instructions) {
-      if (inst.addr?.base === value || inst.addr?.index === value || inst.loc?.base === value) return true;
-      const consumes = (inst.args || []).some((arg) => arg?.value === value);
-      if (!consumes) continue;
-      if (inst.op === V1_OP.CALL) return true;
-      if (inst.op === V1_OP.MOV && inst.dst) queue.push(inst.dst);
-    }
-  }
-  return false;
-}
-'''
-          new = '''function buildProjectedConsumerIndex(projected) {
-  const consumers = new Map();
-  const add = (value, kind, inst) => {
-    if (!value) return;
-    let list = consumers.get(value.id);
-    if (!list) {
-      list = [];
-      consumers.set(value.id, list);
-    }
-    list.push({ kind, inst });
-  };
-  for (const inst of projected.instructions) {
-    if (inst.addr?.base) add(inst.addr.base, 'address', inst);
-    if (inst.addr?.index) add(inst.addr.index, 'address', inst);
-    if (inst.loc?.base) add(inst.loc.base, 'address', inst);
-    for (const arg of inst.args || []) if (arg?.value) add(arg.value, 'arg', inst);
-  }
-  return consumers;
-}
-
-function valueFeedsAddressOrCall(root, consumers, memo) {
-  if (!root) return false;
-  if (memo.has(root.id)) return memo.get(root.id);
-  const queue = [root];
-  const seen = new Set();
-  let cursor = 0;
-  while (cursor < queue.length) {
-    const value = queue[cursor++];
-    if (!value || seen.has(value.id)) continue;
-    if (memo.get(value.id) === true) {
-      for (const id of seen) memo.set(id, true);
-      memo.set(root.id, true);
-      return true;
-    }
-    seen.add(value.id);
-    for (const use of consumers.get(value.id) || []) {
-      if (use.kind === 'address' || use.inst.op === V1_OP.CALL) {
-        for (const id of seen) memo.set(id, true);
-        memo.set(root.id, true);
-        return true;
-      }
-      if (use.inst.op === V1_OP.MOV && use.inst.dst) queue.push(use.inst.dst);
-    }
-  }
-  for (const id of seen) memo.set(id, false);
-  memo.set(root.id, false);
-  return false;
-}
-'''
-          if old not in s:
-            raise SystemExit('old valueFeedsAddressOrCall block not found')
-          s = s.replace(old, new, 1)
-          old = '''function compactProjectedState(projected) {
-  const aliases = new Map();
-  for (const inst of projected.instructions) {'''
-          new = '''function compactProjectedState(projected) {
-  const aliases = new Map();
-  const consumers = buildProjectedConsumerIndex(projected);
-  const feedMemo = new Map();
-  for (const inst of projected.instructions) {'''
-          if old not in s:
-            raise SystemExit('compactProjectedState anchor not found')
-          s = s.replace(old, new, 1)
-          old = 'if (provenExactLoadSource || valueFeedsAddressOrCall(projected, shadow)) {'
-          new = 'if (provenExactLoadSource || valueFeedsAddressOrCall(shadow, consumers, feedMemo)) {'
-          if old not in s:
-            raise SystemExit('call site not found')
-          s = s.replace(old, new, 1)
+          start = s.index('function valueFeedsAddressOrCall(projected, root) {')
+          end = s.index('\n\nfunction compactProjectedState(projected) {', start)
+          lines = [
+            'function buildProjectedConsumerIndex(projected) {',
+            '  const consumers = new Map();',
+            '  const add = (value, kind, inst) => {',
+            '    if (!value) return;',
+            '    let list = consumers.get(value.id);',
+            '    if (!list) { list = []; consumers.set(value.id, list); }',
+            '    list.push({ kind, inst });',
+            '  };',
+            '  for (const inst of projected.instructions) {',
+            "    if (inst.addr?.base) add(inst.addr.base, 'address', inst);",
+            "    if (inst.addr?.index) add(inst.addr.index, 'address', inst);",
+            "    if (inst.loc?.base) add(inst.loc.base, 'address', inst);",
+            "    for (const arg of inst.args || []) if (arg?.value) add(arg.value, 'arg', inst);",
+            '  }',
+            '  return consumers;',
+            '}',
+            '',
+            'function valueFeedsAddressOrCall(root, consumers, memo) {',
+            '  if (!root) return false;',
+            '  if (memo.has(root.id)) return memo.get(root.id);',
+            '  const queue = [root];',
+            '  const seen = new Set();',
+            '  let cursor = 0;',
+            '  while (cursor < queue.length) {',
+            '    const value = queue[cursor++];',
+            '    if (!value || seen.has(value.id)) continue;',
+            '    if (memo.get(value.id) === true) {',
+            '      for (const id of seen) memo.set(id, true);',
+            '      memo.set(root.id, true);',
+            '      return true;',
+            '    }',
+            '    seen.add(value.id);',
+            '    for (const use of consumers.get(value.id) || []) {',
+            "      if (use.kind === 'address' || use.inst.op === V1_OP.CALL) {",
+            '        for (const id of seen) memo.set(id, true);',
+            '        memo.set(root.id, true);',
+            '        return true;',
+            '      }',
+            '      if (use.inst.op === V1_OP.MOV && use.inst.dst) queue.push(use.inst.dst);',
+            '    }',
+            '  }',
+            '  for (const id of seen) memo.set(id, false);',
+            '  memo.set(root.id, false);',
+            '  return false;',
+            '}',
+          ]
+          s = s[:start] + '\n'.join(lines) + s[end:]
+          anchor = 'function compactProjectedState(projected) {\n  const aliases = new Map();'
+          replacement = 'function compactProjectedState(projected) {\n  const aliases = new Map();\n  const consumers = buildProjectedConsumerIndex(projected);\n  const feedMemo = new Map();'
+          if anchor not in s: raise SystemExit('compact anchor missing')
+          s = s.replace(anchor, replacement, 1)
+          call = 'valueFeedsAddressOrCall(projected, shadow)'
+          if call not in s: raise SystemExit('feed call missing')
+          s = s.replace(call, 'valueFeedsAddressOrCall(shadow, consumers, feedMemo)', 1)
           p.write_text(s)
           PY
-      - name: Run exact pathological function
+      - name: Create exact-function probe
         run: |
-          cat > tests/.p3-probe.mjs <<'EOF'
+          cat > tests/.p3-stage-probe.mjs <<'EOF'
           import { openBinary } from './harness.mjs';
           import { decompile } from '../js/decompile.js';
           import { setSemanticMigrationMode } from '../js/ir.js';
           setSemanticMigrationMode('semantic-v2-compat');
-          const world = await openBinary('tests/.real-fixtures/battlecats');
-          const start = 0x10033fd24n;
-          const end = 0x100340074n;
-          const model = await world.analyze(start, end);
+          const w = await openBinary('tests/.real-fixtures/battlecats');
+          const a = 0x10033fd24n, end = 0x100340074n;
+          const model = await w.analyze(a, end);
           const t = Date.now();
-          const result = decompile(model, {
-            addr: start,
-            rowOfAddress: (value) => world.rowOf(value),
-            addrOfRow: (row) => world.region.vmAddr + BigInt(row) * 4n,
-            symbolFor: (value) => world.symbols.nameAt(value),
-          });
-          console.error(`[P3BENCH exact] ms=${Date.now() - t} lines=${result?.lines?.length ?? -1} semantic=${!!result?.semantic}`);
+          const res = decompile(model, { addr:a, rowOfAddress:(x)=>w.rowOf(x), addrOfRow:(r)=>w.region.vmAddr+BigInt(r)*4n, symbolFor:(x)=>w.symbols.nameAt(x) });
+          console.error(`[P3BENCH exact] ms=${Date.now()-t} lines=${res?.lines?.length ?? -1} semantic=${!!res?.semantic}`);
           EOF
-          timeout --signal=TERM --kill-after=5s 20s node --max-old-space-size=6000 tests/.p3-probe.mjs
-      - name: Run focused semantic tests
+      - name: Run exact function
         run: |
-          timeout --signal=TERM --kill-after=5s 60s node tests/ir.mjs
+          timeout --signal=TERM --kill-after=5s 20s node --max-old-space-size=6000 tests/.p3-stage-probe.mjs
+      - name: Run focused IR regression
+        run: |
+          node tests/ir.mjs
