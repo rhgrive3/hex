@@ -1,4 +1,4 @@
-name: P3 exact legacy unary TsumTsum accuracy
+name: P3 combined TsumTsum pseudoc validation
 on:
   push:
     branches: [hex/p3-local-debug-350]
@@ -28,32 +28,74 @@ jobs:
           node scripts/fetch-real-fixtures.mjs TsumTsum --check
           gh run download 31988122265 -n cross-binary-oracle-TsumTsum -D tests
           test -s tests/oracle.TsumTsum.ci.json.gz
-      - name: Apply exact legacy unary renderer candidate
+      - name: Apply combined production candidates
         run: |
           python - <<'PY'
           from pathlib import Path
           p=Path('js/decompile-legacy.js'); s=p.read_text()
           anchor="  if (base === 'mvn' && dst) {\n"
           insert="  if (base === 'rbit' && dst && insn.ops[1]) {\n    return mk(varOf(dst, ctx) + ' = reverse_bits(' + operandText(insn.ops[1], ctx, insn) + ');', { dst, pure: true });\n  }\n  if (base === 'clz' && dst && insn.ops[1]) {\n    return mk(varOf(dst, ctx) + ' = count_leading_zeros(' + operandText(insn.ops[1], ctx, insn) + ');', { dst, pure: true });\n  }\n"
-          assert anchor in s
-          p.write_text(s.replace(anchor,insert+anchor,1))
+          assert anchor in s; p.write_text(s.replace(anchor,insert+anchor,1))
+
+          p=Path('js/core/identity/origin.js'); s=p.read_text()
+          old="function uniqueSorted(values) {\n  return Array.from(new Map(values.map((value) => [stableStringify(value), value])).values())\n    .sort((a, b) => stableStringify(a).localeCompare(stableStringify(b)));\n}"
+          new="function uniqueSorted(values) {\n  const byKey = new Map(values.map((value) => [stableStringify(value), value]));\n  return [...byKey.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([, value]) => value);\n}"
+          assert old in s; p.write_text(s.replace(old,new,1))
+
+          p=Path('js/semantics/ssa/build.js'); s=p.read_text()
+          start=s.index('function resolvePhiOrigins('); end=s.index('\nfunction finalizePhi(',start)
+          lines=[
+            "function resolvePhiOrigins(phiDefinitions, definitionByValue, irBlocks, tick) {",
+            "  const sorted = phiDefinitions.slice().sort((a, b) => a.valueId.localeCompare(b.valueId));",
+            "  const phiIds = new Set(sorted.map((phi) => phi.valueId));",
+            "  const origins = [];",
+            "  const originByKey = new Map();",
+            "  const roots = new Map();",
+            "  const dependents = new Map(sorted.map((phi) => [phi.valueId, new Set()]));",
+            "  const addOrigin = (key, origin) => { if (originByKey.has(key)) return originByKey.get(key); const index = origins.length; origins.push(origin); originByKey.set(key, index); return index; };",
+            "  for (const phi of sorted) {",
+            "    tick();",
+            "    const set = new Set([addOrigin('base:' + phi.valueId, safeOrigin(irBlocks.get(phi.blockId)?.origin, createOriginSet({ parentEntityIds: [phi.blockId] })))]);",
+            "    const incoming = phi.incoming.slice().sort((a, b) => a.predecessorBlockId.localeCompare(b.predecessorBlockId) || a.valueId.localeCompare(b.valueId));",
+            "    for (const item of incoming) {",
+            "      tick(); const definition = definitionByValue.get(item.valueId);",
+            "      if (!definition) fail('semantic-ssa-dangling-phi-value-id');",
+            "      if (definition.kind === 'phi') { if (!phiIds.has(definition.valueId)) fail('semantic-ssa-dangling-phi-value-id'); dependents.get(definition.valueId).add(phi.valueId); }",
+            "      else set.add(addOrigin('definition:' + definition.valueId, definition.origin));",
+            "    }",
+            "    roots.set(phi.valueId, set);",
+            "  }",
+            "  const queue = sorted.map((phi) => phi.valueId); const queued = new Set(queue);",
+            "  for (let cursor = 0; cursor < queue.length; cursor++) {",
+            "    tick(); const sourceId = queue[cursor]; queued.delete(sourceId); const source = roots.get(sourceId);",
+            "    for (const targetId of [...dependents.get(sourceId)].sort()) {",
+            "      tick(); const target = roots.get(targetId); const before = target.size; for (const index of source) target.add(index);",
+            "      if (target.size !== before && !queued.has(targetId)) { queue.push(targetId); queued.add(targetId); }",
+            "    }",
+            "  }",
+            "  const resolved = new Map();",
+            "  for (const phi of sorted) { tick(); resolved.set(phi.valueId, safeOrigin(...[...roots.get(phi.valueId)].sort((a, b) => a - b).map((index) => origins[index]))); }",
+            "  return resolved;",
+            "}",
+          ]
+          p.write_text(s[:start]+'\n'.join(lines)+s[end:])
           PY
       - name: Verify exact regression function
         run: |
-          cat > tests/.p3-exact-unary.mjs <<'EOF'
+          cat > tests/.p3-combined-exact.mjs <<'EOF'
           import { openBinary } from './harness.mjs';
           import { decompile } from '../js/decompile.js';
           const w=await openBinary('tests/.real-fixtures/TsumTsum');
           const a=0x1011af0d4n,end=0x1011af380n;
           const m=await w.analyze(a,end);
+          const t=Date.now();
           const r=decompile(m,{addr:a,rowOfAddress:x=>x==null?null:Number((x-w.region.vmAddr)/4n),addrOfRow:n=>w.region.vmAddr+BigInt(n)*4n,symbolFor:x=>w.symbols.nameAt(x)});
           const asm=(r.lines||[]).filter(l=>/__asm\(.*(?:rbit|clz)/.test(l.text||''));
           const rendered=(r.lines||[]).filter(l=>/(?:reverse_bits|count_leading_zeros)\(/.test(l.text||''));
-          console.error(`[P3EXACT] semantic=${r.semantic} legacy=${r.legacyFallback||false} unaryAsm=${asm.length} rendered=${rendered.length}`);
-          for(const l of rendered) console.error(`[P3EXACT-LINE] ${l.text}`);
+          console.error(`[P3COMBINED exact] ms=${Date.now()-t} unaryAsm=${asm.length} rendered=${rendered.length}`);
           if(asm.length||rendered.length<8) process.exit(2);
           EOF
-          node --max-old-space-size=6000 tests/.p3-exact-unary.mjs
+          node --max-old-space-size=6000 tests/.p3-combined-exact.mjs
       - name: Run canonical pseudoc sample set
         run: |
-          /usr/bin/time -f 'P3_EXACT_UNARY_ELAPSED=%e' node --max-old-space-size=6000 tests/accuracy.mjs --target=tests/.real-fixtures/TsumTsum --oracle=tests/oracle.TsumTsum.ci.json.gz --only=pseudoc --json
+          /usr/bin/time -f 'P3_COMBINED_ELAPSED=%e' node --max-old-space-size=6000 tests/accuracy.mjs --target=tests/.real-fixtures/TsumTsum --oracle=tests/oracle.TsumTsum.ci.json.gz --only=pseudoc --json
