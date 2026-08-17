@@ -14,9 +14,48 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  invariant-gates:
+  plan:
+    name: check-plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build exact npm-check shard matrix
+        id: plan
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          const parts = String(pkg.scripts?.check || '')
+            .split(/\s+&&\s+/)
+            .map((command) => command.trim())
+            .filter(Boolean);
+          if (parts.length < 2) throw new Error('npm check must contain at least two independent top-level commands');
+
+          const include = parts.map((command, index) => {
+            const match = command.match(/^npm run ([A-Za-z0-9:_-]+)$/);
+            const name = command === 'npm test' ? 'test' : (match?.[1] || `shard-${index + 1}`);
+            return { name, command };
+          });
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify({ include })}\n`);
+          NODE
+
+  check-shards:
+    name: check-${{ matrix.name }}
+    needs: plan
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 7
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -30,5 +69,23 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run repository check with invariant contracts
-        run: npm run check
+      - name: Run exact check shard
+        run: ${{ matrix.command }}
+
+  invariant-gates:
+    name: invariant-gates
+    if: always()
+    needs: [plan, check-shards]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require complete repository check
+        env:
+          PLAN_RESULT: ${{ needs.plan.result }}
+          SHARD_RESULT: ${{ needs.check-shards.result }}
+        shell: bash
+        run: |
+          if [[ "$PLAN_RESULT" != "success" || "$SHARD_RESULT" != "success" ]]; then
+            echo "::error::Repository check failed (plan=$PLAN_RESULT, shards=$SHARD_RESULT)."
+            exit 1
+          fi

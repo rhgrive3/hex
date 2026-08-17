@@ -12,6 +12,10 @@ on:
       - '.github/workflows/sandbox-security.yml'
   workflow_dispatch:
 
+concurrency:
+  group: sandbox-security-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   sandbox-security:
     runs-on: ubuntu-latest
@@ -21,6 +25,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
       - name: Install Playwright Chromium
         run: |
           npm install --no-save playwright

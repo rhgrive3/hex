@@ -24,8 +24,13 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: runtime-debugger-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  runtime-debugger:
+  runtime-specific:
+    name: runtime-specific
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -34,18 +39,43 @@ jobs:
         with:
           node-version: '22'
           cache: npm
-      - name: Install dependencies
-        run: npm ci
-      - name: Full repository checks
+      - run: npm ci
+      - name: Runtime separation and evidence regressions
+        run: npm run runtime:test
+
+  non-pr-full-check:
+    name: runtime-non-pr-full-check
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Preserve standalone full-check behavior
+        run: npm run check
+
+  runtime-debugger:
+    name: runtime-debugger
+    if: always()
+    needs: [runtime-specific, non-pr-full-check]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require runtime-specific and standalone coverage
+        env:
+          RUNTIME_RESULT: ${{ needs.runtime-specific.result }}
+          FULL_RESULT: ${{ needs.non-pr-full-check.result }}
         shell: bash
         run: |
-          set -o pipefail
-          if npm run check > /tmp/hex-check.log 2>&1; then
-            cat /tmp/hex-check.log
-          else
-            tail -n 80 /tmp/hex-check.log
-            while IFS= read -r line; do
-              printf '::error::%s\n' "${line//'%'/'%25'}"
-            done < <(tail -n 8 /tmp/hex-check.log)
+          if [[ "$RUNTIME_RESULT" != "success" ]]; then
+            echo "::error::Runtime-specific regression failed ($RUNTIME_RESULT)."
+            exit 1
+          fi
+          if [[ "$FULL_RESULT" != "success" && "$FULL_RESULT" != "skipped" ]]; then
+            echo "::error::Standalone full check failed ($FULL_RESULT)."
             exit 1
           fi
