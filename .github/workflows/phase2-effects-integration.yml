@@ -171,3 +171,5 @@ jobs:
       - name: Require committed loader synchronization
         if: steps.phase5-component.outputs.ephemeral != 'true'
         run: git diff --exit-code -- userscript/hex.user.template.js
+
+# p5 integration userscript synchronization probe
