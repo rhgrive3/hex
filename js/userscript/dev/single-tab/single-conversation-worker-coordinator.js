@@ -45,19 +45,14 @@ export class SingleConversationWorkerCoordinator {
     if (!supervisorConversation?.id) {
       throw workerError(DEV_WORKER_FAILURE.CONVERSATION_MISMATCH, 'Supervisor ChatGPT conversation identity is unavailable.');
     }
-    const supervisorAnchors = this.controller.currentUserAnchors?.() || [];
     this.claimed = {
       runId: normalizedRun,
       workerId: normalizedWorker,
       supervisorConversation,
-      // iOS ChatGPT may virtualize older turns when returning to a conversation.
-      // The most recent Supervisor user turn is enough to prove that the target
-      // conversation body, not only its /c/<id> route, has rehydrated. Requiring
-      // every historical user turn creates false failures on partially hydrated
-      // but already-usable conversations.
-      supervisorAnchor: supervisorAnchors.length ? Object.freeze({ ...supervisorAnchors[supervisorAnchors.length - 1] }) : null,
+      supervisorAnchor: null,
       workerConversation: null,
     };
+    this.refreshSupervisorAnchor();
     this.lastResult = null;
     return this.withIdentity({ state: DEV_WORKER_STATE.STARTING, claimed: true });
   }
@@ -66,11 +61,6 @@ export class SingleConversationWorkerCoordinator {
     const claim = this.assertClaim(args);
     try {
       const result = await this.controller.createChat({ runId: claim.runId, workerId: claim.workerId });
-      // worker.create_chat is a Supervisor tool call. It must finish with the
-      // single Safari tab back on the Supervisor surface; otherwise the very
-      // next Supervisor decision races ChatGPT's New Chat SPA hydration. The
-      // real Worker controller prepares the logical Worker here and performs
-      // the physical New Chat transition atomically with worker.send.
       await this.restoreSupervisor();
       return this.withIdentity(result);
     } catch (error) {
@@ -81,6 +71,7 @@ export class SingleConversationWorkerCoordinator {
 
   async send(args = {}) {
     const claim = this.assertClaim(args);
+    this.refreshSupervisorAnchor();
     return this.runWorkerTurn(() => this.controller.send(required(args.instruction, 'instruction'), {
       runId: claim.runId,
       workerId: claim.workerId,
@@ -94,6 +85,7 @@ export class SingleConversationWorkerCoordinator {
 
   async followup(args = {}) {
     const claim = this.assertClaim(args);
+    this.refreshSupervisorAnchor();
     await this.ensureWorkerConversation();
     const text = args.text ?? args.instruction;
     return this.runWorkerTurn(() => this.controller.followup(required(text, 'text'), {
@@ -104,6 +96,7 @@ export class SingleConversationWorkerCoordinator {
 
   async nudge(args = {}) {
     const claim = this.assertClaim(args);
+    this.refreshSupervisorAnchor();
     if (!this.controller.isActive()) await this.ensureWorkerConversation();
     return this.runWorkerTurn(() => this.controller.nudge({ runId: claim.runId, workerId: claim.workerId }), {
       allowImmediate: true,
@@ -186,9 +179,6 @@ export class SingleConversationWorkerCoordinator {
     let resolve;
     let reject;
     const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
-    // A synchronous submission failure can reject this completion before the
-    // caller reaches `await pending.promise`. Attach a handler immediately so
-    // recovery never creates an unhandled rejection in WebKit.
     promise.catch(() => {});
     this.pendingTerminal = { promise, resolve, reject };
     return this.pendingTerminal;
@@ -260,6 +250,17 @@ export class SingleConversationWorkerCoordinator {
     while (this.events.length > EVENT_QUEUE_LIMIT) this.events.shift();
   }
 
+  refreshSupervisorAnchor() {
+    const claim = this.claimed;
+    if (!claim?.supervisorConversation?.id) return null;
+    const current = this.controller.currentConversation();
+    if (current?.id !== claim.supervisorConversation.id) return claim.supervisorAnchor;
+    const anchors = this.controller.currentUserAnchors?.() || [];
+    const latest = anchors.length ? anchors[anchors.length - 1] : null;
+    if (latest) claim.supervisorAnchor = Object.freeze({ ...latest });
+    return claim.supervisorAnchor;
+  }
+
   async ensureWorkerConversation() {
     const claim = this.claimed;
     const conversation = claim?.workerConversation || this.controller.workerConversation();
@@ -277,10 +278,6 @@ export class SingleConversationWorkerCoordinator {
     if (!claim?.supervisorConversation?.id) return null;
     const current = this.controller.currentConversation();
     if (current?.id === claim.supervisorConversation.id) return current;
-    // Keep navigation authority inside WorkerChatController. Worker return uses
-    // its default strict remembered-history policy; Supervisor return explicitly
-    // uses only the latest pre-delegation continuity anchor because iPad ChatGPT
-    // may leave older history virtualized after the conversation is already live.
     return this.controller.navigateToConversation(claim.supervisorConversation, {
       sessionKey: `dev-supervisor-return:${claim.runId}`,
       continuityAnchor: claim.supervisorAnchor,
