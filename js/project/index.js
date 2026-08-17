@@ -1,3 +1,5 @@
+import { artifactIndexFromProject } from './artifact-index.js';
+
 export const HEX_PROJECT_VERSION = 1;
 export const HEX_PROJECT_MIME = 'application/vnd.hex.project+json';
 export const MAX_PROJECT_BYTES = 16 * 1024 * 1024;
@@ -22,10 +24,13 @@ function encodedByteLength(text) { return new TextEncoder().encode(text).byteLen
 function assertProjectSize(bytes) {
   if (bytes > MAX_PROJECT_BYTES) throw new ProjectFormatError('project exceeds the 16 MiB safety limit', 'HEX_PROJECT_TOO_LARGE');
 }
+function sanitizeCacheReferences(project) {
+  return artifactIndexFromProject(project).toProjectReferences();
+}
 
 export function createHexProject(input = {}) {
   const now = new Date().toISOString();
-  return {
+  const project = {
     format: 'hexproj', version: HEX_PROJECT_VERSION,
     createdAt: input.createdAt || now, updatedAt: now,
     binary: { hash: input.binaryHash || input.binary?.hash || null, metadata: input.binaryMetadata || input.binary?.metadata || null, embedded: false },
@@ -43,6 +48,8 @@ export function createHexProject(input = {}) {
     analysis: { settings: input.analysisSettings || input.analysis?.settings || {}, cacheReferences: list(input.cacheReferences ?? input.analysis?.cacheReferences, 'analysis.cacheReferences') },
     navigation: normalizeNavigation(input.navigation || {}),
   };
+  project.analysis.cacheReferences = sanitizeCacheReferences(project);
+  return project;
 }
 
 export function normalizeNavigation(value = {}) {
@@ -119,6 +126,7 @@ export function validateHexProject(project) {
   project.findings.investigationSessions = list(project.findings.investigationSessions, 'findings.investigationSessions');
   project.analysis.settings = project.analysis.settings && typeof project.analysis.settings === 'object' && !Array.isArray(project.analysis.settings) ? project.analysis.settings : {};
   project.analysis.cacheReferences = list(project.analysis.cacheReferences, 'analysis.cacheReferences');
+  project.analysis.cacheReferences = sanitizeCacheReferences(project);
   project.navigation = normalizeNavigation(project.navigation || {});
   project.createdAt ||= new Date(0).toISOString();
   project.updatedAt ||= project.createdAt;
