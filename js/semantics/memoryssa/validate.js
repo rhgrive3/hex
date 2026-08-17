@@ -67,6 +67,7 @@ export function validateMemorySsa(memorySsa, options = {}) {
 
   if (memorySsa.accessMetadata != null) {
     const metadataIds = new Set();
+    const metadataEntityIdsByKind = new Map();
     for (const item of memorySsa.accessMetadata) {
       assertNotAborted(options);
       if (!item || typeof item !== 'object') fail('memory-ssa-validate-invalid-access-metadata');
@@ -78,18 +79,27 @@ export function validateMemorySsa(memorySsa, options = {}) {
       if (!regionIds.has(String(item.regionId))) fail('memory-ssa-validate-access-metadata-region-mismatch');
       if (item.entityKind === 'use' && !useIds.has(id)) fail('memory-ssa-validate-access-metadata-kind-mismatch');
       if (item.entityKind === 'definition' && !definitionIds.has(id)) fail('memory-ssa-validate-access-metadata-kind-mismatch');
+
+      // Keep the original strict-identity membership semantics while building
+      // the coverage index during the validation pass. The previous validator
+      // rescanned the entire metadata array with Array.some() for every use and
+      // definition, turning large functions into an O(N²) validation hot path.
+      let idsForKind = metadataEntityIdsByKind.get(item.entityKind);
+      if (!idsForKind) {
+        idsForKind = new Set();
+        metadataEntityIdsByKind.set(item.entityKind, idsForKind);
+      }
+      idsForKind.add(item.memorySsaEntityId);
     }
     if (built) {
+      const metadataUseIds = metadataEntityIdsByKind.get('use') ?? new Set();
+      const metadataDefinitionIds = metadataEntityIdsByKind.get('definition') ?? new Set();
       for (const use of contract.uses) {
-        if (!memorySsa.accessMetadata.some((item) => item.memorySsaEntityId === use.id && item.entityKind === 'use')) {
-          fail('memory-ssa-validate-use-access-metadata-missing');
-        }
+        if (!metadataUseIds.has(use.id)) fail('memory-ssa-validate-use-access-metadata-missing');
       }
       for (const definition of contract.definitions) {
         if (definition.kind === 'entry' || definition.kind === 'memory-phi') continue;
-        if (!memorySsa.accessMetadata.some((item) => item.memorySsaEntityId === definition.id && item.entityKind === 'definition')) {
-          fail('memory-ssa-validate-definition-access-metadata-missing');
-        }
+        if (!metadataDefinitionIds.has(definition.id)) fail('memory-ssa-validate-definition-access-metadata-missing');
       }
     }
   }

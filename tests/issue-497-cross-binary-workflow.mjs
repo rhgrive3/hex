@@ -24,8 +24,8 @@ for (const fixture of ['battlecats', 'YWP', 'TsumTsum']) {
   assert.ok(workflow.includes(`fixture: ${fixture}`), `${fixture} must participate in cross-binary accuracy`);
 }
 assert.match(workflow, /max-parallel:\s*3/, 'the three independent oracles must run concurrently');
-assert.match(workflow, /max-parallel:\s*12/, 'measurement must leave free-tier runner slots for other workflows');
-assert.doesNotMatch(workflow, /max-parallel:\s*90/, 'the workflow must not recreate the 90-job fanout');
+assert.match(workflow, /max-parallel:\s*9/, 'measurement must stay well below the Free account concurrency limit');
+assert.doesNotMatch(workflow, /max-parallel:\s*(?:20|90)/, 'measurement must not recreate excessive GitHub-job fanout');
 assert.match(workflow, /fail-fast:\s*false/g, 'parallel jobs must keep collecting diagnostics after one failure');
 
 assert.match(requirements, /^lief==1\.0\.0$/m, 'LIEF oracle version must remain pinned');
@@ -64,22 +64,42 @@ assert.match(generate, /python tests\/oracle\.py/);
 assert.match(generate, /python tests\/oracle-cfg-normalize\.py/);
 
 const measure = workflow.slice(workflow.indexOf('\n  measure:'), workflow.indexOf('\n  accuracy:'));
-for (const partition of ['core', 'pinpoint', 'pinpoint-partial', 'pseudoc-1', 'pseudoc-2']) {
-  assert.ok(measure.includes(`name: ${partition}`), `${partition} accuracy partition must exist`);
+for (const partition of ['core', 'pinpoint', 'pseudoc']) {
+  assert.ok(measure.includes(`name: ${partition}\n`), `${partition} accuracy partition must exist`);
 }
-assert.doesNotMatch(measure, /name: pseudoc-3\n/, 'pseudoc must not consume extra GitHub job slots');
-assert.equal((measure.match(/shardCount:\s*2/g) || []).length, 2,
-  'only two outer pseudoc jobs per target should consume GitHub runner slots');
+assert.doesNotMatch(measure, /name: pinpoint-partial\n/,
+  'pinpoint-partial must share the pinpoint runner instead of consuming another GitHub job');
+assert.doesNotMatch(measure, /name: pseudoc-[12]\n/,
+  'pseudoc must use one GitHub job per target and runner-local persistent workers');
 assert.match(workflow, /LOCAL_PSEUDOC_WORKERS:\s*4/,
-  'each pseudoc job must use the four CPUs inside its runner');
-assert.match(workflow, /LOCAL_PSEUDOC_SHARDS:\s*8/,
-  'two outer jobs times four local workers must cover eight exact local shards');
+  'pseudoc must use the four CPUs inside its runner');
 assert.match(workflow, /LOCAL_CORE_WORKERS:\s*4/,
-  'the monolithic core partition must use runner-local CPU parallelism');
-assert.match(measure, /accuracy-pseudoc-shard-oracle\.mjs/,
-  'pseudoc shards must derive from the exact serial sample set');
+  'the core partition must use runner-local CPU parallelism');
+assert.match(measure, /run_parallel pinpoint pinpoint pinpoint-partial/,
+  'pinpoint and pinpoint-partial must retain both exact feature runs inside one runner');
+assert.match(measure, /node tests\/accuracy-pseudoc-parallel\.mjs/,
+  'pseudoc must use persistent dynamic runner-local workers');
+assert.match(measure, /--workers="\$LOCAL_PSEUDOC_WORKERS"/,
+  'the persistent pseudoc pool size must remain explicitly bounded');
 assert.match(measure, /Restore exact accuracy result cache[\s\S]*actions\/cache\/restore@v4/,
   'deterministic partition results should reuse an exact input-keyed cache');
+assert.match(measure, /accuracy-result-v6-/,
+  'the validated atomic result-cache generation must not restore older potentially poisoned cache entries');
+assert.match(measure, /name:\s*Validate restored accuracy result[\s\S]*accuracy-result-validate\.mjs/,
+  'cache hits must be structurally validated before reuse');
+assert.match(measure, /hashFiles\('js\/\*\*', 'tests\/accuracy\*\.mjs'/,
+  'accuracy cache keys must include all accuracy runner/helper sources');
+assert.match(measure, /temporary="\$\{output\}\.tmp"/,
+  'measurement must build into a temporary file before atomic publication');
+assert.match(measure, /accuracy-result-validate\.mjs "\$temporary" --expect=/,
+  'new measurement output must be validated before publication');
+assert.match(measure, /mv "\$temporary" "\$output"/,
+  'validated measurement output must be atomically published');
+const partitionUpload = measure.slice(measure.indexOf('name: Upload partition result'));
+assert.match(partitionUpload, /if:\s*success\(\)/,
+  'failed measurements must never upload partial accuracy artifacts');
+assert.match(partitionUpload, /if-no-files-found:\s*error/,
+  'a missing accuracy artifact must fail closed');
 assert.match(workflow, /name:\s*Publish oracle for this run[\s\S]*actions\/upload-artifact@v4/,
   'oracle jobs must publish their exact oracle as an intra-run artifact');
 assert.match(measure, /name:\s*Download required oracle[\s\S]*actions\/download-artifact@v4/,
@@ -88,10 +108,14 @@ assert.match(measure, /name:\s*cross-binary-oracle-\$\{\{ matrix\.target\.name \
   'each measurement target must download only its matching oracle');
 
 const aggregate = workflow.slice(workflow.indexOf('\n  accuracy:'));
-assert.match(aggregate, /accuracy-pseudoc-shard-merge\.mjs accuracy-part-BattleCats-pseudoc\.json/,
-  'pseudoc outer shards must be exactly reassembled before normal accuracy merging');
-assert.match(aggregate, /accuracy-part-BattleCats-pseudoc-\*\.json/,
-  'aggregate must consume every outer pseudoc shard');
+assert.doesNotMatch(aggregate, /Reassemble exact pseudoc serial samples/,
+  'persistent pseudoc workers already return the exact complete target result');
+const prerequisiteIndex = aggregate.indexOf('name: Require all prerequisite jobs');
+const downloadIndex = aggregate.indexOf('name: Download accuracy partitions');
+assert.ok(prerequisiteIndex >= 0 && prerequisiteIndex < downloadIndex,
+  'the fail-closed prerequisite gate must run before downloading or merging artifacts');
+assert.match(aggregate, /name:\s*Validate downloaded accuracy partitions[\s\S]*accuracy-result-validate\.mjs/,
+  'the final merge must validate every downloaded partition first');
 assert.match(aggregate, /node tests\/accuracy-merge\.mjs accuracy-BattleCats\.json/);
 assert.match(aggregate, /node tests\/accuracy-merge\.mjs accuracy-YWP\.json/);
 assert.match(aggregate, /node tests\/accuracy-merge\.mjs accuracy-TsumTsum\.json/);
