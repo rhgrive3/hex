@@ -70,11 +70,11 @@ for (const partition of ['core', 'pinpoint', 'pinpoint-partial', 'pseudoc-1', 'p
 assert.doesNotMatch(measure, /name: pseudoc-3\n/, 'pseudoc must not consume extra GitHub job slots');
 assert.equal((measure.match(/shardCount:\s*2/g) || []).length, 2,
   'only two outer pseudoc jobs per target should consume GitHub runner slots');
-assert.match(measure, /LOCAL_PSEUDOC_WORKERS:\s*4/,
+assert.match(workflow, /LOCAL_PSEUDOC_WORKERS:\s*4/,
   'each pseudoc job must use the four CPUs inside its runner');
-assert.match(measure, /LOCAL_PSEUDOC_SHARDS:\s*8/,
+assert.match(workflow, /LOCAL_PSEUDOC_SHARDS:\s*8/,
   'two outer jobs times four local workers must cover eight exact local shards');
-assert.match(measure, /LOCAL_CORE_WORKERS:\s*4/,
+assert.match(workflow, /LOCAL_CORE_WORKERS:\s*4/,
   'the monolithic core partition must use runner-local CPU parallelism');
 assert.match(measure, /accuracy-pseudoc-shard-oracle\.mjs/,
   'pseudoc shards must derive from the exact serial sample set');
