@@ -1,10 +1,17 @@
 <!-- graft:start -->
 ## Graft — repo context graph
 
+### Environment gate — GitHub Codespaces only
+
+The Graft workflow in this section applies **only** when the task is running inside GitHub Codespaces.
+
+- **Inside GitHub Codespaces:** use Graft first for repository context as described below. If Graft is unexpectedly unavailable, continue with the normal repository tools available in that Codespace rather than blocking the task.
+- **Outside GitHub Codespaces:** do **not** install, invoke, emulate, or require Graft. Do not treat Graft's absence as a blocker. Use the repository inspection/search tools available in the current environment instead.
+
 This repo is indexed in `graft/`: small linked markdown nodes that explain each
 system and carry exact file:line spans, kept in sync with the code through git.
 
-For ANY task here — understanding how something works, finding where code lives,
+When running inside GitHub Codespaces, for ANY task here — understanding how something works, finding where code lives,
 or scoping a change — get context from the graph before grepping or opening
 source files. Re-ask freely (it's cheap) and reuse literal identifiers you
 already have (symbol, error string, file name) as the query. New to this repo?
