@@ -57,7 +57,7 @@ export const CHATGPT_STUB = `
 window.__CHATGPT__ = (() => {
   const thread = document.getElementById('thread');
   const history_nav = document.getElementById('history');
-  const composer = document.getElementById('prompt-textarea');
+  let composer = document.getElementById('prompt-textarea');
   const actions = document.getElementById('composer-actions');
   let turnIndex = 0;
   let options = {};
@@ -132,8 +132,9 @@ window.__CHATGPT__ = (() => {
   function showStop() {
     actions.innerHTML = '<button type="button" data-testid="stop-button" aria-label="回答を停止">停止</button>';
   }
-  function showSend() {
-    actions.innerHTML = '<button type="button" data-testid="send-button" aria-label="プロンプトを送信">送信</button>';
+  function showSend(disabled = false) {
+    actions.innerHTML = '<button type="button" data-testid="send-button" aria-label="プロンプトを送信"'
+      + (disabled ? ' disabled aria-disabled="true"' : '') + '>送信</button>';
   }
 
   function assistantBody(section) {
@@ -248,6 +249,21 @@ window.__CHATGPT__ = (() => {
     configure(next) {
       options = next;
       if (options.seedPageErrorText) flashPageError(options.seedPageErrorText, 0);
+      if (options.composerHydrationDelayMs) {
+        // iPad Safari capture: New Chat can expose a provisional editor before
+        // React/ProseMirror replaces it. Input on that stale editor never enables
+        // the send control for the hydrated editor.
+        showSend(true);
+        const staleComposer = composer;
+        setTimeout(() => {
+          if (!staleComposer.isConnected) return;
+          const hydratedComposer = staleComposer.cloneNode(false);
+          hydratedComposer.textContent = '';
+          staleComposer.replaceWith(hydratedComposer);
+          composer = hydratedComposer;
+          hydratedComposer.addEventListener('input', () => showSend(false));
+        }, options.composerHydrationDelayMs);
+      }
     },
     /* Seeded turns belong to an already-open conversation: this is the shape
        that lets a failure from an earlier turn sit in the DOM while a new,
