@@ -83,8 +83,23 @@ assert.match(measure, /--workers="\$LOCAL_PSEUDOC_WORKERS"/,
   'the persistent pseudoc pool size must remain explicitly bounded');
 assert.match(measure, /Restore exact accuracy result cache[\s\S]*actions\/cache\/restore@v4/,
   'deterministic partition results should reuse an exact input-keyed cache');
+assert.match(measure, /accuracy-result-v6-/,
+  'the validated atomic result-cache generation must not restore older potentially poisoned cache entries');
+assert.match(measure, /name:\s*Validate restored accuracy result[\s\S]*accuracy-result-validate\.mjs/,
+  'cache hits must be structurally validated before reuse');
 assert.match(measure, /hashFiles\('js\/\*\*', 'tests\/accuracy\*\.mjs'/,
   'accuracy cache keys must include all accuracy runner/helper sources');
+assert.match(measure, /temporary="\$\{output\}\.tmp"/,
+  'measurement must build into a temporary file before atomic publication');
+assert.match(measure, /accuracy-result-validate\.mjs "\$temporary" --expect=/,
+  'new measurement output must be validated before publication');
+assert.match(measure, /mv "\$temporary" "\$output"/,
+  'validated measurement output must be atomically published');
+const partitionUpload = measure.slice(measure.indexOf('name: Upload partition result'));
+assert.match(partitionUpload, /if:\s*success\(\)/,
+  'failed measurements must never upload partial accuracy artifacts');
+assert.match(partitionUpload, /if-no-files-found:\s*error/,
+  'a missing accuracy artifact must fail closed');
 assert.match(workflow, /name:\s*Publish oracle for this run[\s\S]*actions\/upload-artifact@v4/,
   'oracle jobs must publish their exact oracle as an intra-run artifact');
 assert.match(measure, /name:\s*Download required oracle[\s\S]*actions\/download-artifact@v4/,
@@ -95,6 +110,12 @@ assert.match(measure, /name:\s*cross-binary-oracle-\$\{\{ matrix\.target\.name \
 const aggregate = workflow.slice(workflow.indexOf('\n  accuracy:'));
 assert.doesNotMatch(aggregate, /Reassemble exact pseudoc serial samples/,
   'persistent pseudoc workers already return the exact complete target result');
+const prerequisiteIndex = aggregate.indexOf('name: Require all prerequisite jobs');
+const downloadIndex = aggregate.indexOf('name: Download accuracy partitions');
+assert.ok(prerequisiteIndex >= 0 && prerequisiteIndex < downloadIndex,
+  'the fail-closed prerequisite gate must run before downloading or merging artifacts');
+assert.match(aggregate, /name:\s*Validate downloaded accuracy partitions[\s\S]*accuracy-result-validate\.mjs/,
+  'the final merge must validate every downloaded partition first');
 assert.match(aggregate, /node tests\/accuracy-merge\.mjs accuracy-BattleCats\.json/);
 assert.match(aggregate, /node tests\/accuracy-merge\.mjs accuracy-YWP\.json/);
 assert.match(aggregate, /node tests\/accuracy-merge\.mjs accuracy-TsumTsum\.json/);
