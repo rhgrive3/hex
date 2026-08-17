@@ -84,9 +84,10 @@ export class DevSupervisorEngineV0 {
 
     try {
       for (let step = 0; step < this.maxDecisions; step++) {
+        const promptTools = [...this.supervisor.availableTools];
         const response = await this.bridge.request(buildDevSupervisorPrompt({
           run,
-          availableTools: this.supervisor.availableTools,
+          availableTools: promptTools,
           history,
         }), {
           signal: input.signal,
@@ -95,7 +96,18 @@ export class DevSupervisorEngineV0 {
           reasoning: input.reasoning || null,
         });
         const text = response && typeof response === 'object' ? response.text : response;
-        const decision = parseDevSupervisorDecision(text, { availableTools: this.supervisor.availableTools });
+        const decision = parseDevSupervisorDecision(text);
+        const availableTools = [...this.supervisor.availableTools];
+
+        if (decision.type === 'tool' && !availableTools.includes(decision.tool)) {
+          history.push({
+            kind: 'tool-unavailable',
+            tool: decision.tool,
+            message: `要求されたツール「${decision.tool}」は現在利用できません。現在利用可能なツール一覧を確認して再判断してください。`,
+            availableTools,
+          });
+          continue;
+        }
 
         if (decision.type === 'tool') {
           input.onActivity?.({ label: decision.tool, detail: decision.purpose });
