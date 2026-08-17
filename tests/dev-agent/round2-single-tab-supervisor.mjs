@@ -123,8 +123,7 @@ async function testSupervisorRestoreAcceptsPartialHistoryHydration() {
     { id: 'supervisor-user-latest', text: 'delegate to worker' },
   ];
   let page = supervisor;
-  let hydratedWith = null;
-  let routedKey = null;
+  let navigation = null;
   const listeners = new Set();
   const controller = {
     on(listener) { listeners.add(listener); return () => listeners.delete(listener); },
@@ -133,14 +132,10 @@ async function testSupervisorRestoreAcceptsPartialHistoryHydration() {
     observe() { return { state: 'QUIET' }; },
     isActive() { return false; },
     workerConversation() { return worker; },
-    router: {
-      bind(key, expected) { routedKey = key; assert.equal(expected.id, supervisor.id); },
-      async route() { page = supervisor; return { conversation: supervisor, isNew: false }; },
-    },
-    async waitForConversationHydration(expected, expectedAnchors) {
-      assert.equal(expected.id, supervisor.id);
-      hydratedWith = expectedAnchors;
-      return supervisor;
+    async navigateToConversation(expected, options = {}) {
+      navigation = { expected, options };
+      page = { ...expected };
+      return page;
     },
   };
   const coordinator = new SingleConversationWorkerCoordinator({ controller, tabNodeId: 'same-tab' });
@@ -149,10 +144,11 @@ async function testSupervisorRestoreAcceptsPartialHistoryHydration() {
 
   const restored = await coordinator.restoreSupervisor();
   assert.equal(restored.id, supervisor.id);
-  assert.equal(routedKey, 'dev-supervisor-return:partial-hydration-run');
+  assert.equal(navigation.expected.id, supervisor.id);
+  assert.equal(navigation.options.sessionKey, 'dev-supervisor-return:partial-hydration-run');
   assert.deepEqual(
-    hydratedWith,
-    [anchors.at(-1)],
+    navigation.options.continuityAnchor,
+    anchors.at(-1),
     'Supervisor restore must require only the latest pre-delegation continuity anchor, not every virtualized historical turn',
   );
   coordinator.close();
