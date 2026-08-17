@@ -1,15 +1,13 @@
-name: P3 issue 137 state diagnostic v8
+name: P3 legacy corpus validation v9
 on:
   push:
     branches: [hex/p3-local-debug-350]
     paths:
       - '.github/workflows/p3-local-debug-350.yml'
-permissions:
-  contents: write
 jobs:
-  diagnose:
+  validate:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
@@ -17,29 +15,19 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
+      - run: npm ci
       - run: python3 tools/validation/p3-debug-apply.py
       - run: python3 tools/validation/p3-debug-apply-interproc.py
-      - name: Capture issue 137 projected stack state on scratch only
-        shell: bash
-        run: |
-          node --input-type=module <<'NODE' > tools/validation/p3-debug-137-state.json
-          import { buildSemanticModel } from './js/blocks.js';
-          import { buildIR } from './js/ir.js';
-          const base=0x100000000n;
-          const lines=['str x0, [sp, #32]','str x1, [sp, #-32]','ret'];
-          const raw=lines.map((text,row)=>{ const p=text.indexOf(' '); return {row,address:base+BigInt(row*4),mn:p<0?text:text.slice(0,p),ops:p<0?'':text.slice(p+1)}; });
-          const rowOfAddress=(addr)=>{ const d=BigInt(addr)-base; return d>=0n && d<BigInt(raw.length*4) ? Number(d/4n) : null; };
-          const model=buildSemanticModel(raw,{startRow:0,endRow:raw.length-1,rowOfAddress});
-          const ir=buildIR(model,{rowOfAddress});
-          const out={
-            stackSlots: ir.stackSlots,
-            stackLocations:[...ir.locations.values()].filter((x)=>x.kind==='stack'),
-            memoryInstructions:ir.instructions.filter((x)=>x.op==='load'||x.op==='store').map((x)=>({row:x.row,op:x.op,loc:x.loc,addr:x.addr}))
-          };
-          console.log(JSON.stringify(out,(_k,v)=>typeof v==='bigint'?`${v}n`:v,2));
-          NODE
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add tools/validation/p3-debug-137-state.json
-          git commit -m "Debug: persist issue 137 projected stack state" || true
-          git push origin HEAD:hex/p3-local-debug-350
+      - run: npm run userscript:build
+      - run: node tests/issues-129-134.mjs
+      - run: node tests/issues-130-interproc.mjs
+      - run: node tests/issues-135-145.mjs
+      - run: node tests/issues-350-399.mjs
+      - run: node tests/issues-434-450-regressions.mjs
+      - run: node tests/issues-437-438-interproc.mjs
+      - run: node tests/ir.mjs
+      - run: npm test
+      - run: npm run effects:test
+      - run: npm run semantic-v2:test
+      - run: npm run check
