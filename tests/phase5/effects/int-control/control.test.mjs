@@ -26,6 +26,16 @@ test('register and structured-memory indirect JMP are explicit', () => {
   assert.equal(memory.metadata.memoryIndirect, true);
 });
 
+test('malformed narrow indirect JMP/CALL targets fail closed', () => {
+  for (const family of ['jmp','call']) {
+    const bundle = lift(family, [reg('eax','read')]);
+    assert.equal(bundle.completeness, 'partial');
+    assert.equal(bundle.controlEffect.kind, 'unknown');
+    assert.match(bundle.unknownEffects.reason, new RegExp(`x86-${family}-target-unmodelled`));
+    assert.equal(registerReads(bundle,'rax').length, 0);
+  }
+});
+
 test('Jcc has explicit condition, target, and exact variable-length fallthrough', () => {
   const bundle = lift('je', [imm(0x2000n)], { address:0x1000n, length:2, conditionCode:'e' });
   assert.equal(bundle.controlEffect.kind, 'conditional-branch');
