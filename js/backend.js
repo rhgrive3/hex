@@ -3,11 +3,26 @@ import { LRU } from './lru.js';
 import { augmentAnalysisResultWithChainedImports } from './chained.js';
 import { markMachOSymbolTruthIncomplete, mergeMachOAnalysisResults } from './macho-analysis-merge.js';
 import { AnalysisCache } from './cache/analysis-cache.js';
+import {
+  ANALYSIS_ORCHESTRATION_ROUTE,
+  ArtifactAnalysisOrchestrator,
+  awaitCancellableProducer,
+  createWorkerAnalysisArtifactDescriptor,
+  normalizeAnalysisRoute,
+} from './cache/artifact-orchestration.js';
 
 export const CHUNK_ROWS = 1024;
 export const CHUNK_BYTES = CHUNK_ROWS * 4;
 const CHUNK_CACHE = 64;
 const MAX_INFLIGHT = 6;
+
+const BACKEND_ANALYSIS_ARTIFACT_VERSIONS = Object.freeze({
+  producer:'hex-current-backend-analysis-v1',
+  loader:'hex-current-loader-orchestration-v1',
+  architectureSemantic:'hex-current-semantic-oracle-v1',
+  abiSemantic:'hex-current-abi-oracle-v1',
+  semanticSchema:'hex-current-analysis-result-v1',
+});
 
 export class StaleRequestError extends Error {
   constructor() {
@@ -18,7 +33,7 @@ export class StaleRequestError extends Error {
 }
 
 export class Backend {
-  constructor() {
+  constructor(options = {}) {
     this.legacyWorker = new Worker(new URL('./worker.js', import.meta.url));
     this.platformWorker = new Worker(new URL('./platform/worker.js', import.meta.url), { type: 'module' });
     this.worker = this.legacyWorker;
@@ -47,7 +62,11 @@ export class Backend {
     this._disasmPending = new Map();
     this.contentHash = null;
     this.disposed = false;
-    this.analysisCache = new AnalysisCache();
+    this.analysisRoute = normalizeAnalysisRoute(options.analysisRoute ?? ANALYSIS_ORCHESTRATION_ROUTE.CURRENT);
+    this._artifactOrchestrator = options.artifactOrchestrator ?? null;
+    this._artifactStoreOptions = options.artifactStoreOptions ?? {};
+    this._artifactSchedulerOptions = options.artifactSchedulerOptions ?? {};
+    this.analysisCache = options.analysisCache || new AnalysisCache(options.analysisCacheOptions);
 
     this.legacyWorker.onmessage = (event) => this._onMessage(event.data, 'legacy');
     this.platformWorker.onmessage = (event) => this._onMessage(event.data, 'platform');
@@ -69,6 +88,30 @@ export class Backend {
   }
 
   get gen() { return this.analysisEpoch; }
+
+  setAnalysisRoute(route) {
+    this.analysisRoute = normalizeAnalysisRoute(route);
+    return this.analysisRoute;
+  }
+
+  analysisRouteInfo() {
+    return Object.freeze({
+      route:this.analysisRoute,
+      defaultCutover:false,
+      artifactRuntimeCreated:!!this._artifactOrchestrator,
+      artifactRuntime:this._artifactOrchestrator?.stats?.() ?? null,
+    });
+  }
+
+  _artifactRuntime() {
+    if (!this._artifactOrchestrator) {
+      this._artifactOrchestrator = new ArtifactAnalysisOrchestrator({
+        storeOptions:this._artifactStoreOptions,
+        schedulerOptions:this._artifactSchedulerOptions,
+      });
+    }
+    return this._artifactOrchestrator;
+  }
 
   _onMessage(message, workerName) {
     if (!message) return;
@@ -281,28 +324,85 @@ export class Backend {
 
   cancelSearch(request) { this.cancel(request); }
 
-  async analyze(sliceIndex) {
-    if (this.formatId !== 'macho') return this._callTo('platform', 'analyze', { sliceIndex });
+  analyze(sliceIndex, options = {}) {
+    const route = normalizeAnalysisRoute(options.route ?? this.analysisRoute);
+    if (route === ANALYSIS_ORCHESTRATION_ROUTE.CURRENT) return this._analyzeCurrent(sliceIndex, options);
+    return this._analyzeArtifact(sliceIndex, options);
+  }
+
+  _analyzeCurrent(sliceIndex, options = {}) {
+    if (this.formatId !== 'macho') {
+      return awaitCancellableProducer(this._callTo('platform', 'analyze', { sliceIndex }), options.signal);
+    }
+    return this._analyzeCurrentMachO(sliceIndex, options);
+  }
+
+  async _analyzeCurrentMachO(sliceIndex, options = {}) {
     const uiEpoch = this.gen, transportEpoch = this.transportEpoch, file = this.file;
     const assertCurrent = () => {
       if (uiEpoch !== this.gen || transportEpoch !== this.transportEpoch || file !== this.file) throw new StaleRequestError();
     };
-    const legacy = await this._callTo('legacy', 'analyze', { sliceIndex });
+    const call = (workerName, t, payload) => awaitCancellableProducer(this._callTo(workerName, t, payload), options.signal);
+    const legacy = await call('legacy', 'analyze', { sliceIndex });
     assertCurrent();
     const enriched = await augmentAnalysisResultWithChainedImports(file, sliceIndex, legacy);
     assertCurrent();
+    if (options.signal?.aborted) throw options.signal.reason || new DOMException('Aborted', 'AbortError');
     if (!this.platformInfo?.normalizedDyldTruth) {
       return markMachOSymbolTruthIncomplete(enriched, this.legacyInfo?.platform?.normalizedDyldError || 'normalized-macho-analysis-unavailable');
     }
     try {
-      const normalized = await this._callTo('platform', 'analyze', { sliceIndex });
+      const normalized = await call('platform', 'analyze', { sliceIndex });
       assertCurrent();
       return mergeMachOAnalysisResults(enriched, normalized);
     } catch (error) {
+      if (error?.name === 'AbortError' || options.signal?.aborted) throw options.signal?.reason || error;
       if (error?.stale) throw error;
       assertCurrent();
       return markMachOSymbolTruthIncomplete(enriched, error?.message || 'normalized-macho-analysis-failed');
     }
+  }
+
+  async _analysisArtifactDescriptor(sliceIndex, options = {}) {
+    const binaryId = await this.ensureContentHash(options.onHashProgress, options.signal);
+    const capability = this.formatId === 'macho'
+      ? (this.legacyInfo?.slices?.[sliceIndex]?.capability || this.platformInfo?.slices?.[sliceIndex]?.capability || this.platformInfo?.capability)
+      : (this.platformInfo?.slices?.[sliceIndex]?.capability || this.platformInfo?.capability);
+    const architecture = capability?.architecture || 'unknown';
+    return createWorkerAnalysisArtifactDescriptor({
+      binaryId,
+      sliceId:String(sliceIndex),
+      entityId:`analysis:${sliceIndex}`,
+      artifactKind:'backend-analysis-result',
+      producerVersion:options.producerVersion ?? BACKEND_ANALYSIS_ARTIFACT_VERSIONS.producer,
+      loaderVersion:options.loaderVersion ?? BACKEND_ANALYSIS_ARTIFACT_VERSIONS.loader,
+      architectureSemanticVersion:options.architectureSemanticVersion ?? BACKEND_ANALYSIS_ARTIFACT_VERSIONS.architectureSemantic,
+      abiSemanticVersion:options.abiSemanticVersion ?? BACKEND_ANALYSIS_ARTIFACT_VERSIONS.abiSemantic,
+      semanticSchemaVersion:options.semanticSchemaVersion ?? BACKEND_ANALYSIS_ARTIFACT_VERSIONS.semanticSchema,
+      config:{ sliceIndex:Number(sliceIndex), formatId:this.formatId, architecture, ...(options.config || {}) },
+      originRefs:[`binary:${binaryId}`],
+    });
+  }
+
+  async _analyzeArtifact(sliceIndex, options = {}) {
+    const uiEpoch = this.gen, transportEpoch = this.transportEpoch, file = this.file;
+    const descriptor = await this._analysisArtifactDescriptor(sliceIndex, options);
+    if (uiEpoch !== this.gen || transportEpoch !== this.transportEpoch || file !== this.file) throw new StaleRequestError();
+    const result = await this._artifactRuntime().request({
+      descriptor,
+      signal:options.signal ?? null,
+      budget:options.budget ?? null,
+      priority:options.priority ?? 'current',
+      completeness:options.completeness ?? 'complete',
+      validate:options.validate ?? null,
+      creation:{ backend:'Backend', formatId:this.formatId, sliceIndex:Number(sliceIndex) },
+      produce:({ signal }) => this._analyzeCurrent(sliceIndex, { ...options, route:ANALYSIS_ORCHESTRATION_ROUTE.CURRENT, signal }),
+    });
+    if (uiEpoch !== this.gen || transportEpoch !== this.transportEpoch || file !== this.file) {
+      await this._artifactRuntime().store.delete(descriptor.artifactId).catch(() => {});
+      throw new StaleRequestError();
+    }
+    return result.payload;
   }
 
   guessFunctions(regionId, limit, onProgress) { return this.call('guessFunctions', { regionId, limit }, null, onProgress); }
@@ -332,9 +432,9 @@ export class Backend {
     return Promise.resolve({ kind, start, total: 0, items: [], next: null, compatibility: 'legacy-macho', unsupported: true });
   }
 
-  async ensureContentHash(onProgress) {
+  async ensureContentHash(onProgress, signal = null) {
     if (this.contentHash) return this.contentHash;
-    const result = await this._callTo('platform', 'hash', {}, null, onProgress);
+    const result = await awaitCancellableProducer(this._callTo('platform', 'hash', {}, null, onProgress), signal);
     this.contentHash = result.hash;
     return this.contentHash;
   }
@@ -373,8 +473,14 @@ export class Backend {
     });
   }
 
-  async loadAnalysisCache() { const hash = await this.ensureContentHash(); return this.analysisCache.get(hash); }
-  async saveAnalysisCache(data) { const hash = await this.ensureContentHash(); return this.analysisCache.put(hash, data); }
+  async loadAnalysisCache(options = {}) {
+    const hash = await this.ensureContentHash(options.onProgress, options.signal);
+    return this.analysisCache.get(hash, { artifactId:options.artifactId });
+  }
+  async saveAnalysisCache(data, options = {}) {
+    const hash = await this.ensureContentHash(options.onProgress, options.signal);
+    return this.analysisCache.put(hash, data, { artifactId:options.artifactId });
+  }
   memoryStats() { return this._callTo('platform', 'memoryStats', {}); }
   cleanupMemory() {
     this.resetCache();
@@ -394,6 +500,7 @@ export class Backend {
     for (const pending of this.pending.values()) pending.reject(failure);
     this.pending.clear();
     for (const worker of [this.legacyWorker, this.platformWorker]) { try { worker.terminate(); } catch { /* best effort */ } }
+    this._artifactOrchestrator?.close?.().catch?.(() => {});
     if (typeof document !== 'undefined' && this._memoryPressureHandler) {
       document.removeEventListener('visibilitychange', this._memoryPressureHandler);
       this._memoryPressureHandler = null;
