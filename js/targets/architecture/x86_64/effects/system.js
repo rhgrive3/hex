@@ -5,7 +5,9 @@ const PRIVILEGED = new Set(['cli','sti','hlt','invd','wbinvd','swapgs','lgdt','l
 
 function exactPrefix(instruction, expected) {
   const actual = [...(instruction?.detail?.prefixes?.legacy || [])];
-  return actual.length === expected.length && actual.every((value, index) => value === expected[index]);
+  if (actual.length === expected.length && actual.every((value, index) => value === expected[index])) return true;
+  const raw = [...(instruction?.rawBytes || [])];
+  return raw.length >= expected.length && expected.every((value, index) => raw[index] === value);
 }
 
 function systemHiddenState(family, fields) {
