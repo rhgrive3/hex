@@ -110,6 +110,7 @@ await new Promise((resolve) => setTimeout(resolve, 0));
 assert.equal(slowReader.metrics().cancelledRequests, 1);
 assert.equal(slowReader.metrics().retainedPages, 0);
 assert.equal(slowReader.metrics().pendingRequests, 0);
+assert.equal(slowReader.metrics().pagesFetched, 0);
 assert.equal(slowSource.bytesRead, 0);
 
 const sharedSource = new SparseSource({ delayMs:20 });
@@ -129,9 +130,12 @@ const sharedPage = await sharedB;
 assert.equal(sharedPage.bytes.byteLength, PAGE);
 assert.equal(sharedSource.rangeRequests, 1, 'coalesced readers must share one range request');
 assert.equal(sharedReader.metrics().cancelledRequests, 1);
+assert.equal(sharedReader.metrics().pagesFetched, 1);
 
-await assert.rejects(() => source.read(0n, Number(HUGE_SIZE)), /whole-file-materialization-attempt/);
-assert.equal(source.wholeFileViolations, 1);
+const detectorSource = new SparseSource();
+await assert.rejects(() => detectorSource.read(0n, Number(HUGE_SIZE)), /whole-file-materialization-attempt/);
+assert.equal(detectorSource.wholeFileViolations, 1);
+assert.equal(source.wholeFileViolations, 0);
 assert.ok(reader.metrics().bytesRead < Number(HUGE_SIZE));
 assert.ok(reader.metrics().peakRetainedPageBytes <= PAGE * 2);
 
@@ -156,7 +160,7 @@ for (const count of [10, 100, 1000, 10000]) {
 console.log(JSON.stringify({
   largestSyntheticSourceBytes:HUGE_SIZE.toString(),
   bytesActuallyRead:reader.metrics().bytesRead,
-  wholeFileViolationsDuringPagedAccess:0,
+  wholeFileViolationsDuringPagedAccess:source.wholeFileViolations,
   cancellation:{ beforeRead:'cancelled', midRead:'cancelled-no-residue', sharedConsumer:'survivor-completed' },
   scalingPages:[10, 100, 1000, 10000],
   metrics:reader.metrics(),
