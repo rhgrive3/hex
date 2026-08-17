@@ -62,6 +62,17 @@ test('x86 region never materializes region.size/4 rows and rowData uses actual d
   assert.ok(m.domRows<=viewer.visibleRows()+12);
   assert.ok(m.retainedPages<=8);
   assert.ok(m.retainedInstructions<=16384);
+  console.log(JSON.stringify({
+    logicalSourceBytes:region.size.toString(),
+    decodeRequests:m.decodeRequestCount,
+    requestedDecodeBytes:m.requestedDecodeBytes,
+    decodedInstructions:m.decodedInstructionCount,
+    retainedPages:m.retainedPages,
+    retainedInstructions:m.retainedInstructions,
+    domRows:m.domRows,
+    visibleRows:m.visibleRows,
+    overscanRows:m.overscanRows,
+  }));
   viewer.dispose();
 });
 
