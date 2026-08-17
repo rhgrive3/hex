@@ -47,7 +47,7 @@ function atomicOrderingPartial(ctx, family, possibleFaults, metadata = {}, detai
     detail:{
       atomicity:'represented-by-MemoryAccess.atomic',
       ordering:'intentionally-unmapped',
-      reason:'x86 locked-operation ordering is stronger/more-specific than the frozen generic mapping can prove here',
+      reason:'x86 locked-operation ordering is stronger/more specific than the frozen generic mapping can prove here',
       ...detail,
     },
     metadata:{
@@ -420,7 +420,8 @@ export function liftX86MemoryEffects(instruction, context = {}) {
 
   const hasMemory = memoryOperands(instruction?.detail?.operands || []).length > 0;
   const lock = hasLock(instruction);
-  if (!hasMemory && !lock) return null;
+  const implicitStackMemory = family === 'push' || family === 'pop';
+  if (!hasMemory && !lock && !implicitStackMemory) return null;
 
   const ctx = createX86EffectContext(instruction, context);
 
