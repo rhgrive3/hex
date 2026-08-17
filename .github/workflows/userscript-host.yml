@@ -79,6 +79,13 @@ jobs:
       - run: npm ci
       - name: Build secure userscript runtime
         run: npm run userscript:build
+      - name: Restore pinned Playwright browser cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-1.55.0-chromium-webkit-v1
+          restore-keys: |
+            playwright-${{ runner.os }}-1.55.0-chromium-v1
       - name: Install pinned browser engines
         run: |
           npm install --no-save --save-exact playwright@1.55.0
