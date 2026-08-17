@@ -10,6 +10,7 @@ import {
   createDevBootstrapHandoff,
   verifyDevBootstrapIdentity,
 } from '../../js/ai/dev/bootstrap/dev-bootstrap-gate.js';
+import { createAgentProfileEngine } from '../../js/ai/dev/ui/engine-router.js';
 
 const COMMIT = 'a'.repeat(40);
 const BUILD_ID = 'b'.repeat(24);
@@ -100,5 +101,27 @@ assert.deepEqual(evidence, {
   verified: true,
 });
 assert.throws(() => loader.invoke('dev.bootstrap.unknown'), /Unknown Dev extension capability/);
+
+const routingCalls = [];
+const settings = { agentProfile: 'standard' };
+const standardEngine = {
+  async run(input) { routingCalls.push(['standard', input.mode]); return 'standard'; },
+  marker() { return 'bound-standard'; },
+};
+const devEngine = {
+  prepareBootstrapExtension() { routingCalls.push(['prepare']); return Promise.resolve(staged); },
+  activateBootstrapAtSafeBoundary(options) { routingCalls.push(['activate', options]); return activated; },
+  invokeBootstrapCapability(name) { routingCalls.push(['invoke', name]); return evidence; },
+  async run(input) { routingCalls.push(['dev', input.mode]); return 'dev'; },
+};
+const routed = createAgentProfileEngine({ standardEngine, settings, devEngine });
+assert.equal(await routed.devBootstrap.prepare(), staged);
+assert.equal(routed.devBootstrap.activateAtSafeBoundary({ checkpoint }).status, 'active');
+assert.equal(routed.devBootstrap.invoke(DEV_BOOTSTRAP_CAPABILITY).capability, DEV_BOOTSTRAP_CAPABILITY);
+assert.equal(routed.marker(), 'bound-standard');
+assert.equal(await routed.run({ mode: 'agent' }), 'standard', 'Standard Agent routing must remain unchanged by bootstrap support');
+settings.agentProfile = 'dev';
+assert.equal(await routed.run({ mode: 'agent' }), 'dev');
+assert.deepEqual(routingCalls.slice(0, 3).map((item) => item[0]), ['prepare', 'activate', 'invoke']);
 
 console.log('Dev Agent Seed Round 4 bootstrap gate tests passed');
