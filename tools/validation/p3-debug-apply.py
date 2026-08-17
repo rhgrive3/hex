@@ -23,16 +23,16 @@ s = s.replace(decl, "", 1).replace(
 )
 
 # preserveExactStateWriteSourceIdentity() has already attached a public register
-# identity to a canonical producer under strict SSA/instruction/width proof.  In
-# that proven case keep the producer public and compact only the state-write
-# destination shadow.  Ordinary state-write projection keeps the existing policy.
+# identity to a canonical producer under strict SSA/instruction/width proof.
+# Legacy v1 exposes a proven LOAD producer itself as the destination register;
+# other exact producers retain the existing state-write projection behavior.
 old_state_write = """    if (inst.extra?.stateWrite && samePublicState(inst, source, inst.dst)) {
       const shadow = inst.dst;
       if (valueFeedsAddressOrCall(projected, shadow)) {"""
 new_state_write = """    if (inst.extra?.stateWrite && samePublicState(inst, source, inst.dst)) {
       const shadow = inst.dst;
-      const provenExactSource = source.compatDerived === 'exact-state-write-source';
-      if (provenExactSource || valueFeedsAddressOrCall(projected, shadow)) {"""
+      const provenExactLoadSource = source.compatDerived === 'exact-state-write-source' && source.def?.op === V1_OP.LOAD;
+      if (provenExactLoadSource || valueFeedsAddressOrCall(projected, shadow)) {"""
 if s.count(old_state_write) != 1:
     raise SystemExit("state-write compaction source shape mismatch")
 s = s.replace(old_state_write, new_state_write, 1)
