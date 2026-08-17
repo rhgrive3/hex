@@ -118,7 +118,8 @@ try {
   if (result.warmInvocations !== 0 || result.warmReused !== true || result.warmSource !== 'persistent') throw new Error(`warm reopen did not reuse persistent artifact: ${JSON.stringify(result)}`);
   if (!result.equalPayload) throw new Error(`cold/warm payload mismatch: ${JSON.stringify(result)}`);
   if (!result.coldCapabilities.persistent || !result.warmCapabilities.persistent || !result.warmCapabilities.indexedDB) throw new Error(`IndexedDB capability not reported: ${JSON.stringify(result)}`);
-  console.log(`phase4 browser persistence: PASS artifactId=${result.artifactId} warmProducerInvocations=${result.warmInvocations}`);
+  console.log(`PHASE4_BROWSER_REOPEN ${JSON.stringify({ artifactId:result.artifactId, coldProducerInvocationCount:result.coldInvocations, warmProducerInvocationCount:result.warmInvocations, coldReused:result.coldReused, warmReused:result.warmReused, warmSource:result.warmSource, equalPayload:result.equalPayload })}`);
+  console.log(`phase4 browser persistence: PASS artifactId=${result.artifactId} coldProducerInvocations=${result.coldInvocations} warmProducerInvocations=${result.warmInvocations}`);
 } finally {
   await browser.close();
   await new Promise((resolve) => server.close(resolve));
