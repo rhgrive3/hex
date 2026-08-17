@@ -22,7 +22,9 @@ jobs:
           cache: npm
       - run: npm ci
       - name: Apply forensic repair
-        run: python tools/temp-dev-stuck-stream-patch.py
+        run: |
+          python tools/temp-dev-stuck-stream-patch.py
+          python tools/temp-dev-stuck-stream-followup.py
       - name: Exact runtime regression
         run: node tests/chatgpt-web-runtime.mjs
       - name: Dev Agent regressions
@@ -46,6 +48,7 @@ jobs:
         run: |
           rm .github/workflows/temp-dev-stuck-stream-run-patch.yml
           rm tools/temp-dev-stuck-stream-patch.py
+          rm tools/temp-dev-stuck-stream-followup.py
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add \
@@ -57,6 +60,7 @@ jobs:
             userscript/hex.user.template.js \
             userscript/release-version.json \
             .github/workflows/temp-dev-stuck-stream-run-patch.yml \
-            tools/temp-dev-stuck-stream-patch.py
+            tools/temp-dev-stuck-stream-patch.py \
+            tools/temp-dev-stuck-stream-followup.py
           git commit -m "Recover completed Dev JSON from stuck ChatGPT streaming"
           git push origin HEAD:hex/fix-dev-supervisor-stuck-stream
