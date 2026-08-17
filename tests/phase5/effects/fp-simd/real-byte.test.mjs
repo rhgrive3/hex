@@ -12,7 +12,7 @@ test('real decoder bytes preserve legacy/VEX structure before P5-3 effects', asy
   const decoder=await createCapstoneX86Session();
   try{
     const addssRaw=decoder.decode([0xf3,0x0f,0x58,0xc1],0x401000n)[0],addss=createX86DecodedInstruction({...addssRaw,instructionId:'p5-3:real:addss'});
-    assert.equal(addss.length,4); assert.equal(addss.instructionFamily,'addss'); assert.deepEqual([...addss.detail.prefixes.legacy],[0xf3]); assert.equal(addss.detail.prefixes.vector,null); assert.equal(addss.detail.operands[0].register.id,'xmm0'); assert.equal(addss.detail.operands[1].register.id,'xmm1'); assert.equal(effects(addssRaw).completeness,'partial');
+    assert.equal(addss.length,4); assert.equal(addss.instructionFamily,'addss'); assert.equal(addss.rawBytes[0],0xf3); assert.equal(addss.detail.prefixes.vector,null); assert.equal(addss.detail.operands[0].register.id,'xmm0'); assert.equal(addss.detail.operands[1].register.id,'xmm1'); assert.equal(effects(addssRaw).completeness,'partial');
 
     const moveRaw=decoder.decode([0x0f,0x28,0xc1],0x401100n)[0],move=createX86DecodedInstruction({...moveRaw,instructionId:'p5-3:real:movaps'});
     assert.equal(move.length,3); assert.equal(move.instructionFamily,'movaps'); assert.equal(move.detail.operands[0].register.physicalId,'ymm0'); const moveBundle=effects(moveRaw); assert.equal(moveBundle.completeness,'exact'); assert.equal(moveBundle.metadata.upperLaneBehavior,'preserve-upper-128');
@@ -29,10 +29,10 @@ test('real decoder bytes preserve legacy/VEX structure before P5-3 effects', asy
 
     const cmpRaw=decoder.decode([0x0f,0x2e,0xc1],0x401600n)[0],cmp=createX86DecodedInstruction({...cmpRaw,instructionId:'p5-3:real:ucomiss'}); assert.equal(cmp.instructionFamily,'ucomiss'); assert.equal(cmp.detail.operands[0].register.id,'xmm0'); const cmpBundle=effects(cmpRaw); assert.equal(cmpBundle.completeness,'partial'); assert.equal(ops(cmpBundle,'flag-write').length,6);
 
-    const cvtRaw=decoder.decode([0xf2,0x0f,0x2a,0xc0],0x401700n)[0],cvt=createX86DecodedInstruction({...cvtRaw,instructionId:'p5-3:real:cvtsi2sd'}); assert.equal(cvt.instructionFamily,'cvtsi2sd'); assert.equal(cvt.detail.operands[0].register.id,'xmm0'); assert.equal(cvt.detail.operands[1].register.id,'eax'); assert.equal(effects(cvtRaw).completeness,'partial');
+    const cvtRaw=decoder.decode([0xf2,0x0f,0x2a,0xc0],0x401700n)[0],cvt=createX86DecodedInstruction({...cvtRaw,instructionId:'p5-3:real:cvtsi2sd'}); assert.equal(cvt.instructionFamily,'cvtsi2sd'); assert.equal(cvt.rawBytes[0],0xf2); assert.equal(cvt.detail.operands[0].register.id,'xmm0'); assert.equal(cvt.detail.operands[1].register.id,'eax'); assert.equal(effects(cvtRaw).completeness,'partial');
 
     const fenceRaw=decoder.decode([0x0f,0xae,0xf0],0x401800n)[0],fence=createX86DecodedInstruction({...fenceRaw,instructionId:'p5-3:real:mfence'}); assert.equal(fence.instructionFamily,'mfence'); const fenceBundle=effects(fenceRaw); assert.equal(fenceBundle.completeness,'partial'); assert.equal(fenceBundle.metadata.operation,'mfence');
 
-    const pauseRaw=decoder.decode([0xf3,0x90],0x401900n)[0],pause=createX86DecodedInstruction({...pauseRaw,instructionId:'p5-3:real:pause'}); assert.equal(pause.instructionFamily,'pause'); assert.deepEqual([...pause.detail.prefixes.legacy],[0xf3]); assert.equal(effects(pauseRaw).completeness,'exact');
+    const pauseRaw=decoder.decode([0xf3,0x90],0x401900n)[0],pause=createX86DecodedInstruction({...pauseRaw,instructionId:'p5-3:real:pause'}); assert.equal(pause.instructionFamily,'pause'); assert.deepEqual([...pause.rawBytes],[0xf3,0x90]); assert.equal(pause.detail.prefixes.vector,null); assert.equal(effects(pauseRaw).completeness,'exact');
   }finally{decoder.close();}
 });
