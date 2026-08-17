@@ -156,8 +156,16 @@ async function storeOracles(report) {
     let committedResolve; const committed = new Promise((resolve) => { committedResolve = resolve; });
     class RacingBackend extends MemoryArtifactBackend {
       async putAtomic(record, payload, options = {}) {
-        const result = await super.putAtomic(record, payload, options); committedResolve(); await sleep(20);
-        if (options.signal?.aborted) throw options.signal.reason || abortError(); return result;
+        // Simulate the real publication boundary: durable commit happens while
+        // putAtomic is unresolved, then the successful CAS result is returned.
+        // Store must re-check the consumer signal after await and roll back the
+        // exact row. A backend that commits and then throws while concealing its
+        // duplicate/write result violates the putAtomic contract and cannot be
+        // rolled back without risking deletion of a pre-existing CAS object.
+        const result = await super.putAtomic(record, payload, options);
+        committedResolve();
+        await sleep(20);
+        return result;
       }
     }
     const backend = new RacingBackend(); const store = new ArtifactStore({ backend }); const d = descriptor({ entityId: 'cancel-publish' });
