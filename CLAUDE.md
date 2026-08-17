@@ -20,6 +20,13 @@ When I ask a question, answer it. Do not implement it.
 
 When in doubt, assume it's a question. Answer first. Act when I say go.
 
+## Graft — GitHub Codespaces only
+
+Use Graft **only** when running inside GitHub Codespaces.
+
+- **Inside GitHub Codespaces:** follow the Graft-first workflow in `AGENTS.md`. If Graft is unexpectedly unavailable, continue with the normal repository tools available in that Codespace rather than blocking the task.
+- **Outside GitHub Codespaces:** do **not** install, invoke, emulate, or require Graft. Its absence is never a blocker. Use the repository inspection/search tools available in the current environment instead.
+
 ## Speed (Opus 5 only)
 
 When running as Opus 5: optimize for wall-clock speed. Finish tasks quickly.
