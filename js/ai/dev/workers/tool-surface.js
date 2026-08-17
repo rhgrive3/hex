@@ -22,6 +22,7 @@ export function createDevWorkerToolSurface(client) {
   ];
   if (required.some((name) => typeof client[name] !== 'function')) return null;
 
+  const fullTurnOptions = Object.freeze({ timeoutMs: 0 });
   const handlers = new Map([
     [DEV_WORKER_TOOL.DISCOVER, (args) => client.discover(args)],
     [DEV_WORKER_TOOL.CLAIM, (args) => client.claim(args)],
@@ -29,10 +30,10 @@ export function createDevWorkerToolSurface(client) {
     [DEV_WORKER_TOOL.SEND, (args = {}) => client.send({
       ...args,
       instruction: buildDevWorkerInstruction(args.instruction),
-    })],
+    }, fullTurnOptions)],
     [DEV_WORKER_TOOL.OBSERVE, (args) => client.observe(args)],
-    [DEV_WORKER_TOOL.FOLLOWUP, (args) => client.followup(args)],
-    [DEV_WORKER_TOOL.NUDGE, (args) => client.nudge(args)],
+    [DEV_WORKER_TOOL.FOLLOWUP, (args) => client.followup(args, fullTurnOptions)],
+    [DEV_WORKER_TOOL.NUDGE, (args) => client.nudge(args, fullTurnOptions)],
     [DEV_WORKER_TOOL.STOP, (args) => client.stop(args)],
     [DEV_WORKER_TOOL.RESULT, (args) => client.result(args)],
     [DEV_WORKER_TOOL.RELEASE, (args) => client.release(args)],

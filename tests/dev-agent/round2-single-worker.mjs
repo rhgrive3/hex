@@ -17,13 +17,13 @@ const client = {
     calls.push(['createChat', args]);
     return { workerId: args.workerId, tabNodeId: 'tab-1', chatgptConversationId: null };
   },
-  send: async (args) => {
-    calls.push(['send', args]);
+  send: async (args, options) => {
+    calls.push(['send', args, options]);
     return { workerId: args.workerId, tabNodeId: 'tab-1', chatgptConversationId: 'conversation-1', submitted: true };
   },
   observe: async (args) => ({ workerId: args.workerId, tabNodeId: 'tab-1', state: 'WORKING' }),
-  followup: async (args) => args,
-  nudge: async (args) => args,
+  followup: async (args, options) => { calls.push(['followup', args, options]); return args; },
+  nudge: async (args, options) => { calls.push(['nudge', args, options]); return args; },
   stop: async (args) => args,
   result: async (args) => ({
     workerId: args.workerId,
@@ -87,6 +87,23 @@ const sent = await supervisor.executeToolDecision(run, {
 run = sent.run;
 assert.equal(run.chatgptConversationId, 'conversation-1');
 assert.equal(calls.find(([name]) => name === 'send')[1].instruction, workerPrompt);
+assert.deepEqual(
+  calls.find(([name]) => name === 'send')[2],
+  { timeoutMs: 0 },
+  'full Worker send must not inherit the short parent RPC transport timeout',
+);
+await tools.execute('worker.followup', { runId: 'run-1', workerId: 'worker-1', text: 'continue' });
+assert.deepEqual(
+  calls.find(([name]) => name === 'followup')[2],
+  { timeoutMs: 0 },
+  'Worker follow-up may also span a full ChatGPT generation',
+);
+await tools.execute('worker.nudge', { runId: 'run-1', workerId: 'worker-1' });
+assert.deepEqual(
+  calls.find(([name]) => name === 'nudge')[2],
+  { timeoutMs: 0 },
+  'Worker nudge recovery may start a full follow-up turn',
+);
 assert.throws(
   () => supervisor.applyDecision(run, { type: 'tool', tool: 'worker.spawn', arguments: {}, purpose: 'forbidden' }),
   /Unavailable Dev tool/,
