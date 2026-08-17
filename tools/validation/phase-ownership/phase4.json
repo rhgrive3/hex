@@ -19,7 +19,8 @@
       "tools/validation/phase4-ownership.mjs",
       ".github/workflows/phase4-*.yml",
       "package.json",
-      "hex-viewer.user.js"
+      "userscript/hex.user.template.js",
+      "userscript/release-version.json"
     ],
     "p4-1": [
       "js/core/artifacts/backends.js",
@@ -68,14 +69,16 @@
       "reports/phase4/**",
       ".github/workflows/phase4-*.yml",
       "package.json",
-      "hex-viewer.user.js"
+      "userscript/hex.user.template.js",
+      "userscript/release-version.json"
     ]
   },
   "sharedIntegrationPaths": [
     "js/core/artifacts/index.js",
     "js/project/index.js",
     "package.json",
-    "hex-viewer.user.js"
+    "userscript/hex.user.template.js",
+    "userscript/release-version.json"
   ],
   "forbiddenPaths": [
     "js/semantics/**",
@@ -85,7 +88,8 @@
     "js/decompiler/**"
   ],
   "generatedPaths": [
-    "hex-viewer.user.js"
+    "userscript/hex.user.template.js",
+    "userscript/release-version.json"
   ],
   "releaseOnlyPaths": [
     ".github/workflows/phase4-release-validation.yml",
