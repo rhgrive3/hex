@@ -84,8 +84,8 @@ function normalizeCommitStatuses(values) {
 }
 function summarizeCi({ workflowRuns, checkRuns, commitStatuses, legacyState }) {
   const legacy = String(legacyState || '').toLowerCase();
-  if (legacy === 'failure' || legacy === 'error') return 'failure';
-  if (legacy === 'pending') return 'pending';
+  if (commitStatuses.length && (legacy === 'failure' || legacy === 'error')) return 'failure';
+  if (commitStatuses.length && legacy === 'pending') return 'pending';
   for (const item of [...workflowRuns, ...checkRuns]) {
     const status = String(item.status || '').toLowerCase();
     const conclusion = String(item.conclusion || '').toLowerCase();
@@ -99,7 +99,7 @@ function summarizeCi({ workflowRuns, checkRuns, commitStatuses, legacyState }) {
     if (state === 'pending') return 'pending';
   }
   const observed = workflowRuns.length + checkRuns.length + commitStatuses.length;
-  return observed || legacy === 'success' ? 'success' : 'none';
+  return observed ? 'success' : 'none';
 }
 function parseGithubResponse(status, body) {
   if (status < 200 || status >= 300) throw githubError(`github-http-${status || 0}`, `GitHub verification request failed with HTTP ${status || 0}.`);
