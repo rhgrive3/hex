@@ -1,4 +1,9 @@
 import { ArtifactStorageError, ArtifactUnsupportedError } from './contracts.js';
+import {
+  compatiblePublishedArtifact,
+  createStorageEnvelopeFields,
+  sameObservedArtifact,
+} from './storage/integrity.js';
 
 function exactArrayBuffer(bytes) {
   const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
@@ -13,12 +18,8 @@ function clone(value) {
   return value == null ? value : JSON.parse(JSON.stringify(value));
 }
 
-function equalBytes(left, right) {
-  const a = left instanceof Uint8Array ? left : new Uint8Array(left);
-  const b = right instanceof Uint8Array ? right : new Uint8Array(right);
-  if (a.byteLength !== b.byteLength) return false;
-  for (let i = 0; i < a.byteLength; i++) if (a[i] !== b[i]) return false;
-  return true;
+function abortError(signal) {
+  return signal?.reason || new DOMException('Aborted', 'AbortError');
 }
 
 function storageError(error, operation) {
@@ -39,18 +40,64 @@ function requestPromise(request) {
 
 function transactionPromise(transaction) {
   return new Promise((resolve, reject) => {
-    transaction.oncomplete = () => resolve();
-    transaction.onerror = () => reject(transaction.error || new Error('IndexedDB transaction failed'));
-    transaction.onabort = () => reject(transaction.error || new Error('IndexedDB transaction aborted'));
+    let settled = false;
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      fn(value);
+    };
+    transaction.oncomplete = () => finish(resolve);
+    transaction.onerror = () => finish(reject, transaction.error || new Error('IndexedDB transaction failed'));
+    transaction.onabort = () => finish(reject, transaction.error || new DOMException('IndexedDB transaction aborted', 'AbortError'));
   });
+}
+
+async function absorbTransactionFailure(done) {
+  if (!done) return;
+  try { await done; } catch { /* request error is mapped by the caller */ }
+}
+
+function storedRow(record, payload) {
+  return {
+    artifactId:String(record.artifactId),
+    ...createStorageEnvelopeFields(record),
+    record:clone(record),
+    payload:exactArrayBuffer(payload),
+  };
+}
+
+function cloneRaw(raw) {
+  if (!raw) return null;
+  const result = { record:clone(raw.record) };
+  if (Object.hasOwn(raw, 'storageEnvelopeSchemaVersion')) result.storageEnvelopeSchemaVersion = raw.storageEnvelopeSchemaVersion;
+  if (Object.hasOwn(raw, 'recordChecksum')) result.recordChecksum = raw.recordChecksum;
+  if (Object.hasOwn(raw, 'payload')) result.payload = new Uint8Array(exactArrayBuffer(raw.payload));
+  return result;
+}
+
+function payloadByteLength(raw) {
+  if (!raw || !Object.hasOwn(raw, 'payload')) return 0;
+  try { return new Uint8Array(raw.payload).byteLength; }
+  catch { return Number(raw.record?.payloadSize || 0); }
 }
 
 export class MemoryArtifactBackend {
   constructor({ entries = new Map(), reason = 'explicit-memory-backend' } = {}) {
     this.entries = entries;
     this.reason = reason;
-    this.metrics = { reads:0, writes:0, duplicatePuts:0, deletes:0, bytes:0 };
-    for (const value of entries.values()) this.metrics.bytes += Number(value?.record?.payloadSize || 0);
+    this.metrics = {
+      reads:0,
+      readBytes:0,
+      writes:0,
+      writeBytes:0,
+      bytesWritten:0,
+      duplicatePuts:0,
+      deletes:0,
+      deleteMisses:0,
+      hasChecks:0,
+      bytes:0,
+    };
+    for (const value of entries.values()) this.metrics.bytes += payloadByteLength(value);
   }
 
   capabilities() {
@@ -61,58 +108,99 @@ export class MemoryArtifactBackend {
     this.metrics.reads++;
     const raw = this.entries.get(String(artifactId));
     if (!raw) return null;
-    return { record:clone(raw.record), payload:new Uint8Array(raw.payload.slice(0)) };
+    const result = cloneRaw(raw);
+    this.metrics.readBytes += result.payload?.byteLength || 0;
+    return result;
   }
 
   async putAtomic(record, payload, { signal } = {}) {
-    if (signal?.aborted) throw signal.reason || new DOMException('Aborted', 'AbortError');
+    if (signal?.aborted) throw abortError(signal);
     const id = String(record.artifactId);
     const buffer = exactArrayBuffer(payload);
     const previous = this.entries.get(id);
     if (previous) {
-      if (previous.record?.payloadChecksum !== record.payloadChecksum || !equalBytes(previous.payload, buffer)) {
+      if (!compatiblePublishedArtifact(previous.record, record, previous.payload, buffer)) {
         throw new ArtifactStorageError('artifact-immutable-conflict', `Artifact ${id} is already published with different content`);
       }
       this.metrics.duplicatePuts++;
-      return { duplicate:true };
+      return { duplicate:true, ...cloneRaw(previous) };
     }
-    this.entries.set(id, { record:clone(record), payload:buffer });
+    const row = storedRow(record, buffer);
+    this.entries.set(id, row);
     this.metrics.writes++;
-    this.metrics.bytes += Number(record.payloadSize || 0);
-    return { duplicate:false };
+    this.metrics.writeBytes += buffer.byteLength;
+    this.metrics.bytesWritten += buffer.byteLength;
+    this.metrics.bytes += buffer.byteLength;
+    return { duplicate:false, ...cloneRaw(row) };
   }
 
   async delete(artifactId) {
     const id = String(artifactId);
     const previous = this.entries.get(id);
-    if (!previous) return false;
+    if (!previous) {
+      this.metrics.deleteMisses++;
+      return false;
+    }
     this.entries.delete(id);
     this.metrics.deletes++;
-    this.metrics.bytes -= Number(previous.record?.payloadSize || 0);
+    this.metrics.bytes -= payloadByteLength(previous);
+    if (this.metrics.bytes < 0) this.metrics.bytes = 0;
     return true;
   }
 
-  async has(artifactId) { return this.entries.has(String(artifactId)); }
+  async deleteIfMatches(artifactId, record, payload) {
+    const id = String(artifactId);
+    const previous = this.entries.get(id);
+    if (!previous) return false;
+    if (!sameObservedArtifact(previous.record, record, previous.payload, payload)) return false;
+    return this.delete(id);
+  }
+
+  async has(artifactId) {
+    this.metrics.hasChecks++;
+    return this.entries.has(String(artifactId));
+  }
+
   async close() {}
   stats() { return Object.freeze({ ...this.metrics, entries:this.entries.size }); }
 }
 
 export class IndexedDbArtifactBackend {
-  constructor({ indexedDB = globalThis.indexedDB, dbName = 'hex-artifact-store-v1' } = {}) {
+  constructor({ indexedDB = globalThis.indexedDB, dbName = 'hex-artifact-store-v1', navigator = globalThis.navigator } = {}) {
     if (!indexedDB?.open) throw new ArtifactUnsupportedError('artifact-indexeddb-unsupported', 'IndexedDB is unavailable');
     this.indexedDB = indexedDB;
+    this.navigator = navigator;
     this.dbName = dbName;
     this.dbPromise = null;
-    this.metrics = { reads:0, writes:0, duplicatePuts:0, deletes:0, bytesWritten:0 };
+    this.metrics = {
+      reads:0,
+      readBytes:0,
+      writes:0,
+      writeBytes:0,
+      bytesWritten:0,
+      duplicatePuts:0,
+      deletes:0,
+      deleteMisses:0,
+      hasChecks:0,
+      openFailures:0,
+      transactionAborts:0,
+    };
   }
 
   capabilities() {
-    return Object.freeze({ backend:'indexeddb', persistent:true, indexedDB:true, opfs:typeof globalThis.navigator?.storage?.getDirectory === 'function' });
+    return Object.freeze({
+      backend:'indexeddb',
+      persistent:true,
+      indexedDB:true,
+      opfs:typeof this.navigator?.storage?.getDirectory === 'function',
+      durability:'browser-managed',
+    });
   }
 
   async #db() {
     if (this.dbPromise) return this.dbPromise;
-    this.dbPromise = new Promise((resolve, reject) => {
+    let promise;
+    promise = new Promise((resolve, reject) => {
       let request;
       try { request = this.indexedDB.open(this.dbName, 1); }
       catch (error) { reject(storageError(error, 'open')); return; }
@@ -120,69 +208,92 @@ export class IndexedDbArtifactBackend {
         const db = request.result;
         if (!db.objectStoreNames.contains('artifacts')) db.createObjectStore('artifacts', { keyPath:'artifactId' });
       };
-      request.onsuccess = () => resolve(request.result);
+      request.onsuccess = () => {
+        const db = request.result;
+        db.onversionchange = () => {
+          try { db.close(); } catch {}
+          if (this.dbPromise === promise) this.dbPromise = null;
+        };
+        resolve(db);
+      };
       request.onerror = () => reject(storageError(request.error, 'open'));
       request.onblocked = () => reject(new ArtifactStorageError('artifact-storage-blocked', 'IndexedDB open is blocked'));
+    });
+    this.dbPromise = promise.catch((error) => {
+      this.metrics.openFailures++;
+      if (this.dbPromise) this.dbPromise = null;
+      throw error;
     });
     return this.dbPromise;
   }
 
   async getRaw(artifactId) {
     this.metrics.reads++;
+    let done = null;
     try {
       const db = await this.#db();
       const tx = db.transaction('artifacts', 'readonly');
-      const done = transactionPromise(tx);
+      done = transactionPromise(tx);
       const raw = await requestPromise(tx.objectStore('artifacts').get(String(artifactId)));
       await done;
       if (!raw) return null;
-      return { record:raw.record, payload:new Uint8Array(raw.payload) };
+      const result = cloneRaw(raw);
+      this.metrics.readBytes += result.payload?.byteLength || 0;
+      return result;
     } catch (error) {
+      await absorbTransactionFailure(done);
       if (error instanceof ArtifactStorageError) throw error;
       throw storageError(error, 'get');
     }
   }
 
   async putAtomic(record, payload, { signal } = {}) {
-    if (signal?.aborted) throw signal.reason || new DOMException('Aborted', 'AbortError');
+    if (signal?.aborted) throw abortError(signal);
     let tx = null;
+    let done = null;
     let onAbort = null;
     const id = String(record.artifactId);
     const buffer = exactArrayBuffer(payload);
     try {
       const db = await this.#db();
-      // Avoid non-universal transaction durability options: older iPad/WebKit
-      // releases accept the two-argument form and still provide IDB atomicity.
+      if (signal?.aborted) throw abortError(signal);
+      // Use the portable two-argument transaction form for older iPad/WebKit.
+      // A single readwrite transaction owns conflict detection and publication.
       tx = db.transaction('artifacts', 'readwrite');
-      const done = transactionPromise(tx);
+      done = transactionPromise(tx);
       if (signal) {
-        onAbort = () => { try { tx.abort(); } catch { /* already committed */ } };
+        onAbort = () => {
+          try { tx.abort(); this.metrics.transactionAborts++; } catch { /* transaction already completed */ }
+        };
         signal.addEventListener('abort', onAbort, { once:true });
       }
       const store = tx.objectStore('artifacts');
       const previous = await requestPromise(store.get(id));
-      if (signal?.aborted) { try { tx.abort(); } catch {} throw signal.reason || new DOMException('Aborted', 'AbortError'); }
+      if (signal?.aborted) {
+        try { tx.abort(); this.metrics.transactionAborts++; } catch {}
+        await absorbTransactionFailure(done);
+        throw abortError(signal);
+      }
       if (previous) {
-        if (previous.record?.payloadChecksum !== record.payloadChecksum || !equalBytes(previous.payload, buffer)) {
-          try { tx.abort(); } catch {}
+        if (!compatiblePublishedArtifact(previous.record, record, previous.payload, buffer)) {
+          try { tx.abort(); this.metrics.transactionAborts++; } catch {}
+          await absorbTransactionFailure(done);
           throw new ArtifactStorageError('artifact-immutable-conflict', `Artifact ${id} is already published with different content`);
         }
         await done;
         this.metrics.duplicatePuts++;
-        return { duplicate:true };
+        return { duplicate:true, ...cloneRaw(previous) };
       }
-      store.add({ artifactId:id, record:clone(record), payload:buffer });
+      const row = storedRow(record, buffer);
+      await requestPromise(store.add(row));
       await done;
-      if (signal?.aborted) {
-        // If abort delivery raced the commit event, remove the just-published item.
-        await this.delete(id);
-        throw signal.reason || new DOMException('Aborted', 'AbortError');
-      }
       this.metrics.writes++;
-      this.metrics.bytesWritten += Number(record.payloadSize || 0);
-      return { duplicate:false };
+      this.metrics.writeBytes += buffer.byteLength;
+      this.metrics.bytesWritten += buffer.byteLength;
+      return { duplicate:false, ...cloneRaw(row) };
     } catch (error) {
-      if (error?.name === 'AbortError' || signal?.aborted) throw signal?.reason || error;
+      await absorbTransactionFailure(done);
+      if (error?.name === 'AbortError' || signal?.aborted) throw abortError(signal);
       if (error instanceof ArtifactStorageError) throw error;
       throw storageError(error, 'put');
     } finally {
@@ -191,29 +302,66 @@ export class IndexedDbArtifactBackend {
   }
 
   async delete(artifactId) {
+    const id = String(artifactId);
+    let done = null;
     try {
       const db = await this.#db();
       const tx = db.transaction('artifacts', 'readwrite');
-      const done = transactionPromise(tx);
-      tx.objectStore('artifacts').delete(String(artifactId));
+      done = transactionPromise(tx);
+      const store = tx.objectStore('artifacts');
+      const existing = await requestPromise(store.getKey(id));
+      if (existing == null) {
+        await done;
+        this.metrics.deleteMisses++;
+        return false;
+      }
+      await requestPromise(store.delete(id));
       await done;
       this.metrics.deletes++;
       return true;
     } catch (error) {
+      await absorbTransactionFailure(done);
       if (error instanceof ArtifactStorageError) throw error;
       throw storageError(error, 'delete');
     }
   }
 
+  async deleteIfMatches(artifactId, record, payload) {
+    const id = String(artifactId);
+    let done = null;
+    try {
+      const db = await this.#db();
+      const tx = db.transaction('artifacts', 'readwrite');
+      done = transactionPromise(tx);
+      const store = tx.objectStore('artifacts');
+      const previous = await requestPromise(store.get(id));
+      if (!previous || !sameObservedArtifact(previous.record, record, previous.payload, payload)) {
+        await done;
+        return false;
+      }
+      await requestPromise(store.delete(id));
+      await done;
+      this.metrics.deletes++;
+      return true;
+    } catch (error) {
+      await absorbTransactionFailure(done);
+      if (error instanceof ArtifactStorageError) throw error;
+      throw storageError(error, 'delete-if-match');
+    }
+  }
+
   async has(artifactId) {
+    this.metrics.hasChecks++;
+    let done = null;
     try {
       const db = await this.#db();
       const tx = db.transaction('artifacts', 'readonly');
-      const done = transactionPromise(tx);
+      done = transactionPromise(tx);
       const value = await requestPromise(tx.objectStore('artifacts').getKey(String(artifactId)));
       await done;
       return value != null;
     } catch (error) {
+      await absorbTransactionFailure(done);
       if (error instanceof ArtifactStorageError) throw error;
       throw storageError(error, 'has');
     }
@@ -221,22 +369,26 @@ export class IndexedDbArtifactBackend {
 
   async close() {
     if (!this.dbPromise) return;
-    try { (await this.dbPromise).close(); } finally { this.dbPromise = null; }
+    const promise = this.dbPromise;
+    try { (await promise).close(); }
+    finally { if (this.dbPromise === promise) this.dbPromise = null; }
   }
 
   stats() { return Object.freeze({ ...this.metrics }); }
 }
 
-export function detectArtifactPersistenceCapabilities({ indexedDB = globalThis.indexedDB } = {}) {
+export function detectArtifactPersistenceCapabilities({ indexedDB = globalThis.indexedDB, navigator = globalThis.navigator } = {}) {
   return Object.freeze({
     indexedDB:!!indexedDB?.open,
-    opfs:typeof globalThis.navigator?.storage?.getDirectory === 'function',
+    opfs:typeof navigator?.storage?.getDirectory === 'function',
   });
 }
 
 export function createArtifactBackend(options = {}) {
   const capabilities = detectArtifactPersistenceCapabilities(options);
   if (capabilities.indexedDB) return new IndexedDbArtifactBackend(options);
-  if (options.allowMemoryFallback === false) throw new ArtifactUnsupportedError('artifact-persistence-unsupported', 'No persistent artifact backend is available');
+  if (options.allowMemoryFallback === false) {
+    throw new ArtifactUnsupportedError('artifact-persistence-unsupported', 'No persistent artifact backend is available');
+  }
   return new MemoryArtifactBackend({ entries:options.memoryEntries, reason:'persistent-storage-unavailable' });
 }

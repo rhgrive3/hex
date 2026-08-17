@@ -8,15 +8,30 @@ export class ArtifactHotCache {
     this.maxEntries = maxEntries;
     this.entries = new Map();
     this.bytes = 0;
-    this.metrics = { hits:0, misses:0, puts:0, evictions:0 };
+    this.metrics = {
+      hits:0,
+      misses:0,
+      puts:0,
+      replacements:0,
+      evictions:0,
+      evictionBytes:0,
+      oversizeSkips:0,
+      insertedBytes:0,
+    };
   }
 
   get(artifactId) {
-    const entry = this.entries.get(String(artifactId));
-    if (!entry) { this.metrics.misses++; return null; }
+    const id = String(artifactId);
+    const entry = this.entries.get(id);
+    if (!entry) {
+      this.metrics.misses++;
+      return null;
+    }
     this.metrics.hits++;
-    this.entries.delete(entry.artifactId);
-    this.entries.set(entry.artifactId, entry);
+    // Map insertion order is the entire LRU clock. This is deterministic for a
+    // deterministic access sequence and never depends on wall-clock time.
+    this.entries.delete(id);
+    this.entries.set(id, entry);
     return entry.value;
   }
 
@@ -24,11 +39,18 @@ export class ArtifactHotCache {
     const id = String(artifactId);
     const size = Number(sizeBytes ?? 0);
     if (!Number.isSafeInteger(size) || size < 0) throw new TypeError('artifact-hot-cache-size-invalid');
-    this.delete(id, false);
+    if (this.entries.has(id)) {
+      this.delete(id, false);
+      this.metrics.replacements++;
+    }
     this.metrics.puts++;
-    if (this.maxEntries === 0 || size > this.maxBytes) return false;
+    if (this.maxEntries === 0 || size > this.maxBytes) {
+      this.metrics.oversizeSkips++;
+      return false;
+    }
     this.entries.set(id, { artifactId:id, value, sizeBytes:size });
     this.bytes += size;
+    this.metrics.insertedBytes += size;
     this.#evictToBudget();
     return this.entries.has(id);
   }
@@ -39,12 +61,19 @@ export class ArtifactHotCache {
     if (!entry) return false;
     this.entries.delete(id);
     this.bytes -= entry.sizeBytes;
-    if (countEviction) this.metrics.evictions++;
+    if (this.bytes < 0) this.bytes = 0;
+    if (countEviction) {
+      this.metrics.evictions++;
+      this.metrics.evictionBytes += entry.sizeBytes;
+    }
     return true;
   }
 
   clear() {
-    this.metrics.evictions += this.entries.size;
+    if (this.entries.size) {
+      this.metrics.evictions += this.entries.size;
+      this.metrics.evictionBytes += this.bytes;
+    }
     this.entries.clear();
     this.bytes = 0;
   }
