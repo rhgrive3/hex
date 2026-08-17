@@ -33,6 +33,35 @@ jobs:
           path.write_text(text.replace(old, new, 1))
           PY
           node scripts/temp-r2-single-tab-fix.mjs
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('js/ai/dev/supervisor/dev-supervisor-engine-v0.js')
+          text = path.read_text()
+          old = """  async run(input = {}) {
+    if (!this.bridge || typeof this.bridge.request !== 'function') throw new Error('ChatGPT Web bridge is required for Dev Supervisor.');
+    const ids = {
+"""
+          new = """  async run(input = {}) {
+    const ids = {
+"""
+          if old not in text:
+              raise SystemExit('Dev Supervisor bridge guard anchor missing')
+          text = text.replace(old, new, 1)
+          old = """    this.settings.setLastRun(run);
+    input.onActivity?.({ label: 'Dev Supervisor', detail: run.status });
+    const history = [];
+"""
+          new = """    this.settings.setLastRun(run);
+    input.onActivity?.({ label: 'Dev Supervisor', detail: run.status });
+    if (!this.bridge || typeof this.bridge.request !== 'function') {
+      return uiResponse(`Dev Supervisor run ${run.runId} created.`, run, []);
+    }
+    const history = [];
+"""
+          if old not in text:
+              raise SystemExit('Dev Supervisor foundation insertion anchor missing')
+          path.write_text(text.replace(old, new, 1))
+          PY
       - name: Install dependencies
         run: npm ci
       - name: Regenerate protected userscript
