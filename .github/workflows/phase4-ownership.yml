@@ -1,0 +1,58 @@
+name: Phase 4 ownership
+
+on:
+  pull_request:
+    paths:
+      - 'js/core/artifacts/**'
+      - 'js/core/scheduler/**'
+      - 'js/core/budgets/**'
+      - 'js/project/**'
+      - 'js/cache/**'
+      - 'js/backend.js'
+      - 'js/worker*.js'
+      - 'tests/phase4/**'
+      - 'tools/validation/phase4-ownership.mjs'
+      - 'tools/validation/phase-ownership/phase4.json'
+      - '.github/workflows/phase4-*.yml'
+      - 'package.json'
+      - 'userscript/hex.user.template.js'
+      - 'userscript/release-version.json'
+
+permissions:
+  contents: read
+
+jobs:
+  ownership:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Resolve Phase 4 lane from canonical branch naming
+        id: lane
+        shell: bash
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          set -euo pipefail
+          case "$HEAD_REF" in
+            hex/p4-artifact-foundation) lane=p4-0 ;;
+            hex/p4-1-*) lane=p4-1 ;;
+            hex/p4-2-*) lane=p4-2 ;;
+            hex/p4-3-*) lane=p4-3 ;;
+            hex/p4-4-*) lane=p4-4 ;;
+            hex/p4-5-*) lane=p4-5 ;;
+            hex/p4-6-*) lane=p4-6 ;;
+            hex/p4-artifact-store-scheduler-integration) lane=p4-7 ;;
+            *)
+              echo "::error::Phase 4-owned files require a canonical Phase 4 lane branch; got '$HEAD_REF'."
+              exit 1
+              ;;
+          esac
+          echo "lane=$lane" >> "$GITHUB_OUTPUT"
+      - name: Enforce machine-readable ownership manifest
+        run: node tools/validation/phase4-ownership.mjs --lane "${{ steps.lane.outputs.lane }}" --base "origin/${{ github.base_ref }}"

@@ -1,0 +1,176 @@
+name: Phase 4 exact-SHA release validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      product_sha:
+        description: Exact product commit SHA to validate
+        required: true
+        type: string
+  pull_request:
+    paths:
+      - 'js/core/artifacts/**'
+      - 'js/core/scheduler/**'
+      - 'js/core/budgets/**'
+      - 'js/project/**'
+      - 'js/cache/**'
+      - 'js/backend.js'
+      - 'js/worker*.js'
+      - 'tests/phase4/**'
+      - 'tools/validation/phase4/**'
+      - 'tools/validation/phase4-ownership.mjs'
+      - 'tools/validation/phase-ownership/phase4.json'
+      - '.github/workflows/phase4-*.yml'
+      - 'package.json'
+      - 'userscript/hex.user.template.js'
+      - 'userscript/release-version.json'
+
+permissions:
+  contents: read
+
+env:
+  PRODUCT_SHA: ${{ inputs.product_sha || github.event.pull_request.head.sha }}
+
+concurrency:
+  group: phase4-exact-sha-${{ inputs.product_sha || github.event.pull_request.head.sha }}
+  cancel-in-progress: false
+
+jobs:
+  core:
+    name: exact-sha-core
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.PRODUCT_SHA }}
+          fetch-depth: 0
+      - name: Prove exact checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          ACTUAL="$(git rev-parse HEAD)"
+          test "$ACTUAL" = "$PRODUCT_SHA"
+          printf '{"productSha":"%s","actualSha":"%s"}\n' "$PRODUCT_SHA" "$ACTUAL" > phase4-exact-sha-core.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Phase 4 foundation contracts and current product regression
+        run: npm run check
+      - name: Upload exact-SHA core evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase4-exact-sha-core-${{ env.PRODUCT_SHA }}
+          path: phase4-exact-sha-core.json
+          if-no-files-found: error
+          retention-days: 30
+
+  browser-persistence:
+    name: exact-sha-browser-persistence
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.PRODUCT_SHA }}
+          fetch-depth: 0
+      - name: Prove exact checkout
+        run: test "$(git rev-parse HEAD)" = "$PRODUCT_SHA"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Install browser used by permanent persistence gate
+        run: npx --yes playwright@1.55.0 install --with-deps chromium
+      - name: Real IndexedDB close/reopen proof
+        run: npm run phase4:browser
+
+  userscript-sync:
+    name: exact-sha-userscript-sync
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.PRODUCT_SHA }}
+          fetch-depth: 0
+      - name: Prove exact checkout
+        run: test "$(git rev-parse HEAD)" = "$PRODUCT_SHA"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Rebuild canonical userscript and capture actual buildId
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run userscript:build | tee userscript-build.log
+          BUILD_ID="$(sed -n 's/^built protected runtime \([^ ]*\).*/\1/p' userscript-build.log | tail -1)"
+          test -n "$BUILD_ID"
+          printf '{"productSha":"%s","userscriptBuildId":"%s"}\n' "$PRODUCT_SHA" "$BUILD_ID" > userscript-build-evidence.json
+      - name: Require committed generated outputs to match source
+        run: git diff --exit-code -- userscript/hex.user.template.js userscript/release-version.json
+      - name: Upload canonical userscript evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase4-userscript-${{ env.PRODUCT_SHA }}
+          path: |
+            userscript/hex.user.template.js
+            userscript/release-version.json
+            userscript-build.log
+            userscript-build-evidence.json
+          if-no-files-found: error
+          retention-days: 30
+
+  evidence:
+    name: exact-sha-evidence
+    if: always()
+    needs: [core, browser-persistence, userscript-sync]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Write machine-readable exact-SHA result
+        shell: bash
+        env:
+          CORE_RESULT: ${{ needs.core.result }}
+          BROWSER_RESULT: ${{ needs.browser-persistence.result }}
+          USERSCRIPT_RESULT: ${{ needs.userscript-sync.result }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          report = {
+            "phase": 4,
+            "productSha": os.environ["PRODUCT_SHA"],
+            "baseMainSha": os.environ.get("BASE_SHA") or None,
+            "coreResult": os.environ["CORE_RESULT"],
+            "browserPersistenceResult": os.environ["BROWSER_RESULT"],
+            "userscriptSynchronizationResult": os.environ["USERSCRIPT_RESULT"],
+            "phase4ExactShaCoreSatisfied": all(os.environ[k] == "success" for k in ("CORE_RESULT", "BROWSER_RESULT", "USERSCRIPT_RESULT")),
+          }
+          with open("phase4-exact-sha-evidence.json", "w", encoding="utf-8") as f:
+            json.dump(report, f, indent=2, sort_keys=True)
+            f.write("\n")
+          print(json.dumps(report, sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: phase4-exact-sha-evidence-${{ env.PRODUCT_SHA }}
+          path: phase4-exact-sha-evidence.json
+          if-no-files-found: error
+          retention-days: 30
+      - name: Require every exact-SHA prerequisite
+        shell: bash
+        env:
+          CORE_RESULT: ${{ needs.core.result }}
+          BROWSER_RESULT: ${{ needs.browser-persistence.result }}
+          USERSCRIPT_RESULT: ${{ needs.userscript-sync.result }}
+        run: |
+          test "$CORE_RESULT" = success
+          test "$BROWSER_RESULT" = success
+          test "$USERSCRIPT_RESULT" = success

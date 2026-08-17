@@ -1,0 +1,98 @@
+{
+  "phase": 4,
+  "version": 1,
+  "contractPaths": [
+    "js/core/artifacts/contracts.js",
+    "js/core/artifacts/index.js",
+    "js/core/budgets/index.js",
+    "js/core/scheduler/index.js",
+    "js/project/artifact-index.js"
+  ],
+  "lanes": {
+    "p4-0": [
+      "js/core/artifacts/**",
+      "js/core/budgets/**",
+      "js/core/scheduler/**",
+      "js/project/artifact-index.js",
+      "tests/phase4/**",
+      "tools/validation/phase-ownership/phase4.json",
+      "tools/validation/phase4-ownership.mjs",
+      ".github/workflows/phase4-*.yml",
+      "package.json",
+      "userscript/hex.user.template.js",
+      "userscript/release-version.json"
+    ],
+    "p4-1": [
+      "js/core/artifacts/backends.js",
+      "js/core/artifacts/hot-cache.js",
+      "js/core/artifacts/store.js",
+      "js/core/artifacts/storage/**",
+      "tests/phase4/store/**"
+    ],
+    "p4-2": [
+      "js/core/scheduler/**",
+      "js/core/budgets/**",
+      "tests/phase4/scheduler/**"
+    ],
+    "p4-3": [
+      "js/project/artifact-index.js",
+      "tests/phase4/project/**"
+    ],
+    "p4-4": [
+      "js/core/artifacts/paging/**",
+      "js/bytesource/cached.js",
+      "tests/phase4/paging/**"
+    ],
+    "p4-5": [
+      "js/cache/**",
+      "js/backend.js",
+      "js/worker.js",
+      "js/worker-legacy.js",
+      "js/worker-budget.js",
+      "tests/phase4/migration/**"
+    ],
+    "p4-6": [
+      "tests/phase4/verification/**",
+      "tools/validation/phase4/**",
+      "reports/phase4/**"
+    ],
+    "p4-7": [
+      "js/core/artifacts/index.js",
+      "js/project/index.js",
+      "js/cache/**",
+      "js/backend.js",
+      "js/worker.js",
+      "js/worker-legacy.js",
+      "js/worker-budget.js",
+      "tests/phase4/**",
+      "tools/validation/phase4/**",
+      "reports/phase4/**",
+      ".github/workflows/phase4-*.yml",
+      "package.json",
+      "userscript/hex.user.template.js",
+      "userscript/release-version.json"
+    ]
+  },
+  "sharedIntegrationPaths": [
+    "js/core/artifacts/index.js",
+    "js/project/index.js",
+    "package.json",
+    "userscript/hex.user.template.js",
+    "userscript/release-version.json"
+  ],
+  "forbiddenPaths": [
+    "js/semantics/**",
+    "js/targets/**",
+    "js/ir-core.js",
+    "js/ir.js",
+    "js/decompiler/**"
+  ],
+  "generatedPaths": [
+    "userscript/hex.user.template.js",
+    "userscript/release-version.json"
+  ],
+  "releaseOnlyPaths": [
+    ".github/workflows/phase4-release-validation.yml",
+    "reports/phase4/**"
+  ]
+}
