@@ -1,6 +1,6 @@
 {
   "phase": 4,
-  "version": 1,
+  "version": 2,
   "contractPaths": [
     "js/core/artifacts/contracts.js",
     "js/core/artifacts/index.js",
@@ -8,6 +8,13 @@
     "js/core/scheduler/index.js",
     "js/project/artifact-index.js"
   ],
+  "contractWriteOwners": {
+    "js/core/artifacts/contracts.js": ["p4-0"],
+    "js/core/artifacts/index.js": ["p4-0", "p4-7"],
+    "js/core/budgets/index.js": ["p4-0", "p4-7"],
+    "js/core/scheduler/index.js": ["p4-0", "p4-7"],
+    "js/project/artifact-index.js": ["p4-0", "p4-3", "p4-7"]
+  },
   "lanes": {
     "p4-0": [
       "js/core/artifacts/**",
@@ -57,8 +64,12 @@
       "reports/phase4/**"
     ],
     "p4-7": [
-      "js/core/artifacts/index.js",
+      "js/core/artifacts/**",
+      "js/core/scheduler/**",
+      "js/core/budgets/**",
+      "js/project/artifact-index.js",
       "js/project/index.js",
+      "js/bytesource/cached.js",
       "js/cache/**",
       "js/backend.js",
       "js/worker.js",
@@ -71,10 +82,19 @@
       "package.json",
       "userscript/hex.user.template.js",
       "userscript/release-version.json"
+    ],
+    "p4-r": [
+      "tools/validation/phase-ownership/phase4.json",
+      "tools/validation/phase4-ownership.mjs",
+      ".github/workflows/phase4-ownership.yml",
+      "tests/phase4/ownership/**"
     ]
   },
   "sharedIntegrationPaths": [
     "js/core/artifacts/index.js",
+    "js/core/budgets/index.js",
+    "js/core/scheduler/index.js",
+    "js/project/artifact-index.js",
     "js/project/index.js",
     "package.json",
     "userscript/hex.user.template.js",
