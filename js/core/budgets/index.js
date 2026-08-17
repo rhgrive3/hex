@@ -20,16 +20,31 @@ const DEFAULT_LIMITS = Object.freeze({
   queueOperations:100000,
 });
 
+function uniqueSignals(signal, signals) {
+  const out = [];
+  for (const item of [...(Array.isArray(signals) ? signals : []), signal]) {
+    if (item && !out.includes(item)) out.push(item);
+  }
+  return out;
+}
+
 export class ResourceBudget {
-  constructor(limits = {}, { signal = null } = {}) {
+  constructor(limits = {}, { signal = null, signals = null, sharedUsed = null } = {}) {
     this.limits = Object.freeze({ ...DEFAULT_LIMITS, ...limits });
-    this.used = Object.create(null);
-    this.signal = signal;
+    this.used = sharedUsed || Object.create(null);
+    this.signals = Object.freeze(uniqueSignals(signal, signals));
+    this.signal = this.signals[0] || null;
+  }
+
+  withSignal(signal) {
+    if (!signal || this.signals.includes(signal)) return this;
+    return new ResourceBudget(this.limits, { signals:[...this.signals, signal], sharedUsed:this.used });
   }
 
   checkCancelled() {
-    if (!this.signal?.aborted) return;
-    throw this.signal.reason || new DOMException('Aborted', 'AbortError');
+    for (const signal of this.signals) {
+      if (signal?.aborted) throw signal.reason || new DOMException('Aborted', 'AbortError');
+    }
   }
 
   consume(resource, amount = 1) {
