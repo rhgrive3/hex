@@ -141,7 +141,10 @@ export class ProjectArtifactIndex {
   }
 
   toProjectReferences() {
-    return Object.freeze(this.list().map((ref) => Object.freeze({ ...ref })));
+    // Re-sanitize at the persistence boundary as defense in depth. Even if a
+    // caller mutates the public Map directly, no payload/record/graph can be
+    // serialized through this API.
+    return Object.freeze(this.list().map((ref) => createArtifactRef(ref)));
   }
 
   stats() {
