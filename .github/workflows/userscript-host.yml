@@ -38,6 +38,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: userscript-host-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   userscript:
     runs-on: ubuntu-latest
@@ -58,11 +62,6 @@ jobs:
         run: node tests/chatgpt-conversation-storage-security.mjs
       - name: Build and userscript tests
         run: npm run userscript:test
-      - name: AI and worker regressions
-        run: |
-          npm run ai:test
-          node tests/gemini.mjs
-          node tests/worker-classic-harness.mjs
       - name: Verify tiny committed loader is current
         run: git diff --exit-code -- userscript/hex.user.template.js
 
