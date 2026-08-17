@@ -107,11 +107,17 @@ test('manifest has the exact frozen-contract write-owner policy', () => {
   ]);
 });
 
-test('workflow resolves only the canonical repair branch to p4-r and remains fail-closed', () => {
-  assert.match(WORKFLOW, /hex\/p4-integration-contract-repair\) lane=p4-r ;;/);
-  assert.doesNotMatch(WORKFLOW, /hex\/p4-r-\*\) lane=p4-r/);
-  assert.match(WORKFLOW, /Phase 4-owned files require a canonical Phase 4 lane branch/);
+test('workflow resolves canonical Phase 4 and Phase 5 branches and remains fail-closed', () => {
+  assert.match(WORKFLOW, /hex\/p4-integration-contract-repair\) phase=4; lane=p4-r ;;/);
+  assert.doesNotMatch(WORKFLOW, /hex\/p4-r-\*\) phase=4; lane=p4-r/);
+  assert.match(WORKFLOW, /hex\/p5-0-x86-foundation\) phase=5; lane=p5-0 ;;/);
+  assert.match(WORKFLOW, /hex\/p5-x86-integration\) phase=5; lane=p5-i ;;/);
+  assert.match(WORKFLOW, /Phase 4-owned files require a canonical Phase 4 or Phase 5 lane branch/);
   assert.match(WORKFLOW, /exit 1/);
+  assert.match(WORKFLOW, /if: steps\.lane\.outputs\.phase == '5'/);
+  assert.match(WORKFLOW, /phase5-ownership\.mjs/);
+  assert.match(WORKFLOW, /--base-sha "\$\{\{ github\.event\.pull_request\.base\.sha \}\}"/);
+  assert.match(WORKFLOW, /--head-sha "\$\{\{ github\.event\.pull_request\.head\.sha \}\}"/);
 });
 
 test('shared generated userscript outputs do not alone force an unrelated PR into a Phase 4 lane', () => {

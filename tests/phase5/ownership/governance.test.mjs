@@ -20,6 +20,7 @@ import {
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const VALIDATOR = path.join(ROOT, 'tools/validation/phase5-ownership.mjs');
 const WORKFLOW = fs.readFileSync(path.join(ROOT, '.github/workflows/phase5-ownership.yml'), 'utf8');
+const PHASE4_WORKFLOW = fs.readFileSync(path.join(ROOT, '.github/workflows/phase4-ownership.yml'), 'utf8');
 const SCHEMA = JSON.parse(fs.readFileSync(path.join(ROOT, 'tools/validation/phase5/release-evidence.schema.json'), 'utf8'));
 const MANIFEST = loadManifest();
 const LANES = ['p5-0', 'p5-1', 'p5-2', 'p5-3', 'p5-4', 'p5-5', 'p5-6', 'p5-i'];
@@ -256,6 +257,16 @@ test('workflow resolves exact branches and uses immutable event SHAs', () => {
   assert.match(WORKFLOW, /github\.event\.pull_request\.head\.sha/);
   assert.match(WORKFLOW, /--base-sha "\$BASE_SHA" --head-sha "\$HEAD_SHA"/);
   assert.doesNotMatch(WORKFLOW, /origin\/\$\{\{ github\.base_ref \}\}/);
+});
+
+test('Phase 4 protected paths delegate canonical Phase 5 branches to the exact Phase 5 inventory gate', () => {
+  assert.match(PHASE4_WORKFLOW, /hex\/p5-0-x86-foundation\) phase=5; lane=p5-0 ;;/);
+  assert.match(PHASE4_WORKFLOW, /hex\/p5-x86-integration\) phase=5; lane=p5-i ;;/);
+  assert.match(PHASE4_WORKFLOW, /phase5-ownership\.mjs/);
+  assert.match(PHASE4_WORKFLOW, /github\.event\.pull_request\.base\.sha/);
+  assert.match(PHASE4_WORKFLOW, /github\.event\.pull_request\.head\.sha/);
+  assert.match(PHASE4_WORKFLOW, /Phase 4-owned files require a canonical Phase 4 or Phase 5 lane branch/);
+  assert.match(PHASE4_WORKFLOW, /exit 1/);
 });
 
 test('release schema requires every Phase 5 field and encodes null as not-proven', () => {
