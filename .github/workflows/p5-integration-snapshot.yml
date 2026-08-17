@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - hex/p5-x86-integration
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: read
