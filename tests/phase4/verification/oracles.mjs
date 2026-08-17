@@ -99,8 +99,6 @@ async function artifactIdentityOracles(report) {
 
   await addCase(report, 'under-invalidation', 'A', 'p4-0', () => {
     const baseline = descriptor();
-    // Only frozen ArtifactKey dimensions are varied here. artifactKind is descriptive record metadata;
-    // producer identity/version is the key dimension that separates different production semantics.
     const mutations = [
       ['binaryId', { binaryId: 'binary:changed' }], ['sliceId', { sliceId: 'slice:changed' }],
       ['entityId', { entityId: 'function:changed' }], ['producerId', { producerId: 'producer:changed' }],
@@ -232,12 +230,19 @@ async function schedulerOracles(report) {
     const childRequest = { descriptor: child, produce: async ({ signal }) => { childSignal = signal; started = true; await gate; return { child: true }; } };
     const controller = new AbortController();
     const parentPromise = scheduler.request({ descriptor: parent, signal: controller.signal, dependencies: [childRequest], produce: async () => ({ parent: true }) });
+    const parentSettlement = parentPromise.then(
+      (value) => ({ status: 'fulfilled', value }),
+      (error) => ({ status: 'rejected', error }),
+    );
     await waitUntil(() => started); controller.abort(abortError('parent-cancelled')); await sleep(10);
     const propagated = childSignal?.aborted === true;
     if (!propagated) count(report, 'cancellationFailures');
-    releaseChild(); try { await parentPromise; } catch { /* expected */ }
+    releaseChild();
+    const settlement = await parentSettlement;
+    assert.equal(settlement.status, 'rejected', 'cancelled parent unexpectedly fulfilled');
+    assert.equal(settlement.error?.name, 'AbortError', 'cancelled parent did not reject with AbortError');
     assert.equal(propagated, true, 'parent cancellation did not abort its dependency');
-    return { propagated };
+    return { propagated, parentStatus: settlement.status, parentError: settlement.error?.name || null };
   });
 
   await addCase(report, 'budget behavior', 'E', 'p4-2', async () => {
@@ -316,7 +321,6 @@ async function scalingOracle(report) {
       assert.equal(index.list().length, size); const projectIndexMs = nowMs() - started;
       const coalescing = await coalescingScale(size);
       if (coalescing.invocations !== 1 || coalescing.scheduler.coalescedRequests !== size - 1) count(report, 'coalescingFailures');
-      // Coalesced N-consumer work must not enqueue N semantic producer jobs. This operation-count gate is deterministic.
       if (coalescing.scheduler.queueOperations > 8) count(report, 'scalingFailures');
       rows.push({
         size, identityMs, identityPerItemMs: identityMs / size,
