@@ -62,6 +62,7 @@ export class CachedByteSource extends ByteSource {
     this.pageSize = positiveSafeInteger(options.pageSize ?? 256 * 1024, 'pageSize');
     this.maxCachedBytes = options.maxCachedBytes ?? 8 * 1024 * 1024;
     this.maxPrefetchPages = options.maxPrefetchPages ?? 2;
+    this.abortUnobservedReads = options.abortUnobservedReads === true;
     if (!Number.isSafeInteger(this.maxCachedBytes) || this.maxCachedBytes < this.pageSize) throw new TypeError('maxCachedBytes must be at least one page');
     if (!Number.isSafeInteger(this.maxPrefetchPages) || this.maxPrefetchPages < 0) throw new TypeError('maxPrefetchPages must be a non-negative safe integer');
     this.cache = new Map();
@@ -157,7 +158,7 @@ export class CachedByteSource extends ByteSource {
     const remaining = this.size - offset;
     const length = Number(remaining < BigInt(this.pageSize) ? remaining : BigInt(this.pageSize));
     const generation = this.generation;
-    const controller = typeof AbortController === 'function' ? new AbortController() : null;
+    const controller = this.abortUnobservedReads && typeof AbortController === 'function' ? new AbortController() : null;
     const entry = { controller, waiters:0, settled:false, promise:null };
     this.stats.rangeRequestCount++;
     if (prefetch) this.stats.prefetchCount++;
