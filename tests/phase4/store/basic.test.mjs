@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import { ArtifactHotCache, ArtifactStore } from '../../../js/core/artifacts/index.js';
-import { artifactHotEntrySize } from '../../../js/core/artifacts/storage/integrity.js';
 import { DelayedReadBackend, PersistentMemoryBackend, descriptor } from './support.mjs';
 
 // put/get, cold miss, hot hit, deterministic encoding, mutable-return isolation.
@@ -58,7 +57,7 @@ import { DelayedReadBackend, PersistentMemoryBackend, descriptor } from './suppo
   assert.ok(store.stats().hotCache.evictions >= 1);
 }
 
-// Large payload accounting counts retained record bytes plus raw payload bytes.
+// Large payload accounting uses exact canonical payload bytes, preserving the P4-0 maxBytes contract.
 {
   const entries = new Map();
   const store = new ArtifactStore({
@@ -68,7 +67,7 @@ import { DelayedReadBackend, PersistentMemoryBackend, descriptor } from './suppo
   const d = descriptor('large');
   await store.publish(d, { text:'x'.repeat(32 * 1024) });
   const raw = entries.get(d.artifactId);
-  assert.equal(store.stats().hotCache.bytes, artifactHotEntrySize(raw.record, new Uint8Array(raw.payload)));
+  assert.equal(store.stats().hotCache.bytes, new Uint8Array(raw.payload).byteLength);
 }
 
 // Close/reopen and duplicate publication are deterministic.

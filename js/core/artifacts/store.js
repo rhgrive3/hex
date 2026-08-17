@@ -8,7 +8,6 @@ import {
 import { ArtifactHotCache } from './hot-cache.js';
 import { createArtifactBackend } from './backends.js';
 import {
-  artifactHotEntrySize,
   canonicalStoredRecord,
   normalizeStoredPayloadBytes,
   validateStoredArtifact,
@@ -175,7 +174,7 @@ export class ArtifactStore {
         this.hotCache.put(
           artifactId,
           { record:validated.record, payloadBytes:validated.payloadBytes },
-          artifactHotEntrySize(validated.record, validated.payloadBytes),
+          validated.payloadBytes.byteLength,
         );
         if (source === 'persistent') this.metrics.persistentHits++;
         else this.metrics.memoryHits++;
@@ -350,7 +349,7 @@ export class ArtifactStore {
       this.hotCache.put(
         artifactId,
         { record:canonicalRecord, payloadBytes:canonicalPayloadBytes },
-        artifactHotEntrySize(canonicalRecord, canonicalPayloadBytes),
+        canonicalPayloadBytes.byteLength,
       );
       this.metrics.publishes++;
       this.metrics.publishBytes += canonicalPayloadBytes.byteLength;
