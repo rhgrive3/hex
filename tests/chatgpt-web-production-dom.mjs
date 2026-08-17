@@ -68,6 +68,13 @@ async function run(name, browserType) {
       assert.equal(result.value.text, ANSWER);
     });
 
+    await scenario(context, name, 'New Chat composer rehydration is retried before send', {
+      prompt: SHORT_PROMPT, chatgpt: { composerHydrationDelayMs: 120 },
+    }, (result) => {
+      assert.equal(result.ok, true, `${name}: a provisional iOS composer must not strand Worker submission (${result.error?.code})`);
+      assert.equal(result.value.text, ANSWER);
+    });
+
     await scenario(context, name, 'a submitted user turn may hydrate after its wrapper appears', {
       prompt: LONG_PROMPT, chatgpt: { userHydrationDelayMs: 120 },
     }, (result) => {

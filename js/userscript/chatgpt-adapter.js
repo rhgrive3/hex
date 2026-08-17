@@ -499,7 +499,7 @@ export class ChatGPTTurnController {
   async run(prompt, { signal, timeoutMs = 110000, expectedConversation = null, newConversation = expectedConversation === null, onConversation } = {}) {
     const started = Date.now();
     const normalizedPrompt = normalizeText(prompt);
-    const composer = await waitFor(() => this.adapter.composer(), Math.min(timeoutMs, this.startTimeoutMs), signal);
+    let composer = await waitFor(() => this.adapter.composer(), Math.min(timeoutMs, this.startTimeoutMs), signal);
     if (!composer) throw bridgeError('turn-controller', 'composer-not-found', 'ChatGPT composer was not found.');
     if (this.adapter.isGenerating()) throw bridgeError('turn-controller', 'already-generating', 'ChatGPT is already generating a response.');
 
@@ -507,8 +507,19 @@ export class ChatGPTTurnController {
     const baselineUsers = new Set(this.userTurns().map((turn) => turn.id));
     const baselineConversation = new Set(this.conversationTurns().map((turn) => turn.id));
     const baselinePageErrors = pageErrorSignatures(this.adapter);
-    this.adapter.setComposerText(composer, prompt);
     const send = await waitFor(() => {
+      // ChatGPT can replace the New Chat composer during SPA hydration on
+      // iOS/WebKit. Never keep waiting on text injected into a detached editor:
+      // re-target the currently authoritative composer and require an exact
+      // prompt match there before invoking Send.
+      const currentComposer = this.adapter.composer();
+      if (!currentComposer) return null;
+      const currentText = normalizeText(this.adapter.composerText(currentComposer));
+      if (currentComposer !== composer || currentText !== normalizedPrompt) {
+        this.adapter.setComposerText(currentComposer, prompt);
+        composer = currentComposer;
+      }
+      if (normalizeText(this.adapter.composerText(currentComposer)) !== normalizedPrompt) return null;
       const node = this.adapter.sendButton();
       return node && !node.disabled && node.getAttribute?.('aria-disabled') !== 'true' ? node : null;
     }, Math.min(this.startTimeoutMs, remaining(started, timeoutMs)), signal);
