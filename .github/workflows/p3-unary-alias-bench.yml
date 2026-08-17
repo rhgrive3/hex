@@ -1,4 +1,4 @@
-name: P3 unary alias validation
+name: P3 deterministic unary intrinsic validation
 on:
   push:
     branches: [hex/p3-local-debug-350]
@@ -21,22 +21,16 @@ jobs:
           node-version: '22'
       - run: npm ci
       - run: node scripts/fetch-real-fixtures.mjs TsumTsum
-      - name: Apply generic unary alias candidate
+      - name: Apply deterministic intrinsic compatibility projection
         run: |
           python - <<'PY'
           from pathlib import Path
-          p=Path('js/semantics/ir/normalize-effects.js')
-          s=p.read_text()
-          old="  'neg', 'not', 'abs', 'fneg', 'fabs', 'fsqrt', 'clz', 'rbit', 'rev', 'rev16', 'rev32',\n"
-          new="  'neg', 'not', 'abs', 'fneg', 'fabs', 'fsqrt', 'clz', 'rbit', 'rev', 'rev16', 'rev32',\n  'count-leading-zeroes', 'reverse-bits',\n"
-          assert old in s
-          p.write_text(s.replace(old,new,1))
           p=Path('js/semantics/compat/semantic-ir-v2-to-v1-nodes.js')
           s=p.read_text()
-          old="      setBasic(V1_OP.UN, node.operator || attrs.operator || 'unknown');"
-          new="      setBasic(V1_OP.UN, ({ 'count-leading-zeroes': 'clz', 'reverse-bits': 'rbit' }[node.operator] || node.operator || attrs.operator || 'unknown'));"
-          assert old in s
-          p.write_text(s.replace(old,new,1))
+          anchor="  if (op === 'not-bool') { setBasic(V1_OP.UN, 'not'); return true; }"
+          replacement="  if (op === 'count-leading-zeroes') { setBasic(V1_OP.UN, 'clz'); return true; }\n  if (op === 'reverse-bits') { setBasic(V1_OP.UN, 'rbit'); return true; }\n"+anchor
+          assert anchor in s
+          p.write_text(s.replace(anchor,replacement,1))
           PY
       - name: Check exact regressed function
         run: |
@@ -54,6 +48,7 @@ jobs:
           const asm=lines.filter(l=>/__asm\(/.test(l.text)&&!/__asm\("br\s+x\d+"\)/.test(l.text));
           console.error(`[P3UNARY exact] ms=${Date.now()-t} lines=${lines.length} asm=${asm.length}`);
           for(const l of asm) console.error(`[P3UNARY asm] ${l.text}`);
+          if (asm.some(l=>/\b(rbit|clz)\b/.test(l.text))) process.exit(2);
           EOF
           node --max-old-space-size=6000 tests/.p3-unary-probe.mjs
       - run: node tests/ir.mjs
