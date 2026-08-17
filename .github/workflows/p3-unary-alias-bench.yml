@@ -25,25 +25,18 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
-          p=Path('js/semantics/ir/normalize-effects.js'); s=p.read_text()
+          p=Path('js/semantics/ir/normalize-effects.js')
+          s=p.read_text()
           old="  'neg', 'not', 'abs', 'fneg', 'fabs', 'fsqrt', 'clz', 'rbit', 'rev', 'rev16', 'rev32',\n"
           new="  'neg', 'not', 'abs', 'fneg', 'fabs', 'fsqrt', 'clz', 'rbit', 'rev', 'rev16', 'rev32',\n  'count-leading-zeroes', 'reverse-bits',\n"
-          assert old in s; p.write_text(s.replace(old,new,1))
-
-          p=Path('js/semantics/compat/semantic-ir-v2-to-v1-nodes.js'); s=p.read_text()
-          anchor="function machineControl(node) { return node?.attributes?.machineControlEffect ?? null; }\n"
-          helper="""function machineControl(node) { return node?.attributes?.machineControlEffect ?? null; }
-function legacyUnaryOperator(operator) {
-  const op = String(operator ?? 'unknown');
-  if (op === 'count-leading-zeroes') return 'clz';
-  if (op === 'reverse-bits') return 'rbit';
-  return op;
-}
-"""
-          assert anchor in s; s=s.replace(anchor,helper,1)
+          assert old in s
+          p.write_text(s.replace(old,new,1))
+          p=Path('js/semantics/compat/semantic-ir-v2-to-v1-nodes.js')
+          s=p.read_text()
           old="      setBasic(V1_OP.UN, node.operator || attrs.operator || 'unknown');"
-          new="      setBasic(V1_OP.UN, legacyUnaryOperator(node.operator || attrs.operator || 'unknown'));"
-          assert old in s; p.write_text(s.replace(old,new,1))
+          new="      setBasic(V1_OP.UN, ({ 'count-leading-zeroes': 'clz', 'reverse-bits': 'rbit' }[node.operator] || node.operator || attrs.operator || 'unknown'));"
+          assert old in s
+          p.write_text(s.replace(old,new,1))
           PY
       - name: Check exact regressed function
         run: |
