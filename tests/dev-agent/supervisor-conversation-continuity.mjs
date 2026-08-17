@@ -7,6 +7,7 @@ await testDelayedConversationIdentityStaysOnOneSupervisorChat();
 await testUnboundSupervisorSurfaceNeverCreatesAnotherChat();
 await testWorkerSendRefreshesLatestSupervisorAnchorAfterVirtualization();
 await testWorkerFollowupRefreshesLatestSupervisorAnchorAfterVirtualization();
+await testReleaseAdoptsAlreadyRoutedSupervisorSurfaceAfterVirtualization();
 console.log('dev-agent supervisor conversation continuity: ok');
 
 async function testDelayedConversationIdentityStaysOnOneSupervisorChat() {
@@ -103,14 +104,10 @@ async function testWorkerSendRefreshesLatestSupervisorAnchorAfterVirtualization(
 
   assert.equal(result.status, 'COMPLETED');
   assert.equal(controller.currentConversation().id, supervisor.id);
+  assert.deepEqual(harness.claimAnchor(), harness.turnC, 'worker.send must refresh the retained Supervisor anchor to turn C before handoff');
   const restore = navigation.at(-1);
   assert.equal(restore.conversation.id, supervisor.id);
-  assert.deepEqual(
-    restore.options.continuityAnchor,
-    harness.turnC,
-    'worker.send must refresh to the latest visible Supervisor turn C immediately before handoff, not stale claim-time turn A',
-  );
-  assert.notDeepEqual(restore.options.continuityAnchor, harness.turnA);
+  assert.equal(restore.options.continuityAnchor, null, 'Supervisor restore must not require one virtualizable historical turn to reappear');
   coordinator.close();
 }
 
@@ -128,15 +125,27 @@ async function testWorkerFollowupRefreshesLatestSupervisorAnchorAfterVirtualizat
   assert.equal(result.status, 'COMPLETED');
   assert.equal(navigation.at(-2).conversation.id, worker.id, 'followup must first return to the retained Worker conversation');
   assert.equal(navigation.at(-2).options.continuityAnchor, undefined, 'Worker return keeps strict remembered-history hydration');
+  assert.deepEqual(harness.claimAnchor(), harness.turnC, 'worker.followup must retain the latest Supervisor turn C before leaving the Supervisor surface');
   const restore = navigation.at(-1);
   assert.equal(restore.conversation.id, supervisor.id);
-  assert.deepEqual(
-    restore.options.continuityAnchor,
-    harness.turnC,
-    'worker.followup must refresh to latest visible Supervisor turn C before leaving the Supervisor surface',
-  );
-  assert.notDeepEqual(restore.options.continuityAnchor, harness.turnA);
+  assert.equal(restore.options.continuityAnchor, null, 'Supervisor restore uses settled target-surface adoption instead of exact historical-turn hydration');
   assert.equal(controller.currentConversation().id, supervisor.id);
+  coordinator.close();
+}
+
+async function testReleaseAdoptsAlreadyRoutedSupervisorSurfaceAfterVirtualization() {
+  const harness = createWorkerAnchorHarness();
+  const { coordinator, navigation } = harness;
+
+  await coordinator.claim({ runId: 'release-anchor-run', workerId: 'release-anchor-worker' });
+  harness.setSupervisorAnchors([harness.turnB]);
+  harness.setStrictSupervisorUnavailable(true);
+
+  const released = await coordinator.release({ workerId: 'release-anchor-worker' });
+
+  assert.equal(released.claimed, false);
+  assert.equal(released.role, 'available');
+  assert.equal(navigation.length, 0, 'an already-routed Supervisor surface must be adopted in place instead of navigating again');
   coordinator.close();
 }
 
@@ -151,6 +160,7 @@ function createWorkerAnchorHarness() {
   let workerConversation = null;
   let state = 'STARTING';
   let responseText = '';
+  let strictSupervisorUnavailable = false;
   const listeners = new Set();
   const navigation = [];
 
@@ -170,8 +180,20 @@ function createWorkerAnchorHarness() {
   };
 
   const controller = {
+    adapter: {
+      conversation() { return page ? { ...page } : null; },
+      composer() { return {}; },
+      isGenerating() { return false; },
+    },
     on(listener) { listeners.add(listener); return () => listeners.delete(listener); },
-    currentConversation() { return page ? { ...page } : null; },
+    currentConversation() {
+      if (strictSupervisorUnavailable && page?.id === supervisor.id) return null;
+      return page ? { ...page } : null;
+    },
+    adoptCurrentConversation() {
+      if (page?.id !== supervisor.id) return null;
+      return { ...page };
+    },
     currentUserAnchors() {
       if (page?.id === supervisor.id) return supervisorAnchors.map((anchor) => ({ ...anchor }));
       return [{ id: 'worker-user-turn', text: 'worker task' }];
@@ -210,6 +232,7 @@ function createWorkerAnchorHarness() {
       supervisorAnchors = anchors.map((anchor) => ({ ...anchor }));
       page = { ...supervisor };
     },
+    setStrictSupervisorUnavailable(value) { strictSupervisorUnavailable = !!value; },
     seedWorkerConversation() { workerConversation = { ...worker }; },
     claimAnchor() { return coordinator.claimed?.supervisorAnchor ? { ...coordinator.claimed.supervisorAnchor } : null; },
   };
