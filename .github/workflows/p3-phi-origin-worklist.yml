@@ -1,0 +1,118 @@
+name: P3 phi origin worklist validation
+on:
+  push:
+    branches: [hex/p3-local-debug-350]
+    paths: ['.github/workflows/p3-phi-origin-worklist.yml']
+permissions:
+  contents: read
+env:
+  HEX_FIXTURE_BATTLECATS_URL: https://raw.githubusercontent.com/rhgrive3/hex/bd7bd61d093592d07fdd9e9b14a859e19dd4c3a9/tests/battlecats
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 75c393a7e89a1154963b03a34b8e2ada0bebe9f9
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci
+      - run: node scripts/fetch-real-fixtures.mjs battlecats
+      - name: Apply phi-origin worklist and canonical-sort cache
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('js/core/identity/origin.js'); s=p.read_text()
+          old="function uniqueSorted(values) {\n  return Array.from(new Map(values.map((value) => [stableStringify(value), value])).values())\n    .sort((a, b) => stableStringify(a).localeCompare(stableStringify(b)));\n}"
+          new="function uniqueSorted(values) {\n  const byKey = new Map(values.map((value) => [stableStringify(value), value]));\n  return [...byKey.entries()]\n    .sort(([a], [b]) => a.localeCompare(b))\n    .map(([, value]) => value);\n}"
+          assert old in s; p.write_text(s.replace(old,new,1))
+
+          p=Path('js/semantics/ssa/build.js'); s=p.read_text()
+          start=s.index('function resolvePhiOrigins(')
+          end=s.index('\nfunction finalizePhi(', start)
+          old=s[start:end]
+          new=r'''function resolvePhiOrigins(phiDefinitions, definitionByValue, irBlocks, tick) {
+  const sorted = phiDefinitions.slice().sort((a, b) => a.valueId.localeCompare(b.valueId));
+  const phiByValue = new Map(sorted.map((phi) => [phi.valueId, phi]));
+  const originPool = [];
+  const originIndexByKey = new Map();
+  const rootsByPhi = new Map();
+  const dependents = new Map(sorted.map((phi) => [phi.valueId, new Set()]));
+
+  const originIndex = (key, origin) => {
+    let index = originIndexByKey.get(key);
+    if (index != null) return index;
+    index = originPool.length;
+    originPool.push(origin);
+    originIndexByKey.set(key, index);
+    return index;
+  };
+
+  for (const phi of sorted) {
+    tick();
+    const baseOrigin = safeOrigin(irBlocks.get(phi.blockId)?.origin, createOriginSet({ parentEntityIds: [phi.blockId] }));
+    const roots = new Set([originIndex(`phi-base:${phi.valueId}`, baseOrigin)]);
+    const incoming = phi.incoming.slice().sort((a, b) => a.predecessorBlockId.localeCompare(b.predecessorBlockId) || a.valueId.localeCompare(b.valueId));
+    for (const item of incoming) {
+      tick();
+      const incomingDefinition = definitionByValue.get(item.valueId);
+      if (!incomingDefinition) fail('semantic-ssa-dangling-phi-value-id');
+      if (incomingDefinition.kind === 'phi') {
+        if (!phiByValue.has(incomingDefinition.valueId)) fail('semantic-ssa-dangling-phi-value-id');
+        dependents.get(incomingDefinition.valueId).add(phi.valueId);
+      } else {
+        roots.add(originIndex(`definition:${incomingDefinition.valueId}`, incomingDefinition.origin));
+      }
+    }
+    rootsByPhi.set(phi.valueId, roots);
+  }
+
+  const queue = sorted.map((phi) => phi.valueId);
+  const queued = new Set(queue);
+  while (queue.length) {
+    tick();
+    const sourceId = queue.shift();
+    queued.delete(sourceId);
+    const sourceRoots = rootsByPhi.get(sourceId);
+    for (const targetId of [...dependents.get(sourceId)].sort()) {
+      tick();
+      const targetRoots = rootsByPhi.get(targetId);
+      const before = targetRoots.size;
+      for (const index of sourceRoots) { tick(); targetRoots.add(index); }
+      if (targetRoots.size !== before && !queued.has(targetId)) {
+        queue.push(targetId);
+        queued.add(targetId);
+      }
+    }
+  }
+
+  const resolved = new Map();
+  for (const phi of sorted) {
+    tick();
+    const origins = [...rootsByPhi.get(phi.valueId)].sort((a, b) => a - b).map((index) => originPool[index]);
+    resolved.set(phi.valueId, safeOrigin(...origins));
+  }
+  return resolved;
+}'''
+          p.write_text(s[:start]+new+s[end:])
+          PY
+      - name: Pathological real-function benchmark
+        run: |
+          cat > tests/.p3-phi-probe.mjs <<'EOF'
+          import { openBinary } from './harness.mjs';
+          import { decompile } from '../js/decompile.js';
+          import { setSemanticMigrationMode } from '../js/ir.js';
+          setSemanticMigrationMode('semantic-v2-compat');
+          const w=await openBinary('tests/.real-fixtures/battlecats');
+          const a=0x10033fd24n,end=0x100340074n;
+          const m=await w.analyze(a,end);
+          const t=Date.now();
+          const r=decompile(m,{addr:a,rowOfAddress:x=>w.rowOf(x),addrOfRow:n=>w.region.vmAddr+BigInt(n)*4n,symbolFor:x=>w.symbols.nameAt(x)});
+          console.error(`[P3PHI total] ${Date.now()-t}ms lines=${r?.lines?.length??-1}`);
+          EOF
+          timeout --signal=TERM --kill-after=5s 20s node --max-old-space-size=6000 tests/.p3-phi-probe.mjs
+      - run: node tests/ir.mjs
+      - run: npm run semantic-v2:test
