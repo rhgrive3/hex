@@ -114,6 +114,15 @@ test('workflow resolves only the canonical repair branch to p4-r and remains fai
   assert.match(WORKFLOW, /exit 1/);
 });
 
+test('shared generated userscript outputs do not alone force an unrelated PR into a Phase 4 lane', () => {
+  assert.doesNotMatch(WORKFLOW, /- 'userscript\/hex\.user\.template\.js'/);
+  assert.doesNotMatch(WORKFLOW, /- 'userscript\/release-version\.json'/);
+  assert.deepEqual(MANIFEST.generatedPaths, [
+    'userscript/hex.user.template.js',
+    'userscript/release-version.json',
+  ], 'generated outputs remain governed when a real Phase 4 lane is already running');
+});
+
 test('A: p4-3 may modify project ArtifactIndex', () => {
   expectPass('p4-3', 'js/project/artifact-index.js');
 });
