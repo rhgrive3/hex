@@ -4,13 +4,14 @@ import { gzipSync } from 'node:zlib';
 import { readFile, mkdir, rm, writeFile } from 'node:fs/promises';
 import { dirname, posix, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { resolveUserscriptReleaseVersion } from './userscript-release-version.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const dist = resolve(root, 'dist');
 const generated = resolve(root, '.runtime-build');
 const committedTemplate = resolve(root, 'userscript/hex.user.template.js');
 const ORIGIN_TOKEN = '__HEX_ORIGIN__';
-const LOADER_VERSION = '2.0.2322241684';
+const releaseStatePath = resolve(root, 'userscript/release-version.json');
 const MAX_LOADER_BYTES = 64 * 1024;
 const CLASSIC_ENTRIES = ['js/worker.js', 'js/platform/capstone-probe-worker.js', 'js/platform/capstone-disasm-worker.js'];
 
@@ -23,7 +24,17 @@ const scopedCss = scopeCss(css);
 await writeGeneratedModule('embedded-assets.js', `export const PROTECTED_HOST=${JSON.stringify({ html: body, css, scopedCss })};\nexport const PROTECTED_WORKER_ASSETS=${JSON.stringify(workerAssets)};\n`);
 
 const runtime = await bundle('js/userscript/protected-entry.js', { format: 'esm', rewriteImportMeta: true });
+const loaderBundle = await bundle('js/userscript/loader.js', { format: 'iife' });
 const contentHash = sha256(runtime), buildId = contentHash.slice(0, 24);
+const releaseIdentity = sha256(Buffer.concat([
+  Buffer.from(contentHash, 'utf8'),
+  Buffer.from(sha256(loaderBundle), 'utf8'),
+  await readFile(fileURLToPath(import.meta.url)),
+]));
+const previousRelease = JSON.parse(await readFile(releaseStatePath, 'utf8'));
+const release = resolveUserscriptReleaseVersion(previousRelease, { releaseIdentity, buildId });
+const LOADER_VERSION = release.version;
+if (release.changed) await writeFile(releaseStatePath, JSON.stringify(release.state, null, 2) + '\n');
 const compressed = gzipSync(runtime, { level: 9 });
 const contentKey = randomBytes(32), iv = randomBytes(12);
 const runtimeVersion = `2.${LOADER_VERSION}`;
@@ -35,7 +46,6 @@ const manifest = Object.freeze({ buildId, runtimeVersion, ciphertextHash: sha256
 await writeFile(resolve(dist, assetPath.slice(1)), ciphertext);
 await writeGeneratedModule('runtime-secrets.js', `export const RUNTIME_BUILD=Object.freeze(${JSON.stringify({ manifest, contentKey: b64(contentKey), signingKey: b64(randomBytes(32)) })});\n`);
 
-const loaderBundle = await bundle('js/userscript/loader.js', { format: 'iife' });
 const loaderForOrigin = (origin) => loaderBundle.toString('utf8')
   .replaceAll(ORIGIN_TOKEN, origin)
   .replaceAll('__HEX_LOADER_VERSION__', LOADER_VERSION)
@@ -54,7 +64,8 @@ const index = standaloneIndex(htmlSource, `/assets/${loaderName}`);
 await writeFile(resolve(dist, 'index.html'), index);
 await writeFile(resolve(dist, 'runtime-manifest.json'), JSON.stringify(publicManifest(manifest), null, 2));
 
-console.log(`built tiny userscript loader (${Buffer.byteLength(template)} bytes)`);
+console.log(`built tiny userscript loader ${LOADER_VERSION} (${Buffer.byteLength(template)} bytes)`);
+console.log(`userscript release identity ${releaseIdentity}${release.changed ? " (version advanced)" : ""}`);
 console.log(`built protected runtime ${buildId} (${runtime.length} -> ${ciphertext.length} bytes)`);
 console.log(`built dist/ with ${manifest.ciphertextHash}`);
 
