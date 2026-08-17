@@ -45,6 +45,11 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - name: Restore pinned Playwright Chromium cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-1.55.0-chromium-v1
       - name: Install pinned Playwright Chromium
         run: |
           npm install --no-save --save-exact playwright@1.55.0
@@ -63,6 +68,13 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - name: Restore pinned Playwright viewport cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-1.55.0-chromium-webkit-v1
+          restore-keys: |
+            playwright-${{ runner.os }}-1.55.0-chromium-v1
       - name: Install pinned Playwright viewport engines
         run: |
           npm install --no-save --save-exact playwright@1.55.0
