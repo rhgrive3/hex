@@ -1,127 +1,83 @@
-name: P3 latest-main resync and full gate
+name: P3 cross-binary hang pinpoint
 on:
   push:
     branches: [hex/p3-local-debug-350]
     paths:
       - '.github/workflows/p3-local-debug-350.yml'
 permissions:
-  contents: write
+  contents: read
+  actions: read
 jobs:
-  finalize:
+  pinpoint:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: BattleCats-pseudoc
+            fixture: battlecats
+            file: battlecats
+            oracle_artifact: cross-binary-oracle-BattleCats
+            oracle: tests/oracle.battlecats.ci.json.gz
+            only: pseudoc
+          - name: TsumTsum-core
+            fixture: TsumTsum
+            file: TsumTsum
+            oracle_artifact: cross-binary-oracle-TsumTsum
+            oracle: tests/oracle.TsumTsum.ci.json.gz
+            only: sections,funcs,funcs-guess,disasm,kinds,calls,refs,imports,objc,selstub,strings,xrefs,funcname,selffield,role,apimeaning,summary,expr,formula
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.sha }}
-          fetch-depth: 0
+          ref: 3aa37912a67c0b6d3efb03c93d19ed64b5dad0ff
+          fetch-depth: 1
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
-          cache: npm
-      - name: Checkout exact prior product head
+          node-version: '22'
+      - name: Fetch exact real fixture
+        run: |
+          node scripts/fetch-real-fixtures.mjs "${{ matrix.fixture }}"
+          node scripts/fetch-real-fixtures.mjs "${{ matrix.fixture }}" --check
+      - name: Download oracle from failing canonical run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download 31985496555 -n "${{ matrix.oracle_artifact }}" -D tests
+          test -s "${{ matrix.oracle }}"
+          gzip -t "${{ matrix.oracle }}"
+      - name: Inject temporary stderr diagnostics
         shell: bash
         run: |
-          integration=eaccc2987f7d25fce1e52269e1146be4e0a2cd28
-          base=b132f5add38a9bb335281315146fa5643a7481b5
-          git fetch origin \
-            refs/heads/hex/p3-semantic-ir-integration:refs/remotes/origin/hex/p3-semantic-ir-integration \
-            refs/heads/main:refs/remotes/origin/main
-          test "$(git rev-parse refs/remotes/origin/hex/p3-semantic-ir-integration)" = "$integration"
-          test "$(git rev-parse refs/remotes/origin/main)" = "$base"
-          git checkout --detach "$integration"
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-      - name: Merge current main preserving all newer Dev/userscript work
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('tests/accuracy.mjs')
+          s = p.read_text()
+          old = """    const t = Date.now();\n    let r;\n    try {\n      r = await f.fn({ w, o });\n"""
+          new = """    const t = Date.now();\n    process.stderr.write(`[P3DIAG feature:start] ${f.id}\\n`);\n    let r;\n    try {\n      r = await f.fn({ w, o });\n"""
+          assert old in s
+          s = s.replace(old, new, 1)
+          old = """    r.id = f.id; r.label = f.label; r.ms = Date.now() - t;\n    rows.push(r);\n"""
+          new = """    r.id = f.id; r.label = f.label; r.ms = Date.now() - t;\n    process.stderr.write(`[P3DIAG feature:end] ${f.id} ${r.ms}ms\\n`);\n    rows.push(r);\n"""
+          assert old in s
+          s = s.replace(old, new, 1)
+          old = """  for (const [a, end] of samples) {\n    const model = await w.analyze(BigInt(a), BigInt(end));\n    if (!model) continue;\n    let res;\n    try {\n      res = decompile(model, {\n"""
+          new = """  for (const [a, end] of samples) {\n    process.stderr.write(`[P3DIAG pseudoc:analyze:start] 0x${BigInt(a).toString(16)}-0x${BigInt(end).toString(16)}\\n`);\n    const model = await w.analyze(BigInt(a), BigInt(end));\n    process.stderr.write(`[P3DIAG pseudoc:analyze:end] 0x${BigInt(a).toString(16)}\\n`);\n    if (!model) continue;\n    let res;\n    try {\n      process.stderr.write(`[P3DIAG pseudoc:decompile:start] 0x${BigInt(a).toString(16)}\\n`);\n      res = decompile(model, {\n"""
+          assert old in s
+          s = s.replace(old, new, 1)
+          old = """        symbolFor: (x) => w.symbols.nameAt(x),\n      });\n    } catch { continue; }\n"""
+          new = """        symbolFor: (x) => w.symbols.nameAt(x),\n      });\n      process.stderr.write(`[P3DIAG pseudoc:decompile:end] 0x${BigInt(a).toString(16)}\\n`);\n    } catch (err) {\n      process.stderr.write(`[P3DIAG pseudoc:decompile:error] 0x${BigInt(a).toString(16)} ${err?.stack || err}\\n`);\n      continue;\n    }\n"""
+          assert old in s
+          s = s.replace(old, new, 1)
+          p.write_text(s)
+          PY
+      - name: Run diagnostic partition with short hard timeout
         shell: bash
         run: |
-          base=b132f5add38a9bb335281315146fa5643a7481b5
-          set +e
-          git merge --no-commit --no-ff "$base"
-          rc=$?
-          set -e
-          if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; then exit "$rc"; fi
-          conflicts=$(git diff --name-only --diff-filter=U || true)
-          unexpected=$(printf '%s\n' "$conflicts" | grep -Ev '^(userscript/hex.user.template.js|\.github/workflows/universal-platform\.yml)$' || true)
-          if [ -n "$unexpected" ]; then
-            echo "Unexpected merge conflicts:" >&2
-            echo "$unexpected" >&2
-            exit 1
-          fi
-          if printf '%s\n' "$conflicts" | grep -qx 'userscript/hex.user.template.js'; then
-            git checkout --theirs userscript/hex.user.template.js
-            git add userscript/hex.user.template.js
-          fi
-          if printf '%s\n' "$conflicts" | grep -qx '.github/workflows/universal-platform.yml'; then
-            git checkout --ours .github/workflows/universal-platform.yml
-            git add .github/workflows/universal-platform.yml
-          fi
-          test -z "$(git diff --name-only --diff-filter=U)"
-          grep -q -- '- run: npm ci' .github/workflows/universal-platform.yml
-      - run: npm ci
-      - name: Build canonical userscript and record deterministic digest
-        shell: bash
-        run: |
-          npm run userscript:build
-          sha256sum userscript/hex.user.template.js > /tmp/final-userscript.sha256
-      - name: Public IR 30/30
-        run: node tests/ir.mjs
-      - name: Semantic IR v2 full gate
-        run: npm run semantic-v2:test
-      - name: MachineEffects gate
-        run: npm run effects:test
-      - name: Core identities/evidence gate
-        run: npm run core:test
-      - name: Invariant gates
-        run: npm run invariants:test
-      - name: Migration guardrails
-        run: npm run migration:test
-      - name: Semantic corpus
-        run: npm run semantic:test
-      - name: Decompiler corpus
-        run: npm run decompiler:test
-      - name: Compiler truth
-        run: npm run compiler-truth
-      - name: Platform gate
-        run: npm run platform:test
-      - name: Runtime gate
-        run: npm run runtime:test
-      - name: UI gate
-        run: npm run ui:test
-      - name: Baseline benchmark gate
-        run: npm run benchmark:baseline
-      - name: AI gate
-        run: npm run ai:test
-      - name: Userscript host gate
-        run: npm run userscript:test
-      - name: Userscript determinism after test rebuild
-        run: sha256sum -c /tmp/final-userscript.sha256
-      - name: Complete repository check
-        run: npm run check
-      - name: Userscript determinism after complete check
-        run: sha256sum -c /tmp/final-userscript.sha256
-      - name: Verify clean tree and atomically push latest-main resync
-        shell: bash
-        run: |
-          git checkout -- node_modules/.package-lock.json 2>/dev/null || true
-          unstaged=$(git diff --name-only | grep -Ev '^userscript/hex\.user\.template\.js$' || true)
-          if [ -n "$unstaged" ]; then
-            echo "Unexpected post-test changes:" >&2
-            echo "$unstaged" >&2
-            exit 1
-          fi
-          untracked=$(git ls-files --others --exclude-standard || true)
-          test -z "$untracked"
-          if git ls-files '.github/workflows/*' | grep -E '/p3-(final|debug|local|repair|validation)' ; then
-            echo 'Temporary Phase 3 workflow would land in integration' >&2
-            exit 1
-          fi
-          git add userscript/hex.user.template.js
-          git fetch origin \
-            refs/heads/main:refs/remotes/origin/main-final \
-            refs/heads/hex/p3-semantic-ir-integration:refs/remotes/origin/p3-final
-          test "$(git rev-parse refs/remotes/origin/main-final)" = b132f5add38a9bb335281315146fa5643a7481b5
-          test "$(git rev-parse refs/remotes/origin/p3-final)" = eaccc2987f7d25fce1e52269e1146be4e0a2cd28
-          git commit -m 'merge(main): preserve Dev Agent Round 2 in Phase 3 cutover'
-          git push origin HEAD:hex/p3-semantic-ir-integration
-          echo "LATEST_MAIN_RESYNC_HEAD=$(git rev-parse HEAD)"
+          set -o pipefail
+          timeout --signal=TERM --kill-after=10s 180s \
+            node --max-old-space-size=6000 tests/accuracy.mjs \
+              --target="tests/.real-fixtures/${{ matrix.file }}" \
+              --oracle="${{ matrix.oracle }}" \
+              --only="${{ matrix.only }}" \
+              --json 2>&1 | tee "diag-${{ matrix.name }}.log"
