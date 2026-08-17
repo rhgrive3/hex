@@ -1,9 +1,10 @@
-import { artifactIndexFromProject } from './artifact-index.js';
+import { artifactIndexFromProject, isArtifactRef } from './artifact-index.js';
 
 export const HEX_PROJECT_VERSION = 1;
 export const HEX_PROJECT_MIME = 'application/vnd.hex.project+json';
 export const MAX_PROJECT_BYTES = 16 * 1024 * 1024;
 const MAX_COLLECTION_ITEMS = 1_000_000;
+const MAX_LEGACY_CACHE_REFERENCE_LENGTH = 512;
 
 export class ProjectFormatError extends Error {
   constructor(message, code = 'HEX_PROJECT_INVALID') {
@@ -24,8 +25,20 @@ function encodedByteLength(text) { return new TextEncoder().encode(text).byteLen
 function assertProjectSize(bytes) {
   if (bytes > MAX_PROJECT_BYTES) throw new ProjectFormatError('project exceeds the 16 MiB safety limit', 'HEX_PROJECT_TOO_LARGE');
 }
+function isLegacyPortableCacheReference(value) {
+  return typeof value === 'string' && value.length > 0 && value.length <= MAX_LEGACY_CACHE_REFERENCE_LENGTH;
+}
 function sanitizeCacheReferences(project) {
-  return artifactIndexFromProject(project).toProjectReferences();
+  const source = list(project?.analysis?.cacheReferences, 'analysis.cacheReferences');
+  const legacy = source.filter(isLegacyPortableCacheReference);
+  const structuredProject = {
+    ...project,
+    analysis: {
+      ...(project.analysis || {}),
+      cacheReferences: source.filter(isArtifactRef),
+    },
+  };
+  return [...legacy, ...artifactIndexFromProject(structuredProject).toProjectReferences()];
 }
 
 export function createHexProject(input = {}) {
