@@ -16,4 +16,15 @@ jobs:
         with:
           node-version: 22
       - run: python3 tools/validation/p3-debug-apply.py
+      - name: Expose raw v2 artifacts in instrumentation for this debug run only
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('js/ir-core.js')
+          s=p.read_text()
+          old="  lastSemanticV2Instrumentation = result.instrumentation;\n  return result.legacyV1;"
+          new="  lastSemanticV2Instrumentation = { instrumentation: result.instrumentation, semanticIr: result.semanticIr, ssa: result.ssa };\n  return result.legacyV1;"
+          if s.count(old)!=1: raise SystemExit('debug instrumentation source shape mismatch')
+          p.write_text(s.replace(old,new,1))
+          PY
       - run: node tools/validation/p3-debug-359.mjs
