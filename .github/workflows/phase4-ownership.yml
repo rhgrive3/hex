@@ -15,7 +15,8 @@ on:
       - 'tools/validation/phase-ownership/phase4.json'
       - '.github/workflows/phase4-*.yml'
       - 'package.json'
-      - 'hex-viewer.user.js'
+      - 'userscript/hex.user.template.js'
+      - 'userscript/release-version.json'
 
 permissions:
   contents: read
