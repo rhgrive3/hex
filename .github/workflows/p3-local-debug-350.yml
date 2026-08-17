@@ -1,4 +1,4 @@
-name: P3 combined repair validation v3
+name: P3 combined repair validation v4
 on:
   push:
     branches: [hex/p3-local-debug-350]
@@ -11,7 +11,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: hex/p3-local-debug-350
+          ref: ${{ github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
