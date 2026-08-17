@@ -1,4 +1,5 @@
 import { createArtifactDescriptor, createArtifactStore } from '../core/artifacts/index.js';
+import { createEntityId, createSliceId } from '../core/identity/index.js';
 import { AnalysisScheduler } from '../core/scheduler/index.js';
 import { BudgetExceededError } from '../core/budgets/index.js';
 
@@ -11,6 +12,9 @@ export const WORKER_CACHE_MIGRATION_VERSION = 'hex-worker-cache-migration-v1';
 export const WORKER_ANALYSIS_PAYLOAD_CODEC_VERSION = 'hex-worker-analysis-payload-v1';
 export const CURRENT_WORKER_ANALYSIS_PRODUCER_ID = 'hex-current-worker-analysis';
 
+const CANONICAL_BINARY_ID = /^bin_sha256_[0-9a-f]{64}$/i;
+const CANONICAL_SLICE_ID = /^slice_[0-9a-f]{32}$/i;
+const CANONICAL_ENTITY_ID = /^entity_[0-9a-f]{32}$/i;
 const TYPED_ARRAYS = new Map([
   ['Int8Array', globalThis.Int8Array],
   ['Uint8Array', globalThis.Uint8Array],
@@ -33,6 +37,12 @@ function required(value, code) {
 
 function abortError(signal) {
   return signal?.reason || new DOMException('Aborted', 'AbortError');
+}
+
+export function requireCanonicalBinaryId(value) {
+  const binaryId = required(value, 'analysis-artifact-canonical-binary-id-required');
+  if (!CANONICAL_BINARY_ID.test(binaryId)) throw new TypeError('analysis-artifact-canonical-binary-id-invalid');
+  return binaryId.toLowerCase();
 }
 
 export function normalizeAnalysisRoute(route) {
@@ -179,15 +189,28 @@ export function awaitCancellableProducer(operation, signal) {
 
 /**
  * Build the migration descriptor through the canonical P4 ArtifactId contract.
- * All semantic/version dimensions are required from the caller so no weak
- * legacy cache identity can become an ambient default.
+ * The legacy FNV/cache key is intentionally not accepted as BinaryId. Slice and
+ * entity identities are generated through the frozen P4 identity API unless an
+ * already-canonical identity is supplied.
  */
 export function createWorkerAnalysisArtifactDescriptor(input = {}) {
+  const binaryId = requireCanonicalBinaryId(input.binaryId);
+  const artifactKind = required(input.artifactKind ?? 'worker-analysis-result', 'analysis-artifact-kind-required');
+  const architecture = required(input.architecture ?? 'unknown', 'analysis-artifact-architecture-required');
+  const sliceId = input.sliceId == null
+    ? createSliceId({ binaryId, index:input.sliceIndex ?? 0, architecture })
+    : required(input.sliceId, 'analysis-artifact-slice-id-required');
+  if (!CANONICAL_SLICE_ID.test(sliceId)) throw new TypeError('analysis-artifact-slice-id-not-canonical');
+  const entityId = input.entityId == null
+    ? createEntityId({ binaryId, sliceId, kind:'worker-analysis', identity:{ artifactKind, sliceIndex:input.sliceIndex ?? 0 } })
+    : required(input.entityId, 'analysis-artifact-entity-id-required');
+  if (!CANONICAL_ENTITY_ID.test(entityId)) throw new TypeError('analysis-artifact-entity-id-not-canonical');
+
   return createArtifactDescriptor({
-    binaryId:required(input.binaryId, 'analysis-artifact-binary-id-required'),
-    sliceId:input.sliceId == null ? null : String(input.sliceId),
-    entityId:input.entityId == null ? null : String(input.entityId),
-    artifactKind:required(input.artifactKind ?? 'worker-analysis-result', 'analysis-artifact-kind-required'),
+    binaryId,
+    sliceId,
+    entityId,
+    artifactKind,
     producerId:required(input.producerId ?? CURRENT_WORKER_ANALYSIS_PRODUCER_ID, 'analysis-artifact-producer-id-required'),
     producerVersion:required(input.producerVersion, 'analysis-artifact-producer-version-required'),
     versions:{
@@ -214,7 +237,7 @@ export function createWorkerAnalysisArtifactDescriptor(input = {}) {
  */
 export class ArtifactAnalysisOrchestrator {
   constructor({ store = null, scheduler = null, storeOptions = {}, schedulerOptions = {} } = {}) {
-    if (storeOptions.allowMemoryFallback === true && !store) {
+    if (storeOptions.allowMemoryFallback === true && !store && !scheduler?.store) {
       throw new TypeError('analysis-artifact-memory-fallback-requires-explicit-store');
     }
     const resolvedStore = store || scheduler?.store || createArtifactStore({ ...storeOptions, allowMemoryFallback:false });
