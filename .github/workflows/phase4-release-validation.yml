@@ -22,7 +22,8 @@ on:
       - 'tools/validation/phase-ownership/phase4.json'
       - '.github/workflows/phase4-*.yml'
       - 'package.json'
-      - 'hex-viewer.user.js'
+      - 'userscript/hex.user.template.js'
+      - 'userscript/release-version.json'
 
 permissions:
   contents: read
@@ -104,18 +105,28 @@ jobs:
           node-version: '22'
           cache: npm
       - run: npm ci
-      - name: Rebuild canonical userscript
-        run: npm run userscript:build
-      - name: Require committed generated output to match source
-        run: git diff --exit-code -- hex-viewer.user.js
-      - name: Upload canonical generated userscript
+      - name: Rebuild canonical userscript and capture actual buildId
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run userscript:build | tee userscript-build.log
+          BUILD_ID="$(sed -n 's/^built protected runtime \([^ ]*\).*/\1/p' userscript-build.log | tail -1)"
+          test -n "$BUILD_ID"
+          printf '{"productSha":"%s","userscriptBuildId":"%s"}\n' "$PRODUCT_SHA" "$BUILD_ID" > userscript-build-evidence.json
+      - name: Require committed generated outputs to match source
+        run: git diff --exit-code -- userscript/hex.user.template.js userscript/release-version.json
+      - name: Upload canonical userscript evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: phase4-userscript-${{ env.PRODUCT_SHA }}
-          path: hex-viewer.user.js
+          path: |
+            userscript/hex.user.template.js
+            userscript/release-version.json
+            userscript-build.log
+            userscript-build-evidence.json
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 30
 
   evidence:
     name: exact-sha-evidence
