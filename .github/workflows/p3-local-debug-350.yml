@@ -8,6 +8,8 @@ jobs:
   inspect:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -27,5 +29,12 @@ jobs:
           if s.count(old)!=1: raise SystemExit('debug instrumentation source shape mismatch')
           p.write_text(s.replace(old,new,1))
           PY
-      - name: Inspect row-3 semantic/state projection chain
-        run: node tools/validation/p3-debug-359.mjs
+      - name: Persist row-3 semantic/state projection chain
+        run: node tools/validation/p3-debug-359.mjs > tools/validation/p3-debug-359-output.json
+      - name: Commit debug output only to debug branch
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add tools/validation/p3-debug-359-output.json
+          git commit -m 'Debug: persist row-3 semantic chain output'
+          git push origin HEAD:hex/p3-local-debug-350
