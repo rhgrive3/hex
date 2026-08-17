@@ -69,6 +69,32 @@ function provenConstant(value, memo, active = new Set()) {
 }
 
 /**
+ * Preserve the public physical-state identity through compatibility MOV views
+ * such as an exact width truncation. This follows only projected def-use edges;
+ * it does not infer a register from instruction text or architecture names.
+ */
+function provenRegister(value, memo, active = new Set()) {
+  if (!value) return null;
+  if (value.reg) return value.reg;
+  if (memo.has(value.id)) return memo.get(value.id);
+  if (active.has(value.id)) return null;
+  active.add(value.id);
+
+  let result = null;
+  const def = value.def;
+  if (def && def.op === OP.MOV && def.args && def.args[0]) {
+    result = provenRegister(def.args[0].value, memo, active);
+  } else if (def && def.op === OP.PHI && def.args && def.args.length) {
+    const regs = def.args.map((a) => provenRegister(a && a.value, memo, active));
+    if (regs.length && regs[0] != null && regs.every((reg) => reg === regs[0])) result = regs[0];
+  }
+
+  active.delete(value.id);
+  memo.set(value.id, result);
+  return result;
+}
+
+/**
  * Return integer thresholds that SSA can prove at compare sites.
  * We deliberately require exactly one constant and one non-constant operand in
  * the comparison pair. Two constants are compiler-folding noise; zero constants
@@ -83,6 +109,7 @@ export function findIrConstantComparisons(model, opts) {
   // to scan model.instructions for every comparison, making this path O(n²).
   const sourceByRow = new Map(model.instructions.map((i) => [i.row, i]));
   const constMemo = new Map();
+  const registerMemo = new Map();
   const out = [];
   for (const inst of ir.instructions || []) {
     if (inst.op !== OP.CMP) continue;
@@ -99,7 +126,7 @@ export function findIrConstantComparisons(model, opts) {
     out.push({
       row: inst.row,
       address: inst.address,
-      register: v.reg || null,
+      register: provenRegister(v, registerMemo),
       value: c,
       float: null,
       mnemonic: sourceMnemonic(sourceByRow, inst.row),

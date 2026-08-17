@@ -1,6 +1,7 @@
 import { enhanceSemanticDecompilation as enhanceCore } from './pipeline-core.js';
 import { recoverExactStackReturn } from './passes/stack-return-recovery.js';
-import { expr } from './ast/nodes.js';
+import { expr, sourceOf } from './ast/nodes.js';
+import { printProgram } from './pretty/c.js';
 
 export { buildExpressionForTesting } from './pipeline-core.js';
 
@@ -108,10 +109,65 @@ function reanchorExactStackReturn(result) {
   return result;
 }
 
+/* When a return stack LOAD has a proven same-slot reaching STORE, the spill
+ * STORE remains proof provenance but does not own the reconstructed C return
+ * statement after the stack temporary has been eliminated. Drop only that one
+ * statement-level source row; every other source/proof entry is preserved. */
+function reanchorRecoveredReturnSource(result, opts = {}) {
+  if (!result?.ir || !result?.cAst) return result;
+  const ret = [...(result.ir.instructions || [])].reverse().find((inst) => inst.op === 'ret');
+  if (!ret) return result;
+  let changed = false;
+  for (const node of result.cAst.body || []) {
+    if (!(node.semantic?.op === 'return' || /^return\b/.test(String(node.text || '').trim()))) continue;
+    if (/\blocal_[0-9A-F]+\b/i.test(String(node.text || ''))) continue;
+    const current = sourceOf(node.source);
+    const sourceRows = new Set((current.rows || []).map((row) => String(row)));
+    let load = null;
+    for (const inst of result.ir.instructions || []) {
+      if (inst?.op !== 'load' || inst?.loc?.kind !== 'stack' || inst?.row == null || ret.row == null || inst.row >= ret.row) continue;
+      if (!sourceRows.has(String(inst.row))) continue;
+      const store = inst.reachingStore;
+      if (store?.op !== 'store' || store?.loc?.kind !== 'stack' || store.loc.key !== inst.loc.key || store.row == null) continue;
+      if (!sourceRows.has(String(store.row))) continue;
+      if (!load || inst.row > load.row) load = inst;
+    }
+    const spill = load?.reachingStore;
+    if (!load || !spill) continue;
+    const spillRow = String(spill.row);
+    const alignedAddresses = current.addresses.length === current.rows.length;
+    const alignedIr = current.ir.length === current.rows.length;
+    node.source = {
+      ...current,
+      rows:current.rows.filter((row) => String(row) !== spillRow),
+      addresses:alignedAddresses
+        ? current.addresses.filter((_, index) => String(current.rows[index]) !== spillRow)
+        : current.addresses,
+      ir:alignedIr
+        ? current.ir.filter((_, index) => String(current.rows[index]) !== spillRow)
+        : current.ir,
+      evidence:[...(current.evidence || []), { reason:'eliminated stack spill is proof-only provenance' }],
+    };
+    changed = true;
+  }
+  if (!changed) return result;
+  const printed = printProgram(result.cAst, { columnWidth:opts.columnWidth || opts.prettyColumnWidth || 88 });
+  result.pseudocode = printed.text;
+  result.sourceMap = printed.mapping;
+  result.lines = result.cAst.body.map((node) => ({
+    kind:node.kind, indent:node.indent, text:node.text,
+    row:node.source?.rows?.[0] ?? null, addr:node.source?.addresses?.[0] ?? null,
+    note:null, source:node.source,
+  }));
+  result.metrics = { ...(result.metrics || {}), sourceMappedNodes:result.sourceMap?.length || 0 };
+  return result;
+}
+
 export function enhanceSemanticDecompilation(result, model, opts = {}) {
   const restore = normalizeConditionalSelectAliases(result?.ir);
   let core;
   try { core = constrainSemanticValueWidths(enhanceCore(result, model, opts)); }
   finally { restore(); }
-  return recoverExactStackReturn(reanchorExactStackReturn(core), opts);
+  const recovered = recoverExactStackReturn(reanchorExactStackReturn(core), opts);
+  return reanchorRecoveredReturnSource(recovered, opts);
 }

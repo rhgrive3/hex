@@ -30,6 +30,15 @@ function assertOrigin(bundle) {
 {
   const bundle = lift('add', 'w0, w1, w2');
   assert.equal(bundle.completeness, 'exact');
+  const reads = opsOf(bundle, 'register-read');
+  assert.equal(reads.length, 2);
+  assert.ok(reads.every((operation) => operation.register.widthBits === 64),
+    'W reads must observe the shared 64-bit physical X register state');
+  assert.deepEqual(reads.map((operation) => operation.register.registerId), ['x1','x2']);
+  assert.equal(bundle.operations.filter((operation) => operation.kind === 'value'
+    && operation.opcode === 'trunc'
+    && operation.metadata.reason === 'a64-w-register-read-is-low-32-of-physical-x').length, 2,
+    'each W read must project its low-32 view explicitly');
   const writes = opsOf(bundle, 'register-write');
   assert.equal(writes.length, 1);
   assert.equal(writes[0].register.registerId, 'x0');

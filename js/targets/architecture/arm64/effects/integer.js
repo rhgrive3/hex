@@ -150,7 +150,7 @@ function liftShift(ctx, ops, mnemonic) {
   const widthBits = destinationBits(ops);
   const source = ctx.readOperand(ops[1], widthBits);
   if (!source) return ctx.partial(`arm64-${mnemonic}-source-unmodelled`, ['registers','other']);
-  const variable = mnemonic.endsWith('v');
+  const variable = mnemonic.endsWith('v') || ops[2]?.k === 'reg';
   const base = mnemonic.replace(/v$/, '');
   const opcode = base === 'lsl' ? 'shl' : base === 'lsr' ? 'lshr' : base === 'asr' ? 'ashr' : 'ror';
   let result;

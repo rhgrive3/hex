@@ -23,9 +23,14 @@ try {
 
   const manifest = JSON.parse(await readFile(new URL('../dist/runtime-manifest.json', import.meta.url), 'utf8'));
   const pair = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']);
+  // Wrangler local persistence intentionally remembers replay identities across
+  // process restarts. Use a fresh identity for this test invocation so repeated
+  // repository checks exercise a new session, while the second request below
+  // still proves that replaying the same nonce in this invocation is rejected.
+  const runId = Array.from(crypto.getRandomValues(new Uint8Array(12)), (byte) => byte.toString(16).padStart(2, '0')).join('');
   const input = {
-    nonce: 'nonce_route_0123456789abcdef', loaderVersion: `2.0.${Number.parseInt(manifest.buildId.slice(0, 8), 16)}`,
-    buildId: manifest.buildId, requestId: 'request_route_012345', sessionIdentity: 'session_route_012345',
+    nonce: `nonce_route_${runId}`, loaderVersion: `2.0.${Number.parseInt(manifest.buildId.slice(0, 8), 16)}`,
+    buildId: manifest.buildId, requestId: `request_route_${runId}`, sessionIdentity: `session_route_${runId}`,
     clientPublicKey: await crypto.subtle.exportKey('jwk', pair.publicKey),
   };
   const headers = { 'content-type': 'application/json', origin: 'https://chatgpt.com' };

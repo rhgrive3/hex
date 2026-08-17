@@ -135,6 +135,10 @@ function stableOrigin(value, callByRow, memo = new Map(), active = new Set()) {
 }
 
 function stepFrom(inst, loadValue, callByRow, originMemo) {
+  if (inst?.op === OP.MOV && (
+    inst.extra?.stateRead || inst.extra?.stateWrite ||
+    ['trunc', 'zext', 'sext', 'bitcast'].includes(inst.sub)
+  )) return null;
   const op = operationName(inst);
   if (!op) return null;
   const otherValue = otherInput(inst, loadValue);
@@ -198,11 +202,15 @@ export function findIrValueUpdates(model, opts) {
     const steps = (rmw.chain || [])
       .map((inst) => stepFrom(inst, load.dst, callByRow, originMemo))
       .filter(Boolean);
-    const evidence = [
+    // One machine instruction may project into several exact v1 compatibility
+    // nodes (for example state-read -> trunc -> add -> state-write). Those are
+    // one source fact, not independent evidence. Apply the same code+row identity
+    // rule used when legacy and SSA evidence are merged.
+    const evidence = mergeEvidence([], [
       ev('load', load.row, { base: location.base, disp: location.disp, engine: 'ir-ssa' }),
       ...steps.map((s) => ev('compute', s.row, { op: s.op, imm: s.imm, engine: 'ir-ssa' })),
       ev('store', store.row, { base: location.base, disp: location.disp, engine: 'ir-ssa' }),
-    ];
+    ]);
     const reg = store.args && store.args[0] && store.args[0].value ? store.args[0].value.reg || null : null;
     out.push({
       kind: 'read-modify-write', operationKind: rmw.kind, engine: 'ir-ssa', location,

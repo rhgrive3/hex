@@ -15,6 +15,11 @@ const CONTROL_KINDS = new Set(['branch', 'conditional-branch', 'switch', 'return
 
 export function safeBigInt(value) {
   if (value == null) return null;
+  if (typeof value === 'object') {
+    if (value.kind === 'bitvector' && value.value != null) return safeBigInt(value.value);
+    if ((value.kind === 'absolute-address' || value.kind === 'address') && value.value != null) return safeBigInt(value.value);
+    return null;
+  }
   try { return typeof value === 'bigint' ? value : BigInt(value); } catch { return null; }
 }
 function machineWidth(type) {
@@ -390,7 +395,10 @@ export function buildLegacyValues(ir, ssa) {
       machineType,
       origin: definition.origin,
     });
-    if (definition.kind === 'unknown') value.unknown = true;
+    if (definition.kind === 'unknown') {
+      value.unknown = true;
+      if (definition.variableKey != null) value.clobbered = true;
+    }
     if (definition.kind === 'undef') value.undefined = true;
     byId.set(definition.valueId, value);
   }

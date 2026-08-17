@@ -3,9 +3,10 @@ import { createSemanticSsaContract } from '../ssa/contract.js';
 import { createMemorySsaContract } from '../memoryssa/contract.js';
 import {
   V1_OP, V1_VK, V1_MK, firstAddress, sourceInstructionIds, blockOrder, explicitTargetsForBlock,
-  graphFacts, buildLegacyValues, buildStateProjectionIndex,
+  graphFacts, buildLegacyValues, buildStateProjectionIndex, legacyPublicStateIdentity, makeArg, addUse,
 } from './semantic-ir-v2-to-v1-core.js';
 import { projectNode } from './semantic-ir-v2-to-v1-nodes.js';
+import { finalizeLegacyProjection } from './semantic-ir-v2-to-v1-finalize.js';
 import {
   attachMemorySsa, attachFallbackMemory, addScalarSsaPhis, appendFunctionUnknowns,
   assignInstructionIds, memorySafetySummary,
@@ -42,7 +43,179 @@ function sameInstruction(node, instructionIds) {
   return sourceInstructionIds(node.origin).some((id) => instructionIds.has(id));
 }
 
-function addComparisonCarriers(ir, values, valuesById, producerByValueId) {
+/**
+ * Generic SSA represents an unseeded physical-state entry as an explicit undef.
+ * Legacy v1 represents that same incoming symbolic machine state as version-0
+ * ARG. This is a shape projection only: no concrete value or ABI role is added.
+ */
+function preserveIncomingPhysicalState(ssa, valuesById) {
+  for (const definition of ssa?.definitions ?? []) {
+    if (!definition.variableKey || definition.proof?.kind !== 'implicit-undef') continue;
+    const value = valuesById.get(definition.valueId);
+    if (!value) continue;
+    value.kind = V1_VK.ARG;
+    value.version = 0;
+    delete value.undefined;
+  }
+}
+
+/**
+ * A state-read result is a value produced while observing physical state, not a
+ * second public write to that state. When the same machine operation both reads
+ * and writes one physical state identity (for example a read/modify/select/write
+ * operation), keeping the read result's legacy `reg` creates two same-row public
+ * definitions and can hide the proven write from legacy reaching-value queries.
+ *
+ * MachineEffects v1 already represents register-read results as temporaries. Do
+ * the equivalent projection here only when the canonical origins prove that a
+ * read and write belong to the same machine operation and physical identity.
+ * The physical identity remains available on the state-read instruction and on
+ * its reaching state SSA value; no architecture name or mnemonic is consulted.
+ */
+function preserveStateReadTemporaryIdentity(ir, valuesById) {
+  const writes = new Set();
+  for (const node of ir.nodes) {
+    if (node.kind !== 'state-write') continue;
+    const identity = legacyPublicStateIdentity(node.variable);
+    if (!identity) continue;
+    for (const instructionId of sourceInstructionIds(node.origin)) writes.add(`${instructionId}\u0000${identity}`);
+  }
+  if (!writes.size) return;
+
+  for (const node of ir.nodes) {
+    if (node.kind !== 'state-read') continue;
+    const identity = legacyPublicStateIdentity(node.variable);
+    if (!identity) continue;
+    const sameOperationWrite = sourceInstructionIds(node.origin)
+      .some((instructionId) => writes.has(`${instructionId}\u0000${identity}`));
+    if (!sameOperationWrite) continue;
+    for (const outputId of node.outputs ?? []) {
+      const value = valuesById.get(outputId);
+      if (!value) continue;
+      value.reg = null;
+      value.stateKey = null;
+      value.version = 0;
+      if (value.label === identity) value.label = node.id;
+      value.compatDerived = 'state-read-temporary';
+    }
+  }
+}
+
+/**
+ * Semantic IR separates a computed value from the following physical state
+ * assignment. Legacy v1 names the computed destination itself with the register
+ * identity. Restore that public role only when canonical SSA proves an exact
+ * state-write assignment, the producer and write come from the same machine
+ * instruction, and their widths are identical. This deliberately excludes
+ * architectural view conversions such as W32 -> X64 zero-extension.
+ */
+function preserveExactStateWriteSourceIdentity(ir, producerByValueId, stateProjection, valuesById) {
+  for (const node of ir.nodes) {
+    if (node.kind !== 'state-write' || node.completeness !== 'complete' || node.inputs?.length !== 1) continue;
+    if (node.variable?.physicalIdentity?.kind !== 'register') continue;
+    const definition = stateProjection.writeDefinitionByNodeId.get(node.id) ?? null;
+    if (!definition || definition.proof?.sourceSemanticValueId !== node.inputs[0]) continue;
+    const source = valuesById.get(node.inputs[0]) ?? null;
+    const destination = valuesById.get(definition.valueId) ?? null;
+    const producer = producerByValueId.get(node.inputs[0]) ?? null;
+    const identity = legacyPublicStateIdentity(node.variable);
+    if (!source || !destination || !producer || !identity || source.bits !== destination.bits) continue;
+    const instructionIds = new Set(sourceInstructionIds(node.origin));
+    if (!instructionIds.size || !sameInstruction(producer, instructionIds)) continue;
+    if (source.reg != null && source.reg !== identity) continue;
+    source.reg = identity;
+    if (source.label == null || source.label === producer.id) source.label = identity;
+    source.compatDerived = 'exact-state-write-source';
+  }
+}
+
+function valueDominatesInstruction(value, inst, projected) {
+  if (!value || !inst) return false;
+  if (value.kind === V1_VK.ARG) return true;
+  const definition = value.def;
+  if (!definition || definition === inst) return false;
+  if (definition.block === inst.block) return Number(definition.row) <= Number(inst.row);
+  const dominators = projected.dominators?.[inst.block];
+  return dominators instanceof Set && dominators.has(definition.block);
+}
+
+function abiRegisterDescriptors(argument) {
+  if (!argument || typeof argument !== 'object') return [];
+  if (argument.reg != null) return [{ reg: String(argument.reg), bits: Number(argument.bits ?? 0) || null }];
+  if (!Array.isArray(argument.regs)) return [];
+  return argument.regs.filter(Boolean).map((reg) => ({ reg: String(reg), bits: Number(argument.bits ?? 0) || null }));
+}
+
+function projectedAbiArgumentValue(argument, inst, projected) {
+  if (argument && typeof argument === 'object' && Array.isArray(argument.uses) && argument.kind) {
+    return valueDominatesInstruction(argument, inst, projected) ? argument : null;
+  }
+  const descriptors = abiRegisterDescriptors(argument);
+  for (const descriptor of descriptors) {
+    const candidates = projected.values
+      .filter((value) => value.reg === descriptor.reg && valueDominatesInstruction(value, inst, projected))
+      .sort((left, right) => {
+        const leftWidth = descriptor.bits != null && left.bits === descriptor.bits ? 1 : 0;
+        const rightWidth = descriptor.bits != null && right.bits === descriptor.bits ? 1 : 0;
+        if (leftWidth !== rightWidth) return rightWidth - leftWidth;
+        if ((left.version ?? 0) !== (right.version ?? 0)) return (right.version ?? 0) - (left.version ?? 0);
+        return (right.id ?? 0) - (left.id ?? 0);
+      });
+    if (candidates.length) return candidates[0];
+  }
+  return null;
+}
+
+/**
+ * MachineEffects keeps calls ABI-neutral. When the integration boundary supplies
+ * an ABI adapter, #665 stores the adapter's physical argument locations on the
+ * projected call. Bind those locations to already-projected state values only
+ * when the value definition dominates the call (or is an incoming ARG). This is
+ * compatibility projection of ABI knowledge; no instruction text is decoded and
+ * no register name is embedded in generic code.
+ */
+function attachAbiProjectedArguments(projected) {
+  for (const inst of projected.instructions) {
+    if (inst.op !== V1_OP.CALL || inst.args?.length || !Array.isArray(inst.callArguments)) continue;
+    const seen = new Set();
+    const values = [];
+    for (const argument of inst.callArguments) {
+      const value = projectedAbiArgumentValue(argument, inst, projected);
+      if (!value || seen.has(value.id)) continue;
+      seen.add(value.id);
+      values.push(value);
+    }
+    if (!values.length) continue;
+    inst.args = values.map(makeArg);
+    for (const value of values) addUse(value, inst);
+    inst.extra.abiProjectedArgumentValueIds = values.map((value) => value.semanticSsaValueId ?? value.semanticValueId ?? value.id);
+  }
+}
+
+/**
+ * Canonical SSA can contain multiple entry values for one physical identity when
+ * different typed access views are observed. Legacy v1 exposes one `args` value
+ * per public identity. Choose that representative only after def-use projection,
+ * preferring the entry view that is actually consumed. This avoids an unused
+ * wider entry view shadowing the live narrower view while preserving deterministic
+ * first-seen behavior when candidates are otherwise equivalent.
+ */
+function populateLegacyArguments(projected) {
+  projected.args.clear();
+  for (const value of projected.values) {
+    if (value.kind !== V1_VK.ARG || !value.reg) continue;
+    const current = projected.args.get(value.reg) ?? null;
+    if (!current) {
+      projected.args.set(value.reg, value);
+      continue;
+    }
+    const currentUses = current.uses?.length ?? 0;
+    const candidateUses = value.uses?.length ?? 0;
+    if (candidateUses > currentUses) projected.args.set(value.reg, value);
+  }
+}
+
+function addComparisonCarriers(ir, values, valuesById) {
   const flagWriteInstructionIds = new Set();
   for (const node of ir.nodes) {
     if (node.kind !== 'state-write' || node.variable?.physicalIdentity?.kind !== 'flag') continue;
@@ -85,11 +258,6 @@ function addComparisonCarriers(ir, values, valuesById, producerByValueId) {
     values.push(value);
     byNodeId.set(node.id, value);
   }
-
-  // Direct Semantic compare values already have a producer mapping. Keeping the
-  // map argument here documents that carriers are tied to existing value graph
-  // nodes rather than instruction text or decoder state.
-  void producerByValueId;
   return byNodeId;
 }
 
@@ -149,8 +317,11 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
   for (const block of legacyBlocks) block.isExit = block.succ.length === 0;
 
   const { values, byId: valuesById } = buildLegacyValues(ir, ssa);
+  preserveIncomingPhysicalState(ssa, valuesById);
+  preserveStateReadTemporaryIdentity(ir, valuesById);
   const stateProjection = buildStateProjectionIndex(ssa);
-  const comparisonCarrierByNodeId = addComparisonCarriers(ir, values, valuesById, producerByValueId);
+  preserveExactStateWriteSourceIdentity(ir, producerByValueId, stateProjection, valuesById);
+  const comparisonCarrierByNodeId = addComparisonCarriers(ir, values, valuesById);
   const projected = {
     name: options.name ?? ir.functionId,
     functionId: ir.functionId,
@@ -173,7 +344,7 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
     semanticIrVersion: ir.contractVersion,
     compat: {
       projection: 'semantic-ir-v2-to-v1',
-      version: '1.1.0',
+      version: '1.1.2',
       semanticFunctionId: ir.functionId,
       scalarSsa: !!ssa,
       memorySsa: !!memorySsa,
@@ -199,13 +370,12 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
     },
   };
 
-  for (const value of values) if (value.kind === V1_VK.ARG && value.reg && !projected.args.has(value.reg)) projected.args.set(value.reg, value);
-
   const instructionBySemanticId = new Map();
   let fallbackRow = 0;
   for (const block of legacyBlocks) {
     let firstRow = null;
     let lastRow = null;
+    const physicalStateCurrent = new Map();
     for (const nodeId of block.semanticNodeIds) {
       const node = nodeById.get(nodeId);
       if (!node) continue;
@@ -221,6 +391,7 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
         producerByValueId,
         stateProjection,
         comparisonCarrierByNodeId,
+        physicalStateCurrent,
         blockBySemanticId,
         options,
       });
@@ -259,13 +430,16 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
     if (!list) list = projected.compat.semanticNodeToLegacyInstructionIds[semanticId] = [];
     list.push(inst.id);
   }
+  attachAbiProjectedArguments(projected);
+  finalizeLegacyProjection(projected);
+  populateLegacyArguments(projected);
   projected.memorySafety = memorySafetySummary(projected);
   projected.defUse = () => projected.values;
   return projected;
 }
 
 export const SEMANTIC_IR_V2_V1_COMPAT = Object.freeze({
-  contractVersion: '1.1.0',
+  contractVersion: '1.1.2',
   legacyOps: V1_OP,
   legacyValueKinds: V1_VK,
   legacyMemoryKinds: V1_MK,

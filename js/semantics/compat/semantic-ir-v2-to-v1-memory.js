@@ -1,24 +1,41 @@
 import {
   V1_OP, V1_VK, V1_MK, safeBigInt, bytesForBits, firstAddress,
-  sourceInstructionIds, unique, asArray, makeArg, addUse,
+  sourceInstructionIds, unique, asArray, makeArg, addUse, legacyPublicStateIdentity,
 } from './semantic-ir-v2-to-v1-core.js';
 
 const MEMORY_CLOBBER_KINDS = new Set(['may-alias-clobber', 'unknown-clobber', 'call-clobber', 'intrinsic-clobber']);
 
-function legacyLocation(region, valuesById) {
+function preciseProjectedAddress(address) {
+  return address?.precise === true && address.index == null ? address : null;
+}
+
+function legacyLocation(region, valuesById, projectedAddress = null) {
   const size = region.widthBits == null ? null : bytesForBits(region.widthBits);
+  const address = preciseProjectedAddress(projectedAddress);
   if (region.kind === 'stack-fixed') {
-    const disp = safeBigInt(region.offset) ?? 0n;
-    return { key: `stack:${disp.toString()}`, kind: V1_MK.STACK, disp, size, regionId: region.id, origin: region.origin ?? null };
+    const regionOffset = safeBigInt(region.offset) ?? 0n;
+    const disp = safeBigInt(address?.disp) ?? regionOffset;
+    return { key: `stack:${regionOffset.toString()}`, kind: V1_MK.STACK, disp, size, regionId: region.id, origin: region.origin ?? null };
   }
   if (region.kind === 'global-absolute') {
-    const address = safeBigInt(region.address);
-    if (address != null) return { key: `global:${address.toString(16)}`, kind: V1_MK.GLOBAL, address, size, regionId: region.id, origin: region.origin ?? null };
+    const absolute = safeBigInt(region.address);
+    if (absolute != null) return { key: `global:${absolute.toString(16)}`, kind: V1_MK.GLOBAL, address: absolute, size, regionId: region.id, origin: region.origin ?? null };
   }
   if (region.kind === 'rooted-offset') {
-    const disp = safeBigInt(region.offset) ?? 0n;
-    const base = valuesById.get(region.rootEntityId) ?? null;
-    return { key: `field:${region.rootEntityId}+${disp.toString()}`, kind: V1_MK.FIELD, base, baseEntityId: region.rootEntityId, disp, size, regionId: region.id, origin: region.origin ?? null };
+    const regionOffset = safeBigInt(region.offset) ?? 0n;
+    const disp = safeBigInt(address?.disp) ?? regionOffset;
+    const base = address?.base ?? valuesById.get(region.rootEntityId) ?? null;
+    return {
+      key: `field:${region.rootEntityId}+${regionOffset.toString()}`,
+      kind: V1_MK.FIELD,
+      base,
+      baseEntityId: region.rootEntityId,
+      disp,
+      size,
+      regionId: region.id,
+      origin: region.origin ?? address?.origin ?? null,
+      addressMetadataSource: address ? 'semantic-ir-address-projection' : 'memory-region',
+    };
   }
   return { key: `unknown:${region.id}`, kind: V1_MK.UNKNOWN, size, regionId: region.id, uncertaintyIdentity: region.uncertaintyIdentity ?? region.rootIdentity ?? region.addressSpace ?? region.id, origin: region.origin ?? null };
 }
@@ -33,10 +50,33 @@ function fallbackLocation(inst) {
   return { key: `unknown:${inst.semanticNodeId ?? inst.id ?? 'memory'}`, kind: V1_MK.UNKNOWN, size: inst.addr.size ?? null };
 }
 
+function representativeProjectedAddress(regionId, memorySsa, instructionBySemanticId) {
+  for (const definition of memorySsa.definitions) {
+    if (definition.regionId !== regionId || definition.sourceEntityId == null) continue;
+    const address = instructionBySemanticId.get(definition.sourceEntityId)?.addr ?? null;
+    if (preciseProjectedAddress(address)) return address;
+  }
+  for (const use of memorySsa.uses) {
+    if (use.regionId !== regionId) continue;
+    const address = instructionBySemanticId.get(use.sourceEntityId)?.addr ?? null;
+    if (preciseProjectedAddress(address)) return address;
+  }
+  return null;
+}
+
+function accessLocation(regionId, source, regionById, locationByRegion, valuesById) {
+  const canonical = locationByRegion.get(regionId) ?? null;
+  const region = regionById.get(regionId) ?? null;
+  if (!region || !source) return canonical;
+  const address = preciseProjectedAddress(source.addr);
+  return address ? legacyLocation(region, valuesById, address) : canonical;
+}
+
 export function attachMemorySsa(projected, memorySsa, valuesById, instructionBySemanticId, blockIndexById) {
+  const regionById = new Map(memorySsa.regions.map((region) => [region.id, region]));
   const locationByRegion = new Map();
   for (const region of memorySsa.regions) {
-    const loc = legacyLocation(region, valuesById);
+    const loc = legacyLocation(region, valuesById, representativeProjectedAddress(region.id, memorySsa, instructionBySemanticId));
     locationByRegion.set(region.id, loc);
     projected.locations.set(loc.key, loc);
   }
@@ -79,6 +119,7 @@ export function attachMemorySsa(projected, memorySsa, valuesById, instructionByS
     if (definition.kind === 'memory-phi') {
       memoryNode.incoming = definition.incoming.map((item) => ({
         from: blockIndexById.get(item.predecessorBlockId) ?? null,
+        semanticPredecessorBlockId: item.predecessorBlockId,
         node: memoryNodeById.get(item.definitionId) ?? null,
       }));
       const block = projected.blocks[memoryNode.block];
@@ -87,7 +128,7 @@ export function attachMemorySsa(projected, memorySsa, valuesById, instructionByS
     const source = definition.sourceEntityId == null ? null : instructionBySemanticId.get(definition.sourceEntityId);
     if (!source) continue;
     if (definition.kind === 'memory-def' && source.op === V1_OP.STORE) {
-      const loc = locationByRegion.get(definition.regionId);
+      const loc = accessLocation(definition.regionId, source, regionById, locationByRegion, valuesById);
       if (loc) source.loc = loc;
       if (!source.memDefs) source.memDefs = [];
       source.memDefs.push(memoryNode);
@@ -103,12 +144,11 @@ export function attachMemorySsa(projected, memorySsa, valuesById, instructionByS
   for (const use of memorySsa.uses) {
     const source = instructionBySemanticId.get(use.sourceEntityId);
     if (!source) continue;
-    const loc = locationByRegion.get(use.regionId);
+    const loc = accessLocation(use.regionId, source, regionById, locationByRegion, valuesById);
     if (loc && (source.op === V1_OP.LOAD || source.op === V1_OP.STORE)) source.loc = loc;
     const reaching = memoryNodeById.get(use.reachingDefinitionId) ?? null;
     source.memUse = reaching;
     source.memoryAliasRelation = use.aliasRelation;
-    source.reachingStore = null;
     if (source.op === V1_OP.LOAD && use.aliasRelation === 'must' && reaching?.kind === 'store' && reaching.inst?.op === V1_OP.STORE) {
       source.reachingStore = reaching.inst;
     } else if (source.op === V1_OP.LOAD && reaching?.kind === 'clobber') {
@@ -136,7 +176,6 @@ export function attachFallbackMemory(projected) {
     if (inst.op !== V1_OP.LOAD && inst.op !== V1_OP.STORE) continue;
     inst.loc = fallbackLocation(inst);
     projected.locations.set(inst.loc.key, inst.loc);
-    inst.reachingStore = null;
   }
 }
 
@@ -148,6 +187,7 @@ export function addScalarSsaPhis(projected, ssa, valuesById, blockIndexById, ins
     if (!value) continue;
     const block = blockIndexById.get(definition.blockId);
     if (block == null) continue;
+    const publicIdentity = legacyPublicStateIdentity(definition.proof?.variableIdentity) ?? value.reg ?? definition.variableKey;
     const inst = {
       id: -1,
       op: V1_OP.PHI,
@@ -155,26 +195,38 @@ export function addScalarSsaPhis(projected, ssa, valuesById, blockIndexById, ins
       block,
       row: projected.blocks[block]?.startRow ?? block,
       address: firstAddress(definition.origin),
-      text: `phi ${definition.variableKey ?? definition.valueId}`,
+      text: `phi ${publicIdentity ?? definition.valueId}`,
       args: [],
       dst: value,
       incoming: [],
-      reg: definition.variableKey ?? value.reg,
+      reg: publicIdentity,
+      semanticSsaValueId: definition.valueId,
       semanticNodeId: definition.sourceEntityId,
       sourceEntityId: definition.sourceEntityId,
       sourceInstructionIds: sourceInstructionIds(definition.origin),
       instructionId: sourceInstructionIds(definition.origin)[0] ?? null,
       origin: definition.origin,
-      extra: { semanticSsaDefinitionId: definition.definitionId, proof: definition.proof ?? null },
+      extra: {
+        semanticSsaDefinitionId: definition.definitionId,
+        semanticVariableKey: definition.variableKey,
+        publicStateIdentity: publicIdentity,
+        proof: definition.proof ?? null,
+      },
     };
     for (const incoming of definition.incoming) {
       const incomingValue = valuesById.get(incoming.valueId);
       if (!incomingValue) continue;
-      inst.incoming.push({ from: blockIndexById.get(incoming.predecessorBlockId) ?? null, value: incomingValue });
+      inst.incoming.push({
+        from: blockIndexById.get(incoming.predecessorBlockId) ?? null,
+        semanticPredecessorBlockId: incoming.predecessorBlockId,
+        semanticSsaValueId: incoming.valueId,
+        value: incomingValue,
+      });
       inst.args.push(makeArg(incomingValue));
       addUse(incomingValue, inst);
     }
     value.kind = V1_VK.PHI;
+    value.reg = publicIdentity;
     value.def = inst;
     projected.blocks[block].phis.push(inst);
     projected.instructions.unshift(inst);
@@ -194,6 +246,18 @@ export function addScalarSsaPhis(projected, ssa, valuesById, blockIndexById, ins
   }
 }
 
+function representedCallContextUnknown(projected, unknown) {
+  if (unknown?.reason !== 'call-context-effects-not-enriched') return false;
+  const calls = projected.instructions.filter((inst) => inst.op === V1_OP.CALL);
+  if (!calls.length) return false;
+  return calls.every((call) => {
+    const controlRepresented = call.extra?.target != null || call.extra?.indirect === true;
+    const stateRepresented = call.extra?.abiAdapterStatus === 'used' && Array.isArray(call.clobbers) && call.clobbers.length > 0;
+    const memoryRepresented = call.memoryBarrier === true && call.extra?.memoryWrite?.scope !== 'none';
+    return controlRepresented && stateRepresented && memoryRepresented;
+  });
+}
+
 export function appendFunctionUnknowns(projected, ir) {
   if (!ir.unknowns.length) return;
   const block = projected.blocks[projected.entry];
@@ -201,6 +265,13 @@ export function appendFunctionUnknowns(projected, ir) {
   const instructionIds = sourceInstructionIds(ir.origin);
   const row = block.endRow;
   ir.unknowns.forEach((unknown, index) => {
+    // `call-context-effects-not-enriched` is a function-level marker emitted
+    // before an ABI adapter is available. If every projected CALL already
+    // carries the exact control target plus ABI clobbers and a conservative
+    // memory barrier, emitting another UNKNOWN duplicates the same uncertainty
+    // and incorrectly forces legacy fallback. The CALL remains conservative;
+    // no memory/state/control uncertainty is discarded.
+    if (representedCallContextUnknown(projected, unknown)) return;
     const categories = unique(asArray(unknown.categories).map(String)).sort();
     const semanticNodeId = `${ir.functionId}:function-unknown:${index}`;
     const inst = {

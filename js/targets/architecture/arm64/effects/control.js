@@ -32,6 +32,25 @@ function fallthroughRef(instruction) {
   return address == null ? null : addressRef(address + ARM64_INSTRUCTION_BYTES);
 }
 
+function sameAbsoluteTarget(target, reference) {
+  if (target == null || reference?.kind !== 'absolute-address' || reference.value == null) return false;
+  try { return BigInt(target) === BigInt(reference.value); }
+  catch { return false; }
+}
+
+/**
+ * Preserve condition-evaluation operations even when both control outcomes land
+ * in the same basic block, but canonicalize the externally visible control edge
+ * to one unconditional branch. Semantic IR forbids duplicate node targets, and
+ * two identical successors carry no conditional control distinction.
+ */
+function conditionalControlEffect(target, fallthrough, condition) {
+  if (sameAbsoluteTarget(target, fallthrough)) {
+    return { kind:'branch', target:addressRef(target) };
+  }
+  return { kind:'conditional-branch', target:addressRef(target), fallthrough, condition };
+}
+
 function targetAlignmentFault() {
   return {
     kind: 'pc-alignment-fault',
@@ -129,8 +148,8 @@ export function liftArm64ControlEffects(instruction, options = {}) {
     let condition = ctx.valueOp('is-zero', [value], 1, { widthBits });
     if (mnemonic === 'cbnz') condition = ctx.valueOp('not-bool', [condition], 1);
     return ctx.finish({
-      controlEffect: { kind: 'conditional-branch', target: addressRef(target), fallthrough, condition },
-      metadata: { family: 'control', operation: mnemonic, conditionKind: mnemonic },
+      controlEffect: conditionalControlEffect(target, fallthrough, condition),
+      metadata: { family: 'control', operation: mnemonic, conditionKind: mnemonic, ...(sameAbsoluteTarget(target, fallthrough) ? { degenerateConditional:true } : {}) },
     });
   }
 
@@ -144,8 +163,8 @@ export function liftArm64ControlEffects(instruction, options = {}) {
     const tested = ctx.valueOp('extract-bit', [value], 1, { bit: Number(bit), widthBits });
     const condition = mnemonic === 'tbz' ? ctx.valueOp('is-zero', [tested], 1, { widthBits: 1 }) : tested;
     return ctx.finish({
-      controlEffect: { kind: 'conditional-branch', target: addressRef(target), fallthrough, condition },
-      metadata: { family: 'control', operation: mnemonic, bit: Number(bit) },
+      controlEffect: conditionalControlEffect(target, fallthrough, condition),
+      metadata: { family: 'control', operation: mnemonic, bit: Number(bit), ...(sameAbsoluteTarget(target, fallthrough) ? { degenerateConditional:true } : {}) },
     });
   }
 
@@ -153,7 +172,7 @@ export function liftArm64ControlEffects(instruction, options = {}) {
   const condition = emitArm64Condition(ctx, conditionCode);
   if (!condition) return ctx.partial(`arm64-${mnemonic}-condition-unmodelled`, ['control','flags'], undefined, { kind: 'unknown', reason: `arm64-${mnemonic}-condition-unmodelled` });
   return ctx.finish({
-    controlEffect: { kind: 'conditional-branch', target: addressRef(target), fallthrough, condition },
-    metadata: { family: 'control', operation: mnemonic, conditionCode },
+    controlEffect: conditionalControlEffect(target, fallthrough, condition),
+    metadata: { family: 'control', operation: mnemonic, conditionCode, ...(sameAbsoluteTarget(target, fallthrough) ? { degenerateConditional:true } : {}) },
   });
 }

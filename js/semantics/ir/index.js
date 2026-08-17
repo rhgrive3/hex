@@ -28,3 +28,7 @@ export {
   validateSemanticIrFunction,
   canonicalSerializeSemanticIr,
 } from './function.js';
+export {
+  lowerMachineEffectBundleToSemanticIr,
+  lowerMachineEffectsToSemanticIr,
+} from './from-machine-effects.js';
