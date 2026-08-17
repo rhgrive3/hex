@@ -52,6 +52,9 @@ jobs:
       - name: Commit only validated production artifacts
         shell: bash
         run: |
+          # npm ci may rewrite tracked npm metadata under node_modules; it is not
+          # a product change and must never enter the Phase 3 commit.
+          git checkout -- node_modules/.package-lock.json 2>/dev/null || true
           allowed='^(js/semantics/compat/semantic-ir-v2-to-v1-finalize.js|js/semantics/compat/semantic-ir-v2-to-v1-address.js|js/semantics/compat/semantic-ir-v2-to-v1-core.js|js/semantics/compat/semantic-ir-v2-to-v1-nodes.js|js/targets/architecture/arm64/effects/integer.js|js/ir-core.js|js/interproc.js|js/dataflow-ir.js|js/dataflow-semantic.js|userscript/hex.user.template.js)$'
           unexpected=$(git status --porcelain | awk '{print $2}' | grep -Ev "$allowed" || true)
           if [ -n "$unexpected" ]; then
