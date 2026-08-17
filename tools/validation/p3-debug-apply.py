@@ -86,30 +86,35 @@ replace_once(
     "register-valued shift",
 )
 
-# 5. A typed ABI return is positive evidence. Reuse an existing call state value
-# when possible; otherwise synthesize only the legacy-v1 compatibility value.
-# Untyped/unknown calls remain dst=null, so this does not fabricate return values.
+# 5. Typed call-return evidence belongs at the AAPCS64 compatibility facade.
+# Resolve it from the original decoded call + current options (the same authority
+# used by explicit legacy-v1), then expose only a compatibility value. Untyped
+# calls still have dst=null and no fabricated return result.
 p = Path("js/ir-core.js")
 s = p.read_text()
 call_marker = """function valueMayCarryStackAddress(value) {
 """
-helper = """function attachAapcs64TypedCallResults(projected) {
+helper = """function attachAapcs64TypedCallResults(projected, instructionByRow, options = {}) {
   for (const inst of projected.instructions ?? []) {
-    if (inst.op !== LEGACY_OP.CALL || inst.dst || !inst.returnReg || !inst.returnEvidence) continue;
+    if (inst.op !== LEGACY_OP.CALL || inst.dst) continue;
+    const decoded = instructionByRow.get(inst.row) ?? null;
+    const result = decoded == null ? null : AAPCS64_ABI.classifyCallReturn(decoded, options);
+    if (!result?.reg) continue;
+    const reg = String(result.reg);
+    const bits = Number(result.bits || 64);
     const candidates = (projected.values ?? [])
-      .filter((value) => value?.reg === inst.returnReg
+      .filter((value) => value?.reg === reg
         && value?.sourceEntityId === inst.semanticNodeId
         && value?.def == null)
       .sort((left, right) => Number(right.id ?? -1) - Number(left.id ?? -1));
-    const bits = Number(inst.returnBits || candidates[0]?.bits || 64);
     const priorVersion = Math.max(-1, ...(projected.values ?? [])
-      .filter((value) => value?.reg === inst.returnReg)
+      .filter((value) => value?.reg === reg)
       .map((value) => Number(value.version ?? -1)));
     const value = candidates[0] ?? {
       id: (projected.values ?? []).length,
       vid: (projected.values ?? []).length + 1,
       kind: LEGACY_VK.DEF,
-      reg: inst.returnReg,
+      reg,
       stateKey: null,
       version: priorVersion + 1,
       bits,
@@ -120,7 +125,7 @@ helper = """function attachAapcs64TypedCallResults(projected) {
       signed: null,
       nullable: null,
       type: null,
-      label: inst.returnReg,
+      label: reg,
       semanticValueId: null,
       semanticSsaValueId: null,
       sourceEntityId: inst.semanticNodeId,
@@ -130,6 +135,7 @@ helper = """function attachAapcs64TypedCallResults(projected) {
     };
     if (!candidates[0]) projected.values.push(value);
     value.kind = LEGACY_VK.DEF;
+    value.reg = reg;
     value.bits = bits;
     value.def = inst;
     value.unknown = true;
@@ -137,6 +143,9 @@ helper = """function attachAapcs64TypedCallResults(projected) {
     delete value.clobbered;
     value.compatDerived = 'typed-abi-call-result';
     inst.dst = value;
+    inst.returnReg = reg;
+    inst.returnBits = bits;
+    inst.returnEvidence = 'prototype-aapcs64-call';
     inst.extra = {
       ...(inst.extra ?? {}),
       compatTypedCallResult: true,
@@ -146,13 +155,13 @@ helper = """function attachAapcs64TypedCallResults(projected) {
 }
 
 """
-if s.count(call_marker) != 1 or "function attachAapcs64TypedCallResults(projected)" in s:
+if s.count(call_marker) != 1 or "function attachAapcs64TypedCallResults(projected" in s:
     raise SystemExit("typed call result insertion source shape mismatch")
 s = s.replace(call_marker, helper + call_marker, 1)
 old_call = """  attachAapcs64CallArguments(result.legacyV1);
   invalidateEscapedStackForwarding(result.legacyV1);"""
 new_call = """  attachAapcs64CallArguments(result.legacyV1);
-  attachAapcs64TypedCallResults(result.legacyV1);
+  attachAapcs64TypedCallResults(result.legacyV1, instructionByRow, opts);
   invalidateEscapedStackForwarding(result.legacyV1);"""
 if s.count(old_call) != 1:
     raise SystemExit("typed call result wiring source shape mismatch")
