@@ -5,6 +5,7 @@ import { decompile } from '../../js/decompile.js';
 // Regression: when the public decompiler deliberately selects the isolated legacy
 // fallback, exact deterministic RBIT/CLZ semantics must still render as source
 // expressions rather than regressing real-binary pseudocode coverage to raw asm.
+// Keep this assertion on the final latest-main-resynced integration head as well.
 const raw = [
   { row: 0, address: 0x1000n, mn: 'rbit', ops: 'x1, x0' },
   { row: 1, address: 0x1004n, mn: 'clz', ops: 'x2, x1' },
