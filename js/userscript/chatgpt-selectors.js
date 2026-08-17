@@ -20,12 +20,16 @@ export const CHATGPT_SELECTORS = Object.freeze({
     'button[aria-label*="送信"]',
     'form button[type="submit"]',
   ]),
+  // ChatGPT on iPad/WebKit can keep the Stop control mounted after a response
+  // settles, but marks it disabled. Only an actionable Stop control is evidence
+  // that generation is still active; otherwise TurnController would wait until
+  // the outer RPC timeout even though the assistant answer already completed.
   stop: Object.freeze([
-    'button[data-testid="stop-button"]',
-    'button[aria-label="Stop generating"]',
-    'button[aria-label="Stop streaming"]',
-    'button[aria-label*="Stop" i]',
-    'button[aria-label*="停止"]',
+    'button[data-testid="stop-button"]:not(:disabled):not([aria-disabled="true"])',
+    'button[aria-label="Stop generating"]:not(:disabled):not([aria-disabled="true"])',
+    'button[aria-label="Stop streaming"]:not(:disabled):not([aria-disabled="true"])',
+    'button[aria-label*="Stop" i]:not(:disabled):not([aria-disabled="true"])',
+    'button[aria-label*="停止"]:not(:disabled):not([aria-disabled="true"])',
   ]),
   assistantTurn: Object.freeze([
     '[data-message-author-role="assistant"]',
