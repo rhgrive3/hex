@@ -17,5 +17,9 @@ for (const [start, end] of first) {
   assert.ok(bytes >= 64 && bytes <= 2048, `sample size must remain eligible: ${bytes}`);
 }
 assert.equal(new Set(first.map(([start]) => start)).size, first.length, 'canonical samples must be unique');
+assert.ok(
+  first.every(([start], index) => index === 0 || start >= first[index - 1][0]),
+  'canonical samples must preserve source-address order for deterministic dynamic scheduling',
+);
 
 console.log('accuracy pseudoc canonical sampling regression passed');
