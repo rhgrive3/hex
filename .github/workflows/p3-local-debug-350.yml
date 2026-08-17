@@ -1,4 +1,4 @@
-name: P3 phi provenance worklist benchmark
+name: P3 MemorySSA build profiling
 on:
   push:
     branches: [hex/p3-local-debug-350]
@@ -8,9 +8,9 @@ permissions:
 env:
   HEX_FIXTURE_BATTLECATS_URL: https://raw.githubusercontent.com/rhgrive3/hex/bd7bd61d093592d07fdd9e9b14a859e19dd4c3a9/tests/battlecats
 jobs:
-  benchmark:
+  profile:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 3
     steps:
       - uses: actions/checkout@v4
         with:
@@ -20,78 +20,30 @@ jobs:
         with:
           node-version: '22'
       - run: node scripts/fetch-real-fixtures.mjs battlecats
-      - name: Apply exact phi-origin worklist candidate
+      - name: Inject MemorySSA timers
         run: |
           python - <<'PY'
           from pathlib import Path
-          p=Path('js/semantics/ssa/build.js'); s=p.read_text()
-          start=s.index('function resolvePhiOrigins(phiDefinitions, definitionByValue, irBlocks, tick) {')
-          end=s.index('\n\nfunction finalizePhi(', start)
-          lines=[
-            'function resolvePhiOrigins(phiDefinitions, definitionByValue, irBlocks, tick) {',
-            '  const ordered = phiDefinitions.slice().sort((a, b) => a.valueId.localeCompare(b.valueId));',
-            '  const phiIds = new Set(ordered.map((phi) => phi.valueId));',
-            '  const sourceOrigins = new Map();',
-            '  const sourcesByPhi = new Map();',
-            '  const dependentsByPhi = new Map(ordered.map((phi) => [phi.valueId, new Set()]));',
-            '',
-            '  for (const phi of ordered) {',
-            '    tick();',
-            "    const baseId = `base:${phi.valueId}`;",
-            '    sourceOrigins.set(baseId, safeOrigin(irBlocks.get(phi.blockId)?.origin, createOriginSet({ parentEntityIds: [phi.blockId] })));',
-            '    const sources = new Set([baseId]);',
-            '    for (const incoming of phi.incoming) {',
-            '      tick();',
-            '      const incomingDefinition = definitionByValue.get(incoming.valueId);',
-            "      if (!incomingDefinition) fail('semantic-ssa-dangling-phi-value-id');",
-            '      if (incomingDefinition.kind === \'phi\' && phiIds.has(incomingDefinition.valueId)) {',
-            '        dependentsByPhi.get(incomingDefinition.valueId).add(phi.valueId);',
-            '      } else {',
-            "        const sourceId = `def:${incomingDefinition.valueId}`;",
-            '        sourceOrigins.set(sourceId, incomingDefinition.origin);',
-            '        sources.add(sourceId);',
-            '      }',
-            '    }',
-            '    sourcesByPhi.set(phi.valueId, sources);',
-            '  }',
-            '',
-            '  const queue = ordered.map((phi) => phi.valueId);',
-            '  const queued = new Set(queue);',
-            '  let cursor = 0;',
-            '  while (cursor < queue.length) {',
-            '    tick();',
-            '    const sourcePhiId = queue[cursor++];',
-            '    queued.delete(sourcePhiId);',
-            '    const sourceSet = sourcesByPhi.get(sourcePhiId);',
-            '    for (const dependentId of [...dependentsByPhi.get(sourcePhiId)].sort()) {',
-            '      tick();',
-            '      const targetSet = sourcesByPhi.get(dependentId);',
-            '      let changed = false;',
-            '      for (const sourceId of sourceSet) {',
-            '        if (targetSet.has(sourceId)) continue;',
-            '        targetSet.add(sourceId);',
-            '        changed = true;',
-            '      }',
-            '      if (changed && !queued.has(dependentId)) {',
-            '        queue.push(dependentId);',
-            '        queued.add(dependentId);',
-            '      }',
-            '    }',
-            '  }',
-            '',
-            '  const resolved = new Map();',
-            '  for (const phi of ordered) {',
-            '    tick();',
-            '    const origins = [...sourcesByPhi.get(phi.valueId)].sort().map((id) => sourceOrigins.get(id));',
-            '    resolved.set(phi.valueId, safeOrigin(...origins));',
-            '  }',
-            '  return resolved;',
-            '}',
+          p=Path('js/semantics/memoryssa/build.js'); s=p.read_text()
+          reps=[
+            ("  const fallbackRegion = defaultUnknownRegion(irFunction.functionId);", "  let __p3t=Date.now();\n  const fallbackRegion = defaultUnknownRegion(irFunction.functionId);"),
+            ("  const regionById = new Map();", "  process.stderr.write(`[P3MEM descriptors] ${Date.now()-__p3t}ms count=${descriptors.length}\\n`); __p3t=Date.now();\n  const regionById = new Map();"),
+            ("  const aliasCache = new Map();", "  process.stderr.write(`[P3MEM regions] ${Date.now()-__p3t}ms count=${regionIds.length}\\n`); __p3t=Date.now();\n  const aliasCache = new Map();"),
+            ("  const entryDefinitionIds = new Map(regionIds.map((regionId) => [", "  process.stderr.write(`[P3MEM events] ${Date.now()-__p3t}ms events=${eventById.size} aliasCache=${aliasCache.size}\\n`); __p3t=Date.now();\n  const entryDefinitionIds = new Map(regionIds.map((regionId) => ["),
+            ("  if (!converged) fail('memory-ssa-build-did-not-converge');", "  process.stderr.write(`[P3MEM dataflow] ${Date.now()-__p3t}ms\\n`); __p3t=Date.now();\n  if (!converged) fail('memory-ssa-build-did-not-converge');"),
+            ("  if (definitions.length > budgetLimit(options, 'maxDefinitions'))", "  process.stderr.write(`[P3MEM definitions] ${Date.now()-__p3t}ms defs=${definitions.length}\\n`); __p3t=Date.now();\n  if (definitions.length > budgetLimit(options, 'maxDefinitions'))"),
+            ("  if (uses.length > budgetLimit(options, 'maxUses'))", "  process.stderr.write(`[P3MEM uses] ${Date.now()-__p3t}ms uses=${uses.length} aliasCache=${aliasCache.size}\\n`); __p3t=Date.now();\n  if (uses.length > budgetLimit(options, 'maxUses'))"),
+            ("  const contract = createMemorySsaContract({", "  process.stderr.write(`[P3MEM metadata] ${Date.now()-__p3t}ms\\n`); __p3t=Date.now();\n  const contract = createMemorySsaContract({"),
+            ("  const useDefLinks = contract.reachingDefinitionLinks.map", "  process.stderr.write(`[P3MEM contract] ${Date.now()-__p3t}ms\\n`); __p3t=Date.now();\n  const useDefLinks = contract.reachingDefinitionLinks.map"),
+            ("  return deepFreeze({", "  process.stderr.write(`[P3MEM postprocess] ${Date.now()-__p3t}ms\\n`); __p3t=Date.now();\n  const __p3result = deepFreeze({"),
+            ("    blockStates,\n  });\n}", "    blockStates,\n  });\n  process.stderr.write(`[P3MEM freeze] ${Date.now()-__p3t}ms\\n`);\n  return __p3result;\n}")
           ]
-          s=s[:start]+'\n'.join(lines)+s[end:]
+          for old,new in reps:
+            if old not in s: raise SystemExit('missing '+old[:70])
+            s=s.replace(old,new,1)
           p.write_text(s)
           PY
-      - name: Benchmark pathological function
+      - name: Run pathological function
         run: |
           cat > tests/.p3-probe.mjs <<'EOF'
           import { openBinary } from './harness.mjs';
@@ -102,11 +54,7 @@ jobs:
           const a=0x10033fd24n,end=0x100340074n;
           const m=await w.analyze(a,end);
           const t=Date.now();
-          const r=decompile(m,{addr:a,rowOfAddress:x=>w.rowOf(x),addrOfRow:r=>w.region.vmAddr+BigInt(r)*4n,symbolFor:x=>w.symbols.nameAt(x)});
-          console.error(`[P3PHI total] ${Date.now()-t}ms lines=${r?.lines?.length??-1}`);
+          decompile(m,{addr:a,rowOfAddress:x=>w.rowOf(x),addrOfRow:r=>w.region.vmAddr+BigInt(r)*4n,symbolFor:x=>w.symbols.nameAt(x)});
+          console.error(`[P3MEM total] ${Date.now()-t}ms`);
           EOF
           timeout --signal=TERM --kill-after=5s 20s node --max-old-space-size=6000 tests/.p3-probe.mjs
-      - name: Focused IR regressions
-        run: node tests/ir.mjs
-      - name: Semantic v2 suite
-        run: npm run semantic-v2:test
