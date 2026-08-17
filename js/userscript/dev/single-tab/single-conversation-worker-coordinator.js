@@ -296,6 +296,16 @@ export class SingleConversationWorkerCoordinator {
     const current = this.controller.currentConversation();
     if (current?.id === claim.supervisorConversation.id) return current;
 
+    const canAdoptSettledSurface = typeof this.controller.adoptCurrentConversation === 'function'
+      && typeof this.controller.adapter?.conversation === 'function'
+      && typeof this.controller.adapter?.composer === 'function';
+    if (!canAdoptSettledSurface) {
+      return this.controller.navigateToConversation(claim.supervisorConversation, {
+        sessionKey: `dev-supervisor-return:${claim.runId}`,
+        continuityAnchor: claim.supervisorAnchor,
+      });
+    }
+
     // `currentConversation()` intentionally rejects a route whose complete
     // remembered history has not rehydrated. That is too strict for returning to
     // a Supervisor on iPad: old turns may remain permanently virtualized even
@@ -303,7 +313,7 @@ export class SingleConversationWorkerCoordinator {
     // Route first without a historical-turn requirement, then adopt only a
     // settled target surface. If we came from the Worker route, reject its stale
     // user-turn surface until React has actually swapped the conversation DOM.
-    const rawBefore = this.controller.adapter?.conversation?.() || null;
+    const rawBefore = this.controller.adapter.conversation?.() || null;
     const sourceAnchors = rawBefore?.id && rawBefore.id !== claim.supervisorConversation.id
       ? (this.controller.currentUserAnchors?.() || [])
       : [];
