@@ -1,4 +1,4 @@
-name: P3 legacy corpus validation v9
+name: P3 legacy corpus validation v10
 on:
   push:
     branches: [hex/p3-local-debug-350]
@@ -19,6 +19,7 @@ jobs:
       - run: npm ci
       - run: python3 tools/validation/p3-debug-apply.py
       - run: python3 tools/validation/p3-debug-apply-interproc.py
+      - run: python3 tools/validation/p3-debug-apply-137.py
       - run: npm run userscript:build
       - run: node tests/issues-129-134.mjs
       - run: node tests/issues-130-interproc.mjs
