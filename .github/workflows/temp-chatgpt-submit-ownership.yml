@@ -1,0 +1,105 @@
+name: Temporary ChatGPT submit ownership repair
+
+on:
+  push:
+    branches: [fix/chatgpt-submit-ownership]
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/chatgpt-submit-ownership
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Apply ownership repair and regression
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{path}: expected exactly one match, found {count}')
+              p.write_text(text.replace(old, new, 1))
+
+          adapter = 'js/userscript/chatgpt-adapter.js'
+          replace_once(adapter,
+              "const LONG_SUBMISSION_PROMPT_THRESHOLD = 400;\n",
+              "")
+          replace_once(adapter,
+              "    startTimeoutMs = 10000,\n    conversationGraceMs = 3000,\n    submissionMismatchGraceMs = 1500,\n    submissionMismatchLongPromptGraceMs = 6000,\n    structuredCompletionQuietMs = 1000,\n",
+              "    startTimeoutMs = 30000,\n    conversationGraceMs = 3000,\n    structuredCompletionQuietMs = 1000,\n")
+          replace_once(adapter,
+              "    this.conversationGraceMs = conversationGraceMs;\n    this.submissionMismatchGraceMs = submissionMismatchGraceMs;\n    this.submissionMismatchLongPromptGraceMs = submissionMismatchLongPromptGraceMs;\n    this.structuredCompletionQuietMs = structuredCompletionQuietMs;\n",
+              "    this.conversationGraceMs = conversationGraceMs;\n    this.structuredCompletionQuietMs = structuredCompletionQuietMs;\n")
+          replace_once(adapter,
+              "    const normalizedPrompt = normalizeText(prompt);\n    // Long Dev/Supervisor envelopes use ChatGPT's collapsible user renderer.\n    // On iPad/WebKit its turn wrapper can exist several seconds before the full\n    // semantic message has hydrated. Keep the short-prompt interference guard\n    // strict, but give long owned submissions enough time to finish hydrating.\n    const submissionMismatchGraceMs = normalizedPrompt.length >= LONG_SUBMISSION_PROMPT_THRESHOLD\n      ? Math.max(this.submissionMismatchGraceMs, this.submissionMismatchLongPromptGraceMs)\n      : this.submissionMismatchGraceMs;\n",
+              "    const normalizedPrompt = normalizeText(prompt);\n")
+          replace_once(adapter,
+              "    let requestUserTurn = null;\n    let mismatchSince = null;\n    let mismatchPrefixLength = 0;\n",
+              "    let requestUserTurn = null;\n")
+          replace_once(adapter,
+              "        if (explicit.length === 1) {\n          const candidate = explicit[0];\n          const candidateText = normalizeText(candidate.text);\n          if (candidateText === normalizedPrompt) {\n            requestUserTurn = candidate;\n            mismatchSince = null;\n            mismatchPrefixLength = 0;\n            return true;\n          }\n          if (mismatchSince === null) mismatchSince = Date.now();\n          // A freshly submitted long turn can hydrate progressively. Only extend\n          // the grace window when the observed text is a strictly longer prefix\n          // of the exact Hex prompt; arbitrary human text or identity churn never\n          // earns more time and still trips the manual-interference guard.\n          if (candidateText && normalizedPrompt.startsWith(candidateText) && candidateText.length > mismatchPrefixLength) {\n            mismatchPrefixLength = candidateText.length;\n            mismatchSince = Date.now();\n          }\n          if (Date.now() - mismatchSince >= submissionMismatchGraceMs) {\n            throw bridgeError('turn-controller', 'manual-interference', 'The submitted ChatGPT turn does not match the Hex request.');\n          }\n          return false;\n        }\n        mismatchSince = null;\n        mismatchPrefixLength = 0;\n",
+              "        if (explicit.length === 1) {\n          // Composer ownership is proved immediately before send.click(): the\n          // authoritative composer contains the exact Hex prompt, and JavaScript\n          // cannot interleave a separate human edit between that check and click.\n          // The first fresh user turn after that owned click is therefore the Hex\n          // request. Its rendered text is NOT an ownership signal: iPad/WebKit may\n          // expose clipped, localized, stale, or partially hydrated text for an\n          // arbitrary amount of time while the real ChatGPT turn is already live.\n          requestUserTurn = explicit[0];\n          return true;\n        }\n")
+          replace_once(adapter,
+              "        const requestPresent = requestTurnIsPresent(requestUserTurn, userTurns, conversationTurns, normalizedPrompt);\n",
+              "        const requestPresent = requestTurnIsPresent(requestUserTurn, userTurns, conversationTurns);\n")
+          replace_once(adapter,
+              "    if (!requestTurnIsPresent(requestUserTurn, users, turns, normalizedPrompt)) return false;\n",
+              "    if (!requestTurnIsPresent(requestUserTurn, users, turns)) return false;\n")
+          replace_once(adapter,
+              "function requestTurnIsPresent(request, userTurns, conversationTurns, normalizedPrompt) {\n  if (!request) return false;\n  const matches = (turn) => {\n    if (!turn) return false;\n    const sameIdentity = turn.id === request.id || (!!turn.node && !!request.node && turn.node === request.node);\n    return sameIdentity && normalizeText(turn.text) === normalizedPrompt;\n  };\n  return (userTurns || []).some(matches) || (conversationTurns || []).some(matches);\n}\n",
+              "function requestTurnIsPresent(request, userTurns, conversationTurns) {\n  if (!request) return false;\n  // Once the send click is owned, continuity is an identity question, not a\n  // renderer-text question. ChatGPT may mutate or temporarily truncate visible\n  // user text while preserving the logical turn id/node.\n  const matches = (turn) => !!turn && (turn.id === request.id || (!!turn.node && !!request.node && turn.node === request.node));\n  return (userTurns || []).some(matches) || (conversationTurns || []).some(matches);\n}\n")
+
+          fixture = 'tests/fixtures/chatgpt-production-dom.mjs'
+          replace_once(fixture,
+              "    const initialUserText = options.userHydrationDelayMs ? text.slice(0, Math.max(1, Math.floor(text.length / 3))) : text;\n",
+              "    const initialUserText = options.userInitialText != null\n      ? String(options.userInitialText)\n      : (options.userHydrationDelayMs ? text.slice(0, Math.max(1, Math.floor(text.length / 3))) : text);\n")
+
+          test = 'tests/chatgpt-web-production-dom.mjs'
+          anchor = "    await scenario(context, name, 'a historical page alert does not poison a new request', {\n"
+          addition = "    await scenario(context, name, 'owned submission survives indefinitely wrong renderer text', {\n      prompt: LONG_PROMPT,\n      chatgpt: { userHydrationDelayMs: 60000, userInitialText: '読み込み中…' },\n    }, (result) => {\n      assert.equal(result.ok, true, `${name}: renderer text must never revoke an owned send (${result.error?.code})`);\n      assert.equal(result.value.text, ANSWER);\n    });\n\n"
+          replace_once(test, anchor, addition + anchor)
+          PY
+      - name: Run userscript and Dev Supervisor regressions
+        run: npm run userscript:test
+      - name: Install pinned production DOM browser engines
+        shell: bash
+        run: |
+          npm install --no-save --save-exact playwright@1.55.0
+          npx --no-install playwright install chromium webkit
+          if ! node --input-type=module <<'NODE'
+          import { chromium, webkit } from 'playwright';
+          for (const browserType of [chromium, webkit]) {
+            const browser = await browserType.launch({ headless: true });
+            await browser.close();
+          }
+          NODE
+          then
+            npx --no-install playwright install-deps chromium webkit
+          fi
+      - name: Run production DOM regression in Chromium and WebKit
+        run: node tests/chatgpt-web-production-dom.mjs
+      - name: Commit repair and canonical userscript release
+        shell: bash
+        run: |
+          rm .github/workflows/temp-chatgpt-submit-ownership.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add js/userscript/chatgpt-adapter.js tests/chatgpt-web-production-dom.mjs tests/fixtures/chatgpt-production-dom.mjs userscript/hex.user.template.js userscript/release-version.json .github/workflows/temp-chatgpt-submit-ownership.yml
+          git diff --cached --check
+          git commit -m 'Fix ChatGPT submit ownership on iPad'
+          git push origin HEAD:fix/chatgpt-submit-ownership
