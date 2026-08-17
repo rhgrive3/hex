@@ -1,5 +1,10 @@
 import { openBinary } from './harness.mjs';
-import { irFor, readModifyWrite, getSemanticMigrationMode } from '../js/ir.js';
+import {
+  irFor,
+  readModifyWrite,
+  getSemanticMigrationMode,
+  getLastSemanticV2Instrumentation,
+} from '../js/ir.js';
 import { analyzeGraph } from '../js/controlflow.js';
 import { inferSemanticTypes } from '../js/decompiler/type-recovery.js';
 import { decompileSemantic as decompileSemanticCore } from '../js/decompiler/semantic-core.js';
@@ -34,6 +39,7 @@ function timed(name, fn) {
 console.error(`DECOMPILE_PROFILE addr=${rawAddress} bytes=${bytes} instructions=${model?.instructions?.length ?? 0} migration=${getSemanticMigrationMode()}`);
 const ir = timed('irFor', () => irFor(model, { rowOfAddress: opts.rowOfAddress }));
 if (!ir) throw new Error('IR construction failed');
+console.error(`DECOMPILE_PROFILE instrumentation ${JSON.stringify(getLastSemanticV2Instrumentation())}`);
 console.error(`DECOMPILE_PROFILE ir instructions=${ir.instructions?.length ?? 0} values=${ir.values?.length ?? 0} blocks=${ir.blocks?.length ?? 0}`);
 timed('type-recovery', () => inferSemanticTypes(ir, model));
 timed('graph', () => analyzeGraph(ir.blocks.map((b) => b.succ), ir.entry || 0));
