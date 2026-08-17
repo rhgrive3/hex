@@ -42,13 +42,16 @@ assert.match(serialized, new RegExp(oldArtifactId));
 assert.doesNotMatch(serialized, /mustNeverPersist|giantAnalysisGraph|arbitraryMetadata/, 'derived payload/graphs must not enter .hexproj');
 
 const reopened = parseHexProject(serialized);
-assert.deepEqual(reopened.user.names, userFacts.names);
-assert.deepEqual(reopened.user.comments, userFacts.comments);
-assert.deepEqual(reopened.user.types, userFacts.types);
-assert.deepEqual(reopened.user.bookmarks, userFacts.bookmarks);
-assert.deepEqual(reopened.user.patches, userFacts.patches);
-assert.deepEqual(reopened.findings.confirmed, confirmedFindings);
-assert.deepEqual(reopened.findings.investigationSessions, investigationSessions);
+const assertUserFactsIntact = () => {
+  assert.deepEqual(reopened.user.names, userFacts.names);
+  assert.deepEqual(reopened.user.comments, userFacts.comments);
+  assert.deepEqual(reopened.user.types, userFacts.types);
+  assert.deepEqual(reopened.user.bookmarks, userFacts.bookmarks);
+  assert.deepEqual(reopened.user.patches, userFacts.patches);
+  assert.deepEqual(reopened.findings.confirmed, confirmedFindings);
+  assert.deepEqual(reopened.findings.investigationSessions, investigationSessions);
+};
+assertUserFactsIntact();
 
 const reopenedIndex = artifactIndexFromProject(reopened);
 const localStore = {
@@ -68,12 +71,18 @@ assert.equal(noLocalStore.reason, 'store-unavailable', 'project must remain usab
 const stale = await reopenedIndex.resolve(scope, kind, localStore, { expectedArtifactId:newArtifactId });
 assert.equal(stale.status, 'miss');
 assert.equal(stale.reason, 'stale-ref');
+const invalidated = reopenedIndex.invalidateStale(scope, kind, newArtifactId);
+assert.equal(invalidated.status, 'invalidated');
+assert.equal(reopenedIndex.get(scope, kind), null);
+assertUserFactsIntact();
 
+reopenedIndex.bind(createArtifactRef({ scope, kind, artifactId:oldArtifactId }));
 const deletedArtifact = await reopenedIndex.resolve(scope, kind, {
   async get(artifactId) { return { status:'miss', artifactId, reason:'not-found' }; },
 }, { expectedArtifactId:oldArtifactId });
 assert.equal(deletedArtifact.status, 'miss');
 assert.equal(deletedArtifact.reason, 'not-found');
+assertUserFactsIntact();
 
 const deletedStore = await reopenedIndex.resolve(scope, kind, {
   async get() { const error = new Error('database deleted'); error.name = 'InvalidStateError'; throw error; },
@@ -81,6 +90,7 @@ const deletedStore = await reopenedIndex.resolve(scope, kind, {
 assert.equal(deletedStore.status, 'miss');
 assert.equal(deletedStore.reason, 'store-unavailable');
 assert.equal(deletedStore.storeError.name, 'InvalidStateError');
+assertUserFactsIntact();
 
 reopenedIndex.bind(createArtifactRef({ scope, kind, artifactId:newArtifactId }));
 const recomputed = await reopenedIndex.resolve(scope, kind, {
@@ -88,6 +98,7 @@ const recomputed = await reopenedIndex.resolve(scope, kind, {
 }, { expectedArtifactId:newArtifactId });
 assert.equal(recomputed.status, 'hit', 'later recomputation should replace stale local ref cleanly');
 assert.equal(recomputed.artifact.payload.recomputed, true);
+assertUserFactsIntact();
 
 const hostileProject = createHexProject({
   cacheReferences:[
