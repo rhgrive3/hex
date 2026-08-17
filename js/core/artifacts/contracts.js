@@ -1,0 +1,207 @@
+import {
+  createArtifactId,
+  deepFreeze,
+  jsonSafe,
+  stableDigest,
+  stableStringify,
+} from '../identity/index.js';
+
+export const ARTIFACT_CONTRACT_VERSION = 'hex-artifact-contract-v1';
+export const ARTIFACT_RECORD_SCHEMA_VERSION = 1;
+export const ARTIFACT_STORE_VERSION = 'hex-artifact-store-v1';
+export const ARTIFACT_PAYLOAD_ENCODING = 'canonical-json-v1';
+export const ARTIFACT_NOT_APPLICABLE_VERSION = 'n/a';
+
+const COMPLETENESS = new Set(['complete', 'bounded', 'partial', 'truncated', 'unsupported']);
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
+
+export class ArtifactError extends Error {
+  constructor(code, message = code, detail = null) {
+    super(message);
+    this.name = 'ArtifactError';
+    this.code = code;
+    this.detail = detail;
+  }
+}
+
+export class ArtifactCorruptionError extends ArtifactError {
+  constructor(code, message = code, detail = null) {
+    super(code, message, detail);
+    this.name = 'ArtifactCorruptionError';
+  }
+}
+
+export class ArtifactStorageError extends ArtifactError {
+  constructor(code, message = code, detail = null) {
+    super(code, message, detail);
+    this.name = 'ArtifactStorageError';
+  }
+}
+
+export class ArtifactUnsupportedError extends ArtifactError {
+  constructor(code = 'artifact-storage-unsupported', message = code, detail = null) {
+    super(code, message, detail);
+    this.name = 'ArtifactUnsupportedError';
+  }
+}
+
+function required(value, code) {
+  const text = String(value ?? '').trim();
+  if (!text) throw new ArtifactError(code);
+  return text;
+}
+
+function optional(value) {
+  return value == null ? null : String(value);
+}
+
+function version(value, relevant = true) {
+  if (!relevant) return ARTIFACT_NOT_APPLICABLE_VERSION;
+  return required(value, 'artifact-version-required');
+}
+
+function sortedStrings(values) {
+  if (values == null) return [];
+  if (!Array.isArray(values)) throw new ArtifactError('artifact-upstream-ids-invalid');
+  return [...new Set(values.map(String).filter(Boolean))].sort();
+}
+
+export function canonicalConfigHash(config = {}) {
+  return stableDigest(jsonSafe(config));
+}
+
+/**
+ * Normalizes only behavior-affecting key material. Callers explicitly mark
+ * semantic dimensions irrelevant rather than inheriting ambient defaults.
+ */
+export function createArtifactDescriptor(input = {}) {
+  const relevance = input.relevance || {};
+  const versions = input.versions || {};
+  const config = jsonSafe(input.config ?? {});
+  const keyExtras = jsonSafe(input.keyExtras ?? {});
+  const upstreamArtifactIds = sortedStrings(input.upstreamArtifactIds ?? input.inputArtifactIds ?? []);
+  const canonicalConfig = canonicalConfigHash(config);
+  const keyMaterialHash = stableDigest({ config, keyExtras });
+
+  const descriptor = {
+    contractVersion: ARTIFACT_CONTRACT_VERSION,
+    binaryId: required(input.binaryId, 'artifact-binary-id-required'),
+    sliceId: optional(input.sliceId),
+    entityId: optional(input.entityId),
+    artifactKind: required(input.artifactKind ?? input.kind, 'artifact-kind-required'),
+    producerId: required(input.producerId ?? input.passId, 'artifact-producer-id-required'),
+    producerVersion: required(input.producerVersion ?? input.passVersion ?? '1', 'artifact-producer-version-required'),
+    versions: {
+      loader: version(versions.loader ?? input.loaderVersion, relevance.loader !== false),
+      architectureSemantic: version(versions.architectureSemantic ?? input.architectureSemanticVersion, relevance.architectureSemantic !== false),
+      abiSemantic: version(versions.abiSemantic ?? input.abiSemanticVersion, relevance.abiSemantic !== false),
+      semanticSchema: version(versions.semanticSchema ?? input.semanticSchemaVersion, relevance.semanticSchema !== false),
+      platform: version(versions.platform ?? input.platformVersion, relevance.platform === true),
+      runtime: version(versions.runtime ?? input.runtimeVersion, relevance.runtime === true),
+      plugin: version(versions.plugin ?? input.pluginVersion, relevance.plugin === true),
+      provider: version(versions.provider ?? input.providerVersion, relevance.provider === true),
+    },
+    runtimeSnapshotId: relevance.runtimeSnapshot === true
+      ? required(input.runtimeSnapshotId, 'artifact-runtime-snapshot-required')
+      : null,
+    canonicalConfigHash: canonicalConfig,
+    keyMaterialHash,
+    upstreamArtifactIds,
+    originRefs: sortedStrings(input.originRefs ?? []),
+  };
+
+  // Canonical ArtifactId remains the single repository identity truth. Optional
+  // Phase 4 dimensions are folded into optionsHash only when explicitly relevant.
+  const optionsHash = stableDigest({
+    configHash: canonicalConfig,
+    keyExtrasHash: stableDigest(keyExtras),
+    platformVersion: descriptor.versions.platform,
+    runtimeVersion: descriptor.versions.runtime,
+    pluginVersion: descriptor.versions.plugin,
+    providerVersion: descriptor.versions.provider,
+    runtimeSnapshotId: descriptor.runtimeSnapshotId,
+  });
+  descriptor.artifactId = createArtifactId({
+    binaryId: descriptor.binaryId,
+    sliceId: descriptor.sliceId,
+    loaderVersion: descriptor.versions.loader,
+    architectureSemanticVersion: descriptor.versions.architectureSemantic,
+    abiSemanticVersion: descriptor.versions.abiSemantic,
+    semanticSchemaVersion: descriptor.versions.semanticSchema,
+    entityId: descriptor.entityId,
+    passId: descriptor.producerId,
+    passVersion: descriptor.producerVersion,
+    optionsHash,
+    inputArtifactIds: upstreamArtifactIds,
+  });
+  return deepFreeze(descriptor);
+}
+
+export function encodeArtifactPayload(payload) {
+  return encoder.encode(stableStringify(payload));
+}
+
+export function decodeArtifactPayload(bytes) {
+  const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  try {
+    return JSON.parse(decoder.decode(view));
+  } catch (error) {
+    throw new ArtifactCorruptionError('artifact-payload-malformed', 'Artifact payload is not valid canonical JSON', { cause: String(error) });
+  }
+}
+
+export function artifactPayloadChecksum(bytes) {
+  const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  return stableDigest(Array.from(view));
+}
+
+export function createArtifactRecord(descriptor, payloadBytes, metadata = {}) {
+  if (!descriptor?.artifactId) throw new ArtifactError('artifact-descriptor-required');
+  const bytes = payloadBytes instanceof Uint8Array ? payloadBytes : new Uint8Array(payloadBytes);
+  const completeness = metadata.completeness ?? 'complete';
+  if (!COMPLETENESS.has(completeness)) throw new ArtifactError('artifact-completeness-invalid');
+  const record = {
+    recordSchemaVersion: ARTIFACT_RECORD_SCHEMA_VERSION,
+    artifactContractVersion: ARTIFACT_CONTRACT_VERSION,
+    artifactId: descriptor.artifactId,
+    artifactKind: descriptor.artifactKind,
+    producerId: descriptor.producerId,
+    producerVersion: descriptor.producerVersion,
+    versions: descriptor.versions,
+    canonicalConfigHash: descriptor.canonicalConfigHash,
+    upstreamArtifactIds: descriptor.upstreamArtifactIds,
+    binaryId: descriptor.binaryId,
+    sliceId: descriptor.sliceId,
+    entityId: descriptor.entityId,
+    runtimeSnapshotId: descriptor.runtimeSnapshotId,
+    originRefs: descriptor.originRefs,
+    payloadEncoding: ARTIFACT_PAYLOAD_ENCODING,
+    payloadEncodingVersion: 1,
+    payloadChecksum: artifactPayloadChecksum(bytes),
+    payloadSize: bytes.byteLength,
+    completeness,
+    creation: jsonSafe(metadata.creation ?? {}),
+  };
+  return deepFreeze(record);
+}
+
+export function validateArtifactRecord(record, payloadBytes, expected = {}) {
+  if (!record || typeof record !== 'object') throw new ArtifactCorruptionError('artifact-record-malformed');
+  if (record.recordSchemaVersion !== ARTIFACT_RECORD_SCHEMA_VERSION) throw new ArtifactCorruptionError('artifact-record-schema-mismatch');
+  if (record.artifactContractVersion !== ARTIFACT_CONTRACT_VERSION) throw new ArtifactCorruptionError('artifact-contract-version-mismatch');
+  if (!record.artifactId || !record.producerId || !record.producerVersion) throw new ArtifactCorruptionError('artifact-record-required-field-missing');
+  if (record.payloadEncoding !== ARTIFACT_PAYLOAD_ENCODING || record.payloadEncodingVersion !== 1) throw new ArtifactCorruptionError('artifact-payload-encoding-unsupported');
+  if (record.completeness !== 'complete' && expected.allowIncomplete !== true) throw new ArtifactCorruptionError('artifact-incomplete');
+  const bytes = payloadBytes instanceof Uint8Array ? payloadBytes : new Uint8Array(payloadBytes ?? 0);
+  if (bytes.byteLength !== record.payloadSize) throw new ArtifactCorruptionError('artifact-payload-truncated');
+  if (artifactPayloadChecksum(bytes) !== record.payloadChecksum) throw new ArtifactCorruptionError('artifact-payload-checksum-mismatch');
+  if (expected.artifactId && record.artifactId !== expected.artifactId) throw new ArtifactCorruptionError('artifact-id-mismatch');
+  if (expected.producerVersion && record.producerVersion !== expected.producerVersion) throw new ArtifactCorruptionError('artifact-producer-version-mismatch');
+  if (expected.semanticSchemaVersion && record.versions?.semanticSchema !== expected.semanticSchemaVersion) throw new ArtifactCorruptionError('artifact-semantic-schema-mismatch');
+  return true;
+}
+
+export function canonicalSerializeArtifactRecord(record) {
+  return stableStringify(record);
+}
