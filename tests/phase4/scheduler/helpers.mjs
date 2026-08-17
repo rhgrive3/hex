@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { AnalysisScheduler } from '../../../js/core/scheduler/index.js';
+import { AnalysisScheduler } from '../../../js/core/scheduler/analysis-scheduler.js';
 
 export class TestStore {
   constructor() { this.entries=new Map(); this.publishes=0; this.gets=0; }

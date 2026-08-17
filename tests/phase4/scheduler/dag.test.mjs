@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { SchedulerCycleError, SchedulerDependencyError, SchedulerDependencyIdentityError } from '../../../js/core/scheduler/index.js';
+import { SchedulerCycleError, SchedulerDependencyError, SchedulerDependencyIdentityError } from '../../../js/core/scheduler/analysis-scheduler.js';
 import { descriptor, scheduler } from './helpers.mjs';
 
 function nodeRequest(desc, dependencies=[], counter=null) {

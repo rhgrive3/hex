@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { BudgetExceededError, ResourceBudget } from '../../../js/core/budgets/index.js';
-import { SchedulerDependencyError } from '../../../js/core/scheduler/index.js';
+import { SchedulerDependencyError } from '../../../js/core/scheduler/analysis-scheduler.js';
 import { deferred, delay, descriptor, scheduler, TestStore, waitState } from './helpers.mjs';
 
 // Cancel before enqueue: no task and no producer.
