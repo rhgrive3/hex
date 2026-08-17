@@ -394,6 +394,66 @@ function attachAapcs64CallArguments(projected) {
   }
 }
 
+function attachAapcs64TypedCallResults(projected, instructionByRow, options = {}) {
+  for (const inst of projected.instructions ?? []) {
+    if (inst.op !== LEGACY_OP.CALL || inst.dst) continue;
+    const decoded = instructionByRow.get(inst.row) ?? null;
+    const result = decoded == null ? null : AAPCS64_ABI.classifyCallReturn(decoded, options);
+    if (!result?.reg) continue;
+    const reg = String(result.reg);
+    const bits = Number(result.bits || 64);
+    const candidates = (projected.values ?? [])
+      .filter((value) => value?.reg === reg
+        && value?.sourceEntityId === inst.semanticNodeId
+        && value?.def == null)
+      .sort((left, right) => Number(right.id ?? -1) - Number(left.id ?? -1));
+    const priorVersion = Math.max(-1, ...(projected.values ?? [])
+      .filter((value) => value?.reg === reg)
+      .map((value) => Number(value.version ?? -1)));
+    const value = candidates[0] ?? {
+      id: (projected.values ?? []).length,
+      vid: (projected.values ?? []).length + 1,
+      kind: LEGACY_VK.DEF,
+      reg,
+      stateKey: null,
+      version: priorVersion + 1,
+      bits,
+      def: null,
+      uses: [],
+      const: null,
+      range: null,
+      signed: null,
+      nullable: null,
+      type: null,
+      label: reg,
+      semanticValueId: null,
+      semanticSsaValueId: null,
+      sourceEntityId: inst.semanticNodeId,
+      machineType: null,
+      origin: inst.origin ?? null,
+      compatibilityShapeOnly: true,
+    };
+    if (!candidates[0]) projected.values.push(value);
+    value.kind = LEGACY_VK.DEF;
+    value.reg = reg;
+    value.bits = bits;
+    value.def = inst;
+    value.unknown = true;
+    delete value.undefined;
+    delete value.clobbered;
+    value.compatDerived = 'typed-abi-call-result';
+    inst.dst = value;
+    inst.returnReg = reg;
+    inst.returnBits = bits;
+    inst.returnEvidence = 'prototype-aapcs64-call';
+    inst.extra = {
+      ...(inst.extra ?? {}),
+      compatTypedCallResult: true,
+      compatTypedCallResultEvidence: inst.returnEvidence,
+    };
+  }
+}
+
 function valueMayCarryStackAddress(value) {
   const proof = legacyStackPointerProvenanceOf(value);
   return proof?.must === true || proof?.may === true;
@@ -571,6 +631,7 @@ function buildV2CompatFromLegacyModel(model, opts = {}) {
   restoreAapcs64PublicLocations(result.legacyV1);
   propagateExactLegacyConstants(result.legacyV1);
   attachAapcs64CallArguments(result.legacyV1);
+  attachAapcs64TypedCallResults(result.legacyV1, instructionByRow, opts);
   invalidateEscapedStackForwarding(result.legacyV1);
   restoreProvenNoEscapeStackForwarding(result.legacyV1);
   attachAapcs64FunctionReturns(result.legacyV1, abiAdapter);

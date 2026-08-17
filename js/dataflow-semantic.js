@@ -20,7 +20,10 @@ const UN_NAME = {
   sxt8: 'sxtb', sxt16: 'sxth', sxt32: 'sxtw',
   uxt8: 'uxtb', uxt16: 'uxth', uxt32: 'uxtw',
 };
-const PASS_UN = new Set(['sxt8', 'sxt16', 'sxt32', 'uxt8', 'uxt16', 'uxt32', 'fmov']);
+const PASS_UN = new Set([
+  'sxt8', 'sxt16', 'sxt32', 'uxt8', 'uxt16', 'uxt32', 'fmov',
+  'sext', 'zext', 'trunc', 'bitcast',
+]);
 
 function operationName(inst) {
   if (!inst) return null;
@@ -344,6 +347,14 @@ function helperLocation(offsetValue) {
     return {
       base: 'x0', disp, size: 8, stack: false,
       key: 'x0@' + disp.toString(), indexAddr: null, self: true,
+      irKey: null, irKind: MK.FIELD,
+    };
+  }
+  const load = rootLoad(offsetValue);
+  if (load?.loc?.kind === MK.GLOBAL && load.loc.address != null) {
+    return {
+      base: 'x0', disp: null, size: 8, stack: false,
+      key: 'x0@iv' + load.loc.address.toString(), indexAddr: load.loc.address, self: true,
       irKey: null, irKind: MK.FIELD,
     };
   }

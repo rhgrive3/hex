@@ -45,10 +45,10 @@ function compactProjectedState(projected) {
     const rawSource = inst.args[0]?.value;
     const source = resolveAlias(rawSource, aliases);
     if (!source) continue;
-    const addressStateAlias = rawSource != null && aliases.has(rawSource.id);
     if (inst.extra?.stateWrite && samePublicState(inst, source, inst.dst)) {
       const shadow = inst.dst;
-      if (valueFeedsAddressOrCall(projected, shadow)) {
+      const provenExactLoadSource = source.compatDerived === 'exact-state-write-source' && source.def?.op === V1_OP.LOAD;
+      if (provenExactLoadSource || valueFeedsAddressOrCall(projected, shadow)) {
         aliases.set(shadow.id, source);
         if (source.stateKey == null && shadow.stateKey != null) source.stateKey = shadow.stateKey;
         shadow.compatPublicIdentity = shadow.reg;
@@ -67,7 +67,7 @@ function compactProjectedState(projected) {
         inst.extra.compatPublicStateSourceValueId = source.id;
         inst.extra.compatStateDestinationValueId = shadow.id;
       }
-    } else if (inst.extra?.stateRead && (inst.extra?.localPhysicalViewProjection === true || addressStateAlias) && Number(source.bits || 0) === Number(inst.dst.bits || 0)) {
+    } else if (inst.extra?.stateRead && inst.extra?.localPhysicalViewProjection === true && Number(source.bits || 0) === Number(inst.dst.bits || 0)) {
       const read = inst.dst;
       aliases.set(read.id, source);
       read.reg = null;
@@ -359,7 +359,22 @@ function recoverStackSlots(projected) {
     else slot.writes += 1;
     inst.slot = slot;
   }
-  projected.stackSlots = [...byKey.values()].sort((left, right) => left.offset < right.offset ? -1 : left.offset > right.offset ? 1 : left.key.localeCompare(right.key));
+  const slots = [...byKey.values()];
+  const signsByMagnitude = new Map();
+  for (const slot of slots) {
+    const magnitude = slot.offset < 0n ? -slot.offset : slot.offset;
+    let signs = signsByMagnitude.get(magnitude.toString());
+    if (!signs) { signs = { positive:false, negative:false }; signsByMagnitude.set(magnitude.toString(), signs); }
+    if (slot.offset < 0n) signs.negative = true;
+    else signs.positive = true;
+  }
+  for (const slot of slots) {
+    if (slot.offset < 0n) continue;
+    const magnitude = slot.offset;
+    const signs = signsByMagnitude.get(magnitude.toString());
+    if (signs?.positive && signs?.negative) slot.name = `var_p${magnitude.toString(16)}`;
+  }
+  projected.stackSlots = slots.sort((left, right) => left.offset < right.offset ? -1 : left.offset > right.offset ? 1 : left.key.localeCompare(right.key));
 }
 
 export function finalizeLegacyProjection(projected) {

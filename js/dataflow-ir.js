@@ -135,6 +135,10 @@ function stableOrigin(value, callByRow, memo = new Map(), active = new Set()) {
 }
 
 function stepFrom(inst, loadValue, callByRow, originMemo) {
+  if (inst?.op === OP.MOV && (
+    inst.extra?.stateRead || inst.extra?.stateWrite ||
+    ['trunc', 'zext', 'sext', 'bitcast'].includes(inst.sub)
+  )) return null;
   const op = operationName(inst);
   if (!op) return null;
   const otherValue = otherInput(inst, loadValue);

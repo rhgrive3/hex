@@ -395,7 +395,10 @@ export function buildLegacyValues(ir, ssa) {
       machineType,
       origin: definition.origin,
     });
-    if (definition.kind === 'unknown') value.unknown = true;
+    if (definition.kind === 'unknown') {
+      value.unknown = true;
+      if (definition.variableKey != null) value.clobbered = true;
+    }
     if (definition.kind === 'undef') value.undefined = true;
     byId.set(definition.valueId, value);
   }

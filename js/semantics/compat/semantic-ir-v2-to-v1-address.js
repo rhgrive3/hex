@@ -136,13 +136,17 @@ function lowerAddress(valueId, context, active) {
     if (rightConst != null) {
       const left = lowerAddress(leftId, context, active) ?? baseLeaf(leftId, context);
       if (left && left.precise) {
-        const delta = producer.operator === 'sub' ? -rightConst : rightConst;
+        const addressBits = Math.max(1, Number(left.addressWidthBits || 64));
+        const signedOffset = BigInt.asIntN(addressBits, rightConst);
+        const delta = producer.operator === 'sub' ? -signedOffset : signedOffset;
         result = { ...left, disp: (left.disp ?? 0n) + delta, origin: mergeOrigins(left.origin, producer.origin, rightNode.origin, semanticValue?.origin) };
       }
     } else if (producer.operator === 'add' && leftConst != null) {
       const right = lowerAddress(rightId, context, active) ?? baseLeaf(rightId, context);
       if (right && right.precise) {
-        result = { ...right, disp: (right.disp ?? 0n) + leftConst, origin: mergeOrigins(right.origin, producer.origin, leftNode.origin, semanticValue?.origin) };
+        const addressBits = Math.max(1, Number(right.addressWidthBits || 64));
+        const signedOffset = BigInt.asIntN(addressBits, leftConst);
+        result = { ...right, disp: (right.disp ?? 0n) + signedOffset, origin: mergeOrigins(right.origin, producer.origin, leftNode.origin, semanticValue?.origin) };
       }
     } else if (producer.operator === 'add') {
       const left = lowerAddress(leftId, context, active) ?? baseLeaf(leftId, context);

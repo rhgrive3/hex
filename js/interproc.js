@@ -41,18 +41,54 @@ function returnDescriptor(value) {
   return { kind: 'computed', op: origin.op || null, sub: origin.sub || null, bits: value.bits || null, signed: value.signed ?? null };
 }
 
-function summaryReturnCandidate(ir, ret) {
+function weakTerminalCallReturn(ir, ret, calls) {
+  if (ret?.row == null) return null;
+  const candidates = (ir.instructions || []).filter((inst) => inst.op === OP.CALL
+    && inst.row != null && inst.row < ret.row
+    && (inst.block == null || ret.block == null || inst.block === ret.block));
+  const call = candidates.sort((a, b) => (b.row - a.row) || (b.id - a.id))[0] || null;
+  if (!call) return null;
+  const clobbers = call.clobbers || call.extra?.clobbers || [];
+  if (!clobbers.includes('x0')) return null;
+  const overwritten = (ir.instructions || []).some((inst) => inst !== call && inst !== ret
+    && inst.row != null && inst.row > call.row && inst.row < ret.row
+    && (inst.block == null || ret.block == null || inst.block === ret.block)
+    && (inst.dst?.reg === 'x0' || inst.extra?.publicStateIdentity === 'x0'));
+  if (overwritten) return null;
+  const metadata = (calls || []).find((item) => item.row === call.row) || null;
+  return {
+    kind: 'call',
+    target: metadata?.target ?? call.extra?.target ?? null,
+    instructionId: call.instructionId ?? call.id,
+    bits: call.returnBits || 64,
+    signed: null,
+  };
+}
+
+function passiveIncomingStateRead(value) {
+  if (!value?.def || value.def.op !== OP.MOV || !value.def.extra?.stateRead) return false;
+  const origin = originOf(value);
+  return origin?.kind === 'argument' || value.def.extra?.entryStateRead === true;
+}
+
+function summaryReturnCandidate(ir, ret, calls) {
   const explicit = ret?.args?.[0]?.value || null;
-  if (explicit) return { value: explicit, inferred: false };
+  if (explicit) return { value: explicit, descriptor: null, inferred: false };
 
   // Untyped RET carries no x0 SSA use. A terminal x0 definition is useful as a
-  // local hint, but it is not an ABI return contract by itself.
+  // local hint, but it is not an ABI return contract by itself. Compatibility
+  // may retain the legacy weak call-result view when the ABI marks x0 clobbered,
+  // without promoting an unknown call result to trusted semantic truth.
   const value = valueBefore(ir, ret, 'x0');
-  if (!value || value.kind === VK.ARG || !value.def) return { value: null, inferred: false };
-  if (value.def.row == null || ret.row == null || value.def.row >= ret.row) return { value: null, inferred: false };
+  if (!value || value.kind === VK.ARG || !value.def || passiveIncomingStateRead(value)) {
+    const descriptor = weakTerminalCallReturn(ir, ret, calls);
+    return descriptor ? { value: null, descriptor, inferred: true }
+      : { value: null, descriptor: null, inferred: false };
+  }
+  if (value.def.row == null || ret.row == null || value.def.row >= ret.row) return { value: null, descriptor: null, inferred: false };
   const laterUse = (value.uses || []).some((use) => use !== ret && use.row != null && use.row > value.def.row && use.row < ret.row);
-  if (laterUse) return { value: null, inferred: false };
-  return { value, inferred: true };
+  if (laterUse) return { value: null, descriptor: null, inferred: false };
+  return { value, descriptor: null, inferred: true };
 }
 
 function transparentMoveSource(value) {
@@ -70,6 +106,14 @@ function transparentMoveSource(value) {
   return current;
 }
 
+function returnArgumentIndex(value) {
+  const source = transparentMoveSource(value);
+  if (!source) return null;
+  const origin = originOf(source);
+  const reg = source.kind === VK.ARG ? source.reg : origin?.kind === 'argument' ? origin.reg : null;
+  return /^x[0-7]$/.test(String(reg || '')) ? Number(String(reg).slice(1)) : null;
+}
+
 function simpleReturnExpression(value) {
   if (!value) return null;
   let v = value;
@@ -81,13 +125,15 @@ function simpleReturnExpression(value) {
   const a = transparentMoveSource(aArg && aArg.value);
   const b = transparentMoveSource(bArg && bArg.value);
   if (!a || !b) return null;
+  const aArgument = returnArgumentIndex(a);
+  const bArgument = returnArgumentIndex(b);
   const bits = Number(v.bits || v.def.extra?.dstBits || aArg?.bits || 64);
   const signed = v.signed ?? null;
-  if (a.kind === VK.ARG && /^x[0-7]$/.test(String(a.reg || '')) && b.const != null) {
-    return { kind: 'argument-arithmetic', argument: Number(a.reg.slice(1)), op: v.def.sub, constant: b.const, bits, signed };
+  if (aArgument != null && b.const != null) {
+    return { kind: 'argument-arithmetic', argument: aArgument, op: v.def.sub, constant: b.const, bits, signed };
   }
-  if (v.def.sub === 'add' && b.kind === VK.ARG && /^x[0-7]$/.test(String(b.reg || '')) && a.const != null) {
-    return { kind: 'argument-arithmetic', argument: Number(b.reg.slice(1)), op: 'add', constant: a.const, bits, signed };
+  if (v.def.sub === 'add' && bArgument != null && a.const != null) {
+    return { kind: 'argument-arithmetic', argument: bArgument, op: 'add', constant: a.const, bits, signed };
   }
   return null;
 }
@@ -150,8 +196,8 @@ export function summarizeFunction(model, opts) {
   const returns = [];
   for (const ret of ir.instructions || []) {
     if (ret.op !== OP.RET) continue;
-    const candidate = summaryReturnCandidate(ir, ret);
-    const descriptor = returnDescriptor(candidate.value);
+    const candidate = summaryReturnCandidate(ir, ret, calls);
+    const descriptor = candidate.descriptor || returnDescriptor(candidate.value);
     const expr = simpleReturnExpression(candidate.value);
     const summary = expr || descriptor;
     returns.push(candidate.inferred

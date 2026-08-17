@@ -28,7 +28,7 @@ function conditionCode(node) {
   const attrs = node?.attributes || {};
   const op = operationMetadata(node);
   const bundle = bundleMetadata(node);
-  return attrs.conditionCode ?? op.conditionCode ?? op.condition ?? bundle.conditionCode ?? null;
+  return attrs.conditionCode ?? op.conditionCode ?? op.condition ?? bundle.conditionCode ?? bundle.condition ?? null;
 }
 
 function comparisonPredicate(node) {
@@ -412,6 +412,11 @@ export function projectNode(node, context) {
       attachArgs(inst, nonAddressInputs);
       if (addressValue) addUse(addressValue, inst);
       inst.addr = projectLegacyAddress(addressValueId, node.memory, context);
+      const exactAddressDisplacement = safeBigInt(opMeta.addressing?.addressDisplacement);
+      if (inst.addr.precise && inst.addr.index == null && exactAddressDisplacement != null) {
+        inst.addr.disp = exactAddressDisplacement;
+        inst.addr.compatDisplacementEvidence = 'machine-effects-addressing-metadata';
+      }
       if (inst.addr.base && inst.addr.base !== addressValue) addUse(inst.addr.base, inst);
       if (inst.addr.index) addUse(inst.addr.index, inst);
       inst.extra = { semanticNodeId: node.id, size: bytesForBits(node.memory.widthBits), widthBits: node.memory.widthBits,
@@ -427,6 +432,11 @@ export function projectNode(node, context) {
       attachArgs(inst, stored);
       if (addressValue) addUse(addressValue, inst);
       inst.addr = projectLegacyAddress(addressValueId, node.memory, context);
+      const exactAddressDisplacement = safeBigInt(opMeta.addressing?.addressDisplacement);
+      if (inst.addr.precise && inst.addr.index == null && exactAddressDisplacement != null) {
+        inst.addr.disp = exactAddressDisplacement;
+        inst.addr.compatDisplacementEvidence = 'machine-effects-addressing-metadata';
+      }
       if (inst.addr.base && inst.addr.base !== addressValue) addUse(inst.addr.base, inst);
       if (inst.addr.index) addUse(inst.addr.index, inst);
       inst.extra = { semanticNodeId: node.id, size: bytesForBits(node.memory.widthBits), widthBits: node.memory.widthBits,
@@ -587,6 +597,16 @@ export function projectNode(node, context) {
     }
   }
 
+  const bundle = bundleMetadata(node);
+  const conditionalCompare = conditionCode(node);
+  if (conditionalCompare != null && bundle.fallbackNzcv != null) {
+    for (const candidate of [inst, ...extraInstructions]) {
+      if (candidate.op !== V1_OP.CMP) continue;
+      candidate.cond = conditionalCompare;
+      candidate.extra.conditional = true;
+      candidate.extra.fallbackNzcv = Number(bundle.fallbackNzcv);
+    }
+  }
   if (primaryOutput && primaryOutput.def == null && inst.dst === primaryOutput) primaryOutput.def = inst;
   for (const extra of extraInstructions) if (extra.dst && extra.dst.def == null) extra.dst.def = extra;
   const extras = [];
