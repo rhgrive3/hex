@@ -11,6 +11,7 @@ export const DEV_PARENT_RPC_METHODS = Object.freeze([
   'dev.worker.result',
   'dev.worker.release',
   'dev.worker.wait_event',
+  'dev.github.verify_pr',
 ]);
 
 const METHODS = new Set(DEV_PARENT_RPC_METHODS);
@@ -174,6 +175,7 @@ export function createDevWorkerParentRpcClient({ port, timeoutMs = 60000 } = {})
       ...opts,
       timeoutMs: 0,
     }),
+    verifyPullRequest: (args = {}, opts = {}) => call('dev.github.verify_pr', args, opts),
     close() {
       if (closed) return;
       closed = true;
@@ -201,6 +203,7 @@ async function dispatch(runtime, method, params, signal) {
   if (method === 'dev.worker.result') return runtime.result(params, options);
   if (method === 'dev.worker.release') return runtime.release(params, options);
   if (method === 'dev.worker.wait_event') return runtime.waitEvent(params, options);
+  if (method === 'dev.github.verify_pr') return runtime.verifyPullRequest(params, options);
   throw rpcError('transport-failure', 'Unknown Dev Worker RPC method.');
 }
 
