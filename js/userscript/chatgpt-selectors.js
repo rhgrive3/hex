@@ -12,13 +12,28 @@ export const CHATGPT_SELECTORS = Object.freeze({
     '[contenteditable="true"][role="textbox"]',
     'div[contenteditable="true"][data-id]',
   ]),
+  // Send resolution is intentionally stricter than other controls. ChatGPT's
+  // history/sidebar actions can contain words such as "Send" / "送信" in their
+  // accessible names (for example "Worker指示送信 の会話オプションを開く").
+  // A broad document-wide substring selector can therefore click navigation UI
+  // instead of submitting the composer. Prefer stable composer identities,
+  // exact accessibility names, then a submit button scoped to a form that owns
+  // an actual composer. Never add a global aria-label*=Send/送信 fallback here.
   send: Object.freeze([
+    '#composer-submit-button',
     'button[data-testid="send-button"]',
     'button[aria-label="Send prompt"]',
     'button[aria-label="Send message"]',
-    'button[aria-label*="Send" i]',
-    'button[aria-label*="送信"]',
-    'form button[type="submit"]',
+    'button[aria-label="Send"]',
+    'button[aria-label="プロンプトを送信"]',
+    'button[aria-label="プロンプトを送信する"]',
+    'button[aria-label="メッセージを送信"]',
+    'button[aria-label="メッセージを送信する"]',
+    'button[aria-label="送信"]',
+    'button[aria-label="送信する"]',
+    'form:has(#prompt-textarea) button[type="submit"]',
+    'form:has(textarea[name="prompt-textarea"]) button[type="submit"]',
+    'form:has([contenteditable="true"][role="textbox"]) button[type="submit"]',
   ]),
   // ChatGPT on iPad/WebKit can keep the Stop control mounted after a response
   // settles, but marks it disabled. Only an actionable Stop control is evidence
