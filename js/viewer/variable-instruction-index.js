@@ -257,11 +257,11 @@ export class VariableInstructionIndex {
 
   async navigate(address,{signal=null,trusted=false}={}){
     const target=BigInt(address); this._assertInRegion(target);
+    this.cancelExcept([target]);
     const exact=this.knownEntry(target);
     if(exact){this.currentAddress=exact.address;return Object.freeze({status:'exact',address:exact.address,entry:exact,page:this._pageContaining(exact.address)});}
     const containing=this.containingEntry(target);
     if(containing){this.currentAddress=containing.address;return Object.freeze({status:'inside-known',address:containing.address,entry:containing,page:this._pageContaining(containing.address)});}
-    this.cancelExcept([]);
     if(trusted||target===this.region.start){
       const page=await this.ensurePage(target,{signal,priority:'current',protect:true}),entry=page.entries[0]||null;
       if(!entry||entry.address!==target)return Object.freeze({status:page.status==='undecodable'?'undecodable':'unknown',address:target,entry:null,page});
