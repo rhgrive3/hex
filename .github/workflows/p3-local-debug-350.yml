@@ -1,4 +1,4 @@
-name: P3 final resync and full gate
+name: P3 latest-main resync and full gate
 on:
   push:
     branches: [hex/p3-local-debug-350]
@@ -19,13 +19,11 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - name: Preserve release-gate patch
-        run: cp tools/validation/p3-debug-release-gates.py /tmp/p3-release-gates.py
-      - name: Checkout exact repaired integration head
+      - name: Checkout exact prior product head
         shell: bash
         run: |
-          integration=2b8d91d4d3642529d5df0558177e724e788f6ff4
-          base=25a38914053d78f6909a4692c332ccf78a5a4d98
+          integration=eaccc2987f7d25fce1e52269e1146be4e0a2cd28
+          base=b132f5add38a9bb335281315146fa5643a7481b5
           git fetch origin \
             refs/heads/hex/p3-semantic-ir-integration:refs/remotes/origin/hex/p3-semantic-ir-integration \
             refs/heads/main:refs/remotes/origin/main
@@ -34,10 +32,10 @@ jobs:
           git checkout --detach "$integration"
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-      - name: Merge current main without overwriting Phase 3 repairs
+      - name: Merge current main preserving all newer Dev/userscript work
         shell: bash
         run: |
-          base=25a38914053d78f6909a4692c332ccf78a5a4d98
+          base=b132f5add38a9bb335281315146fa5643a7481b5
           set +e
           git merge --no-commit --no-ff "$base"
           rc=$?
@@ -60,8 +58,6 @@ jobs:
           fi
           test -z "$(git diff --name-only --diff-filter=U)"
           grep -q -- '- run: npm ci' .github/workflows/universal-platform.yml
-      - name: Apply final release-gate contract repairs
-        run: python3 /tmp/p3-release-gates.py
       - run: npm ci
       - name: Build canonical userscript and record deterministic digest
         shell: bash
@@ -104,34 +100,28 @@ jobs:
         run: npm run check
       - name: Userscript determinism after complete check
         run: sha256sum -c /tmp/final-userscript.sha256
-      - name: Verify tree cleanliness, upstream stability, and commit resync
+      - name: Verify clean tree and atomically push latest-main resync
         shell: bash
         run: |
           git checkout -- node_modules/.package-lock.json 2>/dev/null || true
-          unstaged=$(git diff --name-only | grep -Ev '^(tests/semantic-v2/integration-current-corpus\.test\.mjs|tests/semantic-v2/integration-release-report\.test\.mjs|userscript/hex\.user\.template\.js)$' || true)
+          unstaged=$(git diff --name-only | grep -Ev '^userscript/hex\.user\.template\.js$' || true)
           if [ -n "$unstaged" ]; then
             echo "Unexpected post-test changes:" >&2
             echo "$unstaged" >&2
             exit 1
           fi
           untracked=$(git ls-files --others --exclude-standard || true)
-          if [ -n "$untracked" ]; then
-            echo "Unexpected untracked files:" >&2
-            echo "$untracked" >&2
-            exit 1
-          fi
+          test -z "$untracked"
           if git ls-files '.github/workflows/*' | grep -E '/p3-(final|debug|local|repair|validation)' ; then
             echo 'Temporary Phase 3 workflow would land in integration' >&2
             exit 1
           fi
-          git add tests/semantic-v2/integration-current-corpus.test.mjs \
-                  tests/semantic-v2/integration-release-report.test.mjs \
-                  userscript/hex.user.template.js
+          git add userscript/hex.user.template.js
           git fetch origin \
             refs/heads/main:refs/remotes/origin/main-final \
             refs/heads/hex/p3-semantic-ir-integration:refs/remotes/origin/p3-final
-          test "$(git rev-parse refs/remotes/origin/main-final)" = 25a38914053d78f6909a4692c332ccf78a5a4d98
-          test "$(git rev-parse refs/remotes/origin/p3-final)" = 2b8d91d4d3642529d5df0558177e724e788f6ff4
-          git commit -m 'merge(main): finalize Phase 3 semantic cutover'
+          test "$(git rev-parse refs/remotes/origin/main-final)" = b132f5add38a9bb335281315146fa5643a7481b5
+          test "$(git rev-parse refs/remotes/origin/p3-final)" = eaccc2987f7d25fce1e52269e1146be4e0a2cd28
+          git commit -m 'merge(main): preserve Dev Agent Round 2 in Phase 3 cutover'
           git push origin HEAD:hex/p3-semantic-ir-integration
-          echo "FINAL_RESYNC_HEAD=$(git rev-parse HEAD)"
+          echo "LATEST_MAIN_RESYNC_HEAD=$(git rev-parse HEAD)"
