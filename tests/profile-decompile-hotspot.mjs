@@ -1,9 +1,9 @@
 import { openBinary } from './harness.mjs';
-import { decompileSemantic } from '../js/decompiler/semantic.js';
+import { irFor, readModifyWrite, getSemanticMigrationMode } from '../js/ir.js';
+import { analyzeGraph } from '../js/controlflow.js';
+import { inferSemanticTypes } from '../js/decompiler/type-recovery.js';
+import { decompileSemantic as decompileSemanticCore } from '../js/decompiler/semantic-core.js';
 import { decompile as legacyDecompile } from '../js/decompile-legacy.js';
-import { enhanceSemanticDecompilation } from '../js/decompiler/pipeline.js';
-import { structureKnownSwitches } from '../js/decompiler/switch.js';
-import { repairCanonicalPostTestLoop } from '../js/decompiler/loop-repair.js';
 
 const target = process.argv[2];
 const rawAddress = process.argv[3];
@@ -31,17 +31,12 @@ function timed(name, fn) {
   return value;
 }
 
-console.error(`DECOMPILE_PROFILE addr=${rawAddress} bytes=${bytes} instructions=${model?.instructions?.length ?? 0}`);
-const semantic = timed('semantic', () => decompileSemantic(model, opts));
-if (semantic) {
-  const structured = timed('switches', () => structureKnownSwitches(semantic, model, opts));
-  if (structured?.semantic) {
-    const enhanced = timed('enhance', () => enhanceSemanticDecompilation(structured, model, opts));
-    timed('loop-repair', () => repairCanonicalPostTestLoop(enhanced, (bi) => {
-      const block = enhanced?.ir?.blocks?.[bi];
-      if (!block) return a;
-      return model.instructions?.find((x) => x.row === block.startRow)?.address ?? a;
-    }));
-  }
-}
+console.error(`DECOMPILE_PROFILE addr=${rawAddress} bytes=${bytes} instructions=${model?.instructions?.length ?? 0} migration=${getSemanticMigrationMode()}`);
+const ir = timed('irFor', () => irFor(model, { rowOfAddress: opts.rowOfAddress }));
+if (!ir) throw new Error('IR construction failed');
+console.error(`DECOMPILE_PROFILE ir instructions=${ir.instructions?.length ?? 0} values=${ir.values?.length ?? 0} blocks=${ir.blocks?.length ?? 0}`);
+timed('type-recovery', () => inferSemanticTypes(ir, model));
+timed('graph', () => analyzeGraph(ir.blocks.map((b) => b.succ), ir.entry || 0));
+timed('rmw', () => readModifyWrite(ir));
+timed('semantic-core-with-prebuilt-ir', () => decompileSemanticCore(model, { ...opts, ir }));
 timed('legacy', () => legacyDecompile(model, opts));
