@@ -8,6 +8,12 @@ function required(value, code) {
   return text;
 }
 
+function artifactId(value, missingCode = 'artifact-ref-id-required') {
+  const text = required(value, missingCode);
+  if (!text.startsWith('artifact_')) throw new TypeError('artifact-ref-id-invalid');
+  return text;
+}
+
 function normalizeMaxEntries(value = MAX_PROJECT_ARTIFACT_REFS) {
   const number = Number(value);
   if (!Number.isSafeInteger(number) || number < 1 || number > MAX_PROJECT_ARTIFACT_REFS) {
@@ -18,7 +24,7 @@ function normalizeMaxEntries(value = MAX_PROJECT_ARTIFACT_REFS) {
 
 function expectedArtifactId(options = {}) {
   const value = options.expectedArtifactId ?? options.expectedRef?.artifactId ?? null;
-  return value == null ? null : required(value, 'artifact-ref-expected-id-required');
+  return value == null ? null : artifactId(value, 'artifact-ref-expected-id-required');
 }
 
 function portableStoreError(error) {
@@ -34,7 +40,7 @@ export function createArtifactRef(input = {}) {
     version:PROJECT_ARTIFACT_REF_VERSION,
     scope:required(input.scope, 'artifact-ref-scope-required'),
     kind:required(input.kind, 'artifact-ref-kind-required'),
-    artifactId:required(input.artifactId, 'artifact-ref-id-required'),
+    artifactId:artifactId(input.artifactId),
   });
 }
 
@@ -85,15 +91,15 @@ export class ProjectArtifactIndex {
   get(scope, kind) { return this.refs.get(ProjectArtifactIndex.key(scope, kind)) || null; }
   has(scope, kind) { return this.refs.has(ProjectArtifactIndex.key(scope, kind)); }
 
-  isCurrent(scope, kind, artifactId) {
+  isCurrent(scope, kind, expectedArtifactIdValue) {
     const ref = this.get(scope, kind);
-    return !!ref && ref.artifactId === required(artifactId, 'artifact-ref-expected-id-required');
+    return !!ref && ref.artifactId === artifactId(expectedArtifactIdValue, 'artifact-ref-expected-id-required');
   }
 
-  invalidateStale(scope, kind, artifactId) {
+  invalidateStale(scope, kind, expectedArtifactIdValue) {
     const ref = this.get(scope, kind);
     if (!ref) return Object.freeze({ status:'miss', reason:'no-ref', ref:null });
-    const expected = required(artifactId, 'artifact-ref-expected-id-required');
+    const expected = artifactId(expectedArtifactIdValue, 'artifact-ref-expected-id-required');
     if (ref.artifactId === expected) return Object.freeze({ status:'kept', reason:'current', ref });
     this.refs.delete(ProjectArtifactIndex.key(scope, kind));
     this.metrics.invalidations++;
