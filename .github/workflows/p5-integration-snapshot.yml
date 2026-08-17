@@ -1,0 +1,42 @@
+name: Phase 5 integration snapshot
+
+on:
+  push:
+    branches:
+      - hex/p5-x86-integration
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Build canonical userscript
+        run: npm run userscript:build
+      - name: Pack exact checkout
+        shell: bash
+        run: |
+          tar --exclude='./dist' --exclude='./.runtime-build' -czf /tmp/p5-integration-tree.tgz .
+          cp userscript/hex.user.template.js /tmp/hex.user.template.js
+          cp userscript/release-version.json /tmp/release-version.json
+          printf '%s\n' "${GITHUB_SHA}" > /tmp/head-sha.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: p5-integration-snapshot-${{ github.sha }}
+          retention-days: 1
+          if-no-files-found: error
+          path: |
+            /tmp/p5-integration-tree.tgz
+            /tmp/hex.user.template.js
+            /tmp/release-version.json
+            /tmp/head-sha.txt
