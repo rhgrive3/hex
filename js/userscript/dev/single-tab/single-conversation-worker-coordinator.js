@@ -45,10 +45,17 @@ export class SingleConversationWorkerCoordinator {
     if (!supervisorConversation?.id) {
       throw workerError(DEV_WORKER_FAILURE.CONVERSATION_MISMATCH, 'Supervisor ChatGPT conversation identity is unavailable.');
     }
+    const supervisorAnchors = this.controller.currentUserAnchors?.() || [];
     this.claimed = {
       runId: normalizedRun,
       workerId: normalizedWorker,
       supervisorConversation,
+      // iOS ChatGPT may virtualize older turns when returning to a conversation.
+      // The most recent Supervisor user turn is enough to prove that the target
+      // conversation body, not only its /c/<id> route, has rehydrated. Requiring
+      // every historical user turn creates false failures on partially hydrated
+      // but already-usable conversations.
+      supervisorAnchor: supervisorAnchors.length ? Object.freeze({ ...supervisorAnchors[supervisorAnchors.length - 1] }) : null,
       workerConversation: null,
     };
     this.lastResult = null;
@@ -270,8 +277,13 @@ export class SingleConversationWorkerCoordinator {
     if (!claim?.supervisorConversation?.id) return null;
     const current = this.controller.currentConversation();
     if (current?.id === claim.supervisorConversation.id) return current;
+    // Keep navigation authority inside WorkerChatController. Worker return uses
+    // its default strict remembered-history policy; Supervisor return explicitly
+    // uses only the latest pre-delegation continuity anchor because iPad ChatGPT
+    // may leave older history virtualized after the conversation is already live.
     return this.controller.navigateToConversation(claim.supervisorConversation, {
       sessionKey: `dev-supervisor-return:${claim.runId}`,
+      continuityAnchor: claim.supervisorAnchor,
     });
   }
 
