@@ -65,20 +65,22 @@ test('x86 region never materializes region.size/4 rows and rowData uses actual d
   viewer.dispose();
 });
 
-test('x86 asm -> hex -> asm preserves address anchor instead of row identity',async()=>{
+test('x86 asm -> hex -> asm preserves the top visible address anchor instead of row identity',async()=>{
   installDom();const backend=makeViewerBackend();const vp=viewport();const viewer=new CodeViewer({viewport:vp,rows:rows(),backend});
   viewer.setRegion({id:'x86',vmAddr:0x1000n,size:0x10000n,disasm:true,capability:{architecture:'x86_64',fixedInstructionSize:null,capabilities:{decode:'external-structured-v1'}}});
   await settle();
   const anchor=viewer.rowAddress(5);assert.ok(anchor!=null);
-  viewer.goToAddress(anchor);await settle();
+  viewer.goToRow(5,'top');
+  assert.equal(viewer.topAddress(),anchor);
   viewer.setMode('hex');
   assert.equal(viewer.mode,'hex');
   const hexTop=viewer.topAddress();
-  assert.ok(hexTop<=anchor&&anchor<hexTop+4n);
+  assert.ok(hexTop<=anchor&&anchor<hexTop+4n,'hex mode restores the byte row containing the asm address anchor');
   viewer.setMode('asm');await settle();
   const asmTop=viewer.topAddress();
-  assert.ok(asmTop!=null);
-  assert.ok(viewer.variableIndex.knownEntry(anchor)||viewer.variableIndex.containingEntry(anchor));
+  const proven=viewer.variableIndex.knownEntry(anchor)||viewer.variableIndex.containingEntry(anchor);
+  assert.ok(proven);
+  assert.equal(asmTop,proven.address,'asm mode restores the same proven instruction anchor');
   viewer.dispose();
 });
 
