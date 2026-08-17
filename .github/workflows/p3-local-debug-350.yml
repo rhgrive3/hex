@@ -11,17 +11,5 @@ jobs:
         with: { ref: hex/p3-local-debug-350 }
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
-      - name: Narrow finalizer only in workspace
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          p=Path('js/semantics/compat/semantic-ir-v2-to-v1-finalize.js')
-          s=p.read_text()
-          old="    } else if (inst.extra?.stateRead && (inst.extra?.localPhysicalViewProjection === true || addressStateAlias) && Number(source.bits || 0) === Number(inst.dst.bits || 0)) {"
-          new="    } else if (inst.extra?.stateRead && inst.extra?.localPhysicalViewProjection === true && Number(source.bits || 0) === Number(inst.dst.bits || 0)) {"
-          if s.count(old)!=1: raise SystemExit('expected finalizer source shape missing')
-          s=s.replace("    const addressStateAlias = rawSource != null && aliases.has(rawSource.id);\n", "", 1).replace(old,new,1)
-          p.write_text(s)
-          PY
-      - name: Run exact 350-series regression file
+      - name: Run 350-series with current broad compatibility compaction
         run: node tests/issues-350-399.mjs
