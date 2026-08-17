@@ -1,5 +1,5 @@
 import { buildSemanticModel } from '../../js/blocks.js';
-import { buildIR, OP, originOf } from '../../js/ir.js';
+import { buildIR, OP, originOf, getLastSemanticV2Instrumentation } from '../../js/ir.js';
 
 const BASE = 0x100000000n;
 const lines = [
@@ -20,6 +20,7 @@ const rowOfAddress = (a) => {
 };
 const model = buildSemanticModel(rows, { startRow: 0, endRow: lines.length - 1, rowOfAddress });
 const ir = buildIR(model, { rowOfAddress });
+const debug = getLastSemanticV2Instrumentation();
 function value(v) {
   return v && {
     id: v.id,
@@ -48,9 +49,16 @@ function instruction(i) {
     extra: i.extra,
   };
 }
+const semanticIr = debug?.semanticIr ?? null;
+const semanticRow3 = semanticIr?.nodes?.filter((node) => node.origin?.virtualRanges?.some((range) => range.start === BASE + 12n)) ?? [];
+const semanticIds = new Set(semanticRow3.flatMap((node) => [...(node.inputs ?? []), ...(node.outputs ?? [])]));
 console.log(JSON.stringify({
   row3: ir.instructions.filter((i) => i.row === 3).map(instruction),
   x3: ir.values.filter((v) => v.reg === 'x3' || v.compatPublicIdentity === 'x3').map(value),
   loads: ir.instructions.filter((i) => i.op === OP.LOAD).map(instruction),
   stateWrites: ir.instructions.filter((i) => i.extra?.stateWrite).map(instruction),
+  semanticRow3,
+  semanticValues: semanticIr?.values?.filter((v) => semanticIds.has(v.id)) ?? [],
+  ssaDefinitions: debug?.ssa?.definitions?.filter((d) => semanticIds.has(d.proof?.sourceSemanticValueId) || semanticIds.has(d.valueId)) ?? [],
+  ssaUses: debug?.ssa?.uses?.filter((u) => semanticIds.has(u.proof?.sourceSemanticValueId) || semanticIds.has(u.valueId)) ?? [],
 }, (_, v) => typeof v === 'bigint' ? v.toString() : v, 2));
