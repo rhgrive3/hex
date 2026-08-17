@@ -10,8 +10,42 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: universal-platform-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  verify:
+  verify-shards:
+    name: universal-${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        include:
+          - name: capability-maturity
+            command: node tests/capability-maturity.mjs
+          - name: elf-relocation-budget
+            command: node tests/issue-495-elf-relocation-budget.mjs
+          - name: elf-symbol-budget
+            command: node tests/issue-513-elf-symbol-budget.mjs
+          - name: binary
+            command: npm run binary:test
+          - name: binary-gate
+            command: npm run binary:gate
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: ${{ matrix.command }}
+
+  manual-full-check:
+    name: universal-manual-full-check
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -22,12 +56,28 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
-      - run: node tests/capability-maturity.mjs
-      - run: npm run platform:test
-      - run: node tests/issue-495-elf-relocation-budget.mjs
-      - run: node tests/issue-513-elf-symbol-budget.mjs
-      - run: npm run binary:test
-      - run: npm run binary:gate
+
+  verify:
+    name: verify
+    if: always()
+    needs: [verify-shards, manual-full-check]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require universal platform coverage
+        env:
+          SHARD_RESULT: ${{ needs.verify-shards.result }}
+          FULL_RESULT: ${{ needs.manual-full-check.result }}
+        shell: bash
+        run: |
+          if [[ "$SHARD_RESULT" != "success" ]]; then
+            echo "::error::Universal platform verification shard failed ($SHARD_RESULT)."
+            exit 1
+          fi
+          if [[ "$FULL_RESULT" != "success" && "$FULL_RESULT" != "skipped" ]]; then
+            echo "::error::Manual full check failed ($FULL_RESULT)."
+            exit 1
+          fi
 
   benchmark:
     if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
