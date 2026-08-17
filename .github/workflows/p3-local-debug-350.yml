@@ -1,4 +1,4 @@
-name: P3 combined repair validation v2
+name: P3 combined repair validation v3
 on:
   push:
     branches: [hex/p3-local-debug-350]
