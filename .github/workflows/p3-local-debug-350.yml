@@ -16,6 +16,4 @@ jobs:
         with:
           node-version: 22
       - run: python3 tools/validation/p3-debug-apply.py
-      - run: node tests/issues-350-399.mjs
-      - run: node tests/ir.mjs
-      - run: npm run effects:test
+      - run: node tools/validation/p3-debug-359.mjs
