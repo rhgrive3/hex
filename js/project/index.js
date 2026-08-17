@@ -1,7 +1,10 @@
+import { artifactIndexFromProject, isArtifactRef } from './artifact-index.js';
+
 export const HEX_PROJECT_VERSION = 1;
 export const HEX_PROJECT_MIME = 'application/vnd.hex.project+json';
 export const MAX_PROJECT_BYTES = 16 * 1024 * 1024;
 const MAX_COLLECTION_ITEMS = 1_000_000;
+const MAX_LEGACY_CACHE_REFERENCE_LENGTH = 512;
 
 export class ProjectFormatError extends Error {
   constructor(message, code = 'HEX_PROJECT_INVALID') {
@@ -22,10 +25,25 @@ function encodedByteLength(text) { return new TextEncoder().encode(text).byteLen
 function assertProjectSize(bytes) {
   if (bytes > MAX_PROJECT_BYTES) throw new ProjectFormatError('project exceeds the 16 MiB safety limit', 'HEX_PROJECT_TOO_LARGE');
 }
+function isLegacyPortableCacheReference(value) {
+  return typeof value === 'string' && value.length > 0 && value.length <= MAX_LEGACY_CACHE_REFERENCE_LENGTH;
+}
+function sanitizeCacheReferences(project) {
+  const source = list(project?.analysis?.cacheReferences, 'analysis.cacheReferences');
+  const legacy = source.filter(isLegacyPortableCacheReference);
+  const structuredProject = {
+    ...project,
+    analysis: {
+      ...(project.analysis || {}),
+      cacheReferences: source.filter(isArtifactRef),
+    },
+  };
+  return [...legacy, ...artifactIndexFromProject(structuredProject).toProjectReferences()];
+}
 
 export function createHexProject(input = {}) {
   const now = new Date().toISOString();
-  return {
+  const project = {
     format: 'hexproj', version: HEX_PROJECT_VERSION,
     createdAt: input.createdAt || now, updatedAt: now,
     binary: { hash: input.binaryHash || input.binary?.hash || null, metadata: input.binaryMetadata || input.binary?.metadata || null, embedded: false },
@@ -43,6 +61,8 @@ export function createHexProject(input = {}) {
     analysis: { settings: input.analysisSettings || input.analysis?.settings || {}, cacheReferences: list(input.cacheReferences ?? input.analysis?.cacheReferences, 'analysis.cacheReferences') },
     navigation: normalizeNavigation(input.navigation || {}),
   };
+  project.analysis.cacheReferences = sanitizeCacheReferences(project);
+  return project;
 }
 
 export function normalizeNavigation(value = {}) {
@@ -119,6 +139,7 @@ export function validateHexProject(project) {
   project.findings.investigationSessions = list(project.findings.investigationSessions, 'findings.investigationSessions');
   project.analysis.settings = project.analysis.settings && typeof project.analysis.settings === 'object' && !Array.isArray(project.analysis.settings) ? project.analysis.settings : {};
   project.analysis.cacheReferences = list(project.analysis.cacheReferences, 'analysis.cacheReferences');
+  project.analysis.cacheReferences = sanitizeCacheReferences(project);
   project.navigation = normalizeNavigation(project.navigation || {});
   project.createdAt ||= new Date(0).toISOString();
   project.updatedAt ||= project.createdAt;
