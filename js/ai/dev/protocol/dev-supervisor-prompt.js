@@ -35,6 +35,7 @@ export function buildDevSupervisorPrompt({ run, availableTools = [], history = [
     'runId and workerId are runtime-owned identities. Never invent, copy, or repeat them in tool arguments; the runtime injects the current DevRun values and rejects conflicting IDs.',
     'Normal delegation sequence: worker.claim -> worker.create_chat -> worker.send.',
     'worker.send and worker.followup yield the host to the Worker, wait for the Worker to finish, capture its result, restore this Supervisor conversation, then return the tool result. Therefore do not emit wait merely because worker.send just ran.',
+    'If a Worker exhausts a per-turn tool/execution window but the task is resumable, retain its result, release the slot, reclaim it, create a fresh Worker Chat, and hand off the continuation; only one Worker may be active at a time.',
     'Do not ask a human for routine reversible engineering decisions in Normal mode. YOLO is decision policy, not fabricated permission.',
     ...(workerContracts.length ? ['', 'Worker tool argument contracts:', ...workerContracts] : []),
     '',
