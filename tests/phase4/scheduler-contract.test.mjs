@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { ArtifactStore, MemoryArtifactBackend, createArtifactDescriptor } from '../../js/core/artifacts/index.js';
-import { AnalysisScheduler, BudgetExceededError, SchedulerCycleError, SchedulerDependencyIdentityError } from '../../js/core/scheduler/index.js';
+import { BudgetExceededError } from '../../js/core/budgets/index.js';
+import { AnalysisScheduler, SchedulerCycleError, SchedulerDependencyIdentityError } from '../../js/core/scheduler/index.js';
 
 function descriptor(name, upstreamArtifactIds = []) {
   return createArtifactDescriptor({
@@ -46,20 +47,20 @@ async function waitState(scheduler, artifactId, state) {
   );
 }
 
-// Explicit cycle error rather than recursion/deadlock.
+// Explicit cycle error rather than recursion/deadlock. The scheduler contract is
+// tested directly with fixed artifact identities so the cycle is representable.
 {
   const { scheduler }=schedulerWithStore();
-  const aBase=descriptor('cycle-a-base'), bBase=descriptor('cycle-b-base');
-  const a=descriptor('cycle-a',[bBase.artifactId]);
-  const b=descriptor('cycle-b',[a.artifactId]);
-  // Recreate A with B's actual final id, then B with A's actual id is impossible
-  // as content-addressed identities by construction. Use request recursion with
-  // the same descriptor pair to prove ancestry detection independently of a
-  // publishable DAG; identity mismatch itself must fail before any producer.
-  const requestA={descriptor:a,dependencies:[],produce:async()=>({})};
-  await assert.rejects(scheduler.request(requestA),(error)=>error instanceof SchedulerDependencyIdentityError);
+  const a={ artifactId:'artifact_cycle_a', upstreamArtifactIds:['artifact_cycle_b'] };
+  const b={ artifactId:'artifact_cycle_b', upstreamArtifactIds:['artifact_cycle_a'] };
+  const requestA={ descriptor:a, produce:async()=>({}) };
+  const requestB={ descriptor:b, dependencies:[requestA], produce:async()=>({}) };
+  requestA.dependencies=[requestB];
+  await assert.rejects(
+    scheduler.request(requestA),
+    (error)=>error instanceof SchedulerCycleError && error.code==='artifact-dependency-cycle' && error.path.at(-1)==='artifact_cycle_a',
+  );
   assert.equal(scheduler.stats().producerInvocations,0);
-  assert.equal(SchedulerCycleError.prototype.code, undefined);
 }
 
 // Budget exhaustion is distinct and cannot publish a valid artifact.
