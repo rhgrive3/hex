@@ -24,8 +24,8 @@ Status values:
 
 Important limitations:
 
-- `arm64`: current legacy Semantic IR, SSA/dataflow, and decompiler capability remains available, but Master Architecture A2 specifically requires **Exact Low-Level Effects / MachineEffects**. Phase 2 introduces `MachineEffectBundle`, the ARM64 exact lifter, explicit flags/memory effects, and compatibility lowering. Those contracts are not present in current main, so A2 is **Partial**, not Supported, and cumulative maturity remains **A1**.
-- `arm64e`: the same missing exact MachineEffects contract applies, with additional partial pointer-authentication semantics. Its cumulative maturity remains **A1**.
+- `arm64`: current legacy Semantic IR, SSA/dataflow, and decompiler capability remains available, but Master Architecture A2 specifically requires **Exact Low-Level Effects / MachineEffects**. Phase 2 now provides `MachineEffectBundle`, the ARM64 exact lifter, explicit flags/memory effects, and compatibility lowering for a measured instruction subset. Because coverage remains partial or unsupported for some instructions, A2 is **Partial**, not Supported, and cumulative maturity remains **A1**.
+- `arm64e`: the same partial MachineEffects coverage applies, with additional partial pointer-authentication semantics. Its cumulative maturity remains **A1**.
 - `x86_64`: the deployed Capstone build can decode it, but Hex does **not** claim semantic lifting, CFG/Semantic IR, SSA/dataflow, or decompiler maturity for x86-64.
 - If the decoder is unavailable at runtime, a recognized architecture is downgraded to effective **A0 Detect** and decoder-dependent implemented stages become `unavailable`.
 
@@ -47,7 +47,7 @@ The maturity schema exposes **M0–M6**, but the current support matrix contains
 
 The values above are tied to the Master Architecture definitions plus current source and regression behavior, especially:
 
-- Master Architecture Phase 2 — MachineEffects are a future deliverable, so legacy ARM64 Semantic IR cannot satisfy A2 by itself;
+- Master Architecture Phase 2 — MachineEffects are present for a measured ARM64 subset, so legacy ARM64 Semantic IR alone is not proof that cumulative A2 is fully satisfied;
 - `js/architecture/index.js` — current architecture adapters and legacy analysis capability;
 - `js/platform/capstone-capability.js` + `tests/capstone-capability.mjs` — deployed decoder truth for ARM64 and x86-64;
 - current ARM64 Semantic IR / SSA / decompiler regression suites — evidence for implemented legacy A3–A6 functionality, not proof of cumulative A2+ maturity;
