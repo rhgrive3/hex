@@ -1,9 +1,11 @@
-name: P3 RMW projection diagnostic v17
+name: P3 RMW projection diagnostic v18
 on:
   push:
     branches: [hex/p3-local-debug-350]
     paths:
       - '.github/workflows/p3-local-debug-350.yml'
+permissions:
+  contents: write
 jobs:
   diagnose:
     runs-on: ubuntu-latest
@@ -19,4 +21,19 @@ jobs:
       - run: python3 tools/validation/p3-debug-apply-interproc.py
       - run: python3 tools/validation/p3-debug-apply-137.py
       - run: python3 tools/validation/p3-debug-stackname-collision.py
-      - run: node tools/validation/p3-debug-rmw-diag.mjs
+      - name: Persist RMW diagnostic output on scratch only
+        shell: bash
+        run: |
+          set +e
+          node tools/validation/p3-debug-rmw-diag.mjs > /tmp/p3-rmw.log 2>&1
+          status=$?
+          set -e
+          cp /tmp/p3-rmw.log tools/validation/p3-debug-rmw-output.txt
+          cat /tmp/p3-rmw.log || true
+          git checkout HEAD -- js/semantics/compat/semantic-ir-v2-to-v1-finalize.js js/semantics/compat/semantic-ir-v2-to-v1-core.js js/semantics/compat/semantic-ir-v2-to-v1-nodes.js js/targets/architecture/arm64/effects/integer.js js/ir-core.js js/interproc.js
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add tools/validation/p3-debug-rmw-output.txt
+          git commit -m "Debug: persist Phase 3 RMW diagnostic output" || true
+          git push origin HEAD:hex/p3-local-debug-350
+          exit "$status"
