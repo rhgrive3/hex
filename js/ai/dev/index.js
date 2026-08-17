@@ -8,5 +8,6 @@ export * from './workers/contracts.js';
 export * from './workers/tool-surface.js';
 export * from './protocol/hex-dev-supervisor-v1.js';
 export * from './supervisor/dev-supervisor-v0.js';
+export * from './bootstrap/dev-bootstrap-gate.js';
 export * from './ui/settings.js';
 export * from './ui/engine-router.js';

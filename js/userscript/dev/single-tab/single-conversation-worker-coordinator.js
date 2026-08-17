@@ -2,6 +2,9 @@ import { DEV_WORKER_FAILURE, DEV_WORKER_STATE } from '../../../ai/dev/workers/co
 import { waitFor } from '../../chatgpt-adapter.js';
 
 const EVENT_QUEUE_LIMIT = 128;
+const SUPERVISOR_CLAIM_TIMEOUT_MS = 30000;
+const SUPERVISOR_RESTORE_TIMEOUT_MS = 30000;
+const SUPERVISOR_RESTORE_SETTLE_MS = 240;
 const TERMINAL_KINDS = new Set(['completed', 'failed', 'cancelled']);
 
 export class SingleConversationWorkerCoordinator {
@@ -40,8 +43,22 @@ export class SingleConversationWorkerCoordinator {
   async claim({ runId, workerId } = {}) {
     const normalizedRun = required(runId, 'runId');
     const normalizedWorker = required(workerId, 'workerId');
-    if (this.claimed) throw workerError(DEV_WORKER_FAILURE.WORKER_BUSY, 'The single-tab Worker slot is already claimed.');
-    const supervisorConversation = await waitFor(() => this.controller.currentConversation() || null, 3000);
+    if (this.claimed) {
+      if (this.claimed.runId === normalizedRun && this.claimed.workerId === normalizedWorker) {
+        return this.withIdentity({
+          state: this.controller.observe().state,
+          claimed: true,
+          replayed: true,
+        });
+      }
+      throw workerError(DEV_WORKER_FAILURE.WORKER_BUSY, 'The single-tab Worker slot is already claimed.');
+    }
+    const supervisorConversation = await waitFor(() => {
+      if (typeof this.controller.adoptCurrentConversation === 'function') {
+        return this.controller.adoptCurrentConversation() || null;
+      }
+      return this.controller.currentConversation() || null;
+    }, SUPERVISOR_CLAIM_TIMEOUT_MS);
     if (!supervisorConversation?.id) {
       throw workerError(DEV_WORKER_FAILURE.CONVERSATION_MISMATCH, 'Supervisor ChatGPT conversation identity is unavailable.');
     }
@@ -278,10 +295,76 @@ export class SingleConversationWorkerCoordinator {
     if (!claim?.supervisorConversation?.id) return null;
     const current = this.controller.currentConversation();
     if (current?.id === claim.supervisorConversation.id) return current;
-    return this.controller.navigateToConversation(claim.supervisorConversation, {
-      sessionKey: `dev-supervisor-return:${claim.runId}`,
-      continuityAnchor: claim.supervisorAnchor,
-    });
+
+    const canAdoptSettledSurface = typeof this.controller.adoptCurrentConversation === 'function'
+      && typeof this.controller.adapter?.conversation === 'function'
+      && typeof this.controller.adapter?.composer === 'function';
+    if (!canAdoptSettledSurface) {
+      return this.controller.navigateToConversation(claim.supervisorConversation, {
+        sessionKey: `dev-supervisor-return:${claim.runId}`,
+        continuityAnchor: claim.supervisorAnchor,
+      });
+    }
+
+    // `currentConversation()` intentionally rejects a route whose complete
+    // remembered history has not rehydrated. That is too strict for returning to
+    // a Supervisor on iPad: old turns may remain permanently virtualized even
+    // though the correct route, composer and current Supervisor turns are live.
+    // Route first without a historical-turn requirement, then adopt only a
+    // settled target surface. If we came from the Worker route, reject its stale
+    // user-turn surface until React has actually swapped the conversation DOM.
+    const rawBefore = this.controller.adapter.conversation?.() || null;
+    const sourceAnchors = rawBefore?.id && rawBefore.id !== claim.supervisorConversation.id
+      ? (this.controller.currentUserAnchors?.() || [])
+      : [];
+    if (rawBefore?.id !== claim.supervisorConversation.id) {
+      await this.controller.navigateToConversation(claim.supervisorConversation, {
+        sessionKey: `dev-supervisor-return:${claim.runId}`,
+        continuityAnchor: null,
+      });
+    }
+    return this.waitForSettledSupervisorSurface(claim, sourceAnchors);
+  }
+
+  async waitForSettledSupervisorSurface(claim, sourceAnchors = []) {
+    const wanted = String(claim?.supervisorConversation?.id || '');
+    if (!wanted) return null;
+    let stableSignature = null;
+    let stableSince = null;
+    const restored = await waitFor(() => {
+      const visible = this.controller.adapter?.conversation?.() || null;
+      const composer = this.controller.adapter?.composer?.() || null;
+      const generating = !!this.controller.adapter?.isGenerating?.();
+      const anchors = this.controller.currentUserAnchors?.() || [];
+      if (String(visible?.id || '') !== wanted || !composer || generating || !anchors.length) {
+        stableSignature = null;
+        stableSince = null;
+        return null;
+      }
+      if (sourceAnchors.length && anchorsOverlap(sourceAnchors, anchors)) {
+        stableSignature = null;
+        stableSince = null;
+        return null;
+      }
+
+      const signature = anchorSignature(anchors);
+      if (signature !== stableSignature) {
+        stableSignature = signature;
+        stableSince = Date.now();
+        return null;
+      }
+      if (stableSince === null || Date.now() - stableSince < SUPERVISOR_RESTORE_SETTLE_MS) return null;
+
+      const adopted = this.controller.adoptCurrentConversation?.() || null;
+      return adopted?.id === wanted ? adopted : null;
+    }, SUPERVISOR_RESTORE_TIMEOUT_MS);
+    if (!restored) {
+      throw workerError(
+        DEV_WORKER_FAILURE.CONVERSATION_MISMATCH,
+        'Supervisor route was reached, but its usable conversation surface did not settle.',
+      );
+    }
+    return restored;
   }
 
   async safeRestoreSupervisor() {
@@ -311,6 +394,20 @@ export class SingleConversationWorkerCoordinator {
   }
 }
 
+function anchorsOverlap(left, right) {
+  return (left || []).some((anchor) => (right || []).some((turn) => sameAnchor(anchor, turn)));
+}
+function sameAnchor(left, right) {
+  const leftId = String(left?.id || '');
+  const rightId = String(right?.id || '');
+  if (leftId && rightId && leftId === rightId) return true;
+  const leftText = String(left?.text || '').replace(/\s+/g, ' ').trim();
+  const rightText = String(right?.text || '').replace(/\s+/g, ' ').trim();
+  return !!leftText && leftText === rightText;
+}
+function anchorSignature(anchors) {
+  return (anchors || []).map((anchor) => `${String(anchor?.id || '')}\u0000${String(anchor?.text || '').replace(/\s+/g, ' ').trim()}`).join('\u0001');
+}
 function matches(event, wanted, runId) {
   return wanted.has(event.type) && (runId == null || String(event.data?.runId || '') === runId);
 }

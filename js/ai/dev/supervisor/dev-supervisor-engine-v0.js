@@ -3,17 +3,46 @@ import { parseDevSupervisorDecision } from '../protocol/hex-dev-supervisor-v1.js
 import { buildDevSupervisorPrompt } from '../protocol/dev-supervisor-prompt.js';
 import { DevRunEventHost } from '../events/dev-events.js';
 import { DEV_WORKER_TOOL } from '../workers/tool-surface.js';
+import { DEV_BOOTSTRAP_EXTENSION, DevExtensionLoader } from '../bootstrap/dev-bootstrap-gate.js';
 
 const MAX_DECISIONS = 16;
 
 export class DevSupervisorEngineV0 {
-  constructor({ supervisor, settings, bridge = globalThis.__HEX_CHATGPT_BRIDGE__, maxDecisions = MAX_DECISIONS } = {}) {
+  constructor({ supervisor, settings, bridge = globalThis.__HEX_CHATGPT_BRIDGE__, maxDecisions = MAX_DECISIONS, extensionLoader = new DevExtensionLoader() } = {}) {
     if (!supervisor) throw new TypeError('DevSupervisorEngineV0 requires a supervisor.');
     if (!settings) throw new TypeError('DevSupervisorEngineV0 requires settings.');
+    if (!extensionLoader || typeof extensionLoader.beginToolCall !== 'function' || typeof extensionLoader.endToolCall !== 'function') {
+      throw new TypeError('DevSupervisorEngineV0 extensionLoader must expose tool-call boundaries.');
+    }
     this.supervisor = supervisor;
     this.settings = settings;
     this.bridge = bridge || null;
     this.maxDecisions = maxDecisions;
+    this.extensionLoader = extensionLoader;
+    this.bootstrapStage = null;
+  }
+
+  prepareBootstrapExtension() {
+    if (!this.bootstrapStage) this.bootstrapStage = this.extensionLoader.stage(DEV_BOOTSTRAP_EXTENSION);
+    return this.bootstrapStage;
+  }
+
+  activateBootstrapAtSafeBoundary(options) {
+    return this.extensionLoader.activateAtSafeBoundary(options);
+  }
+
+  invokeBootstrapCapability(name) {
+    return this.extensionLoader.invoke(name);
+  }
+
+  async executeWithinToolBoundary(operation) {
+    if (typeof operation !== 'function') throw new TypeError('Dev tool operation must be a function.');
+    this.extensionLoader.beginToolCall();
+    try {
+      return await operation();
+    } finally {
+      this.extensionLoader.endToolCall();
+    }
   }
 
   async run(input = {}) {
@@ -47,6 +76,7 @@ export class DevSupervisorEngineV0 {
 
     const eventHost = new DevRunEventHost({ supervisor: this.supervisor });
     let workerClaimed = false;
+    let workerClaimAttempted = false;
 
     try {
       for (let step = 0; step < this.maxDecisions; step++) {
@@ -65,9 +95,15 @@ export class DevSupervisorEngineV0 {
 
         if (decision.type === 'tool') {
           input.onActivity?.({ label: decision.tool, detail: decision.purpose });
-          const executed = await this.supervisor.executeToolDecision(run, decision);
+          if (decision.tool === DEV_WORKER_TOOL.CLAIM) workerClaimAttempted = true;
+          const executed = await this.executeWithinToolBoundary(
+            () => this.supervisor.executeToolDecision(run, decision),
+          );
           run = executed.run;
-          if (decision.tool === DEV_WORKER_TOOL.CLAIM) workerClaimed = true;
+          if (decision.tool === DEV_WORKER_TOOL.CLAIM) {
+            workerClaimed = true;
+            workerClaimAttempted = false;
+          }
           if (decision.tool === DEV_WORKER_TOOL.RELEASE) workerClaimed = false;
           this.settings.setLastRun(run);
           history.push({ kind: 'tool-result', tool: decision.tool, purpose: decision.purpose, result: sanitize(executed.result) });
@@ -113,14 +149,22 @@ export class DevSupervisorEngineV0 {
       }
       throw new Error('Dev Supervisor decision budget exhausted.');
     } catch (error) {
-      if (workerClaimed) {
+      if (workerClaimed || workerClaimAttempted) {
         try {
           run = await this.releaseWorker(run);
-          this.settings.setLastRun(run);
+          workerClaimed = false;
+          workerClaimAttempted = false;
         } catch (cleanupError) {
           try { error.workerCleanupError = String(cleanupError?.message || cleanupError); } catch {}
         }
       }
+      const terminal = error?.name === 'AbortError' || error?.code === 'cancelled'
+        ? DEV_RUN_STATUS.CANCELLED
+        : DEV_RUN_STATUS.FAILED;
+      if (![DEV_RUN_STATUS.COMPLETED, DEV_RUN_STATUS.FAILED, DEV_RUN_STATUS.CANCELLED].includes(run.status)) {
+        try { run = transitionDevRun(run, terminal, { now: this.supervisor.now() }); } catch {}
+      }
+      this.settings.setLastRun(run);
       throw error;
     }
   }
@@ -137,10 +181,10 @@ export class DevSupervisorEngineV0 {
     if (!this.supervisor.workerTools?.has?.(DEV_WORKER_TOOL.RELEASE)) {
       throw new Error('Dev Worker release tool is unavailable while a Worker claim is active.');
     }
-    const result = await this.supervisor.workerTools.execute(DEV_WORKER_TOOL.RELEASE, {
+    const result = await this.executeWithinToolBoundary(() => this.supervisor.workerTools.execute(DEV_WORKER_TOOL.RELEASE, {
       runId: run.runId,
       workerId: run.workerId,
-    });
+    }));
     return this.supervisor.bindWorkerResult(run, result);
   }
 }

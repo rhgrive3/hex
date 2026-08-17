@@ -232,8 +232,8 @@ async function testSubmittedUserHydrationGrace() {
   await assert.rejects(
     new ChatGPTTurnController(badAdapter, { pollMs: 2, startTimeoutMs: 60, submissionMismatchGraceMs: 10 })
       .run('prompt', { timeoutMs: 100, expectedConversation: conversation }),
-    (error) => error.code === 'manual-interference',
-    'a persistent single-turn mismatch must remain a hard integrity failure',
+    (error) => error.code === 'timeout',
+    'a single owned turn with bad renderer text must wait for the request timeout',
   );
 
   const churn = { generating: false, assistants: [], users: [], turns: [], conversation };
@@ -251,10 +251,10 @@ async function testSubmittedUserHydrationGrace() {
   await assert.rejects(
     new ChatGPTTurnController(churnAdapter, { pollMs: 2, startTimeoutMs: 80, submissionMismatchGraceMs: 12 })
       .run('prompt', { timeoutMs: 100, expectedConversation: conversation }),
-    (error) => error.code === 'manual-interference',
-    'renderer id churn must not keep extending a persistent prompt-mismatch grace window',
+    (error) => error.code === 'timeout',
+    'single-turn renderer identity churn must not become manual interference',
   );
-  assert.ok(Date.now() - churnStarted < 170, 'prompt mismatch must fail on the fixed grace window, not the submit timeout');
+  assert.ok(Date.now() - churnStarted >= 80, 'renderer churn must not shorten the caller-owned timeout');
 }
 
 async function testTurnCompletionAndStaleProtection() {

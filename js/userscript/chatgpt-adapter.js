@@ -1,7 +1,6 @@
 import { CHATGPT_SELECTORS } from './chatgpt-selectors.js';
 
 const CONVERSATION_PATH = /^\/c\/([^/?#]+)/;
-const LONG_SUBMISSION_PROMPT_THRESHOLD = 400;
 const MODEL_PATTERNS = Object.freeze([
   { id: 'chatgpt-web/sol', pattern: /(?:gpt[- ]?5\.6\s*)?sol/i, label: 'GPT-5.6 Sol' },
   { id: 'chatgpt-web/terra', pattern: /(?:gpt[- ]?5\.6\s*)?terra/i, label: 'GPT-5.6 Terra' },
@@ -497,10 +496,8 @@ export class ChatGPTTurnController {
   constructor(adapter, {
     quietMs = 1500,
     pollMs = 120,
-    startTimeoutMs = 10000,
+    startTimeoutMs = 30000,
     conversationGraceMs = 3000,
-    submissionMismatchGraceMs = 1500,
-    submissionMismatchLongPromptGraceMs = 6000,
     structuredCompletionQuietMs = 1000,
   } = {}) {
     this.adapter = adapter;
@@ -508,8 +505,6 @@ export class ChatGPTTurnController {
     this.pollMs = pollMs;
     this.startTimeoutMs = startTimeoutMs;
     this.conversationGraceMs = conversationGraceMs;
-    this.submissionMismatchGraceMs = submissionMismatchGraceMs;
-    this.submissionMismatchLongPromptGraceMs = submissionMismatchLongPromptGraceMs;
     this.structuredCompletionQuietMs = structuredCompletionQuietMs;
   }
 
@@ -523,13 +518,6 @@ export class ChatGPTTurnController {
   } = {}) {
     const started = Date.now();
     const normalizedPrompt = normalizeText(prompt);
-    // Long Dev/Supervisor envelopes use ChatGPT's collapsible user renderer.
-    // On iPad/WebKit its turn wrapper can exist several seconds before the full
-    // semantic message has hydrated. Keep the short-prompt interference guard
-    // strict, but give long owned submissions enough time to finish hydrating.
-    const submissionMismatchGraceMs = normalizedPrompt.length >= LONG_SUBMISSION_PROMPT_THRESHOLD
-      ? Math.max(this.submissionMismatchGraceMs, this.submissionMismatchLongPromptGraceMs)
-      : this.submissionMismatchGraceMs;
     let composer = await waitFor(() => this.adapter.composer(), Math.min(timeoutMs, this.startTimeoutMs), signal);
     if (!composer) throw bridgeError('turn-controller', 'composer-not-found', 'ChatGPT composer was not found.');
     if (this.adapter.isGenerating()) throw bridgeError('turn-controller', 'already-generating', 'ChatGPT is already generating a response.');
@@ -558,8 +546,6 @@ export class ChatGPTTurnController {
     send.click();
 
     let requestUserTurn = null;
-    let mismatchSince = null;
-    let mismatchPrefixLength = 0;
     let pageErrorObserved = null;
     const capturePageError = (signal = null) => {
       if (pageErrorObserved) return;
@@ -581,30 +567,12 @@ export class ChatGPTTurnController {
         const explicit = this.userTurns().filter((turn) => !baselineUsers.has(turn.id));
         if (explicit.length > 1) throw bridgeError('turn-controller', 'manual-interference', 'Another user turn appeared while Hex was submitting its request.');
         if (explicit.length === 1) {
-          const candidate = explicit[0];
-          const candidateText = normalizeText(candidate.text);
-          if (candidateText === normalizedPrompt) {
-            requestUserTurn = candidate;
-            mismatchSince = null;
-            mismatchPrefixLength = 0;
-            return true;
-          }
-          if (mismatchSince === null) mismatchSince = Date.now();
-          // A freshly submitted long turn can hydrate progressively. Only extend
-          // the grace window when the observed text is a strictly longer prefix
-          // of the exact Hex prompt; arbitrary human text or identity churn never
-          // earns more time and still trips the manual-interference guard.
-          if (candidateText && normalizedPrompt.startsWith(candidateText) && candidateText.length > mismatchPrefixLength) {
-            mismatchPrefixLength = candidateText.length;
-            mismatchSince = Date.now();
-          }
-          if (Date.now() - mismatchSince >= submissionMismatchGraceMs) {
-            throw bridgeError('turn-controller', 'manual-interference', 'The submitted ChatGPT turn does not match the Hex request.');
-          }
-          return false;
+          // The composer contains the exact Hex prompt immediately before the
+          // owned send click. Renderer text can hydrate late or incorrectly on
+          // iPad/WebKit, so it must never revoke that ownership.
+          requestUserTurn = explicit[0];
+          return true;
         }
-        mismatchSince = null;
-        mismatchPrefixLength = 0;
 
       // Some ChatGPT builds temporarily omit data-message-author-role while
       // retaining conversation-turn test ids. Accept only an exact prompt match.
@@ -642,7 +610,7 @@ export class ChatGPTTurnController {
         const conversationTurns = this.conversationTurns();
         const userTurns = this.userTurns();
         const freshUsers = userTurns.filter((turn) => !baselineUsers.has(turn.id));
-        const requestPresent = requestTurnIsPresent(requestUserTurn, userTurns, conversationTurns, normalizedPrompt);
+        const requestPresent = requestTurnIsPresent(requestUserTurn, userTurns, conversationTurns);
         const conversation = this.adapter.conversation();
 
         if (conversation) {
@@ -784,7 +752,7 @@ export class ChatGPTTurnController {
     if (observedConversation && current && current.id !== observedConversation.id) return false;
     const users = this.userTurns();
     const turns = this.conversationTurns();
-    if (!requestTurnIsPresent(requestUserTurn, users, turns, normalizedPrompt)) return false;
+    if (!requestTurnIsPresent(requestUserTurn, users, turns)) return false;
     try { return this.adapter.stop?.() === true; } catch { return false; }
   }
 
@@ -869,13 +837,9 @@ function priorTurnsCleared(adapter, priorTurns) {
   for (const id of priorTurns) if (current.has(id)) return false;
   return true;
 }
-function requestTurnIsPresent(request, userTurns, conversationTurns, normalizedPrompt) {
+function requestTurnIsPresent(request, userTurns, conversationTurns) {
   if (!request) return false;
-  const matches = (turn) => {
-    if (!turn) return false;
-    const sameIdentity = turn.id === request.id || (!!turn.node && !!request.node && turn.node === request.node);
-    return sameIdentity && normalizeText(turn.text) === normalizedPrompt;
-  };
+  const matches = (turn) => !!turn && (turn.id === request.id || (!!turn.node && !!request.node && turn.node === request.node));
   return (userTurns || []).some(matches) || (conversationTurns || []).some(matches);
 }
 function isFailureText(value) {

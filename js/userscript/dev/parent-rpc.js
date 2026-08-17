@@ -85,7 +85,7 @@ export function createDevWorkerParentRpc({ port, runtime } = {}) {
   });
 }
 
-export function createDevWorkerParentRpcClient({ port, timeoutMs = 20000 } = {}) {
+export function createDevWorkerParentRpcClient({ port, timeoutMs = 60000 } = {}) {
   if (!usablePort(port)) throw new TypeError('Dev Worker RPC client requires a MessagePort.');
 
   const pending = new Map();

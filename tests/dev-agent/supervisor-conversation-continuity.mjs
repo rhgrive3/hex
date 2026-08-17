@@ -1,9 +1,13 @@
 import assert from 'node:assert/strict';
 import { ChatGPTConversationRouter } from '../../js/userscript/chatgpt-adapter.js';
 import { installChatGPTWebBridge } from '../../js/userscript/chatgpt-bridge.js';
+import { SingleConversationWorkerCoordinator } from '../../js/userscript/dev/single-tab/single-conversation-worker-coordinator.js';
 
 await testDelayedConversationIdentityStaysOnOneSupervisorChat();
 await testUnboundSupervisorSurfaceNeverCreatesAnotherChat();
+await testWorkerSendRefreshesLatestSupervisorAnchorAfterVirtualization();
+await testWorkerFollowupRefreshesLatestSupervisorAnchorAfterVirtualization();
+await testReleaseAdoptsAlreadyRoutedSupervisorSurfaceAfterVirtualization();
 console.log('dev-agent supervisor conversation continuity: ok');
 
 async function testDelayedConversationIdentityStaysOnOneSupervisorChat() {
@@ -86,6 +90,152 @@ async function testUnboundSupervisorSurfaceNeverCreatesAnotherChat() {
   assert.ok(turnsInDom.some((turn) => turn.id === 'assistant-unbound-1'), 'continuity must preserve the first Supervisor turn');
   assert.ok(turnsInDom.some((turn) => turn.id === 'assistant-unbound-2'), 'the second decision must append to the same surface');
   delete globalThis.__HEX_CHATGPT_BRIDGE__;
+}
+
+async function testWorkerSendRefreshesLatestSupervisorAnchorAfterVirtualization() {
+  const harness = createWorkerAnchorHarness();
+  const { coordinator, controller, supervisor, navigation } = harness;
+
+  await coordinator.claim({ runId: 'send-anchor-run', workerId: 'send-anchor-worker' });
+  assert.deepEqual(harness.claimAnchor(), harness.turnA, 'claim must initially capture Supervisor turn A');
+
+  harness.setSupervisorAnchors([harness.turnB, harness.turnC]);
+  const result = await coordinator.send({ workerId: 'send-anchor-worker', instruction: 'run delegated task' });
+
+  assert.equal(result.status, 'COMPLETED');
+  assert.equal(controller.currentConversation().id, supervisor.id);
+  assert.deepEqual(harness.claimAnchor(), harness.turnC, 'worker.send must refresh the retained Supervisor anchor to turn C before handoff');
+  const restore = navigation.at(-1);
+  assert.equal(restore.conversation.id, supervisor.id);
+  assert.equal(restore.options.continuityAnchor, null, 'Supervisor restore must not require one virtualizable historical turn to reappear');
+  coordinator.close();
+}
+
+async function testWorkerFollowupRefreshesLatestSupervisorAnchorAfterVirtualization() {
+  const harness = createWorkerAnchorHarness();
+  const { coordinator, controller, supervisor, worker, navigation } = harness;
+
+  await coordinator.claim({ runId: 'followup-anchor-run', workerId: 'followup-anchor-worker' });
+  assert.deepEqual(harness.claimAnchor(), harness.turnA, 'claim must initially capture Supervisor turn A');
+  harness.seedWorkerConversation();
+  harness.setSupervisorAnchors([harness.turnB, harness.turnC]);
+
+  const result = await coordinator.followup({ workerId: 'followup-anchor-worker', text: 'continue delegated task' });
+
+  assert.equal(result.status, 'COMPLETED');
+  assert.equal(navigation.at(-2).conversation.id, worker.id, 'followup must first return to the retained Worker conversation');
+  assert.equal(navigation.at(-2).options.continuityAnchor, undefined, 'Worker return keeps strict remembered-history hydration');
+  assert.deepEqual(harness.claimAnchor(), harness.turnC, 'worker.followup must retain the latest Supervisor turn C before leaving the Supervisor surface');
+  const restore = navigation.at(-1);
+  assert.equal(restore.conversation.id, supervisor.id);
+  assert.equal(restore.options.continuityAnchor, null, 'Supervisor restore uses settled target-surface adoption instead of exact historical-turn hydration');
+  assert.equal(controller.currentConversation().id, supervisor.id);
+  coordinator.close();
+}
+
+async function testReleaseAdoptsAlreadyRoutedSupervisorSurfaceAfterVirtualization() {
+  const harness = createWorkerAnchorHarness();
+  const { coordinator, navigation } = harness;
+
+  await coordinator.claim({ runId: 'release-anchor-run', workerId: 'release-anchor-worker' });
+  harness.setSupervisorAnchors([harness.turnB]);
+  harness.setStrictSupervisorUnavailable(true);
+
+  const released = await coordinator.release({ workerId: 'release-anchor-worker' });
+
+  assert.equal(released.claimed, false);
+  assert.equal(released.role, 'available');
+  assert.equal(navigation.length, 0, 'an already-routed Supervisor surface must be adopted in place instead of navigating again');
+  coordinator.close();
+}
+
+function createWorkerAnchorHarness() {
+  const supervisor = { id: 'supervisor-anchor-chat', url: 'https://chatgpt.com/c/supervisor-anchor-chat' };
+  const worker = { id: 'worker-anchor-chat', url: 'https://chatgpt.com/c/worker-anchor-chat' };
+  const turnA = { id: 'supervisor-turn-a', text: 'Supervisor turn A: claim worker' };
+  const turnB = { id: 'supervisor-turn-b', text: 'Supervisor turn B: create chat' };
+  const turnC = { id: 'supervisor-turn-c', text: 'Supervisor turn C: send now' };
+  let page = { ...supervisor };
+  let supervisorAnchors = [{ ...turnA }];
+  let workerConversation = null;
+  let state = 'STARTING';
+  let responseText = '';
+  let strictSupervisorUnavailable = false;
+  const listeners = new Set();
+  const navigation = [];
+
+  const emit = (kind, data = {}) => {
+    for (const listener of listeners) listener({ kind, data, observedAt: '2026-08-18T00:00:00.000Z' });
+  };
+  const completeWorkerTurn = (text, context) => {
+    workerConversation = { ...worker };
+    page = { ...worker };
+    state = 'WORKING';
+    queueMicrotask(() => {
+      responseText = text;
+      state = 'COMPLETED';
+      emit('completed', { ...context, responseText });
+    });
+    return { submitted: true, status: 'WORKING', chatgptConversationId: worker.id };
+  };
+
+  const controller = {
+    adapter: {
+      conversation() { return page ? { ...page } : null; },
+      composer() { return {}; },
+      isGenerating() { return false; },
+    },
+    on(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+    currentConversation() {
+      if (strictSupervisorUnavailable && page?.id === supervisor.id) return null;
+      return page ? { ...page } : null;
+    },
+    adoptCurrentConversation() {
+      if (page?.id !== supervisor.id) return null;
+      return { ...page };
+    },
+    currentUserAnchors() {
+      if (page?.id === supervisor.id) return supervisorAnchors.map((anchor) => ({ ...anchor }));
+      return [{ id: 'worker-user-turn', text: 'worker task' }];
+    },
+    observe() { return { state, chatgptConversationId: workerConversation?.id || null }; },
+    isActive() { return false; },
+    workerConversation() { return workerConversation ? { ...workerConversation } : null; },
+    async navigateToConversation(conversation, options = {}) {
+      navigation.push({ conversation: { ...conversation }, options: { ...options } });
+      page = { ...conversation };
+      return { ...page };
+    },
+    async send(text, context) { return completeWorkerTurn(`send:${text}`, context); },
+    async followup(text, context) { return completeWorkerTurn(`followup:${text}`, context); },
+    result() {
+      return {
+        status: state,
+        responseText,
+        chatgptConversationId: workerConversation?.id || null,
+        observedAt: '2026-08-18T00:00:00.000Z',
+      };
+    },
+  };
+
+  const coordinator = new SingleConversationWorkerCoordinator({ controller, tabNodeId: 'same-ipad-tab' });
+  return {
+    coordinator,
+    controller,
+    supervisor,
+    worker,
+    turnA,
+    turnB,
+    turnC,
+    navigation,
+    setSupervisorAnchors(anchors) {
+      supervisorAnchors = anchors.map((anchor) => ({ ...anchor }));
+      page = { ...supervisor };
+    },
+    setStrictSupervisorUnavailable(value) { strictSupervisorUnavailable = !!value; },
+    seedWorkerConversation() { workerConversation = { ...worker }; },
+    claimAnchor() { return coordinator.claimed?.supervisorAnchor ? { ...coordinator.claimed.supervisorAnchor } : null; },
+  };
 }
 
 function fixtureAdapter({ current, turns, onNewChat }) {

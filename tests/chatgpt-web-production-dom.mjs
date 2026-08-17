@@ -98,6 +98,14 @@ async function run(name, browserType) {
       assert.equal(result.value.text, ANSWER);
     });
 
+    await scenario(context, name, 'owned submission survives indefinitely wrong renderer text', {
+      prompt: LONG_PROMPT,
+      chatgpt: { userHydrationDelayMs: 60000, userInitialText: '読み込み中…' },
+    }, (result) => {
+      assert.equal(result.ok, true, `${name}: renderer text must never revoke an owned send (${result.error?.code})`);
+      assert.equal(result.value.text, ANSWER);
+    });
+
     await scenario(context, name, 'a historical page alert does not poison a new request', {
       prompt: LONG_PROMPT, chatgpt: { seedPageErrorText: 'Something went wrong in an older operation.' },
     }, (result) => {
