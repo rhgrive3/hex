@@ -42,6 +42,10 @@ When running as Opus 5: optimize for wall-clock speed. Finish tasks quickly.
 
 The no-overlap rule above remains the default. For the Admin Dev subsystem only, an explicit Dev Supervisor decision may intentionally assign overlapping Worker ownership when the Supervisor determines that overlap improves the result. Do not infer this exception without that explicit Dev Supervisor decision.
 
+### Dev Supervisor iOS tab model
+
+Dev Supervisor Worker automation must use one ChatGPT browser tab on iOS/iPadOS. Workers are logical ChatGPT conversations that run sequentially in that same tab. Do not require, provision, or depend on background Safari Worker tabs, `?hex-worker=1`, or BroadcastChannel-based Worker execution. A Worker turn must finish, its result must be captured, and the Supervisor conversation must be restored before the next Supervisor turn.
+
 ## Short responses
 
 It's been a long day and my brain is fried, talk to me like I'm 5.

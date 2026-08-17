@@ -23,12 +23,7 @@ export async function startChatGPTUserscript(options = {}) {
 
   const devWorkerRuntime = await startParentDevWorkerRuntime({
     ...(options.devWorkerOptions || {}),
-    secret: options.devTabMeshSecret || options.devWorkerOptions?.secret,
   });
-  if (devWorkerRuntime.role === 'worker') {
-    installSessionCleanup(() => devWorkerRuntime.close());
-    return Object.freeze({ mode: 'dev-worker', devWorkerRuntime });
-  }
 
   const bridge = installChatGPTWebBridge();
   globalThis.__HEX_AI_PROVIDER__ = readProvider();
