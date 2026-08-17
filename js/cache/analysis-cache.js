@@ -1,5 +1,7 @@
 export const ANALYSIS_CACHE_SCHEMA = 1;
+export const ANALYSIS_CACHE_FALLBACK = Object.freeze({ MEMORY:'memory', ERROR:'error' });
 const ALLOWED_FIELDS = new Set(['formatMetadata', 'functionSeeds', 'stringsIndex', 'imports', 'analysisSummaries']);
+const CANONICAL_ARTIFACT_ID = /^artifact_[0-9a-f]{32}$/i;
 
 function stableValue(value) {
   if (value == null || typeof value !== 'object') return value;
@@ -15,51 +17,98 @@ function analysisIdentity(options = {}) {
   return `${version}:${JSON.stringify(settings)}`;
 }
 
+function canonicalArtifactId(options = {}) {
+  const value = options?.artifactId == null ? '' : String(options.artifactId).trim();
+  if (!value) return null;
+  if (!CANONICAL_ARTIFACT_ID.test(value)) throw new TypeError('analysis-cache-artifact-id-not-canonical');
+  return value.toLowerCase();
+}
+
 export class AnalysisCache {
   constructor(options = {}) {
     this.schemaVersion = options.schemaVersion ?? ANALYSIS_CACHE_SCHEMA;
     this.dbName = options.dbName || 'hex-analysis-cache';
     this.indexedDB = options.indexedDB === undefined ? globalThis.indexedDB : options.indexedDB;
     this.analysisIdentity = analysisIdentity(options);
-    this.memory = options.memory || (!this.indexedDB ? new Map() : null);
+    this.fallbackMode = options.fallbackMode ?? ANALYSIS_CACHE_FALLBACK.MEMORY;
+    if (!Object.values(ANALYSIS_CACHE_FALLBACK).includes(this.fallbackMode)) throw new TypeError('analysis-cache-fallback-mode-invalid');
+    this.memory = options.memory || (!this.indexedDB && this.fallbackMode === ANALYSIS_CACHE_FALLBACK.MEMORY ? new Map() : null);
     this._db = null;
     this._idbFailed = false;
   }
 
-  key(hash) { return `${this.schemaVersion}:${this.analysisIdentity}:${hash}`; }
+  legacyKey(hash) { return `${this.schemaVersion}:${this.analysisIdentity}:${hash}`; }
+  canonicalKey(artifactId) {
+    const id = canonicalArtifactId({ artifactId });
+    if (!id) throw new TypeError('canonical artifact id is required');
+    return `artifact:${id}`;
+  }
+  key(hash, options = {}) {
+    const artifactId = canonicalArtifactId(options);
+    return artifactId ? this.canonicalKey(artifactId) : this.legacyKey(hash);
+  }
+
+  capabilities() {
+    return Object.freeze({
+      backend:this.memory ? 'memory' : 'indexeddb',
+      persistent:!this.memory && !!this.indexedDB?.open,
+      fallbackMode:this.fallbackMode,
+      canonicalCompatibility:true,
+    });
+  }
 
   #fallback(error) {
     this._idbFailed = true;
     try { this._db?.close?.(); } catch { /* best effort */ }
     this._db = null;
-    if (!this.memory) this.memory = new Map();
     this.lastIndexedDBError = error || null;
+    if (this.fallbackMode === ANALYSIS_CACHE_FALLBACK.ERROR) throw (error || new Error('IndexedDB unavailable'));
+    if (!this.memory) this.memory = new Map();
     return this.memory;
   }
 
-  async get(hash) {
-    if (!hash) return null;
-    const key = this.key(hash);
+  #validRecord(record, hash, artifactId) {
+    if (!record || record.schemaVersion !== this.schemaVersion) return false;
+    if (artifactId) {
+      // Canonical compatibility never falls back to the weak legacy key.
+      return record.canonicalArtifactId === artifactId && (!hash || record.binaryHash === hash);
+    }
+    return record.binaryHash === hash && record.analysisIdentity === this.analysisIdentity && !record.canonicalArtifactId;
+  }
+
+  async get(hash, options = {}) {
+    const artifactId = canonicalArtifactId(options);
+    if (!hash && !artifactId) return null;
+    const key = this.key(hash, { artifactId });
     let record;
     if (this.memory) record = this.memory.get(key) || null;
     else {
       try { record = await this.#idbGet(key); }
-      catch (error) { this.#fallback(error); record = this.memory.get(key) || null; }
+      catch (error) { const memory = this.#fallback(error); record = memory.get(key) || null; }
     }
     if (!record) return null;
-    if (record.schemaVersion !== this.schemaVersion || record.binaryHash !== hash || record.analysisIdentity !== this.analysisIdentity) {
-      await this.delete(hash);
+    if (!this.#validRecord(record, hash, artifactId)) {
+      await this.delete(hash, { artifactId });
       return null;
     }
     return structuredCloneSafe(record.data);
   }
 
-  async put(hash, data = {}) {
+  async put(hash, data = {}, options = {}) {
     if (!hash) throw new TypeError('binary hash is required');
+    const artifactId = canonicalArtifactId(options);
     const clean = {};
     for (const [key, value] of Object.entries(data)) if (ALLOWED_FIELDS.has(key)) clean[key] = value;
     const snapshot = structuredCloneSafe(clean);
-    const record = { key: this.key(hash), schemaVersion: this.schemaVersion, analysisIdentity: this.analysisIdentity, binaryHash: hash, updatedAt: Date.now(), data: snapshot };
+    const record = {
+      key:this.key(hash, { artifactId }),
+      schemaVersion:this.schemaVersion,
+      analysisIdentity:this.analysisIdentity,
+      binaryHash:hash,
+      canonicalArtifactId:artifactId,
+      updatedAt:Date.now(),
+      data:snapshot,
+    };
     if (this.memory) this.memory.set(record.key, record);
     else {
       try { await this.#idbPut(record); }
@@ -68,8 +117,9 @@ export class AnalysisCache {
     return structuredCloneSafe(snapshot);
   }
 
-  async delete(hash) {
-    const key = this.key(hash);
+  async delete(hash, options = {}) {
+    const artifactId = canonicalArtifactId(options);
+    const key = this.key(hash, { artifactId });
     if (this.memory) { this.memory.delete(key); return; }
     try {
       const db = await this.#db();
@@ -78,10 +128,17 @@ export class AnalysisCache {
   }
 
   async invalidateStale() {
+    const stale = (key, record) => {
+      if (record?.canonicalArtifactId) {
+        if (!CANONICAL_ARTIFACT_ID.test(record.canonicalArtifactId)) return true;
+        return record.schemaVersion !== this.schemaVersion || key !== this.canonicalKey(record.canonicalArtifactId);
+      }
+      return record?.schemaVersion !== this.schemaVersion || record?.analysisIdentity !== this.analysisIdentity || !key.startsWith(`${this.schemaVersion}:${this.analysisIdentity}:`);
+    };
     if (this.memory) {
       let removed = 0;
       for (const [key, record] of this.memory) {
-        if (record.schemaVersion !== this.schemaVersion || record.analysisIdentity !== this.analysisIdentity || !key.startsWith(`${this.schemaVersion}:${this.analysisIdentity}:`)) { this.memory.delete(key); removed++; }
+        if (stale(key, record)) { this.memory.delete(key); removed++; }
       }
       return removed;
     }
@@ -95,7 +152,7 @@ export class AnalysisCache {
         req.onsuccess = () => {
           const cursor = req.result;
           if (!cursor) return;
-          if (cursor.value?.schemaVersion !== this.schemaVersion || cursor.value?.analysisIdentity !== this.analysisIdentity) { cursor.delete(); removed++; }
+          if (stale(cursor.key, cursor.value)) { cursor.delete(); removed++; }
           cursor.continue();
         };
         tx.oncomplete = () => resolve(removed);
