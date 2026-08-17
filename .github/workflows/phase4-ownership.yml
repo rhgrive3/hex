@@ -7,12 +7,15 @@ on:
       - 'js/core/scheduler/**'
       - 'js/core/budgets/**'
       - 'js/project/**'
+      - 'js/bytesource/cached.js'
       - 'js/cache/**'
       - 'js/backend.js'
       - 'js/worker*.js'
       - 'tests/phase4/**'
+      - 'tools/validation/phase4/**'
       - 'tools/validation/phase4-ownership.mjs'
       - 'tools/validation/phase-ownership/phase4.json'
+      - 'reports/phase4/**'
       - '.github/workflows/phase4-*.yml'
       - 'package.json'
       - 'userscript/hex.user.template.js'
@@ -48,11 +51,14 @@ jobs:
             hex/p4-5-*) lane=p4-5 ;;
             hex/p4-6-*) lane=p4-6 ;;
             hex/p4-artifact-store-scheduler-integration) lane=p4-7 ;;
+            hex/p4-integration-contract-repair) lane=p4-r ;;
             *)
               echo "::error::Phase 4-owned files require a canonical Phase 4 lane branch; got '$HEAD_REF'."
               exit 1
               ;;
           esac
           echo "lane=$lane" >> "$GITHUB_OUTPUT"
+      - name: Run Phase 4 ownership governance regressions
+        run: node --test tests/phase4/ownership/integration-contract-repair.test.mjs
       - name: Enforce machine-readable ownership manifest
         run: node tools/validation/phase4-ownership.mjs --lane "${{ steps.lane.outputs.lane }}" --base "origin/${{ github.base_ref }}"
