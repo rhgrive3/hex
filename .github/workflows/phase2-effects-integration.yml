@@ -152,22 +152,5 @@ jobs:
       - run: npm ci
       - name: Build and test protected userscript runtime
         run: npm run userscript:test
-      - name: Resolve canonical Phase 5 component policy
-        id: phase5-component
-        shell: bash
-        env:
-          HEAD_REF: ${{ github.head_ref }}
-          BASE_REF: ${{ github.base_ref }}
-        run: |
-          ephemeral=false
-          if test "$BASE_REF" = hex/p5-x86-integration; then
-            case "$HEAD_REF" in
-              hex/p5-1-x86-int-control|hex/p5-2-x86-memory-atomic|hex/p5-3-x86-fp-simd-system|hex/p5-4-x86-abis|hex/p5-5-variable-viewer|hex/p5-6-x86-verification)
-                ephemeral=true
-                ;;
-            esac
-          fi
-          echo "ephemeral=$ephemeral" >> "$GITHUB_OUTPUT"
       - name: Require committed loader synchronization
-        if: steps.phase5-component.outputs.ephemeral != 'true'
         run: git diff --exit-code -- userscript/hex.user.template.js
