@@ -7,13 +7,17 @@ import { DEV_WORKER_TOOL } from '../workers/tool-surface.js';
 const MAX_DECISIONS = 16;
 
 export class DevSupervisorEngineV0 {
-  constructor({ supervisor, settings, bridge = globalThis.__HEX_CHATGPT_BRIDGE__, maxDecisions = MAX_DECISIONS } = {}) {
+  constructor({ supervisor, settings, bridge = globalThis.__HEX_CHATGPT_BRIDGE__, maxDecisions = MAX_DECISIONS, extensionLoader = null } = {}) {
     if (!supervisor) throw new TypeError('DevSupervisorEngineV0 requires a supervisor.');
     if (!settings) throw new TypeError('DevSupervisorEngineV0 requires settings.');
+    if (extensionLoader && (typeof extensionLoader.beginToolCall !== 'function' || typeof extensionLoader.endToolCall !== 'function')) {
+      throw new TypeError('DevSupervisorEngineV0 extensionLoader must expose tool-call boundaries.');
+    }
     this.supervisor = supervisor;
     this.settings = settings;
     this.bridge = bridge || null;
     this.maxDecisions = maxDecisions;
+    this.extensionLoader = extensionLoader;
   }
 
   async run(input = {}) {
@@ -67,7 +71,13 @@ export class DevSupervisorEngineV0 {
         if (decision.type === 'tool') {
           input.onActivity?.({ label: decision.tool, detail: decision.purpose });
           if (decision.tool === DEV_WORKER_TOOL.CLAIM) workerClaimAttempted = true;
-          const executed = await this.supervisor.executeToolDecision(run, decision);
+          let executed;
+          this.extensionLoader?.beginToolCall();
+          try {
+            executed = await this.supervisor.executeToolDecision(run, decision);
+          } finally {
+            this.extensionLoader?.endToolCall();
+          }
           run = executed.run;
           if (decision.tool === DEV_WORKER_TOOL.CLAIM) {
             workerClaimed = true;
