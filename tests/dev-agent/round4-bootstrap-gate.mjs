@@ -1,0 +1,104 @@
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import {
+  DEV_BOOTSTRAP_CAPABILITY,
+  DEV_BOOTSTRAP_EXTENSION,
+  DEV_BOOTSTRAP_EXTENSION_INTEGRITY,
+  DEV_BOOTSTRAP_EXTENSION_VERSION,
+  DevExtensionLoader,
+  createDevBootstrapCheckpoint,
+  createDevBootstrapHandoff,
+  verifyDevBootstrapIdentity,
+} from '../../js/ai/dev/bootstrap/dev-bootstrap-gate.js';
+
+const COMMIT = 'a'.repeat(40);
+const BUILD_ID = 'b'.repeat(24);
+const checkpointInput = {
+  runId: 'run-round4',
+  goal: 'prove the minimum bootstrap gate',
+  decisionPolicy: 'normal',
+  supervisorSessionKey: 'supervisor-round4',
+  chatgptConversationId: 'conversation-round4',
+  pendingTask: { type: 'bootstrap', step: 'activate' },
+  expectedCommit: COMMIT,
+  expectedBuildId: BUILD_ID,
+  expectedExtensionVersion: DEV_BOOTSTRAP_EXTENSION_VERSION,
+};
+const sha256 = async (value) => createHash('sha256').update(String(value)).digest('hex');
+
+const checkpoint = createDevBootstrapCheckpoint(checkpointInput);
+assert.deepEqual(Object.keys(checkpoint), Object.keys(checkpointInput), 'checkpoint must carry only the Round 4 minimum fields');
+assert.equal(Object.isFrozen(checkpoint), true);
+assert.throws(() => createDevBootstrapCheckpoint({ ...checkpointInput, extra: true }), /invalid shape/);
+
+const handoff = createDevBootstrapHandoff(checkpoint);
+assert.equal(handoff.runId, checkpoint.runId);
+assert.equal(handoff.supervisorSessionKey, checkpoint.supervisorSessionKey);
+assert.equal(handoff.chatgptConversationId, checkpoint.chatgptConversationId);
+assert.deepEqual(handoff.checkpoint.pendingTask, checkpoint.pendingTask);
+
+const tampered = structuredClone(DEV_BOOTSTRAP_EXTENSION);
+tampered.capabilities[0].name = 'dev.bootstrap.tampered';
+const integrityLoader = new DevExtensionLoader({ sha256 });
+await assert.rejects(() => integrityLoader.stage(tampered), (error) => error.code === 'dev-extension-integrity-mismatch');
+assert.equal(integrityLoader.stagedVersion, null, 'failed integrity must never stage an extension');
+
+const loader = new DevExtensionLoader({ sha256 });
+const staged = await loader.stage(DEV_BOOTSTRAP_EXTENSION);
+assert.deepEqual(staged, {
+  id: 'dev.bootstrap-observer',
+  version: DEV_BOOTSTRAP_EXTENSION_VERSION,
+  integrity: DEV_BOOTSTRAP_EXTENSION_INTEGRITY,
+  verified: true,
+});
+assert.equal(loader.activeVersion, null, 'staging must not activate the extension');
+assert.throws(
+  () => loader.activateAtSafeBoundary({ checkpoint: { ...checkpointInput, expectedExtensionVersion: '2' }, activeIdentity: { commit: COMMIT, buildId: BUILD_ID }, reinitialized: true }),
+  (error) => error.code === 'dev-extension-version-mismatch',
+);
+
+loader.beginToolCall();
+assert.equal(loader.toolCallActive, true);
+assert.throws(
+  () => loader.activateAtSafeBoundary({ checkpoint, activeIdentity: { commit: COMMIT, buildId: BUILD_ID }, reinitialized: true }),
+  (error) => error.code === 'dev-extension-tool-call-active',
+  'activation must fail closed while a Dev tool call is active',
+);
+loader.endToolCall();
+assert.equal(loader.toolCallActive, false);
+
+const reload = loader.activateAtSafeBoundary({ checkpoint, activeIdentity: { commit: COMMIT, buildId: BUILD_ID } });
+assert.equal(reload.status, 'reload-required');
+assert.equal(reload.reason, 'extension-reinitialize');
+assert.equal(reload.handoff.runId, checkpoint.runId);
+assert.equal(reload.handoff.supervisorSessionKey, checkpoint.supervisorSessionKey);
+assert.equal(reload.handoff.chatgptConversationId, checkpoint.chatgptConversationId);
+assert.equal(loader.activeVersion, null, 'reload request must not activate before reinitialization');
+
+assert.throws(
+  () => loader.activateAtSafeBoundary({ checkpoint, activeIdentity: { commit: 'c'.repeat(40), buildId: BUILD_ID }, reinitialized: true }),
+  (error) => error.code === 'dev-bootstrap-identity-mismatch' && error.mismatches.includes('commit'),
+);
+assert.throws(
+  () => verifyDevBootstrapIdentity(checkpoint, { commit: COMMIT, buildId: 'd'.repeat(24) }, DEV_BOOTSTRAP_EXTENSION_VERSION),
+  (error) => error.code === 'dev-bootstrap-identity-mismatch' && error.mismatches.includes('buildId'),
+);
+
+const activated = loader.activateAtSafeBoundary({ checkpoint, activeIdentity: { commit: COMMIT, buildId: BUILD_ID }, reinitialized: true });
+assert.equal(activated.status, 'active');
+assert.equal(activated.identity.verified, true);
+assert.equal(loader.activeVersion, DEV_BOOTSTRAP_EXTENSION_VERSION);
+
+const evidence = loader.invoke(DEV_BOOTSTRAP_CAPABILITY);
+assert.deepEqual(evidence, {
+  capability: DEV_BOOTSTRAP_CAPABILITY,
+  extensionId: 'dev.bootstrap-observer',
+  extensionVersion: DEV_BOOTSTRAP_EXTENSION_VERSION,
+  integrity: DEV_BOOTSTRAP_EXTENSION_INTEGRITY,
+  commit: COMMIT,
+  buildId: BUILD_ID,
+  verified: true,
+});
+assert.throws(() => loader.invoke('dev.bootstrap.unknown'), /Unknown Dev extension capability/);
+
+console.log('Dev Agent Seed Round 4 bootstrap gate tests passed');
