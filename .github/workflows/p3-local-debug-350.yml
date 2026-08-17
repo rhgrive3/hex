@@ -2,98 +2,20 @@ name: P3 local debug 350
 on:
   push:
     branches: [hex/p3-local-debug-350]
-    paths: ['.github/workflows/p3-local-debug-350.yml']
+    paths:
+      - '.github/workflows/p3-local-debug-350.yml'
 jobs:
   inspect:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-        with: { ref: hex/p3-local-debug-350 }
+        with:
+          ref: hex/p3-local-debug-350
       - uses: actions/setup-node@v4
-        with: { node-version: 22 }
-      - name: Apply candidate repairs in workspace
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          # Required Phase 3 finalizer narrowing + exact state-write public promotion.
-          p=Path('js/semantics/compat/semantic-ir-v2-to-v1-finalize.js')
-          s=p.read_text()
-          decl="    const addressStateAlias = rawSource != null && aliases.has(rawSource.id);\n"
-          old="""    if (inst.extra?.stateWrite && samePublicState(inst, source, inst.dst)) {
-      const shadow = inst.dst;"""
-          new="""    const stateIdentity = inst.extra?.publicStateIdentity ?? null;
-    if (inst.extra?.stateWrite && stateIdentity != null && source.reg == null
-        && inst.dst.reg === stateIdentity && source.kind !== V1_VK.ARG && source.def
-        && source !== inst.dst && Number(source.bits || 0) === Number(inst.dst.bits || 0)) {
-      const shadow = inst.dst;
-      aliases.set(shadow.id, source);
-      source.reg = stateIdentity;
-      source.stateKey = shadow.stateKey ?? source.stateKey ?? null;
-      source.version = shadow.version ?? source.version ?? 0;
-      source.compatDerived = 'exact-state-write-source';
-      shadow.compatPublicIdentity = shadow.reg;
-      shadow.reg = null;
-      shadow.stateKey = null;
-      shadow.version = 0;
-      shadow.compatDerived = 'state-write-destination-shadow';
-      inst.extra.compatPublicStateSourceValueId = source.id;
-      inst.extra.compatStateDestinationValueId = shadow.id;
-    } else if (inst.extra?.stateWrite && samePublicState(inst, source, inst.dst)) {
-      const shadow = inst.dst;"""
-          old_read="inst.extra?.stateRead && (inst.extra?.localPhysicalViewProjection === true || addressStateAlias)"
-          new_read="inst.extra?.stateRead && inst.extra?.localPhysicalViewProjection === true"
-          if s.count(decl)!=1 or s.count(old)!=1 or s.count(old_read)!=1: raise SystemExit('finalizer source shape mismatch')
-          p.write_text(s.replace(decl,'',1).replace(old,new,1).replace(old_read,new_read,1))
-
-          # Unknown physical-state SSA definition is a public clobber boundary.
-          p=Path('js/semantics/compat/semantic-ir-v2-to-v1-core.js')
-          s=p.read_text()
-          old="""    if (definition.kind === 'unknown') value.unknown = true;
-    if (definition.kind === 'undef') value.undefined = true;"""
-          new="""    if (definition.kind === 'unknown') {
-      value.unknown = true;
-      if (definition.variableKey != null) value.clobbered = true;
-    }
-    if (definition.kind === 'undef') value.undefined = true;"""
-          if s.count(old)!=1: raise SystemExit('legacy value unknown source shape mismatch')
-          p.write_text(s.replace(old,new,1))
-
-          # Preserve exact conditional-compare bundle metadata in the v1 view.
-          p=Path('js/semantics/compat/semantic-ir-v2-to-v1-nodes.js')
-          s=p.read_text()
-          old="return attrs.conditionCode ?? op.conditionCode ?? op.condition ?? bundle.conditionCode ?? null;"
-          new="return attrs.conditionCode ?? op.conditionCode ?? op.condition ?? bundle.conditionCode ?? bundle.condition ?? null;"
-          if s.count(old)!=1: raise SystemExit('conditionCode source shape mismatch')
-          s=s.replace(old,new,1)
-          marker="""  if (primaryOutput && primaryOutput.def == null && inst.dst === primaryOutput) primaryOutput.def = inst;
-  for (const extra of extraInstructions) if (extra.dst && extra.dst.def == null) extra.dst.def = extra;"""
-          repl="""  const bundle = bundleMetadata(node);
-  const conditionalCompare = conditionCode(node);
-  if (conditionalCompare != null && bundle.fallbackNzcv != null) {
-    for (const candidate of [inst, ...extraInstructions]) {
-      if (candidate.op !== V1_OP.CMP) continue;
-      candidate.cond = conditionalCompare;
-      candidate.extra.conditional = true;
-      candidate.extra.fallbackNzcv = Number(bundle.fallbackNzcv);
-    }
-  }
-  if (primaryOutput && primaryOutput.def == null && inst.dst === primaryOutput) primaryOutput.def = inst;
-  for (const extra of extraInstructions) if (extra.dst && extra.dst.def == null) extra.dst.def = extra;"""
-          if s.count(marker)!=1: raise SystemExit('projectNode finalize source shape mismatch')
-          p.write_text(s.replace(marker,repl,1))
-
-          # Register-valued shift aliases must use modulo-width semantics even when
-          # the decoder spells the operation as lsl/lsr/asr/ror instead of *v.
-          p=Path('js/targets/architecture/arm64/effects/integer.js')
-          s=p.read_text()
-          old="  const variable = mnemonic.endsWith('v');"
-          new="  const variable = mnemonic.endsWith('v') || ops[2]?.k === 'reg';"
-          if s.count(old)!=1: raise SystemExit('shift variable source shape mismatch')
-          p.write_text(s.replace(old,new,1))
-          PY
-      - name: Run focused regressions
-        run: |
-          node tests/issues-350-399.mjs
-          node tests/ir.mjs
-          npm run effects:test
+        with:
+          node-version: 22
+      - run: python3 tools/validation/p3-debug-apply.py
+      - run: node tests/issues-350-399.mjs
+      - run: node tests/ir.mjs
+      - run: npm run effects:test
