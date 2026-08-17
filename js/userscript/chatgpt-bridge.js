@@ -5,6 +5,7 @@ import {
 
 const LATE_BINDING_LIMIT = 32;
 const DEFAULT_LATE_BINDING_WAIT_MS = 2500;
+const DEV_SUPERVISOR_PROMPT_PREFIX = 'HEX DEV SUPERVISOR PROTOCOL hex-dev-supervisor-v1';
 
 export function installChatGPTWebBridge(options = {}) {
   const existing = globalThis.__HEX_CHATGPT_BRIDGE__;
@@ -48,11 +49,17 @@ export function installChatGPTWebBridge(options = {}) {
           ? { conversation: null, isNew: true }
           : await router.route(requestOptions.sessionKey, { signal: controller.signal });
         const selection = await models.select({ model: requestOptions.model, reasoning: requestOptions.reasoning }, { signal: controller.signal });
-        const result = await turns.run(String(prompt || ''), {
+        const requestPrompt = String(prompt || '');
+        const result = await turns.run(requestPrompt, {
           signal: controller.signal,
-          timeoutMs: explicitTimeout(requestOptions.timeoutMs ?? options.timeoutMs) ?? Infinity,
+          // Leave timeout undefined when the caller did not set one so the
+          // TurnController's 110 s bound beats the outer 120 s embed RPC.
+          timeoutMs: explicitTimeout(requestOptions.timeoutMs ?? options.timeoutMs) ?? undefined,
           expectedConversation: routed.conversation,
           newConversation: routed.isNew === true,
+          completionMode: requestPrompt.startsWith(DEV_SUPERVISOR_PROMPT_PREFIX)
+            ? 'single-json-object'
+            : null,
         });
         // New Chat can expose its settled /c/<id> slightly after the assistant
         // response itself has become quiet. If we return before that route

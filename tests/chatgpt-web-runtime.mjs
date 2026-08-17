@@ -12,6 +12,9 @@ await testCollapsibleUserMessageTextExtraction();
 await testSubmittedUserHydrationGrace();
 await testTurnCompletionAndStaleProtection();
 await testRolelessTurnFallback();
+await testStructuredJsonCompletionStopsStuckGeneration();
+await testOrdinaryResponseDoesNotUseStructuredEarlyCompletion();
+await testDevSupervisorBridgeSelectsStructuredCompletion();
 await testCancelTimeoutAndSingleInflight();
 await testTransientConversationGapIsNotASwitch();
 await testNewConversationIdentityMigration();
@@ -295,6 +298,89 @@ async function testRolelessTurnFallback() {
   assert.equal(result.turnId, 'assistant-general');
   assert.match(result.text, /"answer":"ok"/);
   assert.equal(result.conversation, null, 'a captured model response must not be discarded solely because the SPA URL has not settled');
+}
+
+async function testStructuredJsonCompletionStopsStuckGeneration() {
+  const conversation = { id: 'alpha', url: 'https://chatgpt.com/c/alpha' };
+  const decision = '{"type":"tool","tool":"worker.create_chat","arguments":{},"purpose":"prepare Worker"}';
+  const state = { generating: false, assistants: [], users: [], turns: [], stopCalls: 0, conversation };
+  const assistant = { id: 'hex-assistant', text: '', node: plainNode('hex-assistant') };
+  const adapter = turnAdapter(state, () => {
+    const user = { id: 'hex-user', text: 'prompt', node: plainNode('hex-user') };
+    state.users.push(user); state.turns.push(user); state.generating = true;
+    setTimeout(() => {
+      assistant.text = decision;
+      state.assistants.push(assistant); state.turns.push(assistant);
+      state.generating = false;
+    }, 4);
+    // Exact real-device shape: complete JSON, then cursor-only residue and a
+    // re-lit Stop indicator that otherwise remains stuck until the outer RPC dies.
+    setTimeout(() => { assistant.text = `${decision}_`; state.generating = true; }, 10);
+  });
+  const result = await new ChatGPTTurnController(adapter, {
+    quietMs: 60, pollMs: 2, startTimeoutMs: 40, structuredCompletionQuietMs: 18,
+  }).run('prompt', {
+    timeoutMs: 180,
+    expectedConversation: conversation,
+    completionMode: 'single-json-object',
+  });
+  assert.equal(result.text, decision, 'cursor-only residue must not enter Supervisor JSON');
+  assert.equal(result.turnId, 'hex-assistant');
+  assert.equal(state.stopCalls, 1, 'Hex must stop exactly its own stuck Supervisor generation once');
+}
+
+async function testOrdinaryResponseDoesNotUseStructuredEarlyCompletion() {
+  const conversation = { id: 'alpha', url: 'https://chatgpt.com/c/alpha' };
+  const state = { generating: false, assistants: [], users: [], turns: [], stopCalls: 0, conversation };
+  const adapter = turnAdapter(state, () => {
+    const user = { id: 'hex-user', text: 'ordinary prompt', node: plainNode('hex-user') };
+    const assistant = { id: 'hex-assistant', text: '{"looks":"complete"}_', node: plainNode('hex-assistant') };
+    state.users.push(user); state.assistants.push(assistant); state.turns.push(user, assistant); state.generating = true;
+  });
+  await assert.rejects(
+    new ChatGPTTurnController(adapter, { quietMs: 5, pollMs: 2, startTimeoutMs: 30, structuredCompletionQuietMs: 8 })
+      .run('ordinary prompt', { timeoutMs: 35, expectedConversation: conversation }),
+    (error) => error.code === 'timeout',
+    'ordinary Chat/Worker output must never use structured early completion',
+  );
+  assert.equal(state.stopCalls, 1);
+}
+
+async function testDevSupervisorBridgeSelectsStructuredCompletion() {
+  const makeBridge = (observed) => {
+    delete globalThis.__HEX_CHATGPT_BRIDGE__;
+    const conversation = { id: 'alpha', url: 'https://chatgpt.com/c/alpha' };
+    return installChatGPTWebBridge({
+      adapter: {
+        composer: () => ({}), currentSelection: () => ({}), isGenerating: () => false,
+        conversation: () => conversation, errorState: () => null, stop() {},
+      },
+      router: {
+        route: async () => ({ conversation, isNew: false }),
+        bind: (_key, value) => value,
+        binding: () => conversation,
+      },
+      models: { select: async () => ({}) },
+      turns: {
+        async run(prompt, options) {
+          observed.push({ prompt, options });
+          return { text: '{"type":"final","answer":"ok"}', conversation, turnId: `turn-${observed.length}` };
+        },
+      },
+    });
+  };
+
+  const devObserved = [];
+  const dev = makeBridge(devObserved);
+  await dev.request('HEX DEV SUPERVISOR PROTOCOL hex-dev-supervisor-v1\n<HEX_DEV_DATA>{}</HEX_DEV_DATA>', { sessionKey: 'dev' });
+  assert.equal(devObserved[0].options.completionMode, 'single-json-object');
+  assert.equal(devObserved[0].options.timeoutMs, undefined, 'inner TurnController default must stay bounded');
+
+  const normalObserved = [];
+  const normal = makeBridge(normalObserved);
+  await normal.request('ordinary ChatGPT request', { sessionKey: 'normal' });
+  assert.equal(normalObserved[0].options.completionMode, null);
+  delete globalThis.__HEX_CHATGPT_BRIDGE__;
 }
 
 async function testCancelTimeoutAndSingleInflight() {
