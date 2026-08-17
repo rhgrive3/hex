@@ -1,0 +1,46 @@
+name: P3 unary alias TsumTsum accuracy
+on:
+  push:
+    branches: [hex/p3-local-debug-350]
+    paths: ['.github/workflows/p3-unary-accuracy.yml']
+permissions:
+  contents: read
+  actions: read
+env:
+  HEX_FIXTURE_TSUMTSUM_URL: https://raw.githubusercontent.com/rhgrive3/hex/bd7bd61d093592d07fdd9e9b14a859e19dd4c3a9/tests/TsumTsum
+jobs:
+  accuracy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 75c393a7e89a1154963b03a34b8e2ada0bebe9f9
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Fetch fixture and oracle
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node scripts/fetch-real-fixtures.mjs TsumTsum
+          node scripts/fetch-real-fixtures.mjs TsumTsum --check
+          gh run download 31988122265 -n cross-binary-oracle-TsumTsum -D tests
+          test -s tests/oracle.TsumTsum.ci.json.gz
+      - name: Apply unary alias candidate
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('js/semantics/ir/normalize-effects.js'); s=p.read_text()
+          old="  'neg', 'not', 'abs', 'fneg', 'fabs', 'fsqrt', 'clz', 'rbit', 'rev', 'rev16', 'rev32',\n"
+          new="  'neg', 'not', 'abs', 'fneg', 'fabs', 'fsqrt', 'clz', 'rbit', 'rev', 'rev16', 'rev32',\n  'count-leading-zeroes', 'reverse-bits',\n"
+          assert old in s; p.write_text(s.replace(old,new,1))
+          p=Path('js/semantics/compat/semantic-ir-v2-to-v1-nodes.js'); s=p.read_text()
+          old="      setBasic(V1_OP.UN, node.operator || attrs.operator || 'unknown');"
+          new="      setBasic(V1_OP.UN, ({ 'count-leading-zeroes': 'clz', 'reverse-bits': 'rbit' }[node.operator] || node.operator || attrs.operator || 'unknown'));"
+          assert old in s; p.write_text(s.replace(old,new,1))
+          PY
+      - name: Run canonical pseudoc sample set
+        run: |
+          /usr/bin/time -f 'P3_UNARY_ELAPSED=%e' node --max-old-space-size=6000 tests/accuracy.mjs --target=tests/.real-fixtures/TsumTsum --oracle=tests/oracle.TsumTsum.ci.json.gz --only=pseudoc --json
