@@ -61,6 +61,9 @@ assert.equal(single.bytes.byteLength, 16);
 assert.equal(source.rangeRequests, 1);
 assert.equal(source.bytesRead, PAGE);
 assert.equal(source.wholeFileViolations, 0);
+const requestsBeforeRejectedWholeFile = source.rangeRequests;
+await assert.rejects(() => reader.readRange(0n, Number(HUGE_SIZE)), /maxRangeBytes/);
+assert.equal(source.rangeRequests, requestsBeforeRejectedWholeFile, 'bounded artifact API must reject before a source read');
 
 await reader.readPage(100n);
 await reader.readPage(1000n);
@@ -86,6 +89,20 @@ const cold = await reader.readPage(3000n);
 const warm = await reader.readPage(3000n);
 assert.deepEqual(cold.bytes, warm.bytes);
 assert.equal(reader.metrics().rangeRequestCount - warmBefore, 1);
+
+const evictionSource = new SparseSource();
+const evictionReader = new PagedArtifactReader(evictionSource, {
+  sourceId:'explicit-eviction',
+  pageSize:PAGE,
+  maxRangeBytes:PAGE,
+  maxRetainedPageBytes:PAGE * 2,
+  maxPrefetchPages:0,
+});
+await evictionReader.readPage(5n);
+assert.equal(evictionReader.evictPage(5n), true);
+assert.equal(evictionReader.metrics().pagesEvicted, 1);
+await evictionReader.readPage(5n);
+assert.equal(evictionSource.rangeRequests, 2, 'explicit eviction must force a cold refetch');
 
 const beforeCancel = reader.metrics();
 const preCancelled = new AbortController();
