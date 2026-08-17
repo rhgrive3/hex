@@ -1,4 +1,4 @@
-name: P3 combined repair validation v4
+name: P3 combined repair validation v5
 on:
   push:
     branches: [hex/p3-local-debug-350]
@@ -21,6 +21,7 @@ jobs:
       - run: python3 tools/validation/p3-debug-apply-interproc.py
       - run: npm run userscript:build
       - run: node tests/issues-129-134.mjs
+      - run: node tests/issues-130-interproc.mjs
       - run: node tests/issues-350-399.mjs
       - run: node tests/issues-434-450-regressions.mjs
       - run: node tests/issues-437-438-interproc.mjs
