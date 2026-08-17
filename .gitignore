@@ -6,6 +6,9 @@ graft/
 /node_modules/
 /.wrangler/
 
+# OS metadata must stay local.
+.DS_Store
+
 # 正解表（tests/oracle.py で作り直せる。数 MB あるので置かない）
 tests/oracle.*.json.gz
 tests/current.json
