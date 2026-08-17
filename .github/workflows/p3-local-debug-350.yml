@@ -14,7 +14,7 @@ env:
 jobs:
   pinpoint:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 3
     strategy:
       fail-fast: false
       matrix:
@@ -79,7 +79,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          timeout --signal=TERM --kill-after=10s 180s \
+          timeout --signal=TERM --kill-after=5s 30s \
             node --max-old-space-size=6000 tests/accuracy.mjs \
               --target="tests/.real-fixtures/${{ matrix.file }}" \
               --oracle="${{ matrix.oracle }}" \
