@@ -19,8 +19,20 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Apply source repair
-        run: node scripts/temp-r2-single-tab-fix.mjs
+      - name: Repair staging helper and apply source repair
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('scripts/temp-r2-single-tab-fix.mjs')
+          text = path.read_text()
+          old = "function write(path, content) { fs.mkdirSync(path.split('/').slice(0, -1).join('/'), { recursive: true }); fs.writeFileSync(path, content); }"
+          new = "function write(path, content) { const parent = path.split('/').slice(0, -1).join('/'); if (parent) fs.mkdirSync(parent, { recursive: true }); fs.writeFileSync(path, content); }"
+          if old not in text:
+              raise SystemExit('write() staging helper anchor missing')
+          path.write_text(text.replace(old, new, 1))
+          PY
+          node scripts/temp-r2-single-tab-fix.mjs
       - name: Install dependencies
         run: npm ci
       - name: Regenerate protected userscript
