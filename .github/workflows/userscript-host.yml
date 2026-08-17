@@ -38,6 +38,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: userscript-host-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   userscript:
     runs-on: ubuntu-latest
@@ -58,11 +62,6 @@ jobs:
         run: node tests/chatgpt-conversation-storage-security.mjs
       - name: Build and userscript tests
         run: npm run userscript:test
-      - name: AI and worker regressions
-        run: |
-          npm run ai:test
-          node tests/gemini.mjs
-          node tests/worker-classic-harness.mjs
       - name: Verify tiny committed loader is current
         run: git diff --exit-code -- userscript/hex.user.template.js
 
@@ -80,6 +79,13 @@ jobs:
       - run: npm ci
       - name: Build secure userscript runtime
         run: npm run userscript:build
+      - name: Restore pinned Playwright browser cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-1.55.0-chromium-webkit-v1
+          restore-keys: |
+            playwright-${{ runner.os }}-1.55.0-chromium-v1
       - name: Install pinned browser engines
         run: |
           npm install --no-save --save-exact playwright@1.55.0

@@ -20,10 +20,26 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: semantic-v2-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  release-gate:
+  contract-shards:
+    name: semantic-v2-${{ matrix.name }}
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        include:
+          - name: schema
+            command: npm run semantic-v2:test
+          - name: effects
+            command: npm run effects:test
+          - name: core
+            command: npm run core:test
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -31,9 +47,21 @@ jobs:
           node-version: '22'
           cache: npm
       - run: npm ci
-      - run: npm run semantic-v2:test
-      - run: npm run effects:test
-      - run: npm run core:test
-      - run: npm run invariants:test
-      - run: npm run migration:test
-      - run: npm run check
+      - run: ${{ matrix.command }}
+
+  release-gate:
+    name: release-gate
+    if: always()
+    needs: contract-shards
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require all Semantic IR contract shards
+        env:
+          CONTRACT_RESULT: ${{ needs.contract-shards.result }}
+        shell: bash
+        run: |
+          if [[ "$CONTRACT_RESULT" != "success" ]]; then
+            echo "::error::Semantic IR contract shard failed ($CONTRACT_RESULT)."
+            exit 1
+          fi

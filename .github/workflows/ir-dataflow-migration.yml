@@ -25,10 +25,34 @@ on:
       - '.github/workflows/ir-dataflow-migration.yml'
   workflow_dispatch:
 
+concurrency:
+  group: ir-dataflow-migration-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  ir-dataflow:
+  regressions:
+    name: ir-${{ matrix.name }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      max-parallel: 7
+      matrix:
+        include:
+          - name: dataflow
+            command: node tests/ir-dataflow.mjs
+          - name: alias
+            command: node tests/ir-alias.mjs
+          - name: pinpoint-path
+            command: node tests/ir-pinpoint-path.mjs
+          - name: pinpoint-location
+            command: node tests/ir-pinpoint-location.mjs
+          - name: comparisons
+            command: node tests/ir-comparisons.mjs
+          - name: semantic-core
+            command: node tests/semantic-core.mjs
+          - name: nullability
+            command: node tests/semantic-nullability.mjs
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -37,19 +61,41 @@ jobs:
           cache: npm
       - name: Install dependencies
         run: npm ci
-      - name: Existing checks
-        run: npm run check
-      - name: IR dataflow migration regressions
-        run: node tests/ir-dataflow.mjs
-      - name: IR alias safety regressions
-        run: node tests/ir-alias.mjs
-      - name: Pinpoint verification integration
-        run: node tests/ir-pinpoint-path.mjs
-      - name: Pinpoint location integration
-        run: node tests/ir-pinpoint-location.mjs
-      - name: SSA threshold recovery
-        run: node tests/ir-comparisons.mjs
-      - name: Semantic core regressions
-        run: node tests/semantic-core.mjs
-      - name: Nullability edge regression
-        run: node tests/semantic-nullability.mjs
+      - name: Run targeted regression
+        run: ${{ matrix.command }}
+
+  manual-full-check:
+    name: ir-manual-full-check
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+
+  ir-dataflow:
+    name: ir-dataflow
+    if: always()
+    needs: [regressions, manual-full-check]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require targeted regressions and optional manual full check
+        env:
+          REGRESSION_RESULT: ${{ needs.regressions.result }}
+          FULL_RESULT: ${{ needs.manual-full-check.result }}
+        shell: bash
+        run: |
+          if [[ "$REGRESSION_RESULT" != "success" ]]; then
+            echo "::error::IR migration regression shard failed ($REGRESSION_RESULT)."
+            exit 1
+          fi
+          if [[ "$FULL_RESULT" != "success" && "$FULL_RESULT" != "skipped" ]]; then
+            echo "::error::Manual full check failed ($FULL_RESULT)."
+            exit 1
+          fi

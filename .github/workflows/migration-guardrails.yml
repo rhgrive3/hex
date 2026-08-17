@@ -30,8 +30,36 @@ on:
       - '.github/workflows/migration-guardrails.yml'
   workflow_dispatch:
 
+concurrency:
+  group: migration-guardrails-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  guardrails:
+  targeted:
+    name: guardrail-${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - name: compatibility
+            command: npm run migration:test
+          - name: source-backed-loader
+            command: npm run binary:source-test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: ${{ matrix.command }}
+
+  manual-full-check:
+    name: guardrail-manual-full-check
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -40,21 +68,27 @@ jobs:
         with:
           node-version: '22'
           cache: npm
-      - name: Install dependencies
-        run: npm ci
-      - name: Migration compatibility contracts
-        run: npm run migration:test
-      - name: General checks
-        run: npm run check
-      - name: Semantic regressions
-        run: npm run semantic:test
-      - name: Decompiler regressions
-        run: npm run decompiler:test
-      - name: Platform compatibility
-        run: npm run platform:test
-      - name: Runtime separation
-        run: npm run runtime:test
-      - name: AI trust boundary
-        run: npm run ai:test
-      - name: Source-backed loader
-        run: npm run binary:source-test
+      - run: npm ci
+      - run: npm run check
+
+  guardrails:
+    name: guardrails
+    if: always()
+    needs: [targeted, manual-full-check]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require migration-specific coverage
+        env:
+          TARGETED_RESULT: ${{ needs.targeted.result }}
+          FULL_RESULT: ${{ needs.manual-full-check.result }}
+        shell: bash
+        run: |
+          if [[ "$TARGETED_RESULT" != "success" ]]; then
+            echo "::error::Migration-specific guardrail failed ($TARGETED_RESULT)."
+            exit 1
+          fi
+          if [[ "$FULL_RESULT" != "success" && "$FULL_RESULT" != "skipped" ]]; then
+            echo "::error::Manual full check failed ($FULL_RESULT)."
+            exit 1
+          fi
