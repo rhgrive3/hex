@@ -1,4 +1,4 @@
-name: P3 finalizer stage timing
+name: P3 linear stack escape benchmark
 on:
   push:
     branches: [hex/p3-local-debug-350]
@@ -8,9 +8,9 @@ permissions:
 env:
   HEX_FIXTURE_BATTLECATS_URL: https://raw.githubusercontent.com/rhgrive3/hex/bd7bd61d093592d07fdd9e9b14a859e19dd4c3a9/tests/battlecats
 jobs:
-  timing:
+  benchmark:
     runs-on: ubuntu-latest
-    timeout-minutes: 2
+    timeout-minutes: 3
     steps:
       - uses: actions/checkout@v4
         with:
@@ -22,36 +22,58 @@ jobs:
       - run: |
           node scripts/fetch-real-fixtures.mjs battlecats
           node scripts/fetch-real-fixtures.mjs battlecats --check
-      - name: Instrument finalizer stages
+      - name: Apply linear stack dependency candidate
         run: |
           python - <<'PY'
           from pathlib import Path
           p = Path('js/semantics/compat/semantic-ir-v2-to-v1-finalize.js')
           s = p.read_text()
-          start = s.index('export function finalizeLegacyProjection(projected) {')
-          end = s.index('\n}', start) + 2
+          start = s.index('function valueDependsOnRoots(value, roots, seen = new Set()) {')
+          end = s.index('\n\nfunction recoverLocalStackFlow(projected) {', start)
           lines = [
-            'export function finalizeLegacyProjection(projected) {',
-            "  let t = Date.now(); process.stderr.write('[P3FIN compact:start]\\n');",
-            "  compactProjectedState(projected); process.stderr.write(`[P3FIN compact:end] ${Date.now()-t}ms\\n`);",
-            "  t = Date.now(); process.stderr.write('[P3FIN defuse:start]\\n');",
-            "  rebuildDefUse(projected); process.stderr.write(`[P3FIN defuse:end] ${Date.now()-t}ms\\n`);",
-            "  t = Date.now(); process.stderr.write('[P3FIN suppress:start]\\n');",
-            "  suppressUnusedIncomingState(projected); process.stderr.write(`[P3FIN suppress:end] ${Date.now()-t}ms\\n`);",
-            "  t = Date.now(); process.stderr.write('[P3FIN order:start]\\n');",
-            "  normalizePublicStateDefinitionOrder(projected); process.stderr.write(`[P3FIN order:end] ${Date.now()-t}ms\\n`);",
-            "  t = Date.now(); process.stderr.write('[P3FIN versions:start]\\n');",
-            "  renumberPublicStateVersions(projected); process.stderr.write(`[P3FIN versions:end] ${Date.now()-t}ms\\n`);",
-            "  t = Date.now(); process.stderr.write('[P3FIN stackflow:start]\\n');",
-            "  recoverLocalStackFlow(projected); process.stderr.write(`[P3FIN stackflow:end] ${Date.now()-t}ms\\n`);",
-            "  t = Date.now(); process.stderr.write('[P3FIN constants:start]\\n');",
-            "  propagateConstants(projected); process.stderr.write(`[P3FIN constants:end] ${Date.now()-t}ms\\n`);",
-            "  t = Date.now(); process.stderr.write('[P3FIN slots:start]\\n');",
-            "  recoverStackSlots(projected); process.stderr.write(`[P3FIN slots:end] ${Date.now()-t}ms\\n`);",
-            '  return projected;',
+            'function stackDependentValueIds(projected, roots) {',
+            '  const dependentsByValueId = new Map();',
+            '  const addDependent = (dependency, value) => {',
+            '    if (!dependency || !value) return;',
+            '    let dependents = dependentsByValueId.get(dependency.id);',
+            '    if (!dependents) { dependents = new Set(); dependentsByValueId.set(dependency.id, dependents); }',
+            '    dependents.add(value.id);',
+            '  };',
+            '  for (const value of projected.values) {',
+            '    const def = value?.def;',
+            '    if (!def) continue;',
+            '    for (const arg of def.args || []) addDependent(arg?.value, value);',
+            '    addDependent(def.addr?.base, value);',
+            '    addDependent(def.addr?.index, value);',
+            '  }',
+            '  const dependent = new Set(roots);',
+            '  const queue = [...roots];',
+            '  let cursor = 0;',
+            '  while (cursor < queue.length) {',
+            '    const sourceId = queue[cursor++];',
+            '    for (const valueId of dependentsByValueId.get(sourceId) || []) {',
+            '      if (dependent.has(valueId)) continue;',
+            '      dependent.add(valueId);',
+            '      queue.push(valueId);',
+            '    }',
+            '  }',
+            '  return dependent;',
+            '}',
+            '',
+            'function callEscapesLocalStack(inst, stackDependent) {',
+            '  if (inst.op !== V1_OP.CALL) return false;',
+            '  for (const arg of inst.args || []) if (arg?.value && stackDependent.has(arg.value.id)) return true;',
+            '  return false;',
             '}',
           ]
           s = s[:start] + '\n'.join(lines) + s[end:]
+          anchor = 'function recoverLocalStackFlow(projected) {\n  const roots = stackRootIds(projected);'
+          replacement = 'function recoverLocalStackFlow(projected) {\n  const roots = stackRootIds(projected);\n  const stackDependent = stackDependentValueIds(projected, roots);'
+          if anchor not in s: raise SystemExit('recover anchor missing')
+          s = s.replace(anchor, replacement, 1)
+          call = 'if (callEscapesLocalStack(inst, roots)) stores.clear();'
+          if call not in s: raise SystemExit('escape call missing')
+          s = s.replace(call, 'if (callEscapesLocalStack(inst, stackDependent)) stores.clear();', 1)
           p.write_text(s)
           PY
       - name: Create exact-function probe
@@ -66,8 +88,11 @@ jobs:
           const model = await w.analyze(a, end);
           const t = Date.now();
           const res = decompile(model, { addr:a, rowOfAddress:(x)=>w.rowOf(x), addrOfRow:(r)=>w.region.vmAddr+BigInt(r)*4n, symbolFor:(x)=>w.symbols.nameAt(x) });
-          console.error(`[P3BENCH exact] ms=${Date.now()-t} lines=${res?.lines?.length ?? -1}`);
+          console.error(`[P3BENCH exact] ms=${Date.now()-t} lines=${res?.lines?.length ?? -1} semantic=${!!res?.semantic}`);
           EOF
       - name: Run exact function
         run: |
-          timeout --signal=TERM --kill-after=5s 25s node --max-old-space-size=6000 tests/.p3-stage-probe.mjs
+          timeout --signal=TERM --kill-after=5s 20s node --max-old-space-size=6000 tests/.p3-stage-probe.mjs
+      - name: Run IR regressions
+        run: |
+          node tests/ir.mjs
