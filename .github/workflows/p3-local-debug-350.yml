@@ -1,60 +1,77 @@
-name: P3 MemorySSA build profiling
+name: P3 TsumTsum pseudoc function diff
 on:
   push:
     branches: [hex/p3-local-debug-350]
     paths: ['.github/workflows/p3-local-debug-350.yml']
 permissions:
   contents: read
+  actions: read
 env:
-  HEX_FIXTURE_BATTLECATS_URL: https://raw.githubusercontent.com/rhgrive3/hex/bd7bd61d093592d07fdd9e9b14a859e19dd4c3a9/tests/battlecats
+  HEX_FIXTURE_TSUMTSUM_URL: https://raw.githubusercontent.com/rhgrive3/hex/bd7bd61d093592d07fdd9e9b14a859e19dd4c3a9/tests/TsumTsum
 jobs:
-  profile:
+  diff:
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 6
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: main
+            ref: b132f5add38a9bb335281315146fa5643a7481b5
+          - label: phase3
+            ref: 75c393a7e89a1154963b03a34b8e2ada0bebe9f9
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 75c393a7e89a1154963b03a34b8e2ada0bebe9f9
+          ref: ${{ matrix.ref }}
           fetch-depth: 1
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: node scripts/fetch-real-fixtures.mjs battlecats
-      - name: Inject MemorySSA timers
+      - name: Fetch fixture and oracle
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node scripts/fetch-real-fixtures.mjs TsumTsum
+          node scripts/fetch-real-fixtures.mjs TsumTsum --check
+          gh run download 31988122265 -n cross-binary-oracle-TsumTsum -D tests
+          test -s tests/oracle.TsumTsum.ci.json.gz
+      - name: Inject per-function pseudoc diagnostics
         run: |
           python - <<'PY'
           from pathlib import Path
-          p=Path('js/semantics/memoryssa/build.js'); s=p.read_text()
-          reps=[
-            ("  const fallbackRegion = defaultUnknownRegion(irFunction.functionId);", "  let __p3t=Date.now();\n  const fallbackRegion = defaultUnknownRegion(irFunction.functionId);"),
-            ("  const regionById = new Map();", "  process.stderr.write(`[P3MEM descriptors] ${Date.now()-__p3t}ms count=${descriptors.length}\\n`); __p3t=Date.now();\n  const regionById = new Map();"),
-            ("  const aliasCache = new Map();", "  process.stderr.write(`[P3MEM regions] ${Date.now()-__p3t}ms count=${regionIds.length}\\n`); __p3t=Date.now();\n  const aliasCache = new Map();"),
-            ("  const entryDefinitionIds = new Map(regionIds.map((regionId) => [", "  process.stderr.write(`[P3MEM events] ${Date.now()-__p3t}ms events=${eventById.size} aliasCache=${aliasCache.size}\\n`); __p3t=Date.now();\n  const entryDefinitionIds = new Map(regionIds.map((regionId) => ["),
-            ("  if (!converged) fail('memory-ssa-build-did-not-converge');", "  process.stderr.write(`[P3MEM dataflow] ${Date.now()-__p3t}ms\\n`); __p3t=Date.now();\n  if (!converged) fail('memory-ssa-build-did-not-converge');"),
-            ("  if (definitions.length > budgetLimit(options, 'maxDefinitions'))", "  process.stderr.write(`[P3MEM definitions] ${Date.now()-__p3t}ms defs=${definitions.length}\\n`); __p3t=Date.now();\n  if (definitions.length > budgetLimit(options, 'maxDefinitions'))"),
-            ("  if (uses.length > budgetLimit(options, 'maxUses'))", "  process.stderr.write(`[P3MEM uses] ${Date.now()-__p3t}ms uses=${uses.length} aliasCache=${aliasCache.size}\\n`); __p3t=Date.now();\n  if (uses.length > budgetLimit(options, 'maxUses'))"),
-            ("  const contract = createMemorySsaContract({", "  process.stderr.write(`[P3MEM metadata] ${Date.now()-__p3t}ms\\n`); __p3t=Date.now();\n  const contract = createMemorySsaContract({"),
-            ("  const useDefLinks = contract.reachingDefinitionLinks.map", "  process.stderr.write(`[P3MEM contract] ${Date.now()-__p3t}ms\\n`); __p3t=Date.now();\n  const useDefLinks = contract.reachingDefinitionLinks.map"),
-            ("  return deepFreeze({", "  process.stderr.write(`[P3MEM postprocess] ${Date.now()-__p3t}ms\\n`); __p3t=Date.now();\n  const __p3result = deepFreeze({"),
-            ("    blockStates,\n  });\n}", "    blockStates,\n  });\n  process.stderr.write(`[P3MEM freeze] ${Date.now()-__p3t}ms\\n`);\n  return __p3result;\n}")
-          ]
-          for old,new in reps:
-            if old not in s: raise SystemExit('missing '+old[:70])
-            s=s.replace(old,new,1)
+          p=Path('tests/accuracy.mjs'); s=p.read_text()
+          old='''  for (const [a, end] of samples) {
+    const model = await w.analyze(BigInt(a), BigInt(end));'''
+          new='''  for (const [a, end] of samples) {
+    const __p3t = Date.now();
+    const model = await w.analyze(BigInt(a), BigInt(end));'''
+          assert old in s; s=s.replace(old,new,1)
+          old='''    done++;
+    for (const l of res.lines) {'''
+          new='''    done++;
+    let __p3lines = 0, __p3asm = 0;
+    for (const l of res.lines) {'''
+          assert old in s; s=s.replace(old,new,1)
+          old='''      lines++;
+      // A register-indirect `br` has no statically knowable target.'''
+          new='''      lines++;
+      __p3lines++;
+      // A register-indirect `br` has no statically knowable target.'''
+          assert old in s; s=s.replace(old,new,1)
+          old='''      if (/__asm\\(/.test(l.text) && !/__asm\\(\"br\\s+x\\d+\"\\)/.test(l.text)) asmLines++;
+    }
+  }'''
+          new='''      if (/__asm\\(/.test(l.text) && !/__asm\\(\"br\\s+x\\d+\"\\)/.test(l.text)) { asmLines++; __p3asm++; }
+    }
+    process.stderr.write(`[P3FDIFF ${{ matrix.label }}] 0x${BigInt(a).toString(16)}-0x${BigInt(end).toString(16)} ms=${Date.now()-__p3t} lines=${__p3lines} asm=${__p3asm}\\n`);
+  }'''
+          assert old in s; s=s.replace(old,new,1)
           p.write_text(s)
           PY
-      - name: Run pathological function
+      - name: Run pseudoc partition
         run: |
-          cat > tests/.p3-probe.mjs <<'EOF'
-          import { openBinary } from './harness.mjs';
-          import { decompile } from '../js/decompile.js';
-          import { setSemanticMigrationMode } from '../js/ir.js';
-          setSemanticMigrationMode('semantic-v2-compat');
-          const w=await openBinary('tests/.real-fixtures/battlecats');
-          const a=0x10033fd24n,end=0x100340074n;
-          const m=await w.analyze(a,end);
-          const t=Date.now();
-          decompile(m,{addr:a,rowOfAddress:x=>w.rowOf(x),addrOfRow:r=>w.region.vmAddr+BigInt(r)*4n,symbolFor:x=>w.symbols.nameAt(x)});
-          console.error(`[P3MEM total] ${Date.now()-t}ms`);
-          EOF
-          timeout --signal=TERM --kill-after=5s 20s node --max-old-space-size=6000 tests/.p3-probe.mjs
+          node --max-old-space-size=6000 tests/accuracy.mjs \
+            --target=tests/.real-fixtures/TsumTsum \
+            --oracle=tests/oracle.TsumTsum.ci.json.gz \
+            --only=pseudoc --json
