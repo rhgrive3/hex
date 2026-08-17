@@ -34,6 +34,7 @@ export function createChatGPTSandboxHost(options = {}) {
   const apiOrigin = new URL(virtualSrc).origin;
   const loaderVersion = String(options.loaderVersion || '');
   const buildId = String(options.buildId || '');
+  const runtimeContentHash = normalizeRuntimeContentHash(options.runtimeContentHash);
   const runtimeSourceProvider = options.runtimeSourceProvider;
   const onPort = typeof options.onPort === 'function' ? options.onPort : () => null;
   const onReady = typeof options.onReady === 'function' ? options.onReady : () => {};
@@ -102,6 +103,7 @@ export function createChatGPTSandboxHost(options = {}) {
       virtualSrc: withEmbedGeneration(virtualSrc, currentGeneration),
       loaderVersion,
       buildId,
+      runtimeContentHash,
     });
     const token = normalizeSandboxToken(iframe.dataset.hexSandboxToken);
 
@@ -269,6 +271,7 @@ export function buildSandboxSrcdoc(config) {
   const generation = normalizeEmbedGeneration(config.generation);
   const sandboxToken = normalizeSandboxToken(config.sandboxToken);
   const apiOrigin = normalizeHttpsOrigin(config.apiOrigin);
+  const runtimeContentHash = normalizeRuntimeContentHash(config.runtimeContentHash);
   const virtualUrl = new URL(String(config.virtualSrc || ''));
   if (virtualUrl.protocol !== 'https:' || virtualUrl.origin !== apiOrigin) throw new TypeError('Invalid Hex virtual embed URL.');
   const bootstrap = sandboxBootstrapSource({
@@ -279,13 +282,14 @@ export function buildSandboxSrcdoc(config) {
     virtualHref: virtualUrl.href,
     loaderVersion: String(config.loaderVersion || ''),
     buildId: String(config.buildId || ''),
+    runtimeContentHash,
   });
   return `<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="referrer" content="no-referrer"><title>Hex</title></head><body>${String(config.hostHtml || '')}<script nonce="${escapeAttribute(nonce)}">${bootstrap}<\/script></body></html>`;
 }
 
 function sandboxBootstrapSource(config) {
   const literal = JSON.stringify(config).replaceAll('<', '\\u003c');
-  return `(()=>{const c=${literal},P=${JSON.stringify(CHATGPT_PARENT_ORIGINS)};let used=false;function post(type,extra={}){parent.postMessage({type,protocol:${JSON.stringify(EMBED_PROTOCOL)},version:${EMBED_PROTOCOL_VERSION},generation:c.generation,sandboxToken:c.sandboxToken,...extra},'*')}function fail(message){post(${JSON.stringify(SANDBOX_FAILURE)},{message:String(message||'sandbox runtime failed')})}addEventListener('error',e=>fail(e&&e.message||'sandbox script error'));addEventListener('unhandledrejection',e=>fail(e&&e.reason&&e.reason.message||e&&e.reason||'sandbox promise rejection'));addEventListener('message',async e=>{if(used||e.source!==parent||!P.includes(e.origin))return;const d=e.data;if(!d||d.type!==${JSON.stringify(SANDBOX_RUNTIME)}||d.protocol!==${JSON.stringify(EMBED_PROTOCOL)}||d.version!==${EMBED_PROTOCOL_VERSION}||String(d.generation)!==c.generation||String(d.sandboxToken||'').toLowerCase()!==c.sandboxToken||!(d.runtime instanceof ArrayBuffer))return;used=true;try{globalThis.__HEX_EMBED_SANDBOX_TOKEN__=c.sandboxToken;globalThis.__HEX_RUNTIME_ORIGIN__=c.apiOrigin;const u=new URL(c.virtualHref);const host={origin:u.origin,pathname:u.pathname,search:u.search,href:u.href};globalThis.__HEX_RUNTIME_HOST_HREF__=host.href;globalThis.__HEX_RUNTIME_HOST_ORIGIN__=host.origin;globalThis.__HEX_RUNTIME_HOST_PATHNAME__=host.pathname;globalThis.__HEX_RUNTIME_HOST_SEARCH__=host.search;globalThis.__HEX_RUNTIME_HOST_LOCATION__=host;globalThis.__HEX_SECURE_LOADER__={version:c.loaderVersion,buildId:c.buildId};globalThis.__HEX_PROTECTED_AUTO_START__={sandboxAuto:true,sandboxToken:c.sandboxToken,hostLocation:host,apiOrigin:c.apiOrigin,loaderVersion:c.loaderVersion,buildId:c.buildId};const b=new Uint8Array(d.runtime),source=new TextDecoder().decode(b);b.fill(0);const s=document.createElement('script');s.type='module';s.nonce=c.nonce;s.textContent=source;s.addEventListener('load',()=>{try{s.textContent='';s.remove()}catch{}},{once:true});s.addEventListener('error',()=>fail('protected runtime module execution failed'),{once:true});document.head.append(s)}catch(err){fail(err&&err.message||err)}},{capture:false});post(${JSON.stringify(SANDBOX_READY)})})()`;
+  return `(()=>{const c=${literal},P=${JSON.stringify(CHATGPT_PARENT_ORIGINS)};let used=false;function post(type,extra={}){parent.postMessage({type,protocol:${JSON.stringify(EMBED_PROTOCOL)},version:${EMBED_PROTOCOL_VERSION},generation:c.generation,sandboxToken:c.sandboxToken,...extra},'*')}function fail(message){post(${JSON.stringify(SANDBOX_FAILURE)},{message:String(message||'sandbox runtime failed')})}function hex(bytes){let out='';for(const value of bytes)out+=value.toString(16).padStart(2,'0');return out}function same(a,b){if(a.length!==b.length)return false;let diff=0;for(let i=0;i<a.length;i++)diff|=a.charCodeAt(i)^b.charCodeAt(i);return diff===0}addEventListener('error',e=>fail(e&&e.message||'sandbox script error'));addEventListener('unhandledrejection',e=>fail(e&&e.reason&&e.reason.message||e&&e.reason||'sandbox promise rejection'));addEventListener('message',async e=>{if(used||e.source!==parent||!P.includes(e.origin))return;const d=e.data;if(!d||d.type!==${JSON.stringify(SANDBOX_RUNTIME)}||d.protocol!==${JSON.stringify(EMBED_PROTOCOL)}||d.version!==${EMBED_PROTOCOL_VERSION}||String(d.generation)!==c.generation||String(d.sandboxToken||'').toLowerCase()!==c.sandboxToken||!(d.runtime instanceof ArrayBuffer))return;try{const digest=hex(new Uint8Array(await crypto.subtle.digest('SHA-256',d.runtime)));if(used)return;if(!same(digest,c.runtimeContentHash)){new Uint8Array(d.runtime).fill(0);return}used=true;globalThis.__HEX_EMBED_SANDBOX_TOKEN__=c.sandboxToken;globalThis.__HEX_RUNTIME_ORIGIN__=c.apiOrigin;const u=new URL(c.virtualHref);const host={origin:u.origin,pathname:u.pathname,search:u.search,href:u.href};globalThis.__HEX_RUNTIME_HOST_HREF__=host.href;globalThis.__HEX_RUNTIME_HOST_ORIGIN__=host.origin;globalThis.__HEX_RUNTIME_HOST_PATHNAME__=host.pathname;globalThis.__HEX_RUNTIME_HOST_SEARCH__=host.search;globalThis.__HEX_RUNTIME_HOST_LOCATION__=host;globalThis.__HEX_SECURE_LOADER__={version:c.loaderVersion,buildId:c.buildId};globalThis.__HEX_PROTECTED_AUTO_START__={sandboxAuto:true,sandboxToken:c.sandboxToken,hostLocation:host,apiOrigin:c.apiOrigin,loaderVersion:c.loaderVersion,buildId:c.buildId};const b=new Uint8Array(d.runtime),source=new TextDecoder().decode(b);b.fill(0);const s=document.createElement('script');s.type='module';s.nonce=c.nonce;s.textContent=source;s.addEventListener('load',()=>{try{s.textContent='';s.remove()}catch{}},{once:true});s.addEventListener('error',()=>fail('protected runtime module execution failed'),{once:true});document.head.append(s)}catch(err){if(!used)fail(err&&err.message||err)}},{capture:false});post(${JSON.stringify(SANDBOX_READY)})})()`;
 }
 
 function createSandboxMonitor(options) {
@@ -348,6 +352,11 @@ function normalizeRuntimeSource(value) {
   if (!(value instanceof ArrayBuffer)) throw stageError('runtime-source', 'Protected runtime source must be an ArrayBuffer.');
   if (!value.byteLength || value.byteLength > MAX_RUNTIME_BYTES) throw stageError('runtime-source', 'Protected runtime source has an invalid size.');
   return value;
+}
+function normalizeRuntimeContentHash(value) {
+  const text = String(value || '').trim().toLowerCase();
+  if (!/^[a-f0-9]{64}$/.test(text)) throw stageError('runtime-source', 'Protected runtime content hash is invalid.');
+  return text;
 }
 function normalizeVirtualSrc(value) {
   const url = new URL(String(value || ''));

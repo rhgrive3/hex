@@ -35,9 +35,23 @@ assert.equal(localProofSatisfied, true, 'local Phase 3 semantic exit proof must 
 const externalEvidencePath = path.join(root, 'tools/validation/semantic-v2/phase3-external-evidence.json');
 let externalEvidence = null;
 if (fs.existsSync(externalEvidencePath)) externalEvidence = JSON.parse(fs.readFileSync(externalEvidencePath, 'utf8'));
-const requiredExternalKeys = ['crossBinaryAccuracy','ghidraDifferential','userscriptHost','semanticIrV2','invariantGates','migrationGuardrails','machineEffects','phase2Integration','runtimeDebugger','irDataflow'];
+const requiredExternalKeys = ['crossBinaryAccuracy','ghidraDifferential','userscriptHost','semanticIrV2','invariantGates','migrationGuardrails','machineEffects','phase2Integration','runtimeDebugger','irDataflow','universalPlatform'];
+const externalIdentityComplete = typeof externalEvidence?.validatedHeadSha === 'string'
+  && /^[0-9a-f]{40}$/.test(externalEvidence.validatedHeadSha)
+  && typeof externalEvidence?.baseSha === 'string'
+  && /^[0-9a-f]{40}$/.test(externalEvidence.baseSha);
+const externalRealBinariesPassed = externalEvidence?.realBinaries?.battleCats === 'PASS'
+  && externalEvidence?.realBinaries?.tsumTsum === 'PASS'
+  && externalEvidence?.realBinaries?.ywp === 'PASS';
+const externalUserscriptBuildIdPresent = typeof externalEvidence?.userscriptBuildId === 'string'
+  && /^[0-9a-f]{24}$/.test(externalEvidence.userscriptBuildId);
 const externalPassed = externalEvidence?.status === 'pass'
-  && requiredExternalKeys.every((key) => externalEvidence?.gates?.[key]?.result === 'PASS');
+  && externalIdentityComplete
+  && externalRealBinariesPassed
+  && externalUserscriptBuildIdPresent
+  && requiredExternalKeys.every((key) => externalEvidence?.gates?.[key]?.result === 'PASS'
+    && Number.isSafeInteger(externalEvidence?.gates?.[key]?.runId)
+    && externalEvidence.gates[key].runId > 0);
 const cutoverApplied = getSemanticMigrationMode() === 'semantic-v2-compat';
 const phase3ExitGateFullySatisfied = localProofSatisfied && externalPassed && cutoverApplied;
 
@@ -69,6 +83,8 @@ const report = Object.freeze({
   localSemanticExitProofSatisfied: localProofSatisfied,
   externalGateEvidenceStatus: externalPassed ? 'pass' : 'pending',
   externalValidatedHeadSha: externalEvidence?.validatedHeadSha ?? null,
+  externalBaseSha: externalEvidence?.baseSha ?? null,
+  userscriptBuildId: externalEvidence?.userscriptBuildId ?? null,
   defaultSemanticMigrationMode: getSemanticMigrationMode(),
   cutoverApplied,
   battleCatsResult: externalEvidence?.realBinaries?.battleCats ?? 'pending-github-cross-binary-gate',

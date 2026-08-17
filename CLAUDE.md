@@ -20,6 +20,13 @@ When I ask a question, answer it. Do not implement it.
 
 When in doubt, assume it's a question. Answer first. Act when I say go.
 
+## Graft — GitHub Codespaces only
+
+Use Graft **only** when running inside GitHub Codespaces.
+
+- **Inside GitHub Codespaces:** follow the Graft-first workflow in `AGENTS.md`. If Graft is unexpectedly unavailable, continue with the normal repository tools available in that Codespace rather than blocking the task.
+- **Outside GitHub Codespaces:** do **not** install, invoke, emulate, or require Graft. Its absence is never a blocker. Use the repository inspection/search tools available in the current environment instead.
+
 ## Speed (Opus 5 only)
 
 When running as Opus 5: optimize for wall-clock speed. Finish tasks quickly.
@@ -30,6 +37,10 @@ When running as Opus 5: optimize for wall-clock speed. Finish tasks quickly.
 - Don't over-deliberate. Enough info to act = act. No long option surveys for decisions with an obvious default.
 - Speed never trades away quality: same rigor, same verification, same "done means done". If parallelizing risks a worse result, slow down.
 - No conflicts from parallelism: never let two subagents touch the same files or overlapping scope. Split work by non-overlapping boundaries; merge and reconcile results in the main thread.
+
+### Dev Supervisor overlap exception
+
+The no-overlap rule above remains the default. For the Admin Dev subsystem only, an explicit Dev Supervisor decision may intentionally assign overlapping Worker ownership when the Supervisor determines that overlap improves the result. Do not infer this exception without that explicit Dev Supervisor decision.
 
 ## Short responses
 

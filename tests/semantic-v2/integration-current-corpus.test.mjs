@@ -8,6 +8,7 @@ import { buildSemanticModel } from '../../js/blocks.js';
 import {
   buildIR,
   getLastSemanticV2Instrumentation,
+  getSemanticMigrationMode,
   setSemanticMigrationMode,
 } from '../../js/ir.js';
 import { SEMANTIC_V2_MIGRATION_MODES } from '../../js/semantics/compat/index.js';
@@ -32,13 +33,14 @@ const rowOfAddress = (address) => {
   return delta < 0n || delta >= BigInt(rows.length * 4) ? null : Number(delta / 4n);
 };
 const proofModel = buildSemanticModel(rows, { startRow:0, endRow:rows.length - 1, rowOfAddress });
+const initialMigrationMode = getSemanticMigrationMode();
 setSemanticMigrationMode(SEMANTIC_V2_MIGRATION_MODES.V2_COMPAT);
 const proofIr = buildIR(proofModel, { rowOfAddress });
 assert.ok(proofIr, 'explicit v2 public facade must produce a v1 compatibility result');
 const proof = getLastSemanticV2Instrumentation();
 assert.equal(proof?.v2Executed, true, 'public facade must expose proof that v2 executed');
 assert.deepEqual(proof?.path, proofPath);
-setSemanticMigrationMode(SEMANTIC_V2_MIGRATION_MODES.LEGACY);
+setSemanticMigrationMode(initialMigrationMode);
 
 function commandsFor(scriptName) {
   const script = packageJson.scripts?.[scriptName];

@@ -47,6 +47,11 @@ await run(async ({ browser }) => {
       const panel = document.getElementById('ai-panel');
       const rect = panel.getBoundingClientRect();
       const app = document.getElementById('app').getBoundingClientRect();
+      const segmentedValues = (root) => new Set([...root.querySelectorAll('.ai-seg')].map((node) => node.dataset.value));
+      const modeToggle = [...panel.querySelectorAll('.ai-panel-head .ai-segmented')]
+        .some((root) => { const values = segmentedValues(root); return values.has('chat') && values.has('agent'); });
+      const styleToggle = [...panel.querySelectorAll('.ai-context-bar .ai-segmented')]
+        .some((root) => { const values = segmentedValues(root); return values.has('beginner') && values.has('analyst'); });
       return {
         hidden: panel.hidden,
         layout: panel.dataset.layout,
@@ -58,13 +63,14 @@ await run(async ({ browser }) => {
         role: panel.getAttribute('role'),
         modal: panel.getAttribute('aria-modal'),
         composer: !!panel.querySelector('.ai-input'),
-        modeTabs: panel.querySelectorAll('.ai-panel-head .ai-segmented').length + panel.querySelectorAll('.ai-context-bar .ai-segmented').length,
+        modeToggle,
+        styleToggle,
       };
     });
     check(`${name}: opens as the ${expectedLayout} layout`, open.hidden === false && open.layout === expectedLayout, open.layout);
     check(`${name}: panel stays inside the viewport`, open.rect.right <= width + 1 && open.rect.bottom <= height + 1 && open.rect.x >= -1, JSON.stringify(open.rect));
     check(`${name}: focus moves to the composer`, /ai-input/.test(open.focus || ''), String(open.focus));
-    check(`${name}: mode and style toggles are both present`, open.modeTabs === 2 && open.composer);
+    check(`${name}: mode and style toggles are both present`, open.modeToggle && open.styleToggle && open.composer);
     check(`${name}: launcher reports the open state`, open.expanded === 'true');
     if (expectedLayout === 'dock') {
       check(`${name}: docked panel shrinks the workspace instead of covering it`, open.docked === true);

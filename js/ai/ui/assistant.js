@@ -19,6 +19,10 @@ import { createActionRunner } from '../interaction/actions.js';
 import { renderProposal } from '../render/proposal.js';
 import { showTerm } from '../../panels.js';
 import { uiRoot } from '../../ui-root.js';
+import { DevAgentUiSettings } from '../dev/ui/settings.js';
+import { createAgentProfileEngine } from '../dev/ui/engine-router.js';
+import { installDevAgentControls } from '../dev/ui/controls.js';
+import { DevSupervisorV0 } from '../dev/supervisor/dev-supervisor-v0.js';
 
 const DOCK_MIN_WIDTH = 900;
 const SHEET_MIN_WIDTH = 600;
@@ -49,7 +53,10 @@ export function installAssistant(app, ui) {
   if (document.getElementById('ai-launcher')) return window.__hexAi || null;
 
   const engine = createAiEngine(app);
-  const session = new AiSession({ engine });
+  const devSettings = new DevAgentUiSettings();
+  const devSupervisor = new DevSupervisorV0();
+  const sessionEngine = createAgentProfileEngine({ standardEngine: engine, settings: devSettings, supervisor: devSupervisor });
+  const session = new AiSession({ engine: sessionEngine });
   let open = false;
   let unread = 0;
 
@@ -108,6 +115,7 @@ export function installAssistant(app, ui) {
   };
 
   const panel = createPanel({ session, handlers });
+  const devControls = installDevAgentControls({ panel, session, settings: devSettings });
   const launcher = createLauncher({ onToggle: () => (open ? close() : openPanel()) });
   panel.setSuggestions(suggestionsFor(app));
 
@@ -217,6 +225,7 @@ export function installAssistant(app, ui) {
       panel,
       launcher,
       engine,
+      dev: Object.freeze({ settings: devSettings, supervisor: devSupervisor }),
       open: () => openPanel(),
       close,
       collapse: () => { if (window.innerWidth < DOCK_MIN_WIDTH) close(); },
@@ -231,6 +240,7 @@ export function installAssistant(app, ui) {
         window.removeEventListener('resize', onResize);
         window.removeEventListener('orientationchange', onResize);
         if (unsubscribe) unsubscribe();
+        devControls.destroy();
         panel.root.remove();
         launcher.destroy();
         uiRoot()?.classList.remove('ai-open', 'ai-docked');

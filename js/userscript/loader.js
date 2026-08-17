@@ -87,6 +87,7 @@ async function loadRuntime() {
       apiOrigin: HEX_ORIGIN,
       loaderVersion: LOADER_VERSION,
       buildId: EXPECTED_BUILD,
+      runtimeContentHash: String(bootstrap.manifest.contentHash || '').toLowerCase(),
       runtimeSourceProvider() {
         sourceCopies += 1;
         if (sourceCopies > 1) throw new Error('Protected runtime source was requested more than once.');
