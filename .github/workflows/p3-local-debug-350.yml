@@ -36,42 +36,29 @@ jobs:
           node scripts/fetch-real-fixtures.mjs TsumTsum --check
           gh run download 31988122265 -n cross-binary-oracle-TsumTsum -D tests
           test -s tests/oracle.TsumTsum.ci.json.gz
-      - name: Inject per-function pseudoc diagnostics
+      - name: Inject per-function diagnostics
+        env:
+          P3_LABEL: ${{ matrix.label }}
         run: |
           python - <<'PY'
           from pathlib import Path
           p=Path('tests/accuracy.mjs'); s=p.read_text()
-          old='''  for (const [a, end] of samples) {
-    const model = await w.analyze(BigInt(a), BigInt(end));'''
-          new='''  for (const [a, end] of samples) {
-    const __p3t = Date.now();
-    const model = await w.analyze(BigInt(a), BigInt(end));'''
-          assert old in s; s=s.replace(old,new,1)
-          old='''    done++;
-    for (const l of res.lines) {'''
-          new='''    done++;
-    let __p3lines = 0, __p3asm = 0;
-    for (const l of res.lines) {'''
-          assert old in s; s=s.replace(old,new,1)
-          old='''      lines++;
-      // A register-indirect `br` has no statically knowable target.'''
-          new='''      lines++;
-      __p3lines++;
-      // A register-indirect `br` has no statically knowable target.'''
-          assert old in s; s=s.replace(old,new,1)
-          old='''      if (/__asm\\(/.test(l.text) && !/__asm\\(\"br\\s+x\\d+\"\\)/.test(l.text)) asmLines++;
-    }
-  }'''
-          new='''      if (/__asm\\(/.test(l.text) && !/__asm\\(\"br\\s+x\\d+\"\\)/.test(l.text)) { asmLines++; __p3asm++; }
-    }
-    process.stderr.write(`[P3FDIFF ${{ matrix.label }}] 0x${BigInt(a).toString(16)}-0x${BigInt(end).toString(16)} ms=${Date.now()-__p3t} lines=${__p3lines} asm=${__p3asm}\\n`);
-  }'''
-          assert old in s; s=s.replace(old,new,1)
+          a="  for (const [a, end] of samples) {\n    const model = await w.analyze(BigInt(a), BigInt(end));"
+          b="  for (const [a, end] of samples) {\n    const __p3t = Date.now();\n    const model = await w.analyze(BigInt(a), BigInt(end));"
+          assert a in s; s=s.replace(a,b,1)
+          a="    done++;\n    for (const l of res.lines) {"
+          b="    done++;\n    let __p3lines = 0, __p3asm = 0;\n    for (const l of res.lines) {"
+          assert a in s; s=s.replace(a,b,1)
+          a="      lines++;\n      // A register-indirect `br` has no statically knowable target."
+          b="      lines++;\n      __p3lines++;\n      // A register-indirect `br` has no statically knowable target."
+          assert a in s; s=s.replace(a,b,1)
+          a='      if (/__asm\\(/.test(l.text) && !/__asm\\(\"br\\s+x\\d+\"\\)/.test(l.text)) asmLines++;\n    }\n  }'
+          b='      if (/__asm\\(/.test(l.text) && !/__asm\\(\"br\\s+x\\d+\"\\)/.test(l.text)) { asmLines++; __p3asm++; }\n    }\n    process.stderr.write(`[P3FDIFF ${process.env.P3_LABEL}] 0x${BigInt(a).toString(16)}-0x${BigInt(end).toString(16)} ms=${Date.now()-__p3t} lines=${__p3lines} asm=${__p3asm}\\n`);\n  }'
+          assert a in s; s=s.replace(a,b,1)
           p.write_text(s)
           PY
       - name: Run pseudoc partition
+        env:
+          P3_LABEL: ${{ matrix.label }}
         run: |
-          node --max-old-space-size=6000 tests/accuracy.mjs \
-            --target=tests/.real-fixtures/TsumTsum \
-            --oracle=tests/oracle.TsumTsum.ci.json.gz \
-            --only=pseudoc --json
+          node --max-old-space-size=6000 tests/accuracy.mjs --target=tests/.real-fixtures/TsumTsum --oracle=tests/oracle.TsumTsum.ci.json.gz --only=pseudoc --json
