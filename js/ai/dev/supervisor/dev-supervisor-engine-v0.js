@@ -3,14 +3,15 @@ import { parseDevSupervisorDecision } from '../protocol/hex-dev-supervisor-v1.js
 import { buildDevSupervisorPrompt } from '../protocol/dev-supervisor-prompt.js';
 import { DevRunEventHost } from '../events/dev-events.js';
 import { DEV_WORKER_TOOL } from '../workers/tool-surface.js';
+import { DEV_BOOTSTRAP_EXTENSION, DevExtensionLoader } from '../bootstrap/dev-bootstrap-gate.js';
 
 const MAX_DECISIONS = 16;
 
 export class DevSupervisorEngineV0 {
-  constructor({ supervisor, settings, bridge = globalThis.__HEX_CHATGPT_BRIDGE__, maxDecisions = MAX_DECISIONS, extensionLoader = null } = {}) {
+  constructor({ supervisor, settings, bridge = globalThis.__HEX_CHATGPT_BRIDGE__, maxDecisions = MAX_DECISIONS, extensionLoader = new DevExtensionLoader() } = {}) {
     if (!supervisor) throw new TypeError('DevSupervisorEngineV0 requires a supervisor.');
     if (!settings) throw new TypeError('DevSupervisorEngineV0 requires settings.');
-    if (extensionLoader && (typeof extensionLoader.beginToolCall !== 'function' || typeof extensionLoader.endToolCall !== 'function')) {
+    if (!extensionLoader || typeof extensionLoader.beginToolCall !== 'function' || typeof extensionLoader.endToolCall !== 'function') {
       throw new TypeError('DevSupervisorEngineV0 extensionLoader must expose tool-call boundaries.');
     }
     this.supervisor = supervisor;
@@ -18,6 +19,20 @@ export class DevSupervisorEngineV0 {
     this.bridge = bridge || null;
     this.maxDecisions = maxDecisions;
     this.extensionLoader = extensionLoader;
+    this.bootstrapStage = null;
+  }
+
+  prepareBootstrapExtension() {
+    if (!this.bootstrapStage) this.bootstrapStage = this.extensionLoader.stage(DEV_BOOTSTRAP_EXTENSION);
+    return this.bootstrapStage;
+  }
+
+  activateBootstrapAtSafeBoundary(options) {
+    return this.extensionLoader.activateAtSafeBoundary(options);
+  }
+
+  invokeBootstrapCapability(name) {
+    return this.extensionLoader.invoke(name);
   }
 
   async run(input = {}) {
@@ -72,11 +87,11 @@ export class DevSupervisorEngineV0 {
           input.onActivity?.({ label: decision.tool, detail: decision.purpose });
           if (decision.tool === DEV_WORKER_TOOL.CLAIM) workerClaimAttempted = true;
           let executed;
-          this.extensionLoader?.beginToolCall();
+          this.extensionLoader.beginToolCall();
           try {
             executed = await this.supervisor.executeToolDecision(run, decision);
           } finally {
-            this.extensionLoader?.endToolCall();
+            this.extensionLoader.endToolCall();
           }
           run = executed.run;
           if (decision.tool === DEV_WORKER_TOOL.CLAIM) {
