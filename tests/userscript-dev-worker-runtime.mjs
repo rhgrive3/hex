@@ -2,9 +2,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { MessageChannel } from 'node:worker_threads';
 import { SingleConversationWorkerCoordinator } from '../js/userscript/dev/single-tab/single-conversation-worker-coordinator.js';
+import { WorkerChatController } from '../js/userscript/dev/worker-host/worker-chat-controller.js';
 import { createDevWorkerParentRpc, createDevWorkerParentRpcClient } from '../js/userscript/dev/parent-rpc.js';
 import { startParentDevWorkerRuntime } from '../js/userscript/dev/parent-worker-runtime.js';
 import { DEV_WORKER_NUDGE, DEV_WORKER_STATE } from '../js/ai/dev/workers/contracts.js';
+
+await testRealControllerDefersBlankChatAndWaitsForSupervisorHydration();
 
 class FakeController {
   constructor() {
@@ -62,12 +65,14 @@ const claimed = await coordinator.claim({ runId: 'run-1', workerId: 'worker-1' }
 assert.equal(claimed.supervisorChatgptConversationId, 'supervisor-cid');
 await assert.rejects(() => coordinator.claim({ runId: 'run-2', workerId: 'worker-2' }), (error) => error.code === 'worker-busy');
 await coordinator.createChat({ workerId: 'worker-1' });
+assert.equal(controller.currentConversation().id, 'supervisor-cid', 'create_chat must return only after the single Safari tab is back on Supervisor');
+assert.deepEqual(controller.navigation, ['supervisor-cid'], 'create_chat recovery must restore Supervisor before the next Supervisor decision');
 const result = await coordinator.send({ workerId: 'worker-1', instruction: 'exact instruction' });
 assert.equal(controller.lastSend, 'exact instruction');
 assert.equal(result.responseText, 'one line');
 assert.equal(result.chatgptConversationId, 'worker-cid');
 assert.equal(controller.currentConversation().id, 'supervisor-cid', 'single-tab Worker must restore Supervisor before send resolves');
-assert.deepEqual(controller.navigation, ['supervisor-cid']);
+assert.deepEqual(controller.navigation, ['supervisor-cid', 'supervisor-cid']);
 const completed = await coordinator.waitEvent({ events: ['worker.completed'], runId: 'run-1' });
 assert.equal(completed.type, 'worker.completed', 'terminal event remains available after synchronous single-tab send');
 
@@ -112,3 +117,96 @@ assert.equal(fs.existsSync(new URL('../js/userscript/dev/tab-mesh/transport.js',
 
 coordinator.close();
 console.log('Round 2 single-tab parent Worker runtime tests passed');
+
+async function testRealControllerDefersBlankChatAndWaitsForSupervisorHydration() {
+  const supervisor = { id: 'supervisor-real', url: 'https://chatgpt.com/c/supervisor-real' };
+  const worker = { id: 'worker-real', url: 'https://chatgpt.com/c/worker-real' };
+  const supervisorUsers = [
+    { id: 'supervisor-user-1', text: 'first supervisor request' },
+    { id: 'supervisor-user-2', text: 'second supervisor request' },
+  ];
+  let page = { ...supervisor };
+  let users = supervisorUsers.map((turn) => ({ ...turn }));
+  let physicalNewChats = 0;
+  let hydrated = true;
+  const adapter = {
+    document: { visibilityState: 'visible', body: null, documentElement: null },
+    conversation: () => page ? { ...page } : null,
+    userTurns: () => users.map((turn) => ({ ...turn })),
+    conversationTurns: () => users.map((turn) => ({ ...turn })),
+    assistantTurns: () => [],
+    composer: () => ({}),
+    isGenerating: () => false,
+  };
+  const router = {
+    bind() {},
+    async route(key) {
+      if (String(key).startsWith('dev-worker:')) {
+        physicalNewChats += 1;
+        page = null;
+        users = [];
+        hydrated = true;
+        return { conversation: null, isNew: true };
+      }
+      page = { ...supervisor };
+      users = [];
+      hydrated = false;
+      setTimeout(() => {
+        users = supervisorUsers.map((turn) => ({ ...turn }));
+        hydrated = true;
+      }, 25);
+      return { conversation: { ...supervisor }, isNew: false };
+    },
+  };
+  const turns = {
+    async run(prompt, options = {}) {
+      setTimeout(() => {
+        page = { ...worker };
+        users = [{ id: 'worker-user-1', text: prompt }];
+        options.onConversation?.({ ...worker });
+      }, 10);
+      await delay(140);
+      return { text: '2', conversation: { ...worker }, turnId: 'worker-assistant-1' };
+    },
+    stopOwnedGeneration: () => false,
+  };
+  const real = new WorkerChatController({
+    adapter,
+    router,
+    turns,
+    hydrationSettleMs: 10,
+    hydrationTimeoutMs: 1000,
+  });
+
+  assert.equal(real.currentConversation()?.id, supervisor.id, 'fixture must capture Supervisor history before leaving it');
+  const created = await real.createChat({ runId: 'run-real', workerId: 'worker-real-id' });
+  assert.equal(created.prepared, true);
+  assert.equal(page.id, supervisor.id, 'create_chat must not navigate to an unbound blank ChatGPT surface');
+  assert.equal(physicalNewChats, 0, 'physical New Chat is deferred until worker.send');
+
+  const completed = new Promise((resolve) => {
+    const off = real.on((event) => {
+      if (event.kind !== 'completed') return;
+      off();
+      resolve(event);
+    });
+  });
+  const submitted = await real.send('const x = 1 + 1; answer in one line', {
+    runId: 'run-real',
+    workerId: 'worker-real-id',
+  });
+  assert.equal(submitted.submitted, true);
+  assert.equal(physicalNewChats, 1, 'worker.send must own the one physical New Chat transition');
+  await completed;
+  assert.equal(real.workerConversation()?.id, worker.id);
+
+  const restored = await real.navigateToConversation(supervisor, {
+    sessionKey: 'dev-supervisor-return:run-real',
+    timeoutMs: 1000,
+  });
+  assert.equal(hydrated, true, 'route equality must not return before React rehydrates the prior Supervisor turns');
+  assert.equal(restored.id, supervisor.id);
+  assert.equal(real.currentConversation()?.id, supervisor.id);
+}
+
+function delay(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
