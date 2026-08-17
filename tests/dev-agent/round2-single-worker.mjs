@@ -44,6 +44,11 @@ const client = {
 const tools = createDevWorkerToolSurface(client);
 assert.ok(tools);
 assert.deepEqual([...tools.toolNames], DEV_WORKER_TOOLS);
+assert.equal(
+  createDevWorkerToolSurface({ ...client, enabled: false }),
+  null,
+  'disabled parent runtime must not advertise Dev Worker tools',
+);
 assert.equal(DEV_WORKER_MAY_SPAWN_WORKER, false, 'dev-worker-no-nested-spawn');
 const workerPrompt = buildDevWorkerInstruction('Return one line.');
 assert.match(workerPrompt, /Do not spawn, create, delegate to, or manage subagents or other Workers/);
