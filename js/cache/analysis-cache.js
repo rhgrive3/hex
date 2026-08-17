@@ -165,7 +165,7 @@ export class AnalysisCache {
   }
 
   async #db() {
-    if (this._idbFailed || !this.indexedDB?.open) return this.#fallback(this.lastIndexedDBError || new Error('IndexedDB unavailable'));
+    if (this._idbFailed || !this.indexedDB?.open) throw this.lastIndexedDBError || new Error('IndexedDB unavailable');
     if (this._db) return this._db;
     this._db = await new Promise((resolve, reject) => {
       let req;
@@ -177,7 +177,7 @@ export class AnalysisCache {
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => reject(req.error || new Error('IndexedDB open failed'));
       req.onblocked = () => reject(new Error('IndexedDB open blocked'));
-    }).catch((error) => this.#fallback(error));
+    });
     return this._db;
   }
 
