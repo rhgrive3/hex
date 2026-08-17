@@ -109,11 +109,19 @@ function oraclePayload() {
   const r = runtime('cancel');
   const d = descriptor({ config:{ fixture:'cancel' } });
   const controller = new AbortController();
-  let workerCancels = 0, resolveLate;
+  let workerCancels = 0, resolveLate, markProducerStarted;
   const operation = new Promise((resolve) => { resolveLate = resolve; });
+  const producerStarted = new Promise((resolve) => { markProducerStarted = resolve; });
   operation.cancel = () => { workerCancels++; };
-  const pending = r.request({ descriptor:d, signal:controller.signal, produce:({ signal }) => awaitCancellableProducer(operation, signal) });
-  await Promise.resolve();
+  const pending = r.request({
+    descriptor:d,
+    signal:controller.signal,
+    produce:({ signal }) => {
+      markProducerStarted();
+      return awaitCancellableProducer(operation, signal);
+    },
+  });
+  await producerStarted;
   controller.abort(new DOMException('cancel-test', 'AbortError'));
   await assert.rejects(pending, (error) => error?.name === 'AbortError');
   resolveLate(oraclePayload()); await Promise.resolve();
