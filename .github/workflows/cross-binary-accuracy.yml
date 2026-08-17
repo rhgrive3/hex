@@ -53,6 +53,7 @@ jobs:
           node tests/accuracy-merge.mjs --self-test
           node tests/accuracy-pseudoc-shard-merge.mjs --self-test
           node tests/accuracy-pseudoc-shard.test.mjs
+          node tests/accuracy-result-validate.mjs --self-test
       - name: Syntax lint
         run: npm run lint
       - name: Matcher scaling regression
@@ -205,7 +206,13 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: accuracy-part-${{ matrix.target.name }}-${{ matrix.partition.name }}.json
-          key: accuracy-result-v5-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target.name }}-${{ matrix.partition.name }}-${{ hashFiles('js/**', 'tests/accuracy*.mjs', 'tests/harness.mjs', 'tests/fixtures/real-binaries.json', 'tests/oracle.py', 'tests/oracle-cfg-normalize.py', 'tests/oracle-requirements.txt', '.github/workflows/cross-binary-accuracy.yml') }}
+          key: accuracy-result-v6-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target.name }}-${{ matrix.partition.name }}-${{ hashFiles('js/**', 'tests/accuracy*.mjs', 'tests/harness.mjs', 'tests/fixtures/real-binaries.json', 'tests/oracle.py', 'tests/oracle-cfg-normalize.py', 'tests/oracle-requirements.txt', '.github/workflows/cross-binary-accuracy.yml') }}
+      - name: Validate restored accuracy result
+        if: steps.result-cache.outputs.cache-hit == 'true'
+        run: |
+          node tests/accuracy-result-validate.mjs \
+            "accuracy-part-${{ matrix.target.name }}-${{ matrix.partition.name }}.json" \
+            --expect="${{ matrix.partition.only }}"
       - uses: actions/setup-node@v4
         if: steps.result-cache.outputs.cache-hit != 'true'
         with:
@@ -232,8 +239,10 @@ jobs:
         run: |
           set -euo pipefail
           output="accuracy-part-${{ matrix.target.name }}-${{ matrix.partition.name }}.json"
+          temporary="${output}.tmp"
           target="tests/.real-fixtures/${{ matrix.target.file }}"
           oracle="${{ matrix.target.oracle }}"
+          rm -f "$output" "$temporary"
 
           run_parallel() {
             local mode="$1"
@@ -269,35 +278,39 @@ jobs:
             node --input-type=module <<'NODE'
           import fs from 'node:fs';
           const rows = [0, 1, 2, 3].flatMap((i) => JSON.parse(fs.readFileSync(`accuracy-local-core-${i}.json`, 'utf8')));
-          fs.writeFileSync('accuracy-part-${{ matrix.target.name }}-core.json', JSON.stringify(rows, null, 2) + '\n');
+          fs.writeFileSync('accuracy-part-${{ matrix.target.name }}-core.json.tmp', JSON.stringify(rows, null, 2) + '\n');
           NODE
           elif [[ "${{ matrix.partition.name }}" == "pinpoint" ]]; then
             run_parallel pinpoint pinpoint pinpoint-partial
             node --input-type=module <<'NODE'
           import fs from 'node:fs';
           const rows = [0, 1].flatMap((i) => JSON.parse(fs.readFileSync(`accuracy-local-pinpoint-${i}.json`, 'utf8')));
-          fs.writeFileSync('accuracy-part-${{ matrix.target.name }}-pinpoint.json', JSON.stringify(rows, null, 2) + '\n');
+          fs.writeFileSync('accuracy-part-${{ matrix.target.name }}-pinpoint.json.tmp', JSON.stringify(rows, null, 2) + '\n');
           NODE
           else
             node tests/accuracy-pseudoc-parallel.mjs \
               --target="$target" \
               --oracle="$oracle" \
               --workers="$LOCAL_PSEUDOC_WORKERS" \
-              --json | tee "$output"
+              --json > "$temporary"
           fi
+
+          node tests/accuracy-result-validate.mjs "$temporary" --expect="${{ matrix.partition.only }}"
+          mv "$temporary" "$output"
+          cat "$output"
       - name: Save exact accuracy result cache
         if: steps.result-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: accuracy-part-${{ matrix.target.name }}-${{ matrix.partition.name }}.json
-          key: accuracy-result-v5-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target.name }}-${{ matrix.partition.name }}-${{ hashFiles('js/**', 'tests/accuracy*.mjs', 'tests/harness.mjs', 'tests/fixtures/real-binaries.json', 'tests/oracle.py', 'tests/oracle-cfg-normalize.py', 'tests/oracle-requirements.txt', '.github/workflows/cross-binary-accuracy.yml') }}
+          key: accuracy-result-v6-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target.name }}-${{ matrix.partition.name }}-${{ hashFiles('js/**', 'tests/accuracy*.mjs', 'tests/harness.mjs', 'tests/fixtures/real-binaries.json', 'tests/oracle.py', 'tests/oracle-cfg-normalize.py', 'tests/oracle-requirements.txt', '.github/workflows/cross-binary-accuracy.yml') }}
       - name: Upload partition result
-        if: always()
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: accuracy-part-${{ matrix.target.name }}-${{ matrix.partition.name }}
           path: accuracy-part-${{ matrix.target.name }}-${{ matrix.partition.name }}.json
-          if-no-files-found: warn
+          if-no-files-found: error
 
   accuracy:
     name: accuracy
@@ -310,22 +323,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Download accuracy partitions
-        uses: actions/download-artifact@v4
-        with:
-          pattern: accuracy-part-*
-          merge-multiple: true
-      - name: Merge complete target results
-        run: |
-          node tests/accuracy-merge.mjs accuracy-BattleCats.json accuracy-part-BattleCats-*.json
-          node tests/accuracy-merge.mjs accuracy-YWP.json accuracy-part-YWP-*.json
-          node tests/accuracy-merge.mjs accuracy-TsumTsum.json accuracy-part-TsumTsum-*.json
-      - name: Accuracy regression gate
-        run: node tests/accuracy-gate.mjs
-      - name: Structured baseline report
-        run: node tools/benchmark/accuracy-report.mjs --output=accuracy-baseline-report.json
-      - name: Current-main baseline regression gate
-        run: node tools/benchmark/compare.mjs --accuracy=accuracy-baseline-report.json
       - name: Require all prerequisite jobs
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -343,8 +340,34 @@ jobs:
             echo "::error::Cross-binary prerequisite failed (lint=$PREFLIGHT_LINT_RESULT, tests=$PREFLIGHT_TESTS_RESULT, oracle=$ORACLE_RESULT, measure=$MEASURE_RESULT)."
             exit 1
           fi
+      - name: Download accuracy partitions
+        uses: actions/download-artifact@v4
+        with:
+          pattern: accuracy-part-*
+          merge-multiple: true
+      - name: Validate downloaded accuracy partitions
+        shell: bash
+        run: |
+          set -euo pipefail
+          core='sections,funcs,funcs-guess,disasm,kinds,calls,refs,imports,objc,selstub,strings,xrefs,funcname,selffield,role,apimeaning,summary,expr,formula'
+          for target in BattleCats YWP TsumTsum; do
+            node tests/accuracy-result-validate.mjs "accuracy-part-${target}-core.json" --expect="$core"
+            node tests/accuracy-result-validate.mjs "accuracy-part-${target}-pinpoint.json" --expect='pinpoint,pinpoint-partial'
+            node tests/accuracy-result-validate.mjs "accuracy-part-${target}-pseudoc.json" --expect='pseudoc'
+          done
+      - name: Merge complete target results
+        run: |
+          node tests/accuracy-merge.mjs accuracy-BattleCats.json accuracy-part-BattleCats-*.json
+          node tests/accuracy-merge.mjs accuracy-YWP.json accuracy-part-YWP-*.json
+          node tests/accuracy-merge.mjs accuracy-TsumTsum.json accuracy-part-TsumTsum-*.json
+      - name: Accuracy regression gate
+        run: node tests/accuracy-gate.mjs
+      - name: Structured baseline report
+        run: node tools/benchmark/accuracy-report.mjs --output=accuracy-baseline-report.json
+      - name: Current-main baseline regression gate
+        run: node tools/benchmark/compare.mjs --accuracy=accuracy-baseline-report.json
       - name: Upload combined results
-        if: always()
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: accuracy-results
