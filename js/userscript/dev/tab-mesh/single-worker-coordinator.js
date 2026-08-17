@@ -41,9 +41,13 @@ export class SingleWorkerCoordinator {
   async claim({ runId, workerId } = {}) {
     const normalizedRun = required(runId, 'runId');
     const normalizedWorker = required(workerId, 'workerId');
-    if (this.claimed) throw workerError(DEV_WORKER_FAILURE.WORKER_BUSY, 'The Round 2 Worker slot is already claimed.');
+    if (this.claimed) {
+      throw workerError(DEV_WORKER_FAILURE.WORKER_BUSY, 'The Round 2 Worker slot is already claimed.');
+    }
     const available = (await this.discover())[0];
-    if (!available) throw workerError(DEV_WORKER_FAILURE.WORKER_UNAVAILABLE, 'No registered Worker Tab is available.');
+    if (!available) {
+      throw workerError(DEV_WORKER_FAILURE.TAB_UNAVAILABLE, 'No registered Worker Tab is available.');
+    }
     const result = await this.transport.request(available.tabNodeId, 'worker.claim', {
       runId: normalizedRun,
       workerId: normalizedWorker,
@@ -113,7 +117,9 @@ export class SingleWorkerCoordinator {
   }
 
   assertClaim(args = {}) {
-    if (!this.claimed) throw workerError(DEV_WORKER_FAILURE.WORKER_UNAVAILABLE, 'No Worker Tab is claimed.');
+    if (!this.claimed) {
+      throw workerError(DEV_WORKER_FAILURE.WORKER_UNAVAILABLE, 'No Worker is currently claimed.');
+    }
     if (args.workerId != null && String(args.workerId) !== this.claimed.workerId) {
       throw workerError(DEV_WORKER_FAILURE.WORKER_BUSY, 'The requested workerId does not own the Round 2 Worker slot.');
     }
@@ -157,7 +163,9 @@ function matches(event, wanted, runId) {
   return wanted.has(event.type) && (runId == null || String(event.data?.runId || '') === runId);
 }
 function normalizeEvents(events) {
-  if (!Array.isArray(events) || !events.length) throw new TypeError('waitEvent.events must be a non-empty array.');
+  if (!Array.isArray(events) || !events.length) {
+    throw new TypeError('waitEvent.events must be a non-empty array.');
+  }
   const out = new Set();
   for (const event of events) {
     const value = String(event || '').trim();
@@ -172,5 +180,14 @@ function required(value, field) {
   return text;
 }
 function clone(value) { return value == null ? value : JSON.parse(JSON.stringify(value)); }
-function workerError(code, message) { const error = new Error(message); error.code = code; return error; }
-function abortError(reason) { const error = new Error(String(reason || 'cancelled')); error.name = 'AbortError'; error.code = 'cancelled'; return error; }
+function workerError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+function abortError(reason) {
+  const error = new Error(String(reason || 'cancelled'));
+  error.name = 'AbortError';
+  error.code = DEV_WORKER_FAILURE.CANCELLED;
+  return error;
+}
