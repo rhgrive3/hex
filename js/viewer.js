@@ -35,6 +35,7 @@ export class CodeViewer {
 
     this.region = null;
     this.mode = 'asm';
+    this.modeAddressAnchor = null;
     this.hexJoined = false;
     this.showNotes = false;
     this.noteStyle = 'ja';
@@ -179,6 +180,7 @@ export class CodeViewer {
     this.variableNavigation++;
     this.variableIndex.configureRegion(region, { architecture });
     this.region = region;
+    this.modeAddressAnchor = null;
     this.variableRows = Object.freeze([]);
     this.variableError = null;
     this.totalRows = region ? (this.mode === 'hex' ? Number((region.size + 3n) / 4n)
@@ -204,8 +206,18 @@ export class CodeViewer {
 
   setMode(mode) {
     if (this.mode === mode) return;
-    const anchor = this.topAddress() ?? this.rowAddress(this.selectedRow);
-    if (this.mode === 'asm' && this.isVariableAsm()) this.variableIndex.cancelAll('mode-changed');
+    const previousMode = this.mode;
+    const visibleAnchor = this.topAddress() ?? this.rowAddress(this.selectedRow);
+    let anchor = visibleAnchor;
+    const leavingVariableAsm = previousMode === 'asm' && this.isVariableAsm();
+    if (previousMode === 'hex' && mode === 'asm' && this.modeAddressAnchor != null && visibleAnchor != null) {
+      const rowStart = BigInt(visibleAnchor);
+      const saved = BigInt(this.modeAddressAnchor);
+      if (saved >= rowStart && saved < rowStart + BigInt(HEX_ROW_BYTES)) anchor = saved;
+    }
+    if (leavingVariableAsm && mode === 'hex') this.modeAddressAnchor = visibleAnchor;
+    else if (previousMode !== 'hex' || mode !== 'asm') this.modeAddressAnchor = null;
+    if (leavingVariableAsm) this.variableIndex.cancelAll('mode-changed');
     this.variableNavigation++;
     this.mode = mode;
     this.vp.classList.toggle('mode-asm', mode === 'asm');
@@ -234,6 +246,7 @@ export class CodeViewer {
         else this._navigateVariable(this.region.vmAddr, { trusted:true, where:'top' });
       }
     }
+    if (mode === 'asm') this.modeAddressAnchor = null;
     if (this.showNotes) this.measure();
     else this.invalidate();
   }
