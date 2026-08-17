@@ -1,13 +1,15 @@
-name: P3 combined repair validation v6
+name: P3 issues 135-145 diagnostic v7
 on:
   push:
     branches: [hex/p3-local-debug-350]
     paths:
       - '.github/workflows/p3-local-debug-350.yml'
+permissions:
+  contents: write
 jobs:
-  validate:
+  diagnose:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
@@ -19,15 +21,18 @@ jobs:
       - run: npm ci
       - run: python3 tools/validation/p3-debug-apply.py
       - run: python3 tools/validation/p3-debug-apply-interproc.py
-      - run: npm run userscript:build
-      - run: node tests/issues-129-134.mjs
-      - run: node tests/issues-130-interproc.mjs
-      - run: node tests/issues-135-145.mjs
-      - run: node tests/issues-350-399.mjs
-      - run: node tests/issues-434-450-regressions.mjs
-      - run: node tests/issues-437-438-interproc.mjs
-      - run: node tests/ir.mjs
-      - run: npm test
-      - run: npm run effects:test
-      - run: npm run semantic-v2:test
-      - run: npm run check
+      - name: Capture issues 135-145 output on scratch only
+        shell: bash
+        run: |
+          set +e
+          node tests/issues-135-145.mjs > /tmp/p3-135-145.log 2>&1
+          status=$?
+          set -e
+          cat /tmp/p3-135-145.log || true
+          cp /tmp/p3-135-145.log tools/validation/p3-debug-135-145-output.txt
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add tools/validation/p3-debug-135-145-output.txt
+          git commit -m "Debug: persist issues 135-145 output" || true
+          git push origin HEAD:hex/p3-local-debug-350
+          exit "$status"
