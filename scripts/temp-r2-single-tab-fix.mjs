@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 
 function read(path) { return fs.readFileSync(path, 'utf8'); }
-function write(path, content) { fs.mkdirSync(path.split('/').slice(0, -1).join('/'), { recursive: true }); fs.writeFileSync(path, content); }
+function write(path, content) { const parent = path.split('/').slice(0, -1).join('/'); if (parent) fs.mkdirSync(parent, { recursive: true }); fs.writeFileSync(path, content); }
 function replaceOnce(path, oldText, newText) {
   const text = read(path);
   if (!text.includes(oldText)) throw new Error(`Missing patch anchor in ${path}: ${oldText.slice(0, 120)}`);
