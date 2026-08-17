@@ -101,7 +101,7 @@ export class SingleConversationWorkerCoordinator {
     this.assertClaim(args);
     const result = await this.controller.stop();
     if (this.pendingTerminal) await this.pendingTerminal.promise.catch(() => null);
-    else await this.safeRestoreSupervisor();
+    else await this.restoreSupervisor();
     return this.withIdentity(result);
   }
 
@@ -115,7 +115,7 @@ export class SingleConversationWorkerCoordinator {
     if (this.controller.isActive()) {
       throw workerError(DEV_WORKER_FAILURE.WORKER_BUSY, 'Cannot release the single-tab Worker while it is generating.');
     }
-    await this.safeRestoreSupervisor();
+    await this.restoreSupervisor();
     this.claimed = null;
     this.lastResult = null;
     return this.advertisement();
@@ -173,6 +173,10 @@ export class SingleConversationWorkerCoordinator {
     let resolve;
     let reject;
     const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
+    // A synchronous submission failure can reject this completion before the
+    // caller reaches `await pending.promise`. Attach a handler immediately so
+    // recovery never creates an unhandled rejection in WebKit.
+    promise.catch(() => {});
     this.pendingTerminal = { promise, resolve, reject };
     return this.pendingTerminal;
   }
