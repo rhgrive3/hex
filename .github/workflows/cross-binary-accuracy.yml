@@ -49,6 +49,7 @@ jobs:
         run: |
           node tests/accuracy-merge.mjs --self-test
           node tests/accuracy-pseudoc-shard-merge.mjs --self-test
+          node tests/accuracy-pseudoc-shard.test.mjs
       - name: Syntax lint
         run: npm run lint
       - name: Matcher scaling regression
@@ -170,7 +171,7 @@ jobs:
     timeout-minutes: 20
     strategy:
       fail-fast: false
-      max-parallel: 20
+      max-parallel: 90
       matrix:
         target:
           - name: BattleCats
@@ -186,8 +187,14 @@ jobs:
             file: TsumTsum
             oracle: tests/oracle.TsumTsum.ci.json.gz
         partition:
-          - name: core
-            only: sections,funcs,funcs-guess,disasm,kinds,calls,refs,imports,objc,selstub,strings,xrefs,funcname,selffield,role,apimeaning,summary,expr,formula
+          - name: core-1
+            only: sections,funcs,funcs-guess,disasm,kinds
+          - name: core-2
+            only: calls,refs,imports,objc,selstub
+          - name: core-3
+            only: strings,xrefs,funcname,selffield,role
+          - name: core-4
+            only: apimeaning,summary,expr,formula
           - name: pinpoint
             only: pinpoint
           - name: pinpoint-partial
@@ -195,19 +202,99 @@ jobs:
           - name: pseudoc-1
             only: pseudoc
             shardIndex: 0
-            shardCount: 4
+            shardCount: 24
           - name: pseudoc-2
             only: pseudoc
             shardIndex: 1
-            shardCount: 4
+            shardCount: 24
           - name: pseudoc-3
             only: pseudoc
             shardIndex: 2
-            shardCount: 4
+            shardCount: 24
           - name: pseudoc-4
             only: pseudoc
             shardIndex: 3
-            shardCount: 4
+            shardCount: 24
+          - name: pseudoc-5
+            only: pseudoc
+            shardIndex: 4
+            shardCount: 24
+          - name: pseudoc-6
+            only: pseudoc
+            shardIndex: 5
+            shardCount: 24
+          - name: pseudoc-7
+            only: pseudoc
+            shardIndex: 6
+            shardCount: 24
+          - name: pseudoc-8
+            only: pseudoc
+            shardIndex: 7
+            shardCount: 24
+          - name: pseudoc-9
+            only: pseudoc
+            shardIndex: 8
+            shardCount: 24
+          - name: pseudoc-10
+            only: pseudoc
+            shardIndex: 9
+            shardCount: 24
+          - name: pseudoc-11
+            only: pseudoc
+            shardIndex: 10
+            shardCount: 24
+          - name: pseudoc-12
+            only: pseudoc
+            shardIndex: 11
+            shardCount: 24
+          - name: pseudoc-13
+            only: pseudoc
+            shardIndex: 12
+            shardCount: 24
+          - name: pseudoc-14
+            only: pseudoc
+            shardIndex: 13
+            shardCount: 24
+          - name: pseudoc-15
+            only: pseudoc
+            shardIndex: 14
+            shardCount: 24
+          - name: pseudoc-16
+            only: pseudoc
+            shardIndex: 15
+            shardCount: 24
+          - name: pseudoc-17
+            only: pseudoc
+            shardIndex: 16
+            shardCount: 24
+          - name: pseudoc-18
+            only: pseudoc
+            shardIndex: 17
+            shardCount: 24
+          - name: pseudoc-19
+            only: pseudoc
+            shardIndex: 18
+            shardCount: 24
+          - name: pseudoc-20
+            only: pseudoc
+            shardIndex: 19
+            shardCount: 24
+          - name: pseudoc-21
+            only: pseudoc
+            shardIndex: 20
+            shardCount: 24
+          - name: pseudoc-22
+            only: pseudoc
+            shardIndex: 21
+            shardCount: 24
+          - name: pseudoc-23
+            only: pseudoc
+            shardIndex: 22
+            shardCount: 24
+          - name: pseudoc-24
+            only: pseudoc
+            shardIndex: 23
+            shardCount: 24
     steps:
       - uses: actions/checkout@v4
       - name: Restore exact accuracy result cache
@@ -215,7 +302,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: accuracy-part-${{ matrix.target.name }}-${{ matrix.partition.name }}.json
-          key: accuracy-result-v2-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target.name }}-${{ matrix.partition.name }}-${{ hashFiles('js/**', 'tests/accuracy.mjs', 'tests/harness.mjs', 'tests/accuracy-pseudoc-shard-oracle.mjs', 'tests/accuracy-pseudoc-shard-merge.mjs', 'tests/fixtures/real-binaries.json', 'tests/oracle.py', 'tests/oracle-cfg-normalize.py', 'tests/oracle-requirements.txt', '.github/workflows/cross-binary-accuracy.yml') }}
+          key: accuracy-result-v3-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target.name }}-${{ matrix.partition.name }}-${{ hashFiles('js/**', 'tests/accuracy.mjs', 'tests/harness.mjs', 'tests/accuracy-pseudoc-shard-oracle.mjs', 'tests/accuracy-pseudoc-shard-merge.mjs', 'tests/fixtures/real-binaries.json', 'tests/oracle.py', 'tests/oracle-cfg-normalize.py', 'tests/oracle-requirements.txt', '.github/workflows/cross-binary-accuracy.yml') }}
       - uses: actions/setup-node@v4
         if: steps.result-cache.outputs.cache-hit != 'true'
         with:
@@ -261,7 +348,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: accuracy-part-${{ matrix.target.name }}-${{ matrix.partition.name }}.json
-          key: accuracy-result-v2-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target.name }}-${{ matrix.partition.name }}-${{ hashFiles('js/**', 'tests/accuracy.mjs', 'tests/harness.mjs', 'tests/accuracy-pseudoc-shard-oracle.mjs', 'tests/accuracy-pseudoc-shard-merge.mjs', 'tests/fixtures/real-binaries.json', 'tests/oracle.py', 'tests/oracle-cfg-normalize.py', 'tests/oracle-requirements.txt', '.github/workflows/cross-binary-accuracy.yml') }}
+          key: accuracy-result-v3-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target.name }}-${{ matrix.partition.name }}-${{ hashFiles('js/**', 'tests/accuracy.mjs', 'tests/harness.mjs', 'tests/accuracy-pseudoc-shard-oracle.mjs', 'tests/accuracy-pseudoc-shard-merge.mjs', 'tests/fixtures/real-binaries.json', 'tests/oracle.py', 'tests/oracle-cfg-normalize.py', 'tests/oracle-requirements.txt', '.github/workflows/cross-binary-accuracy.yml') }}
       - name: Upload partition result
         if: always()
         uses: actions/upload-artifact@v4
@@ -288,10 +375,10 @@ jobs:
           merge-multiple: true
       - name: Reassemble exact pseudoc serial samples
         run: |
-          node tests/accuracy-pseudoc-shard-merge.mjs accuracy-part-BattleCats-pseudoc.json accuracy-part-BattleCats-pseudoc-[1-4].json
-          node tests/accuracy-pseudoc-shard-merge.mjs accuracy-part-YWP-pseudoc.json accuracy-part-YWP-pseudoc-[1-4].json
-          node tests/accuracy-pseudoc-shard-merge.mjs accuracy-part-TsumTsum-pseudoc.json accuracy-part-TsumTsum-pseudoc-[1-4].json
-          rm accuracy-part-*-pseudoc-[1-4].json
+          node tests/accuracy-pseudoc-shard-merge.mjs accuracy-part-BattleCats-pseudoc.json accuracy-part-BattleCats-pseudoc-*.json
+          node tests/accuracy-pseudoc-shard-merge.mjs accuracy-part-YWP-pseudoc.json accuracy-part-YWP-pseudoc-*.json
+          node tests/accuracy-pseudoc-shard-merge.mjs accuracy-part-TsumTsum-pseudoc.json accuracy-part-TsumTsum-pseudoc-*.json
+          rm accuracy-part-*-pseudoc-*.json
       - name: Merge complete target results
         run: |
           node tests/accuracy-merge.mjs accuracy-BattleCats.json accuracy-part-BattleCats-*.json
