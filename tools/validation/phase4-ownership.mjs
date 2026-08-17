@@ -24,6 +24,34 @@ function arg(name, fallback = null) {
   return i >= 0 ? process.argv[i + 1] : fallback;
 }
 
+function failConfiguration(message) {
+  console.error(`phase4 ownership: invalid manifest: ${message}`);
+  process.exit(2);
+}
+
+if (!manifest.contractWriteOwners || typeof manifest.contractWriteOwners !== 'object' || Array.isArray(manifest.contractWriteOwners)) {
+  failConfiguration('contractWriteOwners must be an object');
+}
+
+const contractPathSet = new Set(manifest.contractPaths);
+for (const contractPath of manifest.contractPaths) {
+  if (!Object.hasOwn(manifest.contractWriteOwners, contractPath)) {
+    failConfiguration(`contract path has no explicit write-owner entry: ${contractPath}`);
+  }
+  const owners = manifest.contractWriteOwners[contractPath];
+  if (!Array.isArray(owners) || owners.length === 0) {
+    failConfiguration(`contract path has no explicit write owner: ${contractPath}`);
+  }
+  for (const owner of owners) {
+    if (!manifest.lanes[owner]) failConfiguration(`unknown contract write owner ${owner} for ${contractPath}`);
+  }
+}
+for (const contractPath of Object.keys(manifest.contractWriteOwners)) {
+  if (!contractPathSet.has(contractPath)) {
+    failConfiguration(`contractWriteOwners contains non-contract path: ${contractPath}`);
+  }
+}
+
 const lane = arg('lane', process.env.PHASE4_LANE || null);
 if (!lane || !manifest.lanes[lane]) {
   console.error(`phase4 ownership: declare --lane ${Object.keys(manifest.lanes).join('|')}`);
@@ -44,7 +72,11 @@ else {
   }
 }
 
-const allowed = [...manifest.lanes[lane], ...manifest.generatedPaths];
+// Existing generated-path behavior remains intact for canonical Phase 4 lanes.
+// The repair lane is intentionally narrower: it owns only its four manifest paths.
+const allowed = lane === 'p4-r'
+  ? [...manifest.lanes[lane]]
+  : [...manifest.lanes[lane], ...manifest.generatedPaths];
 const forbidden = changed.filter((file) => matches(file, manifest.forbiddenPaths));
 const outside = changed.filter((file) => !matches(file, allowed));
 if (forbidden.length || outside.length) {
@@ -53,14 +85,18 @@ if (forbidden.length || outside.length) {
   process.exit(1);
 }
 
-// Contracts are frozen after P4-0. A component lane cannot edit them even if a
-// broad lane glob would otherwise match (notably scheduler/budget directories).
-if (lane !== 'p4-0' && lane !== 'p4-7') {
-  const contractEdits = changed.filter((file) => matches(file, manifest.contractPaths));
-  if (contractEdits.length) {
-    console.error(`phase4 ownership: frozen contract path(s) are read-only in ${lane}: ${contractEdits.join(', ')}`);
-    process.exit(1);
-  }
+// Frozen contract paths have explicit write owners. Broad directory ownership is
+// never sufficient by itself. This keeps contracts.js P4-0-only while allowing
+// designated integration entrypoints and the P4-3 ArtifactIndex implementation.
+const unauthorizedContractEdits = [];
+for (const file of changed) {
+  if (!contractPathSet.has(file)) continue;
+  const owners = manifest.contractWriteOwners[file];
+  if (!owners.includes(lane)) unauthorizedContractEdits.push(file);
+}
+if (unauthorizedContractEdits.length) {
+  console.error(`phase4 ownership: frozen contract path(s) are not writable by ${lane}: ${unauthorizedContractEdits.join(', ')}`);
+  process.exit(1);
 }
 
 console.log(JSON.stringify({ phase:4, manifestVersion:manifest.version, lane, changedFiles:changed.length, violations:0 }));
