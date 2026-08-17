@@ -69,6 +69,27 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  cutover-rehearsal:
+    name: exact-sha-cutover-rehearsal
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.PRODUCT_SHA }}
+          fetch-depth: 0
+      - name: Prove exact checkout
+        run: test "$(git rev-parse HEAD)" = "$PRODUCT_SHA"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Force artifact route through complete product suite
+        run: npm run phase4:rehearsal
+      - name: Force artifact route through canonical userscript suite
+        run: HEX_ANALYSIS_ROUTE=artifact npm run userscript:test
+
   independent-verifier:
     name: exact-sha-independent-verifier
     runs-on: ubuntu-latest
@@ -162,13 +183,14 @@ jobs:
   evidence:
     name: exact-sha-evidence
     if: always()
-    needs: [core, independent-verifier, browser-persistence, userscript-sync]
+    needs: [core, cutover-rehearsal, independent-verifier, browser-persistence, userscript-sync]
     runs-on: ubuntu-latest
     steps:
       - name: Write machine-readable exact-SHA result
         shell: bash
         env:
           CORE_RESULT: ${{ needs.core.result }}
+          REHEARSAL_RESULT: ${{ needs.cutover-rehearsal.result }}
           VERIFIER_RESULT: ${{ needs.independent-verifier.result }}
           BROWSER_RESULT: ${{ needs.browser-persistence.result }}
           USERSCRIPT_RESULT: ${{ needs.userscript-sync.result }}
@@ -176,15 +198,17 @@ jobs:
         run: |
           python3 - <<'PY'
           import json, os
+          keys = ("CORE_RESULT", "REHEARSAL_RESULT", "VERIFIER_RESULT", "BROWSER_RESULT", "USERSCRIPT_RESULT")
           report = {
             "phase": 4,
             "productSha": os.environ["PRODUCT_SHA"],
             "baseMainSha": os.environ.get("BASE_SHA") or None,
             "coreResult": os.environ["CORE_RESULT"],
+            "cutoverRehearsalResult": os.environ["REHEARSAL_RESULT"],
             "phase4VerifierResult": os.environ["VERIFIER_RESULT"],
             "browserPersistenceResult": os.environ["BROWSER_RESULT"],
             "userscriptSynchronizationResult": os.environ["USERSCRIPT_RESULT"],
-            "phase4ExactShaCoreSatisfied": all(os.environ[k] == "success" for k in ("CORE_RESULT", "VERIFIER_RESULT", "BROWSER_RESULT", "USERSCRIPT_RESULT")),
+            "phase4ExactShaCoreSatisfied": all(os.environ[k] == "success" for k in keys),
           }
           with open("phase4-exact-sha-evidence.json", "w", encoding="utf-8") as f:
             json.dump(report, f, indent=2, sort_keys=True)
@@ -201,11 +225,13 @@ jobs:
         shell: bash
         env:
           CORE_RESULT: ${{ needs.core.result }}
+          REHEARSAL_RESULT: ${{ needs.cutover-rehearsal.result }}
           VERIFIER_RESULT: ${{ needs.independent-verifier.result }}
           BROWSER_RESULT: ${{ needs.browser-persistence.result }}
           USERSCRIPT_RESULT: ${{ needs.userscript-sync.result }}
         run: |
           test "$CORE_RESULT" = success
+          test "$REHEARSAL_RESULT" = success
           test "$VERIFIER_RESULT" = success
           test "$BROWSER_RESULT" = success
           test "$USERSCRIPT_RESULT" = success
