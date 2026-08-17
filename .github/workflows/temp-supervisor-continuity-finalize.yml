@@ -1,0 +1,32 @@
+name: Temporary Supervisor continuity finalize
+on:
+  push:
+    branches: [hex/fix-dev-supervisor-conversation-continuity]
+permissions:
+  contents: write
+jobs:
+  finalize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: hex/fix-dev-supervisor-conversation-continuity
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: node tests/dev-agent/supervisor-conversation-continuity.mjs
+      - run: npm run userscript:build
+      - run: npm run dev-agent:test
+      - run: npm run ai:test
+      - run: npm run userscript:test
+      - run: git diff --check
+      - name: Commit generated release and remove this workflow
+        run: |
+          rm .github/workflows/temp-supervisor-continuity-finalize.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add userscript/hex.user.template.js userscript/release-version.json .github/workflows/temp-supervisor-continuity-finalize.yml
+          git commit -m "Finalize Supervisor conversation continuity release"
+          git push origin HEAD:hex/fix-dev-supervisor-conversation-continuity
