@@ -32,4 +32,22 @@ if (!coordinator.includes('this.claim = null;') || !coordinator.includes('async 
 coordinator = coordinator.replaceAll('this.claim', 'this.claimed');
 fs.writeFileSync(coordinatorPath, coordinator);
 
-console.log('Round 1 foundation compatibility and Worker claim-state repair staged.');
+const routingTestPath = 'tests/chatgpt-web-runtime.mjs';
+let routingTest = fs.readFileSync(routingTestPath, 'utf8');
+const firstExpectation = `  await router.route('A'); assert.equal(fresh, 1);
+`;
+if (!routingTest.includes(firstExpectation)) throw new Error('Clean-surface routing expectation anchor missing');
+routingTest = routingTest.replace(firstExpectation,
+`  await router.route('A');
+  assert.equal(fresh, 0, 'an already-clean ChatGPT surface must be adopted without a redundant New Chat click');
+`, 1);
+const secondExpectation = `  await router.route('B'); assert.equal(fresh, 2);
+`;
+if (!routingTest.includes(secondExpectation)) throw new Error('Existing-conversation routing expectation anchor missing');
+routingTest = routingTest.replace(secondExpectation,
+`  await router.route('B');
+  assert.equal(fresh, 1, 'routing away from an existing conversation must still explicitly create a fresh ChatGPT conversation');
+`, 1);
+fs.writeFileSync(routingTestPath, routingTest);
+
+console.log('Round 1 compatibility, Worker claim-state, and clean-surface routing regression staged.');
