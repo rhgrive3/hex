@@ -5,10 +5,12 @@ import { createAgentProfileEngine } from '../../js/ai/dev/ui/engine-router.js';
 import { AGENT_PROFILE } from '../../js/ai/dev/policy/agent-profile.js';
 import { DEV_RUN_STATUS } from '../../js/ai/dev/run/dev-run.js';
 import { DevSupervisorEngineV0 } from '../../js/ai/dev/supervisor/dev-supervisor-engine-v0.js';
+import { SingleConversationWorkerCoordinator } from '../../js/userscript/dev/single-tab/single-conversation-worker-coordinator.js';
 
 await testSingleTabWorkerLoopReleasesClaim();
 await testRuntimeRejectsWorkerIdentityOverride();
 await testWaitingHumanResumesSameSupervisorRun();
+await testSupervisorRestoreAcceptsPartialHistoryHydration();
 console.log('Round 2 single-tab Supervisor loop passed');
 
 async function testSingleTabWorkerLoopReleasesClaim() {
@@ -110,6 +112,50 @@ async function testWaitingHumanResumesSameSupervisorRun() {
   assert.equal(requests[1].options.sessionKey, 'human-supervisor-session', 'human resume must retain the same Supervisor ChatGPT conversation');
   assert.match(requests[1].prompt, /human-response/);
   assert.match(requests[1].prompt, /yes, proceed/);
+}
+
+async function testSupervisorRestoreAcceptsPartialHistoryHydration() {
+  const supervisor = { id: 'supervisor-cid', url: 'https://chatgpt.com/c/supervisor-cid' };
+  const worker = { id: 'worker-cid', url: 'https://chatgpt.com/c/worker-cid' };
+  const anchors = [
+    { id: 'supervisor-user-1', text: 'first decision' },
+    { id: 'supervisor-user-2', text: 'second decision' },
+    { id: 'supervisor-user-latest', text: 'delegate to worker' },
+  ];
+  let page = supervisor;
+  let hydratedWith = null;
+  let routedKey = null;
+  const listeners = new Set();
+  const controller = {
+    on(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+    currentConversation() { return page; },
+    currentUserAnchors() { return page.id === supervisor.id ? anchors : [{ id: 'worker-user', text: 'worker task' }]; },
+    observe() { return { state: 'QUIET' }; },
+    isActive() { return false; },
+    workerConversation() { return worker; },
+    router: {
+      bind(key, expected) { routedKey = key; assert.equal(expected.id, supervisor.id); },
+      async route() { page = supervisor; return { conversation: supervisor, isNew: false }; },
+    },
+    async waitForConversationHydration(expected, expectedAnchors) {
+      assert.equal(expected.id, supervisor.id);
+      hydratedWith = expectedAnchors;
+      return supervisor;
+    },
+  };
+  const coordinator = new SingleConversationWorkerCoordinator({ controller, tabNodeId: 'same-tab' });
+  await coordinator.claim({ runId: 'partial-hydration-run', workerId: 'worker-1' });
+  page = worker;
+
+  const restored = await coordinator.restoreSupervisor();
+  assert.equal(restored.id, supervisor.id);
+  assert.equal(routedKey, 'dev-supervisor-return:partial-hydration-run');
+  assert.deepEqual(
+    hydratedWith,
+    [anchors.at(-1)],
+    'Supervisor restore must require only the latest pre-delegation continuity anchor, not every virtualized historical turn',
+  );
+  coordinator.close();
 }
 
 function createWorkerClient(ops) {
