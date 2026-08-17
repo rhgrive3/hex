@@ -23,9 +23,10 @@ class FakeController {
   on(fn) { this.listeners.add(fn); return () => this.listeners.delete(fn); }
   emit(kind, data = {}) { for (const fn of this.listeners) fn({ kind, data, observedAt: new Date().toISOString() }); }
   currentConversation() { return this.page ? { ...this.page } : null; }
+  currentUserAnchors() { return [{ id: 'supervisor-latest', text: 'latest supervisor request' }]; }
   workerConversation() { return this.worker ? { ...this.worker } : null; }
   isActive() { return this.active; }
-  async navigateToConversation(conversation) { this.navigation.push(conversation.id); this.page = { ...conversation }; return this.page; }
+  async navigateToConversation(conversation, options = {}) { this.navigation.push({ id: conversation.id, options }); this.page = { ...conversation }; return this.page; }
   async createChat() { this.page = null; this.worker = null; this.text = ''; this.state = DEV_WORKER_STATE.STARTING; return this.observe(); }
   async send(text, context) {
     this.lastSend = text;
@@ -66,19 +67,21 @@ assert.equal(claimed.supervisorChatgptConversationId, 'supervisor-cid');
 await assert.rejects(() => coordinator.claim({ runId: 'run-2', workerId: 'worker-2' }), (error) => error.code === 'worker-busy');
 await coordinator.createChat({ workerId: 'worker-1' });
 assert.equal(controller.currentConversation().id, 'supervisor-cid', 'create_chat must return only after the single Safari tab is back on Supervisor');
-assert.deepEqual(controller.navigation, ['supervisor-cid'], 'create_chat recovery must restore Supervisor before the next Supervisor decision');
+assert.deepEqual(controller.navigation.map((item) => item.id), ['supervisor-cid'], 'create_chat recovery must restore Supervisor before the next Supervisor decision');
+assert.equal(controller.navigation[0].options.continuityAnchor?.id, 'supervisor-latest');
 const result = await coordinator.send({ workerId: 'worker-1', instruction: 'exact instruction' });
 assert.equal(controller.lastSend, 'exact instruction');
 assert.equal(result.responseText, 'one line');
 assert.equal(result.chatgptConversationId, 'worker-cid');
 assert.equal(controller.currentConversation().id, 'supervisor-cid', 'single-tab Worker must restore Supervisor before send resolves');
-assert.deepEqual(controller.navigation, ['supervisor-cid', 'supervisor-cid']);
+assert.deepEqual(controller.navigation.map((item) => item.id), ['supervisor-cid', 'supervisor-cid']);
 const completed = await coordinator.waitEvent({ events: ['worker.completed'], runId: 'run-1' });
 assert.equal(completed.type, 'worker.completed', 'terminal event remains available after synchronous single-tab send');
 
 await coordinator.followup({ workerId: 'worker-1', text: 'follow-up' });
-assert.equal(controller.navigation.at(-2), 'worker-cid', 'follow-up must return to the retained Worker conversation');
-assert.equal(controller.navigation.at(-1), 'supervisor-cid', 'follow-up completion must restore Supervisor again');
+assert.equal(controller.navigation.at(-2).id, 'worker-cid', 'follow-up must return to the retained Worker conversation');
+assert.equal(controller.navigation.at(-2).options.continuityAnchor, undefined, 'Worker return must retain the strict default hydration policy');
+assert.equal(controller.navigation.at(-1).id, 'supervisor-cid', 'follow-up completion must restore Supervisor again');
 assert.equal(controller.currentConversation().id, 'supervisor-cid');
 const released = await coordinator.release({ workerId: 'worker-1' });
 assert.equal(released.role, 'available');
@@ -152,7 +155,9 @@ async function testRealControllerDefersBlankChatAndWaitsForSupervisorHydration()
       users = [];
       hydrated = false;
       setTimeout(() => {
-        users = supervisorUsers.map((turn) => ({ ...turn }));
+        // Reproduce iPad partial hydration: the latest Supervisor turn returns,
+        // while older virtualized history remains absent from the DOM.
+        users = [supervisorUsers.at(-1)].map((turn) => ({ ...turn }));
         hydrated = true;
       }, 25);
       return { conversation: { ...supervisor }, isNew: false };
@@ -203,8 +208,9 @@ async function testRealControllerDefersBlankChatAndWaitsForSupervisorHydration()
   const restored = await real.navigateToConversation(supervisor, {
     sessionKey: 'dev-supervisor-return:run-real',
     timeoutMs: 1000,
+    continuityAnchor: supervisorUsers.at(-1),
   });
-  assert.equal(hydrated, true, 'route equality must not return before React rehydrates the prior Supervisor turns');
+  assert.equal(hydrated, true, 'route equality must not return before the latest Supervisor continuity turn rehydrates');
   assert.equal(restored.id, supervisor.id);
   assert.equal(real.currentConversation()?.id, supervisor.id);
 }
