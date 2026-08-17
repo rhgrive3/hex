@@ -98,6 +98,8 @@ export class Backend {
     return Object.freeze({
       route:this.analysisRoute,
       defaultCutover:false,
+      canonicalIdentityRequired:true,
+      completenessRequired:true,
       artifactRuntimeCreated:!!this._artifactOrchestrator,
       artifactRuntime:this._artifactOrchestrator?.stats?.() ?? null,
     });
@@ -363,16 +365,15 @@ export class Backend {
     }
   }
 
-  async _analysisArtifactDescriptor(sliceIndex, options = {}) {
-    const binaryId = await this.ensureContentHash(options.onHashProgress, options.signal);
+  _analysisArtifactDescriptor(sliceIndex, options = {}) {
     const capability = this.formatId === 'macho'
       ? (this.legacyInfo?.slices?.[sliceIndex]?.capability || this.platformInfo?.slices?.[sliceIndex]?.capability || this.platformInfo?.capability)
       : (this.platformInfo?.slices?.[sliceIndex]?.capability || this.platformInfo?.capability);
     const architecture = capability?.architecture || 'unknown';
     return createWorkerAnalysisArtifactDescriptor({
-      binaryId,
-      sliceId:String(sliceIndex),
-      entityId:`analysis:${sliceIndex}`,
+      binaryId:options.binaryId,
+      sliceIndex:Number(sliceIndex),
+      architecture,
       artifactKind:'backend-analysis-result',
       producerVersion:options.producerVersion ?? BACKEND_ANALYSIS_ARTIFACT_VERSIONS.producer,
       loaderVersion:options.loaderVersion ?? BACKEND_ANALYSIS_ARTIFACT_VERSIONS.loader,
@@ -380,20 +381,21 @@ export class Backend {
       abiSemanticVersion:options.abiSemanticVersion ?? BACKEND_ANALYSIS_ARTIFACT_VERSIONS.abiSemantic,
       semanticSchemaVersion:options.semanticSchemaVersion ?? BACKEND_ANALYSIS_ARTIFACT_VERSIONS.semanticSchema,
       config:{ sliceIndex:Number(sliceIndex), formatId:this.formatId, architecture, ...(options.config || {}) },
-      originRefs:[`binary:${binaryId}`],
+      originRefs:[`binary:${String(options.binaryId || '')}`],
     });
   }
 
   async _analyzeArtifact(sliceIndex, options = {}) {
+    if (!Object.hasOwn(options, 'completeness')) throw new TypeError('analysis-artifact-completeness-required');
     const uiEpoch = this.gen, transportEpoch = this.transportEpoch, file = this.file;
-    const descriptor = await this._analysisArtifactDescriptor(sliceIndex, options);
+    const descriptor = this._analysisArtifactDescriptor(sliceIndex, options);
     if (uiEpoch !== this.gen || transportEpoch !== this.transportEpoch || file !== this.file) throw new StaleRequestError();
     const result = await this._artifactRuntime().request({
       descriptor,
       signal:options.signal ?? null,
       budget:options.budget ?? null,
       priority:options.priority ?? 'current',
-      completeness:options.completeness ?? 'complete',
+      completeness:options.completeness,
       validate:options.validate ?? null,
       creation:{ backend:'Backend', formatId:this.formatId, sliceIndex:Number(sliceIndex) },
       produce:({ signal }) => this._analyzeCurrent(sliceIndex, { ...options, route:ANALYSIS_ORCHESTRATION_ROUTE.CURRENT, signal }),
