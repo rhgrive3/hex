@@ -222,9 +222,10 @@ export function createDevWorkerParentRpcClient({ port, timeoutMs = 60000 } = {})
       if (closed) return;
       closed = true;
       unlisten(port, onMessage);
-      for (const current of pending.values()) {
+      for (const [id, current] of pending) {
         if (current.timer) clearTimeout(current.timer);
         current.detach?.();
+        post(port, { protocol: DEV_PARENT_RPC_PROTOCOL, kind: 'cancel', id, method: current.method });
         current.reject(rpcError('transport-failure', 'Dev Worker RPC closed.'));
       }
       pending.clear();
