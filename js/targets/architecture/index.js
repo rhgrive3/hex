@@ -44,7 +44,13 @@ function riscv64ControlFlow(instruction) {
   if (op === 'jal') return fields.rd === 'x0' ? 'branch' : 'call';
   if (op === 'jalr') {
     if (fields.rd !== 'x0') return 'call';
-    return ['x1', 'x5'].includes(fields.rs1) ? 'return' : 'branch';
+    if (['x1', 'x5'].includes(fields.rs1)) return 'return';
+    // An indirect jump. It is reported as a branch, matching how x86 classifies
+    // an indirect `jmp`: the block ends and no fallthrough edge is invented,
+    // because the transfer does not fall through. The honest "the target is a
+    // computed value" statement lives in the MachineEffects control effect,
+    // which records kind `indirect` with the computed target expression.
+    return 'branch';
   }
   if (['beq','bne','blt','bge','bltu','bgeu'].includes(op)) return 'conditional-branch';
   if (op === 'ecall' || op === 'ebreak') return 'unknown';

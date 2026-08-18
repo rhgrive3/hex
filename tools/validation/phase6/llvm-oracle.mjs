@@ -87,7 +87,8 @@ export function compareDecodedWithOracle(decoded, oracle) {
  */
 export function compareWithCapstoneOperands(decoded, capstoneOperands) {
   if (!Array.isArray(capstoneOperands) || decoded?.fields?.supported !== true) return [];
-  const recovered = [decoded.fields.rd, decoded.fields.rs1, decoded.fields.rs2]
+  const fields = decoded.fields;
+  const recovered = [fields.rd, fields.rs1, fields.rs2]
     .filter(Boolean)
     .map((value) => normalizeRiscv64RegisterName(value))
     .filter(Boolean);
@@ -96,17 +97,58 @@ export function compareWithCapstoneOperands(decoded, capstoneOperands) {
     const reported = operand.type === 'register' ? operand.registerId
       : operand.type === 'memory' ? operand.base
         : null;
-    if (!reported) continue;
-    const canonical = normalizeRiscv64RegisterName(reported);
-    if (!canonical) {
-      mismatches.push({ kind: 'unresolvable-capstone-register', expected: 'canonical physical register', actual: reported });
-      continue;
+    if (reported) {
+      const canonical = normalizeRiscv64RegisterName(reported);
+      if (!canonical) {
+        mismatches.push({ kind: 'unresolvable-capstone-register', expected: 'canonical physical register', actual: reported });
+        continue;
+      }
+      if (!recovered.includes(canonical)) {
+        mismatches.push({ kind: 'register-field', expected: canonical, actual: recovered.join(',') || '(none)' });
+      }
     }
-    if (!recovered.includes(canonical)) {
-      mismatches.push({ kind: 'register-field', expected: canonical, actual: recovered.join(',') || '(none)' });
+    // Immediates matter as much as registers: a wrong compressed offset would
+    // still name the right registers. Capstone prints control-transfer
+    // immediates as absolute targets and everything else as the raw value.
+    if (operand.type === 'memory' && operand.displacement != null) {
+      const expected = BigInt(operand.displacement);
+      const actual = fields.imm == null ? null : BigInt(fields.imm);
+      if (actual == null || actual !== expected) {
+        mismatches.push({ kind: 'memory-displacement', expected: String(expected), actual: String(actual) });
+      }
+    } else if (operand.type === 'immediate' && operand.value != null) {
+      const expected = BigInt(operand.value);
+      const actual = capstoneImmediateEquivalent(decoded);
+      if (actual == null || actual !== expected) {
+        mismatches.push({ kind: 'immediate-field', expected: String(expected), actual: actual == null ? '(none)' : String(actual) });
+      }
     }
   }
   return mismatches;
+}
+
+/**
+ * The value Capstone reports for this instruction's immediate operand,
+ * expressed from the fields Hex recovered.
+ *
+ * The Capstone RISC-V module reports branch and jump immediates as the raw
+ * PC-relative offset (its printer shows the same number), so those compare
+ * directly. Shift amounts compare as shift amounts, and the upper-immediate
+ * forms report the unshifted encoded field rather than the formed value.
+ */
+function capstoneImmediateEquivalent(decoded) {
+  const fields = decoded.fields;
+  if (fields.shamt != null) return BigInt(fields.shamt);
+  if (fields.imm == null) return null;
+  if (fields.op === 'lui') {
+    // Capstone prints the raw 20-bit LUI field, while the decoded value is the
+    // sign-extended result. `c.lui` places its bits directly, so it has no shift.
+    return fields.expandedFrom === 'c.lui'
+      ? BigInt(fields.imm)
+      : BigInt.asUintN(20, BigInt(fields.imm) >> 12n);
+  }
+  if (fields.op === 'auipc') return BigInt.asUintN(20, BigInt(fields.imm) >> 12n);
+  return BigInt(fields.imm);
 }
 
 /** Re-decode raw bytes independently of any session state. */

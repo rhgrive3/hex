@@ -17,6 +17,7 @@
     "phase6:test": "node tests/phase6/run.mjs",
     "phase6:verify": "node tools/validation/phase6/verify.mjs",
     "phase6:corpus": "node tools/validation/phase6/build-verification-corpus.mjs",
+    "phase6:browser": "node tests/phase6/browser/wasm-decode.browser.mjs",
     "phase4:verify": "node tools/validation/phase4/verify.mjs",
     "phase4:rehearsal": "npm run check && HEX_ANALYSIS_ROUTE=artifact node tests/phase4/integration/public-artifact-route.test.mjs && node tests/phase4/migration/orchestration.test.mjs",
     "phase4:browser": "node tests/phase4/browser-persistence.mjs",

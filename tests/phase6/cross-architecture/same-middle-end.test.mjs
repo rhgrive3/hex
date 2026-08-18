@@ -126,6 +126,94 @@ async function riscvFunction() {
   } finally { capstone.close(); }
 }
 
+/*
+ * The same loop -- `long sum(long v, long n) { long s = 0; for (long i = 0; i < n; i++) s += v; return s; }`
+ * -- for each machine. A loop is the case that exercises back edges and phi
+ * placement, so proving all three recover it identically is a stronger claim
+ * than a single two-way branch.
+ */
+function arm64Loop() {
+  const { binaryId } = binaryIdentity('1');
+  const sliceId = createSliceId({ binaryId, index: 0, architecture: 'arm64' });
+  const rows = [
+    { address: 0x2000n, mnemonic: 'mov', operands: 'x2, #0' },
+    { address: 0x2004n, mnemonic: 'mov', operands: 'x3, #0' },
+    { address: 0x2008n, mnemonic: 'cmp', operands: 'x3, x1' },
+    { address: 0x200cn, mnemonic: 'b.ge', operands: '#0x201c', branchTarget: 0x201cn },
+    { address: 0x2010n, mnemonic: 'add', operands: 'x2, x2, x0' },
+    { address: 0x2014n, mnemonic: 'add', operands: 'x3, x3, #1' },
+    { address: 0x2018n, mnemonic: 'b', operands: '#0x2008', branchTarget: 0x2008n },
+    { address: 0x201cn, mnemonic: 'mov', operands: 'x0, x2' },
+    { address: 0x2020n, mnemonic: 'ret', operands: '' },
+  ].map((row) => ({
+    ...row, size: 4, length: 4, mode: 'a64',
+    ops: parseOperands(row.operands), decoderSemanticVersion: 'arm64-test-decoder-v1',
+  }));
+  return {
+    architecture: 'arm64', abiId: 'aapcs64', platform: 'linux', binaryId, sliceId,
+    instructions: withIds(rows, { binaryId, sliceId, mode: 'a64' }),
+    decoderSemanticVersion: 'arm64-test-decoder-v1',
+  };
+}
+
+async function x86Loop() {
+  const capstone = await createCapstoneX86Session();
+  try {
+    const bytes = Uint8Array.from([
+      0x31, 0xc0, 0x31, 0xc9,
+      0x48, 0x39, 0xf1, 0x7d, 0x09,
+      0x48, 0x01, 0xf8, 0x48, 0x83, 0xc1, 0x01,
+      0xeb, 0xf2, 0xc3,
+    ]);
+    const { binaryId } = binaryIdentity('2');
+    const sliceId = createSliceId({ binaryId, index: 0, architecture: 'x86_64' });
+    const rows = capstone.decode(bytes, 0x2000n).map((row) => createX86DecodedInstruction(row));
+    return {
+      architecture: 'x86_64', abiId: 'sysv-amd64', platform: 'linux', binaryId, sliceId,
+      instructions: withIds(rows, { binaryId, sliceId, mode: 'long-64' }),
+      decoderSemanticVersion: rows[0].decoderSemanticVersion,
+    };
+  } finally { capstone.close(); }
+}
+
+async function riscvLoop() {
+  const capstone = await createCapstoneRiscv64Session();
+  try {
+    const bytes = Uint8Array.from([
+      0x01, 0x46, 0x81, 0x46,
+      0x63, 0xd5, 0xb6, 0x00,
+      0x2a, 0x96, 0x85, 0x06,
+      0xe5, 0xbf,
+      0x32, 0x85,
+      0x82, 0x80,
+    ]);
+    const { binaryId } = binaryIdentity('3');
+    const sliceId = createSliceId({ binaryId, index: 0, architecture: 'riscv64' });
+    const rows = capstone.decode(bytes, 0x2000n);
+    return {
+      architecture: 'riscv64', abiId: 'lp64', platform: 'linux', binaryId, sliceId,
+      instructions: withIds(rows, { binaryId, sliceId, mode: 'rv64imc' }),
+      decoderSemanticVersion: rows[0].decoderSemanticVersion,
+    };
+  } finally { capstone.close(); }
+}
+
+function cfgHasCycle(cfg) {
+  const successors = new Map((cfg?.blocks || []).map((block) => [block.id, (block.successors || []).map((edge) => edge.to)]));
+  const state = new Map();
+  const visit = (id) => {
+    const current = state.get(id);
+    if (current === 'active') return true;
+    if (current === 'done') return false;
+    state.set(id, 'active');
+    for (const next of successors.get(id) || []) if (successors.has(next) && visit(next)) return true;
+    state.set(id, 'done');
+    return false;
+  };
+  for (const id of successors.keys()) if (visit(id)) return true;
+  return false;
+}
+
 function structuralShape(analysis) {
   const cfg = analysis.pipeline.cfg;
   const edgeKinds = cfg.blocks.flatMap((block) => (block.successors || []).map((edge) => edge.kind)).sort();
@@ -213,4 +301,40 @@ test('each architecture reaches the middle-end through its own plugin boundary, 
     assert.equal(analysis.pipeline.architectureSemanticVersion, plugin.semanticVersion,
       'artifact identity must move with the architecture semantic version');
   }
+});
+
+
+test('all three architectures recover the same loop through the same middle-end', async () => {
+  const inputs = [arm64Loop(), await x86Loop(), await riscvLoop()];
+  const analyses = inputs.map((input) => analyzeDecodedSemanticFunction({ ...input, name: 'sum' }));
+
+  for (const [index, analysis] of analyses.entries()) {
+    const architecture = inputs[index].architecture;
+    const shape = structuralShape(analysis);
+    assert.equal(shape.v2Executed, true, `${architecture} must execute the v2 pipeline`);
+    assert.equal(shape.unsupportedInstructionCount, 0, `${architecture} must lift every instruction of the loop`);
+    assert.equal(shape.provenanceLossCount, 0, `${architecture} must not lose provenance across the loop`);
+    assert.equal(cfgHasCycle(analysis.pipeline.cfg), true, `${architecture} must recover the loop back edge`);
+    assert.equal(shape.conditionalEdges, 2, `${architecture} must recover both loop-exit edges`);
+    assert.ok(shape.hasSsa, `${architecture} must build SSA across the back edge`);
+    // A loop-carried value means SSA must place phis; the same generic pass
+    // does it for all three.
+    assert.ok((analysis.pipeline.ssa.phis?.length ?? 0) > 0 || analysis.pipeline.legacyV1.instructions.some((instruction) => instruction.op === 'phi'),
+      `${architecture} must place phi nodes for the loop-carried values`);
+    assert.equal(shape.decompiled, true, `${architecture} must reach the shared decompiler`);
+  }
+
+  // Same pipeline identity and same recovered topology across all three.
+  const shapes = analyses.map(structuralShape);
+  assert.equal(new Set(shapes.map((shape) => shape.pipelineVersion)).size, 1);
+  assert.equal(new Set(shapes.map((shape) => shape.path)).size, 1);
+  assert.equal(new Set(shapes.map((shape) => shape.blockCount)).size, 1,
+    `equivalent loops must recover the same block count: ${JSON.stringify(shapes.map((shape, index) => [inputs[index].architecture, shape.blockCount]))}`);
+
+  // And again: only the flag-bearing machines use flags.
+  const byArchitecture = new Map(analyses.map((analysis) => [analysis.architectureId, analysis]));
+  assert.ok(flagOperationCount(byArchitecture.get('arm64')) > 0);
+  assert.ok(flagOperationCount(byArchitecture.get('x86_64')) > 0);
+  assert.equal(flagOperationCount(byArchitecture.get('riscv64')), 0,
+    'riscv64 must recover the same loop without any flag state');
 });

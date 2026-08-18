@@ -23,6 +23,7 @@ const REQUIRED_SUBTREES = Object.freeze([
   'elf',
   'generic-core',
   'cross-architecture',
+  'browser',
   'verification',
   'ownership',
 ]);

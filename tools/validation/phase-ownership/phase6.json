@@ -28,7 +28,11 @@
       "package.json",
       "tests/capability-maturity.mjs",
       "reports/phase5/**",
-      ".gitignore"
+      ".gitignore",
+      "js/platform/capstone-disasm-worker.js",
+      "js/platform/capstone-probe-worker.js",
+      "userscript/hex.user.template.js",
+      "userscript/release-version.json"
     ]
   },
   "contractPaths": [
@@ -52,7 +56,9 @@
     "js/binary/elf.js",
     "js/platform/capability-maturity.js",
     "package.json",
-    "tests/capability-maturity.mjs"
+    "tests/capability-maturity.mjs",
+    "js/platform/capstone-disasm-worker.js",
+    "js/platform/capstone-probe-worker.js"
   ],
   "generatedPaths": [
     "userscript/hex.user.template.js",
@@ -94,5 +100,12 @@
   "ownedWithConstraint": {
     "reports/phase5/**": "Phase 5 evidence may be marked superseded with a pointer to the live gate, but its historical record must not be deleted or rewritten.",
     "tests/capability-maturity.mjs": "May be updated only to match repaired machine-readable capability truth, never to relax an assertion so an inflated claim passes."
-  }
+  },
+  "generatedWriteOwners": [
+    "p6"
+  ],
+  "releaseWriteOwners": [
+    "p6"
+  ],
+  "generatedOutputNote": "Phase 6 is a single-owner phase, so it is also the release owner and MUST complete the generated-output transaction itself: changing protected runtime source without rebuilding the canonical userscript is a merge-blocking desync."
 }

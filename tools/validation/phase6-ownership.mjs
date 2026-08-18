@@ -51,6 +51,21 @@ export function validateManifest(manifest) {
   for (const forbidden of manifest.forbiddenPaths ?? []) {
     if ((manifest.lanes?.p6 ?? []).includes(forbidden)) errors.push(`path is both owned and forbidden: ${forbidden}`);
   }
+  // A manifest that declares a generated or release-only path the lane cannot
+  // write is self-contradictory: the only lane there is would be blocked from
+  // completing its own generated-output transaction. Phase 4 shipped exactly
+  // this contradiction, so it is checked rather than trusted.
+  const owned = manifest.lanes?.p6 ?? [];
+  for (const field of ['generatedPaths', 'releaseOnlyPaths']) {
+    for (const declared of manifest[field] ?? []) {
+      if (!owned.includes(declared)) errors.push(`${field} declares a path the lane does not own: ${declared}`);
+    }
+  }
+  for (const field of ['generatedWriteOwners', 'releaseWriteOwners']) {
+    const owners = manifest[field];
+    if (!Array.isArray(owners) || owners.length === 0) errors.push(`${field} must name at least one lane`);
+    else for (const lane of owners) if (!manifest.lanes?.[lane]) errors.push(`${field} names unknown lane: ${lane}`);
+  }
   return errors;
 }
 

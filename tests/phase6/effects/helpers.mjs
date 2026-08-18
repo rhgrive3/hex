@@ -17,6 +17,22 @@ export function liftBytes(bytes, address = 0x1000n) {
   return { decoded, bundle };
 }
 
+/* Little-endian byte-addressed memory, so overlapping widths stay consistent. */
+function readMemory(memory, address, widthBits) {
+  let value = 0n;
+  for (let index = BigInt(widthBits) / 8n - 1n; index >= 0n; index -= 1n) {
+    value = (value << 8n) | BigInt(memory.get((BigInt(address) + index).toString()) ?? 0);
+  }
+  return value;
+}
+function writeMemory(memory, address, widthBits, value) {
+  let remaining = BigInt.asUintN(widthBits, value);
+  for (let index = 0n; index < BigInt(widthBits) / 8n; index += 1n) {
+    memory.set((BigInt(address) + index).toString(), Number(remaining & 0xffn));
+    remaining >>= 8n;
+  }
+}
+
 function widthOf(value) {
   if (value?.kind === 'temporary') return Number(value.valueType?.widthBits || 64);
   return Number(value?.widthBits || 64);
@@ -56,8 +72,17 @@ export function evaluateBundle(bundle, initialRegisters = {}, memory = new Map()
   for (const operation of bundle.operations) {
     if (operation.kind === 'register-read') { write(operation.value, registers.get(operation.register.registerId) ?? 0n); continue; }
     if (operation.kind === 'register-write') { registers.set(operation.register.registerId, read(operation.value)); continue; }
-    if (operation.kind === 'memory-read') { write(operation.value, memory.get(String(read(operation.access.addressExpr ?? { kind: 'bitvector', widthBits: 64, value: 0n }))) ?? 0n); continue; }
-    if (operation.kind === 'memory-write' || operation.kind === 'barrier') continue;
+    if (operation.kind === 'memory-read') {
+      const address = read(operation.access.addressExpr);
+      write(operation.value, readMemory(memory, address, operation.access.widthBits));
+      continue;
+    }
+    if (operation.kind === 'memory-write') {
+      const address = read(operation.access.addressExpr);
+      writeMemory(memory, address, operation.access.widthBits, read(operation.value));
+      continue;
+    }
+    if (operation.kind === 'barrier') continue;
     if (operation.kind !== 'value') throw new Error(`unsupported operation kind ${operation.kind}`);
 
     const output = operation.outputs[0];
@@ -106,4 +131,113 @@ export function* sampleValues(seed = 1n, count = 24) {
     state = BigInt.asUintN(64, state * 6364136223846793005n + 1442695040888963407n);
     yield state;
   }
+}
+
+/**
+ * Execute a whole lifted RV64 function.
+ *
+ * This is the layer that turns "the pipeline completed" into "the semantics are
+ * right". It interprets only the generic MachineEffects vocabulary and the
+ * generic control-effect contract -- it knows no RISC-V -- and follows the
+ * control effects the lifter produced. Comparing its result against the
+ * behaviour of the C source the corpus was compiled from is a genuine
+ * source-level oracle: neither side is the implementation under test.
+ *
+ * `bundlesByAddress` maps an instruction address to its lifted bundle.
+ * Execution stops at the first `return`, and anything it cannot follow (an
+ * indirect transfer, a trap, an unknown effect) stops with a reason rather than
+ * guessing.
+ */
+export function executeFunction(bundlesByAddress, {
+  registers = {},
+  memory = new Map(),
+  entryAddress,
+  maxSteps = 20000,
+} = {}) {
+  const state = new Map(Object.entries(registers).map(([id, value]) => [id, u64(value)]));
+  let pc = BigInt(entryAddress);
+  let steps = 0;
+
+  while (steps < maxSteps) {
+    steps += 1;
+    const bundle = bundlesByAddress.get(pc.toString());
+    if (!bundle) return { status: 'no-bundle', pc, steps, registers: state, memory };
+    if (bundle.completeness !== 'exact' && bundle.completeness !== 'exact-with-intrinsic') {
+      return { status: `non-exact:${bundle.completeness}`, pc, steps, registers: state, memory };
+    }
+
+    const result = evaluateBundle(bundle, Object.fromEntries(state), memory);
+    for (const [id, value] of result.registers) state.set(id, value);
+
+    const control = bundle.controlEffect;
+    const resolve = (reference) => {
+      if (reference == null) return null;
+      if (reference.kind === 'absolute-address') return BigInt(reference.value);
+      if (reference.kind === 'temporary') {
+        const value = result.temporaries.get(reference.temporaryId);
+        return value == null ? null : BigInt.asUintN(64, value);
+      }
+      return null;
+    };
+
+    if (control.kind === 'return') return { status: 'returned', pc, steps, registers: state, memory };
+    if (control.kind === 'fallthrough') { pc += BigInt(instructionLengthOf(bundle)); continue; }
+    if (control.kind === 'branch' || control.kind === 'indirect') {
+      // An indirect transfer is followable exactly when its target value is
+      // computable from the state we have -- which, with the image mapped into
+      // memory, includes real jump tables.
+      const target = resolve(control.target);
+      if (target == null) return { status: `unresolved-${control.kind}-target`, pc, steps, registers: state, memory };
+      pc = target;
+      continue;
+    }
+    if (control.kind === 'conditional-branch') {
+      const conditionId = control.condition?.temporaryId;
+      const taken = conditionId == null ? null : result.temporaries.get(conditionId);
+      if (taken == null) return { status: 'unresolved-condition', pc, steps, registers: state, memory };
+      const target = taken === 1n ? resolve(control.target) : resolve(control.fallthrough);
+      if (target == null) return { status: 'unresolved-branch-target', pc, steps, registers: state, memory };
+      pc = target;
+      continue;
+    }
+    return { status: `unfollowable-control:${control.kind}`, pc, steps, registers: state, memory };
+  }
+  return { status: 'step-budget-exhausted', pc, steps, registers: state, memory };
+}
+
+function instructionLengthOf(bundle) {
+  const range = bundle.origin?.virtualRanges?.[0];
+  if (range?.start != null && range?.end != null) return Number(BigInt(range.end) - BigInt(range.start));
+  return bundle.metadata?.compressed === true ? 2 : 4;
+}
+
+
+/**
+ * A byte-addressed memory view layered over a shared read-only base.
+ *
+ * The base holds the fixture's mapped image, so real `.rodata` jump tables and
+ * globals read correctly. Writes land in a per-execution overlay, so one input
+ * tuple cannot leak state into the next.
+ */
+export function layeredMemory(base) {
+  const overlay = new Map();
+  return {
+    get(key) { return overlay.has(key) ? overlay.get(key) : base.get(key); },
+    set(key, value) { overlay.set(key, value); return this; },
+    has(key) { return overlay.has(key) || base.has(key); },
+  };
+}
+
+/** Map an ELF image's loadable segments into a byte-addressed memory base. */
+export function imageMemory(image, bytes) {
+  const base = new Map();
+  for (const segment of image.segments || []) {
+    if (segment.address == null || segment.fileSize == null) continue;
+    const start = Number(segment.fileOffset ?? 0);
+    const length = Number(segment.fileSize);
+    for (let index = 0; index < length; index += 1) {
+      base.set((BigInt(segment.address) + BigInt(index)).toString(), bytes[start + index] ?? 0);
+    }
+  }
+  return base;
 }
