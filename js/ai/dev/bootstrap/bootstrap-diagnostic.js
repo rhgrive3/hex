@@ -1,4 +1,5 @@
 const MAX_DETAIL_TEXT = 180;
+const DIAGNOSTIC_KEY = '__HEX_DEV_BOOTSTRAP_DIAGNOSTIC__';
 
 export function bootstrapStatusPresentation(status, { ja = false } = {}) {
   const value = status && typeof status === 'object' ? status : { state: 'unknown' };
@@ -43,12 +44,26 @@ export function bootstrapStatusPresentation(status, { ja = false } = {}) {
   });
 }
 
+export function publishBootstrapDiagnostic(globalObject, status) {
+  const target = globalObject || globalThis;
+  let diagnostic = target?.[DIAGNOSTIC_KEY] || null;
+  if (!diagnostic) {
+    const documentRef = target?.document;
+    const root = documentRef?.getElementById?.('ai-panel') || null;
+    const ja = languageOf(target).startsWith('ja');
+    diagnostic = installBootstrapDiagnostic({ panel: root ? { root } : null, ja, documentRef });
+    try { target[DIAGNOSTIC_KEY] = diagnostic; } catch {}
+  }
+  return diagnostic.set(status);
+}
+
 export function installBootstrapDiagnostic({ panel, ja = false, documentRef = globalThis.document } = {}) {
   const root = panel?.root;
   const contextBar = root?.querySelector?.('.ai-context-bar');
-  if (!root || !contextBar || !documentRef?.createElement) return noOpDiagnostic();
+  if (!root || !contextBar || !documentRef?.createElement) return noOpDiagnostic(ja);
 
   const chip = documentRef.createElement('button');
+  chip.id = 'ai-bootstrap-status';
   chip.type = 'button';
   chip.className = 'ai-chip ai-bootstrap-chip';
   chip.hidden = true;
@@ -101,7 +116,13 @@ function summaryFor(state, ja) {
   if (state === 'reload-requested') return ja ? 'R4 ↻ Bootstrap 再初期化' : 'R4 ↻ Bootstrap reinitializing';
   if (state === 'complete') return ja ? 'R4 ✓ Bootstrap 完了' : 'R4 ✓ Bootstrap complete';
   if (state === 'failed') return ja ? 'R4 ✕ Bootstrap 失敗' : 'R4 ✕ Bootstrap failed';
-  return ja ? `R4 ? Bootstrap ${state}` : `R4 ? Bootstrap ${state}`;
+  return `R4 ? Bootstrap ${state}`;
+}
+
+function languageOf(globalObject) {
+  const documentLanguage = clean(globalObject?.document?.documentElement?.lang).toLowerCase();
+  if (documentLanguage) return documentLanguage;
+  return clean(globalObject?.navigator?.language).toLowerCase();
 }
 
 function clean(value) {
@@ -119,10 +140,10 @@ function setDataset(root, key, value) {
   else delete root.dataset[key];
 }
 
-function noOpDiagnostic() {
-  let current = bootstrapStatusPresentation({ state: 'skipped' });
+function noOpDiagnostic(ja = false) {
+  let current = bootstrapStatusPresentation({ state: 'skipped' }, { ja });
   return Object.freeze({
-    set(status) { current = bootstrapStatusPresentation(status); return current; },
+    set(status) { current = bootstrapStatusPresentation(status, { ja }); return current; },
     current() { return current; },
     element: null,
     destroy() {},
