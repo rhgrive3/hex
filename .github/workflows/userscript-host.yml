@@ -64,6 +64,8 @@ jobs:
         run: node tests/userscript-embed-mode-security.mjs
       - name: Conversation routing storage boundary
         run: node tests/chatgpt-conversation-storage-security.mjs
+      - name: Dynamic Task Graph focused regression
+        run: node tests/dev-agent/dynamic-task-graph.mjs
       - name: Build and userscript tests
         run: npm run userscript:test
       - name: Round 4 production bootstrap contract
