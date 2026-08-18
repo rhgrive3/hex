@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {
   parseSwiftNominalDescriptor, parseSwiftFieldDescriptor, parseSwiftProtocolDescriptor,
-  parseSwiftConformanceDescriptor, buildSwiftRuntimeIndex, resolveSwiftDispatch,
+  parseSwiftConformanceDescriptor, parseSwiftVTable, buildSwiftRuntimeIndex, resolveSwiftDispatch,
   demangleSwiftSymbol, swiftCallingConvention, formatSwiftCall,
 } from '../js/swift.js';
 
@@ -61,6 +61,24 @@ const conf = await parseSwiftConformanceDescriptor(read, 0x1600n);
 assert.equal(conf.protocol, 0x1500n);
 assert.equal(conf.typeRef, 0x1100n);
 assert.equal(conf.witnessTable, 0x1700n);
+
+// Swift MethodDescriptorFlags use bit 0x10 as IsInstance (positive polarity).
+// Exercise ordinary, non-instance, dynamic and async combinations so this ABI bit cannot regress inverted.
+const methodFlags = [0x11, 0x01, 0x31, 0x51];
+for (let i = 0; i < methodFlags.length; i++) {
+  const at = 0x1800 + i * 8;
+  put32(at, methodFlags[i]);
+  putI32(at + 4, 0x2000 + i * 0x10 - (at + 4));
+}
+const vtable = await parseSwiftVTable(read, 0x1800n, methodFlags.length);
+assert.equal(vtable.length, 4);
+assert.equal(vtable[0].instance, true, 'IsInstance bit must classify an ordinary instance method as instance');
+assert.equal(vtable[1].instance, false, 'missing IsInstance bit must remain non-instance');
+assert.equal(vtable[2].instance, true, 'dynamic instance method must preserve IsInstance');
+assert.equal(vtable[2].dynamic, true);
+assert.equal(vtable[3].instance, true, 'async flag must not invert IsInstance');
+assert.equal(vtable[3].dynamic, false);
+assert.deepEqual(vtable.map((entry) => entry.impl), [0x2000n, 0x2010n, 0x2020n, 0x2030n]);
 
 // Vtable and witness dispatch resolution keep ABI slot evidence.
 const index = buildSwiftRuntimeIndex({
