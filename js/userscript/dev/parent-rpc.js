@@ -11,6 +11,7 @@ export const DEV_PARENT_RPC_METHODS = Object.freeze([
   'dev.worker.result',
   'dev.worker.release',
   'dev.worker.wait_event',
+  'dev.runtime.identity',
   'dev.admin.page_snapshot',
   'dev.admin.page_scripts',
   'dev.admin.page_script_source',
@@ -195,6 +196,7 @@ export function createDevWorkerParentRpcClient({ port, timeoutMs = 60000 } = {})
       ...opts,
       timeoutMs: 0,
     }),
+    runtimeIdentity: (args = {}, opts = {}) => call('dev.runtime.identity', args, opts),
     pageSnapshot: (args = {}, opts = {}) => call('dev.admin.page_snapshot', args, opts),
     pageScripts: (args = {}, opts = {}) => call('dev.admin.page_scripts', args, opts),
     pageScriptSource: (args = {}, opts = {}) => call('dev.admin.page_script_source', args, opts),
@@ -243,6 +245,7 @@ async function dispatch(runtime, method, params, signal) {
   if (method === 'dev.worker.result') return runtime.result(params, options);
   if (method === 'dev.worker.release') return runtime.release(params, options);
   if (method === 'dev.worker.wait_event') return runtime.waitEvent(params, options);
+  if (method === 'dev.runtime.identity') return runtime.runtimeIdentity(params, options);
   if (method === 'dev.admin.page_snapshot') return runtime.pageSnapshot(params, options);
   if (method === 'dev.admin.page_scripts') return runtime.pageScripts(params, options);
   if (method === 'dev.admin.page_script_source') return runtime.pageScriptSource(params, options);

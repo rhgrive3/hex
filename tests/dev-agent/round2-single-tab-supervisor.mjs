@@ -97,7 +97,8 @@ async function testUnavailableToolFeedbackAllowsReplan() {
   assert.equal(feedback.kind, 'tool-unavailable');
   assert.equal(feedback.tool, 'worker.not-available');
   assert.match(feedback.message, /現在利用できません/);
-  assert.deepEqual(feedback.availableTools, [...supervisor.availableTools], 'feedback must return the complete current tool list');
+  assert.deepEqual(feedback.availableTools, [...engine.availableTools()], 'feedback must return the complete current tool list');
+  assert.ok(feedback.availableTools.includes('worker.release'), 'the Worker tool surface must stay in the returned list');
 }
 
 async function testRuntimeRejectsWorkerIdentityOverride() {
@@ -141,14 +142,44 @@ async function testAmbiguousClaimFailureCleansUpAndFailsRun() {
       return { text: JSON.stringify({ type: 'tool', tool: 'worker.claim', arguments: {}, purpose: 'claim once' }) };
     },
   };
-  const engine = new DevSupervisorEngineV0({ supervisor, settings, bridge });
+  /* A transport failure is recoverable, so the Supervisor gets it back and may
+     retry. The retry is bounded by the tool-error recovery budget, and once the
+     budget is spent the run still fails with deterministic Worker cleanup. */
+  const engine = new DevSupervisorEngineV0({ supervisor, settings, bridge, maxToolErrorRecoveries: 3 });
   await assert.rejects(
     () => engine.run({ mode: 'agent', question: 'claim safely', conversationId: 'hex-ambiguous' }),
     /timed out/,
   );
-  assert.equal(ops.filter((item) => item.op === 'claim').length, 1);
+  assert.equal(ops.filter((item) => item.op === 'claim').length, 4, 'recoverable claim failures must be bounded by the recovery budget');
   assert.equal(ops.filter((item) => item.op === 'release').length, 1, 'ambiguous claim failure must attempt deterministic cleanup');
   assert.equal(settings.lastRun.status, DEV_RUN_STATUS.FAILED, 'failed Dev tooling must not leave a phantom ACTIVE run');
+
+  const strictOps = [];
+  const strictClient = createWorkerClient(strictOps);
+  strictClient.claim = async (args) => {
+    strictOps.push({ op: 'claim', args });
+    const error = new Error('Dev Worker RPC timed out: dev.worker.claim');
+    error.code = 'transport-failure';
+    throw error;
+  };
+  const strictSettings = devSettings();
+  const strictEngine = new DevSupervisorEngineV0({
+    supervisor: new DevSupervisorV0({
+      workerClient: strictClient,
+      idFactory: (kind) => ({ run: 'strict-run', worker: 'strict-worker', 'supervisor-session': 'strict-supervisor' }[kind] || `${kind}-id`),
+      now: () => '2026-08-17T00:00:00.000Z',
+    }),
+    settings: strictSettings,
+    bridge,
+    maxToolErrorRecoveries: 0,
+  });
+  await assert.rejects(
+    () => strictEngine.run({ mode: 'agent', question: 'claim safely', conversationId: 'hex-strict' }),
+    /timed out/,
+  );
+  assert.equal(strictOps.filter((item) => item.op === 'claim').length, 1, 'a zero recovery budget must keep the original fail-fast path exact');
+  assert.equal(strictOps.filter((item) => item.op === 'release').length, 1);
+  assert.equal(strictSettings.lastRun.status, DEV_RUN_STATUS.FAILED);
 }
 
 async function testWaitingHumanResumesSameSupervisorRun() {
