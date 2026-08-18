@@ -60,8 +60,9 @@ jobs:
             hex/p5-5-*) phase=5; lane=p5-5 ;;
             hex/p5-6-*) phase=5; lane=p5-6 ;;
             hex/p5-x86-integration) phase=5; lane=p5-i ;;
+            hex/p6-riscv64-integration) phase=6; lane=p6 ;;
             *)
-              echo "::error::Phase 4-owned files require a canonical Phase 4 or Phase 5 lane branch; got '$HEAD_REF'."
+              echo "::error::Phase 4-owned files require a canonical Phase 4, Phase 5, or Phase 6 integration branch; got '$HEAD_REF'."
               exit 1
               ;;
           esac
@@ -96,5 +97,11 @@ jobs:
         run: >-
           node tools/validation/phase5-ownership.mjs
           --lane "${{ steps.lane.outputs.lane }}"
+          --base-sha "${{ github.event.pull_request.base.sha }}"
+          --head-sha "${{ github.event.pull_request.head.sha }}"
+      - name: Enforce exact Phase 6 ownership inventory at the Phase 4 boundary
+        if: steps.lane.outputs.phase == '6'
+        run: >-
+          node tools/validation/phase6-ownership.mjs
           --base-sha "${{ github.event.pull_request.base.sha }}"
           --head-sha "${{ github.event.pull_request.head.sha }}"
