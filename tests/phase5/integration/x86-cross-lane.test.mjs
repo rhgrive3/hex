@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { partitionDecodedFunction } from '../../../js/targets/architecture/x86_64/semantic-function.js';
 import { liftX86MachineEffects } from '../../../js/targets/architecture/x86_64/effects/index.js';
 import { decoded, imm, mem, operations, reg } from '../effects/memory/helpers.mjs';
 
@@ -120,4 +121,64 @@ test('proven LOCKed cross-lane memory RMW maps to generic seq-cst while unlocked
   assert.equal(writes(unlocked)[0].access.atomic, false);
   assert.equal(reads(unlocked)[0].access.ordering, undefined);
   assert.equal(writes(unlocked)[0].access.ordering, undefined);
+});
+
+const cfgPlugin = Object.freeze({
+  classifyControlFlow(instruction) { return instruction.control || 'fallthrough'; },
+});
+
+function cfgInsn(address, length, control = 'fallthrough', target = null) {
+  return {
+    address:BigInt(address),
+    length,
+    control,
+    detail:{ operands:target == null ? [] : [{ type:'immediate', value:BigInt(target) }] },
+  };
+}
+
+function blockAt(blocks, address) {
+  return blocks.find((block) => block.startAddress === BigInt(address));
+}
+
+test('#795 conditional branch does not invent false fallthrough across a decode gap', () => {
+  const blocks = partitionDecodedFunction([
+    cfgInsn(0x100, 2, 'conditional-branch', 0x200),
+    cfgInsn(0x200, 1, 'return'),
+  ], cfgPlugin);
+  const branch = blockAt(blocks, 0x100);
+  assert.deepEqual(branch.successors, [{ to:'block-200', kind:'conditional-true' }]);
+});
+
+test('#795 exact physical conditional fallthrough is preserved when decoded', () => {
+  const blocks = partitionDecodedFunction([
+    cfgInsn(0x100, 2, 'conditional-branch', 0x200),
+    cfgInsn(0x102, 1, 'return'),
+    cfgInsn(0x200, 1, 'return'),
+  ], cfgPlugin);
+  const branch = blockAt(blocks, 0x100);
+  assert.deepEqual(branch.successors, [
+    { to:'block-200', kind:'conditional-true' },
+    { to:'block-102', kind:'conditional-false' },
+  ]);
+});
+
+test('#795 ordinary fallthrough does not jump to the next enumerated disjoint block', () => {
+  const blocks = partitionDecodedFunction([
+    cfgInsn(0x80, 2, 'conditional-branch', 0x200),
+    cfgInsn(0x100, 4, 'fallthrough'),
+    cfgInsn(0x200, 1, 'return'),
+  ], cfgPlugin);
+  const disjoint = blockAt(blocks, 0x100);
+  assert.deepEqual(disjoint.successors, []);
+});
+
+test('#795 contiguous ordinary fallthrough still connects to the exact next block', () => {
+  const blocks = partitionDecodedFunction([
+    cfgInsn(0x80, 2, 'conditional-branch', 0x200),
+    cfgInsn(0x100, 4, 'fallthrough'),
+    cfgInsn(0x104, 1, 'return'),
+    cfgInsn(0x200, 1, 'return'),
+  ], cfgPlugin);
+  const contiguous = blockAt(blocks, 0x100);
+  assert.deepEqual(contiguous.successors, [{ to:'block-104', kind:'fallthrough' }]);
 });
