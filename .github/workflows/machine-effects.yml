@@ -40,7 +40,7 @@ jobs:
           t = Path('tests/semantic-v2/issues-791-797-800-825-ir-soundness.test.mjs')
           q = t.read_text()
           needle = "  const fact = firstBranchFact(build(lines, `825-${tag}`));"
-          repl = "  const debugIr = build(lines, `825-${tag}`);\n  const debugCmp = debugIr.instructions.find((inst) => inst.op === OP.CMP);\n  console.log('DEBUG825', tag, JSON.stringify(debugCmp, (_k, v) => typeof v === 'bigint' ? v.toString() : v));\n  const fact = firstBranchFact(debugIr);"
+          repl = "  const debugIr = build(lines, `825-${tag}`);\n  const debugCmp = debugIr.instructions.find((inst) => inst.op === OP.CMP);\n  const debugRhs = debugCmp?.args?.[1];\n  console.log('DEBUG825', tag, JSON.stringify({ extraBits:debugCmp?.extra?.bits ?? null, lhsBits:debugCmp?.args?.[0]?.bits ?? null, rhsBits:debugRhs?.bits ?? null, rhsConst:debugRhs?.value?.const == null ? null : debugRhs.value.const.toString(), rhsValueBits:debugRhs?.value?.bits ?? null, shift:debugRhs?.shift ?? null }));\n  const fact = firstBranchFact(debugIr);"
           assert needle in q
           t.write_text(q.replace(needle, repl))
           PY
