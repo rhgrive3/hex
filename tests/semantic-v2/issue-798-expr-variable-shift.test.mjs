@@ -16,7 +16,7 @@ function evaluate(rows, resultRow = rows.length - 1, resultReg = 'x2') {
   const node = buildValues(model).defAt(resultRow, resultReg);
   assert.ok(node, `missing ${resultReg} definition at row ${resultRow}`);
   const value = constOf(node);
-  assert.notEqual(value, null, `expected a folded constant, got ${JSON.stringify(node)}`);
+  assert.notEqual(value, null, `expected a folded constant; node kind=${node?.k ?? node?.kind ?? 'unknown'}`);
   return value;
 }
 
