@@ -32,7 +32,7 @@ jobs:
           set -euo pipefail
           git rm .github/workflows/tmp-multi-worker-wire.yml .github/workflows/tmp-multi-worker-pr-driver.yml scripts/tmp-multi-worker-wire.py
           test ! -e tmp-multi-worker-trigger.txt || git rm tmp-multi-worker-trigger.txt
-          git add js/ai/dev/admin/tool-surface.js js/ai/dev/protocol/dev-supervisor-prompt.js js/userscript/dev/parent-rpc.js js/userscript/dev/parent-worker-runtime.js js/userscript/dev/tab-mesh/worker-tab-ticket.js js/userscript/dev/tab-mesh/auth-broadcast-port.js js/userscript/dev/tab-mesh/dedicated-worker-coordinator.js js/userscript/dev/tab-mesh/multi-tab-worker-pool.js js/userscript/dev/tab-mesh/worker-tab-runtime.js js/userscript/entry.js scripts/build-userscript.mjs tests/dev-agent/multi-worker-tab-pool.mjs tests/userscript-release-version.mjs userscript/hex.user.template.js userscript/release-version.json
+          git add js/ai/dev/admin/tool-surface.js js/ai/dev/protocol/dev-supervisor-prompt.js js/userscript/dev/parent-rpc.js js/userscript/dev/parent-worker-runtime.js js/userscript/dev/tab-mesh/worker-tab-ticket.js js/userscript/dev/tab-mesh/auth-broadcast-port.js js/userscript/dev/tab-mesh/dedicated-worker-coordinator.js js/userscript/dev/tab-mesh/multi-tab-worker-pool.js js/userscript/dev/tab-mesh/worker-tab-runtime.js js/userscript/entry.js scripts/build-userscript.mjs tests/dev-agent/multi-worker-tab-pool.mjs tests/userscript-dev-worker-runtime.mjs tests/userscript-release-version.mjs userscript/hex.user.template.js userscript/release-version.json
           git diff --cached --check
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
