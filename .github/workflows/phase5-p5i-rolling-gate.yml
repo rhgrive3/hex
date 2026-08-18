@@ -12,6 +12,97 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  addressing-handoff:
+    name: p5-i-close-addressing-handoff
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.pull_request.head.ref == 'hex/p5-x86-integration' }}
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: hex/p5-x86-integration
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Reuse P5-2 addressing truth in P5-3 memory forms
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+
+          def replace_or_assert(path, old, new):
+              p=Path(path); text=p.read_text()
+              if old in text:
+                  if text.count(old) != 1:
+                      raise SystemExit(f'{path}: ambiguous old handoff')
+                  p.write_text(text.replace(old,new))
+              elif new not in text:
+                  raise SystemExit(f'{path}: neither old nor integrated address helper found')
+
+          replace_or_assert(
+            'js/targets/architecture/x86_64/effects/fp.js',
+            "function foundationAddress(ctx,operand){const memory=operand?.type==='memory'?operand.memory:null;if(!memory||memory.addressSizeBits!==64||memory.segment!=null)return null;return x86EffectiveAddressExpression(ctx.instruction,operand);}",
+            "function foundationAddress(ctx,operand){return operand?.type==='memory'?x86EffectiveAddressExpression(ctx.instruction,operand):null;}"
+          )
+          replace_or_assert(
+            'js/targets/architecture/x86_64/effects/simd.js',
+            "function memoryAddress(ctx,operand){const memory=operand?.type==='memory'?operand.memory:null;if(!memory||memory.addressSizeBits!==64||memory.segment!=null)return null;return x86EffectiveAddressExpression(ctx.instruction,operand);}",
+            "function memoryAddress(ctx,operand){return operand?.type==='memory'?x86EffectiveAddressExpression(ctx.instruction,operand):null;}"
+          )
+
+          p=Path('tests/phase5/effects/fp-simd/moves-fp.test.mjs')
+          text=p.read_text()
+          old_title="test('memory forms needing P5-2 address-size/TLS improvements remain explicit P5-I handoffs', () => {"
+          new_title="test('P5-3 memory forms reuse P5-2 address-size and TLS semantics', () => {"
+          if old_title in text:
+              start=text.index(old_title)
+              end=text.index('\n});', start)+4
+              replacement="""test('P5-3 memory forms reuse P5-2 address-size and TLS semantics', () => {
+  const addr32=effects('movss',[reg('xmm0','write'),mem(32,{addressSizeBits:32})],{prefixes:legacyPrefix(0xf3),instructionId:'p5-3:addr32'});
+  assert.equal(addr32.completeness,'exact');
+  const addrRead=ops(addr32,'memory-read')[0];
+  assert.equal(addrRead.access.space,'memory');
+  assert.equal(addrRead.metadata.addressSizeBits,32);
+  assert.equal(addrRead.metadata.addressWrapBits,32);
+
+  const fs=effects('movss',[reg('xmm0','write'),mem(32,{segment:'fs'})],{prefixes:legacyPrefix(0xf3),instructionId:'p5-3:fs'});
+  assert.equal(fs.completeness,'exact');
+  const fsRead=ops(fs,'memory-read')[0];
+  assert.equal(fsRead.access.space,'tls');
+  assert.equal(fsRead.metadata.segment,'fs');
+  assert.equal(fsRead.metadata.segmentBaseDependency,'FS.base');
+});"""
+              p.write_text(text[:start]+replacement+text[end:])
+          elif new_title not in text:
+              raise SystemExit('P5-3 addressing seam test not found')
+          PY
+          git diff --check
+      - name: Focused seam validation
+        run: |
+          node --test --test-concurrency=1 tests/phase5/effects/fp-simd/*.test.mjs
+          node --test --test-concurrency=1 tests/phase5/integration/*.test.mjs
+          npm run phase5:test
+      - name: Commit only the integrated handoff if changed
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add js/targets/architecture/x86_64/effects/fp.js js/targets/architecture/x86_64/effects/simd.js tests/phase5/effects/fp-simd/moves-fp.test.mjs
+          git diff --cached --check
+          if git diff --cached --quiet; then
+            echo 'Address-size/TLS handoff already integrated.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Phase 5: close P5-3 address-size and TLS handoff'
+          git push origin HEAD:refs/heads/hex/p5-x86-integration
+
   canonical-generated:
     name: p5-i-generated-idempotence
     runs-on: ubuntu-latest
