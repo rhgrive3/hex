@@ -42,7 +42,8 @@ function assertCanonical(loc, offset) {
   assertCanonical(directMinus.loc, -8n);
   assert.equal(mustAlias(frameStore.loc, directPlus.loc), true);
   assert.equal(mustAlias(frameStore.loc, directMinus.loc), false);
-  assert.equal(frameStore.loc, directPlus.loc, 'same-size canonical coordinate reuses one public location object');
+  assert.equal(frameStore.loc.key, directPlus.loc.key, 'same-size same-coordinate public keys are identical');
+  assert.equal(frameStore.loc.regionId, directPlus.loc.regionId, 'same stack coordinate remains in one canonical region');
 }
 
 // Nested SP-derived temporary: x9=sp+32, x10=x9-16, [x10-8] => sp+8.
@@ -58,6 +59,8 @@ function assertCanonical(loc, offset) {
   assertCanonical(nested.loc, 8n);
   assertCanonical(direct.loc, 8n);
   assert.equal(mustAlias(nested.loc, direct.loc), true);
+  assert.equal(nested.loc.key, direct.loc.key);
+  assert.equal(nested.loc.regionId, direct.loc.regionId);
 }
 
 // Negative total offset remains signed in loc.disp while key uses canonical
@@ -73,6 +76,8 @@ function assertCanonical(loc, offset) {
   assertCanonical(frameStore.loc, -8n);
   assertCanonical(direct.loc, -8n);
   assert.equal(mustAlias(frameStore.loc, direct.loc), true);
+  assert.equal(frameStore.loc.key, direct.loc.key);
+  assert.equal(frameStore.loc.regionId, direct.loc.regionId);
 }
 
 // Same byte start but different widths overlap without becoming MustAlias.
@@ -90,6 +95,7 @@ function assertCanonical(loc, offset) {
   assertCanonical(narrow.loc, 8n);
   assert.equal(wide.loc.size, 8);
   assert.equal(narrow.loc.size, 4);
+  assert.equal(wide.loc.regionId, narrow.loc.regionId, 'different-width accesses still refer to the same stack region');
   assert.equal(mustAlias(wide.loc, narrow.loc), false);
   assert.equal(mayAliasProvenance(wide.loc, narrow.loc), true);
 }
