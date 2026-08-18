@@ -27,6 +27,7 @@ export async function startProtectedRuntime(options = {}) {
       runtimeSourceProvider: options.runtimeSourceProvider,
       loaderVersion: String(options.loaderVersion || globalThis.__HEX_SECURE_LOADER__?.version || ''),
       buildId: String(options.buildId || globalThis.__HEX_SECURE_LOADER__?.buildId || ''),
+      sourceCommit: normalizeCommit(options.sourceCommit || globalThis.__HEX_DEPLOYMENT_COMMIT__),
       runtimeContentHash: String(options.runtimeContentHash || ''),
     });
   }
@@ -75,6 +76,11 @@ function normalizeApiOrigin(value) {
   } catch {
     throw new Error('Hex protected runtime API origin is invalid.');
   }
+}
+
+function normalizeCommit(value) {
+  const text = String(value || '').trim().toLowerCase();
+  return /^[0-9a-f]{40}$/.test(text) ? text : null;
 }
 
 function installStyle(cssText) {
