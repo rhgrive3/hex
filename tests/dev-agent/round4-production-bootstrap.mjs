@@ -80,6 +80,8 @@ async function testProductionOrchestratorGenerations() {
   };
   const firstParent = responsiveParent({ handoff: null, runtimeIdentity: { commit: COMMIT, buildId: BUILD }, expectedReloadHandoff: handoff });
   const firstGlobal = fakeSandboxGlobal(firstParent);
+  assert.equal(firstGlobal.location.search, '', 'opaque srcdoc location must not carry the virtual Hex query');
+  assert.match(firstGlobal.__HEX_RUNTIME_HOST_SEARCH__, /__hex_dev_bootstrap=1/, 'bootstrap opt-in must come from the trusted virtual runtime location');
   const firstCalls = [];
   const firstEngine = { devBootstrap: {
     prepare: async () => firstCalls.push('prepare'),
@@ -197,7 +199,6 @@ async function testBootstrapDiagnostic() {
 }
 
 function responsiveParent({ handoff, runtimeIdentity, expectedReloadHandoff = null }) {
-  const child = null;
   const parent = {
     reloadRequests: [],
     postMessage(message) {
@@ -225,7 +226,18 @@ function fakeSandboxGlobal(parent, generation = '1') {
   const target = fakeWindow();
   parent.target = target;
   target.parent = parent;
-  target.location = { origin: 'null', search: `?__hex_embed_generation=${generation}&__hex_dev_bootstrap=1` };
+  target.location = { href: 'about:srcdoc', origin: 'null', pathname: '', search: '' };
+  const search = `?__hex_embed_generation=${generation}&__hex_dev_bootstrap=1`;
+  target.__HEX_RUNTIME_HOST_HREF__ = `https://ida.rhgrive.workers.dev/embed/chatgpt${search}`;
+  target.__HEX_RUNTIME_HOST_ORIGIN__ = 'https://ida.rhgrive.workers.dev';
+  target.__HEX_RUNTIME_HOST_PATHNAME__ = '/embed/chatgpt';
+  target.__HEX_RUNTIME_HOST_SEARCH__ = search;
+  target.__HEX_RUNTIME_HOST_LOCATION__ = {
+    href: target.__HEX_RUNTIME_HOST_HREF__,
+    origin: target.__HEX_RUNTIME_HOST_ORIGIN__,
+    pathname: target.__HEX_RUNTIME_HOST_PATHNAME__,
+    search,
+  };
   target.__HEX_EMBED_SANDBOX_TOKEN__ = TOKEN;
   return target;
 }
