@@ -3,7 +3,7 @@
 > **Purpose:** `PHASE9_SOLVER_BACKED_VERIFICATION_IMPLEMENTATION_GUIDE.ja.md` を高速・安全に実作業へ落とす ready-to-use 分担テンプレート。  
 > **Status:** Planning only. Phase 9 実装済みの証拠ではない。  
 > **Base rule:** 実装開始時の最新 `main` exact SHA を固定し、最終検証も exact integrated head SHA で行う。  
-> **Review hardening:** soundness / parallel efficiency / exit-gate の3観点レビューを反映済み。
+> **Review hardening:** soundness / parallel efficiency / exit-gate / current-cache-integration の4観点レビューを反映済み。
 
 ---
 
@@ -18,6 +18,7 @@ Do not:
 - replace the current bounded symbolic evaluator wholesale
 - treat timeout/resource-limit/unsupported/unknown as UNSAT
 - treat UNSAT alone as sufficient for a proved verdict
+- accept an UNSAT-based proof when its preconditions are inconsistent or unverified
 - reinterpret machine instruction mnemonics in generic symbolic code
 - turn UnknownSemantic into an unconstrained input automatically
 - expose backend-native AST/model objects through public APIs
@@ -26,6 +27,7 @@ Do not:
 - trust a SAT model without validation where the supported evaluator can check it
 - use query hash equality as semantic equality without payload/version validation
 - cache timeout/provider-failure as semantic truth
+- let a Phase 9 tool inherit ToolRegistry automatic caching without a verifier/backend/schema-aware cache identity
 - silently send project-derived constraints to a remote solver
 - claim a memory budget is enforced when it is measurement-only
 - let AI prose create verified facts
@@ -35,6 +37,7 @@ Required:
 - preserve provenance/evidence
 - preserve conservative unknown behavior
 - keep claim scope/preconditions/completeness explicit
+- keep precondition consistency explicit for UNSAT-based proofs
 - make expensive work budgeted/cancellable
 - report exact files changed
 - report exact tests actually run
@@ -48,7 +51,7 @@ Required:
 
 ## Mission
 
-Phase 9 semantic contract、proof eligibility、shared seams、integration gate を所有する。
+Phase 9 semantic contract、proof eligibility、precondition consistency、shared seams、integration gate を所有する。
 
 ## Initial preflight
 
@@ -64,6 +67,8 @@ origin/provenance
 patch projection/validation
 EvidenceGraph/evidence schema
 cancellation/budget primitives
+js/ai/tools/registry.js cache behavior
+js/ai/tools/storage/observation-store.js cache key/binding
 current symbolic regression suite
 ```
 
@@ -79,6 +84,7 @@ js/symbolic/function-sandbox.js
 js/agent/tools.js
 js/ai/tools/registry.js
 js/ai/tools/names.js
+js/ai/tools/storage/observation-store.js
 package.json
 shared evidence/public schemas
 CI/gate wiring
@@ -96,6 +102,7 @@ CI/gate wiring
 SolverResult taxonomy
 VerificationResult taxonomy
 proof eligibility predicate
+precondition consistency/vacuous-proof policy
 claim/query polarity
 Bool/BV schema
 assumption taxonomy
@@ -103,8 +110,26 @@ completeness dimensions
 initial support matrix
 budget schema
 remote solver policy decision criteria
+ToolRegistry/ObservationStore cacheability policy
 golden/adversarial corpus format
 ```
+
+## Existing ToolRegistry cache rule
+
+Planning baseline では deterministic tool は `ObservationStore.getCached(name,args)` を通ります。
+
+Phase 9 verifier tool は、verifier/backend/query/Expr/translator/semantic versions が cache identity に含まれるまでは automatic cache を有効化しない。
+
+安全な暫定:
+
+```text
+storeResult: true
+deterministic: false
+```
+
+これにより observation/evidence は残しつつ auto-cache を止められる。
+
+この `deterministic:false` は semantic determinism の放棄ではなく、現行 registry の cacheability switch としての暫定措置。Replay/determinism test は必須のまま。
 
 ## Exit
 
@@ -113,9 +138,11 @@ conditional edge feasibility E2E
 bounded equivalence E2E
 patch verification E2E
 strong/global reachability only if path-completeness contract is satisfied
+no vacuous proof from inconsistent preconditions
 budget/cancel/dispose E2E
 evidence chain E2E
 SAT model validation E2E where supported
+version-safe registry cache or validated no-cache fallback
 existing regressions green
 independent soundness review resolved
 ```
@@ -166,8 +193,29 @@ incomplete incoming path coverage must NOT prove global unreachable
 UnknownSemantic must NOT become FreshSymbol
 return-same/memory-different must NOT prove equivalent
 SAT model that does not satisfy constraints must be rejected
+contradictory preconditions + UNSAT must NOT prove edge infeasibility
+contradictory preconditions + UNSAT must NOT prove equivalence
 hash collision/equal-hash fake must NOT imply payload equality
 stale cancelled query result must NOT publish
+same tool args with incompatible verifier/backend/schema fingerprint must NOT reuse cached proof
+```
+
+## Precondition oracle
+
+For `P` and claim query `Q`:
+
+```text
+Q SAT + validated model
+→ P satisfiable is implied by that model
+
+Q UNSAT + P SAT
+→ UNSAT-based proof may proceed through remaining eligibility
+
+Q UNSAT + P UNSAT
+→ unknown / inconsistent-preconditions
+
+Q UNSAT + P unknown/failure
+→ unknown
 ```
 
 ## Bitvector oracle
@@ -181,7 +229,7 @@ Small-width exhaustive/metamorphic vectors:
 - casts
 - ITE
 
-## Resource/browser corpus
+## Resource/browser/cache corpus
 
 - max expr nodes
 - max constraints
@@ -191,6 +239,8 @@ Small-width exhaustive/metamorphic vectors:
 - repeated session cleanup
 - stale-result race
 - peak memory delta
+- registry auto-cache disabled until version-safe
+- version-aware cache invalidation after enabled
 
 If iPad automated measurement is unavailable, mark unverified and provide a reproducible manual/browser procedure. Do not fabricate.
 
@@ -310,6 +360,7 @@ completeness dimensions
 - unknown call/store/effect は conservative
 - exact load は reaching-def/alias proof がある場合のみ
 - partial translation must never satisfy proof eligibility
+- precondition artifact must preserve exact translated assumptions/origins
 
 ## Must prove
 
@@ -317,6 +368,7 @@ completeness dimensions
 - unsupported dependency cannot produce a proof-eligible query
 - origin survives slicing
 - assumptions carry source/trust class
+- canonical precondition artifact is stable/versioned
 - no architecture-specific decode truth in generic translator
 
 ---
@@ -407,11 +459,11 @@ Boolean-only API 禁止。
 
 ---
 
-# 6. Worker D — Verification Queries / Model Validation
+# 6. Worker D — Verification Queries / Model Validation / Preconditions
 
 ## Mission
 
-Expr/translator/backend を用いて targeted query と proof eligibility を実装する。
+Expr/translator/backend を用いて targeted query、proof eligibility、precondition consistency を実装する。
 
 ## Preferred ownership
 
@@ -424,9 +476,10 @@ tests/...phase9-verify...
 
 1. shared query/result + proof eligibility
 2. SAT model validator
-3. Conditional Edge Feasibility
-4. strong/global reachability only if prerequisite completeness exists
-5. Bounded Equivalence
+3. precondition consistency helper
+4. Conditional Edge Feasibility
+5. strong/global reachability only if prerequisite completeness exists
+6. Bounded Equivalence
 
 ## Proof eligibility
 
@@ -441,10 +494,40 @@ required completeness dimensions complete
 no semantic unknowns
 no unsupported entities
 assumptions explicit
+preconditions satisfiable
 backend exact capability
 not cancelled
 no budget/resource failure
 ```
+
+## Vacuous-proof guard
+
+Claim preconditions を `P`、claim query を `Q` とする。
+
+高速化のため毎回先に `check(P)` しない。
+
+```text
+1. check(Q)
+
+2. Q SAT + validated model
+   → model が P も満たすので P satisfiable
+
+3. Q UNSAT
+   → proofを出す前にだけ P を check
+      または canonical P に対する既存 validated SAT evidence を reuse
+
+4. P SAT
+   → remaining proof eligibilityへ
+
+5. P UNSAT
+   → verdict unknown
+      reasonCode inconsistent-preconditions
+
+6. P unknown/timeout/resource/unsupported/cancelled
+   → verdict unknown
+```
+
+`P UNSAT` を「edge unreachable」「equivalent」の根拠にしてはいけない。
 
 ## Conditional Edge Feasibility
 
@@ -459,9 +542,9 @@ budgets
 Output:
 
 ```text
-edge infeasible under source-entry preconditions
+edge infeasible under satisfiable source-entry preconditions
 edge feasible with validated model
-unknown
+unknown / inconsistent-preconditions
 ```
 
 **Do not call this global unreachable.**
@@ -470,9 +553,9 @@ unknown
 
 Separate query/claim.
 
-Only strong claim when source block/incoming path/loop coverage required by contract is complete.
+Only strong claim when source block/incoming path/loop coverage required by contract is complete **and claim preconditions are satisfiable**.
 
-If not complete:
+If not complete or preconditions are inconsistent/unresolved:
 
 ```text
 verdict = unknown
@@ -510,16 +593,26 @@ preconditions
 bounds
 ```
 
+Use:
+
+```text
+Q = P ∧ (before_observable_state != after_observable_state)
+```
+
+`Q UNSAT` でも `P SAT` を確認するまで equivalent にしない。
+
 Return-only equivalence は default にしない。
 
 ## Must prove
 
-- local false edge -> local infeasibility proof
+- local false edge + satisfiable P -> local infeasibility proof
+- contradictory P -> no local proof
 - same fixture does not mint global unreachable without path completeness
 - symbolic feasible edge -> validated model
 - tampered model rejected
 - incomplete translation -> unknown
-- identical bounded transform -> equivalent
+- identical bounded transform + satisfiable P -> equivalent
+- contradictory P -> no equivalence proof
 - semantic difference -> validated counterexample
 - return-same/memory-different -> not falsely equivalent
 
@@ -539,7 +632,7 @@ phase9-specific patch verification modules
 phase9-specific query adapters
 ```
 
-Shared registry は Integration Owner territory unless delegated。
+Shared registry/cache wiring は Integration Owner territory unless delegated。
 
 ## SymbolicEvidence minimum
 
@@ -553,6 +646,7 @@ expr schema version
 translator/semantic versions
 backend/version/options
 solver status
+precondition status/reason
 counterexample validation status
 assumptions
 limits
@@ -567,7 +661,7 @@ BinaryId/PatchSetId when relevant
 original BinaryId/projection → SemIR
 patched PatchSet/projection  → SemIR
 shared input/state correspondence
-explicit bounded scope
+explicit bounded scope + satisfiable preconditions
 verifier
 result/evidence
 ```
@@ -581,6 +675,29 @@ Keep encoding/relocation/signing/unwind/format integrity in existing patch valid
 - semantic version invalidates stale proof
 - timeout/provider-failure not semantic cache
 - budget-sensitive failures not reused as semantic answer
+- precondition SAT evidence bound to canonical/versioned P
+
+### Existing ToolRegistry / ObservationStore rule
+
+現行 cache key は analysis binding + tool name + serialized args が中心。
+
+Phase 9 tool は以下のどちらか:
+
+```text
+A. verifier fingerprint
+   = query schema
+   + expr schema
+   + translator/semantic versions
+   + backend/version/options
+   を effective cache identity に含める
+
+or
+
+B. version-safe wiring 完成まで automatic cache disabled
+   storeResult:true / deterministic:false
+```
+
+`analysisRevision` が変わるはず、という期待だけに cache invalidation を依存しない。
 
 ## AI/query surface
 
@@ -590,6 +707,7 @@ It must preserve:
 
 - local feasibility vs global reachability
 - assumptions
+- precondition consistency
 - completeness
 - unknown/failure
 
@@ -602,9 +720,12 @@ If remote backend exists, evidence/query adapter must not bypass deployment poli
 ## Must prove
 
 - incomplete cannot mint confirmed evidence
+- inconsistent preconditions cannot mint confirmed evidence
 - local claim is not displayed as global claim
 - SAT counterexample links origin and validation status
-- cache invalidates on semantic/schema version change
+- cache invalidates on semantic/schema/backend version change
+- same args cannot reuse proof across incompatible verifier fingerprint
+- no-cache fallback still preserves observation/evidence
 - hash collision guard works
 - patch semantic difference surfaces
 - AI cannot promote unknown to verified
@@ -643,7 +764,7 @@ Moving base に無記録 rebase しない。
                [First Integration]
                        |
                        v
-        [D Edge Feasibility + Model Validation]
+ [D Preconditions + Edge Feasibility + Model Validation]
                        |
                        v
               [E Evidence Integration]
@@ -669,13 +790,13 @@ Corpus は最初から各層を殴る。
 # 10. Recommended integration order
 
 ```text
-1. Wave0 contracts + adversarial corpus
+1. Wave0 contracts + adversarial/vacuous-proof corpus
 2. A/B/C parallel work
 3. A public Expr core integration
 4. C backend lifecycle/fake integration
 5. B translator integration
-6. first known-query E2E + model validation
-7. shared registry/package minimal wiring
+6. first known-query E2E + model validation + precondition consistency
+7. shared registry/package minimal wiring with explicit cache policy
 8. Conditional Edge Feasibility E2E + evidence
 9. strong/global reachability only if completeness prerequisites exist
 10. Bounded Equivalence
@@ -689,6 +810,8 @@ C を B の後ろに直列化しない。
 F/corpus を終盤まで待たない。
 
 Shared package/registry を最後に一括変更しない。
+
+Version-safe cache が無いのに cache実装待ちで全体を止めない。まず no-cache fallback で vertical slice を通し、cache optimization は後で安全に有効化する。
 
 ---
 
@@ -706,22 +829,24 @@ Prioritize false-proof bugs over style.
 Audit:
 1. UNKNOWN/TIMEOUT/RESOURCE_LIMIT/UNSUPPORTED/CANCELLED/provider failure becoming UNSAT/proved.
 2. Any UNSAT -> proved path that bypasses proof eligibility.
-3. UnknownSemantic becoming a fresh unconstrained input.
-4. Bitvector width/wrap/signedness/shifts/div/rem/casts edge semantics.
-5. Generic translator re-decoding mnemonics/register conventions.
-6. Unknown memory/call effects becoming pure/no-alias.
-7. Local edge infeasibility being presented as global unreachable.
-8. Incomplete incoming path/loop coverage minting a global reachability claim.
-9. Equivalence ignoring declared memory/control/side-effect/trap dimensions.
-10. SAT model not independently validated where supported.
-11. Partial translation minting confirmed evidence.
-12. Hash equality used as payload/semantic equality.
-13. Stale cache reuse across semantic/schema/backend incompatibility.
-14. Timeout/provider failure cached as semantic result.
-15. Solver-specific objects leaking into public API.
-16. Cancel/dispose/late-result races.
-17. Remote backend sending project-derived data without explicit policy.
-18. Browser/iPad memory limit claimed as enforced when measurement-only.
+3. Contradictory or unresolved preconditions allowing vacuous edge/equivalence/patch proofs.
+4. UnknownSemantic becoming a fresh unconstrained input.
+5. Bitvector width/wrap/signedness/shifts/div/rem/casts edge semantics.
+6. Generic translator re-decoding mnemonics/register conventions.
+7. Unknown memory/call effects becoming pure/no-alias.
+8. Local edge infeasibility being presented as global unreachable.
+9. Incomplete incoming path/loop coverage minting a global reachability claim.
+10. Equivalence ignoring declared memory/control/side-effect/trap dimensions.
+11. SAT model not independently validated where supported.
+12. Partial translation minting confirmed evidence.
+13. Hash equality used as payload/semantic equality.
+14. Stale cache reuse across semantic/schema/backend/verifier incompatibility.
+15. Existing ToolRegistry automatic cache being enabled without a verifier fingerprint.
+16. Timeout/provider failure cached as semantic result.
+17. Solver-specific objects leaking into public API.
+18. Cancel/dispose/late-result races.
+19. Remote backend sending project-derived data without explicit policy.
+20. Browser/iPad memory limit claimed as enforced when measurement-only.
 
 Run targeted and available regressions on the exact reviewed SHA.
 Do not claim tests you did not execute.
@@ -735,6 +860,7 @@ For each finding return path/line/symbol, severity, minimal counterexample, and 
 ```text
 [ ] exact integration SHA recorded
 [ ] prerequisite semantic contracts rechecked
+[ ] existing ToolRegistry/ObservationStore cache contract rechecked
 [ ] Wave0 adversarial corpus merged
 [ ] Expr width/signedness/edge-semantics suite green
 [ ] small-BV exhaustive/metamorphic suite green
@@ -742,6 +868,7 @@ For each finding return path/line/symbol, severity, minimal counterexample, and 
 [ ] hash collision/payload equality guard green
 [ ] translator exact/partial/unsupported suite green
 [ ] proof eligibility bypass test green
+[ ] contradictory-precondition/vacuous-proof tests green
 [ ] solver SAT/UNSAT + typed failure replay green
 [ ] cancellation/dispose/stale-result race green
 [ ] SAT model validation green
@@ -751,8 +878,10 @@ For each finding return path/line/symbol, severity, minimal counterexample, and 
 [ ] bounded equivalence positive/negative green
 [ ] memory/control/side-effect mismatch covered
 [ ] patch verification E2E green
-[ ] SymbolicEvidence provenance/completeness green
+[ ] SymbolicEvidence provenance/completeness/precondition status green
 [ ] cache version invalidation green
+[ ] same args cannot reuse incompatible verifier/backend/schema proof
+[ ] no-cache fallback preserves observations/evidence
 [ ] timeout/provider failure not semantic cache
 [ ] remote privacy policy enforced if remote backend exists
 [ ] FastSymbolicEvaluator preserved where contract requires
@@ -764,6 +893,6 @@ For each finding return path/line/symbol, severity, minimal counterexample, and 
 
 Release question:
 
-> Can Hex distinguish a real bounded proof, a validated counterexample, a scoped/local result, and a failure to prove — without losing semantic truth, provenance, or resource safety?
+> Can Hex distinguish a real bounded proof, a validated counterexample, a vacuous/inconsistent-precondition result, a scoped/local result, and a failure to prove — without losing semantic truth, provenance, cache validity, or resource safety?
 
 Yes と exact-SHA evidence で答えられるまで Phase 9 完了扱いにしない。
