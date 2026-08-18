@@ -116,10 +116,10 @@ function machineEffectDivergence(first, instructions) {
     family:first?.metadata?.instructionFamily ?? decoded?.instructionFamily ?? null,
     mnemonic:decoded?.mnemonic ?? null,
     bytes:decoded == null ? null : Buffer.from(decoded.rawBytes || []).toString('hex'),
-    address:first?.origin?.virtualRanges?.[0] ?? decoded == null ? null : {
+    address:first?.origin?.virtualRanges?.[0] ?? (decoded == null ? null : {
       start:`0x${BigInt(decoded.address).toString(16)}`,
       end:`0x${(BigInt(decoded.address) + BigInt(decoded.length ?? decoded.size)).toString(16)}`,
-    },
+    }),
   };
 }
 
@@ -174,7 +174,7 @@ test('P5-6 mandatory 144-tuple compiler corpus traverses the full x86 semantic p
     }
   } finally { capstone.close(); }
   const totals = { mandatory:ledger.length, passed:ledger.filter((row) => row.status === 'PASS').length, failed:ledger.filter((row) => row.status === 'FAIL').length, blocked:ledger.filter((row) => row.status.startsWith('BLOCKING-')).length, notProven:ledger.filter((row) => row.status === 'NOT-PROVEN').length };
-  console.log(`P5_6_PIPELINE_LEDGER=${JSON.stringify({ productSha:process.env.P5_VERIFIED_PRODUCT_SHA || 'b4182b995b7abea85f328b973b03f9ae0719bef3', source:result.source, fixtures:result.fixtures.map(({ bytes, disassembly, objectMetadata, path:ignoredPath, ...fixture }) => fixture), totals, ledger })}`);
+  console.log(`P5_6_PIPELINE_LEDGER=${JSON.stringify({ productSha:process.env.P5_VERIFIED_PRODUCT_SHA || '30145016b128c1a96d660eeca24b6c717c9b858d', source:result.source, fixtures:result.fixtures.map(({ bytes, disassembly, objectMetadata, path:ignoredPath, ...fixture }) => fixture), totals, ledger })}`);
   assert.equal(totals.mandatory, 144);
   assert.equal(totals.blocked, 0, `P5-6 first blocker: ${JSON.stringify(ledger.find((row) => row.status.startsWith('BLOCKING-')))}`);
   assert.equal(totals.notProven, 0);
