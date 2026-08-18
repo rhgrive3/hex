@@ -20,6 +20,11 @@ async function testBoundedParentInspection() {
     type: 'module', async: false, defer: true, integrity: '', nonce: 'hidden-nonce', textContent: '',
     getAttribute(name) { return this[name] ?? null; },
   };
+  const inlineScript = {
+    src: '', type: 'application/json', async: false, defer: false, integrity: '', nonce: 'inline-hidden-nonce',
+    textContent: Array.from({ length: 8 }, (_value, index) => `self.__next_f.push(["project:createProject:${index}",{"sessionToken":"must-not-leak-${index}","route":"/project"}]);${'x'.repeat(900)}`).join('\n'),
+    getAttribute(name) { return this[name] ?? null; },
+  };
   const selectorMap = new Map([
     ['button', [button]],
     ['a[href]', [link]],
@@ -28,7 +33,7 @@ async function testBoundedParentInspection() {
   const document = {
     title: 'ChatGPT',
     location: { href: 'https://chatgpt.com/g/g-p-demo/project?temporary=secret' },
-    scripts: [script],
+    scripts: [script, inlineScript],
     querySelectorAll(selector) { return selectorMap.get(selector) || []; },
     querySelector(selector) { return (selectorMap.get(selector) || [])[0] || null; },
   };
@@ -54,6 +59,26 @@ async function testBoundedParentInspection() {
   assert.equal(scripts.scripts[0].src, 'https://chatgpt.com/assets/app.js');
   assert.equal(scripts.scripts[0].noncePresent, true);
   assert.equal(Object.hasOwn(scripts.scripts[0], 'nonce'), false, 'CSP nonce value must not be exposed');
+  const inline = scripts.scripts[1];
+  assert.equal(inline.external, false);
+  assert.equal(inline.src, null);
+  assert.equal(inline.noncePresent, true);
+  assert.equal(Object.hasOwn(inline, 'nonce'), false, 'inline CSP nonce value must not be exposed');
+  assert.equal(inline.inlineChars, inlineScript.textContent.length);
+
+  /* Regression: page.scripts -> inline index -> page.script_source used to deterministically
+     fail with script-not-loaded because scriptSource only accepted node.src. */
+  const inlineSource = await inspector.scriptSource({ index: inline.index, needle: 'createProject', contextChars: 4096, maxMatches: 99 });
+  assert.equal(fetched, null, 'inline inspection must not perform a network fetch');
+  assert.equal(inlineSource.index, inline.index);
+  assert.equal(inlineSource.src, null);
+  assert.equal(inlineSource.needle, 'createProject');
+  assert.ok(inlineSource.excerpts.length > 0 && inlineSource.excerpts.length <= 5, 'inline match count must be bounded');
+  assert.ok(inlineSource.excerptChars <= 12 * 1024, 'inline total excerpt output must be bounded');
+  assert.match(inlineSource.excerpts[0].text, /createProject/);
+  assert.doesNotMatch(JSON.stringify(inlineSource), /must-not-leak/, 'sensitive inline values near a benign match must be redacted');
+  await assert.rejects(() => inspector.scriptSource({ index: inline.index }), (error) => error.code === 'inline-needle-required');
+  await assert.rejects(() => inspector.scriptSource({ index: inline.index, needle: 'sessionToken' }), (error) => error.code === 'inline-sensitive-needle');
 
   const source = await inspector.scriptSource({ index: 0, needle: 'createProject', contextChars: 32 });
   assert.equal(source.excerpts.length, 1);
