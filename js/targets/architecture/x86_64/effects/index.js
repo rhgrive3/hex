@@ -1,5 +1,6 @@
 import { liftX86ControlEffects } from './control.js';
 import { liftX86IntegerEffects, liftX86LeaEffects } from './integer.js';
+import { liftX86ImplicitSignExtensionEffects } from './implicit-sign-extension.js';
 import { liftX86MemoryEffects } from './memory.js';
 import { liftX86StringEffects } from './string.js';
 import { liftX86AtomicEffects } from './atomic.js';
@@ -12,6 +13,7 @@ const FAMILIES = Object.freeze([
   Object.freeze({ id:'control', lift:liftX86ControlEffects }),
   Object.freeze({ id:'memory', lift:liftX86MemoryEffects }),
   Object.freeze({ id:'lea', lift:liftX86LeaEffects }),
+  Object.freeze({ id:'implicit-sign-extension', lift:liftX86ImplicitSignExtensionEffects }),
   Object.freeze({ id:'integer', lift:liftX86IntegerEffects }),
   Object.freeze({ id:'string', lift:liftX86StringEffects }),
   Object.freeze({ id:'atomic', lift:liftX86AtomicEffects }),
