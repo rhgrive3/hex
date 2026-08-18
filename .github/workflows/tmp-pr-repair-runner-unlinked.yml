@@ -48,12 +48,12 @@ jobs:
           node tests/semantic-v2/issues-875-888-riscv.test.mjs
           node --test tests/phase6/abi/riscv-psabi.test.mjs
           node tests/ir.mjs
-      - name: Semantic + full gates
+      - name: Rebuild canonical userscript before sync gates
+        run: npm run userscript:build
+      - name: Semantic and full repository gates
         run: |
           npm run semantic-v2:test
           npm run check
-      - name: Canonical userscript build
-        run: npm run userscript:build
       - name: Patch hygiene
         run: git diff --check
       - name: Commit verified implementation
