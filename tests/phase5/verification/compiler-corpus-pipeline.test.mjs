@@ -102,12 +102,30 @@ function provenanceFailures(analysis) {
   for (const bundle of bundles) {
     const id = bundle.instructionId;
     const has = (origin) => origin?.instructionIds?.includes(id);
-    if (!bundle.origin?.byteRanges?.length || !bundle.origin?.virtualRanges?.length) failures.push({ instructionId:id, stage:'MachineEffects' });
+    if (!has(bundle.origin)) failures.push({ instructionId:id, stage:'MachineEffects' });
     if (!analysis.pipeline.semanticIr.nodes.some((node) => has(node.origin))) failures.push({ instructionId:id, stage:'Semantic IR' });
     if (!analysis.pipeline.ssa.definitions.some((definition) => has(definition.origin)) && bundle.operations?.some((operation) => ['register-write','value','flag-write'].includes(operation.kind))) failures.push({ instructionId:id, stage:'SSA' });
   }
   return failures;
 }
+
+test('P5-6 provenance audit follows canonical OriginSet instruction-evidence contract', () => {
+  const instructionId = 'instruction_contract_probe';
+  const base = {
+    pipeline: {
+      machineEffects:[{ instructionId, origin:{ instructionIds:[instructionId] }, operations:[] }],
+      semanticIr:{ nodes:[{ origin:{ instructionIds:[instructionId] } }] },
+      ssa:{ definitions:[] },
+    },
+  };
+  assert.deepEqual(provenanceFailures(base), []);
+  assert.deepEqual(provenanceFailures({
+    pipeline:{
+      ...base.pipeline,
+      machineEffects:[{ instructionId, origin:{ instructionIds:[] }, operations:[] }],
+    },
+  }), [{ instructionId, stage:'MachineEffects' }]);
+});
 
 test('P5-6 mandatory 144-tuple compiler corpus traverses the full x86 semantic product with independent LLVM boundaries', async () => {
   const expectedCategories = frozen.mandatoryCategories;
