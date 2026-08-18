@@ -1,0 +1,25 @@
+name: Validate Swift vtable instance flag
+
+on:
+  push:
+    branches: [fix/swift-vtable-instance-flag]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - name: Focused Swift runtime regression
+        run: node tests/swift-runtime.mjs
+      - name: Decompiler integration suite
+        run: npm run decompiler:test
+      - name: Full repository check
+        run: npm run check
