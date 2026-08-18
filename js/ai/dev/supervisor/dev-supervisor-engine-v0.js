@@ -91,10 +91,10 @@ export class DevSupervisorEngineV0 {
 
     try {
       for (let step = 0; step < this.maxDecisions; step++) {
-        const availableTools = this.availableTools();
+        const promptTools = this.availableTools();
         const response = await this.bridge.request(buildDevSupervisorPrompt({
           run,
-          availableTools,
+          availableTools: promptTools,
           history,
         }), {
           signal: input.signal,
@@ -103,7 +103,28 @@ export class DevSupervisorEngineV0 {
           reasoning: input.reasoning || null,
         });
         const text = response && typeof response === 'object' ? response.text : response;
-        const decision = parseDevSupervisorDecision(text, { availableTools });
+        let decision;
+        try {
+          decision = parseDevSupervisorDecision(text);
+        } catch (decisionError) {
+          history.push({
+            kind: 'decision-invalid',
+            message: '直前のSupervisor decisionは有効なhex-dev-supervisor-v1 JSONではありません。同じdecision shape契約に従ってJSONオブジェクトを1つだけ再出力してください。',
+            error: String(decisionError?.message || decisionError || 'Invalid Supervisor decision.'),
+          });
+          continue;
+        }
+        const availableTools = this.availableTools();
+
+        if (decision.type === 'tool' && !availableTools.includes(decision.tool)) {
+          history.push({
+            kind: 'tool-unavailable',
+            tool: decision.tool,
+            message: `要求されたツール「${decision.tool}」は現在利用できません。現在利用可能なツール一覧を確認して再判断してください。`,
+            availableTools,
+          });
+          continue;
+        }
 
         if (decision.type === 'tool') {
           input.onActivity?.({ label: decision.tool, detail: decision.purpose });
