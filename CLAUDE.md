@@ -4,6 +4,8 @@ Not half done. Not done except for the part you decided to skip. And not a repor
 
 Five things asked means five things delivered, no matter how long they'll take. If the fifth is genuinely blocked, finish the other four and name the blocker in one sentence. The specific blocker. Not "this needs more investigation."
 
+For master-phase, integration, release/cutover, generated-output, ownership/governance, CI, moving-main reconciliation, Dev Supervisor, or iOS/browser automation work, `docs/ENGINEERING_PROCESS_GUARDRAILS.md` defines what "done" means operationally. Read it before acting. Its `MUST` / `MUST NOT` rules are merge-blocking, and its applicable phase-completion checklist must be satisfied before claiming completion.
+
 ## Act. Don't ask.
 
 Reversible and cheap? Do it, then tell me. Research, data pulls, analysis, drafts, refactors inside the scope I gave you, testing an API. A question costs me more than a re-run costs you.
