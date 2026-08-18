@@ -115,6 +115,35 @@ export class IframeWorkerPool {
     return this.publicSlot(slot);
   }
 
+  /* Fail-closed cleanup for an ambiguously owned lease. The old iframe is
+     physically retired before logical ownership is cleared, then the exact
+     slot is reprovisioned from its same-origin URL. This prevents a retry from
+     either reusing an ambiguously owned Worker or waiting forever for the only
+     slot. If replacement cannot be proven ready, discard fails deterministically. */
+  async discard({ leaseId, reason = 'worker-discarded' } = {}) {
+    const slot = this.requireLease(leaseId);
+    const index = slot.index;
+    const href = slot.href;
+    try { await slot.client?.stop?.(this.identity(slot)); } catch { /* best-effort stop before retirement */ }
+    closeSlot(slot);
+    this.leases.delete(slot.leaseId);
+    slot.ready = false;
+    slot.claimed = false;
+    slot.reserving = false;
+    slot.leaseId = null;
+    slot.workerId = null;
+    slot.runId = null;
+    slot.taskId = null;
+    slot.pending = null;
+    slot.lastResult = null;
+    slot.error = { code: 'worker-discarded', message: String(reason || 'worker-discarded').slice(0, 384) };
+    this.flushWaiters();
+    const replacement = await this.provisionSlot(index, href, READY_TIMEOUT_MS);
+    this.flushWaiters();
+    if (!replacement) throw poolError('worker-reprovision-failed', `Discarded Worker slot ${index} could not be reprovisioned.`);
+    return replacement;
+  }
+
   close() {
     for (const slot of this.slots.values()) closeSlot(slot);
     for (const waiter of this.waiters) waiter.reject(poolError('transport-failure', 'Worker pool closed.'));

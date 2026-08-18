@@ -33,6 +33,10 @@ export const DEV_PARENT_RPC_METHODS = Object.freeze([
   'dev.worker_pool.nudge',
   'dev.worker_pool.stop',
   'dev.worker_pool.release',
+  'dev.task_graph.start',
+  'dev.task_graph.status',
+  'dev.task_graph.task_result',
+  'dev.task_graph.cancel',
 ]);
 
 const METHODS = new Set(DEV_PARENT_RPC_METHODS);
@@ -218,6 +222,10 @@ export function createDevWorkerParentRpcClient({ port, timeoutMs = 60000 } = {})
     poolNudge: (args = {}, opts = {}) => call('dev.worker_pool.nudge', args, opts),
     poolStop: (args = {}, opts = {}) => call('dev.worker_pool.stop', args, opts),
     poolRelease: (args = {}, opts = {}) => call('dev.worker_pool.release', args, opts),
+    graphStart: (args = {}, opts = {}) => call('dev.task_graph.start', args, opts),
+    graphStatus: (args = {}, opts = {}) => call('dev.task_graph.status', args, opts),
+    graphTaskResult: (args = {}, opts = {}) => call('dev.task_graph.task_result', args, opts),
+    graphCancel: (args = {}, opts = {}) => call('dev.task_graph.cancel', args, opts),
     close() {
       if (closed) return;
       closed = true;
@@ -268,6 +276,10 @@ async function dispatch(runtime, method, params, signal) {
   if (method === 'dev.worker_pool.nudge') return runtime.poolNudge(params, options);
   if (method === 'dev.worker_pool.stop') return runtime.poolStop(params, options);
   if (method === 'dev.worker_pool.release') return runtime.poolRelease(params, options);
+  if (method === 'dev.task_graph.start') return runtime.taskGraphStart(params, options);
+  if (method === 'dev.task_graph.status') return runtime.taskGraphStatus(params, options);
+  if (method === 'dev.task_graph.task_result') return runtime.taskGraphTaskResult(params, options);
+  if (method === 'dev.task_graph.cancel') return runtime.taskGraphCancel(params, options);
   throw rpcError('transport-failure', 'Unknown Dev parent RPC method.');
 }
 
