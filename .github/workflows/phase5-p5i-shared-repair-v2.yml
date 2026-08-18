@@ -1,0 +1,232 @@
+name: Phase 5 P5-I shared repair v2
+on:
+  push:
+    branches: [hex/p5-x86-integration]
+permissions:
+  contents: write
+jobs:
+  repair:
+    if: ${{ github.repository == 'rhgrive3/hex' && github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - name: Apply P5-I shared contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+          import json
+
+          def rep(path, old, new, n=1):
+              p=Path(path); s=p.read_text(); c=s.count(old)
+              if c != n: raise SystemExit(f'{path}: expected {n}, got {c}: {old[:120]!r}')
+              p.write_text(s.replace(old,new))
+
+          rep('js/targets/architecture/x86_64/effects/common.js',"export const X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION = '5.0.0-foundation';","export const X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION = '5.1.0-phase5-integrated';")
+
+          rep('js/targets/architecture/x86_64/registers-core.js',
+              "  addView('flags', 'rflags', 16, 0, 'preserve-unaffected', 'flags');\n\n  for (let index = 0; index < 16; index++) {",
+              "  addView('flags', 'rflags', 16, 0, 'preserve-unaffected', 'flags');\n\n  addPhysical('mxcsr', 32, 'fp-environment', ['mxcsr']);\n  addView('mxcsr', 'mxcsr', 32, 0, 'replace', 'fp-environment');\n\n  for (let index = 0; index < 16; index++) {")
+
+          common=Path('js/targets/architecture/x86_64/effects/common.js'); s=common.read_text()
+          start=s.index('  function intrinsic(intrinsicId, inputs, outputWidths, config = {}) {')
+          end=s.index('\n  function readRegister(input) {',start)
+          new='''  function intrinsic(intrinsicId, inputs, outputWidths, config = {}) {
+    const fpEnvironmentDependency = String(config.metadata?.fpEnvironmentDependency || '');
+    const usesMxcsr = fpEnvironmentDependency.includes('MXCSR');
+    let effectiveInputs = [...inputs];
+    let effectiveOutputWidths = [...outputWidths];
+    let registersRead = [...(config.registersRead ?? [])];
+    let registersWritten = [...(config.registersWritten ?? [])];
+    let mxcsrOperand = null;
+    if (usesMxcsr) {
+      mxcsrOperand = registerOperand('mxcsr');
+      const currentMxcsr = mxcsrOperand ? readRegister(mxcsrOperand) : null;
+      if (!currentMxcsr) throw new TypeError('x86-mxcsr-physical-state-unavailable');
+      effectiveInputs.push(currentMxcsr);
+      effectiveOutputWidths.push(32);
+      registersRead = [...new Set([...registersRead,'mxcsr'])].sort();
+      registersWritten = [...new Set([...registersWritten,'mxcsr'])].sort();
+    }
+    const outputs = effectiveOutputWidths.map((widthBits, index) => temporary(widthBits, `${intrinsicId}-${index}`));
+    addOperation({
+      kind:'intrinsic', intrinsicId,
+      effectSummary:createIntrinsicEffectSummary({
+        inputs:effectiveInputs, outputs, registersRead, registersWritten,
+        memoryRead:config.memoryRead ?? { scope:'none' },
+        memoryWrite:config.memoryWrite ?? { scope:'none' },
+        controlEffects:config.controlEffects ?? [],
+        determinism:usesMxcsr ? 'input-dependent' : (config.determinism ?? 'input-dependent'),
+        symbolicDetail:config.symbolicDetail ?? 'summary-only',
+      }, options),
+      metadata:{
+        summaryContractVersion:'x86-intrinsic-summary/v1', ...(config.metadata || {}),
+        ...(usesMxcsr ? {
+          fpEnvironmentModeled:true,
+          fpEnvironmentContract:'x86-mxcsr/v1',
+          exactArchitecturalSummary:true,
+          mxcsrState:Object.freeze({
+            exceptionStatusBits:'5:0', denormalsAreZeroBit:6, exceptionMaskBits:'12:7',
+            roundingControlBits:'14:13', flushToZeroBit:15, reservedBitsPreserved:true,
+            output:'next-mxcsr',
+          }),
+        } : {}),
+      },
+    });
+    if (usesMxcsr) {
+      const nextMxcsr = outputs[outputs.length - 1];
+      if (!writeRegister(mxcsrOperand,nextMxcsr)) throw new TypeError('x86-mxcsr-physical-state-write-failed');
+      return outputs.slice(0, outputWidths.length);
+    }
+    return outputs;
+  }
+'''
+          common.write_text(s[:start]+new+s[end:])
+
+          rep('js/targets/architecture/x86_64/effects/fp.js',
+              "function foundationAddress(ctx,operand){const memory=operand?.type==='memory'?operand.memory:null;if(!memory||memory.addressSizeBits!==64||memory.segment!=null)return null;return x86EffectiveAddressExpression(ctx.instruction,operand);}",
+              "function foundationAddress(ctx,operand){return operand?.type==='memory'?x86EffectiveAddressExpression(ctx.instruction,operand):null;}")
+          rep('js/targets/architecture/x86_64/effects/simd.js',
+              "function memoryAddress(ctx,operand){const memory=operand?.type==='memory'?operand.memory:null;if(!memory||memory.addressSizeBits!==64||memory.segment!=null)return null;return x86EffectiveAddressExpression(ctx.instruction,operand);}",
+              "function memoryAddress(ctx,operand){return operand?.type==='memory'?x86EffectiveAddressExpression(ctx.instruction,operand):null;}")
+          rep('js/targets/architecture/x86_64/effects/fp.js',
+              "function fpDetail(operation){return Object.freeze({instructionFamily:operation,missingCanonicalState:Object.freeze(['MXCSR.rounding-control','MXCSR.exception-mask-status','MXCSR.denormals-are-zero','MXCSR.flush-to-zero']),exactness:'visible destination shape is known; complete FP result/status/fault behavior is not representable',p5iRequirement:'add canonical x86 FP environment state/effects before promoting FP arithmetic, conversion, or compare to global exactness'});}\n","")
+          rep('js/targets/architecture/x86_64/effects/fp.js',
+              "function fpFault(operation,signaling='operation-dependent'){return Object.freeze({kind:'x86-simd-floating-point-exception',condition:{kind:'mxcsr-exception-state-unmodelled',operation,signaling},detail:{exceptionClass:'#XM',maskState:'MXCSR-unmodelled'}});}",
+              "function fpFault(operation,signaling='operation-dependent'){return Object.freeze({kind:'x86-simd-floating-point-exception',condition:{kind:'mxcsr-unmasked-floating-point-exception',operation,signaling,maskBits:'MXCSR[12:7]',statusBits:'MXCSR[5:0]'},detail:{exceptionClass:'#XM',environmentContract:'x86-mxcsr/v1'}});}")
+          rep('js/targets/architecture/x86_64/effects/fp.js',
+              "function fpPartial(ctx,family,metadata,faults=[],categories=['registers','faults','other']){return ctx.partial('x86-fp-environment-state-unmodelled',categories,{family:'fp',possibleFaults:faults,detail:fpDetail(family),metadata:{operation:family,fpEnvironmentModeled:false,...metadata}});}",
+              "function fpPartial(ctx,family,metadata,faults=[],_categories=['registers','faults','other']){return ctx.finish({family:'fp',possibleFaults:faults,metadata:{operation:family,fpEnvironmentModeled:true,fpEnvironmentContract:'x86-mxcsr/v1',environmentEffect:'intrinsic-consumes-and-produces-canonical-mxcsr',...metadata}});}")
+
+          rep('js/targets/architecture/x86_64/effects/memory.js',
+              "  return {\n    space:address.space,\n    ...extra,\n    metadata:{ ...address.metadata, ...metadata },\n  };",
+              "  return {\n    space:address.space,\n    ...(extra.atomic === true && extra.ordering == null ? { ordering:'seq-cst' } : {}),\n    ...extra,\n    metadata:{ ...address.metadata, ...metadata },\n  };")
+          memory=Path('js/targets/architecture/x86_64/effects/memory.js'); s=memory.read_text(); a=s.index('function atomicOrderingPartial('); b=s.index('\nfunction invalidLockPartial(',a)
+          memory.write_text(s[:a]+'''function atomicOrderingPartial(ctx, family, possibleFaults, metadata = {}, detail = {}) {
+  return ctx.finish({
+    family:'atomic-memory', possibleFaults,
+    metadata:{
+      operation:family, atomic:true, orderingMapping:'seq-cst',
+      orderingAuthority:'Intel SDM Vol.3 locked-instruction total-order / no-reordering rules',
+      orderingScope:'proven-locked-rmw-only', ...metadata, ...detail,
+    },
+  });
+}
+'''+s[b:])
+
+          rep('js/targets/architecture/x86_64/effects/atomic.js',
+              "  return { space:address.space, atomic, metadata:{ ...address.metadata, rmwId:relationshipId, rmwPhase:phase, atomicRmw:atomic, sameInstructionRelationship:true, ...metadata } };",
+              "  return { space:address.space, atomic, ...(atomic ? { ordering:'seq-cst' } : {}), metadata:{ ...address.metadata, rmwId:relationshipId, rmwPhase:phase, atomicRmw:atomic, sameInstructionRelationship:true, ...metadata } };")
+          atomic=Path('js/targets/architecture/x86_64/effects/atomic.js'); s=atomic.read_text(); a=s.index('function orderingPartial('); b=s.index('\nfunction liftXchg(',a)
+          atomic.write_text(s[:a]+'''function orderingPartial(ctx, family, faults, metadata = {}, detail = {}) {
+  return ctx.finish({
+    family:'atomic', possibleFaults:faults,
+    metadata:{
+      operation:family, atomic:true, orderingMapping:'seq-cst',
+      orderingAuthority:'Intel SDM Vol.3 locked-instruction total-order / no-reordering rules',
+      orderingScope:'proven-locked-rmw-only', ...metadata, ...detail,
+    },
+  });
+}
+'''+s[b:])
+          rep('js/targets/architecture/x86_64/effects/atomic.js',"ordering:locked ? 'also intentionally unmapped' : 'not atomic without LOCK'","ordering:locked ? 'mapped to seq-cst by P5-I Intel locked-operation contract' : 'not atomic without LOCK'")
+          rep('js/targets/architecture/x86_64/effects/atomic.js',"orderingMapping:locked ? 'unmapped-not-seq-cst' : 'not-applicable'","orderingMapping:locked ? 'seq-cst' : 'not-applicable'")
+
+          rep('js/targets/architecture/index.js',"id:'x86_64', semanticVersion:X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION, instructionAlignment:1, fixedInstructionSize:null, viewerCompatible:false,","id:'x86_64', semanticVersion:X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION, instructionAlignment:1, fixedInstructionSize:null, viewerCompatible:true,")
+          rep('js/targets/architecture/index.js',
+              "  // P5-5 has an integrated bounded variable-length x86 viewer, but the public\n  // viewer capability remains conservative in this checkpoint because the\n  // global capability regression is outside p5-i ownership. The integrated\n  // viewer seam is verified directly under tests/phase5/** without claiming A6.",
+              "  // Integrated P5-5 viewer gates are green, so viewer compatibility is enabled.\n  // Semantic/A6 maturity remains explicitly partial until P5-6 corpus verification.")
+
+          # P5-2 component atomic tests now assert the integrated ordering seam.
+          p=Path('tests/phase5/effects/memory/atomic.test.mjs'); s=p.read_text()
+          repstr="function assertAtomicPair(bundle){assert.equal(reads(bundle).length,1);assert.equal(writes(bundle).length,1);assert.equal(reads(bundle)[0].access.atomic,true);assert.equal(writes(bundle)[0].access.atomic,true);assert.equal(reads(bundle)[0].access.ordering,undefined);assert.equal(writes(bundle)[0].access.ordering,undefined);assert.deepEqual(reads(bundle)[0].access.addressExpr,writes(bundle)[0].access.addressExpr);assert.equal(reads(bundle)[0].metadata.rmwId,writes(bundle)[0].metadata.rmwId);}"
+          newstr="function assertAtomicPair(bundle){assert.equal(reads(bundle).length,1);assert.equal(writes(bundle).length,1);assert.equal(reads(bundle)[0].access.atomic,true);assert.equal(writes(bundle)[0].access.atomic,true);assert.equal(reads(bundle)[0].access.ordering,'seq-cst');assert.equal(writes(bundle)[0].access.ordering,'seq-cst');assert.deepEqual(reads(bundle)[0].access.addressExpr,writes(bundle)[0].access.addressExpr);assert.equal(reads(bundle)[0].metadata.rmwId,writes(bundle)[0].metadata.rmwId);}"
+          if s.count(repstr)!=1: raise SystemExit('atomic assertAtomicPair shape changed')
+          s=s.replace(repstr,newstr)
+          s=s.replace("test('LOCK ADD atomic without ordering overclaim',()=>{const{bundle}=lift({family:'add',prefixes:[0xf0],operands:[mem({base:'rax',widthBits:64,access:'read-write'}),reg('rbx',64,'read')]});assert.equal(bundle.completeness,'partial');assertAtomicPair(bundle);assert.equal(bundle.metadata.orderingMapping,'unmapped-not-seq-cst');assert.match(bundle.unknownEffects.reason,/ordering-not-representable/);});",
+                      "test('LOCK ADD uses the proven generic seq-cst ordering mapping',()=>{const{bundle}=lift({family:'add',prefixes:[0xf0],operands:[mem({base:'rax',widthBits:64,access:'read-write'}),reg('rbx',64,'read')]});assert.equal(bundle.completeness,'exact-with-intrinsic');assertAtomicPair(bundle);assert.equal(bundle.metadata.orderingMapping,'seq-cst');assert.match(bundle.metadata.orderingAuthority,/Intel SDM Vol\\.3/);});")
+          s=s.replace("test('memory XCHG implicit atomicity',()=>{const{bundle}=lift({family:'xchg',operands:[mem({base:'rax',widthBits:64,access:'read-write'}),reg('rcx',64,'read-write')]});assert.equal(bundle.completeness,'partial');assertAtomicPair(bundle);",
+                      "test('memory XCHG implicit atomicity',()=>{const{bundle}=lift({family:'xchg',operands:[mem({base:'rax',widthBits:64,access:'read-write'}),reg('rcx',64,'read-write')]});assert.equal(bundle.completeness,'exact');assertAtomicPair(bundle);")
+          s=s.replace("test('LOCK XADD same-address atomic RMW',()=>{const{bundle}=lift({family:'xadd',prefixes:[0xf0],operands:[mem({base:'rdi',displacement:8n,widthBits:64,access:'read-write'}),reg('rax',64,'read-write')]});assert.equal(bundle.completeness,'partial');assertAtomicPair(bundle);",
+                      "test('LOCK XADD same-address atomic RMW',()=>{const{bundle}=lift({family:'xadd',prefixes:[0xf0],operands:[mem({base:'rdi',displacement:8n,widthBits:64,access:'read-write'}),reg('rax',64,'read-write')]});assert.equal(bundle.completeness,'exact-with-intrinsic');assertAtomicPair(bundle);")
+          s=s.replace("test('LOCK CMPXCHG atomic but no fake seq-cst',()=>{const{bundle}=lift({family:'cmpxchg',prefixes:[0xf0],operands:[mem({base:'rdi',widthBits:32,access:'read-write'}),reg('ecx',32,'read')]});assert.equal(bundle.completeness,'partial');assertAtomicPair(bundle);assert.equal(bundle.metadata.orderingMapping,'unmapped-not-seq-cst');});",
+                      "test('LOCK CMPXCHG carries seq-cst ordering but remains partial for conditional-store representation',()=>{const{bundle}=lift({family:'cmpxchg',prefixes:[0xf0],operands:[mem({base:'rdi',widthBits:32,access:'read-write'}),reg('ecx',32,'read')]});assert.equal(bundle.completeness,'partial');assertAtomicPair(bundle);assert.equal(bundle.metadata.orderingMapping,'seq-cst');assert.match(bundle.unknownEffects.reason,/conditional-store/);});")
+          p.write_text(s)
+
+          p=Path('tests/phase5/integration/x86-cross-lane.test.mjs'); s=p.read_text(); marker="test('LOCKed cross-lane memory RMW is atomic but ordering is explicit partial, never guessed seq-cst'"
+          if marker not in s: raise SystemExit('cross-lane ordering test missing')
+          a=s.index(marker); a=s.rfind('test(',0,a+5); b=s.index('\n});',a)+4
+          replacement="""test('proven LOCKed cross-lane RMW maps to generic seq-cst; unlocked RMW does not', () => {\n  const locked=lift({family:'adc',prefixes:[0xf0],operands:[mem({base:'rax',widthBits:64,access:'read-write'}),reg('rbx',64,'read')]}).bundle;\n  assert.equal(locked.completeness,'exact-with-intrinsic'); assert.equal(locked.metadata.orderingMapping,'seq-cst'); assert.match(locked.metadata.orderingAuthority,/Intel SDM Vol\\.3/);\n  assert.equal(reads(locked)[0].access.ordering,'seq-cst'); assert.equal(writes(locked)[0].access.ordering,'seq-cst');\n  const unlocked=lift({family:'adc',operands:[mem({base:'rax',widthBits:64,access:'read-write'}),reg('rbx',64,'read')]}).bundle;\n  assert.equal(reads(unlocked)[0].access.atomic,false); assert.equal(writes(unlocked)[0].access.atomic,false); assert.equal(reads(unlocked)[0].access.ordering,undefined);\n});"""
+          p.write_text(s[:a]+replacement+s[b:])
+
+          p=Path('tests/phase5/effects/fp-simd/moves-fp.test.mjs'); s=p.read_text()
+          s=s.replace("test('scalar arithmetic and sqrt remain MXCSR-partial while lane preservation is explicit', () => {","test('scalar arithmetic and sqrt consume and produce canonical MXCSR while lane preservation stays explicit', () => {")
+          old="assert.equal(bundle.completeness,'partial',family); assert.equal(bundle.unknownEffects.reason,'x86-fp-environment-state-unmodelled',family); assert.ok(bundle.unknownEffects.detail.missingCanonicalState.some((x)=>x.startsWith('MXCSR.')),family); assert.equal(physicalWrites(bundle,'ymm0').length,1,family);"
+          new="assert.equal(bundle.completeness,'exact-with-intrinsic',family); assert.equal(bundle.metadata.fpEnvironmentContract,'x86-mxcsr/v1',family); assert.equal(physicalWrites(bundle,'mxcsr').length,1,family); assert.equal(physicalWrites(bundle,'ymm0').length,1,family);"
+          if s.count(old)!=1: raise SystemExit('scalar fp partial assertion changed')
+          s=s.replace(old,new)
+          s=s.replace("test('packed FP arithmetic remains explicit partial rather than fake exact', () => {","test('packed FP arithmetic uses canonical MXCSR exact-with-intrinsic semantics', () => {")
+          s=s.replace("assert.equal(bundle.completeness,'partial',family); assert.equal(bundle.unknownEffects.reason,'x86-fp-environment-state-unmodelled'); assert.equal(intrinsics(bundle,'x86.fp.packed-arithmetic').length,1);","assert.equal(bundle.completeness,'exact-with-intrinsic',family); assert.equal(bundle.metadata.fpEnvironmentContract,'x86-mxcsr/v1'); assert.equal(physicalWrites(bundle,'mxcsr').length,1); assert.equal(intrinsics(bundle,'x86.fp.packed-arithmetic').length,1);")
+          s=s.replace("test('conversion families expose known visible destination shape but remain FP-environment partial', () => {","test('conversion families consume/produce canonical MXCSR without default rounding assumptions', () => {")
+          s=s.replace("assert.equal(bundle.completeness,'partial',family); assert.equal(bundle.unknownEffects.reason,'x86-fp-environment-state-unmodelled');}","assert.equal(bundle.completeness,'exact-with-intrinsic',family); assert.equal(bundle.metadata.fpEnvironmentContract,'x86-mxcsr/v1'); assert.equal(physicalWrites(bundle,'mxcsr').length,1);}",1)
+          s=s.replace("}); assert.equal(bundle.completeness,'partial',family);\n    const compare=", "}); assert.equal(bundle.completeness,'exact-with-intrinsic',family); assert.equal(bundle.metadata.fpEnvironmentContract,'x86-mxcsr/v1'); assert.equal(physicalWrites(bundle,'mxcsr').length,1);\n    const compare=",1)
+          oldmem="const addr32=effects('movss',[reg('xmm0','write'),mem(32,{addressSizeBits:32})],{prefixes:legacyPrefix(0xf3),instructionId:'p5-3:addr32'}); assert.equal(addr32.completeness,'partial'); assert.equal(addr32.metadata.classification,'P5-I-INTEGRATION-REQUIRED');\n  const fs=effects('movss',[reg('xmm0','write'),mem(32,{segment:'fs'})],{prefixes:legacyPrefix(0xf3),instructionId:'p5-3:fs'}); assert.equal(fs.completeness,'partial'); assert.equal(fs.metadata.classification,'P5-I-INTEGRATION-REQUIRED');"
+          newmem="const addr32=effects('movss',[reg('xmm0','write'),mem(32,{addressSizeBits:32})],{prefixes:legacyPrefix(0xf3),instructionId:'p5-3:addr32'}); assert.equal(addr32.completeness,'exact'); const addrRead=ops(addr32,'memory-read')[0]; assert.equal(addrRead.access.space,'memory'); assert.equal(addrRead.metadata.addressSizeBits,32);\n  const fs=effects('movss',[reg('xmm0','write'),mem(32,{segment:'fs'})],{prefixes:legacyPrefix(0xf3),instructionId:'p5-3:fs'}); assert.equal(fs.completeness,'exact'); const fsRead=ops(fs,'memory-read')[0]; assert.equal(fsRead.access.space,'tls'); assert.equal(fsRead.metadata.segment,'fs');"
+          if s.count(oldmem)!=1: raise SystemExit('fp memory handoff assertion changed')
+          s=s.replace(oldmem,newmem)
+          p.write_text(s)
+
+          Path('tests/phase5/integration/p5i-shared-state.test.mjs').write_text("""import assert from 'node:assert/strict';\nimport test from 'node:test';\nimport { ARM64_ARCHITECTURE, X86_64_ARCHITECTURE } from '../../../js/targets/architecture/index.js';\nimport { resolveABIPlugin } from '../../../js/targets/abi/index.js';\nimport { x86RegisterDescriptor } from '../../../js/targets/architecture/x86_64/registers.js';\nimport { effects, reg, vex2, physicalWrites } from '../effects/fp-simd/helpers.mjs';\n\ntest('viewer capability and semantic selection coexist without changing ARM64',()=>{assert.equal(X86_64_ARCHITECTURE.viewerCompatible,true);assert.equal(typeof X86_64_ARCHITECTURE.liftExact,'function');assert.equal(X86_64_ARCHITECTURE.capabilities.semanticAnalysis,'phase5-shadow-partial');assert.equal(ARM64_ARCHITECTURE.viewerCompatible,true);assert.equal(ARM64_ARCHITECTURE.fixedInstructionSize,4);assert.equal(ARM64_ARCHITECTURE.capabilities.semanticAnalysis,'legacy-v1');});\ntest('canonical x86 vector/FP state uses YMM physical identity plus MXCSR',()=>{const xmm=x86RegisterDescriptor('xmm0'),ymm=x86RegisterDescriptor('ymm0'),mxcsr=x86RegisterDescriptor('mxcsr');assert.equal(xmm.physicalId,'ymm0');assert.equal(xmm.viewBits,128);assert.equal(ymm.viewBits,256);assert.equal(mxcsr.physicalId,'mxcsr');assert.equal(mxcsr.kind,'fp-environment');});\ntest('legacy SSE preserves upper YMM while VEX.128 zeroes upper YMM',()=>{const legacy=effects('movaps',[reg('xmm0','write'),reg('xmm1','read')],{instructionId:'p5-i:legacy'});assert.equal(legacy.metadata.upperLaneBehavior,'preserve-upper-128');assert.equal(physicalWrites(legacy,'ymm0').length,1);const vex=effects('vxorps',[reg('xmm0','write'),reg('xmm1','read'),reg('xmm2','read')],{prefixes:vex2(0xf8),instructionId:'p5-i:vex'});assert.equal(vex.metadata.upperLaneBehavior,'zero-upper-128');assert.equal(physicalWrites(vex,'ymm0').length,1);});\ntest('SysV AMD64 and Microsoft x64 remain independently selectable',()=>{assert.equal(resolveABIPlugin({architecture:'x86_64',abiId:'sysv-amd64'}).id,'sysv-amd64');assert.equal(resolveABIPlugin({architecture:'x86_64',abiId:'microsoft-x64'}).id,'microsoft-x64');});\n""")
+
+          manifest=json.loads(Path('tests/phase5/corpus/manifest.json').read_text())
+          targets=[t['id'] for t in manifest['mandatoryTargets']]; opts=manifest['mandatoryOptimizationLevels']; cats=manifest['mandatoryCategories']; covered=set(manifest['source']['coveredCategories']); fixtures=manifest['foundationVerticalFixtures']
+          actual=[]
+          for f in fixtures:
+              target='sysv-amd64-elf' if f['abiId']=='sysv-amd64' else 'microsoft-x64-pe'
+              for cat in sorted(covered):
+                  if cat=='sysv-amd64-abi' and target!='sysv-amd64-elf': continue
+                  if cat=='microsoft-x64-abi' and target!='microsoft-x64-pe': continue
+                  actual.append({'target':target,'optimization':f['optimization'],'category':cat,'fixture':f['path']})
+          keys={(x['target'],x['optimization'],x['category']) for x in actual}
+          missing=[{'target':t,'optimization':o,'category':c,'status':'REQUIRED-FOR-P5-6-VERIFICATION'} for t in targets for o in opts for c in cats if (t,o,c) not in keys]
+          report={'schemaVersion':'phase5-p5i-corpus-gap/v1','sourceManifest':'tests/phase5/corpus/manifest.json','disposition':'REQUIRED-FOR-P5-6-VERIFICATION','a6ClaimAllowed':False,'mandatoryTargets':targets,'mandatoryOptimizationLevels':opts,'mandatoryCategories':cats,'foundationFixtures':fixtures,'mandatoryTupleCount':len(targets)*len(opts)*len(cats),'actualInstantiatedTupleCount':len(actual),'missingTupleCount':len(missing),'actualInstantiatedTuples':actual,'missingTuples':missing,'p5_6Rule':'Any missing required tuple is BLOCKING, never SKIPPED/NOT-APPLICABLE/PASS.'}
+          if (report['mandatoryTupleCount'],report['actualInstantiatedTupleCount'],report['missingTupleCount'])!=(144,20,124): raise SystemExit(f'unexpected corpus counts {report["mandatoryTupleCount"]}/{report["actualInstantiatedTupleCount"]}/{report["missingTupleCount"]}')
+          out=Path('reports/phase5/p5-6-required-corpus-gaps.json'); out.parent.mkdir(parents=True,exist_ok=True); out.write_text(json.dumps(report,indent=2,sort_keys=True)+'\n')
+          PY
+          git diff --check
+      - name: Focused and full Phase 5 gates
+        run: |
+          node --test --test-concurrency=1 tests/phase5/effects/memory/atomic.test.mjs tests/phase5/effects/fp-simd/moves-fp.test.mjs tests/phase5/integration/x86-cross-lane.test.mjs tests/phase5/integration/p5i-shared-state.test.mjs
+          npm run effects:test
+          npm run phase5:test
+          npm run semantic-v2:test
+          npm run platform:test
+      - name: Canonical userscript sync
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run userscript:build
+          cp userscript/hex.user.template.js /tmp/u.js
+          cp userscript/release-version.json /tmp/r.json
+          npm run userscript:build
+          cmp /tmp/u.js userscript/hex.user.template.js
+          cmp /tmp/r.json userscript/release-version.json
+          npm run userscript:test
+          git diff --check
+      - name: Commit repaired integration
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/phase5-p5i-shared-repair-v2.yml
+          git add js/targets/architecture/x86_64 js/targets/architecture/index.js tests/phase5 reports/phase5 userscript/hex.user.template.js userscript/release-version.json .github/workflows/phase5-p5i-shared-repair-v2.yml
+          git diff --cached --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Phase 5: reconcile P5-3 shared x86 contracts'
+          git push origin HEAD:refs/heads/hex/p5-x86-integration
