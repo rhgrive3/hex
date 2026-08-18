@@ -7,57 +7,13 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: invariant-gates-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  repair-pr881:
-    name: repair-pr881
-    if: github.event_name == 'pull_request' && github.head_ref == 'fix/issues-802-821-824-859-866'
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.head_ref }}
-          fetch-depth: 0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - name: Apply guarded correctness repair
-        run: python3 .github/scripts/pr881-repair.py
-      - name: Generate canonical userscript
-        run: npm run userscript:build
-      - name: Focused correctness regressions
-        run: |
-          node tests/semantic-v2/issues-802-821-824-859.test.mjs
-          node tests/semantic-v2/issue-866-riscv-remainder.test.mjs
-      - name: Full repository validation
-        run: npm run check
-      - name: Protected userscript validation
-        run: npm run userscript:test
-      - name: Commit verified repair
-        shell: bash
-        run: |
-          git diff --check
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add js/emu.js js/expr.js js/ir.js js/semantics/ir/normalize-effects.js \
-            tests/semantic-v2/issues-802-821-824-859.test.mjs \
-            tests/semantic-v2/issue-866-riscv-remainder.test.mjs \
-            userscript/hex.user.template.js userscript/release-version.json
-          if git diff --cached --quiet; then
-            echo 'No source/test/generated changes to commit.'
-          else
-            git commit -m 'Fix five analysis correctness regressions'
-            git push origin HEAD:${{ github.head_ref }}
-          fi
-
   plan:
     name: check-plan
     runs-on: ubuntu-latest
