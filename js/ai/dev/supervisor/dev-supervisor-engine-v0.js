@@ -96,7 +96,17 @@ export class DevSupervisorEngineV0 {
           reasoning: input.reasoning || null,
         });
         const text = response && typeof response === 'object' ? response.text : response;
-        const decision = parseDevSupervisorDecision(text);
+        let decision;
+        try {
+          decision = parseDevSupervisorDecision(text);
+        } catch (decisionError) {
+          history.push({
+            kind: 'decision-invalid',
+            message: '直前のSupervisor decisionは有効なhex-dev-supervisor-v1 JSONではありません。同じdecision shape契約に従ってJSONオブジェクトを1つだけ再出力してください。',
+            error: String(decisionError?.message || decisionError || 'Invalid Supervisor decision.'),
+          });
+          continue;
+        }
         const availableTools = [...this.supervisor.availableTools];
 
         if (decision.type === 'tool' && !availableTools.includes(decision.tool)) {
