@@ -32,18 +32,20 @@ function x86ControlFlow(instruction) {
  * the Capstone RISC-V printer collapses `jal rd, off` and `jal x0, off` to the
  * same display form, so mnemonics cannot distinguish a call from a jump.
  *
- * rd == x0 means no link value is produced, which is the architectural
- * difference between a call and a plain jump. For `jalr` with rd == x0, the
- * ISA's return-address-stack prediction table treats rs1 in {x1, x5} as a
- * return; that hint lives in the unprivileged ISA, not in the psABI.
+ * A nonzero rd proves that a link value is written, but that alone does not
+ * prove an ABI procedure call. The ISA's return-address-stack hint registers
+ * x1/x5 are the only instruction-local evidence we use to classify a call.
+ * Other nonzero rd values remain linked jumps so generic ABI call effects are
+ * not invented for them.
  */
 function riscv64ControlFlow(instruction) {
   const fields = instruction?.fields;
   if (!fields?.supported) return 'fallthrough';
   const op = fields.op;
-  if (op === 'jal') return fields.rd === 'x0' ? 'branch' : 'call';
+  if (op === 'jal') return fields.rd === 'x0' ? 'branch' : ['x1', 'x5'].includes(fields.rd) ? 'call' : 'branch';
   if (op === 'jalr') {
-    if (fields.rd !== 'x0') return 'call';
+    if (['x1', 'x5'].includes(fields.rd)) return 'call';
+    if (fields.rd !== 'x0') return 'branch';
     if (['x1', 'x5'].includes(fields.rs1)) return 'return';
     // An indirect jump. It is reported as a branch, matching how x86 classifies
     // an indirect `jmp`: the block ends and no fallthrough edge is invented,
@@ -102,9 +104,6 @@ export const ARM64_ARCHITECTURE = registerArchitecturePlugin({
   modes:()=>Object.freeze(['a64']), registerFile:()=>ARM64_REGISTERS,
   decodeProvider:'capstone/backend', liftExact:liftArm64MachineEffects, assemble:assembleArm64, classifyControlFlow:arm64ControlFlow,
   directControlTarget:arm64DirectControlTarget,
-  // Phase 2 exposes exact low-level effects where implemented. Coverage is not
-  // complete yet, so the proven legacy v1 path remains active and MachineEffects
-  // stays a shadow semantic source until the compatibility differential is zero.
   capabilities:{ decode:'external', exactEffects:'partial', semanticAnalysis:'legacy-v1' },
 });
 
@@ -121,10 +120,6 @@ export const X86_64_ARCHITECTURE = registerArchitecturePlugin({
   modes:()=>Object.freeze(['long-64']), registerFile:x86RegisterFile,
   decodeProvider:'capstone/backend', liftExact:liftX86MachineEffects, classifyControlFlow:x86ControlFlow,
   directControlTarget:x86DirectControlTarget,
-  // P5-5's bounded variable-length viewer implementation is integrated and
-  // verified under tests/phase5/viewer/**. Public capability promotion is kept
-  // conservative because the frozen global capability regression is outside
-  // P5-I ownership; semantic/A6 maturity also remains partial pending P5-6.
   capabilities:{ decode:'external-structured-v1', exactEffects:'partial', semanticAnalysis:'phase5-shadow-partial' },
 });
 
