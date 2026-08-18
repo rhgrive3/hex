@@ -13,7 +13,11 @@ import { x86RegisterDescriptor } from '../registers.js';
 
 export const X86_64_ARCHITECTURE_ID = 'x86_64';
 export const X86_64_MODE = 'long-64';
-export const X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION = '5.0.0-foundation';
+export const X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION = '5.1.0-phase5-integrated';
+
+const X86_ATOMIC_ORDERING_AUTHORITY = 'Intel SDM Vol.3 locked-instruction total-order/no-reordering rules';
+const X86_ATOMIC_ORDERING_CONTRACT = 'x86-locked-rmw-seq-cst/v1';
+const X86_MXCSR_CONTRACT = 'x86-mxcsr/v1';
 
 function mask(bits) { return (1n << BigInt(bits)) - 1n; }
 function unsigned(value, bits) { return BigInt(value) & mask(bits); }
@@ -77,23 +81,64 @@ export function createX86EffectContext(decoded, context = {}) {
   }
 
   function intrinsic(intrinsicId, inputs, outputWidths, config = {}) {
-    const outputs = outputWidths.map((widthBits, index) => temporary(widthBits, `${intrinsicId}-${index}`));
+    const fpEnvironmentDependency = String(config.metadata?.fpEnvironmentDependency || '');
+    const usesMxcsr = fpEnvironmentDependency.includes('MXCSR');
+    let effectiveInputs = [...inputs];
+    let effectiveOutputWidths = [...outputWidths];
+    let registersRead = [...(config.registersRead ?? [])];
+    let registersWritten = [...(config.registersWritten ?? [])];
+    let mxcsrOperand = null;
+
+    if (usesMxcsr) {
+      mxcsrOperand = registerOperand('mxcsr');
+      const currentMxcsr = mxcsrOperand ? readRegister(mxcsrOperand) : null;
+      if (!currentMxcsr) throw new TypeError('x86-mxcsr-physical-state-unavailable');
+      effectiveInputs.push(currentMxcsr);
+      effectiveOutputWidths.push(32);
+      registersRead = [...new Set([...registersRead, 'mxcsr'])].sort();
+      registersWritten = [...new Set([...registersWritten, 'mxcsr'])].sort();
+    }
+
+    const outputs = effectiveOutputWidths.map((widthBits, index) => temporary(widthBits, `${intrinsicId}-${index}`));
     addOperation({
       kind:'intrinsic',
       intrinsicId,
       effectSummary:createIntrinsicEffectSummary({
-        inputs,
+        inputs:effectiveInputs,
         outputs,
-        registersRead:config.registersRead ?? [],
-        registersWritten:config.registersWritten ?? [],
+        registersRead,
+        registersWritten,
         memoryRead:config.memoryRead ?? { scope:'none' },
         memoryWrite:config.memoryWrite ?? { scope:'none' },
         controlEffects:config.controlEffects ?? [],
-        determinism:config.determinism ?? 'input-dependent',
+        determinism:usesMxcsr ? 'input-dependent' : (config.determinism ?? 'input-dependent'),
         symbolicDetail:config.symbolicDetail ?? 'summary-only',
       }, options),
-      metadata:{ summaryContractVersion:'x86-intrinsic-summary/v1', ...(config.metadata || {}) },
+      metadata:{
+        summaryContractVersion:'x86-intrinsic-summary/v1',
+        ...(config.metadata || {}),
+        ...(usesMxcsr ? {
+          fpEnvironmentModeled:true,
+          fpEnvironmentContract:X86_MXCSR_CONTRACT,
+          exactArchitecturalSummary:true,
+          mxcsrState:Object.freeze({
+            exceptionStatusBits:'5:0',
+            denormalsAreZeroBit:6,
+            exceptionMaskBits:'12:7',
+            roundingControlBits:'14:13',
+            flushToZeroBit:15,
+            reservedBitsPreserved:true,
+            output:'next-mxcsr',
+          }),
+        } : {}),
+      },
     });
+
+    if (usesMxcsr) {
+      const nextMxcsr = outputs[outputs.length - 1];
+      if (!writeRegister(mxcsrOperand, nextMxcsr)) throw new TypeError('x86-mxcsr-physical-state-write-failed');
+      return outputs.slice(0, outputWidths.length);
+    }
     return outputs;
   }
 
@@ -192,20 +237,73 @@ export function createX86EffectContext(decoded, context = {}) {
     return null;
   }
 
+  function integratedAtomicOrdering(operation) {
+    if (!['memory-read','memory-write'].includes(operation.kind) || operation.access?.atomic !== true || operation.access.ordering != null) return operation;
+    return createMachineOperation({
+      ...operation,
+      access:createMemoryAccess({ ...operation.access, ordering:'seq-cst' }, options),
+      metadata:{ ...(operation.metadata || {}), orderingContract:X86_ATOMIC_ORDERING_CONTRACT },
+    }, options);
+  }
+
   function finish(config = {}) {
-    const completeness = config.completeness ?? (hasIntrinsic ? 'exact-with-intrinsic' : 'exact');
+    const integratedOperations = operations.map(integratedAtomicOrdering);
+    const hasMappedAtomicOrdering = integratedOperations.some((operation) =>
+      ['memory-read','memory-write'].includes(operation.kind)
+      && operation.access?.atomic === true
+      && operation.access.ordering === 'seq-cst');
+    const hasMxcsrIntrinsic = integratedOperations.some((operation) =>
+      operation.kind === 'intrinsic' && operation.metadata?.fpEnvironmentContract === X86_MXCSR_CONTRACT);
+
+    let completeness = config.completeness ?? (hasIntrinsic ? 'exact-with-intrinsic' : 'exact');
+    let unknownEffects = config.unknownEffects;
+    let metadata = { family:config.family ?? 'foundation', instructionFamily:family, decoderContractVersion:instruction.contractVersion, ...(config.metadata || {}) };
+
+    if (hasMappedAtomicOrdering) {
+      metadata = {
+        ...metadata,
+        orderingMapping:'seq-cst',
+        orderingAuthority:X86_ATOMIC_ORDERING_AUTHORITY,
+        orderingContract:X86_ATOMIC_ORDERING_CONTRACT,
+        orderingScope:'proven-atomic-rmw-only',
+      };
+      if (unknownEffects?.reason === 'x86-locked-memory-ordering-not-representable-by-frozen-p5-0-contract'
+        || unknownEffects?.reason === 'x86-atomic-ordering-not-mapped-by-frozen-p5-0-contract') {
+        unknownEffects = undefined;
+        completeness = hasIntrinsic ? 'exact-with-intrinsic' : 'exact';
+      } else if (unknownEffects?.reason === 'x86-cmpxchg-conditional-store-and-atomic-ordering-not-fully-representable') {
+        unknownEffects = {
+          ...unknownEffects,
+          reason:'x86-cmpxchg-conditional-store-not-fully-representable',
+          detail:{ ...(unknownEffects.detail || {}), ordering:'seq-cst-mapped', orderingContract:X86_ATOMIC_ORDERING_CONTRACT },
+        };
+        completeness = 'partial';
+      }
+    }
+
+    if (hasMxcsrIntrinsic && unknownEffects?.reason === 'x86-fp-environment-state-unmodelled') {
+      unknownEffects = undefined;
+      completeness = 'exact-with-intrinsic';
+      metadata = {
+        ...metadata,
+        fpEnvironmentModeled:true,
+        fpEnvironmentContract:X86_MXCSR_CONTRACT,
+        environmentEffect:'intrinsic-consumes-and-produces-canonical-mxcsr',
+      };
+    }
+
     return createMachineEffectBundle({
       instructionId,
       architectureId:X86_64_ARCHITECTURE_ID,
       mode,
-      operations,
+      operations:integratedOperations,
       controlEffect:config.controlEffect ?? { kind:'fallthrough' },
       possibleFaults:config.possibleFaults ?? [],
       origin:instruction.origin ?? { instructionIds:[instructionId] },
       completeness,
-      ...(config.unknownEffects == null ? {} : { unknownEffects:config.unknownEffects }),
+      ...(unknownEffects == null ? {} : { unknownEffects }),
       ...(config.statePreservation == null ? {} : { statePreservation:config.statePreservation }),
-      metadata:{ family:config.family ?? 'foundation', instructionFamily:family, decoderContractVersion:instruction.contractVersion, ...(config.metadata || {}) },
+      metadata,
     }, options);
   }
 
