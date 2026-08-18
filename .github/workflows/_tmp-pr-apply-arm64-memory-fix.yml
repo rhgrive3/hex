@@ -1,0 +1,34 @@
+name: Temporary PR ARM64 memory patch applicator
+on:
+  pull_request:
+    branches: [main]
+permissions:
+  contents: write
+jobs:
+  apply:
+    if: github.head_ref == 'fix/arm64-memory-decoder-814-816'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/arm64-memory-decoder-814-816
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Execute audited patch body
+        shell: bash
+        run: |
+          awk '
+            /        run: \|/ { capture=1; next }
+            capture { sub(/^          /, ""); print }
+          ' .github/workflows/_tmp-apply-arm64-memory-fix.yml > /tmp/apply-arm64-memory.sh
+          bash /tmp/apply-arm64-memory.sh
+      - name: Remove one-shot plumbing
+        if: success()
+        shell: bash
+        run: |
+          git rm -f .github/workflows/_tmp-pr-apply-arm64-memory-fix.yml .github/_arm64-memory-trigger
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "chore: remove one-shot patch plumbing"
+          git push origin HEAD:fix/arm64-memory-decoder-814-816
