@@ -136,7 +136,7 @@ function scopeCss(source) {
     .replace(/(^|[{},])\s*body(?=[\s.#:[,{>+~])/g, '$1:scope');
   return `@scope (#hex-userscript-host){${translated}}#hex-userscript-host{position:fixed;inset:0;width:100vw;height:100dvh;z-index:2147483646;overflow:hidden;background:var(--bg);isolation:isolate}`;
 }
-function userscriptMetadata() { return `// ==UserScript==\n// @name         Hex for ChatGPT\n// @namespace    https://github.com/rhgrive3/hex\n// @version      ${LOADER_VERSION}\n// @description  Securely load the Hex binary analysis workbench on ChatGPT Web.\n// @match        https://chatgpt.com/*\n// @run-at       document-start\n// @inject-into  content\n// @grant        GM.xmlHttpRequest\n// @connect      ida.rhgrive.workers.dev\n// @updateURL    ${ORIGIN_TOKEN}/hex.meta.js\n// @downloadURL  ${ORIGIN_TOKEN}/hex.user.js\n// ==/UserScript==\n\n`; }
+function userscriptMetadata() { return `// ==UserScript==\n// @name         Hex for ChatGPT\n// @namespace    https://github.com/rhgrive3/hex\n// @version      ${LOADER_VERSION}\n// @description  Securely load the Hex binary analysis workbench on ChatGPT Web.\n// @match        https://chatgpt.com/*\n// @run-at       document-start\n// @inject-into  content\n// @grant        GM.xmlHttpRequest\n// @grant        GM.openInTab\n// @connect      ida.rhgrive.workers.dev\n// @updateURL    ${ORIGIN_TOKEN}/hex.meta.js\n// @downloadURL  ${ORIGIN_TOKEN}/hex.user.js\n// ==/UserScript==\n\n`; }
 function publicManifest(value) { const { assetPath: _private, ...safe } = value; return safe; }
 function sha256(value) { return createHash('sha256').update(value).digest('hex'); }
 function b64(value) { return Buffer.from(value).toString('base64url'); }
