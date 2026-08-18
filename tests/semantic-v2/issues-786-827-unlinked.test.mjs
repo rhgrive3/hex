@@ -24,6 +24,9 @@ function built(lines, base = BASE) {
   const m = model(lines, base);
   return { ...m, ir: buildIR(m.model, { rowOfAddress:m.rowOfAddress }) };
 }
+function unwrap32(node) {
+  return node?.k === 'un' && node.op === 'uxt32' ? node.a : node;
+}
 
 // #789: SDIV/UDIV by zero return architectural zero; widths control signedness.
 assert.equal(constOf(bin('sdiv', constNode(123n), constNode(0n), 32)), 0n);
@@ -122,26 +125,26 @@ assert.equal(unsigned64.paths[0].takenBranches[0]?.taken, true);
 // only subtraction-compatible state exposes the old compare projection.
 {
   const { model:m } = model(['adds w8, w0, w1', 'csel w2, w3, w4, hs', 'ret']);
-  const n = buildValues(m).defAt(1, 'x2');
+  const n = unwrap32(buildValues(m).defAt(1, 'x2'));
   assert.equal(n.predicate?.producer, 'adds');
   assert.equal(n.predicate?.bits, 32);
   assert.ok(n.cmp == null, 'ADDS must not masquerade as CMP for carry conditions');
 }
 {
   const { model:m } = model(['adds w8, w0, w1', 'csel w2, w3, w4, eq', 'ret']);
-  const n = buildValues(m).defAt(1, 'x2');
+  const n = unwrap32(buildValues(m).defAt(1, 'x2'));
   assert.equal(n.predicate?.producer, 'adds');
   assert.equal(n.predicate?.semantics, 'aarch64-nzcv-exact');
 }
 {
   const { model:m } = model(['bics w8, w0, w1', 'csel w2, w3, w4, eq', 'ret']);
-  const n = buildValues(m).defAt(1, 'x2');
+  const n = unwrap32(buildValues(m).defAt(1, 'x2'));
   assert.equal(n.predicate?.producer, 'bics');
   assert.ok(n.cmp == null, 'BICS must keep its A & ~B NZCV producer instead of a false compare');
 }
 {
   const { model:m } = model(['subs w8, w0, w1', 'csel w2, w3, w4, hs', 'ret']);
-  const n = buildValues(m).defAt(1, 'x2');
+  const n = unwrap32(buildValues(m).defAt(1, 'x2'));
   assert.ok(n.cmp?.a, 'SUBS retains the safe compare-compatible projection');
   assert.equal(n.predicate?.producer, 'subs');
 }
