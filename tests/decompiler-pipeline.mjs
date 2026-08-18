@@ -36,3 +36,5 @@ assert.ok(enhanced.sideEffects.some((x) => x.includes('hp')));
 assert.ok(enhanced.metrics.sourceMappedNodes >= 4);
 assert.ok(enhanced.highVariables.groups.length > 0);
 console.log('decompiler semantic pipeline PASS');
+
+await import('./issue-861-862-c-printer-signedness.mjs');
