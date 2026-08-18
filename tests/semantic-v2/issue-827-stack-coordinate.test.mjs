@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict';
 import { buildSemanticModel } from '../../js/blocks.js';
-import { buildIR, OP, mustAlias, mayAliasProvenance } from '../../js/ir.js';
+import {
+  buildIR,
+  OP,
+  mustAlias,
+  mayAliasProvenance,
+  getSemanticMigrationMode,
+  setSemanticMigrationMode,
+} from '../../js/ir.js';
 
 const BASE = 0x720000000n;
 function built(lines) {
@@ -16,7 +23,13 @@ function built(lines) {
   });
   const rowOfAddress = (address) => Number((BigInt(address) - BASE) / 4n);
   const model = buildSemanticModel(rows, { startRow:0, endRow:rows.length - 1, rowOfAddress });
-  return buildIR(model, { rowOfAddress });
+  const previousMode = getSemanticMigrationMode();
+  setSemanticMigrationMode('semantic-v2-compat');
+  try {
+    return buildIR(model, { rowOfAddress });
+  } finally {
+    setSemanticMigrationMode(previousMode);
+  }
 }
 function accesses(ir) {
   return ir.instructions.filter((inst) => inst.op === OP.LOAD || inst.op === OP.STORE);
