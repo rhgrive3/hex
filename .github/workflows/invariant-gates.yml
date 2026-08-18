@@ -7,66 +7,13 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: invariant-gates-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  bootstrap-proof-repair:
-    if: github.event_name == 'pull_request' && github.head_ref == 'fix/bootstrap-proof-capability-verification'
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.head_ref }}
-          fetch-depth: 0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - name: Apply minimal proof capability verification repair
-        shell: python
-        run: |
-          from pathlib import Path
-          source = Path('js/ai/dev/bootstrap/bootstrap-diagnostic.js')
-          text = source.read_text()
-          if "DEV_BOOTSTRAP_ROUND4_PROOF_CAPABILITY" not in text:
-              text = "import { DEV_BOOTSTRAP_ROUND4_PROOF_CAPABILITY } from './dev-bootstrap-gate.js';\n\n" + text
-          old = "const proofVerified = state === 'complete' && !!capability;"
-          new = "const proofVerified = state === 'complete' && capability === DEV_BOOTSTRAP_ROUND4_PROOF_CAPABILITY;"
-          if old not in text and new not in text:
-              raise SystemExit('bootstrap proof predicate not found')
-          source.write_text(text.replace(old, new))
-
-          test = Path('tests/dev-agent/round4-production-bootstrap.mjs')
-          body = test.read_text()
-          marker = "  assert.match(presentation.detail, /proof: 検証済み/);\n"
-          insertion = marker + "\n  const forgedCapability = bootstrapStatusPresentation({\n    state: 'complete',\n    capability: 'hex.dev.bootstrap.fake-proof',\n  });\n  assert.equal(forgedCapability.proofVerified, false, 'unrecognized proof capability must never be marked verified');\n  assert.doesNotMatch(forgedCapability.detail, /proof: verified/);\n"
-          if "unrecognized proof capability must never be marked verified" not in body:
-              if marker not in body:
-                  raise SystemExit('diagnostic test insertion point not found')
-              body = body.replace(marker, insertion, 1)
-          test.write_text(body)
-      - name: Focused Round 4 regression
-        run: node tests/dev-agent/round4-production-bootstrap.mjs
-      - name: Full Dev Agent suite
-        run: npm run dev-agent:test
-      - name: Canonical userscript suite
-        run: npm run userscript:test
-      - name: Commit repair and canonical generated artifacts
-        shell: bash
-        run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add js/ai/dev/bootstrap/bootstrap-diagnostic.js tests/dev-agent/round4-production-bootstrap.mjs userscript/hex.user.template.js userscript/release-version.json
-          if git diff --cached --quiet; then exit 0; fi
-          git commit -m 'Fix bootstrap proof capability verification'
-          git push origin "HEAD:${{ github.head_ref }}"
-
   plan:
     name: check-plan
     runs-on: ubuntu-latest
