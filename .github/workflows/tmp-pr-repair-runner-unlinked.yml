@@ -1,0 +1,63 @@
+name: Temporary unlinked issue PR repair runner
+on:
+  pull_request:
+    branches: [main]
+permissions:
+  contents: write
+  pull-requests: read
+jobs:
+  apply-and-verify:
+    if: github.event.pull_request.head.ref == 'fix/unlinked-issues-a-20260819' && github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/unlinked-issues-a-20260819
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Reconcile current main
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch origin main
+          git rebase origin/main
+      - name: Apply guarded repairs
+        run: |
+          python3 tools/tmp-unlinked-issues-a.py
+          python3 tools/tmp-unlinked-issues-b.py
+          python3 tools/tmp-unlinked-issues-b2.py
+          python3 tools/tmp-unlinked-issues-c.py
+      - name: Install
+        run: npm ci
+      - name: Focused regressions
+        run: |
+          node tests/semantic-v2/issues-786-827-unlinked.test.mjs
+          node tests/semantic-v2/issues-803-833-runtime.test.mjs
+          node tests/semantic-v2/issue-809-fpcr-physical-state.test.mjs
+          node tests/semantic-v2/issues-875-888-riscv.test.mjs
+          node --test tests/phase6/abi/riscv-psabi.test.mjs
+          node tests/ir.mjs
+      - name: Semantic + full gates
+        run: |
+          npm run semantic-v2:test
+          npm run check
+      - name: Canonical userscript build
+        run: npm run userscript:build
+      - name: Patch hygiene
+        run: git diff --check
+      - name: Commit verified implementation
+        run: |
+          rm tools/tmp-unlinked-issues-a.py tools/tmp-unlinked-issues-b.py tools/tmp-unlinked-issues-b2.py tools/tmp-unlinked-issues-c.py
+          rm -f .github/workflows/tmp-apply-unlinked-issues.yml .github/tmp-unlinked-issues-trigger
+          git add -A
+          git commit -m 'fix: resolve all unlinked correctness issues'
+      - name: Generated output zero-diff proof
+        run: |
+          npm run userscript:build
+          git diff --exit-code
+      - name: Publish target branch
+        run: git push --force-with-lease origin HEAD:fix/unlinked-issues-a-20260819
