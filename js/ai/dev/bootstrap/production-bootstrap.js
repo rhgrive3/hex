@@ -1,4 +1,5 @@
 import { DEV_BOOTSTRAP_ROUND4_PROOF_CAPABILITY } from './dev-bootstrap-gate.js';
+import { publishBootstrapDiagnostic } from './bootstrap-diagnostic.js';
 import { readEmbedGeneration } from '../../../userscript/embed-bootstrap.js';
 
 const HOST_PROTOCOL = 'hex.dev.bootstrap-host-v1';
@@ -12,6 +13,7 @@ export async function runProductionDevBootstrap({ engine, session, bridge = glob
   if (!isSandboxChild(globalObject)) return status(globalObject, 'skipped', { reason: 'not-sandbox-child' });
   if (!isProductionBootstrapEnabled(globalObject.location)) return status(globalObject, 'skipped', { reason: 'production-bootstrap-disabled' });
 
+  status(globalObject, 'running', { phase: 'bootstrap' });
   try {
     const parentState = await requestParentState(globalObject);
     const identity = normalizeIdentity(parentState.runtimeIdentity);
@@ -142,5 +144,6 @@ function isProductionBootstrapEnabled(locationRef) {
 function status(globalObject, state, details = {}) {
   const value = Object.freeze({ state, at: new Date().toISOString(), ...details });
   try { globalObject.__HEX_DEV_BOOTSTRAP_STATUS__ = value; } catch {}
+  try { publishBootstrapDiagnostic(globalObject, value); } catch {}
   return value;
 }
