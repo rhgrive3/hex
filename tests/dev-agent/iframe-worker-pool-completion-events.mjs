@@ -3,16 +3,6 @@ import { webcrypto } from 'node:crypto';
 import { IframeWorkerPool } from '../../js/userscript/dev/frame-mesh/iframe-worker-pool.js';
 import { startParentDevWorkerRuntime } from '../../js/userscript/dev/parent-worker-runtime.js';
 
-await testCompletedBeforeWait();
-await testCompletionWhileWaiting();
-await testCompletionAcrossSupervisorRunSwitch();
-await testMultipleSimultaneousCompletions();
-await testCompletionDeliveredExactlyOnce();
-await testReleasedLeaseCompletionIsNotDelivered();
-await testResultRetainedAfterCompletionDelivery();
-
-console.log('iframe worker pool completion events: ok');
-
 async function testCompletedBeforeWait() {
   const harness = await createHarness(1);
   try {
@@ -239,3 +229,13 @@ async function expectNoCompletion(runtime, runId) {
 
 function tick() { return new Promise((resolve) => setTimeout(resolve, 0)); }
 function delay(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
+
+await testCompletedBeforeWait();
+await testCompletionWhileWaiting();
+await testCompletionAcrossSupervisorRunSwitch();
+await testMultipleSimultaneousCompletions();
+await testCompletionDeliveredExactlyOnce();
+await testReleasedLeaseCompletionIsNotDelivered();
+await testResultRetainedAfterCompletionDelivery();
+
+console.log('iframe worker pool completion events: ok');
