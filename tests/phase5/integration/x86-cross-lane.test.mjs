@@ -125,6 +125,10 @@ test('proven LOCKed cross-lane memory RMW maps to generic seq-cst while unlocked
 
 const cfgPlugin = Object.freeze({
   classifyControlFlow(instruction) { return instruction.control || 'fallthrough'; },
+  directControlTarget(instruction) {
+    const operand = instruction?.detail?.operands?.[0];
+    return operand?.type === 'immediate' && operand.value != null ? BigInt(operand.value) : null;
+  },
 });
 
 function cfgInsn(address, length, control = 'fallthrough', target = null) {
@@ -172,12 +176,12 @@ test('#795 ordinary fallthrough does not jump to the next enumerated disjoint bl
   assert.deepEqual(disjoint.successors, []);
 });
 
-test('#795 contiguous ordinary fallthrough still connects to the exact next block', () => {
+test('#795 contiguous ordinary fallthrough connects to an exact decoded block boundary', () => {
   const blocks = partitionDecodedFunction([
-    cfgInsn(0x80, 2, 'conditional-branch', 0x200),
+    // The first conditional branch makes both 0x100 and its target 0x104 block starts.
+    cfgInsn(0x80, 2, 'conditional-branch', 0x104),
     cfgInsn(0x100, 4, 'fallthrough'),
     cfgInsn(0x104, 1, 'return'),
-    cfgInsn(0x200, 1, 'return'),
   ], cfgPlugin);
   const contiguous = blockAt(blocks, 0x100);
   assert.deepEqual(contiguous.successors, [{ to:'block-104', kind:'fallthrough' }]);
