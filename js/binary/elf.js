@@ -40,7 +40,7 @@ export function parseELF(input, options = {}) {
   validateHeaderTableSizes(r, h, bits);
   resolveExtendedProgramHeaderCount(r, h, bits);
   const image = new BinaryImage(bytes, {
-    format: 'elf', arch: elfMachineName(h.machine), bits,
+    format: 'elf', arch: elfMachineName(h.machine, bits), bits,
     endian: littleEndian ? 'little' : 'big', platform: elfOsAbi(r.u8(7)),
     entrypoint: h.entry, imageBase: 0n,
     metadata: { type: h.type, machine: h.machine, flags: h.flags, osabi: r.u8(7), abiVersion: r.u8(8), extendedProgramHeaderCount: h.extendedPhnum ?? null },
@@ -342,8 +342,16 @@ function findImageBase(image) {
   return base;
 }
 
-function elfMachineName(m) {
-  return ({ 3: 'x86', 8: 'mips', 20: 'ppc', 21: 'ppc64', 40: 'arm', 62: 'x86_64', 183: 'arm64', 243: 'riscv' })[m] || `machine-${m}`;
+/*
+ * EM_RISCV does not encode the register width: the same e_machine value is used
+ * by RV32 and RV64, and only ELFCLASS separates them. Emitting a bare `riscv`
+ * would create an architecture identity that no plugin, ABI, or capability
+ * profile can resolve, so the width is folded in here and the canonical ids
+ * `riscv32`/`riscv64` are the only ones this loader produces.
+ */
+function elfMachineName(m, bits) {
+  if (m === 243) return bits === 64 ? 'riscv64' : 'riscv32';
+  return ({ 3: 'x86', 8: 'mips', 20: 'ppc', 21: 'ppc64', 40: 'arm', 62: 'x86_64', 183: 'arm64' })[m] || `machine-${m}`;
 }
 function elfOsAbi(v) {
   return ({ 0: 'sysv', 1: 'hpux', 2: 'netbsd', 3: 'linux', 6: 'solaris', 9: 'freebsd', 12: 'openbsd' })[v] || `elf-osabi-${v}`;

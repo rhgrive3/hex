@@ -1,0 +1,169 @@
+{
+  "schemaVersion": "phase6-riscv64-profile/v1",
+  "phase": 6,
+  "profileVersion": "1.0.0",
+  "verifierVersion": "phase6-verifier/1.0.0",
+  "description": "Frozen Phase 6 RISC-V64 release profile. 'RISC-V support' is not a contract; this file is. Anything not named here as supported is explicitly out of profile and must remain partial or unsupported.",
+
+  "isaProfile": {
+    "id": "rv64imc",
+    "baseIsa": "RV64I",
+    "xlen": 64,
+    "endianness": "little",
+    "elfClass": "ELFCLASS64",
+    "standardExtensions": ["M", "C"],
+    "instructionAlignmentBytes": 2,
+    "fixedInstructionSize": null,
+    "authority": "The RISC-V Instruction Set Manual, Volume I: Unprivileged Architecture",
+    "exactSemantics": [
+      "integer-register-immediate",
+      "integer-register-register",
+      "rv64-w-suffix-32-bit-results",
+      "shifts",
+      "signed-and-unsigned-set-less-than",
+      "loads",
+      "stores",
+      "sign-and-zero-extension",
+      "lui-upper-immediate",
+      "auipc-pc-relative-address-formation",
+      "direct-conditional-branches",
+      "jal-and-jalr-control-transfer",
+      "m-extension-multiply",
+      "m-extension-divide-and-remainder-including-defined-edge-cases",
+      "c-extension-compressed-encodings",
+      "fence-memory-ordering-barrier"
+    ],
+    "explicitlyPartial": [
+      { "family": "ecall", "reason": "execution-environment effects are outside the binary" },
+      { "family": "ebreak", "reason": "execution-environment effects are outside the binary" }
+    ],
+    "explicitlyUnsupported": [
+      { "extension": "A", "reason": "riscv64-atomic-extension-outside-phase6-profile" },
+      { "extension": "F", "reason": "riscv64-floating-point-extension-outside-phase6-profile" },
+      { "extension": "D", "reason": "riscv64-floating-point-extension-outside-phase6-profile" },
+      { "extension": "Q", "reason": "riscv64-floating-point-extension-outside-phase6-profile" },
+      { "extension": "V", "reason": "riscv64-vector-extension-outside-phase6-profile" },
+      { "extension": "Zicsr", "reason": "riscv64-zicsr-outside-phase6-profile" },
+      { "extension": "privileged", "reason": "riscv64-privileged-system-outside-phase6-profile" }
+    ],
+    "notClaimed": ["rv64g", "rv64gc", "big-endian-riscv", "rv32", "rve", "custom-extensions"]
+  },
+
+  "abiProfiles": {
+    "authority": "RISC-V ELF psABI specification, Integer Calling Convention",
+    "canonicalArchitectureId": "riscv64",
+    "supported": [
+      { "id": "lp64", "floatAbi": "soft", "exactness": "exact", "proven": "phase6-mandatory-corpus" },
+      { "id": "lp64f", "floatAbi": "single", "exactness": "partial-floating-point-classification", "proven": "integer-arguments-and-returns-only" },
+      { "id": "lp64d", "floatAbi": "double", "exactness": "partial-floating-point-classification", "proven": "integer-arguments-and-returns-only" }
+    ],
+    "unsupported": [
+      { "id": "lp64q", "reason": "riscv-lp64q-abi-outside-phase6-profile" },
+      { "id": "ilp32-family", "reason": "riscv-non-64-bit-abi-outside-phase6-profile" },
+      { "id": "rve-variants", "reason": "riscv-rve-abi-outside-phase6-profile" }
+    ],
+    "syscallAbi": null,
+    "syscallAbiReason": "A syscall convention is platform policy, not psABI. It stays null until a separate trusted platform contract establishes it."
+  },
+
+  "toolchain": {
+    "id": "clang-18.1.3-lld-18.1.3",
+    "compilerVersionContains": "Ubuntu clang version 18.1.3",
+    "linkerVersionContains": "LLD 18.1.3",
+    "targetTriple": "riscv64-unknown-elf",
+    "requiredTools": ["clang", "ld.lld", "llvm-objdump", "llvm-readobj"],
+    "downloadsRequiredInTests": false
+  },
+
+  "decoder": {
+    "provider": "capstone/backend",
+    "engine": "capstone",
+    "expectedMajor": 5,
+    "expectedMinor": 0,
+    "architectureConstant": "ARCH_RISCV",
+    "modeConstants": ["MODE_RISCV64", "MODE_RISCVC", "MODE_LITTLE_ENDIAN"],
+    "semanticVersion": "capstone-5-riscv64-word-exact-v1",
+    "deployedArtifacts": [
+      { "path": "capstone.js", "sha256": "cb88f8a55326cc19493db560a1d14809dc84fbe36e126d50b8acb84df2299ca8" },
+      { "path": "capstone.wasm", "sha256": "2e71bc203418c273c10c9f21fece3a000a616c96810839dc83eda4c5ca86bf2e" }
+    ],
+    "structuredDetailPolicy": "Capstone owns instruction boundaries, lengths and identity. Exact architectural fields are recovered from the raw instruction word per the official ISA encoding, because the Capstone RISC-V printer normalises to pseudo-instructions and drops fields such as jal's rd."
+  },
+
+  "semanticVersions": {
+    "architecture": "1.0.0-phase6-rv64imc",
+    "decodedInstructionContract": "riscv64-decoded-instruction/v1",
+    "instructionWordContract": "riscv64-instruction-word/v1",
+    "physicalStateContract": "riscv64-physical-state/v1",
+    "abi": "1"
+  },
+
+  "physicalState": {
+    "integerRegisters": 32,
+    "canonicalRegisterIds": "x0..x31",
+    "abiNamesAreViews": true,
+    "hardwiredZeroRegister": "x0",
+    "flagsRegister": null,
+    "flagsRegisterReason": "RV64 has no condition-code register. Phase 6 exists to prove the generic middle-end does not require one; synthesising a flags register would defeat the exit condition."
+  },
+
+  "corpus": {
+    "id": "phase6-riscv64-mandatory/v1",
+    "source": "tests/phase6/corpus/source/p6-corpus.c",
+    "tupleEncoding": "target|optimization|category",
+    "mandatoryTargets": [
+      { "id": "riscv64-lp64-exec", "elfType": "ET_EXEC", "pic": false, "abiId": "lp64" },
+      { "id": "riscv64-lp64-pie", "elfType": "ET_DYN", "pic": true, "abiId": "lp64" }
+    ],
+    "mandatoryOptimizationLevels": ["O0", "O1", "O2", "O3", "Os", "Oz"],
+    "mandatoryCategories": [
+      "scalar-integer-arithmetic",
+      "signed-and-unsigned-comparison",
+      "conditional-branch-without-flags",
+      "loops",
+      "switch-like-control-flow",
+      "stack-locals-and-spills",
+      "pointer-load-and-store",
+      "array-indexing",
+      "structure-field-access",
+      "direct-calls",
+      "indirect-calls",
+      "multiple-arguments",
+      "stack-arguments",
+      "return-values",
+      "rv64-w-suffix-32-bit-operations",
+      "zero-and-sign-extension",
+      "shifts",
+      "multiplication-and-division",
+      "pc-relative-global-addressing",
+      "compressed-instruction-mix",
+      "hardwired-zero-register",
+      "riscv-lp64-abi"
+    ],
+    "missingTupleRule": "Any missing mandatory tuple is BLOCKING. It is never SKIPPED, NOT-APPLICABLE, or counted as PASS by absence.",
+    "semanticComparison": "structured-effect-and-decompiler-meaning",
+    "prettyPrintedPseudocodeAloneIsOracle": false
+  },
+
+  "crossArchitecture": {
+    "architectures": ["arm64", "x86_64", "riscv64"],
+    "sharedMiddleEndModules": [
+      "js/analysis/semantic-function.js",
+      "js/semantics/compat/index.js",
+      "js/semantics/ir/from-machine-effects.js",
+      "js/semantics/cfg/index.js",
+      "js/semantics/ssa/index.js",
+      "js/semantics/memoryssa/index.js",
+      "js/analysis/alias/index-v2.js",
+      "js/decompiler/semantic.js"
+    ],
+    "neutralityRule": "No module in sharedMiddleEndModules, and no generic semantic/decompiler module, may import a target implementation or branch on an architecture id."
+  },
+
+  "capabilityClaim": {
+    "architectureId": "riscv64",
+    "implementedLevel": "A6",
+    "fullySatisfiedLevel": "A1",
+    "reason": "The mandatory corpus proves an A6-depth vertical for the frozen RV64IMC/LP64 profile. Exact MachineEffects coverage is not complete for every RISC-V extension, so A2 stays PARTIAL and cumulative maturity stays A1, exactly as for arm64 and x86_64."
+  }
+}

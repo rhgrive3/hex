@@ -2,6 +2,7 @@ import { ABIPlugin, registerABIPlugin, abiPlugin, abiPlugins, findABIPlugin } fr
 import { AAPCS64_ABI } from './aapcs64.js';
 import { SYSV_AMD64_ABI } from './sysv-amd64.js';
 import { MICROSOFT_X64_ABI } from './microsoft-x64.js';
+import { RISCV_LP64_ABI, RISCV_LP64F_ABI, RISCV_LP64D_ABI } from './riscv-lp64.js';
 
 const UNKNOWN_ABI = new ABIPlugin({
   id:'unknown', semanticVersion:'1', architectureId:'unknown', supported:false,
@@ -21,11 +22,15 @@ const UNKNOWN_ABI = new ABIPlugin({
 registerABIPlugin(AAPCS64_ABI);
 registerABIPlugin(SYSV_AMD64_ABI);
 registerABIPlugin(MICROSOFT_X64_ABI);
+registerABIPlugin(RISCV_LP64_ABI);
+registerABIPlugin(RISCV_LP64F_ABI);
+registerABIPlugin(RISCV_LP64D_ABI);
 registerABIPlugin(UNKNOWN_ABI);
 
 export {
   ABIPlugin, registerABIPlugin, abiPlugin, abiPlugins, findABIPlugin,
   AAPCS64_ABI, SYSV_AMD64_ABI, MICROSOFT_X64_ABI, UNKNOWN_ABI,
+  RISCV_LP64_ABI, RISCV_LP64F_ABI, RISCV_LP64D_ABI,
 };
 
 export function resolveABIPlugin(target = {}, { legacyDefault = false } = {}) {

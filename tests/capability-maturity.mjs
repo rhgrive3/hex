@@ -44,15 +44,37 @@ assert.equal(arm64e.features.decompiler, 'partial');
 assert.ok(arm64e.limitations.includes('exact-machine-effects-partial-coverage'));
 assert.ok(arm64e.limitations.includes('arm64e-pointer-authentication-semantics-partial'));
 
+// Phase 5 proved the x86-64 semantic vertical on its full mandatory corpus, so
+// the implemented depth is A6. Exact effects are proven for that corpus rather
+// than for the whole instruction set, so A2 stays partial and -- because a
+// target never gains a level by skipping an incomplete prerequisite -- the
+// cumulative level stays A1.
 const x86 = architectureMaturity('x86_64');
 assert.equal(x86.level, 'A1');
-assert.equal(x86.implementedLevel, 'A1');
-assert.equal(x86.status, CAPABILITY_STATUS.SUPPORTED);
+assert.equal(x86.implementedLevel, 'A6');
+assert.equal(x86.status, CAPABILITY_STATUS.PARTIAL);
 assert.equal(x86.features.decode, 'supported');
-assert.equal(x86.features.lowLevelEffects, 'unsupported');
-assert.equal(x86.features.cfgSemanticIR, 'unsupported');
-assert.equal(x86.features.ssaMemoryDataflow, 'unsupported');
-assert.equal(x86.features.decompiler, 'unsupported');
+assert.equal(x86.features.lowLevelEffects, 'partial');
+assert.equal(x86.features.cfgSemanticIR, 'supported');
+assert.equal(x86.features.ssaMemoryDataflow, 'supported');
+assert.equal(x86.features.decompiler, 'supported');
+assert.equal(x86.features.runtimeDebugPatchValidation, 'unsupported');
+
+// Phase 6: RISC-V64 reaches the same depth for the frozen RV64IMC/LP64 profile.
+const riscv64 = architectureMaturity('riscv64');
+assert.equal(riscv64.level, 'A1');
+assert.equal(riscv64.implementedLevel, 'A6');
+assert.equal(riscv64.status, CAPABILITY_STATUS.PARTIAL);
+assert.equal(riscv64.features.decode, 'supported');
+assert.equal(riscv64.features.lowLevelEffects, 'partial');
+assert.equal(riscv64.features.cfgSemanticIR, 'supported');
+assert.equal(riscv64.features.ssaMemoryDataflow, 'supported');
+assert.equal(riscv64.features.decompiler, 'supported');
+assert.ok(riscv64.limitations.includes('riscv64-exact-effects-limited-to-rv64imc-profile'));
+assert.ok(riscv64.limitations.includes('riscv64-atomic-float-vector-extensions-unsupported'));
+
+// A bare `riscv` does not say RV32 or RV64 and must not resolve to a profile.
+assert.equal(architectureMaturity('riscv').status, CAPABILITY_STATUS.UNSUPPORTED);
 
 const unknown = architectureMaturity('made-up-cpu');
 assert.equal(unknown.level, null);
@@ -74,8 +96,9 @@ const x86Truth = supportTruthForImage(
   { engine: { x86_64: true, verified: true } },
 );
 assert.equal(x86Truth.architecture.level, 'A1');
-assert.equal(x86Truth.architecture.features.lowLevelEffects, 'unsupported');
-assert.equal(x86Truth.architecture.features.decompiler, 'unsupported');
+assert.equal(x86Truth.architecture.implementedLevel, 'A6');
+assert.equal(x86Truth.architecture.features.lowLevelEffects, 'partial');
+assert.equal(x86Truth.architecture.features.decompiler, 'supported');
 assert.equal(x86Truth.format.level, 'F2');
 assert.equal(x86Truth.format.implementedLevel, 'F4');
 assert.equal(x86Truth.format.features.importsExportsRelocations, 'partial');
@@ -151,7 +174,8 @@ const matrix = currentSupportMatrix({ decoderSupport: { arm64: true, x86_64: tru
 assert.deepEqual(matrix.architectures.map((entry) => [entry.id, entry.level, entry.implementedLevel, entry.status]), [
   ['arm64', 'A1', 'A6', 'partial'],
   ['arm64e', 'A1', 'A6', 'partial'],
-  ['x86_64', 'A1', 'A1', 'supported'],
+  ['x86_64', 'A1', 'A6', 'partial'],
+  ['riscv64', 'A1', 'A6', 'partial'],
 ]);
 assert.deepEqual(matrix.formats.map((entry) => [entry.id, entry.level, entry.implementedLevel, entry.features.importsExportsRelocations]), [
   ['macho', 'F2', 'F5', 'partial'],

@@ -24,3 +24,9 @@ tests/.shots/
 
 # 実アプリの大容量fixtureはopt-inで取得し、Gitには戻さない
 tests/.real-fixtures/
+
+# Phase 6 verifier output. It binds a verdict to an exact commit and tree, so
+# committing it would make every verification run dirty the tree it just
+# verified. CI publishes it as a build artifact instead.
+/reports/phase6/phase6-release-evidence.json
+/reports/phase6/phase6-release-evidence.md
