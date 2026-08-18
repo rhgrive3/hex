@@ -2,10 +2,10 @@
 
 > **Review target:** Phase 8 implementation planning docs on `docs/phase8-decompiler-quality-playbook`  
 > **Prepared baseline:** `main` = `e90c5107f9c77d73687ee452d5042dcbe9e79ece`  
-> **Reviews performed:** 3  
+> **Reviews performed:** 4  
 > **Scope:** design/process review only; no Phase 8 production implementation is claimed
 
-This record exists so the three requested review passes and their corrections are durable rather than only conversational.
+This record exists so the requested review passes and their corrections are durable rather than only conversational.
 
 ---
 
@@ -107,9 +107,58 @@ The final branch diff remains docs-only. Proposed Phase 8 files/commands/infrast
 
 ---
 
+## Review 4 — Fast / Safe Critical-Path Review
+
+### Goal
+
+Optimize for **shortest safe completion time**, not additional theoretical completeness. The review asked which work can be removed, deferred, parallelized, or moved out of the inner development loop without weakening any normative merge/release gate.
+
+### Reviewed against
+
+- the complete Phase 8 planning set after Reviews 1–3;
+- `ENGINEERING_PROCESS_GUARDRAILS.md` §§3.1–3.6, especially the mandatory preflight, candidate merge-tree proof, integration checkpoint lock, verifier maturity, and final cutover;
+- historical EP-003/009/010/011/014/016 failure classes covering generated output, checkpoint ordering, moving main, verifier maturity, CI fanout, and algorithmic performance;
+- the actual PR scope/size and operator reading burden.
+
+### Findings
+
+1. **No safety gate can legitimately be removed from candidate/integration boundaries.** Normative guardrails require candidate-tree rolling product + independent shadow proof and a post-merge checkpoint transaction on an exact head.
+2. The planning set had become deliberately comprehensive, but its size created a new efficiency risk: an operator repeatedly reading all detailed documents would put documentation interpretation on the critical path.
+3. The plan distinguished safe parallelism conceptually but did not provide a single operational rule for **what may be developed early versus what may be integrated early**.
+4. The verification plan needed a clearer separation between fast inner-loop checks and mandatory exact-product boundary proof. Without that separation, implementers could waste time running full external differentials after every edit, or make the opposite mistake and reuse old local green evidence at integration.
+5. Moving-main and generated-output rules were safe but needed to be framed explicitly as **centralized costs** so component lanes do not repeatedly pay them.
+6. Failure triage needed a short operator path centered on the first deterministic divergence to prevent fixing downstream pseudocode symptoms.
+7. Algorithm lanes needed minimum-success stopping rules to prevent scope creep (for example, building a global superoptimizer or an unnecessarily rich value domain before exit metrics require it).
+
+### Corrections made
+
+Added `docs/PHASE8_FAST_PATH.ja.md` as the normal operator entrypoint. It does not weaken or replace any detailed contract. It adds:
+
+- a single shortest-safe critical path;
+- a hard-gate list that must never be optimized away;
+- P8-0/P8-1 stop conditions to prevent foundation/framework polishing from expanding indefinitely;
+- safe prework parallelism for later lanes after P8-0;
+- explicit distinction between parallel **development** and serialized checkpoint **acceptance**;
+- three evidence tiers:
+  - Tier A: owned inner-loop/adversarial tests;
+  - Tier B: mandatory candidate merge-tree rolling + shadow proof;
+  - Tier C: mandatory accepted-integration checkpoint proof;
+- first-deterministic-divergence failure triage;
+- minimum success conditions for P8-2 through P8-7 to prevent feature creep;
+- algorithm-first performance optimization before CI topology changes;
+- moving-main reconciliation centralized in the integration owner;
+- committed generated-output synchronization centralized in the integration owner;
+- a short operator checklist so detailed documents are opened only when a checkpoint/design decision requires them.
+
+### Review 4 result
+
+**PASS after correction.** The plan now distinguishes correctness gates from avoidable repeated work. The safe gates remain unchanged, while the expected implementation path removes repeated full-doc reading, unnecessary full-product test reruns during editing, per-component moving-main churn, per-component committed generated synchronization, downstream symptom debugging, and premature optimizer/framework scope growth.
+
+---
+
 # Final review conclusion
 
-No unresolved architecture/process contradiction was found in the planning set against the prepared baseline after the three correction passes.
+No unresolved architecture/process contradiction was found in the planning set against the prepared baseline after four correction passes.
 
 The remaining unknowns are deliberately future-sensitive and must be resolved from live evidence at P8-0:
 
@@ -124,4 +173,6 @@ The remaining unknowns are deliberately future-sensitive and must be resolved fr
 
 Those are **not gaps to guess now**. The planning docs turn each one into a mandatory P8-0 observation/gate.
 
-The Phase 8 planning set is therefore ready for pre-implementation merge as documentation, without claiming that Phase 8 itself has started or passed any production exit gate.
+For normal execution, start with `PHASE8_FAST_PATH.ja.md`, then open only the current checkpoint contract and the relevant detailed algorithm section. This keeps the safety model intact without putting the planning corpus itself on the critical path.
+
+The Phase 8 planning set is ready for pre-implementation merge as documentation, without claiming that Phase 8 itself has started or passed any production exit gate.
