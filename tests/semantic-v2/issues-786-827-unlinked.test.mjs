@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import { buildSemanticModel } from '../../js/blocks.js';
-import { buildIR, OP, mustAlias } from '../../js/ir.js';
+import {
+  buildIR,
+  OP,
+  mustAlias,
+  getSemanticMigrationMode,
+  setSemanticMigrationMode,
+} from '../../js/ir.js';
 import { symbolicExecute } from '../../js/symbolic/executor.js';
 import { buildValues, bin, constNode, constOf, same } from '../../js/expr.js';
 
@@ -22,7 +28,13 @@ function model(lines, base = BASE) {
 }
 function built(lines, base = BASE) {
   const m = model(lines, base);
-  return { ...m, ir: buildIR(m.model, { rowOfAddress:m.rowOfAddress }) };
+  const previousMode = getSemanticMigrationMode();
+  setSemanticMigrationMode('semantic-v2-compat');
+  try {
+    return { ...m, ir: buildIR(m.model, { rowOfAddress:m.rowOfAddress }) };
+  } finally {
+    setSemanticMigrationMode(previousMode);
+  }
 }
 function unwrap32(node) {
   return node?.k === 'un' && node.op === 'uxt32' ? node.a : node;
