@@ -18,27 +18,21 @@ export class ProgressBudgetDevSupervisorEngineV0 extends BaseDevSupervisorEngine
     this.progressDecisionCount = 0;
     this.progressRunActive = false;
 
+    /* Never Proxy the production bridge: request may be a non-configurable,
+       non-writable own property. A Proxy get trap returning a wrapper function
+       violates the ECMAScript invariant and aborts R4 bootstrap. */
     const bridge = this.bridge;
     if (bridge && typeof bridge.request === 'function') {
       const request = bridge.request.bind(bridge);
-      this.bridge = new Proxy(bridge, {
-        get: (target, property, receiver) => {
-          if (property === 'request') {
-            return async (...args) => {
-              const result = await request(...args);
-              if (this.progressRunActive) this.progressDecisionCount += 1;
-              return result;
-            };
-          }
-          return Reflect.get(target, property, receiver);
+      this.bridge = Object.freeze({
+        request: async (...args) => {
+          const result = await request(...args);
+          if (this.progressRunActive) this.progressDecisionCount += 1;
+          return result;
         },
       });
     }
 
-    /* dev.runtime.require_activation is a successful Dev tool too, but the
-       base engine invokes this gate directly rather than through
-       executeWithinToolBoundary(). Preserve the gate semantics while marking
-       the successful call as progress. */
     const gate = this.selfUpdateGate;
     if (gate && typeof gate.requireActivation === 'function') {
       const requireActivation = gate.requireActivation.bind(gate);
