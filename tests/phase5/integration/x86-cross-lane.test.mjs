@@ -105,13 +105,19 @@ test('cross-lane memory RMW preserves one canonical address, RMW identity, and i
   for (const operation of bundle.operations) assert.equal(operation.metadata.originInstructionId, instruction.instructionId);
 });
 
-test('LOCKed cross-lane memory RMW is atomic but ordering is explicit partial, never guessed seq-cst', () => {
-  const { bundle } = lift({ family:'adc', prefixes:[0xf0], operands:[mem({ base:'rax', widthBits:64, access:'read-write' }), reg('rbx', 64, 'read')] });
-  assert.equal(bundle.completeness, 'partial');
-  assert.match(bundle.unknownEffects.reason, /ordering-not-representable/);
-  assert.equal(bundle.metadata.orderingMapping, 'unmapped-not-seq-cst');
-  assert.equal(reads(bundle)[0].access.atomic, true);
-  assert.equal(writes(bundle)[0].access.atomic, true);
-  assert.equal(reads(bundle)[0].access.ordering, undefined);
-  assert.equal(writes(bundle)[0].access.ordering, undefined);
+test('proven LOCKed cross-lane memory RMW maps to generic seq-cst while unlocked RMW does not', () => {
+  const locked = lift({ family:'adc', prefixes:[0xf0], operands:[mem({ base:'rax', widthBits:64, access:'read-write' }), reg('rbx', 64, 'read')] }).bundle;
+  assert.equal(locked.completeness, 'exact-with-intrinsic');
+  assert.equal(locked.metadata.orderingMapping, 'seq-cst');
+  assert.match(locked.metadata.orderingAuthority, /Intel SDM Vol\.3/);
+  assert.equal(reads(locked)[0].access.atomic, true);
+  assert.equal(writes(locked)[0].access.atomic, true);
+  assert.equal(reads(locked)[0].access.ordering, 'seq-cst');
+  assert.equal(writes(locked)[0].access.ordering, 'seq-cst');
+
+  const unlocked = lift({ family:'adc', operands:[mem({ base:'rax', widthBits:64, access:'read-write' }), reg('rbx', 64, 'read')] }).bundle;
+  assert.equal(reads(unlocked)[0].access.atomic, false);
+  assert.equal(writes(unlocked)[0].access.atomic, false);
+  assert.equal(reads(unlocked)[0].access.ordering, undefined);
+  assert.equal(writes(unlocked)[0].access.ordering, undefined);
 });
