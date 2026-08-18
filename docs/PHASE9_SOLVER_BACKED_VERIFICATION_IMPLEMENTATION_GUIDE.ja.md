@@ -2,11 +2,11 @@
 
 > **Status:** Planning / implementation reference — Phase 9 の実装完了を示す文書ではない  
 > **Target:** Hex Master Architecture Phase 9 — Solver-backed verification  
-> **Source of truth:** 実装時点の `main` + `HEX_MASTER_ARCHITECTURE.md` + accepted ADR + regression tests  
+> **Source of truth:** 実装時点の `main` + `docs/HEX_MASTER_ARCHITECTURE.md` + accepted ADR + regression tests  
 > **Planning baseline:** `e90c5107f9c77d73687ee452d5042dcbe9e79ece`  
 > **Primary product constraint:** Browser / iPad-first, evidence-first, conservative, cancellable  
 > **Primary implementation principle:** 現行 bounded symbolic executor を壊さず、solver-neutral verification stack を横に追加する  
-> **Review hardening:** 3-pass review 済み。特に false-proof、不要な直列化、exit-gate の抜けを優先して補強した。
+> **Review hardening:** 4-pass review 済み。false-proof、不要な直列化、exit-gate、現行 registry/cache 接続事故を優先して補強した。
 
 ---
 
@@ -29,7 +29,7 @@ SolverBackend
         ↓
 SAT / UNSAT / UNKNOWN / typed failure
         ↓
-result validation
+result validation + proof eligibility
         ↓
 SymbolicEvidence
         ↓
@@ -61,8 +61,10 @@ Master exit gate:
 
 - proof eligibility が機械的に判定できる
 - edge feasibility と global reachability を混同しない
+- **矛盾した precondition による vacuous proof を `proved` にしない**
 - SAT model を可能な範囲で独立再評価する
 - query/hash/cache が version-safe
+- 現行 `ToolRegistry` / `ObservationStore` の自動cacheに verifier version を取りこぼさない
 - remote backend は binary-derived data の外送境界を明示する
 - browser 上で enforce 不能な budget を「enforced」と記録しない
 
@@ -172,6 +174,7 @@ js/symbolic/function-sandbox.js
 js/agent/tools.js
 js/ai/tools/names.js
 js/ai/tools/registry.js
+js/ai/tools/storage/observation-store.js
 ```
 
 現行 executor の資産:
@@ -194,12 +197,44 @@ js/ai/tools/registry.js
 - backend abstraction
 - timeout/cancel/dispose
 - query scope/preconditions/completeness
+- precondition consistency / vacuous-proof handling
 - normalized model
 - counterexample validation
 - evidence/replay
 - bounded equivalence semantics
 - patch verification semantics
 - cache/version/privacy policy
+
+### 3.1 現行 AI tool cache の具体的注意
+
+Planning baseline の `ToolRegistry.execute()` は、`tool.storeResult !== false && tool.deterministic !== false` の tool について `ObservationStore.getCached(name, args)` を先に参照します。
+
+`ObservationStore.cacheKey()` は概念的に:
+
+```text
+analysis binding + tool name + stableSerialize(args)
+```
+
+であり、Phase 9 の backend/version、Expr schema、translator version、solver options は **tool args または binding に明示的に入らなければ cache identity に含まれません**。
+
+したがって solver-backed verifier を既存 registry に登録するとき、default `deterministic: true` を無検討で継承してはいけません。
+
+安全な初期選択肢:
+
+```text
+A. verifier fingerprint を cache identity に含める専用 cache policy を実装する
+
+or
+
+B. version-safe cache contract が入るまで
+   storeResult: true
+   deterministic: false
+   として observation/evidence は保存するが automatic cache hit は禁止する
+```
+
+ここで `deterministic: false` は「solver の意味が非決定的でよい」という意味ではなく、**現行 ToolRegistry の cacheability switch として一時的に false にする**という実装上の措置です。
+
+Phase 9 の replay/determinism gate 自体は別途必須です。
 
 ---
 
@@ -217,6 +252,7 @@ Phase 9 coding を始める exact `main` SHA で次を確認します。
 [ ] patch projection/validation API
 [ ] EvidenceGraph / evidence schema
 [ ] cancellation/budget primitives
+[ ] ToolRegistry / ObservationStore cache contract
 [ ] current FastSymbolicEvaluator tests
 ```
 
@@ -257,7 +293,7 @@ Flow:
 ```text
 selected edge
   ↓
-source-block-entry state / explicit preconditions
+source-block-entry state / explicit preconditions P
   ↓
 branch condition backward slice
   ↓
@@ -271,11 +307,14 @@ SAT / UNSAT / unknown/failure
 結果:
 
 ```text
-SAT
-→ edge is feasible under the modeled source-entry preconditions
+SAT + validated model
+→ edge is feasible under P
 
-UNSAT
-→ edge is infeasible under the modeled source-entry preconditions
+UNSAT + P is known satisfiable + proof eligibility
+→ edge is infeasible under P
+
+UNSAT + P itself is UNSAT
+→ inconsistent-preconditions / vacuous result; NOT an edge-infeasibility proof
 
 other
 → no proof
@@ -360,6 +399,21 @@ negatedAssertionMeaning
 
 UI/AI が SAT/UNSAT を逆解釈しないこと。
 
+## D6 — Vacuous proof を verified fact にしない
+
+Precondition `P` が矛盾していると:
+
+```text
+P ∧ edgeCondition = UNSAT
+P ∧ (before != after) = UNSAT
+```
+
+はどちらも trivially 成立します。
+
+しかしこれは edge infeasibility や equivalence の実質的証明ではありません。
+
+Hex は claim を証明する `UNSAT` を採用する前に、`P` が satisfiable であることを要求します。
+
 ---
 
 # 6. Proof eligibility — UNSAT だけでは proved ではない
@@ -378,6 +432,7 @@ ProofEligibility {
   semanticUnknowns: 0
   unsupportedEntities: 0
   assumptionsExplicit: true
+  preconditionsConsistent: true
   backendCapabilityExact: true
   resultStatus: "unsat"
   cancelled: false
@@ -416,7 +471,37 @@ Assumption {
 
 「user が x != 0 と仮定した」「MemorySSA が reaching def を証明した」は同じ種類ではありません。
 
-### 6.2 Completeness dimensions
+### 6.2 Preconditions consistency
+
+Claim proof の前提集合を `P` とします。
+
+速度のため、毎回 solver を2回必ず呼ぶ必要はありません。
+
+```text
+1. まず claim query Q を解く
+
+2. Q が SAT + validated model
+   → その model が P も満たすため P satisfiable は同時に確認できる
+
+3. Q が UNSAT で proved に昇格しそうな場合だけ
+   → P 単体の satisfiability を確認
+      または同一 canonical P artifact に対する既存の validated SAT evidence を再利用
+
+4. P == SAT
+   → 他の proof eligibility が満たされれば proof 可
+
+5. P == UNSAT
+   → verdict=unknown
+      reasonCode="inconsistent-preconditions"
+      vacuous proof として診断
+
+6. P == UNKNOWN/TIMEOUT/RESOURCE_LIMIT/UNSUPPORTED/CANCELLED
+   → verdict=unknown
+```
+
+これにより soundness を維持しつつ、SAT query では余計な solver call を増やしません。
+
+### 6.3 Completeness dimensions
 
 一個の boolean に潰さず、最低限次を区別できるようにします。
 
@@ -465,6 +550,7 @@ js/symbolic/
     patch.js
     query.js
     eligibility.js
+    preconditions.js
     validate-model.js
 
   evidence/
@@ -825,9 +911,11 @@ Public result:
 ```ts
 VerificationResult {
   verdict: "proved" | "refuted" | "unknown"
+  reasonCode?
   claimKind
   proofStatement
   solverStatus
+  preconditionStatus?: "satisfiable" | "inconsistent" | "unknown"
   assumptions
   counterexample?
   counterexampleValidation?
@@ -837,6 +925,8 @@ VerificationResult {
   queryHash
 }
 ```
+
+`preconditionStatus="inconsistent"` は claim を proved にしません。
 
 ---
 
@@ -853,25 +943,34 @@ backward slice
      ↓
 translate supported expressions
      ↓
-add explicit source-entry/path/preconditions
+P = explicit source-entry/path/preconditions
      ↓
-assert selected edge condition
+Q = P ∧ selected-edge-condition
      ↓
-solver.check
+solver.check(Q)
      ↓
-validate SAT model when possible
+SAT  → validate model; model itself proves P satisfiable
+UNSAT→ lazily check/reuse satisfiability evidence for P
 ```
 
 ## 15.2 Result semantics
 
 ```text
-SAT + model validates
+Q SAT + model validates
 → refutes "edge infeasible" claim; feasible counterexample exists
 
-UNSAT + proof eligibility satisfied
+Q UNSAT + P SAT + proof eligibility satisfied
 → proves edge infeasible under explicit source-entry preconditions
 
-SAT but model validation fails
+Q UNSAT + P UNSAT
+→ verdict unknown
+→ reasonCode = inconsistent-preconditions
+→ vacuous result; edge-infeasibility proofを作らない
+
+Q UNSAT + P UNKNOWN/TIMEOUT/RESOURCE_LIMIT/UNSUPPORTED/CANCELLED
+→ unknown
+
+Q SAT but model validation fails
 → provider/adapter failure, never refuted/proved
 
 UNKNOWN/TIMEOUT/RESOURCE_LIMIT/UNSUPPORTED/CANCELLED
@@ -883,6 +982,8 @@ UNKNOWN/TIMEOUT/RESOURCE_LIMIT/UNSUPPORTED/CANCELLED
 `edge infeasible given source entry` と `edge globally unreachable` は別 claim です。
 
 Global unreachable へ昇格するには、source block の reachability/path-coverage dimension が complete であることを query contract が要求します。
+
+さらに global claim に使う preconditions が satisfiable でなければなりません。
 
 ---
 
@@ -920,15 +1021,20 @@ UNSAT は一般に同じ方法で再評価できないため、release corpus �
 同じ対応付け済み symbolic inputs/state のもとで:
 
 ```text
-assert(before_observable_state != after_observable_state)
+P = explicit equivalence preconditions
+Q = P ∧ (before_observable_state != after_observable_state)
 ```
 
 ```text
-UNSAT + eligible
+Q UNSAT + P SAT + eligible
 → equivalent within explicit scope/preconditions/bounds
 
-SAT + validated model
-→ counterexample
+Q SAT + validated model
+→ counterexample; P is satisfiable by that model
+
+Q UNSAT + P UNSAT
+→ unknown / inconsistent-preconditions
+→ vacuous equivalence proofは禁止
 
 other
 → unknown
@@ -943,6 +1049,7 @@ other
 - selected side effects
 - explicit boundedness
 - assumptions
+- precondition consistency before any UNSAT-based proof
 
 最初は:
 
@@ -970,7 +1077,7 @@ after SemIR slice
 
 shared input/state correspondence
  ↓
-explicit invariant/equivalence scope
+explicit invariant/equivalence scope + satisfiable preconditions
  ↓
 verification
 ```
@@ -982,6 +1089,7 @@ Evidence に最低限:
 - before/after semantic versions
 - query hash
 - assumptions/scope
+- precondition status
 
 を含めます。
 
@@ -1014,6 +1122,8 @@ SymbolicEvidence {
   backendId
   backendVersion
   solverStatus
+  preconditionStatus?
+  reasonCode?
   modelArtifactId?
   counterexampleValidation?
   assumptions
@@ -1026,6 +1136,8 @@ SymbolicEvidence {
 ```
 
 `confirmed` は proof eligibility を満たした deterministic verifier result のみ。
+
+矛盾した precondition による vacuous `UNSAT` は `confirmed` を作りません。
 
 AI prose は authority ではありません。
 
@@ -1089,6 +1201,7 @@ backend id/version
 solver options/seed
 limits
 expected classification
+precondition artifact/status
 ```
 
 Cache key に少なくとも semantic/query versions を含めます。
@@ -1099,8 +1212,24 @@ Cache key に少なくとも semantic/query versions を含めます。
 - semantic version が変わった proof result を再利用
 - timeout/provider-failure を semantic answer として永続 cache
 - smaller-budget timeout を larger-budget query の結果として再利用
+- precondition consistency result を異なる canonical P に流用
 
 SAT/UNSAT semantic result の cache policy も backend/options compatibility を明示します。
+
+### 21.1 Existing ToolRegistry integration gate
+
+現行 `js/ai/tools/registry.js` / `ObservationStore` に Phase 9 tool を載せる場合:
+
+```text
+[ ] tool args だけで cache identity が十分か確認
+[ ] backend/version/options を cache identity に含める
+[ ] query/expr/translator/semantic schema versions を含める
+[ ] analysis binding だけに version invalidation を期待しない
+[ ] version-safe でない間は automatic cache を無効化
+[ ] observation/evidence 保存自体は維持
+```
+
+特に現行 registry の default `deterministic: true` をそのまま使うと cache hit が有効になるため、Phase 9 tool registration は明示的 cache policy を必須とします。
 
 ---
 
@@ -1116,6 +1245,8 @@ SAT/UNSAT semantic result の cache policy も backend/options compatibility を
 - query polarity
 - support matrix
 - known SAT/UNSAT/unsupported vectors
+- precondition consistency/vacuous-proof vectors
+- ToolRegistry cacheability policy
 
 ## T1 — Expr DAG
 
@@ -1171,7 +1302,15 @@ SAT/UNSAT semantic result の cache policy も backend/options compatibility を
 - missing required assignment handling
 - backend model normalization
 
-## T6 — Edge feasibility
+## T6 — Preconditions / vacuous proof
+
+- satisfiable P + Q UNSAT → proof eligibility may proceed
+- contradictory P + Q UNSAT → unknown/inconsistent-preconditions
+- P timeout/unknown → claim remains unknown
+- SAT Q model validates P automatically
+- cached P consistency cannot cross canonical-P/version boundary
+
+## T7 — Edge feasibility
 
 - always true edge
 - always false edge
@@ -1180,13 +1319,15 @@ SAT/UNSAT semantic result の cache policy も backend/options compatibility を
 - unsupported dependency
 - source-entry precondition changes result
 - local infeasibility is not labeled global unreachable
+- contradictory source-entry constraints do not mint local proof
 
-## T7 — Global reachability promotion
+## T8 — Global reachability promotion
 
 - complete incoming path coverage allows strong claim
 - incomplete path/loop coverage cannot mint global unreachable
+- inconsistent global preconditions cannot mint global unreachable
 
-## T8 — Equivalence
+## T9 — Equivalence
 
 - identical
 - bitvector-equivalent
@@ -1195,16 +1336,18 @@ SAT/UNSAT semantic result の cache policy も backend/options compatibility を
 - memory mismatch
 - control-effect mismatch
 - unknown effect → unknown
+- contradictory preconditions do not mint equivalence
 
-## T9 — Patch verification
+## T10 — Patch verification
 
 - no-op equivalent
 - condition inversion counterexample
 - return same/memory different
 - unsupported semantics → unknown
 - BinaryId/PatchSetId evidence
+- contradictory patch preconditions do not mint proof
 
-## T10 — Evidence/cache
+## T11 — Evidence/cache
 
 - proof origin chain
 - query hash stable
@@ -1212,8 +1355,10 @@ SAT/UNSAT semantic result の cache policy も backend/options compatibility を
 - version invalidation
 - incomplete cannot confirm
 - failure result cannot confirm
+- ObservationStore automatic cache does not cross verifier/backend/schema fingerprint
+- safe no-cache fallback still stores observation/evidence
 
-## T11 — Browser/iPad
+## T12 — Browser/iPad
 
 - cold init
 - warm query
@@ -1233,17 +1378,20 @@ Integration Owner + Corpus owner が先に固定:
 
 - query/result taxonomy
 - proof eligibility
+- precondition consistency policy
 - Bool/BV schema
 - support matrix
 - assumption/completeness schema
-- golden SAT/UNSAT/unknown vectors
+- golden SAT/UNSAT/unknown/vacuous vectors
 - budget schema
 - backend ADR decision criteria
+- ToolRegistry cacheability policy
 
 Exit:
 
 - Worker が同じ semantics を実装できる
 - false-proof examples が corpus に入っている
+- version-safe cache が無い場合の no-cache fallback が決まっている
 
 ## Wave 1 — A/B/C を最大限並列
 
@@ -1284,6 +1432,7 @@ Exit:
 - A + B + C
 - known query E2E
 - model validation
+- precondition consistency helper
 - cancellation/resource limits
 
 ここで shared registry/package dependency を Integration Owner が小さく統合します。
@@ -1294,12 +1443,14 @@ Exit:
 
 - selected edge query
 - source-entry precondition
+- lazy vacuous-proof guard on UNSAT
 - evidence
 - SAT model validation
 
 Exit:
 
 - local feasibility E2E
+- contradictory P does not produce proof
 - global reachability と誤表示しない
 
 ## Wave 4 — Stronger reachability only if prerequisites complete
@@ -1314,6 +1465,7 @@ Prerequisite が不足するなら Phase 9 の必須 deliverable を満たす最
 
 - correspondence
 - state scope
+- precondition consistency
 - counterexample
 
 ## Wave 6 — Patch Verification
@@ -1327,6 +1479,7 @@ Prerequisite が不足するなら Phase 9 の必須 deliverable を満たす最
 - exhaustive/metamorphic corpus
 - differential backend where feasible
 - cache/versioning
+- existing ToolRegistry/ObservationStore integration
 - remote privacy
 - iPad/browser resource evidence
 - full regressions
@@ -1340,9 +1493,9 @@ Integration Owner — contracts/shared seams/gates
 Worker A          — Expr DAG/evaluator/serialization
 Worker B          — Semantic translator/slicing
 Worker C          — SolverBackend/lifecycle
-Worker D          — verification queries/model validation
+Worker D          — verification queries/model validation/precondition consistency
 Worker E          — Evidence/Patch/AI query surface
-Worker F          — adversarial corpus/resource/browser gates
+Worker F          — adversarial corpus/resource/browser/cache gates
 ```
 
 Hotspots:
@@ -1353,6 +1506,7 @@ js/symbolic/function-sandbox.js
 js/agent/tools.js
 js/ai/tools/registry.js
 js/ai/tools/names.js
+js/ai/tools/storage/observation-store.js
 package.json
 shared evidence schemas
 CI/gate wiring
@@ -1385,6 +1539,8 @@ Integration Owner が shared files を管理しますが、**dependency/package 
 17. Enforce できない memory limit を gate pass と記録
 18. Corpus を統合終盤まで待つ
 19. Shared registry/package edits を最後に大量統合
+20. 矛盾した preconditions の `UNSAT` を実質的 proof として採用する
+21. Phase 9 tool が現行 ToolRegistry の default cache を無検討で継承する
 
 ---
 
@@ -1402,6 +1558,8 @@ Integration Owner が shared files を管理しますが、**dependency/package 
 ## Proof soundness
 
 - [ ] proof eligibility machine-enforced
+- [ ] precondition consistency gate machine-enforced
+- [ ] contradictory preconditions cannot mint proof
 - [ ] local feasibility/global reachability distinction
 - [ ] incomplete translation cannot prove
 - [ ] incomplete path coverage cannot mint global unreachable
@@ -1422,10 +1580,11 @@ Integration Owner が shared files を管理しますが、**dependency/package 
 - [ ] backend/version/options
 - [ ] semantic/translator versions
 - [ ] assumptions/completeness dimensions
+- [ ] precondition status/reason recorded
 - [ ] origin chain
 - [ ] BinaryId/PatchSetId for patch proof
 
-## Resource/security
+## Resource/security/cache
 
 - [ ] wall/solver/state limits
 - [ ] cancellation/dispose races tested
@@ -1433,6 +1592,8 @@ Integration Owner が shared files を管理しますが、**dependency/package 
 - [ ] iPad/browser measurements
 - [ ] remote solver privacy policy if applicable
 - [ ] stale result cannot publish after cancel/replacement
+- [ ] ToolRegistry/ObservationStore cache cannot reuse incompatible verifier/backend/schema result
+- [ ] version-safe cache unavailable時の no-cache fallback validated
 
 ## Regression
 
@@ -1441,6 +1602,7 @@ Integration Owner が shared files を管理しますが、**dependency/package 
 - [ ] compiler-truth/differential gates as applicable
 - [ ] adversarial BV corpus
 - [ ] model validation corpus
+- [ ] vacuous-proof corpus
 - [ ] cache/version invalidation tests
 - [ ] exact tested SHA
 - [ ] independent soundness review resolved
@@ -1450,14 +1612,14 @@ Integration Owner が shared files を管理しますが、**dependency/package 
 # 27. 最短実装順
 
 ```text
-1. Preflight exact main SHA / prerequisite contracts
-2. Result taxonomy + proof eligibility + query polarity
-3. Golden adversarial corpus
+1. Preflight exact main SHA / prerequisite contracts / existing cache contract
+2. Result taxonomy + proof eligibility + query polarity + precondition policy
+3. Golden adversarial corpus（vacuous proof含む）
 4. Bool/BV Expr contract
 5. A Expr implementation | B translator scaffolding | C backend lifecycle を並列
-6. First integration: query → backend → model validation
+6. First integration: query → backend → model validation + lazy precondition check
 7. Conditional Edge Feasibility E2E
-8. Evidence/query API integration
+8. Evidence/query API integration + safe ToolRegistry cache policy
 9. Global reachability は completeness prerequisites がある場合のみ
 10. Bounded Equivalence
 11. Patch Verification
@@ -1479,6 +1641,7 @@ Integration Owner が shared files を管理しますが、**dependency/package 
 - [ ] UnknownSemantic vs FreshSymbol
 - [ ] SolverResult taxonomy
 - [ ] proof eligibility
+- [ ] precondition consistency/vacuous-proof policy
 - [ ] assumption/completeness taxonomy
 - [ ] timeout/cancel/dispose
 - [ ] memory budget enforcement class
@@ -1486,6 +1649,7 @@ Integration Owner が shared files を管理しますが、**dependency/package 
 - [ ] equivalence scope/correspondence
 - [ ] patch state surface
 - [ ] replay/cache format/version policy
+- [ ] ToolRegistry/ObservationStore verifier cache policy
 
 ---
 
@@ -1508,6 +1672,15 @@ Beginner-facing:
 両方を満たす値はありません。
 ```
 
+ただし前提自身が矛盾している場合は:
+
+```text
+→ 判定できません
+理由: 検証前提どうしが矛盾しています
+```
+
+とし、「通れません（検証済み）」にしません。
+
 重要なのは、global unreachable ではない場合に UI が勝手に「このコードは絶対実行されない」と強めないことです。
 
 Expert-facing:
@@ -1515,6 +1688,7 @@ Expert-facing:
 ```text
 Claim kind
 Scope/preconditions
+Precondition status
 Completeness dimensions
 Normalized query/hash
 Backend/version/options
@@ -1534,6 +1708,7 @@ Phase 9 の本質は solver の強さではありません。
 semantic truth
   → explicit bounded claim
   → exact conservative translation
+  → satisfiable preconditions
   → backend-neutral query
   → typed solver result
   → validation / eligibility
@@ -1546,4 +1721,6 @@ semantic truth
 
 Corpus は最後ではなく最初、A/B/C は contract を固定して並列、shared seams は vertical slice ごとに小さく統合します。
 
-これにより Phase 9 の主要事故源である false proof、bitvector、unknown semantics、memory/call effects、scope overclaim、state explosion、browser resource、remote privacy、integration bottleneck を早期に隔離できます。
+さらに現行 AI tool registry の cache contract を Phase 9 verifier にそのまま適用せず、verifier/backend/schema fingerprint を cache identity に含めるか、安全な no-cache fallback を使います。
+
+これにより Phase 9 の主要事故源である false proof、vacuous proof、bitvector、unknown semantics、memory/call effects、scope overclaim、state explosion、stale proof cache、browser resource、remote privacy、integration bottleneck を早期に隔離できます。
