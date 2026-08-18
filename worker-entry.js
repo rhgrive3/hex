@@ -2,7 +2,7 @@ import { DurableObject } from 'cloudflare:workers';
 import worker from './worker.js';
 import { AI_QUOTA, acquireQuotaState, releaseQuotaState } from './js/ai/quota.js';
 import { RUNTIME_BUILD } from './.runtime-build/runtime-secrets.js';
-import { DEPLOYMENT_COMMIT } from './.runtime-build/deployment-identity.js';
+import { DEPLOYMENT_COMMIT } from './js/userscript/deployment-identity.generated.js';
 import {
   decodeBase64URL, encodeBase64URL, publicRuntimeManifest,
   signRuntimeSession, validateRuntimeBootstrap, verifyRuntimeSession,
