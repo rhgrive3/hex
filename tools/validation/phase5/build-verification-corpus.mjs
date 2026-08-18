@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const SOURCE = path.join(ROOT, 'tests/phase5/verification/source/p5-6-corpus.c');
+const SUPPORT_SOURCE = path.join(ROOT, 'tests/phase5/verification/source/p5-6-msvc-runtime.c');
 const EXPECTED = Object.freeze({
   compiler: 'Ubuntu clang version 18.1.3',
   linker: 'LLD 18.1.3',
@@ -80,6 +81,7 @@ function buildOne({ toolchain, target, optimization, outDir }) {
     '-nostdlib',
     '-fuse-ld=lld',
     SOURCE,
+    SUPPORT_SOURCE,
     '-o', output,
   ];
   const targetFlags = target.id === 'sysv-amd64-elf'
@@ -117,6 +119,7 @@ export function buildVerificationCorpus({ outDir = fs.mkdtempSync(path.join(os.t
   }
   fs.mkdirSync(outDir, { recursive:true });
   const sourceBytes = fs.readFileSync(SOURCE);
+  const supportBytes = fs.readFileSync(SUPPORT_SOURCE);
   const targets = [
     { id:'sysv-amd64-elf', triple:'x86_64-unknown-linux-gnu', abiId:'sysv-amd64' },
     { id:'microsoft-x64-pe', triple:'x86_64-pc-windows-msvc', abiId:'microsoft-x64' },
@@ -127,6 +130,7 @@ export function buildVerificationCorpus({ outDir = fs.mkdtempSync(path.join(os.t
     schemaVersion: 'phase5-p5-6-generated-corpus/v1',
     toolchain,
     source: { path:path.relative(ROOT, SOURCE).replaceAll('\\','/'), sha256:sha256(sourceBytes) },
+    supportSource: { path:path.relative(ROOT, SUPPORT_SOURCE).replaceAll('\\','/'), sha256:sha256(supportBytes) },
     fixtures,
   });
 }
@@ -136,6 +140,7 @@ function emit(result, { includeBase64 = false } = {}) {
     schemaVersion: result.schemaVersion,
     toolchain: result.toolchain,
     source: result.source,
+    supportSource: result.supportSource,
     fixtures: result.fixtures.map(({ bytes, disassembly, objectMetadata, path:fixturePath, ...fixture }) => ({
       ...fixture,
       path: path.basename(fixturePath),
