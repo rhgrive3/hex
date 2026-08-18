@@ -9,6 +9,8 @@ export * from './workers/tool-surface.js';
 export * from './admin/tool-surface.js';
 export * from './protocol/hex-dev-supervisor-v1.js';
 export * from './supervisor/dev-supervisor-v0.js';
+export * from './supervisor/tool-error-recovery.js';
 export * from './bootstrap/dev-bootstrap-gate.js';
+export * from './bootstrap/self-update-gate.js';
 export * from './ui/settings.js';
 export * from './ui/engine-router.js';

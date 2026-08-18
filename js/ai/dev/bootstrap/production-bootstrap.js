@@ -1,19 +1,18 @@
 import { DEV_BOOTSTRAP_ROUND4_PROOF_CAPABILITY } from './dev-bootstrap-gate.js';
 import { publishBootstrapDiagnostic } from './bootstrap-diagnostic.js';
-import { readEmbedGeneration } from '../../../userscript/embed-bootstrap.js';
+import { readDevBootstrapRequested, readEmbedGeneration } from '../../../userscript/embed-bootstrap.js';
 import { runtimeHostSnapshotFromGlobals, runtimeLocationFromSnapshot } from '../../../userscript/runtime-host-location.js';
 
 const HOST_PROTOCOL = 'hex.dev.bootstrap-host-v1';
 const PARENT_ORIGINS = new Set(['https://chatgpt.com', 'https://chat.openai.com']);
 const HANDOFF_TIMEOUT_MS = 2500;
-const DEV_BOOTSTRAP_PARAM = '__hex_dev_bootstrap';
 const PREFLIGHT_PROMPT = `HEX DEV SUPERVISOR PROTOCOL hex-dev-supervisor-v1\n\nRound 4 production bootstrap checkpoint preflight.\nDo not use any tool. Return exactly this single JSON object and nothing else:\n{"type":"final","answer":"bootstrap checkpoint ready","completedTasks":["checkpoint-preflight"],"remaining":["reload-and-proof"]}`;
 
 export async function runProductionDevBootstrap({ engine, session, bridge = globalThis.__HEX_CHATGPT_BRIDGE__, globalObject = globalThis } = {}) {
   if (!engine?.devBootstrap || !session?.current || !bridge?.request) return status(globalObject, 'skipped', { reason: 'bootstrap-runtime-unavailable' });
   if (!isSandboxChild(globalObject)) return status(globalObject, 'skipped', { reason: 'not-sandbox-child' });
   const runtimeLocation = productionRuntimeLocation(globalObject);
-  if (!isProductionBootstrapEnabled(runtimeLocation)) return status(globalObject, 'skipped', { reason: 'production-bootstrap-disabled' });
+  if (!readDevBootstrapRequested(runtimeLocation)) return status(globalObject, 'skipped', { reason: 'production-bootstrap-disabled' });
 
   status(globalObject, 'running', { phase: 'bootstrap' });
   try {
@@ -144,11 +143,6 @@ function productionRuntimeLocation(globalObject) {
     safeRead(globalObject, 'location'),
     safeRead(globalObject, 'document'),
   );
-}
-
-function isProductionBootstrapEnabled(locationRef) {
-  try { return new URLSearchParams(String(locationRef?.search || '')).get(DEV_BOOTSTRAP_PARAM) === '1'; }
-  catch { return false; }
 }
 
 function safeRead(value, key) {

@@ -321,3 +321,8 @@ function supervisorResult(turnId, conversation, tool) {
   };
 }
 function delay(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
+
+/* Chained so the canonical dev-agent suite covers these without changing
+   Phase 4-owned package scripts. */
+await import('./supervisor-tool-error-recovery.mjs');
+await import('./self-update-activation-gate.mjs');

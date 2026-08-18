@@ -1,4 +1,7 @@
+import { DEV_RUNTIME_IDENTITY_TOOL } from '../bootstrap/self-update-gate.js';
+
 export const DEV_ADMIN_TOOL = Object.freeze({
+  RUNTIME_IDENTITY: DEV_RUNTIME_IDENTITY_TOOL,
   PAGE_SNAPSHOT: 'chatgpt.page.snapshot',
   PAGE_SCRIPTS: 'chatgpt.page.scripts',
   PAGE_SCRIPT_SOURCE: 'chatgpt.page.script_source',
@@ -27,6 +30,7 @@ export function createDevAdminToolSurface(client) {
   if (!client || typeof client !== 'object' || client.enabled === false) return null;
   const handlers = new Map();
   for (const [tool, method] of [
+    [DEV_ADMIN_TOOL.RUNTIME_IDENTITY,'runtimeIdentity'],
     [DEV_ADMIN_TOOL.PAGE_SNAPSHOT,'pageSnapshot'], [DEV_ADMIN_TOOL.PAGE_SCRIPTS,'pageScripts'], [DEV_ADMIN_TOOL.PAGE_SCRIPT_SOURCE,'pageScriptSource'],
     [DEV_ADMIN_TOOL.SKILL_LIST,'skillList'], [DEV_ADMIN_TOOL.SKILL_DESCRIBE,'skillDescribe'], [DEV_ADMIN_TOOL.SKILL_INSTALL_CANDIDATE,'skillInstallCandidate'], [DEV_ADMIN_TOOL.SKILL_VALIDATE_CANDIDATE,'skillValidateCandidate'], [DEV_ADMIN_TOOL.SKILL_ACTIVATE,'skillActivate'], [DEV_ADMIN_TOOL.SKILL_ROLLBACK,'skillRollback'], [DEV_ADMIN_TOOL.SKILL_RUN,'skillRun'],
     [DEV_ADMIN_TOOL.POOL_STATUS,'poolStatus'], [DEV_ADMIN_TOOL.POOL_PROVISION,'poolProvision'], [DEV_ADMIN_TOOL.POOL_CLAIM,'poolClaim'], [DEV_ADMIN_TOOL.POOL_CREATE_CHAT,'poolCreateChat'], [DEV_ADMIN_TOOL.POOL_START,'poolStart'], [DEV_ADMIN_TOOL.POOL_OBSERVE,'poolObserve'], [DEV_ADMIN_TOOL.POOL_RESULT,'poolResult'], [DEV_ADMIN_TOOL.POOL_FOLLOWUP,'poolFollowup'], [DEV_ADMIN_TOOL.POOL_NUDGE,'poolNudge'], [DEV_ADMIN_TOOL.POOL_STOP,'poolStop'], [DEV_ADMIN_TOOL.POOL_RELEASE,'poolRelease'],
