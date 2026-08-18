@@ -1,0 +1,70 @@
+name: TEMP Round 4 production probe 1714
+
+on:
+  push:
+    branches:
+      - ops/round4-production-probe-1714
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: eb4699b0caf87e9f20d3ec752e10b7ff2af2929c
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Verify public production Round 4 identity and served metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import { randomBytes, webcrypto } from 'node:crypto';
+          const expectedCommit = 'eb4699b0caf87e9f20d3ec752e10b7ff2af2929c';
+          const expectedBuild = 'a41ebb7c89c68b9731c67336';
+          const loaderVersion = '2.0.2322241714';
+          const endpoint = 'https://ida.rhgrive.workers.dev/runtime/bootstrap';
+          const token = (n) => randomBytes(n).toString('base64url');
+          for (let attempt = 1; attempt <= 24; attempt++) {
+            let bootstrapOk = false;
+            let metaOk = false;
+            try {
+              const keys = await webcrypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']);
+              const clientPublicKey = await webcrypto.subtle.exportKey('jwk', keys.publicKey);
+              const response = await fetch(endpoint, {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                  nonce: token(24), loaderVersion, buildId: expectedBuild,
+                  requestId: token(18), sessionIdentity: token(18), clientPublicKey,
+                }),
+              });
+              const body = await response.json().catch(() => ({}));
+              bootstrapOk = response.status === 200 && body?.buildId === expectedBuild && body?.sourceCommit === expectedCommit;
+              console.log(`attempt ${attempt}: bootstrap status=${response.status} build=${body?.buildId || body?.error || 'unknown'} commit=${body?.sourceCommit || 'null'}`);
+            } catch (error) {
+              console.log(`attempt ${attempt}: bootstrap network error ${error?.message || error}`);
+            }
+            try {
+              const metaResponse = await fetch('https://ida.rhgrive.workers.dev/hex.meta.js', { cache: 'no-store' });
+              const meta = await metaResponse.text();
+              const version = meta.match(/^\/\/ @version\s+(.+)$/m)?.[1]?.trim() || 'missing';
+              metaOk = metaResponse.status === 200 && version === loaderVersion;
+              console.log(`attempt ${attempt}: meta status=${metaResponse.status} version=${version}`);
+            } catch (error) {
+              console.log(`attempt ${attempt}: meta network error ${error?.message || error}`);
+            }
+            if (bootstrapOk && metaOk) {
+              console.log('ROUND4_PRODUCTION_1714_VERIFIED');
+              process.exit(0);
+            }
+            if (attempt < 24) await new Promise((resolve) => setTimeout(resolve, 10000));
+          }
+          throw new Error('Production did not expose expected Round 4 1714 identity within 4 minutes.');
+          NODE
