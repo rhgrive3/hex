@@ -5,11 +5,6 @@ import { createAuthBroadcastPort } from '../../js/userscript/dev/tab-mesh/auth-b
 import { readWorkerTabTicket, encodeWorkerTabUrl, createWorkerTabTicket, scrubWorkerTabTicket } from '../../js/userscript/dev/tab-mesh/worker-tab-ticket.js';
 import { MultiTabWorkerPool, DEV_WORKER_POOL_MAX } from '../../js/userscript/dev/tab-mesh/multi-tab-worker-pool.js';
 
-await testAuthenticatedBroadcastIsolation();
-await testSixSlotsSeventhWaitsAndReuse();
-testTicketScrub();
-console.log('multi-worker tab pool: ok');
-
 async function testAuthenticatedBroadcastIsolation() {
   FakeBroadcastChannel.reset();
   const ticket = createWorkerTabTicket({ slot: 1, cryptoRef: webcrypto });
@@ -123,3 +118,8 @@ class FakeBroadcastChannel {
   close() { FakeBroadcastChannel.channels.get(this.name)?.delete(this); this.listeners.clear(); }
 }
 function tick() { return new Promise((resolve) => setTimeout(resolve, 0)); }
+
+await testAuthenticatedBroadcastIsolation();
+await testSixSlotsSeventhWaitsAndReuse();
+testTicketScrub();
+console.log('multi-worker tab pool: ok');
