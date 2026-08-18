@@ -3,216 +3,278 @@
 > **Status:** Implementation planning guide  
 > **Scope:** Phase 10 only  
 > **Normative authority:** `docs/HEX_MASTER_ARCHITECTURE.md`  
-> **Planning baseline:** `353651ca54fa0c244e3093e7e1f53c2b4840b8bf`  
+> **Current-state baseline reviewed:** `e90c5107f9c77d73687ee452d5042dcbe9e79ece`  
 > **Primary constraint:** Browser/iPad-first, evidence-first, compatibility-first  
-> **Purpose:** Remove the expensive design uncertainty before implementation starts.
+> **Purpose:** Remove expensive design uncertainty before Phase 10 implementation/hardening begins.
 
 This document is deliberately non-normative. If it conflicts with `docs/HEX_MASTER_ARCHITECTURE.md` or a later accepted ADR, the master architecture/ADR wins.
+
+The baseline SHA above is the repository state reviewed while writing this guide. Revalidate the small set of runtime files listed below when Phase 10 work actually starts; the repository is moving quickly.
 
 ---
 
 ## 1. Phase 10 in one sentence
 
-Phase 10 turns the existing debugger/emulator/runtime-evidence foundations into a **versioned, identity-bound Runtime Provider plane** where Debugger, Instrumentation, Emulator, and imported Trace backends can feed one evidence model without ever becoming a second static semantic truth.
+Phase 10 turns Hex's already substantial debugger/runtime/replay foundations into a **first-class, versioned Runtime Provider plane** where Debugger, Instrumentation, Emulator, and Trace capabilities share one session/identity/evidence model and can never become a second static semantic truth.
 
 The canonical Phase 10 deliverables are:
 
-- a mature debugger provider;
-- a Frida-compatible instrumentation provider;
-- a trace provider;
-- an emulator provider interface;
-- a versioned remote protocol.
+- mature debugger provider;
+- Frida-compatible instrumentation provider;
+- trace provider;
+- emulator provider interface;
+- remote protocol.
 
-The canonical exit gate is:
+The canonical exit gates are:
 
-- runtime evidence is correctly bound to runtime and binary identity;
-- static/runtime fusion is tested without runtime observations mutating static truth;
-- replay and cross-version ambiguity are explicitly gated.
+- runtime evidence identity binding;
+- static/runtime fusion tests;
+- replay/cross-version ambiguity gates.
 
-The difficult work is therefore **not primarily implementing debugger buttons**. The hard part is getting identity, address mapping, event normalization, replay, and evidence fusion correct enough that all runtime backends can share them safely.
-
----
-
-## 2. Non-goals
-
-Phase 10 SHOULD NOT become a rewrite of all existing runtime code.
-
-It is explicitly not the phase to:
-
-- replace the static Semantic IR/SSA/MemorySSA model;
-- make runtime analysis mandatory for static analysis;
-- directly expose OS debugger APIs to the browser UI;
-- hard-wire Hex to one debugger, instrumentation engine, emulator, or transport;
-- bundle a heavy third-party engine merely to claim support;
-- treat an observed runtime value as an authoritative static fact;
-- build unrestricted whole-process trace storage in browser memory;
-- solve cross-version binary matching by comparing raw addresses;
-- mass-rename current modules before the provider contracts are proven.
-
-A successful Phase 10 leaves the existing static pipeline usable when no runtime provider is installed or available.
+The important correction to keep in mind is that Phase 10 is **not greenfield**. Current `main` already has debugger abstractions, remote protocol hardening, LLDB/Frida-compatible adapters, replay support, event backpressure, runtime evidence, trace-to-fact extraction, and cross-version replay gates. Phase 10 should consolidate and finish those pieces rather than recreate them.
 
 ---
 
-## 3. Current implementation baseline: preserve before extending
+## 2. What is already implemented and must be preserved
 
-The current runtime implementation is not empty. Phase 10 should evolve these foundations instead of replacing them blindly.
+### 2.1 `js/debug/adapter.js`
 
-### 3.1 `js/runtime/index.js`
+Current implementation already provides a meaningful debugger contract:
 
-Current role:
+- protocol version constant (`DEBUG_PROTOCOL_VERSION = 1`);
+- normalized capability vocabulary;
+- attach/launch/pause/resume/step operations;
+- address/function/conditional breakpoints;
+- memory watchpoints;
+- register and memory read/write;
+- thread/module/backtrace access;
+- evaluation;
+- function/call/return/branch/memory tracing capability flags;
+- Objective-C/Swift runtime capability flags;
+- cancellation and replay capabilities;
+- strict address/integer validation;
+- capability negotiation and typed `DebugAdapterError` failures.
 
-- runtime subsystem composition;
-- debugger facade;
-- emulator facade;
-- runtime session/evidence coordination;
-- capability reporting.
+**Preserve:** the capability discipline and strict validation.  
+**Do not assume:** a debugger-shaped capability list is the final universal Runtime Provider model.
 
-Current defaults include a mock debugger and a null emulator path. This is a useful compatibility boundary and SHOULD remain a facade while provider internals migrate behind it.
+### 2.2 `js/adapters/index.js`
 
-### 3.2 `js/runtime/session.js`
+Current implementation is significantly ahead of a minimal skeleton. It already includes:
 
-Current role:
+- `LocalFunctionSandboxAdapter`;
+- `RemoteDebugAdapter`;
+- `LLDBCompatibleAdapter`;
+- `FridaCompatibleAdapter`;
+- `ReplayAdapter`;
+- emulator/symbolic-related adapter paths;
+- bounded remote arrays and trace sizes;
+- runtime memory mapping;
+- trace ring buffers;
+- remote-response validation.
 
-- runtime session lifecycle;
-- debugger/emulator adapter binding;
-- binary identity association;
-- session history/handoff.
+The LLDB/Frida adapters are currently **compatibility adapters over the debugger/remote-adapter vocabulary**, not yet proof that Debugger and Instrumentation are clean first-class provider facets. That distinction matters.
 
-This is the seed for the final `RuntimeSession`, but Phase 10 needs stronger target/module identity and first-class support for provider facets beyond debugger/emulator.
+**Preserve:** the existing concrete compatibility behavior and fixtures.  
+**Refactor toward:** provider/facet composition without forcing all runtime backends through a debugger-shaped interface forever.
 
-### 3.3 `js/debug/adapter.js`
+### 2.3 `js/runtime/index.js`
 
-Current role:
+Current `RuntimeAnalysisPlatform` already does real orchestration:
 
-- debugger capability vocabulary;
-- attach/detach/pause/resume/step;
-- memory/register/module/thread/frame operations;
-- breakpoints/watchpoints;
-- mock adapter for deterministic testing.
+- adapter registration/selection;
+- local and symbolic runtime paths;
+- remote adapter creation, including LLDB/Frida-compatible variants;
+- replay adapter creation;
+- runtime session creation;
+- cancellation propagation through operation controllers;
+- experiments and hypothesis verification;
+- function tracing;
+- trace-to-semantic-fact extraction;
+- runtime evidence creation;
+- static/dynamic fusion;
+- replay shape production;
+- cross-binary replay re-resolution with confidence and ambiguity gates.
 
-This is valuable and SHOULD become a compatibility facade over a `DebuggerProvider` facet rather than being deleted during the first migration PR.
+Current cross-version replay already rejects unsafe automatic reuse unless re-resolution is explicitly accepted with strong enough identity confidence and ambiguity margin. **Do not weaken this while generalizing the provider plane.**
 
-### 3.4 `js/debug/remote-protocol.js`
+### 2.4 `js/runtime/session.js`
 
-Current role:
+Current `DebugSession` / `DebugSessionManager` already provide:
 
-- `hex-runtime-remote-v1` debugger-oriented RPC;
-- handshake;
+- bounded concurrent session count;
+- one-adapter-per-live-session protection;
+- binary hash binding;
+- adapter event subscription;
+- module/thread refresh;
+- session epochs;
+- stale-event rejection by epoch;
+- cancellation of operations on epoch changes;
+- bounded trace/observation state;
+- serializable versioned session/replay shapes;
+- deterministic close/disconnect handling.
+
+This is a strong seed, but the session still thinks primarily in terms of a `DebugAdapter`. Phase 10 should evolve it toward a provider session without discarding its lifecycle/epoch protections.
+
+### 2.5 `js/debug/remote-protocol.js`
+
+Remote protocol v1 is already hardened substantially:
+
+- versioned packet validation;
+- bounded packet/array/object/string sizes;
+- plain-data-only wire values;
+- BigInt and byte-array wire encodings;
+- blocked host-command methods;
 - request IDs;
-- timeout/error behavior;
-- remote debugger adapter creation.
+- epochs;
+- stale request invalidation;
+- timeout and cancellation;
+- bounded pending requests;
+- event-rate and event-byte backpressure;
+- explicit stream truncation signal;
+- listener isolation.
 
-Do not overload this protocol until it becomes an unversioned mixture of unrelated runtime features. Preserve v1 compatibility and introduce a negotiated provider protocol for Phase 10.
+This means Phase 10 should **extend/compose** the protocol, not throw away working hardening.
 
-### 3.5 `js/runtime-evidence/*`
+### 2.6 `js/runtime-evidence/index.js`
 
-Current role:
+Current runtime evidence already has important semantics:
 
-- runtime-evidence schema/lifecycle;
-- per-binary identity checks;
-- availability/attachment/rejection/expiry/error states;
-- claim/correction integration.
+- runtime provenance group;
+- backend, binary hash, slice identity, session identity;
+- timestamp and reproducibility metadata;
+- experiment evidence;
+- trace-to-semantic-fact conversion;
+- trace completeness/truncation metadata;
+- Objective-C/Swift dispatch comparisons;
+- runtime type annotations that remain non-permanent;
+- static/dynamic fusion that filters by binary hash, slice, and function identity;
+- support/contradiction handling without directly overwriting static analysis;
+- runtime tools that require evidence-bearing results.
 
-This is one of the most important things to preserve. Phase 10 should feed normalized provider observations into the existing evidence direction, then converge it with the central evidence architecture. It SHOULD NOT replace immutable evidence history with mutable “latest runtime state”.
-
-### 3.6 Current gap summary
-
-| Area | Current foundation | Phase 10 gap |
-|---|---|---|
-| Debugger | adapter + mock + remote v1 | mature provider/event/session model |
-| Instrumentation | no equal first-class facet | provider contract + normalized observations |
-| Trace import | no equal first-class facet | immutable import/replay provider |
-| Emulator | adapter/null foundation | backend-neutral provider facet + evidence identity |
-| Runtime identity | session/binary binding foundation | module/build/slice/address mapping |
-| Remote protocol | debugger RPC v1 | provider/facet negotiation + async events |
-| Evidence | good runtime evidence foundation | normalized event bridge + explicit static links |
-| Replay | partial concepts | deterministic event-log replay contract |
-| Cross-version | must remain conservative | explicit re-resolution + ambiguity gates |
+This is a core safety foundation. Generalization must not regress its identity filtering or conservative fusion behavior.
 
 ---
 
-## 4. Hard invariants for every Phase 10 PR
+## 3. Current-state gap: what Phase 10 is actually finishing
 
-These are implementation rules, not optional polish.
+| Area | Current state | Remaining Phase 10 work |
+|---|---|---|
+| Debugger | strong adapter contract + LLDB-compatible remote adapter | promote to mature provider facet/session semantics; backend-neutral event/state contract |
+| Instrumentation | Frida-compatible adapter capabilities exist | first-class instrumentation operations/events/intervention semantics, not merely debugger-shaped tracing |
+| Replay/Trace | ReplayAdapter, trace ring buffer, trace facts, replay gates exist | first-class immutable `TraceProvider`, normalized replay event model, module-aware identity |
+| Emulator | local sandbox/emulator adapter paths exist | explicit backend-neutral `EmulatorProvider` facet and evidence semantics |
+| Runtime identity | binary hash/slice/session checks exist | module identity, build identity, runtime load mapping, ASLR/JIT/unload/reload-safe resolution |
+| Remote protocol | robust v1 debugger RPC/event protocol | provider/facet negotiation and generic runtime session/event envelope while retaining v1 compatibility |
+| Events | adapter events + traces exist | one normalized `RuntimeEvent` envelope across debugger/instrumentation/emulator/trace |
+| Evidence | strong runtime evidence/fusion foundation | module-aware static links, intervention lineage, normalized provider provenance |
+| Cross-version | replay confidence/ambiguity gate already exists | generalize from function replay to all runtime/static attachments and module/entity mapping |
+| Browser performance | bounded traces/protocol backpressure already exists | end-to-end stream batching/paging/persistence and explicit gap semantics across providers |
+
+The biggest missing abstraction is therefore not “LLDB support” or “Frida support”. It is **a provider-level identity/event contract above existing adapters**.
+
+---
+
+## 4. Non-goals
+
+Phase 10 should not:
+
+- rewrite Semantic IR/SSA/MemorySSA;
+- make runtime analysis required for static analysis;
+- turn `FridaCompatibleAdapter` into semantic authority;
+- replace current safe replay gates with address-only heuristics;
+- expose native debugger APIs directly to browser UI code;
+- require one particular debugger/instrumentation/emulator implementation forever;
+- store unlimited live trace objects on the main thread;
+- mark a runtime observation as globally confirmed when only one path/input was observed;
+- treat “not observed” as “impossible” without a completeness proof;
+- mass-move runtime files just to match the target directory tree;
+- remove remote protocol v1 in the same PR that introduces the new provider abstraction.
+
+---
+
+## 5. Hard invariants for every Phase 10 PR
 
 ### P10-INV-001 — Runtime evidence never rewrites static truth
 
-The forbidden path is:
+Required flow:
 
 ```text
 runtime observation
-  -> mutate Semantic IR / SSA / recovered type as if statically proven
-```
-
-The required path is:
-
-```text
-runtime observation
-  -> normalized RuntimeEvent
-  -> RuntimeEvidence
+  -> normalized runtime event
+  -> runtime evidence
   -> identity/address resolution
-  -> supports / contradicts / refines static claims
+  -> supports / contradicts / refines static claim
 ```
 
-### P10-INV-002 — Every static attachment is identity-bound
+Forbidden flow:
 
-A runtime address alone is never sufficient to identify static code.
+```text
+runtime observation
+  -> silently mutate Semantic IR / SSA / recovered type
+```
 
-Any runtime-to-static link MUST be justified by a validated runtime module identity and address mapping.
+### P10-INV-002 — Static attachment requires validated identity
 
-### P10-INV-003 — Same address does not mean same code
+A runtime address alone is never enough.
 
-`0x100012340` in two builds is not automatically the same instruction/function.
+A static link needs validated binary/module/address resolution. If identity is insufficient, retain runtime evidence as unresolved runtime-only evidence.
 
-Cross-version evidence MUST be re-resolved through explicit binary/function matching evidence.
+### P10-INV-003 — Existing binary/slice/replay safety is the minimum floor
 
-### P10-INV-004 — Path/name equality is not binary identity
+Current binary hash/slice filtering and cross-version confidence/ambiguity gates must remain equally strict or become stricter.
 
-A module path or filename can be a hint, never sufficient proof of content identity.
+### P10-INV-004 — Same VA does not mean same entity across builds
 
-### P10-INV-005 — Unknown/partial stays explicit
+```text
+old VA == new VA
+```
 
-Provider unavailable, unsupported operation, incomplete trace, unresolved module, dropped events, disconnected transport, and identity mismatch MUST remain distinct states.
+is never a sufficient cross-version match.
 
-### P10-INV-006 — Runtime mutations retain intervention lineage
+### P10-INV-005 — Unknown/partial/truncated remain distinct
 
-Memory writes, register writes, breakpoint modifications, hooks, replacements, emulator state edits, and similar interventions MUST be distinguishable from passive observation.
+Provider unavailable, unsupported capability, identity mismatch, event drop, incomplete trace, transport disconnect, and analysis failure must not collapse into one generic failure.
 
-A later observation after an intervention must not be presented as an untouched natural execution trace.
+### P10-INV-006 — Mutations leave intervention lineage
 
-### P10-INV-007 — High-volume providers are bounded
+Memory/register writes, hook replacements, injected probes, emulator state edits, and similar actions change the experiment. Later evidence must retain that lineage.
 
-Instrumentation and traces MUST have cancellation, batching, queue limits, and explicit gap/drop markers. Silent event loss is forbidden.
+### P10-INV-007 — Event loss is explicit
 
-### P10-INV-008 — Browser UI does not own native debugging authority
+Current remote protocol already exposes stream truncation under backpressure. Provider-level normalization must preserve or improve that behavior. Never silently drop events and report complete evidence.
 
-The browser talks to versioned provider/transport contracts. Native target/process authority remains behind the provider boundary.
+### P10-INV-008 — All long work remains cancellable/budgeted
 
-### P10-INV-009 — Compatibility before cleanup
+Current abort/epoch/backpressure mechanisms are assets. Provider generalization must not introduce uncancellable streams or unbounded queues.
 
-Existing debugger/runtime APIs remain available through compatibility adapters until consumers are migrated and regression gates prove replacement behavior.
+### P10-INV-009 — Compatibility adapters survive staged migration
+
+Current adapter APIs remain usable until their consumers have migrated and differential tests prove the provider path.
 
 ---
 
-## 5. Target architecture: provider + facets, not one giant interface
+## 6. Target architecture: provider + optional facets
 
-One backend may support several runtime capabilities. For example, one native service might expose debugging plus instrumentation. Therefore the recommended shape is **provider composition with optional facets**, not one enormous inheritance tree.
+A provider is the owner of target/session identity and may expose one or more runtime facets.
 
 ```text
 RuntimeProviderRegistry
         |
-        +-- RuntimeProvider A
+        +-- Provider A
         |     +-- DebuggerFacet
         |     +-- InstrumentationFacet
         |
-        +-- RuntimeProvider B
+        +-- Provider B
         |     +-- TraceFacet
         |
-        +-- RuntimeProvider C
+        +-- Provider C
               +-- EmulatorFacet
 ```
 
-A target contract can evolve toward:
+Do not create four unrelated session systems.
+
+A target shape can be:
 
 ```ts
 interface RuntimeProvider {
@@ -230,41 +292,43 @@ interface RuntimeFacetSet {
 }
 ```
 
-The exact TypeScript/JavaScript surface may differ, but the architectural properties should remain:
+The concrete API can evolve, but it should preserve these properties:
 
-- one provider identity/version;
-- one session identity;
-- one target/module identity model;
+- provider ID + semantic/protocol version;
+- session ID;
+- target identity;
+- module map;
 - capability negotiation;
 - facet-specific operations;
-- one normalized event/evidence plane.
+- normalized events;
+- evidence provenance;
+- cancellation/resource budget.
 
-### 5.1 Recommended core objects
-
-Phase 10 should converge around these concepts:
+### 6.1 Migration relationship with current adapters
 
 ```text
-RuntimeProviderRegistry
-RuntimeProviderDescriptor
-RuntimeSession
-RuntimeTargetIdentity
-RuntimeModuleIdentity
-RuntimeAddressResolution
-RuntimeEvent
-RuntimeTransport
-RuntimeCapabilitySet
-RuntimeEvidence
+DebugAdapter / RemoteDebugAdapter
+          |
+          v
+Debugger compatibility facet
+          |
+          v
+RuntimeProvider session
 ```
 
-Do not add provider-specific IDs to random UI state. Stable runtime identity belongs in the runtime plane.
+`LLDBCompatibleAdapter` can become one debugger-provider implementation path.
+
+`FridaCompatibleAdapter` should not simply be renamed to InstrumentationProvider. It can remain a compatibility route while first-class instrumentation operations are added separately.
+
+`ReplayAdapter` is a strong seed for TraceProvider/replay compatibility, but imported traces should eventually have a trace-native contract rather than pretending they are always live debuggers.
 
 ---
 
-## 6. The first hard problem: target, module, and address identity
+## 7. Hardest problem #1: runtime module identity and address mapping
 
-This should be implemented before a real new live backend because every provider depends on it.
+Current code has binary hash and slice checks, but Phase 10 needs **module-aware runtime identity**.
 
-A useful target shape is:
+A useful target identity shape:
 
 ```ts
 RuntimeTargetIdentity {
@@ -280,7 +344,7 @@ RuntimeTargetIdentity {
 }
 ```
 
-A loaded module needs its own identity:
+Loaded modules need independent identity:
 
 ```ts
 RuntimeModuleIdentity {
@@ -299,11 +363,9 @@ RuntimeModuleIdentity {
 }
 ```
 
-`buildIdentity` may use format/platform-native evidence where available, for example a Mach-O UUID, ELF build-id, or PDB identity. Those are useful resolution evidence; they must not be silently treated as a content hash when they are not one.
+`buildIdentity` may represent format/platform-native identifiers such as Mach-O UUID, ELF build-id, or PDB identity. Those are identity evidence, not automatically equivalent to a content hash.
 
-### 6.1 Address resolution result
-
-Never return only an integer slide.
+### 7.1 Address resolution must return a state, not just a slide
 
 ```ts
 RuntimeAddressResolution {
@@ -316,40 +378,39 @@ RuntimeAddressResolution {
 }
 ```
 
-### 6.2 Resolution order
+### 7.2 Resolution preference
 
-Prefer stronger evidence first:
+Prefer stronger evidence:
 
-1. exact content/binary identity;
+1. exact binary/content identity;
 2. exact slice + verified build identity;
 3. validated module mapping inside the same binary identity;
-4. explicit cross-version function/entity match artifact;
+4. explicit cross-version entity/function match artifact;
 5. otherwise ambiguous/unresolved.
 
-Filename/path resemblance can rank candidates but MUST NOT upgrade them to exact identity.
+Path/name similarity may rank candidates but cannot promote them to exact identity.
 
-### 6.3 Edge cases that must be designed now
+### 7.3 Cases to support explicitly
 
-- ASLR/rebased images;
-- FAT Mach-O / architecture slices;
-- dyld/shared-cache style mappings;
-- unloaded/reloaded modules;
-- JIT-generated code without a static BinaryId;
+- ASLR/rebasing;
+- multiple loaded modules;
+- FAT Mach-O slices;
+- module unload/reload;
+- same filename, different binary;
+- copied/renamed binary;
+- JIT code;
 - anonymous executable memory;
-- copied/renamed binaries;
-- same module name from a different build;
-- trace data with no content hash;
-- emulator images created from transformed inputs.
+- shared-cache-style mappings;
+- imported trace with incomplete identity;
+- emulator-generated/transformed images.
 
-Runtime-only code can remain runtime-only. Hex must not invent a static address merely to make navigation convenient.
+Runtime-only code is valid. Hex does not need to invent a static address for every runtime PC.
 
 ---
 
-## 7. The second hard problem: one normalized RuntimeEvent stream
+## 8. Hardest problem #2: normalized RuntimeEvent
 
-Debugger callbacks, instrumentation events, emulator steps, and imported traces look different at the backend. They should not look different to the evidence layer.
-
-Recommended normalized envelope:
+Current adapters and traces already emit events, but each backend should converge on one provider-level envelope.
 
 ```ts
 RuntimeEvent {
@@ -357,7 +418,7 @@ RuntimeEvent {
   runtimeSessionId
   providerId
   providerVersion
-  sequence
+  sequence?
   providerEventId?
   timestamp?
   processId?
@@ -370,7 +431,7 @@ RuntimeEvent {
 }
 ```
 
-Possible `kind` families:
+Suggested event families:
 
 ```text
 session-start / session-stop
@@ -381,7 +442,7 @@ paused / resumed
 breakpoint-hit / watchpoint-hit
 exception / signal
 call / return / basic-block
-memory-observation
+memory-read / memory-write
 register-snapshot
 instrumentation-observation
 emulator-checkpoint
@@ -390,109 +451,124 @@ gap / dropped-events
 provider-warning / provider-error
 ```
 
-### 7.1 Ordering
+### 8.1 Ordering
 
-A timestamp is not necessarily a total order across threads or remote clocks.
+Do not infer a global order only from wall-clock timestamps.
 
-The provider SHOULD supply a monotonic session-local sequence where possible. If the source cannot provide total ordering, the normalized event must say so rather than fabricate one.
+Where possible, providers should expose a monotonic session-local sequence. If an imported/remote source only gives partial ordering, preserve that fact.
 
-### 7.2 Backpressure
+### 8.2 Backpressure
 
-High-volume providers MUST NOT push an unbounded event array into the UI thread.
+Current protocol already has event-rate/byte budgets and stream-truncation notification. Generalize this rather than reimplementing it independently per provider.
 
-Required behavior:
+Required end-to-end properties:
 
-- bounded queues;
-- event batches/pages;
+- bounded queue;
+- batches/pages;
 - cancellation;
-- high-water handling;
-- configurable trace budgets;
-- explicit `gap`/`dropped-events` event when data is discarded;
-- completeness propagated into derived evidence.
-
-A trace with dropped events may still be useful. It must not be represented as complete.
+- explicit gap/drop event;
+- completeness downgrade;
+- no unbounded UI array;
+- no “complete” evidence after silent loss.
 
 ---
 
-## 8. RuntimeEvent -> RuntimeEvidence -> static evidence
+## 9. Hardest problem #3: event -> evidence -> static fusion
 
-The provider event schema and durable evidence schema should stay separate.
+Keep event transport separate from durable evidence.
 
 ```text
-Provider callback / imported record
+backend callback / imported record
           |
           v
-    RuntimeEvent
+     RuntimeEvent
           |
           v
-identity + address resolution
+identity + module/address resolution
           |
           v
     RuntimeEvidence
           |
-          +--> staticEntityLinks (only when resolved)
-          |
-          +--> Claim supports/contradicts/refines edges
+          +--> staticEntityLinks only if resolved
+          +--> supports / contradicts / refines claims
 ```
 
-Why separate them:
+Why this separation matters:
 
-- events can be high-volume/ephemeral;
-- evidence is selected, normalized, durable, and provenance-bearing;
-- replay can regenerate the same evidence pipeline;
-- provider quirks do not leak into static analysis consumers.
+- raw events can be high-volume and short-lived;
+- evidence is selected and provenance-bearing;
+- replay can regenerate evidence deterministically;
+- provider-specific payload does not leak into static analyzers;
+- runtime-only unresolved evidence remains representable.
 
-### 8.1 Static fusion rules
+### 9.1 Preserve current fusion strengths
 
-**Exact same binary + exact mapping**  
-Runtime evidence may attach directly to the matching static entity.
+Current `fuseStaticDynamic()` already filters by binary hash, slice identity, and function address, groups correlated runtime evidence, and distinguishes support/contradiction.
 
-**Unresolved/mismatched identity**  
-Evidence may still be stored, but it remains runtime-only and MUST NOT be attached to a static instruction/function.
+Phase 10 should generalize this toward module/entity identity rather than replace it with a weaker generic confidence combiner.
 
-**Contradiction**  
-Create contradiction evidence. Do not overwrite the static result.
+### 9.2 Intervention semantics
 
-**Instrumented/modified execution**  
-Retain the intervention lineage so downstream claims know the observation happened after a hook/write/replacement.
+Add explicit lineage for:
 
-**Partial trace**  
-Derived claims inherit bounded/partial/truncated completeness.
+- register write;
+- memory write;
+- hook install/remove;
+- function replacement;
+- emulator state mutation;
+- synthetic input injection.
+
+Evidence observed after an intervention is still valuable but must carry the experiment lineage.
 
 ---
 
-## 9. Remote protocol: evolve through negotiation, not by breaking v1
+## 10. Remote protocol strategy
 
-Current `hex-runtime-remote-v1` is debugger-centric and is useful compatibility surface.
+Current v1 is already robust enough that a replacement must justify itself.
 
-Recommended Phase 10 direction:
+Recommended architecture:
 
 ```text
-hex-runtime-remote-v1
-   -> Debugger compatibility adapter
+DEBUG_PROTOCOL_VERSION = 1
+  -> preserved debugger compatibility protocol
 
-hex-runtime-provider-v2
-   -> generic session/provider/facet negotiation
-   -> async RuntimeEvent stream
+Runtime provider protocol v2 (or equivalent negotiated envelope)
+  -> provider/session negotiation
+  -> facet discovery
+  -> generic RuntimeEvent stream
+  -> can host debugger compatibility operations
 ```
 
-The exact version name can be chosen during implementation, but a distinct negotiated protocol is preferable to silently expanding v1 with incompatible assumptions.
+Do not silently redefine v1 semantics.
 
-### 9.1 Handshake should negotiate
+### 10.1 Reuse v1 mechanisms
 
-- protocol versions;
-- provider identity/version;
+Preserve/reuse:
+
+- checked wire encoding;
+- BigInt/bytes serialization;
+- packet size/depth limits;
+- request IDs;
+- epoch invalidation;
+- timeout/cancellation;
+- pending-request backpressure;
+- event backpressure;
+- blocked command execution;
+- listener isolation.
+
+### 10.2 New handshake should negotiate
+
+- protocol version(s);
+- provider ID/version;
 - available facets;
 - capabilities per facet;
-- architecture/platform targets;
-- maximum message/read/write sizes;
-- event streaming/batching support;
+- target architecture/platform;
+- maximum request/event payloads;
+- streaming/batching support;
 - cancellation/deadline support;
 - authentication/authorization requirements where applicable.
 
-### 9.2 Namespace operations
-
-Example organization:
+### 10.3 Suggested namespaces
 
 ```text
 runtime.session.*
@@ -504,428 +580,453 @@ emulator.*
 trace.*
 ```
 
-### 9.3 Protocol correctness requirements
+### 10.4 Typed failures
 
-- request IDs;
-- explicit session IDs;
-- schema/version validation;
-- timeouts/deadlines;
-- cancellation;
-- bounded payloads;
-- typed failures;
-- async event framing;
-- disconnect/reconnect semantics;
-- no executable callbacks or `eval` supplied by a remote peer.
-
-Typed failures should preserve at least:
+Keep/debug-normalize at least:
 
 ```text
 unsupported
 unavailable
+invalid-input
 identity-mismatch
 resource-limit
+backpressure
 cancelled
+timeout
+disconnected
 permission-denied
 provider-failure
 protocol-mismatch
-invalid-input
 ```
 
-The transport itself should remain abstract. WebSocket, native bridge, local service, or another transport must not become part of the semantic provider contract.
+Transport remains abstract. WebSocket/native bridge/local service is deployment detail, not provider semantics.
 
 ---
 
-## 10. Recommended implementation order
+## 11. Recommended implementation order
 
-The sequence below is designed to minimize throw-away work and let later tasks parallelize safely.
+This order now assumes the existing runtime/adapters/replay work on current `main`.
 
-### P10.0 — Freeze current behavior
+### P10.0 — Baseline and contract freeze
 
-Before introducing providers:
+Before refactoring:
 
-- add/confirm contract tests around current runtime session behavior;
-- add/confirm debugger adapter capability tests;
-- add/confirm remote v1 handshake/error tests;
-- capture current runtime-evidence identity behavior;
-- document compatibility surfaces that must remain during migration.
+- pin tests around `DebugAdapter` capability negotiation;
+- pin current `RemoteProtocolClient` epoch/cancel/backpressure behavior;
+- pin `DebugSession` lifecycle/serialization/replay behavior;
+- pin LLDB/Frida/Replay compatibility adapter behavior;
+- pin `traceToSemanticFacts()` completeness/truncation behavior;
+- pin `fuseStaticDynamic()` identity rejection;
+- pin current cross-version replay confidence/ambiguity gate.
 
-**Exit:** current behavior has tests strong enough to detect accidental migration regressions.
+**Exit:** migration cannot accidentally make current runtime safety weaker.
 
-### P10.1 — Runtime identity + module map
+### P10.1 — Module-aware runtime identity
 
-Implement:
+Add the missing identity layer:
 
-- target identity;
-- module identity;
+- runtime target identity;
+- runtime module identity;
+- build/slice identity;
 - loaded/unloaded module map;
-- runtime-to-static resolution result;
-- binary/build/slice mismatch handling.
+- runtime address resolution state;
+- explicit mismatch/ambiguity states.
 
-Do not connect a new real provider yet.
+Keep existing binaryHash behavior as a compatibility input.
 
-**Exit:** deterministic tests cover ASLR, wrong binary, ambiguous module, module unload, and slice mismatch.
+**Exit:** tests cover ASLR, wrong binary, wrong slice, module unload/reload, same-name/different-build, JIT/unresolved address.
 
-### P10.2 — RuntimeProvider registry + facet contracts
+### P10.2 — RuntimeProvider registry and facets
 
-Implement:
+Introduce:
 
 - provider descriptor/version;
 - provider registry;
-- capability set;
-- facet discovery;
-- compatibility wrapper for current debugger adapter;
-- compatibility wrapper for current emulator adapter.
+- provider session;
+- facet discovery/capability sets;
+- DebugAdapter -> DebuggerFacet compatibility wrapper;
+- ReplayAdapter -> Trace/Replay compatibility wrapper;
+- emulator compatibility wrapper.
 
-**Exit:** current mock debugger can operate through the new provider path without changing first-party consumers.
+Do not delete `DebugAdapter`.
 
-### P10.3 — RuntimeEvent + evidence bridge
+**Exit:** existing local/remote/LLDB/Frida/replay paths can still run through compatibility layers.
+
+### P10.3 — Normalize RuntimeEvent
+
+Create provider-level events and adapters from current trace/remote event shapes.
 
 Implement:
 
-- normalized event envelope;
-- batching/backpressure;
-- gap markers;
-- event -> evidence conversion;
-- intervention lineage;
+- event identity;
+- sequence/ordering metadata;
+- observation mode;
+- completeness;
+- gap/drop normalization;
+- module load/unload events;
+- event batching.
+
+**Exit:** current adapter traces can be projected into normalized events without losing truncation/epoch information.
+
+### P10.4 — Evidence bridge and intervention lineage
+
+Generalize current runtime evidence:
+
+- provider/session/module provenance;
+- module-aware static links;
+- intervention parentage;
+- unresolved runtime-only evidence;
+- contradiction/refinement edges;
 - completeness propagation.
 
-**Exit:** deterministic fake-provider streams generate reproducible runtime evidence.
+**Exit:** static/dynamic fusion is at least as conservative as today, with richer identity.
 
-### P10.4 — Remote provider protocol v2
+### P10.5 — First-class TraceProvider
 
-Implement:
+Current `ReplayAdapter` proves replay is already useful. The next step is a trace-native provider rather than treating every recording as a debugger.
 
-- negotiated provider handshake;
-- facet/capability discovery;
-- generic session lifecycle;
-- async event stream;
-- cancellation/deadlines;
-- v1 debugger compatibility adapter.
+Why TraceProvider first:
 
-**Exit:** v1 debugger fixtures remain green and a fake v2 provider can expose at least one facet plus events.
+- deterministic and read-only;
+- exercises new identity/event/evidence contracts;
+- no live-process timing instability;
+- easy negative fixtures for wrong binary/cross-version cases;
+- makes replay semantics testable before more live backends depend on them.
 
-### P10.5 — TraceProvider first
+Minimum imported trace model should preserve when available:
 
-Implement the first new real facet as an imported trace provider.
-
-Why first:
-
-- it is read-only;
-- deterministic fixtures are easy to reproduce;
-- it tests module identity and address resolution without a live process;
-- it exercises event normalization and evidence fusion;
-- it makes replay semantics concrete before live backends add timing/failure complexity.
-
-Minimum trace support should preserve:
-
-- source tool/provider identity;
-- module map/load events when available;
+- source/provider/tool identity;
+- binary/module identity;
+- module load/unload;
 - coverage;
-- branch/call sequence when available;
-- thread/process identity when available;
-- timestamps/order information when available;
-- memory observations when available;
-- explicit completeness/gaps.
+- call/branch sequence;
+- memory observations;
+- thread/process identity;
+- timestamp/order metadata;
+- gaps/truncation/completeness.
 
-**Exit:** import -> normalize -> replay -> evidence produces stable results for deterministic fixtures.
+**Exit:** import -> normalize -> replay -> evidence is deterministic on fixtures.
 
-### P10.6 — Mature DebuggerProvider
+### P10.6 — Provider remote protocol
 
-Build the mature debugger facet on the shared session/identity/event/protocol plane.
+Build provider/facet negotiation on top of the hardened v1 concepts.
 
-Required core operations:
+Required:
 
-- launch/attach;
-- detach/stop;
+- provider handshake;
+- facet/capability negotiation;
+- generic session lifecycle;
+- async normalized event stream;
+- cancellation/deadlines;
+- protocol limits;
+- v1 debugger compatibility path.
+
+**Exit:** v1 tests stay green; a fake provider can negotiate and stream events through the new protocol.
+
+### P10.7 — Mature DebuggerProvider
+
+Promote current debugger behavior into the first-class Debugger facet.
+
+Core operations:
+
+- launch/attach/detach;
 - pause/resume/step;
 - breakpoints/watchpoints;
 - threads/registers;
 - memory read/write;
 - modules;
 - stack frames;
-- target state events;
+- target-state events;
 - remote transport.
 
-Do not force the core to choose LLDB/GDB/DbgEng forever. A concrete backend can be selected later while the provider contract remains backend-neutral.
+`LLDBCompatibleAdapter` is a strong compatibility seed, not the final abstraction boundary.
 
-**Exit:** deterministic mock + at least one concrete provider path satisfy the same contract, including identity and event tests.
+**Exit:** mock/local and at least one remote debugger path satisfy the same provider contract and identity/event rules.
 
-### P10.7 — Frida-compatible InstrumentationProvider
+### P10.8 — First-class InstrumentationProvider
 
-“Frida-compatible” should mean the Hex provider contract can represent the essential instrumentation model. It does **not** mean Frida becomes Hex's semantic core or mandatory bundled dependency.
+Evolve beyond the current `FridaCompatibleAdapter` capability wrapper.
 
 Required concepts:
 
-- attach/instrument session;
-- module/process discovery;
+- attach/instrument target;
 - intercept/probe;
-- call/block tracing where backend supports it;
+- optional replacement when backend allows it;
+- call/block tracing;
 - memory/process observations;
-- batch/high-volume events;
-- explicit hook/replacement intervention lineage;
-- capability/permission reporting.
+- module/runtime metadata observation;
+- high-volume batching/backpressure;
+- intervention lineage;
+- permission/capability reporting.
 
-**Exit:** instrumentation observations use the same identity, event, evidence, backpressure, and replay rules as debugger/trace events.
+“Frida-compatible” means Hex can express the needed instrumentation model. It does not require Frida to become the semantic core or mandatory dependency.
 
-### P10.8 — EmulatorProvider interface
+**Exit:** instrumentation uses the same provider/session/module/event/evidence contracts as debugger/trace.
 
-Generalize the current emulator path behind the provider facet.
+### P10.9 — EmulatorProvider + final replay/fusion gates
 
-Required evidence metadata:
+Generalize local/emulator paths into a backend-neutral Emulator facet.
 
-- engine/provider identity and version;
+Evidence must record:
+
+- provider/engine ID and version;
 - binary identity;
 - architecture/platform model;
-- emulator configuration;
-- initial input/state;
+- initial state/input;
+- relevant environment/configuration;
 - budget/termination reason;
-- checkpoints/observations;
-- completeness.
+- completeness;
+- synthetic observation mode.
 
-Emulator evidence is `synthetic`/experimental runtime evidence. It must not be mislabeled as a direct observation from the real device/process.
+Then close the canonical exit gates across all provider types.
 
-**Exit:** current emulator compatibility path and a deterministic test provider satisfy the common contract.
-
-### P10.9 — Fusion, replay, cross-version gates, query/UI exposure
-
-Finish:
-
-- static/runtime evidence links;
-- support/contradiction/refinement behavior;
-- exact replay path;
-- cross-version re-resolution path;
-- ambiguity thresholds/gates;
-- paged/snapshot runtime query APIs;
-- UI states for unresolved/partial/mismatched runtime data.
-
-**Exit:** all canonical Phase 10 gates are proven with positive and negative tests.
+**Exit:** runtime identity, static/runtime fusion, replay, and cross-version ambiguity tests are green with positive and negative cases.
 
 ---
 
-## 11. Why the order matters
+## 12. Why this order is efficient
 
-The dependency chain is:
+Critical dependency chain:
 
 ```text
-identity/module mapping
+freeze current safety
+        |
+        v
+module-aware identity
         |
         v
 provider/facet contract
         |
         v
-normalized events
+normalized RuntimeEvent
         |
-        +----------------+
-        |                |
-        v                v
-remote protocol       TraceProvider
-        |                |
-        v                |
-DebuggerProvider         |
-InstrumentationProvider  |
-EmulatorProvider          |
-        +----------------+
-                |
-                v
-       evidence fusion/replay
+        v
+evidence bridge
+        |
+        +-------------------+
+        |                   |
+        v                   v
+TraceProvider        provider protocol
+        |                   |
+        |              DebuggerProvider
+        |           InstrumentationProvider
+        |              EmulatorProvider
+        +---------+---------+
+                  |
+                  v
+        replay/fusion exit gates
 ```
 
-If a live debugger is integrated before identity/event contracts, its backend-specific assumptions will leak into the core and then every later provider will need adapters around debugger-shaped semantics.
+The current repository already proved many individual runtime mechanisms. The most efficient Phase 10 path is therefore to **extract the common contract from working code**, not rebuild backend features from zero.
 
-After P10.2/P10.3 are stable, several implementation tracks can run in parallel:
+After P10.4 stabilizes, TraceProvider, provider protocol, debugger hardening, instrumentation, and emulator work can run in parallel with much less merge churn.
 
-- trace fixtures/provider;
-- remote provider client/server;
-- debugger backend bridge;
-- instrumentation bridge;
-- fusion/replay tests.
-
-Do **not** parallelize foundational schema design with multiple consumers before the schema contract is frozen enough to avoid repeated churn.
+Do not parallelize identity/event schema design across several workers before the contracts settle.
 
 ---
 
-## 12. Provider-specific hard parts
+## 13. Provider-specific difficult points
 
-### 12.1 DebuggerProvider
+### 13.1 Debugger
 
-Hard parts:
+Hard problems:
 
-- target state is asynchronous;
+- asynchronous target state;
 - pause/resume races;
-- module load/unload during a session;
-- breakpoint/watchpoint lifecycle;
-- thread-local vs process-global state;
 - stale register/frame snapshots;
-- remote disconnection/reconnect;
-- writes must be marked as interventions.
+- module load/unload;
+- multi-thread state;
+- breakpoint/watchpoint lifecycle;
+- remote disconnect/reconnect;
+- writes are interventions.
 
-Design rule: state transitions should be driven by provider events/acknowledged operations, not inferred only from UI button presses.
+Rule: target state changes should be backed by provider events/acknowledged operations, not UI assumptions.
 
-### 12.2 InstrumentationProvider
+### 13.2 Instrumentation
 
-Hard parts:
+Hard problems:
 
-- extremely high event volume;
-- hooks can alter target behavior;
-- dynamically generated code;
+- event volume;
+- hooks can perturb execution;
+- JIT code;
 - module churn;
-- event drops under pressure;
-- backend permissions/injection failures.
+- injection/permission failure;
+- dropped events;
+- high-level runtime observations may not map to one static instruction.
 
-Design rule: event volume management and intervention lineage are part of correctness, not later performance polish.
+Rule: backpressure and intervention lineage are correctness features.
 
-### 12.3 TraceProvider
+### 13.3 Trace/replay
 
-Hard parts:
+Hard problems:
 
-- source tools provide different levels of identity;
-- incomplete traces are common;
-- ordering may be partial;
-- some traces have addresses but no module identity;
-- imported data may refer to a different binary version.
+- source tools have different identity quality;
+- trace may be incomplete;
+- order may be partial;
+- addresses may lack module identity;
+- trace may belong to another build.
 
-Design rule: importing a trace successfully does not imply that it can be attached to the currently open binary.
+Rule: successful import does not imply successful static attachment.
 
-### 12.4 EmulatorProvider
+### 13.4 Emulator
 
-Hard parts:
+Hard problems:
 
-- emulator state is not real target state;
-- engine configuration affects behavior;
-- OS/runtime semantics may be incomplete;
-- deterministic replay depends on controlled inputs/environment;
-- unsupported syscalls/instructions must remain explicit.
+- synthetic state is not real target state;
+- environment modeling affects behavior;
+- unsupported syscalls/instructions;
+- replay depends on controlled initial state;
+- backend configuration affects reproducibility.
 
-Design rule: record enough environment/configuration metadata for the observation to be reproducible or explicitly marked non-reproducible.
+Rule: emulator observations stay explicitly synthetic/experimental evidence.
 
 ---
 
-## 13. Replay model
+## 14. Replay and cross-version model
 
-A Phase 10 event stream should be replayable through the same evidence pipeline where practical.
+Current `replayExperiment()` already has a strong safety direction:
 
-Replay records need enough information to reconstruct interpretation:
+- source and target binary identity required by default;
+- mismatch requires explicit function re-resolution;
+- resolved candidate must be explicitly accepted;
+- identity confidence threshold is enforced;
+- ambiguity is rejected;
+- low ambiguity margin is rejected.
+
+Phase 10 should generalize this principle to all runtime/static mapping.
+
+### 14.1 Replay record should include
 
 ```text
 provider id/version
-target/binary identity
+protocol/schema version
 runtime session identity
-module map changes
-ordered/partially ordered RuntimeEvents
-inputs/configuration when applicable
+binary identity
+module identities/map changes
+inputs/configuration where relevant
+events and ordering information
 gap/drop markers
 intervention markers
-protocol/schema versions
+completeness
 ```
 
-### 13.1 Replay modes
+### 14.2 Replay modes
 
 **Exact replay**  
-Same verified binary identity and compatible schema/provider semantics. Static links may be restored deterministically.
+Same verified binary identity and compatible runtime schema. Static links can be reconstructed deterministically.
 
 **Re-resolution**  
-Same intended target but module/static mapping is reconstructed from recorded identity evidence.
+Identity is sufficient to reconstruct module/static mapping without assuming old addresses.
 
 **Cross-version candidate replay**  
-Different binary identity. Runtime events remain valid historical evidence, but static attachments require an explicit cross-binary/function/entity match with confidence and ambiguity metadata.
+Different binary identity. Static attachments require explicit match artifacts with confidence and ambiguity information.
 
-### 13.2 Forbidden shortcut
-
-Never do:
+### 14.3 Never allow
 
 ```text
 old runtime address == new runtime address
-=> same static instruction
+=> same static entity
 ```
-
-Even if it appears to work on a small fixture.
 
 ---
 
-## 14. Static/runtime contradiction semantics
+## 15. Static/runtime contradiction semantics
 
 Example:
 
 ```text
-Static analysis claim:
-  branch B appears unreachable under current proven constraints
+Static claim:
+  branch B is unreachable under current assumptions
 
-Runtime observation:
-  verified same binary/session executes B
+Verified same-binary runtime evidence:
+  branch B executed
 ```
 
-The correct result is not “replace static truth with runtime truth”.
-
-The correct result is:
+Correct result:
 
 ```text
-RuntimeEvidence executes B
+RuntimeEvidence
   -> contradicts static Claim
-  -> investigation points to incomplete/incorrect static assumptions
+  -> inspect static assumptions/analysis
 ```
 
-This preserves the evidence chain and makes regressions debuggable.
+Incorrect result:
 
-Similarly, one runtime path cannot prove that a branch is globally unreachable simply because it was not observed.
+```text
+runtime event
+  -> mutate static IR until contradiction disappears
+```
 
----
-
-## 15. Browser/iPad performance rules
-
-Phase 10 can become an accidental memory/latency disaster if runtime streams are treated like ordinary UI state.
-
-Required direction:
-
-- no unbounded event arrays in the main thread;
-- batch transferable data between workers/transport and runtime core;
-- page history/evidence queries;
-- persist cold trace/evidence artifacts when appropriate;
-- virtualize large event/trace views;
-- keep live hot state small;
-- use cancellation and explicit budgets;
-- avoid one JS object per event for millions of retained events when a compact representation is possible;
-- preserve a non-SharedArrayBuffer correctness path;
-- make reconnect/provider loss explicit rather than freezing stale state as “live”.
-
-A high-frequency instrumentation provider SHOULD expose configurable event categories/sampling/limits before events reach the UI.
+Likewise, a branch not observed in one trace is not globally unreachable.
 
 ---
 
-## 16. Security and hostile-provider model
+## 16. Browser/iPad performance rules
 
-Runtime providers, imported traces, remote services, target strings/symbols, and provider metadata are untrusted inputs.
+Current code already uses trace ring buffers, protocol limits, event backpressure, bounded evidence, and cancellation. Phase 10 should extend those principles end-to-end.
 
-Phase 10 must defend against:
+Required:
 
-- malformed protocol messages;
-- oversized payloads;
-- invalid/overflowing addresses;
+- no unbounded event arrays on main thread;
+- batches/transferable compact data where useful;
+- paged history/evidence queries;
+- virtualized trace UI;
+- small hot live state;
+- persisted cold artifacts where appropriate;
+- explicit event budgets;
+- explicit reconnect/provider-loss state;
+- correctness without SharedArrayBuffer;
+- high-frequency instrumentation filters/sampling before UI projection;
+- dropped events downgrade completeness.
+
+Performance optimizations may defer/store/page work. They must not turn partial runtime data into unjustified confidence.
+
+---
+
+## 17. Security model
+
+Runtime providers and traces are untrusted external inputs even when they run with privileged target access.
+
+Threats:
+
+- malformed wire values;
+- oversized packets/events;
+- invalid addresses;
 - malicious module/symbol/path strings;
 - event floods;
 - stale/cross-binary sessions;
-- provider impersonation/identity confusion;
-- protocol downgrade mistakes;
-- injected executable callback/code data;
-- unauthorised mutation operations;
-- compromised remote provider output.
+- protocol downgrade/confusion;
+- provider impersonation;
+- remote attempts to invoke shell/host commands;
+- injected code/callback payloads;
+- unauthorized runtime mutation;
+- compromised backend output.
 
-Minimum rules:
+Preserve current protocol hardening:
 
-- strict schema validation;
-- bounded message/event sizes;
-- checked address arithmetic/BigInt handling;
-- explicit capability checks;
-- explicit mutation permissions;
-- authentication/authorization at remote transport boundaries where supported/required;
-- no remote `eval` or arbitrary callback execution;
-- no provider output becomes AI/system instruction authority;
-- no provider observation becomes a verified static fact merely because it came from a privileged backend.
+- plain-data wire values;
+- bounded nesting/arrays/objects/messages;
+- blocked command execution;
+- strict BigInt/byte validation;
+- cancellation/timeouts;
+- epochs;
+- backpressure.
+
+Add provider-level:
+
+- provider/session identity validation;
+- facet capability authorization;
+- mutation capability distinction;
+- module/binary identity validation;
+- explicit remote authentication/authorization where the chosen transport supports it.
+
+No provider text/data becomes system/AI instruction authority.
 
 ---
 
-## 17. Candidate file/module boundaries
+## 18. Candidate module boundaries
 
-This is a direction, not a requirement to perform a mass move.
+Do not mass-move immediately. Target shape only:
 
 ```text
 js/runtime/
@@ -944,436 +1045,443 @@ js/runtime/
     emulator.js
 ```
 
-Compatibility strategy:
+Compatibility policy:
 
-- keep `js/runtime/index.js` as the public/facade composition point while internals migrate;
-- keep `js/debug/adapter.js` as a compatibility API until debugger consumers move;
-- preserve `js/debug/remote-protocol.js` v1 and wrap it as a debugger provider path;
-- evolve `js/runtime/session.js` rather than replacing all callers at once;
-- integrate `js/runtime-evidence/*` into the normalized evidence path without losing existing identity/rejection behavior.
+- `js/debug/adapter.js` remains until debugger consumers migrate;
+- `js/adapters/index.js` concrete adapters continue to work;
+- remote protocol v1 remains supported through a debugger compatibility route;
+- `RuntimeAnalysisPlatform` remains the public composition facade while internals migrate;
+- `runtime-evidence` behavior is extended, not replaced by a weaker store.
 
-File movement by itself is not a Phase 10 deliverable.
+File movement is not an exit criterion.
 
 ---
 
-## 18. Test strategy
+## 19. Test plan
 
-Tests should be built around contracts and negative cases before real-provider complexity.
+### 19.1 Baseline compatibility tests
 
-### 18.1 Provider contract tests
+Pin current behavior before refactor:
+
+- capability negotiation;
+- strict address/integer validation;
+- session limit and adapter-in-use gate;
+- epoch/stale-event rejection;
+- cancellation propagation;
+- wire BigInt/bytes roundtrip;
+- protocol packet limits;
+- blocked host methods;
+- pending-request backpressure;
+- event backpressure/truncation signal;
+- trace fact completeness/truncation;
+- runtime evidence binary/slice filtering;
+- cross-version replay confidence/ambiguity rejection.
+
+### 19.2 Module identity tests
+
+- same binary + ASLR resolves;
+- wrong content hash rejects;
+- same path/name + wrong hash rejects;
+- correct build ID + correct slice resolves as policy allows;
+- wrong FAT slice rejects;
+- module unload invalidates mapping;
+- reload gets new runtime module identity;
+- anonymous/JIT code remains runtime-only if unresolved;
+- same VA in different build never auto-links.
+
+### 19.3 Provider contract tests
 
 - provider ID/version required;
-- facets discoverable by capability;
-- unsupported facet is typed `unsupported`;
-- unavailable backend is distinct from unsupported;
-- session cannot be accidentally used by another provider;
+- facets negotiated;
+- unsupported and unavailable distinct;
+- session cannot cross provider ownership;
 - cancellation propagates;
-- capability negotiation is immutable for a negotiated session unless a versioned update event says otherwise.
+- provider close invalidates active operations;
+- compatibility DebugAdapter path still works.
 
-### 18.2 Identity/address tests
+### 19.4 RuntimeEvent tests
 
-- exact binary attaches;
-- wrong content hash rejects static link;
-- ASLR mapping resolves correctly;
-- module load creates mapping;
-- module unload invalidates later mapping;
-- same module filename + different hash remains mismatch;
-- wrong FAT slice/architecture remains mismatch;
-- anonymous/JIT address remains runtime-only when unresolved;
-- cross-version same VA does not auto-link.
-
-### 18.3 RuntimeEvent tests
-
-- sequence/order preserved where supplied;
+- provider/session identity required;
+- ordering preserved when known;
 - partial ordering not fabricated;
-- batching produces same logical evidence as individual events;
-- overflow emits explicit gap/drop marker;
-- cancelled stream stops ingestion;
-- malformed event is rejected without corrupting session state.
+- event batches equal logical individual stream;
+- overflow generates gap/truncated signal;
+- completeness propagates;
+- stale epoch events ignored;
+- malformed event cannot corrupt session.
 
-### 18.4 Remote protocol tests
+### 19.5 TraceProvider tests
 
-- version negotiation;
-- facet negotiation;
-- unsupported capability;
-- request timeout;
-- cancellation;
-- disconnect/reconnect;
-- oversized message rejection;
-- invalid session rejection;
-- v1 debugger compatibility through shim;
-- async event framing order.
+- deterministic fixture import;
+- replay yields stable normalized evidence;
+- wrong binary remains detached;
+- missing module identity remains unresolved;
+- gaps downgrade completeness;
+- source thread/process/order metadata preserved.
 
-### 18.5 TraceProvider tests
+### 19.6 DebuggerProvider tests
 
-- import deterministic fixture;
-- replay yields stable normalized events/evidence;
-- missing identity remains unresolved;
-- wrong binary does not attach;
-- gaps propagate `partial`/`truncated` completeness;
-- thread/process identity preserved when source supplies it.
-
-### 18.6 DebuggerProvider tests
-
-- attach/detach;
+- launch/attach/detach;
 - pause/resume/step;
 - break/watchpoint lifecycle;
-- thread/register/frame snapshot invalidation;
+- module events;
+- thread/register/frame freshness;
 - memory read;
-- memory write marked as intervention;
-- module load/unload events normalized;
-- target exit/disconnect transitions session state correctly.
+- register/memory write marked intervention;
+- disconnect/target exit transitions.
 
-### 18.7 InstrumentationProvider tests
+### 19.7 InstrumentationProvider tests
 
-- hook/probe observation normalized;
-- hook/replacement marked as intervention;
+- attach/instrument;
+- probe/intercept observation;
+- replacement marked intervention;
 - high-volume batching;
-- backpressure/drop marker;
-- dynamic module events;
-- provider unavailable/permission failure typed correctly.
+- backpressure/gap event;
+- dynamic module/JIT events;
+- permission failure distinct from unsupported.
 
-### 18.8 EmulatorProvider tests
+### 19.8 EmulatorProvider tests
 
-- engine/provider version recorded;
-- config/input identity recorded;
+- provider/engine version captured;
+- config/input captured;
 - deterministic fixture replay;
-- budget termination produces partial result;
-- unsupported operation remains explicit;
-- emulator observation marked synthetic, not real-target observation.
+- budget termination => partial;
+- unsupported semantics explicit;
+- observation mode synthetic.
 
-### 18.9 Static/runtime fusion tests
+### 19.9 Fusion tests
 
-- runtime evidence cannot mutate Semantic IR directly;
-- exact identity attaches evidence to correct entity;
-- mismatched identity stores evidence without static link;
-- runtime contradiction creates contradiction state/edge;
-- user/project static facts are not silently overwritten;
-- corrections preserve immutable evidence history.
+- runtime cannot directly mutate static IR;
+- exact identity links to correct static entity;
+- mismatch stores runtime evidence but no static link;
+- contradiction preserved;
+- intervention lineage preserved;
+- partial evidence cannot produce completeness-dependent confirmation.
 
-### 18.10 Cross-version negative tests
+### 19.10 Cross-version negative corpus
 
-These deserve a dedicated small corpus because they prevent the most dangerous false confidence:
+At minimum:
 
-- build A and build B use same VA for different functions;
-- same filename but different content;
-- same source function moved to a different address;
-- one source function split/merged after optimization;
-- ambiguous top two function matches;
-- trace references module not present in current binary.
+- same VA, different function;
+- same filename, different content;
+- function moved to new address;
+- function split/merged by optimization;
+- top two matches too close;
+- trace references missing module;
+- source/target slice mismatch.
 
-Expected default: unresolved/ambiguous until an explicit match artifact proves enough.
+Default outcome is unresolved/ambiguous until explicit matching evidence is sufficient.
 
 ---
 
-## 19. Exit gates: turn the master architecture into measurable checks
+## 20. Measurable exit gates
 
 ### Gate A — Runtime evidence identity binding
 
 Pass only if:
 
-- every durable runtime evidence item has provider/session identity;
-- static-linked runtime evidence has a validated binary/module/address resolution;
-- mismatched identity never produces a static link;
-- unresolved evidence remains inspectable rather than discarded;
-- module unload/reload cannot accidentally reuse stale mappings.
+- every durable runtime evidence item has provider/session provenance;
+- static-linked runtime evidence has validated binary/module/address resolution;
+- mismatched identity cannot produce a static link;
+- unresolved evidence remains inspectable;
+- unload/reload cannot reuse stale mapping;
+- existing binary/slice filters are not weakened.
 
 ### Gate B — Static/runtime fusion
 
-Pass only if tests prove:
+Pass only if:
 
-- runtime observations do not directly mutate static Semantic IR/SSA/types;
-- support/refinement/contradiction is represented through evidence/claims;
-- intervention lineage is preserved;
-- partial/truncated runtime evidence cannot masquerade as complete proof.
+- runtime observations cannot directly mutate static Semantic IR/SSA/types;
+- support/contradiction/refinement is evidence-based;
+- intervention lineage is visible;
+- partial/truncated observations preserve completeness limits;
+- correlated runtime observations are not double-counted as independent proof.
 
 ### Gate C — Replay/cross-version ambiguity
 
 Pass only if:
 
-- deterministic trace replay reproduces equivalent normalized evidence;
-- wrong binary identity is blocked;
-- same-address/different-build shortcuts are blocked;
-- cross-version attachment requires explicit match evidence;
-- ambiguous cross-version matches remain ambiguous;
-- replay records provider/schema versions and event gaps.
+- deterministic replay reproduces equivalent normalized evidence;
+- wrong binary is blocked;
+- same-address cross-build shortcut is impossible;
+- cross-version static attachment requires explicit match evidence;
+- ambiguous match remains ambiguous;
+- provider/schema versions and gaps are retained.
 
-### Additional compatibility gate
+### Gate D — Compatibility and operational safety
 
-Before removing any legacy path:
+Pass only if:
 
-- existing debugger adapter behavior remains covered;
-- `hex-runtime-remote-v1` supported behavior remains green through compatibility path;
-- current runtime-evidence rejection/identity behavior is not weakened.
+- current DebugAdapter paths still work through migration adapters;
+- v1 protocol safety/compatibility tests remain green;
+- epoch/cancellation/backpressure behavior remains green;
+- high-volume event tests remain bounded;
+- provider failure cannot corrupt static project state.
 
 ---
 
-## 20. Suggested PR breakdown
+## 21. Suggested PR breakdown
 
-Keep each PR small enough that failures are attributable.
-
-| PR | Scope | Must not include |
+| PR | Scope | Avoid mixing in |
 |---|---|---|
-| P10.0 | baseline/contract tests + docs | new real backend |
-| P10.1 | target/module/address identity | debugger feature work |
-| P10.2 | provider registry/facets + compat adapters | protocol rewrite |
-| P10.3 | RuntimeEvent + evidence bridge | real instrumentation backend |
-| P10.4 | remote provider protocol + v1 shim | UI redesign |
-| P10.5 | TraceProvider + replay fixtures | debugger mutation operations |
-| P10.6 | mature DebuggerProvider | instrumentation-specific tracing |
-| P10.7 | InstrumentationProvider | static IR changes |
-| P10.8 | EmulatorProvider interface | mandatory third-party engine dependency |
-| P10.9 | fusion/replay/cross-version/UI-query gates | unrelated architecture cleanup |
+| P10.0 | baseline contract/negative tests | new backend features |
+| P10.1 | target/module/address identity | debugger UI work |
+| P10.2 | provider registry/facets + compatibility adapters | protocol rewrite |
+| P10.3 | normalized RuntimeEvent | concrete Frida integration |
+| P10.4 | evidence bridge/intervention lineage | unrelated static analysis |
+| P10.5 | first-class TraceProvider + replay fixtures | debugger mutation features |
+| P10.6 | provider remote protocol + v1 compatibility | UI redesign |
+| P10.7 | mature DebuggerProvider | instrumentation-only operations |
+| P10.8 | InstrumentationProvider | static IR changes |
+| P10.9 | EmulatorProvider + final fusion/replay gates | broad repository cleanup |
 
-This breakdown is intentionally dependency-shaped. After P10.3, some later PRs can proceed in parallel if they consume frozen contracts.
-
----
-
-## 21. Decisions worth freezing before implementation starts
-
-These choices remove high-cost ambiguity later.
-
-### Decision 1 — Provider is facet composition
-
-**Recommendation:** yes.
-
-One provider/session can expose debugger, instrumentation, emulator, or trace facets as supported. Avoid separate incompatible session systems.
-
-### Decision 2 — Keep remote v1 compatibility and add negotiated provider protocol
-
-**Recommendation:** yes.
-
-Do not silently mutate `hex-runtime-remote-v1` into a different contract.
-
-### Decision 3 — Implement TraceProvider before the first new live provider
-
-**Recommendation:** yes.
-
-It validates identity, event normalization, replay, and fusion with deterministic fixtures and minimal external instability.
-
-### Decision 4 — Runtime address resolution is module-aware, not a global slide integer
-
-**Recommendation:** mandatory.
-
-This is necessary for ASLR, multiple modules, unload/reload, shared caches, JIT, and cross-version safety.
-
-### Decision 5 — Event log is append-oriented and gap-aware
-
-**Recommendation:** yes.
-
-History/evidence should not depend on mutable “current runtime state” objects.
-
-### Decision 6 — Frida is an optional provider/backend boundary
-
-**Recommendation:** yes.
-
-Adopt the instrumentation model and provider contract; do not make a particular engine the only valid implementation.
-
-### Decision 7 — Emulator evidence has distinct observation semantics
-
-**Recommendation:** yes.
-
-Use `synthetic`/experimental evidence metadata so emulator behavior cannot be confused with direct observation from a real device.
-
-### Decision 8 — Cross-version links default to unresolved
-
-**Recommendation:** mandatory.
-
-Only explicit binary/function/entity matching can promote them.
-
-### Decision 9 — No mass path cleanup in Phase 10 foundation PRs
-
-**Recommendation:** yes.
-
-Compatibility facades reduce conflict and make regression bisection much easier.
+This PR sequence is intentionally conservative. If current main advances further before Phase 10 begins, collapse already-completed slices rather than reimplementing them.
 
 ---
 
-## 22. Work that can be prepared before Phase 10 coding begins
+## 22. What to serialize vs parallelize
 
-Doing these early makes the actual Phase 10 implementation substantially faster:
+### Serialize until stable
 
-1. **Create a tiny deterministic runtime fixture corpus.**
-   - one same-binary ASLR trace;
-   - one wrong-binary trace;
-   - one module load/unload trace;
-   - one event-gap trace;
-   - one intervention trace;
-   - one cross-version ambiguous trace.
+Give one owner to:
 
-2. **Freeze the identity vocabulary.**
-   - BinaryId/content hash;
+- module identity schema;
+- address resolution rules;
+- provider/session identity;
+- RuntimeEvent envelope;
+- capability/facet vocabulary;
+- fusion semantics;
+- provider protocol negotiation.
+
+These are high fan-out contracts. Competing parallel edits create expensive churn.
+
+### Parallelize after P10.4
+
+Good independent tracks:
+
+- TraceProvider + fixtures;
+- provider protocol implementation;
+- debugger provider hardening;
+- instrumentation provider;
+- emulator provider;
+- cross-version negative corpus;
+- runtime query/UI projection.
+
+Each track consumes the same frozen identity/event/evidence contracts.
+
+---
+
+## 23. Decisions worth freezing now
+
+### Decision 1 — Provider owns session identity; capabilities are facets
+
+**Recommendation:** yes.
+
+Avoid four incompatible session models.
+
+### Decision 2 — Existing DebugAdapter becomes compatibility surface, not universal final abstraction
+
+**Recommendation:** yes.
+
+It is strong and useful, but instrumentation/trace should not be forced to pretend to be debuggers forever.
+
+### Decision 3 — Keep protocol v1 and negotiate a provider-level extension/new version
+
+**Recommendation:** yes.
+
+Reuse its hardening and preserve compatibility.
+
+### Decision 4 — Module-aware address mapping, not one global slide
+
+**Recommendation:** mandatory.
+
+Needed for multi-module ASLR, unload/reload, shared caches, JIT, and cross-version safety.
+
+### Decision 5 — TraceProvider is the first new first-class facet
+
+**Recommendation:** yes.
+
+Replay already exists; trace-native abstraction is the lowest-risk way to validate provider identity/event/evidence contracts.
+
+### Decision 6 — Frida-compatible is an interface/backend strategy, not mandatory semantic dependency
+
+**Recommendation:** yes.
+
+The current adapter remains useful while first-class instrumentation semantics are introduced.
+
+### Decision 7 — Emulator observations are explicitly synthetic
+
+**Recommendation:** yes.
+
+Do not conflate emulator execution with direct real-device observation.
+
+### Decision 8 — Current cross-version replay gate is a minimum safety floor
+
+**Recommendation:** mandatory.
+
+Generalize it; do not simplify it away.
+
+### Decision 9 — No big-bang runtime rewrite
+
+**Recommendation:** yes.
+
+Current runtime code already contains useful, tested behavior. Extract common contracts incrementally.
+
+---
+
+## 24. Preparation that can happen before Phase 10 coding
+
+1. **Build a deterministic runtime/trace fixture corpus.**
+   - same-binary ASLR;
+   - wrong binary;
+   - wrong slice;
+   - module load/unload;
+   - truncated stream;
+   - intervention;
+   - same-VA cross-version mismatch;
+   - ambiguous re-resolution.
+
+2. **Freeze identity vocabulary.**
+   - binary/content identity;
    - runtime session ID;
    - runtime module ID;
    - build identity;
    - slice identity;
    - runtime/static address resolution state.
 
-3. **Freeze the event envelope.**
-   Backend-specific payload can evolve, but session/provider/sequence/completeness/intervention fields should not churn across every provider PR.
+3. **Freeze normalized event envelope.**
+   Backend payload can evolve; provider/session/order/completeness/intervention fields should not churn.
 
-4. **Freeze protocol error classes.**
-   Do not let every provider invent different strings for unavailable/unsupported/mismatch/cancelled.
+4. **Create a fake provider harness.**
+   Provider/protocol/fusion tests should not require a real device, LLDB, or Frida.
 
-5. **Build a fake provider harness.**
-   Most contract, transport, replay, and evidence tests should not require LLDB/Frida/a real device.
+5. **Inventory existing runtime tests before adding new files.**
+   Reuse current adapter/protocol/session/replay fixtures instead of duplicating them under new names.
 
-6. **Keep real backend selection behind the contract.**
-   Backend research/integration can proceed independently once the common surface is stable.
-
----
-
-## 23. What should be parallelized vs serialized
-
-### Serialize
-
-These should have one owner until their contract is stable:
-
-- target/module identity schema;
-- address resolution rules;
-- RuntimeEvent envelope;
-- provider capability vocabulary;
-- provider protocol version/handshake;
-- static/runtime fusion rules.
-
-Conflicting versions of these create repository-wide churn.
-
-### Parallelize after the foundation freezes
-
-Good independent tracks:
-
-- trace fixture corpus + TraceProvider;
-- v2 remote client/server transport implementation;
-- debugger backend bridge;
-- instrumentation backend bridge;
-- emulator compatibility provider;
-- evidence/replay negative-test corpus;
-- runtime UI/query projection.
-
-Each track should consume the same provider/session/event/identity contracts and avoid editing them casually.
+6. **Keep backend choice behind the contract.**
+   Concrete LLDB/Frida/native-service work can proceed independently once provider boundaries stabilize.
 
 ---
 
-## 24. Common implementation traps
+## 25. Common traps
 
-### Trap 1 — “Debugger adapter already exists, so Phase 10 is mostly backend wiring”
+### Trap 1 — “LLDBCompatibleAdapter exists, so debugger provider is done”
 
-False. The largest unsolved risks are shared identity/event/evidence contracts.
+No. It proves useful capability coverage, not final provider/session/module identity architecture.
 
-### Trap 2 — “ASLR is only one slide”
+### Trap 2 — “FridaCompatibleAdapter exists, so instrumentation provider is done”
 
-False for multi-module, shared-cache, unload/reload, JIT, and transformed images. Resolve through module identity.
+No. Current compatibility is still debugger/trace-capability shaped. First-class instrumentation needs intercept/probe/intervention/event semantics.
 
-### Trap 3 — “Observed at runtime means confirmed globally”
+### Trap 3 — “ReplayAdapter exists, so TraceProvider is unnecessary”
 
-False. One execution path confirms only the scoped observation it actually made.
+No. Imported immutable traces deserve a trace-native facet; they should not need to masquerade as a live debugger.
 
-### Trap 4 — “No event seen means event cannot happen”
+### Trap 4 — “binaryHash is enough for every runtime mapping”
 
-False unless coverage/completeness makes that absence meaningful.
+Not by itself. Multi-module sessions, build identities, slices, JIT, unload/reload, and cross-version mapping need module-level identity.
 
-### Trap 5 — “Imported trace belongs to current binary because addresses look right”
+### Trap 5 — “ASLR is just one slide”
 
-Unsafe. Require identity/re-resolution.
+Unsafe for multi-module/JIT/shared-cache/unload-reload scenarios.
 
-### Trap 6 — “Instrumentation is read-only observation”
+### Trap 6 — “observed at runtime = globally confirmed”
 
-Not always. Hooks/replacements and even probes can perturb behavior. Preserve intervention lineage.
+A runtime run confirms only the observation under its binary/session/input/path/completeness assumptions.
 
-### Trap 7 — “Dropped trace events are just a performance issue”
+### Trap 7 — “not observed = impossible”
 
-No. They change what can be concluded. Emit explicit gaps and downgrade completeness.
+Only if coverage/completeness evidence justifies that conclusion.
 
-### Trap 8 — “Remote backend is trusted because it is privileged”
+### Trap 8 — “dropped events are only a performance issue”
 
-No. Validate schemas, identities, sizes, permissions, and evidence exactly as with other external inputs.
+They change proof strength. The current protocol already signals truncation; preserve it through all layers.
 
-### Trap 9 — “Implement LLDB/Frida first and abstract later”
+### Trap 9 — “remote backend is trusted because it is privileged”
 
-Likely to leak one backend’s lifecycle, IDs, errors, and event model into the core. Build the minimum shared contract first, then prove it with a fake/trace provider.
+Privilege is not truth. Validate all provider data and identity.
 
-### Trap 10 — “Clean up all old runtime paths while adding providers”
+### Trap 10 — “rename/restructure first, then implement”
 
-Avoid. Keep compatibility adapters until the new route is proven and consumers have migrated.
+Avoid. Use compatibility facades and move files only when a functional slice benefits.
 
 ---
 
-## 25. Definition of done for Phase 10
+## 26. Definition of done
 
-Phase 10 is done when all of the following are true, not merely when one debugger can attach:
+Phase 10 is not done merely because a remote debugger can attach.
 
-- [ ] Runtime providers have versioned provider/session identity.
+- [ ] Provider/session identity is versioned and explicit.
 - [ ] Debugger, Instrumentation, Emulator, and Trace are first-class facets of one runtime model.
-- [ ] Runtime module identity and address mapping are explicit and tested.
-- [ ] Runtime events are normalized, ordered as far as evidence permits, bounded, cancellable, and gap-aware.
-- [ ] Runtime evidence can exist without a static mapping.
-- [ ] Static links require validated binary/module/address resolution.
-- [ ] Runtime intervention lineage is preserved.
-- [ ] A negotiated provider remote protocol exists.
-- [ ] Existing debugger remote v1 behavior remains available through compatibility support until deliberately retired.
-- [ ] A deterministic TraceProvider/replay path proves the shared contracts.
-- [ ] A mature DebuggerProvider uses the same contracts.
-- [ ] A Frida-compatible InstrumentationProvider uses the same contracts.
-- [ ] EmulatorProvider is backend-neutral and records reproducibility/configuration evidence.
-- [ ] Static/runtime support/refinement/contradiction is evidence-based, not direct static mutation.
-- [ ] Replay is versioned and preserves gaps/interventions.
-- [ ] Cross-version same-address auto-linking is impossible by default.
-- [ ] Cross-version attachment requires explicit match evidence and ambiguity handling.
-- [ ] Negative identity/replay tests are green.
-- [ ] High-volume event ingestion stays within explicit resource budgets.
-- [ ] Provider/transport failures cannot corrupt static project state.
+- [ ] Existing DebugAdapter/LLDB/Frida/Replay compatibility paths still work during migration.
+- [ ] Runtime module identity and module-aware address resolution exist.
+- [ ] ASLR/multi-module/unload-reload/JIT unresolved cases are represented safely.
+- [ ] Runtime events are normalized, bounded, cancellable, and gap-aware.
+- [ ] Current protocol epoch/cancel/backpressure protections are preserved.
+- [ ] Runtime evidence may remain runtime-only when static mapping is unresolved.
+- [ ] Static links require validated identity.
+- [ ] Intervention lineage is preserved.
+- [ ] TraceProvider has deterministic import/replay fixtures.
+- [ ] Mature DebuggerProvider uses the common provider/session/event model.
+- [ ] First-class InstrumentationProvider uses the same model.
+- [ ] EmulatorProvider is backend-neutral and marks synthetic evidence explicitly.
+- [ ] Runtime observations support/contradict/refine static claims without directly rewriting static truth.
+- [ ] Existing cross-version confidence/ambiguity safety is preserved/generalized.
+- [ ] Same-VA cross-build automatic linking is impossible.
+- [ ] Negative identity/replay corpus is green.
+- [ ] High-volume event ingestion remains inside explicit budgets.
+- [ ] Provider failure/disconnect cannot corrupt static project state.
 
 ---
 
-## 26. Recommended first implementation move when Phase 10 starts
+## 27. Recommended first coding move when Phase 10 starts
 
-Do **not** start by integrating a live debugger.
+Do **not** begin by adding another LLDB or Frida method.
 
-Start with one focused PR that adds:
+The current repository already has substantial LLDB/Frida/replay/runtime functionality. Start with the missing high-leverage foundation:
 
 1. `RuntimeTargetIdentity`;
 2. `RuntimeModuleIdentity`;
-3. module-aware runtime/static address resolution;
-4. explicit mismatch/ambiguous/unresolved states;
-5. deterministic fixtures/tests for ASLR, wrong binary, wrong slice, module unload, and same-address cross-version mismatch.
+3. module load/unload mapping;
+4. module-aware runtime/static address resolution;
+5. explicit exact/resolved/ambiguous/unresolved/mismatch states;
+6. differential tests proving existing binaryHash/slice/replay gates remain at least as strict.
 
-Once that is stable, build the provider registry and event plane on top of it.
+Then layer `RuntimeProvider` and normalized `RuntimeEvent` over the existing adapters.
 
-That sequence makes every later backend—debugger, Frida-compatible instrumentation, emulator, trace import, remote device—simpler and safer because they no longer need to solve identity independently.
+That gives every later backend one identity and evidence model instead of allowing debugger, instrumentation, replay, and emulator paths to diverge.
 
 ---
 
-## 27. Phase 10 mental model
-
-Keep this model during review:
+## 28. Phase 10 review mental model
 
 ```text
-Live/imported backend
-       |
-       v
- RuntimeProvider
-       |
-       v
- RuntimeSession
-       |
-       +--> RuntimeModule identities
-       |
-       v
-  RuntimeEvent stream
-       |
-       v
- identity/address resolution
-       |
-       v
-  RuntimeEvidence
-       |
-       +--> supports static claim
-       +--> contradicts static claim
-       +--> refines static claim
-       +--> remains runtime-only when unresolved
+Existing adapter / live backend / imported trace
+                |
+                v
+          RuntimeProvider
+                |
+                v
+          RuntimeSession
+                |
+                +--> RuntimeModule identities
+                |
+                v
+        normalized RuntimeEvent
+                |
+                v
+      identity/address resolution
+                |
+                v
+          RuntimeEvidence
+                |
+                +--> supports static claim
+                +--> contradicts static claim
+                +--> refines static claim
+                +--> remains runtime-only when unresolved
 
 Never:
-RuntimeProvider -> silently rewrite static truth
+RuntimeProvider -> silently rewrite static semantic truth
 ```
 
-If each implementation PR preserves that boundary, Phase 10 can add powerful live analysis without turning Hex into several incompatible analysis engines.
+If Phase 10 reviews keep that boundary and preserve the strong runtime safety already present on `main`, implementation can move quickly without accumulating a second runtime-specific semantic architecture.
