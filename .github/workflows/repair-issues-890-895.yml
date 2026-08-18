@@ -23,8 +23,10 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Apply exact guarded repair
-        run: python3 tools/repair-issues-890-895.py
+      - name: Apply exact guarded repair and corrected fixtures
+        run: |
+          python3 tools/repair-issues-890-895.py
+          python3 tools/repair-issues-890-895-testfix.py
       - name: Focused regressions
         run: node --test tests/phase6/generic-core/issues-890-895.test.mjs
       - name: Repository verification
@@ -41,7 +43,8 @@ jobs:
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add js tests/phase6/generic-core/issues-890-895.test.mjs userscript/hex.user.js userscript/hex.user.template.js
+          rm -f tools/repair-issues-890-895.py tools/repair-issues-890-895-testfix.py .github/workflows/repair-issues-890-895.yml
+          git add -A
           git diff --cached --check
           git commit -m 'fix: close control and profile correctness issues 890-895'
           git push origin HEAD:fix/issues-890-895-control-profile-20260819
