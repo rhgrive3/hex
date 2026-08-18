@@ -12,10 +12,11 @@ const MAX_SCRIPT_MATCHES = 8;
 const MAX_CONTEXT_CHARS = 2048;
 const MAX_INLINE_SCRIPT_MATCHES = 5;
 const MAX_INLINE_CONTEXT_CHARS = 1024;
-const MAX_INLINE_EXCERPT_CHARS = 12 * 1024;
+const MAX_INLINE_EXCERPT_CHARS = 8 * 1024;
 const SENSITIVE_ATTRIBUTE = /(?:token|auth|session|csrf|nonce|secret|password|credential|cookie)/i;
+const SENSITIVE_INLINE_NEEDLE = /(?:token|auth|session|csrf|nonce|secret|password|credential|cookie|storage)/i;
 const SAFE_HTML_ATTRIBUTE = /^(?:id|class|role|title|name|type|placeholder|href|for|tabindex|disabled|checked|selected|aria-[\w-]+|data-[\w-]+)$/i;
-const SENSITIVE_SCRIPT_ASSIGNMENT = /((?:["']?)[\w$.-]*(?:token|auth|session|csrf|nonce|secret|password|credential|cookie)[\w$.-]*(?:["']?)\s*[:=]\s*)(["'`])([^"'`\r\n]{0,2048})(["'`])/gi;
+const SENSITIVE_SCRIPT_ASSIGNMENT = /((?:["']?)[\w$.-]*(?:token|auth|session|csrf|nonce|secret|password|credential|cookie|storage)[\w$.-]*(?:["']?)\s*[:=]\s*)(["'`])([^"'`\r\n]{0,2048})(["'`])/gi;
 const BEARER_VALUE = /\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/gi;
 
 export class ParentPageInspector {
@@ -89,13 +90,13 @@ export class ParentPageInspector {
     const selected = selectLoadedScript(scripts, args);
     if (!selected) {
       if (typeof this.fetchRef !== 'function') throw inspectorError('fetch-unavailable', 'Page script fetch is unavailable.');
-      throw inspectorError('script-not-loaded', 'Requested script is not a currently loaded page script.');
+      throw inspectorError('script-not-loaded', 'Requested script is not a currently loaded external page script.');
     }
 
-    const needle = args.needle == null ? '' : boundedText(args.needle, 160);
     if (!selected.node?.src) {
+      const needle = literalNeedle(args.needle);
       if (!needle) throw inspectorError('inline-needle-required', 'Inline script inspection requires a literal needle.');
-      if (SENSITIVE_ATTRIBUTE.test(needle)) {
+      if (SENSITIVE_INLINE_NEEDLE.test(needle)) {
         throw inspectorError('inline-sensitive-needle', 'Inline script inspection does not allow sensitive credential/session needles.');
       }
       const contextChars = boundedInteger(args.contextChars, 64, MAX_INLINE_CONTEXT_CHARS, 768);
@@ -127,6 +128,7 @@ export class ParentPageInspector {
       throw inspectorError('script-fetch-failed', `Loaded script fetch failed (${response?.status || 'unknown'}).`);
     }
     const source = String(await response.text());
+    const needle = args.needle == null ? '' : boundedText(args.needle, 160);
     if (needle) {
       const contextChars = boundedInteger(args.contextChars, 64, MAX_CONTEXT_CHARS, 768);
       const maxMatches = boundedInteger(args.maxMatches, 1, MAX_SCRIPT_MATCHES, 5);
@@ -225,6 +227,14 @@ function selectLoadedScript(scripts, args) {
   if (!wanted) return null;
   const index = scripts.findIndex((node) => safeUrl(node?.src)?.href === wanted);
   return index >= 0 ? { node: scripts[index], index } : null;
+}
+
+function literalNeedle(value) {
+  if (value == null) return '';
+  const text = String(value);
+  if (!text) return '';
+  if (text.length > 160) throw new TypeError('Inline script needle must be at most 160 characters.');
+  return text;
 }
 
 function literalExcerpts(source, needle, contextChars, maxMatches) {
