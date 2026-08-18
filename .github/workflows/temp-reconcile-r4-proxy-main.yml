@@ -1,0 +1,60 @@
+name: TEMP Reconcile R4 proxy repair with main
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/r4-proxy-progress-budget
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Merge current main and resolve only canonical generated artifacts
+        shell: bash
+        run: |
+          git fetch origin main
+          set +e
+          git merge --no-commit --no-ff origin/main
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            conflicts="$(git diff --name-only --diff-filter=U)"
+            unexpected="$(printf '%s\n' "$conflicts" | grep -Ev '^(userscript/hex\.user\.template\.js|userscript/release-version\.json)$' || true)"
+            if [ -n "$unexpected" ]; then
+              echo "Unexpected merge conflicts:"
+              printf '%s\n' "$unexpected"
+              exit 1
+            fi
+            git checkout --theirs -- userscript/hex.user.template.js userscript/release-version.json
+            git add userscript/hex.user.template.js userscript/release-version.json
+          fi
+          test -z "$(git diff --name-only --diff-filter=U)"
+      - run: npm ci
+      - name: Verify exact frozen-bridge regression
+        run: node tests/dev-agent/supervisor-progress-budget.mjs
+      - name: Rebuild canonical userscript from reconciled source
+        run: npm run userscript:build
+      - name: Canonical userscript regression
+        run: npm run userscript:test
+      - name: Explicit Round 4 production bootstrap regression
+        run: node tests/dev-agent/round4-production-bootstrap.mjs
+      - name: Commit reconciliation and remove temporary workflow
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git rm .github/workflows/temp-reconcile-r4-proxy-main.yml
+          git add userscript/hex.user.template.js userscript/release-version.json
+          git commit -m "Reconcile R4 Proxy repair with current main"
+          git push origin HEAD:fix/r4-proxy-progress-budget
