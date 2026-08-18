@@ -4,7 +4,7 @@ import { installChatGPTWebBridge } from './chatgpt-bridge.js';
 import { createChatGPTParentRpc } from './chatgpt-parent-rpc.js';
 import { createChatGPTSandboxHost, findChatGPTCspNonce } from './chatgpt-sandbox-host.js';
 import { LEGACY_MODE, SANDBOX_MODE, readTrustedEmbedMode } from './embed-mode.js';
-import { setEmbedProvider } from './embed-bootstrap.js';
+import { DEV_BOOTSTRAP_PARAM, setEmbedProvider, shouldEnableDevBootstrap } from './embed-bootstrap.js';
 import { installProtectedWorkers } from './protected-workers.js';
 import { installUserscriptNetworkBridge } from './network.js';
 import { startParentDevWorkerRuntime } from './dev/parent-worker-runtime.js';
@@ -15,7 +15,6 @@ const PROVIDER_KEY = 'hex.ai.provider';
 const SESSION_CLEANUP_KEY = '__HEX_CHATGPT_EMBED_CLEANUP__';
 const SANDBOX_BOOTSTRAP_TIMEOUT_MS = 60000;
 const SANDBOX_READY_TIMEOUT_MS = 60000;
-const DEV_BOOTSTRAP_PARAM = '__hex_dev_bootstrap';
 
 export async function startChatGPTUserscript(options = {}) {
   const apiOrigin = normalizeApiOrigin(options.apiOrigin || globalThis.__HEX_API_BASE__ || globalThis.__HEX_RUNTIME_ORIGIN__ || location.origin);
@@ -68,7 +67,7 @@ async function startSandbox(options) {
 
   const sourceCommit = normalizeCommit(options.sourceCommit);
   const buildId = normalizeBuildId(options.buildId);
-  const bootstrapEnabled = !!sourceCommit && !!buildId;
+  const bootstrapEnabled = shouldEnableDevBootstrap({ sourceCommit, buildId, locationRef: globalThis.location });
   const virtualUrl = new URL(setEmbedProvider(new URL('/embed/chatgpt', options.apiOrigin).href, globalThis.__HEX_AI_PROVIDER__));
   if (bootstrapEnabled) virtualUrl.searchParams.set(DEV_BOOTSTRAP_PARAM, '1');
   let resolveReady;
