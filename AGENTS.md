@@ -1,3 +1,9 @@
+## Engineering process safety
+
+For any master-phase, component-lane, living-integration, release/cutover, generated-output, ownership/governance, CI, moving-main reconciliation, Dev Supervisor, or iOS/browser automation work, read `docs/ENGINEERING_PROCESS_GUARDRAILS.md` before acting.
+
+Its `MUST` / `MUST NOT` rules are merge-blocking. Do not replace an exact-head, candidate-merge-tree, generated-output, independent-verifier, active-runtime, or target-device requirement with a weaker proxy. A repeated process failure must gain a permanent automated regression where technically possible. A phase is not done until the applicable completion checklist in that document is satisfied.
+
 <!-- graft:start -->
 ## Graft — repo context graph
 
