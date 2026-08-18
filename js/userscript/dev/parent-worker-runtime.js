@@ -3,6 +3,7 @@ import { createTabNode, TAB_NODE_ROLE } from './tab-mesh/tab-node.js';
 import { SingleConversationWorkerCoordinator } from './single-tab/single-conversation-worker-coordinator.js';
 import { WorkerChatController } from './worker-host/worker-chat-controller.js';
 import { ParentPageInspector } from './admin/page-inspector.js';
+import { DomSkillRegistry } from './skills/dom-skill-registry.js';
 
 export async function startParentDevWorkerRuntime(options = {}) {
   const node = createTabNode({ role: TAB_NODE_ROLE.SUPERVISOR, now: options.now });
@@ -19,10 +20,17 @@ export async function startParentDevWorkerRuntime(options = {}) {
       tabNodeId: node.tabNodeId,
       now: options.now,
     });
+    const documentRef = options.document || controller.adapter?.document || globalThis.document;
+    const locationRef = options.location || controller.adapter?.location || globalThis.location;
     const pageInspector = options.pageInspector || new ParentPageInspector({
-      document: options.document || controller.adapter?.document || globalThis.document,
-      location: options.location || controller.adapter?.location || globalThis.location,
+      document: documentRef,
+      location: locationRef,
       fetchRef: options.fetchRef || globalThis.fetch?.bind(globalThis),
+    });
+    const skillRegistry = options.skillRegistry || new DomSkillRegistry({
+      document: documentRef,
+      location: locationRef,
+      now: options.now,
     });
     return Object.freeze({
       role: 'supervisor',
@@ -30,6 +38,7 @@ export async function startParentDevWorkerRuntime(options = {}) {
       enabled: true,
       tabNodeId: node.tabNodeId,
       coordinator,
+      skillRegistry,
       discover: (args) => coordinator.discover(args),
       claim: (args) => coordinator.claim(args),
       createChat: (args) => coordinator.createChat(args),
@@ -44,6 +53,13 @@ export async function startParentDevWorkerRuntime(options = {}) {
       pageSnapshot: (args) => pageInspector.snapshot(args),
       pageScripts: (args) => pageInspector.scripts(args),
       pageScriptSource: (args, requestOptions = {}) => pageInspector.scriptSource(args, requestOptions),
+      skillList: () => skillRegistry.list(),
+      skillDescribe: (args) => skillRegistry.describe(args),
+      skillInstallCandidate: (args) => skillRegistry.installCandidate(args?.manifest ?? args),
+      skillValidateCandidate: (args, requestOptions = {}) => skillRegistry.validateCandidate({ ...args, signal: requestOptions.signal }),
+      skillActivate: (args) => skillRegistry.activate(args),
+      skillRollback: (args) => skillRegistry.rollback(args),
+      skillRun: (args, requestOptions = {}) => skillRegistry.run({ ...args, signal: requestOptions.signal }),
       close() { coordinator.close(); },
     });
   } catch (error) {
@@ -64,6 +80,8 @@ function disabledRuntime({ node, error }) {
     discover: fail, claim: fail, createChat: fail, send: fail, observe: fail,
     followup: fail, nudge: fail, stop: fail, result: fail, release: fail, waitEvent: fail,
     pageSnapshot: fail, pageScripts: fail, pageScriptSource: fail,
+    skillList: fail, skillDescribe: fail, skillInstallCandidate: fail, skillValidateCandidate: fail,
+    skillActivate: fail, skillRollback: fail, skillRun: fail,
     close() {},
   });
 }
