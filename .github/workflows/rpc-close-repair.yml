@@ -4,12 +4,16 @@ on:
   push:
     branches:
       - fix/rpc-close-cancels-remote
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: write
 
 jobs:
   repair-and-verify:
+    if: github.head_ref == 'fix/rpc-close-cancels-remote' || github.ref == 'refs/heads/fix/rpc-close-cancels-remote'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
