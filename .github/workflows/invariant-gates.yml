@@ -7,108 +7,13 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: invariant-gates-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  rpc-close-repair:
-    name: rpc-close-repair
-    if: github.event_name == 'pull_request' && github.head_ref == 'fix/rpc-close-cancels-remote'
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: fix/rpc-close-cancels-remote
-          fetch-depth: 0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - name: Apply minimal fix and regression
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          rpc = Path('js/userscript/dev/parent-rpc.js')
-          text = rpc.read_text()
-          old = """      for (const current of pending.values()) {\n        if (current.timer) clearTimeout(current.timer);\n        current.detach?.();\n        current.reject(rpcError('transport-failure', 'Dev Worker RPC closed.'));\n      }\n"""
-          new = """      for (const [id, current] of pending) {\n        if (current.timer) clearTimeout(current.timer);\n        current.detach?.();\n        post(port, { protocol: DEV_PARENT_RPC_PROTOCOL, kind: 'cancel', id, method: current.method });\n        current.reject(rpcError('transport-failure', 'Dev Worker RPC closed.'));\n      }\n"""
-          if text.count(old) != 1:
-              raise SystemExit('parent-rpc close block did not match exactly once')
-          rpc.write_text(text.replace(old, new))
-
-          test = Path('tests/userscript-dev-worker-runtime.mjs')
-          text = test.read_text()
-          anchor = "client.close(); server.close();\n\nconst protectedSources = [\n"
-          regression = r'''client.close(); server.close();
-
-{
-  const { port1: cancelServerPort, port2: cancelClientPort } = new MessageChannel();
-  let markStarted;
-  let remoteAborted = false;
-  const started = new Promise((resolve) => { markStarted = resolve; });
-  const cancelServer = createDevWorkerParentRpc({
-    port: cancelServerPort,
-    runtime: {
-      async discover(_args, { signal } = {}) {
-        markStarted();
-        await new Promise((resolve) => {
-          signal?.addEventListener?.('abort', () => {
-            remoteAborted = true;
-            resolve();
-          }, { once: true });
-        });
-        return [];
-      },
-    },
-  });
-  const cancelClient = createDevWorkerParentRpcClient({ port: cancelClientPort, timeoutMs: 60000 });
-  const pendingDiscover = cancelClient.discover({});
-  await started;
-  cancelClient.close();
-  await assert.rejects(
-    pendingDiscover,
-    (error) => error?.code === 'transport-failure',
-    'closing the RPC client must reject its local pending request',
-  );
-  for (let i = 0; i < 10 && !remoteAborted; i++) await new Promise((resolve) => setTimeout(resolve, 0));
-  assert.equal(remoteAborted, true, 'closing the RPC client must cancel the remote in-flight operation');
-  cancelServer.close();
-  cancelServerPort.close();
-  cancelClientPort.close();
-}
-
-const protectedSources = [
-'''
-          if text.count(anchor) != 1:
-              raise SystemExit('userscript RPC test anchor did not match exactly once')
-          test.write_text(text.replace(anchor, regression))
-          PY
-      - name: Focused RPC regression
-        run: node tests/userscript-dev-worker-runtime.mjs
-      - name: Protected userscript validation
-        run: npm run userscript:test
-      - name: Full repository validation
-        run: npm run check
-      - name: Commit clean verified repair
-        shell: bash
-        run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git fetch origin main
-          git checkout origin/main -- .github/workflows/invariant-gates.yml
-          git rm .github/workflows/rpc-close-repair.yml
-          git add js/userscript/dev/parent-rpc.js tests/userscript-dev-worker-runtime.mjs userscript/hex.user.template.js userscript/release-version.json .github/workflows/invariant-gates.yml
-          git diff --cached --check
-          git commit -m 'Fix RPC close cancellation propagation'
-          git push origin HEAD:fix/rpc-close-cancels-remote
-
   plan:
     name: check-plan
     runs-on: ubuntu-latest
