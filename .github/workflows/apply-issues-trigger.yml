@@ -1,0 +1,35 @@
+name: Trigger five correctness fixes
+on:
+  pull_request:
+    branches: [main]
+permissions:
+  contents: write
+jobs:
+  apply:
+    if: github.head_ref == 'fix/issues-828-832-860-875-880' && github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/issues-828-832-860-875-880
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Execute guarded workflow body
+        shell: bash
+        run: |
+          python3 -m pip install --quiet pyyaml
+          rm .github/workflows/apply-issues-trigger.yml
+          python3 - <<'PY'
+          import subprocess, yaml
+          from pathlib import Path
+          workflow = yaml.safe_load(Path('.github/workflows/apply-issues-828-832-860-867-880.yml').read_text())
+          steps = workflow['jobs']['apply-and-verify']['steps']
+          for step in steps:
+              script = step.get('run')
+              if not script:
+                  continue
+              print(f"==> {step.get('name', 'run')}", flush=True)
+              subprocess.run(script, shell=True, executable='/bin/bash', check=True)
+          PY
