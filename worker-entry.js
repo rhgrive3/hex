@@ -3,13 +3,13 @@ import worker from './worker.js';
 import { AI_QUOTA, acquireQuotaState, releaseQuotaState } from './js/ai/quota.js';
 import { RUNTIME_BUILD } from './.runtime-build/runtime-secrets.js';
 import { DEPLOYMENT_COMMIT } from './js/userscript/deployment-identity.generated.js';
+import { CHATGPT_ORIGINS, isAllowedRequestOrigin } from './js/userscript/request-origin-policy.js';
 import {
   decodeBase64URL, encodeBase64URL, publicRuntimeManifest,
   signRuntimeSession, validateRuntimeBootstrap, verifyRuntimeSession,
 } from './js/userscript/runtime-security.js';
 
 const QUOTA_STATE_KEY = 'quota';
-const CHATGPT_ORIGINS = new Set(['https://chatgpt.com', 'https://chat.openai.com']);
 const USER_SCRIPT_TEMPLATE = '/userscript/hex.user.template.js';
 const BOOTSTRAP_MAX_BYTES = 16 * 1024;
 const SESSION_TTL_MS = 2 * 60 * 1000;
@@ -72,7 +72,8 @@ export default {
     if (isPrivatePath(url.pathname)) return new Response('Not Found', { status: 404, headers: securityHeaders() });
     if (url.pathname.startsWith('/api/')) {
       const origin = request.headers.get('origin');
-      if (request.method === 'OPTIONS') return apiPreflight(origin);
+      if (request.method === 'OPTIONS') return apiPreflight(origin, url.origin);
+      if (!isAllowedRequestOrigin(origin, url.origin)) return json({ error: 'origin-not-allowed' }, 403);
       return withApiCors(await worker.fetch(request, env, executionCtx), origin);
     }
     return worker.fetch(request, env, executionCtx);
@@ -100,10 +101,10 @@ async function serveChatGPTEmbed(request, env, url) {
 }
 
 async function runtimeBootstrap(request, env, url) {
-  if (request.method === 'OPTIONS') return runtimePreflight(request.headers.get('origin'));
+  if (request.method === 'OPTIONS') return runtimePreflight(request.headers.get('origin'), url.origin);
   if (request.method !== 'POST') return methodNotAllowed('POST, OPTIONS');
   const origin = request.headers.get('origin');
-  if (origin && origin !== url.origin && !CHATGPT_ORIGINS.has(origin)) return json({ error: 'origin-not-allowed' }, 403);
+  if (!isAllowedRequestOrigin(origin, url.origin)) return json({ error: 'origin-not-allowed' }, 403);
   const length = Number(request.headers.get('content-length') || 0);
   if (length > BOOTSTRAP_MAX_BYTES) return json({ error: 'request-too-large' }, 413);
   let input;
@@ -132,7 +133,7 @@ async function protectedRuntime(request, env, url) {
   const origin = request.headers.get('origin');
   if (request.method === 'OPTIONS') return runtimeAssetPreflight(origin, url.origin);
   if (request.method !== 'GET') return methodNotAllowed('GET, OPTIONS');
-  if (origin && origin !== url.origin && !CHATGPT_ORIGINS.has(origin)) return json({ error: 'origin-not-allowed' }, 403);
+  if (!isAllowedRequestOrigin(origin, url.origin)) return json({ error: 'origin-not-allowed' }, 403);
   const buildId = decodeURIComponent(url.pathname.slice('/_runtime/'.length));
   if (buildId !== RUNTIME_BUILD.manifest.buildId) return json({ error: 'wrong-build' }, 403);
   const raw = request.headers.get('authorization') || '';
@@ -169,15 +170,15 @@ function embedDocumentHeaders() { return new Headers({ 'content-security-policy'
 function utf8(value) { return new TextEncoder().encode(String(value)); }
 async function shortHash(value) { const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', utf8(value))); return encodeBase64URL(digest.slice(0, 12)); }
 
-function runtimePreflight(origin) {
-  if (origin && !CHATGPT_ORIGINS.has(origin) && origin !== 'https://ida.rhgrive.workers.dev') return new Response(null, { status: 403 });
-  return new Response(null, { status: 204, headers: { 'access-control-allow-origin': origin || 'https://ida.rhgrive.workers.dev', 'access-control-allow-methods': 'POST, OPTIONS', 'access-control-allow-headers': 'Content-Type', 'access-control-max-age': '600', vary: 'Origin' } });
+function runtimePreflight(origin, workerOrigin) {
+  if (!isAllowedRequestOrigin(origin, workerOrigin)) return new Response(null, { status: 403 });
+  return new Response(null, { status: 204, headers: { 'access-control-allow-origin': origin, 'access-control-allow-methods': 'POST, OPTIONS', 'access-control-allow-headers': 'Content-Type', 'access-control-max-age': '600', vary: 'Origin' } });
 }
 function runtimeAssetPreflight(origin, workerOrigin) {
-  if (origin && origin !== workerOrigin && !CHATGPT_ORIGINS.has(origin)) return new Response(null, { status: 403 });
-  return new Response(null, { status: 204, headers: { 'access-control-allow-origin': origin || workerOrigin, 'access-control-allow-methods': 'GET, OPTIONS', 'access-control-allow-headers': 'Authorization', 'access-control-max-age': '600', vary: 'Origin' } });
+  if (!isAllowedRequestOrigin(origin, workerOrigin)) return new Response(null, { status: 403 });
+  return new Response(null, { status: 204, headers: { 'access-control-allow-origin': origin, 'access-control-allow-methods': 'GET, OPTIONS', 'access-control-allow-headers': 'Authorization', 'access-control-max-age': '600', vary: 'Origin' } });
 }
-function apiPreflight(origin) { if (!CHATGPT_ORIGINS.has(origin)) return new Response(null, { status: 403 }); return new Response(null, { status: 204, headers: { 'access-control-allow-origin': origin, 'access-control-allow-methods': 'POST, OPTIONS', 'access-control-allow-headers': 'Content-Type, X-Hex-Session', 'access-control-max-age': '86400', vary: 'Origin' } }); }
+function apiPreflight(origin, workerOrigin) { if (!isAllowedRequestOrigin(origin, workerOrigin)) return new Response(null, { status: 403 }); return new Response(null, { status: 204, headers: { 'access-control-allow-origin': origin, 'access-control-allow-methods': 'POST, OPTIONS', 'access-control-allow-headers': 'Content-Type, X-Hex-Session', 'access-control-max-age': '86400', vary: 'Origin' } }); }
 function withApiCors(response, origin) { if (!CHATGPT_ORIGINS.has(origin)) return response; const headers = new Headers(response.headers); headers.set('access-control-allow-origin', origin); headers.set('access-control-allow-methods', 'POST, OPTIONS'); headers.set('access-control-allow-headers', 'Content-Type, X-Hex-Session'); headers.set('vary', appendVary(headers.get('vary'), 'Origin')); return new Response(response.body, { status: response.status, statusText: response.statusText, headers }); }
 function appendVary(current, value) { const parts = String(current || '').split(',').map((item) => item.trim()).filter(Boolean); if (!parts.some((item) => item.toLowerCase() === value.toLowerCase())) parts.push(value); return parts.join(', '); }
 function json(body, status = 200, origin = null, extra = {}) { const headers = new Headers({ ...securityHeaders(), 'content-type': 'application/json; charset=utf-8', ...extra }); if (origin && CHATGPT_ORIGINS.has(origin)) { headers.set('access-control-allow-origin', origin); headers.set('vary', 'Origin'); } return new Response(JSON.stringify(body), { status, headers }); }
