@@ -31,4 +31,5 @@ await import('./userscript-deployment-identity.mjs');
 await import('./dev-agent/post-bootstrap-self-improvement-kernel.mjs');
 await import('./dev-agent/dom-skill-system.mjs');
 await import('./dev-agent/multi-worker-tab-pool.mjs');
+await import('./dev-agent/rpc-close-cancellation.mjs');
 console.log('Userscript release-version contract passed');
