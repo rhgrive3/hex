@@ -1,0 +1,40 @@
+name: TEMP Multi-Worker PR Driver
+on:
+  pull_request:
+    branches: [main]
+permissions:
+  contents: write
+jobs:
+  wire:
+    if: ${{ github.head_ref == 'dev-agent/multi-worker-tab-pool' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: dev-agent/multi-worker-tab-pool, fetch-depth: 0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - run: python3 scripts/tmp-multi-worker-wire.py
+      - name: Focused contracts
+        run: |
+          node --check js/userscript/dev/tab-mesh/worker-tab-ticket.js
+          node --check js/userscript/dev/tab-mesh/auth-broadcast-port.js
+          node --check js/userscript/dev/tab-mesh/dedicated-worker-coordinator.js
+          node --check js/userscript/dev/tab-mesh/multi-tab-worker-pool.js
+          node --check js/userscript/dev/tab-mesh/worker-tab-runtime.js
+          node tests/dev-agent/multi-worker-tab-pool.mjs
+      - name: Full userscript regression and canonical build
+        run: npm run userscript:test
+      - name: Commit canonical result and remove temporary drivers
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm .github/workflows/tmp-multi-worker-wire.yml .github/workflows/tmp-multi-worker-pr-driver.yml scripts/tmp-multi-worker-wire.py
+          test ! -e tmp-multi-worker-trigger.txt || git rm tmp-multi-worker-trigger.txt
+          git add js/ai/dev/admin/tool-surface.js js/ai/dev/protocol/dev-supervisor-prompt.js js/userscript/dev/parent-rpc.js js/userscript/dev/parent-worker-runtime.js js/userscript/dev/tab-mesh/worker-tab-ticket.js js/userscript/dev/tab-mesh/auth-broadcast-port.js js/userscript/dev/tab-mesh/dedicated-worker-coordinator.js js/userscript/dev/tab-mesh/multi-tab-worker-pool.js js/userscript/dev/tab-mesh/worker-tab-runtime.js js/userscript/entry.js scripts/build-userscript.mjs tests/dev-agent/multi-worker-tab-pool.mjs tests/userscript-release-version.mjs userscript/hex.user.template.js userscript/release-version.json
+          git diff --cached --check
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git commit -m 'Complete max-six multi-worker Tab Pool [multi-worker-generated]'
+          git push origin HEAD:dev-agent/multi-worker-tab-pool
