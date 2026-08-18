@@ -11,9 +11,11 @@ for (const origin of [null, undefined, '', 'null', 'https://chatgpt.com.evil.exa
 }
 
 const workerEntry = fs.readFileSync(new URL('../worker-entry.js', import.meta.url), 'utf8');
-assert.match(workerEntry, /if \(!isAllowedRequestOrigin\(origin, url\.origin\)\) return json\(\{ error: 'origin-not-allowed' \}, 403\);/);
-assert.match(workerEntry, /apiPreflight\(origin, url\.origin\)/);
+const failClosedChecks = workerEntry.match(/if \(!isAllowedRequestOrigin\(origin, url\.origin\)\) return json\(\{ error: 'origin-not-allowed' \}, 403\);/g) || [];
+assert.equal(failClosedChecks.length, 2, 'bootstrap and protected-runtime fetch must both fail closed');
 assert.match(workerEntry, /runtimePreflight\(request\.headers\.get\('origin'\), url\.origin\)/);
+assert.match(workerEntry, /runtimeAssetPreflight\(origin, url\.origin\)/);
 assert.doesNotMatch(workerEntry, /if \(origin && origin !== url\.origin && !CHATGPT_ORIGINS\.has\(origin\)\)/);
+assert.match(workerEntry, /if \(request\.method === 'OPTIONS'\) return apiPreflight\(origin\);\n      return withApiCors/, 'privileged GM API transport must remain unchanged');
 
 console.log('userscript worker origin policy: ok');
