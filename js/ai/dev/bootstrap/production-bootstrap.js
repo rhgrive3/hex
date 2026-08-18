@@ -1,6 +1,7 @@
 import { DEV_BOOTSTRAP_ROUND4_PROOF_CAPABILITY } from './dev-bootstrap-gate.js';
 import { publishBootstrapDiagnostic } from './bootstrap-diagnostic.js';
 import { readEmbedGeneration } from '../../../userscript/embed-bootstrap.js';
+import { runtimeHostSnapshotFromGlobals, runtimeLocationFromSnapshot } from '../../../userscript/runtime-host-location.js';
 
 const HOST_PROTOCOL = 'hex.dev.bootstrap-host-v1';
 const PARENT_ORIGINS = new Set(['https://chatgpt.com', 'https://chat.openai.com']);
@@ -11,7 +12,8 @@ const PREFLIGHT_PROMPT = `HEX DEV SUPERVISOR PROTOCOL hex-dev-supervisor-v1\n\nR
 export async function runProductionDevBootstrap({ engine, session, bridge = globalThis.__HEX_CHATGPT_BRIDGE__, globalObject = globalThis } = {}) {
   if (!engine?.devBootstrap || !session?.current || !bridge?.request) return status(globalObject, 'skipped', { reason: 'bootstrap-runtime-unavailable' });
   if (!isSandboxChild(globalObject)) return status(globalObject, 'skipped', { reason: 'not-sandbox-child' });
-  if (!isProductionBootstrapEnabled(globalObject.location)) return status(globalObject, 'skipped', { reason: 'production-bootstrap-disabled' });
+  const runtimeLocation = productionRuntimeLocation(globalObject);
+  if (!isProductionBootstrapEnabled(runtimeLocation)) return status(globalObject, 'skipped', { reason: 'production-bootstrap-disabled' });
 
   status(globalObject, 'running', { phase: 'bootstrap' });
   try {
@@ -87,7 +89,7 @@ function requestParentReload(globalObject, handoff) {
 }
 
 function exchangeWithParent(globalObject, requestType, responseType, payload) {
-  const generation = String(readEmbedGeneration(globalObject.location) || '').trim();
+  const generation = String(readEmbedGeneration(productionRuntimeLocation(globalObject)) || '').trim();
   const sandboxToken = String(globalObject.__HEX_EMBED_SANDBOX_TOKEN__ || '').trim().toLowerCase();
   if (!generation || !sandboxToken) return Promise.reject(new Error('Bootstrap sandbox identity is unavailable.'));
   const parent = globalObject.parent;
@@ -136,9 +138,21 @@ function isSandboxChild(globalObject) {
   catch { return false; }
 }
 
+function productionRuntimeLocation(globalObject) {
+  return runtimeLocationFromSnapshot(
+    runtimeHostSnapshotFromGlobals(globalObject),
+    safeRead(globalObject, 'location'),
+    safeRead(globalObject, 'document'),
+  );
+}
+
 function isProductionBootstrapEnabled(locationRef) {
   try { return new URLSearchParams(String(locationRef?.search || '')).get(DEV_BOOTSTRAP_PARAM) === '1'; }
   catch { return false; }
+}
+
+function safeRead(value, key) {
+  try { return value?.[key]; } catch { return null; }
 }
 
 function status(globalObject, state, details = {}) {
