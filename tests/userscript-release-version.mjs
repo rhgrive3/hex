@@ -32,4 +32,5 @@ await import('./userscript-origin-policy.mjs');
 await import('./dev-agent/post-bootstrap-self-improvement-kernel.mjs');
 await import('./dev-agent/dom-skill-system.mjs');
 await import('./dev-agent/iframe-worker-pool.mjs');
+await import('./dev-agent/supervisor-progress-budget.mjs');
 console.log('Userscript release-version contract passed');
