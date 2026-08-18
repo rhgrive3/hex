@@ -1,0 +1,67 @@
+name: One-shot apply unlinked issue repairs
+on:
+  push:
+    branches:
+      - fix/unlinked-issues-a-20260819
+permissions:
+  contents: write
+jobs:
+  apply-and-verify:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/unlinked-issues-a-20260819
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Reconcile current main
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch origin main
+          git rebase origin/main
+      - name: Apply guarded source repairs
+        run: |
+          python3 tools/tmp-unlinked-issues-a.py
+          python3 tools/tmp-unlinked-issues-b.py
+          python3 tools/tmp-unlinked-issues-b2.py
+          python3 tools/tmp-unlinked-issues-c.py
+      - name: Install dependencies
+        run: npm ci
+      - name: Focused regression gates
+        run: |
+          node tests/semantic-v2/issues-786-827-unlinked.test.mjs
+          node tests/semantic-v2/issues-803-833-runtime.test.mjs
+          node tests/semantic-v2/issue-809-fpcr-physical-state.test.mjs
+          node tests/semantic-v2/issues-875-888-riscv.test.mjs
+          node --test tests/phase6/abi/riscv-psabi.test.mjs
+          node tests/ir.mjs
+      - name: Semantic and full repository gates
+        run: |
+          npm run semantic-v2:test
+          npm run check
+      - name: Rebuild canonical userscript output
+        run: npm run userscript:build
+      - name: Validate patch hygiene
+        run: git diff --check
+      - name: Commit canonical implementation
+        shell: bash
+        run: |
+          rm tools/tmp-unlinked-issues-a.py tools/tmp-unlinked-issues-b.py tools/tmp-unlinked-issues-b2.py tools/tmp-unlinked-issues-c.py
+          rm .github/workflows/tmp-apply-unlinked-issues.yml
+          rm -f .github/tmp-unlinked-issues-trigger
+          git add -A
+          git commit -m 'fix: resolve all unlinked correctness issues'
+      - name: Prove generated output is canonical
+        shell: bash
+        run: |
+          npm run userscript:build
+          git diff --exit-code
+      - name: Publish verified target branch
+        run: git push --force-with-lease origin HEAD:fix/unlinked-issues-a-20260819
