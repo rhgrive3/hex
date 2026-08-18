@@ -3,29 +3,7 @@ import { resolveABIPlugin } from '../targets/abi/index.js';
 import { buildSemanticV2CompatibilityPipeline } from '../semantics/compat/index.js';
 import { decompileSemantic } from '../decompiler/semantic.js';
 
-/**
- * Architecture-neutral function-level semantic analysis driver.
- *
- * This is the single shared route from decoded instructions to the decompiler:
- *
- *   decoded instructions
- *     -> architecture MachineEffects lifter
- *     -> Semantic IR
- *     -> CFG -> SSA -> MemorySSA -> alias/dataflow
- *     -> v1 compatibility projection
- *     -> shared decompiler
- *
- * Everything architecture-specific is reached through the ArchitecturePluginV2
- * and ABIPlugin boundaries: `liftExact`, `classifyControlFlow`,
- * `directControlTarget`, `registerFile`, `modes`. This module never inspects a
- * mnemonic, an operand-shape, a register name, or an architecture id to decide
- * behaviour, which is what makes "same middle-end" a checkable property rather
- * than a claim.
- *
- * `SEMANTIC_FUNCTION_ROUTE` is the identity of this route, not of an
- * architecture; x86-64 and RISC-V64 both travel it, and the architecture is
- * reported separately as `architectureId`.
- */
+/** Architecture-neutral function-level semantic analysis driver. */
 export const SEMANTIC_FUNCTION_ROUTE = 'phase5-shadow-v2';
 
 function abortIfRequested(signal) {
@@ -51,12 +29,19 @@ function directTarget(plugin, instruction) {
   } catch { return null; }
 }
 
-/**
- * Convert decoder-proven instruction starts into discovery facts for the shared
- * semantic pipeline. This is architecture-front-end work: generic CFG/SSA never
- * inspect register names or mnemonics.
- */
-export function partitionDecodedFunction(instructions, architecturePlugin) {
+function callNoreturnState(options = {}) {
+  const prototype = options?.callPrototype;
+  if (!prototype || typeof prototype !== 'object') return 'unknown';
+  if (prototype.noreturn === true || prototype.returns === false) return true;
+  if (prototype.noreturn === false || prototype.returns === true) return false;
+  return 'unknown';
+}
+
+function isAuthoritativeNoreturnCall(kind, options = {}) {
+  return kind === 'call' && callNoreturnState(options) === true;
+}
+
+export function partitionDecodedFunction(instructions, architecturePlugin, options = {}) {
   if (!Array.isArray(instructions) || !instructions.length) throw new TypeError('semantic-function-decoded-instructions-required');
   const ordered = instructions.slice().sort((left, right) => addressOf(left) < addressOf(right) ? -1 : addressOf(left) > addressOf(right) ? 1 : 0);
   const byAddress = new Map();
@@ -72,7 +57,9 @@ export function partitionDecodedFunction(instructions, architecturePlugin) {
     const kind = controlKind(architecturePlugin, instruction);
     const target = directTarget(architecturePlugin, instruction);
     if (target != null && byAddress.has(target.toString()) && ['branch','conditional-branch'].includes(kind)) starts.add(target.toString());
-    if (['branch','conditional-branch','return','unknown'].includes(kind) && ordered[index + 1]) starts.add(addressOf(ordered[index + 1]).toString());
+    if ((['branch','conditional-branch','return','unknown'].includes(kind) || isAuthoritativeNoreturnCall(kind, options)) && ordered[index + 1]) {
+      starts.add(addressOf(ordered[index + 1]).toString());
+    }
   }
 
   const blocks = [];
@@ -98,7 +85,7 @@ export function partitionDecodedFunction(instructions, architecturePlugin) {
       if (fallthroughBlock) block.successors.push({ to:fallthroughBlock.key, kind:'conditional-false' });
     } else if (kind === 'branch') {
       if (targetBlock) block.successors.push({ to:targetBlock.key, kind:'branch' });
-    } else if (kind !== 'return' && fallthroughBlock) {
+    } else if (kind !== 'return' && !isAuthoritativeNoreturnCall(kind, options) && fallthroughBlock) {
       block.successors.push({ to:fallthroughBlock.key, kind:'fallthrough' });
     }
   }
@@ -111,33 +98,15 @@ export function semanticAbiAdapter(abiPlugin, options = {}) {
   return Object.freeze({
     id:abiPlugin.id,
     semanticVersion:abiPlugin.semanticVersion,
-    /**
-     * Physical register that carries a returned value of `returnType`, or null
-     * when the ABI does not designate one. Generic decompiler code must ask for
-     * this rather than assume a register name: AArch64's result register `x0`
-     * is RISC-V's hardwired *zero* register, so a hardcoded name is not merely
-     * imprecise, it reads the wrong location.
-     */
     returnRegister({ returnType = null } = {}) {
       const type = String(returnType ?? '').trim();
       if (!type || type.toLowerCase() === 'void') return null;
       let classified = null;
       try {
-        classified = abiPlugin.classifyFunctionReturn({
-          functionPrototype:{ returnType:type, returnsValue:true },
-          returnType:type,
-          returnsValue:true,
-        });
+        classified = abiPlugin.classifyFunctionReturn({ functionPrototype:{ returnType:type, returnsValue:true }, returnType:type, returnsValue:true });
       } catch { classified = null; }
       return classified?.reg ?? null;
     },
-    /**
-     * Ordered physical registers that carry incoming integer arguments. Generic
-     * type recovery must ask the ABI for these: assuming `x0..x7` is an AAPCS64
-     * fact, and on RISC-V those ids are the zero register, the return address,
-     * the stack pointer, and the temporaries, so the assumption does not just
-     * lose arguments, it reports the stack pointer as one.
-     */
     argumentRegisters() {
       let classified = null;
       try { classified = abiPlugin.classifyArguments({}, {}); } catch { classified = null; }
@@ -146,10 +115,6 @@ export function semanticAbiAdapter(abiPlugin, options = {}) {
         .map((entry) => entry.reg);
       return Object.freeze([...new Set(registers)]);
     },
-    /**
-     * Registers whose spill/restore is pure call-frame bookkeeping rather than
-     * program data: the frame pointer and the return address.
-     */
     frameBookkeepingRegisters() {
       const named = [
         unwindRules.framePointer, stackRules.framePointer,
@@ -172,6 +137,7 @@ export function semanticAbiAdapter(abiPlugin, options = {}) {
         returnReg:returned?.reg ?? null,
         returnBits:returned?.bits ?? null,
         returnEvidence:returned == null ? null : `abi-${abiPlugin.id}-return`,
+        noreturn:callNoreturnState(options),
       };
     },
   });
@@ -179,41 +145,24 @@ export function semanticAbiAdapter(abiPlugin, options = {}) {
 
 function legacyProjectionSnapshot(legacy) {
   return {
-    name:legacy.name,
-    functionId:legacy.functionId,
-    startAddress:legacy.startAddress,
-    truncated:legacy.truncated === true,
-    entry:legacy.entry,
+    name:legacy.name, functionId:legacy.functionId, startAddress:legacy.startAddress,
+    truncated:legacy.truncated === true, entry:legacy.entry,
     instructions:(legacy.instructions || []).map((instruction) => ({
-      id:instruction.id,
-      op:instruction.op,
-      sub:instruction.sub ?? null,
-      row:instruction.row,
-      address:instruction.address ?? null,
-      block:instruction.block,
+      id:instruction.id, op:instruction.op, sub:instruction.sub ?? null, row:instruction.row,
+      address:instruction.address ?? null, block:instruction.block,
       semanticNodeId:instruction.semanticNodeId ?? null,
-      sourceInstructionIds:instruction.sourceInstructionIds ?? [],
-      origin:instruction.origin ?? null,
+      sourceInstructionIds:instruction.sourceInstructionIds ?? [], origin:instruction.origin ?? null,
     })),
     blocks:(legacy.blocks || []).map((block) => ({
-      index:block.index,
-      semanticBlockId:block.semanticBlockId,
-      startRow:block.startRow,
-      endRow:block.endRow,
-      succ:block.succ ?? [],
-      successorEdges:block.successorEdges ?? [],
-      pred:block.pred ?? [],
-      isEntry:block.isEntry === true,
-      isExit:block.isExit === true,
-      origin:block.origin ?? null,
+      index:block.index, semanticBlockId:block.semanticBlockId, startRow:block.startRow, endRow:block.endRow,
+      succ:block.succ ?? [], successorEdges:block.successorEdges ?? [], pred:block.pred ?? [],
+      isEntry:block.isEntry === true, isExit:block.isExit === true, origin:block.origin ?? null,
     })),
     origin:legacy.origin,
     compat:{
-      projection:legacy.compat?.projection,
-      version:legacy.compat?.version,
+      projection:legacy.compat?.projection, version:legacy.compat?.version,
       semanticFunctionId:legacy.compat?.semanticFunctionId,
-      scalarSsa:legacy.compat?.scalarSsa === true,
-      memorySsa:legacy.compat?.memorySsa === true,
+      scalarSsa:legacy.compat?.scalarSsa === true, memorySsa:legacy.compat?.memorySsa === true,
       origins:legacy.compat?.origins ?? {},
     },
   };
@@ -221,40 +170,22 @@ function legacyProjectionSnapshot(legacy) {
 
 function pipelineSnapshot(pipeline) {
   return {
-    mode:pipeline.mode,
-    pipelineVersion:pipeline.pipelineVersion,
-    path:pipeline.path,
-    semanticSchemaVersion:pipeline.semanticSchemaVersion,
-    architectureId:pipeline.architectureId,
-    architectureSemanticVersion:pipeline.architectureSemanticVersion,
-    decoderSemanticVersion:pipeline.decoderSemanticVersion,
-    scalarSsaPassVersion:pipeline.scalarSsaPassVersion,
-    memorySsaPassVersion:pipeline.memorySsaPassVersion,
-    binaryId:pipeline.binaryId,
-    sliceId:pipeline.sliceId,
-    functionId:pipeline.functionId,
-    machineEffects:pipeline.machineEffects,
-    semanticIr:pipeline.semanticIr,
-    cfg:pipeline.cfg,
-    ssa:pipeline.ssa,
-    regions:pipeline.regions,
-    memorySsa:pipeline.memorySsa,
-    legacyV1:legacyProjectionSnapshot(pipeline.legacyV1),
+    mode:pipeline.mode, pipelineVersion:pipeline.pipelineVersion, path:pipeline.path,
+    semanticSchemaVersion:pipeline.semanticSchemaVersion, architectureId:pipeline.architectureId,
+    architectureSemanticVersion:pipeline.architectureSemanticVersion, decoderSemanticVersion:pipeline.decoderSemanticVersion,
+    scalarSsaPassVersion:pipeline.scalarSsaPassVersion, memorySsaPassVersion:pipeline.memorySsaPassVersion,
+    binaryId:pipeline.binaryId, sliceId:pipeline.sliceId, functionId:pipeline.functionId,
+    machineEffects:pipeline.machineEffects, semanticIr:pipeline.semanticIr, cfg:pipeline.cfg, ssa:pipeline.ssa,
+    regions:pipeline.regions, memorySsa:pipeline.memorySsa, legacyV1:legacyProjectionSnapshot(pipeline.legacyV1),
     instrumentation:pipeline.instrumentation,
   };
 }
 
 function decompilerSnapshot(result) {
   return {
-    semantic:result.semantic === true,
-    signature:result.signature,
-    summary:result.summary,
-    pseudocode:result.pseudocode,
-    lines:result.lines,
-    evidence:result.evidence,
-    warnings:result.warnings,
-    labels:[...(result.labels || [])],
-    coverage:result.coverage,
+    semantic:result.semantic === true, signature:result.signature, summary:result.summary,
+    pseudocode:result.pseudocode, lines:result.lines, evidence:result.evidence, warnings:result.warnings,
+    labels:[...(result.labels || [])], coverage:result.coverage,
     unknownInstructions:result.ctx?.unknownInstructions ?? 0,
   };
 }
@@ -277,7 +208,7 @@ export function analyzeDecodedSemanticFunction(input = {}, options = {}) {
   const abiPlugin = resolveABIPlugin({ architecture:architectureId, platform:input.platform, abiId:input.abiId });
   if (!abiPlugin?.supported) throw new TypeError('semantic-function-supported-abi-required');
   if (abiPlugin.architectureId !== architectureId) throw new TypeError('semantic-function-abi-architecture-mismatch');
-  const blocks = partitionDecodedFunction(input.instructions, architecturePlugin);
+  const blocks = partitionDecodedFunction(input.instructions, architecturePlugin, { callPrototype:input.callPrototype ?? null });
   const abiAdapter = semanticAbiAdapter(abiPlugin, input);
   let defaultMode = null;
   try { defaultMode = architecturePlugin.modes()?.[0] ?? null; } catch { defaultMode = null; }
@@ -322,14 +253,9 @@ export function analyzeDecodedSemanticFunction(input = {}, options = {}) {
     switches:[],
   };
   const decompiler = decompileSemantic(model, {
-    ir:pipeline.legacyV1,
-    abiAdapter,
-    decoderSemanticVersion:String(input.decoderSemanticVersion),
-    binaryId:String(input.binaryId),
-    sliceId:String(input.sliceId),
-    addr:addressOf(input.instructions[0]),
-    name:model.name,
-    functionPrototype:input.functionPrototype ?? null,
+    ir:pipeline.legacyV1, abiAdapter, decoderSemanticVersion:String(input.decoderSemanticVersion),
+    binaryId:String(input.binaryId), sliceId:String(input.sliceId), addr:addressOf(input.instructions[0]),
+    name:model.name, functionPrototype:input.functionPrototype ?? null,
   });
   if (!decompiler) throw new Error('semantic-function-shared-decompiler-produced-no-result');
   return Object.freeze({
