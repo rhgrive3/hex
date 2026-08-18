@@ -4,7 +4,7 @@ The campaign target is ChatGPT Project automation, reached evidence-first in
 this order (the order the Supervisor prompt carries):
 
 ```
-versioned DOM Skill system -> max-6 multi-Worker Tab Pool -> dynamic task graph -> ChatGPT Project automation
+versioned DOM Skill system -> max-6 multi-Worker iframe Pool -> dynamic task graph -> ChatGPT Project automation
 ```
 
 This file records where the campaign actually stands so it can be resumed from
@@ -46,16 +46,23 @@ identity before trusting it (see "Resume procedure").
 | stage | status | evidence |
 | --- | --- | --- |
 | Versioned DOM Skill system | implemented | `js/userscript/dev/skills/dom-skill-registry.js`, `js/userscript/dev/skills/automation-program.js`, `chatgpt.skill.*` tools, `tests/dev-agent/dom-skill-system.mjs` |
-| Max-6 multi-Worker Tab Pool | implemented, activation constrained | `js/userscript/dev/tab-mesh/multi-tab-worker-pool.js`, `worker.pool.*` tools, `tests/dev-agent/multi-worker-tab-pool.mjs` |
+| Max-6 multi-Worker iframe Pool | implemented, activation constrained | `js/userscript/dev/frame-mesh/iframe-worker-pool.js`, `worker.pool.*` tools, `tests/dev-agent/iframe-worker-pool.mjs` |
 | Dynamic task graph | not started | named only in the Supervisor prompt roadmap; no implementation |
 | ChatGPT Project automation | not started | only `projectUrl` plumbing exists in the Worker pool |
 
-The Worker pool is implemented and unit-tested, but `CLAUDE.md` requires Dev
-Supervisor Worker automation to run in **one** ChatGPT browser tab on
-iOS/iPadOS, with no background Safari Worker tabs. Treat "pool implemented" and
-"pool usable in production on iOS" as separate claims; the second is not
-proven. The Supervisor prompt already states that the active Worker runtime is
-single-tab until a separately verified multi-Worker capability is installed.
+The Worker pool no longer opens browser tabs. Safari on iOS/iPadOS requires a
+human tap for every `GM.openInTab` / `window.open`, so a tab pool could never be
+provisioned from automation. ChatGPT answers with `x-frame-options: SAMEORIGIN`,
+so each Worker is now a same-origin ChatGPT **iframe** inside the single
+Supervisor tab (`js/userscript/dev/frame-mesh/iframe-worker-pool.js`). The
+parent drives each Worker document directly through `ChatGPTDOMAdapter`, so
+there is no popup, no cross-tab transport, and no per-frame userscript boot (the
+loader still skips nested frames).
+
+Treat "pool implemented" and "pool usable in production on iOS" as separate
+claims; the second is still unproven on a real device. The Supervisor prompt
+states that the active Worker runtime is single-tab until a separately verified
+multi-Worker capability is installed.
 
 ## Resume procedure
 

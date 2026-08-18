@@ -18,7 +18,7 @@ export class DedicatedWorkerCoordinator {
     this.unsubscribe = controller.on((event) => this.onEvent(event));
   }
   advertisement() {
-    return Object.freeze({ tabNodeId: this.tabNodeId, role: this.claimed ? 'worker' : 'available', state: this.claimed ? this.controller.observe().state : DEV_WORKER_STATE.AVAILABLE, claimed: !!this.claimed, runId: this.claimed?.runId || null, workerId: this.claimed?.workerId || null, chatgptConversationId: this.controller.workerConversation?.()?.id || null, lastHeartbeat: this.now(), dedicatedTab: true });
+    return Object.freeze({ tabNodeId: this.tabNodeId, role: this.claimed ? 'worker' : 'available', state: this.claimed ? this.controller.observe().state : DEV_WORKER_STATE.AVAILABLE, claimed: !!this.claimed, runId: this.claimed?.runId || null, workerId: this.claimed?.workerId || null, chatgptConversationId: this.controller.workerConversation?.()?.id || null, lastHeartbeat: this.now(), dedicatedFrame: true });
   }
   async discover() { return Object.freeze([this.advertisement()]); }
   async claim({ runId, workerId } = {}) {
