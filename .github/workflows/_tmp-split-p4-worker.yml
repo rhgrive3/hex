@@ -1,0 +1,26 @@
+name: Temporary split P4 worker consumers
+on:
+  pull_request:
+    branches: [main]
+permissions:
+  contents: write
+jobs:
+  split:
+    if: github.head_ref == 'fix/arm64-memory-decoder-814-816'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/arm64-memory-decoder-814-816
+          fetch-depth: 0
+      - name: Restore Phase 4-owned consumer files and self-remove
+        shell: bash
+        run: |
+          git fetch origin main
+          git checkout origin/main -- js/worker-legacy.js tests/worker-classic-harness.mjs
+          git rm .github/workflows/_tmp-split-p4-worker.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add js/worker-legacy.js tests/worker-classic-harness.mjs
+          git commit -m "refactor: split Phase 4 worker consumers into stacked PR"
+          git push origin HEAD:fix/arm64-memory-decoder-814-816
