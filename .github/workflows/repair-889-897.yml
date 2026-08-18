@@ -1,0 +1,47 @@
+name: Repair issues 889 and 897
+
+on:
+  push:
+    branches:
+      - fix/issues-889-897
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    if: ${{ !contains(github.event.head_commit.message, '[repair-889-897-complete]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: fix/issues-889-897
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Apply guarded source repair
+        run: python3 .github/repair-889-897.py
+      - name: Focused regression
+        run: node --test tests/phase6/generic-core/issues-889-897.test.mjs
+      - name: Regenerate userscript
+        run: npm run userscript:build
+      - name: Full repository verification
+        run: npm run check
+      - name: Verify generated output idempotence
+        run: |
+          git diff --exit-code
+          npm run userscript:build
+          git diff --exit-code
+      - name: Commit verified repair
+        run: |
+          rm -f .github/repair-889-897.py .github/workflows/repair-889-897.yml
+          git add -A
+          git diff --cached --check
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git commit -m 'fix: preserve linked-jump and noreturn control semantics [repair-889-897-complete]'
+          git push origin HEAD:fix/issues-889-897
