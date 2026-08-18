@@ -6,11 +6,16 @@ import { liftX86StringEffects } from './string.js';
 import { liftX86AtomicEffects } from './atomic.js';
 import { liftX86FloatingPointEffects } from './fp.js';
 import { liftX86SimdEffects } from './simd.js';
+import { liftX86SimdAndNotEffects } from './simd-and-not.js';
 import { liftX86SystemEffects } from './system.js';
 import { normalizeX86Instruction, X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION } from './common.js';
 
 function liftX86IntegerFamily(instruction, context) {
   return liftX86ImplicitSignExtensionEffects(instruction, context) ?? liftX86IntegerEffects(instruction, context);
+}
+
+function liftX86SimdFamily(instruction, context) {
+  return liftX86SimdAndNotEffects(instruction, context) ?? liftX86SimdEffects(instruction, context);
 }
 
 const FAMILIES = Object.freeze([
@@ -21,7 +26,7 @@ const FAMILIES = Object.freeze([
   Object.freeze({ id:'string', lift:liftX86StringEffects }),
   Object.freeze({ id:'atomic', lift:liftX86AtomicEffects }),
   Object.freeze({ id:'fp', lift:liftX86FloatingPointEffects }),
-  Object.freeze({ id:'simd', lift:liftX86SimdEffects }),
+  Object.freeze({ id:'simd', lift:liftX86SimdFamily }),
   Object.freeze({ id:'system', lift:liftX86SystemEffects }),
 ]);
 
