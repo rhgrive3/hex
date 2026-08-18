@@ -21,12 +21,38 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Run compiler corpus and emit only blocker summary
+      - name: Run compiler corpus and emit focused evidence
         shell: bash
         run: |
           set +e
           node --test --test-concurrency=1 tests/phase5/verification/compiler-corpus-pipeline.test.mjs > /tmp/p5.log 2>&1
           status=$?
           echo '=== P5-6 concise diagnostic ==='
-          grep -E 'P5-6 first blocker:|"totals":|not ok|AssertionError|tests [0-9]+|pass [0-9]+|fail [0-9]+' /tmp/p5.log | tail -20 || true
+          grep -E 'P5-6 first blocker:|not ok|AssertionError|tests [0-9]+|pass [0-9]+|fail [0-9]+' /tmp/p5.log | tail -12 || true
+          echo '=== Focused objdump evidence ==='
+          node --input-type=module <<'NODE'
+          import { buildVerificationCorpus } from './tools/validation/phase5/build-verification-corpus.mjs';
+          const result = buildVerificationCorpus({ outDir:'/tmp/p5-6-focused' });
+          function section(text, symbol) {
+            const lines = text.split('\n');
+            const start = lines.findIndex((line) => line.includes(`<${symbol}>:`));
+            if (start < 0) return [`MISSING:${symbol}`];
+            const out = [];
+            for (let i = start; i < lines.length; i++) {
+              if (i > start && /<[^>]+>:$/.test(lines[i].trim())) break;
+              out.push(lines[i]);
+            }
+            return out;
+          }
+          for (const id of ['sysv-amd64-elf-O0','sysv-amd64-elf-O2','sysv-amd64-elf-Os']) {
+            const fixture = result.fixtures.find((item) => item.id === id);
+            console.log(`--- ${id}:p5_rip_relative_global ---`);
+            console.log(section(fixture.disassembly, 'p5_rip_relative_global').join('\n'));
+            console.log(`--- ${id}:p5_atomic_rmw ---`);
+            console.log(section(fixture.disassembly, 'p5_atomic_rmw').join('\n'));
+          }
+          const pe = result.fixtures.find((item) => item.id === 'microsoft-x64-pe-O0');
+          console.log('--- microsoft-x64-pe-O0:first-symbol-evidence ---');
+          console.log(pe.disassembly.split('\n').filter((line) => /p5_scalar_integer_arithmetic|p5_rip_relative_global|p5_atomic_rmw|<.*>:/.test(line)).slice(0,40).join('\n'));
+          NODE
           exit "$status"
