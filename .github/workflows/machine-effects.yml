@@ -23,7 +23,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Apply semantic compare integration repair and latest RISC-V ABI fixes
+      - name: Apply semantic compare repair, test isolation, and latest RISC-V ABI fixes
         shell: bash
         run: |
           set -euo pipefail
@@ -63,6 +63,17 @@ jobs:
           new = """    // A single machine instruction may contain auxiliary binary nodes used to\n    // form an operand (for example a shifted register) before canonical\n    // add-with-carry computes the flag-producing arithmetic result. When that\n    // canonical intrinsic exists, do not promote the auxiliary binary node into\n    // a second comparison carrier: doing so flattens operand transforms into\n    // bogus legacy compare arguments. Binary nodes remain valid carriers for\n    // instructions that have no canonical add-with-carry producer.\n    const canonicalAddWithCarry = node.kind === 'intrinsic' && node.operator === 'add-with-carry';\n    const auxiliaryBinary = node.kind === 'binary' && sameInstruction(node, addWithCarryInstructionIds);\n    const flagProducingArithmetic = sameInstruction(node, flagWriteInstructionIds)\n      && (canonicalAddWithCarry || (node.kind === 'binary' && !auxiliaryBinary));"""
           assert s.count(old) == 1, 'comparison carrier predicate drifted'
           p.write_text(s.replace(old, new))
+
+          p = Path('tests/semantic-v2/integration-ir-cache-context.test.mjs')
+          s = p.read_text()
+          s = s.replace("  irFor,\n  setSemanticMigrationMode,", "  irFor,\n  getSemanticMigrationMode,\n  setSemanticMigrationMode,")
+          marker = "const model = buildSemanticModel(rows, { startRow:0, endRow:rows.length - 1, rowOfAddress });\n\ntry {"
+          assert marker in s, 'migration-mode isolation fixture drifted'
+          s = s.replace(marker, "const model = buildSemanticModel(rows, { startRow:0, endRow:rows.length - 1, rowOfAddress });\nconst initialMigrationMode = getSemanticMigrationMode();\n\ntry {")
+          old = """} finally {\n  setSemanticMigrationMode(SEMANTIC_V2_MIGRATION_MODES.LEGACY);\n}"""
+          new = """} finally {\n  setSemanticMigrationMode(initialMigrationMode);\n}"""
+          assert s.count(old) == 1, 'migration-mode finally fixture drifted'
+          p.write_text(s.replace(old, new))
           PY
 
           git show 9f2a4ab2b4480552498e26299326e048581a5360:js/targets/abi/riscv-lp64.js > js/targets/abi/riscv-lp64.js
@@ -71,31 +82,22 @@ jobs:
       - name: Build canonical generated userscript for combined source tree
         run: npm run userscript:build
 
-      - name: Diagnose migration mode and verify semantic contracts
+      - name: Verify targeted and aggregate contracts
         shell: bash
         run: |
           set -euo pipefail
-          python3 <<'PY'
-          from pathlib import Path
-          p = Path('tests/semantic-v2/issues-791-797-800-825-ir-soundness.test.mjs')
-          s = p.read_text()
-          s = s.replace('OP, MK, irFor, branchConstraints, valueRange, mustAlias, mayAliasProvenance,', 'OP, MK, irFor, branchConstraints, valueRange, mustAlias, mayAliasProvenance, getSemanticMigrationMode,')
-          marker = '// #797 — branch RHS bitpatterns are interpreted in the comparison domain.'
-          assert marker in s
-          s = s.replace(marker, "console.log('ISSUE857_MIGRATION_MODE=' + getSemanticMigrationMode());\n" + marker)
-          p.write_text(s)
-          PY
           node --test tests/semantic-v2/issues-791-797-800-825-ir-soundness.test.mjs
           node --test tests/phase6/abi/riscv-issues-868-872.test.mjs
           npm run semantic-v2:test
+          npm run check
 
       - name: Commit only verified product changes and restore permanent workflow
         shell: bash
         run: |
           set -euo pipefail
-          git checkout origin/main -- .github/workflows/machine-effects.yml tests/semantic-v2/issues-791-797-800-825-ir-soundness.test.mjs
+          git checkout origin/main -- .github/workflows/machine-effects.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add js/ir.js js/semantics/compat/semantic-ir-v2-to-v1.js js/targets/abi/riscv-lp64.js tests/phase6/abi/riscv-issues-868-872.test.mjs userscript/hex.user.template.js userscript/release-version.json .github/workflows/machine-effects.yml
+          git add js/ir.js js/semantics/compat/semantic-ir-v2-to-v1.js js/targets/abi/riscv-lp64.js tests/phase6/abi/riscv-issues-868-872.test.mjs tests/semantic-v2/integration-ir-cache-context.test.mjs userscript/hex.user.template.js userscript/release-version.json .github/workflows/machine-effects.yml
           git commit -m "Fix semantic compare projection and absorb RISC-V ABI issues"
           git push origin HEAD:integrate/open-issue-fixes-20260819
