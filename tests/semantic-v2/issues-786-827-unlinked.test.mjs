@@ -118,28 +118,32 @@ assert.equal(unsigned64.paths[0].takenBranches[0]?.taken, true);
   assert.equal(same(v.at(0, 'x1'), v.defAt(1, 'x2')), true, 'pair store tracks each element interval');
 }
 
-// #822: legacy flag reconstruction is exact only when the predicate follows from represented data.
+// #822: non-CMP flag writers retain producer/width-aware NZCV semantics;
+// only subtraction-compatible state exposes the old compare projection.
 {
   const { model:m } = model(['adds w8, w0, w1', 'csel w2, w3, w4, hs', 'ret']);
-  const v = buildValues(m);
-  assert.ok(v.defAt(1, 'x2').cmp == null, 'ADDS carry condition must remain unknown in legacy expr');
+  const n = buildValues(m).defAt(1, 'x2');
+  assert.equal(n.predicate?.producer, 'adds');
+  assert.equal(n.predicate?.bits, 32);
+  assert.ok(n.cmp == null, 'ADDS must not masquerade as CMP for carry conditions');
 }
 {
   const { model:m } = model(['adds w8, w0, w1', 'csel w2, w3, w4, eq', 'ret']);
-  const v = buildValues(m);
-  assert.ok(v.defAt(1, 'x2').cmp?.a, 'ADDS EQ is exactly result==0');
+  const n = buildValues(m).defAt(1, 'x2');
+  assert.equal(n.predicate?.producer, 'adds');
+  assert.equal(n.predicate?.semantics, 'aarch64-nzcv-exact');
 }
 {
   const { model:m } = model(['bics w8, w0, w1', 'csel w2, w3, w4, eq', 'ret']);
-  const v = buildValues(m);
-  const result = v.defAt(1, 'x2').cmp?.a;
-  assert.equal(result?.op, 'and');
-  assert.equal(result?.b?.op, 'not', 'BICS flags come from A & ~B');
+  const n = buildValues(m).defAt(1, 'x2');
+  assert.equal(n.predicate?.producer, 'bics');
+  assert.ok(n.cmp == null, 'BICS must keep its A & ~B NZCV producer instead of a false compare');
 }
 {
   const { model:m } = model(['subs w8, w0, w1', 'csel w2, w3, w4, hs', 'ret']);
-  const v = buildValues(m);
-  assert.ok(v.defAt(1, 'x2').cmp?.a, 'SUBS retains exact compare semantics');
+  const n = buildValues(m).defAt(1, 'x2');
+  assert.ok(n.cmp?.a, 'SUBS retains the safe compare-compatible projection');
+  assert.equal(n.predicate?.producer, 'subs');
 }
 
 // #827: all restored stack locations use the total SP-relative coordinate.
