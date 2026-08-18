@@ -10,6 +10,7 @@ import { installUserscriptNetworkBridge } from './network.js';
 import { startParentDevWorkerRuntime } from './dev/parent-worker-runtime.js';
 import { createDevWorkerParentRpc } from './dev/parent-rpc.js';
 import { installDevBootstrapHost } from './dev/bootstrap-host.js';
+import { isDedicatedWorkerTab, startDedicatedWorkerTabRuntime } from './dev/tab-mesh/worker-tab-runtime.js';
 
 const PROVIDER_KEY = 'hex.ai.provider';
 const SESSION_CLEANUP_KEY = '__HEX_CHATGPT_EMBED_CLEANUP__';
@@ -20,6 +21,15 @@ const DEV_BOOTSTRAP_PARAM = '__hex_dev_bootstrap';
 export async function startChatGPTUserscript(options = {}) {
   const apiOrigin = normalizeApiOrigin(options.apiOrigin || globalThis.__HEX_API_BASE__ || globalThis.__HEX_RUNTIME_ORIGIN__ || location.origin);
   globalThis.__HEX_API_BASE__ = apiOrigin;
+
+  if (isDedicatedWorkerTab(options.runtimeLocation || globalThis.location)) {
+    return startDedicatedWorkerTabRuntime({
+      location: options.runtimeLocation || globalThis.location,
+      document: globalThis.document,
+      history: globalThis.history,
+      BroadcastChannelRef: globalThis.BroadcastChannel,
+    });
+  }
 
   cleanupPreviousSession();
 

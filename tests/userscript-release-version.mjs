@@ -30,4 +30,5 @@ assert.ok(template.includes(releaseState.buildId), 'committed userscript loader 
 await import('./userscript-deployment-identity.mjs');
 await import('./dev-agent/post-bootstrap-self-improvement-kernel.mjs');
 await import('./dev-agent/dom-skill-system.mjs');
+await import('./dev-agent/multi-worker-tab-pool.mjs');
 console.log('Userscript release-version contract passed');

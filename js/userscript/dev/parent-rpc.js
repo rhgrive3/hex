@@ -21,6 +21,17 @@ export const DEV_PARENT_RPC_METHODS = Object.freeze([
   'dev.skill.activate',
   'dev.skill.rollback',
   'dev.skill.run',
+  'dev.worker_pool.status',
+  'dev.worker_pool.provision',
+  'dev.worker_pool.claim',
+  'dev.worker_pool.create_chat',
+  'dev.worker_pool.start',
+  'dev.worker_pool.observe',
+  'dev.worker_pool.result',
+  'dev.worker_pool.followup',
+  'dev.worker_pool.nudge',
+  'dev.worker_pool.stop',
+  'dev.worker_pool.release',
 ]);
 
 const METHODS = new Set(DEV_PARENT_RPC_METHODS);
@@ -194,6 +205,17 @@ export function createDevWorkerParentRpcClient({ port, timeoutMs = 60000 } = {})
     skillActivate: (args = {}, opts = {}) => call('dev.skill.activate', args, opts),
     skillRollback: (args = {}, opts = {}) => call('dev.skill.rollback', args, opts),
     skillRun: (args = {}, opts = {}) => call('dev.skill.run', args, opts),
+    poolStatus: (args = {}, opts = {}) => call('dev.worker_pool.status', args, opts),
+    poolProvision: (args = {}, opts = {}) => call('dev.worker_pool.provision', args, opts),
+    poolClaim: (args = {}, opts = {}) => call('dev.worker_pool.claim', args, opts),
+    poolCreateChat: (args = {}, opts = {}) => call('dev.worker_pool.create_chat', args, opts),
+    poolStart: (args = {}, opts = {}) => call('dev.worker_pool.start', args, opts),
+    poolObserve: (args = {}, opts = {}) => call('dev.worker_pool.observe', args, opts),
+    poolResult: (args = {}, opts = {}) => call('dev.worker_pool.result', args, opts),
+    poolFollowup: (args = {}, opts = {}) => call('dev.worker_pool.followup', args, opts),
+    poolNudge: (args = {}, opts = {}) => call('dev.worker_pool.nudge', args, opts),
+    poolStop: (args = {}, opts = {}) => call('dev.worker_pool.stop', args, opts),
+    poolRelease: (args = {}, opts = {}) => call('dev.worker_pool.release', args, opts),
     close() {
       if (closed) return;
       closed = true;
@@ -231,6 +253,17 @@ async function dispatch(runtime, method, params, signal) {
   if (method === 'dev.skill.activate') return runtime.skillActivate(params, options);
   if (method === 'dev.skill.rollback') return runtime.skillRollback(params, options);
   if (method === 'dev.skill.run') return runtime.skillRun(params, options);
+  if (method === 'dev.worker_pool.status') return runtime.poolStatus(params, options);
+  if (method === 'dev.worker_pool.provision') return runtime.poolProvision(params, options);
+  if (method === 'dev.worker_pool.claim') return runtime.poolClaim(params, options);
+  if (method === 'dev.worker_pool.create_chat') return runtime.poolCreateChat(params, options);
+  if (method === 'dev.worker_pool.start') return runtime.poolStart(params, options);
+  if (method === 'dev.worker_pool.observe') return runtime.poolObserve(params, options);
+  if (method === 'dev.worker_pool.result') return runtime.poolResult(params, options);
+  if (method === 'dev.worker_pool.followup') return runtime.poolFollowup(params, options);
+  if (method === 'dev.worker_pool.nudge') return runtime.poolNudge(params, options);
+  if (method === 'dev.worker_pool.stop') return runtime.poolStop(params, options);
+  if (method === 'dev.worker_pool.release') return runtime.poolRelease(params, options);
   throw rpcError('transport-failure', 'Unknown Dev parent RPC method.');
 }
 

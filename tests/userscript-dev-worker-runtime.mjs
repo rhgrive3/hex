@@ -91,7 +91,7 @@ assert.equal(released.claimed, false);
 const runtimeController = new FakeController();
 const runtime = await startParentDevWorkerRuntime({ controller: runtimeController, now: () => '2026-08-17T00:00:00.000Z' });
 assert.equal(runtime.role, 'supervisor');
-assert.equal(runtime.mode, 'single-tab-conversation-worker');
+assert.equal(runtime.mode, 'multi-tab-capable');
 assert.equal(runtime.enabled, true);
 assert.equal((await runtime.discover()).length, 1);
 runtime.close();
@@ -116,7 +116,7 @@ const protectedSources = [
 ].map((path) => fs.readFileSync(new URL(`../${path}`, import.meta.url), 'utf8')).join('\n');
 assert.doesNotMatch(protectedSources, /querySelector|querySelectorAll|\.click\(|document\./, 'opaque Dev logic must not directly operate ChatGPT DOM');
 const parentRuntimeSource = fs.readFileSync(new URL('../js/userscript/dev/parent-worker-runtime.js', import.meta.url), 'utf8');
-assert.doesNotMatch(parentRuntimeSource, /BroadcastChannel|hex-worker=1|isManualWorkerTab/, 'active Round 2 runtime must not require another Safari tab');
+assert.match(parentRuntimeSource, /MultiTabWorkerPool/, 'post-bootstrap parent runtime must expose the bounded multi-tab pool while retaining the single-tab compatibility lane');
 assert.equal(fs.existsSync(new URL('../js/userscript/dev/tab-mesh/transport.js', import.meta.url)), false, 'obsolete cross-tab transport removed');
 
 coordinator.close();
