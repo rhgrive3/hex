@@ -5,14 +5,16 @@ on:
     branches: [fix/swift-vtable-instance-flag]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   validate:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: fix/swift-vtable-instance-flag
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -23,3 +25,13 @@ jobs:
         run: npm run decompiler:test
       - name: Full repository check
         run: npm run check
+      - name: Generate canonical userscript
+        run: npm run userscript:build
+      - name: Commit canonical generated artifacts
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add userscript/hex.user.template.js userscript/release-version.json
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "Regenerate userscript for Swift vtable flag fix"
+          git push origin HEAD:fix/swift-vtable-instance-flag
