@@ -23,17 +23,12 @@ jobs:
         with:
           ref: integrate/open-issue-fixes-20260819
           fetch-depth: 0
-
-      - name: Set up Node
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Apply exact compare-width repair and verify
+      - run: npm ci
+      - name: Diagnose exact compare-width repair
         shell: bash
         run: |
           set -euo pipefail
@@ -41,39 +36,16 @@ jobs:
           from pathlib import Path
           p = Path('js/ir.js')
           s = p.read_text()
-          old = """  const rhs = shiftedConst(cmp.args[1], cmp.args[0].value.bits || 64);\n  if (rhs == null) return null;\n  return { lhs: cmp.args[0].value, rhs, cond: branch.cond || null, cmp };"""
-          new = """  const bits = Number(cmp.extra?.bits || cmp.args[0].bits || cmp.args[1].bits || cmp.args[0].value.bits || 64);\n  const rhs = shiftedConst(cmp.args[1], bits);\n  if (rhs == null) return null;\n  return { lhs: cmp.args[0].value, rhs, bits, cond: branch.cond || null, cmp };"""
-          assert s.count(old) == 1, 'comparisonOfBranch source drifted'
-          s = s.replace(old, new)
-
-          old = """function constrainedRange(value, op, constant, signed) {\n  const bits = value && value.bits || 64;\n  const rhs = normalizeIntegerValue(constant, bits, signed);\n  const bounds = typeBounds(bits, signed);"""
-          new = """function constrainedRange(value, op, constant, signed, bitsOverride = null) {\n  const bits = Number(bitsOverride || (value && value.bits) || 64);\n  const rhs = normalizeIntegerValue(constant, bits, signed);\n  const bounds = typeBounds(bits, signed);"""
-          assert s.count(old) == 1, 'constrainedRange source drifted'
-          s = s.replace(old, new)
-
-          old = """  const existing = valueRange(value);\n  if (existing) { if (existing.min > min) min = existing.min; if (existing.max < max) max = existing.max; }"""
-          new = """  const existing = normalizeRangeDomain(valueRange(value), bits, signed);\n  if (existing) { if (existing.min > min) min = existing.min; if (existing.max < max) max = existing.max; }"""
-          assert s.count(old) == 1, 'existing-range intersection source drifted'
-          s = s.replace(old, new)
-
-          old = """  const rhs = normalizeIntegerValue(c.rhs, c.lhs.bits || 64, signedForBounds);\n  const range = constrainedRange(c.lhs, relation, rhs, signedForBounds);"""
-          new = """  const bits = Number(c.bits || c.lhs.bits || 64);\n  const rhs = normalizeIntegerValue(c.rhs, bits, signedForBounds);\n  const range = constrainedRange(c.lhs, relation, rhs, signedForBounds, bits);"""
-          assert s.count(old) == 1, 'rangeOnBranch source drifted'
-          s = s.replace(old, new)
+          s = s.replace("  const rhs = shiftedConst(cmp.args[1], cmp.args[0].value.bits || 64);\n  if (rhs == null) return null;\n  return { lhs: cmp.args[0].value, rhs, cond: branch.cond || null, cmp };", "  const bits = Number(cmp.extra?.bits || cmp.args[0].bits || cmp.args[1].bits || cmp.args[0].value.bits || 64);\n  const rhs = shiftedConst(cmp.args[1], bits);\n  if (rhs == null) return null;\n  return { lhs: cmp.args[0].value, rhs, bits, cond: branch.cond || null, cmp };")
+          s = s.replace("function constrainedRange(value, op, constant, signed) {\n  const bits = value && value.bits || 64;\n  const rhs = normalizeIntegerValue(constant, bits, signed);\n  const bounds = typeBounds(bits, signed);", "function constrainedRange(value, op, constant, signed, bitsOverride = null) {\n  const bits = Number(bitsOverride || (value && value.bits) || 64);\n  const rhs = normalizeIntegerValue(constant, bits, signed);\n  const bounds = typeBounds(bits, signed);")
+          s = s.replace("  const existing = valueRange(value);\n  if (existing) { if (existing.min > min) min = existing.min; if (existing.max < max) max = existing.max; }", "  const existing = normalizeRangeDomain(valueRange(value), bits, signed);\n  if (existing) { if (existing.min > min) min = existing.min; if (existing.max < max) max = existing.max; }")
+          s = s.replace("  const rhs = normalizeIntegerValue(c.rhs, c.lhs.bits || 64, signedForBounds);\n  const range = constrainedRange(c.lhs, relation, rhs, signedForBounds);", "  const bits = Number(c.bits || c.lhs.bits || 64);\n  const rhs = normalizeIntegerValue(c.rhs, bits, signedForBounds);\n  const range = constrainedRange(c.lhs, relation, rhs, signedForBounds, bits);")
           p.write_text(s)
+
+          t = Path('tests/semantic-v2/issues-791-797-800-825-ir-soundness.test.mjs')
+          q = t.read_text()
+          needle = "  const fact = firstBranchFact(build(lines, `825-${tag}`));"
+          assert needle in q
+          t.write_text(q.replace(needle, "  console.log('DEBUG825', tag);\n" + needle))
           PY
-
           node --test tests/semantic-v2/issues-791-797-800-825-ir-soundness.test.mjs
-          npm run semantic-v2:test
-          npm run userscript:build
-
-      - name: Commit verified repair and restore workflow
-        shell: bash
-        run: |
-          set -euo pipefail
-          git checkout origin/main -- .github/workflows/machine-effects.yml
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add js/ir.js userscript/hex.user.template.js userscript/release-version.json .github/workflows/machine-effects.yml
-          git commit -m "Fix compare-domain width after SSA canonicalization"
-          git push origin HEAD:integrate/open-issue-fixes-20260819
