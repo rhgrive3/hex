@@ -67,16 +67,13 @@ export function liftRiscv64ControlEffects(decoded, context = {}) {
       conditionSource: 'direct-register-comparison',
     });
     const target = address + BigInt(fields.imm);
-    if (target === next) {
-      // A branch whose taken target is the fallthrough is architecturally still
-      // a conditional branch, but it has one successor. Report it honestly
-      // rather than inventing a second edge.
-      return ctx.finish({
-        controlEffect: { kind: 'branch', target: addressRef(target), condition },
-        family: 'control',
-        metadata: { operation: op, degenerateConditional: true, flagsRegisterUsed: false },
-      });
-    }
+
+    // A same-target branch still performs a syntactic conditional operation.
+    // RVWMO control dependencies are defined from that syntactic dependency,
+    // not from the number of unique CFG successors.  Keep the generic
+    // conditional-branch contract (and therefore the condition input/provenance)
+    // even when target === fallthrough; the CFG layer may deduplicate the two
+    // addresses independently.
     return ctx.finish({
       controlEffect: {
         kind: 'conditional-branch',
@@ -84,9 +81,15 @@ export function liftRiscv64ControlEffects(decoded, context = {}) {
         fallthrough: addressRef(next),
         condition,
       },
-      possibleFaults: [targetAlignmentFault()],
+      possibleFaults: target === next ? [] : [targetAlignmentFault()],
       family: 'control',
-      metadata: { operation: op, predicate, flagsRegisterUsed: false, conditionKind: 'direct-register-comparison' },
+      metadata: {
+        operation: op,
+        predicate,
+        flagsRegisterUsed: false,
+        conditionKind: 'direct-register-comparison',
+        ...(target === next ? { degenerateConditional: true } : {}),
+      },
     });
   }
 
