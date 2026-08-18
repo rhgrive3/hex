@@ -57,6 +57,7 @@ async function testProductionClaimDoesNotSurviveRpcClose() {
     currentConversation() { return claimReady ? supervisor : null; },
     currentUserAnchors() { return [{ id: 'turn-supervisor', text: 'supervisor' }]; },
     observe() { return { state: 'available' }; },
+    isActive() { return false; },
   };
   const runtime = await startParentDevWorkerRuntime({
     controller,
