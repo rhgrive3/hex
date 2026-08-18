@@ -1,0 +1,123 @@
+name: Phase 5 P5-I rolling vertical gate
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phase5-p5i-rolling-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  canonical-generated:
+    name: p5-i-generated-idempotence
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Canonical build twice
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run userscript:build
+          cp userscript/hex.user.template.js /tmp/hex.user.template.js
+          cp userscript/release-version.json /tmp/release-version.json
+          npm run userscript:build
+          cmp /tmp/hex.user.template.js userscript/hex.user.template.js
+          cmp /tmp/release-version.json userscript/release-version.json
+      - name: Require committed generated synchronization
+        run: git diff --exit-code -- userscript/hex.user.template.js userscript/release-version.json
+
+  canonical-gates:
+    name: p5-i-${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        include:
+          - name: userscript
+            command: npm run userscript:test
+          - name: effects
+            command: npm run effects:test
+          - name: phase5
+            command: npm run phase5:test
+          - name: semantic-v2
+            command: npm run semantic-v2:test
+          - name: phase4
+            command: npm run phase4:test
+          - name: semantic
+            command: npm run semantic:test
+          - name: decompiler
+            command: npm run decompiler:test
+          - name: platform
+            command: npm run platform:test
+          - name: ui
+            command: npm run ui:test
+          - name: runtime
+            command: npm run runtime:test
+          - name: lint
+            command: npm run lint
+          - name: check
+            command: npm run check
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: ${{ matrix.command }}
+
+  owned-seams:
+    name: p5-i-owned-seams
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: P5-1 integer/control
+        run: node --test --test-concurrency=1 tests/phase5/effects/int-control/*.test.mjs
+      - name: P5-2 memory/string/atomic
+        run: node --test --test-concurrency=1 tests/phase5/effects/memory/*.test.mjs
+      - name: P5-3 FP/SIMD/system
+        run: node --test --test-concurrency=1 tests/phase5/effects/fp-simd/*.test.mjs
+      - name: P5-4 ABI
+        run: node --test --test-concurrency=1 tests/phase5/abi/*.test.mjs
+      - name: P5-5 viewer
+        run: node --test --test-concurrency=1 tests/phase5/viewer/*.test.mjs
+      - name: P5-I cross-lane integration seams
+        run: node --test --test-concurrency=1 tests/phase5/integration/*.test.mjs
+      - name: SysV AMD64 and Microsoft x64 production-adjacent vertical routes
+        run: node --test --test-concurrency=1 tests/phase5/vertical/backend-shadow-route.test.mjs
+
+  aggregate:
+    name: p5-i-rolling-gate
+    if: always()
+    needs: [canonical-generated, canonical-gates, owned-seams]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every rolling gate shard
+        env:
+          GENERATED: ${{ needs.canonical-generated.result }}
+          CANONICAL: ${{ needs.canonical-gates.result }}
+          SEAMS: ${{ needs.owned-seams.result }}
+        run: |
+          set -euo pipefail
+          test "$GENERATED" = success
+          test "$CANONICAL" = success
+          test "$SEAMS" = success
