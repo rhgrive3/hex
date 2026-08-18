@@ -20,11 +20,6 @@ replace(path,
 "  if (method === 'dev.admin.page_script_source') return runtime.pageScriptSource(params, options);\n  throw rpcError('transport-failure', 'Unknown Dev parent RPC method.');",
 "  if (method === 'dev.admin.page_script_source') return runtime.pageScriptSource(params, options);\n  if (method === 'dev.skill.list') return runtime.skillList(params, options);\n  if (method === 'dev.skill.describe') return runtime.skillDescribe(params, options);\n  if (method === 'dev.skill.install_candidate') return runtime.skillInstallCandidate(params, options);\n  if (method === 'dev.skill.validate_candidate') return runtime.skillValidateCandidate(params, options);\n  if (method === 'dev.skill.activate') return runtime.skillActivate(params, options);\n  if (method === 'dev.skill.rollback') return runtime.skillRollback(params, options);\n  if (method === 'dev.skill.run') return runtime.skillRun(params, options);\n  throw rpcError('transport-failure', 'Unknown Dev parent RPC method.');")
 
-path = 'js/userscript/embed-child.js'
-replace(path,
-"      pageSnapshot: fail,\n      pageScripts: fail,\n      pageScriptSource: fail,\n      close() {},",
-"      pageSnapshot: fail,\n      pageScripts: fail,\n      pageScriptSource: fail,\n      skillList: fail,\n      skillDescribe: fail,\n      skillInstallCandidate: fail,\n      skillValidateCandidate: fail,\n      skillActivate: fail,\n      skillRollback: fail,\n      skillRun: fail,\n      close() {},")
-
 path = 'js/ai/dev/protocol/dev-supervisor-prompt.js'
 replace(path,
 "    'Use chatgpt.page.snapshot / page.scripts / page.script_source when available to inspect the current real ChatGPT UI before encoding or repairing DOM assumptions.',",
