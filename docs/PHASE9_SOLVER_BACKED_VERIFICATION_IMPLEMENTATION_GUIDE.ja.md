@@ -5,18 +5,21 @@
 > **Source of truth:** 実装時点の `main` + `HEX_MASTER_ARCHITECTURE.md` + accepted ADR + regression tests  
 > **Planning baseline:** `e90c5107f9c77d73687ee452d5042dcbe9e79ece`  
 > **Primary product constraint:** Browser / iPad-first, evidence-first, conservative, cancellable  
-> **Primary implementation principle:** 現行 bounded symbolic executor を壊さず、solver-neutral verification stack を横に追加する
+> **Primary implementation principle:** 現行 bounded symbolic executor を壊さず、solver-neutral verification stack を横に追加する  
+> **Review hardening:** 3-pass review 済み。特に false-proof、不要な直列化、exit-gate の抜けを優先して補強した。
 
 ---
 
-## 0. この文書の目的
+# 0. この文書の目的
 
-Phase 9 で最も危険なのは、「SMT solver をつなげば symbolic execution が完成する」と考えて実装を始めることです。
+Phase 9 で最も危険なのは「SMT solver を接続したから symbolic verification ができた」と扱うことです。
 
-Hex に必要なのは solver そのものではなく、次の **検証ループ** です。
+Hex に必要なのは solver そのものではなく、次の検証境界です。
 
 ```text
 Targeted verification question
+        ↓
+explicit scope / preconditions / completeness
         ↓
 Semantic IR / SSA / MemorySSA slice
         ↓
@@ -24,87 +27,92 @@ solver-neutral expression DAG
         ↓
 SolverBackend
         ↓
-SAT / UNSAT / UNKNOWN + model/reason
+SAT / UNSAT / UNKNOWN / typed failure
+        ↓
+result validation
         ↓
 SymbolicEvidence
         ↓
 caller / UI / AI
 ```
 
-Phase 9 の目的は、このループを **狭い問いに対して再現可能・保守的・証拠付きで成立させること** です。
-
 Phase 9 は whole-binary symbolic executor を作るフェーズではありません。
+
+狭い問いについて、**何を仮定し、どの範囲をモデル化し、何が証明され、何が証明されていないか**を再現可能な形で返すフェーズです。
 
 ---
 
 # 1. Phase 9 の契約
 
-Master Architecture が Phase 9 に要求している deliverable は次の4点です。
+Master Architecture が要求する deliverable:
 
 1. solver-neutral DAG
 2. 最初の `SolverBackend`
 3. targeted symbolic APIs
 4. patch / branch / equivalence verification
 
-Exit gate は次です。
+Master exit gate:
 
-- solver test が deterministic / replayable である
+- solver test が deterministic / replayable
 - time / state / memory budget が厳格に効く
-- unsupported semantics が explicit のままである
+- unsupported semantics が explicit
 
-この文書では、これを実装可能な work units に分解します。
+このガイドではさらに、false-proof を防ぐため次を Phase 9 必須条件にします。
+
+- proof eligibility が機械的に判定できる
+- edge feasibility と global reachability を混同しない
+- SAT model を可能な範囲で独立再評価する
+- query/hash/cache が version-safe
+- remote backend は binary-derived data の外送境界を明示する
+- browser 上で enforce 不能な budget を「enforced」と記録しない
 
 ---
 
-# 2. Phase 9 で守る不変条件
-
-Phase 9 は次を絶対に破ってはいけません。
+# 2. 最重要不変条件
 
 ## 2.1 Unknown は unknown のまま
 
-以下はすべて異なります。
+以下は別状態です。
 
 ```text
 SAT
 UNSAT
 UNKNOWN
 TIMEOUT
+RESOURCE_LIMIT
 UNSUPPORTED
 CANCELLED
 PROVIDER_FAILURE
+INVALID_QUERY
 ```
 
-特に禁止:
+禁止:
 
 ```text
-timeout      → UNSAT
-unsupported  → UNSAT
-unknown op   → fresh unconstrained symbol として無条件に続行
-unknown call → pure call とみなす
-unknown store→ no-alias とみなす
+timeout          → UNSAT
+resource limit   → UNSAT
+unsupported      → UNSAT
+unknown semantic → fresh unconstrained symbol
+unknown call     → pure call
+unknown store    → no-alias
+provider failure → refuted/proved
 ```
 
 「証明できなかった」と「反例が存在しない」は別物です。
 
 ## 2.2 Solver は semantic authority ではない
 
-Solver が解くのは Hex が生成した制約です。
-
-したがって:
-
 ```text
-bad translation + correct SMT solver = wrong proof
+bad translation + correct solver = wrong proof
 ```
 
-最重要なのは solver のブランドではなく、`Semantic IR -> expression DAG` の意味保存です。
+solver が解くのは Hex が生成した制約だけです。
+
+Semantic IR、SSA、MemorySSA、alias、effect summary が truth source で、solver は verification backend です。
 
 ## 2.3 Fast path を捨てない
 
-現行 `js/symbolic/executor.js` は bounded / deterministic / conservative な evaluator として既に価値があります。
-
-Phase 9 はこれを unbounded SMT executor に作り替えません。
-
-最終形は二層です。
+現行 `js/symbolic/executor.js` は bounded / deterministic / conservative evaluator として残します。
 
 ```text
 FastSymbolicEvaluator
@@ -112,45 +120,51 @@ FastSymbolicEvaluator
   - local
   - deterministic
   - solver不要
-  - unsupportedは明示
+  - unsupported明示
 
 Solver-backed Verification
   - targeted
   - sliced
   - budgeted
-  - proof/modelを返す
-  - expensive workは明示的に要求
+  - proof/model
+  - explicit scope
 ```
+
+Phase 9 で fast path を unbounded SMT engine に置換しません。
 
 ## 2.4 Provenance を失わない
 
-Proof は boolean だけでは不十分です。
-
-最低でも次を追跡します。
+最低限:
 
 ```text
+claim
+  ↓
 query
   ↓
 constraints
   ↓
 expression nodes
   ↓
-Semantic IR / SSA values
+SSA / MemorySSA values
   ↓
-instructions / origins
+Semantic IR
+  ↓
+instruction / origin bytes
 ```
 
-## 2.5 iPad/browser を correctness requirement にしない
+まで降りられること。
 
-Solver backend が local WASM、native/remote compute、将来の別 backend のどれであっても、公開 contract は同じにします。
+## 2.5 Browser/iPad は contract を歪めないが、resource safety は correctness
 
-特定 solver の内部 object を semantic layer や UI に漏らしてはいけません。
+local WASM / native / remote backend のどれでも public contract は同じです。
+
+ただし timeout、worker termination、memory pressure、route change、abort で誤証明・resource leak が起きないことは correctness requirement です。
 
 ---
 
 # 3. 現行実装の読み方
 
-Planning baseline では symbolic 周辺の中心は次です。
+Planning baseline の中心:
 
 ```text
 js/symbolic/executor.js
@@ -160,87 +174,141 @@ js/ai/tools/names.js
 js/ai/tools/registry.js
 ```
 
-現行 `executor.js` は既に:
+現行 executor の資産:
 
 - `CONST / SYM / OP / ITE / UNKNOWN`
 - structural hash / hash-consing
-- small constant folding
-- value map
-- memory map
+- constant folding
+- value map / memory map
 - path constraints
 - bounded branch fork
 - `maxSteps / maxForks / maxStates`
 - unsupported operation stop
 
-を持ちます。
+不足する Phase 9 contract:
 
-これは捨てる対象ではなく、Phase 9 の differential oracle / fast evaluator として使える資産です。
-
-一方で solver-backed verification に不足しているものは明確です。
-
-- exact bit-width semantics
-- signed / unsigned distinction
-- stable solver-neutral serialization
-- solver result taxonomy
+- exact fixed-width bitvector semantics
+- signed/unsigned distinction
+- stable solver-neutral schema
+- result taxonomy
 - backend abstraction
-- cancellation / timeout protocol
-- proof query schema
-- model normalization
-- counterexample reporting
-- evidence integration
-- replay corpus
-- patch/equivalence semantics
+- timeout/cancel/dispose
+- query scope/preconditions/completeness
+- normalized model
+- counterexample validation
+- evidence/replay
+- bounded equivalence semantics
+- patch verification semantics
+- cache/version/privacy policy
 
 ---
 
-# 4. 最初に固定する設計判断
+# 4. 実装前 preflight — ここを飛ばさない
 
-実装開始前に以下を固定します。
-
-## D1 — 最初の vertical slice は Branch Reachability
-
-最初から patch equivalence をやりません。
-
-Phase 9 の最初の end-to-end success は:
+Phase 9 coding を始める exact `main` SHA で次を確認します。
 
 ```text
-branch condition
-   ↓ dependency slice
-Expr DAG
-   ↓
-SolverBackend
-   ↓
-SAT / UNSAT / UNKNOWN
-   ↓
-SymbolicEvidence
+[ ] Semantic IR op schema/version
+[ ] SSA value identity/version
+[ ] MemorySSA reaching-def contract
+[ ] alias result taxonomy
+[ ] function/effect summary contract
+[ ] origin/provenance identity
+[ ] patch projection/validation API
+[ ] EvidenceGraph / evidence schema
+[ ] cancellation/budget primitives
+[ ] current FastSymbolicEvaluator tests
 ```
 
-とします。
+Phase 7/8 の成果が未統合・契約変動中なら、Phase 9 側で competing semantic model を作って穴埋めしません。
 
-理由:
+独立して進めてよいもの:
 
-- expression DAG が必要
-- translator が必要
-- solver backend が必要
-- result taxonomy が必要
-- evidence が必要
-- budget/cancellation が必要
-- しかし patch equivalence より memory side effect の比較が少ない
+- result/query schema
+- Bool/BV Expr DAG
+- serialization/hash
+- pure evaluator
+- SolverBackend contract
+- solver ADR / deployment investigation
+- golden corpus
 
-つまり Phase 9 全層を最小の難易度で通せます。
+依存契約が安定してからつなぐもの:
 
-## D2 — Phase 9 初期は integer bitvector + boolean を主対象にする
+- Semantic IR translator
+- MemorySSA/alias slice
+- branch/global reachability
+- equivalence
+- patch verification
+
+---
+
+# 5. 最初に固定する設計判断
+
+## D1 — 最初の vertical slice は **Conditional Edge Feasibility**
+
+旧称の `Branch Reachability` だけでは意味が強すぎます。
+
+最初に証明するのは:
+
+> **source block に到達したという明示的 precondition のもとで、selected conditional edge を通る入力/state が存在するか。**
+
+Flow:
+
+```text
+selected edge
+  ↓
+source-block-entry state / explicit preconditions
+  ↓
+branch condition backward slice
+  ↓
+Expr DAG
+  ↓
+SolverBackend
+  ↓
+SAT / UNSAT / unknown/failure
+```
+
+結果:
+
+```text
+SAT
+→ edge is feasible under the modeled source-entry preconditions
+
+UNSAT
+→ edge is infeasible under the modeled source-entry preconditions
+
+other
+→ no proof
+```
+
+**Global edge reachability** は別 query です。
+
+Global unreachable を `proved` にできるのは、source block 自体への到達条件・loops・incoming paths を query contract が complete に扱えている場合だけです。
+
+名前例:
+
+```text
+verify_edge_feasibility
+verify_global_edge_reachability   # later / stronger
+```
+
+これにより局所 feasibility を global unreachable と誤表示する false-proof を防ぎます。
+
+## D2 — 初期 sort は Bool + fixed-width BV
 
 初期必須:
 
 ```text
-BV const / symbol
+Bool
+BV(width)
+const / symbol
 add/sub/mul
-bitwise
-shift
-concat/extract where required
-zext/sext/trunc
-comparison
+and/or/xor/not
+logical/arithmetic shifts
+concat/extract where SemIR requires
+trunc/zext/sext
+signed/unsigned compare
+equality
 ite
 boolean connectives
 ```
@@ -249,70 +317,127 @@ boolean connectives
 
 ```text
 full IEEE754 FP
-large SIMD semantics
+large SIMD
 atomics memory model
-exception semantics
 full heap SMT arrays
 whole-program concolic execution
+unbounded recursion/loops
 ```
 
-非対応は `unsupported` / `unknown` で止めます。
-
-## D3 — Unknown と fresh symbol を別概念にする
-
-これは最重要です。
+## D3 — Fresh input と UnknownSemantic を分離
 
 ```text
 FreshSymbol
-= 「入力値は不明だが、任意値として数学的に扱ってよい」
+= 値は未知だが意味は既知。任意値として数学的に扱える。
 
 UnknownSemantic
-= 「Hex がこの操作の意味を十分にモデル化できていない」
+= 操作/effect の意味を Hex が安全にモデル化できていない。
 ```
 
-`UnknownSemantic` を fresh unconstrained symbol に自動変換すると unsound proof が発生します。
+`UnknownSemantic -> FreshSymbol` 自動変換は禁止。
 
-## D4 — Public API に backend-specific AST を出さない
+## D4 — backend-native AST は public API に出さない
 
-禁止例:
+禁止:
 
 ```text
 Z3.BitVecRef
-Z3.Ast
-backend-native model object
+backend AstRef
+native model object
 ```
 
-公開層は Hex-owned schema のみを使います。
+Hex-owned schema のみを公開します。
 
-## D5 — Proof failure と proof false を分離する
+## D5 — proof false と proof failure を分離
 
-例:
-
-「branch が到達不能か？」
+Query polarity は metadata として残します。
 
 ```text
-UNSAT
-→ 到達不能を証明
-
-SAT
-→ 到達可能な反例/modelを取得
-
-UNKNOWN/TIMEOUT/UNSUPPORTED
-→ 判定不能
+claimKind
+proofStatement
+negatedAssertionMeaning
 ```
+
+UI/AI が SAT/UNSAT を逆解釈しないこと。
 
 ---
 
-# 5. 推奨モジュール境界
+# 6. Proof eligibility — UNSAT だけでは proved ではない
 
-大規模 rename は不要です。
+Phase 9 で最重要の gate です。
 
-既存 facade を維持しながら、必要な境界だけ追加します。
+`solverStatus == unsat` だけを見て `verdict = proved` にしてはいけません。
+
+概念条件:
+
+```ts
+ProofEligibility {
+  queryValid: true
+  translationStatus: "complete"
+  scopeCompleteness: "complete"
+  semanticUnknowns: 0
+  unsupportedEntities: 0
+  assumptionsExplicit: true
+  backendCapabilityExact: true
+  resultStatus: "unsat"
+  cancelled: false
+  budgetExceeded: false
+}
+```
+
+少なくとも一つ欠ければ:
+
+```text
+verdict = unknown
+```
+
+とします。
+
+### 6.1 Assumption classification
+
+Assumption は単なる string 配列にしません。
+
+最低限:
+
+```ts
+Assumption {
+  id
+  kind
+  statement
+  source
+  originIds
+  trust:
+    | "semantic-fact"
+    | "user-precondition"
+    | "query-scope"
+    | "bounded-unroll"
+}
+```
+
+「user が x != 0 と仮定した」「MemorySSA が reaching def を証明した」は同じ種類ではありません。
+
+### 6.2 Completeness dimensions
+
+一個の boolean に潰さず、最低限次を区別できるようにします。
+
+```text
+translation
+control-flow
+memory/effects
+path coverage
+query scope
+```
+
+強い claim は必要 dimension がすべて complete のときだけ confirmed に昇格できます。
+
+---
+
+# 7. 推奨モジュール境界
 
 ```text
 js/symbolic/
-  executor.js                 # legacy/public fast evaluator facade
-  function-sandbox.js         # existing compatibility surface
+  executor.js
+  function-sandbox.js
 
   expr/
     kinds.js
@@ -324,6 +449,7 @@ js/symbolic/
   translate/
     semantic-ir.js
     support-matrix.js
+    slice.js
 
   solver/
     backend.js
@@ -333,18 +459,19 @@ js/symbolic/
     <first-backend>.js
 
   verify/
-    branch.js
+    edge-feasibility.js
+    global-reachability.js      # stronger/later
     equivalence.js
     patch.js
     query.js
+    eligibility.js
+    validate-model.js
 
   evidence/
     symbolic-evidence.js
 ```
 
-名前は実装時に current tree に合わせて調整してよいですが、責務は混ぜないでください。
-
-特に:
+責務:
 
 ```text
 Expr DAG        != Solver backend
@@ -352,15 +479,14 @@ Translator      != Solver backend
 Verifier        != Translator
 Evidence        != Solver model
 Fast evaluator  != Solver-backed executor
+Hash            != semantic identity proof
 ```
 
 ---
 
-# 6. Solver-neutral Expression DAG
+# 8. Solver-neutral Expression DAG
 
-## 6.1 Node の必須情報
-
-概念例:
+## 8.1 Node
 
 ```ts
 ExprNode {
@@ -375,101 +501,66 @@ ExprNode {
 }
 ```
 
-`sort` は最低でも:
+Sort:
 
 ```text
 Bool
 BV(width)
 ```
 
-を持ちます。
+`BV8(0xff)` と `BV32(0xff)` は別。
 
-Bit width を metadata 扱いにしてはいけません。
+width は semantic field です。
 
-```text
-0xff : BV8
-0xff : BV32
-```
-
-は別の値です。
-
-## 6.2 Structural hash と provenance を分離する
-
-同じ式:
+## 8.2 Structural hash と provenance
 
 ```text
-x + 1
-```
-
-が別 origin から来ても solver 上の構造は同じです。
-
-したがって:
-
-```text
-Expr identity/hash
-→ semantic structure
+Expr structural identity
+→ pure semantic structure
 
 Origin/evidence mapping
-→ side table / immutable association
+→ immutable side mapping
 ```
 
-とするのが安全です。
+provenance を hash に混ぜず、捨てもしません。
 
-provenance を hash に混ぜると canonicalization が壊れます。
+## 8.3 Hash collision rule
 
-逆に provenance を捨てると evidence chain が壊れます。
+`structuralHash` / `queryHash` の一致だけで semantic equality を確定してはいけません。
 
-## 6.3 Deterministic serialization
+Hash は index/cache lookup の入口です。
 
-Replay の中心です。
+Cache hit 時は canonical serialized bytes/schema identity を一致確認するか、衝突安全な content-address contract を使います。
 
-同じ query は同じ normalized representation へ serialize できなければなりません。
+## 8.4 Deterministic serialization
 
-最低限記録:
+保存:
 
 ```text
 schemaVersion
 expressionDagVersion
 queryKind
+claimKind
 variables + sorts
 constraints
 assertion
 assumptions
+scope
+completeness requirements
 requestedOutputs
 ```
 
-Object insertion order や random internal IDs に結果を依存させません。
-
-## 6.4 Canonicalization は semantics-preserving のみ
-
-安全な例:
-
-```text
-x + 0 → x
-x & all_ones → x
-ite(true,a,b) → a
-```
-
-危険:
-
-- signedness を無視した comparison rewrite
-- overflow を mathematical integer として扱う
-- JS BigInt の無限精度を machine integer と同一視する
-- shift amount rules を ISA/SemIR contract から勝手に推測する
+Object insertion order、random IDs、Map iteration の偶然に依存しないこと。
 
 ---
 
-# 7. Bitvector semantics — Phase 9 最大の correctness trap
+# 9. Bitvector semantics — 最大の correctness trap
 
 JavaScript `BigInt` と machine bitvector は違います。
-
-例:
 
 ```text
 BV8(255) + BV8(1) = BV8(0)
 ```
-
-ですが JavaScript `255n + 1n = 256n` です。
 
 必須 helper:
 
@@ -483,154 +574,159 @@ zext(value,from,to)
 sext(value,from,to)
 ```
 
-比較も明示します。
+比較:
 
 ```text
 ult / ule / ugt / uge
 slt / sle / sgt / sge
 ```
 
-`LT` 一個に符号意味を埋め込む設計は Phase 9 では不十分です。
+shift/div/rem も signed/unsigned を分けます。
 
-同様に:
+### 9.1 必ず決める edge semantics
 
-- logical right shift
-- arithmetic right shift
-- division
-- remainder
+- width の許容範囲
+- zero-width rejection
+- shift amount >= width の SemIR 上の意味
+- arithmetic shift の sign fill
+- signed min / -1 division overflow の意味
+- division/remainder by zero の意味
+- extract bounds
+- extension/truncation direction
+- constant literal normalization
 
-も signed/unsigned を区別します。
+これらを solver のデフォルト仕様に合わせてはいけません。
 
----
+**SemIR contract が未定義なら unsupported。**
 
-# 8. Semantic IR → Expr DAG Translator
+### 9.2 Golden oracle
 
-Translator は instruction mnemonic を見てはいけません。
-
-入力は Semantic IR / SSA / MemorySSA です。
-
-```text
-instruction bytes
-  ↓ low-level effects
-Semantic IR
-  ↓ SSA/MSSA
-Translator
-  ↓
-Expr DAG
-```
-
-Phase 9 が architecture-neutral であるための必須条件です。
-
-## 8.1 Support matrix を first-class にする
+小さい width では exhaustive truth table が可能です。
 
 例:
 
 ```text
-Semantic op        Status
-CONST              exact
-COPY               exact
-ADD/SUB/...        exact
-CMP signed/unsigned exact
-SELECT             exact
-CAST               exact
-LOAD stack-known   exact/bounded
-LOAD unknown       unsupported/unknown
-STORE known region modeled as state update
-CALL summarized    supported if summary fits model
-CALL unknown       unsupported/unknown
-INTRINSIC          effect-specific
-FLOAT              initially unsupported
+BV1..BV8
+all inputs for unary ops
+selected/full pairs for binary ops
 ```
 
-この matrix は docs だけでなく machine-readable test data にできると良いです。
-
-## 8.2 Unsupported translation は途中で隠さない
-
-Result 例:
-
-```ts
-TranslationResult {
-  status: "complete" | "partial" | "unsupported"
-  expression
-  assumptions
-  unsupportedEntities
-  originMap
-}
-```
-
-部分翻訳なのに完全 proof を返してはいけません。
+Pure evaluator と backend translation を照合します。
 
 ---
 
-# 9. Memory modelling
+# 10. Semantic IR → Expr DAG Translator
 
-Phase 9 で full SMT Array memory を最初から実装しないことを推奨します。
+Translator は instruction mnemonic を見ません。
 
-まず Phase 7/8 までに得られる SSA / MemorySSA / alias proof を最大限利用して slice します。
+```text
+bytes
+ ↓
+low-level effects
+ ↓
+Semantic IR
+ ↓
+SSA / MemorySSA
+ ↓
+Translator
+ ↓
+Expr DAG
+```
 
-## 9.1 初期戦略
+## 10.1 Support matrix を machine-readable にする
+
+最低分類:
+
+```text
+exact
+exact-with-explicit-assumptions
+partial
+unsupported
+```
+
+例:
+
+```text
+CONST/COPY                 exact
+integer arithmetic         exact when width semantics known
+signed/unsigned CMP        exact
+SELECT                     exact
+CAST                       exact when cast kind explicit
+known scalar load          exact only with proven reaching state
+unknown load/store         unsupported/partial
+summarized call            exact only inside summary contract
+unknown call               unsupported/partial
+FP/SIMD/atomic             initially unsupported unless exact semantics exist
+```
+
+## 10.2 TranslationResult
+
+```ts
+TranslationResult {
+  status
+  expression
+  assumptions
+  unsupportedEntities
+  semanticUnknowns
+  originMap
+  completeness
+}
+```
+
+partial translation は diagnostic/query exploration に使えても proof eligibility を満たしません。
+
+---
+
+# 11. Memory / call modelling
+
+Phase 9 初期で full SMT Array memory に飛びません。
+
+まず SSA/MemorySSA/alias/effect summary を使います。
 
 ```text
 proven exact scalar load
-→ symbolic scalar valueに落とせる
+→ scalar symbolic value
 
-known region + known reaching def
-→ state relationとして表現可能
+known region + proven reaching def
+→ explicit state relation
 
 unknown store barrier
-→ proofを継続しない / completenessを落とす
+→ affected memory completeness lost
 
-unknown call memory effect
-→ affected stateをunknownにする
+unknown call effect
+→ affected state unknown / unsupported
 ```
 
-つまり solver に alias analysis を丸投げしません。
+Solver に alias analysis をさせて二重 truth を作らないこと。
 
-Alias truth は Hex semantic analysis が供給し、solver はその制約を検証します。
+### 11.1 Equivalence scope
 
-## 9.2 Patch equivalence では return value だけ比較しない
-
-危険な誤判定:
-
-```text
-before return == after return
-→ equivalent
-```
-
-実際には:
-
-- memory write
-- register side effect
-- branch/control flow
-- exception/trap
-- call side effect
-
-が変わっている可能性があります。
-
-Phase 9 の equivalence scope は明示的にします。
+Return equality だけでは equivalence ではありません。
 
 ```ts
 EquivalenceScope {
+  inputs
   outputs
   memoryRegions
   controlEffect
   sideEffects
+  trapsOrExceptions
   preconditions
+  correspondence
 }
 ```
 
+`trapsOrExceptions` を exact にモデル化できない phase では、その dimension を scope から黙って外さず `unsupported/incomplete` と記録します。
+
 ---
 
-# 10. SolverBackend contract
-
-概念 contract:
+# 12. SolverBackend contract
 
 ```ts
 interface SolverBackend {
   id
   version
   capabilities()
-
   createSession(options): SolverSession
 }
 
@@ -650,90 +746,91 @@ SolverResult {
     | "unsat"
     | "unknown"
     | "timeout"
+    | "resource-limit"
     | "unsupported"
     | "cancelled"
     | "provider-failure"
-
+    | "invalid-query"
   model?
   reason?
   stats
   backend
   backendVersion
   queryHash
-  completeness
 }
 ```
 
-## 10.1 Solver session は必ず disposable
+`completeness` は solver ではなく translator/verifier 側の property として保持する方が責務が明確です。
 
-Browser/iPad では WASM/native resource を永続的に保持し続ける前提を置きません。
+## 12.1 Session lifecycle
 
-- abort
-- timeout
-- memory pressure
-- route change
-- worker termination
+- cancel は idempotent
+- dispose は idempotent
+- timeout 後の session reuse 可否を backend capability で明示
+- worker terminate 後に stale result を publish しない
+- route change / abort race で古い query result を別 query に紐づけない
 
-に耐える必要があります。
+query/session token を持たせ、latest request identity を確認して publish します。
 
-## 10.2 Backend selection は registry 経由
+## 12.2 Backend ADR
 
-Verifier が直接 `new Z3()` してはいけません。
+実装前に確認:
 
-```text
-Verifier
-  ↓
-SolverRegistry
-  ↓
-selected backend
-```
-
-これにより local/remote/native/WASM の切り替えとテスト backend を分離できます。
-
-## 10.3 First backend の選定は ADR 化する
-
-実装前に最低限確認:
-
+- exact version
 - license
-- pinned version
-- browser/WASM footprint
-- startup latency
-- cancellation mechanism
-- memory behavior on iPad
-- deterministic options
-- model extraction
-- supported bitvector operations
+- local WASM/native/remote deployment
+- footprint/startup
 - worker compatibility
-
-「有名だから」で dependency を決めないこと。
+- cancellation
+- memory behavior
+- deterministic seed/options
+- model extraction
+- Bool/BV support
+- CSP/packaging implications
+- remote privacy boundary
 
 ---
 
-# 11. Query API
+# 13. Remote backend policy
 
-Phase 9 は「万能 symbolic_execute」を巨大化するより、目的別 API を先に作る方が安全です。
+Binary 由来 constraints は project data です。
+
+Remote solver を使う場合:
+
+- default local / explicit opt-in policy を ADR で決める
+- 何が送信されるかを明示
+- raw bytes / symbols / names / addresses の送信有無を分離
+- transport/auth/log retention policy を明示
+- local-only project では remote fallback しない
+- provider failure 時に別 remote provider へ黙って送らない
+
+Remote を性能都合で hidden fallback にしません。
+
+---
+
+# 14. Query API
 
 推奨:
 
 ```text
-verify_branch_reachability
+verify_edge_feasibility
+verify_global_edge_reachability     # stronger, only when path coverage complete
 verify_bounded_equivalence
 verify_patch_invariant
-symbolic_query          # later/general facade
+symbolic_query                      # later facade
 ```
 
-Public result は共通 shape を持ちます。
+Public result:
 
 ```ts
 VerificationResult {
-  verdict:
-    | "proved"
-    | "refuted"
-    | "unknown"
-
+  verdict: "proved" | "refuted" | "unknown"
+  claimKind
+  proofStatement
   solverStatus
   assumptions
   counterexample?
+  counterexampleValidation?
   evidenceIds
   completeness
   limits
@@ -741,205 +838,200 @@ VerificationResult {
 }
 ```
 
-注意:
-
-`proved` の意味は query kind によって明示します。
-
-例:
-
-- reachability query で UNSAT → unreachable proved
-- equivalence query で `before != after` が UNSAT → equivalent proved
-
-API 内部で assertion の極性を隠しすぎると UI/AI が逆解釈するため、`claimKind` / `proofStatement` も保存します。
-
 ---
 
-# 12. Vertical Slice 1 — Branch Reachability
+# 15. Vertical Slice 1 — Conditional Edge Feasibility
 
-最初に完成させる実装です。
-
-## 12.1 Flow
+## 15.1 Flow
 
 ```text
 selected conditional edge
      ↓
-resolve branch condition SSA value
+resolve source-block entry state + branch condition
      ↓
 backward slice
      ↓
 translate supported expressions
      ↓
-add path/precondition constraints
+add explicit source-entry/path/preconditions
      ↓
-assert target edge condition
+assert selected edge condition
      ↓
 solver.check
+     ↓
+validate SAT model when possible
 ```
 
-## 12.2 Result semantics
+## 15.2 Result semantics
 
 ```text
-SAT
-→ edge reachable under returned model
+SAT + model validates
+→ refutes "edge infeasible" claim; feasible counterexample exists
 
-UNSAT
-→ edge unreachable under modeled assumptions
+UNSAT + proof eligibility satisfied
+→ proves edge infeasible under explicit source-entry preconditions
 
-UNKNOWN/TIMEOUT/UNSUPPORTED
-→ no proof
+SAT but model validation fails
+→ provider/adapter failure, never refuted/proved
+
+UNKNOWN/TIMEOUT/RESOURCE_LIMIT/UNSUPPORTED/CANCELLED
+→ unknown
 ```
 
-## 12.3 Required evidence
+## 15.3 Global reachability promotion
 
-- function / block / edge identity
-- branch condition origin
-- input symbols
-- assumptions
-- query hash
-- solver/backend version
-- status
-- counterexample model if SAT
-- translation completeness
-- resource limits used
+`edge infeasible given source entry` と `edge globally unreachable` は別 claim です。
 
-## 12.4 Why first
-
-これが通れば Phase 9 の基盤:
-
-- query schema
-- slicing
-- DAG
-- translation
-- backend
-- budgets
-- evidence
-- AI/UI-safe result
-
-を全部一度に検証できます。
+Global unreachable へ昇格するには、source block の reachability/path-coverage dimension が complete であることを query contract が要求します。
 
 ---
 
-# 13. Vertical Slice 2 — Bounded Equivalence
+# 16. SAT model validation
 
-次に行います。
-
-## 13.1 Basic proof form
-
-同じ symbolic inputs のもとで:
+SAT は counterexample を返すので、可能な subset では solver adapter の出力を独立再評価します。
 
 ```text
-assert(before_outputs != after_outputs)
+normalized query
+ + normalized model
+        ↓
+Hex-owned pure Expr evaluator
+        ↓
+all constraints true?
+assertion true?
 ```
 
-を solver に与えます。
+失敗時:
 
 ```text
-UNSAT → outputs equivalent within scope/preconditions
-SAT   → counterexample exists
-other → unknown
+status = provider-failure / invalid-model
+verdict = unknown
 ```
 
-## 13.2 必須比較対象
+model が複数存在すること自体は問題ではありません。
 
-最低限 scope で選べるようにします。
+必要なのは「返された model が claim を本当に反証しているか」です。
 
-- return/output values
+UNSAT は一般に同じ方法で再評価できないため、release corpus では differential backend / exhaustive small-BV oracle / known-answer corpus を組み合わせます。
+
+---
+
+# 17. Vertical Slice 2 — Bounded Equivalence
+
+同じ対応付け済み symbolic inputs/state のもとで:
+
+```text
+assert(before_observable_state != after_observable_state)
+```
+
+```text
+UNSAT + eligible
+→ equivalent within explicit scope/preconditions/bounds
+
+SAT + validated model
+→ counterexample
+
+other
+→ unknown
+```
+
+必須:
+
+- input/state correspondence
+- outputs
 - selected memory regions
-- selected state values
 - terminal control effect
-- side-effect summary
-
-## 13.3 最初から arbitrary whole-function equivalence を狙わない
+- selected side effects
+- explicit boundedness
+- assumptions
 
 最初は:
 
-- bounded straight-line region
-- bounded local transform
-- decompiler rewrite check
-- patch-local basic block/function slice
+- straight-line region
+- local transform
+- decompiler rewrite
+- patch-local bounded slice
 
 から始めます。
 
-Loops/recursion/unknown calls が出たら completeness を落とします。
+Loops/recursion/unknown effects は completeness を落とします。
 
 ---
 
-# 14. Vertical Slice 3 — Patch Verification
-
-Patch subsystem の「byteとして書ける」と Phase 9 の「semantic invariant を守る」は別です。
-
-推奨 flow:
+# 18. Vertical Slice 3 — Patch Verification
 
 ```text
 original bytes
-   ↓ decode/lift/SemIR
-before slice
+ ↓ decode/lift
+before SemIR slice
 
-patched projection
-   ↓ decode/lift/SemIR
-after slice
+patched bytes / patch projection
+ ↓ decode/lift
+after SemIR slice
 
-shared input relation
-   ↓
-Equivalence / invariant query
-   ↓
-proof / counterexample / unknown
+shared input/state correspondence
+ ↓
+explicit invariant/equivalence scope
+ ↓
+verification
 ```
 
-Patch verification は必ず existing patch validation と併用します。
+Evidence に最低限:
 
-Solver が証明しても:
+- original BinaryId/content identity
+- PatchSetId / patched projection identity
+- before/after semantic versions
+- query hash
+- assumptions/scope
 
+を含めます。
+
+Solver proof と binary-format patch validation は別 gate です。
+
+- encoding range
+- relocation
+- signing
+- unwind
 - format integrity
-- branch encoding range
-- code signing
-- relocation consistency
-- unwind metadata
 
-などは別 subsystem の責任です。
+などは既存 patch validation が担当します。
 
 ---
 
-# 15. SymbolicEvidence
-
-Solver result を直接 UI badge にしません。
-
-Evidence node を作ります。
-
-概念例:
+# 19. SymbolicEvidence
 
 ```ts
 SymbolicEvidence {
   id
   queryKind
-  claim
+  claimKind
+  proofStatement
   targetEntityIds
   queryHash
+  normalizedQueryArtifactId?
   expressionSchemaVersion
   translatorVersion
   semanticVersions
   backendId
   backendVersion
-  resultStatus
-  model?
+  solverStatus
+  modelArtifactId?
+  counterexampleValidation?
   assumptions
   limits
   completeness
   originEntityIds
+  originalBinaryId?
+  patchSetId?
 }
 ```
 
-`confirmed` に昇格できるのは query contract に従って deterministic verifier が proof を成立させた場合のみです。
+`confirmed` は proof eligibility を満たした deterministic verifier result のみ。
 
-AI prose だけで `confirmed` にしてはいけません。
+AI prose は authority ではありません。
 
 ---
 
-# 16. Resource budgets
-
-Phase 9 は state explosion を「後で考える」設計にしてはいけません。
-
-最初から limit を query schema に入れます。
+# 20. Resource budgets
 
 ```ts
 SymbolicBudget {
@@ -951,556 +1043,507 @@ SymbolicBudget {
   maxForks
   maxDepth
   maxLoopUnroll
-  maxMemoryBytes?
   maxModelValues
+  maxMemoryBytes?
 }
 ```
 
-最低限:
+必須:
 
-- all loops bounded
-- all forks bounded
-- all solver calls timed
-- cancellation propagated
-- backend worker terminate path exists
-- budget hit is typed result
+- loops bounded
+- forks bounded
+- solver calls timed
+- abort propagated
+- backend worker terminate path
+- typed budget hit
 
-Budget exceeded は `unknown/resource-limit` であり、証明失敗ではありません。
+### 20.1 Memory budget honesty
+
+Browser JS/WASM で hard `maxMemoryBytes` を直接 enforce できない backend では、設定値があるだけで「memory budget enforced」と扱いません。
+
+許容:
+
+- dedicated Worker isolation
+- backend-provided memory cap
+- pre-allocation/node limits + worker kill threshold
+- measured peak + OS/browser termination handling
+
+Exit gate では、どの mechanism が **hard enforcement / soft guard / measurement only** か記録します。
+
+Master Architecture の memory-budget gate を hard enforcement と解釈するなら、measurement-only backend で Phase 9 完了を宣言してはいけません。
 
 ---
 
-# 17. Determinism / Replay
+# 21. Replay / cache / versioning
 
-Solver の内部探索順が完全 deterministic でなくても、Hex query は replay 可能でなければなりません。
-
-保存対象:
+保存:
 
 ```text
-normalized query
+normalized query artifact
 query hash
-solver id/version
-solver options
-semantic schema versions
+query schema version
+expression schema version
+semantic versions
 translator version
+backend id/version
+solver options/seed
 limits
 expected classification
 ```
 
-Replay corpus では最低限:
+Cache key に少なくとも semantic/query versions を含めます。
 
-```text
-SAT stays SAT
-UNSAT stays UNSAT
-unsupported stays unsupported unless intentionally promoted
-```
+禁止:
 
-を gate します。
+- hash 一致だけで payload equality を省略
+- semantic version が変わった proof result を再利用
+- timeout/provider-failure を semantic answer として永続 cache
+- smaller-budget timeout を larger-budget query の結果として再利用
 
-Model の exact variable assignment は backend/version で複数解があり得るため、必要な場合のみ canonical model constraints を設けます。
+SAT/UNSAT semantic result の cache policy も backend/options compatibility を明示します。
 
 ---
 
-# 18. Test strategy
+# 22. Test strategy
 
-## T0 — Expr DAG unit tests
+## T0 — Contract/golden corpus（Wave0から）
+
+実装より先に固定:
+
+- result taxonomy
+- proof eligibility matrix
+- Bool/BV schema
+- query polarity
+- support matrix
+- known SAT/UNSAT/unsupported vectors
+
+## T1 — Expr DAG
 
 - width-distinct constants
-- structural hashing
-- canonical serialization
-- commutative canonicalization if implemented
+- hash + full canonical equality
+- deterministic serialization
 - wraparound
 - signed/unsigned comparison
-- logical/arithmetic shift
+- shifts
+- div/rem edge semantics
 - trunc/zext/sext
 - ITE
-- unknown vs fresh symbol
+- UnknownSemantic vs FreshSymbol
 
-## T1 — Translator tests
+## T2 — Exhaustive/metamorphic BV
 
-Semantic IR fixture ごとに:
+小 width で:
 
-```text
-supported exact
-supported with assumptions
-partial
-unsupported
-```
-
-を固定します。
-
-## T2 — Fast evaluator differential
-
-現行 evaluator が正しく処理できる subset について:
-
-```text
-same expression/input
-FastSymbolicEvaluator
-vs
-Solver-backed query
-```
+- pure evaluator truth table
+- solver translation result
+- algebraic identities valid under bitvector semantics
+- identities that are invalid due to overflow are rejected
 
 を比較します。
 
-目的は old implementation を semantic authority にすることではなく、移行時の accidental behavior change を早く検出することです。
+## T3 — Translator
 
-## T3 — Solver replay corpus
+- exact
+- exact-with-assumptions
+- partial
+- unsupported
+- unknown call/store
+- origin preservation
+- architecture-neutral generic code
+
+## T4 — Solver backend
 
 - known SAT
 - known UNSAT
-- timeout
-- unsupported
-- cancellation
-- malformed query rejection
+- UNKNOWN
+- TIMEOUT
+- RESOURCE_LIMIT
+- CANCELLED
+- PROVIDER_FAILURE
+- INVALID_QUERY
+- malformed/oversized query rejection
+- create/cancel/dispose races
 
-## T4 — Branch verification
+## T5 — SAT model validation
 
-- always true branch
-- always false branch
-- symbolic reachable branch
-- constrained unreachable branch
+- valid model accepts
+- tampered model rejects
+- missing required assignment handling
+- backend model normalization
+
+## T6 — Edge feasibility
+
+- always true edge
+- always false edge
+- symbolic feasible
+- constrained infeasible
 - unsupported dependency
-- loop budget hit
+- source-entry precondition changes result
+- local infeasibility is not labeled global unreachable
 
-## T5 — Equivalence
+## T7 — Global reachability promotion
 
-- identical expressions → proved
-- algebraically equivalent bitvector expressions → proved
-- wraparound-sensitive difference
+- complete incoming path coverage allows strong claim
+- incomplete path/loop coverage cannot mint global unreachable
+
+## T8 — Equivalence
+
+- identical
+- bitvector-equivalent
+- wrap-sensitive difference
 - signedness-sensitive difference
-- intentional semantic difference → counterexample
-- memory side-effect mismatch
+- memory mismatch
+- control-effect mismatch
+- unknown effect → unknown
 
-## T6 — Patch verification
+## T9 — Patch verification
 
-- no-op-equivalent patch
-- condition inversion finds counterexample
-- return-preserving but memory-changing patch is not declared equivalent
-- unsupported instruction produces unknown
+- no-op equivalent
+- condition inversion counterexample
+- return same/memory different
+- unsupported semantics → unknown
+- BinaryId/PatchSetId evidence
 
-## T7 — Evidence
+## T10 — Evidence/cache
 
-- every proof links target + origins
+- proof origin chain
 - query hash stable
-- backend/version recorded
-- incomplete translation cannot create confirmed evidence
+- collision-safe payload check
+- version invalidation
+- incomplete cannot confirm
+- failure result cannot confirm
 
-## T8 — Budgets / cancellation
+## T11 — Browser/iPad
 
-- max nodes
-- max constraints
-- timeout
-- abort signal
-- worker termination
-- repeated query cleanup
-
-## T9 — Browser / iPad
-
-Track at minimum:
-
-- cold solver load latency
-- warm query latency
+- cold init
+- warm query
 - peak memory delta
-- cancellation latency
+- cancel latency
 - repeated session leak
-- background worker behavior where testable
+- worker termination
+- stale result race
 
 ---
 
-# 19. 推奨 Wave 分割
+# 23. 最速かつ安全な Wave 分割
 
-## Wave 0 — Contract freeze / baseline
+## Wave 0 — Contract + adversarial corpus freeze
 
-Deliver:
+Integration Owner + Corpus owner が先に固定:
 
-- Phase 9 query/result taxonomy
-- expression sort/version contract
-- initial supported-op matrix
-- baseline current symbolic fixtures
-- budget schema
-- backend ADR template / decision
-
-Exit:
-
-- implementation worker 間で SAT/UNSAT/UNKNOWN の意味が一致
-- no code migration yet
-
-## Wave 1 — Solver-neutral Expr DAG
-
-Deliver:
-
-- immutable nodes
-- Bool/BV sorts
-- exact bitvector helpers
-- structural hash
-- deterministic serializer
-- pure evaluator for tests
-
-Exit:
-
-- width/signedness corpus green
-- deterministic serialization green
-
-## Wave 2 — Semantic IR translator + slicing
-
-Deliver:
-
-- narrow supported subset
-- backward dependency slice
+- query/result taxonomy
+- proof eligibility
+- Bool/BV schema
 - support matrix
-- partial/unsupported reporting
-- origin map
+- assumption/completeness schema
+- golden SAT/UNSAT/unknown vectors
+- budget schema
+- backend ADR decision criteria
 
 Exit:
 
-- translator never re-decodes instruction text
-- unsupported op cannot silently become solvable
+- Worker が同じ semantics を実装できる
+- false-proof examples が corpus に入っている
 
-## Wave 3 — SolverBackend + first real backend
+## Wave 1 — A/B/C を最大限並列
 
-Deliver:
+### A — Expr DAG
+
+- Bool/BV
+- evaluator
+- serializer/hash
+
+### B — Translator scaffolding
+
+A の frozen interface stub に対して:
+
+- slicing contract
+- support matrix
+- origin/completeness
+- fixture translator
+
+A implementation 依存部分だけ後で接続。
+
+### C — SolverBackend
+
+A の内部実装を待たず:
 
 - backend/session/result contract
-- registry
-- cancellation
-- timeouts
-- normalized models
-- first backend
-- test backend/fakes where useful
+- lifecycle
+- fake backend
+- ADR/pinned dependency
+
+real Expr lowering adapter は A contract 完成後に接続。
 
 Exit:
 
-- SAT/UNSAT/UNKNOWN replay corpus green
-- backend unavailable has typed failure
+- A/B/C の public seam が contract tests で一致
 
-## Wave 4 — Branch Reachability vertical slice
+## Wave 2 — first integration lane
 
-Deliver:
+- A + B + C
+- known query E2E
+- model validation
+- cancellation/resource limits
 
-- branch query
-- solver invocation
-- counterexample/model
-- SymbolicEvidence
-- AI/query API integration
+ここで shared registry/package dependency を Integration Owner が小さく統合します。
+
+**shared seams を最後まで溜めない。**
+
+## Wave 3 — Conditional Edge Feasibility
+
+- selected edge query
+- source-entry precondition
+- evidence
+- SAT model validation
 
 Exit:
 
-- first full end-to-end proof loop green
-- deterministic evidence replay
+- local feasibility E2E
+- global reachability と誤表示しない
+
+## Wave 4 — Stronger reachability only if prerequisites complete
+
+- incoming path coverage
+- loop bound/completeness
+- global claim eligibility
+
+Prerequisite が不足するなら Phase 9 の必須 deliverable を満たす最小範囲を再確認し、偽の global claim を作らない。
 
 ## Wave 5 — Bounded Equivalence
 
-Deliver:
+- correspondence
+- state scope
+- counterexample
 
-- before/after state correspondence
-- explicit equivalence scope
-- counterexample extraction
-- local rewrite verification hook
+## Wave 6 — Patch Verification
 
-Exit:
+- before/after projection
+- PatchSet evidence
+- existing patch gate composition
 
-- positive/negative equivalence corpus green
-- memory/control side effects are not ignored
+## Wave 7 — Hardening
 
-## Wave 6 — Patch verification
-
-Deliver:
-
-- patched projection comparison
-- invariant/equivalence query
-- integration with existing patch validation
-- evidence and user-facing explanation
-
-Exit:
-
-- unsafe semantic changes produce counterexample or unknown, never false confirmation
-
-## Wave 7 — Hardening / Phase gate
-
-Deliver:
-
-- browser worker isolation if required
-- iPad resource measurements
-- cache/replay strategy
-- backend failure recovery
-- plugin/AI integration review
-- full regression matrix
-
-Exit:
-
-- Master Architecture Phase 9 exit gate satisfied
+- exhaustive/metamorphic corpus
+- differential backend where feasible
+- cache/versioning
+- remote privacy
+- iPad/browser resource evidence
+- full regressions
 
 ---
 
-# 20. Worker ownership plan
-
-Phase 9 は parallelize できますが、integration seams を明示します。
-
-推奨 ownership:
+# 24. Worker ownership
 
 ```text
-Worker A — Expr DAG + serialization
-Worker B — Semantic IR translator + support matrix
-Worker C — SolverBackend + provider lifecycle
-Worker D — Branch/equivalence verifier
-Worker E — Evidence + AI/query integration
-Worker F — test corpus + browser/iPad budgets
+Integration Owner — contracts/shared seams/gates
+Worker A          — Expr DAG/evaluator/serialization
+Worker B          — Semantic translator/slicing
+Worker C          — SolverBackend/lifecycle
+Worker D          — verification queries/model validation
+Worker E          — Evidence/Patch/AI query surface
+Worker F          — adversarial corpus/resource/browser gates
 ```
 
-ただし以下は integration hotspot です。
+Hotspots:
 
 ```text
 js/symbolic/executor.js
+js/symbolic/function-sandbox.js
 js/agent/tools.js
 js/ai/tools/registry.js
+js/ai/tools/names.js
 package.json
 shared evidence schemas
+CI/gate wiring
 ```
 
-これらを複数 Worker が無秩序に編集しないこと。
+Integration Owner が shared files を管理しますが、**dependency/package commit と registry wiring を最後まで保留して bottleneck にしない**こと。
 
-Integration owner が shared seams をまとめます。
-
----
-
-# 21. Dependency / sequencing guidance
-
-Phase 9 は Phase 7/8 の成果を利用します。
-
-特に:
-
-- SSA/MemorySSA stability
-- alias proof
-- function summaries
-- type/width information
-- decompiler transform provenance
-
-が強いほど Phase 9 は簡単になります。
-
-ただし solver-neutral DAG / backend contract 自体は独立して先行できます。
-
-したがって効率のよい順序は:
-
-```text
-Phase7/8 semantic contracts stable
-       │
-       ├── parallel: Expr DAG / Backend contract
-       │
-       └── then: translator integration
-                     ↓
-              Branch reachability
-                     ↓
-              Equivalence
-                     ↓
-              Patch verification
-```
-
-Phase 8 の途中で `HighIR` 表現が変わっても Phase 9 が壊れないよう、Phase 9 は HighIR ではなく Semantic IR / SSA を proof input の中心にします。
+各 vertical slice ごとに小さく integration します。
 
 ---
 
-# 22. 失敗しやすい実装パターン
+# 25. Anti-patterns
 
-## Anti-pattern 1 — Current AST に Z3 handle を生やす
-
-短期は速いが backend abstraction が消滅します。
-
-## Anti-pattern 2 — JS BigInt の演算をそのまま machine arithmetic とする
-
-Overflow / signedness で silent wrong proof が出ます。
-
-## Anti-pattern 3 — Unknown を unconstrained input にする
-
-未知の「入力」と未知の「意味」を混同しています。
-
-## Anti-pattern 4 — Whole binary symbolic execution を background で開始する
-
-Browser/iPad-first 方針と state explosion の両方に反します。
-
-## Anti-pattern 5 — Solver timeout を false として扱う
-
-最悪クラスの correctness bug です。
-
-## Anti-pattern 6 — Equivalence が return value だけ
-
-Memory/control/call side effect を失います。
-
-## Anti-pattern 7 — Solver が alias を勝手に補う
-
-Hex の conservative MemorySSA/alias truth と二重 truth になります。
-
-## Anti-pattern 8 — AI が solver query の欠落を prose で補う
-
-AI は planner/explainer であり proof authority ではありません。
-
-## Anti-pattern 9 — Solver dependency を先に import してから contract を考える
-
-Deployment/license/worker/cancellation の都合で architecture が solver-specific になります。
-
-## Anti-pattern 10 — Existing fast evaluator を一気に置換する
-
-Regression oracle と cheap path を同時に失います。
+1. Current AST に solver handle を埋め込む
+2. JS BigInt を machine arithmetic と同一視
+3. UnknownSemantic を unconstrained input 化
+4. Whole-binary symbolic を background 起動
+5. Timeout/resource-limit を false/UNSAT 化
+6. Return-only equivalence
+7. Solver に alias truth を作らせる
+8. AI prose で unsupported を補う
+9. Solver dependency を contract より先に決める
+10. Fast evaluator を一気に置換
+11. Local edge feasibility を global unreachable と表示
+12. `UNSAT` だけで proved にする
+13. SAT model を未検証で counterexample として確定
+14. Query hash を equality proof として使う
+15. Timeout/provider failure を semantic cache する
+16. Remote backend へ project-derived constraints を黙って送る
+17. Enforce できない memory limit を gate pass と記録
+18. Corpus を統合終盤まで待つ
+19. Shared registry/package edits を最後に大量統合
 
 ---
 
-# 23. Phase 9 完了条件
-
-Master exit gate に加え、以下を満たすことを推奨します。
+# 26. Phase 9 完了条件
 
 ## Architecture
 
-- [ ] solver-neutral Expr DAG が backend-specific object を公開しない
-- [ ] `Semantic IR -> Expr` は architecture-neutral
-- [ ] fast evaluator が引き続き利用可能
-- [ ] unknown semantics が explicit
-- [ ] result taxonomy が typed
+- [ ] solver-neutral Expr DAG
+- [ ] backend-native object leak なし
+- [ ] architecture-neutral translator
+- [ ] fast evaluator preserved
+- [ ] explicit UnknownSemantic
+- [ ] typed result taxonomy
 
-## Correctness
+## Proof soundness
 
-- [ ] bitvector overflow / signedness tests green
-- [ ] known SAT/UNSAT corpus green
-- [ ] timeout/unsupported/cancel cannot become proof
-- [ ] branch reachability E2E green
-- [ ] equivalence positive/negative corpus green
-- [ ] patch return-equal/memory-different caseを誤認しない
+- [ ] proof eligibility machine-enforced
+- [ ] local feasibility/global reachability distinction
+- [ ] incomplete translation cannot prove
+- [ ] incomplete path coverage cannot mint global unreachable
+- [ ] timeout/resource/unsupported/cancel cannot prove
+- [ ] SAT model validation implemented for supported subset
+- [ ] bitvector edge semantics fixed
+
+## Verification features
+
+- [ ] edge feasibility E2E
+- [ ] bounded equivalence E2E
+- [ ] patch verification E2E
+- [ ] strong/global reachability only if completeness contract is actually satisfied
 
 ## Evidence
 
-- [ ] proof has query hash
-- [ ] backend/version captured
-- [ ] semantic/translator versions captured
-- [ ] origin/evidence chain preserved
-- [ ] partial translation cannot generate `confirmed`
+- [ ] query hash + canonical artifact/version
+- [ ] backend/version/options
+- [ ] semantic/translator versions
+- [ ] assumptions/completeness dimensions
+- [ ] origin chain
+- [ ] BinaryId/PatchSetId for patch proof
 
-## Performance / safety
+## Resource/security
 
-- [ ] strict wall/solver/state budgets
-- [ ] cancellation works
-- [ ] repeated sessions do not leak materially
-- [ ] iPad/browser measurements recorded
-- [ ] backend unavailable/failure is recoverable
+- [ ] wall/solver/state limits
+- [ ] cancellation/dispose races tested
+- [ ] memory budget enforcement mechanism classified
+- [ ] iPad/browser measurements
+- [ ] remote solver privacy policy if applicable
+- [ ] stale result cannot publish after cancel/replacement
 
 ## Regression
 
-- [ ] current symbolic tests green
-- [ ] semantic regression green
-- [ ] decompiler regression green
-- [ ] compiler-truth / differential gates remain green as applicable
-- [ ] AI evidence/security boundaries green
-- [ ] exact tested SHA recorded
+- [ ] FastSymbolicEvaluator regression
+- [ ] semantic/decompiler regression
+- [ ] compiler-truth/differential gates as applicable
+- [ ] adversarial BV corpus
+- [ ] model validation corpus
+- [ ] cache/version invalidation tests
+- [ ] exact tested SHA
+- [ ] independent soundness review resolved
 
 ---
 
-# 24. 最短で進めるための実装順
-
-実作業で迷ったらこの順で進めます。
+# 27. 最短実装順
 
 ```text
-1. Result taxonomy を固定
-2. Bool/BV Expr DAG を作る
-3. deterministic serializer/hash を作る
-4. tiny evaluator + unit corpus で意味を固定
-5. Semantic IR translator の narrow subset を作る
-6. test backend で query orchestration を完成
-7. first real SolverBackend を接続
-8. Branch Reachability を E2E 完成
-9. Evidence を固定
-10. Equivalence を追加
-11. Patch verification を追加
-12. iPad/browser budgets と failure recovery を詰める
-13. full gate
+1. Preflight exact main SHA / prerequisite contracts
+2. Result taxonomy + proof eligibility + query polarity
+3. Golden adversarial corpus
+4. Bool/BV Expr contract
+5. A Expr implementation | B translator scaffolding | C backend lifecycle を並列
+6. First integration: query → backend → model validation
+7. Conditional Edge Feasibility E2E
+8. Evidence/query API integration
+9. Global reachability は completeness prerequisites がある場合のみ
+10. Bounded Equivalence
+11. Patch Verification
+12. Cache/version/privacy/resource hardening
+13. iPad/browser + full gate
 ```
 
-solver dependency の選定を 1番目にしないことが重要です。
+これが「速いが危険」でも「安全だが直列で遅い」でもない順序です。
 
 ---
 
-# 25. 実装開始前の ADR / decision checklist
+# 28. 実装開始前 ADR checklist
 
-最低限、以下は明示的 decision を残します。
-
-- [ ] first solver backend と version/license
-- [ ] local WASM / native / remote の deployment policy
-- [ ] expression sort/version schema
-- [ ] supported op matrix
-- [ ] `UnknownSemantic` と symbolic input の区別
+- [ ] first backend exact version/license
+- [ ] deployment local/WASM/native/remote
+- [ ] remote data policy
+- [ ] Bool/BV schema/version
+- [ ] edge semantics for shifts/div/rem/casts
+- [ ] UnknownSemantic vs FreshSymbol
 - [ ] SolverResult taxonomy
-- [ ] timeout/cancellation mechanics
-- [ ] SymbolicEvidence schema
-- [ ] equivalence scope semantics
-- [ ] patch verifier が比較する state surface
-- [ ] replay artifact format
+- [ ] proof eligibility
+- [ ] assumption/completeness taxonomy
+- [ ] timeout/cancel/dispose
+- [ ] memory budget enforcement class
+- [ ] SymbolicEvidence
+- [ ] equivalence scope/correspondence
+- [ ] patch state surface
+- [ ] replay/cache format/version policy
 
 ---
 
-# 26. Phase 9 の成功イメージ
+# 29. 成功イメージ
 
-Beginner-facing UI では solver 名を前面に出す必要はありません。
-
-理想:
+Beginner-facing:
 
 ```text
-この分岐は到達できる？
+この分岐は通れる？
 
-→ 到達できません（検証済み）
+→ この地点まで到達した前提では、通れません（検証済み）
 
-理由:
-- 条件 A が成立するには x < 10 が必要
-- 直前の path constraint では x >= 10
-- 両方を満たす入力は存在しない
+前提:
+- source block entry が成立
+- x >= 10
 
-[証拠を見る]
-  ↓
-SymbolicEvidence
-  ↓
-constraint / solver result
-  ↓
-SSA / MemorySSA
-  ↓
-Semantic IR
-  ↓
-instruction / bytes
+分岐条件:
+- x < 10
+
+両方を満たす値はありません。
 ```
 
-Expert-facing view では:
+重要なのは、global unreachable ではない場合に UI が勝手に「このコードは絶対実行されない」と強めないことです。
+
+Expert-facing:
 
 ```text
-Query hash
-Normalized constraints
-Backend/version
+Claim kind
+Scope/preconditions
+Completeness dimensions
+Normalized query/hash
+Backend/version/options
 SAT/UNSAT/UNKNOWN
-Model / unsat proof metadata where available
-Budget
-Completeness
+Validated model / proof metadata
+Budget enforcement class
 Origin mapping
 ```
 
-まで降りられます。
-
-これは Hex の evidence-first architecture と完全に同じ方向です。
-
 ---
 
-# 27. 結論
+# 30. 結論
 
-Phase 9 の本質は「強い solver を積むこと」ではありません。
-
-本質は:
+Phase 9 の本質は solver の強さではありません。
 
 ```text
-Semantic truth
-  → bounded query
-  → exact translation
-  → backend-neutral proof request
+semantic truth
+  → explicit bounded claim
+  → exact conservative translation
+  → backend-neutral query
   → typed solver result
+  → validation / eligibility
   → evidence
 ```
 
-という信頼できる verification boundary を作ることです。
+最初の勝ち筋は **Conditional Edge Feasibility** です。
 
-最初の勝ち筋は **Branch Reachability**。
+そこから completeness を満たせる場合のみ strong/global reachability、次に **Bounded Equivalence**、最後に **Patch Verification** へ進みます。
 
-そこから **Bounded Equivalence**、最後に **Patch Verification** へ進みます。
+Corpus は最後ではなく最初、A/B/C は contract を固定して並列、shared seams は vertical slice ごとに小さく統合します。
 
-現行 FastSymbolicEvaluator は残し、cheap path と solver-backed proof path を分離します。
-
-この順序なら、Phase 9 で最も危険な bitvector、unknown semantics、memory side effects、state explosion、browser resource 問題を一つずつ隔離して解けます。
+これにより Phase 9 の主要事故源である false proof、bitvector、unknown semantics、memory/call effects、scope overclaim、state explosion、browser resource、remote privacy、integration bottleneck を早期に隔離できます。
