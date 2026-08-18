@@ -29,6 +29,7 @@ jobs:
           python3 tools/validation/tmp-consolidate-open-prs.py
           python3 tools/validation/tmp-overlay-pr883.py
           python3 tools/validation/tmp-overlay-pr884.py
+          python3 tools/validation/tmp-overlay-pr885.py
 
       - name: Build canonical generated userscript
         run: npm run userscript:build
@@ -45,6 +46,7 @@ jobs:
           node tests/dev-agent/iframe-worker-pool-completion-events.mjs
           node tests/issues-802-821-824-859-866.mjs
           node tests/issues-799-801-806-807-810.mjs
+          node tests/issue-843-ccmp-guard.mjs
           node --test tests/phase4/ownership/mixed-integration.test.mjs
           git diff --name-only -z "$BASE_SHA" | node tools/validation/phase4/mixed-integration.mjs --files0-stdin
 
@@ -55,7 +57,17 @@ jobs:
         run: npm run check
 
       - name: Generated idempotence verification
-        run: npm run userscript:build
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run userscript:build
+          tmpdir="$(mktemp -d)"
+          cp userscript/hex.user.js "$tmpdir/hex.user.js"
+          cp userscript/hex.user.template.js "$tmpdir/hex.user.template.js"
+          npm run userscript:build
+          cmp "$tmpdir/hex.user.js" userscript/hex.user.js
+          cmp "$tmpdir/hex.user.template.js" userscript/hex.user.template.js
+          rm -rf "$tmpdir"
 
       - name: Publish only the verified product tree
         shell: bash
@@ -66,9 +78,20 @@ jobs:
             .github/workflows/migration-guardrails.yml
           rm tools/validation/tmp-consolidate-open-prs.py \
              tools/validation/tmp-overlay-pr883.py \
-             tools/validation/tmp-overlay-pr884.py
+             tools/validation/tmp-overlay-pr884.py \
+             tools/validation/tmp-overlay-pr885.py
+
+          # Rebuild only after integration-only files are gone. Then prove a
+          # second canonical build produces byte-identical generated output.
           npm run userscript:build
-          npm run generated:check
+          tmpdir="$(mktemp -d)"
+          cp userscript/hex.user.js "$tmpdir/hex.user.js"
+          cp userscript/hex.user.template.js "$tmpdir/hex.user.template.js"
+          npm run userscript:build
+          cmp "$tmpdir/hex.user.js" userscript/hex.user.js
+          cmp "$tmpdir/hex.user.template.js" userscript/hex.user.template.js
+          rm -rf "$tmpdir"
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add \
@@ -81,6 +104,7 @@ jobs:
             js/interproc.js \
             js/objc-legacy.js \
             js/rtti.js \
+            js/verify.js \
             js/targets/abi/riscv-lp64.js \
             js/userscript/dev/frame-mesh/iframe-worker-pool.js \
             js/userscript/dev/parent-worker-runtime.js \
@@ -89,6 +113,8 @@ jobs:
             tests/dev-agent/iframe-worker-pool-completion-events.mjs \
             tests/issues-802-821-824-859-866.mjs \
             tests/issues-799-801-806-807-810.mjs \
+            tests/issue-843-ccmp-guard.mjs \
+            tests/issues-550-559.mjs \
             tools/validation/phase4/mixed-integration.mjs \
             tests/phase4/ownership/mixed-integration.test.mjs \
             .github/workflows/phase4-ownership.yml \
@@ -102,7 +128,8 @@ jobs:
             .github/workflows/migration-guardrails.yml \
             tools/validation/tmp-consolidate-open-prs.py \
             tools/validation/tmp-overlay-pr883.py \
-            tools/validation/tmp-overlay-pr884.py
+            tools/validation/tmp-overlay-pr884.py \
+            tools/validation/tmp-overlay-pr885.py
           git diff --cached --check
           git commit -m "Finalize all current issue fixes on current main"
           git push origin HEAD:integrate/open-issue-fixes-20260819
