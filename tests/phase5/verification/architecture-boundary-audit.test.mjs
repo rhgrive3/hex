@@ -23,9 +23,15 @@ function executableLine(raw) {
   return line && !line.startsWith('*') && !line.startsWith('/*') ? line : '';
 }
 
-const x86Register = /['"](?:r(?:ax|bx|cx|dx|si|di|bp|sp|8|9|10|11|12|13|14|15)|e(?:ax|bx|cx|dx|si|di|bp|sp)|[abcd][lh]|xmm\d+|ymm\d+|mxcsr|rflags|cf|zf|sf|of|pf|af)['"]/i;
-const x86Mnemonic = /['"](?:adc|sbb|cmpxchg|xadd|movzx|movsx|movsxd|set[a-z]+|cmov[a-z]+|ucomiss|ucomisd|addss|addsd|movaps|movups|vxorps|vzeroupper)['"]/i;
+const x86Register = /['"](?:r(?:ax|bx|cx|dx|si|di|bp|sp|8|9|10|11|12|13|14|15)|e(?:ax|bx|cx|dx|si|di|bp|sp)|[bcd][lh]|xmm\d+|ymm\d+|mxcsr|rflags|cf|zf|sf|of|pf|af)['"]/i;
+const x86ConditionSuffix = '(?:o|no|b|nae|c|nb|ae|nc|e|z|ne|nz|be|na|nbe|a|s|ns|p|pe|np|po|l|nge|nl|ge|le|ng|nle|g|cc)';
+const x86Mnemonic = new RegExp(`['"](?:adc|sbb|cmpxchg|xadd|movzx|movsx|movsxd|set${x86ConditionSuffix}|cmov${x86ConditionSuffix}|ucomiss|ucomisd|addss|addsd|movaps|movups|vxorps|vzeroupper)['"]`, 'i');
+const x86AlRegister = /(?:\b(?:register|reg)(?:Name|Id)?\b[^\n]*['"]al['"]|['"]al['"][^\n]*\b(?:register|reg)(?:Name|Id)?\b)/i;
 const branchContext = /(?:===|!==|==|!=|\bcase\b|\bswitch\b|\.includes\s*\(|\.has\s*\(|\.get\s*\()/;
+
+function isX86SpecificBranch(line) {
+  return x86Register.test(line) || x86Mnemonic.test(line) || x86AlRegister.test(line);
+}
 
 test('generic semantic/analysis/decompiler code contains no x86-specific semantic branch', () => {
   const genericRoots = ['js/semantics', 'js/analysis', 'js/decompiler', 'js/core'];
@@ -35,11 +41,30 @@ test('generic semantic/analysis/decompiler code contains no x86-specific semanti
     lines.forEach((raw, index) => {
       const line = executableLine(raw);
       if (!line || !branchContext.test(line)) return;
-      if (x86Register.test(line) || x86Mnemonic.test(line)) findings.push({ file, line:index + 1, source:line.slice(0, 300) });
+      if (isX86SpecificBranch(line)) findings.push({ file, line:index + 1, source:line.slice(0, 300) });
     });
   }
   console.log(`P5_6_GENERIC_ARCHITECTURE_LEAK_AUDIT=${JSON.stringify({ scannedFiles:sourceFiles(genericRoots).length, count:findings.length, findings })}`);
   assert.equal(findings.length, 0, `generic x86-specific semantic leak: ${JSON.stringify(findings[0])}`);
+});
+
+test('architecture-boundary detector rejects only actual x86 vocabulary', () => {
+  const falsePositiveForms = [
+    "if (select?.op !== 'sel' || !['set', 'setm'].includes(select.sub)) return null;",
+    "if (select?.op === 'sel' && (select.sub === 'set' || select.sub === 'setm')) return null;",
+    "case 'al': case 'nv': return true;",
+    "if (cond === 'al' || cond === 'nv') return true;",
+    "if (d.sub === 'set' || d.sub === 'setm') return null;",
+  ];
+  for (const line of falsePositiveForms) assert.equal(isX86SpecificBranch(line), false, line);
+
+  const truePositiveForms = [
+    "if (opcode === 'sete') return null;",
+    "if (register === 'al') return null;",
+    "if (['al'].includes(register)) return null;",
+    "if (opcode === 'movzx') return null;",
+  ];
+  for (const line of truePositiveForms) assert.equal(isX86SpecificBranch(line), true, line);
 });
 
 test('formatted opStr is not parsed as x86 semantic authority', () => {
