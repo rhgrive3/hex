@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { installDevBootstrapHost } from '../../js/userscript/dev/bootstrap-host.js';
 import { runProductionDevBootstrap } from '../../js/ai/dev/bootstrap/production-bootstrap.js';
+import { readDevBootstrapRequested, shouldEnableDevBootstrap } from '../../js/userscript/embed-bootstrap.js';
 import {
   DEV_BOOTSTRAP_EXTENSION,
   DEV_BOOTSTRAP_ROUND4_PROOF_CAPABILITY,
@@ -15,11 +16,23 @@ const BUILD = 'b'.repeat(24);
 const TOKEN = 'c'.repeat(64);
 const sha256 = async (value) => createHash('sha256').update(String(value)).digest('hex');
 
+testBootstrapOptInPolicy();
 await testParentHandoffBoundary();
 await testProductionOrchestratorGenerations();
 await testRequiredSupervisorProof();
 
 console.log('Dev Agent Round 4 production bootstrap tests passed');
+
+function testBootstrapOptInPolicy() {
+  assert.equal(readDevBootstrapRequested({ search: '' }), false, 'normal userscript startup must not request the Dev bootstrap');
+  assert.equal(readDevBootstrapRequested({ search: '?__hex_dev_bootstrap=0' }), false, 'false-like values must not enable the Dev bootstrap');
+  assert.equal(readDevBootstrapRequested({ search: '?__hex_dev_bootstrap=1' }), true, 'explicit opt-in must enable the Dev bootstrap');
+  assert.equal(readDevBootstrapRequested({ href: 'https://chatgpt.com/?__hex_dev_bootstrap=1' }), true, 'href fallback must preserve explicit opt-in');
+  assert.equal(shouldEnableDevBootstrap({ sourceCommit: COMMIT, buildId: BUILD, locationRef: { search: '' } }), false, 'deployment identity alone must not auto-enable Dev bootstrap');
+  assert.equal(shouldEnableDevBootstrap({ sourceCommit: COMMIT, buildId: BUILD, locationRef: { search: '?__hex_dev_bootstrap=1' } }), true, 'identity plus explicit opt-in must enable Dev bootstrap');
+  assert.equal(shouldEnableDevBootstrap({ sourceCommit: null, buildId: BUILD, locationRef: { search: '?__hex_dev_bootstrap=1' } }), false, 'opt-in without commit identity must stay disabled');
+  assert.equal(shouldEnableDevBootstrap({ sourceCommit: COMMIT, buildId: null, locationRef: { search: '?__hex_dev_bootstrap=1' } }), false, 'opt-in without build identity must stay disabled');
+}
 
 async function testParentHandoffBoundary() {
   const parent = fakeWindow();
@@ -75,6 +88,19 @@ async function testProductionOrchestratorGenerations() {
       expectedCommit: COMMIT, expectedBuildId: BUILD, expectedExtensionVersion: '2',
     },
   };
+  const disabledParent = responsiveParent({ handoff: null, runtimeIdentity: { commit: COMMIT, buildId: BUILD } });
+  const disabledGlobal = fakeSandboxGlobal(disabledParent, '1', false);
+  const disabledCalls = [];
+  const disabled = await runProductionDevBootstrap({
+    engine: { devBootstrap: { prepare: async () => disabledCalls.push('prepare') } },
+    session: { current: { id: 'hex-conversation' } },
+    bridge: { request: async () => { throw new Error('standard startup must not send a bootstrap prompt'); } },
+    globalObject: disabledGlobal,
+  });
+  assert.equal(disabled.state, 'skipped');
+  assert.equal(disabled.reason, 'production-bootstrap-disabled');
+  assert.deepEqual(disabledCalls, []);
+
   const firstParent = responsiveParent({ handoff: null, runtimeIdentity: { commit: COMMIT, buildId: BUILD }, expectedReloadHandoff: handoff });
   const firstGlobal = fakeSandboxGlobal(firstParent);
   const firstCalls = [];
@@ -165,11 +191,11 @@ function responsiveParent({ handoff, runtimeIdentity, expectedReloadHandoff = nu
   return parent;
 }
 
-function fakeSandboxGlobal(parent, generation = '1') {
+function fakeSandboxGlobal(parent, generation = '1', bootstrap = true) {
   const target = fakeWindow();
   parent.target = target;
   target.parent = parent;
-  target.location = { origin: 'null', search: `?__hex_embed_generation=${generation}&__hex_dev_bootstrap=1` };
+  target.location = { origin: 'null', search: `?__hex_embed_generation=${generation}${bootstrap ? '&__hex_dev_bootstrap=1' : ''}` };
   target.__HEX_EMBED_SANDBOX_TOKEN__ = TOKEN;
   return target;
 }
