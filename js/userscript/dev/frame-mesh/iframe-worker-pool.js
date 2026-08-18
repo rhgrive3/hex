@@ -40,6 +40,13 @@ export class IframeWorkerPool {
     this.slots = new Map();
     this.leases = new Map();
     this.waiters = [];
+    this.eventListeners = new Set();
+  }
+
+  onEvent(listener) {
+    if (typeof listener !== 'function') throw new TypeError('Worker pool event listener must be a function.');
+    this.eventListeners.add(listener);
+    return () => this.eventListeners.delete(listener);
   }
 
   async provision({ size = this.maxWorkers, projectUrl = null, timeoutMs = READY_TIMEOUT_MS } = {}) {
@@ -90,10 +97,22 @@ export class IframeWorkerPool {
     if (slot.pending) throw poolError('worker-busy', 'Worker slot already has an active task.');
     const text = String(instruction || '').trim();
     if (!text) throw new TypeError('Worker instruction is required.');
+    const token = Object.freeze({
+      completionId: randomId('completion', this.cryptoRef),
+      leaseId: slot.leaseId,
+      workerId: slot.workerId,
+      poolRunId: slot.runId,
+      taskId: slot.taskId,
+      slot: slot.index,
+    });
     const pending = Promise.resolve().then(() => slot.client.send({ ...this.identity(slot), instruction: text }));
     slot.pending = pending;
+    slot.pendingToken = token;
     slot.lastResult = null;
-    pending.then((result) => { slot.lastResult = result; slot.pending = null; }, (error) => { slot.lastResult = { status: 'failed', error: { code: String(error?.code || 'provider-error'), message: String(error?.message || error).slice(0, 512) } }; slot.pending = null; }).finally(() => this.flushWaiters());
+    pending.then(
+      (result) => this.settleStart(slot, token, result),
+      (error) => this.settleStart(slot, token, null, error),
+    ).finally(() => this.flushWaiters());
     return { started: true, ...this.publicSlot(slot) };
   }
 
@@ -110,7 +129,7 @@ export class IframeWorkerPool {
     try { await slot.client.release(this.identity(slot)); }
     catch (error) { if (String(error?.code || '') !== 'worker-not-claimed') throw error; }
     this.leases.delete(slot.leaseId);
-    slot.claimed = false; slot.leaseId = null; slot.workerId = null; slot.runId = null; slot.taskId = null; slot.lastResult = null;
+    slot.claimed = false; slot.leaseId = null; slot.workerId = null; slot.runId = null; slot.taskId = null; slot.lastResult = null; slot.pendingToken = null;
     this.flushWaiters();
     return this.publicSlot(slot);
   }
@@ -135,6 +154,7 @@ export class IframeWorkerPool {
     slot.runId = null;
     slot.taskId = null;
     slot.pending = null;
+    slot.pendingToken = null;
     slot.lastResult = null;
     slot.error = { code: 'worker-discarded', message: String(reason || 'worker-discarded').slice(0, 384) };
     this.flushWaiters();
@@ -148,6 +168,7 @@ export class IframeWorkerPool {
     for (const slot of this.slots.values()) closeSlot(slot);
     for (const waiter of this.waiters) waiter.reject(poolError('transport-failure', 'Worker pool closed.'));
     this.waiters = [];
+    this.eventListeners.clear();
     this.leases.clear();
     this.slots.clear();
   }
@@ -181,7 +202,7 @@ export class IframeWorkerPool {
     }
     const slot = {
       index, href, handle, runtime: null, runtimeDocument: null, client: null, ready: false, claimed: false, reserving: false,
-      leaseId: null, workerId: null, runId: null, taskId: null, pending: null, lastResult: null, error: null,
+      leaseId: null, workerId: null, runId: null, taskId: null, pending: null, pendingToken: null, lastResult: null, error: null,
       createdAt: this.now(),
     };
     this.slots.set(index, slot);
@@ -231,6 +252,7 @@ export class IframeWorkerPool {
 
   readyCount() { return [...this.slots.values()].filter((slot) => slot.ready).length; }
   availableSlot() { return [...this.slots.values()].sort((a, b) => a.index - b.index).find((slot) => slot.ready && !slot.claimed && !slot.reserving && !slot.error) || null; }
+  hasLease(value) { const id = String(value || ''); const index = this.leases.get(id); return !!index && this.slots.get(index)?.leaseId === id; }
 
   async claimSlot(slot, taskId, signal = null) {
     if (signal?.aborted) throw abortError(signal.reason);
@@ -263,6 +285,45 @@ export class IframeWorkerPool {
         code: 'worker-claim-cancel-cleanup-failed',
         message: `Cancelled Worker claim cleanup failed: ${String(error?.message || error).slice(0, 384)}`,
       };
+    }
+  }
+
+  settleStart(slot, token, value, error = null) {
+    if (slot.pendingToken !== token || slot.leaseId !== token.leaseId) return;
+    const result = error
+      ? { status: 'failed', error: { code: String(error?.code || 'provider-error'), message: String(error?.message || error).slice(0, 512) } }
+      : value;
+    slot.lastResult = result;
+    slot.pending = null;
+    slot.pendingToken = null;
+    this.emitTerminal(token, result, error);
+  }
+
+  emitTerminal(token, result, error = null) {
+    const status = String(result?.status || (error ? 'failed' : 'completed')).toLowerCase();
+    const type = status === 'failed' || error
+      ? 'worker.failed'
+      : status === 'cancelled' || status === 'canceled'
+        ? 'worker.cancelled'
+        : 'worker.completed';
+    const event = Object.freeze({
+      type,
+      data: Object.freeze({
+        poolLeaseId: token.leaseId,
+        completionId: token.completionId,
+        poolRunId: token.poolRunId,
+        workerId: token.workerId,
+        taskId: token.taskId,
+        slot: token.slot,
+        status: result?.status || (error ? 'failed' : 'completed'),
+        responseText: result?.responseText ?? null,
+        chatgptConversationId: result?.chatgptConversationId ?? null,
+        ...(error ? { code: String(error?.code || 'provider-error'), message: String(error?.message || error).slice(0, 512) } : {}),
+      }),
+      observedAt: this.now(),
+    });
+    for (const listener of [...this.eventListeners]) {
+      try { listener(event); } catch { /* event observers must not break pool settlement */ }
     }
   }
 
@@ -362,7 +423,7 @@ function normalizeBase(locationRef) {
 function failedSlot(index, error, fallbackCode = 'worker-frame-unavailable') {
   return {
     index, handle: null, runtime: null, runtimeDocument: null, client: null, ready: false, claimed: false, reserving: false,
-    leaseId: null, workerId: null, runId: null, taskId: null, pending: null, lastResult: null,
+    leaseId: null, workerId: null, runId: null, taskId: null, pending: null, pendingToken: null, lastResult: null,
     error: errorRecord(error, fallbackCode), createdAt: new Date().toISOString(),
   };
 }
