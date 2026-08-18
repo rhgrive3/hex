@@ -51,9 +51,11 @@ async function loadRuntime() {
     body: JSON.stringify({ nonce, loaderVersion: LOADER_VERSION, buildId: EXPECTED_BUILD, requestId, sessionIdentity, clientPublicKey }),
   }));
   if (!bootstrap || bootstrap.buildId !== EXPECTED_BUILD || Date.parse(bootstrap.expiry) <= Date.now()) throw new Error('Runtime bootstrap identity or expiry could not be verified.');
+  const sourceCommit = normalizeCommit(bootstrap.sourceCommit);
+  globalThis.__HEX_DEPLOYMENT_COMMIT__ = sourceCommit;
   const serverPublicKey = await cryptoStage('ECDH server-key import', () => crypto.subtle.importKey('jwk', bootstrap.serverPublicKey, { name: 'ECDH', namedCurve: 'P-256' }, false, []));
   const shared = await cryptoStage('ECDH shared-secret derivation', () => crypto.subtle.deriveBits({ name: 'ECDH', public: serverPublicKey }, keyPair.privateKey, 256));
-  const material = await cryptoStage('HKDF material import', () => crypto.subtle.importKey('raw', toExactArrayBuffer(shared), 'HKDF', false, ['deriveKey']));
+  const material = await cryptoStage('HKDF material import', () => crypto.subtle.importKey('raw', shared, 'HKDF', false, ['deriveKey']));
   const wrappingKey = await cryptoStage('HKDF wrapping-key derivation', () => crypto.subtle.deriveKey({
     name: 'HKDF', hash: 'SHA-256',
     salt: toExactArrayBuffer(fromB64(bootstrap.keyEnvelope.salt)),
@@ -87,6 +89,7 @@ async function loadRuntime() {
       apiOrigin: HEX_ORIGIN,
       loaderVersion: LOADER_VERSION,
       buildId: EXPECTED_BUILD,
+      sourceCommit,
       runtimeContentHash: String(bootstrap.manifest.contentHash || '').toLowerCase(),
       runtimeSourceProvider() {
         sourceCopies += 1;
@@ -172,3 +175,4 @@ function fromB64(value) { const raw = String(value).replaceAll('-', '+').replace
 function toHex(bytes) { return Array.from(bytes, (value) => value.toString(16).padStart(2, '0')).join(''); }
 function utf8(value) { return new TextEncoder().encode(String(value)); }
 function delay(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
+function normalizeCommit(value) { const text = String(value || '').trim().toLowerCase(); return /^[0-9a-f]{40}$/.test(text) ? text : null; }
