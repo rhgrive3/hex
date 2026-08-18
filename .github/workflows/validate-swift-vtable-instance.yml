@@ -26,10 +26,10 @@ jobs:
         run: node tests/swift-runtime.mjs
       - name: Decompiler integration suite
         run: npm run decompiler:test
-      - name: Full repository check
-        run: npm run check
       - name: Generate canonical userscript
         run: npm run userscript:build
+      - name: Full repository check
+        run: npm run check
       - name: Commit canonical generated artifacts
         run: |
           git config user.name github-actions[bot]
