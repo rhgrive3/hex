@@ -71,10 +71,10 @@ export class IframeWorkerPool {
   }
 
   async claim({ taskId = null, wait = true, signal = null } = {}) {
-    const slot = this.availableSlot();
-    if (slot) return this.claimSlot(slot, taskId);
-    if (wait === false) throw poolError('worker-pool-full', 'All ready Worker slots are claimed.');
     if (signal?.aborted) throw abortError(signal.reason);
+    const slot = this.availableSlot();
+    if (slot) return this.claimSlot(slot, taskId, signal);
+    if (wait === false) throw poolError('worker-pool-full', 'All ready Worker slots are claimed.');
     return new Promise((resolve, reject) => {
       const waiter = { taskId: taskId == null ? null : String(taskId), resolve, reject, signal, onAbort: null };
       waiter.onAbort = () => { this.waiters = this.waiters.filter((item) => item !== waiter); reject(abortError(signal?.reason)); };
@@ -197,7 +197,8 @@ export class IframeWorkerPool {
   readyCount() { return [...this.slots.values()].filter((slot) => slot.ready).length; }
   availableSlot() { return [...this.slots.values()].sort((a, b) => a.index - b.index).find((slot) => slot.ready && !slot.claimed && !slot.reserving && !slot.error) || null; }
 
-  async claimSlot(slot, taskId) {
+  async claimSlot(slot, taskId, signal = null) {
+    if (signal?.aborted) throw abortError(signal.reason);
     if (slot.claimed || slot.reserving) throw poolError('worker-pool-full', 'Worker slot is already claimed or reserved.');
     slot.reserving = true;
     const leaseId = randomId('lease', this.cryptoRef);
@@ -205,6 +206,10 @@ export class IframeWorkerPool {
     const workerId = randomId('worker', this.cryptoRef);
     try {
       await slot.client.claim({ runId, workerId });
+      if (signal?.aborted) {
+        await this.rollbackCancelledClaim(slot, { runId, workerId });
+        throw abortError(signal.reason);
+      }
       slot.claimed = true; slot.leaseId = leaseId; slot.runId = runId; slot.workerId = workerId;
       slot.taskId = taskId == null ? null : String(taskId);
       this.leases.set(leaseId, slot.index);
@@ -212,6 +217,17 @@ export class IframeWorkerPool {
     } finally {
       slot.reserving = false;
       if (!slot.claimed) this.flushWaiters();
+    }
+  }
+
+  async rollbackCancelledClaim(slot, identity) {
+    try { await slot.client.release(identity); }
+    catch (error) {
+      if (String(error?.code || '') === 'worker-not-claimed') return;
+      slot.error = {
+        code: 'worker-claim-cancel-cleanup-failed',
+        message: `Cancelled Worker claim cleanup failed: ${String(error?.message || error).slice(0, 384)}`,
+      };
     }
   }
 
@@ -236,7 +252,7 @@ export class IframeWorkerPool {
       if (!slot) return;
       const waiter = this.waiters.shift();
       waiter.signal?.removeEventListener?.('abort', waiter.onAbort);
-      this.claimSlot(slot, waiter.taskId).then(waiter.resolve, waiter.reject);
+      this.claimSlot(slot, waiter.taskId, waiter.signal).then(waiter.resolve, waiter.reject);
     }
   }
 }
