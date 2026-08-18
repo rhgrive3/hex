@@ -20,6 +20,10 @@ function evaluate(rows, resultRow = rows.length - 1, resultReg = 'x2') {
   return value;
 }
 
+function assertBits(actual, expected, bits, message) {
+  assert.equal(BigInt.asUintN(bits, actual), BigInt.asUintN(bits, expected), message);
+}
+
 function run32(mn, value, count) {
   return evaluate([
     { mn:'mov', ops:`w0, #${value}` },
@@ -37,25 +41,25 @@ function run64(mn, value, count) {
 }
 
 // A64 variable shifts consume only the low 5 bits for W operations.
-for (const [mn, value, expected32, expected33] of [
-  ['lslv', 3, 3n, 6n],
-  ['lsrv', 8, 8n, 4n],
-  ['asrv', 8, 8n, 4n],
+for (const [mn, value, expected31, expected32, expected33] of [
+  ['lslv', 3, 0x80000000n, 3n, 6n],
+  ['lsrv', 8, 0n, 8n, 4n],
+  ['asrv', 8, 0n, 8n, 4n],
 ]) {
-  assert.equal(run32(mn, value, 31), mn === 'lslv' ? 0x80000000n : 0n);
-  assert.equal(run32(mn, value, 32), expected32, `${mn} W count 32 must alias count 0`);
-  assert.equal(run32(mn, value, 33), expected33, `${mn} W count 33 must alias count 1`);
+  assertBits(run32(mn, value, 31), expected31, 32, `${mn} W count 31`);
+  assertBits(run32(mn, value, 32), expected32, 32, `${mn} W count 32 must alias count 0`);
+  assertBits(run32(mn, value, 33), expected33, 32, `${mn} W count 33 must alias count 1`);
 }
 
 // A64 variable shifts consume only the low 6 bits for X operations.
-for (const [mn, value, expected64, expected65] of [
-  ['lslv', 3, 3n, 6n],
-  ['lsrv', 8, 8n, 4n],
-  ['asrv', 8, 8n, 4n],
+for (const [mn, value, expected63, expected64, expected65] of [
+  ['lslv', 3, 0x8000000000000000n, 3n, 6n],
+  ['lsrv', 8, 0n, 8n, 4n],
+  ['asrv', 8, 0n, 8n, 4n],
 ]) {
-  assert.equal(run64(mn, value, 63), mn === 'lslv' ? 0x8000000000000000n : 0n);
-  assert.equal(run64(mn, value, 64), expected64, `${mn} X count 64 must alias count 0`);
-  assert.equal(run64(mn, value, 65), expected65, `${mn} X count 65 must alias count 1`);
+  assertBits(run64(mn, value, 63), expected63, 64, `${mn} X count 63`);
+  assertBits(run64(mn, value, 64), expected64, 64, `${mn} X count 64 must alias count 0`);
+  assertBits(run64(mn, value, 65), expected65, 64, `${mn} X count 65 must alias count 1`);
 }
 
 console.log('issue #798 expr variable-shift width contract: PASS');
