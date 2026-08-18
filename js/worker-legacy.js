@@ -1411,20 +1411,14 @@ async function scanProgram({ regionId, requestId, epoch, callLimit, refLimit, ki
 
       const memWrite = Words.memoryAccess(w);
       if (memWrite) {
-        const knownBase = !memWrite.indexed && memWrite.disp != null ? provenance.base(memWrite.base, index) : null;
-        if (knownBase != null) {
-          const full = memWrite.mode === 'post' ? knownBase : knownBase + memWrite.disp;
-          addRef(pc, full, memWrite.rmw ? 3 : memWrite.load ? 1 : memWrite.store ? 2 : 0);
-        }
         // FP/SIMD register numbers share the low encoding bits with xN/wN, but
-        // writing d8/q8 must not destroy an address held in x8.  Integer pair
-        // loads/RMWs may overwrite two GP results, while exclusive stores also
-        // write a separate status register.
+        // writing d8/q8 must not destroy an address held in x8.  Conversely,
+        // integer pair loads can overwrite both GP destinations, and pre/post
+        // indexed memory operations overwrite their base register.
         if (memWrite.load && !memWrite.vector) {
           provenance.kill(memWrite.reg);
           if (memWrite.pair && memWrite.reg2 != null) provenance.kill(memWrite.reg2);
         }
-        if (memWrite.statusReg != null) provenance.kill(memWrite.statusReg);
         if (memWrite.mode === 'pre' || memWrite.mode === 'post') provenance.kill(memWrite.base);
         continue;
       }
@@ -1555,7 +1549,6 @@ const SHAPE_INCREASE = 2;    // 増えた
 const SHAPE_CLAMP    = 4;    // 0 で止めていた
 const SHAPE_CROSS    = 8;    // 引く量が「別のオブジェクト」から来ている
 const SHAPE_SCALED   = 16;   // 引く量が掛け算・割り算を通っている（倍率つき）
-const SHAPE_ATOMIC_RMW = 32; // atomic read+write。方向を片側へ潰さず明示する
 
 /* 引く量の出どころ（evAmtKind） */
 const AMT_NONE = 0, AMT_FIELD = 1, AMT_IMM = 2, AMT_CALL = 3;
@@ -1677,71 +1670,41 @@ async function scanValueShapes({ regionId, requestId, epoch }) {
       if (Words.isCondBranch(w)) continue;
 
       const mem = Words.memoryAccess(w);
-      if (mem && !mem.indexed && mem.disp != null) {
+      if (mem && !mem.pair && !mem.indexed && mem.disp != null) {
         const d = Number(mem.disp);
         noteSpan(mem.base, d);
-
-        // Pair transfers are retained by the decoder/field-access paths but are
-        // not scalar value-shape events. Do not invent a one-register mutation.
-        if (mem.pair && !mem.rmw) continue;
-
-        if (mem.rmw) {
-// RMW is simultaneously a memory read and write. Record a neutral
-// atomic mutation event instead of routing it through the old
-// load-else-store split, then preserve the old-memory result register.
-evAddr[n] = region.vmAddr + BigInt(pos + i * 4);
-evDisp[n] = d;
-evSize[n] = mem.size;
-evFlags[n] = SHAPE_ATOMIC_RMW;
-evAmtKind[n] = AMT_NONE;
-evAmtDisp[n] = 0;
-evSpan[n] = spanOf[mem.base];
-evAmtSize[n] = 0;
-evAmtSpan[n] = 0;
-n++;
-if (n >= MAX_SHAPE_EVENTS) capped = true;
-
-const r = mem.resultReg != null ? mem.resultReg : mem.reg;
-if (r != null && r !== 31) {
-  spanOf[r] = 0;
-  pBase[r] = mem.base; pDisp[r] = d; pSize[r] = mem.size;
-  pDir[r] = 0; pClamp[r] = 0;
-  pAmtKind[r] = AMT_NONE; pAmtBase[r] = -1; pAmtDisp[r] = 0; pAmtScaled[r] = 0;
-  pAmtSize[r] = 0; pAmtSpan[r] = 0;
-}
-continue;
-        }
-
         if (mem.load) {
-const r = mem.reg;
-if (r !== 31) {
-  spanOf[r] = 0;
-  pBase[r] = mem.base; pDisp[r] = d; pSize[r] = mem.size;
-  pDir[r] = 0; pClamp[r] = 0;
-  pAmtKind[r] = AMT_NONE; pAmtBase[r] = -1; pAmtDisp[r] = 0; pAmtScaled[r] = 0;
-  pAmtSize[r] = 0; pAmtSpan[r] = 0;
-}
-continue;
+          const r = mem.reg;
+          if (r !== 31) {
+            spanOf[r] = 0;                     // 読み込んだ先は「別のもの」になる
+            pBase[r] = mem.base; pDisp[r] = d; pSize[r] = mem.size;
+            pDir[r] = 0; pClamp[r] = 0;
+            pAmtKind[r] = AMT_NONE; pAmtBase[r] = -1; pAmtDisp[r] = 0; pAmtScaled[r] = 0;
+            pAmtSize[r] = 0; pAmtSpan[r] = 0;
+          }
+          continue;
         }
-        // Store-back: if the value returns to the same location, record the mutation.
-        const src = mem.reg;
-        if (src < 31 && pBase[src] >= 0 && pDir[src] !== 0 &&
-  pBase[src] === mem.base && pDisp[src] === d) {
-let flags = pDir[src] > 0 ? SHAPE_INCREASE : SHAPE_DECREASE;
-if (pClamp[src]) flags |= SHAPE_CLAMP;
-if (pAmtScaled[src]) flags |= SHAPE_SCALED;
-if (pAmtKind[src] === AMT_FIELD && pAmtBase[src] >= 0 && pAmtBase[src] !== mem.base) flags |= SHAPE_CROSS;
-evAddr[n] = region.vmAddr + BigInt(pos + i * 4);
-evDisp[n] = d;
-evSize[n] = mem.size;
-evFlags[n] = flags;
-evAmtKind[n] = pAmtKind[src];
-evAmtDisp[n] = pAmtKind[src] === AMT_FIELD ? pAmtDisp[src] : 0;
-evSpan[n] = spanOf[mem.base];
-evAmtSize[n] = pAmtSize[src];
-evAmtSpan[n] = pAmtSpan[src];
-n++;
-if (n >= MAX_SHAPE_EVENTS) capped = true;
+        // 書き戻し — 同じ場所へ戻っているなら、それが「値が変わった瞬間」
+        const s = mem.reg;
+        if (s < 31 && pBase[s] >= 0 && pDir[s] !== 0 &&
+            pBase[s] === mem.base && pDisp[s] === d) {
+          let flags = pDir[s] > 0 ? SHAPE_INCREASE : SHAPE_DECREASE;
+          if (pClamp[s]) flags |= SHAPE_CLAMP;
+          if (pAmtScaled[s]) flags |= SHAPE_SCALED;
+          if (pAmtKind[s] === AMT_FIELD && pAmtBase[s] >= 0 && pAmtBase[s] !== mem.base) {
+            flags |= SHAPE_CROSS;
+          }
+          evAddr[n] = region.vmAddr + BigInt(pos + i * 4);
+          evDisp[n] = d;
+          evSize[n] = mem.size;
+          evFlags[n] = flags;
+          evAmtKind[n] = pAmtKind[s];
+          evAmtDisp[n] = pAmtKind[s] === AMT_FIELD ? pAmtDisp[s] : 0;
+          evSpan[n] = spanOf[mem.base];
+          evAmtSize[n] = pAmtSize[s];
+          evAmtSpan[n] = pAmtSpan[s];
+          n++;
+          if (n >= MAX_SHAPE_EVENTS) capped = true;
         }
         continue;
       }
@@ -1893,7 +1856,7 @@ async function findFieldAccess({ regionId, offset, size, limit, offsets, request
     for (let i = 0; i < words; i++) {
       const w = dv.getUint32(i * 4, true);
       const kind = Words.classifyWord(w);
-      if (kind !== Words.KIND.LOAD && kind !== Words.KIND.STORE && kind !== Words.KIND.ATOMIC) continue;
+      if (kind !== Words.KIND.LOAD && kind !== Words.KIND.STORE) continue;
       const mem = Words.memoryAccess(w);
       if (!mem || mem.disp == null || mem.indexed) continue;
       const slot = wanted.get(mem.disp.toString());
@@ -1901,20 +1864,14 @@ async function findFieldAccess({ regionId, offset, size, limit, offsets, request
       // 大きさが分かっているなら、それも合わせる（別の変数を拾わないため）
       if (slot.size > 0 && mem.size !== slot.size && !(slot.size > 8 && mem.size === 8)) continue;
       const byteOff = pos + i * 4;
-      const accessKinds = mem.rmw ? ['load', 'store'] : [mem.load ? 'load' : 'store'];
-      for (const accessKind of accessKinds) {
-        if (slot.out.length >= cap) break;
-        slot.out.push({
-          row: byteOff / 4,
-          addr: region.vmAddr + BigInt(byteOff),
-          kind: accessKind,
-          base: mem.base,
-          size: mem.size,
-          atomic: !!mem.atomic,
-          rmw: !!mem.rmw,
-        });
-        found++;
-      }
+      slot.out.push({
+        row: byteOff / 4,
+        addr: region.vmAddr + BigInt(byteOff),
+        kind: mem.load ? 'load' : 'store',
+        base: mem.base,
+        size: mem.size,
+      });
+      found++;
     }
     pos += words * 4;
     scanProgress(requestId, epoch, pos, total, found);
@@ -2142,19 +2099,14 @@ async function findXrefs({ regionId, target, limit, requestId, epoch }) {
       }
       const memWrite = Words.memoryAccess(w);
       if (memWrite) {
-        const knownBase = !memWrite.indexed && memWrite.disp != null ? provenance.base(memWrite.base, index) : null;
-        if (knownBase != null) {
-          const full = memWrite.mode === 'post' ? knownBase : knownBase + memWrite.disp;
-          if (full === want) {
-            out.push({ row: byteOff / 4, addr: pc, kind: memWrite.rmw ? 'rmw' : memWrite.load ? 'load' : 'store' });
-            if (out.length >= cap) break;
-          }
-        }
+        // FP/SIMD register numbers share the low encoding bits with xN/wN, but
+        // writing d8/q8 must not destroy an address held in x8.  Conversely,
+        // integer pair loads can overwrite both GP destinations, and pre/post
+        // indexed memory operations overwrite their base register.
         if (memWrite.load && !memWrite.vector) {
           provenance.kill(memWrite.reg);
           if (memWrite.pair && memWrite.reg2 != null) provenance.kill(memWrite.reg2);
         }
-        if (memWrite.statusReg != null) provenance.kill(memWrite.statusReg);
         if (memWrite.mode === 'pre' || memWrite.mode === 'post') provenance.kill(memWrite.base);
         continue;
       }
