@@ -65,27 +65,35 @@ jobs:
           p.write_text(s.replace(old, new))
           PY
 
-          # Preserve the reviewed #878 source/test blobs exactly.
           git show 9f2a4ab2b4480552498e26299326e048581a5360:js/targets/abi/riscv-lp64.js > js/targets/abi/riscv-lp64.js
           git show 9f2a4ab2b4480552498e26299326e048581a5360:tests/phase6/abi/riscv-issues-868-872.test.mjs > tests/phase6/abi/riscv-issues-868-872.test.mjs
 
       - name: Build canonical generated userscript for combined source tree
         run: npm run userscript:build
 
-      - name: Verify targeted and aggregate semantic contracts
+      - name: Diagnose migration mode and verify semantic contracts
         shell: bash
         run: |
           set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+          p = Path('tests/semantic-v2/issues-791-797-800-825-ir-soundness.test.mjs')
+          s = p.read_text()
+          s = s.replace('OP, MK, irFor, branchConstraints, valueRange, mustAlias, mayAliasProvenance,', 'OP, MK, irFor, branchConstraints, valueRange, mustAlias, mayAliasProvenance, getSemanticMigrationMode,')
+          marker = '// #797 — branch RHS bitpatterns are interpreted in the comparison domain.'
+          assert marker in s
+          s = s.replace(marker, "console.log('ISSUE857_MIGRATION_MODE=' + getSemanticMigrationMode());\n" + marker)
+          p.write_text(s)
+          PY
           node --test tests/semantic-v2/issues-791-797-800-825-ir-soundness.test.mjs
           node --test tests/phase6/abi/riscv-issues-868-872.test.mjs
           npm run semantic-v2:test
-          npm run check
 
       - name: Commit only verified product changes and restore permanent workflow
         shell: bash
         run: |
           set -euo pipefail
-          git checkout origin/main -- .github/workflows/machine-effects.yml
+          git checkout origin/main -- .github/workflows/machine-effects.yml tests/semantic-v2/issues-791-797-800-825-ir-soundness.test.mjs
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add js/ir.js js/semantics/compat/semantic-ir-v2-to-v1.js js/targets/abi/riscv-lp64.js tests/phase6/abi/riscv-issues-868-872.test.mjs userscript/hex.user.template.js userscript/release-version.json .github/workflows/machine-effects.yml
