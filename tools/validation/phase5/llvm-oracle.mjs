@@ -4,35 +4,76 @@ function parseByteField(text) {
   return Uint8Array.from(tokens.map((token) => Number.parseInt(token, 16)));
 }
 
+function parsedInstruction(match) {
+  const bytes = parseByteField(match[2]);
+  if (!bytes?.length) return null;
+  const asm = match[3].trim();
+  const [mnemonic = '', ...rest] = asm.split(/\s+/);
+  return {
+    address:BigInt(`0x${match[1]}`),
+    bytes,
+    length:bytes.length,
+    mnemonic,
+    operands:rest.join(' '),
+    asm,
+  };
+}
+
+function freezeInstruction(instruction) {
+  return Object.freeze({ ...instruction, bytes:Uint8Array.from(instruction.bytes) });
+}
+
 export function parseLlvmObjdump(text) {
   const functions = new Map();
   let current = null;
+  let pendingLock = null;
+  const flushPending = () => {
+    if (current && pendingLock) current.instructions.push(freezeInstruction(pendingLock));
+    pendingLock = null;
+  };
+
   for (const rawLine of String(text).split(/\r?\n/)) {
     const heading = /^\s*([0-9a-f]+)\s+<([^>]+)>:\s*$/i.exec(rawLine);
     if (heading) {
+      flushPending();
       const name = heading[2];
-      if (name.startsWith('p5_')) {
-        current = { name, address:BigInt(`0x${heading[1]}`), instructions:[] };
-        functions.set(name, current);
-      }
+      current = name.startsWith('p5_') ? { name, address:BigInt(`0x${heading[1]}`), instructions:[] } : null;
+      if (current) functions.set(name, current);
       continue;
     }
     if (!current) continue;
-    const instruction = /^\s*([0-9a-f]+):\s+((?:[0-9a-f]{2}(?:\s+|$))+)(.*)$/i.exec(rawLine);
+    const match = /^\s*([0-9a-f]+):\s+((?:[0-9a-f]{2}(?:\s+|$))+)(.*)$/i.exec(rawLine);
+    if (!match) continue;
+    const instruction = parsedInstruction(match);
     if (!instruction) continue;
-    const bytes = parseByteField(instruction[2]);
-    if (!bytes?.length) continue;
-    const asm = instruction[3].trim();
-    const [mnemonic = '', ...rest] = asm.split(/\s+/);
-    current.instructions.push(Object.freeze({
-      address:BigInt(`0x${instruction[1]}`),
-      bytes,
-      length:bytes.length,
-      mnemonic,
-      operands:rest.join(' '),
-      asm,
-    }));
+
+    if (pendingLock) {
+      const contiguous = instruction.address === pendingLock.address + BigInt(pendingLock.length);
+      if (contiguous && pendingLock.bytes.length === 1 && pendingLock.bytes[0] === 0xf0) {
+        const bytes = new Uint8Array(pendingLock.length + instruction.length);
+        bytes.set(pendingLock.bytes, 0);
+        bytes.set(instruction.bytes, pendingLock.length);
+        current.instructions.push(freezeInstruction({
+          ...instruction,
+          address:pendingLock.address,
+          bytes,
+          length:bytes.length,
+          asm:`lock ${instruction.asm}`,
+        }));
+        pendingLock = null;
+        continue;
+      }
+      flushPending();
+    }
+
+    if (instruction.mnemonic.toLowerCase() === 'lock' && instruction.bytes.length === 1 && instruction.bytes[0] === 0xf0) {
+      pendingLock = instruction;
+      continue;
+    }
+    current.instructions.push(freezeInstruction(instruction));
   }
+  flushPending();
+
   for (const entry of functions.values()) {
     if (!entry.instructions.length) continue;
     entry.endAddress = entry.instructions.at(-1).address + BigInt(entry.instructions.at(-1).length);
