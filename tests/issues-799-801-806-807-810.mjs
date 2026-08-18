@@ -39,12 +39,16 @@ assert.doesNotMatch(simple, /const pass = new Set\(\[OP\.MOV\]\)/);
 
 const target = 0x123456789n;
 const high8 = 0xabn;
-const encoded = target | (high8 << 36n) | (1n << 51n);
-assert.equal(sanitizePointer(encoded), 0xab00000123456789n);
+const encodedNextZero = target | (high8 << 36n);
+const encodedWithNext = encodedNextZero | (0x12n << 51n);
+assert.equal(sanitizePointer(encodedNextZero, null, 2), 0xab00000123456789n);
+assert.equal(sanitizePointer(encodedWithNext, null, 2), 0xab00000123456789n);
 const base = 0x100000000n;
-const offsetEncoded = 0x12345n | (1n << 51n);
-assert.equal(sanitizePointer(offsetEncoded, base), base + 0x12345n);
-assert.equal(sanitizePointer(encoded | (1n << 63n), base), null);
+const offsetNextZero = 0x12345n;
+assert.equal(sanitizePointer(offsetNextZero, base, 6), base + 0x12345n);
+assert.equal(sanitizePointer(encodedNextZero | (1n << 63n), base, 2), null);
+assert.equal(sanitizePointer(offsetNextZero, null, 6), null);
+assert.equal(sanitizePointer(encodedNextZero, base, 999), null);
 
 const words = [0n, 0x1000n, 0x2000n, 0n, 0x3000n];
 const bytes = new Uint8Array(words.length * 8);
