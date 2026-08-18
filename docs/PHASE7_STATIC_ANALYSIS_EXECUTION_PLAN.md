@@ -33,7 +33,7 @@ Phase 7 succeeds only when both are true:
 1. the exact integrated product proves fewer memory/data/type/function-boundary relationships as unresolved where evidence permits a stronger answer;
 2. false certainty does not increase.
 
-A stronger answer is valuable only when Hex can explain why it is stronger and can identify the exact snapshot, analyzer version, evidence, assumptions, and completeness under which the answer was produced.
+A stronger answer is valuable only when Hex can explain why it is stronger and identify the exact snapshot, analyzer version, evidence, assumptions, and completeness under which the answer was produced.
 
 The phase is not a contest to maximize `MustAlias`, `NoAlias`, recovered types, discovered functions, or decompiler prettiness.
 
@@ -70,7 +70,7 @@ Absence of evidence is never proof.
 
 Do not model alias refinement as a simplistic total order such as `unknown -> may -> must/no`.
 
-The public semantic question has at least two independent dimensions:
+The semantic question has at least two independent dimensions:
 
 ```text
 relation: must | may | no | unknown
@@ -79,7 +79,7 @@ completeness: complete | bounded | partial | truncated | unsupported
 
 `must` and `no` require positive proof appropriate to the relation. `may` and `unknown` both block any transform that requires `NoAlias`.
 
-A budget-limited or unsupported analysis may return a weaker relation or an incomplete status. It must never convert incompleteness into a stronger relation.
+A budget-limited or unsupported analysis may return a weaker relation or incomplete status. It must never convert incompleteness into a stronger relation.
 
 ## P7-INV-003 — Unknown stores remain barriers
 
@@ -100,6 +100,8 @@ Call effects use, in order:
 
 A missing, stale, partial, cancelled, or identity-mismatched summary is never equivalent to purity.
 
+A library model is versioned, identifies its source, and must not override contradictory binary evidence.
+
 ## P7-INV-005 — Hard and soft type evidence stay separate
 
 Weighted evidence cannot silently become a hard constraint. Contradictory hard constraints remain first-class conflicts; Hex must not select the highest score and call it certain.
@@ -112,7 +114,7 @@ A precise start with unknown extent is valid. Phase 7 must not invent one contig
 
 Generic alias, points-to, summary, type, and function-discovery code must not decode architecture-specific instruction text or embed ABI register assumptions.
 
-Target-specific evidence producers are allowed. The central solver owns the generic contract and evidence fusion.
+Target-specific evidence producers are allowed. The central solver owns generic contracts and evidence fusion.
 
 ## P7-INV-008 — Evidence survives every refinement
 
@@ -136,7 +138,11 @@ A failed or cancelled producer must not leave a zero-byte, half-written, partial
 
 ## P7-INV-012 — One snapshot per query
 
-A single query must not combine an old MemorySSA graph with a new alias result or old callee summary with a new caller graph. UI, AI, decompiler, verifier, and plugins consume one consistent `AnalysisSnapshot` or an explicitly versioned dependency set.
+A single query must not combine an old MemorySSA graph with a new alias result or an old callee summary with a new caller graph. UI, AI, decompiler, verifier, and plugins consume one consistent `AnalysisSnapshot` or an explicitly versioned dependency set.
+
+## P7-INV-013 — Static truth and runtime/user evidence remain separated
+
+Runtime evidence may confirm, contradict, or refine a static candidate, but it must not silently mutate the static Phase 7 artifact. User names/comments likewise must not invalidate or rewrite static semantics unless the explicit user edit is itself a semantic input, such as an approved user type constraint.
 
 ---
 
@@ -192,9 +198,10 @@ Before P7 implementation begins in earnest:
 - identify the exact Phase 6 integrated/release baseline;
 - run the mandatory exact-head suites on that baseline;
 - snapshot the machine-readable capability truth for the architectures/formats that Phase 7 is required to exercise;
-- create Phase 7 ownership/contract ownership rules;
+- create Phase 7 changed-file ownership and contract ownership rules;
 - establish the living integration lane;
-- establish the permanent exact-head Phase 7 verifier path.
+- establish the permanent exact-head Phase 7 verifier path;
+- prove canonical test discovery sees a sentinel from every Phase 7-owned test subtree.
 
 Do not hard-code a stale architecture matrix from an earlier planning baseline. The P7 corpus manifest is generated/frozen from capability truth at the actual Phase 7 start.
 
@@ -224,6 +231,7 @@ Create before precision changes. Include at minimum:
 - integer-to-pointer provenance loss;
 - unknown pointer store between source and load;
 - unknown call between source and load;
+- false `MustAlias` from similar-looking roots;
 - pointer phi/select joining distinct or unresolved roots;
 - cyclic pointer phi with range growth;
 - pointer escape through return/global/argument/unknown call;
@@ -238,7 +246,8 @@ Create before precision changes. Include at minimum:
 - non-contiguous function ownership;
 - precise function start with unknown extent;
 - cancellation/budget exhaustion during analysis;
-- stale callee summary after semantic-version/input change.
+- stale callee summary after semantic-version/input change;
+- stale debug-derived type after provider/build identity change.
 
 The corpus must include tests that demonstrate the verifier rejects intentionally unsound mutants/test doubles. A verifier that only proves the current implementation passes is not proven to detect the targeted failure class.
 
@@ -283,13 +292,14 @@ AnalysisStatus {
 - exact-head verifier runs before precision implementation lands;
 - baseline metrics are captured from the actual product path;
 - ownership and contract ownership are machine-checkable;
+- canonical phase runner discovers every owned test subtree;
 - result/status/evidence semantics are frozen or covered by a narrowly scoped ADR.
 
 ---
 
 # 6. Shared artifact identity and invalidation contract
 
-Phase 7 creates highly reusable derived artifacts. Incorrect reuse is a semantic correctness defect.
+Phase 7 creates reusable derived artifacts. Incorrect reuse is a semantic correctness defect.
 
 Every reusable artifact key must identify all inputs that can change its meaning. At minimum, as applicable:
 
@@ -298,7 +308,7 @@ BinaryId / SliceId / ImageId
 FunctionId or analysis scope
 ArchitectureId
 AbiId / PlatformId when semantically relevant
-AnalysisSnapshot / project revision
+AnalysisSnapshot and only semantically relevant project revision inputs
 Semantic IR / CFG / SSA / MemorySSA semantic versions
 analyzer/pass/schema version
 analysis options that affect semantics
@@ -306,16 +316,72 @@ budget class when it affects completeness
 input artifact IDs/digests
 callee summary IDs/digests for interprocedural results
 debug provider version + matched build identity for debug-derived results
+library-model version/source identity when consumed
 ```
 
-Rules:
+Do not put unrelated presentation state into semantic cache identity merely because it is convenient. User renames/comments should not invalidate alias analysis.
+
+## 6.1 Required dependency graph
+
+Reusable artifacts must expose enough dependency identity to answer "why is this stale?" without heuristic cache clearing.
+
+Minimum conceptual dependency chain:
+
+```text
+Binary/Image identity
+  ↓
+MachineEffects / Semantic IR
+  ↓
+CFG
+  ↓
+SSA + MemorySSA
+  ↓
+A1/A2 points-to + alias
+  ↓
+local FunctionSummary
+  ↓
+escape / A3 interprocedural summaries
+  ↓
+TypeConstraintGraph results
+
+Debug provider + matched build identity
+  ├──→ symbol/debug evidence
+  ├──→ TypeConstraintGraph constraints
+  └──→ Function discovery evidence
+
+Loader/unwind/reloc/runtime-metadata evidence
+  └──→ Function discovery evidence
+```
+
+The graph records actual dependencies; this diagram is not permission to invalidate every downstream artifact blindly when a narrower dependency is known.
+
+## 6.2 Change-impact rules
+
+| Changed input | Must invalidate/recompute at minimum | Must not be invalidated solely for this reason |
+|---|---|---|
+| binary/image identity | all binary-derived Phase 7 artifacts | none |
+| MachineEffects/Semantic-IR semantics | dependent CFG/SSA/MSSA/alias/summaries/types and any discovery evidence derived from semantics | independent loader/debug evidence |
+| CFG/SSA/MSSA semantic version | dependent alias/summary/type results | independent debug symbol pages |
+| A1/A2 analyzer semantics/options | dependent alias proofs and summaries/types that consumed them | unrelated debug parsing |
+| callee summary identity | dependent caller/interprocedural summaries and consumers of them | unrelated functions with no dependency edge |
+| library model identity | only summaries/results that consumed that model | unrelated callsites |
+| approved user type constraint | affected TypeConstraintGraph component and derived presentation/consumers | machine semantics/alias unless an explicit dependency exists |
+| debug provider/build identity | debug-derived evidence/types/discovery results | static alias/MSSA unrelated to debug evidence |
+| UI rename/comment/bookmark | presentation/project projection only | static semantic artifacts |
+| runtime observation | runtime-evidence fusion products | immutable static artifact itself |
+
+If implementation discovers a dependency not represented here, update the dependency contract before relying on cache reuse.
+
+## 6.3 Publication rules
 
 1. Do not key semantic artifacts by filename, UI tab, address string, or mutable object identity.
-2. A caller summary depending on a callee summary must identify that exact dependency.
+2. A caller summary depending on a callee summary identifies that exact dependency.
 3. A change in semantic acceptance rules invalidates historical release evidence affected by that rule.
-4. `partial`/`bounded` artifacts must never satisfy a lookup requiring `complete`.
-5. A cancelled/failed producer must not advance the published artifact identity.
-6. Dependency invalidation is transitive through artifact identity; avoid ad-hoc global cache clearing as the correctness mechanism.
+4. `partial`/`bounded` artifacts never satisfy a lookup requiring `complete`.
+5. A cancelled/failed producer never advances the published artifact identity.
+6. Dependency invalidation is transitive through explicit edges.
+7. Validate schema, scope, snapshot, dependencies, and completeness before publication.
+8. Consumers never silently fall back to a stale artifact after a dependency mismatch; they obtain an explicit cache miss/unknown/partial state and schedule recomputation if appropriate.
 
 ---
 
@@ -348,7 +414,7 @@ origin/evidence
 analysis status/completeness
 ```
 
-Alias and MemorySSA use one canonical root/region identity service. A UI/decompiler/plugin must not create a stronger private root equivalence rule.
+Alias and MemorySSA use one canonical root/region identity service. UI/decompiler/plugin code must not create a stronger private root-equivalence rule.
 
 ## 7.2 Safe A1 `NoAlias` examples
 
@@ -358,7 +424,7 @@ P7-1 itself may prove separation from evidence available at P7-1, for example:
 - disjoint fixed stack intervals in the same proven frame;
 - non-overlapping exact globals.
 
-Do **not** make P7-1 completion depend on "distinct proven non-escaping allocations" because the Phase 7 escape proof is delivered later in P7-3. Once P7-3 exists, A1/A2 may consume its proven non-escape evidence as an additional refinement without creating a backwards phase dependency.
+Do **not** make P7-1 completion depend on "distinct proven non-escaping allocations" because Phase 7 escape proof is delivered later in P7-3. Once P7-3 exists, A1/A2 may consume its proven non-escape evidence as an additional refinement without a backwards phase dependency.
 
 Remain `MayAlias`/`Unknown` when appropriate:
 
@@ -385,11 +451,11 @@ Unknown stores/calls clobber all regions they may affect. Precision failure beco
 ## 7.4 Exit gate
 
 - every A1 `NoAlias` has a machine-readable proof reason/evidence path;
-- zero false `NoAlias` in the mandatory negative corpus;
+- zero false `NoAlias` and zero false `MustAlias` in mandatory truth/negative cases;
 - existing unknown-store/call barriers do not regress;
-- representative broad `UnknownRegion` usage is reduced or the checkpoint explicitly documents why the corpus cannot yet show reduction;
-- no A1 exit criterion requires a P7-3 escape result;
-- latency stays inside the P7-0 machine-readable regression budget.
+- representative broad `UnknownRegion` usage is reduced or the checkpoint explicitly records that reduction is deferred to A2 without claiming the Phase 7 master exit gate;
+- no A1 exit criterion requires P7-3 escape;
+- latency stays inside P7-0 machine-readable regression budget.
 
 ---
 
@@ -460,7 +526,7 @@ Points-to precision is bounded by the reaching-memory proof. Multiple possible d
 - deterministic result for a fixed snapshot/options/analyzer version;
 - cyclic fixtures terminate under documented widening/budget rules;
 - field-sensitive precision improves the frozen representative query set;
-- union/overlap/phi/integer-cast/unknown-store negative cases remain conservative;
+- zero false strong alias conclusions in union/overlap/phi/integer-cast/unknown-store cases;
 - no consumer bypasses the canonical alias/query boundary for a stronger result;
 - latency/memory stay inside P7-0 regression budgets.
 
@@ -547,7 +613,7 @@ When escape evidence changes, any `NoAlias` proof that depended on non-escape mu
 
 ### Summary invalidation
 
-Callee changes invalidate dependent callers transitively by identity/digest, not by manually clearing an unrelated global cache.
+Callee or library-model changes invalidate dependent callers transitively by identity/digest, not by manually clearing an unrelated global cache.
 
 ### Cancellation
 
@@ -559,6 +625,7 @@ A cancelled SCC solve cannot publish a complete interprocedural summary. If boun
 - unknown/partial call effects remain explicit;
 - known callees measurably improve caller memory precision on the frozen query set;
 - unresolved/indirect calls never become accidentally pure;
+- library models cannot override contradictory binary evidence;
 - escape cases invalidate exactly the separation proofs that depended on non-escape;
 - transitive summary invalidation is artifact/version driven;
 - cancelled/budgeted runs fail closed;
@@ -638,6 +705,7 @@ Use graph identities for recursive types. Keep ABI passing shape distinct from r
 - paired truth benchmark improves under the frozen scoring definition;
 - false-certainty count does not increase;
 - debug evidence can only become authoritative after identity verification;
+- user-provided type constraints are provenance-tagged and invalidate only dependent type results unless another dependency is explicit;
 - decompiler consumes canonical `TypeResult`, not private solver state.
 
 ---
@@ -717,6 +785,7 @@ Only a contract-approved matched identity may create authoritative debug facts. 
 - missing-companion state is explicit;
 - provider outputs are paged/budgeted for large inputs;
 - symbols/types/lines retain debug-source provenance;
+- provider/build changes invalidate only dependent debug-derived facts;
 - type accuracy is reported separately with and without debug evidence.
 
 ---
@@ -785,9 +854,9 @@ One good start score cannot hide bad extent ownership.
 
 ## 12.4 Corpus scope
 
-At actual Phase 7 start, freeze a machine-readable target/corpus manifest from the capability truth produced by the completed prerequisite phases.
+At actual Phase 7 start, freeze a machine-readable target/corpus manifest from capability truth produced by the completed prerequisite phases.
 
-Do not infer cross-architecture coverage from the stale planning baseline. Every architecture admitted to the Phase 7 mandatory corpus must have enough prerequisite semantic maturity to exercise the same middle-end contracts; unsupported combinations remain explicit rather than silently skipped green.
+Do not infer cross-architecture coverage from the stale planning baseline. Every architecture admitted to the mandatory corpus must have enough prerequisite semantic maturity to exercise the same middle-end contracts; unsupported combinations remain explicit rather than silently skipped green.
 
 ## 12.5 Exit gate
 
@@ -803,35 +872,82 @@ Do not infer cross-architecture coverage from the stale planning baseline. Every
 
 P7-I exists from P7-0. It is not a final cleanup branch.
 
-Each accepted checkpoint follows this protocol:
+The exact physical branch/PR topology is chosen by P7-0 repository tooling. The semantic rule is independent of whether a component PR targets `main`, an integration branch, or another approved staging branch:
 
-1. component PR proves its owned semantics and negative cases on its exact head;
-2. changed-file inventory is checked against ownership/contract ownership;
+> A component is not **accepted** until its exact implementation is represented in P7-I and the exact P7-I checkpoint is proven.
+
+## 13.1 Checkpoint acceptance transaction
+
+1. component PR proves owned semantics and negative cases on its exact head;
+2. changed-file inventory is checked against changed-file and contract ownership;
 3. candidate integration incorporates the component without unrelated scope;
 4. P7-I enters **checkpoint-locked** state;
 5. required shared contract/invalidation wiring is completed by the integration owner;
-6. generated outputs are rebuilt/synchronized **if the repository ownership policy says this integration lane owns affected generated output**;
-7. canonical Phase 7 runner discovers the new component tests;
-8. rolling product gates run on the exact P7-I head;
+6. generated outputs are rebuilt/synchronized **if the ownership policy says P7-I owns affected generated output**;
+7. canonical Phase 7 runner discovers all new owned tests;
+8. rolling product gates run on exact P7-I head;
 9. independent Phase 7 verifier runs on that same exact head;
-10. evidence records product SHA, verifier/schema version, corpus manifest, and analyzer versions;
+10. checkpoint evidence manifest is written;
 11. only then does the checkpoint unlock for the next dependent acceptance.
 
-Independent future work may continue while P7-I is locked, but the next dependent component must not be accepted on top of an unproven integration checkpoint.
+Independent future work may continue while P7-I is locked, but the next dependent component must not be accepted on top of an unproven checkpoint.
 
-## 13.1 Moving `main`
+## 13.2 Checkpoint evidence manifest
+
+Record enough immutable identity to reproduce exactly what was accepted:
+
+```text
+checkpoint ID
+P7-I exact SHA
+merge-base/main SHA used for candidate
+component commit/PR identity
+changed-file inventory digest
+ownership-policy version
+corpus-manifest ID/digest
+verifier ID/version/schema
+analyzer/pass/schema versions
+required generated-output identity/diff result
+workflow/run evidence IDs
+performance-budget version
+result: accepted | blocking
+blocking reason if any
+```
+
+Do not record a generic "CI green" statement without exact product/verifier/corpus identity.
+
+## 13.3 Moving `main`
 
 One integration/reconciliation lane owns moving-main reconciliation.
 
 Component branches do not repeatedly rebase merely because unrelated `main` moved. Reconcile at defined acceptance/release boundaries and whenever a shared semantic contract actually changed.
 
-If a reconciliation changes the candidate merge tree, exact-head evidence from the old tree is obsolete.
+If reconciliation changes the candidate merge tree, exact-head evidence from the old tree is obsolete.
 
-## 13.2 Verifier rule
+## 13.4 Verifier rule
 
 A verifier change that changes acceptance semantics, corpus provenance, oracle selection, exact-head binding, or completeness rules invalidates affected older evidence.
 
-Prefer verifier-semantic changes as separately reviewable changes before the implementation they will judge. Do not repair a failing implementation by silently weakening the verifier in the same change.
+Prefer verifier-semantic changes as separately reviewable changes before the implementation they will judge. Never repair a failing implementation by weakening the verifier in the same change.
+
+## 13.5 First-divergence triage
+
+When P7-I fails, diagnose the first deterministic semantic divergence before downstream symptoms.
+
+Triage order:
+
+1. product/source identity mismatch;
+2. corpus/verifier identity mismatch;
+3. changed-file/ownership/generated-output violation;
+4. parser/loader/semantic input divergence;
+5. MemorySSA/alias first divergence;
+6. summary/type/discovery downstream divergence;
+7. UI/decompiler projection symptom.
+
+Do not patch a downstream decompiler symptom while an earlier alias/MSSA divergence remains unexplained.
+
+## 13.6 Source merge vs active runtime
+
+If Phase 7 proof depends on a deployed/generated/in-memory runtime rather than repository source alone, source merge is not activation proof. Release evidence must identify the active build/runtime identity and prove it contains the accepted source. If the changed path is source-only and the verifier executes directly from the exact source tree, no artificial deployment step is required.
 
 ---
 
@@ -840,7 +956,7 @@ Prefer verifier-semantic changes as separately reviewable changes before the imp
 | Checkpoint | Primary ownership | Dependency | Main proof |
 |---|---|---|---|
 | P7-0 | metrics + status/proof contracts + verifier + negative corpus | exact Phase 6 baseline | baseline + mutation/exact-head proof |
-| P7-1 | canonical regions + A1 | P7-0 | zero false `NoAlias` |
+| P7-1 | canonical regions + A1 | P7-0 | zero false strong alias conclusion |
 | P7-2 | A2 local/field points-to | P7-1 | precision + cyclic/union/cast safety |
 | P7-3a | local FunctionSummary artifact | P7-2 | deterministic local summaries |
 | P7-3b | escape taxonomy/effects | P7-3a | escape invalidation corpus |
@@ -859,7 +975,7 @@ Prefer verifier-semantic changes as separately reviewable changes before the imp
 Useful parallel work:
 
 - corpus/benchmark construction while A1 starts;
-- verifier implementation/review against already frozen result schemas;
+- verifier implementation/review against frozen schemas;
 - DWARF/PDB fixture preparation while TypeConstraintGraph stabilizes;
 - function-discovery corpus preparation while summaries mature;
 - profiling/hot-path instrumentation while semantic implementation proceeds;
@@ -942,7 +1058,7 @@ Stripped binaries, large functions, recursion, pointer-heavy code, and large deb
 
 ## L6 — exact integrated candidate
 
-Run the permanent exact-head verifier against the actual P7-I candidate.
+Run the permanent exact-head verifier against actual P7-I candidate.
 
 ---
 
@@ -952,7 +1068,7 @@ Run the permanent exact-head verifier against the actual P7-I candidate.
 
 Unknown store/call is ignored because pseudocode becomes cleaner.
 
-**Block with:** negative barriers + proof required for every `NoAlias`.
+**Block with:** negative barriers + positive proof for every strong alias conclusion.
 
 ## FM-2 — A3 big-bang solver
 
@@ -968,7 +1084,7 @@ Everything collapses to `escaped=true/false`.
 
 ## FM-4 — Summary cache poisoning
 
-Caller remains precise after callee semantics/options change.
+Caller remains precise after callee semantics/options/model change.
 
 **Block with:** exact dependency identity + transitive invalidation.
 
@@ -976,7 +1092,7 @@ Caller remains precise after callee semantics/options change.
 
 A timed-out/cancelled result is reused as authoritative.
 
-**Block with:** common analysis status + artifact lookup completeness requirement.
+**Block with:** common analysis status + completeness-aware lookup.
 
 ## FM-6 — Type confidence hides contradiction
 
@@ -1018,13 +1134,25 @@ CI gets faster while product stays pathological.
 
 Repeated replacement PRs are created solely because `main` moved.
 
-**Block with:** one reconciliation lane + defined reconciliation boundaries.
+**Block with:** one reconciliation lane + defined boundaries.
 
 ## FM-13 — Atomicity failure
 
 Failed analysis leaves a current-looking partial artifact.
 
-**Block with:** validate-then-publish immutable artifact transaction.
+**Block with:** validate-then-publish immutable transaction.
+
+## FM-14 — Over-invalidation
+
+Every small project/UI change throws away the whole analysis graph, making iPad performance unusable.
+
+**Block with:** explicit dependency edges and semantic-input-only invalidation.
+
+## FM-15 — Under-invalidation
+
+A changed callee/model/debug identity leaves a stale strong result live.
+
+**Block with:** dependency identity mismatch is a cache miss, never stale fallback.
 
 ---
 
@@ -1044,6 +1172,7 @@ Failed analysis leaves a current-looking partial artifact.
 - Is there one canonical identity/root/effect/result schema?
 - Are reusable outputs immutable/versioned artifacts rather than hidden mutable caches?
 - Does the query observe one consistent snapshot/dependency set?
+- Is invalidation no broader and no narrower than actual semantic dependencies?
 
 ## Evidence
 
@@ -1057,15 +1186,16 @@ Failed analysis leaves a current-looking partial artifact.
 - Did asymptotic behavior or hot-path allocation change?
 - Was the representative production/pathological fixture profiled?
 - Is resource-stop behavior conservative?
-- Does the exact head stay inside machine-readable regression budgets?
+- Does exact head stay inside machine-readable regression budgets?
 
 ## Integration
 
 - Is changed-file inventory inside ownership scope?
-- Does canonical Phase 7 test discovery include the new tests?
+- Does canonical Phase 7 test discovery include new tests?
 - Is the accepted component present on P7-I?
 - Is P7-I checkpoint evidence exact-head and current?
 - If generated output is owned by P7-I for this change, is canonical generated diff zero?
+- Did a moving-main reconciliation invalidate older evidence?
 
 ---
 
@@ -1078,7 +1208,7 @@ Freeze semantic contracts, not internal class/file names.
 3. points-to lattice/join/widening/provenance-loss rules;
 4. unknown store/call clobber semantics;
 5. FunctionSummary effect/completeness schema;
-6. summary artifact identity/dependency rules;
+6. summary/library-model artifact identity/dependency rules;
 7. escape reason/boundary taxonomy;
 8. recursive SCC convergence/widening rules;
 9. hard-vs-soft TypeConstraintGraph boundary and contradiction semantics;
@@ -1087,7 +1217,9 @@ Freeze semantic contracts, not internal class/file names.
 12. corpus manifest identity and truth-generation process;
 13. Phase 7 verifier schema/exact-head invocation;
 14. cancellation/partial-result publication semantics;
-15. machine-readable performance regression budgets.
+15. machine-readable performance regression budgets;
+16. checkpoint evidence manifest schema;
+17. semantic change-impact/invalidation rules.
 
 ---
 
@@ -1120,15 +1252,17 @@ This permits SCCP/GVN/DCE/load-store forwarding/aggregate recovery to improve wi
 - [ ] P7-start machine-readable capability/corpus manifest frozen;
 - [ ] living P7-I lane defined;
 - [ ] changed-file and contract ownership machine-checkable;
+- [ ] canonical runner discovers every Phase 7-owned test subtree;
 - [ ] negative soundness + unsound-mutant tests exist;
 - [ ] baseline alias/type/function/performance metrics captured;
 - [ ] permanent exact-head Phase 7 verifier runs in shadow mode;
 - [ ] root identity + alias/status contracts agreed;
 - [ ] FunctionSummary completeness/effect/invalidation contract agreed before A3;
-- [ ] hard/soft type boundary agreed before debug authoritative application;
+- [ ] hard/soft type boundary agreed before authoritative debug application;
 - [ ] debug build-identity policy agreed;
 - [ ] start/extent truth metrics separate;
-- [ ] cancellation/atomic publication semantics tested.
+- [ ] cancellation/atomic publication semantics tested;
+- [ ] dependency/change-impact matrix has machine-enforced regressions where practical.
 
 ## Phase 7 final completion
 
@@ -1136,15 +1270,16 @@ This permits SCCP/GVN/DCE/load-store forwarding/aggregate recovery to improve wi
 - [ ] exact integrated semantic/decompiler/compiler-truth/migration suites green;
 - [ ] negative soundness corpus green;
 - [ ] unsound-mutant verifier self-tests green;
-- [ ] exact-head Phase 7 verifier green on the release candidate;
-- [ ] unknown memory links measurably reduced under the frozen metric definition;
-- [ ] zero unsound alias regression in mandatory truth/negative corpus;
+- [ ] exact-head Phase 7 verifier green on release candidate;
+- [ ] unknown memory links measurably reduced under frozen metric definition;
+- [ ] zero unsound strong alias regression in mandatory truth/negative corpus;
 - [ ] type accuracy improved without increased false certainty;
 - [ ] DWARF and PDB both use identity-bound common provider path;
 - [ ] function discovery reports independent start/extent metrics across mandatory P7 corpus lanes;
 - [ ] production/pathological performance inside current approved budgets;
 - [ ] no mandatory whole-program solve on file open/current-function path;
-- [ ] Phase 8 consumers use only the public handoff contract.
+- [ ] release evidence identifies active runtime/build when activation matters;
+- [ ] Phase 8 consumers use only public handoff contract.
 
 The desired implementation posture is:
 
