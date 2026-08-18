@@ -1,0 +1,35 @@
+name: TEMP Task Graph PR Driver
+on:
+  pull_request:
+    branches: [main]
+permissions:
+  contents: write
+jobs:
+  wire:
+    if: ${{ github.head_ref == 'dev-agent/dynamic-task-graph' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: dev-agent/dynamic-task-graph, fetch-depth: 0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - run: python3 scripts/tmp-taskgraph-wire.py
+      - name: Focused task graph contracts
+        run: |
+          node --check js/userscript/dev/task-graph/task-graph-scheduler.js
+          node tests/dev-agent/dynamic-task-graph.mjs
+      - name: Full userscript regression and canonical build
+        run: npm run userscript:test
+      - name: Commit canonical task graph and remove temporary driver
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm .github/workflows/tmp-taskgraph-pr-driver.yml scripts/tmp-taskgraph-wire.py
+          git add js/ai/dev/admin/tool-surface.js js/ai/dev/protocol/dev-supervisor-prompt.js js/userscript/dev/parent-rpc.js js/userscript/dev/parent-worker-runtime.js js/userscript/dev/task-graph/task-graph-scheduler.js tests/dev-agent/dynamic-task-graph.mjs tests/userscript-dev-worker-runtime.mjs tests/userscript-release-version.mjs userscript/hex.user.template.js userscript/release-version.json
+          git diff --cached --check
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git commit -m 'Complete dynamic task graph [taskgraph-generated]'
+          git push origin HEAD:dev-agent/dynamic-task-graph
