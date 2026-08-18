@@ -78,27 +78,21 @@ export function sanitizePointer(v, base) {
      already >= base. */
   if (base != null && v < BigInt(base)) return BigInt(base) + v;
   if (v < 0x0001000000000000n) return v;          // 素のポインタ（古い形式）
-  const low = v & 0x0000000fffffffffn;
-  if (low === 0n) return null;
+  const target = v & 0x0000000fffffffffn;
+  const high8 = (v >> 36n) & 0xffn;
+  if (target === 0n) return null;
 
-  /*
-   * 最上位ビットは「他のライブラリの記号を入れる」印（bind）。
-   * そこに書いてあるのはアドレスではなく取り込み表の番号なので、
-   * このファイルの中を指しているようには見えないなら、読めたことにしない。
-   * （親クラスが NSObject のときにここへ来る。番号をアドレスと取り違えると、
-   *   たまたま同じ値だった別のクラスを親として拾ってしまう。）
-   */
-  if (v & 0x8000000000000000n) {
-    return (base == null || low >= base) ? low : null;
-  }
+  /* A bind stores an import ordinal, not a VM address. Without the fixup import
+     table this legacy reader cannot resolve it safely, so fail closed. */
+  if (v & 0x8000000000000000n) return null;
 
-  /*
-   * 形式が 2 つある。target にアドレスそのものが入っているもの（DYLD_CHAINED_PTR_64）と、
-   * イメージ先頭からの距離が入っているもの（同 _64_OFFSET）。
-   * 距離のほうは必ずイメージ先頭より小さいので、そこで見分けられる。
-   */
-  if (base != null && low < base) return base + low;
-  return low;
+  /* DYLD_CHAINED_PTR_64 stores high8 in raw bits 36..43 but reconstructs it at
+     canonical pointer bits 56..63. The OFFSET form instead adds the 36-bit
+     target to imageBase. This bounded legacy heuristic distinguishes the two
+     by whether target is image-relative; format-aware callers should remain
+     authoritative when pointer_format metadata is available. */
+  if (base != null && target < BigInt(base)) return BigInt(base) + target;
+  return target | (high8 << 56n);
 }
 
 function u32(b, o) { return (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0; }

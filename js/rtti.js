@@ -103,7 +103,6 @@ export async function readVtable(read,vtableAddr,symbols,maxSlots=64,opts={}){
   const typeinfoResolved=await resolveVtablePointer(typeinfoRaw,BigInt(vtableAddr)+8n,opts||{});
   for(let i=2;i*8+8<=bytes.length;i++){
     const raw=dv.getBigUint64(i*8,true);
-    if(raw===0n)break;
     const resolved=await resolveVtablePointer(raw,BigInt(vtableAddr)+BigInt(i*8),opts||{});
     const addr=resolved.addr;
     const name=addr!=null&&addr!==0n&&symbols?(symbols.nameAt(addr)||symbols.label(addr)):null;

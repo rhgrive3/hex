@@ -216,11 +216,9 @@ export function bin(op, a, b, bits) {
       return node('bin', { op: q.op === 'sdiv' ? 'smod' : 'umod', a, b: constNode(d) });
     }
   }
-  /* ── (a / c1) / c2 → a / (c1*c2) ── */
-  if ((op === 'sdiv' || op === 'udiv') && cb != null && a.k === 'bin' && a.op === op) {
-    const inner = constOf(a.b);
-    if (inner != null) return bin(op, a.a, constNode(inner * cb), bits);
-  }
+  /* Nested fixed-width division is intentionally not reassociated. Intermediate
+     rounding/wrap is architecturally observable (notably SDIV INT_MIN / -1), and
+     unsigned divisor products also require width-exact proof before reassociation. */
 
   return node('bin', { op, a, b });
 }

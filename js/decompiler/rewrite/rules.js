@@ -259,14 +259,14 @@ const selectRules = [{
   match: (n) => {
     if (n?.kind !== 'select' || n.condition?.kind !== 'compare') return null;
     const q = n.condition;
-    if (!isConst(q.right, 0) || !isStable(q.left)) return null;
+    if (q.compareSigned !== true || !isConst(q.right, 0) || !isStable(q.left)) return null;
     const neg = (x) => x?.kind === 'unary' && x.op === 'neg' && sameExpr(x.arg, q.left);
     if ((q.op === 'lt' || q.op === 'le') && neg(n.whenTrue) && sameExpr(n.whenFalse, q.left)) return {};
     if ((q.op === 'ge' || q.op === 'gt') && sameExpr(n.whenTrue, q.left) && neg(n.whenFalse)) return {};
     return null;
   },
   rewrite: (n) => expr.intrinsic('abs', [n.condition.left], n.bits, true, n.source),
-  proof: proof('select-comparison-equivalence', 'two-arm signed absolute value'), cost,
+  proof: () => ({ kind:'select-comparison-equivalence', detail:'two-arm signed absolute value', signed:true, precondition:'signed-comparison' }), cost,
 }];
 
 const extensionRules = [{
