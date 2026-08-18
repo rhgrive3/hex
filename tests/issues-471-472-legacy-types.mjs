@@ -36,7 +36,7 @@ assert.equal(BASIC_TYPES.find((t) => t.name === 'vector128')?.size, 16);
   assert.equal(byOffset.get(-32)?.type === 'double', false, '16-byte Q load must never collapse to 8-byte double');
 }
 
-// #471: a proven MOV copy keeps argument provenance.
+// #471: a proven full-width MOV copy keeps argument provenance.
 {
   const result = inferTypes(model([
     insn(0, 'mov', { ops: [reg('x19'), reg('x0')], reads: ['x0'], writes: ['x19'] }),
@@ -65,13 +65,24 @@ assert.equal(BASIC_TYPES.find((t) => t.name === 'vector128')?.size, 16);
   assert.equal(argType(result, 0), 'unknown', 'call return x0 must not retain entry argument identity');
 }
 
-// Width aliases (wN/xN) are one GP identity for copy propagation and killing.
+// #812: W-register MOV truncates to 32 bits and zero-extends the physical X destination.
+// It must not preserve the original 64-bit entry-argument identity.
 {
   const result = inferTypes(model([
-    insn(0, 'mov', { ops: [reg('w19'), reg('w0')], reads: ['x0'], writes: ['x19'] }),
+    insn(0, 'mov', { ops: [reg('w19'), reg('w0')], reads: ['w0'], writes: ['x19'] }),
     insn(1, 'ldr', { ops: [reg('w8')], reads: ['x19'], writes: ['x8'], memory: { stack: false, base: 'x19', disp: 4n, kind: 'load', size: 4 } }),
   ], [0]));
-  assert.equal(argType(result, 0), 'void *');
+  assert.equal(argType(result, 0), 'unknown', 'mov w19,w0 must not attribute truncated-address evidence to entry x0');
 }
 
-console.log('issues #471-#472 legacy type regressions PASS');
+// Once truncated, a later full-width copy must not resurrect the lost entry identity.
+{
+  const result = inferTypes(model([
+    insn(0, 'mov', { ops: [reg('w19'), reg('w0')], reads: ['w0'], writes: ['x19'] }),
+    insn(1, 'mov', { ops: [reg('x20'), reg('x19')], reads: ['x19'], writes: ['x20'] }),
+    insn(2, 'ldr', { ops: [reg('w8')], reads: ['x20'], writes: ['x8'], memory: { stack: false, base: 'x20', disp: 0n, kind: 'load', size: 4 } }),
+  ], [0]));
+  assert.equal(argType(result, 0), 'unknown', 'full-width copy after W truncation must not resurrect x0 identity');
+}
+
+console.log('legacy type regressions #471/#472/#812 PASS');
