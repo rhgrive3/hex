@@ -1,0 +1,213 @@
+name: Temporary issue 840 RTTI patch applicator
+on:
+  pull_request:
+    branches: [main]
+permissions:
+  contents: write
+jobs:
+  apply:
+    if: github.head_ref == 'fix/issue-840-rtti-pointer-formats'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/issue-840-rtti-pointer-formats
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Apply audited pointer-format semantics
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          p = Path('js/rtti.js')
+          s = p.read_text()
+          old = '''function decodeChainedVtablePointer(raw,format,imageBase){
+  const base=imageBase==null?null:BigInt(imageBase);
+  if(format===2||format===6){
+    const bind=!!((raw>>63n)&1n);
+    if(bind)return{raw,addr:null,binding:{kind:'chained-bind',ordinal:Number(raw&0xffffffn)},unresolved:false,pointerFormat:format};
+    const target=raw&0xfffffffffn;
+    const high8=(raw>>36n)&0xffn;
+    if(format===6){
+      if(base==null)return{raw,addr:null,binding:null,unresolved:true,reason:'image-base-required',pointerFormat:format};
+      return{raw,addr:base+target,binding:null,unresolved:false,pointerFormat:format};
+    }
+    return{raw,addr:target|(high8<<56n),binding:null,unresolved:false,pointerFormat:format};
+  }
+  if([1,7,9,10,12].includes(format)){
+    const auth=!!((raw>>63n)&1n),bind=!!((raw>>62n)&1n);
+    const ordinalMask=format===12?0xffffffn:0xffffn;
+    if(bind)return{raw,addr:null,binding:{kind:'chained-bind',ordinal:Number(raw&ordinalMask),authenticated:auth},unresolved:false,pointerFormat:format};
+    if(auth){
+      if(base==null)return{raw,addr:null,binding:null,unresolved:true,reason:'image-base-required-for-auth-rebase',pointerFormat:format};
+      return{raw,addr:base+(raw&0xffffffffn),binding:null,unresolved:false,pointerFormat:format,authenticated:true};
+    }
+    const target=raw&0x7ffffffffffn;
+    const high8=(raw>>43n)&0xffn;
+    if([7,9,10,12].includes(format)){
+      if(base==null)return{raw,addr:null,binding:null,unresolved:true,reason:'image-base-required-for-offset-rebase',pointerFormat:format};
+      return{raw,addr:base+target,binding:null,unresolved:false,pointerFormat:format};
+    }
+    return{raw,addr:target|(high8<<56n),binding:null,unresolved:false,pointerFormat:format};
+  }
+  return{raw,addr:null,binding:null,unresolved:true,reason:'unsupported-chained-pointer-format',pointerFormat:format};
+}'''
+          new = '''function decodeChainedVtablePointer(raw,format,imageBase){
+  const base=imageBase==null?null:BigInt(imageBase);
+
+  // dyld_chained_ptr_64[_OFFSET]: both layouts carry target:36 + high8:8.
+  // Format 2 encodes a preferred vmaddr; format 6 encodes a vm offset, so
+  // high8 participates before the image base is added for the OFFSET form.
+  if(format===2||format===6){
+    const bind=!!((raw>>63n)&1n);
+    if(bind)return{raw,addr:null,binding:{kind:'chained-bind',ordinal:Number(raw&0xffffffn)},unresolved:false,pointerFormat:format};
+    const target=raw&0xfffffffffn;
+    const high8=(raw>>36n)&0xffn;
+    const reconstructed=target|(high8<<56n);
+    if(format===6){
+      if(base==null)return{raw,addr:null,binding:null,unresolved:true,reason:'image-base-required-for-offset-rebase',pointerFormat:format};
+      return{raw,addr:base+reconstructed,binding:null,unresolved:false,pointerFormat:format};
+    }
+    return{raw,addr:reconstructed,binding:null,unresolved:false,pointerFormat:format};
+  }
+
+  // Generic arm64e layouts share auth/bind bit placement but not target
+  // coordinates.  Apple dyld defines formats 1 and 10 unauthenticated rebases
+  // as vmaddr, while 7/9/12 use vm offsets. Authenticated rebases always carry
+  // a 32-bit runtime offset. USERLAND24 only changes the bind ordinal width.
+  if([1,7,9,10,12].includes(format)){
+    const auth=!!((raw>>63n)&1n),bind=!!((raw>>62n)&1n);
+    const ordinalMask=format===12?0xffffffn:0xffffn;
+    if(bind)return{raw,addr:null,binding:{kind:'chained-bind',ordinal:Number(raw&ordinalMask),authenticated:auth},unresolved:false,pointerFormat:format};
+    if(auth){
+      if(base==null)return{raw,addr:null,binding:null,unresolved:true,reason:'image-base-required-for-auth-rebase',pointerFormat:format};
+      return{raw,addr:base+(raw&0xffffffffn),binding:null,unresolved:false,pointerFormat:format,authenticated:true};
+    }
+    const target=raw&0x7ffffffffffn;
+    const high8=(raw>>43n)&0xffn;
+    const reconstructed=target|(high8<<56n);
+    const vmOffset=(format===7||format===9||format===12);
+    if(vmOffset){
+      if(base==null)return{raw,addr:null,binding:null,unresolved:true,reason:'image-base-required-for-offset-rebase',pointerFormat:format};
+      return{raw,addr:base+reconstructed,binding:null,unresolved:false,pointerFormat:format};
+    }
+    return{raw,addr:reconstructed,binding:null,unresolved:false,pointerFormat:format};
+  }
+  return{raw,addr:null,binding:null,unresolved:true,reason:'unsupported-chained-pointer-format',pointerFormat:format};
+}'''
+          assert s.count(old) == 1, 'decodeChainedVtablePointer source drifted'
+          p.write_text(s.replace(old, new))
+
+          Path('tests/issue-840-rtti-pointer-formats.mjs').write_text(r'''import assert from 'node:assert/strict';
+import { readVtable } from '../js/rtti.js';
+
+const BASE = 0x100000000n;
+const TARGET = 0x2000n;
+const HIGH8 = 0xabn;
+
+function arm64eRebase(target, high8 = 0n) {
+  return (target & 0x7ffffffffffn) | ((high8 & 0xffn) << 43n);
+}
+function arm64eAuthRebase(target) {
+  return (1n << 63n) | (target & 0xffffffffn);
+}
+function arm64eBind(ordinal, auth = false) {
+  return (auth ? 3n : 1n) << 62n | BigInt(ordinal);
+}
+function ptr64Rebase(target, high8 = 0n) {
+  return (target & 0xfffffffffn) | ((high8 & 0xffn) << 36n);
+}
+function ptr64Bind(ordinal) {
+  return (1n << 63n) | BigInt(ordinal);
+}
+async function decode(raw, format, imageBase = BASE) {
+  const bytes = new Uint8Array(32);
+  const dv = new DataView(bytes.buffer);
+  dv.setBigUint64(8, raw, true);
+  dv.setBigUint64(16, raw, true);
+  const read = async () => bytes;
+  const v = await readVtable(read, 0n, null, 2, { pointerFormat: format, imageBase });
+  return { typeinfo: v.typeinfo, typeinfoBinding: v.typeinfoBinding, slot: v.slots[0] };
+}
+
+// Apple arm64e format target coordinate semantics.
+for (const format of [1, 10]) {
+  const d = await decode(arm64eRebase(TARGET), format);
+  assert.equal(d.typeinfo, TARGET, `format ${format} unauth rebase is vmaddr`);
+}
+for (const format of [7, 9, 12]) {
+  const d = await decode(arm64eRebase(TARGET), format);
+  assert.equal(d.typeinfo, BASE + TARGET, `format ${format} unauth rebase is vm offset`);
+}
+
+// high8 belongs to the reconstructed target for every generic arm64e rebase;
+// only the coordinate interpretation differs by pointer format.
+for (const format of [1, 10]) {
+  const d = await decode(arm64eRebase(TARGET, HIGH8), format);
+  assert.equal(d.typeinfo, (HIGH8 << 56n) | TARGET);
+}
+for (const format of [7, 9, 12]) {
+  const d = await decode(arm64eRebase(TARGET, HIGH8), format);
+  assert.equal(d.typeinfo, BASE + ((HIGH8 << 56n) | TARGET));
+}
+
+// Authenticated rebases carry a 32-bit runtime offset in all generic arm64e
+// formats, independent of the unauthenticated target coordinate rule.
+for (const format of [1, 7, 9, 10, 12]) {
+  const d = await decode(arm64eAuthRebase(TARGET), format);
+  assert.equal(d.typeinfo, BASE + TARGET, `format ${format} auth rebase`);
+  assert.equal(d.slot.addr, BASE + TARGET);
+}
+
+// Bind ordinal width: USERLAND24 preserves 24 bits, the other arm64e forms 16.
+for (const format of [1, 7, 9, 10]) {
+  const d = await decode(arm64eBind(0x1234), format);
+  assert.equal(d.typeinfo, null);
+  assert.equal(d.typeinfoBinding.ordinal, 0x1234);
+  const auth = await decode(arm64eBind(0x2345, true), format);
+  assert.equal(auth.typeinfoBinding.ordinal, 0x2345);
+  assert.equal(auth.typeinfoBinding.authenticated, true);
+}
+{
+  const d = await decode(arm64eBind(0x123456), 12);
+  assert.equal(d.typeinfoBinding.ordinal, 0x123456);
+  const auth = await decode(arm64eBind(0xabcdef, true), 12);
+  assert.equal(auth.typeinfoBinding.ordinal, 0xabcdef);
+}
+
+// 64 vs 64_OFFSET use the same high8 field but different target coordinates.
+{
+  const raw = ptr64Rebase(TARGET, HIGH8);
+  assert.equal((await decode(raw, 2)).typeinfo, (HIGH8 << 56n) | TARGET);
+  assert.equal((await decode(raw, 6)).typeinfo, BASE + ((HIGH8 << 56n) | TARGET));
+  assert.equal((await decode(ptr64Bind(0x654321), 2)).typeinfoBinding.ordinal, 0x654321);
+  assert.equal((await decode(ptr64Bind(0x654321), 6)).typeinfoBinding.ordinal, 0x654321);
+}
+
+// Offset formats fail closed without an image base; vmaddr formats do not need it.
+assert.equal((await decode(arm64eRebase(TARGET), 10, null)).typeinfo, TARGET);
+assert.equal((await decode(arm64eRebase(TARGET), 9, null)).typeinfo, null);
+assert.equal((await decode(ptr64Rebase(TARGET), 6, null)).typeinfo, null);
+
+console.log('issue 840 RTTI chained-pointer formats: ok');
+''')
+
+          p = Path('tests/issues-550-559.mjs')
+          s = p.read_text()
+          line = "\nawait import('./issue-840-rtti-pointer-formats.mjs');\n"
+          if line.strip() not in s:
+            s += line
+          p.write_text(s)
+          PY
+
+          node tests/issue-840-rtti-pointer-formats.mjs
+          node tests/issues-550-559.mjs
+
+          git rm .github/workflows/_tmp-apply-840-rtti.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add js/rtti.js tests/issue-840-rtti-pointer-formats.mjs tests/issues-550-559.mjs
+          git commit -m "fix: decode chained RTTI pointer formats by ABI semantics"
+          git push origin HEAD:fix/issue-840-rtti-pointer-formats
