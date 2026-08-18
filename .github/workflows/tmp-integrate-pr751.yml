@@ -1,0 +1,183 @@
+name: One-shot integrate PR 751
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  integrate:
+    if: contains(github.event.head_commit.message, 'Integrate Round 4 production bootstrap')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Integrate PR 751 with current Supervisor semantics
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git fetch origin dev-agent-r4-production-bootstrap
+          git show origin/dev-agent-r4-production-bootstrap:js/ai/dev/supervisor/dev-supervisor-engine-v0.js > /tmp/pr751-engine.js
+
+          paths=(
+            .github/workflows/userscript-host.yml
+            js/ai/dev/bootstrap/production-bootstrap.js
+            js/ai/dev/ui/engine-router.js
+            js/ai/ui/assistant.js
+            js/userscript/deployment-identity.generated.js
+            js/userscript/dev/bootstrap-host.js
+            js/userscript/entry.js
+            js/userscript/loader.js
+            js/userscript/protected-entry.js
+            scripts/build-userscript.mjs
+            scripts/write-deployment-identity.mjs
+            tests/dev-agent/round4-production-bootstrap.mjs
+            worker-entry.js
+            wrangler.jsonc
+          )
+          git checkout origin/dev-agent-r4-production-bootstrap -- "${paths[@]}"
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('js/ai/dev/supervisor/dev-supervisor-engine-v0.js')
+          lines = path.read_text().splitlines()
+          theirs = Path('/tmp/pr751-engine.js').read_text().splitlines()
+
+          old_import = "import { DEV_BOOTSTRAP_EXTENSION, DevExtensionLoader } from '../bootstrap/dev-bootstrap-gate.js';"
+          try:
+              import_index = lines.index(old_import)
+          except ValueError:
+              raise SystemExit('current bootstrap import changed; refusing unsafe integration')
+          lines[import_index:import_index + 1] = [
+              'import {',
+              '  DEV_BOOTSTRAP_EXTENSION,',
+              '  DEV_BOOTSTRAP_EXTENSION_VERSION,',
+              '  DEV_BOOTSTRAP_ROUND4_PROOF_CAPABILITY,',
+              '  DevExtensionLoader,',
+              '  createDevBootstrapCheckpoint,',
+              '  createDevBootstrapHandoff,',
+              "} from '../bootstrap/dev-bootstrap-gate.js';",
+          ]
+
+          if not any('bootstrapSessionFor(conversationId)' in line for line in lines):
+              theirs_start = next((i for i, line in enumerate(theirs) if line.startswith('  bootstrapSessionFor(conversationId) {')), None)
+              theirs_end = next((i for i in range((theirs_start or 0) + 1, len(theirs)) if theirs[i].startswith('  availableTools() {')), None)
+              current_end = next((i for i, line in enumerate(lines) if line.startswith('  availableTools() {')), None)
+              if None in (theirs_start, theirs_end, current_end):
+                  raise SystemExit('bootstrap method block boundary not found')
+              lines[current_end:current_end] = theirs[theirs_start:theirs_end]
+
+          run_index = next((i for i, line in enumerate(lines) if line.strip() == 'async run(input = {}) {'), None)
+          if run_index is None:
+              raise SystemExit('Supervisor run entry not found')
+          if not any('requiredBootstrapCapability = normalizeRequiredBootstrapCapability' in line for line in lines[run_index:run_index + 6]):
+              lines[run_index + 1:run_index + 1] = [
+                  '    const requiredBootstrapCapability = normalizeRequiredBootstrapCapability(input.requiredBootstrapCapability, this.extensionLoader.activeCapabilities);',
+                  '    let requiredBootstrapObserved = requiredBootstrapCapability == null;',
+              ]
+
+          loop_index = next((i for i in range(run_index, len(lines)) if lines[i].strip() == 'for (let step = 0; step < this.maxDecisions; step++) {'), None)
+          if loop_index is None:
+              raise SystemExit('Supervisor decision loop not found')
+
+          prompt_index = next((i for i in range(loop_index + 1, len(lines)) if lines[i].strip() == 'const promptTools = this.availableTools();'), None)
+          if prompt_index is None:
+              raise SystemExit('current prompt tool snapshot not found')
+          p = lines[prompt_index][:-len(lines[prompt_index].lstrip())]
+          lines[prompt_index:prompt_index + 1] = [
+              p + 'const promptTools = requiredBootstrapCapability',
+              p + '  ? Object.freeze([requiredBootstrapCapability])',
+              p + '  : this.availableTools();',
+          ]
+
+          available_index = next((i for i in range(prompt_index + 1, len(lines)) if lines[i].strip() == 'const availableTools = this.availableTools();'), None)
+          if available_index is None:
+              raise SystemExit('current execution tool snapshot not found')
+          a = lines[available_index][:-len(lines[available_index].lstrip())]
+          lines[available_index:available_index + 1] = [
+              a + 'const availableTools = requiredBootstrapCapability',
+              a + '  ? Object.freeze([requiredBootstrapCapability])',
+              a + '  : this.availableTools();',
+          ]
+
+          result_line = "history.push({ kind: 'tool-result', tool: decision.tool, purpose: decision.purpose, result: sanitize(result) });"
+          result_index = next((i for i in range(available_index + 1, len(lines)) if lines[i].strip() == result_line), None)
+          if result_index is None:
+              raise SystemExit('extension tool result boundary not found')
+          if result_index + 1 >= len(lines) or 'requiredBootstrapObserved = true' not in lines[result_index + 1]:
+              r = lines[result_index][:-len(lines[result_index].lstrip())]
+              lines.insert(result_index + 1, r + 'if (decision.tool === requiredBootstrapCapability) requiredBootstrapObserved = true;')
+
+          wait_index = next((i for i in range(result_index + 1, len(lines)) if lines[i].strip() == "if (decision.type === 'wait') {"), None)
+          if wait_index is None:
+              raise SystemExit('wait decision boundary not found')
+          if not any('requiredBootstrapCapability && !requiredBootstrapObserved' in line for line in lines[result_index:wait_index]):
+              proof_start = next((i for i, line in enumerate(theirs) if line.strip() == 'if (requiredBootstrapCapability && !requiredBootstrapObserved) {'), None)
+              proof_end = next((i for i in range((proof_start or 0) + 1, len(theirs)) if theirs[i].strip() == "if (decision.type === 'wait') {"), None)
+              if None in (proof_start, proof_end):
+                  raise SystemExit('proof enforcement block not found in PR 751')
+              lines[wait_index:wait_index] = theirs[proof_start:proof_end]
+
+          if not any(line.startswith('function normalizeRequiredBootstrapCapability(') for line in lines):
+              helper_start = next((i for i, line in enumerate(theirs) if line.startswith('function normalizeRequiredBootstrapCapability(')), None)
+              if helper_start is None:
+                  raise SystemExit('bootstrap capability helper not found in PR 751')
+              lines.extend([''] + theirs[helper_start:])
+
+          path.write_text('\n'.join(lines) + '\n')
+          PY
+
+          npm ci
+          node tests/dev-agent/round4-production-bootstrap.mjs
+          npm run dev-agent:test
+          npm run userscript:build
+          npm run userscript:test
+          npm run check
+          git diff --check
+
+          rm .github/workflows/tmp-integrate-pr751.yml
+
+          python3 - <<'PY'
+          import subprocess
+          allowed = {
+              '.github/workflows/tmp-integrate-pr751.yml',
+              '.github/workflows/userscript-host.yml',
+              'js/ai/dev/bootstrap/production-bootstrap.js',
+              'js/ai/dev/supervisor/dev-supervisor-engine-v0.js',
+              'js/ai/dev/ui/engine-router.js',
+              'js/ai/ui/assistant.js',
+              'js/userscript/deployment-identity.generated.js',
+              'js/userscript/dev/bootstrap-host.js',
+              'js/userscript/entry.js',
+              'js/userscript/loader.js',
+              'js/userscript/protected-entry.js',
+              'scripts/build-userscript.mjs',
+              'scripts/write-deployment-identity.mjs',
+              'tests/dev-agent/round4-production-bootstrap.mjs',
+              'worker-entry.js',
+              'wrangler.jsonc',
+              'userscript/hex.user.template.js',
+              'userscript/release-version.json',
+          }
+          rows = subprocess.check_output(['git', 'status', '--porcelain=v1'], text=True).splitlines()
+          actual = {row[3:] for row in rows if len(row) >= 4}
+          if actual != allowed:
+              raise SystemExit(f'unexpected integration diff: {sorted(actual)}')
+          PY
+
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m 'Integrate Round 4 production bootstrap on current main'
+          git push origin HEAD:main
