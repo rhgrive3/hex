@@ -36,6 +36,13 @@ export class DevSupervisorEngineV0 {
     return this.extensionLoader.invoke(name);
   }
 
+  availableTools() {
+    return Object.freeze([...new Set([
+      ...(this.supervisor.availableTools || []),
+      ...(this.extensionLoader.activeCapabilities || []),
+    ])]);
+  }
+
   async executeWithinToolBoundary(operation) {
     if (typeof operation !== 'function') throw new TypeError('Dev tool operation must be a function.');
     this.extensionLoader.beginToolCall();
@@ -84,9 +91,10 @@ export class DevSupervisorEngineV0 {
 
     try {
       for (let step = 0; step < this.maxDecisions; step++) {
+        const promptTools = this.availableTools();
         const response = await this.bridge.request(buildDevSupervisorPrompt({
           run,
-          availableTools: this.supervisor.availableTools,
+          availableTools: promptTools,
           history,
         }), {
           signal: input.signal,
@@ -95,10 +103,36 @@ export class DevSupervisorEngineV0 {
           reasoning: input.reasoning || null,
         });
         const text = response && typeof response === 'object' ? response.text : response;
-        const decision = parseDevSupervisorDecision(text, { availableTools: this.supervisor.availableTools });
+        let decision;
+        try {
+          decision = parseDevSupervisorDecision(text);
+        } catch (decisionError) {
+          history.push({
+            kind: 'decision-invalid',
+            message: '直前のSupervisor decisionは有効なhex-dev-supervisor-v1 JSONではありません。同じdecision shape契約に従ってJSONオブジェクトを1つだけ再出力してください。',
+            error: String(decisionError?.message || decisionError || 'Invalid Supervisor decision.'),
+          });
+          continue;
+        }
+        const availableTools = this.availableTools();
+
+        if (decision.type === 'tool' && !availableTools.includes(decision.tool)) {
+          history.push({
+            kind: 'tool-unavailable',
+            tool: decision.tool,
+            message: `要求されたツール「${decision.tool}」は現在利用できません。現在利用可能なツール一覧を確認して再判断してください。`,
+            availableTools,
+          });
+          continue;
+        }
 
         if (decision.type === 'tool') {
           input.onActivity?.({ label: decision.tool, detail: decision.purpose });
+          if (this.extensionLoader.activeCapabilities?.includes(decision.tool)) {
+            const result = await this.executeWithinToolBoundary(() => this.invokeBootstrapCapability(decision.tool));
+            history.push({ kind: 'tool-result', tool: decision.tool, purpose: decision.purpose, result: sanitize(result) });
+            continue;
+          }
           if (decision.tool === DEV_WORKER_TOOL.CLAIM) workerClaimAttempted = true;
           const executed = await this.executeWithinToolBoundary(
             () => this.supervisor.executeToolDecision(run, decision),

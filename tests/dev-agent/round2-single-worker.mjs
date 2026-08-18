@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { DevSupervisorV0 } from '../../js/ai/dev/supervisor/dev-supervisor-v0.js';
+import { DevSupervisorEngineV0 } from '../../js/ai/dev/supervisor/dev-supervisor-engine-v0.js';
 import { DevRunEventHost, createDevEvent, DEV_EVENT_TYPE } from '../../js/ai/dev/events/dev-events.js';
 import { DEV_WORKER_MAY_SPAWN_WORKER, buildDevWorkerInstruction } from '../../js/ai/dev/workers/contracts.js';
 import { createDevWorkerToolSurface, DEV_WORKER_TOOLS } from '../../js/ai/dev/workers/tool-surface.js';
@@ -162,4 +163,44 @@ const standard = await routed.run({ mode: 'agent', question: 'standard' });
 assert.equal(standard.answer, 'standard');
 assert.equal(standardCalls, 1, 'dev-standard-agent-isolation');
 
+await testMalformedSupervisorDecisionRetriesSameSession();
+
 console.log('Round 2 protected Dev Worker tests passed');
+
+async function testMalformedSupervisorDecisionRetriesSameSession() {
+  const retrySupervisor = new DevSupervisorV0({
+    workerTools: tools,
+    idFactory: (kind) => ({ run: 'invalid-run', worker: 'invalid-worker', 'supervisor-session': 'invalid-supervisor-session' }[kind] || `${kind}-id`),
+    now: () => '2026-08-17T00:00:00.000Z',
+  });
+  const retrySettings = {
+    decisionPolicy: 'yolo',
+    analysisScope: { initial: 'none', expansionPolicy: 'agent' },
+    lastRun: null,
+    setLastRun(next) { this.lastRun = next; },
+  };
+  const requests = [];
+  const bridge = {
+    async request(prompt, options) {
+      requests.push({ prompt, options });
+      if (requests.length === 1) {
+        return { text: '{"type":"final","answer":"bad","completedTasks":[],"remaining":[],}' };
+      }
+      return { text: JSON.stringify({ type: 'final', answer: '形式エラーから復旧', completedTasks: [], remaining: [] }) };
+    },
+  };
+  const engine = new DevSupervisorEngineV0({ supervisor: retrySupervisor, settings: retrySettings, bridge });
+  const result = await engine.run({ mode: 'agent', question: '不正decisionから復旧', conversationId: 'hex-invalid' });
+  assert.equal(result.answer, '形式エラーから復旧');
+  assert.equal(requests.length, 2, 'malformed decision must be returned to the same Supervisor for another decision');
+  assert.equal(requests[0].options.sessionKey, 'invalid-supervisor-session');
+  assert.equal(requests[1].options.sessionKey, 'invalid-supervisor-session', 'decision retry must stay in the same Supervisor conversation');
+  assert.equal(retrySettings.lastRun.status, 'COMPLETED', 'malformed decision must not fail the DevRun when replanning succeeds');
+  const payloadMatch = /<HEX_DEV_DATA>\n(.+)\n<\/HEX_DEV_DATA>/.exec(requests[1].prompt);
+  assert.ok(payloadMatch, 'retry prompt must contain invalid-decision feedback');
+  const payload = JSON.parse(payloadMatch[1]);
+  const feedback = payload.history.at(-1);
+  assert.equal(feedback.kind, 'decision-invalid');
+  assert.match(feedback.message, /JSONオブジェクトを1つだけ再出力/);
+  assert.match(feedback.error, /exactly one JSON object/);
+}
