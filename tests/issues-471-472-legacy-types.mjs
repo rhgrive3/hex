@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import { BASIC_TYPES, inferTypes, typeFromAccess, widthOfRegisterName } from '../js/types.js';
+import { verifyAccessor } from '../js/verify.js';
 
 const reg = (text, num = Number(String(text).replace(/\D/g, '') || 0)) => ({ k: 'reg', text, num });
+const gp = (text) => ({ k: 'reg', cls: 'gp', text, num: Number(String(text).replace(/\D/g, '') || 0), bits: text.startsWith('w') ? 32 : 64 });
 const insn = (row, mnemonic, options = {}) => ({
   row, mnemonic, ops: options.ops || [], reads: options.reads || [], writes: options.writes || [],
   memory: options.memory || null, isCall: !!options.isCall, callTarget: options.callTarget ?? null,
@@ -85,4 +87,40 @@ assert.equal(BASIC_TYPES.find((t) => t.name === 'vector128')?.size, 16);
   assert.equal(argType(result, 0), 'unknown', 'full-width copy after W truncation must not resurrect x0 identity');
 }
 
-console.log('legacy type regressions #471/#472/#812 PASS');
+// #813: accessor verification may only trace exact setter-argument identity through MOV copies.
+const accessorModel = (definition, storeReg) => model([
+  definition,
+  insn(1, 'str', {
+    ops: [gp(storeReg), { k: 'mem', text: '[x0, #0x20]' }],
+    reads: [storeReg, 'x0'], writes: [],
+    memory: { stack: false, indexed: false, base: 'x0', disp: 0x20n, kind: 'store', size: storeReg.startsWith('w') ? 4 : 8 },
+  }),
+]);
+const accessor = (definition, storeReg) => verifyAccessor(accessorModel(definition, storeReg), { offset: 0x20n });
+
+{
+  const xCopy = accessor(insn(0, 'mov', { ops: [gp('x8'), gp('x2')], reads: ['x2'], writes: ['x8'] }), 'x8');
+  const wCopy = accessor(insn(0, 'mov', { ops: [gp('w8'), gp('w2')], reads: ['x2'], writes: ['x8'] }), 'w8');
+  assert.equal(xCopy.fromArgument, true, 'mov x8,x2 must preserve setter argument identity');
+  assert.equal(wCopy.fromArgument, true, 'mov w8,w2 must preserve the 32-bit setter argument identity');
+}
+
+for (const [mnemonic, dst, src, ops] of [
+  ['neg', 'w8', 'w2', [gp('w8'), gp('w2')]],
+  ['lsl', 'w8', 'w2', [gp('w8'), gp('w2'), { k: 'imm', value: 1n }]],
+  ['mvn', 'w8', 'w2', [gp('w8'), gp('w2')]],
+  ['sxtw', 'x8', 'w2', [gp('x8'), gp('w2')]],
+  ['uxtw', 'x8', 'w2', [gp('x8'), gp('w2')]],
+  ['rev', 'w8', 'w2', [gp('w8'), gp('w2')]],
+]) {
+  const result = accessor(insn(0, mnemonic, { ops, reads: ['x2'], writes: ['x8'] }), dst);
+  assert.equal(result.fromArgument, false, `${mnemonic} must not be accepted as setter argument identity`);
+}
+
+// A synthetic width-changing MOV must also fail closed rather than equating W/X views.
+{
+  const result = accessor(insn(0, 'mov', { ops: [gp('x8'), gp('w2')], reads: ['x2'], writes: ['x8'] }), 'x8');
+  assert.equal(result.fromArgument, false, 'width-changing MOV must not preserve setter argument identity');
+}
+
+console.log('legacy/verification regressions #471/#472/#812/#813 PASS');
