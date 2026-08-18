@@ -7,6 +7,7 @@ import { partitionDecodedFunction, semanticAbiAdapter } from '../../../js/analys
 function rv(op, fields = {}, address = 0x1000n) {
   return {
     instructionId:`${op}-${address.toString(16)}`,
+    contractVersion:'riscv64-decoded-instruction/v1',
     address,
     size:4,
     length:4,
