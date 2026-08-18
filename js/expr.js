@@ -383,6 +383,22 @@ function applyShift(n, sh, bits) {
   }
 }
 
+function signExtendExtractedField(n, width, bits) {
+  const fieldBits = Number(width);
+  const destinationBits = Number(bits);
+  if (!Number.isSafeInteger(fieldBits) || !Number.isSafeInteger(destinationBits) ||
+      fieldBits < 1 || fieldBits > destinationBits) return null;
+  const c = constOf(n);
+  if (c != null) return constNode(BigInt.asIntN(fieldBits, BigInt.asUintN(fieldBits, c)));
+  if (fieldBits === destinationBits) return n;
+  // After masking to fieldBits, the top field bit is exactly 0 or 1. Subtracting
+  // that bit times 2^fieldBits is mathematical sign extension without inventing
+  // a target-specific unary node or relying on host signed-shift width.
+  const sign = bin('shr', n, constNode(BigInt(fieldBits - 1)), destinationBits);
+  const correction = bin('mul', sign, constNode(1n << BigInt(fieldBits)), destinationBits);
+  return bin('sub', n, correction, destinationBits);
+}
+
 const BIN_MN = {
   add: 'add', adds: 'add', sub: 'sub', subs: 'sub',
   mul: 'mul', sdiv: 'sdiv', udiv: 'udiv',
@@ -783,8 +799,16 @@ export function buildValues(model, opts) {
     } else if (base === 'ubfx' || base === 'sbfx') {
       const lsb = insn.ops[2] && insn.ops[2].value != null ? insn.ops[2].value : 0n;
       const width = insn.ops[3] && insn.ops[3].value != null ? insn.ops[3].value : 0n;
-      const shifted = bin('shr', A(), constNode(lsb), bits);
-      emit(dst, width > 0n && width < 64n ? bin('and', shifted, constNode((1n << width) - 1n), bits) : shifted);
+      const destinationWidth = BigInt(bits);
+      if (lsb < 0n || width <= 0n || lsb >= destinationWidth || width > destinationWidth - lsb) {
+        if (dst) regs.delete(dst);
+      } else {
+        const shifted = bin('shr', A(), constNode(lsb), bits);
+        const extracted = width === destinationWidth
+          ? shifted
+          : bin('and', shifted, constNode((1n << width) - 1n), bits);
+        emit(dst, base === 'sbfx' ? signExtendExtractedField(extracted, width, bits) : extracted);
+      }
     } else if (base === 'csel' || base === 'csinc' || base === 'csinv' || base === 'csneg' ||
                base === 'cset' || base === 'csetm' || base === 'cinc') {
       emit(dst, selectNode(insn, row, valueOf, bits, flags));

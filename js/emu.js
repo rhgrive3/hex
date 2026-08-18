@@ -794,7 +794,7 @@ export class Emulator {
     }
     if (/^(memset|bzero)$/.test(plain)) {
       const d=this.x[0],c=plain==='bzero'?0n:this.x[1],n=plain==='bzero'?this.x[1]:this.x[2]; if(n>MAX_HOOK_BYTES) throw new EmulatorFault('hook-write-too-large',plain+': 書込長が安全上限65536バイトを超えました',{size:n});
-      for(let i=0n;i<n;i++){await this.ensure(d+i);await this.ensure(d+i);this.writeByte(d+i,Number(c&0xffn));} this.x[0]=d; this.log.push({call:plain,note:n+' バイトを埋めました'}); return true;
+      for(let i=0n;i<n;i++){await this.ensure(d+i);this.writeByte(d+i,Number(c&0xffn));} this.x[0]=d; this.log.push({call:plain,note:n+' バイトを埋めました'}); return true;
     }
     if (/^(arc4random|rand|random)$/.test(plain)) { this.x[0]=4n; this.log.push({call:plain,note:'乱数は毎回 4 を返します（結果を比べられるように）'}); return true; }
     if (plain === 'objc_storeStrong') { await this.store(this.x[0],8,this.x[1]); this.log.push({call:plain,note:'strong参照先へ新しいobject pointerを書き込みました'}); return true; }
