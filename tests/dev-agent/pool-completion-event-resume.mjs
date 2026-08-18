@@ -7,17 +7,6 @@ import {
 const NOW = '2026-08-19T01:25:00.000Z';
 const fastSleep = (ms) => new Promise((resolve) => setTimeout(resolve, Math.min(Number(ms) || 0, 1)));
 
-await testCompletedBeforeWait();
-await testCompletionWhileWaiting();
-await testCompletionBetweenSupervisorRuns();
-await testMultipleSimultaneousCompletions();
-await testDuplicateCompletionIsNotDeliveredTwice();
-await testReleasedLeaseCannotDeliverStaleCompletion();
-await testDeliveryDoesNotConsumeRetainedResult();
-await testSingleConversationCoordinatorStillWinsRace();
-
-console.log('pool completion event resume: ok');
-
 async function testCompletedBeforeWait() {
   const pool = new FakePool(1);
   const lease = pool.claim(1, 'before-wait');
@@ -236,3 +225,14 @@ function cancelled(reason) {
   error.code = 'cancelled';
   return error;
 }
+
+await testCompletedBeforeWait();
+await testCompletionWhileWaiting();
+await testCompletionBetweenSupervisorRuns();
+await testMultipleSimultaneousCompletions();
+await testDuplicateCompletionIsNotDeliveredTwice();
+await testReleasedLeaseCannotDeliverStaleCompletion();
+await testDeliveryDoesNotConsumeRetainedResult();
+await testSingleConversationCoordinatorStillWinsRace();
+
+console.log('pool completion event resume: ok');
