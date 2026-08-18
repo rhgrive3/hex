@@ -1,31 +1,19 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { describeBinaryImage } from '../../../js/platform/describe.js';
 import { ARM64_ARCHITECTURE, X86_64_ARCHITECTURE } from '../../../js/targets/architecture/index.js';
 import { resolveABIPlugin } from '../../../js/targets/abi/index.js';
 import { x86RegisterDescriptor } from '../../../js/targets/architecture/x86_64/registers.js';
 import { effects, reg, vex2, physicalWrites } from '../effects/fp-simd/helpers.mjs';
 
-test('x86 viewer compatibility and semantic selection coexist without changing ARM64', () => {
-  assert.equal(X86_64_ARCHITECTURE.viewerCompatible, true);
+test('x86 semantic selection coexists with integrated viewer implementation while public capability remains conservative', () => {
+  assert.equal(X86_64_ARCHITECTURE.fixedInstructionSize, null);
+  assert.equal(X86_64_ARCHITECTURE.viewerCompatible, false);
   assert.equal(typeof X86_64_ARCHITECTURE.liftExact, 'function');
   assert.equal(X86_64_ARCHITECTURE.capabilities.semanticAnalysis, 'phase5-shadow-partial');
   assert.equal(ARM64_ARCHITECTURE.viewerCompatible, true);
   assert.equal(ARM64_ARCHITECTURE.fixedInstructionSize, 4);
   assert.equal(ARM64_ARCHITECTURE.capabilities.semanticAnalysis, 'legacy-v1');
-});
-
-test('public binary capability exposes the integrated variable-length x86 viewer without semantic overclaim', () => {
-  const descriptor = describeBinaryImage({
-    format:'elf', arch:'x86_64', bits:64, endian:'little',
-    sections:[], segments:[], imageBase:0n, fileOffset:0n, fileSize:0n,
-    warnings:[], metadata:{}, summary:()=>({ format:'elf', arch:'x86_64', bits:64 }),
-  }, { engine:{ arm64:true, x86_64:true, verified:true } });
-  assert.equal(descriptor.capability.canDisassemble, true);
-  assert.equal(descriptor.capability.viewerCanDisassemble, true);
-  assert.equal(descriptor.capability.canAnalyzeDataflow, false);
-  assert.equal(descriptor.capability.canEmulate, false);
 });
 
 test('canonical x86 physical state uses YMM-backed XMM views plus one MXCSR environment register', () => {
