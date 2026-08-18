@@ -14,13 +14,10 @@ import { RISCV64_XLEN, createRiscv64EffectContext } from './common.js';
  *
  * Call/return classification is architectural, not psABI:
  *
- *  - `jal`/`jalr` write a link value to rd. rd == x0 means no link is created,
- *    so the transfer is a plain (possibly indirect) jump.
- *  - For `jalr` with rd == x0, the ISA's own return-address-stack prediction
- *    table treats rs1 in {x1, x5} as a *return*. That hint is part of the
- *    unprivileged ISA, so using it here does not import psABI knowledge. Which
- *    register a calling convention actually designates as the return address is
- *    left to the ABI plugin.
+ *  - writing a link value is distinct from proving an ABI call; only x1/x5 are
+ *    the ISA return-address-stack hint registers used as instruction-local call
+ *    evidence here;
+ *  - for `jalr` with rd == x0, rs1 in {x1, x5} is a return hint.
  */
 
 const BRANCH_PREDICATE = Object.freeze({
@@ -32,7 +29,6 @@ const BRANCH_PREDICATE = Object.freeze({
   bgeu: { predicate: 'uge', signed: false },
 });
 
-/** ISA "Control Transfer Instructions": link registers used by the RAS hint. */
 const RETURN_ADDRESS_HINT_REGISTERS = Object.freeze(['x1', 'x5']);
 
 function addressRef(value) {
@@ -42,7 +38,6 @@ function addressRef(value) {
 function targetAlignmentFault() {
   return {
     kind: 'pc-alignment-fault',
-    // With the "C" extension present, instructions are 2-byte aligned.
     condition: { kind: 'riscv64-target-misaligned', alignmentBytes: 2 },
     detail: { architecture: 'riscv64', profile: 'rv64imc' },
   };
@@ -68,9 +63,6 @@ export function liftRiscv64ControlEffects(decoded, context = {}) {
     });
     const target = address + BigInt(fields.imm);
     if (target === next) {
-      // A branch whose taken target is the fallthrough is architecturally still
-      // a conditional branch, but it has one successor. Report it honestly
-      // rather than inventing a second edge.
       return ctx.finish({
         controlEffect: { kind: 'branch', target: addressRef(target), condition },
         family: 'control',
@@ -93,24 +85,31 @@ export function liftRiscv64ControlEffects(decoded, context = {}) {
   if (op === 'jal') {
     const target = address + BigInt(fields.imm);
     const linked = ctx.writeRegister(fields.rd, ctx.constant(RISCV64_XLEN, next));
+    const isCallHint = linked && RETURN_ADDRESS_HINT_REGISTERS.includes(fields.rd);
     return ctx.finish({
-      controlEffect: linked
+      controlEffect: isCallHint
         ? { kind: 'call', target: addressRef(target), fallthrough: addressRef(next) }
         : { kind: 'branch', target: addressRef(target) },
       possibleFaults: [targetAlignmentFault()],
       family: 'control',
-      metadata: { operation: op, direct: true, linkRegister: linked ? fields.rd : null, abiSemantics: false },
+      metadata: {
+        operation: op,
+        direct: true,
+        linkRegister: linked ? fields.rd : null,
+        jumpWithLinkage: linked && !isCallHint,
+        abiSemantics: false,
+      },
     });
   }
 
   if (op === 'jalr') {
-    // target = (rs1 + imm) with bit 0 cleared, per the ISA definition of JALR.
     const base = ctx.readRegister(fields.rs1);
     const sum = ctx.valueOp('add', [base, ctx.constant(RISCV64_XLEN, fields.imm)], RISCV64_XLEN, { addressArithmetic: 'jalr-target' });
     const target = ctx.valueOp('and', [sum, ctx.constant(RISCV64_XLEN, -2n)], RISCV64_XLEN, { targetLowBitCleared: true });
     const linked = ctx.writeRegister(fields.rd, ctx.constant(RISCV64_XLEN, next));
+    const isCallHint = linked && RETURN_ADDRESS_HINT_REGISTERS.includes(fields.rd);
     const isReturnHint = !linked && RETURN_ADDRESS_HINT_REGISTERS.includes(fields.rs1);
-    const kind = linked ? 'call' : isReturnHint ? 'return' : 'indirect';
+    const kind = isCallHint ? 'call' : isReturnHint ? 'return' : 'indirect';
     return ctx.finish({
       controlEffect: {
         kind,
@@ -124,6 +123,7 @@ export function liftRiscv64ControlEffects(decoded, context = {}) {
         indirect: true,
         linkRegister: linked ? fields.rd : null,
         returnAddressStackHint: isReturnHint ? fields.rs1 : null,
+        jumpWithLinkage: linked && !isCallHint,
         abiSemantics: false,
       },
     });
