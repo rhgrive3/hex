@@ -20,4 +20,35 @@ replace_once(
     "    if ((inst.loc?.kind !== LEGACY_MK.UNKNOWN && inst.loc?.kind !== LEGACY_MK.STACK) || inst.addr?.precise !== true || inst.addr.index != null) continue;",
 )
 
+# A same canonical stack start may have distinct public location objects for
+# distinct access widths, but those objects must remain in one canonical stack
+# region. Prefer the region already published at the canonical key when it is
+# a matching stack coordinate, even if size forces a size-qualified key.
+replace_once(
+    'js/ir-core.js',
+'''      const existingMatches = !!existing && existing.kind === LEGACY_MK.STACK
+        && existing.disp != null && BigInt(existing.disp) === offset
+        && (existing.size == null || size == null || Number(existing.size) === Number(size));
+      const locKey = existing && !existingMatches ? `${key}:s${size ?? '?'}:compat` : key;
+      const loc = existingMatches ? existing : {
+        key: locKey,
+        kind: LEGACY_MK.STACK,
+        disp: offset,
+        size,
+        regionId: inst.loc?.regionId ?? null,''',
+'''      const sameCanonicalCoordinate = !!existing && existing.kind === LEGACY_MK.STACK
+        && existing.disp != null && BigInt(existing.disp) === offset;
+      const existingMatches = sameCanonicalCoordinate
+        && (existing.size == null || size == null || Number(existing.size) === Number(size));
+      const locKey = existing && !existingMatches ? `${key}:s${size ?? '?'}:compat` : key;
+      const canonicalRegionId = sameCanonicalCoordinate
+        ? (existing.regionId ?? inst.loc?.regionId ?? null)
+        : (inst.loc?.regionId ?? null);
+      const loc = existingMatches ? existing : {
+        key: locKey,
+        kind: LEGACY_MK.STACK,
+        disp: offset,
+        size,
+        regionId: canonicalRegionId,''')
+
 print('guarded batch A3 public stack-coordinate canonicalization applied')
