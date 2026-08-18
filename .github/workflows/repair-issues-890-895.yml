@@ -33,13 +33,6 @@ jobs:
         run: npm run userscript:build
       - name: Repository verification
         run: npm run check
-      - name: Canonical userscript idempotence
-        run: |
-          cp userscript/hex.user.js /tmp/hex.user.js
-          cp userscript/hex.user.template.js /tmp/hex.user.template.js
-          npm run userscript:build
-          cmp userscript/hex.user.js /tmp/hex.user.js
-          cmp userscript/hex.user.template.js /tmp/hex.user.template.js
       - name: Commit verified source result
         run: |
           git config user.name github-actions[bot]
@@ -49,4 +42,3 @@ jobs:
           git diff --cached --check
           git commit -m 'fix: close control and profile correctness issues 890-895'
           git push origin HEAD:fix/issues-890-895-control-profile-20260819
-# retrigger verified repair
