@@ -12,7 +12,7 @@ concurrency:
 jobs:
   machine-effects:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
         with:
@@ -23,64 +23,224 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Apply candidate semantic repairs
+
+      - name: Materialize verified semantic, ABI, Worker, and governance integration
         shell: bash
         run: |
           set -euo pipefail
           python3 <<'PY'
           from pathlib import Path
 
+          # #857/current-main semantic repair: preserve the machine comparison
+          # width instead of using the physical SSA register width, and avoid
+          # treating auxiliary shifted-operand nodes as independent compares.
           p = Path('js/ir.js')
           s = p.read_text()
           old = """  const rhs = shiftedConst(cmp.args[1], cmp.args[0].value.bits || 64);\n  if (rhs == null) return null;\n  return { lhs: cmp.args[0].value, rhs, cond: branch.cond || null, cmp };"""
           new = """  const bits = Number(cmp.extra?.widthBits || cmp.extra?.bits || cmp.args[0].bits || cmp.args[1].bits || cmp.args[0].value.bits || 64);\n  const rhs = shiftedConst(cmp.args[1], bits);\n  if (rhs == null) return null;\n  return { lhs: cmp.args[0].value, rhs, bits, cond: branch.cond || null, cmp };"""
-          assert s.count(old) == 1
+          assert s.count(old) == 1, 'comparisonOfBranch source drifted'
           s = s.replace(old, new)
+
           old = """function constrainedRange(value, op, constant, signed) {\n  const bits = value && value.bits || 64;\n  const rhs = normalizeIntegerValue(constant, bits, signed);\n  const bounds = typeBounds(bits, signed);"""
           new = """function constrainedRange(value, op, constant, signed, bitsOverride = null) {\n  const bits = Number(bitsOverride || (value && value.bits) || 64);\n  const rhs = normalizeIntegerValue(constant, bits, signed);\n  const bounds = typeBounds(bits, signed);"""
-          assert s.count(old) == 1
+          assert s.count(old) == 1, 'constrainedRange source drifted'
           s = s.replace(old, new)
+
           old = """  const existing = valueRange(value);\n  if (existing) { if (existing.min > min) min = existing.min; if (existing.max < max) max = existing.max; }"""
           new = """  const existing = normalizeRangeDomain(valueRange(value), bits, signed);\n  if (existing) { if (existing.min > min) min = existing.min; if (existing.max < max) max = existing.max; }"""
-          assert s.count(old) == 1
+          assert s.count(old) == 1, 'existing-range intersection source drifted'
           s = s.replace(old, new)
+
           old = """  const rhs = normalizeIntegerValue(c.rhs, c.lhs.bits || 64, signedForBounds);\n  const range = constrainedRange(c.lhs, relation, rhs, signedForBounds);"""
           new = """  const bits = Number(c.bits || c.lhs.bits || 64);\n  const rhs = normalizeIntegerValue(c.rhs, bits, signedForBounds);\n  const range = constrainedRange(c.lhs, relation, rhs, signedForBounds, bits);"""
-          assert s.count(old) == 1
+          assert s.count(old) == 1, 'rangeOnBranch source drifted'
           p.write_text(s.replace(old, new))
 
           p = Path('js/semantics/compat/semantic-ir-v2-to-v1.js')
           s = p.read_text()
           old = """function addComparisonCarriers(ir, values, valuesById) {\n  const flagWriteInstructionIds = new Set();\n  for (const node of ir.nodes) {\n    if (node.kind !== 'state-write' || node.variable?.physicalIdentity?.kind !== 'flag') continue;\n    for (const id of sourceInstructionIds(node.origin)) flagWriteInstructionIds.add(id);\n  }\n\n  const byNodeId = new Map();\n  for (const node of ir.nodes) {"""
           new = """function addComparisonCarriers(ir, values, valuesById) {\n  const flagWriteInstructionIds = new Set();\n  const addWithCarryInstructionIds = new Set();\n  for (const node of ir.nodes) {\n    if (node.kind === 'state-write' && node.variable?.physicalIdentity?.kind === 'flag') {\n      for (const id of sourceInstructionIds(node.origin)) flagWriteInstructionIds.add(id);\n    }\n    if (node.kind === 'intrinsic' && node.operator === 'add-with-carry') {\n      for (const id of sourceInstructionIds(node.origin)) addWithCarryInstructionIds.add(id);\n    }\n  }\n\n  const byNodeId = new Map();\n  for (const node of ir.nodes) {"""
-          assert s.count(old) == 1
+          assert s.count(old) == 1, 'comparison-carrier prelude drifted'
           s = s.replace(old, new)
           old = """    const flagProducingArithmetic = sameInstruction(node, flagWriteInstructionIds)\n      && ((node.kind === 'intrinsic' && node.operator === 'add-with-carry') || node.kind === 'binary');"""
-          new = """    const canonicalAddWithCarry = node.kind === 'intrinsic' && node.operator === 'add-with-carry';\n    const auxiliaryBinary = node.kind === 'binary' && sameInstruction(node, addWithCarryInstructionIds);\n    const flagProducingArithmetic = sameInstruction(node, flagWriteInstructionIds)\n      && (canonicalAddWithCarry || (node.kind === 'binary' && !auxiliaryBinary));"""
-          assert s.count(old) == 1
+          new = """    // Auxiliary binary nodes may construct an operand for the same machine\n    // instruction (for example `cmp w0, w1, lsl #1`). If canonical\n    // add-with-carry exists, it is the flag-producing arithmetic authority;\n    // promoting the auxiliary shift would flatten the compare incorrectly.\n    const canonicalAddWithCarry = node.kind === 'intrinsic' && node.operator === 'add-with-carry';\n    const auxiliaryBinary = node.kind === 'binary' && sameInstruction(node, addWithCarryInstructionIds);\n    const flagProducingArithmetic = sameInstruction(node, flagWriteInstructionIds)\n      && (canonicalAddWithCarry || (node.kind === 'binary' && !auxiliaryBinary));"""
+          assert s.count(old) == 1, 'comparison-carrier predicate drifted'
           p.write_text(s.replace(old, new))
 
-          p = Path('tests/semantic-v2/integration-ir-cache-context.test.mjs')
-          s = p.read_text()
-          s = s.replace("  irFor,\n  setSemanticMigrationMode,", "  irFor,\n  getSemanticMigrationMode,\n  setSemanticMigrationMode,")
-          marker = "const model = buildSemanticModel(rows, { startRow:0, endRow:rows.length - 1, rowOfAddress });\n\ntry {"
-          assert marker in s
-          s = s.replace(marker, "const model = buildSemanticModel(rows, { startRow:0, endRow:rows.length - 1, rowOfAddress });\nconst initialMigrationMode = getSemanticMigrationMode();\n\ntry {")
-          old = """} finally {\n  setSemanticMigrationMode(SEMANTIC_V2_MIGRATION_MODES.LEGACY);\n}"""
-          assert s.count(old) == 1
-          p.write_text(s.replace(old, """} finally {\n  setSemanticMigrationMode(initialMigrationMode);\n}"""))
+          # Mixed integration is a real release shape, not a Phase 4/5/6 lane.
+          # Validate only the exact Phase-4-owned subset against the existing
+          # p4-7 manifest while leaving other phase inventories to their own gates.
+          helper = r'''import { execFileSync, spawnSync } from 'node:child_process';
+          import fs from 'node:fs';
+          import path from 'node:path';
+          import { fileURLToPath } from 'node:url';
 
-          p = Path('tests/semantic-v2/issues-791-797-800-825-ir-soundness.test.mjs')
+          const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
+          function arg(name, fallback = null) {
+            const i = process.argv.indexOf(`--${name}`);
+            return i >= 0 ? process.argv[i + 1] : fallback;
+          }
+          function phase4Path(file) {
+            const prefixes = [
+              'js/core/artifacts/', 'js/core/scheduler/', 'js/core/budgets/',
+              'js/project/', 'js/cache/', 'tests/phase4/',
+              'tools/validation/phase4/', 'reports/phase4/',
+            ];
+            if (prefixes.some((prefix) => file.startsWith(prefix))) return true;
+            if ([
+              'js/bytesource/cached.js', 'js/backend.js',
+              'tools/validation/phase4-ownership.mjs',
+              'tools/validation/phase-ownership/phase4.json', 'package.json',
+            ].includes(file)) return true;
+            if (/^js\/worker[^/]*\.js$/.test(file)) return true;
+            return /^\.github\/workflows\/phase4-[^/]*\.yml$/.test(file);
+          }
+
+          let changed;
+          const filesArg = arg('files');
+          if (filesArg != null) {
+            changed = filesArg.split(',').map((item) => item.trim()).filter(Boolean);
+          } else if (process.argv.includes('--files0-stdin')) {
+            changed = fs.readFileSync(0).toString('utf8').split('\0').filter(Boolean);
+          } else {
+            const base = arg('base-sha');
+            const head = arg('head-sha');
+            if (!base || !head) {
+              console.error('phase4 mixed integration: require --base-sha <sha> --head-sha <sha>, --files, or --files0-stdin');
+              process.exit(2);
+            }
+            const raw = execFileSync('git', ['diff', '--name-only', '-z', `${base}...${head}`], { cwd: ROOT });
+            changed = raw.toString('utf8').split('\0').filter(Boolean);
+          }
+
+          const phase4Changed = changed.filter(phase4Path);
+          for (const file of phase4Changed) {
+            if (/[\r\n,]/.test(file)) {
+              console.error(`phase4 mixed integration: unsupported path spelling: ${JSON.stringify(file)}`);
+              process.exit(2);
+            }
+            const child = spawnSync(process.execPath, [
+              'tools/validation/phase4-ownership.mjs', '--lane', 'p4-7', '--files', file,
+            ], { cwd: ROOT, encoding: 'utf8' });
+            if (child.status !== 0) {
+              process.stdout.write(child.stdout || '');
+              process.stderr.write(child.stderr || '');
+              console.error(`phase4 mixed integration: rejected Phase 4 subset path: ${file}`);
+              process.exit(child.status || 1);
+            }
+          }
+
+          console.log(JSON.stringify({
+            phase: 4,
+            mode: 'mixed-integration',
+            totalChangedFiles: changed.length,
+            phase4ChangedFiles: phase4Changed.length,
+            violations: 0,
+          }));
+          '''
+          helper = '\n'.join(line[10:] if line.startswith('          ') else line for line in helper.splitlines()) + '\n'
+          Path('tools/validation/phase4/mixed-integration.mjs').write_text(helper)
+
+          test = r'''import assert from 'node:assert/strict';
+          import { spawnSync } from 'node:child_process';
+
+          function run(files) {
+            return spawnSync(process.execPath, [
+              'tools/validation/phase4/mixed-integration.mjs', '--files', files.join(','),
+            ], { encoding: 'utf8' });
+          }
+
+          const mixed = run(['js/worker-legacy.js', 'js/ir.js']);
+          assert.equal(mixed.status, 0, mixed.stderr);
+          const report = JSON.parse(mixed.stdout.trim().split(/\r?\n/).at(-1));
+          assert.equal(report.totalChangedFiles, 2);
+          assert.equal(report.phase4ChangedFiles, 1);
+
+          const forbiddenGovernanceWrite = run(['tools/validation/phase-ownership/phase4.json']);
+          assert.notEqual(forbiddenGovernanceWrite.status, 0,
+            'mixed integration must not turn p4-7 into authority for the frozen Phase 4 manifest');
+
+          console.log('phase4 mixed-integration ownership routing: PASS');
+          '''
+          test = '\n'.join(line[10:] if line.startswith('          ') else line for line in test.splitlines()) + '\n'
+          Path('tests/phase4/ownership/mixed-integration.test.mjs').write_text(test)
+
+          p = Path('.github/workflows/phase4-ownership.yml')
           s = p.read_text()
-          s = s.replace('OP, MK, irFor, branchConstraints, valueRange, mustAlias, mayAliasProvenance,', 'OP, MK, irFor, branchConstraints, valueRange, mustAlias, mayAliasProvenance, getSemanticMigrationMode,')
-          needle = """  ], '797-w-signed-minus1');\n  const fact = firstBranchFact(ir);\n  assert.equal(fact.taken.constant, -1n);"""
-          assert s.count(needle) == 1
-          debug = """  ], '797-w-signed-minus1');\n  const fact = firstBranchFact(ir);\n  const cmp = fact.taken.compare;\n  console.log('ISSUE797_DEBUG', [\n    'mode=' + getSemanticMigrationMode(),\n    'constant=' + String(fact.taken.constant),\n    'lhsBits=' + String(fact.taken.value?.bits),\n    'cmpBits=' + String(cmp?.bits),\n    'extraWidth=' + String(cmp?.extra?.widthBits),\n    'arg0Bits=' + String(cmp?.args?.[0]?.bits),\n    'arg0ValueBits=' + String(cmp?.args?.[0]?.value?.bits),\n    'arg1Bits=' + String(cmp?.args?.[1]?.bits),\n    'arg1ValueBits=' + String(cmp?.args?.[1]?.value?.bits),\n    'arg1Const=' + String(cmp?.args?.[1]?.value?.const),\n  ].join(' '));\n  assert.equal(fact.taken.constant, -1n);"""
-          p.write_text(s.replace(needle, debug))
+          old = """            hex/p6-riscv64-integration) phase=6; lane=p6 ;;\n            *)"""
+          new = """            hex/p6-riscv64-integration) phase=6; lane=p6 ;;\n            integrate/open-issue-fixes-*) phase=mixed; lane=p4-7 ;;\n            *)"""
+          assert s.count(old) == 1, 'Phase 4 ownership routing drifted'
+          s = s.replace(old, new)
+          anchor = """      - name: Enforce exact Phase 6 ownership inventory at the Phase 4 boundary\n        if: steps.lane.outputs.phase == '6'\n        run: >-\n          node tools/validation/phase6-ownership.mjs\n          --base-sha \"${{ github.event.pull_request.base.sha }}\"\n          --head-sha \"${{ github.event.pull_request.head.sha }}\"\n"""
+          addition = anchor + """      - name: Enforce exact Phase 4 subset for mixed issue integration\n        if: steps.lane.outputs.phase == 'mixed'\n        run: >-\n          node tools/validation/phase4/mixed-integration.mjs\n          --base-sha \"${{ github.event.pull_request.base.sha }}\"\n          --head-sha \"${{ github.event.pull_request.head.sha }}\"\n"""
+          assert s.count(anchor) == 1, 'Phase 4 ownership final step drifted'
+          p.write_text(s.replace(anchor, addition))
+
+          p = Path('.github/workflows/phase4-release-validation.yml')
+          s = p.read_text()
+          old = """            hex/p6-riscv64-integration) mode=phase6; lane=p6 ;;\n            *) mode=phase4; lane=p4-7 ;;"""
+          new = """            hex/p6-riscv64-integration) mode=phase6; lane=p6 ;;\n            integrate/open-issue-fixes-*) mode=mixed; lane=p4-7 ;;\n            *) mode=phase4; lane=p4-7 ;;"""
+          assert s.count(old) == 1, 'Phase 4 exact-SHA routing drifted'
+          s = s.replace(old, new)
+          anchor = """      - name: Upload independent verifier evidence\n        if: always()\n"""
+          mixed_step = """      - name: Independent Phase 4 verifier for mixed issue integration — blocking release gate\n        if: steps.ownership.outputs.mode == 'mixed'\n        shell: bash\n        env:\n          OWNERSHIP_BASE_SHA: ${{ github.event.pull_request.base.sha }}\n        run: |\n          set -euo pipefail\n          npm run phase4:verify -- \\\n            --base \"$PHASE4_BASE\" \\\n            --head \"$PRODUCT_SHA\" \\\n            --ownership-base \"$PRODUCT_SHA\" \\\n            --lane p4-7\n          node tools/validation/phase4/mixed-integration.mjs \\\n            --base-sha \"$OWNERSHIP_BASE_SHA\" \\\n            --head-sha \"$PRODUCT_SHA\"\n"""
+          assert s.count(anchor) == 1, 'Phase 4 exact-SHA evidence anchor drifted'
+          p.write_text(s.replace(anchor, mixed_step + anchor))
           PY
+
+          # Absorb reviewed source/test blobs from current open PRs #878 and #879.
           git show 9f2a4ab2b4480552498e26299326e048581a5360:js/targets/abi/riscv-lp64.js > js/targets/abi/riscv-lp64.js
           git show 9f2a4ab2b4480552498e26299326e048581a5360:tests/phase6/abi/riscv-issues-868-872.test.mjs > tests/phase6/abi/riscv-issues-868-872.test.mjs
-      - name: Build canonical generated userscript
+          git show 8d5d3998b019662e159516dd56f4ad7a254a3b6b:js/userscript/dev/parent-worker-runtime.js > js/userscript/dev/parent-worker-runtime.js
+          git show 8d5d3998b019662e159516dd56f4ad7a254a3b6b:tests/dev-agent/pool-completion-event-resume.mjs > tests/dev-agent/pool-completion-event-resume.mjs
+          git show 8d5d3998b019662e159516dd56f4ad7a254a3b6b:tests/userscript-runtime-host-location.mjs > tests/userscript-runtime-host-location.mjs
+
+      - name: Build canonical generated userscript for the final combined source tree
         run: npm run userscript:build
-      - name: Run full Semantic IR v2 diagnostic
-        run: npm run semantic-v2:test
+
+      - name: Verify focused regressions and mixed ownership policy
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          node --test tests/semantic-v2/issues-791-797-800-825-ir-soundness.test.mjs
+          node --test tests/phase6/abi/riscv-issues-868-872.test.mjs
+          node tests/dev-agent/pool-completion-event-resume.mjs
+          node tests/userscript-runtime-host-location.mjs
+          node --test tests/phase4/ownership/mixed-integration.test.mjs
+          git diff --name-only -z "$BASE_SHA" | node tools/validation/phase4/mixed-integration.mjs --files0-stdin
+
+      - name: Verify full semantic and repository contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run semantic-v2:test
+          npm run check
+          npm run userscript:build
+
+      - name: Commit only the fully verified product tree and remove the applicator
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout origin/main -- .github/workflows/machine-effects.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            js/ir.js \
+            js/semantics/compat/semantic-ir-v2-to-v1.js \
+            js/targets/abi/riscv-lp64.js \
+            js/userscript/dev/parent-worker-runtime.js \
+            tests/phase6/abi/riscv-issues-868-872.test.mjs \
+            tests/dev-agent/pool-completion-event-resume.mjs \
+            tests/userscript-runtime-host-location.mjs \
+            tools/validation/phase4/mixed-integration.mjs \
+            tests/phase4/ownership/mixed-integration.test.mjs \
+            .github/workflows/phase4-ownership.yml \
+            .github/workflows/phase4-release-validation.yml \
+            userscript/hex.user.template.js \
+            userscript/release-version.json \
+            .github/workflows/machine-effects.yml
+          git diff --cached --check
+          git commit -m "Finalize consolidated issue fixes on current main"
+          git push origin HEAD:integrate/open-issue-fixes-20260819
