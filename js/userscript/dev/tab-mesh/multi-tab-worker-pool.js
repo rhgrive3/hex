@@ -41,7 +41,7 @@ export class MultiTabWorkerPool {
       try { handle = await this.openTab(href, { slot: index, active: false }); }
       catch (error) { client.close(); port.close?.(); this.slots.set(index, failedSlot(index, ticket, error)); continue; }
       if (handle == null) { client.close(); port.close?.(); this.slots.set(index, failedSlot(index, ticket, poolError('popup-blocked','Browser blocked creation of a Worker tab.'))); continue; }
-      const slot = { index, ticket, href, handle, port, client, ready:false, claimed:false, leaseId:null, workerId:null, runId:null, taskId:null, pending:null, lastResult:null, error:null, createdAt:this.now() };
+      const slot = { index, ticket, href, handle, port, client, ready:false, claimed:false, reserving:false, leaseId:null, workerId:null, runId:null, taskId:null, pending:null, lastResult:null, error:null, createdAt:this.now() };
       this.slots.set(index, slot);
       const ready = await this.awaitReady(slot, boundedInt(timeoutMs, 1000, 60000, READY_TIMEOUT_MS));
       if (ready) { slot.ready=true; created.push(this.publicSlot(slot)); }
@@ -107,8 +107,20 @@ export class MultiTabWorkerPool {
     }
     return false;
   }
-  availableSlot(){return [...this.slots.values()].sort((a,b)=>a.index-b.index).find((s)=>s.ready&&!s.claimed&&!s.error)||null;}
-  async claimSlot(slot,taskId){const leaseId=randomId('lease',this.cryptoRef),runId=randomId('poolrun',this.cryptoRef),workerId=randomId('worker',this.cryptoRef);await slot.client.claim({runId,workerId});slot.claimed=true;slot.leaseId=leaseId;slot.runId=runId;slot.workerId=workerId;slot.taskId=taskId==null?null:String(taskId);this.leases.set(leaseId,slot.index);return {leaseId,...this.publicSlot(slot)};}
+  availableSlot(){return [...this.slots.values()].sort((a,b)=>a.index-b.index).find((s)=>s.ready&&!s.claimed&&!s.reserving&&!s.error)||null;}
+  async claimSlot(slot,taskId){
+    if(slot.claimed||slot.reserving)throw poolError('worker-pool-full','Worker slot is already claimed or reserved.');
+    slot.reserving=true;
+    const leaseId=randomId('lease',this.cryptoRef),runId=randomId('poolrun',this.cryptoRef),workerId=randomId('worker',this.cryptoRef);
+    try{
+      await slot.client.claim({runId,workerId});
+      slot.claimed=true;slot.leaseId=leaseId;slot.runId=runId;slot.workerId=workerId;slot.taskId=taskId==null?null:String(taskId);this.leases.set(leaseId,slot.index);
+      return {leaseId,...this.publicSlot(slot)};
+    }finally{
+      slot.reserving=false;
+      if(!slot.claimed)this.flushWaiters();
+    }
+  }
   requireLease(value){const id=String(value||'');const index=this.leases.get(id);const slot=index?this.slots.get(index):null;if(!slot||slot.leaseId!==id)throw poolError('lease-missing','Worker pool lease is invalid or expired.');return slot;}
   identity(slot){return {runId:slot.runId,workerId:slot.workerId};}
   publicSlot(slot){return {slot:slot.index,ready:!!slot.ready,claimed:!!slot.claimed,leaseId:slot.leaseId,workerId:slot.workerId,taskId:slot.taskId,working:!!slot.pending,chatgptConversationId:slot.lastResult?.chatgptConversationId||null,error:slot.error,createdAt:slot.createdAt||null};}
@@ -121,7 +133,7 @@ async function defaultOpenTab(url, options={}) {
   if(typeof globalThis.open==='function') return globalThis.open(url,'_blank');
   return null;
 }
-function failedSlot(index,ticket,error){return{index,ticket,ready:false,claimed:false,leaseId:null,workerId:null,runId:null,taskId:null,pending:null,lastResult:null,error:{code:String(error?.code||'worker-tab-open-failed'),message:String(error?.message||error).slice(0,512)},createdAt:new Date().toISOString()};}
+function failedSlot(index,ticket,error){return{index,ticket,ready:false,claimed:false,reserving:false,leaseId:null,workerId:null,runId:null,taskId:null,pending:null,lastResult:null,error:{code:String(error?.code||'worker-tab-open-failed'),message:String(error?.message||error).slice(0,512)},createdAt:new Date().toISOString()};}
 function randomId(prefix,cryptoRef){if(!cryptoRef?.getRandomValues)throw new TypeError('WebCrypto is required for Worker pool identity.');const bytes=cryptoRef.getRandomValues(new Uint8Array(16));return `${prefix}-${[...bytes].map((v)=>v.toString(16).padStart(2,'0')).join('')}`;}
 function boundedInt(value,min,max,fallback){if(value==null)return fallback;const n=Number(value);if(!Number.isFinite(n))throw new TypeError('Expected finite numeric bound.');return Math.min(max,Math.max(min,Math.floor(n)));}
 function poolError(code,message){const error=new Error(message);error.code=code;return error;}
