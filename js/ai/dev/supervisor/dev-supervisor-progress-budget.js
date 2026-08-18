@@ -18,19 +18,22 @@ export class ProgressBudgetDevSupervisorEngineV0 extends BaseDevSupervisorEngine
     this.progressDecisionCount = 0;
     this.progressRunActive = false;
 
+    /*
+     * The production ChatGPT bridge may be frozen. Never Proxy it: ECMAScript
+     * requires a Proxy get trap to return the exact target value for an own,
+     * non-configurable, non-writable data property. Returning a wrapped request
+     * function violates that invariant and aborts Round 4 bootstrap before the
+     * Supervisor can make a decision. A fresh facade delegates to the real
+     * bridge without interposing on the frozen object itself.
+     */
     const bridge = this.bridge;
     if (bridge && typeof bridge.request === 'function') {
       const request = bridge.request.bind(bridge);
-      this.bridge = new Proxy(bridge, {
-        get: (target, property, receiver) => {
-          if (property === 'request') {
-            return async (...args) => {
-              const result = await request(...args);
-              if (this.progressRunActive) this.progressDecisionCount += 1;
-              return result;
-            };
-          }
-          return Reflect.get(target, property, receiver);
+      this.bridge = Object.freeze({
+        request: async (...args) => {
+          const result = await request(...args);
+          if (this.progressRunActive) this.progressDecisionCount += 1;
+          return result;
         },
       });
     }
