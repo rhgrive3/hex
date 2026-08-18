@@ -246,6 +246,20 @@ export function createX86EffectContext(decoded, context = {}) {
     }, options);
   }
 
+  function integratedMxcsrFault(fault) {
+    if (fault?.condition?.kind !== 'mxcsr-exception-state-unmodelled') return fault;
+    return Object.freeze({
+      ...fault,
+      condition:Object.freeze({
+        ...fault.condition,
+        kind:'mxcsr-unmasked-floating-point-exception',
+        maskBits:'MXCSR[12:7]',
+        statusBits:'MXCSR[5:0]',
+      }),
+      detail:Object.freeze({ ...(fault.detail || {}), environmentContract:X86_MXCSR_CONTRACT }),
+    });
+  }
+
   function finish(config = {}) {
     const integratedOperations = operations.map(integratedAtomicOrdering);
     const hasMappedAtomicOrdering = integratedOperations.some((operation) =>
@@ -257,6 +271,7 @@ export function createX86EffectContext(decoded, context = {}) {
 
     let completeness = config.completeness ?? (hasIntrinsic ? 'exact-with-intrinsic' : 'exact');
     let unknownEffects = config.unknownEffects;
+    let possibleFaults = config.possibleFaults ?? [];
     let metadata = { family:config.family ?? 'foundation', instructionFamily:family, decoderContractVersion:instruction.contractVersion, ...(config.metadata || {}) };
 
     if (hasMappedAtomicOrdering) {
@@ -283,9 +298,11 @@ export function createX86EffectContext(decoded, context = {}) {
 
     if (hasMxcsrIntrinsic && unknownEffects?.reason === 'x86-fp-environment-state-unmodelled') {
       unknownEffects = undefined;
+      possibleFaults = possibleFaults.map(integratedMxcsrFault);
       completeness = 'exact-with-intrinsic';
+      const { failClosed:_legacyFailClosed, ...restMetadata } = metadata;
       metadata = {
-        ...metadata,
+        ...restMetadata,
         fpEnvironmentModeled:true,
         fpEnvironmentContract:X86_MXCSR_CONTRACT,
         environmentEffect:'intrinsic-consumes-and-produces-canonical-mxcsr',
@@ -298,7 +315,7 @@ export function createX86EffectContext(decoded, context = {}) {
       mode,
       operations:integratedOperations,
       controlEffect:config.controlEffect ?? { kind:'fallthrough' },
-      possibleFaults:config.possibleFaults ?? [],
+      possibleFaults,
       origin:instruction.origin ?? { instructionIds:[instructionId] },
       completeness,
       ...(unknownEffects == null ? {} : { unknownEffects }),
