@@ -69,7 +69,10 @@ export function partitionDecodedFunction(instructions, architecturePlugin) {
     const kind = controlKind(architecturePlugin, instruction);
     const target = directTarget(instruction);
     const targetBlock = target == null ? null : byStart.get(target.toString());
-    const fallthroughBlock = byStart.get(endOf(instruction).toString()) || blocks[index + 1] || null;
+    // Fallthrough is an architectural next-instruction address, not "the next
+    // enumerated block". A truncated/disjoint decode must remain incomplete
+    // instead of inventing a control-flow edge across the gap.
+    const fallthroughBlock = byStart.get(endOf(instruction).toString()) || null;
     if (kind === 'conditional-branch') {
       if (targetBlock) block.successors.push({ to:targetBlock.key, kind:'conditional-true' });
       if (fallthroughBlock) block.successors.push({ to:fallthroughBlock.key, kind:'conditional-false' });
