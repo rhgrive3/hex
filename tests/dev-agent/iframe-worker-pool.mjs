@@ -75,6 +75,51 @@ async function testBlockedEmbeddingIsReportedExactly() {
   unavailable.close();
 }
 
+async function testNavigationDocumentReplacementRebindsRuntime() {
+  const initialDocument = { readyState: 'complete', composer: false, location: { href: 'about:blank' } };
+  const committedDocument = { readyState: 'complete', composer: true, location: { href: 'https://chatgpt.com/' } };
+  let activeDocument = initialDocument;
+  const runtimes = [];
+  const frame = {
+    src: null, removed: false,
+    get contentDocument() { return activeDocument; },
+  };
+  const pool = new IframeWorkerPool({
+    maxWorkers: 1,
+    createFrame: () => ({
+      frame,
+      async navigate(href) {
+        frame.src = href;
+        // A real iframe exposes its initial about:blank Document before the
+        // first cross-document navigation commits a replacement Document.
+        setTimeout(() => { activeDocument = committedDocument; }, 0);
+      },
+      close() { frame.removed = true; },
+    }),
+    createWorkerRuntime: ({ slot, document }) => {
+      const runtime = fakeWorkerRuntime(slot, document);
+      runtime.boundDocument = document;
+      runtime.closed = false;
+      const close = runtime.close.bind(runtime);
+      runtime.close = () => { runtime.closed = true; close(); };
+      runtimes.push(runtime);
+      return runtime;
+    },
+    documentRef: new FakeDocument(),
+    cryptoRef: webcrypto,
+    location: { href: 'https://chatgpt.com/', origin: 'https://chatgpt.com' },
+    sleep: async () => tick(),
+  });
+
+  const provisioned = await pool.provision({ size: 1, timeoutMs: 120 });
+  assert.equal(provisioned.readyCount, 1, 'the committed ChatGPT Document must become the authoritative Worker realm');
+  assert.equal(runtimes.length, 2, 'runtime must be rebound exactly once when navigation replaces the initial Document');
+  assert.equal(runtimes[0].boundDocument, initialDocument);
+  assert.equal(runtimes[0].closed, true, 'the runtime bound to initial about:blank must be retired');
+  assert.equal(runtimes[1].boundDocument, committedDocument);
+  pool.close();
+}
+
 async function testCrossOriginProjectUrlFailsClosed() {
   const pool = newPool(new FakeFrameFactory());
   await assert.rejects(
@@ -140,6 +185,7 @@ class FakeFrameFactory {
   }
   create({ slot }) {
     const factory = this;
+    const contentDocument = { readyState: 'complete', composer: factory.composer };
     const frame = {
       slot,
       src: null,
@@ -147,7 +193,7 @@ class FakeFrameFactory {
       style: { cssText: '' },
       get contentDocument() {
         if (factory.crossOrigin) throw new Error('Blocked a frame with origin "https://chatgpt.com" from accessing a cross-origin frame.');
-        return this.src ? { readyState: 'complete', composer: factory.composer } : null;
+        return this.src ? contentDocument : null;
       },
     };
     this.created.push(frame);
@@ -209,6 +255,7 @@ function tick() { return new Promise((resolve) => setTimeout(resolve, 0)); }
 await testSixFramesSeventhWaitsAndReuse();
 await testConcurrentClaimReservesSlotBeforeSettling();
 await testBlockedEmbeddingIsReportedExactly();
+await testNavigationDocumentReplacementRebindsRuntime();
 await testCrossOriginProjectUrlFailsClosed();
 testOffscreenFrameHost();
 testAdapterUsesWorkerFrameRealm();
