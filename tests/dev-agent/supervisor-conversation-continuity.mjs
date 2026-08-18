@@ -1,14 +1,72 @@
 import assert from 'node:assert/strict';
+import { DevSupervisorEngineV0 } from '../../js/ai/dev/supervisor/dev-supervisor-engine-v0.js';
+import { DevSupervisorV0 } from '../../js/ai/dev/supervisor/dev-supervisor-v0.js';
+import { DevAgentUiSettings } from '../../js/ai/dev/ui/settings.js';
 import { ChatGPTConversationRouter } from '../../js/userscript/chatgpt-adapter.js';
 import { installChatGPTWebBridge } from '../../js/userscript/chatgpt-bridge.js';
 import { SingleConversationWorkerCoordinator } from '../../js/userscript/dev/single-tab/single-conversation-worker-coordinator.js';
 
+await testDevSupervisorRunReusesSessionWithinHexConversation();
 await testDelayedConversationIdentityStaysOnOneSupervisorChat();
 await testUnboundSupervisorSurfaceNeverCreatesAnotherChat();
 await testWorkerSendRefreshesLatestSupervisorAnchorAfterVirtualization();
 await testWorkerFollowupRefreshesLatestSupervisorAnchorAfterVirtualization();
 await testReleaseAdoptsAlreadyRoutedSupervisorSurfaceAfterVirtualization();
 console.log('dev-agent supervisor conversation continuity: ok');
+
+async function testDevSupervisorRunReusesSessionWithinHexConversation() {
+  const settings = new DevAgentUiSettings({ storage: null });
+  settings.setAgentProfile('dev');
+  settings.setDecisionPolicy('yolo');
+
+  let sequence = 0;
+  const supervisor = new DevSupervisorV0({
+    idFactory: (kind) => `${kind}-${++sequence}`,
+    now: () => '2026-08-18T00:00:00.000Z',
+  });
+  const sessions = [];
+  const bridge = {
+    async request(_prompt, options = {}) {
+      sessions.push(String(options.sessionKey || ''));
+      return {
+        text: JSON.stringify({ type: 'final', answer: 'done', completedTasks: [], remaining: [] }),
+      };
+    },
+  };
+
+  const firstEngine = new DevSupervisorEngineV0({ supervisor, settings, bridge });
+  await firstEngine.run({ mode: 'agent', question: 'first YOLO turn', conversationId: 'hex-chat-a' });
+  const firstRun = settings.lastRun;
+  assert.equal(firstRun.status, 'COMPLETED');
+
+  // Reconstruct the engine to ensure continuity is not accidentally dependent
+  // on one engine object's private map. The settings-owned last Run is enough to
+  // recover the same logical Supervisor session for the same Hex conversation.
+  const secondEngine = new DevSupervisorEngineV0({ supervisor, settings, bridge });
+  await secondEngine.run({ mode: 'agent', question: 'second YOLO turn', conversationId: 'hex-chat-a' });
+  const secondRun = settings.lastRun;
+
+  assert.notEqual(secondRun.runId, firstRun.runId, 'ordinary user messages still start a fresh DevRun');
+  assert.notEqual(secondRun.workerId, firstRun.workerId, 'Worker identity remains Run-scoped');
+  assert.equal(
+    secondRun.supervisorSessionKey,
+    firstRun.supervisorSessionKey,
+    'the same Hex conversation must retain one ChatGPT Supervisor session across completed YOLO Runs',
+  );
+  assert.deepEqual(
+    sessions.slice(0, 2),
+    [firstRun.supervisorSessionKey, firstRun.supervisorSessionKey],
+    'the bridge must receive the same sessionKey instead of routing the next message through New Chat',
+  );
+
+  await secondEngine.run({ mode: 'agent', question: 'different Hex chat', conversationId: 'hex-chat-b' });
+  const thirdRun = settings.lastRun;
+  assert.notEqual(
+    thirdRun.supervisorSessionKey,
+    firstRun.supervisorSessionKey,
+    'different Hex conversations must not share a Supervisor ChatGPT session',
+  );
+}
 
 async function testDelayedConversationIdentityStaysOnOneSupervisorChat() {
   delete globalThis.__HEX_CHATGPT_BRIDGE__;

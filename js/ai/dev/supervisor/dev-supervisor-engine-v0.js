@@ -20,6 +20,7 @@ export class DevSupervisorEngineV0 {
     this.maxDecisions = maxDecisions;
     this.extensionLoader = extensionLoader;
     this.bootstrapStage = null;
+    this.supervisorSessions = new Map();
   }
 
   prepareBootstrapExtension() {
@@ -51,11 +52,13 @@ export class DevSupervisorEngineV0 {
     const history = [];
     if (resumedHumanRun) {
       run = this.supervisor.resume(resumedHumanRun);
+      this.rememberSupervisorSession(run);
       history.push({ kind: 'human-response', text: String(input.question || input.goal || '').trim() });
     } else {
+      const hexConversationId = normalizeConversationId(input.conversationId);
       const ids = {
         runId: this.supervisor.idFactory('run'),
-        supervisorSessionKey: this.supervisor.idFactory('supervisor-session'),
+        supervisorSessionKey: this.supervisorSessionKeyFor(hexConversationId),
         workerId: this.supervisor.idFactory('worker'),
       };
       run = this.supervisor.createRun({
@@ -63,9 +66,10 @@ export class DevSupervisorEngineV0 {
         goal: input.question || input.goal,
         decisionPolicy: this.settings.decisionPolicy,
         analysisScope: this.settings.analysisScope,
-        hexConversationId: input.conversationId || null,
+        hexConversationId,
       });
       run = this.supervisor.activate(run);
+      this.rememberSupervisorSession(run);
     }
 
     this.settings.setLastRun(run);
@@ -172,9 +176,36 @@ export class DevSupervisorEngineV0 {
   resumableHumanRun(input) {
     const run = this.settings.lastRun;
     if (!run || run.status !== DEV_RUN_STATUS.WAITING_HUMAN) return null;
-    const currentHexConversationId = input.conversationId == null ? null : String(input.conversationId);
-    const waitingHexConversationId = run.hexConversationId == null ? null : String(run.hexConversationId);
+    const currentHexConversationId = normalizeConversationId(input.conversationId);
+    const waitingHexConversationId = normalizeConversationId(run.hexConversationId);
     return currentHexConversationId === waitingHexConversationId ? run : null;
+  }
+
+  supervisorSessionKeyFor(hexConversationId) {
+    const conversationId = normalizeConversationId(hexConversationId);
+    if (conversationId) {
+      const remembered = this.supervisorSessions.get(conversationId);
+      if (remembered) return remembered;
+
+      const lastRun = this.settings.lastRun;
+      const lastConversationId = normalizeConversationId(lastRun?.hexConversationId);
+      const lastSessionKey = String(lastRun?.supervisorSessionKey || '').trim();
+      if (lastConversationId === conversationId && lastSessionKey) {
+        this.supervisorSessions.set(conversationId, lastSessionKey);
+        return lastSessionKey;
+      }
+    }
+
+    const created = this.supervisor.idFactory('supervisor-session');
+    if (conversationId) this.supervisorSessions.set(conversationId, created);
+    return created;
+  }
+
+  rememberSupervisorSession(run) {
+    const conversationId = normalizeConversationId(run?.hexConversationId);
+    const sessionKey = String(run?.supervisorSessionKey || '').trim();
+    if (conversationId && sessionKey) this.supervisorSessions.set(conversationId, sessionKey);
+    return sessionKey || null;
   }
 
   async releaseWorker(run) {
@@ -202,4 +233,9 @@ function uiResponse(answer, run, followups) {
 }
 function sanitize(value) {
   try { return JSON.parse(JSON.stringify(value)); } catch { return { error: 'non-json-tool-result' }; }
+}
+function normalizeConversationId(value) {
+  if (value == null) return null;
+  const text = String(value).trim();
+  return text || null;
 }
