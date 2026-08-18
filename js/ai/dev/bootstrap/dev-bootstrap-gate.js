@@ -1,16 +1,17 @@
 import { assertDevDecisionPolicy } from '../policy/decision-policy.js';
 
 export const DEV_EXTENSION_API_VERSION = 'hex-dev-extension-v1';
-export const DEV_BOOTSTRAP_EXTENSION_VERSION = '1';
+export const DEV_BOOTSTRAP_EXTENSION_VERSION = '2';
 export const DEV_BOOTSTRAP_CAPABILITY = 'dev.bootstrap.identity';
-export const DEV_BOOTSTRAP_EXTENSION_INTEGRITY = 'sha256-555ab61a675c787b9d5f9d497eabd4593967867a81c0b03ee3ef5ee860b2e6fb';
+export const DEV_BOOTSTRAP_ROUND4_PROOF_CAPABILITY = 'dev.bootstrap.round4-proof';
+export const DEV_BOOTSTRAP_EXTENSION_INTEGRITY = 'sha256-f5b44ce6bbc7ec226198d9c01e6b96257503d8980fde3f6d9c389726a6562c1c';
 
 const CHECKPOINT_KEYS = Object.freeze(['runId','goal','decisionPolicy','supervisorSessionKey','chatgptConversationId','pendingTask','expectedCommit','expectedBuildId','expectedExtensionVersion']);
 const EXTENSION_KEYS = Object.freeze(['apiVersion','id','version','requiresReload','capabilities','integrity']);
 const CAPABILITY_KEYS = Object.freeze(['name','kind']);
 const TRUSTED_EXTENSIONS = Object.freeze({ [`dev.bootstrap-observer@${DEV_BOOTSTRAP_EXTENSION_VERSION}`]: DEV_BOOTSTRAP_EXTENSION_INTEGRITY });
 
-export const DEV_BOOTSTRAP_EXTENSION = deepFreeze({ apiVersion: DEV_EXTENSION_API_VERSION, id: 'dev.bootstrap-observer', version: DEV_BOOTSTRAP_EXTENSION_VERSION, requiresReload: true, capabilities: [{ name: DEV_BOOTSTRAP_CAPABILITY, kind: 'identity' }], integrity: DEV_BOOTSTRAP_EXTENSION_INTEGRITY });
+export const DEV_BOOTSTRAP_EXTENSION = deepFreeze({ apiVersion: DEV_EXTENSION_API_VERSION, id: 'dev.bootstrap-observer', version: DEV_BOOTSTRAP_EXTENSION_VERSION, requiresReload: true, capabilities: [{ name: DEV_BOOTSTRAP_CAPABILITY, kind: 'identity' }, { name: DEV_BOOTSTRAP_ROUND4_PROOF_CAPABILITY, kind: 'identity' }], integrity: DEV_BOOTSTRAP_EXTENSION_INTEGRITY });
 
 export function createDevBootstrapCheckpoint(value) {
   assertPlainObject(value, 'Dev bootstrap checkpoint'); assertExactKeys(value, CHECKPOINT_KEYS, 'Dev bootstrap checkpoint');
@@ -28,7 +29,7 @@ export function verifyDevBootstrapIdentity(checkpoint, activeIdentity, extension
 export class DevExtensionLoader {
   #active = null; #activeIdentity = null; #staged = null; #toolCallDepth = 0; #sha256;
   constructor({ sha256 = sha256Hex } = {}) { if (typeof sha256 !== 'function') throw new TypeError('sha256 must be a function.'); this.#sha256 = sha256; }
-  get toolCallActive() { return this.#toolCallDepth > 0; } get activeVersion() { return this.#active?.version || null; } get stagedVersion() { return this.#staged?.version || null; }
+  get toolCallActive() { return this.#toolCallDepth > 0; } get activeVersion() { return this.#active?.version || null; } get activeCapabilities() { return Object.freeze((this.#active?.capabilities || []).map((item) => item.name)); } get stagedVersion() { return this.#staged?.version || null; }
   beginToolCall() { this.#toolCallDepth += 1; return this.#toolCallDepth; }
   endToolCall() { if (this.#toolCallDepth <= 0) throw new Error('No Dev tool call is active.'); this.#toolCallDepth -= 1; return this.#toolCallDepth; }
   async stage(extension) {
