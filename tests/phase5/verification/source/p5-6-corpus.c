@@ -11,7 +11,11 @@ typedef __int128 i128;
 typedef i32 v4i32 __attribute__((vector_size(16)));
 
 #define NOINLINE __attribute__((noinline))
+#if defined(_WIN32)
+#define USED __attribute__((used)) __declspec(dllexport)
+#else
 #define USED __attribute__((used))
+#endif
 #define SYSV_ABI __attribute__((sysv_abi))
 #define MS_ABI __attribute__((ms_abi))
 
@@ -27,6 +31,8 @@ volatile i32 p5_global_i32 = -17;
 volatile double p5_global_f64 = 1.25;
 u64 p5_atomic_word = 9;
 volatile v4i32 p5_global_vec = { 1, 2, 3, 4 };
+static volatile u64 p5_rip_fixture_u64 = 0x8877665544332211ULL;
+static volatile i32 p5_rip_fixture_i32 = 23;
 
 NOINLINE USED u64 p5_scalar_integer_arithmetic(u64 a, u64 b) {
   return ((a + b) ^ (a - b)) + ((a & b) | (a ^ b));
@@ -133,9 +139,9 @@ NOINLINE USED i64 p5_cmov_setcc_shape(i64 a, i64 b) {
 }
 
 NOINLINE USED u64 p5_rip_relative_global(u64 v) {
-  p5_global_u64 += v;
-  p5_global_i32 ^= (i32)v;
-  return p5_global_u64 + (u32)p5_global_i32;
+  p5_rip_fixture_u64 += v;
+  p5_rip_fixture_i32 ^= (i32)v;
+  return p5_rip_fixture_u64 + (u32)p5_rip_fixture_i32;
 }
 
 NOINLINE USED double p5_scalar_floating_point(double a, double b) {
