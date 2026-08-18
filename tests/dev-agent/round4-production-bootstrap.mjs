@@ -160,6 +160,13 @@ async function testBootstrapDiagnostic() {
   assert.match(presentation.detail, /extension: v2/);
   assert.match(presentation.detail, /proof: 検証済み/);
 
+  const forgedCapability = bootstrapStatusPresentation({
+    state: 'complete',
+    capability: 'hex.dev.bootstrap.fake-proof',
+  });
+  assert.equal(forgedCapability.proofVerified, false, 'unrecognized proof capability must never be marked verified');
+  assert.doesNotMatch(forgedCapability.detail, /proof: verified/);
+
   const contextBar = fakeElement();
   const root = fakeElement();
   root.querySelector = (selector) => selector === '.ai-context-bar' ? contextBar : null;

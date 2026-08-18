@@ -1,3 +1,5 @@
+import { DEV_BOOTSTRAP_ROUND4_PROOF_CAPABILITY } from './dev-bootstrap-gate.js';
+
 const MAX_DETAIL_TEXT = 180;
 const DIAGNOSTIC_KEY = '__HEX_DEV_BOOTSTRAP_DIAGNOSTIC__';
 
@@ -12,7 +14,7 @@ export function bootstrapStatusPresentation(status, { ja = false } = {}) {
   const capability = clean(value.capability);
   const proofAnswer = compact(value.proofAnswer, MAX_DETAIL_TEXT);
   const error = compact(value.error, MAX_DETAIL_TEXT);
-  const proofVerified = state === 'complete' && !!capability;
+  const proofVerified = state === 'complete' && capability === DEV_BOOTSTRAP_ROUND4_PROOF_CAPABILITY;
 
   if (state === 'skipped') {
     return freeze({ visible: false, state, summary: '', detail: '', commit, buildId, extensionVersion, integrity, capability, proofVerified, error });
