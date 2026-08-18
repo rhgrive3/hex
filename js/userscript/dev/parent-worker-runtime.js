@@ -8,6 +8,7 @@ import { MultiTabWorkerPool } from './tab-mesh/multi-tab-worker-pool.js';
 
 export async function startParentDevWorkerRuntime(options = {}) {
   const node = createTabNode({ role: TAB_NODE_ROLE.SUPERVISOR, now: options.now });
+  const readIdentity = () => parentRuntimeIdentity(options);
   try {
     const controller = options.controller || new WorkerChatController({ document: options.document || globalThis.document, adapter: options.adapter, router: options.router, turns: options.turns, now: options.now });
     const coordinator = new SingleConversationWorkerCoordinator({ controller, tabNodeId: node.tabNodeId, now: options.now });
@@ -26,20 +27,47 @@ export async function startParentDevWorkerRuntime(options = {}) {
     return Object.freeze({
       role:'supervisor', mode:'multi-tab-capable', enabled:true, tabNodeId:node.tabNodeId, coordinator, skillRegistry, workerPool,
       discover:(args)=>coordinator.discover(args), claim:(args)=>coordinator.claim(args), createChat:(args)=>coordinator.createChat(args), send:(args)=>coordinator.send(args), observe:(args)=>coordinator.observe(args), followup:(args)=>coordinator.followup(args), nudge:(args)=>coordinator.nudge(args), stop:(args)=>coordinator.stop(args), result:(args)=>coordinator.result(args), release:(args)=>coordinator.release(args), waitEvent:(args,opts={})=>coordinator.waitEvent(args,opts),
+      runtimeIdentity:()=>readIdentity(),
       pageSnapshot:(args)=>pageInspector.snapshot(args), pageScripts:(args)=>pageInspector.scripts(args), pageScriptSource:(args,opts={})=>pageInspector.scriptSource(args,opts),
       skillList:()=>skillRegistry.list(), skillDescribe:(args)=>skillRegistry.describe(args), skillInstallCandidate:(args)=>skillRegistry.installCandidate(args?.manifest??args), skillValidateCandidate:(args,opts={})=>skillRegistry.validateCandidate({...args,signal:opts.signal}), skillActivate:(args)=>skillRegistry.activate(args), skillRollback:(args)=>skillRegistry.rollback(args), skillRun:(args,opts={})=>skillRegistry.run({...args,signal:opts.signal}),
       poolStatus:()=>workerPool.status(), poolProvision:(args)=>workerPool.provision(args), poolClaim:(args,opts={})=>workerPool.claim({...args,signal:opts.signal}), poolCreateChat:(args)=>workerPool.createChat(args), poolStart:(args)=>workerPool.start(args), poolObserve:(args)=>workerPool.observe(args), poolResult:(args)=>workerPool.result(args), poolFollowup:(args)=>workerPool.followup(args), poolNudge:(args)=>workerPool.nudge(args), poolStop:(args)=>workerPool.stop(args), poolRelease:(args)=>workerPool.release(args),
       close(){workerPool.close();coordinator.close();},
     });
-  } catch(error) { return disabledRuntime({node,error}); }
+  } catch(error) { return disabledRuntime({node,error,readIdentity}); }
 }
 
-function disabledRuntime({node,error}) {
+/* The identity of the parent userscript runtime that is actually executing.
+   A merged commit only becomes real here after the page reloads, so this is
+   the authority the Dev Supervisor self-update gate checks against. */
+export function parentRuntimeIdentity(options = {}) {
+  const globalObject = options.globalObject || globalThis;
+  const loader = safeRead(globalObject, '__HEX_SECURE_LOADER__') || {};
+  const supplied = options.runtimeIdentity || {};
+  const commit = normalizeCommit(supplied.commit ?? supplied.sourceCommit ?? safeRead(globalObject, '__HEX_DEPLOYMENT_COMMIT__'));
+  const buildId = normalizeBuildId(supplied.buildId ?? loader.buildId);
+  const userscriptVersion = normalizeText(supplied.userscriptVersion ?? supplied.loaderVersion ?? loader.version);
+  return Object.freeze({
+    realm: 'parent-userscript',
+    commit,
+    buildId,
+    userscriptVersion,
+    readable: !!commit && !!buildId,
+    observedAt: new Date().toISOString(),
+  });
+}
+
+function normalizeCommit(value) { const text=String(value??'').trim().toLowerCase(); return /^[0-9a-f]{40}$/.test(text)?text:null; }
+function normalizeBuildId(value) { const text=String(value??'').trim().toLowerCase(); return /^[0-9a-f]{24}$/.test(text)?text:null; }
+function normalizeText(value) { const text=String(value??'').trim(); return text?text.slice(0,128):null; }
+function safeRead(value,key) { try { return value?.[key]; } catch { return null; } }
+
+function disabledRuntime({node,error,readIdentity}) {
   const code=String(error?.code||DEV_WORKER_FAILURE.PROVIDER_ERROR), message=String(error?.message||'Dev Worker runtime is unavailable.');
   const fail=async()=>{const failure=new Error(message);failure.code=code;throw failure;};
   return Object.freeze({
     role:'supervisor',mode:'multi-tab-capable',enabled:false,tabNodeId:node.tabNodeId,error:Object.freeze({code,message}),
     discover:fail,claim:fail,createChat:fail,send:fail,observe:fail,followup:fail,nudge:fail,stop:fail,result:fail,release:fail,waitEvent:fail,
+    runtimeIdentity:()=>(typeof readIdentity==='function'?readIdentity():parentRuntimeIdentity()),
     pageSnapshot:fail,pageScripts:fail,pageScriptSource:fail,skillList:fail,skillDescribe:fail,skillInstallCandidate:fail,skillValidateCandidate:fail,skillActivate:fail,skillRollback:fail,skillRun:fail,
     poolStatus:fail,poolProvision:fail,poolClaim:fail,poolCreateChat:fail,poolStart:fail,poolObserve:fail,poolResult:fail,poolFollowup:fail,poolNudge:fail,poolStop:fail,poolRelease:fail,
     close(){},

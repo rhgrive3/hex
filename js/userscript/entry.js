@@ -34,6 +34,11 @@ export async function startChatGPTUserscript(options = {}) {
   cleanupPreviousSession();
 
   const devWorkerRuntime = await startParentDevWorkerRuntime({
+    runtimeIdentity: {
+      commit: options.sourceCommit,
+      buildId: options.buildId,
+      userscriptVersion: options.loaderVersion,
+    },
     ...(options.devWorkerOptions || {}),
   });
 
