@@ -1,0 +1,189 @@
+name: TEMP Dev Supervisor progress budget repair
+
+on:
+  push:
+    branches:
+      - fix/dev-supervisor-progress-budget
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/dev-supervisor-progress-budget
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Apply narrow progress-budget repair and regression
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          engine = Path('js/ai/dev/supervisor/dev-supervisor-engine-v0.js')
+          text = engine.read_text()
+
+          old = """    try {\n      for (let step = 0; step < this.maxDecisions; step++) {\n"""
+          new = """    let decisionsWithoutProgress = 0;\n    const markProgress = () => {\n      decisionsWithoutProgress = 0;\n      toolErrorRecoveries = 0;\n    };\n\n    try {\n      while (decisionsWithoutProgress < this.maxDecisions) {\n        decisionsWithoutProgress += 1;\n"""
+          assert old in text, 'decision loop anchor changed'
+          text = text.replace(old, new, 1)
+
+          replacements = [
+            (
+              """            if (decision.tool === DEV_RUNTIME_ACTIVATION_TOOL) {\n              const result = this.selfUpdateGate.requireActivation(decision.arguments);\n              history.push({ kind: 'tool-result', tool: decision.tool, purpose: decision.purpose, result: sanitize(result) });\n              continue;\n            }\n""",
+              """            if (decision.tool === DEV_RUNTIME_ACTIVATION_TOOL) {\n              const result = this.selfUpdateGate.requireActivation(decision.arguments);\n              history.push({ kind: 'tool-result', tool: decision.tool, purpose: decision.purpose, result: sanitize(result) });\n              markProgress();\n              continue;\n            }\n""",
+            ),
+            (
+              """            if (decision.tool === DEV_RUNTIME_IDENTITY_TOOL) {\n              const result = await this.readActiveRuntimeIdentity(decision.arguments);\n              history.push({ kind: 'tool-result', tool: decision.tool, purpose: decision.purpose, result: sanitize(result) });\n              history.push({ kind: 'runtime-activation', ...this.observeRuntimeIdentityResult(result) });\n              continue;\n            }\n""",
+              """            if (decision.tool === DEV_RUNTIME_IDENTITY_TOOL) {\n              const result = await this.readActiveRuntimeIdentity(decision.arguments);\n              history.push({ kind: 'tool-result', tool: decision.tool, purpose: decision.purpose, result: sanitize(result) });\n              history.push({ kind: 'runtime-activation', ...this.observeRuntimeIdentityResult(result) });\n              markProgress();\n              continue;\n            }\n""",
+            ),
+            (
+              """            if (this.extensionLoader.activeCapabilities?.includes(decision.tool)) {\n              const result = await this.executeWithinToolBoundary(() => this.invokeBootstrapCapability(decision.tool));\n              history.push({ kind: 'tool-result', tool: decision.tool, purpose: decision.purpose, result: sanitize(result) });\n              if (decision.tool === requiredBootstrapCapability) requiredBootstrapObserved = true;\n              continue;\n            }\n""",
+              """            if (this.extensionLoader.activeCapabilities?.includes(decision.tool)) {\n              const result = await this.executeWithinToolBoundary(() => this.invokeBootstrapCapability(decision.tool));\n              history.push({ kind: 'tool-result', tool: decision.tool, purpose: decision.purpose, result: sanitize(result) });\n              if (decision.tool === requiredBootstrapCapability) requiredBootstrapObserved = true;\n              markProgress();\n              continue;\n            }\n""",
+            ),
+            (
+              """            this.settings.setLastRun(run);\n            history.push({ kind: 'tool-result', tool: decision.tool, purpose: decision.purpose, result: sanitize(executed.result) });\n            continue;\n""",
+              """            this.settings.setLastRun(run);\n            history.push({ kind: 'tool-result', tool: decision.tool, purpose: decision.purpose, result: sanitize(executed.result) });\n            markProgress();\n            continue;\n""",
+            ),
+            (
+              """          this.settings.setLastRun(run);\n          history.push({ kind: 'event', event: sanitize(waited.event) });\n          continue;\n""",
+              """          this.settings.setLastRun(run);\n          history.push({ kind: 'event', event: sanitize(waited.event) });\n          markProgress();\n          continue;\n""",
+            ),
+          ]
+          for old_piece, new_piece in replacements:
+            assert old_piece in text, f'missing replacement anchor: {old_piece[:80]!r}'
+            text = text.replace(old_piece, new_piece, 1)
+
+          engine.write_text(text)
+
+          test = Path('tests/dev-agent/supervisor-progress-budget.mjs')
+          test.write_text(r'''import assert from 'node:assert/strict';
+          import { DevSupervisorV0 } from '../../js/ai/dev/supervisor/dev-supervisor-v0.js';
+          import { DevSupervisorEngineV0 } from '../../js/ai/dev/supervisor/dev-supervisor-engine-v0.js';
+          import { DevAgentUiSettings } from '../../js/ai/dev/ui/settings.js';
+          import { AGENT_PROFILE } from '../../js/ai/dev/policy/agent-profile.js';
+          import { DEV_RUN_STATUS } from '../../js/ai/dev/run/dev-run.js';
+
+          await successfulToolsResetDecisionBudget();
+          await successfulToolsResetRecoveryStreak();
+          console.log('Dev Supervisor progress budget: ok');
+
+          async function successfulToolsResetDecisionBudget() {
+            const requests = [];
+            const client = workerClient(async () => [{ tabNodeId: 'same-tab' }]);
+            const { supervisor, settings } = fixture(client, 'progress');
+            const bridge = sequenceBridge({ toolDecisions: 5, requests });
+            const engine = new DevSupervisorEngineV0({ supervisor, settings, bridge, maxDecisions: 2 });
+            const result = await engine.run({ goal: 'many successful observations', conversationId: 'hex-progress' });
+            assert.equal(result.answer, 'done');
+            assert.equal(requests.length, 6, 'successful tool calls must not exhaust the consecutive no-progress budget');
+            assert.equal(new Set(requests.map((item) => item.sessionKey)).size, 1, 'progress resets must stay in the same Supervisor session');
+            assert.equal(settings.lastRun.status, DEV_RUN_STATUS.COMPLETED);
+          }
+
+          async function successfulToolsResetRecoveryStreak() {
+            let calls = 0;
+            const client = workerClient(async () => {
+              calls += 1;
+              if (calls === 1 || calls === 3) {
+                const error = new Error(`transient-${calls}`);
+                error.code = 'transport-failure';
+                throw error;
+              }
+              return [{ tabNodeId: 'same-tab' }];
+            });
+            const { supervisor, settings } = fixture(client, 'recovery');
+            const requests = [];
+            const bridge = sequenceBridge({ toolDecisions: 4, requests });
+            const engine = new DevSupervisorEngineV0({
+              supervisor,
+              settings,
+              bridge,
+              maxDecisions: 2,
+              maxToolErrorRecoveries: 1,
+            });
+            const result = await engine.run({ goal: 'recover, progress, recover again', conversationId: 'hex-recovery-reset' });
+            assert.equal(result.answer, 'done');
+            assert.equal(calls, 4);
+            assert.equal(settings.lastRun.status, DEV_RUN_STATUS.COMPLETED, 'a successful tool must reset the recoverable-error streak');
+          }
+
+          function sequenceBridge({ toolDecisions, requests }) {
+            let count = 0;
+            return {
+              async request(_prompt, options = {}) {
+                count += 1;
+                requests.push({ sessionKey: options.sessionKey });
+                if (count <= toolDecisions) {
+                  return { text: JSON.stringify({ type: 'tool', tool: 'worker.discover', arguments: {}, purpose: `progress-${count}` }) };
+                }
+                return { text: JSON.stringify({ type: 'final', answer: 'done', completedTasks: ['progress-budget'], remaining: [] }) };
+              },
+            };
+          }
+
+          function fixture(client, prefix) {
+            const supervisor = new DevSupervisorV0({
+              workerClient: client,
+              idFactory: (kind) => `${prefix}-${kind}`,
+              now: () => '2026-08-18T08:00:00.000Z',
+            });
+            const storage = { getItem: () => null, setItem() {} };
+            const settings = new DevAgentUiSettings({ storage });
+            settings.setAgentProfile(AGENT_PROFILE.DEV);
+            return { supervisor, settings };
+          }
+
+          function workerClient(discover) {
+            const noop = async (args = {}) => args;
+            return {
+              enabled: true,
+              discover,
+              claim: noop,
+              createChat: noop,
+              send: noop,
+              observe: noop,
+              followup: noop,
+              nudge: noop,
+              stop: noop,
+              result: noop,
+              release: noop,
+              waitEvent: async () => ({ type: 'worker.completed', data: {}, observedAt: '2026-08-18T08:00:00.000Z' }),
+            };
+          }
+          '''.replace(/^          /gm, ''))
+
+          release_test = Path('tests/userscript-release-version.mjs')
+          release_text = release_test.read_text()
+          anchor = "await import('./dev-agent/multi-worker-tab-pool.mjs');\n"
+          assert anchor in release_text, 'release regression anchor changed'
+          if "supervisor-progress-budget.mjs" not in release_text:
+            release_text = release_text.replace(anchor, anchor + "await import('./dev-agent/supervisor-progress-budget.mjs');\n", 1)
+          release_test.write_text(release_text)
+          PY
+      - name: Focused regression
+        run: node tests/dev-agent/supervisor-progress-budget.mjs
+      - name: Canonical Dev Agent regression
+        run: npm run dev-agent:test
+      - name: Canonical userscript build and tests
+        run: npm run userscript:test
+      - name: Commit generated runtime and remove temporary workflow
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git rm .github/workflows/temp-dev-supervisor-progress-budget.yml
+          git add js/ai/dev/supervisor/dev-supervisor-engine-v0.js \
+                  tests/dev-agent/supervisor-progress-budget.mjs \
+                  tests/userscript-release-version.mjs \
+                  userscript/hex.user.template.js \
+                  userscript/release-version.json
+          git commit -m "Fix Dev Supervisor progress budget accounting"
+          git push origin HEAD:fix/dev-supervisor-progress-budget
