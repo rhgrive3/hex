@@ -201,7 +201,7 @@ function effectiveLocation(loc) {
 }
 
 function sizeCompatible(a, b) {
-  if (a.size == null || b.size == null) return true;
+  if (a.size == null || b.size == null) return false;
   return a.size === b.size;
 }
 
@@ -230,11 +230,13 @@ export function mayAliasProvenance(a, b) {
     const pa = x.kind === MK.STACK ? x.disp : x.address;
     const pb = y.kind === MK.STACK ? y.disp : y.address;
     if (pa == null || pb == null) return true;
-    const sa = BigInt(x.size || 8), sb = BigInt(y.size || 8);
+    if (x.size == null || y.size == null) return true;
+    const sa = BigInt(x.size), sb = BigInt(y.size);
     return !(pa + sa <= pb || pb + sb <= pa);
   }
   if (x.kind === MK.FIELD && x.root && y.root && x.root === y.root && x.disp != null && y.disp != null) {
-    const sa = BigInt(x.size || 8), sb = BigInt(y.size || 8);
+    if (x.size == null || y.size == null) return true;
+    const sa = BigInt(x.size), sb = BigInt(y.size);
     return !(x.disp + sa <= y.disp || y.disp + sb <= x.disp);
   }
   return true;
