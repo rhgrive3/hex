@@ -22,6 +22,38 @@ async function testAuthenticatedBroadcastIsolation() {
   a.close(); b.close(); bad.close();
 }
 
+async function testConcurrentClaimReservesSlotBeforeRpcSettles() {
+  FakeBroadcastChannel.reset();
+  const servers = [];
+  const openTab = async (href, { slot }) => {
+    const ticket = readWorkerTabTicket(href);
+    const port = createAuthBroadcastPort(ticket, { BroadcastChannelRef: FakeBroadcastChannel });
+    servers.push(createDevWorkerParentRpc({ port, runtime: fakeDedicatedRuntime(slot) }));
+    return { close() { port.close(); } };
+  };
+  const pool = new MultiTabWorkerPool({
+    maxWorkers: 1,
+    openTab,
+    BroadcastChannelRef: FakeBroadcastChannel,
+    cryptoRef: webcrypto,
+    location: { href: 'https://chatgpt.com/' },
+    sleep: async () => tick(),
+  });
+  await pool.provision({ size: 1, timeoutMs: 2000 });
+  const firstClaim = pool.claim({ taskId: 'first', wait: false });
+  await assert.rejects(
+    pool.claim({ taskId: 'second', wait: false }),
+    (error) => error?.code === 'worker-pool-full',
+    'a slot whose remote claim is still settling must already be reserved locally',
+  );
+  const lease = await firstClaim;
+  assert.equal(lease.slot, 1);
+  assert.equal(pool.status().claimedCount, 1);
+  await pool.release({ leaseId: lease.leaseId });
+  pool.close();
+  for (const server of servers) server.close();
+}
+
 async function testSixSlotsSeventhWaitsAndReuse() {
   FakeBroadcastChannel.reset();
   const servers = [];
@@ -120,6 +152,7 @@ class FakeBroadcastChannel {
 function tick() { return new Promise((resolve) => setTimeout(resolve, 0)); }
 
 await testAuthenticatedBroadcastIsolation();
+await testConcurrentClaimReservesSlotBeforeRpcSettles();
 await testSixSlotsSeventhWaitsAndReuse();
 testTicketScrub();
 console.log('multi-worker tab pool: ok');
