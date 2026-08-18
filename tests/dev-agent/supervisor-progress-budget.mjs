@@ -5,12 +5,10 @@ import { DevAgentUiSettings } from '../../js/ai/dev/ui/settings.js';
 import { AGENT_PROFILE } from '../../js/ai/dev/policy/agent-profile.js';
 import { DEV_RUN_STATUS } from '../../js/ai/dev/run/dev-run.js';
 
-// Successful tool progress must replenish the safety window; retries and other
-// no-progress decisions remain bounded by the base engine.
-await successfulToolsResetDecisionBudget();
+await successfulToolsResetDecisionBudgetWithFrozenBridge();
 console.log('Dev Supervisor progress budget: ok');
 
-async function successfulToolsResetDecisionBudget() {
+async function successfulToolsResetDecisionBudgetWithFrozenBridge() {
   const requests = [];
   const client = workerClient(async () => [{ tabNodeId: 'same-tab' }]);
   const supervisor = new DevSupervisorV0({
@@ -23,7 +21,7 @@ async function successfulToolsResetDecisionBudget() {
   settings.setAgentProfile(AGENT_PROFILE.DEV);
 
   let count = 0;
-  const bridge = {
+  const bridge = Object.freeze({
     async request(_prompt, options = {}) {
       count += 1;
       requests.push(options.sessionKey);
@@ -32,7 +30,10 @@ async function successfulToolsResetDecisionBudget() {
       }
       return { text: JSON.stringify({ type: 'final', answer: 'done', completedTasks: ['progress-budget'], remaining: [] }) };
     },
-  };
+  });
+  const descriptor = Object.getOwnPropertyDescriptor(bridge, 'request');
+  assert.equal(descriptor.configurable, false);
+  assert.equal(descriptor.writable, false);
 
   const engine = new ProgressBudgetDevSupervisorEngineV0({ supervisor, settings, bridge, maxDecisions: 2 });
   const result = await engine.run({ goal: 'make repeated successful tool progress', conversationId: 'hex-progress' });
