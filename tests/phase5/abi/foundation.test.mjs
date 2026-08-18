@@ -125,19 +125,23 @@ assert.equal(MICROSOFT_X64_ABI.platformPredicate({ platform:'linux' }), false);
   const classified = MICROSOFT_X64_ABI.classifyArguments({
     callPrototype:{ args:[{ type:'struct pair', aggregate:true, bits:128 }] },
   });
-  assert.equal(classified.partial, true);
-  assert.equal(classified.aggregateClassification, 'partial-unproven');
-  assert.equal(classified.arguments[0].location, 'unknown');
-  assert.deepEqual(classified.arguments[0].candidateRegisters, ['rcx','xmm0']);
+  assert.equal(classified.partial, false);
+  assert.equal(classified.aggregateClassification, 'proven');
+  assert.equal(classified.arguments[0].location, 'register');
+  assert.equal(classified.arguments[0].reg, 'rcx');
+  assert.equal(classified.arguments[0].abiClass, 'aggregate-indirect');
+  assert.equal(classified.arguments[0].pointeeBits, 128);
 }
 
 {
   const classified = MICROSOFT_X64_ABI.classifyArguments({
     callPrototype:{ args:[{ type:'__m128', vector:true, bits:128 }] },
   });
-  assert.equal(classified.partial, true);
-  assert.equal(classified.arguments[0].abiClass, 'vector-indirect-partial');
-  assert.equal(classified.scope.vectorArguments, 'partial-default-convention-indirect-classification');
+  assert.equal(classified.partial, false);
+  assert.equal(classified.arguments[0].abiClass, 'vector-indirect');
+  assert.equal(classified.arguments[0].reg, 'rcx');
+  assert.equal(classified.arguments[0].pointer, true);
+  assert.equal(classified.scope.vectorArguments, 'exact-default-convention-by-reference-when-size-is-proven');
 }
 
 {

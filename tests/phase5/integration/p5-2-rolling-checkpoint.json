@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "checkpoint": "p5-2-rolling-integration",
+  "component": {
+    "pr": 734,
+    "reviewedHead": "7dc441fd2a1a32406f34b414fce0f22d1635fb85",
+    "integrationMerge": "2f4e0c77a0ffe1966bff6fb7a666ccbd224fbfb1"
+  },
+  "reconciliation": {
+    "sharedScalarContractCommit": "c8c45b02bcb193b683ca9e1e309e1b63bce5a009",
+    "scalarRepairAndGeneratedSyncCommit": "150cb100b80ff9ba23cdbd4fa69b1f959ea3c89e",
+    "capabilityOwnershipRepairCommit": "c9755205ac0bf3e7493dbdec027e9ddb7920b135",
+    "viewerImplementationIntegrated": true,
+    "publicViewerCapabilityClaimed": false,
+    "semanticA6Claimed": false,
+    "atomicOrdering": "partial-not-seq-cst-overclaimed"
+  },
+  "requiredBeforeP5_3Acceptance": "exact-head-external-workflows-green"
+}

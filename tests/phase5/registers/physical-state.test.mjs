@@ -68,6 +68,8 @@ descriptor('flags', { physicalId:'rflags', physicalBits:64, viewBits:16, lsb:0, 
 assert.deepEqual([...X86_MODELED_FLAGS], ['CF','PF','AF','ZF','SF','OF','DF']);
 assert.equal(Object.isFrozen(X86_MODELED_FLAGS), true);
 
+descriptor('mxcsr', { physicalId:'mxcsr', physicalBits:32, viewBits:32, lsb:0, writePolicy:'replace', kind:'fp-environment' });
+
 for (let index = 0; index < 16; index++) {
   const physicalId = `ymm${index}`;
   const xmm = descriptor(`xmm${index}`, {
@@ -111,8 +113,9 @@ assert.equal(new Set(physicalFile.map((entry) => entry.id)).size, physicalFile.l
 assert.equal(physicalFile.some((entry) => entry.id.startsWith('xmm')), false,
   'XMM spelling must not become a second physical vector cell');
 assert.equal(physicalFile.filter((entry) => entry.id.startsWith('ymm')).length, 16);
-assert.equal(X86_REGISTER_DESCRIPTORS.length, 106);
-assert.equal(X86_PHYSICAL_REGISTERS.length, 34);
+assert.equal(physicalFile.filter((entry) => entry.id === 'mxcsr').length, 1);
+assert.equal(X86_REGISTER_DESCRIPTORS.length, 107);
+assert.equal(X86_PHYSICAL_REGISTERS.length, 35);
 assert.equal(Object.isFrozen(X86_REGISTER_DESCRIPTORS), true);
 assert.equal(Object.isFrozen(X86_PHYSICAL_REGISTERS), true);
 

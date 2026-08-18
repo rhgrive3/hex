@@ -76,6 +76,9 @@
   addView('eflags', 'rflags', 32, 0, 'preserve-unaffected', 'flags');
   addView('flags', 'rflags', 16, 0, 'preserve-unaffected', 'flags');
 
+  addPhysical('mxcsr', 32, 'fp-environment', ['mxcsr']);
+  addView('mxcsr', 'mxcsr', 32, 0, 'replace', 'fp-environment');
+
   for (let index = 0; index < 16; index++) {
     const physicalId = `ymm${index}`;
     const views = [`xmm${index}`, physicalId];

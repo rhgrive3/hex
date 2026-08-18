@@ -53,9 +53,10 @@ export const X86_64_ARCHITECTURE = registerArchitecturePlugin({
   id:'x86_64', semanticVersion:X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION, instructionAlignment:1, fixedInstructionSize:null, viewerCompatible:false,
   modes:()=>Object.freeze(['long-64']), registerFile:x86RegisterFile,
   decodeProvider:'capstone/backend', liftExact:liftX86MachineEffects, classifyControlFlow:x86ControlFlow,
-  // P5-0 exposes a real shadow spine for its bounded seed only. Production
-  // cutover and viewer compatibility remain disabled until the full Phase 5
-  // corpus and release evidence are green.
+  // P5-5's bounded variable-length viewer implementation is integrated and
+  // verified under tests/phase5/viewer/**. Public capability promotion is kept
+  // conservative because the frozen global capability regression is outside
+  // P5-I ownership; semantic/A6 maturity also remains partial pending P5-6.
   capabilities:{ decode:'external-structured-v1', exactEffects:'partial', semanticAnalysis:'phase5-shadow-partial' },
 });
 

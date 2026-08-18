@@ -27,7 +27,7 @@ assert.equal(ARM64_ARCHITECTURE.capabilities.exactEffects, 'partial');
 assert.equal(ARM64E_ARCHITECTURE.capabilities.exactEffects, 'partial');
 assert.equal(ARM64_ARCHITECTURE.capabilities.semanticAnalysis, 'legacy-v1');
 assert.equal(ARM64E_ARCHITECTURE.capabilities.semanticAnalysis, 'legacy-v1-partial');
-assert.equal(X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION, '5.0.0-foundation');
+assert.equal(X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION, '5.1.0-phase5-integrated');
 assert.equal(X86_64_ARCHITECTURE.semanticVersion, X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION);
 assert.equal(X86_64_ARCHITECTURE.capabilities.exactEffects, 'partial');
 assert.equal(X86_64_ARCHITECTURE.capabilities.semanticAnalysis, 'phase5-shadow-partial');
