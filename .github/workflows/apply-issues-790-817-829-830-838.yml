@@ -1,0 +1,302 @@
+name: Apply five correctness repairs
+on:
+  push:
+    branches: [fix/issues-790-817-829-830-838]
+permissions:
+  contents: write
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Apply guarded fixes
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          def patch(path, old, new):
+              p = Path(path)
+              text = p.read_text()
+              if text.count(old) != 1:
+                  raise SystemExit(f'{path}: expected exactly one match, got {text.count(old)}')
+              p.write_text(text.replace(old, new))
+
+          patch('js/symbolic/executor.js',
+          """  if (name === 'shl' || name === 'lshr' || name === 'ashr') {
+            const masked = { kind:SYM.OP, op:'and', args:[b, c(BigInt(width - 1))] };
+            return { kind: SYM.OP, op: name, args: [a, masked], bits:width };
+          }
+          return { kind: SYM.OP, op: name, args: [a, b] };
+""",
+          """  if (name === 'shl' || name === 'lshr' || name === 'ashr') {
+            const masked = { kind:SYM.OP, op:'and', args:[b, c(BigInt(width - 1))], bits:width };
+            return { kind: SYM.OP, op: name, args: [a, masked], bits:width };
+          }
+          // Symbolic integer arithmetic is still a fixed-width bitvector. Keep
+          // that identity even when we cannot fold the operands to constants.
+          return { kind: SYM.OP, op: name, args: [a, b], bits:width };
+""")
+
+          patch('js/symbolic/executor.js',
+          """  if (e.kind === SYM.OP) {
+            if (e.op === 'not') return 'not ' + expressionText(e.args[0]);
+            if (e.args.length === 1) return e.op + '(' + expressionText(e.args[0]) + ')';
+            return '(' + expressionText(e.args[0]) + ' ' + e.op + ' ' + expressionText(e.args[1]) + ')';
+          }
+""",
+          """  if (e.kind === SYM.OP) {
+            let body;
+            if (e.op === 'not') body = 'not ' + expressionText(e.args[0]);
+            else if (e.args.length === 1) body = e.op + '(' + expressionText(e.args[0]) + ')';
+            else body = '(' + expressionText(e.args[0]) + ' ' + e.op + ' ' + expressionText(e.args[1]) + ')';
+            const bits = Number(e.bits);
+            return Number.isSafeInteger(bits) && bits > 0 ? `i${bits}${body}` : body;
+          }
+""")
+
+          patch('js/symbolic/executor.js',
+          """    for (const phi of block.phis || []) {
+              if (!phi.dst) continue;
+              const value = evalValue(phi.dst, state, ir, opts, memo, new Set());
+              state.values.set(phi.dst.id, value);
+            }
+""",
+          """    // PHIs are parallel assignments at block entry. Evaluate every
+            // incoming value against the previous iteration's state, then commit
+            // the new PHI values together. Reusing the cached destination here
+            // would freeze a loop-carried value after its first visit.
+            const phiUpdates = [];
+            for (const phi of block.phis || []) {
+              if (!phi.dst) continue;
+              const chosen = phiValue(phi, state);
+              const value = chosen
+                ? evalValue(chosen, state, ir, opts, memo, new Set())
+                : unknown('ambiguous-phi', { instruction: phi.id });
+              phiUpdates.push([phi.dst.id, value]);
+            }
+            for (const [id, value] of phiUpdates) state.values.set(id, value);
+""")
+
+          patch('js/dataflow-semantic.js',
+          """  return a.op === b.op && a.imm === b.imm && a.immFloat === b.immFloat &&
+            (a.other || null) === (b.other || null) && originFingerprint(a.otherOrigin) === originFingerprint(b.otherOrigin);
+""",
+          """  return a.op === b.op && a.imm === b.imm && a.immFloat === b.immFloat &&
+            (a.sourceOperandIndex ?? null) === (b.sourceOperandIndex ?? null) &&
+            (a.other || null) === (b.other || null) && originFingerprint(a.otherOrigin) === originFingerprint(b.otherOrigin);
+""")
+
+          patch('js/dataflow-semantic.js',
+          """        const step = opname ? {
+                  op: opname,
+                  imm: ov && ov.const != null ? ov.const : null,
+                  immFloat: null,
+                  other: ov && ov.reg || null,
+                  otherOrigin: compatOrigin(ov),
+                  row: def.row,
+""",
+          """        const step = opname ? {
+                  op: opname,
+                  imm: ov && ov.const != null ? ov.const : null,
+                  immFloat: null,
+                  other: ov && ov.reg || null,
+                  otherOrigin: compatOrigin(ov),
+                  sourceOperandIndex: chosen,
+                  sourceOnLeft: chosen === 0,
+                  row: def.row,
+""")
+
+          patch('js/dataflow-semantic.js',
+          """      steps: candidate.steps.map((s) => ({ op: s.op, imm: s.imm, immFloat: s.immFloat, otherOrigin: s.otherOrigin || null, row: s.row, address: s.address })),
+""",
+          """      steps: candidate.steps.map((s) => ({ op: s.op, imm: s.imm, immFloat: s.immFloat, otherOrigin: s.otherOrigin || null,
+                sourceOperandIndex: s.sourceOperandIndex ?? null, sourceOnLeft: s.sourceOnLeft ?? null, row: s.row, address: s.address })),
+""")
+
+          patch('js/dataflow.js',
+          """    if (origin && DIRECT_ORIGIN.has(origin.kind)) amount = { op: step.op, ...origin };
+            else if (step.imm != null) amount = { kind: 'imm', value: step.imm, op: step.op, row: step.row, engine: 'ir-ssa' };
+""",
+          """    const operandSide = step.sourceOperandIndex == null ? {} : {
+              sourceOperandIndex: step.sourceOperandIndex,
+              sourceOnLeft: step.sourceOnLeft === true,
+            };
+            if (origin && DIRECT_ORIGIN.has(origin.kind)) amount = { op: step.op, ...origin, ...operandSide };
+            else if (step.imm != null) amount = { kind: 'imm', value: step.imm, op: step.op, row: step.row, engine: 'ir-ssa', ...operandSide };
+""")
+
+          patch('js/analysis/alias/canonical-address-v2-core.js',
+                "export const CANONICAL_ADDRESS_DERIVATION_VERSION = '1.0.1';",
+                "export const CANONICAL_ADDRESS_DERIVATION_VERSION = '1.0.2';")
+          patch('js/analysis/alias/canonical-address-v2-core.js',
+          """      offset: normalizeModulo(descriptor.baseOffset, widthBits),
+""",
+          """      // Root-relative offsets are signed mathematical offsets, not
+              // machine addresses. Wrapping them would break linear interval aliasing.
+              offset: descriptor.baseOffset,
+""")
+          patch('js/analysis/alias/canonical-address-v2-core.js',
+          """    offset: normalizeModulo(descriptor.baseOffset, widthBits),
+""",
+          """    offset: descriptor.baseOffset,
+""")
+          patch('js/analysis/alias/canonical-address-v2-core.js',
+          """    offset: normalizeModulo(proof.offset + delta, width),
+""",
+          """    offset: proof.offset + delta,
+""")
+
+          patch('js/fields.js',
+          """          certain: access.self === true || access.base === 'x0' || className === via.className,
+""",
+          """          certain: access.self === true || className === via.className,
+""")
+          patch('js/fields.js',
+          """      // self そのものだと確定できるのは x0 のときだけ。他は「その可能性がある」。
+              certain: access.self === true || access.base === 'x0',
+""",
+          """      // Physical x0 alone is not proof of self: calls may reuse x0 for a
+              // return value. Only explicit provenance can make this certain.
+              certain: access.self === true,
+""")
+          PY
+
+          cat > tests/semantic-v2/issues-790-817-829-830-838.test.mjs <<'EOF'
+          import { buildSemanticModel } from '../../js/blocks.js';
+          import { findValueUpdates, amountOf } from '../../js/dataflow.js';
+          import { irFor } from '../../js/ir.js';
+          import { symbolicExecute } from '../../js/symbolic/executor.js';
+          import { FieldIndex } from '../../js/fields.js';
+          import {
+            deriveCanonicalAddressProof,
+            canonicalAddressProofToRegionEvidence,
+          } from '../../js/analysis/alias/canonical-address-v2-core.js';
+          import { aliasMemoryRegions } from '../../js/analysis/alias/legacy-safety-floor.js';
+
+          function ok(value, message) { if (!value) throw new Error(message || 'expected truthy'); }
+          function eq(actual, expected, message) {
+            if (actual !== expected) throw new Error(`${message || 'not equal'}: got ${String(actual)}, want ${String(expected)}`);
+          }
+          const BASE = 0x100000000n;
+          function modelOf(lines) {
+            const rows = lines.map((line, row) => {
+              const text = line.trim();
+              const space = text.indexOf(' ');
+              return { row, address: BASE + BigInt(row * 4), mn: space < 0 ? text : text.slice(0, space), ops: space < 0 ? '' : text.slice(space + 1) };
+            });
+            const rowOfAddress = (address) => {
+              const delta = address - BASE;
+              return delta < 0n || delta >= BigInt(lines.length * 4) ? null : Number(delta / 4n);
+            };
+            return buildSemanticModel(rows, { startRow: 0, endRow: rows.length - 1, rowOfAddress });
+          }
+
+          // #790: operand order is semantic for subtraction/division/shifts.
+          {
+            const left = modelOf(['ldr w8, [x19, #0x20]', 'mov w9, #10', 'sub w10, w8, w9', 'str w10, [x19, #0x30]', 'ret']);
+            const right = modelOf(['ldr w8, [x19, #0x20]', 'mov w9, #10', 'sub w10, w9, w8', 'str w10, [x19, #0x30]', 'ret']);
+            const lu = findValueUpdates(left).find((u) => u.store?.row === 3);
+            const ru = findValueUpdates(right).find((u) => u.store?.row === 3);
+            ok(lu && ru, '#790 updates must exist');
+            eq(lu.steps.at(-1).sourceOperandIndex, 0, '#790 field is lhs');
+            eq(ru.steps.at(-1).sourceOperandIndex, 1, '#790 field is rhs');
+            eq(amountOf(left, lu).amount.sourceOnLeft, true, '#790 amount lhs');
+            eq(amountOf(right, ru).amount.sourceOnLeft, false, '#790 amount rhs');
+          }
+
+          // #817: stack/root-relative offsets stay signed; only absolute machine addresses wrap.
+          {
+            const ir = {
+              functionId: 'issue817',
+              values: [{ id: 'v', kind: 'computed', machineType: { widthBits: 64 }, definitionNodeId: 'n', metadata: {
+                canonicalRoot: { kind: 'stack-like', baseOffset: -4, linearOffsets: true, addressSpace: 'memory' },
+              } }],
+              nodes: [{ id: 'n', kind: 'copy', inputs: [] }],
+              blocks: [],
+            };
+            const proof = deriveCanonicalAddressProof(ir, 'v');
+            eq(proof.offset, -4n, '#817 signed proof offset');
+            const evidence = canonicalAddressProofToRegionEvidence(proof);
+            eq(evidence.offset, '-4', '#817 signed region offset');
+            const a = { ...evidence, functionId: 'issue817', widthBits: 64 };
+            const b = { kind: 'stack-fixed', functionId: 'issue817', offset: '0', widthBits: 32 };
+            eq(aliasMemoryRegions(a, b), 'may', '#817 overlapping negative/zero intervals');
+          }
+
+          // #829: width is part of symbolic identity, so W/X wrap constraints are not conflated.
+          {
+            const ir = irFor(modelOf([
+              'add w1, w0, #1',
+              'cbnz w1, #0x100000014',
+              'add x2, x0, #1',
+              'cbnz x2, #0x100000014',
+              'ret',
+              'ret',
+            ]));
+            const result = symbolicExecute(ir, { timeoutMs: 1000, maxPaths: 16 });
+            const mixed = result.paths.find((p) => p.takenBranches?.some((b) => b.row === 1 && b.taken === false)
+              && p.takenBranches?.some((b) => b.row === 3 && b.taken === true));
+            ok(mixed, '#829 32-bit wrap and 64-bit non-wrap path must remain feasible');
+            const text = mixed.constraintText.join(' ');
+            ok(text.includes('i32') && text.includes('i64'), '#829 width must be visible in expression identity: ' + text);
+          }
+
+          // #830: loop-header PHIs must be recomputed on every backedge visit.
+          {
+            const ir = irFor(modelOf([
+              'mov w8, #0',
+              'add w8, w8, #1',
+              'cmp w8, #2',
+              'b.lo #0x100000004',
+              'mov x0, x8',
+              'ret',
+            ]));
+            const result = symbolicExecute(ir, { timeoutMs: 1000, maxBlockVisits: 5, maxPaths: 16 });
+            ok(result.paths.some((p) => p.status === 'complete'), '#830 loop must reach its exit');
+            ok(!result.paths.some((p) => p.reason === 'loop-budget'), '#830 loop-carried PHI must not stay stale');
+          }
+
+          // #838: a physical x0 access is only certain when self provenance is explicit.
+          {
+            const fields = new FieldIndex({ classes: [{
+              name: 'Player', instanceSize: 64, ivars: [{ name: '_hp', offset: 32, size: 4 }],
+              properties: [], methods: [], classMethods: [],
+            }] });
+            const physical = fields.resolveAccess({ base: 'x0', disp: 32n }, 'Player');
+            const proven = fields.resolveAccess({ base: 'x0', disp: 32n, self: true }, 'Player');
+            ok(physical && proven, '#838 field resolution remains available');
+            eq(physical.certain, false, '#838 raw x0 is uncertain');
+            eq(proven.certain, true, '#838 explicit self provenance is certain');
+          }
+
+          console.log('issues-790-817-829-830-838: PASS');
+          EOF
+      - name: Build generated userscript
+        run: npm run userscript:build
+      - name: Targeted semantic regressions
+        run: node tests/semantic-v2/issues-790-817-829-830-838.test.mjs
+      - name: Canonical semantic-v2 suite
+        run: npm run semantic-v2:test
+      - name: Lint
+        run: npm run lint
+      - name: Main test suite
+        run: npm test
+      - name: Commit verified result
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git rm .github/workflows/apply-issues-790-817-829-830-838.yml
+          git add js/symbolic/executor.js js/dataflow-semantic.js js/dataflow.js js/analysis/alias/canonical-address-v2-core.js js/fields.js tests/semantic-v2/issues-790-817-829-830-838.test.mjs userscript/hex.user.template.js userscript/release-version.json
+          git diff --cached --check
+          git commit -m 'fix: resolve five semantic correctness issues'
+          git push origin HEAD:fix/issues-790-817-829-830-838
