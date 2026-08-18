@@ -34,64 +34,56 @@ jobs:
 
           python3 - <<'PY'
           from pathlib import Path
+
           path = Path('js/ai/dev/supervisor/dev-supervisor-engine-v0.js')
-          text = path.read_text()
-          old = '''      for (let step = 0; step < this.maxDecisions; step++) {
-                const availableTools = this.availableTools();
-                const response = await this.bridge.request(buildDevSupervisorPrompt({
-                  run,
-                  availableTools,
-                  history,
-                }), {
-                  signal: input.signal,
-                  sessionKey: run.supervisorSessionKey,
-                  model: input.model || null,
-                  reasoning: input.reasoning || null,
-                });
-                const text = response && typeof response === 'object' ? response.text : response;
-                const decision = parseDevSupervisorDecision(text, { availableTools });
+          lines = path.read_text().splitlines()
 
-                if (decision.type === 'tool') {'''
-          new = '''      for (let step = 0; step < this.maxDecisions; step++) {
-                const promptTools = this.availableTools();
-                const response = await this.bridge.request(buildDevSupervisorPrompt({
-                  run,
-                  availableTools: promptTools,
-                  history,
-                }), {
-                  signal: input.signal,
-                  sessionKey: run.supervisorSessionKey,
-                  model: input.model || null,
-                  reasoning: input.reasoning || null,
-                });
-                const text = response && typeof response === 'object' ? response.text : response;
-                let decision;
-                try {
-                  decision = parseDevSupervisorDecision(text);
-                } catch (decisionError) {
-                  history.push({
-                    kind: 'decision-invalid',
-                    message: '直前のSupervisor decisionは有効なhex-dev-supervisor-v1 JSONではありません。同じdecision shape契約に従ってJSONオブジェクトを1つだけ再出力してください。',
-                    error: String(decisionError?.message || decisionError || 'Invalid Supervisor decision.'),
-                  });
-                  continue;
-                }
-                const availableTools = this.availableTools();
+          loop_index = next((i for i, line in enumerate(lines) if line.strip() == 'for (let step = 0; step < this.maxDecisions; step++) {'), None)
+          if loop_index is None:
+              raise SystemExit('Supervisor decision loop not found; refusing unsafe integration')
 
-                if (decision.type === 'tool' && !availableTools.includes(decision.tool)) {
-                  history.push({
-                    kind: 'tool-unavailable',
-                    tool: decision.tool,
-                    message: `要求されたツール「${decision.tool}」は現在利用できません。現在利用可能なツール一覧を確認して再判断してください。`,
-                    availableTools,
-                  });
-                  continue;
-                }
+          available_index = next((i for i in range(loop_index + 1, len(lines)) if lines[i].strip() == 'const availableTools = this.availableTools();'), None)
+          if available_index is None:
+              raise SystemExit('current availableTools snapshot not found; refusing unsafe integration')
+          indent = lines[available_index][:-len(lines[available_index].lstrip())]
+          lines[available_index] = indent + 'const promptTools = this.availableTools();'
 
-                if (decision.type === 'tool') {'''
-          if old not in text:
-              raise SystemExit('current-main Supervisor loop changed; refusing unsafe integration')
-          path.write_text(text.replace(old, new, 1))
+          prompt_arg_index = next((i for i in range(available_index + 1, len(lines)) if lines[i].strip() == 'availableTools,'), None)
+          if prompt_arg_index is None:
+              raise SystemExit('buildDevSupervisorPrompt availableTools argument not found')
+          arg_indent = lines[prompt_arg_index][:-len(lines[prompt_arg_index].lstrip())]
+          lines[prompt_arg_index] = arg_indent + 'availableTools: promptTools,'
+
+          decision_index = next((i for i in range(prompt_arg_index + 1, len(lines)) if lines[i].strip() == 'const decision = parseDevSupervisorDecision(text, { availableTools });'), None)
+          if decision_index is None:
+              raise SystemExit('strict availability parse call not found; refusing unsafe integration')
+          d = lines[decision_index][:-len(lines[decision_index].lstrip())]
+          replacement = [
+              d + 'let decision;',
+              d + 'try {',
+              d + '  decision = parseDevSupervisorDecision(text);',
+              d + '} catch (decisionError) {',
+              d + '  history.push({',
+              d + "    kind: 'decision-invalid',",
+              d + "    message: '直前のSupervisor decisionは有効なhex-dev-supervisor-v1 JSONではありません。同じdecision shape契約に従ってJSONオブジェクトを1つだけ再出力してください。',",
+              d + "    error: String(decisionError?.message || decisionError || 'Invalid Supervisor decision.'),",
+              d + '  });',
+              d + '  continue;',
+              d + '}',
+              d + 'const availableTools = this.availableTools();',
+              '',
+              d + "if (decision.type === 'tool' && !availableTools.includes(decision.tool)) {",
+              d + '  history.push({',
+              d + "    kind: 'tool-unavailable',",
+              d + '    tool: decision.tool,',
+              d + '    message: `要求されたツール「${decision.tool}」は現在利用できません。現在利用可能なツール一覧を確認して再判断してください。`,',
+              d + '    availableTools,',
+              d + '  });',
+              d + '  continue;',
+              d + '}',
+          ]
+          lines[decision_index:decision_index + 1] = replacement
+          path.write_text('\n'.join(lines) + '\n')
           PY
 
           npm ci
