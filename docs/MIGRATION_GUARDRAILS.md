@@ -47,6 +47,20 @@ These are current debt, not approved patterns for new code:
 
 The `Migration guardrails` workflow additionally runs the migration test, the required semantic/decompiler/platform/runtime/AI suites, and the source-backed binary loader regression on pull requests that touch migration-sensitive paths.
 
+## Engineering-process guardrails
+
+Architecture compatibility is not sufficient by itself. Phase 3, Phase 4, and Phase 5 showed that a correct implementation can still lose large amounts of time through late integration, contradictory ownership, stale generated output, weak exact-head evidence, moving-main churn, target-platform assumptions, or a verifier that matures only at final release.
+
+`docs/ENGINEERING_PROCESS_GUARDRAILS.md` is therefore a second normative migration contract. Master-phase, integration, release, generated-output, exact-SHA verification, Dev Supervisor, and iOS/browser work MUST follow it.
+
+In particular:
+
+- a migration guardrail MUST NOT be weakened to work around an ownership, generated-output, workflow-trigger, or integration-process defect;
+- repeated process defects MUST gain permanent automated regressions where technically possible;
+- component correctness does not substitute for candidate-merge-tree and living-integration correctness;
+- a final verifier change that changes acceptance semantics invalidates affected historical evidence;
+- a source merge is not proof that the deployed/in-memory runtime has activated that source.
+
 ## Review rule
 
 A migration change may update a guardrail only when the old contract has a tested compatibility adapter or a completed differential cutover. Do not delete a failing guardrail only to make a migration PR green.
