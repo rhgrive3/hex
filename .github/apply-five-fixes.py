@@ -68,12 +68,12 @@ start = text.index("  if (sub === 'fsub') {")
 end = text.index("\n  if (sub === 'sub') {", start)
 head, block, tail = text[:start], text[start:end], text[end:]
 replacements = {
-    "case 'eq': return directCompare('eq', left, right, false, bits, source);": "case 'eq': return directCompare('eq', left, right, false, bits, source, 'floating');",
-    "case 'ne': return directCompare('ne', left, right, false, bits, source);": "case 'ne': return directCompare('ne', left, right, false, bits, source, 'floating');",
-    "case 'mi': case 'lo': case 'cc': return directCompare('lt', left, right, true, bits, source);": "case 'mi': case 'lo': case 'cc': return directCompare('lt', left, right, true, bits, source, 'floating');",
-    "case 'ls': return directCompare('le', left, right, true, bits, source);": "case 'ls': return directCompare('le', left, right, true, bits, source, 'floating');",
-    "case 'ge': return directCompare('ge', left, right, true, bits, source);": "case 'ge': return directCompare('ge', left, right, true, bits, source, 'floating');",
-    "case 'gt': return directCompare('gt', left, right, true, bits, source);": "case 'gt': return directCompare('gt', left, right, true, bits, source, 'floating');",
+    "      case 'eq': return directCompare('eq', left, right, false, bits, source);": "      case 'eq': return directCompare('eq', left, right, false, bits, source, 'floating');",
+    "      case 'ne': return directCompare('ne', left, right, false, bits, source);": "      case 'ne': return directCompare('ne', left, right, false, bits, source, 'floating');",
+    "      case 'mi': case 'lo': case 'cc': return directCompare('lt', left, right, true, bits, source);": "      case 'mi': case 'lo': case 'cc': return directCompare('lt', left, right, true, bits, source, 'floating');",
+    "      case 'ls': return directCompare('le', left, right, true, bits, source);": "      case 'ls': return directCompare('le', left, right, true, bits, source, 'floating');",
+    "      case 'ge': return directCompare('ge', left, right, true, bits, source);": "      case 'ge': return directCompare('ge', left, right, true, bits, source, 'floating');",
+    "      case 'gt': return directCompare('gt', left, right, true, bits, source);": "      case 'gt': return directCompare('gt', left, right, true, bits, source, 'floating');",
 }
 for old, new in replacements.items():
     if block.count(old) != 1:
