@@ -1,6 +1,6 @@
 {
   "phase": 6,
-  "version": 1,
+  "version": 2,
   "singleOwnerLane": "p6",
   "note": "Phase 6 is executed by one owner on one branch, so there is a single lane. The manifest still exists because ownership is what makes 'which files may this change touch' checkable, and because contract, generated and forbidden paths must be explicit even when nobody can race for them.",
   "lanes": {
@@ -23,6 +23,7 @@
       "reports/phase6/**",
       "docs/PHASE6_CHECKPOINT.md",
       "docs/SUPPORT_MATRIX.md",
+      ".github/workflows/phase4-ownership.yml",
       ".github/workflows/phase6-ownership.yml",
       ".github/workflows/phase6-release-validation.yml",
       "package.json",
@@ -56,6 +57,7 @@
     "js/decompiler/type-recovery.js",
     "js/binary/elf.js",
     "js/platform/capability-maturity.js",
+    ".github/workflows/phase4-ownership.yml",
     "package.json",
     "tests/capability-maturity.mjs",
     "js/platform/capstone-disasm-worker.js",
@@ -100,6 +102,7 @@
     "docs/HEX_MASTER_ARCHITECTURE.md": "A phase may not edit the contract it is being judged against."
   },
   "ownedWithConstraint": {
+    ".github/workflows/phase4-ownership.yml": "May be updated only to recognize the canonical Phase 6 integration branch and delegate exact changed-file validation to the Phase 6 ownership gate; Phase 4 lane permissions must not be weakened.",
     "reports/phase5/**": "Phase 5 evidence may be marked superseded with a pointer to the live gate, but its historical record must not be deleted or rewritten.",
     "tests/capability-maturity.mjs": "May be updated only to match repaired machine-readable capability truth, never to relax an assertion so an inflated claim passes."
   },
