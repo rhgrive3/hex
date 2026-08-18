@@ -16,29 +16,26 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Execute guarded workflow body
+      - name: Apply guarded source patches
+        run: python3 .github/apply-five-fixes.py
+      - name: Build generated runtime
+        run: npm run userscript:build
+      - name: Targeted regression
+        run: node tests/semantic-v2/issues-828-832-860-867-880.test.mjs
+      - name: Semantic v2 suite
+        run: npm run semantic-v2:test
+      - name: Decompiler suite
+        run: npm run decompiler:test
+      - name: Lint
+        run: npm run lint
+      - name: Repository tests
+        run: npm test
+      - name: Commit verified result
         shell: bash
         run: |
-          rm .github/workflows/apply-issues-trigger.yml
-          python3 - <<'PY'
-          import subprocess
-          from pathlib import Path
-          lines = Path('.github/workflows/apply-issues-828-832-860-867-880.yml').read_text().splitlines()
-          scripts = []
-          i = 0
-          while i < len(lines):
-              if lines[i] == '        run: |':
-                  i += 1
-                  body = []
-                  while i < len(lines) and (lines[i].startswith('          ') or lines[i] == ''):
-                      body.append(lines[i][10:] if lines[i].startswith('          ') else '')
-                      i += 1
-                  scripts.append('\n'.join(body))
-                  continue
-              i += 1
-          if not scripts:
-              raise SystemExit('no guarded run steps found')
-          for index, script in enumerate(scripts, 1):
-              print(f'==> guarded step {index}/{len(scripts)}', flush=True)
-              subprocess.run(script, shell=True, executable='/bin/bash', check=True)
-          PY
+          rm -f .github/workflows/apply-issues-trigger.yml .github/workflows/apply-issues-828-832-860-867-880.yml .github/apply-five-fixes.py
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m 'fix: resolve five analysis correctness issues'
+          git push
