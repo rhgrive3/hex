@@ -91,7 +91,7 @@ assert.equal(released.claimed, false);
 const runtimeController = new FakeController();
 const runtime = await startParentDevWorkerRuntime({ controller: runtimeController, now: () => '2026-08-17T00:00:00.000Z' });
 assert.equal(runtime.role, 'supervisor');
-assert.equal(runtime.mode, 'single-tab-conversation-worker');
+assert.equal(runtime.mode, 'multi-frame-capable');
 assert.equal(runtime.enabled, true);
 assert.equal((await runtime.discover()).length, 1);
 runtime.close();
@@ -116,8 +116,12 @@ const protectedSources = [
 ].map((path) => fs.readFileSync(new URL(`../${path}`, import.meta.url), 'utf8')).join('\n');
 assert.doesNotMatch(protectedSources, /querySelector|querySelectorAll|\.click\(|document\./, 'opaque Dev logic must not directly operate ChatGPT DOM');
 const parentRuntimeSource = fs.readFileSync(new URL('../js/userscript/dev/parent-worker-runtime.js', import.meta.url), 'utf8');
-assert.doesNotMatch(parentRuntimeSource, /BroadcastChannel|hex-worker=1|isManualWorkerTab/, 'active Round 2 runtime must not require another Safari tab');
-assert.equal(fs.existsSync(new URL('../js/userscript/dev/tab-mesh/transport.js', import.meta.url)), false, 'obsolete cross-tab transport removed');
+assert.match(parentRuntimeSource, /IframeWorkerPool/, 'post-bootstrap parent runtime must expose the bounded same-origin iframe pool while retaining the single-tab compatibility lane');
+for (const obsolete of ['tab-mesh/transport.js', 'frame-mesh/auth-broadcast-port.js', 'frame-mesh/worker-tab-ticket.js', 'frame-mesh/worker-tab-runtime.js']) {
+  assert.equal(fs.existsSync(new URL(`../js/userscript/dev/${obsolete}`, import.meta.url)), false, `obsolete cross-tab transport removed: ${obsolete}`);
+}
+const entrySource = fs.readFileSync(new URL('../js/userscript/entry.js', import.meta.url), 'utf8');
+assert.doesNotMatch(entrySource, /openInTab|DedicatedWorkerTab/, 'Worker provisioning must never depend on a Safari popup/tab');
 
 coordinator.close();
 console.log('Round 2 single-tab parent Worker runtime tests passed');

@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
-import { ChatGPTDOMAdapter } from '../js/userscript/chatgpt-adapter.js';
+import { ChatGPTDOMAdapter, ChatGPTTurnController } from '../js/userscript/chatgpt-adapter.js';
 import { CHATGPT_SELECTORS } from '../js/userscript/chatgpt-selectors.js';
 
 for (const selector of CHATGPT_SELECTORS.stop) {
   assert.match(selector, /:not\(:disabled\)/, 'every Stop selector must ignore a native-disabled control');
   assert.match(selector, /:not\(\[aria-disabled="true"\]\)/, 'every Stop selector must ignore an aria-disabled control');
+  assert.doesNotMatch(selector, /aria-label\*=/, 'generation Stop selectors must not use broad aria-label substring matching');
 }
 
 const enabled = stopButton({ disabled: false, ariaDisabled: null });
@@ -24,6 +25,9 @@ assert.equal(
   'an aria-disabled lingering Stop control must not keep the turn alive',
 );
 
+await assertNewConversationDoesNotHardFailOnPreexistingGlobalStop();
+await assertExistingConversationStillRejectsPreexistingGeneration();
+
 console.log('chatgpt-disabled-stop-settlement: ok');
 
 function adapterFor(button) {
@@ -40,8 +44,48 @@ function adapterFor(button) {
   return new ChatGPTDOMAdapter({ document, location: { href: 'https://chatgpt.com/c/test' } });
 }
 
+async function assertNewConversationDoesNotHardFailOnPreexistingGlobalStop() {
+  const adapter = minimalBusyAdapter();
+  const turns = new ChatGPTTurnController(adapter, { startTimeoutMs: 2, pollMs: 1 });
+  await assert.rejects(
+    turns.run('bootstrap', { timeoutMs: 8, expectedConversation: null, newConversation: true }),
+    (error) => {
+      assert.notEqual(error?.code, 'already-generating');
+      assert.equal(error?.code, 'send-unavailable');
+      return true;
+    },
+  );
+}
+
+async function assertExistingConversationStillRejectsPreexistingGeneration() {
+  const adapter = minimalBusyAdapter();
+  const turns = new ChatGPTTurnController(adapter, { startTimeoutMs: 2, pollMs: 1 });
+  await assert.rejects(
+    turns.run('bootstrap', {
+      timeoutMs: 8,
+      expectedConversation: { id: 'existing', url: 'https://chatgpt.com/c/existing' },
+      newConversation: false,
+    }),
+    (error) => error?.code === 'already-generating',
+  );
+}
+
+function minimalBusyAdapter() {
+  const composer = { text: '', isConnected: true };
+  return {
+    composer: () => composer,
+    isGenerating: () => true,
+    assistantTurns: () => [],
+    userTurns: () => [],
+    conversationTurns: () => [],
+    composerText: (node) => node.text,
+    setComposerText: (node, value) => { node.text = String(value); },
+    sendButton: () => null,
+  };
+}
+
 function looksLikeStopSelector(selector) {
-  return /stop-button|Stop generating|Stop streaming|Stop|停止/.test(String(selector));
+  return /stop-button|Stop generating|Stop streaming|生成を停止|応答の生成を停止|ストリーミングを停止/.test(String(selector));
 }
 
 function stopButton({ disabled, ariaDisabled }) {

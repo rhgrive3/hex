@@ -1,11 +1,11 @@
 import { AGENT_PROFILE } from '../policy/agent-profile.js';
 import { DevSupervisorV0 } from '../supervisor/dev-supervisor-v0.js';
-import { DevSupervisorEngineV0 } from '../supervisor/dev-supervisor-engine-v0.js';
+import { ProgressBudgetDevSupervisorEngineV0 } from '../supervisor/dev-supervisor-progress-budget.js';
 
 export function createAgentProfileEngine({ standardEngine, settings, supervisor = new DevSupervisorV0(), devEngine = null } = {}) {
   if (!standardEngine || typeof standardEngine.run !== 'function') throw new TypeError('standardEngine.run is required.');
   if (!settings) throw new TypeError('DevAgentUiSettings is required.');
-  const dev = devEngine || new DevSupervisorEngineV0({ supervisor, settings });
+  const dev = devEngine || new ProgressBudgetDevSupervisorEngineV0({ supervisor, settings });
   const devBootstrap = Object.freeze({
     prepare: () => dev.prepareBootstrapExtension(),
     activateAtSafeBoundary: (options) => dev.activateBootstrapAtSafeBoundary(options),

@@ -44,7 +44,11 @@ The no-overlap rule above remains the default. For the Admin Dev subsystem only,
 
 ### Dev Supervisor iOS tab model
 
-Dev Supervisor Worker automation must use one ChatGPT browser tab on iOS/iPadOS. Workers are logical ChatGPT conversations that run sequentially in that same tab. Do not require, provision, or depend on background Safari Worker tabs, `?hex-worker=1`, or BroadcastChannel-based Worker execution. A Worker turn must finish, its result must be captured, and the Supervisor conversation must be restored before the next Supervisor turn.
+Dev Supervisor Worker automation must use one ChatGPT browser tab on iOS/iPadOS. Do not require, provision, or depend on background Safari Worker tabs, `?hex-worker=1`, popups, or BroadcastChannel-based Worker execution.
+
+Parallel Workers run as same-origin ChatGPT **iframes** inside that one tab (ChatGPT sends `x-frame-options: SAMEORIGIN`). The parent page drives each Worker document directly; nothing is opened in another tab or window.
+
+Single-tab lane (no pool): Workers are logical ChatGPT conversations that run sequentially in the Supervisor tab. A Worker turn must finish, its result must be captured, and the Supervisor conversation must be restored before the next Supervisor turn.
 
 ## Short responses
 
