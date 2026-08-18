@@ -1,0 +1,126 @@
+name: One-shot integrate PR 746
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  integrate:
+    if: contains(github.event.head_commit.message, 'Integrate non-Phase5 PR cleanup')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Integrate PR 746 against the exact current main
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git fetch origin fix/dev-supervisor-tool-retry-japanese-default
+
+          git show origin/fix/dev-supervisor-tool-retry-japanese-default:js/ai/dev/protocol/dev-supervisor-prompt.js > js/ai/dev/protocol/dev-supervisor-prompt.js
+          git show origin/fix/dev-supervisor-tool-retry-japanese-default:tests/dev-agent/round2-single-tab-supervisor.mjs > tests/dev-agent/round2-single-tab-supervisor.mjs
+          git show origin/fix/dev-supervisor-tool-retry-japanese-default:tests/dev-agent/round2-single-worker.mjs > tests/dev-agent/round2-single-worker.mjs
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('js/ai/dev/supervisor/dev-supervisor-engine-v0.js')
+          lines = path.read_text().splitlines()
+
+          loop_index = next((i for i, line in enumerate(lines) if line.strip() == 'for (let step = 0; step < this.maxDecisions; step++) {'), None)
+          if loop_index is None:
+              raise SystemExit('Supervisor decision loop not found; refusing unsafe integration')
+
+          available_index = next((i for i in range(loop_index + 1, len(lines)) if lines[i].strip() == 'const availableTools = this.availableTools();'), None)
+          if available_index is None:
+              raise SystemExit('current availableTools snapshot not found; refusing unsafe integration')
+          indent = lines[available_index][:-len(lines[available_index].lstrip())]
+          lines[available_index] = indent + 'const promptTools = this.availableTools();'
+
+          prompt_arg_index = next((i for i in range(available_index + 1, len(lines)) if lines[i].strip() == 'availableTools,'), None)
+          if prompt_arg_index is None:
+              raise SystemExit('buildDevSupervisorPrompt availableTools argument not found')
+          arg_indent = lines[prompt_arg_index][:-len(lines[prompt_arg_index].lstrip())]
+          lines[prompt_arg_index] = arg_indent + 'availableTools: promptTools,'
+
+          decision_index = next((i for i in range(prompt_arg_index + 1, len(lines)) if lines[i].strip() == 'const decision = parseDevSupervisorDecision(text, { availableTools });'), None)
+          if decision_index is None:
+              raise SystemExit('strict availability parse call not found; refusing unsafe integration')
+          d = lines[decision_index][:-len(lines[decision_index].lstrip())]
+          replacement = [
+              d + 'let decision;',
+              d + 'try {',
+              d + '  decision = parseDevSupervisorDecision(text);',
+              d + '} catch (decisionError) {',
+              d + '  history.push({',
+              d + "    kind: 'decision-invalid',",
+              d + "    message: '直前のSupervisor decisionは有効なhex-dev-supervisor-v1 JSONではありません。同じdecision shape契約に従ってJSONオブジェクトを1つだけ再出力してください。',",
+              d + "    error: String(decisionError?.message || decisionError || 'Invalid Supervisor decision.'),",
+              d + '  });',
+              d + '  continue;',
+              d + '}',
+              d + 'const availableTools = this.availableTools();',
+              '',
+              d + "if (decision.type === 'tool' && !availableTools.includes(decision.tool)) {",
+              d + '  history.push({',
+              d + "    kind: 'tool-unavailable',",
+              d + '    tool: decision.tool,',
+              d + '    message: `要求されたツール「${decision.tool}」は現在利用できません。現在利用可能なツール一覧を確認して再判断してください。`,',
+              d + '    availableTools,',
+              d + '  });',
+              d + '  continue;',
+              d + '}',
+          ]
+          lines[decision_index:decision_index + 1] = replacement
+          path.write_text('\n'.join(lines) + '\n')
+          PY
+
+          npm ci
+          npm run dev-agent:test
+          npm run userscript:build
+          npm run userscript:test
+          npm run check
+          git diff --check
+
+          rm .github/workflows/tmp-integrate-pr746.yml
+
+          python3 - <<'PY'
+          import subprocess
+          allowed = {
+              '.github/workflows/tmp-integrate-pr746.yml',
+              'js/ai/dev/protocol/dev-supervisor-prompt.js',
+              'js/ai/dev/supervisor/dev-supervisor-engine-v0.js',
+              'tests/dev-agent/round2-single-tab-supervisor.mjs',
+              'tests/dev-agent/round2-single-worker.mjs',
+              'userscript/hex.user.template.js',
+              'userscript/release-version.json',
+          }
+          rows = subprocess.check_output(['git', 'status', '--porcelain=v1'], text=True).splitlines()
+          actual = {row[3:] for row in rows if len(row) >= 4}
+          if actual != allowed:
+              raise SystemExit(f'unexpected integration diff: {sorted(actual)}')
+          PY
+
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A \
+            .github/workflows/tmp-integrate-pr746.yml \
+            js/ai/dev/protocol/dev-supervisor-prompt.js \
+            js/ai/dev/supervisor/dev-supervisor-engine-v0.js \
+            tests/dev-agent/round2-single-tab-supervisor.mjs \
+            tests/dev-agent/round2-single-worker.mjs \
+            userscript/hex.user.template.js \
+            userscript/release-version.json
+          git commit -m 'Integrate Dev Supervisor replanning and Japanese default'
+          git push origin HEAD:main
