@@ -180,7 +180,7 @@ export class IframeWorkerPool {
       return null;
     }
     const slot = {
-      index, href, handle, runtime: null, client: null, ready: false, claimed: false, reserving: false,
+      index, href, handle, runtime: null, runtimeDocument: null, client: null, ready: false, claimed: false, reserving: false,
       leaseId: null, workerId: null, runId: null, taskId: null, pending: null, lastResult: null, error: null,
       createdAt: this.now(),
     };
@@ -206,11 +206,17 @@ export class IframeWorkerPool {
       catch (error) { lastError = error; document = null; }
       if (document) {
         sameOriginSeen = true;
+        // An iframe starts with an initial about:blank Document. Setting src
+        // schedules a cross-document navigation, so the first reachable
+        // contentDocument can be transient. Never keep a Worker runtime bound
+        // to a Document that the frame has already replaced.
+        if (slot.runtime && slot.runtimeDocument !== document) closeRuntime(slot);
         if (!slot.runtime) {
           try {
             slot.runtime = this.createWorkerRuntime({ slot: slot.index, frame: slot.handle.frame, document, now: this.now });
+            slot.runtimeDocument = slot.runtime ? document : null;
             slot.client = slot.runtime?.coordinator || null;
-          } catch (error) { lastError = error; slot.runtime = null; slot.client = null; }
+          } catch (error) { lastError = error; closeRuntime(slot); }
         }
         try { if (slot.runtime && slot.client && slot.runtime.ready()) return { ready: true }; }
         catch (error) { lastError = error; }
@@ -338,8 +344,14 @@ function ensureFrameHost(doc) {
   return host;
 }
 
-function closeSlot(slot) {
+function closeRuntime(slot) {
   try { slot.runtime?.close?.(); } catch { /* already closed */ }
+  slot.runtime = null;
+  slot.runtimeDocument = null;
+  slot.client = null;
+}
+function closeSlot(slot) {
+  closeRuntime(slot);
   try { slot.handle?.close?.(); } catch { /* already detached */ }
 }
 function normalizeBase(locationRef) {
@@ -349,7 +361,7 @@ function normalizeBase(locationRef) {
 }
 function failedSlot(index, error, fallbackCode = 'worker-frame-unavailable') {
   return {
-    index, handle: null, runtime: null, client: null, ready: false, claimed: false, reserving: false,
+    index, handle: null, runtime: null, runtimeDocument: null, client: null, ready: false, claimed: false, reserving: false,
     leaseId: null, workerId: null, runId: null, taskId: null, pending: null, lastResult: null,
     error: errorRecord(error, fallbackCode), createdAt: new Date().toISOString(),
   };
