@@ -28,7 +28,7 @@ export async function startParentDevWorkerRuntime(options = {}) {
     });
     return Object.freeze({
       role:'supervisor', mode:'multi-frame-capable', enabled:true, tabNodeId:node.tabNodeId, coordinator, skillRegistry, workerPool,
-      discover:(args)=>coordinator.discover(args), claim:(args)=>coordinator.claim(args), createChat:(args)=>coordinator.createChat(args), send:(args)=>coordinator.send(args), observe:(args)=>coordinator.observe(args), followup:(args)=>coordinator.followup(args), nudge:(args)=>coordinator.nudge(args), stop:(args)=>coordinator.stop(args), result:(args)=>coordinator.result(args), release:(args)=>coordinator.release(args), waitEvent:(args,opts={})=>coordinator.waitEvent(args,opts),
+      discover:(args)=>coordinator.discover(args), claim:(args,opts={})=>claimWithCancellationCleanup(coordinator,args,opts.signal), createChat:(args)=>coordinator.createChat(args), send:(args)=>coordinator.send(args), observe:(args)=>coordinator.observe(args), followup:(args)=>coordinator.followup(args), nudge:(args)=>coordinator.nudge(args), stop:(args)=>coordinator.stop(args), result:(args)=>coordinator.result(args), release:(args)=>coordinator.release(args), waitEvent:(args,opts={})=>coordinator.waitEvent(args,opts),
       runtimeIdentity:()=>readIdentity(),
       pageSnapshot:(args)=>pageInspector.snapshot(args), pageScripts:(args)=>pageInspector.scripts(args), pageScriptSource:(args,opts={})=>pageInspector.scriptSource(args,opts),
       skillList:()=>skillRegistry.list(), skillDescribe:(args)=>skillRegistry.describe(args), skillInstallCandidate:(args)=>skillRegistry.installCandidate(args?.manifest??args), skillValidateCandidate:(args,opts={})=>skillRegistry.validateCandidate({...args,signal:opts.signal}), skillActivate:(args)=>skillRegistry.activate(args), skillRollback:(args)=>skillRegistry.rollback(args), skillRun:(args,opts={})=>skillRegistry.run({...args,signal:opts.signal}),
@@ -36,6 +36,14 @@ export async function startParentDevWorkerRuntime(options = {}) {
       close(){workerPool.close();coordinator.close();},
     });
   } catch(error) { return disabledRuntime({node,error,readIdentity}); }
+}
+
+async function claimWithCancellationCleanup(coordinator,args,signal) {
+  if (signal?.aborted) throw abortError(signal.reason);
+  const result = await coordinator.claim(args);
+  if (!signal?.aborted) return result;
+  try { await coordinator.release(args); } catch {}
+  throw abortError(signal.reason);
 }
 
 /* The identity of the parent userscript runtime that is actually executing.
@@ -59,4 +67,11 @@ function disabledRuntime({node,error,readIdentity}) {
     poolStatus:fail,poolProvision:fail,poolClaim:fail,poolCreateChat:fail,poolStart:fail,poolObserve:fail,poolResult:fail,poolFollowup:fail,poolNudge:fail,poolStop:fail,poolRelease:fail,
     close(){},
   });
+}
+
+function abortError(reason) {
+  const error = new Error(String(reason || 'cancelled'));
+  error.name = 'AbortError';
+  error.code = DEV_WORKER_FAILURE.CANCELLED;
+  return error;
 }

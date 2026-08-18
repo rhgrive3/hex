@@ -34,5 +34,6 @@ await import('./dev-agent/dom-skill-system.mjs');
 await import('./dev-agent/iframe-worker-pool.mjs');
 await import('./dev-agent/iframe-worker-pool-cancellation.mjs');
 await import('./dev-agent/bootstrap-explicit-opt-in.mjs');
+await import('./dev-agent/rpc-close-cancellation.mjs');
 await import('./dev-agent/supervisor-progress-budget.mjs');
 console.log('Userscript release-version contract passed');
