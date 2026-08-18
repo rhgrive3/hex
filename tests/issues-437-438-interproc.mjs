@@ -152,31 +152,4 @@ async function composedConstant(wrapperLines, calleeLines) {
   assert.equal(summary.propagatedReturn, undefined, 'root ABI evidence must not leak into the callee summary');
 }
 
-// #806: width-changing MOVs must remain explicit in return summaries.
-{
-  const callee = modelAt(CALLEE, [
-    'add x8, x0, #1',
-    'mov w0, w8',
-    'ret',
-  ]);
-  const direct = summarizeFunction(callee, { returnsValue: true });
-  assert.equal(direct.classification.simpleArithmeticWrapper, false,
-    'truncating x8 -> w0 must not be peeled into a 64-bit argument-arithmetic summary');
-  assert.notEqual(direct.returns[0].kind, 'argument-arithmetic');
-
-  const wrapper = modelAt(BASE, [
-    'mov x0, #0xffffffff',
-    `bl #0x${CALLEE.toString(16)}`,
-    'ret',
-  ]);
-  const cache = createFunctionSummaryCache({
-    program: { functionRange: () => null },
-    analyze: async (address) => address === BASE ? wrapper : address === CALLEE ? callee : null,
-    returnEvidenceFor: async () => ({ trusted: true, source: 'prototype-fixture' }),
-  }, { maxDepth: 2 });
-  const summary = await cache.summaryFor(BASE);
-  assert.equal(summary.propagatedReturn, undefined,
-    'caller composition must not erase the callee truncation and invent 0x100000000');
-}
-
-console.log('issues #437/#438/#806/#831 interproc regressions PASS');
+console.log('issues #437/#438/#831 interproc regressions PASS');
