@@ -16,6 +16,7 @@ import {
   DEV_RUNTIME_IDENTITY_TOOL,
   DEV_SELF_UPDATE_HISTORY_KIND,
   DevSelfUpdateGate,
+  readDevRuntimeIdentityFromGlobals,
 } from '../bootstrap/self-update-gate.js';
 import {
   DEV_TOOL_ERROR_RECOVERY_BUDGET,
@@ -35,6 +36,7 @@ export class DevSupervisorEngineV0 {
     extensionLoader = new DevExtensionLoader(),
     selfUpdateGate = new DevSelfUpdateGate(),
     maxToolErrorRecoveries = DEV_TOOL_ERROR_RECOVERY_BUDGET,
+    runtimeIdentityProvider = null,
   } = {}) {
     if (!supervisor) throw new TypeError('DevSupervisorEngineV0 requires a supervisor.');
     if (!settings) throw new TypeError('DevSupervisorEngineV0 requires settings.');
@@ -48,6 +50,7 @@ export class DevSupervisorEngineV0 {
     this.extensionLoader = extensionLoader;
     this.selfUpdateGate = selfUpdateGate;
     this.maxToolErrorRecoveries = Math.max(0, Number(maxToolErrorRecoveries) || 0);
+    this.runtimeIdentityProvider = typeof runtimeIdentityProvider === 'function' ? runtimeIdentityProvider : null;
     this.bootstrapStage = null;
     this.supervisorSessions = new Map();
   }
@@ -62,6 +65,23 @@ export class DevSupervisorEngineV0 {
 
   runtimeActivationStatus() {
     return this.selfUpdateGate.status();
+  }
+
+  /* The Supervisor must be able to re-read the active identity even when the
+     parent runtime predates the dev.runtime.identity RPC method, so the engine
+     owns this tool and falls back to the runtime globals. */
+  async readActiveRuntimeIdentity(args = {}) {
+    if (this.supervisor.adminTools?.has?.(DEV_RUNTIME_IDENTITY_TOOL)) {
+      const result = await this.executeWithinToolBoundary(
+        () => this.supervisor.adminTools.execute(DEV_RUNTIME_IDENTITY_TOOL, args),
+      );
+      return Object.freeze({ source: 'parent-runtime', ...(result && typeof result === 'object' ? result : {}) });
+    }
+    if (this.runtimeIdentityProvider) {
+      const result = await this.runtimeIdentityProvider(args);
+      return Object.freeze({ source: 'runtime-identity-provider', ...(result && typeof result === 'object' ? result : {}) });
+    }
+    return Object.freeze({ source: 'runtime-globals', ...readDevRuntimeIdentityFromGlobals() });
   }
 
   /* An unreadable identity leaves the gate closed instead of failing the run. */
@@ -92,11 +112,16 @@ export class DevSupervisorEngineV0 {
           this.selfUpdateGate.requireActivation({
             expectedCommit: checkpoint.expectedCommit,
             expectedBuildId: checkpoint.expectedBuildId,
+            /* The checkpoint records the identity that is already running, so an
+               identity read alone would satisfy it. Only a real reinitialization
+               may open this gate, and only the extension capabilities are gated. */
+            requireReinitialization: true,
+            capabilities: DEV_BOOTSTRAP_EXTENSION.capabilities.map((item) => item.name),
             reason: result.reason || 'extension-reinitialize',
           });
         }
       } else if (result?.status === 'active' && result.identity) {
-        this.selfUpdateGate.observeActiveRuntime(result.identity);
+        this.selfUpdateGate.observeActiveRuntime(result.identity, { reinitialized: options?.reinitialized === true });
       }
     } catch { /* the gate must never mask the activation result */ }
     return result;
@@ -155,6 +180,7 @@ export class DevSupervisorEngineV0 {
     return Object.freeze([...new Set([
       ...(this.supervisor.availableTools || []),
       ...(this.extensionLoader.activeCapabilities || []),
+      DEV_RUNTIME_IDENTITY_TOOL,
       DEV_RUNTIME_ACTIVATION_TOOL,
     ])]);
   }
@@ -281,6 +307,12 @@ export class DevSupervisorEngineV0 {
               history.push({ kind: 'tool-result', tool: decision.tool, purpose: decision.purpose, result: sanitize(result) });
               continue;
             }
+            if (decision.tool === DEV_RUNTIME_IDENTITY_TOOL) {
+              const result = await this.readActiveRuntimeIdentity(decision.arguments);
+              history.push({ kind: 'tool-result', tool: decision.tool, purpose: decision.purpose, result: sanitize(result) });
+              history.push({ kind: 'runtime-activation', ...this.observeRuntimeIdentityResult(result) });
+              continue;
+            }
             if (this.extensionLoader.activeCapabilities?.includes(decision.tool)) {
               const result = await this.executeWithinToolBoundary(() => this.invokeBootstrapCapability(decision.tool));
               history.push({ kind: 'tool-result', tool: decision.tool, purpose: decision.purpose, result: sanitize(result) });
@@ -299,9 +331,6 @@ export class DevSupervisorEngineV0 {
             if (decision.tool === DEV_WORKER_TOOL.RELEASE) workerClaimed = false;
             this.settings.setLastRun(run);
             history.push({ kind: 'tool-result', tool: decision.tool, purpose: decision.purpose, result: sanitize(executed.result) });
-            if (decision.tool === DEV_RUNTIME_IDENTITY_TOOL) {
-              history.push({ kind: 'runtime-activation', ...this.observeRuntimeIdentityResult(executed.result) });
-            }
             continue;
           } catch (toolError) {
             /* Ownership bookkeeping stays truthful: an unresolved claim keeps

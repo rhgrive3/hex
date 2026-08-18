@@ -5,6 +5,7 @@ import { WorkerChatController } from './worker-host/worker-chat-controller.js';
 import { ParentPageInspector } from './admin/page-inspector.js';
 import { DomSkillRegistry } from './skills/dom-skill-registry.js';
 import { MultiTabWorkerPool } from './tab-mesh/multi-tab-worker-pool.js';
+import { readDevRuntimeIdentityFromGlobals } from '../../ai/dev/bootstrap/self-update-gate.js';
 
 export async function startParentDevWorkerRuntime(options = {}) {
   const node = createTabNode({ role: TAB_NODE_ROLE.SUPERVISOR, now: options.now });
@@ -40,26 +41,11 @@ export async function startParentDevWorkerRuntime(options = {}) {
    A merged commit only becomes real here after the page reloads, so this is
    the authority the Dev Supervisor self-update gate checks against. */
 export function parentRuntimeIdentity(options = {}) {
-  const globalObject = options.globalObject || globalThis;
-  const loader = safeRead(globalObject, '__HEX_SECURE_LOADER__') || {};
-  const supplied = options.runtimeIdentity || {};
-  const commit = normalizeCommit(supplied.commit ?? supplied.sourceCommit ?? safeRead(globalObject, '__HEX_DEPLOYMENT_COMMIT__'));
-  const buildId = normalizeBuildId(supplied.buildId ?? loader.buildId);
-  const userscriptVersion = normalizeText(supplied.userscriptVersion ?? supplied.loaderVersion ?? loader.version);
   return Object.freeze({
     realm: 'parent-userscript',
-    commit,
-    buildId,
-    userscriptVersion,
-    readable: !!commit && !!buildId,
-    observedAt: new Date().toISOString(),
+    ...readDevRuntimeIdentityFromGlobals(options.globalObject || globalThis, options.runtimeIdentity || {}),
   });
 }
-
-function normalizeCommit(value) { const text=String(value??'').trim().toLowerCase(); return /^[0-9a-f]{40}$/.test(text)?text:null; }
-function normalizeBuildId(value) { const text=String(value??'').trim().toLowerCase(); return /^[0-9a-f]{24}$/.test(text)?text:null; }
-function normalizeText(value) { const text=String(value??'').trim(); return text?text.slice(0,128):null; }
-function safeRead(value,key) { try { return value?.[key]; } catch { return null; } }
 
 function disabledRuntime({node,error,readIdentity}) {
   const code=String(error?.code||DEV_WORKER_FAILURE.PROVIDER_ERROR), message=String(error?.message||'Dev Worker runtime is unavailable.');

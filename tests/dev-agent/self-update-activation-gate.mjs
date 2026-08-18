@@ -26,6 +26,9 @@ const OLD_BUILD = '1'.repeat(24);
 const NEW_BUILD = '2'.repeat(24);
 
 testGateUnit();
+testTeardownToolsAreNeverGated();
+testWithdrawingAWrongExpectation();
+await testIdentityToolWorksWithoutParentSupport();
 testAdminSurfaceExposesIdentity();
 testPromptTeachesTheGate();
 await testStaleRuntimeBlocksProofUntilReactivation();
@@ -206,10 +209,69 @@ async function testBootstrapReloadArmsTheSameGate() {
   assert.equal(reload.status, 'reload-required', 'Round 4 reload handling must be unchanged');
   assert.equal(engine.runtimeActivationStatus().state, DEV_SELF_UPDATE_STATE.RELOAD_REQUIRED, 'a bootstrap reload must arm the general gate');
   assert.equal(engine.runtimeActivationStatus().expected.commit, NEW_COMMIT);
+  assert.deepEqual([...engine.runtimeActivationStatus().gatedCapabilities], [
+    'dev.bootstrap.identity',
+    'dev.bootstrap.round4-proof',
+  ], 'a bootstrap reload must gate only the extension capabilities');
+
+  /* The Round 4 checkpoint records the identity that is already running, so an
+     identity read alone must not be able to open the gate. */
+  engine.observeActiveRuntimeIdentity({ commit: NEW_COMMIT, buildId: NEW_BUILD });
+  assert.equal(engine.runtimeActivationStatus().state, DEV_SELF_UPDATE_STATE.RELOAD_REQUIRED, 'a matching read on a runtime that never reinitialized must not satisfy the gate');
+  assert.ok(engine.runtimeActivationStatus().mismatches.includes('reinitialization'));
 
   const activated = engine.activateBootstrapAtSafeBoundary({ checkpoint, activeIdentity: { commit: NEW_COMMIT, buildId: NEW_BUILD }, reinitialized: true });
   assert.equal(activated.status, 'active');
   assert.equal(engine.runtimeActivationStatus().state, DEV_SELF_UPDATE_STATE.ACTIVE, 'a verified reinitialization must satisfy the general gate');
+}
+
+/* Winding a Worker down is cleanup, not a capability proof. */
+function testTeardownToolsAreNeverGated() {
+  const gate = new DevSelfUpdateGate();
+  gate.requireActivation({ expectedCommit: NEW_COMMIT, expectedBuildId: NEW_BUILD });
+  for (const tool of ['worker.release', 'worker.stop', 'worker.pool.release', 'worker.pool.stop']) {
+    assert.equal(gate.blocks(tool), false, `${tool} must stay reachable while the gate is armed`);
+  }
+  assert.equal(gate.blocks('worker.send'), true, 'work that is not teardown stays gated');
+}
+
+/* A mistyped expectation must not brick the Dev tool surface for the session. */
+function testWithdrawingAWrongExpectation() {
+  const gate = new DevSelfUpdateGate();
+  gate.requireActivation({ expectedCommit: NEW_COMMIT, expectedBuildId: NEW_BUILD, reason: 'typo' });
+  assert.equal(gate.blocks('chatgpt.page.snapshot'), true);
+  const cleared = gate.requireActivation({ clear: true, reason: 'withdrew a wrong expectation' });
+  assert.equal(cleared.state, DEV_SELF_UPDATE_STATE.IDLE);
+  assert.equal(cleared.reason, 'withdrew a wrong expectation');
+  assert.equal(gate.blocks('chatgpt.page.snapshot'), false);
+}
+
+/* The stale parent build predates the dev.runtime.identity RPC method, so the
+   engine must still be able to read and report the active identity. */
+async function testIdentityToolWorksWithoutParentSupport() {
+  const supervisor = new DevSupervisorV0({
+    workerClient: { enabled: true, skillRun: async () => ({ ran: true }) },
+    idFactory: (kind) => `${kind}-fallback`,
+    now: () => '2026-08-18T00:00:00.000Z',
+  });
+  assert.equal(supervisor.availableTools.includes(DEV_RUNTIME_IDENTITY_TOOL), false, 'a pre-update parent runtime does not expose the identity method');
+
+  const settings = { decisionPolicy: 'normal', lastRun: null, setLastRun(run) { this.lastRun = run; } };
+  const engine = new DevSupervisorEngineV0({
+    supervisor,
+    settings,
+    bridge: null,
+    runtimeIdentityProvider: async () => ({ commit: NEW_COMMIT, buildId: NEW_BUILD, userscriptVersion: '2.0.2' }),
+  });
+  assert.ok(engine.availableTools().includes(DEV_RUNTIME_IDENTITY_TOOL), 'the engine must always advertise the identity re-read');
+
+  engine.requireRuntimeActivation({ expectedCommit: NEW_COMMIT, expectedBuildId: NEW_BUILD });
+  assert.equal(engine.runtimeActivationStatus().state, DEV_SELF_UPDATE_STATE.RELOAD_REQUIRED);
+  const identity = await engine.readActiveRuntimeIdentity({});
+  assert.equal(identity.source, 'runtime-identity-provider');
+  assert.equal(identity.commit, NEW_COMMIT);
+  engine.observeActiveRuntimeIdentity(identity);
+  assert.equal(engine.runtimeActivationStatus().state, DEV_SELF_UPDATE_STATE.ACTIVE, 'the fallback read must be able to satisfy the gate');
 }
 
 function createHarness({ client, decisions, onDecision }) {

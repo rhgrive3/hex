@@ -18,7 +18,18 @@ export const DEV_SELF_UPDATE_HISTORY_KIND = 'runtime-activation-required';
 
 const COMMIT = /^[0-9a-f]{40}$/;
 const BUILD_ID = /^[0-9a-f]{24}$/;
-const ALWAYS_ALLOWED = new Set([DEV_RUNTIME_IDENTITY_TOOL, DEV_RUNTIME_ACTIVATION_TOOL]);
+
+/* Reading the active identity and withdrawing a wrong expectation are how the
+   gate is satisfied or corrected, and winding an in-flight Worker down is
+   cleanup rather than a capability proof. None of them may ever be gated. */
+const ALWAYS_ALLOWED = new Set([
+  DEV_RUNTIME_IDENTITY_TOOL,
+  DEV_RUNTIME_ACTIVATION_TOOL,
+  'worker.release',
+  'worker.stop',
+  'worker.pool.release',
+  'worker.pool.stop',
+]);
 
 export class DevSelfUpdateGate {
   #expected = null;
@@ -27,6 +38,8 @@ export class DevSelfUpdateGate {
   #mismatches = [];
   #reason = null;
   #observed = false;
+  #requireReinitialization = false;
+  #reinitialized = false;
 
   get state() {
     if (!this.#expected) return DEV_SELF_UPDATE_STATE.IDLE;
@@ -39,7 +52,10 @@ export class DevSelfUpdateGate {
   get activeIdentity() { return this.#active; }
 
   /* Arm the gate for a source change that is merged but not yet running. */
-  requireActivation({ expectedCommit, expectedBuildId, expectedUserscriptVersion = null, capabilities = [], reason = null } = {}) {
+  requireActivation({ expectedCommit, expectedBuildId, expectedUserscriptVersion = null, capabilities = [], reason = null, requireReinitialization = false, clear = false } = {}) {
+    /* A mistyped expectation must not be able to brick the Dev tool surface
+       for the rest of the page session, so the declaring side can withdraw it. */
+    if (clear === true) return this.clear(reason);
     const expected = Object.freeze({
       commit: assertCommit(expectedCommit, 'expectedCommit'),
       buildId: assertBuildId(expectedBuildId, 'expectedBuildId'),
@@ -51,21 +67,28 @@ export class DevSelfUpdateGate {
     /* Anything observed before the update was observed on the old runtime. */
     this.#active = null;
     this.#observed = false;
+    this.#requireReinitialization = requireReinitialization === true;
+    this.#reinitialized = false;
     this.#mismatches = ['not-observed'];
     return this.status();
   }
 
   /* Re-read of the identity that is actually active right now. */
-  observeActiveRuntime(identity) {
+  observeActiveRuntime(identity, { reinitialized = false } = {}) {
     const active = normalizeObservedIdentity(identity);
     this.#active = active;
+    if (reinitialized === true) this.#reinitialized = true;
     if (!this.#expected) {
       this.#observed = false;
       this.#mismatches = [];
       return this.status();
     }
     this.#observed = true;
-    this.#mismatches = compareIdentity(this.#expected, active);
+    const mismatches = compareIdentity(this.#expected, active);
+    /* A matching identity read on a runtime that was never reinitialized is
+       the exact stale-proof this gate exists to refuse. */
+    if (this.#requireReinitialization && !this.#reinitialized) mismatches.push('reinitialization');
+    this.#mismatches = mismatches;
     return this.status();
   }
 
@@ -94,6 +117,8 @@ export class DevSelfUpdateGate {
     return Object.freeze({
       state: this.state,
       observed: this.#observed,
+      reinitialized: this.#reinitialized,
+      requiresReinitialization: this.#requireReinitialization,
       reason: this.#reason,
       expected: this.#expected,
       active: this.#active,
@@ -102,13 +127,15 @@ export class DevSelfUpdateGate {
     });
   }
 
-  clear() {
+  clear(reason = null) {
     this.#expected = null;
     this.#active = null;
     this.#capabilities = new Set();
     this.#mismatches = [];
-    this.#reason = null;
+    this.#reason = optionalText(reason, 'reason');
     this.#observed = false;
+    this.#requireReinitialization = false;
+    this.#reinitialized = false;
     return this.status();
   }
 }
@@ -169,3 +196,26 @@ function optionalText(value, field) {
   if (!text) throw new TypeError(`${field} must be a non-empty string when provided.`);
   return text.slice(0, 128);
 }
+
+/* The identity of the Dev runtime that is executing right now, read from the
+   globals the secure loader publishes. This is the fallback the Supervisor
+   needs when the parent build predates the dev.runtime.identity RPC method —
+   the exact stale runtime the gate exists to catch. */
+export function readDevRuntimeIdentityFromGlobals(globalObject = globalThis, overrides = {}) {
+  const loader = safeRead(globalObject, '__HEX_SECURE_LOADER__') || {};
+  const commit = normalizeCommitText(overrides.commit ?? overrides.sourceCommit ?? safeRead(globalObject, '__HEX_DEPLOYMENT_COMMIT__'));
+  const buildId = normalizeBuildIdText(overrides.buildId ?? loader.buildId);
+  const userscriptVersion = normalizeVersionText(overrides.userscriptVersion ?? overrides.loaderVersion ?? loader.version);
+  return Object.freeze({
+    commit,
+    buildId,
+    userscriptVersion,
+    readable: !!commit && !!buildId,
+    observedAt: new Date().toISOString(),
+  });
+}
+
+export function normalizeCommitText(value) { const text = String(value ?? '').trim().toLowerCase(); return COMMIT.test(text) ? text : null; }
+export function normalizeBuildIdText(value) { const text = String(value ?? '').trim().toLowerCase(); return BUILD_ID.test(text) ? text : null; }
+export function normalizeVersionText(value) { const text = String(value ?? '').trim(); return text ? text.slice(0, 128) : null; }
+function safeRead(value, key) { try { return value?.[key]; } catch { return null; } }
