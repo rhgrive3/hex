@@ -50,11 +50,13 @@ export const ARM64E_ARCHITECTURE = registerArchitecturePlugin({
 });
 
 export const X86_64_ARCHITECTURE = registerArchitecturePlugin({
-  id:'x86_64', semanticVersion:X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION, instructionAlignment:1, fixedInstructionSize:null, viewerCompatible:true,
+  id:'x86_64', semanticVersion:X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION, instructionAlignment:1, fixedInstructionSize:null, viewerCompatible:false,
   modes:()=>Object.freeze(['long-64']), registerFile:x86RegisterFile,
   decodeProvider:'capstone/backend', liftExact:liftX86MachineEffects, classifyControlFlow:x86ControlFlow,
-  // Integrated P5-5 viewer gates are green, so only viewer compatibility is
-  // enabled here. Semantic/A6 maturity remains partial until P5-6 corpus proof.
+  // P5-5's bounded variable-length viewer implementation is integrated and
+  // verified under tests/phase5/viewer/**. Public capability promotion is kept
+  // conservative because the frozen global capability regression is outside
+  // P5-I ownership; semantic/A6 maturity also remains partial pending P5-6.
   capabilities:{ decode:'external-structured-v1', exactEffects:'partial', semanticAnalysis:'phase5-shadow-partial' },
 });
 
