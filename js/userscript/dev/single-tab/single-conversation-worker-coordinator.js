@@ -409,7 +409,9 @@ function anchorSignature(anchors) {
   return (anchors || []).map((anchor) => `${String(anchor?.id || '')}\u0000${String(anchor?.text || '').replace(/\s+/g, ' ').trim()}`).join('\u0001');
 }
 function matches(event, wanted, runId) {
-  return wanted.has(event.type) && (runId == null || String(event.data?.runId || '') === runId);
+  if (!wanted.has(event.type)) return false;
+  if (runId == null || String(event.data?.runId || '') === runId) return true;
+  return !!event.data?.poolLeaseId && event.data?.runId == null;
 }
 function normalizeEvents(events) {
   if (!Array.isArray(events) || !events.length) throw new TypeError('waitEvent.events must be a non-empty array.');
