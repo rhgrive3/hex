@@ -28,6 +28,7 @@ jobs:
       - name: Apply guarded repairs
         run: |
           python3 tools/tmp-unlinked-issues-a.py
+          python3 tools/tmp-unlinked-issues-a2.py
           python3 tools/tmp-unlinked-issues-b.py
           python3 tools/tmp-unlinked-issues-b2.py
           python3 tools/tmp-unlinked-issues-c.py
@@ -36,6 +37,7 @@ jobs:
       - name: Focused regressions
         run: |
           node tests/semantic-v2/issues-786-827-unlinked.test.mjs
+          node tests/semantic-v2/issue-822-exact-nzcv.test.mjs
           node tests/semantic-v2/issues-803-833-runtime.test.mjs
           node tests/semantic-v2/issue-809-fpcr-physical-state.test.mjs
           node tests/semantic-v2/issues-875-888-riscv.test.mjs
@@ -51,7 +53,7 @@ jobs:
         run: git diff --check
       - name: Commit verified implementation
         run: |
-          rm tools/tmp-unlinked-issues-a.py tools/tmp-unlinked-issues-b.py tools/tmp-unlinked-issues-b2.py tools/tmp-unlinked-issues-c.py
+          rm tools/tmp-unlinked-issues-a.py tools/tmp-unlinked-issues-a2.py tools/tmp-unlinked-issues-b.py tools/tmp-unlinked-issues-b2.py tools/tmp-unlinked-issues-c.py
           rm -f .github/workflows/tmp-apply-unlinked-issues.yml .github/tmp-unlinked-issues-trigger
           git add -A
           git commit -m 'fix: resolve all unlinked correctness issues'
