@@ -40,7 +40,7 @@ on:
       - '.github/workflows/userscript-host.yml'
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: userscript-host-${{ github.event.pull_request.number || github.ref }}
@@ -53,7 +53,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: ${{ github.head_ref || github.ref_name }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -69,24 +68,12 @@ jobs:
         run: npm run userscript:test
       - name: Round 4 production bootstrap contract
         run: node tests/dev-agent/round4-production-bootstrap.mjs
-      - name: Commit canonical generated userscript for this repair
-        if: github.head_ref == 'fix/rpc-close-cancels-remote'
-        shell: bash
-        run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git fetch origin main
-          git checkout origin/main -- .github/workflows/userscript-host.yml
-          git add userscript/hex.user.template.js userscript/release-version.json .github/workflows/userscript-host.yml
-          git diff --cached --check
-          if git diff --cached --quiet; then
-            exit 0
-          fi
-          git commit -m 'Build userscript for RPC close cancellation fix'
-          git push origin HEAD:fix/rpc-close-cancels-remote
       - name: Verify tiny committed loader is current
         run: git diff --exit-code -- userscript/hex.user.template.js
 
+  # Both embed-browser suites intentionally exercise Chromium and WebKit. Run
+  # them in Playwright's pinned image so every PR does not spend minutes
+  # downloading 100+ MB of WebKit OS packages onto a fresh hosted runner.
   embed-browser:
     runs-on: ubuntu-latest
     timeout-minutes: 30
