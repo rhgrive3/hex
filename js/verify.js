@@ -138,7 +138,11 @@ export function fieldUse(model, offset, opts) {
       // nearby. That was enough to attach guards from a different CFG path.
       if (controlBoundary(next)) break;
       const mn = String(next.mnemonic || '').toLowerCase();
-      if (!/^(cmp|cmn|subs|adds|ccmp|fcmp|tst)$/.test(mn)) {
+      // CCMP/CCMN only compare when their predicate holds; otherwise they write
+      // the instruction's fallback NZCV. Until that path condition is proven,
+      // treating either instruction as an unconditional field guard is unsound.
+      if (/^(?:ccmp|ccmn)$/.test(mn)) continue;
+      if (!/^(cmp|cmn|subs|adds|fcmp|tst)$/.test(mn)) {
         // An in-place transform such as `sub w8, w8, w2` still carries the
         // loaded field value. A write that does not read the tracked register
         // is a new definition and ends the chain.
