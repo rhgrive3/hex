@@ -23,7 +23,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Inspect compare projection metadata
+      - name: Inspect same-instruction compare projection nodes
         shell: bash
         run: |
           set -euo pipefail
@@ -32,7 +32,7 @@ jobs:
           t = Path('tests/semantic-v2/issues-791-797-800-825-ir-soundness.test.mjs')
           q = t.read_text()
           needle = "  const fact = firstBranchFact(build(lines, `825-${tag}`));"
-          repl = "  const debug = modelOf(lines);\n  const debugIr = irFor(debug.model, { rowOfAddress:debug.rowOfAddress, decoderSemanticVersion:`issue-soundness-825-${tag}` });\n  const debugCmp = debugIr.instructions.find((inst) => inst.op === OP.CMP);\n  console.log('DEBUG_EXTRA', tag, JSON.stringify(debugCmp?.extra ?? null, (_k,v)=>typeof v==='bigint'?v.toString():v));\n  const fact = firstBranchFact(debugIr);"
+          repl = "  const debug = build(lines, `825-${tag}`);\n  if (tag === 'w-lsl-wrap') {\n    for (const inst of debug.instructions.filter((x) => x.row === 1)) console.log('DEBUG_INST', JSON.stringify({op:inst.op,sub:inst.sub,bits:inst.bits,args:(inst.args||[]).map((a)=>({const:a?.value?.const==null?null:a.value.const.toString(),bits:a?.bits??null})),extra:inst.extra}, (_k,v)=>typeof v==='bigint'?v.toString():v));\n  }\n  const fact = firstBranchFact(debug);"
           assert needle in q
           t.write_text(q.replace(needle, repl))
           PY
