@@ -1,0 +1,105 @@
+name: RPC close cancellation repair
+
+on:
+  push:
+    branches:
+      - fix/rpc-close-cancels-remote
+
+permissions:
+  contents: write
+
+jobs:
+  repair-and-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/rpc-close-cancels-remote
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Apply minimal RPC close cancellation repair and regression
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          rpc = Path('js/userscript/dev/parent-rpc.js')
+          text = rpc.read_text()
+          old = """      for (const current of pending.values()) {\n        if (current.timer) clearTimeout(current.timer);\n        current.detach?.();\n        current.reject(rpcError('transport-failure', 'Dev Worker RPC closed.'));\n      }\n"""
+          new = """      for (const [id, current] of pending) {\n        if (current.timer) clearTimeout(current.timer);\n        current.detach?.();\n        post(port, { protocol: DEV_PARENT_RPC_PROTOCOL, kind: 'cancel', id, method: current.method });\n        current.reject(rpcError('transport-failure', 'Dev Worker RPC closed.'));\n      }\n"""
+          if text.count(old) != 1:
+              raise SystemExit('parent-rpc close block did not match exactly once')
+          rpc.write_text(text.replace(old, new))
+
+          test = Path('tests/dev-agent/round2-single-worker.mjs')
+          text = test.read_text()
+          import_anchor = "import assert from 'node:assert/strict';\n"
+          import_insert = "import assert from 'node:assert/strict';\nimport { MessageChannel } from 'node:worker_threads';\nimport { createDevWorkerParentRpc, createDevWorkerParentRpcClient } from '../../js/userscript/dev/parent-rpc.js';\n"
+          if text.count(import_anchor) != 1:
+              raise SystemExit('test import anchor did not match exactly once')
+          text = text.replace(import_anchor, import_insert)
+          call_anchor = "await testMalformedSupervisorDecisionRetriesSameSession();\n\nconsole.log('Round 2 protected Dev Worker tests passed');\n"
+          call_insert = "await testMalformedSupervisorDecisionRetriesSameSession();\nawait testRpcClientCloseCancelsRemote();\n\nconsole.log('Round 2 protected Dev Worker tests passed');\n"
+          if text.count(call_anchor) != 1:
+              raise SystemExit('test call anchor did not match exactly once')
+          text = text.replace(call_anchor, call_insert)
+          fn = r'''
+
+async function testRpcClientCloseCancelsRemote() {
+  const { port1, port2 } = new MessageChannel();
+  let markStarted;
+  let remoteAborted = false;
+  const started = new Promise((resolve) => { markStarted = resolve; });
+  const runtime = {
+    async discover(_args, { signal } = {}) {
+      markStarted();
+      await new Promise((resolve) => {
+        signal?.addEventListener?.('abort', () => {
+          remoteAborted = true;
+          resolve();
+        }, { once: true });
+      });
+      return [];
+    },
+  };
+  const server = createDevWorkerParentRpc({ port: port1, runtime });
+  const rpcClient = createDevWorkerParentRpcClient({ port: port2, timeoutMs: 60000 });
+  const pending = rpcClient.discover({});
+  await started;
+  rpcClient.close();
+  await assert.rejects(
+    pending,
+    (error) => error?.code === 'transport-failure',
+    'closing the RPC client must reject its local pending request',
+  );
+  for (let i = 0; i < 10 && !remoteAborted; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(remoteAborted, true, 'closing the RPC client must cancel the remote in-flight operation');
+  server.close();
+  port1.close();
+  port2.close();
+}
+'''
+          text += fn
+          test.write_text(text)
+          PY
+      - name: Focused regression
+        run: node tests/dev-agent/round2-single-worker.mjs
+      - name: Protected userscript validation
+        run: npm run userscript:test
+      - name: Full repository check
+        run: npm run check
+      - name: Commit verified repair and remove temporary workflow
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm .github/workflows/rpc-close-repair.yml
+          git add js/userscript/dev/parent-rpc.js tests/dev-agent/round2-single-worker.mjs userscript/hex.user.template.js userscript/release-version.json
+          git diff --cached --check
+          git commit -m 'Fix RPC close cancellation propagation'
+          git push origin HEAD:fix/rpc-close-cancels-remote
