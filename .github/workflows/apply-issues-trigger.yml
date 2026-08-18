@@ -19,17 +19,26 @@ jobs:
       - name: Execute guarded workflow body
         shell: bash
         run: |
-          python3 -m pip install --quiet pyyaml
           rm .github/workflows/apply-issues-trigger.yml
           python3 - <<'PY'
-          import subprocess, yaml
+          import subprocess
           from pathlib import Path
-          workflow = yaml.safe_load(Path('.github/workflows/apply-issues-828-832-860-867-880.yml').read_text())
-          steps = workflow['jobs']['apply-and-verify']['steps']
-          for step in steps:
-              script = step.get('run')
-              if not script:
+          lines = Path('.github/workflows/apply-issues-828-832-860-867-880.yml').read_text().splitlines()
+          scripts = []
+          i = 0
+          while i < len(lines):
+              if lines[i] == '        run: |':
+                  i += 1
+                  body = []
+                  while i < len(lines) and (lines[i].startswith('          ') or lines[i] == ''):
+                      body.append(lines[i][10:] if lines[i].startswith('          ') else '')
+                      i += 1
+                  scripts.append('\n'.join(body))
                   continue
-              print(f"==> {step.get('name', 'run')}", flush=True)
+              i += 1
+          if not scripts:
+              raise SystemExit('no guarded run steps found')
+          for index, script in enumerate(scripts, 1):
+              print(f'==> guarded step {index}/{len(scripts)}', flush=True)
               subprocess.run(script, shell=True, executable='/bin/bash', check=True)
           PY
