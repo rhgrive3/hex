@@ -23,6 +23,10 @@ export const DEV_ADMIN_TOOL = Object.freeze({
   POOL_NUDGE: 'worker.pool.nudge',
   POOL_STOP: 'worker.pool.stop',
   POOL_RELEASE: 'worker.pool.release',
+  GRAPH_START: 'worker.graph.start',
+  GRAPH_STATUS: 'worker.graph.status',
+  GRAPH_TASK_RESULT: 'worker.graph.task_result',
+  GRAPH_CANCEL: 'worker.graph.cancel',
 });
 export const DEV_ADMIN_TOOLS = Object.freeze(Object.values(DEV_ADMIN_TOOL));
 
@@ -34,6 +38,7 @@ export function createDevAdminToolSurface(client) {
     [DEV_ADMIN_TOOL.PAGE_SNAPSHOT,'pageSnapshot'], [DEV_ADMIN_TOOL.PAGE_SCRIPTS,'pageScripts'], [DEV_ADMIN_TOOL.PAGE_SCRIPT_SOURCE,'pageScriptSource'],
     [DEV_ADMIN_TOOL.SKILL_LIST,'skillList'], [DEV_ADMIN_TOOL.SKILL_DESCRIBE,'skillDescribe'], [DEV_ADMIN_TOOL.SKILL_INSTALL_CANDIDATE,'skillInstallCandidate'], [DEV_ADMIN_TOOL.SKILL_VALIDATE_CANDIDATE,'skillValidateCandidate'], [DEV_ADMIN_TOOL.SKILL_ACTIVATE,'skillActivate'], [DEV_ADMIN_TOOL.SKILL_ROLLBACK,'skillRollback'], [DEV_ADMIN_TOOL.SKILL_RUN,'skillRun'],
     [DEV_ADMIN_TOOL.POOL_STATUS,'poolStatus'], [DEV_ADMIN_TOOL.POOL_PROVISION,'poolProvision'], [DEV_ADMIN_TOOL.POOL_CLAIM,'poolClaim'], [DEV_ADMIN_TOOL.POOL_CREATE_CHAT,'poolCreateChat'], [DEV_ADMIN_TOOL.POOL_START,'poolStart'], [DEV_ADMIN_TOOL.POOL_OBSERVE,'poolObserve'], [DEV_ADMIN_TOOL.POOL_RESULT,'poolResult'], [DEV_ADMIN_TOOL.POOL_FOLLOWUP,'poolFollowup'], [DEV_ADMIN_TOOL.POOL_NUDGE,'poolNudge'], [DEV_ADMIN_TOOL.POOL_STOP,'poolStop'], [DEV_ADMIN_TOOL.POOL_RELEASE,'poolRelease'],
+    [DEV_ADMIN_TOOL.GRAPH_START,'graphStart'], [DEV_ADMIN_TOOL.GRAPH_STATUS,'graphStatus'], [DEV_ADMIN_TOOL.GRAPH_TASK_RESULT,'graphTaskResult'], [DEV_ADMIN_TOOL.GRAPH_CANCEL,'graphCancel'],
   ]) register(handlers, client, tool, method);
   if (!handlers.size) return null;
   return Object.freeze({

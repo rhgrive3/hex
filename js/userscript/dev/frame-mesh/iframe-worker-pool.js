@@ -115,6 +115,29 @@ export class IframeWorkerPool {
     return this.publicSlot(slot);
   }
 
+  /* Fail-closed cleanup for an ambiguously owned lease. The frame is physically
+     retired before the logical lease is cleared, so a stuck/failed Worker can
+     never be reused concurrently with a retry. A later provision() creates a
+     fresh iframe for the quarantined slot. */
+  async discard({ leaseId, reason = 'worker-discarded' } = {}) {
+    const slot = this.requireLease(leaseId);
+    try { await slot.client?.stop?.(this.identity(slot)); } catch { /* best-effort stop before retirement */ }
+    closeSlot(slot);
+    this.leases.delete(slot.leaseId);
+    slot.ready = false;
+    slot.claimed = false;
+    slot.reserving = false;
+    slot.leaseId = null;
+    slot.workerId = null;
+    slot.runId = null;
+    slot.taskId = null;
+    slot.pending = null;
+    slot.lastResult = null;
+    slot.error = { code: 'worker-discarded', message: String(reason || 'worker-discarded').slice(0, 384) };
+    this.flushWaiters();
+    return this.publicSlot(slot);
+  }
+
   close() {
     for (const slot of this.slots.values()) closeSlot(slot);
     for (const waiter of this.waiters) waiter.reject(poolError('transport-failure', 'Worker pool closed.'));
