@@ -1,0 +1,28 @@
+name: Temporary reapply P4 ARM64 memory consumers
+on:
+  pull_request:
+    branches:
+      - fix/arm64-memory-decoder-814-816
+permissions:
+  contents: write
+jobs:
+  apply:
+    if: github.head_ref == 'hex/p4-5-arm64-memory-consumers'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: hex/p4-5-arm64-memory-consumers
+          fetch-depth: 0
+      - name: Reapply already-validated worker consumer diff and self-remove
+        shell: bash
+        run: |
+          git checkout 53ec6a7994deec6505800e6d8ec8442a5ffd4d3f -- js/worker-legacy.js tests/worker-classic-harness.mjs
+          git rm .github/workflows/_tmp-reapply-p4-worker.yml
+          node tests/words.mjs
+          node tests/worker-classic-harness.mjs
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add js/worker-legacy.js tests/worker-classic-harness.mjs
+          git commit -m "fix: preserve ARM64 pair and RMW facts in worker consumers"
+          git push origin HEAD:hex/p4-5-arm64-memory-consumers
