@@ -2,6 +2,7 @@ import { DurableObject } from 'cloudflare:workers';
 import worker from './worker.js';
 import { AI_QUOTA, acquireQuotaState, releaseQuotaState } from './js/ai/quota.js';
 import { RUNTIME_BUILD } from './.runtime-build/runtime-secrets.js';
+import { DEPLOYMENT_COMMIT } from './.runtime-build/deployment-identity.js';
 import {
   decodeBase64URL, encodeBase64URL, publicRuntimeManifest,
   signRuntimeSession, validateRuntimeBootstrap, verifyRuntimeSession,
@@ -120,6 +121,7 @@ async function runtimeBootstrap(request, env, url) {
     const session = await signRuntimeSession(payload, decodeBase64URL(RUNTIME_BUILD.signingKey));
     return json({
       session, sessionId, expiry: new Date(expiryMs).toISOString(), buildId: RUNTIME_BUILD.manifest.buildId,
+      sourceCommit: DEPLOYMENT_COMMIT,
       manifest: publicRuntimeManifest(RUNTIME_BUILD.manifest), runtimeLocator: `/_runtime/${RUNTIME_BUILD.manifest.buildId}`,
       serverPublicKey: envelope.serverPublicKey, keyEnvelope: envelope.keyEnvelope,
     }, 200, origin, { 'cache-control': 'no-store, private' });
