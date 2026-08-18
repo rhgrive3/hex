@@ -62,7 +62,7 @@ jobs:
             hex/p5-x86-integration) phase=5; lane=p5-i ;;
             hex/p6-riscv64-integration) phase=6; lane=p6 ;;
             *)
-              echo "::error::Phase 4-owned files require a canonical Phase 4, Phase 5, or Phase 6 integration branch; got '$HEAD_REF'."
+              echo "::error::Phase 4-owned files require a canonical Phase 4 or Phase 5 lane branch, or the canonical Phase 6 integration branch; got '$HEAD_REF'."
               exit 1
               ;;
           esac
