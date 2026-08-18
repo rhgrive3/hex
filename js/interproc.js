@@ -116,9 +116,7 @@ function returnArgumentIndex(value) {
 
 function simpleReturnExpression(value) {
   if (!value) return null;
-  let v = value;
-  const pass = new Set([OP.MOV]);
-  for (let guard = 0; guard < 6 && v && v.def && pass.has(v.def.op); guard++) v = v.def.args[0] && v.def.args[0].value;
+  const v = transparentMoveSource(value);
   if (!v || !v.def || v.def.op !== OP.BIN || (v.def.sub !== 'add' && v.def.sub !== 'sub')) return null;
   const aArg = v.def.args[0] || null;
   const bArg = v.def.args[1] || null;
@@ -187,8 +185,32 @@ function trustedExternalReturnEvidence(opts) {
   return evidence === true || !!(evidence && typeof evidence === 'object' && evidence.trusted === true) || opts?.returnsValue === true;
 }
 
+const FUNCTION_LOCAL_SUMMARY_OPTION_KEYS = Object.freeze([
+  'returnEvidence', 'returnsValue', 'returnType', 'returnClass', 'returnBits',
+  'functionPrototype', 'prototype', 'ir',
+]);
+const IR_RETURN_OPTION_KEYS = Object.freeze([
+  'returnsValue', 'returnType', 'returnClass', 'returnBits', 'functionPrototype', 'prototype',
+]);
+
+function own(object, key) {
+  return Object.prototype.hasOwnProperty.call(object || {}, key);
+}
+
+function functionLocalSummaryOptions(opts) {
+  const out = {};
+  for (const key of FUNCTION_LOCAL_SUMMARY_OPTION_KEYS) if (own(opts, key)) out[key] = opts[key];
+  return out;
+}
+
+function summaryIrOptions(opts) {
+  const out = opts?.ir && typeof opts.ir === 'object' ? { ...opts.ir } : {};
+  for (const key of IR_RETURN_OPTION_KEYS) if (own(opts, key)) out[key] = opts[key];
+  return Object.keys(out).length ? out : undefined;
+}
+
 export function summarizeFunction(model, opts) {
-  const ir = irFor(model, opts && opts.ir);
+  const ir = irFor(model, summaryIrOptions(opts));
   if (!ir) return null;
   const facts = semanticFacts(ir);
   const calls = callsOf(model, ir);
@@ -290,21 +312,21 @@ function composeReturn(wrapper, callee) {
   return null;
 }
 
-
 function cacheScopeOf(context) {
   const generation=context?.analysisGeneration ?? context?.generation ?? context?.epoch ?? '';
   const session=context?.sessionId ?? context?.binaryHash ?? context?.binaryIdentity ?? '';
   return String(session)+'@'+String(generation);
 }
+function hasFunctionLocalSummaryOptions(opts) {
+  return FUNCTION_LOCAL_SUMMARY_OPTION_KEYS.some((key) => own(opts, key));
+}
 function hasContextSensitiveSummaryInputs(context, opts) {
-  return opts?.returnEvidence != null || opts?.returnsValue != null || opts?.ir != null ||
-    opts?.functionPrototype != null || opts?.prototype != null || typeof context?.returnEvidenceFor === 'function';
+  return hasFunctionLocalSummaryOptions(opts) || typeof context?.returnEvidenceFor === 'function';
 }
 function calleeOptions(opts, depth) {
   const next={...(opts||{}),depth};
   // All function-local evidence must be re-resolved for the callee identity.
-  delete next.returnEvidence; delete next.returnsValue; delete next.ir;
-  delete next.functionPrototype; delete next.prototype; delete next.returnType; delete next.returnClass;
+  for (const key of FUNCTION_LOCAL_SUMMARY_OPTION_KEYS) delete next[key];
   return next;
 }
 
@@ -351,7 +373,9 @@ export class FunctionSummaryCache {
       if (returnEvidence == null && typeof this.context.returnEvidenceFor === 'function') {
         try { returnEvidence = await this.context.returnEvidenceFor(address, model); } catch { returnEvidence = null; }
       }
-      const summary = summarizeFunction(model, { address, returnEvidence });
+      const summaryOpts = { ...functionLocalSummaryOptions(opts), address };
+      if (returnEvidence != null) summaryOpts.returnEvidence = returnEvidence;
+      const summary = summarizeFunction(model, summaryOpts);
       if (!summary) return null;
 
       if (depth < this.maxDepth && summary.calls.length === 1 && summary.classification.forwarding) {
