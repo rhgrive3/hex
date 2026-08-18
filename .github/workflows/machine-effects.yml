@@ -1,25 +1,20 @@
 name: MachineEffects Contract
-
 on:
   pull_request:
   push:
     branches: [main]
   workflow_dispatch:
-
 permissions:
   contents: write
-
 concurrency:
   group: machine-effects-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
-
 jobs:
   machine-effects:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - name: Checkout integration branch
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           ref: integrate/open-issue-fixes-20260819
           fetch-depth: 0
@@ -28,7 +23,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Diagnose exact compare-width repair
+      - name: Inspect shifted compare IR
         shell: bash
         run: |
           set -euo pipefail
@@ -45,7 +40,8 @@ jobs:
           t = Path('tests/semantic-v2/issues-791-797-800-825-ir-soundness.test.mjs')
           q = t.read_text()
           needle = "  const fact = firstBranchFact(build(lines, `825-${tag}`));"
+          repl = "  const debugIr = build(lines, `825-${tag}`);\n  const debugCmp = debugIr.instructions.find((inst) => inst.op === OP.CMP);\n  console.log('DEBUG825', tag, JSON.stringify(debugCmp, (_k, v) => typeof v === 'bigint' ? v.toString() : v));\n  const fact = firstBranchFact(debugIr);"
           assert needle in q
-          t.write_text(q.replace(needle, "  console.log('DEBUG825', tag);\n" + needle))
+          t.write_text(q.replace(needle, repl))
           PY
           node --test tests/semantic-v2/issues-791-797-800-825-ir-soundness.test.mjs
