@@ -1,0 +1,120 @@
+name: Temporary repair PR 746
+
+on:
+  push:
+    branches:
+      - fix/dev-supervisor-tool-retry-japanese-default
+    paths:
+      - .github/workflows/tmp-repair-pr746.yml
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/dev-supervisor-tool-retry-japanese-default
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Rebase feature onto current main and validate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p /tmp/pr746/js/ai/dev/protocol /tmp/pr746/tests/dev-agent
+          cp js/ai/dev/protocol/dev-supervisor-prompt.js /tmp/pr746/js/ai/dev/protocol/dev-supervisor-prompt.js
+          cp tests/dev-agent/round2-single-tab-supervisor.mjs /tmp/pr746/tests/dev-agent/round2-single-tab-supervisor.mjs
+          cp tests/dev-agent/round2-single-worker.mjs /tmp/pr746/tests/dev-agent/round2-single-worker.mjs
+
+          git fetch origin main
+          git reset --hard origin/main
+
+          cp /tmp/pr746/js/ai/dev/protocol/dev-supervisor-prompt.js js/ai/dev/protocol/dev-supervisor-prompt.js
+          cp /tmp/pr746/tests/dev-agent/round2-single-tab-supervisor.mjs tests/dev-agent/round2-single-tab-supervisor.mjs
+          cp /tmp/pr746/tests/dev-agent/round2-single-worker.mjs tests/dev-agent/round2-single-worker.mjs
+
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('js/ai/dev/supervisor/dev-supervisor-engine-v0.js')
+          text = path.read_text()
+          old = '''      for (let step = 0; step < this.maxDecisions; step++) {
+                const availableTools = this.availableTools();
+                const response = await this.bridge.request(buildDevSupervisorPrompt({
+                  run,
+                  availableTools,
+                  history,
+                }), {
+                  signal: input.signal,
+                  sessionKey: run.supervisorSessionKey,
+                  model: input.model || null,
+                  reasoning: input.reasoning || null,
+                });
+                const text = response && typeof response === 'object' ? response.text : response;
+                const decision = parseDevSupervisorDecision(text, { availableTools });
+
+                if (decision.type === 'tool') {'''
+          new = '''      for (let step = 0; step < this.maxDecisions; step++) {
+                const promptTools = this.availableTools();
+                const response = await this.bridge.request(buildDevSupervisorPrompt({
+                  run,
+                  availableTools: promptTools,
+                  history,
+                }), {
+                  signal: input.signal,
+                  sessionKey: run.supervisorSessionKey,
+                  model: input.model || null,
+                  reasoning: input.reasoning || null,
+                });
+                const text = response && typeof response === 'object' ? response.text : response;
+                let decision;
+                try {
+                  decision = parseDevSupervisorDecision(text);
+                } catch (decisionError) {
+                  history.push({
+                    kind: 'decision-invalid',
+                    message: '直前のSupervisor decisionは有効なhex-dev-supervisor-v1 JSONではありません。同じdecision shape契約に従ってJSONオブジェクトを1つだけ再出力してください。',
+                    error: String(decisionError?.message || decisionError || 'Invalid Supervisor decision.'),
+                  });
+                  continue;
+                }
+                const availableTools = this.availableTools();
+
+                if (decision.type === 'tool' && !availableTools.includes(decision.tool)) {
+                  history.push({
+                    kind: 'tool-unavailable',
+                    tool: decision.tool,
+                    message: `要求されたツール「${decision.tool}」は現在利用できません。現在利用可能なツール一覧を確認して再判断してください。`,
+                    availableTools,
+                  });
+                  continue;
+                }
+
+                if (decision.type === 'tool') {'''
+          if old not in text:
+              raise SystemExit('expected current-main Supervisor loop was not found; refusing unsafe rewrite')
+          path.write_text(text.replace(old, new, 1))
+          PY
+
+          npm ci
+          npm run dev-agent:test
+          npm run userscript:build
+          npm run userscript:test
+          git diff --check
+
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add \
+            js/ai/dev/protocol/dev-supervisor-prompt.js \
+            js/ai/dev/supervisor/dev-supervisor-engine-v0.js \
+            tests/dev-agent/round2-single-tab-supervisor.mjs \
+            tests/dev-agent/round2-single-worker.mjs \
+            userscript/hex.user.template.js \
+            userscript/release-version.json
+          git commit -m 'Rebase Dev Supervisor replanning fix onto current main'
+          git push --force origin HEAD:fix/dev-supervisor-tool-retry-japanese-default
