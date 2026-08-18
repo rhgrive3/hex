@@ -131,8 +131,6 @@ async function decode(raw, format, imageBase = BASE) {
   const v = await readVtable(read, 0n, null, 2, { pointerFormat: format, imageBase });
   return { typeinfo: v.typeinfo, typeinfoBinding: v.typeinfoBinding, slot: v.slots[0] };
 }
-
-// Apple arm64e format target coordinate semantics.
 for (const format of [1, 10]) {
   const d = await decode(arm64eRebase(TARGET), format);
   assert.equal(d.typeinfo, TARGET, `format ${format} unauth rebase is vmaddr`);
@@ -141,9 +139,6 @@ for (const format of [7, 9, 12]) {
   const d = await decode(arm64eRebase(TARGET), format);
   assert.equal(d.typeinfo, BASE + TARGET, `format ${format} unauth rebase is vm offset`);
 }
-
-// high8 belongs to the reconstructed target for every generic arm64e rebase;
-// only the coordinate interpretation differs by pointer format.
 for (const format of [1, 10]) {
   const d = await decode(arm64eRebase(TARGET, HIGH8), format);
   assert.equal(d.typeinfo, (HIGH8 << 56n) | TARGET);
@@ -152,16 +147,11 @@ for (const format of [7, 9, 12]) {
   const d = await decode(arm64eRebase(TARGET, HIGH8), format);
   assert.equal(d.typeinfo, BASE + ((HIGH8 << 56n) | TARGET));
 }
-
-// Authenticated rebases carry a 32-bit runtime offset in all generic arm64e
-// formats, independent of the unauthenticated target coordinate rule.
 for (const format of [1, 7, 9, 10, 12]) {
   const d = await decode(arm64eAuthRebase(TARGET), format);
   assert.equal(d.typeinfo, BASE + TARGET, `format ${format} auth rebase`);
   assert.equal(d.slot.addr, BASE + TARGET);
 }
-
-// Bind ordinal width: USERLAND24 preserves 24 bits, the other arm64e forms 16.
 for (const format of [1, 7, 9, 10]) {
   const d = await decode(arm64eBind(0x1234), format);
   assert.equal(d.typeinfo, null);
@@ -176,8 +166,6 @@ for (const format of [1, 7, 9, 10]) {
   const auth = await decode(arm64eBind(0xabcdef, true), 12);
   assert.equal(auth.typeinfoBinding.ordinal, 0xabcdef);
 }
-
-// 64 vs 64_OFFSET use the same high8 field but different target coordinates.
 {
   const raw = ptr64Rebase(TARGET, HIGH8);
   assert.equal((await decode(raw, 2)).typeinfo, (HIGH8 << 56n) | TARGET);
@@ -185,12 +173,9 @@ for (const format of [1, 7, 9, 10]) {
   assert.equal((await decode(ptr64Bind(0x654321), 2)).typeinfoBinding.ordinal, 0x654321);
   assert.equal((await decode(ptr64Bind(0x654321), 6)).typeinfoBinding.ordinal, 0x654321);
 }
-
-// Offset formats fail closed without an image base; vmaddr formats do not need it.
 assert.equal((await decode(arm64eRebase(TARGET), 10, null)).typeinfo, TARGET);
 assert.equal((await decode(arm64eRebase(TARGET), 9, null)).typeinfo, null);
 assert.equal((await decode(ptr64Rebase(TARGET), 6, null)).typeinfo, null);
-
 console.log('issue 840 RTTI chained-pointer formats: ok');
 ''')
 
@@ -211,3 +196,4 @@ console.log('issue 840 RTTI chained-pointer formats: ok');
           git add js/rtti.js tests/issue-840-rtti-pointer-formats.mjs tests/issues-550-559.mjs
           git commit -m "fix: decode chained RTTI pointer formats by ABI semantics"
           git push origin HEAD:fix/issue-840-rtti-pointer-formats
+# retrigger applicator on PR synchronize
