@@ -29,6 +29,7 @@ jobs:
           python3 tools/validation/tmp-consolidate-open-prs.py
           python3 tools/validation/tmp-overlay-pr883.py
           python3 tools/validation/tmp-overlay-pr884.py
+          python3 tools/validation/tmp-complete-pr884.py
           python3 tools/validation/tmp-overlay-pr885.py
 
       - name: Build canonical generated userscript
@@ -79,10 +80,9 @@ jobs:
           rm tools/validation/tmp-consolidate-open-prs.py \
              tools/validation/tmp-overlay-pr883.py \
              tools/validation/tmp-overlay-pr884.py \
+             tools/validation/tmp-complete-pr884.py \
              tools/validation/tmp-overlay-pr885.py
 
-          # Rebuild only after integration-only files are gone. Then prove a
-          # second canonical build produces byte-identical generated output.
           npm run userscript:build
           tmpdir="$(mktemp -d)"
           cp userscript/hex.user.js "$tmpdir/hex.user.js"
@@ -129,6 +129,7 @@ jobs:
             tools/validation/tmp-consolidate-open-prs.py \
             tools/validation/tmp-overlay-pr883.py \
             tools/validation/tmp-overlay-pr884.py \
+            tools/validation/tmp-complete-pr884.py \
             tools/validation/tmp-overlay-pr885.py
           git diff --cached --check
           git commit -m "Finalize all current issue fixes on current main"
