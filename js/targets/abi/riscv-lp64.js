@@ -115,6 +115,7 @@ function conservativeUnknownArguments(scope, hardFloat) {
 
 function createClassifier(profile) {
   const hardFloat = profile.floatAbi !== 'soft';
+  const abiFlenBits = Number(profile.abiFlenBits || 0);
 
   function classifyArguments(instruction, options = {}) {
     const prototype = callPrototypeOf(instruction, options);
@@ -132,9 +133,31 @@ function createClassifier(profile) {
     let aggregateProven = false;
     let aggregatePartial = false;
     let stackArgsMayContainPointers = false;
+    let variadicStackOnly = false;
 
     function useInteger(reg, extra = {}) {
       if (!seen.has(reg)) { seen.add(reg); srcs.push(registerSource(reg, XLEN, extra)); }
+    }
+
+    function placeByReference(index, classified, abiClass) {
+      const reg = INTEGER_ARGUMENT_REGISTERS[integerIndex];
+      if (reg) {
+        integerIndex += 1;
+        useInteger(reg, { purpose:abiClass });
+        arguments_.push({
+          index, location:'register', reg, abiName:ABI_ALIAS[reg], abiClass,
+          pointer:true, bits:XLEN, pointeeBits:classified.bits,
+          hiddenIndirection:true, byReference:true, mayBeModified:true,
+        });
+        return;
+      }
+      const entry = {
+        index, location:'stack', offset:stackOffset, offsetBase:'incoming-stack-arguments',
+        bytes:8, abiClass, pointer:true, bits:XLEN, pointeeBits:classified.bits,
+        hiddenIndirection:true, byReference:true, mayBeModified:true,
+      };
+      arguments_.push(entry); stackArguments.push(entry); stackOffset += 8;
+      stackArgsMayContainPointers = true;
     }
 
     /*
@@ -151,24 +174,22 @@ function createClassifier(profile) {
     }
 
     const variadic = prototype?.variadic === true || prototype?.varargs === true;
+    const fixedParameterCount = Number.isInteger(prototype?.fixedParameterCount)
+      ? prototype.fixedParameterCount
+      : parameters.length;
 
     parameters.forEach((parameter, index) => {
       const classified = parameterClass(parameter);
+      const variadicArgument = variadic && (
+        parameter?.variadic === true || parameter?.unnamed === true || parameter?.named === false || index >= fixedParameterCount
+      );
 
       if (classified.aggregate) {
         const bytes = Math.ceil(classified.bits / 8);
         if (bytes > 2 * XLEN / 8) {
           /* Aggregates larger than 2*XLEN are passed by reference. */
           aggregateProven = true;
-          const reg = INTEGER_ARGUMENT_REGISTERS[integerIndex];
-          if (reg) {
-            integerIndex += 1;
-            useInteger(reg, { purpose:'aggregate-by-reference' });
-            arguments_.push({ index, location:'register', reg, abiName:ABI_ALIAS[reg], abiClass:'aggregate-by-reference', pointer:true, bits:XLEN, pointeeBits:classified.bits, hiddenIndirection:true });
-          } else {
-            const entry = { index, location:'stack', offset:stackOffset, offsetBase:'incoming-stack-arguments', bytes:8, abiClass:'aggregate-by-reference', pointer:true, bits:XLEN, pointeeBits:classified.bits, hiddenIndirection:true };
-            arguments_.push(entry); stackArguments.push(entry); stackOffset += 8; stackArgsMayContainPointers = true;
-          }
+          placeByReference(index, classified, 'aggregate-by-reference');
           return;
         }
         /*
@@ -181,6 +202,24 @@ function createClassifier(profile) {
         const needed = bytes > XLEN / 8 ? 2 : 1;
         if (hardFloat) { aggregatePartial = true; partial = true; }
         else aggregateProven = true;
+        if (needed === 2 && integerIndex === INTEGER_ARGUMENT_REGISTERS.length - 1) {
+          const reg = INTEGER_ARGUMENT_REGISTERS[integerIndex++];
+          useInteger(reg, { purpose:'aggregate-eightbyte' });
+          stackOffset = align(stackOffset, 8);
+          const stackPart = {
+            index, part:'high', location:'stack', offset:stackOffset,
+            offsetBase:'incoming-stack-arguments', bytes:8,
+            abiClass:'aggregate-memory', bits:Math.max(0, classified.bits - XLEN),
+          };
+          stackArguments.push(stackPart);
+          arguments_.push({
+            index, location:'register-and-stack', reg, regs:[reg], abiName:ABI_ALIAS[reg], abiNames:[ABI_ALIAS[reg]],
+            stackOffset, abiClass:hardFloat ? 'aggregate-partial' : 'aggregate-integer-split',
+            bits:classified.bits, ...(hardFloat ? { partial:true } : {}),
+          });
+          stackOffset += 8;
+          return;
+        }
         if (integerIndex + needed <= INTEGER_ARGUMENT_REGISTERS.length) {
           const regs = [];
           for (let piece = 0; piece < needed; piece += 1) {
@@ -202,23 +241,72 @@ function createClassifier(profile) {
         return;
       }
 
+      /* Scalars wider than 2*XLEN are replaced with a pointer to a caller copy. */
+      if (classified.bits > 2 * XLEN) {
+        placeByReference(index, classified, 'scalar-by-reference');
+        return;
+      }
+
       /*
-       * Hardware-float variants pass scalar float/double in fa0-fa7. Named
-       * arguments only: a variadic call passes floats in integer registers.
+       * Hardware-float variants pass named scalar float/double in fa0-fa7 only
+       * when the scalar is no wider than ABI_FLEN. Variadic/unnamed arguments
+       * and wider floating scalars use the integer convention.
        */
-      if (hardFloat && classified.floating && !variadic && floatIndex < FLOAT_ARGUMENT_REGISTERS.length) {
+      if (hardFloat && classified.floating && classified.bits <= abiFlenBits && !variadicArgument && floatIndex < FLOAT_ARGUMENT_REGISTERS.length) {
         const reg = FLOAT_ARGUMENT_REGISTERS[floatIndex++];
         if (!seen.has(reg)) { seen.add(reg); srcs.push({ t:'reg', reg, bits:classified.bits }); }
         arguments_.push({ index, location:'register', reg, abiClass:'float', bits:classified.bits });
         return;
       }
 
-      /*
-       * Scalars wider than XLEN occupy an aligned pair of argument registers.
-       * On RV64 that only arises for 128-bit integers.
-       */
       const needed = classified.bits > XLEN ? 2 : 1;
-      if (needed === 2 && integerIndex % 2 === 1) integerIndex += 1;
+
+      /* 2*XLEN-aligned variadic values require an aligned pair; spilling makes the remaining variadic tail stack-only. */
+      if (variadicArgument && variadicStackOnly) {
+        const slotAlignment = needed === 2 ? 16 : 8;
+        const bytes = align(Math.max(8, Math.ceil(classified.bits / 8)), slotAlignment);
+        stackOffset = align(stackOffset, slotAlignment);
+        const entry = {
+          index, location:'stack', offset:stackOffset, offsetBase:'incoming-stack-arguments',
+          bytes, abiClass:classified.pointer ? 'pointer' : 'integer', pointer:classified.pointer,
+          bits:classified.bits, variadic:true,
+        };
+        arguments_.push(entry); stackArguments.push(entry); stackOffset += bytes;
+        stackArgsMayContainPointers ||= classified.pointer;
+        return;
+      }
+      if (variadicArgument && needed === 2) {
+        if (integerIndex % 2 === 1) integerIndex += 1;
+        if (integerIndex + needed > INTEGER_ARGUMENT_REGISTERS.length) {
+          variadicStackOnly = true;
+          stackOffset = align(stackOffset, 16);
+          const entry = {
+            index, location:'stack', offset:stackOffset, offsetBase:'incoming-stack-arguments',
+            bytes:16, abiClass:'integer', pointer:false, bits:classified.bits, variadic:true,
+          };
+          arguments_.push(entry); stackArguments.push(entry); stackOffset += 16;
+          return;
+        }
+      }
+
+      /* Ordinary named 2*XLEN scalars do not require an even register pair. */
+      if (needed === 2 && integerIndex === INTEGER_ARGUMENT_REGISTERS.length - 1) {
+        const reg = INTEGER_ARGUMENT_REGISTERS[integerIndex++];
+        useInteger(reg);
+        stackOffset = align(stackOffset, 8);
+        const stackPart = {
+          index, part:'high', location:'stack', offset:stackOffset,
+          offsetBase:'incoming-stack-arguments', bytes:8,
+          abiClass:'integer', bits:classified.bits - XLEN,
+        };
+        stackArguments.push(stackPart);
+        arguments_.push({
+          index, location:'register-and-stack', reg, regs:[reg], abiName:ABI_ALIAS[reg], abiNames:[ABI_ALIAS[reg]],
+          stackOffset, abiClass:'integer-split', bits:classified.bits,
+        });
+        stackOffset += 8;
+        return;
+      }
       if (integerIndex + needed <= INTEGER_ARGUMENT_REGISTERS.length) {
         const regs = [];
         for (let piece = 0; piece < needed; piece += 1) {
@@ -229,7 +317,6 @@ function createClassifier(profile) {
         arguments_.push(needed === 1
           ? { index, location:'register', reg:regs[0], abiName:ABI_ALIAS[regs[0]], abiClass:classified.pointer ? 'pointer' : classified.floating ? 'float-in-integer-register' : 'integer', pointer:classified.pointer, bits:classified.bits }
           : { index, location:'registers', regs, abiNames:regs.map((reg) => ABI_ALIAS[reg]), abiClass:'integer-pair', bits:classified.bits });
-        stackArgsMayContainPointers ||= false;
         return;
       }
 
@@ -251,7 +338,7 @@ function createClassifier(profile) {
       stackArgsUnknown:variadic,
       stackArgsMayContainPointers:stackArgsMayContainPointers || variadic,
       aggregateClassification:aggregatePartial ? 'partial-unproven' : aggregateProven ? 'proven' : 'not-required',
-      variadicClassification:variadic ? 'proven-integer-registers-then-stack' : 'not-variadic',
+      variadicClassification:variadic ? 'proven-named-then-integer-varargs' : 'not-variadic',
       partial:partial || aggregatePartial,
       scope:profile.scope,
       evidence:`prototype-${profile.id}`,
@@ -263,20 +350,20 @@ function createClassifier(profile) {
     const type = String(options.returnType || prototype.returnType || prototype.ret || prototype.result || '').trim().toLowerCase();
     const abiClass = String(options.returnClass || prototype.returnClass || prototype.abiClass || '').trim().toLowerCase();
     if (options.returnsValue === false || prototype.returnsValue === false || prototype.void === true || type === 'void' || abiClass === 'void') return null;
-    if (prototype.indirectResult === true || abiClass === 'indirect') {
-      return { reg:INTEGER_RETURN_REGISTERS[0], abiName:'a0', bits:XLEN, indirect:true, hiddenResultPointer:{ input:'x10', returned:'x10' } };
-    }
+    const indirectResult = () => ({ reg:null, bits:XLEN, indirect:true, resultLocation:'memory', hiddenResultPointer:{ input:'x10' } });
+    if (prototype.indirectResult === true || abiClass === 'indirect') return indirectResult();
     const aggregate = prototype.aggregate === true || /aggregate|struct|union|record|array/.test(`${type} ${abiClass}`);
     const rawBits = Number(prototype.returnBits || prototype.bits || options.returnBits || typeBits(type, XLEN));
     const bits = Number.isSafeInteger(rawBits) && rawBits > 0 ? rawBits : XLEN;
     if (aggregate) {
-      if (bits > 2 * XLEN) return { reg:INTEGER_RETURN_REGISTERS[0], abiName:'a0', bits:XLEN, indirect:true, hiddenResultPointer:{ input:'x10', returned:'x10' } };
+      if (bits > 2 * XLEN) return indirectResult();
       if (hardFloat) return { reg:null, partial:true, reason:`${profile.id}-small-aggregate-return-flattening-not-proven` };
       const regs = bits > XLEN ? INTEGER_RETURN_REGISTERS.slice(0, 2) : INTEGER_RETURN_REGISTERS.slice(0, 1);
       return { reg:regs[0], regs, abiNames:regs.map((reg) => ABI_ALIAS[reg]), bits, aggregate:true };
     }
     const floating = /(^|\s)(?:float|double)(?:\s|$)|\bfp\b/.test(`${type} ${abiClass}`);
-    if (hardFloat && floating) return { reg:'f10', abiName:'fa0', bits };
+    if (hardFloat && floating && bits <= abiFlenBits) return { reg:'f10', abiName:'fa0', bits };
+    if (bits > 2 * XLEN) return indirectResult();
     if (bits > XLEN) return { reg:INTEGER_RETURN_REGISTERS[0], regs:[...INTEGER_RETURN_REGISTERS], abiNames:['a0','a1'], bits };
     if (type || abiClass || options.returnsValue === true || prototype.returnsValue === true) {
       return { reg:INTEGER_RETURN_REGISTERS[0], abiName:'a0', bits };
@@ -354,13 +441,13 @@ export const RISCV_LP64F_SCOPE = Object.freeze({
   integerReturns:'exact',
   stackArguments:'exact',
   aggregates:'partial-float-member-flattening-not-proven',
-  variadic:'exact-integer-registers-then-stack',
+  variadic:'exact-named-hard-float-then-integer-varargs',
   floatingPoint:'partial-scalar-only',
 });
 
-export const RISCV_LP64_ABI = createRiscvAbi({ id:'lp64', floatAbi:'soft', scope:RISCV_LP64_SCOPE });
-export const RISCV_LP64F_ABI = createRiscvAbi({ id:'lp64f', floatAbi:'single', scope:RISCV_LP64F_SCOPE });
-export const RISCV_LP64D_ABI = createRiscvAbi({ id:'lp64d', floatAbi:'double', scope:RISCV_LP64F_SCOPE });
+export const RISCV_LP64_ABI = createRiscvAbi({ id:'lp64', floatAbi:'soft', abiFlenBits:0, scope:RISCV_LP64_SCOPE });
+export const RISCV_LP64F_ABI = createRiscvAbi({ id:'lp64f', floatAbi:'single', abiFlenBits:32, scope:RISCV_LP64F_SCOPE });
+export const RISCV_LP64D_ABI = createRiscvAbi({ id:'lp64d', floatAbi:'double', abiFlenBits:64, scope:RISCV_LP64F_SCOPE });
 
 export const RISCV_INTEGER_ARGUMENT_REGISTERS = INTEGER_ARGUMENT_REGISTERS;
 export const RISCV_INTEGER_RETURN_REGISTERS = INTEGER_RETURN_REGISTERS;
