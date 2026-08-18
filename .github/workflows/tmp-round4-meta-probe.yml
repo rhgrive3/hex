@@ -1,0 +1,29 @@
+name: TEMP Round 4 served metadata probe
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Verify served userscript metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 18); do
+            meta="$(curl -fsS --max-time 10 https://ida.rhgrive.workers.dev/hex.meta.js || true)"
+            version="$(printf '%s\n' "$meta" | sed -n 's#^// @version[[:space:]]*##p' | head -1 | tr -d '\r')"
+            echo "attempt $i: version=${version:-missing}"
+            if [ "$version" = "2.0.2322241713" ]; then
+              echo 'ROUND4_META_1713_VERIFIED'
+              exit 0
+            fi
+            sleep 10
+          done
+          exit 1
