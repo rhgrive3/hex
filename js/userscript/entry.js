@@ -167,7 +167,7 @@ function ensureLegacyHost() {
 function ensureLegacyStyle() {
   let style = document.getElementById('hex-userscript-style');
   if (style) return style;
-  const style = document.createElement('style');
+  style = document.createElement('style');
   style.id = 'hex-userscript-style';
   style.textContent = PROTECTED_HOST.scopedCss;
   document.head.append(style);
