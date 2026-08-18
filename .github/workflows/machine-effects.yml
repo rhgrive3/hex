@@ -23,10 +23,15 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Inspect shifted compare IR
+      - name: Locate shifted operand metadata loss
         shell: bash
         run: |
           set -euo pipefail
+          node --input-type=module <<'NODE'
+          import { parseOperands } from './js/arm64.js';
+          const ops = parseOperands('w0, w1, lsl #1');
+          console.log('DEBUG_PARSE', JSON.stringify(ops, (_k,v)=>typeof v==='bigint'?v.toString():v));
+          NODE
           python3 <<'PY'
           from pathlib import Path
           p = Path('js/ir.js')
@@ -40,7 +45,7 @@ jobs:
           t = Path('tests/semantic-v2/issues-791-797-800-825-ir-soundness.test.mjs')
           q = t.read_text()
           needle = "  const fact = firstBranchFact(build(lines, `825-${tag}`));"
-          repl = "  const debugIr = build(lines, `825-${tag}`);\n  const debugCmp = debugIr.instructions.find((inst) => inst.op === OP.CMP);\n  const debugRhs = debugCmp?.args?.[1];\n  console.log('DEBUG825', tag, JSON.stringify({ extraBits:debugCmp?.extra?.bits ?? null, lhsBits:debugCmp?.args?.[0]?.bits ?? null, rhsBits:debugRhs?.bits ?? null, rhsConst:debugRhs?.value?.const == null ? null : debugRhs.value.const.toString(), rhsValueBits:debugRhs?.value?.bits ?? null, shift:debugRhs?.shift ?? null }));\n  const fact = firstBranchFact(debugIr);"
+          repl = "  const debug = modelOf(lines);\n  const debugModelCmp = debug.model.instructions.find((inst) => String(inst.mn || inst.mnemonic || '').toLowerCase() === 'cmp');\n  console.log('DEBUG_MODEL', tag, JSON.stringify({ ops:debugModelCmp?.ops ?? null, operands:debugModelCmp?.operands ?? null, rawOps:debugModelCmp?.raw?.ops ?? null }, (_k,v)=>typeof v==='bigint'?v.toString():v));\n  const debugIr = irFor(debug.model, { rowOfAddress:debug.rowOfAddress, decoderSemanticVersion:`issue-soundness-825-${tag}` });\n  const debugCmp = debugIr.instructions.find((inst) => inst.op === OP.CMP);\n  const debugArgs = (debugCmp?.args || []).map((a)=>({bits:a?.bits ?? null, const:a?.value?.const == null ? null : a.value.const.toString(), valueBits:a?.value?.bits ?? null, shift:a?.shift ?? null}));\n  console.log('DEBUG_SSA', tag, JSON.stringify({extraBits:debugCmp?.extra?.bits ?? null,args:debugArgs}));\n  const fact = firstBranchFact(debugIr);"
           assert needle in q
           t.write_text(q.replace(needle, repl))
           PY
