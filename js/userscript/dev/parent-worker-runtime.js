@@ -1,10 +1,10 @@
 import { DEV_WORKER_FAILURE } from '../../ai/dev/workers/contracts.js';
-import { createTabNode, TAB_NODE_ROLE } from './tab-mesh/tab-node.js';
+import { createTabNode, TAB_NODE_ROLE } from './frame-mesh/tab-node.js';
 import { SingleConversationWorkerCoordinator } from './single-tab/single-conversation-worker-coordinator.js';
 import { WorkerChatController } from './worker-host/worker-chat-controller.js';
 import { ParentPageInspector } from './admin/page-inspector.js';
 import { DomSkillRegistry } from './skills/dom-skill-registry.js';
-import { MultiTabWorkerPool } from './tab-mesh/multi-tab-worker-pool.js';
+import { IframeWorkerPool } from './frame-mesh/iframe-worker-pool.js';
 import { readDevRuntimeIdentityFromGlobals } from '../../ai/dev/bootstrap/self-update-gate.js';
 
 export async function startParentDevWorkerRuntime(options = {}) {
@@ -17,16 +17,17 @@ export async function startParentDevWorkerRuntime(options = {}) {
     const locationRef = options.location || controller.adapter?.location || globalThis.location;
     const pageInspector = options.pageInspector || new ParentPageInspector({ document: documentRef, location: locationRef, fetchRef: options.fetchRef || globalThis.fetch?.bind(globalThis) });
     const skillRegistry = options.skillRegistry || new DomSkillRegistry({ document: documentRef, location: locationRef, now: options.now });
-    const workerPool = options.workerPool || new MultiTabWorkerPool({
-      openTab: options.openTab,
-      BroadcastChannelRef: options.BroadcastChannelRef || globalThis.BroadcastChannel,
+    const workerPool = options.workerPool || new IframeWorkerPool({
+      createFrame: options.createFrame,
+      createWorkerRuntime: options.createWorkerRuntime,
+      documentRef,
       cryptoRef: options.cryptoRef || globalThis.crypto,
       location: locationRef,
       now: options.now,
       sleep: options.sleep,
     });
     return Object.freeze({
-      role:'supervisor', mode:'multi-tab-capable', enabled:true, tabNodeId:node.tabNodeId, coordinator, skillRegistry, workerPool,
+      role:'supervisor', mode:'multi-frame-capable', enabled:true, tabNodeId:node.tabNodeId, coordinator, skillRegistry, workerPool,
       discover:(args)=>coordinator.discover(args), claim:(args)=>coordinator.claim(args), createChat:(args)=>coordinator.createChat(args), send:(args)=>coordinator.send(args), observe:(args)=>coordinator.observe(args), followup:(args)=>coordinator.followup(args), nudge:(args)=>coordinator.nudge(args), stop:(args)=>coordinator.stop(args), result:(args)=>coordinator.result(args), release:(args)=>coordinator.release(args), waitEvent:(args,opts={})=>coordinator.waitEvent(args,opts),
       runtimeIdentity:()=>readIdentity(),
       pageSnapshot:(args)=>pageInspector.snapshot(args), pageScripts:(args)=>pageInspector.scripts(args), pageScriptSource:(args,opts={})=>pageInspector.scriptSource(args,opts),
@@ -51,7 +52,7 @@ function disabledRuntime({node,error,readIdentity}) {
   const code=String(error?.code||DEV_WORKER_FAILURE.PROVIDER_ERROR), message=String(error?.message||'Dev Worker runtime is unavailable.');
   const fail=async()=>{const failure=new Error(message);failure.code=code;throw failure;};
   return Object.freeze({
-    role:'supervisor',mode:'multi-tab-capable',enabled:false,tabNodeId:node.tabNodeId,error:Object.freeze({code,message}),
+    role:'supervisor',mode:'multi-frame-capable',enabled:false,tabNodeId:node.tabNodeId,error:Object.freeze({code,message}),
     discover:fail,claim:fail,createChat:fail,send:fail,observe:fail,followup:fail,nudge:fail,stop:fail,result:fail,release:fail,waitEvent:fail,
     runtimeIdentity:()=>(typeof readIdentity==='function'?readIdentity():parentRuntimeIdentity()),
     pageSnapshot:fail,pageScripts:fail,pageScriptSource:fail,skillList:fail,skillDescribe:fail,skillInstallCandidate:fail,skillValidateCandidate:fail,skillActivate:fail,skillRollback:fail,skillRun:fail,

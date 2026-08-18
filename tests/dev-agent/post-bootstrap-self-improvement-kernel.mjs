@@ -151,7 +151,7 @@ function testPostBootstrapDogfoodPrompt() {
   });
   const run = supervisor.activate(supervisor.createRun({ goal: 'Project automationまで自己改善し続ける' }));
   const prompt = buildDevSupervisorPrompt({ run, availableTools: supervisor.availableTools });
-  assert.match(prompt, /versioned DOM Skill system -> max-6 multi-Worker Tab Pool -> dynamic task graph -> ChatGPT Project automation/);
+  assert.match(prompt, /versioned DOM Skill system -> max-6 multi-Worker iframe Pool -> dynamic task graph -> ChatGPT Project automation/);
   assert.match(prompt, /chatgpt\.page\.snapshot/);
   assert.doesNotMatch(prompt, /Never request, create, or depend on another browser tab or window/);
 }
