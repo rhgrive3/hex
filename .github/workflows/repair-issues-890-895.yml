@@ -49,3 +49,4 @@ jobs:
           git diff --cached --check
           git commit -m 'fix: close control and profile correctness issues 890-895'
           git push origin HEAD:fix/issues-890-895-control-profile-20260819
+# retrigger verified repair
