@@ -5,6 +5,8 @@ import { DevAgentUiSettings } from '../../js/ai/dev/ui/settings.js';
 import { AGENT_PROFILE } from '../../js/ai/dev/policy/agent-profile.js';
 import { DEV_RUN_STATUS } from '../../js/ai/dev/run/dev-run.js';
 
+// Successful tool progress must replenish the safety window; retries and other
+// no-progress decisions remain bounded by the base engine.
 await successfulToolsResetDecisionBudget();
 console.log('Dev Supervisor progress budget: ok');
 
