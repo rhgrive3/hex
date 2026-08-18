@@ -83,7 +83,7 @@ function buildOne({ toolchain, target, optimization, outDir }) {
     '-o', output,
   ];
   const targetFlags = target.id === 'sysv-amd64-elf'
-    ? ['-Wl,--build-id=none', '-Wl,-e,p5_entry', '-Wl,-Ttext=0x401000']
+    ? ['-no-pie', '-Wl,--build-id=none', '-Wl,-e,p5_entry', '-Wl,-Ttext=0x401000']
     : ['-Wl,/entry:p5_entry', '-Wl,/subsystem:console', '-Wl,/nodefaultlib', '-Wl,/fixed', '-Wl,/base:0x140000000', '-Wl,/Brepro'];
   const flags = [...common, ...targetFlags];
   run(toolchain.clang, flags);
