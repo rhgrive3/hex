@@ -26,7 +26,9 @@ jobs:
           git fetch origin main
           git rebase origin/main
       - name: Apply guarded repair
-        run: python3 tools/repair-issues-890-895.py
+        run: |
+          python3 tools/repair-issues-890-895.py
+          python3 tools/repair-issues-890-895-testfix.py
       - name: Install and run focused regression
         run: |
           npm ci
@@ -43,7 +45,7 @@ jobs:
           cmp userscript/hex.user.template.js /tmp/hex.user.template.js
       - name: Commit canonical result to target branch
         run: |
-          rm -f tools/repair-issues-890-895.py
+          rm -f tools/repair-issues-890-895.py tools/repair-issues-890-895-testfix.py
           rm -f .github/workflows/repair-issues-890-895.yml
           rm -f .github/workflows/tmp-repair-runner-890-895.yml
           git add -A
