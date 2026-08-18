@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - ops/round4-production-probe-1714
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: read
