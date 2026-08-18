@@ -10,6 +10,10 @@ export function createAgentProfileEngine({ standardEngine, settings, supervisor 
     prepare: () => dev.prepareBootstrapExtension(),
     activateAtSafeBoundary: (options) => dev.activateBootstrapAtSafeBoundary(options),
     invoke: (name) => dev.invokeBootstrapCapability(name),
+    sessionFor: (conversationId) => dev.bootstrapSessionFor(conversationId),
+    createCheckpoint: (options) => dev.createBootstrapCheckpoint(options),
+    restore: (handoff) => dev.restoreBootstrapHandoff(handoff),
+    runProof: (options) => dev.runBootstrapProof(options),
   });
 
   return new Proxy(standardEngine, {
