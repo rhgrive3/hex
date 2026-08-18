@@ -97,28 +97,7 @@ This record exists so the three requested review passes and their corrections ar
 
 ### Corrections made
 
-Added `PHASE8_CHECKPOINT_CONTRACTS.md` and `.ja.md` with explicit contracts for:
-
-- global start blockers;
-- P8-0 foundation/baseline/verifier;
-- P8-1 pass transaction/preservation substrate;
-- P8-2 SCCP/range;
-- P8-3 GVN/CSE/DCE;
-- P8-4 induction;
-- P8-5 irreducible/exception structuring;
-- P8-6 aggregate/array/union recovery;
-- P8-7 language/compiler providers;
-- P8-I integration/cutover.
-
-Also added:
-
-- candidate merge-tree proof before component acceptance;
-- checkpoint lock after every integration merge;
-- generated-output ownership/synchronization contract;
-- moving-main single-owner contract;
-- process-failure recurrence map;
-- first-divergence debugging procedure;
-- exact final hard-zero gate set.
+Added `PHASE8_CHECKPOINT_CONTRACTS.md` and `.ja.md` with explicit contracts for global start blockers, P8-0 through P8-7, and P8-I integration/cutover. Also added candidate merge-tree proof, checkpoint locking, generated-output ownership/synchronization, moving-main single-owner behavior, a process-failure recurrence map, first-divergence debugging, and exact hard-zero release gates.
 
 The final branch diff remains docs-only. Proposed Phase 8 files/commands/infrastructure are explicitly labeled as proposals to be generated/revalidated at P8-0 rather than present-tense implementation claims.
 
