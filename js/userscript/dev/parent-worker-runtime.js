@@ -2,6 +2,7 @@ import { DEV_WORKER_FAILURE } from '../../ai/dev/workers/contracts.js';
 import { createTabNode, TAB_NODE_ROLE } from './tab-mesh/tab-node.js';
 import { SingleConversationWorkerCoordinator } from './single-tab/single-conversation-worker-coordinator.js';
 import { WorkerChatController } from './worker-host/worker-chat-controller.js';
+import { ParentPageInspector } from './admin/page-inspector.js';
 
 export async function startParentDevWorkerRuntime(options = {}) {
   const node = createTabNode({ role: TAB_NODE_ROLE.SUPERVISOR, now: options.now });
@@ -17,6 +18,11 @@ export async function startParentDevWorkerRuntime(options = {}) {
       controller,
       tabNodeId: node.tabNodeId,
       now: options.now,
+    });
+    const pageInspector = options.pageInspector || new ParentPageInspector({
+      document: options.document || controller.adapter?.document || globalThis.document,
+      location: options.location || controller.adapter?.location || globalThis.location,
+      fetchRef: options.fetchRef || globalThis.fetch?.bind(globalThis),
     });
     return Object.freeze({
       role: 'supervisor',
@@ -35,6 +41,9 @@ export async function startParentDevWorkerRuntime(options = {}) {
       result: (args) => coordinator.result(args),
       release: (args) => coordinator.release(args),
       waitEvent: (args, requestOptions = {}) => coordinator.waitEvent(args, requestOptions),
+      pageSnapshot: (args) => pageInspector.snapshot(args),
+      pageScripts: (args) => pageInspector.scripts(args),
+      pageScriptSource: (args, requestOptions = {}) => pageInspector.scriptSource(args, requestOptions),
       close() { coordinator.close(); },
     });
   } catch (error) {
@@ -54,6 +63,7 @@ function disabledRuntime({ node, error }) {
     error: Object.freeze({ code, message }),
     discover: fail, claim: fail, createChat: fail, send: fail, observe: fail,
     followup: fail, nudge: fail, stop: fail, result: fail, release: fail, waitEvent: fail,
+    pageSnapshot: fail, pageScripts: fail, pageScriptSource: fail,
     close() {},
   });
 }
