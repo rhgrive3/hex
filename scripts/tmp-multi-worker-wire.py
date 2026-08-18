@@ -1,4 +1,5 @@
 from pathlib import Path
+import subprocess
 
 def rep(path, old, new):
     p=Path(path); text=p.read_text()
@@ -23,3 +24,9 @@ rep(path,"// @grant        GM.xmlHttpRequest\\n// @connect","// @grant        GM
 
 path='tests/userscript-release-version.mjs'
 rep(path,"await import('./dev-agent/dom-skill-system.mjs');\nconsole.log('Userscript release-version contract passed');","await import('./dev-agent/dom-skill-system.mjs');\nawait import('./dev-agent/multi-worker-tab-pool.mjs');\nconsole.log('Userscript release-version contract passed');")
+
+# Keep the established Round 2 regression intact and update only the intentional runtime contract changes.
+path='tests/userscript-dev-worker-runtime.mjs'
+subprocess.run(['git','checkout','origin/main','--',path], check=True)
+rep(path,"assert.equal(runtime.mode, 'single-tab-conversation-worker');","assert.equal(runtime.mode, 'multi-tab-capable');")
+rep(path,"assert.doesNotMatch(parentRuntimeSource, /BroadcastChannel|hex-worker=1|isManualWorkerTab/, 'active Round 2 runtime must not require another Safari tab');","assert.match(parentRuntimeSource, /MultiTabWorkerPool/, 'post-bootstrap parent runtime must expose the bounded multi-tab pool while retaining the single-tab compatibility lane');")
