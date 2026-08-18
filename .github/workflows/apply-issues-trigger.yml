@@ -21,6 +21,7 @@ jobs:
           python3 .github/adjust-five-fixes.py
           python3 .github/apply-five-fixes.py
           python3 .github/refine-five-test.py
+          python3 .github/post-five-fixes.py
       - name: Build generated runtime
         run: npm run userscript:build
       - name: Targeted regression
@@ -36,7 +37,7 @@ jobs:
       - name: Commit verified result
         shell: bash
         run: |
-          rm -f .github/workflows/apply-issues-trigger.yml .github/workflows/apply-issues-828-832-860-867-880.yml .github/apply-five-fixes.py .github/adjust-five-fixes.py .github/refine-five-test.py
+          rm -f .github/workflows/apply-issues-trigger.yml .github/workflows/apply-issues-828-832-860-867-880.yml .github/apply-five-fixes.py .github/adjust-five-fixes.py .github/refine-five-test.py .github/post-five-fixes.py
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add -A
