@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { installDevBootstrapHost } from '../../js/userscript/dev/bootstrap-host.js';
 import { runProductionDevBootstrap } from '../../js/ai/dev/bootstrap/production-bootstrap.js';
+import { bootstrapStatusPresentation, installBootstrapDiagnostic } from '../../js/ai/dev/bootstrap/bootstrap-diagnostic.js';
 import {
   DEV_BOOTSTRAP_EXTENSION,
   DEV_BOOTSTRAP_ROUND4_PROOF_CAPABILITY,
@@ -13,11 +14,13 @@ import { DevSupervisorV0 } from '../../js/ai/dev/supervisor/dev-supervisor-v0.js
 const COMMIT = 'a'.repeat(40);
 const BUILD = 'b'.repeat(24);
 const TOKEN = 'c'.repeat(64);
+const INTEGRITY = 'sha256-' + 'd'.repeat(64);
 const sha256 = async (value) => createHash('sha256').update(String(value)).digest('hex');
 
 await testParentHandoffBoundary();
 await testProductionOrchestratorGenerations();
 await testRequiredSupervisorProof();
+await testBootstrapDiagnostic();
 
 console.log('Dev Agent Round 4 production bootstrap tests passed');
 
@@ -77,6 +80,8 @@ async function testProductionOrchestratorGenerations() {
   };
   const firstParent = responsiveParent({ handoff: null, runtimeIdentity: { commit: COMMIT, buildId: BUILD }, expectedReloadHandoff: handoff });
   const firstGlobal = fakeSandboxGlobal(firstParent);
+  assert.equal(firstGlobal.location.search, '', 'opaque srcdoc location must not carry the virtual Hex query');
+  assert.match(firstGlobal.__HEX_RUNTIME_HOST_SEARCH__, /__hex_dev_bootstrap=1/, 'bootstrap opt-in must come from the trusted virtual runtime location');
   const firstCalls = [];
   const firstEngine = { devBootstrap: {
     prepare: async () => firstCalls.push('prepare'),
@@ -101,13 +106,14 @@ async function testProductionOrchestratorGenerations() {
   const secondEngine = { devBootstrap: {
     prepare: async () => secondCalls.push('prepare'),
     restore: (value) => { secondCalls.push(['restore', value]); return handoff; },
-    activateAtSafeBoundary: () => ({ status: 'active', extensionVersion: '2', integrity: 'sha256-' + 'd'.repeat(64) }),
+    activateAtSafeBoundary: () => ({ status: 'active', extensionVersion: '2', integrity: INTEGRITY }),
     runProof: async (options) => { secondCalls.push(['runProof', options]); return { answer: 'proof observed' }; },
   } };
   const complete = await runProductionDevBootstrap({ engine: secondEngine, session, bridge, globalObject: secondGlobal });
   assert.equal(complete.state, 'complete');
   assert.equal(complete.capability, DEV_BOOTSTRAP_ROUND4_PROOF_CAPABILITY);
   assert.equal(complete.proofAnswer, 'proof observed');
+  assert.equal(secondGlobal.__HEX_DEV_BOOTSTRAP_STATUS__.state, 'complete');
   assert.ok(secondCalls.some((item) => Array.isArray(item) && item[0] === 'runProof'));
 }
 
@@ -140,8 +146,59 @@ async function testRequiredSupervisorProof() {
   assert.match(prompts[2], /verified/);
 }
 
+async function testBootstrapDiagnostic() {
+  const presentation = bootstrapStatusPresentation({
+    state: 'complete',
+    identity: { commit: COMMIT, buildId: BUILD },
+    extensionVersion: '2',
+    integrity: INTEGRITY,
+    capability: DEV_BOOTSTRAP_ROUND4_PROOF_CAPABILITY,
+    proofAnswer: 'proof observed',
+  }, { ja: true });
+  assert.equal(presentation.visible, true);
+  assert.equal(presentation.proofVerified, true);
+  assert.match(presentation.detail, new RegExp(COMMIT));
+  assert.match(presentation.detail, new RegExp(BUILD));
+  assert.match(presentation.detail, /extension: v2/);
+  assert.match(presentation.detail, /proof: 検証済み/);
+
+  const forgedCapability = bootstrapStatusPresentation({
+    state: 'complete',
+    capability: 'hex.dev.bootstrap.fake-proof',
+  });
+  assert.equal(forgedCapability.proofVerified, false, 'unrecognized proof capability must never be marked verified');
+  assert.doesNotMatch(forgedCapability.detail, /proof: verified/);
+
+  const contextBar = fakeElement();
+  const root = fakeElement();
+  root.querySelector = (selector) => selector === '.ai-context-bar' ? contextBar : null;
+  const documentRef = { createElement: () => fakeElement() };
+  const diagnostic = installBootstrapDiagnostic({ panel: { root }, ja: true, documentRef });
+  diagnostic.set({
+    state: 'complete', identity: { commit: COMMIT, buildId: BUILD }, extensionVersion: '2', integrity: INTEGRITY,
+    capability: DEV_BOOTSTRAP_ROUND4_PROOF_CAPABILITY, proofAnswer: 'proof observed',
+  });
+  assert.equal(root.dataset.bootstrapState, 'complete');
+  assert.equal(root.dataset.bootstrapCommit, COMMIT);
+  assert.equal(root.dataset.bootstrapBuildId, BUILD);
+  assert.equal(root.dataset.bootstrapExtensionVersion, '2');
+  assert.equal(root.dataset.bootstrapIntegrity, INTEGRITY);
+  assert.equal(root.dataset.bootstrapCapability, DEV_BOOTSTRAP_ROUND4_PROOF_CAPABILITY);
+  assert.equal(root.dataset.bootstrapProof, 'verified');
+  assert.equal(diagnostic.element.textContent, 'R4 ✓ Bootstrap 完了');
+  diagnostic.element.click();
+  assert.match(diagnostic.element.textContent, new RegExp(COMMIT));
+  assert.match(diagnostic.element.textContent, /proof: 検証済み/);
+
+  diagnostic.set({ state: 'failed', error: 'identity mismatch' });
+  assert.equal(root.dataset.bootstrapState, 'failed');
+  assert.equal(root.dataset.bootstrapError, 'identity mismatch');
+  assert.match(diagnostic.element.textContent, /identity mismatch/);
+
+  assert.equal(bootstrapStatusPresentation({ state: 'skipped' }).visible, false);
+}
+
 function responsiveParent({ handoff, runtimeIdentity, expectedReloadHandoff = null }) {
-  const child = null;
   const parent = {
     reloadRequests: [],
     postMessage(message) {
@@ -169,7 +226,18 @@ function fakeSandboxGlobal(parent, generation = '1') {
   const target = fakeWindow();
   parent.target = target;
   target.parent = parent;
-  target.location = { origin: 'null', search: `?__hex_embed_generation=${generation}&__hex_dev_bootstrap=1` };
+  target.location = { href: 'about:srcdoc', origin: 'null', pathname: '', search: '' };
+  const search = `?__hex_embed_generation=${generation}&__hex_dev_bootstrap=1`;
+  target.__HEX_RUNTIME_HOST_HREF__ = `https://ida.rhgrive.workers.dev/embed/chatgpt${search}`;
+  target.__HEX_RUNTIME_HOST_ORIGIN__ = 'https://ida.rhgrive.workers.dev';
+  target.__HEX_RUNTIME_HOST_PATHNAME__ = '/embed/chatgpt';
+  target.__HEX_RUNTIME_HOST_SEARCH__ = search;
+  target.__HEX_RUNTIME_HOST_LOCATION__ = {
+    href: target.__HEX_RUNTIME_HOST_HREF__,
+    origin: target.__HEX_RUNTIME_HOST_ORIGIN__,
+    pathname: target.__HEX_RUNTIME_HOST_PATHNAME__,
+    search,
+  };
   target.__HEX_EMBED_SANDBOX_TOKEN__ = TOKEN;
   return target;
 }
@@ -182,6 +250,19 @@ function fakeWindow() {
     addEventListener(type, listener) { if (type === 'message') listeners.add(listener); },
     removeEventListener(type, listener) { if (type === 'message') listeners.delete(listener); },
     emit(event) { for (const listener of [...listeners]) listener(event); },
+  };
+}
+
+function fakeElement() {
+  const listeners = new Map();
+  return {
+    id: '', type: '', className: '', hidden: false, textContent: '', title: '', removed: false,
+    dataset: {}, attributes: {}, children: [],
+    setAttribute(name, value) { this.attributes[name] = String(value); },
+    addEventListener(type, listener) { listeners.set(type, listener); },
+    append(child) { this.children.push(child); },
+    click() { listeners.get('click')?.({ currentTarget: this }); },
+    remove() { this.removed = true; },
   };
 }
 

@@ -1,0 +1,328 @@
+import { ChatGPTDOMAdapter } from '../../chatgpt-adapter.js';
+import { WorkerChatController } from '../worker-host/worker-chat-controller.js';
+import { DedicatedWorkerCoordinator } from './dedicated-worker-coordinator.js';
+import { createTabNode, TAB_NODE_ROLE } from './tab-node.js';
+
+export const DEV_WORKER_POOL_MAX = 6;
+export const WORKER_FRAME_HOST_ID = 'hex-dev-worker-frames';
+export const WORKER_FRAME_HOSTS = Object.freeze(['chatgpt.com', 'chat.openai.com']);
+
+const READY_TIMEOUT_MS = 30000;
+const READY_POLL_MS = 250;
+const FRAME_WIDTH = 1024;
+const FRAME_HEIGHT = 900;
+const DEFAULT_BASE = 'https://chatgpt.com/';
+
+/* Safari blocks GM.openInTab/window.open unless a human taps, so a tab pool can
+   never be provisioned from automation on iPad. ChatGPT answers with
+   `x-frame-options: SAMEORIGIN`, so the same page may embed itself. Every Worker
+   is therefore a same-origin iframe inside the one Supervisor tab: no popup, no
+   cross-tab transport, and the parent drives each Worker document directly. */
+export class IframeWorkerPool {
+  constructor({
+    maxWorkers = DEV_WORKER_POOL_MAX,
+    createFrame = defaultCreateFrame,
+    createWorkerRuntime = defaultCreateWorkerRuntime,
+    documentRef = globalThis.document,
+    cryptoRef = globalThis.crypto,
+    location = globalThis.location,
+    now = () => new Date().toISOString(),
+    sleep = delay,
+  } = {}) {
+    this.maxWorkers = boundedInt(maxWorkers, 1, DEV_WORKER_POOL_MAX, DEV_WORKER_POOL_MAX);
+    this.createFrame = createFrame;
+    this.createWorkerRuntime = createWorkerRuntime;
+    this.documentRef = documentRef;
+    this.cryptoRef = cryptoRef;
+    this.location = location;
+    this.now = now;
+    this.sleep = sleep;
+    this.slots = new Map();
+    this.leases = new Map();
+    this.waiters = [];
+  }
+
+  async provision({ size = this.maxWorkers, projectUrl = null, timeoutMs = READY_TIMEOUT_MS } = {}) {
+    const wanted = boundedInt(size, 1, this.maxWorkers, this.maxWorkers);
+    const limit = boundedInt(timeoutMs, 50, 120000, READY_TIMEOUT_MS);
+    let href = null;
+    try { href = this.workerFrameUrl(projectUrl); }
+    catch (error) { throw poolError(String(error?.code || 'worker-frame-origin'), String(error?.message || error)); }
+    const pending = [];
+    for (let index = 1; index <= wanted; index++) {
+      if (this.slots.get(index)?.ready) continue;
+      pending.push(index);
+    }
+    // Worker frames load concurrently: six sequential ChatGPT boots would cost
+    // minutes before the first task can start.
+    const created = (await Promise.all(pending.map((index) => this.provisionSlot(index, href, limit)))).filter(Boolean);
+    this.flushWaiters();
+    return { maxWorkers: this.maxWorkers, requested: wanted, created, slots: this.status().slots, readyCount: this.readyCount() };
+  }
+
+  status() {
+    return {
+      maxWorkers: this.maxWorkers,
+      readyCount: this.readyCount(),
+      claimedCount: [...this.slots.values()].filter((slot) => slot.claimed).length,
+      waiting: this.waiters.length,
+      slots: [...this.slots.values()].sort((a, b) => a.index - b.index).map((slot) => this.publicSlot(slot)),
+    };
+  }
+
+  async claim({ taskId = null, wait = true, signal = null } = {}) {
+    const slot = this.availableSlot();
+    if (slot) return this.claimSlot(slot, taskId);
+    if (wait === false) throw poolError('worker-pool-full', 'All ready Worker slots are claimed.');
+    if (signal?.aborted) throw abortError(signal.reason);
+    return new Promise((resolve, reject) => {
+      const waiter = { taskId: taskId == null ? null : String(taskId), resolve, reject, signal, onAbort: null };
+      waiter.onAbort = () => { this.waiters = this.waiters.filter((item) => item !== waiter); reject(abortError(signal?.reason)); };
+      signal?.addEventListener?.('abort', waiter.onAbort, { once: true });
+      this.waiters.push(waiter);
+    });
+  }
+
+  async createChat({ leaseId } = {}) { const slot = this.requireLease(leaseId); return slot.client.createChat(this.identity(slot)); }
+
+  async start({ leaseId, instruction } = {}) {
+    const slot = this.requireLease(leaseId);
+    if (slot.pending) throw poolError('worker-busy', 'Worker slot already has an active task.');
+    const text = String(instruction || '').trim();
+    if (!text) throw new TypeError('Worker instruction is required.');
+    const pending = Promise.resolve().then(() => slot.client.send({ ...this.identity(slot), instruction: text }));
+    slot.pending = pending;
+    slot.lastResult = null;
+    pending.then((result) => { slot.lastResult = result; slot.pending = null; }, (error) => { slot.lastResult = { status: 'failed', error: { code: String(error?.code || 'provider-error'), message: String(error?.message || error).slice(0, 512) } }; slot.pending = null; }).finally(() => this.flushWaiters());
+    return { started: true, ...this.publicSlot(slot) };
+  }
+
+  async send({ leaseId, instruction } = {}) { const slot = this.requireLease(leaseId); return slot.client.send({ ...this.identity(slot), instruction: String(instruction || '') }); }
+  async followup({ leaseId, text } = {}) { const slot = this.requireLease(leaseId); return slot.client.followup({ ...this.identity(slot), text: String(text || '') }); }
+  async nudge({ leaseId } = {}) { const slot = this.requireLease(leaseId); return slot.client.nudge(this.identity(slot)); }
+  async stop({ leaseId } = {}) { const slot = this.requireLease(leaseId); return slot.client.stop(this.identity(slot)); }
+  async observe({ leaseId } = {}) { const slot = this.requireLease(leaseId); return slot.client.observe(this.identity(slot)); }
+  async result({ leaseId } = {}) { const slot = this.requireLease(leaseId); if (slot.pending) return { status: 'working', ...this.publicSlot(slot) }; return slot.lastResult || slot.client.result(this.identity(slot)); }
+
+  async release({ leaseId } = {}) {
+    const slot = this.requireLease(leaseId);
+    if (slot.pending) throw poolError('worker-busy', 'Cannot release a Worker slot while its task is active.');
+    try { await slot.client.release(this.identity(slot)); }
+    catch (error) { if (String(error?.code || '') !== 'worker-not-claimed') throw error; }
+    this.leases.delete(slot.leaseId);
+    slot.claimed = false; slot.leaseId = null; slot.workerId = null; slot.runId = null; slot.taskId = null; slot.lastResult = null;
+    this.flushWaiters();
+    return this.publicSlot(slot);
+  }
+
+  close() {
+    for (const slot of this.slots.values()) closeSlot(slot);
+    for (const waiter of this.waiters) waiter.reject(poolError('transport-failure', 'Worker pool closed.'));
+    this.waiters = [];
+    this.leases.clear();
+    this.slots.clear();
+  }
+
+  /* Worker frames must stay inside the Supervisor's own ChatGPT origin. A
+     cross-origin frame cannot be driven at all, so this fails closed instead of
+     provisioning slots that can never become ready. */
+  workerFrameUrl(projectUrl) {
+    const base = normalizeBase(this.location);
+    let url;
+    try { url = new URL(String(projectUrl || base), base); }
+    catch { throw poolError('worker-frame-origin', 'Worker iframe URL is invalid.'); }
+    if (url.protocol !== 'https:' || !WORKER_FRAME_HOSTS.includes(url.hostname)) {
+      throw poolError('worker-frame-origin', 'Worker iframes must stay on a ChatGPT HTTPS origin.');
+    }
+    const parentOrigin = String(this.location?.origin || '');
+    if (parentOrigin && parentOrigin !== url.origin) {
+      throw poolError('worker-frame-origin', 'Worker iframes must use the same ChatGPT origin as the Supervisor tab.');
+    }
+    url.hash = '';
+    return url.href;
+  }
+
+  async provisionSlot(index, href, timeoutMs) {
+    let handle = null;
+    try { handle = await this.createFrame({ slot: index, documentRef: this.documentRef, href }); }
+    catch (error) { this.slots.set(index, failedSlot(index, error, 'worker-frame-unavailable')); return null; }
+    if (!handle?.frame) {
+      this.slots.set(index, failedSlot(index, poolError('worker-frame-unavailable', 'The page could not host a Worker iframe.')));
+      return null;
+    }
+    const slot = {
+      index, href, handle, runtime: null, client: null, ready: false, claimed: false, reserving: false,
+      leaseId: null, workerId: null, runId: null, taskId: null, pending: null, lastResult: null, error: null,
+      createdAt: this.now(),
+    };
+    this.slots.set(index, slot);
+    try { await handle.navigate(href); }
+    catch (error) { slot.error = errorRecord(error, 'worker-frame-navigation'); closeSlot(slot); return null; }
+    const outcome = await this.awaitReady(slot, timeoutMs);
+    if (!outcome.ready) { slot.error = { code: outcome.code, message: outcome.message }; closeSlot(slot); return null; }
+    slot.ready = true;
+    return this.publicSlot(slot);
+  }
+
+  /* Ready means the Worker document is same-origin reachable and ChatGPT has
+     rendered a live composer in it. Anything else is reported as the concrete
+     blocker instead of a generic timeout. */
+  async awaitReady(slot, timeoutMs) {
+    const started = Date.now();
+    let sameOriginSeen = false;
+    let lastError = null;
+    while (Date.now() - started < timeoutMs) {
+      let document = null;
+      try { document = slot.handle.frame.contentDocument || slot.handle.frame.contentWindow?.document || null; }
+      catch (error) { lastError = error; document = null; }
+      if (document) {
+        sameOriginSeen = true;
+        if (!slot.runtime) {
+          try {
+            slot.runtime = this.createWorkerRuntime({ slot: slot.index, frame: slot.handle.frame, document, now: this.now });
+            slot.client = slot.runtime?.coordinator || null;
+          } catch (error) { lastError = error; slot.runtime = null; slot.client = null; }
+        }
+        try { if (slot.runtime && slot.client && slot.runtime.ready()) return { ready: true }; }
+        catch (error) { lastError = error; }
+      }
+      await this.sleep(READY_POLL_MS);
+    }
+    if (!sameOriginSeen) {
+      return { ready: false, code: 'worker-frame-blocked', message: `ChatGPT did not allow the Worker iframe to be embedded${lastError ? `: ${String(lastError.message || lastError).slice(0, 200)}` : '.'}` };
+    }
+    return { ready: false, code: 'worker-frame-timeout', message: 'The Worker iframe loaded but ChatGPT never rendered a usable composer in it.' };
+  }
+
+  readyCount() { return [...this.slots.values()].filter((slot) => slot.ready).length; }
+  availableSlot() { return [...this.slots.values()].sort((a, b) => a.index - b.index).find((slot) => slot.ready && !slot.claimed && !slot.reserving && !slot.error) || null; }
+
+  async claimSlot(slot, taskId) {
+    if (slot.claimed || slot.reserving) throw poolError('worker-pool-full', 'Worker slot is already claimed or reserved.');
+    slot.reserving = true;
+    const leaseId = randomId('lease', this.cryptoRef);
+    const runId = randomId('poolrun', this.cryptoRef);
+    const workerId = randomId('worker', this.cryptoRef);
+    try {
+      await slot.client.claim({ runId, workerId });
+      slot.claimed = true; slot.leaseId = leaseId; slot.runId = runId; slot.workerId = workerId;
+      slot.taskId = taskId == null ? null : String(taskId);
+      this.leases.set(leaseId, slot.index);
+      return { leaseId, ...this.publicSlot(slot) };
+    } finally {
+      slot.reserving = false;
+      if (!slot.claimed) this.flushWaiters();
+    }
+  }
+
+  requireLease(value) {
+    const id = String(value || '');
+    const index = this.leases.get(id);
+    const slot = index ? this.slots.get(index) : null;
+    if (!slot || slot.leaseId !== id) throw poolError('lease-missing', 'Worker pool lease is invalid or expired.');
+    return slot;
+  }
+  identity(slot) { return { runId: slot.runId, workerId: slot.workerId }; }
+  publicSlot(slot) {
+    return {
+      slot: slot.index, ready: !!slot.ready, claimed: !!slot.claimed, leaseId: slot.leaseId, workerId: slot.workerId,
+      taskId: slot.taskId, working: !!slot.pending, chatgptConversationId: slot.lastResult?.chatgptConversationId || null,
+      error: slot.error, createdAt: slot.createdAt || null,
+    };
+  }
+  flushWaiters() {
+    while (this.waiters.length) {
+      const slot = this.availableSlot();
+      if (!slot) return;
+      const waiter = this.waiters.shift();
+      waiter.signal?.removeEventListener?.('abort', waiter.onAbort);
+      this.claimSlot(slot, waiter.taskId).then(waiter.resolve, waiter.reject);
+    }
+  }
+}
+
+/* The frame is kept off-screen instead of `display:none`: a non-rendered iframe
+   is not laid out, and ChatGPT then never mounts the composer the Worker drives. */
+export function defaultCreateFrame({ slot, documentRef = globalThis.document } = {}) {
+  const doc = documentRef;
+  if (!doc?.createElement || !doc.documentElement) return null;
+  const host = ensureFrameHost(doc);
+  const frame = doc.createElement('iframe');
+  frame.id = `hex-dev-worker-frame-${slot}`;
+  frame.title = `Hex Dev Worker ${slot}`;
+  frame.setAttribute('aria-hidden', 'true');
+  frame.setAttribute('tabindex', '-1');
+  frame.style.cssText = `width:${FRAME_WIDTH}px;height:${FRAME_HEIGHT}px;border:0;background:#fff;`;
+  host.append(frame);
+  return {
+    frame,
+    async navigate(href) { frame.src = href; },
+    close() {
+      try { frame.remove(); } catch { /* already detached */ }
+      try { if (!host.querySelector?.('iframe')) host.remove(); } catch { /* already detached */ }
+    },
+  };
+}
+
+export function defaultCreateWorkerRuntime({ slot, frame, document, now = () => new Date().toISOString() } = {}) {
+  const view = frame?.contentWindow || document?.defaultView || null;
+  const adapter = new ChatGPTDOMAdapter({
+    document,
+    view,
+    location: view?.location || document?.location || null,
+    history: view?.history || null,
+  });
+  const controller = new WorkerChatController({ adapter, document, now });
+  const node = createTabNode({ role: TAB_NODE_ROLE.WORKER, now });
+  const coordinator = new DedicatedWorkerCoordinator({ controller, tabNodeId: node.tabNodeId, now });
+  return {
+    slot, adapter, controller, coordinator, node,
+    ready() { try { return !!adapter.composer(); } catch { return false; } },
+    close() { try { coordinator.close(); } catch { /* already closed */ } },
+  };
+}
+
+function ensureFrameHost(doc) {
+  const existing = doc.getElementById?.(WORKER_FRAME_HOST_ID);
+  if (existing) return existing;
+  const host = doc.createElement('div');
+  host.id = WORKER_FRAME_HOST_ID;
+  host.setAttribute('aria-hidden', 'true');
+  host.style.cssText = 'position:fixed;top:0;left:-20000px;width:1px;height:1px;overflow:hidden;pointer-events:none;z-index:-1;';
+  doc.documentElement.append(host);
+  return host;
+}
+
+function closeSlot(slot) {
+  try { slot.runtime?.close?.(); } catch { /* already closed */ }
+  try { slot.handle?.close?.(); } catch { /* already detached */ }
+}
+function normalizeBase(locationRef) {
+  const href = String(locationRef?.href || '');
+  try { const url = new URL(href); return WORKER_FRAME_HOSTS.includes(url.hostname) ? url.href : DEFAULT_BASE; }
+  catch { return DEFAULT_BASE; }
+}
+function failedSlot(index, error, fallbackCode = 'worker-frame-unavailable') {
+  return {
+    index, handle: null, runtime: null, client: null, ready: false, claimed: false, reserving: false,
+    leaseId: null, workerId: null, runId: null, taskId: null, pending: null, lastResult: null,
+    error: errorRecord(error, fallbackCode), createdAt: new Date().toISOString(),
+  };
+}
+function errorRecord(error, fallbackCode) {
+  return { code: String(error?.code || fallbackCode), message: String(error?.message || error).slice(0, 512) };
+}
+function randomId(prefix, cryptoRef) {
+  if (!cryptoRef?.getRandomValues) throw new TypeError('WebCrypto is required for Worker pool identity.');
+  const bytes = cryptoRef.getRandomValues(new Uint8Array(16));
+  return `${prefix}-${[...bytes].map((value) => value.toString(16).padStart(2, '0')).join('')}`;
+}
+function boundedInt(value, min, max, fallback) {
+  if (value == null) return fallback;
+  const number = Number(value);
+  if (!Number.isFinite(number)) throw new TypeError('Expected finite numeric bound.');
+  return Math.min(max, Math.max(min, Math.floor(number)));
+}
+function poolError(code, message) { const error = new Error(message); error.code = code; return error; }
+function abortError(reason) { const error = poolError('cancelled', String(reason || 'cancelled')); error.name = 'AbortError'; return error; }
+function delay(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }

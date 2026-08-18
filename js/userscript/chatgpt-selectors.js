@@ -43,8 +43,11 @@ export const CHATGPT_SELECTORS = Object.freeze({
     'button[data-testid="stop-button"]:not(:disabled):not([aria-disabled="true"])',
     'button[aria-label="Stop generating"]:not(:disabled):not([aria-disabled="true"])',
     'button[aria-label="Stop streaming"]:not(:disabled):not([aria-disabled="true"])',
-    'button[aria-label*="Stop" i]:not(:disabled):not([aria-disabled="true"])',
-    'button[aria-label*="停止"]:not(:disabled):not([aria-disabled="true"])',
+    'button[aria-label="生成を停止"]:not(:disabled):not([aria-disabled="true"])',
+    'button[aria-label="生成を停止する"]:not(:disabled):not([aria-disabled="true"])',
+    'button[aria-label="応答の生成を停止"]:not(:disabled):not([aria-disabled="true"])',
+    'button[aria-label="応答の生成を停止する"]:not(:disabled):not([aria-disabled="true"])',
+    'button[aria-label="ストリーミングを停止"]:not(:disabled):not([aria-disabled="true"])',
   ]),
   assistantTurn: Object.freeze([
     '[data-message-author-role="assistant"]',

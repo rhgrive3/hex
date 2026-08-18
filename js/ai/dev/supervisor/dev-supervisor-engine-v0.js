@@ -11,11 +11,33 @@ import {
   createDevBootstrapCheckpoint,
   createDevBootstrapHandoff,
 } from '../bootstrap/dev-bootstrap-gate.js';
+import {
+  DEV_RUNTIME_ACTIVATION_TOOL,
+  DEV_RUNTIME_IDENTITY_TOOL,
+  DEV_SELF_UPDATE_HISTORY_KIND,
+  DevSelfUpdateGate,
+  readDevRuntimeIdentityFromGlobals,
+} from '../bootstrap/self-update-gate.js';
+import {
+  DEV_TOOL_ERROR_RECOVERY_BUDGET,
+  createDevToolErrorHistoryEntry,
+  isTerminalDevToolError,
+  sanitizeDevToolArguments,
+} from './tool-error-recovery.js';
 
 const MAX_DECISIONS = 16;
 
 export class DevSupervisorEngineV0 {
-  constructor({ supervisor, settings, bridge = globalThis.__HEX_CHATGPT_BRIDGE__, maxDecisions = MAX_DECISIONS, extensionLoader = new DevExtensionLoader() } = {}) {
+  constructor({
+    supervisor,
+    settings,
+    bridge = globalThis.__HEX_CHATGPT_BRIDGE__,
+    maxDecisions = MAX_DECISIONS,
+    extensionLoader = new DevExtensionLoader(),
+    selfUpdateGate = new DevSelfUpdateGate(),
+    maxToolErrorRecoveries = DEV_TOOL_ERROR_RECOVERY_BUDGET,
+    runtimeIdentityProvider = null,
+  } = {}) {
     if (!supervisor) throw new TypeError('DevSupervisorEngineV0 requires a supervisor.');
     if (!settings) throw new TypeError('DevSupervisorEngineV0 requires settings.');
     if (!extensionLoader || typeof extensionLoader.beginToolCall !== 'function' || typeof extensionLoader.endToolCall !== 'function') {
@@ -26,8 +48,52 @@ export class DevSupervisorEngineV0 {
     this.bridge = bridge || null;
     this.maxDecisions = maxDecisions;
     this.extensionLoader = extensionLoader;
+    this.selfUpdateGate = selfUpdateGate;
+    this.maxToolErrorRecoveries = Math.max(0, Number(maxToolErrorRecoveries) || 0);
+    this.runtimeIdentityProvider = typeof runtimeIdentityProvider === 'function' ? runtimeIdentityProvider : null;
     this.bootstrapStage = null;
     this.supervisorSessions = new Map();
+  }
+
+  requireRuntimeActivation(options) {
+    return this.selfUpdateGate.requireActivation(options);
+  }
+
+  observeActiveRuntimeIdentity(identity) {
+    return this.selfUpdateGate.observeActiveRuntime(identity);
+  }
+
+  runtimeActivationStatus() {
+    return this.selfUpdateGate.status();
+  }
+
+  /* The Supervisor must be able to re-read the active identity even when the
+     parent runtime predates the dev.runtime.identity RPC method, so the engine
+     owns this tool and falls back to the runtime globals. */
+  async readActiveRuntimeIdentity(args = {}) {
+    if (this.supervisor.adminTools?.has?.(DEV_RUNTIME_IDENTITY_TOOL)) {
+      const result = await this.executeWithinToolBoundary(
+        () => this.supervisor.adminTools.execute(DEV_RUNTIME_IDENTITY_TOOL, args),
+      );
+      return Object.freeze({ source: 'parent-runtime', ...(result && typeof result === 'object' ? result : {}) });
+    }
+    if (this.runtimeIdentityProvider) {
+      const result = await this.runtimeIdentityProvider(args);
+      return Object.freeze({ source: 'runtime-identity-provider', ...(result && typeof result === 'object' ? result : {}) });
+    }
+    return Object.freeze({ source: 'runtime-globals', ...readDevRuntimeIdentityFromGlobals() });
+  }
+
+  /* An unreadable identity leaves the gate closed instead of failing the run. */
+  observeRuntimeIdentityResult(result) {
+    try {
+      return { ...sanitize(this.selfUpdateGate.observeActiveRuntime(result?.identity ?? result)) };
+    } catch (error) {
+      return {
+        ...sanitize(this.selfUpdateGate.status()),
+        identityError: String(error?.message || error || 'active runtime identity is unreadable.').slice(0, 512),
+      };
+    }
   }
 
   prepareBootstrapExtension() {
@@ -35,8 +101,30 @@ export class DevSupervisorEngineV0 {
     return this.bootstrapStage;
   }
 
+  /* Round 4 bootstrap activation is one instance of the general self-update
+     rule, so it arms and satisfies the same gate. */
   activateBootstrapAtSafeBoundary(options) {
-    return this.extensionLoader.activateAtSafeBoundary(options);
+    const result = this.extensionLoader.activateAtSafeBoundary(options);
+    try {
+      if (result?.status === 'reload-required') {
+        const checkpoint = result.handoff?.checkpoint;
+        if (checkpoint) {
+          this.selfUpdateGate.requireActivation({
+            expectedCommit: checkpoint.expectedCommit,
+            expectedBuildId: checkpoint.expectedBuildId,
+            /* The checkpoint records the identity that is already running, so an
+               identity read alone would satisfy it. Only a real reinitialization
+               may open this gate, and only the extension capabilities are gated. */
+            requireReinitialization: true,
+            capabilities: DEV_BOOTSTRAP_EXTENSION.capabilities.map((item) => item.name),
+            reason: result.reason || 'extension-reinitialize',
+          });
+        }
+      } else if (result?.status === 'active' && result.identity) {
+        this.selfUpdateGate.observeActiveRuntime(result.identity, { reinitialized: options?.reinitialized === true });
+      }
+    } catch { /* the gate must never mask the activation result */ }
+    return result;
   }
 
   invokeBootstrapCapability(name) {
@@ -92,6 +180,8 @@ export class DevSupervisorEngineV0 {
     return Object.freeze([...new Set([
       ...(this.supervisor.availableTools || []),
       ...(this.extensionLoader.activeCapabilities || []),
+      DEV_RUNTIME_IDENTITY_TOOL,
+      DEV_RUNTIME_ACTIVATION_TOOL,
     ])]);
   }
 
@@ -142,6 +232,23 @@ export class DevSupervisorEngineV0 {
     const eventHost = new DevRunEventHost({ supervisor: this.supervisor });
     let workerClaimed = false;
     let workerClaimAttempted = false;
+    let toolErrorRecoveries = 0;
+
+    /* A claim that threw leaves ownership ambiguous. Recovery can now carry the
+       run all the way to a normal ending, so every exit settles the obligation
+       instead of only the confirmed-claim case. */
+    const settleWorkerOwnership = async () => {
+      if (workerClaimed) {
+        run = await this.releaseWorker(run);
+        workerClaimed = false;
+        workerClaimAttempted = false;
+        return;
+      }
+      if (!workerClaimAttempted) return;
+      try { run = await this.releaseWorker(run); }
+      catch { /* the ambiguous claim held nothing; a good run must not fail for it */ }
+      workerClaimAttempted = false;
+    };
 
     try {
       for (let step = 0; step < this.maxDecisions; step++) {
@@ -186,25 +293,62 @@ export class DevSupervisorEngineV0 {
 
         if (decision.type === 'tool') {
           input.onActivity?.({ label: decision.tool, detail: decision.purpose });
-          if (this.extensionLoader.activeCapabilities?.includes(decision.tool)) {
-            const result = await this.executeWithinToolBoundary(() => this.invokeBootstrapCapability(decision.tool));
-            history.push({ kind: 'tool-result', tool: decision.tool, purpose: decision.purpose, result: sanitize(result) });
-            if (decision.tool === requiredBootstrapCapability) requiredBootstrapObserved = true;
+
+          /* A merged source change does not make the running runtime new. */
+          const rejection = this.selfUpdateGate.rejectionFor(decision.tool);
+          if (rejection) {
+            history.push({ kind: DEV_SELF_UPDATE_HISTORY_KIND, tool: decision.tool, ...sanitize(rejection) });
             continue;
           }
-          if (decision.tool === DEV_WORKER_TOOL.CLAIM) workerClaimAttempted = true;
-          const executed = await this.executeWithinToolBoundary(
-            () => this.supervisor.executeToolDecision(run, decision),
-          );
-          run = executed.run;
-          if (decision.tool === DEV_WORKER_TOOL.CLAIM) {
-            workerClaimed = true;
-            workerClaimAttempted = false;
+
+          try {
+            if (decision.tool === DEV_RUNTIME_ACTIVATION_TOOL) {
+              const result = this.selfUpdateGate.requireActivation(decision.arguments);
+              history.push({ kind: 'tool-result', tool: decision.tool, purpose: decision.purpose, result: sanitize(result) });
+              continue;
+            }
+            if (decision.tool === DEV_RUNTIME_IDENTITY_TOOL) {
+              const result = await this.readActiveRuntimeIdentity(decision.arguments);
+              history.push({ kind: 'tool-result', tool: decision.tool, purpose: decision.purpose, result: sanitize(result) });
+              history.push({ kind: 'runtime-activation', ...this.observeRuntimeIdentityResult(result) });
+              continue;
+            }
+            if (this.extensionLoader.activeCapabilities?.includes(decision.tool)) {
+              const result = await this.executeWithinToolBoundary(() => this.invokeBootstrapCapability(decision.tool));
+              history.push({ kind: 'tool-result', tool: decision.tool, purpose: decision.purpose, result: sanitize(result) });
+              if (decision.tool === requiredBootstrapCapability) requiredBootstrapObserved = true;
+              continue;
+            }
+            if (decision.tool === DEV_WORKER_TOOL.CLAIM) workerClaimAttempted = true;
+            const executed = await this.executeWithinToolBoundary(
+              () => this.supervisor.executeToolDecision(run, decision),
+            );
+            run = executed.run;
+            if (decision.tool === DEV_WORKER_TOOL.CLAIM) {
+              workerClaimed = true;
+              workerClaimAttempted = false;
+            }
+            if (decision.tool === DEV_WORKER_TOOL.RELEASE) workerClaimed = false;
+            this.settings.setLastRun(run);
+            history.push({ kind: 'tool-result', tool: decision.tool, purpose: decision.purpose, result: sanitize(executed.result) });
+            continue;
+          } catch (toolError) {
+            /* Ownership bookkeeping stays truthful: an unresolved claim keeps
+               its cleanup obligation, and a failed release keeps the claim. */
+            if (isTerminalDevToolError(toolError) || toolErrorRecoveries >= this.maxToolErrorRecoveries) throw toolError;
+            toolErrorRecoveries += 1;
+            history.push({
+              ...createDevToolErrorHistoryEntry({
+                tool: decision.tool,
+                purpose: decision.purpose,
+                error: toolError,
+                attempt: toolErrorRecoveries,
+                remaining: this.maxToolErrorRecoveries - toolErrorRecoveries,
+              }),
+              arguments: sanitizeDevToolArguments(decision.arguments),
+            });
+            continue;
           }
-          if (decision.tool === DEV_WORKER_TOOL.RELEASE) workerClaimed = false;
-          this.settings.setLastRun(run);
-          history.push({ kind: 'tool-result', tool: decision.tool, purpose: decision.purpose, result: sanitize(executed.result) });
-          continue;
         }
 
         if (requiredBootstrapCapability && !requiredBootstrapObserved) {
@@ -225,30 +369,21 @@ export class DevSupervisorEngineV0 {
         }
 
         if (decision.type === 'human') {
-          if (workerClaimed) {
-            run = await this.releaseWorker(run);
-            workerClaimed = false;
-          }
+          await settleWorkerOwnership();
           const applied = eventHost.yieldDecision(run, decision);
           run = applied.run;
           this.settings.setLastRun(run);
           return uiResponse(decision.question, run, [decision.question]);
         }
 
-        if (workerClaimed) {
-          run = await this.releaseWorker(run);
-          workerClaimed = false;
-        }
+        await settleWorkerOwnership();
         const applied = this.supervisor.applyDecision(run, decision);
         run = applied.run;
         this.settings.setLastRun(run);
         return uiResponse(decision.answer, run, []);
       }
 
-      if (workerClaimed) {
-        run = await this.releaseWorker(run);
-        workerClaimed = false;
-      }
+      await settleWorkerOwnership();
       if (run.status === DEV_RUN_STATUS.ACTIVE) {
         run = transitionDevRun(run, DEV_RUN_STATUS.PAUSED, { now: this.supervisor.now() });
         this.settings.setLastRun(run);

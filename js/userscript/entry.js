@@ -24,6 +24,11 @@ export async function startChatGPTUserscript(options = {}) {
   cleanupPreviousSession();
 
   const devWorkerRuntime = await startParentDevWorkerRuntime({
+    runtimeIdentity: {
+      commit: options.sourceCommit,
+      buildId: options.buildId,
+      userscriptVersion: options.loaderVersion,
+    },
     ...(options.devWorkerOptions || {}),
   });
 
@@ -233,7 +238,7 @@ function cleanupPreviousSession() {
     if (typeof cleanup === 'function') cleanup();
   } catch {}
   try { delete globalThis[SESSION_CLEANUP_KEY]; } catch { globalThis[SESSION_CLEANUP_KEY] = null; }
-  for (const id of ['hex-userscript-iframe-host', 'hex-userscript-iframe', 'hex-userscript-launcher', 'hex-userscript-emergency-close', 'hex-userscript-host']) {
+  for (const id of ['hex-userscript-iframe-host', 'hex-userscript-iframe', 'hex-userscript-launcher', 'hex-userscript-emergency-close', 'hex-userscript-host', 'hex-dev-worker-frames']) {
     try { document.getElementById(id)?.remove(); } catch {}
   }
 }

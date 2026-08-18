@@ -32,8 +32,15 @@ export class ChatGPTBridgeError extends Error {
 }
 
 export class ChatGPTDOMAdapter {
-  constructor({ document = globalThis.document, location = globalThis.location, history = globalThis.history, selectors = CHATGPT_SELECTORS } = {}) {
+  /*
+   * `view` is the window the document actually lives in. A Dev Worker document
+   * is a same-origin ChatGPT iframe, so observers, element prototypes, the
+   * selection and event constructors must come from that frame's realm, not
+   * from the Supervisor window that happens to be running this code.
+   */
+  constructor({ document = globalThis.document, location = globalThis.location, history = globalThis.history, view = null, selectors = CHATGPT_SELECTORS } = {}) {
     this.document = document;
+    this.view = view || document?.defaultView || globalThis;
     this.location = location;
     this.history = history;
     this.selectors = selectors;
@@ -223,8 +230,12 @@ export class ChatGPTDOMAdapter {
     return null;
   }
 
+  /* Realm-scoped lookup: prefer the Worker frame's own constructor and fall back
+     to this window only when the frame does not expose it. */
+  realm(name) { let value = null; try { value = this.view?.[name]; } catch { value = null; } return value || globalThis[name] || null; }
+
   observePageErrors(callback) {
-    const Observer = globalThis.MutationObserver;
+    const Observer = this.realm('MutationObserver');
     const root = this.document?.documentElement || this.document?.body || null;
     if (!root || typeof Observer !== 'function') return () => {};
     const selectors = this.selectors.pageError || [];
@@ -299,13 +310,13 @@ export class ChatGPTDOMAdapter {
     if (!node) throw bridgeError('dom-adapter', 'composer-not-found', 'ChatGPT composer was not found.');
     node.focus?.();
     if ('value' in node && typeof node.value === 'string') {
-      const proto = node.tagName === 'TEXTAREA' ? globalThis.HTMLTextAreaElement?.prototype : globalThis.HTMLInputElement?.prototype;
+      const proto = node.tagName === 'TEXTAREA' ? this.realm('HTMLTextAreaElement')?.prototype : this.realm('HTMLInputElement')?.prototype;
       const setter = proto ? Object.getOwnPropertyDescriptor(proto, 'value')?.set : null;
       if (setter) setter.call(node, value); else node.value = value;
     } else {
       let inserted = false;
       try {
-        const selection = globalThis.getSelection?.();
+        const selection = this.view?.getSelection?.() ?? globalThis.getSelection?.();
         const range = this.document?.createRange?.();
         range?.selectNodeContents?.(node); selection?.removeAllRanges?.(); if (range) selection?.addRange?.(range);
         inserted = !!this.document?.execCommand?.('insertText', false, value);
@@ -313,15 +324,16 @@ export class ChatGPTDOMAdapter {
       } catch { inserted = false; }
       if (!inserted) node.textContent = value;
     }
-    const InputEventCtor = globalThis.InputEvent || globalThis.Event;
+    const EventCtor = this.realm('Event');
+    const InputEventCtor = this.realm('InputEvent') || EventCtor;
     node.dispatchEvent?.(new InputEventCtor('input', { bubbles: true, inputType: 'insertText', data: value }));
-    node.dispatchEvent?.(new Event('change', { bubbles: true }));
+    node.dispatchEvent?.(new EventCtor('change', { bubbles: true }));
   }
 
   composerText(node) { return String(node?.value ?? node?.innerText ?? node?.textContent ?? ''); }
 
   observeMutations(node, callback) {
-    const Observer = globalThis.MutationObserver;
+    const Observer = this.realm('MutationObserver');
     if (!node || typeof Observer !== 'function') return () => {};
     const observer = new Observer(() => callback?.());
     observer.observe(node, { subtree: true, childList: true, characterData: true, attributes: true });
@@ -486,7 +498,10 @@ export class ChatGPTModelController {
       }, 3000, signal) || [];
     }
     if (close && options.length) {
-      try { this.adapter.document?.dispatchEvent?.(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); } catch { /* optional */ }
+      try {
+        const KeyboardEventCtor = this.adapter.realm?.('KeyboardEvent') || globalThis.KeyboardEvent;
+        this.adapter.document?.dispatchEvent?.(new KeyboardEventCtor('keydown', { key: 'Escape', bubbles: true }));
+      } catch { /* optional */ }
     }
     return options;
   }
@@ -520,7 +535,7 @@ export class ChatGPTTurnController {
     const normalizedPrompt = normalizeText(prompt);
     let composer = await waitFor(() => this.adapter.composer(), Math.min(timeoutMs, this.startTimeoutMs), signal);
     if (!composer) throw bridgeError('turn-controller', 'composer-not-found', 'ChatGPT composer was not found.');
-    if (this.adapter.isGenerating()) throw bridgeError('turn-controller', 'already-generating', 'ChatGPT is already generating a response.');
+    if (this.adapter.isGenerating() && !newConversation) throw bridgeError('turn-controller', 'already-generating', 'ChatGPT is already generating a response.');
 
     const baselineAssistant = new Set(this.assistantTurns().map((turn) => turn.id));
     const baselineUsers = new Set(this.userTurns().map((turn) => turn.id));

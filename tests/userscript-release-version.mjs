@@ -27,4 +27,10 @@ assert.equal(version, '2.0.' + releaseState.serial, 'committed userscript metada
 assert.match(releaseState.releaseIdentity, /^[a-f0-9]{64}$/);
 assert.match(releaseState.buildId, /^[a-f0-9]{24}$/);
 assert.ok(template.includes(releaseState.buildId), 'committed userscript loader must embed the release state buildId');
+await import('./userscript-deployment-identity.mjs');
+await import('./userscript-origin-policy.mjs');
+await import('./dev-agent/post-bootstrap-self-improvement-kernel.mjs');
+await import('./dev-agent/dom-skill-system.mjs');
+await import('./dev-agent/iframe-worker-pool.mjs');
+await import('./dev-agent/supervisor-progress-budget.mjs');
 console.log('Userscript release-version contract passed');
