@@ -5,12 +5,14 @@ import {
   DEV_BOOTSTRAP_EXTENSION,
   DEV_BOOTSTRAP_EXTENSION_INTEGRITY,
   DEV_BOOTSTRAP_EXTENSION_VERSION,
+  DEV_BOOTSTRAP_ROUND4_PROOF_CAPABILITY,
   DevExtensionLoader,
   createDevBootstrapCheckpoint,
   createDevBootstrapHandoff,
   verifyDevBootstrapIdentity,
 } from '../../js/ai/dev/bootstrap/dev-bootstrap-gate.js';
 import { DevSupervisorEngineV0 } from '../../js/ai/dev/supervisor/dev-supervisor-engine-v0.js';
+import { DevSupervisorV0 } from '../../js/ai/dev/supervisor/dev-supervisor-v0.js';
 import { createAgentProfileEngine } from '../../js/ai/dev/ui/engine-router.js';
 
 const COMMIT = 'a'.repeat(40);
@@ -27,6 +29,12 @@ const checkpointInput = {
   expectedExtensionVersion: DEV_BOOTSTRAP_EXTENSION_VERSION,
 };
 const sha256 = async (value) => createHash('sha256').update(String(value)).digest('hex');
+
+assert.equal(DEV_BOOTSTRAP_EXTENSION_VERSION, '2');
+assert.deepEqual(DEV_BOOTSTRAP_EXTENSION.capabilities.map((item) => item.name), [
+  DEV_BOOTSTRAP_CAPABILITY,
+  DEV_BOOTSTRAP_ROUND4_PROOF_CAPABILITY,
+]);
 
 const checkpoint = createDevBootstrapCheckpoint(checkpointInput);
 assert.deepEqual(Object.keys(checkpoint), Object.keys(checkpointInput), 'checkpoint must carry only the Round 4 minimum fields');
@@ -64,8 +72,9 @@ assert.deepEqual(staged, {
   verified: true,
 });
 assert.equal(loader.activeVersion, null, 'staging must not activate the extension');
+assert.deepEqual(loader.activeCapabilities, [], 'staging must not advertise capabilities');
 assert.throws(
-  () => loader.activateAtSafeBoundary({ checkpoint: { ...checkpointInput, expectedExtensionVersion: '2' }, activeIdentity: { commit: COMMIT, buildId: BUILD_ID }, reinitialized: true }),
+  () => loader.activateAtSafeBoundary({ checkpoint: { ...checkpointInput, expectedExtensionVersion: '3' }, activeIdentity: { commit: COMMIT, buildId: BUILD_ID }, reinitialized: true }),
   (error) => error.code === 'dev-extension-version-mismatch',
 );
 
@@ -98,6 +107,7 @@ assert.equal(reload.handoff.runId, checkpoint.runId);
 assert.equal(reload.handoff.supervisorSessionKey, checkpoint.supervisorSessionKey);
 assert.equal(reload.handoff.chatgptConversationId, checkpoint.chatgptConversationId);
 assert.equal(loader.activeVersion, null, 'reload request must not activate before reinitialization');
+assert.deepEqual(loader.activeCapabilities, [], 'reload handoff must not advertise capabilities before restoration');
 
 assert.throws(
   () => loader.activateAtSafeBoundary({ checkpoint, activeIdentity: { commit: 'c'.repeat(40), buildId: BUILD_ID }, reinitialized: true }),
@@ -112,6 +122,7 @@ const activated = loader.activateAtSafeBoundary({ checkpoint, activeIdentity: { 
 assert.equal(activated.status, 'active');
 assert.equal(activated.identity.verified, true);
 assert.equal(loader.activeVersion, DEV_BOOTSTRAP_EXTENSION_VERSION);
+assert.deepEqual(loader.activeCapabilities, [DEV_BOOTSTRAP_CAPABILITY, DEV_BOOTSTRAP_ROUND4_PROOF_CAPABILITY]);
 
 const evidence = loader.invoke(DEV_BOOTSTRAP_CAPABILITY);
 assert.deepEqual(evidence, {
@@ -123,6 +134,8 @@ assert.deepEqual(evidence, {
   buildId: BUILD_ID,
   verified: true,
 });
+const proofEvidence = loader.invoke(DEV_BOOTSTRAP_ROUND4_PROOF_CAPABILITY);
+assert.deepEqual(proofEvidence, { ...evidence, capability: DEV_BOOTSTRAP_ROUND4_PROOF_CAPABILITY });
 assert.throws(() => loader.invoke('dev.bootstrap.unknown'), /Unknown Dev extension capability/);
 
 const routingCalls = [];
@@ -146,5 +159,37 @@ assert.equal(await routed.run({ mode: 'agent' }), 'standard', 'Standard Agent ro
 settings.agentProfile = 'dev';
 assert.equal(await routed.run({ mode: 'agent' }), 'dev');
 assert.deepEqual(routingCalls.slice(0, 3).map((item) => item[0]), ['prepare', 'activate', 'invoke']);
+
+const productionLoader = new DevExtensionLoader({ sha256 });
+await productionLoader.stage(DEV_BOOTSTRAP_EXTENSION);
+productionLoader.activateAtSafeBoundary({ checkpoint, activeIdentity: { commit: COMMIT, buildId: BUILD_ID }, reinitialized: true });
+const prompts = [];
+const runtimeSettings = {
+  decisionPolicy: 'normal',
+  analysisScope: undefined,
+  lastRun: null,
+  setLastRun(run) { this.lastRun = run; },
+};
+let requestCount = 0;
+const bridge = {
+  async request(prompt) {
+    prompts.push(String(prompt));
+    requestCount += 1;
+    if (requestCount === 1) return JSON.stringify({ type: 'tool', tool: DEV_BOOTSTRAP_ROUND4_PROOF_CAPABILITY, arguments: {}, purpose: 'prove restored bootstrap capability' });
+    return JSON.stringify({ type: 'final', answer: 'proof observed', completedTasks: ['round4-proof'], remaining: [] });
+  },
+};
+const productionEngine = new DevSupervisorEngineV0({
+  supervisor: new DevSupervisorV0({ workerTools: { toolNames: [], has: () => false } }),
+  settings: runtimeSettings,
+  bridge,
+  extensionLoader: productionLoader,
+});
+const runtimeResult = await productionEngine.run({ goal: 'resume after bootstrap restoration', conversationId: 'conversation-round4' });
+assert.equal(runtimeResult.answer, 'proof observed');
+assert.match(prompts[0], /dev\.bootstrap\.round4-proof/, 'an activated extension capability must be advertised to the resumed Supervisor');
+assert.match(prompts[1], /dev\.bootstrap\.round4-proof/, 'the next Supervisor turn must receive the extension tool result');
+assert.match(prompts[1], /verified/, 'the extension proof result must be returned as Supervisor history');
+assert.equal(productionLoader.toolCallActive, false, 'extension invocation must settle its tool-call boundary');
 
 console.log('Dev Agent Seed Round 4 bootstrap gate tests passed');
