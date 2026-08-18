@@ -23,7 +23,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Apply semantic compare repair, test isolation, and latest RISC-V ABI fixes
+      - name: Apply candidate semantic repairs
         shell: bash
         run: |
           set -euo pipefail
@@ -34,70 +34,53 @@ jobs:
           s = p.read_text()
           old = """  const rhs = shiftedConst(cmp.args[1], cmp.args[0].value.bits || 64);\n  if (rhs == null) return null;\n  return { lhs: cmp.args[0].value, rhs, cond: branch.cond || null, cmp };"""
           new = """  const bits = Number(cmp.extra?.widthBits || cmp.extra?.bits || cmp.args[0].bits || cmp.args[1].bits || cmp.args[0].value.bits || 64);\n  const rhs = shiftedConst(cmp.args[1], bits);\n  if (rhs == null) return null;\n  return { lhs: cmp.args[0].value, rhs, bits, cond: branch.cond || null, cmp };"""
-          assert s.count(old) == 1, 'comparisonOfBranch source drifted'
+          assert s.count(old) == 1
           s = s.replace(old, new)
-
           old = """function constrainedRange(value, op, constant, signed) {\n  const bits = value && value.bits || 64;\n  const rhs = normalizeIntegerValue(constant, bits, signed);\n  const bounds = typeBounds(bits, signed);"""
           new = """function constrainedRange(value, op, constant, signed, bitsOverride = null) {\n  const bits = Number(bitsOverride || (value && value.bits) || 64);\n  const rhs = normalizeIntegerValue(constant, bits, signed);\n  const bounds = typeBounds(bits, signed);"""
-          assert s.count(old) == 1, 'constrainedRange source drifted'
+          assert s.count(old) == 1
           s = s.replace(old, new)
-
           old = """  const existing = valueRange(value);\n  if (existing) { if (existing.min > min) min = existing.min; if (existing.max < max) max = existing.max; }"""
           new = """  const existing = normalizeRangeDomain(valueRange(value), bits, signed);\n  if (existing) { if (existing.min > min) min = existing.min; if (existing.max < max) max = existing.max; }"""
-          assert s.count(old) == 1, 'existing-range intersection source drifted'
+          assert s.count(old) == 1
           s = s.replace(old, new)
-
           old = """  const rhs = normalizeIntegerValue(c.rhs, c.lhs.bits || 64, signedForBounds);\n  const range = constrainedRange(c.lhs, relation, rhs, signedForBounds);"""
           new = """  const bits = Number(c.bits || c.lhs.bits || 64);\n  const rhs = normalizeIntegerValue(c.rhs, bits, signedForBounds);\n  const range = constrainedRange(c.lhs, relation, rhs, signedForBounds, bits);"""
-          assert s.count(old) == 1, 'rangeOnBranch source drifted'
-          p.write_text(s)
+          assert s.count(old) == 1
+          p.write_text(s.replace(old, new))
 
           p = Path('js/semantics/compat/semantic-ir-v2-to-v1.js')
           s = p.read_text()
           old = """function addComparisonCarriers(ir, values, valuesById) {\n  const flagWriteInstructionIds = new Set();\n  for (const node of ir.nodes) {\n    if (node.kind !== 'state-write' || node.variable?.physicalIdentity?.kind !== 'flag') continue;\n    for (const id of sourceInstructionIds(node.origin)) flagWriteInstructionIds.add(id);\n  }\n\n  const byNodeId = new Map();\n  for (const node of ir.nodes) {"""
           new = """function addComparisonCarriers(ir, values, valuesById) {\n  const flagWriteInstructionIds = new Set();\n  const addWithCarryInstructionIds = new Set();\n  for (const node of ir.nodes) {\n    if (node.kind === 'state-write' && node.variable?.physicalIdentity?.kind === 'flag') {\n      for (const id of sourceInstructionIds(node.origin)) flagWriteInstructionIds.add(id);\n    }\n    if (node.kind === 'intrinsic' && node.operator === 'add-with-carry') {\n      for (const id of sourceInstructionIds(node.origin)) addWithCarryInstructionIds.add(id);\n    }\n  }\n\n  const byNodeId = new Map();\n  for (const node of ir.nodes) {"""
-          assert s.count(old) == 1, 'comparison carrier prelude drifted'
+          assert s.count(old) == 1
           s = s.replace(old, new)
-
           old = """    const flagProducingArithmetic = sameInstruction(node, flagWriteInstructionIds)\n      && ((node.kind === 'intrinsic' && node.operator === 'add-with-carry') || node.kind === 'binary');"""
-          new = """    // A single machine instruction may contain auxiliary binary nodes used to\n    // form an operand (for example a shifted register) before canonical\n    // add-with-carry computes the flag-producing arithmetic result. When that\n    // canonical intrinsic exists, do not promote the auxiliary binary node into\n    // a second comparison carrier: doing so flattens operand transforms into\n    // bogus legacy compare arguments. Binary nodes remain valid carriers for\n    // instructions that have no canonical add-with-carry producer.\n    const canonicalAddWithCarry = node.kind === 'intrinsic' && node.operator === 'add-with-carry';\n    const auxiliaryBinary = node.kind === 'binary' && sameInstruction(node, addWithCarryInstructionIds);\n    const flagProducingArithmetic = sameInstruction(node, flagWriteInstructionIds)\n      && (canonicalAddWithCarry || (node.kind === 'binary' && !auxiliaryBinary));"""
-          assert s.count(old) == 1, 'comparison carrier predicate drifted'
+          new = """    const canonicalAddWithCarry = node.kind === 'intrinsic' && node.operator === 'add-with-carry';\n    const auxiliaryBinary = node.kind === 'binary' && sameInstruction(node, addWithCarryInstructionIds);\n    const flagProducingArithmetic = sameInstruction(node, flagWriteInstructionIds)\n      && (canonicalAddWithCarry || (node.kind === 'binary' && !auxiliaryBinary));"""
+          assert s.count(old) == 1
           p.write_text(s.replace(old, new))
 
           p = Path('tests/semantic-v2/integration-ir-cache-context.test.mjs')
           s = p.read_text()
           s = s.replace("  irFor,\n  setSemanticMigrationMode,", "  irFor,\n  getSemanticMigrationMode,\n  setSemanticMigrationMode,")
           marker = "const model = buildSemanticModel(rows, { startRow:0, endRow:rows.length - 1, rowOfAddress });\n\ntry {"
-          assert marker in s, 'migration-mode isolation fixture drifted'
+          assert marker in s
           s = s.replace(marker, "const model = buildSemanticModel(rows, { startRow:0, endRow:rows.length - 1, rowOfAddress });\nconst initialMigrationMode = getSemanticMigrationMode();\n\ntry {")
           old = """} finally {\n  setSemanticMigrationMode(SEMANTIC_V2_MIGRATION_MODES.LEGACY);\n}"""
-          new = """} finally {\n  setSemanticMigrationMode(initialMigrationMode);\n}"""
-          assert s.count(old) == 1, 'migration-mode finally fixture drifted'
-          p.write_text(s.replace(old, new))
-          PY
+          assert s.count(old) == 1
+          p.write_text(s.replace(old, """} finally {\n  setSemanticMigrationMode(initialMigrationMode);\n}"""))
 
+          p = Path('tests/semantic-v2/issues-791-797-800-825-ir-soundness.test.mjs')
+          s = p.read_text()
+          s = s.replace('OP, MK, irFor, branchConstraints, valueRange, mustAlias, mayAliasProvenance,', 'OP, MK, irFor, branchConstraints, valueRange, mustAlias, mayAliasProvenance, getSemanticMigrationMode,')
+          needle = """  ], '797-w-signed-minus1');\n  const fact = firstBranchFact(ir);\n  assert.equal(fact.taken.constant, -1n);"""
+          assert s.count(needle) == 1
+          debug = """  ], '797-w-signed-minus1');\n  const fact = firstBranchFact(ir);\n  const cmp = fact.taken.compare;\n  console.log('ISSUE797_DEBUG', [\n    'mode=' + getSemanticMigrationMode(),\n    'constant=' + String(fact.taken.constant),\n    'lhsBits=' + String(fact.taken.value?.bits),\n    'cmpBits=' + String(cmp?.bits),\n    'extraWidth=' + String(cmp?.extra?.widthBits),\n    'arg0Bits=' + String(cmp?.args?.[0]?.bits),\n    'arg0ValueBits=' + String(cmp?.args?.[0]?.value?.bits),\n    'arg1Bits=' + String(cmp?.args?.[1]?.bits),\n    'arg1ValueBits=' + String(cmp?.args?.[1]?.value?.bits),\n    'arg1Const=' + String(cmp?.args?.[1]?.value?.const),\n  ].join(' '));\n  assert.equal(fact.taken.constant, -1n);"""
+          p.write_text(s.replace(needle, debug))
+          PY
           git show 9f2a4ab2b4480552498e26299326e048581a5360:js/targets/abi/riscv-lp64.js > js/targets/abi/riscv-lp64.js
           git show 9f2a4ab2b4480552498e26299326e048581a5360:tests/phase6/abi/riscv-issues-868-872.test.mjs > tests/phase6/abi/riscv-issues-868-872.test.mjs
-
-      - name: Build canonical generated userscript for combined source tree
+      - name: Build canonical generated userscript
         run: npm run userscript:build
-
-      - name: Verify targeted and aggregate contracts
-        shell: bash
-        run: |
-          set -euo pipefail
-          node --test tests/semantic-v2/issues-791-797-800-825-ir-soundness.test.mjs
-          node --test tests/phase6/abi/riscv-issues-868-872.test.mjs
-          npm run semantic-v2:test
-          npm run check
-
-      - name: Commit only verified product changes and restore permanent workflow
-        shell: bash
-        run: |
-          set -euo pipefail
-          git checkout origin/main -- .github/workflows/machine-effects.yml
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add js/ir.js js/semantics/compat/semantic-ir-v2-to-v1.js js/targets/abi/riscv-lp64.js tests/phase6/abi/riscv-issues-868-872.test.mjs tests/semantic-v2/integration-ir-cache-context.test.mjs userscript/hex.user.template.js userscript/release-version.json .github/workflows/machine-effects.yml
-          git commit -m "Fix semantic compare projection and absorb RISC-V ABI issues"
-          git push origin HEAD:integrate/open-issue-fixes-20260819
+      - name: Run full Semantic IR v2 diagnostic
+        run: npm run semantic-v2:test
