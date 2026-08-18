@@ -72,8 +72,7 @@ export default {
     if (isPrivatePath(url.pathname)) return new Response('Not Found', { status: 404, headers: securityHeaders() });
     if (url.pathname.startsWith('/api/')) {
       const origin = request.headers.get('origin');
-      if (request.method === 'OPTIONS') return apiPreflight(origin, url.origin);
-      if (!isAllowedRequestOrigin(origin, url.origin)) return json({ error: 'origin-not-allowed' }, 403);
+      if (request.method === 'OPTIONS') return apiPreflight(origin);
       return withApiCors(await worker.fetch(request, env, executionCtx), origin);
     }
     return worker.fetch(request, env, executionCtx);
@@ -178,7 +177,7 @@ function runtimeAssetPreflight(origin, workerOrigin) {
   if (!isAllowedRequestOrigin(origin, workerOrigin)) return new Response(null, { status: 403 });
   return new Response(null, { status: 204, headers: { 'access-control-allow-origin': origin, 'access-control-allow-methods': 'GET, OPTIONS', 'access-control-allow-headers': 'Authorization', 'access-control-max-age': '600', vary: 'Origin' } });
 }
-function apiPreflight(origin, workerOrigin) { if (!isAllowedRequestOrigin(origin, workerOrigin)) return new Response(null, { status: 403 }); return new Response(null, { status: 204, headers: { 'access-control-allow-origin': origin, 'access-control-allow-methods': 'POST, OPTIONS', 'access-control-allow-headers': 'Content-Type, X-Hex-Session', 'access-control-max-age': '86400', vary: 'Origin' } }); }
+function apiPreflight(origin) { if (!CHATGPT_ORIGINS.has(origin)) return new Response(null, { status: 403 }); return new Response(null, { status: 204, headers: { 'access-control-allow-origin': origin, 'access-control-allow-methods': 'POST, OPTIONS', 'access-control-allow-headers': 'Content-Type, X-Hex-Session', 'access-control-max-age': '86400', vary: 'Origin' } }); }
 function withApiCors(response, origin) { if (!CHATGPT_ORIGINS.has(origin)) return response; const headers = new Headers(response.headers); headers.set('access-control-allow-origin', origin); headers.set('access-control-allow-methods', 'POST, OPTIONS'); headers.set('access-control-allow-headers', 'Content-Type, X-Hex-Session'); headers.set('vary', appendVary(headers.get('vary'), 'Origin')); return new Response(response.body, { status: response.status, statusText: response.statusText, headers }); }
 function appendVary(current, value) { const parts = String(current || '').split(',').map((item) => item.trim()).filter(Boolean); if (!parts.some((item) => item.toLowerCase() === value.toLowerCase())) parts.push(value); return parts.join(', '); }
 function json(body, status = 200, origin = null, extra = {}) { const headers = new Headers({ ...securityHeaders(), 'content-type': 'application/json; charset=utf-8', ...extra }); if (origin && CHATGPT_ORIGINS.has(origin)) { headers.set('access-control-allow-origin', origin); headers.set('vary', 'Origin'); } return new Response(JSON.stringify(body), { status, headers }); }
