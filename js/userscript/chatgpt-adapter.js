@@ -520,7 +520,7 @@ export class ChatGPTTurnController {
     const normalizedPrompt = normalizeText(prompt);
     let composer = await waitFor(() => this.adapter.composer(), Math.min(timeoutMs, this.startTimeoutMs), signal);
     if (!composer) throw bridgeError('turn-controller', 'composer-not-found', 'ChatGPT composer was not found.');
-    if (this.adapter.isGenerating()) throw bridgeError('turn-controller', 'already-generating', 'ChatGPT is already generating a response.');
+    if (this.adapter.isGenerating() && !newConversation) throw bridgeError('turn-controller', 'already-generating', 'ChatGPT is already generating a response.');
 
     const baselineAssistant = new Set(this.assistantTurns().map((turn) => turn.id));
     const baselineUsers = new Set(this.userTurns().map((turn) => turn.id));
