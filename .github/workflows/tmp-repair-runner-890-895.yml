@@ -1,0 +1,49 @@
+name: One-shot repair runner 890-895
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: write
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/issues-890-895-control-profile-20260819
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Rebase target onto current main
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch origin main
+          git rebase origin/main
+      - name: Apply guarded repair
+        run: python3 tools/repair-issues-890-895.py
+      - name: Install and run focused regression
+        run: |
+          npm ci
+          node --test tests/phase6/generic-core/issues-890-895.test.mjs
+      - name: Full repository verification
+        run: npm run check
+      - name: Regenerate canonical userscript twice
+        run: |
+          npm run userscript:build
+          cp userscript/hex.user.js /tmp/hex.user.js
+          cp userscript/hex.user.template.js /tmp/hex.user.template.js
+          npm run userscript:build
+          cmp userscript/hex.user.js /tmp/hex.user.js
+          cmp userscript/hex.user.template.js /tmp/hex.user.template.js
+      - name: Commit canonical result to target branch
+        run: |
+          rm -f tools/repair-issues-890-895.py
+          rm -f .github/workflows/repair-issues-890-895.yml
+          rm -f .github/workflows/tmp-repair-runner-890-895.yml
+          git add -A
+          git diff --cached --check
+          git commit -m 'fix: close control and profile correctness issues 890-895'
+          git push --force-with-lease origin HEAD:fix/issues-890-895-control-profile-20260819
