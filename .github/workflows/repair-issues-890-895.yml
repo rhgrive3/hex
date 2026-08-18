@@ -29,11 +29,12 @@ jobs:
           python3 tools/repair-issues-890-895-testfix.py
       - name: Focused regressions
         run: node --test tests/phase6/generic-core/issues-890-895.test.mjs
+      - name: Regenerate canonical userscript before sync gates
+        run: npm run userscript:build
       - name: Repository verification
         run: npm run check
       - name: Canonical userscript idempotence
         run: |
-          npm run userscript:build
           cp userscript/hex.user.js /tmp/hex.user.js
           cp userscript/hex.user.template.js /tmp/hex.user.template.js
           npm run userscript:build
