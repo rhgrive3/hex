@@ -1,6 +1,8 @@
 name: Validate Swift vtable instance flag
 
 on:
+  pull_request:
+    branches: [main]
   push:
     branches: [fix/swift-vtable-instance-flag]
 
@@ -9,6 +11,7 @@ permissions:
 
 jobs:
   validate:
+    if: github.event_name == 'push' || github.head_ref == 'fix/swift-vtable-instance-flag'
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
