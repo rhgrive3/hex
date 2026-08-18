@@ -8,170 +8,92 @@ import { fileURLToPath } from 'node:url';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const SOURCE = path.join(ROOT, 'tests/phase5/verification/source/p5-6-corpus.c');
 const SUPPORT_SOURCE = path.join(ROOT, 'tests/phase5/verification/source/p5-6-msvc-runtime.c');
-const EXPECTED = Object.freeze({
-  compiler: 'Ubuntu clang version 18.1.3',
-  linker: 'LLD 18.1.3',
-  host: 'x64',
-});
+const EXPECTED = Object.freeze({ compiler:'Ubuntu clang version 18.1.3', linker:'LLD 18.1.3', host:'x64' });
+const PE_IMAGE_BASE = 0x140000000n;
 
-function sha256(bytes) {
-  return crypto.createHash('sha256').update(bytes).digest('hex');
-}
-
+function sha256(bytes) { return crypto.createHash('sha256').update(bytes).digest('hex'); }
 function run(executable, args, options = {}) {
-  const result = spawnSync(executable, args, {
-    encoding: options.encoding ?? 'utf8',
-    cwd: options.cwd ?? ROOT,
-    env: { ...process.env, LC_ALL: 'C', LANG: 'C', SOURCE_DATE_EPOCH: '0' },
-    maxBuffer: 64 * 1024 * 1024,
-  });
+  const result = spawnSync(executable, args, { encoding:options.encoding ?? 'utf8', cwd:options.cwd ?? ROOT, env:{ ...process.env, LC_ALL:'C', LANG:'C', SOURCE_DATE_EPOCH:'0' }, maxBuffer:64 * 1024 * 1024 });
   if (result.error) throw result.error;
-  if (result.status !== 0) {
-    const stdout = typeof result.stdout === 'string' ? result.stdout : '';
-    const stderr = typeof result.stderr === 'string' ? result.stderr : '';
-    throw new Error(`command failed (${result.status}): ${executable} ${args.join(' ')}\n${stdout}\n${stderr}`);
-  }
+  if (result.status !== 0) throw new Error(`command failed (${result.status}): ${executable} ${args.join(' ')}\n${typeof result.stdout === 'string' ? result.stdout : ''}\n${typeof result.stderr === 'string' ? result.stderr : ''}`);
   return result;
 }
-
 function firstExecutable(candidates) {
-  for (const candidate of candidates) {
-    if (candidate.includes('/') ? fs.existsSync(candidate) : spawnSync('bash', ['-lc', `command -v ${candidate}`], { encoding:'utf8' }).status === 0) return candidate;
-  }
+  for (const candidate of candidates) if (candidate.includes('/') ? fs.existsSync(candidate) : spawnSync('bash', ['-lc', `command -v ${candidate}`], { encoding:'utf8' }).status === 0) return candidate;
   return null;
 }
 
 export function probeToolchain() {
-  const clang = firstExecutable(['/usr/bin/clang-18', 'clang-18', '/usr/bin/clang', 'clang']);
-  const lld = firstExecutable(['/usr/bin/ld.lld-18', 'ld.lld-18', '/usr/bin/ld.lld', 'ld.lld']);
-  const lldLink = firstExecutable(['/usr/bin/lld-link-18', 'lld-link-18', '/usr/bin/lld-link', 'lld-link']);
-  const objdump = firstExecutable(['/usr/bin/llvm-objdump-18', 'llvm-objdump-18', '/usr/bin/llvm-objdump', 'llvm-objdump']);
-  const readobj = firstExecutable(['/usr/bin/llvm-readobj-18', 'llvm-readobj-18', '/usr/bin/llvm-readobj', 'llvm-readobj']);
+  const clang = firstExecutable(['/usr/bin/clang-18','clang-18','/usr/bin/clang','clang']);
+  const lld = firstExecutable(['/usr/bin/ld.lld-18','ld.lld-18','/usr/bin/ld.lld','ld.lld']);
+  const lldLink = firstExecutable(['/usr/bin/lld-link-18','lld-link-18','/usr/bin/lld-link','lld-link']);
+  const objdump = firstExecutable(['/usr/bin/llvm-objdump-18','llvm-objdump-18','/usr/bin/llvm-objdump','llvm-objdump']);
+  const readobj = firstExecutable(['/usr/bin/llvm-readobj-18','llvm-readobj-18','/usr/bin/llvm-readobj','llvm-readobj']);
   const compilerVersion = clang ? run(clang, ['--version']).stdout.trim() : null;
   const linkerVersion = lld ? run(lld, ['--version']).stdout.trim() : null;
   const lldLinkVersion = lldLink ? run(lldLink, ['--version']).stdout.trim() : null;
-  const result = {
-    clang, lld, lldLink, objdump, readobj,
-    compilerVersion,
-    linkerVersion,
-    lldLinkVersion,
-    host: process.arch,
-    exactCompiler: Boolean(compilerVersion?.includes(EXPECTED.compiler)),
-    exactLinker: Boolean(linkerVersion?.includes(EXPECTED.linker) && lldLinkVersion?.includes(EXPECTED.linker)),
-    exactHost: process.arch === EXPECTED.host,
-  };
-  return Object.freeze({ ...result, exact: result.exactCompiler && result.exactLinker && result.exactHost && Boolean(objdump) && Boolean(readobj) });
+  const result = { clang,lld,lldLink,objdump,readobj,compilerVersion,linkerVersion,lldLinkVersion,host:process.arch, exactCompiler:Boolean(compilerVersion?.includes(EXPECTED.compiler)), exactLinker:Boolean(linkerVersion?.includes(EXPECTED.linker) && lldLinkVersion?.includes(EXPECTED.linker)), exactHost:process.arch === EXPECTED.host };
+  return Object.freeze({ ...result, exact:result.exactCompiler && result.exactLinker && result.exactHost && Boolean(objdump) && Boolean(readobj) });
 }
 
-function optimizationFlag(level) {
-  if (!['O0', 'O2', 'Os'].includes(level)) throw new TypeError(`unsupported optimization: ${level}`);
-  return `-${level}`;
+function optimizationFlag(level) { if (!['O0','O2','Os'].includes(level)) throw new TypeError(`unsupported optimization: ${level}`); return `-${level}`; }
+
+export function symbolizePeDisassembly(disassembly, objectMetadata, imageBase = PE_IMAGE_BASE) {
+  const symbols = new Map();
+  for (const match of String(objectMetadata).matchAll(/Export\s*\{([\s\S]*?)\}/g)) {
+    const block = match[1];
+    const name = /(?:^|\n)\s*Name:\s*(p5_[A-Za-z0-9_]+)/m.exec(block)?.[1];
+    const rvaText = /(?:^|\n)\s*RVA:\s*(0x[0-9a-f]+)/im.exec(block)?.[1];
+    if (name && rvaText) symbols.set(imageBase + BigInt(rvaText), name);
+  }
+  if (!symbols.size) return String(disassembly);
+  const out = [];
+  for (const line of String(disassembly).split(/\r?\n/)) {
+    const instruction = /^\s*([0-9a-f]+):/i.exec(line);
+    if (instruction) {
+      const address = BigInt(`0x${instruction[1]}`);
+      const name = symbols.get(address);
+      if (name) out.push(`${address.toString(16).padStart(16,'0')} <${name}>:`);
+    }
+    out.push(line);
+  }
+  return out.join('\n');
 }
 
-function buildOne({ toolchain, target, optimization, outDir }) {
+function buildOne({ toolchain,target,optimization,outDir }) {
   const suffix = target.id === 'sysv-amd64-elf' ? '.elf' : '.exe';
   const output = path.join(outDir, `p5-6-${target.id}-${optimization}${suffix}`);
-  const common = [
-    `--target=${target.triple}`,
-    '-std=c11',
-    optimizationFlag(optimization),
-    '-fno-stack-protector',
-    '-fno-omit-frame-pointer',
-    '-fno-pic',
-    '-nostdlib',
-    '-fuse-ld=lld',
-    SOURCE,
-    SUPPORT_SOURCE,
-    '-o', output,
-  ];
-  const targetFlags = target.id === 'sysv-amd64-elf'
-    ? ['-no-pie', '-Wl,--build-id=none', '-Wl,-e,p5_entry', '-Wl,-Ttext=0x401000']
-    : ['-Wl,/entry:p5_entry', '-Wl,/subsystem:console', '-Wl,/nodefaultlib', '-Wl,/fixed', '-Wl,/base:0x140000000', '-Wl,/Brepro'];
-  const flags = [...common, ...targetFlags];
+  const common = [`--target=${target.triple}`,'-std=c11',optimizationFlag(optimization),'-fno-stack-protector','-fno-omit-frame-pointer','-fno-pic','-nostdlib','-fuse-ld=lld',SOURCE,SUPPORT_SOURCE,'-o',output];
+  const targetFlags = target.id === 'sysv-amd64-elf' ? ['-no-pie','-Wl,--build-id=none','-Wl,-e,p5_entry','-Wl,-Ttext=0x401000'] : ['-Wl,/entry:p5_entry','-Wl,/subsystem:console','-Wl,/nodefaultlib','-Wl,/fixed','-Wl,/base:0x140000000','-Wl,/Brepro'];
+  const flags = [...common,...targetFlags];
   run(toolchain.clang, flags);
   const bytes = fs.readFileSync(output);
-  const objdumpArgs = ['-d', '--print-imm-hex', '--show-all-symbols', output];
-  const disassembly = run(toolchain.objdump, objdumpArgs).stdout;
-  const readobjArgs = ['--file-headers', '--sections', '--symbols', output];
+  const readobjArgs = ['--file-headers','--sections','--symbols', ...(target.id === 'microsoft-x64-pe' ? ['--coff-exports'] : []), output];
   const objectMetadata = run(toolchain.readobj, readobjArgs).stdout;
-  return Object.freeze({
-    id: `${target.id}-${optimization}`,
-    target: target.id,
-    targetTriple: target.triple,
-    abiId: target.abiId,
-    optimization,
-    path: output,
-    flags,
-    sha256: sha256(bytes),
-    size: bytes.length,
-    bytes,
-    disassembly,
-    objectMetadata,
-  });
+  const rawDisassembly = run(toolchain.objdump, ['-d','--print-imm-hex','--show-all-symbols',output]).stdout;
+  const disassembly = target.id === 'microsoft-x64-pe' ? symbolizePeDisassembly(rawDisassembly, objectMetadata) : rawDisassembly;
+  return Object.freeze({ id:`${target.id}-${optimization}`, target:target.id, targetTriple:target.triple, abiId:target.abiId, optimization, path:output, flags, sha256:sha256(bytes), size:bytes.length, bytes, disassembly, objectMetadata });
 }
 
-export function buildVerificationCorpus({ outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hex-p5-6-corpus-')) } = {}) {
+export function buildVerificationCorpus({ outDir = fs.mkdtempSync(path.join(os.tmpdir(),'hex-p5-6-corpus-')) } = {}) {
   const toolchain = probeToolchain();
-  if (!toolchain.exact) {
-    const error = new Error(`P5-6 exact frozen toolchain unavailable: ${JSON.stringify(toolchain)}`);
-    error.code = 'P5_6_TOOLCHAIN_MISMATCH';
-    throw error;
-  }
-  fs.mkdirSync(outDir, { recursive:true });
-  const sourceBytes = fs.readFileSync(SOURCE);
-  const supportBytes = fs.readFileSync(SUPPORT_SOURCE);
-  const targets = [
-    { id:'sysv-amd64-elf', triple:'x86_64-unknown-linux-gnu', abiId:'sysv-amd64' },
-    { id:'microsoft-x64-pe', triple:'x86_64-pc-windows-msvc', abiId:'microsoft-x64' },
-  ];
+  if (!toolchain.exact) { const error = new Error(`P5-6 exact frozen toolchain unavailable: ${JSON.stringify(toolchain)}`); error.code = 'P5_6_TOOLCHAIN_MISMATCH'; throw error; }
+  fs.mkdirSync(outDir,{recursive:true});
+  const sourceBytes = fs.readFileSync(SOURCE); const supportBytes = fs.readFileSync(SUPPORT_SOURCE);
+  const targets = [{ id:'sysv-amd64-elf',triple:'x86_64-unknown-linux-gnu',abiId:'sysv-amd64' },{ id:'microsoft-x64-pe',triple:'x86_64-pc-windows-msvc',abiId:'microsoft-x64' }];
   const fixtures = [];
-  for (const target of targets) for (const optimization of ['O0','O2','Os']) fixtures.push(buildOne({ toolchain, target, optimization, outDir }));
-  return Object.freeze({
-    schemaVersion: 'phase5-p5-6-generated-corpus/v1',
-    toolchain,
-    source: { path:path.relative(ROOT, SOURCE).replaceAll('\\','/'), sha256:sha256(sourceBytes) },
-    supportSource: { path:path.relative(ROOT, SUPPORT_SOURCE).replaceAll('\\','/'), sha256:sha256(supportBytes) },
-    fixtures,
-  });
+  for (const target of targets) for (const optimization of ['O0','O2','Os']) fixtures.push(buildOne({toolchain,target,optimization,outDir}));
+  return Object.freeze({ schemaVersion:'phase5-p5-6-generated-corpus/v1', toolchain, source:{path:path.relative(ROOT,SOURCE).replaceAll('\\','/'),sha256:sha256(sourceBytes)}, supportSource:{path:path.relative(ROOT,SUPPORT_SOURCE).replaceAll('\\','/'),sha256:sha256(supportBytes)}, fixtures });
 }
 
-function emit(result, { includeBase64 = false } = {}) {
-  const publicResult = {
-    schemaVersion: result.schemaVersion,
-    toolchain: result.toolchain,
-    source: result.source,
-    supportSource: result.supportSource,
-    fixtures: result.fixtures.map(({ bytes, disassembly, objectMetadata, path:fixturePath, ...fixture }) => ({
-      ...fixture,
-      path: path.basename(fixturePath),
-      disassemblySha256: sha256(Buffer.from(disassembly)),
-      objectMetadataSha256: sha256(Buffer.from(objectMetadata)),
-    })),
-  };
+function emit(result,{includeBase64=false}={}) {
+  const publicResult = { schemaVersion:result.schemaVersion, toolchain:result.toolchain, source:result.source, supportSource:result.supportSource, fixtures:result.fixtures.map(({bytes,disassembly,objectMetadata,path:fixturePath,...fixture})=>({...fixture,path:path.basename(fixturePath),disassemblySha256:sha256(Buffer.from(disassembly)),objectMetadataSha256:sha256(Buffer.from(objectMetadata))})) };
   console.log(`P5_6_CORPUS_PROVENANCE=${JSON.stringify(publicResult)}`);
-  if (includeBase64) {
-    for (const fixture of result.fixtures) {
-      console.log(`P5_6_FIXTURE_B64:${fixture.id}:${fixture.bytes.toString('base64')}`);
-      console.log(`P5_6_OBJDUMP_B64:${fixture.id}:${Buffer.from(fixture.disassembly).toString('base64')}`);
-      console.log(`P5_6_READOBJ_B64:${fixture.id}:${Buffer.from(fixture.objectMetadata).toString('base64')}`);
-    }
-  }
+  if (includeBase64) for (const fixture of result.fixtures) { console.log(`P5_6_FIXTURE_B64:${fixture.id}:${fixture.bytes.toString('base64')}`); console.log(`P5_6_OBJDUMP_B64:${fixture.id}:${Buffer.from(fixture.disassembly).toString('base64')}`); console.log(`P5_6_READOBJ_B64:${fixture.id}:${Buffer.from(fixture.objectMetadata).toString('base64')}`); }
 }
-
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
-  const probeOnly = process.argv.includes('--probe-only');
-  const includeBase64 = process.argv.includes('--emit-base64');
-  if (probeOnly) {
-    const result = probeToolchain();
-    console.log(`P5_6_TOOLCHAIN=${JSON.stringify(result)}`);
-    if (!result.exact) process.exitCode = 2;
-  } else {
-    try {
-      emit(buildVerificationCorpus(), { includeBase64 });
-    } catch (error) {
-      console.error(error?.stack ?? String(error));
-      process.exitCode = error?.code === 'P5_6_TOOLCHAIN_MISMATCH' ? 2 : 1;
-    }
-  }
+  const probeOnly = process.argv.includes('--probe-only'); const includeBase64 = process.argv.includes('--emit-base64');
+  if (probeOnly) { const result=probeToolchain(); console.log(`P5_6_TOOLCHAIN=${JSON.stringify(result)}`); if(!result.exact) process.exitCode=2; }
+  else try { emit(buildVerificationCorpus(),{includeBase64}); } catch(error) { console.error(error?.stack??String(error)); process.exitCode=error?.code==='P5_6_TOOLCHAIN_MISMATCH'?2:1; }
 }
