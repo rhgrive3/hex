@@ -44,7 +44,10 @@ export function runPhase6Tests(argv = process.argv.slice(2), { root = DIRECTORY 
   });
   if (selected.length === 0) throw new Error(`phase6: group has no discovered tests: ${group}`);
   for (const file of selected) process.stdout.write(`[phase6] ${path.relative(root, file).replaceAll('\\', '/')}\n`);
-  const child = spawnSync(process.execPath, ['--test', '--test-concurrency=1', ...selected], {
+  // TAP diagnostics truncate very long single-line test output (the mandatory
+  // corpus ledger is >64 KiB). The spec reporter preserves the full diagnostic
+  // line so the release verifier can consume the machine-readable ledger.
+  const child = spawnSync(process.execPath, ['--test', '--test-reporter=spec', '--test-concurrency=1', ...selected], {
     cwd: path.resolve(root, '../..'),
     encoding: 'utf8',
     maxBuffer: 512 * 1024 * 1024,
