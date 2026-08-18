@@ -1,0 +1,36 @@
+name: TEMP Sync R4 proxy repair userscript
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/r4-proxy-progress-budget
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Verify frozen-bridge regression
+        run: node tests/dev-agent/supervisor-progress-budget.mjs
+      - name: Build canonical userscript
+        run: npm run userscript:build
+      - name: Commit generated artifacts and remove temporary workflow
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git rm .github/workflows/temp-sync-r4-proxy-loader.yml
+          git add userscript/hex.user.template.js userscript/release-version.json
+          git commit -m "Sync R4 Proxy repair userscript release"
+          git push origin HEAD:fix/r4-proxy-progress-budget
