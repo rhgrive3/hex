@@ -69,6 +69,9 @@ jobs:
           git show 9f2a4ab2b4480552498e26299326e048581a5360:js/targets/abi/riscv-lp64.js > js/targets/abi/riscv-lp64.js
           git show 9f2a4ab2b4480552498e26299326e048581a5360:tests/phase6/abi/riscv-issues-868-872.test.mjs > tests/phase6/abi/riscv-issues-868-872.test.mjs
 
+      - name: Build canonical generated userscript for combined source tree
+        run: npm run userscript:build
+
       - name: Verify targeted and aggregate semantic contracts
         shell: bash
         run: |
@@ -77,9 +80,6 @@ jobs:
           node --test tests/phase6/abi/riscv-issues-868-872.test.mjs
           npm run semantic-v2:test
           npm run check
-
-      - name: Rebuild canonical generated userscript
-        run: npm run userscript:build
 
       - name: Commit only verified product changes and restore permanent workflow
         shell: bash
