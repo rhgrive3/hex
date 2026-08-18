@@ -4,7 +4,7 @@ import { createDevWorkerParentRpc, createDevWorkerParentRpcClient } from '../../
 
 const { port1, port2 } = new MessageChannel();
 let markStarted;
-let remoteAborted = false;
+let remoteAbortCount = 0;
 const started = new Promise((resolve) => { markStarted = resolve; });
 
 const server = createDevWorkerParentRpc({
@@ -14,7 +14,7 @@ const server = createDevWorkerParentRpc({
       markStarted();
       await new Promise((resolve) => {
         signal?.addEventListener?.('abort', () => {
-          remoteAborted = true;
+          remoteAbortCount += 1;
           resolve();
         }, { once: true });
       });
@@ -26,13 +26,14 @@ const client = createDevWorkerParentRpcClient({ port: port2, timeoutMs: 60000 })
 const pending = client.discover({});
 await started;
 client.close();
+client.close();
 await assert.rejects(
   pending,
   (error) => error?.code === 'transport-failure',
   'closing the RPC client must reject its local pending request',
 );
-for (let i = 0; i < 10 && !remoteAborted; i++) await new Promise((resolve) => setTimeout(resolve, 0));
-assert.equal(remoteAborted, true, 'closing the RPC client must cancel the remote in-flight operation');
+for (let i = 0; i < 10 && remoteAbortCount === 0; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+assert.equal(remoteAbortCount, 1, 'closing the RPC client must cancel each remote in-flight operation exactly once');
 
 server.close();
 port1.close();
