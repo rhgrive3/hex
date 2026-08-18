@@ -9,6 +9,7 @@
 
   const DEFAULT_WINDOW = 4096;
   const CALLER_SAVED_LAST = 18;
+  const LINK_REGISTER = 30;
 
   function asBigInt(value) {
     if (value == null) return null;
@@ -91,8 +92,12 @@
       return boundary;
     }
 
-    function killCallerSaved() {
+    function killCallClobbered() {
+      // AAPCS64 caller-clobbered argument/temporary registers are x0-x18.
+      // BL/BLR additionally overwrite x30 architecturally with the return
+      // address, so stale address provenance must never survive in LR.
       for (let reg = 0; reg <= CALLER_SAVED_LAST; reg++) kill(reg);
+      kill(LINK_REGISTER);
     }
 
     function control(word, pcValue, kind) {
@@ -100,7 +105,7 @@
       if (pc == null) { clear(); return { barrier: true, target: null }; }
       const K = words.KIND;
       if (kind === K.CALL || kind === K.INDCALL) {
-        killCallerSaved();
+        killCallClobbered();
         return { barrier: false, call: true, target: kind === K.CALL ? words.branchImm26(word, pc) : null };
       }
       if (kind === K.CONDBR) {
@@ -129,5 +134,5 @@
     };
   }
 
-  global.AddressProvenance = Object.freeze({ create, DEFAULT_WINDOW, CALLER_SAVED_LAST });
+  global.AddressProvenance = Object.freeze({ create, DEFAULT_WINDOW, CALLER_SAVED_LAST, LINK_REGISTER });
 })(typeof globalThis !== 'undefined' ? globalThis : self);
