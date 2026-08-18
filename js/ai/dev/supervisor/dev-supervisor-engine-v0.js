@@ -3,7 +3,14 @@ import { parseDevSupervisorDecision } from '../protocol/hex-dev-supervisor-v1.js
 import { buildDevSupervisorPrompt } from '../protocol/dev-supervisor-prompt.js';
 import { DevRunEventHost } from '../events/dev-events.js';
 import { DEV_WORKER_TOOL } from '../workers/tool-surface.js';
-import { DEV_BOOTSTRAP_EXTENSION, DevExtensionLoader } from '../bootstrap/dev-bootstrap-gate.js';
+import {
+  DEV_BOOTSTRAP_EXTENSION,
+  DEV_BOOTSTRAP_EXTENSION_VERSION,
+  DEV_BOOTSTRAP_ROUND4_PROOF_CAPABILITY,
+  DevExtensionLoader,
+  createDevBootstrapCheckpoint,
+  createDevBootstrapHandoff,
+} from '../bootstrap/dev-bootstrap-gate.js';
 
 const MAX_DECISIONS = 16;
 
@@ -36,6 +43,51 @@ export class DevSupervisorEngineV0 {
     return this.extensionLoader.invoke(name);
   }
 
+  bootstrapSessionFor(conversationId) {
+    const hexConversationId = normalizeConversationId(conversationId);
+    if (!hexConversationId) throw new TypeError('Bootstrap Hex conversation ID is required.');
+    return Object.freeze({
+      hexConversationId,
+      supervisorSessionKey: this.supervisorSessionKeyFor(hexConversationId),
+    });
+  }
+
+  createBootstrapCheckpoint({ conversationId, chatgptConversationId, activeIdentity, pendingTask } = {}) {
+    const session = this.bootstrapSessionFor(conversationId);
+    return createDevBootstrapCheckpoint({
+      runId: this.supervisor.idFactory('bootstrap-run'),
+      goal: 'Complete the Round 4 production bootstrap proof.',
+      decisionPolicy: this.settings.decisionPolicy,
+      supervisorSessionKey: session.supervisorSessionKey,
+      chatgptConversationId,
+      pendingTask: pendingTask ?? { type: 'round4-bootstrap', step: 'resume-proof', hexConversationId: session.hexConversationId },
+      expectedCommit: activeIdentity?.commit,
+      expectedBuildId: activeIdentity?.buildId,
+      expectedExtensionVersion: DEV_BOOTSTRAP_EXTENSION_VERSION,
+    });
+  }
+
+  restoreBootstrapHandoff(handoff) {
+    const normalized = createDevBootstrapHandoff(handoff?.checkpoint || handoff);
+    const hexConversationId = normalizeConversationId(normalized.checkpoint?.pendingTask?.hexConversationId);
+    if (!hexConversationId) throw new TypeError('Bootstrap handoff is missing the Hex conversation ID.');
+    this.supervisorSessions.set(hexConversationId, normalized.supervisorSessionKey);
+    return normalized;
+  }
+
+  runBootstrapProof({ handoff, model = null, reasoning = null, signal = null } = {}) {
+    const restored = this.restoreBootstrapHandoff(handoff);
+    const conversationId = normalizeConversationId(restored.checkpoint.pendingTask?.hexConversationId);
+    return this.run({
+      goal: `Round 4 bootstrap restoration is active. Invoke ${DEV_BOOTSTRAP_ROUND4_PROOF_CAPABILITY} first, verify the returned identity evidence, then finish with no remaining tasks.`,
+      conversationId,
+      model,
+      reasoning,
+      signal,
+      requiredBootstrapCapability: DEV_BOOTSTRAP_ROUND4_PROOF_CAPABILITY,
+    });
+  }
+
   availableTools() {
     return Object.freeze([...new Set([
       ...(this.supervisor.availableTools || []),
@@ -54,6 +106,8 @@ export class DevSupervisorEngineV0 {
   }
 
   async run(input = {}) {
+    const requiredBootstrapCapability = normalizeRequiredBootstrapCapability(input.requiredBootstrapCapability, this.extensionLoader.activeCapabilities);
+    let requiredBootstrapObserved = requiredBootstrapCapability == null;
     const resumedHumanRun = this.resumableHumanRun(input);
     let run;
     const history = [];
@@ -91,7 +145,9 @@ export class DevSupervisorEngineV0 {
 
     try {
       for (let step = 0; step < this.maxDecisions; step++) {
-        const promptTools = this.availableTools();
+        const promptTools = requiredBootstrapCapability
+          ? Object.freeze([requiredBootstrapCapability])
+          : this.availableTools();
         const response = await this.bridge.request(buildDevSupervisorPrompt({
           run,
           availableTools: promptTools,
@@ -114,7 +170,9 @@ export class DevSupervisorEngineV0 {
           });
           continue;
         }
-        const availableTools = this.availableTools();
+        const availableTools = requiredBootstrapCapability
+          ? Object.freeze([requiredBootstrapCapability])
+          : this.availableTools();
 
         if (decision.type === 'tool' && !availableTools.includes(decision.tool)) {
           history.push({
@@ -131,6 +189,7 @@ export class DevSupervisorEngineV0 {
           if (this.extensionLoader.activeCapabilities?.includes(decision.tool)) {
             const result = await this.executeWithinToolBoundary(() => this.invokeBootstrapCapability(decision.tool));
             history.push({ kind: 'tool-result', tool: decision.tool, purpose: decision.purpose, result: sanitize(result) });
+            if (decision.tool === requiredBootstrapCapability) requiredBootstrapObserved = true;
             continue;
           }
           if (decision.tool === DEV_WORKER_TOOL.CLAIM) workerClaimAttempted = true;
@@ -145,6 +204,15 @@ export class DevSupervisorEngineV0 {
           if (decision.tool === DEV_WORKER_TOOL.RELEASE) workerClaimed = false;
           this.settings.setLastRun(run);
           history.push({ kind: 'tool-result', tool: decision.tool, purpose: decision.purpose, result: sanitize(executed.result) });
+          continue;
+        }
+
+        if (requiredBootstrapCapability && !requiredBootstrapObserved) {
+          history.push({
+            kind: 'bootstrap-proof-required',
+            capability: requiredBootstrapCapability,
+            message: `Invoke ${requiredBootstrapCapability} before any wait, human, or final decision.`,
+          });
           continue;
         }
 
@@ -272,4 +340,12 @@ function normalizeConversationId(value) {
   if (value == null) return null;
   const text = String(value).trim();
   return text || null;
+}
+
+function normalizeRequiredBootstrapCapability(value, activeCapabilities) {
+  if (value == null || value === '') return null;
+  const name = String(value).trim();
+  if (!name) return null;
+  if (!(activeCapabilities || []).includes(name)) throw new Error(`Required bootstrap capability is not active: ${name}`);
+  return name;
 }

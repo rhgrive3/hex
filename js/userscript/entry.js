@@ -9,11 +9,13 @@ import { installProtectedWorkers } from './protected-workers.js';
 import { installUserscriptNetworkBridge } from './network.js';
 import { startParentDevWorkerRuntime } from './dev/parent-worker-runtime.js';
 import { createDevWorkerParentRpc } from './dev/parent-rpc.js';
+import { installDevBootstrapHost } from './dev/bootstrap-host.js';
 
 const PROVIDER_KEY = 'hex.ai.provider';
 const SESSION_CLEANUP_KEY = '__HEX_CHATGPT_EMBED_CLEANUP__';
 const SANDBOX_BOOTSTRAP_TIMEOUT_MS = 60000;
 const SANDBOX_READY_TIMEOUT_MS = 60000;
+const DEV_BOOTSTRAP_PARAM = '__hex_dev_bootstrap';
 
 export async function startChatGPTUserscript(options = {}) {
   const apiOrigin = normalizeApiOrigin(options.apiOrigin || globalThis.__HEX_API_BASE__ || globalThis.__HEX_RUNTIME_ORIGIN__ || location.origin);
@@ -42,6 +44,7 @@ export async function startChatGPTUserscript(options = {}) {
       runtimeSourceProvider: options.runtimeSourceProvider,
       loaderVersion: options.loaderVersion,
       buildId: options.buildId,
+      sourceCommit: options.sourceCommit,
       runtimeContentHash: options.runtimeContentHash,
     });
     return Object.freeze({ mode: SANDBOX_MODE, ...result, devWorkerRuntime });
@@ -58,7 +61,11 @@ async function startSandbox(options) {
   const cspNonce = findChatGPTCspNonce(document);
   if (!cspNonce) throw new Error('ChatGPT CSP nonce is unavailable for the Hex sandbox.');
 
-  const virtualSrc = setEmbedProvider(new URL('/embed/chatgpt', options.apiOrigin).href, globalThis.__HEX_AI_PROVIDER__);
+  const sourceCommit = normalizeCommit(options.sourceCommit);
+  const buildId = normalizeBuildId(options.buildId);
+  const bootstrapEnabled = !!sourceCommit && !!buildId;
+  const virtualUrl = new URL(setEmbedProvider(new URL('/embed/chatgpt', options.apiOrigin).href, globalThis.__HEX_AI_PROVIDER__));
+  if (bootstrapEnabled) virtualUrl.searchParams.set(DEV_BOOTSTRAP_PARAM, '1');
   let resolveReady;
   let rejectReady;
   let settled = false;
@@ -67,11 +74,11 @@ async function startSandbox(options) {
   const host = createChatGPTSandboxHost({
     hostHtml: PROTECTED_HOST.html,
     cspNonce,
-    virtualSrc,
+    virtualSrc: virtualUrl.href,
     loaderVersion: String(options.loaderVersion || ''),
     buildId: String(options.buildId || ''),
-    runtimeSourceProvider: options.runtimeSourceProvider,
     runtimeContentHash: String(options.runtimeContentHash || ''),
+    runtimeSourceProvider: options.runtimeSourceProvider,
     bootstrapTimeoutMs: SANDBOX_BOOTSTRAP_TIMEOUT_MS,
     readyTimeoutMs: SANDBOX_READY_TIMEOUT_MS,
     onPort(port) {
@@ -100,18 +107,23 @@ async function startSandbox(options) {
     },
   });
 
+  const bootstrapHost = bootstrapEnabled
+    ? installDevBootstrapHost({ host, runtimeIdentity: { commit: sourceCommit, buildId } })
+    : null;
+
   // The protected Hex panel already owns its own visibility controls. The
   // full-screen host's extra floating emergency close button obscures ChatGPT
   // on iPad and is not needed for normal operation.
   try { document.getElementById('hex-userscript-emergency-close')?.remove(); } catch {}
 
   installSessionCleanup(() => {
+    bootstrapHost?.close();
     host.destroy();
     options.devWorkerRuntime.close();
   });
   const info = await ready;
   host.show();
-  return Object.freeze({ host, bridge: options.bridge, info });
+  return Object.freeze({ host, bridge: options.bridge, info, bootstrapHost });
 }
 
 async function startLegacy({ bridge, devWorkerRuntime }) {
@@ -238,6 +250,16 @@ function normalizeApiOrigin(value) {
   const url = new URL(String(value || ''));
   if (url.protocol !== 'https:' || url.origin !== String(value || '')) throw new Error('Hex API origin is invalid.');
   return url.origin;
+}
+
+function normalizeCommit(value) {
+  const text = String(value || '').trim().toLowerCase();
+  return /^[0-9a-f]{40}$/.test(text) ? text : null;
+}
+
+function normalizeBuildId(value) {
+  const text = String(value || '').trim().toLowerCase();
+  return /^[0-9a-f]{24}$/.test(text) ? text : null;
 }
 
 function readProvider() {
