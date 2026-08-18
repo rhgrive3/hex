@@ -56,6 +56,44 @@ eq(0x1e61c020, KIND.FARITH, 'fsqrt d0, d1');
 eq(0x1e22c020, KIND.FCONV,  'fcvt d0, s1');
 eq(0x1e624020, KIND.FCONV,  'fcvt s0, d1');
 
+// The patch assembler must accept disassembler condition aliases and preserve their canonical encoding.
+const { assemble, suggestPatches } = await import('../js/patch.js');
+const patchAt = 0x1000n;
+const patchTarget = 0x1010n;
+const branchBytes = (cond) => {
+  const result = assemble(`b.${cond} 0x${patchTarget.toString(16)}`, patchAt);
+  if (result.error || result.bytes?.length !== 4) {
+    throw new Error(`b.${cond} did not assemble: ${result.error || 'invalid encoding'}`);
+  }
+  return result.bytes;
+};
+const branchWord = (cond) => {
+  const bytes = branchBytes(cond);
+  return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(0, true);
+};
+const sameBytes = (left, right) => {
+  const a = Array.from(branchBytes(left)).join(',');
+  const b = Array.from(branchBytes(right)).join(',');
+  if (a !== b) throw new Error(`b.${left} and b.${right} encode differently: ${a} != ${b}`);
+  passed++;
+};
+sameBytes('hs', 'cs');
+sameBytes('lo', 'cc');
+if ((branchWord('hs') & 0xf) !== 0x2) throw new Error('hs/cs condition code must be 0x2');
+passed++;
+if ((branchWord('lo') & 0xf) !== 0x3) throw new Error('lo/cc condition code must be 0x3');
+passed++;
+for (const alias of ['hs', 'lo']) {
+  const invert = suggestPatches(`b.${alias}`, `#0x${patchTarget.toString(16)}`, patchAt)
+    .find((candidate) => candidate.id === 'invert');
+  if (!invert) throw new Error(`b.${alias} does not offer an invert patch`);
+  const roundTrip = assemble(invert.text, patchAt);
+  if (roundTrip.error || roundTrip.bytes?.length !== 4) {
+    throw new Error(`${invert.text} emitted by suggestPatches does not round-trip`);
+  }
+  passed++;
+}
+
 process.stdout.write(`ARM64 word classification: ${passed} regressions ok\n`);
 
 await import('./issue-556-address-provenance.mjs');
