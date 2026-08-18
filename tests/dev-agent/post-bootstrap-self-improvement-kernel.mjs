@@ -74,18 +74,27 @@ async function testBoundedParentInspection() {
   assert.equal(inlineSource.src, null);
   assert.equal(inlineSource.needle, 'createProject');
   assert.ok(inlineSource.excerpts.length > 0 && inlineSource.excerpts.length <= 5, 'inline match count must be bounded');
-  assert.ok(inlineSource.excerptChars <= 12 * 1024, 'inline total excerpt output must be bounded');
+  assert.ok(inlineSource.excerptChars <= 8 * 1024, 'inline total excerpt output must be bounded');
   assert.match(inlineSource.excerpts[0].text, /createProject/);
   assert.doesNotMatch(JSON.stringify(inlineSource), /must-not-leak/, 'sensitive inline values near a benign match must be redacted');
   await assert.rejects(() => inspector.scriptSource({ index: inline.index }), (error) => error.code === 'inline-needle-required');
   await assert.rejects(() => inspector.scriptSource({ index: inline.index, needle: 'sessionToken' }), (error) => error.code === 'inline-sensitive-needle');
+  await assert.rejects(() => inspector.scriptSource({ index: inline.index, needle: 'localStorage' }), (error) => error.code === 'inline-sensitive-needle');
 
   const source = await inspector.scriptSource({ index: 0, needle: 'createProject', contextChars: 32 });
   assert.equal(source.excerpts.length, 1);
   assert.match(source.excerpts[0].text, /createProject/);
   assert.equal(fetched.options.credentials, 'omit');
   assert.equal(fetched.options.referrerPolicy, 'no-referrer');
-  await assert.rejects(() => inspector.scriptSource({ src: 'https://evil.example/x.js' }), (error) => error.code === 'script-not-loaded');
+
+  fetched = null;
+  const externalSlice = await inspector.scriptSource({ index: 0, offset: 6, maxChars: 256 });
+  assert.equal(externalSlice.src, 'https://chatgpt.com/assets/app.js');
+  assert.equal(externalSlice.offset, 6);
+  assert.match(externalSlice.text, /projectRoute/);
+  assert.equal(fetched.options.credentials, 'omit', 'external no-needle reads must retain credential omission');
+  assert.equal(fetched.options.referrerPolicy, 'no-referrer', 'external no-needle reads must retain no-referrer');
+  await assert.rejects(() => inspector.scriptSource({ src: 'https://evil.example/x.js' }), (error) => error.code === 'script-not-loaded' && error.message === 'Requested script is not a currently loaded external page script.');
 }
 
 async function testAdminRpcSurface() {
