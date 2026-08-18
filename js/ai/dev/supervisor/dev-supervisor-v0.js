@@ -3,15 +3,19 @@ import { createDevAnalysisScopeRequest } from '../run/analysis-scope.js';
 import { bindDevRunIdentity, createDevRun, DEV_RUN_STATUS, transitionDevRun } from '../run/dev-run.js';
 import { validateDevSupervisorDecision } from '../protocol/hex-dev-supervisor-v1.js';
 import { createDevWorkerToolSurface, DEV_WORKER_TOOL } from '../workers/tool-surface.js';
+import { createDevAdminToolSurface } from '../admin/tool-surface.js';
 
 let fallbackSequence = 0;
 
 export class DevSupervisorV0 {
-  constructor({ availableTools = [], workerTools = null, workerClient = null, idFactory = defaultIdFactory, now = () => new Date().toISOString() } = {}) {
-    this.workerTools = workerTools || createDevWorkerToolSurface(workerClient || globalThis.__HEX_DEV_WORKER_CLIENT__ || null);
+  constructor({ availableTools = [], workerTools = null, adminTools = null, workerClient = null, idFactory = defaultIdFactory, now = () => new Date().toISOString() } = {}) {
+    const client = workerClient || globalThis.__HEX_DEV_WORKER_CLIENT__ || null;
+    this.workerTools = workerTools || createDevWorkerToolSurface(client);
+    this.adminTools = adminTools || createDevAdminToolSurface(client);
     this.availableTools = Object.freeze([...new Set([
       ...availableTools.map(String),
       ...(this.workerTools?.toolNames || []),
+      ...(this.adminTools?.toolNames || []),
     ])]);
     this.idFactory = idFactory;
     this.now = now;
@@ -62,6 +66,10 @@ export class DevSupervisorV0 {
   async executeToolDecision(run, input) {
     const applied = this.applyDecision(run, input);
     if (applied.decision.type !== 'tool') throw new TypeError('executeToolDecision requires a Dev tool decision.');
+    if (this.adminTools?.has(applied.decision.tool)) {
+      const result = await this.adminTools.execute(applied.decision.tool, applied.decision.arguments);
+      return Object.freeze({ run: applied.run, decision: applied.decision, result });
+    }
     if (!this.workerTools?.has(applied.decision.tool)) {
       throw new TypeError(`No Dev tool executor is registered for: ${applied.decision.tool}`);
     }

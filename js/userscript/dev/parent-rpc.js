@@ -11,6 +11,9 @@ export const DEV_PARENT_RPC_METHODS = Object.freeze([
   'dev.worker.result',
   'dev.worker.release',
   'dev.worker.wait_event',
+  'dev.admin.page_snapshot',
+  'dev.admin.page_scripts',
+  'dev.admin.page_script_source',
 ]);
 
 const METHODS = new Set(DEV_PARENT_RPC_METHODS);
@@ -174,6 +177,9 @@ export function createDevWorkerParentRpcClient({ port, timeoutMs = 60000 } = {})
       ...opts,
       timeoutMs: 0,
     }),
+    pageSnapshot: (args = {}, opts = {}) => call('dev.admin.page_snapshot', args, opts),
+    pageScripts: (args = {}, opts = {}) => call('dev.admin.page_scripts', args, opts),
+    pageScriptSource: (args = {}, opts = {}) => call('dev.admin.page_script_source', args, opts),
     close() {
       if (closed) return;
       closed = true;
@@ -201,7 +207,10 @@ async function dispatch(runtime, method, params, signal) {
   if (method === 'dev.worker.result') return runtime.result(params, options);
   if (method === 'dev.worker.release') return runtime.release(params, options);
   if (method === 'dev.worker.wait_event') return runtime.waitEvent(params, options);
-  throw rpcError('transport-failure', 'Unknown Dev Worker RPC method.');
+  if (method === 'dev.admin.page_snapshot') return runtime.pageSnapshot(params, options);
+  if (method === 'dev.admin.page_scripts') return runtime.pageScripts(params, options);
+  if (method === 'dev.admin.page_script_source') return runtime.pageScriptSource(params, options);
+  throw rpcError('transport-failure', 'Unknown Dev parent RPC method.');
 }
 
 function validBase(message) {
