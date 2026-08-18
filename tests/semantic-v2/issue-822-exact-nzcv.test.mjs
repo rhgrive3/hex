@@ -12,6 +12,9 @@ function model(lines) {
   const rowOfAddress = (addr) => Number((BigInt(addr) - BASE) / 4n);
   return buildSemanticModel(rows, { startRow:0, endRow:rows.length - 1, rowOfAddress });
 }
+function unwrap32(node) {
+  return node?.k === 'un' && node.op === 'uxt32' ? node.a : node;
+}
 
 const conditions = ['eq','ne','cs','cc','hi','ls','vs','vc','ge','lt','gt','le'];
 function expected(nzcv, cc) {
@@ -63,7 +66,7 @@ for (const entry of cases) {
 // a fabricated ordinary compare. SUBS/CMP retain the safe compare projection.
 {
   const v = buildValues(model(['adds w8, w0, w1','cset w2, cs','ret']));
-  const n = v.defAt(1,'x2');
+  const n = unwrap32(v.defAt(1,'x2'));
   assert.equal(n.k,'sel');
   assert.equal(n.predicate?.producer,'adds');
   assert.equal(n.predicate?.bits,32);
@@ -73,14 +76,14 @@ for (const entry of cases) {
 }
 {
   const v = buildValues(model(['bics w8, w0, w1','cset w2, ne','ret']));
-  const n = v.defAt(1,'x2');
+  const n = unwrap32(v.defAt(1,'x2'));
   assert.equal(n.predicate?.producer,'bics');
   assert.match(render(n), /Z_bics32\(/);
   assert.ok(n.cmp == null);
 }
 {
   const v = buildValues(model(['subs w8, w0, w1','csel w2, w3, w4, hi','ret']));
-  const n = v.defAt(1,'x2');
+  const n = unwrap32(v.defAt(1,'x2'));
   assert.equal(n.predicate?.producer,'subs');
   assert.ok(n.cmp?.a && n.cmp?.b, 'SUBS remains compare-compatible for min/max and readable comparisons');
 }
