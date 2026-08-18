@@ -46,13 +46,14 @@ jobs:
           node --test tests/phase4/ownership/mixed-integration.test.mjs
           git diff --name-only -z "$BASE_SHA" | node tools/validation/phase4/mixed-integration.mjs --files0-stdin
 
-      - name: Full aggregate verification
-        shell: bash
-        run: |
-          set -euo pipefail
-          npm run semantic-v2:test
-          npm run check
-          npm run userscript:build
+      - name: Full Semantic IR v2 verification
+        run: npm run semantic-v2:test
+
+      - name: Full repository check
+        run: npm run check
+
+      - name: Generated idempotence verification
+        run: npm run userscript:build
 
       - name: Publish only the verified product tree
         shell: bash
