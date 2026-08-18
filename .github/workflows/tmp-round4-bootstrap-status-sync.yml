@@ -1,0 +1,58 @@
+name: One-shot Round 4 diagnostic generated sync
+
+on:
+  push:
+    branches:
+      - round4-bootstrap-status
+
+permissions:
+  contents: write
+
+concurrency:
+  group: round4-bootstrap-status-generated-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: contains(github.event.head_commit.message, 'Trigger Round4 diagnostic generated sync')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: round4-bootstrap-status
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Verify Round 4 diagnostic contract
+        run: node tests/dev-agent/round4-production-bootstrap.mjs
+      - name: Build canonical userscript output
+        run: npm run userscript:build
+      - name: Verify canonical userscript tests
+        run: npm run userscript:test
+      - name: Verify diff hygiene
+        run: git diff --check
+      - name: Commit generated output and remove one-shot workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/tmp-round4-bootstrap-status-sync.yml
+          python3 - <<'PY'
+          import subprocess
+          expected = {
+              '.github/workflows/tmp-round4-bootstrap-status-sync.yml',
+              'userscript/hex.user.template.js',
+              'userscript/release-version.json',
+          }
+          rows = subprocess.check_output(['git', 'status', '--porcelain=v1'], text=True).splitlines()
+          actual = {row[3:] for row in rows if len(row) >= 4}
+          if actual != expected:
+              raise SystemExit(f'unexpected generated sync diff: {sorted(actual)}')
+          PY
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m 'Refresh generated userscript for Round 4 diagnostic'
+          git push origin HEAD:round4-bootstrap-status
