@@ -27,4 +27,5 @@ assert.equal(version, '2.0.' + releaseState.serial, 'committed userscript metada
 assert.match(releaseState.releaseIdentity, /^[a-f0-9]{64}$/);
 assert.match(releaseState.buildId, /^[a-f0-9]{24}$/);
 assert.ok(template.includes(releaseState.buildId), 'committed userscript loader must embed the release state buildId');
+await import('./userscript-deployment-identity.mjs');
 console.log('Userscript release-version contract passed');
