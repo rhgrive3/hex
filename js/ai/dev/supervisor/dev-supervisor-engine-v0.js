@@ -208,6 +208,22 @@ export class DevSupervisorEngineV0 {
     let workerClaimAttempted = false;
     let toolErrorRecoveries = 0;
 
+    /* A claim that threw leaves ownership ambiguous. Recovery can now carry the
+       run all the way to a normal ending, so every exit settles the obligation
+       instead of only the confirmed-claim case. */
+    const settleWorkerOwnership = async () => {
+      if (workerClaimed) {
+        run = await this.releaseWorker(run);
+        workerClaimed = false;
+        workerClaimAttempted = false;
+        return;
+      }
+      if (!workerClaimAttempted) return;
+      try { run = await this.releaseWorker(run); }
+      catch { /* the ambiguous claim held nothing; a good run must not fail for it */ }
+      workerClaimAttempted = false;
+    };
+
     try {
       for (let step = 0; step < this.maxDecisions; step++) {
         const promptTools = requiredBootstrapCapability
@@ -324,30 +340,21 @@ export class DevSupervisorEngineV0 {
         }
 
         if (decision.type === 'human') {
-          if (workerClaimed) {
-            run = await this.releaseWorker(run);
-            workerClaimed = false;
-          }
+          await settleWorkerOwnership();
           const applied = eventHost.yieldDecision(run, decision);
           run = applied.run;
           this.settings.setLastRun(run);
           return uiResponse(decision.question, run, [decision.question]);
         }
 
-        if (workerClaimed) {
-          run = await this.releaseWorker(run);
-          workerClaimed = false;
-        }
+        await settleWorkerOwnership();
         const applied = this.supervisor.applyDecision(run, decision);
         run = applied.run;
         this.settings.setLastRun(run);
         return uiResponse(decision.answer, run, []);
       }
 
-      if (workerClaimed) {
-        run = await this.releaseWorker(run);
-        workerClaimed = false;
-      }
+      await settleWorkerOwnership();
       if (run.status === DEV_RUN_STATUS.ACTIVE) {
         run = transitionDevRun(run, DEV_RUN_STATUS.PAUSED, { now: this.supervisor.now() });
         this.settings.setLastRun(run);

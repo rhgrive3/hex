@@ -17,6 +17,7 @@ await testTerminalToolErrorStillFails();
 await testAbortStillCancels();
 await testRecoveryBudgetIsBounded();
 await testWorkerClaimFailureKeepsCleanupObligation();
+await testAbandonedAmbiguousClaimStillReleases();
 await testReleaseFailureKeepsClaimOwnership();
 console.log('Dev Supervisor tool error recovery: ok');
 
@@ -187,6 +188,53 @@ async function testWorkerClaimFailureKeepsCleanupObligation() {
   assert.equal(claims, 2, 'the Supervisor must be able to retry a failed claim');
   assert.deepEqual(calls.map((call) => call[0]), ['claim', 'claim', 'release'], 'the recovered claim must still be released exactly once');
   assert.equal(harness.settings.lastRun.status, DEV_RUN_STATUS.COMPLETED);
+}
+
+/* Recovery can now reach a normal ending after an ambiguous claim, so the
+   ambiguous slot must still be released — best effort, without failing the run. */
+async function testAbandonedAmbiguousClaimStillReleases() {
+  const calls = [];
+  const harness = createHarness({
+    client: workerClient({
+      claim: async () => {
+        calls.push('claim');
+        throw Object.assign(new Error('Dev Worker RPC timed out: dev.worker.claim'), { code: 'transport-failure' });
+      },
+      release: async () => { calls.push('release'); return { released: true }; },
+    }),
+    decisions: [
+      { type: 'tool', tool: 'worker.claim', arguments: {}, purpose: 'claim a worker' },
+      { type: 'final', answer: 'gave up on the Worker', completedTasks: [], remaining: ['worker delegation'] },
+    ],
+  });
+
+  const result = await harness.engine.run({ goal: 'abandon an ambiguous claim', conversationId: 'conversation-abandon' });
+  assert.equal(result.answer, 'gave up on the Worker');
+  assert.deepEqual(calls, ['claim', 'release'], 'an abandoned ambiguous claim must still be released');
+  assert.equal(harness.settings.lastRun.status, DEV_RUN_STATUS.PAUSED, 'remaining work leaves the run paused, not failed');
+
+  /* A release failure on a slot that was never held must not fail the run. */
+  const quiet = [];
+  const quietHarness = createHarness({
+    client: workerClient({
+      claim: async () => {
+        quiet.push('claim');
+        throw Object.assign(new Error('claim timed out'), { code: 'transport-failure' });
+      },
+      release: async () => {
+        quiet.push('release');
+        throw Object.assign(new Error('no lease is held'), { code: 'no-lease' });
+      },
+    }),
+    decisions: [
+      { type: 'tool', tool: 'worker.claim', arguments: {}, purpose: 'claim a worker' },
+      { type: 'final', answer: 'finished without a Worker', completedTasks: ['analysis'], remaining: [] },
+    ],
+  });
+  const quietResult = await quietHarness.engine.run({ goal: 'ambiguous claim cleanup', conversationId: 'conversation-quiet' });
+  assert.equal(quietResult.answer, 'finished without a Worker');
+  assert.deepEqual(quiet, ['claim', 'release']);
+  assert.equal(quietHarness.settings.lastRun.status, DEV_RUN_STATUS.COMPLETED);
 }
 
 /* A release that throws must not drop the claim: the run still owns it. */
