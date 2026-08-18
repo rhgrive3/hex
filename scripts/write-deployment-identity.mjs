@@ -14,6 +14,15 @@ function deploymentCommit(cwd, env) {
   const workersCommit = normalizeCommit(env.WORKERS_CI_COMMIT_SHA);
   if (workersCommit) return workersCommit;
   try {
+    const status = execFileSync('git', [
+      'status', '--porcelain=v1', '--untracked-files=all', '--', '.',
+      ':(exclude)js/userscript/deployment-identity.generated.js',
+    ], {
+      cwd,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    if (String(status || '').trim()) return null;
     return normalizeCommit(execFileSync('git', ['rev-parse', 'HEAD'], {
       cwd,
       encoding: 'utf8',
