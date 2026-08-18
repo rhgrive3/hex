@@ -14,6 +14,13 @@ export const DEV_PARENT_RPC_METHODS = Object.freeze([
   'dev.admin.page_snapshot',
   'dev.admin.page_scripts',
   'dev.admin.page_script_source',
+  'dev.skill.list',
+  'dev.skill.describe',
+  'dev.skill.install_candidate',
+  'dev.skill.validate_candidate',
+  'dev.skill.activate',
+  'dev.skill.rollback',
+  'dev.skill.run',
 ]);
 
 const METHODS = new Set(DEV_PARENT_RPC_METHODS);
@@ -180,6 +187,13 @@ export function createDevWorkerParentRpcClient({ port, timeoutMs = 60000 } = {})
     pageSnapshot: (args = {}, opts = {}) => call('dev.admin.page_snapshot', args, opts),
     pageScripts: (args = {}, opts = {}) => call('dev.admin.page_scripts', args, opts),
     pageScriptSource: (args = {}, opts = {}) => call('dev.admin.page_script_source', args, opts),
+    skillList: (args = {}, opts = {}) => call('dev.skill.list', args, opts),
+    skillDescribe: (args = {}, opts = {}) => call('dev.skill.describe', args, opts),
+    skillInstallCandidate: (args = {}, opts = {}) => call('dev.skill.install_candidate', args, opts),
+    skillValidateCandidate: (args = {}, opts = {}) => call('dev.skill.validate_candidate', args, opts),
+    skillActivate: (args = {}, opts = {}) => call('dev.skill.activate', args, opts),
+    skillRollback: (args = {}, opts = {}) => call('dev.skill.rollback', args, opts),
+    skillRun: (args = {}, opts = {}) => call('dev.skill.run', args, opts),
     close() {
       if (closed) return;
       closed = true;
@@ -210,6 +224,13 @@ async function dispatch(runtime, method, params, signal) {
   if (method === 'dev.admin.page_snapshot') return runtime.pageSnapshot(params, options);
   if (method === 'dev.admin.page_scripts') return runtime.pageScripts(params, options);
   if (method === 'dev.admin.page_script_source') return runtime.pageScriptSource(params, options);
+  if (method === 'dev.skill.list') return runtime.skillList(params, options);
+  if (method === 'dev.skill.describe') return runtime.skillDescribe(params, options);
+  if (method === 'dev.skill.install_candidate') return runtime.skillInstallCandidate(params, options);
+  if (method === 'dev.skill.validate_candidate') return runtime.skillValidateCandidate(params, options);
+  if (method === 'dev.skill.activate') return runtime.skillActivate(params, options);
+  if (method === 'dev.skill.rollback') return runtime.skillRollback(params, options);
+  if (method === 'dev.skill.run') return runtime.skillRun(params, options);
   throw rpcError('transport-failure', 'Unknown Dev parent RPC method.');
 }
 
