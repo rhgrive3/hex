@@ -40,6 +40,10 @@ export function readDevBootstrapRequested(locationRef = globalThis.location) {
   return readLocationParam(locationRef, DEV_BOOTSTRAP_PARAM) === '1';
 }
 
+export function shouldEnableDevBootstrap({ sourceCommit, buildId, locationRef = globalThis.location } = {}) {
+  return !!sourceCommit && !!buildId && readDevBootstrapRequested(locationRef);
+}
+
 export function createEmbedBootstrapMessage(generation, sandboxToken = null) {
   const message = {
     type: EMBED_BOOTSTRAP_TYPE,
