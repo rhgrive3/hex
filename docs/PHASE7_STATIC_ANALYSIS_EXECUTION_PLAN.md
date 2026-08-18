@@ -2,7 +2,8 @@
 
 Status: **implementation runbook / pre-Phase-7 planning**  
 Repository: `rhgrive3/hex`  
-Planning baseline: `main` at `e90c5107f9c77d73687ee452d5042dcbe9e79ece`  
+Initial docs-branch fork: `main` at `e90c5107f9c77d73687ee452d5042dcbe9e79ece`  
+Final review live baseline: `main` at `9fb1c3f9327869e83170e75b6f132ad699b82a0e` (Phase 6 integration merged via #852)  
 Canonical architecture: `docs/HEX_MASTER_ARCHITECTURE.md`  
 Process contract: `docs/ENGINEERING_PROCESS_GUARDRAILS.md`  
 Migration contract: `docs/MIGRATION_GUARDRAILS.md`
@@ -10,6 +11,8 @@ Migration contract: `docs/MIGRATION_GUARDRAILS.md`
 This document turns Master Architecture Phase 7 — **Industrial static-analysis depth** — into an executable engineering plan.
 
 It is deliberately written before implementation. The goal is to settle semantic contracts, dependency order, evidence rules, invalidation, verification, measurement, and integration mechanics before implementation pressure creates shortcuts.
+
+The live-baseline SHA above is a review-time observation, not a permanently frozen Phase 7 release base. P7-0 must resolve the then-current exact Phase 6-integrated baseline again before implementation starts.
 
 If this runbook conflicts with the current `HEX_MASTER_ARCHITECTURE.md`, a later accepted ADR, or another higher-authority versioned contract, the higher-authority contract wins and this runbook must be updated.
 
@@ -202,15 +205,17 @@ P7-0 is the main efficiency investment. If it is weak, later checkpoints will sp
 Before P7 implementation begins in earnest:
 
 - identify the exact Phase 6 integrated/release baseline;
-- run the mandatory exact-head suites on that baseline;
-- snapshot the machine-readable capability truth for architectures/formats that Phase 7 must exercise;
+- run mandatory exact-head suites on that baseline;
+- snapshot machine-readable capability truth for architectures/formats Phase 7 must exercise;
 - create Phase 7 changed-file ownership and contract ownership rules;
-- establish the living integration lane;
-- establish the permanent exact-head Phase 7 verifier path;
+- establish living integration lane;
+- establish permanent exact-head Phase 7 verifier path;
 - prove canonical test discovery sees a sentinel from every Phase 7-owned test subtree;
-- freeze the baseline corpus/query/truth/metric manifest before implementation results are known.
+- freeze baseline corpus/query/truth/metric manifest before implementation results are known.
 
 Do not hard-code a stale architecture matrix from an earlier planning baseline. The P7 corpus manifest is generated/frozen from capability truth at actual Phase 7 start.
+
+At the final review baseline (`9fb1c3f...`), live support truth reports shared implemented depth through the generic CFG/SSA/MemorySSA/decompiler path for `arm64`, `x86_64`, and `riscv64`, while cumulative maturity remains conservative because exact low-level effects are still partial. P7-0 must therefore expect those three as the minimum cross-architecture semantic lanes unless the then-current machine-readable capability truth explicitly changes. `arm64e` partial coverage may add evidence but must not substitute for one of those lanes.
 
 ## 5.2 Baseline evidence schema
 
@@ -257,7 +262,7 @@ Create before precision changes. Include at minimum:
 - stale callee summary after semantic-version/input change;
 - stale debug-derived type after provider/build identity change.
 
-The corpus must include tests demonstrating that the verifier rejects intentionally unsound mutants/test doubles. A verifier that only proves the current implementation passes is not proven to detect the targeted failure class.
+The corpus must include tests demonstrating that the verifier rejects intentionally unsound mutants/test doubles. A verifier that only proves current implementation passes is not proven to detect the targeted failure class.
 
 ## 5.4 Stable query boundaries
 
@@ -295,13 +300,13 @@ AnalysisStatus {
 ## 5.5 P7-0 exit gate
 
 - current semantic/decompiler/migration/compiler-truth suites remain green;
-- negative corpus passes on the conservative product baseline;
+- negative corpus passes on conservative product baseline;
 - unsound mutants are rejected by relevant negative/verifier tests;
 - exact-head verifier runs before precision implementation lands;
 - baseline metrics are captured from actual product path;
 - ownership and contract ownership are machine-checkable;
 - canonical phase runner discovers every owned test subtree;
-- result/status/evidence semantics are frozen or covered by a narrowly scoped ADR;
+- result/status/evidence semantics are frozen or covered by narrowly scoped ADR;
 - corpus/query/truth/scoring manifest is immutable/versioned for baseline-vs-candidate comparison.
 
 ---
@@ -459,10 +464,10 @@ Unknown stores/calls clobber all regions they may affect. Precision failure beco
 
 ## 7.4 Exit gate
 
-- every A1 `NoAlias` has a machine-readable proof reason/evidence path;
+- every A1 `NoAlias` has machine-readable proof reason/evidence path;
 - zero false `NoAlias` and zero false `MustAlias` in mandatory exact-truth cases;
 - existing unknown-store/call barriers do not regress;
-- representative broad `UnknownRegion` usage is reduced or the checkpoint explicitly records that reduction is deferred to A2 without claiming the Phase 7 master exit gate;
+- representative broad `UnknownRegion` usage is reduced or checkpoint explicitly records reduction deferred to A2 without claiming Phase 7 master exit gate;
 - no A1 exit criterion requires P7-3 escape;
 - latency stays inside P7-0 machine-readable regression budget.
 
@@ -520,7 +525,7 @@ Loop pointer phis require finite convergence or widening. A growing range eventu
 
 ### Pointer arithmetic
 
-Constant field offsets are different from arbitrary integer-derived pointers. When provenance is lost, record the loss explicitly.
+Constant field offsets are different from arbitrary integer-derived pointers. When provenance is lost, record loss explicitly.
 
 ### Overlapping fields/unions
 
@@ -528,15 +533,15 @@ Different recovered field labels do not prove separation when byte intervals ove
 
 ### Load-derived pointers
 
-Points-to precision is bounded by the reaching-memory proof. Multiple possible definitions require a conservative merge.
+Points-to precision is bounded by reaching-memory proof. Multiple possible definitions require conservative merge.
 
 ## 8.3 Exit gate
 
-- deterministic result for a fixed snapshot/options/analyzer version;
+- deterministic result for fixed snapshot/options/analyzer version;
 - cyclic fixtures terminate under documented widening/budget rules;
-- field-sensitive precision improves the frozen representative query set;
+- field-sensitive precision improves frozen representative query set;
 - zero false strong alias conclusions in union/overlap/phi/integer-cast/unknown-store cases;
-- no consumer bypasses canonical alias/query boundary for a stronger result;
+- no consumer bypasses canonical alias/query boundary for stronger result;
 - latency/memory stay inside P7-0 regression budgets.
 
 ---
@@ -591,7 +596,7 @@ unknown
 
 Escape is not one boolean when later analysis needs boundary/reason to know which separation proof remains valid.
 
-Generic escape analysis exposes provider/evidence hooks for language/runtime captures. It does not embed Swift/ObjC/C++/Rust/Go-specific decoding in the generic solver.
+Generic escape analysis exposes provider/evidence hooks for language/runtime captures. It does not embed Swift/ObjC/C++/Rust/Go-specific decoding in generic solver.
 
 ## 9.3 P7-3c interprocedural order
 
@@ -622,11 +627,11 @@ When escape evidence changes, any `NoAlias` proof that depended on non-escape mu
 
 ### Summary invalidation
 
-Callee or library-model changes invalidate dependent callers transitively by identity/digest, not by manually clearing an unrelated global cache.
+Callee or library-model changes invalidate dependent callers transitively by identity/digest, not by manually clearing unrelated global cache.
 
 ### Cancellation
 
-A cancelled SCC solve cannot publish a complete interprocedural summary. If bounded partial summaries are exposed, they remain explicitly incomplete and cannot satisfy a complete-summary consumer.
+A cancelled SCC solve cannot publish a complete interprocedural summary. If bounded partial summaries are exposed, they remain explicitly incomplete and cannot satisfy complete-summary consumer.
 
 ## 9.5 Exit gate
 
@@ -661,7 +666,7 @@ Examples aligned with the Master Architecture:
 
 - load/store width;
 - ABI argument/return location;
-- exact debug-info type bound to the matched build;
+- exact debug-info type bound to matched build;
 - verified runtime metadata;
 - pointer arithmetic width/stride where exact;
 - authoritative call prototype constraints.
@@ -721,9 +726,9 @@ Use graph identities for recursive types. Keep ABI passing shape distinct from r
 
 # 11. P7-5 — DWARF / PDB ingestion
 
-Debug information enters as evidence through the common provider boundary; it does not bypass type/evidence identity.
+Debug information enters as evidence through common provider boundary; it does not bypass type/evidence identity.
 
-Canonical provider contract from the Master Architecture:
+Canonical provider contract from Master Architecture:
 
 ```ts
 interface DebugInfoProvider {
@@ -743,9 +748,9 @@ interface DebugInfoProvider {
 3. prove exact identity binding and fail-closed mismatch behavior;
 4. feed authoritative results into canonical symbol/type/evidence systems;
 5. implement second required ecosystem through same boundary;
-6. prove neither backend has a private type-application path.
+6. prove neither backend has private type-application path.
 
-Phase 7's deliverable is DWARF **and** PDB ingestion. The first-backend-first sequence is an implementation tactic, not permission to finish the phase with only one ecosystem.
+Phase 7's deliverable is DWARF **and** PDB ingestion. The first-backend-first sequence is an implementation tactic, not permission to finish phase with only one ecosystem.
 
 ## 11.2 Identity states
 
@@ -817,7 +822,7 @@ Evidence producers may include:
 - validated architecture-specific prologue/epilogue candidates;
 - runtime observations where available.
 
-Central result contract follows the Master Architecture:
+Central result contract follows Master Architecture:
 
 ```ts
 FunctionCandidate {
@@ -835,7 +840,7 @@ FunctionCandidate {
 
 **Evidence producers may be target-specific; evidence fusion is generic.**
 
-The central solver must not parse architecture mnemonic text or embed target-specific register conventions.
+Central solver must not parse architecture mnemonic text or embed target-specific register conventions.
 
 ## 12.2 Start vs extent
 
@@ -859,13 +864,13 @@ One good start score cannot hide bad extent ownership.
 - exception/landing-pad ownership;
 - overlapping evidence;
 - contradictory symbols/unwind/heuristics;
-- architecture-specific producer quality without architecture leakage into the central solver.
+- architecture-specific producer quality without architecture leakage into central solver.
 
 ## 12.4 Corpus scope
 
-At actual Phase 7 start, freeze a machine-readable target/corpus manifest from capability truth produced by completed prerequisite phases.
+At actual Phase 7 start, freeze machine-readable target/corpus manifest from capability truth produced by completed prerequisite phases.
 
-Do not infer cross-architecture coverage from the stale planning baseline. Every architecture admitted to mandatory corpus must have enough prerequisite semantic maturity to exercise same middle-end contracts; unsupported combinations remain explicit rather than silently skipped green.
+Do not infer cross-architecture coverage from stale planning baseline. Every architecture admitted to mandatory corpus must have enough prerequisite semantic maturity to exercise same middle-end contracts; unsupported combinations remain explicit rather than silently skipped green.
 
 ## 12.5 Exit gate
 
@@ -881,9 +886,9 @@ Do not infer cross-architecture coverage from the stale planning baseline. Every
 
 P7-I exists from P7-0. It is not a final cleanup branch.
 
-Exact physical branch/PR topology is chosen by P7-0 repository tooling. The semantic rule is independent of whether a component PR targets `main`, an integration branch, or another approved staging branch:
+Exact physical branch/PR topology is chosen by P7-0 repository tooling. Semantic rule is independent of whether component PR targets `main`, integration branch, or another approved staging branch:
 
-> A component is not **accepted** until its exact implementation is represented in P7-I and the exact P7-I checkpoint is proven.
+> A component is not **accepted** until its exact implementation is represented in P7-I and exact P7-I checkpoint is proven.
 
 ## 13.1 Checkpoint acceptance transaction
 
@@ -899,7 +904,7 @@ Exact physical branch/PR topology is chosen by P7-0 repository tooling. The sema
 10. checkpoint evidence manifest is written;
 11. only then does checkpoint unlock for next dependent acceptance.
 
-Independent future work may continue while P7-I is locked, but next dependent component must not be accepted on top of an unproven checkpoint.
+Independent future work may continue while P7-I is locked, but next dependent component must not be accepted on top of unproven checkpoint.
 
 ## 13.2 Checkpoint evidence manifest
 
@@ -922,13 +927,13 @@ result: accepted | blocking
 blocking reason if any
 ```
 
-Do not record a generic "CI green" statement without exact product/verifier/corpus identity.
+Do not record generic "CI green" statement without exact product/verifier/corpus identity.
 
 ## 13.3 Moving `main`
 
 One integration/reconciliation lane owns moving-main reconciliation.
 
-Component branches do not repeatedly rebase merely because unrelated `main` moved. Reconcile at defined acceptance/release boundaries and whenever a shared semantic contract actually changed.
+Component branches do not repeatedly rebase merely because unrelated `main` moved. Reconcile at defined acceptance/release boundaries and whenever shared semantic contract actually changed.
 
 If reconciliation changes candidate merge tree, exact-head evidence from old tree is obsolete.
 
@@ -952,7 +957,7 @@ Triage order:
 6. summary/type/discovery downstream divergence;
 7. UI/decompiler projection symptom.
 
-Do not patch downstream decompiler symptom while an earlier alias/MSSA divergence remains unexplained.
+Do not patch downstream decompiler symptom while earlier alias/MSSA divergence remains unexplained.
 
 ## 13.6 Source merge vs active runtime
 
@@ -988,7 +993,7 @@ Useful parallel work:
 - DWARF/PDB fixture preparation while TypeConstraintGraph stabilizes;
 - function-discovery corpus preparation while summaries mature;
 - profiling/hot-path instrumentation while semantic implementation proceeds;
-- independent component work that does not require an unproven downstream contract.
+- independent component work that does not require unproven downstream contract.
 
 Do not parallelize competing semantic truths:
 
@@ -1015,9 +1020,9 @@ Rules:
 7. page/bound debug reads and indexes;
 8. prefer compact IDs/sets/intervals over duplicated object graphs;
 9. publish `partial`/`bounded` or no result when budgets stop analysis;
-10. never change a conservative semantic answer solely to meet a latency target.
+10. never change conservative semantic answer solely to meet latency target.
 
-P7-0 captures baseline measurements and creates machine-readable regression budgets. A later budget change requires recorded measurement/rationale; "explained and accepted" prose alone is not a merge gate.
+P7-0 captures baseline measurements and creates machine-readable regression budgets. A later budget change requires recorded measurement/rationale; "explained and accepted" prose alone is not merge gate.
 
 At minimum measure:
 
@@ -1036,7 +1041,7 @@ Performance measurement procedure itself is versioned: fixture identity, warm/co
 
 # 17. Truth, corpus, and metric contract
 
-The Phase 7 master exit gate is quantitative. Therefore measurement is part of correctness, not reporting decoration.
+The Phase 7 master exit gate is quantitative. Measurement is part of correctness, not reporting decoration.
 
 ## 17.1 Corpus manifest
 
@@ -1056,27 +1061,27 @@ scoring ID/version
 allowed exclusions with reason codes
 ```
 
-A fixture or query may be excluded only by a predeclared rule or explicit versioned manifest change. A changed manifest creates a new comparison series; it must not be presented as direct continuation of old numbers without rerunning the baseline under the new manifest.
+A fixture or query may be excluded only by predeclared rule or explicit versioned manifest change. Changed manifest creates a new comparison series; it must not be presented as direct continuation of old numbers without rerunning baseline under new manifest.
 
 ## 17.2 Truth hierarchy
 
-Prefer deterministic truth generated from fixtures designed to make the relevant fact knowable.
+Prefer deterministic truth generated from fixtures designed to make relevant fact knowable.
 
 Examples:
 
 - hand-authored semantic microfixtures with exact expected memory relations;
-- compiler-truth fixtures with pinned source/toolchain/flags and explicit addresses/objects where the fact survives optimization;
-- paired debug/unstripped artifacts used as truth for a stripped copy of the **same exact build**;
+- compiler-truth fixtures with pinned source/toolchain/flags and explicit addresses/objects where fact survives optimization;
+- paired debug/unstripped artifacts used as truth for stripped copy of **same exact build**;
 - loader/unwind/compiler tables tied to exact binary identity;
 - deterministic repository-owned truth annotations for intentionally ambiguous cases.
 
 Do not treat source-level intent as machine truth when optimization, UB, inlining, tail merging, or ABI lowering can invalidate that interpretation.
 
-External tools are differential diagnostics unless a specific repository contract explicitly designates a narrow output as an oracle. Agreement with one external decompiler is not truth.
+External tools are differential diagnostics unless specific repository contract designates a narrow output as oracle. Agreement with one external decompiler is not truth.
 
 ## 17.3 Frozen alias query set
 
-Alias precision is scored on a frozen set of query pairs, not every pair the new analyzer happens to answer.
+Alias precision is scored on frozen set of query pairs, not every pair new analyzer happens to answer.
 
 Each query records:
 
@@ -1094,8 +1099,8 @@ For exact-truth queries:
 
 - false `NoAlias` = analyzer returns `no` when truth is not `no`;
 - false `MustAlias` = analyzer returns `must` when truth is not `must`;
-- strong-alias soundness gate requires both counts to be zero on mandatory exact-truth corpus;
-- `may`/`unknown` are conservative but less precise and are tracked separately.
+- strong-alias soundness gate requires both counts zero on mandatory exact-truth corpus;
+- `may`/`unknown` are conservative but less precise and tracked separately.
 
 For precision reporting:
 
@@ -1105,22 +1110,22 @@ may_rate = may / all frozen queries
 strong_proven_rate = (must + no with valid proof) / all frozen queries
 ```
 
-Do not combine `may` and `unknown` into one success number if the analyzer distinguishes them.
+Do not combine `may` and `unknown` into one success number if analyzer distinguishes them.
 
-A baseline-vs-candidate "unknown reduction" uses the exact same query set and denominator.
+A baseline-vs-candidate "unknown reduction" uses exact same query set and denominator.
 
 ## 17.4 Memory-link metric
 
 A memory link is scored on frozen load/source questions, not on decompiler text.
 
-For each load query record whether the correct reaching definition is:
+For each load query record whether correct reaching definition is:
 
 - exact one definition;
-- a known set of possible definitions;
-- blocked by an unknown store/call;
+- known set of possible definitions;
+- blocked by unknown store/call;
 - intentionally unresolved.
 
-A candidate improves precision when it replaces an unresolved/broad answer with the exact truth **without crossing a mandatory barrier**. Forwarding through a barrier is a soundness failure even if the selected value happens to match the fixture output.
+Candidate improves precision when it replaces unresolved/broad answer with exact truth **without crossing mandatory barrier**. Forwarding through barrier is soundness failure even if selected value happens to match fixture output.
 
 ## 17.5 Summary metric
 
@@ -1133,7 +1138,7 @@ Function-summary evaluation records per field:
 - recursion convergence result stable;
 - dependency identity correct after callee/model mutation.
 
-Do not use one opaque summary score that can hide a missing write effect behind accurate register effects.
+Do not use one opaque summary score that can hide missing write effect behind accurate register effects.
 
 ## 17.6 Type metric
 
@@ -1148,9 +1153,9 @@ hard-constraint contradiction detection
 false-certainty count
 ```
 
-`false certainty` means a selected/certain type conclusion conflicts with exact oracle truth or with an unhandled hard contradiction.
+`false certainty` means selected/certain type conclusion conflicts with exact oracle truth or with an unhandled hard contradiction.
 
-If a single aggregate score is required for the master "type accuracy improves" gate, its weights and eligible entity set are frozen in P7-0. The aggregate cannot override a non-zero mandatory false-certainty regression.
+If single aggregate score is required for master "type accuracy improves" gate, weights and eligible entity set are frozen in P7-0. Aggregate cannot override a non-zero mandatory false-certainty regression.
 
 Report debug-assisted and no-debug scores separately so DWARF/PDB does not conceal regression in inference quality.
 
@@ -1165,26 +1170,26 @@ start precision = matched predicted starts / predicted starts
 start recall = matched truth starts / truth starts
 ```
 
-Extent metrics operate on truth/predicted region sets after the start/candidate matching policy frozen in P7-0. The scoring representation must support multiple ranges and declared shared regions; it must not force every byte to one owner merely to simplify arithmetic.
+Extent metrics operate on truth/predicted region sets after start/candidate matching policy frozen in P7-0. Scoring representation must support multiple ranges and declared shared regions; it must not force every byte to one owner merely to simplify arithmetic.
 
-False split and false merge are counted from candidate-to-truth association, not inferred from a single extent score:
+False split and false merge are counted from candidate-to-truth association, not inferred from single extent score:
 
-- false split: one truth function is represented as multiple independent predicted functions without truth justification;
-- false merge: multiple truth functions are represented as one predicted function without truth justification.
+- false split: one truth function represented as multiple independent predicted functions without truth justification;
+- false merge: multiple truth functions represented as one predicted function without truth justification.
 
-Thunks, aliases, tail-merged blocks, and shared epilogues need explicit truth labels so the metric does not punish a correct non-simple representation or reward an incorrect contiguous one.
+Thunks, aliases, tail-merged blocks, and shared epilogues need explicit truth labels so metric does not punish correct non-simple representation or reward incorrect contiguous one.
 
 ## 17.8 Cross-architecture metamorphic tests
 
 For generic middle-end laws, compile or construct semantically equivalent fixtures across mandatory architecture/ABI lanes and assert architecture-independent properties, for example:
 
-- unknown store remains a barrier;
+- unknown store remains barrier;
 - exact disjoint stack intervals yield equivalent `NoAlias` relation/proof class;
 - equivalent recursion produces equivalent summary completeness/effect classes;
 - type contradiction behavior is independent of register names;
-- function-discovery fusion does not require a target mnemonic in generic code.
+- function-discovery fusion does not require target mnemonic in generic code.
 
-Do not require byte-for-byte identical artifacts across architectures; require equivalent generic semantic conclusions where the fixture contract makes them equivalent.
+Do not require byte-for-byte identical artifacts across architectures; require equivalent generic semantic conclusions where fixture contract makes them equivalent.
 
 ## 17.9 Property/fuzz laws
 
@@ -1199,7 +1204,7 @@ Where practical, add deterministic seeded property tests for:
 - cancellation at publication boundaries;
 - malformed/truncated debug metadata staying bounded/fail-closed.
 
-A discovered minimal counterexample becomes a permanent named regression fixture.
+A discovered minimal counterexample becomes permanent named regression fixture.
 
 ---
 
@@ -1223,7 +1228,7 @@ Tiny CFG/SSA/MemorySSA fixtures for exact edge cases, including negative barrier
 
 ## L2 — compiler-truth micro corpus
 
-Paired source/build truth, optimization variants, stripped/debug pairs, and relevant C/C++/ObjC/Swift/Rust/Go cases where truth is machine-valid under the pinned build.
+Paired source/build truth, optimization variants, stripped/debug pairs, and relevant C/C++/ObjC/Swift/Rust/Go cases where truth is machine-valid under pinned build.
 
 ## L3 — architecture/format capability matrix + metamorphic laws
 
@@ -1343,13 +1348,19 @@ Changed callee/model/debug identity leaves stale strong result live.
 
 Candidate looks better because difficult queries/fixtures moved out of denominator or scoring changed after results were known.
 
-**Block with:** immutable corpus/query/truth/scoring manifest + baseline rerun on any manifest change.
+**Block with:** immutable corpus/query/truth/scoring manifest + baseline rerun on manifest change.
 
 ## FM-17 — Source truth mistaken for machine truth
 
-A source-level pointer/type/function assumption is scored as truth even though optimization/ABI lowering changed machine reality.
+Source-level pointer/type/function assumption is scored as truth even though optimization/ABI lowering changed machine reality.
 
 **Block with:** machine-valid paired truth and explicit ambiguity labels.
+
+## FM-18 — Safety process becomes the bottleneck
+
+Every component reruns every expensive cross-architecture/performance suite despite unchanged exact evidence, or P7-0 attempts to freeze contracts that no current checkpoint consumes.
+
+**Block with:** staged contract freezes, tiered gates, exact-evidence reuse, and checkpoint-level heavy proof described in section 24.
 
 ---
 
@@ -1383,7 +1394,7 @@ A source-level pointer/type/function assumption is scored as truth even though o
 ## Performance
 
 - Did asymptotic behavior or hot-path allocation change?
-- Was representative production/pathological fixture profiled?
+- Was representative production/pathological fixture profiled when this change can affect it?
 - Is resource-stop behavior conservative?
 - Does exact head stay inside machine-readable regression budgets under frozen procedure?
 
@@ -1400,26 +1411,53 @@ A source-level pointer/type/function assumption is scored as truth even though o
 
 # 21. Decisions to freeze before writing dependent code
 
-Freeze semantic contracts, not internal class/file names.
+Freeze semantic contracts, not internal class/file names, and freeze them **just before their first dependent implementation**, not all at P7-0.
 
-1. canonical region/root identity;
-2. canonical `AliasResult` minimum schema and common analysis-status envelope;
-3. points-to lattice/join/widening/provenance-loss rules;
-4. unknown store/call clobber semantics;
-5. FunctionSummary effect/completeness schema;
-6. summary/library-model artifact identity/dependency rules;
-7. escape reason/boundary taxonomy;
-8. recursive SCC convergence/widening rules;
-9. hard-vs-soft TypeConstraintGraph boundary and contradiction semantics;
-10. DebugInfoProvider identity verdict/application policy;
-11. FunctionCandidate start-vs-extent evidence model;
-12. corpus/query/truth/scoring manifest and machine-valid truth process;
-13. Phase 7 verifier schema/exact-head invocation;
-14. cancellation/partial-result publication semantics;
-15. machine-readable performance regression budgets + measurement procedure;
-16. checkpoint evidence manifest schema;
-17. semantic change-impact/invalidation rules;
-18. function-discovery matching/shared-region scoring policy.
+## P7-0 hard freeze
+
+- common analysis status/completeness semantics;
+- corpus/query/truth/scoring identity model;
+- ownership / P7-I checkpoint evidence contract;
+- exact-head verifier identity rules;
+- atomic publication + cancellation contract.
+
+## Before P7-1
+
+- canonical region/root identity;
+- canonical `AliasResult` minimum contract;
+- unknown store/call clobber floor.
+
+## Before P7-2
+
+- points-to lattice/join/widening/provenance-loss rules.
+
+## Before P7-3a/3b/3c
+
+- FunctionSummary effect/completeness contract;
+- summary/library-model artifact dependencies;
+- escape reason/boundary taxonomy;
+- recursive SCC convergence/widening rules.
+
+## Before P7-4
+
+- hard-vs-soft TypeConstraintGraph boundary;
+- contradiction semantics;
+- user-type provenance/invalidation boundary.
+
+## Before P7-5
+
+- DebugInfoProvider identity verdict/application policy.
+
+## Before P7-6
+
+- FunctionCandidate start-vs-extent evidence model;
+- function-discovery matching/shared-region scoring policy.
+
+## P7-X only
+
+- final Phase 8 handoff version/cutover evidence.
+
+A decision that only affects private file/class names, formatting, or non-semantic internal organization does not need an ADR or phase-wide freeze.
 
 ---
 
@@ -1439,7 +1477,7 @@ FunctionCandidate regions/start/extent evidence
 
 Phase 8 transformations must not reach into private A1/A2/A3 solver state.
 
-This permits SCCP/GVN/DCE/load-store forwarding/aggregate recovery to improve without coupling decompiler correctness to a particular Phase 7 solver implementation.
+This permits SCCP/GVN/DCE/load-store forwarding/aggregate recovery to improve without coupling decompiler correctness to particular Phase 7 solver implementation.
 
 ---
 
@@ -1447,7 +1485,7 @@ This permits SCCP/GVN/DCE/load-store forwarding/aggregate recovery to improve wi
 
 ## Before Phase 7 implementation
 
-- [ ] exact Phase 6 integrated baseline identified;
+- [ ] exact Phase 6 integrated baseline re-resolved at P7-0 start;
 - [ ] mandatory baseline gates green on that exact head;
 - [ ] P7-start machine-readable capability/corpus manifest frozen;
 - [ ] query/truth/scoring manifest frozen before candidate results;
@@ -1457,13 +1495,8 @@ This permits SCCP/GVN/DCE/load-store forwarding/aggregate recovery to improve wi
 - [ ] negative soundness + unsound-mutant tests exist;
 - [ ] baseline alias/type/function/performance metrics captured;
 - [ ] permanent exact-head Phase 7 verifier runs in shadow mode;
-- [ ] root identity + alias/status contracts agreed;
-- [ ] FunctionSummary completeness/effect/invalidation contract agreed before A3;
-- [ ] hard/soft type boundary agreed before authoritative debug application;
-- [ ] debug build-identity policy agreed;
-- [ ] start/extent truth and shared-region metrics separate;
-- [ ] cancellation/atomic publication semantics tested;
-- [ ] dependency/change-impact matrix has machine-enforced regressions where practical.
+- [ ] only P7-0 + P7-1 dependency contracts are frozen initially; later contracts wait until their dependency boundary;
+- [ ] cancellation/atomic publication semantics tested.
 
 ## Phase 7 final completion
 
@@ -1472,7 +1505,7 @@ This permits SCCP/GVN/DCE/load-store forwarding/aggregate recovery to improve wi
 - [ ] negative soundness corpus green;
 - [ ] unsound-mutant verifier self-tests green;
 - [ ] exact-head Phase 7 verifier green on release candidate;
-- [ ] comparison uses exact frozen corpus/query/truth/scoring manifest or reruns baseline under a new versioned manifest;
+- [ ] comparison uses exact frozen corpus/query/truth/scoring manifest or reruns baseline under new versioned manifest;
 - [ ] unknown memory links measurably reduced under frozen metric definition;
 - [ ] zero unsound strong alias regression in mandatory exact-truth corpus;
 - [ ] type accuracy improved without increased false certainty in any mandatory hard-truth layer;
@@ -1484,20 +1517,177 @@ This permits SCCP/GVN/DCE/load-store forwarding/aggregate recovery to improve wi
 - [ ] release evidence identifies active runtime/build when activation matters;
 - [ ] Phase 8 consumers use only public handoff contract.
 
-The desired implementation posture is:
+---
+
+# 24. Fast-and-safe execution policy
+
+The objective is not maximum ceremony. It is the shortest path that preserves semantic soundness and exact evidence.
+
+## 24.1 Absolute stop-the-line conditions
+
+These block acceptance immediately and outrank schedule pressure:
+
+- any false `NoAlias` or false `MustAlias` on mandatory exact-truth corpus;
+- unknown store/call barrier bypass;
+- stale artifact accepted after dependency mismatch;
+- cancelled/partial result presented as complete;
+- verifier mutation/self-test that unexpectedly passes;
+- debug identity mismatch applying authoritative facts;
+- non-terminating or nondeterministic mandatory fixed-point case;
+- architecture-specific semantic logic entering generic solver boundary;
+- candidate/verifier/corpus identity mismatch;
+- changed-file/contract ownership violation;
+- exact product evidence belonging to an older head/merge tree.
+
+When one occurs, stop dependent acceptance, isolate the minimal counterexample, fix the first divergence, add/strengthen permanent regression, and rerun the narrowest gate that proves the fix before re-entering P7-I.
+
+## 24.2 Important but not automatic stop-the-line conditions
+
+These are blocking only when they violate an already frozen contract/budget:
+
+- precision improvement smaller than hoped at an intermediate infrastructure checkpoint;
+- formatting/naming preference;
+- private class/file layout disagreement;
+- optional corpus expansion;
+- performance movement inside approved noise/budget;
+- a future-checkpoint contract not yet consumed by current work.
+
+Do not stall P7-1 because PDB field naming is undecided. Do not stall P7-3 because final function-discovery matching policy is still unneeded.
+
+## 24.3 Two-tier gate model
+
+### Component exact-head gate — fast, mandatory
+
+Run on every component head:
+
+- owned unit/lattice/property tests;
+- relevant negative soundness cases;
+- migration/dependency/ownership guardrails touched by diff;
+- targeted semantic/compiler-truth microfixtures for affected architecture lanes;
+- deterministic cache/invalidation/cancellation regressions when relevant;
+- focused performance smoke if hot path changed.
+
+A component head does **not** need to rerun every expensive real-binary/debug/performance matrix merely because it changed one local lattice rule, unless ownership policy or change impact requires it.
+
+### P7-I checkpoint gate — heavy, mandatory before dependent acceptance
+
+Run after integrating an accepted component:
+
+- full canonical Phase 7 runner;
+- mandatory cross-architecture truth matrix;
+- complete negative corpus;
+- verifier mutation/self-test;
+- exact-head independent verifier;
+- current required semantic/decompiler/compiler-truth/migration suites;
+- changed performance/pathological lanes under frozen procedure;
+- generated-output sync where applicable.
+
+This preserves full product proof without duplicating the most expensive work on every pre-integration component commit.
+
+## 24.4 Exact evidence reuse
+
+A green result may be reused only when all evidence identity is unchanged:
 
 ```text
-prove the safety floor
-  ↓
-introduce the smallest stronger fact
-  ↓
-measure the precision gain on a frozen query set
-  ↓
-prove no false certainty
-  ↓
-publish an immutable evidence-bearing artifact
-  ↓
-let the next layer consume only that contract
+exact product SHA/merge tree
+verifier version/schema
+corpus/query/truth/scoring manifest
+relevant analyzer/toolchain identity
+environment class when the gate depends on it
 ```
 
-A good Phase 7 change makes Hex answer more questions exactly while leaving every unanswered question explicitly unanswered.
+If those are identical, do not rerun solely for ceremony. If any load-bearing identity changes, rerun the affected gate. Never reuse "same branch" or "same PR" as evidence identity.
+
+## 24.5 Critical path vs parallel preparation
+
+Critical acceptance path:
+
+```text
+P7-0 → P7-1 → P7-2 → P7-3a → P7-3b → P7-3c → P7-4 → P7-5 → P7-6 → P7-X
+```
+
+Safe parallel preparation that should happen early:
+
+```text
+P7-0 corpus/verifier infrastructure ──────────────┐
+DWARF/PDB fixture research ──────────────────────┤ ready before P7-5
+function-discovery truth corpus ─────────────────┤ ready before P7-6
+performance/pathological fixtures ───────────────┤ reused throughout
+architecture metamorphic fixtures ───────────────┘
+```
+
+Preparation may run ahead. Semantic acceptance may not skip dependencies.
+
+## 24.6 PR shaping for fast review and bisectability
+
+Prefer one semantic obligation per PR/checkpoint:
+
+- contract/schema + tests;
+- implementation;
+- integration wiring if separately owned.
+
+Avoid drive-by refactors, broad renames, unrelated generated changes, or verifier rewrites in implementation PRs.
+
+A reviewer should be able to answer in minutes:
+
+1. what stronger fact is added;
+2. what new proof permits it;
+3. what minimal counterexample would fail if it were unsound;
+4. what artifacts are invalidated;
+5. what exact gate proves the change.
+
+If that cannot be answered, the PR is probably too broad.
+
+## 24.7 Failure recovery priority
+
+Use this order to minimize wasted debugging:
+
+```text
+soundness / false certainty
+  ↓
+identity / stale artifact / invalidation
+  ↓
+integration / ownership / exact-head mismatch
+  ↓
+termination / determinism
+  ↓
+precision regression
+  ↓
+performance regression
+  ↓
+presentation/readability
+```
+
+Do not spend time polishing output produced by an untrusted semantic path.
+
+## 24.8 Minimal rollback boundary
+
+Keep each accepted checkpoint independently identifiable and bisectable. If a later checkpoint breaks soundness, revert/disable the smallest new semantic refinement while retaining earlier proven contracts when repository architecture permits it.
+
+Do not delete the conservative compatibility floor until replacement behavior has exact differential proof and required cutover evidence.
+
+## 24.9 Final operational rule
+
+For speed, prefer:
+
+```text
+small contract
++ minimal implementation
++ minimal counterexample
++ focused exact-head gate
++ immediate P7-I integration
++ one heavy checkpoint proof
+```
+
+over:
+
+```text
+large feature branch
++ broad refactor
++ late verifier
++ late corpus
++ late integration
++ repeated full-matrix reruns on every commit
+```
+
+The fastest safe Phase 7 is the one where unsoundness is caught on the smallest fixture, stale state is impossible to reuse silently, and every dependent checkpoint starts from a previously proven exact integration head.
