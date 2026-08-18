@@ -10,6 +10,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const dist = resolve(root, 'dist');
 const generated = resolve(root, '.runtime-build');
 const committedTemplate = resolve(root, 'userscript/hex.user.template.js');
+const deploymentIdentityStamp = resolve(root, 'js/userscript/deployment-identity.generated.js');
 const ORIGIN_TOKEN = '__HEX_ORIGIN__';
 const releaseStatePath = resolve(root, 'userscript/release-version.json');
 const MAX_LOADER_BYTES = 64 * 1024;
@@ -17,6 +18,7 @@ const CLASSIC_ENTRIES = ['js/worker.js', 'js/platform/capstone-probe-worker.js',
 
 await Promise.all([rm(dist, { recursive: true, force: true }), rm(generated, { recursive: true, force: true })]);
 await Promise.all([mkdir(resolve(dist, 'assets'), { recursive: true }), mkdir(resolve(dist, '.runtime'), { recursive: true }), mkdir(resolve(dist, 'userscript'), { recursive: true }), mkdir(generated, { recursive: true })]);
+await writeFile(deploymentIdentityStamp, '// Cloudflare Workers Builds overwrites this file during the production build.\n// Local/test builds intentionally remain unbound to a deployment commit.\nexport const DEPLOYMENT_COMMIT = null;\n');
 
 const [htmlSource, css, workerAssets] = await Promise.all([readFile(resolve(root, 'index.html'), 'utf8'), bundleCss(), buildWorkerAssets()]);
 const body = extractBody(htmlSource);
