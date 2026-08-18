@@ -67,16 +67,25 @@ jobs:
       - name: Run existing browser regression
         run: npm run browser
 
-  # This is the only viewport suite that actually exercises WebKit. Run it in
-  # Playwright's pinned image so GitHub-hosted runners do not spend 10+ minutes
-  # installing WebKit system packages on every PR.
-  viewport-browser:
-    name: viewport-browser
+  # Only these suites require WebKit. Use Playwright's pinned image so their
+  # runners start with the matching Chromium/WebKit binaries and OS libraries
+  # instead of installing the same WebKit dependencies repeatedly.
+  viewport-webkit-shards:
+    name: viewport-${{ matrix.name }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     container:
       image: mcr.microsoft.com/playwright:v1.55.0-noble
       options: --ipc=host
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - name: browser
+            command: node tests/ui/browser.mjs
+          - name: mobile-state
+            command: node tests/ui/mobile-state.mjs
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -99,31 +108,29 @@ jobs:
         env:
           CI: '1'
           UI_SHOTS: tests/ui-shots
-        run: node tests/ui/browser.mjs
+        run: ${{ matrix.command }}
       - name: Upload shard screenshot audit
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ui-screenshot-audit-browser
+          name: ui-screenshot-audit-${{ matrix.name }}
           path: tests/ui-shots
           if-no-files-found: ignore
           retention-days: 7
 
-  # All remaining viewport suites launch Chromium only. Keep them fully
-  # parallel, but do not download/install WebKit or its OS dependencies.
+  # Every other viewport suite launches Chromium only. Keep them fully
+  # parallel without downloading WebKit or installing WebKit system packages.
   viewport-shards:
     name: viewport-${{ matrix.name }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
-      max-parallel: 10
+      max-parallel: 9
       matrix:
         include:
           - name: analysis-navigation
             command: node tests/ui/analysis-navigation.mjs
-          - name: mobile-state
-            command: node tests/ui/mobile-state.mjs
           - name: accessibility
             command: node tests/ui/accessibility.mjs
           - name: ai-launcher
@@ -182,18 +189,18 @@ jobs:
   viewport-regression:
     name: viewport-regression
     if: always()
-    needs: [viewport-browser, viewport-shards]
+    needs: [viewport-webkit-shards, viewport-shards]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - name: Require every viewport shard
         env:
-          BROWSER_RESULT: ${{ needs.viewport-browser.result }}
-          SHARDS_RESULT: ${{ needs.viewport-shards.result }}
+          WEBKIT_SHARDS_RESULT: ${{ needs.viewport-webkit-shards.result }}
+          CHROMIUM_SHARDS_RESULT: ${{ needs.viewport-shards.result }}
         shell: bash
         run: |
-          if [[ "$BROWSER_RESULT" != "success" || "$SHARDS_RESULT" != "success" ]]; then
-            echo "::error::UI viewport shard failed (browser=$BROWSER_RESULT, chromium-shards=$SHARDS_RESULT)."
+          if [[ "$WEBKIT_SHARDS_RESULT" != "success" || "$CHROMIUM_SHARDS_RESULT" != "success" ]]; then
+            echo "::error::UI viewport shard failed (webkit=$WEBKIT_SHARDS_RESULT, chromium=$CHROMIUM_SHARDS_RESULT)."
             exit 1
           fi
       - name: Download screenshot audit shards
