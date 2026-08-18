@@ -1,6 +1,7 @@
 name: P5-6 verifier diagnostics
 
 on:
+  pull_request:
   push:
     branches:
       - hex/p5-6-x86-verification
