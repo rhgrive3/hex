@@ -6,7 +6,7 @@ import { AGENT_PROFILE } from '../../js/ai/dev/policy/agent-profile.js';
 import { DEV_RUN_STATUS } from '../../js/ai/dev/run/dev-run.js';
 
 // R4 production exposes a frozen bridge; this pins the exact Proxy-invariant
-// condition while also proving successful tools still replenish the budget.
+// condition and proves successful tools still replenish the same-run budget.
 await successfulToolsResetDecisionBudgetWithFrozenBridge();
 console.log('Dev Supervisor progress budget: ok');
 
