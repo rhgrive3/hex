@@ -174,7 +174,7 @@ test('P5-6 mandatory 144-tuple compiler corpus traverses the full x86 semantic p
     }
   } finally { capstone.close(); }
   const totals = { mandatory:ledger.length, passed:ledger.filter((row) => row.status === 'PASS').length, failed:ledger.filter((row) => row.status === 'FAIL').length, blocked:ledger.filter((row) => row.status.startsWith('BLOCKING-')).length, notProven:ledger.filter((row) => row.status === 'NOT-PROVEN').length };
-  console.log(`P5_6_PIPELINE_LEDGER=${JSON.stringify({ productSha:process.env.P5_VERIFIED_PRODUCT_SHA || '30145016b128c1a96d660eeca24b6c717c9b858d', source:result.source, fixtures:result.fixtures.map(({ bytes, disassembly, objectMetadata, path:ignoredPath, ...fixture }) => fixture), totals, ledger })}`);
+  console.log(`P5_6_PIPELINE_LEDGER=${JSON.stringify({ productSha:process.env.P5_VERIFIED_PRODUCT_SHA || 'cede2af69e446fdf628903881eb698c0ccad91f9', source:result.source, fixtures:result.fixtures.map(({ bytes, disassembly, objectMetadata, path:ignoredPath, ...fixture }) => fixture), totals, ledger })}`);
   assert.equal(totals.mandatory, 144);
   assert.equal(totals.blocked, 0, `P5-6 first blocker: ${JSON.stringify(ledger.find((row) => row.status.startsWith('BLOCKING-')))}`);
   assert.equal(totals.notProven, 0);
