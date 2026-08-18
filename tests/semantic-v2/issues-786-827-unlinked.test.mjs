@@ -122,7 +122,7 @@ assert.equal(unsigned64.paths[0].takenBranches[0]?.taken, true);
 {
   const { model:m } = model(['adds w8, w0, w1', 'csel w2, w3, w4, hs', 'ret']);
   const v = buildValues(m);
-  assert.equal(v.defAt(1, 'x2').cmp, null, 'ADDS carry condition must remain unknown in legacy expr');
+  assert.ok(v.defAt(1, 'x2').cmp == null, 'ADDS carry condition must remain unknown in legacy expr');
 }
 {
   const { model:m } = model(['adds w8, w0, w1', 'csel w2, w3, w4, eq', 'ret']);
