@@ -1,0 +1,30 @@
+{
+  "schemaVersion": "phase5-p5-6-category-map/v1",
+  "crossProductInterpretation": "Both compiler targets intentionally contain explicit sysv_abi and ms_abi functions. ABI-named frozen tuples are verified against the correspondingly attributed function rather than silently treated as not-applicable.",
+  "categories": {
+    "scalar-integer-arithmetic": { "symbol": "p5_scalar_integer_arithmetic" },
+    "signed-and-unsigned-comparison": { "symbol": "p5_signed_unsigned_comparison" },
+    "conditional-branch": { "symbol": "p5_conditional_branch" },
+    "loops": { "symbol": "p5_loops" },
+    "switch-like-control-flow": { "symbol": "p5_switch_like" },
+    "stack-locals-and-spills": { "symbol": "p5_stack_locals_and_spills" },
+    "pointer-load-and-store": { "symbol": "p5_pointer_load_store" },
+    "array-indexing": { "symbol": "p5_array_indexing" },
+    "structure-field-access": { "symbol": "p5_structure_field" },
+    "direct-calls": { "symbol": "p5_direct_calls" },
+    "indirect-calls": { "symbol": "p5_indirect_calls" },
+    "multiple-arguments": { "symbol": "p5_multiple_arguments" },
+    "return-values": { "symbol": "p5_return_values" },
+    "partial-width-integer-operations": { "symbol": "p5_partial_width" },
+    "zero-and-sign-extension": { "symbol": "p5_zero_sign_extension" },
+    "shifts": { "symbol": "p5_shifts" },
+    "multiplication-and-division": { "symbol": "p5_multiplication_division" },
+    "rip-relative-globals-and-pic-addressing": { "symbol": "p5_rip_relative_global" },
+    "scalar-floating-point": { "symbol": "p5_scalar_floating_point" },
+    "baseline-compiler-emitted-simd": { "symbol": "p5_baseline_simd" },
+    "atomic-read-modify-write": { "symbol": "p5_atomic_rmw" },
+    "sysv-amd64-abi": { "symbol": "p5_sysv_abi", "analysisAbiId": "sysv-amd64" },
+    "microsoft-x64-abi": { "symbol": "p5_microsoft_x64_abi", "analysisAbiId": "microsoft-x64" },
+    "variadic-abi-edge": { "symbol": "p5_variadic_abi_edge" }
+  }
+}
