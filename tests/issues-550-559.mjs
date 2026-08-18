@@ -101,4 +101,5 @@ import '../js/worker-budget.js';
   assert.doesNotMatch(source, /function addressProvenanceBase\(/);
 }
 
+await import('./issue-843-ccmp-guard.mjs');
 console.log('issues 550-559 regressions: ok');
