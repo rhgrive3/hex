@@ -23,29 +23,16 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Locate shifted operand metadata loss
+      - name: Inspect compare projection metadata
         shell: bash
         run: |
           set -euo pipefail
-          node --input-type=module <<'NODE'
-          import { parseOperands } from './js/arm64.js';
-          const ops = parseOperands('w0, w1, lsl #1');
-          console.log('DEBUG_PARSE', JSON.stringify(ops, (_k,v)=>typeof v==='bigint'?v.toString():v));
-          NODE
           python3 <<'PY'
           from pathlib import Path
-          p = Path('js/ir.js')
-          s = p.read_text()
-          s = s.replace("  const rhs = shiftedConst(cmp.args[1], cmp.args[0].value.bits || 64);\n  if (rhs == null) return null;\n  return { lhs: cmp.args[0].value, rhs, cond: branch.cond || null, cmp };", "  const bits = Number(cmp.extra?.bits || cmp.args[0].bits || cmp.args[1].bits || cmp.args[0].value.bits || 64);\n  const rhs = shiftedConst(cmp.args[1], bits);\n  if (rhs == null) return null;\n  return { lhs: cmp.args[0].value, rhs, bits, cond: branch.cond || null, cmp };")
-          s = s.replace("function constrainedRange(value, op, constant, signed) {\n  const bits = value && value.bits || 64;\n  const rhs = normalizeIntegerValue(constant, bits, signed);\n  const bounds = typeBounds(bits, signed);", "function constrainedRange(value, op, constant, signed, bitsOverride = null) {\n  const bits = Number(bitsOverride || (value && value.bits) || 64);\n  const rhs = normalizeIntegerValue(constant, bits, signed);\n  const bounds = typeBounds(bits, signed);")
-          s = s.replace("  const existing = valueRange(value);\n  if (existing) { if (existing.min > min) min = existing.min; if (existing.max < max) max = existing.max; }", "  const existing = normalizeRangeDomain(valueRange(value), bits, signed);\n  if (existing) { if (existing.min > min) min = existing.min; if (existing.max < max) max = existing.max; }")
-          s = s.replace("  const rhs = normalizeIntegerValue(c.rhs, c.lhs.bits || 64, signedForBounds);\n  const range = constrainedRange(c.lhs, relation, rhs, signedForBounds);", "  const bits = Number(c.bits || c.lhs.bits || 64);\n  const rhs = normalizeIntegerValue(c.rhs, bits, signedForBounds);\n  const range = constrainedRange(c.lhs, relation, rhs, signedForBounds, bits);")
-          p.write_text(s)
-
           t = Path('tests/semantic-v2/issues-791-797-800-825-ir-soundness.test.mjs')
           q = t.read_text()
           needle = "  const fact = firstBranchFact(build(lines, `825-${tag}`));"
-          repl = "  const debug = modelOf(lines);\n  const debugModelCmp = debug.model.instructions.find((inst) => String(inst.mn || inst.mnemonic || '').toLowerCase() === 'cmp');\n  console.log('DEBUG_MODEL', tag, JSON.stringify({ ops:debugModelCmp?.ops ?? null, operands:debugModelCmp?.operands ?? null, rawOps:debugModelCmp?.raw?.ops ?? null }, (_k,v)=>typeof v==='bigint'?v.toString():v));\n  const debugIr = irFor(debug.model, { rowOfAddress:debug.rowOfAddress, decoderSemanticVersion:`issue-soundness-825-${tag}` });\n  const debugCmp = debugIr.instructions.find((inst) => inst.op === OP.CMP);\n  const debugArgs = (debugCmp?.args || []).map((a)=>({bits:a?.bits ?? null, const:a?.value?.const == null ? null : a.value.const.toString(), valueBits:a?.value?.bits ?? null, shift:a?.shift ?? null}));\n  console.log('DEBUG_SSA', tag, JSON.stringify({extraBits:debugCmp?.extra?.bits ?? null,args:debugArgs}));\n  const fact = firstBranchFact(debugIr);"
+          repl = "  const debug = modelOf(lines);\n  const debugIr = irFor(debug.model, { rowOfAddress:debug.rowOfAddress, decoderSemanticVersion:`issue-soundness-825-${tag}` });\n  const debugCmp = debugIr.instructions.find((inst) => inst.op === OP.CMP);\n  console.log('DEBUG_EXTRA', tag, JSON.stringify(debugCmp?.extra ?? null, (_k,v)=>typeof v==='bigint'?v.toString():v));\n  const fact = firstBranchFact(debugIr);"
           assert needle in q
           t.write_text(q.replace(needle, repl))
           PY
