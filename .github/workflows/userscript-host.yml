@@ -71,9 +71,15 @@ jobs:
       - name: Verify tiny committed loader is current
         run: git diff --exit-code -- userscript/hex.user.template.js
 
+  # Both embed-browser suites intentionally exercise Chromium and WebKit. Run
+  # them in Playwright's pinned image so every PR does not spend minutes
+  # downloading 100+ MB of WebKit OS packages onto a fresh hosted runner.
   embed-browser:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    container:
+      image: mcr.microsoft.com/playwright:v1.55.0-noble
+      options: --ipc=host
     steps:
       - uses: actions/checkout@v4
         with:
@@ -85,29 +91,18 @@ jobs:
       - run: npm ci
       - name: Build secure userscript runtime
         run: npm run userscript:build
-      - name: Restore pinned Playwright browser cache
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-1.55.0-chromium-webkit-v1
-          restore-keys: |
-            playwright-${{ runner.os }}-1.55.0-chromium-v1
-      - name: Install pinned browser engines with dependency fallback
+      - name: Install matching Playwright package
+        run: npm install --no-save --save-exact playwright@1.55.0
+      - name: Verify pinned Chromium and WebKit image
         shell: bash
         run: |
-          npm install --no-save --save-exact playwright@1.55.0
-          npx --no-install playwright install chromium webkit
-          if ! node --input-type=module <<'NODE'
+          node --input-type=module <<'NODE'
           import { chromium, webkit } from 'playwright';
           for (const browserType of [chromium, webkit]) {
             const browser = await browserType.launch({ headless: true });
             await browser.close();
           }
           NODE
-          then
-            echo 'Preinstalled runner libraries are insufficient; installing pinned Playwright OS dependencies.'
-            npx --no-install playwright install-deps chromium webkit
-          fi
       - name: Verify opaque srcdoc module and storage execution
         run: node tests/userscript-srcdoc-probe.mjs
       - name: Run full secure sandbox startup
