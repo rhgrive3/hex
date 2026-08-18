@@ -10,8 +10,13 @@ const MAX_SCRIPT_CHARS = 64 * 1024;
 const MAX_SCRIPT_OFFSET = 8 * 1024 * 1024;
 const MAX_SCRIPT_MATCHES = 8;
 const MAX_CONTEXT_CHARS = 2048;
+const MAX_INLINE_SCRIPT_MATCHES = 5;
+const MAX_INLINE_CONTEXT_CHARS = 1024;
+const MAX_INLINE_EXCERPT_CHARS = 12 * 1024;
 const SENSITIVE_ATTRIBUTE = /(?:token|auth|session|csrf|nonce|secret|password|credential|cookie)/i;
 const SAFE_HTML_ATTRIBUTE = /^(?:id|class|role|title|name|type|placeholder|href|for|tabindex|disabled|checked|selected|aria-[\w-]+|data-[\w-]+)$/i;
+const SENSITIVE_SCRIPT_ASSIGNMENT = /((?:["']?)[\w$.-]*(?:token|auth|session|csrf|nonce|secret|password|credential|cookie)[\w$.-]*(?:["']?)\s*[:=]\s*)(["'`])([^"'`\r\n]{0,2048})(["'`])/gi;
+const BEARER_VALUE = /\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/gi;
 
 export class ParentPageInspector {
   constructor({ document = globalThis.document, location = globalThis.location, fetchRef = globalThis.fetch?.bind(globalThis) } = {}) {
@@ -80,11 +85,36 @@ export class ParentPageInspector {
 
   async scriptSource(args = {}, options = {}) {
     const documentRef = this.requireDocument();
-    if (typeof this.fetchRef !== 'function') throw inspectorError('fetch-unavailable', 'Page script fetch is unavailable.');
     const scripts = [...(documentRef.scripts || documentRef.querySelectorAll?.('script') || [])];
-    const selected = selectLoadedExternalScript(scripts, args);
-    if (!selected) throw inspectorError('script-not-loaded', 'Requested script is not a currently loaded external page script.');
-    const url = safeUrl(selected.src);
+    const selected = selectLoadedScript(scripts, args);
+    if (!selected) {
+      if (typeof this.fetchRef !== 'function') throw inspectorError('fetch-unavailable', 'Page script fetch is unavailable.');
+      throw inspectorError('script-not-loaded', 'Requested script is not a currently loaded page script.');
+    }
+
+    const needle = args.needle == null ? '' : boundedText(args.needle, 160);
+    if (!selected.node?.src) {
+      if (!needle) throw inspectorError('inline-needle-required', 'Inline script inspection requires a literal needle.');
+      if (SENSITIVE_ATTRIBUTE.test(needle)) {
+        throw inspectorError('inline-sensitive-needle', 'Inline script inspection does not allow sensitive credential/session needles.');
+      }
+      const contextChars = boundedInteger(args.contextChars, 64, MAX_INLINE_CONTEXT_CHARS, 768);
+      const maxMatches = boundedInteger(args.maxMatches, 1, MAX_INLINE_SCRIPT_MATCHES, 5);
+      const source = String(selected.node?.textContent || '');
+      const excerpts = inlineLiteralExcerpts(source, needle, contextChars, maxMatches, MAX_INLINE_EXCERPT_CHARS);
+      return {
+        kind: 'chatgpt-page-script-source',
+        src: null,
+        index: selected.index,
+        totalChars: source.length,
+        needle,
+        excerptChars: excerpts.reduce((sum, excerpt) => sum + excerpt.text.length, 0),
+        excerpts,
+      };
+    }
+
+    if (typeof this.fetchRef !== 'function') throw inspectorError('fetch-unavailable', 'Page script fetch is unavailable.');
+    const url = safeUrl(selected.node.src);
     if (!url || url.protocol !== 'https:') throw inspectorError('script-url-invalid', 'Loaded script URL is not HTTPS.');
     const response = await this.fetchRef(url.href, {
       method: 'GET',
@@ -97,7 +127,6 @@ export class ParentPageInspector {
       throw inspectorError('script-fetch-failed', `Loaded script fetch failed (${response?.status || 'unknown'}).`);
     }
     const source = String(await response.text());
-    const needle = args.needle == null ? '' : boundedText(args.needle, 160);
     if (needle) {
       const contextChars = boundedInteger(args.contextChars, 64, MAX_CONTEXT_CHARS, 768);
       const maxMatches = boundedInteger(args.maxMatches, 1, MAX_SCRIPT_MATCHES, 5);
@@ -184,17 +213,18 @@ function describeScript(node, index, currentOrigin) {
   };
 }
 
-function selectLoadedExternalScript(scripts, args) {
+function selectLoadedScript(scripts, args) {
   if (args.index != null) {
     const index = boundedInteger(args.index, 0, Math.max(0, scripts.length - 1), 0);
     const node = scripts[index];
-    return node?.src ? node : null;
+    return node ? { node, index } : null;
   }
   const requested = String(args.src || '').trim();
   if (!requested) throw new TypeError('script_source requires a loaded script index or src.');
   const wanted = safeUrl(requested)?.href;
   if (!wanted) return null;
-  return scripts.find((node) => safeUrl(node?.src)?.href === wanted) || null;
+  const index = scripts.findIndex((node) => safeUrl(node?.src)?.href === wanted);
+  return index >= 0 ? { node: scripts[index], index } : null;
 }
 
 function literalExcerpts(source, needle, contextChars, maxMatches) {
@@ -209,6 +239,30 @@ function literalExcerpts(source, needle, contextChars, maxMatches) {
     from = index + Math.max(1, needle.length);
   }
   return out;
+}
+
+function inlineLiteralExcerpts(source, needle, contextChars, maxMatches, maxTotalChars) {
+  const out = [];
+  let from = 0;
+  let usedChars = 0;
+  while (out.length < maxMatches) {
+    const index = source.indexOf(needle, from);
+    if (index < 0) break;
+    const start = Math.max(0, index - contextChars);
+    const end = Math.min(source.length, index + needle.length + contextChars);
+    const text = sanitizeInlineScriptExcerpt(source.slice(start, end));
+    if (usedChars + text.length > maxTotalChars) break;
+    out.push({ index, start, end, text });
+    usedChars += text.length;
+    from = index + Math.max(1, needle.length);
+  }
+  return out;
+}
+
+function sanitizeInlineScriptExcerpt(value) {
+  return String(value)
+    .replace(SENSITIVE_SCRIPT_ASSIGNMENT, (_match, prefix, quote, _secret, closeQuote) => `${prefix}${quote}[redacted]${closeQuote}`)
+    .replace(BEARER_VALUE, 'Bearer [redacted]');
 }
 
 function sanitizeOuterHtml(node, maxChars) {
