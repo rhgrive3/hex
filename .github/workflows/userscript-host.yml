@@ -66,6 +66,8 @@ jobs:
         run: node tests/chatgpt-conversation-storage-security.mjs
       - name: Build and userscript tests
         run: npm run userscript:test
+      - name: Round 4 production bootstrap contract
+        run: node tests/dev-agent/round4-production-bootstrap.mjs
       - name: Verify tiny committed loader is current
         run: git diff --exit-code -- userscript/hex.user.template.js
 

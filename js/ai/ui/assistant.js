@@ -23,6 +23,7 @@ import { DevAgentUiSettings } from '../dev/ui/settings.js';
 import { createAgentProfileEngine } from '../dev/ui/engine-router.js';
 import { installDevAgentControls } from '../dev/ui/controls.js';
 import { DevSupervisorV0 } from '../dev/supervisor/dev-supervisor-v0.js';
+import { runProductionDevBootstrap } from '../dev/bootstrap/production-bootstrap.js';
 
 const DOCK_MIN_WIDTH = 900;
 const SHEET_MIN_WIDTH = 600;
@@ -254,6 +255,7 @@ export function installAssistant(app, ui) {
   launcher.setState('idle');
   panel.root.dataset.locale = isJa() ? 'ja' : 'en';
   window.__hexAi = instance;
+  queueMicrotask(() => { void runProductionDevBootstrap({ engine: sessionEngine, session }); });
   return instance;
 }
 
