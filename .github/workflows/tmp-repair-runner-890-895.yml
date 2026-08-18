@@ -2,10 +2,13 @@ name: One-shot repair runner 890-895
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
 permissions:
   contents: write
 jobs:
   repair:
+    if: github.event_name == 'push' || github.event.pull_request.head.ref == 'fix/issues-890-895-control-profile-20260819'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -47,4 +50,3 @@ jobs:
           git diff --cached --check
           git commit -m 'fix: close control and profile correctness issues 890-895'
           git push --force-with-lease origin HEAD:fix/issues-890-895-control-profile-20260819
-# trigger
