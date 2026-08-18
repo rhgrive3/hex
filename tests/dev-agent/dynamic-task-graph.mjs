@@ -30,7 +30,7 @@ async function testReadyOnlyParallelMaxSixAndNoDuplicates() {
 }
 
 async function testRetryAndDependencyFailurePropagation() {
-  const harness = new WorkerHarness({ retry: { failTimes: 1 }, afterRetry: {}, bad: { failTimes: 9 }, blocked: {} });
+  const harness = new WorkerHarness({ retry: { failTimes: 1, releaseFailsTimes: 1 }, afterRetry: {}, bad: { failTimes: 9 }, blocked: {} });
   const pool = harness.pool();
   const host = graphHost(pool);
   await host.start({
@@ -44,7 +44,8 @@ async function testRetryAndDependencyFailurePropagation() {
   assert.equal(status.state, 'FAILED');
   const retry = host.taskResult({ graphId: 'retry-failure', taskId: 'retry' });
   assert.equal(retry.state, 'SUCCEEDED');
-  assert.equal(retry.attempts, 2);
+  assert.equal(retry.attempts, 2, 'retry must continue after the first failed attempt');
+  assert.equal(harness.frames.some((frame) => frame.removed), true, 'failed release must retire the ambiguous iframe before retry');
   assert.equal(host.taskResult({ graphId: 'retry-failure', taskId: 'afterRetry' }).state, 'SUCCEEDED');
   assert.equal(host.taskResult({ graphId: 'retry-failure', taskId: 'bad' }).state, 'FAILED');
   const blocked = host.taskResult({ graphId: 'retry-failure', taskId: 'blocked' });
@@ -85,15 +86,16 @@ async function testTimeoutCancellationAndLeaseCleanup() {
 }
 
 async function testCleanupFallsBackToFrameDiscard() {
-  const harness = new WorkerHarness({ discardMe: { releaseFails: true } });
+  const harness = new WorkerHarness({ discardMe: { releaseFailsTimes: 1 } });
   const pool = harness.pool();
   const host = graphHost(pool);
-  await host.start({ graphId: 'cleanup-discard', tasks: [task('discardMe')] });
+  await host.start({ graphId: 'cleanup-discard', maxConcurrency: 1, tasks: [task('discardMe')] });
   const status = await waitTerminal(host, 'cleanup-discard');
   assert.equal(status.state, 'SUCCEEDED', 'safe iframe retirement preserves the completed task result');
   assert.equal(pool.status().claimedCount, 0);
-  assert.equal(pool.status().slots[0].ready, false, 'ambiguous ownership must quarantine the old iframe');
-  assert.equal(pool.status().slots[0].error.code, 'worker-discarded');
+  assert.equal(pool.status().readyCount, 1, 'discard must replace the retired iframe so the pool remains usable');
+  assert.equal(harness.frames.length, 2, 'one fresh iframe must replace the retired Worker slot');
+  assert.equal(harness.frames[0].removed, true, 'the ambiguously owned iframe must be physically retired before replacement');
   host.close();
   pool.close();
 }
@@ -241,7 +243,8 @@ class WorkerHarness {
       async release(args) {
         verify(args);
         const behavior = harness.behaviors[currentTask] || {};
-        if (behavior.releaseFails) {
+        const attempt = harness.attempts.get(currentTask) || 0;
+        if (attempt <= Number(behavior.releaseFailsTimes || 0)) {
           const error = new Error('fixture release failure');
           error.code = 'transport-failure';
           throw error;
