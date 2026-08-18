@@ -21,6 +21,12 @@ export class ArchitecturePluginV2 {
     this.decodeProvider = definition.decodeProvider || null;
     this.liftExact = definition.liftExact || null;
     this.classifyControlFlow = definition.classifyControlFlow || (() => null);
+    // Direct (PC-relative or absolute-immediate) control-transfer target of a
+    // decoded instruction, as a BigInt virtual address, or null when the target
+    // is not a decode-time constant. Architectures own this because the encoding
+    // of a direct target is architecture-specific; generic callers must not
+    // inspect operand shapes or disassembly text to recover it.
+    this.directControlTarget = definition.directControlTarget || (() => null);
     this.assemble = definition.assemble || null;
     this.validateEncoding = definition.validateEncoding || null;
     this.instructionAlignment = positiveInteger(definition.instructionAlignment ?? 1, 'instructionAlignment');

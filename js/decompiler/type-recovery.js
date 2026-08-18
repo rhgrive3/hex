@@ -258,15 +258,22 @@ export function inferSemanticTypes(ir, model, opts = {}) {
   const locations = new Map();
   for (const [key, e] of locEv) locations.set(key, decide(e, 64));
 
+  // Which physical registers carry incoming arguments is a property of the
+  // calling convention, not of the decompiler. `x0..x7` is the AAPCS64 answer
+  // and is kept only for legacy callers that supply no ABI adapter; on RISC-V
+  // those same ids name the zero register, ra, sp, gp, tp and temporaries, so
+  // assuming them would report the stack pointer as an argument.
+  const argumentRegisters = opts.abiAdapter?.argumentRegisters?.()
+    ?? Array.from({ length:8 }, (_unused, i) => `x${i}`);
   const args = [];
-  for (let i = 0; i < 8; i++) {
-    const v = ir.args && ir.args.get ? ir.args.get('x' + i) : null;
-    if (!v) continue;
+  argumentRegisters.forEach((reg, i) => {
+    const v = ir.args && ir.args.get ? ir.args.get(reg) : null;
+    if (!v) return;
     const t = values.get(v.id) || { name:'unknown', confidence:0.2 };
     const used = (v.uses || []).length > 0 || ((model && model.argRegs) || []).includes(i);
-    if (!used) continue;
-    args.push({ reg:'x' + i, index:i, type:t.name, conf:t.confidence, why:t.evidence || [], semanticType:t });
-  }
+    if (!used) return;
+    args.push({ reg, index:i, type:t.name, conf:t.confidence, why:t.evidence || [], semanticType:t });
+  });
 
   const locals = [];
   for (const slot of ir.stackSlots || []) {
@@ -278,7 +285,17 @@ export function inferSemanticTypes(ir, model, opts = {}) {
   let ret = { type:'void', conf:0.55, why:[] };
   const rets = (ir.instructions || []).filter((i) => i.op === OP.RET);
   if (rets.length) {
-    const vals = rets.map((r) => valueOf(r.args && r.args[0])).filter(Boolean);
+    let vals = rets.map((r) => valueOf(r.args && r.args[0])).filter(Boolean);
+    if (!vals.length) {
+      // A return instruction that carries no explicit value still leaves the
+      // result in the register the ABI designates. Ask the convention which
+      // one; do not guess a register name.
+      const returnRegister = opts.abiAdapter?.returnRegister?.({ returnType:'int64' }) ?? null;
+      if (returnRegister) {
+        vals = rets.map((r) => reachingRegisterTypeValue(ir, r, returnRegister))
+          .filter((value) => value && ((value.uses || []).length > 0 || value.def));
+      }
+    }
     if (vals.length) {
       let picked = null;
       for (const v of vals) picked = mergeRecoveredTypes(picked, values.get(v.id));

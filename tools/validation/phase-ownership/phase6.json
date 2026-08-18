@@ -1,0 +1,119 @@
+{
+  "phase": 6,
+  "version": 3,
+  "singleOwnerLane": "p6",
+  "note": "Phase 6 is executed by one owner on one branch, so there is a single lane. The manifest still exists because ownership is what makes 'which files may this change touch' checkable, and because contract, generated and forbidden paths must be explicit even when nobody can race for them.",
+  "lanes": {
+    "p6": [
+      "js/targets/architecture/riscv64/**",
+      "js/targets/architecture/index.js",
+      "js/targets/architecture/registry.js",
+      "js/targets/abi/riscv-lp64.js",
+      "js/targets/abi/index.js",
+      "js/analysis/semantic-function.js",
+      "js/targets/architecture/x86_64/semantic-function.js",
+      "js/decompiler/semantic-core.js",
+      "js/decompiler/type-recovery.js",
+      "js/binary/elf.js",
+      "js/platform/capability-maturity.js",
+      "tests/phase6/**",
+      "tools/validation/phase6/**",
+      "tools/validation/phase6-ownership.mjs",
+      "tools/validation/phase-ownership/phase6.json",
+      "reports/phase6/**",
+      "docs/PHASE6_CHECKPOINT.md",
+      "docs/SUPPORT_MATRIX.md",
+      ".github/workflows/phase4-ownership.yml",
+      ".github/workflows/phase4-release-validation.yml",
+      ".github/workflows/phase6-ownership.yml",
+      ".github/workflows/phase6-release-validation.yml",
+      "package.json",
+      "tests/capability-maturity.mjs",
+      "reports/phase5/**",
+      ".gitignore",
+      "js/platform/capstone-disasm-worker.js",
+      "js/platform/capstone-probe-worker.js",
+      "userscript/hex.user.template.js",
+      "userscript/release-version.json",
+      "js/backend.js"
+    ]
+  },
+  "contractPaths": [
+    "tools/validation/phase6/profile.json",
+    "tools/validation/phase6/release-evidence.schema.json",
+    "tools/validation/phase-ownership/phase6.json",
+    "tools/validation/phase6-ownership.mjs",
+    "tests/phase6/corpus/**",
+    "tests/phase6/verification/manifests/**",
+    "tests/phase6/ownership/**",
+    ".github/workflows/phase6-ownership.yml"
+  ],
+  "sharedIntegrationPaths": [
+    "js/targets/architecture/index.js",
+    "js/targets/architecture/registry.js",
+    "js/targets/abi/index.js",
+    "js/analysis/semantic-function.js",
+    "js/targets/architecture/x86_64/semantic-function.js",
+    "js/decompiler/semantic-core.js",
+    "js/decompiler/type-recovery.js",
+    "js/binary/elf.js",
+    "js/platform/capability-maturity.js",
+    ".github/workflows/phase4-ownership.yml",
+    ".github/workflows/phase4-release-validation.yml",
+    "package.json",
+    "tests/capability-maturity.mjs",
+    "js/platform/capstone-disasm-worker.js",
+    "js/platform/capstone-probe-worker.js",
+    "js/backend.js"
+  ],
+  "generatedPaths": [
+    "userscript/hex.user.template.js",
+    "userscript/release-version.json"
+  ],
+  "releaseOnlyPaths": [
+    "docs/SUPPORT_MATRIX.md",
+    "docs/PHASE6_CHECKPOINT.md",
+    ".github/workflows/phase6-release-validation.yml"
+  ],
+  "forbiddenPaths": [
+    "js/analyze.js",
+    "js/worker-legacy.js",
+    "js/targets/architecture/arm64/**",
+    "js/targets/architecture/arm64e/**",
+    "js/targets/abi/aapcs64.js",
+    "js/targets/abi/sysv-amd64.js",
+    "js/targets/abi/microsoft-x64.js",
+    "js/targets/architecture/x86_64/effects/**",
+    "js/core/identity/**",
+    "js/core/artifacts/**",
+    "js/core/scheduler/**",
+    "js/core/budgets/**",
+    "docs/HEX_MASTER_ARCHITECTURE.md",
+    "docs/ENGINEERING_PROCESS_GUARDRAILS.md",
+    "tests/phase5/**",
+    "tools/validation/phase5/**",
+    "tools/validation/phase-ownership/phase5.json",
+    "tests/phase7/**",
+    "tools/validation/phase7/**"
+  ],
+  "forbiddenRationale": {
+    "js/targets/architecture/arm64/**": "Phase 6 must not change ARM64 behaviour to make RISC-V fit (INV-014).",
+    "js/targets/architecture/x86_64/effects/**": "Phase 5's x86 semantics are frozen; Phase 6 repairs generic contracts, never another architecture's lifter.",
+    "js/core/identity/**": "Artifact and instruction identity is a Phase 0/4 contract.",
+    "tests/phase5/**": "Phase 5 evidence may be re-run but not rewritten by Phase 6.",
+    "docs/HEX_MASTER_ARCHITECTURE.md": "A phase may not edit the contract it is being judged against."
+  },
+  "ownedWithConstraint": {
+    ".github/workflows/phase4-ownership.yml": "May be updated only to recognize the canonical Phase 6 integration branch and delegate exact changed-file validation to the Phase 6 ownership gate; Phase 4 lane permissions must not be weakened.",
+    ".github/workflows/phase4-release-validation.yml": "May be updated only to recognize the canonical Phase 6 integration branch and pair the unchanged Phase 4 verification suite with an exact Phase 6 ownership check; Phase 4 and Phase 5 validation behavior must remain unchanged.",
+    "reports/phase5/**": "Phase 5 evidence may be marked superseded with a pointer to the live gate, but its historical record must not be deleted or rewritten.",
+    "tests/capability-maturity.mjs": "May be updated only to match repaired machine-readable capability truth, never to relax an assertion so an inflated claim passes."
+  },
+  "generatedWriteOwners": [
+    "p6"
+  ],
+  "releaseWriteOwners": [
+    "p6"
+  ],
+  "generatedOutputNote": "Phase 6 is a single-owner phase, so it is also the release owner and MUST complete the generated-output transaction itself: changing protected runtime source without rebuilding the canonical userscript is a merge-blocking desync."
+}

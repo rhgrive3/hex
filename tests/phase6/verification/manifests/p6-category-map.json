@@ -1,0 +1,28 @@
+{
+  "schemaVersion": "phase6-category-map/v1",
+  "note": "Each mandatory category names the corpus symbol that must prove it. The proof is independent of Hex: `requiredMnemonics` are checked against LLVM's own disassembly, and the semantic requirements are checked against structured pipeline output, never against pretty-printed pseudocode.",
+  "categories": {
+    "scalar-integer-arithmetic": { "symbol": "p6_scalar_integer_arithmetic", "requiredMnemonicPattern": "\\b(add|addi|sub|xor|or|and|c\\.add|c\\.addi|c\\.sub|c\\.or|c\\.and|c\\.xor)\\b" },
+    "signed-and-unsigned-comparison": { "symbol": "p6_signed_unsigned_comparison", "requiredMnemonicPattern": "\\b(slt|sltu|slti|sltiu)\\b", "requiresComparePredicate": ["slt", "ult"] },
+    "conditional-branch-without-flags": { "symbol": "p6_conditional_branch_without_flags", "requiredMnemonicPattern": "\\b(beq|bne|blt|bge|bltu|bgeu|beqz|bnez|blez|bgez|bltz|bgtz|bgt|ble|bgtu|bleu|c\\.beqz|c\\.bnez)\\b", "requiresControlEffect": "conditional-branch" },
+    "loops": { "symbol": "p6_loops", "requiredMnemonicPattern": "\\b(beq|bne|blt|bge|bltu|bgeu|beqz|bnez|blez|bgez|bltz|bgtz|bgt|ble|bgtu|bleu|c\\.beqz|c\\.bnez)\\b", "requiresBackEdge": true },
+    "switch-like-control-flow": { "symbol": "p6_switch_like_control_flow", "requiresMultiwayBranching": true },
+    "stack-locals-and-spills": { "symbol": "p6_stack_locals_and_spills", "requiresStackMemory": true },
+    "pointer-load-and-store": { "symbol": "p6_pointer_load_and_store", "requiresMemoryRead": true, "requiresMemoryWrite": true },
+    "array-indexing": { "symbol": "p6_array_indexing", "requiresMemoryRead": true, "requiredMnemonicPattern": "\\b(slli|c\\.slli|add|c\\.add)\\b" },
+    "structure-field-access": { "symbol": "p6_structure_field_access", "requiresMemoryRead": true, "requiresMemoryWrite": true },
+    "direct-calls": { "symbol": "p6_direct_calls", "requiresControlEffect": "call", "requiresDirectCall": true },
+    "indirect-calls": { "symbol": "p6_indirect_calls", "requiresControlEffect": "call", "requiresIndirectCall": true },
+    "multiple-arguments": { "symbol": "p6_multiple_arguments", "requiresArgumentRegisters": ["x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17"] },
+    "stack-arguments": { "symbol": "p6_stack_arguments", "requiresStackMemory": true, "requiresArgumentRegisters": ["x10", "x17"] },
+    "return-values": { "symbol": "p6_return_values", "requiresControlEffect": "return", "requiresReturnRegisterWrite": "x10" },
+    "rv64-w-suffix-32-bit-operations": { "symbol": "p6_rv64_w_suffix_operations", "requiresWordResultExtension": true },
+    "zero-and-sign-extension": { "symbol": "p6_zero_and_sign_extension", "requiresExtensionOperations": ["sext", "zext"] },
+    "shifts": { "symbol": "p6_shifts", "requiresShiftOperations": ["shl", "lshr", "ashr"] },
+    "multiplication-and-division": { "symbol": "p6_multiplication_and_division", "requiredMnemonicPattern": "\\b(mul|mulw|mulh|mulhu|mulhsu|div|divu|divw|divuw|rem|remu|remw|remuw)\\b", "requiresDefinedDivideEdgeCases": true },
+    "pc-relative-global-addressing": { "symbol": "p6_pc_relative_global_addressing", "requiredMnemonicPattern": "\\b(auipc|lui)\\b", "requiresPcRelativeAddressFormation": true },
+    "compressed-instruction-mix": { "symbol": "p6_compressed_instruction_mix", "requiresMixedInstructionWidths": true },
+    "hardwired-zero-register": { "symbol": "p6_hardwired_zero_register", "requiresNoZeroRegisterWrite": true },
+    "riscv-lp64-abi": { "symbol": "p6_riscv_lp64_abi", "requiresAbiId": "lp64", "requiresControlEffect": "call" }
+  }
+}

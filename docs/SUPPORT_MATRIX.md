@@ -19,14 +19,17 @@ Status values:
 |---|---|---|---|---|---|---|---|---|---|---|
 | `arm64` | Supported | Supported | **Partial** | Supported | Supported | Supported | Supported | Partial | **A1** | **A6 legacy/partial** |
 | `arm64e` | Supported | Supported | **Partial** | Partial | Partial | Partial | Partial | Partial | **A1** | **A6 partial** |
-| `x86_64` | Supported | Supported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | **A1** | **A1** |
+| `x86_64` | Supported | Supported | **Partial** | Supported | Supported | **Partial** | Supported | Unsupported | **A1** | **A6** |
+| `riscv64` | Supported | Supported | **Partial** | Supported | Supported | **Partial** | Supported | Unsupported | **A1** | **A6** |
 | unknown | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | Unsupported | none | none |
 
 Important limitations:
 
-- `arm64`: current legacy Semantic IR, SSA/dataflow, and decompiler capability remains available, but Master Architecture A2 specifically requires **Exact Low-Level Effects / MachineEffects**. Phase 2 introduces `MachineEffectBundle`, the ARM64 exact lifter, explicit flags/memory effects, and compatibility lowering. Those contracts are not present in current main, so A2 is **Partial**, not Supported, and cumulative maturity remains **A1**.
+- `arm64`: current legacy Semantic IR, SSA/dataflow, and decompiler capability remains available, but Master Architecture A2 specifically requires **Exact Low-Level Effects / MachineEffects**. `MachineEffectBundle`, the ARM64 exact lifter, and compatibility lowering are present, but their instruction coverage is incomplete, so A2 is **Partial**, not Supported, and cumulative maturity remains **A1**.
 - `arm64e`: the same missing exact MachineEffects contract applies, with additional partial pointer-authentication semantics. Its cumulative maturity remains **A1**.
-- `x86_64`: the deployed Capstone build can decode it, but Hex does **not** claim semantic lifting, CFG/Semantic IR, SSA/dataflow, or decompiler maturity for x86-64.
+- `x86_64`: Phase 5 takes all 144 mandatory compiler-corpus tuples through exact MachineEffects, Semantic IR, CFG, SSA, MemorySSA and the shared decompiler, so the implemented depth is **A6**. Exactness is proven for that corpus, not for the whole instruction set, so A2 remains **Partial** and cumulative maturity remains **A1**.
+- `riscv64`: Phase 6 takes 264 mandatory tuples — two ELF targets (`ET_EXEC` and PIE `ET_DYN`) across six optimization levels — through the same generic middle-end, with an independent LLVM disassembly oracle and a Capstone structured-operand differential. The frozen profile is **RV64IMC / LP64 (soft float), little-endian, ELFCLASS64**. The A, F, D, Q and V extensions, Zicsr, and the privileged architecture are explicitly outside it and are **Unsupported**; `lp64f`/`lp64d` are recognized from ELF `e_flags` but classify only integer arguments exactly. Cumulative maturity is therefore **A1**, with implemented depth **A6**. Hex emits the canonical id `riscv64`; a width-ambiguous `riscv` is deliberately not an alias, and RV32 is not supported.
+- No architecture reaches A2 cumulatively yet. `Implemented through` is the furthest stage with a working implementation; `Maturity level` is the highest **cumulative fully satisfied** level, and it never skips an incomplete prerequisite.
 - If the decoder is unavailable at runtime, a recognized architecture is downgraded to effective **A0 Detect** and decoder-dependent implemented stages become `unavailable`.
 
 ## Native format maturity
@@ -50,6 +53,9 @@ The values above are tied to the Master Architecture definitions plus current so
 - Master Architecture Phase 2 — MachineEffects are a future deliverable, so legacy ARM64 Semantic IR cannot satisfy A2 by itself;
 - `js/architecture/index.js` — current architecture adapters and legacy analysis capability;
 - `js/platform/capstone-capability.js` + `tests/capstone-capability.mjs` — deployed decoder truth for ARM64 and x86-64;
+- `tools/validation/phase6/profile.json` — the frozen Phase 6 RISC-V ISA/ABI/toolchain/decoder/corpus identities, including the deployed `capstone.js`/`capstone.wasm` hashes the RISC-V claim is bound to;
+- `tests/phase5/verification/compiler-corpus-pipeline.test.mjs` and `tests/phase6/verification/compiler-corpus-pipeline.test.mjs` — the mandatory compiler-corpus gates behind the x86-64 and RISC-V claims;
+- `tests/phase6/foundation/capability-truth.test.mjs` — pins these declarations to that evidence, so a stale claim fails instead of going unnoticed;
 - current ARM64 Semantic IR / SSA / decompiler regression suites — evidence for implemented legacy A3–A6 functionality, not proof of cumulative A2+ maturity;
 - `js/binary/*`, `tests/universal-binary*.mjs`, and `tests/binary-platform.mjs` — mapping, link metadata, function/unwind evidence, plus explicit partial/incomplete parsing cases;
 - Objective-C / Swift regression suites — basis for partial Mach-O runtime/language metadata.

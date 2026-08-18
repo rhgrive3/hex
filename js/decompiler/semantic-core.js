@@ -146,7 +146,26 @@ function loadReachedByStore(load, store, ctx) {
 function returnRegisterForContext(ctx) {
   const type=String(ctx.opts?.returnType || ctx.opts?.functionPrototype?.returnType || ctx.opts?.prototype?.returnType || ctx.types?.ret?.type || '').toLowerCase();
   if (!type || type === 'void') return null;
+  // The calling convention owns this, not the decompiler. Assuming `x0` is the
+  // result register is an AArch64 fact; on RISC-V `x0` is hardwired zero, so a
+  // hardcoded name would read the wrong location entirely. Callers that supply
+  // no ABI adapter are the legacy AArch64 IR facade, whose behaviour is kept.
+  const fromAbi = ctx.opts?.abiAdapter?.returnRegister?.({ returnType: type });
+  if (fromAbi) return String(fromAbi);
+  if (ctx.opts?.abiAdapter) return null;
   return /^(float|double|__fp16)/.test(type) || /vector|simd/.test(type) ? 'v0' : 'x0';
+}
+
+/*
+ * Registers whose spill/restore is call-frame bookkeeping rather than program
+ * data. The ABI names them; `r29`/`r30` are AArch64's frame pointer and link
+ * register and mean nothing on another target.
+ */
+function frameBookkeepingRegisters(ctx) {
+  const declared = ctx.opts?.abiAdapter?.frameBookkeepingRegisters?.();
+  if (Array.isArray(declared)) return new Set(declared.map(canonicalRegister));
+  if (ctx.opts?.abiAdapter) return new Set();
+  return new Set(['r29', 'r30']);
 }
 function returnValueAt(ret, ctx) {
   const explicit=valueOf(ret?.args?.[0]);
@@ -169,7 +188,7 @@ function isMechanicalStackSpill(inst, ctx) {
   if (inst?.op !== OP.STORE || inst.loc?.kind !== MK.STACK) return false;
   const stored = valueOf(inst.args?.[0]);
   const reg = canonicalRegister(stored?.reg);
-  if (reg === 'r29' || reg === 'r30') return true; // frame pointer / link register save
+  if (reg && frameBookkeepingRegisters(ctx).has(reg)) return true; // frame pointer / return address save
   const loads = (ctx.ir.instructions || []).filter((x) => loadReachedByStore(x, inst, ctx));
   if (!loads.length) return false;
   return loads.every((load) =>
@@ -540,6 +559,13 @@ export function renderValue(value, ctx, flags = {}) {
 }
 
 function targetBlock(ir, cbr, rowOfAddress) {
+  // Prefer the taken-edge block the semantic projection already proved. The
+  // v2->v1 projection resolves conditional-branch targets from Semantic IR
+  // control targets, so the block index is direct evidence and needs no
+  // address round-trip. Callers that build IR from a linear listing (the legacy
+  // js/ir.js facade) have no such evidence and still resolve by address.
+  const provenBlock = cbr?.extra?.targetBlock;
+  if (Number.isInteger(provenBlock) && ir.blocks?.[provenBlock] != null) return provenBlock;
   const addr = cbr?.extra?.target;
   if (addr == null) return null;
   const row = rowOfAddress?.(addr);
@@ -809,7 +835,7 @@ export function decompileSemantic(model, opts = {}) {
   const ir = opts.ir || irFor(model, { rowOfAddress: opts.rowOfAddress });
   if (!ir || !ir.instructions?.length) return null;
   const runtime = runtimeFromOpts(opts);
-  const types = inferSemanticTypes(ir, model, { runtime });
+  const types = inferSemanticTypes(ir, model, { runtime, abiAdapter: opts.abiAdapter ?? null });
   const graph = analyzeGraph(ir.blocks.map((b) => b.succ), ir.entry || 0);
   ir.loops = graph.loops;
   const rmw = readModifyWrite(ir);

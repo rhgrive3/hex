@@ -17,8 +17,11 @@ self.onmessage = async () => {
     self.postMessage({ ok: true, support: {
       arm64: probe(M.ARCH_ARM64, M.MODE_ARM | M.MODE_LITTLE_ENDIAN),
       x86_64: probe(M.ARCH_X86, M.MODE_64 | M.MODE_LITTLE_ENDIAN),
+      // RV64 with the compressed extension enabled, because the frozen Phase 6
+      // profile is RV64IMC and a build without C would decode the stream wrong.
+      riscv64: probe(M.ARCH_RISCV, M.MODE_RISCV64 | M.MODE_RISCVC | M.MODE_LITTLE_ENDIAN),
     }});
   } catch (error) {
-    self.postMessage({ ok: false, error: `Capstone probe initialization: ${error?.message || String(error)}`, support: { arm64: false, x86_64: false } });
+    self.postMessage({ ok: false, error: `Capstone probe initialization: ${error?.message || String(error)}`, support: { arm64: false, x86_64: false, riscv64: false } });
   }
 };

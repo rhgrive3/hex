@@ -115,21 +115,65 @@ const ARCHITECTURE_PROFILES = Object.freeze({
       'runtime-debug-patch-validation-incomplete',
     ]),
   }),
+  // Phase 5 release-truth repair. The declarations below were written before
+  // P5-6 landed and still said x86-64 was decode-only. The merged Phase 5
+  // product proves otherwise: tests/phase5/verification/compiler-corpus-pipeline
+  // instantiates all 144 mandatory corpus tuples and takes each one through
+  // exact MachineEffects, Semantic IR, CFG, SSA, MemorySSA and the shared
+  // decompiler against an independent LLVM oracle.
+  //
+  // The promotion is deliberately limited to what that evidence proves.
+  // `implementedLevel` moves to A6 because the whole vertical is implemented and
+  // exercised; A2 stays PARTIAL because exact effects are proven for the
+  // mandatory corpus, not for the entire x86-64 instruction set; and because a
+  // target never gains a level by skipping an incomplete prerequisite, the
+  // cumulative `fullySatisfiedLevel` stays A1 -- exactly the shape arm64 has.
   x86_64: Object.freeze({
-    implementedLevel: 'A1',
+    implementedLevel: 'A6',
     fullySatisfiedLevel: 'A1',
-    status: SUPPORTED,
+    status: PARTIAL,
     features: freezeFeatures({
       detect: SUPPORTED,
       decode: SUPPORTED,
-      lowLevelEffects: UNSUPPORTED,
-      cfgSemanticIR: UNSUPPORTED,
-      ssaMemoryDataflow: UNSUPPORTED,
-      typesInterprocedural: UNSUPPORTED,
-      decompiler: UNSUPPORTED,
+      lowLevelEffects: PARTIAL,
+      cfgSemanticIR: SUPPORTED,
+      ssaMemoryDataflow: SUPPORTED,
+      typesInterprocedural: PARTIAL,
+      decompiler: SUPPORTED,
       runtimeDebugPatchValidation: UNSUPPORTED,
     }),
-    limitations: freezeCodes(['x86-64-semantic-analysis-unsupported']),
+    limitations: freezeCodes([
+      'exact-machine-effects-partial-coverage',
+      'x86-64-types-interprocedural-partial',
+      'runtime-debug-patch-validation-incomplete',
+    ]),
+  }),
+  // Phase 6. The mandatory RISC-V corpus proves an A6-depth vertical for the
+  // frozen RV64IMC / LP64 profile: 264 tuples across two ELF targets and six
+  // optimization levels, all-exact effects, through the same generic middle-end
+  // as arm64 and x86-64. Exactness is proven for that profile, not for every
+  // RISC-V extension -- A/F/D/Q/V/Zicsr and the privileged architecture are
+  // explicitly outside it -- so A2 is PARTIAL and cumulative maturity is A1.
+  riscv64: Object.freeze({
+    implementedLevel: 'A6',
+    fullySatisfiedLevel: 'A1',
+    status: PARTIAL,
+    features: freezeFeatures({
+      detect: SUPPORTED,
+      decode: SUPPORTED,
+      lowLevelEffects: PARTIAL,
+      cfgSemanticIR: SUPPORTED,
+      ssaMemoryDataflow: SUPPORTED,
+      typesInterprocedural: PARTIAL,
+      decompiler: SUPPORTED,
+      runtimeDebugPatchValidation: UNSUPPORTED,
+    }),
+    limitations: freezeCodes([
+      'riscv64-exact-effects-limited-to-rv64imc-profile',
+      'riscv64-atomic-float-vector-extensions-unsupported',
+      'riscv64-types-interprocedural-partial',
+      'runtime-debug-patch-validation-incomplete',
+    ]),
   }),
 });
 
@@ -213,9 +257,15 @@ const STATUS_DISPLAY = Object.freeze({
   [SUPPORTED]: 'Supported', [PARTIAL]: 'Partial', [UNSUPPORTED]: 'Unsupported', [UNAVAILABLE]: 'Unavailable',
 });
 const LIMITATION_DISPLAY = Object.freeze({
-  'exact-machine-effects-partial-coverage': 'MachineEffects are implemented for a measured ARM64 subset; remaining partial or unsupported instructions keep A2 from being fully satisfied.',
+  'exact-machine-effects-partial-coverage': 'MachineEffects are implemented for a measured instruction subset; remaining partial or unsupported instructions keep A2 from being fully satisfied.',
+  'x86-64-types-interprocedural-partial': 'x86-64 reaches the shared type and interprocedural analysis, but that stage is not independently proven for x86-64 by the mandatory corpus.',
+  'riscv64-exact-effects-limited-to-rv64imc-profile': 'RISC-V exact MachineEffects are proven for the frozen RV64IMC profile only; other encodings remain explicitly partial or unsupported.',
+  'riscv64-atomic-float-vector-extensions-unsupported': 'The RISC-V A, F, D, Q and V extensions, Zicsr, and the privileged architecture are outside the frozen Phase 6 profile and are not supported.',
+  'riscv64-types-interprocedural-partial': 'RISC-V reaches the shared type and interprocedural analysis, but that stage is not independently proven for RISC-V by the mandatory corpus.',
   'runtime-debug-patch-validation-incomplete': 'Runtime/debug/patch validation does not meet A7.',
   'arm64e-pointer-authentication-semantics-partial': 'arm64e pointer-authentication data semantics are partial.',
+  // Retained so historical reports still render. No current profile emits it:
+  // Phase 5 proved the x86-64 semantic vertical on its mandatory corpus.
   'x86-64-semantic-analysis-unsupported': 'x86-64 is decode-only; semantic lifting, CFG/SSA analysis, and decompilation are not supported.',
   'decoder-unavailable': 'The decoder is unavailable in the current runtime.',
   'unknown-architecture': 'The architecture is not recognized by the current capability registry.',
@@ -231,6 +281,10 @@ export function normalizeArchitectureCapabilityId(value) {
   const id = String(value || '').trim().toLowerCase();
   if (id === 'aarch64') return 'arm64';
   if (id === 'amd64' || id === 'x64') return 'x86_64';
+  // `riscv64` is canonical. A bare `riscv` is deliberately NOT aliased: it does
+  // not say whether the target is RV32 or RV64, and inventing a width here
+  // would create a second architecture identity for the same profile.
+  if (id === 'rv64' || id === 'riscv64gc') return 'riscv64';
   return id || 'unknown';
 }
 
@@ -333,7 +387,7 @@ export function currentSupportMatrix(options = {}) {
     ? decoderSupport.arm64e !== false && decoderSupport.arm64 !== false
     : decoderSupport[id] !== false;
   return Object.freeze({
-    architectures: Object.freeze(['arm64', 'arm64e', 'x86_64'].map((id) => architectureMaturity(id, { decoderAvailable: decoderFor(id) }))),
+    architectures: Object.freeze(['arm64', 'arm64e', 'x86_64', 'riscv64'].map((id) => architectureMaturity(id, { decoderAvailable: decoderFor(id) }))),
     formats: Object.freeze(['macho', 'elf', 'pe'].map((id) => formatMaturity(id))),
     managed: Object.freeze([]),
   });

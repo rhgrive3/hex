@@ -1,5 +1,9 @@
 'use strict';
-importScripts('../targets/architecture/x86_64/capstone-structured.js', '../../capstone.js');
+importScripts(
+  '../targets/architecture/x86_64/capstone-structured.js',
+  '../targets/architecture/riscv64/capstone-structured.js',
+  '../../capstone.js',
+);
 
 const CS_INSN_STRUCT = 240;
 const OFF_SIZE = 16, OFF_MNEMONIC = 42, OFF_OP_STR = 74;
@@ -20,6 +24,7 @@ async function handleFor(architecture) {
   let arch, mode;
   if (architecture === 'arm64') { arch = M.ARCH_ARM64; mode = M.MODE_ARM | M.MODE_LITTLE_ENDIAN; }
   else if (architecture === 'x86_64') { arch = M.ARCH_X86; mode = M.MODE_64 | M.MODE_LITTLE_ENDIAN; }
+  else if (architecture === 'riscv64') { arch = M.ARCH_RISCV; mode = M.MODE_RISCV64 | M.MODE_RISCVC | M.MODE_LITTLE_ENDIAN; }
   else throw new Error(`Unsupported architecture: ${architecture}`);
   const hp = M._malloc(4);
   const rc = M.ccall('cs_open', 'number', ['number', 'number', 'pointer'], [arch, mode, hp]);
@@ -30,6 +35,10 @@ async function handleFor(architecture) {
     globalThis.HexX86CapstoneStructured.verifyVersion(M);
     const detailRc = M.ccall('cs_option', 'number', ['number', 'number', 'number'], [handle, M.OPT_DETAIL, M.OPT_ON]);
     if (detailRc !== 0) throw new Error(`Capstone cannot enable x86 detail (error ${detailRc})`);
+  } else if (architecture === 'riscv64') {
+    globalThis.HexRiscv64CapstoneStructured.verifyVersion(M);
+    const detailRc = M.ccall('cs_option', 'number', ['number', 'number', 'number'], [handle, M.OPT_DETAIL, M.OPT_ON]);
+    if (detailRc !== 0) throw new Error(`Capstone cannot enable RISC-V detail (error ${detailRc})`);
   }
   const state = { M, hp, handle, out: M._malloc(4) };
   handles.set(architecture, state);
@@ -59,6 +68,11 @@ self.onmessage = async (event) => {
             instructions.push(globalThis.HexX86CapstoneStructured.parseInstruction(M, handle, p, {
               address:BigInt(msg.address) + BigInt(consumed),
               mode:'long-64',
+            }));
+          } else if (msg.architecture === 'riscv64') {
+            instructions.push(globalThis.HexRiscv64CapstoneStructured.parseInstruction(M, handle, p, {
+              address:BigInt(msg.address) + BigInt(consumed),
+              mode:'rv64imc',
             }));
           } else {
             instructions.push({
