@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - fix/r4-proxy-progress-budget
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: write
