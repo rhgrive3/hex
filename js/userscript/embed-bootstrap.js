@@ -7,6 +7,7 @@ import {
 export const EMBED_BOOTSTRAP_TYPE = 'hex.embed.child-bootstrap-ready';
 export const EMBED_GENERATION_PARAM = '__hex_embed_generation';
 export const EMBED_PROVIDER_PARAM = '__hex_ai_provider';
+export const DEV_BOOTSTRAP_PARAM = '__hex_dev_bootstrap';
 export const DEFAULT_EMBED_BOOTSTRAP_TIMEOUT_MS = 20000;
 
 export function normalizeEmbedGeneration(value) {
@@ -33,6 +34,10 @@ export function readEmbedGeneration(locationRef = globalThis.location) {
   const raw = readLocationParam(locationRef, EMBED_GENERATION_PARAM);
   if (raw == null) return null;
   try { return normalizeEmbedGeneration(raw); } catch { return null; }
+}
+
+export function readDevBootstrapRequested(locationRef = globalThis.location) {
+  return readLocationParam(locationRef, DEV_BOOTSTRAP_PARAM) === '1';
 }
 
 export function createEmbedBootstrapMessage(generation, sandboxToken = null) {
