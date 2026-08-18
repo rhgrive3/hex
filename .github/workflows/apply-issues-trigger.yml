@@ -17,7 +17,19 @@ jobs:
         with:
           node-version: 22
       - name: Apply guarded source patches
-        run: python3 .github/apply-five-fixes.py
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('.github/apply-five-fixes.py')
+          s = p.read_text()
+          old = 'start = text.index("  if (sub === \'fsub\') {")'
+          new = 'start = text.index("  if (sub === \'fsub\') {", text.index("export function buildNZCVConditionExpression"))'
+          if s.count(old) != 1:
+              raise SystemExit(f'expected one fsub start locator, got {s.count(old)}')
+          p.write_text(s.replace(old, new, 1))
+          PY
+          python3 .github/apply-five-fixes.py
       - name: Build generated runtime
         run: npm run userscript:build
       - name: Targeted regression
