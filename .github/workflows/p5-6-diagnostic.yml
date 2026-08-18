@@ -1,0 +1,34 @@
+name: P5-6 verifier diagnostics
+
+on:
+  push:
+    branches:
+      - hex/p5-6-x86-verification
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verifier:
+    name: p5-6-${{ matrix.test }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        test:
+          - architecture-boundary-audit
+          - compiler-corpus-pipeline
+          - safety-counters
+          - toolchain-corpus-bootstrap
+          - viewer-artifact-cancel
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Run verifier
+        run: node --test --test-concurrency=1 tests/phase5/verification/${{ matrix.test }}.test.mjs
