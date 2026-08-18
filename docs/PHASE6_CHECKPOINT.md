@@ -149,7 +149,7 @@ id, so a future fix cannot be smuggled in as a special case.
 | E — ABI + ELF | done | `tests/phase6/{abi,elf}/**` |
 | F — generic middle-end | done | `tests/phase6/generic-core/**`, `tests/phase6/cross-architecture/**` |
 | G — decompiler / compiler truth | done | `tests/phase6/verification/compiler-corpus-pipeline.test.mjs` 264/264, `tests/phase6/verification/source-equivalence.test.mjs` 7,260 semantic checks |
-| H — public capability / product | done | capability truth repaired first, `docs/SUPPORT_MATRIX.md` second; browser worker wiring and generated userscript rebuilt |
+| H — public capability / product | done | capability truth repaired first, `docs/SUPPORT_MATRIX.md` second; `Backend` route parameterized by architecture (`tests/phase6/vertical/**`), decode/probe workers wired, generated userscript rebuilt |
 | I — current-main reconciliation | see PR | performed immediately before final exact-head verification |
 | J — final exact verification | see PR | `npm run phase6:verify` verdict bound to the exact head |
 
@@ -191,6 +191,11 @@ checkpoint, which is the property the guardrail actually protects.
 - The production classic decode worker decodes RISC-V in a real Chromium
   browser from the deployed `capstone.wasm`, without cross-origin isolation or
   SharedArrayBuffer, with ARM64 and x86-64 unregressed.
+- The production `Backend` routes RISC-V through the shared semantic-function
+  artifact: correct architecture at the decode-worker boundary, exact effects,
+  no flag state, shared decompiler, and warm artifact reuse that does not
+  recompute. An ABI belonging to another architecture, or an unregistered
+  architecture, is refused rather than routed as something else.
 
 ## What is not proven
 

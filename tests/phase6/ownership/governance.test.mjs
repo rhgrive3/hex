@@ -17,6 +17,35 @@ test('the Phase 6 ownership manifest is well formed and self-consistent', () => 
   assert.equal(manifest.singleOwnerLane, 'p6');
 });
 
+test('the manifest cannot declare generated or release output the lane may not write', () => {
+  const manifest = loadManifest();
+  // Phase 4 shipped ownership rules that contradicted their own lane
+  // assignments, and Phase 6 briefly repeated it: the canonical userscript was
+  // declared generated output while the only lane there is did not own it, so
+  // the lane could not complete its own generated-output transaction.
+  for (const field of ['generatedPaths', 'releaseOnlyPaths']) {
+    for (const declared of manifest[field]) {
+      assert.ok(manifest.lanes.p6.includes(declared),
+        `${field} declares ${declared}, which lane p6 does not own`);
+    }
+  }
+  assert.deepEqual(manifest.generatedWriteOwners, ['p6']);
+  assert.deepEqual(manifest.releaseWriteOwners, ['p6']);
+
+  const contradictory = {
+    ...manifest,
+    generatedPaths: [...manifest.generatedPaths, 'userscript/not-owned.js'],
+  };
+  assert.ok(
+    validateManifest(contradictory).some((error) => error.includes('userscript/not-owned.js')),
+    'a generated path the lane does not own must be rejected by manifest validation',
+  );
+  assert.ok(
+    validateManifest({ ...manifest, generatedWriteOwners: ['p9'] }).some((error) => error.includes('p9')),
+    'an unknown generated write owner must be rejected',
+  );
+});
+
 test('Phase 6 may not edit another architecture, another phase, or its own contract document', () => {
   const manifest = loadManifest();
   const forbidden = [

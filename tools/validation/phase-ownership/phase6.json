@@ -32,7 +32,8 @@
       "js/platform/capstone-disasm-worker.js",
       "js/platform/capstone-probe-worker.js",
       "userscript/hex.user.template.js",
-      "userscript/release-version.json"
+      "userscript/release-version.json",
+      "js/backend.js"
     ]
   },
   "contractPaths": [
@@ -58,7 +59,8 @@
     "package.json",
     "tests/capability-maturity.mjs",
     "js/platform/capstone-disasm-worker.js",
-    "js/platform/capstone-probe-worker.js"
+    "js/platform/capstone-probe-worker.js",
+    "js/backend.js"
   ],
   "generatedPaths": [
     "userscript/hex.user.template.js",

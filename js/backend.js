@@ -19,6 +19,47 @@ import {
   X86_SEMANTIC_FUNCTION_MAX_DECODE_BYTES,
   X86_SEMANTIC_FUNCTION_SCHEMA_VERSION,
 } from './targets/architecture/x86_64/semantic-function-contract.js';
+import { RISCV64_DECODER_SEMANTIC_VERSION } from './targets/architecture/riscv64/decoded-instruction.js';
+import { RISCV64_MACHINE_EFFECTS_SEMANTIC_VERSION } from './targets/architecture/riscv64/effects/common.js';
+
+/*
+ * Per-architecture inputs to the shared semantic-function route.
+ *
+ * The route itself is architecture-neutral (js/analysis/semantic-function.js);
+ * what differs is which decoder contract, which effects semantic version, and
+ * which calling conventions are legal. `artifactKind` is pinned per
+ * architecture rather than derived, so extending this table cannot silently
+ * change an existing architecture's artifact identity and invalidate its
+ * warm-reuse evidence.
+ */
+const SEMANTIC_FUNCTION_TARGETS = Object.freeze({
+  x86_64: Object.freeze({
+    artifactKind: 'phase5-x86-semantic-function',
+    decoderContract: 'x86-64-decoded-instruction/v1',
+    decoderSemanticVersion: X86_DECODER_SEMANTIC_VERSION,
+    architectureSemanticVersion: X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION,
+    analysisVersion: X86_SEMANTIC_FUNCTION_ANALYSIS_VERSION,
+    schemaVersion: X86_SEMANTIC_FUNCTION_SCHEMA_VERSION,
+    abiIds: Object.freeze(['sysv-amd64', 'microsoft-x64']),
+    defaultPlatform: (formatId) => (formatId === 'pe' ? 'windows' : 'linux'),
+  }),
+  riscv64: Object.freeze({
+    artifactKind: 'phase6-riscv64-semantic-function',
+    decoderContract: 'riscv64-decoded-instruction/v1',
+    decoderSemanticVersion: RISCV64_DECODER_SEMANTIC_VERSION,
+    architectureSemanticVersion: RISCV64_MACHINE_EFFECTS_SEMANTIC_VERSION,
+    analysisVersion: RISCV64_MACHINE_EFFECTS_SEMANTIC_VERSION,
+    schemaVersion: X86_SEMANTIC_FUNCTION_SCHEMA_VERSION,
+    abiIds: Object.freeze(['lp64', 'lp64f', 'lp64d']),
+    defaultPlatform: () => 'linux',
+  }),
+});
+
+function semanticFunctionTarget(architecture) {
+  const target = SEMANTIC_FUNCTION_TARGETS[String(architecture || 'x86_64')];
+  if (!target) throw new TypeError(`semantic-function-unsupported-architecture:${architecture}`);
+  return target;
+}
 
 export const CHUNK_ROWS = 1024;
 export const CHUNK_BYTES = CHUNK_ROWS * 4;
@@ -416,29 +457,31 @@ export class Backend {
   _semanticFunctionArtifactDescriptor(options = {}) {
     const abiId = String(options.abiId || '');
     if (!abiId) throw new TypeError('semantic-function-abi-id-required');
+    const architecture = String(options.architecture || 'x86_64');
+    const target = semanticFunctionTarget(architecture);
     return createWorkerAnalysisArtifactDescriptor({
       binaryId:options.binaryId,
       sliceIndex:Number(options.sliceIndex ?? 0),
-      architecture:'x86_64',
-      artifactKind:'phase5-x86-semantic-function',
-      producerVersion:X86_SEMANTIC_FUNCTION_ANALYSIS_VERSION,
+      architecture,
+      artifactKind:target.artifactKind,
+      producerVersion:target.analysisVersion,
       loaderVersion:BACKEND_ANALYSIS_ARTIFACT_VERSIONS.loader,
-      architectureSemanticVersion:X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION,
+      architectureSemanticVersion:target.architectureSemanticVersion,
       abiSemanticVersion:`${abiId}@${String(options.abiSemanticVersion || '1')}`,
-      semanticSchemaVersion:X86_SEMANTIC_FUNCTION_SCHEMA_VERSION,
+      semanticSchemaVersion:target.schemaVersion,
       config:{
         address:BigInt(options.address).toString(),
         length:Number(options.length),
-        architecture:'x86_64',
+        architecture,
         abiId,
         platform:String(options.platform || 'unknown'),
-        decoderSemanticVersion:X86_DECODER_SEMANTIC_VERSION,
-        analysisVersion:X86_SEMANTIC_FUNCTION_ANALYSIS_VERSION,
+        decoderSemanticVersion:target.decoderSemanticVersion,
+        analysisVersion:target.analysisVersion,
         functionPrototype:options.functionPrototype ?? null,
       },
       keyExtras:{
-        decoderContract:'x86-64-decoded-instruction/v1',
-        decoderSemanticVersion:X86_DECODER_SEMANTIC_VERSION,
+        decoderContract:target.decoderContract,
+        decoderSemanticVersion:target.decoderSemanticVersion,
         semanticRoute:'machine-effects>semantic-ir-v2>cfg>ssa>memoryssa>compat>shared-decompiler',
       },
       upstreamArtifactIds:options.upstreamArtifactIds ?? [],
@@ -447,8 +490,10 @@ export class Backend {
   }
 
   /**
-   * Explicit Phase-5 shadow route. It is production Backend/API orchestration,
-   * but does not change public x86 capability or add a legacy fallback.
+   * Production Backend/API orchestration for the shared semantic-function
+   * route. It adds no legacy fallback and promotes no capability by itself: the
+   * architecture must already be registered with an exact lifter and a
+   * supported calling convention.
    */
   async analyzeSemanticFunction(options = {}) {
     const address = BigInt(options.address);
@@ -456,10 +501,12 @@ export class Backend {
     if (!Number.isSafeInteger(length) || length < 1 || length > X86_SEMANTIC_FUNCTION_MAX_DECODE_BYTES) {
       throw new TypeError('semantic-function-bounded-length-required');
     }
+    const architecture = String(options.architecture || 'x86_64');
+    const target = semanticFunctionTarget(architecture);
     const abiId = String(options.abiId || '');
-    if (!['sysv-amd64','microsoft-x64'].includes(abiId)) throw new TypeError('semantic-function-x86-abi-required');
+    if (!target.abiIds.includes(abiId)) throw new TypeError(`semantic-function-${architecture}-abi-required`);
     const binaryId = options.binaryId ?? await this.ensureBinaryId({ signal:options.signal, onProgress:options.onIdentityProgress });
-    const descriptor = this._semanticFunctionArtifactDescriptor({ ...options, binaryId, address, length, abiId });
+    const descriptor = this._semanticFunctionArtifactDescriptor({ ...options, architecture, binaryId, address, length, abiId });
     const uiEpoch = this.gen, transportEpoch = this.transportEpoch, file = this.file;
     const result = await this._artifactRuntime().request({
       descriptor,
@@ -474,8 +521,8 @@ export class Backend {
         && payload?.abiId === abiId,
       creation:{ backend:'Backend', route:'phase5-shadow-v2', abiId, address:address.toString(), length },
       produce:async ({ signal }) => {
-        const decoded = await this.disassembleAt(address, { architecture:'x86_64', length, signal });
-        if (!decoded?.supported || !decoded?.found || !decoded.instructions?.length) throw new Error('semantic-function-x86-decode-unavailable');
+        const decoded = await this.disassembleAt(address, { architecture, length, signal });
+        if (!decoded?.supported || !decoded?.found || !decoded.instructions?.length) throw new Error(`semantic-function-${architecture}-decode-unavailable`);
         const decodedWithOrigins = decoded.instructions.map((instruction) => {
           const instructionAddress = BigInt(instruction.address);
           const instructionLength = Number(instruction.length ?? instruction.size);
@@ -493,10 +540,11 @@ export class Backend {
           input:{
             binaryId,
             sliceId:descriptor.sliceId,
-            architecture:'x86_64',
-            platform:options.platform || (this.formatId === 'pe' ? 'windows' : 'linux'),
+            architecture,
+            platform:options.platform || target.defaultPlatform(this.formatId),
             abiId,
-            decoderSemanticVersion:X86_DECODER_SEMANTIC_VERSION,
+            decoderSemanticVersion:target.decoderSemanticVersion,
+            analysisVersion:target.analysisVersion,
             instructions:decodedWithOrigins,
             name:options.name,
             functionPrototype:options.functionPrototype ?? null,

@@ -24,6 +24,7 @@ const REQUIRED_SUBTREES = Object.freeze([
   'generic-core',
   'cross-architecture',
   'browser',
+  'vertical',
   'verification',
   'ownership',
 ]);
