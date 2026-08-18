@@ -1,0 +1,27 @@
+name: Apply five correctness repairs fast
+on:
+  push:
+    branches: [fix/issues-790-817-829-830-838]
+permissions:
+  contents: write
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply guarded source patch and regression
+        shell: bash
+        run: |
+          awk '/^          python3 <<'"'"'PY'"'"'$/{f=1;next} /^          PY$/{f=0} f{sub(/^          /,"");print}' .github/workflows/apply-issues-790-817-829-830-838.yml > /tmp/apply.py
+          python3 /tmp/apply.py
+          awk '/^          cat > tests\/semantic-v2\/issues-790-817-829-830-838.test.mjs <<'"'"'EOF'"'"'$/{f=1;next} /^          EOF$/{if(f){exit}} f{sub(/^          /,"");print}' .github/workflows/apply-issues-790-817-829-830-838.yml > tests/semantic-v2/issues-790-817-829-830-838.test.mjs
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git rm .github/workflows/apply-issues-790-817-829-830-838.yml .github/workflows/apply-issues-790-817-829-830-838-fast.yml .github/issue-fix-886-trigger
+          git add js/symbolic/executor.js js/dataflow-semantic.js js/dataflow.js js/analysis/alias/canonical-address-v2-core.js js/fields.js tests/semantic-v2/issues-790-817-829-830-838.test.mjs
+          git diff --cached --check
+          git commit -m 'fix: resolve five semantic correctness issues'
+          git push origin HEAD:fix/issues-790-817-829-830-838
