@@ -116,7 +116,9 @@ function returnArgumentIndex(value) {
 
 function simpleReturnExpression(value) {
   if (!value) return null;
-  const v = transparentMoveSource(value);
+  let v = value;
+  const pass = new Set([OP.MOV]);
+  for (let guard = 0; guard < 6 && v && v.def && pass.has(v.def.op); guard++) v = v.def.args[0] && v.def.args[0].value;
   if (!v || !v.def || v.def.op !== OP.BIN || (v.def.sub !== 'add' && v.def.sub !== 'sub')) return null;
   const aArg = v.def.args[0] || null;
   const bArg = v.def.args[1] || null;
