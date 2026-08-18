@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - fix/dev-supervisor-progress-budget
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: write
@@ -65,100 +68,100 @@ jobs:
 
           test = Path('tests/dev-agent/supervisor-progress-budget.mjs')
           test.write_text(r'''import assert from 'node:assert/strict';
-          import { DevSupervisorV0 } from '../../js/ai/dev/supervisor/dev-supervisor-v0.js';
-          import { DevSupervisorEngineV0 } from '../../js/ai/dev/supervisor/dev-supervisor-engine-v0.js';
-          import { DevAgentUiSettings } from '../../js/ai/dev/ui/settings.js';
-          import { AGENT_PROFILE } from '../../js/ai/dev/policy/agent-profile.js';
-          import { DEV_RUN_STATUS } from '../../js/ai/dev/run/dev-run.js';
+import { DevSupervisorV0 } from '../../js/ai/dev/supervisor/dev-supervisor-v0.js';
+import { DevSupervisorEngineV0 } from '../../js/ai/dev/supervisor/dev-supervisor-engine-v0.js';
+import { DevAgentUiSettings } from '../../js/ai/dev/ui/settings.js';
+import { AGENT_PROFILE } from '../../js/ai/dev/policy/agent-profile.js';
+import { DEV_RUN_STATUS } from '../../js/ai/dev/run/dev-run.js';
 
-          await successfulToolsResetDecisionBudget();
-          await successfulToolsResetRecoveryStreak();
-          console.log('Dev Supervisor progress budget: ok');
+await successfulToolsResetDecisionBudget();
+await successfulToolsResetRecoveryStreak();
+console.log('Dev Supervisor progress budget: ok');
 
-          async function successfulToolsResetDecisionBudget() {
-            const requests = [];
-            const client = workerClient(async () => [{ tabNodeId: 'same-tab' }]);
-            const { supervisor, settings } = fixture(client, 'progress');
-            const bridge = sequenceBridge({ toolDecisions: 5, requests });
-            const engine = new DevSupervisorEngineV0({ supervisor, settings, bridge, maxDecisions: 2 });
-            const result = await engine.run({ goal: 'many successful observations', conversationId: 'hex-progress' });
-            assert.equal(result.answer, 'done');
-            assert.equal(requests.length, 6, 'successful tool calls must not exhaust the consecutive no-progress budget');
-            assert.equal(new Set(requests.map((item) => item.sessionKey)).size, 1, 'progress resets must stay in the same Supervisor session');
-            assert.equal(settings.lastRun.status, DEV_RUN_STATUS.COMPLETED);
-          }
+async function successfulToolsResetDecisionBudget() {
+  const requests = [];
+  const client = workerClient(async () => [{ tabNodeId: 'same-tab' }]);
+  const { supervisor, settings } = fixture(client, 'progress');
+  const bridge = sequenceBridge({ toolDecisions: 5, requests });
+  const engine = new DevSupervisorEngineV0({ supervisor, settings, bridge, maxDecisions: 2 });
+  const result = await engine.run({ goal: 'many successful observations', conversationId: 'hex-progress' });
+  assert.equal(result.answer, 'done');
+  assert.equal(requests.length, 6, 'successful tool calls must not exhaust the consecutive no-progress budget');
+  assert.equal(new Set(requests.map((item) => item.sessionKey)).size, 1, 'progress resets must stay in the same Supervisor session');
+  assert.equal(settings.lastRun.status, DEV_RUN_STATUS.COMPLETED);
+}
 
-          async function successfulToolsResetRecoveryStreak() {
-            let calls = 0;
-            const client = workerClient(async () => {
-              calls += 1;
-              if (calls === 1 || calls === 3) {
-                const error = new Error(`transient-${calls}`);
-                error.code = 'transport-failure';
-                throw error;
-              }
-              return [{ tabNodeId: 'same-tab' }];
-            });
-            const { supervisor, settings } = fixture(client, 'recovery');
-            const requests = [];
-            const bridge = sequenceBridge({ toolDecisions: 4, requests });
-            const engine = new DevSupervisorEngineV0({
-              supervisor,
-              settings,
-              bridge,
-              maxDecisions: 2,
-              maxToolErrorRecoveries: 1,
-            });
-            const result = await engine.run({ goal: 'recover, progress, recover again', conversationId: 'hex-recovery-reset' });
-            assert.equal(result.answer, 'done');
-            assert.equal(calls, 4);
-            assert.equal(settings.lastRun.status, DEV_RUN_STATUS.COMPLETED, 'a successful tool must reset the recoverable-error streak');
-          }
+async function successfulToolsResetRecoveryStreak() {
+  let calls = 0;
+  const client = workerClient(async () => {
+    calls += 1;
+    if (calls === 1 || calls === 3) {
+      const error = new Error(`transient-${calls}`);
+      error.code = 'transport-failure';
+      throw error;
+    }
+    return [{ tabNodeId: 'same-tab' }];
+  });
+  const { supervisor, settings } = fixture(client, 'recovery');
+  const requests = [];
+  const bridge = sequenceBridge({ toolDecisions: 4, requests });
+  const engine = new DevSupervisorEngineV0({
+    supervisor,
+    settings,
+    bridge,
+    maxDecisions: 2,
+    maxToolErrorRecoveries: 1,
+  });
+  const result = await engine.run({ goal: 'recover, progress, recover again', conversationId: 'hex-recovery-reset' });
+  assert.equal(result.answer, 'done');
+  assert.equal(calls, 4);
+  assert.equal(settings.lastRun.status, DEV_RUN_STATUS.COMPLETED, 'a successful tool must reset the recoverable-error streak');
+}
 
-          function sequenceBridge({ toolDecisions, requests }) {
-            let count = 0;
-            return {
-              async request(_prompt, options = {}) {
-                count += 1;
-                requests.push({ sessionKey: options.sessionKey });
-                if (count <= toolDecisions) {
-                  return { text: JSON.stringify({ type: 'tool', tool: 'worker.discover', arguments: {}, purpose: `progress-${count}` }) };
-                }
-                return { text: JSON.stringify({ type: 'final', answer: 'done', completedTasks: ['progress-budget'], remaining: [] }) };
-              },
-            };
-          }
+function sequenceBridge({ toolDecisions, requests }) {
+  let count = 0;
+  return {
+    async request(_prompt, options = {}) {
+      count += 1;
+      requests.push({ sessionKey: options.sessionKey });
+      if (count <= toolDecisions) {
+        return { text: JSON.stringify({ type: 'tool', tool: 'worker.discover', arguments: {}, purpose: `progress-${count}` }) };
+      }
+      return { text: JSON.stringify({ type: 'final', answer: 'done', completedTasks: ['progress-budget'], remaining: [] }) };
+    },
+  };
+}
 
-          function fixture(client, prefix) {
-            const supervisor = new DevSupervisorV0({
-              workerClient: client,
-              idFactory: (kind) => `${prefix}-${kind}`,
-              now: () => '2026-08-18T08:00:00.000Z',
-            });
-            const storage = { getItem: () => null, setItem() {} };
-            const settings = new DevAgentUiSettings({ storage });
-            settings.setAgentProfile(AGENT_PROFILE.DEV);
-            return { supervisor, settings };
-          }
+function fixture(client, prefix) {
+  const supervisor = new DevSupervisorV0({
+    workerClient: client,
+    idFactory: (kind) => `${prefix}-${kind}`,
+    now: () => '2026-08-18T08:00:00.000Z',
+  });
+  const storage = { getItem: () => null, setItem() {} };
+  const settings = new DevAgentUiSettings({ storage });
+  settings.setAgentProfile(AGENT_PROFILE.DEV);
+  return { supervisor, settings };
+}
 
-          function workerClient(discover) {
-            const noop = async (args = {}) => args;
-            return {
-              enabled: true,
-              discover,
-              claim: noop,
-              createChat: noop,
-              send: noop,
-              observe: noop,
-              followup: noop,
-              nudge: noop,
-              stop: noop,
-              result: noop,
-              release: noop,
-              waitEvent: async () => ({ type: 'worker.completed', data: {}, observedAt: '2026-08-18T08:00:00.000Z' }),
-            };
-          }
-          '''.replace(/^          /gm, ''))
+function workerClient(discover) {
+  const noop = async (args = {}) => args;
+  return {
+    enabled: true,
+    discover,
+    claim: noop,
+    createChat: noop,
+    send: noop,
+    observe: noop,
+    followup: noop,
+    nudge: noop,
+    stop: noop,
+    result: noop,
+    release: noop,
+    waitEvent: async () => ({ type: 'worker.completed', data: {}, observedAt: '2026-08-18T08:00:00.000Z' }),
+  };
+}
+''')
 
           release_test = Path('tests/userscript-release-version.mjs')
           release_text = release_test.read_text()
