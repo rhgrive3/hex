@@ -19,6 +19,9 @@
   ],
   "fixtureIds": [
     "cyclic-pointer-phi",
+    "frame-escapes-through-argument",
+    "frame-escapes-through-return",
+    "frame-non-escaping",
     "load-derived-pointer",
     "overlapping-fields",
     "pointer-phi-distinct-offsets",
@@ -121,6 +124,22 @@
       "right": "node_st_other",
       "truth": "may-or-weaker",
       "expectStrong": false
+    },
+    {
+      "id": "q-frame-non-escaping",
+      "fixture": "frame-non-escaping",
+      "left": "node_st_slot",
+      "right": "node_st_arg",
+      "truth": "no",
+      "expectStrong": true
+    },
+    {
+      "id": "q-frame-escaped-argument",
+      "fixture": "frame-escapes-through-argument",
+      "left": "node_st_slot",
+      "right": "node_st_arg",
+      "truth": "may-or-weaker",
+      "expectStrong": false
     }
   ],
   "memoryLinkQueries": [
@@ -153,6 +172,122 @@
       "expectedStore": "node_st"
     }
   ],
+  "escapeQueries": [
+    {
+      "id": "e-frame-non-escaping",
+      "fixture": "frame-non-escaping",
+      "expectedReasons": [],
+      "expectNonEscapingRoots": 1
+    },
+    {
+      "id": "e-frame-stored-through-argument",
+      "fixture": "frame-escapes-through-argument",
+      "expectedReasons": [
+        "stored-through-argument"
+      ],
+      "expectNonEscapingRoots": 0
+    },
+    {
+      "id": "e-unknown-call",
+      "fixture": "unknown-call-barrier",
+      "expectedReasons": [],
+      "expectNonEscapingRoots": 0
+    },
+    {
+      "id": "e-similar-roots",
+      "fixture": "similar-looking-roots",
+      "expectedReasons": [],
+      "expectNonEscapingRoots": 0
+    }
+  ],
+  "summaryCorpus": {
+    "id": "phase7-summary-corpus",
+    "version": 1,
+    "graphIds": [
+      "acyclic-chain",
+      "exhaustive-indirect",
+      "missing-callee-summary",
+      "mutual-recursion",
+      "non-exhaustive-indirect",
+      "self-recursive"
+    ],
+    "queries": [
+      {
+        "id": "s-acyclic-chain",
+        "graph": "acyclic-chain",
+        "root": "fn_a",
+        "functionId": "fn_a",
+        "mustIncludeWrites": [
+          "region_leaf"
+        ],
+        "mustExcludeWrites": [],
+        "mustBeBroad": false,
+        "completeness": "complete",
+        "converges": true
+      },
+      {
+        "id": "s-self-recursive",
+        "graph": "self-recursive",
+        "root": "fn_self",
+        "functionId": "fn_self",
+        "mustIncludeWrites": [
+          "region_self"
+        ],
+        "mustExcludeWrites": [],
+        "mustBeBroad": false,
+        "completeness": "complete",
+        "converges": true
+      },
+      {
+        "id": "s-mutual-recursion",
+        "graph": "mutual-recursion",
+        "root": "fn_top",
+        "functionId": "fn_odd",
+        "mustIncludeWrites": [
+          "region_leaf"
+        ],
+        "mustExcludeWrites": [],
+        "mustBeBroad": false,
+        "completeness": "complete",
+        "converges": true
+      },
+      {
+        "id": "s-missing-callee",
+        "graph": "missing-callee-summary",
+        "root": "fn_caller",
+        "functionId": "fn_caller",
+        "mustIncludeWrites": [],
+        "mustExcludeWrites": [],
+        "mustBeBroad": true,
+        "completeness": "partial",
+        "converges": true
+      },
+      {
+        "id": "s-non-exhaustive-indirect",
+        "graph": "non-exhaustive-indirect",
+        "root": "fn_dispatch",
+        "functionId": "fn_dispatch",
+        "mustIncludeWrites": [],
+        "mustExcludeWrites": [],
+        "mustBeBroad": true,
+        "completeness": "partial",
+        "converges": true
+      },
+      {
+        "id": "s-exhaustive-indirect",
+        "graph": "exhaustive-indirect",
+        "root": "fn_dispatch_exact",
+        "functionId": "fn_dispatch_exact",
+        "mustIncludeWrites": [
+          "region_target"
+        ],
+        "mustExcludeWrites": [],
+        "mustBeBroad": false,
+        "completeness": "complete",
+        "converges": true
+      }
+    ]
+  },
   "truthGenerator": {
     "id": "phase7.corpus.declared-truth",
     "version": "1.0.0"
@@ -162,5 +297,5 @@
     "version": "1.0.0"
   },
   "exclusions": [],
-  "manifestDigest": "f97d8b40b5298824df6f77ea23f923b3"
+  "manifestDigest": "119e522b98e17fad0bef63bb6464f566"
 }

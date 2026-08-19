@@ -45,7 +45,12 @@ function timed(repetitions, run) {
 const solverCache = new Map();
 function solverFor(built) {
   if (!solverCache.has(built)) {
-    solverCache.set(built, createPhase7AliasSolver({ ir: built.ir, cfg: built.cfg, ssa: built.ssa }));
+    solverCache.set(built, createPhase7AliasSolver({
+      ir: built.ir,
+      cfg: built.cfg,
+      ssa: built.ssa,
+      options: built.rootDescriptors == null ? {} : { canonicalOptions: { rootDescriptors: built.rootDescriptors } },
+    }));
   }
   return solverCache.get(built);
 }
@@ -68,6 +73,8 @@ function candidateAliasAnswer(query) {
 const floorFactory = () => (left, right) => aliasMemoryRegions(left, right);
 const phase7Factory = ({ ir, cfg, ssa }) => createPhase7AliasSolver({ ir, cfg, ssa }).queryAlias;
 
+export { solverFor, phase7Factory, floorFactory };
+
 function acceptedCheckpoints() {
   if (!fs.existsSync(CHECKPOINT_LEDGER)) return [];
   try {
@@ -79,31 +86,31 @@ function acceptedCheckpoints() {
 }
 
 async function summaryMetrics() {
-  const module = await optionalModule('../../../js/analysis/summary/metrics.mjs');
+  const module = await optionalModule('./lanes/summary.mjs');
   if (!module) return { available: false, reason: 'summary-analysis-not-implemented' };
   return module.collectSummaryMetrics();
 }
 
 async function escapeMetrics() {
-  const module = await optionalModule('../../../js/analysis/summary/metrics.mjs');
+  const module = await optionalModule('./lanes/summary.mjs');
   if (!module?.collectEscapeMetrics) return { available: false, reason: 'escape-analysis-not-implemented' };
   return module.collectEscapeMetrics();
 }
 
 async function typeMetrics() {
-  const module = await optionalModule('../../../js/analysis/types/metrics.mjs');
+  const module = await optionalModule('./lanes/types.mjs');
   if (!module) return { available: false, candidate: { falseCertainty: Number.POSITIVE_INFINITY }, reason: 'type-constraint-graph-not-implemented' };
   return module.collectTypeMetrics();
 }
 
 async function debugMetrics() {
-  const module = await optionalModule('../../../js/analysis/debug/metrics.mjs');
+  const module = await optionalModule('./lanes/debug.mjs');
   if (!module) return { available: false, ecosystems: {}, reason: 'debug-providers-not-implemented' };
   return module.collectDebugMetrics();
 }
 
 async function discoveryMetrics() {
-  const module = await optionalModule('../../../js/analysis/discovery/metrics.mjs');
+  const module = await optionalModule('./lanes/discovery.mjs');
   if (!module) {
     return {
       available: false,

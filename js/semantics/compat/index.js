@@ -423,6 +423,14 @@ export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
     ssa,
     options: {
       ...(options.aliasOptions ?? {}),
+      // The points-to solve must see exactly the root descriptors the region
+      // classification sees, or the two would name the same object differently
+      // and every refinement would be silently discarded.
+      canonicalOptions: {
+        ...(rootDescriptors == null ? {} : { rootDescriptors }),
+        ...(rootDescriptorProvider == null ? {} : { rootDescriptorProvider }),
+        ...(options.aliasOptions?.canonicalOptions ?? {}),
+      },
       ...(options.signal == null ? {} : { signal: options.signal }),
     },
   });

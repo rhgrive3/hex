@@ -67,7 +67,12 @@ export function pointsToAlias(left, right, options = {}) {
   for (const a of left.targets) {
     for (const b of right.targets) {
       if (a.rootKey !== b.rootKey) {
-        if (nonEscaping.has(a.rootKey) && nonEscaping.has(b.rootKey)) {
+        // One proven non-escaping locally created root is enough. The only way
+        // to obtain a pointer into such a root is from its creation site, and
+        // that would give this root, not a different one. If the address had
+        // reached any other root, that would be an escape — and escape analysis
+        // says it did not.
+        if (nonEscaping.has(a.rootKey) || nonEscaping.has(b.rootKey)) {
           relations.push('no');
           reasonCodes.add('distinct-non-escaping-allocation');
         } else if (a.addressSpace !== b.addressSpace) {

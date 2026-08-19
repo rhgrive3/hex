@@ -270,7 +270,71 @@ function loadDerivedPointer(options) {
   return f.build(options);
 }
 
+/**
+ * Root descriptors an architecture/ABI boundary would supply. Generic code must
+ * not know that a particular state variable is the frame pointer, so the
+ * fixtures declare it the same way the target boundary does at run time.
+ */
+const FRAME_ROOTS = Object.freeze({
+  'variable:state:sp': { kind: 'stack-like', baseOffset: 0, addressSpace: 'memory', linearOffsets: true },
+});
+
+/**
+ * A frame slot and an incoming pointer parameter. Nothing publishes the frame,
+ * so the caller cannot hold a pointer into it: exact truth is separation, and
+ * only escape evidence can prove it.
+ */
+function frameNonEscaping(options) {
+  const f = fixture('function_frame_non_escaping');
+  f.block('entry', []);
+  const sp = f.stateRead('sp', 'state:sp');
+  const arg = f.stateRead('arg', 'state:x0');
+  const c0 = f.constant('c0', 0);
+  const slot = f.binary('slot', 'add', sp, c0);
+  f.store('st_slot', slot, null, { widthBits: 32 });
+  f.store('st_arg', arg, null, { widthBits: 32 });
+  f.ret('r');
+  return f.build({ ...options, rootDescriptors: FRAME_ROOTS });
+}
+
+/**
+ * The same shape, except the frame pointer is stored through the incoming
+ * argument first. The frame has escaped, so the separation above is no longer
+ * true and must be withdrawn.
+ */
+function frameEscapesThroughArgument(options) {
+  const f = fixture('function_frame_escapes');
+  f.block('entry', []);
+  const sp = f.stateRead('sp', 'state:sp');
+  const arg = f.stateRead('arg', 'state:x0');
+  const c0 = f.constant('c0', 0);
+  const slot = f.binary('slot', 'add', sp, c0);
+  f.store('st_publish', arg, slot, { widthBits: 64 });
+  f.store('st_slot', slot, null, { widthBits: 32 });
+  f.store('st_arg', arg, null, { widthBits: 32 });
+  f.ret('r');
+  return f.build({ ...options, rootDescriptors: FRAME_ROOTS });
+}
+
+/** The frame pointer is returned, which publishes it just as effectively. */
+function frameEscapesThroughReturn(options) {
+  const f = fixture('function_frame_returned');
+  f.block('entry', []);
+  const sp = f.stateRead('sp', 'state:sp');
+  const arg = f.stateRead('arg', 'state:x0');
+  const c0 = f.constant('c0', 0);
+  const slot = f.binary('slot', 'add', sp, c0);
+  f.store('st_slot', slot, null, { widthBits: 32 });
+  f.store('st_arg', arg, null, { widthBits: 32 });
+  f.ret('r');
+  const built = f.build({ ...options, rootDescriptors: FRAME_ROOTS });
+  return built;
+}
+
 const BUILDERS = Object.freeze({
+  'frame-non-escaping': frameNonEscaping,
+  'frame-escapes-through-argument': frameEscapesThroughArgument,
+  'frame-escapes-through-return': frameEscapesThroughReturn,
   'stack-disjoint': stackDisjoint,
   'stack-overlapping': stackOverlapping,
   'stack-identical': stackIdentical,
@@ -322,6 +386,8 @@ export const ALIAS_QUERIES = Object.freeze([
   { id: 'q-similar-roots', fixture: 'similar-looking-roots', left: 'node_st_a', right: 'node_st_b', truth: 'may-or-weaker', expectStrong: false },
   { id: 'q-select-roots', fixture: 'select-distinct-roots', left: 'node_st_chosen', right: 'node_st_a', truth: 'may-or-weaker', expectStrong: false },
   { id: 'q-load-derived', fixture: 'load-derived-pointer', left: 'node_st_loaded', right: 'node_st_other', truth: 'may-or-weaker', expectStrong: false },
+  { id: 'q-frame-non-escaping', fixture: 'frame-non-escaping', left: 'node_st_slot', right: 'node_st_arg', truth: 'no', expectStrong: true, proofClass: 'escape' },
+  { id: 'q-frame-escaped-argument', fixture: 'frame-escapes-through-argument', left: 'node_st_slot', right: 'node_st_arg', truth: 'may-or-weaker', expectStrong: false },
 ]);
 
 /**
@@ -333,6 +399,18 @@ export const MEMORY_LINK_QUERIES = Object.freeze([
   { id: 'm-unknown-call', fixture: 'unknown-call-barrier', load: 'node_ld', truth: 'blocked' },
   { id: 'm-pure-call', fixture: 'pure-call-no-barrier', load: 'node_ld', truth: 'exact', expectedStore: 'node_st_known' },
   { id: 'm-stack-identical', fixture: 'stack-identical', load: 'node_ld', truth: 'exact', expectedStore: 'node_st' },
+]);
+
+/**
+ * Frozen escape-analysis query set. `expectNonEscapingRoots: 0` is the
+ * soundness direction: a root the corpus says escaped must never come back as
+ * non-escaping, because separation proofs would be built on it.
+ */
+export const ESCAPE_QUERIES = Object.freeze([
+  { id: 'e-frame-non-escaping', fixture: 'frame-non-escaping', expectedReasons: [], expectNonEscapingRoots: 1 },
+  { id: 'e-frame-stored-through-argument', fixture: 'frame-escapes-through-argument', expectedReasons: ['stored-through-argument'], expectNonEscapingRoots: 0 },
+  { id: 'e-unknown-call', fixture: 'unknown-call-barrier', expectedReasons: [], expectNonEscapingRoots: 0 },
+  { id: 'e-similar-roots', fixture: 'similar-looking-roots', expectedReasons: [], expectNonEscapingRoots: 0 },
 ]);
 
 export { memoryAccessOf, regionOf };

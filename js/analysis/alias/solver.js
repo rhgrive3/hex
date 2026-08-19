@@ -19,6 +19,7 @@
 import { createAnalysisStatus, mergeAnalysisStatus } from '../status.js';
 import { analyzeLocalPointsTo } from '../pointsto/local.js';
 import { pointsToAlias } from '../pointsto/alias.js';
+import { analyzeEscape } from '../summary/escape.js';
 import { a1RegionAlias } from './a1-region-alias.js';
 import { createAliasResult, unknownAlias } from './result.js';
 
@@ -62,7 +63,9 @@ function baseStatus(options) {
  */
 export function createPhase7AliasSolver({ ir, cfg, ssa, options = {} } = {}) {
   let pointsToRun = null;
+  let escapeRun = null;
   const enableA2 = options.enableA2 !== false && ir != null;
+  const enableEscape = options.enableEscape !== false && enableA2;
 
   function pointsTo() {
     if (!enableA2) return null;
@@ -70,6 +73,27 @@ export function createPhase7AliasSolver({ ir, cfg, ssa, options = {} } = {}) {
       pointsToRun = analyzeLocalPointsTo(ir, cfg, ssa, options);
     }
     return pointsToRun;
+  }
+
+  /**
+   * Escape evidence, computed on demand from the same points-to run.
+   *
+   * A1/A2 do not depend on escape to satisfy their own contracts — this is the
+   * later refinement §7.2 allows, layered on top rather than folded backwards
+   * into the earlier checkpoints.
+   */
+  function escape() {
+    if (!enableEscape) return null;
+    if (escapeRun == null) {
+      const run = pointsTo();
+      escapeRun = run == null ? null : analyzeEscape(ir, cfg, ssa, run, options);
+    }
+    return escapeRun;
+  }
+
+  function nonEscapingRoots() {
+    if (options.nonEscapingRoots) return options.nonEscapingRoots;
+    return escape()?.nonEscapingRoots ?? new Set();
   }
 
   function setFor(addressValueId) {
@@ -107,7 +131,7 @@ export function createPhase7AliasSolver({ ir, cfg, ssa, options = {} } = {}) {
       status: a2Status,
       widthBitsLeft: leftAccess.widthBits,
       widthBitsRight: rightAccess.widthBits,
-      nonEscapingRoots: options.nonEscapingRoots,
+      nonEscapingRoots: nonEscapingRoots(),
     });
 
     if (contradicts(a1.relation, a2.relation)) {
@@ -153,6 +177,7 @@ export function createPhase7AliasSolver({ ir, cfg, ssa, options = {} } = {}) {
     alias,
     queryAlias,
     pointsToRun: pointsTo,
+    escapeRun: escape,
     analyzerId: PHASE7_ALIAS_SOLVER_ID,
     analyzerVersion: PHASE7_ALIAS_SOLVER_VERSION,
   });

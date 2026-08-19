@@ -248,7 +248,7 @@ export class FunctionFixture {
       ...(provider == null ? {} : { queryAlias: provider }),
       ...memorySsaOptions,
     });
-    return { ir, cfg, ssa, memorySsa, resolveRegion, binaryId: this.binaryId, functionId: this.functionId };
+    return { ir, cfg, ssa, memorySsa, resolveRegion, rootDescriptors, binaryId: this.binaryId, functionId: this.functionId };
   }
 }
 

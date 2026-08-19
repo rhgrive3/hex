@@ -11,7 +11,8 @@
 
 import { stableDigest } from '../../../js/core/identity/index.js';
 import { currentSupportMatrix } from '../../../js/platform/capability-maturity.js';
-import { ALIAS_QUERIES, CORPUS_ID, CORPUS_VERSION, FIXTURE_IDS, MEMORY_LINK_QUERIES } from '../../../tests/phase7/corpus/fixtures.mjs';
+import { ALIAS_QUERIES, CORPUS_ID, CORPUS_VERSION, ESCAPE_QUERIES, FIXTURE_IDS, MEMORY_LINK_QUERIES } from '../../../tests/phase7/corpus/fixtures.mjs';
+import { SUMMARY_CORPUS_ID, SUMMARY_CORPUS_VERSION, SUMMARY_GRAPH_IDS, SUMMARY_QUERIES } from '../../../tests/phase7/corpus/summaries.mjs';
 import { SCORING_ID, SCORING_VERSION, TRUTH_GENERATOR_ID, TRUTH_GENERATOR_VERSION } from './scoring.mjs';
 
 export const MANIFEST_SCHEMA_VERSION = 1;
@@ -65,6 +66,24 @@ export function buildCorpusManifest({ matrix = currentSupportMatrix() } = {}) {
       id: query.id, fixture: query.fixture, load: query.load, truth: query.truth,
       expectedStore: query.expectedStore ?? null,
     })),
+    escapeQueries: ESCAPE_QUERIES.map((query) => ({
+      id: query.id, fixture: query.fixture,
+      expectedReasons: [...(query.expectedReasons ?? [])],
+      expectNonEscapingRoots: query.expectNonEscapingRoots,
+    })),
+    summaryCorpus: {
+      id: SUMMARY_CORPUS_ID,
+      version: SUMMARY_CORPUS_VERSION,
+      graphIds: [...SUMMARY_GRAPH_IDS],
+      queries: SUMMARY_QUERIES.map((query) => ({
+        id: query.id, graph: query.graph, root: query.root, functionId: query.functionId,
+        mustIncludeWrites: [...query.mustIncludeWrites],
+        mustExcludeWrites: [...query.mustExcludeWrites],
+        mustBeBroad: query.mustBeBroad === true,
+        completeness: query.completeness,
+        converges: query.converges === true,
+      })),
+    },
     truthGenerator: { id: TRUTH_GENERATOR_ID, version: TRUTH_GENERATOR_VERSION },
     scoring: { id: SCORING_ID, version: SCORING_VERSION },
     // Exclusions are declared, never applied silently. An empty list is the

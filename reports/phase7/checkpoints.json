@@ -1,0 +1,104 @@
+{
+  "schemaVersion": 1,
+  "checkpoints": [
+    {
+      "id": "P7-0",
+      "recordedAt": "2026-08-19T11:25:43.297Z",
+      "integrationSha": "37f30c60d4b633ba1a1aeb0c2b84ca0089bf9b87",
+      "integrationTreeSha": "4fe6ba43d52a5fedfd6d321dff8ec51342d2585d",
+      "mergeBaseSha": "bdf90569ed037a3d30e4439dcde970aad9352e21",
+      "branch": "phase7/static-analysis-depth",
+      "changedFileCount": 48,
+      "changedFileInventoryDigest": "29cbf824946e247f999c5e2f1435ac6e",
+      "ownershipPolicyVersion": 2,
+      "corpusManifestDigest": "f97d8b40b5298824df6f77ea23f923b3",
+      "scoring": {
+        "id": "phase7.scoring",
+        "version": "1.0.0"
+      },
+      "truthGenerator": {
+        "id": "phase7.corpus.declared-truth",
+        "version": "1.0.0"
+      },
+      "verifierVersion": "1.0.0",
+      "gates": [
+        "phase7:test",
+        "migration:test",
+        "semantic-v2:test",
+        "semantic:test",
+        "decompiler:test",
+        "lint",
+        "invariants:test",
+        "phase6:test"
+      ],
+      "generatedOutputDiff": "zero",
+      "result": "accepted",
+      "blockingReason": null,
+      "notes": "foundation: status/artifact contracts, corpus manifest, negative corpus, mutant self-tests, shadow verifier"
+    },
+    {
+      "id": "P7-1",
+      "recordedAt": "2026-08-19T11:25:52.655Z",
+      "integrationSha": "37f30c60d4b633ba1a1aeb0c2b84ca0089bf9b87",
+      "integrationTreeSha": "4fe6ba43d52a5fedfd6d321dff8ec51342d2585d",
+      "mergeBaseSha": "bdf90569ed037a3d30e4439dcde970aad9352e21",
+      "branch": "phase7/static-analysis-depth",
+      "changedFileCount": 48,
+      "changedFileInventoryDigest": "29cbf824946e247f999c5e2f1435ac6e",
+      "ownershipPolicyVersion": 2,
+      "corpusManifestDigest": "f97d8b40b5298824df6f77ea23f923b3",
+      "scoring": {
+        "id": "phase7.scoring",
+        "version": "1.0.0"
+      },
+      "truthGenerator": {
+        "id": "phase7.corpus.declared-truth",
+        "version": "1.0.0"
+      },
+      "verifierVersion": "1.0.0",
+      "gates": [
+        "phase7:test",
+        "migration:test",
+        "semantic-v2:test",
+        "semantic:test",
+        "decompiler:test"
+      ],
+      "generatedOutputDiff": "zero",
+      "result": "accepted",
+      "blockingReason": null,
+      "notes": "A1 region alias: proof-carrying relations, address-space refinement, never weaker than the floor"
+    },
+    {
+      "id": "P7-2",
+      "recordedAt": "2026-08-19T11:25:52.791Z",
+      "integrationSha": "37f30c60d4b633ba1a1aeb0c2b84ca0089bf9b87",
+      "integrationTreeSha": "4fe6ba43d52a5fedfd6d321dff8ec51342d2585d",
+      "mergeBaseSha": "bdf90569ed037a3d30e4439dcde970aad9352e21",
+      "branch": "phase7/static-analysis-depth",
+      "changedFileCount": 48,
+      "changedFileInventoryDigest": "29cbf824946e247f999c5e2f1435ac6e",
+      "ownershipPolicyVersion": 2,
+      "corpusManifestDigest": "f97d8b40b5298824df6f77ea23f923b3",
+      "scoring": {
+        "id": "phase7.scoring",
+        "version": "1.0.0"
+      },
+      "truthGenerator": {
+        "id": "phase7.corpus.declared-truth",
+        "version": "1.0.0"
+      },
+      "verifierVersion": "1.0.0",
+      "gates": [
+        "phase7:test",
+        "migration:test",
+        "semantic-v2:test",
+        "semantic:test",
+        "decompiler:test"
+      ],
+      "generatedOutputDiff": "zero",
+      "result": "accepted",
+      "blockingReason": null,
+      "notes": "A2 field-sensitive points-to wired into the canonical pipeline; exact alias relations 1/2 -> 2/2"
+    }
+  ]
+}

@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "capturedAt": "2026-08-19T11:10:29.165Z",
-  "manifestDigest": "f97d8b40b5298824df6f77ea23f923b3",
+  "capturedAt": "2026-08-19T11:40:48.025Z",
+  "manifestDigest": "119e522b98e17fad0bef63bb6464f566",
   "corpusId": "phase7-alias-memory-corpus",
   "corpusVersion": 1,
   "scoring": {
@@ -27,20 +27,20 @@
     "scoringVersion": "1.0.0",
     "truthGeneratorId": "phase7.corpus.declared-truth",
     "truthGeneratorVersion": "1.0.0",
-    "total": 11,
+    "total": 13,
     "counts": {
       "must": 1,
-      "may": 10,
+      "may": 12,
       "no": 0,
       "unknown": 0
     },
     "falseNoAlias": 0,
     "falseMustAlias": 0,
     "exactProven": 1,
-    "exactAvailable": 2,
+    "exactAvailable": 3,
     "unknownRate": 0,
-    "mayRate": 0.9090909090909091,
-    "strongProvenRate": 0.09090909090909091,
+    "mayRate": 0.9230769230769231,
+    "strongProvenRate": 0.07692307692307693,
     "perQuery": [
       {
         "id": "q-stack-disjoint",
@@ -107,6 +107,18 @@
         "relation": "may",
         "truth": "may-or-weaker",
         "expectStrong": false
+      },
+      {
+        "id": "q-frame-non-escaping",
+        "relation": "may",
+        "truth": "no",
+        "expectStrong": true
+      },
+      {
+        "id": "q-frame-escaped-argument",
+        "relation": "may",
+        "truth": "may-or-weaker",
+        "expectStrong": false
       }
     ]
   },
@@ -168,33 +180,33 @@
   },
   "performance": {
     "coldActiveFunction": {
-      "medianMs": 23.948,
+      "medianMs": 22.768,
       "samples": [
-        33.458,
-        23.948,
-        22.649,
-        16.414,
-        25.476
+        29.327,
+        22.768,
+        23.333,
+        19.73,
+        18.639
       ]
     },
     "warmActiveFunction": {
-      "medianMs": 3.836,
+      "medianMs": 5.878,
       "samples": [
-        3.669,
-        3.984,
-        3.836,
-        4.581,
-        2.958
+        4.456,
+        7.374,
+        5.878,
+        7.268,
+        4.548
       ]
     },
     "pathologicalPointerPhi": {
-      "medianMs": 3.939,
+      "medianMs": 6.326,
       "samples": [
-        6.313,
-        5.277,
-        3.939,
-        3.764,
-        3.345
+        8.447,
+        6.326,
+        6.125,
+        6.275,
+        6.703
       ]
     }
   }
