@@ -5,22 +5,20 @@ import { flagReads, flagWrites, imm, intrinsics, lift, operations, reg, register
 
 function flagSet(bundle) { return new Set(flagWrites(bundle).map((operation) => operation.flag.flagId.replace('RFLAGS.',''))); }
 
-test('shift effective count zero preserves the view/flags while r32 still zero-extends the physical GPR', () => {
+test('shift effective count zero preserves the physical destination and flags without a write', () => {
   for (const family of ['shl','sal','shr','sar']) {
     const bundle = lift(family, [reg('eax','read-write'), imm(32n)]);
     assert.equal(bundle.completeness, 'exact');
     assert.equal(bundle.metadata.effectiveCount, 0);
-    assert.equal(bundle.metadata.destinationViewPreserved, true);
+    assert.equal(bundle.metadata.destinationWrite, false);
     assert.equal(bundle.metadata.flagsPreserved, true);
-    assert.equal(bundle.metadata.zeroExtend32Write, true);
     assert.equal(flagWrites(bundle).length, 0);
-    assert.equal(registerWrites(bundle,'rax').length, 1);
-    assert.equal(registerWrites(bundle,'rax')[0].metadata.writePolicy, 'zero-extend-32');
-    assert.ok(operations(bundle,'value').some((operation) => operation.opcode === 'zext' && operation.metadata.fromBits === 32 && operation.metadata.toBits === 64));
+    assert.equal(registerWrites(bundle,'rax').length, 0);
+    assert.equal(bundle.statePreservation.proven, true);
   }
 
   const wide = lift('shl', [reg('rax','read-write'), imm(64n)]);
-  assert.equal(wide.operations.length, 0);
+  assert.equal(registerWrites(wide,'rax').length, 0);
   assert.equal(wide.statePreservation.proven, true);
 });
 
@@ -48,21 +46,21 @@ test('shift count greater than one leaves OF explicit undefined', () => {
   assert.equal(flagWrites(wideByteShift,'CF')[0].metadata.definedness, 'undefined');
 });
 
-test('variable CL shift models count-zero view preservation with architectural r32 zero-extension', () => {
+test('variable CL shift preserves the old physical GPR on the zero-count path', () => {
   const bundle = lift('shl', [reg('eax','read-write'), reg('cl','read')]);
   assert.equal(registerReads(bundle,'rcx').length >= 1, true);
   assert.ok(operations(bundle,'value').some((operation) => operation.opcode === 'and' && operation.metadata.semantic === 'x86-effective-count-mask'));
   const select = operations(bundle,'value').find((operation) => operation.opcode === 'select' && operation.metadata.semantic === 'x86-conditional-register-write');
   assert.ok(select);
-  assert.equal(select.metadata.falsePathViewWrite, true);
+  assert.equal(select.metadata.falsePathViewWrite, false);
   assert.equal(registerWrites(bundle,'rax').length, 1);
   const zeroExtensions = operations(bundle,'value').filter((operation) => operation.opcode === 'zext' && operation.metadata.fromBits === 32 && operation.metadata.toBits === 64);
-  assert.equal(zeroExtensions.length >= 2, true);
+  assert.equal(zeroExtensions.length, 1);
   for (const flag of ['CF','PF','AF','ZF','SF','OF']) assert.equal(flagWrites(bundle,flag).length, 1);
   assert.equal(flagReads(bundle,'CF').length >= 1, true);
 });
 
-test('ROL/ROR affect only CF and count-dependent OF, including r32 zero-count write semantics', () => {
+test('ROL/ROR affect only CF and count-dependent OF, with no write for an effective zero count', () => {
   for (const family of ['rol','ror']) {
     const one = lift(family, [reg('eax','read-write'), imm(1n)]);
     assert.deepEqual(flagSet(one), new Set(['CF','OF']));
@@ -74,8 +72,9 @@ test('ROL/ROR affect only CF and count-dependent OF, including r32 zero-count wr
 
     const dwordZero = lift(family, [reg('eax','read-write'), imm(32n)]);
     assert.equal(flagWrites(dwordZero).length, 0);
-    assert.equal(registerWrites(dwordZero,'rax').length, 1);
-    assert.equal(dwordZero.metadata.zeroExtend32Write, true);
+    assert.equal(registerWrites(dwordZero,'rax').length, 0);
+    assert.equal(dwordZero.metadata.destinationWrite, false);
+    assert.equal(dwordZero.statePreservation.proven, true);
   }
 
   const rotateModuloZero = lift('rol', [reg('al','read-write'), imm(8n)]);
