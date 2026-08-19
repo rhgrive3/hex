@@ -1,8 +1,7 @@
 name: diag-pr946-contracts
 on:
-  push:
-    branches:
-      - fix/issues-915-921-current-main
+  pull_request:
+    branches: [main]
 jobs:
   phase1:
     runs-on: ubuntu-latest
