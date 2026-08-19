@@ -25,6 +25,7 @@ concurrency:
 
 jobs:
   resolve-pr874:
+    # Temporary branch-only resolver; restored to main before publication.
     if: github.event_name == 'pull_request' && github.head_ref == 'integrate/open-issue-fixes-20260819'
     runs-on: ubuntu-latest
     timeout-minutes: 120
