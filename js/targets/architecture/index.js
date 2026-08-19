@@ -1,6 +1,7 @@
 import { assemble as assembleArm64 } from '../../patch.js';
 import { extendArm64WithArm64eEffects } from './arm64e/effects.js';
 import { ARM64_MACHINE_EFFECTS_SEMANTIC_VERSION, liftArm64MachineEffects } from './arm64/effects/index.js';
+import { decorateArm64BtypeEffects } from './arm64/effects/btype.js';
 import { X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION, liftX86MachineEffects } from './x86_64/effects/index.js';
 import { x86RegisterFile } from './x86_64/registers.js';
 import { RISCV64_INSTRUCTION_ALIGNMENT, RISCV64_MACHINE_EFFECTS_SEMANTIC_VERSION, liftRiscv64MachineEffects } from './riscv64/effects/index.js';
@@ -96,10 +97,15 @@ const ARM64_REGISTERS = Object.freeze([
   ...Array.from({length:31}, (_x,i) => Object.freeze({ id:`x${i}`, bits:64, kind:'gp' })),
   Object.freeze({ id:'sp', bits:64, kind:'stack-pointer' }),
   Object.freeze({ id:'nzcv', bits:4, kind:'flags' }),
+  Object.freeze({ id:'pstate.btype', bits:2, kind:'system-state' }),
   ...Array.from({length:32}, (_x,i) => Object.freeze({ id:`v${i}`, bits:128, kind:'vector' })),
 ]);
 
-const liftArm64eMachineEffects = extendArm64WithArm64eEffects(liftArm64MachineEffects);
+const liftArm64eMachineEffectsBase = extendArm64WithArm64eEffects(liftArm64MachineEffects);
+const liftArm64eMachineEffects = (decoded, context = {}) => {
+  const bundle = liftArm64eMachineEffectsBase(decoded, context);
+  return bundle == null ? null : decorateArm64BtypeEffects(decoded, context, bundle);
+};
 
 export const ARM64_ARCHITECTURE = registerArchitecturePlugin({
   id:'arm64', semanticVersion:ARM64_MACHINE_EFFECTS_SEMANTIC_VERSION, instructionAlignment:4, fixedInstructionSize:4, viewerCompatible:true,

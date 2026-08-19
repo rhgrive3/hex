@@ -22,6 +22,7 @@ const SHN_LORESERVE = 0xff00;
 const SHN_ABS = 0xfff1;
 const SHN_COMMON = 0xfff2;
 const SHN_XINDEX = 0xffff;
+const STT_GNU_IFUNC = 10;
 const SHF_WRITE = 0x1n;
 const SHF_ALLOC = 0x2n;
 const SHF_EXECINSTR = 0x4n;
@@ -75,7 +76,15 @@ export function parseELF(input, options = {}) {
   }
 
   image.imageBase = h.type === ET_REL ? 0n : findImageBase(image);
-  if (h.type !== ET_REL && image.entrypoint && image.entrypoint !== 0n) image.functions.push(functionSeed(image.entrypoint, { source: 'entrypoint', confidence: 0.9 }));
+  if (h.type !== ET_REL && image.entrypoint != null) {
+    const zeroResetVector = image.entrypoint === 0n && image.arch === 'arm64' && !!image.segmentAt(0n)?.perms?.execute;
+    if (image.entrypoint !== 0n || zeroResetVector) {
+      image.functions.push(functionSeed(image.entrypoint, { source: 'entrypoint', confidence: 0.9 }));
+      if (zeroResetVector) image.metadata.entrypointZeroEvidence = 'aarch64-executable-pt-load-at-zero';
+    } else {
+      image.metadata.entrypointZeroEvidence = 'zero-sentinel-unproven';
+    }
+  }
   const metadataBudget = createELFMetadataBudget(image, { signal: options.signal, limits: options.metadataLimits });
 
   const symbolTables = rawSections.filter((s) => s.type === SHT_SYMTAB || s.type === SHT_DYNSYM);
@@ -314,16 +323,17 @@ function parseSymbols(r, table, sections, image, bits, elfType, budget) {
     const defined=sectionIdentityKnown?(resolvedShndx!==SHN_UNDEF):null;
     const address=sectionIdentityKnown?symbolAddressForELF(elfType,value,resolvedShndx,sections):null;
     const binding=bind===0?'local':bind===1?'global':bind===2?'weak':`bind-${bind}`;
-    const kind=type===2?'function':type===1?'object':type===3?'section':type===6?'tls':`type-${type}`;
-    const sym={name,address:address??0n,originalValue:value,size,kind,binding,defined,sectionIndex:sectionIdentityKnown?resolvedShndx:null,visibility:other&3,source:table.type===SHT_DYNSYM?'dynsym':'symtab',index:i,tableIndex:table.index,
+    const kind=type===2?'function':type===1?'object':type===3?'section':type===6?'tls':type===STT_GNU_IFUNC?'indirect-function':`type-${type}`;
+    const ifunc=type===STT_GNU_IFUNC&&defined===true;
+    const sym={name,address:address??0n,originalValue:value,size,kind,binding,defined,sectionIndex:sectionIdentityKnown?resolvedShndx:null,visibility:other&3,source:table.type===SHT_DYNSYM?'dynsym':'symtab',index:i,tableIndex:table.index,...(ifunc?{resolverAddress:address??value,resolution:'runtime-resolver'}:{}),
       sectionRelative:elfType===ET_REL&&normal?{sectionIndex:resolvedShndx,offset:value}:null,addressDomain:elfType===ET_REL&&normal?'section-relative-synthetic':'virtual'};
     image.symbols.push(sym);
     if(defined===false&&(bind===1||bind===2)){if(!budget.take({objects:1,operations:1,estimatedHeapBytes:160},'symbol-import'))break;image.imports.push({name,library:null,ordinal:null,weak:bind===2,symbolIndex:i,tableIndex:table.index,source:'elf-dynsym',sites:[]});}
     if(defined===true&&address!=null&&(bind===1||bind===2)&&(sym.visibility===0||sym.visibility===3)){if(!budget.take({objects:1,operations:1,estimatedHeapBytes:144},'symbol-export'))break;image.exports.push({name,address,kind,symbolIndex:i,tableIndex:table.index,source:sym.source});}
-    if(defined===true&&type===2&&address!=null&&address!==0n){
+    if(defined===true&&(type===2||type===STT_GNU_IFUNC)&&address!=null&&address!==0n){
       const owner=executableELFRange(image,address,size||0n,normal?resolvedShndx:null);
-      if(owner){if(!budget.take({objects:1,operations:1,estimatedHeapBytes:128},'symbol-function'))break;image.functions.push(functionSeed(address,{size:size||null,name,source:'symbol',confidence:0.995,exactFunctionStart:true,functionStartEvidence:elfType===ET_REL?'ELF ET_REL STT_FUNC with validated executable section-relative extent':'ELF STT_FUNC with validated executable section extent'}));}
-      else image.warnings.push(`Ignored ELF STT_FUNC ${name} outside its canonical executable extent`);
+      if(owner){if(!budget.take({objects:1,operations:1,estimatedHeapBytes:128},'symbol-function'))break;image.functions.push(functionSeed(address,{size:size||null,name:type===STT_GNU_IFUNC?`${name}$resolver`:name,source:type===STT_GNU_IFUNC?'ifunc-resolver':'symbol',confidence:0.995,exactFunctionStart:true,functionStartEvidence:type===STT_GNU_IFUNC?'ELF STT_GNU_IFUNC resolver with validated executable section extent':elfType===ET_REL?'ELF ET_REL STT_FUNC with validated executable section-relative extent':'ELF STT_FUNC with validated executable section extent'}));}
+      else image.warnings.push(`Ignored ELF ${type===STT_GNU_IFUNC?'STT_GNU_IFUNC resolver':'STT_FUNC'} ${name} outside its canonical executable extent`);
     }
   }
 }

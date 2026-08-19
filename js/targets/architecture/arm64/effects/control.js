@@ -5,6 +5,7 @@ import {
   immediateOf,
   instructionBits,
 } from './common.js';
+import { decorateArm64BtypeEffects } from './btype.js';
 import { emitArm64Condition } from './flags.js';
 
 const DIRECT_BRANCH = new Set(['b','bl']);
@@ -63,7 +64,7 @@ function gpRegister(num) {
   return { k: 'reg', cls: 'gp', num, bits: 64, text: `x${num}` };
 }
 
-export function liftArm64ControlEffects(instruction, options = {}) {
+function liftArm64ControlEffectsCore(instruction, options = {}) {
   const mnemonic = String(instruction?.mnemonic || '').toLowerCase();
   if (!isArm64ControlEffectMnemonic(mnemonic)) return null;
   const ctx = createArm64EffectContext(instruction, options);
@@ -175,4 +176,9 @@ export function liftArm64ControlEffects(instruction, options = {}) {
     controlEffect: conditionalControlEffect(target, fallthrough, condition),
     metadata: { family: 'control', operation: mnemonic, conditionCode, ...(sameAbsoluteTarget(target, fallthrough) ? { degenerateConditional:true } : {}) },
   });
+}
+
+export function liftArm64ControlEffects(instruction, options = {}) {
+  const bundle = liftArm64ControlEffectsCore(instruction, options);
+  return bundle == null ? null : decorateArm64BtypeEffects(instruction, options, bundle);
 }

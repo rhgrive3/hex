@@ -1,5 +1,5 @@
 import { detectBinary } from './detect.js';
-import { parseELF } from './elf.js';
+import { parseELF } from './elf-loader.js';
 import { parseMachO } from './macho.js';
 import { parsePE } from './pe.js';
 import { ByteView } from './reader.js';

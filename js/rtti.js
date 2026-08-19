@@ -49,17 +49,27 @@ function normalizeResolvedPointer(result,raw){
 
 function decodeChainedVtablePointer(raw,format,imageBase){
   const base=imageBase==null?null:BigInt(imageBase);
+
+  // dyld_chained_ptr_64[_OFFSET]: both layouts carry target:36 + high8:8.
+  // Format 2 encodes a preferred vmaddr; format 6 encodes a vm offset, so
+  // high8 participates before the image base is added for the OFFSET form.
   if(format===2||format===6){
     const bind=!!((raw>>63n)&1n);
     if(bind)return{raw,addr:null,binding:{kind:'chained-bind',ordinal:Number(raw&0xffffffn)},unresolved:false,pointerFormat:format};
     const target=raw&0xfffffffffn;
     const high8=(raw>>36n)&0xffn;
+    const reconstructed=target|(high8<<56n);
     if(format===6){
-      if(base==null)return{raw,addr:null,binding:null,unresolved:true,reason:'image-base-required',pointerFormat:format};
-      return{raw,addr:base+target,binding:null,unresolved:false,pointerFormat:format};
+      if(base==null)return{raw,addr:null,binding:null,unresolved:true,reason:'image-base-required-for-offset-rebase',pointerFormat:format};
+      return{raw,addr:base+reconstructed,binding:null,unresolved:false,pointerFormat:format};
     }
-    return{raw,addr:target|(high8<<56n),binding:null,unresolved:false,pointerFormat:format};
+    return{raw,addr:reconstructed,binding:null,unresolved:false,pointerFormat:format};
   }
+
+  // Generic arm64e layouts share auth/bind bit placement but not target
+  // coordinates. Apple dyld defines formats 1 and 10 unauthenticated rebases
+  // as vmaddr, while 7/9/12 use vm offsets. Authenticated rebases always carry
+  // a 32-bit runtime offset. USERLAND24 only changes the bind ordinal width.
   if([1,7,9,10,12].includes(format)){
     const auth=!!((raw>>63n)&1n),bind=!!((raw>>62n)&1n);
     const ordinalMask=format===12?0xffffffn:0xffffn;
@@ -70,11 +80,13 @@ function decodeChainedVtablePointer(raw,format,imageBase){
     }
     const target=raw&0x7ffffffffffn;
     const high8=(raw>>43n)&0xffn;
-    if([7,9,10,12].includes(format)){
+    const reconstructed=target|(high8<<56n);
+    const vmOffset=(format===7||format===9||format===12);
+    if(vmOffset){
       if(base==null)return{raw,addr:null,binding:null,unresolved:true,reason:'image-base-required-for-offset-rebase',pointerFormat:format};
-      return{raw,addr:base+target,binding:null,unresolved:false,pointerFormat:format};
+      return{raw,addr:base+reconstructed,binding:null,unresolved:false,pointerFormat:format};
     }
-    return{raw,addr:target|(high8<<56n),binding:null,unresolved:false,pointerFormat:format};
+    return{raw,addr:reconstructed,binding:null,unresolved:false,pointerFormat:format};
   }
   return{raw,addr:null,binding:null,unresolved:true,reason:'unsupported-chained-pointer-format',pointerFormat:format};
 }
@@ -95,15 +107,16 @@ async function resolveVtablePointer(raw,address,opts){
 export async function readVtable(read,vtableAddr,symbols,maxSlots=64,opts={}){
   if(maxSlots&&typeof maxSlots==='object'){opts=maxSlots;maxSlots=opts.maxSlots||64;}
   maxSlots=Math.max(1,Math.min(4096,Number(maxSlots)||64));
-  const bytes=await read(vtableAddr,(maxSlots+2)*8);
+  const exactSlotCount=Number(opts?.slotCount);
+  const slotLimit=Number.isSafeInteger(exactSlotCount)&&exactSlotCount>=0?Math.min(4096,exactSlotCount):maxSlots;
+  const bytes=await read(vtableAddr,(slotLimit+2)*8);
   if(!bytes||bytes.length<24)return null;
   const dv=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength),slots=[];
   const offsetToTop=BigInt.asIntN(64,dv.getBigUint64(0,true));
   const typeinfoRaw=dv.getBigUint64(8,true);
   const typeinfoResolved=await resolveVtablePointer(typeinfoRaw,BigInt(vtableAddr)+8n,opts||{});
-  for(let i=2;i*8+8<=bytes.length;i++){
+  for(let i=2;i<slotLimit+2&&i*8+8<=bytes.length;i++){
     const raw=dv.getBigUint64(i*8,true);
-    if(raw===0n)break;
     const resolved=await resolveVtablePointer(raw,BigInt(vtableAddr)+BigInt(i*8),opts||{});
     const addr=resolved.addr;
     const name=addr!=null&&addr!==0n&&symbols?(symbols.nameAt(addr)||symbols.label(addr)):null;

@@ -1,32 +1,10 @@
+export * from './semantic-function-base.js';
+
 import { architecturePluginV2 } from '../targets/architecture/index.js';
 import { resolveABIPlugin } from '../targets/abi/index.js';
 import { buildSemanticV2CompatibilityPipeline } from '../semantics/compat/index.js';
 import { decompileSemantic } from '../decompiler/semantic.js';
-
-/**
- * Architecture-neutral function-level semantic analysis driver.
- *
- * This is the single shared route from decoded instructions to the decompiler:
- *
- *   decoded instructions
- *     -> architecture MachineEffects lifter
- *     -> Semantic IR
- *     -> CFG -> SSA -> MemorySSA -> alias/dataflow
- *     -> v1 compatibility projection
- *     -> shared decompiler
- *
- * Everything architecture-specific is reached through the ArchitecturePluginV2
- * and ABIPlugin boundaries: `liftExact`, `classifyControlFlow`,
- * `directControlTarget`, `registerFile`, `modes`. This module never inspects a
- * mnemonic, an operand-shape, a register name, or an architecture id to decide
- * behaviour, which is what makes "same middle-end" a checkable property rather
- * than a claim.
- *
- * `SEMANTIC_FUNCTION_ROUTE` is the identity of this route, not of an
- * architecture; x86-64 and RISC-V64 both travel it, and the architecture is
- * reported separately as `architectureId`.
- */
-export const SEMANTIC_FUNCTION_ROUTE = 'phase5-shadow-v2';
+import { SEMANTIC_FUNCTION_ROUTE, semanticAbiAdapter } from './semantic-function-base.js';
 
 function abortIfRequested(signal) {
   if (!signal?.aborted) return;
@@ -63,11 +41,6 @@ function isAuthoritativeNoreturnCall(kind, options = {}) {
   return kind === 'call' && callNoreturnState(options) === true;
 }
 
-/**
- * Convert decoder-proven instruction starts into discovery facts for the shared
- * semantic pipeline. This is architecture-front-end work: generic CFG/SSA never
- * inspect register names or mnemonics.
- */
 export function partitionDecodedFunction(instructions, architecturePlugin, options = {}) {
   if (!Array.isArray(instructions) || !instructions.length) throw new TypeError('semantic-function-decoded-instructions-required');
   const ordered = instructions.slice().sort((left, right) => addressOf(left) < addressOf(right) ? -1 : addressOf(left) > addressOf(right) ? 1 : 0);
@@ -84,7 +57,9 @@ export function partitionDecodedFunction(instructions, architecturePlugin, optio
     const kind = controlKind(architecturePlugin, instruction);
     const target = directTarget(architecturePlugin, instruction);
     if (target != null && byAddress.has(target.toString()) && ['branch','conditional-branch'].includes(kind)) starts.add(target.toString());
-    if ((['branch','conditional-branch','return','unknown'].includes(kind) || isAuthoritativeNoreturnCall(kind, options)) && ordered[index + 1]) starts.add(addressOf(ordered[index + 1]).toString());
+    if ((['branch','conditional-branch','return','unknown'].includes(kind) || isAuthoritativeNoreturnCall(kind, options)) && ordered[index + 1]) {
+      starts.add(addressOf(ordered[index + 1]).toString());
+    }
   }
 
   const blocks = [];
@@ -97,17 +72,19 @@ export function partitionDecodedFunction(instructions, architecturePlugin, optio
     }
     current.instructions.push({ decoded:instruction });
   }
+
   const byStart = new Map(blocks.map((block) => [block.startAddress.toString(), block]));
-  for (let index = 0; index < blocks.length; index++) {
-    const block = blocks[index];
+  for (const block of blocks) {
     const instruction = block.instructions.at(-1).decoded;
     const kind = controlKind(architecturePlugin, instruction);
     const target = directTarget(architecturePlugin, instruction);
     const targetBlock = target == null ? null : byStart.get(target.toString());
-    const fallthroughBlock = byStart.get(endOf(instruction).toString()) || blocks[index + 1] || null;
+    const fallthroughBlock = byStart.get(endOf(instruction).toString()) || null;
     if (kind === 'conditional-branch') {
       if (targetBlock) block.successors.push({ to:targetBlock.key, kind:'conditional-true' });
-      if (fallthroughBlock) block.successors.push({ to:fallthroughBlock.key, kind:'conditional-false' });
+      if (fallthroughBlock && fallthroughBlock.key !== targetBlock?.key) {
+        block.successors.push({ to:fallthroughBlock.key, kind:'conditional-false' });
+      }
     } else if (kind === 'branch') {
       if (targetBlock) block.successors.push({ to:targetBlock.key, kind:'branch' });
     } else if (!['return','unknown'].includes(kind) && !isAuthoritativeNoreturnCall(kind, options) && fallthroughBlock) {
@@ -115,116 +92,6 @@ export function partitionDecodedFunction(instructions, architecturePlugin, optio
     }
   }
   return blocks;
-}
-
-export function semanticAbiAdapter(abiPlugin, options = {}) {
-  const stackRules = (() => { try { return abiPlugin.stackRules() ?? {}; } catch { return {}; } })();
-  const unwindRules = (() => { try { return abiPlugin.unwindRules() ?? {}; } catch { return {}; } })();
-  return Object.freeze({
-    id:abiPlugin.id,
-    semanticVersion:abiPlugin.semanticVersion,
-    /**
-     * Physical register that carries a returned value of `returnType`, or null
-     * when the ABI does not designate one. Generic decompiler code must ask for
-     * this rather than assume a register name: AArch64's result register `x0`
-     * is RISC-V's hardwired *zero* register, so a hardcoded name is not merely
-     * imprecise, it reads the wrong location.
-     */
-    returnRegister({ returnType = null } = {}) {
-      const type = String(returnType ?? '').trim();
-      if (!type || type.toLowerCase() === 'void') return null;
-      let classified = null;
-      try {
-        classified = abiPlugin.classifyFunctionReturn({
-          functionPrototype:{ returnType:type, returnsValue:true },
-          returnType:type,
-          returnsValue:true,
-        });
-      } catch { classified = null; }
-      return classified?.reg ?? null;
-    },
-    /**
-     * Ordered physical registers that carry incoming integer arguments. Generic
-     * type recovery must ask the ABI for these: assuming `x0..x7` is an AAPCS64
-     * fact, and on RISC-V those ids are the zero register, the return address,
-     * the stack pointer, and the temporaries, so the assumption does not just
-     * lose arguments, it reports the stack pointer as one.
-     */
-    argumentLocations({ functionPrototype = null } = {}) {
-      let classified = null;
-      const instruction = functionPrototype == null ? {} : { callPrototype:functionPrototype };
-      const classifyOptions = functionPrototype == null ? {} : { callPrototype:functionPrototype };
-      try { classified = abiPlugin.classifyArguments(instruction, classifyOptions); } catch { classified = null; }
-      const locations = [];
-      const seen = new Set();
-      for (const entry of classified?.arguments ?? []) {
-        if (!entry || !['register','registers'].includes(entry.location)) continue;
-        const registers = Array.isArray(entry.regs) ? entry.regs : typeof entry.reg === 'string' ? [entry.reg] : [];
-        for (const register of registers) {
-          const reg = String(register || '');
-          if (!reg) continue;
-          const key = String(entry.index ?? locations.length) + ':' + reg;
-          if (seen.has(key)) continue;
-          seen.add(key);
-          locations.push(Object.freeze({
-            index:Number.isInteger(Number(entry.index)) ? Number(entry.index) : locations.length,
-            reg,
-            abiClass:entry.abiClass ?? null,
-          }));
-        }
-      }
-      return Object.freeze(locations);
-    },
-    argumentRegisters(options = {}) {
-      return Object.freeze(this.argumentLocations(options).map((location) => location.reg));
-    },
-    /**
-     * Registers whose spill/restore is pure call-frame bookkeeping rather than
-     * program data: the frame pointer and the return address.
-     */
-    frameBookkeepingRegisters() {
-      const named = [
-        unwindRules.framePointer, stackRules.framePointer,
-        unwindRules.returnAddressRegister, stackRules.returnAddressRegister,
-        unwindRules.linkRegister, stackRules.linkRegister,
-      ].filter((value) => typeof value === 'string' && value.length > 0);
-      return Object.freeze([...new Set(named)]);
-    },
-    classifyCall({ call }) {
-      const instruction = { callTarget:call?.target ?? null, callPrototype:options.callPrototype ?? null };
-      const classified = abiPlugin.classifyArguments(instruction, options);
-      const returned = abiPlugin.classifyCallReturn(instruction, options) ?? null;
-      const explicitArguments = Array.isArray(classified.arguments) ? classified.arguments : null;
-      const implicitInputs = Array.isArray(classified.implicitInputs)
-        ? classified.implicitInputs.map((input, index) => Object.freeze({
-          ...input,
-          index:`implicit:${index}`,
-          location:input.location ?? 'register',
-          abiClass:input.abiClass ?? 'abi-implicit-input',
-          implicit:true,
-          variadicVectorRegisterCount:classified.variadicVectorRegisterCount ?? null,
-          countKnown:Number.isSafeInteger(classified.variadicVectorRegisterCount),
-        }))
-        : [];
-      return {
-        arguments:explicitArguments == null ? (implicitInputs.length ? implicitInputs : null) : [...explicitArguments, ...implicitInputs],
-        explicitArguments,
-        implicitInputs,
-        variadicVectorRegisterCount:classified.variadicVectorRegisterCount ?? null,
-        partial:classified.partial === true,
-        completeness:classified.partial === true ? 'partial' : 'complete',
-        stackArguments:classified.stackArguments ?? null,
-        stackArgsUnknown:classified.stackArgsUnknown ?? true,
-        stackArgsMayContainPointers:classified.stackArgsMayContainPointers ?? true,
-        argumentEvidence:classified.evidence ?? `abi-${abiPlugin.id}`,
-        clobbers:abiPlugin.callerSaved(),
-        returnReg:returned?.reg ?? null,
-        returnBits:returned?.bits ?? null,
-        returnEvidence:returned == null ? null : `abi-${abiPlugin.id}-return`,
-        noreturn:callNoreturnState(options),
-      };
-    },
-  });
 }
 
 function legacyProjectionSnapshot(legacy) {
@@ -241,6 +108,10 @@ function legacyProjectionSnapshot(legacy) {
       row:instruction.row,
       address:instruction.address ?? null,
       block:instruction.block,
+      args:(instruction.args || []).map((arg) => ({
+        valueId:arg?.value?.semanticSsaValueId ?? arg?.value?.semanticValueId ?? arg?.value?.id ?? null,
+        bits:arg?.bits ?? arg?.value?.bits ?? null,
+      })),
       semanticNodeId:instruction.semanticNodeId ?? null,
       sourceInstructionIds:instruction.sourceInstructionIds ?? [],
       origin:instruction.origin ?? null,
@@ -328,8 +199,7 @@ export function analyzeDecodedSemanticFunction(input = {}, options = {}) {
   if (requestedMemoryEndianness != null) {
     const endian = String(requestedMemoryEndianness).trim().toLowerCase();
     const supported = architecturePlugin.supportedMemoryEndianness ?? [];
-    if (supported.length && !supported.includes(endian))
-      throw new TypeError(`semantic-function-unsupported-memory-endianness:${endian}`);
+    if (supported.length && !supported.includes(endian)) throw new TypeError(`semantic-function-unsupported-memory-endianness:${endian}`);
   }
   const abiPlugin = resolveABIPlugin({ architecture:architectureId, platform:input.platform, abiId:input.abiId });
   if (!abiPlugin?.supported) throw new TypeError('semantic-function-supported-abi-required');

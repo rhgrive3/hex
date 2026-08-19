@@ -78,6 +78,24 @@ function semanticTag(n) {
   return `${n.bits ?? ''}:${n.signed ?? ''}:${n.volatile === true}:${n.extension ?? n.extend ?? ''}:${n.returnType ?? n.type ?? ''}:${n.returnClass ?? n.abiReturnClass ?? ''}`;
 }
 
+// A memory location is not a value identity. Two reads of the same address can
+// observe different values after a clobber. Prefer an explicit MemorySSA identity
+// when a caller provides one; the production decompiler already carries the SSA
+// result-def identity in source metadata, which is the authoritative fallback.
+const anonymousLoadIds = new WeakMap();
+let nextAnonymousLoadId = 1;
+function loadValueIdentity(n) {
+  if (n?.memoryVersion != null) return `mem:${scalar(n.memoryVersion)}`;
+  if (n?.loadIdentity != null) return `load:${scalar(n.loadIdentity)}`;
+  const source = sourceOf(n?.source);
+  if (source.ssaDefs.length) return `ssa:${source.ssaDefs.map(String).sort().join(',')}`;
+  if (source.ir.length) return `ir:${source.ir.map(String).sort().join(',')}`;
+  if (source.rows.length) return `row:${source.rows.map(String).sort().join(',')}`;
+  let id = anonymousLoadIds.get(n);
+  if (id == null) { id = nextAnonymousLoadId++; anonymousLoadIds.set(n, id); }
+  return `anon:${id}`;
+}
+
 // Post-order canonicalization without recursion. This handles deeply skewed ASTs safely.
 export function structuralKey(root) {
   if (!root) return 'null';
@@ -108,7 +126,7 @@ export function structuralKey(root) {
       case 'select': value = `sel:${semanticTag(n)}:${k(n.condition)}:${k(n.whenTrue)}:${k(n.whenFalse)}`; break;
       case 'field': value = `field:${k(n.base)}:${n.name}:${n.offset}:${semanticTag(n)}`; break;
       case 'index': value = `idx:${k(n.base)}:${k(n.index)}:${n.scale}:${semanticTag(n)}`; break;
-      case 'load': value = `load:${scalar(n.location?.key || n.location?.name || n.location)}:${semanticTag(n)}`; break;
+      case 'load': value = `load:${scalar(n.location?.key || n.location?.name || n.location)}:${semanticTag(n)}:${loadValueIdentity(n)}`; break;
       case 'call': value = `call:${n.callee}:${semanticTag(n)}:${(n.args || []).map(k).join(',')}`; break;
       case 'intrinsic': value = `intr:${n.name}:${semanticTag(n)}:${(n.args || []).map(k).join(',')}`; break;
       default: value = `${n.kind}:${scalar(n.name || '')}:${semanticTag(n)}`; break;

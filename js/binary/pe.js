@@ -31,6 +31,34 @@ function seedValidatedEntrypoint(image, entryRva, sizeOfImage, machine) {
   image.functions.push(functionSeed(address, { source: 'entrypoint', confidence: 0.9 }));
 }
 
+function reconcileExportFunctionEvidence(image) {
+  const exportNames = new Map();
+  for (const ex of image.exports || []) {
+    if (!ex || ex.kind === 'forwarder' || ex.address == null || ex.address === 0n) continue;
+    exportNames.set(BigInt(ex.address).toString(), ex.name || null);
+  }
+  let rejectedExportOnly = 0;
+  image.functions = (image.functions || []).filter((f) => {
+    if (f?.source !== 'export') return true;
+    rejectedExportOnly++;
+    return false;
+  });
+  let corroborated = 0;
+  for (const f of image.functions) {
+    if (f?.address == null) continue;
+    const name = exportNames.get(BigInt(f.address).toString());
+    if (!name) continue;
+    corroborated++;
+    if (!f.name) f.name = name;
+    f.sources = [...new Set([...(f.sources || [f.source]), 'export-name'])];
+  }
+  image.metadata.peExportFunctionEvidence = {
+    policy:'export-is-symbol-evidence-not-function-proof',
+    rejectedExportOnly,
+    corroborated,
+  };
+}
+
 export function parsePE(input, options = {}) {
   const bytes = new ByteView(input).bytes;
   const r = new ByteView(bytes, { littleEndian: true });
@@ -102,5 +130,6 @@ export function parsePE(input, options = {}) {
   parseDelayImports(r, directory(directories, IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT), image, metadataBudget);
   parseTlsDirectory(r, directory(directories, IMAGE_DIRECTORY_ENTRY_TLS), image, metadataBudget);
   parseLoadConfig(r, directory(directories, IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG), image, metadataBudget);
+  reconcileExportFunctionEvidence(image);
   return image.finalize();
 }

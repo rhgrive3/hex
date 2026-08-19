@@ -1,3 +1,4 @@
+import { decorateArm64BtiGuardedPageEffects } from './bti-guard-state.js';
 import { liftArm64ControlEffects } from './control.js';
 import { directTargetOf, immediateOf, instructionMnemonic } from './common.js';
 import { liftArm64FlagEffects } from './flags.js';
@@ -7,7 +8,7 @@ import { liftArm64MemoryEffects } from './memory.js';
 import { liftArm64SimdEffects } from './simd.js';
 import { liftArm64SystemEffects } from './system.js';
 
-export const ARM64_MACHINE_EFFECTS_SEMANTIC_VERSION = '2';
+export const ARM64_MACHINE_EFFECTS_SEMANTIC_VERSION = '3';
 
 // This order is part of the Phase 2 semantic contract. Shape-sensitive families
 // precede scalar families when A64 reuses a mnemonic (for example ADD/MOV in
@@ -66,7 +67,7 @@ export function liftArm64MachineEffects(decoded, context = {}) {
   const familyContext = normalizedContext(context);
   for (const family of ARM64_EFFECT_FAMILIES) {
     const result = family.lift(instruction, familyContext);
-    if (result != null) return result;
+    if (result != null) return decorateArm64BtiGuardedPageEffects(instruction, result, familyContext);
   }
   return null;
 }

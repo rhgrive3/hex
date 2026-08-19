@@ -15,7 +15,8 @@ assert.equal(printExpression(rw(expr.binary('add', v('x'), c(0), 32, true))), 'x
 assert.equal(printExpression(rw(expr.binary('xor', v('x'), v('x'), 32, false))), '0');
 assert.equal(printExpression(rw(expr.binary('and', v('x', 8, false), c(255, 8, false), 8, false))), 'x');
 const nested = expr.binary('add', expr.binary('add', v('x'), c(5), 32, true), c(7), 32, true);
-assert.equal(printExpression(rw(nested)), 'x + 12');
+// #969: a width-exact signed add prints its wrapping machine view.
+assert.equal(printExpression(rw(nested)), '(int32_t)((uint32_t)x + (uint32_t)12)');
 const maxSel = expr.select(expr.compare('gt', v('a'), v('b'), true), v('a'), v('b'), 32, true);
 assert.equal(printExpression(rw(maxSel)), 'max(a, b)');
 const minSel = expr.select(expr.compare('lt', v('a'), v('b'), true), v('a'), v('b'), 32, true);

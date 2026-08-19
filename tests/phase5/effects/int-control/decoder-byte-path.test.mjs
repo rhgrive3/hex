@@ -69,10 +69,10 @@ test('real Capstone bytes feed structured x86 integer/control MachineEffects', a
     assert.equal(shlZero.length,3);
     const shlZeroEffects = effects(shlZero,'p5-1:bytes:shl-zero');
     assert.equal(flagWrites(shlZeroEffects).length,0);
-    assert.equal(registerWrites(shlZeroEffects,'rax').length,1);
-    assert.equal(registerWrites(shlZeroEffects,'rax')[0].metadata.writePolicy,'zero-extend-32');
-    assert.equal(shlZeroEffects.metadata.destinationViewPreserved,true);
-    assert.equal(shlZeroEffects.metadata.zeroExtend32Write,true);
+    assert.equal(registerWrites(shlZeroEffects,'rax').length,0);
+    assert.equal(shlZeroEffects.metadata.destinationWrite,false);
+    assert.equal(shlZeroEffects.metadata.flagsPreserved,true);
+    assert.equal(shlZeroEffects.statePreservation.proven,true);
 
     const imul = one(session,[0x0f,0xaf,0xc3],0x4100n); // imul eax, ebx
     assert.equal(imul.instructionFamily,'imul');

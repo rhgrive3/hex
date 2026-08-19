@@ -219,27 +219,10 @@ export function liftX86IntegerEffects(instruction, context = {}) {
     const count = resolveX86EffectiveCount(ctx, source, destination.widthBits, { rotate });
     if (!count) return ctx.partial(`x86-${family}-count-source-unmodelled`, ['registers','flags']);
     if (count.knownCount === 0) {
-      if (destination.widthBits === 32) {
-        const unchangedView = ctx.readRegister(destination);
-        if (!unchangedView || !ctx.writeRegister(destination, unchangedView)) {
-          return ctx.partial(`x86-${family}-zero-count-destination-unmodelled`, ['registers']);
-        }
-        return ctx.finish({
-          family:'integer',
-          metadata:{
-            operation:family,
-            widthBits:32,
-            effectiveCount:0,
-            destinationViewPreserved:true,
-            flagsPreserved:true,
-            zeroExtend32Write:true,
-          },
-        });
-      }
       return ctx.finish({
         family:'integer',
         statePreservation:{ proven:true, reason:`x86-${family}-zero-effective-count-preserves-physical-destination-and-flags` },
-        metadata:{ operation:family, widthBits:destination.widthBits, effectiveCount:0, flagsPreserved:true },
+        metadata:{ operation:family, widthBits:destination.widthBits, effectiveCount:0, destinationWrite:false, flagsPreserved:true },
       });
     }
     const value = ctx.readRegister(destination);
@@ -259,7 +242,7 @@ export function liftX86IntegerEffects(instruction, context = {}) {
     if (count.knownCount == null) {
       const zero = ctx.valueOp('is-zero', [count.value], 1, { widthBits:8, semantic:'x86-effective-count-zero' });
       const nonzero = ctx.valueOp('not-bool', [zero], 1, { semantic:'x86-effective-count-nonzero' });
-      if (!writeConditionalRegister(ctx, destination, nonzero, result, { falseValue:value })) {
+      if (!writeConditionalRegister(ctx, destination, nonzero, result)) {
         return ctx.partial(`x86-${family}-destination-unmodelled`, ['registers','flags']);
       }
     } else if (!ctx.writeRegister(destination, result)) {

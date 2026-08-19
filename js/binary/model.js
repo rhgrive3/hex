@@ -10,6 +10,8 @@ function normalizePerms(p) {
   return { read: !!p.read, write: !!p.write, execute: !!p.execute };
 }
 
+function minBigInt(a, b) { return a < b ? a : b; }
+
 export class BinaryImage {
   constructor(input, meta = {}) {
     if (input == null) this.bytes = null;
@@ -109,25 +111,121 @@ export class BinaryImage {
     return this.segments.find((s) => inRange(a, s.address, s.size)) || null;
   }
 
+  _virtualMappingAt(address) {
+    const a = BigInt(address);
+    // Issue #970: the narrowest mapping wins. A zero-fill child section (e.g. __bss)
+    // inside a broader file-backed segment must not be served raw file bytes.
+    let best = null;
+    for (const s of this.sections) {
+      if (s.size > 0n && inRange(a, s.address, s.size) && (!best || s.size < best.size)) best = s;
+    }
+    for (const s of this.segments) {
+      if (s.size > 0n && inRange(a, s.address, s.size) && (!best || s.size < best.size)) best = s;
+    }
+    return best;
+  }
+
+  _nextMappingBoundary(current, owner) {
+    // Issue #970: a narrower mapping starting inside `owner` (e.g. a zero-fill __bss
+    // section inside a file-backed segment) ends the current chunk at its start.
+    const end = owner.address + owner.size;
+    let next = null;
+    const consider = (m) => {
+      if (m === owner || m.size <= 0n) return;
+      if (m.address <= current || m.address >= end) return;
+      if (m.size >= owner.size) return;
+      if (next === null || m.address < next) next = m.address;
+    };
+    for (const m of this.sections) consider(m);
+    for (const m of this.segments) consider(m);
+    return next;
+  }
+
+  resolveVirtualMapping(address) {
+    const a = (() => { try { return BigInt(address); } catch { return null; } })();
+    if (a === null) return null;
+    const owner = this._virtualMappingAt(a);
+    if (!owner) return null;
+    const delta = a - owner.address;
+    const fileSize = owner.fileSize ?? 0n;
+    const fileBacked = delta < fileSize;
+    return {
+      kind: fileBacked ? 'file' : 'zero',
+      mapping: owner,
+      offset: fileBacked ? owner.fileOffset + delta : null,
+      available: fileBacked ? minBigInt(fileSize - delta, owner.size - delta) : owner.size - delta,
+    };
+  }
+
+  _virtualReadPlan(address, size) {
+    let current;
+    let remaining;
+    try {
+      current = BigInt(address);
+      remaining = typeof size === 'bigint' ? size : BigInt(size);
+    } catch {
+      return null;
+    }
+    if (current < 0n || remaining < 0n || remaining > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+    if (remaining === 0n) return [];
+    const chunks = [];
+    while (remaining > 0n) {
+      const owner = this._virtualMappingAt(current);
+      if (!owner) return null;
+      const delta = current - owner.address;
+      const vmAvailable = owner.size - delta;
+      if (vmAvailable <= 0n) return null;
+      const boundary = this._nextMappingBoundary(current, owner);
+      const span = boundary === null ? vmAvailable : minBigInt(vmAvailable, boundary - current);
+      if (span <= 0n) return null;
+      const fileAvailable = delta < owner.fileSize ? minBigInt(owner.fileSize - delta, span) : 0n;
+      const length = fileAvailable > 0n ? minBigInt(fileAvailable, remaining) : minBigInt(span, remaining);
+      if (length <= 0n) return null;
+      if (fileAvailable > 0n) chunks.push({ kind:'file', offset:owner.fileOffset + delta, length });
+      else chunks.push({ kind:'zero', length });
+      current += length;
+      remaining -= length;
+    }
+    return chunks;
+  }
+
   readVirtual(address, size) {
     if (!this.bytes) return null;
-    const off = this.addressToOffset(address);
-    if (off == null) return null;
-    const o = Number(off);
-    const n = Number(size);
-    if (!Number.isSafeInteger(o) || !Number.isSafeInteger(n) || o < 0 || n < 0 || o > this.bytes.length || n > this.bytes.length - o) return null;
-    return this.bytes.subarray(o, o + n);
+    const plan = this._virtualReadPlan(address, size);
+    if (!plan) return null;
+    const total = plan.reduce((sum, chunk) => sum + Number(chunk.length), 0);
+    const out = new Uint8Array(total);
+    let cursor = 0;
+    for (const chunk of plan) {
+      const length = Number(chunk.length);
+      if (chunk.kind === 'zero') { cursor += length; continue; }
+      const off = Number(chunk.offset);
+      if (!Number.isSafeInteger(off) || off < 0 || off > this.bytes.length || length > this.bytes.length - off) return null;
+      out.set(this.bytes.subarray(off, off + length), cursor);
+      cursor += length;
+    }
+    return out;
   }
 
   async readVirtualAsync(address, size) {
     const resident = this.readVirtual(address, size);
     if (resident) return resident;
     if (!this.source) return null;
-    const off = this.addressToOffset(address);
-    if (off == null) return null;
-    const n = typeof size === 'bigint' ? size : BigInt(size);
-    if (n < 0n || off < 0n || off > this.fileSize || n > this.fileSize - off) return null;
-    return this.source.readExactly(off, n);
+    const plan = this._virtualReadPlan(address, size);
+    if (!plan) return null;
+    const total = plan.reduce((sum, chunk) => sum + Number(chunk.length), 0);
+    const out = new Uint8Array(total);
+    let cursor = 0;
+    for (const chunk of plan) {
+      const length = Number(chunk.length);
+      if (chunk.kind === 'zero') { cursor += length; continue; }
+      if (chunk.offset < 0n || chunk.offset > this.fileSize || chunk.length > this.fileSize - chunk.offset) return null;
+      const bytes = await this.source.readExactly(chunk.offset, chunk.length);
+      if (!bytes || bytes.length !== length) return null;
+      out.set(bytes, cursor);
+      cursor += length;
+    }
+    return out;
   }
 
   attachSource(source, { discardBytes = false } = {}) {

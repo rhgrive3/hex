@@ -407,7 +407,14 @@ export class Emulator {
         BigInt.asUintN(wide ? 64 : 32, mn === 'cmp' ? a - b : a + b), wide);
       return null;
     }
-    if (mn === 'neg' || mn === 'negs') { this.set(ops[0].text, -R(ops[1])); return null; }
+    if (mn === 'neg' || mn === 'negs') {
+      const wide = isWide(ops[0]);
+      const source = R(ops[1]);
+      const result = BigInt.asUintN(wide ? 64 : 32, -source);
+      this.set(ops[0].text, result);
+      if (mn === 'negs') this.setFlags('subs', 0n, source, result, wide);
+      return null;
+    }
     if (mn === 'mvn') { this.set(ops[0].text, ~R(ops[1])); return null; }
     if (mn === 'madd' || mn === 'msub') {
       const a = R(ops[1]), b = R(ops[2]), c = R(ops[3]);
@@ -486,7 +493,7 @@ export class Emulator {
 
     if (/^f/.test(mn) || /^[su]cvtf$/.test(mn)) return this.floatInsn(mn, ops);
 
-    if (/^(ldr|ldrb|ldrh|ldrsb|ldrsh|ldrsw|ldur|ldurb|ldurh|ldursb|ldursh|ldursw|ldp|ldnp|ldxr|ldaxr|ldar)/.test(mn)) {
+    if (/^(ldr|ldrb|ldrh|ldrsb|ldrsh|ldrsw|ldur|ldurb|ldurh|ldursb|ldursh|ldursw|ldp|ldnp|ldpsw|ldxr|ldaxr|ldar)/.test(mn)) {
       return this.loadInsn(mn, ops);
     }
     if (/^(str|strb|strh|stur|sturb|sturh|stp|stnp|stxr|stlxr|stlr)/.test(mn)) {
@@ -579,14 +586,19 @@ export class Emulator {
     const mem = ops.find((o) => o.k === 'mem');
     if (!mem) throw new Error('読み出し先が分かりませんでした: ' + mn);
     const addr = this.effectiveAddress(mem, false);
-    const pair = /^(ldp|ldnp)/.test(mn);
+    const signedWordPair = mn === 'ldpsw';
+    const pair = signedWordPair || /^(ldp|ldnp)/.test(mn);
     const size = loadSize(mn, ops[0]);
     const signed = /^ldrs|^ldurs/.test(mn);
 
     if (pair) {
-      const each = isWide(ops[0]) ? 8 : 4;
-      const a = await this.load(addr, each);
-      const b = await this.load(addr + BigInt(each), each);
+      const each = signedWordPair ? 4 : (isWide(ops[0]) ? 8 : 4);
+      let a = await this.load(addr, each);
+      let b = await this.load(addr + BigInt(each), each);
+      if (signedWordPair) {
+        a = BigInt.asUintN(64, BigInt.asIntN(32, a));
+        b = BigInt.asUintN(64, BigInt.asIntN(32, b));
+      }
       this.set(ops[0].text, a);
       this.set(ops[1].text, b);
     } else {

@@ -3,6 +3,7 @@ import { BinaryImage, ByteView, auditBinary, openBinary, openBinarySource } from
 import { makeElf64Fixture, makePe64Fixture } from './universal-binary.mjs';
 import { makeSectionlessElf64Fixture } from './universal-binary-sectionless.mjs';
 import { parseEhFrameHeader } from '../js/binary/elf-unwind.js';
+import { parseExceptionFunctions } from '../js/binary/pe-loader.js';
 
 for (const [name, bytes, format] of [['elf', makeElf64Fixture(), 'elf'], ['pe', makePe64Fixture(), 'pe']]) {
   let largest = 0;
@@ -45,5 +46,67 @@ function issue86To97Regressions(){
   const noEntry=makePe64Fixture(), nev=new DataView(noEntry.buffer); nev.setUint32(0x84+20+16,0,true); const nei=openBinary(noEntry); assert.equal(nei.entrypoint,null); assert.equal(nei.functions.some(f=>f.source==='entrypoint'),false);
 }
 
+
+function peUnwindFragmentRegressions() {
+  const makeImage = () => {
+    const bytes = new Uint8Array(0x400), image = new BinaryImage(bytes,{format:'pe',bits:64,imageBase:0x10000000n});
+    image.addSection({name:'.text',address:0x10001000n,size:0x4000n,fileOffset:0n,fileSize:0x80n,perms:{read:true,execute:true}});
+    image.addSection({name:'.pdata',address:0x10005000n,size:0x100n,fileOffset:0x100n,fileSize:0x100n,perms:{read:true}});
+    image.addSection({name:'.xdata',address:0x10006000n,size:0x100n,fileOffset:0x200n,fileSize:0x100n,perms:{read:true}});
+    return { bytes, view:new DataView(bytes.buffer), image };
+  };
+  {
+    const {bytes,view,image}=makeImage();
+    view.setUint32(0x100,0x1000,true);view.setUint32(0x104,(0x10<<2)|1,true);
+    view.setUint32(0x108,0x2000,true);view.setUint32(0x10c,(0x08<<2)|2,true);
+    view.setUint32(0x110,0x3000,true);view.setUint32(0x114,(0x08<<2)|3,true);
+    parseExceptionFunctions(new ByteView(bytes),{rva:0x5000,size:24},image,0xaa64);
+    assert.deepEqual(image.functions.map(f=>f.address),[0x10001000n]);
+    assert.equal(image.metadata.exceptionDirectory.fragments.length,1);
+    assert.equal(image.metadata.exceptionDirectory.fragments[0].address,0x10002000n);
+    assert.ok(image.warnings.some(x=>x.includes('reserved ARM64')));
+  }
+  {
+    const {bytes,view,image}=makeImage();
+    view.setUint32(0x100,0x1000,true);view.setUint32(0x104,0x6000,true);
+    view.setUint32(0x108,0x2000,true);view.setUint32(0x10c,0x6010,true);
+    view.setUint32(0x200,0x10|(1<<21)|(1<<28),true);view.setUint32(0x204,0,true);
+    view.setUint32(0x210,0x08|(1<<21)|(1<<22)|(1<<28),true);view.setUint32(0x214,0,true);
+    parseExceptionFunctions(new ByteView(bytes),{rva:0x5000,size:16},image,0xaa64);
+    assert.deepEqual(image.functions.map(f=>f.address),[0x10001000n]);
+    assert.equal(image.functions[0].size,64n);
+    assert.equal(image.metadata.exceptionDirectory.fragments[0].address,0x10002000n);
+    assert.equal(image.metadata.exceptionDirectory.fragments[0].size,32n);
+  }
+  {
+    const {bytes,view,image}=makeImage();
+    view.setUint32(0x100,0x1000,true);view.setUint32(0x104,0x7000,true);
+    parseExceptionFunctions(new ByteView(bytes),{rva:0x5000,size:8},image,0xaa64);
+    assert.equal(image.functions.length,0);
+    assert.equal(image.metadata.peMetadata.complete,false);
+  }
+  {
+    const {bytes,view,image}=makeImage();
+    view.setUint32(0x100,0x1000,true);view.setUint32(0x104,0x1080,true);view.setUint32(0x108,0x6000,true);
+    view.setUint32(0x10c,0x2000,true);view.setUint32(0x110,0x2040,true);view.setUint32(0x114,0x6010,true);
+    bytes[0x200]=1;bytes[0x201]=0;bytes[0x202]=0;bytes[0x203]=0;
+    bytes[0x210]=1|(4<<3);bytes[0x211]=0;bytes[0x212]=0;bytes[0x213]=0;
+    view.setUint32(0x214,0x1000,true);view.setUint32(0x218,0x1080,true);view.setUint32(0x21c,0x6000,true);
+    parseExceptionFunctions(new ByteView(bytes),{rva:0x5000,size:24},image,0x8664);
+    assert.ok(image.functions.every(f=>f.address===0x10001000n));
+    assert.equal(image.functions.some(f=>f.address===0x10002000n),false);
+    assert.equal(image.metadata.exceptionDirectory.fragments.some(f=>f.address===0x10002000n&&f.primaryAddress===0x10001000n),true);
+  }
+  {
+    const {bytes,view,image}=makeImage();
+    view.setUint32(0x100,0x2000,true);view.setUint32(0x104,0x2040,true);view.setUint32(0x108,0x6010,true);
+    bytes[0x210]=1|(4<<3);bytes[0x212]=0;
+    view.setUint32(0x214,0x2000,true);view.setUint32(0x218,0x2040,true);view.setUint32(0x21c,0x6010,true);
+    parseExceptionFunctions(new ByteView(bytes),{rva:0x5000,size:12},image,0x8664);
+    assert.equal(image.functions.length,0);
+    assert.equal(image.metadata.peMetadata.complete,false);
+  }
+}
+peUnwindFragmentRegressions();
 issue86To97Regressions();
 console.log('binary-platform: PASS');

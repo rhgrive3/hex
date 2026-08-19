@@ -125,6 +125,22 @@ function completeIntrinsic({ id, inputs = [], outputs = [], registersRead = [], 
     ...(metadata ? { metadata } : {}),
   });
 }
+function nzcvFlagId(flag) { return `NZCV.${flag}`; }
+function readNzcvFlags(operations, prefix) {
+  return ['N','Z','C','V'].map((flag) => {
+    const value=temp(`${prefix}:${flag}`,createBitVectorValue(1));
+    operations.push(createMachineOperation({kind:'register-read',register:createRegisterValue(nzcvFlagId(flag),1),value,metadata:{architecturalState:'PSTATE.NZCV',flag}}));
+    return value;
+  });
+}
+function writeNzcvFlags(operations, packed, prefix) {
+  const positions={N:31,Z:30,C:29,V:28};
+  for (const flag of ['N','Z','C','V']) {
+    const value=temp(`${prefix}:${flag}`,createBitVectorValue(1));
+    operations.push(createMachineOperation({kind:'value',opcode:'extract-bit',inputs:[packed],outputs:[value],metadata:{bit:positions[flag],widthBits:64,architecturalState:'PSTATE.NZCV',flag}}));
+    operations.push(createMachineOperation({kind:'register-write',register:createRegisterValue(nzcvFlagId(flag),1),value,metadata:{architecturalState:'PSTATE.NZCV',flag}}));
+  }
+}
 
 function nop(instruction, context) {
   return bundle(instruction, context, {
@@ -160,16 +176,47 @@ function waitOrEvent(instruction, context, mnemonic) {
   return bundle(instruction, context, { operations:[operation], completeness:'exact-with-intrinsic' });
 }
 
+const EXCLUSIVE_MONITOR_STATE = Object.freeze([
+  ['arm64.exclusive.valid', 1],
+  ['arm64.exclusive.address', 64],
+  ['arm64.exclusive.size', 16],
+  ['arm64.exclusive.token', 64],
+]);
+function readExclusiveMonitor(operations) {
+  return EXCLUSIVE_MONITOR_STATE.map(([registerId,bits]) => {
+    const value = temp(`clrex:${registerId}`, createBitVectorValue(bits));
+    operations.push(createMachineOperation({
+      kind:'register-read', register:createRegisterValue(registerId,bits,{view:registerId}), value,
+      metadata:{ architecture:'arm64', purpose:'exclusive-monitor-state' },
+    }));
+    return value;
+  });
+}
+function clearExclusiveMonitor(operations, token) {
+  const values = [createBitVectorValue(1,0n), createBitVectorValue(64,0n), createBitVectorValue(16,0n), token];
+  EXCLUSIVE_MONITOR_STATE.forEach(([registerId,bits], index) => operations.push(createMachineOperation({
+    kind:'register-write', register:createRegisterValue(registerId,bits,{view:registerId}), value:values[index],
+    metadata:{ architecture:'arm64', purpose:'exclusive-monitor-state', transition:'clear' },
+  })));
+}
+
 function clrex(instruction, context, ops) {
   const imm = immediate(ops[0]);
+  const operations = [];
+  const monitorState = readExclusiveMonitor(operations);
+  const nextToken = temp('clrex:next-monitor-token', createBitVectorValue(64));
   const operation = completeIntrinsic({
     id:'arm64.system.clrex',
-    inputs:imm ? [imm] : [], outputs:[], registersRead:[], registersWritten:[],
+    inputs:[...monitorState, ...(imm ? [imm] : [])], outputs:[nextToken],
+    registersRead:EXCLUSIVE_MONITOR_STATE.map(([id]) => id),
+    registersWritten:EXCLUSIVE_MONITOR_STATE.map(([id]) => id),
     memoryRead:{scope:'none'}, memoryWrite:{scope:'none'}, controlEffects:[],
     determinism:'deterministic', symbolicDetail:'summary-only',
     metadata:{ architecturalStateWritten:'local-exclusive-monitor', immediatePresent:!!imm },
   });
-  return bundle(instruction, context, { operations:[operation], completeness:'exact-with-intrinsic' });
+  operations.push(operation);
+  clearExclusiveMonitor(operations, nextToken);
+  return bundle(instruction, context, { operations, completeness:'exact-with-intrinsic' });
 }
 
 function bti(instruction, context, ops) {
@@ -217,6 +264,13 @@ function mrs(instruction, context, ops) {
   }
   const operations = [];
   const result = temp(`mrs:${sys}:result`, createBitVectorValue(64));
+  if (sys === 'nzcv') {
+    const flags=readNzcvFlags(operations,'mrs:nzcv');
+    operations.push(createMachineOperation({kind:'value',opcode:'arm64.pack-nzcv',inputs:flags,outputs:[result],metadata:{bitPositions:{N:31,Z:30,C:29,V:28},otherBits:'read-as-zero'}}));
+    gpWrite(operations,dst,result);
+    const fault=accessFault(sys,'read');
+    return bundle(instruction,context,{operations,possibleFaults:[fault],completeness:'exact',metadata:{systemRegister:sys,access:'read',canonicalState:'PSTATE.NZCV'}});
+  }
   const operation = completeIntrinsic({
     id:`arm64.system.mrs.${sys}`,
     inputs:[], outputs:[result], registersRead:[sysRegId(sys)], registersWritten:[gpId(dst)],
@@ -245,6 +299,11 @@ function msr(instruction, context, ops) {
   if (!input) input = immediate(src);
   if (!input) return partial(instruction, context, `msr-source-unavailable:${sys}`, ['registers','faults','other'], operations);
   const reads = gpId(src) ? [gpId(src)] : [];
+  if (sys === 'nzcv') {
+    writeNzcvFlags(operations,input,'msr:nzcv');
+    const fault=accessFault(sys,'write');
+    return bundle(instruction,context,{operations,possibleFaults:[fault],completeness:'exact',metadata:{systemRegister:sys,access:'write',canonicalState:'PSTATE.NZCV'}});
+  }
   const operation = completeIntrinsic({
     id:`arm64.system.msr.${sys}`,
     inputs:[input], outputs:[], registersRead:reads, registersWritten:[sysRegId(sys)],
