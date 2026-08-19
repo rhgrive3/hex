@@ -305,7 +305,7 @@ byte-identical to the pre-Phase-8 baseline.
 | measure | value |
 |---|---|
 | congruent value classes | 219 |
-| scalar reuse candidates | 216 |
+| scalar reuse candidates | 270 |
 | load reuse candidates | **0** — see below |
 | dead-operation candidates | 818 |
 | dead but kept, with a recorded reason | 332 |
@@ -317,15 +317,34 @@ operations the semantic IR could not represent, 1 is a comparison.
 
 ### An upstream gap, reported rather than worked around
 
-**Zero loads were reused, and none can be.** All 59 loads in the corpus carry
-`volatility: unknown`, because nothing upstream ever proves an access is
-non-volatile. Unknown is not permission: a volatile read must execute exactly as
-many times as it is written. The gate is therefore correct and the capability is
-unreachable until the loader/semantic layers produce that fact.
+**Zero loads were reused, and none can be today.** Reusing a load means executing
+it once where the program executed it twice, so it needs proof that the second
+execution is unobservable: ordinary memory, not atomic, no ordering.
 
-This is an upstream fact, not a decompiler heuristic to invent (P8-INV-003). It
-is recorded here as a blocking limitation on memory reuse rather than being
-softened into "probably fine".
+Address space and ordering are available. Atomicity is not:
+`js/targets/architecture/arm64/effects/memory.js` sets
+`atomic = BASE_ONLY.has(mnemonic) ? true : null`, so an ordinary `LDR` reports
+`unknown` rather than `false` — a fact the decoder holds and discards. All 59
+corpus loads are blocked by exactly that, and the diagnostic says so by name.
+
+`tests/machine-effects/arm64-memory-addressing.test.mjs` asserts this deliberately
+("ordinary LDR atomicity is not inferred"), so it is an accepted contract
+decision in another lane, not an oversight for Phase 8 to overturn on its own.
+Unblocking is a one-line change plus re-verification of machine-effects and
+Phase 6/7 evidence. The matrix records it as `UPSTREAM_BLOCKED` with that owner.
+
+**What Phase 8 deliberately does not require:** proof that an access is not
+`volatile`. `volatile` is a source-language annotation and is not recoverable
+from a stripped binary, so demanding it would make load reuse unreachable on
+every input forever rather than until one fact lands. A positively volatile
+access still blocks, because that is a fact rather than the absence of one.
+
+The first version of this gate did require it, and also compared against `'no'`,
+`'none'` and `'unordered'` — none of which the Semantic IR ever emits. It
+compiled, ran, and could never have matched. The corrected predicate uses the
+IR's own vocabulary (`true | false | 'unknown'`, and
+`relaxed | acquire | release | acq-rel | seq-cst | unknown`) and is pinned by a
+test that fails against the invented spelling.
 
 ### Three defects found and repaired here
 

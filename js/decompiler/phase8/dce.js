@@ -64,16 +64,19 @@ export function observableEffectReason(instruction) {
 
   const access = instruction.extra?.memoryAccess ?? null;
   if (access != null) {
-    // A load reads memory. That is only unobservable when the access facts say
-    // it cannot fault, is not volatile, and imposes no ordering. The IR reports
-    // `unknown` unless something proved otherwise, and unknown is not permission.
-    if (access.volatility !== 'no' && access.volatility !== 'none' && access.volatility !== false) {
-      return `access volatility is ${access.volatility ?? 'unrecorded'}`;
+    // A load reads memory. Removing it is only safe when its execution cannot be
+    // observed: ordinary memory rather than a device, not atomic, no ordering,
+    // and no possible fault. The values compared here are the Semantic IR's own
+    // vocabulary — `true | false | 'unknown'` for knowledge, and
+    // `relaxed | acquire | release | acq-rel | seq-cst | unknown` for ordering.
+    // `unknown` is what the IR reports until something proved otherwise, and it
+    // is not permission.
+    if (access.addressSpace != null && access.addressSpace !== 'memory') {
+      return `access is to ${access.addressSpace}, not ordinary memory`;
     }
-    if (access.atomic !== 'no' && access.atomic !== 'none' && access.atomic !== false) {
-      return `access atomicity is ${access.atomic ?? 'unrecorded'}`;
-    }
-    if (access.ordering != null && access.ordering !== 'no' && access.ordering !== 'none' && access.ordering !== 'unordered') {
+    if (access.volatility === true) return 'the access is known to be volatile';
+    if (access.atomic !== false) return `access atomicity is ${access.atomic === true ? 'yes' : 'unknown'}`;
+    if (access.ordering != null && access.ordering !== 'unknown' && access.ordering !== 'relaxed') {
       return `access imposes ordering: ${access.ordering}`;
     }
     if (Array.isArray(access.faults) && access.faults.length > 0) {

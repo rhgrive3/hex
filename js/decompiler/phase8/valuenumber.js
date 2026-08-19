@@ -57,21 +57,38 @@ function memoryAccessOf(definition) {
 /**
  * Whether a load may participate in value numbering at all.
  *
- * `volatility`, `atomic` and `ordering` are `unknown` in the IR unless something
- * proved otherwise, and unknown is not permission. A volatile or ordered access
- * must execute exactly as many times as it is written.
+ * Reusing a load means executing it once where the program executed it twice, so
+ * the question is not only "is the value the same" — MemorySSA answers that —
+ * but "is the second execution unobservable". At machine level that turns on
+ * three facts, and this predicate names each one against the vocabulary the
+ * Semantic IR actually uses (`true | false | 'unknown'` for knowledge,
+ * `relaxed | acquire | release | acq-rel | seq-cst | unknown` for ordering).
+ *
+ * Deliberately *not* required: proof that the access was not `volatile`.
+ * `volatile` is a source-language annotation and cannot be recovered from a
+ * stripped binary, so demanding it would make this capability unreachable on
+ * every input forever rather than merely today. What matters at machine level is
+ * that the access is to ordinary memory rather than a device, that it is not
+ * atomic, and that it imposes no ordering. A positively volatile access still
+ * blocks, because that is a fact rather than an absence of one.
  */
 function loadIsReusable(definition) {
   const access = memoryAccessOf(definition);
   if (access == null) return { ok: false, reason: 'load carries no memory-access facts' };
-  if (access.volatility !== 'no' && access.volatility !== 'none' && access.volatility !== false) {
-    return { ok: false, reason: `volatility is ${access.volatility ?? 'unrecorded'}` };
+  // Device or otherwise non-ordinary memory: re-execution is observable there
+  // regardless of what the value is.
+  if (access.addressSpace != null && access.addressSpace !== 'memory') {
+    return { ok: false, reason: `access is to ${access.addressSpace}, not ordinary memory` };
   }
-  if (access.atomic !== 'no' && access.atomic !== 'none' && access.atomic !== false) {
-    return { ok: false, reason: `atomicity is ${access.atomic ?? 'unrecorded'}` };
+  if (access.volatility === true) return { ok: false, reason: 'the access is known to be volatile' };
+  // Atomicity is machine-recoverable — the instruction encoding says whether an
+  // access is exclusive or atomic — so `unknown` here is a missing upstream fact,
+  // not an unknowable one, and unknown is not permission.
+  if (access.atomic !== false) {
+    return { ok: false, reason: `atomicity is ${access.atomic === true ? 'yes' : 'unknown'}` };
   }
-  if (access.ordering != null && access.ordering !== 'no' && access.ordering !== 'none' && access.ordering !== 'unordered') {
-    return { ok: false, reason: `ordering is ${access.ordering}` };
+  if (access.ordering != null && access.ordering !== 'unknown' && access.ordering !== 'relaxed') {
+    return { ok: false, reason: `access imposes ordering: ${access.ordering}` };
   }
   if (definition.unknownAliasBarrier != null) {
     return { ok: false, reason: 'an unknown store lies between this load and its source' };

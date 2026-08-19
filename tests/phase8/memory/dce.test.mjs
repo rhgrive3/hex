@@ -69,29 +69,41 @@ test('a call with an ignored return value is kept', () => {
 test('an unused volatile load is kept', () => {
   const f = fixture('volatile');
   f.block(0);
-  const value = f.load(32, { volatility: 'yes', atomic: 'no' });
+  const value = f.load(32, { volatility: true, atomic: false });
   f.ret();
   const { facts } = analyze(f.build());
   assert.equal(isCandidate(facts, value), false);
-  assert.match(facts.keptReasons.get(value.id), /volatility is yes/);
+  assert.match(facts.keptReasons.get(value.id), /known to be volatile/);
 });
 
-test('unknown volatility is not permission', () => {
-  // The IR reports `unknown` until something proves otherwise. Treating that as
-  // "probably fine" is how a volatile read gets deleted.
-  const f = fixture('unknown-volatility');
+test('unknown atomicity is not permission', () => {
+  // Atomicity is machine-recoverable: the instruction encoding says whether an
+  // access is exclusive. `unknown` therefore means an upstream fact is missing,
+  // and treating a missing fact as "probably fine" is how an exclusive load gets
+  // deleted.
+  const f = fixture('unknown-atomicity');
   f.block(0);
   const value = f.load(32, {});
   f.ret();
   const { facts } = analyze(f.build());
   assert.equal(isCandidate(facts, value), false);
-  assert.match(facts.keptReasons.get(value.id), /volatility is unknown/);
+  assert.match(facts.keptReasons.get(value.id), /atomicity is unknown/);
+});
+
+test('a device access is kept even with every other fact proved', () => {
+  const f = fixture('device');
+  f.block(0);
+  const value = f.load(32, { addressSpace: 'io', atomic: false, ordering: 'unknown' });
+  f.ret();
+  const { facts } = analyze(f.build());
+  assert.equal(isCandidate(facts, value), false);
+  assert.match(facts.keptReasons.get(value.id), /not ordinary memory/);
 });
 
 test('a load that can fault is kept even when fully proved otherwise', () => {
   const f = fixture('faulting');
   f.block(0);
-  const value = f.load(32, { volatility: 'no', atomic: 'no', ordering: 'unordered', faults: [{ kind: 'page-fault' }] });
+  const value = f.load(32, { atomic: false, ordering: 'unknown', faults: [{ kind: 'page-fault' }] });
   f.ret();
   const { facts } = analyze(f.build());
   assert.equal(isCandidate(facts, value), false);
@@ -101,7 +113,7 @@ test('a load that can fault is kept even when fully proved otherwise', () => {
 test('an ordered access is kept', () => {
   const f = fixture('ordered');
   f.block(0);
-  const value = f.load(32, { volatility: 'no', atomic: 'no', ordering: 'acquire' });
+  const value = f.load(32, { atomic: false, ordering: 'acquire' });
   f.ret();
   const { facts } = analyze(f.build());
   assert.equal(isCandidate(facts, value), false);

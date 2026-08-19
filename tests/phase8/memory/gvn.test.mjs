@@ -85,8 +85,14 @@ test('an unrepresented operation is never congruent', () => {
   assert.equal(congruent(facts, first, second), false);
 });
 
+/**
+ * A load with every machine fact proved, spelled in the Semantic IR's own
+ * vocabulary: knowledge is `true | false | 'unknown'`, ordering is one of
+ * `relaxed | acquire | release | acq-rel | seq-cst | unknown`. Writing `'no'`
+ * here would silently never match anything.
+ */
 const PROVED_LOAD = Object.freeze({
-  locKey: 'field:root+0', volatility: 'no', atomic: 'no', ordering: 'unordered',
+  locKey: 'field:root+0', addressSpace: 'memory', volatility: 'unknown', atomic: false, ordering: 'unknown',
   memDefs: ['store_1'], addressPrecise: true,
 });
 
@@ -125,19 +131,52 @@ test('an unknown store between the loads blocks reuse', () => {
   assert.match(facts.singletonReasons.get(second.id) ?? '', /unknown store/);
 });
 
-test('unknown volatility, atomicity or ordering blocks reuse', () => {
-  // `unknown` is what the IR reports until something proves otherwise, and it is
-  // not permission.
-  for (const [field, value] of [['volatility', 'unknown'], ['atomic', 'unknown'], ['ordering', 'acquire']]) {
-    const f = fixture(`load-${field}`);
+test('unknown atomicity, real ordering, device memory or known volatility each block reuse', () => {
+  for (const [field, value, pattern] of [
+    ['atomic', 'unknown', /atomicity is unknown/],
+    ['atomic', true, /atomicity is yes/],
+    ['ordering', 'acquire', /imposes ordering: acquire/],
+    ['ordering', 'seq-cst', /imposes ordering: seq-cst/],
+    ['addressSpace', 'device', /not ordinary memory/],
+    ['volatility', true, /known to be volatile/],
+  ]) {
+    const f = fixture(`load-${field}-${value}`);
     f.block(0);
     const first = f.load(32, PROVED_LOAD);
     const second = f.load(32, { ...PROVED_LOAD, [field]: value });
     f.ret();
     const { facts } = analyze(f.build());
     assert.equal(congruent(facts, first, second), false, `${field}=${value} must block reuse`);
-    assert.match(facts.singletonReasons.get(second.id) ?? '', new RegExp(field === 'atomic' ? 'atomicity' : field));
+    assert.match(facts.singletonReasons.get(second.id) ?? '', pattern);
   }
+});
+
+test('unproved volatility does not block reuse, because it is not machine-recoverable', () => {
+  // `volatile` is a source annotation. Demanding proof of its absence would make
+  // load reuse unreachable on every stripped binary forever, rather than merely
+  // until an upstream fact lands. What governs re-execution at machine level is
+  // the address space, atomicity and ordering, and those are all proved above.
+  const f = fixture('load-unknown-volatility');
+  f.block(0);
+  const first = f.load(32, PROVED_LOAD);
+  const second = f.load(32, PROVED_LOAD);
+  f.ret();
+  const { facts } = analyze(f.build());
+  assert.equal(PROVED_LOAD.volatility, 'unknown');
+  assert.equal(congruent(facts, first, second), true);
+});
+
+test('the predicate uses the Semantic IR vocabulary, not an invented one', () => {
+  // A predicate written against `'no'` or `'unordered'` compiles, runs, and
+  // never matches anything the IR emits.
+  assert.equal(loadIsReusable({
+    extra: { memoryAccess: { addressSpace: 'memory', atomic: 'no', ordering: 'unordered' }, addressPrecise: true },
+    loc: { key: 'k' },
+  }).ok, false, "'no' is not a value the Semantic IR ever produces for atomicity");
+  assert.equal(loadIsReusable({
+    extra: { memoryAccess: { addressSpace: 'memory', atomic: false, ordering: 'relaxed' }, addressPrecise: true },
+    loc: { key: 'k' },
+  }).ok, true);
 });
 
 test('an imprecise address blocks reuse', () => {
@@ -194,7 +233,7 @@ test('the pass refuses to run before the facts it consumes exist', () => {
 });
 
 test('the load reusability predicate answers with a reason, never a bare false', () => {
-  assert.equal(loadIsReusable({ extra: { memoryAccess: { volatility: 'no', atomic: 'no' }, addressPrecise: true }, loc: { key: 'k' } }).ok, true);
+  assert.equal(loadIsReusable({ extra: { memoryAccess: { addressSpace: 'memory', atomic: false }, addressPrecise: true }, loc: { key: 'k' } }).ok, true);
   const refused = loadIsReusable({ extra: {} });
   assert.equal(refused.ok, false);
   assert.ok(refused.reason.length > 0);

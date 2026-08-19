@@ -107,11 +107,11 @@ export class IrFixture {
    * does.
    */
   load(bits, {
-    locKey = null, volatility = 'unknown', atomic = 'unknown', ordering = null,
-    faults = [], memDefs = null, barrier = null, addressPrecise = false,
+    locKey = null, addressSpace = 'memory', volatility = 'unknown', atomic = 'unknown',
+    ordering = 'unknown', faults = [], memDefs = null, barrier = null, addressPrecise = false,
   } = {}) {
     const instruction = this.#instruction('load', null, [], {
-      memoryAccess: { addressSpace: 'memory', widthBits: bits, volatility, atomic, ordering, faults },
+      memoryAccess: { addressSpace, widthBits: bits, volatility, atomic, ordering, faults },
       addressPrecise,
     });
     if (locKey != null) instruction.loc = { kind: 'field', key: locKey };
