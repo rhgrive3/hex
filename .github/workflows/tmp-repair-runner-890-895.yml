@@ -1,71 +1,53 @@
-name: One-shot RV64C HINT repair
+name: Diagnose RV64C HINT repair
 on:
   push:
     branches: [main]
-  pull_request:
-    branches: [main]
 permissions:
-  contents: write
+  contents: read
 jobs:
-  repair:
-    if: github.event_name == 'push' || github.event.pull_request.head.ref == 'fix/riscv64-rvc-hints-20260819'
+  diagnose:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           ref: fix/riscv64-rvc-hints-20260819
           fetch-depth: 0
-      - name: Gate already-completed repair
-        id: gate
-        run: |
-          if [ -f tools/repair-riscv64-rvc-hints.py ]; then
-            echo 'apply=true' >> "$GITHUB_OUTPUT"
-          else
-            echo 'apply=false' >> "$GITHUB_OUTPUT"
-            echo 'Verified repair already committed; no second mutation.'
-          fi
       - uses: actions/setup-node@v4
-        if: steps.gate.outputs.apply == 'true'
         with:
           node-version: 22
           cache: npm
-      - if: steps.gate.outputs.apply == 'true'
-        run: npm ci
-      - name: Rebase target onto current main
-        if: steps.gate.outputs.apply == 'true'
-        run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git fetch origin main
-          git rebase origin/main
-      - name: Apply exact guarded RV64C HINT repair
-        if: steps.gate.outputs.apply == 'true'
+      - run: npm ci
+      - name: Apply repair in workspace
         run: python3 tools/repair-riscv64-rvc-hints.py
-      - name: Focused RV64C HINT regressions
-        if: steps.gate.outputs.apply == 'true'
-        run: node --test tests/phase6/effects/rvc-hints.test.mjs tests/phase6/effects/compressed.test.mjs
-      - name: Regenerate canonical userscript before sync gates
-        if: steps.gate.outputs.apply == 'true'
-        run: npm run userscript:build
-      - name: Repository verification
-        if: steps.gate.outputs.apply == 'true'
-        run: npm run check
-      - name: Canonical tracked userscript idempotence
-        if: steps.gate.outputs.apply == 'true'
+      - name: Compare two canonical builds
         run: |
-          cp userscript/hex.user.template.js /tmp/hex.user.template.js
-          cp userscript/release-version.json /tmp/release-version.json
-          cp js/userscript/deployment-identity.generated.js /tmp/deployment-identity.generated.js
+          set -u
           npm run userscript:build
-          cmp userscript/hex.user.template.js /tmp/hex.user.template.js
-          cmp userscript/release-version.json /tmp/release-version.json
-          cmp js/userscript/deployment-identity.generated.js /tmp/deployment-identity.generated.js
-      - name: Commit verified source result
-        if: steps.gate.outputs.apply == 'true'
-        run: |
-          rm -f tools/repair-riscv64-rvc-hints.py
-          rm -f .github/workflows/tmp-rvc-hint-repair.yml .github/workflows/tmp-repair-runner-890-895.yml
-          git add -A
-          git diff --cached --check
-          git commit -m 'fix(riscv64): model compressed HINTs as exact no-ops'
-          git push --force-with-lease origin HEAD:fix/riscv64-rvc-hints-20260819
+          mkdir -p /tmp/rvc-hint-build1/userscript /tmp/rvc-hint-build1/js/userscript
+          cp userscript/hex.user.template.js /tmp/rvc-hint-build1/userscript/hex.user.template.js
+          cp userscript/release-version.json /tmp/rvc-hint-build1/userscript/release-version.json
+          cp js/userscript/deployment-identity.generated.js /tmp/rvc-hint-build1/js/userscript/deployment-identity.generated.js
+          echo '=== first build hashes ==='
+          sha256sum userscript/hex.user.template.js userscript/release-version.json js/userscript/deployment-identity.generated.js
+          echo '=== first release state ==='
+          cat userscript/release-version.json
+          echo '=== first status ==='
+          git status --short
+          npm run userscript:build
+          echo '=== second build hashes ==='
+          sha256sum userscript/hex.user.template.js userscript/release-version.json js/userscript/deployment-identity.generated.js
+          echo '=== second release state ==='
+          cat userscript/release-version.json
+          echo '=== second status ==='
+          git status --short
+          set +e
+          echo '=== template diff ==='
+          diff -u /tmp/rvc-hint-build1/userscript/hex.user.template.js userscript/hex.user.template.js
+          echo "template diff exit=$?"
+          echo '=== release diff ==='
+          diff -u /tmp/rvc-hint-build1/userscript/release-version.json userscript/release-version.json
+          echo "release diff exit=$?"
+          echo '=== deployment identity diff ==='
+          diff -u /tmp/rvc-hint-build1/js/userscript/deployment-identity.generated.js js/userscript/deployment-identity.generated.js
+          echo "deployment diff exit=$?"
+          exit 0
