@@ -194,26 +194,134 @@ function executableRvaRange(image, beginRva, size = 1) {
   return !!(sec?.perms?.execute && end <= sec.address + sec.size);
 }
 
+function exceptionDirectoryMetadata(image, kind) {
+  const current = image.metadata.exceptionDirectory;
+  if (!current || current.kind !== kind) image.metadata.exceptionDirectory = { count:0, kind, fragments:[], invalidRecords:0 };
+  else {
+    current.fragments ||= [];
+    current.invalidRecords ||= 0;
+  }
+  return image.metadata.exceptionDirectory;
+}
+
+function recordExceptionFragment(image, kind, beginRva, sizeBytes, details = {}) {
+  const meta = exceptionDirectoryMetadata(image, kind);
+  meta.fragments.push({
+    kind:'unwind-fragment',
+    address:image.imageBase + BigInt(beginRva),
+    size:BigInt(sizeBytes),
+    ...details,
+  });
+}
+
+function invalidExceptionRecord(image, kind, budget, reason, warning) {
+  const meta = exceptionDirectoryMetadata(image, kind);
+  meta.invalidRecords++;
+  budget.partial(`exception:${reason}`, warning);
+  return null;
+}
+
+function parseX64UnwindDescriptor(r, image, runtimeFunction, budget, seen = new Set(), depth = 0) {
+  const kind = 'x64-pdata';
+  const { begin, finish, unwind } = runtimeFunction;
+  if (!unwind || depth > 32 || seen.has(unwind)) {
+    return invalidExceptionRecord(image, kind, budget, depth > 32 ? 'x64-chain-depth' : 'x64-chain-cycle', `Ignored cyclic/excessive x64 chained unwind info at RVA 0x${unwind.toString(16)}`);
+  }
+  const range = mappedFileRangeForRva(image, unwind);
+  if (!range || range.start + 4 > range.end || range.start + 4 > r.length) {
+    return invalidExceptionRecord(image, kind, budget, 'x64-unwind-span', `Ignored x64 exception range with unmapped/truncated UNWIND_INFO RVA 0x${unwind.toString(16)}`);
+  }
+  if (!budget.take({ inputBytes:4, operations:1, estimatedHeapBytes:32 }, 'x64-unwind-header')) return null;
+  const first = r.u8(range.start), version = first & 7, flags = first >>> 3, count = r.u8(range.start + 2);
+  if (version !== 1 || (flags & ~7) !== 0 || ((flags & 4) && (flags & 3))) {
+    return invalidExceptionRecord(image, kind, budget, 'x64-unwind-header', `Ignored unsupported/invalid x64 UNWIND_INFO version/flags at RVA 0x${unwind.toString(16)}`);
+  }
+  const tail = range.start + 4 + (((count + 1) & ~1) * 2);
+  if (tail > range.end || tail > r.length) {
+    return invalidExceptionRecord(image, kind, budget, 'x64-unwind-codes', `Ignored truncated x64 unwind-code array at RVA 0x${unwind.toString(16)}`);
+  }
+  if (flags & 4) {
+    if (tail + 12 > range.end || tail + 12 > r.length) {
+      return invalidExceptionRecord(image, kind, budget, 'x64-chain-tail', `Ignored truncated x64 chained RUNTIME_FUNCTION at RVA 0x${unwind.toString(16)}`);
+    }
+    if (!budget.take({ inputBytes:12, records:1, operations:2, estimatedHeapBytes:96 }, 'x64-chain-record')) return null;
+    const chained = { begin:r.u32(tail), finish:r.u32(tail + 4), unwind:r.u32(tail + 8) };
+    if (!chained.begin || chained.finish <= chained.begin || !executableRvaRange(image, chained.begin, chained.finish - chained.begin)) {
+      return invalidExceptionRecord(image, kind, budget, 'x64-chain-range', `Ignored invalid x64 chained primary range RVA 0x${chained.begin.toString(16)}..0x${chained.finish.toString(16)}`);
+    }
+    const nextSeen = new Set(seen); nextSeen.add(unwind);
+    const nested = parseX64UnwindDescriptor(r, image, chained, budget, nextSeen, depth + 1);
+    if (!nested) return null;
+    return { primary:nested.primary, fragments:[runtimeFunction, ...nested.fragments] };
+  }
+  if (flags & 3) {
+    if (tail + 4 > range.end || tail + 4 > r.length) {
+      return invalidExceptionRecord(image, kind, budget, 'x64-handler-tail', `Ignored truncated x64 handler RVA at unwind RVA 0x${unwind.toString(16)}`);
+    }
+    const handlerRva = r.u32(tail);
+    if (!handlerRva || !mappedFileRangeForRva(image, handlerRva)) {
+      return invalidExceptionRecord(image, kind, budget, 'x64-handler-rva', `Ignored x64 UNWIND_INFO with unmapped handler RVA 0x${handlerRva.toString(16)}`);
+    }
+  }
+  return { primary:{ begin, finish, unwind }, fragments:[] };
+}
+
+function parseArm64XdataDescriptor(r, image, begin, xdataRva, budget) {
+  const kind = 'arm64-pdata';
+  const first = mappedFileSpanForRva(image, xdataRva, 4);
+  if (!first || first.start + 4 > r.length) return invalidExceptionRecord(image, kind, budget, 'arm64-xdata-header', `Ignored ARM64 exception entry with unmapped/truncated .xdata RVA 0x${xdataRva.toString(16)}`);
+  if (!budget.take({ inputBytes:4, operations:1, estimatedHeapBytes:32 }, 'arm64-xdata-header')) return null;
+  const header = r.u32(first.start), functionLength = header & 0x3ffff, version = (header >>> 18) & 3;
+  const hasHandler = !!(header & (1 << 20)), packedEpilog = !!(header & (1 << 21)), fragment = !!(header & (1 << 22));
+  let epilogCount = (header >>> 23) & 0x1f, codeWords = (header >>> 28) & 0xf, headerBytes = 4;
+  if (version !== 0 || functionLength === 0) return invalidExceptionRecord(image, kind, budget, 'arm64-xdata-fields', `Ignored invalid ARM64 .xdata header at RVA 0x${xdataRva.toString(16)}`);
+  if (epilogCount === 0 && codeWords === 0) {
+    const ext = mappedFileSpanForRva(image, xdataRva, 8);
+    if (!ext || ext.start + 8 > r.length) return invalidExceptionRecord(image, kind, budget, 'arm64-xdata-extension', `Ignored truncated ARM64 .xdata extension at RVA 0x${xdataRva.toString(16)}`);
+    const word = r.u32(ext.start + 4); epilogCount = word & 0xffff; codeWords = (word >>> 16) & 0xff; headerBytes = 8;
+    if (!budget.take({ inputBytes:4, operations:1 }, 'arm64-xdata-extension')) return null;
+  }
+  const recordBytes = headerBytes + (packedEpilog ? 0 : epilogCount * 4) + codeWords * 4 + (hasHandler ? 4 : 0);
+  if (!Number.isSafeInteger(recordBytes) || !mappedFileSpanForRva(image, xdataRva, recordBytes)) return invalidExceptionRecord(image, kind, budget, 'arm64-xdata-span', `Ignored ARM64 .xdata record that crosses its file-backed mapping at RVA 0x${xdataRva.toString(16)}`);
+  const bytes = functionLength * 4;
+  if (!executableRvaRange(image, begin, bytes)) return invalidExceptionRecord(image, kind, budget, 'arm64-xdata-range', `Ignored ARM64 .xdata range outside executable mapping at RVA 0x${begin.toString(16)}`);
+  return { size:bytes, fragment, xdataRva, version, hasHandler, packedEpilog, epilogCount, codeWords };
+}
+
 export function parseExceptionFunctions(r, dir, image, machine, sharedBudget = null) {
   if(!dir||!dir.rva||!dir.size)return; const budget=ensureBudget(image,sharedBudget);
   const span=mappedFileSpanForRva(image,dir.rva,dir.size); if(!span){budget.partial('exception:directory-span','PE exception directory crosses a mapped boundary');return;}
   const off=span.start,end=span.spanEnd;
   if(machine===0x8664){
-    let previousBegin=null,previousEnd=null;
+    const meta=exceptionDirectoryMetadata(image,'x64-pdata'); let previousBegin=null,previousEnd=null;
     for(let p=off;p+12<=end;p+=12){
       if(!budget.take({inputBytes:12,records:1,objects:1,operations:2,estimatedHeapBytes:128},'exception-record'))break;
       const begin=r.u32(p),finish=r.u32(p+4),unwind=r.u32(p+8); const ordered=previousBegin==null||(begin>previousBegin&&begin>=previousEnd);
-      if(!begin||finish<=begin||!ordered||!executableRvaRange(image,begin,finish-begin)){if(begin||finish)image.warnings.push(`Ignored ${!ordered?'overlapping/out-of-order':'invalid/unmapped'} x64 exception range RVA 0x${begin.toString(16)}..0x${finish.toString(16)}`);continue;}
-      image.functions.push(functionSeed(image.imageBase+BigInt(begin),{size:BigInt(finish-begin),source:'exception',confidence:0.999}));
-      image.metadata.exceptionDirectory=image.metadata.exceptionDirectory||{count:0,kind:'x64-pdata'};image.metadata.exceptionDirectory.count++;previousBegin=begin;previousEnd=finish;void unwind;
+      if(!begin||finish<=begin||!ordered||!executableRvaRange(image,begin,finish-begin)){if(begin||finish)image.warnings.push(`Ignored ${!ordered?'overlapping/out-of-order':'invalid/unmapped'} x64 exception range RVA 0x${begin.toString(16)}..0x${finish.toString(16)}`);meta.invalidRecords++;continue;}
+      const decoded=parseX64UnwindDescriptor(r,image,{begin,finish,unwind},budget);
+      previousBegin=begin;previousEnd=finish;
+      if(!decoded)continue;
+      if(decoded.fragments.length){
+        for(const fragment of decoded.fragments)recordExceptionFragment(image,'x64-pdata',fragment.begin,fragment.finish-fragment.begin,{encoding:'chaininfo',unwindRva:fragment.unwind,primaryAddress:image.imageBase+BigInt(decoded.primary.begin)});
+      }
+      const primary=decoded.primary;
+      if(primary&&executableRvaRange(image,primary.begin,primary.finish-primary.begin))image.functions.push(functionSeed(image.imageBase+BigInt(primary.begin),{size:BigInt(primary.finish-primary.begin),source:'exception',confidence:0.999}));
+      meta.count++;
     }
   }else if(machine===0xaa64||machine===0xa641){
-    let previousBegin=null,previousEnd=null;
+    const meta=exceptionDirectoryMetadata(image,'arm64-pdata'); let previousBegin=null,previousEnd=null;
     for(let p=off;p+8<=end;p+=8){
       if(!budget.take({inputBytes:8,records:1,objects:1,operations:2,estimatedHeapBytes:128},'exception-record'))break;
-      const begin=r.u32(p),unwindData=r.u32(p+4);if(!begin||(previousBegin!=null&&begin<=previousBegin)||!executableRvaRange(image,begin,1)){if(begin)image.warnings.push(`Ignored ARM64 exception entry outside executable order/range at RVA 0x${begin.toString(16)}`);continue;}
-      let size=null;if((unwindData&3)!==0){const functionLength=(unwindData>>>2)&0x7ff;if(functionLength){const bytes=functionLength*4;if((previousEnd!=null&&begin<previousEnd)||!executableRvaRange(image,begin,bytes)){image.warnings.push(`Ignored overlapping/unmapped ARM64 exception range at RVA 0x${begin.toString(16)}`);continue;}size=BigInt(bytes);}}
-      image.functions.push(functionSeed(image.imageBase+BigInt(begin),{size,source:'exception',confidence:0.995}));image.metadata.exceptionDirectory=image.metadata.exceptionDirectory||{count:0,kind:'arm64-pdata'};image.metadata.exceptionDirectory.count++;previousBegin=begin;previousEnd=size==null?null:begin+Number(size);
+      const begin=r.u32(p),unwindData=r.u32(p+4);if(!begin||(previousBegin!=null&&begin<=previousBegin)||!executableRvaRange(image,begin,1)){if(begin)image.warnings.push(`Ignored ARM64 exception entry outside executable order/range at RVA 0x${begin.toString(16)}`);meta.invalidRecords++;continue;}
+      const flag=unwindData&3; let descriptor=null;
+      if(flag===1||flag===2){const functionLength=(unwindData>>>2)&0x7ff;if(!functionLength){invalidExceptionRecord(image,'arm64-pdata',budget,'arm64-packed-length',`Ignored zero-length ARM64 packed unwind entry at RVA 0x${begin.toString(16)}`);previousBegin=begin;continue;}const bytes=functionLength*4;if((previousEnd!=null&&begin<previousEnd)||!executableRvaRange(image,begin,bytes)){image.warnings.push(`Ignored overlapping/unmapped ARM64 exception range at RVA 0x${begin.toString(16)}`);meta.invalidRecords++;previousBegin=begin;continue;}descriptor={size:bytes,fragment:flag===2,encoding:flag===2?'packed-fragment':'packed'};}
+      else if(flag===0){descriptor=parseArm64XdataDescriptor(r,image,begin,unwindData>>>0,budget);}
+      else{invalidExceptionRecord(image,'arm64-pdata',budget,'arm64-reserved-flag',`Ignored reserved ARM64 packed unwind flag at RVA 0x${begin.toString(16)}`);previousBegin=begin;continue;}
+      if(!descriptor){previousBegin=begin;continue;}
+      if(previousEnd!=null&&begin<previousEnd){image.warnings.push(`Ignored overlapping ARM64 exception range at RVA 0x${begin.toString(16)}`);meta.invalidRecords++;previousBegin=begin;continue;}
+      if(descriptor.fragment)recordExceptionFragment(image,'arm64-pdata',begin,descriptor.size,{encoding:descriptor.encoding||'xdata-fragment',xdataRva:descriptor.xdataRva??null});
+      else image.functions.push(functionSeed(image.imageBase+BigInt(begin),{size:BigInt(descriptor.size),source:'exception',confidence:0.995}));
+      meta.count++;previousBegin=begin;previousEnd=begin+descriptor.size;
     }
   }
 }
