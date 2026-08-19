@@ -40,12 +40,34 @@ function argumentName(v, state) {
   return state.opts?.argNames?.[n] || `a${n + 1}`;
 }
 
+function encodedLocationIdentity(value) {
+  return [...String(value ?? '')].map((char) => /[A-Za-z0-9]/.test(char)
+    ? char
+    : `_${char.codePointAt(0).toString(16).toUpperCase()}_`).join('');
+}
+
+function stackLocationName(loc, addr) {
+  const key = typeof loc?.key === 'string' ? loc.key : '';
+  const canonical = /^stack:([+-]?\d+)$/.exec(key);
+  if (canonical) {
+    const coordinate = BigInt(canonical[1]);
+    if (coordinate === 0n) return 'local_0';
+    const magnitude = (coordinate < 0n ? -coordinate : coordinate).toString(16).toUpperCase();
+    return coordinate < 0n ? `local_m${magnitude}` : `local_p${magnitude}`;
+  }
+  // A malformed/noncanonical key must not collapse onto another slot merely
+  // because their local displacements have the same absolute value. Encode the
+  // full available identity losslessly enough for a stable C identifier.
+  const fallbackIdentity = key || `disp:${String(loc?.disp ?? addr?.disp ?? 'unknown')}`;
+  return `local_slot_${encodedLocationIdentity(fallbackIdentity) || 'unknown'}`;
+}
+
 function memoryLocation(inst, state) {
   const loc = inst?.loc || {};
   const addr = inst?.addr || {};
   if (loc.kind === 'stack') {
-    const disp = BigInt(loc.disp ?? addr.disp ?? 0);
-    return { kind: 'stack', key: loc.key, name: `local_${(disp < 0n ? -disp : disp).toString(16).toUpperCase()}`, text: `local_${(disp < 0n ? -disp : disp).toString(16).toUpperCase()}` };
+    const name = stackLocationName(loc, addr);
+    return { kind: 'stack', key: loc.key, name, text: name };
   }
   if (loc.kind === 'global') {
     const name = state.opts?.symbolFor?.(loc.address);

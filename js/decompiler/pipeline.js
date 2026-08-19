@@ -13,6 +13,84 @@ const INVERSE_CONDITION = {
   mi:'pl', pl:'mi', vs:'vc', vc:'vs',
 };
 
+function wrappedSignedStackName(key) {
+  const match = /^stack:(\d+)$/.exec(String(key || ''));
+  if (!match) return null;
+  const raw = BigInt(match[1]);
+  if (raw < (1n << 63n) || raw >= (1n << 64n)) return null;
+  const signed = BigInt.asIntN(64, raw);
+  if (signed >= 0n) return null;
+  return {
+    oldName:`local_p${raw.toString(16).toUpperCase()}`,
+    canonicalName:`local_m${(-signed).toString(16).toUpperCase()}`,
+  };
+}
+
+function wrappedStackAliases(result) {
+  const aliasesByRow = new Map();
+  for (const line of result?.lines || []) {
+    if (line?.row == null) continue;
+    const alias = /\b(var_[A-Za-z0-9_$]+)\b/.exec(String(line.text || ''))?.[1] || null;
+    if (alias) aliasesByRow.set(String(line.row), alias);
+  }
+  const byKey = new Map();
+  for (const inst of result?.ir?.instructions || []) {
+    if (!['load','store'].includes(inst?.op) || inst?.loc?.kind !== 'stack' || !wrappedSignedStackName(inst.loc.key) || inst.row == null) continue;
+    const alias = aliasesByRow.get(String(inst.row));
+    if (alias && !byKey.has(inst.loc.key)) byKey.set(inst.loc.key, alias);
+  }
+  return byKey;
+}
+
+function normalizeWrappedStackDisplay(result, aliasesByKey, opts = {}) {
+  if (!result?.ir) return result;
+  const replacementsByRow = new Map();
+  for (const inst of result.ir.instructions || []) {
+    if (!['load','store'].includes(inst?.op) || inst?.loc?.kind !== 'stack' || inst.row == null) continue;
+    const names = wrappedSignedStackName(inst.loc.key);
+    if (!names) continue;
+    const alias = aliasesByKey?.get?.(inst.loc.key) || null;
+    const newName = alias ? `${names.canonicalName}_${alias}` : names.canonicalName;
+    replacementsByRow.set(String(inst.row), { ...names, newName, key:inst.loc.key });
+  }
+  if (!replacementsByRow.size) return result;
+
+  for (const store of result.semanticFacts?.stores || []) {
+    const names = wrappedSignedStackName(store?.location?.key);
+    if (!names) continue;
+    const alias = aliasesByKey?.get?.(store.location.key) || null;
+    const newName = alias ? `${names.canonicalName}_${alias}` : names.canonicalName;
+    store.location = { ...store.location, name:newName, text:newName };
+    store.lhsText = newName;
+  }
+
+  let changed = false;
+  for (const node of result.cAst?.body || []) {
+    const rows = node.source?.rows || [];
+    let text = String(node.text || '');
+    for (const row of rows) {
+      const replacement = replacementsByRow.get(String(row));
+      if (!replacement) continue;
+      text = text.split(replacement.oldName).join(replacement.newName);
+      if (node.semantic?.location?.key === replacement.key) {
+        node.semantic.location = { ...node.semantic.location, name:replacement.newName, text:replacement.newName };
+      }
+    }
+    if (text !== node.text) { node.text = text; changed = true; }
+  }
+  if (!changed || !result.cAst) return result;
+  const printed = printProgram(result.cAst, { columnWidth:opts.columnWidth || opts.prettyColumnWidth || 88 });
+  result.pseudocode = printed.text;
+  result.sourceMap = printed.mapping;
+  result.lines = result.cAst.body.map((node) => ({
+    kind:node.kind, indent:node.indent, text:node.text,
+    row:node.source?.rows?.[0] ?? null, addr:node.source?.addresses?.[0] ?? null,
+    note:null, source:node.source,
+  }));
+  result.metrics = { ...(result.metrics || {}), sourceMappedNodes:result.sourceMap?.length || 0 };
+  return result;
+}
+
 function isZeroValue(value) {
   return value?.const === 0n || (value?.def?.op === 'const' && (value.def.extra?.value ?? value.const) === 0n);
 }
@@ -120,7 +198,7 @@ function reanchorRecoveredReturnSource(result, opts = {}) {
   let changed = false;
   for (const node of result.cAst.body || []) {
     if (!(node.semantic?.op === 'return' || /^return\b/.test(String(node.text || '').trim()))) continue;
-    if (/\blocal_[0-9A-F]+\b/i.test(String(node.text || ''))) continue;
+    if (/\blocal_(?:[mp])?[0-9A-F]+(?:_var_[A-Za-z0-9_$]+)?\b/i.test(String(node.text || ''))) continue;
     const current = sourceOf(node.source);
     const sourceRows = new Set((current.rows || []).map((row) => String(row)));
     let load = null;
@@ -164,10 +242,11 @@ function reanchorRecoveredReturnSource(result, opts = {}) {
 }
 
 export function enhanceSemanticDecompilation(result, model, opts = {}) {
+  const aliasesByKey = wrappedStackAliases(result);
   const restore = normalizeConditionalSelectAliases(result?.ir);
   let core;
   try { core = constrainSemanticValueWidths(enhanceCore(result, model, opts)); }
   finally { restore(); }
   const recovered = recoverExactStackReturn(reanchorExactStackReturn(core), opts);
-  return reanchorRecoveredReturnSource(recovered, opts);
+  return reanchorRecoveredReturnSource(normalizeWrappedStackDisplay(recovered, aliasesByKey, opts), opts);
 }
