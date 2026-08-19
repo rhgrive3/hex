@@ -47,6 +47,14 @@ function unsupported(reason, detail = {}) {
   return Object.freeze({ supported: false, reason, ...detail });
 }
 
+function architecturalNoOp(base, expandedFrom, detail = {}) {
+  return { ...base, op: 'nop', expandedFrom, architecturalNoOp: true, ...detail };
+}
+
+function architecturalHint(base, expandedFrom, detail = {}) {
+  return { ...architecturalNoOp(base, expandedFrom, detail), op: 'hint', hint: true };
+}
+
 // --------------------------------------------------------------------------
 // 32-bit (uncompressed) encodings
 // --------------------------------------------------------------------------
@@ -232,12 +240,17 @@ function decodeQuadrant1(word) {
   const imm6 = signExtend((bits(word, 12, 12) << 5) | bits(word, 6, 2), 6);
   switch (funct3) {
     case 0:
-      if (bits(word, 11, 7) === 0) return { ...base, op: 'addi', expandedFrom: 'c.nop', format: 'I', rd: 'x0', rs1: 'x0', imm: 0n };
+      if (bits(word, 11, 7) === 0) {
+        if (imm6 === 0n) return architecturalNoOp(base, 'c.nop', { format: 'I', rd: 'x0', rs1: 'x0', imm: 0n });
+        return architecturalHint(base, 'c.nop', { format: 'I', rd: 'x0', rs1: 'x0', imm: imm6 });
+      }
+      if (imm6 === 0n) return architecturalHint(base, 'c.addi', { format: 'I', rd, rs1: rd, imm: imm6 });
       return { ...base, op: 'addi', expandedFrom: 'c.addi', format: 'I', rd, rs1: rd, imm: imm6 };
     case 1:
       if (bits(word, 11, 7) === 0) return unsupported('riscv64-c-addiw-reserved-zero-rd');
       return { ...base, op: 'addiw', expandedFrom: 'c.addiw', format: 'I', rd, rs1: rd, imm: imm6, resultBits: 32 };
     case 2:
+      if (rd === 'x0') return architecturalHint(base, 'c.li', { format: 'I', rd, rs1: 'x0', imm: imm6 });
       return { ...base, op: 'addi', expandedFrom: 'c.li', format: 'I', rd, rs1: 'x0', imm: imm6 };
     case 3: {
       if (bits(word, 11, 7) === 2) {
@@ -247,14 +260,17 @@ function decodeQuadrant1(word) {
       }
       const nz = (bits(word, 12, 12) << 17) | (bits(word, 6, 2) << 12);
       if (nz === 0) return unsupported('riscv64-c-lui-reserved-zero-immediate');
-      return { ...base, op: 'lui', expandedFrom: 'c.lui', format: 'U', rd, imm: signExtend(nz, 18) };
+      const imm = signExtend(nz, 18);
+      if (rd === 'x0') return architecturalHint(base, 'c.lui', { format: 'U', rd, imm });
+      return { ...base, op: 'lui', expandedFrom: 'c.lui', format: 'U', rd, imm };
     }
     case 4: {
       const select = bits(word, 11, 10);
       if (select === 0 || select === 1) {
         const shamt = (bits(word, 12, 12) << 5) | bits(word, 6, 2);
-        if (shamt === 0) return unsupported('riscv64-c-shift-reserved-zero-shamt');
-        return { ...base, op: select === 0 ? 'srli' : 'srai', expandedFrom: select === 0 ? 'c.srli' : 'c.srai', format: 'I', rd: rdPrime, rs1: rdPrime, shamt };
+        const expandedFrom = select === 0 ? 'c.srli' : 'c.srai';
+        if (shamt === 0) return architecturalHint(base, expandedFrom, { format: 'I', rd: rdPrime, rs1: rdPrime, shamt });
+        return { ...base, op: select === 0 ? 'srli' : 'srai', expandedFrom, format: 'I', rd: rdPrime, rs1: rdPrime, shamt };
       }
       if (select === 2) return { ...base, op: 'andi', expandedFrom: 'c.andi', format: 'I', rd: rdPrime, rs1: rdPrime, imm: imm6 };
       const rs2Prime = CREG(bits(word, 4, 2));
@@ -296,7 +312,7 @@ function decodeQuadrant2(word) {
   switch (funct3) {
     case 0: {
       const shamt = (bits(word, 12, 12) << 5) | bits(word, 6, 2);
-      if (shamt === 0 || bits(word, 11, 7) === 0) return unsupported('riscv64-c-slli-reserved-encoding');
+      if (shamt === 0 || bits(word, 11, 7) === 0) return architecturalHint(base, 'c.slli', { format: 'I', rd, rs1: rd, shamt });
       return { ...base, op: 'slli', expandedFrom: 'c.slli', format: 'I', rd, rs1: rd, shamt };
     }
     case 2: {
@@ -317,12 +333,12 @@ function decodeQuadrant2(word) {
           if (!hasRd) return unsupported('riscv64-c-jr-reserved-zero-rs1');
           return { ...base, op: 'jalr', expandedFrom: 'c.jr', format: 'I', rd: 'x0', rs1: rd, imm: 0n };
         }
-        if (!hasRd) return unsupported('riscv64-c-mv-reserved-zero-rd');
+        if (!hasRd) return architecturalHint(base, 'c.mv', { format: 'R', rd, rs1: 'x0', rs2 });
         return { ...base, op: 'add', expandedFrom: 'c.mv', format: 'R', rd, rs1: 'x0', rs2 };
       }
       if (!hasRs2 && !hasRd) return { ...base, op: 'ebreak', expandedFrom: 'c.ebreak', format: 'I' };
       if (!hasRs2) return { ...base, op: 'jalr', expandedFrom: 'c.jalr', format: 'I', rd: 'x1', rs1: rd, imm: 0n };
-      if (!hasRd) return unsupported('riscv64-c-add-reserved-zero-rd');
+      if (!hasRd) return architecturalHint(base, 'c.add', { format: 'R', rd, rs1: rd, rs2 });
       return { ...base, op: 'add', expandedFrom: 'c.add', format: 'R', rd, rs1: rd, rs2 };
     }
     case 6: {
