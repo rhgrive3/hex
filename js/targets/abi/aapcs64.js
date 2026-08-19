@@ -25,6 +25,16 @@ function parameterAbiClass(param) {
   return { pointer, hfa, vector, fp, members, bits };
 }
 
+function possibleRegisterSource(reg, bits, abiClass) {
+  return {
+    t:'reg', reg, bits,
+    possible:true,
+    mustUse:false,
+    purpose:'variadic-tail-candidate',
+    abiClass,
+  };
+}
+
 export function classifyAAPCS64Arguments(insn, opts = {}) {
   const proto = callPrototypeOf(insn, opts);
   const params = callParameterList(proto);
@@ -34,30 +44,76 @@ export function classifyAAPCS64Arguments(insn, opts = {}) {
   let gp = 0, fp = 0, stackOffset = 0;
   let stackArgsMayContainPointers = false;
   if (!params) {
-    for (let i=0;i<8;i++) { srcs.push({t:'reg',reg:`x${i}`,bits:64}); arguments_.push({index:i,location:'register',reg:`x${i}`,abiClass:'unknown-gp'}); }
-    for (let i=0;i<8;i++) { srcs.push({t:'reg',reg:`v${i}`,bits:128}); arguments_.push({index:8+i,location:'register',reg:`v${i}`,abiClass:'unknown-fp-vector'}); }
-    return { srcs, arguments:arguments_, stackArguments, stackArgsUnknown:true, stackArgsMayContainPointers:false, evidence:'conservative-aapcs64' };
+    for (let i=0;i<8;i++) {
+      srcs.push({t:'reg',reg:`x${i}`,bits:64,possible:true,mustUse:false,abiClass:'unknown-gp'});
+      arguments_.push({index:i,location:'register',reg:`x${i}`,abiClass:'unknown-gp',possible:true,mustUse:false,mayContainPointers:true});
+    }
+    for (let i=0;i<8;i++) {
+      srcs.push({t:'reg',reg:`v${i}`,bits:128,possible:true,mustUse:false,abiClass:'unknown-fp-vector'});
+      arguments_.push({index:8+i,location:'register',reg:`v${i}`,abiClass:'unknown-fp-vector',possible:true,mustUse:false});
+    }
+    return {
+      srcs,
+      arguments:arguments_,
+      stackArguments,
+      stackArgsUnknown:true,
+      stackArgsMayContainPointers:true,
+      possibleRegisterInputs:srcs.slice(),
+      partial:true,
+      evidence:'conservative-aapcs64',
+    };
   }
   params.forEach((param,index) => {
     const c=parameterAbiClass(param);
     const regsNeeded=c.hfa ? c.members : 1;
     if (c.fp && fp + regsNeeded <= 8) {
       const regs=[];
-      for(let n=0;n<regsNeeded;n++){const reg=`v${fp++}`;regs.push(reg);srcs.push({t:'reg',reg,bits:c.vector?128:c.bits});}
-      arguments_.push({index,location:'register',regs,reg:regs[0],abiClass:c.hfa?'hfa':c.vector?'vector':'fp',pointer:c.pointer,bits:c.bits});
+      for(let n=0;n<regsNeeded;n++){
+        const reg=`v${fp++}`;
+        regs.push(reg);
+        srcs.push({t:'reg',reg,bits:c.vector?128:c.bits,possible:false,mustUse:true});
+      }
+      arguments_.push({index,location:'register',regs,reg:regs[0],abiClass:c.hfa?'hfa':c.vector?'vector':'fp',pointer:c.pointer,bits:c.bits,possible:false,mustUse:true});
       return;
     }
     if (!c.fp && gp < 8) {
-      const reg=`x${gp++}`; srcs.push({t:'reg',reg,bits:64});
-      arguments_.push({index,location:'register',reg,abiClass:c.pointer?'pointer':'integer',pointer:c.pointer,bits:c.bits});
+      const reg=`x${gp++}`;
+      srcs.push({t:'reg',reg,bits:64,possible:false,mustUse:true});
+      arguments_.push({index,location:'register',reg,abiClass:c.pointer?'pointer':'integer',pointer:c.pointer,bits:c.bits,possible:false,mustUse:true});
       return;
     }
     const slots=Math.max(1,Math.ceil((c.hfa?c.members*c.bits:c.bits)/64));
-    const entry={index,location:'stack',offset:stackOffset,bytes:slots*8,abiClass:c.hfa?'hfa':c.vector?'vector':c.fp?'fp':c.pointer?'pointer':'integer',pointer:c.pointer,bits:c.bits};
+    const entry={index,location:'stack',offset:stackOffset,bytes:slots*8,abiClass:c.hfa?'hfa':c.vector?'vector':c.fp?'fp':c.pointer?'pointer':'integer',pointer:c.pointer,bits:c.bits,possible:false,mustUse:true};
     stackArguments.push(entry);arguments_.push(entry);stackOffset+=slots*8;
     if(c.pointer || param?.mayContainPointers === true || param?.containsPointers === true) stackArgsMayContainPointers=true;
   });
-  return { srcs, arguments:arguments_, stackArguments, stackArgsUnknown:proto?.variadic===true||proto?.varargs===true, stackArgsMayContainPointers, evidence:'prototype-aapcs64' };
+
+  const variadic = proto?.variadic===true||proto?.varargs===true;
+  const possibleRegisterInputs = [];
+  if (variadic) {
+    for (let i=gp;i<8;i++) {
+      const source=possibleRegisterSource(`x${i}`,64,'variadic-unknown-gp');
+      srcs.push(source);
+      possibleRegisterInputs.push(source);
+      arguments_.push({index:null,location:'register',reg:`x${i}`,bits:64,abiClass:'variadic-unknown-gp',possible:true,mustUse:false,mayContainPointers:true});
+    }
+    for (let i=fp;i<8;i++) {
+      const source=possibleRegisterSource(`v${i}`,128,'variadic-unknown-fp-vector');
+      srcs.push(source);
+      possibleRegisterInputs.push(source);
+      arguments_.push({index:null,location:'register',reg:`v${i}`,bits:128,abiClass:'variadic-unknown-fp-vector',possible:true,mustUse:false});
+    }
+  }
+  return {
+    srcs,
+    arguments:arguments_,
+    stackArguments,
+    stackArgsUnknown:variadic,
+    stackArgsMayContainPointers:stackArgsMayContainPointers || variadic,
+    possibleRegisterInputs,
+    partial:variadic,
+    evidence:variadic?'prototype-aapcs64-variadic':'prototype-aapcs64',
+  };
 }
 
 export function classifyAAPCS64CallReturn(insn, opts = {}) {
@@ -94,8 +150,8 @@ const CALLER_SAVED = Object.freeze(['x0','x1','x2','x3','x4','x5','x6','x7','x8'
 const CALLEE_SAVED = Object.freeze(['x19','x20','x21','x22','x23','x24','x25','x26','x27','x28','x29', ...Array.from({length:8},(_x,i)=>`v${i+8}`)]);
 
 export const AAPCS64_ABI = new ABIPlugin({
-  id:'aapcs64', semanticVersion:'1', architectureId:'arm64',
-  platformPredicate:({ platform }) => !platform || platform === 'darwin' || platform === 'linux' || platform === 'android' || platform === 'unknown',
+  id:'aapcs64', semanticVersion:'2', architectureId:'arm64',
+  platformPredicate:({ platform }) => !platform || platform === 'linux' || platform === 'android' || platform === 'unknown',
   callingConventions:()=>Object.freeze(['aapcs64']),
   classifyArguments:classifyAAPCS64Arguments,
   classifyCallReturn:classifyAAPCS64CallReturn,
@@ -103,8 +159,8 @@ export const AAPCS64_ABI = new ABIPlugin({
   classifyEntryRegister:(reg) => /^x[0-7]$/.test(String(reg || '')) ? { kind:'argument', reg:String(reg), index:Number(String(reg).slice(1)) } : { kind:'incoming-register-state', reg:String(reg || '') },
   callerSaved:()=>CALLER_SAVED,
   calleeSaved:()=>CALLEE_SAVED,
-  stackRules:()=>Object.freeze({ alignment:16, stackGrows:'down', argumentSlotBytes:8 }),
+  stackRules:()=>Object.freeze({ alignment:16, stackGrows:'down', argumentSlotBytes:8, variadicRegisterSaveAreas:true }),
   redZone:()=>0,
   unwindRules:()=>Object.freeze({ framePointer:'x29', linkRegister:'x30' }),
-  defaultUnknownCallEffects:()=>Object.freeze({ registerClobbers:CALLER_SAVED, memoryEffects:'unknown', mayThrow:true }),
+  defaultUnknownCallEffects:()=>Object.freeze({ registerClobbers:CALLER_SAVED, memoryEffects:'unknown', mayThrow:true, stackArguments:'unknown', stackArgsMayContainPointers:true }),
 });
