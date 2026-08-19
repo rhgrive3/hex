@@ -1,0 +1,64 @@
+name: Phase 7 ownership
+
+# Ownership is checked from the actual changed-file inventory, never from PR
+# prose (EP-002). The manifest self-check runs too, so a contradictory manifest
+# is caught before it can approve a change it should have blocked (EP-004).
+on:
+  pull_request:
+    paths:
+      - 'js/analysis/**'
+      - 'js/semantics/compat/index.js'
+      - 'tests/phase7/**'
+      - 'tools/validation/phase7/**'
+      - 'tools/validation/phase7-ownership.mjs'
+      - 'tools/validation/phase-ownership/phase7.json'
+      - 'reports/phase7/**'
+      - '.github/workflows/phase7-ownership.yml'
+  workflow_dispatch:
+    inputs:
+      base:
+        description: 'Base SHA for the changed-file inventory'
+        required: true
+        type: string
+      head:
+        description: 'Head SHA for the changed-file inventory'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phase7-ownership-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ownership:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.head || github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Validate the Phase 7 ownership manifest itself
+        run: node tools/validation/phase7-ownership.mjs --check-manifest
+      - name: Validate the actual changed-file inventory
+        env:
+          BASE_SHA: ${{ github.event.inputs.base || github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.inputs.head || github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          node tools/validation/phase7-ownership.mjs --base-sha "$BASE_SHA" --head-sha "$HEAD_SHA"
+      - name: Prove the ownership gate still rejects an out-of-lane change
+        # A gate that has silently stopped rejecting anything is worse than no
+        # gate, because it reports success. This proves it still fails.
+        run: |
+          set -euo pipefail
+          if node tools/validation/phase7-ownership.mjs --files-json '["js/semantics/ir/nodes.js"]'; then
+            echo "Phase 7 ownership gate accepted a forbidden path" >&2
+            exit 1
+          fi
