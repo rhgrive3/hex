@@ -1,6 +1,6 @@
-# Phase 7 release evidence — BLOCKING
+# Phase 7 release evidence — READY
 
-- product: `2db559fe8a7353f04fcbdfb31acb1bf8e58e84cf` (tree `9a9384fa49a1fb827d5319d6303113d4ef4fc036`, branch `phase7/static-analysis-depth`, clean: false)
+- product: `9ba2d8b51d54543caa4a48ac31f3bd65d9fcd54a` (tree `4da00b4f46142a986f778b8e3f6822ede05a84f9`, branch `phase7/static-analysis-depth`, clean: true)
 - verifier: phase7.verifier 1.0.0 (source sha256 `22616c498e0baabc`)
 - profile version: 1
 - corpus: phase7-alias-memory-corpus v1, digest `519bd15f3a918dbc2b436aca4870455d`, frozen match: true
@@ -41,6 +41,4 @@
 
 ## Failures
 
-| category | first divergence | expected | actual | blocking |
-|---|---|---|---|---|
-| identity | working tree is dirty, so the commit does not describe what was tested | clean tree | M .github/workflows/phase7-release-validation.yml; M  js/userscript/deployment-identity.generated.js; M tests/phase7/ownership/manifest.test.mjs; M tools/validation/phase-ownership/phase7.json | true |
+None.

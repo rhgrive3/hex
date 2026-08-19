@@ -3,17 +3,12 @@
   "verifierId": "phase7.verifier",
   "verifierVersion": "1.0.0",
   "verifierSourceSha256": "22616c498e0baabc979b4e2ab98023a2f26ecfd638d8c2168bfb04d15a0d954a",
-  "generatedAt": "2026-08-19T13:05:03.590Z",
+  "generatedAt": "2026-08-19T13:05:30.971Z",
   "product": {
-    "commitSha": "2db559fe8a7353f04fcbdfb31acb1bf8e58e84cf",
-    "treeSha": "9a9384fa49a1fb827d5319d6303113d4ef4fc036",
-    "workingTreeClean": false,
-    "dirtyPaths": [
-      "M .github/workflows/phase7-release-validation.yml",
-      "M  js/userscript/deployment-identity.generated.js",
-      "M tests/phase7/ownership/manifest.test.mjs",
-      "M tools/validation/phase-ownership/phase7.json"
-    ],
+    "commitSha": "9ba2d8b51d54543caa4a48ac31f3bd65d9fcd54a",
+    "treeSha": "4da00b4f46142a986f778b8e3f6822ede05a84f9",
+    "workingTreeClean": true,
+    "dirtyPaths": [],
     "branch": "phase7/static-analysis-depth"
   },
   "profileVersion": 1,
@@ -1165,47 +1160,38 @@
   },
   "performance": {
     "coldActiveFunction": {
-      "medianMs": 24.642,
+      "medianMs": 21.686,
       "samples": [
-        30.135,
-        23.565,
-        25.084,
-        20.421,
-        24.642
+        33.802,
+        21.686,
+        20.18,
+        20.561,
+        26.019
       ]
     },
     "warmActiveFunction": {
-      "medianMs": 3.673,
+      "medianMs": 3.694,
       "samples": [
-        4.732,
-        5.011,
-        3.228,
-        3.673,
-        3.297
+        6.397,
+        3.363,
+        3.694,
+        3.92,
+        2.915
       ]
     },
     "pathologicalPointerPhi": {
-      "medianMs": 3.364,
+      "medianMs": 5.128,
       "samples": [
-        3.158,
-        3.385,
-        4.223,
-        3.364,
-        3.217
+        3.278,
+        3.89,
+        5.128,
+        6.535,
+        7.978
       ]
     }
   },
   "gates": [],
-  "evidenceDigest": "d49bdc164584c6f87b76d640ee9558bd",
-  "failures": [
-    {
-      "category": "identity",
-      "firstDivergence": "working tree is dirty, so the commit does not describe what was tested",
-      "expected": "clean tree",
-      "actual": "M .github/workflows/phase7-release-validation.yml; M  js/userscript/deployment-identity.generated.js; M tests/phase7/ownership/manifest.test.mjs; M tools/validation/phase-ownership/phase7.json",
-      "identity": "2db559fe8a7353f04fcbdfb31acb1bf8e58e84cf",
-      "blocking": true
-    }
-  ],
-  "verdict": "BLOCKING"
+  "evidenceDigest": "44abdb68772326dc23317ae96b883117",
+  "failures": [],
+  "verdict": "READY"
 }
