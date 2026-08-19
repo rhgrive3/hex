@@ -1,4 +1,5 @@
 import { liftRiscv64ControlEffects } from './control.js';
+import { liftRiscv64HintEffects } from './hint.js';
 import { liftRiscv64IntegerEffects } from './integer.js';
 import { liftRiscv64MemoryEffects } from './memory.js';
 import { liftRiscv64MulDivEffects } from './muldiv.js';
@@ -11,6 +12,7 @@ import {
 } from './common.js';
 
 const FAMILIES = Object.freeze([
+  Object.freeze({ id: 'hint', lift: liftRiscv64HintEffects }),
   Object.freeze({ id: 'control', lift: liftRiscv64ControlEffects }),
   Object.freeze({ id: 'memory', lift: liftRiscv64MemoryEffects }),
   Object.freeze({ id: 'muldiv', lift: liftRiscv64MulDivEffects }),
@@ -24,9 +26,9 @@ export { RISCV64_ARCHITECTURE_ID, RISCV64_MACHINE_EFFECTS_SEMANTIC_VERSION, RISC
  * Lift one decoded RV64 instruction to exact MachineEffects.
  *
  * Returning null means "this architecture plugin produced no effects", and the
- * generic pipeline turns that into an explicit `unknown` bundle. Nothing here
- * may return an empty exact bundle, which would silently claim the instruction
- * preserves all state.
+ * generic pipeline turns that into an explicit `unknown` bundle. An empty exact
+ * bundle is valid only for an architecturally proven no-op and therefore must
+ * carry the MachineEffects `statePreservation` proof required by the core schema.
  */
 export function liftRiscv64MachineEffects(decoded, context = {}) {
   const instruction = normalizeRiscv64Instruction(decoded, context);
