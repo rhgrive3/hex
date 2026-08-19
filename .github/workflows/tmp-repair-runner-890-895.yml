@@ -50,14 +50,16 @@ jobs:
       - name: Repository verification
         if: steps.gate.outputs.apply == 'true'
         run: npm run check
-      - name: Canonical userscript idempotence
+      - name: Canonical tracked userscript idempotence
         if: steps.gate.outputs.apply == 'true'
         run: |
-          cp userscript/hex.user.js /tmp/hex.user.js
           cp userscript/hex.user.template.js /tmp/hex.user.template.js
+          cp userscript/release-version.json /tmp/release-version.json
+          cp js/userscript/deployment-identity.generated.js /tmp/deployment-identity.generated.js
           npm run userscript:build
-          cmp userscript/hex.user.js /tmp/hex.user.js
           cmp userscript/hex.user.template.js /tmp/hex.user.template.js
+          cmp userscript/release-version.json /tmp/release-version.json
+          cmp js/userscript/deployment-identity.generated.js /tmp/deployment-identity.generated.js
       - name: Commit verified source result
         if: steps.gate.outputs.apply == 'true'
         run: |
