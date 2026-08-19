@@ -1,14 +1,27 @@
 name: Phase 6 release validation
 
-# The permanent Phase 6 verifier. It runs on the Phase 6 branch and on any
-# pull request that touches Phase 6 surfaces, and it can be dispatched against
-# an exact SHA so a release verdict is always bound to a specific product head
-# rather than to "whatever main was at the time".
+# The permanent Phase 6 verifier. It runs on Phase 6-relevant source changes
+# and can be dispatched against an exact SHA. Unrelated main pushes must not
+# spend the frozen compiler-corpus cost.
 on:
   push:
     branches:
       - main
       - 'hex/p6-*'
+    paths:
+      - 'js/targets/architecture/**'
+      - 'js/targets/abi/**'
+      - 'js/analysis/semantic-function.js'
+      - 'js/semantics/**'
+      - 'js/decompiler/**'
+      - 'js/binary/elf.js'
+      - 'js/platform/capability-maturity.js'
+      - 'capstone.js'
+      - 'capstone.wasm'
+      - 'tests/phase6/**'
+      - 'tools/validation/phase6/**'
+      - '.github/workflows/phase6-release-validation.yml'
+      - 'package.json'
   pull_request:
     paths:
       - 'js/targets/architecture/**'
@@ -23,6 +36,7 @@ on:
       - 'tests/phase6/**'
       - 'tools/validation/phase6/**'
       - '.github/workflows/phase6-release-validation.yml'
+      - 'package.json'
   workflow_dispatch:
     inputs:
       sha:
