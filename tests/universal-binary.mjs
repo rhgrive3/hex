@@ -65,7 +65,7 @@ function makeLegacyThreadMachOFixture() {
   const w16=(o,x)=>v.setUint16(o,x,true), w32=(o,x)=>v.setUint32(o,x,true), wi32=(o,x)=>v.setInt32(o,x,true), w64=(o,x)=>v.setBigUint64(o,BigInt(x),true);
   w32(0,0xfeedfacf); wi32(4,0x0100000c); wi32(8,0); w32(12,2); w32(16,3); w32(20,72+288+16); w32(24,0); w32(28,0);
   let p=32; w32(p,0x19); w32(p+4,72); for (const [i,c] of [...'__TEXT'].entries()) b[p+8+i]=c.charCodeAt(0); w64(p+24,0x100000000n); w64(p+32,0x1000n); w64(p+40,0); w64(p+48,0x400n); wi32(p+56,5); wi32(p+60,5); w32(p+64,0); w32(p+68,0);
-  p+=72; w32(p,0x5); w32(p+4,288); w32(p+8,6); w32(p+12,68); w64(p+16+264,0x100000180n);
+  p+=72; w32(p,0x5); w32(p+4,288); w32(p+8,6); w32(p+12,68); w64(p+16+256,0x100000180n); w32(p+16+264,0x60000000);
   p+=288; w32(p,0x25); w32(p+4,16); w32(p+8,0x00110002); w32(p+12,0x00120000);
   return b;
 }
