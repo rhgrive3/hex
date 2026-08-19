@@ -14,7 +14,8 @@ export const SYSV_AMD64_SCOPE = Object.freeze({
   sseArguments:'exact-through-xmm0-xmm7-for-explicit-scalar-or-128-bit-vector-types',
   aggregates:'exact-when-decoder-type-metadata-provides-valid-eightbyte-classes-up-to-16-bytes-otherwise-partial',
   variadic:'partial-fixed-parameters-and-vector-count-state',
-  x87:'unsupported',
+  x87:'arguments-memory-exact-returns-unsupported',
+  int128:'exact-two-integer-eightbytes-with-whole-argument-register-rollback',
 });
 
 function callPrototypeOf(instruction, options) {
@@ -31,7 +32,27 @@ function parameterList(prototype) {
   return Array.isArray(list) ? list : null;
 }
 
+function normalizedType(type) { return String(type || '').trim().toLowerCase().replace(/\s+/g, ' '); }
+function isComplexLongDouble(type, abiClass = '') {
+  const text = `${normalizedType(type)} ${normalizedType(abiClass)}`;
+  return /(?:^|\s)(?:_complex\s+)?long double complex(?:\s|$)/.test(text)
+    || /(?:^|\s)complex long double(?:\s|$)/.test(text)
+    || /(?:^|\s)complex_x87(?:\s|$)/.test(text);
+}
+function isLongDouble(type, abiClass = '') {
+  const text = `${normalizedType(type)} ${normalizedType(abiClass)}`;
+  return !isComplexLongDouble(type, abiClass) && (/(?:^|\s)long double(?:\s|$)/.test(text) || /(?:^|\s)x87(?:up)?(?:\s|$)/.test(text));
+}
+function isInt128(type) {
+  const text = normalizedType(type).replace(/\b(?:const|volatile|signed)\b/g, '').replace(/\s+/g, ' ').trim();
+  return /^(?:unsigned )?__int128(?:_t)?$/.test(text) || /^(?:u?int128)(?:_t)?$/.test(text);
+}
+
 function typeBits(type, fallback = 64) {
+  type = normalizedType(type);
+  if (isComplexLongDouble(type)) return 256;
+  if (isLongDouble(type)) return 128;
+  if (isInt128(type)) return 128;
   if (/\b(?:bool|char|int8|uint8)\b/.test(type)) return 8;
   if (/\b(?:short|int16|uint16)\b/.test(type)) return 16;
   if (/\b(?:int|unsigned int|int32|uint32|float)\b/.test(type)) return 32;
@@ -40,19 +61,25 @@ function typeBits(type, fallback = 64) {
 }
 
 function parameterClass(parameter) {
-  const type = String(parameter?.type || parameter?.name || '').trim().toLowerCase();
-  const abiClass = String(parameter?.abiClass || parameter?.class || parameter?.kind || '').trim().toLowerCase();
+  const type = normalizedType(parameter?.type || parameter?.name || '');
+  const abiClass = normalizedType(parameter?.abiClass || parameter?.class || parameter?.kind || '');
+  const complexX87 = parameter?.complexX87 === true || isComplexLongDouble(type, abiClass);
+  const x87 = complexX87 || parameter?.x87 === true || isLongDouble(type, abiClass);
   const pointer = parameter?.pointer === true || parameter?.isPointer === true
     || /\*|pointer|ptr|object|class|block|closure/.test(`${type} ${abiClass}`);
-  const aggregate = parameter?.aggregate === true || parameter?.isAggregate === true
-    || /aggregate|struct|union|record|array/.test(`${type} ${abiClass}`);
-  const vector = parameter?.vector === true || /vector|simd|sse/.test(`${type} ${abiClass}`);
-  const floating = !aggregate && (parameter?.floating === true || /(^|\s)(?:float|double)(?:\s|$)|\bfp\b/.test(`${type} ${abiClass}`));
+  const aggregate = !x87 && (parameter?.aggregate === true || parameter?.isAggregate === true
+    || /aggregate|struct|union|record|array/.test(`${type} ${abiClass}`));
+  const vector = !x87 && (parameter?.vector === true || /vector|simd|sse/.test(`${type} ${abiClass}`));
+  const floating = !x87 && !aggregate && (parameter?.floating === true || /(^|\s)(?:float|double)(?:\s|$)|\bfp\b/.test(`${type} ${abiClass}`));
   const declaredBits = parameter?.bits ?? parameter?.sizeBits;
   const rawBits = Number(declaredBits ?? (pointer ? 64 : typeBits(type, vector ? 128 : 64)));
   const bits = Number.isSafeInteger(rawBits) && rawBits > 0 ? Math.min(512, rawBits) : 64;
   const nonTrivialForCalls = parameter?.nonTrivialForCalls === true || parameter?.nonTrivial === true;
-  return { type, abiClass, pointer, aggregate, vector, floating, bits, bitsProven:declaredBits != null, nonTrivialForCalls };
+  const integerEightbytes = !pointer && !aggregate && !vector && !floating && !x87 && bits === 128 ? 2 : 1;
+  return {
+    type, abiClass, pointer, aggregate, vector, floating, bits, bitsProven:declaredBits != null,
+    nonTrivialForCalls, x87, complexX87, integerEightbytes,
+  };
 }
 
 function explicitEightbyteClasses(parameter) {
@@ -95,6 +122,8 @@ function conservativeUnknownArguments() {
     stackArgsMayContainPointers:true,
     aggregateClassification:'partial-unproven',
     variadicClassification:'partial-unproven',
+    implicitInputs:[],
+    variadicVectorRegisterCount:null,
     partial:true,
     scope:SYSV_AMD64_SCOPE,
     evidence:'conservative-sysv-amd64',
@@ -127,6 +156,29 @@ export function classifySysVAMD64Arguments(instruction, options = {}) {
   parameters.forEach((parameter, index) => {
     const classified = parameterClass(parameter);
     const aggregateClasses = classified.aggregate && !classified.nonTrivialForCalls ? explicitEightbyteClasses(parameter) : null;
+
+    if (!allocationUnknown && classified.x87) {
+      const bytes = classified.complexX87 ? 32 : 16;
+      stackOffset = align(stackOffset, 16);
+      const entry = {
+        index,
+        location:'stack',
+        offset:stackOffset,
+        offsetBase:'incoming-stack-arguments',
+        calleeEntryOffset:8 + stackOffset,
+        bytes,
+        alignment:16,
+        abiClass:classified.complexX87 ? 'complex-x87-memory' : 'x87-memory',
+        eightbyteClasses:classified.complexX87 ? ['COMPLEX_X87'] : ['X87','X87UP'],
+        pointer:false,
+        bits:classified.bits,
+      };
+      arguments_.push(entry);
+      stackArguments.push(entry);
+      stackOffset += bytes;
+      return;
+    }
+
     if (!allocationUnknown && classified.nonTrivialForCalls) {
       aggregateProven = true;
       const reg = INTEGER_ARGUMENT_REGISTERS[integerIndex];
@@ -197,6 +249,37 @@ export function classifySysVAMD64Arguments(instruction, options = {}) {
       return;
     }
 
+    if (classified.integerEightbytes === 2) {
+      if (integerIndex + 2 <= INTEGER_ARGUMENT_REGISTERS.length) {
+        const regs = INTEGER_ARGUMENT_REGISTERS.slice(integerIndex, integerIndex + 2);
+        integerIndex += 2;
+        const pieces = regs.map((reg, pieceIndex) => {
+          appendRegisterSource(srcs, seenSources, reg, 64, { purpose:'integer-eightbyte' });
+          return { index:pieceIndex, abiClass:'INTEGER', reg, bits:64 };
+        });
+        arguments_.push({ index, location:'registers', regs, pieces, abiClass:'integer-eightbytes', pointer:false, bits:128 });
+      } else {
+        stackOffset = align(stackOffset, 16);
+        const entry = {
+          index,
+          location:'stack',
+          offset:stackOffset,
+          offsetBase:'incoming-stack-arguments',
+          calleeEntryOffset:8 + stackOffset,
+          bytes:16,
+          alignment:16,
+          abiClass:'integer-eightbytes-memory',
+          eightbyteClasses:['INTEGER','INTEGER'],
+          pointer:false,
+          bits:128,
+        };
+        stackArguments.push(entry);
+        arguments_.push(entry);
+        stackOffset += 16;
+      }
+      return;
+    }
+
     if ((classified.floating || classified.vector) && vectorIndex < VECTOR_ARGUMENT_REGISTERS.length) {
       const reg = VECTOR_ARGUMENT_REGISTERS[vectorIndex++];
       appendRegisterSource(srcs, seenSources, reg, classified.vector ? 128 : classified.bits);
@@ -258,13 +341,13 @@ export function classifySysVAMD64Arguments(instruction, options = {}) {
 
 function classifyReturn(prototype, options = {}) {
   if (!prototype) return null;
-  const type = String(options.returnType || prototype.returnType || prototype.ret || prototype.result || '').trim().toLowerCase();
-  const abiClass = String(options.returnClass || prototype.returnClass || prototype.abiClass || prototype.resultClass || '').trim().toLowerCase();
+  const type = normalizedType(options.returnType || prototype.returnType || prototype.ret || prototype.result || '');
+  const abiClass = normalizedType(options.returnClass || prototype.returnClass || prototype.abiClass || prototype.resultClass || '');
   if (options.returnsValue === false || prototype.returnsValue === false || prototype.void === true || type === 'void' || abiClass === 'void') return null;
   if (prototype.indirectResult === true || abiClass === 'indirect') {
     return { reg:'rax', bits:64, indirect:true, hiddenResultPointer:{ input:'rdi', returned:'rax' } };
   }
-  if (/long double|x87/.test(`${type} ${abiClass}`)) {
+  if (isComplexLongDouble(type, abiClass) || isLongDouble(type, abiClass)) {
     return { reg:null, partial:true, unsupported:true, reason:'sysv-amd64-x87-return-outside-claimed-scope' };
   }
   if (prototype.aggregate === true || /aggregate|struct|union|record|array/.test(`${type} ${abiClass}`)) {
@@ -284,6 +367,13 @@ function classifyReturn(prototype, options = {}) {
   const floating = vector || /(^|\s)(?:float|double)(?:\s|$)|\bfp\b/.test(`${type} ${abiClass}`);
   const rawBits = Number(prototype.returnBits || prototype.bits || options.returnBits || typeBits(type, vector ? 128 : 64));
   const bits = Number.isSafeInteger(rawBits) && rawBits > 0 ? Math.min(128, rawBits) : 64;
+  if (!floating && bits === 128) {
+    const pieces = [
+      { index:0, abiClass:'INTEGER', reg:'rax', bits:64 },
+      { index:1, abiClass:'INTEGER', reg:'rdx', bits:64 },
+    ];
+    return { reg:'rax', regs:['rax','rdx'], pieces, bits:128, abiClass:'integer-eightbytes' };
+  }
   if (floating) return { reg:'xmm0', bits };
   if (type || abiClass || options.returnsValue === true || prototype.returnsValue === true) return { reg:'rax', bits };
   return null;
