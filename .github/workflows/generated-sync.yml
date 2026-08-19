@@ -1,57 +1,32 @@
-name: Generated userscript sync
+name: Diagnose PR987 ABI reconciliation
 
 on:
   pull_request:
-    paths:
-      - 'index.html'
-      - 'css/**'
-      - 'js/**'
-      - 'capstone.wasm'
-      - 'scripts/build-userscript.mjs'
-      - 'scripts/userscript-release-version.mjs'
-      - 'userscript/hex.user.template.js'
-      - 'userscript/release-version.json'
-      - 'package.json'
-      - 'package-lock.json'
-      - '.github/workflows/generated-sync.yml'
-  push:
-    branches: [main]
-    paths:
-      - 'index.html'
-      - 'css/**'
-      - 'js/**'
-      - 'capstone.wasm'
-      - 'scripts/build-userscript.mjs'
-      - 'scripts/userscript-release-version.mjs'
-      - 'userscript/hex.user.template.js'
-      - 'userscript/release-version.json'
-      - 'package.json'
-      - 'package-lock.json'
-      - '.github/workflows/generated-sync.yml'
-  workflow_dispatch:
+    branches:
+      - integrate/all-open-prs-20260819
 
 permissions:
   contents: read
 
-concurrency:
-  group: generated-sync-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
-
 jobs:
-  generated-sync:
+  diagnose:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
         with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - name: Rebuild canonical userscript outputs
-        run: npm run userscript:build
-      - name: Require userscript-owned generated outputs to match source
-        run: >-
-          git diff --exit-code --
-          userscript/hex.user.template.js
-          userscript/release-version.json
+          ref: fix/integration-abi-526-954-955-958-959
+          fetch-depth: 0
+      - name: Attempt source-branch merge without committing
+        shell: bash
+        run: |
+          git fetch origin fix/unlinked-abi-526-954-955-958-959
+          set +e
+          git merge --no-commit --no-ff origin/fix/unlinked-abi-526-954-955-958-959
+          rc=$?
+          echo '=== UNMERGED ==='
+          git diff --name-only --diff-filter=U || true
+          echo '=== STATUS ==='
+          git status --short
+          git merge --abort >/dev/null 2>&1 || true
+          exit "$rc"
