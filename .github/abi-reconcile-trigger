@@ -1,1 +1,1 @@
-trigger after tmp-abi-reconcile.yml promotion
+trigger base-owned tmp-integration-abi-reconcile.yml
