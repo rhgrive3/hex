@@ -90,7 +90,8 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      - if: matrix.name != 'contracts'
+        run: npm ci
       - run: ${{ matrix.command }}
 
   manual-full-check:
