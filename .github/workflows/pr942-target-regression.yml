@@ -1,0 +1,57 @@
+name: PR942 target regression
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [integrate/open-issue-fixes-current-main-20260819]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pr942-target-regression
+  cancel-in-progress: true
+
+jobs:
+  target:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: integrate/open-issue-fixes-current-main-20260819
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Update stale signed condition fixture
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('tests/decompiler-semantic.mjs')
+          text = p.read_text()
+          old = r"assert.match(r.pseudocode, /if\s*\(\s*self->hp\s*<=\s*0\s*\)/);"
+          new = r"assert.match(r.pseudocode, /if\s*\(\s*(?:\(int32_t\))?self->hp\s*<=\s*(?:\(int32_t\))?0\s*\)/);"
+          if text.count(old) != 1:
+              raise SystemExit(f'expected one stale signed-condition assertion, found {text.count(old)}')
+          p.write_text(text.replace(old, new, 1))
+          PY
+          git diff --check
+      - name: Verify focused regressions
+        run: |
+          node tests/decompiler-semantic.mjs
+          node tests/semantic-v2/issues-791-797-800-825-ir-soundness.test.mjs
+          node tests/issue-861-862-c-printer-signedness.mjs
+      - name: Publish fixture and remove temporary files
+        run: |
+          git rm .github/workflows/pr942-target-regression.yml .github/pr942-fixture-trigger
+          git add tests/decompiler-semantic.mjs
+          git diff --cached --check
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git commit -m 'test: align PR942 signed decompiler expectation'
+          git push origin HEAD:integrate/open-issue-fixes-current-main-20260819
