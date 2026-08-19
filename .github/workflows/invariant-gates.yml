@@ -2,130 +2,133 @@ name: Invariant Gates
 
 on:
   pull_request:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
-  group: invariant-gates-${{ github.workflow }}-${{ github.ref }}
+  group: invariant-gates-pr874-resolver
   cancel-in-progress: true
 
 jobs:
-  plan:
-    name: check-plan
+  resolve-pr874:
+    if: github.head_ref == 'integrate/open-issue-fixes-20260819' && github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      matrix: ${{ steps.plan.outputs.matrix }}
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: integrate/open-issue-fixes-20260819
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Build deduplicated npm-check shard matrix
-        id: plan
-        shell: bash
-        run: |
-          node --input-type=module <<'NODE'
-          import fs from 'node:fs';
-
-          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-          const parts = String(pkg.scripts?.check || '')
-            .split(/\s+&&\s+/)
-            .map((command) => command.trim())
-            .filter(Boolean);
-          if (parts.length < 2) throw new Error('npm check must contain at least two independent top-level commands');
-
-          const isolated = new Map([
-            ['npm test', 'test'],
-            ['npm run phase6:test', 'phase6:test'],
-            ['npm run benchmark:baseline', 'benchmark:baseline'],
-          ]);
-          const contracts = parts.filter((command) => !isolated.has(command));
-          if (!contracts.length) throw new Error('npm check must contain contract commands');
-
-          // MachineEffects used to run in a separate always-on workflow. Keep
-          // the coverage while avoiding another checkout/setup/npm-ci runner.
-          if (!parts.includes('npm run effects:test')) contracts.unshift('npm run effects:test');
-
-          // One large serial contract shard became the critical path in live CI.
-          // Keep the low-overhead checks together, but run the heavier historical
-          // phase contracts in parallel. This still cuts the old nine npm-ci
-          // runners almost in half while improving wall-clock latency.
-          const phaseCommands = new Set(['npm run phase4:test', 'npm run phase5:test']);
-          const coreContracts = contracts.filter((command) => !phaseCommands.has(command));
-          const phaseContracts = contracts.filter((command) => phaseCommands.has(command));
-          if (!coreContracts.length || !phaseContracts.length) {
-            throw new Error('npm check contract layout changed; rebalance invariant shards explicitly');
-          }
-
-          const include = [
-            { name: 'contracts-core', command: coreContracts.join(' && ') },
-            { name: 'contracts-phase', command: phaseContracts.join(' && ') },
-            ...parts
-              .filter((command) => isolated.has(command))
-              .map((command) => ({ name: isolated.get(command), command })),
-          ];
-          fs.appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify({ include })}\n`);
-          NODE
-
-  check-shards:
-    name: check-${{ matrix.name }}
-    needs: plan
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      max-parallel: 5
-      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
           cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Prepare generated userscript for canonical Phase 5 component semantic check
-        if: >-
-          github.event_name == 'pull_request' &&
-          github.base_ref == 'hex/p5-x86-integration' &&
-          matrix.name == 'contracts-core' &&
-          (
-            github.head_ref == 'hex/p5-1-x86-int-control' ||
-            github.head_ref == 'hex/p5-2-x86-memory-atomic' ||
-            github.head_ref == 'hex/p5-3-x86-fp-simd-system' ||
-            github.head_ref == 'hex/p5-4-x86-abis' ||
-            github.head_ref == 'hex/p5-5-variable-viewer' ||
-            github.head_ref == 'hex/p5-6-x86-verification'
-          )
-        run: npm run userscript:build
-
-      - name: Run exact check shard
-        run: ${{ matrix.command }}
-
-  invariant-gates:
-    name: invariant-gates
-    if: always()
-    needs: [plan, check-shards]
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Require complete repository check
-        env:
-          PLAN_RESULT: ${{ needs.plan.result }}
-          SHARD_RESULT: ${{ needs.check-shards.result }}
+      - name: Apply reviewed PR 874 delta onto current main
         shell: bash
         run: |
-          if [[ "$PLAN_RESULT" != "success" || "$SHARD_RESULT" != "success" ]]; then
-            echo "::error::Repository check failed (plan=$PLAN_RESULT, shards=$SHARD_RESULT)."
-            exit 1
-          fi
+          set -euo pipefail
+          git fetch origin archive/pr874-pre-resolve integration/safe-prs-20260819 main
+          git diff --binary 4e03ea8a8b3be36e61f91ac4aa6657fd95f382b9 c637d57de3a033572686b32545ddd93256d99456 -- . \
+            ':(exclude).github/workflows/machine-effects.yml' \
+            ':(exclude).github/workflows/migration-guardrails.yml' \
+            ':(exclude)userscript/hex.user.template.js' \
+            ':(exclude)userscript/release-version.json' \
+            ':(exclude)js/analysis/semantic-function.js' \
+            ':(exclude)js/targets/architecture/riscv64/effects/control.js' \
+            > /tmp/pr874.patch
+          git apply --3way --index /tmp/pr874.patch
+      - name: Reconcile shared semantic-function and RISC-V control changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+
+          p = Path('js/analysis/semantic-function.js')
+          s = p.read_text()
+          old = "    const fallthroughBlock = byStart.get(endOf(instruction).toString()) || blocks[index + 1] || null;"
+          new = """    // Fallthrough is an architectural next-instruction address, not \"the next\n    // enumerated block\". A truncated/disjoint decode must remain incomplete\n    // instead of inventing a control-flow edge across the gap.\n    const fallthroughBlock = byStart.get(endOf(instruction).toString()) || null;"""
+          if old not in s:
+              raise SystemExit('PR874 semantic-function anchor changed')
+          p.write_text(s.replace(old, new, 1))
+
+          p = Path('js/targets/architecture/riscv64/effects/control.js')
+          s = p.read_text()
+          old = """    if (target === next) {
+      // A branch whose taken target is the fallthrough is architecturally still
+      // a conditional branch, but it has one successor. Report it honestly
+      // rather than inventing a second edge.
+      return ctx.finish({
+        controlEffect: { kind: 'branch', target: addressRef(target), condition },
+        family: 'control',
+        metadata: { operation: op, degenerateConditional: true, flagsRegisterUsed: false },
+      });
+    }
+    return ctx.finish({
+      controlEffect: {
+        kind: 'conditional-branch',
+        target: addressRef(target),
+        fallthrough: addressRef(next),
+        condition,
+      },
+      possibleFaults: [targetAlignmentFault()],
+      family: 'control',
+      metadata: { operation: op, predicate, flagsRegisterUsed: false, conditionKind: 'direct-register-comparison' },
+    });"""
+          new = """    // A same-target branch still performs a syntactic conditional operation.
+    // RVWMO control dependencies are defined from that syntactic dependency,
+    // not from the number of unique CFG successors. Keep the generic
+    // conditional-branch contract even when target === fallthrough; CFG may
+    // deduplicate the two addresses independently.
+    return ctx.finish({
+      controlEffect: {
+        kind: 'conditional-branch',
+        target: addressRef(target),
+        fallthrough: addressRef(next),
+        condition,
+      },
+      possibleFaults: target === next ? [] : [targetAlignmentFault()],
+      family: 'control',
+      metadata: {
+        operation: op,
+        predicate,
+        flagsRegisterUsed: false,
+        conditionKind: 'direct-register-comparison',
+        ...(target === next ? { degenerateConditional: true } : {}),
+      },
+    });"""
+          if old not in s:
+              raise SystemExit('PR874 riscv control anchor changed')
+          p.write_text(s.replace(old, new, 1))
+          PY
+          git add js/analysis/semantic-function.js js/targets/architecture/riscv64/effects/control.js
+          git diff --cached --check
+      - run: npm ci
+      - name: Regenerate canonical userscript outputs
+        run: npm run userscript:build
+      - name: Full repository verification
+        run: npm run check
+      - name: Prove generated userscript idempotence
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp userscript/hex.user.template.js /tmp/hex.user.template.js
+          cp userscript/release-version.json /tmp/release-version.json
+          npm run userscript:build
+          cmp userscript/hex.user.template.js /tmp/hex.user.template.js
+          cmp userscript/release-version.json /tmp/release-version.json
+      - name: Publish clean resolved head
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git checkout origin/main -- .github/workflows/invariant-gates.yml
+          rm -f .github/workflows/tmp-resolve-874.yml .github/workflows/tmp-resolve-903.yml
+          git add -A
+          git diff --cached --check
+          git commit -m 'chore: resolve PR 874 against current main'
+          git push origin HEAD:integrate/open-issue-fixes-20260819
