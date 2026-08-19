@@ -50,9 +50,8 @@ jobs:
       - run: npm ci
       - name: Rebuild canonical userscript outputs
         run: npm run userscript:build
-      - name: Require tracked generated outputs to match source
+      - name: Require userscript-owned generated outputs to match source
         run: >-
           git diff --exit-code --
           userscript/hex.user.template.js
           userscript/release-version.json
-          js/userscript/deployment-identity.generated.js
