@@ -17,7 +17,7 @@ jobs:
         with:
           ref: fix/integration-abi-526-954-955-958-959
           fetch-depth: 0
-      - name: Attempt source-branch merge without committing
+      - name: Print only substantive ABI conflict hunks
         shell: bash
         run: |
           git config user.name 'integration-diagnostic'
@@ -28,7 +28,11 @@ jobs:
           rc=$?
           echo '=== UNMERGED ==='
           git diff --name-only --diff-filter=U || true
-          echo '=== STATUS ==='
-          git status --short
+          for f in js/targets/abi/aapcs64.js js/targets/abi/microsoft-x64.js package.json; do
+            if git ls-files -u -- "$f" | grep -q .; then
+              echo "=== CONFLICT: $f ==="
+              grep -n -B25 -A35 -E '^(<<<<<<<|=======|>>>>>>>)' "$f" || true
+            fi
+          done
           git merge --abort >/dev/null 2>&1 || true
           exit "$rc"
