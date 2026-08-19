@@ -49,6 +49,8 @@ jobs:
           node tests/decompiler-semantic.mjs
           node tests/phase6/generic-core/degenerate-control-dependency.test.mjs
           node tests/worker-classic-harness.mjs
+      - name: Phase 6 generic-core
+        run: node tests/phase6/run.mjs --group generic-core
       - name: Rebuild canonical userscript outputs
         run: npm run userscript:build
       - name: Full repository verification
