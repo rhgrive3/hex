@@ -146,7 +146,12 @@ function normalizeV1Observable(list) {
   const define = (dst, expr, bits) => {
     if (!dst) return;
     env.set(dst, expr);
-    if (!isSynthetic(dst) && dst !== 'nzcv') writes.push([String(dst), ['value', Number(bits || 64), expr]]);
+    // PSTATE.BTYPE is a v3 canonical state extension with no legacy-v1 slot.
+    // Dedicated BTYPE regressions verify it; this shadow compares only values
+    // representable by both semantic paths.
+    if (!isSynthetic(dst) && dst !== 'nzcv' && dst !== 'pstate.btype') {
+      writes.push([String(dst), ['value', Number(bits || 64), expr]]);
+    }
   };
 
   for (const item of Array.isArray(list) ? list : []) {
@@ -228,7 +233,7 @@ const shadowCases = [
 ];
 
 const differential = await runDifferentialSuite(shadowCases, {
-  semanticVersions:{ machineEffects:'1.0.0', arm64:'2', legacyV1:'1' },
+  semanticVersions:{ machineEffects:'1.0.0', arm64:'3', legacyV1:'1' },
   machineLifter:(instruction) => ARM64_ARCHITECTURE.liftExact(instruction),
   compatibilityLowering:(bundle) => lowerMachineEffectsToLegacyV1(bundle),
   legacyV1Oracle,
@@ -251,7 +256,7 @@ assert.ok(conservativeCompatibilityBarriers > 0, 'fault information must remain 
 const releaseGate = Object.freeze({
   schemaVersion:'phase2-machine-effects-release-gate/v1',
   machineEffectsSchemaVersion:'1.0.0',
-  architectureSemanticVersion:'2',
+  architectureSemanticVersion:'3',
   coverageScope:'phase2-release-corpus',
   coverage,
   shadowDifferentialScope:'representative-observable-v1-smoke',
