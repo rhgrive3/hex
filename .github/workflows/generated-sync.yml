@@ -25,30 +25,28 @@ jobs:
         run: |
           set -euo pipefail
           git show cce0797363bfe0ddc85a89c623d132e1845dce31:js/ir.js > js/ir.js
+          git show 4dae354fcebd8cfda036498183c43be45e1a80ba^:tests/semantic-v2/issues-791-797-800-825-ir-soundness.test.mjs > tests/semantic-v2/issues-791-797-800-825-ir-soundness.test.mjs
           python - <<'PY'
           from pathlib import Path
           p=Path('js/semantics/compat/semantic-ir-v2-to-v1-nodes.js'); s=p.read_text()
           old="""        const resultIsWritten = node.outputs?.[0] && hasRegisterStateWriteForValue(node.outputs[0], context);\n        if (!resultIsWritten) {\n"""
           new="""        const resultValueId = node.outputs?.[0] ?? null;\n        const resultIsWritten = resultValueId != null && hasRegisterStateWriteForValue(resultValueId, context);\n        const resultIsConsumed = resultValueId != null && context.ir.nodes.some((candidate) =>\n          candidate.id !== node.id && candidate.inputs?.includes(resultValueId));\n        if (!resultIsWritten && !resultIsConsumed) {\n"""
           assert old in s; p.write_text(s.replace(old,new,1))
-          p=Path('js/ir-base.js'); s=p.read_text()
-          old="return value.range ? { min: value.range.min, max: value.range.max } : null;"
-          assert old in s; p.write_text(s.replace(old,"return value.range ? { ...value.range } : null;",1))
+
+          for name in ['js/ir-base.js','js/ir.js']:
+              p=Path(name); s=p.read_text()
+              old="""  const existing = valueRange(value);\n  const comparableExisting = existing\n    ? normalizeRangeDomain(existing, bits, signed)\n    : null;\n"""
+              if old in s:
+                  s=s.replace(old,"""  const existing = value?.range ?? null;\n  const comparableExisting = existing\n    ? normalizeRangeDomain(existing, bits, signed)\n    : null;\n""",1)
+              else:
+                  old2="""  const existing = valueRange(value);\n  if (existing) { if (existing.min > min) min = existing.min; if (existing.max < max) max = existing.max; }\n"""
+                  assert old2 in s, f'expected constrained range block not found in {name}'
+                  s=s.replace(old2,"""  const existing = value?.range ?? null;\n  const comparableExisting = existing\n    ? normalizeRangeDomain(existing, bits, signed)\n    : null;\n  if (comparableExisting) {\n    if (comparableExisting.min > min) min = comparableExisting.min;\n    if (comparableExisting.max < max) max = comparableExisting.max;\n  }\n""",1)
+              p.write_text(s)
           PY
-      - name: Inspect branch-fact cache
+          git diff --check
+      - name: Verify semantic frontier
         run: |
-          node --input-type=module <<'NODE'
-          import { buildSemanticModel } from './js/blocks.js';
-          import { irFor, branchConstraints, valueRange } from './js/ir.js';
-          const BASE=0x100000000n, lines=['and x0, x1, #0x8000000000000000','cmp x0, #0','b.lt #0x100000010','nop','ret'];
-          const rows=lines.map((line,row)=>{const i=line.indexOf(' ');return {row,address:BASE+BigInt(row*4),mn:i<0?line:line.slice(0,i),ops:i<0?'':line.slice(i+1)}});
-          const rowOfAddress=(a)=>{const d=BigInt(a)-BASE;return d<0n||d>=BigInt(rows.length*4)||d%4n?null:Number(d/4n)};
-          const ir=irFor(buildSemanticModel(rows,{startRow:0,endRow:rows.length-1,rowOfAddress}),{rowOfAddress,decoderSemanticVersion:'diag-cache-x800'});
-          const rep=(_k,v)=>typeof v==='bigint'?`${v}n`:v;
-          console.log('CACHE_EXISTS',Object.prototype.hasOwnProperty.call(ir,'_branchConstraints'),JSON.stringify(ir._branchConstraints,rep));
-          const before=branchConstraints(ir)[0];
-          console.log('BEFORE',JSON.stringify({range:before?.taken?.range,vr:valueRange(before?.taken?.value)},rep));
-          delete ir._branchConstraints;
-          const after=branchConstraints(ir)[0];
-          console.log('AFTER_DELETE',JSON.stringify({range:after?.taken?.range,vr:valueRange(after?.taken?.value)},rep));
-          NODE
+          node tests/machine-effects/issue-957-bti-guarded-page.test.mjs
+          node tests/semantic-v2/issues-791-797-800-825-ir-soundness.test.mjs
+          node tests/semantic-v2/issue-949-indirect-control.test.mjs
