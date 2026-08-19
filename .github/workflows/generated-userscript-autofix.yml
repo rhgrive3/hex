@@ -1,0 +1,89 @@
+name: Generated userscript autofix
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - 'index.html'
+      - 'css/**'
+      - 'js/**'
+      - 'capstone.wasm'
+      - 'scripts/build-userscript.mjs'
+      - 'scripts/userscript-release-version.mjs'
+      - 'userscript/hex.user.template.js'
+      - 'userscript/release-version.json'
+      - 'package.json'
+      - 'package-lock.json'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: generated-userscript-autofix-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  autofix:
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.ref != github.event.pull_request.base.ref
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Rebuild canonical userscript outputs
+        run: npm run userscript:build
+
+      - name: Restore deployment-only build identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          git restore --source=HEAD --worktree -- js/userscript/deployment-identity.generated.js
+
+      - name: Reject unexpected build side effects
+        shell: bash
+        run: |
+          set -euo pipefail
+          unexpected="$(git status --porcelain --untracked-files=all | awk '{print $2}' | grep -Ev '^(userscript/hex\.user\.template\.js|userscript/release-version\.json)$' || true)"
+          if [[ -n "$unexpected" ]]; then
+            echo 'userscript:build changed files outside the generated-output allowlist:' >&2
+            printf '%s\n' "$unexpected" >&2
+            exit 1
+          fi
+
+      - name: Commit canonical outputs when stale
+        shell: bash
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- userscript/hex.user.template.js userscript/release-version.json; then
+            echo 'Generated userscript outputs are already canonical.'
+            exit 0
+          fi
+
+          git fetch origin "${{ github.event.pull_request.head.ref }}"
+          if [[ "$(git rev-parse FETCH_HEAD)" != "$HEAD_SHA" ]]; then
+            echo 'PR head moved during autofix; refusing stale push.' >&2
+            exit 1
+          fi
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- userscript/hex.user.template.js userscript/release-version.json
+          git diff --cached --quiet && exit 0
+          git commit -m 'chore: sync generated userscript'
+          git push origin "HEAD:${{ github.event.pull_request.head.ref }}"

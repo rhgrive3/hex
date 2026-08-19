@@ -1,27 +1,27 @@
 #!/usr/bin/env python3
-"""Normalize oracle ADRP-derived references with independent CFG-aware provenance.
+"""Normalize oracle references/ObjC layout with independent static trust rules.
 
 The production worker deliberately stopped carrying ADRP state across control-flow
-boundaries in #556.  The original Python oracle only killed registers on explicit
-writes, so it could combine an ADRP from one path/function with a later ADD/LDR
-from another and label that fabricated reference as truth.
+boundaries in #556. The original Python oracle could still combine an ADRP from
+one path/function with a later ADD/LDR, including 32-bit W-register arithmetic,
+and label a fabricated reference as truth.
 
-This pass keeps the oracle independent (LIEF + Python Capstone) while applying the
-architectural lifetime rules that make an address materialisation meaningful:
-known function entries and unconditional control-flow boundaries clear state,
-conditional forward targets start a fresh path, and calls clobber AAPCS64 caller-
-saved x0-x18 while preserving callee-saved registers.
+This pass keeps the oracle independent (LIEF + Python Capstone) while applying
+architectural lifetime/width rules, mapped-VM validation, and static ObjC ivar
+layout sanity. Runtime-populated Swift ivar offsets are not exact static truth.
 """
 import gzip
 import json
 import re
-import struct
 import sys
 
 import lief
 from capstone import Cs, CS_ARCH_ARM64, CS_MODE_ARM
 
+from cross_binary_oracle_hardening import mapped_vm, normalize_objc_ivars
+
 _REGX = re.compile(r'^[wx](\d+)$')
+_REGX64 = re.compile(r'^x(\d+)$')
 _MEM = re.compile(r'(\w+), \[(\w+)(?:, #(-?0x[0-9a-fA-F]+|-?\d+))?\]$')
 _NO_WRITE = {
     'cmp', 'cmn', 'tst', 'fcmp', 'fcmpe', 'ccmp', 'ccmn',
@@ -85,11 +85,11 @@ def text_image(path):
     if text is None:
         raise RuntimeError('missing __TEXT,__text')
     code = raw[text.offset:text.offset + text.size]
-    return text.virtual_address, code
+    return image, text.virtual_address, code
 
 
 def cfg_safe_adr_targets(binary, function_starts):
-    tvm, code = text_image(binary)
+    image, tvm, code = text_image(binary)
     text_end = tvm + len(code)
     md = Cs(CS_ARCH_ARM64, CS_MODE_ARM)
     md.detail = False
@@ -105,6 +105,13 @@ def cfg_safe_adr_targets(binary, function_starts):
         mn = ins.mnemonic
         ops = ins.op_str
 
+        # Skipdata/undecodable words are provenance barriers. We do not know
+        # what registers the skipped bytes would define, so carrying an ADRP
+        # through them would manufacture certainty.
+        if mn.startswith('.'):
+            bases.clear()
+            continue
+
         # A register value from another function or predecessor is not local
         # evidence for this path.
         if pc in starts or pc in forward_entries:
@@ -116,7 +123,8 @@ def cfg_safe_adr_targets(binary, function_starts):
         if mn == 'adrp':
             try:
                 dst, imm = [x.strip() for x in ops.split(',')]
-                dst = reg_x(dst)
+                if not _REGX64.match(dst):
+                    raise ValueError('ADRP destination is not X register')
                 bases[dst] = int(imm.lstrip('#'), 0)
                 written.discard(dst)
                 propagated = dst
@@ -124,25 +132,34 @@ def cfg_safe_adr_targets(binary, function_starts):
                 pass
         elif mn == 'add':
             parts = [x.strip() for x in ops.split(',')]
-            if len(parts) == 3 and parts[2].startswith('#'):
-                src = reg_x(parts[1])
+            # ADRP+ADD is a 64-bit address materialisation. A W-register ADD
+            # truncates to 32 bits and must never inherit X-register provenance.
+            if (len(parts) == 3 and parts[2].startswith('#') and
+                    _REGX64.match(parts[0]) and _REGX64.match(parts[1])):
+                src = parts[1]
                 if src in bases:
                     try:
                         target = bases[src] + int(parts[2][1:], 0)
-                        out[pc] = target
-                        dst = reg_x(parts[0])
-                        bases[dst] = target
-                        written.discard(dst)
-                        propagated = dst
+                        dst = parts[0]
+                        if mapped_vm(image, target):
+                            out[pc] = target
+                            bases[dst] = target
+                            written.discard(dst)
+                            propagated = dst
+                        else:
+                            bases.pop(dst, None)
                     except ValueError:
                         pass
         elif mn in _LOADS and '[' in ops:
             m = _MEM.match(ops)
             if m:
-                base = reg_x(m.group(2))
-                if base in bases:
+                base_text = m.group(2)
+                base = reg_x(base_text)
+                if _REGX64.match(base_text) and base in bases:
                     off = int(m.group(3), 0) if m.group(3) else 0
-                    out[pc] = bases[base] + off
+                    target = bases[base] + off
+                    if mapped_vm(image, target):
+                        out[pc] = target
 
         for reg in written:
             if reg != propagated:
@@ -182,9 +199,15 @@ def main():
     before = len(doc.get('adrTargets') or {})
     doc['adrTargets'] = {str(site): target for site, target in safe.items()}
     doc['stringXrefs'] = {key: sites for key, sites in xrefs.items()}
-    doc['addressProvenanceOracle'] = 'cfg-aware-aapcs64-v1'
+    dropped_ivars = normalize_objc_ivars(doc)
+    doc['addressProvenanceOracle'] = 'cfg-aware-aapcs64-v2'
+    doc['objcIvarOracle'] = 'static-layout-trusted-v1'
     save_doc(oracle_path, doc)
-    print('cfg-normalized adrTargets %d -> %d; string targets %d' % (before, len(safe), len(xrefs)), file=sys.stderr)
+    print(
+        'cfg-normalized adrTargets %d -> %d; string targets %d; dropped untrusted ivars %d'
+        % (before, len(safe), len(xrefs), dropped_ivars),
+        file=sys.stderr,
+    )
     return 0
 
 

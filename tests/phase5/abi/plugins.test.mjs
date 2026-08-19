@@ -125,23 +125,33 @@ test('Microsoft hidden result pointer consumes RCX and shifts positional FP regi
   assert.equal(result.arguments[3].reg, 'r9');
   assert.equal(result.arguments[4].location, 'stack');
   assert.equal(result.arguments[4].offset, 32);
-  assert.deepEqual(classifyMicrosoftX64FunctionReturn({ functionPrototype:{ indirectResult:true } }), {
-    reg:'rax', bits:64, indirect:true, hiddenResultPointer:{ input:'rcx', returned:'rax' },
-  });
+  const returned = classifyMicrosoftX64FunctionReturn({ functionPrototype:{ indirectResult:true } });
+  assert.equal(returned.reg, 'rax');
+  assert.equal(returned.bits, 64);
+  assert.equal(returned.indirect, true);
+  assert.equal(returned.reason, 'explicit-indirect-result');
+  assert.deepEqual(returned.hiddenResultPointer, { input:'rcx', returned:'rax', callerAllocated:true });
 });
 
-test('Microsoft aggregate returns are exact only with proven trivial size', () => {
+test('Microsoft aggregate returns are exact when direct or derive canonical hidden sret', () => {
   assert.deepEqual(classifyMicrosoftX64FunctionReturn({
     functionPrototype:{ aggregate:true, returnBits:64, trivialForCalls:true },
   }), { reg:'rax', bits:64, aggregate:true, abiClass:'integer-aggregate' });
-  assert.equal(classifyMicrosoftX64FunctionReturn({
+  const indirect = classifyMicrosoftX64FunctionReturn({
     functionPrototype:{ aggregate:true, returnBits:128, trivialForCalls:true },
-  }).partial, true);
+  });
+  assert.equal(indirect.reg, 'rax');
+  assert.equal(indirect.bits, 64);
+  assert.equal(indirect.indirect, true);
+  assert.equal(indirect.aggregate, true);
+  assert.equal(indirect.pointeeBits, 128);
+  assert.equal(indirect.reason, 'aggregate-result-not-direct-size');
+  assert.deepEqual(indirect.hiddenResultPointer, { input:'rcx', returned:'rax', callerAllocated:true });
 });
 
 test('both ABIs retain conservative unknown-call and platform stack rules', () => {
   assert.equal(SYSV_AMD64_ABI.semanticVersion, '2');
-  assert.equal(MICROSOFT_X64_ABI.semanticVersion, '2');
+  assert.equal(MICROSOFT_X64_ABI.semanticVersion, '3');
   assert.equal(SYSV_AMD64_ABI.defaultUnknownCallEffects().memoryEffects, 'unknown');
   assert.equal(MICROSOFT_X64_ABI.defaultUnknownCallEffects().memoryEffects, 'unknown');
   assert.equal(SYSV_AMD64_ABI.stackRules().directionFlag, 'clear-on-entry-and-return');
