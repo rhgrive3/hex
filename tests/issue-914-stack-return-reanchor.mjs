@@ -1,3 +1,4 @@
+// #914 regression: a historical stack load cannot replace the actual latest x0 return definition.
 import assert from 'node:assert/strict';
 import { semanticAbiAdapter } from '../js/analysis/semantic-function.js';
 import { AAPCS64_ABI } from '../js/targets/abi/index.js';
