@@ -1,18 +1,15 @@
-name: Cross-binary accuracy diagnostics
+name: Cross-binary function-guess A/B
 
-# Disposable analysis-only workflow. The branch is pinned to PR #996 final head
-# and intentionally runs only root-cause diagnostics for sub-100% features.
+# Disposable analysis-only workflow. PR #999 is pinned to PR #996 final head.
+# All non-function-start diagnostics were already captured; repeated experiments
+# run only the funcs-guess probe for maximum iteration speed.
 on:
   pull_request:
     branches: [analysis/cross-binary-100pct-base]
-    paths:
-      - 'tests/analysis/**'
-      - 'js/**'
-      - '.github/workflows/cross-binary-accuracy.yml'
   workflow_dispatch:
 
 concurrency:
-  group: cross-binary-diagnostics-${{ github.event.pull_request.number || github.ref }}
+  group: cross-binary-function-ab-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -22,10 +19,10 @@ env:
   ORACLE_PYTHON_VERSION: '3.12.13'
 
 jobs:
-  diagnose:
-    name: diagnose-${{ matrix.name }}
+  function-ab:
+    name: funcs-${{ matrix.name }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       max-parallel: 3
@@ -70,39 +67,23 @@ jobs:
           python-version: ${{ env.ORACLE_PYTHON_VERSION }}
           cache: pip
           cache-dependency-path: tests/oracle-requirements.txt
-      - name: Install oracle dependencies on cache miss
-        if: steps.oracle-cache.outputs.cache-hit != 'true'
-        run: python -m pip install --disable-pip-version-check -r tests/oracle-requirements.txt
       - name: Generate oracle on cache miss
         if: steps.oracle-cache.outputs.cache-hit != 'true'
         run: |
+          python -m pip install --disable-pip-version-check -r tests/oracle-requirements.txt
           python tests/oracle.py "tests/.real-fixtures/${{ matrix.file }}" "${{ matrix.oracle }}"
           python tests/oracle-cfg-normalize.py "tests/.real-fixtures/${{ matrix.file }}" "${{ matrix.oracle }}"
-      - name: Run focused root-cause diagnostics
+      - name: Measure function-start heuristic
         run: |
-          node --max-old-space-size=6000 tests/analysis/cross-binary-diagnose.mjs \
-            --target="tests/.real-fixtures/${{ matrix.file }}" \
-            --oracle="${{ matrix.oracle }}" \
-            --name="${{ matrix.name }}" \
-            --out="diagnostics-${{ matrix.name }}.json"
           node --max-old-space-size=6000 tests/analysis/function-guess-filter-probe.mjs \
             --target="tests/.real-fixtures/${{ matrix.file }}" \
             --oracle="${{ matrix.oracle }}" \
             --name="${{ matrix.name }}" \
             --out="function-filter-${{ matrix.name }}.json"
-          node --max-old-space-size=6000 tests/analysis/kind-mismatch-probe.mjs \
-            --target="tests/.real-fixtures/${{ matrix.file }}" \
-            --oracle="${{ matrix.oracle }}" \
-            --name="${{ matrix.name }}" \
-            --out="kind-${{ matrix.name }}.json"
           cat "function-filter-${{ matrix.name }}.json"
-          cat "kind-${{ matrix.name }}.json"
       - uses: actions/upload-artifact@v4
         with:
-          name: cross-binary-diagnostics-${{ matrix.name }}
-          path: |
-            diagnostics-${{ matrix.name }}.json
-            function-filter-${{ matrix.name }}.json
-            kind-${{ matrix.name }}.json
+          name: function-ab-${{ matrix.name }}
+          path: function-filter-${{ matrix.name }}.json
           if-no-files-found: error
           retention-days: 7
