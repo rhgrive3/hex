@@ -106,3 +106,36 @@ a precision or coverage bound that the current contract states explicitly.
 - The frozen corpus is synthetic microfixtures plus real compiler/linker debug
   output. It is deliberately small and exact; a large real-binary corpus is a
   separate, larger investment.
+
+## Phase 8 handoff
+
+Phase 8 consumes `js/analysis/index.js` and nothing else. The boundary supplies:
+
+| Capability | What Phase 8 gets |
+|---|---|
+| `alias(a, b)` | relation, closed-vocabulary proof reasons, evidence ids, status |
+| `reachingMemoryDef(load)` | the reaching definition, an explicit `blocked` flag, status |
+| `explainMemoryPath(load)` | the evidence path between a source and a sink |
+| `memoryEffects(scope)` | read/write regions, unresolved calls, conservative `mayWrite`, status |
+| `functionSummary()` | the immutable summary and its dependency-bearing status |
+| `escape()` | escape records with reason and boundary, plus proven non-escaping roots |
+| `explainType(entityId)` | per-layer candidates, hard constraints, soft evidence, contradictions |
+| `functionCandidates(...)` | starts and regions with independent start/extent evidence |
+| `analyzeInterproceduralSummaries(...)` | solved summaries with completeness and dependency identity |
+
+A test asserts that nothing under `js/decompiler`, `js/ui` or `js/ai` imports a
+Phase 7 solver internal, so SCCP, GVN, DCE, load-store forwarding and aggregate
+recovery can be built on these answers without coupling their correctness to how
+A1/A2/A3 happen to be implemented today.
+
+What Phase 8 must not assume:
+
+- that a `may` or `unknown` alias answer will ever become `no` — both block a
+  transform that requires separation, and neither is a promise about the future;
+- that a summary without a listed write effect is pure — `summaryMayWriteRegion`
+  is the only sanctioned question, and it answers conservatively whenever the
+  summary cannot prove otherwise;
+- that a `certain` type conclusion survives new evidence — a later hard
+  constraint can introduce a contradiction, at which point selection is
+  withheld;
+- that a function candidate's extent is known because its start is exact.

@@ -71,7 +71,7 @@ export function exactRange(value) {
   return createOffsetRange(v, v);
 }
 
-export function rangeIsUnbounded(range) {
+function rangeIsUnbounded(range) {
   return range.min == null || range.max == null;
 }
 
@@ -204,10 +204,17 @@ export function createPointsToTarget(input = {}) {
 export function createPointsToSet(input = {}) {
   const top = input.top === true;
   const targets = top ? [] : [...(input.targets ?? [])].sort((a, b) => a.rootKey.localeCompare(b.rootKey));
+  const lossReasons = [...new Set(input.lossReasons ?? [])].sort();
+  // A loss reason outside the declared vocabulary would be an unexplainable
+  // imprecision: the alias layer maps these onto proof reasons, and a free-form
+  // string there becomes an answer nobody can account for.
+  for (const reason of lossReasons) {
+    if (!PROVENANCE_LOSS_REASONS.includes(reason)) fail(`points-to-unknown-loss-reason:${reason}`);
+  }
   return deepFreeze({
     top,
     targets: deepFreeze(targets),
-    lossReasons: deepFreeze([...new Set(input.lossReasons ?? [])].sort()),
+    lossReasons: deepFreeze(lossReasons),
   });
 }
 

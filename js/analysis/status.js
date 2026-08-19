@@ -14,7 +14,7 @@
  * subsystem from inventing its own subtly different `partial` flag.
  */
 
-import { deepFreeze, stableDigest } from '../core/identity/index.js';
+import { deepFreeze } from '../core/identity/index.js';
 
 export const ANALYSIS_STATUS_SCHEMA_VERSION = 1;
 export const ANALYSIS_STATUS_CONTRACT_VERSION = '1.0.0';
@@ -126,7 +126,7 @@ export function isFailClosedStatus(status) {
   return !!status && status.stopReason != null && FAIL_CLOSED_SET.has(status.stopReason);
 }
 
-export function completenessRank(value) {
+function completenessRank(value) {
   const rank = COMPLETENESS_RANK.get(value);
   if (rank == null) fail('analysis-status-invalid-completeness');
   return rank;
@@ -185,18 +185,4 @@ export function satisfiesRequirement(status, required = 'complete') {
   if (!status) return false;
   if (isFailClosedStatus(status)) return false;
   return completenessRank(status.completeness) <= completenessRank(required);
-}
-
-/** Stable digest of the status identity, for evidence manifests. */
-export function analysisStatusDigest(status) {
-  return stableDigest({
-    schemaVersion: status.schemaVersion,
-    snapshotId: status.snapshotId,
-    analyzerId: status.analyzerId,
-    analyzerVersion: status.analyzerVersion,
-    completeness: status.completeness,
-    budgetClass: status.budgetClass,
-    stopReason: status.stopReason,
-    dependencyIds: status.dependencyIds,
-  });
 }

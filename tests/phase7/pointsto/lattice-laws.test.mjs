@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   BOTTOM_POINTS_TO,
   POINTS_TO_DEFAULT_BUDGET,
+  PROVENANCE_LOSS_REASONS,
   UNBOUNDED_RANGE,
   addRange,
   addRanges,
@@ -177,4 +178,13 @@ test('digests are stable across construction order', () => {
 
 test('an inverted range is rejected rather than silently normalised', () => {
   assert.throws(() => createOffsetRange(8n, 0n), /invalid-offset-range/);
+});
+
+test('a loss reason outside the declared vocabulary is rejected', () => {
+  // Loss reasons are mapped onto alias proof reasons, so a free-form string
+  // would produce a weak answer nobody can account for.
+  assert.throws(() => createPointsToSet({ top: true, lossReasons: ['because'] }), /unknown-loss-reason/);
+  for (const reason of PROVENANCE_LOSS_REASONS) {
+    assert.doesNotThrow(() => createPointsToSet({ top: true, lossReasons: [reason] }), reason);
+  }
 });

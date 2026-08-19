@@ -102,10 +102,6 @@ export function regionsOverlap(a, b) {
   return BigInt(a.start) < BigInt(b.end) && BigInt(b.start) < BigInt(a.end);
 }
 
-export function totalRegionBytes(regions) {
-  return regions.reduce((sum, region) => sum + (BigInt(region.end) - BigInt(region.start)), 0n);
-}
-
 /**
  * A discovered function candidate.
  *

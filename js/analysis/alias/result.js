@@ -10,7 +10,7 @@
  */
 
 import { deepFreeze } from '../../core/identity/index.js';
-import { createAnalysisStatus, isCompleteStatus, weakestCompleteness } from '../status.js';
+import { createAnalysisStatus, isCompleteStatus } from '../status.js';
 
 export const ALIAS_RESULT_SCHEMA_VERSION = 1;
 export const ALIAS_RESULT_CONTRACT_VERSION = '1.0.0';
@@ -144,65 +144,9 @@ export function mayAlias(status, reasonCodes = ['overlapping-interval'], extra =
 }
 
 /**
- * Merges alias answers over several candidate region pairs.
- *
- * A strong answer survives only if *every* pair agrees on it. One `unknown`
- * anywhere in the set drags the merge to `unknown`, because a single
- * unresolved candidate is enough to make the pair possibly-aliasing.
- */
-export function mergeAliasResults(results, status) {
-  const list = [...results];
-  if (!list.length) return unknownAlias(status, ['unresolved-root']);
-  const relations = list.map((result) => result.relation);
-  const reasonCodes = [...new Set(list.flatMap((result) => result.reasonCodes))];
-  const evidenceIds = [...new Set(list.flatMap((result) => result.evidenceIds))];
-  const regionIds = [...new Set(list.flatMap((result) => result.regionIds))];
-  const mergedCompleteness = weakestCompleteness(list.map((result) => result.status.completeness));
-  const mergedStatus = mergedCompleteness === status.completeness
-    ? status
-    : createAnalysisStatus({ ...status, completeness: mergedCompleteness, stopReason: status.stopReason ?? 'evidence-missing' });
-
-  let relation;
-  if (relations.every((value) => value === 'no')) relation = 'no';
-  else if (relations.every((value) => value === 'must')) relation = 'must';
-  else if (relations.includes('unknown')) relation = 'unknown';
-  else relation = 'may';
-
-  const keptReasons = STRONG_ALIAS_RELATIONS.includes(relation)
-    ? reasonCodes.filter((code) => (relation === 'no' ? SEPARATION_PROOFS.has(code) : IDENTITY_PROOFS.has(code)))
-    : reasonCodes;
-
-  return createAliasResult({
-    relation,
-    reasonCodes: keptReasons.length ? keptReasons : reasonCodes,
-    evidenceIds,
-    regionIds,
-    status: mergedStatus,
-    proof: { alternatives: list.map((result) => ({ relation: result.relation, reasonCodes: result.reasonCodes })) },
-  });
-}
-
-/**
  * The single question a transform is allowed to ask before moving memory
  * operations past each other. `may` and `unknown` are both refusals.
  */
 export function permitsSeparationTransform(result) {
   return !!result && result.relation === 'no' && result.status.stopReason == null;
-}
-
-/** Projection onto the four-value relation MemorySSA's provider seam expects. */
-export function toMemorySsaAliasAnswer(result) {
-  return {
-    relation: result.relation,
-    reasonCodes: result.reasonCodes,
-    evidenceIds: result.evidenceIds,
-    proof: {
-      completeness: result.status.completeness,
-      stopReason: result.status.stopReason,
-      analyzerId: result.status.analyzerId,
-      analyzerVersion: result.status.analyzerVersion,
-      regionIds: result.regionIds,
-      ...(result.proof == null ? {} : { detail: result.proof }),
-    },
-  };
 }
