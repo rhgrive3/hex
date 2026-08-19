@@ -1,45 +1,136 @@
 import assert from 'node:assert/strict';
-import { createOriginSet } from '../../js/core/identity/origin.js';
-import {
-  createMachineEffectBundle,
-  createRegisterValue,
-} from '../../js/semantics/effects/index.js';
-import { lowerMachineEffectBundleToSemanticIr } from '../../js/semantics/ir/from-machine-effects.js';
+import { createMachineEffectBundle } from '../../js/semantics/effects/index.js';
+import { buildSemanticV2CompatibilityPipeline } from '../../js/semantics/compat/index.js';
 
-const target = createRegisterValue('x3', 64);
-const bundle = createMachineEffectBundle({
-  instructionId:'issue-949-br-x3',
-  architectureId:'arm64',
-  mode:'a64',
-  operations:[],
-  controlEffect:{ kind:'indirect', target },
-  possibleFaults:[],
-  origin:createOriginSet({ instructionIds:['issue-949-br-x3'] }),
-  completeness:'exact',
+const computedTarget = Object.freeze({
+  kind:'temporary',
+  temporaryId:'computed-target',
+  valueType:{ kind:'bitvector', widthBits:64 },
+});
+const targetRegister = Object.freeze({ kind:'register', registerId:'target-reg', widthBits:64 });
+
+function indirectBundle(decoded) {
+  return createMachineEffectBundle({
+    instructionId:decoded.instructionId,
+    architectureId:'issue-949-test',
+    mode:decoded.mode,
+    operations:[{
+      id:`${decoded.instructionId}:target-read`,
+      kind:'register-read',
+      register:targetRegister,
+      value:computedTarget,
+    }],
+    controlEffect:{ kind:'indirect', target:computedTarget },
+    possibleFaults:[],
+    origin:decoded.origin,
+    completeness:'exact',
+  });
+}
+
+function returnBundle(decoded) {
+  return createMachineEffectBundle({
+    instructionId:decoded.instructionId,
+    architectureId:'issue-949-test',
+    mode:decoded.mode,
+    operations:[],
+    controlEffect:{ kind:'return' },
+    possibleFaults:[],
+    origin:decoded.origin,
+    completeness:'exact',
+  });
+}
+
+const plugin = Object.freeze({
+  id:'issue-949-test',
+  semanticVersion:'1',
+  fixedInstructionSize:4,
+  liftExact(decoded) {
+    return decoded.testKind === 'indirect' ? indirectBundle(decoded) : returnBundle(decoded);
+  },
 });
 
-const ir = lowerMachineEffectBundleToSemanticIr(bundle, {
-  functionId:'issue-949-function',
-  blockId:'issue-949-entry',
-  entryBlockId:'issue-949-entry',
-  addressWidthBits:64,
-});
+function build({ candidates = false } = {}) {
+  return buildSemanticV2CompatibilityPipeline({
+    architecturePlugin:plugin,
+    decoderSemanticVersion:'issue-949-decoder-1',
+    binaryId:candidates ? 'issue_949_candidates' : 'issue_949_unknown',
+    sliceId:'slice',
+    addressWidthBits:64,
+    entryBlockKey:'entry',
+    blocks:[
+      {
+        key:'entry', startAddress:0x1000n,
+        instructions:[{
+          decoded:{ address:0x1000n, size:4, mode:'test', testKind:'indirect' },
+          ...(candidates ? { controlTargets:[
+            { target:computedTarget, to:'left', role:'indirect' },
+            { target:computedTarget, to:'right', role:'indirect' },
+          ] } : {}),
+        }],
+        // No caller-supplied successor. The semantic lowering must not turn an
+        // indirect branch into a successor-free terminal block.
+        successors:[],
+      },
+      ...(candidates ? [
+        {
+          key:'left', startAddress:0x1010n,
+          instructions:[{ decoded:{ address:0x1010n, size:4, mode:'test', testKind:'return' } }],
+          successors:[],
+        },
+        {
+          key:'right', startAddress:0x1020n,
+          instructions:[{ decoded:{ address:0x1020n, size:4, mode:'test', testKind:'return' } }],
+          successors:[],
+        },
+      ] : []),
+    ],
+  });
+}
 
-const control = ir.nodes.find((node) => node.kind === 'unknown-control-effect');
-assert.ok(control, 'unresolved indirect branch must remain an explicit control node');
-assert.equal(control.inputs.length, 1, 'computed target must be a typed control input');
-assert.equal(control.targets.length, 1, 'unknown destination must not collapse to successor-less termination');
-assert.equal(control.unknown.reason, 'unresolved-indirect-control-flow');
-assert.equal(control.unknown.knownParts.targetValueId, control.inputs[0]);
-assert.equal(control.attributes.unresolvedSuccessor, true);
-assert.ok(ir.blocks.some((block) => block.id === control.targets[0]), 'unknown successor placeholder must exist in the IR block set');
+function indirectNode(result) {
+  return result.semanticIr.nodes.find((node) =>
+    node.kind === 'unknown-control-effect' && node.attributes?.indirectControl);
+}
 
-const targetRead = ir.nodes.find((node) => node.kind === 'state-read'
-  && node.variable?.physicalIdentity?.kind === 'register'
-  && node.variable.physicalIdentity.registerId === 'x3');
-assert.ok(targetRead, 'BR target register must remain visible as physical state');
-assert.equal(control.inputs[0], targetRead.outputs[0], 'target producer/read must feed the control sink');
-assert.equal(ir.completeness, 'partial');
-assert.ok(ir.unknowns.some((unknown) => unknown.reason === 'unresolved-indirect-control-flow'));
+// Unknown destination: preserve the computed target dependency and a typed
+// unknown successor. This is not fallthrough and not a real function return.
+{
+  const result = build();
+  const node = indirectNode(result);
+  assert.ok(node, 'indirect control must remain explicit in Semantic IR');
+  assert.equal(node.inputs.length, 1, 'computed indirect target must remain an input');
+  assert.equal(node.targets.length, 1, 'unknown destination still has an unknown successor');
+  assert.equal(node.attributes.indirectControl.targetState, 'unknown');
+  assert.equal(node.attributes.indirectControl.candidateCount, 0);
 
-console.log('issue #949 computed indirect-control target/provenance regression: PASS');
+  const producer = result.semanticIr.nodes.find((candidate) => candidate.outputs.includes(node.inputs[0]));
+  assert.ok(producer, 'target ValueId must retain its producer');
+  assert.equal(producer.kind, 'state-read');
+  assert.ok(result.ssa.uses.some((use) => use.valueId === node.inputs[0]),
+    'SSA must retain a use of the computed target ValueId');
+
+  const entry = result.cfg.blocks.find((block) => block.id === result.semanticIr.entryBlockId);
+  assert.ok(entry);
+  assert.equal(entry.successors.length, 1);
+  assert.equal(entry.successors[0].kind, 'unknown');
+  assert.notEqual(entry.successors[0].kind, 'fallthrough');
+}
+
+// Later refinement may prove multiple targets. Preserve all of them as
+// indirect candidates rather than replacing them with one guessed branch.
+{
+  const result = build({ candidates:true });
+  const node = indirectNode(result);
+  assert.ok(node);
+  assert.equal(node.inputs.length, 1);
+  assert.equal(node.targets.length, 2);
+  assert.equal(node.attributes.indirectControl.targetState, 'candidate');
+  assert.equal(node.attributes.indirectControl.candidateCount, 2);
+
+  const entry = result.cfg.blocks.find((block) => block.id === result.semanticIr.entryBlockId);
+  assert.ok(entry);
+  assert.equal(entry.successors.length, 2);
+  assert.deepEqual(new Set(entry.successors.map((edge) => edge.kind)), new Set(['indirect-candidate']));
+}
+
+console.log('issue #949 indirect control target/successor regression: PASS');
