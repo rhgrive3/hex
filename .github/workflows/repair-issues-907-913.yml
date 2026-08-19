@@ -23,6 +23,13 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Rebase onto current main
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch origin main
+          git rebase origin/main
+
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
@@ -53,5 +60,5 @@ jobs:
           rm .github/workflows/repair-issues-907-913.yml
           git add -A
           git diff --cached --check
-          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'fix: resolve issues 907 909 910 and 913'
-          git push origin HEAD:fix/issues-907-909-910-913-20260819
+          git commit -m 'fix: resolve issues 907 909 910 and 913'
+          git push --force-with-lease origin HEAD:fix/issues-907-909-910-913-20260819
