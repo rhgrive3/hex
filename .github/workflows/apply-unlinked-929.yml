@@ -1,0 +1,285 @@
+name: Apply unlinked issue 929 fix
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'fix/unlinked-929-exclusive-monitor-state'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/unlinked-929-exclusive-monitor-state
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Materialize canonical exclusive-monitor state
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path('js/targets/architecture/arm64/effects/atomic.js')
+          text = p.read_text()
+          old = """  createMachineOperation,
+  createMemoryAccess,
+} from '../../../../semantics/effects/index.js';
+"""
+          new = """  createMachineOperation,
+  createMemoryAccess,
+  createRegisterValue,
+} from '../../../../semantics/effects/index.js';
+"""
+          if text.count(old) != 1: raise SystemExit(f'atomic import anchor={text.count(old)}')
+          text = text.replace(old,new,1)
+          anchor = """function valueOp(opcode, input, fromBits, toBits, id, metadata = {}) {
+"""
+          helpers = """const EXCLUSIVE_MONITOR_STATE = Object.freeze([
+  ['arm64.exclusive.valid', 1],
+  ['arm64.exclusive.address', 64],
+  ['arm64.exclusive.size', 16],
+  ['arm64.exclusive.token', 64],
+]);
+
+function exclusiveStateRead(operations, prefix) {
+  const values = [];
+  for (const [registerId, bits] of EXCLUSIVE_MONITOR_STATE) {
+    const value = arm64Temporary(`${prefix}.${registerId}`, bits);
+    operations.push(createMachineOperation({
+      kind:'register-read', register:createRegisterValue(registerId, bits, { view:registerId }), value,
+      metadata:{ architecture:'arm64', purpose:'exclusive-monitor-state' },
+    }));
+    values.push(value);
+  }
+  return values;
+}
+function exclusiveStateWrite(operations, values, metadata = {}) {
+  EXCLUSIVE_MONITOR_STATE.forEach(([registerId, bits], index) => operations.push(createMachineOperation({
+    kind:'register-write', register:createRegisterValue(registerId, bits, { view:registerId }), value:values[index],
+    metadata:{ architecture:'arm64', purpose:'exclusive-monitor-state', ...metadata },
+  })));
+}
+function exclusiveAddressValue(addressing) {
+  return addressing.readOperations.find((operation) => operation.kind === 'register-read' && operation.register?.registerId === addressing.base.physicalId)?.value || null;
+}
+
+"""
+          if text.count(anchor) != 1: raise SystemExit(f'atomic helper anchor={text.count(anchor)}')
+          text = text.replace(anchor, helpers+anchor,1)
+
+          old = """  const raw = arm64Temporary('exclusive.load.raw', widthBits);
+  const monitor = arm64Temporary('exclusive.monitor.token', 1);
+  const ops = [...addr.readOperations];
+"""
+          new = """  const raw = arm64Temporary('exclusive.load.raw', widthBits);
+  const monitor = arm64Temporary('exclusive.monitor.token', 64);
+  const ops = [...addr.readOperations];
+  const addressValue = exclusiveAddressValue(addr);
+  if (!addressValue) return partial(decoded, context, 'exclusive load effective address state is unavailable');
+"""
+          if text.count(old) != 1: raise SystemExit(f'load monitor anchor={text.count(old)}')
+          text = text.replace(old,new,1)
+          old = """    effectSummary:intrinsicSummary({
+      outputs:[monitor],
+      registersRead:[addr.base.physicalId],
+      determinism:'deterministic',
+    }),
+    metadata:{ addressExpr:addr.addressExpr, widthBits, hiddenState:'exclusive-monitor' },
+  }));
+"""
+          new = """    effectSummary:intrinsicSummary({
+      inputs:[addressValue, createBitVectorValue(16, BigInt(widthBits))],
+      outputs:[monitor],
+      registersRead:[addr.base.physicalId],
+      registersWritten:EXCLUSIVE_MONITOR_STATE.map(([id]) => id),
+      determinism:'deterministic',
+    }),
+    metadata:{ addressExpr:addr.addressExpr, widthBits, state:'exclusive-monitor' },
+  }));
+  exclusiveStateWrite(ops, [
+    createBitVectorValue(1, 1n), addressValue, createBitVectorValue(16, BigInt(widthBits)), monitor,
+  ], { transition:'set' });
+"""
+          if text.count(old) != 1: raise SystemExit(f'load intrinsic anchor={text.count(old)}')
+          text = text.replace(old,new,1)
+
+          old = """  const statusValue = arm64Temporary('exclusive.store.status', 32);
+  const ops = [...addr.readOperations, ...dataRead.operations];
+  ops.push(createMachineOperation({
+"""
+          new = """  const statusValue = arm64Temporary('exclusive.store.status', 32);
+  const nextMonitorToken = arm64Temporary('exclusive.store.next-monitor-token', 64);
+  const ops = [...addr.readOperations, ...dataRead.operations];
+  const addressValue = exclusiveAddressValue(addr);
+  if (!addressValue) return partial(decoded, context, 'exclusive store effective address state is unavailable');
+  const monitorState = exclusiveStateRead(ops, 'exclusive.store.monitor');
+  ops.push(createMachineOperation({
+"""
+          if text.count(old) != 1: raise SystemExit(f'store state anchor={text.count(old)}')
+          text = text.replace(old,new,1)
+          old = """    effectSummary:intrinsicSummary({
+      inputs:[dataRead.value],
+      outputs:[statusValue],
+      registersRead:[addr.base.physicalId, dataRead.registerId],
+      memoryWrite:{ scope:'accesses', accesses:[memAccess] },
+      determinism:'nondeterministic',
+    }),
+"""
+          new = """    effectSummary:intrinsicSummary({
+      inputs:[...monitorState, addressValue, createBitVectorValue(16, BigInt(widthBits)), dataRead.value],
+      outputs:[statusValue, nextMonitorToken],
+      registersRead:[addr.base.physicalId, dataRead.registerId, ...EXCLUSIVE_MONITOR_STATE.map(([id]) => id)],
+      registersWritten:EXCLUSIVE_MONITOR_STATE.map(([id]) => id),
+      memoryWrite:{ scope:'accesses', accesses:[memAccess] },
+      determinism:'nondeterministic',
+    }),
+"""
+          if text.count(old) != 1: raise SystemExit(f'store intrinsic anchor={text.count(old)}')
+          text = text.replace(old,new,1)
+          old = """  try { ops.push(...writeLoadedGp(status, statusValue, 32, 'exclusive.store.status')); }
+  catch (error) { return partial(decoded, context, error.message); }
+"""
+          new = """  exclusiveStateWrite(ops, [
+    createBitVectorValue(1, 0n), createBitVectorValue(64, 0n), createBitVectorValue(16, 0n), nextMonitorToken,
+  ], { transition:'clear-after-store-attempt' });
+  try { ops.push(...writeLoadedGp(status, statusValue, 32, 'exclusive.store.status')); }
+  catch (error) { return partial(decoded, context, error.message); }
+"""
+          if text.count(old) != 1: raise SystemExit(f'store clear anchor={text.count(old)}')
+          p.write_text(text.replace(old,new,1))
+
+          p = Path('js/targets/architecture/arm64/effects/system.js')
+          text = p.read_text()
+          anchor = """function clrex(instruction, context, ops) {
+"""
+          helpers = """const EXCLUSIVE_MONITOR_STATE = Object.freeze([
+  ['arm64.exclusive.valid', 1],
+  ['arm64.exclusive.address', 64],
+  ['arm64.exclusive.size', 16],
+  ['arm64.exclusive.token', 64],
+]);
+function readExclusiveMonitor(operations) {
+  return EXCLUSIVE_MONITOR_STATE.map(([registerId,bits]) => {
+    const value = temp(`clrex:${registerId}`, createBitVectorValue(bits));
+    operations.push(createMachineOperation({
+      kind:'register-read', register:createRegisterValue(registerId,bits,{view:registerId}), value,
+      metadata:{ architecture:'arm64', purpose:'exclusive-monitor-state' },
+    }));
+    return value;
+  });
+}
+function clearExclusiveMonitor(operations, token) {
+  const values = [createBitVectorValue(1,0n), createBitVectorValue(64,0n), createBitVectorValue(16,0n), token];
+  EXCLUSIVE_MONITOR_STATE.forEach(([registerId,bits], index) => operations.push(createMachineOperation({
+    kind:'register-write', register:createRegisterValue(registerId,bits,{view:registerId}), value:values[index],
+    metadata:{ architecture:'arm64', purpose:'exclusive-monitor-state', transition:'clear' },
+  })));
+}
+
+"""
+          if text.count(anchor) != 1: raise SystemExit(f'system clrex anchor={text.count(anchor)}')
+          text = text.replace(anchor, helpers+anchor,1)
+          old = """function clrex(instruction, context, ops) {
+  const imm = immediate(ops[0]);
+  const operation = completeIntrinsic({
+    id:'arm64.system.clrex',
+    inputs:imm ? [imm] : [], outputs:[], registersRead:[], registersWritten:[],
+    memoryRead:{scope:'none'}, memoryWrite:{scope:'none'}, controlEffects:[],
+    determinism:'deterministic', symbolicDetail:'summary-only',
+    metadata:{ architecturalStateWritten:'local-exclusive-monitor', immediatePresent:!!imm },
+  });
+  return bundle(instruction, context, { operations:[operation], completeness:'exact-with-intrinsic' });
+}
+"""
+          new = """function clrex(instruction, context, ops) {
+  const imm = immediate(ops[0]);
+  const operations = [];
+  const monitorState = readExclusiveMonitor(operations);
+  const nextToken = temp('clrex:next-monitor-token', createBitVectorValue(64));
+  const operation = completeIntrinsic({
+    id:'arm64.system.clrex',
+    inputs:[...monitorState, ...(imm ? [imm] : [])], outputs:[nextToken],
+    registersRead:EXCLUSIVE_MONITOR_STATE.map(([id]) => id),
+    registersWritten:EXCLUSIVE_MONITOR_STATE.map(([id]) => id),
+    memoryRead:{scope:'none'}, memoryWrite:{scope:'none'}, controlEffects:[],
+    determinism:'deterministic', symbolicDetail:'summary-only',
+    metadata:{ architecturalStateWritten:'local-exclusive-monitor', immediatePresent:!!imm },
+  });
+  operations.push(operation);
+  clearExclusiveMonitor(operations, nextToken);
+  return bundle(instruction, context, { operations, completeness:'exact-with-intrinsic' });
+}
+"""
+          if text.count(old) != 1: raise SystemExit(f'clrex body anchor={text.count(old)}')
+          p.write_text(text.replace(old,new,1))
+          PY
+      - name: Add exclusive-monitor state regressions
+        shell: bash
+        run: |
+          cat > tests/machine-effects/arm64-exclusive-monitor-state.test.mjs <<'EOF'
+          import test from 'node:test';
+          import assert from 'node:assert/strict';
+          import { liftArm64AtomicEffects } from '../../js/targets/architecture/arm64/effects/atomic.js';
+          import { liftArm64SystemEffects } from '../../js/targets/architecture/arm64/effects/system.js';
+
+          const gp=(n,bits=64)=>({k:'reg',cls:'gp',num:n,bits,text:`${bits===32?'w':'x'}${n}`});
+          const mem=(n)=>({k:'mem',base:gp(n),disp:0n,mode:'offset',text:`[x${n}]`});
+          const ids=['arm64.exclusive.valid','arm64.exclusive.address','arm64.exclusive.size','arm64.exclusive.token'];
+          const state=(bundle,kind)=>bundle.operations.filter(o=>o.kind===kind&&ids.includes(o.register?.registerId));
+
+          test('LDXR defines canonical reservation state and STXR consumes then clears it',()=>{
+            const ldxr=liftArm64AtomicEffects({instructionId:'i:ldxr',mnemonic:'ldxr',ops:[gp(0),mem(1)]},{instructionId:'i:ldxr'});
+            assert.equal(ldxr.completeness,'exact-with-intrinsic');
+            const writes=state(ldxr,'register-write');
+            assert.deepEqual([...new Set(writes.map(o=>o.register.registerId))].sort(),[...ids].sort());
+            assert.equal(writes.find(o=>o.register.registerId==='arm64.exclusive.valid').value.value,'1');
+            assert.equal(writes.find(o=>o.register.registerId==='arm64.exclusive.size').value.value,'64');
+
+            const stxr=liftArm64AtomicEffects({instructionId:'i:stxr',mnemonic:'stxr',ops:[gp(2,32),gp(0),mem(1)]},{instructionId:'i:stxr'});
+            assert.equal(stxr.completeness,'exact-with-intrinsic');
+            assert.deepEqual([...new Set(state(stxr,'register-read').map(o=>o.register.registerId))].sort(),[...ids].sort());
+            assert.deepEqual([...new Set(state(stxr,'register-write').map(o=>o.register.registerId))].sort(),[...ids].sort());
+            const intrinsic=stxr.operations.find(o=>o.kind==='intrinsic'&&o.intrinsicId==='arm64.exclusive-store-conditional');
+            assert.ok(intrinsic.effectSummary.registersRead.includes('arm64.exclusive.token'));
+            assert.ok(intrinsic.effectSummary.registersWritten.includes('arm64.exclusive.valid'));
+          });
+
+          test('CLREX consumes the same canonical state identities and explicitly clears them',()=>{
+            const clrex=liftArm64SystemEffects({instructionId:'i:clrex',mnemonic:'clrex',ops:[]},{instructionId:'i:clrex'});
+            assert.equal(clrex.completeness,'exact-with-intrinsic');
+            assert.deepEqual([...new Set(state(clrex,'register-read').map(o=>o.register.registerId))].sort(),[...ids].sort());
+            assert.deepEqual([...new Set(state(clrex,'register-write').map(o=>o.register.registerId))].sort(),[...ids].sort());
+            const valid=state(clrex,'register-write').find(o=>o.register.registerId==='arm64.exclusive.valid');
+            assert.equal(valid.value.value,'0');
+          });
+          EOF
+      - name: Focused regression
+        run: node --test tests/machine-effects/arm64-exclusive-monitor-state.test.mjs
+      - name: MachineEffects suite
+        run: npm run effects:test
+      - name: Phase 5 suite
+        run: npm run phase5:test
+      - name: Static checks
+        run: npm run lint
+      - name: Canonical userscript build
+        run: npm run userscript:build
+      - name: Diff hygiene
+        run: git diff --check
+      - name: Publish verified implementation
+        shell: bash
+        run: |
+          rm .github/workflows/apply-unlinked-929.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'fix: model ARM64 exclusive monitor as canonical state (#929)'
+          git push origin HEAD:fix/unlinked-929-exclusive-monitor-state
