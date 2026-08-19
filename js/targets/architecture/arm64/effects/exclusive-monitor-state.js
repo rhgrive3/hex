@@ -51,8 +51,6 @@ function stateWrite(definition, value, stateTransition) {
 }
 
 function currentAddressValue() {
-  // Current exclusive instructions are accepted only with base-only addressing,
-  // and atomic.js materializes that base as this typed temporary.
   return temp('atomic.addr.base', 64);
 }
 
@@ -157,12 +155,9 @@ function decorateExclusiveStore(bundle) {
       ...(store.metadata || {}),
       monitorInputOrder:['valid','reservation-address','reservation-width','current-address'],
       reservationAddressRelation:'must-be-compatible-with-current-exclusive-reservation-granule',
-      successRemainsNondeterministicWhenGranule-or-global-monitor-state-is-unknown:true,
+      successRemainsNondeterministicWhenGranuleOrGlobalMonitorStateIsUnknown:true,
     }),
   });
-  // A store-exclusive attempt consumes the local reservation regardless of the
-  // returned status. Preserve stale address/width evidence, but version `valid`
-  // to false so later stores reach this transition rather than the old LDXR.
   operations.splice(adjustedIndex + 1, 0,
     stateWrite(ARM64_EXCLUSIVE_MONITOR_STATE.valid, createBitVectorValue(1, 0), 'store-exclusive-consumed'),
   );
