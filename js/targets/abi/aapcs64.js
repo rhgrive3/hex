@@ -44,6 +44,10 @@ function parameterAbiClass(param) {
   return { pointer, hfa, vector, aggregate, fp, members, bits, wideIntegral, alignment, mayContainPointers, scalableClass };
 }
 
+function possibleRegisterSource(reg, bits, abiClass) {
+  return { t:'reg', reg, bits, possible:true, mustUse:false, purpose:'variadic-tail-candidate', abiClass };
+}
+
 export function classifyAAPCS64Arguments(insn, opts = {}) {
   const proto = callPrototypeOf(insn, opts);
   const params = callParameterList(proto);
@@ -54,9 +58,24 @@ export function classifyAAPCS64Arguments(insn, opts = {}) {
   let gp = 0, fp = 0, stackOffset = 0;
   let stackArgsMayContainPointers = false;
   if (!params) {
-    for (let i=0;i<8;i++) { srcs.push({t:'reg',reg:`x${i}`,bits:64}); arguments_.push({index:i,location:'register',reg:`x${i}`,abiClass:'unknown-gp'}); }
-    for (let i=0;i<8;i++) { srcs.push({t:'reg',reg:`v${i}`,bits:128}); arguments_.push({index:8+i,location:'register',reg:`v${i}`,abiClass:'unknown-fp-vector'}); }
-    return { srcs, arguments:arguments_, stackArguments, stackArgsUnknown:true, stackArgsMayContainPointers:false, evidence:'conservative-aapcs64' };
+    for (let i=0;i<8;i++) {
+      srcs.push({t:'reg',reg:`x${i}`,bits:64,possible:true,mustUse:false,abiClass:'unknown-gp'});
+      arguments_.push({index:i,location:'register',reg:`x${i}`,abiClass:'unknown-gp',possible:true,mustUse:false,mayContainPointers:true});
+    }
+    for (let i=0;i<8;i++) {
+      srcs.push({t:'reg',reg:`v${i}`,bits:128,possible:true,mustUse:false,abiClass:'unknown-fp-vector'});
+      arguments_.push({index:8+i,location:'register',reg:`v${i}`,abiClass:'unknown-fp-vector',possible:true,mustUse:false});
+    }
+    return {
+      srcs,
+      arguments:arguments_,
+      stackArguments,
+      stackArgsUnknown:true,
+      stackArgsMayContainPointers:true,
+      possibleRegisterInputs:srcs.slice(),
+      partial:true,
+      evidence:'conservative-aapcs64',
+    };
   }
   params.forEach((param,index) => {
     const c=parameterAbiClass(param);
@@ -67,17 +86,21 @@ export function classifyAAPCS64Arguments(insn, opts = {}) {
     const regsNeeded=c.hfa ? c.members : 1;
     if (c.fp && fp + regsNeeded <= 8) {
       const regs=[];
-      for(let n=0;n<regsNeeded;n++){const reg=`v${fp++}`;regs.push(reg);srcs.push({t:'reg',reg,bits:c.vector?128:c.bits});}
-      arguments_.push({index,location:'register',regs,reg:regs[0],abiClass:c.hfa?'hfa':c.vector?'vector':'fp',pointer:c.pointer,bits:c.bits});
+      for(let n=0;n<regsNeeded;n++){
+        const reg=`v${fp++}`;
+        regs.push(reg);
+        srcs.push({t:'reg',reg,bits:c.vector?128:c.bits,possible:false,mustUse:true});
+      }
+      arguments_.push({index,location:'register',regs,reg:regs[0],abiClass:c.hfa?'hfa':c.vector?'vector':'fp',pointer:c.pointer,bits:c.bits,possible:false,mustUse:true});
       return;
     }
 
     if (c.aggregate && c.bits > 128) {
       const reg = gp < 8 ? `x${gp++}` : null;
       const entry = reg
-        ? {index,location:'register',reg,abiClass:'aggregate-indirect-copy',pointer:true,bits:64,pointeeBits:c.bits,aggregate:true,callerCopy:true,mayContainPointers:c.mayContainPointers}
-        : {index,location:'stack',offset:stackOffset,bytes:8,abiClass:'aggregate-indirect-copy',pointer:true,bits:64,pointeeBits:c.bits,aggregate:true,callerCopy:true,mayContainPointers:c.mayContainPointers};
-      if (reg) srcs.push({t:'reg',reg,bits:64,purpose:'aggregate-indirect-copy'});
+        ? {index,location:'register',reg,abiClass:'aggregate-indirect-copy',pointer:true,bits:64,pointeeBits:c.bits,aggregate:true,callerCopy:true,mayContainPointers:c.mayContainPointers,possible:false,mustUse:true}
+        : {index,location:'stack',offset:stackOffset,bytes:8,abiClass:'aggregate-indirect-copy',pointer:true,bits:64,pointeeBits:c.bits,aggregate:true,callerCopy:true,mayContainPointers:c.mayContainPointers,possible:false,mustUse:true};
+      if (reg) srcs.push({t:'reg',reg,bits:64,purpose:'aggregate-indirect-copy',possible:false,mustUse:true});
       else { stackArguments.push(entry); stackOffset += 8; }
       arguments_.push(entry);
       stackArgsMayContainPointers = true;
@@ -88,13 +111,13 @@ export function classifyAAPCS64Arguments(insn, opts = {}) {
       if ((gp & 1) !== 0) gp += 1;
       if (gp <= 6) {
         const regs=[`x${gp}`,`x${gp+1}`]; gp += 2;
-        for (const reg of regs) srcs.push({t:'reg',reg,bits:64,purpose:'wide-integral-piece'});
-        arguments_.push({index,location:'registers',regs,reg:regs[0],abiClass:'wide-integer',pointer:false,bits:128,alignment:16,pieces:regs.map((reg,piece)=>({piece,reg,bits:64}))});
+        for (const reg of regs) srcs.push({t:'reg',reg,bits:64,purpose:'wide-integral-piece',possible:false,mustUse:true});
+        arguments_.push({index,location:'registers',regs,reg:regs[0],abiClass:'wide-integer',pointer:false,bits:128,alignment:16,pieces:regs.map((reg,piece)=>({piece,reg,bits:64})),possible:false,mustUse:true});
         return;
       }
       gp = 8;
       stackOffset = Math.ceil(stackOffset / 16) * 16;
-      const entry={index,location:'stack',offset:stackOffset,bytes:16,abiClass:'wide-integer',pointer:false,bits:128,alignment:16};
+      const entry={index,location:'stack',offset:stackOffset,bytes:16,abiClass:'wide-integer',pointer:false,bits:128,alignment:16,possible:false,mustUse:true};
       stackArguments.push(entry);arguments_.push(entry);stackOffset+=16;
       return;
     }
@@ -105,8 +128,12 @@ export function classifyAAPCS64Arguments(insn, opts = {}) {
       const needed=Math.ceil(bytes/8);
       if (gp + needed <= 8) {
         const regs=[];
-        for(let n=0;n<needed;n++){const reg=`x${gp++}`;regs.push(reg);srcs.push({t:'reg',reg,bits:64,purpose:'aggregate-piece'});}
-        arguments_.push({index,location:'registers',regs,reg:regs[0],abiClass:'aggregate',pointer:false,bits:c.bits,bytes,alignment:c.alignment,mayContainPointers:c.mayContainPointers,pieces:regs.map((reg,piece)=>({piece,reg,bits:Math.min(64,Math.max(0,c.bits-piece*64))||64}))});
+        for(let n=0;n<needed;n++){
+          const reg=`x${gp++}`;
+          regs.push(reg);
+          srcs.push({t:'reg',reg,bits:64,purpose:'aggregate-piece',possible:false,mustUse:true});
+        }
+        arguments_.push({index,location:'registers',regs,reg:regs[0],abiClass:'aggregate',pointer:false,bits:c.bits,bytes,alignment:c.alignment,mayContainPointers:c.mayContainPointers,pieces:regs.map((reg,piece)=>({piece,reg,bits:Math.min(64,Math.max(0,c.bits-piece*64))||64})),possible:false,mustUse:true});
         return;
       }
       const registerPieces = stackOffset === 0 ? Math.max(0, 8 - gp) : 0;
@@ -115,43 +142,64 @@ export function classifyAAPCS64Arguments(insn, opts = {}) {
         const pieces=[];
         for(let n=0;n<registerPieces;n++){
           const reg=`x${gp++}`;
-          regs.push(reg);srcs.push({t:'reg',reg,bits:64,purpose:'aggregate-piece'});
+          regs.push(reg);
+          srcs.push({t:'reg',reg,bits:64,purpose:'aggregate-piece',possible:false,mustUse:true});
           pieces.push({piece:n,reg,bits:64});
         }
         gp=8;
         const stackBytes=bytes-registerPieces*8;
         stackOffset = c.alignment >= 16 ? Math.ceil(stackOffset / 16) * 16 : stackOffset;
-        const stackEntry={index,location:'stack-fragment',offset:stackOffset,bytes:stackBytes,abiClass:'aggregate',pointer:false,bits:stackBytes*8,alignment:8,mayContainPointers:c.mayContainPointers,pieceOffsetBytes:registerPieces*8};
+        const stackEntry={index,location:'stack-fragment',offset:stackOffset,bytes:stackBytes,abiClass:'aggregate',pointer:false,bits:stackBytes*8,alignment:8,mayContainPointers:c.mayContainPointers,pieceOffsetBytes:registerPieces*8,possible:false,mustUse:true};
         stackArguments.push(stackEntry);
-        arguments_.push({index,location:'register-stack',regs,reg:regs[0],offset:stackOffset,stackBytes,bytes,abiClass:'aggregate',pointer:false,bits:c.bits,alignment:c.alignment,mayContainPointers:c.mayContainPointers,pieces:[...pieces,{piece:registerPieces,stackOffset,bytes:stackBytes}]});
+        arguments_.push({index,location:'register-stack',regs,reg:regs[0],offset:stackOffset,stackBytes,bytes,abiClass:'aggregate',pointer:false,bits:c.bits,alignment:c.alignment,mayContainPointers:c.mayContainPointers,pieces:[...pieces,{piece:registerPieces,stackOffset,bytes:stackBytes}],possible:false,mustUse:true});
         stackOffset+=stackBytes;
         if(c.mayContainPointers) stackArgsMayContainPointers=true;
         return;
       }
       gp = 8;
       stackOffset = c.alignment >= 16 ? Math.ceil(stackOffset / 16) * 16 : stackOffset;
-      const entry={index,location:'stack',offset:stackOffset,bytes,abiClass:'aggregate',pointer:false,bits:c.bits,alignment:c.alignment,mayContainPointers:c.mayContainPointers};
+      const entry={index,location:'stack',offset:stackOffset,bytes,abiClass:'aggregate',pointer:false,bits:c.bits,alignment:c.alignment,mayContainPointers:c.mayContainPointers,possible:false,mustUse:true};
       stackArguments.push(entry);arguments_.push(entry);stackOffset+=bytes;
       if(c.mayContainPointers) stackArgsMayContainPointers=true;
       return;
     }
 
     if (!c.fp && gp < 8) {
-      const reg=`x${gp++}`; srcs.push({t:'reg',reg,bits:64});
-      arguments_.push({index,location:'register',reg,abiClass:c.pointer?'pointer':'integer',pointer:c.pointer,bits:c.bits});
+      const reg=`x${gp++}`;
+      srcs.push({t:'reg',reg,bits:64,possible:false,mustUse:true});
+      arguments_.push({index,location:'register',reg,abiClass:c.pointer?'pointer':'integer',pointer:c.pointer,bits:c.bits,possible:false,mustUse:true});
       return;
     }
     const slots=Math.max(1,Math.ceil((c.hfa?c.members*c.bits:c.bits)/64));
     if (c.hfa && fp + regsNeeded > 8) fp = 8;
-    const entry={index,location:'stack',offset:stackOffset,bytes:slots*8,abiClass:c.hfa?'hfa':c.vector?'vector':c.fp?'fp':c.pointer?'pointer':'integer',pointer:c.pointer,bits:c.bits};
+    const entry={index,location:'stack',offset:stackOffset,bytes:slots*8,abiClass:c.hfa?'hfa':c.vector?'vector':c.fp?'fp':c.pointer?'pointer':'integer',pointer:c.pointer,bits:c.bits,possible:false,mustUse:true};
     stackArguments.push(entry);arguments_.push(entry);stackOffset+=slots*8;
     if(c.pointer || c.mayContainPointers) stackArgsMayContainPointers=true;
   });
+
+  const variadic=proto?.variadic===true||proto?.varargs===true;
+  const possibleRegisterInputs=[];
+  if (variadic) {
+    for (let i=gp;i<8;i++) {
+      const source=possibleRegisterSource(`x${i}`,64,'variadic-unknown-gp');
+      srcs.push(source);
+      possibleRegisterInputs.push(source);
+      arguments_.push({index:null,location:'register',reg:`x${i}`,bits:64,abiClass:'variadic-unknown-gp',possible:true,mustUse:false,mayContainPointers:true});
+    }
+    for (let i=fp;i<8;i++) {
+      const source=possibleRegisterSource(`v${i}`,128,'variadic-unknown-fp-vector');
+      srcs.push(source);
+      possibleRegisterInputs.push(source);
+      arguments_.push({index:null,location:'register',reg:`v${i}`,bits:128,abiClass:'variadic-unknown-fp-vector',possible:true,mustUse:false});
+    }
+  }
   return {
     srcs, arguments:arguments_, stackArguments,
-    stackArgsUnknown:proto?.variadic===true||proto?.varargs===true,
-    stackArgsMayContainPointers,
-    evidence:unsupported.length?'partial-aapcs64-unsupported-sve':'prototype-aapcs64',
+    stackArgsUnknown:variadic,
+    stackArgsMayContainPointers:stackArgsMayContainPointers||variadic,
+    possibleRegisterInputs,
+    partial:variadic||unsupported.length>0,
+    evidence:unsupported.length?'partial-aapcs64-unsupported-sve':variadic?'prototype-aapcs64-variadic':'prototype-aapcs64',
     unsupported:unsupported.length>0,
     unsupportedArguments:unsupported,
   };
@@ -219,7 +267,7 @@ function callerSavedFor(context = {}) {
 
 export const AAPCS64_ABI = new ABIPlugin({
   id:'aapcs64', semanticVersion:'2', architectureId:'arm64',
-  platformPredicate:({ platform }) => !platform || platform === 'darwin' || platform === 'apple' || platform === 'macos' || platform === 'ios' || platform === 'ipados' || platform === 'linux' || platform === 'android' || platform === 'unknown',
+  platformPredicate:({ platform }) => !platform || platform === 'linux' || platform === 'android' || platform === 'unknown',
   callingConventions:()=>Object.freeze(['aapcs64']),
   classifyArguments:classifyAAPCS64Arguments,
   classifyCallReturn:classifyAAPCS64CallReturn,
@@ -227,8 +275,8 @@ export const AAPCS64_ABI = new ABIPlugin({
   classifyEntryRegister:(reg) => /^x[0-7]$/.test(String(reg || '')) ? { kind:'argument', reg:String(reg), index:Number(String(reg).slice(1)) } : { kind:'incoming-register-state', reg:String(reg || '') },
   callerSaved:(context)=>callerSavedFor(context),
   calleeSaved:()=>CALLEE_SAVED,
-  stackRules:()=>Object.freeze({ alignment:16, stackGrows:'down', argumentSlotBytes:8 }),
+  stackRules:()=>Object.freeze({ alignment:16, stackGrows:'down', argumentSlotBytes:8, variadicRegisterSaveAreas:true }),
   redZone:()=>0,
   unwindRules:()=>Object.freeze({ framePointer:'x29', linkRegister:'x30' }),
-  defaultUnknownCallEffects:(context)=>Object.freeze({ registerClobbers:callerSavedFor(context), memoryEffects:'unknown', mayThrow:true }),
+  defaultUnknownCallEffects:(context)=>Object.freeze({ registerClobbers:callerSavedFor(context), memoryEffects:'unknown', mayThrow:true, stackArguments:'unknown', stackArgsMayContainPointers:true }),
 });
