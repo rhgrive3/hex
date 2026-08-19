@@ -1,3 +1,4 @@
+import { decorateArm64BtiGuardedPageEffects } from './bti-guard-state.js';
 import { liftArm64ControlEffects } from './control.js';
 import { directTargetOf, immediateOf, instructionMnemonic } from './common.js';
 import { liftArm64FlagEffects } from './flags.js';
@@ -66,7 +67,7 @@ export function liftArm64MachineEffects(decoded, context = {}) {
   const familyContext = normalizedContext(context);
   for (const family of ARM64_EFFECT_FAMILIES) {
     const result = family.lift(instruction, familyContext);
-    if (result != null) return result;
+    if (result != null) return decorateArm64BtiGuardedPageEffects(instruction, result, familyContext);
   }
   return null;
 }
