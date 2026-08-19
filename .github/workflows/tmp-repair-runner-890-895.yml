@@ -1,19 +1,16 @@
-name: One-shot repair runner 890-895
+name: One-shot RV64C HINT repair
 on:
   push:
-    branches: [main]
-  pull_request:
     branches: [main]
 permissions:
   contents: write
 jobs:
   repair:
-    if: github.event_name == 'push' || github.event.pull_request.head.ref == 'fix/issues-890-895-control-profile-20260819'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: fix/issues-890-895-control-profile-20260819
+          ref: fix/riscv64-rvc-hints-20260819
           fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
@@ -26,12 +23,10 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git fetch origin main
           git rebase origin/main
-      - name: Apply exact guarded repair and corrected fixtures
-        run: |
-          python3 tools/repair-issues-890-895.py
-          python3 tools/repair-issues-890-895-testfix.py
-      - name: Focused regressions
-        run: node --test tests/phase6/generic-core/issues-890-895.test.mjs
+      - name: Apply exact guarded RV64C HINT repair
+        run: python3 tools/repair-riscv64-rvc-hints.py
+      - name: Focused RV64C HINT regressions
+        run: node --test tests/phase6/effects/rvc-hints.test.mjs tests/phase6/effects/compressed.test.mjs
       - name: Regenerate canonical userscript before sync gates
         run: npm run userscript:build
       - name: Repository verification
@@ -45,10 +40,9 @@ jobs:
           cmp userscript/hex.user.template.js /tmp/hex.user.template.js
       - name: Commit verified source result
         run: |
-          rm -f tools/repair-issues-890-895.py tools/repair-issues-890-895-testfix.py
-          rm -f .github/workflows/repair-issues-890-895.yml .github/workflows/tmp-repair-runner-890-895.yml
+          rm -f tools/repair-riscv64-rvc-hints.py
+          rm -f .github/workflows/tmp-rvc-hint-repair.yml .github/workflows/tmp-repair-runner-890-895.yml
           git add -A
           git diff --cached --check
-          git commit -m 'fix: close control and profile correctness issues 890-895'
-          git push --force-with-lease origin HEAD:fix/issues-890-895-control-profile-20260819
-# trigger corrected ordering
+          git commit -m 'fix(riscv64): model compressed HINTs as exact no-ops'
+          git push --force-with-lease origin HEAD:fix/riscv64-rvc-hints-20260819
