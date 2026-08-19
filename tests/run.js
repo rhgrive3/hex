@@ -3609,7 +3609,8 @@ test('DECOMPILE: 同じ置き場は、どの書き方で来ても同じ名前に
   ]);
   const out = decompile(m, { addr: BASE });
   const text = out.lines.map((l) => l.text).join('\n');
-  has(text, 'var_1C');
+  has(text, 'local_m174');
+  ok(!/FFFFFFFF/i.test(text), 'signed stack identity wrapped to u64: ' + text);
   ok(!/\bsp\s*[-+]\s*\d/.test(text), '置き場が番地のまま出ている: ' + text);
   ok(!/var_164|var_88\b/.test(text), '同じ置き場に別の名前が付いている: ' + text);
 });

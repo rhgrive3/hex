@@ -6,7 +6,6 @@ on:
       - 'index.html'
       - 'css/**'
       - 'js/**'
-      - 'tests/**'
       - 'capstone.wasm'
       - 'scripts/build-userscript.mjs'
       - 'scripts/userscript-release-version.mjs'
@@ -15,78 +14,44 @@ on:
       - 'package.json'
       - 'package-lock.json'
       - '.github/workflows/generated-sync.yml'
-      - '.github/workflows/reconcile-issues-915-921-current-main.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'index.html'
+      - 'css/**'
+      - 'js/**'
+      - 'capstone.wasm'
+      - 'scripts/build-userscript.mjs'
+      - 'scripts/userscript-release-version.mjs'
+      - 'userscript/hex.user.template.js'
+      - 'userscript/release-version.json'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/generated-sync.yml'
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: generated-sync-reconcile-${{ github.event.pull_request.number }}
+  group: generated-sync-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  reconcile-current-main:
-    if: github.event.pull_request.head.ref == 'fix/issues-915-921-current-main'
+  generated-sync:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: fix/issues-915-921-current-main
-          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Restore reviewed PR927 source and focused regression
-        shell: bash
-        run: |
-          git fetch origin fix/issues-915-921-20260819 --depth=1
-          mkdir -p tests/phase5/regressions
-          for path in \
-            js/decompiler/pipeline-core.js \
-            js/semantics/compat/semantic-ir-v2-to-v1.js \
-            js/targets/abi/sysv-amd64.js \
-            tests/phase5/regressions/issues-915-921.test.mjs; do
-            git show FETCH_HEAD:$path > $path
-          done
-      - name: Compose current-main ABI projection and signed-name regression
-        shell: bash
-        run: |
-          python3 <<'PY'
-          from pathlib import Path
-          p = Path('js/analysis/semantic-function.js')
-          text = p.read_text()
-          old = """      const classified = abiPlugin.classifyArguments(instruction, options);\n      const returned = abiPlugin.classifyCallReturn(instruction, options) ?? null;\n      return {\n        arguments:classified.arguments ?? null,\n        stackArguments:classified.stackArguments ?? null,\n"""
-          new = """      const classified = abiPlugin.classifyArguments(instruction, options);\n      const returned = abiPlugin.classifyCallReturn(instruction, options) ?? null;\n      const explicitArguments = Array.isArray(classified.arguments) ? classified.arguments : null;\n      const implicitInputs = Array.isArray(classified.implicitInputs)\n        ? classified.implicitInputs.map((input, index) => Object.freeze({\n          ...input,\n          index:`implicit:${index}`,\n          location:input.location ?? 'register',\n          abiClass:input.abiClass ?? 'abi-implicit-input',\n          implicit:true,\n          variadicVectorRegisterCount:classified.variadicVectorRegisterCount ?? null,\n          countKnown:Number.isSafeInteger(classified.variadicVectorRegisterCount),\n        }))\n        : [];\n      return {\n        arguments:explicitArguments == null ? (implicitInputs.length ? implicitInputs : null) : [...explicitArguments, ...implicitInputs],\n        explicitArguments,\n        implicitInputs,\n        variadicVectorRegisterCount:classified.variadicVectorRegisterCount ?? null,\n        partial:classified.partial === true,\n        completeness:classified.partial === true ? 'partial' : 'complete',\n        stackArguments:classified.stackArguments ?? null,\n"""
-          if text.count(old) != 1:
-              raise SystemExit(f'semantic-function composition anchor count={text.count(old)}')
-          p.write_text(text.replace(old, new))
-
-          r = Path('tests/run.js')
-          text = r.read_text()
-          old = "  has(text, 'var_1C');\n"
-          new = "  has(text, 'local_m174');\n  ok(!/FFFFFFFF/i.test(text), 'signed stack identity wrapped to u64: ' + text);\n"
-          if text.count(old) != 1:
-              raise SystemExit(f'tests/run.js legacy stack assertion count={text.count(old)}')
-          r.write_text(text.replace(old, new))
-          PY
-      - name: Focused semantic correctness regression
-        run: node tests/phase5/regressions/issues-915-921.test.mjs
-      - name: Main regression suite
-        run: npm test
-      - name: Build canonical userscript outputs
+      - name: Rebuild canonical userscript outputs
         run: npm run userscript:build
-      - name: Restore canonical workflow and publish verified candidate
-        shell: bash
-        run: |
-          git fetch origin main
-          git show origin/main:.github/workflows/generated-sync.yml > .github/workflows/generated-sync.yml
-          rm -f .github/workflows/reconcile-issues-915-921-current-main.yml
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add .github/workflows/generated-sync.yml js/analysis/semantic-function.js js/decompiler/pipeline-core.js js/semantics/compat/semantic-ir-v2-to-v1.js js/targets/abi/sysv-amd64.js tests/phase5/regressions/issues-915-921.test.mjs tests/run.js userscript/hex.user.template.js userscript/release-version.json
-          git diff --cached --check
-          git commit -m 'fix: preserve SysV ABI and signed stack semantics (#915 #919 #920 #921)'
-          git push origin HEAD:fix/issues-915-921-current-main
+      - name: Require userscript-owned generated outputs to match source
+        run: >-
+          git diff --exit-code --
+          userscript/hex.user.template.js
+          userscript/release-version.json

@@ -173,21 +173,27 @@ function projectedAbiArgumentValue(argument, inst, projected) {
  * when the value definition dominates the call (or is an incoming ARG). This is
  * compatibility projection of ABI knowledge; no instruction text is decoded and
  * no register name is embedded in generic code.
+ *
+ * Existing explicit Semantic IR arguments and ABI-projected inputs are additive.
+ * The latter include implicit calling-convention state such as SysV AMD64 `%al`
+ * for variadic calls, so dropping them because one explicit argument already
+ * exists would sever the real def-use edge and allow its producer to disappear.
  */
 function attachAbiProjectedArguments(projected) {
   for (const inst of projected.instructions) {
-    if (inst.op !== V1_OP.CALL || inst.args?.length || !Array.isArray(inst.callArguments)) continue;
-    const seen = new Set();
-    const values = [];
+    if (inst.op !== V1_OP.CALL || !Array.isArray(inst.callArguments)) continue;
+    const existing = (inst.args || []).map((argument) => argument?.value).filter(Boolean);
+    const seen = new Set(existing.map((value) => value.id));
+    const values = existing.slice();
     for (const argument of inst.callArguments) {
       const value = projectedAbiArgumentValue(argument, inst, projected);
       if (!value || seen.has(value.id)) continue;
       seen.add(value.id);
       values.push(value);
+      addUse(value, inst);
     }
     if (!values.length) continue;
     inst.args = values.map(makeArg);
-    for (const value of values) addUse(value, inst);
     inst.extra.abiProjectedArgumentValueIds = values.map((value) => value.semanticSsaValueId ?? value.semanticValueId ?? value.id);
   }
 }
@@ -344,7 +350,7 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
     semanticIrVersion: ir.contractVersion,
     compat: {
       projection: 'semantic-ir-v2-to-v1',
-      version: '1.1.2',
+      version: '1.1.3',
       semanticFunctionId: ir.functionId,
       scalarSsa: !!ssa,
       memorySsa: !!memorySsa,
@@ -439,7 +445,7 @@ export function projectSemanticIrV2ToLegacyV1(input, options = {}) {
 }
 
 export const SEMANTIC_IR_V2_V1_COMPAT = Object.freeze({
-  contractVersion: '1.1.2',
+  contractVersion: '1.1.3',
   legacyOps: V1_OP,
   legacyValueKinds: V1_VK,
   legacyMemoryKinds: V1_MK,

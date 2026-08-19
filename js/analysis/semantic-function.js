@@ -194,8 +194,25 @@ export function semanticAbiAdapter(abiPlugin, options = {}) {
       const instruction = { callTarget:call?.target ?? null, callPrototype:options.callPrototype ?? null };
       const classified = abiPlugin.classifyArguments(instruction, options);
       const returned = abiPlugin.classifyCallReturn(instruction, options) ?? null;
+      const explicitArguments = Array.isArray(classified.arguments) ? classified.arguments : null;
+      const implicitInputs = Array.isArray(classified.implicitInputs)
+        ? classified.implicitInputs.map((input, index) => Object.freeze({
+          ...input,
+          index:`implicit:${index}`,
+          location:input.location ?? 'register',
+          abiClass:input.abiClass ?? 'abi-implicit-input',
+          implicit:true,
+          variadicVectorRegisterCount:classified.variadicVectorRegisterCount ?? null,
+          countKnown:Number.isSafeInteger(classified.variadicVectorRegisterCount),
+        }))
+        : [];
       return {
-        arguments:classified.arguments ?? null,
+        arguments:explicitArguments == null ? (implicitInputs.length ? implicitInputs : null) : [...explicitArguments, ...implicitInputs],
+        explicitArguments,
+        implicitInputs,
+        variadicVectorRegisterCount:classified.variadicVectorRegisterCount ?? null,
+        partial:classified.partial === true,
+        completeness:classified.partial === true ? 'partial' : 'complete',
         stackArguments:classified.stackArguments ?? null,
         stackArgsUnknown:classified.stackArgsUnknown ?? true,
         stackArgsMayContainPointers:classified.stackArgsMayContainPointers ?? true,
