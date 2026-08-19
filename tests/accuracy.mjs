@@ -43,14 +43,11 @@ const basePath = path.join(here, 'accuracy-base.mjs');
 const activePath = path.join(here, `.accuracy-active-${process.pid}.mjs`);
 const oldCheck = '      if (core.length >= 4 && text.includes(core)) { ok++; continue; }';
 const newCheck = '      if (summaryNamesCall(text, nm)) { ok++; continue; }';
-const guessAnchor = `  const res = await w.backend.guessFunctions(w.region.id, 400000);\n  const list = res.starts || res.addrs || [];\n  const truth = new Set(o.functionStarts);`;
-const guessDiagnostic = `${guessAnchor}\n  if (res.provenanceDiagnostic?.removed) {\n    const hist = { tp:{run:{},window:{},occ:{},mod:{}}, fp:{run:{},window:{},occ:{},mod:{}} };\n    const bump = (obj, key) => { obj[key] = (obj[key] || 0) + 1; };\n    for (const meta of res.provenanceDiagnostic.removed) {\n      const side = truth.has(meta.target) ? 'tp' : 'fp';\n      bump(hist[side].run, String(Math.min(meta.maxRun || 0, 32)));\n      bump(hist[side].window, String(meta.maxWindow9 || 0));\n      bump(hist[side].occ, String(Math.min(meta.occurrences || 0, 16)));\n      bump(hist[side].mod, String(meta.wordMod8Mask || 0));\n    }\n    console.error('FUNC_PROVENANCE_DIAG ' + JSON.stringify({\n      removed:res.provenanceDiagnostic.removed.length, hist,\n      broad:res.provenanceDiagnostic.broadImageRelativeCandidates,\n      independent:res.provenanceDiagnostic.independentStructuredCandidates,\n    }));\n  }`;
 
 let source = fs.readFileSync(basePath, 'utf8');
 if (!source.includes(oldCheck)) throw new Error('accuracy-summary-scorer-anchor-missing');
-if (!source.includes(guessAnchor)) throw new Error('accuracy-funcs-guess-anchor-missing');
 source = `import { summaryNamesCall } from './accuracy-short-selector.mjs';\n` +
-  source.replace(oldCheck, newCheck).replace(guessAnchor, guessDiagnostic);
+  source.replace(oldCheck, newCheck);
 
 try {
   fs.writeFileSync(activePath, source);
