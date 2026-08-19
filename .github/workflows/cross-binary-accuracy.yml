@@ -1,15 +1,14 @@
-name: Cross-binary function-guess A/B
+name: Cross-binary function cohort A/B
 
-# Disposable analysis-only workflow. PR #999 is pinned to PR #996 final head.
-# All non-function-start diagnostics were already captured; repeated experiments
-# run only the funcs-guess probe for maximum iteration speed.
+# Disposable analysis-only workflow. Tests only the metadata fallthrough cohort
+# threshold inside guessFunctions. No production CI runs on this branch.
 on:
   pull_request:
     branches: [analysis/cross-binary-100pct-base]
   workflow_dispatch:
 
 concurrency:
-  group: cross-binary-function-ab-${{ github.event.pull_request.number || github.ref }}
+  group: cross-binary-function-cohort-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -19,8 +18,8 @@ env:
   ORACLE_PYTHON_VERSION: '3.12.13'
 
 jobs:
-  function-ab:
-    name: funcs-${{ matrix.name }}
+  cohort-ab:
+    name: cohort-${{ matrix.name }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -65,25 +64,27 @@ jobs:
         if: steps.oracle-cache.outputs.cache-hit != 'true'
         with:
           python-version: ${{ env.ORACLE_PYTHON_VERSION }}
-          cache: pip
-          cache-dependency-path: tests/oracle-requirements.txt
       - name: Generate oracle on cache miss
         if: steps.oracle-cache.outputs.cache-hit != 'true'
         run: |
           python -m pip install --disable-pip-version-check -r tests/oracle-requirements.txt
           python tests/oracle.py "tests/.real-fixtures/${{ matrix.file }}" "${{ matrix.oracle }}"
           python tests/oracle-cfg-normalize.py "tests/.real-fixtures/${{ matrix.file }}" "${{ matrix.oracle }}"
-      - name: Measure function-start heuristic
+      - name: A/B cohort thresholds
         run: |
-          node --max-old-space-size=6000 tests/analysis/function-guess-filter-probe.mjs \
-            --target="tests/.real-fixtures/${{ matrix.file }}" \
-            --oracle="${{ matrix.oracle }}" \
-            --name="${{ matrix.name }}" \
-            --out="function-filter-${{ matrix.name }}.json"
-          cat "function-filter-${{ matrix.name }}.json"
+          set -euo pipefail
+          for mode in baseline ratio01 ratio005 absolute; do
+            node --max-old-space-size=6000 tests/analysis/function-cohort-ab.mjs \
+              --target="tests/.real-fixtures/${{ matrix.file }}" \
+              --oracle="${{ matrix.oracle }}" \
+              --name="${{ matrix.name }}" \
+              --mode="$mode" \
+              --out="cohort-${{ matrix.name }}-$mode.json"
+          done
+          cat cohort-${{ matrix.name }}-*.json
       - uses: actions/upload-artifact@v4
         with:
-          name: function-ab-${{ matrix.name }}
-          path: function-filter-${{ matrix.name }}.json
+          name: cohort-ab-${{ matrix.name }}
+          path: cohort-${{ matrix.name }}-*.json
           if-no-files-found: error
           retention-days: 7
