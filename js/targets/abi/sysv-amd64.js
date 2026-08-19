@@ -13,7 +13,7 @@ export const SYSV_AMD64_SCOPE = Object.freeze({
   scalarReturns:'exact',
   sseArguments:'exact-through-xmm0-xmm7-for-explicit-scalar-or-128-bit-vector-types',
   aggregates:'exact-when-decoder-type-metadata-provides-valid-eightbyte-classes-up-to-16-bytes-otherwise-partial',
-  variadic:'partial-fixed-parameters-and-vector-count-state',
+  variadic:'partial-fixed-parameters-plus-conservative-register-frontier-and-vector-count-state',
   x87:'arguments-memory-exact-returns-unsupported',
   int128:'exact-two-integer-eightbytes-with-whole-argument-register-rollback',
 });
@@ -103,6 +103,23 @@ function align(value, alignment) {
   return Math.ceil(value / alignment) * alignment;
 }
 
+function declaredMaxVectorRegisterBits(options = {}) {
+  const raw = Number(options.maxVectorRegisterBits ?? options.vectorRegisterBits ?? options.architectureProfile?.maxVectorBits ?? 128);
+  return [128, 256, 512].includes(raw) ? raw : 128;
+}
+
+function vectorRegisterName(index, bits) {
+  if (bits <= 128) return `xmm${index}`;
+  if (bits <= 256) return `ymm${index}`;
+  if (bits <= 512) return `zmm${index}`;
+  return null;
+}
+
+function vectorRegisterView(index, bits, options = {}) {
+  if (bits > declaredMaxVectorRegisterBits(options)) return null;
+  return vectorRegisterName(index, bits);
+}
+
 function conservativeUnknownArguments() {
   const srcs = [
     ...INTEGER_ARGUMENT_REGISTERS.map((reg) => ({ t:'reg', reg, bits:64 })),
@@ -145,6 +162,7 @@ export function classifySysVAMD64Arguments(instruction, options = {}) {
   let allocationUnknown = false;
   let aggregatePartial = false;
   let aggregateProven = false;
+  let vectorPartial = false;
   let stackArgsMayContainPointers = false;
   const indirectResult = prototype?.indirectResult === true || prototype?.returnClass === 'indirect';
   if (indirectResult) {
@@ -281,12 +299,29 @@ export function classifySysVAMD64Arguments(instruction, options = {}) {
     }
 
     if ((classified.floating || classified.vector) && vectorIndex < VECTOR_ARGUMENT_REGISTERS.length) {
-      const reg = VECTOR_ARGUMENT_REGISTERS[vectorIndex++];
-      appendRegisterSource(srcs, seenSources, reg, classified.vector ? 128 : classified.bits);
+      const registerIndex = vectorIndex++;
+      const exactVectorView = classified.vector ? vectorRegisterView(registerIndex, classified.bits, options) : VECTOR_ARGUMENT_REGISTERS[registerIndex];
+      const architecturalView = classified.vector ? (exactVectorView || vectorRegisterName(registerIndex, classified.bits)) : exactVectorView;
+      if (!architecturalView) {
+        vectorPartial = true;
+        allocationUnknown = true;
+        arguments_.push({
+          index, location:'unknown', candidateRegisters:[], stackPossible:true,
+          abiClass:'sse-vector-unsupported-width', pointer:false, bits:classified.bits,
+          partial:true, unsupported:true, reason:'sysv-amd64-vector-width-outside-modeled-register-views',
+        });
+        return;
+      }
+      const unsupported = classified.vector && exactVectorView == null;
+      vectorPartial ||= unsupported;
+      appendRegisterSource(srcs, seenSources, architecturalView, classified.bits, unsupported
+        ? { partial:true, unsupported:true, purpose:'wide-vector-register-view' }
+        : {});
       arguments_.push({
-        index, location:'register', reg,
+        index, location:'register', reg:architecturalView,
         abiClass:classified.vector ? 'sse-vector' : 'sse-scalar',
         pointer:false, bits:classified.bits,
+        ...(unsupported ? { partial:true, unsupported:true, reason:'sysv-amd64-wide-vector-profile-not-proven' } : {}),
       });
       return;
     }
@@ -323,6 +358,17 @@ export function classifySysVAMD64Arguments(instruction, options = {}) {
   });
 
   const variadic = prototype?.variadic === true || prototype?.varargs === true;
+  const variadicRegisterCandidates = [];
+  if (variadic) {
+    for (const reg of INTEGER_ARGUMENT_REGISTERS.slice(integerIndex)) {
+      variadicRegisterCandidates.push({ t:'reg', reg, bits:64, abiClass:'unknown-integer', possible:true });
+      appendRegisterSource(srcs, seenSources, reg, 64, { purpose:'variadic-register-candidate', possible:true });
+    }
+    for (const reg of VECTOR_ARGUMENT_REGISTERS.slice(vectorIndex)) {
+      variadicRegisterCandidates.push({ t:'reg', reg, bits:128, abiClass:'unknown-sse', possible:true });
+      appendRegisterSource(srcs, seenSources, reg, 128, { purpose:'variadic-register-candidate', possible:true });
+    }
+  }
   return {
     srcs,
     arguments:arguments_,
@@ -330,10 +376,11 @@ export function classifySysVAMD64Arguments(instruction, options = {}) {
     stackArgsUnknown:allocationUnknown || variadic,
     stackArgsMayContainPointers:stackArgsMayContainPointers || allocationUnknown || variadic,
     aggregateClassification:aggregatePartial ? 'partial-unproven' : aggregateProven ? 'proven' : 'not-required',
-    variadicClassification:variadic ? 'partial-fixed-parameters-only' : 'not-variadic',
+    variadicClassification:variadic ? 'partial-fixed-parameters-plus-register-frontier' : 'not-variadic',
+    variadicRegisterCandidates,
     implicitInputs:variadic ? [{ t:'reg', reg:'rax', view:'al', bits:8, purpose:'sse-register-argument-count' }] : [],
     variadicVectorRegisterCount:variadic ? vectorIndex : null,
-    partial:aggregatePartial || variadic,
+    partial:aggregatePartial || vectorPartial || variadic,
     scope:SYSV_AMD64_SCOPE,
     evidence:'prototype-sysv-amd64',
   };
@@ -363,10 +410,19 @@ function classifyReturn(prototype, options = {}) {
     }
     return { reg:pieces[0]?.reg || null, regs:Array.from(new Set(pieces.map((piece) => piece.reg))), pieces, bits:Number(prototype.returnBits || options.returnBits || classes.length * 64), aggregate:true };
   }
-  const vector = /vector|simd|sse/.test(`${type} ${abiClass}`);
+  const vector = prototype.vector === true || options.vector === true || /vector|simd|sse|__m(?:128|256|512)/.test(`${type} ${abiClass}`);
   const floating = vector || /(^|\s)(?:float|double)(?:\s|$)|\bfp\b/.test(`${type} ${abiClass}`);
   const rawBits = Number(prototype.returnBits || prototype.bits || options.returnBits || typeBits(type, vector ? 128 : 64));
-  const bits = Number.isSafeInteger(rawBits) && rawBits > 0 ? Math.min(128, rawBits) : 64;
+  const saneBits = Number.isSafeInteger(rawBits) && rawBits > 0 ? rawBits : 64;
+  if (vector && saneBits > 128) {
+    const reg = vectorRegisterView(0, saneBits, options);
+    if (!reg) return {
+      reg:null, candidateReg:vectorRegisterName(0, saneBits), bits:saneBits, partial:true, unsupported:true,
+      reason:vectorRegisterName(0, saneBits) ? 'sysv-amd64-wide-vector-profile-not-proven' : 'sysv-amd64-vector-width-outside-modeled-register-views',
+    };
+    return { reg, bits:saneBits, abiClass:'sse-vector', wideVector:true };
+  }
+  const bits = Math.min(128, saneBits);
   if (!floating && bits === 128) {
     const pieces = [
       { index:0, abiClass:'INTEGER', reg:'rax', bits:64 },
