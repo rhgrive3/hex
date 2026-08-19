@@ -26,6 +26,9 @@ function fileShim(p) {
 }
 const backend = new NodeBackend();
 const info = await backend.open(fileShim(path.resolve(target)));
+// Match openBinary()/UI initialization: analyze the Mach-O slice before asking
+// the worker for function guesses so slice metadata/function tables are ready.
+await backend.analyze(0);
 const regions = [].concat(...info.slices.map((s) => s.regions), [info.raw]);
 const region = regions.find((r) => r.section === '__text' && r.size > 0n) || regions.find((r) => r.exec && r.size > 0n);
 if (!region) throw new Error('executable region not found');
