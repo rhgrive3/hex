@@ -3,19 +3,12 @@
   "verifierId": "phase7.verifier",
   "verifierVersion": "1.0.0",
   "verifierSourceSha256": "22616c498e0baabc979b4e2ab98023a2f26ecfd638d8c2168bfb04d15a0d954a",
-  "generatedAt": "2026-08-19T12:41:11.951Z",
+  "generatedAt": "2026-08-19T12:58:08.415Z",
   "product": {
-    "commitSha": "3cb5e9ad5c22c46cce32ce3dd675a9307d7a86bc",
-    "treeSha": "922166dbd681b0c6e8678c395ac0f33f83717bc1",
-    "workingTreeClean": false,
-    "dirtyPaths": [
-      "M js/analysis/pointsto/local.js",
-      "M tests/phase7/corpus/fixtures.mjs",
-      "M tests/phase7/corpus/manifest.json",
-      "M tests/phase7/verifier/mutants.test.mjs",
-      "M userscript/hex.user.template.js",
-      "M userscript/release-version.json"
-    ],
+    "commitSha": "354b583e7a24460f6eefef50cf19d019be659cf7",
+    "treeSha": "a5deaff52bab1fa396d2732222b350a4180c6989",
+    "workingTreeClean": true,
+    "dirtyPaths": [],
     "branch": "phase7/static-analysis-depth"
   },
   "profileVersion": 1,
@@ -1167,38 +1160,38 @@
   },
   "performance": {
     "coldActiveFunction": {
-      "medianMs": 33.951,
+      "medianMs": 27.921,
       "samples": [
-        33.951,
-        58.966,
-        41.144,
-        28.033,
-        25.306
+        27.921,
+        21.694,
+        25.234,
+        37.138,
+        36.943
       ]
     },
     "warmActiveFunction": {
-      "medianMs": 3.276,
+      "medianMs": 3.483,
       "samples": [
-        3.842,
-        2.814,
-        3.276,
-        4.188,
-        2.95
+        3.483,
+        3.021,
+        3.198,
+        4.387,
+        4.823
       ]
     },
     "pathologicalPointerPhi": {
-      "medianMs": 5.587,
+      "medianMs": 3.389,
       "samples": [
-        5.126,
-        5.737,
-        5.819,
-        5.587,
-        5.582
+        3.239,
+        3.389,
+        3.701,
+        3.613,
+        3.349
       ]
     }
   },
   "gates": [],
-  "evidenceDigest": "bc98b5282c26eb42c3007773910bb949",
+  "evidenceDigest": "34e1d34a47809023214af114caf3653a",
   "failures": [],
   "verdict": "READY"
 }
