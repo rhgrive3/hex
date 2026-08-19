@@ -24,8 +24,6 @@ concurrency:
 
 jobs:
   autofix:
-    # Never write to forks or directly to main. A bot-generated synchronize event
-    # is safe: if outputs are already canonical, this job exits without a commit.
     if: >-
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.head.ref != github.event.pull_request.base.ref
@@ -49,6 +47,12 @@ jobs:
       - name: Rebuild canonical userscript outputs
         run: npm run userscript:build
 
+      - name: Restore deployment-only build identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          git restore --source=HEAD --worktree -- js/userscript/deployment-identity.generated.js
+
       - name: Reject unexpected build side effects
         shell: bash
         run: |
@@ -71,7 +75,6 @@ jobs:
             exit 0
           fi
 
-          # Refuse to repair a branch that moved while this run was executing.
           git fetch origin "${{ github.event.pull_request.head.ref }}"
           if [[ "$(git rev-parse FETCH_HEAD)" != "$HEAD_SHA" ]]; then
             echo 'PR head moved during autofix; refusing stale push.' >&2
