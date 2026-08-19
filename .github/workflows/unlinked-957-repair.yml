@@ -1,0 +1,58 @@
+name: Unlinked issue 957 repair
+
+on:
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    if: github.head_ref == 'work/unlinked-957-bti-guarded-page'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+      - name: Reconcile BTYPE producer dependency
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch origin work/unlinked-956-arm64-btype
+          git merge origin/work/unlinked-956-arm64-btype --no-edit
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Apply BTI guarded-page repair
+        run: python3 .github/apply-unlinked-957.py
+      - name: Rebuild canonical userscript before suites
+        run: npm run userscript:build
+      - name: Focused regression
+        run: node tests/machine-effects/issue-957-bti-guarded-page.test.mjs
+      - name: MachineEffects suite
+        run: npm run effects:test
+      - name: ELF loader tests
+        run: npm run binary:test
+      - name: Semantic v2 suite
+        run: npm run semantic-v2:test
+      - name: Remove bootstrap files
+        run: rm -f .github/apply-unlinked-957.py .github/workflows/unlinked-957-repair.yml
+      - name: Full repository check
+        run: npm run check
+      - name: Generated-output idempotence and diff hygiene
+        run: |
+          before=$(git diff -- userscript/hex.user.template.js userscript/release-version.json | git hash-object --stdin)
+          npm run userscript:build
+          after=$(git diff -- userscript/hex.user.template.js userscript/release-version.json | git hash-object --stdin)
+          test "$before" = "$after"
+          git diff --check
+      - name: Publish verified implementation
+        run: |
+          git add -A
+          git diff --cached --check
+          git commit -m 'fix: gate ARM64 BTI on guarded-page state (#957)'
+          git push origin HEAD:${{ github.head_ref }}
