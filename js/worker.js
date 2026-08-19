@@ -5,4 +5,3 @@
 importScripts('./worker-legacy.js');
 importScripts('./worker-fixes.js');
 importScripts('./worker-xref-memory-fix.js');
-importScripts('./worker-analysis-guess-filter.js');
