@@ -1,0 +1,54 @@
+name: Diagnose RV64C HINT repair
+on:
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    if: github.event.pull_request.head.ref == 'fix/riscv64-rvc-hints-20260819'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/riscv64-rvc-hints-20260819
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Apply repair in workspace
+        run: python3 tools/repair-riscv64-rvc-hints.py
+      - name: Compare two canonical builds
+        run: |
+          set -u
+          npm run userscript:build
+          mkdir -p /tmp/rvc-hint-build1/userscript /tmp/rvc-hint-build1/js/userscript
+          cp userscript/hex.user.template.js /tmp/rvc-hint-build1/userscript/hex.user.template.js
+          cp userscript/release-version.json /tmp/rvc-hint-build1/userscript/release-version.json
+          cp js/userscript/deployment-identity.generated.js /tmp/rvc-hint-build1/js/userscript/deployment-identity.generated.js
+          echo '=== first build hashes ==='
+          sha256sum userscript/hex.user.template.js userscript/release-version.json js/userscript/deployment-identity.generated.js
+          echo '=== first release state ==='
+          cat userscript/release-version.json
+          echo '=== first status ==='
+          git status --short
+          npm run userscript:build
+          echo '=== second build hashes ==='
+          sha256sum userscript/hex.user.template.js userscript/release-version.json js/userscript/deployment-identity.generated.js
+          echo '=== second release state ==='
+          cat userscript/release-version.json
+          echo '=== second status ==='
+          git status --short
+          set +e
+          echo '=== template diff ==='
+          diff -u /tmp/rvc-hint-build1/userscript/hex.user.template.js userscript/hex.user.template.js
+          echo "template diff exit=$?"
+          echo '=== release diff ==='
+          diff -u /tmp/rvc-hint-build1/userscript/release-version.json userscript/release-version.json
+          echo "release diff exit=$?"
+          echo '=== deployment identity diff ==='
+          diff -u /tmp/rvc-hint-build1/js/userscript/deployment-identity.generated.js js/userscript/deployment-identity.generated.js
+          echo "deployment diff exit=$?"
+          exit 0
