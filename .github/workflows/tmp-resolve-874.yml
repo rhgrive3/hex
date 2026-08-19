@@ -131,3 +131,5 @@ jobs:
           git diff --cached --check
           git commit -m 'chore: resolve PR 874 against current main'
           git push origin HEAD:integrate/open-issue-fixes-20260819
+
+# synchronization trigger
