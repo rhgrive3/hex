@@ -1,0 +1,1 @@
+This disposable analysis branch intentionally runs only `.github/workflows/cross-binary-accuracy.yml` for Cross-binary accuracy diagnostics. Other CI workflows are unrelated to this investigation and may be removed/disabled on this branch only. Do not merge this branch.
