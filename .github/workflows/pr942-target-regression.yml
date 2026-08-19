@@ -26,4 +26,23 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Diagnose shifted compare
+        run: |
+          node --input-type=module <<'NODE'
+          import { buildSemanticModel } from './js/blocks.js';
+          import { OP, irFor, branchConstraints } from './js/ir.js';
+          const BASE = 0x100000000n;
+          const lines = ['mov w1, #0x80000000', 'cmp w0, w1, lsl #1', 'b.eq #0x100000010', 'nop', 'ret'];
+          const rows = lines.map((line,row)=>{ const split=line.indexOf(' '); return {row,address:BASE+BigInt(row*4),mn:split<0?line:line.slice(0,split),ops:split<0?'':line.slice(split+1)}; });
+          const rowOfAddress = (address) => { const d=BigInt(address)-BASE; return d<0n||d>=BigInt(rows.length*4)||d%4n!==0n?null:Number(d/4n); };
+          const model = buildSemanticModel(rows,{startRow:0,endRow:rows.length-1,rowOfAddress});
+          const ir = irFor(model,{rowOfAddress,decoderSemanticVersion:'issue-soundness-diag'});
+          const v = (x) => x == null ? null : typeof x === 'bigint' ? x.toString()+'n' : x;
+          for (const inst of ir.instructions) {
+            console.log('INST', inst.id, 'op=',inst.op,'sub=',inst.sub,'cond=',inst.cond,'bits=',inst.extra?.bits,
+              'dst=',inst.dst && {id:inst.dst.id,bits:inst.dst.bits,const:v(inst.dst.const)},
+              'args=',(inst.args||[]).map(a=>({bits:a.bits,shift:a.shift,value:a.value&&{id:a.value.id,bits:a.value.bits,const:v(a.value.const),def:a.value.def&&{id:a.value.def.id,op:a.value.def.op,sub:a.value.def.sub,argc:a.value.def.args?.length,extra:a.value.def.extra}}})));
+          }
+          console.log('BRANCH_FACTS', branchConstraints(ir).length);
+          NODE
       - run: node tests/semantic-v2/issues-791-797-800-825-ir-soundness.test.mjs
