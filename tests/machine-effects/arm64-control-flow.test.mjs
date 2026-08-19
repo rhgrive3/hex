@@ -20,16 +20,19 @@ function registerWrites(bundle) { return bundle.operations.filter((operation) =>
   assert.equal(bundle.completeness, 'exact');
   assert.equal(bundle.controlEffect.kind, 'branch');
   assert.equal(bundle.controlEffect.target.value, '20480');
-  assert.equal(bundle.operations.length, 0, 'direct B has no architectural register effects');
+  assert.deepEqual(registerWrites(bundle).map((operation) => operation.register.registerId), ['pstate.btype'], 'direct B only resets architectural BTYPE state');
+  assert.equal(registerWrites(bundle)[0].value.value, '0');
   assert.ok(bundle.origin.instructionIds.includes(bundle.instructionId));
 }
 
 {
-  const bundle = lift('br', 'x3');
+  const bundle = lift('br', 'x16');
   assert.equal(bundle.completeness, 'exact');
   assert.equal(bundle.controlEffect.kind, 'indirect');
-  assert.equal(bundle.operations.filter((operation) => operation.kind === 'register-read')[0].register.registerId, 'x3');
+  assert.equal(bundle.operations.filter((operation) => operation.kind === 'register-read')[0].register.registerId, 'x16');
   assert.equal(bundle.possibleFaults[0].kind, 'pc-alignment-fault');
+  const btype = registerWrites(bundle).find((operation) => operation.register.registerId === 'pstate.btype');
+  assert.equal(btype?.value.value, '1');
 }
 
 {
@@ -37,7 +40,7 @@ function registerWrites(bundle) { return bundle.operations.filter((operation) =>
   const bundle = liftArm64ControlEffects(insn);
   assert.equal(bundle.completeness, 'exact');
   assert.equal(bundle.controlEffect.kind, 'call');
-  assert.deepEqual(registerWrites(bundle).map((operation) => operation.register.registerId), ['x30']);
+  assert.deepEqual(registerWrites(bundle).map((operation) => operation.register.registerId), ['x30', 'pstate.btype']);
   assert.equal(bundle.metadata.abiSemantics, false, 'MachineEffects call must not add AAPCS64 semantics');
   assert.equal(bundle.controlEffect.fallthrough.value, String(0x4104));
 }
@@ -47,9 +50,10 @@ function registerWrites(bundle) { return bundle.operations.filter((operation) =>
   assert.equal(bundle.completeness, 'exact');
   assert.equal(bundle.controlEffect.kind, 'call');
   assert.equal(bundle.metadata.indirect, true);
-  assert.deepEqual(registerWrites(bundle).map((operation) => operation.register.registerId), ['x30']);
+  assert.deepEqual(registerWrites(bundle).map((operation) => operation.register.registerId), ['x30', 'pstate.btype']);
   const reads = bundle.operations.filter((operation) => operation.kind === 'register-read').map((operation) => operation.register.registerId);
   assert.deepEqual(reads, ['x9']);
+  assert.equal(registerWrites(bundle).find((operation) => operation.register.registerId === 'pstate.btype')?.value.value, '2');
 }
 
 {
@@ -70,6 +74,7 @@ function registerWrites(bundle) { return bundle.operations.filter((operation) =>
   const flagReads = bundle.operations.filter((operation) => operation.kind === 'flag-read').map((operation) => operation.flag.flagId);
   assert.deepEqual(flagReads, ['NZCV.Z'], 'condition code is lowered to explicit NZCV consumption');
   assert.notEqual(bundle.controlEffect.condition, 'eq', 'downstream consumers receive a condition value, not a mnemonic string');
+  assert.equal(registerWrites(bundle).find((operation) => operation.register.registerId === 'pstate.btype')?.value.value, '0');
 }
 
 {
@@ -93,6 +98,7 @@ function registerWrites(bundle) { return bundle.operations.filter((operation) =>
   assert.equal(partial.completeness, 'partial');
   assert.equal(partial.controlEffect.kind, 'call');
   assert.ok(partial.unknownEffects.categories.includes('registers'), 'unknown link-register value must fail closed');
+  assert.equal(registerWrites(partial).find((operation) => operation.register.registerId === 'pstate.btype')?.value.value, '0');
 }
 
 assert.equal(liftArm64ControlEffects(instruction('ldr', 'x0, [x1]')), null, 'memory family is outside this lifter');
