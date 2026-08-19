@@ -1,6 +1,6 @@
 # Phase 7 Industrial Static Analysis Execution Plan
 
-Status: **executed** — see [`PHASE7_CHECKPOINT.md`](PHASE7_CHECKPOINT.md) for the live evidence  
+Status: **executed** — see [`PHASE7_CHECKPOINT.md`](PHASE7_CHECKPOINT.md) for the live evidence\
 Repository: `rhgrive3/hex`  
 Initial docs-branch fork: `main` at `e90c5107f9c77d73687ee452d5042dcbe9e79ece`  
 Final review live baseline: `main` at `9fb1c3f9327869e83170e75b6f132ad699b82a0e` (Phase 6 integration merged via #852)  
