@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import './issues-961-967.mjs';
+import './issues-969-971.mjs';
 import { parseMachO } from '../js/binary/macho.js';
 import { parsePE } from '../js/binary/pe.js';
 
