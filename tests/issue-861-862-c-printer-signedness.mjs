@@ -83,8 +83,8 @@ function state() { return { types: { values: new Map() }, highVariables: null, o
   const sdiv = buildExpressionForTesting(binaryValue(4, 'sdiv', x, two, 32, true), state());
   assert.equal(udiv.op, 'udiv');
   assert.equal(sdiv.op, 'sdiv');
-  assert.match(printExpression(udiv), /\(uint32_t\)a1 \/ 2/);
-  assert.match(printExpression(sdiv), /\(int32_t\)a1 \/ \(int32_t\)2/);
+  assert.match(printExpression(udiv), /\(uint32_t\)x0 \/ 2/);
+  assert.match(printExpression(sdiv), /\(int32_t\)x0 \/ \(int32_t\)2/);
 }
 
 // Semantic flags -> compare AST -> C: the same SSA input keeps signed/unsigned
@@ -107,8 +107,8 @@ function compareSelect(id, cond, x, rhs, bits) {
   const unsignedAst = buildExpressionForTesting(compareSelect(70, 'lo', x, one, 32), state());
   const signedText = printExpression(signedAst);
   const unsignedText = printExpression(unsignedAst);
-  assert.match(signedText, /\(int32_t\)a1 < \(int32_t\)0/);
-  assert.match(unsignedText, /\(uint32_t\)a1 < 1/);
+  assert.match(signedText, /\(int32_t\)x0 < \(int32_t\)0/);
+  assert.match(unsignedText, /\(uint32_t\)x0 < 1/);
 }
 
 console.log('issues 861-862 C printer signedness regressions: ok');
