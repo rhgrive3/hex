@@ -1,8 +1,7 @@
-name: Cross-binary YWP function evidence
+name: Cross-binary function evidence A/B
 
-# Disposable analysis-only workflow. All unrelated CI is removed on this branch.
-# This run classifies every YWP funcs-guess false positive by the exact hardened
-# evidence that allowed the candidate to survive.
+# Disposable analysis-only workflow. Validate the proposed independent-evidence
+# rule for funcs-guess across all three pinned real binaries. No unrelated CI.
 on:
   pull_request:
     branches: [analysis/cross-binary-100pct-base]
@@ -13,34 +12,53 @@ concurrency:
   cancel-in-progress: true
 
 env:
+  HEX_FIXTURE_BATTLECATS_URL: https://raw.githubusercontent.com/rhgrive3/hex/bd7bd61d093592d07fdd9e9b14a859e19dd4c3a9/tests/battlecats
+  HEX_FIXTURE_TSUMTSUM_URL: https://raw.githubusercontent.com/rhgrive3/hex/bd7bd61d093592d07fdd9e9b14a859e19dd4c3a9/tests/TsumTsum
   HEX_FIXTURE_YWP_URL: https://raw.githubusercontent.com/rhgrive3/hex/bd7bd61d093592d07fdd9e9b14a859e19dd4c3a9/tests/YWP
   ORACLE_PYTHON_VERSION: '3.12.13'
 
 jobs:
-  evidence:
-    name: evidence-YWP
+  evidence-ab:
+    name: filter-${{ matrix.name }}
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        include:
+          - name: BattleCats
+            fixture: battlecats
+            file: battlecats
+            oracle: tests/oracle.battlecats.ci.json.gz
+          - name: TsumTsum
+            fixture: TsumTsum
+            file: TsumTsum
+            oracle: tests/oracle.TsumTsum.ci.json.gz
+          - name: YWP
+            fixture: YWP
+            file: YWP
+            oracle: tests/oracle.YWP.ci.json.gz
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Fetch pinned YWP fixture
+      - name: Fetch pinned fixture
         run: |
-          node scripts/fetch-real-fixtures.mjs YWP
-          node scripts/fetch-real-fixtures.mjs YWP --check
+          node scripts/fetch-real-fixtures.mjs "${{ matrix.fixture }}"
+          node scripts/fetch-real-fixtures.mjs "${{ matrix.fixture }}" --check
       - name: Build oracle cache key
         id: oracle-key
         shell: bash
         env:
           ORACLE_INPUT_HASH: ${{ hashFiles('tests/fixtures/real-binaries.json', 'tests/oracle.py', 'tests/oracle-cfg-normalize.py', 'tests/oracle-requirements.txt') }}
-        run: echo "key=cross-binary-oracle-v3-${{ runner.os }}-${{ runner.arch }}-py${ORACLE_PYTHON_VERSION}-YWP-${ORACLE_INPUT_HASH}" >> "$GITHUB_OUTPUT"
+        run: echo "key=cross-binary-oracle-v3-${{ runner.os }}-${{ runner.arch }}-py${ORACLE_PYTHON_VERSION}-${{ matrix.fixture }}-${ORACLE_INPUT_HASH}" >> "$GITHUB_OUTPUT"
       - name: Restore exact oracle cache
         id: oracle-cache
         uses: actions/cache/restore@v4
         with:
-          path: tests/oracle.YWP.ci.json.gz
+          path: ${{ matrix.oracle }}
           key: ${{ steps.oracle-key.outputs.key }}
       - uses: actions/setup-python@v5
         if: steps.oracle-cache.outputs.cache-hit != 'true'
@@ -50,18 +68,18 @@ jobs:
         if: steps.oracle-cache.outputs.cache-hit != 'true'
         run: |
           python -m pip install --disable-pip-version-check -r tests/oracle-requirements.txt
-          python tests/oracle.py tests/.real-fixtures/YWP tests/oracle.YWP.ci.json.gz
-          python tests/oracle-cfg-normalize.py tests/.real-fixtures/YWP tests/oracle.YWP.ci.json.gz
-      - name: Classify function-start evidence
+          python tests/oracle.py "tests/.real-fixtures/${{ matrix.file }}" "${{ matrix.oracle }}"
+          python tests/oracle-cfg-normalize.py "tests/.real-fixtures/${{ matrix.file }}" "${{ matrix.oracle }}"
+      - name: Measure filtered function-start accuracy
         run: |
           node --max-old-space-size=6000 tests/analysis/function-evidence-probe.mjs \
-            --target=tests/.real-fixtures/YWP \
-            --oracle=tests/oracle.YWP.ci.json.gz \
-            --out=function-evidence-YWP.json
-          cat function-evidence-YWP.json
+            --target="tests/.real-fixtures/${{ matrix.file }}" \
+            --oracle="${{ matrix.oracle }}" \
+            --out="function-filter-${{ matrix.name }}.json"
+          node -e 'const d=require("./function-filter-${{ matrix.name }}.json"); console.log(JSON.stringify(d.totals))'
       - uses: actions/upload-artifact@v4
         with:
-          name: function-evidence-YWP
-          path: function-evidence-YWP.json
+          name: function-filter-${{ matrix.name }}
+          path: function-filter-${{ matrix.name }}.json
           if-no-files-found: error
           retention-days: 7
