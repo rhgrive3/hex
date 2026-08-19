@@ -6,7 +6,7 @@ import {
   stableStringify,
 } from '../../core/identity/index.js';
 
-export const CANONICAL_ADDRESS_DERIVATION_VERSION = '1.0.1';
+export const CANONICAL_ADDRESS_DERIVATION_VERSION = '1.0.2';
 export const GENERIC_ROOT_DESCRIPTOR_KINDS = Object.freeze([
   'stack-like',
   'rooted-object',
@@ -204,7 +204,9 @@ function rootFromDescriptor(descriptor, fallbackIdentity, expectedAddressSpace, 
       kind: 'stack-like',
       addressSpace,
       rootIdentity,
-      offset: normalizeModulo(descriptor.baseOffset, widthBits),
+      // Root-relative offsets are signed mathematical offsets, not machine
+      // addresses. Modulo wrapping here makes linear interval aliasing unsound.
+      offset: descriptor.baseOffset,
       widthBits,
       separationSafe: descriptor.linearOffsets,
     });
@@ -215,7 +217,7 @@ function rootFromDescriptor(descriptor, fallbackIdentity, expectedAddressSpace, 
     addressSpace,
     rootIdentity,
     rootEntityId,
-    offset: normalizeModulo(descriptor.baseOffset, widthBits),
+    offset: descriptor.baseOffset,
     widthBits,
     separationSafe: descriptor.linearOffsets,
   });
@@ -437,7 +439,7 @@ function addToRoot(proof, delta, widthBits, preserveSeparation) {
   const width = widthBits ?? proof.widthBits;
   return deepFreeze({
     ...proof,
-    offset: normalizeModulo(proof.offset + delta, width),
+    offset: proof.offset + delta,
     widthBits: width,
     separationSafe: proof.separationSafe === true && preserveSeparation === true,
   });
