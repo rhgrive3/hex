@@ -6,4 +6,3 @@ importScripts('./worker-legacy.js');
 importScripts('./worker-fixes.js');
 importScripts('./worker-xref-memory-fix.js');
 importScripts('./worker-kind-fix.js');
-importScripts('./worker-function-provenance-fix.js');
