@@ -4,7 +4,7 @@
 
 Hex AI is an interface to Hex's analysis engines, not a second source of reverse-engineering facts. The language model plans, selects tools, interprets bounded observations, and explains results. Browser-side Hex code owns the binary, executes tools, validates addresses and scopes, produces evidence, and decides whether a claim is verified.
 
-The binary file is never uploaded to the Worker. Only the user request, bounded excerpts, compact tool observations, evidence references, and compact conversation state cross the inference boundary. API credentials remain in the Worker environment.
+The raw binary never crosses the inference boundary. Only the user request, bounded excerpts, compact tool observations, evidence references, and compact conversation state may be projected to an inference provider. The Cloudflare Worker holds API credentials for Worker-backed providers; the ChatGPT Web provider uses the visible authenticated host UI through the userscript bridge and does not read cookies or tokens.
 
 ```text
 natural-language goal
@@ -25,10 +25,12 @@ evidence + hypothesis stores <--- deterministic verifier
 structured result + validated UI actions
         |
         v
-Worker /api/ai/turn <----> provider inference only
+AIProvider.nextTurn()
+        |-- UserscriptAIProvider -> visible ChatGPT Web DOM bridge
+        `-- WorkerAIProvider     -> same-origin POST /api/ai/turn -> provider inference
 ```
 
-The design follows the common execution contract in the current primary documentation for [Gemini function calling](https://ai.google.dev/gemini-api/docs/function-calling), [OpenAI Agents SDK tools and guardrails](https://openai.github.io/openai-agents-js/guides/guardrails/), [OpenAI context management](https://openai.github.io/openai-agents-js/guides/context/), [Anthropic client tool loops](https://platform.claude.com/docs/en/agents-and-tools/tool-use/how-tool-use-works), and the [MCP host security boundary](https://modelcontextprotocol.io/specification/2025-06-18/architecture): the model emits typed requests, while the host validates and executes them. Hex implements only the small provider-neutral subset it needs and does not depend on an agent framework.
+The design follows the common execution contract in the current primary documentation for Gemini function calling, OpenAI tool/guardrail/context patterns, Anthropic client tool loops, and the MCP host security boundary: the model emits typed requests, while the host validates and executes them. Hex implements only the small provider-neutral subset it needs and does not depend on an agent framework.
 
 ## Chat and agent runtimes
 
@@ -57,7 +59,7 @@ The public scopes are `auto`, `selection`, `function`, `neighborhood`, `binary`,
 
 Old raw tool output is retained locally in `EvidenceStore`, not replayed on every model turn. The default context limit is 64 KiB for chat and 128 KiB for agent. Large functions are truncated before older high-priority evidence is removed.
 
-All tool-derived text is tagged `untrusted-data`. The Worker system instruction explicitly treats strings, symbols, comments, assembly, and decompiler output as data even when they contain prompt-like or tool-call-like text.
+All tool-derived text is tagged `untrusted-data`. Provider instructions explicitly treat strings, symbols, comments, assembly, decompiler output, DOM text and other observed content as data even when they contain prompt-like or tool-call-like text.
 
 ## Tools and deterministic planning
 
@@ -83,17 +85,22 @@ Mutations are not model-callable tools. `ProposalStore` creates a pending propos
 
 ## Sessions and persistence
 
-An investigation session stores the binary ID, mode/style/scope, goal, compact messages and summary, pinned evidence, hypotheses, confirmed findings, rejected hypotheses, proposals, and timestamps. Secret-looking keys are stripped before persistence. `.hexproj` findings now accept `investigationSessions` while remaining backward compatible with version 1 projects; binaries remain external and are never embedded.
+An investigation session stores the binary ID, mode/style/scope, goal, compact messages and summary, pinned evidence, hypotheses, confirmed findings, rejected hypotheses, proposals, and timestamps. Secret-looking keys are stripped before persistence. `.hexproj` findings accept `investigationSessions` while remaining backward compatible with version 1 projects; binaries remain external and are never embedded.
 
 UI `conversationId` values map independently to AIRuntime session IDs. Provider requests also carry `conversationId`, `provider`, `model`, and `reasoning`; older callers may omit them. `AgentJobManager` extends a large investigation as a sequence of bounded turns. Each checkpoint retains the goal, effective scope, AIRuntime session, evidence/hypothesis IDs, completed tools, continuation/detail references, unresolved work, and cumulative budget. A slice budget creates a resumable `checkpointed` state; only the explicit job-wide slice/elapsed limits produce `hard-limit`.
 
-## Provider and Worker boundary
+## Provider boundary
 
-`AIProvider.nextTurn(request, options)` is the only runtime dependency on inference. `WorkerAIProvider` implements it over same-origin `POST /api/ai/turn`; future providers can implement the same interface without leaking model names into UI code.
+`AIProvider.nextTurn(request, options)` is the runtime dependency on inference. Provider selection is host-dependent rather than hypothetical:
 
-The Worker validates request size, mode/style/scope, bounded context, tool names, and tool schemas. Tool names must be in Hex's static allowlist. It rejects binary-shaped payloads, applies a per-isolate request rate limit, holds the Gemini key, disables provider storage, applies a timeout, and forces a complete function call. Browser tools are never executed by the Worker. `submit_hex_result` is the structured final-result function.
+- `UserscriptAIProvider` is used when the parent userscript exposes `__HEX_CHATGPT_BRIDGE__`; it drives the visible ChatGPT Web model/reasoning UI through the browser-local bridge.
+- `WorkerAIProvider` is used when no ChatGPT bridge is active; it calls same-origin `POST /api/ai/turn` and keeps API credentials in the Worker environment.
 
-Agent function calls are executed only after the complete JSON response validates. `AbortSignal` propagates through provider fetch and tool execution; cancelling preserves the session and evidence already collected. Chat's legacy `/api/gemini`, `buildGeminiPayload`, and `streamGemini` paths remain available while UI migration proceeds.
+Both providers return the same typed turn protocol and neither executes Hex analysis itself. Model/provider names stay out of deterministic analysis code.
+
+The Worker-backed path validates request size, mode/style/scope, bounded context, tool names, and tool schemas. Tool names must be in Hex's static allowlist. It rejects binary-shaped payloads, applies rate/resource limits, holds the provider key, disables provider storage where supported, applies a timeout, and requires a complete typed response. Browser tools are never executed by the Worker.
+
+Agent function calls are executed only after the complete JSON response validates. `AbortSignal` propagates through provider fetch/bridge work and tool execution; cancelling preserves the session and evidence already collected. Legacy `/api/gemini`, `buildGeminiPayload`, and `streamGemini` paths are compatibility surfaces and must not be described as the only or canonical userscript inference path.
 
 ## Errors and observability
 
