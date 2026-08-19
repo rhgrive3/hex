@@ -1,0 +1,227 @@
+name: Real-binary Hex vs Ghidra
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/ghidra-real-binary-differential.yml'
+      - 'tools/real-binary-ghidra/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: real-binary-ghidra-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  HEX_FIXTURE_BATTLECATS_URL: https://raw.githubusercontent.com/rhgrive3/hex/bd7bd61d093592d07fdd9e9b14a859e19dd4c3a9/tests/battlecats
+  HEX_FIXTURE_TSUMTSUM_URL: https://raw.githubusercontent.com/rhgrive3/hex/bd7bd61d093592d07fdd9e9b14a859e19dd4c3a9/tests/TsumTsum
+  HEX_FIXTURE_YWP_URL: https://raw.githubusercontent.com/rhgrive3/hex/bd7bd61d093592d07fdd9e9b14a859e19dd4c3a9/tests/YWP
+  ORACLE_PYTHON_VERSION: '3.12.13'
+  GHIDRA_VERSION: '12.1.2'
+  GHIDRA_BUILD_DATE: '20260605'
+  GHIDRA_TAG: 'Ghidra_12.1.2_build'
+  GHIDRA_SHA256: 'b62e81a0390618466c019c60d8c2f796ced2509c4c1aea4a37644a77272cf99d'
+
+jobs:
+  benchmark:
+    name: ${{ matrix.name }} Hex-vs-Ghidra
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        include:
+          - name: BattleCats
+            fixture: battlecats
+            file: battlecats
+            oracle: tests/oracle.battlecats.ci.json.gz
+          - name: TsumTsum
+            fixture: TsumTsum
+            file: TsumTsum
+            oracle: tests/oracle.TsumTsum.ci.json.gz
+          - name: YWP
+            fixture: YWP
+            file: YWP
+            oracle: tests/oracle.YWP.ci.json.gz
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Fetch and verify pinned real fixture
+        run: |
+          node scripts/fetch-real-fixtures.mjs "${{ matrix.fixture }}"
+          node scripts/fetch-real-fixtures.mjs "${{ matrix.fixture }}" --check
+          file "tests/.real-fixtures/${{ matrix.file }}"
+
+      - name: Build exact oracle cache key
+        id: oracle-key
+        shell: bash
+        env:
+          ORACLE_INPUT_HASH: ${{ hashFiles('tests/fixtures/real-binaries.json', 'tests/oracle.py', 'tests/oracle-cfg-normalize.py', 'tests/oracle-requirements.txt') }}
+        run: |
+          echo "key=cross-binary-oracle-v3-${{ runner.os }}-${{ runner.arch }}-py${ORACLE_PYTHON_VERSION}-${{ matrix.fixture }}-${ORACLE_INPUT_HASH}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore exact oracle cache
+        id: oracle-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ matrix.oracle }}
+          key: ${{ steps.oracle-key.outputs.key }}
+
+      - uses: actions/setup-python@v5
+        if: steps.oracle-cache.outputs.cache-hit != 'true'
+        with:
+          python-version: ${{ env.ORACLE_PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: tests/oracle-requirements.txt
+
+      - name: Install pinned oracle dependencies
+        if: steps.oracle-cache.outputs.cache-hit != 'true'
+        run: python -m pip install --disable-pip-version-check -r tests/oracle-requirements.txt
+
+      - name: Generate independent oracle on cache miss
+        if: steps.oracle-cache.outputs.cache-hit != 'true'
+        run: |
+          python tests/oracle.py "tests/.real-fixtures/${{ matrix.file }}" "${{ matrix.oracle }}"
+          python tests/oracle-cfg-normalize.py "tests/.real-fixtures/${{ matrix.file }}" "${{ matrix.oracle }}"
+          gzip -t "${{ matrix.oracle }}"
+
+      - name: Save exact oracle cache
+        if: steps.oracle-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ matrix.oracle }}
+          key: ${{ steps.oracle-key.outputs.key }}
+
+      - name: Measure Hex on common oracle and choose shared decompile sample
+        run: |
+          node --max-old-space-size=8000 tools/real-binary-ghidra/hex-probe.mjs \
+            --target="tests/.real-fixtures/${{ matrix.file }}" \
+            --oracle="${{ matrix.oracle }}" \
+            --sample="ghidra-sample-${{ matrix.name }}.txt" \
+            --out="hex-probe-${{ matrix.name }}.json"
+
+      - name: Remove LC_FUNCTION_STARTS only from Ghidra comparison copy
+        run: |
+          node tools/real-binary-ghidra/strip-function-starts.mjs \
+            "tests/.real-fixtures/${{ matrix.file }}" \
+            "tests/.real-fixtures/${{ matrix.file }}.no-function-starts"
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Cache official Ghidra
+        id: ghidra-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/hex-ghidra-${{ env.GHIDRA_VERSION }}
+          key: ghidra-${{ runner.os }}-${{ env.GHIDRA_VERSION }}-${{ env.GHIDRA_BUILD_DATE }}
+
+      - name: Install verified official Ghidra release
+        shell: bash
+        run: |
+          set -euo pipefail
+          CACHE="$HOME/.cache/hex-ghidra-${GHIDRA_VERSION}"
+          mkdir -p "$CACHE"
+          if ! find "$CACHE" -maxdepth 1 -type d -name 'ghidra_*' -print -quit | grep -q .; then
+            ZIP="$RUNNER_TEMP/ghidra.zip"
+            URL="https://github.com/NationalSecurityAgency/ghidra/releases/download/${GHIDRA_TAG}/ghidra_${GHIDRA_VERSION}_PUBLIC_${GHIDRA_BUILD_DATE}.zip"
+            curl --fail --location --retry 4 --retry-delay 3 "$URL" -o "$ZIP"
+            echo "${GHIDRA_SHA256}  ${ZIP}" | sha256sum --check --strict
+            unzip -q "$ZIP" -d "$CACHE"
+          fi
+          GHIDRA_HOME="$(find "$CACHE" -maxdepth 1 -type d -name 'ghidra_*' -print -quit)"
+          test -x "$GHIDRA_HOME/support/analyzeHeadless"
+          echo "GHIDRA_HOME=$GHIDRA_HOME" >> "$GITHUB_ENV"
+
+      - name: Analyze no-function-starts copy with official Ghidra
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/ghidra-projects"
+          "$GHIDRA_HOME/support/analyzeHeadless" \
+            "$RUNNER_TEMP/ghidra-projects" "hex-real-${{ matrix.fixture }}" \
+            -deleteProject \
+            -import "$GITHUB_WORKSPACE/tests/.real-fixtures/${{ matrix.file }}.no-function-starts" \
+            -analysisTimeoutPerFile 1200 \
+            -scriptPath "$GITHUB_WORKSPACE/tools/real-binary-ghidra" \
+            -postScript GhidraRealBinaryProbe.java \
+              "$GITHUB_WORKSPACE/ghidra-sample-${{ matrix.name }}.txt" \
+              "$GITHUB_WORKSPACE/ghidra-probe-${{ matrix.name }}.txt"
+          test -s "ghidra-probe-${{ matrix.name }}.txt"
+
+      - name: Score both tools against exactly the same truth
+        run: |
+          node tools/real-binary-ghidra/score.mjs \
+            --target="${{ matrix.name }}" \
+            --oracle="${{ matrix.oracle }}" \
+            --hex="hex-probe-${{ matrix.name }}.json" \
+            --ghidra="ghidra-probe-${{ matrix.name }}.txt" \
+            --out="result-${{ matrix.name }}.json" | tee "result-${{ matrix.name }}.log"
+
+      - name: Upload target result
+        uses: actions/upload-artifact@v4
+        with:
+          name: hex-vs-ghidra-${{ matrix.name }}
+          path: |
+            result-${{ matrix.name }}.json
+            result-${{ matrix.name }}.log
+            hex-probe-${{ matrix.name }}.json
+            ghidra-probe-${{ matrix.name }}.txt
+          if-no-files-found: error
+          retention-days: 14
+
+  aggregate:
+    name: Real-binary comparison summary
+    needs: benchmark
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: hex-vs-ghidra-*
+          path: results
+          merge-multiple: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Build aggregate report
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const files = fs.readdirSync('results').filter((x) => /^result-.*\.json$/.test(x)).sort();
+          if (files.length !== 3) throw new Error(`expected 3 target results, got ${files.length}`);
+          const targets = files.map((x) => JSON.parse(fs.readFileSync(`results/${x}`, 'utf8')));
+          const avg = (rows, fn) => rows.reduce((n, x) => n + fn(x), 0) / rows.length;
+          const summary = {
+            schema: 1,
+            targets,
+            macroAcrossBinaries: {
+              hexStructuralF1: avg(targets, (x) => x.hex.structuralMacroF1),
+              ghidraStructuralF1: avg(targets, (x) => x.ghidra.structuralMacroF1),
+              hexFunctionF1: avg(targets, (x) => x.hex.functions.f1),
+              ghidraFunctionF1: avg(targets, (x) => x.ghidra.functions.f1),
+              hexCallF1: avg(targets, (x) => x.hex.calls.f1),
+              ghidraCallF1: avg(targets, (x) => x.ghidra.calls.f1),
+              hexDecompileSuccess: avg(targets, (x) => x.hex.decompile.successRate),
+              ghidraDecompileSuccess: avg(targets, (x) => x.ghidra.decompile.successRate),
+            },
+          };
+          fs.writeFileSync('real-binary-ghidra-summary.json', JSON.stringify(summary, null, 2) + '\n');
+          console.log('REAL_BINARY_GHIDRA_SUMMARY ' + JSON.stringify(summary));
+          NODE
+      - uses: actions/upload-artifact@v4
+        with:
+          name: real-binary-ghidra-summary
+          path: real-binary-ghidra-summary.json
+          if-no-files-found: error
+          retention-days: 14
