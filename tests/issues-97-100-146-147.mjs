@@ -41,7 +41,8 @@ function minimalPE({ entry = 0, sectionName = '.text', longName = null } = {}) {
   assert.equal(image.libraries.includes('delay.dll'), true); assert.equal(image.imports.length, 1); assert.equal(image.imports[0].name, 'DelayedApi'); assert.equal(image.imports[0].source, 'PE-delay-import'); assert.equal(image.imports[0].sites[0].kind, 'delay-iat'); assert.equal(image.imports[0].sites[0].address, imageBase + 0x240n); assert.ok(image.warnings.some((w) => /malformed PE delay-import thunk/.test(w)));
 }
 {
-  const bytes = new Uint8Array(0x400); const v = new DataView(bytes.buffer); const put = (p, begin, finish) => { v.setUint32(p, begin, true); v.setUint32(p + 4, finish, true); v.setUint32(p + 8, 0x3000, true); };
+  const bytes = new Uint8Array(0x400); const v = new DataView(bytes.buffer); const put = (p, begin, finish) => { v.setUint32(p, begin, true); v.setUint32(p + 4, finish, true); v.setUint32(p + 8, 0x280, true); };
+  v.setUint32(0x280, 1, true); // UNWIND_INFO: version 1, no flags, no codes (#922/#933 require validated unwind data)
   put(0x200, 0x1000, 0x1040); put(0x20c, 0x1030, 0x1060); put(0x218, 0x1080, 0x1090); put(0x224, 0x1020, 0x1030);
   const imageBase = 0x10000000n; const exec = { address: imageBase + 0x1000n, size: 0x100n, fileOffset: 0x1000n, fileSize: 0x100n, perms: { execute: true } };
   const meta = { address: imageBase + 0x200n, size: 0x100n, fileOffset: 0x200n, fileSize: 0x100n, perms: { read: true } };
