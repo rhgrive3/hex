@@ -79,13 +79,13 @@
     },
     {
       "id": "P8-2",
-      "recordedAt": "2026-08-19T17:46:57.020Z",
-      "integrationSha": "15e23a556a0fc2a46b8759e8d14f50784f2f8ac3",
-      "integrationTreeSha": "1db43f3240d690da181a91763ed76d547cdecaa4",
+      "recordedAt": "2026-08-19T17:50:26.950Z",
+      "integrationSha": "22aa1a0317890c9d0e63d5ed1fea674a829744ca",
+      "integrationTreeSha": "0109dba1acd05dec9979d6947fef958594b8b92f",
       "mergeBaseSha": "0d51657a23d446681a86601f8cfd4d9aac3571f7",
       "branch": "phase8/decompiler-quality",
-      "changedFileCount": 24,
-      "changedFileInventoryDigest": "2936ba9677f17101cd8a0a915a79104e",
+      "changedFileCount": 26,
+      "changedFileInventoryDigest": "4f067b59340d6213a6f4a678f1a2bf56",
       "ownershipPolicyVersion": 1,
       "corpusId": "phase8-decompiler-quality-corpus",
       "corpusDigest": "37c049e8ed51a7f0d46538a894be3c7b",
@@ -114,7 +114,7 @@
       "generatedOutputDiff": "zero",
       "result": "accepted",
       "blockingReason": null,
-      "notes": "SCCP and wrapped range domain accepted; output still byte-identical to the pre-Phase-8 baseline."
+      "notes": "SCCP and wrapped range domain accepted; boundary scanner repaired on the same head; output still byte-identical to the pre-Phase-8 baseline."
     }
   ]
 }
