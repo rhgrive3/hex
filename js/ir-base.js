@@ -395,22 +395,37 @@ function comparisonOfBranch(branch) {
   if (!branch || branch.op !== OP.CBR) return null;
   const kind = branch.extra && branch.extra.kind;
   if ((kind === 'cbz' || kind === 'cbnz') && branch.args[0] && branch.args[0].value) {
-    return { lhs: branch.args[0].value, rhs: 0n, cond: kind === 'cbz' ? 'eq' : 'ne', cmp: null };
+    return {
+      lhs: branch.args[0].value,
+      rhs: 0n,
+      cond: kind === 'cbz' ? 'eq' : 'ne',
+      cmp: null,
+      bits: branch.args[0].bits || branch.args[0].value.bits || 64,
+    };
   }
   const flags = branch.args[0] && branch.args[0].value;
   const cmp = flags && flags.def && flags.def.op === OP.CMP ? flags.def : null;
   if (!cmp || !cmp.args[0] || !cmp.args[0].value || !cmp.args[1] || !cmp.args[1].value) return null;
-  const rhs = shiftedConst(cmp.args[1], cmp.args[0].value.bits || 64);
+  const semanticBits = Number(
+    cmp.extra?.attributes?.machineEffects?.operationMetadata?.widthBits
+      ?? cmp.extra?.attributes?.machineEffects?.bundleMetadata?.widthBits
+      ?? cmp.extra?.widthBits
+      ?? 0,
+  );
+  const bits = (semanticBits === 32 || semanticBits === 64)
+    ? semanticBits
+    : (cmp.bits || cmp.args[0].bits || cmp.args[0].value.bits || 64);
+  const rhs = shiftedConst(cmp.args[1], bits);
   if (rhs == null) return null;
-  return { lhs: cmp.args[0].value, rhs, cond: branch.cond || null, cmp };
+  return { lhs: cmp.args[0].value, rhs, cond: branch.cond || null, cmp, bits };
 }
 
 function invertRel(op) {
   return ({ '==': '!=', '!=': '==', '<': '>=', '<=': '>', '>': '<=', '>=': '<' })[op] || null;
 }
 
-function constrainedRange(value, op, constant, signed) {
-  const bits = value && value.bits || 64;
+function constrainedRange(value, op, constant, signed, compareBits = null) {
+  const bits = compareBits || value?.bits || 64;
   const rhs = normalizeIntegerValue(constant, bits, signed);
   const bounds = typeBounds(bits, signed);
   let min = bounds.min, max = bounds.max;
@@ -420,8 +435,14 @@ function constrainedRange(value, op, constant, signed) {
   else if (op === '>') min = rhs + 1n;
   else if (op === '>=') min = rhs;
   else return null;
-  const existing = valueRange(value);
-  if (existing) { if (existing.min > min) min = existing.min; if (existing.max < max) max = existing.max; }
+  const existing = value?.range ?? null;
+  const comparableExisting = existing
+    ? normalizeRangeDomain(existing, bits, signed)
+    : null;
+  if (comparableExisting) {
+    if (comparableExisting.min > min) min = comparableExisting.min;
+    if (comparableExisting.max < max) max = comparableExisting.max;
+  }
   if (min > max) return { min, max, impossible: true };
   return { min, max };
 }
@@ -447,8 +468,9 @@ export function rangeOnBranch(ir, branch, taken = true) {
     : info.signed === false ? 'unsigned'
       : c.lhs.signed === true ? 'signed'
         : c.lhs.signed === false ? 'unsigned' : 'unknown';
-  const rhs = normalizeIntegerValue(c.rhs, c.lhs.bits || 64, signedForBounds);
-  const range = constrainedRange(c.lhs, relation, rhs, signedForBounds);
+  const compareBits = c.bits || c.lhs.bits || 64;
+  const rhs = normalizeIntegerValue(c.rhs, compareBits, signedForBounds);
+  const range = constrainedRange(c.lhs, relation, rhs, signedForBounds, compareBits);
   const zero = zeroFactOnEdge(relation, rhs);
   return {
     value: c.lhs,

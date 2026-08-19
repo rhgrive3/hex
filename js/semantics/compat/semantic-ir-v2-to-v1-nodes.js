@@ -271,8 +271,11 @@ export function projectNode(node, context) {
       setBasic(V1_OP.BIN, node.operator || attrs.operator || 'unknown');
       const carrier = comparisonCarrierByNodeId.get(node.id) ?? null;
       if (carrier) {
-        const resultIsWritten = node.outputs?.[0] && hasRegisterStateWriteForValue(node.outputs[0], context);
-        if (!resultIsWritten) {
+        const resultValueId = node.outputs?.[0] ?? null;
+        const resultIsWritten = resultValueId != null && hasRegisterStateWriteForValue(resultValueId, context);
+        const resultIsConsumed = resultValueId != null && context.ir.nodes.some((candidate) =>
+          candidate.id !== node.id && candidate.inputs?.includes(resultValueId));
+        if (!resultIsWritten && !resultIsConsumed) {
           inst.op = V1_OP.CMP;
           inst.dst = carrier;
           inst.bits = Math.max(1, ...inputValues.map((value) => value.bits || 1));
