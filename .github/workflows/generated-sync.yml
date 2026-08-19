@@ -30,12 +30,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Remove earlier diagnostic/workaround deltas before applying the verified fixes.
+          # Remove earlier diagnostic/workaround deltas before applying the real fixes.
           git show cce0797363bfe0ddc85a89c623d132e1845dce31:js/ir.js > js/ir.js
           git show 4dae354fcebd8cfda036498183c43be45e1a80ba^:tests/semantic-v2/issues-791-797-800-825-ir-soundness.test.mjs > tests/semantic-v2/issues-791-797-800-825-ir-soundness.test.mjs
           python - <<'PY'
           from pathlib import Path
 
+          # #825: a binary result that is still consumed must remain a real value;
+          # append the comparison carrier instead of replacing the producer.
           nodes = Path('js/semantics/compat/semantic-ir-v2-to-v1-nodes.js')
           text = nodes.read_text()
           old = """        const resultIsWritten = node.outputs?.[0] && hasRegisterStateWriteForValue(node.outputs[0], context);\n        if (!resultIsWritten) {\n"""
@@ -43,24 +45,49 @@ jobs:
           assert old in text, 'binary projection block not found'
           nodes.write_text(text.replace(old, new, 1))
 
-          for name in ['js/ir-base.js', 'js/ir.js']:
-              path = Path(name)
-              text = path.read_text()
-              newer = """  const existing = valueRange(value);\n  const comparableExisting = existing\n    ? normalizeRangeDomain(existing, bits, signed)\n    : null;\n"""
-              if newer in text:
-                  text = text.replace(newer, """  const existing = value?.range ?? null;\n  const comparableExisting = existing\n    ? normalizeRangeDomain(existing, bits, signed)\n    : null;\n""", 1)
-              else:
-                  legacy = """  const existing = valueRange(value);\n  if (existing) { if (existing.min > min) min = existing.min; if (existing.max < max) max = existing.max; }\n"""
-                  assert legacy in text, f'constrained range block not found in {name}'
-                  text = text.replace(legacy, """  const existing = value?.range ?? null;\n  const comparableExisting = existing\n    ? normalizeRangeDomain(existing, bits, signed)\n    : null;\n  if (comparableExisting) {\n    if (comparableExisting.min > min) min = comparableExisting.min;\n    if (comparableExisting.max < max) max = comparableExisting.max;\n  }\n""", 1)
-              path.write_text(text)
+          # Public branch facts must not intersect a range whose signedness domain
+          # is incompatible with the comparison domain (#800).
+          ir = Path('js/ir.js')
+          text = ir.read_text()
+          old = """  const existing = valueRange(value);\n  const comparableExisting = existing\n    ? normalizeRangeDomain(existing, bits, signed)\n    : null;\n"""
+          new = """  const existing = value?.range ?? null;\n  const comparableExisting = existing\n    ? normalizeRangeDomain(existing, bits, signed)\n    : null;\n"""
+          assert old in text, 'ir.js constrained range block not found'
+          ir.write_text(text.replace(old, new, 1))
+
+          # buildIR() computes/caches branch constraints in ir-base.js before the
+          # public facade can see them. Make that implementation width- and
+          # domain-exact too, otherwise semantic-v2-compat can reinterpret W32
+          # 0xffffffff as X64 +4294967295 (#797) and can cache the #800 false
+          # impossible range.
+          base = Path('js/ir-base.js')
+          text = base.read_text()
+
+          old = """function comparisonOfBranch(branch) {\n  if (!branch || branch.op !== OP.CBR) return null;\n  const kind = branch.extra && branch.extra.kind;\n  if ((kind === 'cbz' || kind === 'cbnz') && branch.args[0] && branch.args[0].value) {\n    return { lhs: branch.args[0].value, rhs: 0n, cond: kind === 'cbz' ? 'eq' : 'ne', cmp: null };\n  }\n  const flags = branch.args[0] && branch.args[0].value;\n  const cmp = flags && flags.def && flags.def.op === OP.CMP ? flags.def : null;\n  if (!cmp || !cmp.args[0] || !cmp.args[0].value || !cmp.args[1] || !cmp.args[1].value) return null;\n  const rhs = shiftedConst(cmp.args[1], cmp.args[0].value.bits || 64);\n  if (rhs == null) return null;\n  return { lhs: cmp.args[0].value, rhs, cond: branch.cond || null, cmp };\n}\n"""
+          new = """function comparisonOfBranch(branch) {\n  if (!branch || branch.op !== OP.CBR) return null;\n  const kind = branch.extra && branch.extra.kind;\n  if ((kind === 'cbz' || kind === 'cbnz') && branch.args[0] && branch.args[0].value) {\n    return {\n      lhs: branch.args[0].value,\n      rhs: 0n,\n      cond: kind === 'cbz' ? 'eq' : 'ne',\n      cmp: null,\n      bits: branch.args[0].bits || branch.args[0].value.bits || 64,\n    };\n  }\n  const flags = branch.args[0] && branch.args[0].value;\n  const cmp = flags && flags.def && flags.def.op === OP.CMP ? flags.def : null;\n  if (!cmp || !cmp.args[0] || !cmp.args[0].value || !cmp.args[1] || !cmp.args[1].value) return null;\n  const semanticBits = Number(\n    cmp.extra?.attributes?.machineEffects?.operationMetadata?.widthBits\n      ?? cmp.extra?.attributes?.machineEffects?.bundleMetadata?.widthBits\n      ?? cmp.extra?.widthBits\n      ?? 0,\n  );\n  const bits = (semanticBits === 32 || semanticBits === 64)\n    ? semanticBits\n    : (cmp.bits || cmp.args[0].bits || cmp.args[0].value.bits || 64);\n  const rhs = shiftedConst(cmp.args[1], bits);\n  if (rhs == null) return null;\n  return { lhs: cmp.args[0].value, rhs, cond: branch.cond || null, cmp, bits };\n}\n"""
+          assert old in text, 'ir-base comparisonOfBranch block not found'
+          text = text.replace(old, new, 1)
+
+          old = """function constrainedRange(value, op, constant, signed) {\n  const bits = value && value.bits || 64;\n  const rhs = normalizeIntegerValue(constant, bits, signed);\n  const bounds = typeBounds(bits, signed);\n  let min = bounds.min, max = bounds.max;\n  if (op === '==') min = max = rhs;\n  else if (op === '<') max = rhs - 1n;\n  else if (op === '<=') max = rhs;\n  else if (op === '>') min = rhs + 1n;\n  else if (op === '>=') min = rhs;\n  else return null;\n  const existing = valueRange(value);\n  if (existing) { if (existing.min > min) min = existing.min; if (existing.max < max) max = existing.max; }\n  if (min > max) return { min, max, impossible: true };\n  return { min, max };\n}\n"""
+          new = """function constrainedRange(value, op, constant, signed, compareBits = null) {\n  const bits = compareBits || value?.bits || 64;\n  const rhs = normalizeIntegerValue(constant, bits, signed);\n  const bounds = typeBounds(bits, signed);\n  let min = bounds.min, max = bounds.max;\n  if (op === '==') min = max = rhs;\n  else if (op === '<') max = rhs - 1n;\n  else if (op === '<=') max = rhs;\n  else if (op === '>') min = rhs + 1n;\n  else if (op === '>=') min = rhs;\n  else return null;\n  const existing = value?.range ?? null;\n  const comparableExisting = existing\n    ? normalizeRangeDomain(existing, bits, signed)\n    : null;\n  if (comparableExisting) {\n    if (comparableExisting.min > min) min = comparableExisting.min;\n    if (comparableExisting.max < max) max = comparableExisting.max;\n  }\n  if (min > max) return { min, max, impossible: true };\n  return { min, max };\n}\n"""
+          assert old in text, 'ir-base constrainedRange block not found'
+          text = text.replace(old, new, 1)
+
+          old = """  const rhs = normalizeIntegerValue(c.rhs, c.lhs.bits || 64, signedForBounds);\n  const range = constrainedRange(c.lhs, relation, rhs, signedForBounds);\n"""
+          new = """  const compareBits = c.bits || c.lhs.bits || 64;\n  const rhs = normalizeIntegerValue(c.rhs, compareBits, signedForBounds);\n  const range = constrainedRange(c.lhs, relation, rhs, signedForBounds, compareBits);\n"""
+          assert old in text, 'ir-base rangeOnBranch width block not found'
+          base.write_text(text.replace(old, new, 1))
           PY
           git diff --check
-      - name: Verify focused semantic regressions
+      - name: Verify focused semantic regressions in both migration modes
         run: |
           node tests/machine-effects/issue-957-bti-guarded-page.test.mjs
           node tests/semantic-v2/issues-791-797-800-825-ir-soundness.test.mjs
           node tests/semantic-v2/issue-949-indirect-control.test.mjs
+          node --input-type=module <<'NODE'
+          import { setSemanticMigrationMode } from './js/ir.js';
+          setSemanticMigrationMode('semantic-v2-compat');
+          await import('./tests/semantic-v2/issues-791-797-800-825-ir-soundness.test.mjs?semantic-v2-compat');
+          NODE
       - name: Rebuild canonical userscript outputs
         run: npm run userscript:build
       - name: Run full repository check
