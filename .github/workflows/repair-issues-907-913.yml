@@ -4,23 +4,26 @@ on:
   push:
     branches:
       - fix/issues-907-909-910-913-20260819
+  pull_request:
+    branches: [main]
 
 permissions:
   contents: write
 
 concurrency:
-  group: repair-issues-907-913-${{ github.ref }}
+  group: repair-issues-907-913-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
   repair:
-    if: github.actor != 'github-actions[bot]'
+    if: github.actor != 'github-actions[bot]' && (github.event_name != 'pull_request' || github.event.pull_request.head.ref == 'fix/issues-907-909-910-913-20260819')
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - name: Checkout
+      - name: Checkout target branch
         uses: actions/checkout@v4
         with:
+          ref: fix/issues-907-909-910-913-20260819
           fetch-depth: 0
 
       - name: Rebase onto current main
