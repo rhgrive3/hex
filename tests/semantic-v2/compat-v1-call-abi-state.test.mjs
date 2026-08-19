@@ -1,3 +1,4 @@
+// #952 regression: exact direct CALL target identity must survive v2 compatibility lowering on current main.
 import assert from 'node:assert/strict';
 import { buildSemanticModel } from '../../js/blocks.js';
 import {
@@ -36,6 +37,9 @@ try {
   assert.ok(ir, 'explicit v2 compatibility IR must build');
   const call = ir.instructions.find((instruction) => instruction.op === OP.CALL);
   assert.ok(call, 'call must project');
+  assert.equal(call.extra?.indirect, false, 'known direct BL target must remain direct through Semantic IR v2 compatibility');
+  assert.equal(call.extra?.target, 0x100001000n, 'known direct BL target address must survive MachineEffects -> Semantic IR');
+  assert.ok(call.extra?.targetValueIds?.length > 0, 'known direct BL target must be represented by typed CALL target values');
   assert.equal(call.extra?.abiAdapterStatus, 'used', 'AAPCS64 compatibility adapter must reach the call projector');
   assert.ok(call.callArguments?.some((argument) => argument?.reg === 'x0'),
     `ABI call arguments must include x0: ${JSON.stringify(call.callArguments ?? null)}`);
