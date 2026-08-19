@@ -102,7 +102,8 @@ function make(lines, opts = {}) {
   assert.equal(r.legacyFallback, undefined);
   assert.doesNotMatch(r.pseudocode, /\b(?:var_|local_phi|phi_)\w*/i, r.pseudocode);
   assert.match(r.pseudocode, /self->hp\s*-=\s*(?:\(uint32_t\))?a2\s*\*\s*self->damageRate/);
-  assert.match(r.pseudocode, /if\s*\(\s*self->hp\s*<=\s*0\s*\)/);
+  // #861: a signed compare of an unsigned-typed field prints its signed machine view.
+  assert.match(r.pseudocode, /if\s*\(\s*(?:\(int32_t\))?self->hp\s*<=\s*0\s*\)/);
   assert.doesNotMatch(r.pseudocode, /if\s*\([^\n]*self->hp\s*-\s*[^\n]*damageRate/, r.pseudocode);
   assert.doesNotMatch(r.pseudocode, /if\s*\([^\n]+\)\s*\{\s*\}\s*else/s, r.pseudocode);
 

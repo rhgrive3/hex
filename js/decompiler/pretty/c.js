@@ -62,6 +62,10 @@ function exactSignedType(bits) {
 function moduloArithmeticExpression(n, opts) {
   if (!['add','sub','mul','shl'].includes(n.op)) return null;
   const bits = normalizedIntegerWidth(n.bits || n.left?.bits || n.right?.bits || 64);
+  // Issue #969: only make the machine-modulo view explicit where plain C would be
+  // undefined. Unsigned 32/64-bit add/sub/mul is already modulo in C and printing
+  // the cast tower there only costs readability.
+  if (n.signed !== true && n.op !== 'shl' && (bits === 32 || bits === 64)) return null;
   const targetUnsigned = exactUnsignedType(bits);
   const leftText = printExpression(n.left, 0, opts);
   const rightText = printExpression(n.right, 0, opts);
@@ -95,8 +99,15 @@ function printIntegerView(n, bits, signed, parentPrec, opts) {
   // C printer.  Omit a site cast only when it already proves the exact same
   // width and signedness; otherwise make the machine view explicit locally.
   if (hasIntegerView(n, bits, signed)) return printExpression(n, parentPrec, opts);
+  // A literal already states its own value; a cast on it adds no signedness
+  // information and only costs readability (#861/#862 need the *variable* view).
+  if (n?.kind === 'const') return integerText(n.value, bits, signed);
+  const text = printExpression(n, PREC.unary, opts);
+  // A literal already states its own value; a cast on it adds no signedness
+  // information and only costs readability (#861/#862 need the *variable* view).
+  if (/^-?(?:0[xX][0-9A-Fa-f]+|\d+)$/.test(text)) return text;
   const type = `${signed ? 'int' : 'uint'}${bits}_t`;
-  return `(${type})${printExpression(n, PREC.unary, opts)}`;
+  return `(${type})${text}`;
 }
 
 function compareOperands(n, p, opts) {
