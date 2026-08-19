@@ -1,6 +1,9 @@
 name: Temporary resolve PR 874 onto current main
 
 on:
+  push:
+    branches:
+      - integrate/open-issue-fixes-20260819
   pull_request:
     branches:
       - main
@@ -14,7 +17,7 @@ concurrency:
 
 jobs:
   resolve:
-    if: github.actor != 'github-actions[bot]' && github.head_ref == 'integrate/open-issue-fixes-20260819'
+    if: github.actor != 'github-actions[bot]' && (github.head_ref == 'integrate/open-issue-fixes-20260819' || github.ref_name == 'integrate/open-issue-fixes-20260819')
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -131,5 +134,3 @@ jobs:
           git diff --cached --check
           git commit -m 'chore: resolve PR 874 against current main'
           git push origin HEAD:integrate/open-issue-fixes-20260819
-
-# synchronization trigger
