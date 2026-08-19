@@ -4,6 +4,7 @@ import { parseEhFrameHeader } from './elf-unwind.js';
 import { parseProgramDynamic } from './elf-dynamic.js';
 import { createELFMetadataBudget } from './elf-budget.js';
 import { executableELFRange } from './elf-mapping.js';
+import { seedELFEntrypoint } from './elf-entrypoint.js';
 import { parseRiscvAttributes, parseRiscvMappingSymbol } from './riscv-isa.js';
 
 const ET_REL = 1;
@@ -75,7 +76,7 @@ export function parseELF(input, options = {}) {
   }
 
   image.imageBase = h.type === ET_REL ? 0n : findImageBase(image);
-  if (h.type !== ET_REL && image.entrypoint && image.entrypoint !== 0n) image.functions.push(functionSeed(image.entrypoint, { source: 'entrypoint', confidence: 0.9 }));
+  seedELFEntrypoint(image, { relocatable:h.type === ET_REL, options });
   const metadataBudget = createELFMetadataBudget(image, { signal: options.signal, limits: options.metadataLimits });
 
   const symbolTables = rawSections.filter((s) => s.type === SHT_SYMTAB || s.type === SHT_DYNSYM);
