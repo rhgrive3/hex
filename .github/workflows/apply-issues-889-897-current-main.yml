@@ -1,0 +1,97 @@
+name: Apply issues 889 and 897 on current main
+on:
+  push:
+    branches: [fix/issues-889-897-current-main]
+permissions:
+  contents: write
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/issues-889-897-current-main
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Apply guarded current-main source patches
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{path}: expected exactly one match, got {count}: {old!r}')
+              p.write_text(text.replace(old, new))
+
+          arch = 'js/targets/architecture/index.js'
+          replace_once(arch,
+              "  if (op === 'jal') return fields.rd === 'x0' ? 'branch' : 'call';\n",
+              "  if (op === 'jal') return fields.rd === 'x0' ? 'branch' : ['x1', 'x5'].includes(fields.rd) ? 'call' : 'branch';\n")
+          replace_once(arch,
+              "    if (fields.rd !== 'x0') return 'call';\n    if (['x1', 'x5'].includes(fields.rs1)) return 'return';\n",
+              "    if (['x1', 'x5'].includes(fields.rd)) return 'call';\n    if (fields.rd !== 'x0') return 'branch';\n    if (['x1', 'x5'].includes(fields.rs1)) return 'return';\n")
+
+          control = 'js/targets/architecture/riscv64/effects/control.js'
+          replace_once(control,
+              "    const linked = ctx.writeRegister(fields.rd, ctx.constant(RISCV64_XLEN, next));\n    return ctx.finish({\n      controlEffect: linked\n",
+              "    const linked = ctx.writeRegister(fields.rd, ctx.constant(RISCV64_XLEN, next));\n    const isCallHint = linked && RETURN_ADDRESS_HINT_REGISTERS.includes(fields.rd);\n    return ctx.finish({\n      controlEffect: isCallHint\n")
+          replace_once(control,
+              "      metadata: { operation: op, direct: true, linkRegister: linked ? fields.rd : null, abiSemantics: false },\n",
+              "      metadata: { operation: op, direct: true, linkRegister: linked ? fields.rd : null, jumpWithLinkage: linked && !isCallHint, abiSemantics: false },\n")
+          replace_once(control,
+              "    const linked = ctx.writeRegister(fields.rd, ctx.constant(RISCV64_XLEN, next));\n    const isReturnHint = !linked && RETURN_ADDRESS_HINT_REGISTERS.includes(fields.rs1);\n    const kind = linked ? 'call' : isReturnHint ? 'return' : 'indirect';\n",
+              "    const linked = ctx.writeRegister(fields.rd, ctx.constant(RISCV64_XLEN, next));\n    const isCallHint = linked && RETURN_ADDRESS_HINT_REGISTERS.includes(fields.rd);\n    const isReturnHint = !linked && RETURN_ADDRESS_HINT_REGISTERS.includes(fields.rs1);\n    const kind = isCallHint ? 'call' : isReturnHint ? 'return' : 'indirect';\n")
+          replace_once(control,
+              "        returnAddressStackHint: isReturnHint ? fields.rs1 : null,\n        abiSemantics: false,\n",
+              "        returnAddressStackHint: isReturnHint ? fields.rs1 : null,\n        jumpWithLinkage: linked && !isCallHint,\n        abiSemantics: false,\n")
+
+          semantic = 'js/analysis/semantic-function.js'
+          replace_once(semantic,
+              "function directTarget(plugin, instruction) {\n  try {\n    const target = plugin.directControlTarget?.(instruction);\n    return target == null ? null : BigInt(target);\n  } catch { return null; }\n}\n\n/**\n",
+              "function directTarget(plugin, instruction) {\n  try {\n    const target = plugin.directControlTarget?.(instruction);\n    return target == null ? null : BigInt(target);\n  } catch { return null; }\n}\n\nfunction callNoreturnState(options = {}) {\n  const prototype = options?.callPrototype;\n  if (!prototype || typeof prototype !== 'object') return 'unknown';\n  if (prototype.noreturn === true || prototype.returns === false) return true;\n  if (prototype.noreturn === false || prototype.returns === true) return false;\n  return 'unknown';\n}\n\nfunction isAuthoritativeNoreturnCall(kind, options = {}) {\n  return kind === 'call' && callNoreturnState(options) === true;\n}\n\n/**\n")
+          replace_once(semantic,
+              "export function partitionDecodedFunction(instructions, architecturePlugin) {\n",
+              "export function partitionDecodedFunction(instructions, architecturePlugin, options = {}) {\n")
+          replace_once(semantic,
+              "    if (['branch','conditional-branch','return','unknown'].includes(kind) && ordered[index + 1]) starts.add(addressOf(ordered[index + 1]).toString());\n",
+              "    if ((['branch','conditional-branch','return','unknown'].includes(kind) || isAuthoritativeNoreturnCall(kind, options)) && ordered[index + 1]) starts.add(addressOf(ordered[index + 1]).toString());\n")
+          replace_once(semantic,
+              "    } else if (!['return','unknown'].includes(kind) && fallthroughBlock) {\n",
+              "    } else if (!['return','unknown'].includes(kind) && !isAuthoritativeNoreturnCall(kind, options) && fallthroughBlock) {\n")
+          replace_once(semantic,
+              "        returnEvidence:returned == null ? null : `abi-${abiPlugin.id}-return`,\n",
+              "        returnEvidence:returned == null ? null : `abi-${abiPlugin.id}-return`,\n        noreturn:callNoreturnState(options),\n")
+          replace_once(semantic,
+              "  const blocks = partitionDecodedFunction(input.instructions, architecturePlugin);\n",
+              "  const blocks = partitionDecodedFunction(input.instructions, architecturePlugin, { callPrototype:input.callPrototype ?? null });\n")
+          PY
+      - name: Restore reviewed focused regression from superseded branch
+        shell: bash
+        run: |
+          git fetch origin fix/issues-889-897 --depth=1
+          git show FETCH_HEAD:tests/phase6/generic-core/issues-889-897.test.mjs > tests/phase6/generic-core/issues-889-897.test.mjs
+      - name: Focused regression
+        run: node tests/phase6/generic-core/issues-889-897.test.mjs
+      - name: Phase 6 regression suite
+        run: npm run phase6:test
+      - name: Build canonical userscript outputs
+        run: npm run userscript:build
+      - name: Publish candidate for exact-head CI
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git rm .github/workflows/apply-issues-889-897-current-main.yml
+          git add js/targets/architecture/index.js js/targets/architecture/riscv64/effects/control.js js/analysis/semantic-function.js tests/phase6/generic-core/issues-889-897.test.mjs userscript/hex.user.template.js userscript/release-version.json
+          git diff --cached --check
+          git commit -m 'fix: preserve RISC-V linked jumps and noreturn CFG semantics (#889 #897)'
+          git push origin HEAD:fix/issues-889-897-current-main
