@@ -62,24 +62,21 @@ function exactSignedType(bits) {
 function moduloArithmeticExpression(n, opts) {
   if (!['add','sub','mul','shl'].includes(n.op)) return null;
   const bits = normalizedIntegerWidth(n.bits || n.left?.bits || n.right?.bits || 64);
-  // Issue #969: only make the machine-modulo view explicit where plain C would be
-  // undefined. Unsigned 32/64-bit add/sub/mul is already modulo in C and printing
-  // the cast tower there only costs readability.
-  if (n.signed !== true && n.op !== 'shl' && (bits === 32 || bits === 64)) return null;
-  const targetUnsigned = exactUnsignedType(bits);
-  const leftText = printExpression(n.left, 0, opts);
-  const rightText = printExpression(n.right, 0, opts);
-  let raw;
-  if (n.op === 'shl') {
-    // Use the widest supported unsigned type before truncation. This avoids
-    // signed-left-shift UB and integer-promotion UB for 8/16/32-bit values.
-    raw = `((unsigned __int128)(${leftText}) << (${rightText}))`;
-  } else {
-    const arithmeticType = bits <= 64 ? 'uint64_t' : 'unsigned __int128';
-    raw = `((${arithmeticType})(${leftText}) ${OP_TEXT[n.op]} (${arithmeticType})(${rightText}))`;
-  }
-  const exact = `((${targetUnsigned})(${raw}))`;
-  return n.signed === true ? `((${exactSignedType(bits)})${exact})` : exact;
+  // Issue #969: machine add/sub/mul/shl wrap at the operation width. Plain C says
+  // that only for unsigned types whose rank is not promoted away, so print the
+  // wrapping view exactly where C would otherwise be undefined -- and nowhere else.
+  const unsignedNaturalWidth = bits === 32 || bits === 64;
+  if (n.signed !== true && n.op !== 'shl' && unsignedNaturalWidth) return null;
+  // Arithmetic type: wide enough that integer promotion cannot reintroduce `int`.
+  const arithmetic = bits <= 32 ? 'uint32_t' : bits <= 64 ? 'uint64_t' : 'unsigned __int128';
+  const leftText = printExpression(n.left, PREC.unary, opts);
+  const raw = n.op === 'shl'
+    ? `(${arithmetic})${leftText} << ${printExpression(n.right, PREC.shl + 1, opts)}`
+    : `(${arithmetic})${leftText} ${OP_TEXT[n.op]} (${arithmetic})${printExpression(n.right, PREC.unary, opts)}`;
+  const exactWidth = bits === 32 || bits === 64 || bits === 8 || bits === 16 || bits === 128;
+  const needsTruncation = !(exactWidth && arithmetic === exactUnsignedType(bits));
+  const truncated = needsTruncation ? `(${exactUnsignedType(bits)})(${raw})` : `(${raw})`;
+  return n.signed === true ? `(${exactSignedType(bits)})${truncated}` : truncated;
 }
 
 function integerWidth(...nodes) {
