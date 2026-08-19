@@ -1,0 +1,41 @@
+name: Reconcile PR905 safely
+on:
+  push:
+    branches: [fix/issues-889-897]
+permissions:
+  contents: write
+jobs:
+  reconcile:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/issues-889-897
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Rebase strictly onto current main
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git fetch origin main
+          git rebase origin/main
+      - run: npm ci
+      - name: Focused regressions
+        run: node tests/phase6/generic-core/issues-889-897.test.mjs
+      - name: Canonical userscript build
+        run: npm run userscript:build
+      - name: Full repository check
+        run: npm run check
+      - name: Publish reconciled head
+        shell: bash
+        run: |
+          git rm .github/workflows/reconcile-pr905.yml
+          git add userscript/hex.user.template.js userscript/release-version.json
+          git diff --cached --check
+          git commit -m 'build: reconcile PR905 with current main'
+          git push --force-with-lease origin HEAD:fix/issues-889-897
