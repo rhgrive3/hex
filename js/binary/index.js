@@ -1,6 +1,6 @@
 import { detectBinary } from './detect.js';
 import { parseMachO } from './macho.js';
-import { parseELF } from './elf.js';
+import { parseELF } from './elf-loader.js';
 import { parsePE } from './pe.js';
 import { scanStrings } from './strings.js';
 
@@ -14,7 +14,7 @@ export {
 export { openBinarySource, parseMachOSource, parseELFSource, parsePESource } from './source-loaders.js';
 export { detectBinary } from './detect.js';
 export { parseMachO } from './macho.js';
-export { parseELF } from './elf.js';
+export { parseELF, parseAarch64GnuProperty, attachAarch64GnuPropertyEvidence } from './elf-loader.js';
 export { parsePE } from './pe.js';
 export { scanStrings } from './strings.js';
 export { auditBinary, capabilitiesOf } from './audit.js';
