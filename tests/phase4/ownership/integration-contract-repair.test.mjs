@@ -8,8 +8,10 @@ import { fileURLToPath } from 'node:url';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const VALIDATOR = path.join(ROOT, 'tools/validation/phase4-ownership.mjs');
 const MANIFEST = JSON.parse(fs.readFileSync(path.join(ROOT, 'tools/validation/phase-ownership/phase4.json'), 'utf8'));
-const WORKFLOW = fs.readFileSync(path.join(ROOT, '.github/workflows/phase4-ownership.yml'), 'utf8');
+const RETIRED_OWNERSHIP_WORKFLOW = path.join(ROOT, '.github/workflows/phase4-ownership.yml');
+const INVARIANT_WORKFLOW = fs.readFileSync(path.join(ROOT, '.github/workflows/invariant-gates.yml'), 'utf8');
 const RELEASE_WORKFLOW = fs.readFileSync(path.join(ROOT, '.github/workflows/phase4-release-validation.yml'), 'utf8');
+const GENERATED_SYNC_WORKFLOW = fs.readFileSync(path.join(ROOT, '.github/workflows/generated-sync.yml'), 'utf8');
 const VERIFIER = fs.readFileSync(path.join(ROOT, 'tools/validation/phase4/verify.mjs'), 'utf8');
 
 const COMPONENT_INVENTORY = Object.freeze({
@@ -109,35 +111,32 @@ test('manifest has the exact frozen-contract write-owner policy', () => {
   ]);
 });
 
-test('workflow resolves canonical Phase 4 and Phase 5 branches and remains fail-closed', () => {
-  assert.match(WORKFLOW, /hex\/p4-integration-contract-repair\) phase=4; lane=p4-r ;;/);
-  assert.doesNotMatch(WORKFLOW, /hex\/p4-r-\*\) phase=4; lane=p4-r/);
-  assert.match(WORKFLOW, /hex\/p5-0-x86-foundation\) phase=5; lane=p5-0 ;;/);
-  assert.match(WORKFLOW, /hex\/p5-x86-integration\) phase=5; lane=p5-i ;;/);
-  assert.match(WORKFLOW, /Phase 4-owned files require a canonical Phase 4 or Phase 5 lane branch/);
-  assert.match(WORKFLOW, /exit 1/);
-  assert.match(WORKFLOW, /if: steps\.lane\.outputs\.phase == '5'/);
-  assert.match(WORKFLOW, /phase5-ownership\.mjs/);
-  assert.match(WORKFLOW, /--base-sha "\$\{\{ github\.event\.pull_request\.base\.sha \}\}"/);
-  assert.match(WORKFLOW, /--head-sha "\$\{\{ github\.event\.pull_request\.head\.sha \}\}"/);
+test('completed Phase 4 ownership wrapper is retired while canonical invariant checks retain Phase 4/5 contracts', () => {
+  assert.equal(fs.existsSync(RETIRED_OWNERSHIP_WORKFLOW), false);
+  assert.match(INVARIANT_WORKFLOW, /const phaseCommands = new Set\(\['npm run phase4:test', 'npm run phase5:test'\]\)/);
+  assert.match(INVARIANT_WORKFLOW, /name: 'contracts-phase'/);
+  assert.match(INVARIANT_WORKFLOW, /Run exact check shard/);
+  assert.match(INVARIANT_WORKFLOW, /Require complete repository check/);
 });
 
-test('exact-SHA release verifier preserves Phase 4 checks while delegating only ownership to Phase 5', () => {
-  assert.match(RELEASE_WORKFLOW, /hex\/p5-0-x86-foundation\) mode=phase5; lane=p5-0 ;;/);
-  assert.match(RELEASE_WORKFLOW, /hex\/p5-x86-integration\) mode=phase5; lane=p5-i ;;/);
-  assert.match(RELEASE_WORKFLOW, /--ownership-base "\$OWNERSHIP_BASE_SHA"/);
-  assert.match(RELEASE_WORKFLOW, /--phase5-lane "\$\{\{ steps\.ownership\.outputs\.lane \}\}"/);
-  assert.match(RELEASE_WORKFLOW, /github\.event\.pull_request\.base\.sha/);
-  assert.match(VERIFIER, /phase5-ownership\.mjs/);
-  assert.match(VERIFIER, /--base-sha/);
-  assert.match(VERIFIER, /--head-sha/);
+test('dispatch-only exact-SHA Phase 4 proof keeps the permanent verifier and product proofs', () => {
+  assert.match(RELEASE_WORKFLOW, /workflow_dispatch:/);
+  assert.doesNotMatch(RELEASE_WORKFLOW, /\n\s*pull_request:/);
+  assert.match(RELEASE_WORKFLOW, /PRODUCT_SHA: \$\{\{ inputs\.product_sha \}\}/);
+  assert.match(RELEASE_WORKFLOW, /npm run phase4:rehearsal/);
+  assert.match(RELEASE_WORKFLOW, /npm run phase4:verify -- --base "\$PHASE4_BASE" --head "\$PRODUCT_SHA" --lane p4-7/);
+  assert.match(RELEASE_WORKFLOW, /npm run phase4:browser/);
+  assert.match(RELEASE_WORKFLOW, /HEX_ANALYSIS_ROUTE=artifact npm run userscript:test/);
+  assert.match(RELEASE_WORKFLOW, /git diff --exit-code --/);
   assert.match(VERIFIER, /READY-FOR-CROSS-PHASE-INTEGRATION/);
   assert.doesNotMatch(RELEASE_WORKFLOW, /--no-commands/);
 });
 
-test('shared generated userscript outputs do not alone force an unrelated PR into a Phase 4 lane', () => {
-  assert.doesNotMatch(WORKFLOW, /- 'userscript\/hex\.user\.template\.js'/);
-  assert.doesNotMatch(WORKFLOW, /- 'userscript\/release-version\.json'/);
+test('shared generated userscript outputs remain mechanically synchronized without the retired ownership wrapper', () => {
+  assert.match(GENERATED_SYNC_WORKFLOW, /npm run userscript:build/);
+  assert.match(GENERATED_SYNC_WORKFLOW, /userscript\/hex\.user\.template\.js/);
+  assert.match(GENERATED_SYNC_WORKFLOW, /userscript\/release-version\.json/);
+  assert.match(GENERATED_SYNC_WORKFLOW, /git diff --exit-code --/);
   assert.deepEqual(MANIFEST.generatedPaths, [
     'userscript/hex.user.template.js',
     'userscript/release-version.json',

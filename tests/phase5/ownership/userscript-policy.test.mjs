@@ -6,25 +6,17 @@ import { fileURLToPath } from 'node:url';
 import { loadManifest } from '../../../tools/validation/phase5-ownership.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
-const WORKFLOW = fs.readFileSync(path.join(ROOT, '.github/workflows/phase2-effects-integration.yml'), 'utf8');
+const RETIRED_PHASE2_WORKFLOW = path.join(ROOT, '.github/workflows/phase2-effects-integration.yml');
+const GENERATED_SYNC = fs.readFileSync(path.join(ROOT, '.github/workflows/generated-sync.yml'), 'utf8');
 const MANIFEST = loadManifest();
-const COMPONENT_BRANCHES = [
-  'hex/p5-1-x86-int-control',
-  'hex/p5-2-x86-memory-atomic',
-  'hex/p5-3-x86-fp-simd-system',
-  'hex/p5-4-x86-abis',
-  'hex/p5-5-variable-viewer',
-  'hex/p5-6-x86-verification',
-];
 
-test('component lanes build generated userscript ephemerally while integration owns commits', () => {
+test('generated userscript ownership survives retirement of Phase 2/5 campaign wrappers', () => {
   assert.deepEqual(MANIFEST.generatedWriteOwners, ['p5-0', 'p5-i']);
-  assert.match(WORKFLOW, /Build and test protected userscript runtime[\s\S]*npm run userscript:test/);
-  assert.match(WORKFLOW, /BASE_REF: \$\{\{ github\.base_ref \}\}/);
-  assert.match(WORKFLOW, /HEAD_REF: \$\{\{ github\.head_ref \}\}/);
-  assert.match(WORKFLOW, /if test "\$BASE_REF" = hex\/p5-x86-integration/);
-  for (const branch of COMPONENT_BRANCHES) assert.equal(WORKFLOW.includes(branch), true, branch);
-  assert.match(WORKFLOW, /echo "ephemeral=\$ephemeral" >> "\$GITHUB_OUTPUT"/);
-  assert.match(WORKFLOW, /if: steps\.phase5-component\.outputs\.ephemeral != 'true'/);
-  assert.match(WORKFLOW, /git diff --exit-code -- userscript\/hex\.user\.template\.js/);
+  assert.equal(fs.existsSync(RETIRED_PHASE2_WORKFLOW), false);
+  assert.match(GENERATED_SYNC, /npm run userscript:build/);
+  assert.match(GENERATED_SYNC, /git diff --exit-code --/);
+  assert.match(GENERATED_SYNC, /userscript\/hex\.user\.template\.js/);
+  assert.match(GENERATED_SYNC, /userscript\/release-version\.json/);
+  assert.doesNotMatch(GENERATED_SYNC, /deployment-identity\.generated\.js/,
+    'Cloudflare-owned deployment identity must not be treated as local userscript output');
 });

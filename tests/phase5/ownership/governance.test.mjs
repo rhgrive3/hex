@@ -5,9 +5,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import {
-  discoverPhase5Tests,
-} from '../run.mjs';
+import { discoverPhase5Tests } from '../run.mjs';
 import {
   inventoryFromGit,
   inventoryDigest,
@@ -19,12 +17,13 @@ import {
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const VALIDATOR = path.join(ROOT, 'tools/validation/phase5-ownership.mjs');
-const WORKFLOW = fs.readFileSync(path.join(ROOT, '.github/workflows/phase5-ownership.yml'), 'utf8');
-const PHASE4_WORKFLOW = fs.readFileSync(path.join(ROOT, '.github/workflows/phase4-ownership.yml'), 'utf8');
+const RETIRED_PHASE5_WORKFLOW = path.join(ROOT, '.github/workflows/phase5-ownership.yml');
+const RETIRED_PHASE4_WORKFLOW = path.join(ROOT, '.github/workflows/phase4-ownership.yml');
 const PHASE4_RELEASE_WORKFLOW = fs.readFileSync(path.join(ROOT, '.github/workflows/phase4-release-validation.yml'), 'utf8');
 const SCHEMA = JSON.parse(fs.readFileSync(path.join(ROOT, 'tools/validation/phase5/release-evidence.schema.json'), 'utf8'));
 const MANIFEST = loadManifest();
 const LANES = ['p5-0', 'p5-1', 'p5-2', 'p5-3', 'p5-4', 'p5-5', 'p5-6', 'p5-i'];
+
 const COMPONENT_FILES = Object.freeze({
   'p5-1': [
     'js/targets/architecture/x86_64/effects/integer.js',
@@ -85,6 +84,19 @@ test('manifest fixes the exact Phase 5 lane set and special-category owners', ()
   assert.deepEqual(MANIFEST.contractWriteOwners['tests/phase5/corpus/**'], ['p5-0']);
   assert.deepEqual(MANIFEST.generatedWriteOwners, ['p5-0', 'p5-i']);
   assert.deepEqual(MANIFEST.releaseWriteOwners, ['p5-i']);
+});
+
+test('retired Phase 4/5 ownership wrappers are no longer active CI', () => {
+  assert.equal(fs.existsSync(RETIRED_PHASE4_WORKFLOW), false);
+  assert.equal(fs.existsSync(RETIRED_PHASE5_WORKFLOW), false);
+});
+
+test('Phase 4 exact-SHA release proof remains explicit and dispatch-only', () => {
+  assert.match(PHASE4_RELEASE_WORKFLOW, /workflow_dispatch:/);
+  assert.doesNotMatch(PHASE4_RELEASE_WORKFLOW, /\n\s*pull_request:/);
+  assert.match(PHASE4_RELEASE_WORKFLOW, /product_sha:/);
+  assert.match(PHASE4_RELEASE_WORKFLOW, /npm run phase4:rehearsal/);
+  assert.match(PHASE4_RELEASE_WORKFLOW, /npm run phase4:verify/);
 });
 
 test('each component owns its representative inventory and cannot steal another lane', () => {
@@ -240,38 +252,6 @@ test('recursive runner discovers arbitrary nested tests deterministically', () =
   } finally {
     fs.rmSync(temporary, { recursive: true, force: true });
   }
-});
-
-test('workflow resolves exact branches and uses immutable event SHAs', () => {
-  for (const branch of [
-    'hex/p5-0-x86-foundation',
-    'hex/p5-1-x86-int-control',
-    'hex/p5-2-x86-memory-atomic',
-    'hex/p5-3-x86-fp-simd-system',
-    'hex/p5-4-x86-abis',
-    'hex/p5-5-variable-viewer',
-    'hex/p5-6-x86-verification',
-    'hex/p5-x86-integration',
-  ]) assert.match(WORKFLOW, new RegExp(branch.replaceAll('/', '\\/')));
-  assert.match(WORKFLOW, /Non-canonical Phase 5 branch/);
-  assert.match(WORKFLOW, /github\.event\.pull_request\.base\.sha/);
-  assert.match(WORKFLOW, /github\.event\.pull_request\.head\.sha/);
-  assert.match(WORKFLOW, /--base-sha "\$BASE_SHA" --head-sha "\$HEAD_SHA"/);
-  assert.doesNotMatch(WORKFLOW, /origin\/\$\{\{ github\.base_ref \}\}/);
-});
-
-test('Phase 4 protected paths delegate canonical Phase 5 branches to the exact Phase 5 inventory gate', () => {
-  assert.match(PHASE4_WORKFLOW, /hex\/p5-0-x86-foundation\) phase=5; lane=p5-0 ;;/);
-  assert.match(PHASE4_WORKFLOW, /hex\/p5-x86-integration\) phase=5; lane=p5-i ;;/);
-  assert.match(PHASE4_WORKFLOW, /phase5-ownership\.mjs/);
-  assert.match(PHASE4_WORKFLOW, /github\.event\.pull_request\.base\.sha/);
-  assert.match(PHASE4_WORKFLOW, /github\.event\.pull_request\.head\.sha/);
-  assert.match(PHASE4_WORKFLOW, /Phase 4-owned files require a canonical Phase 4 or Phase 5 lane branch/);
-  assert.match(PHASE4_WORKFLOW, /exit 1/);
-  assert.match(PHASE4_RELEASE_WORKFLOW, /hex\/p5-0-x86-foundation\) mode=phase5; lane=p5-0 ;;/);
-  assert.match(PHASE4_RELEASE_WORKFLOW, /hex\/p5-x86-integration\) mode=phase5; lane=p5-i ;;/);
-  assert.match(PHASE4_RELEASE_WORKFLOW, /github\.event\.pull_request\.base\.sha/);
-  assert.match(PHASE4_RELEASE_WORKFLOW, /--phase5-lane/);
 });
 
 test('release schema requires every Phase 5 field and encodes null as not-proven', () => {
