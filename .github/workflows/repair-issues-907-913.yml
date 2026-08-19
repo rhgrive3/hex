@@ -1,9 +1,6 @@
 name: Repair Issues 907 909 910 913
 
 on:
-  push:
-    branches:
-      - fix/issues-907-909-910-913-20260819
   pull_request:
     branches: [main]
 
@@ -11,12 +8,12 @@ permissions:
   contents: write
 
 concurrency:
-  group: repair-issues-907-913-${{ github.event.pull_request.number || github.ref }}
+  group: repair-issues-907-913-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
   repair:
-    if: github.actor != 'github-actions[bot]' && (github.event_name != 'pull_request' || github.event.pull_request.head.ref == 'fix/issues-907-909-910-913-20260819')
+    if: github.actor != 'github-actions[bot]' && github.event.pull_request.head.ref == 'fix/issues-907-909-910-913-20260819'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
