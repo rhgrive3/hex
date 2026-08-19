@@ -1,0 +1,411 @@
+name: apply-five-issue-fix
+on:
+  push:
+    branches:
+      - fix/issues-925-926-932-935-948-current-main
+permissions:
+  contents: write
+jobs:
+  apply-and-verify:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Apply minimal current-main fixes
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_exact(path, old, new):
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{path}: expected one anchor, found {count}')
+              p.write_text(text.replace(old, new, 1))
+
+          # #925/#926: explicit AAPCS64 composite and 16-byte integral classes.
+          replace_exact('js/targets/abi/aapcs64.js', '''function parameterAbiClass(param) {
+  const type = String(param?.type || param?.name || '').toLowerCase();
+  const cls = String(param?.abiClass || param?.class || param?.kind || '').toLowerCase();
+  const pointer = param?.pointer === true || param?.isPointer === true || /\\*|pointer|ptr|object|class|block|closure/.test(type + ' ' + cls);
+  const hfa = param?.hfa === true || cls.includes('hfa') || cls.includes('homogeneous');
+  const vector = cls.includes('vector') || /vector|simd/.test(type);
+  const fp = hfa || vector || cls.includes('float') || cls.includes('fp') || /^(float|double|__fp16)/.test(type);
+  const members = Math.max(1, Math.min(4, Number(param?.members || param?.elements || param?.count || 1) || 1));
+  const bits = Math.max(8, Math.min(128, Number(param?.bits || param?.sizeBits || 64) || 64));
+  return { pointer, hfa, vector, fp, members, bits };
+}''', '''function parameterAbiClass(param) {
+  const type = String(param?.type || param?.name || '').toLowerCase();
+  const cls = String(param?.abiClass || param?.class || param?.kind || '').toLowerCase();
+  const pointer = param?.pointer === true || param?.isPointer === true || /\\*|pointer|ptr|object|class|block|closure/.test(type + ' ' + cls);
+  const hfa = param?.hfa === true || cls.includes('hfa') || cls.includes('homogeneous');
+  const vector = cls.includes('vector') || /vector|simd/.test(type);
+  const aggregate = !pointer && !hfa && (param?.aggregate === true || param?.isAggregate === true || /aggregate|struct|union|record|array|composite/.test(type + ' ' + cls));
+  const fp = !aggregate && (hfa || vector || cls.includes('float') || cls.includes('fp') || /^(float|double|__fp16)/.test(type));
+  const members = Math.max(1, Math.min(4, Number(param?.members || param?.elements || param?.count || 1) || 1));
+  const explicitBits = Number(param?.bits ?? param?.sizeBits);
+  const int128 = !pointer && !aggregate && !fp && /(?:unsigned\\s+)?__int128|int128_t|uint128_t/.test(type + ' ' + cls);
+  const rawBits = Number.isFinite(explicitBits) && explicitBits > 0 ? explicitBits : int128 ? 128 : 64;
+  const bits = Math.max(8, Math.min(1 << 20, Math.floor(rawBits)));
+  const wideIntegral = !pointer && !aggregate && !fp && bits === 128;
+  const declaredAlignment = Number(param?.alignment ?? param?.align ?? param?.alignmentBytes);
+  const alignment = Number.isFinite(declaredAlignment) && declaredAlignment > 0
+    ? Math.min(16, Math.max(1, Math.floor(declaredAlignment)))
+    : wideIntegral ? 16 : 8;
+  const mayContainPointers = param?.mayContainPointers === true || param?.containsPointers === true;
+  return { pointer, hfa, vector, aggregate, fp, members, bits, wideIntegral, alignment, mayContainPointers };
+}''')
+
+          replace_exact('js/targets/abi/aapcs64.js', '''    const c=parameterAbiClass(param);
+    const regsNeeded=c.hfa ? c.members : 1;
+    if (c.fp && fp + regsNeeded <= 8) {
+      const regs=[];
+      for(let n=0;n<regsNeeded;n++){const reg=`v${fp++}`;regs.push(reg);srcs.push({t:'reg',reg,bits:c.vector?128:c.bits});}
+      arguments_.push({index,location:'register',regs,reg:regs[0],abiClass:c.hfa?'hfa':c.vector?'vector':'fp',pointer:c.pointer,bits:c.bits});
+      return;
+    }
+    if (!c.fp && gp < 8) {
+      const reg=`x${gp++}`; srcs.push({t:'reg',reg,bits:64});
+      arguments_.push({index,location:'register',reg,abiClass:c.pointer?'pointer':'integer',pointer:c.pointer,bits:c.bits});
+      return;
+    }
+    const slots=Math.max(1,Math.ceil((c.hfa?c.members*c.bits:c.bits)/64));
+    const entry={index,location:'stack',offset:stackOffset,bytes:slots*8,abiClass:c.hfa?'hfa':c.vector?'vector':c.fp?'fp':c.pointer?'pointer':'integer',pointer:c.pointer,bits:c.bits};
+    stackArguments.push(entry);arguments_.push(entry);stackOffset+=slots*8;
+    if(c.pointer || param?.mayContainPointers === true || param?.containsPointers === true) stackArgsMayContainPointers=true;''', '''    const c=parameterAbiClass(param);
+    const regsNeeded=c.hfa ? c.members : 1;
+    if (c.fp && fp + regsNeeded <= 8) {
+      const regs=[];
+      for(let n=0;n<regsNeeded;n++){const reg=`v${fp++}`;regs.push(reg);srcs.push({t:'reg',reg,bits:c.vector?128:c.bits});}
+      arguments_.push({index,location:'register',regs,reg:regs[0],abiClass:c.hfa?'hfa':c.vector?'vector':'fp',pointer:c.pointer,bits:c.bits});
+      return;
+    }
+
+    if (c.aggregate && c.bits > 128) {
+      const reg = gp < 8 ? `x${gp++}` : null;
+      const entry = reg
+        ? {index,location:'register',reg,abiClass:'aggregate-indirect-copy',pointer:true,bits:64,pointeeBits:c.bits,aggregate:true,callerCopy:true,mayContainPointers:c.mayContainPointers}
+        : {index,location:'stack',offset:stackOffset,bytes:8,abiClass:'aggregate-indirect-copy',pointer:true,bits:64,pointeeBits:c.bits,aggregate:true,callerCopy:true,mayContainPointers:c.mayContainPointers};
+      if (reg) srcs.push({t:'reg',reg,bits:64,purpose:'aggregate-indirect-copy'});
+      else { stackArguments.push(entry); stackOffset += 8; }
+      arguments_.push(entry);
+      stackArgsMayContainPointers = true;
+      return;
+    }
+
+    if (c.wideIntegral) {
+      if ((gp & 1) !== 0) gp += 1;
+      if (gp <= 6) {
+        const regs=[`x${gp}`,`x${gp+1}`]; gp += 2;
+        for (const reg of regs) srcs.push({t:'reg',reg,bits:64,purpose:'wide-integral-piece'});
+        arguments_.push({index,location:'registers',regs,reg:regs[0],abiClass:'wide-integer',pointer:false,bits:128,alignment:16,pieces:regs.map((reg,piece)=>({piece,reg,bits:64}))});
+        return;
+      }
+      gp = 8;
+      stackOffset = Math.ceil(stackOffset / 16) * 16;
+      const entry={index,location:'stack',offset:stackOffset,bytes:16,abiClass:'wide-integer',pointer:false,bits:128,alignment:16};
+      stackArguments.push(entry);arguments_.push(entry);stackOffset+=16;
+      return;
+    }
+
+    if (c.aggregate) {
+      const bytes=Math.max(8,Math.ceil(c.bits/64)*8);
+      if (c.alignment >= 16 && (gp & 1) !== 0) gp += 1;
+      const needed=Math.ceil(bytes/8);
+      if (gp + needed <= 8) {
+        const regs=[];
+        for(let n=0;n<needed;n++){const reg=`x${gp++}`;regs.push(reg);srcs.push({t:'reg',reg,bits:64,purpose:'aggregate-piece'});}
+        arguments_.push({index,location:'registers',regs,reg:regs[0],abiClass:'aggregate',pointer:false,bits:c.bits,bytes,alignment:c.alignment,mayContainPointers:c.mayContainPointers,pieces:regs.map((reg,piece)=>({piece,reg,bits:Math.min(64,Math.max(0,c.bits-piece*64))||64}))});
+        return;
+      }
+      gp = 8;
+      stackOffset = c.alignment >= 16 ? Math.ceil(stackOffset / 16) * 16 : stackOffset;
+      const entry={index,location:'stack',offset:stackOffset,bytes,abiClass:'aggregate',pointer:false,bits:c.bits,alignment:c.alignment,mayContainPointers:c.mayContainPointers};
+      stackArguments.push(entry);arguments_.push(entry);stackOffset+=bytes;
+      if(c.mayContainPointers) stackArgsMayContainPointers=true;
+      return;
+    }
+
+    if (!c.fp && gp < 8) {
+      const reg=`x${gp++}`; srcs.push({t:'reg',reg,bits:64});
+      arguments_.push({index,location:'register',reg,abiClass:c.pointer?'pointer':'integer',pointer:c.pointer,bits:c.bits});
+      return;
+    }
+    const slots=Math.max(1,Math.ceil((c.hfa?c.members*c.bits:c.bits)/64));
+    if (c.hfa && fp + regsNeeded > 8) fp = 8;
+    const entry={index,location:'stack',offset:stackOffset,bytes:slots*8,abiClass:c.hfa?'hfa':c.vector?'vector':c.fp?'fp':c.pointer?'pointer':'integer',pointer:c.pointer,bits:c.bits};
+    stackArguments.push(entry);arguments_.push(entry);stackOffset+=slots*8;
+    if(c.pointer || c.mayContainPointers) stackArgsMayContainPointers=true;''')
+
+          replace_exact('js/targets/abi/aapcs64.js', '''  if (type || cls || proto.returnsValue === true) return { reg:'x0', bits:Number(proto.returnBits || proto.bits || 64) || 64 };''', '''  const returnBits=Number(proto.returnBits || proto.bits || 64) || 64;
+  const aggregate=proto.aggregate===true||proto.isAggregate===true||/aggregate|struct|union|record|array|composite/.test(type+' '+cls);
+  const wideInteger=!aggregate&&/(?:unsigned\\s+)?__int128|int128_t|uint128_t/.test(type+' '+cls)||(!aggregate&&returnBits===128);
+  if (aggregate && returnBits>128) return {reg:null,regs:[],bits:returnBits,aggregate:true,indirect:true,hiddenResultPointer:'x8'};
+  if ((aggregate && returnBits>64) || wideInteger) return {reg:'x0',regs:['x0','x1'],bits:returnBits,aggregate,wideInteger,pieces:[{reg:'x0',bits:64},{reg:'x1',bits:64}]};
+  if (type || cls || proto.returnsValue === true) return { reg:'x0', bits:returnBits };''')
+          replace_exact('js/targets/abi/aapcs64.js', '''  if (type || cls || opts?.returnsValue === true || proto?.returnsValue === true) {
+    return { reg:'x0', bits:Number(proto?.returnBits || proto?.bits || opts?.returnBits || 64) || 64 };
+  }''', '''  if (type || cls || opts?.returnsValue === true || proto?.returnsValue === true) {
+    const returnBits=Number(proto?.returnBits || proto?.bits || opts?.returnBits || 64) || 64;
+    const aggregate=proto?.aggregate===true||proto?.isAggregate===true||/aggregate|struct|union|record|array|composite/.test(type+' '+cls);
+    const wideInteger=!aggregate&&(/(?:unsigned\\s+)?__int128|int128_t|uint128_t/.test(type+' '+cls)||returnBits===128);
+    if (aggregate && returnBits>128) return {reg:null,regs:[],bits:returnBits,aggregate:true,indirect:true,hiddenResultPointer:'x8'};
+    if ((aggregate && returnBits>64) || wideInteger) return {reg:'x0',regs:['x0','x1'],bits:returnBits,aggregate,wideInteger,pieces:[{reg:'x0',bits:64},{reg:'x1',bits:64}]};
+    return { reg:'x0', bits:returnBits };
+  }''')
+
+          # #932: MRS/MSR NZCV use the canonical individual flag identities.
+          replace_exact('js/targets/architecture/arm64/effects/system.js', '''function completeIntrinsic({ id, inputs = [], outputs = [], registersRead = [], registersWritten = [], memoryRead = {scope:'none'}, memoryWrite = {scope:'none'}, controlEffects = [], determinism = 'deterministic', symbolicDetail = 'summary-only', metadata }) {
+  return createMachineOperation({
+    kind:'intrinsic',
+    intrinsicId:id,
+    effectSummary:createIntrinsicEffectSummary({
+      inputs, outputs, registersRead, registersWritten, memoryRead, memoryWrite,
+      controlEffects, determinism, symbolicDetail,
+    }),
+    ...(metadata ? { metadata } : {}),
+  });
+}''', '''function completeIntrinsic({ id, inputs = [], outputs = [], registersRead = [], registersWritten = [], memoryRead = {scope:'none'}, memoryWrite = {scope:'none'}, controlEffects = [], determinism = 'deterministic', symbolicDetail = 'summary-only', metadata }) {
+  return createMachineOperation({
+    kind:'intrinsic',
+    intrinsicId:id,
+    effectSummary:createIntrinsicEffectSummary({
+      inputs, outputs, registersRead, registersWritten, memoryRead, memoryWrite,
+      controlEffects, determinism, symbolicDetail,
+    }),
+    ...(metadata ? { metadata } : {}),
+  });
+}
+function nzcvFlagId(flag) { return `NZCV.${flag}`; }
+function readNzcvFlags(operations, prefix) {
+  return ['N','Z','C','V'].map((flag) => {
+    const value=temp(`${prefix}:${flag}`,createBitVectorValue(1));
+    operations.push(createMachineOperation({kind:'register-read',register:createRegisterValue(nzcvFlagId(flag),1),value,metadata:{architecturalState:'PSTATE.NZCV',flag}}));
+    return value;
+  });
+}
+function writeNzcvFlags(operations, packed, prefix) {
+  const positions={N:31,Z:30,C:29,V:28};
+  for (const flag of ['N','Z','C','V']) {
+    const value=temp(`${prefix}:${flag}`,createBitVectorValue(1));
+    operations.push(createMachineOperation({kind:'value',opcode:'extract-bit',inputs:[packed],outputs:[value],metadata:{bit:positions[flag],widthBits:64,architecturalState:'PSTATE.NZCV',flag}}));
+    operations.push(createMachineOperation({kind:'register-write',register:createRegisterValue(nzcvFlagId(flag),1),value,metadata:{architecturalState:'PSTATE.NZCV',flag}}));
+  }
+}''')
+
+          replace_exact('js/targets/architecture/arm64/effects/system.js', '''  const operations = [];
+  const result = temp(`mrs:${sys}:result`, createBitVectorValue(64));
+  const operation = completeIntrinsic({
+    id:`arm64.system.mrs.${sys}`,
+    inputs:[], outputs:[result], registersRead:[sysRegId(sys)], registersWritten:[gpId(dst)],
+    memoryRead:{scope:'none'}, memoryWrite:{scope:'none'}, controlEffects:[],
+    determinism:(sys === 'cntvct_el0' || sys === 'cntpct_el0') ? 'nondeterministic' : 'input-dependent',
+    symbolicDetail:'summary-only',
+    metadata:{ systemRegister:sys, transferWidthBits:64 },
+  });
+  operations.push(operation);
+  gpWrite(operations, dst, result);
+  const fault = accessFault(sys, 'read');''', '''  const operations = [];
+  const result = temp(`mrs:${sys}:result`, createBitVectorValue(64));
+  if (sys === 'nzcv') {
+    const flags=readNzcvFlags(operations,'mrs:nzcv');
+    operations.push(createMachineOperation({kind:'value',opcode:'arm64.pack-nzcv',inputs:flags,outputs:[result],metadata:{bitPositions:{N:31,Z:30,C:29,V:28},otherBits:'read-as-zero'}}));
+    gpWrite(operations,dst,result);
+    const fault=accessFault(sys,'read');
+    return bundle(instruction,context,{operations,possibleFaults:[fault],completeness:'exact',metadata:{systemRegister:sys,access:'read',canonicalState:'PSTATE.NZCV'}});
+  }
+  const operation = completeIntrinsic({
+    id:`arm64.system.mrs.${sys}`,
+    inputs:[], outputs:[result], registersRead:[sysRegId(sys)], registersWritten:[gpId(dst)],
+    memoryRead:{scope:'none'}, memoryWrite:{scope:'none'}, controlEffects:[],
+    determinism:(sys === 'cntvct_el0' || sys === 'cntpct_el0') ? 'nondeterministic' : 'input-dependent',
+    symbolicDetail:'summary-only',
+    metadata:{ systemRegister:sys, transferWidthBits:64 },
+  });
+  operations.push(operation);
+  gpWrite(operations, dst, result);
+  const fault = accessFault(sys, 'read');''')
+
+          replace_exact('js/targets/architecture/arm64/effects/system.js', '''  const reads = gpId(src) ? [gpId(src)] : [];
+  const operation = completeIntrinsic({
+    id:`arm64.system.msr.${sys}`,
+    inputs:[input], outputs:[], registersRead:reads, registersWritten:[sysRegId(sys)],
+    memoryRead:{scope:'none'}, memoryWrite:{scope:'none'}, controlEffects:[],
+    determinism:'deterministic', symbolicDetail:'summary-only',
+    metadata:{ systemRegister:sys, sourceKind:gpId(src) ? 'register' : 'immediate', architecturalMasking:'intrinsic' },
+  });
+  operations.push(operation);
+  const fault = accessFault(sys, 'write');''', '''  const reads = gpId(src) ? [gpId(src)] : [];
+  if (sys === 'nzcv') {
+    writeNzcvFlags(operations,input,'msr:nzcv');
+    const fault=accessFault(sys,'write');
+    return bundle(instruction,context,{operations,possibleFaults:[fault],completeness:'exact',metadata:{systemRegister:sys,access:'write',canonicalState:'PSTATE.NZCV'}});
+  }
+  const operation = completeIntrinsic({
+    id:`arm64.system.msr.${sys}`,
+    inputs:[input], outputs:[], registersRead:reads, registersWritten:[sysRegId(sys)],
+    memoryRead:{scope:'none'}, memoryWrite:{scope:'none'}, controlEffects:[],
+    determinism:'deterministic', symbolicDetail:'summary-only',
+    metadata:{ systemRegister:sys, sourceKind:gpId(src) ? 'register' : 'immediate', architecturalMasking:'intrinsic' },
+  });
+  operations.push(operation);
+  const fault = accessFault(sys, 'write');''')
+
+          # #935: zero effective count is no write, including 32-bit views; unknown zero path keeps old physical state.
+          replace_exact('js/targets/architecture/x86_64/effects/integer.js', '''    if (count.knownCount === 0) {
+      if (destination.widthBits === 32) {
+        const unchangedView = ctx.readRegister(destination);
+        if (!unchangedView || !ctx.writeRegister(destination, unchangedView)) {
+          return ctx.partial(`x86-${family}-zero-count-destination-unmodelled`, ['registers']);
+        }
+        return ctx.finish({
+          family:'integer',
+          metadata:{
+            operation:family,
+            widthBits:32,
+            effectiveCount:0,
+            destinationViewPreserved:true,
+            flagsPreserved:true,
+            zeroExtend32Write:true,
+          },
+        });
+      }
+      return ctx.finish({
+        family:'integer',
+        statePreservation:{ proven:true, reason:`x86-${family}-zero-effective-count-preserves-physical-destination-and-flags` },
+        metadata:{ operation:family, widthBits:destination.widthBits, effectiveCount:0, flagsPreserved:true },
+      });
+    }''', '''    if (count.knownCount === 0) {
+      return ctx.finish({
+        family:'integer',
+        statePreservation:{ proven:true, reason:`x86-${family}-zero-effective-count-preserves-physical-destination-and-flags` },
+        metadata:{ operation:family, widthBits:destination.widthBits, effectiveCount:0, destinationWrite:false, flagsPreserved:true },
+      });
+    }''')
+          replace_exact('js/targets/architecture/x86_64/effects/integer.js', '''      if (!writeConditionalRegister(ctx, destination, nonzero, result, { falseValue:value })) {''', '''      if (!writeConditionalRegister(ctx, destination, nonzero, result)) {''')
+
+          # #948: element reads project explicitly from canonical 128-bit Vn state.
+          replace_exact('js/targets/architecture/arm64/effects/simd.js', '''function appendElementRead(operations, op, info, id) {
+  if (!info) return null;
+  const value = temp(id, info.valueType);
+  operations.push(createMachineOperation({
+    kind:'register-read',
+    register:createRegisterValue(`v${op.num}`, info.elementBits, { view:String(op.text || `v${op.num}.${info.size}[${info.index}]`).toLowerCase() }),
+    value,
+    metadata:{ laneIndex:info.index, laneWidthBits:info.elementBits },
+  }));
+  return value;
+}''', '''function appendElementRead(operations, op, info, id) {
+  if (!info) return null;
+  const fullValue = temp(`${id}:full-vector`, createVectorValue(info.laneCount, info.valueType));
+  operations.push(createMachineOperation({
+    kind:'register-read',
+    register:createRegisterValue(`v${op.num}`, 128, { view:`v${op.num}` }),
+    value:fullValue,
+    metadata:{ canonicalPhysicalStorage:true, projectedView:String(op.text || `v${op.num}.${info.size}[${info.index}]`).toLowerCase() },
+  }));
+  const value = temp(id, info.valueType);
+  operations.push(createMachineOperation({
+    kind:'value', opcode:'extract-lane', inputs:[fullValue], outputs:[value],
+    metadata:{ laneIndex:info.index, laneWidthBits:info.elementBits, sourceWidthBits:128 },
+  }));
+  return value;
+}''')
+
+          Path('tests/issues-925-926-932-935-948.mjs').write_text(r'''import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import { classifyAAPCS64Arguments, classifyAAPCS64CallReturn } from '../js/targets/abi/aapcs64.js';
+
+const classify = (args) => classifyAAPCS64Arguments({ callPrototype:{ args } });
+
+// #926: 16-byte integral values consume an even-aligned GP pair or spill whole.
+{
+  const first = classify([{ type:'__int128' }]);
+  assert.deepEqual(first.arguments[0].regs, ['x0','x1']);
+  assert.deepEqual(first.srcs.map(x => x.reg), ['x0','x1']);
+  const odd = classify([{ type:'uint64_t', bits:64 }, { type:'unsigned __int128' }]);
+  assert.equal(odd.arguments[0].reg, 'x0');
+  assert.deepEqual(odd.arguments[1].regs, ['x2','x3']);
+  const boundary = classify([
+    ...Array.from({length:7}, () => ({ type:'uint64_t', bits:64 })),
+    { type:'__int128', bits:128 },
+  ]);
+  assert.equal(boundary.arguments[7].location, 'stack');
+  assert.equal(boundary.arguments[7].bytes, 16);
+  const ret = classifyAAPCS64CallReturn({callPrototype:{returnType:'__int128',returnBits:128}});
+  assert.deepEqual(ret.regs, ['x0','x1']);
+}
+
+// #925: non-HFA composites are never collapsed to one scalar register.
+{
+  const pair = classify([{ type:'struct Pair', aggregate:true, bits:128 }]);
+  assert.deepEqual(pair.arguments[0].regs, ['x0','x1']);
+  assert.equal(pair.arguments[0].abiClass, 'aggregate');
+  const afterScalar = classify([{ type:'uint64_t', bits:64 }, { type:'struct Pair', aggregate:true, bits:128 }]);
+  assert.deepEqual(afterScalar.arguments[1].regs, ['x1','x2']);
+  const large = classify([{ type:'struct Triple', aggregate:true, bits:192, containsPointers:true }]);
+  assert.equal(large.arguments[0].abiClass, 'aggregate-indirect-copy');
+  assert.equal(large.arguments[0].reg, 'x0');
+  assert.equal(large.arguments[0].pointeeBits, 192);
+  assert.equal(large.stackArgsMayContainPointers, true);
+}
+
+// #932/#935/#948 structural invariants protect the exact state-model boundary.
+{
+  const system = fs.readFileSync(new URL('../js/targets/architecture/arm64/effects/system.js', import.meta.url), 'utf8');
+  assert.match(system, /createRegisterValue\(nzcvFlagId\(flag\),1\)/);
+  assert.match(system, /opcode:'arm64\.pack-nzcv'/);
+  assert.match(system, /opcode:'extract-bit'.*PSTATE\.NZCV/s);
+  assert.doesNotMatch(system, /sys === 'nzcv'[\s\S]{0,600}registersWritten:\[sysRegId\(sys\)\]/);
+
+  const integer = fs.readFileSync(new URL('../js/targets/architecture/x86_64/effects/integer.js', import.meta.url), 'utf8');
+  const zeroBlock = integer.slice(integer.indexOf('if (count.knownCount === 0)'), integer.indexOf('const value = ctx.readRegister(destination)'));
+  assert.match(zeroBlock, /destinationWrite:false/);
+  assert.doesNotMatch(zeroBlock, /writeRegister/);
+  assert.match(integer, /writeConditionalRegister\(ctx, destination, nonzero, result\)/);
+
+  const simd = fs.readFileSync(new URL('../js/targets/architecture/arm64/effects/simd.js', import.meta.url), 'utf8');
+  const lane = simd.slice(simd.indexOf('function appendElementRead'), simd.indexOf('function appendGpRead'));
+  assert.match(lane, /createRegisterValue\(`v\$\{op\.num\}`, 128/);
+  assert.match(lane, /opcode:'extract-lane'/);
+  assert.match(lane, /laneIndex:info\.index/);
+  assert.doesNotMatch(lane, /createRegisterValue\(`v\$\{op\.num\}`, info\.elementBits/);
+}
+
+console.log('issues #925/#926/#932/#935/#948 regressions: PASS');
+''')
+          PY
+      - name: Focused regressions
+        run: node tests/issues-925-926-932-935-948.mjs
+      - name: Build generated userscript
+        run: npm run userscript:build
+      - name: Full repository check
+        run: npm run check
+      - name: Diff hygiene
+        run: git diff --check
+      - name: Prove generated output idempotent
+        shell: bash
+        run: |
+          git diff -- . ':!userscript/release-version.json' > /tmp/before.diff
+          npm run userscript:build
+          git diff -- . ':!userscript/release-version.json' > /tmp/after.diff
+          diff -u /tmp/before.diff /tmp/after.diff
+      - name: Publish verified source and tests
+        shell: bash
+        run: |
+          rm .github/workflows/apply-five-issue-fix.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m 'fix: resolve ABI and register-state correctness issues (#925 #926 #932 #935 #948)'
+          git push origin HEAD
