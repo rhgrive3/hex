@@ -1,0 +1,107 @@
+name: Apply unlinked issue 923 fix
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'fix/unlinked-923-eh-frame-validation'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/unlinked-923-eh-frame-validation
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Normalize raw/normalized ELF section accessors
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('js/binary/elf-unwind.js')
+          text = path.read_text()
+          old = """function sectionReadable(r, sec) {
+  if (!sec || sec.offset == null || sec.size == null) return false;
+  const start = BigInt(sec.offset);
+  const size = BigInt(sec.size);
+  return start >= 0n && size > 0n && start <= BigInt(r.length) && size <= BigInt(r.length) - start;
+}
+
+function sameSection(a, b) {
+  return !!a && !!b && BigInt(a.addr ?? a.address ?? -1n) === BigInt(b.addr ?? b.address ?? -2n)
+    && BigInt(a.offset ?? -1n) === BigInt(b.offset ?? -2n)
+    && BigInt(a.size ?? -1n) === BigInt(b.size ?? -2n);
+}
+"""
+          new = """function sectionAddress(sec) {
+  return BigInt(sec?.addr ?? sec?.address ?? 0n);
+}
+
+function sectionOffset(sec) {
+  const value = sec?.offset ?? sec?.fileOffset;
+  return value == null ? null : BigInt(value);
+}
+
+function sectionFileSize(sec) {
+  return BigInt(sec?.fileSize ?? sec?.size ?? 0n);
+}
+
+function sectionReadable(r, sec) {
+  const start = sectionOffset(sec);
+  const size = sectionFileSize(sec);
+  return start != null && start >= 0n && size > 0n && start <= BigInt(r.length) && size <= BigInt(r.length) - start;
+}
+
+function sameSection(a, b) {
+  return !!a && !!b && sectionAddress(a) === sectionAddress(b)
+    && sectionOffset(a) === sectionOffset(b)
+    && BigInt(a.size ?? -1n) === BigInt(b.size ?? -2n);
+}
+"""
+          if text.count(old) != 1:
+              raise SystemExit(f'section helper anchor count={text.count(old)}')
+          text = text.replace(old, new, 1)
+          text = text.replace("const start = BigInt(sec.addr ?? sec.address ?? 0n);", "const start = sectionAddress(sec);")
+          text = text.replace("secAddress: BigInt(sec.addr ?? sec.address ?? 0n),\n    secOffset: Number(sec.offset),", "secAddress: sectionAddress(sec),\n    secOffset: Number(sectionOffset(sec)),")
+          old = """  if (offBig == null || offBig < BigInt(sec.offset) || offBig >= BigInt(sec.offset) + BigInt(sec.size))
+    throw new Error(`FDE/CIE address 0x${addressValue.toString(16)} is not file-backed by .eh_frame`);
+"""
+          new = """  const secOff = sectionOffset(sec);
+  const secBytes = sectionFileSize(sec);
+  if (offBig == null || secOff == null || offBig < secOff || offBig >= secOff + secBytes)
+    throw new Error(`FDE/CIE address 0x${addressValue.toString(16)} is not file-backed by .eh_frame`);
+"""
+          if text.count(old) != 1:
+              raise SystemExit(f'record range anchor count={text.count(old)}')
+          text = text.replace(old, new, 1)
+          text = text.replace("const secEnd = BigInt(sec.offset) + BigInt(sec.size);", "const secEnd = secOff + secBytes;")
+          text = text.replace("const pointerFieldAddress = BigInt(sec.addr ?? sec.address ?? 0n) + BigInt(p - Number(sec.offset));", "const pointerFieldAddress = sectionAddress(sec) + BigInt(p - Number(sectionOffset(sec)));")
+          text = text.replace("evidence:{ kind:'eh-frame-fde', fdeAddress:candidate.fdeAddress },", "functionStartEvidence:{ kind:'eh-frame-fde', fdeAddress:candidate.fdeAddress },")
+          path.write_text(text)
+          PY
+      - name: Focused regressions
+        run: node tests/issue-923-eh-frame-validation.mjs
+      - name: Binary suite
+        run: npm run binary:test
+      - name: Static checks
+        run: npm run lint
+      - name: Diff hygiene
+        run: git diff --check
+      - name: Publish verified source/tests
+        shell: bash
+        run: |
+          rm .github/workflows/apply-unlinked-923.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add js/binary/elf-unwind.js tests/issue-923-eh-frame-validation.mjs .github/workflows/apply-unlinked-923.yml
+          git commit -m 'fix: validate eh_frame_hdr FDE function evidence (#923)'
+          git push origin HEAD:fix/unlinked-923-eh-frame-validation
