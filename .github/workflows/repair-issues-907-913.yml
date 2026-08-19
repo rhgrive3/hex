@@ -52,6 +52,7 @@ jobs:
           node scripts/repair-compiler-truth-remaining-abi.mjs
           node scripts/repair-final-acceptance-e2e.mjs
           node scripts/repair-decompiler-pipeline-explicit-abi.mjs
+          node scripts/repair-decompiler-semantic-explicit-abi.mjs
 
       - name: Focused regressions
         run: node --test --test-reporter=spec --test-concurrency=1 tests/phase6/generic-core/issues-907-909-910-913.test.mjs
@@ -78,6 +79,7 @@ jobs:
           rm scripts/repair-compiler-truth-remaining-abi.mjs
           rm scripts/repair-final-acceptance-e2e.mjs
           rm scripts/repair-decompiler-pipeline-explicit-abi.mjs
+          rm scripts/repair-decompiler-semantic-explicit-abi.mjs
           rm .github/workflows/repair-issues-907-913.yml
           git add -A
           git diff --cached --check
