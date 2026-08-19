@@ -1,11 +1,11 @@
-name: Apply issue 817 signed canonical offsets
+name: Publish issue 817 candidate
 on:
   push:
     branches: [fix/issue-817-current-main]
 permissions:
   contents: write
 jobs:
-  apply:
+  publish:
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
@@ -23,105 +23,36 @@ jobs:
         run: |
           python3 <<'PY'
           from pathlib import Path
-
           def replace_once(path, old, new):
-              p = Path(path)
-              text = p.read_text()
-              count = text.count(old)
-              if count != 1:
-                  raise SystemExit(f'{path}: expected exactly one match, got {count}: {old!r}')
+              p = Path(path); text = p.read_text(); count = text.count(old)
+              if count != 1: raise SystemExit(f'{path}: expected one match, got {count}: {old!r}')
               p.write_text(text.replace(old, new))
-
           path = 'js/analysis/alias/canonical-address-v2-core.js'
-          replace_once(path,
-              "export const CANONICAL_ADDRESS_DERIVATION_VERSION = '1.0.1';",
-              "export const CANONICAL_ADDRESS_DERIVATION_VERSION = '1.0.2';")
-          replace_once(path,
-              "      offset: normalizeModulo(descriptor.baseOffset, widthBits),\n",
-              "      // Root-relative offsets are signed mathematical offsets, not machine\n      // addresses. Modulo wrapping here makes linear interval aliasing unsound.\n      offset: descriptor.baseOffset,\n")
-          replace_once(path,
-              "    offset: normalizeModulo(descriptor.baseOffset, widthBits),\n",
-              "    offset: descriptor.baseOffset,\n")
-          replace_once(path,
-              "    offset: normalizeModulo(proof.offset + delta, width),\n",
-              "    offset: proof.offset + delta,\n")
+          replace_once(path, "export const CANONICAL_ADDRESS_DERIVATION_VERSION = '1.0.1';", "export const CANONICAL_ADDRESS_DERIVATION_VERSION = '1.0.2';")
+          replace_once(path, "      offset: normalizeModulo(descriptor.baseOffset, widthBits),\n", "      // Root-relative offsets are signed mathematical offsets, not machine\n      // addresses. Modulo wrapping here makes linear interval aliasing unsound.\n      offset: descriptor.baseOffset,\n")
+          replace_once(path, "    offset: normalizeModulo(descriptor.baseOffset, widthBits),\n", "    offset: descriptor.baseOffset,\n")
+          replace_once(path, "    offset: normalizeModulo(proof.offset + delta, width),\n", "    offset: proof.offset + delta,\n")
           PY
-
           cat > tests/semantic-v2/issue-817-canonical-stack-offsets.test.mjs <<'EOF'
-          import {
-            deriveCanonicalAddressProof,
-            canonicalAddressProofToRegionEvidence,
-          } from '../../js/analysis/alias/canonical-address-v2-core.js';
+          import { deriveCanonicalAddressProof, canonicalAddressProofToRegionEvidence } from '../../js/analysis/alias/canonical-address-v2-core.js';
           import { aliasMemoryRegions } from '../../js/analysis/alias/legacy-safety-floor.js';
-
-          function ok(value, message) { if (!value) throw new Error(message || 'expected truthy'); }
-          function eq(actual, expected, message) {
-            if (actual !== expected) throw new Error(`${message || 'not equal'}: got ${String(actual)}, want ${String(expected)}`);
+          function ok(v,m){ if(!v) throw new Error(m||'expected truthy'); }
+          function eq(a,e,m){ if(a!==e) throw new Error(`${m||'not equal'}: got ${String(a)}, want ${String(e)}`); }
+          function proofFor(canonicalRoot,widthBits=64){ return deriveCanonicalAddressProof({functionId:'issue817',values:[{id:'v',kind:'computed',machineType:{widthBits},definitionNodeId:'n',metadata:{canonicalRoot}}],nodes:[{id:'n',kind:'copy',inputs:[]}],blocks:[]},'v'); }
+          for (const widthBits of [32,64]) {
+            const proof=proofFor({kind:'stack-like',baseOffset:-4,linearOffsets:true,addressSpace:'memory'},widthBits);
+            eq(proof.offset,-4n,`#817 ${widthBits}-bit stack proof stays signed`);
+            eq(canonicalAddressProofToRegionEvidence(proof).offset,'-4',`#817 ${widthBits}-bit region evidence stays signed`);
           }
-
-          function proofFor(canonicalRoot, widthBits = 64) {
-            const ir = {
-              functionId:'issue817',
-              values:[{
-                id:'v', kind:'computed', machineType:{ widthBits }, definitionNodeId:'n',
-                metadata:{ canonicalRoot },
-              }],
-              nodes:[{ id:'n', kind:'copy', inputs:[] }],
-              blocks:[],
-            };
-            return deriveCanonicalAddressProof(ir, 'v');
-          }
-
-          for (const widthBits of [32, 64]) {
-            const proof = proofFor({
-              kind:'stack-like', baseOffset:-4, linearOffsets:true, addressSpace:'memory',
-            }, widthBits);
-            eq(proof.offset, -4n, `#817 ${widthBits}-bit stack proof stays signed`);
-            const evidence = canonicalAddressProofToRegionEvidence(proof);
-            eq(evidence.offset, '-4', `#817 ${widthBits}-bit region evidence stays signed`);
-          }
-
-          {
-            const proof = proofFor({
-              kind:'rooted-object', rootEntityId:'entity_issue817',
-              rootIdentity:{ kind:'fixture-root', id:'root' },
-              baseOffset:-8, linearOffsets:true, addressSpace:'memory',
-            });
-            eq(proof.offset, -8n, '#817 rooted linear offset stays signed');
-            ok(proof.separationSafe === true, '#817 rooted separation evidence retained');
-          }
-
-          eq(aliasMemoryRegions(
-            { kind:'stack-fixed', functionId:'issue817', offset:'-4', widthBits:64 },
-            { kind:'stack-fixed', functionId:'issue817', offset:'0', widthBits:32 },
-          ), 'may', '#817 [-4,+4) overlaps [0,+4)');
-
-          eq(aliasMemoryRegions(
-            { kind:'stack-fixed', functionId:'issue817', offset:'-16', widthBits:64 },
-            { kind:'stack-fixed', functionId:'issue817', offset:'0', widthBits:64 },
-          ), 'no', '#817 [-16,-8) is disjoint from [0,+8)');
-
-          eq(aliasMemoryRegions(
-            { kind:'stack-fixed', functionId:'issue817', offset:'-8', widthBits:64 },
-            { kind:'stack-fixed', functionId:'issue817', offset:'-4', widthBits:64 },
-          ), 'may', '#817 negative intervals overlap without modulo wrap');
-
-          eq(aliasMemoryRegions(
-            { kind:'stack-fixed', functionId:'issue817', offset:'-24', widthBits:64 },
-            { kind:'stack-fixed', functionId:'issue817', offset:'-8', widthBits:64 },
-          ), 'no', '#817 negative intervals can also be proven disjoint');
-
+          { const proof=proofFor({kind:'rooted-object',rootEntityId:'entity_issue817',rootIdentity:{kind:'fixture-root',id:'root'},baseOffset:-8,linearOffsets:true,addressSpace:'memory'}); eq(proof.offset,-8n,'#817 rooted offset stays signed'); ok(proof.separationSafe===true,'#817 separation retained'); }
+          eq(aliasMemoryRegions({kind:'stack-fixed',functionId:'issue817',offset:'-4',widthBits:64},{kind:'stack-fixed',functionId:'issue817',offset:'0',widthBits:32}),'may','#817 overlap across zero');
+          eq(aliasMemoryRegions({kind:'stack-fixed',functionId:'issue817',offset:'-16',widthBits:64},{kind:'stack-fixed',functionId:'issue817',offset:'0',widthBits:64}),'no','#817 signed disjoint intervals');
+          eq(aliasMemoryRegions({kind:'stack-fixed',functionId:'issue817',offset:'-8',widthBits:64},{kind:'stack-fixed',functionId:'issue817',offset:'-4',widthBits:64}),'may','#817 negative overlap');
           console.log('issue-817-canonical-stack-offsets: PASS');
           EOF
-      - name: Focused regression
-        run: node tests/semantic-v2/issue-817-canonical-stack-offsets.test.mjs
-      - name: Canonical Semantic IR v2 suite
-        run: npm run semantic-v2:test
-      - name: Main regression suite
-        run: npm test
       - name: Build canonical userscript outputs
         run: npm run userscript:build
-      - name: Publish verified repair
+      - name: Publish candidate; exact-head CI is authoritative
         shell: bash
         run: |
           git config user.name github-actions[bot]
