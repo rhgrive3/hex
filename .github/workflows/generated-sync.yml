@@ -50,6 +50,13 @@ jobs:
       - run: npm ci
       - name: Rebuild canonical userscript outputs
         run: npm run userscript:build
+      - name: Capture generated userscript outputs for branch reconciliation
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr987-generated-userscript
+          path: |
+            userscript/hex.user.template.js
+            userscript/release-version.json
       - name: Require userscript-owned generated outputs to match source
         run: >-
           git diff --exit-code --
