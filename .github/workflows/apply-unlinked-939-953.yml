@@ -1,0 +1,143 @@
+name: Apply unlinked SysV issues 939 and 953
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-unlinked-939-953-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'fix/unlinked-939-953-sysv'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+
+      - name: Patch SysV variadic frontier and wide-vector handling
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('js/targets/abi/sysv-amd64.js')
+          text = path.read_text()
+
+          replacements = []
+          replacements.append((
+          """  variadic:'partial-fixed-parameters-and-vector-count-state',\n""",
+          """  variadic:'partial-fixed-parameters-plus-conservative-register-frontier-and-vector-count-state',\n"""))
+
+          replacements.append((
+          """function align(value, alignment) {\n  return Math.ceil(value / alignment) * alignment;\n}\n""",
+          """function align(value, alignment) {\n  return Math.ceil(value / alignment) * alignment;\n}\n\nfunction declaredMaxVectorRegisterBits(options = {}) {\n  const raw = Number(options.maxVectorRegisterBits ?? options.vectorRegisterBits ?? options.architectureProfile?.maxVectorBits ?? 128);\n  return [128, 256, 512].includes(raw) ? raw : 128;\n}\n\nfunction vectorRegisterName(index, bits) {\n  if (bits <= 128) return `xmm${index}`;\n  if (bits <= 256) return `ymm${index}`;\n  if (bits <= 512) return `zmm${index}`;\n  return null;\n}\n\nfunction vectorRegisterView(index, bits, options = {}) {\n  if (bits > declaredMaxVectorRegisterBits(options)) return null;\n  return vectorRegisterName(index, bits);\n}\n"""))
+
+          replacements.append((
+          """  let allocationUnknown = false;\n  let aggregatePartial = false;\n  let aggregateProven = false;\n""",
+          """  let allocationUnknown = false;\n  let aggregatePartial = false;\n  let aggregateProven = false;\n  let vectorPartial = false;\n"""))
+
+          replacements.append((
+          """    if ((classified.floating || classified.vector) && vectorIndex < VECTOR_ARGUMENT_REGISTERS.length) {\n      const reg = VECTOR_ARGUMENT_REGISTERS[vectorIndex++];\n      appendRegisterSource(srcs, seenSources, reg, classified.vector ? 128 : classified.bits);\n      arguments_.push({\n        index, location:'register', reg,\n        abiClass:classified.vector ? 'sse-vector' : 'sse-scalar',\n        pointer:false, bits:classified.bits,\n      });\n      return;\n    }\n""",
+          """    if ((classified.floating || classified.vector) && vectorIndex < VECTOR_ARGUMENT_REGISTERS.length) {\n      const registerIndex = vectorIndex++;\n      const exactVectorView = classified.vector ? vectorRegisterView(registerIndex, classified.bits, options) : VECTOR_ARGUMENT_REGISTERS[registerIndex];\n      const architecturalView = classified.vector ? (exactVectorView || vectorRegisterName(registerIndex, classified.bits)) : exactVectorView;\n      if (!architecturalView) {\n        vectorPartial = true;\n        allocationUnknown = true;\n        arguments_.push({\n          index, location:'unknown', candidateRegisters:[], stackPossible:true,\n          abiClass:'sse-vector-unsupported-width', pointer:false, bits:classified.bits,\n          partial:true, unsupported:true, reason:'sysv-amd64-vector-width-outside-modeled-register-views',\n        });\n        return;\n      }\n      const unsupported = classified.vector && exactVectorView == null;\n      vectorPartial ||= unsupported;\n      appendRegisterSource(srcs, seenSources, architecturalView, classified.bits, unsupported\n        ? { partial:true, unsupported:true, purpose:'wide-vector-register-view' }\n        : {});\n      arguments_.push({\n        index, location:'register', reg:architecturalView,\n        abiClass:classified.vector ? 'sse-vector' : 'sse-scalar',\n        pointer:false, bits:classified.bits,\n        ...(unsupported ? { partial:true, unsupported:true, reason:'sysv-amd64-wide-vector-profile-not-proven' } : {}),\n      });\n      return;\n    }\n"""))
+
+          replacements.append((
+          """  const variadic = prototype?.variadic === true || prototype?.varargs === true;\n  return {\n    srcs,\n""",
+          """  const variadic = prototype?.variadic === true || prototype?.varargs === true;\n  const variadicRegisterCandidates = [];\n  if (variadic) {\n    for (const reg of INTEGER_ARGUMENT_REGISTERS.slice(integerIndex)) {\n      variadicRegisterCandidates.push({ t:'reg', reg, bits:64, abiClass:'unknown-integer', possible:true });\n      appendRegisterSource(srcs, seenSources, reg, 64, { purpose:'variadic-register-candidate', possible:true });\n    }\n    for (const reg of VECTOR_ARGUMENT_REGISTERS.slice(vectorIndex)) {\n      variadicRegisterCandidates.push({ t:'reg', reg, bits:128, abiClass:'unknown-sse', possible:true });\n      appendRegisterSource(srcs, seenSources, reg, 128, { purpose:'variadic-register-candidate', possible:true });\n    }\n  }\n  return {\n    srcs,\n"""))
+
+          replacements.append((
+          """    variadicClassification:variadic ? 'partial-fixed-parameters-only' : 'not-variadic',\n    implicitInputs:variadic ? [{ t:'reg', reg:'rax', view:'al', bits:8, purpose:'sse-register-argument-count' }] : [],\n    variadicVectorRegisterCount:variadic ? vectorIndex : null,\n    partial:aggregatePartial || variadic,\n""",
+          """    variadicClassification:variadic ? 'partial-fixed-parameters-plus-register-frontier' : 'not-variadic',\n    variadicRegisterCandidates,\n    implicitInputs:variadic ? [{ t:'reg', reg:'rax', view:'al', bits:8, purpose:'sse-register-argument-count' }] : [],\n    variadicVectorRegisterCount:variadic ? vectorIndex : null,\n    partial:aggregatePartial || vectorPartial || variadic,\n"""))
+
+          replacements.append((
+          """  const vector = /vector|simd|sse/.test(`${type} ${abiClass}`);\n  const floating = vector || /(^|\\s)(?:float|double)(?:\\s|$)|\\bfp\\b/.test(`${type} ${abiClass}`);\n  const rawBits = Number(prototype.returnBits || prototype.bits || options.returnBits || typeBits(type, vector ? 128 : 64));\n  const bits = Number.isSafeInteger(rawBits) && rawBits > 0 ? Math.min(128, rawBits) : 64;\n""",
+          """  const vector = prototype.vector === true || options.vector === true || /vector|simd|sse|__m(?:128|256|512)/.test(`${type} ${abiClass}`);\n  const floating = vector || /(^|\\s)(?:float|double)(?:\\s|$)|\\bfp\\b/.test(`${type} ${abiClass}`);\n  const rawBits = Number(prototype.returnBits || prototype.bits || options.returnBits || typeBits(type, vector ? 128 : 64));\n  const saneBits = Number.isSafeInteger(rawBits) && rawBits > 0 ? rawBits : 64;\n  if (vector && saneBits > 128) {\n    const reg = vectorRegisterView(0, saneBits, options);\n    if (!reg) return {\n      reg:null, candidateReg:vectorRegisterName(0, saneBits), bits:saneBits, partial:true, unsupported:true,\n      reason:vectorRegisterName(0, saneBits) ? 'sysv-amd64-wide-vector-profile-not-proven' : 'sysv-amd64-vector-width-outside-modeled-register-views',\n    };\n    return { reg, bits:saneBits, abiClass:'sse-vector', wideVector:true };\n  }\n  const bits = Math.min(128, saneBits);\n"""))
+
+          for old, new in replacements:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'anchor count={count}: {old[:80]!r}')
+              text = text.replace(old, new, 1)
+          path.write_text(text)
+          PY
+
+          cat > tests/issues-939-953-sysv.mjs <<'EOF'
+          import assert from 'node:assert/strict';
+          import { classifySysVAMD64Arguments, classifySysVAMD64CallReturn } from '../js/targets/abi/sysv-amd64.js';
+
+          const variadic = classifySysVAMD64Arguments({ callPrototype:{
+            parameters:[{ type:'char *', pointer:true, bits:64 }], variadic:true,
+          }});
+          assert.equal(variadic.arguments.length, 1, 'fixed and unknown variadic arguments must remain distinct');
+          assert.equal(variadic.arguments[0].reg, 'rdi');
+          assert.ok(variadic.variadicRegisterCandidates.some((x) => x.reg === 'rsi' && x.possible === true));
+          assert.ok(variadic.variadicRegisterCandidates.some((x) => x.reg === 'xmm0' && x.possible === true));
+          assert.ok(variadic.srcs.some((x) => x.reg === 'rsi' && x.possible === true), 'possible GPR variadic frontier must reach conservative CALL use-set');
+          assert.ok(variadic.srcs.some((x) => x.reg === 'xmm0' && x.possible === true), 'possible SSE variadic frontier must reach conservative CALL use-set');
+          assert.ok(variadic.implicitInputs.some((x) => x.reg === 'rax' && x.view === 'al'), 'SysV variadic AL vector-count state must remain explicit');
+          assert.equal(variadic.partial, true);
+
+          const supported256 = classifySysVAMD64Arguments({ callPrototype:{ parameters:[
+            { type:'vec256', vector:true, bits:256 },
+          ]}}, { maxVectorRegisterBits:256 });
+          assert.equal(supported256.arguments[0].reg, 'ymm0');
+          assert.equal(supported256.arguments[0].bits, 256);
+          assert.ok(supported256.srcs.some((x) => x.reg === 'ymm0' && x.bits === 256));
+          assert.equal(supported256.arguments[0].unsupported, undefined);
+
+          const unsupported256 = classifySysVAMD64Arguments({ callPrototype:{ parameters:[
+            { type:'vec256', vector:true, bits:256 },
+          ]}});
+          assert.equal(unsupported256.arguments[0].reg, 'ymm0', 'ABI view must not masquerade as XMM');
+          assert.equal(unsupported256.arguments[0].bits, 256);
+          assert.equal(unsupported256.arguments[0].partial, true);
+          assert.equal(unsupported256.arguments[0].unsupported, true);
+          assert.ok(!unsupported256.srcs.some((x) => x.reg === 'xmm0' && x.bits === 128), 'wide vector must never truncate to XMM/128');
+
+          const return256 = classifySysVAMD64CallReturn({ callPrototype:{ returnType:'__m256', vector:true, returnBits:256 } }, { maxVectorRegisterBits:256 });
+          assert.equal(return256.reg, 'ymm0');
+          assert.equal(return256.bits, 256);
+          assert.equal(return256.partial, undefined);
+
+          const return512 = classifySysVAMD64CallReturn({ callPrototype:{ returnType:'__m512', vector:true, returnBits:512 } }, { maxVectorRegisterBits:512 });
+          assert.equal(return512.reg, 'zmm0');
+          assert.equal(return512.bits, 512);
+
+          const unknownProfileReturn = classifySysVAMD64CallReturn({ callPrototype:{ returnType:'__m256', vector:true, returnBits:256 } });
+          assert.equal(unknownProfileReturn.reg, null);
+          assert.equal(unknownProfileReturn.candidateReg, 'ymm0');
+          assert.equal(unknownProfileReturn.bits, 256);
+          assert.equal(unknownProfileReturn.partial, true);
+          assert.equal(unknownProfileReturn.unsupported, true);
+
+          console.log('issues 939/953 SysV variadic + wide-vector regressions: PASS');
+          EOF
+
+      - name: Focused regressions
+        run: node tests/issues-939-953-sysv.mjs
+      - name: Phase 5 ABI regressions
+        run: npm run phase5:test
+      - name: Static checks
+        run: npm run lint
+      - name: Canonical userscript build
+        run: npm run userscript:build
+      - name: Commit verified source and generated output
+        shell: bash
+        run: |
+          rm .github/workflows/apply-unlinked-939-953.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'fix: model SysV variadic and wide-vector inputs (#939 #953)'
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}
