@@ -38,7 +38,7 @@ function contextOf(decoded, context = {}) {
     instructionId,
     architectureId:String(context.architectureId || decoded?.architectureId || 'arm64'),
     mode:String(context.mode || decoded?.mode || 'a64'),
-    endian:String(context.endian || decoded?.endian || 'little'),
+    dataEndianness:String(context.dataEndianness || decoded?.dataEndianness || context.endian || decoded?.endian || 'little'),
     origin:context.origin || decoded?.origin || { instructionIds:[instructionId] },
     options:context.options || {},
   };
@@ -107,7 +107,7 @@ function access(ctx, addressExpr, widthBits, ordering) {
     addressExpr,
     widthBits,
     alignment:Math.max(1, widthBits / 8),
-    endian:ctx.endian,
+    endian:ctx.dataEndianness,
     atomic:true,
     ordering,
   }, ctx.options);

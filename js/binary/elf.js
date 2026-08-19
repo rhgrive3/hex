@@ -4,6 +4,7 @@ import { parseEhFrameHeader } from './elf-unwind.js';
 import { parseProgramDynamic } from './elf-dynamic.js';
 import { createELFMetadataBudget } from './elf-budget.js';
 import { executableELFRange } from './elf-mapping.js';
+import { parseRiscvAttributes, parseRiscvMappingSymbol } from './riscv-isa.js';
 
 const ET_REL = 1;
 const PT_LOAD = 1;
@@ -49,6 +50,19 @@ export function parseELF(input, options = {}) {
   const programHeaders = parseProgramHeaders(r, h, image, bits);
   const rawSections = parseSectionHeaders(r, h, bits, image);
   nameSections(r, rawSections, h);
+  let riscvFileIsa = null;
+  if (image.arch === 'riscv64') {
+    const attributes = rawSections.find((section) => section.name === '.riscv.attributes') || null;
+    if (attributes) {
+      const start = safeOffset(attributes.offset), size = safeOffset(attributes.size);
+      if (start == null || size == null || size > 1024 * 1024 || start > r.length || size > r.length - start) {
+        image.warnings.push('RISC-V attributes section is outside the bounded file span');
+      } else {
+        riscvFileIsa = parseRiscvAttributes(r.bytes.subarray(start, start + size), { littleEndian });
+        if (!riscvFileIsa) image.warnings.push('RISC-V Tag_RISCV_arch is missing or malformed');
+      }
+    }
+  }
   if (h.type === ET_REL) assignRelocatableSectionAddresses(rawSections, image);
   for (const s of rawSections) {
     image.addSection({
@@ -66,6 +80,29 @@ export function parseELF(input, options = {}) {
 
   const symbolTables = rawSections.filter((s) => s.type === SHT_SYMTAB || s.type === SHT_DYNSYM);
   for (const s of symbolTables) parseSymbols(r, s, rawSections, image, bits, h.type, metadataBudget);
+  if (image.arch === 'riscv64') {
+    const mappings = image.symbols
+      .filter((symbol) => symbol?.defined === true && typeof symbol.name === 'string')
+      .map((symbol) => {
+        const parsed = parseRiscvMappingSymbol(symbol.name);
+        return parsed ? { address:symbol.address, sectionIndex:symbol.sectionIndex, ...parsed } : null;
+      })
+      .filter(Boolean)
+      .sort((left, right) => left.address < right.address ? -1 : left.address > right.address ? 1 : 0);
+    const sections = rawSections
+      .filter((section) => (section.flags & SHF_EXECINSTR) !== 0n && section.size > 0n)
+      .map((section) => ({
+        sectionIndex:section.index,
+        start:h.type === ET_REL ? (section.syntheticAddr ?? 0n) : section.addr,
+        end:(h.type === ET_REL ? (section.syntheticAddr ?? 0n) : section.addr) + section.size,
+      }));
+    image.metadata.riscvIsa = {
+      file:riscvFileIsa,
+      mappings,
+      sections,
+      evidence:riscvFileIsa ? 'elf-attribute' : 'missing',
+    };
+  }
   for (const s of rawSections) {
     if (s.type === SHT_REL || s.type === SHT_RELA) parseRelocations(r, s, rawSections, image, bits, h.type, metadataBudget);
     else if (s.type === SHT_DYNAMIC) parseDynamic(r, s, rawSections, image, bits, metadataBudget);

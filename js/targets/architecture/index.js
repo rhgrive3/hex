@@ -3,7 +3,7 @@ import { extendArm64WithArm64eEffects } from './arm64e/effects.js';
 import { ARM64_MACHINE_EFFECTS_SEMANTIC_VERSION, liftArm64MachineEffects } from './arm64/effects/index.js';
 import { X86_64_MACHINE_EFFECTS_SEMANTIC_VERSION, liftX86MachineEffects } from './x86_64/effects/index.js';
 import { x86RegisterFile } from './x86_64/registers.js';
-import { RISCV64_MACHINE_EFFECTS_SEMANTIC_VERSION, liftRiscv64MachineEffects } from './riscv64/effects/index.js';
+import { RISCV64_INSTRUCTION_ALIGNMENT, RISCV64_MACHINE_EFFECTS_SEMANTIC_VERSION, liftRiscv64MachineEffects } from './riscv64/effects/index.js';
 import { riscv64RegisterFile } from './riscv64/registers.js';
 import { ArchitecturePluginV2, registerArchitecturePlugin, architecturePluginV2, architecturePluginsV2 } from './registry.js';
 
@@ -140,8 +140,8 @@ export const X86_64_ARCHITECTURE = registerArchitecturePlugin({
  * whole point of Phase 6 is that the generic middle-end does not need one.
  */
 export const RISCV64_ARCHITECTURE = registerArchitecturePlugin({
-  id:'riscv64', semanticVersion:RISCV64_MACHINE_EFFECTS_SEMANTIC_VERSION, instructionAlignment:2, fixedInstructionSize:null, viewerCompatible:false,
-  modes:()=>Object.freeze(['rv64imc']), registerFile:riscv64RegisterFile,
+  id:'riscv64', semanticVersion:RISCV64_MACHINE_EFFECTS_SEMANTIC_VERSION, instructionAlignment:RISCV64_INSTRUCTION_ALIGNMENT, fixedInstructionSize:null, viewerCompatible:false,
+  modes:()=>Object.freeze(['rv64im','rv64imc']), registerFile:riscv64RegisterFile,
   decodeProvider:'capstone/backend', liftExact:liftRiscv64MachineEffects, classifyControlFlow:riscv64ControlFlow,
   directControlTarget:riscv64DirectControlTarget, supportedMemoryEndianness:Object.freeze(['little']),
   capabilities:{ decode:'external-structured-v1', exactEffects:'exact-for-rv64imc-profile', semanticAnalysis:'phase6-shared-middle-end' },

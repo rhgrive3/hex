@@ -18,13 +18,15 @@ async function getModule() {
   return modulePromise;
 }
 
-async function handleFor(architecture) {
-  if (handles.has(architecture)) return handles.get(architecture);
+async function handleFor(architecture, decodeProfile = null) {
+  const compressedInstructions = architecture === 'riscv64' ? decodeProfile?.compressedInstructions !== false : null;
+  const handleKey = architecture === 'riscv64' ? `riscv64:${compressedInstructions ? 'compressed' : 'base'}` : architecture;
+  if (handles.has(handleKey)) return handles.get(handleKey);
   const M = await getModule();
   let arch, mode;
   if (architecture === 'arm64') { arch = M.ARCH_ARM64; mode = M.MODE_ARM | M.MODE_LITTLE_ENDIAN; }
   else if (architecture === 'x86_64') { arch = M.ARCH_X86; mode = M.MODE_64 | M.MODE_LITTLE_ENDIAN; }
-  else if (architecture === 'riscv64') { arch = M.ARCH_RISCV; mode = M.MODE_RISCV64 | M.MODE_RISCVC | M.MODE_LITTLE_ENDIAN; }
+  else if (architecture === 'riscv64') { arch = M.ARCH_RISCV; mode = M.MODE_RISCV64 | (compressedInstructions ? M.MODE_RISCVC : 0) | M.MODE_LITTLE_ENDIAN; }
   else throw new Error(`Unsupported architecture: ${architecture}`);
   const hp = M._malloc(4);
   const rc = M.ccall('cs_open', 'number', ['number', 'number', 'pointer'], [arch, mode, hp]);
@@ -41,14 +43,14 @@ async function handleFor(architecture) {
     if (detailRc !== 0) throw new Error(`Capstone cannot enable RISC-V detail (error ${detailRc})`);
   }
   const state = { M, hp, handle, out: M._malloc(4) };
-  handles.set(architecture, state);
+  handles.set(handleKey, state);
   return state;
 }
 
 self.onmessage = async (event) => {
   const msg = event.data;
   try {
-    const { M, handle, out } = await handleFor(msg.architecture);
+    const { M, handle, out } = await handleFor(msg.architecture, msg.riscvIsa || null);
     const bytes = msg.bytes instanceof Uint8Array ? msg.bytes : new Uint8Array(msg.bytes || 0);
     if (bytes.length > 1024 * 1024) throw new Error('disassembly request exceeds 1 MiB');
     const buf = M._malloc(Math.max(1, bytes.length));
@@ -72,7 +74,11 @@ self.onmessage = async (event) => {
           } else if (msg.architecture === 'riscv64') {
             instructions.push(globalThis.HexRiscv64CapstoneStructured.parseInstruction(M, handle, p, {
               address:BigInt(msg.address) + BigInt(consumed),
-              mode:'rv64imc',
+              mode:msg.riscvIsa?.compressedInstructions === false ? 'rv64im' : 'rv64imc',
+              isaIdentity:msg.riscvIsa?.canonical ?? null,
+              isaEvidence:msg.riscvIsa?.evidence ?? null,
+              instructionAlignment:msg.riscvIsa?.instructionAlignment ?? null,
+              compressedInstructions:msg.riscvIsa?.compressedInstructions ?? null,
             }));
           } else {
             instructions.push({

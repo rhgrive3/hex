@@ -76,6 +76,7 @@ export function describeBinaryImage(image, options = {}) {
   if (image.abi != null) formatMetadata.abi = image.abi;
   if (image.entrypoint != null) formatMetadata.entrypoint = image.entrypoint;
   if (image.imageBase != null) formatMetadata.imageBase = image.imageBase;
+  if (image.metadata?.riscvIsa != null) formatMetadata.riscvIsa = image.metadata.riscvIsa;
   const productDescriptor = {
     formatId: image.format || 'raw',
     regions,

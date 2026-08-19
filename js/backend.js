@@ -21,6 +21,7 @@ import {
 } from './targets/architecture/x86_64/semantic-function-contract.js';
 import { RISCV64_DECODER_SEMANTIC_VERSION } from './targets/architecture/riscv64/decoded-instruction.js';
 import { RISCV64_MACHINE_EFFECTS_SEMANTIC_VERSION } from './targets/architecture/riscv64/effects/common.js';
+import { resolveRiscvIsaProfile } from './binary/riscv-isa.js';
 
 /*
  * Per-architecture inputs to the shared semantic-function route.
@@ -478,6 +479,9 @@ export class Backend {
         decoderSemanticVersion:target.decoderSemanticVersion,
         analysisVersion:target.analysisVersion,
         functionPrototype:options.functionPrototype ?? null,
+        dataEndianness:String(options.dataEndianness || 'unknown'),
+        instructionEndianness:String(options.instructionEndianness || 'unknown'),
+        ...(options.riscvIsa == null ? {} : { riscvIsa:options.riscvIsa }),
       },
       keyExtras:{
         decoderContract:target.decoderContract,
@@ -505,8 +509,19 @@ export class Backend {
     const target = semanticFunctionTarget(architecture);
     const abiId = String(options.abiId || '');
     if (!target.abiIds.includes(abiId)) throw new TypeError(`semantic-function-${architecture}-abi-required`);
+    const sliceIndex = Number(options.sliceIndex ?? 0);
+    const formatMetadata = this.platformInfo?.productDescriptor?.formatMetadata
+      || this.platformInfo?.slices?.[sliceIndex]?.info?.descriptor?.formatMetadata
+      || {};
+    const dataEndianness = String(options.dataEndianness || formatMetadata.endian || this.platformInfo?.capability?.endianness || 'unknown');
+    const instructionEndianness = String(options.instructionEndianness || (architecture === 'arm64' ? 'little' : dataEndianness));
+    const riscvIsa = architecture === 'riscv64'
+      ? (options.riscvIsa || resolveRiscvIsaProfile(formatMetadata.riscvIsa, address, { allowAssumed:true }))
+      : null;
     const binaryId = options.binaryId ?? await this.ensureBinaryId({ signal:options.signal, onProgress:options.onIdentityProgress });
-    const descriptor = this._semanticFunctionArtifactDescriptor({ ...options, architecture, binaryId, address, length, abiId });
+    const descriptor = this._semanticFunctionArtifactDescriptor({
+      ...options, architecture, binaryId, address, length, abiId, dataEndianness, instructionEndianness, riscvIsa,
+    });
     const uiEpoch = this.gen, transportEpoch = this.transportEpoch, file = this.file;
     const result = await this._artifactRuntime().request({
       descriptor,
@@ -521,7 +536,7 @@ export class Backend {
         && payload?.abiId === abiId,
       creation:{ backend:'Backend', route:'phase5-shadow-v2', abiId, address:address.toString(), length },
       produce:async ({ signal }) => {
-        const decoded = await this.disassembleAt(address, { architecture, length, signal });
+        const decoded = await this.disassembleAt(address, { architecture, length, signal, riscvIsa });
         if (!decoded?.supported || !decoded?.found || !decoded.instructions?.length) throw new Error(`semantic-function-${architecture}-decode-unavailable`);
         const decodedWithOrigins = decoded.instructions.map((instruction) => {
           const instructionAddress = BigInt(instruction.address);
@@ -548,6 +563,14 @@ export class Backend {
             instructions:decodedWithOrigins,
             name:options.name,
             functionPrototype:options.functionPrototype ?? null,
+            dataEndianness,
+            instructionEndianness,
+            ...(riscvIsa == null ? {} : { architectureProfile:riscvIsa }),
+            machineEffectsContext:{
+              dataEndianness,
+              instructionEndianness,
+              ...(riscvIsa?.instructionAlignment == null ? {} : { instructionAlignment:Number(riscvIsa.instructionAlignment) }),
+            },
           },
         }), signal);
       },
@@ -657,12 +680,17 @@ export class Backend {
     const read = await awaitCancellableProducer(this._callTo('platform', 'readAt', { addr, len: Math.min(1024 * 1024, options.length || 4096), text: false }), options.signal ?? null);
     if (uiEpoch !== this.gen) throw new StaleRequestError();
     if (!read?.found) return { supported: true, architecture, instructions: [], found: false };
-    const result = await awaitCancellableProducer(this._disassembleBytes(read.bytes, addr, architecture, uiEpoch), options.signal ?? null);
+    const formatMetadata = this.platformInfo?.productDescriptor?.formatMetadata || {};
+    const riscvIsa = architecture === 'riscv64'
+      ? (options.riscvIsa || resolveRiscvIsaProfile(formatMetadata.riscvIsa, addr, { allowAssumed:true }))
+      : null;
+    if (riscvIsa?.code === false) return { supported:true, architecture, found:true, instructions:[], region:read.region ?? null, fileOffset:read.fileOffset ?? null, riscvIsa };
+    const result = await awaitCancellableProducer(this._disassembleBytes(read.bytes, addr, architecture, uiEpoch, { riscvIsa }), options.signal ?? null);
     if (uiEpoch !== this.gen) throw new StaleRequestError();
-    return { supported: true, architecture, found: true, region:read.region ?? null, fileOffset:read.fileOffset ?? null, ...result };
+    return { supported: true, architecture, found: true, region:read.region ?? null, fileOffset:read.fileOffset ?? null, ...(riscvIsa == null ? {} : { riscvIsa }), ...result };
   }
 
-  _disassembleBytes(bytes, address, architecture, uiEpoch = this.gen) {
+  _disassembleBytes(bytes, address, architecture, uiEpoch = this.gen, decodeContext = {}) {
     if (!this._disasmWorker) {
       this._disasmWorker = new Worker(new URL('./platform/capstone-disasm-worker.js', import.meta.url));
       this._disasmWorker.onmessage = (event) => {
@@ -677,7 +705,7 @@ export class Backend {
     const copy = bytes instanceof Uint8Array ? bytes.slice() : new Uint8Array(bytes);
     const promise = new Promise((resolve, reject) => {
       this._disasmPending.set(id, { resolve, reject, uiEpoch });
-      this._disasmWorker.postMessage({ id, architecture, address, bytes: copy }, [copy.buffer]);
+      this._disasmWorker.postMessage({ id, architecture, address, bytes: copy, riscvIsa:decodeContext.riscvIsa ?? null }, [copy.buffer]);
     });
     promise.cancel = () => {
       const pending = this._disasmPending.get(id);
