@@ -223,9 +223,14 @@ function populateLegacyArguments(projected) {
 
 function addComparisonCarriers(ir, values, valuesById) {
   const flagWriteInstructionIds = new Set();
+  const addWithCarryInstructionIds = new Set();
   for (const node of ir.nodes) {
-    if (node.kind !== 'state-write' || node.variable?.physicalIdentity?.kind !== 'flag') continue;
-    for (const id of sourceInstructionIds(node.origin)) flagWriteInstructionIds.add(id);
+    if (node.kind === 'state-write' && node.variable?.physicalIdentity?.kind === 'flag') {
+      for (const id of sourceInstructionIds(node.origin)) flagWriteInstructionIds.add(id);
+    }
+    if (node.kind === 'intrinsic' && node.operator === 'add-with-carry') {
+      for (const id of sourceInstructionIds(node.origin)) addWithCarryInstructionIds.add(id);
+    }
   }
 
   const byNodeId = new Map();
@@ -236,7 +241,8 @@ function addComparisonCarriers(ir, values, valuesById) {
       continue;
     }
     const flagProducingArithmetic = sameInstruction(node, flagWriteInstructionIds)
-      && ((node.kind === 'intrinsic' && node.operator === 'add-with-carry') || node.kind === 'binary');
+      && ((node.kind === 'intrinsic' && node.operator === 'add-with-carry')
+        || (node.kind === 'binary' && !sameInstruction(node, addWithCarryInstructionIds)));
     if (!flagProducingArithmetic) continue;
     const value = {
       id: values.length,
