@@ -1,419 +1,103 @@
-/*
- * ir.js — public facade for the Semantic IR engine.
- *
- * ir-core.js contains lifting / SSA / Memory-SSA. This facade is the semantic
- * boundary seen by the rest of Hex: it supplies CFG address resolution,
- * conservative memory safety, pointer provenance, value/range queries and
- * canonical alias checks. Consumers must not reinterpret ARM64 to recover these
- * facts a second time.
- */
+export * from './ir-base.js';
 
-export * from './ir-core.js';
+import { OP, COND } from './ir-core.js';
+import { normalizeIntegerValue, normalizeRangeDomain } from './range-domain.js';
+import { valueRange } from './ir-base.js';
 
-import {
-  buildIR as buildCoreIR,
-  readModifyWrite as coreReadModifyWrite,
-  getSemanticMigrationMode,
-  OP, MK, VK, COND, pointerProvenance,
-} from './ir-core.js';
-import { mergeRangeDomain, normalizeIntegerValue, normalizeRangeDomain, rangeWithDomain } from './range-domain.js';
-
-function inferredRowResolver(model) {
-  const byAddress = new Map();
-  for (const insn of (model && model.instructions) || []) {
-    if (insn && insn.address != null && insn.row != null) {
-      byAddress.set(insn.address.toString(), insn.row);
-    }
-  }
-  if (!byAddress.size) return () => null;
-  return (addr) => {
-    if (addr == null) return null;
-    const row = byAddress.get(addr.toString());
-    return row == null ? null : row;
-  };
-}
-
-function normalizedOptions(model, opts) {
-  const o = opts ? { ...opts } : {};
-  if (!o.cfg && !o.rowOfAddress) o.rowOfAddress = inferredRowResolver(model);
-  return o;
-}
-
-function blockReachability(ir) {
-  if (ir._canReachBlock) return ir._canReachBlock;
-  const cache = new Map();
-  const canReach = (from, to) => {
-    if (from == null || to == null || from < 0 || to < 0) return false;
-    if (from === to) return true;
-    const key = from + '>' + to;
-    if (cache.has(key)) return cache.get(key);
-    const seen = new Set([from]);
-    const work = [from];
-    let yes = false;
-    while (work.length && !yes) {
-      const b = work.pop();
-      for (const s of (ir.blocks[b] && ir.blocks[b].succ) || []) {
-        if (s === to) { yes = true; break; }
-        if (!seen.has(s)) { seen.add(s); work.push(s); }
+function projectedConstant(value, active = new Set()) {
+  if (!value || active.has(value)) return null;
+  const bits = Math.max(1, Math.min(64, Number(value.bits || 64)));
+  if (value.const != null) return BigInt.asUintN(bits, BigInt(value.const));
+  const def = value.def;
+  if (!def || !Array.isArray(def.args)) return null;
+  active.add(value);
+  const input = (index) => projectedConstant(def.args[index]?.value, active);
+  let result = null;
+  if (def.op === OP.MOV && def.args.length === 1) {
+    const v = input(0);
+    if (v != null) result = BigInt.asUintN(bits, v);
+  } else if (def.op === OP.UN && (def.sub === 'sext' || def.extra?.castKind === 'sext') && def.args.length === 1) {
+    const v = input(0);
+    const sourceBits = Math.max(1, Math.min(64, Number(def.extra?.sourceBits || def.args[0]?.bits || def.args[0]?.value?.bits || bits)));
+    if (v != null) result = BigInt.asUintN(bits, BigInt.asIntN(sourceBits, v));
+  } else if (def.op === OP.BIN && ['shl','lsl','lshr','lsr','ashr','asr','ror'].includes(def.sub) && def.args.length >= 2) {
+    const lhs = input(0);
+    const rhs = input(1);
+    if (lhs != null && rhs != null) {
+      const width = BigInt(bits);
+      const amount = BigInt(rhs);
+      if (amount >= 0n && amount < width) {
+        const v = BigInt.asUintN(bits, lhs);
+        if (def.sub === 'shl' || def.sub === 'lsl') result = BigInt.asUintN(bits, v << amount);
+        else if (def.sub === 'lshr' || def.sub === 'lsr') result = v >> amount;
+        else if (def.sub === 'ashr' || def.sub === 'asr') result = BigInt.asUintN(bits, BigInt.asIntN(bits, v) >> amount);
+        else if (amount === 0n) result = v;
+        else result = BigInt.asUintN(bits, (v >> amount) | (v << (width - amount)));
       }
     }
-    cache.set(key, yes);
-    return yes;
-  };
-  ir._canReachBlock = canReach;
-  return canReach;
-}
-
-function orderedBefore(a, b, canReach) {
-  if (!a || !b) return false;
-  if (a.block === b.block) return (a.row == null ? -1 : a.row) < (b.row == null ? -1 : b.row);
-  return canReach(a.block, b.block);
-}
-
-function unknownStores(ir) {
-  if (ir._unknownStoreBarriers) return ir._unknownStoreBarriers;
-  const list = (ir.instructions || []).filter((inst) =>
-    inst.op === OP.STORE && (!inst.loc || inst.loc.kind === MK.UNKNOWN));
-  ir._unknownStoreBarriers = list;
-  return list;
-}
-
-function unknownStoreBetween(ir, from, to) {
-  const barriers = unknownStores(ir);
-  if (!barriers.length || !from || !to) return null;
-  const canReach = blockReachability(ir);
-  for (const candidate of barriers) {
-    if (orderedBefore(from, candidate, canReach) && orderedBefore(candidate, to, canReach)) return candidate;
   }
-  return null;
+  active.delete(value);
+  return result;
 }
 
-/** A legacy proof is unsafe when an unknown indexed store can occur in-between. */
-export function hasUnknownStoreBarrier(ir, from, to) {
-  return !!unknownStoreBetween(ir, from, to);
-}
-
-/**
- * STORE(MK.UNKNOWN) is a may-alias write to every non-stack object/global state.
- * Never let a concrete reaching-store proof pass through it.
- */
-function hardenUnknownStores(ir) {
-  if (!ir || !ir.instructions) return ir;
-  const barriers = unknownStores(ir);
-  if (!barriers.length) {
-    ir.memorySafety = { unknownStores: 0, blockedLoads: 0 };
-    return ir;
-  }
-
-  let blocked = 0;
-  for (const load of ir.instructions) {
-    if (load.op !== OP.LOAD) continue;
-    // Core Memory-SSA may already have materialized the unknown indexed store as
-    // the reaching clobber. Count that blocked proof instead of requiring a stale
-    // reachingStore to still be attached (#358). This keeps telemetry aligned
-    // with the actual proof state without re-running alias inference.
-    if (load.memUse?.kind === 'clobber' && load.memUse.unknownAlias) {
-      load.unknownAliasBarrier = load.memUse.inst || null;
-      blocked++;
-      continue;
-    }
-    if (!load.reachingStore) continue;
-    const barrier = unknownStoreBetween(ir, load.reachingStore, load);
-    if (!barrier) continue;
-    load.reachingStore = null;
-    load.memUse = {
-      kind: 'clobber',
-      key: load.loc ? load.loc.key : 'unknown',
-      inst: barrier,
-      block: barrier.block,
-      unknownAlias: true,
-    };
-    load.unknownAliasBarrier = barrier;
-    blocked++;
-  }
-  ir.memorySafety = { unknownStores: barriers.length, blockedLoads: blocked };
-  return ir;
-}
-
-/** Reclassify addresses proved absolute only after constant propagation. */
-function promoteResolvedGlobals(ir) {
-  if (!ir || !ir.instructions) return ir;
-  const globals = new Map();
-  for (const inst of ir.instructions) {
-    if ((inst.op !== OP.LOAD && inst.op !== OP.STORE) || !inst.addr) continue;
-    const a = inst.addr;
-    if (a.stack || a.index || !a.base || a.base.const == null || a.disp == null) continue;
-
-    const address = a.base.const + a.disp;
-    const size = (inst.loc && inst.loc.size) || a.size || (inst.extra && inst.extra.size) || null;
-    // A global address identifies the storage root, not an access extent. Keep
-    // per-access width in the canonical location key so a 32-bit access cannot
-    // overwrite the size carried by an 8-bit/64-bit access at the same address.
-    const extent = size == null ? 'unknown' : String(size);
-    const key = 'global:' + address.toString(16) + ':size:' + extent;
-    let loc = globals.get(key);
-    if (!loc) {
-      loc = { key, kind: MK.GLOBAL, address, size };
-      globals.set(key, loc);
-    }
-
-    const oldKey = inst.loc && inst.loc.key;
-    inst.loc = loc;
-    inst.globalAddress = address;
-    if (inst.memUse && oldKey != null && inst.memUse.key === oldKey) inst.memUse.key = key;
-    if (inst.memDef && oldKey != null && inst.memDef.key === oldKey) inst.memDef.key = key;
-  }
-  if (ir.locations && ir.locations.set) {
-    for (const [key, loc] of globals) ir.locations.set(key, loc);
-  }
-  delete ir._unknownStoreBarriers;
-  return ir;
-}
-
-/* ── Pointer provenance ─────────────────────────────────────── */
-
-function shiftedConst(arg, fallbackBits = null) {
-  if (!arg || !arg.value || arg.value.const == null) return null;
+function shiftedConstant(arg, fallbackBits = null) {
+  if (!arg || !arg.value) return null;
   const bits = Math.max(1, Math.min(64, Number(fallbackBits || arg.value.bits || 64)));
   const width = BigInt(bits);
-  let v = BigInt.asUintN(bits, BigInt(arg.value.const));
-  const s = arg.shift;
-  if (!s) return v;
-  const n = BigInt(s.amount || 0);
-  if (n < 0n || n >= width) return null;
-  if (s.op === 'lsl') return BigInt.asUintN(bits, v << n);
-  if (s.op === 'lsr') return v >> n;
-  if (s.op === 'asr') return BigInt.asUintN(bits, BigInt.asIntN(bits, v) >> n);
-  if (s.op === 'ror') {
-    if (n === 0n) return v;
-    return BigInt.asUintN(bits, (v >> n) | (v << (width - n)));
+  const exact = projectedConstant(arg.value);
+  if (exact == null) return null;
+  let value = BigInt.asUintN(bits, exact);
+  const shift = arg.shift;
+  if (!shift) return value;
+  const amount = BigInt(shift.amount || 0);
+  if (amount < 0n || amount >= width) return null;
+  if (shift.op === 'lsl') return BigInt.asUintN(bits, value << amount);
+  if (shift.op === 'lsr') return value >> amount;
+  if (shift.op === 'asr') return BigInt.asUintN(bits, BigInt.asIntN(bits, value) >> amount);
+  if (shift.op === 'ror') {
+    if (amount === 0n) return value;
+    return BigInt.asUintN(bits, (value >> amount) | (value << (width - amount)));
   }
   return null;
-}
-
-function effectiveLocation(loc) {
-  if (!loc) return null;
-  if (loc.kind === MK.UNKNOWN) return { kind: MK.UNKNOWN, key: 'unknown', size: loc.size || null, must: false };
-  if (loc.kind === MK.STACK) return { kind: MK.STACK, root: 'stack', disp: loc.disp || 0n, size: loc.size || null, must: true };
-  if (loc.kind === MK.GLOBAL) return { kind: MK.GLOBAL, root: 'global', address: loc.address, size: loc.size || null, must: true };
-  if (loc.kind !== MK.FIELD || !loc.base || loc.disp == null) return { kind: loc.kind, must: false, size: loc.size || null };
-
-  const p = pointerProvenance(loc.base);
-  if (!p || p.must === false || p.kind === 'phi') {
-    return { kind: MK.FIELD, root: p ? p.root : null, disp: loc.disp, size: loc.size || null, must: false };
-  }
-  const off = (p.offset || 0n) + loc.disp;
-  if (p.kind === 'stack') return { kind: MK.STACK, root: 'stack', disp: off, size: loc.size || null, must: true };
-  if (p.kind === 'global' && p.address != null) {
-    return { kind: MK.GLOBAL, root: 'global', address: p.address + off, size: loc.size || null, must: true };
-  }
-  return { kind: MK.FIELD, root: p.root, disp: off, size: loc.size || null, must: p.must !== false, provenance: p };
-}
-
-function sizeCompatible(a, b) {
-  if (a.size == null || b.size == null) return true;
-  return a.size === b.size;
-}
-
-/** True only when the two locations are proved identical. */
-export function mustAlias(a, b) {
-  if (!a || !b || a.kind === MK.UNKNOWN || b.kind === MK.UNKNOWN) return false;
-  const x = effectiveLocation(a), y = effectiveLocation(b);
-  if (!x || !y || x.must === false || y.must === false || x.kind !== y.kind) return false;
-  if (!sizeCompatible(x, y)) return false;
-  if (x.kind === MK.STACK) return x.disp != null && x.disp === y.disp;
-  if (x.kind === MK.GLOBAL) return x.address != null && x.address === y.address;
-  return x.kind === MK.FIELD && x.root != null && x.root === y.root && x.disp != null && x.disp === y.disp;
-}
-
-/** Conservative may-alias query that understands pointer+constant provenance. */
-export function mayAliasProvenance(a, b) {
-  if (!a || !b) return true;
-  if (mustAlias(a, b)) return true;
-  const x = effectiveLocation(a), y = effectiveLocation(b);
-  if (!x || !y || x.kind === MK.UNKNOWN || y.kind === MK.UNKNOWN) return true;
-  if (x.kind !== y.kind) {
-    if (x.kind === MK.FIELD || y.kind === MK.FIELD) return true;
-    return false;
-  }
-  if (x.kind === MK.STACK || x.kind === MK.GLOBAL) {
-    const pa = x.kind === MK.STACK ? x.disp : x.address;
-    const pb = y.kind === MK.STACK ? y.disp : y.address;
-    if (pa == null || pb == null) return true;
-    const sa = BigInt(x.size || 8), sb = BigInt(y.size || 8);
-    return !(pa + sa <= pb || pb + sb <= pa);
-  }
-  if (x.kind === MK.FIELD && x.root && y.root && x.root === y.root && x.disp != null && y.disp != null) {
-    const sa = BigInt(x.size || 8), sb = BigInt(y.size || 8);
-    return !(x.disp + sa <= y.disp || y.disp + sb <= x.disp);
-  }
-  return true;
-}
-
-/* ── Value range / signedness / nullability ─────────────────── */
-
-function typeBounds(bits, signed) {
-  const n = BigInt(Math.max(1, Math.min(64, bits || 64)));
-  if (signed === true) return { min: -(1n << (n - 1n)), max: (1n << (n - 1n)) - 1n };
-  return { min: 0n, max: (1n << n) - 1n };
-}
-
-function mergeRange(a, b) {
-  if (!a) return b ? { ...b } : null;
-  if (!b) return { ...a };
-  return mergeRangeDomain(a, b, a.bits || b.bits, a.signed);
-}
-
-function rangeEq(a, b) {
-  return !!a === !!b && (!a || (
-    a.min === b.min && a.max === b.max && Number(a.bits || 64) === Number(b.bits || 64) && a.signed === b.signed
-  ));
-}
-
-function argumentRange(arg, bits = null, signed = undefined) {
-  const range = arg && arg.value ? arg.value.range : null;
-  if (!range || bits == null) return range;
-  return normalizeRangeDomain(range, bits, signed);
-}
-
-function annotateValueRanges(ir) {
-  if (!ir || !ir.values) return ir;
-  for (const v of ir.values) {
-    if (v.const != null) {
-      const bits = v.bits || 64;
-      const value = normalizeIntegerValue(v.const, bits, v.signed);
-      v.range = rangeWithDomain(value, value, bits, v.signed);
-    }
-  }
-
-  const maxRounds = 6;
-  for (let round = 0; round < maxRounds; round++) {
-    let changed = false;
-    for (const inst of ir.instructions || []) {
-      if (!inst.dst || inst.dst.const != null) continue;
-      const bits = inst.dst.bits || 64;
-      let next = null;
-      if (inst.op === OP.MOV && inst.args[0]) next = argumentRange(inst.args[0], bits, inst.dst.signed);
-      else if (inst.op === OP.UN && inst.args[0] && /^(uxt8|uxt16|uxt32)$/.test(inst.sub || '')) {
-        const b = Number((inst.sub.match(/\d+/) || ['64'])[0]);
-        next = rangeWithDomain(0n, (1n << BigInt(b)) - 1n, bits, false);
-      } else if (inst.op === OP.BIN && inst.args.length >= 2) {
-        const a = argumentRange(inst.args[0], bits, inst.dst.signed);
-        const b = argumentRange(inst.args[1], bits, inst.dst.signed);
-        const ac = shiftedConst(inst.args[0], bits);
-        const bc = shiftedConst(inst.args[1], bits);
-        const bounds = typeBounds(bits, inst.dst.signed);
-        if (inst.sub === 'and') {
-          const rawMask = bc != null ? bc : ac;
-          if (rawMask != null) {
-            const mask = BigInt.asUintN(bits, rawMask);
-            const signBit = 1n << BigInt(bits - 1);
-            // A signed result can be negative whenever the mask preserves the
-            // sign bit. The contiguous range domain cannot represent {0,MIN}
-            // exactly, so retain soundness with the full signed interval.
-            if (inst.dst.signed === true && (mask & signBit) !== 0n) {
-              next = rangeWithDomain(bounds.min, bounds.max, bits, true);
-            } else {
-              next = { min: 0n, max: mask < bounds.max ? mask : bounds.max };
-            }
-          }
-        } else if ((inst.sub === 'lshr' || inst.sub === 'ashr') && a && bc != null && bc >= 0n && bc < BigInt(bits)) {
-          if (inst.sub === 'lshr' && a.min >= 0n) next = { min: a.min >> bc, max: a.max >> bc };
-        } else if (inst.sub === 'shl' && a && bc != null && bc >= 0n && bc < BigInt(bits)) {
-          const min = a.min << bc, max = a.max << bc;
-          if (min >= bounds.min && max <= bounds.max) next = { min, max };
-        } else if (inst.sub === 'add') {
-          if (a && bc != null) {
-            const min = a.min + bc, max = a.max + bc;
-            if (min >= bounds.min && max <= bounds.max) next = { min, max };
-          } else if (b && ac != null) {
-            const min = b.min + ac, max = b.max + ac;
-            if (min >= bounds.min && max <= bounds.max) next = { min, max };
-          }
-        } else if (inst.sub === 'sub' && a && bc != null) {
-          const min = a.min - bc, max = a.max - bc;
-          if (min >= bounds.min && max <= bounds.max) next = { min, max };
-        }
-      } else if (inst.op === OP.PHI && inst.args.length) {
-        let merged = null, complete = true;
-        for (const a of inst.args) {
-          const r = argumentRange(a, bits, inst.dst.signed);
-          if (!r) { complete = false; break; }
-          merged = mergeRange(merged, r);
-        }
-        if (complete) next = merged;
-      } else if (inst.op === OP.SEL && inst.args.length >= 2) {
-        const a = argumentRange(inst.args[0], bits, inst.dst.signed), b = argumentRange(inst.args[1], bits, inst.dst.signed);
-        if (a && b) next = mergeRange(a, b);
-      }
-      if (next && next.bits == null) next = rangeWithDomain(next.min, next.max, bits, inst.dst.signed);
-      if (next && !rangeEq(inst.dst.range, next)) { inst.dst.range = { ...next }; changed = true; }
-    }
-    if (!changed) break;
-  }
-  return ir;
-}
-
-export function valueRange(value) {
-  if (!value) return null;
-  if (value.const != null) {
-    const n = normalizeIntegerValue(value.const, value.bits || 64, value.signed);
-    return { min:n, max:n };
-  }
-  return value.range ? { min: value.range.min, max: value.range.max } : null;
-}
-
-function nullabilityFromZero(zero, explicit) {
-  if (explicit === false) return 'non-null';
-  if (explicit === true) return 'maybe-null';
-  if (zero === 'zero') return 'null';
-  if (zero === 'non-zero') return 'non-null';
-  return 'unknown';
-}
-
-export function valueInfo(value) {
-  if (!value) return {
-    constant: null, min: null, max: null, signedness: 'unknown', zero: 'unknown', nullability: 'unknown', provenance: null,
-  };
-  const range = valueRange(value);
-  let zero = 'unknown';
-  if (value.const != null) zero = value.const === 0n ? 'zero' : 'non-zero';
-  else if (range && range.min === 0n && range.max === 0n) zero = 'zero';
-  else if (range && (range.min > 0n || range.max < 0n)) zero = 'non-zero';
-  return {
-    constant: value.const == null ? null : value.const,
-    min: range ? range.min : null,
-    max: range ? range.max : null,
-    signedness: value.signed === true ? 'signed' : value.signed === false ? 'unsigned' : 'unknown',
-    zero,
-    nullability: nullabilityFromZero(zero, value.nullable),
-    provenance: pointerProvenance(value),
-  };
 }
 
 function comparisonOfBranch(branch) {
   if (!branch || branch.op !== OP.CBR) return null;
-  const kind = branch.extra && branch.extra.kind;
-  if ((kind === 'cbz' || kind === 'cbnz') && branch.args[0] && branch.args[0].value) {
-    return { lhs: branch.args[0].value, rhs: 0n, cond: kind === 'cbz' ? 'eq' : 'ne', cmp: null };
+  const kind = branch.extra?.kind;
+  if ((kind === 'cbz' || kind === 'cbnz') && branch.args?.[0]?.value) {
+    return {
+      lhs:branch.args[0].value,
+      rhs:0n,
+      cond:kind === 'cbz' ? 'eq' : 'ne',
+      cmp:null,
+      bits:branch.args[0].bits || branch.args[0].value.bits || 64,
+    };
   }
-  const flags = branch.args[0] && branch.args[0].value;
-  const cmp = flags && flags.def && flags.def.op === OP.CMP ? flags.def : null;
-  if (!cmp || !cmp.args[0] || !cmp.args[0].value || !cmp.args[1] || !cmp.args[1].value) return null;
-  const rhs = shiftedConst(cmp.args[1], cmp.args[0].value.bits || 64);
+  const flags = branch.args?.[0]?.value;
+  const cmp = flags?.def?.op === OP.CMP ? flags.def : null;
+  if (!cmp?.args?.[0]?.value || !cmp.args?.[1]?.value) return null;
+  const bits = cmp.args[0].bits || cmp.extra?.bits || cmp.args[0].value.bits || 64;
+  const rhs = shiftedConstant(cmp.args[1], bits);
   if (rhs == null) return null;
-  return { lhs: cmp.args[0].value, rhs, cond: branch.cond || null, cmp };
+  return { lhs:cmp.args[0].value, rhs, cond:branch.cond || null, cmp, bits };
 }
 
 function invertRel(op) {
-  return ({ '==': '!=', '!=': '==', '<': '>=', '<=': '>', '>': '<=', '>=': '<' })[op] || null;
+  return ({ '==':'!=', '!=':'==', '<':'>=', '<=':'>', '>':'<=', '>=':'<' })[op] || null;
 }
 
-function constrainedRange(value, op, constant, signed) {
-  const bits = value && value.bits || 64;
+function typeBounds(bits, signed) {
+  const n = BigInt(Math.max(1, Math.min(64, bits || 64)));
+  if (signed === true) return { min:-(1n << (n - 1n)), max:(1n << (n - 1n)) - 1n };
+  return { min:0n, max:(1n << n) - 1n };
+}
+
+function constrainedRange(value, op, constant, signed, compareBits = null) {
+  const bits = compareBits || value?.bits || 64;
   const rhs = normalizeIntegerValue(constant, bits, signed);
   const bounds = typeBounds(bits, signed);
-  let min = bounds.min, max = bounds.max;
+  let min = bounds.min;
+  let max = bounds.max;
   if (op === '==') min = max = rhs;
   else if (op === '<') max = rhs - 1n;
   else if (op === '<=') max = rhs;
@@ -421,46 +105,59 @@ function constrainedRange(value, op, constant, signed) {
   else if (op === '>=') min = rhs;
   else return null;
   const existing = valueRange(value);
-  if (existing) { if (existing.min > min) min = existing.min; if (existing.max < max) max = existing.max; }
-  if (min > max) return { min, max, impossible: true };
+  const comparableExisting = existing
+    ? normalizeRangeDomain(existing, bits, signed)
+    : null;
+  if (comparableExisting) {
+    if (comparableExisting.min > min) min = comparableExisting.min;
+    if (comparableExisting.max < max) max = comparableExisting.max;
+  }
+  if (min > max) return { min, max, impossible:true };
   return { min, max };
 }
 
 function zeroFactOnEdge(op, constant) {
   if (constant !== 0n) return 'unknown';
   if (op === '==') return 'zero';
-  if (op === '!=') return 'non-zero';
-  if (op === '>') return 'non-zero';
+  if (op === '!=' || op === '>') return 'non-zero';
   return 'unknown';
 }
 
-/** Range/nullability that is true on one branch edge. Does not mutate SSA globally. */
+function nullabilityFromZero(zero) {
+  if (zero === 'zero') return 'null';
+  if (zero === 'non-zero') return 'non-null';
+  return 'unknown';
+}
+
 export function rangeOnBranch(ir, branch, taken = true) {
   void ir;
-  const c = comparisonOfBranch(branch);
-  if (!c || !c.cond) return null;
-  const info = c.cond === 'eq' || c.cond === 'ne' ? { op: c.cond === 'eq' ? '==' : '!=', signed: null } : COND[c.cond];
-  if (!info || !info.op) return null;
+  const comparison = comparisonOfBranch(branch);
+  if (!comparison?.cond) return null;
+  const info = comparison.cond === 'eq' || comparison.cond === 'ne'
+    ? { op:comparison.cond === 'eq' ? '==' : '!=', signed:null }
+    : COND[comparison.cond];
+  if (!info?.op) return null;
   const relation = taken ? info.op : invertRel(info.op);
-  const signedForBounds = info.signed == null ? (c.lhs.signed === true) : info.signed;
+  const signedForBounds = info.signed == null ? comparison.lhs.signed === true : info.signed;
   const signedness = info.signed === true ? 'signed'
     : info.signed === false ? 'unsigned'
-      : c.lhs.signed === true ? 'signed'
-        : c.lhs.signed === false ? 'unsigned' : 'unknown';
-  const rhs = normalizeIntegerValue(c.rhs, c.lhs.bits || 64, signedForBounds);
-  const range = constrainedRange(c.lhs, relation, rhs, signedForBounds);
+      : comparison.lhs.signed === true ? 'signed'
+        : comparison.lhs.signed === false ? 'unsigned' : 'unknown';
+  const compareBits = comparison.bits || comparison.lhs.bits || 64;
+  const rhs = normalizeIntegerValue(comparison.rhs, compareBits, signedForBounds);
+  const range = constrainedRange(comparison.lhs, relation, rhs, signedForBounds, compareBits);
   const zero = zeroFactOnEdge(relation, rhs);
   return {
-    value: c.lhs,
-    condition: relation,
-    constant: rhs,
+    value:comparison.lhs,
+    condition:relation,
+    constant:rhs,
     signedness,
     range,
     zero,
-    nullability: nullabilityFromZero(zero, null),
-    taken: !!taken,
+    nullability:nullabilityFromZero(zero),
+    taken:!!taken,
     branch,
-    compare: c.cmp,
+    compare:comparison.cmp,
   };
 }
 
@@ -472,152 +169,8 @@ export function branchConstraints(ir) {
     if (inst.op !== OP.CBR) continue;
     const yes = rangeOnBranch(ir, inst, true);
     const no = rangeOnBranch(ir, inst, false);
-    if (yes || no) out.push({ branch: inst, taken: yes, fallthrough: no });
+    if (yes || no) out.push({ branch:inst, taken:yes, fallthrough:no });
   }
   ir._branchConstraints = out;
-  return out;
-}
-
-/* ── Stable value origin ────────────────────────────────────── */
-
-function originIdentity(o) {
-  if (!o) return null;
-  if (o.kind === 'field' || o.kind === 'stack') return o.kind + ':' + (o.location && o.location.key || '');
-  if (o.kind === 'global') return 'global:' + String(o.address);
-  if (o.kind === 'argument') return 'arg:' + o.reg;
-  if (o.kind === 'constant') return 'const:' + String(o.value);
-  if (o.kind === 'call') return 'call:' + String(o.instructionId);
-  return null;
-}
-
-const originMemo = new WeakMap();
-export function originOf(value, active) {
-  if (!value) return null;
-  if (originMemo.has(value)) return originMemo.get(value);
-  const visiting = active || new Set();
-  if (visiting.has(value)) return null;
-  visiting.add(value);
-  const def = value.def;
-  let out = null;
-  if (def && def.op === OP.LOAD && def.loc) {
-    if (def.loc.kind === MK.GLOBAL) out = { kind: 'global', address: def.loc.address, location: def.loc, row: def.row, addressOfInstruction: def.address };
-    else out = { kind: def.loc.kind === MK.STACK ? 'stack' : 'field', location: def.loc, row: def.row, address: def.address };
-  } else if (def && def.op === OP.CALL) {
-    out = { kind: 'call', target: def.extra && def.extra.target != null ? def.extra.target : null,
-      instructionId: def.id, row: def.row, address: def.address };
-  } else if (def && (def.op === OP.MOV || (def.op === OP.UN && /^(sxt|uxt|fmov)/.test(def.sub || ''))) && def.args[0]) {
-    out = originOf(def.args[0].value, visiting);
-  } else if (def && def.op === OP.PHI && def.args && def.args.length) {
-    const os = def.args.map((a) => originOf(a && a.value, visiting));
-    const keys = os.map(originIdentity);
-    if (keys[0] && keys.every((k) => k === keys[0])) out = os[0];
-  } else if (value.kind === VK.ARG && /^x[0-7]$/.test(String(value.reg || ''))) {
-    out = { kind: 'argument', reg: value.reg };
-  } else if (value.const != null) {
-    out = { kind: 'constant', value: value.const };
-  } else if (def) {
-    out = { kind: 'computed', op: def.op, sub: def.sub || null, row: def.row, address: def.address };
-  }
-  visiting.delete(value);
-  originMemo.set(value, out);
-  return out;
-}
-
-/** Build Semantic IR with all public safety/value annotations. */
-export function buildIR(model, opts) {
-  const ir = buildCoreIR(model, normalizedOptions(model, opts));
-  if (!ir) return null;
-  promoteResolvedGlobals(ir);
-  hardenUnknownStores(ir);
-  annotateValueRanges(ir);
-  branchConstraints(ir);
-  return ir;
-}
-
-const irCache = new WeakMap();
-export function irFor(model, opts) {
-  if (!model || !model.instructions || !model.instructions.length) return null;
-  const cacheable = opts == null || Object.keys(opts).length === 0;
-  const mode = getSemanticMigrationMode();
-  const byMode = cacheable ? irCache.get(model) : null;
-  if (byMode?.has(mode)) return byMode.get(mode);
-  let ir = null;
-  try { ir = buildIR(model, opts); } catch { ir = null; }
-  if (cacheable) {
-    const next = byMode ?? new Map();
-    next.set(mode, ir);
-    if (!byMode) irCache.set(model, next);
-  }
-  return ir;
-}
-
-/* ── RMW query using canonical pointer provenance ───────────── */
-
-function classifyUpdate(chain) {
-  const ops = chain.map((c) => (c.op === OP.BIN ? c.sub : c.op));
-  if (ops.includes('add')) return 'add';
-  if (ops.includes('sub')) return 'sub';
-  if (ops.includes('mul')) return 'mul';
-  if (ops.includes('sdiv') || ops.includes('udiv')) return 'div';
-  if (ops.includes(OP.SEL)) return 'clamp';
-  if (!ops.length) return 'copy';
-  return 'other';
-}
-
-/**
- * Read/modify/write proof. MOV/PHI/pointer+constant aliases are accepted only
- * when provenance proves must-alias; unknown indexed stores invalidate the path.
- */
-export function readModifyWrite(ir) {
-  if (!ir || !ir.instructions) return [];
-  const out = [];
-  const seen = new Set();
-
-  for (const r of coreReadModifyWrite(ir)) {
-    if (!r || !r.load || !r.store || unknownStoreBetween(ir, r.load, r.store)) continue;
-    const key = r.load.id + '>' + r.store.id;
-    seen.add(key);
-    out.push(r);
-  }
-
-  for (const store of ir.instructions) {
-    if (store.op !== OP.STORE || !store.loc) continue;
-    const written = store.args && store.args[0] && store.args[0].value;
-    if (!written) continue;
-
-    const chain = [];
-    const visited = new Set();
-    const work = [written];
-    let load = null;
-    while (work.length && chain.length < 40) {
-      const v = work.pop();
-      if (!v || visited.has(v.id)) continue;
-      visited.add(v.id);
-      const def = v.def;
-      if (!def) continue;
-      chain.push(def);
-      if (def.op === OP.LOAD) {
-        if (mustAlias(def.loc, store.loc) && !unknownStoreBetween(ir, def, store)) load = def;
-        continue;
-      }
-      for (const a of def.args || []) if (a && a.value) work.push(a.value);
-    }
-    if (!load) continue;
-    // The public provenance fallback must not resurrect a def-use RMW
-    // across a Memory-SSA clobber. Core Memory SSA is the semantic truth.
-    if (!store.memDef || store.memDef.prev !== load.memUse) continue;
-    const key = load.id + '>' + store.id;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push({
-      load,
-      store,
-      location: store.loc,
-      chain: chain.filter((c) => c !== load && c.op !== OP.STORE),
-      kind: classifyUpdate(chain),
-      canonicalAlias: load.loc && store.loc && load.loc.key !== store.loc.key,
-    });
-  }
-
   return out;
 }
