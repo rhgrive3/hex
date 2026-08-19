@@ -2,8 +2,7 @@ name: One-shot finalize integration generated outputs
 
 on:
   pull_request:
-    branches:
-      - main
+    branches: [main]
 
 permissions:
   contents: write
@@ -16,7 +15,7 @@ jobs:
   finalize:
     if: github.head_ref == 'integrate/all-open-prs-20260819' && github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
@@ -27,65 +26,39 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Apply comparison projection root fix
+      - name: Apply current root fix in workspace
         shell: bash
         run: |
           set -euo pipefail
-          # Remove the two temporary diagnostic/workaround changes before validating the real fix.
           git show 3d5698ff95474cc72745fdeeb3b160ab602c3e6c^:js/ir.js > js/ir.js
           git show 4dae354fcebd8cfda036498183c43be45e1a80ba^:tests/semantic-v2/issues-791-797-800-825-ir-soundness.test.mjs > tests/semantic-v2/issues-791-797-800-825-ir-soundness.test.mjs
           python - <<'PY'
           from pathlib import Path
-          path = Path('js/semantics/compat/semantic-ir-v2-to-v1-nodes.js')
-          text = path.read_text()
-          old = """    case 'binary': {\n      setBasic(V1_OP.BIN, node.operator || attrs.operator || 'unknown');\n      const carrier = comparisonCarrierByNodeId.get(node.id) ?? null;\n      if (carrier) {\n        const resultIsWritten = node.outputs?.[0] && hasRegisterStateWriteForValue(node.outputs[0], context);\n        if (!resultIsWritten) {\n          inst.op = V1_OP.CMP;\n          inst.dst = carrier;\n          inst.bits = Math.max(1, ...inputValues.map((value) => value.bits || 1));\n          inst.extra.comparison = 'semantic-flag-result';\n          inst.extra.semanticComparisonCarrier = true;\n          carrier.def = inst;\n        } else {\n          const cmp = appendComparisonInstruction(node, context, inst, carrier, inputValues, inst.sub, row, blockIndex);\n          if (cmp) extraInstructions.push(cmp);\n        }\n      }\n      break;\n    }\n"""
-          new = """    case 'binary': {\n      setBasic(V1_OP.BIN, node.operator || attrs.operator || 'unknown');\n      const carrier = comparisonCarrierByNodeId.get(node.id) ?? null;\n      if (carrier) {\n        const resultValueId = node.outputs?.[0] ?? null;\n        const resultIsWritten = resultValueId != null && hasRegisterStateWriteForValue(resultValueId, context);\n        const resultIsConsumed = resultValueId != null && context.ir.nodes.some((candidate) =>\n          candidate.id !== node.id && candidate.inputs?.includes(resultValueId));\n        if (!resultIsWritten && !resultIsConsumed) {\n          inst.op = V1_OP.CMP;\n          inst.dst = carrier;\n          inst.bits = Math.max(1, ...inputValues.map((value) => value.bits || 1));\n          inst.extra.comparison = 'semantic-flag-result';\n          inst.extra.semanticComparisonCarrier = true;\n          carrier.def = inst;\n        } else {\n          const cmp = appendComparisonInstruction(node, context, inst, carrier, inputValues, inst.sub, row, blockIndex);\n          if (cmp) extraInstructions.push(cmp);\n        }\n      }\n      break;\n    }\n"""
-          if new in text:
-              raise SystemExit('root fix already present unexpectedly')
-          if old not in text:
-              raise SystemExit('expected binary projection block not found')
-          path.write_text(text.replace(old, new, 1))
+          p=Path('js/semantics/compat/semantic-ir-v2-to-v1-nodes.js')
+          s=p.read_text()
+          old="""    case 'binary': {\n      setBasic(V1_OP.BIN, node.operator || attrs.operator || 'unknown');\n      const carrier = comparisonCarrierByNodeId.get(node.id) ?? null;\n      if (carrier) {\n        const resultIsWritten = node.outputs?.[0] && hasRegisterStateWriteForValue(node.outputs[0], context);\n        if (!resultIsWritten) {\n          inst.op = V1_OP.CMP;\n          inst.dst = carrier;\n          inst.bits = Math.max(1, ...inputValues.map((value) => value.bits || 1));\n          inst.extra.comparison = 'semantic-flag-result';\n          inst.extra.semanticComparisonCarrier = true;\n          carrier.def = inst;\n        } else {\n          const cmp = appendComparisonInstruction(node, context, inst, carrier, inputValues, inst.sub, row, blockIndex);\n          if (cmp) extraInstructions.push(cmp);\n        }\n      }\n      break;\n    }\n"""
+          new="""    case 'binary': {\n      setBasic(V1_OP.BIN, node.operator || attrs.operator || 'unknown');\n      const carrier = comparisonCarrierByNodeId.get(node.id) ?? null;\n      if (carrier) {\n        const resultValueId = node.outputs?.[0] ?? null;\n        const resultIsWritten = resultValueId != null && hasRegisterStateWriteForValue(resultValueId, context);\n        const resultIsConsumed = resultValueId != null && context.ir.nodes.some((candidate) =>\n          candidate.id !== node.id && candidate.inputs?.includes(resultValueId));\n        if (!resultIsWritten && !resultIsConsumed) {\n          inst.op = V1_OP.CMP;\n          inst.dst = carrier;\n          inst.bits = Math.max(1, ...inputValues.map((value) => value.bits || 1));\n          inst.extra.comparison = 'semantic-flag-result';\n          inst.extra.semanticComparisonCarrier = true;\n          carrier.def = inst;\n        } else {\n          const cmp = appendComparisonInstruction(node, context, inst, carrier, inputValues, inst.sub, row, blockIndex);\n          if (cmp) extraInstructions.push(cmp);\n        }\n      }\n      break;\n    }\n"""
+          assert old in s
+          p.write_text(s.replace(old,new,1))
           PY
-          git diff --check
-      - name: Verify focused semantic regressions
+      - name: Diagnose x64 sign-bit range
         run: |
-          node tests/machine-effects/issue-957-bti-guarded-page.test.mjs
-          node tests/semantic-v2/issues-791-797-800-825-ir-soundness.test.mjs
-          node tests/semantic-v2/issue-949-indirect-control.test.mjs
-      - name: Rebuild canonical userscript outputs
-        run: npm run userscript:build
-      - name: Run full repository check
-        run: npm run check
-      - name: Prove generated output idempotence
-        run: |
-          cp userscript/hex.user.template.js /tmp/hex.user.template.js
-          cp userscript/release-version.json /tmp/release-version.json
-          npm run userscript:build
-          cmp userscript/hex.user.template.js /tmp/hex.user.template.js
-          cmp userscript/release-version.json /tmp/release-version.json
-      - name: Publish verified root fix and restore canonical workflow
-        shell: bash
-        run: |
-          set -euo pipefail
-          canonical=''
-          while read -r commit; do
-            candidate="$(git show "$commit":.github/workflows/generated-sync.yml 2>/dev/null || true)"
-            if [ -n "$candidate" ] && ! grep -q '^name: One-shot finalize integration generated outputs$' <<<"$candidate"; then
-              canonical="$commit"
-              break
-            fi
-          done < <(git rev-list HEAD -- .github/workflows/generated-sync.yml)
-          test -n "$canonical"
-          git show "$canonical":.github/workflows/generated-sync.yml > .github/workflows/generated-sync.yml
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add \
-            .github/workflows/generated-sync.yml \
-            js/ir.js \
-            js/semantics/compat/semantic-ir-v2-to-v1-nodes.js \
-            tests/semantic-v2/issues-791-797-800-825-ir-soundness.test.mjs \
-            userscript/hex.user.template.js \
-            userscript/release-version.json
-          git diff --cached --check
-          git commit -m 'fix: preserve consumed semantic values in v1 comparison projection'
-          git push origin HEAD:integrate/all-open-prs-20260819
+          node --input-type=module <<'NODE'
+          import { buildSemanticModel } from './js/blocks.js';
+          import { irFor, branchConstraints, valueRange } from './js/ir.js';
+          const BASE=0x100000000n;
+          const lines=['and x0, x1, #0x8000000000000000','cmp x0, #0','b.lt #0x100000010','nop','ret'];
+          const rows=lines.map((line,row)=>{const i=line.indexOf(' ');return {row,address:BASE+BigInt(row*4),mn:i<0?line:line.slice(0,i),ops:i<0?'':line.slice(i+1)}});
+          const rowOfAddress=(a)=>{const d=BigInt(a)-BASE;return d<0n||d>=BigInt(rows.length*4)||d%4n?null:Number(d/4n)};
+          const model=buildSemanticModel(rows,{startRow:0,endRow:rows.length-1,rowOfAddress});
+          const ir=irFor(model,{rowOfAddress,decoderSemanticVersion:'diag-x800'});
+          const simple=(v)=>v?{id:v.id,vid:v.vid,bits:v.bits,signed:v.signed,const:v.const,range:v.range,sourceEntityId:v.sourceEntityId,def:v.def?{op:v.def.op,sub:v.def.sub,row:v.def.row}:null}:null;
+          const ands=(ir.instructions||[]).filter(x=>x.op==='bin'&&x.sub==='and').map(x=>({row:x.row,bits:x.bits,dst:simple(x.dst),args:(x.args||[]).map(a=>simple(a.value)),extra:x.extra}));
+          const cmps=(ir.instructions||[]).filter(x=>x.op==='cmp').map(x=>({row:x.row,sub:x.sub,bits:x.bits,dst:simple(x.dst),args:(x.args||[]).map(a=>simple(a.value)),extra:x.extra}));
+          const rep=(_k,v)=>typeof v==='bigint'?`${v}n`:v;
+          console.log('ANDS',JSON.stringify(ands,rep,2));
+          console.log('CMPS',JSON.stringify(cmps,rep,2));
+          console.log('FACTS',JSON.stringify(branchConstraints(ir).map(f=>({taken:f.taken&&{condition:f.taken.condition,constant:f.taken.constant,range:f.taken.range,value:simple(f.taken.value)},fallthrough:f.fallthrough&&{condition:f.fallthrough.condition,constant:f.fallthrough.constant,range:f.fallthrough.range,value:simple(f.fallthrough.value)}})),rep,2));
+          NODE
+      - name: Reconfirm focused failure frontier
+        run: node tests/semantic-v2/issues-791-797-800-825-ir-soundness.test.mjs
