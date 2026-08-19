@@ -11,8 +11,8 @@ import {
 } from '../js/targets/abi/microsoft-vectorcall.js';
 import { resolveABIPlugin } from '../js/targets/abi/index.js';
 
-// Integration guard: PR #987 introduced this ABI set; PR #994 accidentally
-// dropped the reconciliation while package.json still invoked this fixture.
+// Integration guard: PR #987 introduced this ABI set; PR #998 failed to carry
+// the reconciliation forward while package.json still invoked this fixture.
 
 // #526: an unknown AAPCS64 call must conservatively retain both GP/SIMD
 // register candidates and the possibility of pointer-bearing stack arguments.
