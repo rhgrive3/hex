@@ -1,134 +1,57 @@
-name: One-shot issue 859 alias soundness
+name: Generated userscript sync
 
 on:
   pull_request:
+    paths:
+      - 'index.html'
+      - 'css/**'
+      - 'js/**'
+      - 'capstone.wasm'
+      - 'scripts/build-userscript.mjs'
+      - 'scripts/userscript-release-version.mjs'
+      - 'userscript/hex.user.template.js'
+      - 'userscript/release-version.json'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/generated-sync.yml'
+  push:
     branches: [main]
+    paths:
+      - 'index.html'
+      - 'css/**'
+      - 'js/**'
+      - 'capstone.wasm'
+      - 'scripts/build-userscript.mjs'
+      - 'scripts/userscript-release-version.mjs'
+      - 'userscript/hex.user.template.js'
+      - 'userscript/release-version.json'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/generated-sync.yml'
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: one-shot-issue-859-alias-soundness
+  group: generated-sync-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  finalize:
-    if: github.head_ref == 'integrate/all-open-prs-20260819' && github.actor != 'github-actions[bot]'
+  generated-sync:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: integrate/all-open-prs-20260819
-          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Apply issue 859 fix and regression
-        shell: bash
-        run: |
-          set -euo pipefail
-          python - <<'PY'
-          from pathlib import Path
-          p = Path('js/ir-base.js')
-          text = p.read_text()
-          old = """function sizeCompatible(a, b) {\n  if (a.size == null || b.size == null) return true;\n  return a.size === b.size;\n}\n"""
-          new = """function sizeCompatible(a, b) {\n  if (a.size == null || b.size == null) return false;\n  return a.size === b.size;\n}\n\nfunction rangesProvablyDisjoint(startA, sizeA, startB, sizeB) {\n  if (startA == null || startB == null || sizeA == null || sizeB == null) return false;\n  const sa = BigInt(sizeA), sb = BigInt(sizeB);\n  return startA + sa <= startB || startB + sb <= startA;\n}\n"""
-          assert old in text, 'sizeCompatible block not found'
-          text = text.replace(old, new, 1)
-
-          old = """  if (x.kind === MK.STACK || x.kind === MK.GLOBAL) {\n    const pa = x.kind === MK.STACK ? x.disp : x.address;\n    const pb = y.kind === MK.STACK ? y.disp : y.address;\n    if (pa == null || pb == null) return true;\n    const sa = BigInt(x.size || 8), sb = BigInt(y.size || 8);\n    return !(pa + sa <= pb || pb + sb <= pa);\n  }\n  if (x.kind === MK.FIELD && x.root && y.root && x.root === y.root && x.disp != null && y.disp != null) {\n    const sa = BigInt(x.size || 8), sb = BigInt(y.size || 8);\n    return !(x.disp + sa <= y.disp || y.disp + sb <= x.disp);\n  }\n"""
-          new = """  if (x.kind === MK.STACK || x.kind === MK.GLOBAL) {\n    const pa = x.kind === MK.STACK ? x.disp : x.address;\n    const pb = y.kind === MK.STACK ? y.disp : y.address;\n    if (pa == null || pb == null) return true;\n    return !rangesProvablyDisjoint(pa, x.size, pb, y.size);\n  }\n  if (x.kind === MK.FIELD && x.root && y.root && x.root === y.root && x.disp != null && y.disp != null) {\n    return !rangesProvablyDisjoint(x.disp, x.size, y.disp, y.size);\n  }\n"""
-          assert old in text, 'mayAlias extent block not found'
-          p.write_text(text.replace(old, new, 1))
-          PY
-
-          cat > tests/issue-859-alias-unknown-size.mjs <<'TEST'
-          import assert from 'node:assert/strict';
-          import { MK, VK, mustAlias, mayAliasProvenance } from '../js/ir.js';
-
-          function verifyFamily(label, make) {
-            const unknownAtA = make(0n, null);
-            const size4AtA = make(0n, 4);
-            const size8AtA = make(0n, 8);
-            const size8AtAPlus8 = make(8n, 8);
-
-            assert.equal(mustAlias(unknownAtA, size4AtA), false, `${label}: unknown extent must not prove MustAlias`);
-            assert.equal(mustAlias(size4AtA, unknownAtA), false, `${label}: MustAlias must remain conservative when operands are swapped`);
-            assert.equal(mayAliasProvenance(unknownAtA, size8AtAPlus8), true, `${label}: unknown extent must not prove NoAlias`);
-            assert.equal(mayAliasProvenance(size8AtAPlus8, unknownAtA), true, `${label}: may-alias result must be order independent`);
-            assert.equal(mayAliasProvenance(size8AtA, size8AtAPlus8), false, `${label}: known adjacent extents remain proven disjoint`);
-            assert.equal(mustAlias(size8AtA, make(0n, 8)), true, `${label}: known equal extent at identical identity remains MustAlias`);
-          }
-
-          verifyFamily('global', (delta, size) => ({
-            kind: MK.GLOBAL,
-            address: 0x1000n + delta,
-            size,
-          }));
-
-          verifyFamily('stack', (delta, size) => ({
-            kind: MK.STACK,
-            disp: 0x20n + delta,
-            size,
-          }));
-
-          const root = { id: 0x859, kind: VK.ARG, reg: 'x0', bits: 64, def: null };
-          verifyFamily('same-root-field', (delta, size) => ({
-            kind: MK.FIELD,
-            base: root,
-            disp: 0x30n + delta,
-            size,
-          }));
-
-          console.log('issue #859 unknown alias extent regression: PASS');
-          TEST
-          git diff --check
-      - name: Verify issue 859
-        run: |
-          node tests/issue-859-alias-unknown-size.mjs
-          node tests/semantic-v2/issues-791-797-800-825-ir-soundness.test.mjs
       - name: Rebuild canonical userscript outputs
         run: npm run userscript:build
-      - name: Restore canonical generated-sync workflow before repository checks
-        shell: bash
-        run: |
-          set -euo pipefail
-          canonical=''
-          while read -r commit; do
-            candidate="$(git show "$commit":.github/workflows/generated-sync.yml 2>/dev/null || true)"
-            if [ -n "$candidate" ] && ! grep -q '^name: One-shot' <<<"$candidate"; then
-              canonical="$commit"
-              break
-            fi
-          done < <(git rev-list HEAD -- .github/workflows/generated-sync.yml)
-          test -n "$canonical"
-          git show "$canonical":.github/workflows/generated-sync.yml > .github/workflows/generated-sync.yml
-          grep -q 'git diff --exit-code --' .github/workflows/generated-sync.yml
-          git diff --check
-      - name: Run full repository check
-        run: npm run check
-      - name: Prove generated output idempotence
-        run: |
-          cp userscript/hex.user.template.js /tmp/hex.user.template.js
-          cp userscript/release-version.json /tmp/release-version.json
-          npm run userscript:build
-          cmp userscript/hex.user.template.js /tmp/hex.user.template.js
-          cmp userscript/release-version.json /tmp/release-version.json
-      - name: Publish verified issue 859 fix
-        shell: bash
-        run: |
-          set -euo pipefail
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add \
-            .github/workflows/generated-sync.yml \
-            js/ir-base.js \
-            tests/issue-859-alias-unknown-size.mjs \
-            userscript/hex.user.template.js \
-            userscript/release-version.json
-          git diff --cached --check
-          git commit -m 'fix: keep unknown alias extents conservative (#859)'
-          git push origin HEAD:integrate/all-open-prs-20260819
+      - name: Require userscript-owned generated outputs to match source
+        run: >-
+          git diff --exit-code --
+          userscript/hex.user.template.js
+          userscript/release-version.json

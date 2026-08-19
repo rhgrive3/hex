@@ -211,8 +211,14 @@ function effectiveLocation(loc) {
 }
 
 function sizeCompatible(a, b) {
-  if (a.size == null || b.size == null) return true;
+  if (a.size == null || b.size == null) return false;
   return a.size === b.size;
+}
+
+function rangesProvablyDisjoint(startA, sizeA, startB, sizeB) {
+  if (startA == null || startB == null || sizeA == null || sizeB == null) return false;
+  const sa = BigInt(sizeA), sb = BigInt(sizeB);
+  return startA + sa <= startB || startB + sb <= startA;
 }
 
 /** True only when the two locations are proved identical. */
@@ -240,12 +246,10 @@ export function mayAliasProvenance(a, b) {
     const pa = x.kind === MK.STACK ? x.disp : x.address;
     const pb = y.kind === MK.STACK ? y.disp : y.address;
     if (pa == null || pb == null) return true;
-    const sa = BigInt(x.size || 8), sb = BigInt(y.size || 8);
-    return !(pa + sa <= pb || pb + sb <= pa);
+    return !rangesProvablyDisjoint(pa, x.size, pb, y.size);
   }
   if (x.kind === MK.FIELD && x.root && y.root && x.root === y.root && x.disp != null && y.disp != null) {
-    const sa = BigInt(x.size || 8), sb = BigInt(y.size || 8);
-    return !(x.disp + sa <= y.disp || y.disp + sb <= x.disp);
+    return !rangesProvablyDisjoint(x.disp, x.size, y.disp, y.size);
   }
   return true;
 }
