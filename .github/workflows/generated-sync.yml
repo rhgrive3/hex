@@ -33,14 +33,15 @@ jobs:
         run: node tests/issues-924-930-934-940-941.mjs
       - name: Rebuild canonical userscript outputs
         run: npm run userscript:build
+      - name: Restore canonical workflow before repository contracts
+        run: git checkout origin/main -- .github/workflows/generated-sync.yml
       - name: Full repository check
         run: npm run check
       - name: Diff hygiene
         run: git diff --check
-      - name: Restore canonical workflow and publish verified head
+      - name: Publish verified head
         shell: bash
         run: |
-          git checkout origin/main -- .github/workflows/generated-sync.yml
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
