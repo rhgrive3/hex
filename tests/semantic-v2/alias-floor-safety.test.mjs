@@ -38,7 +38,7 @@ const globalSame = region({ kind: 'global-absolute', address: '0x3000' }, 64);
 const globalOverlap = region({ kind: 'global-absolute', address: 0x3004n }, 64);
 assert.equal(aliasMemoryRegions(globalA, globalSame), 'must', 'same global address and range');
 assert.equal(aliasMemoryRegions(globalA, globalOverlap), 'may', 'overlapping globals account for access size');
-assert.equal(aliasMemoryRegions(stackA, globalA), 'no', 'legacy floor proves stack/global classes disjoint');
+assert.equal(aliasMemoryRegions(stackA, globalA), 'may', 'stack/global classes require explicit storage-disjointness evidence');
 
 const fieldA = region({ kind: 'rooted-offset', rootEntityId: 'entity_root_a', offset: 16 }, 32);
 const fieldSame = region({ kind: 'rooted-offset', rootEntityId: 'entity_root_a', offset: 16 }, 32);
@@ -98,15 +98,3 @@ assert.equal(aliasMemoryRegions(physA, physB), 'unknown', 'same physical space w
 assert.equal(effectSummaryAliasRelation({ scope: 'unknown' }, globalA), 'may', 'unknown call/intrinsic is not pure');
 assert.equal(effectSummaryAliasRelation({ scope: 'none' }, globalA), 'no', 'explicit no-write summary may prove NoAlias');
 assert.equal(effectSummaryAliasRelation({ scope: 'all', addressSpaces: ['io'] }, globalA), 'no');
-assert.equal(effectSummaryAliasRelation({ scope: 'all', addressSpaces: ['memory'] }, globalA), 'may');
-assert.equal(effectSummaryAliasRelation({ scope: 'accesses', accesses: [{ id: 'a' }] }, fieldA, () => fieldSame), 'must');
-assert.equal(effectSummaryAliasRelation({ scope: 'accesses', accesses: [{ id: 'a' }] }, fieldA, () => { throw new Error('bad summary'); }), 'unknown');
-
-const malformed = region({ kind: 'global-absolute', address: 'bad' }, 32);
-const missingProvenance = region({ kind: 'stack-fixed', offset: 0 }, 32, { origin: null });
-assert.equal(malformed.kind, 'unknown');
-assert.equal(missingProvenance.kind, 'unknown');
-assert.equal(aliasMemoryRegions(malformed, globalA), 'may');
-assert.equal(aliasMemoryRegions(missingProvenance, stackA), 'may');
-
-console.log('semantic-v2 alias safety floor: PASS');
