@@ -116,4 +116,40 @@ async function composedConstant(wrapperLines, calleeLines) {
   assert.equal(sub64.value, 0xffffffffffffffffn);
 }
 
-console.log('issues #437/#438 interproc regressions PASS');
+// #831: FunctionSummaryCache must preserve top-level function-local ABI/IR options.
+{
+  const local = modelAt(BASE, ['add w0, w0, #1', 'ret']);
+  const cache = createFunctionSummaryCache({
+    program: { functionRange: () => null },
+    analyze: async (address) => address === BASE ? local : null,
+  });
+
+  const optionSets = [
+    { returnsValue: true },
+    { returnsValue: true, functionPrototype: { returnType: 'uint32_t', returnBits: 32, returnsValue: true } },
+    { returnsValue: true, prototype: { returnType: 'uint32_t', returnBits: 32, returnsValue: true } },
+    { returnsValue: true, ir: { returnType: 'uint32_t', returnBits: 32, returnsValue: true } },
+  ];
+  for (const opts of optionSets) {
+    const direct = summarizeFunction(local, opts);
+    const throughCache = await cache.summaryFor(BASE, opts);
+    assert.deepEqual(throughCache.returns, direct.returns, 'cache facade must preserve function-local summary/IR semantics');
+    assert.deepEqual(throughCache.classification, direct.classification, 'cache facade classification must match direct summary');
+    assert.equal(throughCache.returns[0].trusted, true);
+  }
+}
+
+// #831: caller-local return evidence must be stripped before recursive callee analysis.
+{
+  const wrapper = modelAt(BASE, [`bl #0x${CALLEE.toString(16)}`, 'ret']);
+  const callee = modelAt(CALLEE, ['add x0, x0, #1', 'ret']);
+  const cache = createFunctionSummaryCache({
+    program: { functionRange: () => null },
+    analyze: async (address) => address === BASE ? wrapper : address === CALLEE ? callee : null,
+  }, { maxDepth: 2 });
+  const summary = await cache.summaryFor(BASE, { returnsValue: true, functionPrototype: { returnType: 'uint64_t', returnsValue: true } });
+  assert.equal(summary.classification.forwarding, true, 'root evidence should make the wrapper return trusted');
+  assert.equal(summary.propagatedReturn, undefined, 'root ABI evidence must not leak into the callee summary');
+}
+
+console.log('issues #437/#438/#831 interproc regressions PASS');

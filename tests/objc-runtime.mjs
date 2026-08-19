@@ -17,6 +17,12 @@ const model = {
       classMethods: [{ sel: 'shared', addr: 0x2100n }],
       ivars: [{ name: '_coins', offset: 0x20, type: { kind: 'int', bytes: 4 } }],
     },
+    { name: 'Root', superName: 'NSObject', methods: [{ sel: 'value', addr: 0x3000n }], classMethods: [], protocols: [] },
+    { name: 'Middle', superName: 'Root', methods: [{ sel: 'value', addr: 0x3100n }], classMethods: [], protocols: [] },
+    { name: 'Leaf', superName: 'Middle', methods: [{ sel: 'value', addr: 0x3200n }], classMethods: [], protocols: [] },
+    { name: 'InheritedLeaf', superName: 'Middle', methods: [], classMethods: [], protocols: [] },
+    { name: 'DeepLeaf', superName: 'Leaf', methods: [], classMethods: [], protocols: [] },
+    { name: 'Unrelated', superName: 'NSObject', methods: [{ sel: 'value', addr: 0x3300n }], classMethods: [], protocols: [] },
   ],
   protocols: [
     { name: 'CoinProviding', methods: [{ sel: 'coinCount', addr: null }] },
@@ -24,6 +30,7 @@ const model = {
   categories: [
     { name: 'Debug', className: 'PlayerData', methods: [{ sel: 'debugName', addr: 0x2200n }] },
   ],
+  runtimeCompleteness: { complete: true, categories: { complete: true } },
 };
 
 const index = buildObjcRuntimeIndex(model);
@@ -55,6 +62,40 @@ const index = buildObjcRuntimeIndex(model);
   assert.equal(m.text, '[player addCoins:amount]');
   assert.equal(m.dispatch.resolved?.imp, 0x2000n);
 }
+
+// #834: explicit receiver dispatch follows Objective-C lookup order, not score gaps.
+{
+  const r = resolveObjcDispatch(index, { receiverType: 'Leaf *', selector: 'value' });
+  assert.equal(r.resolved?.imp, 0x3200n, 'subclass override must shadow superclass implementations');
+  assert.deepEqual(r.candidates.map((x) => x.className), ['Leaf']);
+}
+{
+  const r = resolveObjcDispatch(index, { receiverType: 'InheritedLeaf *', selector: 'value' });
+  assert.equal(r.resolved?.imp, 0x3100n, 'nearest superclass implementation must resolve when subclass has no override');
+  assert.deepEqual(r.candidates.map((x) => x.className), ['Middle']);
+}
+{
+  const r = resolveObjcDispatch(index, { receiverType: 'DeepLeaf *', selector: 'value' });
+  assert.equal(r.resolved?.imp, 0x3200n, 'three-level hierarchy must stop at the first implementation');
+  assert.deepEqual(r.candidates.map((x) => x.className), ['Leaf']);
+  assert.equal(r.candidates.some((x) => x.className === 'Unrelated'), false, 'unrelated selector implementations must be excluded');
+}
+{
+  const partial = buildObjcRuntimeIndex({ ...model, runtimeCompleteness: { complete: true, categories: { complete: false } } });
+  const r = resolveObjcDispatch(partial, { receiverType: 'Leaf *', selector: 'value' });
+  assert.equal(r.resolved, null, 'incomplete category metadata must remain conservative');
+  assert.equal(r.partial, true);
+}
+{
+  const collision = buildObjcRuntimeIndex({
+    ...model,
+    categories: [...model.categories, { name: 'Override', className: 'Leaf', methods: [{ sel: 'value', addr: 0x3400n }] }],
+  });
+  const r = resolveObjcDispatch(collision, { receiverType: 'Leaf *', selector: 'value' });
+  assert.equal(r.resolved, null, 'same-level category/class collision must remain ambiguous');
+  assert.equal(r.candidates.length, 2);
+}
+
 {
   const selectors = buildSelectorIndex({
     selectorRefs: [{ addr: 0x4000n, selector: 'addCoins:' }],

@@ -69,24 +69,33 @@ function wideOf(reg) {
   return m ? 'x' + m[1] : null;
 }
 
+function gpView(value) {
+  const text = typeof value === 'string' ? value : value?.text;
+  const m = /^([wx])(\d+)$/.exec(String(text || '').toLowerCase());
+  return m ? { key: 'x' + m[2], bits: m[1] === 'x' ? 64 : 32 } : null;
+}
+
 function tracesToArgument(insns, row, reg) {
-  let want = reg;
+  let want = wideOf(reg);
+  if (!want) return false;
   for (let i = insns.findIndex((x) => x.row === row) - 1; i >= 0; i--) {
     const insn = insns[i];
     if (controlBoundary(insn)) return false;
-    if (!insn.writes.includes(want)) continue;
+    if (!(insn.writes || []).some((written) => wideOf(written) === want)) continue;
     if (insn.memory) return false;
-    const reads = (insn.reads || []).filter((r) => /^[wx]\d+$/.test(r));
-    if (!reads.length) return false;
-    // A copy-chain step must have one value source. Multi-source arithmetic is
-    // not proof that the stored value is the setter argument even if x2 occurs.
-    const distinct = [...new Set(reads.map((r) => wideOf(r) || r))];
-    if (distinct.length !== 1) return false;
-    const next = reads[0];
-    const wide = wideOf(next);
-    if (wide === ARG2) return true;
-    if (/^x[3-7]$/.test(wide || '')) return false;
-    want = next;
+
+    // Setter identity proof is intentionally stricter than general dataflow:
+    // only an explicit same-width GP MOV preserves the exact argument value.
+    // Single-source arithmetic/shift/extend operations are transformations,
+    // not copies, even when their only read happens to be x2/w2.
+    if (String(insn.mnemonic || '').toLowerCase() !== 'mov') return false;
+    const dst = gpView(insn.ops?.[0]);
+    const src = gpView(insn.ops?.[1]);
+    if (!dst || !src || dst.key !== want || dst.bits !== src.bits) return false;
+
+    if (src.key === ARG2) return true;
+    if (/^x[3-7]$/.test(src.key)) return false;
+    want = src.key;
   }
   return false;
 }
