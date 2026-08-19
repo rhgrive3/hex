@@ -67,6 +67,12 @@ async function issue970VirtualReadRegressions() {
   adjacent.addSegment({ address:0x1002n, size:2n, fileOffset:0x180n, fileSize:2n, perms:{read:true} });
   assert.deepEqual([...adjacent.readVirtual(0x1001n, 3)], [0xbb,0xee,0xff], 'adjacent mappings must re-resolve file offsets');
 
+  bytes.set([0x66, 0x77], 0x190);
+  const overlap = new BinaryImage(bytes, { format:'elf' });
+  overlap.addSegment({ address:0x1000n, size:8n, fileOffset:0x100n, fileSize:4n, perms:{read:true} });
+  overlap.addSegment({ address:0x1006n, size:2n, fileOffset:0x190n, fileSize:2n, perms:{read:true} });
+  assert.deepEqual([...overlap.readVirtual(0x1004n, 4)], [0,0,0x66,0x77], 'overlapping file-backed mapping must override earlier zero-fill tail');
+
   const source = {
     size: BigInt(bytes.length),
     async readExactly(offset, size) {
