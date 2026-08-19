@@ -4,14 +4,19 @@ import { OP, COND } from './ir-core.js';
 import { normalizeIntegerValue, normalizeRangeDomain } from './range-domain.js';
 import { valueRange } from './ir-base.js';
 
-function projectedConstant(value, active = new Set()) {
+function projectedConstant(value, active = new Set(), instructions = null) {
   if (!value || active.has(value)) return null;
   const bits = Math.max(1, Math.min(64, Number(value.bits || 64)));
   if (value.const != null) return BigInt.asUintN(bits, BigInt(value.const));
-  const def = value.def;
+  let def = value.def;
+  if (!def && value.sourceEntityId != null && Array.isArray(instructions)) {
+    def = instructions.find((candidate) => candidate?.op === OP.CMP
+      && candidate?.extra?.semanticComparisonCarrier === true
+      && candidate?.extra?.semanticNodeId === value.sourceEntityId) ?? null;
+  }
   if (!def || !Array.isArray(def.args)) return null;
   active.add(value);
-  const input = (index) => projectedConstant(def.args[index]?.value, active);
+  const input = (index) => projectedConstant(def.args[index]?.value, active, instructions);
   let result = null;
   if (def.op === OP.MOV && def.args.length === 1) {
     const v = input(0);
@@ -20,7 +25,8 @@ function projectedConstant(value, active = new Set()) {
     const v = input(0);
     const sourceBits = Math.max(1, Math.min(64, Number(def.extra?.sourceBits || def.args[0]?.bits || def.args[0]?.value?.bits || bits)));
     if (v != null) result = BigInt.asUintN(bits, BigInt.asIntN(sourceBits, v));
-  } else if (def.op === OP.BIN && ['shl','lsl','lshr','lsr','ashr','asr','ror'].includes(def.sub) && def.args.length >= 2) {
+  } else if ((def.op === OP.BIN || (def.op === OP.CMP && def.extra?.semanticComparisonCarrier === true))
+      && ['shl','lsl','lshr','lsr','ashr','asr','ror'].includes(def.sub) && def.args.length >= 2) {
     const lhs = input(0);
     const rhs = input(1);
     if (lhs != null && rhs != null) {
@@ -40,11 +46,11 @@ function projectedConstant(value, active = new Set()) {
   return result;
 }
 
-function shiftedConstant(arg, fallbackBits = null) {
+function shiftedConstant(arg, fallbackBits = null, instructions = null) {
   if (!arg || !arg.value) return null;
   const bits = Math.max(1, Math.min(64, Number(fallbackBits || arg.value.bits || 64)));
   const width = BigInt(bits);
-  const exact = projectedConstant(arg.value);
+  const exact = projectedConstant(arg.value, new Set(), instructions);
   if (exact == null) return null;
   let value = BigInt.asUintN(bits, exact);
   const shift = arg.shift;
@@ -61,7 +67,7 @@ function shiftedConstant(arg, fallbackBits = null) {
   return null;
 }
 
-function comparisonOfBranch(branch) {
+function comparisonOfBranch(branch, ir = null) {
   if (!branch || branch.op !== OP.CBR) return null;
   const kind = branch.extra?.kind;
   if ((kind === 'cbz' || kind === 'cbnz') && branch.args?.[0]?.value) {
@@ -89,7 +95,7 @@ function comparisonOfBranch(branch) {
   const bits = (semanticBits === 32 || semanticBits === 64)
     ? semanticBits
     : (cmp.bits || cmp.args[0].bits || cmp.args[0].value.bits || 64);
-  const rhs = shiftedConstant(cmp.args[1], bits);
+  const rhs = shiftedConstant(cmp.args[1], bits, ir?.instructions ?? null);
   if (rhs == null) return null;
   return { lhs:cmp.args[0].value, rhs, cond:branch.cond || null, cmp, bits };
 }
@@ -143,7 +149,7 @@ function nullabilityFromZero(zero) {
 
 export function rangeOnBranch(ir, branch, taken = true) {
   void ir;
-  const comparison = comparisonOfBranch(branch);
+  const comparison = comparisonOfBranch(branch, ir);
   if (!comparison?.cond) return null;
   const info = comparison.cond === 'eq' || comparison.cond === 'ne'
     ? { op:comparison.cond === 'eq' ? '==' : '!=', signed:null }
