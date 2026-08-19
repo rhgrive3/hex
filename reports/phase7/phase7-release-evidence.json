@@ -1,0 +1,514 @@
+{
+  "schemaVersion": "phase7-release-evidence/v1",
+  "verifierId": "phase7.verifier",
+  "verifierVersion": "1.0.0",
+  "verifierSourceSha256": "0da9e1f444afa126030947c7ce286675fa31a2a35bc4361d65b5b85d15094e1d",
+  "generatedAt": "2026-08-19T11:10:03.094Z",
+  "product": {
+    "commitSha": "bdf90569ed037a3d30e4439dcde970aad9352e21",
+    "treeSha": "fffaafaf60353fa749b0fa763af45288ba3c0f2e",
+    "workingTreeClean": false,
+    "branch": "phase7/static-analysis-depth"
+  },
+  "profileVersion": 1,
+  "corpus": {
+    "corpusId": "phase7-alias-memory-corpus",
+    "corpusVersion": 1,
+    "manifestDigest": "f97d8b40b5298824df6f77ea23f923b3",
+    "frozenDigestMatches": true,
+    "scoring": {
+      "id": "phase7.scoring",
+      "version": "1.0.0"
+    },
+    "truthGenerator": {
+      "id": "phase7.corpus.declared-truth",
+      "version": "1.0.0"
+    }
+  },
+  "checkpoints": [
+    {
+      "id": "P7-0",
+      "present": false
+    },
+    {
+      "id": "P7-1",
+      "present": false
+    },
+    {
+      "id": "P7-2",
+      "present": false
+    },
+    {
+      "id": "P7-3a",
+      "present": false
+    },
+    {
+      "id": "P7-3b",
+      "present": false
+    },
+    {
+      "id": "P7-3c",
+      "present": false
+    },
+    {
+      "id": "P7-4",
+      "present": false
+    },
+    {
+      "id": "P7-5a",
+      "present": false
+    },
+    {
+      "id": "P7-5b",
+      "present": false
+    },
+    {
+      "id": "P7-6",
+      "present": false
+    },
+    {
+      "id": "P7-I",
+      "present": false
+    }
+  ],
+  "alias": {
+    "baseline": {
+      "scoringId": "phase7.scoring",
+      "scoringVersion": "1.0.0",
+      "truthGeneratorId": "phase7.corpus.declared-truth",
+      "truthGeneratorVersion": "1.0.0",
+      "total": 11,
+      "counts": {
+        "must": 1,
+        "may": 10,
+        "no": 0,
+        "unknown": 0
+      },
+      "falseNoAlias": 0,
+      "falseMustAlias": 0,
+      "exactProven": 1,
+      "exactAvailable": 2,
+      "unknownRate": 0,
+      "mayRate": 0.9090909090909091,
+      "strongProvenRate": 0.09090909090909091,
+      "perQuery": [
+        {
+          "id": "q-stack-disjoint",
+          "relation": "may",
+          "truth": "no",
+          "expectStrong": true
+        },
+        {
+          "id": "q-stack-overlapping",
+          "relation": "may",
+          "truth": "may-or-weaker",
+          "expectStrong": false
+        },
+        {
+          "id": "q-stack-identical",
+          "relation": "must",
+          "truth": "must",
+          "expectStrong": true
+        },
+        {
+          "id": "q-uncertain-offset",
+          "relation": "may",
+          "truth": "may-or-weaker",
+          "expectStrong": false
+        },
+        {
+          "id": "q-provenance-loss",
+          "relation": "may",
+          "truth": "may-or-weaker",
+          "expectStrong": false
+        },
+        {
+          "id": "q-pointer-phi",
+          "relation": "may",
+          "truth": "may-or-weaker",
+          "expectStrong": false
+        },
+        {
+          "id": "q-cyclic-phi",
+          "relation": "may",
+          "truth": "may-or-weaker",
+          "expectStrong": false
+        },
+        {
+          "id": "q-overlapping-fields",
+          "relation": "may",
+          "truth": "may-or-weaker",
+          "expectStrong": false
+        },
+        {
+          "id": "q-similar-roots",
+          "relation": "may",
+          "truth": "may-or-weaker",
+          "expectStrong": false
+        },
+        {
+          "id": "q-select-roots",
+          "relation": "may",
+          "truth": "may-or-weaker",
+          "expectStrong": false
+        },
+        {
+          "id": "q-load-derived",
+          "relation": "may",
+          "truth": "may-or-weaker",
+          "expectStrong": false
+        }
+      ]
+    },
+    "candidate": {
+      "scoringId": "phase7.scoring",
+      "scoringVersion": "1.0.0",
+      "truthGeneratorId": "phase7.corpus.declared-truth",
+      "truthGeneratorVersion": "1.0.0",
+      "total": 11,
+      "counts": {
+        "must": 1,
+        "may": 9,
+        "no": 1,
+        "unknown": 0
+      },
+      "falseNoAlias": 0,
+      "falseMustAlias": 0,
+      "exactProven": 2,
+      "exactAvailable": 2,
+      "unknownRate": 0,
+      "mayRate": 0.8181818181818182,
+      "strongProvenRate": 0.18181818181818182,
+      "perQuery": [
+        {
+          "id": "q-stack-disjoint",
+          "relation": "no",
+          "truth": "no",
+          "expectStrong": true
+        },
+        {
+          "id": "q-stack-overlapping",
+          "relation": "may",
+          "truth": "may-or-weaker",
+          "expectStrong": false
+        },
+        {
+          "id": "q-stack-identical",
+          "relation": "must",
+          "truth": "must",
+          "expectStrong": true
+        },
+        {
+          "id": "q-uncertain-offset",
+          "relation": "may",
+          "truth": "may-or-weaker",
+          "expectStrong": false
+        },
+        {
+          "id": "q-provenance-loss",
+          "relation": "may",
+          "truth": "may-or-weaker",
+          "expectStrong": false
+        },
+        {
+          "id": "q-pointer-phi",
+          "relation": "may",
+          "truth": "may-or-weaker",
+          "expectStrong": false
+        },
+        {
+          "id": "q-cyclic-phi",
+          "relation": "may",
+          "truth": "may-or-weaker",
+          "expectStrong": false
+        },
+        {
+          "id": "q-overlapping-fields",
+          "relation": "may",
+          "truth": "may-or-weaker",
+          "expectStrong": false
+        },
+        {
+          "id": "q-similar-roots",
+          "relation": "may",
+          "truth": "may-or-weaker",
+          "expectStrong": false
+        },
+        {
+          "id": "q-select-roots",
+          "relation": "may",
+          "truth": "may-or-weaker",
+          "expectStrong": false
+        },
+        {
+          "id": "q-load-derived",
+          "relation": "may",
+          "truth": "may-or-weaker",
+          "expectStrong": false
+        }
+      ]
+    },
+    "falseNoAlias": 0,
+    "falseMustAlias": 0
+  },
+  "memoryLinks": {
+    "baseline": {
+      "scoringId": "phase7.scoring",
+      "scoringVersion": "1.0.0",
+      "providerId": "floor",
+      "total": 4,
+      "barrierBypasses": 0,
+      "exactLinks": 2,
+      "blockedCorrect": 2,
+      "missedExact": 0,
+      "perQuery": [
+        {
+          "id": "m-unknown-store",
+          "truth": "blocked",
+          "kinds": [
+            "may-alias-clobber"
+          ],
+          "exact": false,
+          "sources": [
+            "node_st_unknown"
+          ]
+        },
+        {
+          "id": "m-unknown-call",
+          "truth": "blocked",
+          "kinds": [
+            "call-clobber"
+          ],
+          "exact": false,
+          "sources": [
+            "node_call_unknown"
+          ]
+        },
+        {
+          "id": "m-pure-call",
+          "truth": "exact",
+          "kinds": [
+            "memory-def"
+          ],
+          "exact": true,
+          "sources": [
+            "node_st_known"
+          ]
+        },
+        {
+          "id": "m-stack-identical",
+          "truth": "exact",
+          "kinds": [
+            "memory-def"
+          ],
+          "exact": true,
+          "sources": [
+            "node_st"
+          ]
+        }
+      ]
+    },
+    "candidate": {
+      "scoringId": "phase7.scoring",
+      "scoringVersion": "1.0.0",
+      "providerId": "phase7",
+      "total": 4,
+      "barrierBypasses": 0,
+      "exactLinks": 2,
+      "blockedCorrect": 2,
+      "missedExact": 0,
+      "perQuery": [
+        {
+          "id": "m-unknown-store",
+          "truth": "blocked",
+          "kinds": [
+            "may-alias-clobber"
+          ],
+          "exact": false,
+          "sources": [
+            "node_st_unknown"
+          ]
+        },
+        {
+          "id": "m-unknown-call",
+          "truth": "blocked",
+          "kinds": [
+            "call-clobber"
+          ],
+          "exact": false,
+          "sources": [
+            "node_call_unknown"
+          ]
+        },
+        {
+          "id": "m-pure-call",
+          "truth": "exact",
+          "kinds": [
+            "memory-def"
+          ],
+          "exact": true,
+          "sources": [
+            "node_st_known"
+          ]
+        },
+        {
+          "id": "m-stack-identical",
+          "truth": "exact",
+          "kinds": [
+            "memory-def"
+          ],
+          "exact": true,
+          "sources": [
+            "node_st"
+          ]
+        }
+      ]
+    },
+    "barrierBypasses": 0
+  },
+  "types": {
+    "available": false,
+    "candidate": {
+      "falseCertainty": null
+    },
+    "reason": "type-constraint-graph-not-implemented"
+  },
+  "summaries": {
+    "available": false,
+    "reason": "summary-analysis-not-implemented"
+  },
+  "escape": {
+    "available": false,
+    "reason": "escape-analysis-not-implemented"
+  },
+  "discovery": {
+    "available": false,
+    "candidate": {
+      "falseStarts": null
+    },
+    "reason": "function-discovery-not-implemented"
+  },
+  "debug": {
+    "available": false,
+    "ecosystems": {},
+    "reason": "debug-providers-not-implemented"
+  },
+  "architectureLanes": {
+    "arm64": {
+      "available": false,
+      "genericLawsHold": false,
+      "reason": "metamorphic-laws-not-implemented"
+    },
+    "riscv64": {
+      "available": false,
+      "genericLawsHold": false,
+      "reason": "metamorphic-laws-not-implemented"
+    },
+    "x86_64": {
+      "available": false,
+      "genericLawsHold": false,
+      "reason": "metamorphic-laws-not-implemented"
+    }
+  },
+  "performance": {
+    "coldActiveFunction": {
+      "medianMs": 24.514,
+      "samples": [
+        22.933,
+        21.913,
+        24.514,
+        34.8,
+        30.973
+      ]
+    },
+    "warmActiveFunction": {
+      "medianMs": 5.548,
+      "samples": [
+        4.266,
+        6.461,
+        3.177,
+        8.151,
+        5.548
+      ]
+    },
+    "pathologicalPointerPhi": {
+      "medianMs": 5.893,
+      "samples": [
+        8.715,
+        7.066,
+        5.893,
+        5.567,
+        5.805
+      ]
+    }
+  },
+  "gates": [],
+  "evidenceDigest": "ef8c54f912c311d045ae57f079d4b879",
+  "failures": [
+    {
+      "category": "soundness",
+      "firstDivergence": "a type conclusion was reported certain against exact truth",
+      "expected": "0",
+      "actual": "Infinity",
+      "identity": "bdf90569ed037a3d30e4439dcde970aad9352e21",
+      "blocking": true
+    },
+    {
+      "category": "soundness",
+      "firstDivergence": "function discovery produced a start with no supporting evidence",
+      "expected": "0",
+      "actual": "Infinity",
+      "identity": "bdf90569ed037a3d30e4439dcde970aad9352e21",
+      "blocking": true
+    },
+    {
+      "category": "debug",
+      "firstDivergence": "required debug ecosystem is missing: dwarf",
+      "expected": "present",
+      "actual": "missing",
+      "identity": "bdf90569ed037a3d30e4439dcde970aad9352e21",
+      "blocking": true
+    },
+    {
+      "category": "debug",
+      "firstDivergence": "required debug ecosystem is missing: pdb",
+      "expected": "present",
+      "actual": "missing",
+      "identity": "bdf90569ed037a3d30e4439dcde970aad9352e21",
+      "blocking": true
+    },
+    {
+      "category": "architecture",
+      "firstDivergence": "metamorphic middle-end laws failed on lane: arm64",
+      "expected": "laws hold",
+      "actual": "violated",
+      "identity": "bdf90569ed037a3d30e4439dcde970aad9352e21",
+      "blocking": true
+    },
+    {
+      "category": "architecture",
+      "firstDivergence": "metamorphic middle-end laws failed on lane: riscv64",
+      "expected": "laws hold",
+      "actual": "violated",
+      "identity": "bdf90569ed037a3d30e4439dcde970aad9352e21",
+      "blocking": true
+    },
+    {
+      "category": "architecture",
+      "firstDivergence": "metamorphic middle-end laws failed on lane: x86_64",
+      "expected": "laws hold",
+      "actual": "violated",
+      "identity": "bdf90569ed037a3d30e4439dcde970aad9352e21",
+      "blocking": true
+    },
+    {
+      "category": "integration",
+      "firstDivergence": "a required checkpoint has no evidence on this head",
+      "expected": "P7-0,P7-1,P7-2,P7-3a,P7-3b,P7-3c,P7-4,P7-5a,P7-5b,P7-6,P7-I",
+      "actual": "missing: P7-0,P7-1,P7-2,P7-3a,P7-3b,P7-3c,P7-4,P7-5a,P7-5b,P7-6,P7-I",
+      "identity": "bdf90569ed037a3d30e4439dcde970aad9352e21",
+      "blocking": true
+    }
+  ],
+  "verdict": "NOT-INTEGRATED"
+}

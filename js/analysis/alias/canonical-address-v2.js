@@ -44,6 +44,11 @@ function addressProofOptions(options = {}) {
   };
 }
 
+export {
+  defaultRootEntityId,
+  normalizeRootIdentity,
+} from './canonical-address-v2-core.js';
+
 export function deriveCanonicalAddressProof(ir, addressValueId, options = {}) {
   return deriveCanonicalAddressProofCore(ir, addressValueId, addressProofOptions(options));
 }

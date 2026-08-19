@@ -1,0 +1,166 @@
+{
+  "schemaVersion": 1,
+  "corpusId": "phase7-alias-memory-corpus",
+  "corpusVersion": 1,
+  "architectureLanes": {
+    "mandatory": [
+      "arm64",
+      "riscv64",
+      "x86_64"
+    ],
+    "supplementary": [
+      "arm64e"
+    ]
+  },
+  "formatLanes": [
+    "elf",
+    "macho",
+    "pe"
+  ],
+  "fixtureIds": [
+    "cyclic-pointer-phi",
+    "load-derived-pointer",
+    "overlapping-fields",
+    "pointer-phi-distinct-offsets",
+    "provenance-loss",
+    "pure-call-no-barrier",
+    "select-distinct-roots",
+    "similar-looking-roots",
+    "stack-disjoint",
+    "stack-identical",
+    "stack-overlapping",
+    "uncertain-offset",
+    "unknown-call-barrier",
+    "unknown-store-barrier"
+  ],
+  "aliasQueries": [
+    {
+      "id": "q-stack-disjoint",
+      "fixture": "stack-disjoint",
+      "left": "node_st0",
+      "right": "node_st8",
+      "truth": "no",
+      "expectStrong": true
+    },
+    {
+      "id": "q-stack-overlapping",
+      "fixture": "stack-overlapping",
+      "left": "node_st0",
+      "right": "node_st4",
+      "truth": "may-or-weaker",
+      "expectStrong": false
+    },
+    {
+      "id": "q-stack-identical",
+      "fixture": "stack-identical",
+      "left": "node_st",
+      "right": "node_ld",
+      "truth": "must",
+      "expectStrong": true
+    },
+    {
+      "id": "q-uncertain-offset",
+      "fixture": "uncertain-offset",
+      "left": "node_st0",
+      "right": "node_stn",
+      "truth": "may-or-weaker",
+      "expectStrong": false
+    },
+    {
+      "id": "q-provenance-loss",
+      "fixture": "provenance-loss",
+      "left": "node_st_lost",
+      "right": "node_st_other",
+      "truth": "may-or-weaker",
+      "expectStrong": false
+    },
+    {
+      "id": "q-pointer-phi",
+      "fixture": "pointer-phi-distinct-offsets",
+      "left": "node_st_merged",
+      "right": "node_st_zero",
+      "truth": "may-or-weaker",
+      "expectStrong": false
+    },
+    {
+      "id": "q-cyclic-phi",
+      "fixture": "cyclic-pointer-phi",
+      "left": "node_st_cur",
+      "right": "node_st_far",
+      "truth": "may-or-weaker",
+      "expectStrong": false
+    },
+    {
+      "id": "q-overlapping-fields",
+      "fixture": "overlapping-fields",
+      "left": "node_st_wide",
+      "right": "node_st_inner",
+      "truth": "may-or-weaker",
+      "expectStrong": false
+    },
+    {
+      "id": "q-similar-roots",
+      "fixture": "similar-looking-roots",
+      "left": "node_st_a",
+      "right": "node_st_b",
+      "truth": "may-or-weaker",
+      "expectStrong": false
+    },
+    {
+      "id": "q-select-roots",
+      "fixture": "select-distinct-roots",
+      "left": "node_st_chosen",
+      "right": "node_st_a",
+      "truth": "may-or-weaker",
+      "expectStrong": false
+    },
+    {
+      "id": "q-load-derived",
+      "fixture": "load-derived-pointer",
+      "left": "node_st_loaded",
+      "right": "node_st_other",
+      "truth": "may-or-weaker",
+      "expectStrong": false
+    }
+  ],
+  "memoryLinkQueries": [
+    {
+      "id": "m-unknown-store",
+      "fixture": "unknown-store-barrier",
+      "load": "node_ld",
+      "truth": "blocked",
+      "expectedStore": null
+    },
+    {
+      "id": "m-unknown-call",
+      "fixture": "unknown-call-barrier",
+      "load": "node_ld",
+      "truth": "blocked",
+      "expectedStore": null
+    },
+    {
+      "id": "m-pure-call",
+      "fixture": "pure-call-no-barrier",
+      "load": "node_ld",
+      "truth": "exact",
+      "expectedStore": "node_st_known"
+    },
+    {
+      "id": "m-stack-identical",
+      "fixture": "stack-identical",
+      "load": "node_ld",
+      "truth": "exact",
+      "expectedStore": "node_st"
+    }
+  ],
+  "truthGenerator": {
+    "id": "phase7.corpus.declared-truth",
+    "version": "1.0.0"
+  },
+  "scoring": {
+    "id": "phase7.scoring",
+    "version": "1.0.0"
+  },
+  "exclusions": [],
+  "manifestDigest": "f97d8b40b5298824df6f77ea23f923b3"
+}

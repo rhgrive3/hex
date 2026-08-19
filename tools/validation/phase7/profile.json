@@ -1,0 +1,44 @@
+{
+  "profileVersion": 1,
+  "phase": 7,
+  "note": "Frozen Phase 7 acceptance profile. Changing any value here is an acceptance-semantics change: it invalidates historical Phase 7 evidence and requires the baseline to be re-run under the new profile (ENGINEERING_PROCESS_GUARDRAILS §5, PHASE7 §13.4).",
+  "soundness": {
+    "maxFalseNoAlias": 0,
+    "maxFalseMustAlias": 0,
+    "maxBarrierBypasses": 0,
+    "maxFalseCertainty": 0,
+    "maxUnsoundMutantsAccepted": 0
+  },
+  "precision": {
+    "requireStrongProvenRateAtLeastBaseline": true,
+    "requireExactProvenAtLeastBaseline": true,
+    "requireNoUnknownRateIncrease": true
+  },
+  "performance": {
+    "procedureVersion": 1,
+    "repetitions": 5,
+    "aggregate": "median",
+    "environmentClass": "ci-linux-x64",
+    "toleratedVariance": 0.35,
+    "budgetsMs": {
+      "coldActiveFunction": 250,
+      "warmActiveFunction": 60,
+      "pathologicalPointerPhi": 1500,
+      "recursiveSccFixture": 1500,
+      "largeDebugLookup": 1500,
+      "strippedDiscovery": 1500
+    }
+  },
+  "requiredCheckpoints": [
+    "P7-0", "P7-1", "P7-2", "P7-3a", "P7-3b", "P7-3c", "P7-4", "P7-5a", "P7-5b", "P7-6", "P7-I"
+  ],
+  "requiredDebugEcosystems": ["dwarf", "pdb"],
+  "requiredGates": [
+    "npm run phase7:test",
+    "npm run migration:test",
+    "npm run semantic-v2:test",
+    "npm run semantic:test",
+    "npm run decompiler:test",
+    "npm run compiler-truth"
+  ]
+}

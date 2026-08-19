@@ -74,7 +74,10 @@ function rootIdentityKey(root) {
   });
 }
 
-function normalizeRootIdentity(variable, functionId) {
+// Exported so P7-2's range-valued points-to solver can name exactly the same
+// root as the exact canonical derivation. Two spellings of one root identity
+// would silently split every A2 refinement away from the A1 answer.
+export function normalizeRootIdentity(variable, functionId) {
   const identity = {
     kind: 'semantic-state-root',
     functionId: String(functionId),
@@ -88,7 +91,7 @@ function normalizeRootIdentity(variable, functionId) {
   return deepFreeze(identity);
 }
 
-function defaultRootEntityId(rootIdentity) {
+export function defaultRootEntityId(rootIdentity) {
   return `entity_memory_root_${stableDigest({
     version: CANONICAL_ADDRESS_DERIVATION_VERSION,
     rootIdentity,

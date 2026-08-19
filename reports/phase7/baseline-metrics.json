@@ -1,0 +1,201 @@
+{
+  "schemaVersion": 1,
+  "capturedAt": "2026-08-19T11:10:29.165Z",
+  "manifestDigest": "f97d8b40b5298824df6f77ea23f923b3",
+  "corpusId": "phase7-alias-memory-corpus",
+  "corpusVersion": 1,
+  "scoring": {
+    "id": "phase7.scoring",
+    "version": "1.0.0"
+  },
+  "truthGenerator": {
+    "id": "phase7.corpus.declared-truth",
+    "version": "1.0.0"
+  },
+  "architectureLanes": {
+    "mandatory": [
+      "arm64",
+      "riscv64",
+      "x86_64"
+    ],
+    "supplementary": [
+      "arm64e"
+    ]
+  },
+  "alias": {
+    "scoringId": "phase7.scoring",
+    "scoringVersion": "1.0.0",
+    "truthGeneratorId": "phase7.corpus.declared-truth",
+    "truthGeneratorVersion": "1.0.0",
+    "total": 11,
+    "counts": {
+      "must": 1,
+      "may": 10,
+      "no": 0,
+      "unknown": 0
+    },
+    "falseNoAlias": 0,
+    "falseMustAlias": 0,
+    "exactProven": 1,
+    "exactAvailable": 2,
+    "unknownRate": 0,
+    "mayRate": 0.9090909090909091,
+    "strongProvenRate": 0.09090909090909091,
+    "perQuery": [
+      {
+        "id": "q-stack-disjoint",
+        "relation": "may",
+        "truth": "no",
+        "expectStrong": true
+      },
+      {
+        "id": "q-stack-overlapping",
+        "relation": "may",
+        "truth": "may-or-weaker",
+        "expectStrong": false
+      },
+      {
+        "id": "q-stack-identical",
+        "relation": "must",
+        "truth": "must",
+        "expectStrong": true
+      },
+      {
+        "id": "q-uncertain-offset",
+        "relation": "may",
+        "truth": "may-or-weaker",
+        "expectStrong": false
+      },
+      {
+        "id": "q-provenance-loss",
+        "relation": "may",
+        "truth": "may-or-weaker",
+        "expectStrong": false
+      },
+      {
+        "id": "q-pointer-phi",
+        "relation": "may",
+        "truth": "may-or-weaker",
+        "expectStrong": false
+      },
+      {
+        "id": "q-cyclic-phi",
+        "relation": "may",
+        "truth": "may-or-weaker",
+        "expectStrong": false
+      },
+      {
+        "id": "q-overlapping-fields",
+        "relation": "may",
+        "truth": "may-or-weaker",
+        "expectStrong": false
+      },
+      {
+        "id": "q-similar-roots",
+        "relation": "may",
+        "truth": "may-or-weaker",
+        "expectStrong": false
+      },
+      {
+        "id": "q-select-roots",
+        "relation": "may",
+        "truth": "may-or-weaker",
+        "expectStrong": false
+      },
+      {
+        "id": "q-load-derived",
+        "relation": "may",
+        "truth": "may-or-weaker",
+        "expectStrong": false
+      }
+    ]
+  },
+  "memoryLinks": {
+    "scoringId": "phase7.scoring",
+    "scoringVersion": "1.0.0",
+    "providerId": "floor",
+    "total": 4,
+    "barrierBypasses": 0,
+    "exactLinks": 2,
+    "blockedCorrect": 2,
+    "missedExact": 0,
+    "perQuery": [
+      {
+        "id": "m-unknown-store",
+        "truth": "blocked",
+        "kinds": [
+          "may-alias-clobber"
+        ],
+        "exact": false,
+        "sources": [
+          "node_st_unknown"
+        ]
+      },
+      {
+        "id": "m-unknown-call",
+        "truth": "blocked",
+        "kinds": [
+          "call-clobber"
+        ],
+        "exact": false,
+        "sources": [
+          "node_call_unknown"
+        ]
+      },
+      {
+        "id": "m-pure-call",
+        "truth": "exact",
+        "kinds": [
+          "memory-def"
+        ],
+        "exact": true,
+        "sources": [
+          "node_st_known"
+        ]
+      },
+      {
+        "id": "m-stack-identical",
+        "truth": "exact",
+        "kinds": [
+          "memory-def"
+        ],
+        "exact": true,
+        "sources": [
+          "node_st"
+        ]
+      }
+    ]
+  },
+  "performance": {
+    "coldActiveFunction": {
+      "medianMs": 23.948,
+      "samples": [
+        33.458,
+        23.948,
+        22.649,
+        16.414,
+        25.476
+      ]
+    },
+    "warmActiveFunction": {
+      "medianMs": 3.836,
+      "samples": [
+        3.669,
+        3.984,
+        3.836,
+        4.581,
+        2.958
+      ]
+    },
+    "pathologicalPointerPhi": {
+      "medianMs": 3.939,
+      "samples": [
+        6.313,
+        5.277,
+        3.939,
+        3.764,
+        3.345
+      ]
+    }
+  }
+}

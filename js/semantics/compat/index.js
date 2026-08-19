@@ -7,7 +7,8 @@ import {
   stableStringify,
 } from '../../core/identity/index.js';
 import { createOriginSet, mergeOriginSets } from '../../core/identity/origin.js';
-import { aliasMemoryRegions, classifySemanticMemoryRegion } from '../../analysis/alias/index-v2.js';
+import { classifySemanticMemoryRegion } from '../../analysis/alias/index-v2.js';
+import { createPhase7AliasSolver } from '../../analysis/alias/solver.js';
 import { createSemanticCfg } from '../cfg/index.js';
 import {
   createMachineEffectBundle,
@@ -416,6 +417,15 @@ export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
   const regionOptions = options.regionOptions ?? {};
   const rootDescriptors = input.rootDescriptors ?? regionOptions.rootDescriptors ?? options.rootDescriptors;
   const rootDescriptorProvider = createRegionRootDescriptorProvider(architecturePlugin, architectureId, input, options);
+  const aliasSolver = createPhase7AliasSolver({
+    ir,
+    cfg,
+    ssa,
+    options: {
+      ...(options.aliasOptions ?? {}),
+      ...(options.signal == null ? {} : { signal: options.signal }),
+    },
+  });
   const memorySsa = buildMemorySsa(ir, cfg, {
     ...(options.memorySsaOptions ?? {}),
     resolveRegion(memory, context) {
@@ -426,9 +436,12 @@ export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
         ...(rootDescriptorProvider == null ? {} : { rootDescriptorProvider }),
       });
     },
-    queryAlias(left, right) {
-      return aliasMemoryRegions(left, right);
-    },
+    // The canonical alias provider. The Phase 7 solver answers region-identity
+    // questions through the same conservative floor it always did, and adds a
+    // field-sensitive refinement on top when — and only when — the points-to
+    // solve proves one. Consumers get the stronger answer here rather than
+    // building a private one, which is what keeps a single semantic truth.
+    queryAlias: aliasSolver.queryAlias,
   });
   validateMemorySsa(memorySsa, { cfg, ...(options.memorySsaValidationOptions ?? {}) });
 
