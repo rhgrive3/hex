@@ -29,12 +29,12 @@ jobs:
       - run: npm ci
       - name: Apply issue 949 repair
         run: python3 .github/apply-unlinked-949.py
+      - name: Rebuild canonical userscript before suites
+        run: npm run userscript:build
       - name: Focused regression
         run: node tests/semantic-v2/issue-949-indirect-control.test.mjs
       - name: Semantic v2 suite
         run: npm run semantic-v2:test
-      - name: Rebuild canonical userscript
-        run: npm run userscript:build
       - name: Remove bootstrap files
         run: rm -f .github/apply-unlinked-949.py .github/workflows/unlinked-949-repair.yml
       - name: Full repository check
