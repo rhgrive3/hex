@@ -34,16 +34,16 @@ replaceOnce(
  * visible while avoiding an invalid duplicate \`var_* = expr; return expr;\`.
  */
 function isElidableReturnSpillStore(store, state) {
-  if (!store || store.op !== OP.STORE || store.loc?.kind !== MK.STACK || !store.loc?.key) return false;
+  if (!store || store.op !== 'store' || store.loc?.kind !== 'stack' || !store.loc?.key) return false;
   const instructions = state.ir?.instructions || [];
   const sameLocationMemory = instructions.filter((inst) =>
-    (inst.op === OP.LOAD || inst.op === OP.STORE) && inst.loc?.key === store.loc.key);
-  const loads = sameLocationMemory.filter((inst) => inst.op === OP.LOAD && inst.reachingStore === store);
-  if (loads.length !== 1 || sameLocationMemory.some((inst) => inst.op === OP.STORE && inst !== store)) return false;
+    (inst.op === 'load' || inst.op === 'store') && inst.loc?.key === store.loc.key);
+  const loads = sameLocationMemory.filter((inst) => inst.op === 'load' && inst.reachingStore === store);
+  if (loads.length !== 1 || sameLocationMemory.some((inst) => inst.op === 'store' && inst !== store)) return false;
   const load = loads[0];
   if (store.row == null || load.row == null || Number(load.row) <= Number(store.row) || !load.dst) return false;
 
-  const calls = instructions.filter((inst) => inst.op === OP.CALL && inst.row != null
+  const calls = instructions.filter((inst) => inst.op === 'call' && inst.row != null
     && Number(inst.row) > Number(store.row) && Number(inst.row) < Number(load.row));
   if (!calls.length) return false;
 
@@ -60,7 +60,7 @@ function isElidableReturnSpillStore(store, state) {
   if (!storedKey) return false;
 
   for (const ret of instructions) {
-    if (ret.op !== OP.RET || ret.row == null || Number(ret.row) <= Number(load.row)) continue;
+    if (ret.op !== 'ret' || ret.row == null || Number(ret.row) <= Number(load.row)) continue;
     const returned = returnValueAt(ret, state);
     if (!returned || !valueDependsOnAny(returned, loadIds)) continue;
     if (structuralKey(expressionFor(returned, state)) === storedKey) return true;
@@ -71,13 +71,11 @@ function isElidableReturnSpillStore(store, state) {
 function knownStatementForLine(line, state) {`);
 
 replaceOnce(
-`  const store = insts.find((i) => i.op === OP.STORE);
+`  const store = insts.find((i) => i.op === 'store');
   if (store) {
-    if (insts.some((i) => i.op === OP.CALL && i.row === store.row)) return null;
-    const location = memoryLocation(store, state), value = valueOf(store.args?.[0]);`,
-`  const store = insts.find((i) => i.op === OP.STORE);
+    const location = memoryLocation(store, state), value = valueOf(store.args?.[0]), e = expressionFor(value, state);`,
+`  const store = insts.find((i) => i.op === 'store');
   if (store) {
-    if (insts.some((i) => i.op === OP.CALL && i.row === store.row)) return null;
     if (isElidableReturnSpillStore(store, state)) {
       return {
         text:'',
@@ -85,7 +83,7 @@ replaceOnce(
         source:sourceOf({ ir:store.id, value:valueOf(store.args?.[0]), reason:'memoryssa-return-spill' }),
       };
     }
-    const location = memoryLocation(store, state), value = valueOf(store.args?.[0]);`);
+    const location = memoryLocation(store, state), value = valueOf(store.args?.[0]), e = expressionFor(value, state);`);
 
 await fs.writeFile(path, source);
 console.log('proven stack-only return spill elision staged');
