@@ -20,6 +20,7 @@ const fp = (num, bits = 32, prefix = bits === 32 ? 's' : 'd') => ({ k:'reg', cls
 const vec = (num, arr) => ({ k:'reg', cls:'vec', num, bits:128, arr, text:`v${num}.${arr}` });
 
 assert.equal(MACHINE_EFFECTS_SCHEMA_VERSION, 1);
+// Keep this integration contract synchronized with the production ARM64 semantic version.
 assert.equal(ARM64_MACHINE_EFFECTS_SEMANTIC_VERSION, '3');
 assert.equal(ARM64_ARCHITECTURE.semanticVersion, '3');
 assert.equal(ARM64E_ARCHITECTURE.semanticVersion, '3');
