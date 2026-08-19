@@ -45,6 +45,8 @@ jobs:
           node scripts/repair-issues-907-909-followup.mjs
           node scripts/repair-issue-909-section-scope.mjs
           node scripts/repair-test-907-ialign32.mjs
+          node scripts/repair-issue-913-abi-locations.mjs
+          node scripts/repair-compiler-truth-explicit-abi.mjs
 
       - name: Focused regressions
         run: node --test --test-reporter=spec --test-concurrency=1 tests/phase6/generic-core/issues-907-909-910-913.test.mjs
@@ -64,6 +66,8 @@ jobs:
           rm scripts/repair-issues-907-909-followup.mjs
           rm scripts/repair-issue-909-section-scope.mjs
           rm scripts/repair-test-907-ialign32.mjs
+          rm scripts/repair-issue-913-abi-locations.mjs
+          rm scripts/repair-compiler-truth-explicit-abi.mjs
           rm .github/workflows/repair-issues-907-913.yml
           git add -A
           git diff --cached --check
