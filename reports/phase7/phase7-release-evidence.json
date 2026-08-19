@@ -1,0 +1,1197 @@
+{
+  "schemaVersion": "phase7-release-evidence/v1",
+  "verifierId": "phase7.verifier",
+  "verifierVersion": "1.0.0",
+  "verifierSourceSha256": "49b9d618389b364be715adf9f4f44ef6e06963638f31487950805da5da78e20c",
+  "generatedAt": "2026-08-19T13:09:26.025Z",
+  "product": {
+    "commitSha": "9f56a39a52015a8349c1f0e3629e05b7fd145d3a",
+    "treeSha": "aed92f8ff5f0f00e783d6ea2980d8d34e2b88492",
+    "workingTreeClean": true,
+    "dirtyPaths": [],
+    "branch": "phase7/static-analysis-depth"
+  },
+  "profileVersion": 1,
+  "corpus": {
+    "corpusId": "phase7-alias-memory-corpus",
+    "corpusVersion": 1,
+    "manifestDigest": "519bd15f3a918dbc2b436aca4870455d",
+    "frozenDigestMatches": true,
+    "scoring": {
+      "id": "phase7.scoring",
+      "version": "1.0.0"
+    },
+    "truthGenerator": {
+      "id": "phase7.corpus.declared-truth",
+      "version": "1.0.0"
+    }
+  },
+  "checkpoints": [
+    {
+      "id": "P7-0",
+      "present": true
+    },
+    {
+      "id": "P7-1",
+      "present": true
+    },
+    {
+      "id": "P7-2",
+      "present": true
+    },
+    {
+      "id": "P7-3a",
+      "present": true
+    },
+    {
+      "id": "P7-3b",
+      "present": true
+    },
+    {
+      "id": "P7-3c",
+      "present": true
+    },
+    {
+      "id": "P7-4",
+      "present": true
+    },
+    {
+      "id": "P7-5a",
+      "present": true
+    },
+    {
+      "id": "P7-5b",
+      "present": true
+    },
+    {
+      "id": "P7-6",
+      "present": true
+    },
+    {
+      "id": "P7-I",
+      "present": true
+    }
+  ],
+  "alias": {
+    "baseline": {
+      "scoringId": "phase7.scoring",
+      "scoringVersion": "1.0.0",
+      "truthGeneratorId": "phase7.corpus.declared-truth",
+      "truthGeneratorVersion": "1.0.0",
+      "total": 16,
+      "counts": {
+        "must": 1,
+        "may": 15,
+        "no": 0,
+        "unknown": 0
+      },
+      "falseNoAlias": 0,
+      "falseMustAlias": 0,
+      "exactProven": 1,
+      "exactAvailable": 3,
+      "unknownRate": 0,
+      "mayRate": 0.9375,
+      "strongProvenRate": 0.0625,
+      "perQuery": [
+        {
+          "id": "q-stack-disjoint",
+          "relation": "may",
+          "truth": "no",
+          "expectStrong": true
+        },
+        {
+          "id": "q-stack-overlapping",
+          "relation": "may",
+          "truth": "may-or-weaker",
+          "expectStrong": false
+        },
+        {
+          "id": "q-stack-identical",
+          "relation": "must",
+          "truth": "must",
+          "expectStrong": true
+        },
+        {
+          "id": "q-uncertain-offset",
+          "relation": "may",
+          "truth": "may-or-weaker",
+          "expectStrong": false
+        },
+        {
+          "id": "q-provenance-loss",
+          "relation": "may",
+          "truth": "may-or-weaker",
+          "expectStrong": false
+        },
+        {
+          "id": "q-pointer-phi",
+          "relation": "may",
+          "truth": "may-or-weaker",
+          "expectStrong": false
+        },
+        {
+          "id": "q-cyclic-phi",
+          "relation": "may",
+          "truth": "may-or-weaker",
+          "expectStrong": false
+        },
+        {
+          "id": "q-overlapping-fields",
+          "relation": "may",
+          "truth": "may-or-weaker",
+          "expectStrong": false
+        },
+        {
+          "id": "q-similar-roots",
+          "relation": "may",
+          "truth": "may-or-weaker",
+          "expectStrong": false
+        },
+        {
+          "id": "q-select-roots",
+          "relation": "may",
+          "truth": "may-or-weaker",
+          "expectStrong": false
+        },
+        {
+          "id": "q-load-derived",
+          "relation": "may",
+          "truth": "may-or-weaker",
+          "expectStrong": false
+        },
+        {
+          "id": "q-frame-non-escaping",
+          "relation": "may",
+          "truth": "no",
+          "expectStrong": true
+        },
+        {
+          "id": "q-frame-escaped-argument",
+          "relation": "may",
+          "truth": "may-or-weaker",
+          "expectStrong": false
+        },
+        {
+          "id": "q-two-pointer-add-left",
+          "relation": "may",
+          "truth": "may-or-weaker",
+          "expectStrong": false
+        },
+        {
+          "id": "q-two-pointer-add-right",
+          "relation": "may",
+          "truth": "may-or-weaker",
+          "expectStrong": false
+        },
+        {
+          "id": "q-frame-arithmetic-escape",
+          "relation": "may",
+          "truth": "may-or-weaker",
+          "expectStrong": false
+        }
+      ]
+    },
+    "candidate": {
+      "scoringId": "phase7.scoring",
+      "scoringVersion": "1.0.0",
+      "truthGeneratorId": "phase7.corpus.declared-truth",
+      "truthGeneratorVersion": "1.0.0",
+      "total": 16,
+      "counts": {
+        "must": 1,
+        "may": 13,
+        "no": 2,
+        "unknown": 0
+      },
+      "falseNoAlias": 0,
+      "falseMustAlias": 0,
+      "exactProven": 3,
+      "exactAvailable": 3,
+      "unknownRate": 0,
+      "mayRate": 0.8125,
+      "strongProvenRate": 0.1875,
+      "perQuery": [
+        {
+          "id": "q-stack-disjoint",
+          "relation": "no",
+          "truth": "no",
+          "expectStrong": true
+        },
+        {
+          "id": "q-stack-overlapping",
+          "relation": "may",
+          "truth": "may-or-weaker",
+          "expectStrong": false
+        },
+        {
+          "id": "q-stack-identical",
+          "relation": "must",
+          "truth": "must",
+          "expectStrong": true
+        },
+        {
+          "id": "q-uncertain-offset",
+          "relation": "may",
+          "truth": "may-or-weaker",
+          "expectStrong": false
+        },
+        {
+          "id": "q-provenance-loss",
+          "relation": "may",
+          "truth": "may-or-weaker",
+          "expectStrong": false
+        },
+        {
+          "id": "q-pointer-phi",
+          "relation": "may",
+          "truth": "may-or-weaker",
+          "expectStrong": false
+        },
+        {
+          "id": "q-cyclic-phi",
+          "relation": "may",
+          "truth": "may-or-weaker",
+          "expectStrong": false
+        },
+        {
+          "id": "q-overlapping-fields",
+          "relation": "may",
+          "truth": "may-or-weaker",
+          "expectStrong": false
+        },
+        {
+          "id": "q-similar-roots",
+          "relation": "may",
+          "truth": "may-or-weaker",
+          "expectStrong": false
+        },
+        {
+          "id": "q-select-roots",
+          "relation": "may",
+          "truth": "may-or-weaker",
+          "expectStrong": false
+        },
+        {
+          "id": "q-load-derived",
+          "relation": "may",
+          "truth": "may-or-weaker",
+          "expectStrong": false
+        },
+        {
+          "id": "q-frame-non-escaping",
+          "relation": "no",
+          "truth": "no",
+          "expectStrong": true
+        },
+        {
+          "id": "q-frame-escaped-argument",
+          "relation": "may",
+          "truth": "may-or-weaker",
+          "expectStrong": false
+        },
+        {
+          "id": "q-two-pointer-add-left",
+          "relation": "may",
+          "truth": "may-or-weaker",
+          "expectStrong": false
+        },
+        {
+          "id": "q-two-pointer-add-right",
+          "relation": "may",
+          "truth": "may-or-weaker",
+          "expectStrong": false
+        },
+        {
+          "id": "q-frame-arithmetic-escape",
+          "relation": "may",
+          "truth": "may-or-weaker",
+          "expectStrong": false
+        }
+      ]
+    },
+    "falseNoAlias": 0,
+    "falseMustAlias": 0
+  },
+  "memoryLinks": {
+    "baseline": {
+      "scoringId": "phase7.scoring",
+      "scoringVersion": "1.0.0",
+      "providerId": "floor",
+      "total": 4,
+      "barrierBypasses": 0,
+      "exactLinks": 2,
+      "blockedCorrect": 2,
+      "missedExact": 0,
+      "perQuery": [
+        {
+          "id": "m-unknown-store",
+          "truth": "blocked",
+          "kinds": [
+            "may-alias-clobber"
+          ],
+          "exact": false,
+          "sources": [
+            "node_st_unknown"
+          ]
+        },
+        {
+          "id": "m-unknown-call",
+          "truth": "blocked",
+          "kinds": [
+            "call-clobber"
+          ],
+          "exact": false,
+          "sources": [
+            "node_call_unknown"
+          ]
+        },
+        {
+          "id": "m-pure-call",
+          "truth": "exact",
+          "kinds": [
+            "memory-def"
+          ],
+          "exact": true,
+          "sources": [
+            "node_st_known"
+          ]
+        },
+        {
+          "id": "m-stack-identical",
+          "truth": "exact",
+          "kinds": [
+            "memory-def"
+          ],
+          "exact": true,
+          "sources": [
+            "node_st"
+          ]
+        }
+      ]
+    },
+    "candidate": {
+      "scoringId": "phase7.scoring",
+      "scoringVersion": "1.0.0",
+      "providerId": "phase7",
+      "total": 4,
+      "barrierBypasses": 0,
+      "exactLinks": 2,
+      "blockedCorrect": 2,
+      "missedExact": 0,
+      "perQuery": [
+        {
+          "id": "m-unknown-store",
+          "truth": "blocked",
+          "kinds": [
+            "may-alias-clobber"
+          ],
+          "exact": false,
+          "sources": [
+            "node_st_unknown"
+          ]
+        },
+        {
+          "id": "m-unknown-call",
+          "truth": "blocked",
+          "kinds": [
+            "call-clobber"
+          ],
+          "exact": false,
+          "sources": [
+            "node_call_unknown"
+          ]
+        },
+        {
+          "id": "m-pure-call",
+          "truth": "exact",
+          "kinds": [
+            "memory-def"
+          ],
+          "exact": true,
+          "sources": [
+            "node_st_known"
+          ]
+        },
+        {
+          "id": "m-stack-identical",
+          "truth": "exact",
+          "kinds": [
+            "memory-def"
+          ],
+          "exact": true,
+          "sources": [
+            "node_st"
+          ]
+        }
+      ]
+    },
+    "barrierBypasses": 0
+  },
+  "types": {
+    "available": true,
+    "candidate": {
+      "falseCertainty": 0,
+      "accuracy": 1,
+      "missedCertainty": 0,
+      "missedContradictions": 0
+    },
+    "debugAssisted": {
+      "total": 10,
+      "falseCertainty": 0,
+      "missedCertainty": 0,
+      "missedContradictions": 0,
+      "correctSelections": 8,
+      "scoredSelections": 8,
+      "accuracy": 1,
+      "perCase": [
+        {
+          "id": "t-access-width",
+          "certain": [
+            "machine"
+          ],
+          "contradictions": 0,
+          "confidences": {
+            "machine": "certain"
+          },
+          "userConstrained": false
+        },
+        {
+          "id": "t-abi-location",
+          "certain": [
+            "abi"
+          ],
+          "contradictions": 0,
+          "confidences": {
+            "abi": "certain",
+            "nominal": "possible"
+          },
+          "userConstrained": false
+        },
+        {
+          "id": "t-contradicting-widths",
+          "certain": [],
+          "contradictions": 1,
+          "confidences": {
+            "machine": "unknown"
+          },
+          "userConstrained": false
+        },
+        {
+          "id": "t-soft-only-ranking",
+          "certain": [],
+          "contradictions": 0,
+          "confidences": {
+            "nominal": "probable"
+          },
+          "userConstrained": false
+        },
+        {
+          "id": "t-soft-tie-is-ambiguous",
+          "certain": [],
+          "contradictions": 0,
+          "confidences": {
+            "nominal": "unknown"
+          },
+          "userConstrained": false
+        },
+        {
+          "id": "t-soft-cannot-overrule-hard",
+          "certain": [
+            "machine"
+          ],
+          "contradictions": 0,
+          "confidences": {
+            "machine": "certain"
+          },
+          "userConstrained": false
+        },
+        {
+          "id": "t-union-overlap",
+          "certain": [],
+          "contradictions": 1,
+          "confidences": {
+            "structural": "unknown"
+          },
+          "userConstrained": false
+        },
+        {
+          "id": "t-disjoint-fields-coexist",
+          "certain": [
+            "structural"
+          ],
+          "contradictions": 0,
+          "confidences": {
+            "structural": "certain"
+          },
+          "userConstrained": false
+        },
+        {
+          "id": "t-nominal-alias-is-not-conflict",
+          "certain": [
+            "nominal"
+          ],
+          "contradictions": 0,
+          "confidences": {
+            "nominal": "certain"
+          },
+          "userConstrained": false
+        },
+        {
+          "id": "t-user-declared-constraint",
+          "certain": [
+            "nominal"
+          ],
+          "contradictions": 0,
+          "confidences": {
+            "nominal": "certain"
+          },
+          "userConstrained": true
+        }
+      ]
+    },
+    "noDebug": {
+      "total": 10,
+      "falseCertainty": 0,
+      "missedCertainty": 0,
+      "missedContradictions": 0,
+      "correctSelections": 8,
+      "scoredSelections": 8,
+      "accuracy": 1,
+      "perCase": [
+        {
+          "id": "t-access-width",
+          "certain": [
+            "machine"
+          ],
+          "contradictions": 0,
+          "confidences": {
+            "machine": "certain"
+          },
+          "userConstrained": false
+        },
+        {
+          "id": "t-abi-location",
+          "certain": [
+            "abi"
+          ],
+          "contradictions": 0,
+          "confidences": {
+            "abi": "certain",
+            "nominal": "possible"
+          },
+          "userConstrained": false
+        },
+        {
+          "id": "t-contradicting-widths",
+          "certain": [
+            "machine"
+          ],
+          "contradictions": 0,
+          "confidences": {
+            "machine": "certain"
+          },
+          "userConstrained": false
+        },
+        {
+          "id": "t-soft-only-ranking",
+          "certain": [],
+          "contradictions": 0,
+          "confidences": {
+            "nominal": "probable"
+          },
+          "userConstrained": false
+        },
+        {
+          "id": "t-soft-tie-is-ambiguous",
+          "certain": [],
+          "contradictions": 0,
+          "confidences": {
+            "nominal": "unknown"
+          },
+          "userConstrained": false
+        },
+        {
+          "id": "t-soft-cannot-overrule-hard",
+          "certain": [
+            "machine"
+          ],
+          "contradictions": 0,
+          "confidences": {
+            "machine": "certain"
+          },
+          "userConstrained": false
+        },
+        {
+          "id": "t-union-overlap",
+          "certain": [],
+          "contradictions": 0,
+          "confidences": {},
+          "userConstrained": false
+        },
+        {
+          "id": "t-disjoint-fields-coexist",
+          "certain": [],
+          "contradictions": 0,
+          "confidences": {},
+          "userConstrained": false
+        },
+        {
+          "id": "t-nominal-alias-is-not-conflict",
+          "certain": [
+            "nominal"
+          ],
+          "contradictions": 0,
+          "confidences": {
+            "nominal": "certain"
+          },
+          "userConstrained": false
+        },
+        {
+          "id": "t-user-declared-constraint",
+          "certain": [
+            "nominal"
+          ],
+          "contradictions": 0,
+          "confidences": {
+            "nominal": "certain"
+          },
+          "userConstrained": true
+        }
+      ]
+    },
+    "guardHolds": true
+  },
+  "summaries": {
+    "available": true,
+    "total": 6,
+    "missingEffects": 0,
+    "inventedEffects": 0,
+    "falsePurity": 0,
+    "wrongCompleteness": 0,
+    "nonConvergent": 0,
+    "nondeterministic": 0,
+    "perQuery": [
+      {
+        "id": "s-acyclic-chain",
+        "writes": [
+          "region_leaf"
+        ],
+        "broad": false,
+        "unknownCalls": [],
+        "completeness": "complete",
+        "expectedCompleteness": "complete",
+        "iterations": 3
+      },
+      {
+        "id": "s-self-recursive",
+        "writes": [
+          "region_self"
+        ],
+        "broad": false,
+        "unknownCalls": [],
+        "completeness": "complete",
+        "expectedCompleteness": "complete",
+        "iterations": 2
+      },
+      {
+        "id": "s-mutual-recursion",
+        "writes": [
+          "region_leaf"
+        ],
+        "broad": false,
+        "unknownCalls": [],
+        "completeness": "complete",
+        "expectedCompleteness": "complete",
+        "iterations": 4
+      },
+      {
+        "id": "s-missing-callee",
+        "writes": [],
+        "broad": true,
+        "unknownCalls": [
+          "library-model-missing"
+        ],
+        "completeness": "partial",
+        "expectedCompleteness": "partial",
+        "iterations": 1
+      },
+      {
+        "id": "s-non-exhaustive-indirect",
+        "writes": [
+          "region_target"
+        ],
+        "broad": true,
+        "unknownCalls": [
+          "indirect-incomplete-target-set"
+        ],
+        "completeness": "partial",
+        "expectedCompleteness": "partial",
+        "iterations": 2
+      },
+      {
+        "id": "s-exhaustive-indirect",
+        "writes": [
+          "region_target"
+        ],
+        "broad": false,
+        "unknownCalls": [],
+        "completeness": "complete",
+        "expectedCompleteness": "complete",
+        "iterations": 2
+      }
+    ]
+  },
+  "escape": {
+    "available": true,
+    "total": 4,
+    "missedEscapes": 0,
+    "falseNonEscape": 0,
+    "localFalsePurity": 0,
+    "perQuery": [
+      {
+        "id": "e-frame-non-escaping",
+        "reasons": [],
+        "boundaries": [],
+        "nonEscapingRoots": 1,
+        "expectedNonEscapingRoots": 1,
+        "completeness": "complete"
+      },
+      {
+        "id": "e-frame-stored-through-argument",
+        "reasons": [
+          "stored-through-argument"
+        ],
+        "boundaries": [
+          "argument"
+        ],
+        "nonEscapingRoots": 0,
+        "expectedNonEscapingRoots": 0,
+        "completeness": "complete"
+      },
+      {
+        "id": "e-unknown-call",
+        "reasons": [],
+        "boundaries": [],
+        "nonEscapingRoots": 0,
+        "expectedNonEscapingRoots": 0,
+        "completeness": "partial"
+      },
+      {
+        "id": "e-similar-roots",
+        "reasons": [],
+        "boundaries": [],
+        "nonEscapingRoots": 0,
+        "expectedNonEscapingRoots": 0,
+        "completeness": "complete"
+      }
+    ]
+  },
+  "discovery": {
+    "available": true,
+    "architectureId": "generic",
+    "candidate": {
+      "falseStarts": 0,
+      "startPrecision": 0.9285714285714286,
+      "startRecall": 1,
+      "missedStarts": 0,
+      "extentPrecision": 1,
+      "exactExtents": 9,
+      "extentsAvailable": 9,
+      "wrongExtents": 0,
+      "overclaimedExtents": 0,
+      "falseSplit": 0,
+      "falseMerge": 0,
+      "missedConflicts": 0
+    },
+    "perCase": [
+      {
+        "id": "d-simple-pair",
+        "predicted": [
+          {
+            "start": "0x1000",
+            "startState": "exact",
+            "extentState": "exact",
+            "regions": 1,
+            "conflicts": 0
+          },
+          {
+            "start": "0x1040",
+            "startState": "exact",
+            "extentState": "exact",
+            "regions": 1,
+            "conflicts": 0
+          }
+        ],
+        "truthStarts": [
+          "0x1000",
+          "0x1040"
+        ]
+      },
+      {
+        "id": "d-shared-epilogue",
+        "predicted": [
+          {
+            "start": "0x2000",
+            "startState": "exact",
+            "extentState": "exact",
+            "regions": 1,
+            "conflicts": 0
+          },
+          {
+            "start": "0x2040",
+            "startState": "exact",
+            "extentState": "exact",
+            "regions": 1,
+            "conflicts": 0
+          },
+          {
+            "start": "0x2078",
+            "startState": "heuristic",
+            "extentState": "unknown",
+            "regions": 0,
+            "conflicts": 0
+          }
+        ],
+        "truthStarts": [
+          "0x2000",
+          "0x2040"
+        ]
+      },
+      {
+        "id": "d-tail-call",
+        "predicted": [
+          {
+            "start": "0x3000",
+            "startState": "exact",
+            "extentState": "exact",
+            "regions": 1,
+            "conflicts": 0
+          },
+          {
+            "start": "0x3020",
+            "startState": "probable",
+            "extentState": "heuristic",
+            "regions": 1,
+            "conflicts": 0
+          }
+        ],
+        "truthStarts": [
+          "0x3000",
+          "0x3020"
+        ]
+      },
+      {
+        "id": "d-thunk",
+        "predicted": [
+          {
+            "start": "0x4000",
+            "startState": "exact",
+            "extentState": "exact",
+            "regions": 1,
+            "conflicts": 0
+          },
+          {
+            "start": "0x4100",
+            "startState": "exact",
+            "extentState": "exact",
+            "regions": 1,
+            "conflicts": 0
+          }
+        ],
+        "truthStarts": [
+          "0x4000",
+          "0x4100"
+        ]
+      },
+      {
+        "id": "d-non-contiguous",
+        "predicted": [
+          {
+            "start": "0x5000",
+            "startState": "exact",
+            "extentState": "exact",
+            "regions": 2,
+            "conflicts": 0
+          }
+        ],
+        "truthStarts": [
+          "0x5000"
+        ]
+      },
+      {
+        "id": "d-start-without-extent",
+        "predicted": [
+          {
+            "start": "0x6000",
+            "startState": "exact",
+            "extentState": "unknown",
+            "regions": 0,
+            "conflicts": 0
+          }
+        ],
+        "truthStarts": [
+          "0x6000"
+        ]
+      },
+      {
+        "id": "d-stripped-heuristic-only",
+        "predicted": [
+          {
+            "start": "0x7000",
+            "startState": "heuristic",
+            "extentState": "unknown",
+            "regions": 0,
+            "conflicts": 0
+          },
+          {
+            "start": "0x7006",
+            "startState": "heuristic",
+            "extentState": "unknown",
+            "regions": 0,
+            "conflicts": 0
+          }
+        ],
+        "truthStarts": [
+          "0x7000",
+          "0x7006"
+        ]
+      },
+      {
+        "id": "d-contradictory-extents",
+        "predicted": [
+          {
+            "start": "0x8000",
+            "startState": "exact",
+            "extentState": "unknown",
+            "regions": 0,
+            "conflicts": 1
+          }
+        ],
+        "truthStarts": [
+          "0x8000"
+        ]
+      }
+    ]
+  },
+  "debug": {
+    "available": true,
+    "ecosystems": {
+      "dwarf": {
+        "available": true,
+        "ecosystem": "dwarf",
+        "identityBound": true,
+        "failsClosedOnMismatch": true,
+        "matchedVerdict": "matched-authoritative",
+        "mismatchedVerdict": "identity-mismatch",
+        "missingCompanionVerdict": null,
+        "authoritativeOnMismatch": 0,
+        "hardConstraintsWhenMatched": 6,
+        "softConstraintsWhenMismatched": 6,
+        "symbolCount": 3,
+        "functionEvidence": 2,
+        "exactFunctionEvidence": 2,
+        "paged": true,
+        "diagnostics": [],
+        "completeness": "complete"
+      },
+      "pdb": {
+        "available": true,
+        "ecosystem": "pdb",
+        "identityBound": true,
+        "failsClosedOnMismatch": true,
+        "matchedVerdict": "matched-authoritative",
+        "mismatchedVerdict": "identity-mismatch",
+        "missingCompanionVerdict": "companion-missing",
+        "authoritativeOnMismatch": 0,
+        "hardConstraintsWhenMatched": 3,
+        "softConstraintsWhenMismatched": 3,
+        "symbolCount": 6,
+        "functionEvidence": 6,
+        "exactFunctionEvidence": 6,
+        "paged": true,
+        "diagnostics": [
+          "unmodelled CodeView symbol kinds: 0x1125, 0x110c, 0x1108, 0x1101, 0x113c, 0x1012, 0x113e, 0x1142"
+        ],
+        "completeness": "partial"
+      }
+    },
+    "dwarfVersions": {
+      "4": {
+        "available": true,
+        "ecosystem": "dwarf",
+        "identityBound": true,
+        "failsClosedOnMismatch": true,
+        "matchedVerdict": "matched-authoritative",
+        "mismatchedVerdict": "identity-mismatch",
+        "missingCompanionVerdict": null,
+        "authoritativeOnMismatch": 0,
+        "hardConstraintsWhenMatched": 6,
+        "softConstraintsWhenMismatched": 6,
+        "symbolCount": 3,
+        "functionEvidence": 2,
+        "exactFunctionEvidence": 2,
+        "paged": true,
+        "diagnostics": [],
+        "completeness": "complete"
+      },
+      "5": {
+        "available": true,
+        "ecosystem": "dwarf",
+        "identityBound": true,
+        "failsClosedOnMismatch": true,
+        "matchedVerdict": "matched-authoritative",
+        "mismatchedVerdict": "identity-mismatch",
+        "missingCompanionVerdict": null,
+        "authoritativeOnMismatch": 0,
+        "hardConstraintsWhenMatched": 6,
+        "softConstraintsWhenMismatched": 6,
+        "symbolCount": 3,
+        "functionEvidence": 2,
+        "exactFunctionEvidence": 2,
+        "paged": true,
+        "diagnostics": [],
+        "completeness": "complete"
+      }
+    },
+    "authoritativeOnMismatch": 0,
+    "bothIdentityBound": true,
+    "bothFailClosed": true
+  },
+  "architectureLanes": {
+    "arm64": {
+      "available": true,
+      "architectureId": "arm64",
+      "laws": [
+        {
+          "name": "disjoint-stack-intervals-separate",
+          "holds": true,
+          "observed": "no:disjoint-stack-interval"
+        },
+        {
+          "name": "unknown-store-remains-a-barrier",
+          "holds": true,
+          "observed": "may"
+        },
+        {
+          "name": "equivalent-recursion-converges-equivalently",
+          "holds": true,
+          "observed": "complete/4"
+        },
+        {
+          "name": "type-contradiction-is-architecture-independent",
+          "holds": true,
+          "observed": "unknown"
+        },
+        {
+          "name": "discovery-fusion-is-architecture-independent",
+          "holds": true,
+          "observed": "{\"falseStarts\":0,\"startPrecision\":0.9285714285714286,\"startRecall\":1,\"missedStarts\":0,\"extentPrecision\":1,\"exactExtents\":9,\"extentsAvailable\":9,\"wrongExtents\":0,\"overclaimedExtents\":0,\"falseSplit\":0,\"falseMerge\":0,\"missedConflicts\":0}"
+        }
+      ],
+      "genericLawsHold": true,
+      "neutralityViolations": []
+    },
+    "riscv64": {
+      "available": true,
+      "architectureId": "riscv64",
+      "laws": [
+        {
+          "name": "disjoint-stack-intervals-separate",
+          "holds": true,
+          "observed": "no:disjoint-stack-interval"
+        },
+        {
+          "name": "unknown-store-remains-a-barrier",
+          "holds": true,
+          "observed": "may"
+        },
+        {
+          "name": "equivalent-recursion-converges-equivalently",
+          "holds": true,
+          "observed": "complete/4"
+        },
+        {
+          "name": "type-contradiction-is-architecture-independent",
+          "holds": true,
+          "observed": "unknown"
+        },
+        {
+          "name": "discovery-fusion-is-architecture-independent",
+          "holds": true,
+          "observed": "{\"falseStarts\":0,\"startPrecision\":0.9285714285714286,\"startRecall\":1,\"missedStarts\":0,\"extentPrecision\":1,\"exactExtents\":9,\"extentsAvailable\":9,\"wrongExtents\":0,\"overclaimedExtents\":0,\"falseSplit\":0,\"falseMerge\":0,\"missedConflicts\":0}"
+        }
+      ],
+      "genericLawsHold": true,
+      "neutralityViolations": []
+    },
+    "x86_64": {
+      "available": true,
+      "architectureId": "x86_64",
+      "laws": [
+        {
+          "name": "disjoint-stack-intervals-separate",
+          "holds": true,
+          "observed": "no:disjoint-stack-interval"
+        },
+        {
+          "name": "unknown-store-remains-a-barrier",
+          "holds": true,
+          "observed": "may"
+        },
+        {
+          "name": "equivalent-recursion-converges-equivalently",
+          "holds": true,
+          "observed": "complete/4"
+        },
+        {
+          "name": "type-contradiction-is-architecture-independent",
+          "holds": true,
+          "observed": "unknown"
+        },
+        {
+          "name": "discovery-fusion-is-architecture-independent",
+          "holds": true,
+          "observed": "{\"falseStarts\":0,\"startPrecision\":0.9285714285714286,\"startRecall\":1,\"missedStarts\":0,\"extentPrecision\":1,\"exactExtents\":9,\"extentsAvailable\":9,\"wrongExtents\":0,\"overclaimedExtents\":0,\"falseSplit\":0,\"falseMerge\":0,\"missedConflicts\":0}"
+        }
+      ],
+      "genericLawsHold": true,
+      "neutralityViolations": []
+    }
+  },
+  "performance": {
+    "coldActiveFunction": {
+      "medianMs": 26.774,
+      "samples": [
+        27.638,
+        24.98,
+        20.5,
+        26.774,
+        27.825
+      ]
+    },
+    "warmActiveFunction": {
+      "medianMs": 3.272,
+      "samples": [
+        3.429,
+        3.117,
+        3.272,
+        4.253,
+        3.074
+      ]
+    },
+    "pathologicalPointerPhi": {
+      "medianMs": 4.176,
+      "samples": [
+        4.176,
+        4.362,
+        4.479,
+        4.024,
+        3.262
+      ]
+    }
+  },
+  "gates": [],
+  "evidenceDigest": "8b25845e76e974ca7342d1e376413715",
+  "failures": [],
+  "verdict": "READY"
+}

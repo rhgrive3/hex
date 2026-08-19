@@ -1,12 +1,20 @@
 # Phase 7 Industrial Static Analysis Execution Plan
 
-Status: **implementation runbook / pre-Phase-7 planning**  
+Status: **executed** — see [`PHASE7_CHECKPOINT.md`](PHASE7_CHECKPOINT.md) for the live evidence\
 Repository: `rhgrive3/hex`  
 Initial docs-branch fork: `main` at `e90c5107f9c77d73687ee452d5042dcbe9e79ece`  
 Final review live baseline: `main` at `9fb1c3f9327869e83170e75b6f132ad699b82a0e` (Phase 6 integration merged via #852)  
 Canonical architecture: `docs/HEX_MASTER_ARCHITECTURE.md`  
 Process contract: `docs/ENGINEERING_PROCESS_GUARDRAILS.md`  
 Migration contract: `docs/MIGRATION_GUARDRAILS.md`
+
+> **Execution note.** This runbook has been executed. The phase base was live
+> `main` at `bdf90569ed037a3d30e4439dcde970aad9352e21`; the accepted checkpoint
+> ledger is `reports/phase7/checkpoints.json`, the frozen corpus/query/truth/
+> scoring manifest is `tests/phase7/corpus/manifest.json`, and the exact-head
+> verifier is `tools/validation/phase7/verify.mjs`. The invariants and exit
+> gates below are unchanged; nothing here was relaxed to fit the
+> implementation.
 
 This document turns Master Architecture Phase 7 — **Industrial static-analysis depth** — into an executable engineering plan.
 

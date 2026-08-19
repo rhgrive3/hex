@@ -1,0 +1,106 @@
+name: Phase 7 release validation
+
+# The permanent Phase 7 verifier, with an exact-SHA dispatch path so proving a
+# specific head never requires creating a throwaway PR (EP-012).
+on:
+  push:
+    branches:
+      - main
+      - 'phase7/**'
+    paths:
+      - 'js/analysis/**'
+      - 'js/semantics/**'
+      - 'js/decompiler/**'
+      - 'tests/phase7/**'
+      - 'tools/validation/phase7/**'
+      - '.github/workflows/phase7-release-validation.yml'
+      - 'package.json'
+  pull_request:
+    paths:
+      - 'js/analysis/**'
+      - 'js/semantics/**'
+      - 'js/decompiler/**'
+      - 'tests/phase7/**'
+      - 'tools/validation/phase7/**'
+      - '.github/workflows/phase7-release-validation.yml'
+      - 'package.json'
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: 'Exact 40-character commit SHA to verify'
+        required: true
+        type: string
+      shadow:
+        description: 'Report the verdict without failing the job'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phase7-release-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.sha || github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci --no-audit --no-fund
+      - name: Canonical Phase 7 suite
+        run: npm run phase7:test
+      - name: Required regression gates on the exact head
+        run: |
+          set -euo pipefail
+          npm run migration:test
+          npm run semantic-v2:test
+          npm run semantic:test
+          npm run decompiler:test
+      - name: Generated-output synchronization
+        # Phase 7 edits protected runtime source, so it owns the rebuild. A
+        # non-zero diff after a canonical rebuild is a merge-blocking desync
+        # (EP-003, EP-008, EP-009).
+        #
+        # The checked set matches .github/workflows/generated-sync.yml exactly.
+        # js/userscript/deployment-identity.generated.js is deliberately not in
+        # it: that file records the commit a *deployment* was built from, so it
+        # differs between a local build and a CI checkout by design. Requiring
+        # it to match would be a gate no commit could ever satisfy.
+        run: |
+          set -euo pipefail
+          npm run userscript:build
+          if ! git diff --quiet -- userscript/hex.user.template.js userscript/release-version.json; then
+            echo "generated userscript output is out of sync with source" >&2
+            git --no-pager diff --stat -- userscript/hex.user.template.js userscript/release-version.json >&2
+            exit 1
+          fi
+      - name: Run the Phase 7 verifier against the exact head
+        env:
+          EXPECT_SHA: ${{ github.event.inputs.sha }}
+          SHADOW: ${{ github.event.inputs.shadow }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [ -n "${EXPECT_SHA:-}" ]; then args+=(--expect-sha "$EXPECT_SHA"); fi
+          if [ "${SHADOW:-false}" = "true" ]; then args+=(--shadow); fi
+          node tools/validation/phase7/verify.mjs "${args[@]}"
+      - name: Publish Phase 7 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase7-release-evidence-${{ github.event.inputs.sha || github.sha }}
+          path: |
+            reports/phase7/phase7-release-evidence.json
+            reports/phase7/phase7-release-evidence.md
+            reports/phase7/checkpoints.json
+            reports/phase7/baseline-metrics.json
+          if-no-files-found: error

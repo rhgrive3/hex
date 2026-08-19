@@ -1,0 +1,654 @@
+{
+  "schemaVersion": 1,
+  "corpusId": "phase7-alias-memory-corpus",
+  "corpusVersion": 1,
+  "architectureLanes": {
+    "mandatory": [
+      "arm64",
+      "riscv64",
+      "x86_64"
+    ],
+    "supplementary": [
+      "arm64e"
+    ]
+  },
+  "formatLanes": [
+    "elf",
+    "macho",
+    "pe"
+  ],
+  "fixtureIds": [
+    "cyclic-pointer-phi",
+    "frame-arithmetic-with-escape-proof",
+    "frame-escapes-through-argument",
+    "frame-escapes-through-return",
+    "frame-non-escaping",
+    "load-derived-pointer",
+    "overlapping-fields",
+    "pointer-phi-distinct-offsets",
+    "provenance-loss",
+    "pure-call-no-barrier",
+    "select-distinct-roots",
+    "similar-looking-roots",
+    "stack-disjoint",
+    "stack-identical",
+    "stack-overlapping",
+    "two-pointer-arithmetic",
+    "uncertain-offset",
+    "unknown-call-barrier",
+    "unknown-store-barrier"
+  ],
+  "aliasQueries": [
+    {
+      "id": "q-stack-disjoint",
+      "fixture": "stack-disjoint",
+      "left": "node_st0",
+      "right": "node_st8",
+      "truth": "no",
+      "expectStrong": true
+    },
+    {
+      "id": "q-stack-overlapping",
+      "fixture": "stack-overlapping",
+      "left": "node_st0",
+      "right": "node_st4",
+      "truth": "may-or-weaker",
+      "expectStrong": false
+    },
+    {
+      "id": "q-stack-identical",
+      "fixture": "stack-identical",
+      "left": "node_st",
+      "right": "node_ld",
+      "truth": "must",
+      "expectStrong": true
+    },
+    {
+      "id": "q-uncertain-offset",
+      "fixture": "uncertain-offset",
+      "left": "node_st0",
+      "right": "node_stn",
+      "truth": "may-or-weaker",
+      "expectStrong": false
+    },
+    {
+      "id": "q-provenance-loss",
+      "fixture": "provenance-loss",
+      "left": "node_st_lost",
+      "right": "node_st_other",
+      "truth": "may-or-weaker",
+      "expectStrong": false
+    },
+    {
+      "id": "q-pointer-phi",
+      "fixture": "pointer-phi-distinct-offsets",
+      "left": "node_st_merged",
+      "right": "node_st_zero",
+      "truth": "may-or-weaker",
+      "expectStrong": false
+    },
+    {
+      "id": "q-cyclic-phi",
+      "fixture": "cyclic-pointer-phi",
+      "left": "node_st_cur",
+      "right": "node_st_far",
+      "truth": "may-or-weaker",
+      "expectStrong": false
+    },
+    {
+      "id": "q-overlapping-fields",
+      "fixture": "overlapping-fields",
+      "left": "node_st_wide",
+      "right": "node_st_inner",
+      "truth": "may-or-weaker",
+      "expectStrong": false
+    },
+    {
+      "id": "q-similar-roots",
+      "fixture": "similar-looking-roots",
+      "left": "node_st_a",
+      "right": "node_st_b",
+      "truth": "may-or-weaker",
+      "expectStrong": false
+    },
+    {
+      "id": "q-select-roots",
+      "fixture": "select-distinct-roots",
+      "left": "node_st_chosen",
+      "right": "node_st_a",
+      "truth": "may-or-weaker",
+      "expectStrong": false
+    },
+    {
+      "id": "q-load-derived",
+      "fixture": "load-derived-pointer",
+      "left": "node_st_loaded",
+      "right": "node_st_other",
+      "truth": "may-or-weaker",
+      "expectStrong": false
+    },
+    {
+      "id": "q-frame-non-escaping",
+      "fixture": "frame-non-escaping",
+      "left": "node_st_slot",
+      "right": "node_st_arg",
+      "truth": "no",
+      "expectStrong": true
+    },
+    {
+      "id": "q-frame-escaped-argument",
+      "fixture": "frame-escapes-through-argument",
+      "left": "node_st_slot",
+      "right": "node_st_arg",
+      "truth": "may-or-weaker",
+      "expectStrong": false
+    },
+    {
+      "id": "q-two-pointer-add-left",
+      "fixture": "two-pointer-arithmetic",
+      "left": "node_st_sum",
+      "right": "node_st_a",
+      "truth": "may-or-weaker",
+      "expectStrong": false
+    },
+    {
+      "id": "q-two-pointer-add-right",
+      "fixture": "two-pointer-arithmetic",
+      "left": "node_st_sum",
+      "right": "node_st_b",
+      "truth": "may-or-weaker",
+      "expectStrong": false
+    },
+    {
+      "id": "q-frame-arithmetic-escape",
+      "fixture": "frame-arithmetic-with-escape-proof",
+      "left": "node_st_sum",
+      "right": "node_st_slot",
+      "truth": "may-or-weaker",
+      "expectStrong": false
+    }
+  ],
+  "memoryLinkQueries": [
+    {
+      "id": "m-unknown-store",
+      "fixture": "unknown-store-barrier",
+      "load": "node_ld",
+      "truth": "blocked",
+      "expectedStore": null
+    },
+    {
+      "id": "m-unknown-call",
+      "fixture": "unknown-call-barrier",
+      "load": "node_ld",
+      "truth": "blocked",
+      "expectedStore": null
+    },
+    {
+      "id": "m-pure-call",
+      "fixture": "pure-call-no-barrier",
+      "load": "node_ld",
+      "truth": "exact",
+      "expectedStore": "node_st_known"
+    },
+    {
+      "id": "m-stack-identical",
+      "fixture": "stack-identical",
+      "load": "node_ld",
+      "truth": "exact",
+      "expectedStore": "node_st"
+    }
+  ],
+  "escapeQueries": [
+    {
+      "id": "e-frame-non-escaping",
+      "fixture": "frame-non-escaping",
+      "expectedReasons": [],
+      "expectNonEscapingRoots": 1
+    },
+    {
+      "id": "e-frame-stored-through-argument",
+      "fixture": "frame-escapes-through-argument",
+      "expectedReasons": [
+        "stored-through-argument"
+      ],
+      "expectNonEscapingRoots": 0
+    },
+    {
+      "id": "e-unknown-call",
+      "fixture": "unknown-call-barrier",
+      "expectedReasons": [],
+      "expectNonEscapingRoots": 0
+    },
+    {
+      "id": "e-similar-roots",
+      "fixture": "similar-looking-roots",
+      "expectedReasons": [],
+      "expectNonEscapingRoots": 0
+    }
+  ],
+  "summaryCorpus": {
+    "id": "phase7-summary-corpus",
+    "version": 1,
+    "graphIds": [
+      "acyclic-chain",
+      "exhaustive-indirect",
+      "missing-callee-summary",
+      "mutual-recursion",
+      "non-exhaustive-indirect",
+      "self-recursive"
+    ],
+    "queries": [
+      {
+        "id": "s-acyclic-chain",
+        "graph": "acyclic-chain",
+        "root": "fn_a",
+        "functionId": "fn_a",
+        "mustIncludeWrites": [
+          "region_leaf"
+        ],
+        "mustExcludeWrites": [],
+        "mustBeBroad": false,
+        "completeness": "complete",
+        "converges": true
+      },
+      {
+        "id": "s-self-recursive",
+        "graph": "self-recursive",
+        "root": "fn_self",
+        "functionId": "fn_self",
+        "mustIncludeWrites": [
+          "region_self"
+        ],
+        "mustExcludeWrites": [],
+        "mustBeBroad": false,
+        "completeness": "complete",
+        "converges": true
+      },
+      {
+        "id": "s-mutual-recursion",
+        "graph": "mutual-recursion",
+        "root": "fn_top",
+        "functionId": "fn_odd",
+        "mustIncludeWrites": [
+          "region_leaf"
+        ],
+        "mustExcludeWrites": [],
+        "mustBeBroad": false,
+        "completeness": "complete",
+        "converges": true
+      },
+      {
+        "id": "s-missing-callee",
+        "graph": "missing-callee-summary",
+        "root": "fn_caller",
+        "functionId": "fn_caller",
+        "mustIncludeWrites": [],
+        "mustExcludeWrites": [],
+        "mustBeBroad": true,
+        "completeness": "partial",
+        "converges": true
+      },
+      {
+        "id": "s-non-exhaustive-indirect",
+        "graph": "non-exhaustive-indirect",
+        "root": "fn_dispatch",
+        "functionId": "fn_dispatch",
+        "mustIncludeWrites": [],
+        "mustExcludeWrites": [],
+        "mustBeBroad": true,
+        "completeness": "partial",
+        "converges": true
+      },
+      {
+        "id": "s-exhaustive-indirect",
+        "graph": "exhaustive-indirect",
+        "root": "fn_dispatch_exact",
+        "functionId": "fn_dispatch_exact",
+        "mustIncludeWrites": [
+          "region_target"
+        ],
+        "mustExcludeWrites": [],
+        "mustBeBroad": false,
+        "completeness": "complete",
+        "converges": true
+      }
+    ]
+  },
+  "typeCorpus": {
+    "id": "phase7-type-corpus",
+    "version": 1,
+    "cases": [
+      {
+        "id": "t-access-width",
+        "entityId": "entity_counter",
+        "hardKinds": [
+          "access-width"
+        ],
+        "softKinds": [],
+        "expectCertain": [
+          "machine"
+        ],
+        "expectContradiction": [],
+        "hasNoDebugVariant": false
+      },
+      {
+        "id": "t-abi-location",
+        "entityId": "entity_arg0",
+        "hardKinds": [
+          "abi-location"
+        ],
+        "softKinds": [
+          "symbol-spelling"
+        ],
+        "expectCertain": [
+          "abi"
+        ],
+        "expectContradiction": [],
+        "hasNoDebugVariant": false
+      },
+      {
+        "id": "t-contradicting-widths",
+        "entityId": "entity_conflicted",
+        "hardKinds": [
+          "access-width",
+          "debug-type"
+        ],
+        "softKinds": [
+          "use-shape"
+        ],
+        "expectCertain": [],
+        "expectContradiction": [
+          "machine"
+        ],
+        "hasNoDebugVariant": true
+      },
+      {
+        "id": "t-soft-only-ranking",
+        "entityId": "entity_guessed",
+        "hardKinds": [],
+        "softKinds": [
+          "symbol-spelling",
+          "use-shape"
+        ],
+        "expectCertain": [],
+        "expectContradiction": [],
+        "hasNoDebugVariant": false
+      },
+      {
+        "id": "t-soft-tie-is-ambiguous",
+        "entityId": "entity_tied",
+        "hardKinds": [],
+        "softKinds": [
+          "signature-candidate",
+          "symbol-spelling"
+        ],
+        "expectCertain": [],
+        "expectContradiction": [],
+        "hasNoDebugVariant": false
+      },
+      {
+        "id": "t-soft-cannot-overrule-hard",
+        "entityId": "entity_overruled",
+        "hardKinds": [
+          "access-width"
+        ],
+        "softKinds": [
+          "array-stride-heuristic"
+        ],
+        "expectCertain": [
+          "machine"
+        ],
+        "expectContradiction": [],
+        "hasNoDebugVariant": false
+      },
+      {
+        "id": "t-union-overlap",
+        "entityId": "entity_union",
+        "hardKinds": [
+          "debug-type",
+          "debug-type"
+        ],
+        "softKinds": [],
+        "expectCertain": [],
+        "expectContradiction": [
+          "structural"
+        ],
+        "hasNoDebugVariant": true
+      },
+      {
+        "id": "t-disjoint-fields-coexist",
+        "entityId": "entity_struct",
+        "hardKinds": [
+          "debug-type",
+          "debug-type"
+        ],
+        "softKinds": [],
+        "expectCertain": [
+          "structural"
+        ],
+        "expectContradiction": [],
+        "hasNoDebugVariant": true
+      },
+      {
+        "id": "t-nominal-alias-is-not-conflict",
+        "entityId": "entity_alias",
+        "hardKinds": [
+          "call-prototype",
+          "debug-type"
+        ],
+        "softKinds": [],
+        "expectCertain": [
+          "nominal"
+        ],
+        "expectContradiction": [],
+        "hasNoDebugVariant": true
+      },
+      {
+        "id": "t-user-declared-constraint",
+        "entityId": "entity_user",
+        "hardKinds": [
+          "user-declared"
+        ],
+        "softKinds": [],
+        "expectCertain": [
+          "nominal"
+        ],
+        "expectContradiction": [],
+        "hasNoDebugVariant": false
+      }
+    ]
+  },
+  "discoveryCorpus": {
+    "id": "phase7-discovery-corpus",
+    "version": 1,
+    "caseIds": [
+      "contradictory-extents",
+      "non-contiguous",
+      "shared-epilogue",
+      "simple-pair",
+      "start-without-extent",
+      "stripped-heuristic-only",
+      "tail-call",
+      "thunk"
+    ],
+    "truth": [
+      {
+        "id": "d-simple-pair",
+        "case": "simple-pair",
+        "starts": [
+          "0x1000",
+          "0x1040"
+        ],
+        "regionCounts": {
+          "0x1000": 1,
+          "0x1040": 1
+        },
+        "extentKnowable": true,
+        "labels": {}
+      },
+      {
+        "id": "d-shared-epilogue",
+        "case": "shared-epilogue",
+        "starts": [
+          "0x2000",
+          "0x2040"
+        ],
+        "regionCounts": {
+          "0x2000": 1,
+          "0x2040": 1
+        },
+        "extentKnowable": true,
+        "labels": {
+          "0x2078": "shared-epilogue"
+        }
+      },
+      {
+        "id": "d-tail-call",
+        "case": "tail-call",
+        "starts": [
+          "0x3000",
+          "0x3020"
+        ],
+        "regionCounts": {
+          "0x3000": 1,
+          "0x3020": 1
+        },
+        "extentKnowable": true,
+        "labels": {
+          "0x3020": "tail-call-target"
+        }
+      },
+      {
+        "id": "d-thunk",
+        "case": "thunk",
+        "starts": [
+          "0x4000",
+          "0x4100"
+        ],
+        "regionCounts": {
+          "0x4000": 1,
+          "0x4100": 1
+        },
+        "extentKnowable": true,
+        "labels": {
+          "0x4000": "thunk"
+        }
+      },
+      {
+        "id": "d-non-contiguous",
+        "case": "non-contiguous",
+        "starts": [
+          "0x5000"
+        ],
+        "regionCounts": {
+          "0x5000": 2
+        },
+        "extentKnowable": true,
+        "labels": {
+          "0x5000": "non-contiguous"
+        }
+      },
+      {
+        "id": "d-start-without-extent",
+        "case": "start-without-extent",
+        "starts": [
+          "0x6000"
+        ],
+        "regionCounts": {},
+        "extentKnowable": false,
+        "labels": {}
+      },
+      {
+        "id": "d-stripped-heuristic-only",
+        "case": "stripped-heuristic-only",
+        "starts": [
+          "0x7000",
+          "0x7006"
+        ],
+        "regionCounts": {},
+        "extentKnowable": false,
+        "labels": {}
+      },
+      {
+        "id": "d-contradictory-extents",
+        "case": "contradictory-extents",
+        "starts": [
+          "0x8000"
+        ],
+        "regionCounts": {},
+        "extentKnowable": false,
+        "labels": {}
+      }
+    ]
+  },
+  "debugCorpus": {
+    "dwarf": {
+      "variants": [
+        {
+          "name": "dwarf4",
+          "dwarfVersion": 4,
+          "compiler": "gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0",
+          "buildId": "4d0e9ae39a30e4cf31ec134c7507260bb8e4be47",
+          "sections": [
+            ".debug_abbrev",
+            ".debug_info",
+            ".debug_str",
+            ".note.gnu.build-id"
+          ],
+          "digest": "1a71f88528e8d7dd2610edbd8c1796be"
+        },
+        {
+          "name": "dwarf5",
+          "dwarfVersion": 5,
+          "compiler": "gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0",
+          "buildId": "efb013ae5591ba16912b8b316237b4329ae5d6b2",
+          "sections": [
+            ".debug_abbrev",
+            ".debug_info",
+            ".debug_line_str",
+            ".debug_str",
+            ".note.gnu.build-id"
+          ],
+          "digest": "1ca5a270066089e6a52bb8cf07899b9b"
+        },
+        {
+          "name": "split-debug",
+          "dwarfVersion": 5,
+          "compiler": null,
+          "buildId": "efb013ae5591ba16912b8b316237b4329ae5d6b2",
+          "sections": [
+            ".debug_abbrev",
+            ".debug_info",
+            ".debug_line_str",
+            ".debug_str",
+            ".note.gnu.build-id"
+          ],
+          "digest": "1ca5a270066089e6a52bb8cf07899b9b"
+        }
+      ]
+    },
+    "pdb": {
+      "variants": [
+        {
+          "name": "clang-lld-x64",
+          "codeView": {
+            "guid": "0DCCAC73-EB07-2D7D-4C4C-44205044422E",
+            "age": 1,
+            "path": "/tmp/phase7/pfx.pdb"
+          },
+          "digest": "8ee4195480e1f6ffbd151b4d321a01de"
+        }
+      ]
+    }
+  },
+  "truthGenerator": {
+    "id": "phase7.corpus.declared-truth",
+    "version": "1.0.0"
+  },
+  "scoring": {
+    "id": "phase7.scoring",
+    "version": "1.0.0"
+  },
+  "exclusions": [],
+  "manifestDigest": "519bd15f3a918dbc2b436aca4870455d"
+}

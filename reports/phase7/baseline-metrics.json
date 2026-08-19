@@ -1,0 +1,231 @@
+{
+  "schemaVersion": 1,
+  "capturedAt": "2026-08-19T12:49:43.411Z",
+  "manifestDigest": "519bd15f3a918dbc2b436aca4870455d",
+  "corpusId": "phase7-alias-memory-corpus",
+  "corpusVersion": 1,
+  "scoring": {
+    "id": "phase7.scoring",
+    "version": "1.0.0"
+  },
+  "truthGenerator": {
+    "id": "phase7.corpus.declared-truth",
+    "version": "1.0.0"
+  },
+  "architectureLanes": {
+    "mandatory": [
+      "arm64",
+      "riscv64",
+      "x86_64"
+    ],
+    "supplementary": [
+      "arm64e"
+    ]
+  },
+  "alias": {
+    "scoringId": "phase7.scoring",
+    "scoringVersion": "1.0.0",
+    "truthGeneratorId": "phase7.corpus.declared-truth",
+    "truthGeneratorVersion": "1.0.0",
+    "total": 16,
+    "counts": {
+      "must": 1,
+      "may": 15,
+      "no": 0,
+      "unknown": 0
+    },
+    "falseNoAlias": 0,
+    "falseMustAlias": 0,
+    "exactProven": 1,
+    "exactAvailable": 3,
+    "unknownRate": 0,
+    "mayRate": 0.9375,
+    "strongProvenRate": 0.0625,
+    "perQuery": [
+      {
+        "id": "q-stack-disjoint",
+        "relation": "may",
+        "truth": "no",
+        "expectStrong": true
+      },
+      {
+        "id": "q-stack-overlapping",
+        "relation": "may",
+        "truth": "may-or-weaker",
+        "expectStrong": false
+      },
+      {
+        "id": "q-stack-identical",
+        "relation": "must",
+        "truth": "must",
+        "expectStrong": true
+      },
+      {
+        "id": "q-uncertain-offset",
+        "relation": "may",
+        "truth": "may-or-weaker",
+        "expectStrong": false
+      },
+      {
+        "id": "q-provenance-loss",
+        "relation": "may",
+        "truth": "may-or-weaker",
+        "expectStrong": false
+      },
+      {
+        "id": "q-pointer-phi",
+        "relation": "may",
+        "truth": "may-or-weaker",
+        "expectStrong": false
+      },
+      {
+        "id": "q-cyclic-phi",
+        "relation": "may",
+        "truth": "may-or-weaker",
+        "expectStrong": false
+      },
+      {
+        "id": "q-overlapping-fields",
+        "relation": "may",
+        "truth": "may-or-weaker",
+        "expectStrong": false
+      },
+      {
+        "id": "q-similar-roots",
+        "relation": "may",
+        "truth": "may-or-weaker",
+        "expectStrong": false
+      },
+      {
+        "id": "q-select-roots",
+        "relation": "may",
+        "truth": "may-or-weaker",
+        "expectStrong": false
+      },
+      {
+        "id": "q-load-derived",
+        "relation": "may",
+        "truth": "may-or-weaker",
+        "expectStrong": false
+      },
+      {
+        "id": "q-frame-non-escaping",
+        "relation": "may",
+        "truth": "no",
+        "expectStrong": true
+      },
+      {
+        "id": "q-frame-escaped-argument",
+        "relation": "may",
+        "truth": "may-or-weaker",
+        "expectStrong": false
+      },
+      {
+        "id": "q-two-pointer-add-left",
+        "relation": "may",
+        "truth": "may-or-weaker",
+        "expectStrong": false
+      },
+      {
+        "id": "q-two-pointer-add-right",
+        "relation": "may",
+        "truth": "may-or-weaker",
+        "expectStrong": false
+      },
+      {
+        "id": "q-frame-arithmetic-escape",
+        "relation": "may",
+        "truth": "may-or-weaker",
+        "expectStrong": false
+      }
+    ]
+  },
+  "memoryLinks": {
+    "scoringId": "phase7.scoring",
+    "scoringVersion": "1.0.0",
+    "providerId": "floor",
+    "total": 4,
+    "barrierBypasses": 0,
+    "exactLinks": 2,
+    "blockedCorrect": 2,
+    "missedExact": 0,
+    "perQuery": [
+      {
+        "id": "m-unknown-store",
+        "truth": "blocked",
+        "kinds": [
+          "may-alias-clobber"
+        ],
+        "exact": false,
+        "sources": [
+          "node_st_unknown"
+        ]
+      },
+      {
+        "id": "m-unknown-call",
+        "truth": "blocked",
+        "kinds": [
+          "call-clobber"
+        ],
+        "exact": false,
+        "sources": [
+          "node_call_unknown"
+        ]
+      },
+      {
+        "id": "m-pure-call",
+        "truth": "exact",
+        "kinds": [
+          "memory-def"
+        ],
+        "exact": true,
+        "sources": [
+          "node_st_known"
+        ]
+      },
+      {
+        "id": "m-stack-identical",
+        "truth": "exact",
+        "kinds": [
+          "memory-def"
+        ],
+        "exact": true,
+        "sources": [
+          "node_st"
+        ]
+      }
+    ]
+  },
+  "performance": {
+    "coldActiveFunction": {
+      "medianMs": 25.745,
+      "samples": [
+        27.238,
+        25.745,
+        28.34,
+        22.38,
+        20.001
+      ]
+    },
+    "warmActiveFunction": {
+      "medianMs": 3.721,
+      "samples": [
+        3.399,
+        3.764,
+        4.04,
+        3.721,
+        3.418
+      ]
+    },
+    "pathologicalPointerPhi": {
+      "medianMs": 5.46,
+      "samples": [
+        5.46,
+        5.795,
+        5.619,
+        5.095,
+        3.87
+      ]
+    }
+  }
+}
