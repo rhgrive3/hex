@@ -20,6 +20,7 @@ jobs:
       - name: Attempt source-branch merge without committing
         shell: bash
         run: |
+          # This workflow is diagnostic-only and is removed by the reconciler.
           git fetch origin fix/unlinked-abi-526-954-955-958-959
           set +e
           git merge --no-commit --no-ff origin/fix/unlinked-abi-526-954-955-958-959
