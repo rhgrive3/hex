@@ -146,13 +146,15 @@ function promoteResolvedGlobals(ir) {
 
     const address = a.base.const + a.disp;
     const size = (inst.loc && inst.loc.size) || a.size || (inst.extra && inst.extra.size) || null;
-    const key = 'global:' + address.toString(16);
+    // A global address identifies the storage root, not an access extent. Keep
+    // per-access width in the canonical location key so a 32-bit access cannot
+    // overwrite the size carried by an 8-bit/64-bit access at the same address.
+    const extent = size == null ? 'unknown' : String(size);
+    const key = 'global:' + address.toString(16) + ':size:' + extent;
     let loc = globals.get(key);
     if (!loc) {
       loc = { key, kind: MK.GLOBAL, address, size };
       globals.set(key, loc);
-    } else if (loc.size == null && size != null) {
-      loc.size = size;
     }
 
     const oldKey = inst.loc && inst.loc.key;
@@ -170,14 +172,22 @@ function promoteResolvedGlobals(ir) {
 
 /* ── Pointer provenance ─────────────────────────────────────── */
 
-function shiftedConst(arg) {
+function shiftedConst(arg, fallbackBits = null) {
   if (!arg || !arg.value || arg.value.const == null) return null;
-  let v = arg.value.const;
+  const bits = Math.max(1, Math.min(64, Number(fallbackBits || arg.value.bits || 64)));
+  const width = BigInt(bits);
+  let v = BigInt.asUintN(bits, BigInt(arg.value.const));
   const s = arg.shift;
   if (!s) return v;
   const n = BigInt(s.amount || 0);
-  if (s.op === 'lsl') return v << n;
+  if (n < 0n || n >= width) return null;
+  if (s.op === 'lsl') return BigInt.asUintN(bits, v << n);
   if (s.op === 'lsr') return v >> n;
+  if (s.op === 'asr') return BigInt.asUintN(bits, BigInt.asIntN(bits, v) >> n);
+  if (s.op === 'ror') {
+    if (n === 0n) return v;
+    return BigInt.asUintN(bits, (v >> n) | (v << (width - n)));
+  }
   return null;
 }
 
@@ -290,12 +300,23 @@ function annotateValueRanges(ir) {
       } else if (inst.op === OP.BIN && inst.args.length >= 2) {
         const a = argumentRange(inst.args[0], bits, inst.dst.signed);
         const b = argumentRange(inst.args[1], bits, inst.dst.signed);
-        const ac = shiftedConst(inst.args[0]);
-        const bc = shiftedConst(inst.args[1]);
+        const ac = shiftedConst(inst.args[0], bits);
+        const bc = shiftedConst(inst.args[1], bits);
         const bounds = typeBounds(bits, inst.dst.signed);
         if (inst.sub === 'and') {
-          const mask = bc != null ? bc : ac;
-          if (mask != null && mask >= 0n) next = { min: 0n, max: mask < bounds.max ? mask : bounds.max };
+          const rawMask = bc != null ? bc : ac;
+          if (rawMask != null) {
+            const mask = BigInt.asUintN(bits, rawMask);
+            const signBit = 1n << BigInt(bits - 1);
+            // A signed result can be negative whenever the mask preserves the
+            // sign bit. The contiguous range domain cannot represent {0,MIN}
+            // exactly, so retain soundness with the full signed interval.
+            if (inst.dst.signed === true && (mask & signBit) !== 0n) {
+              next = rangeWithDomain(bounds.min, bounds.max, bits, true);
+            } else {
+              next = { min: 0n, max: mask < bounds.max ? mask : bounds.max };
+            }
+          }
         } else if ((inst.sub === 'lshr' || inst.sub === 'ashr') && a && bc != null && bc >= 0n && bc < BigInt(bits)) {
           if (inst.sub === 'lshr' && a.min >= 0n) next = { min: a.min >> bc, max: a.max >> bc };
         } else if (inst.sub === 'shl' && a && bc != null && bc >= 0n && bc < BigInt(bits)) {
@@ -379,7 +400,7 @@ function comparisonOfBranch(branch) {
   const flags = branch.args[0] && branch.args[0].value;
   const cmp = flags && flags.def && flags.def.op === OP.CMP ? flags.def : null;
   if (!cmp || !cmp.args[0] || !cmp.args[0].value || !cmp.args[1] || !cmp.args[1].value) return null;
-  const rhs = shiftedConst(cmp.args[1]);
+  const rhs = shiftedConst(cmp.args[1], cmp.args[0].value.bits || 64);
   if (rhs == null) return null;
   return { lhs: cmp.args[0].value, rhs, cond: branch.cond || null, cmp };
 }
@@ -389,13 +410,15 @@ function invertRel(op) {
 }
 
 function constrainedRange(value, op, constant, signed) {
-  const bounds = typeBounds(value && value.bits || 64, signed);
+  const bits = value && value.bits || 64;
+  const rhs = normalizeIntegerValue(constant, bits, signed);
+  const bounds = typeBounds(bits, signed);
   let min = bounds.min, max = bounds.max;
-  if (op === '==') min = max = constant;
-  else if (op === '<') max = constant - 1n;
-  else if (op === '<=') max = constant;
-  else if (op === '>') min = constant + 1n;
-  else if (op === '>=') min = constant;
+  if (op === '==') min = max = rhs;
+  else if (op === '<') max = rhs - 1n;
+  else if (op === '<=') max = rhs;
+  else if (op === '>') min = rhs + 1n;
+  else if (op === '>=') min = rhs;
   else return null;
   const existing = valueRange(value);
   if (existing) { if (existing.min > min) min = existing.min; if (existing.max < max) max = existing.max; }
@@ -424,12 +447,13 @@ export function rangeOnBranch(ir, branch, taken = true) {
     : info.signed === false ? 'unsigned'
       : c.lhs.signed === true ? 'signed'
         : c.lhs.signed === false ? 'unsigned' : 'unknown';
-  const range = constrainedRange(c.lhs, relation, c.rhs, signedForBounds);
-  const zero = zeroFactOnEdge(relation, c.rhs);
+  const rhs = normalizeIntegerValue(c.rhs, c.lhs.bits || 64, signedForBounds);
+  const range = constrainedRange(c.lhs, relation, rhs, signedForBounds);
+  const zero = zeroFactOnEdge(relation, rhs);
   return {
     value: c.lhs,
     condition: relation,
-    constant: c.rhs,
+    constant: rhs,
     signedness,
     range,
     zero,

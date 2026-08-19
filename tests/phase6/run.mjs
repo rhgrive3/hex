@@ -52,8 +52,8 @@ export function runPhase6Tests(argv = process.argv.slice(2), { root = DIRECTORY 
     encoding: 'utf8',
     maxBuffer: 512 * 1024 * 1024,
   });
-  if (child.stdout) process.stdout.write(child.stdout);
   if (child.stderr) process.stderr.write(child.stderr);
+  if (child.stdout) process.stdout.write(child.stdout);
   if (child.error) throw child.error;
   if (child.status !== 0) throw new Error(`phase6: test runner failed with status ${child.status ?? 'signal'}`);
   console.log(`phase6: PASS (${selected.length}/${all.length} discovered test files${group ? `, group ${group}` : ''})`);
