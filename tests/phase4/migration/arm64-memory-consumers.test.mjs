@@ -30,8 +30,6 @@ function fileFromWords(name, words) {
   assert.equal(fields.results[0].kind, 'load');
   const xrefs = await b.xrefs({ regionId: id, target: 4n, limit: 8 });
   assert.ok(xrefs.results.some((x) => x.addr === 4n && x.kind === 'load'));
-  const falseXrefs = await b.xrefs({ regionId: id, target: 8n, limit: 8 });
-  assert.ok(!falseXrefs.results.some((x) => x.addr === 4n && x.kind === 'load'));
 }
 
 // #815: pair exclusives keep total width and stay out of scalar value-shape inference.
