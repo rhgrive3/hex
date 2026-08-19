@@ -1,0 +1,45 @@
+name: diag-pr946-contracts
+on:
+  push:
+    branches:
+      - fix/issues-915-921-current-main
+jobs:
+  phase1:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: node tests/phase1/contract-frontend.mjs
+  phase2:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: node tests/phase2/contract-semantics.mjs
+  phase3:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: node tests/phase3/contract-decoder.mjs
+  phase4:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: node tests/phase4/run.mjs
+  phase5:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [abi, corpus, decoder, effects, integration, ownership, registers, regressions, verification, vertical]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: node tests/phase5/run.mjs --group ${{ matrix.group }}
