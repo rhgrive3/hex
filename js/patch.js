@@ -77,7 +77,8 @@ export function assemble(text, at) {
   }
   const bc = /^b\.(\w+)$/.exec(mn);
   if (bc) {
-    const cond = CONDS.indexOf(bc[1]); if (cond < 0) return { error: '知らない条件です: ' + bc[1] };
+    const conditionName = ({ hs: 'cs', lo: 'cc' })[bc[1]] || bc[1];
+    const cond = CONDS.indexOf(conditionName); if (cond < 0) return { error: '知らない条件です: ' + bc[1] };
     const target = immOf(ops[0]); if (target == null) return { error: '飛び先のアドレスが読めません。' };
     if ((target - at) % 4n !== 0n) return { error: '飛び先は 4 バイト境界で指定してください。' };
     const delta = (target - at) / 4n; if (delta < -(1n << 18n) || delta >= (1n << 18n)) return { error: '条件分岐の飛び先が遠すぎます（±1 MB まで）。' };

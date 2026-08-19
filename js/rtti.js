@@ -70,7 +70,7 @@ function decodeChainedVtablePointer(raw,format,imageBase){
     }
     const target=raw&0x7ffffffffffn;
     const high8=(raw>>43n)&0xffn;
-    if([7,9,10,12].includes(format)){
+    if([7,9,12].includes(format)){
       if(base==null)return{raw,addr:null,binding:null,unresolved:true,reason:'image-base-required-for-offset-rebase',pointerFormat:format};
       return{raw,addr:base+target,binding:null,unresolved:false,pointerFormat:format};
     }
@@ -95,15 +95,16 @@ async function resolveVtablePointer(raw,address,opts){
 export async function readVtable(read,vtableAddr,symbols,maxSlots=64,opts={}){
   if(maxSlots&&typeof maxSlots==='object'){opts=maxSlots;maxSlots=opts.maxSlots||64;}
   maxSlots=Math.max(1,Math.min(4096,Number(maxSlots)||64));
-  const bytes=await read(vtableAddr,(maxSlots+2)*8);
+  const exactSlotCount=Number(opts?.slotCount);
+  const slotLimit=Number.isSafeInteger(exactSlotCount)&&exactSlotCount>=0?Math.min(4096,exactSlotCount):maxSlots;
+  const bytes=await read(vtableAddr,(slotLimit+2)*8);
   if(!bytes||bytes.length<24)return null;
   const dv=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength),slots=[];
   const offsetToTop=BigInt.asIntN(64,dv.getBigUint64(0,true));
   const typeinfoRaw=dv.getBigUint64(8,true);
   const typeinfoResolved=await resolveVtablePointer(typeinfoRaw,BigInt(vtableAddr)+8n,opts||{});
-  for(let i=2;i*8+8<=bytes.length;i++){
+  for(let i=2;i<slotLimit+2&&i*8+8<=bytes.length;i++){
     const raw=dv.getBigUint64(i*8,true);
-    if(raw===0n)break;
     const resolved=await resolveVtablePointer(raw,BigInt(vtableAddr)+BigInt(i*8),opts||{});
     const addr=resolved.addr;
     const name=addr!=null&&addr!==0n&&symbols?(symbols.nameAt(addr)||symbols.label(addr)):null;
