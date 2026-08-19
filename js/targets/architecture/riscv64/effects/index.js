@@ -8,6 +8,7 @@ import {
   RISCV64_ARCHITECTURE_ID,
   RISCV64_MACHINE_EFFECTS_SEMANTIC_VERSION,
   RISCV64_MODE,
+  RISCV64_INSTRUCTION_ALIGNMENT,
   normalizeRiscv64Instruction,
 } from './common.js';
 
@@ -20,7 +21,7 @@ const FAMILIES = Object.freeze([
   Object.freeze({ id: 'system', lift: liftRiscv64SystemEffects }),
 ]);
 
-export { RISCV64_ARCHITECTURE_ID, RISCV64_MACHINE_EFFECTS_SEMANTIC_VERSION, RISCV64_MODE };
+export { RISCV64_ARCHITECTURE_ID, RISCV64_MACHINE_EFFECTS_SEMANTIC_VERSION, RISCV64_MODE, RISCV64_INSTRUCTION_ALIGNMENT };
 
 /**
  * Lift one decoded RV64 instruction to exact MachineEffects.

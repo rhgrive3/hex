@@ -6,6 +6,8 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { parseOperands } from '../../js/arm64.js';
 import { decompile } from '../../js/decompile.js';
+import { semanticAbiAdapter } from '../../js/analysis/semantic-function.js';
+import { AAPCS64_ABI } from '../../js/targets/abi/index.js';
 import { evaluateExpression } from '../../js/decompiler/verify/equivalence.js';
 import { s, u } from '../../js/decompiler/truth/integer.js';
 import { ghidraAvailability, runGhidra, readabilityMetrics } from '../../tools/decompiler/ghidra-diff.mjs';
@@ -13,6 +15,7 @@ import { ghidraAvailability, runGhidra, readabilityMetrics } from '../../tools/d
 const here = path.dirname(fileURLToPath(import.meta.url));
 const sourcePath = path.join(here, 'sources', 'extended.c');
 const optimizations = ['-O2', '-O3', '-Os', '-Oz'];
+const compilerTruthAbiAdapter = semanticAbiAdapter(AAPCS64_ABI);
 
 function codeText(line) { return String(line || '').replace(/\/\/.*$/, '').trim(); }
 
@@ -191,6 +194,7 @@ for (const opt of optimizations) {
       addr: model.instructions[0].address,
       rowOfAddress: (addr) => rowMap.get(addr?.toString()) ?? null,
       returnType,
+      abiAdapter:compilerTruthAbiAdapter,
       decompilerTimeBudgetMs: 180,
     });
     assert.ok(result?.semantic, `${opt} ${name}: semantic path fell back`);

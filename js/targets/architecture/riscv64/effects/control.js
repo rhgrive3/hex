@@ -39,13 +39,24 @@ function addressRef(value) {
   return { kind: 'absolute-address', value: BigInt(value) };
 }
 
-function targetAlignmentFault() {
+function targetAlignmentFault(instructionAlignment) {
+  // IALIGN=16 (2 bytes) makes every architecturally representable branch/JAL
+  // immediate target aligned, while JALR clears bit 0. Therefore an
+  // instruction-address-misaligned exception is impossible for the frozen C
+  // profile. Keep the helper profile-driven so an IALIGN=32 profile can opt in
+  // without reintroducing a hard-coded mode test.
+  const alignmentBytes = Number(instructionAlignment);
+  if (alignmentBytes <= 2) return null;
   return {
     kind: 'pc-alignment-fault',
-    // With the "C" extension present, instructions are 2-byte aligned.
-    condition: { kind: 'riscv64-target-misaligned', alignmentBytes: 2 },
-    detail: { architecture: 'riscv64', profile: 'rv64imc' },
+    condition: { kind: 'riscv64-target-misaligned', alignmentBytes },
+    detail: { architecture: 'riscv64', instructionAlignment: alignmentBytes },
   };
+}
+
+function targetAlignmentFaults(ctx) {
+  const fault = targetAlignmentFault(ctx.instructionAlignment);
+  return fault == null ? [] : [fault];
 }
 
 export function liftRiscv64ControlEffects(decoded, context = {}) {
@@ -84,7 +95,7 @@ export function liftRiscv64ControlEffects(decoded, context = {}) {
         fallthrough: addressRef(next),
         condition,
       },
-      possibleFaults: [targetAlignmentFault()],
+      possibleFaults: targetAlignmentFaults(ctx),
       family: 'control',
       metadata: { operation: op, predicate, flagsRegisterUsed: false, conditionKind: 'direct-register-comparison' },
     });
@@ -97,7 +108,7 @@ export function liftRiscv64ControlEffects(decoded, context = {}) {
       controlEffect: linked
         ? { kind: 'call', target: addressRef(target), fallthrough: addressRef(next) }
         : { kind: 'branch', target: addressRef(target) },
-      possibleFaults: [targetAlignmentFault()],
+      possibleFaults: targetAlignmentFaults(ctx),
       family: 'control',
       metadata: { operation: op, direct: true, linkRegister: linked ? fields.rd : null, abiSemantics: false },
     });
@@ -117,7 +128,7 @@ export function liftRiscv64ControlEffects(decoded, context = {}) {
         target,
         ...(kind === 'call' ? { fallthrough: addressRef(next) } : {}),
       },
-      possibleFaults: [targetAlignmentFault()],
+      possibleFaults: targetAlignmentFaults(ctx),
       family: 'control',
       metadata: {
         operation: op,

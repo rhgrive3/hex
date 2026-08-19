@@ -3,7 +3,7 @@ import { riscv64RegisterDescriptor } from './registers.js';
 
 export const RISCV64_DECODED_INSTRUCTION_CONTRACT_VERSION = 'riscv64-decoded-instruction/v1';
 export const RISCV64_DECODER_SEMANTIC_VERSION = 'capstone-5-riscv64-word-exact-v1';
-export const RISCV64_DECODE_MODES = Object.freeze(['rv64imc']);
+export const RISCV64_DECODE_MODES = Object.freeze(['rv64im', 'rv64imc']);
 
 function text(value, code) {
   const out = String(value ?? '').trim();
@@ -35,10 +35,21 @@ export function createRiscv64DecodedInstruction(input = {}) {
   const fields = decodeRiscv64InstructionWord(rawBytes);
   const mode = text(input.mode ?? 'rv64imc', 'riscv64-decoded-instruction-mode-required');
   if (!RISCV64_DECODE_MODES.includes(mode)) throw new TypeError('riscv64-decoded-instruction-unsupported-mode');
+  if (mode === 'rv64im' && size === 2) throw new TypeError('riscv64-decoded-instruction-compressed-disabled');
+  const instructionAlignment = Number(input.instructionAlignment ?? (mode === 'rv64im' ? 4 : 2));
+  if (!Number.isSafeInteger(instructionAlignment) || ![2,4].includes(instructionAlignment)) {
+    throw new TypeError('riscv64-decoded-instruction-invalid-instruction-alignment');
+  }
+  if (mode === 'rv64im' && instructionAlignment !== 4) throw new TypeError('riscv64-decoded-instruction-mode-alignment-mismatch');
+  if (mode === 'rv64imc' && instructionAlignment !== 2) throw new TypeError('riscv64-decoded-instruction-mode-alignment-mismatch');
 
   return Object.freeze({
     architecture: 'riscv64',
     mode,
+    instructionAlignment,
+    ...(input.isaIdentity == null ? {} : { isaIdentity:String(input.isaIdentity) }),
+    ...(input.isaEvidence == null ? {} : { isaEvidence:String(input.isaEvidence) }),
+    ...(input.compressedInstructions == null ? {} : { compressedInstructions:input.compressedInstructions === true }),
     address,
     size,
     length: size,
