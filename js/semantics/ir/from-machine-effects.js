@@ -898,7 +898,7 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
         emitUnknownEffects(effect, 'conditional-branch-not-fully-representable', ['control'], { control });
         return;
       }
-      const targets = rawTargets.map((target, index) => ensureControlTargetBlock(target, index === rawTargets.length - 1 ? 'fallthrough' : `branch-${index}`));
+      const targets = unique(rawTargets.map((target, index) => ensureControlTargetBlock(target, index === rawTargets.length - 1 ? 'fallthrough' : `branch-${index}`)));
       const nodeId = nodeIdFor(effect, 'conditional-branch-control');
       addNode({
         id: nodeId,

@@ -2,64 +2,56 @@ name: Generated userscript sync
 
 on:
   pull_request:
+    paths:
+      - 'index.html'
+      - 'css/**'
+      - 'js/**'
+      - 'capstone.wasm'
+      - 'scripts/build-userscript.mjs'
+      - 'scripts/userscript-release-version.mjs'
+      - 'userscript/hex.user.template.js'
+      - 'userscript/release-version.json'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/generated-sync.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'index.html'
+      - 'css/**'
+      - 'js/**'
+      - 'capstone.wasm'
+      - 'scripts/build-userscript.mjs'
+      - 'scripts/userscript-release-version.mjs'
+      - 'userscript/hex.user.template.js'
+      - 'userscript/release-version.json'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/generated-sync.yml'
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: generated-sync-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  finalize-pe-unwind:
-    if: github.head_ref == 'fix/issues-922-933-pe-unwind'
+  generated-sync:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.head_ref }}
-          fetch-depth: 0
-      - name: Reconcile live main
-        run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git fetch origin main
-          git merge origin/main --no-edit
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Make legacy PE fixture structurally valid
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path('tests/universal-binary.mjs')
-          text = p.read_text()
-          old = "  w32(0x600,0x1000); w32(0x604,0x1010); w32(0x608,0x3020);\n  return b;"
-          new = "  w32(0x600,0x1000); w32(0x604,0x1010); w32(0x608,0x3020);\n  b.set([1,0,0,0],0x620); // valid x64 UNWIND_INFO v1, flags=0, count=0\n  return b;"
-          if text.count(old) != 1:
-              raise SystemExit(f'PE fixture anchor expected once, found {text.count(old)}')
-          p.write_text(text.replace(old, new, 1))
-          PY
-      - name: Verify PE binary regressions
-        run: npm run binary:test
       - name: Rebuild canonical userscript outputs
         run: npm run userscript:build
-      - name: Restore canonical workflow before repository contracts
-        run: git checkout origin/main -- .github/workflows/generated-sync.yml
-      - name: Full repository check
-        run: npm run check
-      - name: Diff hygiene
-        run: git diff --check
-      - name: Publish verified head
-        shell: bash
-        run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -A
-          git diff --cached --check
-          git commit -m 'fix: validate PE unwind metadata before function seeding (#922 #933)'
-          git push origin HEAD:${{ github.head_ref }}
+      - name: Require userscript-owned generated outputs to match source
+        run: >-
+          git diff --exit-code --
+          userscript/hex.user.template.js
+          userscript/release-version.json

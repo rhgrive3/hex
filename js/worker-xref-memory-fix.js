@@ -9,6 +9,123 @@
  * the existing cross-binary xref set monotonic while covering pair/exclusive/
  * LSE operands that pairedOffset() cannot describe.
  */
+
+/*
+ * The program index has a narrower string-xref contract than interactive
+ * memory xrefs. Its long-standing/cross-binary oracle is the canonical
+ * ADR/ADRP + ADD/scalar-load surface. Generic memoryAccess support added for
+ * #814-#816 must remain available for data/field consumers, but pair,
+ * exclusive and LSE accesses into literal string storage are memory accesses,
+ * not canonical string-address references. Keep those supplemental edges out
+ * of the program string index without weakening the new memory consumers.
+ */
+const __scanProgramWithExtendedMemoryRefs = scanProgram;
+const __programStringSectionNames = new Set([
+  '__objc_methname', '__objc_classname', '__oslogstring', '__objc_methtype',
+]);
+
+function __programStringRanges() {
+  const ranges = [];
+  const seen = new Set();
+  for (const slice of slices || []) {
+    for (const region of slice?.regions || []) {
+      const section = String(region?.section || '');
+      if (!section || (!section.includes('cstring') && !__programStringSectionNames.has(section))) continue;
+      const start = BigInt(region.vmAddr ?? 0);
+      const size = BigInt(region.size ?? 0);
+      if (size <= 0n) continue;
+      const key = `${start}:${size}:${section}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      ranges.push({ start, end:start + size });
+    }
+  }
+  return ranges;
+}
+
+function __inProgramStringRange(addr, ranges) {
+  for (const range of ranges) if (addr >= range.start && addr < range.end) return true;
+  return false;
+}
+
+async function __isSupplementalMemoryRef(region, site) {
+  if (site < region.vmAddr || site + 4n > region.vmAddr + region.size) return false;
+  const off = Number(site - region.vmAddr);
+  if (!Number.isSafeInteger(off) || off < 0) return false;
+  const raw = await readRange(region.fileOffset + BigInt(off), 4);
+  if (raw.length < 4) return false;
+  const word = new DataView(raw.buffer, raw.byteOffset, 4).getUint32(0, true);
+
+  // These are the pre-existing canonical program-reference routes. Never
+  // filter them; current-main accuracy is defined over exactly this surface.
+  const rel = Words.pcRelTarget(word, site);
+  if (rel && !rel.page) return false;
+  if (Words.pairedOffset(word)) return false;
+  if (Words.classifyWord(word) === Words.KIND.LITERAL) return false;
+
+  // Any remaining indexed edge emitted by scanProgram can only come from the
+  // supplemental generic memoryAccess route introduced for #814-#816.
+  return Words.memoryAccess(word) != null;
+}
+
+scanProgram = async function scanProgramCanonicalStringRefs(args) {
+  const result = await __scanProgramWithExtendedMemoryRefs(args);
+  if (!result || result.cancelled || !result.refCount) return result;
+
+  const region = regions.get(args.regionId);
+  const stringRanges = __programStringRanges();
+  if (!region || !stringRanges.length) return result;
+
+  const count = Math.min(
+    Number(result.refCount) || 0,
+    result.refFrom?.length || 0,
+    result.refTo?.length || 0,
+    result.refKind?.length || 0,
+  );
+  if (!count) return result;
+
+  const keep = new Uint8Array(count);
+  let kept = 0;
+  let changed = false;
+  for (let i = 0; i < count; i++) {
+    if (cancelled(args.requestId)) return { cancelled:true, __transfer:[] };
+    const target = result.refTo[i];
+    let drop = false;
+    if (__inProgramStringRange(target, stringRanges)) {
+      drop = await __isSupplementalMemoryRef(region, result.refFrom[i]);
+    }
+    if (drop) {
+      changed = true;
+    } else {
+      keep[i] = 1;
+      kept++;
+    }
+  }
+  if (!changed) return result;
+
+  const refFrom = new BigUint64Array(kept);
+  const refTo = new BigUint64Array(kept);
+  const refKind = new Uint8Array(kept);
+  for (let i = 0, j = 0; i < count; i++) {
+    if (!keep[i]) continue;
+    refFrom[j] = result.refFrom[i];
+    refTo[j] = result.refTo[i];
+    refKind[j] = result.refKind[i];
+    j++;
+  }
+
+  result.refFrom = refFrom;
+  result.refTo = refTo;
+  result.refKind = refKind;
+  result.refCount = kept;
+  result.__transfer = [
+    result.callFrom.buffer, result.callTo.buffer,
+    refFrom.buffer, refTo.buffer, refKind.buffer,
+    result.kinds.buffer,
+  ];
+  return result;
+};
+
 findXrefs = async function findXrefsCanonicalMemory({ regionId, target, limit, requestId, epoch }) {
   const region = regions.get(regionId);
   if (!region) throw new Error('Unknown region.');
