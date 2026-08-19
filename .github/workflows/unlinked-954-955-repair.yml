@@ -28,15 +28,17 @@ jobs:
           cache: npm
       - run: npm ci
       - name: Apply Win64 ABI repair
-        run: python3 .github/apply-unlinked-954-955.py
+        run: |
+          python3 .github/apply-unlinked-954-955.py
+          python3 .github/adjust-unlinked-954-955.py
+      - name: Rebuild canonical userscript before suites
+        run: npm run userscript:build
       - name: Focused regression
         run: node --test tests/phase5/abi/issues-954-955-win64-abi.test.mjs
       - name: Phase 5 suite
         run: npm run phase5:test
-      - name: Rebuild canonical userscript
-        run: npm run userscript:build
       - name: Remove bootstrap files
-        run: rm -f .github/apply-unlinked-954-955.py .github/workflows/unlinked-954-955-repair.yml
+        run: rm -f .github/apply-unlinked-954-955.py .github/adjust-unlinked-954-955.py .github/workflows/unlinked-954-955-repair.yml
       - name: Full repository check
         run: npm run check
       - name: Generated-output idempotence and diff hygiene
