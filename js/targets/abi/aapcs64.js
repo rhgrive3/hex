@@ -20,7 +20,7 @@ function canonicalPlatform(context = {}) {
 
 export function aapcs64X18Policy(context = {}) {
   const platform = canonicalPlatform(context);
-  if (platform === 'darwin' || platform === 'macos' || platform === 'ios' || platform === 'tvos'
+  if (platform === 'darwin' || platform === 'apple' || platform === 'macos' || platform === 'ios' || platform === 'tvos'
       || platform === 'watchos' || platform === 'visionos' || platform === 'android') {
     return Object.freeze({ platform: platform || 'unknown', role:'platform-reserved', callerSaved:false, evidence:'platform-abi-x18-reserved' });
   }
@@ -200,7 +200,7 @@ function aapcs64UnknownCallEffects(context = {}) {
 
 export const AAPCS64_ABI = new ABIPlugin({
   id:'aapcs64', semanticVersion:'2', architectureId:'arm64',
-  platformPredicate:({ platform }) => !platform || platform === 'darwin' || platform === 'linux' || platform === 'android' || platform === 'unknown',
+  platformPredicate:({ platform }) => !platform || ['darwin','apple','macos','ios','tvos','watchos','visionos','linux','sysv','android','unknown'].includes(platform),
   callingConventions:()=>Object.freeze(['aapcs64']),
   classifyArguments:classifyAAPCS64Arguments,
   classifyCallReturn:classifyAAPCS64CallReturn,
