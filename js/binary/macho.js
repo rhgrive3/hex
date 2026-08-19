@@ -32,6 +32,12 @@ const DYLIB_COMMANDS = new Set([
   LC_LAZY_LOAD_DYLIB, LC_LOAD_UPWARD_DYLIB,
 ]);
 
+const THREAD_STATE_LAYOUTS = Object.freeze({
+  arm64: Object.freeze({ flavor:6, minCount:68, pcOffset:256, pcBits:64, alignment:4n, name:'ARM_THREAD_STATE64' }),
+  x86_64: Object.freeze({ flavor:4, minCount:34, pcOffset:128, pcBits:64, alignment:1n, name:'x86_THREAD_STATE64' }),
+  arm: Object.freeze({ flavor:1, minCount:16, pcOffset:60, pcBits:32, alignment:2n, name:'ARM_THREAD_STATE' }),
+});
+
 export function parseMachO(input, opts = {}) {
   const bytes = new ByteView(input).bytes;
   const kind = machoKind(bytes);
@@ -109,8 +115,12 @@ function parseThin(bytes, opts) {
       }
       else if (cmd === LC_MAIN && cmdsize >= 24) linkeditData.main = { entryoff: r.u64(p + 8), stacksize: r.u64(p + 16) };
       else if ((cmd === LC_THREAD || cmd === LC_UNIXTHREAD) && cmdsize >= 16) {
-        const pc = parseThreadEntrypoint(r, p, cmdsize, cpu, bits);
-        if (pc != null && linkeditData.threadEntry == null) linkeditData.threadEntry = pc;
+        const parsed = parseThreadEntrypoint(r, p, cmdsize, cpu, bits);
+        if (parsed.partial) {
+          markMachOMetadataPartial(image, 'thread-state-partial');
+          image.warnings.push(`Mach-O thread state is partial: ${parsed.reason}`);
+        }
+        if (parsed.pc != null && linkeditData.threadEntry == null) linkeditData.threadEntry = { ...parsed, command:cmd };
       }
       else if (cmd === LC_VERSION_MIN_MACOSX || cmd === LC_VERSION_MIN_IPHONEOS || cmd === LC_VERSION_MIN_TVOS || cmd === LC_VERSION_MIN_WATCHOS) {
         if (cmdsize < 16) throw new Error(`invalid LC_VERSION_MIN size ${cmdsize}`);
@@ -138,8 +148,22 @@ function parseThin(bytes, opts) {
     image.entrypoint = image.offsetToAddress(linkeditData.main.entryoff);
     image.metadata.entrypointSource = 'LC_MAIN';
   } else if (linkeditData.threadEntry != null) {
-    image.entrypoint = linkeditData.threadEntry;
-    image.metadata.entrypointSource = 'LC_UNIXTHREAD';
+    const validation = validateThreadEntrypoint(image, linkeditData.threadEntry);
+    image.metadata.threadEntrypoint = {
+      address:linkeditData.threadEntry.pc,
+      flavor:linkeditData.threadEntry.flavor,
+      count:linkeditData.threadEntry.count,
+      layout:linkeditData.threadEntry.layout,
+      valid:validation.valid,
+      evidence:validation.evidence,
+    };
+    if (validation.valid) {
+      image.entrypoint = linkeditData.threadEntry.pc;
+      image.metadata.entrypointSource = linkeditData.threadEntry.command === LC_THREAD ? 'LC_THREAD' : 'LC_UNIXTHREAD';
+    } else {
+      markMachOMetadataPartial(image, 'thread-entrypoint-invalid');
+      image.warnings.push(`Ignored Mach-O thread entrypoint 0x${linkeditData.threadEntry.pc.toString(16)}: ${validation.evidence}`);
+    }
   }
   if (image.entrypoint != null && image.entrypoint !== 0n) image.functions.push(functionSeed(image.entrypoint, { source: 'entrypoint', confidence: 0.9 }));
 
@@ -279,20 +303,41 @@ function parseLegacyVersionMin(r, p, cmd, image) {
 
 function parseThreadEntrypoint(r, p, cmdsize, cpu, bits) {
   const end = p + cmdsize;
+  const arch = cpuName(cpu);
+  const layout = THREAD_STATE_LAYOUTS[arch] ?? null;
   let q = p + 8;
+  let partialReason = null;
   while (q + 8 <= end) {
     const flavor = r.u32(q);
     const count = r.u32(q + 4);
     const state = q + 8;
     const stateBytes = count * 4;
-    if (!Number.isSafeInteger(stateBytes) || stateBytes < 0 || state + stateBytes > end) return null;
-    const arch = cpuName(cpu);
-    if (arch === 'arm64' && flavor === 6 && stateBytes >= 272) return r.u64(state + 264);
-    if (arch === 'x86_64' && flavor === 4 && stateBytes >= 136) return r.u64(state + 128);
-    if (arch === 'arm' && bits === 32 && flavor === 1 && stateBytes >= 64) return BigInt(r.u32(state + 60));
+    if (!Number.isSafeInteger(stateBytes) || stateBytes < 0 || state + stateBytes > end) {
+      return { pc:null, partial:true, reason:'thread-state-count-exceeds-command' };
+    }
+    if (layout && flavor === layout.flavor && (arch !== 'arm' || bits === 32)) {
+      if (count < layout.minCount || stateBytes < layout.pcOffset + layout.pcBits / 8) {
+        partialReason = `${layout.name}-count-${count}-below-${layout.minCount}`;
+      } else {
+        const pc = layout.pcBits === 64 ? r.u64(state + layout.pcOffset) : BigInt(r.u32(state + layout.pcOffset));
+        return { pc, flavor, count, layout:layout.name, alignment:layout.alignment, partial:false, reason:null };
+      }
+    }
     q = state + stateBytes;
   }
-  return null;
+  return { pc:null, partial:partialReason != null, reason:partialReason || 'matching-thread-state-flavor-not-found' };
+}
+
+function validateThreadEntrypoint(image, parsed) {
+  const pc = BigInt(parsed.pc);
+  const alignment = parsed.alignment ?? 1n;
+  if (pc === 0n) return { valid:false, evidence:'zero-thread-pc' };
+  if (alignment > 1n && pc % alignment !== 0n) return { valid:false, evidence:`thread-pc-misaligned-${alignment}` };
+  const segment = image.segmentAt(pc);
+  if (!segment) return { valid:false, evidence:'thread-pc-unmapped' };
+  if (!segment.perms?.execute) return { valid:false, evidence:'thread-pc-non-executable' };
+  if (image.addressToOffset(pc) == null) return { valid:false, evidence:'thread-pc-not-file-backed' };
+  return { valid:true, evidence:'thread-state-pc-executable-file-backed' };
 }
 
 function parseDyldInfo(r, p) {
@@ -327,8 +372,6 @@ function parseSymbolTable(r, st, image, bits, sharedBudget = null) {
     const ntype = type & 0x0e;
     const external = !!(type & 1);
     const isUndefinedType = ntype === 0;
-    // For N_UNDF with non-zero n_value, Mach-O defines a tentative/common
-    // symbol: n_value is the requested byte size, never a VM address.
     const commonSymbol = isUndefinedType && value !== 0n;
     const undefinedSymbol = isUndefinedType && !commonSymbol;
     const sym = {
