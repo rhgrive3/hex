@@ -85,10 +85,24 @@ jobs:
             --oracle="${{ matrix.oracle }}" \
             --name="${{ matrix.name }}" \
             --out="diagnostics-${{ matrix.name }}.json"
-          cat "diagnostics-${{ matrix.name }}.json"
+          node --max-old-space-size=6000 tests/analysis/function-guess-filter-probe.mjs \
+            --target="tests/.real-fixtures/${{ matrix.file }}" \
+            --oracle="${{ matrix.oracle }}" \
+            --name="${{ matrix.name }}" \
+            --out="function-filter-${{ matrix.name }}.json"
+          node --max-old-space-size=6000 tests/analysis/kind-mismatch-probe.mjs \
+            --target="tests/.real-fixtures/${{ matrix.file }}" \
+            --oracle="${{ matrix.oracle }}" \
+            --name="${{ matrix.name }}" \
+            --out="kind-${{ matrix.name }}.json"
+          cat "function-filter-${{ matrix.name }}.json"
+          cat "kind-${{ matrix.name }}.json"
       - uses: actions/upload-artifact@v4
         with:
           name: cross-binary-diagnostics-${{ matrix.name }}
-          path: diagnostics-${{ matrix.name }}.json
+          path: |
+            diagnostics-${{ matrix.name }}.json
+            function-filter-${{ matrix.name }}.json
+            kind-${{ matrix.name }}.json
           if-no-files-found: error
           retention-days: 7
