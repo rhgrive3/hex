@@ -1,0 +1,200 @@
+name: Bootstrap five issue fixes
+on:
+  push:
+    branches: [fix/issues-802-805-821-835-952]
+permissions:
+  contents: write
+jobs:
+  apply-and-verify:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Apply audited minimal source fixes
+        shell: python
+        run: |
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{path}: expected one exact anchor, found {count}')
+              p.write_text(text.replace(old, new, 1))
+
+          replace_once(
+              'js/emu.js',
+              "    if (mn === 'neg' || mn === 'negs') { this.set(ops[0].text, -R(ops[1])); return null; }",
+              """    if (mn === 'neg' || mn === 'negs') {
+      const wide = isWide(ops[0]);
+      const source = R(ops[1]);
+      const result = BigInt.asUintN(wide ? 64 : 32, -source);
+      this.set(ops[0].text, result);
+      if (mn === 'negs') this.setFlags('subs', 0n, source, result, wide);
+      return null;
+    }""",
+          )
+
+          replace_once(
+              'js/patch.js',
+              "    const cond = CONDS.indexOf(bc[1]); if (cond < 0) return { error: '知らない条件です: ' + bc[1] };",
+              "    const conditionName = ({ hs: 'cs', lo: 'cc' })[bc[1]] || bc[1];\n    const cond = CONDS.indexOf(conditionName); if (cond < 0) return { error: '知らない条件です: ' + bc[1] };",
+          )
+
+          replace_once(
+              'js/expr.js',
+              """    } else if (base === 'ubfx' || base === 'sbfx') {
+      const lsb = insn.ops[2] && insn.ops[2].value != null ? insn.ops[2].value : 0n;
+      const width = insn.ops[3] && insn.ops[3].value != null ? insn.ops[3].value : 0n;
+      const shifted = bin('shr', A(), constNode(lsb), bits);
+      emit(dst, width > 0n && width < 64n ? bin('and', shifted, constNode((1n << width) - 1n), bits) : shifted);
+""",
+              """    } else if (base === 'ubfx' || base === 'sbfx') {
+      const lsb = insn.ops[2] && insn.ops[2].value != null ? insn.ops[2].value : 0n;
+      const width = insn.ops[3] && insn.ops[3].value != null ? insn.ops[3].value : 0n;
+      const fullWidth = BigInt(bits);
+      const shifted = bin('shr', A(), constNode(lsb), bits);
+      const field = width > 0n && width < fullWidth
+        ? bin('and', shifted, constNode((1n << width) - 1n), bits)
+        : shifted;
+      if (base === 'sbfx' && width > 0n && width <= fullWidth) {
+        const signBit = 1n << (width - 1n);
+        emit(dst, bin('sub', bin('xor', field, constNode(signBit), bits), constNode(signBit), bits));
+      } else {
+        emit(dst, field);
+      }
+""",
+          )
+
+          replace_once(
+              'js/swift.js',
+              "out.push({index:i,flags,impl,kind:flags&0x0f,instance:!(flags&0x10),dynamic:!!(flags&0x20)});",
+              "out.push({index:i,flags,impl,kind:flags&0x0f,instance:!!(flags&0x10),dynamic:!!(flags&0x20),async:!!(flags&0x40)});",
+          )
+
+          replace_once(
+              'js/semantics/ir/from-machine-effects.js',
+              "    if (condition.kind === 'bitvector') return rawConstant(effect, condition.value, condition.widthBits, 'control-condition', 0);\n    return null;",
+              "    if (condition.kind === 'bitvector') return rawConstant(effect, condition.value, condition.widthBits, 'control-condition', 0);\n    if (condition.kind === 'absolute-address') {\n      const widthBits = positiveInteger(condition.widthBits) ?? positiveInteger(context.addressWidthBits) ?? 64;\n      return rawConstant(effect, condition.value, widthBits, 'control-target', 0);\n    }\n    return null;",
+          )
+
+      - name: Add focused regression coverage
+        shell: bash
+        run: |
+          cat > tests/issues-802-805-821-835-952.mjs <<'EOF'
+          import assert from 'node:assert/strict';
+          import { Emulator } from '../js/emu.js';
+          import { assemble, suggestPatches } from '../js/patch.js';
+          import { buildValues } from '../js/expr.js';
+          import { parseSwiftVTable } from '../js/swift.js';
+          import { createInstructionId } from '../js/core/identity/index.js';
+          import { createMachineEffectBundle } from '../js/semantics/effects/index.js';
+          import { lowerMachineEffectBundleToSemanticIr } from '../js/semantics/ir/from-machine-effects.js';
+
+          // #802: NEGS is SUBS from zero and must update NZCV; NEG must not.
+          {
+            const emu = new Emulator();
+            emu.set('w1', 1n);
+            emu.nzcv = { n:false, z:true, c:true, v:true };
+            await emu.execute('negs', 'w0, w1', 0n);
+            assert.equal(emu.get('w0'), 0xffffffffn);
+            assert.deepEqual(emu.nzcv, { n:true, z:false, c:false, v:false });
+            const before = { ...emu.nzcv };
+            await emu.execute('neg', 'w0, w1', 0n);
+            assert.deepEqual(emu.nzcv, before, 'NEG must preserve flags');
+            emu.set('x1', 0x8000000000000000n);
+            await emu.execute('negs', 'x0, x1', 0n);
+            assert.deepEqual(emu.nzcv, { n:true, z:false, c:false, v:true });
+          }
+
+          // #805: accepted ARM aliases and every suggestion must round-trip through assemble().
+          {
+            assert.deepEqual(Array.from(assemble('b.hs 0x2000', 0x1000n).bytes), Array.from(assemble('b.cs 0x2000', 0x1000n).bytes));
+            assert.deepEqual(Array.from(assemble('b.lo 0x2000', 0x1000n).bytes), Array.from(assemble('b.cc 0x2000', 0x1000n).bytes));
+            for (const mn of ['b.hs', 'b.lo', 'b.cs', 'b.cc']) {
+              for (const proposal of suggestPatches(mn, '#0x2000', 0x1000n)) {
+                assert.equal(assemble(proposal.text, 0x1000n).error, undefined, `${mn}: ${proposal.text}`);
+              }
+            }
+          }
+
+          // #821: SBFX sign-extends the selected field while UBFX remains zero-extended.
+          {
+            const reg = (n) => ({ k:'reg', cls:'gp', num:n, bits:64 });
+            const imm = (value) => ({ k:'imm', value:BigInt(value) });
+            const model = { instructions: [
+              { row:0, mnemonic:'mov', ops:[reg(1), imm(0x80)], reads:[], writes:['x1'] },
+              { row:1, mnemonic:'sbfx', ops:[reg(0), reg(1), imm(0), imm(8)], reads:['x1'], writes:['x0'] },
+              { row:2, mnemonic:'ubfx', ops:[reg(2), reg(1), imm(0), imm(8)], reads:['x1'], writes:['x2'] },
+            ], calls:[], addressRefs:[], basicBlocks:[] };
+            const values = buildValues(model);
+            assert.equal(values.defAt(1, 'x0')?.k, 'const');
+            assert.equal(values.defAt(1, 'x0')?.v, -128n);
+            assert.equal(values.defAt(2, 'x2')?.v, 128n);
+          }
+
+          // #835: Swift MethodDescriptorFlags bit 0x10 is positively IsInstance; 0x40 is async.
+          {
+            const bytes = new Uint8Array(24);
+            new DataView(bytes.buffer).setUint32(0, 0x10, true);
+            new DataView(bytes.buffer).setUint32(8, 0x00, true);
+            new DataView(bytes.buffer).setUint32(16, 0x70, true);
+            const read = async (addr, len) => bytes.subarray(Number(addr), Number(addr) + len);
+            const methods = await parseSwiftVTable(read, 0n, 3);
+            assert.equal(methods[0].instance, true);
+            assert.equal(methods[1].instance, false);
+            assert.equal(methods[2].instance, true);
+            assert.equal(methods[2].dynamic, true);
+            assert.equal(methods[2].async, true);
+          }
+
+          // #952: a direct absolute CALL target must survive in typed targetValueIds as a const.
+          {
+            const instructionId = createInstructionId({
+              binaryId:'bin_issue_952', sliceId:'slice_issue_952', virtualAddress:0x1000n,
+              decodeMode:'opaque-mode', decoderSemanticVersion:'1',
+            });
+            const bundle = createMachineEffectBundle({
+              instructionId, architectureId:'opaque-test-target', mode:'opaque-mode', operations:[],
+              controlEffect:{ kind:'call', target:{ kind:'absolute-address', value:'8192' }, fallthrough:{ kind:'absolute-address', value:'4100' } },
+              possibleFaults:[], origin:{ instructionIds:[instructionId], virtualRanges:[{ imageId:'image_issue_952', start:0x1000n, end:0x1004n }] },
+              completeness:'exact',
+            });
+            const ir = lowerMachineEffectBundleToSemanticIr(bundle, { functionId:'function_issue_952', blockId:'block_issue_952', addressWidthBits:64 });
+            const call = ir.nodes.find((node) => node.kind === 'call');
+            assert.ok(call);
+            assert.equal(call.call.targetValueIds.length, 1);
+            assert.deepEqual(call.inputs, call.call.targetValueIds);
+            const target = ir.values.find((value) => value.id === call.call.targetValueIds[0]);
+            assert.ok(target?.definitionNodeId);
+            const def = ir.nodes.find((node) => node.id === target.definitionNodeId);
+            assert.equal(def?.kind, 'const');
+          }
+
+          console.log('issues 802/805/821/835/952 regressions: PASS');
+          EOF
+      - name: Focused tests
+        run: node tests/issues-802-805-821-835-952.mjs
+      - name: Canonical build
+        run: npm run userscript:build
+      - name: Full repository checks
+        run: npm run check
+      - name: Diff hygiene
+        run: git diff --check
+      - name: Publish verified implementation
+        shell: bash
+        run: |
+          rm .github/workflows/fix-five-issues-bootstrap.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m 'fix: resolve correctness issues 802 805 821 835 952'
+          git push origin HEAD:fix/issues-802-805-821-835-952
