@@ -43,6 +43,7 @@ jobs:
         shell: bash
         run: |
           git fetch origin fix/issues-915-921-20260819 --depth=1
+          mkdir -p tests/phase5/regressions
           for path in \
             js/decompiler/pipeline-core.js \
             js/semantics/compat/semantic-ir-v2-to-v1.js \
