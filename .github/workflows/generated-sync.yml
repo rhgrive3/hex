@@ -31,4 +31,4 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: bash .github/reconcile-pr998.sh
+      - run: bash -x .github/reconcile-pr998.sh
