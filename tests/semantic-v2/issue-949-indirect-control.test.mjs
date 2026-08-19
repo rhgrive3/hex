@@ -1,57 +1,4 @@
-from pathlib import Path
-
-source = Path('js/semantics/ir/from-machine-effects.js')
-text = source.read_text()
-old = """    if (control.kind === 'indirect') {
-      emitUnknownEffects(effect, 'unresolved-indirect-control-flow', ['control'], { control });
-      return;
-    }
-"""
-new = """    if (control.kind === 'indirect') {
-      const targetId = control.target && typeof control.target === 'object'
-        ? resolveControlCondition(effect, control.target)
-        : null;
-      if (!targetId) {
-        emitUnknownEffects(effect, 'unresolved-indirect-control-flow-target-not-representable', ['control'], { control });
-        return;
-      }
-      const targetBlock = ensureControlTargetBlock(control.target, 'indirect');
-      const nodeId = nodeIdFor(effect, 'indirect-control');
-      const origin = effectOrigin(effect, 'indirect-control-projection', [nodeId]);
-      addNode({
-        id: nodeId,
-        kind: 'unknown-control-effect',
-        blockId,
-        inputs: [targetId],
-        targets: [targetBlock],
-        completeness: 'unknown',
-        unknown: {
-          reason: 'unresolved-indirect-control-flow',
-          categories: ['control'],
-          knownParts: { targetValueId: targetId, machineControlEffect: control },
-        },
-        attributes: machineAttributes(effect, {
-          machineControlEffect: control,
-          unresolvedSuccessor: true,
-          targetValueId: targetId,
-        }),
-        sourceEffectIds: [effect.sourceEffectId],
-        origin,
-      });
-      addIssue('unresolved-indirect-control-flow', ['control'], {
-        targetValueId: targetId,
-        targetBlockId: targetBlock,
-        control,
-      });
-      return;
-    }
-"""
-if text.count(old) != 1:
-    raise SystemExit(f'#949 lowering anchor expected once, found {text.count(old)}')
-source.write_text(text.replace(old, new, 1))
-
-test = Path('tests/semantic-v2/issue-949-indirect-control.test.mjs')
-test.write_text("""import assert from 'node:assert/strict';
+import assert from 'node:assert/strict';
 import { createOriginSet } from '../../js/core/identity/origin.js';
 import {
   createMachineEffectBundle,
@@ -96,4 +43,3 @@ assert.equal(ir.completeness, 'partial');
 assert.ok(ir.unknowns.some((unknown) => unknown.reason === 'unresolved-indirect-control-flow'));
 
 console.log('issue #949 computed indirect-control target/provenance regression: PASS');
-""")

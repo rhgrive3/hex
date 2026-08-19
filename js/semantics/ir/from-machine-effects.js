@@ -974,7 +974,41 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
       return;
     }
     if (control.kind === 'indirect') {
-      emitUnknownEffects(effect, 'unresolved-indirect-control-flow', ['control'], { control });
+      const targetId = control.target && typeof control.target === 'object'
+        ? resolveControlCondition(effect, control.target)
+        : null;
+      if (!targetId) {
+        emitUnknownEffects(effect, 'unresolved-indirect-control-flow-target-not-representable', ['control'], { control });
+        return;
+      }
+      const targetBlock = ensureControlTargetBlock(control.target, 'indirect');
+      const nodeId = nodeIdFor(effect, 'indirect-control');
+      const origin = effectOrigin(effect, 'indirect-control-projection', [nodeId]);
+      addNode({
+        id: nodeId,
+        kind: 'unknown-control-effect',
+        blockId,
+        inputs: [targetId],
+        targets: [targetBlock],
+        completeness: 'unknown',
+        unknown: {
+          reason: 'unresolved-indirect-control-flow',
+          categories: ['control'],
+          knownParts: { targetValueId: targetId, machineControlEffect: control },
+        },
+        attributes: machineAttributes(effect, {
+          machineControlEffect: control,
+          unresolvedSuccessor: true,
+          targetValueId: targetId,
+        }),
+        sourceEffectIds: [effect.sourceEffectId],
+        origin,
+      });
+      addIssue('unresolved-indirect-control-flow', ['control'], {
+        targetValueId: targetId,
+        targetBlockId: targetBlock,
+        control,
+      });
       return;
     }
     emitUnknownEffects(effect, control.reason ?? 'unknown-machine-control-effect', ['control'], { control }, bundle.completeness === 'unknown' ? 'unknown' : 'partial');
