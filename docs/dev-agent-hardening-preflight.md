@@ -3,8 +3,10 @@
 **Status:** implementation preflight; non-normative where it conflicts with `docs/ENGINEERING_PROCESS_GUARDRAILS.md` or `docs/improving-agent.md`  
 **Repository:** `rhgrive3/hex`  
 **Primary platform:** iOS / iPadOS WebKit  
-**Baseline reviewed:** `291b91192b07bcd8b1995d7b1b5aba5734cde902`  
+**Baseline reviewed and source-revalidated through:** `ba42a85c3bcf427b8e48bce7d045c0887a4a4850`  
 **Goal:** make the v2.3 Dev-Agent hardening materially easier to implement without weakening any final invariant, evidence requirement, or target-device behavior.
+
+The original implementation map was derived at `291b91192b07bcd8b1995d7b1b5aba5734cde902`. A final compare through `ba42a85c3bcf427b8e48bce7d045c0887a4a4850` found no intervening changes to the relevant Dev Worker Pool / Dynamic Task Graph / Supervisor prompt source; later commits touched unrelated product/docs surfaces.
 
 ---
 
@@ -26,14 +28,16 @@ Therefore the Graph completion work does **not** require a new event system and 
 The lowest-risk implementation path is:
 
 ```text
-completion-state fixtures
+existing completion-state characterization
 -> add Pool waitResult() over pending + retained lastResult
 -> switch DynamicTaskGraph from 50 ms result polling to Pool waitResult()
 -> optionally expose graph/pool wait tools for Supervisor-level yielding
 -> harden timeout semantics
 -> add bounded identity-aware trace
--> compact Supervisor prompt/context
+-> fix prompt/tool compatibility + parity
+-> compact Supervisor prompt transport (same payload meaning)
 -> converge tool metadata onto one registry
+-> introduce ContextPacket/WorkerResult separately
 -> proceed with Project Automation
 ```
 
@@ -169,12 +173,20 @@ task.attempts
 
 Do not invent another global identity layer.
 
-For completion authority:
+For the **current Graph path**, completion authority is:
 
 ```text
-authoritative attempt identity =
+authoritative Graph-attempt identity =
     leaseId + pool runId + workerId
 ```
+
+This is sufficient only because the Graph uses one `start()` per claimed lease/attempt and releases that lease before a retry. The current Pool API can technically call `start()` again on the same completed lease; therefore `leaseId + runId + workerId` is **not** a universal per-turn identity for an externally reusable wait API.
+
+Do not add a global identity subsystem to fix this. Use the smallest applicable rule:
+
+- first Graph migration: freeze and test `one Graph attempt -> one lease -> one start`; bind the internal wait to the captured `slot.pending` Promise/retained result;
+- if a later public `worker.pool.wait_result` must support multiple sequential turns on one lease, either reject a second `start()` until release, or add a small lease-local monotonic/opaque `turnToken` returned by `start()` and required by the wait;
+- never let an old wait silently attach to a newer turn on the same lease.
 
 For diagnostics/handoff:
 
@@ -207,18 +219,22 @@ The Pool-level wait primitive must therefore own settlement ordering itself. Wai
 **Behavior change:** none  
 **Purpose:** make later changes mechanically safer.
 
-### 3.1 Add invariant fixtures before code changes
+### 3.1 Characterize existing state before the new API exists
 
-Add focused fixtures for:
+PR A must stay green on current production behavior. Do **not** write a test that calls nonexistent `waitResult()` and carry it red.
 
-1. completion before `waitResult()` registration;
-2. completion while `waitResult()` is waiting;
-3. multiple Worker completions concurrently;
-4. release/reclaim makes an old wait/result fail closed against the new lease;
-5. retained result is readable after completion until release;
-6. cancellation remains distinguishable;
-7. aborting a wait does not silently release/reuse the Worker;
+First add characterization fixtures for primitives that already exist:
+
+1. `start()` retains an active `slot.pending`;
+2. successful completion clears `pending` and retains the terminal result until release;
+3. rejected Worker-send completion is normalized into the Pool's retained failure result;
+4. multiple Worker completions settle independently;
+5. release during active generation is refused;
+6. release clears the old lease/result and reclaim creates fresh lease/run/worker identity;
+7. Graph uses one `start()` per lease/attempt in the covered production path;
 8. graph `SUCCEEDED` is not represented as Supervisor acceptance anywhere in the new handoff type.
+
+Then PR B adds `waitResult()` together with its own new-API regressions: completion-before-wait, wait-then-complete, aborted wait, stale release/reclaim, and rejected-pending normalization.
 
 For the explicit Coordinator event surface, retain direct fixtures for:
 
@@ -257,7 +273,7 @@ Before the later registry refactor, make one small compatibility PR that **simul
 
 That PR establishes a green safety net before metadata is moved.
 
-**Exit condition:** completion-state fixtures green with production behavior unchanged; tool-parity work is explicitly deferred to its own green compatibility PR.
+**Exit condition:** characterization fixtures for the existing Pool/Graph state are green with production behavior unchanged; new `waitResult()` behavior is intentionally deferred to PR B; tool-parity work is explicitly deferred to its own green compatibility PR.
 
 ---
 
@@ -268,11 +284,13 @@ That PR establishes a green safety net before metadata is moved.
 
 ### 4.1 Preferred internal API
 
-Add a narrow method such as:
+Add a narrow **internal-first** method such as:
 
 ```text
 workerPool.waitResult({ leaseId }, { signal })
 ```
+
+For the first Graph migration, its contract is valid under the tested precondition `one Graph lease -> one start`. Do not expose it as a general multi-turn public Pool tool until the same-lease second-start policy is explicit.
 
 Do not add a general event bus.
 
@@ -289,19 +307,23 @@ Do not add a general event bus.
 3. capture pending = slot.pending
 
 4. if pending exists:
-      await Promise.race(
-        pending,
-        abort signal
-      )
+      await its settlement, cancellation-aware
+      (fulfillment OR rejection both mean the Pool turn settled)
 
-5. revalidate that leaseId still owns the same
+5. distinguish an abort of the wait from a Worker-send rejection
+   - wait abort -> throw typed cancellation to caller
+   - Worker-send rejection -> continue to the Pool's canonical retained terminal failure
+
+6. revalidate that leaseId still owns the same
       slot/runId/workerId
+   and, if the API ever supports multiple starts per lease,
+      the same turnToken/generation
 
-6. return slot.lastResult
+7. return slot.lastResult
    or, only if needed, the coordinator's retained result
 ```
 
-If `pending` is already null because completion happened before the wait, return retained `lastResult` after identity validation.
+If `pending` is already null because completion happened before the wait, return retained `lastResult` after identity validation. The implementation must not let the raw rejection of the captured `pending` Promise bypass identity revalidation or the canonical retained `{status: 'failed', ...}` result path. Detach any abort listener when the wait settles.
 
 ### 4.3 Cancellation semantics
 
@@ -342,9 +364,11 @@ current workerId == expected workerId
 
 Otherwise fail with a typed stale/lease error.
 
+For the first Graph-only adapter, also assert/test that no second `start()` occurs on that lease. If later callers need multiple sequential starts on one lease, same-lease turn identity becomes mandatory as described in §2.4.
+
 ### 4.6 Optional external surfaces
 
-Only after the internal primitive is green, consider additive wait tools:
+Only after the internal primitive is green **and** the same-lease multi-turn policy is explicit, consider additive wait tools:
 
 ```text
 worker.pool.wait_result   // one lease
@@ -378,6 +402,8 @@ claim
 -> existing workerSucceeded()/failure mapping
 -> existing cleanup
 ```
+
+For this migration PR, preserve the current task timeout outcome without reintroducing polling. Use a per-attempt cancellable deadline wrapper around `waitResult()` (or equivalent composed signal), then let the existing stop/release/discard cleanup run. Do not reuse the Graph-wide abort controller as the timeout owner for one task, and detach timer/listener resources after settlement. Preserve error meaning explicitly: Graph-wide cancellation remains `cancelled`; only the per-attempt deadline maps to `task-timeout`. The semantic removal of the default 180-second model-turn timeout belongs to Slice E.
 
 ### 5.2 Multiple completion behavior
 
@@ -537,7 +563,7 @@ Phase-5 recovery may later add multi-signal liveness on top of the new wait prim
 **Difficulty:** 3/10  
 **Purpose:** tune iOS without guessing.
 
-Only after completion transport is event-driven, add IDs/status/timestamps:
+Only after completion transport is Promise/state-driven, add IDs/status/timestamps:
 
 ```text
 TaskTrace {
@@ -643,22 +669,24 @@ Use BOOTSTRAP again when:
 
 This is fail-safe: uncertainty costs tokens, not correctness.
 
-### 9.4 ContextPacket migration in two stages
+### 9.4 Keep prompt transport separate from ContextPacket semantics
 
-**F1 — representation-only**
+Slice G is a prompt-transport change, not the typed context-model migration.
 
-Wrap the same information already sent today into a typed logical packet without more aggressive pruning.
+**G1 — bootstrap/continuation only**
 
-**F2 — deterministic selection**
+Preserve the existing payload meaning and current bounded-history compatibility while splitting stable bootstrap prose from continuation turns. Do not simultaneously introduce `ContextPacket`, change Worker handoff schemas, or aggressively prune evidence in the same PR.
 
-Then remove repetition using:
+**G2 — consume typed context only after Slice I is green**
 
-- refs instead of bulk evidence;
-- deduplication;
-- freshness;
-- authority;
-- covered evidence refs for summaries/compaction;
-- explicit unknowns/negative evidence.
+Once `ContextPacket` exists as a separately tested representation, the continuation builder may consume it without changing the BOOTSTRAP/CONTINUATION transport contract again.
+
+This ordering keeps failures attributable:
+
+```text
+prompt/session continuity bug -> Slice G
+context selection/provenance bug -> Slice I
+```
 
 Do not use an LLM summarizer on the hot path.
 
@@ -759,6 +787,20 @@ coveredEvidenceRefs
 retention metadata when durable storage exists
 ```
 
+Use two changes if needed:
+
+```text
+I1 representation-only:
+    encode the same required facts in typed ContextPacket/WorkerResult shapes
+    without tighter pruning
+
+I2 deterministic selection:
+    deduplicate, replace bulk evidence with refs/bounded excerpts,
+    apply freshness/authority, and retain coveredEvidenceRefs
+```
+
+Do not combine I1 with prompt session-mode changes; Slice G must already be independently green.
+
 Promotion rule:
 
 ```text
@@ -787,12 +829,13 @@ For iOS, deterministic selection and refs are the default.
 |---|---|
 | completion before waitResult | retained terminal result returned |
 | completion while waitResult waits | same pending Promise settles once |
-| failure before waitResult | retained failure result readable |
+| failure before waitResult | retained failure result readable; raw rejected Promise does not escape as a different semantic path |
 | cancellation while waiting | cancellation remains distinct |
 | six simultaneous completions | six lease waits settle independently; no scan loop |
 | repeated result observation | idempotent read; graph task transitions once |
 | release then reclaim | old run event cannot satisfy new lease |
 | retry after failed attempt | old attempt cannot satisfy new attempt |
+| second start on same lease | forbidden by initial Graph precondition; if later supported publicly, must require distinct turn identity |
 | result after event | retained until release |
 | release during active generation | refused |
 | ambiguous cleanup | discard/quarantine behavior preserved |
@@ -841,7 +884,7 @@ For iOS, deterministic selection and refs are the default.
 
 Use small mergeable PRs. Do not create a long-lived mega-branch.
 
-### PR A — completion-state fixtures only
+### PR A — existing completion-state characterization only
 
 Likely paths:
 
@@ -849,7 +892,7 @@ Likely paths:
 tests/dev-agent/*
 ```
 
-No product behavior change. Do not introduce a known-failing tool-parity test here.
+No product behavior change. Characterize `pending`, retained success/failure, release/reclaim identity, and one-start-per-Graph-lease usage. Do not call the not-yet-existing `waitResult()` and do not introduce a known-failing tool-parity test here.
 
 ### PR B — Pool `waitResult()` adapter
 
@@ -861,7 +904,7 @@ tests/dev-agent/iframe-worker-pool.mjs
 tests/dev-agent/iframe-worker-pool-cancellation.mjs
 ```
 
-No new RPC/event surface required.
+No new RPC/event surface required. Add the new-API regressions here, including rejected-pending normalization and same-lease turn-safety preconditions.
 
 ### PR C — Graph Promise-driven wait
 
@@ -891,6 +934,10 @@ tests/dev-agent/dynamic-task-graph.mjs
 
 Keep trace bounded and inert unless enabled.
 
+### PR H0 — prompt/tool compatibility + parity gate
+
+Fix the already-known prompt/tool drift and add the green parity regression in the same change **before** splitting the prompt into bootstrap/continuation modes. This avoids duplicating stale wording/contracts into two prompt paths.
+
 ### PR G — Supervisor prompt bootstrap/continuation
 
 Likely paths:
@@ -901,17 +948,19 @@ js/ai/dev/supervisor/dev-supervisor-engine-v0.js
 tests/dev-agent/*
 ```
 
-### PR H0 — prompt/tool compatibility + parity gate
-
-Fix the already-known prompt/tool drift and add the green parity regression in the same change.
+Build the two-mode prompt on top of the already-green H0 parity contract.
 
 ### PR H1 — canonical tool registry
 
-Only after H0 is green. Move metadata under the parity safety net rather than changing behavior and structure at once.
+Only after H0 is green and the G prompt behavior is covered. Move metadata under the parity safety net rather than changing behavior and structure at once.
 
-### PR I — ContextPacket / WorkerResult representation
+### PR I1 — ContextPacket / WorkerResult representation
 
-Begin representation-only; optimize selection in a later PR.
+Begin representation-only after the prompt transport path is independently green.
+
+### PR I2 — deterministic context selection
+
+Only after I1 is green, reduce repeated payloads using authority/freshness/deduplication/refs and preserve `coveredEvidenceRefs`.
 
 ### Then Phase 4
 
@@ -991,11 +1040,12 @@ Implementation may begin when all are true:
 - v2.3 remains the canonical Dev-Agent contract;
 - existing relevant PRs/issues are checked for overlap;
 - completion fixture ownership is assigned;
-- Pool `waitResult()` identity/return contract is frozen;
+- Pool `waitResult()` identity/return contract is frozen, including rejected-pending normalization and abort-listener cleanup;
+- initial Graph migration explicitly enforces/tests one `start()` per lease/attempt, or a turn token is defined if that restriction is not acceptable;
 - no public tool rename is required;
 - no new scheduler/event subsystem is planned;
 - exact changed-path expectations are written for the first PR;
-- first PR is completion-state fixtures or the smallest Pool adapter, not a mega-refactor.
+- first PR is existing-state characterization (or, if intentionally combined, the smallest Pool adapter plus its tests), not a known-red fixture PR and not a mega-refactor.
 
 ---
 
@@ -1011,7 +1061,7 @@ DedicatedWorkerCoordinator
     Worker turn semantics / optional explicit event queue
         |
 IframeWorkerPool
-    pending Promise + retained result + lease-aware waitResult()
+    pending Promise + retained result + lease/turn-safe waitResult()
         |
 DynamicTaskGraph
     awaits each lease Promise; no result scan loop
