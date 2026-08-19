@@ -1,0 +1,371 @@
+name: Apply unlinked issue 970 fix
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'work/unlinked-970-virtual-read-span'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: work/unlinked-970-virtual-read-span
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Patch mapping-aware virtual reads and regression
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('js/binary/model.js')
+          text = path.read_text()
+          old = '''  addressToOffset(address) {
+    const a = BigInt(address);
+    for (const s of this.segments) {
+      if (!inRange(a, s.address, s.fileSize)) continue;
+      return s.fileOffset + (a - s.address);
+    }
+    for (const s of this.sections) {
+      if (s.address === 0n || !inRange(a, s.address, s.fileSize)) continue;
+      return s.fileOffset + (a - s.address);
+    }
+    return null;
+  }
+
+  offsetToAddress(offset) {
+    const o = BigInt(offset);
+    for (const s of this.segments) {
+      if (!inRange(o, s.fileOffset, s.fileSize)) continue;
+      return s.address + (o - s.fileOffset);
+    }
+    for (const s of this.sections) {
+      if (s.address === 0n || !inRange(o, s.fileOffset, s.fileSize)) continue;
+      return s.address + (o - s.fileOffset);
+    }
+    return null;
+  }
+
+  sectionAt(address) {
+    const a = BigInt(address);
+    return this.sections.find((s) => inRange(a, s.address, s.size)) || null;
+  }
+
+  segmentAt(address) {
+    const a = BigInt(address);
+    return this.segments.find((s) => inRange(a, s.address, s.size)) || null;
+  }
+
+  readVirtual(address, size) {
+    if (!this.bytes) return null;
+    const off = this.addressToOffset(address);
+    if (off == null) return null;
+    const o = Number(off);
+    const n = Number(size);
+    if (!Number.isSafeInteger(o) || !Number.isSafeInteger(n) || o < 0 || n < 0 || o > this.bytes.length || n > this.bytes.length - o) return null;
+    return this.bytes.subarray(o, o + n);
+  }
+
+  async readVirtualAsync(address, size) {
+    const resident = this.readVirtual(address, size);
+    if (resident) return resident;
+    if (!this.source) return null;
+    const off = this.addressToOffset(address);
+    if (off == null) return null;
+    const n = typeof size === 'bigint' ? size : BigInt(size);
+    if (n < 0n || off < 0n || off > this.fileSize || n > this.fileSize - off) return null;
+    return this.source.readExactly(off, n);
+  }
+'''
+          new = '''  resolveVirtualMapping(address) {
+    let a;
+    try { a = BigInt(address); } catch { return null; }
+    if (a < 0n) return null;
+
+    // Sections are the more precise mapping description. In particular, Mach-O
+    // zero-fill sections may live inside a broader file-backed segment.
+    const section = this.sections.find((s) => {
+      if (!s || s.address == null || s.size == null || s.address === 0n) return false;
+      const size = BigInt(s.size);
+      return size > 0n && inRange(a, BigInt(s.address), size);
+    }) || null;
+    const segment = this.segments.find((s) => {
+      if (!s || s.address == null || s.size == null) return false;
+      const size = BigInt(s.size);
+      return size > 0n && inRange(a, BigInt(s.address), size);
+    }) || null;
+    const mapping = section || segment;
+    if (!mapping) return null;
+
+    const mappingStart = BigInt(mapping.address);
+    const mappingSize = BigInt(mapping.size);
+    const mappingEnd = mappingStart + mappingSize;
+    const fileOffset = BigInt(mapping.fileOffset ?? 0);
+    const declaredFileSize = BigInt(mapping.fileSize ?? 0);
+    if (mappingStart < 0n || mappingSize <= 0n || fileOffset < 0n || declaredFileSize < 0n) return null;
+
+    const relativeOffset = a - mappingStart;
+    const fileBackedSize = declaredFileSize < mappingSize ? declaredFileSize : mappingSize;
+    let semanticEnd = mappingEnd;
+    if (!section) {
+      // A child section beginning inside the segment changes the mapping
+      // semantics at that VA (most importantly for S_ZEROFILL/NOBITS-like
+      // regions), so a segment span must stop before that boundary.
+      for (const s of this.sections) {
+        if (!s || s.address == null || s.size == null || s.address === 0n) continue;
+        const start = BigInt(s.address);
+        const childSize = BigInt(s.size);
+        if (childSize > 0n && start > a && start < semanticEnd) semanticEnd = start;
+      }
+    }
+    const virtualRemaining = semanticEnd - a;
+    if (virtualRemaining <= 0n) return null;
+
+    if (relativeOffset < fileBackedSize) {
+      const fileRemaining = fileBackedSize - relativeOffset;
+      return {
+        kind: 'file', source: section ? 'section' : 'segment', mapping,
+        address: a, mappingStart, mappingEnd,
+        relativeOffset, fileOffset: fileOffset + relativeOffset,
+        available: fileRemaining < virtualRemaining ? fileRemaining : virtualRemaining,
+      };
+    }
+    return {
+      kind: 'zero', source: section ? 'section' : 'segment', mapping,
+      address: a, mappingStart, mappingEnd,
+      relativeOffset, fileOffset: null, available: virtualRemaining,
+    };
+  }
+
+  _virtualReadPlan(address, size) {
+    let cursor, remaining;
+    try {
+      cursor = BigInt(address);
+      remaining = typeof size === 'bigint' ? size : BigInt(size);
+    } catch { return null; }
+    if (cursor < 0n || remaining < 0n) return null;
+    if (!this.resolveVirtualMapping(cursor)) return null;
+    if (remaining === 0n) return [];
+
+    const spans = [];
+    const maxSpans = Math.max(4, (this.segments.length + this.sections.length) * 2 + 4);
+    while (remaining > 0n) {
+      const mapped = this.resolveVirtualMapping(cursor);
+      if (!mapped || mapped.available <= 0n) return null;
+      const take = mapped.available < remaining ? mapped.available : remaining;
+      spans.push({
+        kind: mapped.kind,
+        address: cursor,
+        fileOffset: mapped.fileOffset,
+        size: take,
+        source: mapped.source,
+      });
+      cursor += take;
+      remaining -= take;
+      if (spans.length > maxSpans) return null;
+    }
+    return spans;
+  }
+
+  addressToOffset(address) {
+    const mapped = this.resolveVirtualMapping(address);
+    return mapped?.kind === 'file' ? mapped.fileOffset : null;
+  }
+
+  offsetToAddress(offset) {
+    const o = BigInt(offset);
+    for (const s of this.segments) {
+      if (!inRange(o, s.fileOffset, s.fileSize)) continue;
+      return s.address + (o - s.fileOffset);
+    }
+    for (const s of this.sections) {
+      if (s.address === 0n || !inRange(o, s.fileOffset, s.fileSize)) continue;
+      return s.address + (o - s.fileOffset);
+    }
+    return null;
+  }
+
+  sectionAt(address) {
+    const a = BigInt(address);
+    return this.sections.find((s) => inRange(a, s.address, s.size)) || null;
+  }
+
+  segmentAt(address) {
+    const a = BigInt(address);
+    return this.segments.find((s) => inRange(a, s.address, s.size)) || null;
+  }
+
+  readVirtual(address, size) {
+    if (!this.bytes) return null;
+    const plan = this._virtualReadPlan(address, size);
+    if (!plan) return null;
+    let totalBig;
+    try { totalBig = typeof size === 'bigint' ? size : BigInt(size); } catch { return null; }
+    if (totalBig < 0n || totalBig > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+    const total = Number(totalBig);
+    const residentSize = typeof this.bytes.size === 'bigint' ? this.bytes.size : BigInt(this.bytes.length ?? 0);
+
+    const residentSlice = (span) => {
+      if (span.kind !== 'file' || span.fileOffset == null) return null;
+      if (span.fileOffset < 0n || span.fileOffset > residentSize || span.size > residentSize - span.fileOffset) return null;
+      const o = Number(span.fileOffset), n = Number(span.size);
+      if (!Number.isSafeInteger(o) || !Number.isSafeInteger(n) || o < 0 || n < 0) return null;
+      return this.bytes.subarray(o, o + n);
+    };
+
+    if (plan.length === 1 && plan[0].kind === 'file') return residentSlice(plan[0]);
+    let out;
+    try { out = new Uint8Array(total); } catch { return null; }
+    let cursor = 0;
+    for (const span of plan) {
+      const n = Number(span.size);
+      if (!Number.isSafeInteger(n) || n < 0 || cursor > total || n > total - cursor) return null;
+      if (span.kind === 'file') {
+        const chunk = residentSlice(span);
+        if (!chunk || chunk.length !== n) return null;
+        out.set(chunk, cursor);
+      }
+      cursor += n;
+    }
+    return cursor === total ? out : null;
+  }
+
+  async readVirtualAsync(address, size) {
+    const resident = this.readVirtual(address, size);
+    if (resident) return resident;
+    if (!this.source) return null;
+    const plan = this._virtualReadPlan(address, size);
+    if (!plan) return null;
+    let totalBig;
+    try { totalBig = typeof size === 'bigint' ? size : BigInt(size); } catch { return null; }
+    if (totalBig < 0n || totalBig > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+    const total = Number(totalBig);
+    const backingSize = BigInt(this.fileSize ?? this.source.size ?? 0);
+
+    const readFileSpan = async (span) => {
+      if (span.kind !== 'file' || span.fileOffset == null) return null;
+      if (span.fileOffset < 0n || span.fileOffset > backingSize || span.size > backingSize - span.fileOffset) return null;
+      const chunk = await this.source.readExactly(span.fileOffset, span.size);
+      return chunk instanceof Uint8Array && BigInt(chunk.length) === span.size ? chunk : null;
+    };
+
+    if (plan.length === 1 && plan[0].kind === 'file') return readFileSpan(plan[0]);
+    let out;
+    try { out = new Uint8Array(total); } catch { return null; }
+    let cursor = 0;
+    for (const span of plan) {
+      const n = Number(span.size);
+      if (!Number.isSafeInteger(n) || n < 0 || cursor > total || n > total - cursor) return null;
+      if (span.kind === 'file') {
+        const chunk = await readFileSpan(span);
+        if (!chunk) return null;
+        out.set(chunk, cursor);
+      }
+      cursor += n;
+    }
+    return cursor === total ? out : null;
+  }
+'''
+          if text.count(old) != 1:
+              raise SystemExit(f'BinaryImage virtual-read anchor count={text.count(old)}')
+          path.write_text(text.replace(old, new, 1))
+
+          pkg = Path('package.json')
+          text = pkg.read_text()
+          old_script = '"binary:test": "node tests/issues-461-463-binary.mjs && node tests/universal-binary.mjs && node tests/universal-binary-sectionless.mjs && node tests/universal-binary-source.mjs && node tests/binary-platform.mjs"'
+          new_script = '"binary:test": "node tests/issue-970-virtual-read-span.mjs && node tests/issues-461-463-binary.mjs && node tests/universal-binary.mjs && node tests/universal-binary-sectionless.mjs && node tests/universal-binary-source.mjs && node tests/binary-platform.mjs"'
+          if text.count(old_script) != 1:
+              raise SystemExit(f'binary:test anchor count={text.count(old_script)}')
+          pkg.write_text(text.replace(old_script, new_script, 1))
+          PY
+
+          cat > tests/issue-970-virtual-read-span.mjs <<'EOF'
+          import assert from 'node:assert/strict';
+          import { BinaryImage } from '../js/binary/model.js';
+
+          const data = new Uint8Array(0x300);
+          data.set([0xaa, 0xbb, 0xcc, 0xdd], 0x100);
+          data.set([0x11, 0x22, 0x33, 0x44], 0x104); // unrelated raw-file bytes
+          data.set([0x51, 0x52], 0x200);
+
+          function imageWithTail(bytes = data) {
+            const image = new BinaryImage(bytes, { format:'elf' });
+            image.addSegment({
+              name:'LOAD0', address:0x1000n, size:8n,
+              fileOffset:0x100n, fileSize:4n,
+              perms:{ read:true }, source:'PT_LOAD',
+            });
+            return image;
+          }
+
+          const resident = imageWithTail();
+          assert.deepEqual([...resident.readVirtual(0x1000n, 4)], [0xaa,0xbb,0xcc,0xdd], 'fully file-backed reads remain unchanged');
+          assert.deepEqual([...resident.readVirtual(0x1002n, 4)], [0xcc,0xdd,0,0], 'file-backed -> BSS tail must compose mapped bytes plus zero-fill');
+          assert.deepEqual([...resident.readVirtual(0x1004n, 4)], [0,0,0,0], 'fully zero-fill reads must synthesize zero bytes');
+          assert.equal(resident.addressToOffset(0x1004n), null, 'zero-fill VA must not resolve to unrelated raw-file bytes');
+          assert.equal(resident.resolveVirtualMapping(0x1004n)?.kind, 'zero');
+
+          const gap = new BinaryImage(data, { format:'elf' });
+          gap.addSegment({ address:0x1000n, size:4n, fileOffset:0x100n, fileSize:4n, perms:{read:true} });
+          gap.addSegment({ address:0x2000n, size:2n, fileOffset:0x200n, fileSize:2n, perms:{read:true} });
+          assert.equal(gap.readVirtual(0x1002n, 4), null, 'file-backed -> unmapped gap must fail closed');
+
+          const contiguous = new BinaryImage(data, { format:'pe' });
+          contiguous.addSegment({ address:0x3000n, size:2n, fileOffset:0x100n, fileSize:2n, perms:{read:true} });
+          contiguous.addSegment({ address:0x3002n, size:2n, fileOffset:0x200n, fileSize:2n, perms:{read:true} });
+          assert.deepEqual([...contiguous.readVirtual(0x3000n, 4)], [0xaa,0xbb,0x51,0x52], 'VA-contiguous mappings with non-contiguous file offsets must compose per mapping');
+
+          const machoSparse = new BinaryImage(data, { format:'macho' });
+          machoSparse.addSegment({ address:0x4000n, size:8n, fileOffset:0x100n, fileSize:8n, perms:{read:true}, source:'LC_SEGMENT_64' });
+          machoSparse.addSection({ name:'__bss', segment:'__DATA', address:0x4004n, size:4n, fileOffset:0n, fileSize:0n, perms:{read:true,write:true}, source:'LC_SEGMENT_64' });
+          assert.deepEqual([...machoSparse.readVirtual(0x4002n, 4)], [0xcc,0xdd,0,0], 'zero-fill child section must override broader segment raw-file continuity');
+
+          const source = {
+            size: BigInt(data.length),
+            async readExactly(offset, size) {
+              const o = Number(offset), n = Number(size);
+              assert.ok(Number.isSafeInteger(o) && Number.isSafeInteger(n) && o >= 0 && n >= 0 && o + n <= data.length);
+              return data.slice(o, o + n);
+            },
+          };
+          const streamed = imageWithTail();
+          streamed.attachSource(source, { discardBytes:true });
+          assert.deepEqual([...await streamed.readVirtualAsync(0x1002n, 4n)], [0xcc,0xdd,0,0], 'streaming path must share resident mapping semantics');
+          assert.deepEqual([...await streamed.readVirtualAsync(0x1004n, 4n)], [0,0,0,0], 'streaming zero-fill must not read source bytes');
+
+          const streamedGap = new BinaryImage(null, { format:'elf', source, fileSize:source.size });
+          streamedGap.addSegment({ address:0x1000n, size:4n, fileOffset:0x100n, fileSize:4n, perms:{read:true} });
+          streamedGap.addSegment({ address:0x2000n, size:2n, fileOffset:0x200n, fileSize:2n, perms:{read:true} });
+          assert.equal(await streamedGap.readVirtualAsync(0x1002n, 4n), null, 'streaming path must fail closed across unmapped VA gaps');
+
+          console.log('issue 970 mapping-aware BinaryImage virtual read regression: PASS');
+          EOF
+      - name: Focused regression
+        run: node tests/issue-970-virtual-read-span.mjs
+      - name: Binary regression suite
+        run: npm run binary:test
+      - name: Rebuild canonical userscript output
+        run: npm run userscript:build
+      - name: Full repository checks
+        run: npm run check
+      - name: Diff hygiene
+        run: git diff --check
+      - name: Publish verified implementation
+        shell: bash
+        run: |
+          rm .github/workflows/apply-unlinked-970.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'fix: make virtual reads mapping-span aware (#970)'
+          git push origin HEAD:work/unlinked-970-virtual-read-span
