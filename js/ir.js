@@ -23,45 +23,62 @@ function projectedConstant(value, active = new Set()) {
   } else if (def.op === OP.BIN && ['shl','lsl','lshr','lsr','ashr','asr','ror'].includes(def.sub) && def.args.length >= 2) {
     const lhs = input(0);
     const rhs = input(1);
-    if (lhs != null && rhs != null) {
-      const width = BigInt(bits);
-      const amount = BigInt(rhs);
-      if (amount >= 0n && amount < width) {
-        const v = BigInt.asUintN(bits, lhs);
-        if (def.sub === 'shl' || def.sub === 'lsl') result = BigInt.asUintN(bits, v << amount);
-        else if (def.sub === 'lshr' || def.sub === 'lsr') result = v >> amount;
-        else if (def.sub === 'ashr' || def.sub === 'asr') result = BigInt.asUintN(bits, BigInt.asIntN(bits, v) >> amount);
-        else if (amount === 0n) result = v;
-        else result = BigInt.asUintN(bits, (v >> amount) | (v << (width - amount)));
-      }
-    }
+    if (lhs != null && rhs != null) result = applyProjectedShift(def.sub, lhs, rhs, bits);
   }
   active.delete(value);
   return result;
 }
 
-function shiftedConstant(arg, fallbackBits = null) {
-  if (!arg || !arg.value) return null;
-  const bits = Math.max(1, Math.min(64, Number(fallbackBits || arg.value.bits || 64)));
-  const width = BigInt(bits);
-  const exact = projectedConstant(arg.value);
-  if (exact == null) return null;
-  let value = BigInt.asUintN(bits, exact);
-  const shift = arg.shift;
-  if (!shift) return value;
-  const amount = BigInt(shift.amount || 0);
+function applyProjectedShift(op, rawValue, rawAmount, bits) {
+  const widthBits = Math.max(1, Math.min(64, Number(bits || 64)));
+  const width = BigInt(widthBits);
+  const amount = BigInt(rawAmount);
   if (amount < 0n || amount >= width) return null;
-  if (shift.op === 'lsl') return BigInt.asUintN(bits, value << amount);
-  if (shift.op === 'lsr') return value >> amount;
-  if (shift.op === 'asr') return BigInt.asUintN(bits, BigInt.asIntN(bits, value) >> amount);
-  if (shift.op === 'ror') {
+  const value = BigInt.asUintN(widthBits, BigInt(rawValue));
+  if (op === 'shl' || op === 'lsl') return BigInt.asUintN(widthBits, value << amount);
+  if (op === 'lshr' || op === 'lsr') return value >> amount;
+  if (op === 'ashr' || op === 'asr') return BigInt.asUintN(widthBits, BigInt.asIntN(widthBits, value) >> amount);
+  if (op === 'ror') {
     if (amount === 0n) return value;
-    return BigInt.asUintN(bits, (value >> amount) | (value << (width - amount)));
+    return BigInt.asUintN(widthBits, (value >> amount) | (value << (width - amount)));
   }
   return null;
 }
 
-function comparisonOfBranch(branch) {
+function shiftedConstant(arg, fallbackBits = null) {
+  if (!arg || !arg.value) return null;
+  const bits = Math.max(1, Math.min(64, Number(fallbackBits || arg.value.bits || 64)));
+  const exact = projectedConstant(arg.value);
+  if (exact == null) return null;
+  const shift = arg.shift;
+  if (!shift) return BigInt.asUintN(bits, exact);
+  return applyProjectedShift(shift.op, exact, shift.amount || 0, bits);
+}
+
+function sameSourceInstruction(left, right) {
+  const a = new Set((left?.sourceInstructionIds || []).map(String));
+  const b = (right?.sourceInstructionIds || []).map(String);
+  if (a.size && b.length) return b.some((id) => a.has(id));
+  return left?.row != null && right?.row != null && left.row === right.row;
+}
+
+function projectedShiftOperand(ir, cmp, bits) {
+  const shifts = new Set(['shl','lsl','lshr','lsr','ashr','asr','ror']);
+  const candidates = (ir?.instructions || []).filter((candidate) =>
+    candidate !== cmp
+    && candidate.op === OP.CMP
+    && shifts.has(candidate.sub)
+    && sameSourceInstruction(candidate, cmp)
+    && candidate.args?.length >= 2);
+  if (candidates.length !== 1) return null;
+  const candidate = candidates[0];
+  const value = projectedConstant(candidate.args[0]?.value);
+  const amount = projectedConstant(candidate.args[1]?.value);
+  if (value == null || amount == null) return null;
+  return applyProjectedShift(candidate.sub, value, amount, bits);
+}
+
+function comparisonOfBranch(ir, branch) {
   if (!branch || branch.op !== OP.CBR) return null;
   const kind = branch.extra?.kind;
   if ((kind === 'cbz' || kind === 'cbnz') && branch.args?.[0]?.value) {
@@ -77,7 +94,8 @@ function comparisonOfBranch(branch) {
   const cmp = flags?.def?.op === OP.CMP ? flags.def : null;
   if (!cmp?.args?.[0]?.value || !cmp.args?.[1]?.value) return null;
   const bits = cmp.args[0].bits || cmp.extra?.bits || cmp.args[0].value.bits || 64;
-  const rhs = shiftedConstant(cmp.args[1], bits);
+  let rhs = shiftedConstant(cmp.args[1], bits);
+  if (rhs == null) rhs = projectedShiftOperand(ir, cmp, bits);
   if (rhs == null) return null;
   return { lhs:cmp.args[0].value, rhs, cond:branch.cond || null, cmp, bits };
 }
@@ -130,8 +148,7 @@ function nullabilityFromZero(zero) {
 }
 
 export function rangeOnBranch(ir, branch, taken = true) {
-  void ir;
-  const comparison = comparisonOfBranch(branch);
+  const comparison = comparisonOfBranch(ir, branch);
   if (!comparison?.cond) return null;
   const info = comparison.cond === 'eq' || comparison.cond === 'ne'
     ? { op:comparison.cond === 'eq' ? '==' : '!=', signed:null }
