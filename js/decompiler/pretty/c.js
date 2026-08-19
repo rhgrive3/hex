@@ -2,6 +2,8 @@ import { effectOf } from '../ast/nodes.js';
 
 const PREC = { select: 2, oror: 3, andand: 4, or: 5, xor: 6, and: 7, eq: 8, ne: 8, lt: 9, le: 9, gt: 9, ge: 9, shl: 10, lshr: 10, ashr: 10, add: 11, sub: 11, mul: 12, sdiv: 12, udiv: 12, smod: 12, umod: 12, unary: 13, primary: 15 };
 const OP_TEXT = { add: '+', sub: '-', mul: '*', and: '&', or: '|', xor: '^', shl: '<<', lshr: '>>', ashr: '>>', sdiv: '/', udiv: '/', smod: '%', umod: '%', eq: '==', ne: '!=', lt: '<', le: '<=', gt: '>', ge: '>=' };
+const WIDTH_EXACT_WRAP_OPS = new Set(['add', 'sub', 'mul', 'shl']);
+const INTEGER_WIDTHS = new Set([8, 16, 32, 64, 128]);
 
 export function integerText(v, bits = 64, signed = null) {
   const n = BigInt(v);
@@ -14,7 +16,7 @@ export function integerText(v, bits = 64, signed = null) {
     return `0x${BigInt.asUintN(width, n).toString(16).toUpperCase()}`;
   }
 
-  // C has no portable integer-literal suffix for __int128.  Build the value
+  // C has no portable integer-literal suffix for __int128. Build the value
   // from 64-bit chunks so the printed program preserves every source bit.
   const uv = BigInt.asUintN(width, n);
   const lo = uv & ((1n << 64n) - 1n);
@@ -34,6 +36,37 @@ function floatText(value, bits = 64) {
 }
 
 function wrap(text, p, parent) { return p < parent ? `(${text})` : text; }
+function cUnsignedType(bits) { return Number(bits) === 128 ? 'unsigned __int128' : `uint${Number(bits)}_t`; }
+function cSignedType(bits) { return Number(bits) === 128 ? '__int128' : `int${Number(bits)}_t`; }
+function cOperationUnsignedType(bits) { return Number(bits) <= 16 ? 'uint32_t' : cUnsignedType(bits); }
+function cCast(type, text) { return `((${type})(${text}))`; }
+
+function exactWrapWidth(n) {
+  const bits = Number(n?.bits ?? n?.left?.bits ?? n?.right?.bits ?? 0);
+  return INTEGER_WIDTHS.has(bits) ? bits : null;
+}
+
+/*
+ * Semantic AST integer arithmetic is a fixed-width bitvector operation. C signed
+ * overflow/left-shift is not. Force the operation into an unsigned domain and
+ * truncate back to the semantic width at the operation site. For 8/16-bit
+ * values use uint32_t for the operation itself so integer promotion cannot turn
+ * multiplication into signed-int overflow before the narrowing conversion.
+ */
+function printWidthExactBinary(n, parentPrec, opts) {
+  if (!WIDTH_EXACT_WRAP_OPS.has(n?.op)) return null;
+  const bits = exactWrapWidth(n);
+  if (bits == null) return null;
+  const op = OP_TEXT[n.op];
+  if (!op) return null;
+  const left = printExpression(n.left, 0, opts);
+  const right = printExpression(n.right, 0, opts);
+  const opType = cOperationUnsignedType(bits);
+  const resultType = cUnsignedType(bits);
+  const unsignedResult = cCast(resultType, `${cCast(opType, left)} ${op} ${right}`);
+  const text = n.signed === true ? cCast(cSignedType(bits), unsignedResult) : unsignedResult;
+  return wrap(text, PREC.primary, parentPrec);
+}
 
 export function printExpression(n, parentPrec = 0, opts = {}) {
   if (!n) return 'unknown';
@@ -47,12 +80,12 @@ export function printExpression(n, parentPrec = 0, opts = {}) {
     case 'call': return `${n.callee || 'unknown_call'}(${(n.args || []).map((a) => printExpression(a, 0, opts)).join(', ')})`;
     case 'intrinsic': {
       if (n.name === 'madd' && n.args?.length === 3) {
-        const text = `${printExpression(n.args[0], PREC.mul, opts)} * ${printExpression(n.args[1], PREC.mul, opts)} + ${printExpression(n.args[2], PREC.add + 1, opts)}`;
-        return wrap(text, PREC.add, parentPrec);
+        return printExpression({ kind:'binary', op:'add', bits:n.bits, signed:n.signed,
+          left:{ kind:'binary', op:'mul', bits:n.bits, signed:n.signed, left:n.args[0], right:n.args[1] }, right:n.args[2] }, parentPrec, opts);
       }
       if (n.name === 'msub' && n.args?.length === 3) {
-        const text = `${printExpression(n.args[0], PREC.mul, opts)} * ${printExpression(n.args[1], PREC.mul, opts)} - ${printExpression(n.args[2], PREC.add + 1, opts)}`;
-        return wrap(text, PREC.sub, parentPrec);
+        return printExpression({ kind:'binary', op:'sub', bits:n.bits, signed:n.signed,
+          left:{ kind:'binary', op:'mul', bits:n.bits, signed:n.signed, left:n.args[0], right:n.args[1] }, right:n.args[2] }, parentPrec, opts);
       }
       return `${n.name}(${(n.args || []).map((a) => printExpression(a, 0, opts)).join(', ')})`;
     }
@@ -70,6 +103,8 @@ export function printExpression(n, parentPrec = 0, opts = {}) {
       return wrap(text, p, parentPrec);
     }
     case 'binary': {
+      const exact = printWidthExactBinary(n, parentPrec, opts);
+      if (exact != null) return exact;
       const p = PREC[n.op] || 11;
       const text = `${printExpression(n.left, p, opts)} ${OP_TEXT[n.op] || n.op} ${printExpression(n.right, p + (['sub','sdiv','udiv','smod','umod','shl','lshr','ashr'].includes(n.op) ? 1 : 0), opts)}`;
       return wrap(text, p, parentPrec);
