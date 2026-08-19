@@ -125,6 +125,22 @@ function completeIntrinsic({ id, inputs = [], outputs = [], registersRead = [], 
     ...(metadata ? { metadata } : {}),
   });
 }
+function nzcvFlagId(flag) { return `NZCV.${flag}`; }
+function readNzcvFlags(operations, prefix) {
+  return ['N','Z','C','V'].map((flag) => {
+    const value=temp(`${prefix}:${flag}`,createBitVectorValue(1));
+    operations.push(createMachineOperation({kind:'register-read',register:createRegisterValue(nzcvFlagId(flag),1),value,metadata:{architecturalState:'PSTATE.NZCV',flag}}));
+    return value;
+  });
+}
+function writeNzcvFlags(operations, packed, prefix) {
+  const positions={N:31,Z:30,C:29,V:28};
+  for (const flag of ['N','Z','C','V']) {
+    const value=temp(`${prefix}:${flag}`,createBitVectorValue(1));
+    operations.push(createMachineOperation({kind:'value',opcode:'extract-bit',inputs:[packed],outputs:[value],metadata:{bit:positions[flag],widthBits:64,architecturalState:'PSTATE.NZCV',flag}}));
+    operations.push(createMachineOperation({kind:'register-write',register:createRegisterValue(nzcvFlagId(flag),1),value,metadata:{architecturalState:'PSTATE.NZCV',flag}}));
+  }
+}
 
 function nop(instruction, context) {
   return bundle(instruction, context, {
@@ -217,6 +233,13 @@ function mrs(instruction, context, ops) {
   }
   const operations = [];
   const result = temp(`mrs:${sys}:result`, createBitVectorValue(64));
+  if (sys === 'nzcv') {
+    const flags=readNzcvFlags(operations,'mrs:nzcv');
+    operations.push(createMachineOperation({kind:'value',opcode:'arm64.pack-nzcv',inputs:flags,outputs:[result],metadata:{bitPositions:{N:31,Z:30,C:29,V:28},otherBits:'read-as-zero'}}));
+    gpWrite(operations,dst,result);
+    const fault=accessFault(sys,'read');
+    return bundle(instruction,context,{operations,possibleFaults:[fault],completeness:'exact',metadata:{systemRegister:sys,access:'read',canonicalState:'PSTATE.NZCV'}});
+  }
   const operation = completeIntrinsic({
     id:`arm64.system.mrs.${sys}`,
     inputs:[], outputs:[result], registersRead:[sysRegId(sys)], registersWritten:[gpId(dst)],
@@ -245,6 +268,11 @@ function msr(instruction, context, ops) {
   if (!input) input = immediate(src);
   if (!input) return partial(instruction, context, `msr-source-unavailable:${sys}`, ['registers','faults','other'], operations);
   const reads = gpId(src) ? [gpId(src)] : [];
+  if (sys === 'nzcv') {
+    writeNzcvFlags(operations,input,'msr:nzcv');
+    const fault=accessFault(sys,'write');
+    return bundle(instruction,context,{operations,possibleFaults:[fault],completeness:'exact',metadata:{systemRegister:sys,access:'write',canonicalState:'PSTATE.NZCV'}});
+  }
   const operation = completeIntrinsic({
     id:`arm64.system.msr.${sys}`,
     inputs:[input], outputs:[], registersRead:reads, registersWritten:[sysRegId(sys)],

@@ -173,12 +173,17 @@ function appendVectorRead(operations, op, arrangement, id) {
 }
 function appendElementRead(operations, op, info, id) {
   if (!info) return null;
-  const value = temp(id, info.valueType);
+  const fullValue = temp(`${id}:full-vector`, createVectorValue(info.laneCount, info.valueType));
   operations.push(createMachineOperation({
     kind:'register-read',
-    register:createRegisterValue(`v${op.num}`, info.elementBits, { view:String(op.text || `v${op.num}.${info.size}[${info.index}]`).toLowerCase() }),
-    value,
-    metadata:{ laneIndex:info.index, laneWidthBits:info.elementBits },
+    register:createRegisterValue(`v${op.num}`, 128, { view:`v${op.num}` }),
+    value:fullValue,
+    metadata:{ canonicalPhysicalStorage:true, projectedView:String(op.text || `v${op.num}.${info.size}[${info.index}]`).toLowerCase() },
+  }));
+  const value = temp(id, info.valueType);
+  operations.push(createMachineOperation({
+    kind:'value', opcode:'extract-lane', inputs:[fullValue], outputs:[value],
+    metadata:{ laneIndex:info.index, laneWidthBits:info.elementBits, sourceWidthBits:128 },
   }));
   return value;
 }
