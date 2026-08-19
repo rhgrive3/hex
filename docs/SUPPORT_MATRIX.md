@@ -11,7 +11,7 @@ Status values:
 - **Unsupported** — the implementation does not provide this stage.
 - **Unavailable** — the implementation exists, but a required runtime dependency is unavailable.
 
-`level` is the highest **cumulative fully satisfied** maturity level. `implementedLevel` is the furthest stage with current implementation, including legacy or partial implementation. A target never receives a higher maturity level by skipping an incomplete prerequisite.
+`level` is the highest **cumulative fully satisfied** maturity level. `implementedLevel` is the furthest stage with current implementation, including compatibility or partial implementation. A target never receives a higher maturity level by skipping an incomplete prerequisite.
 
 ## Architecture maturity
 
@@ -25,8 +25,8 @@ Status values:
 
 Important limitations:
 
-- `arm64`: current legacy Semantic IR, SSA/dataflow, and decompiler capability remains available, but Master Architecture A2 specifically requires **Exact Low-Level Effects / MachineEffects**. `MachineEffectBundle`, the ARM64 exact lifter, and compatibility lowering are present, but their instruction coverage is incomplete, so A2 is **Partial**, not Supported, and cumulative maturity remains **A1**.
-- `arm64e`: the same missing exact MachineEffects contract applies, with additional partial pointer-authentication semantics. Its cumulative maturity remains **A1**.
+- `arm64`: current Semantic IR/SSA/dataflow/decompiler capability remains available through the compatibility facade, with the legacy ARM64 path retained as an explicit oracle. Master Architecture A2 specifically requires **Exact Low-Level Effects / MachineEffects**. `MachineEffectBundle`, the ARM64 exact lifter, and compatibility lowering are present, but their instruction coverage is incomplete, so A2 is **Partial**, not Supported, and cumulative maturity remains **A1**.
+- `arm64e`: the same incomplete exact MachineEffects contract applies, with additional partial pointer-authentication semantics. Its cumulative maturity remains **A1**.
 - `x86_64`: Phase 5 takes all 144 mandatory compiler-corpus tuples through exact MachineEffects, Semantic IR, CFG, SSA, MemorySSA and the shared decompiler, so the implemented depth is **A6**. Exactness is proven for that corpus, not for the whole instruction set, so A2 remains **Partial** and cumulative maturity remains **A1**.
 - `riscv64`: Phase 6 takes 264 mandatory tuples — two ELF targets (`ET_EXEC` and PIE `ET_DYN`) across six optimization levels — through the same generic middle-end, with an independent LLVM disassembly oracle and a Capstone structured-operand differential. The frozen profile is **RV64IMC / LP64 (soft float), little-endian, ELFCLASS64**. The A, F, D, Q and V extensions, Zicsr, and the privileged architecture are explicitly outside it and are **Unsupported**; `lp64f`/`lp64d` are recognized from ELF `e_flags` but classify only integer arguments exactly. Cumulative maturity is therefore **A1**, with implemented depth **A6**. Hex emits the canonical id `riscv64`; a width-ambiguous `riscv` is deliberately not an alias, and RV32 is not supported.
 - No architecture reaches A2 cumulatively yet. `Implemented through` is the furthest stage with a working implementation; `Maturity level` is the highest **cumulative fully satisfied** level, and it never skips an incomplete prerequisite.
@@ -50,13 +50,13 @@ The maturity schema exposes **M0–M6**, but the current support matrix contains
 
 The values above are tied to the Master Architecture definitions plus current source and regression behavior, especially:
 
-- Master Architecture Phase 2 — MachineEffects are a future deliverable, so legacy ARM64 Semantic IR cannot satisfy A2 by itself;
-- `js/architecture/index.js` — current architecture adapters and legacy analysis capability;
+- Master Architecture A2 requires complete exact Low-Level Effects / MachineEffects coverage. MachineEffects implementations now exist, but incomplete ISA coverage means legacy or corpus-proven later-stage functionality cannot by itself satisfy cumulative A2;
+- `js/architecture/index.js` — current architecture adapters and compatibility analysis capability;
 - `js/platform/capstone-capability.js` + `tests/capstone-capability.mjs` — deployed decoder truth for ARM64 and x86-64;
 - `tools/validation/phase6/profile.json` — the frozen Phase 6 RISC-V ISA/ABI/toolchain/decoder/corpus identities, including the deployed `capstone.js`/`capstone.wasm` hashes the RISC-V claim is bound to;
 - `tests/phase5/verification/compiler-corpus-pipeline.test.mjs` and `tests/phase6/verification/compiler-corpus-pipeline.test.mjs` — the mandatory compiler-corpus gates behind the x86-64 and RISC-V claims;
 - `tests/phase6/foundation/capability-truth.test.mjs` — pins these declarations to that evidence, so a stale claim fails instead of going unnoticed;
-- current ARM64 Semantic IR / SSA / decompiler regression suites — evidence for implemented legacy A3–A6 functionality, not proof of cumulative A2+ maturity;
+- current ARM64 Semantic IR / SSA / decompiler regression suites — evidence for implemented A3–A6 functionality, not proof of cumulative A2+ maturity;
 - `js/binary/*`, `tests/universal-binary*.mjs`, and `tests/binary-platform.mjs` — mapping, link metadata, function/unwind evidence, plus explicit partial/incomplete parsing cases;
 - Objective-C / Swift regression suites — basis for partial Mach-O runtime/language metadata.
 
