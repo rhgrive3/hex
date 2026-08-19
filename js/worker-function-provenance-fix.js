@@ -17,6 +17,8 @@
  * raw-u32 + immediately-after-BR route.
  */
 const __functionEvidenceBeforeImageRelativeHardening = __functionEvidence;
+let __functionProvenanceDiagnostic = null;
+let __broadImageRelativeShape = new Map();
 
 function __hasIndependentFunctionEvidence(ev, target) {
   return ev.exactMetadata?.has?.(target) ||
@@ -33,19 +35,51 @@ function __hasIndependentFunctionEvidence(ev, target) {
 
 async function __broadImageRelativeCandidates(region, slice, requestId) {
   const out = new Set();
+  const shape = new Map();
+  __broadImageRelativeShape = shape;
   const imageBase = slice?.info?.textVM;
   if (imageBase == null) return out;
   const lo = region.vmAddr;
   const hi = region.vmAddr + region.size;
+
+  const record = (target, runLength, windowCount, wordIndex) => {
+    const key = target.toString();
+    let meta = shape.get(key);
+    if (!meta) shape.set(key, meta = {
+      target: Number(target), occurrences: 0, maxRun: 0, maxWindow9: 0, wordMod8Mask: 0,
+    });
+    meta.occurrences++;
+    if (runLength > meta.maxRun) meta.maxRun = runLength;
+    if (windowCount > meta.maxWindow9) meta.maxWindow9 = windowCount;
+    meta.wordMod8Mask |= 1 << (wordIndex & 7);
+  };
 
   for (const r of slice.regions || []) {
     if (r.segment !== '__DATA_CONST' || r.section !== '__const' || r.size <= 0n || r.size > 32n * 1024n * 1024n) continue;
     try {
       const buf = await readRange(r.fileOffset, Number(r.size));
       const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
-      for (let p = 0; p + 4 <= buf.byteLength; p += 4) {
-        const target = imageBase + BigInt(dv.getUint32(p, true));
-        if (target >= lo && target < hi && !(target & 3n)) out.add(target);
+      const count = Math.floor(buf.byteLength / 4);
+      const targets = new Array(count).fill(null);
+      const prefix = new Uint32Array(count + 1);
+      for (let i = 0; i < count; i++) {
+        const target = imageBase + BigInt(dv.getUint32(i * 4, true));
+        if (target >= lo && target < hi && !(target & 3n)) {
+          targets[i] = target;
+          out.add(target);
+        }
+        prefix[i + 1] = prefix[i] + Number(targets[i] != null);
+      }
+      for (let i = 0; i < count;) {
+        if (targets[i] == null) { i++; continue; }
+        let j = i + 1;
+        while (j < count && targets[j] != null) j++;
+        const runLength = j - i;
+        for (let k = i; k < j; k++) {
+          const left = Math.max(0, k - 4), right = Math.min(count, k + 5);
+          record(targets[k], runLength, prefix[right] - prefix[left], k);
+        }
+        i = j;
       }
     } catch { /* malformed/raw data is not evidence */ }
     if (cancelled(requestId)) break;
@@ -134,6 +168,7 @@ __functionEvidence = async function functionEvidenceWithProvenance(region, slice
   if (cancelled(requestId)) return ev;
 
   let removedCircularImageRelative = 0;
+  const removed = [];
   for (const target of broad) {
     if (!ev.structured.has(target)) continue;
     if (!ev.indirectTerminalStarts?.has?.(target)) continue;
@@ -141,6 +176,8 @@ __functionEvidence = async function functionEvidenceWithProvenance(region, slice
     if (__hasIndependentFunctionEvidence(ev, target)) continue;
     ev.structured.delete(target);
     removedCircularImageRelative++;
+    const meta = __broadImageRelativeShape.get(target.toString());
+    if (meta) removed.push(meta);
   }
 
   ev.provenanceStats = {
@@ -149,5 +186,17 @@ __functionEvidence = async function functionEvidenceWithProvenance(region, slice
     independentStructuredCandidates: independentStructured.size,
     removedCircularImageRelative,
   };
+  __functionProvenanceDiagnostic = { ...ev.provenanceStats, removed };
   return ev;
+};
+
+// Temporary measurement plumbing: the scorer uses this only to aggregate
+// structural signatures of the ambiguous cohort. No oracle/truth information
+// enters the worker or affects acceptance.
+const __guessFunctionsBeforeProvenanceDiagnostic = guessFunctions;
+guessFunctions = async function guessFunctionsWithProvenanceDiagnostic(args) {
+  __functionProvenanceDiagnostic = null;
+  const result = await __guessFunctionsBeforeProvenanceDiagnostic(args);
+  if (result && __functionProvenanceDiagnostic) result.provenanceDiagnostic = __functionProvenanceDiagnostic;
+  return result;
 };
