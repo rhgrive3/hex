@@ -26,6 +26,9 @@ const LC_VERSION_MIN_WATCHOS = 0x30;
 const LC_BUILD_VERSION = 0x32;
 const LC_DYLD_EXPORTS_TRIE = 0x80000033;
 const LC_DYLD_CHAINED_FIXUPS = 0x80000034;
+const ARM_THREAD_STATE64 = 6;
+const ARM_THREAD_STATE64_COUNT = 68;
+const ARM_THREAD_STATE64_PC_OFFSET = 256;
 
 const DYLIB_COMMANDS = new Set([
   LC_LOAD_DYLIB, LC_LOAD_WEAK_DYLIB, LC_REEXPORT_DYLIB,
@@ -141,7 +144,17 @@ function parseThin(bytes, opts) {
     image.entrypoint = linkeditData.threadEntry;
     image.metadata.entrypointSource = 'LC_UNIXTHREAD';
   }
-  if (image.entrypoint != null && image.entrypoint !== 0n) image.functions.push(functionSeed(image.entrypoint, { source: 'entrypoint', confidence: 0.9 }));
+  if (image.entrypoint != null && image.entrypoint !== 0n) {
+    const entrySegment = image.segmentAt(image.entrypoint);
+    const alignment = (arch === 'arm64' || arch === 'arm64e' || arch === 'arm64_32') ? 4n : arch === 'arm' ? 2n : 1n;
+    if (entrySegment?.perms?.execute && image.entrypoint % alignment === 0n) {
+      image.metadata.entrypointValid = true;
+      image.functions.push(functionSeed(image.entrypoint, { source: 'entrypoint', confidence: 0.9 }));
+    } else {
+      image.metadata.entrypointValid = false;
+      image.warnings.push(`Ignored ${image.metadata.entrypointSource || 'Mach-O'} entrypoint 0x${image.entrypoint.toString(16)} outside executable/aligned mapping`);
+    }
+  }
 
   for (const st of symtabs) parseSymbolTable(r, st, image, bits, metadataBudget);
   const hadFunctionStarts = !!linkeditData.functionStarts;
@@ -287,11 +300,7 @@ function parseThreadEntrypoint(r, p, cmdsize, cpu, bits) {
     const stateBytes = count * 4;
     if (!Number.isSafeInteger(stateBytes) || stateBytes < 0 || state + stateBytes > end) return null;
     const arch = cpuName(cpu);
-    const ARM_THREAD_STATE64 = 6;
-  const ARM_THREAD_STATE64_COUNT = 68;
-  const ARM_THREAD_STATE64_PC_OFFSET = 256;
-  if (arch === 'arm64' && flavor === ARM_THREAD_STATE64 && count >= ARM_THREAD_STATE64_COUNT)
-    return r.u64(state + ARM_THREAD_STATE64_PC_OFFSET);
+    if (arch === 'arm64' && flavor === ARM_THREAD_STATE64 && count === ARM_THREAD_STATE64_COUNT) return r.u64(state + ARM_THREAD_STATE64_PC_OFFSET);
     if (arch === 'x86_64' && flavor === 4 && stateBytes >= 136) return r.u64(state + 128);
     if (arch === 'arm' && bits === 32 && flavor === 1 && stateBytes >= 64) return BigInt(r.u32(state + 60));
     q = state + stateBytes;
@@ -317,7 +326,7 @@ function parseSymbolTable(r, st, image, bits, sharedBudget = null) {
     image.warnings.push('Mach-O symbol table is truncated'); return;
   }
   for (let i = 0; i < st.nsyms; i++) {
-    if (!budget.take({ inputBytes:ent, records:1, objects:1, operations:2, estimatedHeapBytes:224 }, 'symbol-record')) break;
+    if (!budget.take({ inputBytes:ent, records:1,objects:1,operations:2,estimatedHeapBytes:224 }, 'symbol-record')) break;
     const p = st.symoff + i * ent;
     const strx = r.u32(p);
     const type = r.u8(p + 4);

@@ -35,6 +35,49 @@ function floatText(value, bits = 64) {
 
 function wrap(text, p, parent) { return p < parent ? `(${text})` : text; }
 
+function normalizedIntegerWidth(bits) {
+  const width = Number(bits || 64);
+  if (!Number.isFinite(width) || width <= 0) return 64;
+  return Math.max(1, Math.min(128, Math.trunc(width)));
+}
+
+function exactUnsignedType(bits) {
+  const width = normalizedIntegerWidth(bits);
+  if (width <= 8) return 'uint8_t';
+  if (width <= 16) return 'uint16_t';
+  if (width <= 32) return 'uint32_t';
+  if (width <= 64) return 'uint64_t';
+  return 'unsigned __int128';
+}
+
+function exactSignedType(bits) {
+  const width = normalizedIntegerWidth(bits);
+  if (width <= 8) return 'int8_t';
+  if (width <= 16) return 'int16_t';
+  if (width <= 32) return 'int32_t';
+  if (width <= 64) return 'int64_t';
+  return '__int128';
+}
+
+function moduloArithmeticExpression(n, opts) {
+  if (!['add','sub','mul','shl'].includes(n.op)) return null;
+  const bits = normalizedIntegerWidth(n.bits || n.left?.bits || n.right?.bits || 64);
+  const targetUnsigned = exactUnsignedType(bits);
+  const leftText = printExpression(n.left, 0, opts);
+  const rightText = printExpression(n.right, 0, opts);
+  let raw;
+  if (n.op === 'shl') {
+    // Use the widest supported unsigned type before truncation. This avoids
+    // signed-left-shift UB and integer-promotion UB for 8/16/32-bit values.
+    raw = `((unsigned __int128)(${leftText}) << (${rightText}))`;
+  } else {
+    const arithmeticType = bits <= 64 ? 'uint64_t' : 'unsigned __int128';
+    raw = `((${arithmeticType})(${leftText}) ${OP_TEXT[n.op]} (${arithmeticType})(${rightText}))`;
+  }
+  const exact = `((${targetUnsigned})(${raw}))`;
+  return n.signed === true ? `((${exactSignedType(bits)})${exact})` : exact;
+}
+
 export function printExpression(n, parentPrec = 0, opts = {}) {
   if (!n) return 'unknown';
   switch (n.kind) {
@@ -70,6 +113,8 @@ export function printExpression(n, parentPrec = 0, opts = {}) {
       return wrap(text, p, parentPrec);
     }
     case 'binary': {
+      const exact = moduloArithmeticExpression(n, opts);
+      if (exact) return exact;
       const p = PREC[n.op] || 11;
       const text = `${printExpression(n.left, p, opts)} ${OP_TEXT[n.op] || n.op} ${printExpression(n.right, p + (['sub','sdiv','udiv','smod','umod','shl','lshr','ashr'].includes(n.op) ? 1 : 0), opts)}`;
       return wrap(text, p, parentPrec);

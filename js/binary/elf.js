@@ -75,7 +75,15 @@ export function parseELF(input, options = {}) {
   }
 
   image.imageBase = h.type === ET_REL ? 0n : findImageBase(image);
-  if (h.type !== ET_REL && image.entrypoint && image.entrypoint !== 0n) image.functions.push(functionSeed(image.entrypoint, { source: 'entrypoint', confidence: 0.9 }));
+  if (h.type !== ET_REL && image.entrypoint != null) {
+    const zeroResetVector = image.entrypoint === 0n && image.arch === 'arm64' && !!image.segmentAt(0n)?.perms?.execute;
+    if (image.entrypoint !== 0n || zeroResetVector) {
+      image.functions.push(functionSeed(image.entrypoint, { source: 'entrypoint', confidence: 0.9 }));
+      if (zeroResetVector) image.metadata.entrypointZeroEvidence = 'aarch64-executable-pt-load-at-zero';
+    } else {
+      image.metadata.entrypointZeroEvidence = 'zero-sentinel-unproven';
+    }
+  }
   const metadataBudget = createELFMetadataBudget(image, { signal: options.signal, limits: options.metadataLimits });
 
   const symbolTables = rawSections.filter((s) => s.type === SHT_SYMTAB || s.type === SHT_DYNSYM);

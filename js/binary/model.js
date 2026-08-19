@@ -10,6 +10,8 @@ function normalizePerms(p) {
   return { read: !!p.read, write: !!p.write, execute: !!p.execute };
 }
 
+function minBigInt(a, b) { return a < b ? a : b; }
+
 export class BinaryImage {
   constructor(input, meta = {}) {
     if (input == null) this.bytes = null;
@@ -109,25 +111,79 @@ export class BinaryImage {
     return this.segments.find((s) => inRange(a, s.address, s.size)) || null;
   }
 
+  _virtualMappingAt(address) {
+    const a = BigInt(address);
+    const segment = this.segments.find((s) => s.size > 0n && inRange(a, s.address, s.size));
+    if (segment) return segment;
+    return this.sections.find((s) => s.size > 0n && inRange(a, s.address, s.size)) || null;
+  }
+
+  _virtualReadPlan(address, size) {
+    let current;
+    let remaining;
+    try {
+      current = BigInt(address);
+      remaining = typeof size === 'bigint' ? size : BigInt(size);
+    } catch {
+      return null;
+    }
+    if (current < 0n || remaining < 0n || remaining > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+    if (remaining === 0n) return [];
+    const chunks = [];
+    while (remaining > 0n) {
+      const owner = this._virtualMappingAt(current);
+      if (!owner) return null;
+      const delta = current - owner.address;
+      const vmAvailable = owner.size - delta;
+      if (vmAvailable <= 0n) return null;
+      const fileAvailable = delta < owner.fileSize ? minBigInt(owner.fileSize - delta, vmAvailable) : 0n;
+      const length = fileAvailable > 0n ? minBigInt(fileAvailable, remaining) : minBigInt(vmAvailable, remaining);
+      if (length <= 0n) return null;
+      if (fileAvailable > 0n) chunks.push({ kind:'file', offset:owner.fileOffset + delta, length });
+      else chunks.push({ kind:'zero', length });
+      current += length;
+      remaining -= length;
+    }
+    return chunks;
+  }
+
   readVirtual(address, size) {
     if (!this.bytes) return null;
-    const off = this.addressToOffset(address);
-    if (off == null) return null;
-    const o = Number(off);
-    const n = Number(size);
-    if (!Number.isSafeInteger(o) || !Number.isSafeInteger(n) || o < 0 || n < 0 || o > this.bytes.length || n > this.bytes.length - o) return null;
-    return this.bytes.subarray(o, o + n);
+    const plan = this._virtualReadPlan(address, size);
+    if (!plan) return null;
+    const total = plan.reduce((sum, chunk) => sum + Number(chunk.length), 0);
+    const out = new Uint8Array(total);
+    let cursor = 0;
+    for (const chunk of plan) {
+      const length = Number(chunk.length);
+      if (chunk.kind === 'zero') { cursor += length; continue; }
+      const off = Number(chunk.offset);
+      if (!Number.isSafeInteger(off) || off < 0 || off > this.bytes.length || length > this.bytes.length - off) return null;
+      out.set(this.bytes.subarray(off, off + length), cursor);
+      cursor += length;
+    }
+    return out;
   }
 
   async readVirtualAsync(address, size) {
     const resident = this.readVirtual(address, size);
     if (resident) return resident;
     if (!this.source) return null;
-    const off = this.addressToOffset(address);
-    if (off == null) return null;
-    const n = typeof size === 'bigint' ? size : BigInt(size);
-    if (n < 0n || off < 0n || off > this.fileSize || n > this.fileSize - off) return null;
-    return this.source.readExactly(off, n);
+    const plan = this._virtualReadPlan(address, size);
+    if (!plan) return null;
+    const total = plan.reduce((sum, chunk) => sum + Number(chunk.length), 0);
+    const out = new Uint8Array(total);
+    let cursor = 0;
+    for (const chunk of plan) {
+      const length = Number(chunk.length);
+      if (chunk.kind === 'zero') { cursor += length; continue; }
+      if (chunk.offset < 0n || chunk.offset > this.fileSize || chunk.length > this.fileSize - chunk.offset) return null;
+      const bytes = await this.source.readExactly(chunk.offset, chunk.length);
+      if (!bytes || bytes.length !== length) return null;
+      out.set(bytes, cursor);
+      cursor += length;
+    }
+    return out;
   }
 
   attachSource(source, { discardBytes = false } = {}) {

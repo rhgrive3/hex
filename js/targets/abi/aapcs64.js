@@ -13,16 +13,25 @@ function callParameterList(proto) {
   return Array.isArray(list) ? list : null;
 }
 
+function scalableAAPCS64Class(type, cls) {
+  const text = `${type} ${cls}`;
+  const predicate = /\bsvbool_t\b|\bpredicate\b|\bsve[-_ ]?predicate\b/.test(text);
+  const scalable = predicate || /\bscalable[-_ ]?(?:vector|type)\b|\bsve\b|\bsv(?:u?int|float|bfloat)[0-9_]*_t\b/.test(text);
+  if (!scalable) return null;
+  return predicate ? 'sve-predicate' : 'sve-scalable-vector';
+}
+
 function parameterAbiClass(param) {
   const type = String(param?.type || param?.name || '').toLowerCase();
   const cls = String(param?.abiClass || param?.class || param?.kind || '').toLowerCase();
+  const scalableClass = scalableAAPCS64Class(type, cls);
   const pointer = param?.pointer === true || param?.isPointer === true || /\*|pointer|ptr|object|class|block|closure/.test(type + ' ' + cls);
   const hfa = param?.hfa === true || cls.includes('hfa') || cls.includes('homogeneous');
-  const vector = cls.includes('vector') || /vector|simd/.test(type);
-  const fp = hfa || vector || cls.includes('float') || cls.includes('fp') || /^(float|double|__fp16)/.test(type);
+  const vector = !scalableClass && (cls.includes('vector') || /vector|simd/.test(type));
+  const fp = !scalableClass && (hfa || vector || cls.includes('float') || cls.includes('fp') || /^(float|double|__fp16)/.test(type));
   const members = Math.max(1, Math.min(4, Number(param?.members || param?.elements || param?.count || 1) || 1));
   const bits = Math.max(8, Math.min(128, Number(param?.bits || param?.sizeBits || 64) || 64));
-  return { pointer, hfa, vector, fp, members, bits };
+  return { pointer, hfa, vector, fp, members, bits, scalableClass };
 }
 
 export function classifyAAPCS64Arguments(insn, opts = {}) {
@@ -31,6 +40,7 @@ export function classifyAAPCS64Arguments(insn, opts = {}) {
   const srcs = [];
   const arguments_ = [];
   const stackArguments = [];
+  const unsupported = [];
   let gp = 0, fp = 0, stackOffset = 0;
   let stackArgsMayContainPointers = false;
   if (!params) {
@@ -40,6 +50,10 @@ export function classifyAAPCS64Arguments(insn, opts = {}) {
   }
   params.forEach((param,index) => {
     const c=parameterAbiClass(param);
+    if (c.scalableClass) {
+      const entry={index,location:'unsupported',abiClass:c.scalableClass,pointer:false,scalable:true,evidence:'unsupported-aapcs64-sve'};
+      arguments_.push(entry);unsupported.push(entry);return;
+    }
     const regsNeeded=c.hfa ? c.members : 1;
     if (c.fp && fp + regsNeeded <= 8) {
       const regs=[];
@@ -57,7 +71,18 @@ export function classifyAAPCS64Arguments(insn, opts = {}) {
     stackArguments.push(entry);arguments_.push(entry);stackOffset+=slots*8;
     if(c.pointer || param?.mayContainPointers === true || param?.containsPointers === true) stackArgsMayContainPointers=true;
   });
-  return { srcs, arguments:arguments_, stackArguments, stackArgsUnknown:proto?.variadic===true||proto?.varargs===true, stackArgsMayContainPointers, evidence:'prototype-aapcs64' };
+  return {
+    srcs, arguments:arguments_, stackArguments,
+    stackArgsUnknown:proto?.variadic===true||proto?.varargs===true,
+    stackArgsMayContainPointers,
+    evidence:unsupported.length?'partial-aapcs64-unsupported-sve':'prototype-aapcs64',
+    unsupported:unsupported.length>0,
+    unsupportedArguments:unsupported,
+  };
+}
+
+function scalableReturnClass(proto, type, cls) {
+  return scalableAAPCS64Class(type, cls) || scalableAAPCS64Class(type, String(proto?.returnKind || proto?.resultKind || '').toLowerCase());
 }
 
 export function classifyAAPCS64CallReturn(insn, opts = {}) {
@@ -67,6 +92,7 @@ export function classifyAAPCS64CallReturn(insn, opts = {}) {
   const cls = String(proto.returnClass || proto.abiClass || proto.resultClass || '').toLowerCase();
   if (proto.void === true || type === 'void' || cls === 'void') return null;
   if (proto.indirectResult === true || cls === 'indirect') return null;
+  if (scalableReturnClass(proto,type,cls)) return null;
   if (cls.includes('fp') || cls.includes('float') || cls.includes('vector') || /^(float|double|__fp16)/.test(type)) {
     return { reg:'v0', bits:Number(proto.returnBits || proto.bits || 64) || 64 };
   }
@@ -80,6 +106,7 @@ export function classifyAAPCS64FunctionReturn(opts = {}) {
   const cls = String(opts?.returnClass || proto?.returnClass || proto?.abiClass || proto?.resultClass || '').toLowerCase();
   if (opts?.returnsValue === false || proto?.returnsValue === false || proto?.void === true || type === 'void' || cls === 'void') return null;
   if (proto?.indirectResult === true || cls === 'indirect') return null;
+  if (scalableReturnClass(proto,type,cls)) return null;
   if (cls.includes('fp') || cls.includes('float') || cls.includes('vector') || /^(float|double|__fp16)/.test(type)) {
     return { reg:'v0', bits:Number(proto?.returnBits || proto?.bits || opts?.returnBits || 64) || 64 };
   }
@@ -89,22 +116,33 @@ export function classifyAAPCS64FunctionReturn(opts = {}) {
   return null;
 }
 
-const CALLER_SAVED = Object.freeze(['x0','x1','x2','x3','x4','x5','x6','x7','x8','x9','x10','x11','x12','x13','x14','x15','x16','x17','x30','nzcv',
+const CALLER_SAVED_BASE = Object.freeze(['x0','x1','x2','x3','x4','x5','x6','x7','x8','x9','x10','x11','x12','x13','x14','x15','x16','x17','x30','nzcv',
+  ...Array.from({length:8},(_x,i)=>`v${i}`), ...Array.from({length:16},(_x,i)=>`v${i+16}`)]);
+const CALLER_SAVED_WITH_X18 = Object.freeze(['x0','x1','x2','x3','x4','x5','x6','x7','x8','x9','x10','x11','x12','x13','x14','x15','x16','x17','x18','x30','nzcv',
   ...Array.from({length:8},(_x,i)=>`v${i}`), ...Array.from({length:16},(_x,i)=>`v${i+16}`)]);
 const CALLEE_SAVED = Object.freeze(['x19','x20','x21','x22','x23','x24','x25','x26','x27','x28','x29', ...Array.from({length:8},(_x,i)=>`v${i+8}`)]);
+const APPLE_X18_RESERVED = new Set(['apple','darwin','macos','macosx','ios','ipados','tvos','watchos','visionos','maccatalyst','ios-simulator','tvos-simulator','watchos-simulator','visionos-simulator']);
+
+function platformFromContext(context = {}) {
+  return String(context?.platform || context?.image?.platform || context?.target?.platform || context?.binary?.platform || 'unknown').trim().toLowerCase();
+}
+
+function callerSavedFor(context = {}) {
+  return APPLE_X18_RESERVED.has(platformFromContext(context)) ? CALLER_SAVED_BASE : CALLER_SAVED_WITH_X18;
+}
 
 export const AAPCS64_ABI = new ABIPlugin({
-  id:'aapcs64', semanticVersion:'1', architectureId:'arm64',
-  platformPredicate:({ platform }) => !platform || platform === 'darwin' || platform === 'linux' || platform === 'android' || platform === 'unknown',
+  id:'aapcs64', semanticVersion:'2', architectureId:'arm64',
+  platformPredicate:({ platform }) => !platform || platform === 'darwin' || platform === 'apple' || platform === 'macos' || platform === 'ios' || platform === 'ipados' || platform === 'linux' || platform === 'android' || platform === 'unknown',
   callingConventions:()=>Object.freeze(['aapcs64']),
   classifyArguments:classifyAAPCS64Arguments,
   classifyCallReturn:classifyAAPCS64CallReturn,
   classifyFunctionReturn:classifyAAPCS64FunctionReturn,
   classifyEntryRegister:(reg) => /^x[0-7]$/.test(String(reg || '')) ? { kind:'argument', reg:String(reg), index:Number(String(reg).slice(1)) } : { kind:'incoming-register-state', reg:String(reg || '') },
-  callerSaved:()=>CALLER_SAVED,
+  callerSaved:(context)=>callerSavedFor(context),
   calleeSaved:()=>CALLEE_SAVED,
   stackRules:()=>Object.freeze({ alignment:16, stackGrows:'down', argumentSlotBytes:8 }),
   redZone:()=>0,
   unwindRules:()=>Object.freeze({ framePointer:'x29', linkRegister:'x30' }),
-  defaultUnknownCallEffects:()=>Object.freeze({ registerClobbers:CALLER_SAVED, memoryEffects:'unknown', mayThrow:true }),
+  defaultUnknownCallEffects:(context)=>Object.freeze({ registerClobbers:callerSavedFor(context), memoryEffects:'unknown', mayThrow:true }),
 });
