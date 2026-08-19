@@ -1,31 +1,18 @@
-name: Cross-binary accuracy
+name: Cross-binary accuracy diagnostics
 
-# Required real-binary accuracy gate. Precision is unchanged: every pinned
-# fixture and every accuracy feature still runs. Wall-clock time is reduced by
-# caching exact independent results and using persistent runner-local workers
-# before consuming additional GitHub Actions concurrency slots.
+# Disposable analysis-only workflow. The branch is pinned to PR #996 final head
+# and intentionally runs only root-cause diagnostics for sub-100% features.
 on:
-  workflow_dispatch:
   pull_request:
+    branches: [analysis/cross-binary-100pct-base]
     paths:
+      - 'tests/analysis/**'
       - 'js/**'
-      - 'tests/**'
-      - 'tools/benchmark/**'
-      - 'scripts/fetch-real-fixtures.mjs'
-      - 'package.json'
       - '.github/workflows/cross-binary-accuracy.yml'
-  push:
-    branches: [main]
-    paths:
-      - 'js/**'
-      - 'tests/**'
-      - 'tools/benchmark/**'
-      - 'scripts/fetch-real-fixtures.mjs'
-      - 'package.json'
-      - '.github/workflows/cross-binary-accuracy.yml'
+  workflow_dispatch:
 
 concurrency:
-  group: cross-binary-accuracy-${{ github.event.pull_request.number || github.ref }}
+  group: cross-binary-diagnostics-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -33,62 +20,10 @@ env:
   HEX_FIXTURE_TSUMTSUM_URL: https://raw.githubusercontent.com/rhgrive3/hex/bd7bd61d093592d07fdd9e9b14a859e19dd4c3a9/tests/TsumTsum
   HEX_FIXTURE_YWP_URL: https://raw.githubusercontent.com/rhgrive3/hex/bd7bd61d093592d07fdd9e9b14a859e19dd4c3a9/tests/YWP
   ORACLE_PYTHON_VERSION: '3.12.13'
-  LOCAL_PSEUDOC_WORKERS: 4
-  LOCAL_CORE_WORKERS: 4
 
 jobs:
-  preflight-lint:
-    name: accuracy-preflight
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - name: Workflow contract regression
-        run: node tests/issue-497-cross-binary-workflow.mjs
-      - name: Accuracy merge regression
-        run: |
-          node tests/accuracy-merge.mjs --self-test
-          node tests/accuracy-pseudoc-shard-merge.mjs --self-test
-          node tests/accuracy-pseudoc-shard.test.mjs
-          node tests/accuracy-result-validate.mjs --self-test
-      - name: Syntax lint
-        run: npm run lint
-      - name: Matcher scaling regression
-        run: node tests/issue-500-matcher-budget.mjs
-      - name: Detect real fixture configuration
-        id: fixtures
-        shell: bash
-        run: |
-          if [[ -n "$HEX_FIXTURE_BATTLECATS_URL" && -n "$HEX_FIXTURE_TSUMTSUM_URL" && -n "$HEX_FIXTURE_YWP_URL" ]]; then
-            echo "enabled=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-          fi
-      - name: Require all real fixture URLs
-        if: steps.fixtures.outputs.enabled != 'true'
-        shell: bash
-        run: |
-          echo "::error::Cross-binary accuracy is a required real-binary gate; configure BattleCats, TsumTsum, and YWP fixture URLs."
-          exit 1
-
-  preflight-tests:
-    name: accuracy-core-tests
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - name: Core tests for standalone manual validation
-        run: npm test
-
-  oracle:
-    name: oracle-${{ matrix.name }}
+  diagnose:
+    name: diagnose-${{ matrix.name }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -100,52 +35,42 @@ jobs:
             fixture: battlecats
             file: battlecats
             oracle: tests/oracle.battlecats.ci.json.gz
-          - name: YWP
-            fixture: YWP
-            file: YWP
-            oracle: tests/oracle.YWP.ci.json.gz
           - name: TsumTsum
             fixture: TsumTsum
             file: TsumTsum
             oracle: tests/oracle.TsumTsum.ci.json.gz
+          - name: YWP
+            fixture: YWP
+            file: YWP
+            oracle: tests/oracle.YWP.ci.json.gz
     steps:
       - uses: actions/checkout@v4
-      - name: Build exact oracle cache key
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Fetch pinned real fixture
+        run: |
+          node scripts/fetch-real-fixtures.mjs "${{ matrix.fixture }}"
+          node scripts/fetch-real-fixtures.mjs "${{ matrix.fixture }}" --check
+      - name: Build oracle cache key
         id: oracle-key
         shell: bash
         env:
           ORACLE_INPUT_HASH: ${{ hashFiles('tests/fixtures/real-binaries.json', 'tests/oracle.py', 'tests/oracle-cfg-normalize.py', 'tests/oracle-requirements.txt') }}
-        run: |
-          echo "key=cross-binary-oracle-v3-${{ runner.os }}-${{ runner.arch }}-py${ORACLE_PYTHON_VERSION}-${{ matrix.fixture }}-${ORACLE_INPUT_HASH}" >> "$GITHUB_OUTPUT"
+        run: echo "key=cross-binary-oracle-v3-${{ runner.os }}-${{ runner.arch }}-py${ORACLE_PYTHON_VERSION}-${{ matrix.fixture }}-${ORACLE_INPUT_HASH}" >> "$GITHUB_OUTPUT"
       - name: Restore exact oracle cache
         id: oracle-cache
         uses: actions/cache/restore@v4
         with:
           path: ${{ matrix.oracle }}
           key: ${{ steps.oracle-key.outputs.key }}
-      - name: Validate cached oracle
-        if: steps.oracle-cache.outputs.cache-hit == 'true'
-        shell: bash
-        run: |
-          test -s "${{ matrix.oracle }}"
-          gzip -t "${{ matrix.oracle }}"
       - uses: actions/setup-python@v5
         if: steps.oracle-cache.outputs.cache-hit != 'true'
         with:
           python-version: ${{ env.ORACLE_PYTHON_VERSION }}
           cache: pip
           cache-dependency-path: tests/oracle-requirements.txt
-      - uses: actions/setup-node@v4
-        if: steps.oracle-cache.outputs.cache-hit != 'true'
-        with:
-          node-version: '22'
-      - name: Fetch and verify pinned real fixture
-        if: steps.oracle-cache.outputs.cache-hit != 'true'
-        run: |
-          node scripts/fetch-real-fixtures.mjs "${{ matrix.fixture }}"
-          node scripts/fetch-real-fixtures.mjs "${{ matrix.fixture }}" --check
-          file "tests/.real-fixtures/${{ matrix.file }}"
-      - name: Install pinned oracle dependencies
+      - name: Install oracle dependencies on cache miss
         if: steps.oracle-cache.outputs.cache-hit != 'true'
         run: python -m pip install --disable-pip-version-check -r tests/oracle-requirements.txt
       - name: Generate oracle on cache miss
@@ -153,227 +78,17 @@ jobs:
         run: |
           python tests/oracle.py "tests/.real-fixtures/${{ matrix.file }}" "${{ matrix.oracle }}"
           python tests/oracle-cfg-normalize.py "tests/.real-fixtures/${{ matrix.file }}" "${{ matrix.oracle }}"
-          gzip -t "${{ matrix.oracle }}"
-      - name: Save exact oracle cache
-        if: steps.oracle-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+      - name: Run focused root-cause diagnostics
+        run: |
+          node --max-old-space-size=6000 tests/analysis/cross-binary-diagnose.mjs \
+            --target="tests/.real-fixtures/${{ matrix.file }}" \
+            --oracle="${{ matrix.oracle }}" \
+            --name="${{ matrix.name }}" \
+            --out="diagnostics-${{ matrix.name }}.json"
+          cat "diagnostics-${{ matrix.name }}.json"
+      - uses: actions/upload-artifact@v4
         with:
-          path: ${{ matrix.oracle }}
-          key: ${{ steps.oracle-key.outputs.key }}
-      - name: Publish oracle for this run
-        uses: actions/upload-artifact@v4
-        with:
-          name: cross-binary-oracle-${{ matrix.name }}
-          path: ${{ matrix.oracle }}
+          name: cross-binary-diagnostics-${{ matrix.name }}
+          path: diagnostics-${{ matrix.name }}.json
           if-no-files-found: error
-          retention-days: 1
-
-  measure:
-    name: accuracy-${{ matrix.target.name }}-${{ matrix.partition.name }}
-    needs: oracle
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      # Nine jobs total (3 partitions x 3 targets). Keep this below the Free
-      # account limit so other repository workflows retain runner slots.
-      max-parallel: 9
-      matrix:
-        target:
-          - name: BattleCats
-            fixture: battlecats
-            file: battlecats
-            oracle: tests/oracle.battlecats.ci.json.gz
-          - name: YWP
-            fixture: YWP
-            file: YWP
-            oracle: tests/oracle.YWP.ci.json.gz
-          - name: TsumTsum
-            fixture: TsumTsum
-            file: TsumTsum
-            oracle: tests/oracle.TsumTsum.ci.json.gz
-        partition:
-          - name: core
-            only: sections,funcs,funcs-guess,disasm,kinds,calls,refs,imports,objc,selstub,strings,xrefs,funcname,selffield,role,apimeaning,summary,expr,formula
-          - name: pinpoint
-            only: pinpoint,pinpoint-partial
-          - name: pseudoc
-            only: pseudoc
-    steps:
-      - uses: actions/checkout@v4
-      - name: Restore exact accuracy result cache
-        id: result-cache
-        uses: actions/cache/restore@v4
-        with:
-          path: accuracy-part-${{ matrix.target.name }}-${{ matrix.partition.name }}.json
-          key: accuracy-result-v6-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target.name }}-${{ matrix.partition.name }}-${{ hashFiles('js/**', 'tests/accuracy*.mjs', 'tests/harness.mjs', 'tests/fixtures/real-binaries.json', 'tests/oracle.py', 'tests/oracle-cfg-normalize.py', 'tests/oracle-requirements.txt', '.github/workflows/cross-binary-accuracy.yml') }}
-      - name: Validate restored accuracy result
-        if: steps.result-cache.outputs.cache-hit == 'true'
-        run: |
-          node tests/accuracy-result-validate.mjs \
-            "accuracy-part-${{ matrix.target.name }}-${{ matrix.partition.name }}.json" \
-            --expect="${{ matrix.partition.only }}"
-      - uses: actions/setup-node@v4
-        if: steps.result-cache.outputs.cache-hit != 'true'
-        with:
-          node-version: '22'
-      - name: Fetch and verify pinned real fixture
-        if: steps.result-cache.outputs.cache-hit != 'true'
-        run: |
-          node scripts/fetch-real-fixtures.mjs "${{ matrix.target.fixture }}"
-          node scripts/fetch-real-fixtures.mjs "${{ matrix.target.fixture }}" --check
-      - name: Download required oracle
-        if: steps.result-cache.outputs.cache-hit != 'true'
-        uses: actions/download-artifact@v4
-        with:
-          name: cross-binary-oracle-${{ matrix.target.name }}
-          path: tests
-      - name: Validate required oracle
-        if: steps.result-cache.outputs.cache-hit != 'true'
-        run: |
-          test -s "${{ matrix.target.oracle }}"
-          gzip -t "${{ matrix.target.oracle }}"
-      - name: Measure Hex accuracy partition
-        if: steps.result-cache.outputs.cache-hit != 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          output="accuracy-part-${{ matrix.target.name }}-${{ matrix.partition.name }}.json"
-          temporary="${output}.tmp"
-          target="tests/.real-fixtures/${{ matrix.target.file }}"
-          oracle="${{ matrix.target.oracle }}"
-          rm -f "$output" "$temporary"
-
-          run_parallel() {
-            local mode="$1"
-            shift
-            local -a pids=()
-            local status=0
-            local i=0
-            while (( "$#" )); do
-              local only="$1"
-              shift
-              node --max-old-space-size=2600 tests/accuracy.mjs \
-                --target="$target" \
-                --oracle="$oracle" \
-                --only="$only" \
-                --json > "accuracy-local-${mode}-${i}.json" \
-                2> "accuracy-local-${mode}-${i}.log" &
-              pids+=("$!")
-              i=$((i + 1))
-            done
-            for i in "${!pids[@]}"; do
-              if ! wait "${pids[$i]}"; then status=1; fi
-              cat "accuracy-local-${mode}-${i}.log"
-            done
-            return "$status"
-          }
-
-          if [[ "${{ matrix.partition.name }}" == "core" ]]; then
-            run_parallel core \
-              'sections,funcs,funcs-guess,disasm,kinds' \
-              'calls,refs,imports,objc,selstub' \
-              'strings,xrefs,funcname,selffield,role' \
-              'apimeaning,summary,expr,formula'
-            node --input-type=module <<'NODE'
-          import fs from 'node:fs';
-          const rows = [0, 1, 2, 3].flatMap((i) => JSON.parse(fs.readFileSync(`accuracy-local-core-${i}.json`, 'utf8')));
-          fs.writeFileSync('accuracy-part-${{ matrix.target.name }}-core.json.tmp', JSON.stringify(rows, null, 2) + '\n');
-          NODE
-          elif [[ "${{ matrix.partition.name }}" == "pinpoint" ]]; then
-            run_parallel pinpoint pinpoint pinpoint-partial
-            node --input-type=module <<'NODE'
-          import fs from 'node:fs';
-          const rows = [0, 1].flatMap((i) => JSON.parse(fs.readFileSync(`accuracy-local-pinpoint-${i}.json`, 'utf8')));
-          fs.writeFileSync('accuracy-part-${{ matrix.target.name }}-pinpoint.json.tmp', JSON.stringify(rows, null, 2) + '\n');
-          NODE
-          else
-            node tests/accuracy-pseudoc-parallel.mjs \
-              --target="$target" \
-              --oracle="$oracle" \
-              --workers="$LOCAL_PSEUDOC_WORKERS" \
-              --json > "$temporary"
-          fi
-
-          node tests/accuracy-result-validate.mjs "$temporary" --expect="${{ matrix.partition.only }}"
-          mv "$temporary" "$output"
-          cat "$output"
-      - name: Save exact accuracy result cache
-        if: steps.result-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: accuracy-part-${{ matrix.target.name }}-${{ matrix.partition.name }}.json
-          key: accuracy-result-v6-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target.name }}-${{ matrix.partition.name }}-${{ hashFiles('js/**', 'tests/accuracy*.mjs', 'tests/harness.mjs', 'tests/fixtures/real-binaries.json', 'tests/oracle.py', 'tests/oracle-cfg-normalize.py', 'tests/oracle-requirements.txt', '.github/workflows/cross-binary-accuracy.yml') }}
-      - name: Upload partition result
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: accuracy-part-${{ matrix.target.name }}-${{ matrix.partition.name }}
-          path: accuracy-part-${{ matrix.target.name }}-${{ matrix.partition.name }}.json
-          if-no-files-found: error
-
-  accuracy:
-    name: accuracy
-    if: always()
-    needs: [preflight-lint, preflight-tests, oracle, measure]
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - name: Require all prerequisite jobs
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          PREFLIGHT_LINT_RESULT: ${{ needs.preflight-lint.result }}
-          PREFLIGHT_TESTS_RESULT: ${{ needs.preflight-tests.result }}
-          ORACLE_RESULT: ${{ needs.oracle.result }}
-          MEASURE_RESULT: ${{ needs.measure.result }}
-        shell: bash
-        run: |
-          TESTS_OK=false
-          if [[ "$PREFLIGHT_TESTS_RESULT" == "success" ]]; then TESTS_OK=true; fi
-          if [[ "$EVENT_NAME" != "workflow_dispatch" && "$PREFLIGHT_TESTS_RESULT" == "skipped" ]]; then TESTS_OK=true; fi
-          if [[ "$PREFLIGHT_LINT_RESULT" != "success" || "$TESTS_OK" != "true" || \
-                "$ORACLE_RESULT" != "success" || "$MEASURE_RESULT" != "success" ]]; then
-            echo "::error::Cross-binary prerequisite failed (lint=$PREFLIGHT_LINT_RESULT, tests=$PREFLIGHT_TESTS_RESULT, oracle=$ORACLE_RESULT, measure=$MEASURE_RESULT)."
-            exit 1
-          fi
-      - name: Download accuracy partitions
-        uses: actions/download-artifact@v4
-        with:
-          pattern: accuracy-part-*
-          merge-multiple: true
-      - name: Validate downloaded accuracy partitions
-        shell: bash
-        run: |
-          set -euo pipefail
-          core='sections,funcs,funcs-guess,disasm,kinds,calls,refs,imports,objc,selstub,strings,xrefs,funcname,selffield,role,apimeaning,summary,expr,formula'
-          for target in BattleCats YWP TsumTsum; do
-            node tests/accuracy-result-validate.mjs "accuracy-part-${target}-core.json" --expect="$core"
-            node tests/accuracy-result-validate.mjs "accuracy-part-${target}-pinpoint.json" --expect='pinpoint,pinpoint-partial'
-            node tests/accuracy-result-validate.mjs "accuracy-part-${target}-pseudoc.json" --expect='pseudoc'
-          done
-      - name: Merge complete target results
-        run: |
-          node tests/accuracy-merge.mjs accuracy-BattleCats.json accuracy-part-BattleCats-*.json
-          node tests/accuracy-merge.mjs accuracy-YWP.json accuracy-part-YWP-*.json
-          node tests/accuracy-merge.mjs accuracy-TsumTsum.json accuracy-part-TsumTsum-*.json
-      - name: Accuracy regression gate
-        run: node tests/accuracy-gate.mjs
-      - name: Structured baseline report
-        run: node tools/benchmark/accuracy-report.mjs --output=accuracy-baseline-report.json
-      - name: Current-main baseline regression gate
-        run: node tools/benchmark/compare.mjs --accuracy=accuracy-baseline-report.json
-      - name: Upload combined results
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: accuracy-results
-          path: |
-            accuracy-BattleCats.json
-            accuracy-YWP.json
-            accuracy-TsumTsum.json
-            accuracy-baseline-report.json
-          if-no-files-found: error
+          retention-days: 7
