@@ -34,7 +34,7 @@ await replaceOnce('js/analysis/semantic-function.js',
         for (const register of registers) {
           const reg = String(register || '');
           if (!reg) continue;
-          const key = \`${entry.index ?? locations.length}:\${reg}\`;
+          const key = String(entry.index ?? locations.length) + ':' + reg;
           if (seen.has(key)) continue;
           seen.add(key);
           locations.push(Object.freeze({
