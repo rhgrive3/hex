@@ -3,6 +3,20 @@ const ABI_PLUGINS = new Map();
 function canonicalId(value) { return String(value || '').trim().toLowerCase(); }
 function frozenArray(value) { return Object.freeze(Array.isArray(value) ? value.slice() : []); }
 
+function canonicalCallingConvention(value) {
+  return canonicalId(value).replace(/^__/, '');
+}
+
+function claimedCallingConventions(plugin) {
+  try {
+    return frozenArray(plugin?.callingConventions?.())
+      .map(canonicalCallingConvention)
+      .filter(Boolean);
+  } catch {
+    return Object.freeze([]);
+  }
+}
+
 export class ABIPlugin {
   constructor(definition = {}) {
     const id = canonicalId(definition.id);
@@ -12,6 +26,7 @@ export class ABIPlugin {
 
     this.id = id;
     this.semanticVersion = String(definition.semanticVersion || '1');
+    this.semanticIdentity = String(definition.semanticIdentity || `${id}@${this.semanticVersion}`);
     this.architectureId = architectureId;
     this.platformPredicate = typeof definition.platformPredicate === 'function'
       ? definition.platformPredicate
@@ -51,8 +66,19 @@ export function abiPlugin(id) {
 
 export function abiPlugins() { return Object.freeze(Array.from(ABI_PLUGINS.values())); }
 
-export function findABIPlugin({ id = null, architecture = null, platform = null } = {}) {
-  if (id) return abiPlugin(id);
+export function abiPluginClaimsCallingConvention(plugin, callingConvention = null) {
+  const requested = canonicalCallingConvention(callingConvention);
+  if (!requested) return true;
+  const claims = claimedCallingConventions(plugin);
+  return claims.some((claim) => claim === requested);
+}
+
+export function findABIPlugin({ id = null, architecture = null, platform = null, callingConvention = null } = {}) {
+  if (id) {
+    const explicit = abiPlugin(id);
+    if (!explicit || explicit.id === 'unknown') return explicit;
+    return abiPluginClaimsCallingConvention(explicit, callingConvention) ? explicit : abiPlugin('unknown');
+  }
   const arch = canonicalId(architecture);
   const platformId = canonicalId(platform);
   for (const plugin of ABI_PLUGINS.values()) {
@@ -60,7 +86,9 @@ export function findABIPlugin({ id = null, architecture = null, platform = null 
     if (arch && plugin.architectureId !== arch && !(arch === 'arm64e' && plugin.architectureId === 'arm64')) continue;
     let matches = false;
     try { matches = plugin.platformPredicate({ architecture:arch, platform:platformId }); } catch { matches = false; }
-    if (matches) return plugin;
+    if (!matches) continue;
+    if (!abiPluginClaimsCallingConvention(plugin, callingConvention)) continue;
+    return plugin;
   }
   return abiPlugin('unknown');
 }
