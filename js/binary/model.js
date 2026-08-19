@@ -73,17 +73,98 @@ export class BinaryImage {
     return sec;
   }
 
+  resolveVirtualMapping(address) {
+    let a;
+    try { a = BigInt(address); } catch { return null; }
+    if (a < 0n) return null;
+
+    // Sections are more precise than their parent segment. This matters for
+    // zero-fill/NOBITS-like sections that occupy VM space but no file bytes.
+    const section = this.sections.find((s) => {
+      if (!s || s.address == null || s.size == null || s.address === 0n) return false;
+      const size = BigInt(s.size);
+      return size > 0n && inRange(a, BigInt(s.address), size);
+    }) || null;
+    const segment = this.segments.find((s) => {
+      if (!s || s.address == null || s.size == null) return false;
+      const size = BigInt(s.size);
+      return size > 0n && inRange(a, BigInt(s.address), size);
+    }) || null;
+    const mapping = section || segment;
+    if (!mapping) return null;
+
+    const mappingStart = BigInt(mapping.address);
+    const mappingSize = BigInt(mapping.size);
+    const mappingEnd = mappingStart + mappingSize;
+    const fileOffset = BigInt(mapping.fileOffset ?? 0);
+    const declaredFileSize = BigInt(mapping.fileSize ?? 0);
+    if (mappingStart < 0n || mappingSize <= 0n || fileOffset < 0n || declaredFileSize < 0n) return null;
+
+    const relativeOffset = a - mappingStart;
+    const fileBackedSize = declaredFileSize < mappingSize ? declaredFileSize : mappingSize;
+    let semanticEnd = mappingEnd;
+    if (!section) {
+      // A child section beginning inside a segment changes the mapping semantics
+      // at that VA, so a segment span must stop at the child boundary.
+      for (const s of this.sections) {
+        if (!s || s.address == null || s.size == null || s.address === 0n) continue;
+        const start = BigInt(s.address);
+        const childSize = BigInt(s.size);
+        if (childSize > 0n && start > a && start < semanticEnd) semanticEnd = start;
+      }
+    }
+    const virtualRemaining = semanticEnd - a;
+    if (virtualRemaining <= 0n) return null;
+
+    if (relativeOffset < fileBackedSize) {
+      const fileRemaining = fileBackedSize - relativeOffset;
+      return {
+        kind: 'file', source: section ? 'section' : 'segment', mapping,
+        address: a, mappingStart, mappingEnd,
+        relativeOffset, fileOffset: fileOffset + relativeOffset,
+        available: fileRemaining < virtualRemaining ? fileRemaining : virtualRemaining,
+      };
+    }
+    return {
+      kind: 'zero', source: section ? 'section' : 'segment', mapping,
+      address: a, mappingStart, mappingEnd,
+      relativeOffset, fileOffset: null, available: virtualRemaining,
+    };
+  }
+
+  _virtualReadPlan(address, size) {
+    let cursor, remaining;
+    try {
+      cursor = BigInt(address);
+      remaining = typeof size === 'bigint' ? size : BigInt(size);
+    } catch { return null; }
+    if (cursor < 0n || remaining < 0n) return null;
+    if (!this.resolveVirtualMapping(cursor)) return null;
+    if (remaining === 0n) return [];
+
+    const spans = [];
+    const maxSpans = Math.max(4, (this.segments.length + this.sections.length) * 2 + 4);
+    while (remaining > 0n) {
+      const mapped = this.resolveVirtualMapping(cursor);
+      if (!mapped || mapped.available <= 0n) return null;
+      const take = mapped.available < remaining ? mapped.available : remaining;
+      spans.push({
+        kind: mapped.kind,
+        address: cursor,
+        fileOffset: mapped.fileOffset,
+        size: take,
+        source: mapped.source,
+      });
+      cursor += take;
+      remaining -= take;
+      if (spans.length > maxSpans) return null;
+    }
+    return spans;
+  }
+
   addressToOffset(address) {
-    const a = BigInt(address);
-    for (const s of this.segments) {
-      if (!inRange(a, s.address, s.fileSize)) continue;
-      return s.fileOffset + (a - s.address);
-    }
-    for (const s of this.sections) {
-      if (s.address === 0n || !inRange(a, s.address, s.fileSize)) continue;
-      return s.fileOffset + (a - s.address);
-    }
-    return null;
+    const mapped = this.resolveVirtualMapping(address);
+    return mapped?.kind === 'file' ? mapped.fileOffset : null;
   }
 
   offsetToAddress(offset) {
@@ -111,23 +192,73 @@ export class BinaryImage {
 
   readVirtual(address, size) {
     if (!this.bytes) return null;
-    const off = this.addressToOffset(address);
-    if (off == null) return null;
-    const o = Number(off);
-    const n = Number(size);
-    if (!Number.isSafeInteger(o) || !Number.isSafeInteger(n) || o < 0 || n < 0 || o > this.bytes.length || n > this.bytes.length - o) return null;
-    return this.bytes.subarray(o, o + n);
+    const plan = this._virtualReadPlan(address, size);
+    if (!plan) return null;
+    let totalBig;
+    try { totalBig = typeof size === 'bigint' ? size : BigInt(size); } catch { return null; }
+    if (totalBig < 0n || totalBig > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+    const total = Number(totalBig);
+    const residentSize = typeof this.bytes.size === 'bigint' ? this.bytes.size : BigInt(this.bytes.length ?? 0);
+
+    const residentSlice = (span) => {
+      if (span.kind !== 'file' || span.fileOffset == null) return null;
+      if (span.fileOffset < 0n || span.fileOffset > residentSize || span.size > residentSize - span.fileOffset) return null;
+      const o = Number(span.fileOffset), n = Number(span.size);
+      if (!Number.isSafeInteger(o) || !Number.isSafeInteger(n) || o < 0 || n < 0) return null;
+      return this.bytes.subarray(o, o + n);
+    };
+
+    if (plan.length === 1 && plan[0].kind === 'file') return residentSlice(plan[0]);
+    let out;
+    try { out = new Uint8Array(total); } catch { return null; }
+    let cursor = 0;
+    for (const span of plan) {
+      const n = Number(span.size);
+      if (!Number.isSafeInteger(n) || n < 0 || cursor > total || n > total - cursor) return null;
+      if (span.kind === 'file') {
+        const chunk = residentSlice(span);
+        if (!chunk || chunk.length !== n) return null;
+        out.set(chunk, cursor);
+      }
+      cursor += n;
+    }
+    return cursor === total ? out : null;
   }
 
   async readVirtualAsync(address, size) {
     const resident = this.readVirtual(address, size);
     if (resident) return resident;
     if (!this.source) return null;
-    const off = this.addressToOffset(address);
-    if (off == null) return null;
-    const n = typeof size === 'bigint' ? size : BigInt(size);
-    if (n < 0n || off < 0n || off > this.fileSize || n > this.fileSize - off) return null;
-    return this.source.readExactly(off, n);
+    const plan = this._virtualReadPlan(address, size);
+    if (!plan) return null;
+    let totalBig;
+    try { totalBig = typeof size === 'bigint' ? size : BigInt(size); } catch { return null; }
+    if (totalBig < 0n || totalBig > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+    const total = Number(totalBig);
+    const backingSize = BigInt(this.fileSize ?? this.source.size ?? 0);
+
+    const readFileSpan = async (span) => {
+      if (span.kind !== 'file' || span.fileOffset == null) return null;
+      if (span.fileOffset < 0n || span.fileOffset > backingSize || span.size > backingSize - span.fileOffset) return null;
+      const chunk = await this.source.readExactly(span.fileOffset, span.size);
+      return chunk instanceof Uint8Array && BigInt(chunk.length) === span.size ? chunk : null;
+    };
+
+    if (plan.length === 1 && plan[0].kind === 'file') return readFileSpan(plan[0]);
+    let out;
+    try { out = new Uint8Array(total); } catch { return null; }
+    let cursor = 0;
+    for (const span of plan) {
+      const n = Number(span.size);
+      if (!Number.isSafeInteger(n) || n < 0 || cursor > total || n > total - cursor) return null;
+      if (span.kind === 'file') {
+        const chunk = await readFileSpan(span);
+        if (!chunk) return null;
+        out.set(chunk, cursor);
+      }
+      cursor += n;
+    }
+    return cursor === total ? out : null;
   }
 
   attachSource(source, { discardBytes = false } = {}) {
