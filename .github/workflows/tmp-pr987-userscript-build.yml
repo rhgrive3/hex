@@ -1,0 +1,24 @@
+name: tmp PR987 userscript materialize
+on:
+  push:
+    branches:
+      - fix/unlinked-abi-526-954-955-958-959
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run userscript:build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pr987-generated-userscript
+          path: |
+            userscript/hex.user.template.js
+            userscript/release-version.json
