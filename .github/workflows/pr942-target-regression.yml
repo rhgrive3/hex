@@ -1,0 +1,29 @@
+name: PR942 target regression
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [integrate/open-issue-fixes-current-main-20260819]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr942-target-regression
+  cancel-in-progress: true
+
+jobs:
+  target:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: integrate/open-issue-fixes-current-main-20260819
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: node tests/semantic-v2/issues-791-797-800-825-ir-soundness.test.mjs
