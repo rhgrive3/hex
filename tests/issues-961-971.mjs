@@ -229,11 +229,17 @@ function peExportFixture({ withPdata = false } = {}) {
     const b = expr.variable('b', bits, true);
     for (const op of ['add', 'sub', 'mul']) {
       const text = printExpression(expr.binary(op, a, b, bits, true));
-      assert.match(text, /uint64_t|unsigned __int128/);
+      // Both operands must go through an unsigned type whose rank cannot be
+      // promoted back to signed `int`, and the result is truncated to the exact
+      // machine width before the signed view is restored.
+      assert.match(text, /^\(int(?:8|16|32|64)_t|^\(__int128/);
+      assert.match(text, /\(uint(?:32|64)_t\)a|\(unsigned __int128\)a/);
+      assert.match(text, /\(uint(?:32|64)_t\)b|\(unsigned __int128\)b/);
+      assert.doesNotMatch(text, /\(int(?:8|16|32|64)_t\)a|\(__int128\)a/);
       assert(text.includes(` ${operatorText[op]} `));
     }
     const shifted = printExpression(expr.binary('shl', a, b, bits, true));
-    assert.match(shifted, /unsigned __int128/);
+    assert.match(shifted, /\(uint(?:32|64)_t\)a|\(unsigned __int128\)a/);
     assert.match(shifted, /<</);
   }
 }
