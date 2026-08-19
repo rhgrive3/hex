@@ -2,36 +2,56 @@ name: One-shot RV64C HINT repair
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
 permissions:
   contents: write
 jobs:
   repair:
+    if: github.event_name == 'push' || github.event.pull_request.head.ref == 'fix/riscv64-rvc-hints-20260819'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           ref: fix/riscv64-rvc-hints-20260819
           fetch-depth: 0
+      - name: Gate already-completed repair
+        id: gate
+        run: |
+          if [ -f tools/repair-riscv64-rvc-hints.py ]; then
+            echo 'apply=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'apply=false' >> "$GITHUB_OUTPUT"
+            echo 'Verified repair already committed; no second mutation.'
+          fi
       - uses: actions/setup-node@v4
+        if: steps.gate.outputs.apply == 'true'
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      - if: steps.gate.outputs.apply == 'true'
+        run: npm ci
       - name: Rebase target onto current main
+        if: steps.gate.outputs.apply == 'true'
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git fetch origin main
           git rebase origin/main
       - name: Apply exact guarded RV64C HINT repair
+        if: steps.gate.outputs.apply == 'true'
         run: python3 tools/repair-riscv64-rvc-hints.py
       - name: Focused RV64C HINT regressions
+        if: steps.gate.outputs.apply == 'true'
         run: node --test tests/phase6/effects/rvc-hints.test.mjs tests/phase6/effects/compressed.test.mjs
       - name: Regenerate canonical userscript before sync gates
+        if: steps.gate.outputs.apply == 'true'
         run: npm run userscript:build
       - name: Repository verification
+        if: steps.gate.outputs.apply == 'true'
         run: npm run check
       - name: Canonical userscript idempotence
+        if: steps.gate.outputs.apply == 'true'
         run: |
           cp userscript/hex.user.js /tmp/hex.user.js
           cp userscript/hex.user.template.js /tmp/hex.user.template.js
@@ -39,6 +59,7 @@ jobs:
           cmp userscript/hex.user.js /tmp/hex.user.js
           cmp userscript/hex.user.template.js /tmp/hex.user.template.js
       - name: Commit verified source result
+        if: steps.gate.outputs.apply == 'true'
         run: |
           rm -f tools/repair-riscv64-rvc-hints.py
           rm -f .github/workflows/tmp-rvc-hint-repair.yml .github/workflows/tmp-repair-runner-890-895.yml
