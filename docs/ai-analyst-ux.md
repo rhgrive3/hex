@@ -16,7 +16,7 @@ The workbench stays the product. The assistant is ambient.
 
 | Width | Layout | Behaviour |
 |---|---|---|
-| ≥ 900px | docked column | the workspace shrinks (`html.ai-docked .app { padding-right }`); code stays visible and usable |
+| ≥ 900px | docked column | the workspace shrinks; code stays visible and usable |
 | 600–899px | bottom sheet | modal, dismissed by Escape or ✕, and collapses when an action navigates |
 | < 600px | full screen | same, plus the primary navigation hides while it is open |
 
@@ -43,17 +43,19 @@ injected, so a full turn runs in a Node test with no browser.
 ## Boundary with the AI core
 
 The AI core (`js/ai/runtime.js`, `js/ai/tools/*`, `js/ai/context/*`,
-`js/ai/provider/*`, `js/ai/schema.js`) is owned by the agent-core work stream.
-The UI never imports it statically:
+`js/ai/provider/*`, `js/ai/schema.js`) owns the canonical runtime/schema/tool
+contract. The UI never imports the core statically:
 
 1. `bridge.js` dynamically imports the core on the first question. If it is
-   present, `AIRuntime.turn()` drives the turn and its proposal store backs the
-   approval UI.
-2. If it is absent, mid-change, or throws, `local-engine.js` answers instead —
-   Chat from the current function's bounded context, Agent from the
-   deterministic goal planner (`js/query/planner.js`), with prose from
-   `/api/gemini` when that endpoint is reachable and honest facts when it is
-   not.
+   available, `AIRuntime.turn()` drives the turn and its proposal store backs
+   the approval UI.
+2. A deterministic/local fallback exists for configurations where the core or
+   provider is genuinely unavailable and policy permits it. **Safety-boundary
+   failures do not fall through.** Scope/session-binding failures are rethrown,
+   and in ChatGPT-userscript mode an unexpected core/ChatGPT failure is surfaced
+   unless an explicit Gemini fallback/provider selection permits the local
+   path. This prevents a failed protected turn from being silently re-run
+   against a different live function, binary, session, or provider.
 
 `hex-context.js` is the adapter between the app (workers, BigInt regions,
 caches) and the plain capability object the core expects. It is read-only.
@@ -82,8 +84,9 @@ their own fixed system instruction and a bounded question budget.
 
 - **Evidence is separated from prose.** A claim is read once; its proof is
   navigated. Cards carry the address, the source tool, and a one-tap jump.
-- **Four evidence states** — verified / supported / hypothesis / unknown — each
-  with a word and a glyph, never colour alone.
+- **Four core evidence states** — verified / supported / hypothesis / unknown —
+  each with a word and a glyph, never colour alone. The product UI may also
+  render a separate contradicted presentation state when evidence conflicts.
 - **One confidence scale.** A percentage is shown only for a probability
   produced by evidence fusion. A model or ranking score gets stars and a
   verdict word, because a ranking score is not a probability.
@@ -113,8 +116,8 @@ underneath it fails loudly instead of overwriting newer work.
 | `tests/ai-ui-launcher.mjs` | launcher, layouts, focus, Escape, code reachability |
 | `tests/ai-ui-panel.mjs` | modes, styles, scope, evidence navigation, cancel/retry, volume |
 | `tests/ai-ui-proposal.mjs` | the whole approval gate, including a stale target |
-| `tests/ai-ui-fallback.mjs` | the offline path, with no core and no provider |
-| `tests/ai-ui-core-integration.mjs` | a real turn through the AI core (skips without it) |
+| `tests/ai-ui-fallback.mjs` | the offline/policy-permitted fallback path |
+| `tests/ai-ui-core-integration.mjs` | a real turn through the AI core |
 
 `npm run ai:test` runs the Node suites; `npm run ai:browser` runs the browser
 suites (included in `npm run ui:browser`).

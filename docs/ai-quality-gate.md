@@ -21,7 +21,7 @@ The machine-readable corpus lives in `tests/ai-eval/cases.json`; adversarial pay
 
 ## Why the gate is model-independent
 
-The product may use one model provider, but correctness must not depend on a model deciding to behave nicely. Tool authorization, scope, evidence status, approval, navigation targets, cancellation and privacy are application invariants. This lets the same benchmark detect regressions after prompt changes or model upgrades.
+The product may use more than one inference provider, but correctness must not depend on any model deciding to behave nicely. Tool authorization, scope, evidence status, approval, navigation targets, cancellation and privacy are application invariants. This lets the same benchmark detect regressions after prompt, provider or model upgrades.
 
 ## Evaluation layers
 
@@ -69,6 +69,6 @@ deterministic verification
 
 A binary-wide request must not eagerly build Semantic IR for hundreds of thousands of functions. Instrument candidate count, analyzed function count, disassembly/instruction budget, context bytes, model calls and elapsed time.
 
-## Merge order
+## Integration rule
 
-The Agent Core branch should normally land before the AI UX branch because it owns the canonical schema/tool contract. Rebase the UX branch onto that schema, then run the evaluation suite on the integrated result. This evaluation branch contains no competing UI/core implementation and can be merged independently.
+AI Core, UX and provider/schema changes are already part of one integrated product line. When work is split across branches, the canonical schema/tool owner should land before dependent UX changes where practical; then rebase/reconcile the dependent lane and run the evaluation suite on the exact integrated candidate. A validation-only branch or PR is not a substitute for permanent exact-SHA verification.
