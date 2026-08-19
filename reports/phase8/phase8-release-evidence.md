@@ -1,12 +1,12 @@
 # Phase 8 release evidence — BLOCKING
 
-- product: `22aa1a0317890c9d0e63d5ed1fea674a829744ca` (tree `0109dba1acd05dec9979d6947fef958594b8b92f`, branch `phase8/decompiler-quality`, clean: true)
+- product: `ac811e5271f080afe9af14ca388f1927abf1cc47` (tree `0fc117d6bbeb64de50b899c3fa5400c27cef51b6`, branch `phase8/decompiler-quality`, clean: true)
 - verifier: phase8.verifier 1.0.0 (source sha256 `524b1e3ce071f4d8`)
 - profile version: 2
 - corpus: phase8-decompiler-quality-corpus v1, digest `37c049e8ed51a7f0d46538a894be3c7b`
 - toolchain: Ubuntu clang version 18.1.3 (1ubuntu1) (aarch64-unknown-linux-gnu)
 - baseline: `4f287eb84c083c404474e0cfd8d97a17` captured at `bd03d1a860863814dbdcc00559709794d460189d`
-- pass registry: `ae6a20556477af22d93d8a34ab8e2249` (phase8.identity@1.0.0, phase8.sccp@1.0.0)
+- pass registry: `bb372f9d06cffce1c7ecbe31921d3cb4` (phase8.identity@1.0.0, phase8.sccp@1.0.0, phase8.dce@1.0.0, phase8.gvn@1.0.0)
 
 ## Hard-zero safety counters
 
@@ -50,7 +50,7 @@
 - x P8-0
 - x P8-1
 - x P8-2
--   P8-3
+- x P8-3
 -   P8-4
 -   P8-5
 -   P8-6
@@ -65,4 +65,4 @@
 | coverage | lostCfgEdgeCount is not measurable on this head | measured from P8-5 | null (not measured) | true |
 | architecture | mandatory architecture lane has no Phase 8 evidence: riscv64 | corpus evidence | missing | true |
 | architecture | mandatory architecture lane has no Phase 8 evidence: x86_64 | corpus evidence | missing | true |
-| integration | a required checkpoint has no accepted evidence on this head | P8-0,P8-1,P8-2,P8-3,P8-4,P8-5,P8-6,P8-7,P8-I | missing: P8-3,P8-4,P8-5,P8-6,P8-7,P8-I | true |
+| integration | a required checkpoint has no accepted evidence on this head | P8-0,P8-1,P8-2,P8-3,P8-4,P8-5,P8-6,P8-7,P8-I | missing: P8-4,P8-5,P8-6,P8-7,P8-I | true |
