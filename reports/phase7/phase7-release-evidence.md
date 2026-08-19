@@ -1,7 +1,7 @@
-# Phase 7 release evidence — READY
+# Phase 7 release evidence — BLOCKING
 
-- product: `9ba2d8b51d54543caa4a48ac31f3bd65d9fcd54a` (tree `4da00b4f46142a986f778b8e3f6822ede05a84f9`, branch `phase7/static-analysis-depth`, clean: true)
-- verifier: phase7.verifier 1.0.0 (source sha256 `22616c498e0baabc`)
+- product: `6b7052272f17cfeec62530c0eee413b79a88af6b` (tree `06b03486f241566b3e4d405a0b25f0f4dc6815a9`, branch `phase7/static-analysis-depth`, clean: false)
+- verifier: phase7.verifier 1.0.0 (source sha256 `49b9d618389b364b`)
 - profile version: 1
 - corpus: phase7-alias-memory-corpus v1, digest `519bd15f3a918dbc2b436aca4870455d`, frozen match: true
 - scoring: phase7.scoring 1.0.0; truth: phase7.corpus.declared-truth 1.0.0
@@ -41,4 +41,6 @@
 
 ## Failures
 
-None.
+| category | first divergence | expected | actual | blocking |
+|---|---|---|---|---|
+| identity | working tree is dirty, so the commit does not describe what was tested | clean tree | M tests/phase7/verifier/exact-head.test.mjs; M tools/validation/phase7/verify.mjs | true |

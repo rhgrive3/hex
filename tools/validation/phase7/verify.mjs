@@ -40,8 +40,27 @@ function git(args) {
   return result.status === 0 ? String(result.stdout).trim() : null;
 }
 
-/** The verifier's own output directory, which it necessarily dirties. */
-const EVIDENCE_DIRECTORY = 'reports/phase7/';
+/**
+ * Paths a verification run necessarily dirties, and which are therefore not
+ * source under test.
+ *
+ * `reports/phase7/` is the verifier's own output: writing the report is the
+ * last thing a run does, so counting it would make every run report its own
+ * output as a reason to distrust itself.
+ *
+ * The deployment stamp records which commit a *deployment* was built from. Any
+ * canonical build rewrites it — including the generated-output step that runs
+ * immediately before this verifier in CI — so requiring it to be clean would
+ * fail on the workflow's own side effect. The repository's canonical
+ * generated-sync check excludes it for the same reason.
+ *
+ * Everything else still counts. `dirty source fails closed` in
+ * tests/phase7/verifier/exact-head.test.mjs proves the exclusion stayed narrow.
+ */
+const UNVERIFIED_PATHS = Object.freeze([
+  'reports/phase7/',
+  'js/userscript/deployment-identity.generated.js',
+]);
 
 function productIdentity() {
   const commitSha = git(['rev-parse', 'HEAD']);
@@ -58,7 +77,10 @@ function productIdentity() {
     .split('\n')
     .map((line) => line.trim())
     .filter(Boolean)
-    .filter((line) => !line.slice(2).trim().startsWith(EVIDENCE_DIRECTORY));
+    .filter((line) => {
+      const path_ = line.slice(2).trim();
+      return !UNVERIFIED_PATHS.some((prefix) => path_.startsWith(prefix));
+    });
   return Object.freeze({
     commitSha: commitSha ?? '0'.repeat(40),
     treeSha: treeSha ?? '0'.repeat(40),

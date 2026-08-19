@@ -36,11 +36,41 @@ test('dirty source fails closed', async () => {
   try {
     const report = await verifyPhase7({ shadow: false });
     assert.equal(report.product.workingTreeClean, false);
-    assert.ok(report.failures.some((failure) => failure.category === 'identity'
-      && String(failure.actual).includes('.dirty-tree-probe.js')),
+    assert.ok(report.product.dirtyPaths.some((entry) => entry.includes('.dirty-tree-probe.js')),
       'the verifier must name the dirt it found, not just report a boolean');
   } finally {
     fs.rmSync(marker, { force: true });
+  }
+});
+
+test('the deployment stamp is excluded, and only it', async () => {
+  // Any canonical build rewrites the stamp, including the step that runs right
+  // before this verifier in CI. Excluding it is necessary; excluding anything
+  // else would blind the gate, so both halves are asserted together.
+  //
+  // The assertion is on `dirtyPaths` rather than on `workingTreeClean`, so an
+  // unrelated edit elsewhere in the tree cannot make this test lie either way.
+  const stamp = path.join(ROOT, 'js/userscript/deployment-identity.generated.js');
+  const original = fs.readFileSync(stamp, 'utf8');
+  fs.writeFileSync(stamp, `${original}// touched by the exclusion test\n`);
+  try {
+    const report = await verifyPhase7({ shadow: true });
+    assert.ok(!report.product.dirtyPaths.some((entry) => entry.includes('deployment-identity.generated.js')),
+      'a rewritten deployment stamp must not be treated as source dirt');
+  } finally {
+    fs.writeFileSync(stamp, original);
+  }
+
+  // A neighbouring file in the same directory must still count, so the
+  // exclusion covers the stamp alone rather than its directory.
+  const sibling = path.join(ROOT, 'js/userscript/.exclusion-probe.js');
+  fs.writeFileSync(sibling, 'export const probe = true;\n');
+  try {
+    const report = await verifyPhase7({ shadow: true });
+    assert.ok(report.product.dirtyPaths.some((entry) => entry.includes('.exclusion-probe.js')),
+      'the exclusion must not extend to the stamp\'s directory');
+  } finally {
+    fs.rmSync(sibling, { force: true });
   }
 });
 
