@@ -12,6 +12,7 @@ import { recoverHighVariables } from './types/high-variables.js';
 import { recoverFunctionPrototype } from './types/prototype.js';
 import { recoverAggregateLayouts } from './types/layout.js';
 import { PassManager } from './passes/manager.js';
+import { runPhase8Stage } from './phase8/index.js';
 import { printExpression, printProgram, expressionReadability } from './pretty/c.js';
 import { explainSemanticFacts } from './explain.js';
 import { buildNZCVConditionExpression } from './flag-semantics.js';
@@ -380,7 +381,10 @@ function rewriteAll(state, budget) {
   for (const v of state.ir.values || []) {
     let root = buildValue(v, state);
     root = walkIdiom(root);
-    const r = engine.rewrite(root, { state });
+    // `deterministicTransforms` is an opt-in measurement mode: it removes the
+    // rewrite engine's wall-clock cutoff so the fixed point depends only on the
+    // input and the rules. Work bounds still apply. Production leaves it unset.
+    const r = engine.rewrite(root, { state, deterministicTransforms: state.opts?.deterministicTransforms === true });
     state.expressions.set(v.id, r.root);
     state.rewriteProof.push(...r.proof.map((p) => ({ ...p, valueId: v.id })));
     state.rewriteStats.applications += r.stats.applications;
@@ -593,6 +597,21 @@ export function enhanceSemanticDecompilation(result, model, opts = {}) {
     expressionMemo: new Map(), expressionActive: new Set(),
     warnings: [],
   };
+  // Phase 8 runs as its own stage with its own declared budget, before the
+  // representation passes. It observes canonical semantic facts and publishes a
+  // frozen ledger or publishes nothing; it never mutates `state` beyond
+  // attaching that ledger. Keeping it out of the PassManager deadline is not a
+  // detail: sharing the rewrite allowance measurably changed the rewrite fixed
+  // point on budget-saturated functions, which would make a no-op stage a
+  // quality regression (P8-1 substrate contract).
+  const phase8 = runPhase8Stage(
+    { ir: state.ir, types: state.types, opts },
+    { timeBudgetMs: Number(opts.phase8TimeBudgetMs ?? 15), shouldAbort: opts.shouldAbort },
+  );
+  state.phase8 = phase8.ledger;
+  state.phase8Timings = phase8.timings;
+  state.phase8ElapsedMs = phase8.elapsedMs;
+
   const manager = new PassManager([
     { name: 'high-variable-recovery', run(s) { s.highVariables = recoverHighVariables(s.ir, s.types, opts); return s; } },
     { name: 'prototype-recovery', run(s) { s.prototype = recoverFunctionPrototype(s.ir, s.types, opts); return s; } },
@@ -636,6 +655,9 @@ export function enhanceSemanticDecompilation(result, model, opts = {}) {
     rewriteProof: advanced.rewriteProof,
     rewriteStats: advanced.rewriteStats,
     passMetrics: advanced.passMetrics,
+    // Phase 8's frozen ledger. It is published or withheld as a whole; a missing
+    // ledger is an explicit unknown, never an implied "nothing to optimize".
+    phase8: advanced.phase8 ?? null,
     summary: explanation.summary,
     importantInputs: explanation.importantInputs,
     importantOutputs: explanation.importantOutputs,
@@ -644,7 +666,7 @@ export function enhanceSemanticDecompilation(result, model, opts = {}) {
     evidence: [...(result.evidence || []), ...(advanced.facts?.evidence || [])],
     warnings: [...new Set([...(result.warnings || []), ...(advanced.warnings || []), ...(advanced.rewriteStats?.budgetExceeded ? ['Decompiler rewrite budget reached; output was conservatively degraded.'] : [])])],
     metrics: metricsOf(result, advanced, advanced.printed),
-    ctx: { ...(result.ctx || {}), decompilerPipeline: { phases: advanced.passMetrics, degraded: !!advanced.degraded, rewriteStats: advanced.rewriteStats } },
+    ctx: { ...(result.ctx || {}), decompilerPipeline: { phases: advanced.passMetrics, degraded: !!advanced.degraded, rewriteStats: advanced.rewriteStats, phase8: advanced.phase8 ?? null, phase8Timings: advanced.phase8Timings ?? null, phase8ElapsedMs: advanced.phase8ElapsedMs ?? null } },
   };
 }
 

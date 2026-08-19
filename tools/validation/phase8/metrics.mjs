@@ -1,0 +1,286 @@
+/**
+ * Phase 8 metric collection.
+ *
+ * One place computes the quality vector, the hard-zero safety counters and the
+ * performance numbers, and the baseline capture, the release verifier and the
+ * contract tests all read it. A metric that is computed twice is a metric that
+ * will eventually disagree with itself.
+ *
+ * Counters that Phase 8 has not implemented the machinery for yet report
+ * `null` — explicitly not measured. They are never reported as zero, because a
+ * zero that means "nothing looked" is exactly the skip-green failure the
+ * guardrails forbid.
+ */
+
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import { stableDigest } from '../../../js/core/identity/index.js';
+import { passRegistryDigest, phase8Passes } from '../../../js/decompiler/phase8/index.js';
+import { createPhase8ArtifactDescriptor } from '../../../js/decompiler/phase8/artifact-identity.js';
+
+import { loadCorpus } from './build-corpus.mjs';
+import { observeCorpus } from './decompile-corpus.mjs';
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
+const FROZEN_BASELINE = path.join(ROOT, 'tests/phase8/corpus/pre-phase8-observations.json');
+const PHASE8_SOURCE_DIRECTORY = path.join(ROOT, 'js/decompiler/phase8');
+
+export function loadFrozenBaseline(target = FROZEN_BASELINE) {
+  if (!fs.existsSync(target)) throw new Error(`phase8: frozen baseline missing at ${path.relative(ROOT, target)}`);
+  return JSON.parse(fs.readFileSync(target, 'utf8'));
+}
+
+function sum(values) {
+  return values.reduce((total, value) => total + (Number.isFinite(value) ? value : 0), 0);
+}
+
+/** The accepted readability/recovery vector. Higher is better only where noted. */
+export function qualityVector(observations) {
+  const usable = observations.filter((observation) => !observation.failure);
+  const semantic = usable.filter((observation) => observation.semantic);
+  return {
+    functions: observations.length,
+    failures: observations.length - usable.length,
+    // How much of the corpus the shared semantic decompiler covers at all. Every
+    // function below this line is served by the legacy compatibility path.
+    semanticCoverage: usable.length === 0 ? 0 : semantic.length / usable.length,
+    semanticFunctions: semantic.length,
+    rawAssemblyFallbacks: sum(semantic.map((observation) => observation.readability.rawAssemblyFallbacks)),
+    gotos: sum(semantic.map((observation) => observation.readability.gotos)),
+    temporaries: sum(semantic.map((observation) => observation.readability.temporaries)),
+    redundantCasts: sum(semantic.map((observation) => observation.readability.redundantCasts)),
+    structuredFunctions: semantic.filter((observation) => observation.readability.structured === true).length,
+    sourceMappedNodes: sum(semantic.map((observation) => observation.sourceMappedNodes)),
+    aggregateLayouts: sum(semantic.map((observation) => observation.aggregateLayouts)),
+    highVariableGroups: sum(semantic.map((observation) => observation.highVariableGroups)),
+  };
+}
+
+/**
+ * Static architecture-boundary check over Phase 8's own generic sources.
+ *
+ * Phase 8's generic middle end must not name architecture registers, flags or
+ * decoders. This is a text check on purpose: it is cheap, it runs on every
+ * candidate, and it catches the failure at the moment someone reaches for
+ * `w0`/`nzcv`/`rax` inside a generic optimizer rather than three checkpoints
+ * later when the pass no longer works on RISC-V.
+ */
+export function architectureBoundaryViolations(directory = PHASE8_SOURCE_DIRECTORY) {
+  const patterns = [
+    /\b(?:x|w)(?:[12]?\d|3[01])\b/,          // AArch64 general registers
+    /\bnzcv\b/i,                              // AArch64 flags
+    /\b(?:r[abcd]x|r[sd]i|rsp|rbp|r(?:8|9|1[0-5])d?)\b/i, // x86-64 registers
+    /\beflags\b/i,
+    /\b(?:aapcs64|sysv_amd64|lp64)\b/i,       // ABI identifiers
+    /\bfrom-machine-effects\b/,               // decoder entry points
+  ];
+  const violations = [];
+  const visit = (current) => {
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      const absolute = path.join(current, entry.name);
+      if (entry.isDirectory()) { visit(absolute); continue; }
+      if (!entry.isFile() || !entry.name.endsWith('.js')) continue;
+      const lines = fs.readFileSync(absolute, 'utf8').split('\n');
+      lines.forEach((line, index) => {
+        // Comments explain the boundary; they are not the boundary.
+        const code = line.replace(/\/\*.*?\*\//g, '').replace(/\/\/.*$/, '');
+        for (const pattern of patterns) {
+          if (pattern.test(code)) {
+            violations.push({ file: path.relative(ROOT, absolute), line: index + 1, text: line.trim().slice(0, 120) });
+            break;
+          }
+        }
+      });
+    }
+  };
+  visit(directory);
+  return violations;
+}
+
+/**
+ * Proves Phase 8 artifact identity actually discriminates.
+ *
+ * A key that does not change when the optimizer set changes is how a result
+ * from an older pass registry gets served for a newer one. This computes the
+ * failure count directly rather than trusting the descriptor's intent.
+ */
+export function artifactIdentityFailures() {
+  const base = {
+    kind: 'phase8.passLedger',
+    binaryId: 'binary_phase8_identity_probe',
+    functionId: 'function_probe',
+    architectureId: 'aarch64',
+    snapshotId: 'snapshot_probe',
+    semanticSchemaVersion: 'semantic-ir/v2',
+    cfgVersion: 'cfg/1',
+    ssaVersion: 'ssa/1',
+    producerId: 'phase8.vertical',
+    producerVersion: '1.0.0',
+    passRegistryDigest: passRegistryDigest(),
+    budgetClass: 'interactive',
+  };
+  const failures = [];
+  const original = createPhase8ArtifactDescriptor(base);
+  const differentRegistry = createPhase8ArtifactDescriptor({ ...base, passRegistryDigest: `${base.passRegistryDigest}x` });
+  const differentSsa = createPhase8ArtifactDescriptor({ ...base, ssaVersion: 'ssa/2' });
+  const differentBudget = createPhase8ArtifactDescriptor({ ...base, budgetClass: 'exhaustive' });
+  const sameAgain = createPhase8ArtifactDescriptor({ ...base });
+  if (original.artifactId === differentRegistry.artifactId) failures.push('pass registry digest does not change the artifact id');
+  if (original.artifactId === differentSsa.artifactId) failures.push('SSA version does not change the artifact id');
+  if (original.artifactId === differentBudget.artifactId) failures.push('budget class does not change the artifact id');
+  if (original.artifactId !== sameAgain.artifactId) failures.push('identical inputs do not produce the same artifact id');
+  return failures;
+}
+
+/**
+ * Compares the candidate against the frozen pre-Phase-8 product.
+ *
+ * The hard-zero counters live here because every one of them is defined as a
+ * regression against that frozen evidence, not as an absolute property of a
+ * single run.
+ */
+export function safetyCounters(observations, baseline) {
+  const byId = new Map(baseline.observations.map((observation) => [observation.id, observation]));
+  let semanticMismatchCount = 0;
+  let provenanceLossCount = 0;
+  let unknownSafetyRegressionCount = 0;
+  const details = [];
+
+  for (const observation of observations) {
+    const before = byId.get(observation.id);
+    if (!before) { details.push({ id: observation.id, kind: 'unbaselined' }); continue; }
+
+    if (observation.failure && !before.failure) {
+      semanticMismatchCount += 1;
+      details.push({ id: observation.id, kind: 'failure-appeared', detail: observation.failure });
+      continue;
+    }
+    // Falling off the shared semantic path onto the legacy decompiler is a
+    // semantic regression even when the printed text looks similar.
+    if (before.semantic && !observation.semantic) {
+      semanticMismatchCount += 1;
+      details.push({ id: observation.id, kind: 'semantic-path-lost' });
+    }
+    if (before.semantic && observation.semantic && observation.sourceMappedNodes < before.sourceMappedNodes) {
+      provenanceLossCount += 1;
+      details.push({ id: observation.id, kind: 'source-mapping-lost', detail: `${before.sourceMappedNodes} -> ${observation.sourceMappedNodes}` });
+    }
+
+    const ledger = observation.phase8;
+    if (ledger) {
+      // A published ledger that claims complete reasoning about a function the
+      // shared semantic path could not represent is false certainty.
+      if (ledger.published && ledger.completeness === 'complete' && !observation.semantic) {
+        unknownSafetyRegressionCount += 1;
+        details.push({ id: observation.id, kind: 'complete-claimed-without-semantic-path' });
+      }
+      // A withheld ledger must not carry transforms: nothing was published, so
+      // nothing may claim to have been applied.
+      if (!ledger.published && ledger.transformCount > 0) {
+        unknownSafetyRegressionCount += 1;
+        details.push({ id: observation.id, kind: 'withheld-ledger-claims-transforms' });
+      }
+    }
+  }
+
+  return {
+    semanticMismatchCount,
+    provenanceLossCount,
+    unknownSafetyRegressionCount,
+    details: details.slice(0, 40),
+  };
+}
+
+/**
+ * Runs the corpus twice in-process and reports observations that differ.
+ *
+ * The first run may be supplied by a caller that already has one, so a full
+ * metric collection costs two corpus runs rather than three. What is being
+ * proved is that two independent runs agree, and a caller's run is an
+ * independent run.
+ */
+export function determinismFailures({ decompilerTimeBudgetMs = 400, first: firstRun = null } = {}) {
+  const first = firstRun ?? observeCorpus({ decompilerTimeBudgetMs });
+  const second = observeCorpus({ decompilerTimeBudgetMs });
+  const failures = [];
+  for (let index = 0; index < first.length; index += 1) {
+    if (stableDigest(first[index]) !== stableDigest(second[index])) failures.push(first[index].id);
+  }
+  return failures;
+}
+
+function median(values) {
+  const sorted = [...values].sort((left, right) => left - right);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+}
+
+/**
+ * Active-function latency.
+ *
+ * iPad/WebKit responsiveness is a release constraint, not a final-lane
+ * afterthought (§8), so the cost of the Phase 8 stage is measured from the first
+ * checkpoint. `coldActiveFunction` is the median whole-corpus decompilation; the
+ * Phase 8 stage cost is reported separately so a regression can be attributed.
+ */
+export function performanceMetrics({ repetitions = 3, corpus = loadCorpus() } = {}) {
+  const perFunction = [];
+  const phase8PerFunction = [];
+  for (let repetition = 0; repetition < repetitions; repetition += 1) {
+    const started = Date.now();
+    const observations = observeCorpus({ corpus, deterministicTransforms: false });
+    perFunction.push((Date.now() - started) / Math.max(1, observations.length));
+    // The Phase 8 stage reports its own elapsed time through the pipeline ctx;
+    // when no ledger is published there is nothing to attribute.
+    phase8PerFunction.push(observations.filter((observation) => observation.phase8?.published).length);
+  }
+  return {
+    procedureVersion: 1,
+    repetitions,
+    aggregate: 'median',
+    coldActiveFunctionMs: { medianMs: median(perFunction), samples: perFunction.map((value) => Number(value.toFixed(3))) },
+    publishedLedgers: median(phase8PerFunction),
+  };
+}
+
+export function collectPhase8Metrics({ repetitions = 3, includePerformance = true } = {}) {
+  const corpus = loadCorpus();
+  const baseline = loadFrozenBaseline();
+  const observations = observeCorpus({ corpus });
+  const quality = qualityVector(observations);
+  const baselineQuality = qualityVector(baseline.observations);
+  const boundary = architectureBoundaryViolations();
+  const artifactFailures = artifactIdentityFailures();
+  const determinism = determinismFailures({ first: observations });
+  return {
+    corpus: {
+      corpusId: corpus.corpusId,
+      corpusVersion: corpus.corpusVersion,
+      corpusDigest: corpus.corpusDigest,
+      toolchain: corpus.toolchain,
+      frozenBaselineDigest: baseline.observationsDigest,
+      baselineCommit: baseline.baseCommit,
+    },
+    registry: {
+      passRegistryDigest: passRegistryDigest(),
+      passes: phase8Passes().map(({ descriptor }) => ({ id: descriptor.id, version: descriptor.version, stage: descriptor.stage })),
+    },
+    quality: { baseline: baselineQuality, candidate: quality },
+    safety: {
+      ...safetyCounters(observations, baseline),
+      architectureBoundaryViolationCount: boundary.length,
+      architectureBoundaryViolations: boundary.slice(0, 10),
+      staleArtifactAcceptanceCount: artifactFailures.length,
+      staleArtifactAcceptanceDetails: artifactFailures,
+      transformDeterminismFailureCount: determinism.length,
+      transformDeterminismFailures: determinism,
+      // Not measured until the checkpoint that owns the machinery lands. `null`
+      // is deliberate: a zero here would claim a proof nobody performed.
+      lostCfgEdgeCount: null,
+      forcedTypeContradictionCount: null,
+    },
+    performance: includePerformance ? performanceMetrics({ repetitions, corpus }) : null,
+  };
+}

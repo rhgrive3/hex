@@ -1,0 +1,378 @@
+{
+  "schemaVersion": 1,
+  "corpusId": "phase8-decompiler-quality-corpus",
+  "corpusVersion": 1,
+  "toolchain": {
+    "compiler": "Ubuntu clang version 18.1.3 (1ubuntu1)",
+    "target": "aarch64-unknown-linux-gnu",
+    "optimizationLevels": [
+      "-O0",
+      "-O1",
+      "-O2"
+    ]
+  },
+  "sourceDigest": "e5846af521aaf8fdcd61aae56a9dc684",
+  "functions": [
+    {
+      "id": "quality.aggregate_array_stride.O0",
+      "source": "quality.c",
+      "function": "aggregate_array_stride",
+      "optimization": "-O0",
+      "architectureId": "arm64",
+      "assembly": "sub\tsp, sp, #32\nstr\tx0, [sp, #24]\nstr\tw1, [sp, #20]\nstr\twzr, [sp, #16]\nstr\twzr, [sp, #12]\nb\t.LBB14_1\n.LBB14_1:\nldr\tw8, [sp, #12]\nldr\tw9, [sp, #20]\nsubs\tw8, w8, w9\nb.ge\t.LBB14_4\nb\t.LBB14_2\n.LBB14_2:\nldr\tx8, [sp, #24]\nldrsw\tx9, [sp, #12]\nmov\tx10, #12\nmul\tx9, x9, x10\nadd\tx8, x8, x9\nldr\tw9, [x8, #4]\nldr\tw8, [sp, #16]\nadd\tw8, w8, w9\nstr\tw8, [sp, #16]\nb\t.LBB14_3\n.LBB14_3:\nldr\tw8, [sp, #12]\nadd\tw8, w8, #1\nstr\tw8, [sp, #12]\nb\t.LBB14_1\n.LBB14_4:\nldr\tw0, [sp, #16]\nadd\tsp, sp, #32\nret"
+    },
+    {
+      "id": "quality.aggregate_array_stride.O1",
+      "source": "quality.c",
+      "function": "aggregate_array_stride",
+      "optimization": "-O1",
+      "architectureId": "arm64",
+      "assembly": "cmp\tw1, #1\nb.lt\t.LBB14_4\nmov\tx8, x0\nmov\tw0, wzr\nmov\tw9, w1\nadd\tx8, x8, #4\n.LBB14_2:\nldr\tw10, [x8], #12\nsubs\tx9, x9, #1\nadd\tw0, w10, w0\nb.ne\t.LBB14_2\nret\n.LBB14_4:\nmov\tw0, wzr\nret"
+    },
+    {
+      "id": "quality.aggregate_array_stride.O2",
+      "source": "quality.c",
+      "function": "aggregate_array_stride",
+      "optimization": "-O2",
+      "architectureId": "arm64",
+      "assembly": "cmp\tw1, #1\nb.lt\t.LBB14_3\ncmp\tw1, #9\nmov\tw9, w1\nb.hs\t.LBB14_4\nmov\tx10, xzr\nmov\tw8, wzr\nb\t.LBB14_7\n.LBB14_3:\nmov\tw8, wzr\nmov\tw0, w8\nret\n.LBB14_4:\nands\tx8, x9, #0x7\nmov\tw10, #8\nmovi\tv0.2d, #0000000000000000\nmovi\tv1.2d, #0000000000000000\ncsel\tx8, x10, x8, eq\nsub\tx10, x9, x8\nadd\tx8, x0, #52\nmov\tx11, x10\n.LBB14_5:\nsub\tx12, x8, #48\nld3\t{ v5.4s, v6.4s, v7.4s }, [x8]\nsubs\tx11, x11, #8\nld3\t{ v2.4s, v3.4s, v4.4s }, [x12]\nadd\tx8, x8, #96\nadd\tv1.4s, v5.4s, v1.4s\nadd\tv0.4s, v2.4s, v0.4s\nb.ne\t.LBB14_5\nadd\tv0.4s, v1.4s, v0.4s\naddv\ts0, v0.4s\nfmov\tw8, s0\n.LBB14_7:\nmov\tw11, #12\nsub\tx9, x9, x10\nmadd\tx11, x10, x11, x0\nadd\tx11, x11, #4\n.LBB14_8:\nldr\tw10, [x11], #12\nsubs\tx9, x9, #1\nadd\tw8, w10, w8\nb.ne\t.LBB14_8\nmov\tw0, w8\nret"
+    },
+    {
+      "id": "quality.aggregate_struct_fields.O0",
+      "source": "quality.c",
+      "function": "aggregate_struct_fields",
+      "optimization": "-O0",
+      "architectureId": "arm64",
+      "assembly": "sub\tsp, sp, #16\nstr\tx0, [sp, #8]\nldr\tx8, [sp, #8]\nldr\tw8, [x8]\nldr\tx9, [sp, #8]\nldr\tw9, [x9, #4]\nadd\tw8, w8, w9\nldr\tx9, [sp, #8]\nldr\tw9, [x9, #8]\nadd\tw0, w8, w9\nadd\tsp, sp, #16\nret"
+    },
+    {
+      "id": "quality.aggregate_struct_fields.O1",
+      "source": "quality.c",
+      "function": "aggregate_struct_fields",
+      "optimization": "-O1",
+      "architectureId": "arm64",
+      "assembly": "ldp\tw8, w9, [x0]\nldr\tw10, [x0, #8]\nadd\tw8, w9, w8\nadd\tw0, w8, w10\nret"
+    },
+    {
+      "id": "quality.aggregate_struct_fields.O2",
+      "source": "quality.c",
+      "function": "aggregate_struct_fields",
+      "optimization": "-O2",
+      "architectureId": "arm64",
+      "assembly": "ldp\tw8, w9, [x0]\nldr\tw10, [x0, #8]\nadd\tw8, w9, w8\nadd\tw0, w8, w10\nret"
+    },
+    {
+      "id": "quality.dce_observable_store.O0",
+      "source": "quality.c",
+      "function": "dce_observable_store",
+      "optimization": "-O0",
+      "architectureId": "arm64",
+      "assembly": "sub\tsp, sp, #16\nstr\tx0, [sp, #8]\nstr\tw1, [sp, #4]\nldr\tw8, [sp, #4]\nadd\tw8, w8, #1\nldr\tx9, [sp, #8]\nstr\tw8, [x9]\nadd\tsp, sp, #16\nret"
+    },
+    {
+      "id": "quality.dce_observable_store.O1",
+      "source": "quality.c",
+      "function": "dce_observable_store",
+      "optimization": "-O1",
+      "architectureId": "arm64",
+      "assembly": "add\tw8, w1, #1\nstr\tw8, [x0]\nret"
+    },
+    {
+      "id": "quality.dce_observable_store.O2",
+      "source": "quality.c",
+      "function": "dce_observable_store",
+      "optimization": "-O2",
+      "architectureId": "arm64",
+      "assembly": "add\tw8, w1, #1\nstr\tw8, [x0]\nret"
+    },
+    {
+      "id": "quality.dce_volatile_read.O0",
+      "source": "quality.c",
+      "function": "dce_volatile_read",
+      "optimization": "-O0",
+      "architectureId": "arm64",
+      "assembly": "sub\tsp, sp, #16\nstr\tx0, [sp, #8]\nldr\tx8, [sp, #8]\nldr\tw8, [x8]\nadd\tsp, sp, #16\nret"
+    },
+    {
+      "id": "quality.dce_volatile_read.O1",
+      "source": "quality.c",
+      "function": "dce_volatile_read",
+      "optimization": "-O1",
+      "architectureId": "arm64",
+      "assembly": "ldr\twzr, [x0]\nret"
+    },
+    {
+      "id": "quality.dce_volatile_read.O2",
+      "source": "quality.c",
+      "function": "dce_volatile_read",
+      "optimization": "-O2",
+      "architectureId": "arm64",
+      "assembly": "ldr\twzr, [x0]\nret"
+    },
+    {
+      "id": "quality.gvn_call_barrier.O0",
+      "source": "quality.c",
+      "function": "gvn_call_barrier",
+      "optimization": "-O0",
+      "architectureId": "arm64",
+      "assembly": "sub\tsp, sp, #32\nstp\tx29, x30, [sp, #16]\nadd\tx29, sp, #16\nstr\tx0, [sp, #8]\nldr\tx8, [sp, #8]\nldr\tw8, [x8]\nstr\tw8, [sp, #4]\nbl\topaque\nldr\tw8, [sp, #4]\nldr\tx9, [sp, #8]\nldr\tw9, [x9]\nadd\tw0, w8, w9\nldp\tx29, x30, [sp, #16]\nadd\tsp, sp, #32\nret"
+    },
+    {
+      "id": "quality.gvn_call_barrier.O1",
+      "source": "quality.c",
+      "function": "gvn_call_barrier",
+      "optimization": "-O1",
+      "architectureId": "arm64",
+      "assembly": "stp\tx29, x30, [sp, #-32]!\nstp\tx20, x19, [sp, #16]\nldr\tw20, [x0]\nmov\tx29, sp\nmov\tx19, x0\nbl\topaque\nldr\tw8, [x19]\nadd\tw0, w8, w20\nldp\tx20, x19, [sp, #16]\nldp\tx29, x30, [sp], #32\nret"
+    },
+    {
+      "id": "quality.gvn_call_barrier.O2",
+      "source": "quality.c",
+      "function": "gvn_call_barrier",
+      "optimization": "-O2",
+      "architectureId": "arm64",
+      "assembly": "stp\tx29, x30, [sp, #-32]!\nstp\tx20, x19, [sp, #16]\nldr\tw20, [x0]\nmov\tx29, sp\nmov\tx19, x0\nbl\topaque\nldr\tw8, [x19]\nadd\tw0, w8, w20\nldp\tx20, x19, [sp, #16]\nldp\tx29, x30, [sp], #32\nret"
+    },
+    {
+      "id": "quality.gvn_load_reuse.O0",
+      "source": "quality.c",
+      "function": "gvn_load_reuse",
+      "optimization": "-O0",
+      "architectureId": "arm64",
+      "assembly": "sub\tsp, sp, #32\nstr\tx0, [sp, #24]\nstr\tx1, [sp, #16]\nldr\tx8, [sp, #24]\nldr\tw8, [x8]\nstr\tw8, [sp, #12]\nldr\tx9, [sp, #16]\nmov\tw8, #1\nstr\tw8, [x9, #16]\nldr\tx8, [sp, #24]\nldr\tw8, [x8]\nstr\tw8, [sp, #8]\nldr\tw8, [sp, #12]\nldr\tw9, [sp, #8]\nadd\tw0, w8, w9\nadd\tsp, sp, #32\nret"
+    },
+    {
+      "id": "quality.gvn_load_reuse.O1",
+      "source": "quality.c",
+      "function": "gvn_load_reuse",
+      "optimization": "-O1",
+      "architectureId": "arm64",
+      "assembly": "mov\tw8, #1\nldr\tw9, [x0]\nstr\tw8, [x1, #16]\nldr\tw8, [x0]\nadd\tw0, w8, w9\nret"
+    },
+    {
+      "id": "quality.gvn_load_reuse.O2",
+      "source": "quality.c",
+      "function": "gvn_load_reuse",
+      "optimization": "-O2",
+      "architectureId": "arm64",
+      "assembly": "mov\tw8, #1\nldr\tw9, [x0]\nstr\tw8, [x1, #16]\nldr\tw8, [x0]\nadd\tw0, w8, w9\nret"
+    },
+    {
+      "id": "quality.gvn_repeated_expression.O0",
+      "source": "quality.c",
+      "function": "gvn_repeated_expression",
+      "optimization": "-O0",
+      "architectureId": "arm64",
+      "assembly": "sub\tsp, sp, #16\nstr\tw0, [sp, #12]\nstr\tw1, [sp, #8]\nldr\tw8, [sp, #12]\nldr\tw9, [sp, #8]\nmul\tw8, w8, w9\nadd\tw8, w8, #7\nstr\tw8, [sp, #4]\nldr\tw8, [sp, #12]\nldr\tw9, [sp, #8]\nmul\tw8, w8, w9\nadd\tw8, w8, #7\nstr\tw8, [sp]\nldr\tw8, [sp, #4]\nldr\tw9, [sp]\nadd\tw0, w8, w9\nadd\tsp, sp, #16\nret"
+    },
+    {
+      "id": "quality.gvn_repeated_expression.O1",
+      "source": "quality.c",
+      "function": "gvn_repeated_expression",
+      "optimization": "-O1",
+      "architectureId": "arm64",
+      "assembly": "mul\tw8, w0, w1\nlsl\tw8, w8, #1\nadd\tw0, w8, #14\nret"
+    },
+    {
+      "id": "quality.gvn_repeated_expression.O2",
+      "source": "quality.c",
+      "function": "gvn_repeated_expression",
+      "optimization": "-O2",
+      "architectureId": "arm64",
+      "assembly": "mul\tw8, w0, w1\nlsl\tw8, w8, #1\nadd\tw0, w8, #14\nret"
+    },
+    {
+      "id": "quality.loop_counted_sum.O0",
+      "source": "quality.c",
+      "function": "loop_counted_sum",
+      "optimization": "-O0",
+      "architectureId": "arm64",
+      "assembly": "sub\tsp, sp, #32\nstr\tx0, [sp, #24]\nstr\tw1, [sp, #20]\nstr\twzr, [sp, #16]\nstr\twzr, [sp, #12]\nb\t.LBB8_1\n.LBB8_1:\nldr\tw8, [sp, #12]\nldr\tw9, [sp, #20]\nsubs\tw8, w8, w9\nb.ge\t.LBB8_4\nb\t.LBB8_2\n.LBB8_2:\nldr\tx8, [sp, #24]\nldrsw\tx9, [sp, #12]\nldr\tw9, [x8, x9, lsl #2]\nldr\tw8, [sp, #16]\nadd\tw8, w8, w9\nstr\tw8, [sp, #16]\nb\t.LBB8_3\n.LBB8_3:\nldr\tw8, [sp, #12]\nadd\tw8, w8, #1\nstr\tw8, [sp, #12]\nb\t.LBB8_1\n.LBB8_4:\nldr\tw0, [sp, #16]\nadd\tsp, sp, #32\nret"
+    },
+    {
+      "id": "quality.loop_counted_sum.O1",
+      "source": "quality.c",
+      "function": "loop_counted_sum",
+      "optimization": "-O1",
+      "architectureId": "arm64",
+      "assembly": "cmp\tw1, #1\nb.lt\t.LBB8_4\nmov\tx8, x0\nmov\tw0, wzr\nmov\tw9, w1\n.LBB8_2:\nldr\tw10, [x8], #4\nsubs\tx9, x9, #1\nadd\tw0, w10, w0\nb.ne\t.LBB8_2\nret\n.LBB8_4:\nmov\tw0, wzr\nret"
+    },
+    {
+      "id": "quality.loop_counted_sum.O2",
+      "source": "quality.c",
+      "function": "loop_counted_sum",
+      "optimization": "-O2",
+      "architectureId": "arm64",
+      "assembly": "cmp\tw1, #1\nb.lt\t.LBB8_3\ncmp\tw1, #8\nmov\tw9, w1\nb.hs\t.LBB8_4\nmov\tx10, xzr\nmov\tw8, wzr\nb\t.LBB8_7\n.LBB8_3:\nmov\tw8, wzr\nmov\tw0, w8\nret\n.LBB8_4:\nmovi\tv0.2d, #0000000000000000\nmovi\tv1.2d, #0000000000000000\nand\tx10, x9, #0x7ffffff8\nadd\tx8, x0, #16\nmov\tx11, x10\n.LBB8_5:\nldp\tq2, q3, [x8, #-16]\nsubs\tx11, x11, #8\nadd\tx8, x8, #32\nadd\tv0.4s, v2.4s, v0.4s\nadd\tv1.4s, v3.4s, v1.4s\nb.ne\t.LBB8_5\nadd\tv0.4s, v1.4s, v0.4s\ncmp\tx10, x9\naddv\ts0, v0.4s\nfmov\tw8, s0\nb.eq\t.LBB8_9\n.LBB8_7:\nadd\tx11, x0, x10, lsl #2\nsub\tx9, x9, x10\n.LBB8_8:\nldr\tw10, [x11], #4\nsubs\tx9, x9, #1\nadd\tw8, w10, w8\nb.ne\t.LBB8_8\n.LBB8_9:\nmov\tw0, w8\nret"
+    },
+    {
+      "id": "quality.loop_decrement_step.O0",
+      "source": "quality.c",
+      "function": "loop_decrement_step",
+      "optimization": "-O0",
+      "architectureId": "arm64",
+      "assembly": "sub\tsp, sp, #16\nstr\tw0, [sp, #12]\nstr\twzr, [sp, #8]\nldr\tw8, [sp, #12]\nstr\tw8, [sp, #4]\nb\t.LBB9_1\n.LBB9_1:\nldr\tw8, [sp, #4]\nsubs\tw8, w8, #0\nb.le\t.LBB9_4\nb\t.LBB9_2\n.LBB9_2:\nldr\tw9, [sp, #4]\nldr\tw8, [sp, #8]\nadd\tw8, w8, w9\nstr\tw8, [sp, #8]\nb\t.LBB9_3\n.LBB9_3:\nldr\tw8, [sp, #4]\nsubs\tw8, w8, #3\nstr\tw8, [sp, #4]\nb\t.LBB9_1\n.LBB9_4:\nldr\tw0, [sp, #8]\nadd\tsp, sp, #16\nret"
+    },
+    {
+      "id": "quality.loop_decrement_step.O1",
+      "source": "quality.c",
+      "function": "loop_decrement_step",
+      "optimization": "-O1",
+      "architectureId": "arm64",
+      "assembly": "cmp\tw0, #1\nb.lt\t.LBB9_2\nsubs\tw8, w0, #3\nmov\tw9, #3\nmov\tw10, #43691\ncsel\tw9, w0, w9, lt\nmovk\tw10, #43690, lsl #16\nsub\tw9, w0, w9\nadd\tw9, w9, #2\numull\tx9, w9, w10\nlsr\tx9, x9, #33\nsub\tw10, w9, #1\nmadd\tw8, w9, w8, w0\numull\tx10, w9, w10\nlsr\tx10, x10, #1\nsub\tw9, w10, w10, lsl #2\nadd\tw0, w9, w8\nret\n.LBB9_2:\nmov\tw0, wzr\nret"
+    },
+    {
+      "id": "quality.loop_decrement_step.O2",
+      "source": "quality.c",
+      "function": "loop_decrement_step",
+      "optimization": "-O2",
+      "architectureId": "arm64",
+      "assembly": "cmp\tw0, #1\nb.lt\t.LBB9_2\nsubs\tw8, w0, #3\nmov\tw9, #3\nmov\tw10, #43691\ncsel\tw9, w0, w9, lt\nmovk\tw10, #43690, lsl #16\nsub\tw9, w0, w9\nadd\tw9, w9, #2\numull\tx9, w9, w10\nlsr\tx9, x9, #33\nsub\tw10, w9, #1\nmadd\tw8, w9, w8, w0\numull\tx10, w9, w10\nlsr\tx10, x10, #1\nsub\tw9, w10, w10, lsl #2\nadd\tw0, w9, w8\nret\n.LBB9_2:\nmov\tw0, wzr\nret"
+    },
+    {
+      "id": "quality.loop_early_exit.O0",
+      "source": "quality.c",
+      "function": "loop_early_exit",
+      "optimization": "-O0",
+      "architectureId": "arm64",
+      "assembly": "sub\tsp, sp, #32\nstr\tx0, [sp, #16]\nstr\tw1, [sp, #12]\nstr\tw2, [sp, #8]\nstr\twzr, [sp, #4]\nb\t.LBB10_1\n.LBB10_1:\nldr\tw8, [sp, #4]\nldr\tw9, [sp, #12]\nsubs\tw8, w8, w9\nb.ge\t.LBB10_6\nb\t.LBB10_2\n.LBB10_2:\nldr\tx8, [sp, #16]\nldrsw\tx9, [sp, #4]\nldr\tw8, [x8, x9, lsl #2]\nldr\tw9, [sp, #8]\nsubs\tw8, w8, w9\nb.ne\t.LBB10_4\nb\t.LBB10_3\n.LBB10_3:\nldr\tw8, [sp, #4]\nstr\tw8, [sp, #28]\nb\t.LBB10_7\n.LBB10_4:\nb\t.LBB10_5\n.LBB10_5:\nldr\tw8, [sp, #4]\nadd\tw8, w8, #1\nstr\tw8, [sp, #4]\nb\t.LBB10_1\n.LBB10_6:\nmov\tw8, #-1\nstr\tw8, [sp, #28]\nb\t.LBB10_7\n.LBB10_7:\nldr\tw0, [sp, #28]\nadd\tsp, sp, #32\nret"
+    },
+    {
+      "id": "quality.loop_early_exit.O1",
+      "source": "quality.c",
+      "function": "loop_early_exit",
+      "optimization": "-O1",
+      "architectureId": "arm64",
+      "assembly": "cmp\tw1, #1\nb.lt\t.LBB10_4\nmov\tx8, x0\nmov\tx0, xzr\nmov\tw9, w1\n.LBB10_2:\nldr\tw10, [x8, x0, lsl #2]\ncmp\tw10, w2\nb.eq\t.LBB10_5\nadd\tx0, x0, #1\ncmp\tx9, x0\nb.ne\t.LBB10_2\n.LBB10_4:\nmov\tw0, #-1\n.LBB10_5:\nret"
+    },
+    {
+      "id": "quality.loop_early_exit.O2",
+      "source": "quality.c",
+      "function": "loop_early_exit",
+      "optimization": "-O2",
+      "architectureId": "arm64",
+      "assembly": "cmp\tw1, #1\nb.lt\t.LBB10_4\nmov\tx8, x0\nmov\tx0, xzr\nmov\tw9, w1\n.LBB10_2:\nldr\tw10, [x8, x0, lsl #2]\ncmp\tw10, w2\nb.eq\t.LBB10_5\nadd\tx0, x0, #1\ncmp\tx9, x0\nb.ne\t.LBB10_2\n.LBB10_4:\nmov\tw0, #-1\n.LBB10_5:\nret"
+    },
+    {
+      "id": "quality.loop_nested.O0",
+      "source": "quality.c",
+      "function": "loop_nested",
+      "optimization": "-O0",
+      "architectureId": "arm64",
+      "assembly": "sub\tsp, sp, #32\nstr\tx0, [sp, #24]\nstr\tw1, [sp, #20]\nstr\tw2, [sp, #16]\nstr\twzr, [sp, #12]\nstr\twzr, [sp, #8]\nb\t.LBB11_1\n.LBB11_1:\nldr\tw8, [sp, #8]\nldr\tw9, [sp, #20]\nsubs\tw8, w8, w9\nb.ge\t.LBB11_8\nb\t.LBB11_2\n.LBB11_2:\nstr\twzr, [sp, #4]\nb\t.LBB11_3\n.LBB11_3:\nldr\tw8, [sp, #4]\nldr\tw9, [sp, #16]\nsubs\tw8, w8, w9\nb.ge\t.LBB11_6\nb\t.LBB11_4\n.LBB11_4:\nldr\tx8, [sp, #24]\nldr\tw9, [sp, #8]\nldr\tw10, [sp, #16]\nmul\tw9, w9, w10\nldr\tw10, [sp, #4]\nadd\tw9, w9, w10\nldr\tw9, [x8, w9, sxtw #2]\nldr\tw8, [sp, #12]\nadd\tw8, w8, w9\nstr\tw8, [sp, #12]\nb\t.LBB11_5\n.LBB11_5:\nldr\tw8, [sp, #4]\nadd\tw8, w8, #1\nstr\tw8, [sp, #4]\nb\t.LBB11_3\n.LBB11_6:\nb\t.LBB11_7\n.LBB11_7:\nldr\tw8, [sp, #8]\nadd\tw8, w8, #1\nstr\tw8, [sp, #8]\nb\t.LBB11_1\n.LBB11_8:\nldr\tw0, [sp, #12]\nadd\tsp, sp, #32\nret"
+    },
+    {
+      "id": "quality.loop_nested.O1",
+      "source": "quality.c",
+      "function": "loop_nested",
+      "optimization": "-O1",
+      "architectureId": "arm64",
+      "assembly": "cmp\tw1, #1\nb.lt\t.LBB11_6\nmov\tw9, wzr\nmov\tx10, xzr\nmov\tw8, wzr\nmov\tw11, w1\nmov\tw12, w2\nb\t.LBB11_3\n.LBB11_2:\nadd\tx10, x10, #1\nadd\tw9, w9, w2\ncmp\tx10, x11\nb.eq\t.LBB11_7\n.LBB11_3:\ncmp\tw2, #1\nb.lt\t.LBB11_2\nadd\tx13, x0, w9, uxtw #2\nmov\tx14, x12\n.LBB11_5:\nldr\tw15, [x13], #4\nsubs\tx14, x14, #1\nadd\tw8, w15, w8\nb.ne\t.LBB11_5\nb\t.LBB11_2\n.LBB11_6:\nmov\tw8, wzr\n.LBB11_7:\nmov\tw0, w8\nret"
+    },
+    {
+      "id": "quality.loop_nested.O2",
+      "source": "quality.c",
+      "function": "loop_nested",
+      "optimization": "-O2",
+      "architectureId": "arm64",
+      "assembly": "cmp\tw1, #1\nb.lt\t.LBB11_11\nmov\tw11, w2\nmov\tw9, wzr\nmov\tx10, xzr\nmov\tw8, wzr\nmov\tw12, w1\nand\tx13, x11, #0x7ffffff8\nadd\tx14, x0, #16\nb\t.LBB11_3\n.LBB11_2:\nadd\tx10, x10, #1\nadd\tw9, w9, w2\ncmp\tx10, x12\nb.eq\t.LBB11_12\n.LBB11_3:\ncmp\tw2, #1\nb.lt\t.LBB11_2\nubfiz\tx15, x9, #2, #32\ncmp\tw2, #8\nb.hs\t.LBB11_6\nmov\tx16, xzr\nb\t.LBB11_9\n.LBB11_6:\nmovi\tv0.2d, #0000000000000000\nmovi\tv1.2d, #0000000000000000\nmov\tx16, x13\nmov\tv0.s[0], w8\nadd\tx8, x14, x15\n.LBB11_7:\nldp\tq2, q3, [x8, #-16]\nsubs\tx16, x16, #8\nadd\tx8, x8, #32\nadd\tv0.4s, v2.4s, v0.4s\nadd\tv1.4s, v3.4s, v1.4s\nb.ne\t.LBB11_7\nadd\tv0.4s, v1.4s, v0.4s\ncmp\tx13, x11\nmov\tx16, x13\naddv\ts0, v0.4s\nfmov\tw8, s0\nb.eq\t.LBB11_2\n.LBB11_9:\nadd\tx15, x15, x16, lsl #2\nsub\tx16, x11, x16\nadd\tx15, x0, x15\n.LBB11_10:\nldr\tw17, [x15], #4\nsubs\tx16, x16, #1\nadd\tw8, w17, w8\nb.ne\t.LBB11_10\nb\t.LBB11_2\n.LBB11_11:\nmov\tw8, wzr\n.LBB11_12:\nmov\tw0, w8\nret"
+    },
+    {
+      "id": "quality.sccp_dead_branch.O0",
+      "source": "quality.c",
+      "function": "sccp_dead_branch",
+      "optimization": "-O0",
+      "architectureId": "arm64",
+      "assembly": "sub\tsp, sp, #16\nstr\tw0, [sp, #8]\nmov\tw8, #4\nstr\tw8, [sp, #4]\nldr\tw8, [sp, #4]\nsubs\tw8, w8, #8\nb.le\t.LBB0_2\nb\t.LBB0_1\n.LBB0_1:\nldr\tw8, [sp, #8]\nmov\tw9, #3\nmul\tw8, w8, w9\nstr\tw8, [sp, #12]\nb\t.LBB0_3\n.LBB0_2:\nldr\tw8, [sp, #8]\nldr\tw9, [sp, #4]\nadd\tw8, w8, w9\nstr\tw8, [sp, #12]\nb\t.LBB0_3\n.LBB0_3:\nldr\tw0, [sp, #12]\nadd\tsp, sp, #16\nret"
+    },
+    {
+      "id": "quality.sccp_dead_branch.O1",
+      "source": "quality.c",
+      "function": "sccp_dead_branch",
+      "optimization": "-O1",
+      "architectureId": "arm64",
+      "assembly": "add\tw0, w0, #4\nret"
+    },
+    {
+      "id": "quality.sccp_dead_branch.O2",
+      "source": "quality.c",
+      "function": "sccp_dead_branch",
+      "optimization": "-O2",
+      "architectureId": "arm64",
+      "assembly": "add\tw0, w0, #4\nret"
+    },
+    {
+      "id": "quality.sccp_narrow_extend.O0",
+      "source": "quality.c",
+      "function": "sccp_narrow_extend",
+      "optimization": "-O0",
+      "architectureId": "arm64",
+      "assembly": "sub\tsp, sp, #16\nstr\tw0, [sp, #12]\nldr\tw8, [sp, #12]\nstrb\tw8, [sp, #11]\nldrsb\tw8, [sp, #11]\nadd\tw0, w8, #1\nadd\tsp, sp, #16\nret"
+    },
+    {
+      "id": "quality.sccp_narrow_extend.O1",
+      "source": "quality.c",
+      "function": "sccp_narrow_extend",
+      "optimization": "-O1",
+      "architectureId": "arm64",
+      "assembly": "sxtb\tw8, w0\nadd\tw0, w8, #1\nret"
+    },
+    {
+      "id": "quality.sccp_narrow_extend.O2",
+      "source": "quality.c",
+      "function": "sccp_narrow_extend",
+      "optimization": "-O2",
+      "architectureId": "arm64",
+      "assembly": "sxtb\tw8, w0\nadd\tw0, w8, #1\nret"
+    },
+    {
+      "id": "quality.sccp_wraparound.O0",
+      "source": "quality.c",
+      "function": "sccp_wraparound",
+      "optimization": "-O0",
+      "architectureId": "arm64",
+      "assembly": "sub\tsp, sp, #16\nstr\tw0, [sp, #12]\nmov\tw8, #-16\nstr\tw8, [sp, #8]\nldr\tw8, [sp, #8]\nldr\tw9, [sp, #12]\nadd\tw0, w8, w9\nadd\tsp, sp, #16\nret"
+    },
+    {
+      "id": "quality.sccp_wraparound.O1",
+      "source": "quality.c",
+      "function": "sccp_wraparound",
+      "optimization": "-O1",
+      "architectureId": "arm64",
+      "assembly": "sub\tw0, w0, #16\nret"
+    },
+    {
+      "id": "quality.sccp_wraparound.O2",
+      "source": "quality.c",
+      "function": "sccp_wraparound",
+      "optimization": "-O2",
+      "architectureId": "arm64",
+      "assembly": "sub\tw0, w0, #16\nret"
+    },
+    {
+      "id": "quality.structure_switch.O0",
+      "source": "quality.c",
+      "function": "structure_switch",
+      "optimization": "-O0",
+      "architectureId": "arm64",
+      "assembly": "sub\tsp, sp, #16\nstr\tw0, [sp, #8]\nldr\tw8, [sp, #8]\nstr\tw8, [sp, #4]\ncbz\tw8, .LBB12_4\nb\t.LBB12_1\n.LBB12_1:\nldr\tw8, [sp, #4]\nsubs\tw8, w8, #1\nb.eq\t.LBB12_5\nb\t.LBB12_2\n.LBB12_2:\nldr\tw8, [sp, #4]\nsubs\tw8, w8, #2\nb.eq\t.LBB12_6\nb\t.LBB12_3\n.LBB12_3:\nldr\tw8, [sp, #4]\nsubs\tw8, w8, #3\nb.eq\t.LBB12_7\nb\t.LBB12_8\n.LBB12_4:\nmov\tw8, #10\nstr\tw8, [sp, #12]\nb\t.LBB12_9\n.LBB12_5:\nmov\tw8, #20\nstr\tw8, [sp, #12]\nb\t.LBB12_9\n.LBB12_6:\nmov\tw8, #30\nstr\tw8, [sp, #12]\nb\t.LBB12_9\n.LBB12_7:\nmov\tw8, #40\nstr\tw8, [sp, #12]\nb\t.LBB12_9\n.LBB12_8:\nmov\tw8, #-1\nstr\tw8, [sp, #12]\nb\t.LBB12_9\n.LBB12_9:\nldr\tw0, [sp, #12]\nadd\tsp, sp, #16\nret"
+    },
+    {
+      "id": "quality.structure_switch.O1",
+      "source": "quality.c",
+      "function": "structure_switch",
+      "optimization": "-O1",
+      "architectureId": "arm64",
+      "assembly": "mov\tw8, #10\nmov\tw9, #10\ncmp\tw0, #4\nmadd\tw8, w0, w8, w9\ncsinv\tw0, w8, wzr, lo\nret"
+    },
+    {
+      "id": "quality.structure_switch.O2",
+      "source": "quality.c",
+      "function": "structure_switch",
+      "optimization": "-O2",
+      "architectureId": "arm64",
+      "assembly": "mov\tw8, #10\nmov\tw9, #10\ncmp\tw0, #4\nmadd\tw8, w0, w8, w9\ncsinv\tw0, w8, wzr, lo\nret"
+    }
+  ],
+  "corpusDigest": "37c049e8ed51a7f0d46538a894be3c7b"
+}

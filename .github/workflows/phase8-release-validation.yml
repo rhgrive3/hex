@@ -1,0 +1,75 @@
+name: Phase 8 release validation
+
+# The permanent exact-SHA verification route. It exists from P8-0 so proof never
+# depends on opening a throwaway PR to trigger a workflow (EP-012), and it runs
+# in shadow mode from the first checkpoint so final verification is a re-run of a
+# mature verifier rather than its first meeting with the product (EP-011).
+on:
+  pull_request:
+    paths:
+      - 'js/decompiler/**'
+      - 'tests/phase8/**'
+      - 'tools/validation/phase8/**'
+      - '.github/workflows/phase8-release-validation.yml'
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: 'Exact product SHA to verify'
+        required: true
+        type: string
+      shadow:
+        description: 'Report the verdict without failing the job'
+        required: false
+        default: true
+        type: boolean
+      gates:
+        description: 'Also run the required product gates'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phase8-release-${{ github.event.inputs.sha || github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.sha || github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Phase 8 contract tests
+        run: npm run phase8:test
+      - name: Verify the exact head
+        env:
+          EXPECT_SHA: ${{ github.event.inputs.sha }}
+          SHADOW: ${{ github.event.inputs.shadow || 'true' }}
+          GATES: ${{ github.event.inputs.gates || 'false' }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [ -n "${EXPECT_SHA}" ]; then args+=(--expect-sha "${EXPECT_SHA}"); fi
+          if [ "${SHADOW}" = "true" ]; then args+=(--shadow); fi
+          if [ "${GATES}" = "true" ]; then args+=(--gates); fi
+          node tools/validation/phase8/verify.mjs "${args[@]}"
+      - name: Publish the evidence artifact
+        # Producers that failed must not publish; the verifier writes atomically
+        # and refuses empty output, so a missing artifact here is a hard failure
+        # rather than a silently absent one (EP-015).
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase8-release-evidence
+          path: reports/phase8/phase8-release-evidence.*
+          if-no-files-found: error

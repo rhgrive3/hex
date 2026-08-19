@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "phase8-release-evidence/v1",
+  "type": "object",
+  "required": [
+    "schemaVersion", "verifierId", "verifierVersion", "generatedAt", "product",
+    "profileVersion", "corpus", "registry", "readiness", "checkpoints",
+    "quality", "safety", "architectureLanes", "performance", "failures", "verdict"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "schemaVersion": { "const": "phase8-release-evidence/v1" },
+    "verifierId": { "type": "string", "minLength": 1 },
+    "verifierVersion": { "type": "string", "minLength": 1 },
+    "product": {
+      "type": "object",
+      "required": ["commitSha", "treeSha", "workingTreeClean", "branch"],
+      "properties": {
+        "commitSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "treeSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "workingTreeClean": { "type": "boolean" },
+        "branch": { "type": "string" }
+      }
+    },
+    "corpus": {
+      "type": "object",
+      "required": ["corpusId", "corpusVersion", "corpusDigest", "toolchain", "frozenBaselineDigest", "baselineCommit"]
+    },
+    "registry": {
+      "type": "object",
+      "required": ["passRegistryDigest", "passes"]
+    },
+    "readiness": {
+      "type": "object",
+      "required": ["auditedCommit", "capabilityCount", "unresolved"]
+    },
+    "quality": {
+      "type": "object",
+      "required": ["baseline", "candidate"]
+    },
+    "safety": {
+      "type": "object",
+      "required": [
+        "semanticMismatchCount", "provenanceLossCount", "unknownSafetyRegressionCount",
+        "architectureBoundaryViolationCount", "transformDeterminismFailureCount",
+        "staleArtifactAcceptanceCount", "lostCfgEdgeCount", "forcedTypeContradictionCount"
+      ]
+    },
+    "failures": { "type": "array" },
+    "verdict": { "enum": ["READY", "BLOCKING", "NOT-INTEGRATED"] }
+  }
+}
