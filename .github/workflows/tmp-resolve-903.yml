@@ -1,0 +1,132 @@
+name: Temporary resolve PR 874 onto current main
+
+on:
+  push:
+    branches:
+      - integrate/open-issue-fixes-20260819
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tmp-resolve-874
+  cancel-in-progress: true
+
+jobs:
+  resolve:
+    if: github.actor != 'github-actions[bot]' && (github.head_ref == 'integrate/open-issue-fixes-20260819' || github.ref_name == 'integrate/open-issue-fixes-20260819')
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: integrate/open-issue-fixes-20260819
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Apply only the reviewed PR 874 delta
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin archive/pr874-pre-resolve integration/safe-prs-20260819
+          git diff --binary 4e03ea8a8b3be36e61f91ac4aa6657fd95f382b9 c637d57de3a033572686b32545ddd93256d99456 -- . \
+            ':(exclude).github/workflows/machine-effects.yml' \
+            ':(exclude).github/workflows/migration-guardrails.yml' \
+            ':(exclude)userscript/hex.user.template.js' \
+            ':(exclude)userscript/release-version.json' \
+            ':(exclude)js/analysis/semantic-function.js' \
+            ':(exclude)js/targets/architecture/riscv64/effects/control.js' \
+            > /tmp/pr874.patch
+          git apply --3way --index /tmp/pr874.patch
+      - name: Reconcile shared semantic-function and RISC-V control changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+          p = Path('js/analysis/semantic-function.js')
+          s = p.read_text()
+          old = "    const fallthroughBlock = byStart.get(endOf(instruction).toString()) || blocks[index + 1] || null;"
+          new = """    // Fallthrough is an architectural next-instruction address, not \"the next\n    // enumerated block\". A truncated/disjoint decode must remain incomplete\n    // instead of inventing a control-flow edge across the gap.\n    const fallthroughBlock = byStart.get(endOf(instruction).toString()) || null;"""
+          if old not in s: raise SystemExit('PR874 semantic-function anchor changed')
+          p.write_text(s.replace(old, new, 1))
+          p = Path('js/targets/architecture/riscv64/effects/control.js')
+          s = p.read_text()
+          old = """    if (target === next) {
+      // A branch whose taken target is the fallthrough is architecturally still
+      // a conditional branch, but it has one successor. Report it honestly
+      // rather than inventing a second edge.
+      return ctx.finish({
+        controlEffect: { kind: 'branch', target: addressRef(target), condition },
+        family: 'control',
+        metadata: { operation: op, degenerateConditional: true, flagsRegisterUsed: false },
+      });
+    }
+    return ctx.finish({
+      controlEffect: {
+        kind: 'conditional-branch',
+        target: addressRef(target),
+        fallthrough: addressRef(next),
+        condition,
+      },
+      possibleFaults: [targetAlignmentFault()],
+      family: 'control',
+      metadata: { operation: op, predicate, flagsRegisterUsed: false, conditionKind: 'direct-register-comparison' },
+    });"""
+          new = """    // A same-target branch still performs a syntactic conditional operation.
+    // RVWMO control dependencies are defined from that syntactic dependency,
+    // not from the number of unique CFG successors. Keep the generic
+    // conditional-branch contract even when target === fallthrough; CFG may
+    // deduplicate the two addresses independently.
+    return ctx.finish({
+      controlEffect: {
+        kind: 'conditional-branch',
+        target: addressRef(target),
+        fallthrough: addressRef(next),
+        condition,
+      },
+      possibleFaults: target === next ? [] : [targetAlignmentFault()],
+      family: 'control',
+      metadata: {
+        operation: op,
+        predicate,
+        flagsRegisterUsed: false,
+        conditionKind: 'direct-register-comparison',
+        ...(target === next ? { degenerateConditional: true } : {}),
+      },
+    });"""
+          if old not in s: raise SystemExit('PR874 riscv control anchor changed')
+          p.write_text(s.replace(old, new, 1))
+          PY
+          git add js/analysis/semantic-function.js js/targets/architecture/riscv64/effects/control.js
+          git diff --cached --check
+      - run: npm ci
+      - name: Regenerate canonical userscript outputs
+        run: npm run userscript:build
+      - name: Full repository verification
+        run: npm run check
+      - name: Prove userscript build idempotence
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp userscript/hex.user.template.js /tmp/hex.user.template.js
+          cp userscript/release-version.json /tmp/release-version.json
+          npm run userscript:build
+          cmp userscript/hex.user.template.js /tmp/hex.user.template.js
+          cmp userscript/release-version.json /tmp/release-version.json
+      - name: Publish resolved PR head
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git rm .github/workflows/tmp-resolve-874.yml .github/workflows/tmp-resolve-903.yml
+          git diff --cached --check
+          git commit -m 'chore: resolve PR 874 against current main'
+          git push origin HEAD:integrate/open-issue-fixes-20260819
