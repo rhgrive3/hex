@@ -15,6 +15,8 @@ function fileFromWords(name, words) {
 }
 
 // #814: canonical LDPSW displacement/width must survive every worker consumer.
+// ProgramIndex stores the exact referenced access start; backend xref queries may
+// separately match any byte covered by the decoded memory footprint.
 {
   const b = new NodeBackend();
   const opened = await b.open(fileFromWords('ldpsw-worker.bin', [0x10000002, 0x69408440]));
