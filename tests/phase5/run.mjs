@@ -29,8 +29,7 @@ function selectedGroup(argv) {
 export function runPhase5Tests(argv = process.argv.slice(2), { root = DIRECTORY } = {}) {
   const all = discoverPhase5Tests(root);
   if (all.length === 0) throw new Error('phase5: no contract tests discovered');
-  // Temporary CI diagnostic: isolate the ABI foundation contract without changing production code.
-  const group = selectedGroup(argv) ?? 'abi/foundation';
+  const group = selectedGroup(argv);
   const selected = group == null ? all : all.filter((file) => {
     const relative = path.relative(root, file).replaceAll('\\', '/');
     return relative === `${group}.test.mjs` || relative.startsWith(`${group}/`);
