@@ -54,6 +54,17 @@ export function buildCfg(model, opts) {
     }
     return -1;
   };
+  const physicalFallthrough = (node, term) => {
+    // Fallthrough is a property of the instruction stream, not the caller's
+    // basicBlocks array order. Require the immediately following listing row to
+    // exist and belong to a different block; gaps/truncated listings fail closed.
+    const after = Number(term ? term.row : node.endRow) + 1;
+    if (!Number.isSafeInteger(after)) return -1;
+    const nextInsn = insnByRow.get(after);
+    if (!nextInsn || nextInsn.data) return -1;
+    const nextBlock = blockAtRow(after);
+    return nextBlock >= 0 && nextBlock !== node.index ? nextBlock : -1;
+  };
 
   const nodes = blocks.map((b, i) => ({
     index: i,
@@ -89,7 +100,7 @@ export function buildCfg(model, opts) {
       indirect,
     } : null;
 
-    const next = node.index + 1 < nodes.length ? node.index + 1 : -1;
+    const next = physicalFallthrough(node, term);
     if (!term) {
       if (next >= 0) node.succ.push({ to: next, kind: EDGE.FALL });
       continue;
