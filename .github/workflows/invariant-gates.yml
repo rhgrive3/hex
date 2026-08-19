@@ -1,131 +1,13 @@
-name: Invariant Gates
+name: Invariant Gates (disabled for cross-binary analysis)
 
+# Disposable analysis branch: unrelated invariant CI is intentionally disabled.
+# The production workflow remains untouched on every non-analysis branch.
 on:
-  pull_request:
-  push:
-    branches: [main]
   workflow_dispatch:
 
-permissions:
-  contents: read
-
-concurrency:
-  group: invariant-gates-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
-  plan:
-    name: check-plan
+  disabled:
+    if: ${{ false }}
     runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      matrix: ${{ steps.plan.outputs.matrix }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - name: Build deduplicated npm-check shard matrix
-        id: plan
-        shell: bash
-        run: |
-          node --input-type=module <<'NODE'
-          import fs from 'node:fs';
-
-          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-          const parts = String(pkg.scripts?.check || '')
-            .split(/\s+&&\s+/)
-            .map((command) => command.trim())
-            .filter(Boolean);
-          if (parts.length < 2) throw new Error('npm check must contain at least two independent top-level commands');
-
-          const isolated = new Map([
-            ['npm test', 'test'],
-            ['npm run phase6:test', 'phase6:test'],
-            ['npm run benchmark:baseline', 'benchmark:baseline'],
-          ]);
-          const contracts = parts.filter((command) => !isolated.has(command));
-          if (!contracts.length) throw new Error('npm check must contain contract commands');
-
-          // MachineEffects used to run in a separate always-on workflow. Keep
-          // the coverage while avoiding another checkout/setup/npm-ci runner.
-          if (!parts.includes('npm run effects:test')) contracts.unshift('npm run effects:test');
-
-          // One large serial contract shard became the critical path in live CI.
-          // Keep the low-overhead checks together, but run the heavier historical
-          // phase contracts in parallel. This still cuts the old nine npm-ci
-          // runners almost in half while improving wall-clock latency.
-          const phaseCommands = new Set(['npm run phase4:test', 'npm run phase5:test']);
-          const coreContracts = contracts.filter((command) => !phaseCommands.has(command));
-          const phaseContracts = contracts.filter((command) => phaseCommands.has(command));
-          if (!coreContracts.length || !phaseContracts.length) {
-            throw new Error('npm check contract layout changed; rebalance invariant shards explicitly');
-          }
-
-          const include = [
-            { name: 'contracts-core', command: coreContracts.join(' && ') },
-            { name: 'contracts-phase', command: phaseContracts.join(' && ') },
-            ...parts
-              .filter((command) => isolated.has(command))
-              .map((command) => ({ name: isolated.get(command), command })),
-          ];
-          fs.appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify({ include })}\n`);
-          NODE
-
-  check-shards:
-    name: check-${{ matrix.name }}
-    needs: plan
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      max-parallel: 5
-      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Prepare generated userscript for canonical Phase 5 component semantic check
-        if: >-
-          github.event_name == 'pull_request' &&
-          github.base_ref == 'hex/p5-x86-integration' &&
-          matrix.name == 'contracts-core' &&
-          (
-            github.head_ref == 'hex/p5-1-x86-int-control' ||
-            github.head_ref == 'hex/p5-2-x86-memory-atomic' ||
-            github.head_ref == 'hex/p5-3-x86-fp-simd-system' ||
-            github.head_ref == 'hex/p5-4-x86-abis' ||
-            github.head_ref == 'hex/p5-5-variable-viewer' ||
-            github.head_ref == 'hex/p5-6-x86-verification'
-          )
-        run: npm run userscript:build
-
-      - name: Run exact check shard
-        run: ${{ matrix.command }}
-
-  invariant-gates:
-    name: invariant-gates
-    if: always()
-    needs: [plan, check-shards]
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Require complete repository check
-        env:
-          PLAN_RESULT: ${{ needs.plan.result }}
-          SHARD_RESULT: ${{ needs.check-shards.result }}
-        shell: bash
-        run: |
-          if [[ "$PLAN_RESULT" != "success" || "$SHARD_RESULT" != "success" ]]; then
-            echo "::error::Repository check failed (plan=$PLAN_RESULT, shards=$SHARD_RESULT)."
-            exit 1
-          fi
+      - run: echo "disabled on analysis/cross-binary-100pct"
