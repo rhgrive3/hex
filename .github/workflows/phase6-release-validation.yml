@@ -52,6 +52,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: phase6-release-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   verify:
     runs-on: ubuntu-latest
