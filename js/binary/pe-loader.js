@@ -183,9 +183,20 @@ export function parseExports(r, dir, image, sharedBudget = null) {
       const forwarder=mappedCStringAtRva(r,image,frva,budget,'PE export forwarder');
       image.exports.push({name,address:0n,ordinal:baseOrdinal+i,kind:'forwarder',forwarder:forwarder||null,source:'PE-export'});continue;
     }
-    const address=image.imageBase+BigInt(frva); image.exports.push({name,address,ordinal:baseOrdinal+i,kind:'export',source:'PE-export'});
-    const sec=image.sectionAt(address); if(sec&&sec.perms.execute)image.functions.push(functionSeed(address,{name,source:'export',confidence:0.95}));
+    const address=image.imageBase+BigInt(frva);
+    image.exports.push({
+      name,address,ordinal:baseOrdinal+i,kind:'export',source:'PE-export',
+      symbolKind:'unknown',functionStartAuthority:false,evidence:'exported-symbol-kind-unknown',
+    });
+    const independentlySeeded=(image.functions||[]).find((seed)=>seed?.address!=null&&BigInt(seed.address)===address&&seed.source!=='export')||null;
+    if(independentlySeeded&&!independentlySeeded.name){independentlySeeded.name=name;independentlySeeded.nameEvidence='PE-export-name-enrichment';}
   }
+}
+
+function exportNameAtAddress(image,address){
+  const target=BigInt(address);
+  const match=(image.exports||[]).find((entry)=>entry?.kind==='export'&&entry.address!=null&&BigInt(entry.address)===target)||null;
+  return match?.name||null;
 }
 
 function executableRvaRange(image, beginRva, size = 1) {
@@ -204,7 +215,8 @@ export function parseExceptionFunctions(r, dir, image, machine, sharedBudget = n
       if(!budget.take({inputBytes:12,records:1,objects:1,operations:2,estimatedHeapBytes:128},'exception-record'))break;
       const begin=r.u32(p),finish=r.u32(p+4),unwind=r.u32(p+8); const ordered=previousBegin==null||(begin>previousBegin&&begin>=previousEnd);
       if(!begin||finish<=begin||!ordered||!executableRvaRange(image,begin,finish-begin)){if(begin||finish)image.warnings.push(`Ignored ${!ordered?'overlapping/out-of-order':'invalid/unmapped'} x64 exception range RVA 0x${begin.toString(16)}..0x${finish.toString(16)}`);continue;}
-      image.functions.push(functionSeed(image.imageBase+BigInt(begin),{size:BigInt(finish-begin),source:'exception',confidence:0.999}));
+      const address=image.imageBase+BigInt(begin);
+      image.functions.push(functionSeed(address,{size:BigInt(finish-begin),name:exportNameAtAddress(image,address),source:'exception',confidence:0.999}));
       image.metadata.exceptionDirectory=image.metadata.exceptionDirectory||{count:0,kind:'x64-pdata'};image.metadata.exceptionDirectory.count++;previousBegin=begin;previousEnd=finish;void unwind;
     }
   }else if(machine===0xaa64||machine===0xa641){
@@ -213,7 +225,8 @@ export function parseExceptionFunctions(r, dir, image, machine, sharedBudget = n
       if(!budget.take({inputBytes:8,records:1,objects:1,operations:2,estimatedHeapBytes:128},'exception-record'))break;
       const begin=r.u32(p),unwindData=r.u32(p+4);if(!begin||(previousBegin!=null&&begin<=previousBegin)||!executableRvaRange(image,begin,1)){if(begin)image.warnings.push(`Ignored ARM64 exception entry outside executable order/range at RVA 0x${begin.toString(16)}`);continue;}
       let size=null;if((unwindData&3)!==0){const functionLength=(unwindData>>>2)&0x7ff;if(functionLength){const bytes=functionLength*4;if((previousEnd!=null&&begin<previousEnd)||!executableRvaRange(image,begin,bytes)){image.warnings.push(`Ignored overlapping/unmapped ARM64 exception range at RVA 0x${begin.toString(16)}`);continue;}size=BigInt(bytes);}}
-      image.functions.push(functionSeed(image.imageBase+BigInt(begin),{size,source:'exception',confidence:0.995}));image.metadata.exceptionDirectory=image.metadata.exceptionDirectory||{count:0,kind:'arm64-pdata'};image.metadata.exceptionDirectory.count++;previousBegin=begin;previousEnd=size==null?null:begin+Number(size);
+      const address=image.imageBase+BigInt(begin);
+      image.functions.push(functionSeed(address,{size,name:exportNameAtAddress(image,address),source:'exception',confidence:0.995}));image.metadata.exceptionDirectory=image.metadata.exceptionDirectory||{count:0,kind:'arm64-pdata'};image.metadata.exceptionDirectory.count++;previousBegin=begin;previousEnd=size==null?null:begin+Number(size);
     }
   }
 }
