@@ -1411,7 +1411,12 @@ async function scanProgram({ regionId, requestId, epoch, callLimit, refLimit, ki
 
       const memWrite = Words.memoryAccess(w);
       if (memWrite) {
-        const knownBase = !memWrite.indexed && memWrite.disp != null ? provenance.base(memWrite.base, index) : null;
+        // ProgramIndex refs are evidence-oriented. Broad scalar accesses from a
+        // propagated base create false xrefs on real binaries; retain only
+        // access shapes whose decoder establishes an exact pair/RMW memory role.
+        const referenceWorthy = memWrite.pair === true || memWrite.rmw === true;
+        const knownBase = referenceWorthy && !memWrite.indexed && memWrite.disp != null
+          ? provenance.base(memWrite.base, index) : null;
         if (knownBase != null) {
           const full = memWrite.mode === 'post' ? knownBase : knownBase + memWrite.disp;
           addRef(pc, full, memWrite.rmw ? 3 : memWrite.load ? 1 : memWrite.store ? 2 : 0);

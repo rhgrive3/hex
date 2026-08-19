@@ -1,63 +1,57 @@
-name: One-shot integration xref refinement
+name: Generated userscript sync
 
 on:
   pull_request:
-    branches:
-      - integrate/all-open-prs-20260819
+    paths:
+      - 'index.html'
+      - 'css/**'
+      - 'js/**'
+      - 'capstone.wasm'
+      - 'scripts/build-userscript.mjs'
+      - 'scripts/userscript-release-version.mjs'
+      - 'userscript/hex.user.template.js'
+      - 'userscript/release-version.json'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/generated-sync.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'index.html'
+      - 'css/**'
+      - 'js/**'
+      - 'capstone.wasm'
+      - 'scripts/build-userscript.mjs'
+      - 'scripts/userscript-release-version.mjs'
+      - 'userscript/hex.user.template.js'
+      - 'userscript/release-version.json'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/generated-sync.yml'
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: one-shot-integration-xref-refinement-${{ github.event.pull_request.number || github.ref }}
+  group: generated-sync-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  refine:
+  generated-sync:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: fix/integration-semantic-contracts
-          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Restrict program-index memory references to exact pair or RMW evidence
-        shell: bash
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          p = Path('js/worker-legacy.js')
-          s = p.read_text()
-          old = """      const memWrite = Words.memoryAccess(w);\n      if (memWrite) {\n        const knownBase = !memWrite.indexed && memWrite.disp != null ? provenance.base(memWrite.base, index) : null;\n        if (knownBase != null) {\n          const full = memWrite.mode === 'post' ? knownBase : knownBase + memWrite.disp;\n          addRef(pc, full, memWrite.rmw ? 3 : memWrite.load ? 1 : memWrite.store ? 2 : 0);\n        }\n"""
-          new = """      const memWrite = Words.memoryAccess(w);\n      if (memWrite) {\n        // ProgramIndex refs are evidence-oriented. Broad scalar accesses from a\n        // propagated base create false xrefs on real binaries; retain only\n        // access shapes whose decoder establishes an exact pair/RMW memory role.\n        const referenceWorthy = memWrite.pair === true || memWrite.rmw === true;\n        const knownBase = referenceWorthy && !memWrite.indexed && memWrite.disp != null\n          ? provenance.base(memWrite.base, index) : null;\n        if (knownBase != null) {\n          const full = memWrite.mode === 'post' ? knownBase : knownBase + memWrite.disp;\n          addRef(pc, full, memWrite.rmw ? 3 : memWrite.load ? 1 : memWrite.store ? 2 : 0);\n        }\n"""
-          if s.count(old) != 1:
-              raise SystemExit(f'expected one scanProgram memory-ref block, found {s.count(old)}')
-          p.write_text(s.replace(old, new, 1))
-          PY
-      - name: Run ARM64 memory consumer regression
-        run: node tests/phase4/migration/arm64-memory-consumers.test.mjs
       - name: Rebuild canonical userscript outputs
         run: npm run userscript:build
-      - name: Restore canonical generated-sync workflow
-        shell: bash
-        run: |
-          git fetch origin main
-          git show origin/main:.github/workflows/generated-sync.yml > .github/workflows/generated-sync.yml
-      - name: Commit refinement and generated outputs
-        shell: bash
-        run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add js/worker-legacy.js userscript/hex.user.template.js userscript/release-version.json .github/workflows/generated-sync.yml
-          git diff --cached --check
-          if git diff --cached --quiet; then
-            echo 'No refinement changes to publish.'
-            exit 0
-          fi
-          git commit -m 'fix: keep program-index memory xrefs evidence-backed'
-          git push origin HEAD:fix/integration-semantic-contracts
+      - name: Require userscript-owned generated outputs to match source
+        run: >-
+          git diff --exit-code --
+          userscript/hex.user.template.js
+          userscript/release-version.json
