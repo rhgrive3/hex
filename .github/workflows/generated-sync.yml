@@ -1,5 +1,6 @@
 name: One-shot ABI reconciliation
 
+# Re-run after integration reconciliation audit.
 on:
   pull_request:
     branches:
@@ -41,14 +42,9 @@ jobs:
             echo 'Merge produced the expected audited conflicts.'
           fi
 
-          # Generated outputs/workflow are integration-owned. Keep the current
-          # canonical side here, then rebuild/restore after semantic resolution.
           git checkout --ours -- .github/workflows/generated-sync.yml userscript/hex.user.template.js userscript/release-version.json
           git add .github/workflows/generated-sync.yml userscript/hex.user.template.js userscript/release-version.json
 
-          # Microsoft x64 already has a richer variadic frontier on integration.
-          # Select HEAD only inside conflict hunks, preserving all clean #987
-          # changes around them (hidden sret/convention evidence).
           python - <<'PY'
           from pathlib import Path
           import re
@@ -65,8 +61,6 @@ jobs:
           PY
           git add js/targets/abi/microsoft-x64.js
 
-          # AAPCS64 starts from current integration truth (#950 aggregate/__int128,
-          # #961 platform-aware x18), then layers the audited #526/#958/#959 facts.
           git checkout --ours -- js/targets/abi/aapcs64.js
           python - <<'PY'
           from pathlib import Path
@@ -216,7 +210,6 @@ export function classifyAAPCS64Arguments(insn, opts = {}) {""",
           PY
           git add js/targets/abi/aapcs64.js
 
-          # Preserve the current full npm-test chain and add the new ABI regression.
           git checkout --ours -- package.json
           python - <<'PY'
           from pathlib import Path
@@ -238,7 +231,6 @@ export function classifyAAPCS64Arguments(insn, opts = {}) {""",
             exit 1
           fi
 
-          # Diagnostic scaffolding must not survive the real reconciliation.
           git rm -f .github/workflows/tmp-abi-reconcile.yml 2>/dev/null || true
 
       - run: npm ci
