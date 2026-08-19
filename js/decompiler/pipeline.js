@@ -77,13 +77,10 @@ function constrainSemanticValueWidths(result) {
 function latestReturnStackLoad(ir, ret) {
   const explicit = valueOf(ret?.args?.[0]);
   if (explicit?.def?.op === 'load' && explicit.def.loc?.kind === 'stack') return { value: explicit, load: explicit.def };
-  let best = null;
-  for (const inst of ir?.instructions || []) {
-    if (inst?.op !== 'load' || inst?.loc?.kind !== 'stack' || inst?.dst?.reg !== 'x0') continue;
-    if (ret?.row != null && inst.row >= ret.row) continue;
-    if (!best || (inst.row ?? -1) > (best.load.row ?? -1)) best = { value: inst.dst, load: inst };
-  }
-  if (best) return best;
+
+  // For implicit ABI returns, only the actual latest reaching definition of x0
+  // may authorize a stack-load re-anchor. A historical stack load is not return
+  // truth when a later ADD/SUB/call/etc. redefines x0 (#914).
   let value = null, bestRow = -Infinity;
   for (const candidate of ir?.values || []) {
     const def = candidate?.def;

@@ -847,6 +847,11 @@ export function lowerMachineEffectBundleToSemanticIr(input, context = {}, option
       if (widthBits == null) return null;
       return implicitStateRead(effect, { ...condition, widthBits }, 'control-condition', 0);
     }
+    if (condition.kind === 'absolute-address') {
+      const widthBits = positiveInteger(condition.widthBits) ?? positiveInteger(context.addressWidthBits);
+      if (widthBits == null) return null;
+      return rawConstant(effect, condition.value, widthBits, 'control-condition', 0, 'code');
+    }
     if (condition.kind === 'bitvector') return rawConstant(effect, condition.value, condition.widthBits, 'control-condition', 0);
     return null;
   }
