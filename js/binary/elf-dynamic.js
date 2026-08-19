@@ -17,6 +17,14 @@ const DT_RELAENT = 9n;
 const DT_STRSZ = 10n;
 const DT_SYMENT = 11n;
 const DT_SONAME = 14n;
+const DT_SYMTAB_SHNDX = 34n;
+const DT_SYMTABSZ = 39n;
+const SHN_UNDEF = 0;
+const SHN_LORESERVE = 0xff00;
+const SHN_ABS = 0xfff1;
+const SHN_COMMON = 0xfff2;
+const SHN_XINDEX = 0xffff;
+const STT_GNU_IFUNC = 10;
 const DT_REL = 17n;
 const DT_RELSZ = 18n;
 const DT_RELENT = 19n;
@@ -89,20 +97,40 @@ export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
   });
   let declaredSymbolCount = 0;
   let symbolCountSource = 'none';
-  if (symtab != null && symentValid) {
-    declaredSymbolCount = symbolCountFromHash(r, one(DT_HASH), image);
-    if (declaredSymbolCount) symbolCountSource = 'sysv-hash';
-    if (!declaredSymbolCount) { declaredSymbolCount = symbolCountFromGnuHash(r, one(DT_GNU_HASH), image, bits); if (declaredSymbolCount) symbolCountSource = 'gnu-hash'; }
-    if (!declaredSymbolCount) { declaredSymbolCount = symbolCountFromRelocations(relocs); if (declaredSymbolCount) symbolCountSource = 'relocations'; }
-    if (!declaredSymbolCount) {
-      declaredSymbolCount = symbolCountFromLayout(symtab, strtab, syment, image, r);
-      if (declaredSymbolCount) { symbolCountSource = 'layout-heuristic'; markExtendedPartial(image, 'dynamic symbol count was inferred from bounded SYMTAB/STRTAB layout'); }
-    }
-  }
-
+  let minimumSymbolCount = 0;
   const symbolFileCapacity = symtab != null && symentValid
     ? dynamicSymbolFileCapacity(r, image, tags, symtab, syment)
     : 0;
+  if (symtab != null && symentValid) {
+    const sysvCount = symbolCountFromHash(r, one(DT_HASH), image);
+    const gnuCount = symbolCountFromGnuHash(r, one(DT_GNU_HASH), image, bits);
+    const sizeCount = symbolCountFromSymtabSize(one(DT_SYMTABSZ), symtab, syment, image);
+    minimumSymbolCount = symbolCountFromRelocations(relocs);
+    const exact = [
+      ['sysv-hash', sysvCount],
+      ['gnu-hash', gnuCount],
+      ['dt-symtabsz', sizeCount],
+    ].filter(([, count]) => count > 0);
+    if (exact.length) {
+      const distinct = new Set(exact.map(([, count]) => count));
+      if (distinct.size > 1) markDynamicPartial(image, `dynamic symbol count evidence disagrees: ${exact.map(([source,count]) => `${source}=${count}`).join(', ')}`);
+      declaredSymbolCount = Math.min(...exact.map(([, count]) => count));
+      symbolCountSource = exact.length === 1 ? exact[0][0] : 'multiple-exact-evidence';
+    } else {
+      declaredSymbolCount = symbolCountFromLayout(symtab, strtab, syment, image, r);
+      if (declaredSymbolCount) {
+        symbolCountSource = 'layout-heuristic';
+        markExtendedPartial(image, 'dynamic symbol count was inferred from bounded SYMTAB/STRTAB layout');
+      } else if (minimumSymbolCount) {
+        declaredSymbolCount = minimumSymbolCount;
+        symbolCountSource = 'relocation-lower-bound';
+        markExtendedPartial(image, 'dynamic symbol count is only a relocation-derived lower bound');
+      }
+    }
+    if (minimumSymbolCount > declaredSymbolCount && declaredSymbolCount > 0) {
+      markDynamicPartial(image, `relocation symbol index requires at least ${minimumSymbolCount} symbols but count evidence permits ${declaredSymbolCount}`);
+    }
+  }
   let symbolCount = Math.min(declaredSymbolCount, symbolFileCapacity, symbolBudget.limits.maxSymbolRecords);
   if (declaredSymbolCount > symbolFileCapacity) {
     markDynamicPartial(image, `dynamic symbol count ${declaredSymbolCount} exceeds file-backed SYMTAB capacity ${symbolFileCapacity}; clamped`);
@@ -114,7 +142,7 @@ export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
   const versions = parseDynamicSymbolVersions(r, tags, image, symbolCount, stringAt, { budget: symbolBudget });
   let symbols = [];
   if (!symbolBudget.stopped && opts.symbols !== false && symtab != null && symbolCount > 0) {
-    symbols = parseDynamicSymbols(r, image, bits, symtab, syment, symbolCount, stringAt, versions, symbolBudget);
+    symbols = parseDynamicSymbols(r, image, bits, symtab, syment, symbolCount, stringAt, tags, versions, symbolBudget);
   } else if (symtab != null && symbolCount > 0) {
     symbols = dynamicSymbolsFromImage(image, symbolCount);
   }
@@ -130,6 +158,7 @@ export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
     symbolsDeclared: declaredSymbolCount,
     symbolFileCapacity,
     symbolCountSource,
+    minimumSymbolCount,
     relocations: relocs.length,
     sectionless: image.sections.length === 0,
     hasSysvHash: one(DT_HASH) != null,
@@ -138,7 +167,7 @@ export function parseProgramDynamic(r, programHeaders, image, bits, opts = {}) {
   return { parsed: true, tags, symbols: symbols.length, relocations: relocs.length };
 }
 
-function parseDynamicSymbols(r, image, bits, symtabVa, syment, count, stringAt, versions = new Map(), budget = null) {
+function parseDynamicSymbols(r, image, bits, symtabVa, syment, count, stringAt, tags, versions = new Map(), budget = null) {
   const ent = toSafeNumber(syment);
   if (ent == null || ent <= 0) return [];
   const requested = count * ent;
@@ -165,11 +194,14 @@ function parseDynamicSymbols(r, image, bits, symtabVa, syment, count, stringAt, 
     const name = stringAt(BigInt(nameOff));
     const bind = info >>> 4;
     const type = info & 0xf;
-    const defined = shndx !== 0;
+    const sectionIdentity = resolveDynamicSectionIndex(r, image, tags, i, shndx);
+    const defined = sectionIdentity.known ? sectionIdentity.index !== SHN_UNDEF : null;
+    if (!sectionIdentity.known) markDynamicPartial(image, `dynamic symbol ${i} has unresolved section identity (${sectionIdentity.reason})`);
     const binding = bind === 0 ? 'local' : bind === 1 ? 'global' : bind === 2 ? 'weak' : `bind-${bind}`;
-    const kind = type === 2 ? 'function' : type === 1 ? 'object' : type === 3 ? 'section' : type === 6 ? 'tls' : `type-${type}`;
+    const kind = dynamicSymbolKind(type);
     const ver = versions.get(i) || null;
-    const sym = { name, address: value, size, kind, binding, defined, sectionIndex: shndx, visibility: other & 3, source: 'PT_DYNAMIC', index: i, tableIndex: -1, versionIndex: ver?.index ?? null, version: ver?.name ?? null, versionHidden: ver?.hidden ?? false, versionLibrary: ver?.library ?? null };
+    const ifunc = type === STT_GNU_IFUNC && defined === true;
+    const sym = { name, address: value, size, kind, binding, defined, sectionIndex: sectionIdentity.known ? sectionIdentity.index : null, visibility: other & 3, source: 'PT_DYNAMIC', index: i, tableIndex: -1, versionIndex: ver?.index ?? null, version: ver?.name ?? null, versionHidden: ver?.hidden ?? false, versionLibrary: ver?.library ?? null, ...(ifunc ? { resolverAddress:value, resolution:'runtime-resolver' } : {}) };
     out.push(sym);
     if (!name) continue;
     image.symbols.push(sym);
@@ -181,7 +213,7 @@ function parseDynamicSymbols(r, image, bits, symtabVa, syment, count, stringAt, 
       if (budget && !budget.claimOutput(1, 144, 'PT_DYNAMIC exports')) break;
       image.exports.push({ name, address: value, kind, version: ver?.name ?? null, versionIndex: ver?.index ?? null, symbolIndex: i, source: 'PT_DYNAMIC' });
     }
-    if (defined && type === 2 && value !== 0n) {
+    if (defined === true && (type === 2 || type === STT_GNU_IFUNC) && value !== 0n) {
       if (budget && !budget.claimOutput(1, 128, 'PT_DYNAMIC function seeds')) break;
       const owner = (() => {
         const start=value, extent=size||0n;
@@ -192,10 +224,16 @@ function parseDynamicSymbols(r, image, bits, symtabVa, syment, count, stringAt, 
         return null;
       })();
       if (owner) image.functions.push(functionSeed(value, {
-        size: size || null, name, source: 'symbol', confidence: 0.995,
-        exactFunctionStart: true, functionStartEvidence: 'ELF PT_DYNAMIC STT_FUNC in validated executable mapping and extent',
+        size: size || null,
+        name: type === STT_GNU_IFUNC ? `${name}$resolver` : name,
+        source: type === STT_GNU_IFUNC ? 'ifunc-resolver' : 'symbol',
+        confidence: 0.995,
+        exactFunctionStart: true,
+        functionStartEvidence: type === STT_GNU_IFUNC
+          ? 'ELF PT_DYNAMIC STT_GNU_IFUNC resolver in validated executable mapping and extent'
+          : 'ELF PT_DYNAMIC STT_FUNC in validated executable mapping and extent',
       }));
-      else markDynamicPartial(image, `ignored PT_DYNAMIC STT_FUNC ${name} outside executable mapping/extent`);
+      else markDynamicPartial(image, `ignored PT_DYNAMIC ${type === STT_GNU_IFUNC ? 'STT_GNU_IFUNC resolver' : 'STT_FUNC'} ${name} outside executable mapping/extent`);
     }
   }
   return out;
@@ -291,6 +329,7 @@ function attachDynamicRelocations(image, relocs, symbols) {
       addend: rel.addend,
       section: null,
       source: rel.source,
+      ...dynamicRelocationResolutionMetadata(image, rel, sym),
     };
     image.relocations.push(item);
     if (sym && !sym.defined && sym.name) {
@@ -337,6 +376,49 @@ function symbolCountFromGnuHash(r, hashVa, image, bits) {
   let max=symOffset,remainingSteps=Math.min(10_000_000,Math.max(4096,nbuckets*64));
   for(let i=0;i<nbuckets;i++){const bucket=r.u32(bucketsOff+i*4);if(!bucket||bucket<symOffset)continue;let idx=bucket,p=chainsOff+(idx-symOffset)*4;for(;p+4<=range.end;idx++,p+=4){if(--remainingSteps<0){markDynamicPartial(image,'GNU hash chain traversal exceeded the global budget');return 0;}const chain=r.u32(p);if(idx>max)max=idx;if(chain&1)break;}if(p+4>range.end){markDynamicPartial(image,'DT_GNU_HASH chain crosses a file-backed PT_LOAD boundary');return 0;}}
   return max>=symOffset?max+1:0;
+}
+
+export function dynamicSymbolKind(type) {
+  return type === 2 ? 'function' : type === 1 ? 'object' : type === 3 ? 'section' : type === 6 ? 'tls' : type === STT_GNU_IFUNC ? 'indirect-function' : `type-${type}`;
+}
+
+export function resolveDynamicSectionIndex(r, image, tags, symbolIndex, rawIndex) {
+  if (rawIndex !== SHN_XINDEX) {
+    if (rawIndex === SHN_UNDEF || rawIndex === SHN_ABS || rawIndex === SHN_COMMON || (rawIndex > 0 && rawIndex < SHN_LORESERVE)) return { known:true, index:rawIndex, source:'st_shndx' };
+    return { known:false, index:null, source:'st_shndx', reason:`unsupported-reserved-${rawIndex}` };
+  }
+  const tableVa = tags.get(DT_SYMTAB_SHNDX)?.[0] ?? null;
+  if (tableVa == null) return { known:false, index:null, source:'DT_SYMTAB_SHNDX', reason:'missing-companion' };
+  const range = mappedELFFileRangeForVa(image, tableVa);
+  const byteOffset = symbolIndex * 4;
+  if (!range || !Number.isSafeInteger(byteOffset) || byteOffset < 0 || range.start + byteOffset + 4 > range.end || range.start + byteOffset + 4 > r.length) return { known:false, index:null, source:'DT_SYMTAB_SHNDX', reason:'truncated-companion' };
+  const candidate = r.u32(range.start + byteOffset);
+  if (candidate === SHN_UNDEF || candidate === SHN_ABS || candidate === SHN_COMMON || (candidate > 0 && candidate < SHN_LORESERVE)) return { known:true, index:candidate, source:'DT_SYMTAB_SHNDX' };
+  return { known:false, index:null, source:'DT_SYMTAB_SHNDX', reason:`invalid-extended-index-${candidate}` };
+}
+
+export function symbolCountFromSymtabSize(sizeValue, symtabVa, syment, image) {
+  if (sizeValue == null) return 0;
+  if (syment <= 0n || sizeValue <= 0n || sizeValue % syment !== 0n) {
+    markDynamicPartial(image, `DT_SYMTABSZ ${sizeValue} is not a positive multiple of DT_SYMENT ${syment}`);
+    return 0;
+  }
+  const countBig = sizeValue / syment;
+  if (countBig > 10_000_000n) { markDynamicPartial(image, `DT_SYMTABSZ declares too many symbols (${countBig})`); return 0; }
+  const bytes = toSafeNumber(sizeValue);
+  if (bytes == null || !mappedELFFileSpanForVa(image, symtabVa, bytes)) { markDynamicPartial(image, 'DT_SYMTABSZ crosses a file-backed PT_LOAD boundary'); return 0; }
+  return Number(countBig);
+}
+
+function isIRelativeRelocation(machine, type) {
+  return (machine === 3 && type === 42) || (machine === 62 && type === 37) || (machine === 183 && type === 1032);
+}
+
+export function dynamicRelocationResolutionMetadata(image, rel, sym) {
+  if (sym?.kind === 'indirect-function') return { requiresRuntimeResolution:true, resolverAddress:sym.resolverAddress ?? sym.address ?? null, resolution:'ifunc-resolver-return' };
+  const machine = Number(image?.metadata?.machine);
+  if (rel?.symIndex === 0 && isIRelativeRelocation(machine, Number(rel?.type))) return { requiresRuntimeResolution:true, resolverAddend:rel.addend ?? null, resolution:'irelative-resolver' };
+  return {};
 }
 
 function symbolCountFromRelocations(relocs) {

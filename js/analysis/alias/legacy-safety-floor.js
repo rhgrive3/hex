@@ -35,6 +35,14 @@ function provenStackExternalSeparation(a, b) {
   return classes.has('function-local-stack') && classes.has('external-entry-memory');
 }
 
+function provenStackGlobalSeparation(a, b) {
+  const stack = a.kind === 'stack-fixed' ? a : b.kind === 'stack-fixed' ? b : null;
+  const global = a.kind === 'global-absolute' ? a : b.kind === 'global-absolute' ? b : null;
+  if (!stack || !global) return false;
+  return storageClass(stack) === 'function-local-stack'
+    && ['image-global-static', 'image-global'].includes(storageClass(global));
+}
+
 export function aliasMemoryRegions(a, b) {
   if (!a || !b) return 'unknown';
   if (a.kind === 'unknown' || b.kind === 'unknown') return 'may';
@@ -69,7 +77,7 @@ export function aliasMemoryRegions(a, b) {
   }
 
   const pair = new Set([a.kind, b.kind]);
-  if (pair.has('stack-fixed') && pair.has('global-absolute')) return 'no';
+  if (pair.has('stack-fixed') && pair.has('global-absolute')) return provenStackGlobalSeparation(a, b) ? 'no' : 'may';
   // Do not infer NoAlias from root identity alone. This applies only when an
   // architecture/ABI boundary supplied explicit, architecture-neutral storage
   // classes proving that one region is this function's local stack and the

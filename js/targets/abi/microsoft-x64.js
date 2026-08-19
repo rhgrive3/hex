@@ -206,10 +206,34 @@ export function classifyMicrosoftX64Arguments(instruction, options = {}) {
     stackArgsMayContainPointers ||= classified.pointer;
   });
 
+  const variadicRegisterFrontier = [];
+  if (variadic) {
+    const firstUnknownPosition = parameters.length + positionBias;
+    for (let position = firstUnknownPosition; position < 4; position++) {
+      const gpr = INTEGER_ARGUMENT_REGISTERS[position];
+      const xmm = VECTOR_ARGUMENT_REGISTERS[position];
+      appendSource(srcs, seenSources, gpr, 64, { purpose:'variadic-tail-candidate' });
+      appendSource(srcs, seenSources, xmm, 128, { purpose:'variadic-tail-candidate' });
+      const frontier = {
+        position,
+        index:position - positionBias,
+        location:'unknown-register',
+        candidateRegisters:[gpr,xmm],
+        abiClass:'variadic-tail-candidate',
+        partial:true,
+        variadic:true,
+        floatingMirrorRegister:gpr,
+      };
+      variadicRegisterFrontier.push(frontier);
+      arguments_.push(frontier);
+    }
+  }
+
   return {
     srcs,
     arguments:arguments_,
     stackArguments,
+    variadicRegisterFrontier,
     stackArgsUnknown:variadic,
     stackArgsMayContainPointers:stackArgsMayContainPointers || variadic,
     aggregateClassification:aggregatePartial ? 'partial-unproven' : aggregateProven ? 'proven' : 'not-required',
