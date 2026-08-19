@@ -81,18 +81,7 @@ function ephemeralBinaryId(model) {
 }
 
 function aapcs64FunctionReturnLocation(options = {}) {
-  const proto = options.functionPrototype || options.prototype || null;
-  const type = String(options.returnType || proto?.returnType || proto?.ret || proto?.result || '').toLowerCase();
-  const cls = String(options.returnClass || proto?.returnClass || proto?.abiClass || proto?.resultClass || '').toLowerCase();
-  if (options.returnsValue === false || proto?.returnsValue === false || proto?.void === true || type === 'void' || cls === 'void') return null;
-  if (proto?.indirectResult === true || cls === 'indirect') return null;
-  if (cls.includes('fp') || cls.includes('float') || cls.includes('vector') || /^(float|double|__fp16)/.test(type)) {
-    return { reg:'v0', bits:Number(proto?.returnBits || proto?.bits || options.returnBits || 64) || 64 };
-  }
-  if (type || cls || options.returnsValue === true || proto?.returnsValue === true) {
-    return { reg:'x0', bits:Number(proto?.returnBits || proto?.bits || options.returnBits || 64) || 64 };
-  }
-  return null;
+  return AAPCS64_ABI.classifyFunctionReturn(options);
 }
 
 function aapcs64CompatAbiAdapter(options) {
@@ -103,6 +92,7 @@ function aapcs64CompatAbiAdapter(options) {
         callTarget: control?.target ?? null,
         callPrototype: node?.attributes?.callPrototype ?? null,
       };
+      const callContext = { ...options, insn:callSite, callSite, callPrototype:callSite.callPrototype };
       const classified = classifyAAPCS64Arguments(callSite, options);
       const returnValue = AAPCS64_ABI.classifyCallReturn(callSite, options);
       const callArguments = (classified.srcs ?? [])
@@ -114,15 +104,19 @@ function aapcs64CompatAbiAdapter(options) {
         stackArgsUnknown: classified.stackArgsUnknown !== false,
         stackArgsMayContainPointers: classified.stackArgsMayContainPointers !== false,
         argumentEvidence: classified.evidence ?? 'aapcs64-plugin',
-        clobbers: AAPCS64_ABI.callerSaved(),
+        argumentUnsupported: classified.unsupported === true,
+        argumentPartial: classified.partial === true,
+        clobbers: AAPCS64_ABI.callerSaved(callContext),
         returnReg: returnValue?.reg ?? null,
         returnBits: returnValue?.bits ?? null,
-        returnEvidence: returnValue == null ? null : 'aapcs64-plugin',
+        returnEvidence: returnValue == null ? null : (returnValue.evidence ?? 'aapcs64-plugin'),
+        returnUnsupported: returnValue?.unsupported === true,
+        returnPartial: returnValue?.partial === true,
       };
     },
     classifyFunctionReturn() {
       const result = aapcs64FunctionReturnLocation(options);
-      return result == null ? null : { ...result, evidence:'prototype-aapcs64' };
+      return result == null ? null : { ...result, evidence:result.evidence ?? 'prototype-aapcs64' };
     },
   };
 }
@@ -245,8 +239,8 @@ function replaceLegacyArg(inst, from, to) {
  * state category as a broad clobber. At this AAPCS64 facade we may recover only
  * a callee-preserved physical register state. Memory effects are not changed.
  */
-function restoreAapcs64PreservedStateReads(projected) {
-  const callerSaved = new Set(AAPCS64_ABI.callerSaved().map(String));
+function restoreAapcs64PreservedStateReads(projected, options = {}) {
+  const callerSaved = new Set(AAPCS64_ABI.callerSaved(options).map(String));
   for (const inst of projected.instructions ?? []) {
     if (inst.op !== LEGACY_OP.MOV || !inst.extra?.stateRead || inst.args?.length !== 1) continue;
     const identity = inst.extra.stateRead?.physicalIdentity;
@@ -627,7 +621,7 @@ function buildV2CompatFromLegacyModel(model, opts = {}) {
       ...(opts.compatOptions ?? {}),
     },
   });
-  restoreAapcs64PreservedStateReads(result.legacyV1);
+  restoreAapcs64PreservedStateReads(result.legacyV1, opts);
   restoreAapcs64PublicLocations(result.legacyV1);
   propagateExactLegacyConstants(result.legacyV1);
   attachAapcs64CallArguments(result.legacyV1);
