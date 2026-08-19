@@ -1,4 +1,5 @@
 // #923: .eh_frame_hdr index rows are not function truth until the referenced FDE/CIE record validates them.
+// Keep valid, malformed, mismatched, unsorted, and known-function-only provenance cases together as the fail-closed oracle.
 import assert from 'node:assert/strict';
 import { ByteView } from '../js/binary/reader.js';
 import { BinaryImage } from '../js/binary/model.js';
