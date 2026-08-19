@@ -47,13 +47,24 @@ jobs:
           const contracts = parts.filter((command) => !isolated.has(command));
           if (!contracts.length) throw new Error('npm check must contain contract commands');
 
-          // MachineEffects used to run in a separate always-on workflow. Fold it
-          // into the main invariant gate so coverage is preserved without an
-          // additional checkout/setup/npm-ci runner on every PR.
+          // MachineEffects used to run in a separate always-on workflow. Keep
+          // the coverage while avoiding another checkout/setup/npm-ci runner.
           if (!parts.includes('npm run effects:test')) contracts.unshift('npm run effects:test');
 
+          // One large serial contract shard became the critical path in live CI.
+          // Keep the low-overhead checks together, but run the heavier historical
+          // phase contracts in parallel. This still cuts the old nine npm-ci
+          // runners almost in half while improving wall-clock latency.
+          const phaseCommands = new Set(['npm run phase4:test', 'npm run phase5:test']);
+          const coreContracts = contracts.filter((command) => !phaseCommands.has(command));
+          const phaseContracts = contracts.filter((command) => phaseCommands.has(command));
+          if (!coreContracts.length || !phaseContracts.length) {
+            throw new Error('npm check contract layout changed; rebalance invariant shards explicitly');
+          }
+
           const include = [
-            { name: 'contracts', command: contracts.join(' && ') },
+            { name: 'contracts-core', command: coreContracts.join(' && ') },
+            { name: 'contracts-phase', command: phaseContracts.join(' && ') },
             ...parts
               .filter((command) => isolated.has(command))
               .map((command) => ({ name: isolated.get(command), command })),
@@ -68,7 +79,7 @@ jobs:
     timeout-minutes: 45
     strategy:
       fail-fast: false
-      max-parallel: 4
+      max-parallel: 5
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
       - name: Checkout
@@ -87,7 +98,7 @@ jobs:
         if: >-
           github.event_name == 'pull_request' &&
           github.base_ref == 'hex/p5-x86-integration' &&
-          matrix.name == 'contracts' &&
+          matrix.name == 'contracts-core' &&
           (
             github.head_ref == 'hex/p5-1-x86-int-control' ||
             github.head_ref == 'hex/p5-2-x86-memory-atomic' ||
