@@ -407,7 +407,14 @@ export class Emulator {
         BigInt.asUintN(wide ? 64 : 32, mn === 'cmp' ? a - b : a + b), wide);
       return null;
     }
-    if (mn === 'neg' || mn === 'negs') { this.set(ops[0].text, -R(ops[1])); return null; }
+    if (mn === 'neg' || mn === 'negs') {
+      const wide = isWide(ops[0]);
+      const source = R(ops[1]);
+      const result = BigInt.asUintN(wide ? 64 : 32, -source);
+      this.set(ops[0].text, result);
+      if (mn === 'negs') this.setFlags('subs', 0n, source, result, wide);
+      return null;
+    }
     if (mn === 'mvn') { this.set(ops[0].text, ~R(ops[1])); return null; }
     if (mn === 'madd' || mn === 'msub') {
       const a = R(ops[1]), b = R(ops[2]), c = R(ops[3]);
