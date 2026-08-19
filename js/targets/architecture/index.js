@@ -13,6 +13,7 @@ function arm64ControlFlow(instruction) {
   if (/^(?:bl|blr|blraa|blrab|blraaz|blrabz)$/.test(op)) return 'call';
   if (/^(?:b|br|braa|brab|braaz|brabz)$/.test(op)) return 'branch';
   if (op.startsWith('b.') || op === 'cbz' || op === 'cbnz' || op === 'tbz' || op === 'tbnz') return 'conditional-branch';
+  if (/^(?:eret|eretaa|eretab|brk|svc|hvc|smc)$/.test(op)) return 'unknown';
   return 'fallthrough';
 }
 
@@ -21,6 +22,8 @@ function x86ControlFlow(instruction) {
   if (op.startsWith('ret')) return 'return';
   if (op === 'call') return 'call';
   if (op === 'jmp') return 'branch';
+  if (/^(?:loop|loope|loopz|loopne|loopnz)$/.test(op)) return 'conditional-branch';
+  if (op === 'ud2' || op === 'int3') return 'unknown';
   if (/^j[^m]/.test(op)) return 'conditional-branch';
   return 'fallthrough';
 }
@@ -39,7 +42,7 @@ function x86ControlFlow(instruction) {
  */
 function riscv64ControlFlow(instruction) {
   const fields = instruction?.fields;
-  if (!fields?.supported) return 'fallthrough';
+  if (!fields?.supported) return 'unknown';
   const op = fields.op;
   if (op === 'jal') return fields.rd === 'x0' ? 'branch' : 'call';
   if (op === 'jalr') {
@@ -140,7 +143,7 @@ export const RISCV64_ARCHITECTURE = registerArchitecturePlugin({
   id:'riscv64', semanticVersion:RISCV64_MACHINE_EFFECTS_SEMANTIC_VERSION, instructionAlignment:2, fixedInstructionSize:null, viewerCompatible:false,
   modes:()=>Object.freeze(['rv64imc']), registerFile:riscv64RegisterFile,
   decodeProvider:'capstone/backend', liftExact:liftRiscv64MachineEffects, classifyControlFlow:riscv64ControlFlow,
-  directControlTarget:riscv64DirectControlTarget,
+  directControlTarget:riscv64DirectControlTarget, supportedMemoryEndianness:Object.freeze(['little']),
   capabilities:{ decode:'external-structured-v1', exactEffects:'exact-for-rv64imc-profile', semanticAnalysis:'phase6-shared-middle-end' },
 });
 

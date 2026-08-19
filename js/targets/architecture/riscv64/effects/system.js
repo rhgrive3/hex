@@ -29,7 +29,9 @@ export function liftRiscv64SystemEffects(decoded, context = {}) {
         kind: 'riscv64-fence',
         predecessor: fenceSet(fields.predecessor),
         successor: fenceSet(fields.successor),
-        fenceMode: Number(fields.fenceMode) === 0b1000 ? 'tso' : 'normal',
+        fenceMode: Number(fields.fenceMode) === 0b1000
+          && Number(fields.predecessor) === 0b0011
+          && Number(fields.successor) === 0b0011 ? 'tso' : 'normal',
       },
     });
     return ctx.finish({ family: 'barrier', metadata: { operation: 'fence' } });
