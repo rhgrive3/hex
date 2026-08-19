@@ -15,26 +15,27 @@ guessFunctions = async function guessFunctionsWithEvidenceProbe(args) {
   const ev = await __functionEvidence(region, slice, args.requestId);
   if (cancelled(args.requestId)) return { starts: new BigUint64Array(0), cancelled: true, __transfer: [] };
 
+  const has = (set, addr) => !!set?.has?.(addr);
   const masks = new Uint16Array(result.starts.length);
   for (let i = 0; i < result.starts.length; i++) {
     const a = result.starts[i];
     let m = 0;
-    if (ev.data.has(a)) m |= 1 << 0;
-    if (ev.structured.has(a)) m |= 1 << 1;
-    if (ev.exactMetadata.has(a)) m |= 1 << 2;
-    if (ev.unwind.has(a)) m |= 1 << 3;
-    if (ev.directCalls.has(a)) m |= 1 << 4;
-    if (ev.prologues.has(a)) m |= 1 << 5;
-    if (ev.terminalStarts.has(a)) m |= 1 << 6;
-    if (ev.indirectTerminalStarts.has(a)) m |= 1 << 7;
-    if (ev.conditionalTargets.has(a)) m |= 1 << 8;
-    if (ev.tailCalls.has(a)) m |= 1 << 9;
-    if (ev.exceptionLandingPads.has(a)) m |= 1 << 10;
-    if (ev.interiorFrameSetups.has(a)) m |= 1 << 11;
-    if (ev.denseAddressLeafStarts.has(a)) m |= 1 << 12;
-    if (ev.trapTerminalStarts.has(a)) m |= 1 << 13;
-    if (ev.indirectThunkStarts.has(a)) m |= 1 << 14;
-    if (ev.repeatedThunkStarts.has(a) || ev.repeatedDirectTailStarts.has(a)) m |= 1 << 15;
+    if (has(ev.data, a)) m |= 1 << 0;
+    if (has(ev.structured, a)) m |= 1 << 1;
+    if (has(ev.exactMetadata, a)) m |= 1 << 2;
+    if (has(ev.unwind, a)) m |= 1 << 3;
+    if (has(ev.directCalls, a)) m |= 1 << 4;
+    if (has(ev.prologues, a)) m |= 1 << 5;
+    if (has(ev.terminalStarts, a)) m |= 1 << 6;
+    if (has(ev.indirectTerminalStarts, a)) m |= 1 << 7;
+    if (has(ev.conditionalTargets, a)) m |= 1 << 8;
+    if (has(ev.tailCalls, a)) m |= 1 << 9;
+    if (has(ev.exceptionLandingPads, a)) m |= 1 << 10;
+    if (has(ev.interiorFrameSetups, a)) m |= 1 << 11;
+    if (has(ev.denseAddressLeafStarts, a)) m |= 1 << 12;
+    if (has(ev.trapTerminalStarts, a)) m |= 1 << 13;
+    if (has(ev.indirectThunkStarts, a)) m |= 1 << 14;
+    if (has(ev.repeatedThunkStarts, a) || has(ev.repeatedDirectTailStarts, a)) m |= 1 << 15;
     masks[i] = m;
   }
   return {
