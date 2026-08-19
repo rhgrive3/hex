@@ -160,16 +160,47 @@ function waitOrEvent(instruction, context, mnemonic) {
   return bundle(instruction, context, { operations:[operation], completeness:'exact-with-intrinsic' });
 }
 
+const EXCLUSIVE_MONITOR_STATE = Object.freeze([
+  ['arm64.exclusive.valid', 1],
+  ['arm64.exclusive.address', 64],
+  ['arm64.exclusive.size', 16],
+  ['arm64.exclusive.token', 64],
+]);
+function readExclusiveMonitor(operations) {
+  return EXCLUSIVE_MONITOR_STATE.map(([registerId,bits]) => {
+    const value = temp(`clrex:${registerId}`, createBitVectorValue(bits));
+    operations.push(createMachineOperation({
+      kind:'register-read', register:createRegisterValue(registerId,bits,{view:registerId}), value,
+      metadata:{ architecture:'arm64', purpose:'exclusive-monitor-state' },
+    }));
+    return value;
+  });
+}
+function clearExclusiveMonitor(operations, token) {
+  const values = [createBitVectorValue(1,0n), createBitVectorValue(64,0n), createBitVectorValue(16,0n), token];
+  EXCLUSIVE_MONITOR_STATE.forEach(([registerId,bits], index) => operations.push(createMachineOperation({
+    kind:'register-write', register:createRegisterValue(registerId,bits,{view:registerId}), value:values[index],
+    metadata:{ architecture:'arm64', purpose:'exclusive-monitor-state', transition:'clear' },
+  })));
+}
+
 function clrex(instruction, context, ops) {
   const imm = immediate(ops[0]);
+  const operations = [];
+  const monitorState = readExclusiveMonitor(operations);
+  const nextToken = temp('clrex:next-monitor-token', createBitVectorValue(64));
   const operation = completeIntrinsic({
     id:'arm64.system.clrex',
-    inputs:imm ? [imm] : [], outputs:[], registersRead:[], registersWritten:[],
+    inputs:[...monitorState, ...(imm ? [imm] : [])], outputs:[nextToken],
+    registersRead:EXCLUSIVE_MONITOR_STATE.map(([id]) => id),
+    registersWritten:EXCLUSIVE_MONITOR_STATE.map(([id]) => id),
     memoryRead:{scope:'none'}, memoryWrite:{scope:'none'}, controlEffects:[],
     determinism:'deterministic', symbolicDetail:'summary-only',
     metadata:{ architecturalStateWritten:'local-exclusive-monitor', immediatePresent:!!imm },
   });
-  return bundle(instruction, context, { operations:[operation], completeness:'exact-with-intrinsic' });
+  operations.push(operation);
+  clearExclusiveMonitor(operations, nextToken);
+  return bundle(instruction, context, { operations, completeness:'exact-with-intrinsic' });
 }
 
 function bti(instruction, context, ops) {

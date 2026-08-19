@@ -4,6 +4,7 @@ import {
   createMachineEffectBundle,
   createMachineOperation,
   createMemoryAccess,
+  createRegisterValue,
 } from '../../../../semantics/effects/index.js';
 import {
   Arm64AddressingError,
@@ -153,6 +154,35 @@ function intrinsicSummary({ inputs = [], outputs = [], registersRead = [], regis
   });
 }
 
+const EXCLUSIVE_MONITOR_STATE = Object.freeze([
+  ['arm64.exclusive.valid', 1],
+  ['arm64.exclusive.address', 64],
+  ['arm64.exclusive.size', 16],
+  ['arm64.exclusive.token', 64],
+]);
+
+function exclusiveStateRead(operations, prefix) {
+  const values = [];
+  for (const [registerId, bits] of EXCLUSIVE_MONITOR_STATE) {
+    const value = arm64Temporary(`${prefix}.${registerId}`, bits);
+    operations.push(createMachineOperation({
+      kind:'register-read', register:createRegisterValue(registerId, bits, { view:registerId }), value,
+      metadata:{ architecture:'arm64', purpose:'exclusive-monitor-state' },
+    }));
+    values.push(value);
+  }
+  return values;
+}
+function exclusiveStateWrite(operations, values, metadata = {}) {
+  EXCLUSIVE_MONITOR_STATE.forEach(([registerId, bits], index) => operations.push(createMachineOperation({
+    kind:'register-write', register:createRegisterValue(registerId, bits, { view:registerId }), value:values[index],
+    metadata:{ architecture:'arm64', purpose:'exclusive-monitor-state', ...metadata },
+  })));
+}
+function exclusiveAddressValue(addressing) {
+  return addressing.readOperations.find((operation) => operation.kind === 'register-read' && operation.register?.registerId === addressing.base.physicalId)?.value || null;
+}
+
 function valueOp(opcode, input, fromBits, toBits, id, metadata = {}) {
   const output = arm64Temporary(id, toBits);
   return {
@@ -221,8 +251,10 @@ function exclusiveLoad(decoded, context, match) {
   const ordering = acquire ? 'acquire' : 'relaxed';
   const memAccess = access(ctx, addr.addressExpr, widthBits, ordering);
   const raw = arm64Temporary('exclusive.load.raw', widthBits);
-  const monitor = arm64Temporary('exclusive.monitor.token', 1);
+  const monitor = arm64Temporary('exclusive.monitor.token', 64);
   const ops = [...addr.readOperations];
+  const addressValue = exclusiveAddressValue(addr);
+  if (!addressValue) return partial(decoded, context, 'exclusive load effective address state is unavailable');
   ops.push(createMachineOperation({
     kind:'memory-read', access:memAccess, value:raw,
     metadata:{ architecture:'arm64', exclusive:true, ordering, tagChecked:tagChecked(addr) },
@@ -231,12 +263,17 @@ function exclusiveLoad(decoded, context, match) {
     kind:'intrinsic',
     intrinsicId:'arm64.exclusive-monitor-set',
     effectSummary:intrinsicSummary({
+      inputs:[addressValue, createBitVectorValue(16, BigInt(widthBits))],
       outputs:[monitor],
       registersRead:[addr.base.physicalId],
+      registersWritten:EXCLUSIVE_MONITOR_STATE.map(([id]) => id),
       determinism:'deterministic',
     }),
-    metadata:{ addressExpr:addr.addressExpr, widthBits, hiddenState:'exclusive-monitor' },
+    metadata:{ addressExpr:addr.addressExpr, widthBits, state:'exclusive-monitor' },
   }));
+  exclusiveStateWrite(ops, [
+    createBitVectorValue(1, 1n), addressValue, createBitVectorValue(16, BigInt(widthBits)), monitor,
+  ], { transition:'set' });
   try { ops.push(...writeLoadedGp(dest, raw, widthBits, 'exclusive.load')); }
   catch (error) { return partial(decoded, context, error.message); }
 
@@ -275,14 +312,19 @@ function exclusiveStore(decoded, context, match) {
   try { dataRead = readRegister(data, 'exclusive.store.data', widthBits); }
   catch (error) { return partial(decoded, context, error.message); }
   const statusValue = arm64Temporary('exclusive.store.status', 32);
+  const nextMonitorToken = arm64Temporary('exclusive.store.next-monitor-token', 64);
   const ops = [...addr.readOperations, ...dataRead.operations];
+  const addressValue = exclusiveAddressValue(addr);
+  if (!addressValue) return partial(decoded, context, 'exclusive store effective address state is unavailable');
+  const monitorState = exclusiveStateRead(ops, 'exclusive.store.monitor');
   ops.push(createMachineOperation({
     kind:'intrinsic',
     intrinsicId:'arm64.exclusive-store-conditional',
     effectSummary:intrinsicSummary({
-      inputs:[dataRead.value],
-      outputs:[statusValue],
-      registersRead:[addr.base.physicalId, dataRead.registerId],
+      inputs:[...monitorState, addressValue, createBitVectorValue(16, BigInt(widthBits)), dataRead.value],
+      outputs:[statusValue, nextMonitorToken],
+      registersRead:[addr.base.physicalId, dataRead.registerId, ...EXCLUSIVE_MONITOR_STATE.map(([id]) => id)],
+      registersWritten:EXCLUSIVE_MONITOR_STATE.map(([id]) => id),
       memoryWrite:{ scope:'accesses', accesses:[memAccess] },
       determinism:'nondeterministic',
     }),
@@ -297,6 +339,9 @@ function exclusiveStore(decoded, context, match) {
       tagChecked:tagChecked(addr),
     },
   }));
+  exclusiveStateWrite(ops, [
+    createBitVectorValue(1, 0n), createBitVectorValue(64, 0n), createBitVectorValue(16, 0n), nextMonitorToken,
+  ], { transition:'clear-after-store-attempt' });
   try { ops.push(...writeLoadedGp(status, statusValue, 32, 'exclusive.store.status')); }
   catch (error) { return partial(decoded, context, error.message); }
 
