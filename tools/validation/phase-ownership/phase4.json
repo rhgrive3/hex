@@ -1,6 +1,6 @@
 {
   "phase": 4,
-  "version": 3,
+  "version": 2,
   "contractPaths": [
     "js/core/artifacts/contracts.js",
     "js/core/artifacts/index.js",
@@ -86,6 +86,7 @@
     "p4-r": [
       "tools/validation/phase-ownership/phase4.json",
       "tools/validation/phase4-ownership.mjs",
+      ".github/workflows/phase4-ownership.yml",
       "tests/phase4/ownership/**"
     ]
   },
