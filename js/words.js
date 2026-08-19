@@ -205,26 +205,110 @@
    * disp は分かるときだけ（レジスタ添字つきなら null）。
    */
   function memoryAccess(w) {
-    // 排他・acquire/release 系
-    if (masked(w, 0x3f000000) === 0x08000000) {
-      const load = ((w >>> 22) & 1) === 1;
-      return { load, store: !load, size: 1 << ((w >>> 30) & 3), base: rn(w), reg: rd(w), disp: 0n, atomic: true };
+    const atomicClass = masked(w, 0x3f000000);
+
+    // Exclusive/acquire-release/CAS share the 0x08 class. Decode the operation
+    // shape before interpreting ordering bits: CAS/CASP are true RMW operations.
+    if (atomicClass === 0x08000000) {
+      const sizeCode = (w >>> 30) & 3;
+      const bit23 = ((w >>> 23) & 1) === 1;
+      const acquireBit = ((w >>> 22) & 1) === 1;
+      const pairBit = ((w >>> 21) & 1) === 1;
+      const rs = (w >>> 16) & 0x1f;
+      const releaseBit = ((w >>> 15) & 1) === 1;
+      const encodedRt2 = (w >>> 10) & 0x1f;
+      const rt = rd(w);
+      const base = rn(w);
+      const ordering = (acquire, release) => acquire ? (release ? 'acq_rel' : 'acquire') : (release ? 'release' : 'relaxed');
+
+      // CAS (byte/half/word/dword) uses bit23=1. CASP uses the same fixed Rt2
+      // field with the low size encodings and bit23=0. Pair exclusives use the
+      // high size encodings, so they remain distinguishable even when Rt2==31.
+      const casPair = !bit23 && pairBit && encodedRt2 === 31 && sizeCode <= 1;
+      const casSingle = bit23 && pairBit && encodedRt2 === 31;
+      if (casSingle || casPair) {
+        const elementSize = casPair ? (sizeCode === 0 ? 4 : 8) : (1 << sizeCode);
+        const compareReg = rs;
+        const valueReg = rt;
+        const out = {
+load: true, store: true, rmw: true, atomic: true,
+atomicOp: casPair ? 'casp' : 'cas',
+size: casPair ? elementSize * 2 : elementSize,
+elementSize, pair: casPair,
+base, reg: compareReg, compareReg, valueReg, resultReg: compareReg,
+disp: 0n,
+ordering: ordering(acquireBit, releaseBit),
+acquire: acquireBit, release: releaseBit,
+        };
+        if (casPair) {
+out.reg2 = (compareReg + 1) & 31;
+out.compareReg2 = out.reg2;
+out.resultReg2 = out.reg2;
+out.valueReg2 = (valueReg + 1) & 31;
+        }
+        return out;
+      }
+
+      const load = acquireBit;
+      const exclusive = !bit23;
+      const pair = exclusive && pairBit;
+      const elementSize = 1 << sizeCode;
+      const out = {
+        load, store: !load,
+        size: pair ? elementSize * 2 : elementSize,
+        elementSize, pair,
+        base, reg: rt, disp: 0n, atomic: true,
+        atomicOp: exclusive
+? (pair ? (load ? 'exclusive-load-pair' : 'exclusive-store-pair') : (load ? 'exclusive-load' : 'exclusive-store'))
+: (load ? 'acquire-load' : 'release-store'),
+        ordering: exclusive ? ordering(load && releaseBit, !load && releaseBit) : (load ? 'acquire' : 'release'),
+      };
+      if (pair) out.reg2 = encodedRt2;
+      if (exclusive && !load) out.statusReg = rs;
+      return out;
     }
-    // ペア (ldp / stp / ldnp / stnp) — 添字なし、7 ビットの符号つき
+
+    // LSE atomic memory operations (LDADD/LDCLR/LDEOR/LDSET/LDSMAX/LDSMIN/
+    // LDUMAX/LDUMIN/SWP). Bits 15:12 select the operation; LDAPR occupies a
+    // different selector (0xc) and must not be mistaken for an RMW operation.
+    if (atomicClass === 0x38000000 && ((w >>> 21) & 1) === 1 && ((w >>> 10) & 3) === 0) {
+      const opCode = (w >>> 12) & 0xf;
+      const names = ['ldadd', 'ldclr', 'ldeor', 'ldset', 'ldsmax', 'ldsmin', 'ldumax', 'ldumin', 'swp'];
+      if (opCode < names.length) {
+        const size = 1 << ((w >>> 30) & 3);
+        const acquire = ((w >>> 23) & 1) === 1;
+        const release = ((w >>> 22) & 1) === 1;
+        const sourceReg = (w >>> 16) & 0x1f;
+        const resultReg = rd(w);
+        return {
+load: true, store: true, rmw: true, atomic: true,
+atomicOp: names[opCode], size, elementSize: size,
+base: rn(w), reg: resultReg, sourceReg, valueReg: sourceReg, resultReg,
+disp: 0n,
+ordering: acquire ? (release ? 'acq_rel' : 'acquire') : (release ? 'release' : 'relaxed'),
+acquire, release,
+        };
+      }
+    }
+
+    // Pair (ldp / stp / ldnp / stnp / ldpsw) — 7-bit signed scaled offset.
     if (masked(w, 0x3a000000) === 0x28000000) {
       const load = ((w >>> 22) & 1) === 1;
       const opc = (w >>> 30) & 3;
       const vector = ((w >>> 26) & 1) === 1;
-      // 整数は 32/64 ビット、SIMD は 32/64/128 ビットの組
-      const scale = vector ? (4 << opc) : (opc === 0 ? 4 : 8);
+      const signedWordPair = !vector && load && opc === 1; // LDPSW: two 32-bit words -> X regs
+      // Integer opc=0 => W pair, opc=1 => LDPSW, opc=2 => X pair.
+      // SIMD opc=0/1/2 => S/D/Q pairs.
+      const elementSize = vector ? (4 << opc) : (opc === 2 ? 8 : 4);
       const imm7 = Number(signExtend(BigInt((w >>> 15) & 0x7f), 7));
       return {
-        load, store: !load, size: scale * 2, pair: true, vector,
-        base: rn(w), reg: rd(w), reg2: (w >>> 10) & 0x1f, disp: BigInt(imm7 * scale),
+        load, store: !load, size: elementSize * 2, elementSize, pair: true, vector,
+        signed: signedWordPair, signExtendTo: signedWordPair ? 8 : null,
+        base: rn(w), reg: rd(w), reg2: (w >>> 10) & 0x1f, disp: BigInt(imm7 * elementSize),
         mode: ((w >>> 23) & 3) === 1 ? 'post' : ((w >>> 23) & 3) === 3 ? 'pre' : 'offset',
       };
     }
-    // 符号なし即値つき (いちばん多い形)
+    // Unsigned immediate (the most common scalar/SIMD form).
     if (masked(w, 0x3b000000) === 0x39000000) {
       const scale = transferScale(w);
       const load = transferIsLoad(w);
@@ -233,10 +317,10 @@
         disp: BigInt((w >>> 10) & 0xfff) << BigInt(scale),
       };
     }
-    // 前後変化つき / 符号つき即値（こちらは倍率なしの生バイト数）
+    // Pre/post/unscaled immediate.
     if (masked(w, 0x3b200000) === 0x38000000) {
       const load = transferIsLoad(w);
-      const kind = (w >>> 10) & 3;                            // 00 unscaled, 01 post, 11 pre
+      const kind = (w >>> 10) & 3;
       const imm9 = Number(signExtend(BigInt((w >>> 12) & 0x1ff), 9));
       return {
         load, store: !load, size: 1 << transferScale(w), vector: ((w >>> 26) & 1) === 1, base: rn(w), reg: rd(w),

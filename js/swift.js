@@ -23,7 +23,7 @@ function sectionRange(sections, wanted) {
   for (const s of list) { const name = s.section || s.name || s.sectname; if (!wanted.includes(name)) continue; const addr = s.vmAddr ?? s.addr ?? s.address, size = s.size ?? s.declaredSize ?? 0; if (addr != null && size != null) return { addr: BigInt(addr), size: BigInt(size), raw: s }; }
   return null;
 }
-function normalizeBudget(value, fallback = DEFAULT_BUDGET, max = 100000) { const n = Number(value); return Number.isFinite(n) && n > 0 ? Math.max(1, Math.min(Math.floor(n), max)) : fallback; }
+function normalizeBudget(value, fallback = DEFAULT_BUDGET, max = 100000) { const n = Number(value); return Number.isFinite(Number(n)) && n > 0 ? Math.max(1, Math.min(Math.floor(n), max)) : fallback; }
 
 export function demangleSwiftSymbol(symbol) {
   const original = String(symbol || ''), s = original.replace(/^_/, '');
@@ -102,9 +102,17 @@ async function resolveAbsolutePointer(read,address,options={}) {
   return options.allowRawPointers===true ? (raw||null) : null;
 }
 
+async function resolveRelativeIndirectablePointer(read,fieldAddress,raw,options={}) {
+  if(!raw)return null;
+  const indirect=(raw&1)!==0;
+  const offset=indirect?(raw&~1):raw;
+  const target=BigInt(fieldAddress)+BigInt(offset);
+  return indirect?resolveAbsolutePointer(read,target,options):target;
+}
+
 export async function parseSwiftConformanceDescriptor(read,address,options={}){
   const addr=BigInt(address),b=await exact(read,addr,16);if(!b)return null;
-  const protocol=rel(addr,i32(b,0)), rawTypeRef=rel(addr+4n,i32(b,4)), witnessTable=rel(addr+8n,i32(b,8)), flags=u32(b,12), typeReferenceKind=(flags>>>3)&7;
+  const protocol=await resolveRelativeIndirectablePointer(read,addr,i32(b,0),options), rawTypeRef=rel(addr+4n,i32(b,4)), witnessTable=rel(addr+8n,i32(b,8)), flags=u32(b,12), typeReferenceKind=(flags>>>3)&7;
   if(protocol==null||rawTypeRef==null)return null;
   let typeRef=null, objcClassName=null, objcClassReference=null;
   if(typeReferenceKind===0) typeRef=rawTypeRef;

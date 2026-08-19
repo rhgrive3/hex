@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import vm from 'node:vm';
 import { deterministicAnswer } from '../js/agent/runtime.js';
 import { StringCollectionBudget } from '../js/string-budget.js';
 import { productDescriptor } from '../js/platform/product-descriptor.js';
@@ -101,4 +102,31 @@ import '../js/worker-budget.js';
   assert.doesNotMatch(source, /function addressProvenanceBase\(/);
 }
 
+// #837: BL/BLR overwrite x30/LR, while AAPCS64 callee-saved x19-x29 survive.
+{
+  const sandbox = {};
+  sandbox.globalThis = sandbox;
+  sandbox.self = sandbox;
+  vm.runInContext(fs.readFileSync(new URL('../js/address-provenance.js', import.meta.url), 'utf8'), vm.createContext(sandbox));
+  const K = { CALL: 1, INDCALL: 2, CONDBR: 3, BRANCH: 4, RET: 5, TRAP: 6 };
+  const words = { KIND: K, branchImm26: () => 0x2000n, condBranchTarget: () => null };
+  const p = sandbox.AddressProvenance.create({ words });
+
+  p.note(16, 0x16000n, 0);
+  p.note(19, 0x19000n, 0);
+  p.note(29, 0x29000n, 0);
+  p.note(30, 0x30000n, 0);
+  p.control(0, 0x1000n, K.CALL);
+  assert.equal(p.base(16, 1), null, 'x16 caller-saved provenance must die across BL');
+  assert.equal(p.base(19, 1), 0x19000n, 'x19 callee-saved provenance must survive a conforming call');
+  assert.equal(p.base(29, 1), 0x29000n, 'x29 callee-saved provenance must survive a conforming call');
+  assert.equal(p.base(30, 1), null, 'BL overwrites LR, so x30 provenance must die');
+
+  p.note(30, 0x31000n, 2);
+  p.control(0, 0x1004n, K.INDCALL);
+  assert.equal(p.base(30, 3), null, 'BLR overwrites LR, so x30 provenance must die');
+}
+
 console.log('issues 550-559 regressions: ok');
+
+await import('./issue-840-rtti-pointer-formats.mjs');
