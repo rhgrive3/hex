@@ -99,6 +99,111 @@
       "result": "accepted",
       "blockingReason": null,
       "notes": "A2 field-sensitive points-to wired into the canonical pipeline; exact alias relations 1/2 -> 2/2"
+    },
+    {
+      "id": "P7-3a",
+      "recordedAt": "2026-08-19T11:45:19.848Z",
+      "integrationSha": "7d513a2af6c6f1a3e88c9e3c287efd59bbd1a82e",
+      "integrationTreeSha": "5168e6e14d7d88a8967cb41ee17837ef499b9a01",
+      "mergeBaseSha": "bdf90569ed037a3d30e4439dcde970aad9352e21",
+      "branch": "phase7/static-analysis-depth",
+      "changedFileCount": 58,
+      "changedFileInventoryDigest": "fbcf886bc2cbfc198adc8c1297bd4a8c",
+      "ownershipPolicyVersion": 2,
+      "corpusManifestDigest": "119e522b98e17fad0bef63bb6464f566",
+      "scoring": {
+        "id": "phase7.scoring",
+        "version": "1.0.0"
+      },
+      "truthGenerator": {
+        "id": "phase7.corpus.declared-truth",
+        "version": "1.0.0"
+      },
+      "verifierVersion": "1.0.0",
+      "gates": [
+        "phase7:test",
+        "migration:test",
+        "semantic-v2:test",
+        "semantic:test",
+        "decompiler:test",
+        "lint",
+        "invariants:test",
+        "phase6:test"
+      ],
+      "generatedOutputDiff": "zero",
+      "result": "accepted",
+      "blockingReason": null,
+      "notes": "summary/escape/interprocedural"
+    },
+    {
+      "id": "P7-3b",
+      "recordedAt": "2026-08-19T11:45:19.958Z",
+      "integrationSha": "7d513a2af6c6f1a3e88c9e3c287efd59bbd1a82e",
+      "integrationTreeSha": "5168e6e14d7d88a8967cb41ee17837ef499b9a01",
+      "mergeBaseSha": "bdf90569ed037a3d30e4439dcde970aad9352e21",
+      "branch": "phase7/static-analysis-depth",
+      "changedFileCount": 58,
+      "changedFileInventoryDigest": "fbcf886bc2cbfc198adc8c1297bd4a8c",
+      "ownershipPolicyVersion": 2,
+      "corpusManifestDigest": "119e522b98e17fad0bef63bb6464f566",
+      "scoring": {
+        "id": "phase7.scoring",
+        "version": "1.0.0"
+      },
+      "truthGenerator": {
+        "id": "phase7.corpus.declared-truth",
+        "version": "1.0.0"
+      },
+      "verifierVersion": "1.0.0",
+      "gates": [
+        "phase7:test",
+        "migration:test",
+        "semantic-v2:test",
+        "semantic:test",
+        "decompiler:test",
+        "lint",
+        "invariants:test",
+        "phase6:test"
+      ],
+      "generatedOutputDiff": "zero",
+      "result": "accepted",
+      "blockingReason": null,
+      "notes": "summary/escape/interprocedural"
+    },
+    {
+      "id": "P7-3c",
+      "recordedAt": "2026-08-19T11:45:20.067Z",
+      "integrationSha": "7d513a2af6c6f1a3e88c9e3c287efd59bbd1a82e",
+      "integrationTreeSha": "5168e6e14d7d88a8967cb41ee17837ef499b9a01",
+      "mergeBaseSha": "bdf90569ed037a3d30e4439dcde970aad9352e21",
+      "branch": "phase7/static-analysis-depth",
+      "changedFileCount": 58,
+      "changedFileInventoryDigest": "fbcf886bc2cbfc198adc8c1297bd4a8c",
+      "ownershipPolicyVersion": 2,
+      "corpusManifestDigest": "119e522b98e17fad0bef63bb6464f566",
+      "scoring": {
+        "id": "phase7.scoring",
+        "version": "1.0.0"
+      },
+      "truthGenerator": {
+        "id": "phase7.corpus.declared-truth",
+        "version": "1.0.0"
+      },
+      "verifierVersion": "1.0.0",
+      "gates": [
+        "phase7:test",
+        "migration:test",
+        "semantic-v2:test",
+        "semantic:test",
+        "decompiler:test",
+        "lint",
+        "invariants:test",
+        "phase6:test"
+      ],
+      "generatedOutputDiff": "zero",
+      "result": "accepted",
+      "blockingReason": null,
+      "notes": "summary/escape/interprocedural"
     }
   ]
 }

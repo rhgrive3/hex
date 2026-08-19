@@ -288,6 +288,210 @@
       }
     ]
   },
+  "typeCorpus": {
+    "id": "phase7-type-corpus",
+    "version": 1,
+    "cases": [
+      {
+        "id": "t-access-width",
+        "entityId": "entity_counter",
+        "hardKinds": [
+          "access-width"
+        ],
+        "softKinds": [],
+        "expectCertain": [
+          "machine"
+        ],
+        "expectContradiction": [],
+        "hasNoDebugVariant": false
+      },
+      {
+        "id": "t-abi-location",
+        "entityId": "entity_arg0",
+        "hardKinds": [
+          "abi-location"
+        ],
+        "softKinds": [
+          "symbol-spelling"
+        ],
+        "expectCertain": [
+          "abi"
+        ],
+        "expectContradiction": [],
+        "hasNoDebugVariant": false
+      },
+      {
+        "id": "t-contradicting-widths",
+        "entityId": "entity_conflicted",
+        "hardKinds": [
+          "access-width",
+          "debug-type"
+        ],
+        "softKinds": [
+          "use-shape"
+        ],
+        "expectCertain": [],
+        "expectContradiction": [
+          "machine"
+        ],
+        "hasNoDebugVariant": true
+      },
+      {
+        "id": "t-soft-only-ranking",
+        "entityId": "entity_guessed",
+        "hardKinds": [],
+        "softKinds": [
+          "symbol-spelling",
+          "use-shape"
+        ],
+        "expectCertain": [],
+        "expectContradiction": [],
+        "hasNoDebugVariant": false
+      },
+      {
+        "id": "t-soft-tie-is-ambiguous",
+        "entityId": "entity_tied",
+        "hardKinds": [],
+        "softKinds": [
+          "signature-candidate",
+          "symbol-spelling"
+        ],
+        "expectCertain": [],
+        "expectContradiction": [],
+        "hasNoDebugVariant": false
+      },
+      {
+        "id": "t-soft-cannot-overrule-hard",
+        "entityId": "entity_overruled",
+        "hardKinds": [
+          "access-width"
+        ],
+        "softKinds": [
+          "array-stride-heuristic"
+        ],
+        "expectCertain": [
+          "machine"
+        ],
+        "expectContradiction": [],
+        "hasNoDebugVariant": false
+      },
+      {
+        "id": "t-union-overlap",
+        "entityId": "entity_union",
+        "hardKinds": [
+          "debug-type",
+          "debug-type"
+        ],
+        "softKinds": [],
+        "expectCertain": [],
+        "expectContradiction": [
+          "structural"
+        ],
+        "hasNoDebugVariant": true
+      },
+      {
+        "id": "t-disjoint-fields-coexist",
+        "entityId": "entity_struct",
+        "hardKinds": [
+          "debug-type",
+          "debug-type"
+        ],
+        "softKinds": [],
+        "expectCertain": [
+          "structural"
+        ],
+        "expectContradiction": [],
+        "hasNoDebugVariant": true
+      },
+      {
+        "id": "t-nominal-alias-is-not-conflict",
+        "entityId": "entity_alias",
+        "hardKinds": [
+          "call-prototype",
+          "debug-type"
+        ],
+        "softKinds": [],
+        "expectCertain": [
+          "nominal"
+        ],
+        "expectContradiction": [],
+        "hasNoDebugVariant": true
+      },
+      {
+        "id": "t-user-declared-constraint",
+        "entityId": "entity_user",
+        "hardKinds": [
+          "user-declared"
+        ],
+        "softKinds": [],
+        "expectCertain": [
+          "nominal"
+        ],
+        "expectContradiction": [],
+        "hasNoDebugVariant": false
+      }
+    ]
+  },
+  "debugCorpus": {
+    "dwarf": {
+      "variants": [
+        {
+          "name": "dwarf4",
+          "dwarfVersion": 4,
+          "compiler": "gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0",
+          "buildId": "4d0e9ae39a30e4cf31ec134c7507260bb8e4be47",
+          "sections": [
+            ".debug_abbrev",
+            ".debug_info",
+            ".debug_str",
+            ".note.gnu.build-id"
+          ],
+          "digest": "1a71f88528e8d7dd2610edbd8c1796be"
+        },
+        {
+          "name": "dwarf5",
+          "dwarfVersion": 5,
+          "compiler": "gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0",
+          "buildId": "efb013ae5591ba16912b8b316237b4329ae5d6b2",
+          "sections": [
+            ".debug_abbrev",
+            ".debug_info",
+            ".debug_line_str",
+            ".debug_str",
+            ".note.gnu.build-id"
+          ],
+          "digest": "1ca5a270066089e6a52bb8cf07899b9b"
+        },
+        {
+          "name": "split-debug",
+          "dwarfVersion": 5,
+          "compiler": null,
+          "buildId": "efb013ae5591ba16912b8b316237b4329ae5d6b2",
+          "sections": [
+            ".debug_abbrev",
+            ".debug_info",
+            ".debug_line_str",
+            ".debug_str",
+            ".note.gnu.build-id"
+          ],
+          "digest": "1ca5a270066089e6a52bb8cf07899b9b"
+        }
+      ]
+    },
+    "pdb": {
+      "variants": [
+        {
+          "name": "clang-lld-x64",
+          "codeView": {
+            "guid": "0DCCAC73-EB07-2D7D-4C4C-44205044422E",
+            "age": 1,
+            "path": "/tmp/phase7/pfx.pdb"
+          },
+          "digest": "8ee4195480e1f6ffbd151b4d321a01de"
+        }
+      ]
+    }
+  },
   "truthGenerator": {
     "id": "phase7.corpus.declared-truth",
     "version": "1.0.0"
@@ -297,5 +501,5 @@
     "version": "1.0.0"
   },
   "exclusions": [],
-  "manifestDigest": "119e522b98e17fad0bef63bb6464f566"
+  "manifestDigest": "66535e42f021e852dee7118f57201dd5"
 }

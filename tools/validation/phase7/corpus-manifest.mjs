@@ -9,10 +9,17 @@
  * series and the baseline has to be re-run (FM-16).
  */
 
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import { stableDigest } from '../../../js/core/identity/index.js';
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 import { currentSupportMatrix } from '../../../js/platform/capability-maturity.js';
 import { ALIAS_QUERIES, CORPUS_ID, CORPUS_VERSION, ESCAPE_QUERIES, FIXTURE_IDS, MEMORY_LINK_QUERIES } from '../../../tests/phase7/corpus/fixtures.mjs';
 import { SUMMARY_CORPUS_ID, SUMMARY_CORPUS_VERSION, SUMMARY_GRAPH_IDS, SUMMARY_QUERIES } from '../../../tests/phase7/corpus/summaries.mjs';
+import { TYPE_CASES, TYPE_CORPUS_ID, TYPE_CORPUS_VERSION } from '../../../tests/phase7/corpus/types.mjs';
 import { SCORING_ID, SCORING_VERSION, TRUTH_GENERATOR_ID, TRUTH_GENERATOR_VERSION } from './scoring.mjs';
 
 export const MANIFEST_SCHEMA_VERSION = 1;
@@ -45,6 +52,42 @@ export function debugFormatLanes(matrix = currentSupportMatrix()) {
     .filter((format) => format.features.parseStructures === 'supported' && format.features.correctMapping === 'supported')
     .map((format) => format.id)
     .sort();
+}
+
+/**
+ * Identity of the committed debug fixtures.
+ *
+ * The fixtures are real compiler and linker output, so what identifies them is
+ * the build identity they carry plus a digest of their bytes: a regenerated
+ * fixture has a different build id and is therefore a different corpus.
+ */
+function debugCorpusIdentity() {
+  const read = (name) => {
+    const file = path.join(ROOT, 'tests/phase7/corpus/debug', name);
+    if (!fs.existsSync(file)) return null;
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  };
+  const dwarf = read('dwarf-fixtures.json');
+  const pdb = read('pdb-fixtures.json');
+  return {
+    dwarf: dwarf == null ? null : {
+      variants: dwarf.variants.map((variant) => ({
+        name: variant.name,
+        dwarfVersion: variant.dwarfVersion,
+        compiler: variant.compiler ?? null,
+        buildId: variant.buildId,
+        sections: Object.keys(variant.sections).sort(),
+        digest: stableDigest(variant.sections),
+      })),
+    },
+    pdb: pdb == null ? null : {
+      variants: pdb.variants.map((variant) => ({
+        name: variant.name,
+        codeView: variant.codeView,
+        digest: stableDigest(variant.pdb),
+      })),
+    },
+  };
 }
 
 export function buildCorpusManifest({ matrix = currentSupportMatrix() } = {}) {
@@ -84,6 +127,20 @@ export function buildCorpusManifest({ matrix = currentSupportMatrix() } = {}) {
         converges: query.converges === true,
       })),
     },
+    typeCorpus: {
+      id: TYPE_CORPUS_ID,
+      version: TYPE_CORPUS_VERSION,
+      cases: TYPE_CASES.map((testCase) => ({
+        id: testCase.id,
+        entityId: testCase.entityId,
+        hardKinds: testCase.hard.map((constraint) => constraint.kind).sort(),
+        softKinds: testCase.soft.map((evidence) => evidence.kind).sort(),
+        expectCertain: [...(testCase.expectCertain ?? [])],
+        expectContradiction: [...(testCase.expectContradiction ?? [])],
+        hasNoDebugVariant: testCase.noDebug != null,
+      })),
+    },
+    debugCorpus: debugCorpusIdentity(),
     truthGenerator: { id: TRUTH_GENERATOR_ID, version: TRUTH_GENERATOR_VERSION },
     scoring: { id: SCORING_ID, version: SCORING_VERSION },
     // Exclusions are declared, never applied silently. An empty list is the
