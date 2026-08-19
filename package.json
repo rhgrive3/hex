@@ -42,7 +42,7 @@
     "fixtures:fetch": "node scripts/fetch-real-fixtures.mjs all",
     "fixtures:check": "node scripts/fetch-real-fixtures.mjs all --check",
     "oracle": "python3 tests/oracle.py tests/.real-fixtures/battlecats tests/oracle.battlecats.json.gz",
-    "binary:test": "node tests/issues-461-463-binary.mjs && node tests/universal-binary.mjs && node tests/universal-binary-sectionless.mjs && node tests/universal-binary-source.mjs && node tests/binary-platform.mjs",
+    "binary:test": "node tests/issue-970-virtual-read-span.mjs && node tests/issues-461-463-binary.mjs && node tests/universal-binary.mjs && node tests/universal-binary-sectionless.mjs && node tests/universal-binary-source.mjs && node tests/binary-platform.mjs",
     "binary:source-test": "node tests/universal-binary-source.mjs && node tests/binary-platform.mjs",
     "binary:gate": "node tests/universal-binary-gate.mjs",
     "binary:benchmark": "node tests/universal-binary-benchmark.mjs",
