@@ -25,7 +25,6 @@ concurrency:
 
 jobs:
   resolve-pr874:
-    # Temporary branch-only resolver; restored to main before publication.
     if: github.event_name == 'pull_request' && github.head_ref == 'integrate/open-issue-fixes-20260819'
     runs-on: ubuntu-latest
     timeout-minutes: 120
@@ -41,6 +40,16 @@ jobs:
       - run: npm ci
       - name: Rebuild canonical userscript outputs
         run: npm run userscript:build
+      - name: Restore permanent workflow before repository tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          git checkout origin/main -- .github/workflows/generated-sync.yml
+      - name: Focused Worker regression
+        run: node --test tests/worker-classic-harness.mjs
+      - name: Focused RISC-V same-target regression
+        run: node --test tests/phase6/generic-core/degenerate-control-dependency.test.mjs
       - name: Full repository verification
         run: npm run check
       - name: Prove userscript build idempotence
@@ -58,10 +67,7 @@ jobs:
           set -euo pipefail
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git fetch origin main
-          git add userscript/hex.user.template.js userscript/release-version.json
-          git checkout origin/main -- .github/workflows/generated-sync.yml
-          git add .github/workflows/generated-sync.yml
+          git add userscript/hex.user.template.js userscript/release-version.json .github/workflows/generated-sync.yml
           git diff --cached --check
           git commit -m 'chore: regenerate PR 874 userscript outputs'
           git push origin HEAD:integrate/open-issue-fixes-20260819
