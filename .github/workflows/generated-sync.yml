@@ -20,6 +20,8 @@ jobs:
       - name: Attempt source-branch merge without committing
         shell: bash
         run: |
+          git config user.name 'integration-diagnostic'
+          git config user.email 'integration-diagnostic@users.noreply.github.com'
           git fetch origin fix/unlinked-abi-526-954-955-958-959
           set +e
           git merge --no-commit --no-ff origin/fix/unlinked-abi-526-954-955-958-959
