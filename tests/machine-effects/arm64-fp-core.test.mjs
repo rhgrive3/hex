@@ -26,10 +26,15 @@ const immFloat = (value, text = `#${value}`) => ({ k:'imm', value:null, float:va
   assert.deepEqual([...intrinsic.effectSummary.registersWritten].sort(), ['fpsr','v0'].sort());
   const result = intrinsic.effectSummary.outputs[0];
   assert.equal(result.valueType.kind, 'float');
-  assert.equal(result.valueType.widthBits, 32, 'S-register FP width must remain 32-bit');
+  assert.equal(result.valueType.widthBits, 32, 'S-register FP operation width must remain 32-bit');
   const write = effect.operations.find((op) => op.kind === 'register-write' && op.register.registerId === 'v0');
-  assert.equal(write.register.widthBits, 32);
-  assert.equal(write.register.view, 's0');
+  assert.equal(write.register.widthBits, 128, 'S-register writes must update canonical 128-bit Vn physical state');
+  assert.equal(write.register.view, 'v0');
+  assert.equal(write.metadata.architecturalViewWritten, 's0');
+  assert.equal(write.metadata.writePolicy, 'zero-upper-vector-bits');
+  assert.ok(effect.operations.some((op) => op.kind === 'value' && op.opcode === 'zero-extend'
+    && op.metadata?.fromBits === 32 && op.metadata?.toBits === 128),
+  'S-register result must materialize the architectural zero-upper policy');
   assert.doesNotThrow(() => validateMachineEffectBundle(effect));
 }
 
