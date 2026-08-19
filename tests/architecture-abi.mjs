@@ -6,6 +6,7 @@ import {
 } from '../js/architecture/index.js';
 import {
   AAPCS64_ABI,
+  DARWIN_ARM64_ABI,
   MICROSOFT_X64_ABI,
   SYSV_AMD64_ABI,
   resolveABIPlugin,
@@ -57,10 +58,13 @@ const region = { vmAddr:BASE, size:0x100n };
   assert.equal(AAPCS64_ABI.stackRules().alignment, 16);
 }
 
-// Platform can select an ABI without moving ABI rules into the architecture.
+// Platform profiles keep their compatibility default ABI string, while the
+// semantic resolver may select a more precise platform variant.
 {
   assert.equal(platformProfile('darwin').defaultABI({ architecture:'arm64' }), 'aapcs64');
-  assert.equal(resolveABIPlugin({ architecture:'arm64', platform:'darwin' }).id, 'aapcs64');
+  assert.equal(resolveABIPlugin({ architecture:'arm64', platform:'darwin' }), DARWIN_ARM64_ABI);
+  assert.equal(resolveABIPlugin({ architecture:'arm64', platform:'linux' }), AAPCS64_ABI);
+  assert.notEqual(DARWIN_ARM64_ABI.semanticIdentity, AAPCS64_ABI.semanticIdentity);
   assert.equal(resolveABIPlugin({ architecture:'x86_64', platform:'windows' }), MICROSOFT_X64_ABI);
   assert.equal(resolveABIPlugin({ architecture:'x86_64', platform:'linux' }), SYSV_AMD64_ABI);
 }
