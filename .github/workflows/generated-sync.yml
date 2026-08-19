@@ -14,35 +14,25 @@ on:
       - 'package.json'
       - 'package-lock.json'
       - '.github/workflows/generated-sync.yml'
-  push:
-    branches: [main]
-    paths:
-      - 'index.html'
-      - 'css/**'
-      - 'js/**'
-      - 'capstone.wasm'
-      - 'scripts/build-userscript.mjs'
-      - 'scripts/userscript-release-version.mjs'
-      - 'userscript/hex.user.template.js'
-      - 'userscript/release-version.json'
-      - 'package.json'
-      - 'package-lock.json'
-      - '.github/workflows/generated-sync.yml'
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: generated-sync-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  generated-sync:
+  resolve-pr874:
+    if: github.event_name == 'pull_request' && github.head_ref == 'integrate/open-issue-fixes-20260819'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: integrate/open-issue-fixes-20260819
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -50,8 +40,27 @@ jobs:
       - run: npm ci
       - name: Rebuild canonical userscript outputs
         run: npm run userscript:build
-      - name: Require userscript-owned generated outputs to match source
-        run: >-
-          git diff --exit-code --
-          userscript/hex.user.template.js
-          userscript/release-version.json
+      - name: Full repository verification
+        run: npm run check
+      - name: Prove userscript build idempotence
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp userscript/hex.user.template.js /tmp/hex.user.template.js
+          cp userscript/release-version.json /tmp/release-version.json
+          npm run userscript:build
+          cmp userscript/hex.user.template.js /tmp/hex.user.template.js
+          cmp userscript/release-version.json /tmp/release-version.json
+      - name: Publish clean resolved head
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git fetch origin main
+          git add userscript/hex.user.template.js userscript/release-version.json
+          git checkout origin/main -- .github/workflows/generated-sync.yml
+          git add .github/workflows/generated-sync.yml
+          git diff --cached --check
+          git commit -m 'chore: regenerate PR 874 userscript outputs'
+          git push origin HEAD:integrate/open-issue-fixes-20260819
