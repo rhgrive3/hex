@@ -25,7 +25,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Build exact npm-check shard matrix
+      - name: Build deduplicated npm-check shard matrix
         id: plan
         shell: bash
         run: |
@@ -39,11 +39,25 @@ jobs:
             .filter(Boolean);
           if (parts.length < 2) throw new Error('npm check must contain at least two independent top-level commands');
 
-          const include = parts.map((command, index) => {
-            const match = command.match(/^npm run ([A-Za-z0-9:_-]+)$/);
-            const name = command === 'npm test' ? 'test' : (match?.[1] || `shard-${index + 1}`);
-            return { name, command };
-          });
+          const isolated = new Map([
+            ['npm test', 'test'],
+            ['npm run phase6:test', 'phase6:test'],
+            ['npm run benchmark:baseline', 'benchmark:baseline'],
+          ]);
+          const contracts = parts.filter((command) => !isolated.has(command));
+          if (!contracts.length) throw new Error('npm check must contain contract commands');
+
+          // MachineEffects used to run in a separate always-on workflow. Fold it
+          // into the main invariant gate so coverage is preserved without an
+          // additional checkout/setup/npm-ci runner on every PR.
+          if (!parts.includes('npm run effects:test')) contracts.unshift('npm run effects:test');
+
+          const include = [
+            { name: 'contracts', command: contracts.join(' && ') },
+            ...parts
+              .filter((command) => isolated.has(command))
+              .map((command) => ({ name: isolated.get(command), command })),
+          ];
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify({ include })}\n`);
           NODE
 
@@ -51,10 +65,10 @@ jobs:
     name: check-${{ matrix.name }}
     needs: plan
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     strategy:
       fail-fast: false
-      max-parallel: 7
+      max-parallel: 4
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
       - name: Checkout
@@ -73,7 +87,7 @@ jobs:
         if: >-
           github.event_name == 'pull_request' &&
           github.base_ref == 'hex/p5-x86-integration' &&
-          matrix.name == 'semantic-v2:test' &&
+          matrix.name == 'contracts' &&
           (
             github.head_ref == 'hex/p5-1-x86-int-control' ||
             github.head_ref == 'hex/p5-2-x86-memory-atomic' ||
