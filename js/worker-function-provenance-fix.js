@@ -3,22 +3,20 @@
 /*
  * Cross-binary function-boundary hardening.
  *
- * worker-fixes.js collects several structurally different metadata sources in
- * one `structured` Set. In particular, every raw u32 in __DATA_CONST,__const
- * that happens to decode as imageBase+offset inside __text is promoted to
- * `structured` when the target is immediately after an indirect branch. The
- * same BR boundary then becomes both the reason for promotion and the reason
- * `structured` is accepted as strong evidence.
+ * worker-fixes.js aggregates structurally different metadata sources in one
+ * `structured` Set. A raw u32 in __DATA_CONST,__const can therefore become
+ * `structured` merely because imageBase+u32 lands in __text immediately after
+ * an indirect branch. The same BR boundary then acts twice: once to promote
+ * the raw word and again through `structured` as strong function evidence.
  *
- * Restore the provenance that the aggregate Set loses. We recompute only the
- * broad image-relative cohort and the two non-exact structured sources that
- * can overlap it (field-relative metadata and validated Itanium vtables). A
- * target is removed only when its sole structured provenance is the circular
- * raw-u32 + immediately-after-BR route.
+ * Reconstruct provenance before hardened guessFunctions consumes that Set.
+ * Exact metadata, field-relative metadata and validated Itanium vtables remain
+ * independent evidence. Raw image-relative words are independent only when
+ * their source layout itself looks like a table: at least two adjacent words
+ * map into code, or the same code target occurs more than once in the section.
+ * An isolated one-off raw word immediately after BR is not a second source.
  */
 const __functionEvidenceBeforeImageRelativeHardening = __functionEvidence;
-let __functionProvenanceDiagnostic = null;
-let __broadImageRelativeShape = new Map();
 
 function __hasIndependentFunctionEvidence(ev, target) {
   return ev.exactMetadata?.has?.(target) ||
@@ -33,26 +31,14 @@ function __hasIndependentFunctionEvidence(ev, target) {
     ev.denseAddressLeafStarts?.has?.(target);
 }
 
-async function __broadImageRelativeCandidates(region, slice, requestId) {
-  const out = new Set();
-  const shape = new Map();
-  __broadImageRelativeShape = shape;
+async function __imageRelativeProvenance(region, slice, requestId) {
+  const broad = new Set();
+  const layoutBacked = new Set();
   const imageBase = slice?.info?.textVM;
-  if (imageBase == null) return out;
+  if (imageBase == null) return { broad, layoutBacked };
   const lo = region.vmAddr;
   const hi = region.vmAddr + region.size;
-
-  const record = (target, runLength, windowCount, wordIndex) => {
-    const key = target.toString();
-    let meta = shape.get(key);
-    if (!meta) shape.set(key, meta = {
-      target: Number(target), occurrences: 0, maxRun: 0, maxWindow9: 0, wordMod8Mask: 0,
-    });
-    meta.occurrences++;
-    if (runLength > meta.maxRun) meta.maxRun = runLength;
-    if (windowCount > meta.maxWindow9) meta.maxWindow9 = windowCount;
-    meta.wordMod8Mask |= 1 << (wordIndex & 7);
-  };
+  const occurrences = new Map();
 
   for (const r of slice.regions || []) {
     if (r.segment !== '__DATA_CONST' || r.section !== '__const' || r.size <= 0n || r.size > 32n * 1024n * 1024n) continue;
@@ -60,31 +46,35 @@ async function __broadImageRelativeCandidates(region, slice, requestId) {
       const buf = await readRange(r.fileOffset, Number(r.size));
       const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
       const count = Math.floor(buf.byteLength / 4);
-      const targets = new Array(count).fill(null);
-      const prefix = new Uint32Array(count + 1);
+      const words = new Array(count).fill(null);
       for (let i = 0; i < count; i++) {
         const target = imageBase + BigInt(dv.getUint32(i * 4, true));
-        if (target >= lo && target < hi && !(target & 3n)) {
-          targets[i] = target;
-          out.add(target);
-        }
-        prefix[i + 1] = prefix[i] + Number(targets[i] != null);
+        if (target < lo || target >= hi || (target & 3n)) continue;
+        words[i] = target;
+        broad.add(target);
+        const key = target.toString();
+        occurrences.set(key, (occurrences.get(key) || 0) + 1);
       }
+
+      // Adjacent relative code offsets are table-layout evidence independent of
+      // the target instruction's predecessor. Preserve the whole contiguous run.
       for (let i = 0; i < count;) {
-        if (targets[i] == null) { i++; continue; }
+        if (words[i] == null) { i++; continue; }
         let j = i + 1;
-        while (j < count && targets[j] != null) j++;
-        const runLength = j - i;
-        for (let k = i; k < j; k++) {
-          const left = Math.max(0, k - 4), right = Math.min(count, k + 5);
-          record(targets[k], runLength, prefix[right] - prefix[left], k);
-        }
+        while (j < count && words[j] != null) j++;
+        if (j - i >= 2) for (let k = i; k < j; k++) layoutBacked.add(words[k]);
         i = j;
       }
     } catch { /* malformed/raw data is not evidence */ }
-    if (cancelled(requestId)) break;
+    if (cancelled(requestId)) return { broad, layoutBacked };
   }
-  return out;
+
+  // A target repeated independently in the raw metadata is also source-layout
+  // corroboration. This does not depend on the code bytes or oracle truth.
+  for (const target of broad) {
+    if ((occurrences.get(target.toString()) || 0) >= 2) layoutBacked.add(target);
+  }
+  return { broad, layoutBacked };
 }
 
 async function __independentStructuredCandidates(region, slice, ev, requestId) {
@@ -95,8 +85,8 @@ async function __independentStructuredCandidates(region, slice, ev, requestId) {
   const hi = region.vmAddr + region.size;
 
   // Field-relative Swift/runtime metadata is a distinct physical source from
-  // image-relative raw u32s. Preserve it only under the same boundary contract
-  // used by worker-fixes.js.
+  // image-relative raw u32s. Preserve it under the same boundary contract as
+  // worker-fixes.js.
   for (const r of slice.regions || []) {
     if (r.size <= 0n || r.size > 32n * 1024n * 1024n) continue;
     const sec = r.section || '';
@@ -118,10 +108,8 @@ async function __independentStructuredCandidates(region, slice, ev, requestId) {
     if (cancelled(requestId)) return out;
   }
 
-  // Reconstruct the exact validated-vtable rule from worker-fixes.js. These
-  // entries are structured because of the Itanium header/typeinfo layout, not
-  // because they happen to be after BR, so overlap with the broad-u32 cohort
-  // must not erase them.
+  // Reconstruct the validated Itanium-vtable rule. These pointers are backed
+  // by the offset-to-top/typeinfo layout, not by the BR predecessor relation.
   for (const r of slice.regions || []) {
     if (r.size <= 0n || r.size > 32n * 1024n * 1024n) continue;
     if (!/^__(const|data|objc_const|cfstring)$/.test(r.section || '')) continue;
@@ -153,7 +141,6 @@ async function __independentStructuredCandidates(region, slice, ev, requestId) {
     } catch { /* unreadable metadata is not evidence */ }
     if (cancelled(requestId)) return out;
   }
-
   return out;
 }
 
@@ -161,42 +148,29 @@ __functionEvidence = async function functionEvidenceWithProvenance(region, slice
   const ev = await __functionEvidenceBeforeImageRelativeHardening(region, slice, requestId);
   if (!ev?.structured || cancelled(requestId)) return ev;
 
-  const [broad, independentStructured] = await Promise.all([
-    __broadImageRelativeCandidates(region, slice, requestId),
+  const [imageRelative, independentStructured] = await Promise.all([
+    __imageRelativeProvenance(region, slice, requestId),
     __independentStructuredCandidates(region, slice, ev, requestId),
   ]);
   if (cancelled(requestId)) return ev;
 
   let removedCircularImageRelative = 0;
-  const removed = [];
-  for (const target of broad) {
+  for (const target of imageRelative.broad) {
     if (!ev.structured.has(target)) continue;
     if (!ev.indirectTerminalStarts?.has?.(target)) continue;
+    if (imageRelative.layoutBacked.has(target)) continue;
     if (independentStructured.has(target)) continue;
     if (__hasIndependentFunctionEvidence(ev, target)) continue;
     ev.structured.delete(target);
     removedCircularImageRelative++;
-    const meta = __broadImageRelativeShape.get(target.toString());
-    if (meta) removed.push(meta);
   }
 
   ev.provenanceStats = {
     ...(ev.provenanceStats || {}),
-    broadImageRelativeCandidates: broad.size,
+    broadImageRelativeCandidates: imageRelative.broad.size,
+    layoutBackedImageRelativeCandidates: imageRelative.layoutBacked.size,
     independentStructuredCandidates: independentStructured.size,
     removedCircularImageRelative,
   };
-  __functionProvenanceDiagnostic = { ...ev.provenanceStats, removed };
   return ev;
-};
-
-// Temporary measurement plumbing: the scorer uses this only to aggregate
-// structural signatures of the ambiguous cohort. No oracle/truth information
-// enters the worker or affects acceptance.
-const __guessFunctionsBeforeProvenanceDiagnostic = guessFunctions;
-guessFunctions = async function guessFunctionsWithProvenanceDiagnostic(args) {
-  __functionProvenanceDiagnostic = null;
-  const result = await __guessFunctionsBeforeProvenanceDiagnostic(args);
-  if (result && __functionProvenanceDiagnostic) result.provenanceDiagnostic = __functionProvenanceDiagnostic;
-  return result;
 };
