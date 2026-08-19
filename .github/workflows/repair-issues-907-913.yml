@@ -1,0 +1,57 @@
+name: Repair Issues 907 909 910 913
+
+on:
+  push:
+    branches:
+      - fix/issues-907-909-910-913-20260819
+
+permissions:
+  contents: write
+
+concurrency:
+  group: repair-issues-907-913-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  repair:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Apply guarded repair
+        run: node scripts/repair-issues-907-909-910-913.mjs
+
+      - name: Focused regressions
+        run: node --test --test-reporter=spec --test-concurrency=1 tests/phase6/generic-core/issues-907-909-910-913.test.mjs
+
+      - name: Regenerate userscript
+        run: npm run userscript:build
+
+      - name: Full repository verification
+        run: npm run check
+
+      - name: Diff validation
+        run: git diff --check
+
+      - name: Commit verified source
+        run: |
+          rm scripts/repair-issues-907-909-910-913.mjs
+          rm .github/workflows/repair-issues-907-913.yml
+          git add -A
+          git diff --cached --check
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'fix: resolve issues 907 909 910 and 913'
+          git push origin HEAD:fix/issues-907-909-910-913-20260819
