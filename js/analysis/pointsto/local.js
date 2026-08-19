@@ -340,13 +340,20 @@ export function analyzeLocalPointsTo(ir, cfg, ssa, options = {}) {
       if (leftConstant != null && operator === 'add') {
         return shiftSet(irGet(node.inputs[1]), leftConstant, width);
       }
-      // A pointer displaced by a value we cannot bound. Unbounding the offset
-      // is the sound answer; keeping the base offset would be a false interval.
-      const base = irGet(node.inputs[0]);
-      if (base.top || pointsToIsBottom(base)) return topPointsTo('non-linear-arithmetic');
+      // Neither operand is a constant, so we cannot tell which side is the
+      // pointer. Both sides' roots must survive: taking only the left operand
+      // would drop the right one's targets, and a points-to set that is missing
+      // a target falsely proves separation from it.
+      const left = irGet(node.inputs[0]);
+      const right = irGet(node.inputs[1]);
+      if (left.top || right.top) return topPointsTo('non-linear-arithmetic');
+      const merged = joinPointsTo(left, right, budget);
+      if (merged.top || pointsToIsBottom(merged)) return topPointsTo('non-linear-arithmetic');
+      // The displacement is unbounded, so every surviving root keeps its
+      // identity and loses its offset.
       return createPointsToSet({
-        targets: base.targets.map((target) => createPointsToTarget({ ...target, offsetRange: UNBOUNDED_RANGE })),
-        lossReasons: [...base.lossReasons, 'non-linear-arithmetic'],
+        targets: merged.targets.map((target) => createPointsToTarget({ ...target, offsetRange: UNBOUNDED_RANGE })),
+        lossReasons: [...merged.lossReasons, 'non-linear-arithmetic'],
       });
     }
     if (node.kind === 'load') return topPointsTo('unresolved-load');

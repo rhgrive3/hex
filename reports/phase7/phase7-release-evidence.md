@@ -1,9 +1,9 @@
 # Phase 7 release evidence — READY
 
-- product: `7caa028a0f275eb5386063f26dbac53a01b2026e` (tree `6bf374a41389a598b9af27895d237dbd83fd1bc8`, branch `phase7/static-analysis-depth`, clean: true)
+- product: `3cb5e9ad5c22c46cce32ce3dd675a9307d7a86bc` (tree `922166dbd681b0c6e8678c395ac0f33f83717bc1`, branch `phase7/static-analysis-depth`, clean: false)
 - verifier: phase7.verifier 1.0.0 (source sha256 `22616c498e0baabc`)
 - profile version: 1
-- corpus: phase7-alias-memory-corpus v1, digest `004acbb071160218a8ad023dbf653a65`, frozen match: true
+- corpus: phase7-alias-memory-corpus v1, digest `519bd15f3a918dbc2b436aca4870455d`, frozen match: true
 - scoring: phase7.scoring 1.0.0; truth: phase7.corpus.declared-truth 1.0.0
 
 ## Alias precision (same frozen query set, same denominator)
@@ -11,8 +11,8 @@
 | metric | baseline | candidate |
 |---|---|---|
 | exact relations proven | 1/3 | 3/3 |
-| strong proven rate | 0.077 | 0.231 |
-| may rate | 0.923 | 0.769 |
+| strong proven rate | 0.063 | 0.188 |
+| may rate | 0.938 | 0.813 |
 | unknown rate | 0.000 | 0.000 |
 | false NoAlias | 0 | 0 |
 | false MustAlias | 0 | 0 |

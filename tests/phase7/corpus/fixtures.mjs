@@ -331,7 +331,50 @@ function frameEscapesThroughReturn(options) {
   return built;
 }
 
+/**
+ * Two pointers added together, neither of them constant. The analysis cannot
+ * tell which operand is the pointer, so both roots must survive: dropping
+ * either one would falsely prove separation from it.
+ */
+function twoPointerArithmetic(options) {
+  const f = fixture('function_two_pointer_arithmetic');
+  f.block('entry', []);
+  const a = f.stateRead('a', 'state:x0');
+  const b = f.stateRead('b', 'state:x1');
+  const sum = f.binary('sum', 'add', a, b);
+  f.store('st_sum', sum, null, { widthBits: 32 });
+  f.store('st_a', a, null, { widthBits: 32 });
+  f.store('st_b', b, null, { widthBits: 32 });
+  f.ret('r');
+  return f.build(options);
+}
+
+/**
+ * A frame slot added to an incoming pointer, in a function where the frame
+ * itself never escapes.
+ *
+ * This is the case that punishes an under-approximating points-to set hardest.
+ * If the sum kept only one operand's root, the frame's non-escape proof would
+ * then "prove" that the sum cannot reach the frame — a false NoAlias built on
+ * a dropped target. Keeping both roots makes the answer `may`, which is true.
+ */
+function frameArithmeticWithEscapeProof(options) {
+  const f = fixture('function_frame_arith');
+  f.block('entry', []);
+  const sp = f.stateRead('sp', 'state:sp');
+  const arg = f.stateRead('arg', 'state:x0');
+  const c0 = f.constant('c0', 0);
+  const slot = f.binary('slot', 'add', sp, c0);
+  const sum = f.binary('sum', 'add', arg, slot);
+  f.store('st_slot', slot, null, { widthBits: 32 });
+  f.store('st_sum', sum, null, { widthBits: 32 });
+  f.ret('r');
+  return f.build({ ...options, rootDescriptors: FRAME_ROOTS });
+}
+
 const BUILDERS = Object.freeze({
+  'frame-arithmetic-with-escape-proof': frameArithmeticWithEscapeProof,
+  'two-pointer-arithmetic': twoPointerArithmetic,
   'frame-non-escaping': frameNonEscaping,
   'frame-escapes-through-argument': frameEscapesThroughArgument,
   'frame-escapes-through-return': frameEscapesThroughReturn,
@@ -388,6 +431,9 @@ export const ALIAS_QUERIES = Object.freeze([
   { id: 'q-load-derived', fixture: 'load-derived-pointer', left: 'node_st_loaded', right: 'node_st_other', truth: 'may-or-weaker', expectStrong: false },
   { id: 'q-frame-non-escaping', fixture: 'frame-non-escaping', left: 'node_st_slot', right: 'node_st_arg', truth: 'no', expectStrong: true, proofClass: 'escape' },
   { id: 'q-frame-escaped-argument', fixture: 'frame-escapes-through-argument', left: 'node_st_slot', right: 'node_st_arg', truth: 'may-or-weaker', expectStrong: false },
+  { id: 'q-two-pointer-add-left', fixture: 'two-pointer-arithmetic', left: 'node_st_sum', right: 'node_st_a', truth: 'may-or-weaker', expectStrong: false },
+  { id: 'q-two-pointer-add-right', fixture: 'two-pointer-arithmetic', left: 'node_st_sum', right: 'node_st_b', truth: 'may-or-weaker', expectStrong: false },
+  { id: 'q-frame-arithmetic-escape', fixture: 'frame-arithmetic-with-escape-proof', left: 'node_st_sum', right: 'node_st_slot', truth: 'may-or-weaker', expectStrong: false },
 ]);
 
 /**

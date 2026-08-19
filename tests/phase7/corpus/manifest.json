@@ -19,6 +19,7 @@
   ],
   "fixtureIds": [
     "cyclic-pointer-phi",
+    "frame-arithmetic-with-escape-proof",
     "frame-escapes-through-argument",
     "frame-escapes-through-return",
     "frame-non-escaping",
@@ -32,6 +33,7 @@
     "stack-disjoint",
     "stack-identical",
     "stack-overlapping",
+    "two-pointer-arithmetic",
     "uncertain-offset",
     "unknown-call-barrier",
     "unknown-store-barrier"
@@ -138,6 +140,30 @@
       "fixture": "frame-escapes-through-argument",
       "left": "node_st_slot",
       "right": "node_st_arg",
+      "truth": "may-or-weaker",
+      "expectStrong": false
+    },
+    {
+      "id": "q-two-pointer-add-left",
+      "fixture": "two-pointer-arithmetic",
+      "left": "node_st_sum",
+      "right": "node_st_a",
+      "truth": "may-or-weaker",
+      "expectStrong": false
+    },
+    {
+      "id": "q-two-pointer-add-right",
+      "fixture": "two-pointer-arithmetic",
+      "left": "node_st_sum",
+      "right": "node_st_b",
+      "truth": "may-or-weaker",
+      "expectStrong": false
+    },
+    {
+      "id": "q-frame-arithmetic-escape",
+      "fixture": "frame-arithmetic-with-escape-proof",
+      "left": "node_st_sum",
+      "right": "node_st_slot",
       "truth": "may-or-weaker",
       "expectStrong": false
     }
@@ -624,5 +650,5 @@
     "version": "1.0.0"
   },
   "exclusions": [],
-  "manifestDigest": "004acbb071160218a8ad023dbf653a65"
+  "manifestDigest": "519bd15f3a918dbc2b436aca4870455d"
 }

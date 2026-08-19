@@ -3,19 +3,26 @@
   "verifierId": "phase7.verifier",
   "verifierVersion": "1.0.0",
   "verifierSourceSha256": "22616c498e0baabc979b4e2ab98023a2f26ecfd638d8c2168bfb04d15a0d954a",
-  "generatedAt": "2026-08-19T12:33:00.487Z",
+  "generatedAt": "2026-08-19T12:41:11.951Z",
   "product": {
-    "commitSha": "7caa028a0f275eb5386063f26dbac53a01b2026e",
-    "treeSha": "6bf374a41389a598b9af27895d237dbd83fd1bc8",
-    "workingTreeClean": true,
-    "dirtyPaths": [],
+    "commitSha": "3cb5e9ad5c22c46cce32ce3dd675a9307d7a86bc",
+    "treeSha": "922166dbd681b0c6e8678c395ac0f33f83717bc1",
+    "workingTreeClean": false,
+    "dirtyPaths": [
+      "M js/analysis/pointsto/local.js",
+      "M tests/phase7/corpus/fixtures.mjs",
+      "M tests/phase7/corpus/manifest.json",
+      "M tests/phase7/verifier/mutants.test.mjs",
+      "M userscript/hex.user.template.js",
+      "M userscript/release-version.json"
+    ],
     "branch": "phase7/static-analysis-depth"
   },
   "profileVersion": 1,
   "corpus": {
     "corpusId": "phase7-alias-memory-corpus",
     "corpusVersion": 1,
-    "manifestDigest": "004acbb071160218a8ad023dbf653a65",
+    "manifestDigest": "519bd15f3a918dbc2b436aca4870455d",
     "frozenDigestMatches": true,
     "scoring": {
       "id": "phase7.scoring",
@@ -78,10 +85,10 @@
       "scoringVersion": "1.0.0",
       "truthGeneratorId": "phase7.corpus.declared-truth",
       "truthGeneratorVersion": "1.0.0",
-      "total": 13,
+      "total": 16,
       "counts": {
         "must": 1,
-        "may": 12,
+        "may": 15,
         "no": 0,
         "unknown": 0
       },
@@ -90,8 +97,8 @@
       "exactProven": 1,
       "exactAvailable": 3,
       "unknownRate": 0,
-      "mayRate": 0.9230769230769231,
-      "strongProvenRate": 0.07692307692307693,
+      "mayRate": 0.9375,
+      "strongProvenRate": 0.0625,
       "perQuery": [
         {
           "id": "q-stack-disjoint",
@@ -167,6 +174,24 @@
         },
         {
           "id": "q-frame-escaped-argument",
+          "relation": "may",
+          "truth": "may-or-weaker",
+          "expectStrong": false
+        },
+        {
+          "id": "q-two-pointer-add-left",
+          "relation": "may",
+          "truth": "may-or-weaker",
+          "expectStrong": false
+        },
+        {
+          "id": "q-two-pointer-add-right",
+          "relation": "may",
+          "truth": "may-or-weaker",
+          "expectStrong": false
+        },
+        {
+          "id": "q-frame-arithmetic-escape",
           "relation": "may",
           "truth": "may-or-weaker",
           "expectStrong": false
@@ -178,10 +203,10 @@
       "scoringVersion": "1.0.0",
       "truthGeneratorId": "phase7.corpus.declared-truth",
       "truthGeneratorVersion": "1.0.0",
-      "total": 13,
+      "total": 16,
       "counts": {
         "must": 1,
-        "may": 10,
+        "may": 13,
         "no": 2,
         "unknown": 0
       },
@@ -190,8 +215,8 @@
       "exactProven": 3,
       "exactAvailable": 3,
       "unknownRate": 0,
-      "mayRate": 0.7692307692307693,
-      "strongProvenRate": 0.23076923076923078,
+      "mayRate": 0.8125,
+      "strongProvenRate": 0.1875,
       "perQuery": [
         {
           "id": "q-stack-disjoint",
@@ -267,6 +292,24 @@
         },
         {
           "id": "q-frame-escaped-argument",
+          "relation": "may",
+          "truth": "may-or-weaker",
+          "expectStrong": false
+        },
+        {
+          "id": "q-two-pointer-add-left",
+          "relation": "may",
+          "truth": "may-or-weaker",
+          "expectStrong": false
+        },
+        {
+          "id": "q-two-pointer-add-right",
+          "relation": "may",
+          "truth": "may-or-weaker",
+          "expectStrong": false
+        },
+        {
+          "id": "q-frame-arithmetic-escape",
           "relation": "may",
           "truth": "may-or-weaker",
           "expectStrong": false
@@ -1124,38 +1167,38 @@
   },
   "performance": {
     "coldActiveFunction": {
-      "medianMs": 28.255,
+      "medianMs": 33.951,
       "samples": [
-        42.716,
-        26.579,
-        24.381,
-        29.309,
-        28.255
+        33.951,
+        58.966,
+        41.144,
+        28.033,
+        25.306
       ]
     },
     "warmActiveFunction": {
-      "medianMs": 4.734,
+      "medianMs": 3.276,
       "samples": [
-        5.566,
-        5.452,
-        4.734,
-        4.112,
-        4.118
+        3.842,
+        2.814,
+        3.276,
+        4.188,
+        2.95
       ]
     },
     "pathologicalPointerPhi": {
-      "medianMs": 4.051,
+      "medianMs": 5.587,
       "samples": [
-        6.879,
-        4.404,
-        3.58,
-        3.858,
-        4.051
+        5.126,
+        5.737,
+        5.819,
+        5.587,
+        5.582
       ]
     }
   },
   "gates": [],
-  "evidenceDigest": "82c5fd4cca83536d1b3b19dd872c6c48",
+  "evidenceDigest": "bc98b5282c26eb42c3007773910bb949",
   "failures": [],
   "verdict": "READY"
 }

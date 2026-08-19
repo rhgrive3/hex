@@ -13,6 +13,7 @@ import {
   rangeRelation,
 } from '../../../js/analysis/pointsto/lattice.js';
 import { pointsToAlias } from '../../../js/analysis/pointsto/alias.js';
+import { analyzeLocalPointsTo } from '../../../js/analysis/pointsto/local.js';
 import { reachingConcreteStore } from '../../../js/semantics/memoryssa/queries.js';
 import { scoreAliasQueries, scoreMemoryLinks } from '../../../tools/validation/phase7/scoring.mjs';
 import { ALIAS_QUERIES, buildFixture, regionOf } from '../corpus/fixtures.mjs';
@@ -139,4 +140,38 @@ test('MUTANT: dropping a hard query from the denominator is visible', () => {
   const trimmed = scoreAliasQueries(answerAll, { queries: ALIAS_QUERIES.slice(0, 3) });
   assert.notEqual(full.total, trimmed.total,
     'the score must record its denominator so a shrunken query set is detectable');
+});
+
+test('MUTANT: a points-to set that drops a target falsely proves separation', () => {
+  // The dangerous interaction: an under-approximating points-to set plus a
+  // non-escape proof. If the analysis drops one root from a pointer's target
+  // set, escape evidence then "proves" the pointer cannot reach that root — a
+  // false NoAlias built entirely on a missing target.
+  const frame = createPointsToTarget({ rootKind: 'stack-like', rootEntityId: 'root_frame', offsetRange: exactRange(0n) });
+  const incoming = createPointsToTarget({ rootKind: 'rooted', rootEntityId: 'root_arg', offsetRange: exactRange(0n) });
+  const nonEscapingRoots = new Set([frame.rootKey]);
+
+  const complete = createPointsToSet({ targets: [frame, incoming] });
+  const underApproximated = createPointsToSet({ targets: [incoming] });
+  const frameOnly = createPointsToSet({ targets: [frame] });
+
+  const sound = pointsToAlias(complete, frameOnly, { status, widthBitsLeft: 32, widthBitsRight: 32, nonEscapingRoots });
+  assert.ok(['may', 'unknown'].includes(sound.relation),
+    'a set containing the frame root must not separate from the frame');
+
+  const unsound = pointsToAlias(underApproximated, frameOnly, { status, widthBitsLeft: 32, widthBitsRight: 32, nonEscapingRoots });
+  assert.equal(unsound.relation, 'no',
+    'this self-test only proves something if the dropped target really does produce a false NoAlias');
+});
+
+test('MUTANT: two non-constant pointer operands keep both roots', () => {
+  // The regression that motivated the mutant above: taking only the left
+  // operand of `a + b` silently discards the right operand's roots.
+  const built = buildFixture('two-pointer-arithmetic');
+  const run = analyzeLocalPointsTo(built.ir, built.cfg, built.ssa, {});
+  const sum = run.pointsTo.get('sum');
+  assert.equal(sum.top, false);
+  assert.equal(sum.targets.length, 2, 'both operands\' roots must survive an unbounded displacement');
+  assert.ok(sum.targets.every((target) => target.offsetRange.min == null && target.offsetRange.max == null),
+    'an unbounded displacement must leave no bounded interval behind');
 });

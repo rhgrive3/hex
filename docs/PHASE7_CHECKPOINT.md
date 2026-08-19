@@ -46,8 +46,8 @@ Same frozen query set, same denominator, baseline versus candidate:
 | Metric | Baseline | Candidate |
 |---|---|---|
 | Exact alias relations proven | 1/3 | 3/3 |
-| Strong proven rate | 0.077 | 0.231 |
-| May rate | 0.923 | 0.769 |
+| Strong proven rate | 0.063 | 0.188 |
+| May rate | 0.938 | 0.813 |
 | Unknown rate | 0.000 | 0.000 |
 | False `NoAlias` | 0 | 0 |
 | False `MustAlias` | 0 | 0 |
@@ -106,6 +106,30 @@ a precision or coverage bound that the current contract states explicitly.
 - The frozen corpus is synthetic microfixtures plus real compiler/linker debug
   output. It is deliberately small and exact; a large real-binary corpus is a
   separate, larger investment.
+
+## Bugs the corpus caught before they shipped
+
+Recorded because they are the reason the negative corpus and the mutant
+self-tests earn their keep.
+
+1. **A cancelled alias query returned `complete`.** A1 could answer from region
+   identity without A2 ever running, so the abort signal never reached the
+   status. Found by the cancellation case in the negative corpus.
+2. **Widening never converged.** `widenPointsTo` compared offset ranges by
+   object identity, and `widenRange` always allocates, so every stable range
+   reported itself as widened. Found by the lattice idempotence law.
+3. **Recursive summaries grew without bound.** Propagated unknown-call effects
+   accumulated a path prefix, making the effect lattice infinite. Found by the
+   mutual-recursion convergence case.
+4. **A continuation unwind entry became a second function.** A non-contiguous
+   body was reported as two functions — a false split. Found by the
+   non-contiguous discovery case.
+5. **A single exception-metadata reference promoted a shared epilogue to a
+   probable function start.** Found by the shared-epilogue case.
+6. **Pointer arithmetic with two non-constant operands dropped one operand's
+   roots.** Combined with a non-escape proof this produces a false `NoAlias`
+   built entirely on a missing target — the most dangerous defect found. Both
+   the fix and a mutant that proves the failure mode are now permanent.
 
 ## Phase 8 handoff
 
