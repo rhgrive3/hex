@@ -148,6 +148,8 @@ function semanticEdgeKind(node, index) {
   if (node.kind === 'branch') return 'branch';
   if (node.kind === 'conditional-branch') return index === 0 ? 'conditional-true' : 'conditional-false';
   if (node.kind === 'switch') return 'switch-case';
+  if (node.kind === 'unknown-control-effect'
+      && node.attributes?.indirectControl?.targetState === 'candidate') return 'indirect-candidate';
   return 'unknown';
 }
 function normalizeSuccessor(input) {
