@@ -25,8 +25,6 @@ async function analyze(bytes, address = 0x1000n) {
   } finally { capstone.close(); }
 }
 
-// lw x1,0(x2) / bne x1,x0,+4 / sw x3,0(x4) / ret
-// The taken target of BNE is 0x1008, exactly equal to its fallthrough.
 const SAME_TARGET = [
   0x83, 0x20, 0x01, 0x00,
   0x63, 0x92, 0x00, 0x00,
@@ -36,6 +34,9 @@ const SAME_TARGET = [
 
 test('same-target RISC-V branch remains a typed conditional operation', async () => {
   const analysis = await analyze(SAME_TARGET);
+  console.error('DEGENERATE_DIAG', JSON.stringify(analysis.pipeline.machineEffects.map((item) => ({
+    control:item.controlEffect, metadata:item.metadata,
+  }))));
   const bundle = analysis.pipeline.machineEffects.find((item) => item.metadata?.degenerateConditional === true);
   assert.ok(bundle, 'the same-target branch must remain identifiable');
   assert.equal(bundle.controlEffect.kind, 'conditional-branch');
@@ -62,23 +63,17 @@ test('CFG may deduplicate the same successor without erasing conditional identit
   const blocks = analysis.pipeline.cfg.blocks || [];
   const branchBlock = blocks.find((block) => (block.instructions || block.instructionIds || []).length || (block.successors || []).length);
   assert.ok(branchBlock || blocks.length > 0);
-
-  // Across the recovered CFG, the same branch address must not manufacture two
-  // different successor destinations just to preserve the condition. Semantic
-  // conditional identity is checked separately above.
   for (const block of blocks) {
     const successors = block.successors || [];
     const targets = successors.map((edge) => String(edge.targetBlockId ?? edge.target ?? edge.to ?? edge.block ?? ''));
     assert.equal(new Set(targets).size, targets.length, 'duplicate successor identity must be deduplicated');
   }
-
   const projected = analysis.pipeline.legacyV1.instructions.filter((instruction) => instruction.op === 'cbr');
   assert.equal(projected.length, 1, 'compatibility projection must retain a conditional branch');
   assert.ok(projected[0].args?.length > 0, 'the projected cbr must retain its condition input');
 });
 
 test('ordinary two-way BNE remains unchanged', async () => {
-  // bne x1,x0,+8 / ret / ret
   const analysis = await analyze([
     0x63, 0x94, 0x00, 0x00,
     0x67, 0x80, 0x00, 0x00,
@@ -92,7 +87,6 @@ test('ordinary two-way BNE remains unchanged', async () => {
 });
 
 test('constant compare sources do not collapse syntactic conditional identity early', async () => {
-  // addi x1,x0,0 / beq x1,x0,+4 / sw x3,0(x4) / ret
   const analysis = await analyze([
     0x93, 0x00, 0x00, 0x00,
     0x63, 0x82, 0x00, 0x00,
