@@ -1,5 +1,6 @@
 import { liftArm64ControlEffects } from './control.js';
 import { directTargetOf, immediateOf, instructionMnemonic } from './common.js';
+import { decorateArm64ExclusiveMonitorEffects } from './exclusive-monitor-state.js';
 import { liftArm64FlagEffects } from './flags.js';
 import { liftArm64FpEffects } from './fp.js';
 import { liftArm64IntegerEffects } from './integer.js';
@@ -7,7 +8,7 @@ import { liftArm64MemoryEffects } from './memory.js';
 import { liftArm64SimdEffects } from './simd.js';
 import { liftArm64SystemEffects } from './system.js';
 
-export const ARM64_MACHINE_EFFECTS_SEMANTIC_VERSION = '2';
+export const ARM64_MACHINE_EFFECTS_SEMANTIC_VERSION = '3';
 
 // This order is part of the Phase 2 semantic contract. Shape-sensitive families
 // precede scalar families when A64 reuses a mnemonic (for example ADD/MOV in
@@ -31,11 +32,6 @@ function normalizedInstruction(decoded, context) {
   const origin = decoded.origin ?? context?.origin;
   const mode = decoded.mode ?? context?.mode;
   const mnemonic = instructionMnemonic(decoded);
-  // Current decoded-model producers are allowed to carry ADR/ADRP's resolved
-  // absolute target either in pcRelTarget or in the already-decoded immediate
-  // operand. Normalize those architecture-layer representations before
-  // MachineEffects are created, so generic Semantic IR/SSA consumers never need
-  // to inspect instruction text or reconstruct PC-relative semantics.
   const operands = Array.isArray(decoded.ops) ? decoded.ops : Array.isArray(decoded.operands) ? decoded.operands : [];
   const adrImmediate = operands.length > 1 ? immediateOf(operands[1]) : null;
   const normalizedPcRelTarget = (mnemonic === 'adr' || mnemonic === 'adrp') && decoded.pcRelTarget == null
@@ -66,7 +62,7 @@ export function liftArm64MachineEffects(decoded, context = {}) {
   const familyContext = normalizedContext(context);
   for (const family of ARM64_EFFECT_FAMILIES) {
     const result = family.lift(instruction, familyContext);
-    if (result != null) return result;
+    if (result != null) return decorateArm64ExclusiveMonitorEffects(instruction, result);
   }
   return null;
 }
