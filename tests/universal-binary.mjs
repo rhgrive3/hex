@@ -172,6 +172,7 @@ export function makePe64Fixture() {
   b.set(new TextEncoder().encode('KERNEL32.dll\0'),0x480);
   w16(0x490,0); b.set(new TextEncoder().encode('ExitProcess\0'),0x492);
   w32(0x600,0x1000); w32(0x604,0x1010); w32(0x608,0x3020);
+  w32(0x620,1); // UNWIND_INFO: version 1, no flags, no codes; required by #922/#933 validation.
   return b;
 }
 
