@@ -27,21 +27,22 @@ jobs:
         run: |
           python3 - <<'PYRUN'
           from pathlib import Path
-          import textwrap
 
           workflow = Path('.github/workflows/generated-sync.yml').read_text()
           marker = "      - name: Apply PR942 source reconciliation\n"
           section = workflow.find(marker)
           if section < 0:
             raise SystemExit('PR942 reconciliation section not found')
-          begin = workflow.find("          python3 - <<'PY'\n", section)
+          begin_marker = "          python3 - <<'PY'\n"
+          begin = workflow.find(begin_marker, section)
           if begin < 0:
             raise SystemExit('PR942 reconciliation block start not found')
-          begin += len("          python3 - <<'PY'\n")
+          begin += len(begin_marker)
           end = workflow.find("\n          PY\n", begin)
           if end < 0:
             raise SystemExit('PR942 reconciliation block end not found')
-          script = textwrap.dedent(workflow[begin:end])
+          block = workflow[begin:end]
+          script = "\n".join(line[10:] if line.startswith("          ") else line for line in block.splitlines())
           exec(compile(script, 'generated-sync.yml', 'exec'))
           PYRUN
           git diff --check
