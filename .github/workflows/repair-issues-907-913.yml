@@ -54,6 +54,7 @@ jobs:
           node scripts/repair-decompiler-pipeline-explicit-abi.mjs
           node scripts/repair-decompiler-semantic-explicit-abi.mjs
           node scripts/repair-decompiler-semantic-prototype.mjs
+          node scripts/repair-decompiler-return-spill-elision.mjs
 
       - name: Focused regressions
         run: |
@@ -84,6 +85,7 @@ jobs:
           rm scripts/repair-decompiler-pipeline-explicit-abi.mjs
           rm scripts/repair-decompiler-semantic-explicit-abi.mjs
           rm scripts/repair-decompiler-semantic-prototype.mjs
+          rm scripts/repair-decompiler-return-spill-elision.mjs
           rm .github/workflows/repair-issues-907-913.yml
           git add -A
           git diff --cached --check
