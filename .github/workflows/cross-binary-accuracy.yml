@@ -1,66 +1,14 @@
-name: Cross-binary YWP structured provenance
+name: Cross-binary analysis parked
 
-# Disposable analysis-only workflow. Verify which metadata source feeds the
-# dominant YWP funcs-guess false-positive cohort. No unrelated CI.
+# PR #999 is a disposable investigation branch. Automatic runs are disabled
+# after the evidence collection completed. Re-enable manually only if another
+# isolated experiment is needed.
 on:
-  pull_request:
-    branches: [analysis/cross-binary-100pct-base]
   workflow_dispatch:
 
-concurrency:
-  group: cross-binary-function-cohort-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
-
-env:
-  HEX_FIXTURE_YWP_URL: https://raw.githubusercontent.com/rhgrive3/hex/bd7bd61d093592d07fdd9e9b14a859e19dd4c3a9/tests/YWP
-  ORACLE_PYTHON_VERSION: '3.12.13'
-
 jobs:
-  provenance:
-    name: provenance-YWP
+  parked:
+    if: ${{ false }}
     runs-on: ubuntu-latest
-    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - name: Fetch pinned YWP fixture
-        run: |
-          node scripts/fetch-real-fixtures.mjs YWP
-          node scripts/fetch-real-fixtures.mjs YWP --check
-      - name: Build oracle cache key
-        id: oracle-key
-        shell: bash
-        env:
-          ORACLE_INPUT_HASH: ${{ hashFiles('tests/fixtures/real-binaries.json', 'tests/oracle.py', 'tests/oracle-cfg-normalize.py', 'tests/oracle-requirements.txt') }}
-        run: echo "key=cross-binary-oracle-v3-${{ runner.os }}-${{ runner.arch }}-py${ORACLE_PYTHON_VERSION}-YWP-${ORACLE_INPUT_HASH}" >> "$GITHUB_OUTPUT"
-      - name: Restore exact oracle cache
-        id: oracle-cache
-        uses: actions/cache/restore@v4
-        with:
-          path: tests/oracle.YWP.ci.json.gz
-          key: ${{ steps.oracle-key.outputs.key }}
-      - uses: actions/setup-python@v5
-        if: steps.oracle-cache.outputs.cache-hit != 'true'
-        with:
-          python-version: ${{ env.ORACLE_PYTHON_VERSION }}
-      - name: Generate oracle on cache miss
-        if: steps.oracle-cache.outputs.cache-hit != 'true'
-        run: |
-          python -m pip install --disable-pip-version-check -r tests/oracle-requirements.txt
-          python tests/oracle.py tests/.real-fixtures/YWP tests/oracle.YWP.ci.json.gz
-          python tests/oracle-cfg-normalize.py tests/.real-fixtures/YWP tests/oracle.YWP.ci.json.gz
-      - name: Verify structured provenance
-        run: |
-          node --max-old-space-size=6000 tests/analysis/function-structured-provenance.mjs \
-            --target=tests/.real-fixtures/YWP \
-            --oracle=tests/oracle.YWP.ci.json.gz \
-            --out=structured-provenance-YWP.json
-          cat structured-provenance-YWP.json
-      - uses: actions/upload-artifact@v4
-        with:
-          name: structured-provenance-YWP
-          path: structured-provenance-YWP.json
-          if-no-files-found: error
-          retention-days: 7
+      - run: echo "Cross-binary investigation is parked"
