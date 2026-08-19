@@ -389,7 +389,7 @@ export function classifySysVAMD64FunctionReturn(options = {}) {
 
 export const SYSV_AMD64_ABI = new ABIPlugin({
   id:'sysv-amd64',
-  semanticVersion:'3',
+  semanticVersion:'2',
   architectureId:'x86_64',
   platformPredicate:({ platform }) => !platform || ['linux','freebsd','netbsd','openbsd','solaris','unix','unknown'].includes(platform),
   callingConventions:()=>Object.freeze(['sysv-amd64']),
