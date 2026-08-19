@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - fix/issues-890-895-control-profile-20260819
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: write
@@ -14,12 +17,13 @@ concurrency:
 
 jobs:
   resolve:
-    if: github.actor != 'github-actions[bot]'
+    if: github.actor != 'github-actions[bot]' && github.head_ref == 'fix/issues-890-895-control-profile-20260819'
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: fix/issues-890-895-control-profile-20260819
           fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
