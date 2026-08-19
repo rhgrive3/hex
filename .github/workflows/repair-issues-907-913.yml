@@ -46,6 +46,7 @@ jobs:
         run: |
           node scripts/repair-issues-907-909-910-913.mjs
           node scripts/repair-issues-907-909-followup.mjs
+          node scripts/repair-issue-909-section-scope.mjs
 
       - name: Focused regressions
         run: node --test --test-reporter=spec --test-concurrency=1 tests/phase6/generic-core/issues-907-909-910-913.test.mjs
@@ -63,6 +64,7 @@ jobs:
         run: |
           rm scripts/repair-issues-907-909-910-913.mjs
           rm scripts/repair-issues-907-909-followup.mjs
+          rm scripts/repair-issue-909-section-scope.mjs
           rm .github/workflows/repair-issues-907-913.yml
           git add -A
           git diff --cached --check
