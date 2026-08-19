@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "note": "Frozen pre-Phase-8 decompiler output for the Phase 8 corpus. Captured from the product at the Phase 8 base commit with the rewrite engine time valve disabled, so the fixed point depends only on the input and the rules. Regenerating this file is an acceptance-semantics change: it invalidates every Phase 8 no-op and quality comparison derived from it.",
+  "note": "Frozen pre-Phase-8 decompiler output for the Phase 8 corpus. Captured from the product at the Phase 8 base commit with the rewrite engine time valve disabled and a pass-manager allowance far above what any corpus function needs, so the fixed point depends only on the input and the rules. Regenerating this file is an acceptance-semantics change: it invalidates every Phase 8 no-op and quality comparison derived from it.",
   "baseCommit": "bd03d1a860863814dbdcc00559709794d460189d",
   "corpusId": "phase8-decompiler-quality-corpus",
   "corpusVersion": 1,
@@ -15,7 +15,7 @@
     ]
   },
   "deterministicTransforms": true,
-  "decompilerTimeBudgetMs": 400,
+  "decompilerTimeBudgetMs": 5000,
   "observations": [
     {
       "id": "quality.aggregate_array_stride.O0",

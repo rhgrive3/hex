@@ -19,6 +19,7 @@ const REQUIRED_SUBTREES = Object.freeze([
   'ownership',
   'substrate',
   'scalar',
+  'memory',
   'corpus',
   'verifier',
   'performance',

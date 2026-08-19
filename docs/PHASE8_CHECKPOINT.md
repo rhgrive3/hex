@@ -18,7 +18,7 @@ gate. Where it disagrees with `PHASE8_CHECKPOINT_CONTRACTS.md`, the contract win
 | P8-0 Foundation / baseline / verifier | **accepted** | see below |
 | P8-1 Transactional pass substrate | **accepted** | see below |
 | P8-2 SCCP + wrapped range/value set | **accepted** | see below |
-| P8-3 GVN/CSE + effect-aware DCE | not started | — |
+| P8-3 GVN/CSE + effect-aware DCE | **accepted** | see below |
 | P8-4 Induction / loop facts | not started | — |
 | P8-5 Irreducible / exception structuring | not started | — |
 | P8-6 Aggregate / array / union recovery | not started | — |
@@ -275,6 +275,93 @@ evidence rather than being counted as covered.
 
 ---
 
+## P8-3 — GVN/CSE and effect-aware DCE
+
+### What it delivers
+
+- **`valuenumber.js`** — congruence by semantic identity: operator, sub-kind,
+  exact width, and the numbers of the operands. Never by rendered text.
+  `printExpression` output normalises casts, hides widths and reorders for
+  readability, so two expressions that print identically can compute different
+  things.
+- **Memory reuse gated on the IR's own proof.** A load is congruent to an earlier
+  load only with the same canonical location, the same width, the same reaching
+  memory definitions, no unknown-store barrier, a precise address, and proved
+  non-volatile / non-atomic / unordered access. Phase 8 re-derives none of that —
+  a second opinion computed here would be a second memory truth.
+- **`dce.js`** — the two halves asked separately: is every use gone, and is
+  executing the operation unobservable. Only an operation that fails both is a
+  candidate. Everything else is kept with the reason recorded.
+- **Intra-stage dependency ordering.** Passes in one stage are now ordered so a
+  producer runs before its consumers, with a deterministic id tie-break and a
+  cycle error. Stage order alone was the "dependencies encoded by incidental
+  array order" the P8-1 merge blockers reject.
+
+Both passes publish facts. Neither rewrites the program, so output remains
+byte-identical to the pre-Phase-8 baseline.
+
+### Results on the frozen corpus
+
+| measure | value |
+|---|---|
+| congruent value classes | 219 |
+| scalar reuse candidates | 216 |
+| load reuse candidates | **0** — see below |
+| dead-operation candidates | 818 |
+| dead but kept, with a recorded reason | 332 |
+
+The 332 are the interesting number: every one is an operation with no live result
+that a naive "unused means removable" pass would have deleted. 245 write
+architectural state this analysis does not track, 54 are opaque clobbers, 32 are
+operations the semantic IR could not represent, 1 is a comparison.
+
+### An upstream gap, reported rather than worked around
+
+**Zero loads were reused, and none can be.** All 59 loads in the corpus carry
+`volatility: unknown`, because nothing upstream ever proves an access is
+non-volatile. Unknown is not permission: a volatile read must execute exactly as
+many times as it is written. The gate is therefore correct and the capability is
+unreachable until the loader/semantic layers produce that fact.
+
+This is an upstream fact, not a decompiler heuristic to invent (P8-INV-003). It
+is recorded here as a blocking limitation on memory reuse rather than being
+softened into "probably fine".
+
+### Three defects found and repaired here
+
+1. **DCE read definitions from block instruction lists.** A value whose defining
+   operation was not in the list it was expected to be in simply vanished from
+   the analysis, and the pass reported there was nothing to remove. Across the
+   corpus that was 818 candidates reported as 0. Definitions are now read from
+   the value itself.
+2. **GVN never numbered definition-less values.** Function arguments and incoming
+   state are not in any instruction list, so every expression built on them was a
+   singleton — the pass was silently disabled on exactly the operands real code
+   is made of. This is the same structural gap SCCP had at P8-2; both are now
+   pre-numbered.
+3. **Over-invalidation, caught in production by the fail-closed rule.** GVN never
+   declared it preserves `deadCode`, so it discarded the DCE facts produced
+   moments earlier and the whole analysis looked empty. The invalidation rule
+   behaved exactly as designed; the declaration was wrong.
+
+### The soundness premise, checked directly
+
+DCE decides liveness from `value.uses`. If the IR ever stops maintaining that
+list completely the pass does not fail — it silently starts calling live values
+dead. So `tests/phase8/memory/dce.test.mjs` reconstructs the use map
+independently across the whole corpus and asserts it agrees: 3,511 values, zero
+uses the IR did not declare.
+
+### Stop condition
+
+`PHASE8_FAST_PATH` §8 asks for exact scalar equivalence, memory reuse only under
+MemorySSA/alias/effect proof, dead-operation removal only when the result is dead
+*and* execution is unobservable, and unknown call/store as a barrier. All four are
+proved. No global superoptimizer, no partial redundancy elimination, no
+speculative motion.
+
+---
+
 ## Next allowed action
 
-P8-3 — GVN/CSE and effect-aware DCE, consuming the P8-2 facts.
+P8-4 — induction and loop facts, consuming the P8-2 ranges.

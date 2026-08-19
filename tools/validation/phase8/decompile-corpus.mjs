@@ -89,11 +89,15 @@ export function modelFromAssembly(assembly, name, baseAddress = 0x100000n) {
 /**
  * Decompiles one frozen corpus entry through the product facade.
  *
- * The time budget is generous and fixed. A budget that varies with machine speed
- * would make `degraded` a property of the runner rather than of the function,
- * and degraded output is a completeness state Phase 8 has to measure honestly.
+ * The pass-manager allowance is deliberately far above what any corpus function
+ * needs. Measurement has to be work-bounded end to end: at 400 ms the heaviest
+ * function finished its rewrite fixed point and then crossed the deadline during
+ * the tail, so the very same output was reported `complete` on a warm run and
+ * `partial` on a cold one. That is a property of the runner, not of the
+ * function. The interactive budget is a separate question and is measured
+ * separately in tests/phase8/performance/.
  */
-export function decompileEntry(entry, { decompilerTimeBudgetMs = 400, index = 0, deterministicTransforms = true, phase8Optimize = true } = {}) {
+export function decompileEntry(entry, { decompilerTimeBudgetMs = 5000, index = 0, deterministicTransforms = true, phase8Optimize = true } = {}) {
   const model = modelFromAssembly(entry.assembly, entry.function, 0x100000n + BigInt(index) * 0x10000n);
   if (!model) return { id: entry.id, failure: 'assembly could not be parsed into a function model' };
   const rowOfAddress = new Map(model.instructions.map((instruction) => [instruction.address.toString(), instruction.row]));
@@ -184,6 +188,6 @@ export function observationOf(entry, outcome) {
 }
 
 /** Runs the whole frozen corpus and returns one deterministic observation each. */
-export function observeCorpus({ corpus = loadCorpus(), decompilerTimeBudgetMs = 400, deterministicTransforms = true, phase8Optimize = true } = {}) {
+export function observeCorpus({ corpus = loadCorpus(), decompilerTimeBudgetMs = 5000, deterministicTransforms = true, phase8Optimize = true } = {}) {
   return corpus.functions.map((entry, index) => observationOf(entry, decompileEntry(entry, { decompilerTimeBudgetMs, index, deterministicTransforms, phase8Optimize })));
 }

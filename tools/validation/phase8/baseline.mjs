@@ -33,7 +33,7 @@ function git(args) {
   return result.status === 0 ? String(result.stdout).trim() : null;
 }
 
-export function captureBaseline({ target = TARGET, baseCommit = git(['rev-parse', 'HEAD']), decompilerTimeBudgetMs = 400 } = {}) {
+export function captureBaseline({ target = TARGET, baseCommit = git(['rev-parse', 'HEAD']), decompilerTimeBudgetMs = 5000 } = {}) {
   const corpus = loadCorpus();
   const observations = observeCorpus({ corpus, decompilerTimeBudgetMs }).map(({ phase8, ...rest }) => rest);
   const ledger = {

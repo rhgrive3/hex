@@ -98,9 +98,50 @@ export class IrFixture {
     return this.#emit(this.#instruction('sel', 'sel', [condition, whenTrue, whenFalse]), bits);
   }
 
-  /** A load: the canonical "value comes from memory, do not guess" case. */
-  load(bits) {
-    return this.#emit(this.#instruction('load', null, []), bits);
+  /**
+   * A load with explicit memory facts.
+   *
+   * The defaults mirror what the real IR reports when nothing has been proved:
+   * volatility and atomicity `unknown`, which is not permission to reuse or
+   * remove. A fixture has to opt in to the proved case, exactly as the product
+   * does.
+   */
+  load(bits, {
+    locKey = null, volatility = 'unknown', atomic = 'unknown', ordering = null,
+    faults = [], memDefs = null, barrier = null, addressPrecise = false,
+  } = {}) {
+    const instruction = this.#instruction('load', null, [], {
+      memoryAccess: { addressSpace: 'memory', widthBits: bits, volatility, atomic, ordering, faults },
+      addressPrecise,
+    });
+    if (locKey != null) instruction.loc = { kind: 'field', key: locKey };
+    if (memDefs != null) instruction.memUse = { memDefs: memDefs.map((id) => ({ inst: { id } })) };
+    if (barrier != null) instruction.unknownAliasBarrier = barrier;
+    return this.#emit(instruction, bits);
+  }
+
+  /** A store. Observable regardless of whether anything reads it. */
+  store(value, { locKey = null } = {}) {
+    const instruction = this.#instruction('store', null, [value], {});
+    if (locKey != null) instruction.loc = { kind: 'field', key: locKey };
+    this.current.insts.push(instruction);
+    value?.uses.push(instruction);
+    return instruction;
+  }
+
+  /** A call. It may do anything, and it may do something different each time. */
+  call(bits) {
+    return this.#emit(this.#instruction('call', null, []), bits);
+  }
+
+  /** An operation that writes state this analysis does not track. */
+  stateWrite(bits) {
+    return this.#emit(this.#instruction('mov', null, [], { stateWrite: { key: 'opaque' } }), bits);
+  }
+
+  /** A division, which can trap unless the IR proves otherwise. */
+  divide(left, right, bits, { faults = null } = {}) {
+    return this.#emit(this.#instruction('bin', 'udiv', [left, right], faults == null ? {} : { faults }), bits);
   }
 
   /** An opaque operation the semantic IR could not represent. */

@@ -23,12 +23,16 @@ import { PHASE8_CONTRACT_VERSION, PASS_STAGES, createPassResult } from './contra
 import { IDENTITY_PASS, identityPassObservation, runIdentityPass } from './identity-pass.js';
 import { runPassTransaction, seedAnalysisState } from './transaction.js';
 import { SCCP_PASS, runSccpPass } from './sccp.js';
+import { GVN_PASS, runGvnPass } from './valuenumber.js';
+import { DCE_PASS, runDcePass } from './dce.js';
 
 export { PHASE8_CONTRACT_VERSION, PASS_STAGES } from './contract.js';
 export { createPassDescriptor, createPassResult, unchangedResult, ANALYSIS_KEYS, PASS_STATUSES, COMPLETENESS, BUDGET_CLASSES } from './contract.js';
 export { createPhase8ArtifactDescriptor, PHASE8_ARTIFACT_KINDS, PHASE8_ARTIFACT_SCHEMA_VERSION } from './artifact-identity.js';
 export { createAnalysisState, invalidationFor, runPassTransaction, seedAnalysisState, transactionDigest } from './transaction.js';
 export { SCCP_PASS, describeSccp, runSccpPass } from './sccp.js';
+export { GVN_PASS, loadIsReusable, runGvnPass } from './valuenumber.js';
+export { DCE_PASS, observableEffectReason, runDcePass } from './dce.js';
 
 /**
  * The Phase 8 pass registry.
@@ -40,6 +44,8 @@ export { SCCP_PASS, describeSccp, runSccpPass } from './sccp.js';
 const REGISTERED = Object.freeze([
   Object.freeze({ descriptor: IDENTITY_PASS, run: runIdentityPass, observe: identityPassObservation }),
   Object.freeze({ descriptor: SCCP_PASS, run: runSccpPass }),
+  Object.freeze({ descriptor: GVN_PASS, run: runGvnPass }),
+  Object.freeze({ descriptor: DCE_PASS, run: runDcePass }),
 ]);
 
 /**
@@ -57,12 +63,49 @@ const REGISTERED = Object.freeze([
  */
 export const INTERACTIVE_STAGES = Object.freeze(['canonical-facts']);
 
+/**
+ * Orders passes within one stage so a producer runs before its consumers.
+ *
+ * Stage order alone is not enough: two passes in the same stage can still depend
+ * on each other, and sorting by id would run them in whatever order their names
+ * happen to fall in. That is the "stage dependencies encoded only by incidental
+ * array order" the P8-1 merge blockers reject.
+ *
+ * Ties break on id, so the order is deterministic. A cycle is an error rather
+ * than an arbitrary choice.
+ */
+function orderWithinStage(passes) {
+  const remaining = [...passes].sort((left, right) => left.descriptor.id.localeCompare(right.descriptor.id));
+  const ordered = [];
+  const satisfied = new Set();
+  while (remaining.length > 0) {
+    const index = remaining.findIndex(({ descriptor }) => descriptor.consumes.every((key) => {
+      // A key nobody in this stage produces must come from an earlier stage or
+      // from the seeded state; either way it does not constrain this ordering.
+      const producedHere = remaining.some((candidate) => candidate.descriptor.produces.includes(key));
+      return !producedHere || satisfied.has(key);
+    }));
+    if (index < 0) {
+      const stuck = remaining.map(({ descriptor }) => descriptor.id).join(', ');
+      throw new TypeError(`phase8-pass-dependency-cycle:${stuck}`);
+    }
+    const [next] = remaining.splice(index, 1);
+    for (const key of next.descriptor.produces) satisfied.add(key);
+    ordered.push(next);
+  }
+  return ordered;
+}
+
 export function phase8Passes({ stages = null } = {}) {
   const enabled = stages == null ? null : new Set(stages);
-  return Object.freeze([...REGISTERED]
-    .filter(({ descriptor }) => enabled == null || enabled.has(descriptor.stage))
-    .sort((left, right) => left.descriptor.stageIndex - right.descriptor.stageIndex
-      || left.descriptor.id.localeCompare(right.descriptor.id)));
+  const selected = [...REGISTERED].filter(({ descriptor }) => enabled == null || enabled.has(descriptor.stage));
+  const byStage = new Map();
+  for (const pass of selected) {
+    if (!byStage.has(pass.descriptor.stageIndex)) byStage.set(pass.descriptor.stageIndex, []);
+    byStage.get(pass.descriptor.stageIndex).push(pass);
+  }
+  return Object.freeze([...byStage.keys()].sort((left, right) => left - right)
+    .flatMap((stageIndex) => orderWithinStage(byStage.get(stageIndex))));
 }
 
 /**

@@ -20,7 +20,9 @@
  * program: an analysis pass changes the state without transforming anything, and
  * requiring it to invent a transform record would have made provenance a
  * formality. The shape is versioned so a contract change invalidates derived
- * artifacts instead of silently reinterpreting them.
+ * artifacts instead of silently reinterpreting them. P8-3 added the `deadCode`
+ * key; a pass that does not preserve it now invalidates it, which is the
+ * conservative direction.
  */
 
 /**
@@ -29,7 +31,7 @@
  * material, so a bump invalidates derived artifacts rather than silently
  * reusing them (EP-005 evidence-invalidation rule, MIGRATION_GUARDRAILS §CI).
  */
-export const PHASE8_CONTRACT_VERSION = 3;
+export const PHASE8_CONTRACT_VERSION = 4;
 
 /**
  * Ordered pipeline stages. Order here is the dependency order Phase 8 accepts;
@@ -61,6 +63,7 @@ export const ANALYSIS_KEYS = Object.freeze([
   'effects',
   'ranges',
   'valueNumbers',
+  'deadCode',
   'types',
   'aggregates',
   'summaries',
