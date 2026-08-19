@@ -1,0 +1,53 @@
+name: Temporary resolve PR 903 generated outputs
+
+on:
+  push:
+    branches:
+      - fix/issues-890-895-control-profile-20260819
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tmp-resolve-903
+  cancel-in-progress: true
+
+jobs:
+  resolve:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Focused regression
+        run: node --test tests/phase6/generic-core/issues-890-895.test.mjs
+      - name: Regenerate canonical userscript outputs
+        run: npm run userscript:build
+      - name: Full repository verification
+        run: npm run check
+      - name: Prove generated build idempotence
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp userscript/hex.user.template.js /tmp/hex.user.template.js
+          cp userscript/release-version.json /tmp/release-version.json
+          npm run userscript:build
+          cmp userscript/hex.user.template.js /tmp/hex.user.template.js
+          cmp userscript/release-version.json /tmp/release-version.json
+      - name: Commit resolved generated outputs and remove temporary workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add userscript/hex.user.template.js userscript/release-version.json
+          git rm .github/workflows/tmp-resolve-903.yml
+          git commit -m 'chore: resolve PR 903 against current main'
+          git push origin HEAD:fix/issues-890-895-control-profile-20260819

@@ -7,6 +7,12 @@ const CONDITION_COUNT_BRANCHES = Object.freeze(new Map([
   ['jecxz','ecx'],
   ['jcxz','cx'],
 ]));
+const LOOP_BRANCHES = Object.freeze(new Set(['loop','loope','loopz','loopne','loopnz']));
+
+function loopCountRegister(instruction) {
+  const legacy = Array.from(instruction?.detail?.prefixes?.legacy ?? []);
+  return legacy.includes(0x67) ? 'ecx' : 'rcx';
+}
 
 function addressRef(value) { return Object.freeze({ kind:'absolute-address', value:BigInt(value).toString(), widthBits:64 }); }
 function fallthrough(instruction) { return addressRef(BigInt(instruction.address) + BigInt(instruction.length)); }
@@ -55,7 +61,7 @@ function resolveIndirectTarget(ctx, operand, operation) {
 
 export function liftX86ControlEffects(instruction, context = {}) {
   const family = String(instruction?.instructionFamily || '').toLowerCase();
-  const conditional = family.startsWith('j') && family !== 'jmp';
+  const conditional = (family.startsWith('j') && family !== 'jmp') || LOOP_BRANCHES.has(family);
   if (!conditional && !['jmp','call','ret','retq','nop','ud2','int3'].includes(family)) return null;
   const ctx = createX86EffectContext(instruction, context);
 
@@ -75,6 +81,31 @@ export function liftX86ControlEffects(instruction, context = {}) {
       return ctx.partial(`x86-${family}-target-unmodelled`, ['control'], {
         controlEffect:{ kind:'unknown', reason:`x86-${family}-target-unmodelled` },
       });
+    }
+
+    if (LOOP_BRANCHES.has(family)) {
+      const countRegister = loopCountRegister(ctx.instruction);
+      const countOperand = x86RegisterOperand(countRegister);
+      const oldCount = countOperand ? ctx.readRegister(countOperand) : null;
+      if (!oldCount) {
+        return ctx.partial(`x86-${family}-count-register-unmodelled`, ['control','registers'], { controlEffect:{ kind:'unknown', reason:`x86-${family}-count-register-unmodelled` } });
+      }
+      const bits = countOperand.widthBits;
+      const decremented = ctx.valueOp('sub', [oldCount,ctx.constant(bits,1n)], bits, { widthBits:bits, semantic:`${countRegister} - 1`, loopCounter:true });
+      if (!ctx.writeRegister(countOperand, decremented)) {
+        return ctx.partial(`x86-${family}-count-register-write-unmodelled`, ['control','registers'], { controlEffect:{ kind:'unknown', reason:`x86-${family}-count-register-write-unmodelled` } });
+      }
+      const nonZero = ctx.valueOp('icmp.ne', [decremented,ctx.constant(bits,0n)], 1, { predicate:'ne', signed:false, widthBits:bits, semantic:`${countRegister} != 0 after decrement` });
+      let condition = nonZero;
+      let conditionKind = 'loop-count';
+      if (family !== 'loop') {
+        const zf = ctx.readFlag('ZF');
+        const wantsZero = family === 'loope' || family === 'loopz';
+        const zfCondition = wantsZero ? zf : ctx.valueOp('xor', [zf,ctx.constant(1,1n)], 1, { semantic:'ZF == 0' });
+        condition = ctx.valueOp('and', [nonZero,zfCondition], 1, { semantic:wantsZero ? 'count != 0 && ZF == 1' : 'count != 0 && ZF == 0' });
+        conditionKind = wantsZero ? 'loop-count-and-zf' : 'loop-count-and-not-zf';
+      }
+      return ctx.finish({ family:'control', controlEffect:{ kind:'conditional-branch', target:addressRef(target), fallthrough:fallthrough(ctx.instruction), condition }, metadata:{ operation:family, conditionKind, countRegister, countDecremented:true, flagsPreserved:true, instructionLength:ctx.instruction.length } });
     }
 
     const countRegister = CONDITION_COUNT_BRANCHES.get(family);

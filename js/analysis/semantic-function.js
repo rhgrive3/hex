@@ -98,7 +98,7 @@ export function partitionDecodedFunction(instructions, architecturePlugin) {
       if (fallthroughBlock) block.successors.push({ to:fallthroughBlock.key, kind:'conditional-false' });
     } else if (kind === 'branch') {
       if (targetBlock) block.successors.push({ to:targetBlock.key, kind:'branch' });
-    } else if (kind !== 'return' && fallthroughBlock) {
+    } else if (!['return','unknown'].includes(kind) && fallthroughBlock) {
       block.successors.push({ to:fallthroughBlock.key, kind:'fallthrough' });
     }
   }
@@ -274,6 +274,13 @@ export function analyzeDecodedSemanticFunction(input = {}, options = {}) {
   const architecturePlugin = architecturePluginV2(architectureId);
   if (!architecturePlugin || architecturePlugin.id !== architectureId) throw new TypeError('semantic-function-architecture-not-registered');
   if (typeof architecturePlugin.liftExact !== 'function') throw new TypeError('semantic-function-architecture-lifter-required');
+  const requestedMemoryEndianness = input.memoryEndianness ?? input.endian ?? null;
+  if (requestedMemoryEndianness != null) {
+    const endian = String(requestedMemoryEndianness).trim().toLowerCase();
+    const supported = architecturePlugin.supportedMemoryEndianness ?? [];
+    if (supported.length && !supported.includes(endian))
+      throw new TypeError(`semantic-function-unsupported-memory-endianness:${endian}`);
+  }
   const abiPlugin = resolveABIPlugin({ architecture:architectureId, platform:input.platform, abiId:input.abiId });
   if (!abiPlugin?.supported) throw new TypeError('semantic-function-supported-abi-required');
   if (abiPlugin.architectureId !== architectureId) throw new TypeError('semantic-function-abi-architecture-mismatch');

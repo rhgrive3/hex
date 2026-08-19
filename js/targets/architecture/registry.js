@@ -29,6 +29,10 @@ export class ArchitecturePluginV2 {
     this.directControlTarget = definition.directControlTarget || (() => null);
     this.assemble = definition.assemble || null;
     this.validateEncoding = definition.validateEncoding || null;
+    this.supportedMemoryEndianness = Object.freeze([...new Set(
+      (Array.isArray(definition.supportedMemoryEndianness) ? definition.supportedMemoryEndianness : [])
+        .map((value) => canonicalId(value)).filter(Boolean)
+    )]);
     this.instructionAlignment = positiveInteger(definition.instructionAlignment ?? 1, 'instructionAlignment');
     this.fixedInstructionSize = positiveInteger(definition.fixedInstructionSize, 'fixedInstructionSize', { nullable:true });
     this.viewerCompatible = !!definition.viewerCompatible;
