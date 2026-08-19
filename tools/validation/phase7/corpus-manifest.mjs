@@ -20,6 +20,7 @@ import { currentSupportMatrix } from '../../../js/platform/capability-maturity.j
 import { ALIAS_QUERIES, CORPUS_ID, CORPUS_VERSION, ESCAPE_QUERIES, FIXTURE_IDS, MEMORY_LINK_QUERIES } from '../../../tests/phase7/corpus/fixtures.mjs';
 import { SUMMARY_CORPUS_ID, SUMMARY_CORPUS_VERSION, SUMMARY_GRAPH_IDS, SUMMARY_QUERIES } from '../../../tests/phase7/corpus/summaries.mjs';
 import { TYPE_CASES, TYPE_CORPUS_ID, TYPE_CORPUS_VERSION } from '../../../tests/phase7/corpus/types.mjs';
+import { DISCOVERY_CASE_IDS, DISCOVERY_CORPUS_ID, DISCOVERY_CORPUS_VERSION, DISCOVERY_TRUTH } from '../../../tests/phase7/corpus/discovery.mjs';
 import { SCORING_ID, SCORING_VERSION, TRUTH_GENERATOR_ID, TRUTH_GENERATOR_VERSION } from './scoring.mjs';
 
 export const MANIFEST_SCHEMA_VERSION = 1;
@@ -138,6 +139,21 @@ export function buildCorpusManifest({ matrix = currentSupportMatrix() } = {}) {
         expectCertain: [...(testCase.expectCertain ?? [])],
         expectContradiction: [...(testCase.expectContradiction ?? [])],
         hasNoDebugVariant: testCase.noDebug != null,
+      })),
+    },
+    discoveryCorpus: {
+      id: DISCOVERY_CORPUS_ID,
+      version: DISCOVERY_CORPUS_VERSION,
+      caseIds: [...DISCOVERY_CASE_IDS],
+      truth: DISCOVERY_TRUTH.map((truth) => ({
+        id: truth.id,
+        case: truth.case,
+        starts: [...truth.starts],
+        // Start and extent truth are recorded separately, and region truth may
+        // be non-contiguous or explicitly shared (§17.7).
+        regionCounts: Object.fromEntries(Object.entries(truth.regions).map(([start, regions]) => [start, regions.length])),
+        extentKnowable: truth.extentKnowable === true,
+        labels: { ...truth.labels },
       })),
     },
     debugCorpus: debugCorpusIdentity(),

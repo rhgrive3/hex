@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "capturedAt": "2026-08-19T12:00:19.150Z",
-  "manifestDigest": "66535e42f021e852dee7118f57201dd5",
+  "capturedAt": "2026-08-19T12:12:48.306Z",
+  "manifestDigest": "004acbb071160218a8ad023dbf653a65",
   "corpusId": "phase7-alias-memory-corpus",
   "corpusVersion": 1,
   "scoring": {
@@ -180,33 +180,33 @@
   },
   "performance": {
     "coldActiveFunction": {
-      "medianMs": 26.764,
+      "medianMs": 28.12,
       "samples": [
-        31.793,
-        24.04,
-        21.062,
-        28.323,
-        26.764
+        28.643,
+        24.302,
+        30.924,
+        16.921,
+        28.12
       ]
     },
     "warmActiveFunction": {
-      "medianMs": 3.027,
+      "medianMs": 4.414,
       "samples": [
-        6.259,
-        3.027,
-        3.097,
-        2.657,
-        2.373
+        4.612,
+        4.124,
+        4.414,
+        5.954,
+        4.007
       ]
     },
     "pathologicalPointerPhi": {
-      "medianMs": 3.4,
+      "medianMs": 7.227,
       "samples": [
-        4.361,
-        3.214,
-        3.4,
-        4.694,
-        3.4
+        11.239,
+        5.885,
+        6.019,
+        8.765,
+        7.227
       ]
     }
   }

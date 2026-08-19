@@ -432,6 +432,129 @@
       }
     ]
   },
+  "discoveryCorpus": {
+    "id": "phase7-discovery-corpus",
+    "version": 1,
+    "caseIds": [
+      "contradictory-extents",
+      "non-contiguous",
+      "shared-epilogue",
+      "simple-pair",
+      "start-without-extent",
+      "stripped-heuristic-only",
+      "tail-call",
+      "thunk"
+    ],
+    "truth": [
+      {
+        "id": "d-simple-pair",
+        "case": "simple-pair",
+        "starts": [
+          "0x1000",
+          "0x1040"
+        ],
+        "regionCounts": {
+          "0x1000": 1,
+          "0x1040": 1
+        },
+        "extentKnowable": true,
+        "labels": {}
+      },
+      {
+        "id": "d-shared-epilogue",
+        "case": "shared-epilogue",
+        "starts": [
+          "0x2000",
+          "0x2040"
+        ],
+        "regionCounts": {
+          "0x2000": 1,
+          "0x2040": 1
+        },
+        "extentKnowable": true,
+        "labels": {
+          "0x2078": "shared-epilogue"
+        }
+      },
+      {
+        "id": "d-tail-call",
+        "case": "tail-call",
+        "starts": [
+          "0x3000",
+          "0x3020"
+        ],
+        "regionCounts": {
+          "0x3000": 1,
+          "0x3020": 1
+        },
+        "extentKnowable": true,
+        "labels": {
+          "0x3020": "tail-call-target"
+        }
+      },
+      {
+        "id": "d-thunk",
+        "case": "thunk",
+        "starts": [
+          "0x4000",
+          "0x4100"
+        ],
+        "regionCounts": {
+          "0x4000": 1,
+          "0x4100": 1
+        },
+        "extentKnowable": true,
+        "labels": {
+          "0x4000": "thunk"
+        }
+      },
+      {
+        "id": "d-non-contiguous",
+        "case": "non-contiguous",
+        "starts": [
+          "0x5000"
+        ],
+        "regionCounts": {
+          "0x5000": 2
+        },
+        "extentKnowable": true,
+        "labels": {
+          "0x5000": "non-contiguous"
+        }
+      },
+      {
+        "id": "d-start-without-extent",
+        "case": "start-without-extent",
+        "starts": [
+          "0x6000"
+        ],
+        "regionCounts": {},
+        "extentKnowable": false,
+        "labels": {}
+      },
+      {
+        "id": "d-stripped-heuristic-only",
+        "case": "stripped-heuristic-only",
+        "starts": [
+          "0x7000",
+          "0x7006"
+        ],
+        "regionCounts": {},
+        "extentKnowable": false,
+        "labels": {}
+      },
+      {
+        "id": "d-contradictory-extents",
+        "case": "contradictory-extents",
+        "starts": [
+          "0x8000"
+        ],
+        "regionCounts": {},
+        "extentKnowable": false,
+        "labels": {}
+      }
+    ]
+  },
   "debugCorpus": {
     "dwarf": {
       "variants": [
@@ -501,5 +624,5 @@
     "version": "1.0.0"
   },
   "exclusions": [],
-  "manifestDigest": "66535e42f021e852dee7118f57201dd5"
+  "manifestDigest": "004acbb071160218a8ad023dbf653a65"
 }
