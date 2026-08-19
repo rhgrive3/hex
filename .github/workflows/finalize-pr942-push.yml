@@ -1,0 +1,70 @@
+name: Finalize PR942 Push Trigger
+
+on:
+  push:
+    branches:
+      - integrate/open-issue-fixes-current-main-20260819
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: integrate/open-issue-fixes-current-main-20260819
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Apply canonical PR942 reconciliation
+        run: |
+          python3 - <<'PYRUN'
+          from pathlib import Path
+          import textwrap
+
+          workflow = Path('.github/workflows/finalize-pr942-ci.yml').read_text()
+          begin = "          python3 - <<'PY'\n"
+          end = "\n          PY\n"
+          start = workflow.find(begin)
+          if start < 0:
+            raise SystemExit('PR942 reconciliation block start not found')
+          stop = workflow.find(end, start + len(begin))
+          if stop < 0:
+            raise SystemExit('PR942 reconciliation block end not found')
+          script = textwrap.dedent(workflow[start + len(begin):stop])
+          exec(compile(script, 'finalize-pr942-ci.yml', 'exec'))
+          PYRUN
+          git diff --check
+      - name: Focused regressions
+        run: |
+          node tests/semantic-v2/issues-791-797-800-825-ir-soundness.test.mjs
+          node tests/issue-861-862-c-printer-signedness.mjs
+          node tests/decompiler-semantic.mjs
+          node tests/phase6/generic-core/degenerate-control-dependency.test.mjs
+          node tests/worker-classic-harness.mjs
+      - name: Rebuild canonical userscript outputs
+        run: npm run userscript:build
+      - name: Full repository verification
+        run: npm run check
+      - name: Verify userscript build idempotence
+        run: |
+          git diff > /tmp/prebuild.diff
+          npm run userscript:build
+          git diff > /tmp/postbuild.diff
+          diff -u /tmp/prebuild.diff /tmp/postbuild.diff
+      - name: Publish verified clean head
+        run: |
+          git rm .github/workflows/finalize-pr942-ci.yml .github/workflows/finalize-pr942-push.yml
+          git add -A
+          git diff --cached --check
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git commit -m 'fix: rebase PR942 and restore CI invariants'
+          git push origin HEAD:integrate/open-issue-fixes-current-main-20260819
