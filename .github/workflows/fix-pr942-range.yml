@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - integrate/open-issue-fixes-current-main-20260819
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: write
