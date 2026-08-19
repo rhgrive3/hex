@@ -110,16 +110,7 @@ jobs:
         run: npm run userscript:build
 
       - name: Run exact check shard
-        if: matrix.name != 'contracts-phase'
         run: ${{ matrix.command }}
-
-      - name: Run Phase 4 contracts
-        if: matrix.name == 'contracts-phase'
-        run: npm run phase4:test
-
-      - name: Run Phase 5 contracts
-        if: ${{ matrix.name == 'contracts-phase' && always() }}
-        run: npm run phase5:test
 
   invariant-gates:
     name: invariant-gates
