@@ -106,8 +106,20 @@ function indirectNode(result) {
   const producer = result.semanticIr.nodes.find((candidate) => candidate.outputs.includes(node.inputs[0]));
   assert.ok(producer, 'target ValueId must retain its producer');
   assert.equal(producer.kind, 'state-read');
-  assert.ok(result.ssa.uses.some((use) => use.valueId === node.inputs[0]),
-    'SSA must retain a use of the computed target ValueId');
+
+  // Semantic IR ids and canonical SSA ids are intentionally distinct identity
+  // domains. Verify the actual cross-layer use-def proof rather than requiring
+  // those two ids to be byte-for-byte equal.
+  const targetUse = result.ssa.uses.find((use) =>
+    use.sourceEntityId === node.id
+    && use.proof?.kind === 'semantic-value-use'
+    && use.proof?.sourceSemanticValueId === node.inputs[0]
+    && use.proof?.roles?.includes('input'));
+  assert.ok(targetUse, 'SSA must retain an input use for the computed target semantic ValueId');
+  const targetDefinition = result.ssa.definitions.find((definition) => definition.valueId === targetUse.valueId);
+  assert.ok(targetDefinition, 'computed target SSA use must resolve to a canonical SSA definition');
+  assert.equal(targetDefinition.proof?.sourceSemanticValueId, node.inputs[0],
+    'computed target SSA definition must preserve the source semantic ValueId');
 
   const entry = result.cfg.blocks.find((block) => block.id === result.semanticIr.entryBlockId);
   assert.ok(entry);
