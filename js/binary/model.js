@@ -14,7 +14,22 @@ function minBigInt(a, b) {
   return a < b ? a : b;
 }
 
-function mappingAt(image, address) {
+function mappedFileSize(mapping) {
+  if (mapping.size <= 0n || mapping.fileSize <= 0n) return 0n;
+  return minBigInt(mapping.size, mapping.fileSize);
+}
+
+function fileMappingAt(image, address) {
+  for (const s of image.segments) {
+    if (inRange(address, s.address, mappedFileSize(s))) return s;
+  }
+  for (const s of image.sections) {
+    if (s.address !== 0n && inRange(address, s.address, mappedFileSize(s))) return s;
+  }
+  return null;
+}
+
+function virtualMappingAt(image, address) {
   for (const s of image.segments) {
     if (inRange(address, s.address, s.size)) return s;
   }
@@ -24,36 +39,45 @@ function mappingAt(image, address) {
   return null;
 }
 
+function nextFileMappingStart(image, address, limit) {
+  let next = limit;
+  for (const s of [...image.segments, ...image.sections]) {
+    if (s.address === 0n || mappedFileSize(s) <= 0n || s.address <= address || s.address >= next) continue;
+    next = s.address;
+  }
+  return next;
+}
+
 function virtualReadSpans(image, address, size) {
   const start = BigInt(address);
   const length = typeof size === 'bigint' ? size : BigInt(size);
   if (length < 0n) return null;
-  if (length === 0n) return mappingAt(image, start) ? [] : null;
+  if (length === 0n) return fileMappingAt(image, start) || virtualMappingAt(image, start) ? [] : null;
 
   const end = start + length;
   let cursor = start;
   const spans = [];
   while (cursor < end) {
-    const mapping = mappingAt(image, cursor);
-    if (!mapping) return null;
-
-    const mappingSize = mapping.size > 0n ? mapping.size : 0n;
-    const fileSize = mapping.fileSize < mappingSize ? mapping.fileSize : mappingSize;
-    const mappingEnd = mapping.address + mappingSize;
-    const fileEnd = mapping.address + fileSize;
-    const spanEnd = minBigInt(end, cursor < fileEnd ? fileEnd : mappingEnd);
-    if (spanEnd <= cursor) return null;
-
-    const spanSize = spanEnd - cursor;
-    if (cursor < fileEnd) {
+    const fileMapping = fileMappingAt(image, cursor);
+    if (fileMapping) {
+      const fileEnd = fileMapping.address + mappedFileSize(fileMapping);
+      const spanEnd = minBigInt(end, fileEnd);
+      if (spanEnd <= cursor) return null;
       spans.push({
         kind: 'file',
-        offset: mapping.fileOffset + (cursor - mapping.address),
-        size: spanSize,
+        offset: fileMapping.fileOffset + (cursor - fileMapping.address),
+        size: spanEnd - cursor,
       });
-    } else {
-      spans.push({ kind: 'zero', size: spanSize });
+      cursor = spanEnd;
+      continue;
     }
+
+    const virtualMapping = virtualMappingAt(image, cursor);
+    if (!virtualMapping) return null;
+    const mappingEnd = virtualMapping.address + virtualMapping.size;
+    const spanEnd = nextFileMappingStart(image, cursor, minBigInt(end, mappingEnd));
+    if (spanEnd <= cursor) return null;
+    spans.push({ kind: 'zero', size: spanEnd - cursor });
     cursor = spanEnd;
   }
   return spans;
@@ -62,6 +86,11 @@ function virtualReadSpans(image, address, size) {
 function safeNumber(value) {
   const n = Number(value);
   return Number.isSafeInteger(n) && n >= 0 ? n : null;
+}
+
+function allocateBytes(size) {
+  try { return new Uint8Array(size); }
+  catch { return null; }
 }
 
 export class BinaryImage {
@@ -177,7 +206,8 @@ export class BinaryImage {
       return this.bytes.subarray(o, o + spanSize);
     }
 
-    const out = new Uint8Array(n);
+    const out = allocateBytes(n);
+    if (!out) return null;
     let cursor = 0;
     for (const span of spans) {
       const spanSize = safeNumber(span.size);
@@ -210,7 +240,8 @@ export class BinaryImage {
 
     const n = safeNumber(requested);
     if (n == null) return null;
-    const out = new Uint8Array(n);
+    const out = allocateBytes(n);
+    if (!out) return null;
     let cursor = 0;
     for (const span of spans) {
       const spanSize = safeNumber(span.size);
