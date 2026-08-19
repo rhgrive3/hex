@@ -51,12 +51,24 @@ function directTarget(plugin, instruction) {
   } catch { return null; }
 }
 
+function callNoreturnState(options = {}) {
+  const prototype = options?.callPrototype;
+  if (!prototype || typeof prototype !== 'object') return 'unknown';
+  if (prototype.noreturn === true || prototype.returns === false) return true;
+  if (prototype.noreturn === false || prototype.returns === true) return false;
+  return 'unknown';
+}
+
+function isAuthoritativeNoreturnCall(kind, options = {}) {
+  return kind === 'call' && callNoreturnState(options) === true;
+}
+
 /**
  * Convert decoder-proven instruction starts into discovery facts for the shared
  * semantic pipeline. This is architecture-front-end work: generic CFG/SSA never
  * inspect register names or mnemonics.
  */
-export function partitionDecodedFunction(instructions, architecturePlugin) {
+export function partitionDecodedFunction(instructions, architecturePlugin, options = {}) {
   if (!Array.isArray(instructions) || !instructions.length) throw new TypeError('semantic-function-decoded-instructions-required');
   const ordered = instructions.slice().sort((left, right) => addressOf(left) < addressOf(right) ? -1 : addressOf(left) > addressOf(right) ? 1 : 0);
   const byAddress = new Map();
@@ -72,7 +84,7 @@ export function partitionDecodedFunction(instructions, architecturePlugin) {
     const kind = controlKind(architecturePlugin, instruction);
     const target = directTarget(architecturePlugin, instruction);
     if (target != null && byAddress.has(target.toString()) && ['branch','conditional-branch'].includes(kind)) starts.add(target.toString());
-    if (['branch','conditional-branch','return','unknown'].includes(kind) && ordered[index + 1]) starts.add(addressOf(ordered[index + 1]).toString());
+    if ((['branch','conditional-branch','return','unknown'].includes(kind) || isAuthoritativeNoreturnCall(kind, options)) && ordered[index + 1]) starts.add(addressOf(ordered[index + 1]).toString());
   }
 
   const blocks = [];
@@ -98,7 +110,7 @@ export function partitionDecodedFunction(instructions, architecturePlugin) {
       if (fallthroughBlock) block.successors.push({ to:fallthroughBlock.key, kind:'conditional-false' });
     } else if (kind === 'branch') {
       if (targetBlock) block.successors.push({ to:targetBlock.key, kind:'branch' });
-    } else if (!['return','unknown'].includes(kind) && fallthroughBlock) {
+    } else if (!['return','unknown'].includes(kind) && !isAuthoritativeNoreturnCall(kind, options) && fallthroughBlock) {
       block.successors.push({ to:fallthroughBlock.key, kind:'fallthrough' });
     }
   }
@@ -192,6 +204,7 @@ export function semanticAbiAdapter(abiPlugin, options = {}) {
         returnReg:returned?.reg ?? null,
         returnBits:returned?.bits ?? null,
         returnEvidence:returned == null ? null : `abi-${abiPlugin.id}-return`,
+        noreturn:callNoreturnState(options),
       };
     },
   });
@@ -304,7 +317,7 @@ export function analyzeDecodedSemanticFunction(input = {}, options = {}) {
   const abiPlugin = resolveABIPlugin({ architecture:architectureId, platform:input.platform, abiId:input.abiId });
   if (!abiPlugin?.supported) throw new TypeError('semantic-function-supported-abi-required');
   if (abiPlugin.architectureId !== architectureId) throw new TypeError('semantic-function-abi-architecture-mismatch');
-  const blocks = partitionDecodedFunction(input.instructions, architecturePlugin);
+  const blocks = partitionDecodedFunction(input.instructions, architecturePlugin, { callPrototype:input.callPrototype ?? null });
   const abiAdapter = semanticAbiAdapter(abiPlugin, input);
   let defaultMode = null;
   try { defaultMode = architecturePlugin.modes()?.[0] ?? null; } catch { defaultMode = null; }

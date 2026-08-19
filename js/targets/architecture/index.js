@@ -44,9 +44,10 @@ function riscv64ControlFlow(instruction) {
   const fields = instruction?.fields;
   if (!fields?.supported) return 'unknown';
   const op = fields.op;
-  if (op === 'jal') return fields.rd === 'x0' ? 'branch' : 'call';
+  if (op === 'jal') return fields.rd === 'x0' ? 'branch' : ['x1', 'x5'].includes(fields.rd) ? 'call' : 'branch';
   if (op === 'jalr') {
-    if (fields.rd !== 'x0') return 'call';
+    if (['x1', 'x5'].includes(fields.rd)) return 'call';
+    if (fields.rd !== 'x0') return 'branch';
     if (['x1', 'x5'].includes(fields.rs1)) return 'return';
     // An indirect jump. It is reported as a branch, matching how x86 classifies
     // an indirect `jmp`: the block ends and no fallthrough edge is invented,

@@ -104,13 +104,14 @@ export function liftRiscv64ControlEffects(decoded, context = {}) {
   if (op === 'jal') {
     const target = address + BigInt(fields.imm);
     const linked = ctx.writeRegister(fields.rd, ctx.constant(RISCV64_XLEN, next));
+    const isCallHint = linked && RETURN_ADDRESS_HINT_REGISTERS.includes(fields.rd);
     return ctx.finish({
-      controlEffect: linked
+      controlEffect: isCallHint
         ? { kind: 'call', target: addressRef(target), fallthrough: addressRef(next) }
         : { kind: 'branch', target: addressRef(target) },
       possibleFaults: targetAlignmentFaults(ctx),
       family: 'control',
-      metadata: { operation: op, direct: true, linkRegister: linked ? fields.rd : null, abiSemantics: false },
+      metadata: { operation: op, direct: true, linkRegister: linked ? fields.rd : null, jumpWithLinkage: linked && !isCallHint, abiSemantics: false },
     });
   }
 
@@ -120,8 +121,9 @@ export function liftRiscv64ControlEffects(decoded, context = {}) {
     const sum = ctx.valueOp('add', [base, ctx.constant(RISCV64_XLEN, fields.imm)], RISCV64_XLEN, { addressArithmetic: 'jalr-target' });
     const target = ctx.valueOp('and', [sum, ctx.constant(RISCV64_XLEN, -2n)], RISCV64_XLEN, { targetLowBitCleared: true });
     const linked = ctx.writeRegister(fields.rd, ctx.constant(RISCV64_XLEN, next));
+    const isCallHint = linked && RETURN_ADDRESS_HINT_REGISTERS.includes(fields.rd);
     const isReturnHint = !linked && RETURN_ADDRESS_HINT_REGISTERS.includes(fields.rs1);
-    const kind = linked ? 'call' : isReturnHint ? 'return' : 'indirect';
+    const kind = isCallHint ? 'call' : isReturnHint ? 'return' : 'indirect';
     return ctx.finish({
       controlEffect: {
         kind,
@@ -135,6 +137,7 @@ export function liftRiscv64ControlEffects(decoded, context = {}) {
         indirect: true,
         linkRegister: linked ? fields.rd : null,
         returnAddressStackHint: isReturnHint ? fields.rs1 : null,
+        jumpWithLinkage: linked && !isCallHint,
         abiSemantics: false,
       },
     });
