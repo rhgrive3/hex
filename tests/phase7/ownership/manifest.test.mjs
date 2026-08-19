@@ -75,12 +75,34 @@ test('Phase 7 owns the generated userscript output it invalidates', () => {
   // source but cannot commit the rebuild is the EP-003/EP-008 contradiction:
   // CI demands synchronisation the lane is forbidden from performing.
   const manifest = loadManifest();
-  for (const generated of ['userscript/hex.user.template.js', 'userscript/release-version.json', 'js/userscript/deployment-identity.generated.js']) {
+  for (const generated of ['userscript/hex.user.template.js', 'userscript/release-version.json']) {
     assert.ok(manifest.lanes.p7.includes(generated), `Phase 7 must own the generated output it invalidates: ${generated}`);
     assert.ok(manifest.generatedPaths.includes(generated), `${generated} must be declared generated, not ordinary source`);
     assert.ok(manifest.ownedWithConstraint[generated], `${generated} must carry its canonical-builder constraint`);
   }
   assert.deepEqual(manifest.generatedWriteOwners, ['p7']);
+
+  // The deployment stamp records which commit a deployment was built from, so
+  // it differs between a local build and a CI checkout by design. Claiming it
+  // as owned committed output would create a gate no commit could satisfy.
+  const stamp = 'js/userscript/deployment-identity.generated.js';
+  assert.ok(!manifest.lanes.p7.includes(stamp), 'the deployment stamp is not Phase 7 output');
+  assert.ok(!manifest.generatedPaths.includes(stamp));
+});
+
+test('the Phase 7 sync check matches the canonical generated-sync check', () => {
+  // Two workflows enforcing different sets is how a lane ends up blocked by a
+  // rule the rest of the repository does not apply (EP-008).
+  const canonical = fs.readFileSync(path.join(ROOT, '.github/workflows/generated-sync.yml'), 'utf8');
+  const phase7 = fs.readFileSync(path.join(ROOT, '.github/workflows/phase7-release-validation.yml'), 'utf8');
+  for (const artifact of ['userscript/hex.user.template.js', 'userscript/release-version.json']) {
+    assert.ok(canonical.includes(artifact), `canonical workflow must check ${artifact}`);
+    assert.ok(phase7.includes(artifact), `Phase 7 workflow must check ${artifact}`);
+  }
+  const stamp = 'deployment-identity.generated.js';
+  assert.ok(!canonical.includes(stamp), 'the canonical workflow excludes the deployment stamp');
+  assert.ok(!phase7.split('Generated-output synchronization')[1].split('- name:')[0].includes(`-- ${stamp}`),
+    'the Phase 7 workflow must not require the deployment stamp to match');
 });
 
 test('the ownership gate is reachable as a script', () => {
