@@ -22,7 +22,7 @@ const immFloat = (value, text = `#${value}`) => ({ k:'imm', value:null, float:va
   assert.equal(effect.completeness, 'exact-with-intrinsic', 'FP arithmetic must not pretend primitive IEEE exactness');
   const intrinsic = effect.operations.find((op) => op.kind === 'intrinsic');
   assert.equal(intrinsic.intrinsicId, 'arm64.fp.fadd');
-  assert.deepEqual([...intrinsic.effectSummary.registersRead].sort(), ['fpcr','fpsr','v1','v2'].sort());
+  assert.deepEqual([...intrinsic.effectSummary.registersRead].sort(), ['fpcr','fpsr','v0','v1','v2'].sort(), 'scalar FP arithmetic reads the prior physical destination because FPCR can affect preserved upper-lane state');
   assert.deepEqual([...intrinsic.effectSummary.registersWritten].sort(), ['fpsr','v0'].sort());
   const result = intrinsic.effectSummary.outputs[0];
   assert.equal(result.valueType.kind, 'float');
