@@ -163,7 +163,6 @@ export function rangeOnBranch(ir, branch, taken = true) {
 
 export function branchConstraints(ir) {
   if (!ir) return [];
-  if (ir._branchConstraints) return ir._branchConstraints;
   const out = [];
   for (const inst of ir.instructions || []) {
     if (inst.op !== OP.CBR) continue;
