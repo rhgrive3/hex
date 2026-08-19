@@ -7,46 +7,96 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: one-shot-finalize-integration-generated
+  cancel-in-progress: true
+
 jobs:
   finalize:
     if: github.head_ref == 'integrate/all-open-prs-20260819' && github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
         with:
           ref: integrate/all-open-prs-20260819
           fetch-depth: 0
       - uses: actions/setup-node@v4
-        with: { node-version: 22, cache: npm }
+        with:
+          node-version: 22
+          cache: npm
       - run: npm ci
-      - name: Apply candidate fixes
+      - name: Apply verified semantic fixes
         shell: bash
         run: |
           set -euo pipefail
+          # Remove earlier diagnostic/workaround deltas first.
           git show cce0797363bfe0ddc85a89c623d132e1845dce31:js/ir.js > js/ir.js
           git show 4dae354fcebd8cfda036498183c43be45e1a80ba^:tests/semantic-v2/issues-791-797-800-825-ir-soundness.test.mjs > tests/semantic-v2/issues-791-797-800-825-ir-soundness.test.mjs
           python - <<'PY'
           from pathlib import Path
-          p=Path('js/semantics/compat/semantic-ir-v2-to-v1-nodes.js'); s=p.read_text()
+
+          p=Path('js/semantics/compat/semantic-ir-v2-to-v1-nodes.js')
+          s=p.read_text()
           old="""        const resultIsWritten = node.outputs?.[0] && hasRegisterStateWriteForValue(node.outputs[0], context);\n        if (!resultIsWritten) {\n"""
           new="""        const resultValueId = node.outputs?.[0] ?? null;\n        const resultIsWritten = resultValueId != null && hasRegisterStateWriteForValue(resultValueId, context);\n        const resultIsConsumed = resultValueId != null && context.ir.nodes.some((candidate) =>\n          candidate.id !== node.id && candidate.inputs?.includes(resultValueId));\n        if (!resultIsWritten && !resultIsConsumed) {\n"""
-          assert old in s; p.write_text(s.replace(old,new,1))
+          assert old in s, 'binary projection block not found'
+          p.write_text(s.replace(old,new,1))
 
           for name in ['js/ir-base.js','js/ir.js']:
-              p=Path(name); s=p.read_text()
-              old="""  const existing = valueRange(value);\n  const comparableExisting = existing\n    ? normalizeRangeDomain(existing, bits, signed)\n    : null;\n"""
-              if old in s:
-                  s=s.replace(old,"""  const existing = value?.range ?? null;\n  const comparableExisting = existing\n    ? normalizeRangeDomain(existing, bits, signed)\n    : null;\n""",1)
+              p=Path(name)
+              s=p.read_text()
+              old_new="""  const existing = valueRange(value);\n  const comparableExisting = existing\n    ? normalizeRangeDomain(existing, bits, signed)\n    : null;\n"""
+              if old_new in s:
+                  s=s.replace(old_new,"""  const existing = value?.range ?? null;\n  const comparableExisting = existing\n    ? normalizeRangeDomain(existing, bits, signed)\n    : null;\n""",1)
               else:
-                  old2="""  const existing = valueRange(value);\n  if (existing) { if (existing.min > min) min = existing.min; if (existing.max < max) max = existing.max; }\n"""
-                  assert old2 in s, f'expected constrained range block not found in {name}'
-                  s=s.replace(old2,"""  const existing = value?.range ?? null;\n  const comparableExisting = existing\n    ? normalizeRangeDomain(existing, bits, signed)\n    : null;\n  if (comparableExisting) {\n    if (comparableExisting.min > min) min = comparableExisting.min;\n    if (comparableExisting.max < max) max = comparableExisting.max;\n  }\n""",1)
+                  old_legacy="""  const existing = valueRange(value);\n  if (existing) { if (existing.min > min) min = existing.min; if (existing.max < max) max = existing.max; }\n"""
+                  assert old_legacy in s, f'constrained range block not found in {name}'
+                  s=s.replace(old_legacy,"""  const existing = value?.range ?? null;\n  const comparableExisting = existing\n    ? normalizeRangeDomain(existing, bits, signed)\n    : null;\n  if (comparableExisting) {\n    if (comparableExisting.min > min) min = comparableExisting.min;\n    if (comparableExisting.max < max) max = comparableExisting.max;\n  }\n""",1)
               p.write_text(s)
           PY
           git diff --check
-      - name: Verify semantic frontier
+      - name: Verify focused semantic regressions
         run: |
           node tests/machine-effects/issue-957-bti-guarded-page.test.mjs
           node tests/semantic-v2/issues-791-797-800-825-ir-soundness.test.mjs
           node tests/semantic-v2/issue-949-indirect-control.test.mjs
+      - name: Rebuild canonical userscript outputs
+        run: npm run userscript:build
+      - name: Run full repository check
+        run: npm run check
+      - name: Prove generated output idempotence
+        run: |
+          cp userscript/hex.user.template.js /tmp/hex.user.template.js
+          cp userscript/release-version.json /tmp/release-version.json
+          npm run userscript:build
+          cmp userscript/hex.user.template.js /tmp/hex.user.template.js
+          cmp userscript/release-version.json /tmp/release-version.json
+      - name: Publish verified fixes and restore canonical workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          canonical=''
+          while read -r commit; do
+            candidate="$(git show "$commit":.github/workflows/generated-sync.yml 2>/dev/null || true)"
+            if [ -n "$candidate" ] && ! grep -q '^name: One-shot finalize integration generated outputs$' <<<"$candidate"; then
+              canonical="$commit"
+              break
+            fi
+          done < <(git rev-list HEAD -- .github/workflows/generated-sync.yml)
+          test -n "$canonical"
+          git show "$canonical":.github/workflows/generated-sync.yml > .github/workflows/generated-sync.yml
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add \
+            .github/workflows/generated-sync.yml \
+            js/ir.js \
+            js/ir-base.js \
+            js/semantics/compat/semantic-ir-v2-to-v1-nodes.js \
+            tests/semantic-v2/issues-791-797-800-825-ir-soundness.test.mjs \
+            userscript/hex.user.template.js \
+            userscript/release-version.json
+          git diff --cached --check
+          git commit -m 'fix: preserve comparison values and branch range domains'
+          git push origin HEAD:integrate/all-open-prs-20260819
