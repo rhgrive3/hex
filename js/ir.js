@@ -77,13 +77,13 @@ function comparisonOfBranch(branch) {
   const cmp = flags?.def?.op === OP.CMP ? flags.def : null;
   if (!cmp?.args?.[0]?.value || !cmp.args?.[1]?.value) return null;
   // Semantic-v2 compatibility can expose a 64-bit physical register view while
-  // the machine comparison itself is width-exact W32. Prefer the canonical
-  // projected comparison width, then exact effect/bundle metadata, before the
-  // widened physical-state view.
+  // the machine comparison itself is width-exact W32. MachineEffects metadata
+  // is the authoritative machine-width evidence; projected compatibility width
+  // can be widened by a later physical-state view and is only a fallback.
   const semanticBits = Number(
-    cmp.extra?.widthBits
-      ?? cmp.extra?.attributes?.machineEffects?.operationMetadata?.widthBits
+    cmp.extra?.attributes?.machineEffects?.operationMetadata?.widthBits
       ?? cmp.extra?.attributes?.machineEffects?.bundleMetadata?.widthBits
+      ?? cmp.extra?.widthBits
       ?? 0,
   );
   const bits = (semanticBits === 32 || semanticBits === 64)
