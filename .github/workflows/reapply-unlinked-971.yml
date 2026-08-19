@@ -1,0 +1,103 @@
+name: Reapply verified issue 971 fix
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'work/unlinked-971-macho-thread-pc'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: work/unlinked-971-macho-thread-pc
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Apply verified ARM_THREAD_STATE64 PC correction
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('js/binary/macho.js')
+          text = path.read_text()
+          old = "  if (arch === 'arm64' && flavor === 6 && stateBytes >= 272) return r.u64(state + 264);\n"
+          new = "  const ARM_THREAD_STATE64 = 6;\n  const ARM_THREAD_STATE64_COUNT = 68;\n  const ARM_THREAD_STATE64_PC_OFFSET = 256;\n  if (arch === 'arm64' && flavor === ARM_THREAD_STATE64 && count >= ARM_THREAD_STATE64_COUNT)\n    return r.u64(state + ARM_THREAD_STATE64_PC_OFFSET);\n"
+          if text.count(old) != 1:
+              raise SystemExit(f'ARM64 thread-state PC anchor count={text.count(old)}')
+          path.write_text(text.replace(old, new, 1))
+
+          test = Path('tests/universal-binary.mjs')
+          text = test.read_text()
+          old = "  p+=72; w32(p,0x5); w32(p+4,288); w32(p+8,6); w32(p+12,68); w64(p+16+264,0x100000180n);\n"
+          new = "  p+=72; w32(p,0x5); w32(p+4,288); w32(p+8,6); w32(p+12,68); w64(p+16+256,0x100000180n); w32(p+16+264,0x60000000);\n"
+          if text.count(old) != 1:
+              raise SystemExit(f'legacy thread fixture anchor count={text.count(old)}')
+          test.write_text(text.replace(old, new, 1))
+          PY
+          cat > tests/issue-971-macho-thread-entry.mjs <<'EOF'
+          // #971: ARM_THREAD_STATE64.__pc is at +256; +264 is CPSR/pad and must never become entrypoint truth.
+          import assert from 'node:assert/strict';
+          import { parseMachO } from '../js/binary/macho.js';
+
+          function makeMachO({ pc = 0x100000100n, cpsr = 0x60000000, count = 68 } = {}) {
+            const segCmdSize = 72;
+            const threadStateBytes = count * 4;
+            const threadCmdSize = 16 + threadStateBytes;
+            const size = 32 + segCmdSize + threadCmdSize;
+            const b = new Uint8Array(size);
+            const v = new DataView(b.buffer);
+            const u32 = (o, x) => v.setUint32(o, x >>> 0, true);
+            const i32 = (o, x) => v.setInt32(o, x, true);
+            const u64 = (o, x) => v.setBigUint64(o, BigInt(x), true);
+            const ascii = (o, s) => { for (let i=0;i<s.length;i++) b[o+i]=s.charCodeAt(i); };
+            u32(0, 0xfeedfacf); i32(4, 0x0100000c); i32(8, 0); u32(12, 2);
+            u32(16, 2); u32(20, segCmdSize + threadCmdSize); u32(24, 0); u32(28, 0);
+            let p = 32;
+            u32(p, 0x19); u32(p+4, segCmdSize); ascii(p+8, '__TEXT');
+            u64(p+24, 0x100000000n); u64(p+32, 0x1000n); u64(p+40, 0n); u64(p+48, BigInt(size));
+            i32(p+56, 5); i32(p+60, 5); u32(p+64, 0); u32(p+68, 0);
+            p += segCmdSize;
+            u32(p, 0x5); u32(p+4, threadCmdSize); u32(p+8, 6); u32(p+12, count);
+            const state = p + 16;
+            if (count >= 66) u64(state + 256, pc);
+            if (count >= 67) u32(state + 264, cpsr);
+            return b;
+          }
+
+          const image = parseMachO(makeMachO());
+          assert.equal(image.entrypoint, 0x100000100n);
+          assert.equal(image.metadata.entrypointSource, 'LC_UNIXTHREAD');
+          assert.ok(image.functions.some((f) => f.address === 0x100000100n && f.source === 'entrypoint'));
+          assert.notEqual(image.entrypoint, 0x60000000n);
+          const truncated = parseMachO(makeMachO({ count:67 }));
+          assert.equal(truncated.entrypoint, null);
+          console.log('issue 971 Mach-O ARM64 LC_UNIXTHREAD PC regression: PASS');
+          EOF
+      - name: Focused regression
+        run: node tests/issue-971-macho-thread-entry.mjs
+      - name: Binary loader suite
+        run: npm run binary:test
+      - name: Static checks
+        run: npm run lint
+      - name: Canonical userscript build
+        run: npm run userscript:build
+      - name: Diff hygiene
+        run: git diff --check
+      - name: Publish current-main implementation
+        shell: bash
+        run: |
+          rm .github/workflows/reapply-unlinked-971.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'fix: read ARM64 LC_UNIXTHREAD PC at correct offset (#971)'
+          git push origin HEAD:work/unlinked-971-macho-thread-pc
