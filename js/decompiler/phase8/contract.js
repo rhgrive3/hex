@@ -16,8 +16,11 @@
  *
  * P8-0 shipped the versioned skeleton and one identity pass through the real
  * production pipeline. P8-1 added `produces` and the staged/atomic transaction
- * in ./transaction.js. The shape is versioned so a contract change invalidates
- * derived artifacts instead of silently reinterpreting them.
+ * in ./transaction.js. P8-2 separated producing a fact from rewriting the
+ * program: an analysis pass changes the state without transforming anything, and
+ * requiring it to invent a transform record would have made provenance a
+ * formality. The shape is versioned so a contract change invalidates derived
+ * artifacts instead of silently reinterpreting them.
  */
 
 /**
@@ -26,7 +29,7 @@
  * material, so a bump invalidates derived artifacts rather than silently
  * reusing them (EP-005 evidence-invalidation rule, MIGRATION_GUARDRAILS §CI).
  */
-export const PHASE8_CONTRACT_VERSION = 2;
+export const PHASE8_CONTRACT_VERSION = 3;
 
 /**
  * Ordered pipeline stages. Order here is the dependency order Phase 8 accepts;
@@ -206,9 +209,19 @@ export function createPassResult(input = {}) {
   for (const key of invalidated) {
     if (!descriptor.invalidates.includes(key)) fail(`phase8-pass-result-undeclared-invalidation:${key}`);
   }
+  const produced = analysisList(input.produced, 'phase8-pass-result-unknown-produced-analysis');
+  for (const key of produced) {
+    if (!descriptor.produces.includes(key)) fail(`phase8-pass-result-undeclared-production:${key}`);
+  }
   const changed = status === 'changed' || status === 'degraded' ? input.changed !== false : input.changed === true;
-  if (changed && transforms.length === 0) fail('phase8-pass-result-changed-without-transform');
+  // A change has to be accounted for by something: a program transformation or a
+  // produced analysis. These are different things. An analysis pass that proved
+  // nothing still changed the state — "SCCP ran and found nothing" is not the
+  // same fact as "SCCP never ran" — and forcing it to file a transform record
+  // with no target would turn provenance into a formality.
+  if (changed && transforms.length === 0 && produced.length === 0) fail('phase8-pass-result-changed-without-transform-or-production');
   if (!changed && transforms.length > 0) fail('phase8-pass-result-transform-without-change');
+  if (!changed && produced.length > 0) fail('phase8-pass-result-production-without-change');
   if (status === 'unchanged' && invalidated.length > 0) fail('phase8-pass-result-unchanged-invalidates');
   if (status === 'unsupported' && completeness === 'complete') fail('phase8-pass-result-unsupported-claims-complete');
   return Object.freeze({
@@ -222,6 +235,7 @@ export function createPassResult(input = {}) {
     transforms,
     diagnostics,
     invalidated,
+    produced,
     // Analyses that survive this pass, derived from the declaration rather than
     // restated by the pass body, so the two cannot drift.
     preserved: descriptor.preserves,

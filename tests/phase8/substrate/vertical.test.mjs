@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { createPassDescriptor } from '../../../js/decompiler/phase8/contract.js';
-import { passRegistryDigest, phase8Passes, runPassTransaction, runPhase8Stage, runPhase8Vertical, seedAnalysisState } from '../../../js/decompiler/phase8/index.js';
+import { INTERACTIVE_STAGES, PASS_STAGES, passRegistryDigest, phase8Passes, runPassTransaction, runPhase8Stage, runPhase8Vertical, seedAnalysisState } from '../../../js/decompiler/phase8/index.js';
 
 /**
  * A minimal IR carrying exactly the canonical facts the identity pass declares
@@ -22,8 +22,8 @@ const CONTEXT = Object.freeze({
 });
 
 test('the vertical publishes a frozen deterministic ledger', () => {
-  const first = runPhase8Vertical(CONTEXT, {});
-  const second = runPhase8Vertical(CONTEXT, {});
+  const first = runPhase8Vertical({ ...CONTEXT, enabledStages: INTERACTIVE_STAGES }, {});
+  const second = runPhase8Vertical({ ...CONTEXT, enabledStages: INTERACTIVE_STAGES }, {});
   assert.equal(first.ledger.status, 'published');
   assert.equal(first.ledger.published, true);
   assert.equal(first.ledger.transformCount, 0, 'the identity pass must not transform anything');
@@ -31,6 +31,16 @@ test('the vertical publishes a frozen deterministic ledger', () => {
   assert.ok(Object.isFrozen(first.ledger));
   // Same input, same registry, same digest. Timings are excluded on purpose.
   assert.equal(first.ledger.publicationDigest, second.ledger.publicationDigest);
+});
+
+test('the enabled stage set is part of the ledger and of its registry digest', () => {
+  // A ledger produced without the optimizer stages must never be servable for a
+  // request that wanted them, so the two must be distinguishable.
+  const interactive = runPhase8Vertical({ ...CONTEXT, enabledStages: INTERACTIVE_STAGES }, {});
+  const everything = runPhase8Vertical({ ...CONTEXT, enabledStages: PASS_STAGES }, {});
+  assert.deepEqual([...interactive.ledger.enabledStages], [...INTERACTIVE_STAGES]);
+  assert.notEqual(interactive.ledger.registryDigest, everything.ledger.registryDigest);
+  assert.ok(everything.ledger.passes.length > interactive.ledger.passes.length);
 });
 
 test('cancellation before the first pass publishes nothing', () => {
@@ -87,7 +97,7 @@ test('a pass whose declared inputs are absent does not run and is not complete',
   // The transaction refuses rather than letting the pass improvise a substitute
   // for a missing upstream fact. The ledger still publishes, because "this pass
   // could not run and here is which fact was missing" is real information.
-  const { ledger } = runPhase8Vertical({ ir: { values: [] } }, {});
+  const { ledger } = runPhase8Vertical({ ir: { values: [] }, enabledStages: INTERACTIVE_STAGES }, {});
   assert.equal(ledger.published, true);
   assert.equal(ledger.completeness, 'unknown');
   assert.equal(ledger.passes[0].status, 'unsupported');
@@ -97,7 +107,7 @@ test('a pass whose declared inputs are absent does not run and is not complete',
 });
 
 test('the analysis state is seeded from upstream facts, never approximated', () => {
-  const { analysis } = runPhase8Vertical(CONTEXT, {});
+  const { analysis } = runPhase8Vertical({ ...CONTEXT, enabledStages: INTERACTIVE_STAGES }, {});
   assert.deepEqual([...analysis.available()], ['cfg', 'ssa', 'origins']);
   // MemorySSA, alias, types and the rest were not supplied and stay absent at
   // version 0 rather than being invented.
@@ -106,13 +116,13 @@ test('the analysis state is seeded from upstream facts, never approximated', () 
 });
 
 test('a committed no-op moves no analysis version', () => {
-  const { ledger } = runPhase8Vertical(CONTEXT, {});
+  const { ledger } = runPhase8Vertical({ ...CONTEXT, enabledStages: INTERACTIVE_STAGES }, {});
   assert.deepEqual(ledger.analysisVersions.before, ledger.analysisVersions.after);
   assert.deepEqual(ledger.invalidated, []);
 });
 
 test('a withheld ledger reports the state as untouched', () => {
-  const { ledger } = runPhase8Vertical(CONTEXT, { shouldAbort: () => true });
+  const { ledger } = runPhase8Vertical({ ...CONTEXT, enabledStages: INTERACTIVE_STAGES }, { shouldAbort: () => true });
   assert.equal(ledger.published, false);
   assert.deepEqual(ledger.analysisVersions.before, ledger.analysisVersions.after);
 });
@@ -132,6 +142,7 @@ test('passes are ordered by declared stage, not by registration order', () => {
 
 test('the stage honours its own budget and reports its cost', () => {
   const outcome = runPhase8Stage(CONTEXT, { timeBudgetMs: 15 });
+  assert.deepEqual([...outcome.ledger.enabledStages], [...INTERACTIVE_STAGES], 'the stage defaults to the interactive set, not the whole middle end');
   assert.equal(outcome.ledger.published, true);
   assert.ok(Number.isFinite(outcome.elapsedMs));
   const cancelled = runPhase8Stage(CONTEXT, { timeBudgetMs: 15, shouldAbort: () => true });

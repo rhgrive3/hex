@@ -17,7 +17,7 @@ gate. Where it disagrees with `PHASE8_CHECKPOINT_CONTRACTS.md`, the contract win
 |---|---|---|
 | P8-0 Foundation / baseline / verifier | **accepted** | see below |
 | P8-1 Transactional pass substrate | **accepted** | see below |
-| P8-2 SCCP + wrapped range/value set | not started | — |
+| P8-2 SCCP + wrapped range/value set | **accepted** | see below |
 | P8-3 GVN/CSE + effect-aware DCE | not started | — |
 | P8-4 Induction / loop facts | not started | — |
 | P8-5 Irreducible / exception structuring | not started | — |
@@ -196,6 +196,85 @@ completeness. It is not extended further for elegance; the next work is P8-2.
 
 ---
 
+## P8-2 — SCCP and the wrapped range/value-set domain
+
+### What it delivers
+
+- **`bitvector.js`** — exact-width machine integer semantics. Every fold wraps at
+  the declared width, signed and unsigned readings of the same bits are both
+  available, and anything the machine leaves target-defined is refused rather
+  than picked: a shift at or past the width, a division that traps, `INT_MIN / -1`,
+  a mixed-width operand pair.
+- **`range.js`** — a wrapped interval domain on Z/2^n. `[0xFFFFFFF0, 0x0F]` at 32
+  bits is the 32 values around zero, not the empty set. Operations that cannot be
+  represented exactly widen to full and record why; none of them invent a tighter
+  answer.
+- **`sccp.js`** — executable-edge-aware constant propagation. A phi meets only
+  its proved-reachable predecessors, so a value stays constant even when a dead
+  path assigns something else. Values with no producer are overdefined from the
+  start, and an undecided branch marks nothing rather than permanently marking
+  both arms.
+- **Demand-driven optimizer stages.** The interactive decompile publishes
+  canonical facts only (~1.3 ms worst case in the corpus). A caller that wants
+  the middle-end facts asks for them and gets a budget sized for the work.
+- **Producing a fact is not transforming the program** (contract version 2 → 3).
+  SCCP changes the state without rewriting anything; requiring it to file a
+  transform record with no target would have made provenance a formality.
+
+### Results on the frozen corpus
+
+| measure | value |
+|---|---|
+| newly proven constants (beyond what the IR already carried) | 20 |
+| provably unreachable blocks | 1 |
+| ranges widened to reach a fixed point | 30 |
+| worst-case work items | 7,861 (bound 50,000) |
+| functions reporting `partial` | 0 of 35 |
+| worst-case optimizer stage | 16.7 ms cold, 250 ms budget |
+| worst-case interactive stage | 1.3 ms |
+
+Output is still byte-identical to the pre-Phase-8 baseline: nothing consumes the
+facts yet, which is what makes them safe to land on their own.
+
+### Three defects found and repaired here
+
+1. **Non-terminating worklist.** `sameBitvector(null, null)` is false by design —
+   a missing constant is not a constant — so comparing two overdefined cells
+   through it alone reported a change on every revisit. A five-block function
+   burned 200,000 work items and reported `partial`. Cells now compare states and
+   constants separately, and both cells and ranges move monotonically.
+2. **O(edges) reachability check per phi edge.** Scanning the executable-edge set
+   for every incoming value on every revisit dominated the pass on a 300-value
+   function. An executable-predecessor index and re-running only the terminators a
+   value actually decides cut the worst case from 20 ms to 14 ms warm, before the
+   demand-driven change removed it from the interactive path entirely (EP-016:
+   profile the production hot path).
+3. **Values with no producer were never evaluated.** A branch on a function
+   argument left its condition at top forever, so every block behind it looked
+   unreachable — an unsound answer, not merely an imprecise one. Definition-less
+   values are now overdefined at initialization.
+
+### Minimum success condition, and where it stops
+
+`PHASE8_FAST_PATH` §8 asks for executable-edge correctness, exact-width wrap
+correctness, unknown staying unknown, retained provenance and bounded
+convergence. All five are proved in `tests/phase8/scalar/`, on
+architecture-neutral IR fixtures: a fixture assembled from one target's assembly
+would prove things about that target as much as about the optimizer.
+
+The domain is deliberately not richer than that. No congruence information, no
+relational facts, no per-branch refinement — those are precision features and the
+exit metrics do not yet ask for them.
+
+### Still open after P8-2
+
+x86-64 and RISC-V64 remain mandatory lanes with no product corpus. The scalar
+lane is now proved on architecture-neutral IR, which is the algorithm half of
+that gap; the product half needs real binaries and is still reported as missing
+evidence rather than being counted as covered.
+
+---
+
 ## Next allowed action
 
-P8-2 — SCCP and the wrapped range/value-set domain, on top of the substrate.
+P8-3 — GVN/CSE and effect-aware DCE, consuming the P8-2 facts.

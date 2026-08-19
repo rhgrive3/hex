@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 import { stableDigest } from '../../../js/core/identity/index.js';
 import { loadCorpus } from '../../../tools/validation/phase8/build-corpus.mjs';
-import { observeCorpus } from '../../../tools/validation/phase8/decompile-corpus.mjs';
+import { decompileEntry, observeCorpus } from '../../../tools/validation/phase8/decompile-corpus.mjs';
 import { loadFrozenBaseline, qualityVector, safetyCounters } from '../../../tools/validation/phase8/metrics.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -98,9 +98,24 @@ test('the Phase 8 ledger reaches the product result for every semantic function'
   for (const observation of observations.filter((item) => item.semantic)) {
     assert.ok(observation.phase8, `no Phase 8 ledger published for ${observation.id}`);
     assert.equal(observation.phase8.published, true);
-    assert.equal(observation.phase8.transformCount, 0, 'the identity pass must not transform anything');
-    assert.deepEqual(observation.phase8.invalidated, []);
+    assert.equal(observation.phase8.completeness, 'complete', `${observation.id} did not reach a fixed point`);
+    // The corpus is the demand-driven caller, so the optimizer stages ran. SCCP
+    // publishes exactly one facts transform; nothing here rewrites the program,
+    // which is why the output above is still byte-identical to the baseline.
+    assert.equal(observation.phase8.transformCount, 0, `${observation.id} rewrote the program while Phase 8 is still analysis-only`);
+    assert.deepEqual(observation.phase8.produced, ['ranges'], `${observation.id} did not publish the SCCP facts`);
+    assert.deepEqual(observation.phase8.invalidated, [], 'publishing facts must not invalidate anything');
   }
+});
+
+test('the interactive path runs only the canonical-facts stage', () => {
+  // Running a whole middle end on every function the user scrolls past is the
+  // eager whole-binary optimization the architecture rules out.
+  const entry = loadCorpus().functions.find((item) => item.id === 'quality.loop_nested.O2');
+  const interactive = decompileEntry(entry, { phase8Optimize: false });
+  assert.deepEqual([...interactive.result.phase8.enabledStages], ['canonical-facts']);
+  assert.equal(interactive.result.phase8.transformCount, 0);
+  assert.equal(interactive.result.phase8.published, true);
 });
 
 test('the ledger publication digest is stable across runs', () => {

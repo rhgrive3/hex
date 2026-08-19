@@ -22,11 +22,13 @@ import { stableDigest } from '../../core/identity/index.js';
 import { PHASE8_CONTRACT_VERSION, PASS_STAGES, createPassResult } from './contract.js';
 import { IDENTITY_PASS, identityPassObservation, runIdentityPass } from './identity-pass.js';
 import { runPassTransaction, seedAnalysisState } from './transaction.js';
+import { SCCP_PASS, runSccpPass } from './sccp.js';
 
 export { PHASE8_CONTRACT_VERSION, PASS_STAGES } from './contract.js';
 export { createPassDescriptor, createPassResult, unchangedResult, ANALYSIS_KEYS, PASS_STATUSES, COMPLETENESS, BUDGET_CLASSES } from './contract.js';
 export { createPhase8ArtifactDescriptor, PHASE8_ARTIFACT_KINDS, PHASE8_ARTIFACT_SCHEMA_VERSION } from './artifact-identity.js';
 export { createAnalysisState, invalidationFor, runPassTransaction, seedAnalysisState, transactionDigest } from './transaction.js';
+export { SCCP_PASS, describeSccp, runSccpPass } from './sccp.js';
 
 /**
  * The Phase 8 pass registry.
@@ -37,10 +39,28 @@ export { createAnalysisState, invalidationFor, runPassTransaction, seedAnalysisS
  */
 const REGISTERED = Object.freeze([
   Object.freeze({ descriptor: IDENTITY_PASS, run: runIdentityPass, observe: identityPassObservation }),
+  Object.freeze({ descriptor: SCCP_PASS, run: runSccpPass }),
 ]);
 
-export function phase8Passes() {
+/**
+ * Stages that run on the default interactive decompile.
+ *
+ * Only the canonical-facts stage. Optimizer stages are demand-driven: running a
+ * whole middle end on every function the user scrolls past is the eager
+ * whole-binary optimization the architecture rules out, and it also makes
+ * publication depend on the clock — on the heaviest corpus function the 25 ms
+ * interactive allowance is the binding constraint, so the ledger would be
+ * published on a fast run and withheld on a slow one for the same input.
+ *
+ * A caller that wants the optimizer facts asks for them and gets a budget that
+ * matches the work.
+ */
+export const INTERACTIVE_STAGES = Object.freeze(['canonical-facts']);
+
+export function phase8Passes({ stages = null } = {}) {
+  const enabled = stages == null ? null : new Set(stages);
   return Object.freeze([...REGISTERED]
+    .filter(({ descriptor }) => enabled == null || enabled.has(descriptor.stage))
     .sort((left, right) => left.descriptor.stageIndex - right.descriptor.stageIndex
       || left.descriptor.id.localeCompare(right.descriptor.id)));
 }
@@ -101,6 +121,7 @@ function withheldLedger(status, reason, diagnostics, registryDigest, analysisVer
     degraded: true,
     passes: Object.freeze([]),
     transformCount: 0,
+    produced: Object.freeze([]),
     invalidated: Object.freeze([]),
     diagnostics: Object.freeze(diagnostics),
     observations: Object.freeze({}),
@@ -126,7 +147,12 @@ function withheldLedger(status, reason, diagnostics, registryDigest, analysisVer
  * those cases, so the withheld ledger and the untouched state agree.
  */
 export function runPhase8Vertical(context = {}, budget = {}) {
-  const passes = phase8Passes();
+  const enabledStages = context.enabledStages ?? null;
+  const passes = phase8Passes({ stages: enabledStages });
+  // The digest covers the passes that actually ran. A ledger produced with the
+  // optimizer stages disabled must never be servable for a request that wanted
+  // them, and a digest over the full registry would make those two ledgers
+  // indistinguishable.
   const registryDigest = passRegistryDigest(passes);
   let analysis;
   try {
@@ -222,9 +248,13 @@ export function runPhase8Vertical(context = {}, budget = {}) {
     degraded: results.some((result) => result.status === 'degraded'),
     passes: Object.freeze(results),
     transformCount: results.reduce((total, result) => total + result.transforms.length, 0),
+    // Analyses this run produced, so a consumer can tell "the optimizer ran and
+    // found nothing" apart from "the optimizer never ran".
+    produced: Object.freeze([...new Set(results.flatMap((result) => result.produced))].sort()),
     invalidated: Object.freeze([...invalidated].sort()),
     diagnostics: Object.freeze(diagnostics),
     observations: Object.freeze(observations),
+    enabledStages: Object.freeze(enabledStages == null ? [...PASS_STAGES] : [...enabledStages]),
     // Analysis versions before and after. Invalidation is a property a consumer
     // can check, not a claim it has to believe.
     analysisVersions: Object.freeze({ before, after: analysis.snapshot() }),
@@ -251,6 +281,7 @@ export function runPhase8Vertical(context = {}, budget = {}) {
  */
 export function runPhase8Stage(context = {}, options = {}) {
   const timeBudgetMs = Math.max(0, Number(options.timeBudgetMs ?? 15));
+  const stages = options.stages ?? INTERACTIVE_STAGES;
   const started = clock();
   const deadline = started + timeBudgetMs;
   const external = typeof options.shouldAbort === 'function' ? options.shouldAbort : null;
@@ -260,6 +291,6 @@ export function runPhase8Stage(context = {}, options = {}) {
     budgetClass: options.budgetClass ?? 'interactive',
     shouldAbort: () => (external ? external() === true : false) || clock() >= deadline,
   };
-  const outcome = runPhase8Vertical(context, budget);
+  const outcome = runPhase8Vertical({ ...context, enabledStages: stages }, budget);
   return { ...outcome, elapsedMs: clock() - started };
 }

@@ -26,6 +26,9 @@ function pass(descriptorInput, { changed = true, stage: stageWrites = [] } = {})
         changed,
         transforms: changed ? [{ kind: 'probe', targets: ['value_1'], proof: 'probe' }] : [],
         invalidated: changed ? descriptor.invalidates : [],
+        // What was staged and what is declared produced must agree, or the
+        // ledger describes a different commit than the one that happened.
+        produced: changed ? stageWrites.map(([key]) => key) : [],
       });
     },
   };
@@ -102,6 +105,28 @@ test('a cancelled pass leaves the state byte-identical', () => {
   assert.equal(outcome.committed, false);
   assert.deepEqual(state.snapshot(), before);
   assert.deepEqual(state.get('ranges'), { key: 'ranges' }, 'the original analysis must survive a cancelled pass');
+});
+
+test('a staged write that the result does not declare as produced is refused', () => {
+  // The staging area already refuses an undeclared *descriptor* production. This
+  // is the other half: the result must also say what it produced, so the ledger
+  // and the commit cannot disagree.
+  const descriptor = createPassDescriptor({
+    id: 'phase8.probe', version: '1.0.0', stage: 'scalar-optimization',
+    consumes: ['ssa'], preserves: ['cfg'], produces: ['ranges'],
+  });
+  const silent = {
+    descriptor,
+    run(_context, _budget, area) {
+      area.stage('ranges', { computed: true });
+      return createPassResult({ descriptor, status: 'changed', transforms: [{ kind: 'probe', targets: ['value_1'], proof: 'probe' }] });
+    },
+  };
+  const state = createAnalysisState(FULL_STATE);
+  const outcome = runPassTransaction(state, silent, {}, {});
+  assert.equal(outcome.committed, false);
+  assert.match(outcome.stopReason, /staged-production-mismatch/);
+  assert.deepEqual(state.get('ranges'), { key: 'ranges' }, 'the mismatched write must not have landed');
 });
 
 test('deterministic replay: the same pass over the same state agrees on everything but time', () => {

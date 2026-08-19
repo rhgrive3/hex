@@ -93,7 +93,7 @@ export function modelFromAssembly(assembly, name, baseAddress = 0x100000n) {
  * would make `degraded` a property of the runner rather than of the function,
  * and degraded output is a completeness state Phase 8 has to measure honestly.
  */
-export function decompileEntry(entry, { decompilerTimeBudgetMs = 400, index = 0, deterministicTransforms = true } = {}) {
+export function decompileEntry(entry, { decompilerTimeBudgetMs = 400, index = 0, deterministicTransforms = true, phase8Optimize = true } = {}) {
   const model = modelFromAssembly(entry.assembly, entry.function, 0x100000n + BigInt(index) * 0x10000n);
   if (!model) return { id: entry.id, failure: 'assembly could not be parsed into a function model' };
   const rowOfAddress = new Map(model.instructions.map((instruction) => [instruction.address.toString(), instruction.row]));
@@ -108,6 +108,9 @@ export function decompileEntry(entry, { decompilerTimeBudgetMs = 400, index = 0,
       // valve is a responsiveness guard; leaving it on would make the baseline a
       // measurement of the CI runner's speed.
       deterministicTransforms,
+      // The quality path is the demand-driven caller: it wants the optimizer
+      // facts, so it asks for them. The interactive default does not.
+      phase8Optimize,
     });
     return { id: entry.id, result };
   } catch (error) {
@@ -168,9 +171,11 @@ export function observationOf(entry, outcome) {
     aggregateLayouts: Array.isArray(result?.aggregateLayouts) ? result.aggregateLayouts.length : null,
     phase8: result?.phase8 == null ? null : {
       status: result.phase8.status,
+      enabledStages: [...(result.phase8.enabledStages ?? [])],
       published: result.phase8.published,
       completeness: result.phase8.completeness,
       transformCount: result.phase8.transformCount,
+      produced: [...(result.phase8.produced ?? [])],
       invalidated: [...result.phase8.invalidated],
       registryDigest: result.phase8.registryDigest,
       publicationDigest: result.phase8.publicationDigest,
@@ -179,6 +184,6 @@ export function observationOf(entry, outcome) {
 }
 
 /** Runs the whole frozen corpus and returns one deterministic observation each. */
-export function observeCorpus({ corpus = loadCorpus(), decompilerTimeBudgetMs = 400, deterministicTransforms = true } = {}) {
-  return corpus.functions.map((entry, index) => observationOf(entry, decompileEntry(entry, { decompilerTimeBudgetMs, index, deterministicTransforms })));
+export function observeCorpus({ corpus = loadCorpus(), decompilerTimeBudgetMs = 400, deterministicTransforms = true, phase8Optimize = true } = {}) {
+  return corpus.functions.map((entry, index) => observationOf(entry, decompileEntry(entry, { decompilerTimeBudgetMs, index, deterministicTransforms, phase8Optimize })));
 }

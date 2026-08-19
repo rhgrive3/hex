@@ -38,7 +38,7 @@ test('unknown stages, budget classes and analysis keys are rejected', () => {
 test('a changed result must carry a transform, and a transform must carry provenance', () => {
   const pass = descriptor();
   assert.throws(() => createPassResult({ descriptor: pass, status: 'changed' }),
-    /changed-without-transform/, 'a change with nothing to show for it is unauditable');
+    /changed-without-transform-or-production/, 'a change with nothing to show for it is unauditable');
   assert.throws(() => createPassResult({
     descriptor: pass, status: 'changed',
     transforms: [{ kind: 'fold', proof: 'constant', targets: [] }],
@@ -80,6 +80,23 @@ test('an unchanged result may not carry transforms', () => {
     descriptor: descriptor(), status: 'unchanged', changed: false,
     transforms: [{ kind: 'fold', targets: ['value_1'], proof: 'p' }],
   }), /transform-without-change/);
+});
+
+test('an analysis pass may change the state by producing a fact, without a transform', () => {
+  // SCCP rewrites nothing but still changes the state: "the optimizer ran and
+  // found nothing" is not the same fact as "the optimizer never ran".
+  const producer = createPassDescriptor({
+    id: 'phase8.producer', version: '1.0.0', stage: 'scalar-optimization',
+    consumes: ['ssa'], preserves: ['cfg'], produces: ['ranges'],
+  });
+  const result = createPassResult({ descriptor: producer, status: 'changed', produced: ['ranges'] });
+  assert.equal(result.changed, true);
+  assert.deepEqual(result.transforms, []);
+  assert.deepEqual(result.produced, ['ranges']);
+  assert.throws(() => createPassResult({ descriptor: producer, status: 'changed', produced: ['types'] }),
+    /undeclared-production:types/);
+  assert.throws(() => createPassResult({ descriptor: producer, status: 'unchanged', produced: ['ranges'] }),
+    /production-without-change/);
 });
 
 test('a diagnostic must say why, not only what', () => {

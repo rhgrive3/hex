@@ -160,7 +160,19 @@ export function runPassTransaction(state, pass, context = {}, budget = {}) {
   }
 
   const stagedWrites = take();
-  if (!result.changed && stagedWrites.size > 0) fail(`phase8-pass-unchanged-with-staged-writes:${descriptor.id}`);
+  const refuse = (stopReason) => Object.freeze({
+    committed: false, result: null, invalidated: Object.freeze([]), staged: Object.freeze([]), stopReason,
+  });
+  // A contract violation is refused the same way a cancellation is: nothing
+  // commits and the caller gets a reason. Throwing here instead would turn a
+  // withheld ledger into an uncaught exception at the vertical, which is a
+  // worse failure mode for the same fault.
+  if (!result.changed && stagedWrites.size > 0) return refuse(`unchanged-with-staged-writes:${descriptor.id}`);
+  // What the pass staged and what it declared it produced must agree, or the
+  // ledger describes a different commit than the one that happened.
+  const stagedKeys = [...stagedWrites.keys()].sort().join(',');
+  const declaredKeys = [...result.produced].sort().join(',');
+  if (stagedKeys !== declaredKeys) return refuse(`staged-production-mismatch:${descriptor.id}:${stagedKeys || 'none'}!=${declaredKeys || 'none'}`);
 
   // Commit. Nothing above this line touched authoritative state.
   const invalidated = invalidationFor(descriptor, { changed: result.changed });

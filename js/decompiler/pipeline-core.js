@@ -12,7 +12,7 @@ import { recoverHighVariables } from './types/high-variables.js';
 import { recoverFunctionPrototype } from './types/prototype.js';
 import { recoverAggregateLayouts } from './types/layout.js';
 import { PassManager } from './passes/manager.js';
-import { runPhase8Stage } from './phase8/index.js';
+import { INTERACTIVE_STAGES as PHASE8_INTERACTIVE_STAGES, PASS_STAGES as PHASE8_ALL_STAGES, runPhase8Stage } from './phase8/index.js';
 import { printExpression, printProgram, expressionReadability } from './pretty/c.js';
 import { explainSemanticFacts } from './explain.js';
 import { buildNZCVConditionExpression } from './flag-semantics.js';
@@ -626,9 +626,18 @@ export function enhanceSemanticDecompilation(result, model, opts = {}) {
   // detail: sharing the rewrite allowance measurably changed the rewrite fixed
   // point on budget-saturated functions, which would make a no-op stage a
   // quality regression (P8-1 substrate contract).
+  // Optimizer stages are opt-in. The interactive path publishes canonical facts
+  // only; a caller that wants constants, ranges and the rest asks for them and
+  // gets a budget sized for the work rather than an interactive allowance that
+  // would make publication depend on how fast the machine is that day.
+  const phase8Optimize = opts.phase8Optimize === true;
   const phase8 = runPhase8Stage(
     { ir: state.ir, types: state.types, opts },
-    { timeBudgetMs: Number(opts.phase8TimeBudgetMs ?? 15), shouldAbort: opts.shouldAbort },
+    {
+      stages: phase8Optimize ? PHASE8_ALL_STAGES : PHASE8_INTERACTIVE_STAGES,
+      timeBudgetMs: Number(opts.phase8TimeBudgetMs ?? (phase8Optimize ? 250 : 15)),
+      shouldAbort: opts.shouldAbort,
+    },
   );
   state.phase8 = phase8.ledger;
   state.phase8Timings = phase8.timings;

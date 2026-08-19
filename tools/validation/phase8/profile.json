@@ -42,8 +42,10 @@
     "toleratedVariance": 0.35,
     "budgetsMs": {
       "coldActiveFunction": 250,
-      "phase8Stage": 15
-    }
+      "phase8InteractiveStage": 5,
+      "phase8OptimizeStage": 120
+    },
+    "note": "coldActiveFunction is the whole-function decompile. phase8InteractiveStage is the canonical-facts stage that runs on every decompile; phase8OptimizeStage is the demand-driven optimizer stage, which only runs when a caller asks for the middle-end facts."
   },
   "requiredCheckpoints": [
     "P8-0",
