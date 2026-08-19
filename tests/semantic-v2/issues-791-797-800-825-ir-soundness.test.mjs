@@ -36,9 +36,9 @@ function build(lines, tag) {
 
 function loads(ir) { return ir.instructions.filter((inst) => inst.op === OP.LOAD); }
 function stores(ir) { return ir.instructions.filter((inst) => inst.op === OP.STORE); }
-function firstBranchFact(ir) {
+function firstBranchFact(ir, label = '') {
   const fact = branchConstraints(ir)[0];
-  assert.ok(fact, 'branch constraint must exist');
+  assert.ok(fact, `branch constraint must exist${label ? `: ${label}` : ''}`);
   return fact;
 }
 
@@ -167,7 +167,7 @@ for (const [tag, lines, expected] of [
   ['w-asr', ['mov w1, #0x80000000', 'cmp w0, w1, asr #31', 'b.eq #0x100000010', 'nop', 'ret'], 0xffffffffn],
   ['w-ror', ['mov w1, #0x80000001', 'cmp w0, w1, ror #1', 'b.eq #0x100000010', 'nop', 'ret'], 0xc0000000n],
 ]) {
-  const fact = firstBranchFact(build(lines, `825-${tag}`));
+  const fact = firstBranchFact(build(lines, `825-${tag}`), `#825 ${tag}`);
   assert.equal(fact.taken.constant, expected, `#825 ${tag}`);
   assert.notEqual(fact.taken.range?.impossible, true, `${tag} taken equality must remain representable`);
 }
@@ -189,15 +189,20 @@ for (const [tag, andLine, branchLine] of [
   assert.notEqual(fact.fallthrough.range?.impossible, true, `${tag} sign-bit AND can also be nonnegative`);
 }
 
+// Low masks still keep useful precision.
 {
   const ir = build([
     'and w0, w1, #0xff',
+    'cmp w0, #0x80',
+    'b.lt #0x100000010',
+    'nop',
     'ret',
   ], '800-low-mask');
-  const andInst = ir.instructions.find((inst) => inst.op === OP.BIN && inst.sub === 'and');
-  assert.ok(andInst?.dst);
-  const range = valueRange(andInst.dst);
-  assert.deepEqual(range, { min:0n, max:0xffn }, 'low-bit mask keeps useful precision');
+  const masked = ir.instructions.find((inst) => inst.op === OP.BIN && inst.sub === 'and')?.dst;
+  const range = valueRange(masked);
+  assert.ok(range);
+  assert.equal(range.min, 0n);
+  assert.equal(range.max, 0xffn);
 }
 
-console.log('issues #791/#797/#800/#825 IR soundness regressions: PASS');
+console.log('issues #791/#797/#800/#825 semantic IR soundness regressions: ok');
