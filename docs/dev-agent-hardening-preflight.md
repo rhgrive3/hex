@@ -26,7 +26,7 @@ Therefore the Graph completion work does **not** require a new event system and 
 The lowest-risk implementation path is:
 
 ```text
-contract/parity tests
+completion-state fixtures
 -> add Pool waitResult() over pending + retained lastResult
 -> switch DynamicTaskGraph from 50 ms result polling to Pool waitResult()
 -> optionally expose graph/pool wait tools for Supervisor-level yielding
@@ -201,7 +201,7 @@ The Pool-level wait primitive must therefore own settlement ordering itself. Wai
 
 ---
 
-## 3. Slice A — Contract and parity harness only
+## 3. Slice A — Completion-state contract harness only
 
 **Difficulty:** 2/10  
 **Behavior change:** none  
@@ -926,7 +926,7 @@ Do not fill six slots automatically.
 For the hardest completion change:
 
 ```text
-Worker 1  Pool event adapter implementation
+Worker 1  Pool waitResult adapter implementation
 Worker 2  completion-race fixture owner
 Worker 3  Graph integration implementation
 Worker 4  independent real-time reviewer
@@ -991,11 +991,11 @@ Implementation may begin when all are true:
 - v2.3 remains the canonical Dev-Agent contract;
 - existing relevant PRs/issues are checked for overlap;
 - completion fixture ownership is assigned;
-- Pool event envelope is frozen;
+- Pool `waitResult()` identity/return contract is frozen;
 - no public tool rename is required;
 - no new scheduler/event subsystem is planned;
 - exact changed-path expectations are written for the first PR;
-- first PR is tests/parity or the smallest Pool adapter, not a mega-refactor.
+- first PR is completion-state fixtures or the smallest Pool adapter, not a mega-refactor.
 
 ---
 
