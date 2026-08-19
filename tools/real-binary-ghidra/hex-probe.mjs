@@ -46,7 +46,7 @@ function stride(list, n) {
 const w = await openBinary(target, { log: (m) => process.stderr.write(`[hex] ${m}\n`) });
 
 const guess = await w.backend.guessFunctions(w.region.id, 400000);
-const guessStarts = new Set((guess.starts || guess.addrs || []).map(Number));
+const guessStarts = new Set(Array.from(guess.starts || guess.addrs || [], Number));
 const functionGuess = scoreSet(guessStarts, truthFunctions);
 
 const callEdges = new Set();
