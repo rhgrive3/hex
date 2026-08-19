@@ -59,7 +59,8 @@ const region = { vmAddr:BASE, size:0x100n };
 }
 
 // Platform profiles keep their compatibility default ABI string, while the
-// semantic resolver may select a more precise platform variant.
+// semantic resolver may select a more precise platform variant. Regression:
+// #998 integration must not collapse Darwin back into generic AAPCS64.
 {
   assert.equal(platformProfile('darwin').defaultABI({ architecture:'arm64' }), 'aapcs64');
   assert.equal(resolveABIPlugin({ architecture:'arm64', platform:'darwin' }), DARWIN_ARM64_ABI);
