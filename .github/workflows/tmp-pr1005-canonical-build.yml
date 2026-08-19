@@ -1,0 +1,42 @@
+name: Temporary PR 1005 canonical userscript rebuild
+
+on:
+  push:
+    branches:
+      - fix/main-ci-restore-abi-regression
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tmp-pr1005-canonical-userscript
+  cancel-in-progress: true
+
+jobs:
+  rebuild:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/main-ci-restore-abi-regression
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run userscript:build
+      - name: Commit canonical generated outputs and remove this one-shot workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          rm -f .github/workflows/tmp-pr1005-canonical-build.yml
+          git add userscript/hex.user.template.js userscript/release-version.json .github/workflows/tmp-pr1005-canonical-build.yml
+          git diff --cached --check
+          git diff --cached --quiet && exit 0
+          git commit -m 'build: refresh canonical userscript after ABI reconciliation'
+          git push origin HEAD:fix/main-ci-restore-abi-regression
