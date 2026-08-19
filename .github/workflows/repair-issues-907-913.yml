@@ -49,6 +49,7 @@ jobs:
           node scripts/repair-compiler-truth-explicit-abi.mjs
           node scripts/repair-acceptance-909-910.mjs
           node scripts/repair-issue-909-g-abbrev.mjs
+          node scripts/repair-compiler-truth-remaining-abi.mjs
 
       - name: Focused regressions
         run: node --test --test-reporter=spec --test-concurrency=1 tests/phase6/generic-core/issues-907-909-910-913.test.mjs
@@ -72,6 +73,7 @@ jobs:
           rm scripts/repair-compiler-truth-explicit-abi.mjs
           rm scripts/repair-acceptance-909-910.mjs
           rm scripts/repair-issue-909-g-abbrev.mjs
+          rm scripts/repair-compiler-truth-remaining-abi.mjs
           rm .github/workflows/repair-issues-907-913.yml
           git add -A
           git diff --cached --check
