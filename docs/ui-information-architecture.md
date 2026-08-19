@@ -20,7 +20,7 @@ Users should not need to choose an internal analysis algorithm before they can a
 | 根拠 / Evidence | why a conclusion is supported | ranking score, stars or probability presented as certainty |
 | 高度な機能 / Advanced | patch/script/plugin/raw low-level tools | Tools as a beginner destination |
 
-Beginner-facing copy describes intent: 「値の流れ」「なぜそう言える？」「書き換えている場所」. Formal terms such as SSA, Memory SSA and ARM64 remain available in expert detail.
+Beginner-facing copy describes intent: 「値の流れ」「なぜそう言える？」「書き換えている場所」. Formal terms such as SSA, Memory SSA and architecture-specific details remain available in expert detail.
 
 ## Top-level navigation
 
@@ -31,18 +31,11 @@ The persistent navigation has four entries only:
 3. **索引 / Explorer** — entity browsing/search.
 4. **結果 / Results** — revisit conclusions and evidence.
 
-The four entries live in the chrome row as compact tabs from 900px up, and are
-pinned to the bottom of the viewport below that. There is no left rail: the
-width it reserved belongs to the disassembly.
+The four entries live in the chrome row as compact tabs from 900px up, and are pinned to the bottom of the viewport below that. There is no left rail: the width it reserved belongs to the disassembly.
 
-**Code is the default route**, before a file exists as well as after. With no
-file open the workbench shows a compact open/sample card in the viewer area;
-opening a file goes straight to the instructions instead of a question screen
-or an overview sheet. Investigate remains one tap away for a structured goal,
-and the AI Assistant answers a question asked in ordinary language from
-wherever the user already is.
+**Code is the default route**, before a file exists as well as after. With no file open the workbench shows a compact open/sample card in the viewer area; opening a file goes straight to the instructions instead of a question screen or an overview sheet. Investigate remains one tap away for a structured goal, and the AI Assistant answers a question asked in ordinary language from wherever the user already is.
 
-Secondary destinations live in More: Settings, Learn, Help and Advanced. Functions, Sections, Structure, Search and Tools are never repeated there.
+Secondary destinations live in More: Settings, Learn, Help and Advanced. Functions, Sections, Structure, Search and Tools are never repeated there. Diff is a canonical non-primary route reached contextually rather than a fifth persistent navigation item.
 
 ## Route hierarchy
 
@@ -57,6 +50,7 @@ Secondary destinations live in More: Settings, Learn, Help and Advanced. Functio
   external
   sections
 /results
+/diff
 /finding/:id
 /function/:address/:tab?
   overview
@@ -84,17 +78,11 @@ The global field accepts intent without requiring command syntax:
 - `> settings` or `> 設定` → command navigation;
 - `? コインが増えるのはどこ` → ask the AI Assistant.
 
-The classified intent is named beside the field as the user types
-(`js/ai/interaction/omnibox.js`), so pressing Enter is never a surprise.
-Command syntax is optional. `Cmd/Ctrl+K` and `/` focus the field for expert use.
+The classified intent is named beside the field as the user types (`js/ai/interaction/omnibox.js`), so pressing Enter is never a surprise. Command syntax is optional. `Cmd/Ctrl+K` and `/` focus the field for expert use.
 
 ## AI Assistant
 
-The assistant is ambient, never a destination: a 48px launcher at the bottom
-right, a docked column beside the code from 900px up, a bottom sheet on a
-tablet, full screen on a phone. The docked layout shrinks the workspace rather
-than covering it; the overlay layouts step aside as soon as an action
-navigates.
+The assistant is ambient, never a destination: a 48px launcher at the bottom right, a docked column beside the code from 900px up, a bottom sheet on a tablet, full screen on a phone. The docked layout shrinks the workspace rather than covering it; the overlay layouts step aside as soon as an action navigates.
 
 | Control | Meaning |
 |---|---|
@@ -104,14 +92,11 @@ navigates.
 | 解析者 / Analyst | addresses, facts and cost front-loaded |
 | 範囲 / Scope | Auto, selection, function, neighborhood, binary, project, runtime |
 
-Every answer carries evidence, hypotheses and executable actions rather than
-prose alone, and every card ends somewhere in the code. Reading needs no
-approval; any change to project state (rename, comment, type, patch) is a
-proposal card that does nothing until the user presses Apply.
+Every answer carries evidence, hypotheses and executable actions rather than prose alone, and every card ends somewhere in the code. Reading needs no approval; any change to project state (rename, comment, type, patch) is a proposal card that does nothing until the user presses Apply.
 
 ## Investigate
 
-Investigate is the default screen. It contains:
+Investigate is a primary structured-question screen, **not the default landing route**. It contains:
 
 - natural-language goal input;
 - common goal suggestions;
@@ -132,14 +117,14 @@ Explorer has one search model with scopes:
 - External APIs
 - Sections
 
-Large flat lists use `VirtualList`; only visible rows plus overscan exist in the DOM. Search/filter chrome is sticky. Selecting a function pushes the Function Workspace; selecting an address moves to Code.
+Large flat lists use `VirtualList`; only visible rows plus overscan exist in the DOM. Source/query budgets are explicit and may produce partial result sets with completeness/truncation metadata; an unscanned tail is never treated as negative evidence. Search/filter chrome is sticky. Selecting a function pushes the Function Workspace; selecting an address moves to Code.
 
 ## Function Workspace
 
 A function is one route with progressive tabs:
 
 - **Overview** — plain-language role, core facts, next steps.
-- **Pseudocode** — C-like reconstruction with copy/wrap/assembly jump.
+- **Pseudocode** — C-like reconstruction with copy/wrap/assembly jump where the architecture/product path supports it.
 - **Flow** — CFG plus text representation.
 - **Calls** — callers/callees.
 - **Evidence** — observed facts vs inference.
@@ -151,14 +136,14 @@ The default is Overview. Expert details are never required to understand the fir
 
 Evidence state and ranking score are separate dimensions.
 
-Canonical semantic states:
+Canonical UI semantic states:
 
 - **Confirmed** — directly observed binary/runtime fact.
 - **Likely** — inference supported by evidence.
 - **Unverified** — insufficient evidence.
 - **Contradicted** — evidence conflicts with the claim.
 
-The component uses text, border/icon and color; color is not the only signal. Candidate ranking may still be shown where useful, but it must not be labelled or styled as certainty.
+The component uses text, border/icon and color; color is not the only signal. Candidate ranking may still be shown where useful, but it must not be labelled or styled as certainty. The AI core's wire/evidence states remain a separate schema contract (`verified`, `supported`, `hypothesis`, `unknown`); UI presentation must not blur the two vocabularies.
 
 ## Overlay rules
 
@@ -283,10 +268,10 @@ Runtime inline style is reserved for geometry such as virtualization offsets, pr
 
 - Chromium viewport matrix: 375×667, 393×852, 430×932, 844×390, 744×1133, 1133×744, 1024×1366, 1440×900;
 - WebKit: representative phone portrait/landscape, tablet and desktop;
-- default Investigate route;
+- default **Code** route;
 - persistent navigation/touch geometry;
 - no body horizontal overflow;
-- windowed Explorer;
+- windowed Explorer and explicit partial-result behavior;
 - Code route and existing virtualized viewer;
 - Function Overview/Pseudocode/Flow/Calls/Evidence/Runtime;
 - browser-back state restoration;

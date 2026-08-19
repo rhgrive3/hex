@@ -12,7 +12,7 @@ chatgpt.com
               └─ encrypted/minified runtime → WebCrypto verify/decrypt → Blob URL
                   └─ canonical Hex UI / AIRuntime / local workers
                       ├─ ChatGPT Web → visible DOM adapter
-                      └─ Gemini → Worker provider
+                      └─ Worker-backed provider → server-held API credentials
 ```
 
 The build resolves the canonical CSS import graph, bundles and minifies the application with identifier mangling, embeds the local Worker/WASM graph, gzip-compresses it, and encrypts it with AES-256-GCM. Source maps are disabled. The content key and signing key are generated into `.runtime-build/`, outside `dist/`, and are bundled into the Cloudflare Worker rather than the public loader or static assets.
@@ -50,7 +50,9 @@ Origin and Referer checks are supplementary controls only; session signatures, e
 
 Selectors live in `js/userscript/chatgpt-selectors.js`. `ChatGPTDOMAdapter`, `ChatGPTConversationRouter`, `ChatGPTModelController`, and `ChatGPTTurnController` separately own DOM access, Hex-session/ChatGPT-URL routing, dynamic model selection, and turn completion.
 
-One ChatGPT tab permits one in-flight Hex request. Completion requires a new assistant-turn identity, a matching submitted user turn, non-empty stable content, a DOM quiet period, and a stopped generating state. Errors, cancellation, navigation, multiple new turns, manual interference, and timeout are explicit failures; an old assistant turn is never returned.
+For the normal AI bridge, one ChatGPT conversation DOM permits one in-flight Hex request at a time. Completion requires a new assistant-turn identity, a matching submitted user turn, non-empty stable content, a DOM quiet period, and a stopped generating state. Errors, cancellation, navigation, multiple new turns, manual interference, and timeout are explicit failures; an old assistant turn is never returned.
+
+This per-conversation rule must not be confused with the **Dev Agent Worker Pool**. The Dev Agent may host up to six same-origin hidden Worker iframes inside one Supervisor tab, with each iframe owning a separate ChatGPT conversation/turn controller. Each Worker still obeys its own one-in-flight turn rule. The canonical Dev Agent topology and target-platform constraints live in `improving-agent.md`.
 
 Available model/reasoning choices are discovered from the visible picker. Canonical IDs such as `chatgpt-web/sol`, `chatgpt-web/terra`, and `chatgpt-web/luna` are exposed only when matching UI options are observed. A requested model and reasoning level are re-read after selection; mismatch fails closed without fallback.
 

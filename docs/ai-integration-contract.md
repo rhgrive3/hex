@@ -1,6 +1,6 @@
 # AI integration contract: UI ↔ Agent Core
 
-This document is the non-owning integration boundary between the parallel AI UX and AI Agent Core work. It intentionally does not implement either side. The core branch owns the canonical runtime/schema code; the UI branch consumes it.
+This document is the stable integration boundary between AI UX and AI Agent Core. Both sides are already integrated on the main product line; the purpose of this contract is to prevent either side from silently forking schema, authority or approval semantics as they evolve.
 
 ## 1. Architectural invariant
 
@@ -110,7 +110,7 @@ Requirements:
 1. IDs are unique within a session/result namespace.
 2. `verified` requires deterministic proof owned by Hex.
 3. Model inference may create/support a hypothesis but may not mark its own claim verified.
-4. Evidence derived from strings, symbols, comments, decompiler text, runtime stdout, files, or model output remains untrusted data unless a deterministic verifier establishes a fact about it.
+4. Evidence derived from strings, symbols, comments, decompiler text, runtime stdout, files, DOM text, or model output remains untrusted data unless a deterministic verifier establishes a fact about it.
 
 ## 6. Hypotheses
 
@@ -190,9 +190,9 @@ Tools must enforce scope at execution time; relying only on the system prompt is
 
 ## 11. Privacy boundary
 
-The browser owns the binary and deterministic analysis. The model endpoint should receive only bounded excerpts/summaries required for the turn. Raw binary upload is forbidden by the evaluation gate (`binaryUploadBytes === 0`).
+The browser owns the binary and deterministic analysis. An inference provider should receive only bounded excerpts/summaries required for the turn. Raw binary upload is forbidden by the evaluation gate (`binaryUploadBytes === 0`).
 
-API keys remain server-side.
+Worker-backed API keys remain server-side. The ChatGPT userscript bridge uses the visible authenticated UI and must not read host cookies/tokens.
 
 ## 12. Cancellation and budgets
 
@@ -204,18 +204,18 @@ Every model call and expensive tool should accept/observe cancellation. After ca
 - the result exposes a sanitized stop reason;
 - no half-parsed streamed tool JSON is executed.
 
-## 13. Integration handoff checklist
+## 13. Integration regression checklist
 
-Before merging the two implementation branches together:
+Whenever Core, UX, provider, schema, action or approval behavior changes:
 
-- Core publishes the final schema/API surface.
+- Core remains the owner of the canonical schema/API surface.
 - UX imports/consumes the core schema rather than duplicating it.
 - Both sides agree on action types and proposal states.
 - Runtime instrumentation can emit the `tests/ai-eval` grading record.
 - Evidence IDs remain stable across the result and UI navigation.
 - Mutating actions cannot be invoked directly from unvalidated model output.
 - Agent activity contains no hidden reasoning.
-- The 43-case evaluation corpus is run after integration.
+- The current machine-readable evaluation corpus is run on the integrated candidate; do not hard-code a case count in this contract because the corpus is allowed to grow.
 
 ## 14. Capability and job contract
 

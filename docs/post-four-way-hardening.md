@@ -1,31 +1,13 @@
-# Post-four-way hardening
+# Post-four-way hardening — historical integration report
 
-This pass audits the merged Decompiler, Runtime, Recognition/Knowledge and canonical UI work as one product rather than as four isolated branches.
+> **Status: HISTORICAL SNAPSHOT.**  
+> **Original report:** [`archive/ui/post-four-way-hardening.md`](archive/ui/post-four-way-hardening.md)  
+> **Current UI contract:** [`ui-information-architecture.md`](ui-information-architecture.md)
 
-## Correctness fixes
+This document originally recorded the merged Decompiler, Runtime, Recognition/Knowledge and canonical UI hardening pass. Its correctness and regression lessons remain useful, but several scale statements describe that snapshot rather than the current product contract.
 
-- Canonical Investigate now calls the Goal Compiler directly. It no longer opens a legacy Sheet, scrapes its search input, and synthesizes an Enter key event.
-- Function Runtime now uses `RuntimeAnalysisPlatform` through a narrow App I/O bridge for local observations; the old debugger remains an explicit advanced fallback.
-- Function Evidence now surfaces deterministic analysis evidence, runtime evidence, rewrite proofs and warnings instead of three synthetic summary rows only.
-- Function Overview exposes conservative Recognition classification/subsystem evidence without presenting uncalibrated scores as probabilities.
-- ARM64-only fixed-row mappings are capability-gated so non-ARM64 binaries are not silently treated as four-byte instruction streams.
+In particular, the historical report says that all ~100k–300k functions remain reachable without truncation and that string search no longer hard-caps matches after materialization. Current product code intentionally applies explicit bounded work instead of pretending an unscanned tail is negative evidence: the unfiltered Explorer source is budgeted (`EXPLORER_SOURCE_LIMIT`, currently 50,000 in `js/ui/product.js`), and interactive function/string queries use bounded result limits (currently 200 by default in the product/query path). Partial results carry completeness/truncation metadata and the UI states that unscanned regions are not “no match”.
 
-## Scale fixes
+The important invariant is therefore **bounded, explicit partiality**, not “no cap”. Source/tests are authoritative for the exact current budget values.
 
-- Explorer no longer truncates functions to 600/1000 rows.
-- `VirtualList` accepts a lazy `{ length, itemAt(index) }` source, so all ~100k–300k functions remain reachable without allocating a JS object for every function up front.
-- String search no longer hard-caps matches at 1000 after strings are already materialized by the analysis cache.
-
-## UI regression reliability
-
-The merged UI PR had one red browser-matrix job caused by generic Chromium `Failed to load resource` console messages with no URL. The test now:
-
-- ignores only that URL-less generic console form;
-- independently fails on every same-origin HTTP >=400 response, with the exact URL;
-- fails on same-origin request failures, also with the URL.
-
-External font/CDN failures can therefore no longer create opaque false failures, while missing Hex assets remain hard failures.
-
-## Regression contract
-
-`tests/ui/integration-hardening.mjs` protects the important integration boundaries: no legacy Investigate DOM injection, Runtime Platform wiring, runtime evidence exposure, Recognition wiring, and removal of the old Explorer caps.
+The original hardening report is preserved unchanged at the archive path above.

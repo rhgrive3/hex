@@ -32,9 +32,9 @@ The sanctioned AI mutation executor is separately checked for `requiresApproval`
 
 ## Deliberate migration exceptions
 
-These are current debt, not approved patterns for new code:
+These are current debt or compatibility seams, not approved patterns for new code:
 
-- `js/ir-core.js` is excluded from the architecture-import boundary because Master Architecture section 35 explicitly defines it as the temporary mixed legacy core. The guardrail must move when that core is split; it must not force Phase 1-3 work into Phase 0.
+- `js/ir-core.js` is now a **compatibility facade** whose production default is Semantic IR v2 compatibility. The legacy ARM64/AAPCS64 implementation remains available only as an explicit compatibility/oracle path through `js/architecture/compat/ir-core-arm64-aapcs64-v1.js`. The old exception that treated `js/ir-core.js` itself as the temporary mixed legacy core is retired. New generic code MUST NOT import the architecture-specific compatibility implementation directly; compatibility exports may remain at the public facade until their tested consumers are migrated.
 - Architecture/compiler-specific decompiler idioms may remain refinement providers. They must not become a second instruction-decoding path.
 - `analysis.cacheReferences` in `.hexproj` v1 is allowed. It is a reference to derived analysis, not ownership of an ArtifactStore.
 - Public API tests assert required exports, not the complete export set. Additive compatibility changes therefore remain possible.
