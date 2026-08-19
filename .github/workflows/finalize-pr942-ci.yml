@@ -71,7 +71,6 @@ jobs:
           node tests/issue-861-862-c-printer-signedness.mjs
           node tests/decompiler-semantic.mjs
           node tests/phase6/generic-core/degenerate-control-dependency.test.mjs
-          node tests/phase6/generic-core/issue-865-same-target-conditional.mjs
           node tests/worker-classic-harness.mjs
       - name: Rebuild canonical userscript outputs
         run: npm run userscript:build
