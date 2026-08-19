@@ -73,9 +73,11 @@ function knownStatementForLine(line, state) {`);
 replaceOnce(
 `  const store = insts.find((i) => i.op === OP.STORE);
   if (store) {
+    if (insts.some((i) => i.op === OP.CALL && i.row === store.row)) return null;
     const location = memoryLocation(store, state), value = valueOf(store.args?.[0]);`,
 `  const store = insts.find((i) => i.op === OP.STORE);
   if (store) {
+    if (insts.some((i) => i.op === OP.CALL && i.row === store.row)) return null;
     if (isElidableReturnSpillStore(store, state)) {
       return {
         text:'',
