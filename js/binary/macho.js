@@ -287,7 +287,11 @@ function parseThreadEntrypoint(r, p, cmdsize, cpu, bits) {
     const stateBytes = count * 4;
     if (!Number.isSafeInteger(stateBytes) || stateBytes < 0 || state + stateBytes > end) return null;
     const arch = cpuName(cpu);
-    if (arch === 'arm64' && flavor === 6 && stateBytes >= 272) return r.u64(state + 264);
+    const ARM_THREAD_STATE64 = 6;
+  const ARM_THREAD_STATE64_COUNT = 68;
+  const ARM_THREAD_STATE64_PC_OFFSET = 256;
+  if (arch === 'arm64' && flavor === ARM_THREAD_STATE64 && count >= ARM_THREAD_STATE64_COUNT)
+    return r.u64(state + ARM_THREAD_STATE64_PC_OFFSET);
     if (arch === 'x86_64' && flavor === 4 && stateBytes >= 136) return r.u64(state + 128);
     if (arch === 'arm' && bits === 32 && flavor === 1 && stateBytes >= 64) return BigInt(r.u32(state + 60));
     q = state + stateBytes;
