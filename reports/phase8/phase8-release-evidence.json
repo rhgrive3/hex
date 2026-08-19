@@ -3,10 +3,10 @@
   "verifierId": "phase8.verifier",
   "verifierVersion": "1.0.0",
   "verifierSourceSha256": "524b1e3ce071f4d8efba4be5447f217acec4447f0c33b2eeb7e2d8ed88b186d4",
-  "generatedAt": "2026-08-19T17:13:52.363Z",
+  "generatedAt": "2026-08-19T17:47:34.455Z",
   "product": {
-    "commitSha": "0d51657a23d446681a86601f8cfd4d9aac3571f7",
-    "treeSha": "6c645dd6836b198090104183897545fd1c1276a6",
+    "commitSha": "15e23a556a0fc2a46b8759e8d14f50784f2f8ac3",
+    "treeSha": "1db43f3240d690da181a91763ed76d547cdecaa4",
     "workingTreeClean": true,
     "dirtyPaths": [],
     "branch": "phase8/decompiler-quality"
@@ -29,12 +29,17 @@
     "baselineCommit": "bd03d1a860863814dbdcc00559709794d460189d"
   },
   "registry": {
-    "passRegistryDigest": "f3e1d41902755d5cacbd268e57dbe479",
+    "passRegistryDigest": "ae6a20556477af22d93d8a34ab8e2249",
     "passes": [
       {
         "id": "phase8.identity",
         "version": "1.0.0",
         "stage": "canonical-facts"
+      },
+      {
+        "id": "phase8.sccp",
+        "version": "1.0.0",
+        "stage": "scalar-optimization"
       }
     ]
   },
@@ -103,7 +108,7 @@
     },
     {
       "id": "P8-2",
-      "present": false
+      "present": true
     },
     {
       "id": "P8-3",
@@ -165,8 +170,14 @@
     "provenanceLossCount": 0,
     "unknownSafetyRegressionCount": 0,
     "details": [],
-    "architectureBoundaryViolationCount": 0,
-    "architectureBoundaryViolations": [],
+    "architectureBoundaryViolationCount": 1,
+    "architectureBoundaryViolations": [
+      {
+        "file": "js/decompiler/phase8/sccp.js",
+        "line": 22,
+        "text": "* know what `nzcv` or `eflags` mean."
+      }
+    ],
     "staleArtifactAcceptanceCount": 0,
     "staleArtifactAcceptanceDetails": [],
     "transformDeterminismFailureCount": 0,
@@ -195,24 +206,32 @@
     "repetitions": 3,
     "aggregate": "median",
     "coldActiveFunctionMs": {
-      "medianMs": 120.95555555555555,
+      "medianMs": 118.33333333333333,
       "samples": [
-        121.111,
-        119.956,
-        120.956
+        118.333,
+        126.378,
+        116.711
       ]
     },
     "publishedLedgers": 35
   },
   "gates": [],
-  "evidenceDigest": "c0dd972547b10fd2dba3639fd39feb75",
+  "evidenceDigest": "3cae480b04cbfac0248c270f4755fb55",
   "failures": [
     {
       "category": "coverage",
       "firstDivergence": "forcedTypeContradictionCount is not measurable on this head",
       "expected": "measured from P8-6",
       "actual": "null (not measured)",
-      "identity": "0d51657a23d446681a86601f8cfd4d9aac3571f7",
+      "identity": "15e23a556a0fc2a46b8759e8d14f50784f2f8ac3",
+      "blocking": true
+    },
+    {
+      "category": "safety",
+      "firstDivergence": "architectureBoundaryViolationCount exceeded its hard-zero limit",
+      "expected": "0",
+      "actual": "1",
+      "identity": "15e23a556a0fc2a46b8759e8d14f50784f2f8ac3",
       "blocking": true
     },
     {
@@ -220,7 +239,7 @@
       "firstDivergence": "lostCfgEdgeCount is not measurable on this head",
       "expected": "measured from P8-5",
       "actual": "null (not measured)",
-      "identity": "0d51657a23d446681a86601f8cfd4d9aac3571f7",
+      "identity": "15e23a556a0fc2a46b8759e8d14f50784f2f8ac3",
       "blocking": true
     },
     {
@@ -228,7 +247,7 @@
       "firstDivergence": "mandatory architecture lane has no Phase 8 evidence: riscv64",
       "expected": "corpus evidence",
       "actual": "missing",
-      "identity": "0d51657a23d446681a86601f8cfd4d9aac3571f7",
+      "identity": "15e23a556a0fc2a46b8759e8d14f50784f2f8ac3",
       "blocking": true
     },
     {
@@ -236,15 +255,15 @@
       "firstDivergence": "mandatory architecture lane has no Phase 8 evidence: x86_64",
       "expected": "corpus evidence",
       "actual": "missing",
-      "identity": "0d51657a23d446681a86601f8cfd4d9aac3571f7",
+      "identity": "15e23a556a0fc2a46b8759e8d14f50784f2f8ac3",
       "blocking": true
     },
     {
       "category": "integration",
       "firstDivergence": "a required checkpoint has no accepted evidence on this head",
       "expected": "P8-0,P8-1,P8-2,P8-3,P8-4,P8-5,P8-6,P8-7,P8-I",
-      "actual": "missing: P8-2,P8-3,P8-4,P8-5,P8-6,P8-7,P8-I",
-      "identity": "0d51657a23d446681a86601f8cfd4d9aac3571f7",
+      "actual": "missing: P8-3,P8-4,P8-5,P8-6,P8-7,P8-I",
+      "identity": "15e23a556a0fc2a46b8759e8d14f50784f2f8ac3",
       "blocking": true
     }
   ],
