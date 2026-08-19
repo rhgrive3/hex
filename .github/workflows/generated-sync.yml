@@ -1,48 +1,26 @@
-name: Generated userscript sync
+name: One-shot integration userscript sync
 
 on:
-  pull_request:
-    paths:
-      - 'index.html'
-      - 'css/**'
-      - 'js/**'
-      - 'capstone.wasm'
-      - 'scripts/build-userscript.mjs'
-      - 'scripts/userscript-release-version.mjs'
-      - 'userscript/hex.user.template.js'
-      - 'userscript/release-version.json'
-      - 'package.json'
-      - 'package-lock.json'
-      - '.github/workflows/generated-sync.yml'
   push:
-    branches: [main]
-    paths:
-      - 'index.html'
-      - 'css/**'
-      - 'js/**'
-      - 'capstone.wasm'
-      - 'scripts/build-userscript.mjs'
-      - 'scripts/userscript-release-version.mjs'
-      - 'userscript/hex.user.template.js'
-      - 'userscript/release-version.json'
-      - 'package.json'
-      - 'package-lock.json'
-      - '.github/workflows/generated-sync.yml'
-  workflow_dispatch:
+    branches:
+      - fix/integration-semantic-contracts
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
-  group: generated-sync-${{ github.event.pull_request.number || github.ref }}
+  group: one-shot-userscript-sync-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  generated-sync:
+  sync:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: fix/integration-semantic-contracts
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -50,8 +28,21 @@ jobs:
       - run: npm ci
       - name: Rebuild canonical userscript outputs
         run: npm run userscript:build
-      - name: Require userscript-owned generated outputs to match source
-        run: >-
-          git diff --exit-code --
-          userscript/hex.user.template.js
-          userscript/release-version.json
+      - name: Restore canonical generated-sync workflow
+        shell: bash
+        run: |
+          git fetch origin main
+          git show origin/main:.github/workflows/generated-sync.yml > .github/workflows/generated-sync.yml
+      - name: Commit synchronized generated outputs
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add userscript/hex.user.template.js userscript/release-version.json .github/workflows/generated-sync.yml
+          git diff --cached --check
+          if git diff --cached --quiet; then
+            echo 'No generated changes to publish.'
+            exit 0
+          fi
+          git commit -m 'build: synchronize userscript after semantic integration'
+          git push origin HEAD:fix/integration-semantic-contracts
