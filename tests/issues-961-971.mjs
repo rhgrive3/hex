@@ -130,7 +130,9 @@ function peExportFixture({ withPdata = false } = {}) {
   if (withPdata) {
     d.setUint32(0x360, 0x1200, true);
     d.setUint32(0x364, 0x1210, true);
-    d.setUint32(0x368, 0, true);
+    d.setUint32(0x368, 0x1220, true);
+    // UNWIND_INFO at RVA 0x1220 (file 0x420): version 1, no flags, no codes.
+    d.setUint32(0x420, 0x00000001, true);
   }
   return bytes;
 }
