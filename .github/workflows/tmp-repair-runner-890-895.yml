@@ -1,14 +1,12 @@
-name: One-shot RV64C HINT repair
+name: Final guarded RV64C HINT repair
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
 permissions:
   contents: write
 jobs:
   repair:
-    if: github.event_name == 'push' || github.event.pull_request.head.ref == 'fix/riscv64-rvc-hints-20260819'
+    if: github.event.pull_request.head.ref == 'fix/riscv64-rvc-hints-20260819'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -44,15 +42,10 @@ jobs:
       - name: Focused RV64C HINT regressions
         if: steps.gate.outputs.apply == 'true'
         run: node --test tests/phase6/effects/rvc-hints.test.mjs tests/phase6/effects/compressed.test.mjs
-      - name: Regenerate canonical userscript before sync gates
-        if: steps.gate.outputs.apply == 'true'
-        run: npm run userscript:build
-      - name: Repository verification
-        if: steps.gate.outputs.apply == 'true'
-        run: npm run check
-      - name: Canonical tracked userscript idempotence
+      - name: Canonical userscript build idempotence
         if: steps.gate.outputs.apply == 'true'
         run: |
+          npm run userscript:build
           cp userscript/hex.user.template.js /tmp/hex.user.template.js
           cp userscript/release-version.json /tmp/release-version.json
           cp js/userscript/deployment-identity.generated.js /tmp/deployment-identity.generated.js
@@ -60,6 +53,15 @@ jobs:
           cmp userscript/hex.user.template.js /tmp/hex.user.template.js
           cmp userscript/release-version.json /tmp/release-version.json
           cmp js/userscript/deployment-identity.generated.js /tmp/deployment-identity.generated.js
+      - name: Repository verification
+        if: steps.gate.outputs.apply == 'true'
+        run: npm run check
+      - name: Userscript-specific verification
+        if: steps.gate.outputs.apply == 'true'
+        run: npm run userscript:test
+      - name: Restore canonical generated outputs
+        if: steps.gate.outputs.apply == 'true'
+        run: npm run userscript:build
       - name: Commit verified source result
         if: steps.gate.outputs.apply == 'true'
         run: |
