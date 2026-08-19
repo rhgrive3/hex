@@ -149,22 +149,24 @@ export function inferTypes(model) {
   // 引数レジスタの「同じ値のまま移された先」を追う（x0 → x19 が典型）
   const alias = new Map();          // reg -> 引数の reg
   for (const r of argRegs) alias.set(r, r);
-  const canonicalGpr = (value) => {
+  const gprView = (value) => {
     const text = typeof value === 'string' ? value : value && value.text;
-    const m = /^[wx](\d+)$/.exec(String(text || '').toLowerCase());
-    return m ? 'x' + Number(m[1]) : null;
+    const m = /^([wx])(\d+)$/.exec(String(text || '').toLowerCase());
+    return m ? { reg: 'x' + Number(m[2]), bits: m[1] === 'x' ? 64 : 32 } : null;
   };
+  const canonicalGpr = (value) => gprView(value)?.reg || null;
 
   for (const insn of insns) {
     const base = (insn.mnemonic || '').toLowerCase();
     let copyDest = null, copyOwner = null;
 
-    /* Proven GP-register MOV is the only operation that preserves identity. */
+    /* Proven full-width GP-register MOV is the only operation that preserves entry identity. */
     if (base === 'mov' && insn.ops.length >= 2 &&
         insn.ops[0] && insn.ops[0].k === 'reg' && insn.ops[1] && insn.ops[1].k === 'reg') {
-      const from = canonicalGpr(insn.ops[1]);
-      copyDest = canonicalGpr(insn.ops[0]);
-      copyOwner = from ? (alias.get(from) || null) : null;
+      const dst = gprView(insn.ops[0]);
+      const src = gprView(insn.ops[1]);
+      copyDest = dst?.reg || null;
+      copyOwner = dst?.bits === 64 && src?.bits === 64 ? (alias.get(src.reg) || null) : null;
     }
 
     const finishAliases = () => {

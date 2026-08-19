@@ -35,6 +35,54 @@ function floatText(value, bits = 64) {
 
 function wrap(text, p, parent) { return p < parent ? `(${text})` : text; }
 
+function integerWidth(...nodes) {
+  for (const n of nodes) {
+    const bits = Number(n?.bits || 0);
+    if (Number.isInteger(bits) && bits > 0) return bits;
+  }
+  return 64;
+}
+
+function hasIntegerView(n, bits, signed) {
+  return Number(n?.bits || 0) === Number(bits) && n?.signed === signed;
+}
+
+function printIntegerView(n, bits, signed, parentPrec, opts) {
+  // Recovered AST signedness is the declaration/view contract available to the
+  // C printer.  Omit a site cast only when it already proves the exact same
+  // width and signedness; otherwise make the machine view explicit locally.
+  if (hasIntegerView(n, bits, signed)) return printExpression(n, parentPrec, opts);
+  const type = `${signed ? 'int' : 'uint'}${bits}_t`;
+  return `(${type})${printExpression(n, PREC.unary, opts)}`;
+}
+
+function compareOperands(n, p, opts) {
+  if (n.compareSigned !== true && n.compareSigned !== false) {
+    return [printExpression(n.left, p, opts), printExpression(n.right, p + 1, opts)];
+  }
+  const bits = integerWidth(n.left, n.right);
+  return [
+    printIntegerView(n.left, bits, n.compareSigned, p, opts),
+    printIntegerView(n.right, bits, n.compareSigned, p + 1, opts),
+  ];
+}
+
+function signedBinaryOperands(n, p, opts) {
+  const bits = integerWidth(n, n.left, n.right);
+  switch (n.op) {
+    case 'lshr':
+      return [printIntegerView(n.left, bits, false, p, opts), printExpression(n.right, p + 1, opts)];
+    case 'ashr':
+      return [printIntegerView(n.left, bits, true, p, opts), printExpression(n.right, p + 1, opts)];
+    case 'udiv': case 'umod':
+      return [printIntegerView(n.left, bits, false, p, opts), printIntegerView(n.right, bits, false, p + 1, opts)];
+    case 'sdiv': case 'smod':
+      return [printIntegerView(n.left, bits, true, p, opts), printIntegerView(n.right, bits, true, p + 1, opts)];
+    default:
+      return null;
+  }
+}
+
 export function printExpression(n, parentPrec = 0, opts = {}) {
   if (!n) return 'unknown';
   switch (n.kind) {
@@ -66,13 +114,16 @@ export function printExpression(n, parentPrec = 0, opts = {}) {
       return `${n.op}(${printExpression(n.arg, 0, opts)})`;
     }
     case 'compare': {
-      const p = PREC[n.op] || 8, text = `${printExpression(n.left, p, opts)} ${OP_TEXT[n.op] || n.op} ${printExpression(n.right, p + 1, opts)}`;
-      return wrap(text, p, parentPrec);
+      const p = PREC[n.op] || 8;
+      const [left, right] = compareOperands(n, p, opts);
+      return wrap(`${left} ${OP_TEXT[n.op] || n.op} ${right}`, p, parentPrec);
     }
     case 'binary': {
       const p = PREC[n.op] || 11;
-      const text = `${printExpression(n.left, p, opts)} ${OP_TEXT[n.op] || n.op} ${printExpression(n.right, p + (['sub','sdiv','udiv','smod','umod','shl','lshr','ashr'].includes(n.op) ? 1 : 0), opts)}`;
-      return wrap(text, p, parentPrec);
+      const semanticOperands = signedBinaryOperands(n, p, opts);
+      const left = semanticOperands?.[0] ?? printExpression(n.left, p, opts);
+      const right = semanticOperands?.[1] ?? printExpression(n.right, p + (['sub','sdiv','udiv','smod','umod','shl','lshr','ashr'].includes(n.op) ? 1 : 0), opts);
+      return wrap(`${left} ${OP_TEXT[n.op] || n.op} ${right}`, p, parentPrec);
     }
     case 'select': {
       const text = `${printExpression(n.condition, PREC.select + 1, opts)} ? ${printExpression(n.whenTrue, PREC.select, opts)} : ${printExpression(n.whenFalse, PREC.select, opts)}`;

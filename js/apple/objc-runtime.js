@@ -195,13 +195,19 @@ export function resolveObjcDispatch(index, { receiverType = null, selector, clas
         reason: 'selector candidates contradict the explicit receiver type',
       };
     }
-    candidates = narrowed;
+    // Objective-C lookup stops at the first class in the receiver hierarchy
+    // that provides this selector. Implementations on deeper superclasses are
+    // shadowed, not competing dispatch candidates. Keep every method at the
+    // winning level so category collisions remain conservative.
+    const nearestRank = Math.min(...narrowed.map((m) => ranks.get(m.className)));
+    candidates = narrowed.filter((m) => ranks.get(m.className) === nearestRank);
   }
   candidates.sort((a, b) => b.score - a.score || String(a.className).localeCompare(String(b.className)));
 
   const top = candidates[0];
   const second = candidates[1];
-  const uniqueByEvidence = !!top && top.imp != null && (!second || top.score - second.score >= 0.16 || (second.imp != null && top.imp.toString() === second.imp.toString()));
+  const sameImplementation = !!top && top.imp != null && candidates.every((m) => m.imp != null && m.imp.toString() === top.imp.toString());
+  const uniqueByEvidence = !!top && top.imp != null && (!second || sameImplementation || (!cleanReceiver && top.score - second.score >= 0.16));
   const categoryComplete = index.completeness?.categories?.complete !== false;
   const metadataComplete = index.completeness?.complete !== false;
   const partialBlocksVerification = cleanReceiver ? !categoryComplete : !metadataComplete;

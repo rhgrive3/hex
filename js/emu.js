@@ -486,7 +486,7 @@ export class Emulator {
 
     if (/^f/.test(mn) || /^[su]cvtf$/.test(mn)) return this.floatInsn(mn, ops);
 
-    if (/^(ldr|ldrb|ldrh|ldrsb|ldrsh|ldrsw|ldur|ldurb|ldurh|ldursb|ldursh|ldursw|ldp|ldnp|ldxr|ldaxr|ldar)/.test(mn)) {
+    if (/^(ldr|ldrb|ldrh|ldrsb|ldrsh|ldrsw|ldur|ldurb|ldurh|ldursb|ldursh|ldursw|ldp|ldnp|ldpsw|ldxr|ldaxr|ldar)/.test(mn)) {
       return this.loadInsn(mn, ops);
     }
     if (/^(str|strb|strh|stur|sturb|sturh|stp|stnp|stxr|stlxr|stlr)/.test(mn)) {
@@ -579,14 +579,19 @@ export class Emulator {
     const mem = ops.find((o) => o.k === 'mem');
     if (!mem) throw new Error('読み出し先が分かりませんでした: ' + mn);
     const addr = this.effectiveAddress(mem, false);
-    const pair = /^(ldp|ldnp)/.test(mn);
+    const signedWordPair = mn === 'ldpsw';
+    const pair = signedWordPair || /^(ldp|ldnp)/.test(mn);
     const size = loadSize(mn, ops[0]);
     const signed = /^ldrs|^ldurs/.test(mn);
 
     if (pair) {
-      const each = isWide(ops[0]) ? 8 : 4;
-      const a = await this.load(addr, each);
-      const b = await this.load(addr + BigInt(each), each);
+      const each = signedWordPair ? 4 : (isWide(ops[0]) ? 8 : 4);
+      let a = await this.load(addr, each);
+      let b = await this.load(addr + BigInt(each), each);
+      if (signedWordPair) {
+        a = BigInt.asUintN(64, BigInt.asIntN(32, a));
+        b = BigInt.asUintN(64, BigInt.asIntN(32, b));
+      }
       this.set(ops[0].text, a);
       this.set(ops[1].text, b);
     } else {
