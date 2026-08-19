@@ -1,10 +1,22 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { passRegistryDigest, phase8Passes, runPhase8Stage, runPhase8Vertical } from '../../../js/decompiler/phase8/index.js';
+import { createPassDescriptor } from '../../../js/decompiler/phase8/contract.js';
+import { passRegistryDigest, phase8Passes, runPassTransaction, runPhase8Stage, runPhase8Vertical, seedAnalysisState } from '../../../js/decompiler/phase8/index.js';
 
+/**
+ * A minimal IR carrying exactly the canonical facts the identity pass declares
+ * it consumes: blocks (cfg), values (ssa) and origins. Anything less and the
+ * transaction correctly refuses to run the pass, which is a different case and
+ * is covered separately below.
+ */
 const CONTEXT = Object.freeze({
-  ir: { values: [{ id: 1 }, { id: 2 }], blocks: [{ id: 'entry' }] },
+  ir: {
+    values: [{ id: 1, origin: { instructionIds: ['instruction_1'] } }, { id: 2, origin: { instructionIds: ['instruction_2'] } }],
+    blocks: [{ id: 'entry' }],
+    entry: 'entry',
+    origin: { instructionIds: ['instruction_1'] },
+  },
   types: null,
   opts: {},
 });
@@ -46,24 +58,63 @@ test('a cancellation predicate that throws is treated as cancelled', () => {
   assert.equal(ledger.published, false);
 });
 
-test('a pass that throws withholds the ledger instead of publishing a partial one', () => {
-  // Exercised through the public runner by making the context hostile: the
-  // identity pass reads ir.values, so a throwing accessor reproduces a pass
-  // failure without a private test-only registry.
+test('a failure while reading upstream facts withholds the ledger', () => {
+  // Exercised through the public runner by making the context hostile, so the
+  // failure path is the real one rather than a private test-only registry.
   const hostile = { get ir() { throw new Error('boom'); } };
-  const { ledger } = runPhase8Vertical(hostile, {});
+  const { ledger, analysis } = runPhase8Vertical(hostile, {});
   assert.equal(ledger.published, false);
   assert.equal(ledger.status, 'failed');
-  assert.match(ledger.stopReason, /^pass-failed:/);
+  assert.equal(ledger.stopReason, 'analysis-seed-failed');
   assert.equal(ledger.diagnostics[0].severity, 'error');
+  assert.equal(analysis, null, 'no state may be handed on when the facts could not be read');
 });
 
-test('a function with no canonical values is unsupported, never complete', () => {
+test('a pass that throws is not committed and withholds the ledger', () => {
+  const throwing = {
+    descriptor: createPassDescriptor({ id: 'phase8.throwing', version: '1.0.0', stage: 'scalar-optimization', consumes: ['ssa'], produces: ['ranges'] }),
+    run() { throw new Error('boom'); },
+  };
+  const state = seedAnalysisState(CONTEXT.ir);
+  const before = state.snapshot();
+  const outcome = runPassTransaction(state, throwing, { analysis: state }, {});
+  assert.equal(outcome.committed, false);
+  assert.match(outcome.stopReason, /^failed:/);
+  assert.deepEqual(state.snapshot(), before, 'a thrown pass must leave no residue');
+});
+
+test('a pass whose declared inputs are absent does not run and is not complete', () => {
+  // The transaction refuses rather than letting the pass improvise a substitute
+  // for a missing upstream fact. The ledger still publishes, because "this pass
+  // could not run and here is which fact was missing" is real information.
   const { ledger } = runPhase8Vertical({ ir: { values: [] } }, {});
   assert.equal(ledger.published, true);
   assert.equal(ledger.completeness, 'unknown');
   assert.equal(ledger.passes[0].status, 'unsupported');
-  assert.equal(ledger.passes[0].stopReason, 'no-canonical-ssa-values');
+  assert.match(ledger.passes[0].stopReason, /^missing-input:/);
+  assert.equal(ledger.transformCount, 0);
+  assert.equal(ledger.diagnostics[0].code, 'phase8.pass.missing-input');
+});
+
+test('the analysis state is seeded from upstream facts, never approximated', () => {
+  const { analysis } = runPhase8Vertical(CONTEXT, {});
+  assert.deepEqual([...analysis.available()], ['cfg', 'ssa', 'origins']);
+  // MemorySSA, alias, types and the rest were not supplied and stay absent at
+  // version 0 rather than being invented.
+  assert.equal(analysis.version('memorySsa'), 0);
+  assert.equal(analysis.version('alias'), 0);
+});
+
+test('a committed no-op moves no analysis version', () => {
+  const { ledger } = runPhase8Vertical(CONTEXT, {});
+  assert.deepEqual(ledger.analysisVersions.before, ledger.analysisVersions.after);
+  assert.deepEqual(ledger.invalidated, []);
+});
+
+test('a withheld ledger reports the state as untouched', () => {
+  const { ledger } = runPhase8Vertical(CONTEXT, { shouldAbort: () => true });
+  assert.equal(ledger.published, false);
+  assert.deepEqual(ledger.analysisVersions.before, ledger.analysisVersions.after);
 });
 
 test('the registry digest changes with the pass set and is stable otherwise', () => {

@@ -14,9 +14,10 @@
  * while declaring nothing invalidated is an error at construction time rather
  * than a stale cache three passes later.
  *
- * P8-0 ships the versioned skeleton and one identity pass through the real
- * production pipeline. P8-1 adds staged/atomic publication on top of it. The
- * shape is frozen here first so later checkpoints extend rather than replace it.
+ * P8-0 shipped the versioned skeleton and one identity pass through the real
+ * production pipeline. P8-1 added `produces` and the staged/atomic transaction
+ * in ./transaction.js. The shape is versioned so a contract change invalidates
+ * derived artifacts instead of silently reinterpreting them.
  */
 
 /**
@@ -25,7 +26,7 @@
  * material, so a bump invalidates derived artifacts rather than silently
  * reusing them (EP-005 evidence-invalidation rule, MIGRATION_GUARDRAILS §CI).
  */
-export const PHASE8_CONTRACT_VERSION = 1;
+export const PHASE8_CONTRACT_VERSION = 2;
 
 /**
  * Ordered pipeline stages. Order here is the dependency order Phase 8 accepts;
@@ -154,8 +155,14 @@ export function createPassDescriptor(input = {}) {
   const consumes = analysisList(input.consumes, 'phase8-pass-unknown-consumed-analysis');
   const preserves = analysisList(input.preserves, 'phase8-pass-unknown-preserved-analysis');
   const invalidates = analysisList(input.invalidates, 'phase8-pass-unknown-invalidated-analysis');
+  const produces = analysisList(input.produces, 'phase8-pass-unknown-produced-analysis');
   for (const key of invalidates) {
     if (preserves.includes(key)) fail(`phase8-pass-preserves-and-invalidates:${key}`);
+  }
+  // Producing an analysis and preserving it are contradictory claims: the
+  // consumer cannot both keep its cached version and receive a new one.
+  for (const key of produces) {
+    if (preserves.includes(key)) fail(`phase8-pass-preserves-and-produces:${key}`);
   }
   return Object.freeze({
     contractVersion: PHASE8_CONTRACT_VERSION,
@@ -167,6 +174,10 @@ export function createPassDescriptor(input = {}) {
     consumes,
     preserves,
     invalidates,
+    // Analyses this pass writes. The transaction refuses a staged write to
+    // anything not declared here, so an undeclared production cannot become an
+    // undeclared dependency for everything downstream.
+    produces,
     // A pass that must run even under an exhausted budget so the public result
     // stays structurally valid. Optional passes are skipped instead.
     required: input.required === true,

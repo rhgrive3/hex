@@ -150,6 +150,11 @@ export function observationOf(entry, outcome) {
     // every run. That is a pre-existing determinism defect, owned by P8-1
     // (`transformDeterminismFailureCount = 0`), not something to average away.
     budgetExceeded: metrics.rewriteBudgetExceeded ?? null,
+    // The pipeline's single completeness answer, weakest-wins across the pass
+    // deadline, the rewrite budget and the Phase 8 ledger. A result marked
+    // `partial` is valid output but is not the canonical output for this input,
+    // so it must never be compared against a baseline as if it were.
+    completeness: result?.ctx?.decompilerPipeline?.completeness ?? null,
     readability: {
       rawAssemblyFallbacks: metrics.rawAssemblyFallbacks ?? null,
       gotos: metrics.gotos ?? null,

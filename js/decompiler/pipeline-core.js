@@ -391,6 +391,12 @@ function rewriteAll(state, budget) {
     state.rewriteStats.budgetExceeded ||= r.stats.budgetExceeded;
     for (const [k, n] of Object.entries(r.stats.byRule)) state.rewriteStats.byRule[k] = (state.rewriteStats.byRule[k] || 0) + n;
   }
+  // A truncated rewrite is a truncated result. Before this, `rewriteStats.budgetExceeded`
+  // could be true while the pipeline still reported `degraded: false`, so a consumer
+  // reading the pipeline's own completeness flag was told the output was complete
+  // when it was not. Budget truncation is a completeness state, and it has to
+  // propagate to the one place consumers look.
+  if (state.rewriteStats.budgetExceeded) state.degraded = true;
   return state;
 }
 
@@ -590,6 +596,22 @@ function metricsOf(result, state, printed) {
   };
 }
 
+/**
+ * The weakest completeness any stage of the pipeline reached.
+ *
+ * `complete` here means every stage ran to its own fixed point. `partial` means
+ * at least one stage stopped early — the output is still valid, but it is not
+ * the canonical output for this input and must not be compared as if it were.
+ */
+function pipelineCompleteness(state) {
+  if (state.degraded) return 'partial';
+  if (state.rewriteStats?.budgetExceeded) return 'partial';
+  if (state.passDeadlineExceeded) return 'partial';
+  const ledger = state.phase8;
+  if (ledger && (!ledger.published || ledger.completeness !== 'complete')) return 'partial';
+  return 'complete';
+}
+
 export function enhanceSemanticDecompilation(result, model, opts = {}) {
   if (!result?.semantic || !result.ir) return result;
   const state = {
@@ -666,7 +688,19 @@ export function enhanceSemanticDecompilation(result, model, opts = {}) {
     evidence: [...(result.evidence || []), ...(advanced.facts?.evidence || [])],
     warnings: [...new Set([...(result.warnings || []), ...(advanced.warnings || []), ...(advanced.rewriteStats?.budgetExceeded ? ['Decompiler rewrite budget reached; output was conservatively degraded.'] : [])])],
     metrics: metricsOf(result, advanced, advanced.printed),
-    ctx: { ...(result.ctx || {}), decompilerPipeline: { phases: advanced.passMetrics, degraded: !!advanced.degraded, rewriteStats: advanced.rewriteStats, phase8: advanced.phase8 ?? null, phase8Timings: advanced.phase8Timings ?? null, phase8ElapsedMs: advanced.phase8ElapsedMs ?? null } },
+    ctx: { ...(result.ctx || {}), decompilerPipeline: {
+      phases: advanced.passMetrics,
+      degraded: !!advanced.degraded,
+      // One completeness answer, weakest-wins across every source that can
+      // truncate: the pass deadline, the rewrite budget, and Phase 8's own
+      // ledger. Separate flags that disagree are how a consumer ends up
+      // trusting an incomplete result.
+      completeness: pipelineCompleteness(advanced),
+      rewriteStats: advanced.rewriteStats,
+      phase8: advanced.phase8 ?? null,
+      phase8Timings: advanced.phase8Timings ?? null,
+      phase8ElapsedMs: advanced.phase8ElapsedMs ?? null,
+    } },
   };
 }
 

@@ -19,12 +19,14 @@
 
 import { stableDigest } from '../../core/identity/index.js';
 
-import { PHASE8_CONTRACT_VERSION, PASS_STAGES } from './contract.js';
+import { PHASE8_CONTRACT_VERSION, PASS_STAGES, createPassResult } from './contract.js';
 import { IDENTITY_PASS, identityPassObservation, runIdentityPass } from './identity-pass.js';
+import { runPassTransaction, seedAnalysisState } from './transaction.js';
 
 export { PHASE8_CONTRACT_VERSION, PASS_STAGES } from './contract.js';
 export { createPassDescriptor, createPassResult, unchangedResult, ANALYSIS_KEYS, PASS_STATUSES, COMPLETENESS, BUDGET_CLASSES } from './contract.js';
 export { createPhase8ArtifactDescriptor, PHASE8_ARTIFACT_KINDS, PHASE8_ARTIFACT_SCHEMA_VERSION } from './artifact-identity.js';
+export { createAnalysisState, invalidationFor, runPassTransaction, seedAnalysisState, transactionDigest } from './transaction.js';
 
 /**
  * The Phase 8 pass registry.
@@ -89,7 +91,7 @@ function clock() {
  * result that is simply absent is indistinguishable from a Phase 8 that never
  * ran, and "unknown stays explicit" is a non-negotiable principle.
  */
-function withheldLedger(status, reason, diagnostics, registryDigest) {
+function withheldLedger(status, reason, diagnostics, registryDigest, analysisVersions = null) {
   const ledger = {
     contractVersion: PHASE8_CONTRACT_VERSION,
     registryDigest,
@@ -102,6 +104,9 @@ function withheldLedger(status, reason, diagnostics, registryDigest) {
     invalidated: Object.freeze([]),
     diagnostics: Object.freeze(diagnostics),
     observations: Object.freeze({}),
+    // The state is unchanged, so before and after are the same snapshot. Saying
+    // so explicitly is what lets a consumer prove nothing was committed.
+    analysisVersions: analysisVersions == null ? null : Object.freeze({ before: analysisVersions, after: analysisVersions }),
     stopReason: reason,
   };
   ledger.publicationDigest = stableDigest({ ...ledger, publicationDigest: undefined });
@@ -111,15 +116,37 @@ function withheldLedger(status, reason, diagnostics, registryDigest) {
 /**
  * Runs every registered Phase 8 pass over one function's canonical facts.
  *
- * Returns `{ ledger, timings }`. `ledger` is deterministic and safe to publish
- * or key an artifact with; `timings` is observational.
+ * Returns `{ ledger, timings, analysis }`. `ledger` is deterministic and safe to
+ * publish or key an artifact with; `timings` is observational; `analysis` is the
+ * authoritative state after the transactions committed.
  *
- * Cancellation and pass failure both withhold the whole ledger. A partially
- * executed optimizer set is not a smaller optimizer set — it is an unknown one.
+ * Cancellation and pass failure withhold the whole ledger. A partially executed
+ * optimizer set is not a smaller optimizer set — it is an unknown one. The
+ * per-pass transaction has already guaranteed that nothing was committed in
+ * those cases, so the withheld ledger and the untouched state agree.
  */
 export function runPhase8Vertical(context = {}, budget = {}) {
   const passes = phase8Passes();
   const registryDigest = passRegistryDigest(passes);
+  let analysis;
+  try {
+    analysis = context.analysis ?? seedAnalysisState(context.ir);
+  } catch (error) {
+    // Seeding reads upstream facts. If reading them throws, Phase 8 knows
+    // nothing about this function and must say so rather than proceeding with a
+    // half-built state.
+    return {
+      ledger: withheldLedger('failed', 'analysis-seed-failed', [{
+        severity: 'error',
+        code: 'phase8.seed.failed',
+        message: 'Phase 8 could not read the canonical analysis facts for this function.',
+        reason: String(error?.message ?? error),
+      }], registryDigest, null),
+      timings: Object.freeze([]),
+      analysis: null,
+    };
+  }
+  const before = analysis.snapshot();
 
   if (aborted(budget)) {
     return {
@@ -128,52 +155,64 @@ export function runPhase8Vertical(context = {}, budget = {}) {
         code: 'phase8.cancelled',
         message: 'Phase 8 was cancelled before any pass started.',
         reason: 'The decompiler budget was already exhausted when the Phase 8 stage was reached.',
-      }], registryDigest),
+      }], registryDigest, before),
       timings: Object.freeze([]),
+      analysis,
     };
   }
 
+  const passContext = { ...context, analysis };
   const results = [];
   const timings = [];
   const observations = {};
+  const invalidated = new Set();
   for (const pass of passes) {
     const started = clock();
-    let result;
-    try {
-      result = pass.run(context, budget);
-    } catch (error) {
-      // Fail closed. A pass that threw may have left its own scratch state in
-      // any condition; nothing it produced is publishable.
-      return {
-        ledger: withheldLedger('failed', `pass-failed:${pass.descriptor.id}`, [{
-          severity: 'error',
-          code: 'phase8.pass.failed',
-          message: `Phase 8 pass failed: ${pass.descriptor.id}`,
-          reason: String(error?.message ?? error),
-        }], registryDigest),
-        timings: Object.freeze(timings),
-      };
-    }
+    const outcome = runPassTransaction(analysis, pass, passContext, budget);
     timings.push({ passId: pass.descriptor.id, elapsedMs: clock() - started });
-    results.push(result);
-    if (typeof pass.observe === 'function') observations[pass.descriptor.id] = pass.observe(context);
-    // Checked after the pass, not only before it: a long pass that outlives the
-    // deadline must not have its result published as if it had finished in time.
-    if (aborted(budget)) {
+
+    if (!outcome.committed) {
+      const reason = outcome.stopReason ?? 'unknown';
+      // A missing declared input is not a failure: it is an honest unsupported
+      // answer for that pass, and the rest of the set may still be meaningful.
+      if (reason.startsWith('missing-input:')) {
+        results.push(createPassResult({
+          descriptor: pass.descriptor,
+          status: 'unsupported',
+          changed: false,
+          completeness: 'unknown',
+          stopReason: reason,
+          diagnostics: [{
+            severity: 'info',
+            code: 'phase8.pass.missing-input',
+            message: `Phase 8 pass did not run: ${pass.descriptor.id}`,
+            reason: `A declared input analysis is unavailable (${reason.slice('missing-input:'.length)}); the pass refuses to improvise a substitute.`,
+          }],
+        }));
+        continue;
+      }
+      // Cancellation or failure. Nothing was committed, and nothing is published.
+      const cancelled = reason.startsWith('cancelled');
       return {
-        ledger: withheldLedger('cancelled', `cancelled-after:${pass.descriptor.id}`, [{
-          severity: 'info',
-          code: 'phase8.cancelled',
-          message: 'Phase 8 was cancelled part way through the pass set.',
-          reason: `The budget was exhausted after ${pass.descriptor.id}; a partial optimizer set is withheld rather than published.`,
-        }], registryDigest),
+        ledger: withheldLedger(cancelled ? 'cancelled' : 'failed', `${cancelled ? '' : 'pass-failed:'}${cancelled ? reason : pass.descriptor.id}`, [{
+          severity: cancelled ? 'info' : 'error',
+          code: cancelled ? 'phase8.cancelled' : 'phase8.pass.failed',
+          message: cancelled
+            ? 'Phase 8 was cancelled part way through the pass set.'
+            : `Phase 8 pass failed: ${pass.descriptor.id}`,
+          reason,
+        }], registryDigest, before),
         timings: Object.freeze(timings),
+        analysis,
       };
     }
+
+    results.push(outcome.result);
+    for (const key of outcome.invalidated) invalidated.add(key);
+    if (typeof pass.observe === 'function') observations[pass.descriptor.id] = pass.observe(passContext);
   }
 
   const diagnostics = results.flatMap((result) => result.diagnostics);
-  const invalidated = [...new Set(results.flatMap((result) => result.invalidated))].sort();
   const ledger = {
     contractVersion: PHASE8_CONTRACT_VERSION,
     registryDigest,
@@ -183,13 +222,16 @@ export function runPhase8Vertical(context = {}, budget = {}) {
     degraded: results.some((result) => result.status === 'degraded'),
     passes: Object.freeze(results),
     transformCount: results.reduce((total, result) => total + result.transforms.length, 0),
-    invalidated: Object.freeze(invalidated),
+    invalidated: Object.freeze([...invalidated].sort()),
     diagnostics: Object.freeze(diagnostics),
     observations: Object.freeze(observations),
+    // Analysis versions before and after. Invalidation is a property a consumer
+    // can check, not a claim it has to believe.
+    analysisVersions: Object.freeze({ before, after: analysis.snapshot() }),
     stopReason: null,
   };
   ledger.publicationDigest = stableDigest({ ...ledger, publicationDigest: undefined });
-  return { ledger: Object.freeze(ledger), timings: Object.freeze(timings) };
+  return { ledger: Object.freeze(ledger), timings: Object.freeze(timings), analysis };
 }
 
 /**

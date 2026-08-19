@@ -7,7 +7,7 @@ import { stableDigest } from '../../../js/core/identity/index.js';
 import { passRegistryDigest } from '../../../js/decompiler/phase8/index.js';
 
 import { loadCorpus } from './build-corpus.mjs';
-import { VERIFIER_VERSION } from './verify.mjs';
+import { PROFILE, VERIFIER_VERSION } from './verify.mjs';
 
 /**
  * Records one Phase 8 checkpoint acceptance.
@@ -71,6 +71,10 @@ export function recordCheckpoint({
     toolchain: corpus.toolchain,
     passRegistryDigest: passRegistryDigest(),
     verifierVersion: VERIFIER_VERSION,
+    // The acceptance profile this checkpoint was accepted under. A profile bump
+    // changes what "accepted" means, so evidence recorded under an older profile
+    // is visibly older evidence rather than silently grandfathered (§5).
+    profileVersion: PROFILE.profileVersion,
     gates,
     generatedOutputDiff,
     result,

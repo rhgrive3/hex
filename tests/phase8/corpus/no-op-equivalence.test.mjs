@@ -49,11 +49,28 @@ test('every corpus function decompiles without throwing', () => {
 });
 
 test('the Phase 8 path is output-identical to the pre-Phase-8 product', () => {
+  // Fields Phase 8 added are excluded by construction rather than by
+  // re-capturing the baseline. The baseline is the pre-Phase-8 product; a
+  // baseline regenerated to make a new field fit would no longer be evidence of
+  // anything (§5). Each exclusion is covered by its own assertion below.
   for (const observation of observations) {
     const before = byId.get(observation.id);
     assert.ok(before, `no baseline for ${observation.id}`);
-    const { phase8, ...candidate } = observation;
+    const { phase8, completeness, ...candidate } = observation;
     assert.deepEqual(candidate, before, `Phase 8 changed the output of ${observation.id} while it is still a no-op`);
+  }
+});
+
+test('every function on the semantic path reports complete, and no other value is silently null', () => {
+  // `completeness` is the field P8-1 added. Under the work-bounded measurement
+  // mode nothing truncates, so anything other than `complete` on a semantic
+  // function means a stage stopped early and the number beside it is not the
+  // canonical one.
+  for (const observation of observations) {
+    if (observation.semantic) assert.equal(observation.completeness, 'complete', `${observation.id} did not run to its fixed point`);
+    // Legacy-path functions have no Phase 8 pipeline completeness to report.
+    // Null is the honest answer there; it is not an implied "complete".
+    else assert.equal(observation.completeness, null, `${observation.id} reported pipeline completeness from the legacy path`);
   }
 });
 

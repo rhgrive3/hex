@@ -16,7 +16,7 @@ gate. Where it disagrees with `PHASE8_CHECKPOINT_CONTRACTS.md`, the contract win
 | checkpoint | state | evidence |
 |---|---|---|
 | P8-0 Foundation / baseline / verifier | **accepted** | see below |
-| P8-1 Transactional pass substrate | not started | — |
+| P8-1 Transactional pass substrate | **accepted** | see below |
 | P8-2 SCCP + wrapped range/value set | not started | — |
 | P8-3 GVN/CSE + effect-aware DCE | not started | — |
 | P8-4 Induction / loop facts | not started | — |
@@ -25,9 +25,14 @@ gate. Where it disagrees with `PHASE8_CHECKPOINT_CONTRACTS.md`, the contract win
 | P8-7 Language / compiler providers | not started | — |
 | P8-I Final integration / cutover | not started | — |
 
-Verifier verdict on this head: **NOT-INTEGRATED** — correct, and the point. The
-verifier exists and reports the truth from the first checkpoint instead of being
-assembled at the end (EP-011).
+Verifier verdict on this head: **BLOCKING** — correct, and the point. P8-0 and
+P8-1 are accepted; the remaining checkpoints have no evidence and two hard-zero
+counters are not measurable yet. The verifier exists and reports the truth from
+the first checkpoint instead of being assembled at the end (EP-011).
+
+Acceptance profile is now **v2**. The bump added `completeResultDivergenceCount`,
+which changes what acceptance means, so P8-0's evidence was re-verified under the
+new profile at the P8-1 head rather than being grandfathered (§5).
 
 ---
 
@@ -126,8 +131,71 @@ headroom Phase 8 is aimed at.
 
 ---
 
+## P8-1 — transactional pass substrate
+
+### What it delivers
+
+- **`js/decompiler/phase8/transaction.js`** — the authoritative analysis state
+  and the only thing that commits. A pass reads its declared inputs, stages what
+  it produces, and returns; the transaction commits everything or nothing.
+- **Fail-closed invalidation.** A pass that changed something invalidates every
+  analysis it did not explicitly promise to preserve. `invalidates` is still
+  declared and checked, but correctness does not depend on the declaration being
+  complete — the analysis an author forgets is exactly the one that goes stale.
+- **`produces` on the pass contract** (contract version 1 → 2). A staged write to
+  an undeclared analysis is refused, so an undeclared production cannot become an
+  undeclared dependency downstream.
+- **Refusal on missing input.** A pass whose declared inputs are absent does not
+  run at all. That is the mechanism that stops a decompiler pass from inventing a
+  private substitute for a missing upstream fact.
+- **Seeding from upstream facts only.** `seedAnalysisState` reads CFG, dominance,
+  loops, SSA and origins off the IR the pipeline already holds. An absent fact
+  stays at version 0 rather than being approximated. All 35 semantic corpus
+  functions supply cfg + dominators + loops + ssa + origins.
+- **One completeness answer.** `ctx.decompilerPipeline.completeness` is the
+  weakest of the pass deadline, the rewrite budget and the Phase 8 ledger.
+
+### The repair P8-0 handed over
+
+P8-0 recorded that the rewrite fixed point was wall-clock dependent. Investigating
+it at P8-1 found the sharper defect: `rewriteStats.budgetExceeded` could be true
+while the pipeline reported `degraded: false` and no completeness at all, so a
+consumer reading the pipeline's own flag was told a truncated result was
+complete. Measured over 25 production-mode runs of `loop_decrement_step` at `-O1`,
+three distinct outputs appeared and two of them were mislabelled.
+
+The repair propagates truncation into a single completeness answer, and the
+determinism requirement is now stated in the form that is both honest and
+achievable while an interactive clock valve exists:
+
+> Any result marked `complete` is the canonical result. Anything else is marked
+> `partial`.
+
+`completeResultDivergenceCount` measures exactly that, in **production mode**, and
+is a hard-zero gate from profile v2. A determinism property proved only in the
+work-bounded measurement mode would not be a property of the product.
+
+### Required proof, and what proved it
+
+| P8-1 required proof | evidence |
+|---|---|
+| abort before start leaves authoritative input unchanged | `invalidation.test.mjs` "a cancelled pass leaves the state byte-identical" |
+| abort mid-pass publishes no half result | `vertical.test.mjs` cancellation cases |
+| failure at the publication boundary is deterministic and residue-free | `vertical.test.mjs` "a pass that throws is not committed" |
+| repeated identical input yields identical output and transform metadata | `invalidation.test.mjs` deterministic replay; `completeness.test.mjs` "every result marked complete is the same result" |
+| targeted mutations invalidate exactly the required dependent analyses | `invalidation.test.mjs` over-invalidation case |
+| under-invalidation blocked | `invalidation.test.mjs` under-invalidation case, which fails against the obvious "invalidate only what is declared" implementation |
+| over-invalidation measured | same file; every preserved analysis keeps version 1 |
+| existing decompiler output remains compatible | `no-op-equivalence.test.mjs` still byte-identical to the pre-Phase-8 baseline |
+
+### Stop condition
+
+P8-1 stops here. The substrate expresses consumes / preserves / invalidates /
+produces, commits atomically, refuses on missing input, and propagates
+completeness. It is not extended further for elegance; the next work is P8-2.
+
+---
+
 ## Next allowed action
 
-P8-1 — transactional pass substrate. Its first owned repair is finding 1 above:
-make the production rewrite/pass degradation deterministic, with a regression
-that fails on the old behaviour.
+P8-2 — SCCP and the wrapped range/value-set domain, on top of the substrate.

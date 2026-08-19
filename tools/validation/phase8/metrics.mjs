@@ -228,6 +228,7 @@ function median(values) {
 export function performanceMetrics({ repetitions = 3, corpus = loadCorpus() } = {}) {
   const perFunction = [];
   const phase8PerFunction = [];
+  const runs = [];
   for (let repetition = 0; repetition < repetitions; repetition += 1) {
     const started = Date.now();
     const observations = observeCorpus({ corpus, deterministicTransforms: false });
@@ -235,6 +236,7 @@ export function performanceMetrics({ repetitions = 3, corpus = loadCorpus() } = 
     // The Phase 8 stage reports its own elapsed time through the pipeline ctx;
     // when no ledger is published there is nothing to attribute.
     phase8PerFunction.push(observations.filter((observation) => observation.phase8?.published).length);
+    runs.push(observations);
   }
   return {
     procedureVersion: 1,
@@ -242,7 +244,39 @@ export function performanceMetrics({ repetitions = 3, corpus = loadCorpus() } = 
     aggregate: 'median',
     coldActiveFunctionMs: { medianMs: median(perFunction), samples: perFunction.map((value) => Number(value.toFixed(3))) },
     publishedLedgers: median(phase8PerFunction),
+    runs,
   };
+}
+
+/**
+ * Production-mode determinism.
+ *
+ * The clock valve that guards iPad responsiveness means a budget-saturated
+ * function can stop at different points on different runs. That is acceptable
+ * only because such a result is labelled `partial`. What must never vary is the
+ * canonical result: two runs that both report `complete` for the same function
+ * have to agree exactly.
+ *
+ * This is measured in production mode, not in the work-bounded measurement mode,
+ * because a determinism property that only holds in the mode nobody ships is not
+ * a property of the product.
+ */
+export function completeResultDivergences(runs) {
+  // One run cannot disagree with itself. Reporting zero divergences from a
+  // single sample would claim a proof nobody performed, so it reports null.
+  if (!Array.isArray(runs) || runs.length < 2) return null;
+  const canonical = new Map();
+  const divergences = [];
+  for (const run of runs) {
+    for (const observation of run) {
+      if (observation.failure || observation.completeness !== 'complete') continue;
+      const digest = stableDigest({ ...observation, phase8: undefined });
+      const first = canonical.get(observation.id);
+      if (first == null) canonical.set(observation.id, digest);
+      else if (first !== digest && !divergences.includes(observation.id)) divergences.push(observation.id);
+    }
+  }
+  return divergences;
 }
 
 export function collectPhase8Metrics({ repetitions = 3, includePerformance = true } = {}) {
@@ -254,6 +288,8 @@ export function collectPhase8Metrics({ repetitions = 3, includePerformance = tru
   const boundary = architectureBoundaryViolations();
   const artifactFailures = artifactIdentityFailures();
   const determinism = determinismFailures({ first: observations });
+  const performance = includePerformance ? performanceMetrics({ repetitions, corpus }) : null;
+  const productionDivergences = performance ? completeResultDivergences(performance.runs) : null;
   return {
     corpus: {
       corpusId: corpus.corpusId,
@@ -276,11 +312,17 @@ export function collectPhase8Metrics({ repetitions = 3, includePerformance = tru
       staleArtifactAcceptanceDetails: artifactFailures,
       transformDeterminismFailureCount: determinism.length,
       transformDeterminismFailures: determinism,
+      // Null when performance runs were skipped: not measured, never zero.
+      completeResultDivergenceCount: productionDivergences == null ? null : productionDivergences.length,
+      completeResultDivergences: productionDivergences ?? [],
       // Not measured until the checkpoint that owns the machinery lands. `null`
       // is deliberate: a zero here would claim a proof nobody performed.
       lostCfgEdgeCount: null,
       forcedTypeContradictionCount: null,
     },
-    performance: includePerformance ? performanceMetrics({ repetitions, corpus }) : null,
+    // `runs` is dropped: it is several megabytes of observations that exist only
+    // to compute the divergence counter, and release evidence has to stay
+    // auditable by a human.
+    performance: performance == null ? null : { ...performance, runs: undefined },
   };
 }

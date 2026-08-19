@@ -30,56 +30,44 @@ export const IDENTITY_PASS = createPassDescriptor({
   consumes: ['cfg', 'ssa', 'origins'],
   preserves: ['cfg', 'dominators', 'loops', 'ssa', 'memorySsa', 'alias', 'effects', 'ranges', 'valueNumbers', 'types', 'aggregates', 'summaries', 'origins', 'structuredRegions'],
   invalidates: [],
+  produces: [],
   required: false,
   description: 'Identity vertical pass: observes canonical semantic facts and changes nothing.',
 });
 
-function countValues(ir) {
-  return Array.isArray(ir?.values) ? ir.values.length : 0;
-}
-
-function countBlocks(ir) {
-  if (Array.isArray(ir?.blocks)) return ir.blocks.length;
-  if (Array.isArray(ir?.cfg?.blocks)) return ir.cfg.blocks.length;
-  return 0;
-}
-
 /**
- * Observes and reports. Returns a `PassResult`, never a mutated state.
+ * Observes and reports. Returns a `PassResult`; it never writes.
  *
- * `completeness` is honest about the one thing that can genuinely be unknown
- * here: whether canonical SSA facts were available at all. A function reached
- * through the legacy compatibility path has no Semantic IR values, and saying
- * `complete` about a function we did not look at would be exactly the
- * skip-green failure the guardrails forbid.
+ * `context.analysis` is the authoritative analysis state. The pass reads its
+ * declared inputs from there rather than from the raw IR, so "what does this
+ * pass actually depend on" is the same question as "what does it declare".
  */
 export function runIdentityPass(context = {}) {
-  const values = countValues(context.ir);
-  const blocks = countBlocks(context.ir);
-  const observed = values > 0;
+  const analysis = context.analysis;
+  const ssa = analysis?.get('ssa') ?? null;
+  const cfg = analysis?.get('cfg') ?? null;
+  const values = Array.isArray(ssa?.values) ? ssa.values.length : 0;
+  const blocks = Array.isArray(cfg?.blocks) ? cfg.blocks.length : 0;
+  // The transaction refuses to run a pass whose declared inputs are absent, so
+  // reaching this point means the facts are present. Reporting `complete` here
+  // is therefore a statement about facts that exist, not an assumption.
   return createPassResult({
     descriptor: IDENTITY_PASS,
-    status: observed ? 'unchanged' : 'unsupported',
+    status: 'unchanged',
     changed: false,
-    completeness: observed ? 'complete' : 'unknown',
-    stopReason: observed ? null : 'no-canonical-ssa-values',
-    diagnostics: observed ? [] : [{
-      severity: 'info',
-      code: 'phase8.identity.no-canonical-values',
-      message: 'Phase 8 saw no canonical Semantic IR values for this function.',
-      reason: 'The function was produced through a path that does not publish Semantic IR values; Phase 8 reports unknown rather than assuming there was nothing to do.',
-    }],
-    // Deliberately empty: this pass has no transforms, and a transform record
-    // here would mean the control is no longer a control.
+    completeness: 'complete',
+    diagnostics: [],
     transforms: [],
     invalidated: [],
-    // Observation counters are metrics, not semantics; they are reported through
-    // the publication ledger below rather than smuggled into the result shape.
     observation: { values, blocks },
   });
 }
 
 /** Observation counters, kept separate from the validated result contract. */
 export function identityPassObservation(context = {}) {
-  return Object.freeze({ values: countValues(context.ir), blocks: countBlocks(context.ir) });
+  const analysis = context.analysis;
+  return Object.freeze({
+    values: Array.isArray(analysis?.get('ssa')?.values) ? analysis.get('ssa').values.length : 0,
+    blocks: Array.isArray(analysis?.get('cfg')?.blocks) ? analysis.get('cfg').blocks.length : 0,
+  });
 }
