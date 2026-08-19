@@ -1,6 +1,6 @@
 # Phase 8 release evidence — BLOCKING
 
-- product: `15e23a556a0fc2a46b8759e8d14f50784f2f8ac3` (tree `1db43f3240d690da181a91763ed76d547cdecaa4`, branch `phase8/decompiler-quality`, clean: true)
+- product: `baecce647833e43a9bbf7024ca903d6e99cccf33` (tree `c9ed566d39f2344e7c6b1534f4b93d7a2fe07274`, branch `phase8/decompiler-quality`, clean: false)
 - verifier: phase8.verifier 1.0.0 (source sha256 `524b1e3ce071f4d8`)
 - profile version: 2
 - corpus: phase8-decompiler-quality-corpus v1, digest `37c049e8ed51a7f0d46538a894be3c7b`
@@ -15,9 +15,9 @@
 | semanticMismatchCount | 0 |
 | provenanceLossCount | 0 |
 | unknownSafetyRegressionCount | 0 |
-| architectureBoundaryViolationCount | 1 |
+| architectureBoundaryViolationCount | 0 |
 | staleArtifactAcceptanceCount | 0 |
-| transformDeterminismFailureCount | 0 |
+| transformDeterminismFailureCount | 1 |
 | completeResultDivergenceCount | 0 |
 | lostCfgEdgeCount | not measured |
 | forcedTypeContradictionCount | not measured |
@@ -62,7 +62,7 @@
 | category | first divergence | expected | actual | blocking |
 |---|---|---|---|---|
 | coverage | forcedTypeContradictionCount is not measurable on this head | measured from P8-6 | null (not measured) | true |
-| safety | architectureBoundaryViolationCount exceeded its hard-zero limit | 0 | 1 | true |
+| safety | transformDeterminismFailureCount exceeded its hard-zero limit | 0 | 1 | true |
 | coverage | lostCfgEdgeCount is not measurable on this head | measured from P8-5 | null (not measured) | true |
 | architecture | mandatory architecture lane has no Phase 8 evidence: riscv64 | corpus evidence | missing | true |
 | architecture | mandatory architecture lane has no Phase 8 evidence: x86_64 | corpus evidence | missing | true |

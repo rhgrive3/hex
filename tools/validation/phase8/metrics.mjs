@@ -73,7 +73,9 @@ export function architectureBoundaryViolations(directory = PHASE8_SOURCE_DIRECTO
     /\bnzcv\b/i,                              // AArch64 flags
     /\b(?:r[abcd]x|r[sd]i|rsp|rbp|r(?:8|9|1[0-5])d?)\b/i, // x86-64 registers
     /\beflags\b/i,
-    /\b(?:aapcs64|sysv_amd64|lp64)\b/i,       // ABI identifiers
+    // `\b` alone would miss AAPCS64_ABI: an underscore is a word character, so
+    // there is no boundary after the identifier proper.
+    /\b(?:aapcs64|sysv[_-]?amd64|lp64|ilp32)\w*/i, // ABI identifiers
     /\bfrom-machine-effects\b/,               // decoder entry points
   ];
   const violations = [];
@@ -83,9 +85,23 @@ export function architectureBoundaryViolations(directory = PHASE8_SOURCE_DIRECTO
       if (entry.isDirectory()) { visit(absolute); continue; }
       if (!entry.isFile() || !entry.name.endsWith('.js')) continue;
       const lines = fs.readFileSync(absolute, 'utf8').split('\n');
+      // Comments explain the boundary; they are not the boundary. Block comments
+      // span lines, so the scanner tracks that state rather than stripping each
+      // line in isolation — otherwise the sentence explaining that generic code
+      // must not know what a flag register is gets reported as generic code
+      // knowing what a flag register is.
+      let inBlockComment = false;
       lines.forEach((line, index) => {
-        // Comments explain the boundary; they are not the boundary.
-        const code = line.replace(/\/\*.*?\*\//g, '').replace(/\/\/.*$/, '');
+        let code = '';
+        for (let position = 0; position < line.length; position += 1) {
+          if (inBlockComment) {
+            if (line.startsWith('*/', position)) { inBlockComment = false; position += 1; }
+            continue;
+          }
+          if (line.startsWith('/*', position)) { inBlockComment = true; position += 1; continue; }
+          if (line.startsWith('//', position)) break;
+          code += line[position];
+        }
         for (const pattern of patterns) {
           if (pattern.test(code)) {
             violations.push({ file: path.relative(ROOT, absolute), line: index + 1, text: line.trim().slice(0, 120) });
