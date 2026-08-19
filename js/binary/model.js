@@ -10,6 +10,60 @@ function normalizePerms(p) {
   return { read: !!p.read, write: !!p.write, execute: !!p.execute };
 }
 
+function minBigInt(a, b) {
+  return a < b ? a : b;
+}
+
+function mappingAt(image, address) {
+  for (const s of image.segments) {
+    if (inRange(address, s.address, s.size)) return s;
+  }
+  for (const s of image.sections) {
+    if (s.address !== 0n && inRange(address, s.address, s.size)) return s;
+  }
+  return null;
+}
+
+function virtualReadSpans(image, address, size) {
+  const start = BigInt(address);
+  const length = typeof size === 'bigint' ? size : BigInt(size);
+  if (length < 0n) return null;
+  if (length === 0n) return mappingAt(image, start) ? [] : null;
+
+  const end = start + length;
+  let cursor = start;
+  const spans = [];
+  while (cursor < end) {
+    const mapping = mappingAt(image, cursor);
+    if (!mapping) return null;
+
+    const mappingSize = mapping.size > 0n ? mapping.size : 0n;
+    const fileSize = mapping.fileSize < mappingSize ? mapping.fileSize : mappingSize;
+    const mappingEnd = mapping.address + mappingSize;
+    const fileEnd = mapping.address + fileSize;
+    const spanEnd = minBigInt(end, cursor < fileEnd ? fileEnd : mappingEnd);
+    if (spanEnd <= cursor) return null;
+
+    const spanSize = spanEnd - cursor;
+    if (cursor < fileEnd) {
+      spans.push({
+        kind: 'file',
+        offset: mapping.fileOffset + (cursor - mapping.address),
+        size: spanSize,
+      });
+    } else {
+      spans.push({ kind: 'zero', size: spanSize });
+    }
+    cursor = spanEnd;
+  }
+  return spans;
+}
+
+function safeNumber(value) {
+  const n = Number(value);
+  return Number.isSafeInteger(n) && n >= 0 ? n : null;
+}
+
 export class BinaryImage {
   constructor(input, meta = {}) {
     if (input == null) this.bytes = null;
@@ -111,23 +165,65 @@ export class BinaryImage {
 
   readVirtual(address, size) {
     if (!this.bytes) return null;
-    const off = this.addressToOffset(address);
-    if (off == null) return null;
-    const o = Number(off);
-    const n = Number(size);
-    if (!Number.isSafeInteger(o) || !Number.isSafeInteger(n) || o < 0 || n < 0 || o > this.bytes.length || n > this.bytes.length - o) return null;
-    return this.bytes.subarray(o, o + n);
+    const spans = virtualReadSpans(this, address, size);
+    if (!spans) return null;
+    const n = safeNumber(typeof size === 'bigint' ? size : BigInt(size));
+    if (n == null) return null;
+
+    if (spans.length === 1 && spans[0].kind === 'file') {
+      const o = safeNumber(spans[0].offset);
+      const spanSize = safeNumber(spans[0].size);
+      if (o == null || spanSize == null || o > this.bytes.length || spanSize > this.bytes.length - o) return null;
+      return this.bytes.subarray(o, o + spanSize);
+    }
+
+    const out = new Uint8Array(n);
+    let cursor = 0;
+    for (const span of spans) {
+      const spanSize = safeNumber(span.size);
+      if (spanSize == null || spanSize > n - cursor) return null;
+      if (span.kind === 'file') {
+        const o = safeNumber(span.offset);
+        if (o == null || o > this.bytes.length || spanSize > this.bytes.length - o) return null;
+        out.set(this.bytes.subarray(o, o + spanSize), cursor);
+      }
+      cursor += spanSize;
+    }
+    return out;
   }
 
   async readVirtualAsync(address, size) {
     const resident = this.readVirtual(address, size);
     if (resident) return resident;
     if (!this.source) return null;
-    const off = this.addressToOffset(address);
-    if (off == null) return null;
-    const n = typeof size === 'bigint' ? size : BigInt(size);
-    if (n < 0n || off < 0n || off > this.fileSize || n > this.fileSize - off) return null;
-    return this.source.readExactly(off, n);
+
+    const spans = virtualReadSpans(this, address, size);
+    if (!spans) return null;
+    const requested = typeof size === 'bigint' ? size : BigInt(size);
+    if (requested < 0n) return null;
+
+    if (spans.length === 1 && spans[0].kind === 'file') {
+      const span = spans[0];
+      if (span.offset < 0n || span.offset > this.fileSize || span.size > this.fileSize - span.offset) return null;
+      return this.source.readExactly(span.offset, span.size);
+    }
+
+    const n = safeNumber(requested);
+    if (n == null) return null;
+    const out = new Uint8Array(n);
+    let cursor = 0;
+    for (const span of spans) {
+      const spanSize = safeNumber(span.size);
+      if (spanSize == null || spanSize > n - cursor) return null;
+      if (span.kind === 'file') {
+        if (span.offset < 0n || span.offset > this.fileSize || span.size > this.fileSize - span.offset) return null;
+        const bytes = await this.source.readExactly(span.offset, span.size);
+        if (!bytes || bytes.length !== spanSize) return null;
+        out.set(bytes, cursor);
+      }
+      cursor += spanSize;
+    }
+    return out;
   }
 
   attachSource(source, { discardBytes = false } = {}) {
