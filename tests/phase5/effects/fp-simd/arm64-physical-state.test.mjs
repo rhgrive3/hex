@@ -1,3 +1,4 @@
+// #947: S/D are architectural views of one 128-bit Vn physical state; narrow writes must explicitly zero upper bits.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { liftArm64FpEffects } from '../../../../js/targets/architecture/arm64/effects/fp.js';
