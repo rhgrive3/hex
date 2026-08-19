@@ -344,6 +344,42 @@
       "result": "accepted",
       "blockingReason": null,
       "notes": ""
+    },
+    {
+      "id": "P7-I",
+      "recordedAt": "2026-08-19T12:31:35.475Z",
+      "integrationSha": "401b41c1ae5270be4e386b9eda49203ed3e0c438",
+      "integrationTreeSha": "8a9bbfe6864bc040b309e6a6445f41087a3012b1",
+      "mergeBaseSha": "bdf90569ed037a3d30e4439dcde970aad9352e21",
+      "branch": "phase7/static-analysis-depth",
+      "changedFileCount": 80,
+      "changedFileInventoryDigest": "4d4ab9f195156f988858bf6942389bd1",
+      "ownershipPolicyVersion": 2,
+      "corpusManifestDigest": "004acbb071160218a8ad023dbf653a65",
+      "scoring": {
+        "id": "phase7.scoring",
+        "version": "1.0.0"
+      },
+      "truthGenerator": {
+        "id": "phase7.corpus.declared-truth",
+        "version": "1.0.0"
+      },
+      "verifierVersion": "1.0.0",
+      "gates": [
+        "phase7:test",
+        "migration:test",
+        "semantic-v2:test",
+        "semantic:test",
+        "decompiler:test",
+        "compiler-truth",
+        "lint",
+        "invariants:test",
+        "phase6:test"
+      ],
+      "generatedOutputDiff": "zero",
+      "result": "accepted",
+      "blockingReason": null,
+      "notes": "public analysis surface + CI + checkpoint doc"
     }
   ]
 }

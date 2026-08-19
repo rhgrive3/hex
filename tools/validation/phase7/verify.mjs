@@ -40,16 +40,30 @@ function git(args) {
   return result.status === 0 ? String(result.stdout).trim() : null;
 }
 
+/** The verifier's own output directory, which it necessarily dirties. */
+const EVIDENCE_DIRECTORY = 'reports/phase7/';
+
 function productIdentity() {
   const commitSha = git(['rev-parse', 'HEAD']);
   const treeSha = git(['rev-parse', 'HEAD^{tree}']);
-  const status = git(['status', '--porcelain']);
+  const status = git(['status', '--porcelain']) ?? '';
+  // A dirty tree means the reported commit does not describe what was tested
+  // (EP-018), so exact-commit proof fails closed rather than being fudged.
+  //
+  // The one exclusion is the verifier's own evidence directory. Writing the
+  // report is the last thing a run does, so counting it as dirt would make
+  // every run report its own output as a reason to distrust itself. Source
+  // dirt anywhere else still fails, which is the property that matters.
+  const dirty = status
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => !line.slice(2).trim().startsWith(EVIDENCE_DIRECTORY));
   return Object.freeze({
     commitSha: commitSha ?? '0'.repeat(40),
     treeSha: treeSha ?? '0'.repeat(40),
-    // A dirty tree means the reported commit does not describe what was tested
-    // (EP-018). Exact-commit proof is disabled rather than fudged.
-    workingTreeClean: status === '',
+    workingTreeClean: dirty.length === 0,
+    dirtyPaths: dirty.slice(0, 10),
     branch: git(['rev-parse', '--abbrev-ref', 'HEAD']) ?? 'unknown',
   });
 }
@@ -93,7 +107,8 @@ export async function verifyPhase7({ shadow = false, expectedSha = null, gates =
     blocking('identity', 'product commit does not match the requested exact head', expectedSha, product.commitSha);
   }
   if (!product.workingTreeClean && !shadow) {
-    blocking('identity', 'working tree is dirty, so the commit does not describe what was tested', 'clean tree', 'dirty');
+    blocking('identity', 'working tree is dirty, so the commit does not describe what was tested',
+      'clean tree', product.dirtyPaths.join('; ') || 'dirty');
   }
 
   // Corpus identity. A regenerated manifest that differs from the frozen one

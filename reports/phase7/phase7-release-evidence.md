@@ -1,7 +1,7 @@
 # Phase 7 release evidence — BLOCKING
 
-- product: `ee17547478b1cbedc69f504c03cf6e421b97f940` (tree `7d60ac7ab2de6b852d877597668984c48ce92e2c`, branch `phase7/static-analysis-depth`, clean: false)
-- verifier: phase7.verifier 1.0.0 (source sha256 `0da9e1f444afa126`)
+- product: `401b41c1ae5270be4e386b9eda49203ed3e0c438` (tree `8a9bbfe6864bc040b309e6a6445f41087a3012b1`, branch `phase7/static-analysis-depth`, clean: false)
+- verifier: phase7.verifier 1.0.0 (source sha256 `22616c498e0baabc`)
 - profile version: 1
 - corpus: phase7-alias-memory-corpus v1, digest `004acbb071160218a8ad023dbf653a65`, frozen match: true
 - scoring: phase7.scoring 1.0.0; truth: phase7.corpus.declared-truth 1.0.0
@@ -36,11 +36,11 @@
 - x P7-4
 - x P7-5a
 - x P7-5b
--   P7-6
--   P7-I
+- x P7-6
+- x P7-I
 
 ## Failures
 
 | category | first divergence | expected | actual | blocking |
 |---|---|---|---|---|
-| integration | a required checkpoint has no evidence on this head | P7-0,P7-1,P7-2,P7-3a,P7-3b,P7-3c,P7-4,P7-5a,P7-5b,P7-6,P7-I | missing: P7-6,P7-I | true |
+| identity | working tree is dirty, so the commit does not describe what was tested | clean tree | M tools/validation/phase7/verify.mjs | true |
