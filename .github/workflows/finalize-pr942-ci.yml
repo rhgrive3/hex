@@ -43,6 +43,26 @@ jobs:
             text = text.replace(old, new, 1)
           p.write_text(text)
 
+          p = Path('js/ir.js')
+          text = p.read_text()
+          replacements = {
+            "    return { lhs: branch.args[0].value, rhs: 0n, cond: kind === 'cbz' ? 'eq' : 'ne', cmp: null };":
+              "    return { lhs: branch.args[0].value, rhs: 0n, cond: kind === 'cbz' ? 'eq' : 'ne', cmp: null, bits:branch.args[0].bits || branch.args[0].value.bits || 64 };",
+            "  const rhs = shiftedConst(cmp.args[1], cmp.args[0].value.bits || 64);\n  if (rhs == null) return null;\n  return { lhs: cmp.args[0].value, rhs, cond: branch.cond || null, cmp };":
+              "  const bits = cmp.args[0].bits || cmp.extra?.bits || cmp.args[0].value.bits || 64;\n  const rhs = shiftedConst(cmp.args[1], bits);\n  if (rhs == null) return null;\n  return { lhs: cmp.args[0].value, rhs, cond: branch.cond || null, cmp, bits };",
+            "function constrainedRange(value, op, constant, signed) {\n  const bits = value && value.bits || 64;":
+              "function constrainedRange(value, op, constant, signed, compareBits = null) {\n  const bits = compareBits || value && value.bits || 64;",
+            "  const existing = valueRange(value);\n  if (existing) { if (existing.min > min) min = existing.min; if (existing.max < max) max = existing.max; }":
+              "  const existing = valueRange(value);\n  const comparableExisting = existing && Number(existing.bits || bits) === Number(bits)\n    ? normalizeRangeDomain(existing, bits, signed)\n    : null;\n  if (comparableExisting) { if (comparableExisting.min > min) min = comparableExisting.min; if (comparableExisting.max < max) max = comparableExisting.max; }",
+            "  const rhs = normalizeIntegerValue(c.rhs, c.lhs.bits || 64, signedForBounds);\n  const range = constrainedRange(c.lhs, relation, rhs, signedForBounds);":
+              "  const compareBits = c.bits || c.lhs.bits || 64;\n  const rhs = normalizeIntegerValue(c.rhs, compareBits, signedForBounds);\n  const range = constrainedRange(c.lhs, relation, rhs, signedForBounds, compareBits);",
+          }
+          for old, new in replacements.items():
+            if text.count(old) != 1:
+              raise SystemExit(f'IR comparison-width anchor expected once: {old!r}; found {text.count(old)}')
+            text = text.replace(old, new, 1)
+          p.write_text(text)
+
           p = Path('tests/issue-861-862-c-printer-signedness.mjs')
           text = p.read_text()
           replacements = {
@@ -68,6 +88,7 @@ jobs:
           git diff --check
       - name: Focused regressions
         run: |
+          node tests/semantic-v2/issues-791-797-800-825-ir-soundness.test.mjs
           node tests/issue-861-862-c-printer-signedness.mjs
           node tests/decompiler-semantic.mjs
           node tests/phase6/generic-core/degenerate-control-dependency.test.mjs
