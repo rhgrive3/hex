@@ -113,9 +113,48 @@ export class BinaryImage {
 
   _virtualMappingAt(address) {
     const a = BigInt(address);
-    const segment = this.segments.find((s) => s.size > 0n && inRange(a, s.address, s.size));
-    if (segment) return segment;
-    return this.sections.find((s) => s.size > 0n && inRange(a, s.address, s.size)) || null;
+    // Issue #970: the narrowest mapping wins. A zero-fill child section (e.g. __bss)
+    // inside a broader file-backed segment must not be served raw file bytes.
+    let best = null;
+    for (const s of this.sections) {
+      if (s.size > 0n && inRange(a, s.address, s.size) && (!best || s.size < best.size)) best = s;
+    }
+    for (const s of this.segments) {
+      if (s.size > 0n && inRange(a, s.address, s.size) && (!best || s.size < best.size)) best = s;
+    }
+    return best;
+  }
+
+  _nextMappingBoundary(current, owner) {
+    // Issue #970: a narrower mapping starting inside `owner` (e.g. a zero-fill __bss
+    // section inside a file-backed segment) ends the current chunk at its start.
+    const end = owner.address + owner.size;
+    let next = null;
+    const consider = (m) => {
+      if (m === owner || m.size <= 0n) return;
+      if (m.address <= current || m.address >= end) return;
+      if (m.size >= owner.size) return;
+      if (next === null || m.address < next) next = m.address;
+    };
+    for (const m of this.sections) consider(m);
+    for (const m of this.segments) consider(m);
+    return next;
+  }
+
+  resolveVirtualMapping(address) {
+    const a = (() => { try { return BigInt(address); } catch { return null; } })();
+    if (a === null) return null;
+    const owner = this._virtualMappingAt(a);
+    if (!owner) return null;
+    const delta = a - owner.address;
+    const fileSize = owner.fileSize ?? 0n;
+    const fileBacked = delta < fileSize;
+    return {
+      kind: fileBacked ? 'file' : 'zero',
+      mapping: owner,
+      offset: fileBacked ? owner.fileOffset + delta : null,
+      available: fileBacked ? minBigInt(fileSize - delta, owner.size - delta) : owner.size - delta,
+    };
   }
 
   _virtualReadPlan(address, size) {
@@ -136,8 +175,11 @@ export class BinaryImage {
       const delta = current - owner.address;
       const vmAvailable = owner.size - delta;
       if (vmAvailable <= 0n) return null;
-      const fileAvailable = delta < owner.fileSize ? minBigInt(owner.fileSize - delta, vmAvailable) : 0n;
-      const length = fileAvailable > 0n ? minBigInt(fileAvailable, remaining) : minBigInt(vmAvailable, remaining);
+      const boundary = this._nextMappingBoundary(current, owner);
+      const span = boundary === null ? vmAvailable : minBigInt(vmAvailable, boundary - current);
+      if (span <= 0n) return null;
+      const fileAvailable = delta < owner.fileSize ? minBigInt(owner.fileSize - delta, span) : 0n;
+      const length = fileAvailable > 0n ? minBigInt(fileAvailable, remaining) : minBigInt(span, remaining);
       if (length <= 0n) return null;
       if (fileAvailable > 0n) chunks.push({ kind:'file', offset:owner.fileOffset + delta, length });
       else chunks.push({ kind:'zero', length });
