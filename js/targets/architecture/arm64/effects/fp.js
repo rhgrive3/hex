@@ -124,10 +124,42 @@ function temp(id, valueType) {
 }
 
 function appendRegisterRead(operations, op, valueType, id) {
-  const reg = registerValue(op, valueType?.widthBits || scalarWidth(op));
-  if (!reg) return null;
+  const widthBits = valueType?.widthBits || scalarWidth(op);
+  const physicalId = physicalRegisterId(op);
+  if (!physicalId || !widthBits || !valueType) return null;
+
+  if (op?.cls !== 'fp' && op?.cls !== 'vec') {
+    const reg = registerValue(op, widthBits);
+    if (!reg) return null;
+    const value = temp(id, valueType);
+    operations.push(createMachineOperation({ kind: 'register-read', register: reg, value }));
+    return value;
+  }
+
+  if (widthBits > 128) return null;
+  const physical = temp(`${id}:physical`, bitType(128));
+  operations.push(createMachineOperation({
+    kind: 'register-read',
+    register: createRegisterValue(physicalId, 128, { view: physicalId }),
+    value: physical,
+    metadata: { architecturalViewRead: String(op.text || physicalId).toLowerCase(), physicalWidthBits: 128 },
+  }));
+
+  let view = physical;
+  if (widthBits < 128) {
+    view = temp(`${id}:view`, bitType(widthBits));
+    operations.push(createMachineOperation({
+      kind: 'value', opcode: 'truncate', inputs: [physical], outputs: [view],
+      metadata: { purpose: 'arm64-fp-register-view', fromBits: 128, toBits: widthBits, readPolicy: 'low-bits' },
+    }));
+  }
+
+  if (valueType.kind === 'bitvector' && valueType.widthBits === widthBits) return view;
   const value = temp(id, valueType);
-  operations.push(createMachineOperation({ kind: 'register-read', register: reg, value }));
+  operations.push(createMachineOperation({
+    kind: 'value', opcode: 'bitcast', inputs: [view], outputs: [value],
+    metadata: { purpose: 'arm64-fp-register-view-type', widthBits },
+  }));
   return value;
 }
 
@@ -178,6 +210,44 @@ function appendDestinationWrite(operations, dst, semanticValue, idPrefix) {
     }));
     return;
   }
+  if (dst.cls === 'fp' || dst.cls === 'vec') {
+    const id = physicalRegisterId(dst);
+    const viewBits = scalarWidth(dst);
+    if (!id || !viewBits || viewBits > 128) return;
+
+    const semanticType = semanticValue?.kind === 'temporary' ? semanticValue.valueType : semanticValue;
+    let physicalValue = semanticValue;
+    if (semanticType?.kind !== 'bitvector' || semanticType?.widthBits !== viewBits) {
+      const bits = temp(`${idPrefix}:bits`, bitType(viewBits));
+      operations.push(createMachineOperation({
+        kind: 'value', opcode: 'bitcast', inputs: [semanticValue], outputs: [bits],
+        metadata: { purpose: 'arm64-fp-destination-bit-pattern', widthBits: viewBits },
+      }));
+      physicalValue = bits;
+    }
+
+    if (viewBits < 128) {
+      const widened = temp(`${idPrefix}:physical`, bitType(128));
+      operations.push(createMachineOperation({
+        kind: 'value', opcode: 'zero-extend', inputs: [physicalValue], outputs: [widened],
+        metadata: { fromBits: viewBits, toBits: 128, writePolicy: 'zero-upper-vector-bits' },
+      }));
+      physicalValue = widened;
+    }
+
+    operations.push(createMachineOperation({
+      kind: 'register-write',
+      register: createRegisterValue(id, 128, { view: id }),
+      value: physicalValue,
+      metadata: {
+        architecturalViewWritten: String(dst.text || id).toLowerCase(),
+        physicalWidthBits: 128,
+        writePolicy: viewBits < 128 ? 'zero-upper-vector-bits' : 'full-width',
+      },
+    }));
+    return;
+  }
+
   operations.push(createMachineOperation({
     kind: 'register-write',
     register: registerValue(dst, scalarWidth(dst)),
