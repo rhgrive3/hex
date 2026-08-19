@@ -380,6 +380,35 @@
       "result": "accepted",
       "blockingReason": null,
       "notes": "public analysis surface + CI + checkpoint doc"
+    },
+    {
+      "id": "P7-X",
+      "recordedAt": "2026-08-19T12:38:25.169Z",
+      "integrationSha": "8af53267959d4588c359c9ffdcde959fdd877c4b",
+      "integrationTreeSha": "fa761af4aaf8833720c687681d3177520a6c7f6b",
+      "mergeBaseSha": "bdf90569ed037a3d30e4439dcde970aad9352e21",
+      "branch": "phase7/static-analysis-depth",
+      "changedFileCount": 83,
+      "changedFileInventoryDigest": "a8c62816c6c1393df2aa2cf4e1938cc6",
+      "ownershipPolicyVersion": 2,
+      "corpusManifestDigest": "004acbb071160218a8ad023dbf653a65",
+      "scoring": {
+        "id": "phase7.scoring",
+        "version": "1.0.0"
+      },
+      "truthGenerator": {
+        "id": "phase7.corpus.declared-truth",
+        "version": "1.0.0"
+      },
+      "verifierVersion": "1.0.0",
+      "gates": [
+        "phase7:test",
+        "check"
+      ],
+      "generatedOutputDiff": "zero",
+      "result": "accepted",
+      "blockingReason": null,
+      "notes": "Phase 8 handoff contract + exit evidence"
     }
   ]
 }
