@@ -138,13 +138,33 @@ export function semanticAbiAdapter(abiPlugin, options = {}) {
      * the stack pointer, and the temporaries, so the assumption does not just
      * lose arguments, it reports the stack pointer as one.
      */
-    argumentRegisters() {
+    argumentLocations({ functionPrototype = null } = {}) {
       let classified = null;
-      try { classified = abiPlugin.classifyArguments({}, {}); } catch { classified = null; }
-      const registers = (classified?.arguments ?? [])
-        .filter((entry) => entry && entry.location === 'register' && typeof entry.reg === 'string' && entry.abiClass !== 'unknown-sse' && entry.abiClass !== 'unknown-float')
-        .map((entry) => entry.reg);
-      return Object.freeze([...new Set(registers)]);
+      const instruction = functionPrototype == null ? {} : { callPrototype:functionPrototype };
+      const classifyOptions = functionPrototype == null ? {} : { callPrototype:functionPrototype };
+      try { classified = abiPlugin.classifyArguments(instruction, classifyOptions); } catch { classified = null; }
+      const locations = [];
+      const seen = new Set();
+      for (const entry of classified?.arguments ?? []) {
+        if (!entry || !['register','registers'].includes(entry.location)) continue;
+        const registers = Array.isArray(entry.regs) ? entry.regs : typeof entry.reg === 'string' ? [entry.reg] : [];
+        for (const register of registers) {
+          const reg = String(register || '');
+          if (!reg) continue;
+          const key = String(entry.index ?? locations.length) + ':' + reg;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          locations.push(Object.freeze({
+            index:Number.isInteger(Number(entry.index)) ? Number(entry.index) : locations.length,
+            reg,
+            abiClass:entry.abiClass ?? null,
+          }));
+        }
+      }
+      return Object.freeze(locations);
+    },
+    argumentRegisters(options = {}) {
+      return Object.freeze(this.argumentLocations(options).map((location) => location.reg));
     },
     /**
      * Registers whose spill/restore is pure call-frame bookkeeping rather than
@@ -298,6 +318,10 @@ export function analyzeDecodedSemanticFunction(input = {}, options = {}) {
     entryBlockKey:blocks[0].key,
     blocks,
     abiAdapter,
+    machineEffectsContext:input.machineEffectsContext ?? {
+      dataEndianness:input.dataEndianness,
+      instructionEndianness:input.instructionEndianness,
+    },
   }, { signal:options.signal, abiAdapter });
   abortIfRequested(options.signal);
   const decodedByInstructionId = new Map(pipeline.machineEffects.map((bundle, index) => [bundle.instructionId, input.instructions[index]]));
@@ -347,6 +371,11 @@ export function analyzeDecodedSemanticFunction(input = {}, options = {}) {
     abiId:abiPlugin.id,
     abiSemanticVersion:abiPlugin.semanticVersion,
     decoderSemanticVersion:String(input.decoderSemanticVersion),
+    analysisContext:Object.freeze({
+      dataEndianness:input.dataEndianness ?? null,
+      instructionEndianness:input.instructionEndianness ?? null,
+      architectureProfile:input.architectureProfile ?? null,
+    }),
     pipeline:pipelineSnapshot(pipeline),
     decompiler:decompilerSnapshot(decompiler),
   });

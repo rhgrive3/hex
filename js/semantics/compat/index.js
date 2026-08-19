@@ -221,6 +221,9 @@ export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
   const sliceId = nonEmpty(input.sliceId, 'semantic-v2-integration-slice-id-required');
   const rawBlocks = array(input.blocks, 'semantic-v2-integration-blocks-required');
   if (!rawBlocks.length) fail('semantic-v2-integration-blocks-required');
+  const machineEffectsContext = input.machineEffectsContext == null
+    ? {}
+    : object(input.machineEffectsContext, 'semantic-v2-integration-machine-effects-context-invalid');
 
   const canonicalStartIdentity = input.canonicalStartIdentity ?? { address: canonicalAddress(rawBlocks[0].startAddress) };
   const functionId = createFunctionId({ binaryId, sliceId, canonicalStartIdentity });
@@ -303,6 +306,7 @@ export function buildSemanticV2CompatibilityPipeline(input, options = {}) {
       const decoded = object(item.decoded ?? item, 'semantic-v2-integration-decoded-instruction-required');
       const prepared = { ...decoded, instructionId, origin, mode };
       let bundle = architecturePlugin.liftExact(prepared, {
+        ...machineEffectsContext,
         instructionId,
         origin,
         mode,

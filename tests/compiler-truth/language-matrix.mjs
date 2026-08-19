@@ -5,12 +5,15 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { parseOperands } from '../../js/arm64.js';
 import { decompile } from '../../js/decompile.js';
+import { semanticAbiAdapter } from '../../js/analysis/semantic-function.js';
+import { AAPCS64_ABI } from '../../js/targets/abi/index.js';
 import { evaluateExpression } from '../../js/decompiler/verify/equivalence.js';
 import { s, u } from '../../js/decompiler/truth/integer.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const sourceDir = path.join(here, 'sources');
 const optimizations = ['-O0','-O1','-O2','-O3','-Os','-Oz'];
+const compilerTruthAbiAdapter = semanticAbiAdapter(AAPCS64_ABI);
 const clangTargets = ['aarch64-unknown-linux-gnu', 'arm64-apple-ios13.0'];
 const boundary32 = [0n, 1n, -1n, 2n, -2n, 0x7fffffffn, 0x80000000n, 0xffffffffn, 0x12345678n];
 
@@ -111,6 +114,7 @@ function verifyClamp(asm, fn, baseAddress) {
     name: fn, addr:model.instructions[0].address,
     rowOfAddress:(address) => rowMap.get(address?.toString()) ?? null,
     returnType:'int32',
+    abiAdapter:compilerTruthAbiAdapter,
     decompilerTimeBudgetMs:120,
   });
   assert.ok(result?.semantic, `${fn}: semantic decompiler fallback`);

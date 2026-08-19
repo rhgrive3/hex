@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { semanticAbiAdapter } from '../js/analysis/semantic-function.js';
+import { AAPCS64_ABI } from '../js/targets/abi/index.js';
 import { enhanceSemanticDecompilation } from '../js/decompiler/pipeline.js';
 
 function val(id, reg, bits = 32, kind = 'def') { return { id, reg, bits, kind, uses: [], def: null, const: null }; }
@@ -26,7 +28,12 @@ for (const [v, use] of [[self, loadI],[damage,subI],[loaded,subI],[sub,cmpI],[su
 const ir = { values: [self,damage,loaded,zero,sub,flags,selected], instructions: [loadI,constI,subI,cmpI,selI,storeI,retI], args: new Map([['x0',self],['x1',damage]]), blocks: [{ index:0,startRow:0,endRow:6,succ:[],insts:[loadI,constI,subI,cmpI,selI,storeI,retI] }] };
 const types = { values: new Map([[self.id,{name:'Player *',kind:'pointer',confidence:.9}],[damage.id,{name:'int32',kind:'integer',bits:32,signed:true,confidence:.9}],[loaded.id,{name:'int32',kind:'integer',bits:32,signed:true,confidence:.9}],[sub.id,{name:'int32',kind:'integer',bits:32,signed:true,confidence:.9}],[selected.id,{name:'int32',kind:'integer',bits:32,signed:true,confidence:.9}]]), locations: new Map() };
 const result = { semantic:true, ir, types, lines:[{kind:'sig',indent:0,text:'void test(Player * a1, int32 a2)'},{kind:'ctrl',indent:0,text:'{'},{kind:'stmt',indent:1,text:'a1->field_20 = (a1->field_20 - a2 > 0 ? a1->field_20 - a2 : 0);',row:5,addr:0x1014n},{kind:'ctrl',indent:0,text:'}'}], warnings:[], evidence:[], summary:'fallback', coverage:{mode:'structured'} };
-const enhanced = enhanceSemanticDecompilation(result, { calls:[] }, { fieldFor: (_reg, off) => off === 32n ? { name:'hp' } : null, decompilerTimeBudgetMs:1000 });
+const enhanced = enhanceSemanticDecompilation(result, { calls:[] }, {
+  fieldFor: (_reg, off) => off === 32n ? { name:'hp' } : null,
+  abiAdapter:semanticAbiAdapter(AAPCS64_ABI),
+  functionPrototype:{ returnType:'void', parameters:[{ type:'Player *' }, { type:'int32' }] },
+  decompilerTimeBudgetMs:1000,
+});
 assert.ok(enhanced.semanticAst && enhanced.cAst);
 assert.ok(enhanced.sourceMap.length >= 4);
 assert.match(enhanced.pseudocode, /->hp = max\(/);

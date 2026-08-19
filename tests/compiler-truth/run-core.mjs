@@ -6,6 +6,8 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { parseOperands } from '../../js/arm64.js';
 import { decompile } from '../../js/decompile.js';
+import { semanticAbiAdapter } from '../../js/analysis/semantic-function.js';
+import { AAPCS64_ABI } from '../../js/targets/abi/index.js';
 import { evaluateExpression } from '../../js/decompiler/verify/equivalence.js';
 import { s, u } from '../../js/decompiler/truth/integer.js';
 import { ghidraAvailability, runGhidra, readabilityMetrics } from '../../tools/decompiler/ghidra-diff.mjs';
@@ -14,6 +16,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const sourcePath = path.join(here, 'sources', 'scalars.c');
 const expected = JSON.parse(fs.readFileSync(path.join(here, 'expected.json'), 'utf8'));
 const opts = ['-O0','-O1','-O2','-O3','-Os','-Oz'];
+const compilerTruthAbiAdapter = semanticAbiAdapter(AAPCS64_ABI);
 
 function memoryInfo(mn, ops) {
   const m = String(mn).toLowerCase();
@@ -152,7 +155,7 @@ for (const opt of opts) {
     try {
       const rowMap = new Map(model.instructions.map((x) => [x.address.toString(), x.row]));
       const returnType = fn === 'extract8' || fn === 'bool_i32' ? 'uint32' : 'int32';
-      const result = decompile(model, { name:fn, addr:model.instructions[0].address, rowOfAddress:(a)=>rowMap.get(a?.toString()) ?? null, returnType, decompilerTimeBudgetMs:120 });
+      const result = decompile(model, { name:fn, addr:model.instructions[0].address, rowOfAddress:(a)=>rowMap.get(a?.toString()) ?? null, returnType, abiAdapter:compilerTruthAbiAdapter, decompilerTimeBudgetMs:120 });
       perFunction.push(checkExpected(fn, result, opt === '-O2' || opt === '-O3'));
     } catch (error) {
       perFunction.push({ function:fn, failure:error?.message || String(error) });
@@ -170,7 +173,7 @@ max_prebuilt:
 const prebuilt = parseFunction(prebuiltAsm, 'max_prebuilt', 0x200000n);
 assert.ok(prebuilt);
 const preMap = new Map(prebuilt.instructions.map((x) => [x.address.toString(), x.row]));
-const preResult = decompile(prebuilt, { name:'max_prebuilt', addr:0x200000n, returnType:'int32', rowOfAddress:(a)=>preMap.get(a?.toString()) ?? null, decompilerTimeBudgetMs:120 });
+const preResult = decompile(prebuilt, { name:'max_prebuilt', addr:0x200000n, returnType:'int32', rowOfAddress:(a)=>preMap.get(a?.toString()) ?? null, abiAdapter:compilerTruthAbiAdapter, decompilerTimeBudgetMs:120 });
 assert.ok(preResult.semanticAst && preResult.cAst && preResult.sourceMap?.length, 'prebuilt compiler-truth pipeline missing AST/source map');
 assert.match(preResult.pseudocode, /max\(/, `prebuilt max recovery failed\n${preResult.pseudocode}`);
 const preTruth = semanticTruth('max_i32', preResult);

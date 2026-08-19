@@ -53,7 +53,7 @@ function contextOf(decoded, context = {}) {
     instructionId,
     architectureId: String(context.architectureId || decoded?.architectureId || 'arm64'),
     mode: String(context.mode || decoded?.mode || 'a64'),
-    endian: String(context.endian || decoded?.endian || 'little'),
+    dataEndianness: String(context.dataEndianness || decoded?.dataEndianness || context.endian || decoded?.endian || 'little'),
     origin: context.origin || decoded?.origin || { instructionIds:[instructionId] },
     options: context.options || {},
   };
@@ -108,7 +108,7 @@ function accessAlignment(mnemonic, widthBits) {
   return undefined;
 }
 function accessFor({ ctx, addressExpr, widthBits, atomic = null, ordering = null, alignment = null, volatility = null }) {
-  const input = { space:'memory', addressExpr, widthBits, endian:ctx.endian };
+  const input = { space:'memory', addressExpr, widthBits, endian:ctx.dataEndianness };
   if (alignment) input.alignment = alignment;
   if (typeof atomic === 'boolean') input.atomic = atomic;
   if (ordering) input.ordering = ordering;

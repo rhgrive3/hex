@@ -1,12 +1,15 @@
 import assert from 'node:assert/strict';
 import { buildSemanticModel, attachTexts } from '../js/blocks.js';
 import { decompile } from '../js/decompile.js';
+import { semanticAbiAdapter } from '../js/analysis/semantic-function.js';
+import { AAPCS64_ABI } from '../js/targets/abi/index.js';
 import { buildIR, OP } from '../js/ir.js';
 import { recoverInductionVariables } from '../js/decompiler/semantic.js';
 import { inferSemanticTypes } from '../js/types.js';
 import { decompilerSourceAddresses, formatDecompilerSource, fullDecompilerSourceText } from '../js/decompiler/provenance.js';
 
 const BASE = 0x100000000n;
+const testAbiAdapter = semanticAbiAdapter(AAPCS64_ABI);
 function make(lines, opts = {}) {
   const base = opts.base ?? BASE;
   const raw = lines.map((text, row) => {
@@ -32,7 +35,7 @@ function make(lines, opts = {}) {
     'str w8, [x0, #0x20]',
     'ret',
   ]);
-  const r = decompile(model, {
+  const r = decompile(model, { abiAdapter:testAbiAdapter,
     addr: BASE, name: 'addCoins', rowOfAddress, receiverType: 'PlayerData', beginner: false,
     fieldFor: (_base, off) => off === 0x20n ? { name: 'coins', type: 'int32' } : null,
   });
@@ -52,7 +55,7 @@ function make(lines, opts = {}) {
     'str w8, [x0, #0x20]',
     'ret',
   ]);
-  const r = decompile(model, {
+  const r = decompile(model, { abiAdapter:testAbiAdapter,
     addr: BASE, name: 'damage', rowOfAddress, receiverType: 'Player', beginner: false,
     fieldFor: (_base, off) => off === 0x20n ? { name: 'hp', type: 'int32' } : null,
   });
@@ -88,8 +91,9 @@ function make(lines, opts = {}) {
   ], { base, name: 'apply_damage', symbolFor: (addr) => BigInt(addr) === PUTS ? '_puts' : null });
   attachTexts(model, new Map([['4294968756', 'damage dealt to enemy']])); // 0x1000005B4
 
-  const r = decompile(model, {
+  const r = decompile(model, { abiAdapter:testAbiAdapter,
     addr: base, name: 'apply_damage', rowOfAddress, returnType: 'int32', receiverType: 'Unit', beginner: false,
+    functionPrototype:{ returnType:'int32', parameters:[{ type:'Unit *' }, { type:'int32' }] },
     symbolFor: (addr) => BigInt(addr) === PUTS ? '_puts' : null,
     fieldFor: (_base, off) => off === 0x20n ? { name: 'hp', type: 'int32' }
       : off === 0x24n ? { name: 'damageRate', type: 'uint32' } : null,
@@ -148,7 +152,7 @@ function make(lines, opts = {}) {
   const iv = recoverInductionVariables(ir);
   assert.ok(iv.length >= 1, 'expected SSA PHI induction variable');
   assert.equal(iv[0].step, 1n);
-  const r = decompile(model, { addr: BASE, name: 'loop', rowOfAddress, beginner: false });
+  const r = decompile(model, { abiAdapter:testAbiAdapter, addr: BASE, name: 'loop', rowOfAddress, beginner: false });
   assert.ok(/for\s*\(|while\s*\(/.test(r.pseudocode), r.pseudocode);
 }
 
@@ -210,7 +214,7 @@ function make(lines, opts = {}) {
     { row: 14, name: '__Unwind_Resume', target: UNWIND },
   ];
 
-  const r = decompile(model, {
+  const r = decompile(model, { abiAdapter:testAbiAdapter,
     addr: BASE, name: methodName, rowOfAddress, symbolFor, returnType: 'id', beginner: false,
   });
   assert.equal(r.semantic, true, r.warnings?.join('\n'));
@@ -256,7 +260,7 @@ function make(lines, opts = {}) {
     { row: 7, name: '__Unwind_Resume', target: UNWIND },
   ];
 
-  const r = decompile(model, {
+  const r = decompile(model, { abiAdapter:testAbiAdapter,
     addr: BASE, name: 'empty_detached_exception_block', rowOfAddress, symbolFor, beginner: false,
   });
   assert.equal(r.semantic, true, r.warnings?.join('\n'));
@@ -276,7 +280,7 @@ function make(lines, opts = {}) {
     'mov w0, #2',
     'ret',
   ]);
-  const r = decompile(model, { addr: BASE, name: 'has_unknown_detached_code', rowOfAddress, returnType: 'int32', beginner: false });
+  const r = decompile(model, { abiAdapter:testAbiAdapter, addr: BASE, name: 'has_unknown_detached_code', rowOfAddress, returnType: 'int32', beginner: false });
   assert.equal(r.semantic, false);
   assert.equal(r.legacyFallback, true);
   assert.match((r.warnings || []).join('\n'), /disconnected or indirect targets use the isolated faithful fallback/);

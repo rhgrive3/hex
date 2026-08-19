@@ -11,6 +11,7 @@ import { riscv64RegisterDescriptor } from '../registers.js';
 
 export const RISCV64_ARCHITECTURE_ID = 'riscv64';
 export const RISCV64_MODE = 'rv64imc';
+export const RISCV64_INSTRUCTION_ALIGNMENT = 2;
 export const RISCV64_XLEN = 64;
 export const RISCV64_MACHINE_EFFECTS_SEMANTIC_VERSION = '1.0.0-phase6-rv64imc';
 
@@ -34,6 +35,10 @@ export function createRiscv64EffectContext(decoded, context = {}) {
   const instructionId = String(instruction.instructionId ?? '').trim();
   if (!instructionId) throw new TypeError('riscv64-effects-instruction-id-required');
   const mode = String(instruction.mode || RISCV64_MODE);
+  const instructionAlignment = Number(context.instructionAlignment ?? instruction.instructionAlignment ?? RISCV64_INSTRUCTION_ALIGNMENT);
+  if (!Number.isSafeInteger(instructionAlignment) || instructionAlignment < 2 || (instructionAlignment & (instructionAlignment - 1)) !== 0) {
+    throw new TypeError('riscv64-invalid-instruction-alignment');
+  }
   const options = context.machineEffectsOptions ?? context.options ?? {};
   const fields = instruction.fields;
   const operations = [];
@@ -129,6 +134,10 @@ export function createRiscv64EffectContext(decoded, context = {}) {
       instructionFamily: fields.op,
       decoderContractVersion: instruction.contractVersion,
       compressed: fields.compressed === true,
+      instructionAlignment,
+      ...(instruction.isaIdentity == null ? {} : { isaIdentity:String(instruction.isaIdentity) }),
+      ...(instruction.isaEvidence == null ? {} : { isaEvidence:String(instruction.isaEvidence) }),
+      ...(instruction.compressedInstructions == null ? {} : { compressedInstructions:instruction.compressedInstructions === true }),
       ...(fields.expandedFrom == null ? {} : { compressedEncoding: fields.expandedFrom }),
       ...(discardedZeroWrites.length ? { discardedHardwiredZeroWrites: [...new Set(discardedZeroWrites)].sort() } : {}),
       ...(config.metadata || {}),
@@ -167,6 +176,7 @@ export function createRiscv64EffectContext(decoded, context = {}) {
     instructionId,
     fields,
     mode,
+    instructionAlignment,
     options,
     constant,
     temporary,

@@ -29,15 +29,37 @@ function origin(inst, v = null, reason = null) {
     ssaUses: (inst?.args || []).map(valueOf).filter(Boolean).map((x) => x.id), evidence: reason ? [{ reason }] : [] });
 }
 
+function abiArgumentLocationsForState(state) {
+  const functionPrototype = state.opts?.functionPrototype || state.opts?.prototype || state.prototype || null;
+  try {
+    const locations = state.opts?.abiAdapter?.argumentLocations?.({ functionPrototype });
+    if (Array.isArray(locations)) return locations
+      .filter((location) => location && typeof location.reg === 'string')
+      .map((location, ordinal) => ({
+        index:Number.isInteger(Number(location.index)) ? Number(location.index) : ordinal,
+        reg:String(location.reg),
+        abiClass:location.abiClass ?? null,
+      }));
+    const registers = state.opts?.abiAdapter?.argumentRegisters?.({ functionPrototype });
+    return Array.isArray(registers) ? registers.map((reg, index) => ({ index, reg:String(reg), abiClass:null })) : [];
+  } catch { return []; }
+}
+
+function abiArgumentLocationForRegister(state, reg) {
+  const name = String(reg || '');
+  return abiArgumentLocationsForState(state).find((location) => location.reg === name) || null;
+}
+
 function argumentName(v, state) {
   const groupId = state.highVariables?.valueToGroup?.get(v?.id);
   const group = state.highVariables?.groups?.find((g) => g.id === groupId);
   if (group?.name) return group.name;
-  const m = /^x([0-7])$/.exec(v?.reg || '');
-  if (!m) return safeIdent(v?.reg || `value_${v?.id}`);
-  const n = Number(m[1]);
-  if (n === 0 && (state.opts?.receiverType || state.opts?.methodKind === 'objc')) return 'self';
-  return state.opts?.argNames?.[n] || `a${n + 1}`;
+  const reg = String(v?.reg || '');
+  const location = abiArgumentLocationForRegister(state, reg);
+  if (!location) return safeIdent(reg || `value_${v?.id}`);
+  const index = location.index;
+  if (index === 0 && (state.opts?.receiverType || state.opts?.methodKind === 'objc')) return 'self';
+  return state.opts?.argNames?.[index] || `a${index + 1}`;
 }
 
 function memoryLocation(inst, state) {
@@ -367,7 +389,12 @@ function expressionFor(v, state) { return state.expressions?.get(v?.id) || walkI
 function returnRegisterForState(state) {
   const type=String(state.opts?.returnType || state.opts?.functionPrototype?.returnType || state.opts?.prototype?.returnType || state.prototype?.returnType || '').toLowerCase();
   if (!type || type === 'void') return null;
-  return /^(float|double|__fp16)/.test(type) || /vector|simd/.test(type) ? 'v0' : 'x0';
+  try {
+    return state.opts?.abiAdapter?.returnRegister?.({
+      returnType:type,
+      functionPrototype:state.opts?.functionPrototype || state.opts?.prototype || state.prototype || null,
+    }) ?? null;
+  } catch { return null; }
 }
 function returnValueAt(inst, state) {
   const explicit=valueOf(inst?.args?.[0]);
@@ -378,8 +405,9 @@ function returnValueAt(inst, state) {
 
 function semanticFacts(state, result) {
   const facts = { inputs: [], outputs: [], stores: [], calls: [], conditions: [], evidence: [], warnings: [] };
+  const abiArgumentRegisters = new Set(abiArgumentLocationsForState(state).map((location) => location.reg));
   for (const [reg, v] of state.ir.args || []) {
-    if (/^x[0-7]$/.test(reg) && (v.uses || []).length) facts.inputs.push({ name: argumentName(v, state), reg, type: typeFor(state, v), valueId: v.id });
+    if (abiArgumentRegisters.has(String(reg)) && (v.uses || []).length) facts.inputs.push({ name: argumentName(v, state), reg, type: typeFor(state, v), valueId: v.id });
   }
   for (const inst of state.ir.instructions || []) {
     if (inst.op === 'store') {
@@ -407,11 +435,75 @@ function semanticFacts(state, result) {
   return facts;
 }
 
+function valueDependsOnAny(value, targetValueIds, active = new Set()) {
+  if (!value || active.has(value.id)) return false;
+  if (targetValueIds.has(value.id)) return true;
+  active.add(value.id);
+  const def = value.def;
+  if (!def) { active.delete(value.id); return false; }
+  const inputs = [
+    ...(def.args || []).map((arg) => arg?.value).filter(Boolean),
+    ...(def.incoming || []).map((item) => item?.value).filter(Boolean),
+  ];
+  const result = inputs.some((input) => valueDependsOnAny(input, targetValueIds, active));
+  active.delete(value.id);
+  return result;
+}
+
+/*
+ * Hide only a stack slot proven to be machine-level return preservation across
+ * a call. MemorySSA must identify one exact store and one exact reaching load;
+ * that load must feed the function return, and no call argument may depend on
+ * the spill address base. This keeps ordinary locals/address-taken slots
+ * visible while avoiding an invalid duplicate `var_* = expr; return expr;`.
+ */
+function isElidableReturnSpillStore(store, state) {
+  if (!store || store.op !== 'store' || store.loc?.kind !== 'stack' || !store.loc?.key) return false;
+  const instructions = state.ir?.instructions || [];
+  const sameLocationMemory = instructions.filter((inst) =>
+    (inst.op === 'load' || inst.op === 'store') && inst.loc?.key === store.loc.key);
+  const loads = sameLocationMemory.filter((inst) => inst.op === 'load' && inst.reachingStore === store);
+  if (loads.length !== 1 || sameLocationMemory.some((inst) => inst.op === 'store' && inst !== store)) return false;
+  const load = loads[0];
+  if (store.row == null || load.row == null || Number(load.row) <= Number(store.row) || !load.dst) return false;
+
+  const calls = instructions.filter((inst) => inst.op === 'call' && inst.row != null
+    && Number(inst.row) > Number(store.row) && Number(inst.row) < Number(load.row));
+  if (!calls.length) return false;
+
+  const addressBaseId = store.addr?.base?.id ?? null;
+  if (addressBaseId != null) {
+    const addressBase = new Set([addressBaseId]);
+    if (calls.some((call) => (call.args || []).some((arg) => valueDependsOnAny(arg?.value, addressBase)))) return false;
+  }
+
+  const loadIds = new Set([load.dst.id]);
+  const storedValue = valueOf(store.args?.[0]);
+  if (!storedValue) return false;
+  const storedKey = structuralKey(expressionFor(storedValue, state));
+  if (!storedKey) return false;
+
+  for (const ret of instructions) {
+    if (ret.op !== 'ret' || ret.row == null || Number(ret.row) <= Number(load.row)) continue;
+    const returned = returnValueAt(ret, state);
+    if (!returned || !valueDependsOnAny(returned, loadIds)) continue;
+    if (structuralKey(expressionFor(returned, state)) === storedKey) return true;
+  }
+  return false;
+}
+
 function knownStatementForLine(line, state) {
   if (line?.row == null || line.kind !== 'stmt') return null;
   const insts = (state.ir.instructions || []).filter((i) => i.row === line.row);
   const store = insts.find((i) => i.op === 'store');
   if (store) {
+    if (isElidableReturnSpillStore(store, state)) {
+      return {
+        text:'',
+        semantic:{ op:'elided-return-spill', ir:store.id },
+        source:sourceOf({ ir:store.id, value:valueOf(store.args?.[0]), reason:'memoryssa-return-spill' }),
+      };
+    }
     const location = memoryLocation(store, state), value = valueOf(store.args?.[0]), e = expressionFor(value, state);
     let text = `${location.text} = ${printExpression(e)};`;
     if (e?.kind === 'binary' && ['add','sub','mul'].includes(e.op) && e.left?.kind === 'load' && e.left.location?.key === location.key) {
