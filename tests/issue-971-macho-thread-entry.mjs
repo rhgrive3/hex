@@ -1,4 +1,5 @@
 // #971: ARM_THREAD_STATE64.__pc is at +256; +264 is CPSR/pad and must never become entrypoint truth.
+// Keep PC and CPSR deliberately distinct so any future offset regression fails deterministically.
 import assert from 'node:assert/strict';
 import { parseMachO } from '../js/binary/macho.js';
 
