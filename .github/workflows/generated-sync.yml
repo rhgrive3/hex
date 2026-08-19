@@ -27,6 +27,26 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Diagnose shifted W32 comparison projection
+        run: |
+          node --input-type=module <<'NODE'
+          import { buildSemanticModel } from './js/blocks.js';
+          import { irFor, branchConstraints } from './js/ir.js';
+          const BASE = 0x100000000n;
+          const lines = ['mov w1, #0x80000000', 'cmp w0, w1, lsl #1', 'b.eq #0x100000010', 'nop', 'ret'];
+          const rows = lines.map((line,row) => {
+            const split=line.indexOf(' ');
+            return { row, address:BASE+BigInt(row*4), mn:split<0?line:line.slice(0,split), ops:split<0?'':line.slice(split+1) };
+          });
+          const rowOfAddress=(address)=>{const d=BigInt(address)-BASE; return d<0n||d>=BigInt(rows.length*4)||d%4n?null:Number(d/4n);};
+          const model=buildSemanticModel(rows,{startRow:0,endRow:rows.length-1,rowOfAddress});
+          const ir=irFor(model,{rowOfAddress,decoderSemanticVersion:'diag-825-w-lsl'});
+          const simple=(v)=>v?{id:v.id,vid:v.vid,bits:v.bits,reg:v.reg,const:v.const,def:v.def?{op:v.def.op,sub:v.def.sub,row:v.def.row}:null}:null;
+          const instructions=(ir?.instructions||[]).map((x)=>({op:x.op,sub:x.sub,row:x.row,bits:x.bits,cond:x.cond,dst:simple(x.dst),args:(x.args||[]).map(a=>({bits:a.bits,shift:a.shift||null,value:simple(a.value)})),extra:x.extra}));
+          const replacer=(_k,v)=>typeof v==='bigint'?`${v}n`:v;
+          console.log('IR825',JSON.stringify(instructions,replacer,2));
+          console.log('FACT825',JSON.stringify(branchConstraints(ir),replacer,2));
+          NODE
       - name: Verify focused semantic regressions
         run: |
           node tests/machine-effects/issue-957-bti-guarded-page.test.mjs
