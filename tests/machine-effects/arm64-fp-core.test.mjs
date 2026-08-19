@@ -26,10 +26,10 @@ const immFloat = (value, text = `#${value}`) => ({ k:'imm', value:null, float:va
   assert.deepEqual([...intrinsic.effectSummary.registersWritten].sort(), ['fpsr','v0'].sort());
   const result = intrinsic.effectSummary.outputs[0];
   assert.equal(result.valueType.kind, 'float');
-  assert.equal(result.valueType.widthBits, 32, 'S-register FP width must remain 32-bit');
+  assert.equal(result.valueType.widthBits, 32, 'S-register FP result value width must remain 32-bit');
   const write = effect.operations.find((op) => op.kind === 'register-write' && op.register.registerId === 'v0');
-  assert.equal(write.register.widthBits, 32);
-  assert.equal(write.register.view, 's0');
+  assert.equal(write.register.widthBits, 128, 'all scalar FP views write the canonical 128-bit physical V register');
+  assert.equal(write.register.view, 's0', 'the architectural S0 view remains explicit on the physical V0 write');
   assert.doesNotThrow(() => validateMachineEffectBundle(effect));
 }
 
