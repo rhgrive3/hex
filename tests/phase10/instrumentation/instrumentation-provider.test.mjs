@@ -37,14 +37,21 @@ test('P10.8 instrumentation is first-class and does not require a debugger facet
   assert.equal(backend.listeners.size, 0);
 });
 
-test('P10.8 replacement and writes require explicit authority and create intervention lineage', async () => {
-  const provider = new InstrumentationProvider(new InstrumentBackend(), { id: 'frida-mutation-provider' });
+test('P10.8 replacement and writes require provider-owned authority and create intervention lineage', async () => {
+  const provider = new InstrumentationProvider(new InstrumentBackend(), {
+    id: 'frida-mutation-provider',
+    authorizeMutation: async ({ context }) => context?.grant === 'trusted-runtime-mutation',
+  });
   const session = await provider.openSession({ binaryId, targetIdentity: 'process:2', sessionNonce: 'inst:2' });
   await assert.rejects(() => session.facets.instrumentation.replace('foo', 'bar'), /permission|authorization/i);
-  const replacement = await session.facets.instrumentation.replace('foo', 'bar', { authorized: true });
+  await assert.rejects(() => session.facets.instrumentation.replace('foo', 'bar', { authorized: true }), /permission|authorization/i);
+  const replacement = await session.facets.instrumentation.replace('foo', 'bar', { authorizationContext: { grant: 'trusted-runtime-mutation' } });
   assert.equal(replacement.intervention.kind, 'function-replacement');
-  await assert.rejects(() => session.facets.instrumentation.writeMemory(0x7000n, new Uint8Array([1])), /permission|authorization/i);
-  const write = await session.facets.instrumentation.writeMemory(0x7000n, new Uint8Array([1]), { authorized: true, parentInterventionIds: [replacement.intervention.interventionId] });
+  await assert.rejects(() => session.facets.instrumentation.writeMemory(0x7000n, new Uint8Array([1]), { authorized: true }), /permission|authorization/i);
+  const write = await session.facets.instrumentation.writeMemory(0x7000n, new Uint8Array([1]), {
+    authorizationContext: { grant: 'trusted-runtime-mutation' },
+    parentInterventionIds: [replacement.intervention.interventionId],
+  });
   assert.equal(write.intervention.kind, 'memory-write');
   const ancestry = session.facets.instrumentation.interventions.ancestry([write.intervention.interventionId]);
   assert.deepEqual(new Set(ancestry.map((item) => item.interventionId)), new Set([replacement.intervention.interventionId, write.intervention.interventionId]));
