@@ -27,8 +27,10 @@
     const pageOf = new Array(32).fill(null);
     const pageAt = new Int32Array(32);
     pageAt.fill(-1);
-    const functionStarts = opts.functionStarts || [];
-    const startCount = Number(functionStarts.length || 0);
+    const functionStarts = Array.from(opts.functionStarts || [], asBigInt)
+      .filter((start) => start != null)
+      .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    const startCount = functionStarts.length;
     let startIndex = 0;
     const branchEntries = new Set();
     const rangeStart = asBigInt(opts.rangeStart);
@@ -82,8 +84,8 @@
       if (pc == null) return false;
       let boundary = false;
       while (startIndex < startCount) {
-        const start = asBigInt(functionStarts[startIndex]);
-        if (start == null || start < pc) { startIndex++; continue; }
+        const start = functionStarts[startIndex];
+        if (start < pc) { startIndex++; continue; }
         if (start === pc) { boundary = true; startIndex++; }
         break;
       }
