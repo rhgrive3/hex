@@ -19,15 +19,16 @@ gate. Where it disagrees with `PHASE8_CHECKPOINT_CONTRACTS.md`, the contract win
 | P8-1 Transactional pass substrate | **accepted** | see below |
 | P8-2 SCCP + wrapped range/value set | **accepted** | see below |
 | P8-3 GVN/CSE + effect-aware DCE | **accepted** | see below |
-| P8-4 Induction / loop facts | not started | — |
+| P8-4 Induction / loop facts | **accepted** | see below |
 | P8-5 Irreducible / exception structuring | not started | — |
 | P8-6 Aggregate / array / union recovery | not started | — |
 | P8-7 Language / compiler providers | not started | — |
 | P8-I Final integration / cutover | not started | — |
 
-Verifier verdict on this head: **BLOCKING** — correct, and the point. P8-0 and
-P8-1 are accepted; the remaining checkpoints have no evidence and two hard-zero
-counters are not measurable yet. The verifier exists and reports the truth from
+Verifier verdict on this head: **BLOCKING** — correct, and the point. P8-0 to
+P8-4 are accepted; the remaining checkpoints have no evidence, two hard-zero
+counters are not measurable yet, and two mandatory architecture lanes have no
+corpus. The verifier exists and reports the truth from
 the first checkpoint instead of being assembled at the end (EP-011).
 
 Acceptance profile is now **v2**. The bump added `completeResultDivergenceCount`,
@@ -381,6 +382,90 @@ speculative motion.
 
 ---
 
+## P8-4 — induction and loop facts
+
+`js/decompiler/phase8/induction.js` publishes `induction`, a versioned
+`InductionSummary` (`summaryVersion` 1). Per loop it carries the classification,
+latches, nodes, exit edges with their kinds, nesting depth and parent, the guard
+block, the early-exit edges, and per induction variable: kind, init, step,
+signedness, wrap knowledge, guard predicate, bound, trip range, evidence,
+completeness and provenance. Loop-carried values whose step could not be proved
+are published separately with their reason.
+
+Like SCCP, GVN and DCE it produces facts and rewrites nothing, so the corpus
+differential against the pre-Phase-8 baseline is still byte-exact.
+
+### It does not detect loops
+
+The CFG, dominators, back edges and the loop set all arrive from
+`js/controlflow.js`. What this pass adds is a *check* against them: a loop record
+is treated as natural only when the dominator facts say the header dominates
+every node and every latch branches back to it. A region that fails is reported
+`irreducible` with the offending block named, and gets no induction facts — the
+alternative is inventing an initialization point for a region that has two.
+Nesting depth and parent are read off the node sets that arrived, not
+rediscovered from the CFG.
+
+Exit edges are republished with their kinds intact, including edges that are not
+the loop guard. P8-5 consumes them; nothing here may drop one to make a loop look
+counted.
+
+### What a guard may mean
+
+Three shapes are read, and only three: a one-bit logical `not` (inverts the
+sense), `is-zero(a - b)` (equality at any width, because the subtract is modular),
+and a `bin` whose sub is one of the named comparison predicates.
+
+A comparison of extracted condition-flag bits and a `cmp/sub` are refused with
+their reason. Their meaning depends on which flag the branch reads, and that is
+architecture knowledge the generic optimizer must not contain. On this corpus
+that refusal costs every `-O0` trip count, which is the correct trade.
+
+An exact trip count is claimed only with a single back edge, no early exit, a
+recognized predicate, constant init, bound and step, and a proof that the counter
+does not wrap before the guard fails. An early exit downgrades the exact count to
+an upper bound. Everything else reports a range or a reason.
+
+### Results on the frozen corpus
+
+| measure | value |
+|---|---|
+| natural loops | 19 |
+| regions refused as irreducible or unverified | 0 |
+| induction variables recovered | 20 |
+| of those, pointer inductions | 10 |
+| exact trip counts | **0** — see below |
+| worst optimize-stage latency | 25.6 ms against a 120 ms budget |
+| induction pass latency | ≤ 3.3 ms |
+
+Zero exact trip counts is the honest answer here, not a gap. Every corpus loop
+bound is a runtime argument rather than a constant, and the `-O0` guards compare
+condition-flag bits. Both are recorded per variable as the reason, so "no trip
+count could be proved" stays distinguishable from "no trip count was looked for".
+What the artifact does carry on those loops is step, guard predicate, bound value
+and exit edges, which is what P8-5 and P8-6 consume.
+
+### One defect found and fixed, in the measurement rather than the transform
+
+Adding the pass turned `transformDeterminismFailureCount` from 0 to 2. The cause
+was not the pass. `determinismFailures` compared a caller-supplied corpus run made
+at the 5000 ms measurement allowance against its own run at 400 ms, so any
+function heavy enough to truncate at the lower budget was reported as a
+non-deterministic transform. The defect had been latent since the allowance was
+raised at P8-3; the new pass only made two functions cross the line. Both runs now
+share one corpus and one `MEASUREMENT_TIME_BUDGET_MS`, pinned by
+`tests/phase8/verifier/determinism-measurement.test.mjs`.
+
+### Stop condition
+
+The P8-4 contract asks for a versioned reusable summary with
+init/step/guard/bound/signedness/trip-range/exits/evidence/completeness,
+conservative handling of pointer, wrapping, multi-backedge and early-exit loops,
+and simplification candidates with proofs. All are delivered. No loop rewriting,
+no second loop detector, no trip count claimed where the evidence is partial.
+
+---
+
 ## Next allowed action
 
-P8-4 — induction and loop facts, consuming the P8-2 ranges.
+P8-5 — irreducible and exception-aware structuring, consuming the P8-4 loop facts.

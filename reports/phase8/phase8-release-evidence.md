@@ -1,6 +1,6 @@
 # Phase 8 release evidence — BLOCKING
 
-- product: `586f62733b2a1747ad3514bbfe49f2d77e8304cc` (tree `dd65525cebc199052083a74d8294e81dec219d8b`, branch `phase8/decompiler-quality`, clean: true)
+- product: `d01f3c861efd107247418713a16bb1a568912a01` (tree `2736e9bb28d95a18486d2ef2479f9efd02b3862a`, branch `phase8/decompiler-quality`, clean: true)
 - verifier: phase8.verifier 1.0.0 (source sha256 `524b1e3ce071f4d8`)
 - profile version: 2
 - corpus: phase8-decompiler-quality-corpus v1, digest `37c049e8ed51a7f0d46538a894be3c7b`
@@ -17,7 +17,7 @@
 | unknownSafetyRegressionCount | 0 |
 | architectureBoundaryViolationCount | 0 |
 | staleArtifactAcceptanceCount | 0 |
-| transformDeterminismFailureCount | 2 |
+| transformDeterminismFailureCount | 0 |
 | completeResultDivergenceCount | 0 |
 | lostCfgEdgeCount | not measured |
 | forcedTypeContradictionCount | not measured |
@@ -62,7 +62,6 @@
 | category | first divergence | expected | actual | blocking |
 |---|---|---|---|---|
 | coverage | forcedTypeContradictionCount is not measurable on this head | measured from P8-6 | null (not measured) | true |
-| safety | transformDeterminismFailureCount exceeded its hard-zero limit | 0 | 2 | true |
 | coverage | lostCfgEdgeCount is not measurable on this head | measured from P8-5 | null (not measured) | true |
 | architecture | mandatory architecture lane has no Phase 8 evidence: riscv64 | corpus evidence | missing | true |
 | architecture | mandatory architecture lane has no Phase 8 evidence: x86_64 | corpus evidence | missing | true |

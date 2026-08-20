@@ -3,10 +3,10 @@
   "verifierId": "phase8.verifier",
   "verifierVersion": "1.0.0",
   "verifierSourceSha256": "524b1e3ce071f4d8efba4be5447f217acec4447f0c33b2eeb7e2d8ed88b186d4",
-  "generatedAt": "2026-08-20T00:40:35.459Z",
+  "generatedAt": "2026-08-20T00:45:13.375Z",
   "product": {
-    "commitSha": "586f62733b2a1747ad3514bbfe49f2d77e8304cc",
-    "treeSha": "dd65525cebc199052083a74d8294e81dec219d8b",
+    "commitSha": "d01f3c861efd107247418713a16bb1a568912a01",
+    "treeSha": "2736e9bb28d95a18486d2ef2479f9efd02b3862a",
     "workingTreeClean": true,
     "dirtyPaths": [],
     "branch": "phase8/decompiler-quality"
@@ -190,11 +190,8 @@
     "architectureBoundaryViolations": [],
     "staleArtifactAcceptanceCount": 0,
     "staleArtifactAcceptanceDetails": [],
-    "transformDeterminismFailureCount": 2,
-    "transformDeterminismFailures": [
-      "quality.loop_decrement_step.O1",
-      "quality.loop_decrement_step.O2"
-    ],
+    "transformDeterminismFailureCount": 0,
+    "transformDeterminismFailures": [],
     "completeResultDivergenceCount": 0,
     "completeResultDivergences": [],
     "lostCfgEdgeCount": null,
@@ -219,32 +216,24 @@
     "repetitions": 3,
     "aggregate": "median",
     "coldActiveFunctionMs": {
-      "medianMs": 113.42222222222222,
+      "medianMs": 111.64444444444445,
       "samples": [
-        113.533,
-        113.422,
-        108.378
+        111.644,
+        110.378,
+        115.222
       ]
     },
     "publishedLedgers": 35
   },
   "gates": [],
-  "evidenceDigest": "e860013ec705f489faf4e9b465b73f1c",
+  "evidenceDigest": "f16401ab0751127eaa40b2e43d990c0d",
   "failures": [
     {
       "category": "coverage",
       "firstDivergence": "forcedTypeContradictionCount is not measurable on this head",
       "expected": "measured from P8-6",
       "actual": "null (not measured)",
-      "identity": "586f62733b2a1747ad3514bbfe49f2d77e8304cc",
-      "blocking": true
-    },
-    {
-      "category": "safety",
-      "firstDivergence": "transformDeterminismFailureCount exceeded its hard-zero limit",
-      "expected": "0",
-      "actual": "2",
-      "identity": "586f62733b2a1747ad3514bbfe49f2d77e8304cc",
+      "identity": "d01f3c861efd107247418713a16bb1a568912a01",
       "blocking": true
     },
     {
@@ -252,7 +241,7 @@
       "firstDivergence": "lostCfgEdgeCount is not measurable on this head",
       "expected": "measured from P8-5",
       "actual": "null (not measured)",
-      "identity": "586f62733b2a1747ad3514bbfe49f2d77e8304cc",
+      "identity": "d01f3c861efd107247418713a16bb1a568912a01",
       "blocking": true
     },
     {
@@ -260,7 +249,7 @@
       "firstDivergence": "mandatory architecture lane has no Phase 8 evidence: riscv64",
       "expected": "corpus evidence",
       "actual": "missing",
-      "identity": "586f62733b2a1747ad3514bbfe49f2d77e8304cc",
+      "identity": "d01f3c861efd107247418713a16bb1a568912a01",
       "blocking": true
     },
     {
@@ -268,7 +257,7 @@
       "firstDivergence": "mandatory architecture lane has no Phase 8 evidence: x86_64",
       "expected": "corpus evidence",
       "actual": "missing",
-      "identity": "586f62733b2a1747ad3514bbfe49f2d77e8304cc",
+      "identity": "d01f3c861efd107247418713a16bb1a568912a01",
       "blocking": true
     },
     {
@@ -276,7 +265,7 @@
       "firstDivergence": "a required checkpoint has no accepted evidence on this head",
       "expected": "P8-0,P8-1,P8-2,P8-3,P8-4,P8-5,P8-6,P8-7,P8-I",
       "actual": "missing: P8-5,P8-6,P8-7,P8-I",
-      "identity": "586f62733b2a1747ad3514bbfe49f2d77e8304cc",
+      "identity": "d01f3c861efd107247418713a16bb1a568912a01",
       "blocking": true
     }
   ],
