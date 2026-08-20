@@ -2,6 +2,8 @@ import { enhanceSemanticDecompilation as enhanceCore } from './pipeline-core.js'
 import { recoverExactStackReturn } from './passes/stack-return-recovery.js';
 import { expr, sourceOf } from './ast/nodes.js';
 import { printProgram } from './pretty/c.js';
+import { PASS_STAGES as PHASE8_ALL_STAGES, runPhase8Stage } from './phase8/index.js';
+import { applyPhase8Projection } from './phase8/projection.js';
 
 export { buildExpressionForTesting } from './pipeline-core.js';
 
@@ -160,11 +162,49 @@ function reanchorRecoveredReturnSource(result, opts = {}) {
   return result;
 }
 
+function fullPhase8Projection(result, model, opts) {
+  if (opts.phase8Optimize !== true || !result?.semantic || !result?.ir) return result;
+  const stage = runPhase8Stage(
+    { ir:result.ir, types:result.types, opts },
+    {
+      stages:PHASE8_ALL_STAGES,
+      timeBudgetMs:Number(opts.phase8TimeBudgetMs ?? 250),
+      shouldAbort:opts.shouldAbort,
+      budgetClass:'standard',
+    },
+  );
+  const priorPipeline = result.ctx?.decompilerPipeline || {};
+  let updated = {
+    ...result,
+    phase8:stage.ledger,
+    ctx:{
+      ...(result.ctx || {}),
+      decompilerPipeline:{
+        ...priorPipeline,
+        completeness:stage.ledger?.published === true && stage.ledger?.completeness === 'complete'
+          ? priorPipeline.completeness
+          : 'partial',
+        phase8:stage.ledger,
+        phase8Timings:stage.timings,
+        phase8ElapsedMs:stage.elapsedMs,
+      },
+    },
+  };
+  if (stage.ledger?.published !== true || stage.ledger?.completeness !== 'complete' || !stage.analysis) return updated;
+  updated = applyPhase8Projection(updated, stage.analysis, opts);
+  return updated;
+}
+
 export function enhanceSemanticDecompilation(result, model, opts = {}) {
   const restore = normalizeConditionalSelectAliases(result?.ir);
   let core;
-  try { core = constrainSemanticValueWidths(enhanceCore(result, model, opts)); }
-  finally { restore(); }
+  try {
+    // The final Phase 8 path executes the full optimizer set once below, after
+    // the existing representation pipeline reaches its stable AST. The core is
+    // kept on its interactive/canonical lane here so the optimizer is not run
+    // twice and does not borrow the PassManager rewrite deadline.
+    core = constrainSemanticValueWidths(enhanceCore(result, model, { ...opts, phase8Optimize:false }));
+  } finally { restore(); }
   const recovered = recoverExactStackReturn(reanchorExactStackReturn(core), opts);
-  return reanchorRecoveredReturnSource(recovered, opts);
+  return fullPhase8Projection(reanchorRecoveredReturnSource(recovered, opts), model, opts);
 }
