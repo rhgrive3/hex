@@ -19,6 +19,7 @@ import { fileURLToPath } from 'node:url';
 import { stableDigest } from '../../../js/core/identity/index.js';
 import { PASS_STAGES, passRegistryDigest, phase8Passes, runPhase8Stage } from '../../../js/decompiler/phase8/index.js';
 import { edgeAccountingFailures } from '../../../js/decompiler/phase8/structuring.js';
+import { forcedContradictions } from '../../../js/decompiler/phase8/aggregates.js';
 import { createPhase8ArtifactDescriptor } from '../../../js/decompiler/phase8/artifact-identity.js';
 
 import { loadCorpus } from './build-corpus.mjs';
@@ -294,6 +295,53 @@ export function structuringAccounting({ corpus = loadCorpus(), decompilerTimeBud
   };
 }
 
+/**
+ * Aggregate certainty over the whole corpus.
+ *
+ * The P8-6 gate is `forcedTypeContradictionCount = 0`: no candidate reached
+ * certainty over an unresolved conflict, on soft evidence alone, or by a region
+ * with contradictory declarations quietly settling on one shape. It is
+ * recomputed here from the published evidence rather than read off a counter the
+ * pass keeps about itself.
+ */
+export function aggregateCertainty({ corpus = loadCorpus(), decompilerTimeBudgetMs = MEASUREMENT_TIME_BUDGET_MS } = {}) {
+  const forced = [];
+  const withoutFacts = [];
+  let regionCount = 0;
+  let candidateCount = 0;
+  let ambiguousRegionCount = 0;
+  let conflictCount = 0;
+  let confirmedCount = 0;
+  for (const [index, entry] of corpus.functions.entries()) {
+    const outcome = decompileEntry(entry, { index, decompilerTimeBudgetMs });
+    const ir = outcome?.result?.ir ?? null;
+    if (ir == null) { withoutFacts.push(`${entry.id}: no semantic IR`); continue; }
+    const { ledger, analysis } = runPhase8Stage({ ir, types: outcome.result.types ?? null }, { stages: PASS_STAGES, timeBudgetMs: 4000 });
+    if (!ledger.published) { withoutFacts.push(`${entry.id}: ${ledger.stopReason}`); continue; }
+    const facts = analysis.get('aggregates');
+    if (facts == null) { withoutFacts.push(`${entry.id}: no aggregate facts`); continue; }
+    regionCount += facts.regionCount;
+    candidateCount += facts.candidateCount;
+    ambiguousRegionCount += facts.ambiguousRegionCount;
+    conflictCount += facts.conflictCount;
+    confirmedCount += facts.confirmedCount;
+    for (const failure of forcedContradictions(facts)) forced.push({ id: entry.id, ...failure });
+  }
+  return {
+    // Missing coverage counts against the gate: a region nobody looked at is not
+    // a region with no forced contradiction.
+    forcedTypeContradictionCount: forced.length + withoutFacts.length,
+    forcedContradictions: forced.slice(0, 20),
+    functionsWithoutFacts: withoutFacts,
+    regionCount,
+    candidateCount,
+    // Regions that kept more than one shape instead of picking the best score.
+    ambiguousRegionCount,
+    conflictCount,
+    confirmedCount,
+  };
+}
+
 function median(values) {
   const sorted = [...values].sort((left, right) => left - right);
   const middle = Math.floor(sorted.length / 2);
@@ -372,6 +420,7 @@ export function collectPhase8Metrics({ repetitions = 3, includePerformance = tru
   const artifactFailures = artifactIdentityFailures();
   const determinism = determinismFailures({ corpus, first: observations, decompilerTimeBudgetMs: MEASUREMENT_TIME_BUDGET_MS });
   const accounting = structuringAccounting({ corpus });
+  const certainty = aggregateCertainty({ corpus });
   const performance = includePerformance ? performanceMetrics({ repetitions, corpus }) : null;
   const productionDivergences = performance ? completeResultDivergences(performance.runs) : null;
   return {
@@ -403,9 +452,10 @@ export function collectPhase8Metrics({ repetitions = 3, includePerformance = tru
       // function's CFG and diffing it against the published accounting.
       lostCfgEdgeCount: accounting.lostCfgEdgeCount,
       edgeAccounting: accounting,
-      // Not measured until the checkpoint that owns the machinery lands. `null`
-      // is deliberate: a zero here would claim a proof nobody performed.
-      forcedTypeContradictionCount: null,
+      // Measured from P8-6 by recomputing certainty from each published
+      // candidate's own evidence.
+      forcedTypeContradictionCount: certainty.forcedTypeContradictionCount,
+      aggregateCertainty: certainty,
     },
     // `runs` is dropped: it is several megabytes of observations that exist only
     // to compute the divergence counter, and release evidence has to stay

@@ -360,12 +360,14 @@
     {
       "id": "aggregate-array-recovery",
       "title": "Aggregate, array and union recovery",
-      "state": "PARTIAL_EXISTING",
+      "state": "PHASE8_IMPLEMENT",
       "owner": "P8-6",
       "evidence": [
-        "js/decompiler/types/layout.js"
+        "js/decompiler/types/layout.js",
+        "js/decompiler/phase8/aggregates.js",
+        "tests/phase8/aggregates/recovery.test.mjs"
       ],
-      "finding": "Conservative layout recovery exists and produces layouts on the corpus. It has no contradiction model, no struct/array/union ambiguity preservation and no stride evidence, so `forcedTypeContradictionCount` is currently not measurable."
+      "finding": "P8-6 publishes `aggregates`: every shape a memory region supports, each with its own evidence, hard and soft evidence kept apart, and conflicts recorded rather than resolved. `confirmed` requires a hard fact and no conflict, so no amount of repeated access pattern reaches certainty. `forcedTypeContradictionCount` is measured by recomputing certainty from each published candidate's own evidence: 58 regions, 74 candidates, 16 that kept more than one shape, 0 forced. The pre-existing js/decompiler/types/layout.js is untouched and remains the compatibility baseline."
     },
     {
       "id": "language-compiler-providers",

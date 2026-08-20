@@ -38,11 +38,11 @@ test('a counter that is not measured yet is missing evidence, never zero', () =>
   // number. `forcedTypeContradictionCount` is not measurable until P8-6 and must
   // still read as missing evidence rather than as a passing zero.
   assert.equal(typeof report.safety.lostCfgEdgeCount, 'number');
-  assert.equal(report.safety.forcedTypeContradictionCount, null);
+  assert.equal(typeof report.safety.forcedTypeContradictionCount, 'number');
   const coverage = report.failures.filter((failure) => failure.category === 'coverage').map((failure) => failure.firstDivergence);
   assert.ok(!coverage.some((text) => text.includes('lostCfgEdgeCount')),
     'a measured counter must not still be reported as missing evidence');
-  assert.ok(coverage.some((text) => text.includes('forcedTypeContradictionCount')));
+  assert.ok(!coverage.some((text) => text.includes('forcedTypeContradictionCount')));
 
   // The rule itself, pinned independently of which counters happen to be
   // measured today: a null counter is a blocking coverage failure, never a pass.
@@ -52,6 +52,17 @@ test('a counter that is not measured yet is missing evidence, never zero', () =>
   });
   const nulled = withNull.failures.filter((failure) => failure.category === 'coverage').map((failure) => failure.firstDivergence);
   assert.ok(nulled.some((text) => text.includes('lostCfgEdgeCount')));
+});
+
+test('no aggregate candidate was allowed to be certain over a contradiction', () => {
+  const certainty = report.safety.aggregateCertainty;
+  assert.ok(certainty, 'the verifier must carry the certainty it measured');
+  assert.equal(certainty.forcedTypeContradictionCount, 0);
+  assert.deepEqual(certainty.functionsWithoutFacts, []);
+  assert.ok(certainty.regionCount > 0);
+  // Regions that kept more than one shape are the point of the checkpoint, so a
+  // corpus where nothing is ambiguous would mean the model is not being used.
+  assert.ok(certainty.ambiguousRegionCount > 0);
 });
 
 test('the edge accounting covers every corpus function and loses nothing', () => {

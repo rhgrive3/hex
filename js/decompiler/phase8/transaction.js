@@ -225,9 +225,14 @@ export function transactionDigest(outcome) {
  * them. An absent fact stays absent — version 0, unavailable — rather than being
  * approximated, so a pass that needs it refuses to run instead of improvising.
  */
-export function seedAnalysisState(ir) {
+export function seedAnalysisState(ir, upstream = {}) {
   if (!ir || typeof ir !== 'object') return createAnalysisState({});
   const seed = {};
+  // Recovered types arrive from Phase 7 alongside the IR rather than on it.
+  // Seeding them here is the same rule as everything else in this function: the
+  // fact is upstream truth, and a Phase 8 pass that needs it must read it rather
+  // than grow a second type engine.
+  if (upstream.types != null) seed.types = Object.freeze({ recovered: upstream.types });
   if (Array.isArray(ir.blocks) && ir.blocks.length > 0) {
     seed.cfg = Object.freeze({ blocks: ir.blocks, entry: ir.entry ?? null, backEdges: ir.backEdges ?? null });
   }

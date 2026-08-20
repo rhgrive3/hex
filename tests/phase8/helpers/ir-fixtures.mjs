@@ -115,25 +115,37 @@ export class IrFixture {
   load(bits, {
     locKey = null, addressSpace = 'memory', volatility = 'unknown', atomic = 'unknown',
     ordering = 'unknown', faults = [], memDefs = null, barrier = null, addressPrecise = false,
-    addrBase = null, addrIndex = null,
+    addrBase = null, addrIndex = null, scale = 0, disp = null, locKind = null,
   } = {}) {
     const instruction = this.#instruction('load', null, [], {
       memoryAccess: { addressSpace, widthBits: bits, volatility, atomic, ordering, faults },
       addressPrecise,
     });
-    if (locKey != null) instruction.loc = { kind: 'field', key: locKey };
+    if (locKey != null || locKind != null || disp != null) {
+      instruction.loc = { kind: locKind ?? 'field', key: locKey, size: bits / 8, disp: disp == null ? null : BigInt(disp) };
+    }
     if (memDefs != null) instruction.memUse = { memDefs: memDefs.map((id) => ({ inst: { id } })) };
     if (barrier != null) instruction.unknownAliasBarrier = barrier;
     // The address a load computes from, as the real IR carries it: a base value
     // and an optional index, not an ordinary operand.
-    if (addrBase != null || addrIndex != null) instruction.addr = { base: addrBase, index: addrIndex, disp: 0n, scale: 0 };
+    if (addrBase != null || addrIndex != null) {
+      instruction.addr = { base: addrBase, index: addrIndex, disp: disp == null ? 0n : BigInt(disp), scale };
+    }
     return this.#emit(instruction, bits);
   }
 
   /** A store. Observable regardless of whether anything reads it. */
-  store(value, { locKey = null } = {}) {
-    const instruction = this.#instruction('store', null, [value], {});
-    if (locKey != null) instruction.loc = { kind: 'field', key: locKey };
+  store(value, { locKey = null, locKind = null, disp = null, addrBase = null, addrIndex = null, scale = 0, bits = null } = {}) {
+    const width = bits ?? value?.bits ?? 32;
+    const instruction = this.#instruction('store', null, [value], {
+      memoryAccess: { addressSpace: 'memory', widthBits: width, volatility: 'unknown', atomic: 'unknown', ordering: 'unknown', faults: [] },
+    });
+    if (locKey != null || locKind != null || disp != null) {
+      instruction.loc = { kind: locKind ?? 'field', key: locKey, size: width / 8, disp: disp == null ? null : BigInt(disp) };
+    }
+    if (addrBase != null || addrIndex != null) {
+      instruction.addr = { base: addrBase, index: addrIndex, disp: disp == null ? 0n : BigInt(disp), scale };
+    }
     this.current.insts.push(instruction);
     value?.uses.push(instruction);
     return instruction;
