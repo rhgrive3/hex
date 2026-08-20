@@ -232,7 +232,15 @@ export function seedAnalysisState(ir) {
     seed.cfg = Object.freeze({ blocks: ir.blocks, entry: ir.entry ?? null, backEdges: ir.backEdges ?? null });
   }
   if (ir.idom != null || ir.dominators != null) {
-    seed.dominators = Object.freeze({ idom: ir.idom ?? null, dominators: ir.dominators ?? null });
+    // Post-dominance travels with dominance: both are views of the same
+    // canonical control-flow analysis, and a consumer that has one and not the
+    // other ends up deriving the missing half itself.
+    seed.dominators = Object.freeze({
+      idom: ir.idom ?? null,
+      dominators: ir.dominators ?? null,
+      ipdom: ir.ipdom ?? ir.immediatePostDominators ?? null,
+      postDominators: ir.postDominators ?? null,
+    });
   }
   if (ir.loops != null) {
     seed.loops = Object.freeze({ loops: ir.loops, backEdges: ir.backEdges ?? null });

@@ -34,11 +34,36 @@ test('the verifier reports the truth at an early checkpoint, never READY by abse
 });
 
 test('a counter that is not measured yet is missing evidence, never zero', () => {
-  assert.equal(report.safety.lostCfgEdgeCount, null);
+  // P8-5 landed the edge accounting, so `lostCfgEdgeCount` is now a measured
+  // number. `forcedTypeContradictionCount` is not measurable until P8-6 and must
+  // still read as missing evidence rather than as a passing zero.
+  assert.equal(typeof report.safety.lostCfgEdgeCount, 'number');
   assert.equal(report.safety.forcedTypeContradictionCount, null);
   const coverage = report.failures.filter((failure) => failure.category === 'coverage').map((failure) => failure.firstDivergence);
-  assert.ok(coverage.some((text) => text.includes('lostCfgEdgeCount')));
+  assert.ok(!coverage.some((text) => text.includes('lostCfgEdgeCount')),
+    'a measured counter must not still be reported as missing evidence');
   assert.ok(coverage.some((text) => text.includes('forcedTypeContradictionCount')));
+
+  // The rule itself, pinned independently of which counters happen to be
+  // measured today: a null counter is a blocking coverage failure, never a pass.
+  const withNull = verifyPhase8({
+    shadow: true,
+    metrics: { ...metrics, safety: { ...metrics.safety, lostCfgEdgeCount: null } },
+  });
+  const nulled = withNull.failures.filter((failure) => failure.category === 'coverage').map((failure) => failure.firstDivergence);
+  assert.ok(nulled.some((text) => text.includes('lostCfgEdgeCount')));
+});
+
+test('the edge accounting covers every corpus function and loses nothing', () => {
+  const accounting = report.safety.edgeAccounting;
+  assert.ok(accounting, 'the verifier must carry the accounting it measured');
+  assert.equal(accounting.lostCfgEdgeCount, 0);
+  assert.deepEqual(accounting.functionsWithoutIr, []);
+  assert.deepEqual(accounting.functionsWithoutFacts, []);
+  assert.ok(accounting.edgeCount > 0);
+  // Residual jumps are reported and not gated. Their presence or absence must
+  // not appear in the failure list at all.
+  assert.ok(!report.failures.some((failure) => String(failure.firstDivergence).includes('residualGoto')));
 });
 
 test('a mandatory architecture lane with no evidence is blocking', () => {

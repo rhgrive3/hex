@@ -176,9 +176,10 @@
       "owner": null,
       "evidence": [
         "js/decompiler/switch.js",
-        "tests/decompiler-switch.mjs"
+        "tests/decompiler-switch.mjs",
+        "js/decompiler/phase8/structuring.js"
       ],
-      "finding": "Present and regression-tested. P8-5 improves break/continue and default handling on top of it."
+      "finding": "Present and regression-tested. P8-5 improves break/continue and default handling on top of it. P8-5 accounts for switch edges explicitly: a case that converges on the switch join is a case, and one that does not is an explicit jump rather than a case with a wrong target."
     },
     {
       "id": "equivalence-verification",
@@ -347,13 +348,14 @@
     {
       "id": "irreducible-exception-structuring",
       "title": "Irreducible and exception-aware structuring",
-      "state": "PARTIAL_EXISTING",
+      "state": "PHASE8_IMPLEMENT",
       "owner": "P8-5",
       "evidence": [
-        "js/controlflow.js",
-        "js/decompiler/switch.js"
+        "js/decompiler/phase8/structuring.js",
+        "tests/phase8/structuring/edge-accounting.test.mjs",
+        "tools/validation/phase8/metrics.mjs"
       ],
-      "finding": "Region building already refuses side entries, and unwind information is parsed by the loaders. There is no edge-accounting verifier and no explicit goto fallback contract, so `lostCfgEdgeCount` is currently not measurable \u2014 it is reported as null, never as zero."
+      "finding": "P8-5 publishes `structuredRegions`: every CFG edge accounted for as a structured construct, an explicit jump or an explicit unknown, with the region tree that follows. `lostCfgEdgeCount` is now measured by recomputing the edge set from each corpus function CFG and diffing it against the published accounting: 45 functions, 150 edges, 0 lost. An irreducible region is never given a loop construct, and an edge whose kind the pass does not recognise becomes a constraint rather than being folded into an `if`. Node splitting is offered as candidates only, and never for a block carrying an observable effect."
     },
     {
       "id": "aggregate-array-recovery",

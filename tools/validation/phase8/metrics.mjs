@@ -17,11 +17,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { stableDigest } from '../../../js/core/identity/index.js';
-import { passRegistryDigest, phase8Passes } from '../../../js/decompiler/phase8/index.js';
+import { PASS_STAGES, passRegistryDigest, phase8Passes, runPhase8Stage } from '../../../js/decompiler/phase8/index.js';
+import { edgeAccountingFailures } from '../../../js/decompiler/phase8/structuring.js';
 import { createPhase8ArtifactDescriptor } from '../../../js/decompiler/phase8/artifact-identity.js';
 
 import { loadCorpus } from './build-corpus.mjs';
-import { observeCorpus } from './decompile-corpus.mjs';
+import { decompileEntry, observeCorpus } from './decompile-corpus.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const FROZEN_BASELINE = path.join(ROOT, 'tests/phase8/corpus/pre-phase8-observations.json');
@@ -239,6 +240,60 @@ export function determinismFailures({ corpus = loadCorpus(), decompilerTimeBudge
   return failures;
 }
 
+/**
+ * Edge accounting over the whole corpus.
+ *
+ * The P8-5 gate is `lostCfgEdgeCount = 0`: every edge in every corpus function's
+ * CFG is accounted for by a structured construct, an explicit jump or an
+ * explicit unknown. The count is recomputed here from the CFG rather than read
+ * off the pass's own summary, which is the entire point of an edge-accounting
+ * verifier.
+ *
+ * A function with no semantic IR is reported separately and counted as missing
+ * coverage. It is never counted as zero: an edge nobody looked at is not an edge
+ * nobody lost.
+ */
+export function structuringAccounting({ corpus = loadCorpus(), decompilerTimeBudgetMs = MEASUREMENT_TIME_BUDGET_MS } = {}) {
+  const failures = [];
+  const withoutIr = [];
+  const withoutFacts = [];
+  let edgeCount = 0;
+  let residualGotoCount = 0;
+  let constraintEdgeCount = 0;
+  let unknownEdgeCount = 0;
+  let covered = 0;
+  for (const [index, entry] of corpus.functions.entries()) {
+    const outcome = decompileEntry(entry, { index, decompilerTimeBudgetMs });
+    const ir = outcome?.result?.ir ?? null;
+    if (ir == null) { withoutIr.push(entry.id); continue; }
+    const { ledger, analysis } = runPhase8Stage({ ir }, { stages: PASS_STAGES, timeBudgetMs: 4000 });
+    if (!ledger.published) { withoutFacts.push(`${entry.id}: ${ledger.stopReason}`); continue; }
+    const facts = analysis.get('structuredRegions');
+    if (facts == null) { withoutFacts.push(`${entry.id}: no structured-region facts`); continue; }
+    covered += 1;
+    edgeCount += facts.edgeCount;
+    residualGotoCount += facts.residualGotoCount;
+    constraintEdgeCount += facts.constraintEdgeCount;
+    unknownEdgeCount += facts.unknownEdgeCount;
+    for (const failure of edgeAccountingFailures(ir, facts)) {
+      failures.push({ id: entry.id, ...failure });
+    }
+  }
+  return {
+    // Missing coverage is a lost edge as far as this gate is concerned.
+    lostCfgEdgeCount: failures.length + withoutIr.length + withoutFacts.length,
+    accountingFailures: failures.slice(0, 20),
+    functionsCovered: covered,
+    functionsWithoutIr: withoutIr,
+    functionsWithoutFacts: withoutFacts,
+    edgeCount,
+    // Reported for evidence, never gated: a correct jump beats a false loop.
+    residualGotoCount,
+    constraintEdgeCount,
+    unknownEdgeCount,
+  };
+}
+
 function median(values) {
   const sorted = [...values].sort((left, right) => left - right);
   const middle = Math.floor(sorted.length / 2);
@@ -316,6 +371,7 @@ export function collectPhase8Metrics({ repetitions = 3, includePerformance = tru
   const boundary = architectureBoundaryViolations();
   const artifactFailures = artifactIdentityFailures();
   const determinism = determinismFailures({ corpus, first: observations, decompilerTimeBudgetMs: MEASUREMENT_TIME_BUDGET_MS });
+  const accounting = structuringAccounting({ corpus });
   const performance = includePerformance ? performanceMetrics({ repetitions, corpus }) : null;
   const productionDivergences = performance ? completeResultDivergences(performance.runs) : null;
   return {
@@ -343,9 +399,12 @@ export function collectPhase8Metrics({ repetitions = 3, includePerformance = tru
       // Null when performance runs were skipped: not measured, never zero.
       completeResultDivergenceCount: productionDivergences == null ? null : productionDivergences.length,
       completeResultDivergences: productionDivergences ?? [],
+      // Measured from P8-5 by recomputing the edge set from each corpus
+      // function's CFG and diffing it against the published accounting.
+      lostCfgEdgeCount: accounting.lostCfgEdgeCount,
+      edgeAccounting: accounting,
       // Not measured until the checkpoint that owns the machinery lands. `null`
       // is deliberate: a zero here would claim a proof nobody performed.
-      lostCfgEdgeCount: null,
       forcedTypeContradictionCount: null,
     },
     // `runs` is dropped: it is several megabytes of observations that exist only

@@ -34,6 +34,10 @@ export class IrFixture {
       insts: [],
       phis: [],
       isEntry,
+      // A block whose edges were declared explicitly keeps them: a terminator
+      // helper must not quietly relabel an unwind or indirect edge as a plain
+      // branch, which is the very thing the structuring tests are about.
+      declaredEdges: edges != null,
       origin: { instructionIds: [`instruction_block_${index}`] },
     };
     this.blocks.push(block);
@@ -196,13 +200,32 @@ export class IrFixture {
     return this;
   }
 
+  /** A switch terminator: one edge per case, plus an optional default. */
+  switchBranch(selector, cases, defaultTarget = null) {
+    this.current.insts.push({
+      op: 'switch', sub: null, block: this.current.index, row: this.current.insts.length,
+      args: [{ value: selector }], selectorValue: selector,
+      origin: { instructionIds: [`instruction_switch_${nextId}`] },
+    });
+    selector?.uses.push(this.current.insts.at(-1));
+    const targets = defaultTarget == null ? [...cases] : [...cases, defaultTarget];
+    this.current.succ = targets;
+    this.current.successorEdges = targets.map((to, index) => ({
+      to,
+      kind: defaultTarget != null && index === targets.length - 1 ? 'switch-default' : 'switch-case',
+    }));
+    return this;
+  }
+
   branch(target) {
     this.current.insts.push({
       op: 'br', sub: null, block: this.current.index, row: this.current.insts.length, args: [],
       origin: { instructionIds: [`instruction_br_${nextId}`] },
     });
-    this.current.succ = [target];
-    this.current.successorEdges = [{ to: target, kind: 'branch' }];
+    if (!this.current.declaredEdges) {
+      this.current.succ = [target];
+      this.current.successorEdges = [{ to: target, kind: 'branch' }];
+    }
     return this;
   }
 
@@ -246,6 +269,8 @@ export class IrFixture {
       entry: this.blocks[0]?.index ?? null,
       idom: graph.immediateDominators,
       dominators: graph.dominators,
+      ipdom: graph.immediatePostDominators,
+      postDominators: graph.postDominators,
       backEdges: graph.backEdges,
       loops: loops ?? graph.loops,
       origin: { instructionIds: [`instruction_${this.name}`] },
