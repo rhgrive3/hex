@@ -1,3 +1,13 @@
+/* The typed Worker result contract lives with the other protocol shapes; the
+   Worker contracts layer re-exports it so callers here have one import. */
+export {
+  DEV_TERMINAL_REASON,
+  DEV_TERMINAL_REASONS,
+  DEV_WORKER_RESULT_SCHEMA,
+  createDevWorkerResult,
+  devTerminalReasonFrom,
+} from '../protocol/context-packet.js';
+
 export const DEV_WORKER_STATE = Object.freeze({
   AVAILABLE: 'AVAILABLE',
   STARTING: 'STARTING',
