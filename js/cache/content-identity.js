@@ -18,7 +18,7 @@ function abortError() {
   if (typeof DOMException === 'function') return new DOMException('Aborted', 'AbortError');
   const error = new Error('Aborted'); error.name = 'AbortError'; return error;
 }
-function throwIfAborted(signal) { if (signal?.aborted) throw signal.reason || abortError(); }
+function throwIfAborted(signal) { if (signal?.aborted) throw signal.reason ?? abortError(); }
 function asBytes(value) {
   if (value instanceof Uint8Array) return value;
   if (value instanceof ArrayBuffer) return new Uint8Array(value);
