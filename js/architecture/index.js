@@ -30,8 +30,8 @@ export class ArchitectureAdapter {
     this.rowForAddress = definition.rowForAddress || ((region, address) => {
       if (this.fixedInstructionSize == null || !region) return null;
       const rel = BigInt(address) - BigInt(region.vmAddr);
-      if (rel < 0n || rel >= BigInt(region.size)) return null;
       const size = BigInt(this.fixedInstructionSize);
+      if (rel < 0n || rel + size > BigInt(region.size)) return null;
       if (rel % size !== 0n) return null;
       return Number(rel / size);
     });
@@ -39,13 +39,16 @@ export class ArchitectureAdapter {
       if (this.fixedInstructionSize == null || !region) return null;
       const n = Number(row);
       if (!Number.isSafeInteger(n) || n < 0) return null;
-      const address = BigInt(region.vmAddr) + BigInt(n) * BigInt(this.fixedInstructionSize);
-      return address < BigInt(region.vmAddr) + BigInt(region.size) ? address : null;
+      const size = BigInt(this.fixedInstructionSize);
+      const address = BigInt(region.vmAddr) + BigInt(n) * size;
+      return address + size <= BigInt(region.vmAddr) + BigInt(region.size) ? address : null;
     });
     this.validateInstructionPlacement = definition.validateInstructionPlacement || ((region, address, length) => {
       if (this.fixedInstructionSize == null) return unsupportedArchitectureResult('assemble', this.id);
-      const rel = BigInt(address) - BigInt(region?.vmAddr ?? 0n);
-      if (!region || rel < 0n || rel >= BigInt(region.size)) return { ok:false, code:'patch-range', error:'アドレスがコードのセクション範囲外です。' };
+      if (!region) return { ok:false, code:'patch-range', error:'アドレスがコードのセクション範囲外です。' };
+      const rel = BigInt(address) - BigInt(region.vmAddr);
+      const size = BigInt(this.fixedInstructionSize);
+      if (rel < 0n || rel + size > BigInt(region.size)) return { ok:false, code:'patch-range', error:'アドレスがコードのセクション範囲外です。' };
       if (rel % BigInt(this.instructionAlignment) !== 0n || Number(length) !== this.fixedInstructionSize) {
         return { ok:false, code:'instruction-placement', architecture:this.id, error:`${this.id} 命令の位置または長さが不正です。` };
       }
