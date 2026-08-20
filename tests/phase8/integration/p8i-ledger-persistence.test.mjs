@@ -52,4 +52,10 @@ test('P8-I cutover evidence remains durably persisted', () => {
   for (const gate of REQUIRED_GATES) {
     assert.ok(recordedGates.has(gate), `P8-I is missing exact-head gate evidence: ${gate}`);
   }
+
+  assert.equal(
+    fs.existsSync(path.join(ROOT, 'tools/validation/phase8/p8i-cutover-request.json')),
+    false,
+    'the one-shot P8-I cutover request must be removed after accepted evidence is persisted',
+  );
 });
