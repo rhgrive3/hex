@@ -31,7 +31,25 @@ function safeIdent(s, fallback = 'value') {
   return x || fallback;
 }
 function paren(s) { return /^[-+]?\w+(?:->\w+|\.\w+|\[[^\]]+\])*$/.test(s) || /^0x[0-9A-F]+$/.test(s) ? s : `(${s})`; }
-function sameValue(a, b) { return !!a && !!b && a.id === b.id; }
+function isZeroVal(v) {
+  return !!v && (v.const === 0n || v.const === 0 || v.reg === 'xzr' || v.reg === 'wzr' || v.reg === 'zr');
+}
+function unwrapValue(v) {
+  let cur = v;
+  while (cur && cur.def && cur.def.op === OP.MOV && cur.def.args?.length === 1 && cur.def.args[0]?.value) {
+    cur = cur.def.args[0].value;
+  }
+  return cur || v;
+}
+function sameValue(a, b) {
+  if (!a || !b) return false;
+  if (a.id === b.id) return true;
+  if (isZeroVal(a) && isZeroVal(b)) return true;
+  const ua = unwrapValue(a), ub = unwrapValue(b);
+  if (ua && ub && ua.id === ub.id) return true;
+  if (isZeroVal(ua) && isZeroVal(ub)) return true;
+  return false;
+}
 
 function sourceForInst(inst, reason = null) {
   if (!inst) return sourceOf();

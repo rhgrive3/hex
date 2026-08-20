@@ -275,6 +275,84 @@ const LIMITATION_DISPLAY = Object.freeze({
   'validated-rebuild-patch-unsupported': 'Validated format rebuild/patch support is not implemented.',
   'unknown-format': 'The executable format is not recognized by the current capability registry.',
   'managed-frontend-unsupported': 'No managed/VM frontend is currently implemented at this maturity level.',
+  'runtime-debug-provider-phase10-deferred': 'Runtime debugging and live provider integration is deferred pending Phase 10 provider contracts.',
+  'solver-backed-verification-phase9-deferred': 'Solver-backed symbolic verification is deferred pending Phase 9 SolverBackend contracts.',
+  'managed-types-interprocedural-partial': 'Managed type constraint and interprocedural analysis is partial.',
+});
+
+const MANAGED_PROFILES = Object.freeze({
+  wasm: Object.freeze({
+    implementedLevel: 'M3',
+    fullySatisfiedLevel: 'M3',
+    status: PARTIAL,
+    features: freezeFeatures({
+      detectContainer: SUPPORTED,
+      metadata: SUPPORTED,
+      vmEffects: SUPPORTED,
+      cfgSsa: SUPPORTED,
+      typesInterprocedural: PARTIAL,
+      decompiler: PARTIAL,
+      runtimeDebug: UNSUPPORTED,
+    }),
+    limitations: freezeCodes([
+      'runtime-debug-provider-phase10-deferred',
+      'solver-backed-verification-phase9-deferred',
+    ]),
+  }),
+  dex: Object.freeze({
+    implementedLevel: 'M3',
+    fullySatisfiedLevel: 'M3',
+    status: PARTIAL,
+    features: freezeFeatures({
+      detectContainer: SUPPORTED,
+      metadata: SUPPORTED,
+      vmEffects: SUPPORTED,
+      cfgSsa: SUPPORTED,
+      typesInterprocedural: PARTIAL,
+      decompiler: PARTIAL,
+      runtimeDebug: UNSUPPORTED,
+    }),
+    limitations: freezeCodes([
+      'runtime-debug-provider-phase10-deferred',
+      'solver-backed-verification-phase9-deferred',
+    ]),
+  }),
+  cil: Object.freeze({
+    implementedLevel: 'M3',
+    fullySatisfiedLevel: 'M3',
+    status: PARTIAL,
+    features: freezeFeatures({
+      detectContainer: SUPPORTED,
+      metadata: SUPPORTED,
+      vmEffects: SUPPORTED,
+      cfgSsa: SUPPORTED,
+      typesInterprocedural: PARTIAL,
+      decompiler: PARTIAL,
+      runtimeDebug: UNSUPPORTED,
+    }),
+    limitations: freezeCodes([
+      'runtime-debug-provider-phase10-deferred',
+      'solver-backed-verification-phase9-deferred',
+    ]),
+  }),
+  jvm: Object.freeze({
+    implementedLevel: 'M3',
+    fullySatisfiedLevel: 'M3',
+    status: PARTIAL,
+    features: freezeFeatures({
+      detectContainer: SUPPORTED,
+      metadata: SUPPORTED,
+      vmEffects: SUPPORTED,
+      cfgSsa: SUPPORTED,
+      typesInterprocedural: PARTIAL,
+      decompiler: PARTIAL,
+      runtimeDebug: UNSUPPORTED,
+    }),
+    limitations: freezeCodes([
+      'runtime-debug-provider-phase10-deferred',
+      'solver-backed-verification-phase9-deferred',
+    ]),
+  }),
 });
 
 export function normalizeArchitectureCapabilityId(value) {
@@ -349,9 +427,19 @@ export function formatMaturity(format) {
   return materialize('format', id, profile, profile?.limitations || ['unknown-format']);
 }
 
+export function normalizeManagedCapabilityId(value) {
+  const id = String(value || '').trim().toLowerCase();
+  if (id === 'webassembly' || id === 'wat') return 'wasm';
+  if (id === 'dalvik' || id === 'apk') return 'dex';
+  if (id === 'clr' || id === 'dotnet' || id === '.net') return 'cil';
+  if (id === 'java' || id === 'class' || id === 'jar') return 'jvm';
+  return id || 'unknown';
+}
+
 export function managedMaturity(frontend) {
-  const id = String(frontend || '').trim().toLowerCase() || 'unknown';
-  return materialize('managed', id, null, ['managed-frontend-unsupported']);
+  const id = normalizeManagedCapabilityId(frontend);
+  const profile = MANAGED_PROFILES[id];
+  return materialize('managed', id, profile, profile?.limitations || ['managed-frontend-unsupported']);
 }
 
 export function featureAvailable(maturity, feature) {
@@ -389,6 +477,6 @@ export function currentSupportMatrix(options = {}) {
   return Object.freeze({
     architectures: Object.freeze(['arm64', 'arm64e', 'x86_64', 'riscv64'].map((id) => architectureMaturity(id, { decoderAvailable: decoderFor(id) }))),
     formats: Object.freeze(['macho', 'elf', 'pe'].map((id) => formatMaturity(id))),
-    managed: Object.freeze([]),
+    managed: Object.freeze(['wasm', 'dex', 'cil', 'jvm'].map((id) => managedMaturity(id))),
   });
 }
