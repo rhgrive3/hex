@@ -153,7 +153,7 @@ export class ByteView {
       value |= BigInt(b & 0x7f) << shift;
       shift += 7n;
       if ((b & 0x80) === 0) {
-        if (shift < 64n && (b & 0x40)) value |= (-1n) << shift;
+        if (b & 0x40) value |= (-1n) << shift;
         return { value, next: p + 1, bytes: p + 1 - start };
       }
     }
