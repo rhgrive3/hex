@@ -68,7 +68,7 @@ test('P8-I collapses repeated equal-kind extensions and retains transform proven
 
   assert.match(result.pseudocode, /return \(uint64_t\)a1;/);
   assert.doesNotMatch(result.pseudocode, /\(uint64_t\)\(uint32_t\)/);
-  const transform = result.phase8Projection.transforms.find((entry) => entry.proof.includes('zext_N(zext_M')));
+  const transform = result.phase8Projection.transforms.find((entry) => entry.proof.includes('zext_N(zext_M'));
   assert.ok(transform);
   assert.ok(transform.origin.rows.includes(2));
   assert.ok(transform.origin.rows.includes(3));
