@@ -29,14 +29,14 @@ for (const kind of ['lldb', 'remote']) {
     assert.equal(session.state, 'ready');
     assert.ok(session.facets.debugger);
 
-    adapter.emit({ type: 'module-load', epoch: 1, streamId: 'debugger', sequence: 1, payload: { bindingKey: 'main', runtimeBase: 0x7000n, runtimeSize: 0x1000n, staticBase: 0x1000n, binaryId } });
+    adapter.emit({ type: 'module-load', epoch: 1, streamId: 'debugger', sequence: 1, payload: { bindingKey: 'main', runtimeBase: 0x7000n, runtimeSize: 0x1000n, staticBase: 0x1000n, binaryId, identityState: 'exact', identityEvidenceIds: ['fixture:debugger-module-match'] } });
     adapter.emit({ type: 'paused', epoch: 1, streamId: 'debugger', sequence: 2 });
     assert.equal(session.state, 'paused');
     assert.equal(session.modules.active()[0].generation, 1);
     assert.equal(session.facets.debugger.resolveAddress(0x7010n, { binaryId }).state, 'exact');
 
     adapter.emit({ type: 'module-unload', epoch: 1, streamId: 'debugger', sequence: 3, payload: { bindingKey: 'main' } });
-    adapter.emit({ type: 'module-load', epoch: 1, streamId: 'debugger', sequence: 4, payload: { bindingKey: 'main', runtimeBase: 0x7000n, runtimeSize: 0x1000n, staticBase: 0x2000n, binaryId } });
+    adapter.emit({ type: 'module-load', epoch: 1, streamId: 'debugger', sequence: 4, payload: { bindingKey: 'main', runtimeBase: 0x7000n, runtimeSize: 0x1000n, staticBase: 0x2000n, binaryId, identityState: 'exact', identityEvidenceIds: ['fixture:debugger-module-match-reload'] } });
     assert.equal(session.modules.active()[0].generation, 2);
 
     const batch = session.facets.debugger.events.flush();
@@ -45,6 +45,18 @@ for (const kind of ['lldb', 'remote']) {
     assert.equal(adapter.listeners.size, 0);
   });
 }
+
+test('P10.7 provider-reported binaryId without binding evidence stays unresolved', async () => {
+  const adapter = new EventAdapter();
+  const provider = new DebuggerProvider(adapter, { id: 'unproven-debugger-provider' });
+  const session = await provider.openSession({ binaryId, targetIdentity: 'fixture-unproven', sessionNonce: 'debug:unproven' });
+  adapter.emit({ type: 'module-load', epoch: 1, streamId: 'debugger', sequence: 1, payload: { bindingKey: 'main', runtimeBase: 0x7000n, runtimeSize: 0x1000n, staticBase: 0x1000n, binaryId } });
+  const [module] = session.modules.active();
+  assert.equal(module.identityState, 'unresolved');
+  assert.equal(module.binaryId, null);
+  assert.equal(session.facets.debugger.resolveAddress(0x7010n, { binaryId }).state, 'unresolved');
+  await session.close();
+});
 
 test('P10.7 debugger mutations create provider-scoped intervention records', async () => {
   const adapter = new EventAdapter();
