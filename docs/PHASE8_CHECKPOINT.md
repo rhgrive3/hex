@@ -21,14 +21,14 @@ gate. Where it disagrees with `PHASE8_CHECKPOINT_CONTRACTS.md`, the contract win
 | P8-3 GVN/CSE + effect-aware DCE | **accepted** | see below |
 | P8-4 Induction / loop facts | **accepted** | see below |
 | P8-5 Irreducible / exception structuring | **accepted** | see below |
-| P8-6 Aggregate / array / union recovery | not started | — |
-| P8-7 Language / compiler providers | not started | — |
+| P8-6 Aggregate / array / union recovery | **accepted** | see below |
+| P8-7 Language / compiler providers | **accepted** | see below |
 | P8-I Final integration / cutover | not started | — |
 
 Verifier verdict on this head: **BLOCKING** — correct, and the point. P8-0 to
-P8-5 are accepted; the remaining checkpoints have no evidence, one hard-zero
-counter (`forcedTypeContradictionCount`, owned by P8-6) is not measurable yet,
-and two mandatory architecture lanes have no corpus. The verifier exists and reports the truth from
+P8-7 are accepted and all eight hard-zero counters are now measured and zero.
+What still blocks is real: P8-I has no evidence, and two mandatory architecture
+lanes — `x86_64` and `riscv64` — have no Phase 8 corpus. Both are P8-I scope. The verifier exists and reports the truth from
 the first checkpoint instead of being assembled at the end (EP-011).
 
 Acceptance profile is now **v2**. The bump added `completeResultDivergenceCount`,
@@ -558,6 +558,141 @@ fallback, and an edge-accounting verifier. All are delivered, with
 
 ---
 
+## P8-6 — aggregate candidates that keep the ambiguity
+
+`js/decompiler/phase8/aggregates.js` publishes `aggregates` (`summaryVersion` 1):
+for each memory region, every shape its accesses support — struct, array,
+array-of-struct, struct-of-array, union, embedded object, unknown — each with the
+facts behind it and the conflicts that stop any of them being certain.
+
+The failure this is built against is a decompiler that scores "array" at 0.86,
+"struct" at 0.68, prints one, and throws the other away. The score was never a
+proof. What the accesses established was that both shapes fit.
+
+### Three rules
+
+- **Hard and soft evidence are different things.** A declaration is hard; an
+  access pattern is soft however often it repeats. `confirmed` needs at least one
+  hard fact and no conflict; soft facts reach `supported` and stop there.
+  `certaintyOf` is the only place the ladder is climbed, and a unit test walks it
+  with fifty soft facts to prove frequency never becomes confirmation.
+- **A conflict caps certainty and is never resolved.** Overlapping accesses, two
+  shapes that both fit, a pointer at a negative offset, two recovered names that
+  disagree — each is recorded and each holds the whole region at `candidate`.
+- **No private type or alias truth.** Offsets, widths, strides and location kinds
+  come from the Semantic IR; nominal names from the types Phase 7 recovered;
+  pointer strides from the P8-4 induction artifact rather than a second induction
+  analyser. Grouping accesses reached through reloads of one slot is published as
+  a *hypothesis* with its reason, and an unknown store between the reloads
+  withdraws it.
+
+### The gate is measured, not asserted
+
+`forcedTypeContradictionCount` is recomputed in
+`tools/validation/phase8/metrics.mjs` from each published candidate's own
+evidence. A candidate confirmed over a conflict, confirmed on soft evidence
+alone, or a contradicted region that settled on one shape, each counts. The test
+suite doctors the published facts three ways and asserts the recount catches
+each.
+
+### Results on the frozen corpus
+
+| measure | value |
+|---|---|
+| regions | 58 |
+| candidates | 74 |
+| regions that kept more than one shape | 16 |
+| conflicts recorded | 23 |
+| candidates reaching `confirmed` | 0 |
+| **forced contradictions** | **0** |
+
+Zero confirmed is the honest answer on stripped binaries: there is no debug
+information and no declared layout anywhere in this corpus, so no hard evidence
+exists to confirm anything with. Publishing that as `candidate` and `supported`
+is the whole point.
+
+`js/decompiler/types/layout.js` is untouched and remains the compatibility
+baseline.
+
+---
+
+## P8-7 — providers refine, they do not decide
+
+`js/decompiler/phase8/providers.js` adds a versioned provider interface
+(`PROVIDER_INTERFACE_VERSION` 1) and publishes `providerHints`. A provider reads
+facts the generic passes already proved and offers an interpretation.
+
+### Four guarantees, enforced rather than documented
+
+- **It cannot decode.** The view is built field by field from published facts —
+  ids, offsets, widths, strides, kinds, certainties. No `insts`, no text, no
+  register, no address. A provider that wanted to read an instruction has nothing
+  to read it from, and the test walks the view's keys to prove none of those ever
+  appears.
+- **It cannot promote.** Every hint is capped at the certainty the generic
+  evidence for its region already reached. Four hints on the corpus ask for
+  `confirmed` and are capped, so the ceiling is exercised on real input rather
+  than only in a unit test.
+- **It cannot override a contradiction.** A hint about a region with a hard
+  conflict is rejected — and published as rejected, because deleting it would
+  erase the disagreement.
+- **It cannot matter when switched off.** With `phase8Providers: false` every
+  generic artifact is byte-identical and no hint is published. The verifier
+  measures that across all 45 functions.
+
+A provider that throws is switched off for that function and takes nothing down
+with it; the refinement reports `partial`. Provider id and version travel with
+every hint, so a version change invalidates provider-derived artifacts and
+nothing else. The provider module imports no target, architecture or ABI module,
+and no generic pass imports the provider module — the dependency runs one way and
+a test asserts both directions.
+
+Two providers ship, both built only on generic facts: `counted-loop` names a
+proved counted loop and suggests a `for` rendering; `array-traversal` names a
+loop whose stride matches an array candidate's element width.
+
+### Results on the frozen corpus
+
+| measure | value |
+|---|---|
+| hints | 12 across 6 functions |
+| accepted | 12 |
+| capped by the generic ceiling | 4 |
+| rejected | 0 |
+| **provider authority failures** | **0** |
+| **generic facts changed by provider-on** | **0** |
+
+---
+
+## Hard-zero gates on this head
+
+All eight are measured. None is inferred from absence.
+
+| counter | value | measured by |
+|---|---|---|
+| semanticMismatchCount | 0 | corpus differential against the pre-Phase-8 baseline |
+| provenanceLossCount | 0 | corpus differential |
+| unknownSafetyRegressionCount | 0 | corpus differential |
+| forcedTypeContradictionCount | 0 | P8-6 certainty recount |
+| architectureBoundaryViolationCount | 0 | source scan of the generic passes |
+| transformDeterminismFailureCount | 0 | two corpus runs at one budget |
+| staleArtifactAcceptanceCount | 0 | artifact identity |
+| lostCfgEdgeCount | 0 | P8-5 edge accounting recount |
+
+Worst optimize-stage latency 31.5 ms against a 120 ms budget across eight passes.
+
+---
+
 ## Next allowed action
 
-P8-6 — aggregate, array and union recovery, consuming the P8-4 stride facts.
+P8-I — final integration and cutover. Two things block it and both are real:
+
+1. **`x86_64` and `riscv64` have no Phase 8 corpus.** Live capability truth lists
+   both as `supported` for CFG/Semantic IR, SSA/memory dataflow and decompiler,
+   so both are mandatory lanes. clang 18 in this environment can target both, so
+   the work is to extend `tests/phase8/corpus/` — which also requires a fresh
+   pre-Phase-8 baseline for the new functions, captured from the product at the
+   Phase 8 base commit, not from this head.
+2. **P8-I evidence itself**: reconciliation against live `main`, the generated
+   output transaction, and the final release-evidence artifact bound to an exact
+   candidate SHA.

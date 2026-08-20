@@ -1,12 +1,12 @@
 # Phase 8 release evidence — BLOCKING
 
-- product: `c2616dee932558782559abac70dade07707e52b6` (tree `195e0c58a91ba8a10336e51405a7bc9bc1d63ce2`, branch `phase8/decompiler-quality`, clean: true)
+- product: `b67ddca2db460f2248cb1f2766bc977a160b707c` (tree `e9cc448fe54be7c422f0af2d690a4797f304574a`, branch `phase8/decompiler-quality`, clean: true)
 - verifier: phase8.verifier 1.0.0 (source sha256 `524b1e3ce071f4d8`)
 - profile version: 2
 - corpus: phase8-decompiler-quality-corpus v1, digest `37c049e8ed51a7f0d46538a894be3c7b`
 - toolchain: Ubuntu clang version 18.1.3 (1ubuntu1) (aarch64-unknown-linux-gnu)
 - baseline: `4f287eb84c083c404474e0cfd8d97a17` captured at `bd03d1a860863814dbdcc00559709794d460189d`
-- pass registry: `291c5572aa4e15cc2190d3fca9f17ed1` (phase8.identity@1.0.0, phase8.sccp@1.0.0, phase8.dce@1.0.0, phase8.gvn@1.0.0, phase8.induction@1.0.0, phase8.structuring@1.0.0)
+- pass registry: `68e46693c0b45a082ff09d0625ab59e9` (phase8.identity@1.0.0, phase8.sccp@1.0.0, phase8.dce@1.0.0, phase8.gvn@1.0.0, phase8.induction@1.0.0, phase8.aggregates@1.0.0, phase8.structuring@1.0.0, phase8.providers@1.0.0)
 
 ## Hard-zero safety counters
 
@@ -20,7 +20,7 @@
 | transformDeterminismFailureCount | 0 |
 | completeResultDivergenceCount | 0 |
 | lostCfgEdgeCount | 0 |
-| forcedTypeContradictionCount | not measured |
+| forcedTypeContradictionCount | 0 |
 
 ## Readability / recovery vector
 
@@ -61,7 +61,6 @@
 
 | category | first divergence | expected | actual | blocking |
 |---|---|---|---|---|
-| coverage | forcedTypeContradictionCount is not measurable on this head | measured from P8-6 | null (not measured) | true |
 | architecture | mandatory architecture lane has no Phase 8 evidence: riscv64 | corpus evidence | missing | true |
 | architecture | mandatory architecture lane has no Phase 8 evidence: x86_64 | corpus evidence | missing | true |
 | integration | a required checkpoint has no accepted evidence on this head | P8-0,P8-1,P8-2,P8-3,P8-4,P8-5,P8-6,P8-7,P8-I | missing: P8-6,P8-7,P8-I | true |
