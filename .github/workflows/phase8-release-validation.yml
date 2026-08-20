@@ -73,6 +73,7 @@ jobs:
           set -euo pipefail
           BASE="$RUNNER_TEMP/phase8-base"
           git worktree add --detach "$BASE" "$BASE_SHA"
+          mkdir -p "$BASE/tests/phase8/corpus"
           overlay=(
             tools/validation/phase8/build-corpus.mjs
             tools/validation/phase8/decompile-corpus.mjs
