@@ -1,0 +1,259 @@
+/* Parity safety net for the Dev tool surface.
+   A public tool is only usable if four separate representations agree: the tool
+   name the Supervisor is offered, the prompt contract that tells it how to call
+   that tool, the client method the host dispatches through, and the parent RPC
+   method the runtime answers. Each lives in its own file today, so any one of
+   them can drift silently. This test fails when they stop agreeing.
+   H0 is the safety net only; the canonical registry is CARD H1. */
+import assert from 'node:assert/strict';
+import { MessageChannel } from 'node:worker_threads';
+import { DEV_WORKER_TOOL, DEV_WORKER_TOOLS, createDevWorkerToolSurface } from '../../js/ai/dev/workers/tool-surface.js';
+import { DEV_ADMIN_TOOL, DEV_ADMIN_TOOLS, createDevAdminToolSurface } from '../../js/ai/dev/admin/tool-surface.js';
+import { buildDevSupervisorPrompt } from '../../js/ai/dev/protocol/dev-supervisor-prompt.js';
+import {
+  DEV_PARENT_RPC_METHODS,
+  createDevWorkerParentRpc,
+  createDevWorkerParentRpcClient,
+} from '../../js/userscript/dev/parent-rpc.js';
+import { DEV_RUNTIME_ACTIVATION_TOOL, DEV_RUNTIME_IDENTITY_TOOL } from '../../js/ai/dev/bootstrap/self-update-gate.js';
+
+const PUBLIC_TOOLS = Object.freeze([
+  ...DEV_WORKER_TOOLS,
+  ...DEV_ADMIN_TOOLS,
+  DEV_RUNTIME_IDENTITY_TOOL,
+  DEV_RUNTIME_ACTIVATION_TOOL,
+]);
+
+/* Arguments a caller cannot omit. This is a test expectation, not production
+   metadata: H0 must not create a second operation table for H1 to replace. */
+const REQUIRED_ARGUMENTS = Object.freeze({
+  [DEV_WORKER_TOOL.SEND]: ['instruction'],
+  [DEV_WORKER_TOOL.FOLLOWUP]: ['text'],
+  [DEV_ADMIN_TOOL.PAGE_SCRIPT_SOURCE]: ['index'],
+  [DEV_ADMIN_TOOL.SKILL_DESCRIBE]: ['skillId'],
+  [DEV_ADMIN_TOOL.SKILL_INSTALL_CANDIDATE]: ['manifest'],
+  [DEV_ADMIN_TOOL.SKILL_VALIDATE_CANDIDATE]: ['skillId'],
+  [DEV_ADMIN_TOOL.SKILL_ACTIVATE]: ['skillId'],
+  [DEV_ADMIN_TOOL.SKILL_ROLLBACK]: ['skillId'],
+  [DEV_ADMIN_TOOL.SKILL_RUN]: ['skillId', 'program'],
+  [DEV_ADMIN_TOOL.POOL_CREATE_CHAT]: ['leaseId'],
+  [DEV_ADMIN_TOOL.POOL_START]: ['leaseId', 'instruction'],
+  [DEV_ADMIN_TOOL.POOL_OBSERVE]: ['leaseId'],
+  [DEV_ADMIN_TOOL.POOL_RESULT]: ['leaseId'],
+  [DEV_ADMIN_TOOL.POOL_FOLLOWUP]: ['leaseId', 'text'],
+  [DEV_ADMIN_TOOL.POOL_NUDGE]: ['leaseId'],
+  [DEV_ADMIN_TOOL.POOL_STOP]: ['leaseId'],
+  [DEV_ADMIN_TOOL.POOL_RELEASE]: ['leaseId'],
+  [DEV_ADMIN_TOOL.GRAPH_START]: ['tasks'],
+  [DEV_ADMIN_TOOL.GRAPH_STATUS]: ['graphId'],
+  [DEV_ADMIN_TOOL.GRAPH_TASK_RESULT]: ['graphId', 'taskId'],
+  [DEV_ADMIN_TOOL.GRAPH_CANCEL]: ['graphId'],
+  [DEV_RUNTIME_ACTIVATION_TOOL]: ['expectedCommit', 'expectedBuildId'],
+});
+
+function promptContracts(availableTools) {
+  const prompt = buildDevSupervisorPrompt({
+    run: {
+      runId: 'devrun-parity', workerId: null, supervisorSessionKey: 'session-parity',
+      goal: 'parity', decisionPolicy: 'normal', analysisScope: 'none', status: 'running',
+    },
+    availableTools,
+    history: [],
+  });
+  const contracts = new Map();
+  for (const line of prompt.split('\n')) {
+    const match = /^- ([a-z0-9_.]+): arguments=(.+)$/.exec(line);
+    if (match) contracts.set(match[1], match[2]);
+  }
+  return { prompt, contracts };
+}
+
+function everyPublicToolIsCallableFromThePrompt() {
+  const { contracts } = promptContracts(PUBLIC_TOOLS);
+  const missing = PUBLIC_TOOLS.filter((tool) => !contracts.has(tool));
+  assert.deepEqual(missing, [], 'every exposed public Dev tool must carry a prompt argument contract');
+
+  for (const [tool, required] of Object.entries(REQUIRED_ARGUMENTS)) {
+    const contract = contracts.get(tool);
+    assert.ok(contract, `${tool} must have a prompt contract`);
+    for (const field of required) {
+      assert.ok(contract.includes(`"${field}"`), `${tool} contract must document its required "${field}" argument`);
+    }
+  }
+}
+
+function thePromptNeverAdvertisesAToolThatDoesNotExist() {
+  const known = new Set(PUBLIC_TOOLS);
+  // Ask for every contract the prompt is capable of rendering, not just the
+  // ones that happen to be installed, so a contract for a deleted tool is caught.
+  const { contracts } = promptContracts([...known, 'worker.pool.wait_result', 'worker.graph.wait', 'not.a.tool']);
+  for (const tool of contracts.keys()) {
+    assert.ok(known.has(tool), `the prompt advertises "${tool}", which is not an exposed public tool`);
+  }
+
+  // And a tool that is not offered this turn must not be described this turn.
+  const narrow = promptContracts([DEV_WORKER_TOOL.DISCOVER]);
+  assert.deepEqual([...narrow.contracts.keys()], [DEV_WORKER_TOOL.DISCOVER], 'only the offered tools are described');
+  assert.equal(
+    narrow.prompt.includes('worker.pool.claim -> worker.pool.create_chat'),
+    false,
+    'Pool delegation must not be described when the Pool is not available',
+  );
+  assert.equal(
+    narrow.prompt.includes('The multi-Worker Pool is not available this turn.'),
+    true,
+    'capability wording follows the actual inventory',
+  );
+
+  // The single-tab constraint is permanent architecture, not capability drift:
+  // it must be stated whatever the inventory is.
+  for (const { prompt } of [narrow, promptContracts([...DEV_ADMIN_TOOLS])]) {
+    assert.match(prompt, /single-tab/i, 'the single-tab Worker constraint is always stated');
+  }
+
+  const pooled = promptContracts([...DEV_ADMIN_TOOLS]);
+  assert.equal(pooled.prompt.includes('The multi-Worker iframe Pool is available.'), true);
+  assert.equal(pooled.prompt.includes('Six Workers is the capacity limit, not a target.'), true);
+  assert.equal(pooled.prompt.includes('"size":6'), false, 'the provision example must not hard-code the capacity as the target');
+  assert.equal(pooled.prompt.includes('the current single slot'), false, 'stale single-slot wording must not survive');
+  assert.equal(pooled.prompt.includes('only one Worker may be active at a time'), false);
+}
+
+async function everyAdminToolReachesADistinctRuntimeOperation() {
+  const surface = createDevAdminToolSurface(adminClientStub());
+  assert.deepEqual([...surface.toolNames].sort(), [...DEV_ADMIN_TOOLS].sort(), 'the Admin surface exposes exactly the declared tools');
+
+  const worker = createDevWorkerToolSurface(workerClientStub());
+  assert.deepEqual([...worker.toolNames].sort(), [...DEV_WORKER_TOOLS].sort(), 'the Worker surface exposes exactly the declared tools');
+
+  // Each declared RPC method must reach its own runtime operation, so a tool
+  // cannot be advertised on a transport that silently drops it.
+  const { port1, port2 } = new MessageChannel();
+  const routed = [];
+  const runtime = new Proxy({}, {
+    get: (_target, name) => (params) => { routed.push({ name: String(name), params }); return { ok: String(name) }; },
+    has: () => true,
+  });
+  const server = createDevWorkerParentRpc({ port: port1, runtime });
+  const client = createDevWorkerParentRpcClient({ port: port2, timeoutMs: 2000 });
+  try {
+    for (const method of DEV_PARENT_RPC_METHODS) {
+      routed.length = 0;
+      const clientMethod = CLIENT_METHOD_FOR[method];
+      assert.ok(clientMethod, `RPC method ${method} has no client method`);
+      assert.equal(typeof client[clientMethod], 'function', `client.${clientMethod}() must exist for ${method}`);
+      const answer = await client[clientMethod]({});
+      assert.equal(routed.length, 1, `${method} must reach exactly one runtime operation`);
+      assert.deepEqual(answer, { ok: routed[0].name }, `${method} must return its runtime operation's answer`);
+    }
+    const runtimeOperations = new Set();
+    for (const method of DEV_PARENT_RPC_METHODS) {
+      routed.length = 0;
+      await client[CLIENT_METHOD_FOR[method]]({});
+      assert.equal(runtimeOperations.has(routed[0].name), false, `${method} shares a runtime operation with another method`);
+      runtimeOperations.add(routed[0].name);
+    }
+
+    await assert.rejects(
+      client.graphStatus({}, { signal: abortedSignal() }),
+      (error) => error?.code === 'cancelled',
+      'cancellation semantics are preserved',
+    );
+  } finally {
+    client.close();
+    server.close();
+    port1.close();
+    port2.close();
+  }
+}
+
+function unknownToolsAreStillRejected() {
+  const admin = createDevAdminToolSurface(adminClientStub());
+  assert.equal(admin.has('worker.graph.wait'), false);
+  assert.throws(() => admin.execute('worker.graph.wait', {}), /Unavailable Dev Admin tool/);
+  assert.throws(() => admin.execute('', {}), /Unavailable Dev Admin tool/);
+
+  const worker = createDevWorkerToolSurface(workerClientStub());
+  assert.equal(worker.has('worker.pool.claim'), false, 'the single-slot surface must not answer for Pool tools');
+  assert.throws(() => worker.execute('worker.pool.claim', {}), /Unavailable Dev Worker tool/);
+
+  // The Standard Agent has no Dev tool surface at all.
+  assert.equal(createDevAdminToolSurface({ enabled: false }), null);
+  assert.equal(createDevAdminToolSurface(null), null);
+  assert.equal(createDevWorkerToolSurface({ enabled: false }), null);
+  assert.equal(createDevWorkerToolSurface({ discover() {} }), null, 'a partial client must not become a usable Dev surface');
+}
+
+const CLIENT_METHOD_FOR = Object.freeze({
+  'dev.worker.discover': 'discover',
+  'dev.worker.claim': 'claim',
+  'dev.worker.create_chat': 'createChat',
+  'dev.worker.send': 'send',
+  'dev.worker.observe': 'observe',
+  'dev.worker.followup': 'followup',
+  'dev.worker.nudge': 'nudge',
+  'dev.worker.stop': 'stop',
+  'dev.worker.result': 'result',
+  'dev.worker.release': 'release',
+  'dev.worker.wait_event': 'waitEvent',
+  'dev.runtime.identity': 'runtimeIdentity',
+  'dev.admin.page_snapshot': 'pageSnapshot',
+  'dev.admin.page_scripts': 'pageScripts',
+  'dev.admin.page_script_source': 'pageScriptSource',
+  'dev.skill.list': 'skillList',
+  'dev.skill.describe': 'skillDescribe',
+  'dev.skill.install_candidate': 'skillInstallCandidate',
+  'dev.skill.validate_candidate': 'skillValidateCandidate',
+  'dev.skill.activate': 'skillActivate',
+  'dev.skill.rollback': 'skillRollback',
+  'dev.skill.run': 'skillRun',
+  'dev.worker_pool.status': 'poolStatus',
+  'dev.worker_pool.provision': 'poolProvision',
+  'dev.worker_pool.claim': 'poolClaim',
+  'dev.worker_pool.create_chat': 'poolCreateChat',
+  'dev.worker_pool.start': 'poolStart',
+  'dev.worker_pool.observe': 'poolObserve',
+  'dev.worker_pool.result': 'poolResult',
+  'dev.worker_pool.followup': 'poolFollowup',
+  'dev.worker_pool.nudge': 'poolNudge',
+  'dev.worker_pool.stop': 'poolStop',
+  'dev.worker_pool.release': 'poolRelease',
+  'dev.task_graph.start': 'graphStart',
+  'dev.task_graph.status': 'graphStatus',
+  'dev.task_graph.task_result': 'graphTaskResult',
+  'dev.task_graph.cancel': 'graphCancel',
+});
+
+function adminClientStub() {
+  const client = { enabled: true };
+  for (const name of [
+    'runtimeIdentity', 'pageSnapshot', 'pageScripts', 'pageScriptSource',
+    'skillList', 'skillDescribe', 'skillInstallCandidate', 'skillValidateCandidate',
+    'skillActivate', 'skillRollback', 'skillRun',
+    'poolStatus', 'poolProvision', 'poolClaim', 'poolCreateChat', 'poolStart',
+    'poolObserve', 'poolResult', 'poolFollowup', 'poolNudge', 'poolStop', 'poolRelease',
+    'graphStart', 'graphStatus', 'graphTaskResult', 'graphCancel',
+  ]) client[name] = async () => ({ called: name });
+  return client;
+}
+
+function workerClientStub() {
+  const client = { enabled: true };
+  for (const name of [
+    'discover', 'claim', 'createChat', 'send', 'observe', 'followup',
+    'nudge', 'stop', 'result', 'release', 'waitEvent',
+  ]) client[name] = async () => ({ called: name });
+  return client;
+}
+
+function abortedSignal() {
+  const controller = new AbortController();
+  controller.abort('parity-cancelled');
+  return controller.signal;
+}
+
+everyPublicToolIsCallableFromThePrompt();
+thePromptNeverAdvertisesAToolThatDoesNotExist();
+await everyAdminToolReachesADistinctRuntimeOperation();
+unknownToolsAreStillRejected();
+console.log('dev tool contract parity: ok');
