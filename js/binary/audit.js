@@ -52,7 +52,9 @@ export function auditBinary(image) {
     }
   }
 
-  if (image.entrypoint != null) {
+  const unprovenZeroEntrypoint = image.entrypoint === 0n
+    && image.metadata?.entrypointZeroEvidence === 'zero-sentinel-unproven';
+  if (image.entrypoint != null && !unprovenZeroEntrypoint) {
     const sec = image.sectionAt(image.entrypoint) || image.segmentAt(image.entrypoint);
     if (!sec || !sec.perms.execute) issues.push(issue('warning', 'entrypoint-not-executable', `entrypoint ${hex(image.entrypoint)} is not in executable mapped memory`));
   }
