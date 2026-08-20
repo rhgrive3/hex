@@ -216,10 +216,22 @@ export function safetyCounters(observations, baseline) {
  * metric collection costs two corpus runs rather than three. What is being
  * proved is that two independent runs agree, and a caller's run is an
  * independent run.
+ *
+ * Both runs must share a time budget. They did not: the default here was 400 ms
+ * while every caller's own run used the 5000 ms measurement allowance, so the
+ * comparison was a fast run against a slow one and any function heavy enough to
+ * truncate at 400 ms would be reported as non-deterministic. That is a
+ * measurement defect, not a transform defect — the same defect P8-3 removed from
+ * the baseline capture — and it stayed latent only until the corpus got slightly
+ * more expensive. `MEASUREMENT_TIME_BUDGET_MS` is now the single allowance both
+ * runs use.
  */
-export function determinismFailures({ decompilerTimeBudgetMs = 400, first: firstRun = null } = {}) {
-  const first = firstRun ?? observeCorpus({ decompilerTimeBudgetMs });
-  const second = observeCorpus({ decompilerTimeBudgetMs });
+export const MEASUREMENT_TIME_BUDGET_MS = 5000;
+
+export function determinismFailures({ corpus = loadCorpus(), decompilerTimeBudgetMs = MEASUREMENT_TIME_BUDGET_MS, first: firstRun = null } = {}) {
+  const first = firstRun ?? observeCorpus({ corpus, decompilerTimeBudgetMs });
+  // Same corpus, same budget. Anything else compares two different questions.
+  const second = observeCorpus({ corpus, decompilerTimeBudgetMs });
   const failures = [];
   for (let index = 0; index < first.length; index += 1) {
     if (stableDigest(first[index]) !== stableDigest(second[index])) failures.push(first[index].id);
@@ -298,12 +310,12 @@ export function completeResultDivergences(runs) {
 export function collectPhase8Metrics({ repetitions = 3, includePerformance = true } = {}) {
   const corpus = loadCorpus();
   const baseline = loadFrozenBaseline();
-  const observations = observeCorpus({ corpus });
+  const observations = observeCorpus({ corpus, decompilerTimeBudgetMs: MEASUREMENT_TIME_BUDGET_MS });
   const quality = qualityVector(observations);
   const baselineQuality = qualityVector(baseline.observations);
   const boundary = architectureBoundaryViolations();
   const artifactFailures = artifactIdentityFailures();
-  const determinism = determinismFailures({ first: observations });
+  const determinism = determinismFailures({ corpus, first: observations, decompilerTimeBudgetMs: MEASUREMENT_TIME_BUDGET_MS });
   const performance = includePerformance ? performanceMetrics({ repetitions, corpus }) : null;
   const productionDivergences = performance ? completeResultDivergences(performance.runs) : null;
   return {
