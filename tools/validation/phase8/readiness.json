@@ -1,0 +1,414 @@
+{
+  "schemaVersion": 1,
+  "phase": 8,
+  "auditedAt": "2026-08-19",
+  "auditedCommit": "bd03d1a860863814dbdcc00559709794d460189d",
+  "note": "P8-0 readiness matrix, audited against live source on the Phase 8 base commit. Every Master Architecture \u00a718.2 mature middle-end capability has exactly one state. UNKNOWN is not an allowed state: an unresolved item is an explicit audit task or UPSTREAM_BLOCKED with an owner (PHASE8_FAST_PATH \u00a73).",
+  "states": [
+    "PROVEN_EXISTING",
+    "PARTIAL_EXISTING",
+    "PHASE8_IMPLEMENT",
+    "UPSTREAM_BLOCKED",
+    "INTEGRATION_ONLY",
+    "NOT_REQUIRED_FOR_P8_EXIT"
+  ],
+  "capabilities": [
+    {
+      "id": "semantic-ir",
+      "title": "Semantic IR v2",
+      "state": "PROVEN_EXISTING",
+      "owner": null,
+      "evidence": [
+        "js/semantics/ir/function.js",
+        "js/semantics/ir/nodes.js"
+      ],
+      "finding": "Canonical constructors exist and are the production default. Phase 8 consumes them; it must not add a second lifting path."
+    },
+    {
+      "id": "cfg",
+      "title": "Semantic CFG, dominance, reverse post-order",
+      "state": "PROVEN_EXISTING",
+      "owner": null,
+      "evidence": [
+        "js/semantics/cfg/index.js"
+      ],
+      "finding": "createSemanticCfg, analyzeSemanticDominance, reversePostOrder and typed edge kinds are all present. P8-5 structuring consumes these; it must not build a second CFG."
+    },
+    {
+      "id": "ssa",
+      "title": "SSA construction and queries",
+      "state": "PROVEN_EXISTING",
+      "owner": null,
+      "evidence": [
+        "js/semantics/ssa/build.js",
+        "js/semantics/ssa/queries.js"
+      ],
+      "finding": "Phi definitions, per-predecessor incoming values and use/def indices are queryable. Executable-edge-aware SCCP (P8-2) has the inputs it needs."
+    },
+    {
+      "id": "memory-ssa",
+      "title": "MemorySSA",
+      "state": "PROVEN_EXISTING",
+      "owner": null,
+      "evidence": [
+        "js/semantics/memoryssa/build.js",
+        "js/semantics/memoryssa/queries.js"
+      ],
+      "finding": "reachingMemoryDefinition, reachingConcreteStore, memoryVersionAtBlock and explainMemoryPath exist. P8-3 load reuse is gated on these rather than on address heuristics."
+    },
+    {
+      "id": "alias-analysis",
+      "title": "Alias and points-to analysis",
+      "state": "PROVEN_EXISTING",
+      "owner": null,
+      "evidence": [
+        "js/analysis/alias/solver.js",
+        "js/analysis/pointsto/alias.js",
+        "js/analysis/index.js"
+      ],
+      "finding": "Phase 7 published a conservative alias surface through createAnalysisSurface. Unknown locations stay MayAlias; the migration guardrail enforces it."
+    },
+    {
+      "id": "escape-analysis",
+      "title": "Escape analysis",
+      "state": "PROVEN_EXISTING",
+      "owner": null,
+      "evidence": [
+        "js/analysis/summary/escape.js"
+      ],
+      "finding": "Available through the Phase 7 analysis surface."
+    },
+    {
+      "id": "function-summaries-effects",
+      "title": "Function summaries and machine effects",
+      "state": "PROVEN_EXISTING",
+      "owner": null,
+      "evidence": [
+        "js/analysis/summary/interprocedural.js",
+        "js/analysis/summary/contract.js",
+        "js/semantics/effects/index.js"
+      ],
+      "finding": "Interprocedural summaries and the machine-effect model (including intrinsic completeness and fault/control effects) exist. P8-3 effect-aware DCE consumes them; it must not keep a private pure-call whitelist."
+    },
+    {
+      "id": "range-value-facts",
+      "title": "Range and value-set facts",
+      "state": "PARTIAL_EXISTING",
+      "owner": "P8-2",
+      "evidence": [
+        "js/range-domain.js"
+      ],
+      "finding": "A width- and signedness-aware interval domain with merge exists, but there is no wraparound-correct value set, no widening/precision-loss reporting, and no SCCP lattice on top of it. P8-2 extends this domain rather than replacing it."
+    },
+    {
+      "id": "type-constraints",
+      "title": "Type constraints and type graph",
+      "state": "PROVEN_EXISTING",
+      "owner": null,
+      "evidence": [
+        "js/analysis/types/constraints.js",
+        "js/analysis/types/graph.js"
+      ],
+      "finding": "Phase 7 truth. P8-6 consumes it; a contradiction stays a contradiction."
+    },
+    {
+      "id": "debug-runtime-metadata",
+      "title": "Debug and runtime metadata providers",
+      "state": "PROVEN_EXISTING",
+      "owner": null,
+      "evidence": [
+        "js/analysis/debug/dwarf.js",
+        "js/analysis/debug/pdb.js",
+        "js/analysis/debug/provider.js"
+      ],
+      "finding": "DWARF and PDB providers are identity-bound and fail closed on mismatch."
+    },
+    {
+      "id": "provenance",
+      "title": "Origin sets and transform records",
+      "state": "PROVEN_EXISTING",
+      "owner": null,
+      "evidence": [
+        "js/core/identity/origin.js",
+        "js/decompiler/provenance.js",
+        "js/decompiler/ast/nodes.js"
+      ],
+      "finding": "createOriginSet, mergeOriginSets and appendTransform exist, and printed lines already carry address/row source. The Phase 8 pass contract requires targets and proof on every transform record."
+    },
+    {
+      "id": "decompiler-pass-manager",
+      "title": "Decompiler pass execution",
+      "state": "PARTIAL_EXISTING",
+      "owner": "P8-1",
+      "evidence": [
+        "js/decompiler/passes/manager.js"
+      ],
+      "finding": "PassManager runs an ordered list under one global deadline and merges each pass's return value into shared state as it goes. There is no staged publication, no consumes/preserves/invalidates declaration, and stage order is the array order. P8-1 adds the transaction; P8-0 already keeps the Phase 8 stage outside this deadline so a no-op stage cannot change the rewrite fixed point."
+    },
+    {
+      "id": "rewrite-engine",
+      "title": "Expression rewrite engine",
+      "state": "PARTIAL_EXISTING",
+      "owner": "P8-1",
+      "evidence": [
+        "js/decompiler/rewrite/engine.js",
+        "js/decompiler/rewrite/rules.js"
+      ],
+      "finding": "Named phases, preconditions, proof records, deterministic structural keys and multiple budgets already exist and must be reused rather than duplicated. Defect found at P8-0: the fixed point was bounded by an 18 ms wall clock, so the same input reached different fixed points on different runs. P8-0 added an opt-in work-bounded mode so quality can be measured at all; making the production degradation itself deterministic is P8-1's `transformDeterminismFailureCount = 0` work."
+    },
+    {
+      "id": "loop-recovery",
+      "title": "Loop structuring and repair",
+      "state": "PROVEN_EXISTING",
+      "owner": "P8-4",
+      "evidence": [
+        "js/controlflow.js",
+        "js/decompiler/loop-repair.js",
+        "js/decompiler/phase8/induction.js",
+        "tests/phase8/loops/induction.test.mjs"
+      ],
+      "finding": "P8-4 consumes the loop set, dominators and back edges from js/controlflow.js rather than detecting loops again, and verifies each record against the dominator facts before using it: a region whose header does not dominate every node is reported irreducible and given no induction facts. Exit edges are republished with their kinds intact for P8-5."
+    },
+    {
+      "id": "switch-recovery",
+      "title": "Switch recovery",
+      "state": "PROVEN_EXISTING",
+      "owner": null,
+      "evidence": [
+        "js/decompiler/switch.js",
+        "tests/decompiler-switch.mjs",
+        "js/decompiler/phase8/structuring.js"
+      ],
+      "finding": "Present and regression-tested. P8-5 improves break/continue and default handling on top of it. P8-5 accounts for switch edges explicitly: a case that converges on the switch join is a case, and one that does not is an explicit jump rather than a case with a wrong target."
+    },
+    {
+      "id": "equivalence-verification",
+      "title": "Expression equivalence evaluation",
+      "state": "PARTIAL_EXISTING",
+      "owner": "P8-3",
+      "evidence": [
+        "js/decompiler/verify/equivalence.js",
+        "js/decompiler/truth/integer.js"
+      ],
+      "finding": "Concrete evaluation over exact-width integers exists and compiler-truth uses it as a differential oracle. It is evaluation, not proof; solver-backed proof stays Phase 9 scope."
+    },
+    {
+      "id": "artifact-store-versioning",
+      "title": "ArtifactStore identity and invalidation",
+      "state": "PROVEN_EXISTING",
+      "owner": null,
+      "evidence": [
+        "js/core/artifacts/contracts.js",
+        "js/core/artifacts/store.js"
+      ],
+      "finding": "createArtifactDescriptor keys on producer version, upstream artifact ids and explicit key extras. Phase 8 declares its kinds through it in js/decompiler/phase8/artifact-identity.js and proves the key discriminates."
+    },
+    {
+      "id": "cancellation-deadline",
+      "title": "Cancellation and deadline behaviour",
+      "state": "PARTIAL_EXISTING",
+      "owner": "P8-1",
+      "evidence": [
+        "js/decompiler/passes/manager.js",
+        "js/core/budgets/index.js"
+      ],
+      "finding": "Deadline and shouldAbort exist, but a cancelled pass's partial state is still merged into the shared state. The Phase 8 vertical already withholds its whole ledger on cancellation; P8-1 generalises that to staged mutation."
+    },
+    {
+      "id": "compiler-truth",
+      "title": "Compiler-truth differential",
+      "state": "PROVEN_EXISTING",
+      "owner": null,
+      "evidence": [
+        "tests/compiler-truth/run.mjs",
+        "tests/compiler-truth/run-core.mjs"
+      ],
+      "finding": "Real clang output at six optimization levels, checked against concrete semantic truth. Required Phase 8 gate."
+    },
+    {
+      "id": "ghidra-differential",
+      "title": "Ghidra differential",
+      "state": "PROVEN_EXISTING",
+      "owner": null,
+      "evidence": [
+        "tools/decompiler/ghidra-diff.mjs",
+        "tools/decompiler/GhidraDump.java",
+        ".github/workflows/ghidra-differential.yml"
+      ],
+      "finding": "A permanent workflow exists. Ghidra is not installed in the development container, so the differential is a CI-side gate; a local run reports unavailable rather than green."
+    },
+    {
+      "id": "cross-binary-accuracy",
+      "title": "Cross-binary accuracy",
+      "state": "PROVEN_EXISTING",
+      "owner": null,
+      "evidence": [
+        "tests/accuracy.mjs",
+        ".github/workflows/cross-binary-accuracy.yml"
+      ],
+      "finding": "Requires fetched real fixtures; not present in the development container, so it is a CI-side gate for Phase 8."
+    },
+    {
+      "id": "architecture-neutrality",
+      "title": "Architecture-neutrality enforcement",
+      "state": "PROVEN_EXISTING",
+      "owner": null,
+      "evidence": [
+        "tools/validation/semantic-v2/architecture-neutrality.mjs",
+        "tests/migration-guardrails.mjs"
+      ],
+      "finding": "Existing gates cover the semantic core. Phase 8 adds a boundary scan over its own generic sources in tools/validation/phase8/metrics.mjs."
+    },
+    {
+      "id": "copy-propagation",
+      "title": "Copy propagation",
+      "state": "PHASE8_IMPLEMENT",
+      "owner": "P8-3",
+      "evidence": [],
+      "finding": "No copy-propagation pass exists. The expression builder inlines single-use definitions during rendering, which is not the same fact and is not reusable by other passes."
+    },
+    {
+      "id": "sccp",
+      "title": "Sparse conditional constant propagation",
+      "state": "PHASE8_IMPLEMENT",
+      "owner": "P8-2",
+      "evidence": [],
+      "finding": "Absent. No executable-edge lattice, no phi handling restricted to executable predecessors. This is the first Phase 8 algorithm lane."
+    },
+    {
+      "id": "gvn-cse",
+      "title": "Global value numbering and CSE",
+      "state": "PHASE8_IMPLEMENT",
+      "owner": "P8-3",
+      "evidence": [],
+      "finding": "Absent. structuralKey in js/decompiler/ast/nodes.js is a rendering-level key and must not be reused as a semantic value number."
+    },
+    {
+      "id": "load-store-forwarding",
+      "title": "Alias-proven load/store forwarding",
+      "state": "UPSTREAM_BLOCKED",
+      "owner": "upstream: js/targets/architecture/arm64/effects/memory.js",
+      "evidence": [
+        "js/decompiler/phase8/valuenumber.js",
+        "js/targets/architecture/arm64/effects/memory.js",
+        "tests/machine-effects/arm64-memory-addressing.test.mjs"
+      ],
+      "finding": "P8-3 implemented memory-proof-gated load reuse and it is correct, but it cannot fire on any binary today. Reusing a load requires proof that re-executing it is unobservable: ordinary memory, not atomic, no ordering. Address space and ordering are available; atomicity is not. js/targets/architecture/arm64/effects/memory.js sets `atomic = BASE_ONLY.has(mnemonic) ? true : null` for single-transfer accesses, so an ordinary LDR reports `unknown` rather than `false` \u2014 a fact the decoder holds and discards. tests/machine-effects/arm64-memory-addressing.test.mjs asserts that behaviour deliberately ('ordinary LDR atomicity is not inferred'), so this is an accepted contract decision and not an oversight for Phase 8 to overturn on its own. All 59 corpus loads are blocked by exactly this. Phase 8 deliberately does NOT require proof that an access is non-volatile: `volatile` is a source annotation and is not recoverable from a stripped binary, so requiring it would make the capability unreachable forever rather than until one upstream fact lands. Unblocking is a one-line change in the owning lane plus re-verification of machine-effects and Phase 6/7 evidence."
+    },
+    {
+      "id": "effect-aware-dce",
+      "title": "Effect-aware dead code elimination",
+      "state": "PHASE8_IMPLEMENT",
+      "owner": "P8-3",
+      "evidence": [],
+      "finding": "Absent. The effect model needed to separate 'result unused' from 'execution unobservable' already exists in js/semantics/effects and Phase 7 summaries."
+    },
+    {
+      "id": "loop-induction",
+      "title": "Loop induction facts",
+      "state": "PHASE8_IMPLEMENT",
+      "owner": "P8-4",
+      "evidence": [
+        "js/decompiler/phase8/induction.js",
+        "tests/phase8/loops/induction.test.mjs"
+      ],
+      "finding": "P8-4 publishes a versioned InductionSummary (analysis key `induction`, summaryVersion 1) carrying init, step, guard, bound, signedness, wrap, trip range, exit edges, evidence and completeness per loop. On the frozen corpus it recovers 20 induction variables across 19 natural loops, 10 of them pointer inductions; no exact trip count is claimed there because every bound is a runtime argument and the -O0 guards compare condition-flag bits, which the generic pass refuses to decode. recoverInductionVariables in js/decompiler/semantic.js stays as the rendering-time helper it always was; it is not a second source of truth for this artifact."
+    },
+    {
+      "id": "prototype-recovery",
+      "title": "Function prototype recovery",
+      "state": "PROVEN_EXISTING",
+      "owner": null,
+      "evidence": [
+        "js/decompiler/types/prototype.js"
+      ],
+      "finding": "Exists and is exercised by the corpus. Re-audit for residual ABI assumptions is folded into P8-6/P8-7 rather than being a separate lane."
+    },
+    {
+      "id": "variable-coalescing",
+      "title": "High variable recovery and coalescing",
+      "state": "PROVEN_EXISTING",
+      "owner": null,
+      "evidence": [
+        "js/decompiler/types/high-variables.js"
+      ],
+      "finding": "Exists. P8-6 integrates aggregate candidates with it rather than creating a second variable model."
+    },
+    {
+      "id": "tail-call-thunk-normalization",
+      "title": "Tail-call and thunk normalization",
+      "state": "NOT_REQUIRED_FOR_P8_EXIT",
+      "owner": null,
+      "evidence": [
+        "js/worker-fixes-base.js",
+        "js/analysis/discovery/candidates.js"
+      ],
+      "finding": "Thunk and tail-call handling exists at function discovery, which is where it belongs. No Phase 8 exit gate depends on a decompiler-side normalization, so it is explicitly out of scope rather than silently omitted."
+    },
+    {
+      "id": "irreducible-exception-structuring",
+      "title": "Irreducible and exception-aware structuring",
+      "state": "PHASE8_IMPLEMENT",
+      "owner": "P8-5",
+      "evidence": [
+        "js/decompiler/phase8/structuring.js",
+        "tests/phase8/structuring/edge-accounting.test.mjs",
+        "tools/validation/phase8/metrics.mjs"
+      ],
+      "finding": "P8-5 publishes `structuredRegions`: every CFG edge accounted for as a structured construct, an explicit jump or an explicit unknown, with the region tree that follows. `lostCfgEdgeCount` is now measured by recomputing the edge set from each corpus function CFG and diffing it against the published accounting: 45 functions, 150 edges, 0 lost. An irreducible region is never given a loop construct, and an edge whose kind the pass does not recognise becomes a constraint rather than being folded into an `if`. Node splitting is offered as candidates only, and never for a block carrying an observable effect."
+    },
+    {
+      "id": "aggregate-array-recovery",
+      "title": "Aggregate, array and union recovery",
+      "state": "PHASE8_IMPLEMENT",
+      "owner": "P8-6",
+      "evidence": [
+        "js/decompiler/types/layout.js",
+        "js/decompiler/phase8/aggregates.js",
+        "tests/phase8/aggregates/recovery.test.mjs"
+      ],
+      "finding": "P8-6 publishes `aggregates`: every shape a memory region supports, each with its own evidence, hard and soft evidence kept apart, and conflicts recorded rather than resolved. `confirmed` requires a hard fact and no conflict, so no amount of repeated access pattern reaches certainty. `forcedTypeContradictionCount` is measured by recomputing certainty from each published candidate's own evidence: 58 regions, 74 candidates, 16 that kept more than one shape, 0 forced. The pre-existing js/decompiler/types/layout.js is untouched and remains the compatibility baseline."
+    },
+    {
+      "id": "language-compiler-providers",
+      "title": "Language and compiler refinement providers",
+      "state": "PHASE8_IMPLEMENT",
+      "owner": "P8-7",
+      "evidence": [
+        "js/decompiler/phase8/providers.js",
+        "tests/phase8/providers/refinement.test.mjs"
+      ],
+      "finding": "P8-7 ships a versioned provider interface. A provider is handed a view built field by field from published facts, so it has nothing to decode from; every hint is capped at the certainty the generic evidence already reached; a hint about a region with a hard conflict is rejected and published as rejected; and a provider that throws is switched off without taking the generic result down. On the frozen corpus: 12 hints across 6 functions, 4 capped by the ceiling, 0 authority failures, and 0 generic facts changed between provider-off and provider-on."
+    },
+    {
+      "id": "architecture-lane-x86-64",
+      "title": "x86-64 Phase 8 evidence lane",
+      "state": "PARTIAL_EXISTING",
+      "owner": "P8-2",
+      "evidence": [
+        "js/platform/capability-maturity.js"
+      ],
+      "finding": "Live capability truth reports x86-64 CFG/Semantic IR, SSA/MemorySSA and shared decompiler as supported, so it is a mandatory Phase 8 lane. The P8-0 corpus reaches the product through an AArch64 assembler harness and therefore does not yet cover it. P8-2 adds architecture-neutral Semantic IR fixtures for the cross-architecture lanes; until then the verifier reports the lane as missing evidence, not as passing."
+    },
+    {
+      "id": "architecture-lane-riscv64",
+      "title": "RISC-V64 Phase 8 evidence lane",
+      "state": "PARTIAL_EXISTING",
+      "owner": "P8-2",
+      "evidence": [
+        "js/platform/capability-maturity.js"
+      ],
+      "finding": "Same position as x86-64: mandatory by live capability truth, not yet covered by the P8-0 corpus, reported as missing evidence rather than skipped."
+    },
+    {
+      "id": "solver-backed-proof",
+      "title": "Solver-backed transform proof",
+      "state": "NOT_REQUIRED_FOR_P8_EXIT",
+      "owner": null,
+      "evidence": [
+        "docs/PHASE9_SOLVER_BACKED_VERIFICATION_IMPLEMENTATION_GUIDE.ja.md"
+      ],
+      "finding": "Explicitly Phase 9 scope. Phase 8 records transform proofs in a shape a future solver can consume, and does not implement one."
+    }
+  ]
+}

@@ -1,0 +1,102 @@
+{
+  "phase": 8,
+  "version": 1,
+  "singleOwnerLane": "p8",
+  "note": "Phase 8 (Decompiler Quality) is executed by one owner on one living integration branch, so there is a single lane. The manifest exists because ownership is what makes 'may this change touch that file' a checkable property (EP-002, EP-004), and because contract, generated and forbidden paths must be explicit even when nobody can race for them. Phase 8 edits the shared decompiler, which is protected userscript runtime, so the same lane is also the generated-output and release owner (EP-003, EP-008, EP-009).",
+  "lanes": {
+    "p8": [
+      "js/decompiler/**",
+      "tests/phase8/**",
+      "tools/validation/phase8/**",
+      "tools/validation/phase8-ownership.mjs",
+      "tools/validation/phase-ownership/phase8.json",
+      "reports/phase8/**",
+      "docs/PHASE8_CHECKPOINT.md",
+      "docs/PHASE8_HANDOFF.md",
+      ".github/workflows/phase8-ownership.yml",
+      ".github/workflows/phase8-release-validation.yml",
+      "package.json",
+      "userscript/hex.user.template.js",
+      "userscript/release-version.json"
+    ]
+  },
+  "contractPaths": [
+    "tools/validation/phase8/profile.json",
+    "tools/validation/phase8/readiness.json",
+    "tools/validation/phase8/release-evidence.schema.json",
+    "tools/validation/phase-ownership/phase8.json",
+    "tools/validation/phase8-ownership.mjs",
+    "tests/phase8/corpus/**",
+    "tests/phase8/ownership/**",
+    "js/decompiler/phase8/contract.js",
+    ".github/workflows/phase8-ownership.yml"
+  ],
+  "sharedIntegrationPaths": [
+    "js/decompiler/pipeline-core.js",
+    "js/decompiler/pipeline.js",
+    "package.json"
+  ],
+  "generatedPaths": [
+    "reports/phase8/**",
+    "userscript/hex.user.template.js",
+    "userscript/release-version.json"
+  ],
+  "releaseOnlyPaths": [
+    "docs/PHASE8_CHECKPOINT.md",
+    "docs/PHASE8_HANDOFF.md",
+    ".github/workflows/phase8-release-validation.yml"
+  ],
+  "forbiddenPaths": [
+    "js/ir-core.js",
+    "js/ir.js",
+    "js/semantics/**",
+    "js/analysis/**",
+    "js/targets/**",
+    "js/core/identity/**",
+    "js/core/artifacts/**",
+    "js/core/scheduler/**",
+    "js/core/budgets/**",
+    "js/platform/capability-maturity.js",
+    "docs/HEX_MASTER_ARCHITECTURE.md",
+    "docs/ENGINEERING_PROCESS_GUARDRAILS.md",
+    "docs/MIGRATION_GUARDRAILS.md",
+    "tests/migration-guardrails.mjs",
+    "tests/phase4/**",
+    "tests/phase5/**",
+    "tests/phase6/**",
+    "tests/phase7/**",
+    "tools/validation/phase4/**",
+    "tools/validation/phase5/**",
+    "tools/validation/phase6/**",
+    "tools/validation/phase7/**",
+    "tools/validation/phase-ownership/phase4.json",
+    "tools/validation/phase-ownership/phase5.json",
+    "tools/validation/phase-ownership/phase6.json",
+    "tools/validation/phase-ownership/phase7.json"
+  ],
+  "forbiddenRationale": {
+    "js/semantics/**": "Semantic IR, CFG, SSA, MemorySSA and the effect model are Phase 3/6 truth. Phase 8 consumes them through their published seams. A decompiler optimization that needs to edit them is creating a second semantic engine (Master Architecture §2, P8-INV-002).",
+    "js/analysis/**": "Alias, points-to, escape, summary, type-constraint and debug facts are Phase 7 truth. A missing upstream fact is repaired at its owner layer, never faked by a private decompiler heuristic (P8-INV-003).",
+    "js/targets/**": "Architecture and ABI decoding stay behind the target boundary. A generic optimizer change that needs a decoder edit is leaking architecture semantics into the middle end (P8-INV-004).",
+    "js/core/identity/**": "Artifact and instruction identity is a Phase 0/4 contract; Phase 8 keys artifacts with it rather than redefining it.",
+    "js/core/artifacts/**": "ArtifactStore invalidation semantics are a Phase 4 contract. Phase 8 declares new artifact kinds through the existing descriptor contract.",
+    "js/platform/capability-maturity.js": "Phase 8 reads capability truth to build its corpus manifest. Promoting maturity is a separate, evidence-backed change.",
+    "docs/HEX_MASTER_ARCHITECTURE.md": "A phase may not edit the contract it is being judged against.",
+    "tests/phase7/**": "Earlier-phase evidence may be re-run and its helpers imported read-only, but Phase 8 must not rewrite it."
+  },
+  "ownedWithConstraint": {
+    "js/decompiler/pipeline-core.js": "The production decompiler entry point. Phase 8 may register passes and publish Phase 8 results here. It must not begin reading instruction mnemonic/operand text or decoder internals; that boundary stays enforced by MIGRATION_GUARDRAILS and tests/migration-guardrails.mjs.",
+    "package.json": "May add Phase 8 scripts and wire them into existing aggregates. Must not remove or weaken an existing gate.",
+    "userscript/hex.user.template.js": "Generated output. It MUST be produced by the canonical builder (npm run userscript:build) and committed by the integration owner after each accepted checkpoint. It must never be hand-edited or copied from another branch.",
+    "userscript/release-version.json": "Generated release identity. It advances deterministically from protected runtime content and must never be edited by hand.",
+    "docs/PHASE8_CHECKPOINT.md": "The living checkpoint record. It records what was accepted with which evidence; it may not relax an exit gate.",
+    "docs/PHASE8_HANDOFF.md": "The handoff record: current state, open work and the traps that cost time. It may not relax an exit gate."
+  },
+  "generatedWriteOwners": [
+    "p8"
+  ],
+  "releaseWriteOwners": [
+    "p8"
+  ],
+  "generatedOutputNote": "Phase 8 edits js/decompiler/**, which is part of the protected userscript runtime, so the canonical userscript build output changes with every accepted checkpoint. Phase 8 is a single-owner phase and is therefore also the release owner: it MUST complete the generated-output transaction itself (rebuild with the canonical builder, commit, rebuild again and require a zero diff) before accepting the next dependent checkpoint. Changing protected runtime source without rebuilding is a merge-blocking desync (EP-003, EP-008, EP-009). js/userscript/deployment-identity.generated.js is deliberately not owned here: it records the commit a deployment was built from, is written by the Workers build, and differs between a local build and a CI checkout by design."
+}

@@ -1,0 +1,70 @@
+name: Phase 8 ownership
+
+# Ownership is checked from the actual changed-file inventory, never from PR
+# prose (EP-002). The manifest self-check runs too, so a contradictory manifest
+# is caught before it can approve a change it should have blocked (EP-004).
+on:
+  pull_request:
+    paths:
+      - 'js/decompiler/**'
+      - 'tests/phase8/**'
+      - 'tools/validation/phase8/**'
+      - 'tools/validation/phase8-ownership.mjs'
+      - 'tools/validation/phase-ownership/phase8.json'
+      - 'reports/phase8/**'
+      - 'docs/PHASE8_CHECKPOINT.md'
+      - 'docs/PHASE8_HANDOFF.md'
+      - '.github/workflows/phase8-ownership.yml'
+      - '.github/workflows/phase8-release-validation.yml'
+  workflow_dispatch:
+    inputs:
+      base:
+        description: 'Base SHA for the changed-file inventory'
+        required: true
+        type: string
+      head:
+        description: 'Head SHA for the changed-file inventory'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phase8-ownership-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ownership:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.head || github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Validate the Phase 8 ownership manifest itself
+        run: node tools/validation/phase8-ownership.mjs --check-manifest
+      - name: Validate the actual changed-file inventory
+        env:
+          BASE_SHA: ${{ github.event.inputs.base || github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.inputs.head || github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          node tools/validation/phase8-ownership.mjs --base-sha "$BASE_SHA" --head-sha "$HEAD_SHA"
+      - name: Prove the ownership gate still rejects an out-of-lane change
+        # A gate that has silently stopped rejecting anything is worse than no
+        # gate, because it reports success. This proves it still fails.
+        run: |
+          set -euo pipefail
+          if node tools/validation/phase8-ownership.mjs --files-json '["js/semantics/ssa/build.js"]'; then
+            echo "phase8 ownership gate accepted a forbidden path" >&2
+            exit 1
+          fi
+          if node tools/validation/phase8-ownership.mjs --files-json '["js/ui/product.js"]'; then
+            echo "phase8 ownership gate accepted an out-of-lane path" >&2
+            exit 1
+          fi

@@ -1,0 +1,74 @@
+{
+  "profileVersion": 2,
+  "phase": 8,
+  "note": "Frozen Phase 8 acceptance profile. Changing any value here is an acceptance-semantics change: it invalidates historical Phase 8 evidence and requires the baseline to be re-captured under the new profile (ENGINEERING_PROCESS_GUARDRAILS \u00a75, \u00a73.5). v2 (P8-1) added completeResultDivergenceCount, which measures determinism in production mode rather than only in the work-bounded measurement mode.",
+  "hardZero": {
+    "semanticMismatchCount": 0,
+    "provenanceLossCount": 0,
+    "unknownSafetyRegressionCount": 0,
+    "forcedTypeContradictionCount": 0,
+    "architectureBoundaryViolationCount": 0,
+    "transformDeterminismFailureCount": 0,
+    "staleArtifactAcceptanceCount": 0,
+    "lostCfgEdgeCount": 0,
+    "completeResultDivergenceCount": 0
+  },
+  "hardZeroMeasuredFrom": {
+    "forcedTypeContradictionCount": "P8-6",
+    "lostCfgEdgeCount": "P8-5",
+    "completeResultDivergenceCount": "P8-1 (needs at least 2 performance repetitions; a single sample cannot disagree with itself)"
+  },
+  "quality": {
+    "note": "Direction of improvement per vector entry. `lower` and `higher` are floors against the frozen pre-Phase-8 baseline: a candidate may never move a vector entry the wrong way. `requireStrictImprovementAtExit` names the entries that must actually improve before P8-I may be accepted, so a Phase 8 that changed nothing cannot pass its own exit gate.",
+    "direction": {
+      "semanticCoverage": "higher",
+      "rawAssemblyFallbacks": "lower",
+      "temporaries": "lower",
+      "redundantCasts": "lower",
+      "structuredFunctions": "higher",
+      "sourceMappedNodes": "higher"
+    },
+    "requireStrictImprovementAtExit": [
+      "redundantCasts",
+      "temporaries"
+    ],
+    "gotosAreNotACorrectnessGoal": true
+  },
+  "performance": {
+    "procedureVersion": 1,
+    "repetitions": 3,
+    "aggregate": "median",
+    "environmentClass": "ci-linux-x64",
+    "toleratedVariance": 0.35,
+    "budgetsMs": {
+      "coldActiveFunction": 250,
+      "phase8InteractiveStage": 5,
+      "phase8OptimizeStage": 120
+    },
+    "note": "coldActiveFunction is the whole-function decompile. phase8InteractiveStage is the canonical-facts stage that runs on every decompile; phase8OptimizeStage is the demand-driven optimizer stage, which only runs when a caller asks for the middle-end facts."
+  },
+  "requiredCheckpoints": [
+    "P8-0",
+    "P8-1",
+    "P8-2",
+    "P8-3",
+    "P8-4",
+    "P8-5",
+    "P8-6",
+    "P8-7",
+    "P8-I"
+  ],
+  "requiredArchitectureLaneSource": "js/platform/capability-maturity.js",
+  "requiredGates": [
+    "npm run phase8:test",
+    "npm run migration:test",
+    "npm run semantic:test",
+    "npm run decompiler:test",
+    "npm run compiler-truth"
+  ],
+  "externalEvidence": {
+    "note": "These cannot run in a development container and are CI-side gates. Absence is reported as missing evidence, never as a pass.",
+    "ghidraDifferential": ".github/workflows/ghidra-differential.yml",
+    "crossBinaryAccuracy": ".github/workflows/cross-binary-accuracy.yml"
+  }
+}

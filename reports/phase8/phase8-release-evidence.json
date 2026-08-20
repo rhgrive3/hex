@@ -1,0 +1,306 @@
+{
+  "schemaVersion": "phase8-release-evidence/v1",
+  "verifierId": "phase8.verifier",
+  "verifierVersion": "1.0.0",
+  "verifierSourceSha256": "524b1e3ce071f4d8efba4be5447f217acec4447f0c33b2eeb7e2d8ed88b186d4",
+  "generatedAt": "2026-08-20T01:54:49.102Z",
+  "product": {
+    "commitSha": "7799ec6e7f3e6fbd51d821512bb3757de7471da3",
+    "treeSha": "a23bab53602d47309215d18519b78f473b9b3b27",
+    "workingTreeClean": true,
+    "dirtyPaths": [],
+    "branch": "phase8/decompiler-quality"
+  },
+  "profileVersion": 2,
+  "corpus": {
+    "corpusId": "phase8-decompiler-quality-corpus",
+    "corpusVersion": 1,
+    "corpusDigest": "37c049e8ed51a7f0d46538a894be3c7b",
+    "toolchain": {
+      "compiler": "Ubuntu clang version 18.1.3 (1ubuntu1)",
+      "target": "aarch64-unknown-linux-gnu",
+      "optimizationLevels": [
+        "-O0",
+        "-O1",
+        "-O2"
+      ]
+    },
+    "frozenBaselineDigest": "4f287eb84c083c404474e0cfd8d97a17",
+    "baselineCommit": "bd03d1a860863814dbdcc00559709794d460189d"
+  },
+  "registry": {
+    "passRegistryDigest": "68e46693c0b45a082ff09d0625ab59e9",
+    "passes": [
+      {
+        "id": "phase8.identity",
+        "version": "1.0.0",
+        "stage": "canonical-facts"
+      },
+      {
+        "id": "phase8.sccp",
+        "version": "1.0.0",
+        "stage": "scalar-optimization"
+      },
+      {
+        "id": "phase8.dce",
+        "version": "1.0.0",
+        "stage": "memory-optimization"
+      },
+      {
+        "id": "phase8.gvn",
+        "version": "1.0.0",
+        "stage": "memory-optimization"
+      },
+      {
+        "id": "phase8.induction",
+        "version": "1.0.0",
+        "stage": "loop-facts"
+      },
+      {
+        "id": "phase8.aggregates",
+        "version": "1.0.0",
+        "stage": "high-level-recovery"
+      },
+      {
+        "id": "phase8.structuring",
+        "version": "1.0.0",
+        "stage": "structuring"
+      },
+      {
+        "id": "phase8.providers",
+        "version": "1.0.0",
+        "stage": "providers"
+      }
+    ]
+  },
+  "readiness": {
+    "auditedCommit": "bd03d1a860863814dbdcc00559709794d460189d",
+    "capabilityCount": 37,
+    "unresolved": [],
+    "byState": {
+      "PROVEN_EXISTING": [
+        "semantic-ir",
+        "cfg",
+        "ssa",
+        "memory-ssa",
+        "alias-analysis",
+        "escape-analysis",
+        "function-summaries-effects",
+        "type-constraints",
+        "debug-runtime-metadata",
+        "provenance",
+        "loop-recovery",
+        "switch-recovery",
+        "artifact-store-versioning",
+        "compiler-truth",
+        "ghidra-differential",
+        "cross-binary-accuracy",
+        "architecture-neutrality",
+        "prototype-recovery",
+        "variable-coalescing"
+      ],
+      "PARTIAL_EXISTING": [
+        "range-value-facts",
+        "decompiler-pass-manager",
+        "rewrite-engine",
+        "equivalence-verification",
+        "cancellation-deadline",
+        "architecture-lane-x86-64",
+        "architecture-lane-riscv64"
+      ],
+      "PHASE8_IMPLEMENT": [
+        "copy-propagation",
+        "sccp",
+        "gvn-cse",
+        "effect-aware-dce",
+        "loop-induction",
+        "irreducible-exception-structuring",
+        "aggregate-array-recovery",
+        "language-compiler-providers"
+      ],
+      "UPSTREAM_BLOCKED": [
+        "load-store-forwarding"
+      ],
+      "INTEGRATION_ONLY": [],
+      "NOT_REQUIRED_FOR_P8_EXIT": [
+        "tail-call-thunk-normalization",
+        "solver-backed-proof"
+      ]
+    }
+  },
+  "checkpoints": [
+    {
+      "id": "P8-0",
+      "present": true
+    },
+    {
+      "id": "P8-1",
+      "present": true
+    },
+    {
+      "id": "P8-2",
+      "present": true
+    },
+    {
+      "id": "P8-3",
+      "present": true
+    },
+    {
+      "id": "P8-4",
+      "present": true
+    },
+    {
+      "id": "P8-5",
+      "present": true
+    },
+    {
+      "id": "P8-6",
+      "present": true
+    },
+    {
+      "id": "P8-7",
+      "present": true
+    },
+    {
+      "id": "P8-I",
+      "present": false
+    }
+  ],
+  "quality": {
+    "baseline": {
+      "functions": 45,
+      "failures": 0,
+      "semanticCoverage": 0.7777777777777778,
+      "semanticFunctions": 35,
+      "rawAssemblyFallbacks": 12,
+      "gotos": 39,
+      "temporaries": 40,
+      "redundantCasts": 30,
+      "structuredFunctions": 29,
+      "sourceMappedNodes": 322,
+      "aggregateLayouts": 30,
+      "highVariableGroups": 3013
+    },
+    "candidate": {
+      "functions": 45,
+      "failures": 0,
+      "semanticCoverage": 0.7777777777777778,
+      "semanticFunctions": 35,
+      "rawAssemblyFallbacks": 12,
+      "gotos": 39,
+      "temporaries": 40,
+      "redundantCasts": 30,
+      "structuredFunctions": 29,
+      "sourceMappedNodes": 322,
+      "aggregateLayouts": 30,
+      "highVariableGroups": 3013
+    }
+  },
+  "safety": {
+    "semanticMismatchCount": 0,
+    "provenanceLossCount": 0,
+    "unknownSafetyRegressionCount": 0,
+    "details": [],
+    "architectureBoundaryViolationCount": 0,
+    "architectureBoundaryViolations": [],
+    "staleArtifactAcceptanceCount": 0,
+    "staleArtifactAcceptanceDetails": [],
+    "transformDeterminismFailureCount": 0,
+    "transformDeterminismFailures": [],
+    "completeResultDivergenceCount": 0,
+    "completeResultDivergences": [],
+    "lostCfgEdgeCount": 0,
+    "edgeAccounting": {
+      "lostCfgEdgeCount": 0,
+      "accountingFailures": [],
+      "functionsCovered": 45,
+      "functionsWithoutIr": [],
+      "functionsWithoutFacts": [],
+      "edgeCount": 150,
+      "residualGotoCount": 0,
+      "constraintEdgeCount": 0,
+      "unknownEdgeCount": 0
+    },
+    "forcedTypeContradictionCount": 0,
+    "aggregateCertainty": {
+      "forcedTypeContradictionCount": 0,
+      "forcedContradictions": [],
+      "functionsWithoutFacts": [],
+      "regionCount": 58,
+      "candidateCount": 74,
+      "ambiguousRegionCount": 16,
+      "conflictCount": 23,
+      "confirmedCount": 0
+    },
+    "providerEvidence": {
+      "providerAuthorityFailureCount": 0,
+      "providerAuthorityFailures": [],
+      "providerOffDivergenceCount": 0,
+      "providerOffDivergences": [],
+      "functionsWithoutFacts": [],
+      "hintCount": 12,
+      "acceptedCount": 12,
+      "rejectedCount": 0,
+      "cappedCount": 4,
+      "functionsWithHints": 6,
+      "providerFailureCount": 0
+    }
+  },
+  "architectureLanes": [
+    {
+      "lane": "arm64",
+      "hasEvidence": true
+    },
+    {
+      "lane": "riscv64",
+      "hasEvidence": false
+    },
+    {
+      "lane": "x86_64",
+      "hasEvidence": false
+    }
+  ],
+  "performance": {
+    "procedureVersion": 1,
+    "repetitions": 3,
+    "aggregate": "median",
+    "coldActiveFunctionMs": {
+      "medianMs": 124.35555555555555,
+      "samples": [
+        124.356,
+        118.289,
+        125.6
+      ]
+    },
+    "publishedLedgers": 35
+  },
+  "gates": [],
+  "evidenceDigest": "f53a87afb71ff5562d539fa2e66d7a11",
+  "failures": [
+    {
+      "category": "architecture",
+      "firstDivergence": "mandatory architecture lane has no Phase 8 evidence: riscv64",
+      "expected": "corpus evidence",
+      "actual": "missing",
+      "identity": "7799ec6e7f3e6fbd51d821512bb3757de7471da3",
+      "blocking": true
+    },
+    {
+      "category": "architecture",
+      "firstDivergence": "mandatory architecture lane has no Phase 8 evidence: x86_64",
+      "expected": "corpus evidence",
+      "actual": "missing",
+      "identity": "7799ec6e7f3e6fbd51d821512bb3757de7471da3",
+      "blocking": true
+    },
+    {
+      "category": "integration",
+      "firstDivergence": "a required checkpoint has no accepted evidence on this head",
+      "expected": "P8-0,P8-1,P8-2,P8-3,P8-4,P8-5,P8-6,P8-7,P8-I",
+      "actual": "missing: P8-I",
+      "identity": "7799ec6e7f3e6fbd51d821512bb3757de7471da3",
+      "blocking": true
+    }
+  ],
+  "verdict": "BLOCKING"
+}

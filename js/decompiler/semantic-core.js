@@ -838,6 +838,11 @@ export function decompileSemantic(model, opts = {}) {
   const types = inferSemanticTypes(ir, model, { runtime, abiAdapter: opts.abiAdapter ?? null });
   const graph = analyzeGraph(ir.blocks.map((b) => b.succ), ir.entry || 0);
   ir.loops = graph.loops;
+  // Post-dominance is already computed by analyzeGraph. Attaching it here is
+  // what lets P8-5 read the join point of a conditional from the canonical
+  // control-flow analysis instead of deriving a second opinion about it.
+  ir.postDominators = graph.postDominators;
+  ir.ipdom = graph.immediatePostDominators;
   const rmw = readModifyWrite(ir);
   const firstAddr = model.instructions?.[0]?.address ?? opts.addr ?? 0n;
   const ctx = {

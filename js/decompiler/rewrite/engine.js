@@ -26,8 +26,26 @@ export class RewriteEngine {
 
   rewrite(root, context = {}) {
     const started = now();
-    const localDeadline = started + Math.max(0, Number(this.budget.timeBudgetMs));
-    const deadline = Number.isFinite(Number(context.deadline)) ? Math.min(localDeadline, Number(context.deadline)) : localDeadline;
+    /*
+     * The wall-clock valve exists so a pathological function cannot hang an
+     * interactive iPad session, and that is a real release constraint. But it
+     * makes the rewrite fixed point a function of machine speed: the same input
+     * reaches a different fixed point on different runs, and the difference is
+     * visible in the output. Measurement therefore has to be able to turn it
+     * off, or a Phase 8 quality baseline would be measuring the host, not the
+     * decompiler.
+     *
+     * `deterministicTransforms` disables only the time-based cutoff. The work
+     * bounds (iterations, applications, node budget) still apply, so this is not
+     * an unbounded mode — it is the same engine bounded by work instead of by
+     * clock. Production defaults are unchanged.
+     */
+    const deterministic = context.deterministicTransforms === true;
+    const localDeadline = deterministic ? Infinity : started + Math.max(0, Number(this.budget.timeBudgetMs));
+    const contextDeadline = Number(context.deadline);
+    const deadline = !deterministic && Number.isFinite(contextDeadline)
+      ? Math.min(localDeadline, contextDeadline)
+      : localDeadline;
     const proof = [];
     const stats = { iterations: 0, applications: 0, budgetExceeded: false, elapsedMs: 0, byRule: {} };
     const phases = [...new Set(this.rules.map((r) => r.phase))];
