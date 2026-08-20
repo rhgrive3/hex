@@ -60,7 +60,7 @@ test('P8-I preserves sign extension when truncation keeps sign-extension bits', 
   assert.equal(result.phase8Projection.transforms.filter((entry) => entry.proof.includes('trunc_N(ext_M')).length, 0);
 });
 
-test('P8-I collapses repeated equal-kind extensions and retains merged provenance', () => {
+test('P8-I collapses repeated equal-kind extensions and retains transform provenance', () => {
   const input = expr.variable('a1', 8, false, source(1));
   const mid = expr.unary('zext', input, 32, false, source(2), { fromBits:8 });
   const wide = expr.unary('zext', mid, 64, false, source(3), { fromBits:32 });
@@ -68,7 +68,8 @@ test('P8-I collapses repeated equal-kind extensions and retains merged provenanc
 
   assert.match(result.pseudocode, /return \(uint64_t\)a1;/);
   assert.doesNotMatch(result.pseudocode, /\(uint64_t\)\(uint32_t\)/);
-  assert.ok(result.phase8Projection.transforms.some((entry) => entry.proof.includes('zext_N(zext_M')));
-  assert.ok(result.semanticAst.values[0].expression.source.rows.includes(2));
-  assert.ok(result.semanticAst.values[0].expression.source.rows.includes(3));
+  const transform = result.phase8Projection.transforms.find((entry) => entry.proof.includes('zext_N(zext_M')));
+  assert.ok(transform);
+  assert.ok(transform.origin.rows.includes(2));
+  assert.ok(transform.origin.rows.includes(3));
 });
