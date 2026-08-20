@@ -5,7 +5,7 @@
   "description": "Browser-first universal binary analysis platform for Mach-O, ELF and PE, optimized for iPad.",
   "scripts": {
     "lint": "node tests/check.mjs",
-    "check": "npm run lint && npm run invariants:test && npm run migration:test && npm run semantic-v2:test && npm run phase4:test && npm run phase5:test && npm run phase6:test && npm run phase7:test && npm run phase8:test && npm run phase9:test && npm run phase11:test && npm test && npm run benchmark:baseline",
+    "check": "npm run lint && npm run invariants:test && npm run migration:test && npm run semantic-v2:test && npm run phase4:test && npm run phase5:test && npm run phase6:test && npm run phase7:test && npm run phase8:test && npm run phase9:test && npm run phase10:test && npm run phase11:test && npm test && npm run benchmark:baseline",
     "invariants:test": "node tools/validation/invariant-gates.mjs",
     "migration:test": "node tests/migration-guardrails.mjs",
     "core:test": "node tests/core-identity-contracts.mjs && node tests/core-evidence-contracts.mjs",
@@ -29,6 +29,8 @@
     "phase8:checkpoint": "node tools/validation/phase8/checkpoint.mjs",
     "phase9:test": "node tests/phase9/run.mjs",
     "phase9:verify": "node tools/validation/phase9/verify.mjs",
+    "phase10:test": "node tests/phase10/run.mjs",
+    "phase10:verify": "node tools/validation/phase10/verify.mjs",
     "phase11:test": "node tests/phase11/run.mjs",
     "phase11:verify": "node tools/validation/phase11/verify.mjs",
     "phase6:browser": "node tests/phase6/browser/wasm-decode.browser.mjs",
