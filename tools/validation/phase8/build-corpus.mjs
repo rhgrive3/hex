@@ -4,10 +4,11 @@
  * One architecture-neutral source set is compiled for every mandatory Phase 8
  * architecture at the same optimization levels. ARM64 retains the historical
  * frozen assembly representation used by the public decompile facade. The
- * x86-64 and RISC-V64 lanes freeze the actual ELF symbol bytes and are decoded
- * later by Hex's shipped Capstone artifact before entering the shared semantic
- * product path. Architecture labels are therefore never substituted for real
- * machine code.
+ * x86-64 and RISC-V64 lanes freeze relocation-resolved bytes from a final ELF
+ * link and are decoded later by Hex's shipped Capstone artifact before entering
+ * the shared semantic product path. Architecture labels are therefore never
+ * substituted for real machine code, and unresolved ET_REL branch placeholders
+ * are never mistaken for executable branch displacements.
  *
  * Re-running this builder deliberately changes corpus identity and invalidates
  * the baseline. The baseline must then be captured from the Phase 8 base product
@@ -93,6 +94,7 @@ function elf64SectionHeaders(buffer) {
     sections.push({
       index,
       type:buffer.readUInt32LE(at + 4),
+      address:buffer.readBigUInt64LE(at + 16),
       offset:safeNumber(buffer.readBigUInt64LE(at + 24), 'invalid ELF section offset'),
       size:safeNumber(buffer.readBigUInt64LE(at + 32), 'invalid ELF section size'),
       link:buffer.readUInt32LE(at + 40),
@@ -110,9 +112,17 @@ function cString(buffer, offset, limit) {
   return buffer.toString('utf8', offset, end);
 }
 
-/** Extract exact STT_FUNC bytes from a clang ELF relocatable object. */
+/**
+ * Extract exact STT_FUNC bytes from an ELF64 file.
+ *
+ * ET_REL symbols use section-relative st_value. Final linked ELF files use a
+ * virtual st_value, so the section virtual address is subtracted before mapping
+ * to file bytes. Phase 8 machine-byte lanes intentionally use the latter: local
+ * branch/jump relocations must already be applied before bytes become evidence.
+ */
 export function extractElfFunctionBytes(buffer, name) {
   const sections = elf64SectionHeaders(buffer);
+  const elfType = buffer.readUInt16LE(0x10);
   const symbolTable = sections.find((section) => section.type === 2 && section.entrySize >= 24);
   if (!symbolTable) throw new Error('phase8 corpus: ELF symbol table missing');
   const strings = sections[symbolTable.link];
@@ -126,7 +136,9 @@ export function extractElfFunctionBytes(buffer, name) {
     if (symbolName !== name) continue;
     const section = sections[sectionIndex];
     if (!section) throw new Error(`phase8 corpus: function ${name} has invalid section index`);
-    const value = safeNumber(buffer.readBigUInt64LE(at + 8), `function ${name} offset is invalid`);
+    const symbolValue = buffer.readBigUInt64LE(at + 8);
+    const sectionRelativeValue = elfType === 1 ? symbolValue : symbolValue - section.address;
+    const value = safeNumber(sectionRelativeValue, `function ${name} offset is invalid`);
     const size = safeNumber(buffer.readBigUInt64LE(at + 16), `function ${name} size is invalid`);
     if (size <= 0 || value + size > section.size) throw new Error(`phase8 corpus: function ${name} has invalid/empty extent`);
     return Uint8Array.from(buffer.subarray(section.offset + value, section.offset + value + size));
@@ -157,7 +169,25 @@ function compileObject(clang, architecture, optimization, sourcePath, outputPath
     '-o', outputPath, sourcePath,
   ], { encoding:'utf8', maxBuffer:32 * 1024 * 1024 });
   if (compiled.status !== 0) throw new Error(`phase8 corpus: clang object failed for ${architecture.architectureId} ${optimization}: ${String(compiled.stderr).trim().slice(0, 300)}`);
-  return fs.readFileSync(outputPath);
+  return outputPath;
+}
+
+function linkObject(clang, architecture, optimization, objectPath, outputPath) {
+  const linked = spawnSync(clang, [
+    `--target=${architecture.targetTriple}`,
+    ...architecture.compilerArgs,
+    '-fuse-ld=lld',
+    '-nostdlib',
+    '-no-pie',
+    '-Wl,--unresolved-symbols=ignore-all',
+    '-Wl,--build-id=none',
+    '-Wl,-e,0',
+    '-o', outputPath, objectPath,
+  ], { encoding:'utf8', maxBuffer:32 * 1024 * 1024 });
+  if (linked.status !== 0) throw new Error(`phase8 corpus: final link failed for ${architecture.architectureId} ${optimization}: ${String(linked.stderr).trim().slice(0, 300)}`);
+  const result = fs.readFileSync(outputPath);
+  if (result.readUInt16LE(0x10) === 1) throw new Error(`phase8 corpus: ${architecture.architectureId} final link remained relocatable`);
+  return result;
 }
 
 function entryId(sourceName, functionName, optimization, architectureId) {
@@ -198,11 +228,14 @@ export function buildCorpus({ clang = process.env.CLANG || 'clang' } = {}) {
               });
             }
           } else {
-            const objectPath = path.join(temporaryDirectory, `${architecture.architectureId}-${path.basename(sourceName)}-${optimization.slice(1)}.o`);
-            const object = compileObject(clang, architecture, optimization, sourcePath, objectPath);
+            const stem = `${architecture.architectureId}-${path.basename(sourceName)}-${optimization.slice(1)}`;
+            const objectPath = path.join(temporaryDirectory, `${stem}.o`);
+            const linkedPath = path.join(temporaryDirectory, `${stem}.elf`);
+            compileObject(clang, architecture, optimization, sourcePath, objectPath);
+            const linked = linkObject(clang, architecture, optimization, objectPath, linkedPath);
             for (const name of names) {
-              const bytes = extractElfFunctionBytes(object, name);
-              if (!bytes) throw new Error(`phase8 corpus: function not found in object: ${architecture.architectureId} ${name} ${optimization}`);
+              const bytes = extractElfFunctionBytes(linked, name);
+              if (!bytes) throw new Error(`phase8 corpus: function not found in linked ELF: ${architecture.architectureId} ${name} ${optimization}`);
               functions.push({
                 id:entryId(sourceName, name, optimization, architecture.architectureId),
                 source:sourceName,
