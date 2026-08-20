@@ -38,6 +38,13 @@ export class InstrumentationProvider {
 
   descriptor() { return this._descriptor; }
 
+  async #authorizeMutation(kind, details, callOptions = {}) {
+    const direct = kind === 'function-replacement' ? this.options.allowReplacement === true : kind === 'memory-write' ? this.options.allowMemoryWrite === true : false;
+    if (direct) return true;
+    if (typeof this.options.authorizeMutation !== 'function') return false;
+    return (await this.options.authorizeMutation({ kind, providerId: this._descriptor.id, details, context: callOptions.authorizationContext ?? null })) === true;
+  }
+
   async openSession(request = {}, options = {}) {
     if (this.activeSession && !this.activeSession.closed) throw new DebugAdapterError('runtime-session-active', 'instrumentation provider already has an open session');
     let session;
@@ -114,7 +121,8 @@ export class InstrumentationProvider {
         return requiredMethod(this.backend, 'installProbe', 'interception')(spec, callOptions);
       },
       replace: async (target, replacement, callOptions = {}) => {
-        if (this.options.allowReplacement !== true && callOptions.authorized !== true) throw new DebugAdapterError('permission-denied', 'instrumentation replacement requires explicit authorization');
+        const authorized = await this.#authorizeMutation('function-replacement', { target, replacement }, callOptions);
+        if (!authorized) throw new DebugAdapterError('permission-denied', 'instrumentation replacement requires provider-authorized mutation capability');
         const replace = requiredMethod(this.backend, 'replace', 'function replacement');
         const result = await replace(target, replacement, callOptions);
         const intervention = interventions.add({
@@ -130,7 +138,8 @@ export class InstrumentationProvider {
       },
       readMemory: async (...args) => requiredMethod(this.backend, 'readMemory', 'memory read')(...args),
       writeMemory: async (address, bytes, callOptions = {}) => {
-        if (this.options.allowMemoryWrite !== true && callOptions.authorized !== true) throw new DebugAdapterError('permission-denied', 'instrumentation memory write requires explicit authorization');
+        const authorized = await this.#authorizeMutation('memory-write', { address, byteLength: bytes?.byteLength ?? bytes?.length ?? null }, callOptions);
+        if (!authorized) throw new DebugAdapterError('permission-denied', 'instrumentation memory write requires provider-authorized mutation capability');
         const write = requiredMethod(this.backend, 'writeMemory', 'memory write');
         const result = await write(address, bytes, callOptions);
         const intervention = interventions.add({
