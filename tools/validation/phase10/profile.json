@@ -1,0 +1,12 @@
+{
+  "schemaVersion": "phase10-verifier-profile/v1",
+  "phase": 10,
+  "gates": [
+    { "id": "P10.0-core-identity", "description": "Canonical runtime identity contracts remain green." },
+    { "id": "P10.0-core-evidence", "description": "Canonical runtime evidence conversion remains conservative." },
+    { "id": "P10.0-runtime-regression", "description": "Existing runtime/debug/replay regression suite remains green." },
+    { "id": "P10.0-phase-contracts", "description": "Phase 10 provider contracts and negative fixtures remain green." },
+    { "id": "P10.cross-version", "description": "Cross-version runtime/static attachment fails closed unless explicitly resolved." },
+    { "id": "P10.event-completeness", "description": "Dropped/truncated runtime events never regain complete evidence." }
+  ]
+}
