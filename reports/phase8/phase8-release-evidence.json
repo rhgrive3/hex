@@ -3,10 +3,10 @@
   "verifierId": "phase8.verifier",
   "verifierVersion": "1.0.0",
   "verifierSourceSha256": "524b1e3ce071f4d8efba4be5447f217acec4447f0c33b2eeb7e2d8ed88b186d4",
-  "generatedAt": "2026-08-20T00:45:13.375Z",
+  "generatedAt": "2026-08-20T00:46:45.237Z",
   "product": {
-    "commitSha": "d01f3c861efd107247418713a16bb1a568912a01",
-    "treeSha": "2736e9bb28d95a18486d2ef2479f9efd02b3862a",
+    "commitSha": "1e38ca03e949ebdc2f2fb8ad1ce85f025e4f1f7a",
+    "treeSha": "f2e8e3929843ed321a236ef72cedef1195ae9aaf",
     "workingTreeClean": true,
     "dirtyPaths": [],
     "branch": "phase8/decompiler-quality"
@@ -216,11 +216,11 @@
     "repetitions": 3,
     "aggregate": "median",
     "coldActiveFunctionMs": {
-      "medianMs": 111.64444444444445,
+      "medianMs": 108.71111111111111,
       "samples": [
-        111.644,
-        110.378,
-        115.222
+        108.711,
+        110.844,
+        108.222
       ]
     },
     "publishedLedgers": 35
@@ -233,7 +233,7 @@
       "firstDivergence": "forcedTypeContradictionCount is not measurable on this head",
       "expected": "measured from P8-6",
       "actual": "null (not measured)",
-      "identity": "d01f3c861efd107247418713a16bb1a568912a01",
+      "identity": "1e38ca03e949ebdc2f2fb8ad1ce85f025e4f1f7a",
       "blocking": true
     },
     {
@@ -241,7 +241,7 @@
       "firstDivergence": "lostCfgEdgeCount is not measurable on this head",
       "expected": "measured from P8-5",
       "actual": "null (not measured)",
-      "identity": "d01f3c861efd107247418713a16bb1a568912a01",
+      "identity": "1e38ca03e949ebdc2f2fb8ad1ce85f025e4f1f7a",
       "blocking": true
     },
     {
@@ -249,7 +249,7 @@
       "firstDivergence": "mandatory architecture lane has no Phase 8 evidence: riscv64",
       "expected": "corpus evidence",
       "actual": "missing",
-      "identity": "d01f3c861efd107247418713a16bb1a568912a01",
+      "identity": "1e38ca03e949ebdc2f2fb8ad1ce85f025e4f1f7a",
       "blocking": true
     },
     {
@@ -257,7 +257,7 @@
       "firstDivergence": "mandatory architecture lane has no Phase 8 evidence: x86_64",
       "expected": "corpus evidence",
       "actual": "missing",
-      "identity": "d01f3c861efd107247418713a16bb1a568912a01",
+      "identity": "1e38ca03e949ebdc2f2fb8ad1ce85f025e4f1f7a",
       "blocking": true
     },
     {
@@ -265,7 +265,7 @@
       "firstDivergence": "a required checkpoint has no accepted evidence on this head",
       "expected": "P8-0,P8-1,P8-2,P8-3,P8-4,P8-5,P8-6,P8-7,P8-I",
       "actual": "missing: P8-5,P8-6,P8-7,P8-I",
-      "identity": "d01f3c861efd107247418713a16bb1a568912a01",
+      "identity": "1e38ca03e949ebdc2f2fb8ad1ce85f025e4f1f7a",
       "blocking": true
     }
   ],
