@@ -12,14 +12,10 @@ import { loadFrozenBaseline, qualityVector, safetyCounters } from '../../../tool
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 
 /**
- * The P8-0 required proof: the Phase 8 path is semantically, textually and
- * provenance-wise identical to the pre-Phase-8 product on the whole corpus.
- *
- * The baseline is real output captured from the product at the Phase 8 base
- * commit, not a hand-written expectation. Once an optimizer lands this test
- * becomes the regression that says exactly which functions it changed, which is
- * the point: a quality change should be visible as a diff against evidence, not
- * as a claim.
+ * P8-I keeps the P8-0 frozen-baseline proof but no longer requires a no-op:
+ * the final product is expected to improve its high-level projection. The
+ * invariant is now same questions + conservative safety + preserved provenance
+ * + the profile's required strict readability improvements.
  */
 
 const baseline = loadFrozenBaseline();
@@ -34,12 +30,18 @@ test('the frozen baseline was captured against the frozen corpus', () => {
     'the frozen baseline does not match its own digest');
   assert.equal(baseline.observations.length, corpus.functions.length);
   assert.match(baseline.baseCommit, /^[0-9a-f]{40}$/);
+  assert.equal(baseline.baseCommit, 'bd03d1a860863814dbdcc00559709794d460189d');
 });
 
-test('the corpus carries its toolchain identity', () => {
+test('the corpus carries all mandatory architecture and toolchain identities', () => {
   const corpus = loadCorpus();
   assert.match(corpus.toolchain.compiler, /clang/i);
-  assert.equal(corpus.toolchain.target, 'aarch64-unknown-linux-gnu');
+  assert.deepEqual(corpus.toolchain.targets.map((target) => target.architectureId).sort(), ['arm64', 'riscv64', 'x86_64']);
+  assert.deepEqual([...new Set(corpus.functions.map((entry) => entry.architectureId))].sort(), ['arm64', 'riscv64', 'x86_64']);
+  assert.deepEqual(Object.fromEntries(['arm64', 'x86_64', 'riscv64'].map((architectureId) => [architectureId,
+    corpus.functions.filter((entry) => entry.architectureId === architectureId).length])), {
+    arm64:45, x86_64:45, riscv64:45,
+  });
   assert.ok(corpus.toolchain.optimizationLevels.length >= 3);
 });
 
@@ -48,50 +50,56 @@ test('every corpus function decompiles without throwing', () => {
   assert.deepEqual(failed.map((observation) => `${observation.id}: ${observation.failure}`), []);
 });
 
-test('the Phase 8 path is output-identical to the pre-Phase-8 product', () => {
-  // Fields Phase 8 added are excluded by construction rather than by
-  // re-capturing the baseline. The baseline is the pre-Phase-8 product; a
-  // baseline regenerated to make a new field fit would no longer be evidence of
-  // anything (§5). Each exclusion is covered by its own assertion below.
-  for (const observation of observations) {
-    const before = byId.get(observation.id);
-    assert.ok(before, `no baseline for ${observation.id}`);
-    const { phase8, completeness, ...candidate } = observation;
-    assert.deepEqual(candidate, before, `Phase 8 changed the output of ${observation.id} while it is still a no-op`);
-  }
+test('candidate and baseline use exactly the same denominator', () => {
+  assert.deepEqual(observations.map((observation) => observation.id), baseline.observations.map((observation) => observation.id));
+  for (const observation of observations) assert.ok(byId.has(observation.id), `no baseline for ${observation.id}`);
 });
 
-test('every function on the semantic path reports complete, and no other value is silently null', () => {
-  // `completeness` is the field P8-1 added. Under the work-bounded measurement
-  // mode nothing truncates, so anything other than `complete` on a semantic
-  // function means a stage stopped early and the number beside it is not the
-  // canonical one.
+test('every function on the semantic path reports complete, and no legacy value invents completeness', () => {
   for (const observation of observations) {
     if (observation.semantic) assert.equal(observation.completeness, 'complete', `${observation.id} did not run to its fixed point`);
-    // Legacy-path functions have no Phase 8 pipeline completeness to report.
-    // Null is the honest answer there; it is not an implied "complete".
     else assert.equal(observation.completeness, null, `${observation.id} reported pipeline completeness from the legacy path`);
   }
 });
 
-test('provenance is preserved exactly, not merely in count', () => {
+test('provenance coverage is preserved, and mapped product rows do not disappear', () => {
   for (const observation of observations.filter((item) => item.semantic)) {
     const before = byId.get(observation.id);
-    assert.equal(observation.provenanceDigest, before.provenanceDigest,
-      `source addresses/rows changed for ${observation.id}`);
-    assert.equal(observation.sourceMappedNodes, before.sourceMappedNodes);
+    assert.ok(before?.semantic, `semantic candidate ${observation.id} lost its semantic baseline identity`);
+    assert.ok(observation.sourceMappedNodes >= before.sourceMappedNodes,
+      `source mapping coverage regressed for ${observation.id}: ${before.sourceMappedNodes} -> ${observation.sourceMappedNodes}`);
   }
 });
 
-test('the hard-zero safety counters are zero against the frozen baseline', () => {
+test('the hard-zero safety counters remain zero against the frozen pre-Phase-8 product', () => {
   const counters = safetyCounters(observations, baseline);
-  assert.equal(counters.semanticMismatchCount, 0, JSON.stringify(counters.details));
-  assert.equal(counters.provenanceLossCount, 0, JSON.stringify(counters.details));
-  assert.equal(counters.unknownSafetyRegressionCount, 0, JSON.stringify(counters.details));
+  for (const key of [
+    'semanticMismatchCount',
+    'provenanceLossCount',
+    'unknownSafetyRegressionCount',
+    'forcedTypeContradictionCount',
+    'architectureBoundaryViolationCount',
+    'transformDeterminismFailureCount',
+    'staleArtifactAcceptanceCount',
+    'lostCfgEdgeCount',
+    'completeResultDivergenceCount',
+  ]) assert.equal(counters[key], 0, `${key}: ${JSON.stringify(counters.details)}`);
 });
 
-test('the readability vector has not moved', () => {
-  assert.deepEqual(qualityVector(observations), qualityVector(baseline.observations));
+test('the final quality vector makes both required strict improvements without directional regressions', () => {
+  const before = qualityVector(baseline.observations);
+  const after = qualityVector(observations);
+  assert.equal(after.functions, before.functions);
+  assert.equal(after.failures, 0);
+  assert.ok(after.semanticCoverage >= before.semanticCoverage, `semantic coverage ${before.semanticCoverage} -> ${after.semanticCoverage}`);
+  assert.ok(after.rawAssemblyFallbacks <= before.rawAssemblyFallbacks, `raw assembly ${before.rawAssemblyFallbacks} -> ${after.rawAssemblyFallbacks}`);
+  assert.ok(after.gotos <= before.gotos, `gotos ${before.gotos} -> ${after.gotos}`);
+  assert.ok(after.structuredFunctions >= before.structuredFunctions, `structured ${before.structuredFunctions} -> ${after.structuredFunctions}`);
+  assert.ok(after.sourceMappedNodes >= before.sourceMappedNodes, `source map ${before.sourceMappedNodes} -> ${after.sourceMappedNodes}`);
+  assert.ok(after.aggregateLayouts >= before.aggregateLayouts, `aggregates ${before.aggregateLayouts} -> ${after.aggregateLayouts}`);
+  assert.ok(after.highVariableGroups >= before.highVariableGroups, `high variables ${before.highVariableGroups} -> ${after.highVariableGroups}`);
+  assert.ok(after.redundantCasts < before.redundantCasts, `redundant casts must strictly improve: ${before.redundantCasts} -> ${after.redundantCasts}`);
+  assert.ok(after.temporaries < before.temporaries, `temporaries must strictly improve: ${before.temporaries} -> ${after.temporaries}`);
 });
 
 test('the Phase 8 ledger reaches the product result for every semantic function', () => {
@@ -99,21 +107,21 @@ test('the Phase 8 ledger reaches the product result for every semantic function'
     assert.ok(observation.phase8, `no Phase 8 ledger published for ${observation.id}`);
     assert.equal(observation.phase8.published, true);
     assert.equal(observation.phase8.completeness, 'complete', `${observation.id} did not reach a fixed point`);
-    // The corpus is the demand-driven caller, so the optimizer stages ran. SCCP
-    // publishes exactly one facts transform; nothing here rewrites the program,
-    // which is why the output above is still byte-identical to the baseline.
-    assert.equal(observation.phase8.transformCount, 0, `${observation.id} rewrote the program while Phase 8 is still analysis-only`);
     assert.deepEqual(observation.phase8.produced, ['aggregates', 'deadCode', 'induction', 'providerHints', 'ranges', 'structuredRegions', 'valueNumbers'],
       `${observation.id} did not publish the full middle-end fact set`);
     assert.deepEqual(observation.phase8.invalidated, [], 'publishing facts must not invalidate anything');
   }
 });
 
+test('the final projection is proof-carrying and actually cuts over on this corpus', () => {
+  const transformed = observations.filter((observation) => (observation.phase8Projection?.transformCount ?? 0) > 0);
+  assert.ok(transformed.length > 0, 'the P8-I product projection never consumed a proved Phase 8 fact');
+});
+
 test('the interactive path runs only the canonical-facts stage', () => {
-  // Running a whole middle end on every function the user scrolls past is the
-  // eager whole-binary optimization the architecture rules out.
   const entry = loadCorpus().functions.find((item) => item.id === 'quality.loop_nested.O2');
-  const interactive = decompileEntry(entry, { phase8Optimize: false });
+  const interactive = decompileEntry(entry, { phase8Optimize:false });
+  assert.ok(interactive.result, interactive.failure);
   assert.deepEqual([...interactive.result.phase8.enabledStages], ['canonical-facts']);
   assert.equal(interactive.result.phase8.transformCount, 0);
   assert.equal(interactive.result.phase8.published, true);
@@ -127,10 +135,8 @@ test('the ledger publication digest is stable across runs', () => {
   }
 });
 
-test('the frozen corpus is committed rather than rebuilt at test time', () => {
-  // A corpus regenerated per run is a different question set per run. The
-  // builder exists to change it deliberately, not as a test-time dependency on
-  // whichever clang happens to be installed.
+test('the frozen corpus and baseline identity are committed rather than rebuilt at test time', () => {
   assert.ok(fs.existsSync(path.join(ROOT, 'tests/phase8/corpus/functions.json')));
   assert.ok(fs.existsSync(path.join(ROOT, 'tests/phase8/corpus/pre-phase8-observations.json')));
+  assert.ok(fs.existsSync(path.join(ROOT, 'tests/phase8/corpus/pre-phase8-baseline-identity.json')));
 });
