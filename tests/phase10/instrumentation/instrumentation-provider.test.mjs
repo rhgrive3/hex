@@ -64,11 +64,11 @@ test('P10.8 replacement and writes require provider-owned authority and create i
     authorizeMutation: async ({ context }) => context?.grant === 'trusted-runtime-mutation',
   });
   const session = await provider.openSession({ binaryId, targetIdentity: 'process:2', sessionNonce: 'inst:2' });
-  await assert.rejects(() => session.facets.instrumentation.replace('foo', 'bar'), /permission|authorization/i);
-  await assert.rejects(() => session.facets.instrumentation.replace('foo', 'bar', { authorized: true }), /permission|authorization/i);
+  await assert.rejects(() => session.facets.instrumentation.replace('foo', 'bar'), { code: 'permission-denied' });
+  await assert.rejects(() => session.facets.instrumentation.replace('foo', 'bar', { authorized: true }), { code: 'permission-denied' });
   const replacement = await session.facets.instrumentation.replace('foo', 'bar', { authorizationContext: { grant: 'trusted-runtime-mutation' } });
   assert.equal(replacement.intervention.kind, 'function-replacement');
-  await assert.rejects(() => session.facets.instrumentation.writeMemory(0x7000n, new Uint8Array([1]), { authorized: true }), /permission|authorization/i);
+  await assert.rejects(() => session.facets.instrumentation.writeMemory(0x7000n, new Uint8Array([1]), { authorized: true }), { code: 'permission-denied' });
   const write = await session.facets.instrumentation.writeMemory(0x7000n, new Uint8Array([1]), {
     authorizationContext: { grant: 'trusted-runtime-mutation' },
     parentInterventionIds: [replacement.intervention.interventionId],
