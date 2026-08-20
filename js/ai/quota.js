@@ -70,6 +70,7 @@ export function acquireQuotaState(raw, request = {}, config = AI_QUOTA) {
   const state = normalizeQuotaState(raw, now, config);
   const sessionId = normalizeQuotaSessionId(request.sessionId);
   const session = normalizedSession(state.sessions[sessionId], state.windowStarted);
+  const windowMs = finiteInt(config.windowMs, AI_QUOTA.windowMs) || AI_QUOTA.windowMs;
   const ipRateLimit = finiteInt(config.ipRateLimit, AI_QUOTA.ipRateLimit);
   const sessionRateLimit = finiteInt(config.sessionRateLimit, AI_QUOTA.sessionRateLimit);
   const ipConcurrencyLimit = finiteInt(config.ipConcurrencyLimit, AI_QUOTA.ipConcurrencyLimit);
@@ -79,7 +80,7 @@ export function acquireQuotaState(raw, request = {}, config = AI_QUOTA) {
   const sessionActive = activeForSession(state.leases, sessionId);
 
   if (state.count >= ipRateLimit || session.count >= sessionRateLimit) {
-    const retryAfterMs = Math.max(1, state.windowStarted + config.windowMs - now);
+    const retryAfterMs = Math.max(1, state.windowStarted + windowMs - now);
     return { state, result: { allowed: false, reason: 'rate', retryAfterMs, active, sessionActive } };
   }
   if (active >= ipConcurrencyLimit || sessionActive >= sessionConcurrencyLimit) {
