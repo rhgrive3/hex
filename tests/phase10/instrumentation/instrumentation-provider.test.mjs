@@ -6,12 +6,16 @@ import { InstrumentationProvider } from '../../../js/runtime/instrumentation-pro
 const binaryId = 'bin_sha256_' + 'bc'.repeat(32);
 
 class InstrumentBackend {
-  constructor() { this.id = 'frida-fixture'; this.listeners = new Set(); this.probes = new Map(); this.next = 1; this.connected = false; }
+  constructor({ moduleIdentity = true } = {}) { this.id = 'frida-fixture'; this.listeners = new Set(); this.probes = new Map(); this.next = 1; this.connected = false; this.moduleIdentity = moduleIdentity; }
   async connect() { this.connected = true; }
   async disconnect() { this.connected = false; }
   onEvent(listener) { this.listeners.add(listener); return () => this.listeners.delete(listener); }
   emit(event) { for (const listener of [...this.listeners]) listener(event); }
-  async getModules() { return [{ id: 'main', base: 0x7000n, size: 0x1000n, staticBase: 0x1000n }]; }
+  async getModules() {
+    const module = { id: 'main', base: 0x7000n, size: 0x1000n, staticBase: 0x1000n };
+    if (!this.moduleIdentity) return [module];
+    return [{ ...module, binaryId, sliceId: 'slice:arm64', identityState: 'exact', identityEvidenceIds: ['fixture:frida-module-match'] }];
+  }
   async installProbe(spec) { const handle = `probe:${this.next++}`; this.probes.set(handle, spec); return { handle }; }
   async removeProbe(handle) { return this.probes.delete(handle); }
   async replace(target, replacement) { return { target, replacement, installed: true }; }
@@ -42,6 +46,16 @@ test('P10.8 instrumentation is first-class and probe installation is interventio
   await session.close();
   assert.equal(backend.connected, false);
   assert.equal(backend.listeners.size, 0);
+});
+
+test('P10.8 instrumentation does not authenticate a first module from session identity alone', async () => {
+  const provider = new InstrumentationProvider(new InstrumentBackend({ moduleIdentity: false }), { id: 'frida-unproven-provider' });
+  const session = await provider.openSession({ binaryId, sliceId: 'slice:arm64', targetIdentity: 'process:unproven', sessionNonce: 'inst:unproven' });
+  const [module] = session.modules.active();
+  assert.equal(module.identityState, 'unresolved');
+  assert.equal(module.binaryId, null);
+  assert.equal(session.modules.resolve(0x7010n, { binaryId }).state, 'unresolved');
+  await session.close();
 });
 
 test('P10.8 replacement and writes require provider-owned authority and create intervention lineage', async () => {
