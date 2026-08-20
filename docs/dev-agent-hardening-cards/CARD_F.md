@@ -25,7 +25,7 @@ PRECONDITION
 CARD E is merged/present.
 
 MISSION
-Add bounded, low-cost critical-path timestamps/IDs for Graph attempts. Do not add logging of prompts/responses or a background observer.
+Add bounded, low-cost critical-path timestamps/IDs for Graph attempts. Do not add logging of prompts/responses or a background observer. The trace must make queue/scheduling, model-turn, completion-detection, parse, and release costs distinguishable without changing execution semantics.
 
 ALLOWED FILES
 - js/userscript/dev/task-graph/dynamic-task-graph.js
@@ -50,6 +50,15 @@ At minimum, where technically observable without extra polling:
 - leaseReleasedAt
 - outcome
 
+DERIVED TIMINGS
+Do not add more clocks solely for metrics. From the recorded timestamps, make it straightforward for tests/diagnostics to derive when the required endpoints exist:
+- readyToLeaseMs = leaseClaimedAt - graphReadyAt
+- leaseToSubmitMs = promptSubmitAt - leaseClaimedAt
+- submitToCompletionDetectedMs = completionDetectedAt - promptSubmitAt
+- completionToParseMs = resultParsedAt - completionDetectedAt
+- parseToReleaseMs = leaseReleasedAt - resultParsedAt
+These may be computed on demand rather than stored. Missing endpoints must stay explicit/null rather than fabricated.
+
 RULES
 - bounded per graph/run; no unbounded global accumulation
 - no full prompt
@@ -58,6 +67,7 @@ RULES
 - no new timer/poll loop
 - no console spam by default
 - failure/benchmark detail may be retained only within the bounded structure
+- timestamps must be monotonic in the logical attempt order where both endpoints exist
 - do not change scheduling or completion semantics
 
 TESTS
@@ -66,6 +76,8 @@ TESTS
 - cancelled/failed attempts carry terminal outcome
 - trace storage is bounded
 - no responseText/prompt body is persisted in trace
+- derived timing endpoints can separate queue/submit/completion/parse/release cost without extra polling
+- missing timestamp endpoints remain explicit rather than producing invented zero/negative durations
 - existing Graph behavior/tests unchanged
 
 RUN
