@@ -1,0 +1,20 @@
+{
+  "schemaVersion": "phase10-ownership/v1",
+  "phase": 10,
+  "owner": "phase10/runtime-providers living integration",
+  "allowedPrefixes": [
+    "js/runtime/",
+    "tests/phase10/",
+    "tools/validation/phase10/"
+  ],
+  "allowedExact": [
+    ".github/workflows/phase10-release-validation.yml",
+    "package.json"
+  ],
+  "forbiddenPrefixes": [
+    "js/semantics/",
+    "js/decompiler/",
+    "js/analysis/",
+    "js/managed/"
+  ]
+}
