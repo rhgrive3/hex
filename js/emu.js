@@ -62,6 +62,8 @@ export class Emulator {
     this.pc = 0n;
     this.nzcv = { n: false, z: false, c: false, v: false };
     this.v = new Array(32).fill(0);
+    this.vRaw = new Array(32).fill(null);
+    this.vRawNumber = new Array(32).fill(undefined);
     this.exclusive = null;
     this.mem = new Map();
     this.loaded = new Map();
@@ -549,7 +551,7 @@ export class Emulator {
         const o = op.shift.op;
         if (o === 'lsl') v = v << s;
         else if (o === 'lsr') v = v >> s;
-        else if (o === 'asr') v = BigInt.asIntN(64, v) >> s;
+        else if (o === 'asr') v = BigInt.asIntN(op.bits === 32 ? 32 : 64, v) >> s;
         else if (o === 'sxtw') v = BigInt.asUintN(64, BigInt.asIntN(32, v) << s);
         else if (o === 'uxtw') v = (v & MASK32) << s;
         else if (o === 'sxtb') v = BigInt.asUintN(64, BigInt.asIntN(8, v) << s);
@@ -604,7 +606,7 @@ export class Emulator {
     } else {
       let v = await this.load(addr, size);
       if (signed) v = BigInt.asUintN(64, BigInt.asIntN(size * 8, v));
-      if (isFloatReg(ops[0])) this.v[ops[0].num] = bitsToFloat(v, size);
+      if (isFloatReg(ops[0])) this.setFpBits(ops[0], v);
       else this.set(ops[0].text, v);
     }
     if (/^(ldxr|ldaxr)/.test(mn) && !pair) this.exclusive = { addr:BigInt(addr), size };
@@ -625,7 +627,7 @@ export class Emulator {
       const success = !!monitor && monitor.addr === BigInt(addr) && monitor.size === size;
       this.exclusive = null;
       if (success) {
-        if (isFloatReg(ops[first])) await this.store(addr,size,floatToBits(this.fget(ops[first]),size));
+        if (isFloatReg(ops[first])) await this.store(addr,size,this.fpBits(ops[first]));
         else await this.store(addr,size,this.get(ops[first].text));
       }
       this.set(ops[0].text, success ? 0n : 1n);
@@ -636,10 +638,33 @@ export class Emulator {
       const each = isWide(ops[0]) ? 8 : 4;
       await this.store(addr,each,this.get(ops[0].text));
       await this.store(addr + BigInt(each),each,this.get(ops[1].text));
-    } else if (isFloatReg(ops[first])) await this.store(addr,size,floatToBits(this.fget(ops[first]),size));
+    } else if (isFloatReg(ops[first])) await this.store(addr,size,this.fpBits(ops[first]));
     else await this.store(addr,size,this.get(ops[first].text));
     this.effectiveAddress(mem,true);
     return null;
+  }
+
+  fpSize(op) {
+    return op?.bits === 32 || /^s\d+$/i.test(op?.text || '') ? 4 : 8;
+  }
+
+  fpBits(op) {
+    if (!op || op.k !== 'reg' || !isFloatReg(op)) return 0n;
+    const size = this.fpSize(op);
+    const current = this.v[op.num] === undefined ? 0 : Number(this.v[op.num]);
+    const raw = this.vRaw[op.num];
+    if (raw != null && Object.is(this.vRawNumber[op.num], current)) return BigInt.asUintN(size * 8, raw);
+    return floatToBits(size === 4 ? Math.fround(current) : current, size);
+  }
+
+  setFpBits(op,bits) {
+    if (!op || op.k !== 'reg' || !isFloatReg(op)) return;
+    const size = this.fpSize(op);
+    const raw = BigInt.asUintN(size * 8, BigInt(bits));
+    const value = bitsToFloat(raw, size);
+    this.v[op.num] = value;
+    this.vRaw[op.num] = raw;
+    this.vRawNumber[op.num] = value;
   }
 
   fget(op) {
@@ -655,7 +680,11 @@ export class Emulator {
   fset(op,value) {
     if (!op || op.k !== 'reg') return;
     if (op.cls === 'gp') { this.set(op.text,BigInt(Math.trunc(value))); return; }
-    this.v[op.num] = op.bits === 32 || /^s\d+$/i.test(op.text || '') ? Math.fround(value) : value;
+    const size = this.fpSize(op);
+    const rounded = size === 4 ? Math.fround(value) : Number(value);
+    this.v[op.num] = rounded;
+    this.vRaw[op.num] = floatToBits(rounded, size);
+    this.vRawNumber[op.num] = rounded;
   }
 
   floatInsn(mn,ops) {
@@ -669,7 +698,14 @@ export class Emulator {
       return null;
     }
     const a=this.fget(ops[1]), b=ops[2] ? this.fget(ops[2]) : 0;
-    if (mn === 'fmov') { if (ops[1]?.k === 'imm') this.fset(ops[0],ops[1].float != null ? ops[1].float : Number(ops[1].value || 0n)); else this.fset(ops[0],a); return null; }
+    if (mn === 'fmov') {
+      if (ops[1]?.k === 'imm') this.fset(ops[0], ops[1].float != null ? ops[1].float : Number(ops[1].value || 0n));
+      else if (isFloatReg(ops[0]) && (ops[1]?.cls === 'gp' || ops[1]?.cls === 'sp')) this.setFpBits(ops[0], this.get(ops[1].text));
+      else if ((ops[0]?.cls === 'gp' || ops[0]?.cls === 'sp') && isFloatReg(ops[1])) this.set(ops[0].text, this.fpBits(ops[1]));
+      else if (isFloatReg(ops[0]) && isFloatReg(ops[1])) this.setFpBits(ops[0], this.fpBits(ops[1]));
+      else throw new EmulatorFault('invalid-fmov-form', 'unsupported FMOV operand form');
+      return null;
+    }
     if (mn === 'fadd') { this.fset(ops[0],a+b); return null; }
     if (mn === 'fsub') { this.fset(ops[0],a-b); return null; }
     if (mn === 'fmul') { this.fset(ops[0],a*b); return null; }
@@ -677,8 +713,15 @@ export class Emulator {
     if (mn === 'fneg') { this.fset(ops[0],-a); return null; }
     if (mn === 'fabs') { this.fset(ops[0],Math.abs(a)); return null; }
     if (mn === 'fsqrt') { this.fset(ops[0],Math.sqrt(a)); return null; }
-    if (mn === 'fmadd') { this.fset(ops[0],this.fget(ops[3])+a*b); return null; }
-    if (mn === 'fmsub') { this.fset(ops[0],this.fget(ops[3])-a*b); return null; }
+    if (mn === 'fmadd' || mn === 'fmsub' || mn === 'fnmadd' || mn === 'fnmsub') {
+      const size = this.fpSize(ops[0]);
+      const negateProduct = mn === 'fmsub' || mn === 'fnmsub';
+      const negateResult = mn === 'fnmadd' || mn === 'fnmsub';
+      let raw = fusedMultiplyAddBits(this.fpBits(ops[1]), this.fpBits(ops[2]), this.fpBits(ops[3]), size, negateProduct);
+      if (negateResult) raw ^= size === 4 ? 0x80000000n : 0x8000000000000000n;
+      this.setFpBits(ops[0], raw);
+      return null;
+    }
     if (mn === 'fcvt' || mn === 'fcvtd' || mn === 'fcvts') { this.fset(ops[0],a); return null; }
     if (/^(scvtf|ucvtf)$/.test(mn)) {
       const bits=ops[1]?.bits === 32 ? 32 : 64, raw=this.get(ops[1].text);
@@ -854,6 +897,70 @@ function floatToBits(value, size) {
   if (size === 4) { dv.setFloat32(0, value, true); return BigInt(dv.getUint32(0, true)); }
   dv.setFloat64(0, value, true);
   return dv.getBigUint64(0, true);
+}
+
+function fpFormat(size) {
+  return size === 4 ? { bits:32, fracBits:23, expBits:8, bias:127, emin:-126, emax:127 }
+    : { bits:64, fracBits:52, expBits:11, bias:1023, emin:-1022, emax:1023 };
+}
+function decodeFp(bits, size) {
+  const f=fpFormat(size), raw=BigInt.asUintN(f.bits,BigInt(bits));
+  const sign=Number((raw>>BigInt(f.bits-1))&1n), expMask=(1n<<BigInt(f.expBits))-1n, fracMask=(1n<<BigInt(f.fracBits))-1n;
+  const expField=Number((raw>>BigInt(f.fracBits))&expMask), frac=raw&fracMask;
+  if (expField===Number(expMask)) return {kind:frac===0n?'inf':'nan',sign,raw,frac};
+  if (expField===0) {
+    if (frac===0n) return {kind:'zero',sign,raw,coefficient:0n,exponent:0};
+    return {kind:'finite',sign,raw,coefficient:sign?-frac:frac,exponent:1-f.bias-f.fracBits};
+  }
+  const significand=(1n<<BigInt(f.fracBits))|frac;
+  return {kind:'finite',sign,raw,coefficient:sign?-significand:significand,exponent:expField-f.bias-f.fracBits};
+}
+function defaultQuietNaN(size) { const f=fpFormat(size), expMask=(1n<<BigInt(f.expBits))-1n; return (expMask<<BigInt(f.fracBits))|(1n<<BigInt(f.fracBits-1)); }
+function quietNaN(decoded,size) { const f=fpFormat(size); return decoded.raw|(1n<<BigInt(f.fracBits-1)); }
+function roundShiftRightEven(value,shift) {
+  if (shift<=0) return value<<BigInt(-shift);
+  const s=BigInt(shift), q=value>>s, rem=value-(q<<s), half=1n<<(s-1n);
+  return rem>half||(rem===half&&(q&1n))?q+1n:q;
+}
+function encodeExactFp(coefficient,exponent,size,zeroSign=0) {
+  const f=fpFormat(size), signBit=1n<<BigInt(f.bits-1);
+  if (coefficient===0n) return zeroSign?signBit:0n;
+  const negative=coefficient<0n; let n=negative?-coefficient:coefficient;
+  let top=n.toString(2).length-1, unbiased=top+exponent; const precision=f.fracBits+1; let significand;
+  if (unbiased>=f.emin) {
+    significand=roundShiftRightEven(n,top-(precision-1));
+    if (significand>=(1n<<BigInt(precision))) { significand>>=1n; unbiased+=1; }
+    if (unbiased>f.emax) { const all=(1n<<BigInt(f.expBits))-1n; return (negative?signBit:0n)|(all<<BigInt(f.fracBits)); }
+    if (unbiased>=f.emin) {
+      const expField=BigInt(unbiased+f.bias), fraction=significand-(1n<<BigInt(f.fracBits));
+      return (negative?signBit:0n)|(expField<<BigInt(f.fracBits))|fraction;
+    }
+  }
+  const subExp=f.emin-f.fracBits, delta=exponent-subExp;
+  const fraction=delta>=0?n<<BigInt(delta):roundShiftRightEven(n,-delta);
+  if (fraction===0n) return negative?signBit:0n;
+  if (fraction>=(1n<<BigInt(f.fracBits))) return (negative?signBit:0n)|(1n<<BigInt(f.fracBits));
+  return (negative?signBit:0n)|fraction;
+}
+function fusedMultiplyAddBits(aBits,bBits,cBits,size,negateProduct=false) {
+  const a=decodeFp(aBits,size), b=decodeFp(bBits,size), c=decodeFp(cBits,size);
+  for (const value of [a,b,c]) if (value.kind==='nan') return quietNaN(value,size);
+  const productSign=a.sign^b.sign^(negateProduct?1:0);
+  if ((a.kind==='inf'&&b.kind==='zero')||(a.kind==='zero'&&b.kind==='inf')) return defaultQuietNaN(size);
+  if (a.kind==='inf'||b.kind==='inf') {
+    if (c.kind==='inf'&&c.sign!==productSign) return defaultQuietNaN(size);
+    const f=fpFormat(size), signBit=1n<<BigInt(f.bits-1), all=(1n<<BigInt(f.expBits))-1n;
+    return (productSign?signBit:0n)|(all<<BigInt(f.fracBits));
+  }
+  if (c.kind==='inf') return c.raw;
+  let product=(a.coefficient??0n)*(b.coefficient??0n); if (negateProduct) product=-product;
+  const productExp=(a.exponent??0)+(b.exponent??0), cc=c.coefficient??0n;
+  if (product===0n&&cc===0n) return encodeExactFp(0n,0,size,productSign===c.sign?productSign:0);
+  if (product===0n) return encodeExactFp(cc,c.exponent??0,size,c.sign);
+  if (cc===0n) return encodeExactFp(product,productExp,size,productSign);
+  const common=Math.min(productExp,c.exponent);
+  const exact=(product<<BigInt(productExp-common))+(cc<<BigInt(c.exponent-common));
+  return encodeExactFp(exact,common,size,0);
 }
 
 function padTo(bytes, len) {

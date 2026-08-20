@@ -11,7 +11,7 @@ export const MACHINE_EFFECTS_TO_SEMANTIC_IR_PASS_ID = 'semantic-ir.from-machine-
 export const MACHINE_EFFECTS_TO_SEMANTIC_IR_PASS_VERSION = '1.0.0';
 
 const BINARY_OPS = new Set([
-  'add', 'sub', 'mul', 'sdiv', 'udiv', 'div', 'and', 'or', 'orr', 'xor', 'eor', 'bic', 'orn', 'eon',
+  'add', 'sub', 'mul', 'sdiv', 'udiv', 'div', 'srem', 'urem', 'and', 'or', 'orr', 'xor', 'eor', 'bic', 'orn', 'eon',
   'shl', 'lsl', 'lshr', 'lsr', 'ashr', 'asr', 'ror', 'fadd', 'fsub', 'fmul', 'fdiv', 'min', 'max',
 ]);
 const UNARY_OPS = new Set([

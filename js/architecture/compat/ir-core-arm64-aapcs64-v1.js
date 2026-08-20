@@ -1126,24 +1126,38 @@ function storeOverlapsRange(storeLoc, otherLoc) {
   if (!storeLoc || !otherLoc) return true;
   if (storeLoc.kind === MK.UNKNOWN) return true;
   if (otherLoc.kind === MK.UNKNOWN) return false;
-  if (storeLoc.kind !== otherLoc.kind) return false;
   const overlap = (pa, sa, pb, sb) => !(pa + sa <= pb || pb + sb <= pa);
+  if (storeLoc.kind !== otherLoc.kind) {
+    const pair = new Set([storeLoc.kind, otherLoc.kind]);
+    if (pair.has(MK.FIELD) && pair.has(MK.GLOBAL)) return true;
+    if (pair.has(MK.FIELD) && pair.has(MK.STACK)) {
+      const field = storeLoc.kind === MK.FIELD ? storeLoc : otherLoc;
+      const stack = storeLoc.kind === MK.STACK ? storeLoc : otherLoc;
+      const proof = stackPointerProvenanceOf(field.rawBase || field.base);
+      if (!proof || proof.must !== true || proof.offset == null || field.disp == null || stack.disp == null) return false;
+      if (stack.baseReg && !['sp','x29'].includes(String(stack.baseReg))) return true;
+      const fieldStart = BigInt(proof.offset) + BigInt(field.disp);
+      return overlap(fieldStart, BigInt(field.size || 8), BigInt(stack.disp), BigInt(stack.size || 8));
+    }
+    return false;
+  }
+  const overlapSameKind = overlap;
   const sa=BigInt(storeLoc.size || 8), sb=BigInt(otherLoc.size || 8);
   if (storeLoc.kind === MK.GLOBAL) {
     if (storeLoc.address == null || otherLoc.address == null) return false;
-    return overlap(storeLoc.address,sa,otherLoc.address,sb);
+    return overlapSameKind(storeLoc.address,sa,otherLoc.address,sb);
   }
   if (storeLoc.kind === MK.STACK) {
     if (storeLoc.baseReg !== otherLoc.baseReg || storeLoc.frameEpoch !== otherLoc.frameEpoch) return false;
     if (storeLoc.disp == null || otherLoc.disp == null) return false;
-    return overlap(storeLoc.disp,sa,otherLoc.disp,sb);
+    return overlapSameKind(storeLoc.disp,sa,otherLoc.disp,sb);
   }
   if (storeLoc.kind === MK.FIELD) {
     const storeRoot = storeLoc.aliasRoot || (storeLoc.base ? 'value:' + storeLoc.base.id : null);
     const otherRoot = otherLoc.aliasRoot || (otherLoc.base ? 'value:' + otherLoc.base.id : null);
     if (storeRoot && otherRoot && storeRoot === otherRoot) {
       if (storeLoc.disp == null || otherLoc.disp == null) return true;
-      return overlap(storeLoc.disp,sa,otherLoc.disp,sb);
+      return overlapSameKind(storeLoc.disp,sa,otherLoc.disp,sb);
     }
     // Different symbolic pointer roots are *not* proof of distinct objects.
     // Conservatively clobber the other field range so stale stores cannot become
