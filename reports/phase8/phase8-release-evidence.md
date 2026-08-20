@@ -1,6 +1,6 @@
 # Phase 8 release evidence — BLOCKING
 
-- product: `b67ddca2db460f2248cb1f2766bc977a160b707c` (tree `e9cc448fe54be7c422f0af2d690a4797f304574a`, branch `phase8/decompiler-quality`, clean: true)
+- product: `7799ec6e7f3e6fbd51d821512bb3757de7471da3` (tree `a23bab53602d47309215d18519b78f473b9b3b27`, branch `phase8/decompiler-quality`, clean: true)
 - verifier: phase8.verifier 1.0.0 (source sha256 `524b1e3ce071f4d8`)
 - profile version: 2
 - corpus: phase8-decompiler-quality-corpus v1, digest `37c049e8ed51a7f0d46538a894be3c7b`
@@ -53,8 +53,8 @@
 - x P8-3
 - x P8-4
 - x P8-5
--   P8-6
--   P8-7
+- x P8-6
+- x P8-7
 -   P8-I
 
 ## Failures
@@ -63,4 +63,4 @@
 |---|---|---|---|---|
 | architecture | mandatory architecture lane has no Phase 8 evidence: riscv64 | corpus evidence | missing | true |
 | architecture | mandatory architecture lane has no Phase 8 evidence: x86_64 | corpus evidence | missing | true |
-| integration | a required checkpoint has no accepted evidence on this head | P8-0,P8-1,P8-2,P8-3,P8-4,P8-5,P8-6,P8-7,P8-I | missing: P8-6,P8-7,P8-I | true |
+| integration | a required checkpoint has no accepted evidence on this head | P8-0,P8-1,P8-2,P8-3,P8-4,P8-5,P8-6,P8-7,P8-I | missing: P8-I | true |

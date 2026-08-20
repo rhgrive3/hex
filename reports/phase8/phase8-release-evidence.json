@@ -3,10 +3,10 @@
   "verifierId": "phase8.verifier",
   "verifierVersion": "1.0.0",
   "verifierSourceSha256": "524b1e3ce071f4d8efba4be5447f217acec4447f0c33b2eeb7e2d8ed88b186d4",
-  "generatedAt": "2026-08-20T01:52:57.585Z",
+  "generatedAt": "2026-08-20T01:54:49.102Z",
   "product": {
-    "commitSha": "b67ddca2db460f2248cb1f2766bc977a160b707c",
-    "treeSha": "e9cc448fe54be7c422f0af2d690a4797f304574a",
+    "commitSha": "7799ec6e7f3e6fbd51d821512bb3757de7471da3",
+    "treeSha": "a23bab53602d47309215d18519b78f473b9b3b27",
     "workingTreeClean": true,
     "dirtyPaths": [],
     "branch": "phase8/decompiler-quality"
@@ -155,11 +155,11 @@
     },
     {
       "id": "P8-6",
-      "present": false
+      "present": true
     },
     {
       "id": "P8-7",
-      "present": false
+      "present": true
     },
     {
       "id": "P8-I",
@@ -265,11 +265,11 @@
     "repetitions": 3,
     "aggregate": "median",
     "coldActiveFunctionMs": {
-      "medianMs": 129.93333333333334,
+      "medianMs": 124.35555555555555,
       "samples": [
-        166.733,
-        129.933,
-        123.978
+        124.356,
+        118.289,
+        125.6
       ]
     },
     "publishedLedgers": 35
@@ -282,7 +282,7 @@
       "firstDivergence": "mandatory architecture lane has no Phase 8 evidence: riscv64",
       "expected": "corpus evidence",
       "actual": "missing",
-      "identity": "b67ddca2db460f2248cb1f2766bc977a160b707c",
+      "identity": "7799ec6e7f3e6fbd51d821512bb3757de7471da3",
       "blocking": true
     },
     {
@@ -290,15 +290,15 @@
       "firstDivergence": "mandatory architecture lane has no Phase 8 evidence: x86_64",
       "expected": "corpus evidence",
       "actual": "missing",
-      "identity": "b67ddca2db460f2248cb1f2766bc977a160b707c",
+      "identity": "7799ec6e7f3e6fbd51d821512bb3757de7471da3",
       "blocking": true
     },
     {
       "category": "integration",
       "firstDivergence": "a required checkpoint has no accepted evidence on this head",
       "expected": "P8-0,P8-1,P8-2,P8-3,P8-4,P8-5,P8-6,P8-7,P8-I",
-      "actual": "missing: P8-6,P8-7,P8-I",
-      "identity": "b67ddca2db460f2248cb1f2766bc977a160b707c",
+      "actual": "missing: P8-I",
+      "identity": "7799ec6e7f3e6fbd51d821512bb3757de7471da3",
       "blocking": true
     }
   ],
