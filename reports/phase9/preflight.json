@@ -1,0 +1,88 @@
+{
+  "schemaVersion": 1,
+  "checkpoint": "P9-0-preflight",
+  "recordedFromMain": {
+    "commitSha": "b9728ded0913d39b9886df7e66a7e07bb6153ab9",
+    "treeSha": "10a14553c15a499c14b611efb336dc536bf758e2"
+  },
+  "phase8Handoff": {
+    "status": "accepted",
+    "verdict": "READY",
+    "productionCandidateSha": "e88c45791ed7f294d0df865ae7001cc45212d0bb",
+    "productionCandidateTree": "8588dbae75e6b41a2a2a0eae5f83bfaab8a166b7",
+    "finalMainSha": "ed2a1688f600fe78b6cfd6659d59a8a836b9ea44",
+    "finalMainTree": "2cdf2a042b28b1ef1fe419c02cfe1bf45d9bcb57",
+    "evidenceDigest": "a021e9dec2818c2e3efc56ec51d2d567",
+    "corpusDigest": "94094f7e9487f640e871e46b19c86c69",
+    "mandatoryArchitectures": ["arm64", "riscv64", "x86_64"]
+  },
+  "contracts": {
+    "analysisBoundary": {
+      "path": "js/analysis/index.js",
+      "contractVersion": "1.0.0",
+      "status": "present"
+    },
+    "analysisStatus": {
+      "path": "js/analysis/status.js",
+      "schemaVersion": 1,
+      "contractVersion": "1.0.0",
+      "status": "present"
+    },
+    "fastSymbolicEvaluator": {
+      "path": "js/symbolic/executor.js",
+      "mode": "bounded-conservative",
+      "explicitUnknown": true,
+      "replacementAllowed": false,
+      "status": "present"
+    },
+    "toolRegistry": {
+      "path": "js/ai/tools/registry.js",
+      "defaultDeterministic": true,
+      "defaultStoreResult": true,
+      "automaticCachePolicy": "disabled-for-phase9-proof-tools-until-version-safe-fingerprint"
+    },
+    "observationStore": {
+      "path": "js/ai/tools/storage/observation-store.js",
+      "currentCacheIdentity": "analysis-binding + tool-name + stable-serialized-args",
+      "phase9Requirement": "verifier/backend/query/expr/translator/semantic versions must enter effective cache identity before proof cache is enabled"
+    }
+  },
+  "wave0": {
+    "ready": true,
+    "blockingPrerequisites": [],
+    "allowedParallelLanes": [
+      "contract-and-adversarial-corpus",
+      "bool-bv-expression-dag",
+      "translator-slicing-scaffolding-against-frozen-interface",
+      "solver-backend-lifecycle-and-fake-backend",
+      "solver-provider-adr-investigation"
+    ],
+    "forbiddenUntilFrozen": [
+      "proof-producing-public-api",
+      "global-unreachability-claims",
+      "automatic-proof-cache",
+      "remote-solver-data-egress"
+    ]
+  },
+  "deferredDecisions": [
+    {
+      "id": "solver-provider",
+      "status": "unselected",
+      "blockingWave0": false,
+      "requiredBefore": "first-real-backend"
+    },
+    {
+      "id": "remote-solver-policy",
+      "status": "disabled-until-explicit-policy",
+      "blockingWave0": false,
+      "requiredBefore": "remote-backend-activation"
+    }
+  ],
+  "sourceOfTruth": [
+    "docs/HEX_MASTER_ARCHITECTURE.md",
+    "docs/PHASE9_SOLVER_BACKED_VERIFICATION_IMPLEMENTATION_GUIDE.ja.md",
+    "docs/PHASE9_WORKER_PROMPTS.ja.md",
+    "reports/phase8/checkpoints.json",
+    "reports/phase8/phase8-release-evidence.json"
+  ]
+}
