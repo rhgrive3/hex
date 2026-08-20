@@ -27,6 +27,7 @@
     const pageOf = new Array(32).fill(null);
     const pageAt = new Int32Array(32);
     pageAt.fill(-1);
+    // enter() advances monotonically, so normalize external boundaries once.
     const functionStarts = Array.from(opts.functionStarts || [], asBigInt)
       .filter((start) => start != null)
       .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
