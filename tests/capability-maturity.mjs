@@ -156,8 +156,17 @@ for (const format of ['elf', 'pe']) {
 }
 
 const managed = managedMaturity('dex');
-assert.equal(managed.level, null);
-assert.equal(managed.status, CAPABILITY_STATUS.UNSUPPORTED);
+assert.equal(managed.level, 'M3');
+assert.equal(managed.implementedLevel, 'M3');
+assert.equal(managed.fullySatisfiedLevel, 'M3');
+assert.equal(managed.status, CAPABILITY_STATUS.PARTIAL);
+assert.equal(managed.features.detectContainer, 'supported');
+assert.equal(managed.features.metadata, 'supported');
+assert.equal(managed.features.vmEffects, 'supported');
+assert.equal(managed.features.cfgSsa, 'supported');
+assert.equal(managed.features.typesInterprocedural, 'partial');
+assert.equal(managed.features.decompiler, 'partial');
+assert.equal(managed.features.runtimeDebug, 'unsupported');
 
 assert.equal(arm64.display, undefined);
 const arm64Display = capabilityDisplay(arm64);
@@ -182,6 +191,11 @@ assert.deepEqual(matrix.formats.map((entry) => [entry.id, entry.level, entry.imp
   ['elf', 'F2', 'F4', 'partial'],
   ['pe', 'F2', 'F4', 'partial'],
 ]);
-assert.deepEqual(matrix.managed, []);
+assert.deepEqual(matrix.managed.map((entry) => [entry.id, entry.level, entry.implementedLevel, entry.status]), [
+  ['wasm', 'M3', 'M3', 'partial'],
+  ['dex', 'M3', 'M3', 'partial'],
+  ['cil', 'M3', 'M3', 'partial'],
+  ['jvm', 'M3', 'M3', 'partial'],
+]);
 
 console.log('capability-maturity: PASS');
