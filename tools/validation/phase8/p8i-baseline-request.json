@@ -1,0 +1,5 @@
+{
+  "schemaVersion": 1,
+  "baseProductSha": "bd03d1a860863814dbdcc00559709794d460189d",
+  "reason": "P8-I mandatory architecture expansion requires a same-corpus baseline from the exact pre-Phase-8 product. This marker is removed by the baseline-capture job in the commit that freezes the regenerated corpus and observations."
+}
