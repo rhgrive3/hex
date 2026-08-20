@@ -330,17 +330,19 @@ function canonicalAddressBase(value, active = new Set()) {
 function restoreAapcs64PublicLocations(projected) {
   for (const inst of projected.instructions ?? []) {
     if (inst.op !== LEGACY_OP.LOAD && inst.op !== LEGACY_OP.STORE) continue;
-    if (inst.loc?.kind !== LEGACY_MK.UNKNOWN || inst.addr?.precise !== true || inst.addr.index != null) continue;
+    if ((inst.loc?.kind !== LEGACY_MK.UNKNOWN && inst.loc?.kind !== LEGACY_MK.STACK) || inst.addr?.precise !== true || inst.addr.index != null) continue;
     const stack = legacyStackPointerProvenanceOf(inst.addr.base);
     if (stack?.must === true) {
       const offset = BigInt(stack.offset ?? 0n) + BigInt(inst.addr.disp ?? 0n);
-      const key = `stack:${BigInt.asUintN(64, offset).toString()}`;
-      const existing = projected.locations?.get?.(key) ?? null;
+      const size = inst.addr.size ?? inst.extra?.size ?? null;
+      const existing = inst.loc?.kind === LEGACY_MK.STACK && inst.loc.disp != null && BigInt(inst.loc.disp) === offset
+        && (inst.loc.size == null || size == null || Number(inst.loc.size) === Number(size)) ? inst.loc : null;
+      const key = existing?.key ?? `stack:${offset.toString()}`;
       const loc = existing ?? {
         key,
         kind: LEGACY_MK.STACK,
-        disp: inst.addr.disp ?? offset,
-        size: inst.addr.size ?? inst.extra?.size ?? null,
+        disp: offset,
+        size,
         regionId: inst.loc?.regionId ?? null,
         origin: inst.loc?.origin ?? inst.addr?.origin ?? null,
         compatAbiPreservedAddress: true,
@@ -510,8 +512,16 @@ function restoreProvenNoEscapeStackForwarding(projected) {
     const block = projected.blocks?.[load.block];
     if (!block) continue;
     const priorStores = (block.insts ?? [])
-      .filter((inst) => inst.op === LEGACY_OP.STORE && inst.loc?.kind === LEGACY_MK.STACK
-        && inst.loc.key === load.loc.key && Number(inst.row) < Number(load.row))
+      .filter((inst) => {
+        if (inst.op !== LEGACY_OP.STORE || inst.loc?.kind !== LEGACY_MK.STACK || inst.loc.key !== load.loc.key || Number(inst.row) >= Number(load.row)) return false;
+        const loadSize = Number(load.loc?.size ?? load.extra?.size ?? 0);
+        const storeSize = Number(inst.loc?.size ?? inst.extra?.size ?? 0);
+        if (!(loadSize > 0 && storeSize > 0 && loadSize === storeSize)) return false;
+        if (load.extra?.signed === true || load.extra?.extension === 'sign') return false;
+        const loadBits = Number(load.dst?.bits ?? loadSize * 8);
+        const storeBits = Number(inst.args?.[0]?.bits ?? inst.args?.[0]?.value?.bits ?? storeSize * 8);
+        return loadBits === storeBits;
+      })
       .sort((left, right) => Number(right.row) - Number(left.row));
     const store = priorStores[0] ?? null;
     if (!store) continue;

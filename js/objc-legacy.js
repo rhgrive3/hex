@@ -68,8 +68,17 @@ const MAX_NAME = 512;
  * @param {BigInt} v      その 8 バイトをそのまま読んだ値
  * @param {BigInt} [base] イメージの先頭（__TEXT の vmaddr）。無ければ足さない。
  */
-export function sanitizePointer(v, base) {
+export function sanitizePointer(v, base, pointerFormat = null) {
   if (v === 0n) return null;
+  const format = pointerFormat == null ? null : Number(pointerFormat);
+  if (format === 2 || format === 6) {
+    if (((v >> 63n) & 1n) !== 0n) return null;
+    const target = v & 0xfffffffffn;
+    if (format === 6) return base == null ? null : BigInt(base) + target;
+    const high8 = (v >> 36n) & 0xffn;
+    return target | (high8 << 56n);
+  }
+  if (format != null) return null;
   /* Some modern Mach-O metadata fields contain a bare image-relative offset
      without the chained-pointer next/high bits.  When the image base is known,
      a non-zero value below that base cannot be a valid in-image VM address;
@@ -163,9 +172,11 @@ async function cstring(get, addr) {
   return null;                                   // 終端が見つからない
 }
 
+function cleanPointer(get, value) { return sanitizePointer(value, get.base, get.pointerFormat); }
+
 async function pointer(get, addr) {
   const b = await get(addr, PTR);
-  return b ? sanitizePointer(u64(b, 0), get.base) : null;
+  return b ? cleanPointer(get, u64(b, 0)) : null;
 }
 
 /**
@@ -205,8 +216,8 @@ async function readMethods(get, listAddr, out, className, prefix, budget) {
         if (nameAddr == null || await cstring(get, nameAddr) == null) nameAddr = nameTarget;
       }
     } else {
-      nameAddr = sanitizePointer(u64(b, 0), get.base);
-      imp = sanitizePointer(u64(b, 16), get.base);
+      nameAddr = cleanPointer(get, u64(b, 0));
+      imp = cleanPointer(get, u64(b, 16));
     }
     if (imp == null) continue;
     const sel = await cstring(get, nameAddr);
@@ -314,11 +325,11 @@ async function readIvars(get, listAddr) {
      * 「self の何を読んでいるか」が永久に分からない。分かるのは
      * **どの位置変数を読んだか**で、それはこのアドレスで引ける。
      */
-    const offsetVar = sanitizePointer(u64(b, 0), get.base);
+    const offsetVar = cleanPointer(get, u64(b, 0));
     const offset = await ivarOffset(get, offsetVar);
-    const name = await cstring(get, sanitizePointer(u64(b, 8), get.base));
+    const name = await cstring(get, cleanPointer(get, u64(b, 8)));
     if (!name) continue;                      // 名前が読めないものだけ採らない
-    const typeEnc = await cstring(get, sanitizePointer(u64(b, 16), get.base));
+    const typeEnc = await cstring(get, cleanPointer(get, u64(b, 16)));
     const size = u32(b, 28);
     out.push({
       name,
@@ -402,9 +413,9 @@ async function readProperties(get, listAddr) {
     const entry = listAddr + 8n + BigInt(i) * BigInt(stride);
     const b = await get(entry, PROP_STRIDE);
     if (!b) break;
-    const name = await cstring(get, sanitizePointer(u64(b, 0), get.base));
+    const name = await cstring(get, cleanPointer(get, u64(b, 0)));
     if (!name) continue;
-    const attrText = await cstring(get, sanitizePointer(u64(b, 8), get.base));
+    const attrText = await cstring(get, cleanPointer(get, u64(b, 8)));
     const attrs = parsePropertyAttributes(attrText);
     out.push({
       name,
@@ -427,7 +438,7 @@ async function readClass(get, classAddr, out, seen, meta) {
 
   const cls = await get(classAddr, CLASS_SIZE);
   if (!cls) return null;
-  const roAddr = sanitizePointer(u64(cls, CLASS_DATA) & ~7n, get.base);
+  const roAddr = cleanPointer(get, u64(cls, CLASS_DATA) & ~7n);
   if (roAddr == null) return null;
   /*
    * 短くても受け取る。baseProperties まで読めるとうれしいが、そこまで
@@ -437,11 +448,11 @@ async function readClass(get, classAddr, out, seen, meta) {
   const ro = await get(roAddr, RO_SIZE, true);
   if (!ro || ro.length < RO_IVARS + PTR) return null;
 
-  const name = await cstring(get, sanitizePointer(u64(ro, RO_NAME), get.base));
+  const name = await cstring(get, cleanPointer(get, u64(ro, RO_NAME)));
   if (!name) return null;
 
   const before = out.length;
-  await readMethods(get, sanitizePointer(u64(ro, RO_METHODS), get.base), out, name,
+  await readMethods(get, cleanPointer(get, u64(ro, RO_METHODS)), out, name,
     meta ? '+' : '-', MAX_METHODS);
   const methods = out.slice(before);
 
@@ -449,7 +460,7 @@ async function readClass(get, classAddr, out, seen, meta) {
     name,
     addr: classAddr,
     meta: !!meta,
-    superAddr: sanitizePointer(u64(cls, CLASS_SUPER), get.base),
+    superAddr: cleanPointer(get, u64(cls, CLASS_SUPER)),
     instanceSize: u32(ro, RO_INSTANCE_SIZE),
     methods,
     ivars: [],
@@ -459,19 +470,19 @@ async function readClass(get, classAddr, out, seen, meta) {
   // ivar とプロパティはインスタンス側にしかない（クラスメソッド側には持たせない）
   if (!meta) {
     try {
-      info.ivars = await readIvars(get, sanitizePointer(u64(ro, RO_IVARS), get.base));
+      info.ivars = await readIvars(get, cleanPointer(get, u64(ro, RO_IVARS)));
     } catch { info.ivars = []; }
     try {
       // 表が短くて baseProperties まで届かないことがある。届かなければ空のまま。
       if (ro.length >= RO_PROPS + PTR) {
-        info.properties = await readProperties(get, sanitizePointer(u64(ro, RO_PROPS), get.base));
+        info.properties = await readProperties(get, cleanPointer(get, u64(ro, RO_PROPS)));
       }
     } catch { info.properties = []; }
   }
 
   // isa はメタクラス。そちらにクラスメソッド（+）が入っている。
   if (!meta) {
-    const isa = sanitizePointer(u64(cls, CLASS_ISA), get.base);
+    const isa = cleanPointer(get, u64(cls, CLASS_ISA));
     if (isa != null) {
       const metaInfo = await readClass(get, isa, out, seen, true);
       if (metaInfo && metaInfo.methods) info.classMethods = metaInfo.methods;
@@ -493,7 +504,7 @@ async function readClass(get, classAddr, out, seen, meta) {
  *   chained fixups のポインタを組み立てるのに要る。渡されなければ
  *   クラス表の位置から推定する（iOS のアプリは 4 GiB 境界に置かれる）。
  */
-export async function buildObjcModel(read, classList, onProgress, imageBase) {
+export async function buildObjcModel(read, classList, onProgress, imageBase, pointerFormat) {
   const names = [];
   const classes = [];
   const seen = new Set();
@@ -503,6 +514,7 @@ export async function buildObjcModel(read, classList, onProgress, imageBase) {
   get.base = imageBase != null
     ? BigInt(imageBase)
     : (classList.vmAddr / 0x100000000n) * 0x100000000n;
+  get.pointerFormat = pointerFormat ?? classList.pointerFormat ?? classList.pointer_format ?? null;
   const total = Math.min(Number(classList.size) / PTR, MAX_CLASSES);
 
   for (let i = 0; i < total && names.length < MAX_METHODS; i++) {
@@ -530,7 +542,7 @@ export async function buildObjcModel(read, classList, onProgress, imageBase) {
 /**
  * 実装アドレス → 名前 の一覧だけが欲しいとき（既存の呼び出し元向け）。
  */
-export async function buildObjcNames(read, classList, onProgress) {
-  const model = await buildObjcModel(read, classList, onProgress);
+export async function buildObjcNames(read, classList, onProgress, imageBase, pointerFormat) {
+  const model = await buildObjcModel(read, classList, onProgress, imageBase, pointerFormat);
   return { names: model.names, classes: model.count };
 }

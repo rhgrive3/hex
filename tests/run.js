@@ -1725,8 +1725,10 @@ test('FIELDS: [x0, #0x20] を self の hp として解決できる', async () =>
   const hit = fields.resolveAccess({ base: 'x0', disp: 0x20n }, 'BattleManager');
   ok(hit, '解決できていない');
   eq(hit.plain, 'hp');
-  eq(hit.certain, true, 'x0 なら self と言い切ってよい');
+  eq(hit.certain, false, 'physical x0 alone must not prove self');
   eq(hit.exact, true);
+  const provenX0 = fields.resolveAccess({ base: 'x0', disp: 0x20n, self: true }, 'BattleManager');
+  ok(provenX0 && provenX0.certain === true, 'entry-self provenance should make x0 certain');
 
   // 別のレジスタ経由は「self とは限らない」ので確定させない
   const viaX19 = fields.resolveAccess({ base: 'x19', disp: 0x20n }, 'BattleManager');

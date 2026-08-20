@@ -41,8 +41,8 @@ function categoryNames(categories = []) {
 }
 
 /** Full Apple-runtime Objective-C model used by the App. */
-export async function buildObjcRuntimeModel(read, classList, runtimeSections = {}, onProgress, imageBase) {
-  const base = await buildLegacyObjcModel(read, classList, onProgress, imageBase);
+export async function buildObjcRuntimeModel(read, classList, runtimeSections = {}, onProgress, imageBase, pointerFormat) {
+  const base = await buildLegacyObjcModel(read, classList, onProgress, imageBase, pointerFormat);
   const extra = await parseObjcExtendedMetadata(read, runtimeSections, {
     imageBase,
     classes: base.classes || [],

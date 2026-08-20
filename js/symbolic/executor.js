@@ -4,7 +4,7 @@
  * It intentionally stops on unsupported semantic operations. The executor does
  * not pretend that an unknown instruction preserved registers/memory.
  */
-import { OP, MK, COND } from '../ir.js';
+import { OP, MK, COND, mayAliasProvenance } from '../ir.js';
 import { valueBefore } from '../dataflow-semantic.js';
 
 export const SYM = Object.freeze({ CONST: 'const', SYMBOL: 'symbol', OP: 'op', ITE: 'ite', UNKNOWN: 'unknown' });
@@ -54,20 +54,34 @@ function binOp(name, a, b, bits = 64) {
       return c(BigInt.asUintN(width, value));
     } catch { /* symbolic fallback */ }
   }
-  if (name === 'shl' || name === 'lshr' || name === 'ashr') {
-    const masked = { kind:SYM.OP, op:'and', args:[b, c(BigInt(width - 1))] };
-    return { kind: SYM.OP, op: name, args: [a, masked], bits:width };
-  }
-  return { kind: SYM.OP, op: name, args: [a, b] };
+    if (name === 'shl' || name === 'lshr' || name === 'ashr') {
+  const masked = { kind:SYM.OP, op:'and', args:[b, c(BigInt(width - 1))], bits:width };
+  return { kind: SYM.OP, op: name, args: [a, masked], bits:width };
+}
+// Symbolic integer arithmetic is still a fixed-width bitvector. Keep
+// that identity even when we cannot fold the operands to constants.
+return { kind: SYM.OP, op: name, args: [a, b], bits:width };
+
 }
 
-function cmp(name, a, b) {
+function cmp(name, a, b, options = {}) {
+  const bits = Math.max(1, Math.min(64, Number(options.bits) || 64));
+  const signed = options.signed === true ? true : options.signed === false ? false : null;
   if (a?.kind === SYM.CONST && b?.kind === SYM.CONST) {
-    const av=a.value, bv=b.value;
-    const yes = name === '==' ? av === bv : name === '!=' ? av !== bv : name === '<' ? av < bv : name === '<=' ? av <= bv : name === '>' ? av > bv : name === '>=' ? av >= bv : null;
-    if (yes != null) return { ...c(yes ? 1n : 0n), boolean:true };
+    const au = BigInt.asUintN(bits, a.value), bu = BigInt.asUintN(bits, b.value);
+    const av = signed === true ? BigInt.asIntN(bits, au) : au;
+    const bv = signed === true ? BigInt.asIntN(bits, bu) : bu;
+    const yes = name === '==' ? au === bu : name === '!=' ? au !== bu : name === '<' ? av < bv : name === '<=' ? av <= bv : name === '>' ? av > bv : name === '>=' ? av >= bv : null;
+    if (yes != null) return { ...c(yes ? 1n : 0n), boolean:true, bits, signed };
   }
-  return { kind: SYM.OP, op: name, args: [a, b], boolean: true };
+  return { kind: SYM.OP, op: name, args: [a, b], boolean: true, bits, signed };
+}
+function conditionIdentity(condition) {
+  if (condition?.kind === SYM.OP && condition.boolean && ['==', '!=', '<', '<=', '>', '>='].includes(condition.op)) {
+    const mode = condition.signed === true ? 's' : condition.signed === false ? 'u' : 'n';
+    return `${mode}${condition.bits || 64}:${expressionText(condition)}`;
+  }
+  return expressionText(condition);
 }
 function negate(condition) {
   if (!condition) return unknown('missing-condition');
@@ -78,10 +92,10 @@ function negate(condition) {
 }
 function constraintAllowed(existing, condition) {
   if (condition?.kind === SYM.CONST && condition.boolean) return condition.value !== 0n;
-  const key = expressionText(condition);
+  const key = conditionIdentity(condition);
   for (const prior of existing || []) {
     if (prior?.kind === SYM.CONST && prior.boolean && prior.value === 0n) return false;
-    if (expressionText(negate(prior)) === key) return false;
+    if (conditionIdentity(negate(prior)) === key) return false;
   }
   return true;
 }
@@ -92,11 +106,15 @@ export function expressionText(e) {
   if (e.kind === SYM.SYMBOL) return e.name;
   if (e.kind === SYM.UNKNOWN) return 'unknown(' + e.reason + ')';
   if (e.kind === SYM.ITE) return '(' + expressionText(e.condition) + ' ? ' + expressionText(e.then) + ' : ' + expressionText(e.else) + ')';
-  if (e.kind === SYM.OP) {
-    if (e.op === 'not') return 'not ' + expressionText(e.args[0]);
-    if (e.args.length === 1) return e.op + '(' + expressionText(e.args[0]) + ')';
-    return '(' + expressionText(e.args[0]) + ' ' + e.op + ' ' + expressionText(e.args[1]) + ')';
-  }
+    if (e.kind === SYM.OP) {
+  let body;
+  if (e.op === 'not') body = 'not ' + expressionText(e.args[0]);
+  else if (e.args.length === 1) body = e.op + '(' + expressionText(e.args[0]) + ')';
+  else body = '(' + expressionText(e.args[0]) + ' ' + e.op + ' ' + expressionText(e.args[1]) + ')';
+  const bits = Number(e.bits);
+  return Number.isSafeInteger(bits) && bits > 0 ? `i${bits}${body}` : body;
+}
+
   return '?';
 }
 
@@ -155,7 +173,10 @@ function phiValue(inst, state) {
 function loadExpression(inst, state, opts) {
   if (!inst || !inst.loc) return unknown('missing-load-location', { instruction: inst && inst.id });
   const key = locationKey(inst.loc);
-  if (key && state.memory.has(key)) return state.memory.get(key);
+  if (key && state.memory.has(key)) {
+    const remembered = state.memory.get(key);
+    return remembered && remembered.value ? remembered.value : remembered;
+  }
   if (inst.loc.kind === MK.UNKNOWN) return unknown('unknown-load-alias', { instruction: inst.id });
   return symbolicField(inst.loc, fieldName(opts, inst.loc));
 }
@@ -218,7 +239,8 @@ function conditionFromCmp(cmpInst, condCode, state, ir, opts, memo, active) {
   if (!info || !info.op) return unknown('unsupported-condition', { condition: condCode });
   const a = evalValue(cmpInst.args[0].value, state, ir, opts, memo, active);
   const b = evalValue(cmpInst.args[1].value, state, ir, opts, memo, active);
-  return cmp(info.op, a, b);
+  const bits = Number(cmpInst.args[0]?.bits || cmpInst.args[0]?.value?.bits || cmpInst.args[1]?.bits || cmpInst.args[1]?.value?.bits || 64);
+  return cmp(info.op, a, b, { bits, signed: info.signed });
 }
 
 function conditionFromFlags(inst, state, ir, opts, memo, active) {
@@ -319,11 +341,21 @@ export function symbolicExecute(ir, opts) {
     const memo = new Map();
     let transferred = false;
 
-    for (const phi of block.phis || []) {
-      if (!phi.dst) continue;
-      const value = evalValue(phi.dst, state, ir, opts, memo, new Set());
-      state.values.set(phi.dst.id, value);
-    }
+        // PHIs are parallel assignments at block entry. Evaluate every
+  // incoming value against the previous iteration's state, then commit
+  // the new PHI values together. Reusing the cached destination here
+  // would freeze a loop-carried value after its first visit.
+  const phiUpdates = [];
+  for (const phi of block.phis || []) {
+    if (!phi.dst) continue;
+    const chosen = phiValue(phi, state);
+    const value = chosen
+      ? evalValue(chosen, state, ir, opts, memo, new Set())
+      : unknown('ambiguous-phi', { instruction: phi.id });
+    phiUpdates.push([phi.dst.id, value]);
+  }
+  for (const [id, value] of phiUpdates) state.values.set(id, value);
+
 
     for (const inst of block.insts || []) {
       state.steps++;
@@ -346,7 +378,11 @@ export function symbolicExecute(ir, opts) {
         }
         const key = locationKey(inst.loc);
         const value = inst.args[0] ? evalValue(inst.args[0].value, state, ir, opts, memo, new Set()) : unknown('missing-store-value');
-        if (key) state.memory.set(key, value);
+        for (const [knownKey, remembered] of Array.from(state.memory.entries())) {
+          const knownLocation = remembered && remembered.location ? remembered.location : null;
+          if (!knownLocation || mayAliasProvenance(knownLocation, inst.loc)) state.memory.delete(knownKey);
+        }
+        if (key) state.memory.set(key, { location: inst.loc, value });
         if (inst.loc.kind === MK.FIELD || inst.loc.kind === MK.GLOBAL) {
           state.touchedFields.push({ key, location: inst.loc, row: inst.row, address: inst.address, value, valueText: expressionText(value) });
         }

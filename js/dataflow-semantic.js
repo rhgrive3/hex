@@ -126,6 +126,7 @@ function originFingerprint(origin) {
 function sameSemanticStep(a, b) {
   if (!a || !b) return a === b;
   return a.op === b.op && a.imm === b.imm && a.immFloat === b.immFloat &&
+    (a.sourceOperandIndex ?? null) === (b.sourceOperandIndex ?? null) &&
     (a.other || null) === (b.other || null) && originFingerprint(a.otherOrigin) === originFingerprint(b.otherOrigin);
 }
 
@@ -179,6 +180,8 @@ function computationPath(value, active = new Set()) {
           immFloat: null,
           other: ov && ov.reg || null,
           otherOrigin: compatOrigin(ov),
+          sourceOperandIndex: chosen,
+          sourceOnLeft: chosen === 0,
           row: def.row,
           address: def.address,
           engine: 'ir-semantic',
@@ -209,7 +212,8 @@ function directWrites(ir, facts, rmwRows) {
     const confidence = ambiguous ? SCORE.inferred : SCORE.high;
     const alternatives = ambiguous ? (path.alternatives || []).map((candidate) => ({
       from: candidate.load ? { row: candidate.load.row, address: candidate.load.address } : null,
-      steps: candidate.steps.map((s) => ({ op: s.op, imm: s.imm, immFloat: s.immFloat, otherOrigin: s.otherOrigin || null, row: s.row, address: s.address })),
+      steps: candidate.steps.map((s) => ({ op: s.op, imm: s.imm, immFloat: s.immFloat, otherOrigin: s.otherOrigin || null,
+        sourceOperandIndex: s.sourceOperandIndex ?? null, sourceOnLeft: s.sourceOnLeft ?? null, row: s.row, address: s.address })),
     })) : null;
     out.push({
       kind,

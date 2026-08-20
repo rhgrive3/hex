@@ -127,7 +127,7 @@ export function buildFunctionReport(opts) {
   if (fieldIndex && owner) {
     for (const u of updates) {
       u.field = fieldIndex.resolveAccess(
-        { base: u.location.base, disp: u.location.disp }, owner.className);
+        { base: u.location.base, disp: u.location.disp, self: u.location.self === true }, owner.className);
     }
   }
 
@@ -152,7 +152,7 @@ export function buildFunctionReport(opts) {
   const locations = hotLocations(model);
   if (fieldIndex && owner) {
     for (const loc of locations) {
-      loc.field = fieldIndex.resolveAccess({ base: loc.base, disp: loc.disp }, owner.className);
+      loc.field = fieldIndex.resolveAccess({ base: loc.base, disp: loc.disp, self: loc.self === true }, owner.className);
     }
   }
 

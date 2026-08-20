@@ -106,6 +106,31 @@ function transparentMoveSource(value) {
   return current;
 }
 
+function summaryArithmeticSource(value) {
+  let current = value;
+  for (let guard = 0; guard < 8 && current?.def?.op === OP.MOV; guard++) {
+    const def = current.def;
+    const source = def.args?.[0]?.value ?? null;
+    if (!source) break;
+    const fromBits = Number(source.bits || 0), toBits = Number(current.bits || 0);
+    if (def.sub == null) {
+      if (fromBits === toBits) { current = source; continue; }
+      const sameInstructionView = fromBits === 32 && toBits === 64 &&
+        def.row != null && source.def?.row != null && Number(def.row) === Number(source.def.row) &&
+        def.address != null && source.def?.address != null && BigInt(def.address) === BigInt(source.def.address);
+      if (sameInstructionView) { current = source; continue; }
+      break;
+    }
+    const op = String(def.sub || '').toLowerCase();
+    const sameInstructionView = ['zext','uxt32'].includes(op) && fromBits === 32 && toBits === 64 &&
+      def.row != null && source.def?.row != null && Number(def.row) === Number(source.def.row) &&
+      def.address != null && source.def?.address != null && BigInt(def.address) === BigInt(source.def.address);
+    if (sameInstructionView) { current = source; continue; }
+    break;
+  }
+  return current;
+}
+
 function returnArgumentIndex(value) {
   const source = transparentMoveSource(value);
   if (!source) return null;
@@ -116,9 +141,7 @@ function returnArgumentIndex(value) {
 
 function simpleReturnExpression(value) {
   if (!value) return null;
-  let v = value;
-  const pass = new Set([OP.MOV]);
-  for (let guard = 0; guard < 6 && v && v.def && pass.has(v.def.op); guard++) v = v.def.args[0] && v.def.args[0].value;
+  const v = summaryArithmeticSource(value);
   if (!v || !v.def || v.def.op !== OP.BIN || (v.def.sub !== 'add' && v.def.sub !== 'sub')) return null;
   const aArg = v.def.args[0] || null;
   const bArg = v.def.args[1] || null;

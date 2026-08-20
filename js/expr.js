@@ -83,7 +83,8 @@ function childrenOf(n) {
   switch (n.k) {
     case 'bin': return [n.a, n.b];
     case 'un': return [n.a];
-    case 'sel': return [n.a, n.b].concat(n.cmp ? [n.cmp.a, n.cmp.b].filter(Boolean) : []);
+    case 'sel': return [n.a, n.b].concat(n.predicate ? [n.predicate] : [], n.cmp ? [n.cmp.a, n.cmp.b].filter(Boolean) : []);
+    case 'flagcond': return [n.a, n.b].filter(Boolean);
     case 'mem': return [n.base, n.index].filter(Boolean);
     case 'call': return (n.args || []).map((a) => a.value).filter(Boolean);
     default: return [];
@@ -135,6 +136,7 @@ export function same(a, b) {
     case 'mem':
       return a.baseReg === b.baseReg && a.disp === b.disp && a.size === b.size &&
         a.signed === b.signed && a.resultBits === b.resultBits && a.extension === b.extension &&
+        a.memoryVersion === b.memoryVersion &&
         a.scale === b.scale && JSON.stringify(a.indexShift || null) === JSON.stringify(b.indexShift || null) &&
         (!!a.base === !!b.base) && (!a.base || same(a.base, b.base)) &&
         (!!a.index === !!b.index) && (!a.index || same(a.index, b.index));
@@ -166,7 +168,8 @@ export function bin(op, a, b, bits) {
     if ((op === 'mul' || op === 'sdiv' || op === 'udiv') && cb === 1n) return a;
     if (op === 'mul' && cb === 0n) return ZERO;
     if (op === 'and' && cb === 0n) return ZERO;
-    if ((op === 'sdiv' || op === 'udiv' || op === 'smod' || op === 'umod') && cb === 0n) return null;
+    if ((op === 'sdiv' || op === 'udiv') && cb === 0n) return ZERO;
+    if ((op === 'smod' || op === 'umod') && cb === 0n) return null;
   }
   if (op === 'sub' && same(a, b)) return ZERO;
   if (op === 'xor' && same(a, b)) return ZERO;
@@ -216,11 +219,8 @@ export function bin(op, a, b, bits) {
       return node('bin', { op: q.op === 'sdiv' ? 'smod' : 'umod', a, b: constNode(d) });
     }
   }
-  /* ── (a / c1) / c2 → a / (c1*c2) ── */
-  if ((op === 'sdiv' || op === 'udiv') && cb != null && a.k === 'bin' && a.op === op) {
-    const inner = constOf(a.b);
-    if (inner != null) return bin(op, a.a, constNode(inner * cb), bits);
-  }
+  /* Nested fixed-width division is deliberately not reassociated: the first
+     division's rounding/wrap is architectural state (notably INT_MIN / -1). */
 
   return node('bin', { op, a, b });
 }
@@ -263,11 +263,13 @@ function foldConst(op, a, b, w) {
       const m = MASK[w] || MASK[64];
       return (a & m) >> b;
     }
-    case 'sdiv': return b === 0n ? null : truncDiv(a, b);
+    case 'sdiv': {
+      const lhs = BigInt.asIntN(w, a), rhs = BigInt.asIntN(w, b);
+      return rhs === 0n ? 0n : truncDiv(lhs, rhs);
+    }
     case 'udiv': {
-      if (b === 0n) return null;
-      const m = MASK[w] || MASK[64];
-      return (a & m) / (b & m);
+      const lhs = BigInt.asUintN(w, a), rhs = BigInt.asUintN(w, b);
+      return rhs === 0n ? 0n : lhs / rhs;
     }
     case 'smod': return b === 0n ? null : a - truncDiv(a, b) * b;
     default: return null;
@@ -383,6 +385,17 @@ function applyShift(n, sh, bits) {
   }
 }
 
+function signExtendExtractedField(n, width, bits) {
+  const fieldBits = Number(width), destinationBits = Number(bits);
+  if (!Number.isSafeInteger(fieldBits) || !Number.isSafeInteger(destinationBits) || fieldBits < 1 || fieldBits > destinationBits) return null;
+  const c = constOf(n);
+  if (c != null) return constNode(BigInt.asIntN(fieldBits, BigInt.asUintN(fieldBits, c)));
+  if (fieldBits === destinationBits) return n;
+  const sign = bin('shr', n, constNode(BigInt(fieldBits - 1)), destinationBits);
+  const correction = bin('mul', sign, constNode(1n << BigInt(fieldBits)), destinationBits);
+  return bin('sub', n, correction, destinationBits);
+}
+
 const BIN_MN = {
   add: 'add', adds: 'add', sub: 'sub', subs: 'sub',
   mul: 'mul', sdiv: 'sdiv', udiv: 'udiv',
@@ -430,6 +443,8 @@ export function buildValues(model, opts) {
    * 合流点で捨てる（どちらの道の比較か分からなくなるため）。
    */
   let flags = null;
+  // Non-stack memory value identity changes at every possible clobber.
+  let memoryEpoch = 0;
 
   /*
    * sp は本体の途中では動かないか。
@@ -487,8 +502,22 @@ export function buildValues(model, opts) {
     return null;
   };
 
-  const slotKey = (m) => (m && m.stack && m.disp != null && !m.indexed
-    ? m.base + '+' + m.disp.toString() : null);
+  const stackSlotEligible = (m) => !!(m && m.stack && m.disp != null && !m.indexed);
+  const stackSlotKey = (base, disp, size) => `${base}+${BigInt(disp).toString()}:s${Number(size)}`;
+  const stackRead = (m, disp, size) => {
+    if (!stackSlotEligible(m)) return null;
+    const entry = stack.get(stackSlotKey(m.base, disp, size));
+    return entry ? entry.value : null;
+  };
+  const stackWrite = (m, disp, size, value) => {
+    if (!stackSlotEligible(m)) return;
+    const start = BigInt(disp), end = start + BigInt(size);
+    for (const [key, entry] of Array.from(stack.entries())) {
+      if (entry.base !== m.base) continue;
+      if (start < entry.end && entry.start < end) stack.delete(key);
+    }
+    stack.set(stackSlotKey(m.base, start, size), { base:m.base, start, end, size:Number(size), value });
+  };
 
   for (let i = 0; i < insns.length; i++) {
     const insn = insns[i];
@@ -552,6 +581,7 @@ export function buildValues(model, opts) {
 
     /* ── 呼び出し ── */
     if (insn.isCall) {
+      memoryEpoch++;
       flags = null; // NZCV is caller-clobbered and cannot be reused after a call.
       const call = callRows.get(row);
       const args = [];
@@ -614,20 +644,21 @@ export function buildValues(model, opts) {
     if (insn.memory) {
       const m = insn.memory;
       const memOp = insn.ops.find((x) => x.k === 'mem');
-      const slot = slotKey(m);
+      const slot = stackSlotEligible(m);
       if (m.kind === 'load') {
         const txt = textOf.get(row);
         const dstOps = insn.ops.filter((x) => x.k === 'reg');
         const pair = base === 'ldp' || base === 'ldpsw' || base === 'ldnp';
         const list = pair ? dstOps.slice(0, 2) : dstOps.slice(0, 1);
+        const elemSize = pair ? m.size / 2 : m.size;
         list.forEach((dop, k) => {
           const key = regKeyOf(dop);
           if (!key || key === m.base && memOp && (memOp.mode === 'pre' || memOp.mode === 'post')) return;
           let v = null;
           if (txt && k === 0) v = node('str', { addr: txt.addr, text: txt.text });
-          else if (slot && !k && stack.has(slot)) v = stack.get(slot);
-          else if (slot && k === 1 && stack.has(m.base + '+' + (m.disp + BigInt(m.size / 2)).toString())) {
-            v = stack.get(m.base + '+' + (m.disp + BigInt(m.size / 2)).toString());
+          else if (slot) {
+            const stackDisp = m.disp + BigInt(k * elemSize);
+            v = stackRead(m, stackDisp, elemSize);
           }
           if (!v) {
             const baseVal = m.base ? regs.get(m.base) : null;
@@ -653,6 +684,7 @@ export function buildValues(model, opts) {
               resultBits: regBits(dop),
               extension: /^(ldrs|ldurs|ldpsw)/.test(base) ? 'sign' : (regBits(dop) === 32 ? 'zero' : null),
               signed: /^(ldrs|ldurs|ldpsw)/.test(base),
+              memoryVersion: (m.volatile || m.atomic || /^(ldar|ldaxr|ldxr)/.test(base)) ? `ordered:${row}` : memoryEpoch,
               stack: !!m.stack, addr: absolute, row,
             });
           }
@@ -663,17 +695,19 @@ export function buildValues(model, opts) {
           emit(m.base, bin('add', get(m.base, row), constNode(m.writebackDisp), 64));
         }
       } else {
+        memoryEpoch++;
         const srcs = insn.ops.filter((x) => x.k === 'reg');
         const pair = base === 'stp' || base === 'stnp';
         const list = pair ? srcs.slice(0, 2) : srcs.slice(0, 1);
+        const elemSize = pair ? m.size / 2 : m.size;
         list.forEach((sop, k) => {
           const v = valueOf(sop, row, regBits(sop));
-          const step = pair ? BigInt(k * (m.size / 2)) : 0n;
-          if (slot && m.disp != null) stack.set(m.base + '+' + (m.disp + step).toString(), v);
+          const step = pair ? BigInt(k * elemSize) : 0n;
+          if (slot && m.disp != null) stackWrite(m, m.disp + step, elemSize, v);
           memWrites.push({
             row, address: insn.address, baseReg: m.base,
             disp: m.disp != null ? m.disp + step : null,
-            size: pair ? m.size / 2 : m.size, stack: !!m.stack,
+            size: elemSize, stack: !!m.stack,
             index: m.index || null, value: v,
           });
         });
@@ -702,7 +736,7 @@ export function buildValues(model, opts) {
     const unsupportedFlagWriter = /^(adcs|sbcs|ngcs|rmif|setf8|setf16)$/.test(base);
     if (unsupportedFlagWriter) flags = null;
     if (/^(subs|adds|ands|bics|negs)$/.test(base)) {
-      flags = { op: base, a: A(), b: B() };
+      flags = base === 'negs' ? { op: base, a: ZERO, b: A(), bits } : { op: base, a: A(), b: B(), bits };
     }
     // Unknown instructions explicitly reported as writing NZCV must invalidate
     // the remembered predicate even when their mnemonic is not in our table.
@@ -783,8 +817,14 @@ export function buildValues(model, opts) {
     } else if (base === 'ubfx' || base === 'sbfx') {
       const lsb = insn.ops[2] && insn.ops[2].value != null ? insn.ops[2].value : 0n;
       const width = insn.ops[3] && insn.ops[3].value != null ? insn.ops[3].value : 0n;
-      const shifted = bin('shr', A(), constNode(lsb), bits);
-      emit(dst, width > 0n && width < 64n ? bin('and', shifted, constNode((1n << width) - 1n), bits) : shifted);
+      const destinationWidth = BigInt(bits);
+      if (lsb < 0n || width <= 0n || lsb >= destinationWidth || width > destinationWidth - lsb) {
+        if (dst) regs.delete(dst);
+      } else {
+        const shifted = bin('shr', A(), constNode(lsb), bits);
+        const extracted = width === destinationWidth ? shifted : bin('and', shifted, constNode((1n << width) - 1n), bits);
+        emit(dst, base === 'sbfx' ? signExtendExtractedField(extracted, width, bits) : extracted);
+      }
     } else if (base === 'csel' || base === 'csinc' || base === 'csinv' || base === 'csneg' ||
                base === 'cset' || base === 'csetm' || base === 'cinc') {
       emit(dst, selectNode(insn, row, valueOf, bits, flags));
@@ -808,6 +848,7 @@ export function buildValues(model, opts) {
         op: base,
         a: valueOf(insn.ops[0], row, cbits),
         b: insn.ops[1] ? valueOf(insn.ops[1], row, cbits) : ZERO,
+        bits: cbits,
       };
     } else if (insn.writes.length) {
       for (const w of insn.writes) regs.delete(w);
@@ -923,63 +964,81 @@ function narrow32(v) {
   return un('uxt32', v);
 }
 
+function nzcvForConstants(flags) {
+  if (!flags || !flags.a || !flags.b) return null;
+  const av = constOf(flags.a), bv = constOf(flags.b);
+  if (av == null || bv == null) return null;
+  const bits = Math.max(1, Math.min(64, Number(flags.bits) || 64));
+  const width = BigInt(bits), mask = (1n << width) - 1n, sign = 1n << (width - 1n);
+  const a = BigInt.asUintN(bits, av), b = BigInt.asUintN(bits, bv);
+  let result = 0n, c = false, v = false;
+  if (flags.op === 'adds' || flags.op === 'cmn') {
+    const full = a + b; result = full & mask; c = full > mask; v = ((~(a ^ b) & (a ^ result) & sign) !== 0n);
+  } else if (flags.op === 'subs' || flags.op === 'cmp' || flags.op === 'negs') {
+    result = (a - b) & mask; c = a >= b; v = (((a ^ b) & (a ^ result) & sign) !== 0n);
+  } else if (flags.op === 'ands' || flags.op === 'tst') {
+    result = a & b;
+  } else if (flags.op === 'bics') {
+    result = a & ((~b) & mask);
+  } else return null;
+  return { n:(result & sign) !== 0n, z:result === 0n, c, v };
+}
+
+function conditionFromNzcv(f, cc) {
+  if (!f || !cc) return null;
+  const { n,z,c,v } = f;
+  switch (cc) {
+    case 'eq': return z; case 'ne': return !z;
+    case 'cs': case 'hs': return c; case 'cc': case 'lo': return !c;
+    case 'mi': return n; case 'pl': return !n; case 'vs': return v; case 'vc': return !v;
+    case 'hi': return c && !z; case 'ls': return !c || z;
+    case 'ge': return n === v; case 'lt': return n !== v;
+    case 'gt': return !z && n === v; case 'le': return z || n !== v;
+    case 'al': return true; case 'nv': return false; default: return null;
+  }
+}
+
+function compareCompatible(flags) {
+  if (!flags || !flags.a || !flags.b) return null;
+  if (['cmp','subs','negs','fcmp','fcmpe'].includes(flags.op)) return { a:flags.a, b:flags.b };
+  return null;
+}
+
+function flagConditionNode(flags, cc) {
+  if (!flags || !flags.a || !flags.b || !cc) return null;
+  if (!['adds','cmn','ands','tst','bics'].includes(flags.op)) return null;
+  return node('flagcond', { cc, producer:flags.op, bits:Math.max(1, Math.min(64, Number(flags.bits) || 64)), a:flags.a, b:flags.b, semantics:'aarch64-nzcv-exact' });
+}
+
 function selectNode(insn, row, valueOf, bits, flags) {
   const ops = insn.ops;
-  const cc = ops.length ? ops[ops.length - 1] : null;
-  const cond = cc && cc.k === 'cond' ? cc.text : null;
+  const ccOp = ops.length ? ops[ops.length - 1] : null;
+  const cond = ccOp && ccOp.k === 'cond' ? ccOp.text : null;
   const base = String(insn.mnemonic).toLowerCase();
-  /*
-   * 何と何を比べた結果なのか。分かっていれば、条件を式として書ける。
-   *
-   * tst と cmn は「引き算して 0 と比べる」形ではないので、比べる形に直してから渡す。
-   *   tst w8, #1  → (w8 & 1) と 0
-   *   cmn w8, #4  → (w8 + 4) と 0
-   */
-  let cmp = null;
-  if (flags && flags.a) {
-    if (flags.op === 'tst' || flags.op === 'ands' || flags.op === 'bics') {
-      cmp = { a: bin('and', flags.a, flags.b, 64), b: ZERO };
-    } else if (flags.op === 'cmn' || flags.op === 'adds') {
-      cmp = { a: bin('add', flags.a, flags.b, 64), b: ZERO };
-    } else {
-      cmp = { a: flags.a, b: flags.b };
-    }
-    if (!cmp.a) cmp = null;
-  }
+  const cmp = compareCompatible(flags);
+  const predicate = cmp ? null : flagConditionNode(flags, cond);
+  const known = conditionFromNzcv(nzcvForConstants(flags), cond);
   if (base === 'cset' || base === 'csetm') {
-    return node('sel', { cc: cond, cmp, a: constNode(base === 'csetm' ? -1n : 1n), b: ZERO });
+    const on = constNode(base === 'csetm' ? -1n : 1n);
+    if (known != null) return known ? on : ZERO;
+    return node('sel', { cc:cond, cmp, predicate, a:on, b:ZERO });
   }
   const a = valueOf(ops[1], row, bits);
   const b = ops[2] && ops[2].k !== 'cond' ? valueOf(ops[2], row, bits) : a;
   if (base === 'cinc') {
     const inc = bin('add', a, constNode(1n), bits);
-    return node('sel', { cc: cond, cmp, a: inc, b: a });
+    if (known != null) return known ? inc : a;
+    return node('sel', { cc:cond, cmp, predicate, a:inc, b:a });
   }
   let alt = b;
   if (base === 'csinc') alt = bin('add', b, constNode(1n), bits);
   else if (base === 'csinv') alt = un('not', b);
   else if (base === 'csneg') alt = un('neg', b);
-  /*
-   * どちらを選んでも同じ値なら、選んでいない。
-   *
-   *   x22 = flag_ne ? flag_ne ? result : flag_lt ? result : 1 : result;
-   *
-   * こう出ていた行の外側 2 段は、どちらの枝も result だった。
-   * 比較が読めなかったときに条件を `flag_ne` と書くので、余計に読めなくなる。
-   */
+  if (known != null) return known ? a : alt;
   if (same(a, alt)) return a;
-  /*
-   * 「大きいほうを採る」「小さいほうを採る」の定型。
-   *
-   *   cmp x25, #1 ; csel x22, x25, x8, lt      →   x22 = min(result, 1);
-   *
-   * ARM64 に min / max の命令は無いので、コンパイラは必ず比較と csel の
-   * 2 命令で書く。比べた 2 つと選んだ 2 つが同じものなら、それは min か max
-   * であって、条件つき代入として読む必要はない。
-   */
   const mm = minMaxOf(cond, cmp, a, alt);
   if (mm) return mm;
-  return node('sel', { cc: cond, cmp, a, b: alt });
+  return node('sel', { cc:cond, cmp, predicate, a, b:alt });
 }
 
 /** cond ? a : b が min / max の形になっていれば、その 1 つのノードにする。 */
@@ -1059,7 +1118,7 @@ export function foldMagic(n, depth) {
   }
   if (n.k === 'sel') {
     const a = foldMagic(n.a, d), b = foldMagic(n.b, d);
-    return (a === n.a && b === n.b) ? n : node('sel', { cc: n.cc, a, b, cmp: n.cmp });
+    return (a === n.a && b === n.b) ? n : node('sel', { cc: n.cc, a, b, cmp: n.cmp, predicate: n.predicate });
   }
   if (n.k === 'mem' && n.index) {
     const idx = foldMagic(n.index, d);
@@ -1334,7 +1393,7 @@ function emit(n, prec, o, depth) {
     case 'un': return emitUn(n, prec, o, depth);
     case 'sel': {
       const s = emit(n.a, 3, o, depth + 1) + ' : ' + emit(n.b, 3, o, depth + 1);
-      const c = n.cc ? condSymbol(n.cc, n.cmp, o, depth) : 'cond';
+      const c = n.cmp ? condSymbol(n.cc, n.cmp, o, depth) : (n.predicate ? emitFlagCondition(n.predicate, o, depth) : (n.cc ? condSymbol(n.cc, null, o, depth) : 'cond'));
       const t = c + ' ? ' + s;
       return prec > 3 ? '(' + t + ')' : t;
     }
@@ -1394,6 +1453,23 @@ function emitCall(n, o, depth) {
     (n.target != null ? 'sub_' + n.target.toString(16).toUpperCase() : '(*func)');
   const args = (n.args || []).map((a) => emit(a.value, 0, o, depth + 1));
   return label + '(' + args.join(', ') + ')';
+}
+
+function emitFlagCondition(predicate, o, depth) {
+  if (!predicate || predicate.k !== 'flagcond') return 'flag_unknown';
+  const producer = String(predicate.producer || 'unknown'), bits = Number(predicate.bits || 64);
+  const a = emit(predicate.a, 0, o, depth + 1), b = emit(predicate.b, 0, o, depth + 1);
+  const stem = `${producer}${bits}(${a}, ${b})`;
+  const n=`N_${stem}`, z=`Z_${stem}`, c=`C_${stem}`, v=`V_${stem}`;
+  switch (predicate.cc) {
+    case 'eq': return z; case 'ne': return `!${z}`;
+    case 'cs': case 'hs': return c; case 'cc': case 'lo': return `!${c}`;
+    case 'mi': return n; case 'pl': return `!${n}`; case 'vs': return v; case 'vc': return `!${v}`;
+    case 'hi': return `${c} && !${z}`; case 'ls': return `!${c} || ${z}`;
+    case 'ge': return `${n} == ${v}`; case 'lt': return `${n} != ${v}`;
+    case 'gt': return `!${z} && ${n} == ${v}`; case 'le': return `${z} || ${n} != ${v}`;
+    default: return `nzcv_${stem}.${predicate.cc || 'unknown'}`;
+  }
 }
 
 function condSymbol(cc, cmp, o, depth) {

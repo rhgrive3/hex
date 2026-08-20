@@ -310,6 +310,8 @@ export function functionSeed(address, opts = {}) {
     extentConfidence: opts.extentConfidence == null ? (hasExtent ? confidence : null)
       : Math.max(0, Math.min(1, Number(opts.extentConfidence))),
     extentInherited: !!opts.extentInherited,
+    callingConvention: opts.callingConvention || null,
+    abiMetadata: opts.abiMetadata == null ? null : { ...opts.abiMetadata },
   };
 }
 
@@ -331,6 +333,8 @@ export function mergeFunctionSeeds(input, context = {}) {
     if (!best.name && other.name) best.name = other.name;
     best.exactFunctionStart = !!(prev.exactFunctionStart || f.exactFunctionStart);
     if (!best.functionStartEvidence) best.functionStartEvidence = other.functionStartEvidence || null;
+    if (!best.callingConvention && other.callingConvention) best.callingConvention = other.callingConvention;
+    if (!best.abiMetadata && other.abiMetadata) best.abiMetadata = { ...other.abiMetadata };
     let inheritedExtent = false;
     if (best.size == null && other.size != null) { best.size = other.size; inheritedExtent = true; }
     if (best.end == null && other.end != null) { best.end = other.end; inheritedExtent = true; }

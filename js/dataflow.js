@@ -136,8 +136,12 @@ export function amountOf(model, update) {
     }
     if (SCALE_OPS.has(step.op)) scaled = true;
     if (amount || !AMOUNT_OPS.has(step.op)) continue;
-    if (origin && DIRECT_ORIGIN.has(origin.kind)) amount = { op: step.op, ...origin };
-    else if (step.imm != null) amount = { kind: 'imm', value: step.imm, op: step.op, row: step.row, engine: 'ir-ssa' };
+    const operandSide = step.sourceOperandIndex == null ? {} : {
+      sourceOperandIndex: step.sourceOperandIndex,
+      sourceOnLeft: step.sourceOnLeft === true,
+    };
+    if (origin && DIRECT_ORIGIN.has(origin.kind)) amount = { op: step.op, ...origin, ...operandSide };
+    else if (step.imm != null) amount = { kind: 'imm', value: step.imm, op: step.op, row: step.row, engine: 'ir-ssa', ...operandSide };
   }
   return { amount, clamped, scaled, cappedBy, ops };
 }

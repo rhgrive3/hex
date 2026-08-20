@@ -149,7 +149,7 @@ const bitRules = [
 
 const compareRules = [{
   name: 'compare-self-eq-ne', phase: 'boolean',
-  match: (n) => n?.kind === 'compare' && ['eq','ne'].includes(n.op) && sameExpr(n.left, n.right) && isPure(n.left) ? {} : null,
+  match: (n) => n?.kind === 'compare' && n.comparisonDomain !== 'floating' && ['eq','ne'].includes(n.op) && sameExpr(n.left, n.right) && isPure(n.left) ? {} : null,
   rewrite: (n) => c(n.op === 'eq' ? 1 : 0, n, 1),
   proof: proof('comparison-reflexivity', 'pure expression compared with itself'), cost,
 }, {

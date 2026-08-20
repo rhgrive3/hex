@@ -21,7 +21,10 @@ export const expr = {
   variable(name, bits = 64, signed = null, source = null, extra = {}) { return node('var', { name, bits: Number(bits || 64), signed, effect: 'pure', ...extra }, source); },
   unary(op, arg, bits = arg?.bits || 64, signed = arg?.signed ?? null, source = null, extra = {}) { return node('unary', { op, arg, bits, signed, effect: effectOf(arg), ...extra }, mergeSource(source, arg?.source)); },
   binary(op, left, right, bits = left?.bits || right?.bits || 64, signed = null, source = null, extra = {}) { return node('binary', { op, left, right, bits, signed, effect: maxEffect(effectOf(left), effectOf(right)), ...extra }, mergeSource(source, left?.source, right?.source)); },
-  compare(op, left, right, signed = null, source = null) { return node('compare', { op, left, right, bits: 1, signed: false, compareSigned: signed, effect: maxEffect(effectOf(left), effectOf(right)) }, mergeSource(source, left?.source, right?.source)); },
+  compare(op, left, right, signed = null, source = null, extra = {}) {
+    const comparisonDomain = extra.comparisonDomain ?? ((left?.floating === true || right?.floating === true || left?.kind === 'float-const' || right?.kind === 'float-const') ? 'floating' : 'integer');
+    return node('compare', { op, left, right, bits: 1, signed: false, compareSigned: signed, comparisonDomain, effect: maxEffect(effectOf(left), effectOf(right)), ...extra }, mergeSource(source, left?.source, right?.source));
+  },
   select(condition, whenTrue, whenFalse, bits = whenTrue?.bits || whenFalse?.bits || 64, signed = null, source = null) { return node('select', { condition, whenTrue, whenFalse, bits, signed, effect: maxEffect(effectOf(condition), effectOf(whenTrue), effectOf(whenFalse)) }, mergeSource(source, condition?.source, whenTrue?.source, whenFalse?.source)); },
   call(callee, args = [], bits = 64, source = null, extra = {}) { return node('call', { callee, args: args.slice(), bits, signed: null, effect: 'call', ...extra }, mergeSource(source, ...args.map((a) => a?.source))); },
   load(location, bits = 64, source = null, extra = {}) { return node('load', { location, bits, signed: extra.signed ?? null, effect: extra.volatile ? 'volatile' : 'read', ...extra }, source); },
@@ -122,7 +125,7 @@ export function structuralKey(root) {
       case 'var': value = `v:${n.name}:${semanticTag(n)}`; break;
       case 'unary': value = `u:${n.op}:${semanticTag(n)}:${k(n.arg)}`; break;
       case 'binary': value = `b:${n.op}:${semanticTag(n)}:${k(n.left)}:${k(n.right)}`; break;
-      case 'compare': value = `cmp:${n.op}:${n.compareSigned}:${k(n.left)}:${k(n.right)}`; break;
+      case 'compare': value = `cmp:${n.op}:${n.compareSigned}:${n.comparisonDomain ?? 'unknown'}:${k(n.left)}:${k(n.right)}`; break;
       case 'select': value = `sel:${semanticTag(n)}:${k(n.condition)}:${k(n.whenTrue)}:${k(n.whenFalse)}`; break;
       case 'field': value = `field:${k(n.base)}:${n.name}:${n.offset}:${semanticTag(n)}`; break;
       case 'index': value = `idx:${k(n.base)}:${k(n.index)}:${n.scale}:${semanticTag(n)}`; break;

@@ -100,14 +100,14 @@ function withSignedWidth(node, bits, source) {
   return raw ? expr.unary('sext', raw, bits, true, source, { fromBits: bits }) : null;
 }
 
-function directCompare(op, left, right, signed, bits, source) {
+function directCompare(op, left, right, signed, bits, source, comparisonDomain = 'integer') {
   // The AST comparison carries signedness/width semantics. Do not inject
   // redundant textual casts here: recovered fields/locals already have their
   // declared C type, and double-casts make otherwise readable predicates noisy.
   // Architecture-specific cases that cannot be represented by a normal C
   // comparison are retained as explicit NZCV intrinsics below.
   void bits;
-  return left && right ? expr.compare(op, left, right, signed, source) : null;
+  return left && right ? expr.compare(op, left, right, signed, source, { comparisonDomain }) : null;
 }
 
 function zero(bits, signed, source) {
@@ -137,12 +137,12 @@ export function buildNZCVConditionExpression(sub, cond, left, right, bits = 64, 
 
   if (sub === 'fsub') {
     switch (cond) {
-      case 'eq': return directCompare('eq', left, right, false, bits, source);
-      case 'ne': return directCompare('ne', left, right, false, bits, source);
-      case 'mi': case 'lo': case 'cc': return directCompare('lt', left, right, true, bits, source);
-      case 'ls': return directCompare('le', left, right, true, bits, source);
-      case 'ge': return directCompare('ge', left, right, true, bits, source);
-      case 'gt': return directCompare('gt', left, right, true, bits, source);
+      case 'eq': return directCompare('eq', left, right, false, bits, source, 'floating');
+      case 'ne': return directCompare('ne', left, right, false, bits, source, 'floating');
+      case 'mi': case 'lo': case 'cc': return directCompare('lt', left, right, true, bits, source, 'floating');
+      case 'ls': return directCompare('le', left, right, true, bits, source, 'floating');
+      case 'ge': return directCompare('ge', left, right, true, bits, source, 'floating');
+      case 'gt': return directCompare('gt', left, right, true, bits, source, 'floating');
       default: return intrinsicCondition(sub, cond, left, right, bits, source);
     }
   }
