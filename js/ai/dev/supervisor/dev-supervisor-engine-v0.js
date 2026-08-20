@@ -6,6 +6,7 @@ import {
   devBootstrapContractSignature,
   devSupervisorContextPacket,
 } from '../protocol/dev-supervisor-prompt.js';
+import { selectDevContext } from '../protocol/context-selection.js';
 import { DevRunEventHost } from '../events/dev-events.js';
 import { DEV_WORKER_TOOL } from '../workers/tool-surface.js';
 import {
@@ -42,6 +43,7 @@ export class DevSupervisorEngineV0 {
     selfUpdateGate = new DevSelfUpdateGate(),
     maxToolErrorRecoveries = DEV_TOOL_ERROR_RECOVERY_BUDGET,
     runtimeIdentityProvider = null,
+    contextBudgetBytes = null,
   } = {}) {
     if (!supervisor) throw new TypeError('DevSupervisorEngineV0 requires a supervisor.');
     if (!settings) throw new TypeError('DevSupervisorEngineV0 requires settings.');
@@ -56,6 +58,10 @@ export class DevSupervisorEngineV0 {
     this.selfUpdateGate = selfUpdateGate;
     this.maxToolErrorRecoveries = Math.max(0, Number(maxToolErrorRecoveries) || 0);
     this.runtimeIdentityProvider = typeof runtimeIdentityProvider === 'function' ? runtimeIdentityProvider : null;
+    /* No budget by default: selection still removes duplicates, superseded facts
+       and already-covered evidence, but drops nothing until a caller sets a
+       limit. Reducing context is never worth guessing about. */
+    this.contextBudgetBytes = contextBudgetBytes == null ? null : Number(contextBudgetBytes);
     this.bootstrapStage = null;
     this.supervisorSessions = new Map();
     /* In-runtime only. A new engine instance -- which is what a reload or
@@ -266,6 +272,7 @@ export class DevSupervisorEngineV0 {
           ? Object.freeze([requiredBootstrapCapability])
           : this.availableTools();
         const transport = this.promptTransportFor(run.supervisorSessionKey, promptTools, history);
+        const contextPacket = this.selectSupervisorContext(run);
         let response;
         try {
           response = await this.bridge.request(buildDevSupervisorPrompt({
@@ -273,7 +280,7 @@ export class DevSupervisorEngineV0 {
             availableTools: promptTools,
             history: transport.history,
             mode: transport.mode,
-            contextPacket: devSupervisorContextPacket(run),
+            contextPacket,
           }), {
             signal: input.signal,
             sessionKey: run.supervisorSessionKey,
@@ -445,6 +452,20 @@ export class DevSupervisorEngineV0 {
     return currentHexConversationId === waitingHexConversationId ? run : null;
   }
 
+  /* Deterministic host-side selection. No model call, no summarizer: it removes
+     exact duplicates, superseded facts and evidence a compact result already
+     covers, and applies a byte budget only when one was configured. A blocker
+     means the correctness-critical context did not fit, which is reported
+     rather than trimmed away. */
+  selectSupervisorContext(run) {
+    const packet = devSupervisorContextPacket(run);
+    if (!packet) return null;
+    const selection = selectDevContext({ packet, budgetBytes: this.contextBudgetBytes });
+    this.lastContextSelection = selection;
+    if (selection.blocker) throw devEngineError(selection.blocker.code, selection.blocker.message);
+    return selection.packet;
+  }
+
   /* CONTINUATION is allowed only when this runtime can prove the session was
      bootstrapped under exactly the contract still in force. Anything else --
      a new runtime, a new session key, a changed tool/protocol contract, or a
@@ -546,3 +567,5 @@ function normalizeRequiredBootstrapCapability(value, activeCapabilities) {
   if (!(activeCapabilities || []).includes(name)) throw new Error(`Required bootstrap capability is not active: ${name}`);
   return name;
 }
+
+function devEngineError(code, message) { const error = new Error(message); error.code = code; return error; }
