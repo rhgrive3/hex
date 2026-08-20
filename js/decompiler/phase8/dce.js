@@ -32,7 +32,7 @@ export const DCE_PASS = createPassDescriptor({
   // would be a dependency this pass does not have, which is as misleading as an
   // undeclared one: it would order the pipeline around a fact nobody reads.
   consumes: ['cfg', 'ssa'],
-  preserves: ['cfg', 'dominators', 'loops', 'ssa', 'memorySsa', 'alias', 'effects', 'ranges', 'valueNumbers', 'types', 'aggregates', 'summaries', 'origins', 'structuredRegions'],
+  preserves: ['cfg', 'dominators', 'loops', 'ssa', 'memorySsa', 'alias', 'effects', 'ranges', 'valueNumbers', 'induction', 'types', 'aggregates', 'summaries', 'origins', 'structuredRegions'],
   invalidates: [],
   produces: ['deadCode'],
   description: 'Identifies operations whose result is dead and whose execution is provably unobservable.',

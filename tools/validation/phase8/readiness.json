@@ -159,13 +159,15 @@
     {
       "id": "loop-recovery",
       "title": "Loop structuring and repair",
-      "state": "PARTIAL_EXISTING",
+      "state": "PROVEN_EXISTING",
       "owner": "P8-4",
       "evidence": [
+        "js/controlflow.js",
         "js/decompiler/loop-repair.js",
-        "js/controlflow.js"
+        "js/decompiler/phase8/induction.js",
+        "tests/phase8/loops/induction.test.mjs"
       ],
-      "finding": "Canonical post-test loop repair exists and js/controlflow.js already refuses to absorb side-entry nodes into a region. There are no reusable loop facts; P8-4 produces one summary artifact instead of each consumer rediscovering loops."
+      "finding": "P8-4 consumes the loop set, dominators and back edges from js/controlflow.js rather than detecting loops again, and verifies each record against the dominator facts before using it: a region whose header does not dominate every node is reported irreducible and given no induction facts. Exit edges are republished with their kinds intact for P8-5."
     },
     {
       "id": "switch-recovery",
@@ -303,12 +305,13 @@
     {
       "id": "loop-induction",
       "title": "Loop induction facts",
-      "state": "PARTIAL_EXISTING",
+      "state": "PHASE8_IMPLEMENT",
       "owner": "P8-4",
       "evidence": [
-        "js/decompiler/semantic.js"
+        "js/decompiler/phase8/induction.js",
+        "tests/phase8/loops/induction.test.mjs"
       ],
-      "finding": "recoverInductionVariables exists but is a rendering-time helper, not a versioned reusable summary with init/step/guard/bound/signedness/wrap/exit evidence. P8-4 replaces the helper's role with one artifact so aggregate recovery does not rediscover induction."
+      "finding": "P8-4 publishes a versioned InductionSummary (analysis key `induction`, summaryVersion 1) carrying init, step, guard, bound, signedness, wrap, trip range, exit edges, evidence and completeness per loop. On the frozen corpus it recovers 20 induction variables across 19 natural loops, 10 of them pointer inductions; no exact trip count is claimed there because every bound is a runtime argument and the -O0 guards compare condition-flag bits, which the generic pass refuses to decode. recoverInductionVariables in js/decompiler/semantic.js stays as the rendering-time helper it always was; it is not a second source of truth for this artifact."
     },
     {
       "id": "prototype-recovery",

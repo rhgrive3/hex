@@ -25,6 +25,7 @@ import { runPassTransaction, seedAnalysisState } from './transaction.js';
 import { SCCP_PASS, runSccpPass } from './sccp.js';
 import { GVN_PASS, runGvnPass } from './valuenumber.js';
 import { DCE_PASS, runDcePass } from './dce.js';
+import { INDUCTION_PASS, runInductionPass } from './induction.js';
 
 export { PHASE8_CONTRACT_VERSION, PASS_STAGES } from './contract.js';
 export { createPassDescriptor, createPassResult, unchangedResult, ANALYSIS_KEYS, PASS_STATUSES, COMPLETENESS, BUDGET_CLASSES } from './contract.js';
@@ -33,6 +34,7 @@ export { createAnalysisState, invalidationFor, runPassTransaction, seedAnalysisS
 export { SCCP_PASS, describeSccp, runSccpPass } from './sccp.js';
 export { GVN_PASS, loadIsReusable, runGvnPass } from './valuenumber.js';
 export { DCE_PASS, observableEffectReason, runDcePass } from './dce.js';
+export { INDUCTION_PASS, INDUCTION_SUMMARY_VERSION, classifyLoop, describeLoopFacts, readGuardPredicate, resolveStep, runInductionPass, tripCountOf } from './induction.js';
 
 /**
  * The Phase 8 pass registry.
@@ -46,6 +48,7 @@ const REGISTERED = Object.freeze([
   Object.freeze({ descriptor: SCCP_PASS, run: runSccpPass }),
   Object.freeze({ descriptor: GVN_PASS, run: runGvnPass }),
   Object.freeze({ descriptor: DCE_PASS, run: runDcePass }),
+  Object.freeze({ descriptor: INDUCTION_PASS, run: runInductionPass }),
 ]);
 
 /**

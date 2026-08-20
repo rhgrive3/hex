@@ -22,7 +22,9 @@
  * formality. The shape is versioned so a contract change invalidates derived
  * artifacts instead of silently reinterpreting them. P8-3 added the `deadCode`
  * key; a pass that does not preserve it now invalidates it, which is the
- * conservative direction.
+ * conservative direction. P8-4 added `induction`, the loop/trip fact summary
+ * that structuring and aggregate recovery consume instead of each deriving
+ * their own.
  */
 
 /**
@@ -31,7 +33,7 @@
  * material, so a bump invalidates derived artifacts rather than silently
  * reusing them (EP-005 evidence-invalidation rule, MIGRATION_GUARDRAILS §CI).
  */
-export const PHASE8_CONTRACT_VERSION = 4;
+export const PHASE8_CONTRACT_VERSION = 5;
 
 /**
  * Ordered pipeline stages. Order here is the dependency order Phase 8 accepts;
@@ -64,6 +66,7 @@ export const ANALYSIS_KEYS = Object.freeze([
   'ranges',
   'valueNumbers',
   'deadCode',
+  'induction',
   'types',
   'aggregates',
   'summaries',

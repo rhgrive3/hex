@@ -10,6 +10,8 @@
  * Nothing here names a register, a flag or an ABI.
  */
 
+import { analyzeGraph } from '../../../js/controlflow.js';
+
 let nextId = 1;
 
 function freshId() { return nextId++; }
@@ -109,6 +111,7 @@ export class IrFixture {
   load(bits, {
     locKey = null, addressSpace = 'memory', volatility = 'unknown', atomic = 'unknown',
     ordering = 'unknown', faults = [], memDefs = null, barrier = null, addressPrecise = false,
+    addrBase = null, addrIndex = null,
   } = {}) {
     const instruction = this.#instruction('load', null, [], {
       memoryAccess: { addressSpace, widthBits: bits, volatility, atomic, ordering, faults },
@@ -117,6 +120,9 @@ export class IrFixture {
     if (locKey != null) instruction.loc = { kind: 'field', key: locKey };
     if (memDefs != null) instruction.memUse = { memDefs: memDefs.map((id) => ({ inst: { id } })) };
     if (barrier != null) instruction.unknownAliasBarrier = barrier;
+    // The address a load computes from, as the real IR carries it: a base value
+    // and an optional index, not an ordinary operand.
+    if (addrBase != null || addrIndex != null) instruction.addr = { base: addrBase, index: addrIndex, disp: 0n, scale: 0 };
     return this.#emit(instruction, bits);
   }
 
@@ -161,6 +167,20 @@ export class IrFixture {
     return value;
   }
 
+  /**
+   * Fills in a phi edge whose value is only defined further down the loop body.
+   *
+   * A loop-carried phi has to name a value that does not exist yet when the
+   * header is written, which is a property of loops, not of this helper.
+   */
+  closePhi(phiValue, from, value) {
+    const incoming = (phiValue?.def?.incoming ?? []).find((entry) => entry.from === from);
+    if (incoming == null) throw new TypeError(`ir-fixture-no-phi-edge-from:${from}`);
+    incoming.value = value;
+    value?.uses.push(phiValue.def);
+    return phiValue;
+  }
+
   /** A conditional branch on a one-bit value, as the IR presents it. */
   conditionalBranch(condition, trueBlock, falseBlock) {
     this.current.insts.push({
@@ -194,7 +214,19 @@ export class IrFixture {
     return this;
   }
 
-  build() {
+  /**
+   * Finishes the function.
+   *
+   * Dominance and the loop set come from the product's own `analyzeGraph`, not
+   * from anything written here. That is the point: the Phase 8 loop pass has to
+   * be proved against the canonical upstream loop facts, and a fixture that
+   * hand-wrote its own would be proving the pass against a second loop detector
+   * — the exact thing P8-4 forbids.
+   *
+   * `loops` may be overridden to hand the pass a record that is *not* a natural
+   * loop, which is how the refusal path is tested.
+   */
+  build({ loops = null } = {}) {
     // Predecessors are derived rather than declared, so a fixture cannot
     // describe a CFG whose edges disagree with themselves.
     const byIndex = new Map(this.blocks.map((block) => [block.index, block]));
@@ -203,11 +235,19 @@ export class IrFixture {
       for (const successor of block.succ) byIndex.get(successor)?.pred.push(block.index);
     }
     if (this.blocks.length > 0 && !this.blocks.some((block) => block.isEntry)) this.blocks[0].isEntry = true;
+    const highest = this.blocks.reduce((most, block) => Math.max(most, block.index), -1);
+    const successors = [];
+    for (let index = 0; index <= highest; index += 1) successors.push([...(byIndex.get(index)?.succ ?? [])]);
+    const graph = analyzeGraph(successors, this.blocks[0]?.index ?? 0);
     return {
       name: this.name,
       values: this.values,
       blocks: this.blocks,
       entry: this.blocks[0]?.index ?? null,
+      idom: graph.immediateDominators,
+      dominators: graph.dominators,
+      backEdges: graph.backEdges,
+      loops: loops ?? graph.loops,
       origin: { instructionIds: [`instruction_${this.name}`] },
     };
   }

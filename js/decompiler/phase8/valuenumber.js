@@ -30,7 +30,7 @@ export const GVN_PASS = createPassDescriptor({
   // same computation however they were spelled. Declaring the dependency is what
   // makes the transaction refuse to run this pass before SCCP has run.
   consumes: ['cfg', 'ssa', 'ranges'],
-  preserves: ['cfg', 'dominators', 'loops', 'ssa', 'memorySsa', 'alias', 'effects', 'ranges', 'deadCode', 'types', 'aggregates', 'summaries', 'origins', 'structuredRegions'],
+  preserves: ['cfg', 'dominators', 'loops', 'ssa', 'memorySsa', 'alias', 'effects', 'ranges', 'deadCode', 'induction', 'types', 'aggregates', 'summaries', 'origins', 'structuredRegions'],
   invalidates: [],
   produces: ['valueNumbers'],
   description: 'Semantic value numbering with memory reuse gated on the IR\'s own memory proof.',
