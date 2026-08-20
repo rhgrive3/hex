@@ -18,6 +18,8 @@ export const RUNTIME_EVENT_KINDS = Object.freeze([
   'gap', 'dropped-events', 'provider-warning', 'provider-error',
 ]);
 
+const COMPLETENESS_RANK = Object.freeze({ unsupported: 0, truncated: 1, partial: 2, bounded: 3, complete: 4 });
+
 function required(value, code, message) {
   const text = String(value ?? '').trim();
   if (!text) throw new DebugAdapterError(code, message || code);
@@ -150,16 +152,23 @@ export function normalizeLegacyRuntimeEvent(input, context = {}) {
 
 export function createRuntimeEventBatch(input = {}) {
   const events = Array.isArray(input.events) ? input.events.map((event) => createRuntimeEvent(event)) : [];
-  const hasGap = events.some((event) => event.kind === 'gap' || event.kind === 'dropped-events' || event.completeness === 'truncated');
-  const completeness = normalizeCompleteness(input.completeness, hasGap ? 'truncated' : 'partial');
-  if (hasGap && completeness === 'complete') throw new DebugAdapterError('runtime-completeness-upgrade', 'event batch containing loss cannot be complete');
+  const dropped = safeInteger(input.dropped, 0, 'dropped');
+  const hasLoss = dropped > 0 || events.some((event) => event.kind === 'gap' || event.kind === 'dropped-events' || event.completeness === 'truncated');
+  const requested = normalizeCompleteness(input.completeness, hasLoss ? 'truncated' : 'partial');
+  let strongestAllowed = hasLoss ? 'truncated' : 'complete';
+  for (const event of events) {
+    if (COMPLETENESS_RANK[event.completeness] < COMPLETENESS_RANK[strongestAllowed]) strongestAllowed = event.completeness;
+  }
+  if (COMPLETENESS_RANK[requested] > COMPLETENESS_RANK[strongestAllowed]) {
+    throw new DebugAdapterError('runtime-completeness-upgrade', `event batch cannot upgrade ${strongestAllowed} source evidence to ${requested}`);
+  }
   return deepFreeze({
     runtimeSessionId: required(input.runtimeSessionId ?? events[0]?.runtimeSessionId, 'runtime-session-id-required', 'runtime event batch requires runtimeSessionId'),
     providerId: required(input.providerId ?? events[0]?.providerId, 'runtime-provider-required', 'runtime event batch requires providerId'),
     sessionEpoch: safeInteger(input.sessionEpoch ?? events[0]?.sessionEpoch, 1, 'sessionEpoch', { min: 1 }),
     events: Object.freeze(events),
-    completeness,
-    dropped: safeInteger(input.dropped, 0, 'dropped'),
+    completeness: requested,
+    dropped,
   });
 }
 
@@ -198,7 +207,7 @@ export class RuntimeEventNormalizer {
     const events = this.#queue;
     this.#queue = [];
     this.queuedBytes = 0;
-    let dropped = this.#dropped;
+    const dropped = this.#dropped;
     this.#dropped = 0;
     if (dropped > 0) {
       events.unshift(createRuntimeEvent({
