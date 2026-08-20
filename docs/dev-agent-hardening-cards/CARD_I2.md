@@ -56,12 +56,14 @@ PROVENANCE/FRESHNESS
 - Cached facts must retain source/authority and observation/freshness metadata.
 - A newer owning-system observation supersedes a stale conflicting snapshot without erasing the conflict from audit evidence.
 - Tool/DOM/runtime/CI observations are snapshots, not timeless memory.
+- H2 batching changes transport only; each observation keeps the same owner/provenance/authority it would have had as a direct call.
 
 DEDUPLICATION/COMPACTION
 - remove exact/redundant repeated facts deterministically;
 - prefer refs over bulk logs/documents;
-- if a compacted summary is supplied by an existing trusted process, preserve coveredEvidenceRefs so the same evidence is not re-injected again;
-- never invent a summary with an extra LLM call here.
+- if a compacted summary/result carries coveredEvidenceRefs, do not inject those covered source artifacts again unless the current task explicitly requires expanding them;
+- preserve coveredEvidenceRefs when the compact representation survives selection so the audit expansion path remains available;
+- never invent coveredEvidenceRefs or a summary with an extra LLM call here.
 
 BUDGET
 Use a simple byte/character budget at the prompt boundary. Do not add a tokenizer dependency for iOS.
@@ -81,10 +83,12 @@ Create `tests/dev-agent/context-selection.mjs` with deterministic fixtures provi
 3. stale duplicate fact loses to fresher owning-system fact while provenance remains inspectable;
 4. irrelevant bulk evidence becomes ref/omitted excerpt before critical facts are removed;
 5. duplicate facts are not injected repeatedly;
-6. coveredEvidenceRefs prevent summary + original evidence double injection in the same packet;
-7. budget overflow that cannot be made safe becomes explicit failure/blocker;
-8. selected context is materially smaller for a repeated-history fixture while all assertions needed for the correct decision remain present;
-9. no additional model request occurs during selection.
+6. WorkerResult/context summaries with coveredEvidenceRefs prevent compact-summary + covered-original double injection in the same packet;
+7. covered evidence can still be expanded by ref when explicitly required by the task;
+8. H2 batched observations retain per-observation provenance/owner metadata rather than becoming one synthetic higher-authority fact;
+9. budget overflow that cannot be made safe becomes explicit failure/blocker;
+10. selected context is materially smaller for a repeated-history fixture while all assertions needed for the correct decision remain present;
+11. no additional model request occurs during selection.
 
 STANDARD GATE
 Add `node tests/dev-agent/context-selection.mjs` to `dev-agent:test` in package.json. Preserve all existing entries.
@@ -96,10 +100,11 @@ RUN
 - npm run dev-agent:test
 
 REVIEW
-Request/perform an independent review focused on accidental information loss, provenance, unknown/negative-evidence retention, and iOS hot-path cost.
+Request/perform an independent review focused on accidental information loss, provenance, unknown/negative-evidence retention, covered-evidence lineage, batched-observation authority preservation, and iOS hot-path cost.
 
 STOP CONDITIONS
 If a fixture needs semantic interpretation that cannot be deterministic, preserve the context instead of adding an LLM selector. Report the optimization as deferred.
+If deduplication cannot prove that one compact item covers a source ref, keep both rather than guessing coverage.
 
 DELIVERY
 Ready-to-merge PR, no merge. NEXT_CARD=NONE. Return to the strong reviewer for the Phase-4 readiness gate.
