@@ -1,6 +1,6 @@
 # Phase 8 release evidence — BLOCKING
 
-- product: `17b9957a91d3a660e9279095fea8af88cededf61` (tree `e38a85acd7df34bdaf8c002c0ba11bbedda0d82b`, branch `phase8/decompiler-quality`, clean: true)
+- product: `c2616dee932558782559abac70dade07707e52b6` (tree `195e0c58a91ba8a10336e51405a7bc9bc1d63ce2`, branch `phase8/decompiler-quality`, clean: true)
 - verifier: phase8.verifier 1.0.0 (source sha256 `524b1e3ce071f4d8`)
 - profile version: 2
 - corpus: phase8-decompiler-quality-corpus v1, digest `37c049e8ed51a7f0d46538a894be3c7b`
@@ -52,7 +52,7 @@
 - x P8-2
 - x P8-3
 - x P8-4
--   P8-5
+- x P8-5
 -   P8-6
 -   P8-7
 -   P8-I
@@ -64,4 +64,4 @@
 | coverage | forcedTypeContradictionCount is not measurable on this head | measured from P8-6 | null (not measured) | true |
 | architecture | mandatory architecture lane has no Phase 8 evidence: riscv64 | corpus evidence | missing | true |
 | architecture | mandatory architecture lane has no Phase 8 evidence: x86_64 | corpus evidence | missing | true |
-| integration | a required checkpoint has no accepted evidence on this head | P8-0,P8-1,P8-2,P8-3,P8-4,P8-5,P8-6,P8-7,P8-I | missing: P8-5,P8-6,P8-7,P8-I | true |
+| integration | a required checkpoint has no accepted evidence on this head | P8-0,P8-1,P8-2,P8-3,P8-4,P8-5,P8-6,P8-7,P8-I | missing: P8-6,P8-7,P8-I | true |

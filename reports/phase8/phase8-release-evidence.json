@@ -3,10 +3,10 @@
   "verifierId": "phase8.verifier",
   "verifierVersion": "1.0.0",
   "verifierSourceSha256": "524b1e3ce071f4d8efba4be5447f217acec4447f0c33b2eeb7e2d8ed88b186d4",
-  "generatedAt": "2026-08-20T01:18:56.824Z",
+  "generatedAt": "2026-08-20T01:20:34.416Z",
   "product": {
-    "commitSha": "17b9957a91d3a660e9279095fea8af88cededf61",
-    "treeSha": "e38a85acd7df34bdaf8c002c0ba11bbedda0d82b",
+    "commitSha": "c2616dee932558782559abac70dade07707e52b6",
+    "treeSha": "195e0c58a91ba8a10336e51405a7bc9bc1d63ce2",
     "workingTreeClean": true,
     "dirtyPaths": [],
     "branch": "phase8/decompiler-quality"
@@ -141,7 +141,7 @@
     },
     {
       "id": "P8-5",
-      "present": false
+      "present": true
     },
     {
       "id": "P8-6",
@@ -232,11 +232,11 @@
     "repetitions": 3,
     "aggregate": "median",
     "coldActiveFunctionMs": {
-      "medianMs": 116.91111111111111,
+      "medianMs": 192.84444444444443,
       "samples": [
-        118.667,
-        116.911,
-        114.267
+        193.467,
+        192.844,
+        117.667
       ]
     },
     "publishedLedgers": 35
@@ -249,7 +249,7 @@
       "firstDivergence": "forcedTypeContradictionCount is not measurable on this head",
       "expected": "measured from P8-6",
       "actual": "null (not measured)",
-      "identity": "17b9957a91d3a660e9279095fea8af88cededf61",
+      "identity": "c2616dee932558782559abac70dade07707e52b6",
       "blocking": true
     },
     {
@@ -257,7 +257,7 @@
       "firstDivergence": "mandatory architecture lane has no Phase 8 evidence: riscv64",
       "expected": "corpus evidence",
       "actual": "missing",
-      "identity": "17b9957a91d3a660e9279095fea8af88cededf61",
+      "identity": "c2616dee932558782559abac70dade07707e52b6",
       "blocking": true
     },
     {
@@ -265,15 +265,15 @@
       "firstDivergence": "mandatory architecture lane has no Phase 8 evidence: x86_64",
       "expected": "corpus evidence",
       "actual": "missing",
-      "identity": "17b9957a91d3a660e9279095fea8af88cededf61",
+      "identity": "c2616dee932558782559abac70dade07707e52b6",
       "blocking": true
     },
     {
       "category": "integration",
       "firstDivergence": "a required checkpoint has no accepted evidence on this head",
       "expected": "P8-0,P8-1,P8-2,P8-3,P8-4,P8-5,P8-6,P8-7,P8-I",
-      "actual": "missing: P8-5,P8-6,P8-7,P8-I",
-      "identity": "17b9957a91d3a660e9279095fea8af88cededf61",
+      "actual": "missing: P8-6,P8-7,P8-I",
+      "identity": "c2616dee932558782559abac70dade07707e52b6",
       "blocking": true
     }
   ],
