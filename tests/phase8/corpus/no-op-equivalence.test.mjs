@@ -71,19 +71,14 @@ test('provenance coverage is preserved, and mapped product rows do not disappear
   }
 });
 
-test('the hard-zero safety counters remain zero against the frozen pre-Phase-8 product', () => {
+test('the direct baseline comparator keeps its three hard safety counters at zero', () => {
+  // safetyCounters() intentionally owns only these direct candidate-vs-baseline
+  // checks. The remaining hard-zero counters are independent recomputations in
+  // collectPhase8Metrics()/verify.mjs and are covered by exact-head verifier tests.
   const counters = safetyCounters(observations, baseline);
-  for (const key of [
-    'semanticMismatchCount',
-    'provenanceLossCount',
-    'unknownSafetyRegressionCount',
-    'forcedTypeContradictionCount',
-    'architectureBoundaryViolationCount',
-    'transformDeterminismFailureCount',
-    'staleArtifactAcceptanceCount',
-    'lostCfgEdgeCount',
-    'completeResultDivergenceCount',
-  ]) assert.equal(counters[key], 0, `${key}: ${JSON.stringify(counters.details)}`);
+  for (const key of ['semanticMismatchCount', 'provenanceLossCount', 'unknownSafetyRegressionCount']) {
+    assert.equal(counters[key], 0, `${key}: ${JSON.stringify(counters.details)}`);
+  }
 });
 
 test('the final quality vector makes both required strict improvements without directional regressions', () => {
