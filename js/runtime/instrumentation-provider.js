@@ -12,6 +12,16 @@ function moduleKey(module, index) {
   return module?.bindingKey ?? module?.moduleKey ?? module?.id ?? module?.uuid ?? module?.name ?? `instrumentation-module:${index}`;
 }
 
+function probeHandle(result) {
+  const value = result?.handle ?? result?.id ?? result?.probeId ?? null;
+  return value == null ? null : String(value);
+}
+
+function eventProbeHandle(raw) {
+  const value = raw?.probeHandle ?? raw?.handle ?? raw?.payload?.probeHandle ?? raw?.payload?.handle ?? null;
+  return value == null ? null : String(value);
+}
+
 export class InstrumentationProvider {
   constructor(backend, options = {}) {
     if (!backend || typeof backend !== 'object') throw new DebugAdapterError('instrumentation-backend-required', 'InstrumentationProvider requires a backend');
@@ -31,6 +41,7 @@ export class InstrumentationProvider {
         memoryWrite: typeof backend.writeMemory === 'function',
         objcRuntime: typeof backend.getObjCRuntimeInfo === 'function',
         swiftRuntime: typeof backend.getSwiftRuntimeInfo === 'function',
+        mutationRequiresAuthorization: true,
         ...options.capabilities,
       },
     });
@@ -68,10 +79,15 @@ export class InstrumentationProvider {
       observationMode: 'observed',
     }, this.options.events || {});
     const interventions = new InterventionLedger();
+    const probes = new Map();
 
     const ingest = (raw) => {
       if (typeof this.options.eventFilter === 'function' && this.options.eventFilter(raw) === false) return null;
-      return normalizer.push(raw);
+      const handle = eventProbeHandle(raw);
+      const interventionId = handle == null ? null : probes.get(handle) ?? null;
+      if (!interventionId) return normalizer.push(raw);
+      const existing = Array.isArray(raw?.interventionIds) ? raw.interventionIds : [];
+      return normalizer.push({ ...raw, interventionIds: [...new Set([...existing, interventionId])] });
     };
 
     try {
@@ -110,15 +126,53 @@ export class InstrumentationProvider {
       capabilities: this._descriptor.capabilities,
       installProbe: async (spec, callOptions = {}) => {
         const install = requiredMethod(this.backend, 'installProbe', 'probe installation');
-        return install(spec, callOptions);
+        const result = await install(spec, callOptions);
+        const intervention = interventions.add({
+          runtimeSessionId: session.runtimeSessionId,
+          providerId: session.providerId,
+          kind: 'probe-install',
+          target: spec,
+          requestedChange: { install: true },
+          acknowledgedResult: result,
+          parentInterventionIds: callOptions.parentInterventionIds ?? [],
+        });
+        const handle = probeHandle(result);
+        if (handle != null) probes.set(handle, intervention.interventionId);
+        return { result, intervention };
       },
       removeProbe: async (handle, callOptions = {}) => {
         const remove = requiredMethod(this.backend, 'removeProbe', 'probe removal');
-        return remove(handle, callOptions);
+        const result = await remove(handle, callOptions);
+        const parent = probes.get(String(handle));
+        const intervention = interventions.add({
+          runtimeSessionId: session.runtimeSessionId,
+          providerId: session.providerId,
+          kind: 'probe-remove',
+          target: { handle: String(handle) },
+          requestedChange: { remove: true },
+          acknowledgedResult: result,
+          parentInterventionIds: [...new Set([...(callOptions.parentInterventionIds ?? []), ...(parent ? [parent] : [])])],
+        });
+        probes.delete(String(handle));
+        return { result, intervention };
       },
       intercept: async (spec, callOptions = {}) => {
-        if (typeof this.backend.intercept === 'function') return this.backend.intercept(spec, callOptions);
-        return requiredMethod(this.backend, 'installProbe', 'interception')(spec, callOptions);
+        const install = typeof this.backend.intercept === 'function'
+          ? this.backend.intercept.bind(this.backend)
+          : requiredMethod(this.backend, 'installProbe', 'interception');
+        const result = await install(spec, callOptions);
+        const intervention = interventions.add({
+          runtimeSessionId: session.runtimeSessionId,
+          providerId: session.providerId,
+          kind: 'interceptor-install',
+          target: spec,
+          requestedChange: { install: true },
+          acknowledgedResult: result,
+          parentInterventionIds: callOptions.parentInterventionIds ?? [],
+        });
+        const handle = probeHandle(result);
+        if (handle != null) probes.set(handle, intervention.interventionId);
+        return { result, intervention };
       },
       replace: async (target, replacement, callOptions = {}) => {
         const authorized = await this.#authorizeMutation('function-replacement', { target, replacement }, callOptions);
