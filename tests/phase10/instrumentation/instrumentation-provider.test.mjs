@@ -21,7 +21,7 @@ class InstrumentBackend {
   async getSwiftRuntimeInfo() { return { types: ['Fixture.Type'] }; }
 }
 
-test('P10.8 instrumentation is first-class and does not require a debugger facet', async () => {
+test('P10.8 instrumentation is first-class and probe installation is intervention-tracked', async () => {
   const backend = new InstrumentBackend();
   const provider = new InstrumentationProvider(backend, { id: 'frida-provider' });
   const session = await provider.openSession({ binaryId, sliceId: 'slice:arm64', targetIdentity: 'process:1', sessionNonce: 'inst:1' });
@@ -30,8 +30,15 @@ test('P10.8 instrumentation is first-class and does not require a debugger facet
   assert.equal(session.facets.debugger, undefined);
   assert.equal(session.modules.resolve(0x7010n, { binaryId }).state, 'exact');
   const probe = await session.facets.instrumentation.installProbe({ address: 0x7010n, kind: 'call' });
-  assert.match(probe.handle, /^probe:/);
-  assert.equal(session.facets.instrumentation.interventions.all().length, 0);
+  assert.match(probe.result.handle, /^probe:/);
+  assert.equal(probe.intervention.kind, 'probe-install');
+  assert.equal(session.facets.instrumentation.interventions.all().length, 1);
+  backend.emit({ type: 'instrumentation-observation', epoch: 1, streamId: 'thread:1', sequence: 1, payload: { probeHandle: probe.result.handle, call: 'foo' } });
+  const batch = session.facets.instrumentation.events.flush();
+  assert.deepEqual(batch.events[0].interventionIds, [probe.intervention.interventionId]);
+  const removed = await session.facets.instrumentation.removeProbe(probe.result.handle);
+  assert.equal(removed.intervention.kind, 'probe-remove');
+  assert.deepEqual(removed.intervention.parentInterventionIds, [probe.intervention.interventionId]);
   await session.close();
   assert.equal(backend.connected, false);
   assert.equal(backend.listeners.size, 0);
