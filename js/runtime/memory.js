@@ -7,7 +7,7 @@ const MAX_REGION_SIZE = 64 * 1024 * 1024;
 const MAX_TRANSFER = 4 * 1024 * 1024;
 
 function normalizePermissions(value) {
-  const s = String(value || 'rw').toLowerCase();
+  const s = String(value == null ? 'rw' : value).toLowerCase();
   return Object.freeze({ read: s.includes('r'), write: s.includes('w'), execute: s.includes('x') });
 }
 
