@@ -100,6 +100,19 @@ export function acquireQuotaState(raw, request = {}, config = AI_QUOTA) {
 
   const token = String(request.token || '').trim();
   if (!token) throw new TypeError('quota acquisition requires a lease token');
+  const existingLease = state.leases[token];
+  if (existingLease) {
+    return {
+      state,
+      result: {
+        allowed: false,
+        reason: 'concurrency',
+        retryAfterMs: Math.max(1, existingLease.expiresAt - now),
+        active,
+        sessionActive,
+      },
+    };
+  }
   state.count++;
   session.count++;
   state.sessions[sessionId] = session;
