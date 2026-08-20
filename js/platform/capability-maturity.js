@@ -282,16 +282,16 @@ const LIMITATION_DISPLAY = Object.freeze({
 
 const MANAGED_PROFILES = Object.freeze({
   wasm: Object.freeze({
-    implementedLevel: 'M3',
-    fullySatisfiedLevel: 'M3',
+    implementedLevel: 'M5',
+    fullySatisfiedLevel: 'M5',
     status: PARTIAL,
     features: freezeFeatures({
       detectContainer: SUPPORTED,
       metadata: SUPPORTED,
       vmEffects: SUPPORTED,
       cfgSsa: SUPPORTED,
-      typesInterprocedural: PARTIAL,
-      decompiler: PARTIAL,
+      typesInterprocedural: SUPPORTED,
+      decompiler: SUPPORTED,
       runtimeDebug: UNSUPPORTED,
     }),
     limitations: freezeCodes([
@@ -300,16 +300,16 @@ const MANAGED_PROFILES = Object.freeze({
     ]),
   }),
   dex: Object.freeze({
-    implementedLevel: 'M3',
-    fullySatisfiedLevel: 'M3',
+    implementedLevel: 'M5',
+    fullySatisfiedLevel: 'M5',
     status: PARTIAL,
     features: freezeFeatures({
       detectContainer: SUPPORTED,
       metadata: SUPPORTED,
       vmEffects: SUPPORTED,
       cfgSsa: SUPPORTED,
-      typesInterprocedural: PARTIAL,
-      decompiler: PARTIAL,
+      typesInterprocedural: SUPPORTED,
+      decompiler: SUPPORTED,
       runtimeDebug: UNSUPPORTED,
     }),
     limitations: freezeCodes([
@@ -318,16 +318,16 @@ const MANAGED_PROFILES = Object.freeze({
     ]),
   }),
   cil: Object.freeze({
-    implementedLevel: 'M3',
-    fullySatisfiedLevel: 'M3',
+    implementedLevel: 'M5',
+    fullySatisfiedLevel: 'M5',
     status: PARTIAL,
     features: freezeFeatures({
       detectContainer: SUPPORTED,
       metadata: SUPPORTED,
       vmEffects: SUPPORTED,
       cfgSsa: SUPPORTED,
-      typesInterprocedural: PARTIAL,
-      decompiler: PARTIAL,
+      typesInterprocedural: SUPPORTED,
+      decompiler: SUPPORTED,
       runtimeDebug: UNSUPPORTED,
     }),
     limitations: freezeCodes([
@@ -336,16 +336,16 @@ const MANAGED_PROFILES = Object.freeze({
     ]),
   }),
   jvm: Object.freeze({
-    implementedLevel: 'M3',
-    fullySatisfiedLevel: 'M3',
+    implementedLevel: 'M5',
+    fullySatisfiedLevel: 'M5',
     status: PARTIAL,
     features: freezeFeatures({
       detectContainer: SUPPORTED,
       metadata: SUPPORTED,
       vmEffects: SUPPORTED,
       cfgSsa: SUPPORTED,
-      typesInterprocedural: PARTIAL,
-      decompiler: PARTIAL,
+      typesInterprocedural: SUPPORTED,
+      decompiler: SUPPORTED,
       runtimeDebug: UNSUPPORTED,
     }),
     limitations: freezeCodes([

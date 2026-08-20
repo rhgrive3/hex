@@ -1,0 +1,24 @@
+{
+  "schemaVersion": "phase11-ownership/v1",
+  "phase": 11,
+  "owner": "phase11/managed-frontends living integration",
+  "allowedPrefixes": [
+    "js/managed/",
+    "tests/phase11/",
+    "tools/validation/phase11/",
+    "reports/phase11/"
+  ],
+  "allowedExact": [
+    ".github/workflows/phase11-release-validation.yml",
+    "js/platform/capability-maturity.js",
+    "tests/capability-maturity.mjs",
+    "docs/SUPPORT_MATRIX.md",
+    "userscript/hex.user.template.js",
+    "userscript/release-version.json",
+    "package.json"
+  ],
+  "forbiddenPrefixes": [
+    "js/binary/",
+    "js/architecture/"
+  ]
+}

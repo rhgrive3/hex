@@ -1,0 +1,14 @@
+{
+  "phase": 11,
+  "checkpoints": [
+    {
+      "id": "P11-LIVING",
+      "timestamp": "2026-08-20T17:18:10.774Z",
+      "result": "accepted",
+      "integrationSha": "589e2ca9e079e4cc6cb3d70ed71e599fec16c274",
+      "integrationTreeSha": "f928d333a7895fb744618d2453b9a8fcc4b14bec",
+      "evidenceDigest": "3b908b973142b806f60184c5722f6bba96355727edbb28bf331c9a2d6f45feb6",
+      "gatesPassed": 10
+    }
+  ]
+}

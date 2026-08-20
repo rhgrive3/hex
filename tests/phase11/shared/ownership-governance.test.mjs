@@ -10,12 +10,12 @@ console.log('[phase11] running ownership and governance tests...');
 // 1. Phase 9 Solver-backed verification non-interference
 const symResult = queryManagedSymbolicVerification('managed-method:123');
 assert.equal(symResult.status, 'deferred');
-assert.equal(symResult.reason, 'phase-9-solver-backed-verification-in-progress');
+assert.equal(symResult.reason, 'managed-solver-backend-unbound');
 
 // 2. Phase 10 Runtime provider non-interference
 const rtResult = queryManagedRuntimeProvider('managed-method:123');
 assert.equal(rtResult.status, 'deferred');
-assert.equal(rtResult.reason, 'phase-10-runtime-providers-in-progress');
+assert.equal(rtResult.reason, 'managed-runtime-provider-unbound');
 
 // 3. Native architecture maturity non-interference
 const arm64Maturity = architectureMaturity('arm64');

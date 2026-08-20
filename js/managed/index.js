@@ -38,6 +38,10 @@ import {
   VM_UNKNOWN_CATEGORIES,
 } from './shared/vm-effects.js';
 import {
+  analyzeManagedInterprocedural,
+  buildManagedMethodSummary,
+  buildManagedTypeConstraintGraph,
+  decompileManagedMethod,
   lowerVMEffectsToSemanticIr,
   MANAGED_BRIDGE_VERSION,
   queryManagedRuntimeProvider,
@@ -77,6 +81,10 @@ export {
   lowerVMEffectsToSemanticIr,
   queryManagedSymbolicVerification,
   queryManagedRuntimeProvider,
+  buildManagedTypeConstraintGraph,
+  buildManagedMethodSummary,
+  analyzeManagedInterprocedural,
+  decompileManagedMethod,
   WasmFrontend,
   DexFrontend,
   CilFrontend,

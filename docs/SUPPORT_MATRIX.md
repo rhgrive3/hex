@@ -44,7 +44,15 @@ F3 is intentionally conservative. Current loaders do parse substantial import/ex
 
 ## Managed / VM frontends
 
-The maturity schema exposes **M0–M6**, but the current support matrix contains no managed frontend entry. DEX/JVM/CIL/WASM must not appear as supported until a real managed frontend is registered and tested.
+| Frontend | Detect container | Metadata | VMEffects | CFG + SSA | Types / interproc | Decompiler | Runtime / debug | Maturity level | Implemented through |
+|---|---|---|---|---|---|---|---|---|---|
+| `wasm` | Supported | Supported | Supported | Supported | Supported | Supported | Unsupported | **M5** | **M5** |
+| `dex` | Supported | Supported | Supported | Supported | Supported | Supported | Unsupported | **M5** | **M5** |
+| `cil` | Supported | Supported | Supported | Supported | Supported | Supported | Unsupported | **M5** | **M5** |
+| `jvm` | Supported | Supported | Supported | Supported | Supported | Supported | Unsupported | **M5** | **M5** |
+
+Phase 11 implements first-class managed frontends for WASM, DEX, CLR/CIL, and JVM. Each frontend decodes VM operations, produces exact low-level `VMEffects`, lowers to shared Semantic IR/CFG/SSA, and performs type/interprocedural analysis and decompilation via the shared middle-end. M6 (runtime debugging and live provider integration) is deferred pending Phase 10 provider contracts and evidence-bound runtime module bindings.
+
 
 ## Evidence used for current claims
 

@@ -1,0 +1,225 @@
+{
+  "schemaVersion": "phase11-release-evidence/v1",
+  "phase": 11,
+  "verdict": "READY",
+  "verifier": {
+    "id": "phase11.verifier",
+    "version": "1.0.0"
+  },
+  "product": {
+    "commitSha": "589e2ca9e079e4cc6cb3d70ed71e599fec16c274",
+    "treeSha": "f928d333a7895fb744618d2453b9a8fcc4b14bec",
+    "clean": true,
+    "dirtyFiles": []
+  },
+  "gates": [
+    {
+      "id": "P11.0-baseline",
+      "description": "Managed frontends (WASM, DEX, CIL, JVM) are registered and vertical pipelines pass.",
+      "status": "PASSED"
+    },
+    {
+      "id": "P11.1-vm-effects",
+      "description": "Low-level VMEffects contracts preserved without fake native MachineEffects (M11-INV-001..003).",
+      "status": "PASSED"
+    },
+    {
+      "id": "P11.2-semantic-lowering",
+      "description": "VMEffects lower cleanly to shared Semantic IR, CFG, and SSA with provenance (M11-INV-004, M11-INV-006).",
+      "status": "PASSED"
+    },
+    {
+      "id": "P11.3-types-interprocedural",
+      "description": "Execution-authoritative metadata states hard constraints; interprocedural calls resolved conservatively (M11-INV-007).",
+      "status": "PASSED"
+    },
+    {
+      "id": "P11.4-shared-decompiler",
+      "description": "Decompilation uses shared Semantic IR / HighIR without frontend-private shortcuts (M11-INV-004).",
+      "status": "PASSED"
+    },
+    {
+      "id": "P11.5-exception-regions",
+      "description": "Exception clauses and handlers are modeled explicitly in CFG and summaries (M11-INV-008).",
+      "status": "PASSED"
+    },
+    {
+      "id": "P11.6-external-boundaries",
+      "description": "Host imports, JNI, and PInvoke are treated as explicit external boundaries (M11-INV-009).",
+      "status": "PASSED"
+    },
+    {
+      "id": "P11.7-phase9-10-integration",
+      "description": "Phase 9 solver and Phase 10 runtime hooks provide truthful status and do not fake M6 availability (M11-INV-010).",
+      "status": "PASSED"
+    },
+    {
+      "id": "P11.8-capability-matrix",
+      "description": "Capability maturity reflects verified M5 status with M6 unsupported.",
+      "status": "PASSED"
+    },
+    {
+      "id": "P11.9-ownership",
+      "description": "The living integration diff remains inside the declared Phase 11 ownership envelope.",
+      "status": "PASSED"
+    }
+  ],
+  "report": {
+    "frontends": {
+      "wasm": {
+        "status": "COMPLETE",
+        "validation": "valid",
+        "cfgs": 1
+      },
+      "dex": {
+        "status": "COMPLETE",
+        "validation": "valid",
+        "cfgs": 1
+      },
+      "cil": {
+        "status": "COMPLETE",
+        "validation": "valid",
+        "cfgs": 2
+      },
+      "jvm": {
+        "status": "COMPLETE",
+        "validation": "valid",
+        "cfgs": 1
+      }
+    },
+    "invariants": {
+      "M11-INV-001": {
+        "status": "PASSED",
+        "description": "VMEffects schema validated for all frontends without fake MachineEffects"
+      },
+      "M11-INV-002": {
+        "status": "PASSED",
+        "description": "Native VM register/local/stack kinds preserved without native register conflation"
+      },
+      "M11-INV-003": {
+        "status": "PASSED",
+        "description": "Every VM bundle carries exact operation ID, offset, and mnemonic"
+      },
+      "M11-INV-004": {
+        "status": "PASSED",
+        "description": "Shared Semantic IR, CFG, and SSA generated via canonical lowering"
+      },
+      "M11-INV-005": {
+        "status": "PASSED",
+        "description": "Unknown effects carry explicit reason and category"
+      },
+      "M11-INV-006": {
+        "status": "PASSED",
+        "description": "Origin tracking preserved from decoded bundles to lowered Semantic IR nodes"
+      },
+      "M11-INV-007": {
+        "status": "PASSED",
+        "description": "Authoritative metadata produces hard constraints; debug metadata produces soft evidence"
+      },
+      "M11-INV-008": {
+        "status": "PASSED",
+        "description": "Exception regions model exception edges in CFG and summary"
+      },
+      "M11-INV-009": {
+        "status": "PASSED",
+        "description": "JNI/Host imports produce conservative summaries with unresolved: true"
+      },
+      "M11-INV-010": {
+        "status": "PASSED",
+        "description": "Phase 9 solver and Phase 10 runtime queries return truthful deferred statuses"
+      }
+    },
+    "supportMatrix": [
+      {
+        "kind": "managed",
+        "id": "wasm",
+        "implementedLevel": "M5",
+        "level": "M5",
+        "fullySatisfiedLevel": "M5",
+        "status": "partial",
+        "partial": true,
+        "features": {
+          "detectContainer": "supported",
+          "metadata": "supported",
+          "vmEffects": "supported",
+          "cfgSsa": "supported",
+          "typesInterprocedural": "supported",
+          "decompiler": "supported",
+          "runtimeDebug": "unsupported"
+        },
+        "limitations": [
+          "runtime-debug-provider-phase10-deferred",
+          "solver-backed-verification-phase9-deferred"
+        ]
+      },
+      {
+        "kind": "managed",
+        "id": "dex",
+        "implementedLevel": "M5",
+        "level": "M5",
+        "fullySatisfiedLevel": "M5",
+        "status": "partial",
+        "partial": true,
+        "features": {
+          "detectContainer": "supported",
+          "metadata": "supported",
+          "vmEffects": "supported",
+          "cfgSsa": "supported",
+          "typesInterprocedural": "supported",
+          "decompiler": "supported",
+          "runtimeDebug": "unsupported"
+        },
+        "limitations": [
+          "runtime-debug-provider-phase10-deferred",
+          "solver-backed-verification-phase9-deferred"
+        ]
+      },
+      {
+        "kind": "managed",
+        "id": "cil",
+        "implementedLevel": "M5",
+        "level": "M5",
+        "fullySatisfiedLevel": "M5",
+        "status": "partial",
+        "partial": true,
+        "features": {
+          "detectContainer": "supported",
+          "metadata": "supported",
+          "vmEffects": "supported",
+          "cfgSsa": "supported",
+          "typesInterprocedural": "supported",
+          "decompiler": "supported",
+          "runtimeDebug": "unsupported"
+        },
+        "limitations": [
+          "runtime-debug-provider-phase10-deferred",
+          "solver-backed-verification-phase9-deferred"
+        ]
+      },
+      {
+        "kind": "managed",
+        "id": "jvm",
+        "implementedLevel": "M5",
+        "level": "M5",
+        "fullySatisfiedLevel": "M5",
+        "status": "partial",
+        "partial": true,
+        "features": {
+          "detectContainer": "supported",
+          "metadata": "supported",
+          "vmEffects": "supported",
+          "cfgSsa": "supported",
+          "typesInterprocedural": "supported",
+          "decompiler": "supported",
+          "runtimeDebug": "unsupported"
+        },
+        "limitations": [
+          "runtime-debug-provider-phase10-deferred",
+          "solver-backed-verification-phase9-deferred"
+        ]
+      }
+    ]
+  },
+  "timestamp": "2026-08-20T17:18:10.774Z",
+  "evidenceDigest": "3b908b973142b806f60184c5722f6bba96355727edbb28bf331c9a2d6f45feb6"
+}

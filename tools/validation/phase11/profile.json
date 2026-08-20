@@ -1,0 +1,16 @@
+{
+  "schemaVersion": "phase11-verifier-profile/v1",
+  "phase": 11,
+  "gates": [
+    { "id": "P11.0-baseline", "description": "Managed frontends (WASM, DEX, CIL, JVM) are registered and vertical pipelines pass." },
+    { "id": "P11.1-vm-effects", "description": "Low-level VMEffects contracts preserved without fake native MachineEffects (M11-INV-001..003)." },
+    { "id": "P11.2-semantic-lowering", "description": "VMEffects lower cleanly to shared Semantic IR, CFG, and SSA with provenance (M11-INV-004, M11-INV-006)." },
+    { "id": "P11.3-types-interprocedural", "description": "Execution-authoritative metadata states hard constraints; interprocedural calls resolved conservatively (M11-INV-007)." },
+    { "id": "P11.4-shared-decompiler", "description": "Decompilation uses shared Semantic IR / HighIR without frontend-private shortcuts (M11-INV-004)." },
+    { "id": "P11.5-exception-regions", "description": "Exception clauses and handlers are modeled explicitly in CFG and summaries (M11-INV-008)." },
+    { "id": "P11.6-external-boundaries", "description": "Host imports, JNI, and PInvoke are treated as explicit external boundaries (M11-INV-009)." },
+    { "id": "P11.7-phase9-10-integration", "description": "Phase 9 solver and Phase 10 runtime hooks provide truthful status and do not fake M6 availability (M11-INV-010)." },
+    { "id": "P11.8-capability-matrix", "description": "Capability maturity reflects verified M5 status with M6 unsupported." },
+    { "id": "P11.9-ownership", "description": "The living integration diff remains inside the declared Phase 11 ownership envelope." }
+  ]
+}

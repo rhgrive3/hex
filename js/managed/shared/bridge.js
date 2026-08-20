@@ -11,10 +11,25 @@ import {
   createSemanticVariableRef,
 } from '../../semantics/ir/types.js';
 import { buildSemanticSsa } from '../../semantics/ssa/build.js';
+import { TypeConstraintGraph } from '../../analysis/types/graph.js';
+import { createAnalysisStatus } from '../../analysis/status.js';
+import {
+  createFunctionSummary,
+  createMemoryEffect,
+  createUnknownCallEffect,
+} from '../../analysis/summary/contract.js';
+import { condenseCallGraph } from '../../analysis/summary/interprocedural.js';
+import { expr, node, sourceOf } from '../../decompiler/ast/nodes.js';
+import { printProgram, printExpression } from '../../decompiler/pretty/c.js';
 
 export const MANAGED_BRIDGE_VERSION = '1.0.0';
 
 function fail(code) { throw new TypeError(code); }
+
+function safeIdent(s, fallback = 'value') {
+  const x = String(s || '').replace(/^_+/, '').replace(/[^A-Za-z0-9_$]/g, '_').replace(/^([0-9])/, '_$1');
+  return x || fallback;
+}
 
 function normalizeMachineType(t) {
   if (!t) return { kind: 'bitvector', widthBits: 32 };
@@ -73,14 +88,12 @@ export function lowerVMEffectsToSemanticIr(vmEffectFunction, options = {}) {
 
   const sortedLeaderOffsets = [...leaderOffsets].sort((a, b) => a - b);
   const blockByOffset = new Map();
-  const blocks = [];
   for (let bi = 0; bi < sortedLeaderOffsets.length; bi++) {
     const off = sortedLeaderOffsets[bi];
     const blockId = `bb_0x${off.toString(16)}`;
     blockByOffset.set(off, blockId);
   }
 
-  let currentBlockId = blockByOffset.get(0) || 'bb_0x0';
   let currentBlockNodeIds = [];
   const irBlocks = [];
   const allNodes = [];
@@ -205,10 +218,12 @@ export function lowerVMEffectsToSemanticIr(vmEffectFunction, options = {}) {
       }
 
       const allInputs = [...readValues, ...consumedInputs];
-      
+
       let nodeKind = 'unary';
       let targets = [];
-      if (b.memoryEffects && b.memoryEffects.length > 0) {
+      if (b.completeness === 'unknown') {
+        nodeKind = 'barrier';
+      } else if (b.memoryEffects && b.memoryEffects.length > 0) {
         nodeKind = b.memoryEffects[0].isWrite ? 'store' : 'load';
       } else if (b.callEffects && b.callEffects.length > 0) {
         nodeKind = 'call';
@@ -225,7 +240,6 @@ export function lowerVMEffectsToSemanticIr(vmEffectFunction, options = {}) {
           if (c.targetOffset != null) {
             targets.push(blockByOffset.get(c.targetOffset) || `bb_0x${c.targetOffset.toString(16)}`);
           }
-          // Also add fallthrough block if next block exists
           const currentIdx = sortedLeaderOffsets.indexOf(sortedLeaderOffsets.find((off) => blockByOffset.get(off) === blkId));
           if (currentIdx >= 0 && currentIdx + 1 < sortedLeaderOffsets.length) {
             targets.push(blockByOffset.get(sortedLeaderOffsets[currentIdx + 1]));
@@ -241,7 +255,7 @@ export function lowerVMEffectsToSemanticIr(vmEffectFunction, options = {}) {
         } else if (c.kind === 'trap' || c.kind === 'throw') {
           nodeKind = 'trap';
         } else {
-          nodeKind = 'intrinsic';
+          nodeKind = 'barrier';
         }
       } else if (b.opcode != null || b.mnemonic) {
         const mn = (b.mnemonic || '').toLowerCase();
@@ -256,6 +270,7 @@ export function lowerVMEffectsToSemanticIr(vmEffectFunction, options = {}) {
         }
       }
 
+      const completeness = b.completeness === 'exact' ? 'complete' : b.completeness === 'unknown' ? 'unknown' : 'partial';
       const nodePayload = {
         id: mainNodeId,
         blockId: blkId,
@@ -264,7 +279,15 @@ export function lowerVMEffectsToSemanticIr(vmEffectFunction, options = {}) {
         outputs: opOutputs,
         origin: nodeOrigin,
         sourceEffectIds: [b.operationId],
+        completeness,
       };
+
+      if (completeness !== 'complete') {
+        nodePayload.unknown = {
+          reason: b.unknownEffects?.[0]?.reason || (b.completeness === 'unknown' ? 'unknown-vm-effect' : 'partial-vm-effect'),
+          categories: b.unknownEffects?.[0]?.categories || ['other'],
+        };
+      }
 
       if (targets.length > 0) {
         nodePayload.targets = targets;
@@ -272,24 +295,38 @@ export function lowerVMEffectsToSemanticIr(vmEffectFunction, options = {}) {
 
       if (nodeKind === 'call' && b.callEffects?.[0]) {
         const ce = b.callEffects[0];
+        const isComplete = !ce.unresolved && ce.target;
         nodePayload.call = createSemanticCallSummary({
-          callCompleteness: ce.unresolved ? 'partial' : 'complete',
-          calleeCandidateFunctionIds: ce.target ? [ce.target] : [],
-          dispatchKind: ce.dispatchKind || 'direct',
-          isTailCall: false,
+          targetEntityIds: ce.target ? [String(ce.target)] : [],
           arguments: allInputs,
           returns: opOutputs,
+          memoryRead: { scope: isComplete ? 'none' : 'all', addressSpaces: isComplete ? undefined : ['memory'] },
+          memoryWrite: { scope: isComplete ? 'none' : 'all', addressSpaces: isComplete ? undefined : ['memory'] },
+          determinism: 'input-dependent',
+          noreturn: false,
+          mayThrow: isComplete ? false : 'unknown',
+          summarySource: `vm-effect-${frontendId}`,
+          completeness: isComplete ? 'complete' : 'partial',
+          unknownEffects: isComplete ? null : {
+            reason: `unresolved-managed-call:${ce.dispatchKind || 'unknown'}`,
+            categories: ['other'],
+          },
         });
       }
 
       if ((nodeKind === 'load' || nodeKind === 'store') && b.memoryEffects?.[0]) {
         const me = b.memoryEffects[0];
         nodePayload.memory = createSemanticMemoryAccess({
-          space: me.space || 'memory',
-          byteWidth: me.byteWidth || 4,
-          endianness: 'little',
-          ordering: 'relaxed',
+          addressSpace: me.space || 'memory',
+          addressValueId: allInputs[0] || 'val_1',
+          widthBits: (me.byteWidth || 4) * 8,
+          endian: 'little',
+          alignment: 1,
         });
+      }
+
+      if (b.mnemonic) {
+        nodePayload.metadata = { mnemonic: b.mnemonic, opcode: b.opcode };
       }
 
       const mainNode = createSemanticNode(nodePayload);
@@ -344,13 +381,31 @@ export function lowerVMEffectsToSemanticIr(vmEffectFunction, options = {}) {
     });
   }
 
+  const isComplete = vmEffectFunction.aggregateCompleteness === 'exact';
+  const unknowns = [];
+  if (!isComplete) {
+    const collectedReasons = new Set();
+    for (const b of bundles) {
+      if (b.unknownEffects) {
+        for (const u of b.unknownEffects) {
+          if (u.reason) collectedReasons.add(u.reason);
+        }
+      }
+    }
+    if (collectedReasons.size === 0) collectedReasons.add('partial-vm-effects');
+    for (const reason of collectedReasons) {
+      unknowns.push({ reason, categories: ['other'] });
+    }
+  }
+
   const semanticIr = createSemanticIrFunction({
     functionId: methodId,
     entryBlockId: blockByOffset.get(0) || 'bb_0x0',
     blocks: irBlocks,
     nodes: allNodes,
     values: allValues,
-    completeness: vmEffectFunction.aggregateCompleteness === 'exact' ? 'complete' : 'partial',
+    completeness: isComplete ? 'complete' : 'partial',
+    unknowns,
     origin: vmEffectFunction.origin,
   }, options);
 
@@ -405,7 +460,7 @@ export function lowerVMEffectsToSemanticIr(vmEffectFunction, options = {}) {
       if (leaderOff >= exc.startOffset && leaderOff < exc.endOffset) {
         if (exc.handlerOffset != null && blockByOffset.has(exc.handlerOffset)) {
           const hId = blockByOffset.get(exc.handlerOffset);
-          if (hId !== b.id && !successors.some((s) => s.to === hId)) {
+          if (hId !== b.id && !successors.some((s) => s.to === hId && s.kind === 'exception')) {
             successors.push({ to: hId, kind: 'exception' });
           }
         }
@@ -433,33 +488,479 @@ export function lowerVMEffectsToSemanticIr(vmEffectFunction, options = {}) {
     semanticIr,
     cfg: semanticCfg,
     ssa: semanticSsa,
+    exceptionRegions: vmEffectFunction.exceptionRegions || [],
   });
 }
 
 /**
  * Phase 9 Solver-backed Verification Hook
- * Phase 9 is running in parallel and not yet completed.
- * Managed verification returns an explicit deferred status.
+ * Connects to Phase 9 SolverBackend contract when provided, or returns accurate deferred status.
  */
 export function queryManagedSymbolicVerification(methodId, options = {}) {
+  const backend = options.backend || (options.registry?.getDefaultBackend ? options.registry.getDefaultBackend() : null);
+  if (!backend) {
+    return deepFreeze({
+      status: 'deferred',
+      reason: 'managed-solver-backend-unbound',
+      methodId: String(methodId || ''),
+      details: 'Solver-backed verification requires an explicit SolverBackend instance registered or provided in options.backend.',
+    });
+  }
+  if (!options.formulas && !options.constraints && !options.assertions) {
+    return deepFreeze({
+      status: 'deferred',
+      reason: 'managed-symbolic-formulas-unspecified',
+      methodId: String(methodId || ''),
+      backendId: backend.id,
+      details: 'Managed method verification requires symbolic formulas or constraint inputs to query the solver backend.',
+    });
+  }
+  const session = options.session || (typeof backend.createSession === 'function' ? backend.createSession(options) : null);
   return deepFreeze({
-    status: 'deferred',
-    reason: 'phase-9-solver-backed-verification-in-progress',
+    status: 'connected',
+    backendId: backend.id,
     methodId: String(methodId || ''),
-    details: 'Solver integration will connect to Phase 9 public SolverBackend contract when landed.',
+    session,
   });
 }
 
 /**
  * Phase 10 Runtime Providers Hook
- * Phase 10 is running in parallel and not yet completed.
- * Managed runtime inspection returns an explicit deferred status.
+ * Connects to Phase 10 RuntimeProvider contract when provided with module identity evidence, or returns accurate deferred status.
  */
 export function queryManagedRuntimeProvider(methodId, options = {}) {
+  const platform = options.platform || options.runtimePlatform;
+  const provider = options.provider || (platform?.current ? platform.current : (platform?.provider ? platform.provider(options.providerId) : null));
+  if (!provider) {
+    return deepFreeze({
+      status: 'deferred',
+      reason: 'managed-runtime-provider-unbound',
+      methodId: String(methodId || ''),
+      details: 'Live runtime inspection requires an attached RuntimeProvider or RuntimeProviderPlatform session with evidence-bound module identity.',
+    });
+  }
+  if (!options.moduleEvidence && !options.sessionBinding && !options.evidence) {
+    return deepFreeze({
+      status: 'deferred',
+      reason: 'managed-runtime-identity-evidence-missing',
+      methodId: String(methodId || ''),
+      providerId: provider.id || provider.providerId || 'unknown',
+      details: 'Managed method inspection requires evidence-bound module identity before binding to live runtime frames.',
+    });
+  }
   return deepFreeze({
-    status: 'deferred',
-    reason: 'phase-10-runtime-providers-in-progress',
+    status: 'connected',
+    providerId: provider.id || provider.providerId,
     methodId: String(methodId || ''),
-    details: 'Runtime inspection and debugging will connect to Phase 10 RuntimeProvider contract when landed.',
+    provider,
+  });
+}
+
+/**
+ * M4 — Build Type Constraint Graph with explicit authority separation.
+ */
+export function buildManagedTypeConstraintGraph(methodInfo, options = {}) {
+  const graph = new TypeConstraintGraph({ snapshotId: options.snapshotId || 'managed-types-v1' });
+  const methodId = methodInfo.methodId || methodInfo.id || 'method_0';
+
+  // 1. Authoritative metadata -> Hard constraints
+  if (methodInfo.returnType || methodInfo.returnDescriptor) {
+    const returnType = methodInfo.returnType || methodInfo.returnDescriptor;
+    graph.addHardConstraint({
+      kind: 'runtime-metadata-type',
+      origin: 'binary-evidence',
+      claim: {
+        layer: 'nominal',
+        entityId: `${methodId}:return`,
+        descriptor: { kind: 'nominal', name: String(returnType) },
+      },
+      evidenceIds: [String(methodId)],
+    });
+  }
+
+  if (Array.isArray(methodInfo.paramTypes || methodInfo.params)) {
+    const params = methodInfo.paramTypes || methodInfo.params;
+    for (let i = 0; i < params.length; i++) {
+      const pType = params[i];
+      graph.addHardConstraint({
+        kind: 'runtime-metadata-type',
+        origin: 'binary-evidence',
+        claim: {
+          layer: 'nominal',
+          entityId: `${methodId}:param_${i}`,
+          descriptor: { kind: typeof pType === 'object' ? (pType.kind || 'primitive') : 'nominal', name: String(pType.name || pType) },
+        },
+        evidenceIds: [String(methodId)],
+      });
+    }
+  }
+
+  // 2. Debug metadata / heuristics -> Soft evidence (never elevated to hard constraints)
+  if (Array.isArray(methodInfo.debugLocalVariables)) {
+    for (const d of methodInfo.debugLocalVariables) {
+      if (d.name || d.signature || d.type) {
+        graph.addSoftEvidence({
+          kind: 'signature-candidate',
+          origin: 'heuristic',
+          claim: {
+            layer: 'nominal',
+            entityId: `${methodId}:local_${d.slot ?? d.index ?? 0}`,
+            descriptor: { kind: 'debug-inferred', name: String(d.signature || d.type || 'unknown'), debugName: d.name },
+          },
+          weight: 0.85,
+          reason: 'debug-symbol-table',
+          evidenceIds: [String(methodId)],
+        });
+      }
+    }
+  }
+
+  return graph;
+}
+
+/**
+ * M4 — Build Managed Method Summary.
+ */
+export function buildManagedMethodSummary(loweredOrFunction, options = {}) {
+  let lowered = loweredOrFunction;
+  if (loweredOrFunction && Array.isArray(loweredOrFunction.bundles)) {
+    lowered = lowerVMEffectsToSemanticIr(loweredOrFunction, options);
+  }
+  const methodId = lowered.methodId || 'method_0';
+  const semanticIr = lowered.semanticIr;
+  const cfg = lowered.cfg;
+
+  const directCalls = [];
+  const dynamicCalls = [];
+  const externalCalls = [];
+  const memoryReads = [];
+  const memoryWrites = [];
+  const unknownCallEffects = [];
+  const thrownExceptions = [];
+
+  for (const node of semanticIr.nodes) {
+    if (node.kind === 'call' && node.call) {
+      const call = node.call;
+      const candidates = call.targetEntityIds || [];
+      const isComplete = call.completeness === 'complete' && candidates.length === 1;
+      if (isComplete) {
+        directCalls.push({
+          target: candidates[0],
+          dispatchKind: 'direct',
+          unresolved: false,
+          nodeId: node.id,
+        });
+      } else {
+        const isExternal = candidates.some((c) => {
+          const lc = String(c).toLowerCase();
+          return lc.includes('jni') || lc.includes('host') || lc.includes('import') || lc.includes('native') || lc.includes('pinvoke');
+        });
+        if (isExternal) {
+          externalCalls.push({
+            target: candidates[0] || 'external',
+            dispatchKind: 'external',
+            unresolved: true,
+            nodeId: node.id,
+          });
+          unknownCallEffects.push(createUnknownCallEffect({
+            callSiteId: node.id,
+            reason: 'unresolved-target',
+            targetEntityIds: candidates,
+            evidenceIds: [node.id],
+          }));
+        } else {
+          dynamicCalls.push({
+            targets: candidates,
+            dispatchKind: 'dynamic',
+            unresolved: true,
+            nodeId: node.id,
+          });
+          unknownCallEffects.push(createUnknownCallEffect({
+            callSiteId: node.id,
+            reason: 'indirect-incomplete-target-set',
+            targetEntityIds: candidates,
+            evidenceIds: [node.id],
+          }));
+        }
+      }
+    } else if (node.kind === 'load') {
+      memoryReads.push(createMemoryEffect({
+        regionKind: 'heap',
+        broad: false,
+        addressSpaces: ['memory'],
+        source: 'instruction',
+        evidenceIds: [node.id],
+      }));
+    } else if (node.kind === 'store') {
+      memoryWrites.push(createMemoryEffect({
+        regionKind: 'heap',
+        broad: false,
+        addressSpaces: ['memory'],
+        source: 'instruction',
+        evidenceIds: [node.id],
+      }));
+    } else if (node.kind === 'trap') {
+      thrownExceptions.push({
+        kind: 'trap',
+        nodeId: node.id,
+      });
+    }
+  }
+
+  const hasExceptionEdges = cfg.blocks.some((b) => (b.successors || []).some((s) => s.kind === 'exception'));
+  const completeness = (unknownCallEffects.length > 0) ? 'partial' : 'complete';
+
+  if (unknownCallEffects.length > 0) {
+    memoryWrites.push(createMemoryEffect({
+      regionKind: 'unknown',
+      broad: true,
+      addressSpaces: ['memory'],
+      source: 'unknown-call-fallback',
+      evidenceIds: unknownCallEffects.map((u) => u.callSiteId),
+    }));
+  }
+
+  const status = createAnalysisStatus({
+    snapshotId: options.snapshotId || 'managed-summary-v1',
+    analyzerId: 'managed.method.summary',
+    analyzerVersion: '1.0.0',
+    completeness,
+    stopReason: completeness === 'complete' ? null : 'evidence-missing',
+  });
+
+  const summary = createFunctionSummary({
+    functionId: methodId,
+    status,
+    memoryReadRegions: memoryReads,
+    memoryWriteRegions: memoryWrites,
+    unknownCallEffects,
+  });
+
+  return deepFreeze({
+    methodId,
+    summary,
+    directCalls,
+    dynamicCalls,
+    externalCalls,
+    thrownExceptions,
+    hasExceptionEdges,
+    completeness,
+  });
+}
+
+/**
+ * M4 — Interprocedural analysis across managed methods.
+ */
+export function analyzeManagedInterprocedural(methods, options = {}) {
+  const methodMap = new Map();
+  for (const m of methods) {
+    const sum = buildManagedMethodSummary(m, options);
+    methodMap.set(sum.methodId, sum);
+  }
+
+  const roots = [...methodMap.keys()];
+  const successorsOf = (id) => {
+    const entry = methodMap.get(id);
+    if (!entry) return [];
+    return entry.directCalls.map((c) => c.target).filter((t) => methodMap.has(t));
+  };
+
+  const { components, truncated } = condenseCallGraph(roots, successorsOf, options);
+
+  return deepFreeze({
+    components,
+    truncated,
+    summaries: methodMap,
+  });
+}
+
+/**
+ * M5 — Shared Managed Decompiler.
+ * Uses shared decompiler AST and printProgram to produce clean, semantically structured pseudo-C.
+ */
+export function decompileManagedMethod(loweredOrFunction, options = {}) {
+  let lowered = loweredOrFunction;
+  if (loweredOrFunction && Array.isArray(loweredOrFunction.bundles)) {
+    lowered = lowerVMEffectsToSemanticIr(loweredOrFunction, options);
+  }
+  const methodId = lowered.methodId || 'managed_method';
+  const frontendId = lowered.frontendId || 'wasm';
+  const semanticIr = lowered.semanticIr;
+  const cfg = lowered.cfg;
+  const ssa = lowered.ssa;
+
+  const nodeMap = new Map();
+  for (const n of semanticIr.nodes) nodeMap.set(n.id, n);
+
+  const valueMap = new Map();
+  for (const v of semanticIr.values) valueMap.set(v.id, v);
+
+  const exprMemo = new Map();
+
+  function buildValueExpr(valId) {
+    if (exprMemo.has(valId)) return exprMemo.get(valId);
+    const val = valueMap.get(valId);
+    if (!val) return expr.variable(`v_${valId}`);
+
+    const defNode = val.definitionNodeId ? nodeMap.get(val.definitionNodeId) : null;
+    if (!defNode) {
+      if (val.metadata?.constant != null) {
+        const c = expr.constant(BigInt(val.metadata.constant), val.machineType?.widthBits || 32);
+        exprMemo.set(valId, c);
+        return c;
+      }
+      const vExpr = expr.variable(safeIdent(val.id || `v_${valId}`));
+      exprMemo.set(valId, vExpr);
+      return vExpr;
+    }
+
+    const n = defNode;
+    const bits = val.machineType?.widthBits || 32;
+    let res = null;
+
+    if (n.kind === 'const') {
+      const cVal = val.metadata?.constant != null ? BigInt(val.metadata.constant) : 0n;
+      res = expr.constant(cVal, bits);
+    } else if (n.kind === 'binary') {
+      const left = n.inputs[0] ? buildValueExpr(n.inputs[0]) : expr.constant(0n, bits);
+      const right = n.inputs[1] ? buildValueExpr(n.inputs[1]) : expr.constant(0n, bits);
+      const mn = (n.metadata?.mnemonic || '').toLowerCase();
+      let normalizedOp = 'add';
+      if (mn.includes('sub')) normalizedOp = 'sub';
+      else if (mn.includes('mul')) normalizedOp = 'mul';
+      else if (mn.includes('div')) normalizedOp = 'sdiv';
+      else if (mn.includes('rem') || mn.includes('mod')) normalizedOp = 'smod';
+      else if (mn.includes('and')) normalizedOp = 'and';
+      else if (mn.includes('xor')) normalizedOp = 'xor';
+      else if (mn.includes('or')) normalizedOp = 'or';
+      else if (mn.includes('shl')) normalizedOp = 'shl';
+      else if (mn.includes('shr')) normalizedOp = 'ashr';
+      res = expr.binary(normalizedOp, left, right, bits);
+    } else if (n.kind === 'compare') {
+      const left = n.inputs[0] ? buildValueExpr(n.inputs[0]) : expr.constant(0n, bits);
+      const right = n.inputs[1] ? buildValueExpr(n.inputs[1]) : expr.constant(0n, bits);
+      const mn = (n.metadata?.mnemonic || '').toLowerCase();
+      const op = mn.includes('eq') ? 'eq' : mn.includes('ne') ? 'ne' : mn.includes('le') ? 'le' : mn.includes('ge') ? 'ge' : mn.includes('lt') ? 'lt' : mn.includes('gt') ? 'gt' : 'eq';
+      res = expr.compare(op, left, right);
+    } else if (n.kind === 'unary') {
+      const arg = n.inputs[0] ? buildValueExpr(n.inputs[0]) : expr.constant(0n, bits);
+      const mn = (n.metadata?.mnemonic || '').toLowerCase();
+      const op = mn.includes('neg') ? 'neg' : mn.includes('not') ? 'not' : 'trunc';
+      res = expr.unary(op, arg, bits);
+    } else if (n.kind === 'call') {
+      const callee = n.call?.targetEntityIds?.[0] || 'callee';
+      const args = (n.inputs || []).map(buildValueExpr);
+      res = expr.call(callee, args, bits);
+    } else if (n.kind === 'load') {
+      const base = n.inputs[0] ? buildValueExpr(n.inputs[0]) : expr.variable('base');
+      if (n.inputs.length > 1) {
+        const idx = buildValueExpr(n.inputs[1]);
+        res = expr.index(base, idx, 1, bits);
+      } else {
+        res = expr.field(base, n.metadata?.fieldName || 'field', 0n, bits);
+      }
+    } else if (n.kind === 'intrinsic' || n.kind === 'barrier') {
+      const args = (n.inputs || []).map(buildValueExpr);
+      res = expr.intrinsic(n.metadata?.mnemonic || 'unsupported_intrinsic', args, bits);
+    } else if (n.kind === 'state-read') {
+      res = expr.variable(safeIdent(val.id || `v_${valId}`));
+    } else {
+      res = expr.variable(safeIdent(val.id || `v_${valId}`));
+    }
+
+    exprMemo.set(valId, res);
+    return res;
+  }
+
+  const body = [];
+  const loopHeaders = new Set();
+  for (const blk of cfg.blocks) {
+    for (const succ of (blk.successors || [])) {
+      if (succ.to === blk.id) loopHeaders.add(blk.id);
+    }
+  }
+
+  for (let bi = 0; bi < cfg.blocks.length; bi++) {
+    const blk = cfg.blocks[bi];
+    const isLoop = loopHeaders.has(blk.id);
+
+    if (isLoop) {
+      body.push({ kind: 'loop_header', indent: 1, text: 'while (1) {' });
+    }
+
+    const irBlock = semanticIr.blocks.find((b) => b.id === blk.id);
+    const nodeIds = irBlock ? irBlock.nodeIds : [];
+
+    for (const nid of nodeIds) {
+      const n = nodeMap.get(nid);
+      if (!n) continue;
+
+      if (n.kind === 'call') {
+        const callee = n.call?.targetEntityIds?.[0] || 'callee';
+        const args = (n.inputs || []).map((i) => printExpression(buildValueExpr(i))).join(', ');
+        if (n.outputs && n.outputs.length > 0) {
+          const outVal = n.outputs[0];
+          body.push({ kind: 'call_assign', indent: isLoop ? 2 : 1, text: `${safeIdent(outVal)} = ${callee}(${args});` });
+        } else {
+          body.push({ kind: 'call_stmt', indent: isLoop ? 2 : 1, text: `${callee}(${args});` });
+        }
+      } else if (n.kind === 'store') {
+        const base = n.inputs[0] ? printExpression(buildValueExpr(n.inputs[0])) : 'base';
+        if (n.inputs.length > 2) {
+          const idx = printExpression(buildValueExpr(n.inputs[1]));
+          const val = printExpression(buildValueExpr(n.inputs[2]));
+          body.push({ kind: 'array_store', indent: isLoop ? 2 : 1, text: `${base}[${idx}] = ${val};` });
+        } else if (n.inputs.length === 2) {
+          const val = printExpression(buildValueExpr(n.inputs[1]));
+          body.push({ kind: 'field_store', indent: isLoop ? 2 : 1, text: `${base}->${n.metadata?.fieldName || 'field'} = ${val};` });
+        }
+      } else if (n.kind === 'return') {
+        if (n.inputs && n.inputs.length > 0) {
+          const retVal = printExpression(buildValueExpr(n.inputs[0]));
+          body.push({ kind: 'return', indent: isLoop ? 2 : 1, text: `return ${retVal};` });
+        } else {
+          body.push({ kind: 'return', indent: isLoop ? 2 : 1, text: 'return;' });
+        }
+      } else if (n.kind === 'conditional-branch') {
+        const cond = n.inputs[0] ? printExpression(buildValueExpr(n.inputs[0])) : 'cond';
+        body.push({ kind: 'if', indent: isLoop ? 2 : 1, text: `if (${cond}) {` });
+        if (n.targets && n.targets[0]) {
+          body.push({ kind: 'goto', indent: isLoop ? 3 : 2, text: `goto ${n.targets[0]};` });
+        }
+        body.push({ kind: 'if_close', indent: isLoop ? 2 : 1, text: '}' });
+      } else if (n.kind === 'trap') {
+        body.push({ kind: 'trap', indent: isLoop ? 2 : 1, text: 'throw Exception();' });
+      } else if (n.kind === 'intrinsic' || n.kind === 'barrier') {
+        const args = (n.inputs || []).map((i) => printExpression(buildValueExpr(i))).join(', ');
+        body.push({ kind: 'intrinsic', indent: isLoop ? 2 : 1, text: `${n.metadata?.mnemonic || 'unsupported_intrinsic'}(${args});` });
+      } else if (n.outputs && n.outputs.length > 0 && (n.kind === 'binary' || n.kind === 'unary' || n.kind === 'compare' || n.kind === 'const')) {
+        const outVal = n.outputs[0];
+        const valExpr = printExpression(buildValueExpr(outVal));
+        body.push({ kind: 'assign', indent: isLoop ? 2 : 1, text: `${safeIdent(outVal)} = ${valExpr};` });
+      }
+    }
+
+    if (isLoop) {
+      body.push({ kind: 'loop_close', indent: 1, text: '}' });
+    }
+  }
+
+  const programAst = {
+    kind: 'function',
+    name: methodId,
+    body,
+  };
+
+  const printed = printProgram(programAst);
+
+  return deepFreeze({
+    methodId,
+    frontendId,
+    decompiledAst: programAst,
+    pseudocode: printed.text,
+    lines: printed.lines,
+    semanticIr,
+    cfg,
+    ssa,
   });
 }
