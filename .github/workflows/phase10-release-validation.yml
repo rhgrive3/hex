@@ -1,0 +1,85 @@
+name: Phase 10 release validation
+
+# Permanent exact-product verifier for the Runtime Provider phase. Exact-SHA
+# dispatch prevents validation-only PRs (EP-012).
+on:
+  push:
+    branches:
+      - main
+      - 'phase10/**'
+    paths:
+      - 'js/runtime/**'
+      - 'js/debug/**'
+      - 'js/adapters/**'
+      - 'js/runtime-evidence/**'
+      - 'js/core/identity/**'
+      - 'js/core/evidence/**'
+      - 'tests/phase10/**'
+      - 'tests/runtime-platform.mjs'
+      - 'tests/runtime-evidence-fusion.mjs'
+      - 'tools/validation/phase10/**'
+      - '.github/workflows/phase10-release-validation.yml'
+  pull_request:
+    paths:
+      - 'js/runtime/**'
+      - 'js/debug/**'
+      - 'js/adapters/**'
+      - 'js/runtime-evidence/**'
+      - 'js/core/identity/**'
+      - 'js/core/evidence/**'
+      - 'tests/phase10/**'
+      - 'tests/runtime-platform.mjs'
+      - 'tests/runtime-evidence-fusion.mjs'
+      - 'tools/validation/phase10/**'
+      - '.github/workflows/phase10-release-validation.yml'
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: 'Exact 40-character commit SHA to verify'
+        required: true
+        type: string
+      shadow:
+        description: 'Report without failing the job'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phase10-release-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.sha || github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci --no-audit --no-fund
+      - name: Phase 10 exact-product verifier
+        env:
+          EXPECT_SHA: ${{ github.event.inputs.sha }}
+          SHADOW: ${{ github.event.inputs.shadow }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [ -n "${EXPECT_SHA:-}" ]; then args+=(--expect-sha "$EXPECT_SHA"); fi
+          if [ "${SHADOW:-false}" = "true" ]; then args+=(--shadow); fi
+          node tools/validation/phase10/verify.mjs "${args[@]}"
+      - name: Publish validated Phase 10 evidence
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase10-release-evidence-${{ github.event.inputs.sha || github.sha }}
+          path: |
+            reports/phase10/phase10-release-evidence.json
+            reports/phase10/checkpoints.json
+          if-no-files-found: error
