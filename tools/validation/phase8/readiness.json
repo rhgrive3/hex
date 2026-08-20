@@ -372,14 +372,13 @@
     {
       "id": "language-compiler-providers",
       "title": "Language and compiler refinement providers",
-      "state": "PARTIAL_EXISTING",
+      "state": "PHASE8_IMPLEMENT",
       "owner": "P8-7",
       "evidence": [
-        "js/decompiler/idioms/arm64-clang.js",
-        "js/objc.js",
-        "js/swift.js"
+        "js/decompiler/phase8/providers.js",
+        "tests/phase8/providers/refinement.test.mjs"
       ],
-      "finding": "Compiler and runtime idioms exist but are called directly from the pipeline rather than through a versioned provider interface with recorded provenance and conflict rules."
+      "finding": "P8-7 ships a versioned provider interface. A provider is handed a view built field by field from published facts, so it has nothing to decode from; every hint is capped at the certainty the generic evidence already reached; a hint about a region with a hard conflict is rejected and published as rejected; and a provider that throws is switched off without taking the generic result down. On the frozen corpus: 12 hints across 6 functions, 4 capped by the ceiling, 0 authority failures, and 0 generic facts changed between provider-off and provider-on."
     },
     {
       "id": "architecture-lane-x86-64",

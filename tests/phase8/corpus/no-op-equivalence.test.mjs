@@ -103,7 +103,7 @@ test('the Phase 8 ledger reaches the product result for every semantic function'
     // publishes exactly one facts transform; nothing here rewrites the program,
     // which is why the output above is still byte-identical to the baseline.
     assert.equal(observation.phase8.transformCount, 0, `${observation.id} rewrote the program while Phase 8 is still analysis-only`);
-    assert.deepEqual(observation.phase8.produced, ['aggregates', 'deadCode', 'induction', 'ranges', 'structuredRegions', 'valueNumbers'],
+    assert.deepEqual(observation.phase8.produced, ['aggregates', 'deadCode', 'induction', 'providerHints', 'ranges', 'structuredRegions', 'valueNumbers'],
       `${observation.id} did not publish the full middle-end fact set`);
     assert.deepEqual(observation.phase8.invalidated, [], 'publishing facts must not invalidate anything');
   }

@@ -42,7 +42,7 @@ export const INDUCTION_PASS = createPassDescriptor({
   // Loops and dominators come from upstream. Ranges come from P8-2 and are what
   // lets a bound be reported as a proved constant rather than a rendered guess.
   consumes: ['cfg', 'dominators', 'loops', 'ssa', 'ranges'],
-  preserves: ['cfg', 'dominators', 'loops', 'ssa', 'memorySsa', 'alias', 'effects', 'ranges', 'valueNumbers', 'deadCode', 'types', 'aggregates', 'summaries', 'origins', 'structuredRegions'],
+  preserves: ['cfg', 'dominators', 'loops', 'ssa', 'memorySsa', 'alias', 'effects', 'ranges', 'valueNumbers', 'deadCode', 'types', 'aggregates', 'summaries', 'origins', 'structuredRegions', 'providerHints'],
   invalidates: [],
   produces: ['induction'],
   description: 'Derives induction, bound and trip facts for each upstream natural loop, and refuses the loops it cannot prove.',

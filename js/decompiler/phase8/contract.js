@@ -24,7 +24,9 @@
  * key; a pass that does not preserve it now invalidates it, which is the
  * conservative direction. P8-4 added `induction`, the loop/trip fact summary
  * that structuring and aggregate recovery consume instead of each deriving
- * their own.
+ * their own. P8-7 added `providerHints`, the refinement layer's output, kept as
+ * its own key so a provider version change invalidates provider-derived
+ * artifacts and nothing else.
  */
 
 /**
@@ -33,7 +35,7 @@
  * material, so a bump invalidates derived artifacts rather than silently
  * reusing them (EP-005 evidence-invalidation rule, MIGRATION_GUARDRAILS §CI).
  */
-export const PHASE8_CONTRACT_VERSION = 5;
+export const PHASE8_CONTRACT_VERSION = 6;
 
 /**
  * Ordered pipeline stages. Order here is the dependency order Phase 8 accepts;
@@ -72,6 +74,7 @@ export const ANALYSIS_KEYS = Object.freeze([
   'summaries',
   'origins',
   'structuredRegions',
+  'providerHints',
 ]);
 
 /** What a pass run did. `unsupported` is a first-class answer, never skip-green. */

@@ -40,7 +40,7 @@ export const AGGREGATE_PASS = createPassDescriptor({
   stage: 'high-level-recovery',
   budgetClass: 'standard',
   consumes: ['cfg', 'ssa', 'ranges', 'induction'],
-  preserves: ['cfg', 'dominators', 'loops', 'ssa', 'memorySsa', 'alias', 'effects', 'ranges', 'valueNumbers', 'deadCode', 'induction', 'types', 'summaries', 'origins', 'structuredRegions'],
+  preserves: ['cfg', 'dominators', 'loops', 'ssa', 'memorySsa', 'alias', 'effects', 'ranges', 'valueNumbers', 'deadCode', 'induction', 'types', 'summaries', 'origins', 'structuredRegions', 'providerHints'],
   invalidates: [],
   produces: ['aggregates'],
   description: 'Publishes every aggregate shape a memory region supports, with hard/soft evidence separated and conflicts preserved.',
@@ -261,6 +261,22 @@ export function candidatesFor(region) {
     ], conflicts.map((entry) => entry.kind), {
       elementWidthBits: consistentIndexed[0].widthBits,
       strideBytes: consistentIndexed[0].strideBytes,
+    }));
+  }
+
+  // Array by moving base: the pointer itself advances by exactly the width
+  // being accessed, every iteration. That is a walk over consecutive elements,
+  // and the stride comes from the P8-4 induction artifact rather than from a
+  // second look at the loop.
+  if (region.inductionStride != null && fixed.length > 0
+      && new Set(fixed.map((field) => String(field.offset))).size === 1
+      && fixed.every((field) => field.byteWidth > 0 && BigInt(field.byteWidth) === region.inductionStride)) {
+    candidates.push(candidate('array', [
+      { tier: 'soft', fact: 'induction-stride', detail: `a loop advances this pointer by ${region.inductionStride} bytes each iteration` },
+      { tier: 'soft', fact: 'width-matches-stride', detail: `every access through it is ${fixed[0].widthBits} bits wide, which is exactly that stride` },
+    ], conflicts.map((entry) => entry.kind), {
+      elementWidthBits: fixed[0].widthBits,
+      strideBytes: region.inductionStride,
     }));
   }
 

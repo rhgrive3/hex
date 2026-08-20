@@ -28,7 +28,7 @@ export const IDENTITY_PASS = createPassDescriptor({
   // It reads the canonical facts a real Phase 8 pass reads, so the wiring it
   // proves is the wiring the optimizers will use.
   consumes: ['cfg', 'ssa', 'origins'],
-  preserves: ['cfg', 'dominators', 'loops', 'ssa', 'memorySsa', 'alias', 'effects', 'ranges', 'valueNumbers', 'deadCode', 'induction', 'types', 'aggregates', 'summaries', 'origins', 'structuredRegions'],
+  preserves: ['cfg', 'dominators', 'loops', 'ssa', 'memorySsa', 'alias', 'effects', 'ranges', 'valueNumbers', 'deadCode', 'induction', 'types', 'aggregates', 'summaries', 'origins', 'structuredRegions', 'providerHints'],
   invalidates: [],
   produces: [],
   required: false,

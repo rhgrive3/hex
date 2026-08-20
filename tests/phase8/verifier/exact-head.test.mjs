@@ -65,6 +65,20 @@ test('no aggregate candidate was allowed to be certain over a contradiction', ()
   assert.ok(certainty.ambiguousRegionCount > 0);
 });
 
+test('providers refine without changing what they refine, and none exceeded its authority', () => {
+  const evidence = report.safety.providerEvidence;
+  assert.ok(evidence, 'the verifier must carry the provider evidence it measured');
+  // Switching the refinement layer on must not move a single generic fact.
+  assert.equal(evidence.providerOffDivergenceCount, 0, JSON.stringify(evidence.providerOffDivergences));
+  assert.equal(evidence.providerAuthorityFailureCount, 0, JSON.stringify(evidence.providerAuthorityFailures));
+  assert.deepEqual(evidence.functionsWithoutFacts, []);
+  // Provider-on has to actually do something, or the layer is untested.
+  assert.ok(evidence.hintCount > 0);
+  assert.ok(evidence.functionsWithHints > 0);
+  // And the cap has to have done work on real input, not only in a unit test.
+  assert.ok(evidence.cappedCount > 0, 'no hint was ever capped, so the ceiling is unexercised');
+});
+
 test('the edge accounting covers every corpus function and loses nothing', () => {
   const accounting = report.safety.edgeAccounting;
   assert.ok(accounting, 'the verifier must carry the accounting it measured');

@@ -40,7 +40,7 @@ export const STRUCTURING_PASS = createPassDescriptor({
   stage: 'structuring',
   budgetClass: 'standard',
   consumes: ['cfg', 'dominators', 'loops', 'ssa', 'induction'],
-  preserves: ['cfg', 'dominators', 'loops', 'ssa', 'memorySsa', 'alias', 'effects', 'ranges', 'valueNumbers', 'deadCode', 'induction', 'types', 'aggregates', 'summaries', 'origins'],
+  preserves: ['cfg', 'dominators', 'loops', 'ssa', 'memorySsa', 'alias', 'effects', 'ranges', 'valueNumbers', 'deadCode', 'induction', 'types', 'aggregates', 'summaries', 'providerHints', 'origins'],
   invalidates: [],
   produces: ['structuredRegions'],
   description: 'Accounts for every CFG edge as a structured construct, an explicit jump or an explicit unknown, and publishes the regions that follow.',

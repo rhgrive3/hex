@@ -23,6 +23,7 @@ const REQUIRED_SUBTREES = Object.freeze([
   'loops',
   'structuring',
   'aggregates',
+  'providers',
   'corpus',
   'verifier',
   'performance',

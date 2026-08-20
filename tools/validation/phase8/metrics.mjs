@@ -20,6 +20,7 @@ import { stableDigest } from '../../../js/core/identity/index.js';
 import { PASS_STAGES, passRegistryDigest, phase8Passes, runPhase8Stage } from '../../../js/decompiler/phase8/index.js';
 import { edgeAccountingFailures } from '../../../js/decompiler/phase8/structuring.js';
 import { forcedContradictions } from '../../../js/decompiler/phase8/aggregates.js';
+import { providerAuthorityFailures, providerView } from '../../../js/decompiler/phase8/providers.js';
 import { createPhase8ArtifactDescriptor } from '../../../js/decompiler/phase8/artifact-identity.js';
 
 import { loadCorpus } from './build-corpus.mjs';
@@ -342,6 +343,79 @@ export function aggregateCertainty({ corpus = loadCorpus(), decompilerTimeBudget
   };
 }
 
+/**
+ * Provider evidence: the same corpus with providers off and on.
+ *
+ * Two things have to hold at once. With providers off the generic result must be
+ * exactly what it was — a refinement layer that changes the answer when it is
+ * switched off was never a refinement layer. With providers on the hints must
+ * appear, and none of them may have been granted more authority than the generic
+ * evidence supports.
+ */
+export function providerEvidence({ corpus = loadCorpus(), decompilerTimeBudgetMs = MEASUREMENT_TIME_BUDGET_MS } = {}) {
+  const genericDivergences = [];
+  const authorityFailures = [];
+  const withoutFacts = [];
+  let hintCount = 0;
+  let acceptedCount = 0;
+  let rejectedCount = 0;
+  let cappedCount = 0;
+  let functionsWithHints = 0;
+  let providerFailureCount = 0;
+  for (const [index, entry] of corpus.functions.entries()) {
+    const outcome = decompileEntry(entry, { index, decompilerTimeBudgetMs });
+    const ir = outcome?.result?.ir ?? null;
+    if (ir == null) { withoutFacts.push(`${entry.id}: no semantic IR`); continue; }
+    const context = { ir, types: outcome.result.types ?? null };
+    const off = runPhase8Stage({ ...context, opts: { phase8Providers: false } }, { stages: PASS_STAGES, timeBudgetMs: 4000 });
+    const on = runPhase8Stage(context, { stages: PASS_STAGES, timeBudgetMs: 4000 });
+    if (!off.ledger.published || !on.ledger.published) {
+      withoutFacts.push(`${entry.id}: ${off.ledger.stopReason ?? on.ledger.stopReason}`);
+      continue;
+    }
+    // Every generic fact must be identical with the providers switched off and
+    // on. Only the hints may differ.
+    for (const key of ['ranges', 'valueNumbers', 'deadCode', 'induction', 'aggregates', 'structuredRegions']) {
+      if (stableDigest(off.analysis.get(key)) !== stableDigest(on.analysis.get(key))) {
+        genericDivergences.push(`${entry.id}: ${key} changed when providers were enabled`);
+      }
+    }
+    const offHints = off.analysis.get('providerHints');
+    if (offHints != null && offHints.hints.length > 0) {
+      genericDivergences.push(`${entry.id}: hints were published with providers disabled`);
+    }
+    const facts = on.analysis.get('providerHints');
+    if (facts == null) { withoutFacts.push(`${entry.id}: no provider facts`); continue; }
+    hintCount += facts.hints.length;
+    acceptedCount += facts.acceptedCount;
+    rejectedCount += facts.rejectedCount;
+    cappedCount += facts.cappedCount;
+    providerFailureCount += facts.failures.length;
+    if (facts.hints.length > 0) functionsWithHints += 1;
+    for (const failure of providerAuthorityFailures(facts, providerView(on.analysis))) {
+      authorityFailures.push({ id: entry.id, ...failure });
+    }
+  }
+  return {
+    // A provider that exceeded its authority, or a generic fact that moved when
+    // the refinement layer was switched on, are both hard failures. They are
+    // reported as evidence rather than added to the frozen hard-zero list, which
+    // the P8-I contract fixes at eight counters.
+    providerAuthorityFailureCount: authorityFailures.length + withoutFacts.length,
+    providerAuthorityFailures: authorityFailures.slice(0, 20),
+    providerOffDivergenceCount: genericDivergences.length,
+    providerOffDivergences: genericDivergences.slice(0, 20),
+    functionsWithoutFacts: withoutFacts,
+    hintCount,
+    acceptedCount,
+    rejectedCount,
+    // Hints that asked for more certainty than the generic evidence allowed.
+    cappedCount,
+    functionsWithHints,
+    providerFailureCount,
+  };
+}
+
 function median(values) {
   const sorted = [...values].sort((left, right) => left - right);
   const middle = Math.floor(sorted.length / 2);
@@ -421,6 +495,7 @@ export function collectPhase8Metrics({ repetitions = 3, includePerformance = tru
   const determinism = determinismFailures({ corpus, first: observations, decompilerTimeBudgetMs: MEASUREMENT_TIME_BUDGET_MS });
   const accounting = structuringAccounting({ corpus });
   const certainty = aggregateCertainty({ corpus });
+  const providers = providerEvidence({ corpus });
   const performance = includePerformance ? performanceMetrics({ repetitions, corpus }) : null;
   const productionDivergences = performance ? completeResultDivergences(performance.runs) : null;
   return {
@@ -456,6 +531,9 @@ export function collectPhase8Metrics({ repetitions = 3, includePerformance = tru
       // candidate's own evidence.
       forcedTypeContradictionCount: certainty.forcedTypeContradictionCount,
       aggregateCertainty: certainty,
+      // Reported evidence, not a frozen gate: the P8-I hard-zero list is fixed
+      // at eight counters and this is not one of them.
+      providerEvidence: providers,
     },
     // `runs` is dropped: it is several megabytes of observations that exist only
     // to compute the divergence counter, and release evidence has to stay

@@ -40,7 +40,7 @@ export const SCCP_PASS = createPassDescriptor({
   consumes: ['cfg', 'ssa'],
   // It reads nothing about memory, types or loops and rewrites nothing, so every
   // other analysis survives it untouched.
-  preserves: ['cfg', 'dominators', 'loops', 'ssa', 'memorySsa', 'alias', 'effects', 'valueNumbers', 'deadCode', 'induction', 'types', 'aggregates', 'summaries', 'origins', 'structuredRegions'],
+  preserves: ['cfg', 'dominators', 'loops', 'ssa', 'memorySsa', 'alias', 'effects', 'valueNumbers', 'deadCode', 'induction', 'types', 'aggregates', 'summaries', 'origins', 'structuredRegions', 'providerHints'],
   invalidates: [],
   produces: ['ranges'],
   description: 'Executable-edge-aware constant propagation with an exact-width wrapped range domain.',

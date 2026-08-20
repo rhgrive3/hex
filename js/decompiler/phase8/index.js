@@ -28,6 +28,7 @@ import { DCE_PASS, runDcePass } from './dce.js';
 import { INDUCTION_PASS, runInductionPass } from './induction.js';
 import { STRUCTURING_PASS, runStructuringPass } from './structuring.js';
 import { AGGREGATE_PASS, runAggregatePass } from './aggregates.js';
+import { PROVIDER_PASS, runProviderPass } from './providers.js';
 
 export { PHASE8_CONTRACT_VERSION, PASS_STAGES } from './contract.js';
 export { createPassDescriptor, createPassResult, unchangedResult, ANALYSIS_KEYS, PASS_STATUSES, COMPLETENESS, BUDGET_CLASSES } from './contract.js';
@@ -37,6 +38,7 @@ export { SCCP_PASS, describeSccp, runSccpPass } from './sccp.js';
 export { GVN_PASS, loadIsReusable, runGvnPass } from './valuenumber.js';
 export { DCE_PASS, observableEffectReason, runDcePass } from './dce.js';
 export { INDUCTION_PASS, INDUCTION_SUMMARY_VERSION, classifyLoop, describeLoopFacts, readGuardPredicate, resolveStep, runInductionPass, tripCountOf } from './induction.js';
+export { PROVIDER_PASS, PROVIDER_INTERFACE_VERSION, PROVIDER_HINT_KINDS, HINT_STATUSES, REGISTERED_PROVIDERS, ARRAY_TRAVERSAL_PROVIDER, COUNTED_LOOP_PROVIDER, createProvider, describeProviderHints, judgeHint, providerAuthorityFailures, providerView, runProviderPass } from './providers.js';
 export { AGGREGATE_PASS, AGGREGATE_SUMMARY_VERSION, AGGREGATE_KINDS, CERTAINTIES, candidatesFor, certaintyOf, describeRegion, forcedContradictions, regionIdentityOf, runAggregatePass } from './aggregates.js';
 export { STRUCTURING_PASS, STRUCTURING_SUMMARY_VERSION, EDGE_CONSTRUCTS, accountEdges, classifyEdge, describeStructuring, edgeAccountingFailures, observableEffectsIn, runStructuringPass, successorEdgesOf } from './structuring.js';
 
@@ -55,6 +57,7 @@ const REGISTERED = Object.freeze([
   Object.freeze({ descriptor: INDUCTION_PASS, run: runInductionPass }),
   Object.freeze({ descriptor: AGGREGATE_PASS, run: runAggregatePass }),
   Object.freeze({ descriptor: STRUCTURING_PASS, run: runStructuringPass }),
+  Object.freeze({ descriptor: PROVIDER_PASS, run: runProviderPass }),
 ]);
 
 /**
