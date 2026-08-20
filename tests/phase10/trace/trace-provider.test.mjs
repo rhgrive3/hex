@@ -17,7 +17,16 @@ function recording(overrides = {}) {
     architecture: 'arm64',
     platform: 'darwin',
     completeness: 'complete',
-    modules: [{ bindingKey: 'main', runtimeBase: 0x7000n, runtimeSize: 0x1000n, staticBase: 0x1000n, binaryId: binaryA, sliceId: 'slice:arm64' }],
+    modules: [{
+      bindingKey: 'main',
+      runtimeBase: 0x7000n,
+      runtimeSize: 0x1000n,
+      staticBase: 0x1000n,
+      binaryId: binaryA,
+      sliceId: 'slice:arm64',
+      identityState: 'exact',
+      identityEvidenceIds: ['fixture:trace-module-match'],
+    }],
     events: [
       { type: 'call', streamId: 't1', sequence: 1, moduleBindingKey: 'main', moduleGeneration: 1, payload: { target: '0x7100' }, completeness: 'complete' },
       { type: 'return', streamId: 't1', sequence: 2, moduleBindingKey: 'main', moduleGeneration: 1, payload: { value: 1 }, completeness: 'complete' },
@@ -57,6 +66,18 @@ test('P10.5 same runtime address on a different binary does not attach by filena
   assert.equal(exact.state, 'exact');
   const mismatch = session.facets.trace.resolveAddress(0x7010n, { binaryId: binaryB, sliceId: 'slice:arm64' });
   assert.equal(mismatch.state, 'mismatch');
+  await session.close();
+});
+
+test('P10.5 recording-level binary identity does not implicitly authenticate the first trace module', async () => {
+  const provider = new TraceProvider(recording({
+    modules: [{ bindingKey: 'main', runtimeBase: 0x7000n, runtimeSize: 0x1000n, staticBase: 0x1000n }],
+  }), { id: 'trace-unproven-module-provider' });
+  const session = await provider.openSession();
+  const [module] = session.modules.active();
+  assert.equal(module.identityState, 'unresolved');
+  assert.equal(module.binaryId, null);
+  assert.equal(session.facets.trace.resolveAddress(0x7010n, { binaryId: binaryA }).state, 'unresolved');
   await session.close();
 });
 
